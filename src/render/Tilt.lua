@@ -10,8 +10,19 @@
 -- Spec: docs/new-features.md (tilt mode)
 
 local Zoom = require("src.render.Zoom")
+local love = love
 
 local Tilt = {}
+
+-- Sky image for tilt mode (nil = black sky)
+Tilt.skyImage = nil
+Tilt.skyImagePath = nil
+-- Store options for sky enabled check
+Tilt.options = nil
+-- Sky rotation tracking (in radians)
+Tilt.skyRotation = 0
+Tilt.skyTargetRotation = 0
+Tilt.skyBounceOffset = 0
 
 -- Discrete tilt angles in degrees (index 0 is off).  Cycle: off→15→35→50→off.
 Tilt.ANGLES_DEG = { 0, 15, 35, 50 }
@@ -88,6 +99,29 @@ function Tilt.applyOptions(opts)
   Tilt.t = 1
   Tilt.TARGET_ANGLE = Tilt.goal
   Tilt.enabled = level > 0
+  
+  -- Store options for sky enabled check
+  Tilt.options = opts
+  
+  -- Load sky image from save directory if enabled and not already loaded
+  if opts and opts.skyImageEnabled and not Tilt.skyImage then
+    local savePath = "sky_image.png"
+    if love.filesystem.getInfo(savePath) then
+      local success, err = pcall(function()
+        Tilt.skyImage = love.graphics.newImage(savePath)
+      end)
+      if not success then
+        print("Failed to load sky image from save directory: " .. tostring(err))
+      else
+        print("Sky image loaded from save directory")
+      end
+    end
+  end
+end
+
+-- Check if sky image should be rendered (enabled and image loaded)
+function Tilt:isSkyEnabled()
+  return Tilt.options and Tilt.options.skyImageEnabled and Tilt.skyImage ~= nil
 end
 
 function Tilt.levelLabel(level)
@@ -105,6 +139,36 @@ function Tilt.update(dt)
   end
   Tilt.TARGET_ANGLE = Tilt.goal
   Tilt.enabled = Tilt.level > 0
+  -- Ease sky rotation toward target
+  local rotDiff = Tilt.skyTargetRotation - Tilt.skyRotation
+  if math.abs(rotDiff) > 0.001 then
+    Tilt.skyRotation = Tilt.skyRotation + rotDiff * 5 * dt
+  end
+end
+
+-- Update sky rotation based on player movement direction
+-- dx: -1 (left), 0, 1 (right)
+-- dy: -1 (up), 0, 1 (down)
+function Tilt.updateSkyRotation(dx, dy)
+  local rotationSpeed = 0.5 -- radians per second of movement
+  local wiggleAmount = 0.1 -- radians for forward/back wiggle
+  local bounceAmount = 0.05 -- radians for left/right bounce
+  
+  if dx ~= 0 then
+    -- Rotate opposite to horizontal movement
+    Tilt.skyTargetRotation = Tilt.skyTargetRotation + (-dx) * rotationSpeed
+    -- Set bounce offset for left/right movement
+    Tilt.skyBounceOffset = math.sin(love.timer.getTime() * 5) * bounceAmount
+  elseif dy ~= 0 then
+    -- Wiggle for forward/backward movement (affects target rotation directly)
+    Tilt.skyTargetRotation = math.sin(love.timer.getTime() * 3) * wiggleAmount
+    Tilt.skyBounceOffset = 0
+  else
+    -- No movement, reset bounce
+    Tilt.skyBounceOffset = 0
+  end
+  -- Clamp rotation to reasonable range
+  Tilt.skyTargetRotation = math.max(-math.pi/2, math.min(math.pi/2, Tilt.skyTargetRotation))
 end
 
 -- true while tilt is on *or* still tweening -- i.e. whenever the renderer
@@ -150,6 +214,58 @@ function Tilt.meshCorners(vw, vh)
     out[i] = { sx, sy, c[3], c[4], scale }
   end
   return out
+end
+
+-- Set sky image from file path
+function Tilt:setSkyImage(path)
+  -- Ensure path is a string
+  path = path and tostring(path) or nil
+  
+  -- Check if path has changed (avoid unnecessary copying)
+  if path == Tilt.skyImagePath and Tilt.skyImage then
+    -- Same image already loaded, do nothing
+    return
+  end
+  
+  Tilt.skyImagePath = path
+  if Tilt.skyImage and Tilt.skyImage.release then
+    Tilt.skyImage:release()
+    Tilt.skyImage = nil
+  end
+  
+  if path and path ~= "" then
+    -- Copy image to save directory for LÖVE to access it
+    local love = love
+    local savePath = "sky_image.png"
+    
+    -- Try to read the source file and write to save directory
+    local sourceFile = io.open(path, "rb")
+    if sourceFile then
+      local content = sourceFile:read("*a")
+      sourceFile:close()
+      if content then
+        love.filesystem.write(savePath, content)
+        print("Sky image copied to save directory: " .. savePath)
+      end
+    end
+    
+    -- Load from save directory
+    local success, err = pcall(function()
+      Tilt.skyImage = love.graphics.newImage(savePath)
+    end)
+    if not success then
+      -- Log error but don't crash
+      print("Failed to load sky image: " .. tostring(err))
+      Tilt.skyImage = nil
+    else
+      print("Sky image loaded successfully from save directory")
+    end
+  end
+end
+
+-- Get current sky image
+function Tilt:getSkyImage()
+  return Tilt.skyImage
 end
 
 return Tilt

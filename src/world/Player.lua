@@ -89,6 +89,10 @@ function Player:tryMove(dir, map, entities)
   local save = Game.save
   local frames = (save and save.onBike) and self.bikeStepFrames
                  or self.stepFrames or STEP_FRAMES
+  -- Hold B to run: 2x movement speed when option enabled and B held
+  if save and save.options and save.options.holdBToRun and Game.input:isDown("b") then
+    frames = math.ceil(frames / 2)
+  end
   if Runtime.wantsHook("movement.speed") then
     frames = Runtime.call("movement.speed", function(f) return f end, frames, {
       onBike = save and save.onBike or false,
@@ -131,7 +135,14 @@ function Player:update()
   -- below) can never double-tick the leg cadence.
   if not self.moving and self.bumpFrames and self.bumpFrames > 0 then
     self.bumpFrames = self.bumpFrames - 1
-    self.animClock = (self.animClock or 0) + 1
+    local animIncrement = 1
+    -- Hold B to run: 2x animation speed when option enabled and B held
+    local Game = require("src.core.Game")
+    local save = Game.save
+    if save and save.options and save.options.holdBToRun and Game.input:isDown("b") then
+      animIncrement = 2
+    end
+    self.animClock = (self.animClock or 0) + animIncrement
   end
   if not self.moving then return false end
   local stepLen = self.stepFramesCur or self.stepFrames or STEP_FRAMES
@@ -139,7 +150,12 @@ function Player:update()
   -- the walk-cycle clock ticks once per real frame while moving, so the
   -- leg cadence stays constant when the bike halves stepFramesCur (only
   -- translation speed doubles, like UpdatePlayerSprite's frame counters)
-  self.animClock = (self.animClock or 0) + 1
+  local animIncrement = 1
+  -- Hold B to run: 2x animation speed when option enabled and B held
+  if save and save.options and save.options.holdBToRun and Game.input:isDown("b") then
+    animIncrement = 2
+  end
+  self.animClock = (self.animClock or 0) + animIncrement
   local d = Collision.DELTA[self.facing]
   local px = math.floor(self.progress * 16 / stepLen)
   self.px = self.cellX * 16 + d[1] * px

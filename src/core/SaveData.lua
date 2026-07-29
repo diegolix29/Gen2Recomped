@@ -230,10 +230,22 @@ function SaveData.defaultOptions()
     colors = "gbc",
     tilt = 0,
     gbcfx = 0,
+    -- sky image zoom factor (1.0 = default, higher = zoomed in)
+    skyZoom = 1.0,
+    -- sky image vertical offset (in screen height units, x5 scale in UI)
+    skyOffsetY = 0,
+    -- sky image enabled toggle (for launcher)
+    skyImageEnabled = false,
     -- survey zoom offset from window fit scale (0 = FIT); see Zoom.lua
     zoom = 0,
     -- OVERWORLD beyond-edge fill: trees | water | black
     voidFill = "trees",
+    -- options menu cursor position (remembered across sessions)
+    optionsMenuIndex = 1,
+    -- hold B button to run (2x player movement speed)
+    holdBToRun = false,
+    -- disable wild encounter flash animation
+    disableBattleFlash = false,
     -- windowed | borderless (desktop fullscreen); ignored on mobile
     videoMode = "windowed",
     -- hard render frame-rate cap; render-only pacing (issue #88, FrameCap.lua)

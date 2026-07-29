@@ -176,7 +176,8 @@ end
 -- dimensions, by Tilt.viewGrowth) so the projected ground plane still covers
 -- the whole window with no background peeking at the receded top/bottom
 -- corners; flat mode returns exactly today's size (growth factor is 1 when
--- tilt is inactive).
+-- tilt is inactive).  When camera is rotated, the canvas also grows to
+-- accommodate the rotated view without cropping.
 function Renderer:worldViewSize()
   local _, _, pw, ph = displayMetrics()
   local sp = Zoom.scale(self:fitScale())
@@ -189,6 +190,41 @@ function Renderer:worldViewSize()
     local g = Tilt.viewGrowth()
     vw, vh = math.ceil(vw * g), math.ceil(vh * g)
   end
+  -- Grow canvas for camera rotation when looking left/right (90°, -90°)
+  -- with tilt off and voxel off
+  local cameraRotation = 0
+  local ok, Game = pcall(require, "src.core.Game")
+  if ok and Game.overworld and Game.overworld.camera then
+    cameraRotation = Game.overworld.camera:getRotation() or 0
+  end
+  -- Check if voxel mode is active - also check if any world pipeline is active
+  local voxelActive = false
+  local okVoxel, Voxel = pcall(require, "mods.DRAMATIC_SHAPE.lib.VoxelState")
+  if okVoxel then
+    voxelActive = Voxel.active()
+  end
+  -- Also check if any world pipeline is active through Pipelines module
+  local worldPipelineActive = false
+  local okPipelines, Pipelines = pcall(require, "src.render.Pipelines")
+  if okPipelines then
+    -- Check if any world pipeline is active
+    for _, entry in ipairs(Pipelines.list()) do
+      if entry.def.drawWorld and Pipelines.level(entry.id) > 0 then
+        worldPipelineActive = true
+        break
+      end
+    end
+  end
+  -- Expand canvas when looking left/right (90°, -90°) with tilt off and voxel off
+  -- Front (0°) and back (180°) views don't need expansion as they match screen dimensions
+  local isLeftRightView = (cameraRotation == 90 or cameraRotation == -90)
+  if isLeftRightView and not Tilt.active() and not voxelActive and not worldPipelineActive then
+    -- For 90-degree rotation, use max dimension for both width and height
+    -- This ensures the rotated view fits without cropping
+    local maxDim = math.max(vw, vh)
+    vw, vh = maxDim, maxDim
+  end
+
   return vw, vh
 end
 
@@ -383,6 +419,13 @@ function Renderer:drawTiltedWorld(zoneList, sx, sy, wox, woy, target)
   sy = sy or sx
   local wvw = self.worldCanvas:getWidth()
   local wvh = self.worldCanvas:getHeight()
+  
+  -- Get camera rotation from overworld
+  local cameraRotation = 0
+  local ok, Game = pcall(require, "src.core.Game")
+  if ok and Game.overworld and Game.overworld.camera then
+    cameraRotation = Game.overworld.camera:getRotation() or 0
+  end
 
   -- colorized ground canvas, resized to match the world canvas.  Linear
   -- sampling softens the pixel shimmer the perspective warp would cause
@@ -429,6 +472,16 @@ function Renderer:drawTiltedWorld(zoneList, sx, sy, wox, woy, target)
   love.graphics.push()
   love.graphics.translate(wox, woy)
   love.graphics.scale(sx, sy)
+  
+  -- Apply camera rotation as Y-axis rotation for tilt mode
+  if cameraRotation ~= 0 then
+    local viewCenterX = wvw / 2
+    local viewCenterY = wvh / 2
+    love.graphics.translate(viewCenterX, viewCenterY)
+    love.graphics.rotate(math.rad(-cameraRotation)) -- Invert direction
+    love.graphics.translate(-viewCenterX, -viewCenterY)
+  end
+  
   love.graphics.setColor(1, 1, 1, 1)
   love.graphics.setShader(shader)
   love.graphics.draw(mesh)
@@ -581,11 +634,41 @@ function Renderer:endFrame(zones, worldZones)
   end
 
   if self.worldOverride then
+    -- Draw sky image before mod's world override (background layer)
+    if Tilt:isSkyEnabled() then
+      local sky = Tilt:getSkyImage()
+      if sky then
+        love.graphics.setColor(1, 1, 1, 1)
+        -- Pan horizontally for panoramic effect instead of rotating
+        local rotation = Tilt.skyRotation or 0
+        -- Add bounce offset for left/right movement
+        local bounce = Tilt.skyBounceOffset or 0
+        rotation = rotation + bounce
+        local skyW = sky:getWidth()
+        local skyH = sky:getHeight()
+        -- Apply sky zoom factor from options
+        local zoom = Tilt.options and Tilt.options.skyZoom or 1.0
+        -- Apply vertical offset from options (in screen height units)
+        local offsetY = Tilt.options and Tilt.options.skyOffsetY or 0
+        local scaleX = (ww / skyW) * zoom
+        local scaleY = (wh / skyH) * zoom
+        -- Convert rotation angle to x offset (full 360 degrees = full image width)
+        local xOffset = (rotation / (2 * math.pi)) * skyW * scaleX
+        -- Center the image initially (offset by half screen width)
+        xOffset = xOffset + (ww / 2)
+        -- Apply vertical offset (multiplied by screen height)
+        local yOffset = offsetY * wh
+        -- Draw twice for seamless wrapping
+        love.graphics.draw(sky, xOffset, yOffset, 0, scaleX, scaleY)
+        love.graphics.draw(sky, xOffset - (skyW * scaleX), yOffset, 0, scaleX, scaleY)
+      end
+    end
     -- A render pipeline already produced the whole world -- terrain,
     -- characters and its own FX overlay -- as one window-resolution image,
     -- so it composites with a straight 1:1 blit and the world canvas is
     -- skipped entirely (nothing drew into it).  The UI blit below still
     -- runs, so dialogs, menus and the HUD sit on top as usual.
+    
     love.graphics.setColor(1, 1, 1, 1)
     love.graphics.setScissor(0, 0, ww, wh)
     love.graphics.draw(self.worldOverride, 0, 0, 0, 1 / dpiX, 1 / dpiY)
@@ -607,20 +690,72 @@ function Renderer:endFrame(zones, worldZones)
     local wvh = self.worldCanvas:getHeight()
     local wox = math.floor((pw - wvw * sp) / 2) / dpiX
     local woy = math.floor((ph - wvh * sp) / 2) / dpiY
+    
+    -- Get camera rotation from overworld
+    local cameraRotation = 0
+    local ok, Game = pcall(require, "src.core.Game")
+    if ok and Game.overworld and Game.overworld.camera then
+      cameraRotation = Game.overworld.camera:getRotation() or 0
+    end
+    
     -- Tilt mode projects the ground world pass through the perspective mesh
     -- (SGB zones baked in beforehand -- see drawTiltedWorld -- so no zone
     -- scissoring here).  drawTiltedWorld returns false when tilt is off or
     -- projection is unavailable (headless / no shader); then the ground
     -- falls through to the flat blit, keeping the flat frame byte-for-byte
     -- identical to today.
+    
+    -- Draw sky image BEFORE world rendering (background layer)
+    if Tilt:isSkyEnabled() then
+      local sky = Tilt:getSkyImage()
+      if sky then
+        love.graphics.setColor(1, 1, 1, 1)
+        -- Pan horizontally for panoramic effect instead of rotating
+        local rotation = Tilt.skyRotation or 0
+        -- Add bounce offset for left/right movement
+        local bounce = Tilt.skyBounceOffset or 0
+        rotation = rotation + bounce
+        local skyW = sky:getWidth()
+        local skyH = sky:getHeight()
+        -- Apply sky zoom factor from options
+        local zoom = Tilt.options and Tilt.options.skyZoom or 1.0
+        -- Apply vertical offset from options (in screen height units)
+        local offsetY = Tilt.options and Tilt.options.skyOffsetY or 0
+        local scaleX = (ww / skyW) * zoom
+        local scaleY = (wh / skyH) * zoom
+        -- Convert rotation angle to x offset (full 360 degrees = full image width)
+        local xOffset = (rotation / (2 * math.pi)) * skyW * scaleX
+        -- Center the image initially (offset by half screen width)
+        xOffset = xOffset + (ww / 2)
+        -- Apply vertical offset (multiplied by screen height)
+        local yOffset = offsetY * wh
+        -- Draw twice for seamless wrapping
+        love.graphics.draw(sky, xOffset, yOffset, 0, scaleX, scaleY)
+        love.graphics.draw(sky, xOffset - (skyW * scaleX), yOffset, 0, scaleX, scaleY)
+      end
+    end
+    
     local projected =
       Tilt.active() and self:drawTiltedWorld(worldZones or zones, sx, sy, wox, woy, present)
     if not projected then
+      -- Apply camera rotation as Y-axis rotation (world rotates around camera center)
+      love.graphics.push()
+      if cameraRotation ~= 0 then
+        -- Rotate around the center of the view (camera center)
+        local viewCenterX = ww / 2
+        local viewCenterY = wh / 2
+        love.graphics.translate(viewCenterX, viewCenterY)
+        love.graphics.rotate(math.rad(-cameraRotation)) -- Invert direction
+        love.graphics.translate(-viewCenterX, -viewCenterY)
+      end
+      
       if worldZones then
         blit(self.worldCanvas, sx, sy, worldZones, sx, sy, wox, woy, 0, 0, ww, wh)
       else
         blit(self.worldCanvas, sx, sy, zones, Sx, Sy, wox, woy, 0, 0, ww, wh)
       end
+      
+      love.graphics.pop()
       -- OBP-baked overworld sprites replay on top of the zone pass (GBC
       -- mode per-object coloring; see PaletteFX.markSpriteRedraw).  Grass
       -- feet-overdraw entries carry `colors` and re-colorize through the

@@ -34,6 +34,22 @@ local mapScripts -- registry of hand-ported map scripts
 local COMPASS = { up = "north", down = "south", left = "west", right = "east" }
 local DIRVEC = { up = { 0, -1 }, down = { 0, 1 }, left = { -1, 0 }, right = { 1, 0 } }
 
+-- Rotate input direction based on camera angle
+local function rotateDirection(dir, angleDeg)
+  if angleDeg == 0 then return dir end
+  local angleRad = math.rad(angleDeg)
+  local dirs = { "up", "right", "down", "left" }
+  local idx = 1
+  for i, d in ipairs(dirs) do
+    if d == dir then idx = i break end
+  end
+  -- Rotate index based on angle (90° = 1 step clockwise)
+  -- Use negative angle to match the visual rotation which uses -cameraRotation
+  local steps = math.floor((-angleDeg / 90) + 0.5)
+  local newIdx = ((idx - 1 + steps) % 4) + 1
+  return dirs[newIdx]
+end
+
 -- healing machine ball screen positions (PokeCenterOAMData dbsprite
 -- rows are raw shadow-OAM bytes, so the hardware's -8/-16 OAM origin
 -- applies: screen = tile*8 + pixel offset - 8/16); [3] = OAM_XFLIP
@@ -761,6 +777,9 @@ function OverworldState:updateParallel()
 end
 
 function OverworldState:update(dt)
+  -- Update camera rotation tween
+  self.camera:update(dt)
+  
   -- deferred cutscene launch (see queueScript): run a queued script only
   -- once the triggering warp's transition has finished, its runner has gone
   -- dead, and no scripted walk is mid-step.  This is how the HALL_OF_FAME
@@ -1003,19 +1022,23 @@ function OverworldState:handleInput()
 
   for _, dir in ipairs({ "up", "down", "left", "right" }) do
     if input:isDown(dir) then
-      if not self.player.moving and self.player.facing == dir then
-        if self:checkEdgeExit(dir) then return end
-        if self:checkLedgeHop(dir) then return end
-        if self:checkBoulderPush(dir) then return end
+      -- Rotate input direction based on camera angle
+      local cameraAngle = self.camera:getRotation()
+      local rotatedDir = rotateDirection(dir, cameraAngle)
+      
+      if not self.player.moving and self.player.facing == rotatedDir then
+        if self:checkEdgeExit(rotatedDir) then return end
+        if self:checkLedgeHop(rotatedDir) then return end
+        if self:checkBoulderPush(rotatedDir) then return end
       end
-      local result, why = self.player:tryMove(dir, self.map, self.entities)
+      local result, why = self.player:tryMove(rotatedDir, self.map, self.entities)
       -- a collision while standing on a warp square fires the warp when the
       -- extra check passes (CheckWarpsCollision: route-gate doorways, dock
       -- entrances, ...) -- but never on the inert cell we just warped in on
       -- (issue #230), which the completed-step path guards the same way.
       if result == "blocked" and not self:onWarpArrivalCell() then
         local w = Warp.onCollision(self.map, Game.data.field.warpCarpets,
-                                   self.player.cellX, self.player.cellY, dir)
+                                   self.player.cellX, self.player.cellY, rotatedDir)
         if w then
           self:takeWarp(w.def)
           return result

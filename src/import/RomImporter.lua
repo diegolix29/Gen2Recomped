@@ -84,7 +84,10 @@ local PAL = {
   chipGoldBot = { 199, 154, 0 },   -- #c79a00
   chipModTop  = { 61, 74, 109 },   -- #3d4a6d
   chipModBot  = { 32, 42, 69 },    -- #202a45
+  chipSkyTop  = { 70, 180, 200 },  -- #46b4c8
+  chipSkyBot  = { 30, 100, 130 },  -- #1e6482
   chipInkGold = { 58, 44, 0 },     -- #3a2c00  dark "Y" on the gold chip
+  skyDot      = { 100, 200, 220 }, -- #64c8dc  SKY chip sun icon + underline
 }
 
 -- CacheFs.exists checks the game folder directly for a portable install,
@@ -606,6 +609,7 @@ function RomImporter.new(onComplete, opts)
       and love.joystick.getJoystickCount() > 0 then
     self:_activatePadCursor()
   end
+
 
   return self
 end
@@ -1973,16 +1977,75 @@ function RomImporter:mousepressed(x, y, button)
     return
   end
   -- Tab chips switch panels even mid-import so the player can look around
-  -- while a ROM extracts.
+  -- while a ROM extracts. Sky tab toggles skyImageEnabled instead.
   for _, t in ipairs(self.tabRects or {}) do
     if inside(t, x, y) then
-      self.tab = t.id
-      self._slotPress = nil   -- drop any half-started slot drag on tab change
-      self._modPress = nil    -- and any half-started mod toggle press
-      self._pagePress = nil   -- and any half-started page pan
-      -- Each tab is its own column of a different length; carrying one tab's
-      -- offset into another lands somewhere arbitrary.
-      self.pageScroll = 0
+      if t.id == "sky" then
+        -- Open file picker to select sky image
+        local SaveData = require("src.core.SaveData")
+        local opts = SaveData.loadOptions()
+        if opts then
+          local platform = love.system.getOS()
+          local prompt = "Select Sky Image"
+          local path = nil
+          
+          releasePointerGrab()
+          
+          if platform == "Windows" then
+            local script = table.concat({
+              "Add-Type -AssemblyName System.Windows.Forms;",
+              "$d=New-Object System.Windows.Forms.OpenFileDialog;",
+              "$d.Title='" .. prompt .. "';",
+              "$d.Filter='Image files (*.png;*.jpg;*.jpeg;*.bmp;*.hdr)|*.png;*.jpg;*.jpeg;*.bmp;*.hdr|All files (*.*)|*.*';",
+              "if($d.ShowDialog() -eq 'OK'){[Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::Write($d.FileName)}",
+            })
+            local pipe = HostShell.popen('powershell -NoProfile -STA -Command "' .. script .. '"')
+            if pipe then
+              local result = pipe:read("*a")
+              pipe:close()
+              result = result and result:gsub("^%s+", ""):gsub("%s+$", "") or nil
+              if result and result ~= "" then path = result end
+            end
+          elseif platform == "Linux" then
+            local pipe = HostShell.popen([[zenity --file-selection --title="]] .. prompt .. [[" --file-filter="Image files | *.png *.jpg *.jpeg *.bmp *.hdr" 2>/dev/null]])
+            if pipe then
+              local result = pipe:read("*a")
+              pipe:close()
+              result = result and result:gsub("^%s+", ""):gsub("%s+$", "") or nil
+              if result and result ~= "" then path = result end
+            end
+            pipe = HostShell.popen([[kdialog --getopenfilename "$HOME" "*.png *.jpg *.jpeg *.bmp *.hdr|Image files" 2>/dev/null]])
+            if pipe then
+              local result = pipe:read("*a")
+              pipe:close()
+              result = result and result:gsub("^%s+", ""):gsub("%s+$", "") or nil
+              if result and result ~= "" then path = result end
+            end
+          elseif platform == "OS X" then
+            local pipe = HostShell.popen([[osascript -e 'POSIX path of (choose file with prompt "]] .. prompt .. [[" of type {"png","jpg","jpeg","bmp","hdr"})' 2>/dev/null]])
+            if pipe then
+              local result = pipe:read("*a")
+              pipe:close()
+              result = result and result:gsub("^%s+", ""):gsub("%s+$", "") or nil
+              if result and result ~= "" then path = result end
+            end
+          end
+          
+          if path and path ~= "" then
+            -- Convert to string in case it's userdata
+            path = tostring(path)
+            -- Only save the enabled flag, not the path (path is launcher-only)
+            opts.skyImageEnabled = true
+            SaveData.saveOptions(opts)
+            local Tilt = require("src.render.Tilt")
+            Tilt:setSkyImage(path)
+          end
+        end
+      else
+        self.tab = t.id
+        self._slotPress = nil   -- drop any half-started slot drag on tab change
+        self._modPress = nil    -- and any half-started mod toggle press
+      end
       return
     end
   end
@@ -2202,6 +2265,8 @@ function RomImporter:_drawTabBar(x, y, w, h, chip)
       under = PAL.gold,   label = Strings("YELLOW"), ink = PAL.chipInkGold },
     { id = "mods",   mods = true,  top = PAL.chipModTop,  bot = PAL.chipModBot,
       under = PAL.modDot, label = Strings("MODS") },
+    { id = "sky",    sky = true,   top = PAL.chipSkyTop,  bot = PAL.chipSkyBot,
+      under = PAL.skyDot, label = Strings("SKY") },
   }
   local gap = 10 * s
   local r = 12 * s
@@ -2209,8 +2274,8 @@ function RomImporter:_drawTabBar(x, y, w, h, chip)
   local underY = y + h - 3 * s
   local cursorX = x
   for _, t in ipairs(tabs) do
-    if t.mods then
-      -- divider between the game chips and MODS
+    if t.mods or t.sky then
+      -- divider between the game chips and MODS/SKY
       col(PAL.cardBorder, 0.25)
       love.graphics.rectangle("fill", cursorX, y + (h - 34 * s) / 2,
         math.max(1, 1 * s), 34 * s)
@@ -2230,6 +2295,25 @@ function RomImporter:_drawTabBar(x, y, w, h, chip)
         for c2 = 0, 2 do
           love.graphics.rectangle("fill", gx + c2 * (d + gd), gy + row * (d + gd), d, d)
         end
+      end
+    elseif t.sky then
+      -- Draw sun icon for sky chip
+      local cx = cursorX + chip / 2
+      local cy = chipY + chip / 2
+      local sunR = 6 * s
+      col(PAL.skyDot)
+      -- Sun circle
+      love.graphics.circle("fill", cx, cy, sunR)
+      -- Sun rays
+      for i = 0, 7 do
+        local angle = (i / 8) * math.pi * 2
+        local rayLen = 3 * s
+        love.graphics.line(
+          cx + math.cos(angle) * (sunR + 1),
+          cy + math.sin(angle) * (sunR + 1),
+          cx + math.cos(angle) * (sunR + rayLen),
+          cy + math.sin(angle) * (sunR + rayLen)
+        )
       end
     else
       love.graphics.setFont(self.chipFont)

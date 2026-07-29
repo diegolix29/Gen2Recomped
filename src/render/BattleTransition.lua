@@ -209,7 +209,9 @@ function BattleTransition.new(game, onDone, opts)
   self.style = style
   self.def = def
   -- only the circle wipes flash first (battle_transitions.asm:585,628)
-  self.phase = def.flash and "flash" or "wipe"
+  -- skip flash if disableBattleFlash option is enabled
+  local disableFlash = self.game.save.options.disableBattleFlash or false
+  self.phase = (def.flash and not disableFlash) and "flash" or "wipe"
   self.wipeLen = def.frames
   return self
 end
@@ -236,7 +238,12 @@ function BattleTransition:draw()
     if v ~= 0 then
       local shade = v > 0 and 0 or 1
       love.graphics.setColor(shade, shade, shade, math.abs(v))
-      love.graphics.rectangle("fill", 0, 0, 160, 144)
+      -- Use full screen dimensions instead of fixed GB dimensions
+      love.graphics.push()
+      love.graphics.origin() -- Reset any transformations
+      local w, h = love.graphics.getDimensions()
+      love.graphics.rectangle("fill", 0, 0, w, h)
+      love.graphics.pop()
       love.graphics.setColor(1, 1, 1, 1)
     end
     return

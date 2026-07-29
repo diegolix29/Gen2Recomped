@@ -8,6 +8,7 @@ local Font = require("src.render.Font")
 local ListMenu = require("src.ui.ListMenu")
 local Input = require("src.core.Input")
 local Strings = require("src.core.Strings")
+local Theme = require("src.ui.Theme")
 
 local BindingsMenu = setmetatable({}, { __index = ListMenu })
 BindingsMenu.__index = BindingsMenu
@@ -16,13 +17,13 @@ BindingsMenu.__index = BindingsMenu
 -- `pad` is the default SDL gamecontroller button (see Input.lua); shown
 -- on the SELECT row so controller Back/View is discoverable (#73).
 local BUTTONS = {
-  { id = "up", label = "UP", key = "up" },
-  { id = "down", label = "DOWN", key = "down" },
-  { id = "left", label = "LEFT", key = "left" },
-  { id = "right", label = "RIGHT", key = "right" },
-  { id = "a", label = "A", key = "z" },
-  { id = "b", label = "B", key = "x" },
-  { id = "start", label = "START", key = "escape" },
+  { id = "up", label = "UP", key = "up", pad = "dpup" },
+  { id = "down", label = "DOWN", key = "down", pad = "dpdown" },
+  { id = "left", label = "LEFT", key = "left", pad = "dpleft" },
+  { id = "right", label = "RIGHT", key = "right", pad = "dpright" },
+  { id = "a", label = "A", key = "z", pad = "a" },
+  { id = "b", label = "B", key = "x", pad = "b" },
+  { id = "start", label = "START", key = "escape", pad = "start" },
   { id = "select", label = "SELECT", key = "tab", pad = "back" },
 }
 
@@ -41,11 +42,10 @@ local function boundPad(overlay, def)
   return def.pad
 end
 
--- Key column for every row. SELECT also appends "/PAD" (default BACK)
--- so controller Select/View is visible without opening a second legend.
+-- Key column for every row. Show both keyboard and gamepad bindings
+-- separated by "/" so controller bindings are visible for all buttons
 local function boundRight(overlay, def)
   local key = boundKey(overlay, def)
-  if def.id ~= "select" then return key:upper() end
   local pad = boundPad(overlay, def)
   if pad then return (key .. "/" .. pad):upper() end
   return key:upper()
@@ -61,9 +61,14 @@ function BindingsMenu.new(game)
     items[i] = { label = Strings(def.label),
                  right = boundRight(overlay, def), button = def }
   end
-  local self = setmetatable(ListMenu.new(game, "CONTROLS", items, {}),
-                            BindingsMenu)
+  local self = setmetatable(ListMenu.new(game, "CONTROLS", items, {
+    rows = 4, -- Fewer rows since each item takes 2 lines like hotkeys
+    footer = Strings("SELECT: RESET TO DEFAULT"),
+    onSelectKey = function(item) self:resetItem(item) end,
+  }), BindingsMenu)
   self.onChoose = function(item) self:beginCapture(item) end
+  self.scroll = 0
+  self.index = 1
   return self
 end
 
@@ -107,10 +112,52 @@ end
 function BindingsMenu:update(dt)
   if self.capture then return end -- the raw capture owns the input
   ListMenu.update(self, dt)
+  
+  -- Handle scrolling to keep selected item visible
+  local totalItems = #self.items
+  local rows = self.rows or 4
+  local maxScroll = math.max(0, totalItems - rows)
+  
+  if self.index < self.scroll + 1 then
+    self.scroll = math.max(0, self.index - 1)
+  elseif self.index > self.scroll + rows then
+    self.scroll = math.min(maxScroll, self.index - rows)
+  end
+end
+
+function BindingsMenu:resetItem(item)
+  local game = self.game
+  if not (item and game.save and game.save.options) then return end
+  local opts = game.save.options
+  opts.bindings = opts.bindings or {}
+  opts.bindings[item.button.id] = nil
+  item.right = boundRight(opts.bindings, item.button)
+  Input:applyBindings(opts.bindings)
+  if game.writeOptions then game:writeOptions() end
 end
 
 function BindingsMenu:draw()
-  ListMenu.draw(self)
+  Font.draw(self.title, 8, 4)
+  local baseY = 20
+  local rows = self.rows or 4
+  
+  for row = 1, rows do
+    local i = (self.scroll or 0) + row
+    local item = self.items[i]
+    local y = baseY + (row - 1) * 24 -- 24 pixels per item (2 lines + blank line)
+    if item then
+      Font.draw(item.label, 16, y)
+      Font.draw(item.right, 80, y + 8) -- Centered position (x=80)
+      if i == self.index then
+        Font.drawCode(Theme.cursor, 8, y)
+      end
+    end
+  end
+  
+  if self.footer then
+    Font.draw(self.footer, 8, 136)
+  end
+  
   if self.capture then
     Font.drawBox(1, 6, 18, 4)
     love.graphics.setColor(0, 0, 0, 1)

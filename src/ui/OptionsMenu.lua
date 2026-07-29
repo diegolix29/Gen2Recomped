@@ -19,6 +19,8 @@ local GameSpeed = require("src.core.GameSpeed")
 local VideoMode = require("src.core.VideoMode")
 local FrameCap = require("src.core.FrameCap")
 local Logger = require("src.core.Logger")
+local HostShell = require("src.core.HostShell")
+local love = love
 local Runtime = require("src.mods.Runtime")
 local OptionRows = require("src.ui.OptionRows")
 local Renderer = require("src.render.Renderer")
@@ -97,6 +99,69 @@ local function stepVolume(v, dir)
   return math.max(0, math.min(7, (v or 7) + dir))
 end
 
+-- Helper to trim whitespace
+local function trim(s)
+  return s and s:gsub("^%s+", ""):gsub("%s+$", "") or nil
+end
+
+-- Release pointer grab before opening file picker (prevents freeze)
+local function releasePointerGrab()
+  local love = love
+  if love and love.mouse and love.mouse.hasCursor and love.mouse.hasCursor() then
+    love.mouse.setGrabbed(false)
+    love.mouse.setRelativeMode(false)
+  end
+end
+
+-- File picker for sky image selection
+local function pickSkyImage()
+  local platform = love.system.getOS()
+  local prompt = "Select Sky Image"
+  
+  releasePointerGrab()
+  
+  if platform == "Windows" then
+    local script = table.concat({
+      "Add-Type -AssemblyName System.Windows.Forms;",
+      "$d=New-Object System.Windows.Forms.OpenFileDialog;",
+      "$d.Title='" .. prompt .. "';",
+      "$d.Filter='Image files (*.png;*.jpg;*.jpeg;*.bmp)|*.png;*.jpg;*.jpeg;*.bmp|All files (*.*)|*.*';",
+      "if($d.ShowDialog() -eq 'OK'){[Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::Write($d.FileName)}",
+    })
+    local pipe = HostShell.popen('powershell -NoProfile -STA -Command "' .. script .. '"')
+    if pipe then
+      local result = pipe:read("*a")
+      pipe:close()
+      result = trim(result)
+      return result ~= "" and result or nil
+    end
+  elseif platform == "Linux" then
+    local pipe = HostShell.popen([[zenity --file-selection --title="]] .. prompt .. [[" --file-filter="Image files | *.png *.jpg *.jpeg *.bmp" 2>/dev/null]])
+    if pipe then
+      local result = pipe:read("*a")
+      pipe:close()
+      result = trim(result)
+      if result and result ~= "" then return result end
+    end
+    pipe = HostShell.popen([[kdialog --getopenfilename "$HOME" "*.png *.jpg *.jpeg *.bmp|Image files" 2>/dev/null]])
+    if pipe then
+      local result = pipe:read("*a")
+      pipe:close()
+      result = trim(result)
+      if result and result ~= "" then return result end
+    end
+  elseif platform == "OS X" then
+    local pipe = HostShell.popen([[osascript -e 'POSIX path of (choose file with prompt "]] .. prompt .. [[" of type {"png","jpg","jpeg","bmp"})' 2>/dev/null]])
+    if pipe then
+      local result = pipe:read("*a")
+      pipe:close()
+      result = trim(result)
+      if result and result ~= "" then return result end
+    end
+  end
+  return nil
+end
+
 local function colorIndex(opts)
   local cur = opts.colors or "gbc"
   for i, m in ipairs(PaletteFX.MODES) do
@@ -131,6 +196,15 @@ local function buildRows(game)
       step = function(g)
         local o = g.save.options
         o.animations = o.animations == false and true or false
+        return true
+      end },
+    { id = "battleFlash", label = "BATTLE FLASH",
+      value = function(g)
+        return g.save.options.disableBattleFlash == true and "OFF" or "ON"
+      end,
+      step = function(g)
+        local o = g.save.options
+        o.disableBattleFlash = not o.disableBattleFlash
         return true
       end },
     { id = "battleStyle", label = Strings("BATTLE STYLE"),
@@ -215,6 +289,65 @@ local function buildRows(game)
           end
           Pipelines.syncOptions(o)
         end
+        return true
+      end },
+    { id = "skyZoom", label = Strings("SKY ZOOM"),
+      value = function(g)
+        local zoom = g.save.options.skyZoom or 1.0
+        return string.format("%.1fx", zoom)
+      end,
+      step = function(g, dir)
+        local o = g.save.options
+        local zoom = o.skyZoom or 1.0
+        zoom = zoom + dir * 0.1
+        zoom = math.max(0.5, math.min(3.0, zoom)) -- Clamp between 0.5x and 3.0x
+        o.skyZoom = zoom
+        if g.writeOptions then g:writeOptions() end
+        return true
+      end },
+    { id = "rightStickMovement", label = Strings("RIGHT STICK MOVE"),
+      value = function(g)
+        return (g.save.options.rightStickMovement or false) and "ON" or "OFF"
+      end,
+      step = function(g)
+        local o = g.save.options
+        o.rightStickMovement = not (o.rightStickMovement or false)
+        if g.writeOptions then g:writeOptions() end
+        return true
+      end },
+    { id = "skyOffsetY", label = Strings("SKY OFFSET Y"),
+      value = function(g)
+        local offset = g.save.options.skyOffsetY or 0
+        return string.format("%.1f", offset)
+      end,
+      step = function(g, dir)
+        local o = g.save.options
+        local offset = o.skyOffsetY or 0
+        -- x5 scale: UI shows -5 to +5, stored as -1.0 to +1.0
+        offset = offset + dir * 0.2
+        offset = math.max(-1.0, math.min(1.0, offset)) -- Clamp between -1.0 and 1.0
+        o.skyOffsetY = offset
+        if g.writeOptions then g:writeOptions() end
+        return true
+      end },
+    { id = "skyImageEnabled", label = Strings("SKY ENABLED"),
+      value = function(g)
+        return g.save.options.skyImageEnabled and "ON" or "OFF"
+      end,
+      step = function(g, dir)
+        local o = g.save.options
+        o.skyImageEnabled = not o.skyImageEnabled
+        if g.writeOptions then g:writeOptions() end
+        return true
+      end },
+    { id = "holdBToRun", label = Strings("HOLD B TO RUN"),
+      value = function(g)
+        return g.save.options.holdBToRun and "ON" or "OFF"
+      end,
+      step = function(g, dir)
+        local o = g.save.options
+        o.holdBToRun = not o.holdBToRun
+        if g.writeOptions then g:writeOptions() end
         return true
       end },
     { id = "gbcfx", label = Strings("GBC FX"),
@@ -308,6 +441,13 @@ local function buildRows(game)
       activate = function(g)
         require("src.ui.Screens").push(g, "BindingsMenu")
       end },
+    -- lets COLORS/TILT/ZOOM/GBC FX/zoom-step be bound to a controller
+    -- button, same "PRESS A BUTTON" capture as CONTROLS above; the row
+    -- costs a vanilla install nothing (no default pad binding ships)
+    { id = "hotkeys", label = Strings("HOTKEYS"),
+      activate = function(g)
+        require("src.ui.Screens").push(g, "HotkeyBindingsMenu")
+      end },
   }
   -- issue #136: hide GBC FX on Android/iOS -- the present shader soft-bricks
   if not GBCFX.isSupported() then
@@ -350,7 +490,14 @@ function OptionsMenu.new(game, opts)
     Logger.error("ui.options.rows returned %s; keeping the vanilla rows",
                  type(hooked))
   end
-  return setmetatable({ game = game, rows = rows, index = 1, scroll = 0,
+  -- Restore cursor position from saved options
+  local savedIndex = game.save.options.optionsMenuIndex or 1
+  -- Clamp to valid range
+  local cancelRow = #rows + 1
+  if savedIndex < 1 or savedIndex > cancelRow then
+    savedIndex = 1
+  end
+  return setmetatable({ game = game, rows = rows, index = savedIndex, scroll = 0,
                         onCancel = opts.onCancel }, OptionsMenu)
 end
 
@@ -362,8 +509,10 @@ function OptionsMenu:update(dt)
   local changed = false
   if input:wasPressed("up") then
     self.index = self.index > 1 and self.index - 1 or cancelRow
+    self.game.save.options.optionsMenuIndex = self.index
   elseif input:wasPressed("down") then
     self.index = self.index < cancelRow and self.index + 1 or 1
+    self.game.save.options.optionsMenuIndex = self.index
   elseif input:wasPressed("left") or input:wasPressed("right")
       or input:wasPressed("a") then
     local dir = input:wasPressed("left") and -1 or 1
@@ -373,10 +522,14 @@ function OptionsMenu:update(dt)
     elseif row and row.step then
       changed = row.step(self.game, dir) and true or false
     elseif input:wasPressed("a") then -- CANCEL
+      -- Save cursor position before closing
+      self.game.save.options.optionsMenuIndex = self.index
       self.game.stack:pop()
       if self.onCancel then self.onCancel() end
     end
   elseif input:wasPressed("b") or input:wasPressed("start") then
+    -- Save cursor position before closing
+    self.game.save.options.optionsMenuIndex = self.index
     self.game.stack:pop()
     if self.onCancel then self.onCancel() end
   end
