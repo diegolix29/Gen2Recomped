@@ -46,6 +46,7 @@ local Rulesets = {
   modern_clean = require("src.battle.rulesets.modern_clean"),
 }
 local FILTERS = { "OFF", "1X", "2X", "3X" }
+local SKY_PIXELATION = { "OFF", "2X", "4X", "8X", "16X" }
 
 local function speedIndex(game)
   -- default matches InitOptions' TEXT_DELAY_MEDIUM in wOptions
@@ -337,6 +338,19 @@ local function buildRows(game)
       step = function(g, dir)
         local o = g.save.options
         o.skyImageEnabled = not o.skyImageEnabled
+        if g.writeOptions then g:writeOptions() end
+        return true
+      end },
+    { id = "skyPixelation", label = Strings("SKY PIXELATION"),
+      value = function(g)
+        local pixelation = g.save.options.skyPixelation or 0
+        return SKY_PIXELATION[pixelation + 1]
+      end,
+      step = function(g, dir)
+        local o = g.save.options
+        local pixelation = o.skyPixelation or 0
+        pixelation = ((pixelation + dir) % #SKY_PIXELATION + #SKY_PIXELATION) % #SKY_PIXELATION
+        o.skyPixelation = pixelation
         if g.writeOptions then g:writeOptions() end
         return true
       end },

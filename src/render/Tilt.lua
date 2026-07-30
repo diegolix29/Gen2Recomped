@@ -23,6 +23,8 @@ Tilt.options = nil
 Tilt.skyRotation = 0
 Tilt.skyTargetRotation = 0
 Tilt.skyBounceOffset = 0
+-- Pixelation canvas for sky image (cached)
+Tilt.pixelatedSkyCanvas = nil
 
 -- Discrete tilt angles in degrees (index 0 is off).  Cycle: off→15→35→50→off.
 Tilt.ANGLES_DEG = { 0, 15, 35, 50 }
@@ -263,9 +265,42 @@ function Tilt:setSkyImage(path)
   end
 end
 
--- Get current sky image
+-- Get current sky image (with pixelation applied if enabled)
 function Tilt:getSkyImage()
-  return Tilt.skyImage
+  local pixelation = Tilt.options and Tilt.options.skyPixelation or 0
+  -- 0 = OFF, 1 = 2X, 2 = 4X, 3 = 8X, 4 = 16X
+  if pixelation == 0 or not Tilt.skyImage then
+    return Tilt.skyImage
+  end
+  
+  local scale = math.pow(2, pixelation) -- 2, 4, 8, or 16
+  
+  -- Check if we need to regenerate the pixelated canvas
+  local skyW = Tilt.skyImage:getWidth()
+  local skyH = Tilt.skyImage:getHeight()
+  local pixelW = math.max(1, math.floor(skyW / scale))
+  local pixelH = math.max(1, math.floor(skyH / scale))
+  
+  if not Tilt.pixelatedSkyCanvas or 
+     Tilt.pixelatedSkyCanvas:getWidth() ~= pixelW or 
+     Tilt.pixelatedSkyCanvas:getHeight() ~= pixelH then
+    -- Release old canvas
+    if Tilt.pixelatedSkyCanvas and Tilt.pixelatedSkyCanvas.release then
+      Tilt.pixelatedSkyCanvas:release()
+    end
+    
+    -- Create new canvas at reduced size
+    Tilt.pixelatedSkyCanvas = love.graphics.newCanvas(pixelW, pixelH)
+    Tilt.pixelatedSkyCanvas:setFilter("nearest", "nearest")
+    
+    -- Draw sky image scaled down to create pixelation effect
+    love.graphics.setCanvas(Tilt.pixelatedSkyCanvas)
+    love.graphics.clear(1, 1, 1, 1)
+    love.graphics.draw(Tilt.skyImage, 0, 0, 0, pixelW / skyW, pixelH / skyH)
+    love.graphics.setCanvas()
+  end
+  
+  return Tilt.pixelatedSkyCanvas
 end
 
 return Tilt

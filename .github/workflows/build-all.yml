@@ -1,0 +1,206 @@
+name: Build All Platforms
+
+# Builds macOS, Windows, Linux, and Android on every push/PR.
+# Uploads build artifacts for testing without requiring signing/notarization.
+# For official releases, use the release.yml workflow instead.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp (e.g. 0.2.0). Leave blank for dev build."
+        required: false
+        default: ""
+
+concurrency:
+  group: build-all-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Build macOS app (unsigned, not notarized)
+  build-macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: ver
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            version="${{ github.event.inputs.version }}"
+          else
+            version="$(git rev-parse --short HEAD)"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install LÖVE
+        run: |
+          brew install --cask love
+
+      - name: Build macOS app
+        run: |
+          set -euo pipefail
+          version="${{ steps.ver.outputs.version }}"
+          # Build without signing/notarization for testing
+          scripts/build.sh mac --version "$version" --identity "" --no-notarize
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gen1recomp-macos
+          path: dist/mac/gen1recomp-macos.zip
+          retention-days: 7
+
+  # Build Windows app
+  build-windows:
+    name: Windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: ver
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            version="${{ github.event.inputs.version }}"
+          else
+            version="$(git rev-parse --short HEAD)"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zip unzip curl
+
+      - name: Build Windows app
+        run: |
+          set -euo pipefail
+          version="${{ steps.ver.outputs.version }}"
+          scripts/build.sh win --version "$version"
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gen1recomp-windows
+          path: dist/win/gen1recomp-win64.zip
+          retention-days: 7
+
+  # Build Linux AppImage
+  build-linux:
+    name: Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: ver
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            version="${{ github.event.inputs.version }}"
+          else
+            version="$(git rev-parse --short HEAD)"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zip unzip curl squashfs-tools
+
+      - name: Build Linux AppImage
+        run: |
+          set -euo pipefail
+          version="${{ steps.ver.outputs.version }}"
+          scripts/build.sh linux --version "$version"
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gen1recomp-linux
+          path: dist/linux/gen1recomp-linux.zip
+          retention-days: 7
+
+  # Build Android APK
+  build-android:
+    name: Android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: ver
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            version="${{ github.event.inputs.version }}"
+          else
+            version="$(git rev-parse --short HEAD)"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 34
+          ndk: 25.2.9519653
+
+      - name: Build Android APK
+        run: |
+          set -euo pipefail
+          version="${{ steps.ver.outputs.version }}"
+          scripts/build_android.sh --version "$version"
+
+      - name: Upload Android artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gen1recomp-android
+          path: dist/android/debug/*.apk
+          retention-days: 7
+
+  # Build iOS app (requires macOS)
+  build-ios:
+    name: iOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: ver
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            version="${{ github.event.inputs.version }}"
+          else
+            version="$(git rev-parse --short HEAD)"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build iOS app (debug)
+        run: |
+          set -euo pipefail
+          scripts/build_ios.sh
+
+      - name: Upload iOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gen1recomp-ios
+          path: dist/ios/**/*.app
+          retention-days: 7

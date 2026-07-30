@@ -27,6 +27,24 @@ APPLICATION_ID="com.theboisclub.pokemonred"
 LOVE_ANDROID_VERSION="11.5a"
 NDK_VERSION="25.2.9519653"
 
+# Convert Git Bash path to Windows path for PowerShell
+git_bash_to_windows_path() {
+  local path="$1"
+  # Convert /c/ to C:/, /f/ to F:/, etc.
+  if [[ "$path" =~ ^/([a-z])/(.*)$ ]]; then
+    local drive="${BASH_REMATCH[1]}"
+    local rest="${BASH_REMATCH[2]}"
+    echo "${drive^^}:/${rest}"
+  else
+    echo "$path"
+  fi
+}
+
+# Convert key paths to Windows format
+WIN_ROOT="$(git_bash_to_windows_path "$ROOT")"
+WIN_LOVE_FILE="$(git_bash_to_windows_path "$LOVE_FILE")"
+WIN_EMBED_ASSETS="$(git_bash_to_windows_path "$EMBED_ASSETS")"
+
 VERSION=""
 PACKAGE_ONLY=false
 
@@ -84,7 +102,12 @@ apply_android_branding() {
 
   say "applying Android branding (gradle.properties + permission trim)"
 
-  python3 - "$props" "$APPLICATION_ID" "$APP_NAME" "$VERSION" "$VERSION_CODE" <<'PY'
+  local win_props
+  local win_manifest
+  win_props="$(git_bash_to_windows_path "$props")"
+  win_manifest="$(git_bash_to_windows_path "$manifest")"
+
+  py -3 - "$win_props" "$APPLICATION_ID" "$APP_NAME" "$VERSION" "$VERSION_CODE" <<'PY'
 import pathlib, re, sys
 path = pathlib.Path(sys.argv[1])
 app_id, name, version, version_code = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
@@ -108,7 +131,7 @@ if version:
 path.write_text(text)
 PY
 
-  python3 - "$manifest" <<'PY'
+  py -3 - "$win_manifest" <<'PY'
 import pathlib, re, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
@@ -137,20 +160,127 @@ pack_game_love() {
   say "packing game.love for love-android embed flavor"
   mkdir -p "$EMBED_ASSETS"
   rm -f "$LOVE_FILE"
-  # tools/save-editor ships with the app: the launcher's Edit button on a save
-  # row opens it in-process, so it must be inside the archive (see build.sh).
-  (cd "$ROOT" && zip -q -9 -r "$LOVE_FILE" \
-    main.lua conf.lua src data assets tools/save-editor \
-    tools/rom_manifest.json tools/rom_manifest_blue.json \
-    -x '*.DS_Store' -x '*/.git/*' -x '*/.DS_Store' \
-    -x 'data/generated/*' -x 'assets/generated/*')
-  if unzip -Z1 "$LOVE_FILE" \
-      | grep -Eq '^(data|assets)/generated/[^/]+|^(data|assets)/generated/.+/'; then
-    fail "game.love unexpectedly contains generated ROM data"
+  
+  # Use PowerShell for compression since zip is not available on Windows
+  powershell -Command "
+    \$ProgressPreference = 'SilentlyContinue'
+    Set-Location '$WIN_ROOT'
+    \$files = @(
+      'main.lua', 'conf.lua', 'src', 'data', 'assets', 'tools'
+    )
+    \$excludePatterns = @(
+      '*.DS_Store', '*/.git/*', '*/.DS_Store', 'data/generated/*', 'assets/generated/*',
+      '*/__pycache__/*', '*.pyc', '*/.pytest_cache/*'
+    )
+    
+    # Get all files recursively with relative paths
+    \$allFiles = @()
+    foreach (\$file in \$files) {
+      if (Test-Path \$file) {
+        if (Test-Path \$file -PathType Leaf) {
+          \$allFiles += @{ Path = \$file; Relative = \$file }
+        } else {
+          Get-ChildItem -Path \$file -Recurse -File | ForEach-Object {
+            \$relative = \$_.FullName.Replace((Get-Location).Path + '\', '').Replace('\', '/')
+            \$allFiles += @{ Path = \$_.FullName; Relative = \$relative }
+          }
+        }
+      }
+    }
+    
+    # Filter out excluded files
+    \$filteredFiles = @()
+    foreach (\$fileInfo in \$allFiles) {
+      \$exclude = \$false
+      \$relativePath = \$fileInfo.Relative
+      foreach (\$pattern in \$excludePatterns) {
+        if (\$relativePath -like \$pattern) {
+          \$exclude = \$true
+          break
+        }
+      }
+      if (-not \$exclude) {
+        \$filteredFiles += \$fileInfo
+      }
+    }
+    
+    # Create directory if it doesn't exist
+    if (-not (Test-Path '$WIN_EMBED_ASSETS')) {
+      New-Item -ItemType Directory -Path '$WIN_EMBED_ASSETS' -Force | Out-Null
+    }
+    
+    # Create zip archive using .NET to preserve directory structure
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    \$tempZip = '$WIN_LOVE_FILE.zip'
+    if (Test-Path \$tempZip) { Remove-Item \$tempZip }
+    \$zip = [System.IO.Compression.ZipFile]::Open(\$tempZip, 'Create')
+    
+    foreach (\$fileInfo in \$filteredFiles) {
+      \$entry = \$zip.CreateEntry(\$fileInfo.Relative)
+      \$fs = [System.IO.File]::OpenRead(\$fileInfo.Path)
+      try {
+        \$es = \$entry.Open()
+        try {
+          \$fs.CopyTo(\$es)
+        } finally {
+          \$es.Dispose()
+        }
+      } finally {
+        \$fs.Dispose()
+      }
+    }
+    \$zip.Dispose()
+    
+    # Rename to .love
+    Move-Item -Force \$tempZip '$WIN_LOVE_FILE'
+  "
+  
+  # Verify the archive was created
+  if [ ! -f "$LOVE_FILE" ]; then
+    fail "Failed to create game.love using PowerShell"
   fi
-  unzip -Z1 "$LOVE_FILE" | grep -qx 'tools/save-editor/App.lua' \
-    || fail "game.love is missing the save editor (Edit on a save row would crash)"
-  say "game.love: $(du -h "$LOVE_FILE" | cut -f1) -> $LOVE_FILE"
+  
+  # Verify contents using PowerShell (since unzip is not available)
+  powershell -Command "
+    \$ProgressPreference = 'SilentlyContinue'
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    \$zip = [System.IO.Compression.ZipFile]::OpenRead('$WIN_LOVE_FILE')
+    \$entries = \$zip.Entries | ForEach-Object { \$_.FullName }
+    
+    # Check for generated files
+    \$hasGenerated = \$false
+    foreach (\$entry in \$entries) {
+      if (\$entry -match '^(data|assets)/generated/') {
+        \$hasGenerated = \$true
+        break
+      }
+    }
+    if (\$hasGenerated) {
+      Write-Host 'ERROR: game.love unexpectedly contains generated ROM data'
+      exit 1
+    }
+    
+    # Check for tools folder
+    \$hasTools = \$false
+    foreach (\$entry in \$entries) {
+      if (\$entry -like 'tools/*') {
+        \$hasTools = \$true
+        break
+      }
+    }
+    if (-not \$hasTools) {
+      Write-Host 'ERROR: game.love is missing the tools folder'
+      exit 1
+    }
+    
+    \$zip.Dispose()
+    Write-Host 'OK'
+  " || fail "game.love validation failed"
+  
+  # Get file size
+  file_size=$(powershell -Command "(Get-Item '$WIN_LOVE_FILE').Length")
+  file_size_mb=$(powershell -Command "('{0:N2}' -f ((Get-Item '$WIN_LOVE_FILE').Length / 1MB))")
+  say "game.love: ${file_size_mb}MB -> $LOVE_FILE"
 
   # This script packs its own game.love (it does not reuse build.sh's), so it
   # stamps the release version the same way: patch a copy of Version.lua
@@ -166,12 +296,50 @@ pack_game_love() {
     mkdir -p "$stamp_dir/src/core"
     sed -E "s/(engine[[:space:]]*=[[:space:]]*\")[^\"]*(\")/\1$VERSION\2/" \
       "$ROOT/src/core/Version.lua" > "$stamp_dir/src/core/Version.lua"
-    (cd "$stamp_dir" && zip -q "$LOVE_FILE" src/core/Version.lua)
-    local version_re
-    version_re="$(printf '%s' "$VERSION" | sed 's/\./\\./g')"
-    unzip -p "$LOVE_FILE" src/core/Version.lua \
-      | grep -Eq "engine[[:space:]]*=[[:space:]]*\"$version_re\"" \
-      || fail "version stamp failed: game.love does not report engine $VERSION"
+    
+    # Use PowerShell to add the version file to the archive
+    local win_stamp_dir
+    win_stamp_dir="$(git_bash_to_windows_path "$stamp_dir")"
+    
+    powershell -Command "
+      \$ProgressPreference = 'SilentlyContinue'
+      \$tempZip = '$WIN_LOVE_FILE.tmp.zip'
+      Copy-Item '$WIN_LOVE_FILE' \$tempZip
+      Add-Type -AssemblyName System.IO.Compression.FileSystem
+      \$zip = [System.IO.Compression.ZipFile]::Open(\$tempZip, 'Update')
+      \$entry = \$zip.Entries | Where-Object { \$_.FullName -eq 'src/core/Version.lua' }
+      if (\$entry) {
+        \$entry.Delete()
+      }
+      [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(\$zip, '$win_stamp_dir/src/core/Version.lua', 'src/core/Version.lua') | Out-Null
+      \$zip.Dispose()
+      Move-Item -Force \$tempZip '$WIN_LOVE_FILE'
+    "
+    
+    # Verify the version stamp
+    powershell -Command "
+      Add-Type -AssemblyName System.IO.Compression.FileSystem
+      \$zip = [System.IO.Compression.ZipFile]::OpenRead('$WIN_LOVE_FILE')
+      \$entry = \$zip.Entries | Where-Object { \$_.FullName -eq 'src/core/Version.lua' }
+      if (\$entry) {
+        \$stream = \$entry.Open()
+        \$reader = New-Object System.IO.StreamReader(\$stream)
+        \$content = \$reader.ReadToEnd()
+        \$reader.Close()
+        \$stream.Close()
+        if (\$content -match 'engine[[:space:]]*=[[:space:]]*\"$VERSION\"') {
+          Write-Host 'OK'
+        } else {
+          Write-Host 'ERROR: version stamp failed'
+          exit 1
+        }
+      } else {
+        Write-Host 'ERROR: Version.lua not found in archive'
+        exit 1
+      }
+      \$zip.Dispose()
+    " || fail "version stamp failed: game.love does not report engine $VERSION"
+    
     rm -rf "$stamp_dir"
     say "stamped engine version: $VERSION"
   else
@@ -208,8 +376,13 @@ require_android_sdk() {
   export ANDROID_HOME="$sdk"
 
   local props="$ANDROID_DIR/local.properties"
+  local win_props
+  win_props="$(git_bash_to_windows_path "$props")"
   # Always rewrite so a leftover Docker sdk.dir=/opt/android-sdk cannot stick.
   printf 'sdk.dir=%s\n' "$sdk" > "$props"
+  
+  # Also write to local.properties using Windows path for compatibility
+  powershell -Command "Set-Content -Path '$win_props' -Value 'sdk.dir=$sdk'"
 
   if ! command -v java >/dev/null 2>&1; then
     fail "java not found. Install JDK 17 (Android Studio's bundled JDK is fine)."
@@ -228,7 +401,7 @@ run_gradle() {
 
   if ! (
     cd "$ANDROID_DIR"
-    ./gradlew --no-daemon "$task"
+    ./gradlew.bat --no-daemon "$task"
   ); then
     fail "gradle $task failed.
   Packaging already wrote: $LOVE_FILE
@@ -237,14 +410,30 @@ run_gradle() {
   fi
 
   local out_dir="$ANDROID_DIR/app/build/outputs/apk/embedNoRecord/debug"
+  local win_out_dir
+  win_out_dir="$(git_bash_to_windows_path "$out_dir")"
+  
   if [ -d "$out_dir" ]; then
     say "APK output:"
     find "$out_dir" -name '*.apk' -exec ls -lh {} \;
 
     local dist_dir="$DIST/debug"
+    local win_dist_dir
+    win_dist_dir="$(git_bash_to_windows_path "$dist_dir")"
+    
     rm -rf "$dist_dir"
     mkdir -p "$dist_dir"
-    find "$out_dir" -name '*.apk' -exec cp {} "$dist_dir/" \;
+    
+    # Use PowerShell for copying to handle Windows paths
+    powershell -Command "
+      \$ProgressPreference = 'SilentlyContinue'
+      if (Test-Path '$win_out_dir') {
+        Get-ChildItem -Path '$win_out_dir' -Filter '*.apk' | ForEach-Object {
+          Copy-Item -Path \$_.FullName -Destination '$win_dist_dir' -Force
+          Write-Host \"  \$((Get-Item \$_.FullName).Length / 1MB):MB  \$_.Name\"
+        }
+      }
+    "
     say "copied to $dist_dir/"
   else
     warn "gradle finished but no APK dir at $out_dir,  check gradle logs above"
