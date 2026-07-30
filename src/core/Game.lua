@@ -45,7 +45,7 @@ function Game:load()
   Input:init()
 
   self.touchControls = TouchControls
-  TouchControls:init()
+  TouchControls:init(self)
 
   self.renderer = Renderer
   Renderer:init()

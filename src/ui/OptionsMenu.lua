@@ -462,12 +462,31 @@ local function buildRows(game)
       activate = function(g)
         require("src.ui.Screens").push(g, "HotkeyBindingsMenu")
       end },
+    -- mobile-only: customize touch overlay button positions
+    { id = "touchLayout", label = Strings("TOUCH LAYOUT"),
+      value = function(g)
+        return g.touchControls and g.touchControls:isEditMode() and "EDITING" or "DEFAULT"
+      end,
+      activate = function(g)
+        if g.touchControls then
+          g.touchControls:toggleEditMode()
+        end
+      end },
   }
   -- issue #136: hide GBC FX on Android/iOS -- the present shader soft-bricks
   if not GBCFX.isSupported() then
     local filtered = {}
     for _, row in ipairs(rows) do
       if row.id ~= "gbcfx" then filtered[#filtered + 1] = row end
+    end
+    rows = filtered
+  end
+  -- hide TOUCH LAYOUT on non-mobile platforms
+  local osName = love.system and love.system.getOS and love.system.getOS()
+  if osName ~= "Android" and osName ~= "iOS" then
+    local filtered = {}
+    for _, row in ipairs(rows) do
+      if row.id ~= "touchLayout" then filtered[#filtered + 1] = row end
     end
     rows = filtered
   end

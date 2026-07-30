@@ -15,6 +15,7 @@ local ListMenu = require("src.ui.ListMenu")
 local Input = require("src.core.Input")
 local Strings = require("src.core.Strings")
 local Theme = require("src.ui.Theme")
+local TouchControls = require("src.core.TouchControls")
 
 local HotkeyBindingsMenu = setmetatable({}, { __index = ListMenu })
 HotkeyBindingsMenu.__index = HotkeyBindingsMenu
@@ -69,6 +70,14 @@ local function padLabel(pad)
     rightstickright = "R-STICK RIGHT",
     lefttrigger = "L2",
     righttrigger = "R2",
+    -- physical L1/R1 (SDL "shoulder" buttons) and the touch overlay's
+    -- matching L1/R1 buttons share this same pad name -- see
+    -- src/core/TouchControls.lua's HOTKEY_BUTTONS
+    leftshoulder = "L1",
+    rightshoulder = "R1",
+    -- touch-only: no physical-pad equivalent, only ever bound via a tap
+    -- on the overlay's H1-H4 buttons while this screen is capturing
+    h1 = "H1", h2 = "H2", h3 = "H3", h4 = "H4",
   }
   return labels[pad] or pad
 end
@@ -111,6 +120,10 @@ function HotkeyBindingsMenu:beginCapture(item)
   self.onKeyPressed = HotkeyBindingsMenu.captureKey
   self.onGamepadPressed = HotkeyBindingsMenu.capturePad
   self.onGamepadAxis = HotkeyBindingsMenu.captureAxis
+  -- lets a mobile player with no controller bind the touch overlay's
+  -- L1/R1/L2/R2/H1-H4 buttons by tapping them instead of only firing
+  -- whatever's already bound; see TouchControls:touchpressed
+  TouchControls.captureTarget = self
 end
 
 function HotkeyBindingsMenu:captureKey(key)
@@ -173,6 +186,7 @@ function HotkeyBindingsMenu:storeBinding(slot, value)
   self.onKeyPressed = nil
   self.onGamepadPressed = nil
   self.onGamepadAxis = nil
+  TouchControls.captureTarget = nil
   local game = self.game
   if not (item and value and game.save and game.save.options) then return end
   local opts = game.save.options

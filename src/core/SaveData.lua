@@ -255,6 +255,10 @@ function SaveData.defaultOptions()
     -- is kept rather than pruned, so re-enabling the mod restores the mode
     -- the player left it in.
     pipelines = {},
+    -- Custom touch control button positions (Android/iOS overlay)
+    -- Each button stores: { cx = number, cy = number, w = number }
+    -- nil means use default layout
+    touchButtonPositions = {},
     -- Native mod enablement is an installation option, not save-slot data.
     -- Missing entries mean enabled so newly installed mods work by default.
     mods = {},

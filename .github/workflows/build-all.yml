@@ -46,8 +46,12 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ steps.ver.outputs.version }}"
-          # Build without signing/notarization for testing
-          scripts/build.sh mac --version "$version" --identity "" --no-notarize
+          # Only pass --version if it's a valid X.Y.Z format
+          if printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            scripts/build.sh mac --version "$version" --identity "" --no-notarize
+          else
+            scripts/build.sh mac --identity "" --no-notarize
+          fi
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
@@ -84,7 +88,12 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ steps.ver.outputs.version }}"
-          scripts/build.sh win --version "$version"
+          # Only pass --version if it's a valid X.Y.Z format
+          if printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            scripts/build.sh win --version "$version"
+          else
+            scripts/build.sh win
+          fi
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
@@ -121,7 +130,12 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ steps.ver.outputs.version }}"
-          scripts/build.sh linux --version "$version"
+          # Only pass --version if it's a valid X.Y.Z format
+          if printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            scripts/build.sh linux --version "$version"
+          else
+            scripts/build.sh linux
+          fi
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
@@ -165,7 +179,14 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ steps.ver.outputs.version }}"
-          scripts/build_android.sh --version "$version"
+          # Only pass --version if it's a valid X.Y.Z format
+          if printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            scripts/build_android.sh --version "$version"
+          else
+            scripts/build_android.sh
+          fi
+        env:
+          PYTHON_CMD: python3
 
       - name: Upload Android artifact
         uses: actions/upload-artifact@v4
@@ -174,33 +195,39 @@ jobs:
           path: dist/android/debug/*.apk
           retention-days: 7
 
-  # Build iOS app (requires macOS)
-  build-ios:
-    name: iOS
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Determine version
-        id: ver
-        run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            version="${{ github.event.inputs.version }}"
-          else
-            version="$(git rev-parse --short HEAD)"
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      - name: Build iOS app (debug)
-        run: |
-          set -euo pipefail
-          scripts/build_ios.sh
-
-      - name: Upload iOS artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: gen1recomp-ios
-          path: dist/ios/**/*.app
-          retention-days: 7
+  # Build iOS app (requires macOS) - DISABLED due to long compilation time
+  # Re-enable if needed for iOS testing
+  # build-ios:
+  #   name: iOS
+  #   runs-on: macos-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         fetch-depth: 0
+  # 
+  #     - name: Determine version
+  #       id: ver
+  #       run: |
+  #         if [ -n "${{ github.event.inputs.version }}" ]; then
+  #           version="${{ github.event.inputs.version }}"
+  #         else
+  #           version="$(git rev-parse --short HEAD)"
+  #         fi
+  #         echo "version=$version" >> "$GITHUB_OUTPUT"
+  # 
+  #     - name: Fetch LÖVE iOS sources
+  #       run: |
+  #         set -euo pipefail
+  #         scripts/build_ios.sh --fetch
+  # 
+  #     - name: Build iOS app (debug)
+  #       run: |
+  #         set -euo pipefail
+  #         scripts/build_ios.sh
+  # 
+  #     - name: Upload iOS artifact
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: gen1recomp-ios
+  #         path: dist/ios/**/*.app
+  #         retention-days: 7

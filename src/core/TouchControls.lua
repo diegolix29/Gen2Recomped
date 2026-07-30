@@ -1,5 +1,6 @@
--- On-screen touch controls: a visible d-pad, A, B, START and SELECT drawn
--- over the finished frame (art: Xelu's CC0 controller prompts, see
+-- On-screen touch controls: a visible d-pad, A, B, START, SELECT, L1/R1/
+-- L2/R2, H1-H4 hotkey buttons, and dual analog sticks, drawn over the
+-- finished frame (art: Xelu's CC0 controller prompts, see
 -- assets/touch/README.md).  Replaces the old touch gesture recognizer:
 -- every control is a real button under the thumb, so there is no
 -- tap-vs-swipe classification, no deferred-A double-tap window, and no
@@ -16,6 +17,25 @@
 -- own input source, not a keyboard alias -- so a held overlay direction
 -- merges cleanly with a keyboard key or stick holding the same button,
 -- and a player rebind can never detach the overlay.
+--
+-- L1/R1/L2/R2 and H1-H4 are not Game Boy buttons: like a physical pad's
+-- shoulders/triggers, they only do anything once a "display hotkey"
+-- action (COLORS/TILT/ZOOM/... or a mod's) is bound to them in
+-- HotkeyBindingsMenu (src/ui/HotkeyBindingsMenu.lua), and they fire that
+-- action once per tap through the exact same Input:hotkeyForPad lookup
+-- Game:gamepadpressed uses -- so a binding made on a real controller's
+-- L1 fires from the touch L1 too, for free. HotkeyBindingsMenu also lets
+-- a player tap one of these buttons *during* a "PRESS A BUTTON" capture
+-- to bind it in the first place (see TouchControls.captureTarget below);
+-- H1-H4 have no physical-pad equivalent, so that touch capture is the
+-- only way to ever bind them.
+--
+-- The left stick presses the same GB directions as the d-pad (an
+-- alternate thumb position, not a distinct input). The right stick
+-- mirrors Input:gamepadaxis's real-stick behavior: it presses GB
+-- directions when "right stick moves the player" is on in Options, and
+-- otherwise fires a bound rightstick<dir> hotkey instead, edge-triggered
+-- exactly like a real right stick crossing the deadzone.
 
 local Input = require("src.core.Input")
 
@@ -29,16 +49,38 @@ local ALPHA_PRESSED = 0.95
 local BACK = 0.24
 local BACK_PRESSED = 0.38
 
--- neutral zone at the d-pad center, as a fraction of the d-pad width;
+-- neutral zone at a d-pad/stick center, as a fraction of its width;
 -- inside it no direction is held (keeps a resting thumb from jittering)
 local DPAD_DEAD = 0.16
+
+-- how far the stick art drifts toward the held direction, as a fraction
+-- of the stick's width -- purely cosmetic, the input itself is 4-way
+-- digital like the d-pad, not a continuous drag
+local STICK_DRIFT = 0.28
 
 -- hit slop: how far past the visible edge a press still counts, as a
 -- multiplier on the control's half-width.  START/SELECT get more because
 -- the glyphs are small.
 local SLOP = { a = 1.3, b = 1.3, start = 1.4, select = 1.4 }
+-- same idea for the shoulder/trigger/hotkey row: small targets, generous
+-- slop so a thumb near the top edge of the screen still lands cleanly
+local HOTKEY_SLOP = 1.35
 
 local BUTTONS = { "a", "b", "start", "select" }
+
+-- touch-zone name -> Input:hotkeyForPad name. L1/R1/L2/R2 reuse the exact
+-- names a real controller reports (see src/core/Input.lua's
+-- DEFAULT_HOTKEY_PAD_BINDINGS and HotkeyBindingsMenu's padLabel), so
+-- their bindings are shared with a physical pad automatically. H1-H4 are
+-- synthetic names that only ever exist as touch buttons.
+local HOTKEY_BUTTONS = {
+  h1 = "h1", h2 = "h2", h3 = "h3", h4 = "h4",
+  l1 = "leftshoulder", r1 = "rightshoulder",
+  l2 = "lefttrigger", r2 = "righttrigger",
+}
+local HOTKEY_ORDER = { "l2", "l1", "h1", "h2", "h3", "h4", "r1", "r2" }
+
+local DIR_VEC = { up = { 0, -1 }, down = { 0, 1 }, left = { -1, 0 }, right = { 1, 0 } }
 
 local IMAGES = {
   dpad = "assets/touch/dpad.png",
@@ -50,6 +92,16 @@ local IMAGES = {
   b = "assets/touch/b.png",
   start = "assets/touch/start.png",
   select = "assets/touch/select.png",
+  h1 = "assets/touch/hotkey1.png",
+  h2 = "assets/touch/hotkey2.png",
+  h3 = "assets/touch/hotkey3.png",
+  h4 = "assets/touch/hotkey4.png",
+  l1 = "assets/touch/l1.png",
+  r1 = "assets/touch/r1.png",
+  l2 = "assets/touch/l2.png",
+  r2 = "assets/touch/r2.png",
+  leftstick = "assets/touch/leftstick.png",
+  rightstick = "assets/touch/rightstick.png",
 }
 
 local function wantsOverlay()
@@ -60,19 +112,35 @@ local function wantsOverlay()
   return osName == "Android" or osName == "iOS"
 end
 
-function TouchControls:init()
+-- `game` is stored (not queried through a global) so the right stick can
+-- read save.options.rightStickMovement and hotkey taps can call
+-- game:fireHotkey -- both live on the instance Game:load() passes in.
+function TouchControls:init(game)
+  self.game = game
   self.active = wantsOverlay()
   self.controllerHidden = false
   self.touches = {}
   -- per-GB-button owner count: two fingers on A must not double-press it,
   -- and lifting one of them must not release the other's hold
   self.held = {}
+  -- per-hotkey-button pressed-visual flag; these aren't held GB state,
+  -- just "is a finger currently on this button" for the art
+  self.tapped = {}
   self.dpadTouch = nil
+  self.leftStickTouch = nil
+  self.rightStickTouch = nil
   self.layoutW, self.layoutH = nil, nil
   self.img = nil
+  -- Edit mode for customizing button positions
+  self.editMode = false
+  self.editingButton = nil
+  self.editOffset = { x = 0, y = 0 }
   if not self.active then return end
   -- soft-fail: a missing/corrupt PNG must never block boot; the overlay
-  -- stays off and keyboard/controller play still works
+  -- stays off and keyboard/controller play still works. Every name in
+  -- IMAGES must resolve, so the four new button sets ship together --
+  -- add all ten new PNGs (hotkey1-4, l1, r1, l2, r2, leftstick,
+  -- rightstick) to assets/touch or the whole overlay disables itself.
   local img = {}
   for name, path in pairs(IMAGES) do
     local ok, im = pcall(love.graphics.newImage, path)
@@ -91,10 +159,26 @@ function TouchControls:visible()
   return self.active and self.img ~= nil and not self.controllerHidden
 end
 
+-- Toggle edit mode for customizing button positions
+function TouchControls:toggleEditMode()
+  self.editMode = not self.editMode
+  if not self.editMode then
+    self.editingButton = nil
+  end
+  return self.editMode
+end
+
+-- Check if edit mode is active
+function TouchControls:isEditMode()
+  return self.editMode
+end
+
 -- Layout in LOVE units (density-independent on mobile), recomputed when
 -- the window size changes (rotation, resize).  D-pad bottom-left, B/A
 -- bottom-right with A above B (the Game Boy diagonal), START/SELECT
--- flanking the bottom center.
+-- flanking the bottom center, L2/L1 and R2/R1 stacked in the top
+-- corners, H1-H4 centered along the top edge, and the two sticks resting
+-- mid-height on either side, clear of both rows.
 function TouchControls:layout()
   local ww, wh = love.graphics.getDimensions()
   if self.layoutW == ww and self.layoutH == wh then return self.L end
@@ -105,16 +189,51 @@ function TouchControls:layout()
   local abW = dpadW * 0.46
   local ssW = dpadW * 0.30
   local margin = dpadW * 0.12
-  -- START/SELECT hug the bottom center: on a narrow portrait phone the
-  -- d-pad and B leave little room, so a tight pair is what keeps them off
-  -- the neighboring controls
-  self.L = {
+  local shoulderW = math.min(56, short * 0.16)
+  local hotkeyW = math.min(40, short * 0.10)
+  local stickW = math.min(150, short * 0.32)
+  local topMargin = margin + shoulderW * 0.18
+  local hGap = hotkeyW * 1.25
+  local hCenterX = ww / 2
+  
+  -- Default layout
+  local defaultLayout = {
     dpad = { cx = margin + dpadW / 2, cy = wh - margin - dpadW / 2, w = dpadW },
     a = { cx = ww - margin - abW * 0.55, cy = wh - margin - abW * 1.75, w = abW },
     b = { cx = ww - margin - abW * 1.60, cy = wh - margin - abW * 0.55, w = abW },
     start = { cx = ww / 2 + ssW * 0.60, cy = wh - margin - ssW * 0.95, w = ssW },
     select = { cx = ww / 2 - ssW * 0.60, cy = wh - margin - ssW * 0.95, w = ssW },
+    l2 = { cx = margin + shoulderW / 2, cy = topMargin + shoulderW / 2, w = shoulderW },
+    l1 = { cx = margin + shoulderW / 2, cy = topMargin + shoulderW * 1.75, w = shoulderW },
+    r2 = { cx = ww - margin - shoulderW / 2, cy = topMargin + shoulderW / 2, w = shoulderW },
+    r1 = { cx = ww - margin - shoulderW / 2, cy = topMargin + shoulderW * 1.75, w = shoulderW },
+    h1 = { cx = hCenterX - hGap * 1.5, cy = topMargin + hotkeyW / 2, w = hotkeyW },
+    h2 = { cx = hCenterX - hGap * 0.5, cy = topMargin + hotkeyW / 2, w = hotkeyW },
+    h3 = { cx = hCenterX + hGap * 0.5, cy = topMargin + hotkeyW / 2, w = hotkeyW },
+    h4 = { cx = hCenterX + hGap * 1.5, cy = topMargin + hotkeyW / 2, w = hotkeyW },
+    leftstick = { cx = margin + stickW / 2, cy = wh * 0.42, w = stickW },
+    rightstick = { cx = ww - margin - stickW / 2, cy = wh * 0.42, w = stickW },
   }
+  
+  -- Apply custom positions from save if they exist
+  local customPositions = self.game and self.game.save and self.game.save.options and 
+                          self.game.save.options.touchButtonPositions or {}
+  
+  self.L = {}
+  for buttonName, defaultPos in pairs(defaultLayout) do
+    if customPositions[buttonName] then
+      -- Use custom position but keep default width if not specified
+      local custom = customPositions[buttonName]
+      self.L[buttonName] = {
+        cx = custom.cx or defaultPos.cx,
+        cy = custom.cy or defaultPos.cy,
+        w = custom.w or defaultPos.w
+      }
+    else
+      self.L[buttonName] = defaultPos
+    end
+  end
+  
   local fontSize = math.max(8, math.floor(ssW * 0.26))
   if not self.labelFont or self.fontSize ~= fontSize then
     self.fontSize = fontSize
@@ -156,12 +275,57 @@ local function releaseBtn(self, btn)
   end
 end
 
--- the d-pad touch's held direction changed (or ended): swap the GB hold
+-- the d-pad/left-stick touch's held direction changed (or ended): swap
+-- the GB hold. Shared by the d-pad and the left stick -- they're two
+-- thumb positions for the same four directions, tracked as independent
+-- touches so one lifting doesn't drop the other's hold.
 local function setDpad(self, touch, dir)
   if touch.dir == dir then return end
   if touch.dir then releaseBtn(self, touch.dir) end
   touch.dir = dir
   if dir then pressBtn(self, dir) end
+end
+
+local function rightStickMovementEnabled(self)
+  local g = self.game
+  return (g and g.save and g.save.options and g.save.options.rightStickMovement) or false
+end
+
+-- looks up a bound "display hotkey" action for a touch shoulder/trigger/
+-- H1-H4 button and fires it exactly once, the same path a physical pad
+-- button takes through Game:gamepadpressed -> Input:hotkeyForPad ->
+-- Game:fireHotkey. A no-op until the player binds something to it.
+local function fireHotkeyPad(self, padName)
+  local g = self.game
+  if not g or not g.fireHotkey then return end
+  local hotkey = Input:hotkeyForPad(padName)
+  if hotkey then g:fireHotkey(hotkey) end
+end
+
+-- Right stick direction changed (or ended). Mirrors Input:gamepadaxis's
+-- real-stick branch: presses GB directions when right-stick movement is
+-- on, otherwise fires a bound rightstick<dir> hotkey once per direction
+-- change. Whether a release also needs to let go of a GB button is
+-- decided by how the press itself was made (touch.pressedAsMovement),
+-- not by re-reading the option -- so flipping the option mid-drag can't
+-- strand a held direction.
+local function setRightStickDir(self, touch, dir)
+  if touch.dir == dir then return end
+  if touch.dir and touch.pressedAsMovement then
+    releaseBtn(self, touch.dir)
+  end
+  touch.dir = dir
+  if dir then
+    local enabled = rightStickMovementEnabled(self)
+    touch.pressedAsMovement = enabled
+    if enabled then
+      pressBtn(self, dir)
+    else
+      fireHotkeyPad(self, "rightstick" .. dir)
+    end
+  else
+    touch.pressedAsMovement = nil
+  end
 end
 
 function TouchControls:touchpressed(id, x, y)
@@ -172,10 +336,46 @@ function TouchControls:touchpressed(id, x, y)
     return
   end
   local L = self:layout()
+  
+  -- Edit mode: check if touching a button to start dragging
+  if self.editMode then
+    -- Check if Done button was pressed
+    if self.doneButton and x >= self.doneButton.x and x <= self.doneButton.x + self.doneButton.w and
+       y >= self.doneButton.y and y <= self.doneButton.y + self.doneButton.h then
+      self:toggleEditMode()
+      return
+    end
+    
+    for buttonName, zone in pairs(L) do
+      if inCircle(zone, x, y, 1.5) then -- More generous hit area for editing
+        self.editingButton = buttonName
+        self.editOffset = { x = x - zone.cx, y = y - zone.cy }
+        self.touches[id] = { control = buttonName, isEdit = true }
+        return
+      end
+    end
+    return -- In edit mode, only allow button dragging
+  end
+  
   for _, btn in ipairs(BUTTONS) do
     if inCircle(L[btn], x, y, SLOP[btn]) then
       self.touches[id] = { control = btn }
       pressBtn(self, btn)
+      return
+    end
+  end
+  for _, name in ipairs(HOTKEY_ORDER) do
+    if inCircle(L[name], x, y, HOTKEY_SLOP) then
+      self.touches[id] = { control = name }
+      self.tapped[name] = true
+      -- HotkeyBindingsMenu arms this while its "PRESS A BUTTON" capture
+      -- is open, so a mobile player with no controller can still bind
+      -- these buttons instead of only firing whatever's already bound
+      if self.captureTarget then
+        self.captureTarget:capturePad(HOTKEY_BUTTONS[name])
+      else
+        fireHotkeyPad(self, HOTKEY_BUTTONS[name])
+      end
       return
     end
   end
@@ -188,24 +388,93 @@ function TouchControls:touchpressed(id, x, y)
     local touch = { control = "dpad", dir = nil }
     self.touches[id] = touch
     setDpad(self, touch, dpadDir(dz, x, y))
+    return
+  end
+  local lz = L.leftstick
+  local lHalf = lz.w * 0.65
+  if not self.leftStickTouch
+     and math.abs(x - lz.cx) <= lHalf and math.abs(y - lz.cy) <= lHalf then
+    self.leftStickTouch = id
+    local touch = { control = "leftstick", dir = nil }
+    self.touches[id] = touch
+    setDpad(self, touch, dpadDir(lz, x, y))
+    return
+  end
+  local rz = L.rightstick
+  local rHalf = rz.w * 0.65
+  if not self.rightStickTouch
+     and math.abs(x - rz.cx) <= rHalf and math.abs(y - rz.cy) <= rHalf then
+    self.rightStickTouch = id
+    local touch = { control = "rightstick", dir = nil }
+    self.touches[id] = touch
+    setRightStickDir(self, touch, dpadDir(rz, x, y))
+    return
   end
 end
 
 function TouchControls:touchmoved(id, x, y)
   local touch = self.touches[id]
-  -- only the d-pad tracks movement (slide between directions without
-  -- lifting); buttons hold until release wherever the finger wanders
-  if not touch or touch.control ~= "dpad" then return end
-  setDpad(self, touch, dpadDir(self:layout().dpad, x, y))
+  if not touch then return end
+  
+  -- Edit mode: drag the button being edited
+  if touch.isEdit and self.editingButton then
+    local L = self:layout()
+    local zone = L[self.editingButton]
+    if zone then
+      zone.cx = x - self.editOffset.x
+      zone.cy = y - self.editOffset.y
+    end
+    return
+  end
+  
+  -- the d-pad and left stick both track movement (slide between
+  -- directions without lifting); buttons hold until release wherever the
+  -- finger wanders, and the right stick has its own hotkey-vs-movement
+  -- branch
+  if touch.control == "dpad" or touch.control == "leftstick" then
+    setDpad(self, touch, dpadDir(self:layout()[touch.control], x, y))
+  elseif touch.control == "rightstick" then
+    setRightStickDir(self, touch, dpadDir(self:layout().rightstick, x, y))
+  end
 end
 
 function TouchControls:touchreleased(id, x, y)
   local touch = self.touches[id]
   if not touch then return end
   self.touches[id] = nil
+  
+  -- Edit mode: save the new position
+  if touch.isEdit and self.editingButton then
+    local L = self:layout()
+    local zone = L[self.editingButton]
+    if zone and self.game and self.game.save and self.game.save.options then
+      if not self.game.save.options.touchButtonPositions then
+        self.game.save.options.touchButtonPositions = {}
+      end
+      self.game.save.options.touchButtonPositions[self.editingButton] = {
+        cx = zone.cx,
+        cy = zone.cy,
+        w = zone.w
+      }
+      -- Save the options
+      local SaveData = require("src.core.SaveData")
+      SaveData.saveOptions(self.game.save.options)
+    end
+    self.editingButton = nil
+    return
+  end
+  
   if touch.control == "dpad" then
     setDpad(self, touch, nil)
     self.dpadTouch = nil
+  elseif touch.control == "leftstick" then
+    setDpad(self, touch, nil)
+    self.leftStickTouch = nil
+  elseif touch.control == "rightstick" then
+    setRightStickDir(self, touch, nil)
+    self.rightStickTouch = nil
+  elseif HOTKEY_BUTTONS[touch.control] then
+    self.tapped[touch.control] = nil
   else
     releaseBtn(self, touch.control)
   end
@@ -220,8 +489,11 @@ function TouchControls:reset()
     Input:overlayReleased(btn)
   end
   self.held = {}
+  self.tapped = {}
   self.touches = {}
   self.dpadTouch = nil
+  self.leftStickTouch = nil
+  self.rightStickTouch = nil
 end
 
 -- a gamepad is being used: hide the overlay (dropping anything it held)
@@ -235,10 +507,24 @@ end
 -- last controller unplugged: show the overlay again immediately instead
 -- of requiring a blind first tap
 function TouchControls:joystickremoved()
-  self:reset()
-  if love.joystick and love.joystick.getJoystickCount
-     and love.joystick.getJoystickCount() == 0 then
-    self.controllerHidden = false
+  if not self.active or not self.controllerHidden then return end
+  self.controllerHidden = false
+end
+
+-- Mouse support for desktop testing
+function TouchControls:mousepressed(x, y, button)
+  if button == 1 then -- Left click only
+    self:touchpressed("mouse", x, y)
+  end
+end
+
+function TouchControls:mousemoved(x, y, dx, dy)
+  self:touchmoved("mouse", x, y)
+end
+
+function TouchControls:mousereleased(x, y, button)
+  if button == 1 then
+    self:touchreleased("mouse", x, y)
   end
 end
 
@@ -251,6 +537,22 @@ local function drawIcon(img, zone, pressed)
                      zone.cy - img:getHeight() * scale / 2, 0, scale, scale)
 end
 
+-- the stick art itself doesn't have per-direction frames like the d-pad
+-- does, so held direction is shown by nudging it off-center instead
+local function drawStick(img, zone, dir)
+  love.graphics.setColor(1, 1, 1, dir and BACK_PRESSED or BACK)
+  love.graphics.circle("fill", zone.cx, zone.cy, zone.w * 0.5)
+  local ox, oy = 0, 0
+  if dir and DIR_VEC[dir] then
+    local v = DIR_VEC[dir]
+    ox, oy = v[1] * zone.w * STICK_DRIFT, v[2] * zone.w * STICK_DRIFT
+  end
+  local scale = zone.w * 0.62 / img:getWidth()
+  love.graphics.setColor(1, 1, 1, dir and ALPHA_PRESSED or ALPHA)
+  love.graphics.draw(img, zone.cx + ox - img:getWidth() * scale / 2,
+                     zone.cy + oy - img:getHeight() * scale / 2, 0, scale, scale)
+end
+
 -- Screen-space, called by Game:draw after Renderer:endFrame so the
 -- overlay rides on top of everything (world, UI, CRT/GBC FX included).
 function TouchControls:draw()
@@ -259,12 +561,65 @@ function TouchControls:draw()
   love.graphics.push("all")
   love.graphics.origin()
 
+  -- Edit mode visual feedback
+  if self.editMode then
+    love.graphics.setColor(1, 0.5, 0, 0.3) -- Orange tint for edit mode
+    love.graphics.rectangle("fill", 0, 0, love.graphics.getDimensions())
+    
+    -- Draw edit mode indicator
+    love.graphics.setFont(self.labelFont)
+    love.graphics.setColor(1, 1, 1, 0.9)
+    love.graphics.print("EDIT MODE - Drag buttons to reposition", 20, 20)
+    
+    -- Draw Done button in top right corner
+    local ww, wh = love.graphics.getDimensions()
+    local doneButton = { x = ww - 120, y = 10, w = 100, h = 40 }
+    love.graphics.setColor(0.2, 0.8, 0.2, 0.8) -- Green
+    love.graphics.rectangle("fill", doneButton.x, doneButton.y, doneButton.w, doneButton.h, 8)
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.printf("DONE", doneButton.x, doneButton.y + 12, doneButton.w, "center")
+    
+    -- Store done button bounds for touch handling
+    self.doneButton = doneButton
+  end
+
   local dpadTouch = self.dpadTouch and self.touches[self.dpadTouch]
   local dir = dpadTouch and dpadTouch.dir
   drawIcon(dir and self.img["dpad_" .. dir] or self.img.dpad, L.dpad,
            dir ~= nil)
   for _, btn in ipairs(BUTTONS) do
-    drawIcon(self.img[btn], L[btn], self.held[btn] ~= nil)
+    local isEditing = self.editMode and self.editingButton == btn
+    drawIcon(self.img[btn], L[btn], self.held[btn] ~= nil or isEditing)
+    if isEditing then
+      -- Highlight the button being edited
+      love.graphics.setColor(1, 1, 0, 0.5)
+      love.graphics.circle("line", L[btn].cx, L[btn].cy, L[btn].w * 0.6)
+    end
+  end
+  for _, name in ipairs(HOTKEY_ORDER) do
+    local isEditing = self.editMode and self.editingButton == name
+    drawIcon(self.img[name], L[name], self.tapped[name] or isEditing)
+    if isEditing then
+      -- Highlight the button being edited
+      love.graphics.setColor(1, 1, 0, 0.5)
+      love.graphics.circle("line", L[name].cx, L[name].cy, L[name].w * 0.6)
+    end
+  end
+
+  local leftTouch = self.leftStickTouch and self.touches[self.leftStickTouch]
+  local isEditingLeft = self.editMode and self.editingButton == "leftstick"
+  drawStick(self.img.leftstick, L.leftstick, leftTouch and leftTouch.dir)
+  if isEditingLeft then
+    love.graphics.setColor(1, 1, 0, 0.5)
+    love.graphics.circle("line", L.leftstick.cx, L.leftstick.cy, L.leftstick.w * 0.5)
+  end
+  
+  local rightTouch = self.rightStickTouch and self.touches[self.rightStickTouch]
+  local isEditingRight = self.editMode and self.editingButton == "rightstick"
+  drawStick(self.img.rightstick, L.rightstick, rightTouch and rightTouch.dir)
+  if isEditingRight then
+    love.graphics.setColor(1, 1, 0, 0.5)
+    love.graphics.circle("line", L.rightstick.cx, L.rightstick.cy, L.rightstick.w * 0.5)
   end
 
   -- the +/- glyphs alone don't say which is which; shadowed so the text

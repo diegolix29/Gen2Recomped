@@ -42,6 +42,7 @@ android {
         release {
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.debug
         }
     }
     flavorDimensions = ['mode', 'recording']
@@ -63,6 +64,10 @@ android {
         abortOnError false
     }
 }
+
+// NOTE: To rebuild game.love when source files change, run:
+// bash scripts/build_android.sh --package-only
+// Then build the APK in Android Studio
 
 dependencies {
     api 'androidx.multidex:multidex:2.0.1'
