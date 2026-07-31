@@ -138,6 +138,7 @@ function Loader.new(opts)
     events = Events.new(), hooks = Hooks.new(), content = {}, assets = {},
     exports = {}, migrations = {}, order = {},
     modSave = {}, modOptions = {}, optionSchemas = {}, imageCache = {},
+    modHotkeys = {}, -- stores mod-registered hotkeys
     fs = (opts and opts.fs) or (love and love.filesystem),
     dev = dev,
   }, Loader)
@@ -200,7 +201,7 @@ end
 
 function Loader:_discover()
   if not self.fs.getDirectoryItems then return end
-  local roots = { "mods" }
+  local roots = { "mods", "bundlemods" }
   for _, root in ipairs(roots) do
     if self.fs.getInfo(root) then
       for _, name in ipairs(self.fs.getDirectoryItems(root)) do
@@ -213,7 +214,9 @@ function Loader:_discover()
               self.errors[#self.errors + 1] =
                 ("%s: duplicate mod id (ignored %s)"):format(manifest.id, path)
             else
-              self.mods[manifest.id] = { manifest = manifest, path = path }
+              -- Mark bundled mods as bundled
+              local isBundled = (root == "bundlemods")
+              self.mods[manifest.id] = { manifest = manifest, path = path, bundled = isBundled }
             end
           else
             Logger.warn("mod %s ignored: %s", path, tostring(err))
@@ -593,6 +596,22 @@ function Loader:_api(mod)
           if row.key == key then return row.default end
         end
         return nil
+      end,
+    },
+    -- Hotkey registration for mods
+    hotkey = {
+      register = function(_, actionId, label, defaultKey)
+        assert(type(actionId) == "string" and actionId ~= "", "hotkey action ID must be a non-empty string")
+        assert(type(label) == "string" and label ~= "", "hotkey label must be a non-empty string")
+        -- Store mod hotkey definitions for UI
+        if not loader.modHotkeys then loader.modHotkeys = {} end
+        loader.modHotkeys[modId] = loader.modHotkeys[modId] or {}
+        loader.modHotkeys[modId][actionId] = {
+          id = actionId,
+          label = label,
+          key = defaultKey, -- optional default key binding
+          modId = modId
+        }
       end,
     },
     commands = { register = function(_, verb, fn)

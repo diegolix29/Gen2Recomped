@@ -490,6 +490,11 @@ function Game:fireHotkey(action)
   elseif action == "reloadMods" then
     -- Hot reload mods during gameplay
     require("src.dev.HotReload").run(self)
+  else
+    -- Let mods handle custom hotkeys via hook
+    local Runtime = require("src.mods.Runtime")
+    local handled = Runtime.call("game.hotkey", function() return false end, action, self)
+    if handled then return end
   end
 end
 

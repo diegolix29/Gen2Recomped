@@ -113,8 +113,8 @@ local function wantsOverlay()
 end
 
 -- `game` is stored (not queried through a global) so the right stick can
--- read save.options.rightStickMovement and hotkey taps can call
--- game:fireHotkey -- both live on the instance Game:load() passes in.
+-- read save.options.rightStickMovement, left stick can read save.options.leftStickCamera,
+-- and hotkey taps can call game:fireHotkey -- both live on the instance Game:load() passes in.
 function TouchControls:init(game)
   self.game = game
   self.active = wantsOverlay()
@@ -281,14 +281,57 @@ end
 -- touches so one lifting doesn't drop the other's hold.
 local function setDpad(self, touch, dir)
   if touch.dir == dir then return end
-  if touch.dir then releaseBtn(self, touch.dir) end
+  if touch.dir then 
+    -- Release previous direction
+    if touch.pressedAsMovement then
+      releaseBtn(self, touch.dir)
+    end
+  end
   touch.dir = dir
-  if dir then pressBtn(self, dir) end
+  if dir then 
+    -- Check if in capture mode for binding
+    if self.captureTarget then
+      local padName = "dpad" .. dir
+      self.captureTarget:capturePad(padName)
+      touch.pressedAsMovement = false
+    else
+      -- Check if this is left stick and camera mode is enabled
+      local isLeftStick = touch.control == "leftstick"
+      local cameraEnabled = isLeftStick and leftStickCameraEnabled(self)
+      
+      if cameraEnabled then
+        -- In camera mode, left stick left/right controls camera rotation
+        touch.pressedAsMovement = false
+        if dir == "left" then
+          local g = self.game
+          if g and g.fireHotkey then g:fireHotkey("cameraRotateLeft") end
+        elseif dir == "right" then
+          local g = self.game
+          if g and g.fireHotkey then g:fireHotkey("cameraRotateRight") end
+        else
+          -- Up/down still control movement
+          pressBtn(self, dir)
+          touch.pressedAsMovement = true
+        end
+      else
+        -- Normal movement mode
+        pressBtn(self, dir)
+        touch.pressedAsMovement = true
+      end
+    end
+  else
+    touch.pressedAsMovement = nil
+  end
 end
 
 local function rightStickMovementEnabled(self)
   local g = self.game
   return (g and g.save and g.save.options and g.save.options.rightStickMovement) or false
+end
+
+local function leftStickCameraEnabled(self)
+  local g = self.game
+  return (g and g.save and g.save.options and g.save.options.leftStickCamera) or false
 end
 
 -- looks up a bound "display hotkey" action for a touch shoulder/trigger/
@@ -316,12 +359,18 @@ local function setRightStickDir(self, touch, dir)
   end
   touch.dir = dir
   if dir then
-    local enabled = rightStickMovementEnabled(self)
-    touch.pressedAsMovement = enabled
-    if enabled then
-      pressBtn(self, dir)
+    -- Check if in capture mode for binding
+    if self.captureTarget then
+      self.captureTarget:capturePad("rightstick" .. dir)
+      touch.pressedAsMovement = false
     else
-      fireHotkeyPad(self, "rightstick" .. dir)
+      local enabled = rightStickMovementEnabled(self)
+      touch.pressedAsMovement = enabled
+      if enabled then
+        pressBtn(self, dir)
+      else
+        fireHotkeyPad(self, "rightstick" .. dir)
+      end
     end
   else
     touch.pressedAsMovement = nil

@@ -33,6 +33,10 @@ local DEFAULT_GAMEPAD_BINDINGS = {
   start = "start", back = "select",
 }
 
+-- Raw joystick button bindings for joysticks that don't follow gamepad mapping
+-- These are numeric button indices that some joysticks use
+local RAW_BUTTON_BINDINGS = DEFAULT_GAMEPAD_BINDINGS
+
 -- left-stick deadzones: press past STICK_ON, release once back under
 -- STICK_OFF. The gap (hysteresis) stops the direction from flickering
 -- while the stick sits near the threshold.
@@ -88,6 +92,12 @@ local DEFAULT_HOTKEY_PAD_BINDINGS = {
   ["rightstickright"] = nil,
   ["lefttrigger"] = nil,
   ["righttrigger"] = nil,
+  ["dpadup"] = nil,
+  ["dpaddown"] = nil,
+  ["dpadleft"] = nil,
+  ["dpadright"] = nil,
+  ["stickleftcamera"] = nil,
+  ["stickrightcamera"] = nil,
 }
 
 function Input:init()
@@ -137,6 +147,17 @@ function Input:applyHotkeyBindings(overlay)
   end
   self.hotkeyKeyBindings = keys
   self.hotkeyPadBindings = pads
+end
+
+-- Allow mods to add default hotkey bindings at runtime
+function Input:addHotkeyKeyBinding(key, actionId)
+  if not self.hotkeyKeyBindings then self.hotkeyKeyBindings = {} end
+  self.hotkeyKeyBindings[key] = actionId
+end
+
+function Input:addHotkeyPadBinding(pad, actionId)
+  if not self.hotkeyPadBindings then self.hotkeyPadBindings = {} end
+  self.hotkeyPadBindings[pad] = actionId
 end
 
 -- Returns the hotkey action id (e.g. "tilt") bound to a keyboard key or
@@ -370,6 +391,11 @@ function Input:gamepadaxis(joystick, axis, value)
       self.rightStickDir = newDir
     end
   end
+end
+
+-- Alias for joystickaxis (used by some controllers/joysticks)
+function Input:joystickaxis(joystick, axis, value)
+  self:gamepadaxis(joystick, axis, value)
 end
 
 -- Handle analog triggers (ZL/ZR) with threshold detection

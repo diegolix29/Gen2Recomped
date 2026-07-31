@@ -265,7 +265,12 @@ function ManagerState:modRows()
   for _, cat in ipairs(categories) do
     rows[#rows + 1] = { header = true, label = cat }
     for _, m in ipairs(byCategory[cat]) do
-      rows[#rows + 1] = { mod = m, label = m.name or m.id,
+      local label = m.name or m.id
+      -- Add visual indicator for bundled mods
+      if m.bundled then
+        label = label .. " [B]"
+      end
+      rows[#rows + 1] = { mod = m, label = label,
                           glyph = self:glyphFor(m) }
     end
   end

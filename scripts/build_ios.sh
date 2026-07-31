@@ -215,10 +215,11 @@ pack_game_love() {
   # read-only app bundle, so the mod manager's Delete can't remove it and
   # it reappears every launch.  Mods install as .zips at runtime instead
   # (launcher -> MODS -> Import mod .zip), the same lifecycle as every
-  # other platform.
+  # other platform.  However, bundlemods folder is included as these are
+  # meant to be pre-bundled mods that ship with the application.
   (cd "$ROOT" && zip -q -9 -r "$LOVE_FILE" \
     main.lua conf.lua src data assets tools/save-editor \
-    tools/rom_manifest.json tools/rom_manifest_blue.json \
+    tools/rom_manifest.json tools/rom_manifest_blue.json bundlemods \
     -x '*.DS_Store' -x '*/.git/*' -x '*/.DS_Store' \
     -x 'data/generated/*' -x 'assets/generated/*')
   # NOTE: grep -q here would race pipefail — it exits on first match, unzip

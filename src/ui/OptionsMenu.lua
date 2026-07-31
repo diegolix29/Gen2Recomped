@@ -123,7 +123,16 @@ local function pickSkyImage()
   
   releasePointerGrab()
   
-  if platform == "Windows" then
+  if platform == "Android" then
+    -- Android file picker is not directly supported through LÖVE's standard API
+    -- The user needs to manually copy images to the app's storage directory
+    -- or use a file manager to place them in the appropriate location
+    -- Log a message to inform the user
+    if Logger then
+      Logger.log("info", "Android: Please copy sky images to the game's directory manually")
+    end
+    return nil
+  elseif platform == "Windows" then
     local script = table.concat({
       "Add-Type -AssemblyName System.Windows.Forms;",
       "$d=New-Object System.Windows.Forms.OpenFileDialog;",
@@ -327,6 +336,16 @@ local function buildRows(game)
       step = function(g)
         local o = g.save.options
         o.rightStickMovement = not (o.rightStickMovement or false)
+        if g.writeOptions then g:writeOptions() end
+        return true
+      end },
+    { id = "leftStickCamera", label = Strings("LEFT STICK CAMERA"),
+      value = function(g)
+        return (g.save.options.leftStickCamera or false) and "ON" or "OFF"
+      end,
+      step = function(g)
+        local o = g.save.options
+        o.leftStickCamera = not (o.leftStickCamera or false)
         if g.writeOptions then g:writeOptions() end
         return true
       end },

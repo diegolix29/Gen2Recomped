@@ -66,7 +66,7 @@ rm -f "$LOVE_FILE"
 (cd "$ROOT" && zip -q -9 -r "$LOVE_FILE" \
   main.lua conf.lua src data assets tools/save-editor \
   tools/rom_manifest.json tools/rom_manifest_blue.json \
-  tools/rom_manifest_yellow.json \
+  tools/rom_manifest_yellow.json bundlemods \
   -x '*.DS_Store' 'data/generated/*' 'assets/generated/*')
 if unzip -Z1 "$LOVE_FILE" \
     | grep -Eq '^(data|assets)/generated/[^/]+|^(data|assets)/generated/.+/'; then

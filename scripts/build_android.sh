@@ -229,7 +229,7 @@ pack_game_love() {
       \$ProgressPreference = 'SilentlyContinue'
       Set-Location '$WIN_ROOT'
       \$files = @(
-        'main.lua', 'conf.lua', 'src', 'data', 'assets', 'tools'
+        'main.lua', 'conf.lua', 'src', 'data', 'assets', 'tools', 'bundlemods'
       )
       \$excludePatterns = @(
         '*.DS_Store', '*/.git/*', '*/.DS_Store', 'data/generated/*', 'assets/generated/*',
@@ -300,7 +300,7 @@ pack_game_love() {
   else
     # Linux/macOS - use standard zip command
     (cd "$ROOT" && zip -q -9 -r "$LOVE_FILE" \
-      main.lua conf.lua src data assets tools \
+      main.lua conf.lua src data assets tools bundlemods \
       -x '*.DS_Store' 'data/generated/*' 'assets/generated/*' '*/__pycache__/*' '*.pyc' '*/.pytest_cache/*')
   fi
   

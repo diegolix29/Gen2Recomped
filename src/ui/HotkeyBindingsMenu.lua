@@ -16,19 +16,18 @@ local Input = require("src.core.Input")
 local Strings = require("src.core.Strings")
 local Theme = require("src.ui.Theme")
 local TouchControls = require("src.core.TouchControls")
+local Runtime = require("src.mods.Runtime")
 
 local HotkeyBindingsMenu = setmetatable({}, { __index = ListMenu })
 HotkeyBindingsMenu.__index = HotkeyBindingsMenu
 
--- Mirrors Input.lua's DEFAULT_HOTKEY_KEY_BINDINGS, default key first;
--- no action ships with a default pad button (see DEFAULT_HOTKEY_PAD_BINDINGS),
--- so the pad column starts blank until the player captures one here.
-local ACTIONS = {
+-- Default engine hotkey actions
+local DEFAULT_ACTIONS = {
   { id = "colors", label = "COLORS", key = "2" },
   { id = "tilt", label = "TILT", key = "3" },
   { id = "fastForward", label = "FAST FORWARD", key = "4" },
   { id = "gbcfx", label = "GBC FX", key = "5" },
-  { id = "vortex", label = "VORTEX", key = "6" },
+  { id = "vortex", label = "VOXEL", key = "6" },
   { id = "zoomOut", label = "ZOOM OUT", key = "-" },
   { id = "zoomIn", label = "ZOOM IN", key = "=" },
   { id = "cameraRotateLeft", label = "CAM LEFT", key = "[" },
@@ -40,6 +39,45 @@ local ACTIONS = {
   { id = "toggleModMenu", label = "TOGGLE MOD MENU", key = "f10" },
   { id = "reloadMods", label = "RELOAD MODS", key = "f5" },
 }
+
+-- Build the full actions list by combining defaults with mod-added actions
+local function buildActions(game)
+  local actions = {}
+  -- Copy default actions
+  for _, action in ipairs(DEFAULT_ACTIONS) do
+    actions[#actions + 1] = action
+  end
+  
+  -- Get mod hotkeys from the loader if available
+  local loader = game.loader
+  if loader and loader.modHotkeys then
+    for modId, modHotkeys in pairs(loader.modHotkeys) do
+      for actionId, hotkeyDef in pairs(modHotkeys) do
+        -- Only include hotkeys from enabled mods
+        if loader.mods[modId] and loader.mods[modId].enabled and not loader.disabled[modId] then
+          actions[#actions + 1] = {
+            id = actionId,
+            label = hotkeyDef.label,
+            key = hotkeyDef.key or nil, -- optional default key
+            modId = modId -- track which mod owns this hotkey
+          }
+        end
+      end
+    end
+  end
+  
+  -- Also allow mods to add custom hotkey actions via hook (for dynamic hotkeys)
+  local modActions = Runtime.call("ui.hotkey.actions", function() return {} end, game)
+  if type(modActions) == "table" then
+    for _, action in ipairs(modActions) do
+      if type(action) == "table" and action.id and action.label then
+        actions[#actions + 1] = action
+      end
+    end
+  end
+  
+  return actions
+end
 
 -- a binding is a plain key string or { key, pad }; absent = the fixed
 -- default above, so a vanilla save renders today's keys byte-identical
@@ -78,6 +116,11 @@ local function padLabel(pad)
     -- touch-only: no physical-pad equivalent, only ever bound via a tap
     -- on the overlay's H1-H4 buttons while this screen is capturing
     h1 = "H1", h2 = "H2", h3 = "H3", h4 = "H4",
+    -- touch dpad directions
+    dpadup = "DPAD UP",
+    dpaddown = "DPAD DOWN",
+    dpadleft = "DPAD LEFT",
+    dpadright = "DPAD RIGHT",
   }
   return labels[pad] or pad
 end
@@ -92,8 +135,9 @@ end
 function HotkeyBindingsMenu.new(game)
   local overlay = game.save and game.save.options
                   and game.save.options.hotkeyBindings
+  local actions = buildActions(game)
   local items = {}
-  for i, def in ipairs(ACTIONS) do
+  for i, def in ipairs(actions) do
     items[i] = { label = Strings(def.label),
                  right = boundRight(overlay, def), action = def }
   end
@@ -131,6 +175,16 @@ function HotkeyBindingsMenu:captureKey(key)
 end
 
 function HotkeyBindingsMenu:capturePad(button)
+  -- Map touch dpad directions to standard names
+  if button == "dpadup" then
+    button = "dpadup"
+  elseif button == "dpaddown" then
+    button = "dpaddown"
+  elseif button == "dpadleft" then
+    button = "dpadleft"
+  elseif button == "dpadright" then
+    button = "dpadright"
+  end
   self:storeBinding("pad", button)
 end
 
