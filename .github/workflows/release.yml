@@ -168,6 +168,7 @@ jobs:
       - name: Build Android
         run: |
           set -euo pipefail
+          chmod +x scripts/build_android.sh
           scripts/build_android.sh --version "${{ steps.ver.outputs.version }}"
 
       - name: Build Anbernic RG34XXSP port

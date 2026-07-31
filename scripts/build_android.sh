@@ -162,7 +162,7 @@ path.write_text(text)
 PY
   else
     # Linux/macOS - use native paths
-    py - "$props" "$APPLICATION_ID" "$APP_NAME" "$VERSION" "$VERSION_CODE" <<'PY'
+    python3 - "$props" "$APPLICATION_ID" "$APP_NAME" "$VERSION" "$VERSION_CODE" <<'PY'
 import pathlib, re, sys
 path = pathlib.Path(sys.argv[1])
 app_id, name, version, version_code = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
@@ -186,7 +186,7 @@ if version:
 path.write_text(text)
 PY
 
-    py - "$manifest" <<'PY'
+    python3 - "$manifest" <<'PY'
 import pathlib, re, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()

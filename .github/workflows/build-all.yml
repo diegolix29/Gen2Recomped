@@ -178,6 +178,7 @@ jobs:
       - name: Build Android APK
         run: |
           set -euo pipefail
+          chmod +x scripts/build_android.sh
           version="${{ steps.ver.outputs.version }}"
           # Only pass --version if it's a valid X.Y.Z format
           if printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
