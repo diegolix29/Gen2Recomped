@@ -270,6 +270,16 @@ function Input:gamepadreleased(joystick, button)
   end
 end
 
+function Input:joystickpressed(joystick, button)
+  local btn = RAW_BUTTON_BINDINGS[button]
+  if btn then press(self, btn, "joy:" .. button) end
+end
+
+function Input:joystickreleased(joystick, button)
+  local btn = RAW_BUTTON_BINDINGS[button]
+  if btn then release(self, btn, "joy:" .. button) end
+end
+
 -- left stick treated as a continuous held direction, same 4-way rule as
 -- the touch swipe d-pad: whichever axis has the larger magnitude wins.
 function Input:gamepadaxis(joystick, axis, value)

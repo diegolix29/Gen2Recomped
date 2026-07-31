@@ -381,13 +381,22 @@ end
 
 -- Clip drawing to a rect (list bodies).  No-ops under the headless stub.
 function Kit.pushClip(x, y, w, h)
-  if G and G.setScissor then
-    G.setScissor(math.floor(x), math.floor(y), math.ceil(w), math.ceil(h))
+  -- A compact mobile viewport can leave a panel with no room for a list.
+  -- LÖVE rejects negative scissor dimensions, so treat an exhausted clip
+  -- region as empty instead of passing invalid geometry through to it.
+  Kit._clipActive = G and G.setScissor ~= nil
+  if Kit._clipActive then
+    if w <= 0 or h <= 0 then
+      G.setScissor(0, 0, 0, 0)
+    else
+      G.setScissor(math.floor(x), math.floor(y), math.ceil(w), math.ceil(h))
+    end
   end
 end
 
 function Kit.popClip()
-  if G and G.setScissor then G.setScissor() end
+  if Kit._clipActive and G and G.setScissor then G.setScissor() end
+  Kit._clipActive = false
 end
 
 return Kit

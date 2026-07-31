@@ -331,6 +331,30 @@ function love.gamepadaxis(joystick, axis, value)
   Game:gamepadaxis(joystick, axis, value)
 end
 
+function love.joystickpressed(joystick, button)
+  if editorMode then return end
+  if Importer then return Importer:joystickpressed(joystick, button) end
+  Game:joystickpressed(joystick, button)
+end
+
+function love.joystickreleased(joystick, button)
+  if editorMode then return end
+  if Importer then return Importer:joystickreleased(joystick, button) end
+  Game:joystickreleased(joystick, button)
+end
+
+function love.joystickaxis(joystick, axis, value)
+  if editorMode then return end
+  if Importer then return Importer:joystickaxis(joystick, axis, value) end
+  Game:joystickaxis(joystick, axis, value)
+end
+
+function love.joystickhat(joystick, hat, direction)
+  if editorMode then return end
+  if Importer then return Importer:joystickhat(joystick, hat, direction) end
+  Game:joystickhat(joystick, hat, direction)
+end
+
 function love.joystickremoved(joystick)
   if editorMode then return end
   if Importer then return end
@@ -358,7 +382,18 @@ end
 
 function love.touchpressed(id, x, y, dx, dy, pressure)
   if editorMode then return end
-  if Importer then return Importer:mousepressed(x, y, 1) end
+  if Importer then
+    -- iOS: LÖVE already synthesizes a mousepressed for the primary touch,
+    -- and love.mousepressed below forwards that to the Importer, so
+    -- forwarding here too fires every launcher button twice per tap.  The
+    -- resulting double-present was fatal for the document picker: the
+    -- second sheet stole the first one's weakly-held delegate, so picking
+    -- a file silently did nothing.  Android keeps the forward for upstream
+    -- parity (its SAF picker is a separate activity and tolerates the
+    -- re-launch).
+    if love.system.getOS() == "iOS" then return end
+    return Importer:mousepressed(x, y, 1)
+  end
   Game:touchpressed(id, x, y)
 end
 
@@ -424,6 +459,16 @@ function love.quit()
   pcall(function()
     require("src.core.DiscordPresence").shutdown()
   end)
+  -- LOVE waits for every live love.thread before the process exits, and both
+  -- background workers idle in a loop that only a "quit" command breaks, so
+  -- without this the process outlived the window and the next launch re-entered
+  -- the dead one instead of starting fresh (#339)
+  if package.loaded["src.core.ChipAudio"] then
+    pcall(package.loaded["src.core.ChipAudio"].shutdown)
+  end
+  if package.loaded["src.update.Check"] then
+    pcall(package.loaded["src.update.Check"].shutdown)
+  end
 end
 
 function love.filedropped(file)
@@ -461,6 +506,13 @@ function love.run()
       for name, a, b, c, d, e, f in love.event.poll() do
         if name == "quit" then
           if not love.quit or not love.quit() then
+            -- Android keeps the process and its task alive after LOVE's own
+            -- teardown, so the relaunched task re-enters an activity whose
+            -- native main already returned; end the process outright once the
+            -- love.quit hook has run (#339)
+            if love.system and love.system.getOS() == "Android" then
+              os.exit(a or 0)
+            end
             return a or 0
           end
         end

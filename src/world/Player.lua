@@ -4,6 +4,7 @@
 
 local Collision = require("src.world.Collision")
 local FieldDefaults = require("src.world.FieldDefaults")
+local GameVersion = require("src.core.GameVersion")
 local Runtime = require("src.mods.Runtime")
 local SpriteRenderer = require("src.render.SpriteRenderer")
 
@@ -40,6 +41,20 @@ function Player.new(data, cx, cy, facing)
   if fx and fx.shadow then
     local ok, img = pcall(love.graphics.newImage, fx.shadow.path)
     self.shadowImg = ok and img or nil
+  end
+  -- FishingAnim (engine/overworld/player_animations.asm) patches tiles
+  -- $02/$06/$0a -- the bottom tile row of each standing frame -- with
+  -- RedFishingTiles before it parks the rod OAM, so the rod stroke meets a
+  -- pair of hands instead of ending in mid air (#384)
+  if fx then
+    local function posePath(name)
+      local def = fx[name]
+      return def and def.path or nil
+    end
+    local pose = { down = posePath("redFishFront"), up = posePath("redFishBack") }
+    pose.left = posePath("redFishSide")
+    pose.right = pose.left -- the side pose mirrors like the sprite (OAM_XFLIP)
+    if pose.down or pose.up or pose.left then self.fishTiles = pose end
   end
   self.cellX, self.cellY = cx, cy
   self.px, self.py = cx * 16, cy * 16
@@ -246,24 +261,51 @@ function Player:pose()
       py = py - math.floor((total - self.spinFrames) * 24 / total)
     end
   end
-  local sprite = (self.surfing and self.surfSprite)
+  -- RodResponse (engine/items/item_effects.asm) zeroes wWalkBikeSurfState
+  -- across FishingAnim, so casting from the water shows the on-foot sheet
+  local sprite = (self.fishing and self.sprite)
+                 or (self.surfing and self.surfSprite)
                  or (self.onBike and self.bikeSprite) or self.sprite
   return sprite, self.px, py, facing, phase, flip, hopping
 end
 
 function Player:draw(camX, camY)
   local sprite, px, py, facing, phase, flip, hopping = self:pose()
-  -- the shadow stays on the ground under the jumper: one 8x8 tile
-  -- mirrored into a 2x2 block (normal/XFLIP/YFLIP/both) whose top-left
-  -- is 8px below the sprite's standing top-left (LoadHoppingShadowOAM +
-  -- LedgeHoppingShadowOAMBlock, engine/overworld/ledges.asm)
+  -- the shadow stays on the ground under the jumper, mirrored out of the
+  -- single 8x8 tile the ROM stores -- but the two engines lay it out
+  -- differently, and their shadow.png tiles differ to match.
+  --   RED/BLUE: a 2x2 block (normal/XFLIP/YFLIP/both) whose top-left sits
+  --   8px below the sprite's standing top-left (LoadHoppingShadowOAM +
+  --   LedgeHoppingShadowOAMBlock at "lb bc, $54, $48",
+  --   engine/overworld/ledges.asm); its tile is blank above the bottom
+  --   four rows, so the four copies make one 16x16 ellipse.
+  --   YELLOW: a single 16x8 row 4px lower.  Its LoadHoppingShadowOAM
+  --   copies only two entries (LedgeHoppingShadowOAM: dbsprite 9,11 and
+  --   dbsprite 10,11 OAM_XFLIP, raw OAM y=88 against RED's $54=84) and
+  --   parks sprites 38/39 offscreen at y=$a0, because its tile is a
+  --   full-height half-ellipse that already fills the row.  Mirroring
+  --   that tile downward stacked a second blob under the first (#408).
   if hopping and self.shadowImg then
+    local yellow = GameVersion.isYellow()
     local sx = math.floor(self.px - camX)
-    local sy = math.floor(self.py - camY) - 4 + 8
+    local sy = math.floor(self.py - camY) - 4 + 8 + (yellow and 4 or 0)
     love.graphics.draw(self.shadowImg, sx, sy)
     love.graphics.draw(self.shadowImg, sx + 16, sy, 0, -1, 1)
-    love.graphics.draw(self.shadowImg, sx, sy + 16, 0, 1, -1)
-    love.graphics.draw(self.shadowImg, sx + 16, sy + 16, 0, -1, -1)
+    if not yellow then
+      love.graphics.draw(self.shadowImg, sx, sy + 16, 0, 1, -1)
+      love.graphics.draw(self.shadowImg, sx + 16, sy + 16, 0, -1, -1)
+    end
+  end
+  -- Fishing pose: the standing frame with its bottom tile row swapped for
+  -- RedFishingTiles, which is where the hands and the near half of the rod
+  -- live; the far half is the rod OAM OverworldState draws (FishingRodOAM,
+  -- engine/overworld/player_animations.asm) -- #384
+  local fishTile = self.fishing and self.fishTiles and self.fishTiles[facing]
+  if fishTile then
+    sprite:draw(px, py, camX, camY, facing, 0, false, true)
+    sprite:drawTile(fishTile, math.floor(px - camX),
+                    math.floor(py - camY) - 4 + 8, facing == "right")
+    return
   end
   sprite:draw(px, py, camX, camY, facing, phase, flip)
 end

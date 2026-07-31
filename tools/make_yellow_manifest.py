@@ -75,6 +75,9 @@ YELLOW_EXTRA_SYMBOLS = (
     "YellowIntroCloudGFX",
     "PikachuCriesPointerTable",
     "CGBBasePalettes",
+    # Jessie & James share the ROCKET trainer class but battle behind their
+    # own pic (home/trainers2.asm IsFightingJessieJames) (#439)
+    "JessieJamesPic",
     # the five Pikachu-only emotion bubbles (emotion_bubbles.asm)
     "SkullEmote",
     "HeartEmote",
@@ -382,6 +385,7 @@ def derive(red, pokeyellow, symbols_path):
         except SystemExit as exc:
             print(f"warning: parse_credits failed ({exc}); keeping Red credits")
             # TODO: hand-author a Yellow credits banner if pret layout drifts.
+        yellow["field"]["trades"] = field.parse_trades(pokeyellow)
     finally:
         util.ASM_DEFINES = saved
 

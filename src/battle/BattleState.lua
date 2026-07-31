@@ -4,7 +4,7 @@
 -- Flow: intro -> menu (FIGHT/PKMN/ITEM/RUN) -> move select -> turn
 -- resolution (a queue of messages/actions/UI pushes) -> back to menu,
 -- until one side is out, then finish.  Pops itself and calls
--- onFinish("win"|"lose"|"run"|"caught"|"skipped").
+-- onFinish("win"|"lose"|"run"|"caught").
 --
 -- The Gen 1 move-effect pipeline (multi-hit, charge, trapping, thrash,
 -- bide, recharge, confusion, screens, substitute, transform, ...) is
@@ -186,6 +186,36 @@ local function namedPalette(data, name)
   local key = name
   if PaletteFX.usesGbcPack() then key = "redpp:" .. name end
   return { name = key, colors = colors }
+end
+
+-- Custom trainer portraits can opt into the same Advanced OBJ palette source
+-- as their overworld walker. Vanilla trainers preserve the hardware-faithful
+-- MEWMON fallback used during the battle introduction.
+function BattleState.trainerPalette(data, trainer)
+  local source = trainer and trainer.paletteSource
+  if source then
+    local PaletteFX = require("src.render.PaletteFX")
+    local colors, group = PaletteFX.spriteObp({ paletteSource = source }, trainer.id)
+    if colors then
+      return { name = "trainer:" .. source .. ":" .. tostring(group), colors = colors }
+    end
+  end
+  return namedPalette(data, "MEWMON")
+end
+
+-- Yellow only: ROCKET with wTrainerNo >= $2a is Jessie & James, who share
+-- the class and the name "ROCKET" but battle behind their own pic
+-- (home/trainers2.asm IsFightingJessieJames).  picJessieJames exists only
+-- in a Yellow cache extracted after #439, so an older cache keeps the
+-- grunt pic until it is re-imported.
+function BattleState.trainerPicPath(data, trainer, oppClass, partyIndex)
+  if oppClass == "OPP_ROCKET" and (partyIndex or 1) >= 42
+     and trainer and trainer.picJessieJames then
+    return trainer.picJessieJames
+  end
+  if trainer and trainer.pic then return trainer.pic end
+  local base = trainer and trainer.basePic and data.trainers[trainer.basePic]
+  return base and base.pic or nil
 end
 
 -- The battle-BGP fade variant of a pic (AnimationFlashScreen and the
@@ -608,7 +638,9 @@ function BattleState.newTrainer(game, oppClass, partyIndex)
   -- MonsterPalettes[0] = PAL_MEWMON -- InitBattleCommon zeroes
   -- wEnemyMonSpecies2 before the intro's SET_PAL_BATTLE
   -- (engine/battle/core.asm:6682, engine/gfx/palettes.asm SetPal_Battle)
-  self.trainerPic = getImage(self.trainer.pic, namedPalette(game.data, "MEWMON"))
+  self.trainerPic = getImage(
+    BattleState.trainerPicPath(game.data, self.trainer, oppClass, partyIndex),
+    BattleState.trainerPalette(game.data, self.trainer))
   self.introText = Strings("%s wants\nto fight!", self.trainer.name)
   return self
 end
@@ -740,10 +772,17 @@ function BattleState:buildScreen(id, ...)
 end
 
 -- insert a wait for the HP bars to finish draining (UpdateHPBar):
--- the queue holds until every battler's displayed HP catches up
-function BattleState:drainNext()
+-- the queue holds until every battler's displayed HP catches up.
+-- `stopAt` pins how far that battler's bar may drain on this row.  A
+-- multi-hit move takes every strike off the model while the turn is still
+-- being queued, so an unpinned row would drain straight to the
+-- post-last-hit HP and the later strikes would animate nothing (#394);
+-- ApplyDamageToEnemyPokemon runs UpdateHPBar2 once per strike inside the
+-- wNumAttacksLeft loop (engine/battle/core.asm:4727).
+function BattleState:drainNext(battler, stopAt)
   self.nextInsert = (self.nextInsert or 0) + 1
-  table.insert(self.queue, self.nextInsert, { drain = true })
+  table.insert(self.queue, self.nextInsert,
+               { drain = true, battler = battler, stopAt = stopAt })
 end
 
 -- One frame of the HP-bar drain (engine/gfx/hp_bar.asm UpdateHPBar):
@@ -752,14 +791,22 @@ end
 function BattleState:stepHPDrain()
   local busy = false
   for _, b in ipairs({ self.player, self.enemy }) do
-    if b and b.shownHP and b.shownHP ~= b.mon.hp then
-      local step = math.max(1, b.mon.stats.hp) / 96
-      if b.shownHP > b.mon.hp then
-        b.shownHP = math.max(b.mon.hp, b.shownHP - step)
-      else
-        b.shownHP = math.min(b.mon.hp, b.shownHP + step)
+    if b and b.shownHP then
+      -- drainFloor is the stop the running row carries (see drainNext)
+      local goal = b.mon.hp
+      if b.drainFloor and b.drainFloor > goal
+         and b.shownHP >= b.drainFloor then
+        goal = b.drainFloor
       end
-      busy = busy or b.shownHP ~= b.mon.hp
+      if b.shownHP ~= goal then
+        local step = math.max(1, b.mon.stats.hp) / 96
+        if b.shownHP > goal then
+          b.shownHP = math.max(goal, b.shownHP - step)
+        else
+          b.shownHP = math.min(goal, b.shownHP + step)
+        end
+        busy = busy or b.shownHP ~= goal
+      end
     end
   end
   return busy
@@ -837,6 +884,8 @@ function BattleState:updateQueue()
   if self.draining then
     if self:stepHPDrain() then return true end
     self.draining = nil
+    if self.player then self.player.drainFloor = nil end
+    if self.enemy then self.enemy.drainFloor = nil end
   end
   -- a move animation holds the queue until it finishes; its screen
   -- effects (SE_*) and per-row sounds route into the fx layer as they
@@ -875,6 +924,7 @@ function BattleState:updateQueue()
     end
     if item.drain then
       self.draining = true
+      if item.battler then item.battler.drainFloor = item.stopAt end
       return true
     end
     if item.wait then
@@ -1097,10 +1147,34 @@ function BattleState:battleKind()
 end
 
 function BattleState:enter()
-  if self.dead then
+  -- Out of useable POKéMON before the battle even starts.  pokered does not
+  -- skip the battle: .checkAnyPartyAlive (engine/battle/core.asm:158-162)
+  -- runs right after the intro and jumps to HandlePlayerBlackOut, so the
+  -- player blacks out and afterBattle's "lose" path revives the party at the
+  -- last heal point.  Handing the map back with a 0 HP party instead bricked
+  -- the save: every later encounter aborted here too and sighted trainers
+  -- re-engaged forever (#425).  self.dead alone is not the test --
+  -- makeOldManDemo and LinkBattle install a player battler after the
+  -- constructor flagged the battle dead.
+  if self.dead and not self.player then
+    local name = self.game.save.player.name
+    self.result = "lose"
     self.game.stack:pop()
-    Runtime.emit("battle.ended", { battle = self, result = "skipped" })
-    if self.onFinish then self.onFinish("skipped") end
+    require("src.core.Music").restoreMap(self.data)
+    Runtime.emit("battle.ended", { battle = self, result = "lose", skipped = true })
+    local onFinish = self.onFinish
+    local function blackedOut()
+      if onFinish then onFinish("lose") end
+    end
+    -- the Oak's Lab starter rival returns above PlayerBlackedOutText2 and
+    -- afterBattle keeps the player in the lab, so print nothing there
+    if BattleState.isOaksLabStarterRival(self) then return blackedOut() end
+    -- _PlayerBlackedOutText2 (data/text/text_2.asm:896): the two paragraphs
+    -- playerMonFainted queues on the battle screen; there is no battle
+    -- screen to queue them on here, so they print over the map.
+    self.game.stack:push(require("src.render.TextBox").new(self.game,
+      Strings("%s is out of\nuseable POKéMON!", name) .. "\f"
+      .. Strings("%s blacked\nout!", name), blackedOut))
     return
   end
   local Music = require("src.core.Music")
@@ -1380,6 +1454,7 @@ function BattleState:update(dt)
     for _, b in ipairs({ self.player, self.enemy }) do
       if b then
         if b.shownHP then b.shownHP = b.mon.hp end
+        b.drainFloor = nil
         b.shownStatus = b.mon.status
       end
     end
@@ -1937,6 +2012,15 @@ function BattleState:resolveSwitch(newMon)
 end
 
 function BattleState:endOfTurn()
+  -- the same ret: a decided battle never reaches HandlePoisonBurnLeechSeed
+  -- or CheckNumAttacksLeft (core.asm:417-421, 456-460), so the residual
+  -- sweep and the trapping-counter release are skipped on the turn a
+  -- Teleport escape (or a win/loss/capture) settles it (#441).  The
+  -- turn_ended hook still fires: mods count turns, not residuals.
+  if self.result then
+    Runtime.emit("battle.turn_ended", { battle = self, turn = self.turnCount or 0 })
+    return
+  end
   -- sideToxic mirrors w*ToxicCounter: it advances only while the
   -- battler's badly-poisoned flag (toxicCounter) is set, an item/AI
   -- cure clears the flag but NOT the side counter, and a fresh Toxic
@@ -2154,6 +2238,31 @@ local function startPicKind(pf, kind)
   pf.hidden = nil
 end
 
+-- PredefShakeScreenHorizontally (engine/gfx/screen_effects.asm): the window
+-- jumps right by b for 5 frames then home for 4, b counting down to 1.
+-- b = 8 for SE_SHAKE_SCREEN and the heavy applying-attack shake, b = 2 for
+-- the light one.
+local function fastShakeProg(b)
+  local prog = {}
+  for i = b, 1, -1 do
+    prog[#prog + 1] = { dx = i, frames = 5 }
+    prog[#prog + 1] = { dx = 0, frames = 4 }
+  end
+  return prog
+end
+
+-- AnimationShakeScreenHorizontallySlow (engine/battle/animations.asm:526):
+-- rWX creeps 1px right every 2 frames b times, then back down to 0, c times
+-- over.  Silent -- this is the non-damaging move's feedback.
+local function slowShakeProg(b, c)
+  local prog = {}
+  for _ = 1, c do
+    for i = 1, b do prog[#prog + 1] = { dx = i, frames = 2 } end
+    for i = b - 1, 0, -1 do prog[#prog + 1] = { dx = i, frames = 2 } end
+  end
+  return prog
+end
+
 -- Route one AnimPlayer event into the fx layer.  Frame counts and
 -- amplitudes are the routines' own (engine/battle/animations.asm;
 -- shakes: engine/gfx/screen_effects.asm).
@@ -2195,14 +2304,7 @@ function BattleState:applyAnimEffect(ev)
 
   -- ---------------------------------------------- screen shakes
   elseif e == "SE_SHAKE_SCREEN" then
-    -- PredefShakeScreenHorizontally b=8: the window jumps right by b
-    -- for 5 frames then home for 4, b counting down 8..1
-    local prog = {}
-    for b = 8, 1, -1 do
-      prog[#prog + 1] = { dx = b, frames = 5 }
-      prog[#prog + 1] = { dx = 0, frames = 4 }
-    end
-    fx.shakeProg = prog
+    fx.shakeProg = fastShakeProg(8)
   elseif e == "SE_ROCK_SLIDE_SHAKE" then
     -- DoRockSlideSpecialEffects: 1px horizontal then vertical rumble
     fx.shakeProg = { { dx = 1, frames = 5 }, { dx = 0, frames = 4 },
@@ -2299,33 +2401,76 @@ function BattleState:applyAnimEffect(ev)
   -- battler.substituteHP is set (MoveEffects raises it with the move)
 end
 
--- The target's post-animation hit feedback (PlayApplyingAttackAnimation,
--- engine/battle/animations.asm:475): the player's damaging moves blink
--- the ENEMY pic; the enemy's damaging moves shake the screen vertically
--- (ShakeScreenVertically -> PredefShakeScreenVertically b=8: the window
--- drops by b for 3 frames then home for 3, b counting down) -- the
--- player's pic never blinks.  Damage sound with either.  A hold keeps
+-- The post-animation applying-attack feedback (PlayApplyingAttackAnimation
+-- -> AnimationTypePointerTable, engine/battle/animations.asm:475-524).
+-- hit.animType is wAnimationType, 1..6:
+--   1 enemy damaging, no added effect   ShakeScreenVertically (b=8)
+--   2 enemy damaging, added effect      fast horizontal shake, b=8
+--   3 enemy non-damaging                slow horizontal shake, b=6, c=2
+--   4 player damaging, no added effect  BlinkEnemyMonSprite
+--   5 player damaging, added effect     fast horizontal shake, b=2
+--   6 player non-damaging               slow horizontal shake, b=3, c=2
+-- Types 3 and 6 are silent; the rest open with PlayApplyingAttackSound,
+-- which is the damage sound hit.sfx already carries.  Only 1 and 4 were
+-- implemented, so every move with an added effect blinked (or shook
+-- vertically) instead of shaking sideways and every status move showed
+-- nothing at all -- Bubblebeam, Confusion, Hypnosis (#354).  A hold keeps
 -- the queue still until the effect finishes.
 function BattleState:applyHitFx(hit)
-  if hit.blink then
-    self.fx = self.fx or {}
-    if hit.blink.isPlayer then
-      local prog = {}
-      for b = 8, 1, -1 do
-        prog[#prog + 1] = { dy = b, frames = 3 }
-        prog[#prog + 1] = { dy = 0, frames = 3 }
-      end
-      self.fx.shakeProg = prog
-      self.waitFrames = 48 -- the predef blocks until the shake settles
-    else
-      self.fx.blink = { target = hit.blink, frames = 20 }
-      self.waitFrames = 20
-    end
-  end
+  self.fx = self.fx or {}
+  -- rows queued before animType existed carry only the blink target
+  local t = hit.animType
+  if not t and hit.blink then t = hit.blink.isPlayer and 1 or 4 end
   if hit.sfx then
     require("src.core.Sound").play(self.data, hit.sfx)
   end
+  if not t or not self:animationsOn() then return end
+  if t == 1 then
+    -- PredefShakeScreenVertically b=8: the window drops by b for 3 frames
+    -- then home for 3, b counting down
+    local prog = {}
+    for b = 8, 1, -1 do
+      prog[#prog + 1] = { dy = b, frames = 3 }
+      prog[#prog + 1] = { dy = 0, frames = 3 }
+    end
+    self.fx.shakeProg = prog
+    self.waitFrames = 48 -- the predef blocks until the shake settles
+  elseif t == 2 then
+    self.fx.shakeProg = fastShakeProg(8)
+    self.waitFrames = 72
+  elseif t == 3 then
+    self.fx.shakeProg = slowShakeProg(6, 2)
+    self.waitFrames = 48
+  elseif t == 4 then
+    if hit.blink then
+      self.fx.blink = { target = hit.blink, frames = 20 }
+      self.waitFrames = 20
+    end
+  elseif t == 5 then
+    self.fx.shakeProg = fastShakeProg(2)
+    self.waitFrames = 18
+  elseif t == 6 then
+    self.fx.shakeProg = slowShakeProg(3, 2)
+    self.waitFrames = 24
+  end
 end
+
+-- Primary status effects whose pokered handler ends in
+-- PlayCurrentMoveAnimation2 (engine/battle/effects.asm:1448), which sets
+-- wAnimationType 6 on the player's turn and 3 on the enemy's: sleep,
+-- poison, confuse, disable and the primary stat-down effects.  Every other
+-- primary effect goes through PlayCurrentMoveAnimation and leaves the type
+-- at 0 (no applying animation): paralysis (FreezeBurnParalyzeEffect),
+-- leech seed, the stat-UP effects, Splash.  Side-effect stat drops are
+-- skipped too -- UpdateLoweredStatDone bails out for them because the
+-- damaging move's own type 2/5 shake already played.
+local SLOW_SHAKE_EFFECTS = {
+  SLEEP_EFFECT = true, POISON_EFFECT = true, CONFUSION_EFFECT = true,
+  DISABLE_EFFECT = true,
+  ATTACK_DOWN1_EFFECT = true, DEFENSE_DOWN1_EFFECT = true,
+  DEFENSE_DOWN2_EFFECT = true, SPEED_DOWN1_EFFECT = true,
+  ACCURACY_DOWN1_EFFECT = true,
+}
 
 -- AnimateSendingOutMon (core.asm:6801-6838): the mon grows out of the
 -- ball -- a 3-frame ball beat, 4 frames of the pic at 3/7 scale (a 3x3
@@ -2546,6 +2691,12 @@ function BattleState:syncShownStatus()
 end
 
 function BattleState:executeAction(user, target, action)
+  -- MainInBattleLoop reads wEscapedFromBattle right after Execute*Move and
+  -- rets (core.asm:417-421, 456-460): a Teleport/Roar/Whirlwind escape ends
+  -- the turn where it lands and the second mover never moves.  self.result
+  -- is only ever set once the battle is over (run/win/lose/caught), and the
+  -- faint cases are already covered by the HP guard below (#441)
+  if self.result then return end
   if user.mon.hp <= 0 or target.mon.hp <= 0 then return end
   if not action then return end
 
@@ -2910,6 +3061,8 @@ function BattleState:performMove(user, target, moveInst, isCalled)
     -- (AlreadyAsleep / NothingHappened / ButItFailed print with no anim)
     if primaryEffectFailed(msgs) then
       self:cancelMoveAnim()
+    elseif SLOW_SHAKE_EFFECTS[move.effect] and self.moveAnimRow then
+      self.moveAnimRow.hit = { animType = user.isPlayer and 6 or 3 }
     end
     for _, m in ipairs(msgs) do
       self:sayNext(m)
@@ -2963,6 +3116,10 @@ function BattleState:continueBide(user, target)
     self:sayNext(Strings("But, it failed!"))
     return
   end
+  -- .UnleashEnergy (core.asm:3501-3529) re-points wPlayerMoveNum at BIDE
+  -- and rejoins HandleIfPlayerMoveMissed, so BIDE's own animation plays
+  -- here, after UnleashedEnergyText and before the damage (#375)
+  self:animNext("BIDE", user.isPlayer)
   self:applyDamage(target, dmg)
   if target.mon.hp <= 0 then self:onFaint(target) end
 end
@@ -2987,7 +3144,7 @@ function BattleState:applyDamage(target, dmg)
   end
   local dealt = math.min(dmg, target.mon.hp)
   target.mon.hp = target.mon.hp - dealt
-  if dealt > 0 then self:drainNext() end -- animate the bar down
+  if dealt > 0 then self:drainNext(target, target.mon.hp) end -- animate the bar down
   if target.bideTurns then
     target.bideDamage = (target.bideDamage or 0) + dealt
   end
@@ -3834,12 +3991,15 @@ function BattleState:throwBall(ball)
       self:act(function() self:endOfTurn() end)
       return
     end
-    if self.ghost then
+    if self.ghost or self.noCatch then
       -- ItemUseBall's can't-be-caught path (item_effects.asm:149-153):
       -- the ball is thrown (TossBallAnimation still picks the arc from
       -- wCurItem, so a Master/Ultra toss keeps its flicker), dodged
       -- ($10 anim data, no wobbles), and the turn is spent like any
-      -- failed throw
+      -- failed throw.  battle.noCatch is the .notOldManBattle half of the
+      -- same check (item_effects.asm:166-175): the POKEMON_TOWER_6F
+      -- RESTLESS SOUL dodges balls even once the scope has revealed it,
+      -- so it is not a ghost battle any more (#444)
       self:animNext(self:tossAnimFor(ball), true, nil, ball)
       self:sayNext(Strings("It dodged the\nthrown BALL!"))
       self:sayNext(Strings("This POKéMON\ncan't be caught!"))

@@ -46,6 +46,51 @@ Input:step()
 check(Input:wasPressed("left"), "stick flick edges wasPressed")
 check(not Input:isDown("left"), "stick flick does not stick isDown")
 
+-- Linux handhelds without an SDL game-controller mapping send raw joystick
+-- axes and D-pad hats instead of gamepad events.
+Input:reset()
+Input:joystickaxis(nil, 1, -0.9)
+Input:step()
+check(Input:isDown("left"), "raw joystick left axis holds left")
+Input:joystickaxis(nil, 1, 0)
+check(not Input:isDown("left"), "raw joystick axis release clears left")
+
+Input:reset()
+Input:joystickhat(nil, 1, "u")
+Input:step()
+check(Input:isDown("up"), "raw joystick hat holds up")
+Input:joystickhat(nil, 1, "c")
+check(not Input:isDown("up"), "raw joystick hat release clears up")
+
+Input:reset()
+Input:joystickpressed(nil, 1)
+Input:step()
+check(Input:isDown("a"), "raw joystick primary button presses A")
+
+-- The launcher has a separate virtual cursor, so prove generic joystick
+-- events reach its left-stick and D-pad state too.
+local RomImporter = require("src.import.RomImporter")
+local importer = setmetatable({
+  _padCursor = { x = 0, y = 0 }, _padCursorActive = false,
+  _padAxis = { leftx = 0, lefty = 0, righty = 0 },
+  _padDir = {}, _rawHatDirs = {}, _padInited = true,
+}, RomImporter)
+local clicked = false
+function importer:mousepressed(_, _, button)
+  clicked = button == 1
+end
+importer:joystickaxis(nil, 1, -0.8)
+check(importer._padAxis.leftx == -0.8,
+  "raw joystick left axis reaches the launcher cursor")
+importer:joystickhat(nil, 1, "r")
+check(importer._padDir.dpright,
+  "raw joystick hat reaches the launcher cursor")
+importer:joystickhat(nil, 1, "c")
+check(not importer._padDir.dpright,
+  "raw joystick hat release clears the launcher cursor")
+importer:joystickpressed(nil, 1)
+check(clicked, "raw joystick primary button clicks the launcher cursor")
+
 -- Drivers that only inject pressQueue still get a one-step hold.
 Input:reset()
 table.insert(Input.pressQueue, "down")

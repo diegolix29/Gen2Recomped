@@ -61,7 +61,7 @@ local function tryImage(path)
   return ok and img or nil
 end
 
--- Resolve a pic descriptor to (image, flip).
+-- Resolve a pic descriptor to (image, flip, trueColor).
 -- Descriptors:
 --   "oak" | "rival" | "player"          shorthand
 --   { type = "trainer", id = "OPP_PROF_OAK" }
@@ -70,7 +70,7 @@ end
 --   { type = "image", path = "..." }
 --   { type = "sprite", id = "SPRITE_RED" }
 function OakSpeech.resolvePic(game, desc, speech)
-  if desc == nil then return nil, false end
+  if desc == nil then return nil, false, false end
   if type(desc) == "string" then
     if desc == "oak" then
       desc = { type = "trainer", id = "OPP_PROF_OAK" }
@@ -86,35 +86,37 @@ function OakSpeech.resolvePic(game, desc, speech)
   local t = desc.type
   if t == "trainer" then
     if speech and desc.id == "OPP_PROF_OAK" and speech.oakPic then
-      return speech.oakPic, false
+      return speech.oakPic, false, false
     end
     if speech and desc.id == "OPP_RIVAL1" and speech.rivalPic then
-      return speech.rivalPic, false
+      return speech.rivalPic, false, false
     end
     local trainers = game.data.trainers or {}
     local tr = trainers[desc.id]
-    return tryImage(tr and tr.pic), false
+    return tryImage(tr and tr.pic), false, false
   elseif t == "pokemon" then
     if speech and desc.id == speech.demoSpecies and speech.demoPic then
-      return speech.demoPic, desc.flip and true or false
+      return speech.demoPic, desc.flip and true or false, speech.demoTrueColor
     end
-    local path = require("src.pokemon.Sprites").path(
+    local path, trueColor = require("src.pokemon.Sprites").path(
       game.data, desc.id, "front", { kind = "oak" })
-    return tryImage(path), desc.flip and true or false
+    return tryImage(path), desc.flip and true or false, trueColor
   elseif t == "player" then
     if speech and speech.playerPic and not desc.path then
-      return speech.playerPic, false
+      return speech.playerPic, false, speech.playerTrueColor
     end
-    if desc.path then return tryImage(desc.path), false end
-    return tryImage(require("src.pokemon.Sprites").playerPath(
-      game.data, "front", { kind = "intro" })), false
+    if desc.path then return tryImage(desc.path), false, false end
+    local path, trueColor = require("src.pokemon.Sprites").playerPath(
+      game.data, "front", { kind = "intro" })
+    return tryImage(path), false, trueColor
   elseif t == "image" then
-    return tryImage(desc.path), desc.flip and true or false
+    return tryImage(desc.path), desc.flip and true or false, false
   elseif t == "sprite" then
     local sp = game.data.sprites and game.data.sprites[desc.id]
-    return tryImage(sp and sp.image), desc.flip and true or false
+    return tryImage(sp and sp.image), desc.flip and true or false,
+           sp and sp.trueColor or false
   end
-  return nil, false
+  return nil, false, false
 end
 
 -- Vanilla step list.  Ids are the stable anchors mods insert around.
@@ -219,15 +221,18 @@ function OakSpeech.new(game, onDone)
   -- the show-off mon and the name length cap come from data; the vanilla
   -- literals stay as the fallbacks
   self.demoSpecies = oakGfx.demoSpecies or "NIDORINO"
-  local demoPath = require("src.pokemon.Sprites").path(
+  local demoPath, demoTrueColor = require("src.pokemon.Sprites").path(
     game.data, self.demoSpecies, "front", { kind = "oak" })
   self.demoPic = tryImage(demoPath)
+  self.demoTrueColor = self.demoPic and demoTrueColor or false
   local constants = game.data.constants or {}
   self.nameLen = constants.playerNameLength or 7
   -- RedPicFront (gfx/player/red.png, shared with the trainer card) and
   -- the ShrinkPic1/ShrinkPic2 frames (gfx/player/shrink{1,2}.png)
-  self.playerPic = tryImage(require("src.pokemon.Sprites").playerPath(
-    game.data, "front", { kind = "intro" }))
+  local playerPath, playerTrueColor = require("src.pokemon.Sprites").playerPath(
+    game.data, "front", { kind = "intro" })
+  self.playerPic = tryImage(playerPath)
+  self.playerTrueColor = self.playerPic and playerTrueColor or false
   self.shrinkPic1 = tryImage(oakGfx.shrink1
                              or "assets/generated/intro/shrink1.png")
   self.shrinkPic2 = tryImage(oakGfx.shrink2
@@ -278,14 +283,17 @@ end
 
 function OakSpeech:applyPic(step)
   if step.pic == nil then return end
-  local img, flip = OakSpeech.resolvePic(self.game, step.pic, self)
+  local img, flip, trueColor = OakSpeech.resolvePic(self.game, step.pic, self)
   if img then
     self.pic = img
     self.picFlip = flip or false
+    self.picTrueColor = trueColor or false
   elseif step.pic == "player" or (type(step.pic) == "table" and step.pic.type == "player") then
     -- mirror the old fallback: player pic missing → oak
     self.pic = self.playerPic or self.oakPic
     self.picFlip = false
+    self.picTrueColor = self.pic == self.playerPic and self.playerTrueColor
+                        or false
   end
 end
 
@@ -342,6 +350,7 @@ function OakSpeech:runStep(step)
     -- NIDORINO show-off: mirrored front sprite + wipe + cry + text 2A
     self.pic = self.demoPic
     self.picFlip = true
+    self.picTrueColor = self.demoTrueColor
     self:revealPic("wipe", function()
       Sound.playCry(self.game.data, self.demoSpecies)
       self:say(Strings("_OakSpeechText2A"), function() self:advance() end)
@@ -477,7 +486,10 @@ end
 
 function OakSpeech:advance()
   self.step = self.step + 1
-  self.picFlip = false
+  -- picFlip belongs to the pic, not to the step: OakSpeechText2 prints 2A
+  -- and 2B over one flipped NIDORINO with no redraw between them
+  -- (oak_speech.asm:80-83), so a pic-less step must not un-mirror what is
+  -- still on screen; only applyPic and the demo step may change it (#397)
   local steps = self.steps
   if not steps then
     -- enter() builds steps; keep a path for callers that advance early
@@ -536,8 +548,10 @@ function OakSpeech:update(dt)
   s.frame = s.frame + 1
   if s.frame == 5 then
     self.pic = self.shrinkPic1 or self.pic
+    self.picTrueColor = false
   elseif s.frame == 9 then
     self.pic = self.shrinkPic2 or self.pic
+    self.picTrueColor = false
     -- wAudioFadeOutControl = 10: the music ramps to silence over ~70
     -- frames (7 levels x 10), reaching 0 just as the fade-to-white
     -- begins at frame 79, instead of a hard cut (oak_speech.asm:145-149,
@@ -545,6 +559,7 @@ function OakSpeech:update(dt)
     Music.fadeOut(10)
   elseif s.frame == 29 then
     self.pic = nil
+    self.picTrueColor = false
     self.walkVisible = true
   elseif s.frame >= 79 and s.frame <= 102 then
     self.fadeLevel = math.floor((s.frame - 79) / 8) + 1
@@ -583,6 +598,9 @@ function OakSpeech:draw()
       love.graphics.draw(self.pic, x + off + w, y, 0, -1, 1)
     else
       love.graphics.draw(self.pic, x + off, y)
+    end
+    if self.picTrueColor then
+      require("src.render.PaletteFX").markTrueColor(x + off, y, w, h)
     end
     love.graphics.setColor(1, 1, 1, 1)
   end

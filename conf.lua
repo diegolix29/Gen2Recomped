@@ -78,6 +78,14 @@ function love.conf(t)
     -- player to copy their ROM there instead of needing a native file
     -- picker (LOVE 11.5 on Android has none -- see src/import/RomImporter.lua).
     t.externalstorage = osName == "Android"
+    -- LOVE 11.x exposes the phone's accelerometer as a 3-axis joystick by
+    -- default.  Gravity keeps one axis pinned near +/-1.0 whenever the phone
+    -- is held upright, so it streams past-deadzone joystickaxis events that
+    -- both hid the touch overlay every instant (it reads as "a controller is
+    -- in use") and, via the generic-joystick axis mapping (#459), walked the
+    -- player around by tilt.  Nothing in the game reads the accelerometer,
+    -- so drop the device entirely (#468).
+    t.accelerometerjoystick = false
   else
     t.window.resizable = true
   end

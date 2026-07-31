@@ -432,6 +432,34 @@ do
 end
 
 do
+  -- #476: on Android a high-DPI 1560x720 capture can leave the editor with
+  -- only a compact logical viewport.  The Items picker must not hand a
+  -- negative list height to love.graphics.setScissor in that layout.
+  local tmpPath = os.tmpname() .. "-items-compact-save.lua"
+  local f = io.open(tmpPath, "wb")
+  f:write(SaveData.encode(SaveData.newGame()))
+  f:close()
+
+  local oldDimensions = love.graphics.getDimensions
+  local oldScissor = love.graphics.setScissor
+  love.graphics.getDimensions = function() return 520, 240 end
+  love.graphics.setScissor = function(_, _, width, height)
+    if width and (width < 0 or height < 0) then
+      error("Can't set scissor with negative width and/or height.")
+    end
+  end
+  App.load(tmpPath, { version = "red" })
+  App.getState().tab = "items"
+  local ok, err = pcall(App.draw)
+  check(ok, "the Items tab draws in a compact Android viewport: " .. tostring(err))
+  love.graphics.getDimensions = oldDimensions
+  love.graphics.setScissor = oldScissor
+
+  os.remove(tmpPath)
+  for _, bak in ipairs(FsIo.globPrefix(tmpPath .. ".bak-")) do os.remove(bak) end
+end
+
+do
   -- Whole-editor smoke test: every tab has to survive a real headless draw,
   -- which is what catches a layout that divides by a nil font metric or
   -- indexes a save field the panel assumed was always present.

@@ -25,12 +25,46 @@ local SAMPLE_RATE = ChipSynth.SAMPLE_RATE
 local MUSIC_BUFFER_SAMPLES = ChipSynth.MUSIC_BUFFER_SAMPLES
 local MUSIC_BUFFER_COUNT = ChipSynth.MUSIC_BUFFER_COUNT
 
+-- ---------------------------------------------------------------------------
+-- Per-channel mix (edit these)
+-- Applied on load and whenever this file hot-reloads.
+-- Runtime: ChipAudio.setChannelVolume / setChannelPitch.
+--   [1] pulse 1   [2] pulse 2   [3] wave   [4] noise / drums
+-- Volume: 1 = authentic, 0 = mute, >1 boosts
+-- Pitch:  1 = authentic, 2 = +1 octave, 0.5 = -1 octave
+-- The shipped values stay at 1: 0.25 / 0.5 on the wave channel buried the Ch3
+-- countermelodies an octave low (#429), and ChipSynth already applies the
+-- wave channel's own hardware octave (frequency * 0.5).
+-- ---------------------------------------------------------------------------
+local CHANNEL_VOLUME = {
+  [1] = 1, -- pulse 1
+  [2] = 1, -- pulse 2
+  [3] = 1, -- wave
+  [4] = 1, -- noise / drums
+}
+local CHANNEL_PITCH = {
+  [1] = 1, -- pulse 1
+  [2] = 1, -- pulse 2
+  [3] = 1, -- wave
+  [4] = 1, -- noise / drums
+}
+ChipSynth.setChannelVolumes(CHANNEL_VOLUME)
+ChipSynth.setChannelPitches(CHANNEL_PITCH)
+
 -- currentMusic: { source, gen, threaded, started, finished, engine }
 --   threaded songs stream from the worker (engine is nil here);
 --   the fallback path owns a local engine and fills the source itself.
 local currentMusic
 local pendingBuf -- a current-gen buffer popped from the worker but not yet
                  -- queued because the Source was momentarily full
+
+-- Music holds playback while a fanfare owns the music channels (#398).
+-- Pausing the Source is not enough on its own: this module is what starts a
+-- chip song (immediately on the sync path, on the first worker buffer on the
+-- threaded one), so a song that begins during a jingle would come up
+-- underneath it.  Music.duckForFanfare sets the hold, Music releases it when
+-- the jingle ends.
+local musicHeld = false
 
 -- ---------------------------------------------------------------------------
 -- worker management
@@ -125,7 +159,7 @@ local function playMusicSync(data, header, allowLoops)
   currentMusic = { source = source, engine = engine, threaded = false,
                    started = true, finished = false }
   fillSync(MUSIC_FILL_INITIAL)
-  source:play()
+  if not musicHeld then source:play() end
   return source
 end
 
@@ -152,11 +186,21 @@ function ChipAudio.playMusic(data, header, allowLoops)
   musicGen = musicGen + 1
   local gen = musicGen
   cmdCh:push({ cmd = "play", gen = gen, header = header,
-               allowLoops = allowLoops, audio = slimAudio(data) })
+               allowLoops = allowLoops, audio = slimAudio(data),
+               channelVolumes = ChipSynth.getChannelVolumes(),
+               channelPitches = ChipSynth.getChannelPitches() })
   currentMusic = { source = source, gen = gen, threaded = true,
                    started = false, finished = false }
   -- playback starts in update() once the first buffer arrives (~1 frame)
   return source
+end
+
+local function pushChannelMix()
+  if workerReady and cmdCh then
+    cmdCh:push({ cmd = "channelMix",
+                 volumes = ChipSynth.getChannelVolumes(),
+                 pitches = ChipSynth.getChannelPitches() })
+  end
 end
 
 -- move finished buffers from the worker into the Source; start playback once
@@ -189,7 +233,7 @@ local function updateThreaded()
       end
     end
   end
-  if not m.started then
+  if not m.started and not musicHeld then
     if (MUSIC_BUFFER_COUNT - m.source:getFreeBufferCount()) > 0 then
       pcall(function() m.source:play() end)
       m.started = true
@@ -212,7 +256,7 @@ end
 -- pause/resume behavior.
 function ChipAudio.ensureMusicPlaying()
   local m = currentMusic
-  if not m or m.finished then return end
+  if not m or m.finished or musicHeld then return end
   if m.threaded then
     if not m.started then return end
     local ok, playing = pcall(function() return m.source:isPlaying() end)
@@ -228,6 +272,18 @@ function ChipAudio.ensureMusicPlaying()
       pcall(m.source.play, m.source)
     end
   end
+end
+
+-- Silence the song for the length of a fanfare and start whatever was held
+-- back once it ends.  Held state outlives a song change: Music.play may swap
+-- songs while the jingle is still sounding.
+function ChipAudio.holdMusic(held)
+  held = not not held
+  if held == musicHeld then return end
+  musicHeld = held
+  if held then return end
+  ChipAudio.update()
+  ChipAudio.ensureMusicPlaying()
 end
 
 -- Threaded playMusic returns an empty QueueableSource and only calls
@@ -268,6 +324,64 @@ function ChipAudio.invalidate()
   ChipAudio.stopMusic()
   ChipSynth.invalidateBanks()
   if workerReady and cmdCh then cmdCh:push({ cmd = "invalidate" }) end
+end
+
+-- End the worker thread.  LOVE waits for every live love.thread before the
+-- process exits and the worker's command loop only returns on "quit", so
+-- skipping this leaves the process running after the window is gone (#339).
+function ChipAudio.shutdown()
+  ChipAudio.stopMusic()
+  if workerReady and cmdCh then cmdCh:push({ cmd = "quit" }) end
+  if worker then pcall(function() worker:wait() end) end
+  worker, cmdCh, outCh = nil, nil, nil
+  workerReady = false
+end
+
+-- Runtime mix for one hardware channel (1..4).  Takes effect on the next
+-- synthesized buffer (live music) and on any SFX/cry rendered after the call.
+function ChipAudio.setChannelVolume(hw, scale)
+  ChipSynth.setChannelVolume(hw, scale)
+  pushChannelMix()
+end
+
+function ChipAudio.getChannelVolume(hw)
+  return ChipSynth.getChannelVolume(hw)
+end
+
+function ChipAudio.setChannelVolumes(volumes)
+  ChipSynth.setChannelVolumes(volumes)
+  pushChannelMix()
+end
+
+function ChipAudio.getChannelVolumes()
+  return ChipSynth.getChannelVolumes()
+end
+
+function ChipAudio.setChannelPitch(hw, scale)
+  ChipSynth.setChannelPitch(hw, scale)
+  pushChannelMix()
+end
+
+function ChipAudio.getChannelPitch(hw)
+  return ChipSynth.getChannelPitch(hw)
+end
+
+function ChipAudio.setChannelPitches(pitches)
+  ChipSynth.setChannelPitches(pitches)
+  pushChannelMix()
+end
+
+function ChipAudio.getChannelPitches()
+  return ChipSynth.getChannelPitches()
+end
+
+-- aliases for channel 4 (noise / drums)
+function ChipAudio.setNoiseVolume(scale)
+  ChipAudio.setChannelVolume(4, scale)
+end
+
+function ChipAudio.getNoiseVolume()
+  return ChipAudio.getChannelVolume(4)
 end
 
 -- a stale song must not keep sounding past the flush that replaced its

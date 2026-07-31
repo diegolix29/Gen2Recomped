@@ -594,6 +594,40 @@ function Game:gamepadaxis(joystick, axis, value)
   end
 end
 
+-- conf.lua turns the mobile accelerometer-joystick off (#468), but guard the
+-- generic joystick path anyway: any sensor-style device that still reaches us
+-- has gravity pinning an axis past the deadzone, which would hide the touch
+-- overlay every instant and steer the player by tilt through the axis-1/2
+-- mapping (#459).  Real controllers arrive as SDL gamepads or named sticks,
+-- never as "* Accelerometer".
+local function isAccelerometer(joystick)
+  local name = joystick and joystick.getName and joystick:getName()
+  return name ~= nil and name:lower():find("accelerometer", 1, true) ~= nil
+end
+
+function Game:joystickpressed(joystick, button)
+  if isAccelerometer(joystick) then return end
+  TouchControls:noteGamepad()
+  Input:joystickpressed(joystick, button)
+end
+
+function Game:joystickreleased(joystick, button)
+  if isAccelerometer(joystick) then return end
+  Input:joystickreleased(joystick, button)
+end
+
+function Game:joystickaxis(joystick, axis, value)
+  if isAccelerometer(joystick) then return end
+  if math.abs(value) > 0.5 then TouchControls:noteGamepad() end
+  Input:joystickaxis(joystick, axis, value)
+end
+
+function Game:joystickhat(joystick, hat, direction)
+  if isAccelerometer(joystick) then return end
+  if direction ~= "c" then TouchControls:noteGamepad() end
+  Input:joystickhat(joystick, hat, direction)
+end
+
 -- Window focus/visibility flips: a release due while unfocused/hidden can
 -- be swallowed by the OS. Reset on both edges -- gaining focus with a
 -- physically held key won't re-fire keypressed, so trusting leftover

@@ -211,6 +211,10 @@ check(segment.startSample == 0 and segment.volume == 13
 check(segment.endSample > 0, "drum segment spans samples")
 
 -- ------- ChipAudio: def-local blobs render without touching programs.bin
+-- Force unity mix so amplitude/pitch checks are independent of the
+-- CHANNEL_VOLUME / CHANNEL_PITCH knobs in ChipAudio.lua.
+ChipAudio.setChannelVolumes({ 1, 1, 1, 1 })
+ChipAudio.setChannelPitches({ 1, 1, 1, 1 })
 
 local blobData = { audio = {} }
 
@@ -255,6 +259,59 @@ check(math.abs(waveTrace[1].value - 1) < 1e-9,
 -- def-local drums are honored over the ROM's noise headers
 local drumTrace = ChipAudio._traceFirstMusicSampleForTest(blobData, drumDef)
 check(drumTrace[1].drumSegments == 1, "def-local drums reach the noise channel")
+
+-- per-hardware-channel gains scale only that layer; restore to 1x after
+local fullPulse = ChipAudio._traceFirstMusicSampleForTest(blobData, blobSong)
+local fullDrum = ChipAudio._traceFirstMusicSampleForTest(blobData, drumDef)
+local fullWave = ChipAudio._traceFirstMusicSampleForTest(blobData, waveSong)
+ChipAudio.setChannelVolume(1, 0.5)
+local halfPulse = ChipAudio._traceFirstMusicSampleForTest(blobData, blobSong)
+ChipAudio.setChannelVolumes({ 1, 1, 0, 0.5 })
+local muteWave = ChipAudio._traceFirstMusicSampleForTest(blobData, waveSong)
+local halfDrum = ChipAudio._traceFirstMusicSampleForTest(blobData, drumDef)
+local pulseWhileOthers = ChipAudio._traceFirstMusicSampleForTest(blobData, blobSong)
+ChipAudio.setChannelVolumes({ 1, 1, 1, 1 })
+check(math.abs(halfPulse[1].value - fullPulse[1].value * 0.5) < 1e-9,
+  "channel 1 volume 0.5 halves the pulse sample")
+check(muteWave[1].value == 0, "channel 3 volume 0 mutes the wave sample")
+check(math.abs(halfDrum[1].value - fullDrum[1].value * 0.5) < 1e-9,
+  "channel 4 volume 0.5 halves the drum sample")
+check(math.abs(pulseWhileOthers[1].value - fullPulse[1].value) < 1e-9,
+  "muting wave/noise does not change pulse amplitude")
+check(math.abs(fullWave[1].value) > 0, "wave sample is nonzero at unity gain")
+local vols = ChipAudio.getChannelVolumes()
+check(vols[1] == 1 and vols[2] == 1 and vols[3] == 1 and vols[4] == 1,
+  "channel volumes restore to 1")
+check(ChipAudio.getNoiseVolume() == 1, "noise-volume alias tracks channel 4")
+
+-- per-channel pitch scales oscillator rate (zero-crossings ~double at 2x)
+local function zeroCrossings(sd)
+  local count, prev = 0, sd:getSample(0)
+  for index = 1, sd:getSampleCount() - 1 do
+    local sample = sd:getSample(index)
+    if prev * sample < 0 then count = count + 1 end
+    prev = sample
+  end
+  return count
+end
+ChipAudio.setChannelVolumes({ 1, 1, 1, 1 })
+ChipAudio.setChannelPitches({ 1, 1, 1, 1 })
+local pitchBase = ChipAudio._renderMusicChannelForTest(blobData, blobSong, 0.25, 1)
+ChipAudio.setChannelPitch(1, 2)
+local pitchOctave = ChipAudio._renderMusicChannelForTest(blobData, blobSong, 0.25, 1)
+ChipAudio.setChannelPitch(1, 0)
+local pitchFrozen = ChipAudio._renderMusicChannelForTest(blobData, blobSong, 0.25, 1)
+ChipAudio.setChannelPitches({ 1, 1, 1, 1 })
+local baseX = zeroCrossings(pitchBase)
+local octaveX = zeroCrossings(pitchOctave)
+check(baseX > 10, "unity pitch produces a tone with zero crossings")
+check(octaveX > baseX * 1.7 and octaveX < baseX * 2.3,
+  "channel 1 pitch 2 roughly doubles zero crossings")
+check(zeroCrossings(pitchFrozen) == 0,
+  "channel 1 pitch 0 freezes the oscillator")
+local pitches = ChipAudio.getChannelPitches()
+check(pitches[1] == 1 and pitches[2] == 1 and pitches[3] == 1 and pitches[4] == 1,
+  "channel pitches restore to 1")
 
 -- ------- data fixtures (chip + wav only)
 
@@ -345,7 +402,7 @@ check(ChipAudio.awaitingFirstBuffer(),
 clearAwait()
 
 -- sfx shape dispatch
-check(Sound.play(data, "Beep") == nil, "Sound.play returns nothing")
+check(Sound.play(data, "Beep") ~= nil, "Sound.play returns the source it started")
 check(lastSource().file == "assets/beep.wav", "a bare string sfx is a static source")
 resetSources()
 Sound.play(data, "Chip_Sfx")

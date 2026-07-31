@@ -10552,63 +10552,63 @@
     "trades": [
       {
         "dialogset": 1,
-        "get": "NIDORINA",
-        "give": "NIDORINO",
-        "nickname": "TERRY"
+        "get": "DUGTRIO",
+        "give": "LICKITUNG",
+        "nickname": "GURIO"
       },
       {
         "dialogset": 1,
         "get": "MR_MIME",
-        "give": "ABRA",
-        "nickname": "MARCEL"
+        "give": "CLEFAIRY",
+        "nickname": "MILES"
       },
       {
         "dialogset": 3,
         "get": "BEEDRILL",
         "give": "BUTTERFREE",
-        "nickname": "CHIKUCHIKU"
+        "nickname": "STINGER"
       },
       {
         "dialogset": 1,
-        "get": "SEEL",
-        "give": "PONYTA",
-        "nickname": "SAILOR"
+        "get": "MUK",
+        "give": "KANGASKHAN",
+        "nickname": "STICKY"
       },
       {
         "dialogset": 3,
-        "get": "FARFETCHD",
-        "give": "SPEAROW",
-        "nickname": "DUX"
+        "get": "MEW",
+        "give": "MEW",
+        "nickname": "BART"
       },
       {
         "dialogset": 1,
-        "get": "LICKITUNG",
-        "give": "SLOWBRO",
-        "nickname": "MARC"
+        "get": "PARASECT",
+        "give": "TANGELA",
+        "nickname": "SPIKE"
       },
       {
         "dialogset": 2,
-        "get": "JYNX",
-        "give": "POLIWHIRL",
-        "nickname": "LOLA"
+        "get": "PIDGEOT",
+        "give": "PIDGEOT",
+        "nickname": "MARTY"
       },
       {
         "dialogset": 2,
-        "get": "ELECTRODE",
-        "give": "RAICHU",
-        "nickname": "DORIS"
+        "get": "RHYDON",
+        "give": "GOLDUCK",
+        "nickname": "BUFFY"
       },
       {
         "dialogset": 3,
-        "get": "TANGELA",
-        "give": "VENONAT",
-        "nickname": "CRINKLES"
+        "get": "DEWGONG",
+        "give": "GROWLITHE",
+        "nickname": "CEZANNE"
       },
       {
         "dialogset": 3,
-        "get": "NIDORAN_F",
-        "give": "NIDORAN_M",
-        "nickname": "SPOT"
+        "get": "MACHOKE",
+        "give": "CUBONE",
+        "nickname": "RICKY"
       }
     ],
     "warpCarpets": {
@@ -21980,6 +21980,10 @@
     "IvysaurPicFront": [
       9,
       20457
+    ],
+    "JessieJamesPic": [
+      19,
+      31873
     ],
     "JigglypuffPicBack": [
       11,
@@ -39058,6 +39062,7 @@
       ]
     },
     "labels": [
+      "SilphCo2FSilphWorkerFPleaseTakeThisText",
       "_AIBattleUseItemText",
       "_AIBattleWithdrawText",
       "_AbandonLearningText",

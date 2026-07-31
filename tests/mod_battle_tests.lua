@@ -11,6 +11,7 @@ local Font = require("src.render.Font")
 Font.load(Data)
 
 local BattleState = require("src.battle.BattleState")
+local PaletteFX = require("src.render.PaletteFX")
 local Catching = require("src.battle.Catching")
 local Damage = require("src.battle.Damage")
 local Events = require("src.mods.Events")
@@ -326,6 +327,25 @@ do
 end
 
 -- ------- ai_classes: brains and layer records
+
+-- ------- custom trainer portraits: palette sources and base portraits
+
+do
+  local oldMode = PaletteFX.mode
+  PaletteFX.mode = "redpp"
+  local custom = { id = "TEST_TRAINER",
+                   paletteSource = "ROM:SpriteSheetPointerTable[21]" }
+  local pal = BattleState.trainerPalette(Data, custom)
+  local expected = PaletteFX.spriteObp({ paletteSource = custom.paletteSource }, custom.id)
+  PaletteFX.mode = oldMode
+  check(pal and expected and pal.colors[3][1] == expected[3][1]
+        and pal.colors[3][2] == expected[3][2]
+        and pal.colors[3][3] == expected[3][3],
+        "a custom trainer portrait resolves its Advanced OBJ palette source")
+  check(BattleState.trainerPicPath(Data, { basePic = "OPP_ENGINEER" })
+        == Data.trainers.OPP_ENGINEER.pic,
+        "a custom trainer can reuse a base trainer portrait by id")
+end
 
 do
   Data.ai_classes = { OPP_YOUNGSTER = { brain = function(battle)

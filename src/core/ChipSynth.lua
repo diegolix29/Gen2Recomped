@@ -29,6 +29,71 @@ ChipSynth.SAMPLE_RATE = SAMPLE_RATE
 ChipSynth.MUSIC_BUFFER_SAMPLES = MUSIC_BUFFER_SAMPLES
 ChipSynth.MUSIC_BUFFER_COUNT = MUSIC_BUFFER_COUNT
 
+-- Runtime mix per hardware channel (1 pulse, 2 pulse, 3 wave, 4 noise).
+-- Volume: 1 = authentic GB, 0 = mute.  Pitch: 1 = authentic, 2 = +1 octave,
+-- 0.5 = -1 octave.  Applied at sample time so a live change reaches the next
+-- buffer on both the sync path and the worker (via ChipAudio).
+local channelVolume = { 1, 1, 1, 1 }
+local channelPitch = { 1, 1, 1, 1 }
+
+local function clampScale(scale)
+  return math.max(0, tonumber(scale) or 0)
+end
+
+local function setChannelTable(table, hw, scale)
+  hw = tonumber(hw)
+  if not hw or hw < 1 or hw > 4 then return end
+  table[hw] = clampScale(scale)
+end
+
+local function setChannelTables(table, values)
+  if type(values) ~= "table" then return end
+  for hw = 1, 4 do
+    if values[hw] ~= nil then table[hw] = clampScale(values[hw]) end
+  end
+end
+
+function ChipSynth.setChannelVolume(hw, scale)
+  setChannelTable(channelVolume, hw, scale)
+end
+
+function ChipSynth.getChannelVolume(hw)
+  return channelVolume[tonumber(hw) or 0] or 1
+end
+
+function ChipSynth.setChannelVolumes(volumes)
+  setChannelTables(channelVolume, volumes)
+end
+
+function ChipSynth.getChannelVolumes()
+  return { channelVolume[1], channelVolume[2], channelVolume[3], channelVolume[4] }
+end
+
+function ChipSynth.setChannelPitch(hw, scale)
+  setChannelTable(channelPitch, hw, scale)
+end
+
+function ChipSynth.getChannelPitch(hw)
+  return channelPitch[tonumber(hw) or 0] or 1
+end
+
+function ChipSynth.setChannelPitches(pitches)
+  setChannelTables(channelPitch, pitches)
+end
+
+function ChipSynth.getChannelPitches()
+  return { channelPitch[1], channelPitch[2], channelPitch[3], channelPitch[4] }
+end
+
+-- aliases for the noise/drum layer
+function ChipSynth.setNoiseVolume(scale)
+  ChipSynth.setChannelVolume(4, scale)
+end
+
+function ChipSynth.getNoiseVolume()
+  return ChipSynth.getChannelVolume(4)
+end
+
 local PITCHES = {
   0xF82C, 0xF89D, 0xF907, 0xF96B, 0xF9CA, 0xFA23,
   0xFA77, 0xFAC7, 0xFB12, 0xFB58, 0xFB9B, 0xFBDA,
@@ -430,7 +495,8 @@ function Channel:sampleNoise(parameter)
   local divisor = NOISE_DIVISORS[bit.band(parameter, 7)]
   local shift = bit.rshift(parameter, 4)
   if shift < 14 then
-    local cycles = GB_CLOCK / divisor / (2 ^ shift) / SAMPLE_RATE
+    local pitch = channelPitch[self.hardware] or 1
+    local cycles = GB_CLOCK / divisor / (2 ^ shift) / SAMPLE_RATE * pitch
     local width7 = bit.band(parameter, 8) ~= 0
     local remaining = cycles
     while remaining > 0 do
@@ -500,11 +566,14 @@ function Channel:sample()
   event.sample = sampleIndex + 1
   if event.silence then return 0 end
 
-  if event.drum then return self:sampleDrum(event, sampleIndex) end
+  local gain = channelVolume[self.hardware] or 1
+  if event.drum then
+    return self:sampleDrum(event, sampleIndex) * gain
+  end
   local volume = envelopeVolume(
     event.volume or 0, event.fade or 0, event.elapsed)
   if event.noise then
-    return self:sampleNoise(event.noiseParameter) * volume / 15
+    return self:sampleNoise(event.noiseParameter) * volume / 15 * gain
   end
 
   local register = event.register
@@ -529,7 +598,8 @@ function Channel:sample()
       end
     end
   end
-  local frequency = 131072 / (2048 - math.min(register, 2047))
+  local pitch = channelPitch[self.hardware] or 1
+  local frequency = 131072 / (2048 - math.min(register, 2047)) * pitch
   if event.wave then frequency = frequency * 0.5 end
   local phase = self.phase
   self.phase = (phase + frequency / SAMPLE_RATE) % 1
@@ -539,7 +609,7 @@ function Channel:sample()
     -- a def-local program may omit its wave table entirely
     if not wave then return 0 end
     local index = math.min(32, math.floor(phase * 32) + 1)
-    return wave[index] * event.waveLevel
+    return wave[index] * event.waveLevel * gain
   end
   local duty = event.duty
   if type(duty) == "table" then
@@ -548,9 +618,9 @@ function Channel:sample()
   local pattern = WAVE_PATTERN_TABLES[duty or 2] or WAVE_PATTERN_TABLES[2]
   local step = math.floor(phase * 8) % 8
   if pattern[step + 1] == 0 then
-    return -volume / 15
+    return -volume / 15 * gain
   end
-  return volume / 15
+  return volume / 15 * gain
 end
 
 local Engine = {}

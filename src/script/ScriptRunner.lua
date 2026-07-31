@@ -125,6 +125,10 @@ function ScriptRunner:run(script, extra)
   end
   self.co = coroutine.create(function()
     self:exec(script, ctx)
+    -- Commands can defer a game action until the script's own dialogue is
+    -- done. start_battle uses this for win-path evolutions, which must not
+    -- be covered by post-battle trainer text.
+    for _, callback in ipairs(ctx.afterScript or {}) do callback() end
     if ctx.onDone then ctx.onDone() end
     if Runtime.wants("script.ended") then
       Runtime.emit("script.ended", { ctx = ctx, completed = true })

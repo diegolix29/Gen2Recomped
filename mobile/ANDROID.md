@@ -70,7 +70,10 @@ The APK lands under `app/build/outputs/apk/embedNoRecord/debug/`.
 ### Payload path
 
 `app/src/embed/assets/game.love` - zip of `main.lua`, `conf.lua`, `src/`,
-`data/`, `assets/`, and `tools/rom_manifest.json`. Generated game data,
+`data/`, `assets/`, and the Red, Blue, and Yellow ROM manifests. The Android
+packer verifies the Yellow manifest before it packages; if a partial source
+export omitted it, it restores the file from this checkout's Git data and then
+falls back to the project's GitHub copy. Generated game data,
 scripts, tests, and mobile build sources are excluded.
 
 ## Branding (applied by the build script)

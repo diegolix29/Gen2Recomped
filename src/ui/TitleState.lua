@@ -22,13 +22,17 @@ TitleState.isOpaque = true
 -- LOGO2 blue / LOGO1 red (issue #133).  A trailing trueColor zone leaves the
 -- overlay's DMG black unshaded while the logo and title mon keep title pals.
 --
--- ROM SuperPal whites are often {255,239,255}.  Under RED++, LOGO2/MEWMON
--- come from the GBC pack (pure white) while Blue's LOGO1 stays on the ROM
--- pack (#128), so the version-ribbon row reads as a pink band.  Force that
--- slot to pure white; ink colors (Blue/Red "Version" text) stay intact.
-local function withPureWhite(pal)
+-- Every title SuperPal shares color 0 on hardware (sgb_palettes.asm: LOGO1,
+-- LOGO2 and MEWMON all start RGB 31,29,31), so the ribbon band's white has to
+-- be the neighbouring zones' white.  Under RED++, LOGO2/MEWMON come from the
+-- GBC pack (pure white) while Blue's LOGO1 stays on the ROM pack (#128) and
+-- the row reads as a pink band; taking LOGO2's white fixes that without
+-- forcing pure white in SGB, where a brighter band drew two faint lines
+-- across the title (#373).  Ink colors (Blue/Red "Version" text) stay intact.
+local function withWhiteOf(pal, ref)
   if not pal then return nil end
-  return { { 255, 255, 255 }, pal[2], pal[3], pal[4] }
+  if not (ref and ref[1]) then return pal end
+  return { ref[1], pal[2], pal[3], pal[4] }
 end
 
 function TitleState:sgbPalettes(game)
@@ -46,9 +50,10 @@ function TitleState:sgbPalettes(game)
       P.zone(logoPal, 9, 8, 10, 8),
     }
   else
+    local logoPal = P.pal(game.data, "LOGO2")
     z = {
-      P.zone(P.pal(game.data, "LOGO2"), 0, 0, 19, 7),
-      P.zone(withPureWhite(P.pal(game.data, "LOGO1")), 0, 8, 19, 9),
+      P.zone(logoPal, 0, 0, 19, 7),
+      P.zone(withWhiteOf(P.pal(game.data, "LOGO1"), logoPal), 0, 8, 19, 9),
       P.zone(P.pal(game.data, "MEWMON"), 0, 10, 19, 17),
     }
   end
@@ -96,6 +101,30 @@ end
 local function imagePath(entry)
   if type(entry) == "table" then return entry.path end
   return entry
+end
+
+-- PaletteFX redraws a true-color rectangle after the palette pass.  Red's
+-- title art is drawn on top of the title mon, so leave its bounds out of the
+-- rectangle rather than redrawing that art without its title palette.
+local function markVisibleTrueColor(x, y, w, h, cover)
+  local P = require("src.render.PaletteFX")
+  if not cover then
+    P.markTrueColor(x, y, w, h)
+    return
+  end
+  local cx, cy, cw, ch = cover[1], cover[2], cover[3], cover[4]
+  local right, bottom = x + w, y + h
+  local cright, cbottom = cx + cw, cy + ch
+  local ix1, iy1 = math.max(x, cx), math.max(y, cy)
+  local ix2, iy2 = math.min(right, cright), math.min(bottom, cbottom)
+  if ix1 >= ix2 or iy1 >= iy2 then
+    P.markTrueColor(x, y, w, h)
+    return
+  end
+  if y < iy1 then P.markTrueColor(x, y, w, iy1 - y) end
+  if iy2 < bottom then P.markTrueColor(x, iy2, w, bottom - iy2) end
+  if x < ix1 then P.markTrueColor(x, iy1, ix1 - x, iy2 - iy1) end
+  if ix2 < right then P.markTrueColor(ix2, iy1, right - ix2, iy2 - iy1) end
 end
 
 function TitleState.new(game, opts)
@@ -148,7 +177,7 @@ function TitleState.new(game, opts)
   self.cycleSpecies = (type(title.cycleSpecies) == "table"
                        and #title.cycleSpecies > 0)
                       and title.cycleSpecies or defaultCycle
-  self.sprites = {} -- species -> image or false (load failed)
+  self.sprites = {} -- species -> { image, trueColor } or false (load failed)
   self.cycleIndex = 1
   self.timer = 0
   self.blink = 0
@@ -252,12 +281,13 @@ function TitleState:currentSprite()
   local species = self.cycleSpecies[self.cycleIndex]
   local cached = self.sprites[species]
   if cached == nil then
-    local path = require("src.pokemon.Sprites").path(
+    local path, trueColor = require("src.pokemon.Sprites").path(
       self.game.data, species, "front", { kind = "title" })
-    cached = tryImage(path) or false
+    local image = tryImage(path)
+    cached = image and { image = image, trueColor = trueColor } or false
     self.sprites[species] = cached
   end
-  return cached or nil
+  return cached and cached.image or nil, cached and cached.trueColor or false
 end
 
 local function hasSave()
@@ -402,7 +432,7 @@ end
 -- the version ribbon at (7,8), Red's title art as OAM at px (82,80),
 -- the title mon in the 7x7 box at tile (5,10), copyright on row 17.
 -- Yellow (title_yellow.asm): logo (2,1), speech bubble (6,4), Pikachu
--- (4,8) 12x9 — no version ribbon, no cycling mon, no Red OAM.
+-- (4,8) 12x9 -- no version ribbon, no cycling mon, no Red OAM.
 function TitleState:draw()
   love.graphics.setColor(1, 1, 1, 1)
   love.graphics.rectangle("fill", 0, 0, 160, 144)
@@ -446,13 +476,27 @@ function TitleState:draw()
           love.graphics.newQuad(40, 0, 40, 8, iw, ih), 80, 64)
       end
     end
-    local sprite = self:currentSprite()
+    local sprite, spriteTrueColor = self:currentSprite()
     if sprite then
       local w, h = sprite:getDimensions()
-      local slide = (self.slideIn or 0) * 8
-      love.graphics.draw(sprite, 40 + math.floor((56 - w) / 2) + slide,
-                         136 - h)
+      local slide = (self.slideIn or 0) * 8 -- scroll in from the right
+      -- bottom-aligned and centered in the (5,10)-(11,16) tile box
+      local x = 40 + math.floor((56 - w) / 2) + slide
+      local y = 136 - h
+      love.graphics.draw(sprite, x, y)
+      -- a full-color mon keeps its own palette through the SGB pass, minus
+      -- the strip Red's OAM covers (#350).  Yellow never reaches here: its
+      -- layout has no cycling mon and no Red art (title_yellow.asm).
+      if spriteTrueColor then
+        local cover
+        if self.player then
+          local pw, ph = self.player:getDimensions()
+          cover = { 82, 80, pw, ph }
+        end
+        markVisibleTrueColor(x, y, w, h, cover)
+      end
     end
+    -- Red is OAM in the original: he draws over the mon's box edge
     if self.player then
       love.graphics.draw(self.player, 82, 80)
     end

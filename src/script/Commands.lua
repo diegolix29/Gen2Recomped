@@ -225,11 +225,23 @@ function Commands.give_item(ctx, itemId, count, gotText)
   ctx.game.stringBuffer = def and def.name or itemId
   -- the jingle rides the box -- Sound.play routes fanfares through
   -- Music.duckForFanfare, like PlaySoundWaitForCurrent
-  require("src.core.Sound").play(ctx.game.data,
-    (def and def.keyItem) and "Get_Key_Item" or "Get_Item1")
+  local Sound = require("src.core.Sound")
+  local jingle = (def and def.keyItem) and "Get_Key_Item" or "Get_Item1"
   if gotText ~= false then
+    -- the gift texts carry the jingle as a trailing text command
+    -- (sound_get_item_1 / sound_get_key_item -> home/text.asm
+    -- TextCommand_SOUND), so it only fires once the last page has typed
+    -- out, blocks on WaitForSoundToFinish, and AfterDisplayingTextID's
+    -- button wait runs after it (#374)
+    ctx.textOpts = ctx.textOpts or {}
+    ctx.textOpts.auto = {
+      sound = function() return Sound.play(ctx.game.data, jingle) end,
+      wait = true,
+    }
     Commands.show_text(ctx, gotText
       or Strings("{PLAYER} got\n%s!", ctx.game.stringBuffer))
+  else
+    Sound.play(ctx.game.data, jingle)
   end
 end
 
@@ -253,7 +265,18 @@ function Commands.start_battle(ctx, kind, a, b)
     ctx.lastBattleResult = result
     ctx.lastCheck = result == "win"
     if ctx.overworld then
-      ctx.overworld:afterBattle(result, battle)
+      -- A map script often follows a trainer battle with its own text.
+      -- Keep a level evolution behind that text: otherwise afterBattle
+      -- pushes the evolution screen, then this runner resumes and pushes
+      -- the trainer's text on top of it.
+      if result == "win" then
+        ctx.afterScript = ctx.afterScript or {}
+        table.insert(ctx.afterScript, function()
+          ctx.overworld:afterBattle(result, battle)
+        end)
+      else
+        ctx.overworld:afterBattle(result, battle)
+      end
     end
     runner:resume()
   end

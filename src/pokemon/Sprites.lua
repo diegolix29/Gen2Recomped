@@ -18,7 +18,8 @@ local function samePath(path) return path end
 -- side: "front" | "back"
 -- opts.mon: the live mon when available (per-instance skins)
 -- opts.kind: "battle" | "summary" | "dex" | "evolution" | "hof" | "trade"
---            | "title" | "oak" | "credits" (informational for wrappers)
+--            | "title" | "oak" | "credits" | "overworld" (informational
+--            for wrappers)
 -- Returns path, trueColor.
 function Sprites.path(data, species, side, opts)
   opts = opts or {}

@@ -52,13 +52,24 @@ function NPC:facePlayer(player)
 end
 
 function NPC:update(map, entities)
+  -- self.stepFrames overrides the shared 16-frame walk for an object whose
+  -- step has to stay in phase with something else: Yellow's follower
+  -- Pikachu takes the player's own step length, halved while it is more
+  -- than a cell behind (FastPikachuFollow, engine/pikachu/
+  -- pikachu_follow.asm).  self.hopStep is the same file's $5-$8 hop
+  -- command: two cells of travel inside one step's frames
+  -- (DoubleAddPikachuStepVectorToScreenPixelCoords), which is why the
+  -- pixel span doubles while the frame count does not.  Nothing else sets
+  -- either field, so every other object keeps the constant (#410, #409).
+  local stepLen = self.stepFrames or STEP_FRAMES
+  local span = self.hopStep and 2 or 1
   if self.moving then
     self.progress = self.progress + 1
     -- NPC_CHANGE_FACING: animate the walk cycle in place, no translation
     -- (movement.asm ChangeFacingDirection zeroes the delta); px/py stay
     -- pinned to the current cell while walkPhase() cycles.
     if self.marching then
-      if self.progress >= STEP_FRAMES then
+      if self.progress >= stepLen then
         self.progress = 0
         self.moving = false
         self.marching = false
@@ -67,13 +78,18 @@ function NPC:update(map, entities)
       return
     end
     local d = Collision.DELTA[self.facing]
-    self.px = self.cellX * 16 + d[1] * self.progress
-    self.py = self.cellY * 16 + d[2] * self.progress
-    if self.progress >= STEP_FRAMES then
+    -- 1px per frame at the default length; a shortened step scales instead,
+    -- so the cell still lands on a 16px boundary (Player:update does the
+    -- same for the bicycle)
+    local moved = math.floor(self.progress * 16 * span / stepLen)
+    self.px = self.cellX * 16 + d[1] * moved
+    self.py = self.cellY * 16 + d[2] * moved
+    if self.progress >= stepLen then
       self.cellX, self.cellY = self.targetX, self.targetY
       self.targetX, self.targetY = nil, nil
       self.px, self.py = self.cellX * 16, self.cellY * 16
       self.moving = false
+      self.hopStep = nil
       self.stepFlip = not self.stepFlip
     end
     return

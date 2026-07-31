@@ -5,8 +5,10 @@
 --
 -- Protocol -- main thread pushes command tables onto the "chipaudio_cmd"
 -- channel and drains produced buffers off "chipaudio_out":
---   cmd = "play"  { gen, header, allowLoops, audio }  start a song
+--   cmd = "play"  { gen, header, allowLoops, audio,
+--                   channelVolumes?, channelPitches? }
 --   cmd = "stop"                                       halt production
+--   cmd = "channelMix" { volumes, pitches }            per-hw volume/pitch
 --   cmd = "invalidate"                                 drop the bank cache
 --   cmd = "quit"                                        end the thread
 -- out buffers are tagged with the play's `gen` so the main thread can
@@ -45,6 +47,12 @@ local function handle(cmd)
     engine = nil
     outCh:clear() -- drop any buffers left from the previous song
     data = { audio = cmd.audio }
+    if cmd.channelVolumes ~= nil then
+      ChipSynth.setChannelVolumes(cmd.channelVolumes)
+    end
+    if cmd.channelPitches ~= nil then
+      ChipSynth.setChannelPitches(cmd.channelPitches)
+    end
     local ok, eng = pcall(ChipSynth.newEngine, data, cmd.header,
                           { allowLoops = cmd.allowLoops })
     if ok then
@@ -58,6 +66,9 @@ local function handle(cmd)
     engine = nil
     finished = false
     outCh:clear()
+  elseif cmd.cmd == "channelMix" then
+    if cmd.volumes ~= nil then ChipSynth.setChannelVolumes(cmd.volumes) end
+    if cmd.pitches ~= nil then ChipSynth.setChannelPitches(cmd.pitches) end
   elseif cmd.cmd == "invalidate" then
     ChipSynth.invalidateBanks()
   elseif cmd.cmd == "quit" then

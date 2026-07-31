@@ -81,6 +81,16 @@ local ROD_OAM = {
   right = { dx = 16, dy =  4, tile = 1, flip = true }, -- dbsprite 11, 10, 0, 0, $fe, XFLIP
 }
 
+-- field.darkMaps (home/overworld.asm's dark-map check): the floors that run
+-- with wMapPalOffset = 6 until FLASH
+local function isDarkMap(mapId)
+  local darkDef = Game.data.field.darkMaps
+  for _, m in ipairs(darkDef and darkDef.maps or {}) do
+    if m == mapId then return true end
+  end
+  return false
+end
+
 -- object_event spawn filter (toggleable_objects, items taken, beaten
 -- static encounters), shared by the current map's real NPCs and the
 -- visual-only ghosts on connected neighbor maps
@@ -204,8 +214,50 @@ function OverworldState:enter(mapId, x, y, facing)
   -- survives save/load: a loaded game may start inside a building whose
   -- exit mat is a LAST_MAP warp
   self.lastOutdoor = Game.save.lastOutdoor
-  self.justWarped = false
   self:setMap(mapId, x, y, facing, { via = "boot" })
+  -- boot/load: derive the flag from the tile the save left us standing on,
+  -- like MapEntryAfterBattle's IsPlayerStandingOnWarp, so a game saved on a
+  -- door mat can still walk straight back out (issue #378)
+  self:refreshStandingOnWarp()
+end
+
+-- Silph Co card key doors + Rocket Hideout elevator gates: the .blk
+-- layouts ship with the doorways open; each floor's map script stamps
+-- the closed door block on load until its unlock event is set
+-- (scripts/SilphCo2F.asm SilphCo2FGateCallbackScript et al., closed
+-- blocks $54/$5f/$20; scripts/RocketHideoutB1F.asm +
+-- RocketHideoutB4F.asm ...DoorCallbackScript, closed blocks $54/$2d over
+-- the lift doorway).  A door opens on its single `event`, or on `events`
+-- when every listed flag must be set (Rocket Hideout B4F's lift gate
+-- needs both guard trainers beaten -- CheckBothEventsSet).  The callbacks
+-- run whenever BIT_CUR_MAP_LOADED_1 is set, which is map load AND the end
+-- of a battle on that map (home/trainers.asm EndTrainerBattle), so the
+-- gate opens with SFX_GO_INSIDE the moment the last guard falls (#372).
+function OverworldState:stampClosedDoors()
+  local closedDoors = FieldDefaults.fieldValue(Game.data, "cardKeyDoors",
+                                               "closedDoors")
+  local floorDoors = self.map and closedDoors and closedDoors[self.map.id]
+  if not floorDoors then return end
+  local stamped, unlocked = false, false
+  for _, door in ipairs(floorDoors) do
+    local open
+    if door.events then
+      open = true
+      for _, ev in ipairs(door.events) do
+        if not Game.save.flags[ev] then open = false break end
+      end
+    else
+      open = Game.save.flags[door.event]
+    end
+    local want = open and door.open or door.block
+    if self.map:blockAt(door.bx, door.by) ~= want then
+      self.map:setBlock(door.bx, door.by, want)
+      stamped = true
+      if open then unlocked = true end
+    end
+  end
+  if stamped then self.map.renderer:rebuild() end
+  if unlocked then require("src.core.Sound").play(Game.data, "Go_Inside") end
 end
 
 function OverworldState:setMap(mapId, x, y, facing, opts)
@@ -238,6 +290,13 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
     self.tileAnimOverride.tileset.animation = self.tileAnimOverride.animation
     self.tileAnimOverride = nil
   end
+  -- ADVANCED bakes colour into the tileset atlas, so the dark-cave shift has
+  -- to be armed before that atlas is built for this map (#383); self.dark is
+  -- settled below, once the map record is in hand.
+  if PaletteFX.setDarkWorld(isDarkMap(mapId) and not Game.save.flashLit)
+     and PaletteFX.usesGbcPack() then
+    MapLoader.invalidateAll()
+  end
   self.map = MapLoader.load(Game.data, mapId)
   -- STRENGTH deactivates on every real map load (home/overworld.asm
   -- EnterMap -> ResetUsingStrengthOutOfBattleBit clears BIT_STRENGTH_ACTIVE
@@ -257,38 +316,7 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
     self.map.renderer:rebuild()
     self.cutBlocks[mapId] = nil
   end
-  -- Silph Co card key doors + Rocket Hideout elevator gates: the .blk
-  -- layouts ship with the doorways open; each floor's map script stamps
-  -- the closed door block on load until its unlock event is set
-  -- (scripts/SilphCo2F.asm SilphCo2FGateCallbackScript et al., closed
-  -- blocks $54/$5f/$20; scripts/RocketHideoutB1F.asm +
-  -- RocketHideoutB4F.asm ...DoorCallbackScript, closed blocks $54/$2d over
-  -- the lift doorway).  A door opens on its single `event`, or on `events`
-  -- when every listed flag must be set (Rocket Hideout B4F's lift gate
-  -- needs both guard trainers beaten -- CheckBothEventsSet).
-  local closedDoors = FieldDefaults.fieldValue(Game.data, "cardKeyDoors",
-                                               "closedDoors")
-  local floorDoors = closedDoors and closedDoors[mapId]
-  if floorDoors then
-    local stamped = false
-    for _, door in ipairs(floorDoors) do
-      local open
-      if door.events then
-        open = true
-        for _, ev in ipairs(door.events) do
-          if not Game.save.flags[ev] then open = false break end
-        end
-      else
-        open = Game.save.flags[door.event]
-      end
-      local want = open and door.open or door.block
-      if self.map:blockAt(door.bx, door.by) ~= want then
-        self.map:setBlock(door.bx, door.by, want)
-        stamped = true
-      end
-    end
-    if stamped then self.map.renderer:rebuild() end
-  end
+  self:stampClosedDoors()
   -- forced dismount only where riding is disallowed (IsBikeRidingAllowed,
   -- home/overworld.asm: bike_riding_tilesets.asm tilesets plus the
   -- ROUTE_23/INDIGO_PLATEAU map exceptions)
@@ -310,18 +338,11 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
   -- Rock Tunnel darkness (wMapPalOffset, home/overworld.asm): dark
   -- until FLASH is used; the light persists between the tunnel floors
   -- and resets once outside
-  local darkDef = Game.data.field.darkMaps
-  self.dark = false
-  if darkDef then
-    local isDark = false
-    for _, m in ipairs(darkDef.maps) do
-      if m == mapId then isDark = true break end
-    end
-    if isDark then
-      self.dark = not Game.save.flashLit
-    else
-      Game.save.flashLit = nil
-    end
+  if isDarkMap(mapId) then
+    self:setDark(not Game.save.flashLit)
+  else
+    Game.save.flashLit = nil
+    self:setDark(false)
   end
   if Game.data.field.flyWarps[mapId] then
     Game.save.visited = Game.save.visited or {}
@@ -361,7 +382,7 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
   for _, n in ipairs(self.npcs) do table.insert(self.entities, n) end
   -- Yellow's companion Pikachu trails the player (never in
   -- self.entities: it does not block movement, pikachu_follow.asm)
-  require("src.world.PikachuFollower").onMapEntered(Game, self)
+  require("src.world.PikachuFollower").onMapEntered(Game, self, opts)
 
   -- opts.keepMusic: the Oak-escort warp keeps MUSIC_MEET_PROF_OAK
   -- playing into the lab (BIT_NO_MAP_MUSIC in wStatusFlags7);
@@ -592,17 +613,19 @@ function OverworldState:sgbWorldZones()
   return zones
 end
 
--- Whether the dark-map shade shift (PaletteFX.DARK_BGP, armed in drawWorld)
--- can actually reach this frame's world pass.  It cannot in RED++: that mode
--- bakes real per-tile colour into the tileset atlas and sgbWorldZones returns
--- an EMPTY zone list above, so the world blits with no shade-remap shader at
--- all and there is no palette left to permute.  Only then does fxDark
--- composite the darkness by hand (#322).
-function OverworldState:darkNeedsOverlay()
-  if not self.dark then return false end
-  local renderer = self.map and self.map.renderer
-  return PaletteFX.usesGbcPack() and renderer ~= nil
-         and renderer.gbcAtlas ~= nil
+-- wMapPalOffset, the one piece of state both halves of the darkness read:
+-- drawWorld arms PaletteFX.DARK_BGP off self.dark for the shade-remapped
+-- modes, and PaletteFX.setDarkWorld feeds the bakes ADVANCED does instead of
+-- shading (tileset atlas, sprite sheets) plus their cache keys.  A bake cannot
+-- be re-shaded in place, so a change there rebuilds every resident map --
+-- every dark floor, not just this one, since FLASH lights them all (#383).
+function OverworldState:setDark(on)
+  on = on and true or false
+  self.dark = on
+  if PaletteFX.setDarkWorld(on) and PaletteFX.usesGbcPack() and self.map then
+    MapLoader.invalidateAll()
+    self:reloadMap(self.map.id, "dark")
+  end
 end
 
 function OverworldState:npcByIndex(index)
@@ -814,6 +837,21 @@ function OverworldState:update(dt)
       if ca.onDone then ca.onDone() end
     end
   end
+  -- fishing pose tail: the rod is already gone, the pose holds for the
+  -- frames the original spends unwinding the item menu (#384)
+  if self.fishPose then
+    self.fishPose = self.fishPose - 1
+    if self.fishPose <= 0 then
+      self.fishPose = nil
+      self.player.fishing = nil
+    end
+  end
+  -- Yellow's companion hopping up onto the Poke Center counter owns the
+  -- world for its arc, the same way the heal machine below does (#417)
+  if self.pikaHop then
+    require("src.world.PikachuFollower").updateHop(self)
+    return
+  end
   if self.healAnim then
     local ha = self.healAnim
     local ev = OverworldState.stepHealAnim(ha)
@@ -880,7 +918,12 @@ function OverworldState:update(dt)
   -- the emotion-bubble pause holds the world for a beat
   if self.emote then
     self.emote.frames = self.emote.frames - 1
-    if self.emote.frames <= 0 then
+    -- PikaPicAnimTimerAndJoypad (engine/pikachu/pikachu_pic_animation.asm)
+    -- cuts a pikapic beat short on A or B; the "!" bubble hold has no such
+    -- check, so only the pikapic marks itself skippable (#424)
+    local cut = self.emote.skippable
+                and (Game.input:wasPressed("a") or Game.input:wasPressed("b"))
+    if cut or self.emote.frames <= 0 then
       local done = self.emote.onDone
       self.emote = nil
       if done then done() end
@@ -974,19 +1017,33 @@ function OverworldState:dirHeld()
       or input:isDown("left") or input:isDown("right")
 end
 
--- The warp cell the player WARPED IN on is inert until they physically step
--- off it: standing on it, or bonking a wall/edge from it, must not re-fire a
--- warp (CheckWarpsNoCollision's arrival-disable; see setMap where
--- warpEntryCell/justWarped are set and onStepComplete where they clear).
--- Both stand-still warp triggers -- the map-edge exit (checkEdgeExit) and the
--- blocked-step collision warp (handleInput) -- must consult this, or a corner
--- staircase whose warp tile sits on the map edge (Red's-house (7,1)) bounces
--- floors every input frame (issue #230).
-function OverworldState:onWarpArrivalCell()
-  if self.justWarped then return true end
-  local entry = self.warpEntryCell
-  return entry ~= nil and self.player.cellX == entry.x
-         and self.player.cellY == entry.y
+-- BIT_STANDING_ON_WARP (wMovementFlags): the warp under the player's feet may
+-- only fire from a collision -- the blocked-step warp (handleInput) and the
+-- map-edge exit (checkEdgeExit) -- while this flag is set.  pokered clears it
+-- on every completed step, sets it again when that step lands on a warp
+-- square, then clears it once more when the square is a warp-activating tile
+-- that is not also a door tile (CheckWarpsNoCollisionLoop ->
+-- IsPlayerStandingOnDoorTileOrWarpTile, engine/overworld/player_state.asm);
+-- onStepComplete maintains it.  ClearVariablesOnEnterMap does not clear
+-- wMovementFlags, so the flag rides through the warp itself: a house door
+-- tile ($1B) leaves it set, so you land on the interior mat still able to
+-- walk back out on that same tile (issue #378), while a staircase tile
+-- ($1A/$1C) clears it and cannot bounce you between floors (issue #230).
+function OverworldState:canCollisionWarp()
+  return self.standingOnWarp == true
+end
+
+-- Re-derive the flag from the tile under the player, the way a completed step
+-- does (and the way MapEntryAfterBattle's IsPlayerStandingOnWarp does after a
+-- battle): a door tile keeps it, a stair/ladder warp tile clears it.
+function OverworldState:refreshStandingOnWarp()
+  local p = self.player
+  self.standingOnWarp = false
+  if self.map:warpAtCell(p.cellX, p.cellY)
+     and not (self.map:isWarpTileCell(p.cellX, p.cellY)
+              and not self.map:isDoorTileCell(p.cellX, p.cellY)) then
+    self.standingOnWarp = true
+  end
 end
 
 function OverworldState:handleInput()
@@ -1034,9 +1091,9 @@ function OverworldState:handleInput()
       local result, why = self.player:tryMove(rotatedDir, self.map, self.entities)
       -- a collision while standing on a warp square fires the warp when the
       -- extra check passes (CheckWarpsCollision: route-gate doorways, dock
-      -- entrances, ...) -- but never on the inert cell we just warped in on
-      -- (issue #230), which the completed-step path guards the same way.
-      if result == "blocked" and not self:onWarpArrivalCell() then
+      -- entrances, ...), and only while BIT_STANDING_ON_WARP is set (issue
+      -- #230), which the map-edge path guards the same way.
+      if result == "blocked" and self:canCollisionWarp() then
         local w = Warp.onCollision(self.map, Game.data.field.warpCarpets,
                                    self.player.cellX, self.player.cellY, rotatedDir)
         if w then
@@ -1192,11 +1249,11 @@ function OverworldState:checkEdgeExit(dir)
 
   local w = Warp.onEdge(self.map, p.cellX, p.cellY, dir)
   if w then
-    -- ...but not while still standing on the warp cell we just arrived on
-    -- (issue #230): fall through so pushing into the edge bonks (SFX +
-    -- walk-in-place) instead of instantly re-warping.  A real step onto an
-    -- exit-carpet edge cleared warpEntryCell first, so those still fire.
-    if self:onWarpArrivalCell() then return false end
+    -- ...but only with BIT_STANDING_ON_WARP set: a staircase tile clears it,
+    -- so pushing into the edge beside one bonks (SFX + walk-in-place) instead
+    -- of bouncing floors (issue #230), while the door mat you warped in on
+    -- keeps it and exits on that same tile (issue #378).
+    if not self:canCollisionWarp() then return false end
     self:takeWarp(w.def)
     return true
   end
@@ -1262,7 +1319,14 @@ function OverworldState:crossConnection(dir, conn)
   -- still protects the visible step when neighbor rebuild or the sync
   -- fallback stalls, and avoids the rare one-frame volume spike from a
   -- song swap mid-step.
-  self:setMap(conn.map, x, y, p.facing, { seamless = true, keepMusic = true })
+  -- Yellow's follower crosses the seam as one continuous walk, so hand the
+  -- live instance through setMap (which rebuilds self.npcs) instead of
+  -- letting it respawn behind the player (#427)
+  local PikachuFollower = require("src.world.PikachuFollower")
+  local pika = PikachuFollower.current(self)
+  local fromX, fromY = p.cellX, p.cellY
+  self:setMap(conn.map, x, y, p.facing,
+              { seamless = true, keepMusic = true, keepPikachu = pika })
   self.pendingSeamMusic = conn.map
   -- place the player one cell before the seam (their old world spot,
   -- which the neighbor strip renders identically) and start the step
@@ -1272,6 +1336,8 @@ function OverworldState:crossConnection(dir, conn)
   local d = DIRVEC[dir]
   p.cellX, p.cellY = x - d[1], y - d[2]
   p.px, p.py = p.cellX * 16, p.cellY * 16
+  -- same translation for the follower and the cell it is chasing
+  PikachuFollower.rebase(self, p.cellX - fromX, p.cellY - fromY)
   self.camera:follow(p.px, p.py)
   p.facing = dir
   p.targetX, p.targetY = x, y
@@ -1422,6 +1488,7 @@ function OverworldState:goFishing(rod)
   -- the bobber waits a beat before the verdict (the original's
   -- FishingInit dot animation); the rod pose draws in the meantime
   self.fishing = { facing = self.player.facing }
+  self.player.fishing = true
   Game.stack:push(TextBox.new(Game, ". . .", function()
     -- FishingAnim (engine/overworld/player_animations.asm) holds
     -- BIT_LEDGE_OR_FISHING -- the rod OAM and the fishing pose -- through
@@ -1429,12 +1496,20 @@ function OverworldState:goFishing(rod)
     -- must NOT vanish with the dots box (#321).
     if not enc then
       Game.stack:push(TextBox.new(Game, Strings("Not even a nibble!"), function()
+        -- the rod OAM goes out with the verdict box (res BIT_LEDGE_OR_FISHING
+        -- straight after PrintText) but the player keeps the patched tiles
+        -- until the overworld reloads them a few frames later
+        -- (RestoreScreenTilesAndReloadTilePatterns, home/palettes.asm ->
+        -- ReloadMapSpriteTilePatterns, home/reload_sprites.asm) -- #384
         self.fishing = nil
+        self.fishPose = 10
       end))
       return
     end
     Game.stack:push(TextBox.new(Game, Strings("Oh!\nIt's a bite!"), function()
+      -- the bite goes straight into battle, which reloads the sprite tiles
       self.fishing = nil
+      self.player.fishing = nil
       local BattleState = require("src.battle.BattleState")
       local battle = BattleState.newWild(Game, enc.species, enc.level, { hooked = true })
       if Game.save.safari and Map.inRegion(self.map.def, "SAFARI", "SAFARI_ZONE") then
@@ -1520,13 +1595,18 @@ function OverworldState:interact()
     npc = self:npcAtCell(fx2, fy2)
   end
   if npc then
-    if not npc.moving then
-      if npc.pikachuFollower then
-        -- the companion answers directly (TalkToPikachu), no map text id
-        require("src.world.PikachuFollower").talk(Game, self, npc)
-      else
-        self:talkTo(npc)
-      end
+    if npc.pikachuFollower then
+      -- the companion answers directly (TalkToPikachu), no map text id --
+      -- and it answers mid-step too.  pikachu_follow.asm walks the follower
+      -- on the player's own step clock, so the original never has it
+      -- mid-tile while the player stands; this port's follow is a frame
+      -- late (the npc loop runs before Player:update lands the step), so
+      -- the not-moving gate used to eat the A press in the frames right
+      -- after landing -- exactly when you turn round to face it (#407).
+      -- talk() lands the follower on its cell first.
+      require("src.world.PikachuFollower").talk(Game, self, npc)
+    elseif not npc.moving then
+      self:talkTo(npc)
     end
     interacted(self, fx, fy, "npc", npc)
     return
@@ -2036,6 +2116,7 @@ function OverworldState:billsHouseBillExits()
   local Commands = require("src.script.Commands")
   local ctx = { game = Game, save = Game.save, overworld = self }
   Commands.show_object(ctx, "BILLS_HOUSE", "BILLSHOUSE_BILL1")
+  require("src.world.PikachuFollower").onBillExitedMachine(Game, self)
   local function done()
     Game.save.flags.EVENT_MET_BILL = true
     Game.save.flags.EVENT_MET_BILL_2 = true
@@ -2110,25 +2191,26 @@ end
 -- Gen 1 has no confirmation prompt: using SURF gets straight on
 -- (_SurfingGotOnText, item_effects.asm .surf).  Called from the party
 -- menu's SURF action (via useSurfFieldMove) once the facing tile has been
--- confirmed to be water -- there is no overworld A-press hook.
-function OverworldState:trySurf(fx, fy)
+-- confirmed to be water -- there is no overworld A-press hook.  onClose is
+-- that menu's own close, called when the got-on text ends (see below).
+function OverworldState:trySurf(fx, fy, onClose)
   local mon = self:partyKnows("SURF")
   if not mon then return end
   local name = mon.nickname or Game.data.pokemon[mon.species].name
   local p = self.player
   local text = (Game.data.text._SurfingGotOnText or Strings("{PLAYER} got on\n{RAM:wNameBuffer}!"))
                :gsub("{RAM:wNameBuffer}", name)
-  -- GBPalWhiteOutWithDelay3 runs while the got-on text is still up
-  -- (start_sub_menus.asm .surf), so the blink reads as a text flash
-  -- instead of a flashbang on the empty map (#320).  The flash sits
-  -- under the textbox on the stack: only the top state updates, so it
-  -- holds its frames until the text closes.  surfing (and the sprite
-  -- swap) only applies when the step happens -- no paddling on land.
-  Game.stack:push(require("src.render.Transition").whiteFlash(Game))
+  -- UseItem prints the got-on text with the party menu still on screen and
+  -- GBPalWhiteOutWithDelay3 + .goBackToMap only run after it
+  -- (start_sub_menus.asm .surf), so the text reads over the menu and the
+  -- blink is the menu closing, not a flashbang on the empty map (#320,
+  -- #385).  The mount rides the blink, so nothing paddles on land.
   Game.stack:push(TextBox.new(Game, text, function()
+    if onClose then onClose() end
     p.surfing = true
     require("src.core.Music").setSurfing(Game.data, true)
-    self:stepForwardOrCrossEdge(p.facing)
+    Game.stack:push(require("src.render.Transition").whiteFlash(Game, nil,
+      function() self:stepForwardOrCrossEdge(p.facing) end))
   end))
 end
 
@@ -2532,41 +2614,56 @@ function OverworldState:nurseHeal(onDone, npc)
     hello = hello .. "\f"
             .. (t._ShallWeHealYourPokemonText or Strings("Shall we heal your\nPOKéMON?"))
   end
+  -- Yellow's companion has its own beat threaded through this sequence
+  local Follower = require("src.world.PikachuFollower")
   Game.stack:push(TextBox.new(Game, hello, nil, { choice = function(yes)
     if not yes then
       Game.stack:push(TextBox.new(Game, bye, onDone))
       return
     end
     local need = t._NeedYourPokemonText or Strings("OK. We'll need\nyour POKéMON.")
-    Game.stack:push(TextBox.new(Game, need, function()
-      -- the nurse turns to the machine, the map music stops, and the
-      -- party heals before the machine runs (predef HealParty)
-      if npc then npc.facing = "left" end
-      require("src.core.Music").stop()
-      local Pokemon = require("src.pokemon.Pokemon")
-      for _, mon in ipairs(Game.save.party) do
-        Pokemon.heal(mon)
-      end
-      Game.save.lastHeal = { -- SetLastBlackoutMap
-        map = self.map.id, x = self.player.cellX, y = self.player.cellY,
-        -- the town door of this interior, for LAST_MAP exits after a
-        -- blackout/ESCAPE ROPE warp here
-        outdoor = self.lastOutdoor
-          and { id = self.lastOutdoor.id, x = self.lastOutdoor.x, y = self.lastOutdoor.y }
-          or nil,
-      }
-      self.healAnim = { balls = #Game.save.party, lit = 0, timer = 0,
-                        visible = true,
-                        -- map anchor: the player's cell when healing
-                        -- began (the GB's fixed screen coords assume it
-                        -- BG-aligned at (64,64))
-                        px = self.player.cellX * 16,
-                        py = self.player.cellY * 16 }
-      self.healAnim.onDone = function()
-        if npc then npc:facePlayer(self.player) end
-        self:finishNurseHeal(bye, onDone)
-      end
-    end))
+    -- accepting the heal sends the companion up onto the counter to Nurse
+    -- Joy first: pokecenter.asm runs `callfar PikachuWalksToNurseJoy`
+    -- between SetLastBlackoutMap and NeedYourPokemonText, and the hop has
+    -- to finish before the text box goes up because only the top state
+    -- updates.  No follower (or not Yellow) calls straight through (#417).
+    Follower.hopToCounter(self, function()
+      Game.stack:push(TextBox.new(Game, need, function()
+        -- the nurse turns to the machine, the map music stops, and the
+        -- party heals before the machine runs (predef HealParty)
+        if npc then npc.facing = "left" end
+        -- DisablePikachuOverworldSpriteDrawing: Pikachu goes behind the
+        -- counter with the party for the machine animation
+        Follower.setVisible(self, false)
+        require("src.core.Music").stop()
+        local Pokemon = require("src.pokemon.Pokemon")
+        for _, mon in ipairs(Game.save.party) do
+          Pokemon.heal(mon)
+        end
+        Game.save.lastHeal = { -- SetLastBlackoutMap
+          map = self.map.id, x = self.player.cellX, y = self.player.cellY,
+          -- the town door of this interior, for LAST_MAP exits after a
+          -- blackout/ESCAPE ROPE warp here
+          outdoor = self.lastOutdoor
+            and { id = self.lastOutdoor.id, x = self.lastOutdoor.x, y = self.lastOutdoor.y }
+            or nil,
+        }
+        self.healAnim = { balls = #Game.save.party, lit = 0, timer = 0,
+                          visible = true,
+                          -- map anchor: the player's cell when healing
+                          -- began (the GB's fixed screen coords assume it
+                          -- BG-aligned at (64,64))
+                          px = self.player.cellX * 16,
+                          py = self.player.cellY * 16 }
+        self.healAnim.onDone = function()
+          -- EnablePikachuOverworldSpriteDrawing, before the fighting-fit
+          -- line: it comes back on the counter facing the player
+          Follower.setVisible(self, true)
+          if npc then npc:facePlayer(self.player) end
+          self:finishNurseHeal(bye, onDone)
+        end
+      end))
+    end)
   end }))
 end
 
@@ -3047,18 +3144,16 @@ function OverworldState:onStepComplete()
     entry = nil
   end
   -- The arrival disable is POSITIONAL: warpEntryCell above is the whole
-  -- test.  justWarped only records that an arrival happened (it still
-  -- backs onWarpArrivalCell's bonk guard for issue #230), so consuming a
-  -- completed step with it swallowed the warp under the player's feet,
-  -- which is why a second ladder one cell from the first did nothing
-  -- (Seafoam B3F has warp tiles on (25,3) and (25,4)) -- issue #265.
-  -- pokered has no such counter: every completed step runs
-  -- CheckWarpsNoCollision (home/overworld.asm), and BIT_STANDING_ON_WARP,
-  -- the flag the bonk path needs, is only set by
-  -- CheckWarpsNoCollisionLoop itself or by IsPlayerStandingOnWarp from
-  -- MapEntryAfterBattle, never on a plain warp arrival -- which is
-  -- exactly what warpEntryCell reproduces.
-  self.justWarped = false
+  -- test.  Consuming a completed step with a one-shot "just warped" counter
+  -- instead swallowed the warp under the player's feet, which is why a
+  -- second ladder one cell from the first did nothing (Seafoam B3F has warp
+  -- tiles on (25,3) and (25,4)) -- issue #265.  pokered has no such counter:
+  -- every completed step runs CheckWarpsNoCollision (home/overworld.asm).
+  -- That same step is where BIT_STANDING_ON_WARP is maintained: cleared
+  -- before the check (home/overworld.asm:324), set again while standing on a
+  -- warp square, then cleared once more when the square is a warp-activating
+  -- tile that is not a door tile (IsPlayerStandingOnDoorTileOrWarpTile).
+  self:refreshStandingOnWarp()
   if entry then
     -- still standing on the warp we arrived through; do not re-trigger it
   else
@@ -3496,6 +3591,10 @@ function OverworldState:afterBattle(result, battle)
       { save = Game.save, healTarget = self:healPoint() })
     self:warpToHealPoint(evolutions)
   else
+    -- EndTrainerBattle sets BIT_CUR_MAP_LOADED_1 (home/trainers.asm), which
+    -- re-runs the floor's door callback: beating the last Rocket Hideout guard
+    -- opens the lift gate without leaving the map (#372)
+    self:stampClosedDoors()
     -- throwing the last SAFARI BALL ends the game
     if Game.save.safari and Game.save.safari.balls <= 0 then
       self:safariGameOver(Strings("PA: You're out of\nSAFARI BALLs!"))
@@ -3629,12 +3728,12 @@ function OverworldState:startWarpTo(mapId, x, y, facing, onDone, opts)
   self.arriveWarp = nil
   Game.stack:push(Transition.new(Game, function()
     self:setMap(mapId, x, y, facing or "down", opts)
-    self.justWarped = true
-    -- The warp we land ON stays inert until we physically step off it, so a
-    -- warp whose destination cell is itself a warp cannot bounce us straight
-    -- back (elevator cars, stacked stair/door mats). This generalizes the
-    -- one-step justWarped guard, which only skipped the very next frame's
-    -- check and so let a mon walked back onto the pad re-trigger it.
+    -- The warp we land ON stays inert for the completed-step check until we
+    -- physically step off it, so a warp whose destination cell is itself a
+    -- warp cannot bounce us straight back (elevator cars, stacked stair/door
+    -- mats).  BIT_STANDING_ON_WARP is deliberately NOT touched here:
+    -- ClearVariablesOnEnterMap leaves wMovementFlags alone, so the flag the
+    -- departing tile set rides through the warp (issue #378).
     self.warpEntryCell = { x = x, y = y }
     -- Fly/Teleport/Dig/Escape-Rope landings poof the player back in
     -- (player_animations.asm EnterMapAnim).  Blackouts and ordinary
@@ -3660,8 +3759,8 @@ function OverworldState:startWarpTo(mapId, x, y, facing, onDone, opts)
       -- PlayerStepOutFromDoor (engine/overworld/auto_movement.asm): any
       -- warp that lands on a door tile auto-steps south once, indoor or
       -- outdoor. Auto-walk leaves the mat, so the arrival disable
-      -- (warpEntryCell / justWarped) is unnecessary -- and would let you
-      -- stand on the door without re-entering if you hold back into it.
+      -- (warpEntryCell) is unnecessary -- and would let you stand on the
+      -- door without re-entering if you hold back into it.
       -- The walk-out is a simulated d-pad press (wSimulatedJoypadStates),
       -- not a forced move, so it obeys collision: on a landing with a
       -- solid cell south of the door (the mansion stair landings back
@@ -3670,7 +3769,6 @@ function OverworldState:startWarpTo(mapId, x, y, facing, onDone, opts)
       if self.map:isDoorTileCell(self.player.cellX, self.player.cellY) then
         if Collision.canMove(self.map, self.entities, self.player, "down") then
           self.warpEntryCell = nil
-          self.justWarped = false
           self:scriptMove(self.player, "down", 1)
         else
           self.player.facing = "down"
@@ -4113,23 +4211,6 @@ function OverworldState:drawWorld()
     end
   end
 
-  -- Rock Tunnel darkness.  The original never cuts a window of light around
-  -- the player: it shifts the BG palette for the WHOLE screen (wMapPalOffset
-  -- = 6 -> home/fade.asm LoadGBPal -> FadePal2 `dc 3,3,3,2`) and FLASH shifts
-  -- it back (#322).  PaletteFX.DARK_BGP does that for every shade-remapped
-  -- mode, armed at the top of drawWorld.  RED++ is the one mode with no
-  -- palette left to shift -- TileRenderer bakes true colour into the tileset
-  -- atlas and sgbWorldZones hands the blit an EMPTY zone list, so no shader
-  -- runs over the world at all -- so there the darkness is composited instead:
-  -- a flat veil over the whole world view (surveying still cannot peek past
-  -- it) at the 85/255 brightness FadePal2 leaves DMG white on.
-  local function fxDark()
-    if not self:darkNeedsOverlay() then return end
-    love.graphics.setColor(0, 0, 0, 1 - 85 / 255)
-    love.graphics.rectangle("fill", 0, 0, vw, vh)
-    love.graphics.setColor(1, 1, 1, 1)
-  end
-
   -- the FLY bird sweeping off with the player
   local function fxBird()
     if not self.flyAnim then return end
@@ -4207,7 +4288,7 @@ function OverworldState:drawWorld()
         return PaletteFX.pal(Game.data, self:paletteNameFor(map or self.map))
       end,
       fx = { heal = fxHeal, dust = fxDust, cutTree = fxCutTree,
-             emote = fxEmote, dark = fxDark, bird = fxBird, rod = fxRod },
+             emote = fxEmote, bird = fxBird, rod = fxRod },
     }
     -- Draw every active field FX into the finished scene.  `project(wx, wy)`
     -- maps a world point to canvas pixels (nil when it is behind the
@@ -4257,17 +4338,6 @@ function OverworldState:drawWorld()
       end
       if self.fishing then
         at(fxRod, self.player.px + 8, self.player.py + 16)
-      end
-      -- Rock Tunnel darkness is a screen-space veil, not a ground object:
-      -- draw it flat over the finished scene like the tilt path.  It fills
-      -- the view in world-pixel units, so it only needs the scale, and it is
-      -- only needed at all in the mode whose palette cannot carry the
-      -- darkening itself (see fxDark).
-      if self:darkNeedsOverlay() then
-        love.graphics.push()
-        love.graphics.scale(scale, scale)
-        fxDark()
-        love.graphics.pop()
       end
     end
     override = Pipelines.drawWorld(pipelineId, ctx)
@@ -4331,7 +4401,6 @@ function OverworldState:drawWorld()
     fxDust()
     fxCutTree()
     fxEmote()
-    fxDark()
     fxBird()
     fxRod()
   else
@@ -4420,12 +4489,6 @@ function OverworldState:drawWorld()
       self:billboard(fx, fy, vw, vh, zoneColorsAt(zones, fx, fy), false, fxRod)
     end
 
-    -- Rock Tunnel darkness is a screen-space veil, not a ground object --
-    -- draw it flat into the upright canvas so it darkens the final
-    -- composited scene uniformly.  It no-ops unless this mode needs the
-    -- composited fallback (see fxDark).
-    fxDark()
-
     Game.renderer:endUprightPass()
   end
 
@@ -4433,6 +4496,32 @@ end
 
 -- screen-space overlays: drawn to the UI canvas at normal scale
 function OverworldState:drawUI()
+  -- TalkToPikachu's picture box (engine/pikachu/pikachu_pic_animation.asm
+  -- PlacePikapicTextBoxBorder: TextBoxBorder at (6,5) with b,c = 5,5, so a
+  -- 7x7 box holding the 5x5 pic at (7,6) -- PikaAnimTilemap_1).  The
+  -- per-emotion frame gfx (gfx/pikachu/unknown_*) are not extracted, so the
+  -- front pic stands in for every frame of the script; PikachuFollower
+  -- .picLift lifts it on the runs that draw the alternate pose, and the
+  -- script's own duration times the beat (#407, #424).
+  if self.emote and self.emote.pikaPic then
+    require("src.render.Font").drawBox(6, 5, 7, 7)
+    -- one image per path, cached: this draws every frame of the hold, and
+    -- a mod skin can move the path between talks
+    if self.pikaPicPath ~= self.emote.pikaPic then
+      local ok, loaded = pcall(love.graphics.newImage, self.emote.pikaPic)
+      self.pikaPicImg = ok and loaded or nil
+      self.pikaPicPath = self.emote.pikaPic
+    end
+    local img = self.pikaPicImg
+    if img then
+      love.graphics.setColor(1, 1, 1, 1)
+      local w, h = img:getDimensions()
+      local lift = require("src.world.PikachuFollower").picLift(self.emote)
+      love.graphics.draw(img, math.floor(56 + (40 - w) / 2),
+                         math.floor(48 + (40 - h) / 2) - lift)
+    end
+  end
+
   -- poison step flicker (ChangeBGPalColor0_4Frames: dark for two
   -- 4-frame pulses)
   if self.poisonFlash and self.poisonFlash > 0 then

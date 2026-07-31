@@ -38,6 +38,22 @@ local CONSTANT_DEFAULTS = {
   },
 }
 
+-- data/events/trades.asm in Pokemon Yellow has its own TradeMons table.
+-- Old Yellow imports were built from the Red manifest, so correct that
+-- table after loading as well as in the fixed import manifest below.
+local YELLOW_TRADES = {
+  { give = "LICKITUNG", get = "DUGTRIO", dialogset = 1, nickname = "GURIO" },
+  { give = "CLEFAIRY", get = "MR_MIME", dialogset = 1, nickname = "MILES" },
+  { give = "BUTTERFREE", get = "BEEDRILL", dialogset = 3, nickname = "STINGER" },
+  { give = "KANGASKHAN", get = "MUK", dialogset = 1, nickname = "STICKY" },
+  { give = "MEW", get = "MEW", dialogset = 3, nickname = "BART" },
+  { give = "TANGELA", get = "PARASECT", dialogset = 1, nickname = "SPIKE" },
+  { give = "PIDGEOT", get = "PIDGEOT", dialogset = 2, nickname = "MARTY" },
+  { give = "GOLDUCK", get = "RHYDON", dialogset = 2, nickname = "BUFFY" },
+  { give = "GROWLITHE", get = "DEWGONG", dialogset = 3, nickname = "CEZANNE" },
+  { give = "CUBONE", get = "MACHOKE", dialogset = 3, nickname = "RICKY" },
+}
+
 -- field.boot is the total-conversion override point for the new game; the
 -- values match what SaveData.newGame and the Oak speech used to inline.
 local BOOT_DEFAULTS = {
@@ -56,6 +72,12 @@ local function copy(value)
   local out = {}
   for k, v in pairs(value) do out[k] = copy(v) end
   return out
+end
+
+function Data:applyVersionedFieldData()
+  if require("src.core.GameVersion").isYellow() then
+    self.field.trades = copy(YELLOW_TRADES)
+  end
 end
 
 -- Fills only what the cache is missing, so an importer that learns to
@@ -77,6 +99,7 @@ function Data:seedDefaults()
   if constants.dexDigits == nil then
     constants.dexDigits = math.max(3, #tostring(constants.dexSize))
   end
+  self:applyVersionedFieldData()
   local boot = self.field.boot
   if boot == nil then
     boot = {}
