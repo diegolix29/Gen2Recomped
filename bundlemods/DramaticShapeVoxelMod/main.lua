@@ -334,9 +334,10 @@ local SETTINGS = {
   { WorldCurve.setting,
     "Bend the world down over the horizon, Animal Crossing style." },
   { DrawDistance.setting,
-    "How many adjacent maps to render: NEAR (0 neighbors) for best performance "
-    .. "on low-end devices, MILD (2 neighbors) for balanced quality, or FAR "
-    .. "(4 neighbors) for maximum view distance and visual quality." },
+    "How many adjacent maps to render: OFF (no limit, original behavior), "
+    .. "NEAR (0 neighbors) for best performance on low-end devices, MILD "
+    .. "(2 neighbors) for balanced quality, or FAR (4 neighbors) for moderate "
+    .. "quality/performance balance." },
   -- `full` marks a row FULL does not take away. FULL owns the diorama's own
   -- knobs; what a battle is drawn over, and how it is framed, are not that.
   { OverworldBattle.setting,

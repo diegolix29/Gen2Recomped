@@ -748,6 +748,22 @@ function RomImporter:focus(f)
       self.saveNotice[version] and self.saveNotice[version].ok)
     return
   end
+  -- Handle sky image pick on Android
+  if love.filesystem.getInfo("picked_sky.png", "file") then
+    self.pickPending = nil
+    local SaveData = require("src.core.SaveData")
+    local opts = SaveData.loadOptions()
+    if opts then
+      opts.skyImageEnabled = true
+      SaveData.saveOptions(opts)
+      local Tilt = require("src.render.Tilt")
+      Tilt:setSkyImage("picked_sky.png")
+      -- Rename to the standard sky_image.png for consistency
+      love.filesystem.write("sky_image.png", love.filesystem.read("picked_sky.png"))
+      love.filesystem.remove("picked_sky.png")
+    end
+    return
+  end
   for _, v in ipairs(GameVersion.ORDER) do
     if not self.ready[v] then
       local name, data = findPendingRom(self.ready)
@@ -955,6 +971,7 @@ end
 function RomImporter:chooseMod()
   if self.workState == "working" then return end
   if self.android then
+    if self.pickPending then return end
     local name = findPendingMod(true, self.pickSkip)
     if name then
       self:_installMod(name)
@@ -1016,6 +1033,7 @@ end
 function RomImporter:chooseSaveImport(version)
   if self.workState == "working" then return end
   if self.android then
+    if self.pickPending then return end
     local name = findPendingSav(true, self.pickSkip)
     if name then
       self.androidPendingVersion = version
@@ -1105,6 +1123,7 @@ function RomImporter:choose(version)
   if self.workState == "working" then return end
   self.chooseVersion = version or "red"
   if self.android then
+    if self.pickPending then return end
     -- Prefer a not-yet-imported .gb/.gbc already in the save dir (USB copy, or
     -- a fresh SAF pick).  Never reuse an already-imported cart's file -- that
     -- was the #167 failure mode (second Choose just re-extracted Red).
@@ -2188,6 +2207,8 @@ function RomImporter:mousepressed(x, y, button)
   for _, t in ipairs(self.tabRects or {}) do
     if inside(t, x, y) then
       if t.id == "sky" then
+        -- Guard against double-taps or multiple picker launches
+        if self.pickPending then return end
         -- Open file picker to select sky image
         local SaveData = require("src.core.SaveData")
         local opts = SaveData.loadOptions()
@@ -2198,7 +2219,24 @@ function RomImporter:mousepressed(x, y, button)
           
           releasePointerGrab()
           
-          if platform == "Windows" then
+          if platform == "Android" then
+            -- Use the Android SAF picker for image selection
+            if love.system.pickFile then
+              local ok = love.system.pickFile("image")
+              if ok then
+                -- The picker was launched successfully; the image will be saved as picked_sky.png
+                -- in the save directory. We'll need to wait for focus to return and check for the file.
+                path = "picked_sky.png"
+                self.pickPending = true
+              else
+                -- Picker failed to launch
+                local Logger = require("src.core.Logger")
+                if Logger then
+                  Logger.warn("Android image picker failed to launch")
+                end
+              end
+            end
+          elseif platform == "Windows" then
             local script = table.concat({
               "Add-Type -AssemblyName System.Windows.Forms;",
               "$d=New-Object System.Windows.Forms.OpenFileDialog;",

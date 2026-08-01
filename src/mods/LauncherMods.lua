@@ -194,7 +194,7 @@ local function decodeManifest(raw, path)
   return manifest
 end
 
--- Scan "mods/" one level deep for valid manifests (mirrors Loader:_discover,
+-- Scan "mods/" and "bundlemods/" one level deep for valid manifests (mirrors Loader:_discover,
 -- but validates only -- no entry chunk is ever loaded).  First id wins on a
 -- duplicate.  Returns an array of validated manifests.
 local function discover()
@@ -208,18 +208,41 @@ local function discover()
   -- the launcher's readiness check has usually resolved it already; the call
   -- is cached and idempotent.
   CacheFs.root()
-  if not fs.getInfo("mods") then return out end
+  local roots = { "mods", "bundlemods" }
   local seen = {}
-  for _, name in ipairs(fs.getDirectoryItems("mods")) do
-    local path = "mods/" .. name
-    local info = fs.getInfo(path)
-    if info and info.type == "directory" then
-      local raw = fs.read(path .. "/manifest.json")
-      if raw then
-        local manifest = decodeManifest(raw, path)
-        if manifest and not seen[manifest.id] then
-          seen[manifest.id] = true
-          out[#out + 1] = manifest
+  for _, root in ipairs(roots) do
+    -- Check if directory exists and is listable
+    local dirInfo = fs.getInfo(root)
+    local canList = dirInfo ~= nil
+    
+    -- On Android, bundlemods is inside the read-only game.love archive
+    -- Try to list it even if getInfo fails (some Android setups report archives oddly)
+    if not canList and root == "bundlemods" then
+      local ok, items = pcall(function()
+        return fs.getDirectoryItems(root)
+      end)
+      if ok and items then
+        canList = true
+      end
+    end
+    
+    if canList then
+      local items = fs.getDirectoryItems(root)
+      if items then
+        for _, name in ipairs(items) do
+          local path = root .. "/" .. name
+          local info = fs.getInfo(path)
+          if info and info.type == "directory" then
+            local raw = fs.read(path .. "/manifest.json")
+            if raw then
+              local manifest = decodeManifest(raw, path)
+              if manifest and not seen[manifest.id] then
+                seen[manifest.id] = true
+                manifest.bundled = (root == "bundlemods")
+                out[#out + 1] = manifest
+              end
+            end
+          end
         end
       end
     end

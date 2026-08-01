@@ -4,12 +4,13 @@
 
 ### Added
 
-- **DRAW DIST, a new performance option: NEAR / MILD / FAR draw distance.**
+- **DRAW DIST, a new performance option: OFF / NEAR / MILD / FAR draw distance.**
   Controls how many adjacent maps (neighbors) are rendered, which significantly
-  affects performance on low-end PCs and mobile devices. NEAR renders only the
-  current map (0 neighbors) for best performance, MILD renders 2 neighbors for
-  balanced quality, and FAR renders 4 neighbors for maximum visual quality.
-  Accessible via hotkey 9 (default, rebindable) or the DRAW DIST options row.
+  affects performance on low-end PCs and mobile devices. OFF uses no limit
+  (original behavior), NEAR renders only the current map (0 neighbors) for best
+  performance, MILD renders 2 neighbors for balanced quality, and FAR renders
+  4 neighbors for moderate quality/performance balance. Accessible via hotkey 9
+  (default, rebindable) or the DRAW DIST options row.
 
 - **Hotkey system integration: All mod hotkeys are now properly registered through
   the game's hotkey system and can be rebound through the hotkey bindings menu.**

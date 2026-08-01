@@ -201,6 +201,18 @@ bool showFilePicker(const char *destFilename)
 	return result;
 }
 
+bool showImagePicker()
+{
+	JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();
+	jclass activity = env->FindClass("org/love2d/android/GameActivity");
+
+	jmethodID method = env->GetStaticMethodID(activity, "showImageFilePicker", "()Z");
+	jboolean result = env->CallStaticBooleanMethod(activity, method);
+
+	env->DeleteLocalRef(activity);
+	return result;
+}
+
 bool showCreateDocument(const char *suggestedName)
 {
 	if (suggestedName == nullptr || suggestedName[0] == '\0')

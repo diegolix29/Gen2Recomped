@@ -76,6 +76,7 @@ public class GameActivity extends SDLActivity {
     private static final String PICKED_ROM_FILENAME = "picked_rom.gb";
     private static final String PICKED_MOD_FILENAME = "picked_mod.zip";
     private static final String PICKED_SAVE_FILENAME = "picked_save.sav";
+    private static final String PICKED_IMAGE_FILENAME = "picked_sky.png";
     private static final String PENDING_EXPORT_FILENAME = "pending_export.sav";
     private static final String EXPORT_DONE_FILENAME = "export_done.flag";
     // Written when a SAF pick cannot be read at all, with the destination
@@ -411,6 +412,26 @@ public class GameActivity extends SDLActivity {
     @Keep
     public static boolean showSaveFilePicker() {
         return showFilePicker(PICKED_SAVE_FILENAME);
+    }
+
+    /** Image picker convenience wrapper used for skybox selection. */
+    @Keep
+    public static boolean showImageFilePicker() {
+        if (android.os.Build.VERSION.SDK_INT < 19) return false;
+        GameActivity self = (GameActivity) mSingleton;
+        if (self == null) return false;
+
+        self.pendingPickFilename = PICKED_IMAGE_FILENAME;
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/*");
+        try {
+            self.startActivityForResult(intent, FILE_PICKER_REQUEST_CODE);
+            return true;
+        } catch (Exception e) {
+            Log.d("GameActivity", "could not open image picker: " + e.getMessage());
+            return false;
+        }
     }
 
     /**

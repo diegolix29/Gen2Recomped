@@ -449,6 +449,18 @@ pack_game_love() {
 # --------------------------------------------------------------- SDK check
 require_android_sdk() {
   local sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+  
+  # Check if running in CI environment (GitHub Actions, etc.)
+  local is_ci=false
+  if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ] || [ -n "${CONTINUOUS_INTEGRATION:-}" ]; then
+    is_ci=true
+  fi
+  
+  # For local builds, use hardcoded path
+  if [ "$is_ci" = false ]; then
+    sdk="C:/Android/android-sdk"
+  fi
+  
   if [ -z "$sdk" ]; then
     for candidate in \
       "$HOME/Library/Android/sdk" \

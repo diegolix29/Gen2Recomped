@@ -124,14 +124,17 @@ local function pickSkyImage()
   releasePointerGrab()
   
   if platform == "Android" then
-    -- Android file picker is not directly supported through LÖVE's standard API
-    -- The user needs to manually copy images to the app's storage directory
-    -- or use a file manager to place them in the appropriate location
-    -- Log a message to inform the user
-    if Logger then
-      Logger.log("info", "Android: Please copy sky images to the game's directory manually")
+    -- Use the Android SAF picker for image selection
+    if love.system.pickFile and love.system.pickFile("image") then
+      -- The picker was launched successfully; the image will be saved as picked_sky.png
+      -- in the save directory. We'll need to wait for focus to return and check for the file.
+      return "picked_sky.png"
+    else
+      if Logger then
+        Logger.log("info", "Android: Could not open image picker. Please copy sky images to the game's directory manually")
+      end
+      return nil
     end
-    return nil
   elseif platform == "Windows" then
     local script = table.concat({
       "Add-Type -AssemblyName System.Windows.Forms;",

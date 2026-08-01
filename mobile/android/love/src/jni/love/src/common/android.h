@@ -69,6 +69,14 @@ void vibrate(double seconds);
 bool showFilePicker(const char *destFilename = nullptr);
 
 /**
+ * Shows the system's "pick an image" UI (Storage Access Framework with image/* MIME type).
+ * Returns true if the picker was launched; the picked file (if any) is
+ * copied asynchronously by GameActivity.onActivityResult into the app's
+ * external save directory as picked_sky.png, not returned here.
+ **/
+bool showImagePicker();
+
+/**
  * Shows ACTION_CREATE_DOCUMENT so Lua can export a staged pending_export.sav
  * to a user-chosen location. suggestedName is the dialog default filename.
  **/

@@ -41,6 +41,7 @@ local Input = require("src.core.Input")
 
 local TouchControls = {}
 
+
 -- idle vs pressed overlay opacity
 local ALPHA = 0.65
 local ALPHA_PRESSED = 0.95
@@ -275,6 +276,17 @@ local function releaseBtn(self, btn)
   end
 end
 
+-- Helper functions for stick mode checking (must be defined before setDpad)
+local function rightStickMovementEnabled(self)
+  local g = self.game
+  return (g and g.save and g.save.options and g.save.options.rightStickMovement) or false
+end
+
+local function leftStickCameraEnabled(self)
+  local g = self.game
+  return (g and g.save and g.save.options and g.save.options.leftStickCamera) or false
+end
+
 -- the d-pad/left-stick touch's held direction changed (or ended): swap
 -- the GB hold. Shared by the d-pad and the left stick -- they're two
 -- thumb positions for the same four directions, tracked as independent
@@ -322,16 +334,6 @@ local function setDpad(self, touch, dir)
   else
     touch.pressedAsMovement = nil
   end
-end
-
-local function rightStickMovementEnabled(self)
-  local g = self.game
-  return (g and g.save and g.save.options and g.save.options.rightStickMovement) or false
-end
-
-local function leftStickCameraEnabled(self)
-  local g = self.game
-  return (g and g.save and g.save.options and g.save.options.leftStickCamera) or false
 end
 
 -- looks up a bound "display hotkey" action for a touch shoulder/trigger/
