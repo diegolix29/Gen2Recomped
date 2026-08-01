@@ -85,6 +85,10 @@ function MonEditor.draw(S, Kit, x, y, w, h)
   local def = S.data.pokemon[mon.species]
   local cx, cy = x + pad, y + pad
   local inner = w - 2 * pad
+  -- Backstop for a window too short for even the compacted rhythm below:
+  -- nothing this panel draws may land outside its own card (#497).  Party
+  -- draws the inspector last, so no outer clip is lost by the pop at the end.
+  Kit.pushClip(x, y, w, h)
 
   -- ---------------------------------------------------------- header row
   local sprite = 96 * s
@@ -97,17 +101,22 @@ function MonEditor.draw(S, Kit, x, y, w, h)
   Kit.text("tiny", ("#%03d"):format(def and def.dex or 0), hx + nameW + 12 * s,
     cy + Kit.textHeight("title") - Kit.textHeight("tiny") - 2 * s, PAL.caption)
 
-  local stepW, stepH = 28 * s, 26 * s
-  local sx = hx + hw - 2 * stepW - 6 * s
-  local sy = cy + (Kit.textHeight("title") - stepH) / 2
-  if Kit.stepper(sx, sy, stepW, stepH, "<", { radius = 7 * s }) then
-    Ops.stepSpecies(S, mon, -1)
+  -- One control instead of a pair of arrows: cycling walked the catalog an
+  -- entry at a time (151 taps to cross the dex) and ran a full MonOps
+  -- recalculation on every step, including on records the Gen1 formulas
+  -- cannot use, which is what crashed the editor (#541).  This opens the
+  -- searchable picker; the species name itself is a second, larger target.
+  local pickH = 30 * s
+  local pickW = math.min(150 * s, math.max(90 * s, hw * 0.6))
+  local px = hx + hw - pickW
+  local py = cy + (Kit.textHeight("title") - pickH) / 2
+  local openPicker = Kit.button(px, py, pickW, pickH, "Change species",
+    { kind = "accent", font = "small", radius = 8 * s })
+  if not openPicker then
+    openPicker = Kit.press(hx, cy, math.max(0, px - hx - 10 * s),
+      Kit.textHeight("title"))
   end
-  if Kit.stepper(sx + stepW + 6 * s, sy, stepW, stepH, ">", { radius = 7 * s }) then
-    Ops.stepSpecies(S, mon, 1)
-  end
-  Kit.textRight("tiny", "species", sx - 8 * s,
-    sy + (stepH - Kit.textHeight("tiny")) / 2, PAL.caption)
+  if openPicker then Ops.openSpeciesPicker(S, Kit) end
 
   -- level stepper: -5 -1 [Lv] +1 +5, matching MonOps.setLevel's 1..100 clamp
   local ly = cy + Kit.textHeight("title") + 14 * s
@@ -139,7 +148,20 @@ function MonEditor.draw(S, Kit, x, y, w, h)
   statsY = statsY + Kit.textHeight("caption") + 10 * s
   local gap = 12 * s
   local cellW = (inner - gap * 4) / 5
-  local cellH = 68 * s
+  -- Everything below the header competes for one vertical budget.  At the
+  -- design size it is generous; in a 720px-tall window (a phone held
+  -- sideways) it is not, and the DV / move rows used to run past the card and
+  -- paint over the status bar (#497).  Shrink the two flexible blocks -- the
+  -- stat tiles and the DV / move rows -- instead of overflowing, with floors
+  -- that keep every row the 26px target Kit's rule 6 promises.  statsY is
+  -- already past the STATS caption here, so only the DVs / MOVES caption is
+  -- subtracted.
+  local actH = 34 * s
+  local rowGap = 8 * s
+  local budget = (y + h - pad) - statsY - (Kit.textHeight("caption") + 10 * s)
+    - 18 * s - actH - 4 * s
+  local cellH = Theme.clamp(budget * 0.3, 46 * s, 68 * s)
+  local rowH = Theme.clamp((budget - cellH) / 4 - rowGap, 26 * s, 34 * s)
   for i, st in ipairs(STAT_KEYS) do
     local bx = cx + (i - 1) * (cellW + gap)
     Theme.row(bx, statsY, cellW, cellH, 10 * s, 0.6)
@@ -164,8 +186,6 @@ function MonEditor.draw(S, Kit, x, y, w, h)
   Kit.textRight("tiny", "click a slot to cycle", rightX + colW, colY, PAL.caption)
 
   local rowY = colY + Kit.textHeight("caption") + 10 * s
-  local rowH = 34 * s
-  local rowGap = 8 * s
 
   for i, key in ipairs(DV_KEYS) do
     local ry = rowY + (i - 1) * (rowH + rowGap)
@@ -221,7 +241,6 @@ function MonEditor.draw(S, Kit, x, y, w, h)
   end
 
   local actY = rowY + 4 * (rowH + rowGap) + 4 * s
-  local actH = 34 * s
   local actW = (colW - 10 * s) / 2
   if Kit.button(rightX, actY, actW, actH, "Reset to learnset",
       { font = "small", radius = 9 * s }) then
@@ -231,6 +250,7 @@ function MonEditor.draw(S, Kit, x, y, w, h)
       { kind = "good", font = "small", radius = 9 * s }) then
     Ops.healMon(S, mon)
   end
+  Kit.popClip()
 end
 
 return MonEditor

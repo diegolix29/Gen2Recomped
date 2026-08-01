@@ -716,6 +716,68 @@ do
   check(actBattle:enemyAction().hooked == true,
         "battle.enemy_action hook rewrites the choice")
   unsub()
+
+  -- battle.catch_exp: vanilla catches never grant exp; a mod can flip that
+  unsub = hooks:wrap("battle.catch_exp", function() return true end)
+  local catchExpParty = { Pokemon.new(Data, "BULBASAUR", 10) }
+  local catchExpGame = makeGame(catchExpParty)
+  local catchExpBattle = BattleState.newWild(catchExpGame, "RATTATA", 3)
+  catchExpBattle.enemy.mon = Pokemon.new(Data, "RATTATA", 3)
+  local expBeforeCatch = catchExpParty[1].exp
+  catchExpBattle:storeCaughtMon()
+  check(catchExpParty[1].exp > expBeforeCatch,
+        "battle.catch_exp hook pays out exp on a catch")
+  unsub()
+
+  -- battle.exp_award: a mod can replace the participant/EXP.ALL split
+  -- wholesale via ctx.applyShare
+  unsub = hooks:wrap("battle.exp_award", function(nextFn, ctx)
+    ctx.applyShare(ctx.alive[1], 999, "flatShare")
+  end)
+  local awardParty = { Pokemon.new(Data, "BULBASAUR", 10) }
+  local awardGame = makeGame(awardParty)
+  local awardBattle = BattleState.newWild(awardGame, "RATTATA", 3)
+  local expBeforeAward = awardParty[1].exp
+  awardBattle:awardExp()
+  check(awardParty[1].exp > expBeforeAward,
+        "battle.exp_award hook replaces the award split")
+  unsub()
+end
+
+-- ------- battle.low_health_alarm hook: mirrors the siren toggle
+
+do
+  local Sound = require("src.core.Sound")
+  local calls = {}
+  local origStart, origStop = Sound.startLoop, Sound.stopLoop
+  Sound.startLoop = function(data, name) calls[#calls + 1] = { "start", name } end
+  Sound.stopLoop = function(name) calls[#calls + 1] = { "stop", name } end
+
+  local game = makeGame({ Pokemon.new(Data, "BULBASAUR", 20) })
+  local battle = BattleState.newWild(game, "RATTATA", 5)
+  battle.player.mon.hp = 1
+  battle.player.shownHP = 1
+
+  local seenOn = nil
+  local unsub = hooks:wrap("battle.low_health_alarm", function(nextFn, ctx)
+    seenOn = ctx.on
+    return nextFn(ctx)
+  end)
+  battle:updateFx()
+  check(seenOn == true, "battle.low_health_alarm hook sees the alarm toggle on")
+  check(calls[#calls][1] == "start" and calls[#calls][2] == "Low_Health_Alarm",
+        "an unmodified hook still starts the siren loop")
+  unsub()
+
+  unsub = hooks:wrap("battle.low_health_alarm", function(nextFn, ctx)
+    ctx.on = false
+    return nextFn(ctx)
+  end)
+  battle:updateFx()
+  check(calls[#calls][1] == "stop", "a mod can force the alarm off before vanilla acts")
+  unsub()
+
+  Sound.startLoop, Sound.stopLoop = origStart, origStop
 end
 
 -- ------- battle events: the scripted sequence

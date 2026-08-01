@@ -78,6 +78,10 @@ function ListMenu.new(game, title, items, opts)
   -- bottom text box -- same row budget as the mart, without the money box.
   self.messageBox = opts.messageBox
   self.money = opts.money          -- () -> current money for the box
+  -- BIT_NO_MENU_BUTTON_SOUND (wMiscFlags): both PC sessions hold the flag
+  -- for their whole run (engine/menus/pc.asm, engine/menus/players_pc.asm),
+  -- so their lists opt out of the A/B beep the same way Menu's noSound does
+  self.noSound = opts.noSound or false
   self.rows = opts.rows or ((opts.dialogue or opts.messageBox) and 4 or ROWS)
   return self
 end
@@ -99,6 +103,17 @@ local function syncScroll(self)
     self.scroll = self.index - self.rows
   end
   if self.index - self.scroll < 1 then self.scroll = self.index - 1 end
+end
+
+-- HandleMenuInput_ (home/window.asm) replays SFX_PRESS_AB for any watched
+-- A or B press; DisplayListMenuID's mask is PAD_A | PAD_B | PAD_SELECT
+-- (home/list_menu.asm), so the SELECT swap key stays silent (#570)
+local function beep(self)
+  -- game.data is nil under the UI harnesses that drive a list with a stub
+  -- game (tests/engine/rebind_capture_bug510.lua), where there is no audio
+  -- cache to play out of
+  if self.noSound or not (self.game and self.game.data) then return end
+  require("src.core.Sound").play(self.game.data, "Press_AB")
 end
 
 -- edge press or key-repeat tick for a held direction
@@ -126,6 +141,7 @@ function ListMenu:update(dt)
   local input = self.game.input
   if #self.items == 0 then
     if input:wasPressed("a") or input:wasPressed("b") then
+      beep(self)
       self.game.stack:pop()
       if self.onCancel then self.onCancel() end
     end
@@ -148,10 +164,12 @@ function ListMenu:update(dt)
   elseif self.onSelectKey and input:wasPressed("select") then
     self.onSelectKey(self.items[self.index], self)
   elseif input:wasPressed("b") then
+    beep(self)
     self.game.stack:pop()
     if self.onCancel then self.onCancel() end
     return
   elseif input:wasPressed("a") then
+    beep(self)
     local item = self.items[self.index]
     if self.onChoose then
       self.onChoose(item, self)

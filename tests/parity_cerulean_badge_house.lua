@@ -60,4 +60,30 @@ dismissText()
 eq(#states, 0, "backing out after viewing a badge leaves no menu behind")
 eq(done, true, "backing out after viewing a badge completes the NPC script")
 
+-- PrintListMenuEntries writes ListMenuCancelText where the item list's $FF
+-- terminator lands (home/list_menu.asm), so a DisplayListMenuID list always
+-- offers CANCEL on screen; choosing it is `cp c / jp c, ExitListMenu`, which
+-- sets carry, so the badge script's `jr c, .done` treats it exactly like B
+-- (pokered scripts/CeruleanBadgeHouse.asm).  The row was missing (#569).
+local check = S.check
+local cancelled = false
+script(game, nil, nil, function() cancelled = true end)
+dismissText()
+dismissText()
+
+local menu = game.stack:top()
+eq(#menu.items, 9, "eight badges plus the CANCEL row")
+eq(menu.items[#menu.items].label, "CANCEL", "CANCEL is the last row")
+check(menu.items[#menu.items].value == nil,
+      "the CANCEL row carries no badge, so it cannot print a description")
+for i = 1, 8 do
+  check(menu.items[i].value ~= nil, "badge row " .. i .. " still picks a badge")
+end
+
+menu.onChoose(menu.items[#menu.items])
+eq(#states, 1, "choosing CANCEL closes the list and leaves the goodbye line")
+dismissText()
+eq(#states, 0, "choosing CANCEL leaves no menu behind")
+eq(cancelled, true, "choosing CANCEL takes the same .done exit as B")
+
 S.finish()

@@ -82,6 +82,13 @@ bool showImagePicker();
  **/
 bool showCreateDocument(const char *suggestedName = nullptr);
 
+/**
+ * Pokéwalker step bridge: asks GameActivity to read the hardware step
+ * counter and stage steps_pending.json in the save identity dir (see
+ * GameActivity.syncHealthSteps). Returns whether a sync could start.
+ */
+bool syncHealthSteps();
+
 /*
  * Helper functions for the filesystem module
  */

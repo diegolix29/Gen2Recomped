@@ -315,7 +315,7 @@ the overlay on and lets the mouse act as a finger (`=0` forces it off).
 
 The launcher's **Touch Controls** button opens a drag editor: move each
 button freely, **Disable** to hide the overlay permanently (for
-controllers / emulation handhelds — distinct from the temporary
+controllers / emulation handhelds -- distinct from the temporary
 gamepad auto-hide), **Reset** for defaults, **Done** to save into
 `options.lua` as normalized window fractions so rotation keeps the
 relative placement. In-game, Options → **TOUCH PAD** toggles the same
@@ -433,3 +433,18 @@ own repositories. No index ships with the launcher and none is ever added
 automatically, so the tab opens on an "Add an index" prompt until you name
 one; paste an index URL or its `owner/repo` and it is remembered in
 `options.lua`. More than one index can be added, and the listings merge.
+
+## Soft reset (all versions)
+
+Holding A, B, START and SELECT together restarts the game the way flicking
+a Game Boy's power switch did, dropping straight back to the title screen.
+It works from anywhere, including mid-battle, which the QUIT entry on the
+start menu cannot do: the original combo is how stationary and gift
+Pokemon get their stats rerolled without sitting through a full relaunch.
+Unsaved progress is discarded, exactly as on hardware.
+
+As on the original, the four buttons have to stay held for 16 straight
+polls (better than a quarter of a second) and any direction in the mix
+cancels it, so it is hard to hit by accident -- including on the on-screen
+touch controls, where it would take four fingers held on four separate
+controls.

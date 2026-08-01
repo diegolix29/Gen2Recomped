@@ -35,6 +35,7 @@ TARGET="all"
 NOTARY_PROFILE="notary-profile"
 NOTARIZE=true
 IOS_RELEASE=false
+IOS_IPA=false
 
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mwarn:\033[0m %s\n' "$*" >&2; }
@@ -48,6 +49,7 @@ while [ $# -gt 0 ]; do
     --notary-profile) NOTARY_PROFILE="$2"; shift ;;
     --no-notarize) NOTARIZE=false ;;
     --release) IOS_RELEASE=true ;;
+    --ipa) IOS_IPA=true ;;
     *) fail "unknown argument: $1" ;;
   esac
   shift
@@ -302,6 +304,9 @@ build_android() {
   local args=()
   if [ "$VERSION_EXPLICIT" = true ]; then
     args+=(--version "$VERSION")
+  fi
+  if [ "$IOS_IPA" = true ]; then
+    args+=(--ipa)
   fi
   "$ROOT/scripts/build_android.sh" ${args[@]+"${args[@]}"}
 }

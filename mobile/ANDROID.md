@@ -50,6 +50,29 @@ chosen file under the app save directory as `picked_rom.gb`,
 from that folder on Choose / refocus; see `docs/launcher.md`. The APK payload
 itself remains data-free (no embedded ROM or generated cache).
 
+### Step bridge (Pokéwalker mod)
+
+`love.system.syncHealthSteps()` → `GameActivity.syncHealthSteps` (same
+JNI route as the picker: `common/android.cpp` →
+`modules/system/System.cpp` → `wrap_System.cpp`). The Java side does a
+one-shot read of the hardware `TYPE_STEP_COUNTER` sensor (cumulative
+since boot, counted by the OS whether or not any app runs), anchors the
+reading in `SharedPreferences` so a walk is never credited twice
+(a reading below the anchor means the phone rebooted → re-anchor without
+crediting), and stages the delta as `steps_pending.json` in the save
+identity dir — the same contract as the iOS `GRHealthBridge`. Nothing in
+the base game calls it; the consumer is the
+[Pokéwalker mod](https://github.com/mresnick67/Gen1ReComp-Pokewalker),
+installed as a mod `.zip` at runtime (its SYNC STEPS option defaults
+off).
+
+Android 10+ gates the sensor behind the `ACTIVITY_RECOGNITION` runtime
+permission (declared in `app/src/main/AndroidManifest.xml`; keep it out
+of the build script's permission trim). The first
+`syncHealthSteps()` call shows the system prompt; on grant the sensor
+read runs immediately (`onRequestPermissionsResult`,
+`STEP_PERMISSION_REQUEST_CODE`).
+
 ### SDK / NDK
 
 love-android 11.5a expects:

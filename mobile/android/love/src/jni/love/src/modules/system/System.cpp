@@ -214,6 +214,15 @@ bool System::createFile(const char *suggestedName) const
 #endif
 }
 
+bool System::syncHealthSteps() const
+{
+#ifdef LOVE_ANDROID
+	return love::android::syncHealthSteps();
+#else
+	return false;
+#endif
+}
+
 bool System::hasBackgroundMusic() const
 {
 #if defined(LOVE_ANDROID)

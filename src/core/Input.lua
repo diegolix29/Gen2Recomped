@@ -443,8 +443,56 @@ function Input:isDown(btn)
   return self.state[btn] or false
 end
 
+-- True when the on-screen overlay is one of the live sources holding this
+-- button (see overlayPressed above).  Player:turnWindow widens the
+-- turn-in-place tap window on touch, where a press and release can never be
+-- as short as a physical d-pad's (#415).
+function Input:isTouchDown(btn)
+  local sources = self.sources[btn]
+  return (sources and sources["touch:" .. btn]) and true or false
+end
+
 function Input:wasPressed(btn)
   return self.pressed[btn] or false
+end
+
+-- Soft reset (#563).  _Joypad (engine/joypad.asm) tests the RAW joypad read
+-- with `cp PAD_BUTTONS` -- an equality, not a mask -- so the combo counts
+-- only while A, B, SELECT and START are the only buttons down; any d-pad
+-- direction in the mix cancels it.  That test sits ahead of the wJoyIgnore
+-- and BIT_DISABLE_JOYPAD masking below it, which is why the reset still
+-- works mid-battle and mid-cutscene where ordinary input is thrown away.
+-- TrySoftReset then burns one DelayFrame per pass and decrements hSoftReset,
+-- seeded with 16 by Init (home/init.asm), so the combo has to survive 16
+-- consecutive polls.  That hold is also what keeps the on-screen overlay
+-- safe: it already takes four separate fingers on four separate controls,
+-- and they all have to stay put for better than a quarter of a second.
+local SOFT_RESET_FRAMES = 16
+
+function Input:softResetHeld()
+  if not (self.state.a and self.state.b
+          and self.state.start and self.state.select) then
+    return false
+  end
+  return not (self.state.up or self.state.down
+              or self.state.left or self.state.right)
+end
+
+-- Ticked once per fixed step by Game:step; true on the step the countdown
+-- runs out.  hSoftReset is never re-seeded on release in the original, so
+-- its count leaks across a whole session; a port that copied that would
+-- eventually reset on a stray four-button press, so the counter re-arms as
+-- soon as the combo drops.
+function Input:softResetStep()
+  if not self:softResetHeld() then
+    self.softResetFrames = nil
+    return false
+  end
+  local left = (self.softResetFrames or SOFT_RESET_FRAMES) - 1
+  self.softResetFrames = left
+  if left > 0 then return false end
+  self.softResetFrames = nil
+  return true
 end
 
 return Input

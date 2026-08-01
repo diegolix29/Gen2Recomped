@@ -1186,11 +1186,13 @@ R.field = {
       nest = f.opt(f.any) },
     flyOrder = f.list(f.str),
     -- the player's own trainer art (FieldDefaults.PLAYER_PICS): the battle
-    -- back pic, the catch tutorial's old man, and the front pic the intro,
-    -- trainer card and Hall of Fame share.  Every key is optional so a
-    -- conversion can replace one pic and inherit the rest.
+    -- back pic, the catch tutorial's old man, Yellow's PROF.OAK variant of
+    -- it (#557), and the front pic the intro, trainer card and Hall of Fame
+    -- share.  Every key is optional so a conversion can replace one pic and
+    -- inherit the rest.
     playerPics = f.rec{
-      back = f.opt(f.str), demoBack = f.opt(f.str), front = f.opt(f.str) },
+      back = f.opt(f.str), demoBack = f.opt(f.str),
+      oakBack = f.opt(f.str), front = f.opt(f.str) },
     -- the new-game and boot config a total conversion replaces
     boot = f.rec{
       startMap = f.opt(f.str), startX = f.opt(f.int(0)), startY = f.opt(f.int(0)),

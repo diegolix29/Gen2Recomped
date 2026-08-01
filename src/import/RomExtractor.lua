@@ -1179,6 +1179,13 @@ function RomExtractor:extractPokemon()
     completed = completed + 1
     self:tick("Pokemon", completed, #self.manifest.dexOrder + 10)
   end
+  -- Yellow-only third back pic: LoadPlayerBackPic (engine/battle/core.asm)
+  -- picks OldManPicBack for BATTLE_TYPE_OLD_MAN but ProfOakPicBack for
+  -- BATTLE_TYPE_PIKACHU, the Pallet Town catch scene (#557).  Outside the
+  -- ticked loop so the progress denominator stays as it was.
+  if self.symbols["ProfOakPicBack"] then
+    self:writeCompressedPic("ProfOakPicBack", "battle/profoakb.png")
+  end
   local balls = self:symbol("PokeballTileGraphics")
   self:write2bpp(self.rom:bytes(balls.bank, balls.address, 64),
     32, 8, "battle/balls.png", true)
@@ -1823,6 +1830,35 @@ function RomExtractor:extractField()
         self.rom:bytes(symbol.bank, symbol.address, spec[2] * 16),
         spec[3], spec[2] / tilesPerRow * 8, spec[4])
       self:save(image, spec[5])
+    end
+  end
+
+  -- Yellow-only: TalkToPikachu's framed portrait, one 5x5 base frame per
+  -- PikaPicAnimScript -- each script's FIRST pikapic_loadgfx in
+  -- data/pikachu/pikachu_pic_animation.asm, the pic PikaPicAnimBGFrames_4
+  -- (PikaAnimTilemap_1, column order) paints.  Scripts 18/22/23/24 have no
+  -- compressed base and take PikaPicAnimBGFrames_5 -> PikaAnimTilemap_9,
+  -- which is ROW order over a raw 25-tile sheet, hence no columns flag.
+  -- Script 26 shares script 11's base.  The pikaframe overlays each script
+  -- draws ON TOP of the base are a second full pose out of the same blob and
+  -- stay unripped: PikachuFollower.picLift stands in for their motion
+  -- (#561, still on #407's stand-in).
+  local PIKAPIC_BASE = {
+    "Pic_e4000", "Pic_e411c", "Pic_e4272", "Pic_e4383", "Pic_e458b",
+    "Pic_e467b", "Pic_e476e", "Pic_e49d1", "Pic_e4b39", "Pic_e4c3e",
+    "Pic_e5000", "Pic_e523f", "Pic_e548e", "Pic_e56d1", "Pic_e5924",
+    "Pic_e5b7d", "Pic_e5ddd", "GFX_e6020", "Pic_e6340", "Pic_e6587",
+    "Pic_e67d6", "GFX_e6e6f", "GFX_e718f", "GFX_e74af", "Pic_e77cf",
+    "Pic_e5000", "Pic_f0abf", "Pic_f0cf4",
+  }
+  if self.symbols[PIKAPIC_BASE[1]] then
+    for script, label in ipairs(PIKAPIC_BASE) do
+      local path = "pikachu/pikapic_" .. script .. ".png"
+      if label:sub(1, 4) == "GFX_" then
+        self:raw2bpp(label, 40, 40, path, { matte = true })
+      else
+        self:writeCompressedPic(label, path)
+      end
     end
   end
 

@@ -50,11 +50,13 @@ function PokedexMenu.new(game, opts)
     footer = Strings("SEEN %d  OWNED %d", seen, owned),
     pageJump = true, -- Left/Right page jumps like the original
     onCancel = opts.onCancel, -- B returns to the start menu when opened from it
-    onChoose = function(item)
+    onChoose = function(item, dexList)
       if not item.value then return end
       -- the DATA / CRY / AREA / QUIT choice (engine/menus/pokedex.asm
       -- PokedexMenuItemsText); CRY keeps the side menu open like the
-      -- original, QUIT returns to the list
+      -- original.  B is what returns to the list: HandlePokedexSideMenu
+      -- hands back b=2 for B and b=1 for QUIT, and ShowPokedexMenu sends
+      -- b=1 to .exitPokedex, so QUIT closes the whole Pokédex (#571)
       local Menu = require("src.ui.Menu")
       local Screens = require("src.ui.Screens")
       local entries = {
@@ -91,7 +93,13 @@ function PokedexMenu.new(game, opts)
             or Strings("Printer error!\n%s", tostring(err))))
         end }
       end
-      entries[#entries + 1] = { label = Strings("QUIT") }
+      entries[#entries + 1] = { label = Strings("QUIT"), onSelect = function()
+        -- .exitPokedex: drop the dex list too and hand back to whoever
+        -- opened it (the start menu, whose saved cursor is still on
+        -- POKéDEX -- wBattleAndStartSavedMenuItem)
+        dexList:close()
+        if opts.onCancel then opts.onCancel() end
+      end }
       game.stack:push(Menu.new(game, entries,
         { tx = 12, ty = 8, tw = 8,
           th = #entries * 2 + 2 }))

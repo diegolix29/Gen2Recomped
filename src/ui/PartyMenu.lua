@@ -310,6 +310,14 @@ function PartyMenu:update(dt)
   local input = self.game.input
   local party = self.party or self.game.save.party
 
+  -- HandlePartyMenuInput (home/pokemon.asm) and the field-move submenu
+  -- (engine/menus/start_sub_menus.asm .chosePokemon) both run through
+  -- HandleMenuInput_, which beeps SFX_PRESS_AB on any A or B press (#570).
+  -- game.data is nil under the stub games the UI harnesses drive.
+  if self.game.data and (input:wasPressed("a") or input:wasPressed("b")) then
+    require("src.core.Sound").play(self.game.data, "Press_AB")
+  end
+
   if self.submenu then
     local n = #self.subItems
     if input:wasPressed("up") then

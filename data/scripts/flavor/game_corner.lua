@@ -85,6 +85,47 @@ return {
         alreadyGotLabel = "_GameCornerGentlemanCloselyWatchTheReelsText",
         alreadyGotFallback = "The trick is to\nwatch the reels\vclosely!",
       }),
+
+      -- Yellow keeps all three giveaways with the same events and amounts
+      -- but renames the objects and their text labels: FISHING_GURU ->
+      -- FISHING_GURU1, CLERK2 -> MIDDLE_AGED_MAN2, GENTLEMAN ->
+      -- FISHING_GURU2 (pokeyellow/scripts/GameCorner.asm).  The Red/Blue
+      -- keys above never match there, so Yellow needs its own three (#552).
+      TEXT_GAMECORNER_FISHING_GURU1 = coinGiver({
+        event = "EVENT_GOT_10_COINS",
+        amount = 10,
+        askLabel = "_GameCornerFishingGuru1WantToPlayText",
+        askFallback = "Kid, do you want\nto play?",
+        receivedLabel = "_GameCornerFishingGuru1Received10CoinsText",
+        coinCaseFullLabel = "_GameCornerFishingGuru1DontNeedMyCoinsText",
+        coinCaseFullFallback = "You don't need my\ncoins!",
+        alreadyGotLabel = "_GameCornerFishingGuru1WinsComeAndGoText",
+        alreadyGotFallback = "Wins seem to come\nand go.",
+      }),
+
+      TEXT_GAMECORNER_MIDDLE_AGED_MAN2 = coinGiver({
+        event = "EVENT_GOT_20_COINS_2",
+        amount = 20,
+        askLabel = "_GameCornerMiddleAgedMan2WantSomeCoinsText",
+        askFallback = "What's up? Want\nsome coins?",
+        receivedLabel = "_GameCornerMiddleAgedMan2Received20CoinsText",
+        coinCaseFullLabel = "_GameCornerMiddleAgedMan2YouHaveLotsOfCoinsText",
+        coinCaseFullFallback = "You have lots of\ncoins!",
+        alreadyGotLabel = "_GameCornerMiddleAgedMan2INeedMoreCoinsText",
+        alreadyGotFallback = "Darn! I need more\ncoins for the\vPOKéMON I want!",
+      }),
+
+      TEXT_GAMECORNER_FISHING_GURU2 = coinGiver({
+        event = "EVENT_GOT_20_COINS",
+        amount = 20,
+        askLabel = "_GameCornerFishingGuru2ThrowingMeOffText",
+        askFallback = "Hey, what? You're\nthrowing me off!\vHere are some\vcoins, shoo!",
+        receivedLabel = "_GameCornerFishingGuru2Received20CoinsText",
+        coinCaseFullLabel = "_GameCornerFishingGuru2YouGotYourOwnCoinsText",
+        coinCaseFullFallback = "You've got your\nown coins!",
+        alreadyGotLabel = "_GameCornerFishingGuru2CloselyWatchTheReelsText",
+        alreadyGotFallback = "The trick is to\nwatch the reels\vclosely!",
+      }),
     },
   },
 }

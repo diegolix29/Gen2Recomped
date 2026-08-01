@@ -1178,6 +1178,13 @@ function OverworldState:handleInput()
     end
   end
 
+  -- .noDirectionButtonsPressed (home/overworld.asm) is the only place that
+  -- sets wCheckFor180DegreeTurn, so reaching this line -- a poll that found
+  -- no direction held -- is what re-arms the next turn in place.  The early
+  -- returns above (mid-step, A, START) skip it exactly as the original's
+  -- jumps to .moveAhead and .displayDialogue do (#415).
+  self.player.turnArmed = true
+
   -- Cycling Road's downhill pull: with no d-pad held the bike rolls
   -- south (home/overworld.asm JoypadOverworld's simulated PAD_DOWN).
   -- The mask there is PAD_CTRL_PAD | PAD_B | PAD_A, so HOLDING A or B
@@ -1914,9 +1921,20 @@ function OverworldState:tryHiddenObject(fx, fy)
     end
   end
 
-  -- bench guys (data/events/bench_guys.asm)
+  -- Bench guys (data/events/bench_guys.asm).  A hidden_event's fourth byte
+  -- is wHiddenEventFunctionArgument, not a facing gate -- pokered's own
+  -- macro comment says the SPRITE_FACING_* values parked there "do not
+  -- actually prevent the player from interacting with them in any
+  -- direction" (data/events/hidden_events.asm).  The facing that does decide
+  -- a bench guy is PrintBenchGuyText's own test against BenchGuyTextPointers,
+  -- SPRITE_FACING_LEFT for all twelve seats, which the manifest carries as
+  -- `textFacing`.  Gating on the hidden_event byte instead silenced the four
+  -- seats that store SPRITE_FACING_UP (Vermilion, Saffron, Fuchsia,
+  -- Cinnabar): (0,4) is the bench wall cell and can only ever be faced from
+  -- the right (#488).
   for _, h in ipairs(extras.benchGuys[self.map.id] or {}) do
-    if h.x == fx and h.y == fy and (not h.facing or h.facing == facing) then
+    local want = h.textFacing or h.facing
+    if h.x == fx and h.y == fy and (not want or want == facing) then
       local text = OverworldState.benchGuyText(Game.data, save, h.text)
       if text then
         Game.stack:push(TextBox.new(Game, text))
@@ -3852,7 +3870,15 @@ end
 -- dev-mode hot reload).  The neighbors go too: their strips render the
 -- same tileset.  When the active map is the one that changed, the player
 -- is clamped back in bounds, the NPC pool is reused so runtime handles
--- survive, and the tile-pair table is re-read.
+-- survive, and the tile-pair table is re-read.  keepMusic: a reload is not a
+-- map entry.  Its counterpart ReloadMapData (home/reload_tiles.asm) only
+-- re-reads the map view and the tileset tile patterns after the Pokedex /
+-- start menu / PC clobbered VRAM; map music starts from LoadMapData alone
+-- (home/overworld.asm, gated on BIT_NO_MAP_MUSIC).  Whatever is playing
+-- belongs to the state on top, so a COLORS cycle during a battle
+-- (PaletteFX.setMode reloads the live map to rebuild its baked atlas) must
+-- not drop the route theme over the battle song (#484).  The out-of-bounds
+-- fallback below is a real map change and keeps its map music.
 function OverworldState:reloadMap(mapId, reason)
   MapLoader.invalidate(mapId)
   for _, nb in ipairs(self.neighbors or {}) do MapLoader.invalidate(nb.map.id) end
@@ -3860,7 +3886,8 @@ function OverworldState:reloadMap(mapId, reason)
     local p = self.player
     local x, y, facing = p.cellX, p.cellY, p.facing
     Collision.load(Game.data)
-    self:setMap(mapId, x, y, facing, { seamless = true, via = "reload" })
+    self:setMap(mapId, x, y, facing,
+                { seamless = true, via = "reload", keepMusic = true })
     if not self.map:inBounds(x, y) then
       local heal = self:healPoint()
       Logger.warn("map %s reloaded out from under the player; sending to %s",
@@ -4591,9 +4618,9 @@ function OverworldState:drawUI()
   -- TalkToPikachu's picture box (engine/pikachu/pikachu_pic_animation.asm
   -- PlacePikapicTextBoxBorder: TextBoxBorder at (6,5) with b,c = 5,5, so a
   -- 7x7 box holding the 5x5 pic at (7,6) -- PikaAnimTilemap_1).  The
-  -- per-emotion frame gfx (gfx/pikachu/unknown_*) are not extracted, so the
-  -- front pic stands in for every frame of the script; PikachuFollower
-  -- .picLift lifts it on the runs that draw the alternate pose, and the
+  -- script's base frame is ripped as pikachu/pikapic_N.png (#561) but the
+  -- pikaframe overlays on top of it are not, so PikachuFollower
+  -- .picLift lifts the base on the runs that draw the alternate pose, and the
   -- script's own duration times the beat (#407, #424).  Palette zone
   -- PAL_PIKACHU_PORTRAIT covers (7,6)-(11,10) via sgbPalettes above.
   if self.emote and self.emote.pikaPic then

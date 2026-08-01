@@ -42,6 +42,9 @@ do
     newWild = function(_, species, level)
       local b = { species = species, level = level, ghost = false }
       b.makeGhost = function(self) self.ghost = true end
+      -- the scope's branch (#492): disguised on entry, but IsGhostBattle
+      -- false, which is exactly the state the dodge below has to survive
+      b.makeUnveiledGhost = function(self) self.scopeReveal = true end
       made[#made + 1] = b
       return b
     end,
@@ -70,7 +73,8 @@ do
   check(noScope.noCatch, "and noCatch is set")
 
   local withScope = trigger({ SILPH_SCOPE = 1 })
-  check(not withScope.ghost, "with the scope the disguise is gone")
+  check(not withScope.ghost, "with the scope IsGhostBattle is false")
+  check(withScope.scopeReveal, "and the unveil plays instead (#492)")
   check(withScope.noCatch,
         "but noCatch survives it -- balls are dodged either way")
 

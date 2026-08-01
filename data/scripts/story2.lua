@@ -413,22 +413,141 @@ M.POKEMON_FAN_CLUB = {
   },
 }
 
+-- BikeShopClerkText (scripts/BikeShop.asm) runs three ways: the BICYCLE is
+-- already yours, you are carrying the BIKE VOUCHER, or you get the sales
+-- pitch.  The pitch draws its own window (TextBoxBorder hlcoord 0,0, b=4
+-- c=15) holding BikeShopMenuText and BikeShopMenuPrice, and leaves it up
+-- while the clerk keeps talking in the bottom box: the original never
+-- erases it before TextScriptEnd (#568).
+local BikeShopWindow = {}
+BikeShopWindow.__index = BikeShopWindow
+
+function BikeShopWindow.new(game, footer, onChoose)
+  local self = setmetatable({}, BikeShopWindow)
+  self.game = game
+  self.onChoose = onChoose
+  self.index = 1
+  self.active = true
+  -- BikeShopClerkDoYouLikeItText stays on screen under the window for as
+  -- long as the menu is up.  The text box pushed on top types it out and
+  -- pops itself; this copy of its last page takes over from there, so the
+  -- bottom box never blanks between the pitch and the answer.  Paginated
+  -- with the themed column budget so the copy breaks where the box did.
+  local TextBox = require("src.render.TextBox")
+  local box = require("src.ui.Theme").textBox or {}
+  local pages = TextBox.paginate(TextBox.substitute(game, footer), box.maxCols)
+  self.footer = pages[#pages]
+  return self
+end
+
+function BikeShopWindow:update()
+  -- one answer only: the boxes pushed by onChoose sit on top of this
+  -- state, but a second A on the same frame must not fire it twice
+  if not self.active then return end
+  local input = self.game.input
+  -- HandleMenuInput with wMenuWrappingEnabled clear: the two rows clamp
+  if input:wasPressed("up") then
+    self.index = 1
+  elseif input:wasPressed("down") then
+    self.index = 2
+  elseif input:wasPressed("a") or input:wasPressed("b") then
+    local cancelled = input:wasPressed("b") -- bit B_PAD_B -> .cancel
+    require("src.core.Sound").play(self.game.data, "Press_AB")
+    self.active = false
+    self.onChoose(not cancelled and self.index == 1)
+  end
+end
+
+function BikeShopWindow:draw()
+  local Font = require("src.render.Font")
+  local Strings = require("src.core.Strings")
+  local Theme = require("src.ui.Theme")
+  Font.drawBox(0, 0, 17, 6)
+  love.graphics.setColor(0, 0, 0, 1)
+  local bike = self.game.data.items.BICYCLE
+  Font.draw(bike and bike.name or "BICYCLE", 16, 16)  -- hlcoord 2, 2
+  Font.draw("¥1000000", 64, 24)                       -- hlcoord 8, 3
+  Font.draw(Strings("CANCEL"), 16, 32)                -- `next` skips a row
+  -- wTopMenuItemX 1, wTopMenuItemY 2, rows two apart
+  Font.drawCode(Theme.cursor, 8, self.index == 1 and 16 or 32)
+  if self.footer then
+    -- same geometry TextBox resolves against, so a themed box matches
+    local box = Theme.textBox or {}
+    local tx, ty = box.tx or 0, box.ty or 12
+    love.graphics.setColor(1, 1, 1, 1)
+    Font.drawBox(tx, ty, box.tw or 20, box.th or 6)
+    love.graphics.setColor(0, 0, 0, 1)
+    for i, line in ipairs(self.footer) do
+      Font.draw(line, (tx + 1) * 8, (ty + 2 * i) * 8)
+    end
+  end
+  love.graphics.setColor(1, 1, 1, 1)
+end
+
 M.BIKE_SHOP = {
   talk = {
     TEXT_BIKESHOP_CLERK = function(game, ow, npc, done)
+      local Bag = require("src.inventory.Bag")
+      local Flags = require("src.script.Flags")
       local TextBox = require("src.render.TextBox")
-      if (game.save.inventory.BICYCLE or 0) > 0 then
-        game.stack:push(TextBox.new(game, "How's the\nBICYCLE treating\nyou?", done))
-      elseif (game.save.inventory.BIKE_VOUCHER or 0) > 0 then
-        game.save.inventory.BIKE_VOUCHER = nil
-        game.save.inventory.BICYCLE = 1
-        game.stack:push(TextBox.new(game,
-          ("Oh, that's a\nBIKE VOUCHER!\f%s exchanged\nit for a BICYCLE!")
-          :format(game.save.player.name), done))
-      else
-        game.stack:push(TextBox.new(game,
-          "A BICYCLE costs\n¥1000000. Sorry,\nno instalments!", done))
+      local t = game.data.text
+      local function say(text, after, opts)
+        game.stack:push(TextBox.new(game, text, after, opts))
       end
+
+      -- CheckEvent EVENT_GOT_BICYCLE.  Saves made before the clerk started
+      -- setting the event still have the bike in the bag, so either counts.
+      if (game.save.inventory.BICYCLE or 0) > 0
+          or Flags.get(game.save, "EVENT_GOT_BICYCLE") then
+        say(t._BikeShopClerkHowDoYouLikeYourBicycleText, done)
+        return
+      end
+
+      -- .dontHaveBike: IsItemInBag BIKE_VOUCHER
+      if (game.save.inventory.BIKE_VOUCHER or 0) > 0 then
+        say(t._BikeShopClerkOhThatsAVoucherText, function()
+          -- GiveItem's `jr nc, .BagFull`: the voucher is only spent once
+          -- the BICYCLE is actually in the bag
+          if not Bag.add(game.save, "BICYCLE", 1) then
+            say(t._BikeShopBagFullText, done)
+            return
+          end
+          Bag.remove(game.save, "BIKE_VOUCHER", 1)
+          Flags.set(game.save, "EVENT_GOT_BICYCLE")
+          -- BikeShopExchangedVoucherText carries sound_get_key_item; the
+          -- map runs EnableAutoTextBoxDrawing, so the box still waits for
+          -- a button once the jingle has played (auto.wait, #247)
+          say(t._BikeShopExchangedVoucherText, done, {
+            auto = { wait = true, sound = function()
+              return require("src.core.Sound").play(game.data, "Get_Key_Item")
+            end },
+          })
+        end)
+        return
+      end
+
+      -- .dontHaveVoucher: welcome, then the BICYCLE/CANCEL window
+      say(t._BikeShopClerkWelcomeText, function()
+        local pitch = t._BikeShopClerkDoYouLikeItText
+        game.stack:push(BikeShopWindow.new(game, pitch, function(bought)
+          local function comeAgain()
+            say(t._BikeShopComeAgainText, function()
+              game.stack:pop() -- the window, still up under the text
+              done()
+            end)
+          end
+          if bought then
+            -- a million is out of anyone's reach: BikeShopCantAffordText
+            say(t._BikeShopCantAffordText, comeAgain)
+          else
+            comeAgain()
+          end
+        end))
+        -- PrintText BikeShopClerkDoYouLikeItText, then straight into
+        -- HandleMenuInput: the box types out and hands over without
+        -- waiting, leaving the window's copy of the line on screen
+        say(pitch, nil, { auto = { delay = 0 } })
+      end)
     end,
   },
 }

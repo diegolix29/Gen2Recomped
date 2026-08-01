@@ -32,6 +32,8 @@ local Items = require("Items")
 local Events = require("Events")
 local MapBrowser = require("MapBrowser")
 local Dex = require("Dex")
+-- chrome, not a tab panel, so deliberately kept out of PANELS below (#541)
+local SpeciesPicker = require("SpeciesPicker")
 
 local App = {}
 local S
@@ -222,8 +224,11 @@ function App.unload()
   -- Kit is never evicted from package.loaded, so a Close taken while a text
   -- field still owns focus would leak Kit.focus and a raised soft keyboard
   -- (against a rect that is gone) into the launcher and the next session
-  -- (#529).
+  -- (#529).  A Close taken on the frame the species picker went up would
+  -- likewise leave its modal shield raised, and the next session would open
+  -- deaf to every click (#541).
   Kit.blur()
+  Kit.blockClicks = false
 end
 
 function App.save()
@@ -345,35 +350,11 @@ local function drawTitleBar(x, y, w, h)
     { 159, 180, 221 })
   cx = cx + badge + 10 * s
 
-  local wordH = Kit.textHeight("wordmark")
-  local brandH = Kit.textHeight("brand")
-  local blockY = y + (h - (wordH + 2 * s + brandH)) / 2
-  love.graphics.setFont(Kit.fonts.wordmark)
-  Theme.col(PAL.heading, 1)
-  local wordW = Theme.spaced(Kit.fonts.wordmark, "SAVE EDITOR", cx, blockY, 2 * s)
-  love.graphics.setFont(Kit.fonts.brand)
-  Theme.col(PAL.caption, 1)
-  local brandW = Theme.spaced(Kit.fonts.brand, "GEN1RECOMP", cx,
-    blockY + wordH + 2 * s, 1 * s)
-  cx = cx + math.max(wordW, brandW) + 12 * s
-
-  -- version chip: which game this save belongs to (from the launcher slot,
-  -- or the save's own header in a standalone run)
-  if S.version then
-    local name = S.version:upper()
-    local c = (S.version == "blue") and PAL.blue or PAL.red
-    local cw = Kit.textWidth("chip", name) + 16 * s
-    local ch = 22 * s
-    local cy = y + (h - ch) / 2
-    Theme.col(c, 0.1)
-    love.graphics.rectangle("fill", cx, cy, cw, ch, 6 * s, 6 * s)
-    Theme.stroke(cx, cy, cw, ch, 6 * s, c, 0.5, 1)
-    Kit.textCenter("chip", name, cx, cy + (ch - Kit.textHeight("chip")) / 2, cw, c)
-    cx = cx + cw + 12 * s
-  end
-
-  -- right-aligned action cluster, laid out from the right edge inward so the
-  -- file chip can absorb whatever is left
+  -- The right-aligned action cluster is laid out from the right edge inward
+  -- BEFORE anything on the left is drawn: the buttons are the one thing in
+  -- this bar that must always be reachable, so on a phone the identity block,
+  -- the version chip and the file chip are what yield.  Measuring them last
+  -- is why they used to paint straight through the buttons (#497).
   local btnH = 38 * s
   local btnY = y + (h - btnH) / 2
   local rightEdge = x + w - pad
@@ -394,6 +375,41 @@ local function drawTitleBar(x, y, w, h)
   local openX = closeX - gap - openW
   local reloadX = openX - gap - reloadW
   local saveX = reloadX - gap - saveW
+
+  local wordH = Kit.textHeight("wordmark")
+  local brandH = Kit.textHeight("brand")
+  local blockY = y + (h - (wordH + 2 * s + brandH)) / 2
+  local wordW = math.max(
+    Theme.spacedWidth(Kit.fonts.wordmark, "SAVE EDITOR", 2 * s),
+    Theme.spacedWidth(Kit.fonts.brand, "GEN1RECOMP", 1 * s))
+  if cx + wordW + 12 * s < saveX then
+    love.graphics.setFont(Kit.fonts.wordmark)
+    Theme.col(PAL.heading, 1)
+    Theme.spaced(Kit.fonts.wordmark, "SAVE EDITOR", cx, blockY, 2 * s)
+    love.graphics.setFont(Kit.fonts.brand)
+    Theme.col(PAL.caption, 1)
+    Theme.spaced(Kit.fonts.brand, "GEN1RECOMP", cx,
+      blockY + wordH + 2 * s, 1 * s)
+    cx = cx + wordW + 12 * s
+  end
+
+  -- version chip: which game this save belongs to (from the launcher slot,
+  -- or the save's own header in a standalone run)
+  if S.version then
+    local name = S.version:upper()
+    local c = (S.version == "blue") and PAL.blue or PAL.red
+    local cw = Kit.textWidth("chip", name) + 16 * s
+    local ch = 22 * s
+    local cy = y + (h - ch) / 2
+    if cx + cw + 12 * s < saveX then
+      Theme.col(c, 0.1)
+      love.graphics.rectangle("fill", cx, cy, cw, ch, 6 * s, 6 * s)
+      Theme.stroke(cx, cy, cw, ch, 6 * s, c, 0.5, 1)
+      Kit.textCenter("chip", name, cx, cy + (ch - Kit.textHeight("chip")) / 2,
+        cw, c)
+      cx = cx + cw + 12 * s
+    end
+  end
 
   -- Save is the only green-filled control in the chrome; a corrupt load
   -- renders it steel with the reason parked in the status bar rather than
@@ -481,9 +497,11 @@ local function railDetail(x, pillX)
     widths.glyph = widths.glyph + tile + 12 * s
   end
   local avail = pillX - 14 * s - (x + 22 * s)
-  if widths.full <= avail then return "full" end
-  if widths.nocount <= avail then return "nocount" end
-  return "glyph"
+  -- the widths come back too: the caller needs the glyph-mode figure to decide
+  -- whether the pill still has room, and measuring the rail twice is waste
+  if widths.full <= avail then return "full", widths end
+  if widths.nocount <= avail then return "nocount", widths end
+  return "glyph", widths
 end
 
 local function drawTabRail(x, y, w, h)
@@ -496,7 +514,15 @@ local function drawTabRail(x, y, w, h)
   local ph = 26 * s
   local pw = Kit.textWidth("small", label) + 28 * s
   local px = x + w - pad - pw
-  local detail = railDetail(x, px)
+  local detail, widths = railDetail(x, px)
+  -- Last stop before the tiles and the pill collide: at phone widths even the
+  -- 2-letter glyph tiles need the room the pill is sitting in, and the pill
+  -- only repeats a line the status bar already prints on load, so the pill is
+  -- what goes (#497).  With it gone the tiles get the full bar back.
+  local showPill = widths.glyph <= px - 14 * s - (x + 22 * s)
+  if not showPill then
+    detail = railDetail(x, x + w - pad)
+  end
 
   local tile = 40 * s
   local cx = x + pad
@@ -546,15 +572,19 @@ local function drawTabRail(x, y, w, h)
     cx = cx + cellW
   end
 
-  local py = y + h - 14 * s - ph
-  Theme.col(pillColor, clean and 0.08 or 0.1)
-  love.graphics.rectangle("fill", px, py, pw, ph, ph / 2, ph / 2)
-  Theme.stroke(px, py, pw, ph, ph / 2, pillColor, clean and 0.45 or 0.5, 1)
-  Kit.textCenter("small", label, px, py + (ph - Kit.textHeight("small")) / 2, pw,
-    pillColor)
-  if target and Kit.press(px, py, pw, ph) then
-    S.tab = target
-    Ops.say(S, "Jumped to the tab holding the first quarantine warning")
+  if showPill then
+    local py = y + h - 14 * s - ph
+    Theme.col(pillColor, clean and 0.08 or 0.1)
+    love.graphics.rectangle("fill", px, py, pw, ph, ph / 2, ph / 2)
+    Theme.stroke(px, py, pw, ph, ph / 2, pillColor, clean and 0.45 or 0.5, 1)
+    Kit.textCenter("small", label, px, py + (ph - Kit.textHeight("small")) / 2,
+      pw, pillColor)
+    -- paint and hit target are suppressed together, so a hidden pill cannot
+    -- still eat a tap meant for the DEX tile
+    if target and Kit.press(px, py, pw, ph) then
+      S.tab = target
+      Ops.say(S, "Jumped to the tab holding the first quarantine warning")
+    end
   end
 end
 
@@ -592,6 +622,11 @@ function App.draw()
   local mx, my = love.mouse.getPosition()
   Kit.beginFrame(mx, my, mouseClicked)
   mouseClicked = false
+  -- Modal shield.  Kit has no z-order, so the picker cannot simply be drawn
+  -- last: the chrome and the panel underneath would take the same tap.  The
+  -- shield goes up before anything dispatches and comes down only for the
+  -- picker's own layer at the bottom of this function (#541).
+  Kit.blockClicks = (S.speciesPicker ~= nil)
 
   Theme.field(width, height)
 
@@ -613,6 +648,8 @@ function App.draw()
   end
 
   drawStatusBar(0, height - statusH, width, statusH)
+  Kit.blockClicks = false
+  SpeciesPicker.draw(S, Kit, width, height)
   Kit.endFrame()
 
   -- Only now, with the whole frame painted, is it safe to drop the editor.
@@ -621,6 +658,18 @@ end
 
 function App.keypressed(key)
   if not S then return end
+  -- The picker takes Enter and Escape before the focused field does: Kit maps
+  -- both to the same "\r" edit (a blur), which cannot tell "commit the top
+  -- match" apart from "give up" (#541).
+  if S.speciesPicker then
+    if key == "return" or key == "kpenter" then
+      SpeciesPicker.commitFirst(S, Kit)
+      return
+    elseif key == "escape" then
+      Ops.closeSpeciesPicker(S, Kit)
+      return
+    end
+  end
   -- A focused text field eats the keys it cares about (typing "s" into the
   -- map filter must not trigger Save).
   if Kit.keypressed(key) then return end

@@ -35,14 +35,25 @@ local function middleAgedMan(game, ow, npc, done)
     -- .loop: print WhichBadgeText, then show the badge list menu again
     push(game, t._CeruleanBadgeHouseMiddleAgedManWhichBadgeText, function()
       local ListMenu = require("src.ui.ListMenu")
+      local Strings = require("src.core.Strings")
       local items = {}
       for _, id in ipairs(BADGE_ORDER) do
         local idef = game.data.items[id]
         items[#items + 1] = { label = idef and idef.name or id, value = id }
       end
+      -- PrintListMenuEntries prints ListMenuCancelText once it hits the
+      -- list's $FF terminator (home/list_menu.asm), so every
+      -- DisplayListMenuID list ends in an on-screen CANCEL row; picking it
+      -- takes DisplayListMenuIDLoop's ExitListMenu path, the same .done
+      -- exit as B (#569)
+      items[#items + 1] = { label = Strings("CANCEL") }
       local menu = ListMenu.new(game, "", items, {
         onChoose = function(item)
           game.stack:pop()
+          if not item.value then
+            push(game, t._CeruleanBadgeHouseMiddleAgedManVisitAnyTimeText, done)
+            return
+          end
           push(game, t[BADGE_TEXT[item.value]], loop)
         end,
         onCancel = function()

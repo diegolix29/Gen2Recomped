@@ -50,7 +50,7 @@ DISPLAY_NAME="gen1recomp"
 #      capabilities like HealthKit are involved), so a per-team default
 #      lets anyone build without colliding with someone else's app
 #   4. simulator: the project default (no App ID registration involved)
-BUNDLE_ID="${GEN1_BUNDLE_ID:-}"
+BUNDLE_ID="${GEN1_BUNDLE_ID:-com.theboisclub.gen1recomp}"
 if [ -z "$BUNDLE_ID" ] && [ -f "$IOS_DIR/bundle_id.local" ]; then
   BUNDLE_ID="$(tr -d '[:space:]' < "$IOS_DIR/bundle_id.local")"
 fi
@@ -65,6 +65,7 @@ DEVICE=false
 RELEASE=false
 PACKAGE_ONLY=false
 INSTALL=false
+CREATE_IPA=false
 # Last resort for an incomplete source export, mirroring build_android.sh.
 MANIFEST_BASE_URL="${MANIFEST_BASE_URL:-https://raw.githubusercontent.com/bryanthaboi/gen1recomp/main}"
 MANIFESTS=""
@@ -82,6 +83,7 @@ while [ $# -gt 0 ]; do
     --release) RELEASE=true ;;
     --package-only) PACKAGE_ONLY=true ;;
     --install) INSTALL=true ;;
+    --ipa) CREATE_IPA=true ;;
     --version) VERSION="$2"; shift ;;
     -h|--help)
       sed -n '2,24p' "$0"
@@ -91,6 +93,10 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+if $CREATE_IPA; then
+  DEVICE=true
+fi
 
 VERSION_CODE=""
 if [ -n "$VERSION" ]; then
@@ -232,6 +238,30 @@ apply_ios_branding() {
   cp "$OVERLAY_PLIST" "$dest"
 }
 
+apply_ios_icon() {
+  local source="$ROOT/assets/logo/logo.png"
+  local target="$XCODE_DIR/Images.xcassets/iOS AppIcon.appiconset"
+  [ -f "$source" ] || fail "missing iOS icon source: $source"
+  [ -d "$target" ] || fail "missing iOS app icon set: $target"
+  local entry name size
+  while IFS=: read -r name size; do
+    sips -z "$size" "$size" "$source" --out "$target/$name" >/dev/null
+  done <<'EOF'
+icon-1024pt@1x.png:1024
+icon-29pt@1x.png:29
+icon-29pt@2x.png:58
+icon-29pt@3x.png:87
+icon-40pt@1x.png:40
+icon-40pt@2x.png:80
+icon-40pt@3x.png:120
+icon-60pt@2x.png:120
+icon-60pt@3x.png:180
+icon-76pt@1x.png:76
+icon-76pt@2x.png:152
+icon-83.5pt@2x.png:167
+EOF
+}
+
 # --------------------------------------------------------------- game.love
 # Every version's import manifest has to ship or that game's ROM import fails in
 # the built app: decodeManifest (src/import/RomImporter.lua) errors outright when
@@ -326,8 +356,9 @@ pack_game_love() {
   # in the built app while dev, which reads the source tree, stayed green.
   archive_entries="$(unzip -Z1 "$LOVE_FILE")"
   # shellcheck disable=SC2086  # MANIFESTS is a deliberate word list
-  for required in tools/save-editor/App.lua tools/save-editor/Kit.lua \
-                  tools/save-editor/panels/Party.lua $MANIFESTS; do
+  for required in src/update/Boot.lua tools/save-editor/App.lua \
+                  tools/save-editor/Kit.lua tools/save-editor/panels/Party.lua \
+                  $MANIFESTS; do
     printf '%s\n' "$archive_entries" | grep -qx "$required" \
       || fail "game.love is missing $required"
   done
@@ -640,6 +671,7 @@ install_to_device() {
 
 # --------------------------------------------------------------- main
 apply_ios_branding
+apply_ios_icon
 say "applying iOS native bridge patches (picker/Files support)"
 python3 "$IOS_DIR/patch_love_src.py" || fail "patch_love_src.py failed"
 ensure_manifests

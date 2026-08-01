@@ -49,7 +49,7 @@ function love.conf(t)
     t.window.minwidth = 480
     t.window.minheight = 360
   end
-  t.version = "11.5"
+  t.version = love._os == "iOS" and "12.0" or "11.5"
   t.window.vsync = 1
   t.modules.joystick = true
   t.modules.physics = false

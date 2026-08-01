@@ -183,6 +183,21 @@ local function drawCommandMenu(battle)
   Font.drawBox(0, 13, 20, 5)
   Font.drawBox(20, 13, 18, 5)
   love.graphics.setColor(0, 0, 0, 1)
+  -- The old-man / PROF.OAK catch demo has no party, so makeOldManDemo parks
+  -- the WILD mon in battle.player as a placeholder (BattleState:1209).  The
+  -- classic layout's demo branch never names anyone (DisplayBattleMenu,
+  -- core.asm:2038-2049, just draws the menu), so naming it here printed
+  -- "What will PIKACHU do?" over Oak's scripted throw (#557).  Leave the
+  -- prompt side blank and run the same scripted hand the classic does.
+  if battle.demo then
+    Font.draw(Strings("FIGHT"), 176, 112)
+    Font.drawCode(0xE1, 240, 112); Font.drawCode(0xE2, 248, 112)
+    Font.draw(Strings("ITEM"), 176, 128)
+    Font.draw(Strings("RUN"), 240, 128)
+    -- next to FIGHT for the first 80 frames, then ITEM
+    Font.drawCode(0xED, 168, (battle.demoTimer or 0) <= 80 and 112 or 128)
+    return
+  end
   Font.draw(Strings("What will"), 8, 112)
   local who = battle.player and battle.player.name or ""
   Font.draw(fitName(who, 112) .. Strings(" do?"), 8, 128)
@@ -310,17 +325,35 @@ function WideBattle.draw(battle)
   -- Each side keeps its original sprite pixels and placement math: the two
   -- 160x144 OAM regions are translated apart and clipped into the wider
   -- battlefield rather than either monster being scaled.  wideRegion tells
-  -- drawBattlerPic its own side window is already the clip.
+  -- drawBattlerPic its own side window is already the clip.  A shake moves
+  -- each region's clip with its contents, so a pic pushed toward a region
+  -- edge is not sheared off it (a vertical shake used to clip the player's
+  -- feet at FIELD_BOTTOM).
   battle.wideRegion = true
-  inRegion(0, 32, 160, WideBattle.FIELD_BOTTOM - 32, 20 + sx, 8 + sy,
+  inRegion(sx, 32 + sy, 160, WideBattle.FIELD_BOTTOM - 32, 20 + sx, 8 + sy,
     function() battle:drawPicsLayer(slide, 0, 0, "player", true) end)
-  inRegion(160, 0, 144, WideBattle.FIELD_BOTTOM, 136 + sx, sy,
+  inRegion(160 + sx, sy, 144, WideBattle.FIELD_BOTTOM, 136 + sx, sy,
     function() battle:drawPicsLayer(slide, 0, 0, "enemy", true) end)
   battle.wideRegion = nil
 
-  drawHUDs(battle, slide)
+  -- A battle sets rWY to 0 (engine/battle/core.asm), so the window the
+  -- shakes move IS the whole screen: PredefShakeScreenHorizontally,
+  -- PredefShakeScreenVertically and AnimationShakeScreenHorizontallySlow
+  -- displace the HUDs and the message window along with the pics, exactly as
+  -- drawClassic offsets its whole BG canvas.  Shaking only the two pic
+  -- regions left the foe gliding sideways across a nailed-down screen on
+  -- every applying-attack shake -- TAIL WHIP and every other status move
+  -- (#562).  The OAM anim layer stays put, as it does in drawClassic.
+  local function shaken(fn)
+    if sx == 0 and sy == 0 then return fn() end
+    g.push()
+    g.translate(sx, sy)
+    fn()
+    g.pop()
+  end
+  shaken(function() drawHUDs(battle, slide) end)
   drawAnimationLayer(battle)
-  drawTextArea(battle)
+  shaken(function() drawTextArea(battle) end)
 
   if fx and fx.flash and fx.flash > 0 and battle.frame % 4 < 2 then
     g.setColor(1, 1, 1, 0.85)

@@ -46,20 +46,32 @@ end
 -- opts.kind: "battle" | "intro" | "trainer_card" | "hof"
 -- opts.demo: the catch tutorial, where the old man fights in the player's
 --            place and stands in for the back pic
+-- opts.oakDemo: the Yellow variant of that demo (BATTLE_TYPE_PIKACHU), where
+--            PROF.OAK fights in the player's place behind his own back pic
 -- opts.battle: the live battle, for kind == "battle"
 -- Returns path, trueColor.
 function Sprites.playerPath(data, side, opts)
   opts = opts or {}
   side = side == "back" and "back" or "front"
   -- one key per pic, so a conversion can replace the back and inherit the
-  -- rest; fieldValue folds data.field over FieldDefaults per key
+  -- rest; fieldValue folds data.field over FieldDefaults per key.  The two
+  -- demo keys mirror LoadPlayerBackPic's wBattleType branch (#557).
   local key = side == "front" and "front"
+              or (opts.oakDemo and "oakBack")
               or (opts.demo and "demoBack" or "back")
   local path = FieldDefaults.fieldValue(data, "playerPics", key)
+  -- ProfOakPicBack is a Yellow-only rip, so a cache imported before it
+  -- existed has no file there; fall back to the old man rather than hand a
+  -- missing path to getImage (#557)
+  if key == "oakBack" and path
+     and not require("src.render.Assets").exists(path) then
+    path = FieldDefaults.fieldValue(data, "playerPics", "demoBack")
+  end
   local ctx = {
     side = side,
     kind = opts.kind or "battle",
     demo = opts.demo and true or false,
+    oakDemo = opts.oakDemo and true or false,
     battle = opts.battle,
     trueColor = false,
     data = data,

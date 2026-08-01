@@ -73,6 +73,7 @@ local function withdraw(game)
   local pc = game.save.pcItems
   game.stack:push(ListMenu.new(game, "WITHDRAW ITEM", buildItems(game, pc), {
     messageBox = true,
+    noSound = true, -- PlayerPCMenu holds BIT_NO_MENU_BUTTON_SOUND (#570)
     onChoose = function(item, list)
       askQuantity(game, list, pc[item.value] or 1, item.value, function(qty)
         local Bag = require("src.inventory.Bag")
@@ -110,6 +111,7 @@ local function deposit(game)
   end
   game.stack:push(ListMenu.new(game, "DEPOSIT ITEM", buildItems(game, depositable), {
     messageBox = true,
+    noSound = true, -- PlayerPCMenu holds BIT_NO_MENU_BUTTON_SOUND (#570)
     onChoose = function(item, list)
       askQuantity(game, list, inv[item.value] or 1, item.value, function(qty)
         if pcFull(game, pc, item.value) then
@@ -130,6 +132,7 @@ local function toss(game)
   local pc = game.save.pcItems
   game.stack:push(ListMenu.new(game, "TOSS ITEM", buildItems(game, pc), {
     messageBox = true,
+    noSound = true, -- PlayerPCMenu holds BIT_NO_MENU_BUTTON_SOUND (#570)
     onChoose = function(item, list)
       local def = game.data.items[item.value]
       if (def and def.keyItem) or item.value:find("^HM_") then

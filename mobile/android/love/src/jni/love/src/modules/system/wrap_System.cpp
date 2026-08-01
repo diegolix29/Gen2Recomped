@@ -109,6 +109,12 @@ int w_createFile(lua_State *L)
 	return 1;
 }
 
+int w_syncHealthSteps(lua_State *L)
+{
+	luax_pushboolean(L, instance()->syncHealthSteps());
+	return 1;
+}
+
 int w_hasBackgroundMusic(lua_State *L)
 {
 	lua_pushboolean(L, instance()->hasBackgroundMusic());
@@ -126,6 +132,7 @@ static const luaL_Reg functions[] =
 	{ "vibrate", w_vibrate },
 	{ "pickFile", w_pickFile },
 	{ "createFile", w_createFile },
+	{ "syncHealthSteps", w_syncHealthSteps },
 	{ "hasBackgroundMusic", w_hasBackgroundMusic },
 	{ 0, 0 }
 };

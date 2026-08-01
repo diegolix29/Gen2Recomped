@@ -15,8 +15,11 @@ local Party = {}
 
 -- Roster column width: the design's 460px at the reference size, but it gives
 -- ground to the inspector on a narrow window so neither column collapses.
+-- The 300px floor used to be absolute, which on a phone handed the roster
+-- three quarters of the panel and left the inspector laying itself out at a
+-- negative width (#497); the floor now yields to a share of what there is.
 local function rosterWidth(w, s)
-  return math.max(300 * s, math.min(460 * s, w * 0.36))
+  return math.max(math.min(300 * s, w * 0.42), math.min(460 * s, w * 0.36))
 end
 
 -- HP colour follows the game's own health bar thresholds.

@@ -354,6 +354,19 @@ pack_game_love() {
   else
     # Linux/macOS - use standard unzip for verification
     if unzip -Z1 "$LOVE_FILE" \
+  # tools/save-editor ships with the app: the launcher's Edit button on a save
+  # row opens it in-process, so it must be inside the archive (see build.sh).
+  # Deliberately NO fused mods: a mod inside game.love sits in the read-only
+  # APK, so the mod manager's Delete can't remove it and it reappears every
+  # launch.  Pokewalker ships as an importable .zip instead, which gives it
+  # a real install/upgrade/delete lifecycle.
+  (cd "$ROOT" && zip -q -9 -r "$LOVE_FILE" \
+    main.lua conf.lua src data assets tools/save-editor \
+    tools/rom_manifest.json tools/rom_manifest_blue.json \
+    tools/rom_manifest_yellow.json \
+    -x '*.DS_Store' -x '*/.git/*' -x '*/.DS_Store' \
+    -x 'data/generated/*' -x 'assets/generated/*')
+  if unzip -Z1 "$LOVE_FILE" \
       | grep -Eq '^(data|assets)/generated/[^/]+|^(data|assets)/generated/.+/'; then
       fail "game.love unexpectedly contains generated ROM data"
     fi
@@ -503,6 +516,29 @@ require_android_sdk() {
 # --------------------------------------------------------------- gradle
 run_gradle() {
   local task="assembleEmbedNoRecordDebug"
+  local build_dir="$ANDROID_DIR"
+
+  # ndk-build is GNU make underneath and cannot cope with spaces anywhere in
+  # the project path ("Your APP_BUILD_SCRIPT points to an unknown file").
+  # When this checkout lives at a spaced path (e.g. "~/xCode Projects/..."),
+  # shadow the android tree to a space-free location and build there; the
+  # shadow persists across runs so gradle/ndk builds stay incremental.
+  case "$ANDROID_DIR" in
+    *" "*)
+      build_dir="${TMPDIR:-/tmp}/gen1recomp-android-shadow"
+      say "path contains spaces (ndk-build cannot handle them);"
+      say "shadow-building in: $build_dir"
+      mkdir -p "$build_dir"
+      rsync -a --delete \
+        --exclude=".gradle" --exclude="app/build" --exclude="love/build" \
+        --exclude="local.properties" \
+        "$ANDROID_DIR/" "$build_dir/"
+      if [ -f "$ANDROID_DIR/local.properties" ]; then
+        cp "$ANDROID_DIR/local.properties" "$build_dir/local.properties"
+      fi
+      ;;
+  esac
+
   say "building APK ($task)"
 
   # Detect if running on Windows (Git Bash) or Linux/macOS
@@ -525,8 +561,7 @@ run_gradle() {
   You can still iterate on the .love payload with: scripts/build_android.sh --package-only"
   fi
 
-  local out_dir="$ANDROID_DIR/app/build/outputs/apk/embedNoRecord/debug"
-  
+  local out_dir="$build_dir/app/build/outputs/apk/embedNoRecord/debug"
   if [ -d "$out_dir" ]; then
     say "APK output:"
     find "$out_dir" -name '*.apk' -exec ls -lh {} \;

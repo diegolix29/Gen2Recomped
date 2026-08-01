@@ -156,16 +156,119 @@ function Ops.setLevel(S, mon, level)
   return Ops.mark(S, ("%s is now Lv%d"):format(mon.species, mon.level))
 end
 
+-- A catalog id is only usable as a real mon when its record carries what the
+-- Gen1 formulas read: Stats.calc indexes baseStats.<stat> unconditionally
+-- (src/pokemon/Stats.lua, home/move_mon.asm CalcStat), because the asm's
+-- BaseStats is a fixed 151-entry table and every row is complete.  The
+-- editor's list is NOT that table -- it is every key in Data.pokemon after
+-- the mod merge -- and a mod loaded at api 1 can leave a partial record in
+-- there, since the schema violation downgrades to a warning rather than a
+-- rejection (src/mods/Schemas.lua R.pokemon).  So the editor tests the record
+-- instead of trusting the list: without this, picking such a species walked
+-- Stats.calc into `speciesDef.baseStats[key]` on a nil and took the window
+-- down (#541).
+local BASE_STAT_KEYS = { "hp", "attack", "defense", "speed", "special" }
+
+function Ops.speciesUsable(S, id)
+  local def = id and S.data.pokemon[id]
+  if type(def) ~= "table" or type(def.baseStats) ~= "table" then return false end
+  for _, key in ipairs(BASE_STAT_KEYS) do
+    if type(def.baseStats[key]) ~= "number" then return false end
+  end
+  return true
+end
+
+-- The one funnel every species change goes through (the picker, the stepper,
+-- anything later).  MonOps asserts and recalculates, so an unusable record is
+-- refused before it runs, and the round trip itself is fenced: a record that
+-- passes the check above but still trips a formula has to leave the mon
+-- exactly as it was and speak in the status bar, not take the editor with it.
+function Ops.setSpecies(S, mon, id)
+  if not mon then return false end
+  if id == mon.species then
+    return Ops.say(S, ("Already a %s"):format(tostring(id)))
+  end
+  if not Ops.speciesUsable(S, id) then
+    return Ops.say(S, ("%s has no usable base stats,  cannot assign it")
+      :format(tostring(id)))
+  end
+  -- MonOps.recalc replaces mon.stats with a fresh table rather than editing
+  -- it in place, so holding the old reference is a real rollback.
+  local wasSpecies, wasLevel, wasExp = mon.species, mon.level, mon.exp
+  local wasStats, wasHp = mon.stats, mon.hp
+  local ok, err = pcall(MonOps.setSpecies, S.data, mon, id)
+  if not ok then
+    mon.species, mon.level, mon.exp = wasSpecies, wasLevel, wasExp
+    mon.stats, mon.hp = wasStats, wasHp
+    return Ops.say(S, ("Could not set %s: %s"):format(tostring(id), tostring(err)))
+  end
+  return Ops.mark(S, ("Species set to %s"):format(id))
+end
+
+-- Kept for the keyboard and test path; the inspector opens the searchable
+-- picker instead of walking the catalog one arrow at a time (#541).  Skips
+-- ids Ops.setSpecies would refuse, so one bad record cannot park the walk.
 function Ops.stepSpecies(S, mon, delta)
   if not mon then return false end
   local list = S.cat.species
+  local n = #list
+  if n == 0 then return Ops.say(S, "No species in the catalog") end
   local idx = 1
   for i, id in ipairs(list) do
     if id == mon.species then idx = i break end
   end
-  local nextId = list[((idx - 1 + delta) % #list) + 1]
-  MonOps.setSpecies(S.data, mon, nextId)
-  return Ops.mark(S, ("Species set to %s"):format(nextId))
+  for step = 1, n do
+    local nextId = list[((idx - 1 + delta * step) % n) + 1]
+    if nextId ~= mon.species and Ops.speciesUsable(S, nextId) then
+      return Ops.setSpecies(S, mon, nextId)
+    end
+  end
+  return Ops.say(S, "No other species in the catalog can be assigned")
+end
+
+-- Search predicate behind the picker's field: the id, the display name, and a
+-- bare dex number ("25" finds PIKACHU), all case-insensitive and plain (no
+-- pattern magic, so a "." typed by accident matches a literal dot).
+function Ops.speciesMatches(S, id, query)
+  if not query or query == "" then return true end
+  local q = tostring(query):lower()
+  if id:lower():find(q, 1, true) then return true end
+  local def = S.data.pokemon[id]
+  local name = def and def.name
+  if name and tostring(name):lower():find(q, 1, true) then return true end
+  local dex = tonumber(def and def.dex)
+  -- dex matches exactly, in either the bare or the padded form the inspector
+  -- prints ("25" and "025" both find PIKACHU).  A substring match here would
+  -- pull in ELECTABUZZ (#125) on a search for 25, which reads as a bug.
+  return dex ~= nil and (q == tostring(dex) or q == ("%03d"):format(dex))
+end
+
+function Ops.speciesSearch(S, query)
+  local out = {}
+  for _, id in ipairs(S.cat.species) do
+    if Ops.speciesMatches(S, id, query) then out[#out + 1] = id end
+  end
+  return out
+end
+
+-- The picker is modal editor chrome, not a save mutation, so its flag lives
+-- with the other view state on S (State.new).  Ops owns the door only because
+-- both the inspector and App need one and neither should require the other.
+-- `opened` marks the frame the picker went up: the click that opened it is
+-- still live when the overlay draws later in that same frame (#541).
+function Ops.openSpeciesPicker(S, Kit)
+  if not S.editingMon then
+    return Ops.say(S, "Pick a slot first, then choose its species")
+  end
+  S.speciesPicker = { query = "", offset = 0, opened = true }
+  -- focus the field on open so the mobile soft keyboard rises with it (#529)
+  if Kit then Kit.focus = "species-picker" end
+  return true
+end
+
+function Ops.closeSpeciesPicker(S, Kit)
+  S.speciesPicker = nil
+  if Kit and Kit.blur then Kit.blur() end
 end
 
 function Ops.setDv(S, mon, key, value)

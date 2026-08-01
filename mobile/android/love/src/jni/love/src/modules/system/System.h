@@ -128,6 +128,12 @@ public:
 	virtual bool createFile(const char *suggestedName = nullptr) const;
 
 	/**
+	 * Pokéwalker: stage pending real-world steps (steps_pending.json in the
+	 * save dir) from the platform step source. Android-only; false elsewhere.
+	 */
+	virtual bool syncHealthSteps() const;
+
+	/**
 	 * Gets if the user is playing music on background.
 	 * Throws an exception on unsupported platforms.
 	 *

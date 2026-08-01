@@ -527,6 +527,41 @@ local function withTrueColor(zoneList, pass)
   return merged
 end
 
+-- Palette-correct blit of `canvas` at (sx, sy) LOVE-unit scales into origin
+-- (bx, by), scissored to the (boxX, boxY, boxW, boxH) screen rect.  zoneSx/
+-- zoneSy convert zone coords (canvas-space) into screen units.  Public so a
+-- render.compose mod can composite the world/UI canvases into its own layout.
+function Renderer:blitCanvas(canvas, sx, sy, zoneList, zoneSx, zoneSy,
+                             bx, by, boxX, boxY, boxW, boxH, dpiX, dpiY)
+  local shader = zoneList and zoneList[1] and PaletteFX.shader() or nil
+  if not shader then
+    love.graphics.setScissor(boxX, boxY, boxW, boxH)
+    love.graphics.draw(canvas, bx, by, 0, sx, sy)
+    love.graphics.setScissor()
+    return
+  end
+  love.graphics.setShader(shader)
+  -- a colors == false zone is the trueColor opt-out: its rect draws with
+  -- no shader at all.  Nothing sets one without a mod, so a vanilla zone
+  -- list never toggles and issues exactly the calls it always did.
+  local bare = false
+  for _, z in ipairs(zoneList) do
+    local plain = z.colors == false
+    if plain ~= bare then
+      bare = plain
+      love.graphics.setShader(not plain and shader or nil)
+    end
+    if not plain then PaletteFX.sendColors(shader, z.colors) end
+    if scissorClamped(bx + z.x * zoneSx, by + z.y * zoneSy,
+                      z.w * zoneSx, z.h * zoneSy,
+                      boxX, boxY, boxW, boxH, dpiX, dpiY) then
+      love.graphics.draw(canvas, bx, by, 0, sx, sy)
+    end
+  end
+  love.graphics.setScissor()
+  love.graphics.setShader()
+end
+
 -- zones: optional list of SGB palette regions (see PaletteFX) in
 -- 160x144 UI space, applied to the UI pass.  worldZones: optional
 -- regions in world-canvas pixels (overworld survey zoom colors each
@@ -558,6 +593,36 @@ function Renderer:endFrame(zones, worldZones)
   -- space the world rects are not in, so they are dropped there.
   zones = withTrueColor(zones, "ui")
   worldZones = withTrueColor(worldZones, "world")
+
+  -- render.compose: hand a mod the finished world + UI canvases (and their
+  -- SGB zones), the frame metrics, Renderer:blitCanvas and the SecondScreen
+  -- bridge, letting it lay the two passes out however it likes -- e.g. as two
+  -- stacked Game Boy screens, or driving one onto a second physical display.
+  -- The mod returns true to take over the whole window; anything else (or no
+  -- mod wrapping the hook) falls through to the normal composite below.
+  if Runtime.wantsHook("render.compose") then
+    local ctx = {
+      renderer = self,
+      worldCanvas = self.worldCanvas, uiCanvas = self.canvas,
+      worldOverride = self.worldOverride,
+      worldActive = self.worldActive and true or false,
+      zones = zones, worldZones = worldZones,
+      ww = ww, wh = wh, pw = pw, ph = ph, ox = ox, oy = oy,
+      vpw = vpw, vph = vph, uiw = uiw, uih = uih,
+      scale = Sp, Sx = Sx, Sy = Sy, dpiX = dpiX, dpiY = dpiY,
+      secondScreen = require("src.render.SecondScreen"),
+    }
+    if Runtime.call("render.compose", function() return false end, self, ctx) == true then
+      self.worldActive = false
+      self.uprightActive = false
+      self.worldOverride = nil
+      PaletteFX.setPass(nil)
+      return {
+        width = ww, height = wh, gameX = ox, gameY = oy,
+        gameWidth = vpw, gameHeight = vph, scale = Sp, dpiX = dpiX, dpiY = dpiY,
+      }
+    end
+  end
 
   -- A post-process pipeline needs the whole composite in a canvas for the
   -- same reason GBC FX does, so either one alone is enough to take the
@@ -613,38 +678,12 @@ function Renderer:endFrame(zones, worldZones)
     })
   end
 
-  -- blit `canvas` at (sx, sy) LOVE-unit scales into origin (bx, by),
-  -- scissored to the (boxX, boxY, boxW, boxH) screen rect.  zoneSx/zoneSy
-  -- convert zone coords (canvas-space) into screen units.
+  -- see Renderer:blitCanvas; bound here to the frame's dpi so the composite
+  -- call sites below stay unchanged.
   local function blit(canvas, sx, sy, zoneList, zoneSx, zoneSy,
                       bx, by, boxX, boxY, boxW, boxH)
-    local shader = zoneList and zoneList[1] and PaletteFX.shader() or nil
-    if not shader then
-      love.graphics.setScissor(boxX, boxY, boxW, boxH)
-      love.graphics.draw(canvas, bx, by, 0, sx, sy)
-      love.graphics.setScissor()
-      return
-    end
-    love.graphics.setShader(shader)
-    -- a colors == false zone is the trueColor opt-out: its rect draws with
-    -- no shader at all.  Nothing sets one without a mod, so a vanilla zone
-    -- list never toggles and issues exactly the calls it always did.
-    local bare = false
-    for _, z in ipairs(zoneList) do
-      local plain = z.colors == false
-      if plain ~= bare then
-        bare = plain
-        love.graphics.setShader(not plain and shader or nil)
-      end
-      if not plain then PaletteFX.sendColors(shader, z.colors) end
-      if scissorClamped(bx + z.x * zoneSx, by + z.y * zoneSy,
-                        z.w * zoneSx, z.h * zoneSy,
-                        boxX, boxY, boxW, boxH, dpiX, dpiY) then
-        love.graphics.draw(canvas, bx, by, 0, sx, sy)
-      end
-    end
-    love.graphics.setScissor()
-    love.graphics.setShader()
+    return self:blitCanvas(canvas, sx, sy, zoneList, zoneSx, zoneSy,
+                           bx, by, boxX, boxY, boxW, boxH, dpiX, dpiY)
   end
 
   if self.worldOverride then

@@ -41,9 +41,13 @@ If the file isn't there (or you want another copy), use **Open...**, drop a
 | `App.lua` | chrome (version rail, title bar, tab rail, status bar) and the panel router |
 | `panels/` | one file per tab; pure layout that dispatches into Ops |
 
-The design reference is `SaveEditor.dc.html` in the Claude Design project
-that this port transcribes; its measurements are in the same pixel space
-`App.lua` draws in.
+`panels/SpeciesPicker.lua` is the one exception to "one file per tab": it is
+the modal species search the inspector opens, drawn by `App.draw` after the
+panel rather than routed through the tab table. Kit has no z-order, so while
+it is up `Kit.blockClicks` shields every widget underneath it.
+
+The design reference is the `SaveEditor.dc.html` mockup that this port
+transcribes; its measurements are in the same pixel space `App.lua` draws in.
 
 Two rules the code enforces and the tests assert:
 

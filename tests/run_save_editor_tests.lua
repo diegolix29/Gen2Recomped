@@ -628,5 +628,324 @@ do
   Kit.focus = nil
 end
 
+do
+  -- #541: changing species took the editor down.  The inspector's arrows
+  -- called MonOps.setSpecies on whatever record came next in the catalog, and
+  -- the stat recalculation indexes baseStats.<stat> unconditionally
+  -- (src/pokemon/Stats.lua, ported from home/move_mon.asm CalcStat) because
+  -- the asm's BaseStats is a fixed 151-entry table with no partial rows.  The
+  -- editor's catalog is NOT that table: it is every key in Data.pokemon after
+  -- the mod merge, and a partial record survives that merge as a warning
+  -- rather than a rejection (src/mods/Schemas.lua R.pokemon).  So the sweep
+  -- below is the real check -- every id the catalog offers has to either
+  -- assign or refuse in words, and neither may raise.
+  local S = State.new()
+  S.data = Data
+  S.save = SaveData.newGame()
+
+  -- a mod-shaped partial record: registered, listed, missing the stats the
+  -- Gen1 formulas read
+  Data.pokemon.TESTMON_PARTIAL = { name = "TESTMON", dex = 0,
+    baseStats = { hp = 40, attack = 30 }, growthRate = "MEDIUM_FAST",
+    types = { "NORMAL" }, learnset = {} }
+  S.cat = Catalog.build(Data)
+
+  check(Ops.speciesUsable(S, "PIKACHU"), "a complete record is usable")
+  check(Ops.speciesUsable(S, "TESTMON_PARTIAL") == false,
+        "a record missing base stats is not usable")
+  check(Ops.speciesUsable(S, "NO_SUCH_SPECIES") == false,
+        "an id that is not in the data at all is not usable")
+
+  local mon = MonOps.create(Data, "WARTORTLE", 20)
+  S.editingMon = mon
+  local statsBefore = mon.stats.attack
+  check(Ops.setSpecies(S, mon, "TESTMON_PARTIAL") == false,
+        "setSpecies refuses a record the formulas cannot use")
+  eq(mon.species, "WARTORTLE", "a refused setSpecies leaves the mon alone")
+  eq(mon.stats.attack, statsBefore, "a refused setSpecies leaves the stats alone")
+  check(S.status:match("base stats") ~= nil, "a refused setSpecies explains itself")
+  check(S.dirty == false, "a refused setSpecies does not dirty the save")
+
+  -- the crash itself: walk the whole catalog the way the arrows did
+  local landed = {}
+  local walkOk, walkErr = pcall(function()
+    for _ = 1, #S.cat.species do
+      Ops.stepSpecies(S, mon, 1)
+      landed[mon.species] = true
+      assert(Ops.speciesUsable(S, mon.species),
+        "stepSpecies parked on " .. tostring(mon.species))
+    end
+  end)
+  check(walkOk, "cycling the whole catalog never errors: " .. tostring(walkErr))
+  check(landed.TESTMON_PARTIAL == nil, "cycling steps over an unusable record")
+  check(landed.PIKACHU, "cycling still reaches ordinary species")
+
+  local backOk, backErr = pcall(function()
+    for _ = 1, #S.cat.species do Ops.stepSpecies(S, mon, -1) end
+  end)
+  check(backOk, "cycling backwards never errors: " .. tostring(backErr))
+
+  -- and every real id assigns, so "nothing crashes" cannot be bought by
+  -- refusing everything
+  local assigned, refused = 0, 0
+  for _, id in ipairs(S.cat.species) do
+    if id ~= "TESTMON_PARTIAL" then
+      local ok, err = pcall(Ops.setSpecies, S, mon, id)
+      check(ok, "setSpecies " .. id .. ": " .. tostring(err))
+      if ok and mon.species == id then assigned = assigned + 1 else refused = refused + 1 end
+    end
+  end
+  eq(refused, 0, "no real species is refused")
+  check(assigned > 140, "the whole dex assigns (" .. assigned .. " species)")
+
+  Data.pokemon.TESTMON_PARTIAL = nil
+end
+
+do
+  -- #541 search predicate.  The picker replaced the arrows, so the filter is
+  -- the only way to reach a species now and its rules are worth pinning: ids
+  -- and names substring-match case-insensitively, a dex number matches whole
+  -- (a substring match would answer "25" with ELECTABUZZ, #125), and the
+  -- query is plain text, not a Lua pattern.
+  local S = State.new()
+  S.data = Data
+  S.cat = Catalog.build(Data)
+  S.save = SaveData.newGame()
+
+  check(Ops.speciesMatches(S, "PIKACHU", "pika"), "lowercase query matches an id")
+  check(Ops.speciesMatches(S, "PIKACHU", "KACH"), "a mid-word substring matches")
+  check(Ops.speciesMatches(S, "PIKACHU", "25"), "a bare dex number matches")
+  check(Ops.speciesMatches(S, "PIKACHU", "025"), "the padded dex number matches")
+  check(Ops.speciesMatches(S, "ELECTABUZZ", "25") == false,
+        "a dex number does not substring-match #125")
+  check(Ops.speciesMatches(S, "PIKACHU", ""), "an empty query matches everything")
+
+  eq(#Ops.speciesSearch(S, ""), #S.cat.species, "an empty search lists the catalog")
+  -- a dot is a literal, not a pattern wildcard: MR.MIME is the one species
+  -- whose printed name carries one, so it is the whole result
+  local dots = Ops.speciesSearch(S, ".")
+  eq(#dots, 1, "a dot matches literally instead of matching everything")
+  eq(dots[1], "MR_MIME", "and the literal it matched is MR.MIME's name")
+  eq(#Ops.speciesSearch(S, "%a"), 0, "a pattern class is literal too")
+  check(#Ops.speciesSearch(S, "zzzznope") == 0, "a miss returns nothing")
+  local pika = Ops.speciesSearch(S, "pikachu")
+  eq(#pika, 1, "an exact name search narrows to one")
+  eq(pika[1], "PIKACHU", "and it is the right one")
+end
+
+do
+  -- #541 end to end through App: open the picker off a selected slot, type,
+  -- commit with Enter.  Enter and Escape have to be taken before the focused
+  -- field sees them -- Kit maps both to the same "\r" edit, which cannot tell
+  -- "commit the top match" from "give up".
+  local Kit = require("Kit")
+  local SpeciesPicker = require("SpeciesPicker")
+  local tmpPath = os.tmpname() .. "-picker-save.lua"
+  local data = SaveData.newGame()
+  data.party = { MonOps.create(Data, "WARTORTLE", 20) }
+  local f = io.open(tmpPath, "wb")
+  f:write(SaveData.encode(data))
+  f:close()
+
+  App.load(tmpPath, { version = "red" })
+  local S = App.getState()
+  S.tab = "party"
+
+  check(Ops.openSpeciesPicker(S, Kit) == false,
+        "the picker refuses to open with no slot selected")
+  check(S.speciesPicker == nil, "and it stayed closed")
+  check(S.status:match("Pick a slot") ~= nil, "and it said why")
+
+  Ops.selectParty(S, 1)
+  check(Ops.openSpeciesPicker(S, Kit) == true, "the picker opens on a selected slot")
+  check(S.speciesPicker ~= nil, "the picker is up")
+  eq(S.speciesPicker.query, "", "it opens with an empty query")
+  eq(Kit.focus, "species-picker", "it opens with the field focused (#529 keyboard)")
+
+  local ok, err = pcall(App.draw)
+  check(ok, "the picker draws headlessly: " .. tostring(err))
+
+  App.textinput("PIKACHU")
+  ok, err = pcall(App.draw)
+  check(ok, "the picker draws while typing: " .. tostring(err))
+  eq(S.speciesPicker.query, "PIKACHU", "typing reaches the picker's field")
+  eq(#SpeciesPicker.results(S), 1, "the list narrowed to the typed species")
+
+  App.keypressed("return")
+  eq(S.save.party[1].species, "PIKACHU", "Enter commits the top match")
+  check(S.speciesPicker == nil, "and closes the picker")
+  check(S.dirty, "and the save is dirty")
+
+  -- Escape leaves without touching the mon
+  Ops.openSpeciesPicker(S, Kit)
+  App.textinput("BULBASAUR")
+  App.draw()
+  App.keypressed("escape")
+  check(S.speciesPicker == nil, "Escape closes the picker")
+  eq(S.save.party[1].species, "PIKACHU", "Escape did not commit anything")
+  check(S.editingMon ~= nil, "Escape closed the picker, not the selection")
+
+  -- a query nothing matches cannot commit
+  Ops.openSpeciesPicker(S, Kit)
+  App.textinput("zzzznope")
+  App.draw()
+  App.keypressed("return")
+  check(S.speciesPicker ~= nil, "Enter on an empty result set keeps the picker up")
+  check(S.status:match("No species matches") ~= nil, "and says so")
+  eq(S.save.party[1].species, "PIKACHU", "and changes nothing")
+  Ops.closeSpeciesPicker(S, Kit)
+
+  os.remove(tmpPath)
+  for _, bak in ipairs(FsIo.globPrefix(tmpPath .. ".bak-")) do os.remove(bak) end
+end
+
+do
+  -- #541 modal shield.  Kit hit-tests without a z-order, so the picker cannot
+  -- simply be drawn last: the chrome and the panel underneath would take the
+  -- same tap.  App raises Kit.blockClicks around everything it draws before
+  -- the picker and lowers it for the picker's own layer, which is asserted
+  -- here by watching what Kit.press sees over one frame rather than by
+  -- clicking coordinates the design is free to move.
+  local Kit = require("Kit")
+  local tmpPath = os.tmpname() .. "-shield-save.lua"
+  local data = SaveData.newGame()
+  data.party = { MonOps.create(Data, "WARTORTLE", 20) }
+  local f = io.open(tmpPath, "wb")
+  f:write(SaveData.encode(data))
+  f:close()
+
+  App.load(tmpPath, { version = "red" })
+  local S = App.getState()
+  S.tab = "party"
+  Ops.selectParty(S, 1)
+
+  -- the shield itself: a raised shield refuses a click that hits
+  Kit.beginFrame(15, 15, true)
+  Kit.blockClicks = false
+  check(Kit.press(10, 10, 100, 20) == true, "an unshielded press takes the click")
+  Kit.blockClicks = true
+  check(Kit.press(10, 10, 100, 20) == false, "a shielded press refuses it")
+  Kit.blockClicks = false
+  Kit.endFrame()
+
+  local realPress = Kit.press
+  local seen = {}
+  Kit.press = function(...)
+    seen[#seen + 1] = Kit.blockClicks
+    return realPress(...)
+  end
+
+  Ops.openSpeciesPicker(S, Kit)
+  seen = {}
+  App.draw()
+  check(#seen > 0, "the opening frame dispatched clicks at all")
+  local allShielded = true
+  for _, v in ipairs(seen) do allShielded = allShielded and (v == true) end
+  check(allShielded,
+        "on the opening frame even the picker's own layer is shielded, so the "
+        .. "click that opened it cannot read as a tap outside")
+
+  seen = {}
+  App.draw()
+  check(seen[1] == true, "the frame under an open picker is shielded")
+  check(seen[#seen] == false, "the picker's own layer is not")
+  check(Kit.blockClicks == false, "the shield is down again once the frame ends")
+
+  Kit.press = realPress
+
+  -- a Close taken with the picker up must not leak the shield into the next
+  -- session, which would open deaf to every click
+  Kit.blockClicks = true
+  App.unload()
+  check(Kit.blockClicks == false, "unload lowers the shield")
+
+  os.remove(tmpPath)
+  for _, bak in ipairs(FsIo.globPrefix(tmpPath .. ".bak-")) do os.remove(bak) end
+end
+
+do
+  -- #497: the editor drew a desktop layout into a phone window.  Kit.layout
+  -- scaled off height alone, and a phone in portrait (720x1560) is TALLER
+  -- than the 768px desktop reference while being barely half as wide, so the
+  -- scale came back clamped at 1.6 and every right-aligned cluster in the
+  -- chrome landed on top of the block to its left.  Both axes now pay.
+  local Kit = require("Kit")
+  local Theme = require("Theme")
+  local function about(got, want, msg)
+    check(math.abs(got - want) < 0.001,
+          msg .. string.format(" (got %.4f, want %.4f)", got, want))
+  end
+
+  about(Kit.layout(720, 1560), 0.72, "portrait phone scales off its width")
+  check(Kit.layout(720, 1560) < 1.0,
+        "a portrait phone no longer draws a larger-than-desktop layout")
+  about(Kit.layout(1560, 720), 720 / 768, "landscape phone still scales off height")
+  about(Kit.layout(360, 640), 0.62, "a tiny window stops at the floor")
+
+  -- desktop and laptop sizes have to be pixel-identical to before the fix:
+  -- everything at or above the 1000px reference width lands on the height
+  -- term, exactly as it always did
+  for _, size in ipairs({ { 1280, 800 }, { 1024, 768 }, { 1920, 1080 },
+                          { 1440, 900 }, { 2560, 1440 } }) do
+    about(Kit.layout(size[1], size[2]), Theme.clamp(size[2] / 768, 0.7, 1.6),
+      ("%dx%d keeps its old height-only scale"):format(size[1], size[2]))
+  end
+end
+
+do
+  -- #497 draw pass at the two shapes the report came in on (720x1560 and
+  -- 1560x720, an A20s held either way).  The layout is what a human has to
+  -- judge, but a panel that lays itself out at a negative width is machine
+  -- visible: LOVE rejects a negative scissor, so the inspector's own clip
+  -- catches the collapse the roster used to cause by keeping an absolute
+  -- 300px floor on a 720px-wide window.
+  local Kit = require("Kit")
+  local Theme = require("Theme")
+  local tmpPath = os.tmpname() .. "-phone-save.lua"
+  local data = SaveData.newGame()
+  data.party = { MonOps.create(Data, "CHARIZARD", 100),
+                 MonOps.create(Data, "PIDGEY", 5) }
+  local f = io.open(tmpPath, "wb")
+  f:write(SaveData.encode(data))
+  f:close()
+
+  local oldDimensions = love.graphics.getDimensions
+  local oldScissor = love.graphics.setScissor
+  love.graphics.setScissor = function(_, _, width, height)
+    if width and (width < 0 or height < 0) then
+      error(("negative scissor %sx%s"):format(tostring(width), tostring(height)))
+    end
+  end
+
+  for _, size in ipairs({ { 720, 1560 }, { 1560, 720 }, { 480, 1040 },
+                          { 1280, 800 } }) do
+    love.graphics.getDimensions = function() return size[1], size[2] end
+    App.load(tmpPath, { version = "red" })
+    local S = App.getState()
+    local label = ("%dx%d"):format(size[1], size[2])
+    for _, tab in ipairs({ "party", "boxes", "items", "events", "map", "dex" }) do
+      S.tab = tab
+      local ok, err = pcall(App.draw)
+      check(ok, ("the %s tab draws at %s: %s"):format(tab, label, tostring(err)))
+    end
+    S.tab = "party"
+    Ops.selectParty(S, 1)
+    local ok, err = pcall(App.draw)
+    check(ok, ("the inspector draws at %s: %s"):format(label, tostring(err)))
+    Ops.openSpeciesPicker(S, Kit)
+    ok, err = pcall(App.draw)
+    check(ok, ("the species picker draws at %s: %s"):format(label, tostring(err)))
+    ok, err = pcall(App.draw)
+    check(ok, ("the species picker redraws at %s: %s"):format(label, tostring(err)))
+    Ops.closeSpeciesPicker(S, Kit)
+  end
+
+  love.graphics.getDimensions = oldDimensions
+  love.graphics.setScissor = oldScissor
+
+  os.remove(tmpPath)
+  for _, bak in ipairs(FsIo.globPrefix(tmpPath .. ".bak-")) do os.remove(bak) end
+end
+
 print(string.format("save editor tests: %d passed, %d failed", passed, failed))
 if failed > 0 then os.exit(1) end

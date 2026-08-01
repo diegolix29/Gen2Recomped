@@ -33,13 +33,16 @@ package.loaded["src.render.TextBox"] = {
 }
 
 -- A recording stand-in for BattleState: newWild captures the species and
--- level, makeGhost sets the flag the real one sets, and the test drives
--- onFinish by hand.
+-- level, the two disguise entry points set the flags the real ones set, and
+-- the test drives onFinish by hand.  The unveiled branch is the scope's
+-- (#492) -- it disguises the pic exactly like makeGhost but leaves
+-- IsGhostBattle false, so `ghost` stays down and `scopeReveal` comes up.
 local madeBattles = {}
 package.loaded["src.battle.BattleState"] = {
   newWild = function(_, species, level)
     local b = { species = species, level = level, ghost = false }
     b.makeGhost = function(self) self.ghost = true end
+    b.makeUnveiledGhost = function(self) self.scopeReveal = true end
     madeBattles[#madeBattles + 1] = b
     return b
   end,
@@ -107,13 +110,17 @@ do
   check(battle.ghost, "and it is ghost-disguised without the scope")
 end
 
--- ---- 3. scope: same battle, not disguised -------------------------------
+-- ---- 3. scope: same battle, unveiled instead of ghosted ------------------
+-- PrintBeginningBattleText .isMarowak (common_text.asm:49-60) still enters
+-- disguised and plays the unveil over it; only IsGhostBattle flips (#492).
 do
   local game, pushed = gameWith({ SILPH_SCOPE = 1 })
   local ow = owWith()
   local battle = trigger(game, pushed, ow, 10, 16)
   check(battle ~= nil and not battle.ghost,
-        "with the scope the battle is not a ghost")
+        "with the scope the battle is not a ghost battle")
+  check(battle ~= nil and battle.scopeReveal,
+        "but it still opens disguised, with the unveil armed (#492)")
 end
 
 -- ---- 4. a win sets the event and shows the departed text ----------------

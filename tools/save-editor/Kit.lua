@@ -71,16 +71,22 @@ function Kit.endFrame()
   for i = #edits, 1, -1 do edits[i] = nil end
 end
 
--- Rebuild the font set when the window size changes.  `s` matches the
--- launcher's height/768 scale so both windows step together.
+-- Rebuild the font set when the window size changes.  `s` matched the
+-- launcher's height/768 scale alone until #497: a phone in portrait
+-- (720x1560) is TALLER than the desktop reference and barely half as wide, so
+-- a height-only scale drew a 1.6x desktop layout into a 720px window and every
+-- right-aligned cluster in the chrome landed on top of the block to its left.
+-- The layout needs roughly 1000 logical px of width, so the window now pays
+-- for both axes.  Every desktop and landscape size still lands on the height
+-- term, which is why they stay pixel-identical to before.
 function Kit.layout(width, height)
-  local s = Theme.clamp(height / 768, 0.7, 1.6)
+  local s = Theme.clamp(math.min(width / 1000, height / 768), 0.62, 1.6)
   local key = ("%dx%d"):format(width, height)
   if Kit._fontKey ~= key then
     Kit._fontKey = key
     Kit.fonts = Theme.fonts(s)
-    Kit.scale = s
   end
+  Kit.scale = s
   return s
 end
 
@@ -124,7 +130,15 @@ function Kit.hover(x, y, w, h)
   return Kit.hit(x, y, w, h)
 end
 
+-- Kit hit-tests without a z-order, so an overlay cannot just be drawn last:
+-- every widget underneath it would still take the same click.  A modal raises
+-- this shield over the layers it covers (App.draw does it around the chrome
+-- and the panel while the species picker is up) and lowers it for its own
+-- layer (#541).
+Kit.blockClicks = false
+
 function Kit.press(x, y, w, h)
+  if Kit.blockClicks then return false end
   return Kit.mouseClicked and Kit.hit(x, y, w, h)
 end
 

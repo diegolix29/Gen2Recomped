@@ -8,6 +8,11 @@
        the link screen shows as "(Operation not permitted)" (issue #287).
        scripts/build_android.sh must not strip this again. -->
   <uses-permission android:name="android.permission.INTERNET" />
+  <!-- Step bridge: love.system.syncHealthSteps reads the hardware step
+       counter, which Android 10+ gates behind this runtime permission.
+       Requested only on the first sync call (the Pokéwalker mod's SYNC
+       STEPS option); scripts/build_android.sh must not strip it. -->
+  <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
 <!-- OpenGL ES 2.0 -->
   <uses-feature android:glEsVersion="0x00020000" />
   <!-- Touchscreen support -->

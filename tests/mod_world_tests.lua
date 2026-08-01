@@ -291,7 +291,7 @@ do
   check(data.field.palettes.byMap.PALLET_TOWN == "PALLET",
     "seed fills the missing siblings of a stamped record")
   check(data.constants.world.stepFrames == 4, "seed leaves a stamped constant")
-  check(data.constants.world.turnFrames == 2, "seed fills the missing siblings")
+  check(data.constants.world.turnFrames == 4, "seed fills the missing siblings")
   check(data.field.fishing.OLD_ROD.always.species == "MAGIKARP",
     "seed installs the whole missing key")
   local before = data.field.fishing

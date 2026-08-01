@@ -4,7 +4,7 @@
 Yellow is a separate pret tree (pokeyellow), not a `_YELLOW` flip of pokered.
 Most of the ~3268 Red manifest symbols still exist under the same names in
 pokeyellow.sym (~3123 with shifted addresses).  The remainder need aliases,
-synthetic addresses (Mew in BaseStats), or omission (FightIntro* — Yellow's
+synthetic addresses (Mew in BaseStats), or omission (FightIntro* -- Yellow's
 intro movie is different; RomExtractor must skip those).
 
 Map/object/sprite/tileset/text metadata diverge enough that those sections are
@@ -48,7 +48,7 @@ from yellow_symbol_aliases import (  # noqa: E402
 
 try:
     from rom_data import CANONICAL_YELLOW_SHA1
-except ImportError:  # pragma: no cover — constant lands with GameVersion work
+except ImportError:  # pragma: no cover -- constant lands with GameVersion work
     CANONICAL_YELLOW_SHA1 = "cc7d03262ebfaf2f06772c1a480c7d9d5f4a38e1"
 
 DEV = "/Users/bryanbassett/Documents/development"
@@ -88,6 +88,21 @@ YELLOW_EXTRA_SYMBOLS = (
     "SurfingPikachu1Graphics1",
     "SurfingPikachu1Graphics2",
     "SurfingPikachu1Graphics3",
+    # Oak's own battle back pic.  LoadPlayerBackPic (engine/battle/core.asm)
+    # picks OldManPicBack for BATTLE_TYPE_OLD_MAN but ProfOakPicBack for
+    # BATTLE_TYPE_PIKACHU, the Pallet Town catch scene (#557).
+    "ProfOakPicBack",
+    # Base frames for the framed portrait TalkToPikachu draws, one per
+    # PikaPicAnimScript (data/pikachu/pikachu_pic_animation.asm).  These are
+    # raw address labels because the pikapic blobs carry no named symbols;
+    # RomExtractor's PIKAPIC_BASE table indexes them positionally, so the
+    # order here is not load bearing but every entry must resolve (#561).
+    "Pic_e4000", "Pic_e411c", "Pic_e4272", "Pic_e4383", "Pic_e458b",
+    "Pic_e467b", "Pic_e476e", "Pic_e49d1", "Pic_e4b39", "Pic_e4c3e",
+    "Pic_e5000", "Pic_e523f", "Pic_e548e", "Pic_e56d1", "Pic_e5924",
+    "Pic_e5b7d", "Pic_e5ddd", "GFX_e6020", "Pic_e6340", "Pic_e6587",
+    "Pic_e67d6", "GFX_e6e6f", "GFX_e718f", "GFX_e74af", "Pic_e77cf",
+    "Pic_f0abf", "Pic_f0cf4",
 )
 
 # Yellow-only dialogue whose bank labels carry no leading underscore, so

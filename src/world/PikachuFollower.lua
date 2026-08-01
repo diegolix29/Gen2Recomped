@@ -518,9 +518,12 @@ end
 -- pikachu_emotions.asm): pick a scripted emotion, then play its bubble
 -- and voiced PCM clip, and raise the framed Pikachu picture the original
 -- puts over the map (pikaemotion_pikapic -> pikachu_pic_animation.asm
--- PlacePikapicTextBoxBorder), drawn by OverworldController:drawUI.  The
--- per-emotion animation frames (gfx/pikachu/unknown_*) are not extracted,
--- so the front pic stands in for all twenty of them (#407).
+-- PlacePikapicTextBoxBorder), drawn by OverworldController:drawUI.  Each
+-- script's BASE 5x5 frame is ripped as pikachu/pikapic_N.png (#561); the
+-- pikaframe overlays it alternates with are a second full-body pose out of
+-- the same blob and are still unported, so picLift below stands in for
+-- their motion and the battle front pic covers caches built before the
+-- rip (#407).
 -- ---------------------------------------------------------------------
 
 -- PikachuEmotionTable, reduced to each entry's bubble + pikaemotion_pcm
@@ -715,9 +718,17 @@ function PikachuFollower.talk(game, ow, npc, done)
   -- 40x40 front pic is the size of PikaAnimTilemap_1's 5x5 base frame;
   -- Sprites.path keeps a mod's replacement skin in play.
   local Sprites = require("src.pokemon.Sprites")
-  local pic = Sprites.path(game.data, "PIKACHU", "front",
-                           { kind = "overworld" })
-  local anim = PIKAPIC[PIKAPIC_SCRIPT[emotion] or emotion] or PIKAPIC[1]
+  -- The chosen script's own base frame (its first pikapic_loadgfx, ripped as
+  -- pikachu/pikapic_N.png).  Red/Blue have no such art and Yellow caches
+  -- built before the rip do not carry it, so both fall back to the battle
+  -- front pic that stood in for every script before (#561).
+  local script = PIKAPIC_SCRIPT[emotion] or emotion
+  local pic = "assets/generated/pikachu/pikapic_" .. script .. ".png"
+  if not require("src.render.Assets").exists(pic) then
+    pic = Sprites.path(game.data, "PIKACHU", "front",
+                       { kind = "overworld" })
+  end
+  local anim = PIKAPIC[script] or PIKAPIC[1]
   local hold = anim.dur * PIKAPIC_TICK
   ow.emote = {
     npc = npc, frames = hold, bubble = bi or false, pikaPic = pic,
@@ -790,10 +801,22 @@ function PikachuFollower.onBillEnteredMachine(game, ow)
   if not (GameVersion.isYellow() and ow.pikachuBillsScene) then return end
   local npc = findFollower(ow)
   if not npc then return end
+  -- BillsHouseScript3 (pokeyellow scripts/BillsHouse.asm:100-115).  The two
+  -- movement tables are named the wrong way round in the cartridge source:
+  -- hl is seeded with ..._EnterCellSeparatorDown, then
+  --   and a ; cp SPRITE_FACING_DOWN   (SPRITE_FACING_DOWN is 0)
+  --   jr nz, .applyPikachuMovement
+  -- keeps that seeded table when the player is NOT facing down, and only the
+  -- fallthrough -- facing down -- swaps in ..._EnterCellSeparatorNotDown.
+  -- So facing down takes the long way round the cell separator and every
+  -- other facing walks straight up.  Following the label names instead of the
+  -- branch inverts the scene (#455).
   local steps = ow.player.facing == "down"
-      and { { "up", 3 } }
-      or { { "up", 1 }, { "left", 1 }, { "up", 2 }, { "right", 1 } }
+      and { { "up", 1 }, { "left", 1 }, { "up", 2 }, { "right", 1 } }
+      or { { "up", 3 } }
   movePikachu(ow, npc, steps, function()
+    -- PIKAMOVEMENT_LOOK_UP closes the detour table before the bubble
+    npc.facing = "up"
     billsHouseEmotion(game, ow, npc, "QUESTION_BUBBLE")
   end)
 end

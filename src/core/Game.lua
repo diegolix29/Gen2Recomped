@@ -178,6 +178,22 @@ function Game:step(dt)
   -- this logic tick, not one tick later.  With no wrapper this is a no-op.
   ModRuntime.call("input.step", function() end, self, dt)
   self.input:step()
+  -- A+B+SELECT+START held for 16 steps: SoftReset (home/init.asm) stops the
+  -- audio, whites the palettes out and falls through into Init, i.e. the
+  -- power-on boot, so everything unsaved is gone and the title sequence
+  -- comes back -- exactly what returnToTitle does for the START menu's QUIT.
+  -- The check lives here, above stack:update, so it fires from any state:
+  -- overworld, battle, a menu or a cutscene, the way _Joypad's does (#563).
+  -- Input:reset clears the four still-physically-held buttons so the title
+  -- screen does not read A as a menu choice on its first frame.
+  -- a tool mod (or a harness) may hand Game a stand-in input with no
+  -- chord bookkeeping; those simply never soft reset
+  if self.input.softResetStep and self.input:softResetStep() then
+    Input:reset()
+    TouchControls:reset()
+    self:returnToTitle()
+    return
+  end
   -- serviced unconditionally: a link battle's ENet transport must not
   -- stall just because PartyMenu/ChoiceBox/NamingScreen is temporarily
   -- on top of BattleState (see LinkBattle.new)

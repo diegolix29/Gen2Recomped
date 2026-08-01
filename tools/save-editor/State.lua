@@ -41,6 +41,10 @@ function State.new()
     -- party / inspector
     selectedParty = 1,
     editingMon = nil,   -- reference into party or a box
+    -- species picker overlay: nil when closed, otherwise { query, offset }.
+    -- Modal in the literal sense -- App shields every widget under it for the
+    -- frame -- because Kit hit-tests without a z-order (#541).
+    speciesPicker = nil,
 
     -- boxes
     selectedBox = 1,

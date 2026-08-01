@@ -89,6 +89,11 @@ local PLAYER_SPRITES = {
 local PLAYER_PICS = {
   back = "assets/generated/battle/redb.png",
   demoBack = "assets/generated/battle/oldmanb.png",
+  -- LoadPlayerBackPic keys the demo pic off wBattleType, not off "is a
+  -- demo": BATTLE_TYPE_PIKACHU (Yellow's Pallet catch scene) puts PROF.OAK
+  -- in the player's place with his own back pic, not the old man's (#557).
+  -- Red/Blue never reach it -- only the Yellow script names that thrower.
+  oakBack = "assets/generated/battle/profoakb.png",
   front = "assets/generated/trainer_card/red.png",
 }
 
@@ -185,7 +190,7 @@ FieldDefaults.CONSTANTS = {
     neighborHops = 2,         -- connection hops drawn around the current map
     stepFrames = 16,          -- 1px per frame, 16 frames per tile
     bikeStepFrames = 8,       -- the bicycle doubles walking speed
-    turnFrames = 2,           -- the extra OverworldLoop pass after a turn
+    turnFrames = 4,           -- tap window before a turn commits to a step
   },
   -- cumulative slot thresholds out of 256 (engine/battle/wild_encounters.asm)
   encounterBuckets = { 51, 102, 141, 166, 191, 216, 229, 242, 253, 256 },

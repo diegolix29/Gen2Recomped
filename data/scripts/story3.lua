@@ -111,8 +111,9 @@ M.POKEMON_TOWER_5F = {
 --
 -- PokemonTower6FDefaultScript starts the RESTLESS SOUL battle with NO
 -- Silph Scope check at the trigger -- the scope only decides whether the
--- battle is disguised (IsGhostBattle -> makeGhost: "too scared to move",
--- balls dodged). An earlier version of this port turned the player back
+-- disguise sticks (IsGhostBattle -> makeGhost: "too scared to move", balls
+-- dodged) or comes off in the unveil (makeUnveiledGhost, #492). An earlier
+-- version of this port turned the player back
 -- without the scope and never opened the battle, which made 6F
 -- impassable on any route that skips Rocket Hideout; vanilla lets the
 -- battle open and a POKE_DOLL end it (see wBattleResult below).
@@ -133,7 +134,13 @@ M.POKEMON_TOWER_6F = {
       -- or not the scope revealed it, so the "can't be caught" state rides
       -- the battle instead of IsGhostBattle alone (#444)
       battle.noCatch = true
-      if not game.save.inventory.SILPH_SCOPE then
+      -- InitWildBattle enters disguised for the RESTLESS SOUL either way
+      -- (core.asm:6698-6700).  The scope does not skip the disguise, it
+      -- buys the unveil PrintBeginningBattleText .isMarowak plays over it
+      -- before the battle proceeds as an ordinary wild one (#492).
+      if game.save.inventory.SILPH_SCOPE then
+        battle:makeUnveiledGhost()
+      else
         battle:makeGhost()
       end
       battle.onFinish = function(result)
@@ -353,6 +360,38 @@ M.ROCKET_HIDEOUT_B4F = {
         end))
     end,
 
+    -- Yellow swaps Rocket1/Rocket2 for Jessie & James and keeps a single
+    -- grunt, spelled ROCKETHIDEOUTB4F_ROCKET / TEXT_ROCKETHIDEOUTB4F_ROCKET
+    -- (pokeyellow/scripts/RocketHideoutB4F.asm), so the Red/Blue key above
+    -- never matched there and the LIFT KEY never dropped (#552, a
+    -- regression of #105).  Yellow also moves the drop off the second
+    -- talk: RocketHideoutB4FRocketEndBattleText is text_promptbutton +
+    -- text_asm, so its SetEvent EVENT_ROCKET_DROPPED_LIFT_KEY / ShowObject
+    -- TOGGLE_ROCKET_HIDEOUT_B4F_ITEM_5 run the instant the battle ends.
+    TEXT_ROCKETHIDEOUTB4F_ROCKET = function(game, ow, npc, done)
+      if not ow:trainerDefeated(npc) then
+        ow:engageTrainer(npc, function()
+          -- engageTrainer records the win before it calls back, so this
+          -- is the end-battle text's SetEvent + ShowObject
+          if ow:trainerDefeated(npc)
+             and not game.save.flags.EVENT_ROCKET_DROPPED_LIFT_KEY then
+            game.save.flags.EVENT_ROCKET_DROPPED_LIFT_KEY = true
+            local Commands = require("src.script.Commands")
+            Commands.show_object(
+              { game = game, save = game.save, overworld = ow },
+              "ROCKET_HIDEOUT_B4F", "ROCKETHIDEOUTB4F_LIFT_KEY")
+          end
+          done()
+        end)
+        return
+      end
+      -- RocketHideoutB4FRocketAfterBattleText: later talks only reprint
+      local TextBox = require("src.render.TextBox")
+      game.stack:push(TextBox.new(game,
+        game.data.text._RocketHideoutB4FRocketAfterBattleText
+        or "Oh no! I dropped\nthe LIFT KEY!", done))
+    end,
+
     TEXT_ROCKETHIDEOUTB4F_GIOVANNI = function(game, ow, npc, done)
       -- Giovanni has no trainer-header row (def_trainers 2); his text_asm
       -- owns both the engage and the BeatGiovanniScript aftermath.
@@ -502,51 +541,69 @@ M.GAME_CORNER = {
           end))
       end)
     end,
+    -- GameCornerClerk1Text (scripts/GameCorner.asm): the offer, a
+    -- YesNoChoice, then ¥1000 for 50 coins.  Yellow drops the "1" from the
+    -- object const and from every one of his text labels
+    -- (GameCornerClerkText, pokeyellow/scripts/GameCorner.asm) with an
+    -- identical body, so each line resolves under both spellings and the
+    -- handler is bound to both text ids just below (#552).
     TEXT_GAMECORNER_CLERK1 = function(game, ow, npc, done)
       local TextBox = require("src.render.TextBox")
       local ChoiceBox = require("src.ui.ChoiceBox")
       local t = game.data.text
+      local function line(suffix, fallback)
+        return t["_GameCornerClerk1" .. suffix]
+               or t["_GameCornerClerk" .. suffix]
+               or fallback
+      end
       game.stack:push(TextBox.new(game,
-        (t._GameCornerClerk1DoYouNeedSomeGameCoinsText
-         or "Do you need some\ngame coins?\f¥1000 for 50."), function()
+        line("DoYouNeedSomeGameCoinsText",
+             "Do you need some\ngame coins?\f¥1000 for 50."), function()
         game.stack:push(ChoiceBox.new(game, function(yes)
           if not yes then
             game.stack:push(TextBox.new(game,
-              t._GameCornerClerk1PleaseComePlaySometimeText
-              or "No? Please come\nplay sometime!", done))
+              line("PleaseComePlaySometimeText",
+                   "No? Please come\nplay sometime!"), done))
             return
           end
           -- scripts/GameCorner.asm GameCornerClerk1Text: coins need
           -- the COIN CASE and room for at least 9 coins (Has9990Coins)
           if not game.save.inventory.COIN_CASE then
             game.stack:push(TextBox.new(game,
-              t._GameCornerClerk1DontHaveCoinCaseText
-              or "You don't have a\nCOIN CASE!", done))
+              line("DontHaveCoinCaseText",
+                   "You don't have a\nCOIN CASE!"), done))
             return
           end
           if (game.save.coins or 0) >= 9990 then
             game.stack:push(TextBox.new(game,
-              t._GameCornerClerk1CoinCaseIsFullText
-              or "Oops! Your COIN\nCASE is full.", done))
+              line("CoinCaseIsFullText",
+                   "Oops! Your COIN\nCASE is full."), done))
             return
           end
           if game.save.money < 1000 then
             game.stack:push(TextBox.new(game,
-              t._GameCornerClerk1CantAffordTheCoinsText
-              or "You can't afford\nthe coins!", done))
+              line("CantAffordTheCoinsText",
+                   "You can't afford\nthe coins!"), done))
             return
           end
           game.save.money = game.save.money - 1000
           game.save.coins = math.min(9999, (game.save.coins or 0) + 50)
           game.stack:push(TextBox.new(game,
-            (t._GameCornerClerk1ThanksHereAre50CoinsText
-             or "Thanks! Here are\nyour 50 coins!")
+            line("ThanksHereAre50CoinsText",
+                 "Thanks! Here are\nyour 50 coins!")
             .. ("\fCOINS: %d"):format(game.save.coins), done))
         end))
       end))
     end,
   },
 }
+
+-- Yellow's coin clerk is GAMECORNER_CLERK / TEXT_GAMECORNER_CLERK where Red
+-- and Blue spell him CLERK1, and the two text_asm bodies are identical, so
+-- one handler answers both ids.  Without the alias the Yellow clerk fell
+-- through to his extracted offer line with no yes/no box behind it (#552).
+M.GAME_CORNER.talk.TEXT_GAMECORNER_CLERK =
+  M.GAME_CORNER.talk.TEXT_GAMECORNER_CLERK1
 
 -- Game Corner prize lists (data/events/prizes.asm, prize_mon_levels.asm).
 -- The six mon prizes differ between Red and Blue; the three TM prizes are

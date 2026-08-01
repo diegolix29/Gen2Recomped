@@ -36,4 +36,13 @@ ri:play("red")
 eq(booted, "red", "android play still boots")
 eq(currentCursor, "hand", "android play leaves the cursor alone")
 
+booted = nil
+currentCursor = "hand"
+ri.android = false
+ri.arrowCursor = nil
+love.mouse.getSystemCursor = function() error("CreateSystemCursor is not currently supported") end
+ri:play("red")
+eq(booted, "red", "unsupported system cursors still allow boot")
+eq(currentCursor, "hand", "unsupported system cursors leave the existing cursor alone")
+
 S.finish()

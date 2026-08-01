@@ -187,5 +187,18 @@ composited and before touch controls draw. The window-space viewport contains
 and `dpiY`, so a tool can use the letterbox margins without drawing over the
 playfield or pushing an updating game state.
 
+`render.compose` wraps the whole-window composite in `Renderer:endFrame`. It
+receives `(next, renderer, ctx)`; returning `true` without calling `next` hands
+the mod full control of the window, while calling `next` runs the engine's
+normal single-window composite so the mod can decorate around it. `ctx` carries
+the finished `worldCanvas` and `uiCanvas` with their SGB `zones` / `worldZones`,
+`worldActive`, the frame metrics (`ww`, `wh`, `pw`, `ph`, `ox`, `oy`, `vpw`,
+`vph`, `scale`, `Sx`, `Sy`, `dpiX`, `dpiY`), `renderer:blitCanvas(...)` for a
+palette-correct blit of either canvas into an arbitrary screen rect, and the
+`secondScreen` bridge (`available()` / `push(imageData, w, h)` / `setEnabled`)
+for driving a second physical display. This is what lets a mod lay the two
+passes out as two stacked Game Boy screens, or push one onto a second screen,
+without the engine knowing the layout.
+
 Developer mode also arms the mod loader's dev tripwire, which flags mods
 that reach outside their permission set.
