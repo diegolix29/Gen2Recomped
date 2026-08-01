@@ -115,6 +115,14 @@ int w_syncHealthSteps(lua_State *L)
 	return 1;
 }
 
+int w_restartApp(lua_State *L)
+{
+	// Does not return on success: GameActivity.restartApp exits the process
+	// after scheduling the relaunch (#575).
+	luax_pushboolean(L, instance()->restartApp());
+	return 1;
+}
+
 int w_hasBackgroundMusic(lua_State *L)
 {
 	lua_pushboolean(L, instance()->hasBackgroundMusic());
@@ -133,6 +141,7 @@ static const luaL_Reg functions[] =
 	{ "pickFile", w_pickFile },
 	{ "createFile", w_createFile },
 	{ "syncHealthSteps", w_syncHealthSteps },
+	{ "restartApp", w_restartApp },
 	{ "hasBackgroundMusic", w_hasBackgroundMusic },
 	{ 0, 0 }
 };

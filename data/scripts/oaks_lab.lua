@@ -6,6 +6,8 @@
 --   takes it ("I'll take this one, then!") and both balls disappear.
 --   Source: scripts/OaksLab.asm OaksLabCharmanderPokeBallText /
 --   OaksLabRivalTakePokeBallScript.
+-- * Leftover ball (after the pick): Oak turns and reads the last-mon
+--   line instead of re-offering the starter (OaksLabLastMonScript, #601).
 -- * Rival (object 1): before starter -> "go ahead and choose" once Oak
 --   has walked you in, else "gramps isn't around" (#218); with
 --   starter -> taunt + battle OPP_RIVAL1 with the counter-pick party
@@ -23,7 +25,7 @@ local function starterBall(askText, species, choseFlag, ownBall,
     { "jump_if_true", 20 },                       -- 2
     -- no picking until Oak has walked you in (OaksLabScript gating)
     { "check_flag", "EVENT_FOLLOWED_OAK_INTO_LAB" }, -- 3
-    { "jump_if_false", 20 },                      -- 4
+    { "jump_if_false", 22 },                      -- 4
     -- the Pokédex "new species" entry shows before the ask (predef
     -- StarterDex ahead of OaksLabYouWant...Text).  StarterDex temporarily
     -- sets the owned bits so ShowPokedexData prints height/weight/text;
@@ -31,7 +33,7 @@ local function starterBall(askText, species, choseFlag, ownBall,
     { "push_screen", "DexEntryMenu",
       { species = species, forceOwned = true } }, -- 5
     { "ask", askText },                           -- 6
-    { "jump_if_false", 21 },                      -- 7
+    { "jump_if_false", "end" },                   -- 7
     -- OaksLab.asm prints ReceivedMon then AddPartyMon (AskName lives
     -- inside give_pokemon).  Show the received text first so the
     -- nickname prompt follows "you got X", matching Gen1.
@@ -52,9 +54,16 @@ local function starterBall(askText, species, choseFlag, ownBall,
       { RAM = rivalBall == "OAKSLAB_CHARMANDER_POKE_BALL" and "CHARMANDER"
               or rivalBall == "OAKSLAB_SQUIRTLE_POKE_BALL" and "SQUIRTLE"
               or "BULBASAUR" } },                 -- 17
-    { "jump", 21 },                               -- 18
-    { "jump", 21 },                               -- 19 (spacer)
-    { "show_text", "_OaksLabThoseArePokeBallsText" }, -- 20
+    { "jump", "end" },                            -- 18
+    { "jump", "end" },                            -- 19 (spacer)
+    -- a leftover ball after the player's pick: Oak turns to face the
+    -- player and reads the last-mon line instead of re-offering the
+    -- starter (scripts/OaksLab.asm OaksLabSelectedPokeBallScript ->
+    -- OaksLabLastMonScript; #601).  The ROM's "#MON" ligature is spelled
+    -- out as Pokémon here.
+    { "face_object", 5, "down" },                 -- 20
+    { "show_text", "That's PROF.OAK's\nlast Pokémon!" }, -- 21
+    { "show_text", "_OaksLabThoseArePokeBallsText" }, -- 22
   }
 end
 

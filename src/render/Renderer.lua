@@ -32,7 +32,7 @@ Renderer.MAX_UI_HEIGHT = 576
 -- would otherwise take the frame down with it.
 local function isCanvas(v)
   if type(v) == "userdata" then
-    return type(v.typeOf) == "function" and v:typeOf("Canvas") == true
+    return type(v.getWidth) == "function" and type(v.getHeight) == "function"
   end
   if type(v) == "table" then
     return type(v.getWidth) == "function" and type(v.getHeight) == "function"
@@ -724,7 +724,12 @@ function Renderer:endFrame(zones, worldZones)
     
     love.graphics.setColor(1, 1, 1, 1)
     love.graphics.setScissor(0, 0, ww, wh)
-    love.graphics.draw(self.worldOverride, 0, 0, 0, 1 / dpiX, 1 / dpiY)
+    local loveMajor = love.getVersion()
+    if love.system and love.system.getOS and love.system.getOS() == "iOS" and loveMajor >= 12 then
+      love.graphics.draw(self.worldOverride, 0, wh, 0, 1 / dpiX, -1 / dpiY)
+    else
+      love.graphics.draw(self.worldOverride, 0, 0, 0, 1 / dpiX, 1 / dpiY)
+    end
     love.graphics.setScissor()
     -- the screen-space overlays the flat path draws over its composite
     local fade = self.worldFadeAlpha

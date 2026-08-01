@@ -291,10 +291,17 @@ function BattleState:picImage(img)
                or PaletteFX.mode == "classic"
   if self.grayPics or mono then return grayImage(img) end
   -- SET_PAL_BATTLE_BLACK covers every battle palette slot, so the pics go
-  -- dark with the HP bars while the blackout text is up (#292).  Below the
-  -- mono check on purpose: the forced-mono modes re-threshold the whole
-  -- frame downstream, and the DMG had no SGB darkening to begin with.
-  if self.blackedOut then return blackImage(self.data, img) end
+  -- dark with the HP bars while the blackout text is up (#292).  The intro
+  -- silhouette slide (SlidePlayerAndEnemySilhouettesOnScreen) darkens the
+  -- same way: the original slides both pics in under the %11100100
+  -- silhouette palette and only runs SET_PAL_BATTLE once they have landed,
+  -- so a still-sliding pic reads as a black silhouette, exactly like the
+  -- evolution movie's PAL_BLACK (#577).  Below the mono check on purpose:
+  -- the forced-mono modes re-threshold the whole frame downstream, and the
+  -- DMG had no SGB darkening to begin with.
+  if self.blackedOut or (self.introSlide or 0) > 0 then
+    return blackImage(self.data, img)
+  end
   return fadeImage(img, self:activeBgp())
 end
 
@@ -1241,8 +1248,11 @@ function BattleState:enter()
   -- without a transition (link battles, scripted pushes)
   Music.playBattle(self.data, self.musicKind)
   -- intro presentation (SlidePlayerAndEnemySilhouettesOnScreen): both
-  -- sides slide in; the trainer pics stay up until the send-outs
-  self.introSlide = 40
+  -- sides slide in as black silhouettes.  The original scrolls SCX from
+  -- $90 to 0 two pixels per frame (72 frames); the port covers the full
+  -- 160px screen width, so 2px/frame is an 80-frame slide (slide offset is
+  -- introSlide*2 below).  The trainer pics stay up until the send-outs.
+  self.introSlide = 80
   self.showEnemyTrainer = self.kind == "trainer" and self.trainerPic ~= nil
   -- DrawAllPokeballs (common_text.asm:27) puts the party ball rows AND the
   -- HUD corner/underline tiles under them (PlacePlayerHUDTiles /
@@ -5220,7 +5230,7 @@ function BattleState:drawClassic()
   if sx == 0 and sy == 0 and fx and fx.shake and fx.shake > 0 then
     sx = self.frame % 4 < 2 and 2 or -2
   end
-  local slide = (self.introSlide or 0) * 4 -- intro slide-in offset
+  local slide = (self.introSlide or 0) * 2 -- intro slide-in offset (2px/frame)
 
   if self:colorMode() then
     -- SGB pipeline: gray BG canvas -> (wavy) -> zone recolor with the

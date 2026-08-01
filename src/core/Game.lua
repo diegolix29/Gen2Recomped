@@ -569,8 +569,16 @@ function Game:restartWithMods()
   require("src.core.HostShell").restart()
 end
 
+-- Releases reach Input even while a top state captures raw input: a
+-- swallowed key-up would strand a held-state flag for a key Input saw go
+-- down before the capture armed (the stuck-flag hazard Input:reset
+-- exists for).  The top state only OBSERVES the release afterwards,
+-- unlike onKeyPressed above which owns the press, so BindingsMenu can
+-- commit a capture on the key-up (#589).
 function Game:keyreleased(key)
   Input:keyreleased(key)
+  local top = self.stack and self.stack:top()
+  if top and top.onKeyReleased then top:onKeyReleased(key) end
 end
 
 function Game:gamepadpressed(joystick, button)
@@ -596,7 +604,10 @@ function Game:gamepadpressed(joystick, button)
 end
 
 function Game:gamepadreleased(joystick, button)
+  -- same observe-after-Input contract as Game:keyreleased (#589)
   Input:gamepadreleased(joystick, button)
+  local top = self.stack and self.stack:top()
+  if top and top.onGamepadReleased then top:onGamepadReleased(button) end
 end
 
 function Game:gamepadaxis(joystick, axis, value)

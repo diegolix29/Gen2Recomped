@@ -1,4 +1,4 @@
-# iOS build (LÖVE 11.5)
+# iOS build (LÖVE 12.0)
 
 > **Native ROM/mod/save import.** The iOS build ships a Swift
 > document-picker bridge (`native/GRPickerBridge.swift` + `GRBootstrap.m`)
@@ -20,20 +20,17 @@
 > The note below about a missing "UIDocumentPicker handoff" is
 > resolved by this bridge.
 
-macOS + Xcode only. Pins the official **LÖVE 11.5** iOS Xcode tree
-(`love-11.5-ios-source.zip` from [love2d/love releases](https://github.com/love2d/love/releases/tag/11.5)),
-matching `conf.lua`'s `t.version = "11.5"`.
+macOS + Xcode only. Fetches the **LÖVE 12.0** source tree and matching Apple
+dependencies from the official [LÖVE source](https://github.com/love2d/love)
+and [Apple dependencies](https://github.com/love2d/love-apple-dependencies)
+repositories. `conf.lua` declares LÖVE 12.0 on iOS and 11.5 elsewhere.
 
-There is no separate `love2d/love-ios` GitHub repo for 11.5; the release zip
-**is** the vendored iOS project (Xcode project under
-`love-src/platform/xcode/love.xcodeproj`, target `love-ios`).
-
-Pin file: [`LOVE_VERSION`](./LOVE_VERSION) → `11.5`.
+Pin file: [`LOVE_VERSION`](./LOVE_VERSION) → `12.0`.
 
 ## Quick start (simulator)
 
 ```bash
-# Fetch LÖVE 11.5 iOS sources (once) + build for Simulator
+# Fetch LÖVE 12.0 iOS sources and dependencies (once) + build for Simulator
 scripts/build_ios.sh --fetch
 ```
 
@@ -80,10 +77,10 @@ Manual out-of-band steps:
 
 | Path | Role |
 |------|------|
-| `LOVE_VERSION` | Engine pin (`11.5`) |
+| `LOVE_VERSION` | Engine pin (`12.0`) |
 | `overlays/love-ios.plist` | Portrait-only Info.plist + display name **Pokemon Red** (copied over the upstream plist every build) |
-| `love-src/` | Downloaded `love-11.5-ios-source` tree (**gitignored**,  do not commit) |
-| `cache/` | Downloaded zips (**gitignored**) |
+| `love-src/` | Downloaded LÖVE 12.0 source tree (**gitignored**, do not commit) |
+| `cache/` | Temporary source and dependency checkout data (**gitignored**) |
 | `build/` | `xcodebuild` derived data (**gitignored**) |
 
 Game payload lands at:
@@ -94,28 +91,10 @@ and is fused into the built `.app` (LÖVE auto-runs any bundled `*.love`).
 
 ## Apple libraries dependency
 
-The official `love-11.5-ios-source.zip` already ships prebuilt iOS
-xcframeworks under `platform/xcode/ios/libraries/` (SDL2, LuaJIT, freetype,
-ogg, vorbis, theora, modplug).
-
-If that folder is missing or incomplete (e.g. you cloned sources without
-libs), download the matching prebuilts and install them:
-
-```bash
-curl -fL -o mobile/ios/cache/love-11.5-apple-libraries.zip \
-  https://github.com/love2d/love/releases/download/11.5/love-11.5-apple-libraries.zip
-unzip -q mobile/ios/cache/love-11.5-apple-libraries.zip -d mobile/ios/cache
-rm -rf mobile/ios/love-src/platform/xcode/ios/libraries
-cp -R mobile/ios/cache/love-apple-dependencies/iOS/libraries \
-  mobile/ios/love-src/platform/xcode/ios/libraries
-```
-
-`scripts/build_ios.sh` checks for `libraries/SDL2.xcframework` and fails with
-these instructions if it is absent.
-
-Upstream also documents
-[love-apple-dependencies](https://github.com/love2d/love-apple-dependencies)
-as an alternate source of the same libraries.
+`scripts/build_ios.sh --fetch` retrieves the matching iOS libraries and the
+SDL3 framework from
+[love-apple-dependencies](https://github.com/love2d/love-apple-dependencies).
+Re-run it if either dependency directory is absent.
 
 ## App identity
 
@@ -134,7 +113,7 @@ so refreshing `love-src/` does not lose branding.
 | Flag | Meaning |
 |------|---------|
 | *(default)* | Simulator, Debug, no signing |
-| `--fetch` | Download/extract `love-11.5-ios-source.zip` if `love-src/` is missing |
+| `--fetch` | Fetch the LÖVE 12.0 source tree and Apple dependencies if `love-src/` is missing |
 | `--device` | Build against `iphoneos` instead of `iphonesimulator` |
 | `--release` | `Release` configuration instead of `Debug` |
 | `--package-only` | Zip `game.love` + apply plist overlay; skip `xcodebuild` |
@@ -147,5 +126,5 @@ Also: `scripts/build.sh ios` delegates here (`--release` is forwarded).
 - iOS platform installed in Xcode (Settings → Platforms). `xcodebuild -showsdks`
   should list `iphonesimulator` / `iphoneos`. A partial install can fail IB/xib
   compiles with `iOS … Platform Not Installed` even when the SDK name appears.
-- `love-src/` present (`--fetch` or manual unzip of `love-11.5-ios-source.zip`)
-- iOS libraries under `love-src/platform/xcode/ios/libraries/` (see above)
+- `love-src/` present (`--fetch`)
+- iOS libraries under `love-src/platform/xcode/ios/libraries/` and SDL3 under `love-src/platform/xcode/shared/Frameworks/`

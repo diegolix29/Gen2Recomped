@@ -29,10 +29,11 @@ local kbField = nil       -- id of the field the OS soft keyboard is raised for
 -- Mobile LOVE only delivers love.textinput while setTextInput(true) is
 -- active, and that call is what raises the Android/iOS soft keyboard; the
 -- rect keeps the focused field visible above it.  Desktop has text input on
--- by default and the launcher hosting this editor depends on that -- nothing
--- in src/import/RomImporter.lua (slot rename #205, ROM finder, mod index
--- prompt) ever enables it -- so the editor only ever raises there and never
--- lowers, since setTextInput is global SDL state, not per-widget (#529).
+-- by default and the launcher hosting this editor depends on that -- the
+-- launcher's own fields (slot rename #205, mod index prompt, find search)
+-- follow the same rule since #578: arm on open, lower only on mobile -- so
+-- neither side ever turns desktop text input off, since setTextInput is
+-- global SDL state, not per-widget (#529).
 local function mobile()
   local osName = love and love.system and love.system.getOS
     and love.system.getOS()

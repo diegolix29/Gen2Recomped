@@ -320,7 +320,7 @@ function WideBattle.draw(battle)
   if sx == 0 and sy == 0 and fx and fx.shake and fx.shake > 0 then
     sx = battle.frame % 4 < 2 and 2 or -2
   end
-  local slide = (battle.introSlide or 0) * 4
+  local slide = (battle.introSlide or 0) * 2
 
   -- Each side keeps its original sprite pixels and placement math: the two
   -- 160x144 OAM regions are translated apart and clipped into the wider

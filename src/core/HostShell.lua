@@ -26,9 +26,30 @@ end
 -- ("Failed to initialize filesystem: already initialized") and the relaunch
 -- crashes. So on an AppImage we relaunch the executable; the fresh process's
 -- Boot step mounts any downloaded update exactly as a manual relaunch would.
+-- Android hits the same wall (#575): the vendored love.cpp loops runlove()
+-- in-process on "restart", and PHYSFS_deinit in the old Filesystem module's
+-- destructor fails ("files still open") whenever any physfs handle survives
+-- lua_close, so the second PHYSFS_init throws the same "already initialized"
+-- and the app dies. There we relaunch through the GameActivity.restartApp
+-- JNI bridge (love.system.restartApp), which schedules our launch intent
+-- and kills the process so no native state can leak into the fresh run.
 -- On every other platform the in-process restart works, so keep it.
 function HostShell.restart()
   if not (love and love.event and love.event.quit) then return end
+
+  local osName = love.system and love.system.getOS and love.system.getOS()
+  if osName == "Android" then
+    -- restartApp kills the process on success, so a true return is never
+    -- observed; false means the bridge could not schedule the relaunch.
+    -- An older APK whose liblove predates the bridge (love.system.restartApp
+    -- is nil) has no crash-free in-process restart, so quit to the OS
+    -- cleanly and let the player relaunch by hand -- worse than restarting,
+    -- but better than the guaranteed crash of quit("restart") (#575).
+    if love.system.restartApp and love.system.restartApp() then return end
+    love.event.quit()
+    return
+  end
+
   local appimage = os.getenv("APPIMAGE")
   if not appimage then
     love.event.quit("restart")

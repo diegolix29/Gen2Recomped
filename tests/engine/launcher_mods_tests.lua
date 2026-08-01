@@ -297,4 +297,35 @@ do
   eq(rows[1].name, "bare", "a nameless row falls back to its id")
 end
 
+-- ------- manifest strings are scrubbed to valid UTF-8 (MODS panel crash:
+-- LÖVE's printf raises "Invalid UTF-8" on a mangled name/description, so
+-- validate must drop bad bytes before any panel draws them)
+
+do
+  local m = mf({ id = "utf", entry = "m.lua",
+    -- BOM-prefixed name (a real manifest shipped this way), a Latin-1 e-acute
+    -- (\233, invalid as UTF-8) in the description, and a lone continuation
+    -- byte in the version
+    name = "\239\187\191Run Mode",
+    version = "1.0\128.0",
+    description = "caf\233 latt\233",
+    category = "UI\255" })
+  eq(m.name, "Run Mode", "a leading BOM is stripped from the name")
+  eq(m.version, "1.0.0", "invalid bytes are dropped from the version")
+  eq(m.description, "caf latt", "Latin-1 bytes are dropped, not replaced")
+  eq(m.raw.category, "UI", "raw.category is scrubbed in place for the badge")
+
+  local ok2 = mf({ id = "utf2", name = "Vers\195\163oVermelha", version = "1.0.0",
+    entry = "m.lua", description = "Pok\195\169mon \240\159\148\165" })
+  eq(ok2.name, "Vers\195\163oVermelha", "valid two-byte sequences survive")
+  eq(ok2.description, "Pok\195\169mon \240\159\148\165",
+    "valid three- and four-byte sequences survive")
+
+  -- surrogate half (ED A0 80) and overlong slash (C0 AF) are invalid even
+  -- though their lead bytes look plausible
+  local bad = mf({ id = "utf3", name = "a\237\160\128b\192\175c",
+    version = "1.0.0", entry = "m.lua" })
+  eq(bad.name, "abc", "surrogates and overlongs are dropped")
+end
+
 T.finish("launcher_mods")

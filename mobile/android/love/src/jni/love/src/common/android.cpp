@@ -243,6 +243,28 @@ bool syncHealthSteps()
 	return result;
 }
 
+bool restartApp()
+{
+	JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();
+	jclass activity = env->FindClass("org/love2d/android/GameActivity");
+
+	// Old APK / new liblove skew: fail soft so HostShell.restart can fall
+	// back to a clean quit instead of aborting on a missing method (#575).
+	jmethodID method = env->GetStaticMethodID(activity, "restartApp", "()Z");
+	if (method == nullptr)
+	{
+		env->ExceptionClear();
+		env->DeleteLocalRef(activity);
+		return false;
+	}
+
+	// Does not return on success: the Java side exits the process.
+	jboolean result = env->CallStaticBooleanMethod(activity, method);
+
+	env->DeleteLocalRef(activity);
+	return result;
+}
+
 /*
  * Helper functions for the filesystem module
  */

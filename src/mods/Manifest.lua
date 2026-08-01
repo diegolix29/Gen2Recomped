@@ -86,8 +86,58 @@ local function mergeConflictLists(conflicts, incompatible)
   return out
 end
 
+-- Drop bytes that are not valid UTF-8 (malformed sequences, overlongs,
+-- surrogates, > U+10FFFF) and a leading BOM.  LÖVE's text renderer raises
+-- "Invalid UTF-8" from love.graphics.print/printf, so any manifest string a
+-- panel may draw must be scrubbed here -- the one place every mod manifest
+-- passes through -- or a single mangled description crashes the whole MODS
+-- panel instead of misrendering one card.
+local function scrubUtf8(s)
+  if type(s) ~= "string" then return s end
+  s = s:gsub("^\239\187\191", "")
+  local out, i, n = {}, 1, #s
+  while i <= n do
+    local b = s:byte(i)
+    local len
+    if b < 0x80 then len = 1
+    elseif b >= 0xC2 and b <= 0xDF then len = 2
+    elseif b >= 0xE0 and b <= 0xEF then len = 3
+    elseif b >= 0xF0 and b <= 0xF4 then len = 4
+    end
+    local ok = len ~= nil and i + len - 1 <= n
+    if ok and len > 1 then
+      for j = i + 1, i + len - 1 do
+        local c = s:byte(j)
+        if c < 0x80 or c > 0xBF then ok = false; break end
+      end
+      if ok then
+        -- boundary lead bytes narrow their second byte: no overlongs
+        -- (E0/F0), no surrogates (ED), nothing past U+10FFFF (F4)
+        local b2 = s:byte(i + 1)
+        if (b == 0xE0 and b2 < 0xA0) or (b == 0xED and b2 > 0x9F)
+            or (b == 0xF0 and b2 < 0x90) or (b == 0xF4 and b2 > 0x8F) then
+          ok = false
+        end
+      end
+    end
+    if ok then
+      out[#out + 1] = s:sub(i, i + len - 1)
+      i = i + len
+    else
+      i = i + 1
+    end
+  end
+  return table.concat(out)
+end
+
 function Manifest.validate(raw, path)
   assert(type(raw) == "table", "manifest must be an object")
+  -- scrubbed in place so every later reader agrees, including the launcher's
+  -- badge derivation, which reads raw.category rather than the validated copy
+  raw.name = scrubUtf8(raw.name)
+  raw.version = scrubUtf8(raw.version)
+  raw.description = scrubUtf8(raw.description)
+  raw.category = scrubUtf8(raw.category)
   assert(type(raw.id) == "string" and raw.id:match("^[%w_%-]+$"),
     "manifest id must contain only letters, numbers, _ or -")
   assert(type(raw.name) == "string" and raw.name ~= "", "manifest name is required")

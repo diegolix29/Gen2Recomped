@@ -89,6 +89,15 @@ bool showCreateDocument(const char *suggestedName = nullptr);
  */
 bool syncHealthSteps();
 
+/**
+ * Full process relaunch (GameActivity.restartApp): schedules the app's
+ * launch intent and kills the process, because the in-process
+ * quit("restart") loop double-inits physfs and crashes (#575). On success
+ * the process dies inside the Java call and this never returns; false
+ * means the relaunch could not be scheduled.
+ **/
+bool restartApp();
+
 /*
  * Helper functions for the filesystem module
  */

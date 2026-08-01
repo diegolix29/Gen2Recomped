@@ -120,7 +120,7 @@ end
 -- shape (love.graphics.newCanvas), so accept either and nothing else.
 local function isCanvas(v)
   if type(v) == "userdata" then
-    return type(v.typeOf) == "function" and v:typeOf("Canvas") == true
+    return type(v.getWidth) == "function" and type(v.getHeight) == "function"
   end
   if type(v) == "table" then
     return type(v.getWidth) == "function" and type(v.getHeight) == "function"

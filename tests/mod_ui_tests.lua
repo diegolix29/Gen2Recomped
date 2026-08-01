@@ -397,11 +397,11 @@ check(getmetatable(bm) == BindingsMenu,
 check(bm.screenId == "BindingsMenu",
   "the pushed rebind screen carries its screen id")
 check(#bm.items == 8, "one row per logical button")
-check(bm.items[1].label == "UP" and bm.items[1].right == "UP"
-  and bm.items[5].label == "A" and bm.items[5].right == "Z"
-  and bm.items[7].label == "START" and bm.items[7].right == "ESCAPE"
+check(bm.items[1].label == "UP" and bm.items[1].right == "UP/D-UP"
+  and bm.items[5].label == "A" and bm.items[5].right == "Z/A"
+  and bm.items[7].label == "START" and bm.items[7].right == "ESC/START"
   and bm.items[8].label == "SELECT" and bm.items[8].right == "TAB/BACK",
-  "with no rebind the rows mirror the fixed map")
+  "with no rebind the rows mirror the fixed map, key and pad both (#589)")
 check(cbGame.save.options.bindings == nil,
   "opening the screen alone writes nothing")
 check(bm.onKeyPressed == nil and bm.onGamepadPressed == nil,
@@ -412,18 +412,20 @@ check(bm.capture == bm.items[1] and bm.onKeyPressed ~= nil,
 local wroteOptions = false
 function cbGame:writeOptions() wroteOptions = true end
 bm:onKeyPressed("j")
+bm:onKeyReleased("j") -- a capture commits on the press's release (#589)
 check(cbGame.save.options.bindings.up.key == "j",
   "a captured key lands in options.bindings")
-check(bm.items[1].right == "J", "the row shows the new key")
+check(bm.items[1].right == "J/D-UP", "the row shows the new key")
 check(wroteOptions, "a rebind persists through writeOptions")
 check(bm.capture == nil and bm.onKeyPressed == nil
   and bm.onGamepadPressed == nil, "the capture disarms after one input")
 bm.index = 5
 press(bm, "a")
 bm:onGamepadPressed("y")
+bm:onGamepadReleased("y")
 check(cbGame.save.options.bindings.a.pad == "y",
   "a captured pad button lands beside the key slot")
-check(bm.items[5].right == "Z", "a pad rebind keeps the key column")
+check(bm.items[5].right == "Z/Y", "a pad rebind keeps the key column")
 press(bm, "b")
 check(#cbGame.stack.states == 0, "B closes the rebind screen")
 

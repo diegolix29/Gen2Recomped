@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Packages the LÖVE2D Pokémon Red port into an iOS app via LÖVE 11.5's
-# official iOS Xcode project (love-11.5-ios-source.zip).
+# Packages the LÖVE2D Pokémon Red port into an iOS app via LÖVE 12.0's
+# iOS Xcode project.
 #
 # Usage: scripts/build_ios.sh [--fetch] [--device] [--release] [--install]
 #                             [--version X.Y.Z] [--package-only]
@@ -12,13 +12,12 @@
 #                     first connected iPhone/iPad (unlock it first)
 #   --release         Release configuration
 #   --version X.Y.Z   stamp MARKETING_VERSION / CURRENT_PROJECT_VERSION
-#   --fetch           Download love-11.5-ios-source.zip into mobile/ios/love-src/
+#   --fetch           Fetch LÖVE 12.0 sources and Apple dependencies into mobile/ios/love-src/
 #   --package-only    Zip game.love + apply plist overlay; skip xcodebuild
 #
 # Prerequisites:
 #   - macOS + Xcode (xcodebuild)
 #   - mobile/ios/love-src/ (see --fetch / mobile/ios/README.md)
-#   - prebuilt iOS libraries under love-src/platform/xcode/ios/libraries/
 #
 # Output: dist/ios/<Config>-<sdk>/gen1recomp.app (convenience copy)
 #         dist/ios/gen1recomp.ipa                 (device builds only)
@@ -54,11 +53,11 @@ BUNDLE_ID="${GEN1_BUNDLE_ID:-com.theboisclub.gen1recomp}"
 if [ -z "$BUNDLE_ID" ] && [ -f "$IOS_DIR/bundle_id.local" ]; then
   BUNDLE_ID="$(tr -d '[:space:]' < "$IOS_DIR/bundle_id.local")"
 fi
-LOVE_VERSION="$(tr -d '[:space:]' < "$IOS_DIR/LOVE_VERSION" 2>/dev/null || echo 11.5)"
-IOS_SOURCE_ZIP="love-${LOVE_VERSION}-ios-source.zip"
-APPLE_LIBS_ZIP="love-${LOVE_VERSION}-apple-libraries.zip"
-IOS_SOURCE_URL="https://github.com/love2d/love/releases/download/${LOVE_VERSION}/${IOS_SOURCE_ZIP}"
-APPLE_LIBS_URL="https://github.com/love2d/love/releases/download/${LOVE_VERSION}/${APPLE_LIBS_ZIP}"
+LOVE_VERSION="$(tr -d '[:space:]' < "$IOS_DIR/LOVE_VERSION" 2>/dev/null || echo 12.0)"
+LOVE_SOURCE_REF="${LOVE_SOURCE_REF:-main}"
+APPLE_DEPENDENCIES_REF="${APPLE_DEPENDENCIES_REF:-main}"
+LOVE_SOURCE_REPO="https://github.com/love2d/love.git"
+APPLE_DEPENDENCIES_REPO="https://github.com/love2d/love-apple-dependencies.git"
 
 FETCH=false
 DEVICE=false
@@ -160,25 +159,19 @@ fi
 # --------------------------------------------------------------- fetch love-src
 fetch_love_ios() {
   mkdir -p "$CACHE"
-  local zip_path="$CACHE/$IOS_SOURCE_ZIP"
-  if [ ! -f "$zip_path" ]; then
-    say "downloading $IOS_SOURCE_ZIP (LÖVE $LOVE_VERSION iOS sources)"
-    curl -fL --progress-bar "$IOS_SOURCE_URL" -o "$zip_path" \
-      || fail "download failed: $IOS_SOURCE_URL"
-  else
-    say "using cached $zip_path"
-  fi
-
-  say "extracting into $LOVE_SRC"
-  rm -rf "$LOVE_SRC"
   local tmp
   tmp="$(mktemp -d "$CACHE/extract.XXXXXX")"
-  unzip -q "$zip_path" -d "$tmp"
-  # Zip root is love-<version>-ios-source/
-  local extracted
-  extracted="$(find "$tmp" -maxdepth 1 -mindepth 1 -type d ! -name '__MACOSX' | head -1)"
-  [ -n "$extracted" ] || fail "unexpected layout inside $IOS_SOURCE_ZIP"
-  mv "$extracted" "$LOVE_SRC"
+  say "fetching LÖVE $LOVE_VERSION sources ($LOVE_SOURCE_REF)"
+  git clone --depth 1 --branch "$LOVE_SOURCE_REF" "$LOVE_SOURCE_REPO" "$tmp/love" \
+    || fail "failed to fetch LÖVE sources from $LOVE_SOURCE_REPO"
+  say "fetching Apple dependencies ($APPLE_DEPENDENCIES_REF)"
+  git clone --depth 1 --branch "$APPLE_DEPENDENCIES_REF" "$APPLE_DEPENDENCIES_REPO" "$tmp/dependencies" \
+    || fail "failed to fetch Apple dependencies from $APPLE_DEPENDENCIES_REPO"
+  rm -rf "$LOVE_SRC"
+  mv "$tmp/love" "$LOVE_SRC"
+  mkdir -p "$LIBS_DIR" "$XCODE_DIR/shared"
+  cp -R "$tmp/dependencies/iOS/libraries/." "$LIBS_DIR"
+  cp -R "$tmp/dependencies/shared/." "$XCODE_DIR/shared"
   rm -rf "$tmp"
   say "love-src ready (LÖVE $LOVE_VERSION)"
 }
@@ -188,18 +181,12 @@ if [ ! -d "$XCODE_DIR/love.xcodeproj" ]; then
     fetch_love_ios
   else
     fail "LÖVE $LOVE_VERSION iOS sources not found at mobile/ios/love-src/.
-  Fetch them (documented download of love-${LOVE_VERSION}-ios-source.zip):
+  Fetch them:
     scripts/build_ios.sh --fetch
-  Or manually:
-    mkdir -p mobile/ios/cache
-    curl -fL -o mobile/ios/cache/$IOS_SOURCE_ZIP \\
-      $IOS_SOURCE_URL
-    unzip -q mobile/ios/cache/$IOS_SOURCE_ZIP -d mobile/ios/cache
-    mv mobile/ios/cache/love-${LOVE_VERSION}-ios-source mobile/ios/love-src
   See mobile/ios/README.md."
   fi
 elif $FETCH; then
-  say "love-src already present; skipping download (delete mobile/ios/love-src to refresh)"
+  say "love-src already present; skipping fetch (delete mobile/ios/love-src to refresh)"
 fi
 
 [ -d "$XCODE_DIR/love.xcodeproj" ] \
@@ -207,25 +194,16 @@ fi
 
 # --------------------------------------------------------------- apple libraries
 require_ios_libraries() {
-  if [ -d "$LIBS_DIR/SDL2.xcframework" ]; then
+  if [ -d "$LIBS_DIR/SDL2.xcframework" ] && [ -d "$XCODE_DIR/shared/Frameworks/SDL3.xcframework" ]; then
     return 0
   fi
   fail "prebuilt iOS libraries missing at:
   $LIBS_DIR
-  love-ios expects SDL2.xcframework (and friends) there.
+  and shared/Frameworks.
 
-  The official love-${LOVE_VERSION}-ios-source.zip normally includes them.
-  If they are absent, install love-${LOVE_VERSION}-apple-libraries.zip:
+  Re-fetch the LÖVE $LOVE_VERSION source tree and its Apple dependencies:
 
-    mkdir -p mobile/ios/cache
-    curl -fL -o mobile/ios/cache/$APPLE_LIBS_ZIP \\
-      $APPLE_LIBS_URL
-    unzip -q mobile/ios/cache/$APPLE_LIBS_ZIP -d mobile/ios/cache
-    rm -rf mobile/ios/love-src/platform/xcode/ios/libraries
-    cp -R mobile/ios/cache/love-apple-dependencies/iOS/libraries \\
-      mobile/ios/love-src/platform/xcode/ios/libraries
-
-  See mobile/ios/README.md (Apple libraries dependency)."
+    scripts/build_ios.sh --fetch"
 }
 
 require_ios_libraries
@@ -565,11 +543,27 @@ run_xcodebuild() {
 
   say "xcodebuild love-ios ($config / $sdk)"
   set +e
-  (
-    cd "$XCODE_DIR"
-    xcodebuild "${args[@]}"
-  )
-  local xc_status=$?
+  local xc_status
+  if command -v xcbeautify >/dev/null 2>&1; then
+    (
+      cd "$XCODE_DIR"
+      xcodebuild "${args[@]}"
+    ) 2>&1 | xcbeautify
+    local pipeline_status=("${PIPESTATUS[@]}")
+    local xcode_status=${pipeline_status[0]}
+    local beautify_status=${pipeline_status[1]}
+    if [ "$xcode_status" -ne 0 ]; then
+      xc_status=$xcode_status
+    else
+      xc_status=$beautify_status
+    fi
+  else
+    (
+      cd "$XCODE_DIR"
+      xcodebuild "${args[@]}"
+    )
+    xc_status=$?
+  fi
   set -e
   if [ "$xc_status" -ne 0 ]; then
     fail "xcodebuild failed (exit $xc_status).

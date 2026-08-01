@@ -37,7 +37,9 @@ import java.util.List;
 import java.util.Map;
 
 import android.Manifest;
+import android.app.AlarmManager;
 import android.app.AlertDialog;
+import android.app.PendingIntent;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
@@ -75,6 +77,7 @@ public class GameActivity extends SDLActivity {
     public static final int FILE_PICKER_REQUEST_CODE = 4;
     public static final int FILE_CREATE_REQUEST_CODE = 5;
     public static final int STEP_PERMISSION_REQUEST_CODE = 6;
+    public static final int RESTART_REQUEST_CODE = 7;
     /** @deprecated Prefer FILE_PICKER_REQUEST_CODE; kept for older call sites. */
     public static final int ROM_PICKER_REQUEST_CODE = FILE_PICKER_REQUEST_CODE;
     // Mirrors conf.lua's t.identity ("pokemon-love2d"): where the picked file
@@ -448,15 +451,23 @@ public class GameActivity extends SDLActivity {
      * Shows the system document picker (Storage Access Framework) so the
      * player can pick a ROM / mod / save from anywhere (Downloads, Drive,
      * etc.) without needing to know where the app's external files folder
-     * is. Requires API 19+ (ACTION_OPEN_DOCUMENT); the picked file (if any)
-     * arrives later in onActivityResult, not synchronously here.
+     * is. The picked file (if any) arrives later in onActivityResult, not
+     * synchronously here.
+     *
+     * API 21+ uses ACTION_OPEN_DOCUMENT; API 16-20 uses an ACTION_GET_CONTENT
+     * chooser instead. Below 19 OPEN_DOCUMENT does not exist, and on 19/20
+     * the stock DocumentsUI is unreliable -- it launches and then hands back
+     * RESULT_CANCELED with no data, which onActivityResult cannot tell apart
+     * from the player cancelling (#584). GET_CONTENT lets any installed file
+     * manager serve the pick, and both intents return the same content:// or
+     * file:// URI shapes, so the result path in onActivityResult stays
+     * picker-agnostic and unchanged.
      *
      * @param destFilename basename under the app save identity (e.g.
      *                     picked_rom.gb, picked_mod.zip, picked_save.sav)
      */
     @Keep
     public static boolean showFilePicker(String destFilename) {
-        if (android.os.Build.VERSION.SDK_INT < 19) return false;
         GameActivity self = (GameActivity) mSingleton;
         if (self == null) return false;
         if (destFilename == null || destFilename.length() == 0) {
@@ -470,11 +481,26 @@ public class GameActivity extends SDLActivity {
         }
 
         self.pendingPickFilename = destFilename;
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        if (android.os.Build.VERSION.SDK_INT >= 21) {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("*/*");
+            try {
+                self.startActivityForResult(intent, FILE_PICKER_REQUEST_CODE);
+                return true;
+            } catch (Exception e) {
+                // Some OEM / TV builds ship without DocumentsUI; fall through
+                // to the GET_CONTENT chooser below instead of giving up (#584).
+                Log.d("GameActivity", "could not open document picker: " + e.getMessage());
+            }
+        }
+        Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("*/*");
         try {
-            self.startActivityForResult(intent, FILE_PICKER_REQUEST_CODE);
+            self.startActivityForResult(
+                Intent.createChooser(intent, "Choose a file"),
+                FILE_PICKER_REQUEST_CODE);
             return true;
         } catch (Exception e) {
             Log.d("GameActivity", "could not open file picker: " + e.getMessage());
@@ -521,13 +547,59 @@ public class GameActivity extends SDLActivity {
     }
 
     /**
+     * Relaunches the whole app for love.system.restartApp, used by
+     * src/core/HostShell.lua when a mod toggle needs a cold boot (#575).
+     * love.event.quit("restart") re-runs LOVE's boot inside the same
+     * process, and the second love.filesystem.init throws once physfs
+     * failed to deinit ("already initialized"), killing the app. Instead
+     * we hand our launch intent to AlarmManager and then exit the process:
+     * the alarm lives in system_server, so it survives our death and
+     * cannot race the exit the way a plain startActivity right before
+     * Runtime.exit can on some OEMs, and the dead process guarantees no
+     * native (physfs / SDL / JNI) state leaks into the fresh run.
+     */
+    @Keep
+    public static boolean restartApp() {
+        GameActivity self = (GameActivity) mSingleton;
+        if (self == null) return false;
+        try {
+            Context context = self.getApplicationContext();
+            Intent intent = context.getPackageManager()
+                .getLaunchIntentForPackage(context.getPackageName());
+            if (intent == null) return false;
+            intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
+            int pendingFlags = PendingIntent.FLAG_CANCEL_CURRENT;
+            if (android.os.Build.VERSION.SDK_INT >= 23) {
+                // Mandatory mutability flag on API 31+; harmless from 23 up.
+                pendingFlags |= PendingIntent.FLAG_IMMUTABLE;
+            }
+            PendingIntent pending = PendingIntent.getActivity(
+                context, RESTART_REQUEST_CODE, intent, pendingFlags);
+            AlarmManager alarm = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+            if (alarm == null) return false;
+            alarm.set(AlarmManager.RTC, System.currentTimeMillis() + 250, pending);
+        } catch (Exception e) {
+            Log.d("GameActivity", "could not schedule restart: " + e.getMessage());
+            return false;
+        }
+        Runtime.getRuntime().exit(0);
+        return true; // unreachable, but keeps the JNI signature honest
+    }
+
+    /**
      * Shows ACTION_CREATE_DOCUMENT so the player can save a staged export
      * (pending_export.sav in the app save identity) to Downloads / Drive /
      * etc. Suggested name is the dialog's default filename.
+     *
+     * CREATE_DOCUMENT does not exist below API 19 and has no pre-SAF
+     * equivalent, so unlike showFilePicker this stays 19+ (#584); the false
+     * return degrades on the Lua side (RomImporter export) to "Exported
+     * inside the app folder", which is the correct pre-KitKat behavior.
      */
     @Keep
     public static boolean showCreateDocument(String suggestedName) {
         if (android.os.Build.VERSION.SDK_INT < 19) return false;
+        // (see showFilePicker for why the import side got a pre-19 path)
         GameActivity self = (GameActivity) mSingleton;
         if (self == null) return false;
         if (suggestedName == null || suggestedName.length() == 0) {

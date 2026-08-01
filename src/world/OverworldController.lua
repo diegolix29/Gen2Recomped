@@ -2625,8 +2625,7 @@ function OverworldState:openPC(onDone)
     table.insert(items, {
       label = Strings("PROF.OAK's PC"),
       onSelect = function()
-        self:dexRating()
-        done()
+        self:openOaksPC(done)
       end,
     })
   end
@@ -2653,11 +2652,41 @@ function OverworldState:openPC(onDone)
       noSound = true }))
 end
 
+-- The PROF. OAK's PC session (engine/menus/oaks_pc.asm OpenOaksPC): the
+-- access text, "Want to get your #DEX rated?" with a YES/NO, then the
+-- rating, and "Closed link to PROF.OAK's PC." before control returns -- the
+-- intro and closing links the launcher skipped, jingle ordering aside (#576).
+function OverworldState:openOaksPC(onDone)
+  local done = onDone or function() end
+  local text = Game.data.text or {}
+  local accessed = text._AccessedOaksPCText
+    or Strings("Accessed PROF.\nOAK's PC.\fAccessed POKéDEX\nRating System.")
+  local rated = text._GetDexRatedText
+    or Strings("Want to get your\nPOKéDEX rated?")
+  local closed = text._ClosedOaksPCText
+    or Strings("Closed link to\nPROF.OAK's PC.")
+  local function close()
+    Game.stack:push(TextBox.new(Game, closed, done))
+  end
+  Game.stack:push(TextBox.new(Game, accessed, function()
+    -- _GetDexRatedText ends with `done`, so the YES/NO pops as soon as the
+    -- text has typed out, with no button wait in between (YesNoChoice)
+    Game.stack:push(TextBox.new(Game, rated, nil, {
+      choice = function(yes)
+        if not yes then
+          close()
+          return
+        end
+        self:dexRating(close)
+      end,
+    }))
+  end))
+end
+
 -- Prof. Oak's dex rating service (engine/events/pokedex_rating.asm):
 -- the completion line with seen AND owned counts, then the per-decade
 -- rating text.
 function OverworldState:dexRating(onDone)
-  require("src.core.Sound").play(Game.data, "Pokedex_Rating")
   local seen, owned = 0, 0
   for _ in pairs(Game.save.pokedex.seen or {}) do seen = seen + 1 end
   for _ in pairs(Game.save.pokedex.owned or {}) do owned = owned + 1 end
@@ -2674,7 +2703,15 @@ function OverworldState:dexRating(onDone)
   completion = completion
     :gsub("{NUM:hDexRatingNumMonsSeen[^}]*}", tostring(seen))
     :gsub("{NUM:hDexRatingNumMonsOwned[^}]*}", tostring(owned))
-  Game.stack:push(TextBox.new(Game, completion .. "\f" .. rating, onDone))
+  -- DisplayDexRating prints the completion line, then the tier text, and
+  -- only then plays the rating jingle and waits for a button -- the fanfare
+  -- must not pre-empt the evaluation it celebrates (#576).  auto.wait hands
+  -- the box to the plain A/B path once the jingle has sounded.
+  Game.stack:push(TextBox.new(Game, completion .. "\f" .. rating, onDone, {
+    auto = { wait = true, sound = function()
+      return require("src.core.Sound").play(Game.data, "Pokedex_Rating")
+    end },
+  }))
 end
 
 -- AnimateHealingMachine (engine/overworld/healing_machine.asm): balls

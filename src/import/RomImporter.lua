@@ -1510,6 +1510,7 @@ function RomImporter:_cycleTab(delta)
   self._slotPress = nil
   self._modPress = nil
   self._findSearchFocus = false
+  self:_disarmTextInput()
 end
 
 function RomImporter:_updatePadCursor(dt)
@@ -2390,7 +2391,7 @@ function RomImporter:draw()
     col(PAL.bgBot, 0.72)
     love.graphics.rectangle("fill", 0, 0, fullW, fullH)
     local dw = math.min(appW - 32 * s, 520 * s)
-    local dh = 168 * s
+    local dh = 176 * s
     local dx = appX + (appW - dw) / 2
     local dy = oy + (height - dh) / 2
     local rr = 12 * s
@@ -2433,6 +2434,14 @@ function RomImporter:draw()
         fx + 10 * s + self.hintFont:getWidth(shown) + 2 * s,
         fy + 7 * s, math.max(1, 1.5 * s), fh - 14 * s)
     end
+
+    -- PASTE under the field: a touch screen has no ctrl+V, and an index URL
+    -- is not something anyone retypes on a soft keyboard (#578).  This rect
+    -- is the one click mousepressed honors while the prompt is up; pinned so
+    -- page-scroll banding never eats the tap.
+    self._indexPasteRect = self:_chipButton(fx + fw - 84 * s, fy + fh + 8 * s,
+      Strings("Paste"), { w = 84 * s, h = 28 * s, kind = "accent" })
+    self._indexPasteRect.pinned = true
 
     love.graphics.setFont(self.hintFont)
     col(PAL.warning)
@@ -2775,7 +2784,14 @@ end
 
 function RomImporter:mousepressed(x, y, button)
   if self._rename then return end -- the rename modal swallows all clicks
-  if self._indexPrompt then return end -- and so does the add-index prompt
+  -- The add-index prompt swallows clicks too, except its PASTE button: a
+  -- touch screen has no ctrl+V, so the button is the only paste path (#578).
+  if self._indexPrompt then
+    if button == 1 and inside(self._indexPasteRect, x, y) then
+      self:_pasteIndexUrl()
+    end
+    return
+  end
   -- Mod confirm / versions / release-notes modals swallow clicks too.
   if self._modConfirm then
     if button ~= 1 then return end
@@ -2882,6 +2898,7 @@ function RomImporter:mousepressed(x, y, button)
       self._modPress = nil    -- and any half-started mod toggle press
       self._pagePress = nil   -- and any half-started page pan
       self._findSearchFocus = false  -- and the search caret, now off screen
+      self:_disarmTextInput()
       -- Each tab is its own column of a different length; carrying one tab's
       -- offset into another lands somewhere arbitrary.
       self.pageScroll = 0
@@ -3003,11 +3020,14 @@ function RomImporter:mousepressed(x, y, button)
   end
   if inside(self.findRefreshRect, x, y) then
     self._findSearchFocus = false
+    self:_disarmTextInput()
     self:_refreshFind(true)
     return
   end
   if inside(self.findSearchRect, x, y) then
-    self._findSearchFocus = true; return
+    self._findSearchFocus = true
+    self:_armTextInput()
+    return
   end
   for _, r in ipairs(self.findSourceRemoveRects or {}) do
     if inside(r, x, y) then self:_removeIndex(r.id); return end
@@ -3042,7 +3062,10 @@ function RomImporter:mousepressed(x, y, button)
   end
   -- A press anywhere else on the tab drops the search caret, so the field does
   -- not silently keep eating keystrokes once the player has moved on.
-  if self.tab == "find" then self._findSearchFocus = false end
+  if self.tab == "find" and self._findSearchFocus then
+    self._findSearchFocus = false
+    self:_disarmTextInput()
+  end
   -- Nothing was hit.  On a scrolling page that is a press on empty background,
   -- which is the natural place to grab and pan from.
   if armDrag and (self._pageMax or 0) > 0 then
@@ -3058,6 +3081,7 @@ function RomImporter:keypressed(key)
       self:_commitRename()
     elseif key == "escape" then
       self._rename = nil
+      self:_disarmTextInput()
     end
     return
   end
@@ -3068,13 +3092,11 @@ function RomImporter:keypressed(key)
       self:_commitAddIndex()
     elseif key == "escape" then
       self._indexPrompt = nil
+      self:_disarmTextInput()
     elseif key == "v" and (love.keyboard.isDown("lctrl", "rctrl", "lgui", "rgui")) then
       -- an index URL is long and comes from a browser: typing it out by hand
       -- is the difference between adding one and giving up
-      local ok, text = pcall(love.system.getClipboardText)
-      if ok and type(text) == "string" then
-        self._indexPrompt.text = self._indexPrompt.text .. text:gsub("%s", "")
-      end
+      self:_pasteIndexUrl()
     end
     return
   end
@@ -3098,6 +3120,7 @@ function RomImporter:keypressed(key)
       self.findScroll = 0
     elseif key == "escape" or key == "return" or key == "kpenter" then
       self._findSearchFocus = false
+      self:_disarmTextInput()
     end
     return
   end
@@ -3659,6 +3682,27 @@ local MAX_SLOT_LABEL = 24
 local MAX_INDEX_URL = 200
 local MAX_FIND_QUERY = 48
 
+-- Mobile LOVE only delivers love.textinput while setTextInput(true) is armed,
+-- and arming it is also what raises the soft keyboard, so a cabled USB
+-- keyboard is just as dead without it (#578).  Every site that opens one of
+-- the launcher's three text fields (_rename, _indexPrompt, _findSearchFocus)
+-- arms through here, and every site that closes one disarms.  Desktop has
+-- text input on by default and the save editor hosted from this launcher
+-- depends on it staying on (tools/save-editor/Kit.lua, #529), so disarm only
+-- lowers on mobile -- setTextInput is global SDL state, not per-widget.
+function RomImporter:_armTextInput()
+  if love.keyboard and love.keyboard.setTextInput then
+    pcall(love.keyboard.setTextInput, true)
+  end
+end
+
+function RomImporter:_disarmTextInput()
+  if not self.android then return end
+  if love.keyboard and love.keyboard.setTextInput then
+    pcall(love.keyboard.setTextInput, false)
+  end
+end
+
 function RomImporter:_beginRename(version, id)
   local label
   for _, slot in ipairs(self.slots[version] or {}) do
@@ -3666,12 +3710,14 @@ function RomImporter:_beginRename(version, id)
   end
   self._rename = { version = version, id = id, text = label or "" }
   self._slotPress = nil -- cancel any armed click/drag on the list
+  self:_armTextInput()
 end
 
 function RomImporter:_commitRename()
   local r = self._rename
   if not r then return end
   self._rename = nil
+  self:_disarmTextInput()
   require("src.core.SaveData").renameSlot(r.version, r.id, r.text)
   self:_refreshSlots(r.version)
 end
@@ -3691,6 +3737,19 @@ function RomImporter:textinput(text)
   end
   if not self._rename then return end
   self._rename.text = utf8Cap(self._rename.text .. text, MAX_SLOT_LABEL)
+end
+
+-- Clipboard into the index prompt, shared by ctrl/cmd+V and the prompt's
+-- on-screen PASTE button (#578).  Same rule as typed input: URLs never
+-- contain a literal space, and a pasted one usually arrives with a stray
+-- newline attached.
+function RomImporter:_pasteIndexUrl()
+  if not self._indexPrompt then return end
+  local ok, text = pcall(love.system.getClipboardText)
+  if ok and type(text) == "string" then
+    self._indexPrompt.text =
+      utf8Cap(self._indexPrompt.text .. text:gsub("%s", ""), MAX_INDEX_URL)
+  end
 end
 
 -- "+ New save slot": register an empty slot, make it active, relist, and pin the
@@ -4736,11 +4795,13 @@ end
 -- would make the launcher's choice look like an endorsement.
 function RomImporter:_promptAddIndex()
   self._indexPrompt = { text = "" }
+  self:_armTextInput()
 end
 
 function RomImporter:_commitAddIndex()
   local prompt = self._indexPrompt
   self._indexPrompt = nil
+  self:_disarmTextInput()
   if not prompt then return end
   local ModIndex = require("src.mods.ModIndex")
   local row, err = ModIndex.addSource(prompt.text or "")

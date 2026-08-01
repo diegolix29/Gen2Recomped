@@ -448,3 +448,15 @@ polls (better than a quarter of a second) and any direction in the mix
 cancels it, so it is hard to hit by accident -- including on the on-screen
 touch controls, where it would take four fingers held on four separate
 controls.
+
+## Controls rebinding (CONTROLS screen)
+
+OPTIONS -> CONTROLS lists every Game Boy button with its current keyboard
+key and controller button side by side (Z/A). Press A on a row, then press
+and release the key or pad button you want; the rebind commits on the
+release. If that input already belongs to another row, the two rows swap,
+so no button is ever stranded without an input and no input ever serves
+two buttons. Holding a second key or pad button while the first is still
+down backs out of the capture without touching a keyboard; Escape still
+cancels too. SELECT clears one row back to its default, and START resets
+every binding after a confirmation.

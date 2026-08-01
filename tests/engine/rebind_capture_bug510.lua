@@ -2,7 +2,10 @@
 -- screen that captured it is still steering by that map (#510).  Swapping A
 -- and B used to close the screen mid-swap, because Input:applyBindings ran
 -- inside BindingsMenu:storeBinding and turned the player's next confirm
--- press into a cancel.  No pokered cite: rebinding is port-only (gap C2).
+-- press into a cancel.  A capture commits on the RELEASE of its press, a
+-- second held input cancels it, and a captured input that another row owns
+-- swaps rather than steals (#589).  No pokered cite: rebinding is
+-- port-only (gap C2).
 --   luajit tests/engine/rebind_capture_bug510.lua
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
@@ -73,19 +76,29 @@ eq(game.wroteOptions, 0, "and does not touch options on disk")
 bm.index = ROW_B
 press(bm, "a")
 bm:onKeyPressed("z")
-eq(game.save.options.bindings.b.key, "z", "the capture stores B = Z")
-eq(bm.items[ROW_B].right, "Z", "the row shows the new key straight away")
+check(game.save.options.bindings == nil,
+      "a capture holds its press; nothing stores before the release (#589)")
+bm:onKeyReleased("z")
+eq(game.save.options.bindings.b.key, "z", "releasing the press stores B = Z")
+eq(bm.items[ROW_B].right, "Z/B", "the row shows the new key straight away")
 eq(game.wroteOptions, 1, "the choice persists immediately")
 eq(Input.keyBindings["z"], "a",
    "but the live map still reads Z as A while the screen is open (#510)")
 eq(#game.stack.states, 1, "capturing Z does not close the screen")
+
+-- Z was the A row's effective key, so the steal became a swap: the A row
+-- inherits B's previous key and no key serves two rows (#589)
+eq(game.save.options.bindings.a.key, "x",
+   "capturing A's key for B hands A the old B key")
+eq(bm.items[ROW_A].right, "X/A", "and the A row redraws with it")
 
 -- the next Z the player presses is still confirm, so the A row can be armed
 bm.index = ROW_A
 press(bm, "a")
 eq(bm.capture, bm.items[ROW_A], "the A row arms instead of the screen closing")
 bm:onKeyPressed("x")
-eq(game.save.options.bindings.a.key, "x", "the swap's other half stores")
+bm:onKeyReleased("x")
+eq(game.save.options.bindings.a.key, "x", "re-capturing A's own key keeps it")
 eq(Input.keyBindings["x"], "b", "and X is still cancel until the screen closes")
 
 -- closing commits both halves at once, through ListMenu's onCancel
@@ -107,8 +120,23 @@ local padBm = openMenu(padGame)
 padBm.index = ROW_B
 press(padBm, "a")
 padBm:onGamepadPressed("y")
+padBm:onGamepadReleased("y")
 eq(padGame.save.options.bindings.b.pad, "y", "a pad capture stores")
 eq(Input.padBindings["y"], nil, "and stays out of the live pad map until close")
+
+-- a second input going down while the first is held backs the capture out
+-- with no keyboard in reach, the pad's Escape (#589)
+padBm.index = ROW_A
+press(padBm, "a")
+padBm:onGamepadPressed("x")
+padBm:onGamepadPressed("b")
+check(padBm.capture == nil, "a second press cancels the armed capture")
+-- Game only calls the hook while it is armed; the straggling release of
+-- the first button reaches a disarmed menu and stores nothing
+if padBm.onGamepadReleased then padBm:onGamepadReleased("x") end
+eq(padGame.save.options.bindings.a, nil,
+   "a cancelled capture's release writes no binding")
+
 press(padBm, "b")
 eq(Input.padBindings["y"], "b", "closing commits the pad half too")
 

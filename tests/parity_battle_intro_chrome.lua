@@ -98,8 +98,9 @@ check(wild.queue[1] and wild.queue[1].fn ~= nil,
 check(wild.queue[2] and wild.queue[2].text == wild.introText,
       "the intro text is still the second queue row")
 
--- let the silhouette slide land so the intro box is genuinely up
-for _ = 1, 45 do wild:update(1 / 60) end
+-- let the silhouette slide land so the intro box is genuinely up (the slide
+-- now runs 80 frames at 2px/frame, matching the original ~2px/frame)
+for _ = 1, 85 do wild:update(1 / 60) end
 eq(wild.introSlide or 0, 0, "the silhouette slide has landed")
 eq(wild.introBalls, true, "the window is still open under the intro text")
 eq(currentText(wild), wild.introText, "the intro box is the row on screen")
@@ -164,7 +165,7 @@ local tr = BattleState.newTrainer(game2, "OPP_YOUNGSTER", 1)
 tr.onFinish = function() end
 tr:enter()
 eq(tr.introBalls, true, "the trainer intro opens the same window")
-for _ = 1, 45 do tr:update(1 / 60) end
+for _ = 1, 85 do tr:update(1 / 60) end
 
 local ok3, err3, rows3 = snapshotHUD(tr)
 check(ok3, "drawHUDs runs during the trainer intro: " .. tostring(err3))

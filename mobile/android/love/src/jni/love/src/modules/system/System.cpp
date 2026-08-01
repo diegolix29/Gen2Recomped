@@ -223,6 +223,15 @@ bool System::syncHealthSteps() const
 #endif
 }
 
+bool System::restartApp() const
+{
+#ifdef LOVE_ANDROID
+	return love::android::restartApp();
+#else
+	return false;
+#endif
+}
+
 bool System::hasBackgroundMusic() const
 {
 #if defined(LOVE_ANDROID)

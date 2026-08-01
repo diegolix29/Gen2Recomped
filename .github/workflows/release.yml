@@ -45,6 +45,12 @@ jobs:
     runs-on: [self-hosted, macOS]
 
     steps:
+      # The self-hosted runner lives under the machine owner's home
+      # directory; mask it first so absolute paths in every later step's
+      # output show up as *** in the public workflow logs.
+      - name: Mask runner paths
+        run: echo "::add-mask::$HOME"
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -170,6 +176,11 @@ jobs:
           set -euo pipefail
           chmod +x scripts/build_android.sh
           scripts/build_android.sh --version "${{ steps.ver.outputs.version }}"
+
+      - name: Install xcbeautify
+        run: |
+          set -euo pipefail
+          brew list xcbeautify >/dev/null 2>&1 || brew install xcbeautify
 
       - name: Build iOS
         run: |
