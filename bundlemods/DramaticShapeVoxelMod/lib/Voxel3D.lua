@@ -252,6 +252,11 @@ local SHADER = [[
 local shaders = { [false] = nil, [true] = nil }
 local activeShader = nil      -- the variant this pass bound
 
+-- Cache the availability check to prevent repeated re-checking during
+-- route/scene changes. Once available() returns true, we assume the hardware
+-- capabilities don't change during gameplay (context loss is handled elsewhere).
+local availabilityCache = nil  -- nil = untried, true = available, false = unavailable
+
 -- Scene canvases, one per NAMED SLOT. There are exactly two callers and
 -- they want different sizes -- the free-roam pass renders at the window's
 -- pixel dimensions, the overworld battle at the GB's 160x144 -- and a
@@ -302,11 +307,22 @@ end
 -- love.graphics), without shader support, or where a depth canvas cannot be
 -- created -- every caller treats that as "stay on the 2D path".
 function Voxel3D.available()
+  -- Return cached result if available
+  if availabilityCache ~= nil then
+    return availabilityCache
+  end
+  
+  -- Check basic LOVE graphics capabilities
   if not (love.graphics and love.graphics.newCanvas
           and love.graphics.setDepthMode) then
+    availabilityCache = false
     return false
   end
-  return Voxel3D.shader() ~= nil
+  
+  -- Check shader availability
+  local shaderAvailable = Voxel3D.shader() ~= nil
+  availabilityCache = shaderAvailable
+  return shaderAvailable
 end
 
 -- Build a mesh in the shared format. `verts` is the LOVE vertex list and
@@ -824,6 +840,8 @@ function Voxel3D.invalidate()
   end
   canvas, canvasW, canvasH = nil, 0, 0
   ShadowMap.invalidate()
+  -- Reset availability cache so it gets re-checked on next available() call
+  availabilityCache = nil
 end
 
 return Voxel3D

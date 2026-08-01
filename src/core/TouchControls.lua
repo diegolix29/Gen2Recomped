@@ -194,7 +194,8 @@ local function loadImages()
   return img
 end
 
-function TouchControls:init()
+function TouchControls:init(game)
+  self.game = game
   self.active = wantsOverlay()
   self.enabled = true
   self.positions = nil
@@ -473,10 +474,11 @@ local function setDpad(self, touch, dir)
     end
   end
   touch.dir = dir
-  if dir then 
+  if dir then
     -- Check if in capture mode for binding
     if self.captureTarget then
-      local padName = "dpad" .. dir
+      local isLeftStick = touch.control == "leftstick"
+      local padName = (isLeftStick and "stick" or "dpad") .. dir
       self.captureTarget:capturePad(padName)
       touch.pressedAsMovement = false
     else
@@ -499,9 +501,25 @@ local function setDpad(self, touch, dir)
           touch.pressedAsMovement = true
         end
       else
-        -- Normal movement mode
-        pressBtn(self, dir)
-        touch.pressedAsMovement = true
+        -- Check if a hotkey is bound to this direction (for left stick or dpad)
+        local isLeftStick = touch.control == "leftstick"
+        local padName = (isLeftStick and "stick" or "dpad") .. dir
+        local hotkey = Input:hotkeyForPad(padName)
+        local g = self.game
+        
+        print("TouchControls: Checking hotkey for pad '" .. padName .. "', found: " .. tostring(hotkey))
+        
+        if hotkey and g and g.fireHotkey then
+          -- Fire the bound hotkey once (edge-triggered, like right stick)
+          print("TouchControls: Firing hotkey '" .. hotkey .. "' for pad '" .. padName .. "'")
+          g:fireHotkey(hotkey)
+          touch.pressedAsMovement = false
+        else
+          -- No hotkey bound: normal movement mode
+          print("TouchControls: No hotkey bound, using movement for pad '" .. padName .. "'")
+          pressBtn(self, dir)
+          touch.pressedAsMovement = true
+        end
       end
     end
   else

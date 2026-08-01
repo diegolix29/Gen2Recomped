@@ -413,11 +413,22 @@ function VoxelScene.prefetch(state)
   -- Limit neighbors based on DrawDistance setting for performance
   local neighborLimit = DrawDistance.neighborLimit()
   local limitedNeighbors = {}
-  for i, nb in ipairs(state.neighbors or {}) do
-    if i <= neighborLimit then
-      limitedNeighbors[#limitedNeighbors + 1] = nb
+  
+  -- If neighborLimit is nil (OFF setting), use all neighbors (original behavior)
+  if neighborLimit == nil then
+    limitedNeighbors = state.neighbors or {}
+    for _, nb in ipairs(limitedNeighbors) do
       live[nb.map.id] = true
       liveKey = liveKey .. "|" .. nb.map.id
+    end
+  else
+    -- Apply neighbor limiting
+    for i, nb in ipairs(state.neighbors or {}) do
+      if i <= neighborLimit then
+        limitedNeighbors[#limitedNeighbors + 1] = nb
+        live[nb.map.id] = true
+        liveKey = liveKey .. "|" .. nb.map.id
+      end
     end
   end
   
@@ -604,20 +615,37 @@ local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
   if not ShadowMap.begin(cx, cy, vw, vh) then return end
 
   ShadowMap.draw(terrain, atlasFor(state.map), nil)
-  for i, nb in ipairs(state.neighbors or {}) do
-    if i <= neighborLimit and nbMesh[i] then
-      ShadowMap.draw(nbMesh[i], atlasFor(nb.map),
-                     Mat4.translate(nb.ox, 0, nb.oy))
+  -- If neighborLimit is nil (OFF setting), render all neighbors (original behavior)
+  if neighborLimit == nil then
+    for i, nb in ipairs(state.neighbors or {}) do
+      if nbMesh[i] then
+        ShadowMap.draw(nbMesh[i], atlasFor(nb.map),
+                       Mat4.translate(nb.ox, 0, nb.oy))
+      end
+    end
+  else
+    for i, nb in ipairs(state.neighbors or {}) do
+      if i <= neighborLimit and nbMesh[i] then
+        ShadowMap.draw(nbMesh[i], atlasFor(nb.map),
+                       Mat4.translate(nb.ox, 0, nb.oy))
+      end
     end
   end
   -- flower billboards live outside the terrain mesh (they draw after the
   -- characters, pulled -- see render), but the sun still sees them: a
   -- handful of cutouts per meadow, unlike the grass left out below
   ShadowMap.draw(ChunkMesher.flowers(state.map), atlasFor(state.map), nil)
-  for i, nb in ipairs(state.neighbors or {}) do
-    if i <= neighborLimit then
+  if neighborLimit == nil then
+    for i, nb in ipairs(state.neighbors or {}) do
       ShadowMap.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),
                      Mat4.translate(nb.ox, 0, nb.oy))
+    end
+  else
+    for i, nb in ipairs(state.neighbors or {}) do
+      if i <= neighborLimit then
+        ShadowMap.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),
+                       Mat4.translate(nb.ox, 0, nb.oy))
+      end
     end
   end
   for _, p in ipairs(posed) do
@@ -673,10 +701,18 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor)
 
   Voxel3D.draw(terrain, atlasFor(state.map), nil)
   local neighborLimit = DrawDistance.neighborLimit()
-  for i, nb in ipairs(state.neighbors or {}) do
-    if i <= neighborLimit then
+  -- If neighborLimit is nil (OFF setting), render all neighbors (original behavior)
+  if neighborLimit == nil then
+    for i, nb in ipairs(state.neighbors or {}) do
       Voxel3D.draw(nbMesh[i], atlasFor(nb.map),
                    Mat4.translate(nb.ox, 0, nb.oy))
+    end
+  else
+    for i, nb in ipairs(state.neighbors or {}) do
+      if i <= neighborLimit then
+        Voxel3D.draw(nbMesh[i], atlasFor(nb.map),
+                     Mat4.translate(nb.ox, 0, nb.oy))
+      end
     end
   end
 
@@ -735,10 +771,18 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor)
   local Voxel = V.require("VoxelState")
   local pull = VoxelScene.pull(math.max(Voxel.angle, 0.05))
   Voxel3D.draw(ChunkMesher.grass(state.map), atlasFor(state.map), nil, pull)
-  for i, nb in ipairs(state.neighbors or {}) do
-    if i <= neighborLimit then
+  local neighborLimit = DrawDistance.neighborLimit()
+  if neighborLimit == nil then
+    for i, nb in ipairs(state.neighbors or {}) do
       Voxel3D.draw(ChunkMesher.grass(nb.map), atlasFor(nb.map),
                    Mat4.translate(nb.ox, 0, nb.oy), pull)
+    end
+  else
+    for i, nb in ipairs(state.neighbors or {}) do
+      if i <= neighborLimit then
+        Voxel3D.draw(ChunkMesher.grass(nb.map), atlasFor(nb.map),
+                     Mat4.translate(nb.ox, 0, nb.oy), pull)
+      end
     end
   end
   -- flower billboards: pulled like the characters and the grass, MINUS
@@ -756,10 +800,17 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor)
   -- through the same snugged transform the sun stored them with
   Voxel3D.draw(ChunkMesher.flowers(state.map), atlasFor(state.map), nil,
                fpull)
-  for i, nb in ipairs(state.neighbors or {}) do
-    if i <= neighborLimit then
+  if neighborLimit == nil then
+    for i, nb in ipairs(state.neighbors or {}) do
       Voxel3D.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),
                    Mat4.translate(nb.ox, 0, nb.oy), fpull)
+    end
+  else
+    for i, nb in ipairs(state.neighbors or {}) do
+      if i <= neighborLimit then
+        Voxel3D.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),
+                     Mat4.translate(nb.ox, 0, nb.oy), fpull)
+      end
     end
   end
 

@@ -167,7 +167,10 @@ function HotkeyBindingsMenu:beginCapture(item)
   -- lets a mobile player with no controller bind the touch overlay's
   -- L1/R1/L2/R2/H1-H4 buttons by tapping them instead of only firing
   -- whatever's already bound; see TouchControls:touchpressed
-  TouchControls.captureTarget = self
+  local game = self.game
+  if game and game.touchControls then
+    game.touchControls.captureTarget = self
+  end
 end
 
 function HotkeyBindingsMenu:captureKey(key)
@@ -175,7 +178,7 @@ function HotkeyBindingsMenu:captureKey(key)
 end
 
 function HotkeyBindingsMenu:capturePad(button)
-  -- Map touch dpad directions to standard names
+  -- Map touch dpad/left stick directions to standard names
   if button == "dpadup" then
     button = "dpadup"
   elseif button == "dpaddown" then
@@ -184,6 +187,14 @@ function HotkeyBindingsMenu:capturePad(button)
     button = "dpadleft"
   elseif button == "dpadright" then
     button = "dpadright"
+  elseif button == "stickup" then
+    button = "stickup"
+  elseif button == "stickdown" then
+    button = "stickdown"
+  elseif button == "stickleft" then
+    button = "stickleft"
+  elseif button == "stickright" then
+    button = "stickright"
   end
   self:storeBinding("pad", button)
 end
@@ -240,8 +251,10 @@ function HotkeyBindingsMenu:storeBinding(slot, value)
   self.onKeyPressed = nil
   self.onGamepadPressed = nil
   self.onGamepadAxis = nil
-  TouchControls.captureTarget = nil
   local game = self.game
+  if game and game.touchControls then
+    game.touchControls.captureTarget = nil
+  end
   if not (item and value and game.save and game.save.options) then return end
   local opts = game.save.options
   opts.hotkeyBindings = opts.hotkeyBindings or {}

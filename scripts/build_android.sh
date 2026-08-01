@@ -354,19 +354,6 @@ pack_game_love() {
   else
     # Linux/macOS - use standard unzip for verification
     if unzip -Z1 "$LOVE_FILE" \
-  # tools/save-editor ships with the app: the launcher's Edit button on a save
-  # row opens it in-process, so it must be inside the archive (see build.sh).
-  # Deliberately NO fused mods: a mod inside game.love sits in the read-only
-  # APK, so the mod manager's Delete can't remove it and it reappears every
-  # launch.  Pokewalker ships as an importable .zip instead, which gives it
-  # a real install/upgrade/delete lifecycle.
-  (cd "$ROOT" && zip -q -9 -r "$LOVE_FILE" \
-    main.lua conf.lua src data assets tools/save-editor \
-    tools/rom_manifest.json tools/rom_manifest_blue.json \
-    tools/rom_manifest_yellow.json \
-    -x '*.DS_Store' -x '*/.git/*' -x '*/.DS_Store' \
-    -x 'data/generated/*' -x 'assets/generated/*')
-  if unzip -Z1 "$LOVE_FILE" \
       | grep -Eq '^(data|assets)/generated/[^/]+|^(data|assets)/generated/.+/'; then
       fail "game.love unexpectedly contains generated ROM data"
     fi

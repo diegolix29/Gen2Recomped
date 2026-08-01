@@ -215,6 +215,9 @@ function OverworldState:enter(mapId, x, y, facing)
   -- survives save/load: a loaded game may start inside a building whose
   -- exit mat is a LAST_MAP warp
   self.lastOutdoor = Game.save.lastOutdoor
+  -- Initialize map preloading system
+  local MapLoader = require("src.world.MapLoader")
+  MapLoader.setData(Game.data)
   self:setMap(mapId, x, y, facing, { via = "boot" })
   -- boot/load: derive the flag from the tile the save left us standing on,
   -- like MapEntryAfterBattle's IsPlayerStandingOnWarp, so a game saved on a
@@ -446,11 +449,13 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
 
   -- fires before the onEnter chain so a listener sees the map in the same
   -- state the map script does
+  local MapLoader = require("src.world.MapLoader")
   Runtime.emit("map.entered", {
     mapId = mapId, map = self.map, fromMapId = fromMapId,
     via = (opts and opts.via)
           or (opts and opts.seamless and "connection")
           or (fromMapId and "warp" or "boot"),
+    preloaded = MapLoader.isPreloaded(mapId),
   })
 
   -- map-enter hooks (hand-ported map scripts, e.g. Victory Road barriers).
@@ -490,17 +495,34 @@ function OverworldState:rebuildNeighbors()
   -- resident set the eviction pass must never touch: the current map plus
   -- every drawn neighbor
   local keep = { [mapId] = true }
+  local neighborIds = {}
   for _, n in ipairs(OverworldState.computeNeighbors(Game.data.maps, mapId,
                                                      hops,
                                                      math.floor(vw / 2) + 64,
                                                      math.floor(vh / 2) + 64)) do
     keep[n.id] = true
+    neighborIds[#neighborIds + 1] = n.id
     local m = MapLoader.load(Game.data, n.id)
     table.insert(self.neighbors, { map = m, ox = n.ox, oy = n.oy })
   end
   -- bound resident memory: drop maps behind us that are neither current nor
   -- a drawn neighbor, releasing their window batch / border image / atlas
   MapLoader.trim(keep)
+
+  -- Preload neighbor maps for future transitions
+  -- We preload 2-hop neighbors to reduce stutter on further transitions
+  local preloadHops = hops + 1
+  local preloadNeighbors = OverworldState.computeNeighbors(Game.data.maps, mapId,
+                                                           preloadHops,
+                                                           math.floor(vw / 2) + 64,
+                                                           math.floor(vh / 2) + 64)
+  local preloadIds = {}
+  for _, n in ipairs(preloadNeighbors) do
+    if not keep[n.id] then -- only preload non-immediate neighbors
+      preloadIds[#preloadIds + 1] = n.id
+    end
+  end
+  MapLoader.preloadBatch(preloadIds)
 
   -- visual-only NPCs on connected maps (survey zoom): same spawn filter
   -- as a real map entry, but they never join self.entities -- no sight
@@ -850,7 +872,11 @@ end
 function OverworldState:update(dt)
   -- Update camera rotation tween
   self.camera:update(dt)
-  
+
+  -- Process map preloading in background (1-2 maps per frame for smooth transitions)
+  local MapLoader = require("src.world.MapLoader")
+  MapLoader.processPreload(2)
+
   -- deferred cutscene launch (see queueScript): run a queued script only
   -- once the triggering warp's transition has finished, its runner has gone
   -- dead, and no scripted walk is mid-step.  This is how the HALL_OF_FAME
