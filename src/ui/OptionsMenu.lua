@@ -507,6 +507,12 @@ local function buildRows(game)
       activate = function(g)
         require("src.ui.Screens").push(g, "BindingsMenu")
       end },
+    -- hotkey rebinding UI (display hotkeys like COLORS/TILT/ZOOM)
+    { id = "hotkeys", label = Strings("HOTKEYS"),
+      activate = function(g)
+        require("src.ui.Screens").push(g, "HotkeyBindingsMenu")
+      end },
+
     -- permanent on-screen pad toggle (#327); layout editing stays in the
     -- launcher.  Hidden where the overlay never appears (desktop without
     -- POKEPORT_TOUCH), so the row costs a non-mobile install nothing.
@@ -525,6 +531,23 @@ local function buildRows(game)
         o.touchControls = tc
         require("src.core.TouchControls"):applyOptions(o)
         return true
+      end,
+      activate = function(g)
+        -- Only enable touch controls editor in launcher context
+        -- During gameplay, touch controls layout editing is not available
+        -- The comment says "layout editing stays in the launcher"
+        -- So we should not try to open the editor from in-game options
+        return false
+      end },
+    -- mobile-only: customize touch overlay button positions
+    { id = "touchLayout", label = Strings("TOUCH LAYOUT"),
+      value = function(g)
+        return g.touchControls and g.touchControls:isEditMode() and "EDITING" or "DEFAULT"
+      end,
+      activate = function(g)
+        if g.touchControls then
+          g.touchControls:toggleEditMode()
+        end
       end },
   }
   -- issue #136: hide GBC FX on Android/iOS -- the present shader soft-bricks
@@ -532,6 +555,15 @@ local function buildRows(game)
     local filtered = {}
     for _, row in ipairs(rows) do
       if row.id ~= "gbcfx" then filtered[#filtered + 1] = row end
+    end
+    rows = filtered
+  end
+  -- hide TOUCH LAYOUT on non-mobile platforms
+  local osName = love.system and love.system.getOS and love.system.getOS()
+  if osName ~= "Android" and osName ~= "iOS" then
+    local filtered = {}
+    for _, row in ipairs(rows) do
+      if row.id ~= "touchLayout" then filtered[#filtered + 1] = row end
     end
     rows = filtered
   end

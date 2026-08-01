@@ -248,31 +248,6 @@ function Loader:_discover()
     end
   end
 end
-    if self.fs.getInfo(root) then
-      for _, name in ipairs(self.fs.getDirectoryItems(root)) do
-        local path = root .. "/" .. name
-        local info = self.fs.getInfo(path)
-        -- a dev-linked mod dir (ln -s) reports type "symlink" even with
-        -- setSymlinksEnabled(true) -- PhysFS never resolves the symlink's
-        -- own getInfo, only traversal into it. readManifest below still
-        -- correctly no-ops on a symlink that isn't a directory.
-        if info and (info.type == "directory" or info.type == "symlink") then
-          local manifest, err = readManifest(self.fs, path)
-          if manifest then
-            if self.mods[manifest.id] then
-              self.errors[#self.errors + 1] =
-                ("%s: duplicate mod id (ignored %s)"):format(manifest.id, path)
-            else
-              self.mods[manifest.id] = { manifest = manifest, path = path }
-            end
-          else
-            Logger.warn("mod %s ignored: %s", path, tostring(err))
-          end
-        end
-      end
-    end
-  end
-end
 
 -- ------- validate and resolve
 

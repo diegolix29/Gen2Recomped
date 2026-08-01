@@ -88,6 +88,21 @@ local CUT = 0.5
 -- its data back, so it is drawn into a canvas of its own size and the canvas
 -- is read -- which is also what makes this work for every path that produces
 -- a pic, without knowing which one produced this one.
+--
+-- The canvas is forced to dpiscale = 1, and that is the whole difference
+-- between a pic and a MONSTER. love.graphics.newCanvas defaults its dpiscale
+-- to the surface's, conf.lua turns highdpi on for Android and iOS, and
+-- Android's density is routinely 2.75 -- so newCanvas(56, 56) hands back a
+-- 154x154 texture there, the pic is drawn into it magnified to fill it, and
+-- newImageData reads the magnified copy back at its own PIXEL size. The image
+-- built from that is 2.75x the artwork, drawPicsLayer draws it at 1:1 because
+-- it trusts getWidth(), and the mon stands on the map nearly three times the
+-- size of the square it is supposed to cover. Desktop never saw it: dpiscale
+-- is already 1 there. Nor did every species, because only a pic with an
+-- enclosed hole in it comes back through here at all (see `changed` below) --
+-- so a Pidgey came out giant and the mon beside it did not, which is what
+-- makes this read as a sprite bug rather than a scale one. See the engine's
+-- own src/render/PixelCanvas.lua, which exists for exactly this reason.
 local function readBack(img)
   local w, h = img:getDimensions()
   if w <= 0 or h <= 0 then return nil end
@@ -96,7 +111,7 @@ local function readBack(img)
   local prevR, prevG, prevB, prevA = love.graphics.getColor()
   local data = nil
   local ok = pcall(function()
-    local canvas = love.graphics.newCanvas(w, h)
+    local canvas = love.graphics.newCanvas(w, h, { dpiscale = 1 })
     love.graphics.setCanvas(canvas)
     love.graphics.clear(0, 0, 0, 0)
     love.graphics.setBlendMode("replace", "premultiplied")

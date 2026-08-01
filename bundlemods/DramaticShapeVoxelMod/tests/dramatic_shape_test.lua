@@ -2170,6 +2170,7 @@ local BattlePics = run.loader.exports.DRAMATIC_SHAPE.lib.require("BattlePics")
 -- Run one hand-drawn figure through the real BattlePics and hand back a
 -- reader over what came out. The pic is faked at the readback seam, which is
 -- the only thing between this and the pixels the engine would have blitted.
+local lastCanvas = nil                  -- what the readback asked newCanvas for
 local function fill(rows)
   local W, H = #rows[1], #rows
   local built = nil
@@ -2189,7 +2190,8 @@ local function fill(rows)
   end
 
   local realNewCanvas, realNewImage = love.graphics.newCanvas, love.graphics.newImage
-  love.graphics.newCanvas = function()
+  love.graphics.newCanvas = function(cw, ch, opts)
+    lastCanvas = { w = cw, h = ch, opts = opts }
     return { setFilter = function() end, release = function() end,
              newImageData = fakeData }
   end
@@ -2284,6 +2286,24 @@ local drainOut, drainPic, drain = fill({
 })
 T.check(drainOut ~= drainPic and drain and drain(8, 4),
   "a narrow one is where the drawing ran out, and is paper")
+
+-- ------- and the readback is measured in PIXELS, which is what kept the mons
+-- the size of the squares they stand on
+--
+-- love.graphics.newCanvas takes the SURFACE's dpi scale when it is not told
+-- otherwise, conf.lua turns highdpi on for Android and iOS, and Android's
+-- density is routinely 2.75. So an untold newCanvas(56, 56) allocated a
+-- 154x154 texture on a phone, the pic was magnified into it, and newImageData
+-- read the magnified copy back at its own size -- an image 2.75x the artwork,
+-- which drawPicsLayer then drew at 1:1 because it trusts getWidth(). The mon
+-- stood on the map three times the size of its tile.
+--
+-- Only for a pic with paper to put back, which is why it read as a bug in
+-- particular Pokemon (a giant Pidgey beside a normal mon) rather than as a
+-- scale that was wrong everywhere.
+T.check(lastCanvas and lastCanvas.opts and lastCanvas.opts.dpiscale == 1,
+  "the readback canvas is one texel per pic pixel, on a highdpi phone too")
+T.eq(lastCanvas.w, 18, "and it is the size of the pic, in those pixels")
 
 -- the answer is cached on the image, so a pic costs one readback a session
 -- rather than one a frame -- checked on the first figure, which is still in

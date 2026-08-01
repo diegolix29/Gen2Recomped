@@ -1,16 +1,41 @@
 # Changelog
 
+## 1.3.1
+
+### Fixed
+
+- **A staged battle on a phone stood some Pokémon three times the size of the
+  square they were on.** A Pidgey towered over the arena while the mon beside
+  it was the right size, which reads as a bug in one species and is not one.
+
+  Putting the paper back inside a battle pic (BattlePics, 1.3.0) needs the
+  pic's pixels, and a LOVE Image does not hand them back -- so the pic is drawn
+  into a canvas of its own size and the canvas is read. `newCanvas` takes the
+  SURFACE's dpi scale when it is not told otherwise, `conf.lua` turns highdpi
+  on for Android and iOS, and Android's display density is routinely 2.75. So
+  `newCanvas(56, 56)` allocated a 154x154 texture there, the pic was magnified
+  into it, and the readback came back at the magnified size. The rebuilt pic
+  was 2.75x the artwork, the engine's pics layer drew it 1:1 because it trusts
+  `getWidth()`, and the mon stood on its tile nearly three times too big.
+
+  Only a pic with an enclosed hole in it is rebuilt at all -- the rest are
+  handed straight back untouched -- which is why it hit some species and not
+  others, and why it never showed on desktop, where the dpi scale is already 1.
+  The readback now asks for one texel per pic pixel, the way the engine's own
+  `PixelCanvas` does for the same reason. The animated-tile atlas readback took
+  the same fix: on a phone it would have come back magnified too, and every
+  tile coordinate in it counts in eights from the top-left.
+
 ## 1.3.0
 
 ### Added
 
-- **DRAW DIST, a new performance option: OFF / NEAR / MILD / FAR draw distance.**
+- **DRAW DIST, a new performance option: NEAR / MILD / FAR draw distance.**
   Controls how many adjacent maps (neighbors) are rendered, which significantly
-  affects performance on low-end PCs and mobile devices. OFF uses no limit
-  (original behavior), NEAR renders only the current map (0 neighbors) for best
-  performance, MILD renders 2 neighbors for balanced quality, and FAR renders
-  4 neighbors for moderate quality/performance balance. Accessible via hotkey 9
-  (default, rebindable) or the DRAW DIST options row.
+  affects performance on low-end PCs and mobile devices. NEAR renders only the
+  current map (0 neighbors) for best performance, MILD renders 2 neighbors for
+  balanced quality, and FAR renders 4 neighbors for maximum visual quality.
+  Accessible via hotkey 9 (default, rebindable) or the DRAW DIST options row.
 
 - **Hotkey system integration: All mod hotkeys are now properly registered through
   the game's hotkey system and can be rebound through the hotkey bindings menu.**

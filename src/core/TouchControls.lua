@@ -74,7 +74,7 @@ local SLOP = { a = 1.3, b = 1.3, start = 1.4, select = 1.4 }
 local HOTKEY_SLOP = 1.35
 
 local BUTTONS = { "a", "b", "start", "select" }
-local CONTROLS = { "dpad", "a", "b", "start", "select" }
+local CONTROLS = { "dpad", "a", "b", "start", "select", "l1", "l2", "r1", "r2", "h1", "h2", "h3", "h4", "leftstick", "rightstick" }
 
 -- touch-zone name -> Input:hotkeyForPad name. L1/R1/L2/R2 reuse the exact
 -- names a real controller reports (see src/core/Input.lua's
@@ -157,12 +157,29 @@ function TouchControls.defaultLayout(ww, wh, ox, oy)
   local abW = dpadW * 0.46
   local ssW = dpadW * 0.30
   local margin = dpadW * 0.12
+  local shoulderW = math.min(56, short * 0.16)
+  local hotkeyW = math.min(40, short * 0.10)
+  local stickW = math.min(150, short * 0.32)
+  local topMargin = margin + shoulderW * 0.18
+  local hGap = hotkeyW * 1.25
+  local hCenterX = ww / 2
+  
   return {
     dpad = { cx = ox + margin + dpadW / 2, cy = oy + wh - margin - dpadW / 2, w = dpadW },
     a = { cx = ox + ww - margin - abW * 0.55, cy = oy + wh - margin - abW * 1.75, w = abW },
     b = { cx = ox + ww - margin - abW * 1.60, cy = oy + wh - margin - abW * 0.55, w = abW },
     start = { cx = ox + ww / 2 + ssW * 0.60, cy = oy + wh - margin - ssW * 0.95, w = ssW },
     select = { cx = ox + ww / 2 - ssW * 0.60, cy = oy + wh - margin - ssW * 0.95, w = ssW },
+    l2 = { cx = ox + margin + shoulderW / 2, cy = oy + topMargin + shoulderW / 2, w = shoulderW },
+    l1 = { cx = ox + margin + shoulderW / 2, cy = oy + topMargin + shoulderW * 1.75, w = shoulderW },
+    r2 = { cx = ox + ww - margin - shoulderW / 2, cy = oy + topMargin + shoulderW / 2, w = shoulderW },
+    r1 = { cx = ox + ww - margin - shoulderW / 2, cy = oy + topMargin + shoulderW * 1.75, w = shoulderW },
+    h1 = { cx = ox + hCenterX - hGap * 1.5, cy = oy + topMargin + hotkeyW / 2, w = hotkeyW },
+    h2 = { cx = ox + hCenterX - hGap * 0.5, cy = oy + topMargin + hotkeyW / 2, w = hotkeyW },
+    h3 = { cx = ox + hCenterX + hGap * 0.5, cy = oy + topMargin + hotkeyW / 2, w = hotkeyW },
+    h4 = { cx = ox + hCenterX + hGap * 1.5, cy = oy + topMargin + hotkeyW / 2, w = hotkeyW },
+    leftstick = { cx = ox + margin + stickW / 2, cy = oy + wh * 0.42, w = stickW },
+    rightstick = { cx = ox + ww - margin - stickW / 2, cy = oy + wh * 0.42, w = stickW },
   }
 end
 
@@ -195,10 +212,30 @@ function TouchControls:init()
   self.rightStickTouch = nil
   self.layoutW, self.layoutH = nil, nil
   self.img = nil
+  -- Edit mode for customizing button positions
+  self.editMode = false
+  self.editingButton = nil
+  self.editOffset = { x = 0, y = 0 }
   -- Images load whenever the platform wants the overlay OR the launcher
   -- editor forces a preview (desktop testing of the editor).
   if self.active then
-    self.img = loadImages()
+    -- soft-fail: a missing/corrupt PNG must never block boot; the overlay
+    -- stays off and keyboard/controller play still works. Every name in
+    -- IMAGES must resolve, so the four new button sets ship together --
+    -- add all ten new PNGs (hotkey1-4, l1, r1, l2, r2, leftstick,
+    -- rightstick) to assets/touch or the whole overlay disables itself.
+    local img = {}
+    for name, path in pairs(IMAGES) do
+      local ok, im = pcall(love.graphics.newImage, path)
+      if not ok then
+        img = nil
+        break
+      end
+      -- smooth UI icons; the global default filter is nearest for GB pixels
+      im:setFilter("linear", "linear")
+      img[name] = im
+    end
+    self.img = img
   end
 end
 
@@ -208,28 +245,6 @@ function TouchControls:ensureImages()
   if self.img then return true end
   self.img = loadImages()
   return self.img ~= nil
-  -- Edit mode for customizing button positions
-  self.editMode = false
-  self.editingButton = nil
-  self.editOffset = { x = 0, y = 0 }
-  if not self.active then return end
-  -- soft-fail: a missing/corrupt PNG must never block boot; the overlay
-  -- stays off and keyboard/controller play still works. Every name in
-  -- IMAGES must resolve, so the four new button sets ship together --
-  -- add all ten new PNGs (hotkey1-4, l1, r1, l2, r2, leftstick,
-  -- rightstick) to assets/touch or the whole overlay disables itself.
-  local img = {}
-  for name, path in pairs(IMAGES) do
-    local ok, im = pcall(love.graphics.newImage, path)
-    if not ok then
-      img = nil
-      break
-    end
-    -- smooth UI icons; the global default filter is nearest for GB pixels
-    im:setFilter("linear", "linear")
-    img[name] = im
-  end
-  self.img = img
 end
 
 -- Apply options.touchControls.  Called from Game:applyOptions and from
@@ -399,6 +414,10 @@ function TouchControls:hitTest(x, y)
   local half = dz.w * 0.65
   if math.abs(x - dz.cx) <= half and math.abs(y - dz.cy) <= half then
     return "dpad"
+  end
+  -- Check hotkey buttons, shoulder buttons, and sticks
+  for _, name in ipairs({"l1", "l2", "r1", "r2", "h1", "h2", "h3", "h4", "leftstick", "rightstick"}) do
+    if L[name] and inCircle(L[name], x, y, HOTKEY_SLOP) then return name end
   end
   return nil
 end

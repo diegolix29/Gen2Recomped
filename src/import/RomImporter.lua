@@ -588,6 +588,7 @@ function RomImporter.new(onComplete, opts)
     -- boot armed and let the first poll tick consume it, rather than making the
     -- player tap Import a second time to trigger the scan by hand (#553).
     pickPending = android or nil,
+    _startupPoll = android or nil,
     -- Android drag: the launcher is handed no move events at all (main.lua
     -- forwards neither touchmoved nor mousemoved while it is up), and its mouse
     -- emulation is what "no reliable pointer polling" below refers to.
@@ -739,6 +740,9 @@ end
 -- moments later (it clears pickPending itself once something is found).
 function RomImporter:focus(f)
   if not (f and self.android and self.workState ~= "working") then return end
+
+  self.pickPending = nil
+  self._startupPoll = nil
   -- SAF create-document finished: GameActivity wrote export_done.flag.
   if love.filesystem.getInfo("export_done.flag", "file") then
     love.filesystem.remove("export_done.flag")
@@ -1111,6 +1115,99 @@ function RomImporter:chooseSaveImport(version)
   if path then self:_importSave(version, path) end
 end
 
+-- Pick a sky image using the platform's file picker
+function RomImporter:_pickSkyImage()
+  if self.pickPending then return end
+  
+  local SaveData = require("src.core.SaveData")
+  local opts = SaveData.loadOptions()
+  if not opts then return end
+  
+  local platform = love.system.getOS()
+  local prompt = "Select Sky Image"
+  local path = nil
+  
+  releasePointerGrab()
+  
+  if platform == "Android" then
+    -- Use the Android SAF picker for image selection
+    if love.system.pickFile and love.system.pickFile("image") then
+      path = "picked_sky.png"
+      self.pickPending = true
+    else
+      local Logger = require("src.core.Logger")
+      if Logger then
+        Logger.warn("Android image picker failed to launch")
+      end
+    end
+  elseif platform == "Windows" then
+    local script = table.concat({
+      "Add-Type -AssemblyName System.Windows.Forms;",
+      "$d=New-Object System.Windows.Forms.OpenFileDialog;",
+      "$d.Title='" .. prompt .. "';",
+      "$d.Filter='Image files (*.png;*.jpg;*.jpeg;*.bmp;*.hdr)|*.png;*.jpg;*.jpeg;*.bmp;*.hdr|All files (*.*)|*.*';",
+      "if($d.ShowDialog() -eq 'OK'){[Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::Write($d.FileName)}",
+    })
+    local pipe = HostShell.popen('powershell -NoProfile -STA -Command "' .. script .. '"')
+    if pipe then
+      local result = pipe:read("*a")
+      pipe:close()
+      result = result and result:gsub("^%s+", ""):gsub("%s+$", "") or nil
+      if result and result ~= "" then path = result end
+    end
+  elseif platform == "Linux" then
+    local pipe = HostShell.popen([[zenity --file-selection --title="]] .. prompt .. [[" --file-filter="Image files | *.png *.jpg *.jpeg *.bmp *.hdr" 2>/dev/null]])
+    if pipe then
+      local result = pipe:read("*a")
+      pipe:close()
+      result = result and result:gsub("^%s+", ""):gsub("%s+$", "") or nil
+      if result and result ~= "" then path = result end
+    end
+    pipe = HostShell.popen([[kdialog --getopenfilename "$HOME" "*.png *.jpg *.jpeg *.bmp *.hdr|Image files" 2>/dev/null]])
+    if pipe then
+      local result = pipe:read("*a")
+      pipe:close()
+      result = result and result:gsub("^%s+", ""):gsub("%s+$", "") or nil
+      if result and result ~= "" then path = result end
+    end
+  elseif platform == "OS X" then
+    local pipe = HostShell.popen([[osascript -e 'POSIX path of (choose file with prompt "]] .. prompt .. [[" of type {"png","jpg","jpeg","bmp","hdr"})' 2>/dev/null]])
+    if pipe then
+      local result = pipe:read("*a")
+      pipe:close()
+      result = result and result:gsub("^%s+", ""):gsub("%s+$", "") or nil
+      if result and result ~= "" then path = result end
+    end
+  end
+  
+  if path and path ~= "" then
+    path = tostring(path)
+    opts.skyImageEnabled = true
+    SaveData.saveOptions(opts)
+    local Tilt = require("src.render.Tilt")
+    Tilt:setSkyImage(path)
+  end
+end
+
+-- Remove the current sky image
+function RomImporter:_removeSkyImage()
+  local SaveData = require("src.core.SaveData")
+  local opts = SaveData.loadOptions()
+  if opts then
+    opts.skyImageEnabled = false
+    SaveData.saveOptions(opts)
+    
+    -- Remove the sky image file
+    if love.filesystem.getInfo("sky_image.png", "file") then
+      love.filesystem.remove("sky_image.png")
+    end
+    
+    -- Clear the Tilt sky image
+    local Tilt = require("src.render.Tilt")
+    Tilt:setSkyImage(nil)
+  end
+end
+
 -- "Export save" button: write the active slot back out to a raw .sav in the save
 -- directory's exports/ folder.  On desktop, show the path with an open-folder
 -- affordance.  On Android, stage pending_export.sav and open the system
@@ -1282,9 +1379,13 @@ function RomImporter:_pollPickedFiles(dt)
       end
     end
   end
-  if found then
+if found then
     self.pickPending = nil
+    self._startupPoll = nil
     self:focus(true)
+  elseif self._startupPoll then
+    self.pickPending = nil
+    self._startupPoll = nil
   end
 end
 
@@ -1970,12 +2071,14 @@ function RomImporter:draw()
       math.ceil(appW), math.ceil(viewportH))
   end
 
-  -- content: game panel for a version tab, mods panel for the mods tab
+  -- content: game panel for a version tab, mods panel for the mods tab, sky panel for sky tab
   local panelH
   if self.tab == "mods" then
     panelH = self:_drawModsPanel(cX, panelY, cW, cH, paged)
   elseif self.tab == "find" then
     panelH = self:_drawFindPanel(cX, panelY, cW, cH, paged)
+  elseif self.tab == "sky" then
+    panelH = self:_drawSkyPanel(cX, panelY, cW, cH, paged)
   else
     panelH = self:_drawGamePanel(self.tab, cX, panelY, cW, cH, paged)
   end
@@ -2694,94 +2797,9 @@ function RomImporter:mousepressed(x, y, button)
     return
   end
   -- Tab chips switch panels even mid-import so the player can look around
-  -- while a ROM extracts. Sky tab toggles skyImageEnabled instead.
+  -- while a ROM extracts.
   for _, t in ipairs(self.tabRects or {}) do
     if inside(t, x, y) then
-      if t.id == "sky" then
-        -- Guard against double-taps or multiple picker launches
-        if self.pickPending then return end
-        -- Open file picker to select sky image
-        local SaveData = require("src.core.SaveData")
-        local opts = SaveData.loadOptions()
-        if opts then
-          local platform = love.system.getOS()
-          local prompt = "Select Sky Image"
-          local path = nil
-          
-          releasePointerGrab()
-          
-          if platform == "Android" then
-            -- Use the Android SAF picker for image selection
-            if love.system.pickFile then
-              local ok = love.system.pickFile("image")
-              if ok then
-                -- The picker was launched successfully; the image will be saved as picked_sky.png
-                -- in the save directory. We'll need to wait for focus to return and check for the file.
-                path = "picked_sky.png"
-                self.pickPending = true
-              else
-                -- Picker failed to launch
-                local Logger = require("src.core.Logger")
-                if Logger then
-                  Logger.warn("Android image picker failed to launch")
-                end
-              end
-            end
-          elseif platform == "Windows" then
-            local script = table.concat({
-              "Add-Type -AssemblyName System.Windows.Forms;",
-              "$d=New-Object System.Windows.Forms.OpenFileDialog;",
-              "$d.Title='" .. prompt .. "';",
-              "$d.Filter='Image files (*.png;*.jpg;*.jpeg;*.bmp;*.hdr)|*.png;*.jpg;*.jpeg;*.bmp;*.hdr|All files (*.*)|*.*';",
-              "if($d.ShowDialog() -eq 'OK'){[Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::Write($d.FileName)}",
-            })
-            local pipe = HostShell.popen('powershell -NoProfile -STA -Command "' .. script .. '"')
-            if pipe then
-              local result = pipe:read("*a")
-              pipe:close()
-              result = result and result:gsub("^%s+", ""):gsub("%s+$", "") or nil
-              if result and result ~= "" then path = result end
-            end
-          elseif platform == "Linux" then
-            local pipe = HostShell.popen([[zenity --file-selection --title="]] .. prompt .. [[" --file-filter="Image files | *.png *.jpg *.jpeg *.bmp *.hdr" 2>/dev/null]])
-            if pipe then
-              local result = pipe:read("*a")
-              pipe:close()
-              result = result and result:gsub("^%s+", ""):gsub("%s+$", "") or nil
-              if result and result ~= "" then path = result end
-            end
-            pipe = HostShell.popen([[kdialog --getopenfilename "$HOME" "*.png *.jpg *.jpeg *.bmp *.hdr|Image files" 2>/dev/null]])
-            if pipe then
-              local result = pipe:read("*a")
-              pipe:close()
-              result = result and result:gsub("^%s+", ""):gsub("%s+$", "") or nil
-              if result and result ~= "" then path = result end
-            end
-          elseif platform == "OS X" then
-            local pipe = HostShell.popen([[osascript -e 'POSIX path of (choose file with prompt "]] .. prompt .. [[" of type {"png","jpg","jpeg","bmp","hdr"})' 2>/dev/null]])
-            if pipe then
-              local result = pipe:read("*a")
-              pipe:close()
-              result = result and result:gsub("^%s+", ""):gsub("%s+$", "") or nil
-              if result and result ~= "" then path = result end
-            end
-          end
-          
-          if path and path ~= "" then
-            -- Convert to string in case it's userdata
-            path = tostring(path)
-            -- Only save the enabled flag, not the path (path is launcher-only)
-            opts.skyImageEnabled = true
-            SaveData.saveOptions(opts)
-            local Tilt = require("src.render.Tilt")
-            Tilt:setSkyImage(path)
-          end
-        end
-      else
-        self.tab = t.id
-        self._slotPress = nil   -- drop any half-started slot drag on tab change
-        self._modPress = nil    -- and any half-started mod toggle press
-      end
       self.tab = t.id
       self._slotPress = nil   -- drop any half-started slot drag on tab change
       self._modPress = nil    -- and any half-started mod toggle press
@@ -2937,6 +2955,13 @@ function RomImporter:mousepressed(x, y, button)
   end
   for _, r in ipairs(self.findInstallRects or {}) do
     if inside(r, x, y) and r.entry then self:_findConfirmInstall(r.entry); return end
+  end
+  -- SKY panel buttons
+  if inside(self.skyAddRect, x, y) then
+    self:_pickSkyImage(); return
+  end
+  if inside(self.skyRemoveRect, x, y) then
+    self:_removeSkyImage(); return
   end
   -- A press anywhere else on the tab drops the search caret, so the field does
   -- not silently keep eating keystrokes once the player has moved on.
@@ -3198,24 +3223,11 @@ function RomImporter:_drawTabBar(x, y, w, h, chip)
         end
       end
     elseif t.sky then
-      -- Draw sun icon for sky chip
-      local cx = cursorX + chip / 2
-      local cy = chipY + chip / 2
-      local sunR = 6 * s
-      col(PAL.skyDot)
-      -- Sun circle
-      love.graphics.circle("fill", cx, cy, sunR)
-      -- Sun rays
-      for i = 0, 7 do
-        local angle = (i / 8) * math.pi * 2
-        local rayLen = 3 * s
-        love.graphics.line(
-          cx + math.cos(angle) * (sunR + 1),
-          cy + math.sin(angle) * (sunR + 1),
-          cx + math.cos(angle) * (sunR + rayLen),
-          cy + math.sin(angle) * (sunR + rayLen)
-        )
-      end
+      -- Draw simple text label for sky chip (no sun icon)
+      love.graphics.setFont(self.chipFont)
+      col(t.ink or PAL.white)
+      love.graphics.print("S", cursorX + chip / 2 - self.chipFont:getWidth("S") / 2,
+                          chipY + chip / 2 - self.chipFont:getHeight() / 2)
     elseif t.find then
       -- magnifier: a ring plus a handle running down-right out of it
       local cr = chip * 0.20
@@ -5117,6 +5129,100 @@ function RomImporter:_drawFindPanel(x, y, w, h, paged)
       1.5 * s, 1.5 * s)
   end
   return (top - y) + totalH
+end
+
+-- Draw the sky panel for custom sky image management
+function RomImporter:_drawSkyPanel(x, y, w, h, paged)
+  local s = self._s
+  local padH = 16 * s
+  local headerH = 60 * s
+  
+  -- Header
+  love.graphics.setFont(self.gameNameFont)
+  col(PAL.heading)
+  printfB(Strings("SKY IMAGE"), x, y + 18 * s, w, "left")
+  
+  -- Check current sky image status
+  local SaveData = require("src.core.SaveData")
+  local opts = SaveData.loadOptions()
+  local skyEnabled = opts and opts.skyImageEnabled
+  local skyImageExists = love.filesystem.getInfo("sky_image.png", "file")
+  
+  -- Description
+  love.graphics.setFont(self.stateFont)
+  col(PAL.labelGray)
+  local descText = skyEnabled and skyImageExists 
+    and "Custom sky image is currently active" 
+    or "No custom sky image set. Add one to personalize your game."
+  love.graphics.printf(descText, x, y + headerH - 20 * s, w, "left")
+  
+  local top = y + headerH + 20 * s
+  local listH = h - headerH - 20 * s
+  if paged then listH = math.min(listH, 400 * s) end
+  
+  -- Sky image preview area
+  local previewH = 200 * s
+  local previewW = math.min(w - 2 * padH, 400 * s)
+  local previewX = x + (w - previewW) / 2
+  local previewY = top
+  
+  -- Preview background
+  col({ 9, 14, 34 }, 0.8)
+  love.graphics.rectangle("fill", previewX, previewY, previewW, previewH, 12 * s)
+  col(PAL.cardBorder, 0.3)
+  love.graphics.setLineWidth(math.max(1, 1 * s))
+  love.graphics.rectangle("line", previewX, previewY, previewW, previewH, 12 * s)
+  
+  -- Draw current sky image or placeholder
+  if skyEnabled and skyImageExists then
+    local success, skyImg = pcall(love.graphics.newImage, "sky_image.png")
+    if success then
+      -- Draw sky image scaled to fit preview
+      local imgW, imgH = skyImg:getDimensions()
+      local scale = math.min(previewW / imgW, previewH / imgH)
+      local drawW = imgW * scale
+      local drawH = imgH * scale
+      local drawX = previewX + (previewW - drawW) / 2
+      local drawY = previewY + (previewH - drawH) / 2
+      love.graphics.draw(skyImg, drawX, drawY, 0, scale, scale)
+    else
+      -- Fallback to placeholder
+      love.graphics.setFont(self.stateFont)
+      col(PAL.red)
+      printfB("Failed to load sky image", previewX, previewY + previewH / 2 - 10 * s, previewW, "center")
+    end
+  else
+    -- Placeholder
+    love.graphics.setFont(self.stateFont)
+    col(PAL.labelGray)
+    printfB("No sky image set", previewX, previewY + previewH / 2 - 10 * s, previewW, "center")
+    love.graphics.setFont(self.hintFont)
+    col(PAL.warning)
+    printfB("Tap 'Add Image' to select a custom sky", previewX, previewY + previewH / 2 + 10 * s, previewW, "center")
+  end
+  
+  -- Buttons area
+  local btnY = previewY + previewH + 20 * s
+  local btnH = 44 * s
+  local btnW = math.min(180 * s, w - 2 * padH)
+  
+  if skyEnabled and skyImageExists then
+    -- Remove button
+    local removeX = x + (w - btnW) / 2
+    self.skyRemoveRect = self:_glassyButton(removeX, btnY, btnW, btnH, "Remove Image", self.saveBtnFont, true)
+  else
+    -- Add button
+    local addX = x + (w - btnW) / 2
+    self.skyAddRect = self:_glassyButton(addX, btnY, btnW, btnH, "Add Image", self.saveBtnFont, true)
+  end
+  
+  -- Help text
+  love.graphics.setFont(self.hintFont)
+  col(PAL.labelGray)
+  local helpText = "Supported formats: PNG, JPG, JPEG, BMP, HDR"
+  love.graphics.printf(helpText, x, btnY + btnH + 16 * s, w, "center")
+  
+  return headerH + previewH + btnH + 60 * s
 end
 
 return RomImporter
