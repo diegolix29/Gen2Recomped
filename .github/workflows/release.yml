@@ -1,8 +1,8 @@
 name: Release
 
-# Builds the macOS, Windows, and Linux desktop apps, an Android APK, and the
-# Anbernic RG34XXSP (Stock OS 64-bit MOD / PortMaster) port on the self-hosted
-# Mac runner, and publishes them as a GitHub Release.
+# Builds the macOS, Windows, and Linux desktop apps, an Android APK, an iOS
+# IPA, and the Anbernic RG34XXSP (Stock OS 64-bit MOD / PortMaster) port on
+# the self-hosted Mac runner, and publishes them as a GitHub Release.
 #
 # Versioning:
 #   - First ever release is 0.1.0.
@@ -171,6 +171,15 @@ jobs:
           chmod +x scripts/build_android.sh
           scripts/build_android.sh --version "${{ steps.ver.outputs.version }}"
 
+      - name: Build iOS
+        run: |
+          set -euo pipefail
+          # Device Release IPA; signs with the Apple Development identity on
+          # the runner (auto team detection). Users on other Apple IDs still
+          # re-sign or build via docs/ios-install.md.
+          scripts/build_ios.sh --fetch --device --release \
+            --version "${{ steps.ver.outputs.version }}"
+
       - name: Build Anbernic RG34XXSP port
         run: |
           set -euo pipefail
@@ -226,6 +235,10 @@ jobs:
           apk="$(find dist/android/debug -name '*.apk' | head -1)"
           [ -n "$apk" ] || { echo "::error::no Android APK found under dist/android/debug"; exit 1; }
           cp "$apk" "$outdir/gen1recomp-${v}-android.apk"
+
+          ipa="dist/ios/gen1recomp.ipa"
+          [ -f "$ipa" ] || { echo "::error::$ipa not found (expected from scripts/build_ios.sh --device)"; exit 1; }
+          cp "$ipa" "$outdir/gen1recomp-${v}-ios.ipa"
 
           # Anbernic handheld port (suffix names the CFW it targets, so a
           # future RG35XX/other-CFW pack can ship alongside it).
@@ -345,6 +358,7 @@ jobs:
             "dist/release/gen1recomp-${v}-windows.zip" \
             "dist/release/gen1recomp-${v}-linux.zip" \
             "dist/release/gen1recomp-${v}-android.apk" \
+            "dist/release/gen1recomp-${v}-ios.ipa" \
             "dist/release/gen1recomp-${v}-rg34xxsp-stockos64-mod.zip" \
             "dist/release/gen1recomp-${v}.love" \
             "dist/release/sha256sums.txt"

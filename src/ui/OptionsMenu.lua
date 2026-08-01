@@ -20,6 +20,7 @@ local GameSpeed = require("src.core.GameSpeed")
 local GameVersion = require("src.core.GameVersion")
 local VideoMode = require("src.core.VideoMode")
 local FrameCap = require("src.core.FrameCap")
+local Performance = require("src.core.Performance")
 local Logger = require("src.core.Logger")
 local HostShell = require("src.core.HostShell")
 local love = love
@@ -289,6 +290,21 @@ local function buildRows(game)
         require("src.core.Music").setFilterLevel(o.musicFilter)
         return true
       end },
+    -- Heads the port's display group: one tier that scales the heavy extras
+    -- (TILT / GBC FX / survey ZOOM) and the FPS ceiling for weaker devices.
+    -- AUTO picks a default from the hardware; every tier is overridable.
+    -- Re-applies live so the extras clamp (or, on a higher tier, restore to
+    -- the player's stored TILT / GBC FX / ZOOM) the moment the row changes.
+    { id = "performance", label = Strings("PERFORMANCE"),
+      value = function(g)
+        return Strings(Performance.label(g.save.options.performance))
+      end,
+      step = function(g, dir)
+        local o = g.save.options
+        o.performance = Performance.cycle(o.performance, dir)
+        g:applyOptions(o)
+        return true
+      end },
     { id = "colors", label = Strings("COLORS"),
       value = function(g)
         return PaletteFX.modeLabel(g.save.options.colors or "gbc")
@@ -491,22 +507,24 @@ local function buildRows(game)
       activate = function(g)
         require("src.ui.Screens").push(g, "BindingsMenu")
       end },
-    -- lets COLORS/TILT/ZOOM/GBC FX/zoom-step be bound to a controller
-    -- button, same "PRESS A BUTTON" capture as CONTROLS above; the row
-    -- costs a vanilla install nothing (no default pad binding ships)
-    { id = "hotkeys", label = Strings("HOTKEYS"),
-      activate = function(g)
-        require("src.ui.Screens").push(g, "HotkeyBindingsMenu")
-      end },
-    -- mobile-only: customize touch overlay button positions
-    { id = "touchLayout", label = Strings("TOUCH LAYOUT"),
+    -- permanent on-screen pad toggle (#327); layout editing stays in the
+    -- launcher.  Hidden where the overlay never appears (desktop without
+    -- POKEPORT_TOUCH), so the row costs a non-mobile install nothing.
+    { id = "touchControls", label = Strings("TOUCH PAD"),
       value = function(g)
-        return g.touchControls and g.touchControls:isEditMode() and "EDITING" or "DEFAULT"
+        local tc = g.save.options.touchControls
+        local on = not (type(tc) == "table" and tc.enabled == false)
+        return on and Strings("ON") or Strings("OFF")
       end,
-      activate = function(g)
-        if g.touchControls then
-          g.touchControls:toggleEditMode()
-        end
+      step = function(g)
+        local o = g.save.options
+        local tc = type(o.touchControls) == "table" and o.touchControls or {}
+        local on = not (tc.enabled == false)
+        tc.enabled = not on
+        -- keep any saved positions when toggling
+        o.touchControls = tc
+        require("src.core.TouchControls"):applyOptions(o)
+        return true
       end },
   }
   -- issue #136: hide GBC FX on Android/iOS -- the present shader soft-bricks
@@ -516,6 +534,21 @@ local function buildRows(game)
       if row.id ~= "gbcfx" then filtered[#filtered + 1] = row end
     end
     rows = filtered
+  end
+  -- TOUCH PAD only where the overlay can appear (mobile, or desktop with
+  -- POKEPORT_TOUCH=1).  POKEPORT_TOUCH=0 forces it off everywhere.
+  do
+    local env = os.getenv("POKEPORT_TOUCH")
+    local osName = love.system and love.system.getOS and love.system.getOS()
+    local show = env == "1"
+      or (env ~= "0" and (osName == "Android" or osName == "iOS"))
+    if not show then
+      local filtered = {}
+      for _, row in ipairs(rows) do
+        if row.id ~= "touchControls" then filtered[#filtered + 1] = row end
+      end
+      rows = filtered
+    end
   end
   -- PIKACHU VOL only means something where the voice clips exist: Yellow
   -- (data.audio.pikaCries is the clip count the importer wrote).  Red/Blue

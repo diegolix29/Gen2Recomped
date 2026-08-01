@@ -2414,14 +2414,15 @@ local function sellItem(id)
   return sold
 end
 
--- Free up bag slots so `needed` NEW item kinds fit (Bag.CAPACITY is 20
--- slots; a stack of an item already held costs nothing). This is why
+-- Free up bag slots so `needed` NEW item kinds fit (20 slots without a
+-- capacity mod; a stack of an item already held costs nothing). This is why
 -- every restock had been reporting "HYPER_POTION x0": the buy list
 -- opened, the quantity was set, the engine said "no room" -- and the run
 -- walked into the Mansion with FULL_HEALs but not one HP restore.
 local function freeBagSlots(needed, where)
   local used = #(G.save.bagOrder or {})
-  local free = 20 - used
+  local capacity = require("src.inventory.Bag").capacity(G.data)
+  local free = capacity - used
   for _, id in ipairs(SELLABLE_JUNK) do
     if free >= needed then break end
     if ((G.save.inventory or {})[id] or 0) > 0 then
@@ -2632,7 +2633,8 @@ function ops.shop(s, where)
       end
     end
     local used = #(G.save.bagOrder or {})
-    if newKinds > 0 and 20 - used < newKinds then
+    local capacity = require("src.inventory.Bag").capacity(G.data)
+    if newKinds > 0 and capacity - used < newKinds then
       freeBagSlots(newKinds, where)
     end
   end

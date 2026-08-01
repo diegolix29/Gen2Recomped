@@ -235,6 +235,37 @@ def _rebuild_yellow_sourced(yellow, pokeyellow):
     }
 
 
+def _remap_audio(yellow, yellow_symbols):
+    """Re-anchor the Red-copied audio section on pokeyellow.sym (#522).
+
+    Yellow's music bank $1f shifts after 1f:4294: Music_YellowIntro is a
+    3-channel header (pokeyellow audio/headers/musicheaders3.asm) where
+    Red's Music_IntroBattle had 4, so Red's addresses for every later
+    header land on a channel-2 row (one voice, and no tempo command --
+    Viridian Forest slow and hollow).  Yellow also has a single
+    wave-sample table at Audio1_WavePointers (audio.asm "Music 1"), not
+    Red's per-engine 0x4373 copies, and CryData moved to 0e:5462.  Names
+    absent from the sym (Music_IntroBattle, which Yellow only knows as
+    Music_YellowIntro) keep their positional mapping.
+    """
+    for name, header in yellow["audio"]["musicHeaders"].items():
+        symbol = yellow_symbols.by_name.get(name)
+        if symbol is not None:
+            header["bank"] = symbol.bank
+            header["address"] = symbol.address
+    wave = yellow_symbols.by_name.get("Audio1_WavePointers.wave0")
+    if wave is None:
+        raise SystemExit("pokeyellow.sym missing Audio1_WavePointers.wave0")
+    for engine in yellow["audio"]["waveBanks"]:
+        yellow["audio"]["waveBanks"][engine] = {
+            "bank": wave.bank, "address": wave.address,
+        }
+    cry = yellow_symbols.by_name.get("CryData")
+    if cry is None:
+        raise SystemExit("pokeyellow.sym missing CryData")
+    yellow["audio"]["cryData"] = {"bank": cry.bank, "address": cry.address}
+
+
 def derive(red, pokeyellow, symbols_path):
     """Return the Yellow manifest derived from the Red manifest dict."""
     yellow = copy.deepcopy(red)
@@ -261,6 +292,7 @@ def derive(red, pokeyellow, symbols_path):
     yellow = _drop_strings(yellow, dropped)
 
     rebuilt = _rebuild_yellow_sourced(yellow, pokeyellow)
+    _remap_audio(yellow, yellow_symbols)  # #522
 
     for label in YELLOW_EXTRA_TEXT_LABELS:
         if label not in yellow["text"]["labels"]:

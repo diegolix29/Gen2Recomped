@@ -855,6 +855,13 @@ function Renderer:endFrame(zones, worldZones)
   self.uprightActive = false
   self.worldOverride = nil
   PaletteFX.setPass(nil)
+  return {
+    width = ww, height = wh,
+    gameX = ox, gameY = oy,
+    gameWidth = vpw, gameHeight = vph,
+    scale = Sp,
+    dpiX = dpiX, dpiY = dpiY,
+  }
 end
 
 return Renderer

@@ -647,7 +647,12 @@ M.WARDENS_HOUSE = {
     TEXT_WARDENSHOUSE_WARDEN = {
       { "face_player" },                                             -- 1
       { "check_flag", "EVENT_GOT_HM04" },                            -- 2
-      { "jump_if_true", 13 },                                        -- 3
+      -- #535: previously jumped to the same silent-end target as the
+      -- give-then-thank fallthrough (row 13), so the warden said nothing
+      -- on every visit after the trade. pokered's .got_item branch
+      -- (scripts/WardensHouse.asm) instead prints HM04ExplanationText,
+      -- so route here to the new row 17 that does the same.
+      { "jump_if_true", 17 },                                        -- 3
       { "check_item", "GOLD_TEETH" },                                -- 4
       { "jump_if_false", 15 },                                       -- 5
       { "show_text", "_WardensHouseWardenGaveTheGoldTeethText" },    -- 6
@@ -658,9 +663,15 @@ M.WARDENS_HOUSE = {
       { "give_item", "HM_STRENGTH", 1, false },                      -- 10
       { "show_text", "_WardensHouseWardenReceivedHM04Text" },        -- 11
       { "set_flag", "EVENT_GOT_HM04" },                              -- 12
-      { "jump", 16 },                                                -- 13 (already got it)
-      { "jump", 16 },                                                -- 14 (unused)
+      { "jump", 18 },                                                -- 13 (already got it this convo; jp .done)
+      { "jump", 18 },                                                -- 14 (unused)
       { "show_text", "_WardensHouseWardenGibberish1Text" },          -- 15
+      { "jump", 18 },                                                -- 16 (#535: skip the new explanation row below)
+      -- #535: pokered .got_item branch (scripts/WardensHouse.asm) --
+      -- printed on every subsequent talk once EVENT_GOT_HM04 is set.
+      -- Text is _WardensHouseWardenHM04ExplanationText (text/WardensHouse.asm):
+      -- HM04 teaches Strength, and hints at the Safari Zone secret house.
+      { "show_text", "_WardensHouseWardenHM04ExplanationText" },     -- 17
     },
   },
 }

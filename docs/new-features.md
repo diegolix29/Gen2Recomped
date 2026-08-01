@@ -86,14 +86,20 @@ Game Boy equivalent:
 ## Colors mode
 
 The `2` key (and the Options menu COLORS row) cycles the display mode
-through **OG RED → SGB → ADVANCED → OG → OG INV → SGB INV → CLASSIC → OG RED**.
+through **OG RED → SGB → ADVANCED → OG → OG INV → SGB INV → CLASSIC → OG RED**
+(on Blue the first slot labels **OG BLUE**; on Yellow, **OG YELLOW**).
 The first three are the real colorizations; the rest are DMG-shade novelties:
 
-- **OG RED**: the Game Boy Color boot-ROM look for Pokemon Red -- one global
-  red BG palette + one green OBJ palette, every map, no per-map variation
-  (Pokemon Red has no CGB code, so on a GBC the boot ROM colors it globally).
-  The player/NPCs stay green over the red terrain via the OBP bake +
-  post-zone redraw (`PaletteFX.GBC_BG` / `GBC_OBJ`).
+- **OG RED** / **OG BLUE**: the Game Boy Color boot-ROM look for that cart --
+  one global BG palette + one OBJ palette, every map, no per-map variation
+  (Red/Blue ship no CGB code, so on a GBC the boot ROM colors them globally).
+  The player/NPCs keep the boot-ROM OBJ color over the terrain via the OBP
+  bake + post-zone redraw (`PaletteFX.GBC_BG` / `GBC_OBJ`, or Blue's blue/pink
+  pair).
+- **OG YELLOW** (Yellow playthrough, same `ogred` save id): Pokemon Yellow's
+  authentic GBC look from `CGBBasePalettes` (`data/palettes_yellow.lua`,
+  sourced from pret/pokeyellow). Per-map / per-species colors, not a single
+  boot-ROM ramp -- Yellow was CGB-enhanced.
 - **SGB** (default): the per-map Super Game Boy region palettes
   (`data/sgb/sgb_palettes.asm`). Sprites tint with the region palette, as on
   real SGB. (This is the mode formerly mislabeled "GBC".)
@@ -137,6 +143,41 @@ effect, `=1` forces it available. The Anbernic handheld pack exports `0` from
 its launcher because the device reports `"Linux"` while its GPU is in the
 phone class (see [Anbernic RG34XXSP](anbernic-rg34xxsp.md)).
 
+## Performance tier (low-end devices)
+
+The Options **PERFORMANCE** row scales the port's optional presentation
+extras down for weaker hardware. The extras it governs are the three
+heaviest things the port adds on top of the original -- the whole-screen 3D
+**TILT** (transforms the entire map as a ground plane), the **GBC FX**
+post-process shader (a fullscreen pass), and survey **ZOOM** (zooming out
+renders the connected neighbor maps, a lot of extra overdraw) -- plus a hard
+FPS ceiling. None of this touches game logic, which is fixed-step off `dt`
+(`src/core/FixedStep.lua`), so every tier plays identically; they differ
+only in how much eye-candy the renderer is allowed to do.
+
+| Tier         | TILT | GBC FX | Survey ZOOM | Extra FPS ceiling |
+| ------------ | ---- | ------ | ----------- | ----------------- |
+| **HIGH**     | on   | on     | on          | none              |
+| **BALANCED** | off  | off    | on          | none              |
+| **LOW**      | off  | off    | off         | 60                |
+| **AUTO**     | picks a default from the device (below) |||
+
+- **AUTO** (the default) reads the device once at boot: ARM Linux handhelds
+  (e.g. the RG34XXSP) resolve to **LOW**, phones/tablets and very-low-core
+  desktops to **BALANCED**, and everything else -- a normal desktop, and
+  every existing `options.lua` that predates this option -- to **HIGH**,
+  so the common case is unchanged. See `src/core/Performance.detect`.
+- AUTO only chooses the *default*; all four tiers are selectable, so a
+  wrong guess is one row away from being overridden.
+- The clamps are applied **live** against your stored options and never
+  rewrite them (`Game:applyOptions`), so a lower tier hides your TILT / GBC
+  FX / ZOOM without forgetting them -- raising the tier restores exactly
+  what you had. (This is why the TILT / GBC FX / ZOOM rows still show your
+  saved choice on a clamped tier: it's your preference, waiting for a tier
+  that can afford it.)
+- Persisted as `save.options.performance` (`auto` | `high` | `balanced` |
+  `low`); unit-tested in `tests/engine/performance_tiers.lua`.
+
 ## Peer-to-peer link play (lua-enet)
 
 Trades and link battles connect two copies of the game directly over
@@ -150,6 +191,13 @@ broken." Internet play needs a forwarded UDP port or a VPN (deliberate
 tradeoff vs. the relay). Headless tests drive the protocol over an
 in-memory loopback (`Net.loopbackPair`); under LÖVE the same test file
 also exercises real UDP pairing.
+
+Red, Blue, and Yellow copies link with each other, as the real cable
+does. The compatibility fingerprint hashes only data a link mode can
+actually read, so Yellow's Dragonair/Dragonite catch-rate retunes (the
+only R/B/Y link-surface difference) no longer read as different games
+(issue #511). Moving the fingerprint is a link parity change: builds
+from before this fix will refuse to pair with builds after it.
 
 ## Fair play in link and online matches
 
@@ -265,6 +313,14 @@ the last controller restores it immediately. Layout re-derives from the
 window size on rotation. Desktop testing: `POKEPORT_TOUCH=1 love .` forces
 the overlay on and lets the mouse act as a finger (`=0` forces it off).
 
+The launcher's **Touch Controls** button opens a drag editor: move each
+button freely, **Disable** to hide the overlay permanently (for
+controllers / emulation handhelds — distinct from the temporary
+gamepad auto-hide), **Reset** for defaults, **Done** to save into
+`options.lua` as normalized window fractions so rotation keeps the
+relative placement. In-game, Options → **TOUCH PAD** toggles the same
+on/off flag without leaving a play session.
+
 ## Translation support
 
 Every string the player can read is now reachable from a mod, so a
@@ -324,7 +380,8 @@ semantics - so the two windows read as one app. Six tabs:
   party dock, so deposit and withdraw live in one place. Empty slots are
   clickable and create a mon there.
 - **Items**: money, a searchable item picker (replacing the arrows that
-  cycled one id at a time through ~250 items), the 20-slot bag, PC storage
+  cycled one id at a time through ~250 items), the configurable bag (20 slots
+  by default), PC storage
   with no slot cap, and the eight badges as toggle chips.
 - **Events**: flags, defeated trainers, taken items and per-map object
   toggles, with a real filter field and a two-column paged grid.
@@ -367,3 +424,12 @@ kind, number, height/weight, dex text) to a PNG at 4x scale under
 `prints/` in the save directory, then reports the filename in a dialog.
 No printer hardware or link cable emulation involved; the file is the
 printout.
+
+## Find Mods (community mod indexes)
+
+A FIND MODS tab sits beside MODS in the launcher and browses a published
+mod index: a metadata-only feed listing mods that live in their authors'
+own repositories. No index ships with the launcher and none is ever added
+automatically, so the tab opens on an "Add an index" prompt until you name
+one; paste an index URL or its `owner/repo` and it is remembered in
+`options.lua`. More than one index can be added, and the listings merge.

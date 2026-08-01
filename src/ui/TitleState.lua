@@ -7,6 +7,8 @@ local Font = require("src.render.Font")
 local Music = require("src.core.Music")
 local GameVersion = require("src.core.GameVersion")
 local Strings = require("src.core.Strings")
+local Runtime = require("src.mods.Runtime")
+local Logger = require("src.core.Logger")
 
 local TitleState = {}
 TitleState.__index = TitleState
@@ -300,6 +302,8 @@ local function hasSave()
   return ok and info ~= nil
 end
 
+local function sameItems(_, items) return items end
+
 -- The CONTINUE info window (main_menu.asm DisplayContinueGameInfo):
 -- PLAYER / BADGES / POKéDEX / TIME over the title, shown after choosing
 -- CONTINUE.  A confirms and loads the game, B returns to the main menu.
@@ -375,6 +379,13 @@ function TitleState:openMenu()
       love.event.quit()
     end
   end })
+  local hooked = Runtime.call("ui.title_menu.items", sameItems, game, items)
+  if type(hooked) == "table" then
+    items = hooked
+  else
+    Logger.error("ui.title_menu.items returned %s; keeping the vanilla items",
+                 type(hooked))
+  end
   local th = #items * 2 + 2
   local menu = Menu.new(game, items, { tx = 0, ty = 0, tw = 13, th = th })
   -- full-width title LOGO zones would recolor this box; see sgbPalettes

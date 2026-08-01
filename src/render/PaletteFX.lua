@@ -5,11 +5,13 @@
 -- then drawn once per zone through a shader that remaps the four DMG
 -- shades to that zone's palette.
 --
--- Port display option: COLORS (OG RED / SGB / ADVANCED / OG / OG INV /
--- SGB INV / CLASSIC) transforms every zone's palette at send time via
--- effectiveColors.  ADVANCED (the `redpp` id below) swaps the named-palette
--- pack for pokered-gbc SuperPalettes (data/palettes_gbc.lua), including
--- per-species mon colors.
+-- Port display option: COLORS (OG RED / OG BLUE / OG YELLOW / SGB /
+-- ADVANCED / OG / OG INV / SGB INV / CLASSIC) transforms every zone's
+-- palette at send time via effectiveColors.  ADVANCED (the `redpp` id
+-- below) swaps the named-palette pack for pokered-gbc SuperPalettes
+-- (data/palettes_gbc.lua), including per-species mon colors.  OG YELLOW
+-- (Yellow playthrough + `ogred` id) uses pokeyellow CGBBasePalettes
+-- (data/palettes_yellow.lua / ROM cgbBase).
 
 local GameVersion = require("src.core.GameVersion")
 
@@ -17,10 +19,11 @@ local PaletteFX = {}
 
 local shader -- false = unavailable (headless / no shader support)
 local gbcPack -- false = missing; nil = not loaded yet
+local yellowPack -- false = missing; nil = not loaded yet
 
 -- Cycle order matches OptionsMenu / hotkey 2.  The three real colorizations
--- come first (OG RED = GBC hardware, SGB = per-map Super Game Boy, ADVANCED =
--- pokered-gbc per-tile), then the DMG-shade novelty modes.
+-- come first (OG RED/BLUE/YELLOW = GBC hardware, SGB = per-map Super Game Boy,
+-- ADVANCED = pokered-gbc per-tile), then the DMG-shade novelty modes.
 PaletteFX.MODES = { "ogred", "gbc", "redpp", "og", "og_inv", "gbc_inv", "classic" }
 -- `gbc`/`gbc_inv`/`redpp` keep their save-value ids for back-compat while
 -- their LABELS say what the mode actually is: "SGB"/"SGB INV" because the old
@@ -117,14 +120,19 @@ PaletteFX.GBC_OBJ_BLUE = {
 }
 
 -- The active game's OG boot-ROM background palette: blue for a Blue
--- playthrough, red otherwise.  White (index 1) and black (index 4) are
--- identical across versions, so callers that only touch the endpoints
--- (e.g. BattleState's zone white/black snap) need no version branch.
--- Yellow is CGB-enhanced (pokeyellow CGBBasePalettes) and has no extracted
--- boot-ROM auto-palette here; keep the Red ramp -- never Blue's GBC_BG_BLUE.
+-- playthrough, red for Red.  White (index 1) and black (index 4) are
+-- identical across Red/Blue, so callers that only touch the endpoints
+-- (e.g. BattleState's zone white/black snap) need no version branch there.
+-- Yellow is CGB-enhanced (pokeyellow CGBBasePalettes): named zones go through
+-- pal() / usesYellowCgb(), and ogBg() falls back to CGBBase PAL_ROUTE for any
+-- remaining whole-screen callers -- never Blue's GBC_BG_BLUE.
 function PaletteFX.ogBg()
   if GameVersion.isBlue() then return PaletteFX.GBC_BG_BLUE end
-  if GameVersion.isYellow() then return PaletteFX.GBC_BG end
+  if GameVersion.isYellow() then
+    local y = PaletteFX.yellowPack()
+    local route = y and y.cgbBase and y.cgbBase.ROUTE
+    if route then return route end
+  end
   return PaletteFX.GBC_BG
 end
 
@@ -133,13 +141,11 @@ end
 -- version-distinct cache-group string, because SpriteRenderer.getObpImage keys
 -- its baked-image cache by (image path, group): a shared group would collide a
 -- Red bake with a Blue one and one version would show the other's colors.
--- Yellow: same Red OBJ green as above until Yellow-specific tables land.
+-- Yellow OG does not bake a boot-ROM OBJ (usesSpriteObp is false); this path
+-- is unused there and kept as Red green only as a safe leftover.
 function PaletteFX.ogObj()
   if GameVersion.isBlue() then
     return PaletteFX.darkObp(PaletteFX.GBC_OBJ_BLUE, "gbcobj_blue")
-  end
-  if GameVersion.isYellow() then
-    return PaletteFX.darkObp(PaletteFX.GBC_OBJ, "gbcobj")
   end
   return PaletteFX.darkObp(PaletteFX.GBC_OBJ, "gbcobj")
 end
@@ -271,13 +277,31 @@ function PaletteFX.gbcPack()
   return gbcPack or nil
 end
 
+-- pokeyellow SuperPalettes + CGBBasePalettes (committed; not wiped by import).
+-- ROM import may also stamp palettes.cgbBase; yellowCgbNamedPal prefers that.
+function PaletteFX.yellowPack()
+  if yellowPack == nil then
+    local ok, pack = pcall(require, "data.palettes_yellow")
+    yellowPack = ok and pack or false
+  end
+  return yellowPack or nil
+end
+
 function PaletteFX.usesGbcPack(mode)
   mode = mode or PaletteFX.mode
   return mode == "redpp"
 end
 
+-- Yellow's authentic GBC look is CGBBasePalettes (per-map), not a boot-ROM
+-- auto-palette.  The shared `ogred` save id wears that table on a Yellow
+-- playthrough and labels itself "OG YELLOW".
+function PaletteFX.usesYellowCgb(mode)
+  mode = mode or PaletteFX.mode
+  return GameVersion.isYellow() and mode == "ogred"
+end
+
 -- Whether the active mode bakes a per-OBJ palette onto overworld sprites
--- (the OBP bake + post-zone redraw path).  OG RED alone does: the Game Boy
+-- (the OBP bake + post-zone redraw path).  OG RED / OG BLUE do: the Game Boy
 -- Color boot ROM hands the game one global object palette (PaletteFX.ogObj --
 -- green over Red's red background, pink over Blue's blue background), so on
 -- that machine the player and NPCs carry a fixed object color instead of
@@ -287,6 +311,10 @@ end
 -- palette is GBC_OBJ (green), so baking that here is the fix, not that
 -- regression.  Terrain is unaffected -- pal() below still hands SGB its per-map
 -- BG palette; only OG RED short-circuits BG to the one global red palette.
+--
+-- OG YELLOW does NOT.  Yellow ships CGB code and colors regions via
+-- CGBBasePalettes the same way SGB mode colors SuperPalettes, so sprites tint
+-- with the map zone (usesSpriteObp stays off).
 --
 -- SGB does NOT.  The Super Game Boy colorizes the composited DMG picture it is
 -- handed and cannot tell an OBJ pixel from a BG one; pokered never sends the
@@ -306,7 +334,7 @@ end
 -- usesGbcPack() path in SpriteRenderer instead.
 function PaletteFX.usesSpriteObp(mode)
   mode = mode or PaletteFX.mode
-  return mode == "ogred"
+  return mode == "ogred" and not GameVersion.isYellow()
 end
 
 -- ------- post-zone sprite redraw (OG RED)
@@ -363,8 +391,8 @@ end
 -- read these from the ROM-imported table or the title ribbon stays red
 -- and the Game Corner reels keep Red's pink (issue #128).
 -- Yellow is intentionally NOT in BLUE_VERSIONED: skip Blue LOGO1/SLOTS*
--- recolors.  When CGBBasePalettes were imported (palettes.cgbBase), Yellow
--- prefers those over SGB SuperPalettes for named zones.
+-- recolors.  OG YELLOW (usesYellowCgb) reads CGBBasePalettes; SGB mode on
+-- Yellow keeps SuperPalettes.
 local BLUE_VERSIONED = {
   LOGO1 = true, SLOTS2 = true, SLOTS3 = true, SLOTS4 = true,
 }
@@ -376,31 +404,42 @@ end
 
 local function yellowCgbNamedPal(data, name)
   local p = data and data.palettes
-  return p and p.cgbBase and p.cgbBase[name]
+  local fromRom = p and p.cgbBase and p.cgbBase[name]
+  if fromRom then return fromRom end
+  local y = PaletteFX.yellowPack()
+  return y and y.cgbBase and y.cgbBase[name] or nil
 end
 
 -- named palette from the active pack (nil on stale builds / missing name).
 -- RED++ falls back to the ROM pack for names the gbc table omits (rare).
--- OG RED short-circuits EVERY name to the one global GBC boot-ROM BG palette
--- (the hardware had a single BGP for the whole game), so terrain zones,
--- battle HP bars / text, and menu boxes all come out red -- everything a
--- background tile drew.  Objects do not come through here (they bake
--- GBC_OBJ green), so this stays a BG-only hook.
+-- OG RED / OG BLUE short-circuit EVERY name to the one global GBC boot-ROM
+-- BG palette (the hardware had a single BGP for the whole game), so terrain
+-- zones, battle HP bars / text, and menu boxes all come out red/blue --
+-- everything a background tile drew.  Objects do not come through here
+-- (they bake GBC_OBJ), so this stays a BG-only hook.
+-- OG YELLOW instead resolves each name through CGBBasePalettes.
 function PaletteFX.pal(data, name)
-  if PaletteFX.mode == "ogred" then return PaletteFX.ogBg() end
+  if PaletteFX.mode == "ogred" and not GameVersion.isYellow() then
+    return PaletteFX.ogBg()
+  end
   -- Blue-only ROM override for versioned SuperPals.  Yellow (isYellow) and
   -- Red keep the active pack / Red-like path -- do not apply Blue recolors.
   if GameVersion.isBlue() and BLUE_VERSIONED[name] then
     local fromRom = romNamedPal(data, name)
     if fromRom then return fromRom end
   end
-  if GameVersion.isYellow() then
+  if PaletteFX.usesYellowCgb() then
     local fromCgb = yellowCgbNamedPal(data, name)
     if fromCgb then return fromCgb end
   end
   local p = PaletteFX.pack(data)
   local c = p and p.palettes[name]
   if c then return c end
+  if GameVersion.isYellow() then
+    local y = PaletteFX.yellowPack()
+    local yc = y and y.palettes and y.palettes[name]
+    if yc then return yc end
+  end
   if PaletteFX.usesGbcPack() then
     return romNamedPal(data, name)
   end
@@ -413,14 +452,20 @@ end
 -- Transformed mon's pic is tinted gray, not the copied species' own
 -- SGB color).  RED++ uses per-species pals from mon_palettes.asm.
 function PaletteFX.monPal(data, species, transformed)
-  -- OG RED: a battle mon pic is a BG tile on the Game Boy Color (drawn into
-  -- the tilemap, colored by BGP), so it wears the global red BG palette, not
-  -- a per-species one -- matching the hardware capture where both mons are
-  -- red/pink on the white field.
-  if PaletteFX.mode == "ogred" then return PaletteFX.ogBg() end
+  -- OG RED / OG BLUE: a battle mon pic is a BG tile on the Game Boy Color
+  -- (drawn into the tilemap, colored by BGP), so it wears the global boot-ROM
+  -- BG palette, not a per-species one -- matching the hardware capture where
+  -- both mons are red/pink (or blue/pink) on the white field.
+  -- OG YELLOW keeps per-species CGBBasePalettes (Yellow had real CGB code).
+  if PaletteFX.mode == "ogred" and not GameVersion.isYellow() then
+    return PaletteFX.ogBg()
+  end
   local p = PaletteFX.pack(data)
   if not p then return nil end
   if transformed then
+    if PaletteFX.usesYellowCgb() then
+      return PaletteFX.pal(data, "GRAYMON")
+    end
     return p.palettes.GRAYMON
         or (data and data.palettes and data.palettes.palettes.GRAYMON)
   end
@@ -430,16 +475,31 @@ function PaletteFX.monPal(data, species, transformed)
   -- so fall back to it when the pack itself doesn't carry the name.
   local def = data and data.pokemon and data.pokemon[species]
   if def and def.palette then
+    if PaletteFX.usesYellowCgb() then
+      local yc = PaletteFX.pal(data, def.palette)
+      if yc then return yc end
+    end
     local pal = p.palettes[def.palette]
              or (data and data.palettes and data.palettes.palettes[def.palette])
     if pal then return pal end
   end
   local name = p.pokemon[species] or "MEWMON"
+  if PaletteFX.usesYellowCgb() then
+    local yc = PaletteFX.pal(data, name)
+    if yc then return yc end
+  end
   local c = p.palettes[name]
   if c then return c end
   if PaletteFX.usesGbcPack() and data and data.palettes then
     name = data.palettes.pokemon[species] or "MEWMON"
     return data.palettes.palettes[name]
+  end
+  if GameVersion.isYellow() then
+    local y = PaletteFX.yellowPack()
+    if y and y.pokemon then
+      name = y.pokemon[species] or "MEWMON"
+      return y.palettes and y.palettes[name]
+    end
   end
   return nil
 end
@@ -707,12 +767,10 @@ end
 
 function PaletteFX.modeLabel(mode)
   mode = mode or PaletteFX.mode
-  -- The GBC boot-ROM mode wears the running game's name: it is red for Red and
-  -- blue for Blue (see ogBg), so a Blue playthrough shows "OG BLUE".
-  -- Yellow still uses the Red boot-ROM ramp (no Yellow table yet), so keep
-  -- the "OG RED" label rather than inventing an "OG YELLOW" without colors.
+  -- The GBC hardware mode wears the running game's name: OG RED / OG BLUE
+  -- (boot-ROM auto-palette) or OG YELLOW (pokeyellow CGBBasePalettes).
   if mode == "ogred" and GameVersion.isBlue() then return "OG BLUE" end
-  if mode == "ogred" and GameVersion.isYellow() then return "OG RED" end
+  if mode == "ogred" and GameVersion.isYellow() then return "OG YELLOW" end
   return PaletteFX.MODE_LABELS[mode] or "GBC"
 end
 

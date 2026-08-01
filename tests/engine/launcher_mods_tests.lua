@@ -60,6 +60,25 @@ do
   eq(m.aaa.statusDetail, "Ready", "ok detail reads Ready")
 end
 
+-- ------- experimental defaults to disabled; github surfaces on the row
+
+do
+  local manifests = {
+    mf({ id = "lab", name = "Lab", version = "1.2.0", entry = "m.lua",
+         experimental = true, github = "acme/lab" }),
+    mf({ id = "lab_on", name = "Lab On", version = "1.0.0", entry = "m.lua",
+         experimental = true }),
+  }
+  local m = byId(LauncherMods.deriveList(manifests, {
+    mods = { lab_on = true },
+  }))
+  check(not m.lab.enabled, "experimental with no options entry stays off")
+  check(m.lab_on.enabled, "experimental can still be explicitly enabled")
+  eq(m.lab.badge, "EXPERIMENTAL", "experimental badge overrides category")
+  eq(m.lab.github, "acme/lab", "github is exposed on the panel row")
+  check(m.lab.experimental, "experimental flag is exposed on the panel row")
+end
+
 -- ------- conflict: only when this mod is enabled and the other is too
 
 do

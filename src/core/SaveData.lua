@@ -253,6 +253,11 @@ function SaveData.defaultOptions()
     videoMode = "windowed",
     -- hard render frame-rate cap; render-only pacing (issue #88, FrameCap.lua)
     fpsCap = 60,
+    -- graphics performance tier: auto | high | balanced | low.  "auto"
+    -- picks a default from the device (ARM handhelds/phones drop the heavy
+    -- extras); scales TILT / GBC FX / survey ZOOM / FPS but never game
+    -- logic.  See src/core/Performance.lua.
+    performance = "auto",
     -- Per-pipeline display levels, keyed by render_pipelines id (see
     -- src/render/Pipelines.lua).  A level for a mod that is not installed
     -- is kept rather than pruned, so re-enabling the mod restores the mode
@@ -265,6 +270,24 @@ function SaveData.defaultOptions()
     -- Native mod enablement is an installation option, not save-slot data.
     -- Missing entries mean enabled so newly installed mods work by default.
     mods = {},
+    -- GitHub release checks for mods with a manifest "github" field
+    -- (src/mods/ModUpdate.lua). Keyed by owner/repo; TTL is six hours.
+    modUpdateCache = {},
+    -- Community mod indexes the player has chosen to browse
+    -- (src/mods/ModIndex.lua), in the order they added them.  Empty by
+    -- default and never populated automatically: adding an index is how a
+    -- player says they trust whoever publishes it, so the launcher asks
+    -- rather than shipping one.  Rows are { url, feed, base, fallback,
+    -- label }.
+    modIndexes = {},
+    -- Parsed index listings keyed by feed URL; TTL is 24 hours, matching how
+    -- often the feeds themselves rebuild.
+    modIndexCache = {},
+    -- On-screen touch overlay (Android/iOS; see src/core/TouchControls.lua).
+    -- enabled=false hides it permanently (distinct from auto-hide-on-gamepad).
+    -- positions are optional normalized centers {x=0..1, y=0..1} per control
+    -- (dpad/a/b/start/select); nil means the default layout.
+    touchControls = { enabled = true },
   }
 end
 
@@ -1051,7 +1074,7 @@ local function reclaim(save, data, report)
     if type(entry) == "table" and known(data.items, entry.id) then
       table.remove(orphaned.items, i)
       if entry.from == "pcItems" or type(save.inventory) ~= "table"
-          or not Bag.add(save, entry.id, entry.count or 1) then
+          or not Bag.add(save, entry.id, entry.count or 1, data) then
         save.pcItems = save.pcItems or {}
         save.pcItems[entry.id] = (save.pcItems[entry.id] or 0) + (entry.count or 1)
       end

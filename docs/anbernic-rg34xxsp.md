@@ -65,6 +65,13 @@ display option — COLORS, TILT, ZOOM, VOID FILL, MAX FPS — works normally. If
 your device turns out to handle the pass, launch with `POKEPORT_GBCFX=1` to
 put the row back.
 
+**PERFORMANCE defaults to LOW here.** The OPTIONS → PERFORMANCE tier defaults
+to AUTO, which reads this device as an ARM Linux handheld and resolves to
+**LOW**: the 3D tilt and survey zoom stay off and the frame rate is capped,
+so the overworld runs smoothly on the H700 out of the box. Bump it to
+BALANCED or HIGH from OPTIONS if you want the extras and your device keeps
+up; see [Performance tier](new-features.md#performance-tier-low-end-devices).
+
 The pack bundles the LÖVE 11.5 aarch64 runtime from
 [PortMaster](https://portmaster.games/), so the device does not need a
 separate `love_11.5` runtime download on first launch. The launcher resolves

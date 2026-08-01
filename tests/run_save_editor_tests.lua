@@ -528,5 +528,105 @@ do
   end
 end
 
+do
+  -- #515: badge read/write agreement between SaveData/the in-game grant
+  -- and the editor.  checkVictoryRewards (src/world/OverworldController.lua)
+  -- writes save.inventory[badge] = 1, a truthy number, not the boolean
+  -- `true` the editor used to compare against with `== true`.  This drives
+  -- the same field through a real save encode/decode round trip and checks
+  -- src/inventory/Badges.count (what the in-game badge case/count reads)
+  -- agrees with what the editor's own badge state shows.
+  local Badges = require("src.inventory.Badges")
+
+  local save = SaveData.newGame()
+  local id = Badges.list(Data)[1].id
+  -- simulate the in-game grant's exact representation, not the editor's
+  save.inventory[id] = 1
+  eq(Badges.count(Data, save), 1, "Badges.count sees a numeric 1 grant as earned")
+
+  local encoded = SaveData.encode(save)
+  local back = SaveData.decode(encoded)
+  eq(back.inventory[id], 1, "save round trip preserves the numeric badge flag")
+  eq(Badges.count(Data, back), 1, "Badges.count still agrees after the round trip")
+
+  local S = State.new()
+  S.data = Data
+  S.cat = Catalog.build(Data)
+  S.save = back
+  check(Ops.badgeIds(S)[1] ~= nil, "the editor's badge catalog is non-empty")
+  check(S.save.inventory[id] and true or false,
+        "the editor's own truthy read (panel badge chip state) sees the grant as earned")
+
+  -- toggling off then on again round-trips through the editor's own write
+  -- shape and still agrees with Badges.count
+  Ops.toggleBadge(S, id)
+  eq(S.save.inventory[id], nil, "toggleBadge clears the badge (nil, not false)")
+  eq(Badges.count(Data, S.save), 0, "Badges.count agrees once cleared")
+  Ops.toggleBadge(S, id)
+  eq(S.save.inventory[id], 1, "toggleBadge re-earns the badge as a truthy 1, matching the in-game grant")
+  eq(Badges.count(Data, S.save), 1, "Badges.count agrees once re-earned")
+end
+
+do
+  -- #529: focusing a text field raises the OS soft keyboard on Android/iOS
+  -- (love.keyboard.setTextInput(true, x, y, w, h)) and blurring lowers it;
+  -- desktop raises the same way but never lowers, since setTextInput is
+  -- global SDL state and the launcher's own text fields (RomImporter slot
+  -- rename, ROM finder) depend on it staying enabled.
+  --
+  -- This is the closest honest check this checkout can run: the real soft
+  -- keyboard is OS chrome outside the LOVE frame, unreachable by any
+  -- driver. A human still has to verify on an Android build that the
+  -- keyboard visibly rises over the Items search bar, typed characters
+  -- filter the list, and Enter/Escape/switching tabs lowers it again.
+  local Kit = require("Kit")
+  local calls = {}
+  local savedKeyboard, savedSystem = love.keyboard, love.system
+
+  local function stubOS(name)
+    love.system = { getOS = function() return name end }
+    love.keyboard = {
+      isDown = function() return false end,
+      setTextInput = function(...) calls[#calls + 1] = { ... } end,
+    }
+  end
+
+  -- Android: focusing raises with the field's rect, restaying focused on
+  -- the same id does not re-raise, and blur lowers it.
+  stubOS("Android")
+  Kit.focus = nil
+  Kit.beginFrame(15, 15, true)
+  Kit.textfield("kb-test", 10, 10, 100, 20, "", "type here")
+  eq(#calls, 1, "Android: focusing a field raises the soft keyboard")
+  check(calls[1][1] == true, "Android: raise call passes enable=true")
+  eq(calls[1][2], 10, "Android: raise call passes the field's x")
+  eq(calls[1][3], 10, "Android: raise call passes the field's y")
+  eq(calls[1][4], 100, "Android: raise call passes the field's w")
+  eq(calls[1][5], 20, "Android: raise call passes the field's h")
+
+  Kit.beginFrame(15, 15, false)
+  Kit.textfield("kb-test", 10, 10, 100, 20, "abc", "type here")
+  eq(#calls, 1, "Android: staying focused on the same field does not re-raise")
+
+  Kit.blur()
+  eq(#calls, 2, "Android: blur lowers the soft keyboard")
+  eq(calls[2][1], false, "Android: lower call passes enable=false")
+  check(Kit.focus == nil, "blur clears Kit.focus")
+
+  -- Desktop: focusing still raises (harmless there), but blur must not
+  -- disable text input globally -- the launcher's own fields rely on it
+  -- staying on.
+  calls = {}
+  stubOS("Mac OS X")
+  Kit.beginFrame(65, 65, true)
+  Kit.textfield("kb-test2", 60, 60, 80, 24, "", "")
+  eq(#calls, 1, "desktop: focusing a field still raises setTextInput")
+  Kit.blur()
+  eq(#calls, 1, "desktop: blur does not call setTextInput(false)")
+
+  love.keyboard, love.system = savedKeyboard, savedSystem
+  Kit.focus = nil
+end
+
 print(string.format("save editor tests: %d passed, %d failed", passed, failed))
 if failed > 0 then os.exit(1) end

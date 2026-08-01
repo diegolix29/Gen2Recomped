@@ -3,6 +3,7 @@
 -- surfing, Cut trees, trainer sight lines, and dispatches interactions to
 -- map scripts (data/scripts/), marts, nurses or extracted text.
 
+local Assets = require("src.render.Assets")
 local Camera = require("src.render.Camera")
 local Collision = require("src.world.Collision")
 local Encounter = require("src.world.Encounter")
@@ -375,6 +376,36 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
   else
     self.player = Player.new(Game.data, x, y, facing)
   end
+  -- boot only: the original persists the surf state.  wWalkBikeSurfState
+  -- (ram/wram.asm) lives inside wMainDataStart..wMainDataEnd, which
+  -- engine/menus/save.asm block-copies into sMainData on save and back out
+  -- on load (sram.asm declares sMainData as `ds wMainDataEnd -
+  -- wMainDataStart`), and Continue never clears it -- the only `xor a /
+  -- ld [wWalkBikeSurfState], a` on that path is the cable club's.  Restore
+  -- it here, before Music.playMap reads it below and before
+  -- PikachuFollower.onMapEntered, matching LoadMapData calling
+  -- LoadPlayerSpriteGraphics ahead of PlayDefaultMusic (home/overworld.asm,
+  -- home/audio.asm).  Without this the player resumed on foot on a water
+  -- cell, which softlocks here: Collision.canMove (src/world/Collision.lua)
+  -- picks land tile-pairs whenever mover.surfing is falsy, and land
+  -- tile-pairs never permit stepping off a water cell (#536).  Same
+  -- boot-only shape as the refreshStandingOnWarp door-mat restore (#378).
+  if opts and opts.via == "boot" then
+    local ps = Game.save and Game.save.player
+    if ps and ps.surfing ~= nil then
+      self.player.surfing = ps.surfing and true or false
+    else
+      -- saves written before #536 carry no flag.  Map:isWaterCell alone is
+      -- not self-sufficient (see src/world/Map.lua: water and shore share
+      -- one lookup, and no tileset stamps waterTiles, so tile $14 -- a
+      -- walkable floor in HOUSE/GATE/LOBBY/MANSION/MUSEUM -- reads as
+      -- water), so gate it the way facingIsShoreOrWater does and require a
+      -- cell you could not be standing on upright.
+      self.player.surfing = self:tilesetHasWater()
+        and not self.map:isWalkableCell(x, y)
+        and self.map:isWaterCell(x, y)
+    end
+  end
   -- crossConnection re-arms this after setMap; clear so a warp/reload
   -- cannot leave a stale deferred PlayMapMusic pending
   self.pendingSeamMusic = nil
@@ -566,9 +597,26 @@ end
 -- UI-pass palette (text boxes and menus tint with the current map).  OG RED
 -- resolves every name to the one global red BG palette inside PaletteFX.pal,
 -- so this needs no mode-specific branch.
+--
+-- TalkToPikachu's framed frontpic is the one exception: pokeyellow
+-- LoadOverworldPikachuFrontpicPalettes loads the map pal as slot 0 and
+-- PAL_PIKACHU_PORTRAIT as slot 1, then ATTR_BLK's the 5x5 pic at
+-- (7,6)-(11,10) onto slot 1 (engine/gfx/palettes.asm:345-391).  Without
+-- that zone the pic wears the route/town palette and looks washed out.
 function OverworldState:sgbPalettes()
   local PaletteFX = require("src.render.PaletteFX")
-  return PaletteFX.wholeNamed(Game.data, self:paletteNameFor(self.map))
+  local mapName = self:paletteNameFor(self.map)
+  if self.emote and self.emote.pikaPic then
+    local base = PaletteFX.pal(Game.data, mapName)
+    if not base then return nil end
+    local zones = { PaletteFX.whole(base) }
+    local portrait = PaletteFX.pal(Game.data, "PIKACHU_PORTRAIT")
+    if portrait then
+      zones[#zones + 1] = PaletteFX.zone(portrait, 7, 6, 11, 10)
+    end
+    return zones
+  end
+  return PaletteFX.wholeNamed(Game.data, mapName)
 end
 
 -- World-pass palette zones in world-canvas pixels: each visible map
@@ -1059,19 +1107,38 @@ function OverworldState:handleInput()
   -- OverworldLoop (home/overworld.asm) gates ALL of JoypadOverworld on
   -- wWalkCounter == 0 ("if the player sprite has not yet completed the
   -- walking animation" it jumps straight to .moveAhead): A, START and
-  -- direction initiation are only ever looked at while the player stands
-  -- on a tile, and a button pressed mid-step is simply never seen.
-  -- Without this gate a mid-step A/START pushed its TextBox/StartMenu
-  -- right there and froze Red between tiles, mid-animation (#286).  Held
-  -- directions need no buffering -- isDown below picks them up on the
-  -- landing frame.
-  if self.player.moving then return end
+  -- direction initiation are only ever ACTED ON while the player stands on
+  -- a tile.  Without this gate a mid-step A/START pushed its TextBox/
+  -- StartMenu right there and froze Red between tiles, mid-animation
+  -- (#286).  Held directions need no buffering -- isDown below picks them
+  -- up on the landing frame.
+  --
+  -- The original defers the poll rather than discarding it, though.  Joypad
+  -- (engine/joypad.asm _Joypad) computes hJoyPressed against hJoyLast and
+  -- advances hJoyLast only when something calls it; the mid-step path never
+  -- does, and vblank's per-frame ReadJoypad refreshes hJoyInput alone.
+  -- hJoyLast is frozen for the whole animation, so a button pressed
+  -- mid-step and STILL HELD when the step lands reads as a fresh press at
+  -- the next poll -- one released before then is genuinely lost.  Dropping
+  -- the edge outright made START a coin flip on the Cycling Road roll,
+  -- where the pull below re-arms a step on the single idle frame in
+  -- bikeStepFrames (#525).
+  if self.player.moving then
+    local held = self.joyLatch
+    if not held then held = {}; self.joyLatch = held end
+    if input:wasPressed("a") then held.a = true end
+    if input:wasPressed("start") then held.start = true end
+    return
+  end
+  local latch = self.joyLatch
+  self.joyLatch = nil
 
-  if input:wasPressed("a") then
+  if input:wasPressed("a") or (latch and latch.a and input:isDown("a")) then
     self:interact()
     return
   end
-  if input:wasPressed("start") then
+  if input:wasPressed("start")
+     or (latch and latch.start and input:isDown("start")) then
     require("src.core.Sound").play(Game.data, "Start_Menu")
     Screens.push(Game, "StartMenu")
     return
@@ -1759,7 +1826,7 @@ function OverworldState:tryHiddenObject(fx, fy)
     if h.x == fx and h.y == fy then
       save.hiddenTaken = save.hiddenTaken or {}
       if save.hiddenTaken[key] then return false end
-      if not require("src.inventory.Bag").add(save, h.item, 1) then
+      if not require("src.inventory.Bag").add(save, h.item, 1, Game.data) then
         Game.stack:push(TextBox.new(Game, Strings("You can't carry\nany more items!")))
         return true
       end
@@ -2379,7 +2446,7 @@ function OverworldState:talkTo(npc)
   -- (e.g. Blue's House wall Town Map / walking Daisy, #11).  Lua treats
   -- the string "0" as truthy, so screen it out and fall through to text.
   if d.item and d.item ~= "0" and d.item ~= 0 then
-    if not require("src.inventory.Bag").add(Game.save, d.item, 1) then
+    if not require("src.inventory.Bag").add(Game.save, d.item, 1, Game.data) then
       Game.stack:push(TextBox.new(Game, Strings("You can't carry\nany more items!")))
       return
     end
@@ -3938,6 +4005,31 @@ function OverworldState:draw()
   self:drawUI()
 end
 
+-- The emote sheet is OBJ art (engine/overworld/emotion_bubbles.asm builds the
+-- bubble out of shadow OAM), so it renders through OBP0, and GBPalNormal
+-- (home/palettes.asm:20-26 `ld a, %11010000 ; 3100 / ldh [rOBP0], a`) holds
+-- OBP0 at "3100": OBJ color 1 shows as shade 0, color 2 as shade 1, color 3
+-- as shade 3.  Blitting the raw sheet skipped that lift and left the "!"
+-- bubble's interior (color 1) at DMG shade 1 grey instead of white (#505).
+-- Same CPU-remap bake as SpriteRenderer.getObpImage and PartyMenu's obpIcon,
+-- and it resolves through Assets so a mod's emotes.png override still wins.
+-- Color 0's alpha (a tRNS entry on the extracted png) is what keys the
+-- bubble's corners out, so carry it through untouched.
+local function obpEmoteImage(path)
+  if not (love.image and love.image.newImageData) then
+    return love.graphics.newImage(Assets.resolve(path)) -- headless stub
+  end
+  local id = Assets.imageData(path)
+  id:mapPixel(function(_, _, r, _, _, a)
+    local v = 0
+    if r > 0.5 then v = 1               -- OBJ colors 0 and 1 -> shade 0
+    elseif r > 0.17 then v = 170 / 255  -- OBJ color 2 -> shade 1
+    end                                 -- OBJ color 3 -> shade 3
+    return v, v, v, a
+  end)
+  return love.graphics.newImage(id)
+end
+
 -- The SGB palette a tilt-mode billboard at flat foot (fx, fy) sits under.
 -- World zones are rectangles in flat world-canvas space (the current map's
 -- base fills the view; neighbour maps stack on top), so the last zone that
@@ -4177,7 +4269,7 @@ function OverworldState:drawWorld()
     local drawn = false
     if bubble and bubble.path then
       local ok, img = pcall(function()
-        self.emoteImg = self.emoteImg or love.graphics.newImage(bubble.path)
+        self.emoteImg = self.emoteImg or obpEmoteImage(bubble.path)
         return self.emoteImg
       end)
       -- EXCLAMATION_BUBBLE is index 0 -> first crop; the emote command
@@ -4502,7 +4594,8 @@ function OverworldState:drawUI()
   -- per-emotion frame gfx (gfx/pikachu/unknown_*) are not extracted, so the
   -- front pic stands in for every frame of the script; PikachuFollower
   -- .picLift lifts it on the runs that draw the alternate pose, and the
-  -- script's own duration times the beat (#407, #424).
+  -- script's own duration times the beat (#407, #424).  Palette zone
+  -- PAL_PIKACHU_PORTRAIT covers (7,6)-(11,10) via sgbPalettes above.
   if self.emote and self.emote.pikaPic then
     require("src.render.Font").drawBox(6, 5, 7, 7)
     -- one image per path, cached: this draws every frame of the hold, and
@@ -4540,6 +4633,11 @@ function OverworldState:captureSave(save)
   save.player.x = self.player.cellX
   save.player.y = self.player.cellY
   save.player.facing = self.player.facing
+  -- wWalkBikeSurfState (ram/wram.asm) sits inside the wMainDataStart..
+  -- wMainDataEnd range engine/menus/save.asm block-copies into sMainData,
+  -- so the original saves and restores the surf state; setMap's boot path
+  -- reads this back (#536).
+  save.player.surfing = self.player.surfing and true or false
 end
 
 return OverworldState

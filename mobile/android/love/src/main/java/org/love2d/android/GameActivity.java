@@ -41,6 +41,7 @@ import android.app.AlertDialog;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.content.pm.ApplicationInfo;
 import android.content.res.AssetManager;
 import android.media.AudioManager;
@@ -84,7 +85,15 @@ public class GameActivity extends SDLActivity {
     // instead of leaving the player on "No ROM imported" (issue #442).
     private static final String PICK_ERROR_FILENAME = "pick_error.flag";
     // Destination basename for the in-flight SAF pick (set by showFilePicker).
+    // Saved/restored across instance state: the picker is a separate activity
+    // and Android may destroy this one while it is up (memory pressure, or
+    // "Don't keep activities"). A recreated instance still receives
+    // onActivityResult, so without this a mod or save pick came back with the
+    // field reset and was filed as picked_rom.gb, which Lua then rejected as a
+    // bad ROM instead of installing it (#553).
     private String pendingPickFilename = PICKED_ROM_FILENAME;
+    private static final String STATE_PENDING_PICK = "pendingPickFilename";
+    private static final String STATE_PENDING_CREATE = "pendingCreateSuggestedName";
     // Suggested download name for the in-flight SAF create (set by showCreateDocument).
     private String pendingCreateSuggestedName = "export.sav";
     private static boolean immersiveActive = false;
@@ -149,6 +158,14 @@ public class GameActivity extends SDLActivity {
         }
 
         super.onCreate(savedInstanceState);
+        if (savedInstanceState != null) {
+            // Restore the in-flight SAF destinations, so a pick that returns to
+            // a recreated activity still lands under the basename it asked for.
+            String pick = savedInstanceState.getString(STATE_PENDING_PICK);
+            if (pick != null) pendingPickFilename = pick;
+            String create = savedInstanceState.getString(STATE_PENDING_CREATE);
+            if (create != null) pendingCreateSuggestedName = create;
+        }
         metrics = getResources().getDisplayMetrics();
 
         // Set low-latency audio values
@@ -302,6 +319,54 @@ public class GameActivity extends SDLActivity {
     @Override
     public void onResume() {
         super.onResume();
+    }
+
+    /**
+     * SDL decides the activity's requested orientation at window creation
+     * (SDLActivity.setOrientationBis). With a resizable window and no
+     * SDL_HINT_ORIENTATIONS -- exactly what conf.lua produces on Android --
+     * it asks for SCREEN_ORIENTATION_FULL_SENSOR, and that request overrides
+     * the android:screenOrientation="fullUser" set in the manifest. The
+     * *_SENSOR constants follow the accelerometer even when the player has
+     * turned auto-rotate off, so the game kept rotating on a device whose
+     * rotation was locked.
+     *
+     * Remap SDL's choice onto the matching *_USER constant, which allows the
+     * same orientations but defers to the system rotation setting. Applied
+     * after super so SDL keeps deciding *which* orientations the window may
+     * take; this only changes who breaks the tie, the sensor or the player.
+     */
+    @Override
+    public void setOrientationBis(int w, int h, boolean resizable, String hint) {
+        super.setOrientationBis(w, h, resizable, hint);
+
+        // The *_USER constants only exist from API 18; below that the sensor
+        // ones are all there is, so leave SDL's request alone.
+        if (android.os.Build.VERSION.SDK_INT < 18) {
+            return;
+        }
+
+        int requested = getRequestedOrientation();
+        int userRequested;
+        switch (requested) {
+            case ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR:
+                userRequested = ActivityInfo.SCREEN_ORIENTATION_FULL_USER;
+                break;
+            case ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE:
+                userRequested = ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE;
+                break;
+            case ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT:
+                userRequested = ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT;
+                break;
+            default:
+                // SENSOR / plain LANDSCAPE / PORTRAIT etc: either already
+                // explicit or never produced by setOrientationBis.
+                return;
+        }
+
+        Log.d("GameActivity", "requestedOrientation " + requested + " -> " + userRequested
+            + " (honour the device rotation lock)");
+        setRequestedOrientation(userRequested);
     }
 
     @Keep
@@ -509,6 +574,13 @@ public class GameActivity extends SDLActivity {
             try { if (in != null) in.close(); } catch (IOException ignored) {}
             try { if (out != null) out.close(); } catch (IOException ignored) {}
         }
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        outState.putString(STATE_PENDING_PICK, pendingPickFilename);
+        outState.putString(STATE_PENDING_CREATE, pendingCreateSuggestedName);
     }
 
     @Override

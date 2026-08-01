@@ -12,9 +12,13 @@ local Player = {}
 Player.__index = Player
 
 local STEP_FRAMES = 16
--- a turn in place holds for the ~2 frames the original spends on the
--- extra OverworldLoop pass (home/overworld.asm .handleDirectionButtonPress
--- returns to the loop without moving after a direction change)
+-- a turn in place blocks movement for the one extra OverworldLoop pass the
+-- original spends after a direction change: .handleDirectionButtonPress ends
+-- `jp OverworldLoop` (home/overworld.asm), and OverworldLoop burns two
+-- DelayFrame calls before the next JoypadOverworld, so the sample that can
+-- commit to a step lands exactly 2 fixed steps after the turn -- the same
+-- 2-frames-per-iteration cadence that makes STEP_FRAMES 16 above
+-- (wWalkCounter = 8, 2px per AdvancePlayerSprite) (#415)
 local TURN_FRAMES = 2
 
 function Player.new(data, cx, cy, facing)

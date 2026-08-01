@@ -42,6 +42,7 @@ local function middleAgedMan(game, ow, npc, done)
       end
       local menu = ListMenu.new(game, "", items, {
         onChoose = function(item)
+          game.stack:pop()
           push(game, t[BADGE_TEXT[item.value]], loop)
         end,
         onCancel = function()

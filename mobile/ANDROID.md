@@ -82,7 +82,7 @@ scripts, tests, and mobile build sources are excluded.
 | --- | --- |
 | `app.application_id` | `com.theboisclub.pokemonred` |
 | `app.name` | Pokemon Red |
-| `app.orientation` | `portrait` |
+| `app.orientation` | `fullUser`. This is only the manifest default: SDL requests FULL_SENSOR at window creation (resizable window, no `SDL_HINT_ORIENTATIONS`), and `GameActivity.setOrientationBis` remaps that to FULL_USER so the device's rotation lock is honoured. |
 | `app.version_name` / `app.version_code` | set from `--version X.Y.Z` (code = major*10000 + minor*100 + patch); left as-is if `--version` is omitted |
 | Permissions | INTERNET / RECORD_AUDIO / WRITE_EXTERNAL_STORAGE stripped; VIBRATE + BLUETOOTH kept |
 

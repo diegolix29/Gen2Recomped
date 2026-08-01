@@ -1507,10 +1507,14 @@ function BattleState:update(dt)
     end
     local col = (self.menuIndex - 1) % 2
     local row = math.floor((self.menuIndex - 1) / 2)
-    if input:wasPressed("left") or input:wasPressed("right") then
-      col = 1 - col
-    elseif input:wasPressed("up") or input:wasPressed("down") then
-      row = 1 - row
+    if input:wasPressed("left") then
+      col = math.max(0, col - 1)
+    elseif input:wasPressed("right") then
+      col = math.min(1, col + 1)
+    elseif input:wasPressed("up") then
+      row = math.max(0, row - 1)
+    elseif input:wasPressed("down") then
+      row = math.min(1, row + 1)
     end
     self.menuIndex = row * 2 + col + 1
     if input:wasPressed("a") then
@@ -1539,10 +1543,14 @@ function BattleState:update(dt)
     end
     local col = (self.menuIndex - 1) % 2
     local row = math.floor((self.menuIndex - 1) / 2)
-    if input:wasPressed("left") or input:wasPressed("right") then
-      col = 1 - col
-    elseif input:wasPressed("up") or input:wasPressed("down") then
-      row = 1 - row
+    if input:wasPressed("left") then
+      col = math.max(0, col - 1)
+    elseif input:wasPressed("right") then
+      col = math.min(1, col + 1)
+    elseif input:wasPressed("up") then
+      row = math.max(0, row - 1)
+    elseif input:wasPressed("down") then
+      row = math.min(1, row + 1)
     end
     self.menuIndex = row * 2 + col + 1
     if input:wasPressed("a") then
@@ -4483,7 +4491,9 @@ function BattleState:sgbBattlePals()
   -- true white, which is what drew a white box around each pic on the pink
   -- field.  Snap every zone's color 0/3 to the global GBC white/black; the
   -- mid shades (and the green bar the user prefers) stay untouched.
-  if PaletteFX.mode == "ogred" then
+  -- Boot-ROM OG only (Red/Blue): snap zone paper to the global GBC white/black.
+  -- OG YELLOW keeps each CGBBasePalettes endpoint (already near-white / near-black).
+  if PaletteFX.mode == "ogred" and not require("src.core.GameVersion").isYellow() then
     local white, black = PaletteFX.GBC_BG[1], PaletteFX.GBC_BG[4]
     for i = 0, 3 do
       local c = out[i]

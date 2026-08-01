@@ -10,6 +10,13 @@ local Zoom = {}
 
 Zoom.offset = 0
 
+-- Survey zoom (zooming out past FIT, which renders connected neighbor maps)
+-- is the port's most expensive optional extra.  The performance tier sets
+-- this false on LOW hardware (Game:applyOptions); offsetRange then floors
+-- the range at FIT so the option row, hotkey, and mouse wheel all stop at
+-- close-up.  Nil/true keeps the historical full range.
+Zoom.allowSurvey = true
+
 -- legal offset range for a given fit scale (vanilla: survey at 1 px/world
 -- through 2× fit).  zoom.range may widen or shrink the window.
 function Zoom.offsetRange(S)
@@ -21,6 +28,9 @@ function Zoom.offsetRange(S)
     hi = math.floor(tonumber(hi) or S)
     if lo > hi then lo, hi = hi, lo end
   end
+  -- LOW performance tier: no survey (negative offsets), even if a mod's
+  -- zoom.range widened it.  == false so nil/true stays permissive.
+  if Zoom.allowSurvey == false and lo < 0 then lo = 0 end
   return lo, hi
 end
 

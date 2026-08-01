@@ -10,7 +10,6 @@
 --   "ball"                          caller must throw it (battle only)
 --   "learn", moveId                 caller must run the learn-move flow
 
-local Pokemon = require("src.pokemon.Pokemon")
 local Flags = require("src.script.Flags")
 local Strings = require("src.core.Strings")
 
@@ -431,6 +430,13 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
 
   if itemId == "OLD_ROD" or itemId == "GOOD_ROD" or itemId == "SUPER_ROD" then
     if battle then
+      return "failed", { Strings("OAK: %s!\nThis isn't the\ntime to use that!", save.player.name) }
+    end
+    -- FishingInit (engine/items/item_effects.asm): cp wWalkBikeSurfState, 2
+    -- (surfing) sets carry, and every ItemUseXRod does jp c, ItemUseNotTime
+    -- on that carry -- surfing refuses the rod with the same OAK text as
+    -- the mid-battle case above, no rod-specific message (#533)
+    if ow and ow.player and ow.player.surfing then
       return "failed", { Strings("OAK: %s!\nThis isn't the\ntime to use that!", save.player.name) }
     end
     return "fish", itemId

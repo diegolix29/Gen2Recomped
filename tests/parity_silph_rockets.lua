@@ -176,7 +176,14 @@ for _, key in ipairs({ "_SilphCo11FSilphPresidentText",
 end
 
 -- run the rows through the real interpreter with only the leaf commands
--- stubbed, so the branch arithmetic is what is under test
+-- stubbed, so the branch arithmetic is what is under test. Commands is a
+-- shared module singleton read by every later suite dofile'd into this
+-- same process (tests/run_tests.lua), so the three stubs must be restored
+-- before this file falls off the end -- an unrestored give_item stub
+-- silently swallows any later test's item grants, matching the save/
+-- restore parity_gift_atomicity.lua already does for show_text.
+local origFacePlayer, origShowText, origGiveItem =
+  Commands.face_player, Commands.show_text, Commands.give_item
 local shown, given
 Commands.face_player = function() end
 Commands.show_text = function(_, key) shown[#shown + 1] = key end
@@ -213,5 +220,8 @@ do
   eq(fresh[1], "_SilphCo11FSilphPresidentText",
      "an unbeaten-Giovanni save still gets the thank-you and the ball")
 end
+
+Commands.face_player, Commands.show_text, Commands.give_item =
+  origFacePlayer, origShowText, origGiveItem
 
 S.finish()

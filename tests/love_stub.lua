@@ -203,4 +203,12 @@ stub.mouse = {
 
 stub.timer = { getTime = function() return 0 end }
 
+-- Desktop / headless: full-window safe area (matches LÖVE's fallback).
+stub.window = {
+  getSafeArea = function()
+    local ww, wh = stub.graphics.getDimensions()
+    return 0, 0, ww, wh
+  end,
+}
+
 return stub

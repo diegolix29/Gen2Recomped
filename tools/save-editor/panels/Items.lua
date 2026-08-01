@@ -1,4 +1,4 @@
--- Items panel: money, the shared item picker, badges, the 20-slot bag
+-- Items panel: money, the shared item picker, badges, the configurable bag
 -- (Bag.add/remove, ordered by Bag.order) and PC item storage (a plain
 -- S.save.pcItems dict with no slot cap).
 --
@@ -154,7 +154,10 @@ function M.draw(S, Kit, x, y, w, h)
   Kit.card(x, badgeY, leftW, badgeH)
   local earned = 0
   for _, id in ipairs(badgeIds) do
-    if S.save.inventory[id] == true then earned = earned + 1 end
+    -- #515: truthy check, not `== true` -- the in-game grant path stores a
+    -- number (see OverworldController.lua checkVictoryRewards), matching
+    -- src/inventory/Badges.lua's own truthy read.
+    if S.save.inventory[id] then earned = earned + 1 end
   end
   Kit.caption(x + pad, badgeY + pad, "BADGES")
   Kit.textRight("mono", ("%d/%d"):format(earned, #badgeIds), x + leftW - pad,
@@ -164,7 +167,7 @@ function M.draw(S, Kit, x, y, w, h)
   for i, id in ipairs(badgeIds) do
     local bc = (i - 1) % badgeCols
     local br = math.floor((i - 1) / badgeCols)
-    local on = S.save.inventory[id] == true
+    local on = S.save.inventory[id]
     local short = id:gsub("BADGE$", "")
     if Kit.chip(x + pad + bc * (bW + 7 * s), bTop + br * (28 * s + 7 * s),
         bW, 28 * s, Kit.ellipsize("micro", short, bW - 8 * s), on,
@@ -175,12 +178,13 @@ function M.draw(S, Kit, x, y, w, h)
 
   -- --------------------------------------------------------------- bag
   local order = Bag.order(S.save)
+  local capacity = Bag.capacity(S.data)
   Kit.card(bagX, y, listW, h)
   Kit.caption(bagX + pad, y + pad, "BAG")
-  Kit.textRight("mono", ("%d/%d slots"):format(Bag.slots(S.save), Bag.CAPACITY),
+  Kit.textRight("mono", ("%d/%d slots"):format(Bag.slots(S.save), capacity),
     bagX + listW - pad, y + pad, PAL.caption)
   local barY = y + pad + Kit.textHeight("caption") + 8 * s
-  local slotFrac = Bag.slots(S.save) / Bag.CAPACITY
+  local slotFrac = Bag.slots(S.save) / capacity
   Kit.meter(bagX + pad, barY, listW - 2 * pad, 5 * s, slotFrac * 100,
     slotFrac >= 1 and PAL.yellow or PAL.blue)
 

@@ -248,6 +248,31 @@ function Loader:_discover()
     end
   end
 end
+    if self.fs.getInfo(root) then
+      for _, name in ipairs(self.fs.getDirectoryItems(root)) do
+        local path = root .. "/" .. name
+        local info = self.fs.getInfo(path)
+        -- a dev-linked mod dir (ln -s) reports type "symlink" even with
+        -- setSymlinksEnabled(true) -- PhysFS never resolves the symlink's
+        -- own getInfo, only traversal into it. readManifest below still
+        -- correctly no-ops on a symlink that isn't a directory.
+        if info and (info.type == "directory" or info.type == "symlink") then
+          local manifest, err = readManifest(self.fs, path)
+          if manifest then
+            if self.mods[manifest.id] then
+              self.errors[#self.errors + 1] =
+                ("%s: duplicate mod id (ignored %s)"):format(manifest.id, path)
+            else
+              self.mods[manifest.id] = { manifest = manifest, path = path }
+            end
+          else
+            Logger.warn("mod %s ignored: %s", path, tostring(err))
+          end
+        end
+      end
+    end
+  end
+end
 
 -- ------- validate and resolve
 
@@ -875,6 +900,18 @@ function Loader:load(data)
   require("src.mods.Builtins").install(self.content, data)
   self:_loadState()
   self:_discover()
+  -- Experimental mods stay off until the player opts in: a missing
+  -- options.mods entry normally means enabled, but experimental flips that.
+  do
+    local options = SaveData.loadOptions(self.fs)
+    local modsOpt = options.mods or {}
+    for id, mod in pairs(self.mods) do
+      if not self.disabled[id] and modsOpt[id] == nil
+          and mod.manifest.experimental then
+        self.disabled[id] = true
+      end
+    end
+  end
   for id, mod in pairs(self.mods) do
     mod.enabled = not self.disabled[id]
     mod.state = mod.enabled and "pending" or "disabled"

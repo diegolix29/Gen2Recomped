@@ -48,11 +48,11 @@ end
 local FLASH_FRAMES = 220
 
 local function frontSprite(game, species, mon)
-  local path = require("src.pokemon.Sprites").path(game.data, species, "front",
-    { mon = mon, kind = "evolution" })
-  if not path then return nil end
+  local path, trueColor = require("src.pokemon.Sprites").path(
+    game.data, species, "front", { mon = mon, kind = "evolution" })
+  if not path then return nil, false end
   local ok, img = pcall(love.graphics.newImage, path)
-  return ok and img or nil
+  return ok and img or nil, ok and trueColor or false
 end
 
 function EvolutionState.new(game, mon, newSpecies, onDone, via)
@@ -69,8 +69,8 @@ function EvolutionState.new(game, mon, newSpecies, onDone, via)
   -- wForceEvolution clear and so honour B (#290, #213).
   self.cancelable = (via ~= "TRADE" and via ~= "ITEM")
   self.oldName = mon.nickname or game.data.pokemon[mon.species].name
-  self.oldSprite = frontSprite(game, mon.species, mon)
-  self.newSprite = frontSprite(game, newSpecies, mon)
+  self.oldSprite, self.oldSpriteTrueColor = frontSprite(game, mon.species, mon)
+  self.newSprite, self.newSpriteTrueColor = frontSprite(game, newSpecies, mon)
   self.t = 0
   self.done = false
   self.canceled = false
@@ -127,18 +127,30 @@ function EvolutionState:draw()
   love.graphics.rectangle("fill", 0, 0, 160, 144)
 
   -- accelerating flash between the two forms
-  local sprite
+  local sprite, spriteTrueColor
   if self.done then
     -- a cancelled evolution settles back on the original form
-    sprite = self.canceled and self.oldSprite or self.newSprite
+    if self.canceled then
+      sprite, spriteTrueColor = self.oldSprite, self.oldSpriteTrueColor
+    else
+      sprite, spriteTrueColor = self.newSprite, self.newSpriteTrueColor
+    end
   else
     local period = math.max(4, 28 - math.floor(self.t / 40) * 6)
     local showNew = math.floor(self.t / period) % 2 == 1
-    sprite = showNew and self.newSprite or self.oldSprite
+    if showNew then
+      sprite, spriteTrueColor = self.newSprite, self.newSpriteTrueColor
+    else
+      sprite, spriteTrueColor = self.oldSprite, self.oldSpriteTrueColor
+    end
   end
   if sprite then
-    love.graphics.draw(sprite, math.floor((160 - sprite:getWidth()) / 2),
-                       math.max(8, 64 - sprite:getHeight()))
+    local x = math.floor((160 - sprite:getWidth()) / 2)
+    local y = math.max(8, 64 - sprite:getHeight())
+    love.graphics.draw(sprite, x, y)
+    if spriteTrueColor then
+      require("src.render.PaletteFX").markTrueColor(x, y, sprite:getDimensions())
+    end
   end
 
   love.graphics.setColor(0, 0, 0, 1)

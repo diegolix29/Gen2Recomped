@@ -12,7 +12,7 @@ this port.
 
 | # | Mechanic | Value | Why the Game Boy had this limit | Where it lives here |
 |---|---|---|---|---|
-| 1 | Bag capacity | 20 item slots | `wNumBagItems` save block was a fixed 20-entry id/quantity array in SRAM | `src/inventory/Bag.lua:8` (`Bag.CAPACITY = 20`) |
+| 1 | Bag capacity | 20 item slots by default | `wNumBagItems` save block was a fixed 20-entry id/quantity array in SRAM | `Data.constants.bagSize`, read by `src/inventory/Bag.lua` (`Bag.capacity`) |
 | 2 | Party size | 6 Pokémon | `wPartyMon1..6` were 6 fixed save-RAM slots | `src/pokemon/Party.lua:5` (`Party.MAX = 6`) |
 | 3 | PC storage | 12 boxes × 20 Pokémon | `wBoxDataStart` / Bill's PC allocated a fixed 12×20 SRAM block | `src/pokemon/Boxes.lua:7-8` |
 | 4 | Moves per Pokémon | 4 | Fixed 4-move-slot field in the party/box Pokémon struct | `src/pokemon/Pokemon.lua:20`, enforced again in `src/battle/BattleState.lua:1941` |
@@ -38,6 +38,10 @@ this port.
 
 ## Notes
 
+- Mods may patch `constants.bagSize` through the public content registry. The
+  native `save.lua` format keeps every existing item when the configured
+  limit changes; exporting to a cartridge `.sav` still writes only the first
+  20 bag slots because the original SRAM layout has no room for more.
 - PC Box **overflow handling** was deliberately changed even though the
   20×12 box *shape* was kept faithful: instead of Gen 1's "full box discards
   or blocks the deposit," this port spills into the next box with room.

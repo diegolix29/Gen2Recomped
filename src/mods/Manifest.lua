@@ -50,6 +50,42 @@ local function parseSpecs(list, field)
   return specs
 end
 
+-- Optional GitHub repo for launcher auto-update / other-versions.
+-- Accepts "owner/repo" or a github.com URL; empty/absent means no updates.
+function Manifest.parseGithub(value)
+  if value == nil or value == "" then return nil end
+  assert(type(value) == "string", "github must be a string")
+  local trimmed = value:match("^%s*(.-)%s*$") or value
+  if trimmed == "" then return nil end
+  local owner, repo = trimmed:match(
+    "^https?://github%.com/([%w%._%-]+)/([%w%._%-]+)/?$")
+  if not owner then
+    owner, repo = trimmed:match(
+      "^https?://github%.com/([%w%._%-]+)/([%w%._%-]+)%.git/?$")
+  end
+  if not owner then
+    owner, repo = trimmed:match("^([%w%._%-]+)/([%w%._%-]+)$")
+  end
+  assert(owner and repo and owner ~= "" and repo ~= "",
+    "github must be owner/repo or a github.com URL")
+  repo = repo:gsub("%.git$", "")
+  return owner .. "/" .. repo
+end
+
+-- conflicts + incompatible (alias) merged, first-wins on duplicate ids
+local function mergeConflictLists(conflicts, incompatible)
+  local seen, out = {}, {}
+  for _, list in ipairs({ array(conflicts), array(incompatible) }) do
+    for _, entry in ipairs(list) do
+      if not seen[entry] then
+        seen[entry] = true
+        out[#out + 1] = entry
+      end
+    end
+  end
+  return out
+end
+
 function Manifest.validate(raw, path)
   assert(type(raw) == "table", "manifest must be an object")
   assert(type(raw.id) == "string" and raw.id:match("^[%w_%-]+$"),
@@ -86,6 +122,12 @@ function Manifest.validate(raw, path)
   assert(gameVersionOk, ("malformed game_version %q: %s")
     :format(tostring(raw.game_version), tostring(gameVersionErr)))
 
+  local github = Manifest.parseGithub(raw.github)
+
+  assert(raw.experimental == nil or type(raw.experimental) == "boolean",
+    "experimental must be a boolean")
+  local experimental = raw.experimental == true
+
   -- overhauls and total conversions are assumed to move the link
   -- fingerprint unless the manifest says otherwise; content packs are not
   local affectsLink = profile ~= "content"
@@ -97,6 +139,8 @@ function Manifest.validate(raw, path)
     return value
   end
 
+  local conflicts = mergeConflictLists(raw.conflicts, raw.incompatible)
+
   return {
     id = raw.id,
     name = raw.name,
@@ -106,13 +150,16 @@ function Manifest.validate(raw, path)
     priority = tonumber(raw.priority) or 0,
     dependencies = array(raw.dependencies),
     optional_dependencies = array(raw.optional_dependencies),
-    conflicts = array(raw.conflicts),
+    conflicts = conflicts,
+    incompatible = array(raw.incompatible),
     dependencySpecs = parseSpecs(array(raw.dependencies), "dependencies"),
     optionalSpecs = parseSpecs(array(raw.optional_dependencies), "optional_dependencies"),
-    conflictSpecs = parseSpecs(array(raw.conflicts), "conflicts"),
+    conflictSpecs = parseSpecs(conflicts, "conflicts"),
     category = raw.category or "OTHER",
     game_version = raw.game_version,
     description = raw.description or "",
+    github = github,
+    experimental = experimental,
     profile = profile,
     affects_link = affectsLink,
     permissions = permissions,

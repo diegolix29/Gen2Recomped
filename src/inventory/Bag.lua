@@ -1,11 +1,26 @@
--- The 20-slot bag (BAG_ITEM_CAPACITY, constants/menu_constants.asm):
--- a distinct item id occupies one slot regardless of quantity; badges
--- live in the inventory table but are not bag items.  save.bagOrder
--- keeps acquisition order like wBagItems (SELECT can reorder it).
+-- The bag defaults to 20 slots (BAG_ITEM_CAPACITY,
+-- constants/menu_constants.asm), but mods may replace that limit through
+-- Data.constants.bagSize.  A distinct item id occupies one slot regardless
+-- of quantity; badges live in the inventory table but are not bag items.
+-- save.bagOrder keeps acquisition order like wBagItems (SELECT can reorder
+-- it).
 
 local Bag = {}
 
-Bag.CAPACITY = 20
+local DEFAULT_CAPACITY = 20
+
+-- `data` is injectable for the save editor and headless mod tests.  Normal
+-- gameplay may omit it because the loader merges mods into the Data
+-- singleton before any item can be added.  The fallback keeps old/stale
+-- generated caches and isolated callers at the vanilla limit.
+function Bag.capacity(data)
+  data = data or require("src.core.Data")
+  local configured = data and data.constants and data.constants.bagSize
+  if type(configured) == "number" and configured >= 1 then
+    return math.floor(configured)
+  end
+  return DEFAULT_CAPACITY
+end
 
 local function isBadge(id)
   return id:find("BADGE", 1, true) ~= nil
@@ -55,9 +70,10 @@ end
 -- Add qty of an item; returns false (and adds nothing) when a new slot
 -- is needed and the bag is full, or when the stack would pass 99
 -- (AddItemToInventory's per-slot quantity cap).
-function Bag.add(save, id, qty)
+function Bag.add(save, id, qty, data)
   local inv = save.inventory
-  if not inv[id] and not isBadge(id) and Bag.slots(save) >= Bag.CAPACITY then
+  if not inv[id] and not isBadge(id)
+      and Bag.slots(save) >= Bag.capacity(data) then
     return false
   end
   if not isBadge(id) and (inv[id] or 0) + (qty or 1) > 99 then

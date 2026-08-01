@@ -128,7 +128,14 @@ end
 
 -- ------- the link surface
 
-local SPECIES_FIELDS = { "baseStats", "types", "catchRate", "baseExp",
+-- catchRate stays out (#511): no link mode ever reads it -- a ball thrown
+-- in a link battle is a trainer-battle throw and always refused (pokered
+-- engine/items/item_effects.asm ItemUseBall), and the trade rebuild never
+-- touches it.  Hashing it split Red/Blue from Yellow, whose only link
+-- surface delta is the Dragonair/Dragonite catch-rate bytes
+-- (data/pokemon/base_stats/dragonair.asm db 45 vs 27, dragonite.asm 45
+-- vs 9), when the real cable links R/B/Y freely.
+local SPECIES_FIELDS = { "baseStats", "types", "baseExp",
                          "growthRate", "evolutions" }
 local MOVE_FIELDS = { "power", "type", "accuracy", "pp", "effect", "category",
                       "priority", "highCrit", "fixedDamage", "multiHit",

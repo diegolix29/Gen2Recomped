@@ -67,9 +67,22 @@ function BindingsMenu.new(game)
     onSelectKey = function(item) self:resetItem(item) end,
   }), BindingsMenu)
   self.onChoose = function(item) self:beginCapture(item) end
-  self.scroll = 0
-  self.index = 1
+  -- A rebind reaches Input only when this screen closes (#510).  The menu
+  -- steers by the live map, so applying "B = Z" the instant it was captured
+  -- turned the player's next confirm press into a cancel and shut the
+  -- screen mid-swap.  options.bindings is still written immediately, and
+  -- Game:applyOptions re-applies it on load, so a close that skips this
+  -- hook still ends up with the saved map.
+  self.onCancel = function() self:commitBindings() end
   return self
+end
+
+-- Cross-file contract with src/core/Input.lua: the saved overlay reaches
+-- the live map here, on close, and nowhere else in this screen.
+function BindingsMenu:commitBindings()
+  local game = self.game
+  local opts = game and game.save and game.save.options
+  if opts then Input:applyBindings(opts.bindings) end
 end
 
 -- the capture handlers are per-instance slots, so Game's raw-input
@@ -80,7 +93,12 @@ function BindingsMenu:beginCapture(item)
   self.onGamepadPressed = BindingsMenu.capturePad
 end
 
+-- Escape is the capture's way out, so it is never captured: every other
+-- key is bindable, which otherwise leaves an armed row with no exit but
+-- to bind something (#510).  Escape stays START in Input's default map,
+-- which no rebind removes, so reserving it costs the player nothing.
 function BindingsMenu:captureKey(key)
+  if key == "escape" then return self:storeBinding("key", nil) end
   self:storeBinding("key", key)
 end
 
@@ -105,7 +123,6 @@ function BindingsMenu:storeBinding(slot, value)
   b[slot] = value
   opts.bindings[item.button.id] = b
   item.right = boundRight(opts.bindings, item.button)
-  Input:applyBindings(opts.bindings)
   if game.writeOptions then game:writeOptions() end
 end
 
@@ -159,9 +176,10 @@ function BindingsMenu:draw()
   end
   
   if self.capture then
-    Font.drawBox(1, 6, 18, 4)
+    Font.drawBox(1, 6, 18, 5)
     love.graphics.setColor(0, 0, 0, 1)
     Font.draw(Strings("PRESS A BUTTON"), 24, 60)
+    Font.draw(Strings("ESC TO CANCEL"), 24, 72)
     love.graphics.setColor(1, 1, 1, 1)
   end
 end

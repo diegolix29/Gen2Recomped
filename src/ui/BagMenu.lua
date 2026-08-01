@@ -93,6 +93,17 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
   end
 
   if result == "bicycle" then
+    -- StartMenu_Item .useOrTossItem (engine/menus/start_sub_menus.asm):
+    -- while BIT_ALWAYS_ON_BIKE of wStatusFlags6 is set -- the Cycling Road,
+    -- armed by the forced-bike tiles and cleared by the Route 16/18 gate
+    -- scripts -- the BICYCLE refuses with _CannotGetOffHereText and jumps
+    -- back to ItemMenuLoop, so the bag stays open and no dismount happens
+    -- (#513).  The gate sits ahead of UseItem, before ItemUseBicycle ever
+    -- runs, which is why it precedes list:close() here.
+    if game.save.forcedBike then
+      showMessages(game, { Strings("You can't get off\nhere.") })
+      return
+    end
     list:close()
     local ow = game.overworld
     local Music = require("src.core.Music")

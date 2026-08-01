@@ -790,8 +790,19 @@ local function bikeGateGuard(coords, stopText, explainText)
     local t = text(game)
     push(game, t[stopText] or "Hey! Wait up!", function()
       push(game, t[explainText] or "You need a\nBICYCLE for\nCYCLING ROAD!", function()
+        -- pokered's Route16Gate1FGuardScript / Route18Gate1FGuardScript
+        -- (scripts/Route16Gate1F.asm, Route18Gate1F.asm) simulate one
+        -- PAD_RIGHT step after the refusal text, and only clear
+        -- wJoyIgnore / hand control back once that step finishes
+        -- (PlayerMovingRightScript). Without it the player was left
+        -- parked beside the guard's counter with no way past. #518
+        local function shoveRight()
+          ow:scriptMove(ow.player, "right", 1)
+        end
         if dist > 0 then
-          ow:scriptMove(ow.player, "up", dist)
+          ow:scriptMove(ow.player, "up", dist, shoveRight)
+        else
+          shoveRight()
         end
       end)
     end)

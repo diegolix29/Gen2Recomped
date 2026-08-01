@@ -95,8 +95,15 @@ function LauncherMods.deriveList(manifests, options)
   local byId, enabledSet = {}, {}
   for _, m in ipairs(ordered) do
     byId[m.id] = m
-    -- missing entry means enabled, matching the loader's default
-    if mods[m.id] ~= false then enabledSet[m.id] = true end
+    -- missing entry means enabled, matching the loader -- except experimental
+    -- mods, which stay off until the player opts in
+    if mods[m.id] == false then
+      -- stay off
+    elseif mods[m.id] == true then
+      enabledSet[m.id] = true
+    elseif not m.experimental then
+      enabledSet[m.id] = true
+    end
   end
 
   local out = {}
@@ -104,16 +111,19 @@ function LauncherMods.deriveList(manifests, options)
     local enabled = enabledSet[m.id] == true
     local status, detail = statusFor(byId, m.id, enabledSet, enabled)
     local raw = m.raw or {}
+    local badge = tostring(raw.category or m.profile or "MOD"):upper()
+    if m.experimental then badge = "EXPERIMENTAL" end
     out[#out + 1] = {
       id = m.id,
       name = m.name or m.id,
       version = m.version,
-      -- category, then profile, then a generic fallback -- uppercased
-      badge = tostring(raw.category or m.profile or "MOD"):upper(),
+      badge = badge,
       description = m.description or "",
       enabled = enabled,
       status = status,
       statusDetail = detail,
+      github = m.github,
+      experimental = m.experimental == true,
     }
   end
   return out
@@ -247,6 +257,22 @@ local function discover()
       end
     end
   end
+  for _, name in ipairs(fs.getDirectoryItems("mods")) do
+    local path = "mods/" .. name
+    local info = fs.getInfo(path)
+    -- a dev-linked mod dir (ln -s) reports type "symlink" even with
+    -- setSymlinksEnabled(true); see the matching note in Loader:_discover.
+    if info and (info.type == "directory" or info.type == "symlink") then
+      local raw = fs.read(path .. "/manifest.json")
+      if raw then
+        local manifest = decodeManifest(raw, path)
+        if manifest and not seen[manifest.id] then
+          seen[manifest.id] = true
+          out[#out + 1] = manifest
+        end
+      end
+    end
+  end
   return out
 end
 
@@ -254,8 +280,15 @@ end
 -- options.mods enable-state the loader persists, so a toggle here is what the
 -- game sees on its next boot.
 function LauncherMods.list()
-  local options = SaveData.loadOptions()
-  return LauncherMods.deriveList(discover(), options)
+  local ok, result = pcall(function()
+    local options = SaveData.loadOptions()
+    return LauncherMods.deriveList(discover(), options)
+  end)
+  if not ok then
+    -- a single bad options/mod file must not blank the launcher
+    return {}
+  end
+  return result or {}
 end
 
 -- setEnabled(id, enabled): persist options.mods[id] in the exact shape
@@ -477,13 +510,22 @@ function LauncherMods.strays() return scanStrays(false) end
 -- on the player's behalf is not this function's call to make.
 function LauncherMods.adoptStrays() return scanStrays(true) end
 
--- installZip(source) -> true, id  |  nil, errString
+-- installZip(source [, opts]) -> true, id  |  nil, errString
 -- source is an external path or a love DroppedFile.  The archive is validated
 -- BEFORE anything is copied; every path unmounts and clears the staged temp
 -- file, and a failed copy rolls its partial tree back.  A dropped file outside
 -- the save dir is staged into a save-dir temp first, because
 -- love.filesystem.mount only reaches a save-directory-relative path.
-function LauncherMods.installZip(source)
+-- opts.replace = true uninstalls an existing same-id mod first (updates /
+-- rollbacks).  opts.expectId, when set, refuses a zip whose manifest id differs.
+function LauncherMods.installZip(source, opts)
+  local ok, result, err = pcall(LauncherMods._installZipInner, source, opts)
+  if not ok then return nil, "import failed: " .. tostring(result) end
+  return result, err
+end
+
+function LauncherMods._installZipInner(source, opts)
+  opts = opts or {}
   if not (love and love.filesystem) then
     return nil, "mod install needs LOVE"
   end
@@ -524,12 +566,24 @@ function LauncherMods.installZip(source)
     cleanup()
     return nil, "invalid mod manifest: " .. tostring(manifestErr)
   end
+  if opts.expectId and manifest.id ~= opts.expectId then
+    cleanup()
+    return nil, ("zip is for '%s', expected '%s'")
+      :format(manifest.id, opts.expectId)
+  end
 
-  -- reject a duplicate before touching the mods tree
   local dest = "mods/" .. manifest.id
   if fs.getInfo(dest) then
-    cleanup()
-    return nil, "a mod named '" .. manifest.id .. "' is already installed"
+    if not opts.replace then
+      cleanup()
+      return nil, "a mod named '" .. manifest.id .. "' is already installed"
+    end
+    -- drop the old tree before copy; enable-flag is preserved (uninstall
+    -- would clear it, which would surprise an update)
+    local savedPrefix = CacheFs.prefix
+    CacheFs.prefix = ""
+    removeTree(dest)
+    CacheFs.prefix = savedPrefix
   end
 
   -- CacheFs.prefix steers ROM-cache writes into a version subtree (blue/...);
@@ -550,6 +604,56 @@ function LauncherMods.installZip(source)
   end
   cleanup()
   return true, manifest.id
+end
+
+-- Install (or replace) a mod from a GitHub release zip URL.
+-- Returns true, version  |  nil, errString. Soft-fails: download / install /
+-- cleanup errors never throw into the launcher UI.
+function LauncherMods.installFromRelease(modId, release)
+  local ok, result, err = pcall(function()
+    if type(modId) ~= "string" or modId == "" then
+      return nil, "missing mod id"
+    end
+    if type(release) ~= "table" or not release.zip or not release.zip.url then
+      return nil, "release has no downloadable .zip"
+    end
+    local ModUpdate = require("src.mods.ModUpdate")
+    local tmpName = ("mod_update_%s_%s.zip"):format(
+      tostring(modId), tostring(release.version or os.time()))
+    local localPath, dlErr = ModUpdate.downloadZip(release.zip.url, tmpName)
+    if not localPath then return nil, dlErr end
+    local installed, res = LauncherMods.installZip(localPath, {
+      replace = true, expectId = modId,
+    })
+    pcall(love.filesystem.remove, localPath)
+    if not installed then return nil, res end
+    return true, release.version or res
+  end)
+  if not ok then return nil, "install failed: " .. tostring(result) end
+  return result, err
+end
+
+-- Install a mod listed in a community index (src/mods/ModIndex.lua).
+-- The index only ever tells us WHERE the zip is; resolving that URL is
+-- ModIndex's job and installing it is installFromRelease's, so this is the
+-- seam between them and nothing about the archive is special-cased.  expectId
+-- comes from the listing, so a feed that points an entry at somebody else's
+-- zip fails the manifest check instead of installing the wrong mod.
+-- Returns true, version | nil, errString.
+function LauncherMods.installFromIndex(entry)
+  local ok, result, err = pcall(function()
+    if type(entry) ~= "table" or type(entry.id) ~= "string" then
+      return nil, "index entry has no mod id"
+    end
+    local ModIndex = require("src.mods.ModIndex")
+    local release, why = ModIndex.releaseFor(entry)
+    if not release then
+      return nil, why or "this mod cannot be installed from the index"
+    end
+    return LauncherMods.installFromRelease(entry.id, release)
+  end)
+  if not ok then return nil, "install failed: " .. tostring(result) end
+  return result, err
 end
 
 -- uninstall(id) -> true  |  nil, errString

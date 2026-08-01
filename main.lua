@@ -10,7 +10,7 @@
 
 local editorMode = os.getenv("POKEPORT_EDITOR") == "1" or POKEPORT_EDITOR_MODE == true
 
-local Game, EditorApp, Importer
+local Game, EditorApp, Importer, TouchEditor
 
 local autopilot -- optional scripted-input dev tool (tests/autopilot.lua)
 local driverCo  -- optional frame-driver (POKEPORT_DRIVER=file.lua): a
@@ -134,6 +134,26 @@ function closeEditor()
   end
 end
 
+-- ------------------------------------------------------------ touch controls editor
+-- Suspends the launcher while the player drags on-screen buttons / toggles
+-- the overlay off (#327).  No ROM cache needed -- options.lua only.
+local touchEditorHost
+local closeTouchControlsEditor  -- forward declaration
+
+local function openTouchControlsEditor()
+  touchEditorHost = Importer
+  Importer = nil
+  TouchEditor = require("src.ui.TouchControlsEditor")
+  TouchEditor.load({ onClose = function() closeTouchControlsEditor() end })
+end
+
+function closeTouchControlsEditor()
+  if TouchEditor and TouchEditor.unload then TouchEditor.unload() end
+  TouchEditor = nil
+  Importer = touchEditorHost
+  touchEditorHost = nil
+end
+
 local function bootGame(version)
   -- The launcher hands us the chosen game (Red / Blue / Yellow); scripted and
   -- headless runs fall back to POKEPORT_VERSION, then Red.  Set the active
@@ -239,11 +259,17 @@ function love.load(args)
   Importer = RomImporter.new(function(version)
     Importer = nil
     bootGame(version)
-  end, { launcher = true, forceImport = forceImport, onEditSave = openEditor })
+  end, {
+    launcher = true,
+    forceImport = forceImport,
+    onEditSave = openEditor,
+    onEditTouchControls = openTouchControlsEditor,
+  })
 end
 
 function love.update(dt)
   if editorMode then return EditorApp.update(dt) end
+  if TouchEditor then return TouchEditor.update(dt) end
   if Importer then return Importer:update(dt) end
 
   -- Scripted runs (autopilot / POKEPORT_DRIVER) observe and act exactly
@@ -283,6 +309,7 @@ end
 
 function love.draw()
   if editorMode then return EditorApp.draw() end
+  if TouchEditor then return TouchEditor.draw() end
   if Importer then return Importer:draw() end
 
   Game:draw()
@@ -303,60 +330,61 @@ end
 
 function love.keypressed(key, scancode, isrepeat)
   if editorMode then return EditorApp.keypressed(key) end
+  if TouchEditor then return TouchEditor.keypressed(key) end
   if Importer then return Importer:keypressed(key) end
   Game:keypressed(key)
 end
 
 function love.keyreleased(key)
-  if editorMode then return end
+  if editorMode or TouchEditor then return end
   if Importer then return end
   Game:keyreleased(key)
 end
 
 function love.gamepadpressed(joystick, button)
-  if editorMode then return end
+  if editorMode or TouchEditor then return end
   if Importer then return Importer:gamepadpressed(joystick, button) end
   Game:gamepadpressed(joystick, button)
 end
 
 function love.gamepadreleased(joystick, button)
-  if editorMode then return end
+  if editorMode or TouchEditor then return end
   if Importer then return Importer:gamepadreleased(joystick, button) end
   Game:gamepadreleased(joystick, button)
 end
 
 function love.gamepadaxis(joystick, axis, value)
-  if editorMode then return end
+  if editorMode or TouchEditor then return end
   if Importer then return Importer:gamepadaxis(joystick, axis, value) end
   Game:gamepadaxis(joystick, axis, value)
 end
 
 function love.joystickpressed(joystick, button)
-  if editorMode then return end
+  if editorMode or TouchEditor then return end
   if Importer then return Importer:joystickpressed(joystick, button) end
   Game:joystickpressed(joystick, button)
 end
 
 function love.joystickreleased(joystick, button)
-  if editorMode then return end
+  if editorMode or TouchEditor then return end
   if Importer then return Importer:joystickreleased(joystick, button) end
   Game:joystickreleased(joystick, button)
 end
 
 function love.joystickaxis(joystick, axis, value)
-  if editorMode then return end
+  if editorMode or TouchEditor then return end
   if Importer then return Importer:joystickaxis(joystick, axis, value) end
   Game:joystickaxis(joystick, axis, value)
 end
 
 function love.joystickhat(joystick, hat, direction)
-  if editorMode then return end
+  if editorMode or TouchEditor then return end
   if Importer then return Importer:joystickhat(joystick, hat, direction) end
   Game:joystickhat(joystick, hat, direction)
 end
 
 function love.joystickremoved(joystick)
-  if editorMode then return end
+  if editorMode or TouchEditor then return end
   if Importer then return end
   Game:joystickremoved(joystick)
 end
@@ -365,7 +393,7 @@ end
 -- direction's key-up can be delivered to the OS instead of the game while
 -- unfocused, so reset input on either transition rather than trust it.
 function love.focus(f)
-  if editorMode then return end
+  if editorMode or TouchEditor then return end
   if Importer then
     if Importer.focus then Importer:focus(f) end
     return
@@ -375,13 +403,19 @@ end
 
 -- v is true when the window becomes visible again, false on minimize.
 function love.visible(v)
-  if editorMode then return end
+  if editorMode or TouchEditor then return end
   if Importer then return end
   Game:visible(v)
 end
 
 function love.touchpressed(id, x, y, dx, dy, pressure)
   if editorMode then return end
+  if TouchEditor then
+    -- iOS synthesizes mousepressed for the primary touch (same as the
+    -- launcher); Android drives the editor through love.touch directly.
+    if love.system.getOS() == "iOS" then return end
+    return TouchEditor.touchpressed(id, x, y)
+  end
   if Importer then
     -- iOS: LÖVE already synthesizes a mousepressed for the primary touch,
     -- and love.mousepressed below forwards that to the Importer, so
@@ -399,12 +433,20 @@ end
 
 function love.touchmoved(id, x, y, dx, dy, pressure)
   if editorMode then return end
+  if TouchEditor then
+    if love.system.getOS() == "iOS" then return end
+    return TouchEditor.touchmoved(id, x, y)
+  end
   if Importer then return end
   Game:touchmoved(id, x, y)
 end
 
 function love.touchreleased(id, x, y, dx, dy, pressure)
   if editorMode then return end
+  if TouchEditor then
+    if love.system.getOS() == "iOS" then return end
+    return TouchEditor.touchreleased(id, x, y)
+  end
   if Importer then return end
   Game:touchreleased(id, x, y)
 end
@@ -414,12 +456,36 @@ function love.wheelmoved(x, y)
     if EditorApp.wheelmoved then return EditorApp.wheelmoved(x, y) end
     return
   end
+  if TouchEditor then return end
   if Importer then return end
   Game:wheelmoved(x, y)
 end
 
-function love.mousepressed(x, y, button)
-  if Importer then return Importer:mousepressed(x, y, button) end
+function love.mousepressed(x, y, button, istouch)
+  if TouchEditor then
+    -- Android primary touch already arrived via love.touchpressed; a second
+    -- mouse path would double-fire Done / begin a second drag.
+    if love.system.getOS() == "Android" then return end
+    return TouchEditor.mousepressed(x, y, button)
+  end
+  if Importer then
+    -- The same double-fire TouchEditor guards against, which the launcher was
+    -- missing: love.touchpressed above forwards the primary touch to the
+    -- Importer on Android, and LÖVE ALSO synthesizes a mouse press for that
+    -- same touch, so one tap ran every launcher button twice.  On Import that
+    -- meant two choose() calls and two stacked SAF picker activities: the
+    -- player picked their ROM, the top picker closed, and the second was still
+    -- underneath asking for it again, which is the "import the file twice"
+    -- in #553.  Filtering on istouch keeps a real mouse (DeX, a Chromebook, a
+    -- USB mouse) working, which an Android-wide return would have broken.
+    --
+    -- ANDROID ONLY, and the OS test is load bearing: love.touchpressed above
+    -- returns early on iOS and never forwards, so there the synthesized mouse
+    -- press is the ONLY event the launcher gets.  Filtering istouch on both
+    -- killed every tap on iOS outright.
+    if istouch and love.system.getOS() == "Android" then return end
+    return Importer:mousepressed(x, y, button)
+  end
   if editorMode and EditorApp.mousepressed then
     return EditorApp.mousepressed(x, y, button)
   end
@@ -429,6 +495,10 @@ function love.mousepressed(x, y, button)
 end
 
 function love.mousereleased(x, y, button)
+  if TouchEditor then
+    if love.system.getOS() == "Android" then return end
+    return TouchEditor.mousereleased(x, y, button)
+  end
   if Importer then return end
   if editorMode and EditorApp.mousereleased then
     return EditorApp.mousereleased(x, y, button)
@@ -439,6 +509,10 @@ function love.mousereleased(x, y, button)
 end
 
 function love.mousemoved(x, y)
+  if TouchEditor then
+    if love.system.getOS() == "Android" then return end
+    return TouchEditor.mousemoved(x, y)
+  end
   if editorMode or Importer then return end
   if mouseTouch and Game and love.mouse.isDown(1) then
     Game:touchmoved("mouse", x, y)
@@ -446,6 +520,7 @@ function love.mousemoved(x, y)
 end
 
 function love.textinput(text)
+  if TouchEditor then return end
   if Importer then return Importer:textinput(text) end
   if editorMode and EditorApp.textinput then
     return EditorApp.textinput(text)

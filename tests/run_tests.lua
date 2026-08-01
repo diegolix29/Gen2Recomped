@@ -1674,6 +1674,16 @@ do
   local optBack = SD.loadOptions()
   eq(optBack.zoom, -2, "options.lua round-trips zoom")
   eq(optBack.voidFill, "water", "options.lua round-trips voidFill")
+  -- touchControls (#327): enabled flag + normalized positions
+  rep.options.touchControls = {
+    enabled = false,
+    positions = { dpad = { x = 0.2, y = 0.8 }, a = { x = 0.9, y = 0.7 } },
+  }
+  SD.saveOptions(rep.options)
+  optBack = SD.loadOptions()
+  eq(optBack.touchControls.enabled, false, "options.lua round-trips touchControls.enabled")
+  eq(optBack.touchControls.positions.dpad.x, 0.2,
+     "options.lua round-trips touchControls.positions")
   local origOpts, loadedOpts = rep.options, back.options
   rep.options, back.options = nil, nil
   local same, where = deepEq(rep, back, "save")
@@ -1681,6 +1691,96 @@ do
   rep.options, back.options = origOpts, loadedOpts
   -- leave defaults for later tests that expect a clean options.lua
   SD.saveOptions(SD.defaultOptions())
+end
+
+-- ---------------------------------------------------------------- touch controls layout (#327)
+do
+  local TC = require("src.core.TouchControls")
+  local SafeArea = require("src.core.SafeArea")
+  local cfg = TC.normalizeConfig(nil)
+  eq(cfg.enabled, true, "touchControls default enabled")
+  check(cfg.positions == nil, "touchControls default positions nil")
+
+  cfg = TC.normalizeConfig({
+    enabled = false,
+    positions = {
+      dpad = { x = 1.5, y = -0.2 },  -- clamped
+      a = { x = 0.5, y = 0.5 },
+      junk = { x = 0, y = 0 },
+      b = { x = "nope", y = 0.1 },
+    },
+  })
+  eq(cfg.enabled, false, "normalizeConfig keeps enabled=false")
+  eq(cfg.positions.dpad.x, 1, "normalizeConfig clamps x high")
+  eq(cfg.positions.dpad.y, 0, "normalizeConfig clamps y low")
+  eq(cfg.positions.a.x, 0.5, "normalizeConfig keeps a")
+  check(cfg.positions.junk == nil, "normalizeConfig drops unknown controls")
+  check(cfg.positions.b == nil, "normalizeConfig drops non-numeric")
+
+  local L = TC.defaultLayout(400, 800)
+  check(L.dpad.cx < 200, "default d-pad on left half")
+  check(L.a.cx > 200, "default A on right half")
+  check(L.dpad.cy > 400, "default d-pad in bottom half")
+
+  -- safe-area origin shifts defaults without changing relative layout
+  local Ls = TC.defaultLayout(400, 800, 20, 30)
+  eq(Ls.dpad.cx, L.dpad.cx + 20, "defaultLayout ox shifts controls")
+  eq(Ls.dpad.cy, L.dpad.cy + 30, "defaultLayout oy shifts controls")
+  eq(Ls.a.cx, L.a.cx + 20, "defaultLayout ox shifts A")
+
+  -- applyOptions + visible gate (no real images needed for the gate)
+  TC.enabled = true
+  TC.active = true
+  TC.img = {}  -- pretend art loaded
+  TC.controllerHidden = false
+  TC.preview = false
+  TC:applyOptions({ touchControls = { enabled = false } })
+  eq(TC.enabled, false, "applyOptions disables overlay")
+  check(not TC:visible(), "disabled overlay is not visible")
+  TC:applyOptions({
+    touchControls = {
+      enabled = true,
+      positions = { dpad = { x = 0.25, y = 0.75 } },
+    },
+  })
+  eq(TC.enabled, true, "applyOptions re-enables overlay")
+  eq(TC.positions.dpad.x, 0.25, "applyOptions stores positions")
+  check(TC:visible(), "enabled overlay is visible when active+imaged")
+
+  -- custom position applied through layout()
+  local g = love.graphics
+  local oldDim, oldFont = g.getDimensions, g.newFont
+  local oldSafe = love.window and love.window.getSafeArea
+  g.getDimensions = function() return 400, 800 end
+  g.newFont = function() return { getWidth = function() return 10 end,
+                                  getHeight = function() return 10 end } end
+  love.window = love.window or {}
+  love.window.getSafeArea = function() return 0, 0, 400, 800 end
+  TC.layoutW, TC.layoutH, TC.layoutOx, TC.layoutOy, TC.L = nil, nil, nil, nil, nil
+  local lay = TC:layout()
+  eq(lay.dpad.cx, 100, "custom dpad cx = nx * ww")
+  eq(lay.dpad.cy, 600, "custom dpad cy = ny * wh")
+
+  -- inset safe area: custom positions stay inside the usable rect
+  love.window.getSafeArea = function() return 10, 40, 380, 720 end
+  TC.layoutW, TC.layoutH, TC.layoutOx, TC.layoutOy, TC.L = nil, nil, nil, nil, nil
+  lay = TC:layout()
+  eq(lay.dpad.cx, 10 + 0.25 * 380, "safe-area custom dpad cx")
+  eq(lay.dpad.cy, 40 + 0.75 * 720, "safe-area custom dpad cy")
+  check(lay.dpad.cy <= 40 + 720 - lay.dpad.w * 0.5 + 1e-6,
+        "safe-area dpad clears bottom inset")
+
+  local x, y, w, h = SafeArea.rect()
+  eq(x, 10, "SafeArea.rect x")
+  eq(y, 40, "SafeArea.rect y")
+  eq(w, 380, "SafeArea.rect w")
+  eq(h, 720, "SafeArea.rect h")
+
+  TC:clearPositions()
+  check(TC.positions == nil, "clearPositions wipes overrides")
+  g.getDimensions, g.newFont = oldDim, oldFont
+  if oldSafe then love.window.getSafeArea = oldSafe
+  else love.window.getSafeArea = nil end
 end
 
 -- ---------------------------------------------------------------- crit thresholds (CriticalHitTest)
@@ -3265,6 +3365,10 @@ runSuites({ "tests/rom_importer_android_pick_test.lua" })
 
 -- ---------------------------------------------- Android mod / save SAF pick
 runSuites({ "tests/rom_importer_android_mod_pick_test.lua" })
+
+-- ---------------------------------------------- import with no picker (#482)
+runSuites({ "tests/rom_importer_no_picker_test.lua" })
+runSuites({ "tests/rom_importer_double_pick_test.lua" })
 -- ---------------------------------------------- parity workstream tests
 -- Each tests/parity_*.lua is a self-contained file (own bootstrap + check,
 -- error()s if any assertion fails).  Globbed, so dropping a new parity
@@ -3274,6 +3378,8 @@ runSuites(orderedGlob("tests/parity_*.lua", {
   "tests/parity_C.lua", "tests/parity_K.lua", "tests/parity_L.lua",
   "tests/parity_H.lua", "tests/parity_G.lua", "tests/parity_I_M.lua",
   "tests/parity_B.lua", "tests/parity_J.lua", "tests/parity_A.lua",
+  "tests/parity_battle_menu_cursor.lua",
+  "tests/parity_cerulean_badge_house.lua",
   "tests/parity_flavor.lua", "tests/parity_trainer_sight.lua",
   "tests/parity_static.lua", "tests/parity_trashcans.lua",
   "tests/parity_hof.lua", "tests/parity_trade_gift.lua",

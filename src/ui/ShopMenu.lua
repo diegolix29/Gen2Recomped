@@ -67,7 +67,7 @@ local function buy(game, stock)
               list.footer = notEnough
               return
             end
-            if not Bag.add(game.save, item.value, qty) then
+            if not Bag.add(game.save, item.value, qty, game.data) then
               list.footer = txt(game, "_PokemartItemBagFullText",
                                 Strings("You can't carry\nany more items."))
               return

@@ -313,6 +313,9 @@ build_ios() {
   if [ "$IOS_RELEASE" = true ]; then
     args+=(--release)
   fi
+  if [ "$VERSION_EXPLICIT" = true ]; then
+    args+=(--version "$VERSION")
+  fi
   "$ROOT/scripts/build_ios.sh" ${args[@]+"${args[@]}"}
 }
 

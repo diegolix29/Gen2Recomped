@@ -1,5 +1,8 @@
 # Build & install on your iPhone — step by step
 
+Don't want to install Xcode? Download the release IPA and sideload it with
+AltStore instead — see [ios-sideload.md](ios-sideload.md).
+
 This guide assumes **zero** programming experience. Follow it top to
 bottom and you'll have the game running on your own iPhone in roughly an
 hour (most of it is waiting for downloads).

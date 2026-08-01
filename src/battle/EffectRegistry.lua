@@ -93,6 +93,12 @@ function EffectRegistry.runDamaging(battle, ctx, record)
     -- Explosion/Selfdestruct still animate on a miss (HandleIfPlayerMoveMissed)
     if not (record and record.explode) then battle:cancelMoveAnim() end
     battle:sayNext(Strings("%s's\nattack missed!", displayName(user)))
+    -- MoveHitTest's INVULNERABLE branch sets the same wMoveMissed as a
+    -- failed accuracy roll (core.asm:5260), and the miss handler still
+    -- runs the explode effect ("even if Explosion or Selfdestruct
+    -- missed, its effect still needs to be activated", core.asm:3223),
+    -- so the user faints against a mid-Fly/Dig target too (#528)
+    if record and record.onMiss then record.onMiss(ctx, "invulnerable") end
     return
   end
 

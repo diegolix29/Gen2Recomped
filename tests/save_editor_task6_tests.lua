@@ -181,12 +181,13 @@ end
 do
   -- the bag has a hard slot cap; the picker must refuse past it
   local S = newState()
+  local capacity = Bag.capacity(S.data)
   local added = 0
   for _, id in ipairs(S.cat.items) do
     if not Ops.isBadgeId(id) and Ops.addToBag(S, id) then added = added + 1 end
-    if added >= Bag.CAPACITY then break end
+    if added >= capacity then break end
   end
-  eq(Bag.slots(S.save), Bag.CAPACITY, "the bag filled to its cap")
+  eq(Bag.slots(S.save), capacity, "the bag filled to its cap")
   S.dirty = false
   local spare
   for _, id in ipairs(S.cat.items) do
@@ -230,13 +231,14 @@ do
 end
 
 do
-  -- badges are boolean flags on inventory, toggled not stacked
+  -- badges are truthy flags on inventory, toggled not stacked; the engine
+  -- writes them as 1 (#515), so the editor must too
   local S = newState()
   local ids = Ops.badgeIds(S)
   check(#ids > 0, "the catalog exposes badge ids")
   local id = ids[1]
   Ops.toggleBadge(S, id)
-  eq(S.save.inventory[id], true, "toggleBadge earns the badge")
+  eq(S.save.inventory[id], 1, "toggleBadge earns the badge")
   Ops.toggleBadge(S, id)
   eq(S.save.inventory[id], nil, "toggleBadge removes the badge (nil, not false)")
 end

@@ -2,7 +2,8 @@
 # Packages the LÖVE2D Pokémon Red port into an iOS app via LÖVE 11.5's
 # official iOS Xcode project (love-11.5-ios-source.zip).
 #
-# Usage: scripts/build_ios.sh [--fetch] [--device] [--release] [--package-only]
+# Usage: scripts/build_ios.sh [--fetch] [--device] [--release] [--install]
+#                             [--version X.Y.Z] [--package-only]
 #
 #   (default)         Simulator Debug (ad-hoc signed)
 #   --device          iphoneos SDK; signing team auto-detected from the
@@ -10,6 +11,7 @@
 #   --install         after a --device build, install the app onto the
 #                     first connected iPhone/iPad (unlock it first)
 #   --release         Release configuration
+#   --version X.Y.Z   stamp MARKETING_VERSION / CURRENT_PROJECT_VERSION
 #   --fetch           Download love-11.5-ios-source.zip into mobile/ios/love-src/
 #   --package-only    Zip game.love + apply plist overlay; skip xcodebuild
 #
@@ -19,6 +21,7 @@
 #   - prebuilt iOS libraries under love-src/platform/xcode/ios/libraries/
 #
 # Output: dist/ios/<Config>-<sdk>/gen1recomp.app (convenience copy)
+#         dist/ios/gen1recomp.ipa                 (device builds only)
 #         mobile/ios/build/Build/Products/<Config>-<sdk>/gen1recomp.app
 
 set -euo pipefail
@@ -62,6 +65,11 @@ DEVICE=false
 RELEASE=false
 PACKAGE_ONLY=false
 INSTALL=false
+# Last resort for an incomplete source export, mirroring build_android.sh.
+MANIFEST_BASE_URL="${MANIFEST_BASE_URL:-https://raw.githubusercontent.com/bryanthaboi/gen1recomp/main}"
+MANIFESTS=""
+
+VERSION=""
 
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mwarn:\033[0m %s\n' "$*" >&2; }
@@ -74,23 +82,43 @@ while [ $# -gt 0 ]; do
     --release) RELEASE=true ;;
     --package-only) PACKAGE_ONLY=true ;;
     --install) INSTALL=true ;;
+    --version) VERSION="$2"; shift ;;
     -h|--help)
-      sed -n '2,22p' "$0"
+      sed -n '2,24p' "$0"
       exit 0
       ;;
-    *) fail "unknown argument: $1 (try --fetch, --device, --release, --install, or --package-only)" ;;
+    *) fail "unknown argument: $1 (try --fetch, --device, --release, --version, --install, or --package-only)" ;;
   esac
   shift
 done
 
+VERSION_CODE=""
+if [ -n "$VERSION" ]; then
+  if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+    fail "invalid --version '$VERSION' (expected X.Y.Z)"
+  fi
+  major="${VERSION%%.*}"
+  rest="${VERSION#*.}"
+  minor="${rest%%.*}"
+  patch="${rest##*.}"
+  VERSION_CODE=$((major * 10000 + minor * 100 + patch))
+fi
+
 # ---------------------------------------------------------- signing identity
-# Auto-detect the Apple Development team when the caller didn't set one: the
-# OU field of the first Apple Development certificate in the keychain (Xcode
-# creates that certificate when you sign into Settings -> Accounts).
+# Auto-detect the Apple Development team when the caller didn't set one.
+# Prefer a *valid* identity from `find-identity` (the parenthetical there is
+# the cert id, not the team), then read that cert's OU. Scanning every
+# "Apple Development" certificate picks expired personal/work certs first.
 detect_team() {
-  security find-certificate -c "Apple Development" -p 2>/dev/null \
+  local cn
+  cn="$(security find-identity -v -p codesigning 2>/dev/null \
+    | sed -n -E 's/.*"Apple Development: ([^"]+)".*/\1/p' \
+    | head -1)"
+  [ -n "$cn" ] || return 1
+  security find-certificate -c "Apple Development: $cn" -p 2>/dev/null \
     | openssl x509 -noout -subject 2>/dev/null \
-    | sed -n 's/.*OU *= *\([A-Z0-9]*\).*/\1/p' | head -1
+    | sed -n 's/.*OU *= *\([A-Z0-9]*\).*/\1/p' \
+    | head -1
 }
 if $DEVICE && [ -z "${DEVELOPMENT_TEAM:-}" ]; then
   DEVELOPMENT_TEAM="$(detect_team || true)"
@@ -205,6 +233,68 @@ apply_ios_branding() {
 }
 
 # --------------------------------------------------------------- game.love
+# Every version's import manifest has to ship or that game's ROM import fails in
+# the built app: decodeManifest (src/import/RomImporter.lua) errors outright when
+# one is absent, and dev reads them off the source tree, so the miss only ever
+# shows up in a build.  iOS shipped without the Yellow one in 0.1.45 to 0.1.47
+# for exactly that reason.
+#
+# The list is READ OUT OF src/core/GameVersion.lua rather than hand-kept here, so
+# a fourth version cannot silently ship without its manifest, and a missing file
+# is recovered from Git or the project repo the same way build_android.sh already
+# recovers Yellow's.  Recovery is a last resort for an incomplete source export:
+# a manifest carries extraction metadata only, never a ROM or game data.
+manifest_paths() {
+  python3 - "$ROOT/src/core/GameVersion.lua" <<'PY'
+import re, sys
+src = open(sys.argv[1]).read()
+print(" ".join(dict.fromkeys(re.findall(r'manifest\s*=\s*"([^"]+)"', src))))
+PY
+}
+
+manifest_is_valid() {
+  python3 - "$1" <<'PY'
+import json, pathlib, sys
+try:
+    m = json.loads(pathlib.Path(sys.argv[1]).read_text())
+except (OSError, ValueError):
+    raise SystemExit(1)
+sha = m.get("romSha1")
+raise SystemExit(0 if isinstance(sha, str) and len(sha) == 40 else 1)
+PY
+}
+
+ensure_manifests() {
+  MANIFESTS="$(manifest_paths)"
+  [ -n "$MANIFESTS" ] \
+    || fail "could not read any manifest path out of src/core/GameVersion.lua"
+  local rel staged
+  for rel in $MANIFESTS; do
+    if manifest_is_valid "$ROOT/$rel"; then continue; fi
+    warn "$rel is missing or invalid; recovering it before packaging"
+    staged="$(mktemp)"
+    if git -C "$ROOT" show "HEAD:$rel" > "$staged" 2>/dev/null \
+        && manifest_is_valid "$staged"; then
+      mkdir -p "$ROOT/$(dirname "$rel")"
+      mv "$staged" "$ROOT/$rel"
+      say "restored $rel from this checkout's Git data"
+      continue
+    fi
+    if command -v curl >/dev/null 2>&1 \
+        && curl --fail --location --retry 2 --connect-timeout 15 \
+            --output "$staged" "$MANIFEST_BASE_URL/$rel" \
+        && manifest_is_valid "$staged"; then
+      mkdir -p "$ROOT/$(dirname "$rel")"
+      mv "$staged" "$ROOT/$rel"
+      say "downloaded $rel from the project repository"
+      continue
+    fi
+    rm -f "$staged"
+    fail "$rel is unavailable: Git recovery failed and $MANIFEST_BASE_URL/$rel could not be downloaded"
+  done
+  say "import manifests: $MANIFESTS"
+}
+
 pack_game_love() {
   say "packing game.love for love-ios resources"
   mkdir -p "$RESOURCES_DIR"
@@ -215,11 +305,11 @@ pack_game_love() {
   # read-only app bundle, so the mod manager's Delete can't remove it and
   # it reappears every launch.  Mods install as .zips at runtime instead
   # (launcher -> MODS -> Import mod .zip), the same lifecycle as every
-  # other platform.  However, bundlemods folder is included as these are
-  # meant to be pre-bundled mods that ship with the application.
+  # other platform.
+  # shellcheck disable=SC2086  # MANIFESTS is a deliberate word list
   (cd "$ROOT" && zip -q -9 -r "$LOVE_FILE" \
     main.lua conf.lua src data assets tools/save-editor \
-    tools/rom_manifest.json tools/rom_manifest_blue.json bundlemods \
+    $MANIFESTS \
     -x '*.DS_Store' -x '*/.git/*' -x '*/.DS_Store' \
     -x 'data/generated/*' -x 'assets/generated/*')
   # NOTE: grep -q here would race pipefail — it exits on first match, unzip
@@ -229,8 +319,18 @@ pack_game_love() {
       | grep -E '^(data|assets)/generated/[^/]+|^(data|assets)/generated/.+/' >/dev/null; then
     fail "game.love unexpectedly contains generated ROM data"
   fi
-  unzip -Z1 "$LOVE_FILE" | grep -x 'tools/save-editor/App.lua' >/dev/null \
-    || fail "game.love is missing the save editor (Edit on a save row would crash)"
+  # Same required-file gate as scripts/build.sh and scripts/build_android.sh.
+  # iOS only checked App.lua, which is why the Yellow manifest shipped missing
+  # in 0.1.45 through 0.1.47: decodeManifest (src/import/RomImporter.lua) errors
+  # outright when a version's manifest is absent, so Import ROM on Yellow died
+  # in the built app while dev, which reads the source tree, stayed green.
+  archive_entries="$(unzip -Z1 "$LOVE_FILE")"
+  # shellcheck disable=SC2086  # MANIFESTS is a deliberate word list
+  for required in tools/save-editor/App.lua tools/save-editor/Kit.lua \
+                  tools/save-editor/panels/Party.lua $MANIFESTS; do
+    printf '%s\n' "$archive_entries" | grep -qx "$required" \
+      || fail "game.love is missing $required"
+  done
   say "game.love: $(du -h "$LOVE_FILE" | cut -f1) -> $LOVE_FILE"
 }
 
@@ -325,6 +425,43 @@ PY
 }
 
 # --------------------------------------------------------------- xcodebuild
+# love.system.pickFile and createFile are a native bridge compiled in by
+# mobile/ios/patch_love_src.py, not part of LÖVE.  A build that skipped the
+# patch still links and still runs, then finds the field nil the moment anyone
+# taps Import ROM (#482).  #539 made that degrade to the copy-into-Files flow
+# rather than crash, which is the right floor, but a build with no picker at all
+# is a silent downgrade, so fail here instead of shipping one.
+#
+# Checked against the built binary rather than the source, because patching
+# love-src proves nothing about what Xcode actually compiled: the shipped
+# 0.1.45/0.1.46/0.1.47 IPAs all DO carry the bridge, so the reports that blamed
+# a missing patch step were self-built IPAs, exactly the case this catches.
+verify_native_bridge() {
+  local app="$1"
+  local exe bin missing=""
+  exe="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
+         "$app/Info.plist" 2>/dev/null || true)"
+  bin="$app/${exe:-love}"
+  [ -f "$bin" ] || bin="$app/love"
+  if [ ! -f "$bin" ]; then
+    warn "no executable inside $(basename "$app"); skipping native bridge check"
+    return 0
+  fi
+  # grep -q here would race pipefail the same way pack_game_love documents:
+  # it exits on first match, strings dies of SIGPIPE, the pipeline "fails"
+  # nondeterministically.  >/dev/null keeps grep reading the whole stream.
+  for sym in pickFile createFile; do
+    strings -a "$bin" | grep -x "$sym" >/dev/null || missing="$missing $sym"
+  done
+  if [ -n "$missing" ]; then
+    fail "built app has no native bridge (missing:$missing).
+  Import ROM would fall back to copy-into-Files instead of opening the picker.
+  mobile/ios/patch_love_src.py did not take. Re-run:
+    scripts/build_ios.sh --fetch && scripts/build_ios.sh"
+  fi
+  say "native bridge present (pickFile, createFile)"
+}
+
 run_xcodebuild() {
   local config sdk destination
   if $RELEASE; then
@@ -345,6 +482,15 @@ run_xcodebuild() {
 
   # Prefer -target + SYMROOT over -derivedDataPath: modern Xcode requires
   # -scheme whenever -derivedDataPath is set, and love-ios ships no shared schemes.
+  # Always stamp both: the overlay plist expands $(MARKETING_VERSION) /
+  # $(CURRENT_PROJECT_VERSION), and love-ios has no project-level defaults.
+  local marketing_version="$LOVE_VERSION"
+  local project_version="1"
+  if [ -n "$VERSION" ]; then
+    marketing_version="$VERSION"
+    project_version="$VERSION_CODE"
+  fi
+
   local args=(
     -project "$PROJECT"
     -target love-ios
@@ -354,7 +500,8 @@ run_xcodebuild() {
     SYMROOT="$BUILD_DIR/Build/Products"
     OBJROOT="$BUILD_DIR/Build/Intermediates"
     PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID"
-    MARKETING_VERSION="$LOVE_VERSION"
+    MARKETING_VERSION="$marketing_version"
+    CURRENT_PROJECT_VERSION="$project_version"
     ONLY_ACTIVE_ARCH=NO
   )
 
@@ -422,11 +569,17 @@ run_xcodebuild() {
     cp "$LOVE_FILE" "$app/game.love"
   fi
 
+  verify_native_bridge "$app"
+
   local dist_dir="$DIST/${config}-${sdk}"
   rm -rf "$dist_dir"
   mkdir -p "$dist_dir"
   cp -R "$app" "$dist_dir/$APP_NAME.app"
   say "copied to $dist_dir/$APP_NAME.app"
+
+  if $DEVICE; then
+    package_ipa "$dist_dir/$APP_NAME.app"
+  fi
 
   say "iOS app: $app"
   say "bundle id: $BUNDLE_ID  display: $DISPLAY_NAME"
@@ -439,6 +592,20 @@ run_xcodebuild() {
   else
     say "simulator tip: xcrun simctl install booted \"$app\""
   fi
+}
+
+# Pack Payload/<app>.app into dist/ios/gen1recomp.ipa for release / sideload tools.
+package_ipa() {
+  local app="$1"
+  local ipa="$DIST/$APP_NAME.ipa"
+  local tmp
+  tmp="$(mktemp -d "$DIST/ipa.XXXXXX")"
+  mkdir -p "$tmp/Payload"
+  cp -R "$app" "$tmp/Payload/$(basename "$app")"
+  rm -f "$ipa"
+  (cd "$tmp" && zip -q -r "$ipa" Payload)
+  rm -rf "$tmp"
+  say "ipa: $ipa ($(du -h "$ipa" | cut -f1))"
 }
 
 # ------------------------------------------------------------ device install
@@ -475,6 +642,7 @@ install_to_device() {
 apply_ios_branding
 say "applying iOS native bridge patches (picker/Files support)"
 python3 "$IOS_DIR/patch_love_src.py" || fail "patch_love_src.py failed"
+ensure_manifests
 pack_game_love
 ensure_game_love_in_xcode
 

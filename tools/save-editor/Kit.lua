@@ -24,6 +24,34 @@ Kit.scale = 1
 
 local G = love and love.graphics or nil
 local edits = {}          -- queued textinput / backspace since the last frame
+local kbField = nil       -- id of the field the OS soft keyboard is raised for
+
+-- Mobile LOVE only delivers love.textinput while setTextInput(true) is
+-- active, and that call is what raises the Android/iOS soft keyboard; the
+-- rect keeps the focused field visible above it.  Desktop has text input on
+-- by default and the launcher hosting this editor depends on that -- nothing
+-- in src/import/RomImporter.lua (slot rename #205, ROM finder, mod index
+-- prompt) ever enables it -- so the editor only ever raises there and never
+-- lowers, since setTextInput is global SDL state, not per-widget (#529).
+local function mobile()
+  local osName = love and love.system and love.system.getOS
+    and love.system.getOS()
+  return osName == "Android" or osName == "iOS"
+end
+
+local function syncSoftKeyboard(id, x, y, w, h)
+  if not (love and love.keyboard and love.keyboard.setTextInput) then return end
+  if id then
+    if kbField ~= id then
+      kbField = id
+      love.keyboard.setTextInput(true, math.floor(x), math.floor(y),
+        math.ceil(w), math.ceil(h))
+    end
+  elseif kbField then
+    kbField = nil
+    if mobile() then love.keyboard.setTextInput(false) end
+  end
+end
 
 local function canPrintf()
   return G and type(G.printf) == "function"
@@ -81,7 +109,10 @@ function Kit.keypressed(key)
   return false
 end
 
-function Kit.blur() Kit.focus = nil end
+function Kit.blur()
+  Kit.focus = nil
+  syncSoftKeyboard(nil)  -- the soft keyboard follows focus down too (#529)
+end
 
 -- ------------------------------------------------------------- hit testing
 function Kit.hit(x, y, w, h)
@@ -319,11 +350,13 @@ function Kit.textfield(id, x, y, w, h, value, placeholder)
   if Kit.press(x, y, w, h) then Kit.focus = id end
   local focused = (Kit.focus == id)
   if focused then
+    -- raise (or hand off) the soft keyboard while this field owns focus (#529)
+    syncSoftKeyboard(id, x, y, w, h)
     for _, e in ipairs(edits) do
       if e == "\b" then
         value = value:sub(1, -2)
       elseif e == "\r" then
-        Kit.focus = nil
+        Kit.blur()  -- commit/cancel also lowers the soft keyboard (#529)
         focused = false
       else
         value = value .. e

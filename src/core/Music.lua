@@ -23,6 +23,13 @@ local volumeScale = 1
 local FILTER_HIGHGAIN = { 0.4, 0.16, 0.064 }
 local filterLevel = 0
 
+-- Forward-declared here so applyVolume (below) closes over the real playback
+-- state rather than a nil global: the table literal is assigned further down,
+-- but a `local state = {}` there would leave every reference above it bound
+-- to the global `state`.  Before this, registering the `music.volume` mod
+-- hook crashed applyVolume on `state.current` (a nil index).
+local state
+
 local function applyVolume(src)
   if not src then return end
   local vol = VOLUME * volumeScale
@@ -63,7 +70,7 @@ local function applyFilter(src)
   end
 end
 
-local state = {
+state = {
   current = nil,      -- song label
   chip = false,       -- the playing song is a synthesized channel program
   source = nil,       -- currently playing source

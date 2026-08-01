@@ -214,7 +214,7 @@ function VERBS.give(self, rest)
     end
   elseif game.data.items and game.data.items[id] then
     local n = tonumber(count) or 1
-    if require("src.inventory.Bag").add(save, id, n) then
+    if require("src.inventory.Bag").add(save, id, n, game.data) then
       self:print(("%s x%d added"):format(id, n))
     else
       self:print("bag full")

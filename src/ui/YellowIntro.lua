@@ -148,6 +148,37 @@ local SPEED_BARS = {
   { 0xE0, 0x80, 4 }, { 0xF0, 0x90, 2 },
 }
 
+-- PlayIntroScene's .loop (pokeyellow engine/movie/intro_yellow.asm) ends
+-- every iteration with its own `call DelayFrame`, so one scene handler costs
+-- one frame plus whatever DelayFrame calls it makes itself.  The port runs a
+-- handler inside a single update() tick, so every one of those internal
+-- DelayFrame calls has to be spent explicitly or the movie runs short of
+-- hardware.  Three places owe frames:
+--
+--   SETUP_SCENE_DELAY  scenes 2/4/6/8/10/12 open with
+--                      YellowIntro_BlankPalsDelay2AndDisableLCD: rBGP/rOBP0/
+--                      rOBP1 to $00 (color 0 in every shade -- the lightest,
+--                      white on DMG), two DelayFrame calls, then DisableLCD.
+--                      Two internal plus the loop's own is a 3-frame
+--                      iteration, after which the next wait scene takes its
+--                      first timer decrement.  Func_f9e9a restores rBGP $e4
+--                      at the end of the same handler.
+--   HEAD_FRAMES        PlayIntroScene spends a DelayFrame between
+--                      InitYellowIntroGFXAndMusic (which ends in PlayMusic)
+--                      and the first .loop pass, and YellowIntroScene0 then
+--                      owns a whole iteration of its own.
+--   EXIT_FRAMES        .go_to_title_screen blanks the palettes and spends
+--                      four DelayFrame calls clearing the tilemap and OAM
+--                      before the title screen is built.
+--
+-- These restore the movie's real elapsed length; they do NOT lengthen the
+-- intro song.  title.asm's StopAllMusic before MUSIC_TITLE_SCREEN is
+-- unconditional (only PikachuCry1 is waited on), so hardware cuts
+-- Music_YellowIntro off mid-phrase too (#523).
+local SETUP_SCENE_DELAY = 3
+local HEAD_FRAMES = 2
+local EXIT_FRAMES = 4
+
 -- scene-6 sine (YellowIntro_Copy8BitSineWave.SineWave), signed SCY deltas
 local WAVE = { 0, 0, 1, 2, 2, 3, 3, 3, 4, 3, 3, 3, 2, 2, 1, 0,
                0, 0, -1, -2, -2, -3, -3, -3, -4, -3, -3, -3, -2, -2, -1, 0 }
@@ -208,6 +239,8 @@ function YellowIntro.new(game, onDone)
   self.palName = "MEWMON" -- PalPacket_Generic
   self.objects = {}
   self.cloudFrame = 0
+  self.pendingThen = nil  -- what enterDelay runs once pendingDelay hits 0 (#523)
+  self.pendingDelay = 0
 
   self.atlas1 = tryImage("assets/generated/intro/yellow_intro_1.png")
   self.atlas2 = tryImage("assets/generated/intro/yellow_intro_2.png")
@@ -559,6 +592,24 @@ function YellowIntro:startScene(scene)
   end
 end
 
+-- Spend `frames` real frames, then run fn: the port's stand-in for the
+-- DelayFrame calls a pokeyellow scene handler makes inside its own
+-- PlayIntroScene .loop iteration (#523).  fn may be nil to just burn time.
+function YellowIntro:enterDelay(frames, fn)
+  self.pendingDelay = frames
+  self.pendingThen = fn
+end
+
+-- YellowIntro_BlankPalsDelay2AndDisableLCD blanks the palettes for the
+-- delay; Func_f9e9a puts rBGP back to $e4 at the tail of the same handler.
+function YellowIntro:enterSetupScene(scene)
+  self.bgp = 0x00
+  self:enterDelay(SETUP_SCENE_DELAY, function()
+    self.bgp = 0xE4
+    self:startScene(scene)
+  end)
+end
+
 function YellowIntro:enter()
   if self.pre then return end -- pre-roll first; beginScenes takes over
   self:beginScenes()
@@ -571,7 +622,11 @@ function YellowIntro:beginScenes()
   local song = songs and (songs.Music_YellowIntro and "Music_YellowIntro"
                           or songs.Music_IntroBattle and "Music_IntroBattle")
   if song then pcall(Music.play, data, song, false) end
-  self:startScene(0)
+  -- HEAD_FRAMES: the DelayFrame between PlayMusic and the first .loop pass
+  -- plus YellowIntroScene0's own iteration.  new() already laid down the
+  -- Func_f9e5f letterbox that InitYellowIntroGFXAndMusic writes, so these
+  -- frames show what hardware shows: the letterbox with no pika yet.
+  self:enterDelay(HEAD_FRAMES, function() self:startScene(0) end)
 end
 
 -- The movie's exit never stops the song (intro_yellow.asm PlayIntroScene
@@ -586,16 +641,44 @@ function YellowIntro:finish()
   if self.onDone then self.onDone() end
 end
 
+-- Both scene-loop exits (scene 17 running out, and the A/B/START skip) land
+-- on .go_to_title_screen, which calls YellowIntro_BlankPalettes and then
+-- spends EXIT_FRAMES DelayFrame calls clearing the tilemap and the OAM
+-- buffers before the title screen is built (#523).  The pre-roll's own skip
+-- is IntroMovie's path, not this one, and still finishes immediately.
+function YellowIntro:exitToTitle()
+  if self.finished or self.exiting then return end
+  self.exiting = true
+  self.bgp = 0x00
+  self:clearObjects()
+  self:enterDelay(EXIT_FRAMES, function() self:finish() end)
+end
+
 function YellowIntro:update(dt)
   if self.finished then return end
   if self.pre then
     self.pre:update(dt)
     return
   end
+  -- Ahead of the skip poll on purpose: JoypadLowSensitivity runs once at the
+  -- top of each .loop iteration, never inside a handler, so hardware is deaf
+  -- for the DelayFrame calls these ticks stand in for (#523).
+  if self.pendingDelay > 0 then
+    self.pendingDelay = self.pendingDelay - 1
+    if self.pendingDelay == 0 then
+      local fn = self.pendingThen
+      self.pendingThen = nil
+      if fn then fn() end
+    end
+    self:updateObjects()
+    if self.bgDirty then self:rebuildBgCanvas() end
+    return
+  end
+
   local input = self.game.input
   if input:wasPressed("a") or input:wasPressed("b")
      or input:wasPressed("start") then
-    self:finish()
+    self:exitToTitle()
     return
   end
 
@@ -605,7 +688,7 @@ function YellowIntro:update(dt)
       self.timer = self.timer - 1
     else
       self:clearObjects()
-      self:startScene(scene + 1)
+      self:enterSetupScene(scene + 1) -- BlankPalsDelay2AndDisableLCD (#523)
     end
   elseif scene == 3 then
     if self.timer > 0 then
@@ -613,7 +696,7 @@ function YellowIntro:update(dt)
       if self.scx ~= 0x68 then self.scx = self.scx + 4 end
     else
       self:clearObjects()
-      self:startScene(4)
+      self:enterSetupScene(4) -- BlankPalsDelay2AndDisableLCD (#523)
     end
   elseif scene == 7 then
     if self.timer > 0 then
@@ -625,7 +708,7 @@ function YellowIntro:update(dt)
       self.wave[255] = first
     else
       self:clearObjects()
-      self:startScene(8)
+      self:enterSetupScene(8) -- BlankPalsDelay2AndDisableLCD (#523)
     end
   elseif scene == 11 then
     if self.timer > 0 then
@@ -640,7 +723,7 @@ function YellowIntro:update(dt)
       self.timer = self.timer - 1
     else
       self:clearObjects()
-      self:startScene(12)
+      self:enterSetupScene(12) -- BlankPalsDelay2AndDisableLCD (#523)
     end
   elseif scene == 13 then
     if self.timer > 0 then
@@ -656,13 +739,17 @@ function YellowIntro:update(dt)
     if v then
       self.bgp = v
     else
-      -- .expired: everything despawns, letterbox returns, logo/face
-      -- object $7 appears for the strobe scene
+      -- .expired: everything despawns and the letterbox returns, then the
+      -- handler spends three DelayFrame calls with hAutoBGTransferEnabled
+      -- pushing that rebuilt tilemap to VRAM before it restores rBGP $e4
+      -- and spawns the logo/face object $7 for the strobe scene (#523).
       self:clearObjects()
       self:bgLetterbox()
-      self.bgp = 0xE4
-      self:spawn(7, 0x58, 0x58)
-      self:startScene(15)
+      self:enterDelay(3, function()
+        self.bgp = 0xE4
+        self:spawn(7, 0x58, 0x58)
+        self:startScene(15)
+      end)
     end
   elseif scene == 15 then
     if self.timer > 0 then
@@ -687,7 +774,7 @@ function YellowIntro:update(dt)
     if self.timer > 0 then
       self.timer = self.timer - 1
     else
-      self:finish()
+      self:exitToTitle()
       return
     end
   end

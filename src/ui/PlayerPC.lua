@@ -76,7 +76,7 @@ local function withdraw(game)
     onChoose = function(item, list)
       askQuantity(game, list, pc[item.value] or 1, item.value, function(qty)
         local Bag = require("src.inventory.Bag")
-        if not Bag.add(game.save, item.value, qty) then
+        if not Bag.add(game.save, item.value, qty, game.data) then
           list.footer = Strings("You can't carry\nany more items.")
           return
         end

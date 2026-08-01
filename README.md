@@ -50,25 +50,26 @@ supplied by the player.
 
 
 This project does not include a ROM, emulate the Game Boy, transpile assembly,
-or download a disassembly. A canonical US Poke Red or Blue ROM is the only
-game content input.
+or download a disassembly. A canonical US Poke Red, Blue, or Yellow ROM is the
+only game content input.
 
 The ROM is verified, used during import, and then released from memory. It is
 not copied into the cache. Later launches load the private generated cache and
-do not ask for the ROM again. Red and Blue can both be imported and played
-side by side.
+do not ask for the ROM again. Red, Blue, and Yellow can all be imported and
+played side by side.
 
 ## Quick Start
 
-Open the desktop app. On first boot, choose your legally obtained `.gb` file
-or drop it onto the window. Import takes a few seconds and the game starts
-automatically.
+Open the desktop app. On first boot, choose your legally obtained `.gb` /
+`.gbc` file or drop it onto the window. Import takes a few seconds and the
+game starts automatically.
 
-Only the canonical 1 MiB US Red and Blue ROMs are accepted. The importer
-verifies SHA-1 before creating any game data:
+Only the canonical 1 MiB US Red, Blue, and Yellow ROMs are accepted. The
+importer verifies SHA-1 before creating any game data:
 
 - Red: `ea9bcae617fdf159b045185467ae58b2e4a48b9a`
 - Blue: `d7037c83e1ae5b39bde3c30787637ba1d4c48ce2`
+- Yellow: `cc7d03262ebfaf2f06772c1a480c7d9d5f4a38e1`
 
 The packaged app contains neither a ROM nor pre-extracted game data. Music,
 sound effects, and cries are synthesized while the game runs from compact
@@ -107,6 +108,17 @@ supported out of the box.
 COLORS, TILT, ZOOM, GBC FX, and VOID FILL are also in the Options menu
 and persist in `options.lua`.
 
+### Low-end devices
+
+**OPTIONS → PERFORMANCE** scales the port's optional extras for weaker
+hardware: **HIGH** (everything on), **BALANCED** (no 3D tilt or GBC FX),
+**LOW** (also no survey zoom, FPS capped), or **AUTO** — the default, which
+picks a tier from your device (ARM handhelds → LOW, phones → BALANCED,
+normal desktops → HIGH, unchanged). It only scales presentation; the
+fixed-step game logic is identical on every tier, and a lower tier hides
+your tilt/zoom/GBC-FX preferences without forgetting them. Details in
+[docs/new-features.md](docs/new-features.md#performance-tier-low-end-devices).
+
 ### Rulesets
 
 **OPTIONS → RULESET** picks which set of Gen 1 battle behaviors to run.
@@ -141,11 +153,11 @@ famous bugs included:
 
 ## Running From Source
 
-Requires LÖVE 11.x. Place a Red or Blue ROM in the project folder and
+Requires LÖVE 11.x. Place a Red, Blue, or Yellow ROM in the project folder and
 double-click `Play-Mac.command` or `Play-Windows.bat`, or run:
 
 ```sh
-scripts/setup.sh --rom "/path/to/Poke Red.gb"   # or Poke Blue.gb
+scripts/setup.sh --rom "/path/to/Poke Red.gb"   # or Blue.gb / Yellow.gbc
 scripts/run.sh
 ```
 
@@ -175,6 +187,13 @@ even on a different computer, as long as the same folder comes along.
 - Deleting `portable.txt` switches back to the normal OS save directory; nothing
 already written to either location is touched automatically, so copy files
 over yourself if you want to carry existing progress across the switch.
+
+## iOS
+
+Every release ships `gen1recomp-*-ios.ipa`. Sideload it with AltStore
+(Windows or Mac) — see [docs/ios-sideload.md](docs/ios-sideload.md). To
+build and install from source on a Mac instead, see
+[docs/ios-install.md](docs/ios-install.md).
 
 ## Handhelds
 

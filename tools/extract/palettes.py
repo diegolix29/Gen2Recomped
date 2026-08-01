@@ -21,6 +21,16 @@ Output: data/palettes_gbc.lua (committed; not wiped by ROM import)
   same shape, plus per-species palette entries (BULBASAUR, …), plus a
   `world` table (below) for true overworld tile/roof/sprite coloring.
 
+Sources (pokeyellow / COLORS OG YELLOW):
+  data/sgb/sgb_palettes.asm   SuperPalettes + CGBBasePalettes (Yellow is
+                              CGB-enhanced; CGBBase is the authentic GBC look)
+  data/pokemon/palettes.asm   MonsterPalettes (same shape as Red)
+
+Output: data/palettes_yellow.lua (committed; not wiped by ROM import)
+  palettes[NAME] = SuperPalettes RGB
+  cgbBase[NAME]  = CGBBasePalettes RGB
+  pokemon[SPECIES] = NAME
+
 The HP bar fill is GB color 2 of PAL_GREENBAR / PAL_YELLOWBAR /
 PAL_REDBAR; the thresholds live in home/palettes.asm GetHealthBarColor
 (>= 27 pixels green, >= 10 yellow, else red).
@@ -536,6 +546,89 @@ def extract_gbc(pokered_gbc, out_path):
     return palettes, mon_pals
 
 
+def _parse_pokeyellow_palette_tables(path):
+    """Parse SuperPalettes and CGBBasePalettes from pokeyellow sgb_palettes.asm."""
+    tables = {"SuperPalettes": {}, "CGBBasePalettes": {}}
+    orders = {"SuperPalettes": [], "CGBBasePalettes": []}
+    current = None
+    for lineno, line in _read_raw(path):
+        s = line.strip()
+        if s.startswith("SuperPalettes:"):
+            current = "SuperPalettes"
+            continue
+        if s.startswith("CGBBasePalettes:"):
+            current = "CGBBasePalettes"
+            continue
+        if s.startswith("assert_table_length") or s.endswith(":") and " " not in s:
+            if s.endswith(":") and not s.startswith(("Super", "CGB")):
+                current = None
+            continue
+        if current is None:
+            continue
+        m = re.match(r"RGB\s+([\d,\s]+);\s*PAL_(\w+)", s)
+        if not m:
+            continue
+        nums = [n for n in re.split(r"[,\s]+", m.group(1).strip()) if n]
+        if len(nums) != 12:
+            util.die(f"{path}:{lineno}: expected 12 components, got {len(nums)}")
+        name = m.group(2)
+        tables[current][name] = _rgb8(nums)
+        orders[current].append(name)
+    return tables, orders
+
+
+def extract_yellow(pokeyellow, out_path):
+    """Extract Yellow SuperPalettes + CGBBasePalettes for COLORS=OG YELLOW."""
+    pal_path = os.path.join(pokeyellow, "data/sgb/sgb_palettes.asm")
+    mon_path = os.path.join(pokeyellow, "data/pokemon/palettes.asm")
+    tables, orders = _parse_pokeyellow_palette_tables(pal_path)
+    palettes = tables["SuperPalettes"]
+    cgb_base = tables["CGBBasePalettes"]
+    order = orders["SuperPalettes"]
+    if not palettes:
+        util.die(f"{pal_path}: SuperPalettes empty")
+    if not cgb_base:
+        util.die(f"{pal_path}: CGBBasePalettes empty")
+    if orders["CGBBasePalettes"] != order:
+        util.die(f"{pal_path}: CGBBasePalettes order differs from SuperPalettes")
+
+    mon_pals = {}
+    in_table = False
+    for lineno, line in _read_raw(mon_path):
+        s = line.strip()
+        if s.startswith("MonsterPalettes:"):
+            in_table = True
+            continue
+        if not in_table:
+            continue
+        m = re.match(r"db\s+PAL_(\w+)\s*;\s*(\w+)", s)
+        if not m:
+            continue
+        pal, species = m.group(1), m.group(2)
+        if pal not in palettes:
+            util.die(f"{mon_path}:{lineno}: unknown palette PAL_{pal}")
+        if species != "MISSINGNO":
+            mon_pals[species] = pal
+
+    if len(mon_pals) != 151:
+        util.die(f"MonsterPalettes parsed {len(mon_pals)} species (want 151)")
+    for name in ("MEWMON", "GREENBAR", "YELLOWBAR", "REDBAR", "ROUTE"):
+        if name not in cgb_base:
+            util.die(f"{pal_path}: CGBBase PAL_{name} missing")
+
+    util.write_lua(
+        out_path,
+        {"source": "pokeyellow data/sgb/sgb_palettes.asm + data/pokemon/palettes.asm",
+         "palettes": palettes,
+         "cgbBase": cgb_base,
+         "order": order,
+         "pokemon": mon_pals},
+        header="Pokemon Yellow palettes (COLORS=OG YELLOW): SuperPalettes +\n"
+               "CGBBasePalettes (authentic GBC look) as 4 8-bit RGB colors\n"
+               "per palette (color 0 first), plus MonsterPalettes.")
+    return palettes, cgb_base, mon_pals
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -548,11 +641,17 @@ def main(argv=None):
     p_gbc.add_argument("--pokered-gbc", required=True)
     p_gbc.add_argument("--out", default="data/palettes_gbc.lua")
 
+    p_yel = sub.add_parser("yellow", help="extract pokeyellow CGBBasePalettes")
+    p_yel.add_argument("--pokeyellow", required=True)
+    p_yel.add_argument("--out", default="data/palettes_yellow.lua")
+
     args = parser.parse_args(argv)
     if args.cmd == "vanilla":
         extract(args.pokered, args.out_dir)
-    else:
+    elif args.cmd == "gbc":
         extract_gbc(args.pokered_gbc, args.out)
+    else:
+        extract_yellow(args.pokeyellow, args.out)
     return 0
 
 

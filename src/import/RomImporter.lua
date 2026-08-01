@@ -1,12 +1,34 @@
 local GameVersion = require("src.core.GameVersion")
 local Strings = require("src.core.Strings")
 local HostShell = require("src.core.HostShell")
+local SafeArea = require("src.core.SafeArea")
 
 local RomImporter = {}
 RomImporter.__index = RomImporter
 
+-- love.system.pickFile is a NATIVE BRIDGE, not part of LÖVE: it exists only on
+-- builds that compiled one (Android, and iOS builds patched by
+-- mobile/ios/patch_love_src.py). A build without it must fall back to the
+-- copy-it-into-the-save-folder flow that every caller below already has --
+-- calling the nil field instead took the whole app down the moment the player
+-- pressed Import ROM:
+--
+--   src/import/RomImporter.lua: attempt to call field 'pickFile' (a nil value)
+--
+-- love.system.createFile was already guarded this way at its one call site;
+-- these three were not. Every caller here treats `false` as "no picker
+-- available" and shows its own notice, so a missing bridge now degrades to
+-- exactly the path a picker-less Android device has always taken.
+local function pickFile(...)
+  local fn = love.system.pickFile
+  if not fn then return false end
+  return fn(...) and true or false
+end
+
 -- Cache generation tag; bump to force every imported version to re-extract.
-local CACHE_FORMAT = "rom-cache-v8:"
+-- v9: Yellow audio re-anchored on pokeyellow.sym (#522) -- stale caches
+-- carry Red's bank $1f header, wave-table, and CryData offsets.
+local CACHE_FORMAT = "rom-cache-v9:"
 -- The completion marker is written under each version's cache prefix
 -- (rom-cache.complete for Red, blue/rom-cache.complete for Blue).
 local MARKER_PATH = "rom-cache.complete"
@@ -536,7 +558,9 @@ end
 -- forceImport (treat every version as not-yet-imported, so re-import is forced),
 -- onEditSave(version, slotId) (host handler for the Edit affordance on a save
 -- row -- main.lua opens the bundled save editor on that slot; when it is not
--- supplied the Edit label is not drawn at all).
+-- supplied the Edit label is not drawn at all),
+-- onEditTouchControls() (host handler for the Touch Controls button -- main.lua
+-- opens the layout editor; when it is not supplied the button is not drawn).
 function RomImporter.new(onComplete, opts)
   opts = opts or {}
   -- iOS rides the same mobile import flows as Android: the save-dir
@@ -551,12 +575,19 @@ function RomImporter.new(onComplete, opts)
     launcher = opts.launcher or false,
     forceImport = opts.forceImport or false,
     onEditSave = opts.onEditSave,
+    onEditTouchControls = opts.onEditTouchControls,
     android = android,
     ios = mobileOS == "iOS",
-    -- One startup poll pass: files dropped through the Files app are swept
-    -- into the save dir before Lua boots (GRBootstrap), but no love.focus
-    -- event necessarily follows, so consume them via the first poll tick.
-    pickPending = mobileOS == "iOS" or nil,
+    -- One startup poll pass on both mobiles.  iOS: files dropped through the
+    -- Files app are swept into the save dir before Lua boots (GRBootstrap) with
+    -- no love.focus event necessarily following.  Android: the SAF picker is a
+    -- separate activity, and Android is free to destroy GameActivity while it
+    -- is up (memory pressure, or "Don't keep activities"), so the app RESTARTS
+    -- instead of resuming and the love.focus(true) that would have consumed the
+    -- pick never arrives.  The file is sitting in the save dir either way, so
+    -- boot armed and let the first poll tick consume it, rather than making the
+    -- player tap Import a second time to trigger the scan by hand (#553).
+    pickPending = android or nil,
     -- Android drag: the launcher is handed no move events at all (main.lua
     -- forwards neither touchmoved nor mousemoved while it is up), and its mouse
     -- emulation is what "no reliable pointer polling" below refers to.
@@ -590,6 +621,15 @@ function RomImporter.new(onComplete, opts)
     -- modScroll is the list scroll offset (px, clamped in draw); modNotice is
     -- the last install/delete result { ok, text } shown as a line above the list.
     mods = nil, modScroll = 0, modNotice = nil,
+    -- FIND MODS panel state (src/mods/ModIndex.lua).  findLoaded gates the
+    -- first fetch the way `mods = nil` gates the mods list, but it is a flag
+    -- rather than a nil listing because "no index added" is a legitimate
+    -- loaded state and must not re-fetch every frame.  findSources is the
+    -- player's index list from options; findIndex is the merged listing;
+    -- _findThumbs caches one image per mod id (false = fetched and failed).
+    findLoaded = false, findSources = nil, findIndex = nil,
+    findScroll = 0, findNotice = nil, findQuery = "", findCategory = nil,
+    _findSearchFocus = false, _findThumbs = nil,
     -- Page scroll offset (px) for the column under the tab bar -- panel, updater
     -- banner and footer -- used only while that column is taller than the window
     -- (see draw()).  Clamped against content in draw, reset on a tab change.
@@ -940,24 +980,38 @@ end
 -- or a love DroppedFile.
 function RomImporter:_installMod(source)
   if self.workState == "working" then return end
-  local LauncherMods = require("src.mods.LauncherMods")
-  local ok, res = LauncherMods.installZip(source)
-  if ok then
-    self:_refreshMods()
+  self.tab = "mods"
+  local ok, installed, res = pcall(function()
+    local LauncherMods = require("src.mods.LauncherMods")
+    return LauncherMods.installZip(source)
+  end)
+  if not ok then
+    self.modNotice = { ok = false,
+      text = "Import failed: " .. tostring(installed) }
+    return
+  end
+  if installed then
+    pcall(self._refreshMods, self)
     self.modNotice = { ok = true, text = "Installed " .. tostring(res) }
   else
     self.modNotice = { ok = false, text = tostring(res) }
   end
-  self.tab = "mods"
 end
 
 -- Remove an installed mod from the save-dir mods/ tree and refresh the panel.
 function RomImporter:_deleteMod(id)
   if self.workState == "working" then return end
-  local LauncherMods = require("src.mods.LauncherMods")
-  local ok, res = LauncherMods.uninstall(id)
-  if ok then
-    self:_refreshMods()
+  local ok, deleted, res = pcall(function()
+    local LauncherMods = require("src.mods.LauncherMods")
+    return LauncherMods.uninstall(id)
+  end)
+  if not ok then
+    self.modNotice = { ok = false,
+      text = "Delete failed: " .. tostring(deleted) }
+    return
+  end
+  if deleted then
+    pcall(self._refreshMods, self)
     self.modNotice = { ok = true, text = "Deleted " .. tostring(id) }
   else
     self.modNotice = { ok = false, text = tostring(res) }
@@ -979,7 +1033,7 @@ function RomImporter:chooseMod()
         self.modNotice and self.modNotice.ok)
       return
     end
-    if not love.system.pickFile("mod") then
+    if not pickFile("mod") then
       self.modNotice = { ok = false,
         text = "Could not open the file picker. Copy a mod .zip via USB." }
     else
@@ -1043,7 +1097,7 @@ function RomImporter:chooseSaveImport(version)
       return
     end
     self.androidPendingVersion = version
-    if not love.system.pickFile("sav") then
+    if not pickFile("sav") then
       self.androidPendingVersion = nil
       self.saveNotice[version] = { ok = false,
         text = "Could not open the file picker. Copy a .sav via USB." }
@@ -1132,7 +1186,7 @@ function RomImporter:choose(version)
       self:startData(data, name)
     elseif consumePickedRomError(self) then
       return   -- a rejected pick explains itself instead of silently reopening
-    elseif not love.system.pickFile() then
+    elseif not pickFile() then
       -- Picker unavailable (API < 19, or no document-picker app installed):
       -- fall back to the USB folder-drop path as a friendly notice, not an
       -- error (which would read as a rejected file).
@@ -1178,13 +1232,30 @@ function RomImporter:choose(version)
   end
 end
 
--- iOS: the document picker is an in-process modal sheet, so unlike Android's
--- separate SAF activity there is no love.focus(true) when it dismisses.
--- While a pick is outstanding, poll the save dir for the bridge's delivered
--- file (picked_rom.gb / picked_mod.zip / picked_save.sav / export_done.flag)
--- and run the same refocus import path Android uses.
+-- Poll the save dir for a delivered pick (picked_rom.gb / picked_mod.zip /
+-- picked_save.sav / export_done.flag) and run the same import path a refocus
+-- runs.  Both mobiles need this, for different reasons:
+--
+--   iOS     the document picker is an in-process modal sheet, so there is no
+--           love.focus(true) when it dismisses -- nothing else would consume it.
+--   Android the SAF picker IS a separate activity and normally does refocus,
+--           but Android may destroy GameActivity while it is up, in which case
+--           the app restarts and that focus event never comes.  Polling makes
+--           the outcome the same either way instead of leaving the pick on disk
+--           for the next tap to find, which is what made users import twice and
+--           what made it look random: it depends on memory pressure (#553).
+--
+-- Deliberately NO timeout.  A version of this disarmed the poll after 120s so a
+-- cancelled picker would stop scanning, which was wrong on iOS: the picker there
+-- is an in-process modal sheet, so update() keeps running while it is open and
+-- the window burned down while the player was still browsing Files.  The pick
+-- then landed with nothing armed to consume it, and because every path here is
+-- silent on success the import just did not happen, with no error shown.  A
+-- half-second directory listing on a menu screen is far cheaper than an import
+-- that vanishes, so the poll stays armed until something is actually consumed.
+
 function RomImporter:_pollPickedFiles(dt)
-  if not (self.ios and self.pickPending) then return end
+  if not self.pickPending then return end
   if self.workState == "working" then return end
   self.pickTimer = (self.pickTimer or 0) + dt
   if self.pickTimer < 0.5 then return end
@@ -1244,17 +1315,17 @@ local PAD_DPAD_SPEED = 420
 
 function RomImporter:_activatePadCursor()
   if self._padCursorActive then return end
-  local w, h = love.graphics.getDimensions()
+  local ox, oy, w, h = SafeArea.rect()
   if not self._padInited then
-    self._padCursor.x = w * 0.5
-    self._padCursor.y = h * 0.45
+    self._padCursor.x = ox + w * 0.5
+    self._padCursor.y = oy + h * 0.45
     self._padInited = true
   end
   self._padCursorActive = true
 end
 
 function RomImporter:_cycleTab(delta)
-  local order = { "red", "blue", "yellow", "mods" }
+  local order = { "red", "blue", "yellow", "mods", "find" }
   local idx = 1
   for i, id in ipairs(order) do
     if id == self.tab then idx = i; break end
@@ -1263,6 +1334,7 @@ function RomImporter:_cycleTab(delta)
   self.tab = order[idx]
   self._slotPress = nil
   self._modPress = nil
+  self._findSearchFocus = false
 end
 
 function RomImporter:_updatePadCursor(dt)
@@ -1292,11 +1364,11 @@ function RomImporter:_updatePadCursor(dt)
     if mag > 1 then dx, dy = dx / mag, dy / mag end
     local speed = (math.abs(ax) > PAD_DEAD or math.abs(ay) > PAD_DEAD)
       and PAD_SPEED or PAD_DPAD_SPEED
-    local w, h = love.graphics.getDimensions()
+    local ox, oy, w, h = SafeArea.rect()
     local nx = self._padCursor.x + dx * speed * dt
     local ny = self._padCursor.y + dy * speed * dt
-    self._padCursor.x = math.max(0, math.min(w, nx))
-    self._padCursor.y = math.max(0, math.min(h, ny))
+    self._padCursor.x = math.max(ox, math.min(ox + w, nx))
+    self._padCursor.y = math.max(oy, math.min(oy + h, ny))
   end
 
   -- Right stick scrolls the active list (save slots or mods), or the whole page
@@ -1313,6 +1385,12 @@ function RomImporter:_updatePadCursor(dt)
       if maxS > 0 then
         local next = (self.modScroll or 0) + step
         self.modScroll = math.max(0, math.min(maxS, next))
+      end
+    elseif self.tab == "find" then
+      local maxS = self._findMax or 0
+      if maxS > 0 then
+        local next = (self.findScroll or 0) + step
+        self.findScroll = math.max(0, math.min(maxS, next))
       end
     elseif GameVersion.VERSIONS[self.tab] then
       local maxS = (self._slotMax and self._slotMax[self.tab]) or 0
@@ -1540,13 +1618,15 @@ end
 
 -- Clip text to a pixel width, appending an ellipsis when it overflows (the UI
 -- font has no built-in truncation).  Used for save-slot names / meta lines.
+-- Drops whole UTF-8 codepoints (never mid-byte) so Font:getWidth cannot see
+-- a truncated multi-byte sequence and throw "UTF-8 decoding error".
 local function ellipsize(font, text, maxW)
   text = tostring(text or "")
   if maxW <= 0 or font:getWidth(text) <= maxW then return text end
   local ell = "..."
   local ew = font:getWidth(ell)
   while #text > 0 and font:getWidth(text) + ew > maxW do
-    text = text:sub(1, #text - 1)
+    text = utf8Back(text)
   end
   return text .. ell
 end
@@ -1640,15 +1720,36 @@ function RomImporter:_resetFrameRects()
   self.modRects = nil
   self.modDeleteRects = nil
   self.modImportRect = nil
+  -- Same rule as the toggles above, and it started to bite once FIND MODS gave
+  -- the mods tab a neighbour: these two were rebuilt by the mods panel but
+  -- never cleared, so switching tabs left the last mod row's Update / Versions
+  -- labels clickable over whatever the next tab drew there (#433's shape).
+  self.modUpdateRects = nil
+  self.modVersionsRects = nil
+  -- Rebuilt only by the FIND MODS panel.
+  self.findAddRect = nil
+  self.findRefreshRect = nil
+  self.findSearchRect = nil
+  self.findCatRects = nil
+  self.findInstallRects = nil
+  self.findDetailRects = nil
+  self.findRepoRects = nil
+  self.findSourceRemoveRects = nil
   -- Rebuilt only by the active game panel's SAVE FILES card; nil elsewhere so
   -- the mods tab cannot inherit last frame's save Import/Export/open-folder hits.
   self.saveImportRect = nil
   self.saveExportRect = nil
   self.saveFolderRect = nil
+  -- Rebuilt only by the active game panel; nil elsewhere so the mods tab
+  -- cannot inherit last frame's Touch Controls button.
+  self.touchControlsRect = nil
 end
 
 function RomImporter:draw()
-  local width, height = love.graphics.getDimensions()
+  -- Full window for immersive backdrop; safe rect for interactive chrome so
+  -- notch / Dynamic Island / home indicator / Android cutouts are respected.
+  local fullW, fullH = love.graphics.getDimensions()
+  local ox, oy, width, height = SafeArea.rect()
   local s = clamp(height / 768, 0.7, 1.6)
   local pulse = self.pulse
   self._s = s
@@ -1667,8 +1768,9 @@ function RomImporter:draw()
   self._anyHover = false
   self:_resetFrameRects()
 
-  -- Fonts + size-dependent scenery, rebuilt only when the window size changes.
-  local fontKey = ("%dx%d"):format(width, height)
+  -- Fonts + size-dependent scenery, rebuilt only when the window / safe
+  -- area changes (rotation, resize, inset changes).
+  local fontKey = ("%dx%d@%d,%d"):format(fullW, fullH, ox, oy)
   if self.fontKey ~= fontKey then
     self.fontKey = fontKey
     local function f(px) return love.graphics.newFont(math.max(8, math.floor(px + 0.5))) end
@@ -1692,10 +1794,10 @@ function RomImporter:draw()
     -- Background: a radial gradient (bright navy at top-centre -> near black).
     -- A triangle fan from the top-centre gives the radial falloff; the screen
     -- is cleared to the outer colour first so the corners it does not reach
-    -- match seamlessly.
+    -- match seamlessly.  Sized to the full window so unsafe edges stay filled.
     do
-      local cx, cy = width / 2, 0
-      local rx, ry = width * 1.3, height * 1.08
+      local cx, cy = fullW / 2, 0
+      local rx, ry = fullW * 1.3, fullH * 1.08
       local n = 72
       local verts = { { cx, cy, 0, 0,
         PAL.bgTop[1] / 255, PAL.bgTop[2] / 255, PAL.bgTop[3] / 255, 1 } }
@@ -1709,8 +1811,8 @@ function RomImporter:draw()
 
     -- CRT vignette: a gentle edge darkening, centred slightly above the middle.
     do
-      local cx, cy = width / 2, height * 0.45
-      local rx, ry = width * 0.78, height * 0.78
+      local cx, cy = fullW / 2, fullH * 0.45
+      local rx, ry = fullW * 0.78, fullH * 0.78
       local n = 72
       local verts = { { cx, cy, 0, 0, 0, 0, 0, 0 } }
       for i = 0, n do
@@ -1732,7 +1834,7 @@ function RomImporter:draw()
       self.scanlineImage:setWrap("repeat", "repeat")
       self.scanlineImage:setFilter("nearest", "nearest")
     end
-    self.scanlineQuad = love.graphics.newQuad(0, 0, width, height, 1, 3)
+    self.scanlineQuad = love.graphics.newQuad(0, 0, fullW, fullH, 1, 3)
   end
 
   -- Invert shader: the Boi's Club Games mark is dark ink; on this dark panel it
@@ -1758,21 +1860,23 @@ function RomImporter:draw()
     }
   ]])
 
-  -- background
+  -- background (full window — unsafe edges stay painted)
   col(PAL.bgBot)
-  love.graphics.rectangle("fill", 0, 0, width, height)
+  love.graphics.rectangle("fill", 0, 0, fullW, fullH)
   love.graphics.setColor(1, 1, 1, 1)
   love.graphics.draw(self.bgMesh)
 
   -- Centered content container (max ~1440 scaled units on very wide windows)
   -- with a responsive side gutter; every column below derives from these.
+  -- Origin is the safe-area top-left so chrome clears device insets.
   local appW = math.min(width, 1440 * s)
-  local appX = (width - appW) / 2
+  local appX = ox + (width - appW) / 2
   local padH = clamp(appW * 0.03, 12 * s, 26 * s)
   local third = appW / 3
 
   -- tricolor strip (Red | Blue | Yellow), 6px tall, with a soft downward bloom
   local stripH = math.max(4, 6 * s)
+  local stripY = oy
   local segs = {
     { PAL.red,  appX,             third },
     { PAL.blue, appX + third,     third },
@@ -1780,11 +1884,11 @@ function RomImporter:draw()
   }
   love.graphics.setBlendMode("add")
   for _, seg in ipairs(segs) do
-    fillGrad(seg[2], stripH, seg[3], stripH * 3.6, seg[1], seg[1], 0.30, 0.0)
+    fillGrad(seg[2], stripY + stripH, seg[3], stripH * 3.6, seg[1], seg[1], 0.30, 0.0)
   end
   love.graphics.setBlendMode("alpha")
   for _, seg in ipairs(segs) do
-    col(seg[1]); love.graphics.rectangle("fill", seg[2], 0, seg[3], stripH)
+    col(seg[1]); love.graphics.rectangle("fill", seg[2], stripY, seg[3], stripH)
   end
 
   -- Footer (Boi's Club Games logo + trust warning), measured first so the
@@ -1806,7 +1910,7 @@ function RomImporter:draw()
     math.min(330 * s, appW - 32 * s))
   local logoScale = math.min(logoTargetW / logoW, height * 0.15 / logoH)
   local logoDW, logoDH = logoW * logoScale, logoH * logoScale
-  local logoY = stripH + 14 * s
+  local logoY = stripY + stripH + 14 * s
 
   -- Tab bar: R/B/Y/divider/MODS chips (label + underline on the active one),
   -- with "N of 3 ready" right-aligned.
@@ -1836,7 +1940,7 @@ function RomImporter:draw()
   local bannerBand = bannerActive and (bannerH + 20 * s) or 6 * s
   local cX = appX + padH
   local cW = appW - 2 * padH
-  local contentBottom = height - footerH - bannerBand
+  local contentBottom = oy + height - footerH - bannerBand
   local cH = math.max(0, contentBottom - contentTop)
 
   -- Page scroll.  Everything under the tab bar -- panel, updater banner and
@@ -1847,14 +1951,14 @@ function RomImporter:draw()
   -- the previous frame's measurement, the same one-frame settle the slot and
   -- mod lists already rely on.  While the page fits, `paged` is false and every
   -- measurement below is what it always was.
-  local viewportH = math.max(0, height - contentTop)
+  local viewportH = math.max(0, oy + height - contentTop)
   self._panelNaturalH = self._panelNaturalH or {}
   local naturalH = (self._panelNaturalH[self.tab] or 0) + bannerBand + footerH
   local paged, pageScroll, maxPage =
     RomImporter.pageScrollFor(naturalH, viewportH, self.pageScroll)
   self.pageScroll, self._pageMax = pageScroll, maxPage
   -- read by the hit tests; a scrolled control is live only inside the viewport
-  pageBand = paged and { contentTop, height } or nil
+  pageBand = paged and { contentTop, oy + height } or nil
 
   -- tab bar (rebuilds self.tabRects).  Pinned: it is the launcher's navigation,
   -- and it sits above the scrolling viewport.
@@ -1870,6 +1974,8 @@ function RomImporter:draw()
   local panelH
   if self.tab == "mods" then
     panelH = self:_drawModsPanel(cX, panelY, cW, cH, paged)
+  elseif self.tab == "find" then
+    panelH = self:_drawFindPanel(cX, panelY, cW, cH, paged)
   else
     panelH = self:_drawGamePanel(self.tab, cX, panelY, cW, cH, paged)
   end
@@ -2023,10 +2129,10 @@ function RomImporter:draw()
 
   -- logo, over the split, with a gentle bob + gold glow + sweeping shine
   local bob = math.sin(pulse * (2 * math.pi / 4)) * 6 * s
-  local lx, ly = (width - logoDW) / 2, logoY + bob
+  local lx, ly = ox + (width - logoDW) / 2, logoY + bob
   love.graphics.setBlendMode("add")
   love.graphics.setColor(1, 0.85, 0.2, 0.16 + 0.12 * (0.5 + 0.5 * math.sin(pulse * 1.6)))
-  love.graphics.draw(self.logo, (width - logoDW * 1.05) / 2, ly - logoDH * 0.025, 0,
+  love.graphics.draw(self.logo, ox + (width - logoDW * 1.05) / 2, ly - logoDH * 0.025, 0,
     logoScale * 1.05, logoScale * 1.05)
   love.graphics.setBlendMode("alpha")
   local shineW = 0.16
@@ -2059,11 +2165,11 @@ function RomImporter:draw()
   -- save-slot rename modal (#205), drawn over everything
   if self._rename then
     col(PAL.bgBot, 0.72)
-    love.graphics.rectangle("fill", 0, 0, width, height)
+    love.graphics.rectangle("fill", 0, 0, fullW, fullH)
     local dw = math.min(appW - 32 * s, 420 * s)
     local dh = 128 * s
     local dx = appX + (appW - dw) / 2
-    local dy = (height - dh) / 2
+    local dy = oy + (height - dh) / 2
     local rr = 12 * s
     neonGlow(dx, dy, dw, dh, rr, PAL.green, 0.4)
     fillGradRounded(dx, dy, dw, dh, rr, PAL.slotBg, PAL.slotBg, 0.85, 0.85)
@@ -2098,6 +2204,331 @@ function RomImporter:draw()
     col(PAL.detail)
     printfB(Strings("Enter to save - Esc to cancel - empty clears"),
       dx + 16 * s, dy + dh - 30 * s, dw - 32 * s, "left")
+  end
+
+  -- "Add an index" prompt: the same field as the rename modal, sized for a URL
+  -- and with the caret pinned to the tail so a long one stays readable while
+  -- it is typed.
+  if self._indexPrompt then
+    col(PAL.bgBot, 0.72)
+    love.graphics.rectangle("fill", 0, 0, fullW, fullH)
+    local dw = math.min(appW - 32 * s, 520 * s)
+    local dh = 168 * s
+    local dx = appX + (appW - dw) / 2
+    local dy = oy + (height - dh) / 2
+    local rr = 12 * s
+    neonGlow(dx, dy, dw, dh, rr, PAL.modDot, 0.4)
+    fillGradRounded(dx, dy, dw, dh, rr, PAL.slotBg, PAL.slotBg, 0.9, 0.9)
+    love.graphics.setLineWidth(math.max(1, 1.2 * s))
+    col(PAL.modDot, 0.55)
+    love.graphics.rectangle("line", dx, dy, dw, dh, rr, rr)
+
+    love.graphics.setFont(self.slotNameFont)
+    col(PAL.white)
+    love.graphics.print(Strings("Add a mod index"), dx + 16 * s, dy + 14 * s)
+    love.graphics.setFont(self.hintFont)
+    col(PAL.detail)
+    love.graphics.printf(
+      Strings("Paste the index URL, or its owner/repo."),
+      dx + 16 * s, dy + 40 * s, dw - 32 * s, "left")
+
+    local fx, fy = dx + 16 * s, dy + 66 * s
+    local fw, fh = dw - 32 * s, 32 * s
+    col(PAL.bgBot, 0.9)
+    love.graphics.rectangle("fill", fx, fy, fw, fh, 8 * s, 8 * s)
+    love.graphics.setLineWidth(math.max(1, s))
+    col(PAL.cardBorder, 0.45)
+    love.graphics.rectangle("line", fx, fy, fw, fh, 8 * s, 8 * s)
+    love.graphics.setFont(self.hintFont)
+    col(PAL.heading)
+    -- keep the END of the URL visible: the interesting half is the tail
+    local text = self._indexPrompt.text or ""
+    local maxW = fw - 20 * s
+    local shown = text
+    while #shown > 0 and self.hintFont:getWidth(shown) > maxW do
+      shown = shown:sub(2)
+    end
+    love.graphics.print(shown, fx + 10 * s,
+      fy + (fh - self.hintFont:getHeight()) / 2)
+    if (self.pulse * 2 % 1) < 0.5 then
+      col(PAL.modDot)
+      love.graphics.rectangle("fill",
+        fx + 10 * s + self.hintFont:getWidth(shown) + 2 * s,
+        fy + 7 * s, math.max(1, 1.5 * s), fh - 14 * s)
+    end
+
+    love.graphics.setFont(self.hintFont)
+    col(PAL.warning)
+    printfB(Strings("Enter to add - Esc to cancel"),
+      dx + 16 * s, dy + dh - 32 * s, dw - 32 * s, "left")
+  end
+
+  -- Mod confirm / versions / release-notes / index-details overlays
+  if self._modConfirm or self._modVersions or self._modReleaseNotes
+      or self._findDetails then
+    col(PAL.bgBot, 0.72)
+    love.graphics.rectangle("fill", 0, 0, fullW, fullH)
+  end
+  if self._modConfirm then
+    local c = self._modConfirm
+    local dw = math.min(appW - 32 * s, 400 * s)
+    local lineH = self.hintFont:getHeight() + 4 * s
+    local dh = 36 * s + (#c.lines) * lineH + 56 * s
+    local dx = appX + (appW - dw) / 2
+    local dy = oy + (height - dh) / 2
+    local rr = 12 * s
+    fillGradRounded(dx, dy, dw, dh, rr, PAL.slotBg, PAL.slotBg, 0.92, 0.92)
+    love.graphics.setLineWidth(math.max(1, 1.2 * s))
+    col((c.kind == "update") and PAL.green or PAL.gold, 0.65)
+    love.graphics.rectangle("line", dx, dy, dw, dh, rr, rr)
+    love.graphics.setFont(self.slotNameFont)
+    col(PAL.white)
+    love.graphics.printf(c.title or "Confirm", dx + 16 * s, dy + 14 * s,
+      dw - 32 * s, "left")
+    love.graphics.setFont(self.hintFont)
+    col(PAL.detail)
+    local ty = dy + 42 * s
+    for _, line in ipairs(c.lines) do
+      love.graphics.printf(line, dx + 16 * s, ty, dw - 32 * s, "left")
+      ty = ty + lineH
+    end
+    local btnH = 34 * s
+    local btnW = (dw - 48 * s) / 2
+    local by = dy + dh - btnH - 14 * s
+    self._modConfirmYes = { x = dx + 16 * s, y = by, width = btnW, height = btnH }
+    self._modConfirmNo = { x = dx + dw - 16 * s - btnW, y = by,
+      width = btnW, height = btnH }
+    local yhot = self:_hover(self._modConfirmYes)
+    local nhot = self:_hover(self._modConfirmNo)
+    fillGradRounded(self._modConfirmYes.x, by, btnW, btnH, 8 * s,
+      PAL.playTop, PAL.playBot, yhot and 1 or 0.85, yhot and 1 or 0.85)
+    col(PAL.disabled, nhot and 0.55 or 0.35)
+    love.graphics.rectangle("fill", self._modConfirmNo.x, by, btnW, btnH, 8 * s, 8 * s)
+    love.graphics.setFont(self.saveBtnFont)
+    col(PAL.white)
+    printfB(c.yesLabel or "OK", self._modConfirmYes.x,
+      by + (btnH - self.saveBtnFont:getHeight()) / 2, btnW, "center")
+    col(PAL.detail)
+    printfB("Cancel", self._modConfirmNo.x, by + (btnH - self.saveBtnFont:getHeight()) / 2,
+      btnW, "center")
+  elseif self._modReleaseNotes then
+    local n = self._modReleaseNotes
+    local ModUpdate = require("src.mods.ModUpdate")
+    local dw = math.min(appW - 32 * s, 480 * s)
+    local dh = math.min(height - 48 * s, 360 * s)
+    local dx = appX + (appW - dw) / 2
+    local dy = oy + (height - dh) / 2
+    local rr = 12 * s
+    fillGradRounded(dx, dy, dw, dh, rr, PAL.slotBg, PAL.slotBg, 0.92, 0.92)
+    love.graphics.setLineWidth(math.max(1, 1.2 * s))
+    col(PAL.green, 0.5)
+    love.graphics.rectangle("line", dx, dy, dw, dh, rr, rr)
+    love.graphics.setFont(self.slotNameFont)
+    col(PAL.white)
+    love.graphics.printf("v" .. tostring(n.version) .. " notes",
+      dx + 16 * s, dy + 12 * s, dw - 32 * s, "left")
+    local body = ModUpdate.cleanBody(n.body or "", 0)
+    if body == "" then body = "(No release notes.)" end
+    love.graphics.setFont(self.hintFont)
+    col(PAL.detail)
+    local textTop = dy + 44 * s
+    local textH = dh - 44 * s - 52 * s
+    love.graphics.setScissor(math.floor(dx + 16 * s), math.floor(textTop),
+      math.ceil(dw - 32 * s), math.ceil(textH))
+    love.graphics.printf(body, dx + 16 * s, textTop - (n.scroll or 0),
+      dw - 32 * s, "left")
+    love.graphics.setScissor()
+    local closeW = self.hintFont:getWidth("Close") + 28 * s
+    local closeH = 30 * s
+    self._modReleaseNotesClose = {
+      x = dx + (dw - closeW) / 2, y = dy + dh - closeH - 12 * s,
+      width = closeW, height = closeH,
+    }
+    local chot = self:_hover(self._modReleaseNotesClose)
+    col(PAL.disabled, chot and 0.55 or 0.35)
+    love.graphics.rectangle("fill", self._modReleaseNotesClose.x,
+      self._modReleaseNotesClose.y, closeW, closeH, 8 * s, 8 * s)
+    col(PAL.detail)
+    printfB("Close", self._modReleaseNotesClose.x,
+      self._modReleaseNotesClose.y + (closeH - self.hintFont:getHeight()) / 2,
+      closeW, "center")
+  elseif self._findDetails then
+    -- The index's description markdown, stripped by the same cleanBody a
+    -- release changelog goes through.  There is no markdown renderer in the
+    -- engine and a listing does not warrant one: the point is to read what the
+    -- author wrote before installing, not to reproduce their formatting.
+    local d = self._findDetails
+    local ModUpdate = require("src.mods.ModUpdate")
+    local dw = math.min(appW - 32 * s, 520 * s)
+    local dh = math.min(height - 48 * s, 420 * s)
+    local dx = appX + (appW - dw) / 2
+    local dy = oy + (height - dh) / 2
+    local rr = 12 * s
+    fillGradRounded(dx, dy, dw, dh, rr, PAL.slotBg, PAL.slotBg, 0.94, 0.94)
+    love.graphics.setLineWidth(math.max(1, 1.2 * s))
+    col(PAL.modDot, 0.5)
+    love.graphics.rectangle("line", dx, dy, dw, dh, rr, rr)
+    love.graphics.setFont(self.slotNameFont)
+    col(PAL.white)
+    love.graphics.printf(ellipsize(self.slotNameFont, d.title, dw - 32 * s),
+      dx + 16 * s, dy + 12 * s, dw - 32 * s, "left")
+    local body = ModUpdate.cleanBody(d.body or "", 0)
+    if body == "" then body = "(No description.)" end
+    love.graphics.setFont(self.hintFont)
+    col(PAL.detail)
+    local textTop = dy + 44 * s
+    local textH = dh - 44 * s - 52 * s
+    local _, lines = self.hintFont:getWrap(body, dw - 32 * s)
+    local bodyH = #lines * self.hintFont:getHeight()
+    d.max = math.max(0, bodyH - textH)
+    d.scroll = clamp(d.scroll or 0, 0, d.max)
+    love.graphics.setScissor(math.floor(dx + 16 * s), math.floor(textTop),
+      math.ceil(dw - 32 * s), math.ceil(textH))
+    love.graphics.printf(body, dx + 16 * s, textTop - d.scroll,
+      dw - 32 * s, "left")
+    love.graphics.setScissor()
+    local closeW = self.hintFont:getWidth("Close") + 28 * s
+    local closeH = 30 * s
+    self._findDetailsClose = {
+      x = dx + (dw - closeW) / 2, y = dy + dh - closeH - 12 * s,
+      width = closeW, height = closeH,
+    }
+    local chot = self:_hover(self._findDetailsClose)
+    col(PAL.disabled, chot and 0.55 or 0.35)
+    love.graphics.rectangle("fill", self._findDetailsClose.x,
+      self._findDetailsClose.y, closeW, closeH, 8 * s, 8 * s)
+    col(PAL.detail)
+    printfB("Close", self._findDetailsClose.x,
+      self._findDetailsClose.y + (closeH - self.hintFont:getHeight()) / 2,
+      closeW, "center")
+  elseif self._modVersions then
+    local ModUpdate = require("src.mods.ModUpdate")
+    local v = self._modVersions
+    local dw = math.min(appW - 40 * s, 520 * s)
+    local pad = 16 * s
+    local headerH = 56 * s
+    local rowH = 52 * s
+    local footerH = 48 * s
+    local listN = math.min(6, math.max(0, #v.releases))
+    local listH = math.max(rowH, listN * rowH)
+    local dh = headerH + listH + footerH
+    dh = math.min(dh, height - 40 * s)
+    -- recompute how many rows fit under the clamped dialog height
+    local fitN = math.max(1, math.floor((dh - headerH - footerH) / rowH))
+    listN = math.min(listN, fitN)
+    listH = listN * rowH
+    dh = headerH + listH + footerH
+    local dx = appX + (appW - dw) / 2
+    local dy = oy + (height - dh) / 2
+    local rr = 12 * s
+    fillGradRounded(dx, dy, dw, dh, rr, PAL.slotBg, PAL.slotBg, 0.96, 0.96)
+    love.graphics.setLineWidth(math.max(1, 1.2 * s))
+    col(PAL.green, 0.5)
+    love.graphics.rectangle("line", dx, dy, dw, dh, rr, rr)
+
+    love.graphics.setFont(self.slotNameFont)
+    col(PAL.white)
+    love.graphics.printf("Other versions — " .. tostring(v.name),
+      dx + pad, dy + 10 * s, dw - pad * 2, "left")
+    love.graphics.setFont(self.hintFont)
+    local info = self:_modUpdateInfo(v.id)
+    local statusTxt = "Installed: v" .. tostring(v.current)
+    local statusCol = PAL.detail
+    if info and info.status == "available" then
+      statusTxt = statusTxt .. "  -  Update v" .. tostring(info.latest)
+      statusCol = PAL.playTop
+    elseif info and info.status == "current" then
+      statusTxt = statusTxt .. "  -  Up to date"
+      statusCol = PAL.playTop
+    end
+    col(statusCol)
+    love.graphics.printf(statusTxt, dx + pad, dy + 34 * s, dw - pad * 2, "left")
+
+    self._modVersionRects = {}
+    self._modVersionNotesRects = {}
+    local listTop = dy + headerH
+    local notesW = self.hintFont:getWidth("Read more") + 20 * s
+    local installW = self.hintFont:getWidth("Install") + 20 * s
+    local btnH = 26 * s
+    -- clip the list to the band above the footer so nothing can paint over Close
+    love.graphics.setScissor(math.floor(dx + 2 * s), math.floor(listTop),
+      math.ceil(dw - 4 * s), math.ceil(listH))
+    for i = 1, listN do
+      local rel = v.releases[i]
+      local ly = listTop + (i - 1) * rowH
+      local rect = { x = dx + 12 * s, y = ly + 2 * s, width = dw - 24 * s,
+        height = rowH - 6 * s, release = rel }
+      col(PAL.bgBot, 0.45)
+      love.graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height, 8 * s, 8 * s)
+      love.graphics.setLineWidth(1)
+      col(PAL.cardBorder, 0.35)
+      love.graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height, 8 * s, 8 * s)
+
+      love.graphics.setFont(self.hintFont)
+      local label = "v" .. rel.version
+      if rel.version == v.current then label = label .. " (installed)" end
+      if rel.prerelease then label = label .. " pre" end
+      col(rel.version == v.current and PAL.warning or PAL.white)
+      love.graphics.print(label, rect.x + 12 * s, rect.y + 6 * s)
+
+      -- one-line ellipsized preview only (never wrap changelog into the row)
+      local btnStackW = 0
+      local hasNotes = type(rel.body) == "string" and rel.body:match("%S")
+      local canInstall = rel.version ~= v.current
+      if hasNotes then btnStackW = btnStackW + notesW end
+      if canInstall then btnStackW = btnStackW + (hasNotes and 8 * s or 0) + installW end
+      local previewW = math.max(24 * s, rect.width - 24 * s - btnStackW - 12 * s)
+      local preview = ModUpdate.previewLine(rel.body or "", 90)
+      if preview ~= "" then
+        col(PAL.detail)
+        love.graphics.print(
+          ellipsize(self.hintFont, preview, previewW),
+          rect.x + 12 * s,
+          rect.y + 6 * s + self.hintFont:getHeight() + 2 * s)
+      end
+
+      local btnY = rect.y + (rect.height - btnH) / 2
+      local bx = rect.x + rect.width - 10 * s
+      if canInstall then
+        bx = bx - installW
+        local irect = self:_chipButton(bx, btnY, "Install", {
+          w = installW, h = btnH, id = v.id, kind = "accent",
+        })
+        irect.release = rel
+        self._modVersionRects[#self._modVersionRects + 1] = irect
+        bx = bx - 8 * s
+      end
+      if hasNotes then
+        bx = bx - notesW
+        local nrect = self:_chipButton(bx, btnY, "Read more", {
+          w = notesW, h = btnH, id = v.id, kind = "neutral",
+        })
+        nrect.release = rel
+        self._modVersionNotesRects[#self._modVersionNotesRects + 1] = nrect
+      end
+    end
+    love.graphics.setScissor()
+
+    -- opaque footer so list content can never bleed under Close
+    local footerY = dy + dh - footerH
+    col(PAL.slotBg, 1)
+    love.graphics.rectangle("fill", dx + 2 * s, footerY, dw - 4 * s, footerH - 2 * s)
+    local closeW = self.hintFont:getWidth("Close") + 32 * s
+    local closeH = 32 * s
+    self._modVersionsClose = {
+      x = dx + (dw - closeW) / 2,
+      y = footerY + (footerH - closeH) / 2 - 2 * s,
+      width = closeW, height = closeH,
+    }
+    local chot = self:_hover(self._modVersionsClose)
+    col(PAL.disabled, chot and 0.55 or 0.35)
+    love.graphics.rectangle("fill", self._modVersionsClose.x,
+      self._modVersionsClose.y, closeW, closeH, 8 * s, 8 * s)
+    love.graphics.setFont(self.hintFont)
+    col(PAL.detail)
+    printfB("Close", self._modVersionsClose.x,
+      self._modVersionsClose.y + (closeH - self.hintFont:getHeight()) / 2,
+      closeW, "center")
   end
 
   -- pointer cursor over any interactive element (desktop only)
@@ -2164,6 +2595,66 @@ end
 
 function RomImporter:mousepressed(x, y, button)
   if self._rename then return end -- the rename modal swallows all clicks
+  if self._indexPrompt then return end -- and so does the add-index prompt
+  -- Mod confirm / versions / release-notes modals swallow clicks too.
+  if self._modConfirm then
+    if button ~= 1 then return end
+    if inside(self._modConfirmYes, x, y) then
+      local c = self._modConfirm
+      self._modConfirm = nil
+      -- An index install carries its whole entry: the confirm is the only
+      -- place the compatibility warnings were shown, so the install must not
+      -- be reachable by any other route.
+      if c.indexEntry then
+        self:_findInstall(c.indexEntry)
+      elseif c.kind == "update" then
+        self:_confirmModUpdate(c.id, c.release)
+      else
+        self:_toggleMod(c.id, true)
+      end
+    elseif inside(self._modConfirmNo, x, y) then
+      self._modConfirm = nil
+    end
+    return
+  end
+  if self._modReleaseNotes then
+    if button ~= 1 then return end
+    if inside(self._modReleaseNotesClose, x, y) then
+      self._modReleaseNotes = nil
+    end
+    return
+  end
+  if self._findDetails then
+    if button ~= 1 then return end
+    if inside(self._findDetailsClose, x, y) then
+      self._findDetails = nil
+    end
+    return
+  end
+  if self._modVersions then
+    if button ~= 1 then return end
+    if inside(self._modVersionsClose, x, y) then
+      self._modVersions = nil
+      return
+    end
+    for _, r in ipairs(self._modVersionNotesRects or {}) do
+      if inside(r, x, y) and r.release then
+        self._modReleaseNotes = {
+          version = r.release.version,
+          body = r.release.body or "",
+          scroll = 0,
+        }
+        return
+      end
+    end
+    for _, r in ipairs(self._modVersionRects or {}) do
+      if inside(r, x, y) and r.release then
+        self:_installModVersion(self._modVersions.id, r.release)
+        return
+      end
+    end
+    return
+  end
   -- Whether a press can be ARMED and resolved on release, which needs a
   -- pollable pointer: always on desktop, on Android only where love.touch is.
   local armDrag = (not self.android) or self.touchPollable
@@ -2291,6 +2782,14 @@ function RomImporter:mousepressed(x, y, button)
         self._slotPress = nil   -- drop any half-started slot drag on tab change
         self._modPress = nil    -- and any half-started mod toggle press
       end
+      self.tab = t.id
+      self._slotPress = nil   -- drop any half-started slot drag on tab change
+      self._modPress = nil    -- and any half-started mod toggle press
+      self._pagePress = nil   -- and any half-started page pan
+      self._findSearchFocus = false  -- and the search caret, now off screen
+      -- Each tab is its own column of a different length; carrying one tab's
+      -- offset into another lands somewhere arbitrary.
+      self.pageScroll = 0
       return
     end
   end
@@ -2316,6 +2815,10 @@ function RomImporter:mousepressed(x, y, button)
     if self.saveFolderRect.dir then
       love.system.openURL(fileUrl(self.saveFolderRect.dir))
     end
+    return
+  end
+  if inside(self.touchControlsRect, x, y) then
+    if self.onEditTouchControls then self.onEditTouchControls() end
     return
   end
   -- SAVE SLOT rows / Edit / Delete.  The two labels are checked first so a tap
@@ -2374,6 +2877,18 @@ function RomImporter:mousepressed(x, y, button)
       return
     end
   end
+  for _, r in ipairs(self.modUpdateRects or {}) do
+    if inside(r, x, y) then
+      self:_modGithubAction(r.id, "update")
+      return
+    end
+  end
+  for _, r in ipairs(self.modVersionsRects or {}) do
+    if inside(r, x, y) then
+      self:_modGithubAction(r.id, "versions")
+      return
+    end
+  end
   for _, r in ipairs(self.modRects or {}) do
     if inside(r, x, y) then
       if not armDrag then
@@ -2385,6 +2900,47 @@ function RomImporter:mousepressed(x, y, button)
       return
     end
   end
+  -- FIND MODS panel.  Everything here dispatches on press: none of it is a
+  -- toggle that a drag-scroll could be mistaken for, and the search field wants
+  -- focus the instant it is touched.
+  if inside(self.findAddRect, x, y) then
+    self:_promptAddIndex(); return
+  end
+  if inside(self.findRefreshRect, x, y) then
+    self._findSearchFocus = false
+    self:_refreshFind(true)
+    return
+  end
+  if inside(self.findSearchRect, x, y) then
+    self._findSearchFocus = true; return
+  end
+  for _, r in ipairs(self.findSourceRemoveRects or {}) do
+    if inside(r, x, y) then self:_removeIndex(r.id); return end
+  end
+  for _, r in ipairs(self.findCatRects or {}) do
+    if inside(r, x, y) then
+      -- the "All" chip carries the empty id; every other chip toggles itself
+      -- off when it is already the filter, so a second tap is the way back
+      self.findCategory = (r.id ~= "" and self.findCategory ~= r.id) and r.id or nil
+      self.findScroll = 0
+      return
+    end
+  end
+  for _, r in ipairs(self.findDetailRects or {}) do
+    if inside(r, x, y) and r.entry then self:_findShowDetails(r.entry); return end
+  end
+  for _, r in ipairs(self.findRepoRects or {}) do
+    if inside(r, x, y) and r.entry and r.entry.repo then
+      love.system.openURL(r.entry.repo)
+      return
+    end
+  end
+  for _, r in ipairs(self.findInstallRects or {}) do
+    if inside(r, x, y) and r.entry then self:_findConfirmInstall(r.entry); return end
+  end
+  -- A press anywhere else on the tab drops the search caret, so the field does
+  -- not silently keep eating keystrokes once the player has moved on.
+  if self.tab == "find" then self._findSearchFocus = false end
   -- Nothing was hit.  On a scrolling page that is a press on empty background,
   -- which is the natural place to grab and pan from.
   if armDrag and (self._pageMax or 0) > 0 then
@@ -2400,6 +2956,46 @@ function RomImporter:keypressed(key)
       self:_commitRename()
     elseif key == "escape" then
       self._rename = nil
+    end
+    return
+  end
+  if self._indexPrompt then
+    if key == "backspace" then
+      self._indexPrompt.text = utf8Back(self._indexPrompt.text)
+    elseif key == "return" or key == "kpenter" then
+      self:_commitAddIndex()
+    elseif key == "escape" then
+      self._indexPrompt = nil
+    elseif key == "v" and (love.keyboard.isDown("lctrl", "rctrl", "lgui", "rgui")) then
+      -- an index URL is long and comes from a browser: typing it out by hand
+      -- is the difference between adding one and giving up
+      local ok, text = pcall(love.system.getClipboardText)
+      if ok and type(text) == "string" then
+        self._indexPrompt.text = self._indexPrompt.text .. text:gsub("%s", "")
+      end
+    end
+    return
+  end
+  if self._modConfirm or self._modVersions or self._modReleaseNotes
+      or self._findDetails then
+    if key == "escape" then
+      if self._findDetails then
+        self._findDetails = nil
+      elseif self._modReleaseNotes then
+        self._modReleaseNotes = nil
+      else
+        self._modConfirm = nil
+        self._modVersions = nil
+      end
+    end
+    return
+  end
+  if self._findSearchFocus then
+    if key == "backspace" then
+      self.findQuery = utf8Back(self.findQuery or "")
+      self.findScroll = 0
+    elseif key == "escape" or key == "return" or key == "kpenter" then
+      self._findSearchFocus = false
     end
     return
   end
@@ -2464,6 +3060,52 @@ function RomImporter:_glassyButton(x, y, w, h, label, font, enabled)
   return rect
 end
 
+-- Compact pill button for row actions (Edit / Delete / Update / Versions).
+-- kind: "neutral" (default), "accent" (green), "danger" (red), "dangerArmed"
+-- (filled confirm). Returns the hit rect; opts.id is copied onto it.
+function RomImporter:_chipButton(x, y, label, opts)
+  opts = opts or {}
+  local s = self._s
+  local font = opts.font or self.hintFont
+  local padX = opts.padX or (12 * s)
+  local h = opts.h or (font:getHeight() + 10 * s)
+  love.graphics.setFont(font)
+  local w = opts.w or (font:getWidth(label) + 2 * padX)
+  local r = opts.r or math.min(8 * s, h / 2)
+  local kind = opts.kind or "neutral"
+  local rect = { x = x, y = y, width = w, height = h, id = opts.id }
+  local hot = self:_hover(rect)
+
+  if kind == "dangerArmed" then
+    fillGradRounded(x, y, w, h, r, PAL.chooseTop, PAL.chooseBot,
+      hot and 1 or 0.92, hot and 1 or 0.92)
+    col(PAL.white)
+  elseif kind == "danger" then
+    col(PAL.chooseTop, hot and 0.28 or 0.14)
+    love.graphics.rectangle("fill", x, y, w, h, r, r)
+    love.graphics.setLineWidth(math.max(1, s))
+    col(PAL.chooseTop, hot and 0.95 or 0.7)
+    love.graphics.rectangle("line", x, y, w, h, r, r)
+    col(hot and PAL.white or PAL.chooseTop)
+  elseif kind == "accent" then
+    col(PAL.playTop, hot and 0.28 or 0.12)
+    love.graphics.rectangle("fill", x, y, w, h, r, r)
+    love.graphics.setLineWidth(math.max(1, s))
+    col(PAL.playTop, hot and 0.95 or 0.65)
+    love.graphics.rectangle("line", x, y, w, h, r, r)
+    col(hot and PAL.white or PAL.playTop)
+  else
+    fillGradRounded(x, y, w, h, r, PAL.white, PAL.white,
+      hot and 0.22 or 0.12, 0.04)
+    love.graphics.setLineWidth(math.max(1, s))
+    col(PAL.white, hot and 0.35 or 0.18)
+    love.graphics.rectangle("line", x, y, w, h, r, r)
+    col(PAL.white)
+  end
+  printfB(label, x, y + (h - font:getHeight()) / 2, w, "center")
+  return rect
+end
+
 -- The tall green Play button (ready) or a disabled placeholder.  Sets
 -- self.playButtonRect.
 function RomImporter:_playButton(x, y, w, h, gameName, ready, locked)
@@ -2521,6 +3163,11 @@ function RomImporter:_drawTabBar(x, y, w, h, chip)
       under = PAL.modDot, label = Strings("MODS") },
     { id = "sky",    sky = true,   top = PAL.chipSkyTop,  bot = PAL.chipSkyBot,
       under = PAL.skyDot, label = Strings("SKY") },
+    -- Browsing a community index sits beside the installed list rather than
+    -- inside it: one answers "what do I have", the other "what is out there",
+    -- and the second is empty until the player adds an index of their own.
+    { id = "find",   find = true,  top = PAL.chipModTop,  bot = PAL.chipModBot,
+      under = PAL.modDot, label = Strings("FIND MODS") },
   }
   local gap = 10 * s
   local r = 12 * s
@@ -2569,6 +3216,17 @@ function RomImporter:_drawTabBar(x, y, w, h, chip)
           cy + math.sin(angle) * (sunR + rayLen)
         )
       end
+    elseif t.find then
+      -- magnifier: a ring plus a handle running down-right out of it
+      local cr = chip * 0.20
+      local ccx = cursorX + chip / 2 - cr * 0.35
+      local ccy = chipY + chip / 2 - cr * 0.35
+      col(PAL.modDot)
+      love.graphics.setLineWidth(math.max(1.5, 2 * s))
+      love.graphics.circle("line", ccx, ccy, cr)
+      local d = cr * 0.72
+      love.graphics.line(ccx + d, ccy + d, ccx + d + cr * 0.9, ccy + d + cr * 0.9)
+      love.graphics.setLineWidth(1)
     else
       love.graphics.setFont(self.chipFont)
       col(t.ink)
@@ -2748,16 +3406,26 @@ function RomImporter:_drawGamePanel(version, x, y, w, h, paged)
   local sfFolderH = (sfNotice and sfNotice.dir) and (self.hintFont:getHeight() + 4 * s) or 0
   local saveFilesH = pad + labelH + 10 * s + sfBtnH + 6 * s + sfHintH + sfFolderH + pad
   local playH = math.max(50 * s, self.playFont:getHeight() + 30 * s)
+  -- Touch Controls editor entry (layout + permanent disable).  Drawn whenever
+  -- the host supplied onEditTouchControls; height reserved only then so a
+  -- scripted/headless importer without the callback stays compact.
+  local touchBtnH = self.onEditTouchControls
+    and math.max(38 * s, self.saveBtnFont:getHeight() + 20 * s) or 0
+  local touchGap = self.onEditTouchControls and (12 * s) or 0
 
   -- vertical placement of the left column
   local romY = bodyTop
   local saveFilesY = romY + romCardH + 12 * s
-  local leftNaturalH = romCardH + 12 * s + saveFilesH + 12 * s + playH
-  local playY
+  local leftNaturalH = romCardH + 12 * s + saveFilesH + touchGap + touchBtnH
+    + 12 * s + playH
+  local playY, touchY
   if twoCol and not paged then
-    playY = bodyTop + bodyH - playH        -- pinned to the column's bottom
+    -- Play pinned to the column bottom; Touch Controls sits just above it
+    playY = bodyTop + bodyH - playH
+    touchY = playY - touchGap - touchBtnH
   else
-    playY = saveFilesY + saveFilesH + 12 * s
+    touchY = saveFilesY + saveFilesH + touchGap
+    playY = touchY + touchBtnH + 12 * s
   end
 
   -- ROM card
@@ -2826,6 +3494,12 @@ function RomImporter:_drawGamePanel(version, x, y, w, h, paged)
     self.saveFolderRect = frect
   end
 
+  -- Touch Controls: open the drag-to-reposition / disable editor (#327).
+  if self.onEditTouchControls and touchBtnH > 0 then
+    self.touchControlsRect = self:_glassyButton(
+      leftX, touchY, colW, touchBtnH, "Touch Controls", self.saveBtnFont, true)
+  end
+
   -- Play button
   self:_playButton(leftX, playY, colW, playH, gameName, ready, locked)
 
@@ -2891,6 +3565,10 @@ end
 -- commits through SaveData.renameSlot (empty clears the label), Esc cancels.
 -- While it is up, keypressed/textinput/mousepressed all route here first.
 local MAX_SLOT_LABEL = 24
+-- Long enough for a Pages URL with a deep path; short enough that a paste of
+-- something that is not a URL at all cannot fill options.lua.
+local MAX_INDEX_URL = 200
+local MAX_FIND_QUERY = 48
 
 function RomImporter:_beginRename(version, id)
   local label
@@ -2910,6 +3588,18 @@ function RomImporter:_commitRename()
 end
 
 function RomImporter:textinput(text)
+  if self._indexPrompt then
+    -- URLs never contain a literal space, and a pasted one usually arrives
+    -- with a stray newline attached
+    self._indexPrompt.text =
+      utf8Cap(self._indexPrompt.text .. text:gsub("%s", ""), MAX_INDEX_URL)
+    return
+  end
+  if self._findSearchFocus then
+    self.findQuery = utf8Cap((self.findQuery or "") .. text, MAX_FIND_QUERY)
+    self.findScroll = 0
+    return
+  end
   if not self._rename then return end
   self._rename.text = utf8Cap(self._rename.text .. text, MAX_SLOT_LABEL)
 end
@@ -3009,6 +3699,13 @@ end
 -- content extent draw computed for that version.
 function RomImporter:wheelmoved(_, dy)
   local step = 48 * (self._s or 1)
+  -- An open modal owns the wheel: the page behind it is not what the player is
+  -- looking at, and a long description is the one thing here that needs it.
+  if self._findDetails then
+    self._findDetails.scroll = clamp(
+      (self._findDetails.scroll or 0) - dy * step, 0, self._findDetails.max or 0)
+    return
+  end
   -- An overflowing page scrolls as a whole; the panels' own lists are flattened
   -- in that mode, so there is never a second scroll region competing for this.
   local maxPage = self._pageMax or 0
@@ -3020,6 +3717,12 @@ function RomImporter:wheelmoved(_, dy)
     local maxS = self._modMax or 0
     if maxS <= 0 then return end
     self.modScroll = clamp((self.modScroll or 0) - dy * step, 0, maxS)
+    return
+  end
+  if self.tab == "find" then
+    local maxS = self._findMax or 0
+    if maxS <= 0 then return end
+    self.findScroll = clamp((self.findScroll or 0) - dy * step, 0, maxS)
     return
   end
   local version = self.panelVersion
@@ -3051,9 +3754,15 @@ function RomImporter:_drawSaveSlotPanel(version, x, y, w, h, paged)
   local nameH = self.slotNameFont:getHeight()
   local metaH = self.labelFont:getHeight()
   local rowPadV = 10 * s
-  local rowH = rowPadV * 2 + nameH + 4 * s + metaH
+  local chipBtnH = self.hintFont:getHeight() + 10 * s
+  -- LOADED sits top-right; Edit/Delete sit bottom-right — row must fit both
+  -- without stacking on the same y (chip buttons are taller than the old text).
+  local loadedH = self.warningFont:getHeight() + 6 * s
+  local rowH = math.max(rowPadV * 2 + nameH + 4 * s + metaH,
+    rowPadV + loadedH + 4 * s + chipBtnH + rowPadV)
   local rowGap = 8 * s
   local rr = 12 * s
+  local btnGap = 8 * s
   -- an empty registry shows a fixed-height dashed hint box instead of rows
   local totalH = (n > 0) and (n * rowH + (n - 1) * rowGap) or (96 * s)
   local naturalH = pad + labelH + 12 * s + totalH + 10 * s + newBtnH + pad
@@ -3120,48 +3829,41 @@ function RomImporter:_drawSaveSlotPanel(version, x, y, w, h, paged)
         col(selected and PAL.green or PAL.cardBorder, selected and 0.9 or 0.22)
         love.graphics.rectangle("line", rx, ry, rw, rowH, rr, rr)
 
-        -- Delete label (bottom-right); reserve its width so name/meta don't overlap
+        -- Edit + Delete chip buttons (bottom-right row). Delete arms on the
+        -- first click and asks "Sure?" on the second; width stays on "Delete"
+        -- so the row never reflows (#433).
         love.graphics.setFont(self.hintFont)
-        local delText = "Delete"
-        local delW = self.hintFont:getWidth(delText)
-        local delH = self.hintFont:getHeight()
-        local delX = rx + rw - 12 * s - delW
-        local delY = ry + rowH - rowPadV - delH
-        local drect = { x = delX - 6 * s, y = delY - 4 * s,
-          width = delW + 12 * s, height = delH + 8 * s, id = slot.id }
-        local dhot = self:_hover(drect)
-        -- Armed by a first click, the label asks before a second one commits;
-        -- the box stays sized to "Delete" so the row never reflows (#433).
         local darmed = armedDelete(self._confirmDelete, "slot", slot.id, version)
-        col((darmed or dhot) and PAL.red or PAL.warning)
-        love.graphics.printf(darmed and "Sure?" or delText, delX, delY, delW, "center")
+        local delLabel = darmed and "Sure?" or "Delete"
+        local delW = self.hintFont:getWidth("Delete") + 24 * s
+        local delX = rx + rw - 12 * s - delW
+        local delY = ry + rowH - rowPadV - chipBtnH
+        local drect = self:_chipButton(delX, delY, delLabel, {
+          w = delW, h = chipBtnH, id = slot.id,
+          kind = darmed and "dangerArmed" or "danger",
+        })
         local rightReserve = delW + 18 * s
 
-        -- Edit label, immediately left of Delete: opens the bundled save
-        -- editor (tools/save-editor) on this slot's file.  Only drawn when the
-        -- host supplied onEditSave and the slot actually holds a save -- there
-        -- is nothing to edit in an empty slot, and offering it would open the
-        -- editor on a new-game stub the player never asked for.
+        -- Edit, immediately left of Delete: opens the bundled save editor on
+        -- this slot's file. Only when the host supplied onEditSave and the
+        -- slot actually holds a save.
         local erect = nil
         if self.onEditSave and slot.exists then
-          local edText = "Edit"
-          local edW = self.hintFont:getWidth(edText)
-          local edX = delX - 14 * s - edW
-          erect = { x = edX - 6 * s, y = delY - 4 * s,
-            width = edW + 12 * s, height = delH + 8 * s, id = slot.id }
-          local ehot = self:_hover(erect)
-          col(ehot and PAL.blue or PAL.warning)
-          love.graphics.print(edText, edX, delY)
-          rightReserve = rightReserve + edW + 20 * s
+          local edW = self.hintFont:getWidth("Edit") + 24 * s
+          local edX = delX - btnGap - edW
+          erect = self:_chipButton(edX, delY, "Edit", {
+            w = edW, h = chipBtnH, id = slot.id, kind = "accent",
+          })
+          rightReserve = rightReserve + edW + btnGap + 6 * s
         end
 
-        -- LOADED pill (top-right of the active row), then reserve its width
+        -- LOADED pill top-right (above the button row, never over Delete)
         local pillW = 0
         if selected then
           love.graphics.setFont(self.warningFont)
           local pText = "LOADED"
           local pw = self.warningFont:getWidth(pText) + 14 * s
-          local ph = self.warningFont:getHeight() + 6 * s
+          local ph = loadedH
           local ppx = rx + rw - 12 * s - pw
           local ppy = ry + rowPadV
           col(PAL.green)
@@ -3273,22 +3975,239 @@ function RomImporter:_refreshMods()
     end
   end
   self.mods = LauncherMods.list() or {}
+  self:_syncModUpdateInfo(false)
 end
 
 function RomImporter:_ensureMods()
   if not self.mods then self:_refreshMods() end
 end
 
+-- Resolve cached (or freshly fetched) GitHub status for every mod that
+-- declares a github field. force=true bypasses the 6h cache on every repo.
+-- Results live on self.modUpdateInfo[id] = { status, latest, best, releases }.
+function RomImporter:_syncModUpdateInfo(force)
+  local ModUpdate = require("src.mods.ModUpdate")
+  self.modUpdateInfo = self.modUpdateInfo or {}
+  for _, m in ipairs(self.mods or {}) do
+    if m.github and m.github ~= "" then
+      local ok, packed = pcall(function()
+        local releases, err, meta = ModUpdate.fetchReleases(m.github, m.id, {
+          force = force == true,
+        })
+        local cached = ModUpdate.readCache(m.github)
+        return {
+          releases = releases,
+          err = err,
+          meta = meta,
+          checkedAt = (cached and cached.checkedAt) or os.time(),
+        }
+      end)
+      if not ok then
+        self.modUpdateInfo[m.id] = {
+          status = "error", err = tostring(packed),
+        }
+      elseif packed.releases then
+        local status, best = ModUpdate.statusFor(m.version, packed.releases)
+        self.modUpdateInfo[m.id] = {
+          status = status,
+          latest = best and best.version or nil,
+          best = best,
+          releases = packed.releases,
+          err = nil,
+          checkedAt = packed.checkedAt or os.time(),
+        }
+      else
+        self.modUpdateInfo[m.id] = {
+          status = "error",
+          latest = nil,
+          best = nil,
+          releases = nil,
+          err = tostring(packed.err),
+        }
+      end
+    else
+      self.modUpdateInfo[m.id] = nil
+    end
+  end
+end
+
+function RomImporter:_modUpdateInfo(id)
+  return self.modUpdateInfo and self.modUpdateInfo[id] or nil
+end
+
 -- Flip a mod's enabled flag (persisted via LauncherMods.setEnabled) and relist
 -- so the toggle, count, and every status chip reflect the new resolution.
-function RomImporter:_toggleMod(id)
+-- Enabling an experimental mod arms a confirm first.
+function RomImporter:_toggleMod(id, confirmed)
   local LauncherMods = require("src.mods.LauncherMods")
-  local cur = false
+  local cur, experimental = false, false
   for _, m in ipairs(self.mods or {}) do
-    if m.id == id then cur = m.enabled; break end
+    if m.id == id then
+      cur = m.enabled
+      experimental = m.experimental == true
+      break
+    end
   end
-  LauncherMods.setEnabled(id, not cur)
+  local want = not cur
+  if want and experimental and not confirmed then
+    self._modConfirm = {
+      kind = "experimental", id = id,
+      title = "Experimental mod",
+      yesLabel = "Enable",
+      lines = {
+        "This mod is marked experimental.",
+        "It may be unfinished or unstable.",
+        "Enable it anyway?",
+      },
+    }
+    return
+  end
+  self._modConfirm = nil
+  LauncherMods.setEnabled(id, want)
   self:_refreshMods()
+end
+
+-- GitHub Update / Check for updates / Versions. Soft-fails into modNotice.
+-- Update button: when a newer release is known, confirm then install; when
+-- already current, force-refresh the 6h cache and report / offer update.
+function RomImporter:_modGithubAction(id, action)
+  local ran, err = pcall(function()
+    local ModUpdate = require("src.mods.ModUpdate")
+    local row
+    for _, m in ipairs(self.mods or {}) do
+      if m.id == id then row = m; break end
+    end
+    if not row or not row.github then
+      self.modNotice = { ok = false, text = "This mod has no github field" }
+      return
+    end
+
+    if action == "versions" then
+      self.modNotice = { ok = true, text = "Loading versions..." }
+      local releases, fetchErr = ModUpdate.fetchReleases(row.github, row.id, {})
+      if not releases then
+        self.modNotice = { ok = false, text = tostring(fetchErr) }
+        return
+      end
+      local status, best = ModUpdate.statusFor(row.version, releases)
+      self.modUpdateInfo = self.modUpdateInfo or {}
+      self.modUpdateInfo[row.id] = {
+        status = status, latest = best and best.version, best = best,
+        releases = releases,
+      }
+      self._modVersions = {
+        id = row.id, name = row.name, current = row.version,
+        releases = releases, scroll = 0,
+      }
+      self.modNotice = nil
+      return
+    end
+
+    -- update / check
+    local info = self:_modUpdateInfo(id)
+    if info and info.status == "available" and info.best then
+      self._modConfirm = {
+        kind = "update", id = row.id, release = info.best,
+        title = "Update available",
+        yesLabel = "Update",
+        lines = {
+          "Update " .. row.name .. "?",
+          "Installed v" .. tostring(row.version),
+          "Latest v" .. tostring(info.best.version),
+        },
+      }
+      return
+    end
+
+    -- Manual check (or first click when status is current/unknown/error)
+    self.modNotice = { ok = true, text = "Checking " .. row.github .. "..." }
+    local releases, fetchErr = ModUpdate.fetchReleases(row.github, row.id, {
+      force = true,
+    })
+    if not releases then
+      self.modNotice = { ok = false, text = tostring(fetchErr) }
+      return
+    end
+    if #releases == 0 then
+      self.modNotice = { ok = false, text = "No .zip releases found" }
+      return
+    end
+    local status, best = ModUpdate.statusFor(row.version, releases)
+    self.modUpdateInfo = self.modUpdateInfo or {}
+    self.modUpdateInfo[row.id] = {
+      status = status, latest = best and best.version, best = best,
+      releases = releases, checkedAt = os.time(),
+    }
+    if status == "available" and best then
+      self.modNotice = { ok = true,
+        text = row.name .. ": new version available (v" .. best.version .. ")" }
+      self._modConfirm = {
+        kind = "update", id = row.id, release = best,
+        title = "Update available",
+        yesLabel = "Update",
+        lines = {
+          "Update " .. row.name .. "?",
+          "Installed v" .. tostring(row.version),
+          "Latest v" .. tostring(best.version),
+        },
+      }
+    else
+      self.modNotice = { ok = true,
+        text = row.name .. " is up to date (v"
+          .. tostring(row.version) .. ")" }
+    end
+  end)
+  if not ran then
+    self._modVersions = nil
+    self.modNotice = { ok = false,
+      text = "Update failed: " .. tostring(err) }
+  end
+end
+
+function RomImporter:_confirmModUpdate(modId, release)
+  local row
+  for _, m in ipairs(self.mods or {}) do
+    if m.id == modId then row = m; break end
+  end
+  local name = row and row.name or modId
+  self.modNotice = { ok = true,
+    text = "Downloading " .. tostring(release and release.version or "?") .. "..." }
+  local ran, err = pcall(function()
+    local LauncherMods = require("src.mods.LauncherMods")
+    local ok, res = LauncherMods.installFromRelease(modId, release)
+    if ok then
+      pcall(self._refreshMods, self)
+      self.modNotice = { ok = true,
+        text = "Updated " .. name .. " to " .. tostring(res) }
+    else
+      self.modNotice = { ok = false, text = tostring(res) }
+    end
+  end)
+  if not ran then
+    self.modNotice = { ok = false, text = "Update failed: " .. tostring(err) }
+  end
+end
+
+function RomImporter:_installModVersion(modId, release)
+  self._modVersions = nil
+  self._modReleaseNotes = nil
+  local version = release and release.version or "?"
+  self.modNotice = { ok = true, text = "Downloading " .. tostring(version) .. "..." }
+  local ran, err = pcall(function()
+    local LauncherMods = require("src.mods.LauncherMods")
+    local ok, res = LauncherMods.installFromRelease(modId, release)
+    if ok then
+      pcall(self._refreshMods, self)
+      self.modNotice = { ok = true,
+        text = "Installed " .. tostring(modId) .. " " .. tostring(res) }
+    else
+      self.modNotice = { ok = false, text = tostring(res) }
+    end
+  end)
+  if not ran then
+    self.modNotice = { ok = false,
+      text = "Install failed: " .. tostring(err) }
+  end
 end
 
 -- The status-chip label + colour for a mod row (deriveList's status verdict).
@@ -3363,18 +4282,21 @@ function RomImporter:_drawModsPanel(x, y, w, h, paged)
       x + 16 * s, top + boxH / 2 - self.hintFont:getHeight() / 2, w - 32 * s, "center")
     self.modRects = {}
     self.modDeleteRects = {}
+    self.modUpdateRects = {}
+    self.modVersionsRects = {}
     self._modMax = 0
     return (top - y) + boxH
   end
 
-  -- card metrics (design: rounded 14, padding 14x16; toggle 56x28; Delete under)
+  -- card metrics: status + toggle top-right; action chip-buttons in one row
+  -- under the body (Update / Versions / Delete when github is set).
   local padH, padV = 16 * s, 14 * s
   local cardGap, cardR = 10 * s, 14 * s
   local tw, th = 52 * s, 28 * s
   local innerW = w - 2 * padH
   local chipH = self.hintFont:getHeight() + 8 * s
-  local delH = self.hintFont:getHeight()
-  local clusterH = chipH + 6 * s + th + 6 * s + delH
+  local btnH = self.hintFont:getHeight() + 10 * s
+  local btnGap = 8 * s
 
   love.graphics.setFont(self.stateFont)
   local nameH = self.stateFont:getHeight()
@@ -3384,8 +4306,36 @@ function RomImporter:_drawModsPanel(x, y, w, h, paged)
   for i, m in ipairs(mods) do
     local chipText = modStatusChip(m.status)
     local chipW = self.hintFont:getWidth(chipText) + 20 * s
-    local delW = self.hintFont:getWidth("Delete")
-    local clusterW = math.max(chipW, tw, delW)
+    local delW = self.hintFont:getWidth("Delete") + 24 * s
+    local verW = self.hintFont:getWidth("Versions") + 24 * s
+    local hasGh = m.github and m.github ~= ""
+    local info = hasGh and self:_modUpdateInfo(m.id) or nil
+    local updLabel = "Check for updates"
+    local updateKind = "neutral"
+    -- checkLine: always on the mod row for github mods so the check result
+    -- is visible without relying on the top-of-panel notice.
+    local checkLine = nil
+    local checkLineColor = PAL.detail
+    if info and info.status == "available" then
+      updLabel = "Update"
+      updateKind = "accent"
+      checkLine = "Checked for updates - v" .. tostring(info.latest) .. " available"
+      checkLineColor = PAL.playTop
+    elseif info and info.status == "current" then
+      updLabel = "Check again"
+      checkLine = "Checked for updates - up to date"
+      checkLineColor = PAL.playTop
+    elseif info and info.status == "error" then
+      checkLine = "Checked for updates - failed"
+      checkLineColor = PAL.chooseTop
+    elseif hasGh then
+      checkLine = "Not checked for updates yet"
+      checkLineColor = PAL.warning
+    end
+    local updW = self.hintFont:getWidth(updLabel) + 24 * s
+    local btnRowW = delW
+    if hasGh then btnRowW = updW + btnGap + verW + btnGap + delW end
+    local clusterW = math.max(chipW, tw)
     local leftW = math.max(40 * s, innerW - clusterW - 14 * s)
     local descH = 0
     if m.description ~= "" then
@@ -3393,10 +4343,22 @@ function RomImporter:_drawModsPanel(x, y, w, h, paged)
       local _, dl = self.hintFont:getWrap(m.description, leftW)
       descH = math.max(1, #dl) * self.hintFont:getHeight()
     end
-    local contentH = padV * 2 + nameH + (descH > 0 and (6 * s + descH) or 0)
-    local cardH = math.max(contentH, padV * 2 + clusterH)
+    local clusterH = chipH + 6 * s + th
+    local metaH = self.hintFont:getHeight() + 2 * s
+    if checkLine then
+      metaH = metaH + self.hintFont:getHeight() + 2 * s
+    end
+    if descH > 0 then
+      metaH = metaH + self.hintFont:getHeight() + 2 * s + descH
+    end
+    local bodyH = math.max(nameH + 4 * s + metaH, clusterH)
+    local cardH = padV * 2 + bodyH + 10 * s + btnH
     layout[i] = { h = cardH, leftW = leftW, clusterW = clusterW,
-      chipText = chipText, chipW = chipW, delW = delW }
+      chipText = chipText, chipW = chipW, delW = delW,
+      updW = updW, verW = verW, hasGh = hasGh, clusterH = clusterH,
+      btnRowW = btnRowW, bodyH = bodyH, updLabel = updLabel,
+      updateKind = updateKind, checkLine = checkLine,
+      checkLineColor = checkLineColor }
     total = total + cardH
   end
   total = total + (#mods - 1) * cardGap
@@ -3410,6 +4372,8 @@ function RomImporter:_drawModsPanel(x, y, w, h, paged)
   self.modScroll = scroll
   self.modRects = {}
   self.modDeleteRects = {}
+  self.modUpdateRects = {}
+  self.modVersionsRects = {}
 
   if not paged then
     love.graphics.setScissor(math.floor(x), math.floor(top),
@@ -3439,20 +4403,30 @@ function RomImporter:_drawModsPanel(x, y, w, h, paged)
       col(PAL.cardBorder, 0.5)
       love.graphics.rectangle("line", bxx, byy, badgeW, badgeH, 5 * s, 5 * s)
       love.graphics.setFont(self.warningFont)
-      col(PAL.warning)
+      col(m.experimental and PAL.gold or PAL.warning)
       love.graphics.print(m.badge, bxx + 6 * s,
         byy + (badgeH - self.warningFont:getHeight()) / 2)
 
-      -- description under the name, wrapped in the left block
+      -- version + check status line + description under the name
+      love.graphics.setFont(self.hintFont)
+      col(PAL.detail)
+      local metaY = ny + nameH + 4 * s
+      love.graphics.print("v" .. tostring(m.version or "?"), nx, metaY)
+      metaY = metaY + self.hintFont:getHeight() + 2 * s
+      if L.checkLine then
+        col(L.checkLineColor or PAL.detail)
+        love.graphics.print(
+          ellipsize(self.hintFont, L.checkLine, L.leftW), nx, metaY)
+        metaY = metaY + self.hintFont:getHeight() + 2 * s
+      end
       if m.description ~= "" then
-        love.graphics.setFont(self.hintFont)
         col(PAL.detail)
-        love.graphics.printf(m.description, nx, ny + nameH + 6 * s, L.leftW, "left")
+        love.graphics.printf(m.description, nx, metaY, L.leftW, "left")
       end
 
-      -- right cluster: status chip, toggle, Delete -- vertically centred
+      -- right cluster: status chip + toggle (action buttons are a bottom row)
       local clusterX = x + w - padH - L.clusterW
-      local clusterY = cy + (cardH - clusterH) / 2
+      local clusterY = cy + padV
       local _, chipColor = modStatusChip(m.status)
       local chipX = clusterX + (L.clusterW - L.chipW) / 2
       col(chipColor, 0.1)
@@ -3484,30 +4458,45 @@ function RomImporter:_drawModsPanel(x, y, w, h, paged)
       col(PAL.white)
       love.graphics.circle("fill", kcx, ty + th / 2, kd / 2)
 
-      -- Delete under the toggle
-      local delX = clusterX + (L.clusterW - L.delW) / 2
-      local delY = ty + th + 6 * s
-      local drect = { x = delX - 6 * s, y = delY - 2 * s,
-        width = L.delW + 12 * s, height = delH + 4 * s, id = m.id }
-      local dhot = self:_hover(drect)
-      love.graphics.setFont(self.hintFont)
-      -- Same two-click arm as a save slot's Delete (#433).
+      -- Action chip-buttons in one right-aligned row under the body
+      local btnY = cy + cardH - padV - btnH
+      local btnX = x + w - padH - L.btnRowW
       local darmed = armedDelete(self._confirmDelete, "mod", m.id, nil)
-      col((darmed or dhot) and PAL.red or PAL.warning)
-      love.graphics.printf(darmed and "Sure?" or "Delete", delX, delY, L.delW, "center")
+      local function clipHit(rect, bucket)
+        if not rect then return end
+        local vy = math.max(rect.y, top)
+        local vy2 = math.min(rect.y + rect.height, top + listH)
+        if vy2 > vy then
+          bucket[#bucket + 1] = {
+            x = rect.x, y = vy, width = rect.width, height = vy2 - vy,
+            id = rect.id,
+          }
+        end
+      end
+      if L.hasGh then
+        local urect = self:_chipButton(btnX, btnY, L.updLabel, {
+          w = L.updW, h = btnH, id = m.id, kind = L.updateKind or "neutral",
+        })
+        clipHit(urect, self.modUpdateRects)
+        btnX = btnX + L.updW + btnGap
+        local vrect = self:_chipButton(btnX, btnY, "Versions", {
+          w = L.verW, h = btnH, id = m.id, kind = "neutral",
+        })
+        clipHit(vrect, self.modVersionsRects)
+        btnX = btnX + L.verW + btnGap
+      end
+      local drect = self:_chipButton(btnX, btnY, darmed and "Sure?" or "Delete", {
+        w = L.delW, h = btnH, id = m.id,
+        kind = darmed and "dangerArmed" or "danger",
+      })
+      clipHit(drect, self.modDeleteRects)
 
-      -- hit rects clipped to the visible list band
+      -- toggle hit rect clipped to the visible list band
       local vy = math.max(trect.y, top)
       local vy2 = math.min(trect.y + trect.height, top + listH)
       if vy2 > vy then
         self.modRects[#self.modRects + 1] =
           { x = trect.x, y = vy, width = trect.width, height = vy2 - vy, id = m.id }
-      end
-      local dvy = math.max(drect.y, top)
-      local dvy2 = math.min(drect.y + drect.height, top + listH)
-      if dvy2 > dvy then
-        self.modDeleteRects[#self.modDeleteRects + 1] =
-          { x = drect.x, y = dvy, width = drect.width, height = dvy2 - dvy, id = m.id }
       end
     end
     cy = cy + cardH + cardGap
@@ -3522,6 +4511,612 @@ function RomImporter:_drawModsPanel(x, y, w, h, paged)
     love.graphics.rectangle("fill", x + w - 3 * s, thumbY, 3 * s, thumbH, 1.5 * s, 1.5 * s)
   end
   return (top - y) + total
+end
+
+-- ------- FIND MODS: browsing a community mod index -------------------------
+--
+-- The index is metadata only (src/mods/ModIndex.lua): it says where a mod's
+-- zip lives, and the install runs through exactly the same path "Import mod
+-- .zip" does.  Nothing here is automatic -- no index ships with the launcher,
+-- and the tab stays an empty "Add an index" prompt until the player names one,
+-- because subscribing to somebody's list of mods is a trust decision and not a
+-- default.
+--
+-- Fetching is the same synchronous curl the update checks already use, cached
+-- in options for a day, so the first open of the tab costs one round trip and
+-- every later one is free until the player hits Refresh.
+
+-- The sources list, reloaded from options.  Cheap; called whenever the panel
+-- has reason to think the list changed.
+function RomImporter:_refreshFindSources()
+  local ModIndex = require("src.mods.ModIndex")
+  local ok, rows = pcall(ModIndex.sources)
+  self.findSources = ok and rows or {}
+end
+
+-- Fetch every source and merge into one listing.  First source wins on a
+-- duplicate id, matching how the mod loader resolves two mods with one id --
+-- there is one "nuzlocke" as far as the installer is concerned, so the panel
+-- must not offer two.  Per-source failures are collected rather than fatal: an
+-- index that is down should cost its own rows, not everybody else's.
+function RomImporter:_refreshFind(force)
+  local ModIndex = require("src.mods.ModIndex")
+  self:_refreshFindSources()
+  local mods, seen, cats, catSeen, errs = {}, {}, {}, {}, {}
+  local stale, oldest = false, nil
+  for _, source in ipairs(self.findSources or {}) do
+    local ok, index, err, meta = pcall(function()
+      return ModIndex.fetch(source, { force = force == true })
+    end)
+    if not ok then
+      errs[#errs + 1] = (source.label or source.feed) .. ": " .. tostring(index)
+    elseif not index then
+      errs[#errs + 1] = (source.label or source.feed) .. ": " .. tostring(err)
+    else
+      if meta and meta.stale then stale = true end
+      if meta and meta.checkedAt then
+        oldest = math.min(oldest or meta.checkedAt, meta.checkedAt)
+      end
+      for _, entry in ipairs(index.mods or {}) do
+        if not seen[entry.id] then
+          seen[entry.id] = true
+          entry._source = source.label or source.feed
+          entry._base = source.base
+          mods[#mods + 1] = entry
+        end
+      end
+      for _, c in ipairs(ModIndex.categoriesIn(index)) do
+        if not catSeen[c] then catSeen[c] = true; cats[#cats + 1] = c end
+      end
+    end
+  end
+  self.findIndex = { mods = mods, categories = cats, stale = stale,
+                     checkedAt = oldest }
+  self.findLoaded = true
+  if #errs > 0 then
+    self.findNotice = { ok = false, text = table.concat(errs, "  -  ") }
+  elseif force then
+    self.findNotice = { ok = true,
+      text = Strings("Refreshed - %d mods listed", #mods) }
+  end
+  -- A category that no longer exists after a refresh would filter everything
+  -- away with no way back except guessing.
+  if self.findCategory and not catSeen[self.findCategory] then
+    self.findCategory = nil
+  end
+end
+
+function RomImporter:_ensureFind()
+  if not self.findLoaded then
+    self:_refreshFindSources()
+    if #(self.findSources or {}) == 0 then
+      -- Nothing to fetch, but the panel is loaded: the empty state is the
+      -- answer, not a pending request.
+      self.findIndex = { mods = {}, categories = {} }
+      self.findLoaded = true
+    else
+      self:_refreshFind(false)
+    end
+  end
+end
+
+-- The rows the filters leave, and the installed-mod context the compatibility
+-- warnings are judged against.
+function RomImporter:_findRows()
+  local ModIndex = require("src.mods.ModIndex")
+  local all = (self.findIndex and self.findIndex.mods) or {}
+  return ModIndex.filter(all, {
+    query = self.findQuery,
+    category = self.findCategory,
+  })
+end
+
+function RomImporter:_findInstalledMap()
+  local map = {}
+  for _, m in ipairs(self.mods or {}) do map[m.id] = m.version or true end
+  return map
+end
+
+-- One thumbnail per frame, and only for a card actually on screen: the fetch
+-- is a blocking curl, so downloading a whole listing's worth on open would
+-- stall the launcher for as many seconds as there are mods.  A failure is
+-- remembered as `false` so a broken URL is tried once, not every frame.
+function RomImporter:_findThumb(entry)
+  self._findThumbs = self._findThumbs or {}
+  local cached = self._findThumbs[entry.id]
+  if cached ~= nil then return cached or nil end
+  if self._findThumbFetched then return nil end   -- budget spent this frame
+  local ModIndex = require("src.mods.ModIndex")
+  local url = ModIndex.joinUrl(entry._base, entry.thumbnail)
+  if not url then
+    self._findThumbs[entry.id] = false
+    return nil
+  end
+  self._findThumbFetched = true
+  local ok, image = pcall(function()
+    local path, err = ModIndex.downloadThumbnail(url, entry.id)
+    if not path then error(err or "download failed", 0) end
+    return love.graphics.newImage(path)
+  end)
+  self._findThumbs[entry.id] = ok and image or false
+  return ok and image or nil
+end
+
+-- Open the "add an index" text prompt.  Deliberately a typed URL rather than a
+-- picked-from-a-list affair: there is no blessed index, and presenting one
+-- would make the launcher's choice look like an endorsement.
+function RomImporter:_promptAddIndex()
+  self._indexPrompt = { text = "" }
+end
+
+function RomImporter:_commitAddIndex()
+  local prompt = self._indexPrompt
+  self._indexPrompt = nil
+  if not prompt then return end
+  local ModIndex = require("src.mods.ModIndex")
+  local row, err = ModIndex.addSource(prompt.text or "")
+  if not row then
+    self.findNotice = { ok = false, text = tostring(err) }
+    return
+  end
+  self.findNotice = { ok = true, text = Strings("Added %s", row.label or row.feed) }
+  self.findLoaded = false
+  self:_ensureFind()
+end
+
+function RomImporter:_removeIndex(feed)
+  local ModIndex = require("src.mods.ModIndex")
+  local ok, err = ModIndex.removeSource(feed)
+  if not ok then
+    self.findNotice = { ok = false, text = tostring(err) }
+    return
+  end
+  self.findNotice = { ok = true, text = Strings("Index removed") }
+  self.findLoaded = false
+  self:_ensureFind()
+end
+
+-- Fetch and show an entry's description markdown.  Loaded on demand, never
+-- with the listing: a feed of any size would otherwise be one request per mod.
+function RomImporter:_findShowDetails(entry)
+  local ModIndex = require("src.mods.ModIndex")
+  local url = ModIndex.joinUrl(entry._base, entry.description_url)
+  local body = entry.summary or ""
+  if url then
+    local ok, text = pcall(ModIndex.fetchText, url)
+    if ok and type(text) == "string" and text ~= "" then body = text end
+  end
+  self._findDetails = {
+    title = entry.title or entry.id,
+    body = body,
+    scroll = 0,
+  }
+end
+
+-- Arm the install confirm.  The compatibility list is the whole point of the
+-- dialog: the panel deliberately does not hide an incompatible mod (an index
+-- entry can be months stale, and a hidden mod looks like a missing one), so
+-- this is where the player is told what the author declared before anything
+-- is downloaded.
+function RomImporter:_findConfirmInstall(entry)
+  local ModIndex = require("src.mods.ModIndex")
+  local Version = require("src.core.Version")
+  local url, why = ModIndex.installUrl(entry)
+  if not url then
+    self.findNotice = { ok = false,
+      text = (entry.title or entry.id) .. ": " .. tostring(why) }
+    return
+  end
+  local installed = self:_findInstalledMap()
+  local issues = ModIndex.compatIssues(entry, {
+    modApi = Version.modApi,
+    engineVersion = Version.engine,
+    installed = installed,
+  })
+  local version = ModIndex.displayVersion(entry)
+  local lines = { (entry.title or entry.id) .. " v" .. tostring(version) }
+  if entry.author then lines[#lines + 1] = "by " .. entry.author end
+  local have = installed[entry.id]
+  if have then
+    lines[#lines + 1] = "Replaces installed v" .. tostring(have)
+  end
+  for _, issue in ipairs(issues) do
+    lines[#lines + 1] = "! " .. issue.text
+  end
+  lines[#lines + 1] = "Mods are not reviewed - trust the author."
+  self._modConfirm = {
+    kind = (#issues > 0) and "warn" or "update",
+    indexEntry = entry,
+    title = have and "Reinstall mod" or "Install mod",
+    yesLabel = have and "Reinstall" or "Install",
+    lines = lines,
+  }
+end
+
+function RomImporter:_findInstall(entry)
+  local name = entry.title or entry.id
+  self.findNotice = { ok = true, text = Strings("Downloading %s...", name) }
+  local ran, err = pcall(function()
+    local LauncherMods = require("src.mods.LauncherMods")
+    local ok, res = LauncherMods.installFromIndex(entry)
+    if ok then
+      -- The installed list is what the Install / Installed labels read, so it
+      -- has to be re-derived before the next paint or the card lies.
+      pcall(self._refreshMods, self)
+      self.findNotice = { ok = true,
+        text = Strings("Installed %s %s", name, tostring(res)) }
+    else
+      self.findNotice = { ok = false, text = tostring(res) }
+    end
+  end)
+  if not ran then
+    self.findNotice = { ok = false, text = "Install failed: " .. tostring(err) }
+  end
+end
+
+-- The label + colour for an entry's install state, given what is installed.
+local function findActionFor(entry, installedVersion)
+  local ModIndex = require("src.mods.ModIndex")
+  if not ModIndex.canInstall(entry) then
+    return nil, "Not installable from this index"
+  end
+  if not installedVersion then return "Install", nil end
+  local listed = ModIndex.displayVersion(entry)
+  local ModUpdate = require("src.mods.ModUpdate")
+  if type(installedVersion) == "string"
+      and ModUpdate.isNewer(installedVersion, listed) then
+    return "Update", "Installed v" .. installedVersion
+  end
+  return "Reinstall", "Installed v" .. tostring(installedVersion)
+end
+
+-- FIND MODS panel.  Header ("Find Mods" + count + Refresh / Add an index),
+-- notice line, the source list, a search field and category chips, then the
+-- listing.  With no index added at all it collapses to a single dashed prompt.
+-- `paged` behaves as everywhere else: no inner scroll region, the list is drawn
+-- whole, and the returned natural height is what draw() measures the page on.
+function RomImporter:_drawFindPanel(x, y, w, h, paged)
+  local s = self._s
+  self._findThumbFetched = false
+  self:_ensureFind()
+  self:_ensureMods()
+  local ModIndex = require("src.mods.ModIndex")
+  local sources = self.findSources or {}
+  local rows = self:_findRows()
+  local total = #((self.findIndex and self.findIndex.mods) or {})
+
+  self.findCatRects = {}
+  self.findInstallRects = {}
+  self.findDetailRects = {}
+  self.findRepoRects = {}
+  self.findSourceRemoveRects = {}
+
+  -- header
+  love.graphics.setFont(self.gameNameFont)
+  col(PAL.white)
+  printB("Find Mods", x, y)
+  local nameW = self.gameNameFont:getWidth("Find Mods")
+  local headerH = self.gameNameFont:getHeight()
+  if #sources > 0 then
+    love.graphics.setFont(self.hintFont)
+    col(PAL.warning)
+    local countLabel = (#rows == total)
+      and Strings("%d mods listed", total)
+      or Strings("%d of %d mods", #rows, total)
+    love.graphics.print(countLabel, x + nameW + 14 * s,
+      y + (headerH - self.hintFont:getHeight()) / 2)
+  end
+
+  local btnH = math.max(38 * s, self.saveBtnFont:getHeight() + 20 * s)
+  local btnY = y + (headerH - btnH) / 2
+  local addLabel = (#sources == 0) and "Add an index" or "Add index"
+  local addW = math.min(w * 0.45, self.saveBtnFont:getWidth(addLabel) + 40 * s)
+  local addX = x + w - addW
+  self.findAddRect =
+    self:_glassyButton(addX, btnY, addW, btnH, addLabel, self.saveBtnFont, true)
+  if #sources > 0 then
+    local refLabel = "Refresh"
+    local refW = math.min(w * 0.3, self.saveBtnFont:getWidth(refLabel) + 36 * s)
+    self.findRefreshRect = self:_glassyButton(addX - refW - 8 * s, btnY,
+      refW, btnH, refLabel, self.saveBtnFont, true)
+  end
+
+  local top = y + headerH + 14 * s
+
+  -- notice line: the last add / refresh / install result, else the standing
+  -- reminder that a listing is not a review
+  love.graphics.setFont(self.hintFont)
+  if self.findNotice then
+    col(self.findNotice.ok and PAL.green or PAL.red)
+    love.graphics.printf(self.findNotice.text, x, top, w, "left")
+  else
+    col(PAL.warning)
+    love.graphics.printf(
+      Strings("Mods here are listed, not reviewed - read the source and trust the author."),
+      x, top, w, "left")
+  end
+  top = top + self.hintFont:getHeight() + 12 * s
+
+  -- no index: one dashed prompt and nothing else.  This is the whole tab until
+  -- the player names a feed.
+  if #sources == 0 then
+    local boxH = 150 * s
+    love.graphics.setLineWidth(math.max(1, 1 * s))
+    col(PAL.cardBorder, 0.45)
+    dashedRoundRect(x, top, w, boxH, 14 * s, 7 * s, 5 * s)
+    love.graphics.setFont(self.stateFont)
+    col(PAL.heading)
+    printfB(Strings("No mod index added"), x + 16 * s, top + boxH / 2
+      - self.stateFont:getHeight(), w - 32 * s, "center")
+    love.graphics.setFont(self.hintFont)
+    col(PAL.warning)
+    love.graphics.printf(
+      Strings("Add an index to browse mods. An index is a published list; paste its URL or its owner/repo."),
+      x + 24 * s, top + boxH / 2 + 4 * s, w - 48 * s, "center")
+    self._findMax = 0
+    return (top - y) + boxH
+  end
+
+  -- source rows: which indexes are feeding this list, each with a Remove
+  local srcH = self.hintFont:getHeight() + 10 * s
+  for _, source in ipairs(sources) do
+    love.graphics.setFont(self.hintFont)
+    col(PAL.detail)
+    local remW = self.hintFont:getWidth("Remove") + 20 * s
+    love.graphics.print(
+      ellipsize(self.hintFont, source.label or source.feed, w - remW - 20 * s),
+      x + 2 * s, top + 5 * s)
+    local rrect = self:_chipButton(x + w - remW, top, "Remove", {
+      w = remW, h = srcH, id = source.feed, kind = "danger",
+    })
+    self.findSourceRemoveRects[#self.findSourceRemoveRects + 1] = rrect
+    top = top + srcH + 4 * s
+  end
+  top = top + 6 * s
+
+  -- search field: click to focus, type to filter.  Not a modal -- the results
+  -- have to move while the player types or the field is guesswork.
+  local fieldH = 30 * s
+  local focused = self._findSearchFocus == true
+  col(PAL.bgBot, 0.9)
+  love.graphics.rectangle("fill", x, top, w, fieldH, 8 * s, 8 * s)
+  love.graphics.setLineWidth(math.max(1, s))
+  col(focused and PAL.green or PAL.cardBorder, focused and 0.7 or 0.45)
+  love.graphics.rectangle("line", x, top, w, fieldH, 8 * s, 8 * s)
+  love.graphics.setFont(self.detailFont)
+  local query = self.findQuery or ""
+  if query == "" and not focused then
+    col(PAL.disabledInk)
+    love.graphics.print(Strings("Search mods"), x + 10 * s,
+      top + (fieldH - self.detailFont:getHeight()) / 2)
+  else
+    col(PAL.heading)
+    local shown = ellipsize(self.detailFont, query, w - 20 * s)
+    love.graphics.print(shown, x + 10 * s,
+      top + (fieldH - self.detailFont:getHeight()) / 2)
+    if focused and (self.pulse * 2 % 1) < 0.5 then
+      col(PAL.green)
+      love.graphics.rectangle("fill",
+        x + 10 * s + self.detailFont:getWidth(shown) + 2 * s,
+        top + 6 * s, math.max(1, 1.5 * s), fieldH - 12 * s)
+    end
+  end
+  self.findSearchRect = { x = x, y = top, width = w, height = fieldH }
+  self:_hover(self.findSearchRect)
+  top = top + fieldH + 10 * s
+
+  -- category chips: "All" plus whatever the feeds actually use
+  local cats = (self.findIndex and self.findIndex.categories) or {}
+  if #cats > 0 then
+    local chipH = self.hintFont:getHeight() + 8 * s
+    local cx, cy = x, top
+    local function catChip(label, id, active)
+      local cw = self.hintFont:getWidth(label) + 20 * s
+      if cx + cw > x + w and cx > x then
+        cx = x
+        cy = cy + chipH + 6 * s
+      end
+      local rect = { x = cx, y = cy, width = cw, height = chipH, id = id }
+      local hot = self:_hover(rect)
+      col(active and PAL.green or PAL.cardBorder, active and 0.18 or 0.10)
+      love.graphics.rectangle("fill", cx, cy, cw, chipH, chipH / 2, chipH / 2)
+      love.graphics.setLineWidth(1)
+      col(active and PAL.green or PAL.cardBorder, active and 0.6 or 0.35)
+      love.graphics.rectangle("line", cx, cy, cw, chipH, chipH / 2, chipH / 2)
+      love.graphics.setFont(self.hintFont)
+      col(active and PAL.green or (hot and PAL.heading or PAL.detail))
+      printfB(label, cx, cy + (chipH - self.hintFont:getHeight()) / 2, cw, "center")
+      self.findCatRects[#self.findCatRects + 1] = rect
+      cx = cx + cw + 6 * s
+    end
+    catChip("All", "", self.findCategory == nil)
+    for _, c in ipairs(cats) do
+      catChip(c, c, self.findCategory == c)
+    end
+    top = cy + chipH + 12 * s
+  end
+
+  local listH = math.max(0, (y + h) - top)
+
+  if #rows == 0 then
+    local boxH = paged and (110 * s) or math.min(listH, 110 * s)
+    love.graphics.setLineWidth(math.max(1, 1 * s))
+    col(PAL.cardBorder, 0.45)
+    dashedRoundRect(x, top, w, boxH, 14 * s, 7 * s, 5 * s)
+    love.graphics.setFont(self.hintFont)
+    col(PAL.warning)
+    local hint = (total == 0)
+      and Strings("This index lists no mods yet.")
+      or Strings("No mods match that search.")
+    love.graphics.printf(hint, x + 16 * s,
+      top + boxH / 2 - self.hintFont:getHeight() / 2, w - 32 * s, "center")
+    self._findMax = 0
+    return (top - y) + boxH
+  end
+
+  -- card metrics.  The thumbnail column is fixed whether or not a given entry
+  -- has one, so rows stay aligned down the list.
+  local padH, padV = 16 * s, 14 * s
+  local cardGap, cardR = 10 * s, 14 * s
+  local thumbW = 64 * s
+  local innerW = w - 2 * padH
+  local chipH = self.hintFont:getHeight() + 8 * s
+  local rowBtnH = self.hintFont:getHeight() + 10 * s
+  local btnGap = 8 * s
+  local installed = self:_findInstalledMap()
+
+  love.graphics.setFont(self.stateFont)
+  local nameH = self.stateFont:getHeight()
+
+  local layout, totalH = {}, 0
+  for i, entry in ipairs(rows) do
+    local action, note = findActionFor(entry, installed[entry.id])
+    local detW = self.hintFont:getWidth("Details") + 24 * s
+    local repoW = entry.repo and (self.hintFont:getWidth("Source") + 24 * s) or 0
+    local actW = action and (self.hintFont:getWidth(action) + 24 * s) or 0
+    local btnRowW = detW
+    if repoW > 0 then btnRowW = btnRowW + btnGap + repoW end
+    if actW > 0 then btnRowW = btnRowW + btnGap + actW end
+    local leftX = thumbW + 12 * s
+    local textW = math.max(60 * s, innerW - leftX)
+    local summaryH = 0
+    if entry.summary ~= "" then
+      local _, sl = self.hintFont:getWrap(entry.summary, textW)
+      summaryH = math.max(1, #sl) * self.hintFont:getHeight()
+    end
+    local metaH = self.hintFont:getHeight() + 2 * s   -- version + author
+    if note then metaH = metaH + self.hintFont:getHeight() + 2 * s end
+    if summaryH > 0 then metaH = metaH + 2 * s + summaryH end
+    local bodyH = math.max(nameH + 4 * s + metaH, thumbW)
+    local cardH = padV * 2 + bodyH + 10 * s + rowBtnH
+    layout[i] = { h = cardH, textW = textW, leftX = leftX, action = action,
+      note = note, detW = detW, repoW = repoW, actW = actW,
+      btnRowW = btnRowW, summaryH = summaryH }
+    totalH = totalH + cardH
+  end
+  totalH = totalH + (#rows - 1) * cardGap
+
+  if paged then listH = totalH end
+  local maxScroll = math.max(0, totalH - listH)
+  self._findMax = maxScroll
+  local scroll = clamp(self.findScroll or 0, 0, maxScroll)
+  self.findScroll = scroll
+
+  if not paged then
+    love.graphics.setScissor(math.floor(x), math.floor(top),
+      math.ceil(w), math.ceil(listH))
+  end
+  local cy = top - scroll
+  for i, entry in ipairs(rows) do
+    local L = layout[i]
+    local cardH = L.h
+    if cy + cardH >= top and cy <= top + listH then
+      roundedCard(x, cy, w, cardH, cardR)
+      local nx = x + padH
+      local ny = cy + padV
+
+      -- thumbnail, or a placeholder tile so the text column never shifts
+      local image = self:_findThumb(entry)
+      if image then
+        local iw, ih = image:getDimensions()
+        local fit = math.min(thumbW / iw, thumbW / ih)
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.draw(image, nx + (thumbW - iw * fit) / 2,
+          ny + (thumbW - ih * fit) / 2, 0, fit, fit)
+      else
+        col(PAL.cardBorder, 0.18)
+        love.graphics.rectangle("fill", nx, ny, thumbW, thumbW, 8 * s, 8 * s)
+        love.graphics.setFont(self.warningFont)
+        col(PAL.disabledInk)
+        printfB("MOD", nx, ny + (thumbW - self.warningFont:getHeight()) / 2,
+          thumbW, "center")
+      end
+
+      local tx = nx + L.leftX
+      love.graphics.setFont(self.stateFont)
+      col(PAL.white)
+      printB(ellipsize(self.stateFont, entry.title or entry.id, L.textW), tx, ny)
+
+      love.graphics.setFont(self.hintFont)
+      col(PAL.detail)
+      local metaY = ny + nameH + 4 * s
+      local meta = "v" .. tostring(ModIndex.displayVersion(entry))
+      if entry.author then meta = meta .. "  -  " .. entry.author end
+      if entry.categories[1] then meta = meta .. "  -  " .. entry.categories[1] end
+      love.graphics.print(ellipsize(self.hintFont, meta, L.textW), tx, metaY)
+      metaY = metaY + self.hintFont:getHeight() + 2 * s
+      if L.note then
+        col(PAL.playTop)
+        love.graphics.print(ellipsize(self.hintFont, L.note, L.textW), tx, metaY)
+        metaY = metaY + self.hintFont:getHeight() + 2 * s
+      end
+      if L.summaryH > 0 then
+        col(PAL.detail)
+        love.graphics.printf(entry.summary, tx, metaY + 2 * s, L.textW, "left")
+      end
+
+      -- An entry the index could not resolve a download for still shows: a
+      -- broken upstream is worth seeing, and hiding it reads as "no such mod".
+      if not L.action then
+        local warnChipW = self.hintFont:getWidth("Unavailable") + 20 * s
+        local wx = x + w - padH - warnChipW
+        col(PAL.gold, 0.1)
+        love.graphics.rectangle("fill", wx, cy + padV, warnChipW, chipH,
+          chipH / 2, chipH / 2)
+        love.graphics.setLineWidth(1)
+        col(PAL.gold, 0.55)
+        love.graphics.rectangle("line", wx, cy + padV, warnChipW, chipH,
+          chipH / 2, chipH / 2)
+        love.graphics.setFont(self.hintFont)
+        col(PAL.gold)
+        printfB("Unavailable", wx,
+          cy + padV + (chipH - self.hintFont:getHeight()) / 2,
+          warnChipW, "center")
+      end
+
+      -- action row, clipped to the visible band exactly like the mods panel
+      local by = cy + cardH - padV - rowBtnH
+      local bx = x + w - padH - L.btnRowW
+      local function clipHit(rect, bucket)
+        if not rect then return end
+        local vy = math.max(rect.y, top)
+        local vy2 = math.min(rect.y + rect.height, top + listH)
+        if vy2 > vy then
+          bucket[#bucket + 1] = { x = rect.x, y = vy, width = rect.width,
+            height = vy2 - vy, id = rect.id, entry = entry }
+        end
+      end
+      local drect = self:_chipButton(bx, by, "Details", {
+        w = L.detW, h = rowBtnH, id = entry.id, kind = "neutral",
+      })
+      clipHit(drect, self.findDetailRects)
+      bx = bx + L.detW + btnGap
+      if L.repoW > 0 then
+        local rrect = self:_chipButton(bx, by, "Source", {
+          w = L.repoW, h = rowBtnH, id = entry.id, kind = "neutral",
+        })
+        clipHit(rrect, self.findRepoRects)
+        bx = bx + L.repoW + btnGap
+      end
+      if L.action then
+        local arect = self:_chipButton(bx, by, L.action, {
+          w = L.actW, h = rowBtnH, id = entry.id, kind = "accent",
+        })
+        clipHit(arect, self.findInstallRects)
+      end
+    end
+    cy = cy + cardH + cardGap
+  end
+  if not paged then love.graphics.setScissor() end
+
+  if maxScroll > 0 then
+    local thumbH = math.max(24 * s, listH * (listH / totalH))
+    local thumbY = top + (listH - thumbH) * (scroll / maxScroll)
+    col(PAL.cardBorder, 0.35)
+    love.graphics.rectangle("fill", x + w - 3 * s, thumbY, 3 * s, thumbH,
+      1.5 * s, 1.5 * s)
+  end
+  return (top - y) + totalH
 end
 
 return RomImporter

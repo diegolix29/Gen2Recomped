@@ -5,7 +5,7 @@
 
 Subcommands:
     scaffold  <id> [--profile content|overhaul|total_conversion] [--api 2]
-              [--dest DIR] [--force]
+              [--github owner/repo] [--experimental] [--dest DIR] [--force]
     translation <id> [--language NAME] [--base auto|fixture|imported]
               [--refresh] [--dest DIR]
     validate  <id|path> [--strict] [--base auto|fixture|imported]
@@ -13,6 +13,8 @@ Subcommands:
     pack      <mod-dir> [-o out.modpkg]
     bounce    <song-id|--all> [--seconds N] [--out DIR]
     docs      [--out DIR]
+    set-github <id|path> <url>     add/update manifest "github" (auto-update)
+    add-release-workflow <id|path> copy GitHub Actions release.yml into the mod
 
 Global flags: --repo PATH, --json, --quiet.
 Exit codes: 0 success, 1 validation/lint failure, 2 usage error.
@@ -330,9 +332,51 @@ MANIFEST_TEMPLATE = """{
   "dependencies": [],
   "optional_dependencies": [],
   "conflicts": [],
+  "incompatible": [],
+  "experimental": {{experimental}},{{github_line}}
   "description": "TODO: one line about {{id}}"{{extra}}
 }
 """
+
+# owner/repo or https://github.com/owner/repo(.git)
+GITHUB_RE = re.compile(
+    r"^(?:https?://github\.com/)?([\w.\-]+)/([\w.\-]+?)(?:\.git)?/?$"
+)
+
+
+def normalize_github(value):
+    """Return 'owner/repo' or None for empty; raise ValueError if malformed."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    match = GITHUB_RE.fullmatch(text)
+    if not match:
+        raise ValueError(
+            "github must be owner/repo or a github.com URL "
+            f"(got {value!r})")
+    owner, repo = match.group(1), match.group(2)
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+    return f"{owner}/{repo}"
+
+
+def check_github_field(manifest):
+    """Optional github field: absent is fine (note), present must parse."""
+    findings, notes = [], []
+    raw = manifest.get("github")
+    if raw is None or raw == "":
+        notes.append(
+            'optional tip: set "github": "owner/repo" in manifest.json '
+            "to enable launcher auto-update and Other versions")
+        return findings, notes
+    try:
+        normalize_github(raw)
+    except ValueError as err:
+        findings.append(Finding(
+            "MK001", "error", str(err), "manifest.json"))
+    return findings, notes
 
 MAIN_CONTENT = """-- {{id}}: a content-profile mod (api 2).
 -- The 10-minute loop: edit, save, F5 in a POKEPORT_DEV=1 game, repeat.
@@ -428,13 +472,25 @@ def cmd_scaffold(args, repo):
     next_major = int(engine.split(".")[0]) + 1
     name = args.id.replace("_", " ").replace("-", " ").title()
 
+    github = ""
+    if getattr(args, "github", None):
+        try:
+            github = normalize_github(args.github) or ""
+        except ValueError as err:
+            print(f"modkit: {err}")
+            return 2
+
     extra = ""
     if profile == "total_conversion":
         extra = ',\n  "assets_transforms": "transforms.lua"'
+    github_line = f'\n  "github": "{github}",' if github else ""
     subst = {
         "{{id}}": args.id, "{{name}}": name, "{{profile}}": profile,
         "{{game_version}}": engine, "{{next_major}}": str(next_major),
         "{{extra}}": extra,
+        "{{github_line}}": github_line,
+        "{{experimental}}": "true" if getattr(args, "experimental", False)
+        else "false",
     }
 
     def emit(rel, template):
@@ -753,6 +809,9 @@ def cmd_validate(args, repo):
     if problem:
         findings.append(problem)
     else:
+        gh_findings, gh_notes = check_github_field(manifest)
+        findings.extend(gh_findings)
+        notes.extend(gh_notes)
         findings.extend(check_permissions(repo, manifest))
         run_loader(repo, mod_dir, findings, args.base, notes)
         findings.extend(check_requires(repo, mod_dir, manifest))
@@ -760,6 +819,70 @@ def cmd_validate(args, repo):
     name = manifest.get("id") if manifest else os.path.basename(mod_dir)
     return report(findings, args, f"ok {name} valid", f"FAIL {name} invalid",
                   notes)
+
+
+def write_manifest(mod_dir, manifest):
+    path = os.path.join(mod_dir, "manifest.json")
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
+
+
+def cmd_set_github(args, repo):
+    """Add or update the optional github field on an existing manifest."""
+    mod_dir = resolve_mod_dir(repo, args.mod)
+    if not mod_dir:
+        print(f"modkit: no mod at {args.mod!r}")
+        return 2
+    manifest, problem = read_manifest(mod_dir)
+    if problem:
+        print(problem.line())
+        return 1
+    try:
+        repo_slug = normalize_github(args.url)
+    except ValueError as err:
+        print(f"modkit: {err}")
+        return 2
+    if not repo_slug:
+        print("modkit: github url is empty")
+        return 2
+    manifest["github"] = repo_slug
+    write_manifest(mod_dir, manifest)
+    if not args.quiet:
+        print(f"set github to {repo_slug!r} in {mod_dir}/manifest.json")
+        print("launcher auto-update / Other versions will use this repo")
+    return 0
+
+
+def cmd_add_release_workflow(args, repo):
+    """Copy the standard GitHub Actions release workflow into a mod folder."""
+    mod_dir = resolve_mod_dir(repo, args.mod)
+    if not mod_dir:
+        print(f"modkit: no mod at {args.mod!r}")
+        return 2
+    manifest, problem = read_manifest(mod_dir)
+    if problem:
+        print(problem.line())
+        return 1
+    mod_id = manifest.get("id") or os.path.basename(mod_dir)
+    template = os.path.join(repo, "tools", "mod_release_workflow.yml")
+    if not os.path.isfile(template):
+        print(f"modkit: missing template {template}")
+        return 2
+    dest_dir = os.path.join(mod_dir, ".github", "workflows")
+    dest = os.path.join(dest_dir, "release.yml")
+    if os.path.exists(dest) and not args.force:
+        print(f"modkit: {dest} exists (use --force to overwrite)")
+        return 2
+    body = open(template, encoding="utf-8").read().replace("{{MOD_ID}}", mod_id)
+    os.makedirs(dest_dir, exist_ok=True)
+    with open(dest, "w", encoding="utf-8") as handle:
+        handle.write(body)
+    if not args.quiet:
+        print(f"wrote {dest}")
+        print("push this mod as its own GitHub repo (with manifest github set) "
+              "to publish installable .zip releases on every main push")
+    return 0
 
 
 # ---------------------------------------------------------------- lint
@@ -1636,6 +1759,8 @@ def cmd_translation(args, repo):
         "{{next_major}}": str(int(engine_version_.split(".")[0]) + 1),
         "{{profile}}": "content",
         "{{extra}}": "",
+        "{{github_line}}": "",
+        "{{experimental}}": "false",
         "{{total}}": str(sum(counts.values())),
         "{{table}}": "\n".join(
             f"| `lang/{name}.lua` | {counts[name]} |" for name, *_ in catalogs),
@@ -1840,6 +1965,10 @@ def main(argv):
     p.add_argument("--profile", default="content",
                    choices=["content", "overhaul", "total_conversion"])
     p.add_argument("--api", type=int, default=2)
+    p.add_argument("--github", default="",
+                   help="optional owner/repo (enables launcher auto-update)")
+    p.add_argument("--experimental", action="store_true",
+                   help="mark the mod experimental (off until confirmed)")
     p.add_argument("--dest")
     p.add_argument("--force", action="store_true")
 
@@ -1877,6 +2006,16 @@ def main(argv):
     p = sub.add_parser("docs", parents=[shared])
     p.add_argument("--out")
 
+    p = sub.add_parser("set-github", parents=[shared],
+                       help="add github field to an existing mod manifest")
+    p.add_argument("mod")
+    p.add_argument("url", help="owner/repo or https://github.com/owner/repo")
+
+    p = sub.add_parser("add-release-workflow", parents=[shared],
+                       help="copy GitHub Actions release.yml into the mod")
+    p.add_argument("mod")
+    p.add_argument("--force", action="store_true")
+
     args = parser.parse_args(argv)
     for dest, fallback in (("repo", None), ("json", False),
                            ("quiet", False)):
@@ -1905,6 +2044,8 @@ def main(argv):
         "bounce": cmd_bounce,
         "translation": cmd_translation,
         "docs": cmd_docs,
+        "set-github": cmd_set_github,
+        "add-release-workflow": cmd_add_release_workflow,
     }[args.command]
     return handler(args, repo)
 

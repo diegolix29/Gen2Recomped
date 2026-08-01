@@ -172,6 +172,11 @@ function Game:returnToTitle()
 end
 
 function Game:step(dt)
+  -- Tool mods (autoplay, accessibility drivers, input visualizers) act on
+  -- the same fixed-step boundary as a physical controller.  Run them before
+  -- Input:step promotes queued edges so a button chosen here is visible to
+  -- this logic tick, not one tick later.  With no wrapper this is a no-op.
+  ModRuntime.call("input.step", function() end, self, dt)
   self.input:step()
   -- serviced unconditionally: a link battle's ENet transport must not
   -- stall just because PartyMenu/ChoiceBox/NamingScreen is temporarily
@@ -354,7 +359,13 @@ function Game:draw()
   if worldBelow and self.overworld.sgbWorldZones then
     worldZones = self.overworld:sgbWorldZones()
   end
-  Renderer:endFrame(zones, worldZones)
+  local viewport = Renderer:endFrame(zones, worldZones)
+  -- Persistent tool status is screen-space UI: draw it over the completed
+  -- render pipeline with exact playfield/margin geometry, but below mobile
+  -- controls. It never becomes an updating game state.
+  if ModRuntime.wantsHook("render.hud") then
+    ModRuntime.call("render.hud", function() end, self, viewport)
+  end
   -- on-screen mobile controls: pure screen-space, over the finished frame
   TouchControls:draw()
 end
@@ -686,6 +697,11 @@ end
 -- Capture the live world state into the save table and persist it.
 -- Options are flushed to options.lua as part of SaveData.save.
 function Game:writeSave()
+  -- Tool sessions can be deliberately ephemeral. Give them one narrow veto
+  -- before captureSave mutates the snapshot or any progress bytes reach disk.
+  if ModRuntime.call("save.write", function() return true end, self) == false then
+    return false
+  end
   if self.overworld and self.overworld.captureSave then
     self.overworld:captureSave(self.save)
   end
@@ -696,7 +712,7 @@ function Game:writeSave()
   if ModRuntime.wants("save.writing") then
     ModRuntime.emit("save.writing", { save = self.save, meta = self.save.meta })
   end
-  SaveData.save(self.save)
+  return SaveData.save(self.save)
 end
 
 -- Persist options.lua only (Options menu / hotkeys 2-5).  Keeps settings
@@ -726,8 +742,26 @@ function Game:applyOptions(opts)
   -- normalizes a nil/garbage cap to the 60 default, so old saves with no
   -- fpsCap key pace at the standard rate (issue #88)
   require("src.core.FrameCap").applyOptions(opts)
+  -- Scale the optional presentation extras to the device's performance
+  -- tier.  Every heavy feature was just applied from the stored options
+  -- above; here we clamp the *live* state down for a weaker device without
+  -- rewriting what the player saved, so raising the tier later restores
+  -- their exact TILT / GBC FX / ZOOM / MAX FPS choices.  A HIGH tier (the
+  -- default on a normal desktop, and every options.lua predating this
+  -- option) clamps nothing, so it is a no-op for the common case.
+  local caps = require("src.core.Performance").applyOptions(opts)
+  if not caps.tilt then require("src.render.Tilt").setLevel(0) end
+  if not caps.gbcfx then require("src.render.GBCFX").setLevel(0) end
+  local Zoom = require("src.render.Zoom")
+  Zoom.allowSurvey = caps.survey
+  if not caps.survey and Zoom.offset < 0 then Zoom.offset = 0 end
+  if caps.fpsMax then
+    local FrameCap = require("src.core.FrameCap")
+    if FrameCap.current > caps.fpsMax then FrameCap.apply(caps.fpsMax) end
+  end
   Input:applyBindings(opts.bindings)
   Input:applyHotkeyBindings(opts.hotkeyBindings)
+  TouchControls:applyOptions(opts)
   -- heal soft-bricked APK installs that already saved gbcfx > 0 (#136)
   if gbcCleared then self:writeOptions() end
 end

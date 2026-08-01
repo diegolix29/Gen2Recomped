@@ -49,9 +49,10 @@ local function dexOf(game, mon)
 end
 
 local function spriteOf(game, mon)
-  local path = require("src.pokemon.Sprites").path(game.data, mon.species, "front",
-    { mon = mon, kind = "trade" })
-  return tryImage(path)
+  local path, trueColor = require("src.pokemon.Sprites").path(
+    game.data, mon.species, "front", { mon = mon, kind = "trade" })
+  local image = tryImage(path)
+  return image, image and trueColor or false
 end
 
 local function expand(game, key, subs)
@@ -110,8 +111,8 @@ function TradeAnim.new(game, opts)
     cableBallAlt = tryImage(art.cableBallAlt or DEFAULT_ART.cableBallAlt),
     bubble = tryImage(art.bubble or DEFAULT_ART.bubble),
   }
-  self.sentSprite = spriteOf(game, self.sent)
-  self.recvSprite = spriteOf(game, self.received)
+  self.sentSprite, self.sentSpriteTrueColor = spriteOf(game, self.sent)
+  self.recvSprite, self.recvSpriteTrueColor = spriteOf(game, self.received)
 
   self.seq = 1
   self.phase = SEQ[1]
@@ -349,8 +350,8 @@ function TradeAnim:drawMonInfo(mon, ot, otId, boxTy)
   love.graphics.setColor(1, 1, 1, 1)
 end
 
-function TradeAnim:drawIconInBubble(mon, x, y)
-  local spr = (mon.species == self.received.species) and self.recvSprite or self.sentSprite
+function TradeAnim:drawIconInBubble(sprite, x, y)
+  local spr = sprite
   if spr then
     local sw, sh = spr:getDimensions()
     local s = 16 / math.max(sw, sh)
@@ -425,6 +426,10 @@ function TradeAnim:draw()
     -- hWY $50, so it sits in the bottom half of the screen
     if self.monVisible and self.sentSprite then
       love.graphics.draw(self.sentSprite, 56, 16)
+      if self.sentSpriteTrueColor then
+        require("src.render.PaletteFX").markTrueColor(
+          56 - self.scx, 16, self.sentSprite:getDimensions())
+      end
     end
     self:drawMonInfo(self.sent, self.playerOt, self.playerOtId, 10)
     love.graphics.pop()
@@ -466,8 +471,13 @@ function TradeAnim:draw()
     love.graphics.translate(160, 0)
     self:drawRightGB()
     love.graphics.pop()
-    local mon = (p == "transfer_lr") and self.sent or self.received
-    self:drawIconInBubble(mon, self.monX, self.monY)
+    local sprite
+    if p == "transfer_lr" then
+      sprite = self.sentSprite
+    else
+      sprite = self.recvSprite
+    end
+    self:drawIconInBubble(sprite, self.monX, self.monY)
     if self.cableFlash then
       love.graphics.setColor(1, 1, 1, 0.15)
       love.graphics.rectangle("fill", 0, 32, 160, 8)
@@ -477,6 +487,10 @@ function TradeAnim:draw()
   elseif p == "show_enemy" then
     if self.monVisible and self.recvSprite then
       love.graphics.draw(self.recvSprite, 56, 16)
+      if self.recvSpriteTrueColor then
+        require("src.render.PaletteFX").markTrueColor(
+          56, 16, self.recvSprite:getDimensions())
+      end
     end
     self:drawMonInfo(self.received, self.enemyName, self.enemyOtId, 10)
   end

@@ -171,6 +171,28 @@ local function dojoBall(species, ownBall, otherBall, askKey)
   end
 end
 
+-- FightingDojoDefaultScript does not use the Master's facing direction for
+-- this battle.  It checks exactly the cell left of him, turns both sprites
+-- toward one another, and then displays his trainer text.  Keeping this out
+-- of trainer sight also lets him keep his original downward-facing pose.
+local function dojoMasterGate(game, ow, x, y)
+  if x ~= 4 or y ~= 3 or game.save.flags.EVENT_BEAT_KARATE_MASTER then
+    return false
+  end
+  local master
+  for _, npc in ipairs(ow.npcs) do
+    if npc.def and npc.def.name == "FIGHTINGDOJO_KARATE_MASTER" then
+      master = npc
+      break
+    end
+  end
+  if not master or ow:trainerDefeated(master) then return false end
+  ow.player.facing = "right"
+  master:facePlayer(ow.player)
+  ow:engageTrainer(master)
+  return true
+end
+
 M.FIGHTING_DOJO = {
   talk = {
     TEXT_FIGHTINGDOJO_HITMONLEE_POKE_BALL =
@@ -197,6 +219,7 @@ M.FIGHTING_DOJO = {
     end
     return false
   end,
+  onStep = dojoMasterGate,
 }
 
 -- -------------------------------------------------------------------

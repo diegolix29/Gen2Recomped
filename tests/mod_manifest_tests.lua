@@ -116,6 +116,28 @@ check(full.conflictSpecs[1].id == "always_noon" and full.conflictSpecs[1].range 
 check(full.options_schema == "options.lua"
   and full.assets_transforms == "transforms.lua", "declared files are kept")
 
+-- ------- github / experimental / incompatible
+local gh = Manifest.validate({
+  id = "gh", name = "GH", version = "1.0.0", entry = "main.lua",
+  github = "https://github.com/Acme/Cool-Mod.git",
+  experimental = true,
+  incompatible = { "rival" },
+  conflicts = { "rival", "other" },
+})
+check(gh.github == "Acme/Cool-Mod", "github URL normalizes to owner/repo")
+check(gh.experimental == true, "experimental flag is kept")
+check(#gh.conflictSpecs == 2, "incompatible merges into conflicts without dupes")
+check(gh.conflictSpecs[1].id == "rival" and gh.conflictSpecs[2].id == "other",
+  "conflicts list order keeps conflicts then new incompatible ids")
+check(Manifest.parseGithub(nil) == nil and Manifest.parseGithub("") == nil,
+  "absent github is nil")
+check(not pcall(Manifest.parseGithub, "not a repo"),
+  "a malformed github value fails")
+check(not pcall(Manifest.validate, {
+  id = "badgh", name = "Bad", version = "1.0.0", entry = "main.lua",
+  github = "ftp://example.com/x",
+}), "a bad github field fails manifest validation")
+
 local v1 = Manifest.validate({
   id = "v1", name = "V1", version = "1.0.0", entry = "main.lua",
 }, "mods/v1")
@@ -155,6 +177,21 @@ check(not pcall(Manifest.validate, {
   id = "baddep", name = "Bad", version = "1.0.0", entry = "main.lua",
   dependencies = { "other@nonsense" },
 }, "mods/baddep"), "a malformed dependency range fails validation")
+
+-- ------- experimental mods stay disabled until options.mods says otherwise
+do
+  local loader = Loader.new({ fs = memfs({
+    ["mods/lab/manifest.json"] = manifestJson("lab", {
+      experimental = "true", api = "2", profile = '"content"',
+    }),
+    ["mods/lab/main.lua"] = "return function(mod) mod.content.items:register('X', {}) end",
+  }) })
+  local data = { items = {} }
+  check(loader:load(data) == true, "experimental-only install still boots")
+  local st = statusById(loader)
+  check(st.lab.state == "disabled", "experimental mod is disabled by default")
+  check(data.items.X == nil, "experimental entry chunk does not run while off")
+end
 
 -- ------- game_version against the engine
 local versionLoader = Loader.new({ fs = memfs({

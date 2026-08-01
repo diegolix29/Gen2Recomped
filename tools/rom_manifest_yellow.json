@@ -10,7 +10,7 @@
       "wildWin": "Music_DefeatedWildMon"
     },
     "cryData": {
-      "address": 21574,
+      "address": 21602,
       "bank": 14
     },
     "cryHeaders": {
@@ -473,7 +473,7 @@
         "engine": 1
       },
       "Music_CinnabarMansion": {
-        "address": 17092,
+        "address": 17089,
         "bank": 31,
         "engine": 3
       },
@@ -508,17 +508,17 @@
         "engine": 2
       },
       "Music_Dungeon1": {
-        "address": 17056,
+        "address": 17053,
         "bank": 31,
         "engine": 3
       },
       "Music_Dungeon2": {
-        "address": 17068,
+        "address": 17065,
         "bank": 31,
         "engine": 3
       },
       "Music_Dungeon3": {
-        "address": 17080,
+        "address": 17077,
         "bank": 31,
         "engine": 3
       },
@@ -573,12 +573,12 @@
         "engine": 1
       },
       "Music_MeetEvilTrainer": {
-        "address": 17122,
+        "address": 17119,
         "bank": 31,
         "engine": 3
       },
       "Music_MeetFemaleTrainer": {
-        "address": 17131,
+        "address": 17128,
         "bank": 31,
         "engine": 3
       },
@@ -588,7 +588,7 @@
         "engine": 3
       },
       "Music_MeetMaleTrainer": {
-        "address": 17140,
+        "address": 17137,
         "bank": 31,
         "engine": 3
       },
@@ -628,7 +628,7 @@
         "engine": 1
       },
       "Music_PokemonTower": {
-        "address": 17104,
+        "address": 17101,
         "bank": 31,
         "engine": 3
       },
@@ -663,7 +663,7 @@
         "engine": 1
       },
       "Music_SilphCo": {
-        "address": 17113,
+        "address": 17110,
         "bank": 31,
         "engine": 3
       },
@@ -1526,16 +1526,16 @@
     },
     "waveBanks": {
       "1": {
-        "address": 17267,
+        "address": 23078,
         "bank": 2
       },
       "2": {
-        "address": 17267,
-        "bank": 8
+        "address": 23078,
+        "bank": 2
       },
       "3": {
-        "address": 17267,
-        "bank": 31
+        "address": 23078,
+        "bank": 2
       }
     }
   },

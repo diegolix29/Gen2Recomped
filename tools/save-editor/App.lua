@@ -219,6 +219,11 @@ function App.unload()
   S = nil
   mods = nil
   App.dataVersion = nil
+  -- Kit is never evicted from package.loaded, so a Close taken while a text
+  -- field still owns focus would leak Kit.focus and a raised soft keyboard
+  -- (against a rect that is gone) into the launcher and the next session
+  -- (#529).
+  Kit.blur()
 end
 
 function App.save()
@@ -422,7 +427,7 @@ local function tabCount(id)
     return tostring(n)
   elseif id == "items" then
     local Bag = require("src.inventory.Bag")
-    return ("%d/%d"):format(Bag.slots(S.save), Bag.CAPACITY)
+    return ("%d/%d"):format(Bag.slots(S.save), Bag.capacity(S.data))
   elseif id == "events" then
     local n = 0
     for _ in pairs(S.save.flags or {}) do n = n + 1 end

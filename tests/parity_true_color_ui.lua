@@ -16,8 +16,10 @@ require("src.render.Font").load(Data)
 local PaletteFX = require("src.render.PaletteFX")
 local Sound = require("src.core.Sound")
 local DexEntryMenu = require("src.ui.DexEntryMenu")
+local EvolutionState = require("src.ui.EvolutionState")
 local TitleState = require("src.ui.TitleState")
 local OakSpeech = require("src.ui.OakSpeech")
+local TradeAnim = require("src.ui.TradeAnim")
 
 local savedCry = Sound.playCry
 Sound.playCry = function() end
@@ -33,7 +35,10 @@ end
 
 local def = Data.pokemon.PIKACHU
 local savedTrueColor = def.trueColor
+local raichu = Data.pokemon.RAICHU
+local savedRaichuTrueColor = raichu.trueColor
 def.trueColor = true
+raichu.trueColor = true
 
 local game = {
   data = Data,
@@ -49,6 +54,39 @@ check(#dexRects == 1 and dexRects[1].x == dx and dexRects[1].y == dy
       and dexRects[1].w == dex.sprite:getWidth()
       and dexRects[1].h == dex.sprite:getHeight(),
       "Pokedex reports the true-color sprite rectangle")
+
+local evolving = EvolutionState.new(game, { species = "PIKACHU" }, "RAICHU")
+check(evolving.oldSpriteTrueColor == true,
+      "evolution keeps the current Pokemon sprite's trueColor flag")
+check(evolving.newSpriteTrueColor == true,
+      "evolution keeps the evolved Pokemon sprite's trueColor flag")
+local evoRects = uiRects(function() evolving:draw() end)
+local ex = math.floor((160 - evolving.oldSprite:getWidth()) / 2)
+local ey = math.max(8, 64 - evolving.oldSprite:getHeight())
+check(#evoRects == 1 and evoRects[1].x == ex and evoRects[1].y == ey
+      and evoRects[1].w == evolving.oldSprite:getWidth()
+      and evoRects[1].h == evolving.oldSprite:getHeight(),
+      "evolution reports the true-color sprite rectangle")
+
+local trade = TradeAnim.new(game, {
+  sent = { species = "PIKACHU" }, received = { species = "RAICHU" },
+})
+check(trade.sentSpriteTrueColor == true,
+      "trade keeps the sent Pokemon sprite's trueColor flag")
+check(trade.recvSpriteTrueColor == true,
+      "trade keeps the received Pokemon sprite's trueColor flag")
+local tradeRects = uiRects(function() trade:draw() end)
+check(#tradeRects == 1 and tradeRects[1].x == 56 and tradeRects[1].y == 16
+      and tradeRects[1].w == trade.sentSprite:getWidth()
+      and tradeRects[1].h == trade.sentSprite:getHeight(),
+      "trade reports the sent true-color sprite rectangle")
+trade.phase = "show_enemy"
+local receivedRects = uiRects(function() trade:draw() end)
+check(#receivedRects == 1 and receivedRects[1].x == 56
+      and receivedRects[1].y == 16
+      and receivedRects[1].w == trade.recvSprite:getWidth()
+      and receivedRects[1].h == trade.recvSprite:getHeight(),
+      "trade reports the received true-color sprite rectangle")
 
 local titleGame = {
   data = { pokemon = Data.pokemon,
@@ -83,6 +121,7 @@ check(#oakRects == 1 and oakRects[1].x == ox and oakRects[1].y == oy
       "Oak intro reports the true-color sprite rectangle")
 
 def.trueColor = savedTrueColor
+raichu.trueColor = savedRaichuTrueColor
 Sound.playCry = savedCry
 PaletteFX.clearTrueColor()
 S.finish()

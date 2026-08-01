@@ -178,19 +178,16 @@ end
 
 -- ------- subset negotiation
 
--- the species and moves this party actually references, so the exchange
--- stays small (six mons) instead of shipping the whole catalog
+-- every record hash, not just this party's slice: the receiver filters
+-- its OWN party against these (eligibleParty), so a message limited to the
+-- sender's party read "not on the other game" for every species the two
+-- parties did not happen to share, and a subset trade between different
+-- games showed neither side (#511).  The full catalog is ~300 short hash
+-- strings -- still one message.
 function Protocol.recordsMessage(data, party)
-  local species = Fingerprint.records(data, "pokemon")
-  local moves = Fingerprint.records(data, "moves")
-  local outSpecies, outMoves = {}, {}
-  for _, mon in ipairs(party or {}) do
-    if species[mon.species] then outSpecies[mon.species] = species[mon.species] end
-    for _, mv in ipairs(mon.moves or {}) do
-      if moves[mv.id] then outMoves[mv.id] = moves[mv.id] end
-    end
-  end
-  return { type = "records", pokemon = outSpecies, moves = outMoves }
+  return { type = "records",
+           pokemon = Fingerprint.records(data, "pokemon"),
+           moves = Fingerprint.records(data, "moves") }
 end
 
 -- a mon may cross the wire only if both peers rebuild it identically: the

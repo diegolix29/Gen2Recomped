@@ -329,6 +329,12 @@ function ManagerState:detailRows(m)
     rows[#rows + 1] = { label = Strings("PERMISSIONS.."),
       action = function() self:goTo("permissions") end }
   end
+  if m.github then
+    rows[#rows + 1] = { inert = true, label = "GH " .. m.github }
+  end
+  if m.experimental then
+    rows[#rows + 1] = { inert = true, label = "EXPERIMENTAL" }
+  end
   if m.error then
     rows[#rows + 1] = { label = Strings("VIEW ERROR.."),
       action = function() self:goTo("errors") end }
@@ -612,13 +618,26 @@ function ManagerState:beginToggle(m)
     r = ManagerState.resolveToggle(self:manifestMap(), m.id, want,
                                    self:enabledSet())
   end
-  if #r.missing > 0 or #r.conflicts > 0 or #r.badVersion > 0 then
-    self:openBlocked(r)
-  elseif #r.alsoEnable > 0 or #r.alsoDisable > 0 then
-    self:openCascade(r, m, want)
-  else
-    self:commitToggle(r.apply)
+  local function proceed()
+    if #r.missing > 0 or #r.conflicts > 0 or #r.badVersion > 0 then
+      self:openBlocked(r)
+    elseif #r.alsoEnable > 0 or #r.alsoDisable > 0 then
+      self:openCascade(r, m, want)
+    else
+      self:commitToggle(r.apply)
+    end
   end
+  -- Experimental mods ask once on enable; disable is silent.
+  if want and m.experimental then
+    self:openConfirm({
+      "EXPERIMENTAL MOD",
+      "THIS MOD IS MARKED",
+      "EXPERIMENTAL.",
+      "ENABLE ANYWAY?",
+    }, proceed)
+    return
+  end
+  proceed()
 end
 
 function ManagerState:commitToggle(apply)

@@ -384,9 +384,16 @@ function Tournament:update(dt)
         else
           self.pendingBattleOpts.seed = msg.seed
         end
-        local battle, why = self.isHost
-          and LinkBattle.newHost(self.game, self.net, self.pendingBattleOpts)
-          or LinkBattle.newGuest(self.game, self.net, self.pendingBattleOpts)
+        -- Split rather than `cond and newHost() or newGuest()`: the and/or
+        -- idiom truncates a call to its first result, so the second return
+        -- (the specific reason) was always dropped and every failure showed
+        -- the generic fallback instead of "same mods on both games" etc.
+        local battle, why
+        if self.isHost then
+          battle, why = LinkBattle.newHost(self.game, self.net, self.pendingBattleOpts)
+        else
+          battle, why = LinkBattle.newGuest(self.game, self.net, self.pendingBattleOpts)
+        end
         if not battle then
           self:exitWith(why or Strings("Link battle\ncan't start."))
           return
