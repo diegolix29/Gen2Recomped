@@ -71,8 +71,12 @@ return {
       { "show_text", "_OaksLabRivalLeaveItAllToMeText" },
       { "set_flag", "EVENT_GOT_POKEDEX" },
       { "set_flag", "EVENT_OAK_GOT_PARCEL" },
+      -- OaksLabOakGivesPokedexScript: HideObject TOGGLE_LYING_OLD_MAN /
+      -- ShowObject TOGGLE_OLD_MAN_2 -- Yellow's tutorial old man stands
+      -- on the sleeper's cell (18,9); the Red/Blue walker OLD_MAN at
+      -- (17,5) never appears in Yellow (#617)
       { "hide_object", "VIRIDIAN_CITY", "VIRIDIANCITY_OLD_MAN_SLEEPY" },
-      { "show_object", "VIRIDIAN_CITY", "VIRIDIANCITY_OLD_MAN" },
+      { "show_object", "VIRIDIAN_CITY", "VIRIDIANCITY_OLD_MAN2" },
       { "stop_music" },
       { "play_music", "Music_MeetRival" },
       { "move_npc_to", RIVAL, 4, 7 },

@@ -114,9 +114,10 @@ end
 -- BindingsMenu:storeBinding) -- without this the menu records a choice
 -- that never actually reaches gameplay.
 function Input:applyBindings(overlay)
-  local keys, pads = {}, {}
+  local keys, pads, joys = {}, {}, {}
   for key, action in pairs(DEFAULT_BINDINGS) do keys[key] = action end
   for button, action in pairs(DEFAULT_GAMEPAD_BINDINGS) do pads[button] = action end
+  for index, action in pairs(RAW_BUTTON_BINDINGS) do joys[index] = action end
   for actionId, binding in pairs(overlay or {}) do
     if type(binding) == "table" then
       if binding.key then keys[binding.key] = actionId end
@@ -125,8 +126,20 @@ function Input:applyBindings(overlay)
       keys[binding] = actionId
     end
   end
+  -- A pad binding named "joyN" is the Nth button of a stick SDL has no
+  -- game-controller-database entry for, captured on the joystick path by
+  -- src/ui/BindingsMenu.lua (#632).  It deliberately rides the existing
+  -- pad slot: the CONTROLS row, the swap in BindingsMenu:storeBinding and
+  -- START's reset-all then all stay one code path, and this loop is the
+  -- only place that has to know what the name means.  Laid over the raw
+  -- defaults AFTER them, so a rebind wins the button it claims.
+  for padName, action in pairs(pads) do
+    local n = tonumber(padName:match("^joy(%d+)$"))
+    if n then joys[n] = action end
+  end
   self.keyBindings = keys
   self.padBindings = pads
+  self.joyBindings = joys
 end
 
 -- Same layering as applyBindings above, but for the hotkey action table
@@ -291,13 +304,30 @@ function Input:gamepadreleased(joystick, button)
   end
 end
 
+-- LOVE raises love.joystickpressed for EVERY stick, including ones SDL
+-- recognizes as gamepads, which raise love.gamepadpressed for the same
+-- physical press as well.  Answering both meant the fixed raw table
+-- re-asserted the factory A/B/START/SELECT map underneath the player's
+-- rebinds, so swapping A and B in CONTROLS pressed both at once and any
+-- controller rebind of those four looked ignored; on iOS the MFi driver's
+-- packing put the D-pad on 7..10, so a D-pad press also fired SELECT or
+-- START (#620, #632).  A recognized pad is served by the gamepad path
+-- alone; the raw path exists for sticks with no game-controller-database
+-- entry.  A nil joystick is a raw stick: that is how
+-- tests/input_hold_test.lua and the drivers drive this path.
+local function isRawStick(joystick)
+  return not (joystick and joystick.isGamepad and joystick:isGamepad())
+end
+
 function Input:joystickpressed(joystick, button)
-  local btn = RAW_BUTTON_BINDINGS[button]
+  if not isRawStick(joystick) then return end
+  local btn = self.joyBindings[button]
   if btn then press(self, btn, "joy:" .. button) end
 end
 
 function Input:joystickreleased(joystick, button)
-  local btn = RAW_BUTTON_BINDINGS[button]
+  if not isRawStick(joystick) then return end
+  local btn = self.joyBindings[button]
   if btn then release(self, btn, "joy:" .. button) end
 end
 

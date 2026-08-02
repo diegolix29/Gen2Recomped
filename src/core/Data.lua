@@ -77,6 +77,13 @@ end
 function Data:applyVersionedFieldData()
   if require("src.core.GameVersion").isYellow() then
     self.field.trades = copy(YELLOW_TRADES)
+    -- The old man's catch demo is a RATTATA in Yellow
+    -- (scripts/ViridianCity.asm ViridianCityOldManStartCatchTrainingScript
+    -- .SetupBattle: ld a, RATTATA / ld [wCurOpponent], a) but the Yellow
+    -- manifest inherited Red's WEEDLE field.oldManBattle (#617), so old
+    -- Yellow caches carry the wrong demo species too.  The fixed import
+    -- manifest below stamps RATTATA for fresh imports.
+    self.field.oldManBattle = { species = "RATTATA", level = 5 }
   end
 end
 

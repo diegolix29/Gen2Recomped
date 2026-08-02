@@ -25,7 +25,7 @@ local function starterBall(askText, species, choseFlag, ownBall,
     { "jump_if_true", 20 },                       -- 2
     -- no picking until Oak has walked you in (OaksLabScript gating)
     { "check_flag", "EVENT_FOLLOWED_OAK_INTO_LAB" }, -- 3
-    { "jump_if_false", 22 },                      -- 4
+    { "jump_if_false", 23 },                      -- 4
     -- the Pokédex "new species" entry shows before the ask (predef
     -- StarterDex ahead of OaksLabYouWant...Text).  StarterDex temporarily
     -- sets the owned bits so ShowPokedexData prints height/weight/text;
@@ -63,7 +63,10 @@ local function starterBall(askText, species, choseFlag, ownBall,
     -- out as Pokémon here.
     { "face_object", 5, "down" },                 -- 20
     { "show_text", "That's PROF.OAK's\nlast Pokémon!" }, -- 21
-    { "show_text", "_OaksLabThoseArePokeBallsText" }, -- 22
+    -- OaksLabLastMonScript ends at TextScriptEnd; the port used to fall
+    -- through into the pre-pick line below (#601 remnant, reported on #600)
+    { "jump", "end" },                            -- 22
+    { "show_text", "_OaksLabThoseArePokeBallsText" }, -- 23
   }
 end
 
@@ -71,10 +74,22 @@ return {
   talk = {
     -- Oak: OaksLabOak1Text.  Parcel delivery kicks SCRIPT_OAKSLAB_RIVAL_
     -- ARRIVES_AT_OAKS_REQUEST + OaksLabOakGivesPokedexScript (rival walk-
-    -- in, full Pokédex speech, rival exit, Route 22 arm).  Dex-rating
-    -- (DisplayDexRating) is still skipped.
+    -- in, full Pokédex speech, rival exit, Route 22 arm).
     TEXT_OAKSLAB_OAK1 = {
       { "face_player" },
+      -- OaksLabOak1Text leads with the dex-rating branch (#600): with
+      -- EVENT_PALLET_AFTER_GETTING_POKEBALLS set (converted saves), or
+      -- 2+ species owned once the Pokédex is in hand, Oak asks how it is
+      -- coming and rates it (predef DisplayDexRating).  Red keeps the
+      -- GOT_POKEDEX gate that Yellow's copy of this text drops
+      -- (data/scripts/oaks_lab_yellow.lua).
+      { "check_flag", "EVENT_PALLET_AFTER_GETTING_POKEBALLS" },
+      { "jump_if_true", "dex_rating" },
+      { "check_dex_owned", 2 },
+      { "jump_if_false", "no_rating" },
+      { "check_flag", "EVENT_GOT_POKEDEX" },
+      { "jump_if_true", "dex_rating" },
+      { "label", "no_rating" },
       { "check_item", "POKE_BALL" },
       { "jump_if_true", "come_see" },
       { "check_flag", "EVENT_BEAT_ROUTE22_RIVAL_1ST_BATTLE" },
@@ -160,6 +175,14 @@ return {
 
       { "label", "come_see" },
       { "show_text", "_OaksLabOak1ComeSeeMeSometimesText" },
+      { "jump", "end" },
+
+      -- .HowIsYourPokedexComingText ends on `prompt` and OaksLabOak1Text
+      -- sets wDoNotWaitForButtonPressAfterDisplayingText, so the seen/owned
+      -- tally follows with no button wait (engine/events/pokedex_rating.asm)
+      { "label", "dex_rating" },
+      { "show_text", "_OaksLabOak1HowIsYourPokedexComingText" },
+      { "dex_rating" },
     },
 
     TEXT_OAKSLAB_CHARMANDER_POKE_BALL =
@@ -254,7 +277,12 @@ return {
        and y >= 6 then
       local rival = ow:npcByIndex(1)
       if not rival then return false end
+      -- OaksLabRivalChallengesPlayerScript swaps in the rival encounter
+      -- fanfare for the taunt/challenge exchange, same as the Yellow port
+      -- (oaks_lab_yellow.lua); it was silently dropped here (#596).
       local rows = {
+        { "stop_music" },
+        { "play_music", "Music_MeetRival" },
         { "show_text", "_OaksLabRivalIllTakeYouOnText" },         -- 1
       }
       -- the rival routes to a free cell beside the player
@@ -294,6 +322,8 @@ return {
       table.insert(rows, { "show_text", "_OaksLabRivalSmellYouLaterText" })
       table.insert(rows, { "move_npc_to", 1, 4, 11 })
       table.insert(rows, { "hide_object", "OAKS_LAB", "OAKSLAB_RIVAL" })
+      -- restore the lab theme once he's walked out, same as the Yellow port
+      table.insert(rows, { "play_music", "Music_OaksLab" })
       ow.runner:run(rows, { npc = rival })
       return true
     end
