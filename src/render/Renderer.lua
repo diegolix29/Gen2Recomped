@@ -12,6 +12,8 @@ local PaletteFX = require("src.render.PaletteFX")
 local Pipelines = require("src.render.Pipelines")
 local PixelCanvas = require("src.render.PixelCanvas")
 local Runtime = require("src.mods.Runtime")
+-- leaf module (no renderer dependency), so requiring it here cannot cycle
+local FaithfulRes = require("src.core.FaithfulRes")
 
 local Renderer = {}
 
@@ -124,7 +126,16 @@ end
 function Renderer:fitScale()
   local _, _, pw, ph = displayMetrics()
   local w, h = self:uiSize()
-  return math.max(1, math.floor(math.min(pw / w, ph / h)))
+  local s = math.max(1, math.floor(math.min(pw / w, ph / h)))
+  -- FAITHFUL RATIO on mobile locks the scale here rather than by resizing the
+  -- window, which a phone does not have (see src/core/FaithfulRes.lua).  The
+  -- cap is the largest WHOLE multiple the display holds, so the picture is as
+  -- big as exact pixels allow and the remainder is bars.  Computed per frame
+  -- off the live drawable size, so a rotate re-derives it with nothing to
+  -- re-apply.
+  local cap = FaithfulRes.scaleCap()
+  if cap and cap < s then s = cap end
+  return s
 end
 
 -- Integer framebuffer pixels per GB pixel for the UI pass.
@@ -142,6 +153,13 @@ end
 function Renderer:uiScale()
   local S = self:fitScale()
   local off = Zoom.offset or 0
+  -- UI LAYOUT = CENTERED (uiCentered, set per frame by Game:draw): the UI is
+  -- a fixed letterbox at the fit scale and does not follow the survey zoom at
+  -- all, which is the whole point of the setting -- the screen furniture
+  -- stays put instead of resizing under the player.  DYNAMIC keeps the
+  -- step-down below.  BATTLE SIZE is unaffected either way: uiFill overrides
+  -- the scale in endFrame, after this.
+  if self.uiCentered then return S end
   -- Only follow the zoom when a world is actually behind the UI.  Survey zoom
   -- is an OVERWORLD control; the title screen, the intro and the credits show
   -- no world at all, and shrinking them to match a zoom level the player set
@@ -218,6 +236,21 @@ end
 -- accommodate the rotated view without cropping.
 function Renderer:worldViewSize()
   local _, _, pw, ph = displayMetrics()
+  -- FAITHFUL RATIO on mobile.  The world pass deliberately expands to cover the
+  -- WHOLE display, so letterbox voids become more map instead of black bars.
+  -- That is why the lock appeared to do nothing in the overworld: it shrank
+  -- the UI blit while the map kept filling the screen -- and showed MORE of
+  -- the map, because a smaller scale fits more world pixels in.
+  --
+  -- Size the view against the LOCKED VIEWPORT rather than the display.  A
+  -- desktop lock gets this for free by making the window exactly 160N x 144N;
+  -- this is the same sum with the viewport standing in for the window, so
+  -- both platforms show the same map area at the same zoom.
+  local cap = FaithfulRes.scaleCap()
+  if cap then
+    local uiw, uih = self:uiSize()
+    pw, ph = uiw * cap, uih * cap
+  end
   local sp = Zoom.scale(self:fitScale())
   local vw, vh = math.ceil(pw / sp), math.ceil(ph / sp)
   -- Even sizes keep Camera:follow on integer pixels (viewW/2 is integral),
@@ -683,6 +716,14 @@ end
 -- pixels, and consumed by endFrame this frame only.
 --   anchor: "bottom" | "topright" | "topleft" | "bottomright"
 function Renderer:setUIAnchor(x, y, w, h, anchor)
+  -- UI LAYOUT = CENTERED (uiCentered, set per frame by Game:draw from
+  -- save.options.uiLayout): every element stays where it was drawn in the
+  -- 160x144 canvas and the letterbox centres the lot, which is how the port
+  -- behaved before edge docking existed.  This is the DEFAULT; DYNAMIC opts
+  -- back into docking.  Gating here rather than at each caller means one
+  -- switch covers the dialogue box, its YES/NO, the START menu and anything
+  -- added later, and none of them has to know the option exists.
+  if self.uiCentered then return end
   -- uiAnchorHold (Game:draw): a state that composes its own screen -- a
   -- battle -- keeps every element inside it, so the box blits where it was
   -- drawn in the canvas instead of being pulled to the window edge.

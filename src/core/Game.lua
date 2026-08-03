@@ -330,6 +330,15 @@ end
 -- everything else here: the text box and YES/NO a battle puts up are states
 -- of their own sitting above it, and they are exactly the elements that must
 -- stay inside the battle's composition rather than dock to the window.
+-- UI LAYOUT: is edge docking switched on?  Only the explicit "dynamic" turns
+-- it on, so a save written before the option existed -- and any caller with no
+-- save at all, which is most of the headless suites -- gets CENTERED, the
+-- behaviour the port shipped with.
+function Game.dynamicUI(save)
+  local options = save and save.options
+  return options ~= nil and options.uiLayout == "dynamic"
+end
+
 function Game.uiAnchorsHeldInStack(stack)
   for i = #(stack and stack.states or {}), 1, -1 do
     local state = stack.states[i]
@@ -430,6 +439,13 @@ function Game:draw()
   Renderer.uiWorldHold = Renderer.battleDim ~= nil
   -- ...and a battle keeps its dialogue box and YES/NO inside its own screen
   -- instead of letting them dock to the window edge.
+  -- UI LAYOUT: CENTERED (the default) is a fixed letterbox -- every element
+  -- stays inside the 160x144 canvas and the UI does not follow the survey
+  -- zoom, so the screen furniture never moves or resizes under the player.
+  -- That is the composition the port shipped with.  DYNAMIC opts into both
+  -- halves: the dialogue box docks to the window's bottom edge, the START
+  -- menu to its top right, and the whole UI steps down with the zoom.
+  Renderer.uiCentered = not Game.dynamicUI(self.save)
   Renderer.uiAnchorHold = Game.uiAnchorsHeldInStack(self.stack)
   Renderer:beginFrame(worldBelow)
   for i = drawFrom, #self.stack.states do
@@ -508,6 +524,24 @@ function Game:wheelmoved(_, dy)
   end
 end
 
+function Game:_cycleSpeed(dir)
+  if not (self.save and self.save.options) then return end
+  local busy
+  local ow = self.overworld
+  if ow then
+    local top = self.stack:top()
+    busy = ow.transitioning
+      or (top == ow and (
+           (ow.runner and ow.runner.isRunning and ow.runner:isRunning())
+        or (ow.scriptMoves and #ow.scriptMoves > 0)
+        or ow.engaging or ow.emote))
+  end
+  if busy then return end
+  local GameSpeed = require("src.core.GameSpeed")
+  self.save.options.speed = GameSpeed.cycle(self.save.options.speed, dir)
+  self:writeOptions()
+end
+
 -- One-shot display actions, fired identically whether the trigger was a
 -- keyboard key (Game:keypressed) or a gamepad button (Game:gamepadpressed)
 -- bound through HotkeyBindingsMenu. `action` is one of the ids in
@@ -517,7 +551,13 @@ function Game:fireHotkey(action)
     self:zoomStep(-1)
   elseif action == "zoomIn" then
     self:zoomStep(1)
-  elseif action == "colors" then
+    return
+  elseif key == "1" then
+    -- cycle GAME SPEED (0.25X → 200X, logic only; audio unaffected);
+    -- R2/L2 on gamepad do the same (see gamepadpressed)
+    self:_cycleSpeed(1)
+    return
+  elseif key == "2" then
     -- cycle COLORS (GBC / OG / OG INV / GBC INV / CLASSIC); the pack change
     -- forces Game.overworld:reloadMap, which rebuilds the live NPC array, so
     -- hold it while a warp/transition or an on-screen scripted cutscene is
@@ -688,6 +728,15 @@ function Game:gamepadpressed(joystick, button)
   -- a controller is being used: the touch overlay steps aside until the
   -- next screen touch (mobile only; a no-op elsewhere)
   TouchControls:noteGamepad()
+  -- shoulder buttons cycle GAME SPEED (R2/rightshoulder = faster,
+  -- L2/leftshoulder = slower; same as keyboard hotkey 1)
+  if button == "rightshoulder" then
+    self:_cycleSpeed(1)
+    return
+  elseif button == "leftshoulder" then
+    self:_cycleSpeed(-1)
+    return
+  end
   -- BindingsMenu's pad capture rides the same top-state routing as keys
   local top = self.stack and self.stack:top()
   if top and top.onGamepadPressed then

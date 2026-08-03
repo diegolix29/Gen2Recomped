@@ -779,8 +779,9 @@ check(oak.demoSpecies == "NIDORINO" and oak.nameLen == 7,
 
 -- ------- intro.oak_speech.build
 local vanillaSteps = OakSpeech.defaultSteps(oak)
-check(#vanillaSteps == 9, "vanilla speech has nine steps")
-check(vanillaSteps[1].id == "oak_welcome" and vanillaSteps[9].id == "shrink",
+check(#vanillaSteps == 11, "vanilla speech has eleven steps")
+check(vanillaSteps[1].id == "oak_welcome"
+  and vanillaSteps[#vanillaSteps].id == "shrink",
   "vanilla speech anchors start and end")
 
 hooks:wrap("intro.oak_speech.build", function(nextFn, steps, speech)
@@ -799,7 +800,7 @@ hooks:removeOwner("fixture")
 
 hooks:wrap("intro.oak_speech.build", function() return 42 end, 0, "bad")
 built = oak:buildSteps()
-check(#built == 9 and built[1].id == "oak_welcome",
+check(#built == #vanillaSteps and built[1].id == "oak_welcome",
   "a non-table intro.oak_speech.build result degrades to vanilla")
 check(logged("intro.oak_speech.build returned"),
   "the intro build degrade is logged")

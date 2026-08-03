@@ -129,6 +129,7 @@ Timing.NO_MOVES_LEFT      = 60 -- core.asm:2753-2754
 Timing.TRAINER_VICTORY    = 40 -- core.asm:940-941
 Timing.PLAYER_BLACKOUT    = 40 -- core.asm:1143-1144
 Timing.FAINT_SLIDE_ROW    = 2  -- core.asm:1216-1217, per row
+Timing.FAINT_SLIDE_STEP   = 8 / Timing.FAINT_SLIDE_ROW -- 4px per frame at 1x
 Timing.TRAINER_SLIDE_COL  = 2  -- core.asm:1267-1268, per column
 
 -- HP bar (engine/gfx/hp_bar.asm) ---------------------------------------------

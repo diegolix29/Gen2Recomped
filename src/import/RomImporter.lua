@@ -340,6 +340,15 @@ local function commandOutput(command)
   return result ~= "" and result or nil
 end
 
+-- Sanitize a string before it is interpolated into a picker shell command:
+--   * "%" would be eaten as a string.format directive (#665);
+--   * '"' would break the AppleScript / zenity double-quoted argument and
+--     "'" the surrounding single-quoted shell string.
+local function shellSafe(s)
+  s = tostring(s):gsub("%%", "%%%%")
+  return s:gsub('"', '\\"'):gsub("'", "''")
+end
+
 -- LOVE 11.5 on Android has no native file picker (love.window.showFileDialog
 -- is a LOVE 12 nightly-only addition) and never fires love.filedropped, so
 -- neither desktop path below works there. conf.lua points the Android save
@@ -446,7 +455,7 @@ end
 
 local function chooseRom(promptName)
   promptName = promptName or "Pokemon"
-  local prompt = "Choose your " .. promptName .. " ROM"
+  local prompt = shellSafe("Choose your " .. promptName .. " ROM")
   local platform = love.system.getOS()
   if platform == "OS X" then
     return commandOutput(
@@ -458,10 +467,16 @@ local function chooseRom(promptName)
       "$d=New-Object System.Windows.Forms.OpenFileDialog;",
       "$d.Title='" .. prompt .. "';",
       "$d.Filter='Game Boy ROM (*.gb;*.gbc)|*.gb;*.gbc|All files (*.*)|*.*';",
-      -- write the pick as UTF-8: the console's OEM codepage would mangle
-      -- non-ASCII names (Pokémon -> Pok\x82mon) and crash any text draw
-      -- that shows them (#325)
-      "if($d.ShowDialog() -eq 'OK'){[Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::Write($d.FileName)}",
+      -- copy the pick to a plain-ASCII temp name and answer with that:
+      -- the console's OEM codepage would mangle a non-ASCII path
+      -- (Pokémon -> Pok\x82mon) and io.open on Windows needs ANSI bytes,
+      -- so returning the original name both crashed the notice draw and
+      -- could never have opened the file (#325, #665)
+      "if($d.ShowDialog() -eq 'OK'){",
+      "$t=Join-Path $env:TEMP 'pokeport_rom_pick.gb';",
+      "Copy-Item -LiteralPath $d.FileName -Destination $t -Force;",
+      "[Console]::OutputEncoding=[Text.Encoding]::UTF8;",
+      "[Console]::Write($t)}",
     })
     return commandOutput(
       'powershell -NoProfile -STA -Command "' .. script .. '"')
@@ -480,7 +495,7 @@ end
 -- Returns the chosen absolute path or nil.  Android uses love.system.pickFile
 -- ("mod") instead -- see RomImporter:chooseMod.
 local function chooseZip()
-  local prompt = Strings("Choose a mod .zip")
+  local prompt = shellSafe(Strings("Choose a mod .zip"))
   local platform = love.system.getOS()
   if platform == "OS X" then
     return commandOutput(
@@ -520,7 +535,7 @@ end
 -- dialogs).  Returns the chosen absolute path or nil.  Android uses
 -- love.system.pickFile("sav") instead -- see RomImporter:chooseSaveImport.
 local function chooseSav()
-  local prompt = Strings("Choose a .sav save file")
+  local prompt = shellSafe(Strings("Choose a .sav save file"))
   local platform = love.system.getOS()
   if platform == "OS X" then
     return commandOutput(
@@ -532,8 +547,14 @@ local function chooseSav()
       "$d=New-Object System.Windows.Forms.OpenFileDialog;",
       "$d.Title='" .. prompt .. "';",
       "$d.Filter='Game Boy save (*.sav)|*.sav|All files (*.*)|*.*';",
-      -- UTF-8, like the ROM and mod pickers (#325)
-      "if($d.ShowDialog() -eq 'OK'){[Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::Write($d.FileName)}",
+      -- copy the pick to a plain-ASCII temp name: io.open on Windows
+      -- needs ANSI bytes, so a non-ASCII path (Pokémon -> Pok\x82mon)
+      -- could never have been opened (#325, #665)
+      "if($d.ShowDialog() -eq 'OK'){",
+      "$t=Join-Path $env:TEMP 'pokeport_sav_pick.sav';",
+      "Copy-Item -LiteralPath $d.FileName -Destination $t -Force;",
+      "[Console]::OutputEncoding=[Text.Encoding]::UTF8;",
+      "[Console]::Write($t)}",
     })
     return commandOutput(
       'powershell -NoProfile -STA -Command "' .. script .. '"')

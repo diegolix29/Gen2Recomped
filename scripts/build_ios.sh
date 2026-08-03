@@ -343,23 +343,12 @@ pack_game_love() {
   done
   say "game.love: $(du -h "$LOVE_FILE" | cut -f1) -> $LOVE_FILE"
 
-  # This script packs its own game.love (it does not reuse build.sh's), so it
-  # stamps the release version the same way build.sh and build_android.sh do:
-  # patch a copy of Version.lua (engine set to $VERSION) under a throwaway
-  # staging dir and replace the entry inside the archive in place -- never the
-  # source tree. Stamping the Info.plist alone is not enough: the mod loader
-  # reads Version.engine out of game.love (src/mods/Loader.lua game_version
-  # gate), so an unstamped archive reports "0.0.0-dev" and every mod with a
-  # version floor is rejected on iOS while it loads on desktop (#613).
-  # VERSION is already validated as X.Y.Z above; when it is empty the packaged
-  # game keeps the "0.0.0-dev" default so a dev build cannot pass for a
-  # release. The stamp is read back out and the build fails if it did not take.
   if printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
     say "stamping engine version $VERSION into game.love"
     local stamp_dir
     stamp_dir="$(mktemp -d)"
     mkdir -p "$stamp_dir/src/core"
-    sed -E "s/(engine[[:space:]]*=[[:space:]]*\")[^\"]*(\")/\1$VERSION\2/" \
+    sed -E "s/(engine[[:space:]]*=[[:space:]]*\")([^\"]*)(\")/\1$VERSION\3/" \
       "$ROOT/src/core/Version.lua" > "$stamp_dir/src/core/Version.lua"
     (cd "$stamp_dir" && zip -q "$LOVE_FILE" src/core/Version.lua)
     local version_re
@@ -464,6 +453,86 @@ print("patched project.pbxproj")
 PY
 }
 
+suppress_love_dependency_warnings() {
+  local liblove_pbx="$XCODE_DIR/liblove.xcodeproj/project.pbxproj"
+  local love_pbx="$XCODE_DIR/love.xcodeproj/project.pbxproj"
+  [ -f "$liblove_pbx" ] || fail "missing $liblove_pbx"
+  [ -f "$love_pbx" ] || fail "missing $love_pbx"
+
+  python3 - "$liblove_pbx" "$love_pbx" <<'PY'
+import pathlib
+import sys
+
+def patch_configs(path, config_ids, settings):
+    text = path.read_text()
+    for config_id in config_ids:
+        marker = f"\t\t{config_id}"
+        start = text.find(marker)
+        if start < 0:
+            raise SystemExit(f"missing configuration {config_id}")
+        settings_start = text.find("\t\t\tbuildSettings = {\n", start)
+        block_end = text.find("\n\t\t};", settings_start)
+        if settings_start < 0 or block_end < 0:
+            raise SystemExit(f"invalid configuration {config_id}")
+        block = text[settings_start:block_end]
+        lines = block.splitlines(keepends=True)
+        for setting in settings:
+            key = setting.split(" = ", 1)[0].strip()
+            prefix = f"{key} ="
+            replaced = False
+            normalized = []
+            for line in lines:
+                if line.startswith(f"\t\t\t\t{prefix}"):
+                    if not replaced:
+                        normalized.append(setting)
+                        replaced = True
+                else:
+                    normalized.append(line)
+            if not replaced:
+                normalized.insert(1, setting)
+            lines = normalized
+        normalized_block = "".join(lines)
+        if normalized_block != block:
+            text = text[:settings_start] + normalized_block + text[block_end:]
+    path.write_text(text)
+
+patch_configs(
+    pathlib.Path(sys.argv[1]),
+    (
+        "FA0B78EF1A958B90000E1D17",
+        "FA0B78F01A958B90000E1D17",
+        "FA0B78F11A958B90000E1D17",
+    ),
+    (
+        "\t\t\t\tCLANG_WARN_UNINITIALIZED_AUTOS = NO;\n",
+        "\t\t\t\tCLANG_WARN_UNREACHABLE_CODE = NO;\n",
+        "\t\t\t\tCLANG_WARN_UNUSED_PARAMETER = NO;\n",
+        "\t\t\t\tGCC_WARN_CHECK_SWITCH_STATEMENTS = NO;\n",
+        "\t\t\t\tGCC_WARN_SIGN_COMPARE = NO;\n",
+        "\t\t\t\tGCC_WARN_UNINITIALIZED_AUTOS = NO;\n",
+        "\t\t\t\tGCC_WARN_UNUSED_FUNCTION = NO;\n",
+        "\t\t\t\tGCC_WARN_UNUSED_PARAMETER = NO;\n",
+        "\t\t\t\tGCC_WARN_UNUSED_VARIABLE = NO;\n",
+        "\t\t\t\tOTHER_CFLAGS = \"$(inherited) -Wno-sign-compare -Wno-strict-prototypes -Wno-unused-but-set-variable -Wno-unused-function -Wno-unused-parameter -Wno-unused-variable\";\n",
+        "\t\t\t\tOTHER_CPLUSPLUSFLAGS = \"$(inherited) -Wno-deprecated-declarations -Wno-non-c-typedef-for-linkage -Wno-sign-compare -Wno-switch -Wno-unguarded-availability-new -Wno-unused-but-set-variable -Wno-unused-function -Wno-unused-parameter -Wno-unused-private-field -Wno-unused-variable\";\n",
+    ),
+)
+patch_configs(
+    pathlib.Path(sys.argv[2]),
+    (
+        "FA0B7F261A95AAF4000E1D17",
+        "FA0B7F271A95AAF4000E1D17",
+        "FA0B7F281A95AAF4000E1D17",
+    ),
+    (
+        "\t\t\t\tCLANG_WARN_UNDECLARED_SELECTOR = NO;\n",
+        "\t\t\t\tCLANG_WARN_UNUSED_PARAMETER = NO;\n",
+        "\t\t\t\tOTHER_CFLAGS = \"$(inherited) -Wno-undeclared-selector -Wno-unused-parameter\";\n",
+    ),
+)
+PY
+}
+
 # --------------------------------------------------------------- xcodebuild
 # love.system.pickFile and createFile are a native bridge compiled in by
 # mobile/ios/patch_love_src.py, not part of LÖVE.  A build that skipped the
@@ -543,6 +612,7 @@ run_xcodebuild() {
     MARKETING_VERSION="$marketing_version"
     CURRENT_PROJECT_VERSION="$project_version"
     ONLY_ACTIVE_ARCH=NO
+    DISABLE_MANUAL_TARGET_ORDER_BUILD_WARNING=YES
   )
 
   if ! $DEVICE; then
@@ -702,6 +772,7 @@ python3 "$IOS_DIR/patch_love_src.py" || fail "patch_love_src.py failed"
 ensure_manifests
 pack_game_love
 ensure_game_love_in_xcode
+suppress_love_dependency_warnings
 
 if $PACKAGE_ONLY; then
   say "package-only: skipping xcodebuild (game.love + plist ready under mobile/ios/love-src/)"

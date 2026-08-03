@@ -228,6 +228,15 @@ function SaveData.defaultOptions()
     -- "black" = plain black bars, "world" = the frozen overworld showing
     -- through, dimmed.  See BattleState:bgMode.
     battleBg = "white",
+    -- UI LAYOUT: "centered" = a fixed letterbox.  Every element sits where it
+    -- was drawn in the 160x144 canvas and the UI does not follow the survey
+    -- zoom, so nothing moves or resizes under the player.  The original
+    -- composition.  "dynamic" = the dialogue box docks to the window's bottom
+    -- edge, the START menu to its top right, and the UI steps down with the
+    -- zoom.  Centered is the default: dynamic reads better zoomed out, but it
+    -- moves the screen furniture, so it is opt-in.
+    -- See Game.dynamicUI, Renderer:setUIAnchor and Renderer:uiScale.
+    uiLayout = "centered",
     ruleset = "gen1_faithful",
     -- 0-7 like the GB's NR50 master volume
     musicVol = 7,

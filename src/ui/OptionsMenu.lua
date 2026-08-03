@@ -278,6 +278,23 @@ local function buildRows(game)
         o.battleBg = order[(cur - 1 + (dir or 1)) % #order + 1]
         return true
       end },
+    -- CENTERED is a fixed letterbox: elements stay inside the 160x144 canvas
+    -- and the UI does not follow the survey zoom, so nothing moves or resizes
+    -- under the player.  The composition the port shipped with.  DYNAMIC docks
+    -- the dialogue box to the window's bottom edge and the START menu to its
+    -- top right, and steps the UI down with the zoom -- easier to read zoomed
+    -- out, but it moves furniture the original never moved, so it is opt-in.
+    -- BATTLE SIZE is independent of this and works under either.
+    { id = "uiLayout", label = Strings("UI LAYOUT"),
+      value = function(g)
+        return g.save.options.uiLayout == "dynamic" and Strings("DYNAMIC")
+               or Strings("CENTERED")
+      end,
+      step = function(g)
+        local o = g.save.options
+        o.uiLayout = o.uiLayout == "dynamic" and "centered" or "dynamic"
+        return true
+      end },
     { id = "ruleset", label = Strings("RULESET"),
       value = function(g) return rulesetName(g) end,
       step = function(g, dir)
@@ -506,7 +523,7 @@ local function buildRows(game)
     -- Game Boy screen with no letterbox at all.  Sits next to VIDEO MODE
     -- because it overrides it: holding an exact size means dropping
     -- fullscreen.
-    { id = "faithfulRes", label = Strings("FAITHFUL RES"),
+    { id = "faithfulRes", label = Strings("FAITHFUL RATIO"),
       value = function(g)
         return FaithfulRes.label(g.save.options.faithfulRes)
       end,

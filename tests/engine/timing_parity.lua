@@ -273,6 +273,26 @@ T.eq(Timing.BLINK_MON % 10, 0,
 -- SlideDownFaintedMonPic: b = PIC_HEIGHT slide steps of DelayFrames 2
 T.eq(Timing.FAINT_SLIDE, 14, "the faint slide is 7 steps x 2 frames")
 
+-- #671: the slide must start at the sprite's resting spot and sink the
+-- full PIC_HEIGHT (7 rows x 8px = 56px at 1x) across those 14 frames.
+-- The old (30 - frames) * 2 math teleported the pic 32px down on frame
+-- one once the budget was shortened from 30 to 14 frames.
+local faintBattle = newBattle()
+faintBattle.fx = { faint = { battler = faintBattle.enemy,
+                             frames = Timing.FAINT_SLIDE } }
+T.eq(faintBattle:fxFaintOffset(faintBattle.enemy, 1), 0,
+  "the faint slide starts at offset 0 (#671)")
+faintBattle.fx.faint.frames = Timing.FAINT_SLIDE - 7
+T.eq(faintBattle:fxFaintOffset(faintBattle.enemy, 1),
+     7 * Timing.FAINT_SLIDE_STEP,
+  "the slide sinks one 8px row per step")
+faintBattle.fx.faint.frames = 1
+T.eq(faintBattle:fxFaintOffset(faintBattle.enemy, 1),
+     (Timing.FAINT_SLIDE - 1) * Timing.FAINT_SLIDE_STEP,
+  "the slide reaches 52px by the last visible frame")
+T.eq(Timing.FAINT_SLIDE * Timing.FAINT_SLIDE_STEP, 56,
+  "and covers the full 7-row pic height over the whole budget")
+
 T.eq(Timing.MOVE_STATUS_OR_MISS, 30,
   "a status move or a miss holds DelayFrames 30 before its text")
 
