@@ -35,7 +35,16 @@ local DEFAULT_GAMEPAD_BINDINGS = {
 
 -- Raw joystick button bindings for joysticks that don't follow gamepad mapping
 -- These are numeric button indices that some joysticks use
-local RAW_BUTTON_BINDINGS = DEFAULT_GAMEPAD_BINDINGS
+local RAW_BUTTON_BINDINGS = {
+  [1] = "b",
+  [2] = "a",
+  [3] = "select",
+  [4] = "start",
+  [9] = "left",
+  [10] = "right",
+  [11] = "up",
+  [12] = "down",
+}
 
 -- left-stick deadzones: press past STICK_ON, release once back under
 -- STICK_OFF. The gap (hysteresis) stops the direction from flickering

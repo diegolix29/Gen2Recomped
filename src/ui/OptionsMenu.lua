@@ -633,6 +633,14 @@ local function buildRows(game)
     end
     rows = filtered
   end
+  -- hide ORIENTATION on non-Android platforms
+  if osName ~= "Android" then
+    local filtered = {}
+    for _, row in ipairs(rows) do
+      if row.id ~= "orientation" then filtered[#filtered + 1] = row end
+    end
+    rows = filtered
+  end
   -- TOUCH PAD only where the overlay can appear (mobile, or desktop with
   -- POKEPORT_TOUCH=1).  POKEPORT_TOUCH=0 forces it off everywhere.
   do
@@ -656,15 +664,6 @@ local function buildRows(game)
     local filtered = {}
     for _, row in ipairs(rows) do
       if row.id ~= "pikaVol" then filtered[#filtered + 1] = row end
-    end
-    rows = filtered
-  end
-  -- hide TOUCH LAYOUT on non-mobile platforms
-  local osName = love.system and love.system.getOS and love.system.getOS()
-  if osName ~= "Android" and osName ~= "iOS" then
-    local filtered = {}
-    for _, row in ipairs(rows) do
-      if row.id ~= "touchLayout" then filtered[#filtered + 1] = row end
     end
     rows = filtered
   end

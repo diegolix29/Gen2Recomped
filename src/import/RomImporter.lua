@@ -619,15 +619,15 @@ function RomImporter.new(onComplete, opts)
     -- pick never arrives.  The file is sitting in the save dir either way, so
     -- boot armed and let the first poll tick consume it, rather than making the
     -- player tap Import a second time to trigger the scan by hand (#553).
-    pickPending = android or nil,
-    _startupPoll = android or nil,
+    pickPending = mobileFileBridge or nil,
+    _startupPoll = mobileFileBridge or nil,
     -- Android drag: the launcher is handed no move events at all (main.lua
     -- forwards neither touchmoved nor mousemoved while it is up), and its mouse
     -- emulation is what "no reliable pointer polling" below refers to.
     -- love.touch IS pollable, so where it exists a touch drag can be resolved
     -- inside draw the same way the desktop mouse is.  Where it does not, every
     -- Android path stays exactly as it was: act on press, never arm.
-    touchPollable = android and love.touch ~= nil
+    touchPollable = mobileFileBridge and love.touch ~= nil
       and love.touch.getTouches ~= nil and love.touch.getPosition ~= nil,
     tab = "red",          -- active launcher tab: "red"/"blue"/"yellow"/"mods"
     logo = love.graphics.newImage("assets/logo/logo.png"),
