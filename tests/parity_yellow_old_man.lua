@@ -190,6 +190,8 @@ do
   check(battle and battle.demo, "it is the old-man demo battle")
   eq(battle and battle.enemy and battle.enemy.mon.species, "RATTATA",
      "the demo is a RATTATA in Yellow (#617)")
+  check(battle and battle.demoFails,
+        "the initial training throw breaks out, never catches (#636)")
   eq(save.flags[DONE_FLAG], nil, "the flag is still clear mid-demo")
   battle.onFinish() -- the battle ends, the post-battle text prints
 

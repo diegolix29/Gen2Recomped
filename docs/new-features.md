@@ -332,6 +332,17 @@ one used sideways. An `options.lua` from before this split keeps its single
 layout in both orientations until one of them is edited. In-game, Options →
 **TOUCH PAD** toggles the same on/off flag without leaving a play session.
 
+## Screen orientation lock (Android)
+
+Options → **ORIENTATION** (also in the launcher's gear menu) locks the
+screen to **PORTRAIT**, **LANDSCAPE** (either landscape, following the
+device), or **REVERSE LANDSCAPE**, or leaves it on **AUTO** (#592). AUTO
+allows every orientation but defers to the system: with auto-rotate turned
+off in Android's quick settings, the game stays put instead of following
+the sensor (#716). Changes apply immediately -- the screen rotates as the
+row is stepped -- and persist in `options.lua`. Android only: iOS follows
+the app's fixed orientation list, and desktop windows rotate nothing.
+
 ## Translation support
 
 Every string the player can read is now reachable from a mod, so a

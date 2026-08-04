@@ -8,6 +8,7 @@
 local MoveEffects = require("src.battle.MoveEffects")
 local Runtime = require("src.mods.Runtime")
 local StatusRegistry = require("src.battle.StatusRegistry")
+local romText = require("src.core.RomText")
 local Strings = require("src.core.Strings")
 local Timing = require("src.core.Timing")
 
@@ -106,7 +107,7 @@ function EffectRegistry.runDamaging(battle, ctx, record)
     -- Explosion/Selfdestruct still animate on a miss (HandleIfPlayerMoveMissed)
     if not (record and record.explode) then battle:cancelMoveAnim() end
     missBeat(battle, record)
-    battle:sayNext(Strings("%s's\nattack missed!", displayName(user)))
+    battle:sayNext(romText(battle.data, "_AttackMissedText", "%s's\nattack missed!", displayName(user)))
     -- MoveHitTest's INVULNERABLE branch sets the same wMoveMissed as a
     -- failed accuracy roll (core.asm:5260), and the miss handler still
     -- runs the explode effect ("even if Explosion or Selfdestruct
@@ -135,7 +136,7 @@ function EffectRegistry.runDamaging(battle, ctx, record)
       -- Explosion/Selfdestruct still animate on a miss (HandleIfPlayerMoveMissed)
       if not (record and record.explode) then battle:cancelMoveAnim() end
       missBeat(battle, record)
-      battle:sayNext(Strings("%s's\nattack missed!", displayName(user)))
+      battle:sayNext(romText(battle.data, "_AttackMissedText", "%s's\nattack missed!", displayName(user)))
       -- Jump Kick crash, Explode self-destruct
       if record and record.onMiss then record.onMiss(ctx, "accuracy") end
       user.trappingTurns = nil
@@ -163,7 +164,7 @@ function EffectRegistry.runDamaging(battle, ctx, record)
     if not counterable or (battle.lastDamage or 0) == 0 then
       battle:cancelMoveAnim()
       missBeat(battle, record)
-      battle:sayNext(Strings("%s's\nattack missed!", displayName(user)))
+      battle:sayNext(romText(battle.data, "_AttackMissedText", "%s's\nattack missed!", displayName(user)))
       return
     end
     dmg = math.min(65535, battle.lastDamage * 2)
@@ -187,7 +188,7 @@ function EffectRegistry.runDamaging(battle, ctx, record)
     -- type immunity zeros damage and sets wMoveMissed in Gen 1, so no anim
     if not (record and record.explode) then battle:cancelMoveAnim() end
     missBeat(battle, record)
-    battle:sayNext(Strings("It doesn't affect\n%s!", displayName(target)))
+    battle:sayNext(romText(battle.data, "_DoesntAffectMonText", "It doesn't affect\n%s!", displayName(target)))
     if record and record.onMiss then record.onMiss(ctx, "immune") end
     return
   end
@@ -195,7 +196,7 @@ function EffectRegistry.runDamaging(battle, ctx, record)
     -- 0.25x floored the damage to zero: the original registers a miss
     if not (record and record.explode) then battle:cancelMoveAnim() end
     missBeat(battle, record)
-    battle:sayNext(Strings("%s's\nattack missed!", displayName(user)))
+    battle:sayNext(romText(battle.data, "_AttackMissedText", "%s's\nattack missed!", displayName(user)))
     if record and record.onMiss then record.onMiss(ctx, "floored") end
     return
   end
@@ -247,8 +248,8 @@ function EffectRegistry.runDamaging(battle, ctx, record)
     -- multi-hit loop (core.asm .moveDidNotMiss before the jump back
     -- to GetPlayerAnimationType), so crit/effectiveness reprint on
     -- every strike -- damage was only rolled once
-    if info.crit then battle:sayNext(Strings("Critical hit!")) end
-    if info.ohko then battle:sayNext(Strings("One-hit KO!")) end
+    if info.crit then battle:sayNext(romText(battle.data, "_CriticalHitText", "Critical hit!")) end
+    if info.ohko then battle:sayNext(romText(battle.data, "_OHKOText", "One-hit KO!")) end
     -- PrintCriticalOHKOText closes with `ld c, 20 / jp DelayFrames` at its
     -- .done label (core.asm:3812-3814) -- and the no-crit path jumps to that
     -- same label (:3799), so this hold is paid on EVERY landed hit, not just
@@ -257,9 +258,9 @@ function EffectRegistry.runDamaging(battle, ctx, record)
     -- comes from.
     battle:waitNext(Timing.CRIT_OHKO_TEXT)
     if info.typeMult > 10 then
-      battle:sayNext(Strings("It's super\neffective!"))
+      battle:sayNext(romText(battle.data, "_SuperEffectiveText", "It's super\neffective!"))
     elseif info.typeMult < 10 then
-      battle:sayNext(Strings("It's not very\neffective..."))
+      battle:sayNext(romText(battle.data, "_NotVeryEffectiveText", "It's not very\neffective..."))
     end
     if Runtime.wants("battle.damage_dealt") then
       Runtime.emit("battle.damage_dealt", {
@@ -277,9 +278,9 @@ function EffectRegistry.runDamaging(battle, ctx, record)
   if hits > 1 then
     -- player: _MultiHitText; enemy: _HitXTimesText (always plural)
     if user.isPlayer then
-      battle:sayNext(Strings("Hit the enemy\n%d times!", hits))
+      battle:sayNext(romText(battle.data, "_MultiHitText", "Hit the enemy\n%d times!", hits))
     else
-      battle:sayNext(Strings("Hit %d times!", hits))
+      battle:sayNext(romText(battle.data, "_HitXTimesText", "Hit %d times!", hits))
     end
   end
 
@@ -291,7 +292,7 @@ function EffectRegistry.runDamaging(battle, ctx, record)
   elseif moveInst.struggle then
     -- struggle recoils even when its effect id resolves to no record
     local recoil = math.max(1, math.floor(dmg / 2))
-    battle:sayNext(Strings("%s's\nhit with recoil!", displayName(user)))
+    battle:sayNext(romText(battle.data, "_HitWithRecoilText", "%s's\nhit with recoil!", displayName(user)))
     battle:applyDamage(user, recoil)
   end
 

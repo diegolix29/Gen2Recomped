@@ -3375,6 +3375,10 @@ runSuites({ "tests/rom_importer_android_mod_pick_test.lua" })
 -- ---------------------------------------------- import with no picker (#482)
 runSuites({ "tests/rom_importer_no_picker_test.lua" })
 runSuites({ "tests/rom_importer_double_pick_test.lua" })
+-- ---------------------------------------------- Switch platform capabilities
+-- platform_nx_* / rom_importer_nx_* live in tests/engine/ (ROM-free T2) so
+-- CI's headless lane runs them without data/generated/.
+runSuites({ "tests/launcher_mods_install_zip_test.lua" })
 -- ---------------------------------------------- parity workstream tests
 -- Each tests/parity_*.lua is a self-contained file (own bootstrap + check,
 -- error()s if any assertion fails).  Globbed, so dropping a new parity

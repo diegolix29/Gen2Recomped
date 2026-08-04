@@ -240,6 +240,14 @@ end
 -- and the zone lists are exactly the ones the states returned.
 local trueColorRects = { ui = {}, world = {} }
 local currentPass = nil
+-- Horizontal shift applied to UI-pass marks.  A wide battle keeps its 304px
+-- surface through every classic state it opens, and Game:draw centres each
+-- of those with a translate while centerClassicZones shifts their zone list
+-- by the same amount.  A rect reported from inside that translate has to
+-- move with it, or the unshaded re-blit lands 72 columns off and the pic
+-- keeps the shade remap -- the party STATS screen in a wide battle (#637).
+-- World-pass marks are already in world-canvas space and are never centred.
+local markOffsetX = 0
 
 -- which canvas the renderer is filling.  nil for a pass that composites
 -- with no zone list of its own (tilt's upright billboards carry their own
@@ -252,11 +260,20 @@ function PaletteFX.clearTrueColor()
   for _, rects in pairs(trueColorRects) do
     for i = #rects, 1, -1 do rects[i] = nil end
   end
+  markOffsetX = 0
+end
+
+-- Game:draw declares the translate it is drawing a classic state under, so
+-- that state's marks land where its pixels did.  Cleared with the rects at
+-- the top of every frame (Renderer:beginFrame). #637
+function PaletteFX.setMarkOffset(dx)
+  markOffsetX = tonumber(dx) or 0
 end
 
 function PaletteFX.markTrueColor(x, y, w, h)
   local rects = currentPass and trueColorRects[currentPass]
   if not rects or w <= 0 or h <= 0 then return end
+  if currentPass == "ui" then x = x + markOffsetX end
   rects[#rects + 1] = { colors = false, x = x, y = y, w = w, h = h }
 end
 

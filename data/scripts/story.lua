@@ -766,6 +766,28 @@ local function silphRocketsLeave(game, ow, onlyMap)
   end
 end
 
+-- SilphCo11FGiovanniAfterBattleScript (scripts/SilphCo11F.asm) is the whole
+-- aftermath: DisplayTextID TEXT_SILPHCO11F_GIOVANNI_YOU_RUINED_OUR_PLANS,
+-- GBFadeOutToBlack, SilphCo11FTeamRocketLeavesScript, Delay3,
+-- GBFadeInFromBlack, then SetEvent.  The port had only the hide pass, so the
+-- speech never played and every rocket blinked out in front of the player
+-- (#722).  Same hide list as silphRocketsLeave, spelled as script rows so the
+-- fade can hold over it.
+local function silphAftermathRows()
+  local rows = {
+    { "show_text", "_SilphCo11FGiovanniYouRuinedOurPlansText" },
+    { "fade", "out" },
+  }
+  for _, floor in ipairs(SILPH_ROCKET_OBJECTS) do
+    for _, name in ipairs(floor[2]) do
+      rows[#rows + 1] = { "hide_object", floor[1], name }
+    end
+  end
+  rows[#rows + 1] = { "wait", 3 }   -- Delay3
+  rows[#rows + 1] = { "fade", "in" }
+  return rows
+end
+
 M.SILPH_CO_11F = {
   -- Giovanni's battle is a COORDINATE TRIGGER, not a talk.
   -- SilphCo11FDefaultScript (scripts/SilphCo11F.asm) checks
@@ -792,11 +814,15 @@ M.SILPH_CO_11F = {
     ow:scriptMove(gio, "down", 3, function()
       gio:facePlayer(ow.player)
       ow:engageTrainer(gio, function()
-        -- SilphCo11FTeamRocketLeavesScript: every Silph rocket leaves
-        -- after the loss (the street rockets are handled by
-        -- M.SAFFRON_CITY.onEnter in story4.lua).
+        -- SilphCo11FGiovanniAfterBattleScript: the "Blast it all!" speech,
+        -- then SilphCo11FTeamRocketLeavesScript behind a fade so every Silph
+        -- rocket leaves off-screen (the street rockets are handled by
+        -- M.SAFFRON_CITY.onEnter in story4.lua).  Queued, not run here: the
+        -- battle's own callbacks are still unwinding, so queueScript starts
+        -- it on the first idle overworld frame -- after the end-battle
+        -- "Arrgh!!" box victories.lua OPP_GIOVANNI#2 pushes (#722).
         if game.save.flags.EVENT_BEAT_SILPH_CO_GIOVANNI then
-          silphRocketsLeave(game, ow)
+          ow:queueScript(silphAftermathRows())
         end
       end)
     end)
@@ -981,7 +1007,11 @@ M.VICTORY_ROAD_3F = {
 local championsRoomRivalScript = {
   { "face_player" },                                        -- 1
   { "check_flag", "EVENT_BEAT_CHAMPION_RIVAL_THIS_RUN" },   -- 2
-  { "jump_if_true", 26 },                                   -- 3  past end
+  -- "end" rather than a row number past the tail: this script grew by a row
+  -- when the follow-Oak walk landed (#704), which silently turned the old
+  -- numeric 26 into a jump ONTO the closing HALL_OF_FAME warp instead of past
+  -- it, so a returning champion warped straight into the induction.
+  { "jump_if_true", "end" },                                -- 3
   { "show_text", "_ChampionsRoomRivalIntroText" },          -- 4
   -- ChampionsRoomRivalReadyToBattleScript plays MUSIC_FINAL_BATTLE after
   -- the intro text, before the battle itself (#706); pushBattle's wipe-time
@@ -989,37 +1019,50 @@ local championsRoomRivalScript = {
   -- continuous into the fight
   { "play_music", "Music_FinalBattle" },                    -- 5
   { "rival_battle", "OPP_RIVAL3", 1 },                      -- 6
-  { "jump_if_false", 26 },                                  -- 6  past end
-  { "set_flag", "EVENT_BEAT_CHAMPION_RIVAL_THIS_RUN" },     -- 7
-  { "set_flag", "EVENT_BEAT_CHAMPION_RIVAL" },              -- 8
+  -- losing halts here; the numeric target this replaced pointed at the
+  -- closing warp, which inducted a player who had just lost the fight (#704)
+  { "jump_if_false", "end" },                               -- 7
+  { "set_flag", "EVENT_BEAT_CHAMPION_RIVAL_THIS_RUN" },     -- 8
+  { "set_flag", "EVENT_BEAT_CHAMPION_RIVAL" },              -- 9
   -- ChampionsRoomRivalDefeatedScript re-displays TEXT_CHAMPIONSROOM_RIVAL,
   -- whose text_asm takes the EVENT_BEAT_CHAMPION_RIVAL branch =
   -- _ChampionsRoomRivalAfterBattleText (the in-battle _RivalDefeatedText
   -- is the port's generic "<PLAYER> defeated BLUE!" engine line instead).
-  { "show_text", "_ChampionsRoomRivalAfterBattleText" },    -- 9
+  { "show_text", "_ChampionsRoomRivalAfterBattleText" },    -- 10
   -- ChampionsRoomOakArrivesScript: Music_Cities1AlternateTempo
   -- (Cities1, kept into HALL_OF_FAME like BIT_NO_MAP_MUSIC after
   -- defeating RIVAL3), then Oak's "{PLAYER}!" + reveal + walk in
-  { "play_music", "Music_Cities1", { keep = true } },       -- 10
-  { "show_text", "_ChampionsRoomOakText" },                 -- 11
-  { "show_object", "CHAMPIONS_ROOM", "CHAMPIONSROOM_OAK" },  -- 12
-  { "move_npc", 2, "up", 5 },                               -- 13 OakEntranceAfterVictoryMovement
+  { "play_music", "Music_Cities1", { keep = true } },       -- 11
+  { "show_text", "_ChampionsRoomOakText" },                 -- 12
+  { "show_object", "CHAMPIONS_ROOM", "CHAMPIONSROOM_OAK" },  -- 13
+  { "move_npc", 2, "up", 5 },                               -- 14 OakEntranceAfterVictoryMovement
   -- OakCongratulatesPlayerScript: rival faces left, Oak faces down
-  { "face_object", 1, "left" },                             -- 14
-  { "face_object", 2, "down" },                             -- 15
-  { "show_text", "_ChampionsRoomOakCongratulatesPlayerText" }, -- 16
+  { "face_object", 1, "left" },                             -- 15
+  { "face_object", 2, "down" },                             -- 16
+  { "show_text", "_ChampionsRoomOakCongratulatesPlayerText" }, -- 17
   -- OakDisappointedWithRivalScript: Oak turns to the rival (right)
-  { "face_object", 2, "right" },                            -- 17
-  { "show_text", "_ChampionsRoomOakDisappointedWithRivalText" }, -- 18
+  { "face_object", 2, "right" },                            -- 18
+  { "show_text", "_ChampionsRoomOakDisappointedWithRivalText" }, -- 19
   -- OakComeWithMeScript: Oak faces down again, then exits up
-  { "face_object", 2, "down" },                             -- 19
-  { "show_text", "_ChampionsRoomOakComeWithMeText" },       -- 20
-  { "move_npc", 2, "up", 2 },                               -- 21 OakExitChampionsRoomMovement
-  { "hide_object", "CHAMPIONS_ROOM", "CHAMPIONSROOM_OAK" },  -- 22
+  { "face_object", 2, "down" },                             -- 20
+  { "show_text", "_ChampionsRoomOakComeWithMeText" },       -- 21
+  { "move_npc", 2, "up", 2 },                               -- 22 OakExitChampionsRoomMovement
+  { "hide_object", "CHAMPIONS_ROOM", "CHAMPIONSROOM_OAK" },  -- 23
+  -- ChampionsRoomPlayerFollowsOakScript / WalkToHallOfFame_RLEMovement
+  -- (PAD_UP 4, PAD_LEFT 1): the player walks out after Oak instead of the
+  -- screen just fading on the spot (#704).  The entrance walk leaves the
+  -- player at (4,3) and both north-wall warps sit on row 0, so the original
+  -- only ever spends three of those simulated steps -- CheckWarpsNoCollision
+  -- takes the HALL_OF_FAME warp the moment the walk lands on (4,0) and the
+  -- trailing UP/LEFT are dropped.  Scripted steps ignore collision here just
+  -- as they do in the original (CollisionCheckOnLand skips its checks while
+  -- wSimulatedJoypadStatesIndex is non-zero), so stepping through the
+  -- rival's cell at (4,2) is the ported behavior, not a clip.
+  { "move_player", "up", 3 },                               -- 24
   -- hand the induction off to the HALL_OF_FAME room (consumed by its
   -- onEnter), then warp up into it (destWarp 1 lands at (4,7) facing up)
-  { "set_field", "pendingHallOfFame", true },               -- 23
-  { "warp", "HALL_OF_FAME", 4, 7, "up" },                   -- 24
+  { "set_field", "pendingHallOfFame", true },               -- 25
+  { "warp", "HALL_OF_FAME", 4, 7, "up" },                   -- 26
 }
 
 M.CHAMPIONS_ROOM = {

@@ -218,7 +218,7 @@ apply_ios_branding() {
 }
 
 apply_ios_icon() {
-  local source="$ROOT/assets/logo/logo.png"
+  local source="$ROOT/assets/logo/gen1recomp_cover.png"
   local target="$XCODE_DIR/Images.xcassets/iOS AppIcon.appiconset"
   [ -f "$source" ] || fail "missing iOS icon source: $source"
   [ -d "$target" ] || fail "missing iOS app icon set: $target"
@@ -315,9 +315,13 @@ pack_game_love() {
   # it reappears every launch.  Mods install as .zips at runtime instead
   # (launcher -> MODS -> Import mod .zip), the same lifecycle as every
   # other platform.
+  # libs/ carries the vendored FlexLove toolkit the launcher UI is built on
+  # (src/import/LauncherView.lua requires it at the top level, and RomImporter
+  # calls into that view from both update and draw), so an archive without it
+  # dies on the first frame with nothing left to fall back to.
   # shellcheck disable=SC2086  # MANIFESTS is a deliberate word list
   (cd "$ROOT" && zip -q -9 -r "$LOVE_FILE" \
-    main.lua conf.lua src data assets tools/save-editor \
+    main.lua conf.lua src libs data assets tools/save-editor \
     $MANIFESTS \
     -x '*.DS_Store' -x '*/.git/*' -x '*/.DS_Store' \
     -x 'data/generated/*' -x 'assets/generated/*')
@@ -333,10 +337,14 @@ pack_game_love() {
   # in 0.1.45 through 0.1.47: decodeManifest (src/import/RomImporter.lua) errors
   # outright when a version's manifest is absent, so Import ROM on Yellow died
   # in the built app while dev, which reads the source tree, stayed green.
+  # libs/flexlove/FlexLove.lua is on the list for the same reason: it was added
+  # to build.sh's payload and to no other packager, so the mobile builds shipped
+  # a launcher that threw before drawing its first frame.
   archive_entries="$(unzip -Z1 "$LOVE_FILE")"
   # shellcheck disable=SC2086  # MANIFESTS is a deliberate word list
   for required in src/update/Boot.lua tools/save-editor/App.lua \
                   tools/save-editor/Kit.lua tools/save-editor/panels/Party.lua \
+                  libs/flexlove/FlexLove.lua \
                   $MANIFESTS; do
     printf '%s\n' "$archive_entries" | grep -qx "$required" \
       || fail "game.love is missing $required"
@@ -614,7 +622,6 @@ run_xcodebuild() {
     ONLY_ACTIVE_ARCH=NO
     DISABLE_MANUAL_TARGET_ORDER_BUILD_WARNING=YES
   )
-
   if ! $DEVICE; then
     # Simulator: ad-hoc signing (no certificate needed). A plain unsigned
     # build would drop the entitlements file, and HealthKit refuses to run
@@ -624,9 +631,6 @@ run_xcodebuild() {
   else
     warn "device build: configure signing in Xcode or set DEVELOPMENT_TEAM / CODE_SIGN_IDENTITY"
     if [ -n "${DEVELOPMENT_TEAM:-}" ]; then
-      # Automatic signing + provisioning updates lets xcodebuild register the
-      # bundle ID / create a development profile from the CLI, so a device
-      # build works without ever opening the project in Xcode.
       args+=(DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM"
              CODE_SIGN_STYLE=Automatic
              -allowProvisioningUpdates)
@@ -680,8 +684,9 @@ run_xcodebuild() {
   if [ ! -d "$app" ]; then
     # PRODUCT_NAME override can still leave love.app on older projects
     if [ -d "$products/love.app" ]; then
-      app="$products/love.app"
-      warn "built app is love.app (PRODUCT_NAME override not applied); fusing game.love anyway"
+      app="$products/$APP_NAME.app"
+      mv "$products/love.app" "$app"
+      warn "renamed love.app to $APP_NAME.app"
     else
       warn "xcodebuild finished but no .app under $products"
       find "$BUILD_DIR/Build/Products" -name '*.app' 2>/dev/null | head -20 || true

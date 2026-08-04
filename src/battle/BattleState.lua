@@ -27,70 +27,18 @@ local Timing = require("src.core.Timing")
 local TrainerAI = require("src.battle.TrainerAI")
 local TurnOrder = require("src.battle.TurnOrder")
 local TypeChart = require("src.battle.TypeChart")
+local RomText = require("src.core.RomText")
 local Strings = require("src.core.Strings")
 local WideBattle = require("src.battle.WideBattle")
+
+local romText = RomText
 
 local BattleState = {}
 BattleState.__index = BattleState
 BattleState.isOpaque = true
 
--- pokered prints the battle lines itself (engine/battle/core.asm and the
--- move-effect banks), and the importer extracts every one of them, so the
--- port paraphrasing them in Lua meant the screen showed a near-miss of the
--- game's own wording while the cache held the real line -- and on a
--- localized import it showed English over translated data.
---
--- fromRom prefers the extracted text and keeps the literal as the catalog
--- fallback, for a cache built before the label and for the pure-module
--- tests that run without a dataset.  The battle text's slots ({USER},
--- {TARGET}, the {RAM:...} buffers) are NOT in the token registry that
--- TextBox.substitute serves -- it only resolves {PLAYER}, {RIVAL} and
--- three string buffers -- so they are spliced here, in argument order,
--- before the box ever sees the string.  {PLAYER}/{RIVAL} are left alone
--- for that later pass.
--- {PLAYER}/{RIVAL} are the two slots TextBox.substitute can fill on its
--- own, so they are only consumed here when the caller clearly supplies
--- them: an argument count matching every slot.  Matching just the other
--- slots leaves those two for the later pass.  Anything else means the
--- extracted line cannot carry what the call has to say -- a few labels
--- stop at a dynamic marker the decoder does not follow, e.g.
--- _EnemysWeakText extracts as "The enemy's weak!\nGet'm! " with nowhere
--- to put the name -- so the engine's own wording stands in rather than
--- printing a sentence with a hole in it.
-local function fromRom(data, label, fallback, ...)
-  local text = data and data.text and data.text[label]
-  if not text then return Strings(fallback, ...) end
-  local args = { ... }
-  if #args == 0 then return text end
-
-  local slots, named = 0, 0
-  for token in text:gmatch("%b{}") do
-    slots = slots + 1
-    if token == "{PLAYER}" or token == "{RIVAL}" then named = named + 1 end
-  end
-  local fillNamed
-  if #args == slots then
-    fillNamed = true
-  elseif #args == slots - named then
-    fillNamed = false
-  else
-    return Strings(fallback, ...)
-  end
-
-  local index = 0
-  return (text:gsub("%b{}", function(token)
-    if not fillNamed and (token == "{PLAYER}" or token == "{RIVAL}") then
-      return token
-    end
-    index = index + 1
-    local value = args[index]
-    if value == nil then return token end
-    return tostring(value)
-  end))
-end
-
 function BattleState:romText(label, fallback, ...)
-  return fromRom(self.data, label, fallback, ...)
+  return romText(self.data, label, fallback, ...)
 end
 -- Letterbox voids around the 160x144 battle canvas fill white so the
 -- window reads as one continuous battle screen (no black bars).
@@ -437,8 +385,8 @@ local function displayName(b)
 end
 
 -- Apply the "Enemy " prefix to a pre-built message from a module that
--- only knows the raw nickname (Status.beforeMove/residual,
--- TrainerAI.useItem): splice it in before the first name occurrence.
+-- only knows the raw nickname (Status.beforeMove/residual): splice it
+-- in before the first name occurrence.
 local function prefixEnemy(msg, battler)
   if battler.isPlayer then return msg end
   local s = msg:find(battler.name, 1, true)
@@ -820,13 +768,23 @@ end
 -- engine/battle/core.asm DisplayBattleMenu .oldManName branch): no
 -- player mon; the battle menu appears under the OLD MAN's name and a
 -- scripted cursor hovers FIGHT, hops to ITEM and forces the item menu
--- (one POKé BALL x50).  The throw always catches; nothing is kept.
+-- (one POKé BALL x50).  Nothing is kept.
 -- Yellow's Pallet intro (BATTLE_TYPE_PIKACHU) is the same simulated
 -- script under "PROF.OAK" (pokeyellow core.asm .profOakName), so the
 -- displayed thrower name is a parameter.
-function BattleState:makeOldManDemo(name)
+-- The throw catches everywhere except Yellow's FIRST Viridian training.
+-- ItemUseBall's .oldManBattle branch checks EVENT_INITIAL_CATCH_TRAINING
+-- and, when it is set, stores anim data $63 in place of the $43 capture
+-- value -- three shakes, then a breakout (pokeyellow
+-- engine/items/item_effects.asm).  Red/Blue's ItemUseBall has no such
+-- branch and jumps straight to .captured, and Yellow's repeat "Watch
+-- closely!" demo resets the event before its battle
+-- (ViridianCityOldManStartCatchTrainingScript), so only the initial
+-- tutorial passes failThrow -- it stands in for that event (#636).
+function BattleState:makeOldManDemo(name, failThrow)
   self.demo = true
   self.demoName = name or "OLD MAN"
+  self.demoFails = failThrow and true or false
   -- LoadPlayerBackPic and DisplayBattleMenu split on the same wBattleType:
   -- BATTLE_TYPE_OLD_MAN gets .oldManName + OldManPicBack, BATTLE_TYPE_PIKACHU
   -- gets .profOakName + ProfOakPicBack (pokeyellow core.asm).  The thrower
@@ -2113,7 +2071,10 @@ end
 -- skipped -- the old man branch jumps straight to .captured, $43 anim
 -- data = 3 shakes and caught (:155-164 + :193-200) -- and
 -- .oldManCaughtMon prints the caught text WITHOUT adding the mon to
--- the party or the dex (:568-570).  The "used" line reads OLD MAN
+-- the party or the dex (:568-570).  Yellow's initial training is the one
+-- exception (demoFails, #636): its .oldManBattle branch forces $63, so
+-- the same chain ends in a breakout and ItemUseBallText04 instead.
+-- The "used" line reads OLD MAN
 -- because DisplayBattleMenu swapped wPlayerName (core.asm:2024-2037);
 -- no ball is consumed (.done returns early, :576-578).
 function BattleState:oldManThrow()
@@ -2126,6 +2087,14 @@ function BattleState:oldManThrow()
     -- ItemUseBall's beat before the toss chain (like throwBall)
     self.nextInsert = (self.nextInsert or 0) + 1
     table.insert(self.queue, self.nextInsert, { wait = 20 })
+    if self.demoFails then
+      -- $63 instead of $43: the same three shakes, then POOF+SHOWPIC and
+      -- ItemUseBallText04.  No sound_caught_mon, and .captured is never
+      -- reached, so nothing touches the party or the dex either (#636).
+      self:ballChain("TOSS_ANIM", false, 3, "POKE_BALL")
+      self:sayNext(self:ballMissMessage(3))
+      return
+    end
     self:ballChain("TOSS_ANIM", true, 3, "POKE_BALL")
     self:actNext(function()
       require("src.core.Sound").play(self.data, "Caught_Mon")
@@ -3075,8 +3044,11 @@ function BattleState:executeAction(user, target, action)
     -- trainer class AI actions (engine/battle/trainer_ai.asm)
     if action.special == "aiItem" then
       self.aiUses = (self.aiUses or 1) - 1
+      -- useItem's messages arrive final: its item line prints the raw
+      -- nickname on purpose (no "Enemy " in AIPrintItemUseText), so the
+      -- prefix splice must not touch them.
       for _, m in ipairs(TrainerAI.useItem(self, action.item)) do
-        self:sayNext(prefixEnemy(m, self.enemy))
+        self:sayNext(m)
       end
       self:drainNext()
       require("src.core.Sound").play(self.data, "Heal_Ailment")

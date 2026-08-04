@@ -49,6 +49,49 @@ Kit.blockClicks = false
 Kit.endFrame()
 eq(Kit.wheelY, 0, "an unclaimed notch retires with the frame")
 
+-- #715: a phone has no wheel, so Kit.scroll also follows a held pointer
+-- dragging vertically over the list body.  Kit.beginFrame polls
+-- love.mouse.isDown for this (neither host routes mousereleased), so the
+-- stub grows one here.
+local held = false
+love.mouse = love.mouse or {}
+love.mouse.getPosition = love.mouse.getPosition or function() return 0, 0 end
+love.mouse.isDown = function() return held end
+
+held = true
+Kit.beginFrame(50, 90, false, 0)
+eq(Kit.scroll(0, 0, 100, 100, 0, 250, 10), 0,
+   "the press frame starts a drag without moving the list")
+Kit.endFrame()
+
+Kit.beginFrame(50, 60, false, 0)  -- dragged 30px up, 10 rows / 100px = 3 rows
+eq(Kit.scroll(0, 0, 100, 100, 0, 250, 10), 3,
+   "dragging upward reveals lower rows")
+Kit.endFrame()
+
+Kit.beginFrame(50, -2910, false, 0)  -- a wild fling clamps like the wheel does
+eq(Kit.scroll(0, 0, 100, 100, 3, 250, 10), 240,
+   "a drag past the end clamps to the last page")
+Kit.endFrame()
+
+held = false
+Kit.beginFrame(50, 60, false, 0)
+eq(Kit.scroll(0, 0, 100, 100, 3, 250, 10), 3,
+   "releasing the pointer ends the drag")
+Kit.endFrame()
+
+held = true
+Kit.beginFrame(500, 500, false, 0)  -- press outside the list body
+Kit.scroll(0, 0, 100, 100, 0, 250, 10)
+Kit.endFrame()
+Kit.beginFrame(500, 400, false, 0)
+eq(Kit.scroll(0, 0, 100, 100, 0, 250, 10), 0,
+   "a drag that never entered the list does not scroll it")
+Kit.endFrame()
+held = false
+Kit.beginFrame(0, 0, false, 0)
+Kit.endFrame()
+
 -- The wheel has to reach the Items lists without touching the map camera,
 -- which is the only thing App.wheelmoved used to drive (#595).  Loading the
 -- whole editor needs data/generated/, so pin the routing at the source seam

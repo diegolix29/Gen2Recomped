@@ -24,7 +24,8 @@
 -- ViridianCityPostInitialCatchTraining): stepping into (19,9) -- the gap
 -- east of the sleeper's cell -- faces the old man right and the player
 -- left, prints the apology, and without any choice runs the demo battle
--- (BATTLE_TYPE_OLD_MAN, RATTATA lvl 5).  After it, the same text pointer
+-- (BATTLE_TYPE_OLD_MAN, RATTATA lvl 5), which he FAILS -- the ball shakes
+-- three times and breaks open.  After it, the same text pointer
 -- now prints _ViridianCityOldManLosingMyTouchText ("That didn't work!
 -- I must be losing my touch."), the old man walks off (down 6 with the
 -- player on (19,9), right 1 otherwise, Pikachu nudged out of the way
@@ -63,7 +64,12 @@ end
 local function oldMan2Rows(game, ow, npc)
   local rows = {
     { "show_text", "_ViridianCityOldManHadMyCoffeeNowText" },
-    { "old_man_demo" },
+    -- ViridianCityOldManInitialCatchTrainingScript sets
+    -- EVENT_INITIAL_CATCH_TRAINING before the battle runs, and
+    -- ItemUseBall's .oldManBattle branch turns that event into anim data
+    -- $63: three shakes, then the ball breaks open.  The losing-my-touch
+    -- line below only follows a throw that failed (#636).
+    { "old_man_demo", "fail" },
     { "set_flag", "EVENT_COMPLETED_CATCH_TRAINING" },
     { "show_text", "_ViridianCityOldManLosingMyTouchText" },
   }

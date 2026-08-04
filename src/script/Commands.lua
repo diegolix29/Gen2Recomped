@@ -784,12 +784,17 @@ end
 -- The Viridian old man's catch tutorial (scripts/ViridianCity.asm
 -- BATTLE_TYPE_OLD_MAN): a demo wild battle where the old man throws
 -- one POKé BALL; nothing is kept.
-function Commands.old_man_demo(ctx)
+-- `outcome` == "fail" is Yellow's initial training: ItemUseBall's
+-- .oldManBattle branch reads EVENT_INITIAL_CATCH_TRAINING and stores anim
+-- data $63, so the ball shakes three times and breaks open (pokeyellow
+-- engine/items/item_effects.asm).  Red, Blue and Yellow's repeat "Watch
+-- closely!" demo all catch, and all of them omit the argument (#636).
+function Commands.old_man_demo(ctx, outcome)
   local BattleState = require("src.battle.BattleState")
   local runner = ctx.runner
   local om = ctx.game.data.field.oldManBattle or { species = "WEEDLE", level = 5 }
   local battle = BattleState.newWild(ctx.game, om.species, om.level)
-  battle:makeOldManDemo()
+  battle:makeOldManDemo(nil, outcome == "fail")
   battle.onFinish = function() runner:resume() end
   -- InitWildBattle calls DoBattleTransitionAndInitBattleVariables
   -- unconditionally (core.asm:6699) -- there is no BATTLE_TYPE_OLD_MAN
