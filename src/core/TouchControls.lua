@@ -431,22 +431,26 @@ function TouchControls:layout()
     rightstick = { cx = ww - margin - stickW / 2, cy = wh * 0.42, w = stickW },
   }
   
-  -- Apply custom positions from save if they exist
-  local customPositions = self.game and self.game.save and self.game.save.options and 
-                          self.game.save.options.touchButtonPositions or {}
+  -- Apply custom positions from the current orientation bucket if they exist
+  local customPositions = self.positions or {}
   
   self.L = {}
   for buttonName, defaultPos in pairs(defaultLayout) do
     if customPositions[buttonName] then
-      -- Use custom position but keep default width if not specified
+      -- Use custom position (normalized) and scale it to current safe rect
       local custom = customPositions[buttonName]
+      local ox, oy, sw, sh = SafeArea.rect()
       self.L[buttonName] = {
-        cx = custom.cx or defaultPos.cx,
-        cy = custom.cy or defaultPos.cy,
-        w = custom.w or defaultPos.w
+        cx = ox + (custom.x or 0) * sw,
+        cy = oy + (custom.y or 0) * sh,
+        w = defaultPos.w * (self.scale or 1)
       }
     else
-      self.L[buttonName] = defaultPos
+      self.L[buttonName] = {
+        cx = defaultPos.cx,
+        cy = defaultPos.cy,
+        w = defaultPos.w * (self.scale or 1)
+      }
     end
   end
   
@@ -569,10 +573,7 @@ local function leftStickCameraEnabled(self)
   return (g and g.save and g.save.options and g.save.options.leftStickCamera) or false
 end
 
--- the d-pad/left-stick touch's held direction changed (or ended): swap
--- the GB hold. Shared by the d-pad and the left stick -- they're two
--- thumb positions for the same four directions, tracked as independent
--- touches so one lifting doesn't drop the other's hold.
+-- the d-pad's held direction changed (or ended): swap the GB hold.
 local function setDpad(self, touch, dir)
   if touch.dir == dir then return end
   if touch.dir then 
@@ -585,14 +586,50 @@ local function setDpad(self, touch, dir)
   if dir then
     -- Check if in capture mode for binding
     if self.captureTarget then
-      local isLeftStick = touch.control == "leftstick"
-      local padName = (isLeftStick and "stick" or "dpad") .. dir
+      local padName = "dpad" .. dir
       self.captureTarget:capturePad(padName)
       touch.pressedAsMovement = false
     else
-      -- Check if this is left stick and camera mode is enabled
-      local isLeftStick = touch.control == "leftstick"
-      local cameraEnabled = isLeftStick and leftStickCameraEnabled(self)
+      -- Check if a hotkey is bound to this direction
+      local padName = "dpad" .. dir
+      local hotkey = Input:hotkeyForPad(padName)
+      local g = self.game
+      
+      if hotkey and g and g.fireHotkey then
+        -- Fire the bound hotkey once (edge-triggered)
+        g:fireHotkey(hotkey)
+        touch.pressedAsMovement = false
+      else
+        -- No hotkey bound: normal movement mode
+        pressBtn(self, dir)
+        touch.pressedAsMovement = true
+      end
+    end
+  else
+    touch.pressedAsMovement = nil
+  end
+end
+
+-- the left stick's held direction changed (or ended): swap the GB hold.
+-- Similar to d-pad but with camera mode support.
+local function setLeftStick(self, touch, dir)
+  if touch.dir == dir then return end
+  if touch.dir then 
+    -- Release previous direction
+    if touch.pressedAsMovement then
+      releaseBtn(self, touch.dir)
+    end
+  end
+  touch.dir = dir
+  if dir then
+    -- Check if in capture mode for binding
+    if self.captureTarget then
+      local padName = "stick" .. dir
+      self.captureTarget:capturePad(padName)
+      touch.pressedAsMovement = false
+    else
+      -- Check if camera mode is enabled
+      local cameraEnabled = leftStickCameraEnabled(self)
       
       if cameraEnabled then
         -- In camera mode, left stick left/right controls camera rotation
@@ -609,22 +646,17 @@ local function setDpad(self, touch, dir)
           touch.pressedAsMovement = true
         end
       else
-        -- Check if a hotkey is bound to this direction (for left stick or dpad)
-        local isLeftStick = touch.control == "leftstick"
-        local padName = (isLeftStick and "stick" or "dpad") .. dir
+        -- Check if a hotkey is bound to this direction
+        local padName = "stick" .. dir
         local hotkey = Input:hotkeyForPad(padName)
         local g = self.game
         
-        print("TouchControls: Checking hotkey for pad '" .. padName .. "', found: " .. tostring(hotkey))
-        
         if hotkey and g and g.fireHotkey then
-          -- Fire the bound hotkey once (edge-triggered, like right stick)
-          print("TouchControls: Firing hotkey '" .. hotkey .. "' for pad '" .. padName .. "'")
+          -- Fire the bound hotkey once (edge-triggered)
           g:fireHotkey(hotkey)
           touch.pressedAsMovement = false
         else
           -- No hotkey bound: normal movement mode
-          print("TouchControls: No hotkey bound, using movement for pad '" .. padName .. "'")
           pressBtn(self, dir)
           touch.pressedAsMovement = true
         end
@@ -749,7 +781,7 @@ function TouchControls:touchpressed(id, x, y)
     self.leftStickTouch = id
     local touch = { control = "leftstick", dir = nil }
     self.touches[id] = touch
-    setDpad(self, touch, dpadDir(lz, x, y))
+    setLeftStick(self, touch, dpadDir(lz, x, y))
     return
   end
   local rz = L.rightstick
@@ -784,8 +816,10 @@ function TouchControls:touchmoved(id, x, y)
   -- directions without lifting); buttons hold until release wherever the
   -- finger wanders, and the right stick has its own hotkey-vs-movement
   -- branch
-  if touch.control == "dpad" or touch.control == "leftstick" then
+  if touch.control == "dpad" then
     setDpad(self, touch, dpadDir(self:layout()[touch.control], x, y))
+  elseif touch.control == "leftstick" then
+    setLeftStick(self, touch, dpadDir(self:layout()[touch.control], x, y))
   elseif touch.control == "rightstick" then
     setRightStickDir(self, touch, dpadDir(self:layout().rightstick, x, y))
   end
@@ -797,23 +831,8 @@ function TouchControls:touchreleased(id, x, y)
   if not touch then return end
   self.touches[id] = nil
   
-  -- Edit mode: save the new position
+  -- Edit mode: position is already saved via setControlCenter during drag
   if touch.isEdit and self.editingButton then
-    local L = self:layout()
-    local zone = L[self.editingButton]
-    if zone and self.game and self.game.save and self.game.save.options then
-      if not self.game.save.options.touchButtonPositions then
-        self.game.save.options.touchButtonPositions = {}
-      end
-      self.game.save.options.touchButtonPositions[self.editingButton] = {
-        cx = zone.cx,
-        cy = zone.cy,
-        w = zone.w
-      }
-      -- Save the options
-      local SaveData = require("src.core.SaveData")
-      SaveData.saveOptions(self.game.save.options)
-    end
     self.editingButton = nil
     return
   end
@@ -822,7 +841,7 @@ function TouchControls:touchreleased(id, x, y)
     setDpad(self, touch, nil)
     self.dpadTouch = nil
   elseif touch.control == "leftstick" then
-    setDpad(self, touch, nil)
+    setLeftStick(self, touch, nil)
     self.leftStickTouch = nil
   elseif touch.control == "rightstick" then
     setRightStickDir(self, touch, nil)
