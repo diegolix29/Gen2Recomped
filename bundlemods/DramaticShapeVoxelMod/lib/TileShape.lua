@@ -65,6 +65,21 @@ local FALLBACK_HEIGHTS = {
   -- body builds from the bark rows and the drawn ellipse projects onto
   -- the hull's round top
   stump = 16,
+  -- the same hull cut at both ends, hollowed and tapered: an OPEN bin
+  -- standing on a floor (the Vermilion Gym trash cans).  The drawn mouth
+  -- ellipse projects onto the round top and down the well, the drawn base
+  -- ellipse is ground contact rather than body, and the plan narrows toward
+  -- the floor.  Height is AUTHORED (the profile's can_height, which this
+  -- pin must be kept equal to so anything riding a can lands on its rim) --
+  -- the drawing's own straight run is only a couple of rows, because a GB
+  -- cell spends most of itself on the opening
+  can = 9,
+  -- round scenery drawn ONE cell wide and TWO cells TALL, standing on one
+  -- cell of plot: the Pokemon Centers' potted plants. Carved as one
+  -- 16x32x16 hull in the SOUTH (pot) cell -- the drawing's upper cell is
+  -- the object's height, not its depth. BOTH cells take the class; the
+  -- group build anchors on the north one (Structures.buildCylinders)
+  planter = 32,
   billboard = 16,
   signpost = 16,
   post = 16,
@@ -77,10 +92,18 @@ local FALLBACK_HEIGHTS = {
   bed = 7,
   stool = 8,
   counter = 8,
+  -- the raised back band of low seating: the Center couch's west strip
+  -- is drawn from above like the rest of the couch, but depicts the
+  -- back and arm rising over the 8px seat
+  backrest = 12,
   table = 12,
   desk = 24,
   prop = 16,
   cutout = 16,
+  -- a vehicle drawn SIDE-ON: the showroom bicycles.  Standee height like
+  -- every other cutout pool -- what differs is the thickness (see
+  -- Structures' PINNED_DEPTH)
+  bike = 16,
   console = 16,
   relief = 3,
   bookcase = 32,
@@ -116,6 +139,8 @@ local ART = {
   cylinder = "cylinder",
   canopy = "canopy",
   stump = "cylinder",
+  can = "cylinder",
+  planter = "planter",
   billboard = "billboard",
   -- signposts share the billboard treatment but as their own pool at a
   -- 2-voxel depth: a sign is a thin plate on a stick, and the standard
@@ -138,6 +163,9 @@ local ART = {
   -- profile archetype Structures builds real steps for -- rising flights
   -- for stairs leading up, sunken stairwells for stairs leading down
   bed = "top",
+  -- a backrest's art is the couch seen from above, so like the bed it
+  -- rides the top face of its taller box
+  backrest = "top",
   stool = "billboard",
   -- half-cell furniture: a service counter, a low couch.  One 8px band,
   -- so exactly the drawing's bottom row stands up as the front and
@@ -151,6 +179,13 @@ local ART = {
   desk = "upright",
   prop = "billboard",
   cutout = "billboard",
+  -- a bicycle is a LINE drawing seen side-on, and its negative space --
+  -- the air inside the frame, between the wheel and the fork -- is what
+  -- makes it read as a bicycle at all.  Its own pool at two voxels: any
+  -- thicker and the side faces of neighbouring strokes close those gaps
+  -- from every angle but dead-on, and six of them in a showroom come out
+  -- as one dark lump (which is what the 5px `prop` pool gave)
+  bike = "billboard",
   -- a machine standing on furniture: the billboard treatment with
   -- body, plus the one-object contract `cutout` has -- the drawing is
   -- ringed by the furniture it sits on, and those edges must not be
@@ -168,6 +203,9 @@ local ART = {
 
 local spec = nil          -- the loaded data file, or false when absent
 local cache = {}          -- tileset id -> resolved shape list
+local figCache = {}       -- tileset id -> parsed figure masks, or false
+local mntCache = {}       -- tileset id -> parsed mounted masks, or false
+local bgCache = {}        -- tileset id -> prop background shades, or false
 
 -- The shape profile ships with the mod (data/voxel_heights.lua) and is read
 -- through the mod's own file loader rather than package.path: a mod's
@@ -273,6 +311,24 @@ function TileShape.forMap(map)
   if cache[id] then return cache[id] end
 
   local heights = TileShape.heights()
+  -- Per-tileset height overrides (a tileset entry's `heights`): the class
+  -- vocabulary is global but the drawings are not -- the DOJO lab tables
+  -- are drawn 6px tall where the default `table` is 12 -- and the height
+  -- a sprite RIDES at (VoxelScene.groundAt) must be the height the art
+  -- actually stands, or the starter balls float over their own table.
+  -- Same gate as the global list: known classes, numbers only.
+  do
+    local s = load()
+    local entry = s and s.tilesets and s.tilesets[id]
+    local over = entry and entry.heights
+    if type(over) == "table" then
+      for class, h in pairs(over) do
+        if type(h) == "number" and FALLBACK_HEIGHTS[class] then
+          heights[class] = h
+        end
+      end
+    end
+  end
   local authored = authoredGroups(id, heights)
   local count = math.floor((tileset.imageWidth or 128) / 8)
                 * math.floor((tileset.imageHeight or 48) / 8)
@@ -369,11 +425,266 @@ function TileShape.at(map, shapes, tile, tx, ty)
   return s
 end
 
+-- Hand-authored FIGURES for one tileset: a drawing painted INTO furniture,
+-- cut out by an explicit pixel mask and stood up on top of it.
+--
+-- Every other route in this file resolves a whole 8x8 TILE, which is
+-- exactly why none of them can reach a figure that shares its tiles with
+-- the thing it sits on -- and the detector's segmentation cannot either
+-- when the drawing has no background margin to flood from and wears the
+-- same shades as its furniture.  So the profile authors the silhouette
+-- pixel by pixel (see data/voxel_heights.lua):
+--
+--   figures = { { w      = <tiles across>,
+--                 depth  = <voxels of body; ABSENT for a person>,
+--                 thin   = { rows = <top rows>, depth = <voxels> },
+--                 flat   = { x = { <lx0>, <lx1> }, rows = { <r0>, <r1> } },
+--                 tiles  = { ...w*h tile ids, row-major... },
+--                 under  = { ...w*h ids: what each tile wears once the
+--                            figure is lifted off it... },
+--                 pixels = { ...h*8 strings of w*8 chars, "." = not the
+--                            figure... } } }
+--
+-- No class -- what the entry carries instead is a `depth`, or does not:
+--
+--   WITHOUT one it is a flat sprite card, drawn the way SpriteBillboards
+--   draws a character.  That is the right reading for a PERSON: a Gen 1
+--   figure is a face-on 2D icon, and extruding one reconstructs a body
+--   nobody drew (see Structures.buildFigures).
+--   WITH one it is an OBJECT and gets the standee treatment every other
+--   solid here gets -- a per-pixel slab in world space, standing on the
+--   same furniture the card would have stood on.  The Marts' cash
+--   register is the case: a machine on a counter is a box, not an icon.
+--
+-- Two fields say which parts of such a drawing are NOT the extrusion,
+-- because a solid drawn in one 16x16 GB cell still packs more than one
+-- facing:
+--
+--   `thin` caps the thickness over the mask's top rows, for the part of
+--   the drawing that is not the machine (the register's receipt curl).
+--   `flat` names a rect of the mask that is a TOP-VIEW surface rather
+--   than a face -- the register's keypad, whose keys lie ON its deck.
+--   The rect lays horizontal one voxel proud of whatever the extrusion
+--   leaves below it, at the elevation its BOTTOM row would have had,
+--   with drawn row = depth row 1:1 (the mapping the lab tabletop is
+--   drawn with).  So a drawing whose front elevation is an L reads as
+--   one: body up the side and along the base, keys lying in the notch.
+--
+-- Returned normalized: `mask` as a set keyed by ly * (w * 8) + lx, so
+-- Structures can read it as a bitmap without re-parsing per position.
+-- A malformed entry is dropped rather than half-applied -- a typo in a
+-- mask should leave the couch alone, not carve a hole in it.
+--
+-- `mounted` (below) carries the same four fields, so the parse is shared,
+-- and so are the optional ones that give an authored mask a BODY: `depth`,
+-- `thin` and `flat` above.  `depth` is left nil when unstated, because
+-- absence is meaningful on a figure: no depth means the flat sprite card a
+-- person is drawn as.
+local function authoredMasks(list)
+  local out = {}
+  if type(list) ~= "table" then return out end
+  for _, f in ipairs(list) do
+    local ok = type(f) == "table" and type(f.w) == "number"
+               and type(f.tiles) == "table" and type(f.under) == "table"
+               and type(f.pixels) == "table"
+    local w = ok and math.floor(f.w) or 0
+    local h = (w >= 1) and (#f.tiles / w) or 0
+    ok = ok and w >= 1 and h >= 1 and h == math.floor(h)
+         and #f.under == #f.tiles and #f.pixels == h * 8
+    if ok then
+      for i = 1, h * 8 do
+        local row = f.pixels[i]
+        if type(row) ~= "string" or #row ~= w * 8 then
+          ok = false
+          break
+        end
+      end
+    end
+    if ok then
+      local mask, n = {}, 0
+      for ly = 0, h * 8 - 1 do
+        local row = f.pixels[ly + 1]
+        for lx = 0, w * 8 - 1 do
+          if row:sub(lx + 1, lx + 1) ~= "." then
+            mask[ly * (w * 8) + lx] = true
+            n = n + 1
+          end
+        end
+      end
+      local depth = tonumber(f.depth)
+      local thin = nil
+      if type(f.thin) == "table" and tonumber(f.thin.rows)
+         and tonumber(f.thin.depth) then
+        thin = { rows = math.floor(tonumber(f.thin.rows)),
+                 depth = math.floor(tonumber(f.thin.depth)) }
+      end
+      local flat = nil
+      if type(f.flat) == "table" and type(f.flat.x) == "table"
+         and type(f.flat.rows) == "table" then
+        flat = { x0 = math.floor(f.flat.x[1]), x1 = math.floor(f.flat.x[2]),
+                 r0 = math.floor(f.flat.rows[1]),
+                 r1 = math.floor(f.flat.rows[2]) }
+      end
+      if n > 0 then
+        out[#out + 1] = { w = w, h = h, n = n, mask = mask,
+                          tiles = f.tiles, under = f.under,
+                          depth = depth and math.floor(depth) or nil,
+                          thin = thin, flat = flat }
+      end
+    end
+  end
+  return out
+end
+
+function TileShape.figures(tilesetId)
+  local hit = figCache[tilesetId]
+  if hit ~= nil then return hit or nil end
+
+  local s = load()
+  local entry = s and s.tilesets and s.tilesets[tilesetId]
+  local out = authoredMasks(entry and entry.figures)
+
+  figCache[tilesetId] = (#out > 0) and out or false
+  return figCache[tilesetId] or nil
+end
+
+-- Hand-authored MOUNTED objects for one tileset: a thing drawn INTO the
+-- wall band it hangs on, cut out by an explicit pixel mask and stood
+-- proud of the wall's face.
+--
+-- Same authoring problem as `figures` and the same answer -- a class pin
+-- resolves a whole 8x8 tile, and the detector cannot segment a drawing
+-- that has no background margin to flood from.  The Bike Shop's two wall
+-- bicycles are the case: the shop's striped wall panel runs BEHIND them,
+-- and its #555 stripes are a flood boundary, so a silhouette flood comes
+-- back with the stripes attached to the bike.
+--
+-- Two things differ from a figure, and both follow from the object being
+-- an object rather than a character:
+--
+--   it keeps its DRAWN ELEVATION.  A figure stands on its own feet; a
+--   mounted thing sits where the wall band draws it, so a bicycle hung
+--   clear of the floor stays hung.
+--   it has THICKNESS (`depth`, default 2), and it is built in world
+--   space as a per-pixel slab jutting south of the band -- not as a
+--   camera-facing sprite card.  A bicycle drawn side-on is a plane
+--   parallel to the wall, not a face-on icon.
+--
+--   mounted = { { w      = <tiles across>,
+--                 depth  = <voxels it juts into the room>,
+--                 tiles  = { ...w*h tile ids, row-major... },
+--                 under  = { ...w*h ids: what each tile wears once the
+--                            object is lifted off it (the plain panel)... },
+--                 pixels = { ...h*8 strings of w*8 chars, "." = wall... } } }
+function TileShape.mounted(tilesetId)
+  local hit = mntCache[tilesetId]
+  if hit ~= nil then return hit or nil end
+
+  local s = load()
+  local entry = s and s.tilesets and s.tilesets[tilesetId]
+  local out = authoredMasks(entry and entry.mounted)
+
+  mntCache[tilesetId] = (#out > 0) and out or false
+  return mntCache[tilesetId] or nil
+end
+
+-- Which GB shades count as BACKGROUND for a pinned per-pixel prop, per tile
+-- (a tileset entry's prop_bg). Returns tile id -> set of shade names, or nil.
+--
+-- Structures normally votes on this by reading the shades that touch the
+-- drawing's own bounding box, which is right whenever the drawing has a
+-- margin of floor around it and wrong when it does not: a prop whose body
+-- reaches its own edge votes itself out. Naming the shades is the override,
+-- and it is keyed by TILE because the answer is per drawing rather than per
+-- tileset -- two props in one atlas can want opposite calls on the same
+-- shade (see the POKECENTER entry).
+--
+--   prop_bg = { { tiles = { ...ids... }, shades = { "light", "white" } } }
+--
+-- Only the four GB shade names exist; anything else is dropped, so a typo
+-- degrades to the ordinary vote rather than emptying the background.
+local SHADES = { black = true, dark = true, light = true, white = true }
+
+function TileShape.propBg(tilesetId)
+  local hit = bgCache[tilesetId]
+  if hit ~= nil then return hit or nil end
+
+  local s = load()
+  local entry = s and s.tilesets and s.tilesets[tilesetId]
+  local list = entry and entry.prop_bg
+  local out, any = {}, false
+  if type(list) == "table" then
+    for _, rule in ipairs(list) do
+      if type(rule) == "table" and type(rule.tiles) == "table"
+         and type(rule.shades) == "table" then
+        local set, n = {}, 0
+        for _, name in ipairs(rule.shades) do
+          if SHADES[name] then
+            set[name] = true
+            n = n + 1
+          end
+        end
+        if n > 0 then
+          for _, t in ipairs(rule.tiles) do
+            if type(t) == "number" then
+              out[t] = set
+              any = true
+            end
+          end
+        end
+      end
+    end
+  end
+
+  bgCache[tilesetId] = any and out or false
+  return bgCache[tilesetId] or nil
+end
+
+-- What a bookcase rank does with the rows it VACATES -- the ones behind the
+-- one-cell-deep box it collapses onto (a tileset entry's
+-- bookcase_backfill).  Returns the mode name, or nil for the default.
+--
+--   "above"   hand them the cell immediately above the run: its shape and
+--             its art.  A wall set INTO a terrace wants this -- the ground
+--             behind it is more terrace, not a trench.
+--   nil       skip them and paint the map's commonest ground underneath,
+--             which is right for a free-standing shelf against a wall.
+--
+-- Per tileset because it is a statement about what the drawing depicts, and
+-- the answer differs: the Mart's racks and Red's shelves stand in a room,
+-- the Plateau's gate walls are cut into a hillside.
+function TileShape.bookcaseBackfill(tilesetId)
+  local s = load()
+  local entry = s and s.tilesets and s.tilesets[tilesetId]
+  local mode = entry and entry.bookcase_backfill
+  return mode == "above" and mode or nil
+end
+
+--- Does this tileset's `bookcase` run carry the measured pane RELIEF on
+--- its front (a tileset entry's bookcase_relief)?  Default yes: the class
+--- almost always collapses a shelf, a rack or a display case, and every
+--- one of those seals its contents behind a frame that should stand proud
+--- of them.
+---
+--- A tileset says `bookcase_relief = false` when it borrows the collapse
+--- for something that is NOT a shelf -- the League's gate walls and
+--- pilasters, Bill's transporter drums -- where the drawing's light
+--- regions are the masonry and the barrel, not panes, and sinking them
+--- carves the surface instead of describing it.
+function TileShape.bookcaseRelief(tilesetId)
+  local s = load()
+  local entry = s and s.tilesets and s.tilesets[tilesetId]
+  return not (entry and entry.bookcase_relief == false)
+end
+
 -- Drop the cache: a mod that shadows data/voxel_heights.lua or a tileset
 -- record needs the next lookup to re-resolve (hot reload, mod toggle).
 function TileShape.invalidate()
   spec = nil
   cache = {}
+  figCache = {}
+  mntCache = {}
+  bgCache = {}
 end
 
 return TileShape

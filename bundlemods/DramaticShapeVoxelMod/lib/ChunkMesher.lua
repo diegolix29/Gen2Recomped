@@ -221,8 +221,18 @@ end
 -- Kept free of any GPU call so it can be exercised headless -- the
 -- geometry is the part with the interesting invariants, and a suite that
 -- needed a real GL context to check them would never run in CI.
-local function runGeometry(map, bodyOnly, masks, sink)
+-- `waterSink`, when given, takes the WATER SURFACE quads instead of the
+-- main sink -- the one class in this world that is drawn as its own pass
+-- (see Water: a mirror cannot be drawn until what it reflects exists).
+-- Nothing else moves: the quads are the same quads, emitted by the same
+-- corner and uv arithmetic at the same recessed height, and the shoreline
+-- faces around them still belong to the GROUND that exposes them.
+--
+-- Omitted, water stays in the terrain mesh exactly as it always did, which
+-- is what the headless geometry() below and the sun's own pass both want.
+local function runGeometry(map, bodyOnly, masks, sink, waterSink)
   local push = sink.push
+  local waterPush = waterSink and waterSink.push or nil
   local tileset = map.tileset
   local S = Structures.forMap(map)
   local perRow = tileset.tilesPerRow or 16
@@ -358,12 +368,14 @@ local function runGeometry(map, bodyOnly, masks, sink)
     return aoSide
   end
 
-  local function topQuad(x0, z0, h, tile, shade)
+  -- `to` routes the quad somewhere other than the main sink -- the water
+  -- surface is the only caller that ever does (see runGeometry's header).
+  local function topQuad(x0, z0, h, tile, shade, to)
     local u0, u1, v0, v1 = uvRect(tile, 0, 8)
-    push({ { x0, h, z0 }, { x0 + 8, h, z0 },
-           { x0 + 8, h, z0 + 8 }, { x0, h, z0 + 8 } },
-         { { u0, v0 }, { u1, v0 }, { u1, v1 }, { u0, v1 } },
-         aoShades(x0 / 8, z0 / 8, h, shade))
+    ;(to or push)({ { x0, h, z0 }, { x0 + 8, h, z0 },
+                    { x0 + 8, h, z0 + 8 }, { x0, h, z0 + 8 } },
+                  { { u0, v0 }, { u1, v0 }, { u1, v1 }, { u0, v1 } },
+                  aoShades(x0 / 8, z0 / 8, h, shade))
   end
 
   -- vertical quad for face direction `d` of the tile column at (x0, z0),
@@ -558,8 +570,14 @@ local function runGeometry(map, bodyOnly, masks, sink)
             end
             topTile = S.tileAt[keyOf(tx, row)]
           end
+          -- water's surface, and only water's: the recessed sheet itself,
+          -- never the ground's shoreline bands around it. A cell an object
+          -- stands on took the branch above and paints synthesized GROUND,
+          -- which is right -- a sign at the waterline stands on a plot, not
+          -- on the pond.
           topQuad(x0, z0, h, topTile,
-                  s.art == "upright" and VOLUME_TOP_SHADE or 1)
+                  s.art == "upright" and VOLUME_TOP_SHADE or 1,
+                  (s.class == "water") and waterPush or nil)
         end
 
         -- sides: 8px bands wherever the neighbour is lower. Band k spans
@@ -764,18 +782,34 @@ end
 -- The raw geometry for `map`: (vertex list, triangle index list, quad
 -- count). Synchronous and GPU-free -- the headless suite and the probes
 -- exercise the invariants through this.
-function ChunkMesher.geometry(map, bodyOnly, masks)
+--
+-- `split` lifts the water surface out, as it is lifted out for the
+-- reflective pass, and appends that sink's own three values -- so the suite
+-- can check the same separation the GPU path relies on without a GPU.
+-- Without it the water is in the first list, which is what every existing
+-- caller reads.
+function ChunkMesher.geometry(map, bodyOnly, masks, split)
   local sink = newTableSink()
-  runGeometry(map, bodyOnly, masks, sink)
-  return sink.results()
+  local waterSink = split and newTableSink() or nil
+  runGeometry(map, bodyOnly, masks, sink, waterSink)
+  if not waterSink then return sink.results() end
+  local v, i, n = sink.results()
+  local wv, wi, wn = waterSink.results()
+  return v, i, n, wv, wi, wn
 end
 
 -- Build the mesh for `map` synchronously. Returns nil when there is
 -- nothing to draw or meshes are unavailable (headless).
-function ChunkMesher.build(map, bodyOnly, masks)
+--
+-- `split` asks for the water surface as a SECOND mesh, returned after the
+-- terrain one -- the shape the reflective pass needs (see Water). Without
+-- it the water is inside the terrain mesh, which is the historical
+-- contract and what every other caller still wants.
+function ChunkMesher.build(map, bodyOnly, masks, split)
   local sink = newSink()
-  runGeometry(map, bodyOnly, masks, sink)
-  return sink.finish()
+  local waterSink = split and newSink() or nil
+  runGeometry(map, bodyOnly, masks, sink, waterSink)
+  return sink.finish(), waterSink and waterSink.finish() or nil
 end
 
 local function quadsMesh(quads)
@@ -819,14 +853,24 @@ end
 -- character card (VoxelScene). A figure baked into the terrain mesh could
 -- not lean, and a shared mesh could not carry per-figure placement.
 --
--- A list, not a mesh: `{ mesh, wx, wz, y }` per figure. Maps have one or
--- none, so the loop that draws them is shorter than the terrain's.
+-- A list, not a mesh: `{ mesh, wx, wz, y, w }` per figure. Maps have one
+-- or none, so the loop that draws them is shorter than the terrain's.
+-- `w` is the card's own width in its local space (its quads start at
+-- x = 0), measured here because the first-person pass yaws a card about
+-- its middle -- a card yawed about its left edge swings off its seat.
 local function buildFigureMeshes(map)
   local out = {}
   for _, f in ipairs(Structures.forMap(map).figures or {}) do
     local mesh = quadsMesh(f.quads)
     if mesh then
-      out[#out + 1] = { mesh = mesh, wx = f.wx, wz = f.wz, y = f.y }
+      local w = 0
+      for _, q in ipairs(f.quads) do
+        for c = 1, 4 do
+          local x = q[c] and q[c][1]
+          if x and x > w then w = x end
+        end
+      end
+      out[#out + 1] = { mesh = mesh, wx = f.wx, wz = f.wz, y = f.y, w = w }
     end
   end
   return out
@@ -858,8 +902,17 @@ local function entry(id)
   return c
 end
 
+-- The water surface that came out of a terrain slot's own build. Kept
+-- beside it rather than in a slot of its own because the two are ONE
+-- answer: a full mesh drawn beside a body build's water would draw the
+-- ring's ponds twice and miss the body's own.
+local function waterSlot(slot)
+  return slot .. "Water"
+end
+
 local function releaseEntry(c)
-  for _, slot in ipairs({ "full", "body", "grass", "flowers" }) do
+  for _, slot in ipairs({ "full", "body", "fullWater", "bodyWater",
+                          "grass", "flowers" }) do
     local mesh = c[slot]
     if mesh and mesh.release then pcall(mesh.release, mesh) end
     c[slot] = nil
@@ -924,13 +977,17 @@ local function runJob(job)
     if c.stale then c.stale.aux = nil end
   end
   local sink = newSink()
-  runGeometry(map, job.slot == "body", job.masks, sink)
+  local waterSink = newSink()
+  runGeometry(map, job.slot == "body", job.masks, sink, waterSink)
   local mesh = sink.finish()
+  local water = waterSink.finish()
   if (gen[job.id] or 0) ~= job.gen then
     if mesh and mesh.release then pcall(mesh.release, mesh) end
+    if water and water.release then pcall(water.release, water) end
     return
   end
   swapSlot(c, job.slot, mesh or false)
+  swapSlot(c, waterSlot(job.slot), water or false)
   if c.stale then
     c.stale[job.slot] = nil
     if not (c.stale.full or c.stale.body or c.stale.aux) then
@@ -1032,12 +1089,14 @@ function ChunkMesher.get(map, bodyOnly, masks)
     if c.stale then c.stale.aux = nil end
   end
   if c[slot] == nil or (c.stale and c.stale[slot]) then
-    local ok, mesh = pcall(ChunkMesher.build, map, bodyOnly, masks)
+    local ok, mesh, water = pcall(ChunkMesher.build, map, bodyOnly, masks,
+                                  true)
     if not ok then
       print("[warn] voxel mesh build failed for " .. tostring(map.id)
             .. ": " .. tostring(mesh))
     end
     swapSlot(c, slot, (ok and mesh) or false)
+    swapSlot(c, waterSlot(slot), (ok and water) or false)
     if c.stale then
       c.stale[slot] = nil
       if not (c.stale.full or c.stale.body or c.stale.aux) then
@@ -1058,6 +1117,21 @@ function ChunkMesher.peek(map, bodyOnly)
   return mesh or nil
 end
 
+-- A slot's terrain mesh AND the water surface lifted out of it, as one
+-- answer. Never builds, like peek.
+--
+-- Both or neither, always from the SAME slot: the water was cut out of that
+-- exact geometry, so pairing a full mesh with a body build's water would
+-- draw the border ring's ponds twice and leave the body's as holes. Callers
+-- that fall back from one variant to the other fall back through this, so
+-- there is nowhere for the two to be chosen separately.
+function ChunkMesher.pair(map, bodyOnly)
+  local c = cache[map.id]
+  if not c then return nil, nil end
+  local slot = bodyOnly and "body" or "full"
+  return c[slot] or nil, c[waterSlot(slot)] or nil
+end
+
 function ChunkMesher.grass(map)
   local c = cache[map.id]
   return c and c.grass or nil
@@ -1068,8 +1142,8 @@ function ChunkMesher.flowers(map)
   return c and c.flowers or nil
 end
 
--- Authored figures as `{ mesh, wx, wz, y }` records -- each placed by its
--- own leaning matrix at draw time, so they cannot share one mesh.
+-- Authored figures as `{ mesh, wx, wz, y, w }` records -- each placed by
+-- its own leaning matrix at draw time, so they cannot share one mesh.
 function ChunkMesher.figures(map)
   local c = cache[map.id]
   local list = c and c.figures

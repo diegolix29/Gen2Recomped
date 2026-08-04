@@ -68,7 +68,18 @@ OverworldBattle.setting = ModSetting.new(OverworldBattle.KEY,
                                          OverworldBattle.LABEL,
                                          { true, false }, { "ON", "OFF" })
 
+-- Whether the VR row is ON -- read lazily, because VR requires modules
+-- that sit above this one. While it is, this mode stops being optional:
+-- the headset's battle seat, the pokedex screen and the effects plane
+-- all assume a fight standing on the world, and a white-field battle
+-- inside a headset is exactly the flat screen VR exists to replace.
+local function vrOn()
+  local ok, vr = pcall(V.require, "VR")
+  return ok and vr and vr.enabled and vr.enabled() or false
+end
+
 function OverworldBattle.enabled()
+  if vrOn() then return true end
   return OverworldBattle.setting:get() and true or false
 end
 
@@ -98,10 +109,38 @@ OverworldBattle.backSetting = ModSetting.new(OverworldBattle.BACK_KEY,
 
 -- Gated on 3D-BTL rather than read alone: with staged battles off there is no
 -- staged shot for a back pic to be pinned in FRONT of, and the engine's own
--- battle screen already draws exactly this.
+-- battle screen already draws exactly this. And held OFF under VR: the
+-- headset stands both mons on the world -- a flat back pic pinned to the
+-- 2D frame would keep your own mon off the arena the battle seat looks at.
 function OverworldBattle.backPinned()
   if not OverworldBattle.enabled() then return false end
+  if vrOn() then return false end
   return OverworldBattle.backSetting:get() and true or false
+end
+
+-- Whether a pic is the one drawn in the GB's own slot with its feet on the
+-- text box, rather than geometry standing out on the map.
+--
+-- Exactly the player's side under BACK SPRITES -- its mon, or the trainer back
+-- that holds the slot until "Go!" -- because that is the only pic this mod
+-- ever leaves flat (see drawPicsLayer below). The foe is a billboard on its
+-- tile whichever mode is on, and with the mode off the player's side is one
+-- too, so both of those keep the open bottom that lets the arena through a
+-- stride. What the answer buys is in BattlePics: a pic on the box has nothing
+-- behind its lowest row, so its bottom edge seals.
+-- Read by TRUTHINESS rather than against nil, because sideTexture blanks the
+-- side it is not rendering by setting the field to FALSE (see OFF) and holds
+-- it that way for the whole render -- during which the pic layer runs, and
+-- picImage asks this. A nil test passes a `false` straight through to the
+-- index below, and the error comes out of sideTexture into the pcall that
+-- calls it: the foe's billboard is dropped for the frame and the Pokemon
+-- simply is not there.
+function OverworldBattle.pinnedPic(battle, img)
+  if not (battle and img) then return false end
+  if not OverworldBattle.backPinned() then return false end
+  if img == battle.playerBackPic then return true end
+  local player = battle.player
+  return (player and img == player.sprite) and true or false
 end
 
 -- ------- both mons face you
@@ -287,6 +326,10 @@ end
 -- not nest.
 local session = nil
 
+local function isIOS()
+  return love.system and love.system.getOS and love.system.getOS() == "iOS"
+end
+
 local function game()
   return require("src.core.Game")
 end
@@ -448,6 +491,23 @@ function OverworldBattle.update(dt)
   -- inside somebody else's frame means putting the frame back afterwards.
   local okTex, textures = pcall(OverworldBattle.textures, session.battle)
   if not okTex then textures = nil end
+  -- stashed for the VR eye pass, which stands these same pics on the map
+  -- in ITS view of the world (VoxelScene's eyes path). Stashed HERE
+  -- because rendering them binds canvases, which the eye pass -- mid-scene
+  -- when it wants them -- must never do; reading a stashed canvas is free.
+  session.textures = textures
+  -- and the move-animation layer, for the same eyes -- rendered only
+  -- while a headset is actually watching, because only the VR world
+  -- pass draws it (the flat screen has the animations in-frame already)
+  session.animTex = nil
+  local okVR, vrOn = pcall(function()
+    local vr = V.require("VR")
+    return vr.active and vr.active() or false
+  end)
+  if okVR and vrOn and session.battle then
+    local okA, anim = pcall(OverworldBattle.animTexture, session.battle)
+    if okA then session.animTex = anim end
+  end
   session.token = (session.token or 0) + 1
   local ok, shot = pcall(BattleScene.render, session.state, session.arena,
                          textures, session.token)
@@ -484,11 +544,15 @@ function OverworldBattle.update(dt)
     -- reason the scene is: it binds a canvas of its own. After the frost, so
     -- the glass is frosted from the world alone and never from the glyphs
     -- about to sit on it.
-    local okHud, up = pcall(OverworldBattle.snapHUDs, session.battle, shot)
+    local ios = isIOS()
+    local okHud, up = false, false
+    if not ios then
+      okHud, up = pcall(OverworldBattle.snapHUDs, session.battle, shot)
+    end
     session.snapped = (okHud and up) and true or false
     -- once per battle, not once per frame: a driver that cannot do this cannot
     -- do it sixty times a second either, and the fallback is silent and fine
-    if not okHud and not session.hudWarned then
+    if not ios and not okHud and not session.hudWarned then
       session.hudWarned = true
       V.mod.log:warn("overworld battle HUD snap failed: %s -- the HUDs draw "
                      .. "in the battle frame this battle", tostring(up))
@@ -504,6 +568,104 @@ function OverworldBattle.shot()
   local s = session.shot
   if s and s.canvas then return s end
   return nil
+end
+
+-- The staged fight's WORLD-side pieces, for a pass that stands the mons in
+-- its own view of the map rather than in the arena's composed shot -- the
+-- VR eyes. Returns the two cards as BattleScene.monCards builds them (yawed
+-- toward whatever Voxel3D.eye is at CALL time, so a per-eye caller gets
+-- per-eye cards), the live textures table (for the hit-flash flag), and the
+-- token the shadow signature keys on. nil while nothing is staged, the
+-- arena is broken, or the pics have not been rendered yet.
+function OverworldBattle.worldCards()
+  if not (session and session.arena and not session.broken) then return nil end
+  local tex = session.textures
+  if not tex then return nil end
+  local host = (session.state and session.state.map) or nil
+  if not host then return nil end
+  local groundY = BattleScene.groundY(host, session.arena)
+  return BattleScene.monCards(session.arena, groundY, tex), tex, session.token
+end
+
+-- The live session's BATTLE STATE, once the pushed battle has been met
+-- (session.battle fills in from the stack in update). The VR quad reads
+-- it to tell "the battle screen is on top" from "a menu is over the
+-- battle" -- the UI-only panel is right for the first and wrong for the
+-- second. nil with no session, a broken one, or a battle not yet pushed.
+function OverworldBattle.battle()
+  if not (session and not session.broken) then return nil end
+  return session.battle
+end
+
+-- The move-animation layer as a texture: the engine's own drawAnimLayer,
+-- rendered UNSHIFTED (slot-authored coordinates) into a GB-sized
+-- transparent canvas of its own. This is what stands the effects up in
+-- the VR eyes' world -- see worldAnim below -- the same move the pics
+-- made through sideTexture: let the engine draw what it always draws,
+-- catch it on a canvas, stand the canvas in the scene.
+local animLayer = nil
+-- the engine's own drawAnimLayer, captured by install(). Declared HERE,
+-- above the function that reads it: a local declared further down the
+-- chunk would leave this function reading a global of the same name --
+-- nil forever, and the effects silently absent from the eyes (the bug
+-- this comment is the tombstone of).
+local innerAnim = nil
+
+function OverworldBattle.animTexture(battle)
+  if not (innerAnim and battle) then return nil end
+  if not (love.graphics and love.graphics.newCanvas) then return nil end
+  if not animLayer then
+    local ok, c = pcall(love.graphics.newCanvas,
+                        BattleScene.GB_W, BattleScene.GB_H)
+    if not (ok and c) then return nil end
+    pcall(c.setFilter, c, "nearest", "nearest")
+    animLayer = c
+  end
+  local g = love.graphics
+  local prevCanvas = g.getCanvas()
+  local ok = pcall(function()
+    g.push("all")
+    g.origin()
+    g.setCanvas(animLayer)
+    g.clear(0, 0, 0, 0)
+    g.setBlendMode("alpha")
+    g.setColor(1, 1, 1, 1)
+    innerAnim(battle, false)
+    g.pop()
+  end)
+  if not ok then pcall(g.pop, g) end
+  if prevCanvas then pcall(g.setCanvas, g, prevCanvas)
+  else pcall(g.setCanvas, g) end
+  return ok and animLayer or nil
+end
+
+-- The staged fight's effects, for the VR eyes: the animation layer plus
+-- the plane to stand it on (BattleScene.fxCard -- anchored so a hit
+-- authored at a slot lands on the mon standing in for that slot). nil
+-- while nothing is staged or no layer was rendered this frame.
+function OverworldBattle.worldAnim()
+  if not (session and session.arena and not session.broken) then return nil end
+  local tex = session.animTex
+  if not tex then return nil end
+  local host = (session.state and session.state.map) or nil
+  if not host then return nil end
+  local groundY = BattleScene.groundY(host, session.arena)
+  local model = BattleScene.fxCard(session.arena, groundY,
+                                   OverworldBattle.ANCHOR)
+  if not model then return nil end
+  return tex, model
+end
+
+-- Where the staged fight STANDS -- the arena and its floor height -- for a
+-- camera that wants to look at it rather than draw it (the VR battle
+-- mount). Answered as soon as the stage exists, textures or not: the
+-- camera should be seated behind the fade before the first pic lands.
+-- nil whenever no fight is staged on the world.
+function OverworldBattle.stage()
+  if not (session and session.arena and not session.broken) then return nil end
+  local host = (session.state and session.state.map) or nil
+  if not host then return nil end
+  return session.arena, BattleScene.groundY(host, session.arena)
 end
 
 function OverworldBattle.invalidate()
@@ -668,6 +830,8 @@ local texturing = nil
 local texCanvas = {}
 local innerPics = nil                   -- captured by install()
 local innerHUDs = nil                   -- likewise, for the snapped HUD layer
+-- (innerAnim, their sibling, is declared up beside animTexture, which
+-- sits earlier in the chunk than this group and must see the local)
 
 local function texCanvasFor(side)
   local c = texCanvas[side]
@@ -831,11 +995,17 @@ function OverworldBattle.install()
   -- behind it. There is a world back there now, so they are filled here
   -- instead -- see BattlePics, which puts the paper back without touching
   -- the silhouette.
+  --
+  -- The pinned pic is told that its feet are on the box, which is what lets
+  -- the pale-bodied back sprites be filled at all: their bellies leak out
+  -- through an opening too wide to read as a drain, and only the box under
+  -- them settles that it is not a hole. Passed the pre-bake image, because
+  -- that is the one the battle holds a reference to.
   local innerPic = BattleState.picImage
   function BattleState:picImage(img)
     local out = innerPic(self, img)
     if not OverworldBattle.shot() then return out end
-    return BattlePics.filled(out)
+    return BattlePics.filled(out, OverworldBattle.pinnedPic(self, img))
   end
 
   -- While a billboard texture is being rendered both pics are put in the same
@@ -928,6 +1098,7 @@ function OverworldBattle.install()
   local innerText = BattleState.drawTextArea
   function BattleState:drawTextArea()
     if not self.dramaticShapeShot then return innerText(self) end
+    if isIOS() then return innerText(self) end
     local battle = self
     if not self.dramaticShapeDark then return withoutBoxFill(battle, innerText) end
     BattleHud.flipGlyphs(BattleScene.GB_W, BattleScene.GB_H, function()
@@ -940,7 +1111,7 @@ function OverworldBattle.install()
   -- give them. They ride the average, which is where the pair's centre went
   -- -- a few pixels at most, and it keeps a hit landing on the mon it is
   -- aimed at instead of drifting off it.
-  local innerAnim = BattleState.drawAnimLayer
+  innerAnim = BattleState.drawAnimLayer
   function BattleState:drawAnimLayer(colorized)
     local shot = self.dramaticShapeShot
     if not shot then return innerAnim(self, colorized) end
@@ -1089,6 +1260,13 @@ function OverworldBattle.snapHUDs(battle, shot)
   if not (battle and shot and shot.canvas and (shot.scale or 0) > 0) then
     return false
   end
+  -- With a headset live the HUDs stay IN the GB frame -- the classic
+  -- slots, on the glass drawHudPanels lays for the unsnapped path. Both
+  -- of VR's battle screens (the floating panel and the pokedex's) crop
+  -- to the letterbox, and a block snapped out to the window's edge would
+  -- be cropped away with the window around it.
+  local okV, vr = pcall(V.require, "VR")
+  if okV and vr and vr.active and vr.active() then return false end
   local slide = (battle.introSlide or 0) * 4
   local rects, bandX = OverworldBattle.snapRects(shot)
   local enemy, player = OverworldBattle.hudLive(battle, slide)
@@ -1146,6 +1324,17 @@ function OverworldBattle.drawHudPanels(battle)
   local shot = battle.dramaticShapeShot
   battle.dramaticShapeDark = nil
   if not shot then return end
+  if isIOS() then
+    local slide = (battle.introSlide or 0) * 4
+    local enemy, player = OverworldBattle.hudLive(battle, slide)
+    local rect = OverworldBattle.HUD_RECT
+    love.graphics.setColor(1, 1, 1, 0.84)
+    if enemy then love.graphics.rectangle("fill", rect.enemy[1], rect.enemy[2], rect.enemy[3], rect.enemy[4]) end
+    if player then love.graphics.rectangle("fill", rect.player[1], rect.player[2], rect.player[3], rect.player[4]) end
+    love.graphics.setColor(1, 1, 1, 1)
+    battle.dramaticShapeDark = nil
+    return
+  end
   if snapped() then
     battle.dramaticShapeDark = session and session.dark or nil
     return

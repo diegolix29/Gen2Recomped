@@ -32,8 +32,18 @@ local Voxel = {}
 -- Its ANGLE is 35 degrees, the same as the rung of that name. The duplicate
 -- in the table is deliberate: the ladder is a list of what each rung LOOKS
 -- like, and two rungs may look the same while meaning different things.
-Voxel.ANGLES_DEG = { 0, 15, 35, 50, 75 }
-Voxel.ANGLE_LABELS = { "OFF", "15", "35", "50", "75" }
+--
+-- 1ST is the other rung that is more than an angle: the camera steps off its
+-- orbit entirely and stands in the player's own eyes (lib/FirstPerson.lua),
+-- with free look and free movement. Its ANGLE entry is 75 -- the orbit rung
+-- it hands over from -- because the tween in and out of first person starts
+-- from whatever the orbit shows, and the lowest rung is the one a dive into
+-- a head should start from. Everything angle-derived (the sky's fade, the
+-- billboard lean the blend eases away) reads that 75 while the first-person
+-- rig owns the actual camera.
+Voxel.ANGLES_DEG = { 0, 35, 15, 35, 50, 75, 75 }
+Voxel.ANGLE_LABELS = { "OFF", "FULL", "15", "35", "50", "75",
+                       "1ST (EXPERIMENTAL)" }
 Voxel.MAX_LEVEL = #Voxel.ANGLES_DEG - 1
 
 -- Sprite rotation offsets for different voxel angles (side views)
@@ -53,6 +63,13 @@ function Voxel.isFull(level)
   return (level or Voxel.level) == Voxel.FULL_LEVEL
 end
 
+-- the rung the first-person camera sits on, likewise
+Voxel.FP_LEVEL = 6
+
+function Voxel.isFirstPerson(level)
+  return (level or Voxel.level) == Voxel.FP_LEVEL
+end
+
 -- ------- what the hotkey walks
 --
 -- The ANGLE rungs only, with FULL left out. The key is a display-mode
@@ -61,7 +78,12 @@ end
 -- mid-walk, would silently turn the blur to maximum and flatten the horizon
 -- with no indication that a keypress had done so. FULL stays on the OPTIONS
 -- row, which is where a preset that changes other rows belongs.
-Voxel.HOTKEY_ORDER = { 0, 2, 3, 4, 5 }   -- OFF, 15, 35, 50, 75
+--
+-- 1ST is on the path: it changes the camera and only the camera, which is
+-- exactly what the key promises -- and the key is also the way back OUT of
+-- first person on a keyboard, where the mouse is captured and the OPTIONS
+-- menu is a trip.
+Voxel.HOTKEY_ORDER = { 0, 2, 3, 4, 5, 6 }   -- OFF, 15, 35, 50, 75, 1ST
 
 -- The rung a press moves to from `level`.
 --

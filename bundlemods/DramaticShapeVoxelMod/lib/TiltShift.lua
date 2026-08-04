@@ -25,6 +25,7 @@
 -- failure -- headless, no shader support) apply() hands the canvas back
 -- untouched, so every other path is byte-for-byte what it always was.
 
+local V = ...
 local TiltShift = {}
 
 TiltShift.level = 0
@@ -75,26 +76,20 @@ local SHADER = [[
 local shader = nil            -- nil = untried, false = unavailable
 local ping, pong, cw, ch = nil, nil, 0, 0
 
--- Cache the shader availability to prevent repeated re-checking during
--- route/scene changes. Once the shader is successfully compiled, we assume
--- the hardware capabilities don't change during gameplay (context loss is
--- handled elsewhere).
-local shaderCache = nil  -- nil = untried, true = available, false = unavailable
-
 local function getShader()
   if shader == nil then
     local ok, sh = pcall(function() return love.graphics.newShader(SHADER) end)
     shader = (ok and sh) or false
-    shaderCache = (ok and sh) and true or false
   end
   return shader or nil
 end
 
 local function getCanvases(w, h)
   if not ping or cw ~= w or ch ~= h then
-    local ok, a = pcall(love.graphics.newCanvas, w, h)
+    local PixelCanvas = V.require("PixelCanvas")
+    local ok, a = PixelCanvas.new(w, h)
     if not ok then return nil end
-    local okB, b = pcall(love.graphics.newCanvas, w, h)
+    local okB, b = PixelCanvas.new(w, h)
     if not okB then return nil end
     -- the gaussian's fractional tap offsets need linear filtering
     a:setFilter("linear", "linear")
@@ -179,8 +174,6 @@ end
 -- Drop the GPU objects (window resize, hot reload).
 function TiltShift.invalidate()
   ping, pong, cw, ch = nil, nil, 0, 0
-  shader = nil
-  shaderCache = nil
 end
 
 return TiltShift

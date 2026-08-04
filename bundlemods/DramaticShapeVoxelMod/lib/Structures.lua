@@ -55,6 +55,14 @@ local Structures = {}
 -- must match ChunkMesher's ring (3 border blocks, in tiles)
 local RING = 12
 
+-- how far past the map body cells still get the hull. A route's ring is
+-- nearly as big as its body; modelling all of it costs hundreds of
+-- thousands of quads of border trees nobody walks near. Beyond this,
+-- pinned cells simply are not claimed and fall through to the mesher's
+-- plain box -- cheap distant scenery. (Declared up here rather than
+-- beside buildCylinders because forMap's grid resolve reads it too.)
+local ROUND_RING = 4
+
 -- object-mode gates
 local OBJECT_MAX_ROWS = 6          -- a prop is at most 48px of drawing
 local OBJECT_MAX_QUADS = 4096      -- safety cap per cluster
@@ -67,9 +75,12 @@ local OBJECT_DEPTH = 6             -- voxel thickness of a detected prop
 -- pure profile; `post` matches the 6px the detector gives the fence
 -- rows it finds on its own, so pinned and detected fences look alike;
 -- `signpost` is a plate on a stick -- 2 voxels, the thinnest that still
--- shows an edge
+-- shows an edge; `bike` is the same 2 for the same reason from the other
+-- direction -- a bicycle drawn side-on is a LINE drawing whose negative
+-- space is the drawing, and at the 5 voxels `prop` gives, the side faces
+-- of neighbouring strokes close every gap in it off-axis
 local PINNED_DEPTH = { billboard = 10, prop = 5, stool = 10, cutout = 1,
-                       console = 10, post = 6, signpost = 2 }
+                       console = 10, post = 6, signpost = 2, bike = 2 }
 
 local MAX_ROWS = 6                 -- volume height cap: 48px
 
@@ -154,12 +165,34 @@ function Structures.forMap(map)
   local TileRenderer = require("src.render.TileRenderer")
   local borderId = TileRenderer.borderBlockFor(map)
   local borderBlk = borderId and tileset.blocks[borderId + 1] or nil
+  -- TREES fill stops at ROUND_RING instead of running the full RING.
+  -- Only that far out does a tree cell get carved into a hull; past it
+  -- the cells fall through to the mesher's plain box, and a slab of
+  -- flat-topped boxes beside the modelled wall reads as a painted-on
+  -- plateau -- the wall looking like it was cut off with scissors. So
+  -- the far ring is simply not built: beyond ROUND_RING tileLookup
+  -- answers nil, which is the same "nothing out there" BLACK already
+  -- produces and every pass below already copes with. The cut lands on
+  -- the carve boundary exactly -- the 2x2-cell canopy scan starts at
+  -- floor(-RING/2) and RING, ROUND_RING and the body are all multiples
+  -- of 4 tiles, so no group is left half-resolved at the edge.
+  --
+  -- WATER and the other tilesets' own borders keep the full ring: a flat
+  -- sheet of water is what water looks like from above anyway, and an
+  -- interior's border is black already.
+  local hullRingOnly = borderBlk and def.tileset == "OVERWORLD"
+                       and (TileRenderer.voidFill or "trees") == "trees"
   local tw2, th2 = tw, th
   local function tileLookup(tx, ty)
     if tx >= 0 and ty >= 0 and tx < tw2 and ty < th2 then
       return map:tileAt(tx, ty)
     end
     if not borderBlk then return nil end
+    if hullRingOnly and (tx < -ROUND_RING or ty < -ROUND_RING
+                         or tx >= tw2 + ROUND_RING
+                         or ty >= th2 + ROUND_RING) then
+      return nil
+    end
     return borderBlk[(ty % 4) * 4 + (tx % 4) + 1] or 0
   end
   local shapeAt, tileAt = {}, {}
@@ -192,8 +225,9 @@ function Structures.forMap(map)
   -- still overdraws a walker's feet even though characters stamp over
   -- terrain.)
   S = { shapeAt = shapeAt, tileAt = tileAt, outdoor = Map.isOutdoor(def),
+        hideBareRing = hullRingOnly or nil,
         runs = {}, skip = {}, ground = {}, doorFold = {}, objectQuads = {},
-        grassQuads = {}, flowerQuads = {}, roundStamps = {} }
+        grassQuads = {}, flowerQuads = {}, roundStamps = {}, figures = {} }
   Buildings.build(S, map, pixels(tileset), perRow)
 
   -- Fold doors into their buildings. A door cell is WALKABLE (the player
@@ -266,7 +300,25 @@ function Structures.forMap(map)
   Structures.buildStairs(S, map, x0, x1, y0, y1)
 
   -- ---- bookcases: pinned shelves collapsed to one cell of depth ----
-  Structures.buildBookcases(S, map, x0, x1, y0, y1)
+  -- The atlas comes along so the shelf front can carry its own measured
+  -- relief: the panes it seals behind its black frames sink a voxel.
+  Structures.buildBookcases(S, map, x0, x1, y0, y1, pixels(tileset), perRow)
+
+  -- ---- figures: a person drawn INTO furniture, lifted off it ----
+  -- Before the region flood and the volume pass, so everything after this
+  -- reads the tiles the profile says are there once the figure is gone.
+  -- (Its own tiles are authored furniture or walkable floor either way, so
+  -- no pass below would have claimed them -- but the repaint is what those
+  -- passes should see, and this needs no pixel access to do it.)
+  Structures.buildFigures(S, map, x0, x1, y0, y1)
+
+  -- ---- mounted: a thing drawn INTO a wall band, stood proud of it ----
+  -- Here for the same reason and with the same guarantee as the figures
+  -- above: the repaint hands every pass below the plain panel the profile
+  -- says is behind the object, so the wall band it was painted into keeps
+  -- resolving as the wall it is -- without a second copy of the drawing
+  -- flat on its face.
+  Structures.buildMounted(S, map, x0, x1, y0, y1)
 
   -- ---- flood-fill regions of structural tiles ----
   local seen = {}
@@ -519,14 +571,51 @@ end
 local ROUND_SHADE = { front = 1.0, back = 0.68, side = 0.78,
                       top = 1.0, bottom = 0.55 }
 
-local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows)
-  N = N or 16                  -- art canvas: 16 = one cell, 32 = 2x2 cells
-  local N2 = N / 2
+-- The potted plant's ORGANIC HALF: the leaf crown (16 rows), then the
+-- trunk, its root flare and the strands draping over the pot's rim (8
+-- more) -- all of it stands as a slab this many voxels deep instead of
+-- revolving. `depth` 5 is the thin standee pool's depth, what every other
+-- interior plant already uses.
+--
+-- `rows` = 24 puts the slab/revolve boundary AT THE VESSEL'S RIM ROW, and
+-- that placement is what makes the pot read as a pot. The first cut put
+-- it at the cell seam (16), which let the root and drape rows revolve:
+-- their drawn spans are 8-12 wide, so they stacked 8-12-deep discs on top
+-- of the rim and the whole base read as one bulbous onion instead of a
+-- flat-mouthed planter with a trunk standing out of it. Only rows 24-31
+-- -- black rim edge, gold band, body, foot, the drawn flowerpot profile
+-- -- are the vessel, and only they revolve.
+local PLANTER_SPRAY = { rows = 24, depth = 5 }
+
+-- `spray`, when given, caps the chord over the canvas's top `rows` rows to
+-- `depth` voxels instead of revolving them.
+--
+-- Revolving a row turns its DRAWN WIDTH into depth, which only means
+-- something when the drawing states a width to turn -- the pot's rows do
+-- (a 3px stem opening to a 12px belly and closing to a 6px foot, an urn's
+-- profile), and a tree canopy's do (the ball's outline is drawn). A leaf
+-- crown's do NOT: the leaves are a spray that runs off all four sides of
+-- its tile, so every row measures the full canvas and the revolve can only
+-- produce a solid cylinder -- the "hedge column" a plant must never become,
+-- with one row of texels smeared down its whole top face. Where the drawing
+-- states no profile, the honest reading is the one the thin standee pools
+-- exist for: the foliage stands as a per-pixel slab and keeps the airy
+-- silhouette that makes it read as leaves.
+local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
+                             NYin, spray, baseRows, bodyRows, wellRows,
+                             taperVox)
+  -- The canvas is NX wide and NX DEEP (a hull is round in plan, so its
+  -- depth is its width) by NY tall. NX = 16 is one cell, 32 a 2x2-cell
+  -- group; NY defaults to NX -- a ball -- and NY = 2 * NX is a drawing
+  -- STACKED two cells high on one cell of plot (the potted plant).
+  local NX = N or 16
+  local NY = NYin or NX
+  local N2 = NX / 2
   local perRow = map.tileset.tilesPerRow or 16
   local atlasW = map.tileset.imageWidth or 128
   local atlasH = map.tileset.imageHeight or 48
 
-  -- cell-space art access (NxN, row 0 = top), anchored at cell (cx, cy)
+  -- cell-space art access (NX x NY, row 0 = top), anchored at cell (cx, cy)
   local function tileOf(px, py)
     return S.tileAt[keyOf(cx * 2 + math.floor(px / 8),
                           cy * 2 + math.floor(py / 8))]
@@ -537,19 +626,19 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows)
            math.floor(tile / perRow) * 8 + py % 8
   end
 
-  -- shade class of every canvas pixel, indexed py * N + px
+  -- shade class of every canvas pixel, indexed py * NX + px
   local cls = {}
-  for py = 0, N - 1 do
-    for px = 0, N - 1 do
+  for py = 0, NY - 1 do
+    for px = 0, NX - 1 do
       local ax, ay = texel(px, py)
       local r, g, b, a = data:getPixel(ax, ay)
-      cls[py * N + px] = a == 0 and "off"
-                         or Structures.shadeClass(math.min(r, g, b))
+      cls[py * NX + px] = a == 0 and "off"
+                          or Structures.shadeClass(math.min(r, g, b))
     end
   end
 
-  -- 4-connected flood from the canvas border through `passable` classes
-  local function floodOutside(passable)
+  -- 4-connected flood from a row band's border through `passable` classes
+  local function floodOutside(passable, y0, y1)
     local out, stack = {}, {}
     local function seed(i)
       if not out[i] and passable[cls[i]] then
@@ -557,39 +646,56 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows)
         stack[#stack + 1] = i
       end
     end
-    for i = 0, N - 1 do
-      seed(i); seed(N * (N - 1) + i); seed(i * N); seed(i * N + N - 1)
+    for px = 0, NX - 1 do
+      seed(y0 * NX + px); seed(y1 * NX + px)
+    end
+    for py = y0, y1 do
+      seed(py * NX); seed(py * NX + NX - 1)
     end
     while #stack > 0 do
       local i = table.remove(stack)
-      local px = i % N
+      local px, py = i % NX, math.floor(i / NX)
       if px > 0 then seed(i - 1) end
-      if px < N - 1 then seed(i + 1) end
-      if i >= N then seed(i - N) end
-      if i < N * (N - 1) then seed(i + N) end
+      if px < NX - 1 then seed(i + 1) end
+      if py > y0 then seed(i - NX) end
+      if py < y1 then seed(i + NX) end
     end
     return out
   end
 
-  -- the mask: darkest-pixel outline plus its enclosure; dither fallback
-  local out = floodOutside({ off = true, dark = true,
-                             light = true, white = true })
-  local mask, enclosed = {}, 0
-  for i = 0, N * N - 1 do
-    if not out[i] then
-      mask[i] = true
-      if cls[i] ~= "black" then enclosed = enclosed + 1 end
+  -- The mask -- darkest-pixel outline plus its enclosure, with the dither
+  -- rule as fallback -- computed per CELL BAND of NX rows.
+  --
+  -- A square canvas is ONE band, so this is exactly the whole-canvas rule
+  -- it replaces. A STACKED canvas needs it per band because its two halves
+  -- want opposite answers: the potted plant's leaf crown is a black-outlined
+  -- dither drawn over floor (outline enclosure keeps it), while its pot is a
+  -- solid DARK body whose base runs flush to the band's bottom edge (the
+  -- enclosure flood walks in through dark and guts it, and the fallback --
+  -- which the band's own `enclosed` count asks for -- keeps it). Measured on
+  -- the Center plant: one flood over both bands keeps 53% of the drawing and
+  -- leaves the pot a hollow black frame; per band keeps 68% and both read.
+  local mask = {}
+  for band = 0, NY / NX - 1 do
+    local y0, y1 = band * NX, band * NX + NX - 1
+    local out = floodOutside({ off = true, dark = true,
+                               light = true, white = true }, y0, y1)
+    local enclosed = 0
+    for i = y0 * NX, (y1 + 1) * NX - 1 do
+      if not out[i] then
+        mask[i] = true
+        if cls[i] ~= "black" then enclosed = enclosed + 1 end
+      end
     end
-  end
-  if enclosed < N * N / 8 then
-    out = floodOutside({ off = true, light = true, white = true })
-    mask = {}
-    for i = 0, N * N - 1 do
-      if not out[i] and cls[i] ~= "off" then mask[i] = true end
+    if enclosed < NX * NX / 8 then
+      out = floodOutside({ off = true, light = true, white = true }, y0, y1)
+      for i = y0 * NX, (y1 + 1) * NX - 1 do
+        mask[i] = (not out[i] and cls[i] ~= "off") or nil
+      end
     end
   end
   local any = nil
-  for i = 0, N * N - 1 do any = any or mask[i] end
+  for i = 0, NX * NY - 1 do any = any or mask[i] end
   if not any then return {} end
 
   -- a CAPPED hull (the stump): the top capRows rows of the mask are the
@@ -599,21 +705,93 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows)
   local capY0, capY1 = nil, nil
   if capRows and capRows > 0 then
     local top = nil
-    for iy = 0, N - 1 do
-      for ix = 0, N - 1 do
-        if mask[iy * N + ix] then top = iy break end
+    for iy = 0, NY - 1 do
+      for ix = 0, NX - 1 do
+        if mask[iy * NX + ix] then top = iy break end
       end
       if top then break end
     end
     if top then
       capY0 = top
-      capY1 = math.min(top + capRows - 1, N - 2)
+      capY1 = math.min(top + capRows - 1, NY - 2)
       for iy = capY0, capY1 do
-        for ix = 0, N - 1 do mask[iy * N + ix] = nil end
+        for ix = 0, NX - 1 do mask[iy * NX + ix] = nil end
       end
       any = nil
-      for i = 0, N * N - 1 do any = any or mask[i] end
+      for i = 0, NX * NY - 1 do any = any or mask[i] end
       if not any then return {} end
+    end
+  end
+
+  -- a FLAT-BASED hull (the can): the bottom baseRows rows of the mask are
+  -- the BASE circle's front arc -- the drawing's mirror of the cut face
+  -- above, ground contact seen from above rather than body. A can is only
+  -- round in the horizontal plane, so the drop those rows make toward the
+  -- middle is DEPTH, not a narrowing of the plan: left as body they revolve
+  -- into ever smaller discs and the can ends up balanced on a stem three
+  -- voxels wide (which is exactly what the first build did). Strip them and
+  -- the foot rule below runs the last body row's full disc straight to the
+  -- floor; the rows keep their own texels there, so the front view is still
+  -- the drawing, base rim and all.
+  local baseArt = nil
+  if baseRows and baseRows > 0 then
+    local bot = nil
+    for iy = NY - 1, 0, -1 do
+      for ix = 0, NX - 1 do
+        if mask[iy * NX + ix] then bot = iy break end
+      end
+      if bot then break end
+    end
+    if bot then
+      baseArt = {}
+      for iy = math.max(bot - baseRows + 1, (capY1 or -1) + 2), bot do
+        for ix = 0, NX - 1 do
+          local i = iy * NX + ix
+          if mask[i] then baseArt[i] = true end
+          mask[i] = nil
+        end
+      end
+      any = nil
+      for i = 0, NX * NY - 1 do any = any or mask[i] end
+      if not any then return {} end
+    end
+  end
+
+  -- The can's HEIGHT, and the one place this file departs from the drawing
+  -- on purpose. Strictly un-projected, the drawing states a squat drum: cut
+  -- the mouth ellipse off the top and the base circle off the bottom and
+  -- barely two rows of straight side are left between them, because the GB
+  -- artist spent most of a 16px cell on the opening. A real bin is TALLER
+  -- than it is wide, and the flat game reads as one because the drawing is
+  -- 14px tall next to a 16px player -- so the height is authored (can_height
+  -- voxels) rather than measured, and the surviving body band is repeated
+  -- upward to fill it, bottom row first, which continues the drawn rib
+  -- rhythm instead of inventing a texel. Everything else still comes off
+  -- the pixels.
+  local artRow = {}
+  if bodyRows and bodyRows > 0 then
+    local body = {}
+    for iy = 0, NY - 1 do
+      for ix = 0, NX - 1 do
+        if mask[iy * NX + ix] then body[#body + 1] = iy break end
+      end
+    end
+    local nb = #body
+    if nb > 0 then
+      local top = body[1]
+      for iy = top - 1, math.max(NY - bodyRows, 0), -1 do
+        -- the LOWEST surviving body row, repeated: it is the widest and
+        -- plainest reading of the material (outline, shaded flank, lit
+        -- face) and stacks into a clean metal cylinder. Cycling the whole
+        -- surviving band instead stacks the drawn rim arcs into a barcode
+        -- of hoops, which is detail the drawing never states about the
+        -- side of the can.
+        local from = body[nb]
+        artRow[iy] = from
+        for ix = 0, NX - 1 do
+          mask[iy * NX + ix] = mask[from * NX + ix]
+        end
+      end
     end
   end
 
@@ -631,11 +809,15 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows)
       local ox = (t % perRow) * 8
       local oy = math.floor(t / perRow) * 8
       local score, n = 0, 0
-      for py = 0, N - 1 do
-        for px = 0, N - 1 do
-          local i = py * N + px
+      for py = 0, NY - 1 do
+        for px = 0, NX - 1 do
+          local i = py * NX + px
           local c = cls[i]
-          if not mask[i] and (c == "light" or c == "white") then
+          -- a stripped base row is the OBJECT's own rim, not background:
+          -- scoring its whites against the floor tiles matches paper-white
+          -- ground under a can whose art stands on the gym's grey
+          if not mask[i] and not (baseArt and baseArt[i])
+             and (c == "light" or c == "white") then
             local ax, ay = texel(px, py)
             local r1, g1, b1 = data:getPixel(ax, ay)
             local r2, g2, b2 = data:getPixel(ox + px % 8, oy + py % 8)
@@ -652,14 +834,17 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows)
     end
   end
 
-  -- discs: per mask pixel a z chord [z0, z1), from its row's span circle
-  local z0, z1, src = {}, {}, {}
+  -- discs: per mask pixel a z chord [z0, z1), from its row's span circle.
+  -- z2/z3 is an optional SECOND chord for the same pixel, which only the
+  -- can's hollow mouth uses: a ring in plan needs a front wall and a back
+  -- wall at the same column, and one interval cannot say that.
+  local z0, z1, z2, z3, src, srcX = {}, {}, {}, {}, {}, {}
   local loRow, hiRow = {}, {}
   local yBot = nil
-  for iy = 0, N - 1 do
+  for iy = 0, NY - 1 do
     local lo, hi = nil, nil
-    for ix = 0, N - 1 do
-      if mask[iy * N + ix] then
+    for ix = 0, NX - 1 do
+      if mask[iy * NX + ix] then
         lo = lo or ix
         hi = ix
       end
@@ -670,7 +855,7 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows)
       local c = (lo + hi + 1) / 2
       local hw = (hi - lo + 1) / 2
       for ix = lo, hi do
-        local i = iy * N + ix
+        local i = iy * NX + ix
         if mask[i] then
           local dx = ix + 0.5 - c
           local n = 1
@@ -678,23 +863,148 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows)
             n = math.max(1, math.floor(2 * math.sqrt(hw * hw - dx * dx)
                                        + 0.5))
           end
+          if spray and iy < spray.rows then n = math.min(n, spray.depth) end
           z0[i] = math.floor(N2 - n / 2 + 0.5)
           z1[i] = z0[i] + n
-          src[i] = iy
+          -- a row the can's body band was repeated into wears the row it
+          -- was copied from, never a texel of its own
+          src[i] = artRow[iy] or iy
+        end
+      end
+    end
+  end
+
+  -- Spray-gap BACKING: the drawing's own gap pixels, one voxel deep at
+  -- the slab's mid-plane. The flat crown is full of floor showing
+  -- between leaves; carved as an open slab those gaps became TUNNELS --
+  -- the Center couch, the man sitting on it and the void wall all read
+  -- as pink/orange/black confetti INSIDE the foliage, and the sparse
+  -- bottom rows (lone drawn leaf tips) floated as disconnected specks
+  -- against them. The drawing itself backs every gap with its own
+  -- pixels, so the hull does the same: each in-span gap below drawn
+  -- foliage takes ITS OWN texel as a plate recessed behind the leaf
+  -- relief. Coverage is monotone down a column, so the first backed
+  -- cell always sits directly under a leaf chord -- and every chord
+  -- spans the mid-plane, so no plate ever caps the crown's top: columns
+  -- open to the sky stay open and the silhouette keeps its notches.
+  if spray then
+    for iy = 1, math.min(spray.rows, NY) - 1 do
+      if loRow[iy] then
+        for ix = loRow[iy], hiRow[iy] do
+          local i = iy * NX + ix
+          if not z0[i] then
+            local covered = false
+            for iy2 = 0, iy - 1 do
+              if mask[iy2 * NX + ix] then covered = true break end
+            end
+            if covered then
+              z0[i], z1[i], src[i] = N2, N2 + 1, iy
+            end
+          end
         end
       end
     end
   end
 
   -- foot: rows under the mask repeat the bottom row's discs, wearing the
-  -- bottom row's (outline-dark) pixels
-  for iy = yBot + 1, N - 1 do
+  -- bottom row's (outline-dark) pixels -- except where a stripped base row
+  -- DREW something at that pixel, which keeps its own texel, so a can's
+  -- drawn base rim lands on the model's base instead of being painted over
+  -- by the body band above it
+  for iy = yBot + 1, NY - 1 do
     loRow[iy], hiRow[iy] = loRow[yBot], hiRow[yBot]
     for ix = loRow[yBot], hiRow[yBot] do
-      local b = yBot * N + ix
+      local b = yBot * NX + ix
       if z0[b] then
-        local i = iy * N + ix
-        z0[i], z1[i], src[i] = z0[b], z1[b], yBot
+        local i = iy * NX + ix
+        z0[i], z1[i] = z0[b], z1[b]
+        src[i] = (baseArt and baseArt[i]) and iy or yBot
+      end
+    end
+  end
+
+  -- the TAPER: a bin is a truncated cone, not a tube -- wide at the rim,
+  -- drawn in a couple of voxels toward the base. The drawing agrees as far
+  -- as it can (its own base arc pulls in to 9px from the 11px flanks), but
+  -- it cannot state the whole run, so taperVox is the diameter the base
+  -- loses and the rows in between interpolate. Every row keeps its plan
+  -- ROUND: narrow the span, then re-cut the chords from the narrowed span,
+  -- or the model comes out a cylinder with its corners shaved.
+  local stepped = {}
+  if taperVox and taperVox > 0 then
+    local yTopRow = nil
+    for iy = 0, NY - 1 do
+      if loRow[iy] then yTopRow = iy break end
+    end
+    local span = NY - 1 - (yTopRow or 0)
+    if yTopRow and span > 0 then
+      for iy = yTopRow, NY - 1 do
+        local inset = math.floor(taperVox / 2 * (iy - yTopRow) / span + 0.5)
+        if inset > 0 and loRow[iy] then
+          local lo = loRow[iy] + inset
+          local hi = hiRow[iy] - inset
+          if hi - lo < 1 then
+            lo = math.floor((loRow[iy] + hiRow[iy]) / 2)
+            hi = lo + 1
+          end
+          for ix = loRow[iy], hiRow[iy] do
+            if ix < lo or ix > hi then
+              local i = iy * NX + ix
+              z0[i], z1[i], z2[i], z3[i] = nil, nil, nil, nil
+            end
+          end
+          -- squeeze the row's ART into the narrowed span rather than
+          -- clipping its ends off: the drawn outline is the last column
+          -- either side, and dropping it leaves the taper's new edge
+          -- wearing an interior texel -- a white chip down the rim
+          for ix = lo, hi do
+            srcX[iy * NX + ix] = loRow[iy]
+              + math.floor((ix - lo) * (hiRow[iy] - loRow[iy])
+                           / (hi - lo) + 0.5)
+          end
+          loRow[iy], hiRow[iy] = lo, hi
+          stepped[iy] = true
+          local c = (lo + hi + 1) / 2
+          local hw = (hi - lo + 1) / 2
+          for ix = lo, hi do
+            local i = iy * NX + ix
+            if z0[i] then
+              local dx = ix + 0.5 - c
+              local n = 1
+              if hw * hw > dx * dx then
+                n = math.max(1, math.floor(2 * math.sqrt(hw * hw - dx * dx)
+                                           + 0.5))
+              end
+              z0[i] = math.floor(N2 - n / 2 + 0.5)
+              z1[i] = z0[i] + n
+            end
+          end
+        end
+      end
+    end
+  end
+
+  -- the MOUTH: a bin is open, and a solid top wearing the drawn opening
+  -- only paints one. Hollow the top wellRows voxel rows -- every chord
+  -- long enough to hold two walls plus a gap keeps a wall at each end and
+  -- loses its middle, which is a ring in plan, so the model has a real rim
+  -- to look into. The short chords at the left and right of the row ARE
+  -- the ring's sides and stay solid on their own.
+  local wellTop = nil
+  if wellRows and wellRows > 0 then
+    for iy = 0, NY - 1 do
+      if loRow[iy] then wellTop = iy break end
+    end
+    local wall = 2
+    for iy = wellTop or 0, math.min((wellTop or 0) + wellRows - 1, NY - 1) do
+      if loRow[iy] then
+        for ix = loRow[iy], hiRow[iy] do
+          local i = iy * NX + ix
+          if z0[i] and z1[i] - z0[i] > wall * 2 then
+            z2[i], z3[i] = z1[i] - wall, z1[i]
+            z1[i] = z0[i] + wall
+          end
+        end
       end
     end
   end
@@ -703,31 +1013,47 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows)
   -- projection below
   local capTopRow, capZ0, capZ1 = nil, nil, nil
   if capY0 then
-    for iy = 0, N - 1 do
+    for iy = 0, NY - 1 do
       if loRow[iy] then capTopRow = iy break end
     end
     if capTopRow then
       for ix = loRow[capTopRow], hiRow[capTopRow] do
-        local i = capTopRow * N + ix
+        local i = capTopRow * NX + ix
         if z0[i] then
+          -- the OUTER extent, so a hollowed row still projects the mouth
+          -- across the whole opening and not just its front wall
+          local back = z3[i] or z1[i]
           capZ0 = math.min(capZ0 or z0[i], z0[i])
-          capZ1 = math.max(capZ1 or z1[i], z1[i])
+          capZ1 = math.max(capZ1 or back, back)
         end
       end
     end
   end
 
+  -- the art row the mouth projection puts at depth iz -- the drawn
+  -- opening's north arc at the far side of the hull, its south arc at the
+  -- near one. The top-face pass below reads the same mapping; this is the
+  -- vertical faces inside the well asking it the same question.
+  local function mouthRow(iz)
+    if not (capY0 and capZ0 and capZ1) then return 0 end
+    local t = capZ1 - 1 > capZ0 and (iz - capZ0) / (capZ1 - 1 - capZ0) or 0
+    t = math.max(0, math.min(1, t))
+    return capY0 + math.floor(t * (capY1 - capY0) + 0.5)
+  end
+
   local function solidAt(ix, iy, iz)
-    if ix < 0 or ix > N - 1 or iy < 0 or iy > N - 1 then return false end
-    local i = iy * N + ix
-    return z0[i] ~= nil and iz >= z0[i] and iz < z1[i]
+    if ix < 0 or ix > NX - 1 or iy < 0 or iy > NY - 1 then return false end
+    local i = iy * NX + ix
+    if z0[i] == nil then return false end
+    if iz >= z0[i] and iz < z1[i] then return true end
+    return z2[i] ~= nil and iz >= z2[i] and iz < z3[i]
   end
 
   -- cap interiors sample the canopy a couple of rows below the rim,
   -- skipping outline-dark pixels
   local function deepTexel(ix, iy)
-    for iy2 = iy + 2, math.min(N - 1, iy + 4) do
-      local i = iy2 * N + ix
+    for iy2 = iy + 2, math.min(NY - 1, iy + 4) do
+      local i = iy2 * NX + ix
       if mask[i] and cls[i] ~= "black" then return texel(ix, iy2) end
     end
     return texel(ix, iy)
@@ -739,56 +1065,95 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows)
   -- ball paints solid black the moment the camera turns. The foot rows
   -- stay dark on purpose: their whole source row is outline-black.
   local function sideTexel(ix, iy)
-    local r = src[iy * N + ix]
+    -- A foot row's SIDE keeps the last body row's material even where its
+    -- FRONT wears a stripped base row (the can). The drawn base rim is
+    -- front-face art; walking the de-outline inside a row that is no longer
+    -- in the mask breaks at once and hands back the silhouette's own
+    -- outline, which painted every flank of the can solid black.
+    local r = (yBot and iy > yBot) and yBot or src[iy * NX + ix]
+    -- the walk runs in ART columns, so a tapered row starts from the drawn
+    -- pixel its squeezed span put here rather than from the model column
+    local a = srcX[iy * NX + ix] or ix
     local dir = ix + ix < loRow[iy] + hiRow[iy] and 1 or -1
     for step = 0, 3 do
-      local x2 = ix + dir * step
-      local i2 = r * N + x2
-      if x2 < 0 or x2 > N - 1 or not mask[i2] then break end
+      local x2 = a + dir * step
+      local i2 = r * NX + x2
+      if x2 < 0 or x2 > NX - 1 or not mask[i2] then break end
       if cls[i2] ~= "black" then return texel(x2, r) end
     end
-    return texel(ix, r)
+    return texel(a, r)
   end
 
   local quads = {}
 
-  for iy = 0, N - 1 do
+  for iy = 0, NY - 1 do
     if loRow[iy] then
-      local yB, yT = N - 1 - iy, N - iy
+      local yB, yT = NY - 1 - iy, NY - iy
 
       -- front and back: the drawing per-pixel, columns merged where they
       -- share a chord plane; a run never crosses the 8px atlas tile seam
       -- (its u range must interpolate inside one tile)
       local ix = loRow[iy]
       while ix <= hiRow[iy] do
-        local i = iy * N + ix
+        local i = iy * NX + ix
         if z0[i] then
           local ix2 = ix
           while ix2 + 1 <= hiRow[iy] do
-            local j = iy * N + ix2 + 1
-            if z0[j] == z0[i] and z1[j] == z1[i]
+            local j = iy * NX + ix2 + 1
+            -- src too: a can's foot row draws part of its span from the
+            -- stripped base rim and the rest from the body band above it,
+            -- so a run must not straddle two source rows (the u range is
+            -- interpolated from one row's texels)
+            if z0[j] == z0[i] and z1[j] == z1[i] and src[j] == src[i]
+               and z2[j] == z2[i] and z3[j] == z3[i]
                and math.floor((ix2 + 1) / 8) == math.floor(ix / 8) then
               ix2 = ix2 + 1
             else
               break
             end
           end
-          local ax0, ay = texel(ix, src[i])
-          local ax1 = (texel(ix2, src[i]))
-          local u0, u1 = (ax0 + 0.05) / atlasW, (ax1 + 0.95) / atlasW
-          local v0, v1 = (ay + 0.05) / atlasH, (ay + 0.95) / atlasH
           local x0, x1 = ix - N2, ix2 - N2 + 1
-          local zF, zB = z1[i] - N2, z0[i] - N2
-          quads[#quads + 1] = {
-            { x0, yB, zF }, { x1, yB, zF }, { x1, yT, zF }, { x0, yT, zF },
-            uv = { { u0, v1 }, { u1, v1 }, { u1, v0 }, { u0, v0 } },
-            shade = ROUND_SHADE.front,
-          }
-          quads[#quads + 1] = {
-            { x1, yB, zB }, { x0, yB, zB }, { x0, yT, zB }, { x1, yT, zB },
-            uv = { { u1, v1 }, { u0, v1 }, { u0, v0 }, { u1, v0 } },
-            shade = ROUND_SHADE.back,
-          }
+          -- one facing pair per chord, each face given the art row it
+          -- should wear. A hollowed mouth row has two chords, and the two
+          -- faces that look into the well take the drawn OPENING (via the
+          -- same projection the rim does) rather than the body band: the
+          -- drawing paints its mouth dark, and an inside-out white wall
+          -- across the opening is the one thing that stops a bin reading
+          -- as a bin.
+          local function facing(za, zb, rowF, rowB)
+            local zF, zB = zb - N2, za - N2
+            local function pair(z, row, shade, back)
+              local ax0, ay = texel(srcX[i] or ix, row)
+              local ax1 = (texel(srcX[iy * NX + ix2] or ix2, row))
+              local u0, u1 = (ax0 + 0.05) / atlasW, (ax1 + 0.95) / atlasW
+              local v0, v1 = (ay + 0.05) / atlasH, (ay + 0.95) / atlasH
+              if back then
+                quads[#quads + 1] = {
+                  { x1, yB, z }, { x0, yB, z }, { x0, yT, z }, { x1, yT, z },
+                  uv = { { u1, v1 }, { u0, v1 }, { u0, v0 }, { u1, v0 } },
+                  shade = shade,
+                }
+              else
+                quads[#quads + 1] = {
+                  { x0, yB, z }, { x1, yB, z }, { x1, yT, z }, { x0, yT, z },
+                  uv = { { u0, v1 }, { u1, v1 }, { u1, v0 }, { u0, v0 } },
+                  shade = shade,
+                }
+              end
+            end
+            pair(zF, rowF, ROUND_SHADE.front, false)
+            pair(zB, rowB, ROUND_SHADE.back, true)
+          end
+          local body = src[i]
+          if z2[i] then
+            -- z grows toward the viewer: the low chord is the can's FAR
+            -- wall, so its +z face is the inside you look across, and the
+            -- near chord's -z face is the inside of the wall facing you
+            facing(z0[i], z1[i], mouthRow(z1[i]), body)
+            facing(z2[i], z3[i], body, mouthRow(z2[i] - 1))
+          else
+            facing(z0[i], z1[i], body, body)
+          end
           ix = ix2 + 1
         else
           ix = ix + 1
@@ -798,19 +1163,20 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows)
       -- sides, steps, undersides: constant-texel quads over the z runs a
       -- neighbour doesn't cover
       for ix = loRow[iy], hiRow[iy] do
-        local i = iy * N + ix
+        local i = iy * NX + ix
         if z0[i] then
-          local ax, ay = texel(ix, src[i])
+          local ax, ay = texel(srcX[i] or ix, src[i])
           local u, v = (ax + 0.5) / atlasW, (ay + 0.5) / atlasH
           local x0, x1 = ix - N2, ix - N2 + 1
 
-          -- exposed z pieces against one neighbouring column
-          local function pieces(nx, ny, emit)
-            local iz = z0[i]
-            while iz < z1[i] do
+          -- exposed z pieces against one neighbouring column, over each of
+          -- the pixel's chords (a hollowed mouth row has two)
+          local function chordPieces(nx, ny, emit, zLo, zHi)
+            local iz = zLo
+            while iz < zHi do
               if not solidAt(nx, ny, iz) then
                 local iz2 = iz
-                while iz2 + 1 < z1[i] and not solidAt(nx, ny, iz2 + 1) do
+                while iz2 + 1 < zHi and not solidAt(nx, ny, iz2 + 1) do
                   iz2 = iz2 + 1
                 end
                 emit(iz - N2, iz2 - N2 + 1, iz, iz2)
@@ -819,6 +1185,10 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows)
                 iz = iz + 1
               end
             end
+          end
+          local function pieces(nx, ny, emit)
+            chordPieces(nx, ny, emit, z0[i], z1[i])
+            if z2[i] then chordPieces(nx, ny, emit, z2[i], z3[i]) end
           end
 
           local sax, say = sideTexel(ix, iy)
@@ -842,7 +1212,12 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows)
                 u = tu, v = tv, shade = ROUND_SHADE.top,
               }
             end
-            if capTopRow and iy == capTopRow and capZ1 then
+            -- the whole hollowed band takes the projection, not just its
+            -- top row: the rim ring gets the mouth's outer arcs and the
+            -- floor of the well gets its middle, so looking in reads as
+            -- one opening rather than a lid with a hole punched in it
+            if capTopRow and capZ1
+               and iy >= capTopRow and iy <= capTopRow + (wellRows or 0) then
               -- the CUT FACE (a capped hull's top): project the drawn
               -- ellipse across the round cap voxel row by voxel row --
               -- its top arc at the cap's north rim, its bottom arc at
@@ -851,7 +1226,7 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows)
                 local t = capZ1 - 1 > capZ0
                           and (iz - capZ0) / (capZ1 - 1 - capZ0) or 0
                 local ry = capY0 + math.floor(t * (capY1 - capY0) + 0.5)
-                local cax, cay = texel(ix, ry)
+                local cax, cay = texel(srcX[i] or ix, ry)
                 top(iz - N2, iz - N2 + 1,
                     (cax + 0.5) / atlasW, (cay + 0.5) / atlasH)
               end
@@ -861,11 +1236,21 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows)
               top(zA, zA + 1, u, v)
               top(zA + 1, zB - 1, (du + 0.5) / atlasW, (dv + 0.5) / atlasH)
               top(zB - 1, zB, u, v)
+            elseif stepped[iy] then
+              -- a taper STEP: the chord narrowing leaves a ring facing up
+              -- at the front of the can, and wearing the lit body band it
+              -- reads as a bright chip taken out of the wall. The drawing's
+              -- own rim column is black, so the step wears that and the
+              -- taper reads as a hoop line -- which is how the reference
+              -- object is banded anyway.
+              local rx = srcX[iy * NX + loRow[iy]] or loRow[iy]
+              local rax, ray = texel(rx, src[i])
+              top(zA, zB, (rax + 0.5) / atlasW, (ray + 0.5) / atlasH)
             else
               top(zA, zB, u, v)
             end
           end)
-          if iy < N - 1 then
+          if iy < NY - 1 then
             pieces(ix, iy + 1, function(zA, zB)
               quads[#quads + 1] = {
                 { x0, yB, zB }, { x1, yB, zB }, { x1, yB, zA }, { x0, yB, zA },
@@ -879,13 +1264,6 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows)
   end
   return quads, bg
 end
-
--- how far past the map body cells still get the hull. A route's ring is
--- nearly as big as its body; modelling all of it costs hundreds of
--- thousands of quads of border trees nobody walks near. Beyond this,
--- pinned cells simply are not claimed and fall through to the mesher's
--- plain box -- cheap distant scenery.
-local ROUND_RING = 4
 
 -- Hull templates dedupe GLOBALLY per (tileset, four tiles, ground set):
 -- the same four-tile tree repeats for hundreds of cells on a map and
@@ -914,14 +1292,33 @@ function Structures.buildCylinders(S, map, x0, x1, y0, y1, groundTiles)
   local tsid = tostring(map.tileset.id or map.tileset.image or "?")
 
   -- the stump class's drawn-ellipse height, hand-authored per tileset
-  -- (the profile's stump_cap, in art rows)
-  local stumpCap = 6
+  -- (the profile's stump_cap, in art rows), and the can class's three: the
+  -- mouth ellipse over the top (can_cap) and the base ellipse under the
+  -- bottom (can_base), both in art rows, plus the authored can_height in
+  -- voxels the body band is repeated up to
+  local stumpCap, canCap, canBase, canHeight, canWell, canTaper
+    = 6, 9, 4, 9, 5, 4
   do
     local okP, prof = pcall(V.data, "voxel_heights")
     local entry = okP and type(prof) == "table" and prof.tilesets
                   and prof.tilesets[map.tileset.id]
     if entry and type(entry.stump_cap) == "number" then
       stumpCap = entry.stump_cap
+    end
+    if entry and type(entry.can_cap) == "number" then
+      canCap = entry.can_cap
+    end
+    if entry and type(entry.can_base) == "number" then
+      canBase = entry.can_base
+    end
+    if entry and type(entry.can_height) == "number" then
+      canHeight = entry.can_height
+    end
+    if entry and type(entry.can_well) == "number" then
+      canWell = entry.can_well
+    end
+    if entry and type(entry.can_taper) == "number" then
+      canTaper = entry.can_taper
     end
   end
 
@@ -983,13 +1380,72 @@ function Structures.buildCylinders(S, map, x0, x1, y0, y1, groundTiles)
           grouped[ckey + 8192] = true
           grouped[ckey + 8193] = true
         end
+      elseif s and s.art == "planter" and near then
+        -- ONE 16x32x16 hull over a drawing stacked TWO CELLS HIGH on one
+        -- cell of plot: the Pokemon Centers' potted plants (a leaf crown
+        -- over a flared pot, 78 placements across 13 maps).
+        --
+        -- The anchor is the NORTH cell -- the crown, where the canvas
+        -- starts -- but the hull stands in the SOUTH cell, because that is
+        -- where the pot is drawn and an object's ground contact is its
+        -- plot. The crown is therefore HEIGHT, not depth: the north cell
+        -- is claimed and left as floor for the crown to overhang, which is
+        -- what un-projecting the 3/4 view means here. Pinning only one of
+        -- the two cells leaves the drawing partial (a map edit, a mod's
+        -- stray tile), so the anchor is left alone rather than carved into
+        -- half a plant.
+        local below = S.shapeAt[keyOf(cx * 2, (cy + 1) * 2)]
+        if below and below.art == "planter" then
+          local ground = false
+          if data then
+            local ids = {}
+            for dy = 0, 3 do
+              for dx = 0, 1 do
+                ids[#ids + 1] = S.tileAt[keyOf(cx * 2 + dx, cy * 2 + dy)]
+              end
+            end
+            local sig = tsid .. "|p32|" .. gsig .. "|"
+                        .. table.concat(ids, ":")
+            local tpl = roundCache[sig]
+            if not tpl then
+              local tq, tbg = roundTemplate(S, map, data, cx, cy,
+                                            groundTiles, 16, nil, 32,
+                                            PLANTER_SPRAY)
+              tpl = { quads = tq, bg = tbg }
+              roundCache[sig] = tpl
+            end
+            ground = tpl.bg or false
+            S.roundStamps[#S.roundStamps + 1] =
+              { quads = tpl.quads, mx = cx * 16 + 8,
+                mz = (cy + 1) * 16 + 8 }
+          end
+          for dy = 0, 3 do
+            for dx = 0, 1 do
+              local tk = keyOf(cx * 2 + dx, cy * 2 + dy)
+              S.skip[tk] = true
+              S.ground[tk] = ground
+            end
+          end
+          grouped[ckey + 8192] = true
+        end
       elseif s and s.art == "cylinder" and near then
         -- a `stump`-class cell is the same hull with a cut face: its
-        -- top capRows of drawing project onto the round top
-        local cap = s.class == "stump" and stumpCap or nil
+        -- top capRows of drawing project onto the round top. A `can`-class
+        -- cell is that hull cut at BOTH ends -- lid on top, base circle on
+        -- the floor -- which is what a drum standing on a floor is.
+        local cap = (s.class == "stump" and stumpCap)
+                    or (s.class == "can" and canCap) or nil
+        local base = s.class == "can" and canBase or nil
+        local tall = s.class == "can" and canHeight or nil
+        local well = s.class == "can" and canWell or nil
+        local taper = s.class == "can" and canTaper or nil
         local ground = false
         if data then
-          local sig = tsid .. (cap and ("|c" .. cap) or "") .. "|"
+          local sig = tsid .. (cap and ("|c" .. cap) or "")
+            .. (base and ("|b" .. base) or "")
+            .. (tall and ("|h" .. tall) or "")
+            .. (well and ("|w" .. well) or "")
+            .. (taper and ("|t" .. taper) or "") .. "|"
             .. gsig .. "|" .. table.concat({
             S.tileAt[k], S.tileAt[keyOf(cx * 2 + 1, cy * 2)],
             S.tileAt[keyOf(cx * 2, cy * 2 + 1)],
@@ -997,7 +1453,8 @@ function Structures.buildCylinders(S, map, x0, x1, y0, y1, groundTiles)
           local tpl = roundCache[sig]
           if not tpl then
             local tq, tbg = roundTemplate(S, map, data, cx, cy,
-                                          groundTiles, 16, cap)
+                                          groundTiles, 16, cap, nil, nil,
+                                          base, tall, well, taper)
             tpl = { quads = tq, bg = tbg }
             roundCache[sig] = tpl
           end
@@ -1041,7 +1498,7 @@ function Structures.buildRelief(S, map, region, data, perRow, h)
   local member = {}
   for _, c in ipairs(region.tiles) do member[keyOf(c[1], c[2])] = true end
 
-  local cls, srcU, srcV = {}, {}, {}
+  local cls, srcU, srcV = {}, {}
   for py = 0, bh - 1 do
     for px = 0, bw - 1 do
       local i = py * bw + px
@@ -1147,11 +1604,107 @@ end
 -- When the row just above a rank is undetected structure (a shared trim
 -- tile the profile cannot pin), the rank adopts it as its CAP: one more
 -- band of height and the art its top face wears.
-local BOOK_SHADE = { south = 1.0, north = 0.68, flank = 0.8, top = 0.85 }
+local BOOK_SHADE = { south = 1.0, north = 0.68, flank = 0.8, top = 0.85,
+                     -- a pane's reveal: the one-voxel side of the frame
+                     -- standing proud of it.  The sill catches the light
+                     -- the top face does; the lintel is in shadow.
+                     sill = 0.85, lintel = 0.5 }
 
-local function bookcaseRank(S, map, tx, northTy, frontTy, capTile)
+-- A pane is a shelf opening, a glass door or an inset panel: a non-black
+-- region the drawing SEALS OFF behind its own black frame.  Anything
+-- wider or taller than this is a band of the front itself -- a trim
+-- course, a plinth -- and stays flush.  The same number and the same
+-- rule lib/Buildings.lua measures a facade's panes with, so a shelf the
+-- band pipeline models and a shelf this class collapses carry the same
+-- relief.
+local BOOK_RECESS_MAX = 24
+
+-- The panes of a BANK of ranks -- every rank of the same height standing
+-- side by side -- as a mask over the bank's south face, plus the atlas
+-- pixel each face texel comes from.  Measured over the whole bank rather
+-- than per column, because a door panel drawn across two tiles is one
+-- region and not two halves, and because the size test that keeps a
+-- broad course flush has to see the course's real width.
+--
+-- `fx` runs across the bank and `fy` DOWN from its top, so the grid
+-- reads like the drawing: the rank folds its tiles up band by band, the
+-- southmost row lowest, and fy = 0 is the topmost drawn row.
+local function bookcasePanes(map, data, perRow, run, i, j)
+  if not data then return nil end
+  local bands = run[i].bands
+  local size = run[i].front - run[i].top + 1
+  local W, H = (j - i + 1) * 8, bands * 8
+  local light, srcU, srcV = {}, {}, {}
+  for fy = 0, H - 1 do
+    local band = bands - 1 - math.floor(fy / 8)
+    local row = fy % 8
+    for fx = 0, W - 1 do
+      local col = run[i + math.floor(fx / 8)]
+      local tile = band < size and map:tileAt(col.tx, col.front - band)
+                   or col.cap
+      if tile then
+        local k = fy * W + fx
+        local ax = (tile % perRow) * 8 + fx % 8
+        local ay = math.floor(tile / perRow) * 8 + row
+        srcU[k], srcV[k] = ax, ay
+        local r, g, b, a = data:getPixel(ax, ay)
+        light[k] = a ~= 0
+          and Structures.shadeClass(math.min(r, g, b)) ~= "black"
+      end
+    end
+  end
+
+  -- The drawing's non-black regions, split across its black frames.  A
+  -- region that reaches the face's own border is not sealed by anything
+  -- -- it is a course of the front running edge to edge, the way a
+  -- masonry band or a wall of siding does -- and it stays flush.  That
+  -- test is what keeps this rule to shelves: `bookcase` also collapses
+  -- the League's gate walls and the terraces, and their courses run off
+  -- the drawing, so nothing there sinks.
+  local pane, seen = {}, {}
+  for k0 = 0, W * H - 1 do
+    if light[k0] and not seen[k0] then
+      local cells, stack = {}, { k0 }
+      seen[k0] = true
+      local ax0, ax1 = k0 % W, k0 % W
+      local ay0, ay1 = math.floor(k0 / W), math.floor(k0 / W)
+      local edge = false
+      while #stack > 0 do
+        local k = table.remove(stack)
+        cells[#cells + 1] = k
+        local cx, cy = k % W, math.floor(k / W)
+        if cx < ax0 then ax0 = cx end
+        if cx > ax1 then ax1 = cx end
+        if cy < ay0 then ay0 = cy end
+        if cy > ay1 then ay1 = cy end
+        if cx == 0 or cx == W - 1 or cy == 0 or cy == H - 1 then
+          edge = true
+        end
+        for _, d in ipairs(DIRS4) do
+          local nx, ny = cx + d[1], cy + d[2]
+          if nx >= 0 and nx < W and ny >= 0 and ny < H then
+            local nk = ny * W + nx
+            if light[nk] and not seen[nk] then
+              seen[nk] = true
+              stack[#stack + 1] = nk
+            end
+          end
+        end
+      end
+      if not edge and ax1 - ax0 < BOOK_RECESS_MAX
+         and ay1 - ay0 < BOOK_RECESS_MAX then
+        for _, k in ipairs(cells) do pane[k] = true end
+      end
+    end
+  end
+  return pane, srcU, srcV, W, H
+end
+
+local function bookcaseRank(S, map, perRow, run, i, j, k, pane, srcU, srcV,
+                            bankW, bankH)
+  local r = run[k]
+  local tx, northTy, frontTy, capTile = r.tx, r.top, r.front, r.cap
   local quads = S.objectQuads
-  local perRow = map.tileset.tilesPerRow or 16
   local atlasW = map.tileset.imageWidth or 128
   local atlasH = map.tileset.imageHeight or 48
   local function uvRect(tile)
@@ -1162,12 +1715,13 @@ local function bookcaseRank(S, map, tx, northTy, frontTy, capTile)
   end
 
   local size = frontTy - northTy + 1
-  local bands = size + (capTile and 1 or 0)
+  local bands = r.bands
   local h = bands * 8
   local depth = math.min(2, size) * 8
   local x0, x1 = tx * 8, tx * 8 + 8
   local z1 = frontTy * 8 + 8
   local z0 = z1 - depth
+  local fx0 = (k - i) * 8            -- this rank's columns within the bank
 
   -- does the neighbouring column continue this shelf? (flanks only cap
   -- the ends of a run of bookcases standing side by side)
@@ -1176,14 +1730,101 @@ local function bookcaseRank(S, map, tx, northTy, frontTy, capTile)
     return ns ~= nil and ns.art == "bookcase"
   end
 
+  local function sunk(fx, fy)
+    if not pane or fx < 0 or fx >= bankW or fy < 0 or fy >= bankH then
+      return false
+    end
+    return pane[fy * bankW + fx] == true
+  end
+
   for band = 0, bands - 1 do
     local tile = band < size and map:tileAt(tx, frontTy - band) or capTile
     local u0, u1, v0, v1 = uvRect(tile)
     local y0, y1 = band * 8, band * 8 + 8
-    quads[#quads + 1] = { { x0, y0, z1 }, { x1, y0, z1 },
-      { x1, y1, z1 }, { x0, y1, z1 },
-      uv = { { u0, v1 }, { u1, v1 }, { u1, v0 }, { u0, v0 } },
-      shade = BOOK_SHADE.south }
+    local fyTop = (bands - 1 - band) * 8
+
+    -- The south face: the drawing folded upright.  A band with no pane
+    -- in it is the single quad it has always been; a band that seals
+    -- one splits into per-row runs of texels, and the pane's run sinks
+    -- a voxel behind the frame that stays proud around it.
+    local relief = false
+    if pane then
+      for row = 0, 7 do
+        for c = 0, 7 do
+          if sunk(fx0 + c, fyTop + row) then relief = true break end
+        end
+        if relief then break end
+      end
+    end
+    if not relief then
+      quads[#quads + 1] = { { x0, y0, z1 }, { x1, y0, z1 },
+        { x1, y1, z1 }, { x0, y1, z1 },
+        uv = { { u0, v1 }, { u1, v1 }, { u1, v0 }, { u0, v0 } },
+        shade = BOOK_SHADE.south }
+    else
+      local ax = (tile % perRow) * 8
+      local ay = math.floor(tile / perRow) * 8
+      for row = 0, 7 do
+        local fy = fyTop + row
+        local wy = y0 + 7 - row             -- the drawing's row 0 is the top
+        local c = 0
+        while c < 8 do
+          local s = sunk(fx0 + c, fy)
+          local n = 1
+          while c + n < 8 and sunk(fx0 + c + n, fy) == s do n = n + 1 end
+          local pz = s and z1 - 1 or z1
+          local qu0 = (ax + c + 0.05) / atlasW
+          local qu1 = (ax + c + n - 0.05) / atlasW
+          local qv0 = (ay + row + 0.05) / atlasH
+          local qv1 = (ay + row + 1 - 0.05) / atlasH
+          quads[#quads + 1] = { { x0 + c, wy, pz }, { x0 + c + n, wy, pz },
+            { x0 + c + n, wy + 1, pz }, { x0 + c, wy + 1, pz },
+            uv = { { qu0, qv1 }, { qu1, qv1 }, { qu1, qv0 }, { qu0, qv0 } },
+            shade = BOOK_SHADE.south }
+          c = c + n
+        end
+      end
+      -- the reveals: where a sunk texel meets a proud one, the frame's
+      -- own one-voxel side shows.  It wears the PROUD neighbour's texel,
+      -- because that is the block it belongs to.  A pane running off the
+      -- bank, or off the top or bottom of the rank, needs none: the
+      -- flank and top faces already close it.
+      for row = 0, 7 do
+        local fy = fyTop + row
+        local wy = y0 + 7 - row
+        for c = 0, 7 do
+          if sunk(fx0 + c, fy) then
+            local X = x0 + c
+            local function reveal(nfx, nfy, verts, shade)
+              if nfx < 0 or nfx >= bankW or nfy < 0 or nfy >= bankH then
+                return
+              end
+              if sunk(nfx, nfy) then return end
+              local nk = nfy * bankW + nfx
+              if not srcU[nk] then return end
+              quads[#quads + 1] = { verts[1], verts[2], verts[3], verts[4],
+                u = (srcU[nk] + 0.5) / atlasW, v = (srcV[nk] + 0.5) / atlasH,
+                shade = shade }
+            end
+            reveal(fx0 + c - 1, fy, {
+              { X, wy, z1 }, { X, wy, z1 - 1 },
+              { X, wy + 1, z1 - 1 }, { X, wy + 1, z1 } }, BOOK_SHADE.flank)
+            reveal(fx0 + c + 1, fy, {
+              { X + 1, wy, z1 - 1 }, { X + 1, wy, z1 },
+              { X + 1, wy + 1, z1 }, { X + 1, wy + 1, z1 - 1 } },
+              BOOK_SHADE.flank)
+            reveal(fx0 + c, fy + 1, {
+              { X, wy, z1 - 1 }, { X + 1, wy, z1 - 1 },
+              { X + 1, wy, z1 }, { X, wy, z1 } }, BOOK_SHADE.sill)
+            reveal(fx0 + c, fy - 1, {
+              { X, wy + 1, z1 }, { X + 1, wy + 1, z1 },
+              { X + 1, wy + 1, z1 - 1 }, { X, wy + 1, z1 - 1 } },
+              BOOK_SHADE.lintel)
+          end
+        end
+      end
+    end
+
     quads[#quads + 1] = { { x1, y0, z0 }, { x0, y0, z0 },
       { x0, y1, z0 }, { x1, y1, z0 },
       uv = { { u0, v1 }, { u1, v1 }, { u1, v0 }, { u0, v0 } },
@@ -1213,7 +1854,19 @@ local function bookcaseRank(S, map, tx, northTy, frontTy, capTile)
   end
 end
 
-function Structures.buildBookcases(S, map, x0, x1, y0, y1)
+function Structures.buildBookcases(S, map, x0, x1, y0, y1, data, perRow)
+  perRow = perRow or map.tileset.tilesPerRow or 16
+  -- What to do with the rows a rank VACATES (see TileShape.bookcaseBackfill).
+  -- Read once: it is a property of the tileset, not of the column.
+  local backfill = TileShape.bookcaseBackfill(map.tileset.id)
+  -- the front's measured relief: on for a shelf, off for the tilesets
+  -- that borrow the collapse for masonry or machinery
+  if not TileShape.bookcaseRelief(map.tileset.id) then data = nil end
+  -- Ranks are collected here and emitted after the sweep: a rank's panes
+  -- are measured over the whole BANK it stands in (see bookcasePanes),
+  -- and the bank is only known once every column has been read.  Nothing
+  -- below this loop mutates what the sweep reads, so deferring is free.
+  local order, banks = {}, {}
   for tx = x0, x1 do
     local ty = y1
     while ty >= y0 do
@@ -1241,18 +1894,60 @@ function Structures.buildBookcases(S, map, x0, x1, y0, y1)
               capTile = S.tileAt[ck]
             end
           end
+          -- The box is one cell deep, so it covers only the run's southmost
+          -- rows; everything north of that is vacated.  By default a vacated
+          -- row is skipped and painted with synthesized ground -- right for a
+          -- shelf standing in a room.  `bookcase_backfill = "above"` hands it
+          -- the cell above the run instead, shape and art, so a wall cut into
+          -- a terrace has more terrace behind it rather than a trench.
+          local covered = math.min(2, front - top + 1)
+          local srcK = keyOf(tx, top - 1)
+          local src = backfill == "above" and S.shapeAt[srcK] or nil
           for cy = top, front do
             local tk = keyOf(tx, cy)
-            S.skip[tk] = true
-            S.ground[tk] = false
+            if src and cy <= front - covered then
+              S.shapeAt[tk] = src
+              S.tileAt[tk] = S.tileAt[srcK]
+            else
+              S.skip[tk] = true
+              S.ground[tk] = false
+            end
           end
-          bookcaseRank(S, map, tx, top, front, capTile)
+          -- ranks of the same height standing side by side are one bank
+          local bands = (front - top + 1) + (capTile and 1 or 0)
+          local key = top .. ":" .. front .. ":" .. bands
+          local bank = banks[key]
+          if not bank then
+            bank = {}
+            banks[key] = bank
+            order[#order + 1] = key
+          end
+          bank[#bank + 1] = { tx = tx, top = top, front = front,
+                              cap = capTile, bands = bands }
           front = top - 1
         end
         ty = north - 1
       else
         ty = ty - 1
       end
+    end
+  end
+
+  -- tx ascends in the sweep above, so each bank's columns are already in
+  -- order; split them into the contiguous runs that actually touch
+  for _, key in ipairs(order) do
+    local run = banks[key]
+    local i = 1
+    while i <= #run do
+      local j = i
+      while j < #run and run[j + 1].tx == run[j].tx + 1 do j = j + 1 end
+      local pane, srcU, srcV, bankW, bankH =
+        bookcasePanes(map, data, perRow, run, i, j)
+      for k = i, j do
+        bookcaseRank(S, map, perRow, run, i, j, k,
+                     pane, srcU, srcV, bankW, bankH)
+      end
+      i = j + 1
     end
   end
 end
@@ -1700,18 +2395,44 @@ function Structures.extractObjects(S, map, region, data, perRow, force)
       local fs = S.shapeAt[keyOf(region.tiles[1][1], region.tiles[1][2])]
       strict = fs ~= nil and fs.class == "cutout"
     end
+    -- The rim vote reads the shades on the DRAWING'S OWN bounding box, so a
+    -- prop whose body reaches its own edge votes itself out. The Center's
+    -- potted plants are the case: the pot's olive base is drawn flush on the
+    -- bottom row of the block, so "dark" came back as background and every
+    -- dark pixel in the whole plant drained with it -- the pots rendered as
+    -- hollow black frames while the 2D art has solid olive bodies.
+    --
+    -- Where the vote misreads the art, the profile can name the background
+    -- shades outright (a tileset entry's prop_bg). Keyed BY TILE rather than
+    -- per tileset, because the answer is per drawing: the healing consoles'
+    -- screens really do stand on a dark wall band and really do need dark
+    -- voted out, and the PC really does need light kept.
     local bg = {}
-    for iy = 0, H - 1 do
-      for ix = 0, W - 1 do
-        local px, py = ix - 1, iy - 1
-        local edge = px == 0 or px == bw - 1 or py == 0 or py == bh - 1
-        local st = state[iy * W + ix]
-        if edge and (st == "dark" or st == "light" or st == "white") then
-          bg[st] = true
+    do
+      local named = TileShape.propBg(map.tileset.id)
+      if named then
+        for _, c in ipairs(region.tiles) do
+          local rule = named[S.tileAt[keyOf(c[1], c[2])]]
+          if rule then
+            for shadeName in pairs(rule) do bg[shadeName] = true end
+            break
+          end
         end
       end
     end
-    if not (bg.dark or bg.light or bg.white) then bg.white = true end
+    if not next(bg) then
+      for iy = 0, H - 1 do
+        for ix = 0, W - 1 do
+          local px, py = ix - 1, iy - 1
+          local edge = px == 0 or px == bw - 1 or py == 0 or py == bh - 1
+          local st = state[iy * W + ix]
+          if edge and (st == "dark" or st == "light" or st == "white") then
+            bg[st] = true
+          end
+        end
+      end
+      if not (bg.dark or bg.light or bg.white) then bg.white = true end
+    end
     for i, st in pairs(state) do
       if strict then
         if st == "dark" or st == "light" then
@@ -1943,8 +2664,19 @@ function Structures.buildObject(S, map, region, cluster,
     local bs = S.shapeAt[keyOf(cluster.minX, cluster.maxY + 1)]
     local blocked = not map:isWalkableCell(math.floor(cluster.minX / 2),
                                            math.floor(cluster.maxY / 2))
-    if blocked and bs and bs.authored and bs.art == "upright"
-       and (bs.h or 0) > 0 then
+    -- `bookcase` supports as well as `upright`.  A prop drawn above an
+    -- authored box stands ON it whatever art the box renders with, and a
+    -- stacked box is still a box: the Plateau's gate pilasters carry a
+    -- statue on 48 of their tops, and collapsing the pilaster to a stacked
+    -- run made every one of them fail this test and drop to ground level.
+    -- A `building` claim supports too, when it carries a height: a
+    -- Buildings template that names `support` is furniture modelled in
+    -- full with a standee left standing on it (Red's dining table under
+    -- its potted plant), and the height it states is the model's top
+    -- plane.  A plain claim stays at h = 0 and supports nothing.
+    if blocked and bs and bs.authored and (bs.h or 0) > 0
+       and (bs.art == "upright" or bs.art == "bookcase"
+            or bs.class == "building") then
       baseY, support = bs.h, bs
     end
   end
@@ -2078,7 +2810,9 @@ function Structures.buildObject(S, map, region, cluster,
   end
   for _, c in ipairs(cluster.tiles) do
     local k = keyOf(c[1], c[2])
-    if support and support.class == "wall" then
+    if support and (support.class == "wall" or support.class == "cliff"
+                    or support.art == "bookcase"
+                    or support.class == "building") then
       -- a figure drawn above a FULL-HEIGHT block (the gym statue on its
       -- plinth) is a statue on a pillar with ONE cell of footprint: the
       -- block below already carries the whole base, so the drawn cell
@@ -2086,8 +2820,21 @@ function Structures.buildObject(S, map, region, cluster,
       -- the base backwards. Furniture supports (a monitor on its desk)
       -- keep the box-extension below -- their drawn cell is the
       -- furniture's own upper rows, and floor there would amputate it.
+      --
+      -- STRUCTURE, not height, decides which: `cliff` and `bookcase` are
+      -- full-height blocks like `wall` and belong here, while `desk` is
+      -- 24px and still furniture.  The Plateau's statues on stacked
+      -- pilasters found this -- taking the furniture branch turned each
+      -- statue's own two rows into a 32px box wearing the pilaster's art,
+      -- so every one of them stood inside a slab of its own plinth.
+      -- A `building` support belongs here too: the template's stamped
+      -- model already carries every surface under the standee (that is
+      -- what its `support` height asserts), so a box here would stand
+      -- INSIDE the modelled tabletop.  Its stamp pre-painted the floor
+      -- under these tiles, which the `or` keeps when no flat tile
+      -- touches a cluster ringed by its own furniture.
       S.skip[k] = true
-      S.ground[k] = best
+      S.ground[k] = best or S.ground[k]
     elseif support then
       -- the claimed tile keeps rendering as the box the prop stands on,
       -- wearing the art its own ROW would have without the drawing (the
@@ -2114,6 +2861,430 @@ function Structures.buildObject(S, map, region, cluster,
     end
   end
   return true
+end
+
+-- ---- authored masks with a body ----
+
+-- One authored mask emitted as a per-pixel voxel slab in WORLD space --
+-- the treatment every solid standee in this file gets, driven by a hand
+-- drawn silhouette instead of a flood.
+--
+-- The caller owns placement entirely, because placement is the whole
+-- difference between the two things that use this: `x0` is the world x of
+-- the mask's west edge, `yOf(ly)` the world y a drawn row lands at, and
+-- `bandOf(ly)` its z span.  A bicycle hung on a wall keeps its drawn
+-- elevation and juts south of the band; a cash register stands on the
+-- counter's top plane and sits inside its own cell.
+--
+-- `bandOf` is per ROW rather than per object so one drawing can hold parts
+-- of different thickness (the register's receipt curl over its body).
+-- Where the band CHANGES between two stacked rows the lower row still gets
+-- its top face: without that the body would be open along the strip the
+-- thinner part does not cover, and you would see into the machine.
+--
+-- `omit` is a rect of the mask this pass does NOT extrude, because it is
+-- not a face at all -- maskPlate lays it flat instead.  It leaves the mask
+-- for good here, neighbours included, so the extrusion closes up around
+-- the notch exactly as if the drawing had never filled it.
+local function maskSlab(quads, m, perRow, atlasW, atlasH, x0, yOf, bandOf,
+                        yFloor, omit)
+  local bw, bh = m.w * 8, m.h * 8
+
+  local function at(lx, ly)
+    if lx < 0 or lx >= bw or ly < 0 or ly >= bh then return false end
+    if omit and lx >= omit.x0 and lx <= omit.x1
+       and ly >= omit.r0 and ly <= omit.r1 then return false end
+    return m.mask[ly * bw + lx] or false
+  end
+
+  for ly = 0, bh - 1 do
+    Budget.tick()
+    local z0, z1 = bandOf(ly)
+    local pz0, pz1 = bandOf(ly - 1)
+    local capped = (pz0 ~= z0 or pz1 ~= z1)
+    for lx = 0, bw - 1 do
+      if at(lx, ly) then
+        local tile = m.tiles[math.floor(ly / 8) * m.w
+                             + math.floor(lx / 8) + 1]
+        local u = ((tile % perRow) * 8 + lx % 8 + 0.5) / atlasW
+        local v = (math.floor(tile / perRow) * 8 + ly % 8 + 0.5) / atlasH
+        local x, y = x0 + lx, yOf(ly)
+        local function quad(c1, c2, c3, c4, shade)
+          quads[#quads + 1] = { c1, c2, c3, c4, u = u, v = v, shade = shade }
+        end
+        quad({ x, y, z1 }, { x + 1, y, z1 }, { x + 1, y + 1, z1 },
+             { x, y + 1, z1 }, OBJ_SHADE.front)
+        quad({ x + 1, y, z0 }, { x, y, z0 }, { x, y + 1, z0 },
+             { x + 1, y + 1, z0 }, OBJ_SHADE.back)
+        if capped or not at(lx, ly - 1) then
+          quad({ x, y + 1, z0 }, { x + 1, y + 1, z0 }, { x + 1, y + 1, z1 },
+               { x, y + 1, z1 }, OBJ_SHADE.top)
+        end
+        if y > yFloor and not at(lx, ly + 1) then
+          quad({ x, y, z1 }, { x + 1, y, z1 }, { x + 1, y, z0 },
+               { x, y, z0 }, OBJ_SHADE.bottom)
+        end
+        if not at(lx - 1, ly) then
+          quad({ x, y, z0 }, { x, y, z1 }, { x, y + 1, z1 },
+               { x, y + 1, z0 }, OBJ_SHADE.side)
+        end
+        if not at(lx + 1, ly) then
+          quad({ x + 1, y, z1 }, { x + 1, y, z0 }, { x + 1, y + 1, z0 },
+               { x + 1, y + 1, z1 }, OBJ_SHADE.side)
+        end
+      end
+    end
+  end
+end
+
+-- The other half of the same drawing: a rect of the mask that is a
+-- TOP-VIEW surface, laid HORIZONTAL instead of extruded.
+--
+-- This is the methodology's band classification at rect granularity, and
+-- the reason the register is not a box.  A GB cell packs several facings,
+-- and the register's keypad is drawn from ABOVE -- its keys lie on the
+-- machine's deck, sealed behind their own black border inside the outer
+-- silhouette.  Extruding it stands that surface on end and paints the keys
+-- up the machine's face, which is the extruded-picture failure exactly.
+--
+-- So the rect lands one voxel proud of what maskSlab left below it, at `y`,
+-- one voxel thick, filling the body's whole depth band (`z0`, `D`).
+--
+-- The rect STRETCHES over that band rather than laying its rows 1:1: it is
+-- the machine's whole deck, so it has to reach the machine's whole depth,
+-- and the alternative -- panel at the front, bare deck behind -- leaves a
+-- strip of the base band's top showing through where the keys should be.
+-- Sampled at the voxel's CENTRE, the same rule Stage 1 samples the atlas
+-- with, so a band scales by whole voxels and nothing blurs: at 8 rows over
+-- 12 voxels every second drawn row doubles.  The one place in the model
+-- where a texel is not 1:1 with a drawn pixel, and the reason `depth` is an
+-- authored number again.  No bottom faces: it rests on the box.
+local function maskPlate(quads, m, perRow, atlasW, atlasH, x0, r, y, z0, D)
+  local bw, bh = m.w * 8, m.h * 8
+  local rows = r.r1 - r.r0 + 1
+
+  -- depth voxel -> the drawn row it wears
+  local function rowAt(k)
+    if k < 0 or k >= D then return nil end
+    return r.r0 + math.min(rows - 1, math.floor((k + 0.5) * rows / D))
+  end
+
+  local function at(lx, k)
+    local ly = rowAt(k)
+    if not ly or lx < r.x0 or lx > r.x1 then return false end
+    return m.mask[ly * bw + lx] or false
+  end
+
+  -- The plate's rim, in the two directions the drawing treats differently.
+  -- ACROSS the rows the neighbour is the extrusion standing BESIDE the
+  -- notch (the register's display unit), which is tall and covers the
+  -- plate's edge, so that face must not be drawn twice.  ALONG them the
+  -- neighbour is the extrusion BELOW it (the base band, whose own front
+  -- face stops one voxel short), so the plate's front lip is exposed and
+  -- is the deck's own front edge.
+  local function beside(lx, ly)
+    if lx < 0 or lx >= bw or ly < 0 or ly >= bh then return false end
+    return m.mask[ly * bw + lx] or false
+  end
+
+  for k = 0, D - 1 do
+    Budget.tick()
+    local ly, z = rowAt(k), z0 + k
+    for lx = r.x0, r.x1 do
+      if at(lx, k) then
+        local tile = m.tiles[math.floor(ly / 8) * m.w
+                             + math.floor(lx / 8) + 1]
+        local u = ((tile % perRow) * 8 + lx % 8 + 0.5) / atlasW
+        local v = (math.floor(tile / perRow) * 8 + ly % 8 + 0.5) / atlasH
+        local x = x0 + lx
+        local function quad(c1, c2, c3, c4, shade)
+          quads[#quads + 1] = { c1, c2, c3, c4, u = u, v = v, shade = shade }
+        end
+        quad({ x, y + 1, z }, { x + 1, y + 1, z }, { x + 1, y + 1, z + 1 },
+             { x, y + 1, z + 1 }, OBJ_SHADE.top)
+        if not at(lx, k + 1) then
+          quad({ x, y, z + 1 }, { x + 1, y, z + 1 }, { x + 1, y + 1, z + 1 },
+               { x, y + 1, z + 1 }, OBJ_SHADE.front)
+        end
+        if not at(lx, k - 1) then
+          quad({ x + 1, y, z }, { x, y, z }, { x, y + 1, z },
+               { x + 1, y + 1, z }, OBJ_SHADE.back)
+        end
+        if not beside(lx - 1, ly) then
+          quad({ x, y, z }, { x, y, z + 1 }, { x, y + 1, z + 1 },
+               { x, y + 1, z }, OBJ_SHADE.side)
+        end
+        if not beside(lx + 1, ly) then
+          quad({ x + 1, y, z + 1 }, { x + 1, y, z }, { x + 1, y + 1, z },
+               { x + 1, y + 1, z + 1 }, OBJ_SHADE.side)
+        end
+      end
+    end
+  end
+end
+
+-- ---- figures: a thing drawn INTO furniture, cut out and stood up ----
+
+-- One authored figure at one matched position.
+--
+-- The mask IS the classification: no flood, no shade segmentation, no
+-- validation gate.  Every automatic route in this file asks the art where
+-- the object ends, and a figure painted into its own furniture has no
+-- answer to give -- so the profile answers instead, and this only has to
+-- believe it.  Which also means figures build HEADLESS: unlike every
+-- other standee here, nothing below reads a pixel.
+--
+-- A PERSON is a SPRITE, not a prop, and an entry that states no `depth`
+-- gets exactly the treatment SpriteBillboards gives a character: one flat
+-- plane of the drawing's own pixels, no thickness, standing at its feet
+-- and leaned back by the camera's pitch at draw time so it always reads
+-- face-on -- because that is what the artwork is.  A seated man drawn
+-- face-on is a 2D icon like every other Gen 1 figure; extruding him into
+-- a slab reconstructs a body nobody drew (the ten-voxel version read as a
+-- wedge of furniture, and even one voxel showed an edge the sprites never
+-- show).
+--
+-- So the card's quads are emitted in its OWN LOCAL SPACE -- x from the
+-- mask's west edge, y from his feet, all at z = 0 -- and the placement
+-- (`wx`, `wz`, `y`) rides along for VoxelScene to build the lean matrix
+-- from.  One quad per pixel rather than one alpha-keyed texture: the
+-- tileset atlas has no alpha to key on, and per-pixel quads cut the exact
+-- same silhouette straight out of the live atlas, so every palette bake
+-- (SGB, RED++ per-tile groups, a mod's own art) textures him for free.
+--
+-- An entry that DOES state a `depth` is not a person, and takes the other
+-- branch: a per-pixel voxel slab in world space (maskSlab above), standing
+-- on the same furniture the card would have stood on.  The Marts' cash
+-- register is why -- a machine set down on a counter is a box seen from
+-- the front, and a card of it is the billboard failure the standee pools
+-- exist to avoid.  It keeps the card's anchoring exactly: its feet on the
+-- support's top plane, and its body in the 8px depth band of the tile row
+-- its lowest pixel is drawn in, which is where a character card would
+-- have pivoted.  So the machine sits at the FRONT of the counter cell it
+-- is drawn low in, and never leans into the aisle behind it.
+local function buildFigure(S, map, fig, tx, ty, perRow)
+  local bw, bh = fig.w * 8, fig.h * 8
+
+  local function at(lx, ly)
+    if lx < 0 or lx >= bw or ly < 0 or ly >= bh then return false end
+    return fig.mask[ly * bw + lx] or false
+  end
+
+  -- his feet and his west edge: the card's own origin
+  local lowY, minX = 0, bw - 1
+  for ly = 0, bh - 1 do
+    for lx = 0, bw - 1 do
+      if at(lx, ly) then
+        if ly > lowY then lowY = ly end
+        if lx < minX then minX = lx end
+      end
+    end
+  end
+
+  -- He stands ON the furniture he was drawn into -- the same lift a pinned
+  -- prop above a pinned box takes (see buildObject), and gated the same
+  -- way: a thing set down on furniture occupies a BLOCKED cell, while a
+  -- seat you merely walk up to is in a walkable one.  The row under his
+  -- card is SCANNED for the tallest authored upright rather than read at
+  -- its west corner: the corner tile can be furniture that is not his
+  -- seat (the couch's raised backrest column stands there, `top` art and
+  -- taller than the cushion he actually sits on).
+  local baseY = 0
+  local blocked = not map:isWalkableCell(math.floor(tx / 2),
+                                         math.floor((ty + fig.h - 1) / 2))
+  if blocked then
+    for dx = 0, fig.w - 1 do
+      local bs = S.shapeAt[keyOf(tx + dx, ty + fig.h)]
+      if bs and bs.authored and bs.art == "upright"
+         and (bs.h or 0) > baseY then
+        baseY = bs.h
+      end
+    end
+  end
+
+  local atlasW = map.tileset.imageWidth or 128
+  local atlasH = map.tileset.imageHeight or 48
+
+  if fig.depth then
+    -- An OBJECT: the standee slab, standing on the FRONT edge of the tile
+    -- row its feet are drawn in -- the south face of the 8px band a
+    -- character card would have pivoted in.  It is anchored there and
+    -- grows NORTH rather than being centred, so that `depth` is free to
+    -- exceed the 8px band without the machine ever creeping toward the
+    -- aisle: a till drawn low on a counter is at the counter's front, and
+    -- a deeper one just eats more of the bare top behind it.  (At the
+    -- 8 the band itself is, the two rules agree.)
+    --
+    -- `thin` caps the top rows to their own thickness, centred in the
+    -- body's depth -- the register's receipt curl leaves the arm's top
+    -- face by a slot in the middle of it, not flush with its front.
+    local south = ty * 8 + math.floor(lowY / 8) * 8 + 8
+    local function bandOf(ly)
+      local z0 = south - fig.depth
+      if fig.thin and ly < fig.thin.rows then
+        local m = math.floor((fig.depth - fig.thin.depth) / 2)
+        return z0 + m, z0 + m + fig.thin.depth
+      end
+      return z0, south
+    end
+    local function yOf(ly) return baseY + lowY - ly end
+    maskSlab(S.objectQuads, fig, perRow, atlasW, atlasH, tx * 8,
+             yOf, bandOf, baseY, fig.flat)
+    if fig.flat then
+      -- The top-view rect lands on the plane its own BOTTOM row would
+      -- have stood at -- which is the top of whatever the extrusion left
+      -- under it (the register's base band), so the keys lie on the deck
+      -- and never float.
+      --
+      -- In depth it fills the body's whole band, STRETCHED to it: the rect
+      -- is the machine's deck, so it reaches as deep as the machine does,
+      -- and its last drawn row stays the deck's front edge directly over
+      -- the fascia below it -- an object drawn LOW on a surface is drawn
+      -- NEAR its front.
+      maskPlate(S.objectQuads, fig, perRow, atlasW, atlasH, tx * 8,
+                fig.flat, yOf(fig.flat.r1), south - fig.depth, fig.depth)
+    end
+  else
+    local quads = {}
+    for ly = 0, bh - 1 do
+      Budget.tick()
+      for lx = 0, bw - 1 do
+        if at(lx, ly) then
+          local tile = fig.tiles[math.floor(ly / 8) * fig.w
+                                 + math.floor(lx / 8) + 1]
+          local u = ((tile % perRow) * 8 + lx % 8 + 0.5) / atlasW
+          local v = (math.floor(tile / perRow) * 8 + ly % 8 + 0.5) / atlasH
+          local x, y = lx - minX, lowY - ly
+          quads[#quads + 1] = { { x, y, 0 }, { x + 1, y, 0 },
+                                { x + 1, y + 1, 0 }, { x, y + 1, 0 },
+                                u = u, v = v, shade = 1 }
+        end
+      end
+    end
+
+    -- Where the card stands.  `wz` is the MIDDLE of the tile row his feet
+    -- are drawn in, which is the same convention a character card uses
+    -- (its feet plane sits at its cell's middle) -- so he sorts against
+    -- the couch and against a player walking past exactly the way an NPC
+    -- standing there would.
+    S.figures[#S.figures + 1] = {
+      quads = quads,
+      wx = tx * 8 + minX,
+      wz = ty * 8 + math.floor(lowY / 8) * 8 + 4,
+      y = baseY,
+    }
+  end
+
+  -- What each covered tile wears now that he is off it.  Only the ART
+  -- changes: the couch tiles keep their `counter` box (they ARE the
+  -- couch) and the floor tiles he overhung stay flat floor -- the
+  -- profile just names the version of each drawing without him in it,
+  -- so nothing has to be synthesized or repainted from a neighbour vote.
+  for i = 1, #fig.tiles do
+    local dx, dy = (i - 1) % fig.w, math.floor((i - 1) / fig.w)
+    S.tileAt[keyOf(tx + dx, ty + dy)] = fig.under[i]
+  end
+end
+
+-- Every authored figure, wherever the map draws it.
+--
+-- Matched by TILE PATTERN rather than by coordinates: one blockset entry
+-- places this couch once in each of the eleven Pokemon Centers (and the
+-- Celadon Hotel), so the pattern finds all of them without the profile
+-- naming a single map or cell.  The repaint above replaces the pattern's
+-- own tiles, so a match can never fire twice on the same drawing.
+function Structures.buildFigures(S, map, x0, x1, y0, y1)
+  local figures = TileShape.figures(map.tileset.id)
+  if not figures then return end
+  local perRow = map.tileset.tilesPerRow or 16
+  for _, fig in ipairs(figures) do
+    for ty = y0, y1 - fig.h + 1 do
+      for tx = x0, x1 - fig.w + 1 do
+        Budget.tick()
+        local hit = true
+        for i = 1, #fig.tiles do
+          local dx, dy = (i - 1) % fig.w, math.floor((i - 1) / fig.w)
+          if S.tileAt[keyOf(tx + dx, ty + dy)] ~= fig.tiles[i] then
+            hit = false
+            break
+          end
+        end
+        if hit then buildFigure(S, map, fig, tx, ty, perRow) end
+      end
+    end
+  end
+end
+
+-- ---- mounted: a thing drawn INTO a wall band, stood proud of it ----
+
+-- One authored mounted object at one matched position.
+--
+-- Same authoring premise as a figure -- the mask IS the classification,
+-- because a drawing painted onto the wall it hangs on has no background
+-- margin for a flood to enter by, and here the wall's own #555 stripes
+-- are a flood boundary as well, so a silhouette comes back striped.
+-- Like a figure it therefore builds HEADLESS: nothing below reads a
+-- pixel.
+--
+-- But a mounted object is an OBJECT, so it is built the way every other
+-- standee here is -- a per-pixel voxel slab wearing the drawing's own
+-- texels, quads emitted in world space -- and not as a sprite card:
+--
+--   ELEVATION is the drawn one.  A figure stands on its own feet; this
+--   keeps the row it is painted in, because the band it is painted into
+--   is a measured 16px face rising off the floor.  So drawn row `ly`
+--   becomes world y = (band height - 1) - ly, and a bicycle whose wheels
+--   are drawn on the band's bottom row lands on the floor while one hung
+--   clear of it stays hung.
+--   DEPTH juts SOUTH of the band's own face (z0 at the drawing's south
+--   edge), so the object stands in front of the wall rather than inside
+--   it.  It overhangs the walkable cell in front, which is what a bicycle
+--   leaning on a wall does; nothing about collision changes.
+local function buildMountedAt(S, map, m, tx, ty, perRow)
+  local bh = m.h * 8
+  local z0 = (ty + m.h) * 8
+  local z1 = z0 + (m.depth or 2)
+
+  maskSlab(S.objectQuads, m, perRow, map.tileset.imageWidth or 128,
+           map.tileset.imageHeight or 48, tx * 8,
+           function(ly) return (bh - 1) - ly end,
+           function() return z0, z1 end, 0)
+
+  -- What the band wears now that the object is off it: the plain panel
+  -- the artist drew everywhere else along the same wall.  Only the ART
+  -- changes -- these tiles keep the `wall` box they always resolved to,
+  -- because they ARE the wall.
+  for i = 1, #m.tiles do
+    local dx, dy = (i - 1) % m.w, math.floor((i - 1) / m.w)
+    S.tileAt[keyOf(tx + dx, ty + dy)] = m.under[i]
+  end
+end
+
+-- Every authored mounted object, wherever the map draws it.  Matched by
+-- TILE PATTERN like a figure, and for the same reason -- one blockset
+-- entry can place the same drawing in several rooms -- and the repaint
+-- above replaces the pattern's own tiles, so a match never fires twice
+-- on one drawing.
+function Structures.buildMounted(S, map, x0, x1, y0, y1)
+  local list = TileShape.mounted(map.tileset.id)
+  if not list then return end
+  local perRow = map.tileset.tilesPerRow or 16
+  for _, m in ipairs(list) do
+    for ty = y0, y1 - m.h + 1 do
+      for tx = x0, x1 - m.w + 1 do
+        Budget.tick()
+        local hit = true
+        for i = 1, #m.tiles do
+          local dx, dy = (i - 1) % m.w, math.floor((i - 1) / m.w)
+          if S.tileAt[keyOf(tx + dx, ty + dy)] ~= m.tiles[i] then
+            hit = false
+            break
+          end
+        end
+        if hit then buildMountedAt(S, map, m, tx, ty, perRow) end
+      end
+    end
+  end
 end
 
 -- ---- tall grass ----

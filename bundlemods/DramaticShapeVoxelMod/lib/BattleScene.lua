@@ -42,6 +42,7 @@ local BattleCam = V.require("BattleCam")
 local BattleBillboard = V.require("BattleBillboard")
 local VoxelGrid = V.require("VoxelGrid")
 local DayNight = V.require("DayNight")
+local AntiAlias = V.require("AntiAlias")
 local PaletteFX = require("src.render.PaletteFX")
 local Map = require("src.world.Map")
 
@@ -141,9 +142,10 @@ local function prefetchArena(state, host)
   for _, nb in ipairs(state.neighbors or {}) do live[nb.map.id] = true end
   ChunkMesher.setLive(live)
   TerrainAtlas.setLive(live)
-  local terrain = ChunkMesher.request(host, false, nil, true)
-                  or ChunkMesher.peek(host, true)
-  return terrain, {}
+  ChunkMesher.request(host, false, nil, true)
+  local terrain, water = ChunkMesher.pair(host, false)
+  if not terrain then terrain, water = ChunkMesher.pair(host, true) end
+  return terrain, {}, water, {}
 end
 
 -- ------- the sun
@@ -208,6 +210,91 @@ end
 
 BattleScene.monCards = monCards
 
+-- The MOVE-ANIMATION layer's place in the world: a BILLBOARD facing the
+-- eye, for the GB-frame effects texture OverworldBattle.animTexture
+-- renders (the engine's own drawAnimLayer, caught on a canvas).
+--
+-- Effects are 2D drawings like the pics, and the pics' answer holds for
+-- them too: a drawing must FACE the eye that is looking (the mon cards
+-- yaw toward it per eye -- see monMatrix). So the frame stands on the
+-- arena's midpoint, yawed at the eye like the cards are, and the classic
+-- layout's two slot marks are pinned where each CELL lands on that plane
+-- along this very eye's own ray -- so from the eye that is looking, a
+-- burst authored at a slot sits exactly over the mon standing in for it,
+-- and a projectile crossing the frame crosses the arena. The vertical
+-- scale is the mon cards' own (FULL_W / FULL_PIC), so an effect is sized
+-- like the pics it plays over.
+--
+-- An eye standing (nearly) ON the arena's axis sees the two cells in
+-- line and the pinning degenerates; the frame then falls back to the
+-- fixed plane through both cells, which that eye views edge-on anyway.
+--
+-- Reads Voxel3D.eye at CALL time, like the cards -- call it per eye.
+-- Returns the model matrix for BattleBillboard's unit card (x -0.5..0.5,
+-- y 0..1 up, v flipped), or nil where the anchors are degenerate.
+function BattleScene.fxCard(arena, groundY, anchors)
+  local p, e = anchors.player, anchors.enemy
+  local dgb = e[1] - p[1]
+  if math.abs(dgb) < 1 then return nil end
+  local GW, GH = BattleScene.GB_W, BattleScene.GB_H
+  local Px, Py, Pz = arena.player[1], groundY, arena.player[2]
+  local Ex, Ey, Ez = arena.enemy[1], groundY, arena.enemy[2]
+  local s = BattleBillboard.FULL_W / BattleBillboard.FULL_PIC
+  local Mx, My, Mz = (Px + Ex) / 2, groundY, (Pz + Ez) / 2
+
+  local eye = Voxel3D.eye
+  local yaw = BattleBillboard.yawToward(Mx, Mz, eye)
+  local nx, nz = math.sin(yaw), math.cos(yaw)     -- out of the frame, at the eye
+  local rx, rz = math.cos(yaw), -math.sin(yaw)    -- the frame's own right
+
+  -- where a world point sits ON the billboard, as (right, up) coordinates
+  -- about the midpoint: slid along the eye's ray onto the plane, so the
+  -- mark and the mon line up from exactly the seat that is looking
+  local function inPlane(qx_, qy_, qz_)
+    if eye then
+      local dqx, dqy, dqz = qx_ - eye[1], qy_ - eye[2], qz_ - eye[3]
+      local denom = dqx * nx + dqz * nz
+      if math.abs(denom) > 1e-6 then
+        local t = ((Mx - eye[1]) * nx + (Mz - eye[3]) * nz) / denom
+        qx_ = eye[1] + dqx * t
+        qy_ = eye[2] + dqy * t
+        qz_ = eye[3] + dqz * t
+      end
+    end
+    return (qx_ - Mx) * rx + (qz_ - Mz) * rz, qy_ - My
+  end
+  local pax, pay = inPlane(Px, Py, Pz)
+  local eax, eay = inPlane(Ex, Ey, Ez)
+
+  if math.abs(eax - pax) < 4 then
+    -- edge-on: the fixed plane through both cells, world-axis mapping
+    local ux = (Ex - Px) / dgb
+    local uy = (Ey - Py - s * (p[2] - e[2])) / dgb
+    local uz = (Ez - Pz) / dgb
+    local cx = Px + ux * (0.5 * GW - p[1])
+    local cy = Py + uy * (0.5 * GW - p[1]) + s * (p[2] - GH)
+    local cz = Pz + uz * (0.5 * GW - p[1])
+    local nl = math.sqrt(ux * ux + uz * uz)
+    local fx, fz = 0, 1
+    if nl > 1e-9 then fx, fz = uz / nl, -ux / nl end
+    return { ux * GW, 0, fx, cx,
+             uy * GW, s * GH, 0, cy,
+             uz * GW, 0, fz, cz,
+             0, 0, 0, 1 }
+  end
+
+  -- in-plane travel per GB pixel of frame x, solved so both marks land:
+  -- inPlane(gb) = (pax, pay) + U * (gbx - p.x) + (0, s) * (p.y - gby)
+  local ux = (eax - pax) / dgb
+  local uy = (eay - pay - s * (p[2] - e[2])) / dgb
+  local cxp = pax + ux * (0.5 * GW - p[1])
+  local cyp = pay + uy * (0.5 * GW - p[1]) + s * (p[2] - GH)
+  return { rx * ux * GW, 0, nx, Mx + rx * cxp,
+           uy * GW, s * GH, 0, My + cyp,
+           rz * ux * GW, 0, nz, Mz + rz * cxp,
+           0, 0, 0, 1 }
+end
+
 -- The sun has to see the mons too, or they stand on the ground without
 -- putting anything on it. They are the one thing in this scene that MOVES,
 -- so `token` -- a counter the caller bumps whenever a pic could have changed
@@ -227,7 +314,8 @@ local function shadowSignature(state, arena, terrain, nbMesh, token)
 end
 
 local function castShadows(state, arena, terrain, nbMesh, cx, cy, vw, vh,
-                           atlasFor, cards, token, host, neighbors)
+                           atlasFor, cards, token, host, neighbors,
+                           water, nbWater)
   if not ShadowMap.available() then return end
   local sig = shadowSignature(state, arena, terrain, nbMesh, token)
   if not ShadowMap.stale(sig) then return end
@@ -236,6 +324,14 @@ local function castShadows(state, arena, terrain, nbMesh, cx, cy, vw, vh,
   ShadowMap.draw(terrain, atlasFor(host), nil)
   for i, nb in ipairs(neighbors) do
     ShadowMap.draw(nbMesh[i], atlasFor(nb.map), Mat4.translate(nb.ox, 0, nb.oy))
+  end
+  -- the water surface is its own reflective pass now (see Water) and so is
+  -- no longer inside the terrain mesh; the sun still has to see it, or the
+  -- light's map has a hole at every lake
+  ShadowMap.draw(water, atlasFor(host), nil)
+  for i, nb in ipairs(neighbors) do
+    ShadowMap.draw(nbWater and nbWater[i], atlasFor(nb.map),
+                   Mat4.translate(nb.ox, 0, nb.oy))
   end
   -- thin cards are snugged toward the sun (ShadowMap.snug) so their shadows
   -- keep contact with their bases instead of starting a bias-width away
@@ -249,10 +345,15 @@ local function castShadows(state, arena, terrain, nbMesh, cx, cy, vw, vh,
   -- the mons themselves, as the same cards the camera will see. Their alpha
   -- is the silhouette, so what lands on the ground is the shape of the
   -- Pokemon rather than a blob standing in for one.
+  -- marked as the CAST, so a fight staged at the water's edge does not lay a
+  -- cut-out of a Pokemon across the lake (see ShadowMap.sprites); the arena's
+  -- own floor still takes them, which is the shadow that matters here
+  ShadowMap.sprites(true)
   for _, card in ipairs(cards or {}) do
     ShadowMap.draw(BattleBillboard.mesh(), card.tex,
                    ShadowMap.snug(card.model))
   end
+  ShadowMap.sprites(false)
 
   ShadowMap.finish(sig)
 end
@@ -299,9 +400,36 @@ end
 BattleScene.FLASH_COLOR = { 1, 1, 1 }
 BattleScene.FLASH_STRENGTH = 0.5
 
+-- ------- the tile clock, while the overworld is not the one drawing
+--
+-- Water and flowers animate off TileRenderer's 60Hz counter, and the ENGINE
+-- only advances it from OverworldState:drawWorld -- which runs under dialogs
+-- and menus, but not under a battle, because a battle draws instead of the
+-- overworld rather than over it. So for the length of a staged fight the
+-- counter stood still: the water tiles stopped rotating their pixels and the
+-- wave field, which is driven off the same number so the two cannot drift
+-- (see Water), stopped with them. A lake in the background of a battle was a
+-- photograph.
+--
+-- Ticked HERE rather than from the mod's update hook, because here is the
+-- one place that means "a staged battle is drawing this frame, and the
+-- overworld is not". From the update hook the condition would have to be
+-- guessed at, and a frame where both ran would double the rate.
+local function tickTiles()
+  local Game = require("src.core.Game")
+  local ow = Game and Game.overworld
+  local top = Game and Game.stack and Game.stack:top()
+  -- during the wipe INTO a battle the overworld can still be the one
+  -- drawing, and it is ticking the clock itself; two ticks in a frame would
+  -- run the water at double speed
+  if top and ow and top == ow then return end
+  pcall(require("src.render.TileRenderer").tick)
+end
+
 function BattleScene.render(state, arena, textures, token)
   if not (state and state.map and arena) then return nil end
   if not Voxel3D.available() then return nil end
+  tickTiles()
 
   -- the floor the fight is staged on: normally the player's own, sometimes
   -- another floor of the same cave or building (see BattleArena)
@@ -326,7 +454,7 @@ function BattleScene.render(state, arena, textures, token)
 
   -- shares the free-roam mode's request/evict bookkeeping, so a battle warms
   -- exactly the meshes walking around would have and nothing extra
-  local terrain, nbMesh = prefetchArena(state, host)
+  local terrain, nbMesh, water, nbWater = prefetchArena(state, host)
   if not terrain then return nil end
 
   local lx, ly, s, pw, ph = BattleScene.letterbox()
@@ -356,7 +484,7 @@ function BattleScene.render(state, arena, textures, token)
   local cards = monCards(arena, groundY, textures)
   Voxel3D.camera = nil
   castShadows(state, arena, terrain, nbMesh, cx, cy, vw, vh, atlasFor,
-              cards, token, host, neighbors)
+              cards, token, host, neighbors, water, nbWater)
 
   -- An opaque void either way. Outdoors the camera is low enough that the
   -- horizon is genuinely in frame, so it is sky; indoors it is the dark end
@@ -385,13 +513,38 @@ function BattleScene.render(state, arena, textures, token)
     -- its own canvas slot: this renders at the window's pixel size and the
     -- free-roam pass does too, but the two are alive at different moments
     -- and a shared slot would reallocate on every battle entry and exit
-    if not Voxel3D.beginScene(pw, ph, cx, cy, vw, vh, sky, "battle") then
+    --
+    -- AA, if the row asks for it, renders it larger still and folds it back
+    -- to pw x ph below (see AntiAlias). The framing is untouched by that:
+    -- the lens was widened by the window's RATIO to the letterbox and the
+    -- rig solved in the GB's own frame, so a bigger canvas is more samples
+    -- of the identical shot -- which is why the pins below still measure in
+    -- pw and ph, and why the HUDs and the depth of field, drawn onto the
+    -- folded canvas afterwards, stay the chunky GB art they are.
+    local rw, rh = AntiAlias.expand(pw, ph)
+    if not Voxel3D.beginScene(rw, rh, cx, cy, vw, vh, sky, "battle") then
       return
     end
     Voxel3D.draw(terrain, atlasFor(host), nil)
     for i, nb in ipairs(neighbors) do
       Voxel3D.draw(nbMesh[i], atlasFor(nb.map),
                    Mat4.translate(nb.ox, 0, nb.oy))
+    end
+    -- and the water over it -- PLAIN, always: the flat animated tiles, never
+    -- the reflective pass, whatever the WATER row says. The reflection is
+    -- tuned for the overworld's ladder of cameras; this shot's is PLACED --
+    -- low, tilted and framed like a picture -- and under it the pass reads
+    -- wrong: Fresnel opens all the way up, the leaned sky lands on bands the
+    -- framing never shows, and a lake-sized arena comes out as murk wearing
+    -- the tile art. The battle is a stage set, and stage water is painted.
+    -- (No mirror also means the mons need no second draw into one -- they
+    -- just composite over the water below, like everything else on the set.)
+    if water then Voxel3D.draw(water, atlasFor(host)) end
+    for i, nb in ipairs(neighbors) do
+      if nbWater and nbWater[i] then
+        Voxel3D.draw(nbWater[i], atlasFor(nb.map),
+                     Mat4.translate(nb.ox, 0, nb.oy))
+      end
     end
     -- The mons, standing on their tiles. Depth-tested like everything else,
     -- so a ledge or a tree between the camera and a Pokemon really is in
@@ -442,7 +595,7 @@ function BattleScene.render(state, arena, textures, token)
                    Mat4.translate(nb.ox, 0, nb.oy), fpull,
                    ShadowMap.snug(Mat4.translate(nb.ox, 0, nb.oy)))
     end
-    local canvas = Voxel3D.endScene()
+    local canvas = AntiAlias.resolve(Voxel3D.endScene(), pw, ph, "battle")
     if not canvas then return end
 
     local vp = Voxel3D.vp

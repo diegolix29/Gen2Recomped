@@ -1,16 +1,962 @@
 # Changelog
 
+## 1.5.4
+
+### Added
+
+- **HORDE MODE.** Enter the konami code -- Up Up Down Down Left Right
+  Left Right B A -- standing in the overworld, and Kanto turns on you.
+  The sky drops to a starless violet night, the Lavender Town theme
+  comes up, the camera locks into the player's own head, a voxel
+  handgun with working iron sights appears in their right hand, and
+  waves of people walk out of the dark to kill them. The map's own NPCs
+  join in. Every mob that falls screams as a random Pokemon. Score goes
+  up per kill and per wave cleared; there is no pausing. When the health
+  runs out, a GAME OVER card offers the score and PRESS A -- and pressing
+  it puts the map, the cell, the facing, the camera rung, the hour, the
+  music and every NPC back exactly as they were.
+
+  The code is read off GAME BOY BUTTONS rather than off keys, so it
+  works on a keyboard, a pad, a phone's touch overlay and a pair of VR
+  controllers without knowing which one is in use. Fire on left click,
+  the pad's right trigger or B, a tap on a touch screen, or the right
+  trigger in VR; reload on R, the pad's X, or B on the right hand; aim
+  down the sights on right click or the left trigger (in VR you aim by
+  pointing, and the sights are real geometry to line up).
+
+  The crowd walks the same grid the game walks, chases along a flow
+  field swept out from the player -- so they come through doorways and
+  around buildings rather than into walls -- and they follow the player
+  through a door into the building on the far side of it.
+
+- **The horde's gun, on the Game Boy's own sound hardware.** The
+  gunshot, the dry fire, the magazine dropping out and seating, and the
+  slide coming home are all authored as channel programs and
+  synthesized by the game's emulated APU (`lib/HordeSfx.lua`). No audio
+  files ship with the mod. Three shot variants round-robin so a fast
+  trigger finger overlaps its own echoes instead of cutting them off.
+
+### Changed
+
+- **SMOOTH TURN**, a new options row under VR (OFF by default), turns the
+  right stick into a continuous turn instead of the 45-degree snap. The
+  snap stays the default deliberately -- a software turn moves the world
+  past a head that did not move, which is the most reliable way to make
+  somebody ill in a headset -- but it costs continuity, so the choice is
+  the player's. The row only exists while VR is ON: a comfort setting for
+  a device that is not plugged in decides nothing.
+
+- **The wall bump is silent in first person**, on the flat screen and in
+  VR alike. On the grid a blocked step is a discrete event -- you pressed
+  a direction, the game refused, and the bump answers you once. The free
+  walk has no such moment: the body slides along whatever it grazes, so
+  walking a fence line or rounding a doorframe is blocked on one axis
+  continuously and the sound came out as a rattle rather than as an
+  answer. The grid walk keeps its own bump untouched.
+
+- **`FirstPerson.fovScale`** is a new seam on the first-person rig: a
+  plain multiplier on the field of view, for anything that wants to
+  narrow the lens without owning the camera. Horde mode's iron sights
+  ease it from 65 degrees to 40. It is folded into the orbit blend and
+  into the shadow signature, so a lens that narrows while the player
+  stands still still re-fits the sun's box.
+
+- **VR gains an aim pose and a fire action** (`lib/VRXR.lua`). The fire
+  action is suggested ALONGSIDE START on the right trigger rather than
+  instead of it -- bindings are suggested once, before the session
+  attaches its action sets, so they cannot be swapped when a mode
+  starts, and OpenXR is happy for two actions to share an input.
+  Outside horde mode nothing reads it and the trigger is START exactly
+  as it was.
+
+## 1.5.2
+
+### Added
+
+- **The Pokédex in hand is a quarter larger.** Its voxel pitch went from
+  1.1 cm to 1.375 cm (the body from about 10x15 cm to about 12x19 cm),
+  because the screen carries every menu in first person and was
+  squint-small at the old size. The attachment -- flush along the left
+  controller -- is unchanged.
+
+- **Left stick click steps the VOXEL ladder.** In VR the click now makes
+  exactly the step the "3" key (and the pad's SELECT) makes -- the same
+  function, handed across, so the ladder walk, the FULL step-over and
+  the TILT/GBC FX clearing can never drift from the key's. It used to
+  toggle first/third person against a remembered return rung.
+
+- **The floating panel shows the same picture at every window size.**
+  The GB-frame region used to be copied into the headset's panel
+  pixel-for-pixel, and the panel's swapchain image has a fixed size --
+  so a window scaled past it (fullscreen above all) ran the frame off
+  the copy's edge and cut the START menu out of the panel. The region
+  is now blitted OUT of the window and SCALED into the swapchain image
+  at the frame's own aspect: identical picture, identical near-square
+  ratio, whatever size or shape the window takes.
+
+- **Menus stay inside the GB frame while a headset is live.** The
+  engine's new zoom-aware anchoring docks the START menu to the
+  WINDOW's edge -- and both VR screens (the floating panel and the
+  Pokédex) crop the window to the near-square GB frame, so a docked
+  menu was cropped away with the border it hugged. While a headset is
+  live the mod answers the engine's own "hold the anchors" predicate
+  with yes, and every menu blits where it was drawn: the START menu's
+  classic slot, flush with the frame's right edge, which is the right
+  edge of everything the headset shows.
+
+- **The sky's dither is glued to the sky.** The gradient's bands were
+  already read by true elevation, but the GBC checker between them kept
+  SCREEN-cell parity -- so a head's pitch or roll slid the world-fixed
+  band edges over a screen-fixed checkerboard and the whole gradient
+  shimmered as the pattern recomputed. The ray path is now a computed
+  SKYBOX: each pixel's ray lands in a cell of the sky's own angular
+  grid (azimuth columns, elevation rows, sized to match the diorama's
+  pixel grid on screen), and the band, the checker's parity and the
+  twilight glow -- now measured by the angle to the sun's own direction
+  -- are all answered from that cell's centre. The screen grid
+  quantises nothing, so the picture behaves exactly like a
+  nearest-filtered texture on a dome: its cells slide smoothly with the
+  world, no motion of the head recomputes the pattern, and only the
+  clock moves the sky.
+
+- **VR works from an installed release.** The OpenXR loader used to be
+  looked for only against the working directory and the game's source --
+  right for the dev tree, wrong for a release install, where importing
+  the mod lands it in the game's SAVE DIRECTORY (or keeps it zipped) and
+  the VR row silently failed to start. The search now also asks the
+  mount that actually holds the mod and the save directory itself; and
+  if nothing on disk answers -- the mod imported as an archive -- the
+  DLL is copied once out of the mod into the save directory and loaded
+  from there, so every install shape reaches the headset.
+
+- **SELECT walks the VOXEL ladder.** In free roam, the pad's SELECT
+  button makes exactly the step hotkey 3 makes -- OFF through the angle
+  rungs to 1ST and round, stepping over FULL, clearing TILT and GBC FX
+  on every press like the key does. For the machines with no number row:
+  the phone's touch pad and a controller. SELECT has no overworld job in
+  Gen 1 -- its work is all in-menu, and menus keep it untouched.
+
+- **PCVR, in-process, through OpenXR -- with no change to the parent
+  app.** A new **VR** row (OFF / ON, off by default; on the OPTIONS menu
+  and the mod manager's page). The whole stack rides LuaJIT's FFI from
+  inside the mod: the Khronos OpenXR loader ships in `assets/vr/` (with
+  its Apache-2.0 license alongside), the session binds to LOVE's own
+  OpenGL context, each eye is rendered by the mod's existing scene pass
+  under a placed camera built from the tracked pose, and the finished
+  canvases are blitted straight into the runtime's swapchain images.
+  Works with any Windows OpenXR runtime (SteamVR, Oculus, WMR).
+
+  - **What you see mirrors the VOXEL ladder.** On the orbit rungs the
+    world is a TABLETOP DIORAMA hung at the RUNG'S own viewing angle and
+    at the scale that reproduces the flat screen's framing -- step onto
+    35 and the model presents at 35 degrees, onto 75 and it rises toward
+    eye level, easing between rungs; lean in and the town grows, walk
+    around the table and honest occlusion shows you the far side of the
+    buildings. On **1ST** you stand inside the world at life size (a
+    tile is a stride), the headset steers the same yaw and pitch the
+    flat screen's mouse does, and FreeMove walks where you look.
+
+  - **VR controllers.** One OpenXR action set, suggested onto Touch,
+    Index and WMR (plus the khr/simple fallback), rebindable in the
+    runtime's own UI. In both modes: **left stick** moves (through the
+    engine's own stick path, so it grid-walks the diorama and free-walks
+    1ST), **A/B** are A/B, **either trigger** is START, and **clicking
+    the left stick** steps the VOXEL angle ladder exactly as the "3"
+    key does. In the diorama: **right stick up/down** zooms the
+    model, and **squeezing a grip** while moving that hand up or down
+    drags the whole table with it. No controller button leaves VR --
+    both directions belong to the VR row alone, so no mid-fight click
+    can eject you from the headset.
+
+  - **Battles happen ON the world -- from the flat game's own seat.**
+    When a staged fight starts, the headset fades to black and comes
+    back seated in the flat battle's over-the-shoulder shot: on the same
+    camera line (your mon near-left, the foe far-right), pulled in to
+    the wide rig's standing distance at life scale, turned to face the
+    arena -- and fades back to wherever you were when the fight ends.
+    Both mons stand on their arena cells in the VR eyes' own view, yawed
+    per eye, casting real shadows, wearing the hit flash -- and the MOVE
+    ANIMATIONS play out there with them: the engine's own effects layer,
+    caught on a canvas and stood on a billboard that faces the eye the
+    way the mon cards do (effects are 2D drawings, and a drawing must
+    face the eye that is looking), with the classic layout's two slot
+    marks pinned where each arena cell lands on that plane along the
+    eye's own ray -- so a burst authored at a slot sits exactly over the
+    mon standing in for it, per eye, and a projectile crossing the frame
+    crosses the arena. (The flat screen keeps its
+    composed battle shot, untouched.) And the battle camera's parallax
+    drift holds still while a headset is watching: the sway is a flat
+    screen's depth cue, and inside VR it read as the world lurching.
+
+  - **A voxel POKEDEX along your left controller.** A hand-authored
+    voxel model of the series' own field guide -- red slab, lens, LEDs,
+    hinge, d-pad, dark screen bezel -- laid flush along the left
+    controller's grip pose (a full quarter turn forward, so holding the
+    controller is holding the device) through the same XR-to-world
+    mapping as the eyes, at its real hand size wherever the camera is.
+    It rides in FIRST PERSON and in the BATTLE seat; the diorama does
+    without it -- a hand-sized device hovering over a tabletop town is
+    clutter, and the floating panel serves there. In first person its
+    screen carries EVERYTHING the flat screen shows -- menus, dialogs,
+    shops, wipes -- and the floating billboard is retired outright:
+    raise your hand to read, lower it to play. In a staged fight the
+    screen is the 2D battle -- text, menus, HP bars, and any party or
+    bag screen opened over it -- and there too the floating billboard is
+    gone entirely: the fight owns the view, the reading is in the hand.
+    (No tracked left controller still gets the floating panel -- the UI
+    must be readable somewhere.) Drawn by the scene's own pass with real
+    depth, per eye; dark when nothing is showing.
+
+  - **The floating panel wears the GB frame.** The quad used to show
+    the whole window -- monitor-wide, mostly mirror -- and now crops to
+    the 160x144 letterbox where everything the flat screen has to say
+    actually lives, so the panel presents near-square (10:9) at 1:1
+    pixel aspect. To keep a battle's HUDs inside that frame, the HUD
+    blocks stay in their classic GB slots for as long as a headset is
+    live instead of snapping out to the window's edges.
+
+  - **The sky is anchored in space.** On the flat screen the band
+    gradient hangs off the frame; inside a headset that meant the sky
+    (and the sun and moon with it) rode the player's head. The VR eyes
+    now hang the gradient over a fixed slice of elevation above the
+    world's real horizon and drop the fixed-slice fallback entirely, so
+    tilting your head slides the frame across a sky that stays put --
+    and the discs, already projected through each eye's true camera,
+    stand still over their own azimuth. The gradient is a true SKYBOX:
+    each eye hands the sky shader its own ray fan (head rotation plus
+    frustum tangents), and every pixel takes its band -- and its GBC
+    checker dither -- from the TRUE elevation of its own view ray, so
+    no motion of the head, pitch, yaw or roll, in the diorama or in
+    first person, moves a band by a pixel; only the clock recolours
+    them. The FLAT screen's first person gets the very same treatment:
+    the placed rig builds its own ray fan from the basis its view is
+    made of, so mouse-look pitch slides the frame over a sky that
+    stays put there too, dither and all -- while the orbit rungs keep
+    their classic frame-hung painting. And the SUN AND MOON are no
+    longer painted on the frame at all (in first person on the flat
+    screen included): the cell art is baked to a texture once per
+    palette and hung on a quad IN THE WORLD, projected through the
+    camera like any geometry -- no per-frame cell snapping (the
+    jitter), no pattern squared to the canvas (the face that turned
+    with the head).
+
+  - **The VR row exists only where VR can.** Off Windows -- the Android
+    build above all -- the row is absent from the OPTIONS menu and the
+    mod manager's page both (the loader and the GL interop are Win32),
+    and a stored vr=true that migrated over in a save is ignored instead
+    of read, so a phone never tries to start a session or force the
+    battle rows.
+
+  - **VR owns the battle rows.** While the VR row is ON, staged battles
+    are REQUIRED (3D-BTL answers ON whatever it was set to) and BACK
+    SPRITES is held OFF -- the battle seat, the pokedex screen and the
+    effects plane all assume both mons standing on the world -- and both
+    rows leave the OPTIONS menu for the duration, because a switch that
+    decides nothing reads as broken. Both come back, at their stored
+    values, the moment VR goes off.
+
+  - **First person snap-turns.** Flicking the right stick left or right
+    steps the view 45 degrees, once per flick (it re-arms at centre) --
+    a snap rather than a smooth spin, because smooth software yaw is
+    the classic VR comfort mistake. The turn steps the XR-to-world
+    mapping itself, so the eyes, the walk direction and the pokedex in
+    your hand all agree about which way the world now faces.
+
+  - **The cast holds one pose for the headset.** Sprite cards lean back
+    by the camera pitch on the flat screen; a head that roams the table
+    has no one pitch to match, so every VR frame leans the cards at the
+    top rung's near-upright 75 degrees instead -- whatever orbit rung
+    the ladder is on -- and the flat screen keeps leaning with the rung.
+
+  - **Menus, dialogs, battles and wipes float on a panel** (an OpenXR
+    quad layer fed from the window), so everything the flat screen can
+    show, the headset can read. The window itself becomes the VR mirror
+    -- the left eye, fitted to the window -- and every existing
+    keyboard, mouse and pad input keeps working alongside the XR
+    controllers.
+
+  - The two eyes share one shadow map, one pose capture and one glint
+    step per frame (VoxelScene.render's `eyes` path), so they can never
+    disagree about anything but their viewpoint. xrWaitFrame paces the
+    app at headset rate while FixedStep keeps game logic at its own 60
+    Hz; vsync is handed off while the session runs and put back after.
+
+  - Failure is a status, never a crash: no runtime, no headset, no GL
+    interop, or a session lost mid-play all land back on the flat screen
+    with the reason printed (`XR_ERROR_FORM_FACTOR_UNAVAILABLE` means
+    "plug the headset in, then toggle the row"). Needs the mod running
+    from a real folder (the FFI cannot load a DLL out of an archive).
+
+## 1.5.0
+
+### Added
+
+- **1ST: a first-person camera, played like a modern one.** A seventh
+  rung on the VOXEL ladder (hotkey 3 walks it; the OPTIONS row carries
+  it). Stepping onto it dives the camera from wherever the orbit was
+  into the player's own head over half a second, and stepping off flies
+  it back out. The rig rides the same placed-camera seam the staged
+  battle proved out, so the sky's bands meet the horizon, the sun and
+  moon hang where their shadows say, and the water reflects at eye
+  level -- all through math that was already there.
+
+  - **Free look.** Relative mouse motion (the cursor is captured while
+    the rung is on; left click is A, right click is B), the right
+    stick at a rate with a squared response curve, or a touch dragged
+    across any open screen -- the overlay's d-pad and buttons still
+    work, and a second finger can drag the view while the first
+    walks. Pitch clamps short of straight up and straight down.
+
+  - **Free movement.** While 1ST drives, the grid walk is replaced by
+    a continuous, camera-relative one: push forward and you go where
+    you look, at any angle, sliding along whatever you graze. The left
+    stick's raw deflection, the touch d-pad's true vector, or the held
+    keys (forward / backpedal / strafe) all steer it. The grid is
+    still the game: the walk asks the engine's own collision the same
+    per-cell questions a grid step asks, the logical cell tracks the
+    body, and every cell crossed runs the engine's own landing
+    pipeline -- warps, encounters, spinners, gates, poison, repel, the
+    step counters. Walking off the map edge, into a ledge or into a
+    boulder hands the push to the engine's own handlers, so
+    connections cross, ledges hop and boulders shove exactly as
+    themselves. Speed is the grid walker's own (bike included), so
+    distance per second and encounters per tile are unchanged.
+
+  - **Billboards seen from inside the world.** Character cards stop
+    leaning and start turning: upright, yawed about their feet to face
+    the eye, wearing the frame their pose shows *this* viewer -- walk
+    behind an NPC and you see their back, circle to a flank and you
+    get the profile, exactly the four frames Gen 1 drew. The authored
+    figures (the couch sitters) turn the same way, about their own
+    middle. The sun pass swaps frames in step, so a card never reads
+    its own shadow through a mirror-flipped record of itself. The
+    player's own card is left out of the camera draw -- the eye stands
+    in it -- but still casts its shadow on the ground ahead.
+
+  - The shadow map's box follows the look (the orbit's fit reaches far
+    north and barely south, which is wrong for a head facing south);
+    the world curve is declined outright while the head owns the
+    camera; and the whole rung falls back to the 75-degree orbit on
+    hardware without the 3D pass.
+
+## 1.4.3
+
+### Added
+
+- **The furniture of the whole game goes through the building
+  pipeline.** 1.4.1 put four drawings through it; this is the rest of
+  the rooms. Every one of them is the same read -- the drawing's own
+  bands say what is a top seen from above, what is a face seen head-on,
+  and where the thing ends on the floor -- and every one of them
+  replaces a pinned box that wore its drawing as a decal. The pins all
+  stay as the degradation path, neutralized wherever a template stamps.
+
+  - **The bookcase, the commonest piece of furniture in the game** --
+    58 placements across two drawings on the town-house atlas (books
+    and a bowl on each shelf at the west end of eighteen homes, books
+    on both at the east), plus Red's and the Copycat's pair. Pinned
+    `desk` it was a 24px box with the books painted on its flat front.
+    Modelled it is 23 voxels of cabinet with its top seen from above,
+    and every book, bowl and door panel sunk a voxel behind the frame
+    the drawing seals it in.
+  - **Celadon's display cabinets** -- the tall one with the trophy
+    behind its glass and the short one beside it, band for band the
+    same object as the town house's on another atlas, which is what
+    makes the pair read as one line of furniture: 23 voxels and 15,
+    exactly the 8 rows of drawing between them.
+  - **The dining table, everywhere it is drawn** -- the generic town
+    house's at 18 placements, Red's and the Copycat's, and the chief's
+    long table at four cells wide. All of them the lab table's read at
+    a different width, all of them 6 voxels, all of them standing on
+    the ground line their legs are drawn stopping at rather than on
+    the grid's floor.
+  - **The stool at every one of those tables** -- 94 placements on the
+    house atlas alone, ten more in Red's and the Copycat's, and the Fan
+    Club's four members' chairs, a different drawing that is
+    pixel-identical from the seat down. The first template with no base
+    piece at all: a stool is drawn mid-cell over its own floor, so it
+    is a desk-set of exactly one part, seat lid over legs with the
+    floor showing between them.
+  - **The Pokemon Center's healing machine** -- two variants, 24
+    placements, plus the Indigo Plateau lobby's pair. A wall-height
+    cabinet with its monitor perched on the front of its top face,
+    drawn across two map rows because it towers over the 16px band
+    behind it, which the volume path could only read as more wall. The
+    hoses leaving its side are modelled as hoses, at the elevation and
+    the depth the two stacked motifs put them; the west machine's
+    keyboard is a shelf at counter height wearing its own top-view art.
+  - **Bill's desk, and the Silph president's** -- the same drawing in
+    both rooms. Its terminal is drawn in 2:1 isometric, turned 45
+    degrees to the map, and builds as a cube rather than the slab a 2:1
+    reading gives; the kinked dark run between keyboard and computer is
+    raised to the keyboard's height and reads as the cable it is. The
+    desk stops at its own two cells because the artist drew its apron
+    into the walkable cell in front, sharing tiles with the chair
+    pushed up to it -- so the chair is modelled as a part of the desk.
+  - **The Bike Shop's open toolbox.** The drawing looks down INTO the
+    tray, which is why every solid treatment failed it -- as a
+    `billboard` the whole cell went up as one 10-voxel slab wearing the
+    drawing as a decal. `tray` builds four walls, a floor and air
+    between them, with the lid standing open on its hinge.
+
+  What the template language grew to carry them: `tray`; a `desk` band
+  that lays its top face flat as a lid; the `box`, `flat` and `iso`
+  part kinds; `stretch` for a band mapped over a deeper plot than it
+  was drawn on; `inset` for a pane sunk by hand; `panes = false` where
+  the global recess pass has the polarity backwards; a `wall` element
+  so a template can keep the band behind it solid; `plane` for a height
+  the drawing states elsewhere; and `scrub`/`keep`/`support`, which let
+  a template model a surface while leaving an object standing on it to
+  its own standee -- Red's potted plant on the dining table.
+
+- **Round bins: the `can` class.** Vermilion Gym's switch puzzle stands
+  fifteen galvanised trash cans in a row, and the S.S. Anne redraws the
+  same object pixel for pixel as its galley barrels. Left to the thin
+  standee pool they were flat discs on edge -- fifteen coins standing
+  in a row; pinned a plain `cylinder` the drawing's base arc revolves
+  too and they came out as barrels balanced on a three-voxel stem.
+  `can` is the round hull cut at both ends, hollowed and tapered: the
+  drawn mouth ellipse projects across the top and down the well so you
+  look into the bin, the drawn base ellipse is ground contact rather
+  than body, and the plan narrows toward the floor. The two ellipses
+  are measured off the pixels; the height, the well and the taper are
+  authored, and the entry says why.
+
+- **The rock gyms' boulders are round.** 87 placements over Pewter's
+  walls and maze and Bruno's clusters, and every one of them was a
+  square bar wearing a boulder texture in relief -- the repeat-aware
+  scenery path extruding the whole drawing as one course. Each cell is
+  now a hull whose plan is its own drawn width profile turned in depth:
+  a dome full-width from the drawn shoulder down, tapering over the top
+  five rows exactly where the art tapers, with the floor's corner
+  diamonds opening between them the way the drawing has them. Still
+  16px, so nothing standing on or beside a rock moves.
+
+- **The potted plant stands as a plant.** The most repeated interior
+  prop in the game -- 78 placements over 13 maps, six per Pokemon
+  Center -- and its urn was rendering as a hollow black frame, because
+  the drawing's foot lies flush on the block's bottom edge and the
+  background vote took the plant's own darks away with the floor. Named
+  outright as light and white instead, it stands as one organic
+  silhouette 32px tall over its two stacked cells, crown overhanging
+  the stem. `planter` carries the same reading for a round drawing
+  stacked two cells high on one cell of plot.
+
+- **Bicycles, in both places the Bike Shop draws them.** The six on the
+  showroom floor get their own pool at two voxels rather than the thin
+  pool's five: a bike is a line drawing, and at five voxels every
+  stroke closes the gap to its neighbour with its own side faces, so
+  from any angle but dead-on the air inside the frames filled in and
+  the six came out as one dark lump. And the two against the north wall
+  get `mounted`, a new authored-mask escape for a thing drawn INTO a
+  wall band: it holds the wall's plane as a thin per-pixel slab instead
+  of standing up as a sprite card, and it keeps its drawn elevation, so
+  a bicycle hung clear of the floor stays hung. Its mask is measured
+  rather than hand-drawn -- the plain panel tile composited across the
+  same grid and the background flooded in through the pixels that still
+  match it, which separates bicycle from stripe exactly.
+
+- **The Marts' cash register is a machine, not a decal.** An authored
+  figure may now state a `depth`, which makes it an object rather than
+  a person: a per-pixel solid standing on the counter instead of the
+  flat card that turned edge-on with the camera. And the drawing is not
+  a box -- its black linework packs two facings, an L of base and arm
+  around a keypad that is the machine's deck seen from above. `flat`
+  lays that rect horizontal in the notch of the L, and `thin` gives the
+  receipt curl a paper's thickness where the body's would have made it
+  a wedge.
+
+- **Shelf fronts have relief.** Everything the `bookcase` collapse is
+  used for is a shelf, a rack or a display case, and all of them seal
+  their contents behind the drawing's own black frame -- so those
+  regions now sink a voxel, the same rule a facade's window panes are
+  recessed by, and the books stand in the shelf instead of being
+  painted on it. A tileset that borrows the collapse for something that
+  is not a shelf says `bookcase_relief = false`: the League's masonry
+  and pilasters, whose courses are the wall itself, and Bill's
+  transporter drums, whose light regions are a lit barrel.
+
+### Changed
+
+- **Class heights now follow the models under them.** A tileset's
+  `heights` gets stools at 5 and tables at 6 in the houses, Bill's desk
+  at 8, and cans at 9 -- each of them the drawn elevation the new
+  template or hull stands at, so whoever sits on a stool sits on the
+  seat, and whatever object sprite stands on a table lands on the
+  modelled top rather than three voxels over it or under it.
+- The healing machines' two flanks leave the `wall` pin for the thin
+  standee pool. They are equipment standing beside the console -- a
+  pair of pipes and a keyboard -- and as wall each was boxed into a
+  solid 16px half-cell wearing its drawing in relief.
+
+### Fixed
+
+- **Water no longer hides behind water.** The reflective pass writes no
+  depth -- the depth canvas is detached for the length of it so the
+  shader can read it -- so nothing put a lake in the buffer and no lake
+  could occlude another; the sheets were simply painted in mesh order.
+  Flat water never showed it, one plane, a farther sheet always landing
+  farther down the screen. The world curve ends that: it drops the far
+  side of the map into the near field of view, and a sea a hundred and
+  fifty tiles away came out rasterised on top of the pond at the
+  player's feet, tall grass and all -- water and terrain "from the
+  other side of the map", not reflected but there. The water meshes now
+  go down flat first, through the ordinary scene shader with depth
+  writes on, and the reflective pass draws over what survived. The
+  buffer holds the surface, so the pass's own test throws the far sheet
+  away; the reflection copy holds it too, so a ray grazing another part
+  of the lake reads water rather than the void behind it; and a frame
+  that cannot run the pass at all is unchanged, because the flat draw
+  is the fallback that was already there.
+- **Reflections under the world curve.** The bend tips the world away
+  and the things standing on it do not lean with it -- and a lake is
+  one of those things. Reflected off the bowl the bend makes, the far
+  half of a pond was a mirror tilted twenty degrees: it threw the ray
+  past the vertical, where the sky ramp's own measure swings from one
+  end to the other across a single column, and hard-edged patches of
+  the wrong sky stamped into the water; the same tilt sent the
+  screen-space march grazing along the bank rather than over it, which
+  is what smeared the dock and the roofs across the harbour. What the
+  water reflects is now worked out in the flat world, exactly as it
+  would be with the curve off, and every marched sample is bent on its
+  way to the screen by the vertex stage's own displacement -- so the
+  ray is straight where it should be and lands where the geometry did.
+  The wave columns are read on the flat sheet too: the relief walk is
+  built on an even slab over a level plane, and in the curved world
+  that slab is a bowl, which handed back a column a pixel or three off
+  per fragment -- a patch of noise in the middle of a pond.
+- **Merged runs tore open under the curve.** A quad's interior is the
+  chord of a parabola its neighbours draw the arc of, so a long run
+  hangs below the short quads butted against it. Nothing bounded a
+  run's length, and the ones that ran away were those wearing a
+  constant texel -- a roof's black eave outline, its fascia, its shaded
+  underside -- because a flat run has no art to break it. At 102px
+  across a gym the eave tore off the roof and the slot showed the
+  building's dark interior through it. Runs now stop at the next 8px
+  lattice line, which is the lattice buildings are stamped on and the
+  one every other quad in the scene already ends on, so every join is
+  vertex-for-vertex and the bend carries them together. It costs quads
+  whether the curve is on or not -- Cerulean's object stream goes from
+  35.7k to 41.6k -- and that is deliberate: the mesh is cached per map
+  and built over seconds, so meshing for the curve's sake only when the
+  curve is on would mean rebuilding every live map on a keypress.
+
+## 1.4.1
+
+### Added
+
+- **Furniture through the building pipeline.** The band-table voxelizer
+  that models whole buildings from their own drawings (lib/Buildings.lua)
+  now reads interior furniture too, and the first four drawings are in:
+
+  - **F01, the starter-ball table in Oak's lab** -- the tabletop's 16
+    drawn rows lay flat over a 16px plot (1:1, the first template that
+    never cycles), the black/#555/black edge band folds into the slab's
+    own rim, and the base extrudes with its corner feet. Six voxels
+    tall, exactly the drawn elevation.
+  - **F03, the empty north table beside it** -- the same band table on a
+    grid two tiles narrower.
+  - **F02, the lab's computer desk** -- the first DESK-SET template: the
+    drawing segments into PARTS, each classified by the surface it
+    depicts. The monitor and the computer tower stand upright on the
+    desk wearing their own drawn tops as lids; the keyboards and the
+    mouse lie flat in front of them; the sheet of paper on the right
+    lies flat across the desk. Flat parts keep the drawing's own rule --
+    drawn row IS depth row, the same 1:1 the tabletop is drawn with --
+    so an object's height on the drawing is its position on the desk.
+    The Hall of Fame's recording machine is this drawing tile for tile
+    on the GYM atlas, and models identically for free.
+  - **F04, the Center PC** -- the desk-set read again: a Mac-style unit
+    with its screen and drive slot in relief, standing at the back of a
+    low white-topped desk with its keyboard lying at the front edge.
+    Eleven Pokemon Centers, plus the Indigo Plateau lobby, whose MART
+    tileset shares the atlas.
+
+  Two measurements had to stop being assumptions for furniture to fit
+  the pipeline: the GROUND LINE is now read off the drawing (a building
+  ends on the black threshold row it stands on; a table's legs stop two
+  rows short of theirs, and extruding against the grid floated them in
+  the air), and a template may name its PLOT (`depth`) when the matched
+  grid runs past it onto the walkable floor the legs merely stand on.
+  Both are identities for every existing building.
+
+- **The Center couch has a backrest.** The couch is drawn from above --
+  back-and-arm strip down the west side, cushions and seams on the east
+  -- and rendered as one seat-high box. The new `backrest` class raises
+  the drawn back strip to 12px over the 8px seat, in every Center and
+  the Celadon Hotel. The man sitting on it keeps his seat: the figure
+  anchor now scans under his card for the tallest authored upright (his
+  cushion) instead of reading the corner tile, which is the backrest
+  now.
+
+### Changed
+
+- **Sprites ride at the height the art actually stands.** Class heights
+  can now be overridden per tileset (a tileset entry's `heights`), and
+  DOJO's lab tables use it: they are drawn 6px tall, not the default
+  table's 12, so the starter balls sit exactly on the modelled tabletop
+  -- and the volume-built north tables drop to the same height, keeping
+  every table in the room level.
+- The Center PC's old rendering -- a 12px table box with the unit as a
+  flat standee on it -- retires wherever the F04 template stamps; the
+  pins stay only as the degradation path when the shape profile is
+  absent.
+
+## 1.4.0
+
+### Added
+
+- **WATER, a new row on hotkey 9: water reflects the world, the sky, the sun
+  and the moon.** Every lake, sea and pond in Kanto was a flat animated
+  texture lying in a hole in the ground. It is now a surface, and it is
+  reflective.
+
+  What it reflects, in the order the shader resolves them:
+
+  - **The sky.** The reflected direction goes through the very matrix the
+    frame is drawn with, as a point at infinity, and the canvas row that
+    lands on is looked up on Sky's own band ramp -- the identical texture,
+    the identical checkerboard dither, the identical display-mode transform.
+    So the sky in the lake is the sky over it, and the two meet at the
+    waterline with no seam at any pitch, field of view, window shape or zoom.
+    Blue at noon, gold at dusk, navy under the moon; GRAY gets a grey lake
+    and CLASSIC a green one, for nothing.
+
+  - **The sun and the moon**, hung by ANGLE rather than by screen position,
+    because a reflected body is usually off the top of the frame entirely
+    and a projected point stops meaning anything out there. The angular
+    radius is the painted disc's own radius run back through the camera's
+    field of view, so the two are the same size -- craters, dithered rim,
+    the sunset's loom and all, off one shared list. This is also the
+    specular: a low sun lays a broken gold path across the water on its own,
+    out of the reflection rather than out of a highlight term nailed on
+    beside it.
+
+  - **The world, in screen space.** The reflected ray is walked forward in
+    world space, each step projected through the same matrix, looking for
+    where it passes behind what the depth buffer holds -- then binary-refined
+    onto the contact and read out of a copy of the frame as it stood before
+    the water went down. Shore trees, buildings, ledges and cliffs land in
+    the water because they are on screen; where the ray leaves the frame or
+    finds nothing, the sky above answers instead, which is what makes the far
+    half of a lake sky and the near half scenery with no seam between them.
+
+  Fresnel decides how much of it shows: almost nothing looked straight down
+  at, almost everything looked along -- so the 15-degree rung is a pond and
+  the 75-degree rung is a mirror, off the same surface.
+
+  Every rung gets one, though, which took a lean. A reflection off flat water
+  points as far above the horizon as the eye is above the water: 15 degrees
+  at the top rung -- grazing the sky's pale end, sweeping the sun's own path,
+  travelling far enough across the screen for the march to find the shoreline
+  -- and 75 degrees, straight up, at the steepest. Up there the bands are at
+  their darkest, the sun and moon sit at about 6 degrees of squashed
+  elevation and are nowhere near it, and the screen-space ray leaves the top
+  of the frame in two steps. All three are correct, and together they are a
+  lake with nothing in it.
+
+  So the reflection now LEANS toward the elevation the top rung reflects at,
+  by however far the camera is from having a horizon in frame -- **zero** at
+  the rung where the horizon IS in frame, so the one place the join can be
+  seen, the waterline, is still the exact reflection it was. Toward an
+  elevation rather than by a weight, because the ray it starts from differs
+  at every rung and a fixed fraction lands them all somewhere different: the
+  middle rungs came out further from the sun than the steepest one. And it
+  leans the LEVEL reflection with each column's own deflection added back on
+  top -- leaning the perturbed ray sets its elevation outright, which at full
+  lean gave every column on the lake the same one, flattened the sky to a
+  single band and removed the moon entirely.
+
+  Three rungs rather than a toggle. FULL is the whole thing; SKY drops the
+  ray march and keeps the sky, sun and moon, which is most of the look for a
+  handful of instructions; OFF is the flat water this mode always drew. The
+  FULL preset sets it to FULL.
+
+- **The water surface is a field of pixel-tall columns, and they are real.**
+  Not a normal map: a heightfield of one-world-pixel bars -- the same unit
+  every other voxel in this mode is built from, and exactly one texel of the
+  water tile -- each standing a WHOLE number of pixels high and rising and
+  falling on its own.
+
+  Three travelling wave trains, and one of them dominates: a wave has a
+  DIRECTION, and its crest is a line running across it for as far as the
+  water goes. Three trains of equal weight cancel and reinforce in patches
+  instead, and the surface comes out as round islands of raised pixels with
+  no travel to them -- blobs rather than waves. The dominant train's
+  wavelength is about forty world pixels, five tiles, so a crest is a long
+  run of columns at one height with a step down either side.
+
+  Drawn with no extra geometry at all: the mesh is still one flat quad per
+  tile, and the columns are found by walking the view ray down through the
+  slab in the pixel shader. That is what makes them read as solid -- a tall
+  bar hides the shorter ones behind it, you see the SIDE of the ones facing
+  you (wearing the mesh's own direction shading, so a crest is lit like every
+  other voxel in the world), and the whole field parallaxes against the plane
+  as the camera moves. The water's art is read at the column the ray landed
+  on rather than at the flat quad underneath, so the pixels travel with the
+  bars they are made of.
+
+  The columns are what you SEE; the normal they reflect with is read off the
+  smooth surface they are a quantisation of. That distinction is the whole
+  difference between a moon on the water and confetti: whole-pixel heights
+  have whole-pixel differences, so a normal built from them can only point in
+  about five directions, and a sun or moon barely two degrees across falls
+  between them. Still one normal per column, so the surface stays
+  pixel-quantised in space while the value it reflects with is continuous.
+
+  Crests stand up to five world pixels, well past the 2px recess water sits
+  in -- deliberately, because the columns are relief drawn inside the water
+  quad's own footprint, so a bar that reaches above the bank is clipped at
+  the water's edge rather than spilling over it. What it buys is a surface
+  with real swell in it instead of a two-rung terrace.
+
+  And it moves in STEPS, at **15 a second** -- the cadence hand-drawn pixel
+  art is animated at. A surface built out of whole pixels that crawls
+  smoothly between them gives away that the quantisation is only skin deep.
+  Each step advances the dominant wave by exactly one world pixel, derived
+  from that train's own wavelength rather than tuned beside it, so nothing
+  ever lands half-way between two pixels and changing a wavelength moves the
+  speed with it.
+
+- **AA, a new options row: OFF / 2X / 4X.** Everything else in this game is
+  flat art blitted at whole pixels. This mode's world is real geometry seen
+  through a perspective camera, and a polygon edge that lands at an angle
+  across the pixel grid is the one place where a hard stair-step is not a
+  stylistic choice -- a roof ridge, a ledge lip, a tree's silhouette against
+  the sky, the leaning card of a character. At the shallow rungs, where the
+  diorama reads most like a photograph of a model, they crawl as the camera
+  drifts.
+
+  The row is SUPERSAMPLING: the whole pass renders into a canvas larger than
+  the window and is folded back down at the end. The ladder is samples per
+  display pixel, so 2X is a canvas root-two wider and taller and 4X one
+  exactly twice the size -- an honest 2x2 box.
+
+  Two alternatives were tried against what this pass already is, and both
+  lost:
+
+  - **MSAA** would have taken the water with it. The reflections read the
+    frame's own depth buffer as a texture, and a multisampled depth
+    attachment is not something a fragment shader in this dialect can sample.
+    The row would have quietly switched the WATER row off.
+
+  - **An edge filter** (FXAA and its relatives) works from the finished
+    colour alone, so it would be guessing where the edges are out of one
+    sample per pixel -- inventing detail it never rendered, and unable to
+    tell a geometry edge from the boundary between two texels of a tileset.
+
+  Rendering larger has neither problem, and nothing in the frame had to be
+  taught about it: every pass already measures itself in the canvas it was
+  handed, so the sky's dither, the water's ray march, the shadow lookups and
+  the camera itself come out the same picture at a higher sample rate. It
+  antialiases the geometry, the alpha-cut outline of a sprite card, the
+  wireframe and the reflections at once, because none of them know it is
+  happening.
+
+  And it softens the ARTWORK with them, which is worth saying plainly. A
+  tileset texel out here is not a screen pixel, it is a quad in a perspective
+  view, and its boundary crosses the pixel grid at the same arbitrary angle a
+  roof ridge does -- so the fold averages across it exactly as it averages
+  across the ridge. That is what an honest extra sample says about that
+  pixel, and it is also the trade the row is: the diorama comes out smoother,
+  not sharper. Which is why it is a row and not something that is simply on.
+
+  Two things are quoted in DISPLAY pixels rather than canvas ones and are
+  multiplied up to match: the voxel wireframe's line width -- left alone it
+  would fold down to half a line, so turning the smoothing up would appear to
+  fade the grid out -- and the scale the overworld's FX closures draw at.
+
+  The fold is a shader rather than a scaled draw, because the void this pass
+  renders into is a transparent BLACK: averaging a straight-alpha edge against
+  it drags the colour toward black as well as toward transparent, and the
+  engine's composite then multiplies by that alpha a second time. Every
+  silhouette against the sky would have come out ringed with a dark fringe --
+  the exact artefact the row exists to remove. So the taps are premultiplied
+  before they are averaged and divided back out after.
+
+  The staged battle gets it too, on its own canvas: the arena is folded back
+  to the window's pixel size before the depth-of-field pass and the HUDs go
+  on, so the world is smoothed and the pics, panels and text box stay the
+  chunky GB art they are.
+
+  OFF by default, and **FULL neither sets it nor takes the row away** -- it
+  is the one row that is not a knob on the look but on what the look COSTS,
+  and only the player knows what their machine can carry. No hotkey, for the
+  same reason: it is set once, not flicked while walking.
+
+
+### Changed
+
+- **The water surface is its own mesh, and its own pass.** A mirror cannot be
+  drawn until what it reflects exists, so water is lifted out of the terrain
+  mesh at build time and drawn between the world and the characters. The
+  shoreline faces around it are untouched -- they belong to the GROUND that
+  exposes them -- and the sun still sees the surface, so a tree at the water's
+  edge still throws its shadow onto the lake.
+
+- **The scene's depth buffer is a readable canvas.** It was an internal buffer
+  that could be written and tested and never sampled; it is now the same
+  buffer with a texture handle on it, at the same cost. Drivers that will not
+  make one fall straight back to the old buffer and lose the reflections and
+  nothing else.
+
+- **The cast is reflected too -- by being drawn twice.** Gen 1 draws people
+  over the world and water is world, so a surfing player has to composite
+  OVER the water they are sitting on, which puts them after it; and a
+  reflection can only hold what came before it. So the walkers, the NPCs and
+  the authored figures are painted into the reflection COPY alone, where they
+  are in the picture the water reflects and not yet in the picture the water
+  is drawn into. Both draws go through one function, so they cannot come out
+  different. The staged battle does the same with its two Pokemon.
+
+  The ray march finds them the honest way round: a sprite is not in the depth
+  buffer at that point, so a ray aimed at one passes through to the terrain
+  standing behind it and reads the copy there -- where the sprite is already
+  painted. The reflection lands a hair off the sprite's own depth and exactly
+  on its colour, which at a lake's worth of wave is the same picture.
+
+### Changed
+
+- **The waves arrive in sets now, and a little slower.** Three fixed trains
+  are an exactly periodic field -- every forty-odd pixels of sea wore the
+  same crest at the same height, which reads as wallpaper the moment a lake
+  is bigger than the repeat. Two long-wavelength fields now ride the
+  dominant train, four to five carrier wavelengths apiece so neither reads
+  as a wave itself: a SWELL that breathes its amplitude, so a few tall
+  crests march through and hand over to a lull that is itself moving, and a
+  BEND that bows its phase, so a crest line curves across the surface
+  instead of ruling itself over all of it. The two lesser trains stay
+  plain: they are texture rather than structure, and a third modulator is
+  the soup the train weights exist to avoid. The step beat comes down from
+  15 to 12 a second -- the crests were hurrying, and a big wave is slower
+  than a walk cycle -- still a clean divisor of the engine's 60, and still
+  exactly one world pixel of dominant-crest travel per step.
+
+- **Staged battles draw their water plain, whatever the WATER row says.**
+  The reflective pass is tuned for the overworld's ladder of cameras; a
+  battle's camera is PLACED -- low, tilted, framed like a picture -- and
+  under it the pass read wrong: Fresnel opened all the way up, the leaned
+  sky landed on bands the framing never shows, and a lake-sized arena came
+  out as murk wearing the tile art. The battle is a stage set, and stage
+  water is painted: the flat animated tiles the mode always drew, with the
+  mons compositing over them like everything else on the set.
+
+### Fixed
+
+- **On Android the water stayed flat, as if the row were off -- and once it
+  did draw, it came up in blocks with the haze showing through the holes.**
+  Three separate faults, every one of them invisible on desktop GL, run down
+  on a Galaxy Z Fold 7 with the driver's own compiler errors in logcat:
+
+  **The shader would not build.** Fragment floats default to **mediump** on
+  GLSL ES while the vertex stage's default is highp, and the water shader is
+  the mod's first to declare the same uniform -- the frame's `vp` matrix --
+  in BOTH stages, one on each default; GLSL ES refuses to link that, and the
+  pass fell back, quietly and by design, to the flat water the mode always
+  drew. The pixel stage now lifts its float default to highp (guarded, so a
+  GPU without fragment highp still compiles and falls back flat), which
+  settles the link and is also simply needed: the march works in world
+  coordinates that run to a few thousand, where fp16 has no fraction left.
+  The world-position varying is qualified highp for the same reason the
+  wireframe's always was, and the depth sampler too -- samplers default to
+  **lowp** whatever the floats are set to, and eight bits of depth is a
+  march with nothing to land on. One wrinkle inside the fix: LOVE's header
+  forward-declares `effect()` under ITS default, and Samsung's Xclipse
+  compiler treats a definition whose parameter precisions have drifted from
+  the prototype's as an illegal overload -- so effect()'s own float
+  parameters stay pinned to mediump, matching the declaration, and the
+  maths above them runs highp regardless.
+
+  **The depth test read the wrong texels.** The shader's own depth test
+  normalised LOVE's pixel coordinate by the `screen` uniform, which counts
+  canvas UNITS -- and on a highdpi phone (Android's density here is 2.625)
+  a canvas holds that many PIXELS per unit, so the lookup ran to 2.6,
+  clamped, and read edge texels across two thirds of the frame. Water
+  discarded itself in blocks wherever the mis-read depth landed in front,
+  and the haze backdrop showed through the holes. The coordinate is now
+  normalised by `love_ScreenSize.xy` -- the bound canvas's own pixel size,
+  measured in the same units on every display.
+
+  **And the readable depth canvas** -- the one hardware requirement the
+  rest of the mode does not already have -- now tries four formats before
+  giving up: depth24, depth24 riding a stencil (a pairing some mobile
+  drivers will texture when they refuse the bare format), depth32f, and
+  depth16 as the floor every GLES3 device can read. Refused all four, the
+  reflections are lost and nothing else, exactly as before.
+
+- **Under BACK SPRITES some of your own Pokemon were see-through -- Pikachu,
+  Seel, Dewgong, Chansey, Jigglypuff -- with the arena showing through the
+  middle of them.** Those back pics are drawn as OUTLINES: everything inside
+  the ink is the lightest shade, the decoder keys that shade to nothing, and
+  on hardware it did not matter because the field behind them was white too.
+
+  BattlePics already put that paper back by flooding the background inward and
+  filling whatever it could not reach, and along the bottom of a figure it told
+  a narrow opening (a belly the drawing ran out of, sealed) from a wide one (a
+  stride, left open for the world to show through). Right for a mon standing
+  on the map -- but the pinned back pic is not on the map, it is on the text
+  box with its feet on row 96, and there is white box under its lowest row
+  rather than arena. Every one of those mons leaks out through an opening far
+  too wide to read as a drain, so the flood walked straight up inside them.
+
+  A pic on the box is now told so, and its bottom edge seals: nothing reaches
+  it from below at any width, and the rule stops being a heuristic -- paper is
+  whatever the background cannot walk to from the left, the right or the top.
+  Twelve of the game's 151 back pics turn on this; the other 139 come back
+  byte-identical, and no front pic is touched at all.
+
+  **And a hole is filled with the pic's own paper rather than with white.**
+  Shade 0 is only white while the pic is still grays, and pics arrive here
+  after the bake -- a species SGB colour, a BGP fade mid-animation, PAL_BLACK
+  across the whole screen while the blackout text is up. A hardcoded white
+  belly would have been the one lit thing on a blacked-out mon. The lightest
+  shade still standing in the pic is that colour, and every one of the game's
+  battler pics keeps at least one such pixel -- an eye, a highlight down a
+  cheek -- so what goes back is the baked shade itself.
+
+### Known
+
+- Screen-space reflections can only reflect what is in the frame. A tree just
+  off the top edge is not in the water below it, and a reflection whose ray
+  runs off the side of the screen fades into the sky rather than ending on a
+  hard line.
+
+## 1.3.1
+
+### Fixed
+
+- **A staged battle on a phone stood some Pokémon three times the size of the
+  square they were on.** A Pidgey towered over the arena while the mon beside
+  it was the right size, which reads as a bug in one species and is not one.
+
+  Putting the paper back inside a battle pic (BattlePics, 1.3.0) needs the
+  pic's pixels, and a LOVE Image does not hand them back -- so the pic is drawn
+  into a canvas of its own size and the canvas is read. `newCanvas` takes the
+  SURFACE's dpi scale when it is not told otherwise, `conf.lua` turns highdpi
+  on for Android and iOS, and Android's display density is routinely 2.75. So
+  `newCanvas(56, 56)` allocated a 154x154 texture there, the pic was magnified
+  into it, and the readback came back at the magnified size. The rebuilt pic
+  was 2.75x the artwork, the engine's pics layer drew it 1:1 because it trusts
+  `getWidth()`, and the mon stood on its tile nearly three times too big.
+
+  Only a pic with an enclosed hole in it is rebuilt at all -- the rest are
+  handed straight back untouched -- which is why it hit some species and not
+  others, and why it never showed on desktop, where the dpi scale is already 1.
+  The readback now asks for one texel per pic pixel, the way the engine's own
+  `PixelCanvas` does for the same reason. The animated-tile atlas readback took
+  the same fix: on a phone it would have come back magnified too, and every
+  tile coordinate in it counts in eights from the top-left.
+
 ## 1.3.0
 
 ### Added
 
-- **DRAW DIST, a new performance option: OFF / NEAR / MILD / FAR draw distance.**
+- **DRAW DIST, a new performance option: NEAR / MILD / FAR draw distance.**
   Controls how many adjacent maps (neighbors) are rendered, which significantly
-  affects performance on low-end PCs and mobile devices. OFF uses no limit
-  (original behavior), NEAR renders only the current map (0 neighbors) for best
-  performance, MILD renders 2 neighbors for balanced quality, and FAR renders
-  4 neighbors for moderate quality/performance balance. Accessible via hotkey 9
-  (default, rebindable) or the DRAW DIST options row.
+  affects performance on low-end PCs and mobile devices. NEAR renders only the
+  current map (0 neighbors) for best performance, MILD renders 2 neighbors for
+  balanced quality, and FAR renders 4 neighbors for maximum visual quality.
+  Accessible via hotkey 9 (default, rebindable) or the DRAW DIST options row.
 
 - **Hotkey system integration: All mod hotkeys are now properly registered through
   the game's hotkey system and can be rebound through the hotkey bindings menu.**

@@ -44,6 +44,19 @@ VoxelGrid.DARK = 0.45
 -- 1.0 here is the one-pixel wireframe.
 VoxelGrid.WIDTH = 1.0
 
+-- The same width in the CANVAS pixels the shader measures in, which is what
+-- every sender of it actually wants.
+--
+-- The two are the same number until AA renders the pass larger than the
+-- window (see AntiAlias): there a canvas pixel is a fraction of a display
+-- one, and a width left at 1.0 would come out a half or a quarter of a line
+-- after the fold -- the wireframe fading as the smoothing goes up, which
+-- reads as one row breaking the other. Scaled, it stays a one-pixel seam and
+-- simply gains the antialiasing everything else in the frame just gained.
+function VoxelGrid.width()
+  return VoxelGrid.WIDTH * V.require("AntiAlias").factor()
+end
+
 -- where it persists and the rows that cycle it (see ModSetting)
 VoxelGrid.setting = ModSetting.new(VoxelGrid.KEY, VoxelGrid.LABEL,
                                    { false, true }, { "OFF", "ON" })

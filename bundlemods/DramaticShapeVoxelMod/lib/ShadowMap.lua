@@ -130,16 +130,22 @@ local SHADER = [[
   }
 #endif
 #ifdef PIXEL
+  uniform float sprite;   // 1 while the CAST is being drawn; see ShadowMap.sprites
   vec4 effect(vec4 color, Image tex, vec2 tc, vec2 sc) {
     // the same alpha discard the main pass uses: a sprite card casts its
     // silhouette, not its 16x16 bounding box
     if (Texel(tex, tc).a < 0.5) discard;
-    // pack into two channels: the high byte in red, the low in green
+    // pack into two channels: the high byte in red, the low in green.
+    // Blue says WHAT cast this, which costs a channel that was zero anyway
+    // and lets a surface decline one kind of caster -- water does, for the
+    // people (see Water's sunLit).
     float d = clamp(vDepth, 0.0, 1.0) * 255.0;
-    return vec4(floor(d) / 255.0, fract(d), 0.0, 1.0);
+    return vec4(floor(d) / 255.0, fract(d), sprite, 1.0);
   }
 #endif
 ]]
+
+ShadowMap._source = function() return SHADER end   -- named for the suite
 
 local shader = nil            -- nil = untried, false = unavailable
 local canvas = nil            -- nil = untried, false = unavailable
@@ -149,11 +155,6 @@ local drawing = false
 local ready = false
 local lastSig = nil
 local prevBlend, prevAlphaMode = nil, nil
-
--- Cache the availability check to prevent repeated re-checking during
--- route/scene changes. Once available() returns true, we assume the hardware
--- capabilities don't change during gameplay (context loss is handled elsewhere).
-local availabilityCache = nil  -- nil = untried, true = available, false = unavailable
 
 local IDENTITY = Mat4.identity()
 
@@ -185,7 +186,7 @@ end
 local function getCanvas(res)
   if canvas == false then return nil end
   if canvas and canvasRes == res then return canvas end
-  local ok, c = pcall(love.graphics.newCanvas, res, res)
+  local ok, c = V.require("PixelCanvas").new(res, res)
   if not (ok and c) then
     canvas = false
     return nil
@@ -220,23 +221,16 @@ end
 -- where the canvas cannot be made -- VoxelScene then keeps the flat decal
 -- shadows, which need nothing but a quad.
 function ShadowMap.available()
-  -- Return cached result if available
-  if availabilityCache ~= nil then
-    return availabilityCache
-  end
-  
-  -- Check basic LOVE graphics capabilities
-  if not (love.graphics and love.graphics.newCanvas
-          and love.graphics.setDepthMode) then
-    availabilityCache = false
+  if love.system and love.system.getOS and love.system.getOS() == "iOS" then
     return false
   end
-  
+  if not (love.graphics and love.graphics.newCanvas
+          and love.graphics.setDepthMode) then
+    return false
+  end
   -- the smallest rung is enough to answer the question; fit() picks the
   -- one this frame actually wants
-  local shaderAvailable = getShader() ~= nil and getCanvas(ShadowMap.SIZES[1]) ~= nil
-  availabilityCache = shaderAvailable
-  return shaderAvailable
+  return getShader() ~= nil and getCanvas(ShadowMap.SIZES[1]) ~= nil
 end
 
 -- The map to sample, or the blank stand-in. Never nil once the main pass
@@ -455,6 +449,9 @@ function ShadowMap.begin(cx, cy, vw, vh)
   love.graphics.setShader(sh)
   love.graphics.setColor(1, 1, 1, 1)
   pcall(sh.send, sh, "lightVP", "row", ShadowMap.clipVP)
+  -- the world until a cast pass says otherwise, reset per pass so one that
+  -- forgot to put it back cannot leak into the next map's terrain
+  pcall(sh.send, sh, "sprite", 0)
   drawing = true
   ready = false
   return true
@@ -463,6 +460,25 @@ end
 -- Draw one caster. Same signature as Voxel3D.draw minus the camera-ward
 -- pull, which is a trick for the VIEW's depth buffer and would drag a
 -- shadow off whatever throws it.
+-- Whether what is drawn next is one of the CAST -- a walker, an authored
+-- figure, a battle's Pokemon -- rather than part of the world. false for the
+-- length of such a pass, true to put it back.
+--
+-- The map records it per texel (the shader's blue channel) so a surface can
+-- decline that kind of caster, and exactly one does: water. A character
+-- standing at a lake's edge threw a hard cut-out of its own sprite across
+-- the surface, which on something showing the sky and the shoreline reads as
+-- a sticker rather than as a shadow in the water. Everything else -- ground,
+-- roofs, ledges, the characters themselves -- still takes them.
+--
+-- Sent rather than branched, so a caller that forgets to put it back only
+-- mislabels casters rather than losing them; begin() resets it per pass.
+function ShadowMap.sprites(on)
+  if not drawing then return end
+  local sh = getShader()
+  if sh then pcall(sh.send, sh, "sprite", on and 1 or 0) end
+end
+
 function ShadowMap.draw(mesh, texture, model)
   if not (drawing and mesh) then return end
   local sh = getShader()
@@ -488,8 +504,6 @@ end
 function ShadowMap.invalidate()
   canvas, canvasRes, blank = nil, 0, nil
   drawing, ready, lastSig = false, false, nil
-  -- Reset availability cache so it gets re-checked on next available() call
-  availabilityCache = nil
 end
 
 return ShadowMap

@@ -58,12 +58,43 @@
 --                           collapses onto a one-cell-deep box at its
 --                           full drawn height; back rows become hidden
 --                           floor, and an unpinnable trim row above
---                           becomes the cap
+--                           becomes the cap.  Its FRONT carries the
+--                           measured pane relief -- every non-black
+--                           region the drawing seals behind its own
+--                           black frame sinks one voxel, the same rule
+--                           lib/Buildings.lua recesses a facade with,
+--                           so the books stand in the shelf instead of
+--                           being painted on it.  A tileset that
+--                           borrows the collapse for something that is
+--                           not a shelf says `bookcase_relief = false`
+--   cylinder / canopy       round scenery (tree canopies): a voxel hull
+--   / stump                 cut from the art's own darkest-pixel outline,
+--                           round in depth -- one 16px cell, a 2x2-cell
+--                           group, or with the drawn top read as a cut face
+--   can                     that hull cut at both ends, hollowed and
+--                           tapered: an OPEN bin standing on a floor
+--                           (Vermilion Gym's trash cans).  The drawn mouth
+--                           ellipse projects across the round top and down
+--                           the well, the drawn base ellipse is ground
+--                           contact rather than body, the top rows keep a
+--                           wall at each end of their chord and lose the
+--                           middle, and the plan narrows toward the floor
+--                           (can_cap / can_base in art rows; can_height,
+--                           can_well, can_taper in voxels)
+--   planter                 the same hull for a round drawing stacked TWO
+--                           cells high on ONE cell of plot (the Centers'
+--                           potted plants): it stands in the lower cell and
+--                           the upper cell is the height it overhangs
 --   billboard / prop        a prop drawn face-on: a standing per-pixel
 --                           cutout, black-outline segmented; drawn above
 --                           a pinned box it stands ON that box (a
 --                           monitor on its desk).  prop is a second pool
 --                           so two touching cutouts stay separate
+--   bike                    the same cutout at TWO voxels: a vehicle drawn
+--                           side-on is a LINE drawing, and the air inside
+--                           its frame is what makes it read as one -- any
+--                           thicker and neighbouring strokes close those
+--                           gaps with their own side faces
 --
 -- A tileset entry may also carry `prop_ground` (not a class): a map of
 -- prop tile id -> ground tile id naming the tile painted under that
@@ -83,7 +114,20 @@
 -- and nothing automatic can either when the figure has no background
 -- margin to flood from and wears the same shades as what it sits on.
 -- The Pokemon Center's seated man is the case; see POKECENTER below for
--- the format.
+-- the format.  A figure entry that states a `depth` is not a person and
+-- stands as a per-pixel SOLID instead of a flat card -- the Marts' cash
+-- register, a machine set down on a counter (`thin` gives its top rows a
+-- thickness of their own, for the part of a drawing that is paper).
+--
+-- And `mounted` (not a class either): the same authored-mask escape for a
+-- thing painted INTO a WALL band, stood proud of the panel as a thin
+-- per-pixel slab instead of standing on its feet as a sprite card.  Where
+-- a figure is a person and reads face-on from any angle, a mounted object
+-- is an object drawn side-on and holds the wall's own plane; and it keeps
+-- its DRAWN elevation, so a thing hung clear of the floor stays hung.
+-- The Bike Shop's two wall bicycles are the case -- and the mask there is
+-- measured rather than drawn, by flooding the panel tile's own stripe out
+-- from behind them; see CLUB below.
 --
 -- Whole BUILDINGS are not tile pins -- one drawing packs a roof seen from
 -- above, a facade seen face-on and sloped ends as diagonal silhouettes,
@@ -110,10 +154,20 @@ return {
     bed = 7,
     stool = 8,
     counter = 8,
+    -- the raised back band of low seating (the Center couch's back and
+    -- arm strip): half again the 8px seat it rises over
+    backrest = 12,
     table = 12,
     desk = 24,
     prop = 16,
     cutout = 16,
+    -- a vehicle drawn side-on (the Bike Shop's bicycles): a standee like
+    -- the pools above, two voxels thin so the air inside its frame stays
+    -- air (see Structures' PINNED_DEPTH)
+    bike = 16,
+    -- a round drawing stacked two cells high on one cell of plot (the
+    -- Centers' potted plants): 32px of hull standing in its lower cell
+    planter = 32,
     relief = 3,
     bookcase = 32,
     stair_e = 16,
@@ -192,12 +246,8 @@ return {
     -- black-outline segmented -- backgrounds flood away, the pixels
     -- the outline encloses stay.  Everything stands on the gyms' main
     -- floor tile ($11), which is also Bruno's floor.
-    -- (The round boulder drawn beside some statues, $07/$08/$17/$18,
-    -- is NOT pinned: it also tiles wall-to-wall as Pewter's rock rows,
-    -- which are scenery for the detector, not a lone prop.  Probed:
-    -- the repeat-aware scenery path already gives every one of them a
-    -- single 16px course in Pewter's and Bruno's rock walls alike, so
-    -- a pin would only restate the derived answer.)
+    -- (The boulders, $07/$08/$17/$18, are pinned round -- see the
+    -- `cylinder` pool below.)
     --
     -- The rest of the tileset is the ten rooms' own furniture: the six
     -- badge gyms it serves (Pewter, Cerulean, Vermilion, Celadon,
@@ -267,13 +317,100 @@ return {
       -- from the darkest-pixel outline -- the same treatment the
       -- overworld's tree canopies take, and per-CELL, so a hedge row
       -- becomes a row of bushes instead of one boxed monolith.
-      cylinder = { 44, 45, 46, 47 },
-      -- The statues, the cans, and Celadon's three little trees
-      -- ($40/$41 canopy over $50/$51 trunk).  A trunk is not round, so
-      -- the tree cannot be a ball like the shrubs beside it -- it takes
-      -- the thin standee pool every interior plant takes, which is also
-      -- a pool apart from the cylinders it touches.
-      prop = { 2, 56, 18, 19, 11, 12, 27, 28,
+      --
+      -- The rock gyms' boulder ($07/$08 over $17/$18) is the same
+      -- reading: one cell is one rock, drawn as a lit dome -- white
+      -- highlight up the north-west, mid-grey body, black-and-grey
+      -- rubble dither filling the rest -- with the FLOOR showing
+      -- through all four corners, which is what makes a run of them
+      -- read as a pile of separate stones rather than a wall (tile
+      -- them and the gaps between four rocks draw a grey diamond).
+      -- Left derived it fell to the repeat-aware scenery path, which
+      -- extruded the whole drawing as one 16px course: Pewter's and
+      -- Bruno's rock rows came out as square bars wearing a boulder
+      -- texture in relief -- the extruded picture.  Round-pinned,
+      -- each cell is a hull whose plan view is its own drawn width
+      -- profile turned in depth: a dome 16 wide and 16 tall, full
+      -- width from the drawn shoulder down and tapering over the top
+      -- five rows exactly where the art tapers, and the corner
+      -- diamonds open up between them the way the drawing has them.
+      -- It stays 16px, so nothing that stands on or beside a rock
+      -- moves.  The perimeter rows take the same model as the maze
+      -- clusters -- one drawing, one rock, everywhere.
+      -- Scanned: across all 222 maps these four tiles occur 87 times
+      -- on this atlas and every one of them anchors a whole boulder
+      -- cell (87 tile-$07 hits, 87 grid matches), in exactly two maps
+      -- -- PEWTER_GYM's walls and rock maze, and BRUNOS_ROOM's
+      -- clusters.  DOJO shares gym.png but places none of them, so
+      -- the pin is not copied there.
+      cylinder = { 44, 45, 46, 47,
+                   7, 8, 23, 24 },
+      -- Vermilion Gym's trash cans ($0B/$0C over $1B/$1C), the switch
+      -- puzzle's fifteen cans plus the sixteenth beside the leader's
+      -- platform.  An open galvanised bin in the 3/4 view, and its plan is
+      -- measured: the silhouette runs straight down both flanks for art
+      -- rows 4-10 and is 11px wide there, so the can is 11 across -- and
+      -- being round in plan, 11 DEEP.  Above row 4 is the MOUTH seen from
+      -- above (the drawn ring is 9x5, a circle flattened to 55%, which is
+      -- what fixes it as a top view rather than a face-on dome); below row
+      -- 10 is the base circle's front arc, ground contact, with the
+      -- drawing's own $555 halo one pixel outside it as the grounding
+      -- shadow.
+      --
+      -- Left in the thin standee pool the can was a flat disc on edge --
+      -- fifteen coins standing in a row.  Pinned a plain `cylinder` it
+      -- revolves every drawn row, bottom arc included, and comes out a
+      -- barrel balanced on a three-voxel stem.  `can` is the hull cut at
+      -- both ends and hollowed: the mouth projects across the round top,
+      -- the base rows are ground rather than body, and the top can_well
+      -- voxel rows keep a wall at each end of every chord and lose their
+      -- middle, so the bin is open and you look down into it.
+      --
+      -- can_cap and can_base are the two ellipses in art rows and come off
+      -- the pixels.  The other three do NOT, and are the numbers taste
+      -- moves:
+      --
+      --   can_height 9    Un-projected strictly the drawing states a squat
+      --                   drum barely two rows of straight side tall,
+      --                   because the GB artist spent most of a 16px cell
+      --                   on the opening -- but a bin is taller than it is
+      --                   wide and the flat game reads as one, the drawing
+      --                   being 14px tall beside a 16px player.  The lowest
+      --                   surviving body row (art row 10: black rim, shaded
+      --                   flank, lit face) is repeated up to this, the
+      --                   plainest continuation of the material drawn.
+      --                   `heights` must follow it so anything riding a can
+      --                   lands on the rim.
+      --   can_well 5      How far down the mouth is hollowed.  The drawing
+      --                   paints an opening and cannot say how deep.
+      --   can_taper 4     Voxels of DIAMETER the base loses -- 11 at the
+      --                   rim to 7 on the floor, stepped twice over the
+      --                   height.  The drawing's base arc pulls in to 9px
+      --                   on its own, so the direction is drawn; the amount
+      --                   is not.  2 is one barely-visible step, 4 reads as
+      --                   a cone.
+      --
+      -- Scanned: the four ids occur as this grid 16 times on the GYM atlas
+      -- and only in VERMILION_GYM -- cells (1/3/5/7/9, 7), the same five
+      -- on rows 9 and 11, and (6,1).  DOJO shares gym.png and places none,
+      -- so the pin is not copied there.  The same four ids form the same
+      -- grid on eight OTHER atlases (the Bike Shop's crates, the overworld
+      -- roofs, the Centers' counters, ...) for 142 more hits; those are id
+      -- collisions between tilesets, and a pin is per tileset id, so they
+      -- are none of this entry's business.
+      can = { 11, 12, 27, 28 },
+      can_cap = 9,
+      can_base = 4,
+      can_height = 9,
+      can_well = 5,
+      can_taper = 4,
+      heights = { can = 9 },
+      -- The statues and Celadon's three little trees ($40/$41 canopy over
+      -- $50/$51 trunk).  A trunk is not round, so the tree cannot be a
+      -- ball like the shrubs beside it -- it takes the thin standee pool
+      -- every interior plant takes, which is also a pool apart from the
+      -- cylinders it touches.
+      prop = { 2, 56, 18, 19,
                64, 65, 80, 81 },
       -- The Hall of Fame's recording machine, the one piece of real
       -- furniture in the tileset.  It is drawn 32px wide and THREE tile
@@ -579,6 +716,12 @@ return {
       -- auto-extracting into standing prisms, and the ball/Pokedex
       -- sprites ride the table's authored height.
       table = { 41, 42, 57, 59, 78, 79 },
+      -- These tables are drawn 6px tall (3px slab edge over 3px base --
+      -- see the lab_table entry under `buildings`), not the default
+      -- table's 12: the override keeps the volume-built north tables
+      -- and the band-built starter table one height, and stands the
+      -- ball/Pokedex sprites exactly on the top face of both.
+      heights = { table = 6 },
     },
 
     -- Red's room and the Copycat's room (one tileset).  The detector reads
@@ -620,6 +763,11 @@ return {
     -- the floor above).  Bookcases, dining table with its flower pot,
     -- stools, the TV on the floor, and the staircase up.
     REDS_HOUSE_1 = {
+      -- the `house_stool` template below stands 5 voxels and the
+      -- `reds_house_table` model 6 (both the drawn elevation): whoever
+      -- sits on a stool cell and whatever object sprite stands on the
+      -- table rides these heights, not the 8/12px class defaults
+      heights = { stool = 5, table = 6 },
       wall = { 0, 36, 37, 52, 53 },
       stool = { 2, 3, 18, 19 },
       -- the dining table (38-44/58-60); its top row also caps the
@@ -647,6 +795,12 @@ return {
     -- wall-height volumes and towers the table, so every object is
     -- pinned to the shape it depicts.
     HOUSE = {
+      -- the `house_stool` template below stands 5 voxels and the
+      -- `house_table` model 6 (both the drawn elevation): whoever sits
+      -- on a stool cell -- Daisy at her table -- and whatever object
+      -- sprite stands on a table cell rides these heights, not the
+      -- 8/12px class defaults
+      heights = { stool = 5, table = 6 },
       -- the wall band stays one 16px face: blank courses, the window,
       -- the framed picture, and the schoolhouse blackboard (72-75/88-91)
       wall = { 0, 36, 45, 46, 52, 61, 62, 72, 73, 75, 88, 89, 90, 91 },
@@ -685,33 +839,73 @@ return {
       -- look-only), the pokeball poster (2/3/18/19), and the pillars
       -- (16/41) with their bases (4/5/20/21; 20 is the $14 water-fallback
       -- trap and would recess into a pond lip).  The healing machines'
-      -- bodies (72/76/77 console face, 6/22 button panel, 73 light edge,
-      -- 7/13 shadowed edge) are ALSO wall: drawn 16px tall against the
-      -- band, so wall height is their drawn height and they read as
-      -- consoles jutting from it; the near-black screen tiles must be
-      -- pinned or the void rule flattens them, and 72 is the $48
-      -- water-fallback trap
-      wall = { 2, 3, 4, 5, 6, 7, 13, 16, 18, 19, 20, 21, 22, 40, 41,
-               72, 73, 76, 77, 92, 93, 94, 95 },
+      -- console face (76/77) and button panel (6/22) are ALSO wall:
+      -- drawn 16px tall against the band, so wall height is their drawn
+      -- height and they read as equipment jutting from it.  (The
+      -- `center_heal_machine_w`/`_e` templates below claim the full
+      -- 4x4 machine grids at every placement and model the console
+      -- properly; these pins are the degradation path when the profile
+      -- is absent.)  The near-black screen tiles must be pinned or the
+      -- void rule flattens them.  What is NOT wall is the machines'
+      -- two flanks -- see `prop` below.
+      wall = { 2, 3, 4, 5, 6, 16, 18, 19, 20, 21, 22, 40, 41,
+               76, 77, 92, 93, 94, 95 },
       -- the counters, half a cell high: top band (8) with the nurse's
       -- tray (10), front face (24/25, the game's counterTiles), left end
       -- cap (56) and the Cable Club's light sections (90/91).  8px is
       -- one clean band, so the drawn front panel stands up and the
       -- counter top stays on top; at 12 they read as wall stubs
       counter = { 8, 10, 24, 25, 56, 90, 91,
-                  -- and the lounge couch with the man sitting on it.
-                  -- Same half-cell box: its bottom row (42/43, the front
-                  -- base) stands up as the couch's front, and the three
-                  -- rows above it -- cushion (38/39) and the man
-                  -- (36/37 head, 52/53 face) -- ride the top face in
+                  -- and the lounge couch's SEAT column with the man
+                  -- sitting on it.  Same half-cell box: its bottom row
+                  -- (43, the front base) stands up as the couch's
+                  -- front, and the rows above it -- cushion (39) and
+                  -- the man (37 head, 53 face) -- ride the top face in
                   -- drawn order, each exactly once.  See the note below
                   -- on why he cannot be stood upright.
-                  36, 37, 38, 39, 42, 43, 52, 53 },
+                  37, 39, 43, 53 },
+      -- The couch's WEST tile column: the drawing's left strip is the
+      -- couch's back and arm running north-south (the seat's cushions
+      -- and seams fill the east column), so it rises over the 8px seat
+      -- the way a couch back does instead of lying flush in the same
+      -- box.  Per-tile granularity puts the drawn ~6px strip plus a
+      -- 2px sliver of cushion on the raised band -- invisible at tile
+      -- scale, and the alternative is no backrest at all.  The figure
+      -- anchor scans for the tallest authored UPRIGHT under the man
+      -- (see Structures.buildFigure), so he keeps sitting at seat
+      -- height beside it.
+      backrest = { 36, 38, 42, 52 },
       -- standing per-pixel props, black-outline segmented: the healing
       -- machines' screen tops (58/59/74/75, drawn above the pinned
       -- bodies so they stand ON them) and the PC (66/70/82/86), which
       -- stands on its pinned desk
       billboard = { 58, 59, 66, 70, 74, 75, 82, 86 },
+      -- The healing machines' two FLANKS, which are not the machine and
+      -- not the wall: thin equipment standing on the floor beside the
+      -- console, drawn against a plain light-grey ground with no floor
+      -- checker in it.  `wall` boxed each of them into a solid 16px
+      -- half-cell wearing its drawing in relief -- the billboard failure,
+      -- one tile wide.
+      --   72   the west flank of both machines, and 73 its mirror on the
+      --        east machine: a pair of PIPES leaving the console and
+      --        bending down into the floor in an L, the 8px motif drawn
+      --        once per pipe.  Round and thin, so the THIN pool's 5px
+      --        slab, per-pixel, is the whole of them; a box is a wall
+      --        stub with pipework printed on it.
+      --   7/13 the west machine's east flank: a KEYBOARD, one 16px panel
+      --        over two tiles (keys, and the wide bar down its right).
+      --        Same thin standee; the drawn panel IS its thickness.
+      -- All four ids are used at these flanks and nowhere else in the
+      -- game -- 12 maps, the same two cells in each -- so this pin cannot
+      -- reach anything but the machines.  72 is still the $48
+      -- water-fallback trap and still has to carry SOME pin; it just
+      -- wanted the thin one, not the wall.  (The machine templates now
+      -- claim the flank tiles too and model the hoses and keyboard as
+      -- attached 3D equipment; these standee pins are the degradation
+      -- path when the profile is absent.)
+      prop = { 7, 13, 72, 73,
+               -- ...and the potted plants -- see THE POTTED PLANTS below
+               32, 33, 34, 35, 48, 49, 50, 51 },
       -- The man on the couch, cut out by hand and stood up (see `figures`
       -- below).  Nothing automatic reaches him.  A class pin resolves a
       -- whole 8x8 tile and he SHARES his tiles with the couch, so pinning
@@ -725,34 +919,35 @@ return {
       -- sofa he is painted into, so that is what `figures` carries.
       -- the PC's desk body, which the PC stands on
       table = { 9, 88 },
-      -- the potted plants: bush (32/33/48/49) over pot (34/35/50/51,
-      -- 50 is the $32 water-fallback trap).  Standing per-pixel
-      -- billboards in the THIN pool, like every other interior plant --
-      -- and a pool apart from the sofa, which touches the corner pair
-      -- and must stay a separate object.  The bush's light checker
-      -- highlights share the floor's shades, so the mask drains some of
-      -- them; the standee reads darker than the flat art, which is the
-      -- accepted trade for a real plant silhouette
-      prop = { 32, 33, 34, 35, 48, 49, 50, 51 },
-      -- ...but the POTS were draining outright.  The plant pair is drawn
-      -- as one 4x4-tile block and the pot's olive base is flush on that
-      -- block's bottom row, so the background vote -- which reads the
-      -- shades touching the drawing's own bounding box -- came back with
-      -- "dark" in it, and every dark pixel in the plant left with the
-      -- floor.  The pots rendered as hollow black frames around one or
-      -- two surviving pixels while the flat art has solid olive bodies.
+      -- THE POTTED PLANTS: a leaf crown (32/33/48/49) over an urn
+      -- (34/35/50/51; 50 is the $32 water-fallback trap), the most
+      -- repeated interior prop in the game -- 78 placements over 13 maps
+      -- across this id and MART (scan: six per Center, two in the
+      -- Celadon hotel's lounge rows, four in the Plateau lobby).
       --
-      -- So name the background outright for these eight tiles: the floor
-      -- IS light and white here, and nothing else is.  That restores 152
-      -- pixels of the block (55% -> 69% of it kept) and cannot move any
-      -- other prop, which matters -- the same call tileset-wide would pull
-      -- the dark wall band into the healing consoles' screens and strip
-      -- three pixels off the PC, because those two want the opposite
-      -- answer on the very same shades.
-      prop_bg = {
-        { tiles = { 32, 33, 34, 35, 48, 49, 50, 51 },
-          shades = { "light", "white" } },
-      },
+      -- A plant is the THIN pool's textbook case: the drawing is ONE
+      -- organic silhouette -- crown, 3px stem, urn, all 8-connected,
+      -- 350 of the block's 512 pixels -- so it stands as a per-pixel
+      -- cutout 5 voxels deep at its real drawn height, 32px over the
+      -- two stacked cells.  Its lowest drawn row is the block's bottom
+      -- row, so it stands in the pot cell's south band -- drawn low,
+      -- near the front of its blocked plot -- and the crown overhangs
+      -- the stem the way the drawing says, which no box or hull cut to
+      -- cell granularity can do.  Both cells' tiles carry the pin (in
+      -- `prop` above); the pool clusters them into one drawing, and the
+      -- two side-by-side placements (every map pairs or quads them)
+      -- share one cluster whose per-pixel geometry is identical to two
+      -- separate ones.
+      -- The plant drawing has no floor margin to vote from: the urn's
+      -- #555 foot lies flush on the block's bottom edge, so the rim
+      -- vote reads "dark" as background and drains the urn's own body.
+      -- Name the background outright instead: the floor showing
+      -- through the crown's gaps is white+light and nothing else,
+      -- while the crown's own white/light highlights are sealed inside
+      -- its black/#555 outline -- a light+white flood from the ring
+      -- reproduces the extract mask exactly, leaves intact.
+      prop_bg = { { tiles = { 32, 33, 34, 35, 48, 49, 50, 51 },
+                    shades = { "light", "white" } } },
       -- THE MAN ON THE COUCH.  He is drawn INTO the lounge furniture and
       -- spills out of it in BOTH directions, which is why he needs three
       -- tile columns:
@@ -888,6 +1083,21 @@ return {
       -- part of that same work surface now that the machine has been cut
       -- off them as a sprite -- see `figures` below.
       counter = { 8, 14, 15, 16, 24, 25, 30, 31, 41, 56, 89 },
+      -- the same potted plants as POKECENTER above -- MART shares that
+      -- atlas, so this is the identical drawing tile for tile, and
+      -- INDIGO_PLATEAU_LOBBY (the only map on this id that places it)
+      -- puts four of them along the hall.  Across POKECENTER and MART
+      -- all eight of these ids appear exactly 78 times each, which is
+      -- exactly how often the 2x4 plant grid appears: they are never
+      -- anything but this plant, so pinning them by tile cannot catch
+      -- anything else.  Same reading as the POKECENTER entry: one
+      -- organic silhouette in the THIN standee pool, per-pixel, 5
+      -- voxels deep at its drawn 32px height, with the background
+      -- shades named because the urn's foot lies flush on the block's
+      -- bottom edge and votes the drawing's own darks away.
+      prop = { 32, 33, 34, 35, 48, 49, 50, 51 },
+      prop_bg = { { tiles = { 32, 33, 34, 35, 48, 49, 50, 51 },
+                    shades = { "light", "white" } } },
       -- Left to the derived default on purpose: the floor checker and
       -- its shadowed variants (1/11/17/26/27/54) and the exit mat
       -- (12/28) all sit in cells the ROM marks walkable, so the cell
@@ -895,13 +1105,14 @@ return {
       -- interior, used to be left to the volume path here; it is now the
       -- back wall's third band, because a run of four rows has to be
       -- contiguous for the wall to collapse into one box at all.)
-      -- THE CASH REGISTER: a keypad and a curl of receipt paper drawn
-      -- face-on across two tile rows in the middle of the counter's east
-      -- arm.  Like the Center's seated man it is a FIGURE drawn into the
-      -- furniture, so it gets the same treatment -- a flat sprite card
-      -- standing on the counter -- and for the same reason: no class pin
-      -- can separate it from the counter, because the counter draws its
-      -- own edging down columns 0 and 15 of the very same tiles.
+      -- THE CASH REGISTER: a till drawn across two tile rows in the middle
+      -- of the counter's east arm, and the same drawing in all nine maps
+      -- on this id (eight Marts plus the Indigo Plateau lobby), always at
+      -- cell (1,5).  Like the Center's seated man it is drawn INTO the
+      -- furniture, so it is cut out by the same authored mask, and for the
+      -- same reason: no class pin can separate it from the counter,
+      -- because the counter draws its own edging down columns 0 and 15 of
+      -- the very same tiles.
       --
       -- That edging is what defeated every automatic reading. Black
       -- always survives the shade flood, so the standee pools extruded
@@ -913,13 +1124,70 @@ return {
       -- to the top right, and the counter keeps its edging and its light
       -- work surface.
       --
+      -- But it is a MACHINE, not a person, so unlike the seated man it
+      -- carries a `depth` and stands as a solid rather than a sprite
+      -- card.  A flat card of a till is exactly the billboard the standee
+      -- pools exist to avoid -- it read as a decal on the counter, and
+      -- turned edge-on with the camera.
+      --
+      -- AND IT IS NOT A BOX.  The 16x16 packs two facings, and the black
+      -- linework says which is which: the keypad has its OWN complete
+      -- border (cols 2-8, rows 4-11) sealed inside the outer silhouette,
+      -- and what surrounds it is an L --
+      --
+      --     cols 2-----8 9--12
+      --     +-----------+-----+  row 4
+      --     |  keypad   | arm |    the L's upright arm: the printer and
+      --     +-----------+-----+  row 11    display the paper feeds out of
+      --     |   base / drawer  |  rows 12-15: the L's foot, drawn face-on
+      --     +------------------+
+      --
+      -- So the keypad is NOT a face.  It is the machine's DECK seen from
+      -- ABOVE -- the keys lie on it -- and `flat` lays it horizontal in
+      -- the notch of the L, at the height the base band leaves it and
+      -- with drawn row = depth row 1:1.  Extruding it instead stood that
+      -- surface on end and painted the keys up the front of a plain box:
+      -- the extruded-picture failure, and what the first pass shipped.
+      --
+      -- Everything else falls out of the drawing: the base band is 4 rows,
+      -- so the deck stands 4 above the counter; the arm is 8, so it rises
+      -- 8 above the deck; the paper reaches 4 more.
+      --
+      -- TWO AUTHORED NUMBERS.
+      --
+      -- `depth` 12, three quarters of the cell.  The keypad's own eight
+      -- drawn rows measure 8, and at 8 the machine read thin on the
+      -- counter, so the body runs half again deeper and the deck STRETCHES
+      -- over it -- 8 rows into 12 voxels, centre-sampled, so every second
+      -- row doubles and the keypad still covers the whole surface.  This
+      -- is the one place in the model where a texel is not 1:1 with a
+      -- drawn pixel; laying the panel 1:1 instead leaves a strip of the
+      -- base band's top showing behind the keys.  The model is anchored at
+      -- the counter cell's FRONT and grows north into the bare top behind
+      -- it, so deepening it can never push the till toward the aisle: at
+      -- 12 it still stops 4 voxels short of the cell's north edge.  This
+      -- is the number to move if it wants more or less presence.
+      --
+      -- `thin`: 4 rows at 2.  Row 4 is the machine's
+      -- own drawn top edge -- a black rule from column 3 to column 9 -- so
+      -- everything above it is the receipt strip, and paper is 2 voxels
+      -- like every other `cutout` here.  Centred in the body's band, so
+      -- the strip leaves the arm's top face by a slot in the middle of it
+      -- rather than flush with its front.  At the body's 8 the curl came
+      -- out as a chunky wedge on the corner and stopped reading as paper.
+      --
       -- `under` is 16/41 twice -- the plain work surface, which already
       -- carries the west edging (black over white) and the east (dark
       -- over black), so the counter closes up behind the machine with no
-      -- synthesis at all.
+      -- synthesis at all.  The `counter` pin on 14/15/30/31 stays: the
+      -- box under the till is still the counter, and the machine stands
+      -- on its 8px top plane.
       figures = {
         {
           w = 2,
+          depth = 12,
+          thin = { rows = 4, depth = 2 },
+          flat = { x = { 2, 8 }, rows = { 4, 11 } },
           tiles = { 14, 15,
                     30, 31 },
           under = { 16, 41,
@@ -1628,6 +1896,11 @@ return {
       -- footing.
       bookcase = { 7, 8, 9, 10, 23, 24, 25, 26, 39, 40, 41, 42,
                    55, 56, 57, 58 },
+      -- ...and the drums are the reason this tileset turns the shelf
+      -- relief OFF: the collapse here is borrowed for a MACHINE, whose
+      -- light regions are the barrel's own lit face and not panes
+      -- behind a frame.  Sinking them would dent the drum.
+      bookcase_relief = false,
       -- The big OCTAGONAL boardroom table -- the Fan Club's and Silph
       -- 11F's, the same drawing in both -- half a cell high, and half a
       -- cell on purpose.  A `counter` is ONE band: exactly the drawing's
@@ -1692,12 +1965,30 @@ return {
       -- drawn into the WALKABLE cell in front; 43/44 belong to the stool
       -- there, not to the desk.
       table = { 11, 12, 13, 14, 27, 28, 29, 30 },
+      -- and those eight ids are the ONLY `table` in this tileset, so the
+      -- height override is this desk's alone: 8px, the height its apron
+      -- is drawn and the plane the `bills_desk` template stands its top
+      -- on (see `buildings` below).  The pin is only the degradation
+      -- path here -- the template claims both placements -- but the two
+      -- must not disagree about where the desk's top is.
+      --
+      -- `stool` is 5 for the same reason: that is the drawn elevation of
+      -- BOTH seats in this tileset -- rows 11-15, the seat's front edge
+      -- over its legs -- and the height the `club_stool` template stands
+      -- them.  Bill's chair and the Fan Club's are different drawings
+      -- above the seat but share tiles 59/60 below it, so they are drawn
+      -- at the same height pixel for pixel; the class default of 8 was
+      -- three voxels over both.  Every one of these cells is WALKABLE,
+      -- so this is also where a character sitting on one ends up.
+      heights = { table = 8, stool = 5 },
       -- the seats: Bill's desk stool (43/44 over 59/60) and the Fan
       -- Club's four members' chairs (61/62 over 59/60), a whole cell
       -- each.  All of them sit in WALKABLE cells, so they were flat
-      -- floor until pinned; the 8px standee pool puts them at seat
-      -- height, which is also where a character standing on the cell
-      -- ends up.
+      -- floor until pinned; the standee pool puts them at seat height,
+      -- which is also where a character standing on the cell ends up.
+      -- The Fan Club's four are modelled in full by `club_stool` below
+      -- and these pins are their degradation path; Bill's chair stays a
+      -- standee, stood up as a part of `bills_desk`.
       stool = { 43, 44, 59, 60, 61, 62 },
       -- flat, and pinned flat on purpose.  31 is the rooms' floor tile
       -- and needs no pin for its 980 walkable placements -- but the
@@ -1745,11 +2036,13 @@ return {
       -- rounded foot, 53, stands one row lower on the floor and is
       -- walkable, so it stays flat ground in front of the band).
       -- Drawn INTO the band and therefore wall as well: the two
-      -- bicycles hung on the Bike Shop's wall (1/2/3 over 17/18/19,
+      -- bicycles against the Bike Shop's wall (1/2/3 over 17/18/19,
       -- exactly two tile rows = exactly the band's height), the Cable
       -- Club's link poster (48/49/50/51 -- 50 is $32, the shore trap
       -- that had it recessing to -2), and the Trade Center's pair of
       -- lit notice boards (63/68/68/69 over 66/67/67/70).
+      -- The bicycles keep their `wall` pin as the degradation path, but
+      -- `mounted` below lifts them off the panel -- see there.
       wall = { 1, 2, 3, 6, 17, 18, 19, 48, 49, 50, 51, 52, 63, 66, 67,
                68, 69, 70 },
       -- Counters, half a cell high -- the house rule for anything you
@@ -1777,28 +2070,114 @@ return {
       -- character standing on one sits on it.
       stool = { 38, 39, 42, 43 },
       -- The showroom bicycles -- six of them standing on the Bike Shop
-      -- floor, in two columns, each drawn 3 tiles by 2 side-on.  The
-      -- THIN standee pool, not `bookcase`: a bike is nearly all air
-      -- (two wheel rings and a frame), and collapsing a rack of them
-      -- onto a one-cell-deep box at full height would trade six
-      -- bicycles for one blank 32px panel wearing a bicycle print.  As
-      -- cutouts they segment cleanly -- the drawing has floor margin on
-      -- three sides and its own black outline seals the wheels -- and
-      -- the standee builder's connected-component split gives each bike
-      -- its own feet in its own cell even where a lower bike's
-      -- handlebar stem touches the wheel of the one drawn above it.
+      -- floor, in two columns, each drawn 3 tiles by 2 side-on.  A THIN
+      -- standee pool, not `bookcase`: a bike is nearly all air (two
+      -- wheel rings and a frame), and collapsing a rack of them onto a
+      -- one-cell-deep box at full height would trade six bicycles for
+      -- one blank 32px panel wearing a bicycle print.  As cutouts they
+      -- segment cleanly -- the drawing has floor margin on three sides
+      -- and its own black outline seals the wheels -- and the standee
+      -- builder's connected-component split gives each bike its own
+      -- feet in its own cell even where a lower bike's handlebar stem
+      -- touches the wheel of the one drawn above it.
       -- 11/12/14 the saddle and bar row, 27/28/9 the frame and wheels.
-      prop = { 9, 11, 12, 14, 27, 28 },
-      -- The crate and the standing pump beside the shop's south wall
+      --
+      -- Their own pool at TWO voxels rather than `prop`'s five, which is
+      -- the whole reason `bike` exists.  The segmentation was never the
+      -- problem -- the mask the detector cuts is a clean bicycle, wheels,
+      -- forks, handlebars and all.  Depth was: every stroke of a line
+      -- drawing extruded five voxels closes the gap to its neighbour with
+      -- its own side faces, so off-axis (which is every camera rung but
+      -- flat) the air inside the frame filled in and the showroom's six
+      -- bicycles came out as one dark lump against the wall.  At two the
+      -- negative space survives and they read as bicycles again.
+      bike = { 9, 11, 12, 14, 27, 28 },
+      -- The toolbox and the standing pump beside the shop's south wall
       -- (29/13 over 21/22), twice.  A separate pool from the bicycles
-      -- on purpose, and the thicker one: a crate is a deliberate object
-      -- with a body, where a bike is a silhouette.
+      -- on purpose, and the thicker one: a toolbox is a deliberate
+      -- object with a body, where a bike is a silhouette.
+      --
+      -- Kept as the DEGRADATION PATH only.  The `bike_shop_toolbox`
+      -- building template (see `buildings.CLUB`) claims these cells and
+      -- models the drawing properly -- a per-pixel standee is the wrong
+      -- primitive for a box, and 10 voxels of it turned every black
+      -- outline pixel into a 10-deep bar.  Buildings runs before the
+      -- standee scan, so where the template stamps, this pin never
+      -- fires; without a profile it is still better than the volume
+      -- path.
       billboard = { 13, 21, 22, 29 },
       -- The Bike Shop floor's second checker phase.  It is NOT in the
       -- tileset's walkable list, so the cells it floors resolve by rule
       -- 4 and it rose as a wall stub -- or, worse, got swept into the
       -- bicycle beside it and dragged to 8px.  It is floor; it is flat.
       ground = { 30 },
+      -- THE TWO BICYCLES AGAINST THE SHOWROOM'S NORTH WALL.  Same object
+      -- as the six on the floor -- 24x16 of bicycle seen side-on, wheels
+      -- on the floor line -- but drawn INTO the wall band instead of onto
+      -- the floor, which is a different problem entirely:
+      --
+      --   a class pin resolves a whole 8x8 tile, so `wall` (what these
+      --   carried) paints the bicycle flat on the panel: a green wall
+      --   with a bicycle printed on it, which is what the shop looked
+      --   like;
+      --   and nothing automatic can cut it out either.  The panel behind
+      --   it is tile 6's stripe -- a #aaa field ruled with #555 every
+      --   four rows -- and #555 is a flood BOUNDARY, so a silhouette
+      --   flood comes back with three full-width wall stripes welded
+      --   across the bike (rows 3, 7 and 15 of the drawing).  Naming the
+      --   background shades instead (prop_bg) cannot work either: the
+      --   bicycle's own basket is drawn in the very #aaa and white the
+      --   wall field uses.
+      --
+      -- So the silhouette is authored -- but MEASURED, not drawn by hand.
+      -- 6 is the plain panel these three tile columns are painted over,
+      -- and it is perfectly regular, so compositing 6 across the same 3x2
+      -- grid and flooding the background in through the pixels that still
+      -- MATCH it separates bicycle from wall exactly: 247 pixels, one
+      -- connected component, no stripe left on it and no hole in it.
+      -- That is also why `under` is six 6s -- the wall wears the panel
+      -- the artist drew everywhere else along the same run.
+      --
+      -- `depth` 2 for the same reason the `bike` pool above is 2, and
+      -- because a family shares a silhouette: these are the showroom's
+      -- bicycles, leaning on the wall rather than standing in the room.
+      -- The slab juts 2 voxels SOUTH of the band, so they stand in front
+      -- of the wall and overhang the walkable cell a little -- which is
+      -- what a bicycle leaning on a wall does.  Collision is untouched.
+      --
+      -- Only BIKE_SHOP places this grid on the club atlas, at tile (1,0)
+      -- and (6,0).  The same six tile ids DO pair up in gate.png (both
+      -- Route gate upper floors and all four Safari rest houses), but
+      -- that is a different image and `mounted` is keyed per tileset, so
+      -- the pattern cannot reach them.
+      mounted = {
+        {
+          w = 3,
+          depth = 2,
+          tiles = {  1,  2,  3,
+                    17, 18, 19 },
+          under = {  6,  6,  6,
+                     6,  6,  6 },
+          pixels = {
+            ".........XXX............",
+            "..XXXXX.XXXX............",
+            "..XXXXXXXXXX............",
+            "..XXXXXXXXXX............",
+            "..XXXXXXXXXXXXX.........",
+            "..XXXXXXXXXXXXXX........",
+            "..XXXXXXXXXXXXXX........",
+            "..XXXXXXXXXXXXXX..XXX...",
+            ".XXXXXXXXXXXXXXXXXXXXXX.",
+            "XXXXXXXXX..XXXXXXXXXXXXX",
+            "XXXXXXXXX.XXXXXXXXXXXXXX",
+            "XXXXXXXXX.XXXXXXXXXXXXXX",
+            "XXXXXXXXX.XXXXXXXXXXXXXX",
+            "XXXXXXXXX..XXX..XXXXXXXX",
+            ".XXXXXXX....X...XXXXXXX.",
+            "...XXX.....XXX....XXX...",
+          },
+        },
+      },
       -- Left to the derived default on purpose:
       --   $0F $1F    the main floor checker -> walkable, ground
       --   $0A $1A    the dark slab under the Bike Shop's exit warp -> a
@@ -1900,11 +2279,34 @@ return {
       -- towered to 24.
       bookcase = { 43, 54 },
       -- The galley barrels -- three down the kitchen's east wall, one in
-      -- the captain's room, one in each house.  A per-pixel cutout in
-      -- the THIN pool, the treatment Lt. Surge's trash cans get: 72/73
-      -- the lid, 88/89 the banded body.  72 is $48, the shore-set trap
-      -- that had each barrel resolving to water at -2.
-      prop = { 72, 73, 88, 89 },
+      -- the captain's room, one in each house.  72/73 the mouth, 88/89
+      -- the banded body.  72 is $48, the shore-set trap that had each
+      -- barrel resolving to water at -2.
+      --
+      -- This is Lt. Surge's trash can REDRAWN PIXEL FOR PIXEL on the ship
+      -- atlas: lay the two masks side by side and the only difference is
+      -- that the gym's floor stripes cross the gym copy's background,
+      -- which the flood keeps and this one has no need of.  So it takes
+      -- the same treatment and the same numbers as GYM's can -- see there
+      -- for why the mouth and base ellipses are measured and the height,
+      -- well and taper are authored.
+      --
+      -- Scanned: six placements on the SHIP atlas and no others --
+      -- SS_ANNE_KITCHEN (13,5), (13,7) and (13,9) down the east wall,
+      -- SS_ANNE_CAPTAINS_ROOM (4,1), and one each in CERULEAN_BADGE_HOUSE
+      -- and FUCHSIA_GOOD_ROD_HOUSE at (7,7), both of which are ship
+      -- interiors reusing the tileset.  Twenty-one more hits are id
+      -- collisions on other atlases and no business of this entry; the one
+      -- worth naming is VERMILION_DOCK, because SHIP_PORT is a near-twin
+      -- of this image -- but its $48/$49/$58/$59 are a hull panel, not a
+      -- barrel (diffed pixel for pixel), so the pin is NOT copied there.
+      can = { 72, 73, 88, 89 },
+      can_cap = 9,
+      can_base = 4,
+      can_height = 9,
+      can_well = 5,
+      can_taper = 4,
+      heights = { can = 9 },
       -- The stairs, both flights, in every map that has them (1F, 2F,
       -- 3F, B1F and the captain's room).  Same two drawings the whole
       -- game uses, and the warp table says which is which: 41/42/57/58
@@ -2409,6 +2811,11 @@ return {
       -- PLATEAU, so the wall reads as set INTO the terrace instead of
       -- standing in front of a trench of synthesized ground.
       bookcase_backfill = "above",
+      -- and no shelf relief: what the collapse carries here is MASONRY,
+      -- whose courses are the wall itself rather than panes set behind
+      -- a frame.  Sinking them cut a stepped bevel into the League's
+      -- walls and the pilasters (shot before it was turned off).
+      bookcase_relief = false,
       -- ONE course, and it must stay one: $15/$16 + $05/$06 + $30/$31 is
       -- the pilaster -- cap, shaft, plaque base -- and $15/$16 over $30/$31
       -- IS the statue's plinth, the artist having drawn the same stone
@@ -3229,6 +3636,848 @@ return {
         },
         roofRows = 17, roofBack = 5, roofFront = 3, roofCycle = { 5, 9 },
         slab = 4, frontEave = 4, ledge = nil,
+      },
+    },
+
+    DOJO = {
+      -- F01: the starter-ball table in Oak's lab (one placement in the
+      -- game: OAKS_LAB cell 6,3) -- the first FURNITURE through the
+      -- band pipeline, and the first drawing whose plot is smaller than
+      -- its grid. Its 24 rows read: 0-15 the tabletop seen from above
+      -- (black rim, white highlight course, grey field); 16-18 the top
+      -- slab's own front edge, black/#555/black -- which is exactly
+      -- what the rim treatment paints, so slab = 3 and those rows fold
+      -- into the roof band instead of extruding under it; 19-21 the
+      -- base band, corner feet and the inset dark panel between them.
+      --
+      -- The legs stand on open FLOOR: the measured ground line lands
+      -- two rows short of the grid (see Buildings measure), and `depth`
+      -- keeps the plot to the blocked cell row -- the grid's third row
+      -- is the walkable cell the player faces the table from, matched
+      -- so the flat leg art is claimed off the floor, not so the model
+      -- stands on it. 16 top rows onto a 16px plot map 1:1: roofBack
+      -- covers the whole depth, nothing cycles, and roofCycle is
+      -- unreachable behind it. The Poke Ball sprites ride the `table`
+      -- pin's height (VoxelScene.groundAt reads the collision tile, not
+      -- this model), so the tileset entry above overrides that height
+      -- to the 6px this drawing actually stands.
+      {
+        id = "lab_table",
+        tiles = {
+          { 41, 59, 59, 59, 59, 42 },
+          { 78, 57, 57, 57, 57, 79 },
+          { 88, 89, 89, 89, 89, 90 },
+        },
+        roofRows = 19, roofBack = 16, roofFront = 0, roofCycle = { 2, 13 },
+        slab = 3, frontEave = 0, ledge = nil, depth = 2,
+      },
+      -- F02: the computer desk on the lab's west side (OAKS_LAB cell
+      -- 0,1) -- the one DESK-SET template: the pipeline's region
+      -- classification at PART granularity (see Buildings
+      -- deskSetModel). The desk is the sibling lab table (fascia rows
+      -- 16-18, base 19-21); on it stand a monitor over its keyboard
+      -- (left), a computer tower over a keyboard and mouse (middle),
+      -- and a sheet of paper LYING FLAT (right). Upright parts anchor
+      -- their drawn bottom row to the desk's top plane and wear their
+      -- own drawn tops as lids; flat parts lie one voxel proud at
+      -- drawn row = depth row -- the same 1:1 the tabletop itself is
+      -- drawn with. The roof fields are inert (roofRows = 0 keeps the
+      -- recess scan over the whole drawing, which is what sinks the
+      -- monitor's screen and the tower's slots). Same drawing, same
+      -- grid, stands in the Hall of Fame on the GYM atlas --
+      -- registered there below.
+      {
+        id = "lab_computers",
+        tiles = {
+          { 91, 92, 93, 94 },
+          { 54, 55, 85, 95 },
+          { 88, 89, 89, 90 },
+        },
+        roofRows = 0, roofBack = 0, roofFront = 0, roofCycle = { 0, 0 },
+        slab = 0, frontEave = 0, ledge = nil, depth = 2,
+        desk = { fascia = { 16, 18 }, base = { 19, 21 } },
+        parts = {
+          { kind = "upright", x = { 2, 13 }, top = { 0, 2 },
+            facade = { 3, 10 }, depth = 4 },              -- the monitor
+          { kind = "flat", x = { 1, 13 }, rows = { 11, 14 } },  -- keyboard
+          { kind = "upright", x = { 14, 21 }, top = { 0, 3 },
+            facade = { 4, 10 }, depth = 6 },              -- the tower
+          { kind = "flat", x = { 14, 21 }, rows = { 11, 14 } }, -- keys+mouse
+          { kind = "flat", x = { 22, 30 }, rows = { 1, 14 } },  -- the paper
+        },
+      },
+      -- F03: the empty north table beside it (OAKS_LAB cell 2,1): the
+      -- starter table's band table verbatim on a grid two tiles
+      -- narrower.
+      {
+        id = "lab_table_small",
+        tiles = {
+          { 41, 59, 59, 42 },
+          { 78, 57, 57, 79 },
+          { 88, 89, 89, 90 },
+        },
+        roofRows = 19, roofBack = 16, roofFront = 0, roofCycle = { 2, 13 },
+        slab = 3, frontEave = 0, ledge = nil, depth = 2,
+      },
+    },
+
+    POKECENTER = {
+      -- F04: the PC in every Center's northeast corner (11
+      -- placements; the Indigo Plateau lobby's twin is registered
+      -- under MART below). The lab desk-set read again: a Mac-style
+      -- unit drawn face-on -- white top band (rows 0-3), bezel, screen
+      -- and drive slot (4-14) -- standing at the back of a low desk
+      -- whose front face is rows 20-23; the drawn top around the unit
+      -- is WHITE, which is what `lid` carries. The keyboard rows 17-19
+      -- are drawn below the desk's 16px top span, so the flat part's
+      -- `z` puts it at the desk's front edge. The old billboard pins
+      -- for these tiles (66/70/82/86, desk 9/88) stay as the
+      -- degradation path -- the claim neutralizes them wherever this
+      -- template stamps.
+      {
+        id = "center_pc",
+        tiles = {
+          { 66, 70 },
+          { 82, 86 },
+          {  9, 88 },
+        },
+        roofRows = 0, roofBack = 0, roofFront = 0, roofCycle = { 0, 0 },
+        slab = 0, frontEave = 0, ledge = nil, depth = 2,
+        desk = { fascia = { 20, 21 }, base = { 22, 23 }, lid = "white" },
+        parts = {
+          { kind = "upright", x = { 2, 13 }, top = { 0, 3 },
+            facade = { 4, 14 }, depth = 6 },                -- the unit
+          { kind = "flat", x = { 2, 13 }, rows = { 17, 19 },
+            z = 13 },                                       -- keyboard
+        },
+      },
+      -- F05: the healing machine behind the counter -- two 4x4-tile
+      -- variants, 24 placements between them (a pair in every Center,
+      -- cells (1,0):(2,1) and (6,0):(7,1), plus the Indigo Plateau
+      -- lobby's pair under MART below).  The variants differ only in
+      -- the east flank: the west machine has the control keyboard
+      -- there (7/13, scan "40,58,59,40;40,74,75,40;72,76,77,7;
+      -- 72,6,22,13" -- 12 placements), the east machine mirrored
+      -- hoses (73, scan "...;72,76,77,73;72,6,22,73" -- 12).
+      --
+      -- The FULL drawing is claimed now: the corners are the striped
+      -- wall band (40), the flanks the machine's own equipment --
+      -- hoses and a keyboard ATTACHED to the cabinet, not furniture
+      -- standing free (their standee pins above stay as the
+      -- degradation path).  What no class can split is a wall-height
+      -- cabinet with a monitor perched on its front top edge, drawn
+      -- across two map rows because it towers over the 16px band
+      -- behind it, which the volume path can only read as more wall.
+      --
+      -- Read off the pixels (absolute grid x0..x31):
+      --   rows 15-31, x8..x23  the CABINET's front face, 16 wide, 17
+      --               tall: black front-top edge with vent notches
+      --               (15), white top rail (16), black panel in a
+      --               white frame (17-28), white rail / light plinth /
+      --               black ground line (29-31).  `desk.x` bounds the
+      --               desk to the middle columns.
+      --   rows 6-14, x8..x23   the cabinet's TOP FACE seen from above
+      --               -- not a second-story facade: a white expanse
+      --               with a lit west strip (x9) and a shaded east
+      --               strip (x22) wrapping the monitor.  Its 9 rows
+      --               plus the front edge row 15 ARE the cabinet's
+      --               depth: 10, z 16..25 against the wall.
+      --               `desk.top` lays the band flat as the lid; where
+      --               the monitor's drawing occludes it, the lid
+      --               continues the nearest strip (the drawing's own
+      --               pixels).
+      --   rows 1-13, x10..x21  the MONITOR: black back rim (1) and
+      --               white cap (2-3) seen from above -- depth 4 --
+      --               then bezel, screen and control strip (4-13)
+      --               face-on, 10 tall, at the cabinet top's front
+      --               (the drawn base edge 13 is one band row up from
+      --               the front strip 14): z 20..23.  The screen
+      --               interior (x13..x18, rows 6-8) sinks one voxel
+      --               via `inset` -- the pane rule applied by hand,
+      --               because `panes = false` blocks the global pass.
+      --   rows 16-31, x0..x7   the HOSES (tile 72 stacked): one 8-row
+      --               motif per map row, and the two stacked motifs
+      --               are two hoses in DEPTH -- the drawn row band is
+      --               the depth band, and each motif's own rows are
+      --               its elevation WITHIN that band, exactly the
+      --               potted plants' stacked-cell rule.  So both
+      --               hoses hug the floor: a horizontal run off the
+      --               cabinet's side (rows 24-26, x3..x7 -> heights
+      --               5..7) over a shaded drop landing ON the floor
+      --               (rows 27-31, x2..x7 -> heights 0..4) -- all
+      --               measured, the drawn extent maps 1:1 with no
+      --               continuation.  `box` parts at z 18 and z 24, 3
+      --               deep; both wear the LOWER motif's rows (the one
+      --               drawn at its true elevation; the upper motif is
+      --               the same atlas tile, pixel-identical).
+      --   rows 16-31, x24..x31 west variant: the KEYBOARD (7/13), a
+      --               key grid with its cable at the north end and a
+      --               bar down the east edge -- TOP-VIEW art, 16 rows
+      --               = 16 depth rows.  A `flat` part mounted on the
+      --               cabinet's side at COUNTER level (`at` 8, the
+      --               counters' own 8px band -- the one number
+      --               top-view art cannot state, pinned to the room's
+      --               work surface), 3 thick, top face wearing the
+      --               drawn art.  The dark dashes east of it (x30-31)
+      --               are its cast shadow on the floor: background.
+      --               East variant: mirrored hoses (runs x24..x28,
+      --               drops x24..x29), same rows and z slots.
+      --   rows 0-15 elsewhere  wall stripes and the machine's cast
+      --               shadow -- BACKGROUND, the same standing as the
+      --               potted plants' floor.  The `wall` element keeps
+      --               the band solid over the back map row, full grid
+      --               width: a 16-tall, 16-deep block cycling the
+      --               drawing's own stripe unit (x0, rows 0-3), what
+      --               the neighbouring cells' wall pins render.
+      --
+      -- `depth = 4` is BOTH map rows: the back row is the wall's plot,
+      -- the front row the machine's own.  `panes = false`: the front
+      -- panel seals DARK behind LIGHT (a black panel in a white
+      -- frame), the opposite polarity to the pane rule, so the global
+      -- recess pass would sink the frame and leave the panel proud.
+      {
+        id = "center_heal_machine_w",
+        tiles = {
+          { 40, 58, 59, 40 },
+          { 40, 74, 75, 40 },
+          { 72, 76, 77,  7 },
+          { 72,  6, 22, 13 },
+        },
+        roofRows = 0, roofBack = 0, roofFront = 0, roofCycle = { 0, 0 },
+        slab = 0, frontEave = 0, ledge = nil, depth = 4,
+        panes = false,
+        wall = { h = 16, depthPx = 16, x = 0, cycle = { 0, 3 } },
+        desk = { x = { 8, 23 }, fascia = { 15, 16 }, base = { 17, 31 },
+                 z = 16, depthPx = 10, top = { 6, 14 } },
+        parts = {
+          { kind = "upright", x = { 10, 21 }, top = { 1, 3 },
+            facade = { 4, 13 }, z = 20, depth = 4,
+            inset = { x = { 13, 18 }, rows = { 6, 8 } } },   -- the monitor
+          { kind = "box", x = { 3, 7 }, rows = { 24, 26 },
+            z = 18, depth = 3 },                             -- N hose run
+          { kind = "box", x = { 2, 7 }, rows = { 27, 31 },
+            z = 18, depth = 3 },                             -- N hose drop
+          { kind = "box", x = { 3, 7 }, rows = { 24, 26 },
+            z = 24, depth = 3 },                             -- S hose run
+          { kind = "box", x = { 2, 7 }, rows = { 27, 31 },
+            z = 24, depth = 3 },                             -- S hose drop
+          { kind = "flat", x = { 24, 29 }, rows = { 16, 31 },
+            z = 16, at = 8, thick = 3 },                     -- keyboard shelf
+        },
+      },
+      {
+        id = "center_heal_machine_e",
+        tiles = {
+          { 40, 58, 59, 40 },
+          { 40, 74, 75, 40 },
+          { 72, 76, 77, 73 },
+          { 72,  6, 22, 73 },
+        },
+        roofRows = 0, roofBack = 0, roofFront = 0, roofCycle = { 0, 0 },
+        slab = 0, frontEave = 0, ledge = nil, depth = 4,
+        panes = false,
+        wall = { h = 16, depthPx = 16, x = 0, cycle = { 0, 3 } },
+        desk = { x = { 8, 23 }, fascia = { 15, 16 }, base = { 17, 31 },
+                 z = 16, depthPx = 10, top = { 6, 14 } },
+        parts = {
+          { kind = "upright", x = { 10, 21 }, top = { 1, 3 },
+            facade = { 4, 13 }, z = 20, depth = 4,
+            inset = { x = { 13, 18 }, rows = { 6, 8 } } },   -- the monitor
+          { kind = "box", x = { 3, 7 }, rows = { 24, 26 },
+            z = 18, depth = 3 },                             -- NW hose run
+          { kind = "box", x = { 2, 7 }, rows = { 27, 31 },
+            z = 18, depth = 3 },                             -- NW hose drop
+          { kind = "box", x = { 3, 7 }, rows = { 24, 26 },
+            z = 24, depth = 3 },                             -- SW hose run
+          { kind = "box", x = { 2, 7 }, rows = { 27, 31 },
+            z = 24, depth = 3 },                             -- SW hose drop
+          { kind = "box", x = { 24, 28 }, rows = { 24, 26 },
+            z = 18, depth = 3 },                             -- NE hose run
+          { kind = "box", x = { 24, 29 }, rows = { 27, 31 },
+            z = 18, depth = 3 },                             -- NE hose drop
+          { kind = "box", x = { 24, 28 }, rows = { 24, 26 },
+            z = 24, depth = 3 },                             -- SE hose run
+          { kind = "box", x = { 24, 29 }, rows = { 27, 31 },
+            z = 24, depth = 3 },                             -- SE hose drop
+        },
+      },
+    },
+
+    MART = {
+      -- F04 again: the Indigo Plateau lobby's PC (cell 15,7) -- the
+      -- MART tileset shares the POKECENTER atlas, so this is the same
+      -- drawing tile for tile. Same part table as the POKECENTER entry
+      -- above.
+      {
+        id = "center_pc",
+        tiles = {
+          { 66, 70 },
+          { 82, 86 },
+          {  9, 88 },
+        },
+        roofRows = 0, roofBack = 0, roofFront = 0, roofCycle = { 0, 0 },
+        slab = 0, frontEave = 0, ledge = nil, depth = 2,
+        desk = { fascia = { 20, 21 }, base = { 22, 23 }, lid = "white" },
+        parts = {
+          { kind = "upright", x = { 2, 13 }, top = { 0, 3 },
+            facade = { 4, 14 }, depth = 6 },                -- the unit
+          { kind = "flat", x = { 2, 13 }, rows = { 17, 19 },
+            z = 13 },                                       -- keyboard
+        },
+      },
+      -- F05 again: the Indigo Plateau lobby has the Centers' healing
+      -- machine pair too -- the west-variant grid at (5,4):(6,5) and
+      -- the east at (10,4):(11,5), verified by region dump -- and its
+      -- MART tileset shares the POKECENTER atlas, so these are the
+      -- same drawings tile for tile. Same part tables as the
+      -- POKECENTER entries above.
+      {
+        id = "center_heal_machine_w",
+        tiles = {
+          { 40, 58, 59, 40 },
+          { 40, 74, 75, 40 },
+          { 72, 76, 77,  7 },
+          { 72,  6, 22, 13 },
+        },
+        roofRows = 0, roofBack = 0, roofFront = 0, roofCycle = { 0, 0 },
+        slab = 0, frontEave = 0, ledge = nil, depth = 4,
+        panes = false,
+        wall = { h = 16, depthPx = 16, x = 0, cycle = { 0, 3 } },
+        desk = { x = { 8, 23 }, fascia = { 15, 16 }, base = { 17, 31 },
+                 z = 16, depthPx = 10, top = { 6, 14 } },
+        parts = {
+          { kind = "upright", x = { 10, 21 }, top = { 1, 3 },
+            facade = { 4, 13 }, z = 20, depth = 4,
+            inset = { x = { 13, 18 }, rows = { 6, 8 } } },   -- the monitor
+          { kind = "box", x = { 3, 7 }, rows = { 24, 26 },
+            z = 18, depth = 3 },                             -- N hose run
+          { kind = "box", x = { 2, 7 }, rows = { 27, 31 },
+            z = 18, depth = 3 },                             -- N hose drop
+          { kind = "box", x = { 3, 7 }, rows = { 24, 26 },
+            z = 24, depth = 3 },                             -- S hose run
+          { kind = "box", x = { 2, 7 }, rows = { 27, 31 },
+            z = 24, depth = 3 },                             -- S hose drop
+          { kind = "flat", x = { 24, 29 }, rows = { 16, 31 },
+            z = 16, at = 8, thick = 3 },                     -- keyboard shelf
+        },
+      },
+      {
+        id = "center_heal_machine_e",
+        tiles = {
+          { 40, 58, 59, 40 },
+          { 40, 74, 75, 40 },
+          { 72, 76, 77, 73 },
+          { 72,  6, 22, 73 },
+        },
+        roofRows = 0, roofBack = 0, roofFront = 0, roofCycle = { 0, 0 },
+        slab = 0, frontEave = 0, ledge = nil, depth = 4,
+        panes = false,
+        wall = { h = 16, depthPx = 16, x = 0, cycle = { 0, 3 } },
+        desk = { x = { 8, 23 }, fascia = { 15, 16 }, base = { 17, 31 },
+                 z = 16, depthPx = 10, top = { 6, 14 } },
+        parts = {
+          { kind = "upright", x = { 10, 21 }, top = { 1, 3 },
+            facade = { 4, 13 }, z = 20, depth = 4,
+            inset = { x = { 13, 18 }, rows = { 6, 8 } } },   -- the monitor
+          { kind = "box", x = { 3, 7 }, rows = { 24, 26 },
+            z = 18, depth = 3 },                             -- NW hose run
+          { kind = "box", x = { 2, 7 }, rows = { 27, 31 },
+            z = 18, depth = 3 },                             -- NW hose drop
+          { kind = "box", x = { 3, 7 }, rows = { 24, 26 },
+            z = 24, depth = 3 },                             -- SW hose run
+          { kind = "box", x = { 2, 7 }, rows = { 27, 31 },
+            z = 24, depth = 3 },                             -- SW hose drop
+          { kind = "box", x = { 24, 28 }, rows = { 24, 26 },
+            z = 18, depth = 3 },                             -- NE hose run
+          { kind = "box", x = { 24, 29 }, rows = { 27, 31 },
+            z = 18, depth = 3 },                             -- NE hose drop
+          { kind = "box", x = { 24, 28 }, rows = { 24, 26 },
+            z = 24, depth = 3 },                             -- SE hose run
+          { kind = "box", x = { 24, 29 }, rows = { 27, 31 },
+            z = 24, depth = 3 },                             -- SE hose drop
+        },
+      },
+    },
+
+    GYM = {
+      -- F02 again: the Hall of Fame's recording machine is the lab's
+      -- computer desk drawing, tile for tile, on the GYM atlas (one
+      -- placement: HALL_OF_FAME cell 4,1). Same part table as the DOJO
+      -- entry above.
+      {
+        id = "lab_computers",
+        tiles = {
+          { 91, 92, 93, 94 },
+          { 54, 55, 85, 95 },
+          { 88, 89, 89, 90 },
+        },
+        roofRows = 0, roofBack = 0, roofFront = 0, roofCycle = { 0, 0 },
+        slab = 0, frontEave = 0, ledge = nil, depth = 2,
+        desk = { fascia = { 16, 18 }, base = { 19, 21 } },
+        parts = {
+          { kind = "upright", x = { 2, 13 }, top = { 0, 2 },
+            facade = { 3, 10 }, depth = 4 },              -- the monitor
+          { kind = "flat", x = { 1, 13 }, rows = { 11, 14 } },  -- keyboard
+          { kind = "upright", x = { 14, 21 }, top = { 0, 3 },
+            facade = { 4, 10 }, depth = 6 },              -- the tower
+          { kind = "flat", x = { 14, 21 }, rows = { 11, 14 } }, -- keys+mouse
+          { kind = "flat", x = { 22, 30 }, rows = { 1, 14 } },  -- the paper
+        },
+      },
+    },
+
+    CLUB = {
+      -- F06: the Bike Shop's OPEN TOOLBOX -- BIKE_SHOP cells (6,6) and
+      -- (7,7), and nowhere else in the game (2 placements).
+      --
+      -- The drawing looks down INTO the box: what fills its middle is not
+      -- a face but the inside of the tray, with a wrench lying in it, and
+      -- the lid standing open on the right.  That is why every solid
+      -- treatment fails it.  As a `billboard` (what these tiles carried)
+      -- the whole 16x16 went up as one 10-voxel per-pixel slab -- the
+      -- extruded picture in its pure form, a black monolith wearing the
+      -- drawing as a decal.  Reading the middle as a cabinet FRONT and
+      -- extruding that is the same mistake one level down: it puts a wall
+      -- where the opening is.  An open box has to be hollow, so `tray`
+      -- builds four walls, a floor slab and AIR between them.
+      --
+      -- The bands, and they measure out exactly (8 depth rows for a
+      -- one-tile-row plot):
+      --   row 4       the FAR rim, black across the back wall     -> z 0
+      --   rows 5-10   the tray's inside, seen from above, with the
+      --               wrench lying across it -- drawn row = depth row,
+      --               six rows for six rows                       -> z 1-6
+      --   row 11      the near wall's INNER face, in shadow
+      --   row 12      the near rim, black right across the box    -> z 7
+      --   rows 13-15  the near wall's outer face, seen face-on: a light
+      --               panel between its black rim and its black foot,
+      --               so the wall stands 4 voxels and the rim is its top
+      --
+      -- `x` is the box's outer span and `inner` the opening's, so the
+      -- one-column difference on each side IS the wall.  x12 is left out
+      -- of both on purpose: the #555 at x11-x12 on rows 13-15 is the 3/4
+      -- shear of the right wall, which un-projecting simply removes --
+      -- the wall is where the plan says it is, not where the projection
+      -- slides it to.  `floor = 0` puts the tray's bottom one voxel thick,
+      -- leaving three voxels of open box above it.
+      --
+      -- The LID is an upright part riding the rim, hinged on the right
+      -- and standing up: 12 tall as drawn, spanning the box's whole depth
+      -- (8) and 4 thick, which is the black outline plus the two columns
+      -- of white body the drawing gives it.  It overhangs east of the
+      -- hinge, which is what a hinged lid standing open does.
+      {
+        id = "bike_shop_toolbox",
+        tiles = {
+          { 29, 13 },
+          { 21, 22 },
+        },
+        roofRows = 0, roofBack = 0, roofFront = 0, roofCycle = { 0, 0 },
+        slab = 0, frontEave = 0, ledge = nil, depthPx = 14,
+        tray = { top = { 4, 11 }, front = { 12, 15 }, x = { 2, 11 },
+                 inner = { 3, 9 }, floor = 0 },
+        parts = {
+          { kind = "upright", x = { 11, 14 }, top = { 0, 0 },
+            facade = { 0, 11 }, z = 0, depth = 14 },       -- the open lid
+        },
+      },
+    },
+
+    MANSION = {
+      -- F05: the TALL display cabinet, the one with the trophy behind
+      -- its glass -- CELADON_CHIEF_HOUSE cells 3,0 and 4,0 and
+      -- CELADON_MANSION_1F cell 2,2 (3 placements).  Its 32 rows read
+      -- like every band table's: 0-8 the cabinet top seen from above
+      -- (black rim, white highlight courses along the north and west,
+      -- grey field, the front corner shaded at row 8); row 9 the top's
+      -- own black front edge -- which is what the rim treatment paints,
+      -- so slab = 1 and that row folds into the roof band instead of
+      -- extruding under it; 10-31 the front face: the trophy in its
+      -- dark display opening, the nameplate under it, then the two
+      -- panelled doors of the base.  The contents come off the pixels,
+      -- not the band table: the trophy, the plate and both door panels
+      -- are non-black regions the drawing seals behind its own black
+      -- frame, so the measured recess pass sinks each of them a voxel
+      -- and the frames stay proud.  Nine drawn top rows over a 32px
+      -- plot, so the rims map 1:1 -- the drawn front-corner shading
+      -- lands one voxel behind the front edge -- and the uniform field
+      -- cycles between.  Both cell rows of the plot are BLOCKED and
+      -- both are cabinet drawing, so D is the whole grid: the rank is
+      -- built into the room's north wall, and its front stands flush
+      -- with the short case's beside it.  23 voxels tall.
+      {
+        id = "mansion_trophy_case",
+        tiles = {
+          { 38, 41 },
+          { 40, 21 },
+          { 56, 87 },
+          { 50, 51 },
+        },
+        roofRows = 10, roofBack = 8, roofFront = 2, roofCycle = { 2, 7 },
+        slab = 1, frontEave = 0, ledge = nil,
+      },
+      -- F06: the SHORT book case standing beside it -- the same
+      -- cabinet on a grid one tile row shorter (CELADON_CHIEF_HOUSE
+      -- cells 2,0 and 5,0, CELADON_MANSION_1F tiles 2,5 and 6,5; 4
+      -- placements).  Identical top band, identical panelled base;
+      -- only the display opening is shorter, a shelf of books where
+      -- the tall one has the trophy.  Same band numbers as F05 --
+      -- which is what makes the pair read as one line of furniture --
+      -- and 15 voxels tall against the tall one's 23, exactly the 8
+      -- rows of drawing between them.  The grid must carry the 38/41
+      -- cap row: {34,35} over {50,51} alone also stands on
+      -- CELADON_MANSION_2F, where it is the bottom of a taller
+      -- two-shelf bank and not this drawing at all.  The 8px of wall
+      -- behind the cap is not part of the cabinet and keeps its own
+      -- `wall` pin.
+      {
+        id = "mansion_bookcase",
+        tiles = {
+          { 38, 41 },
+          { 34, 35 },
+          { 50, 51 },
+        },
+        roofRows = 10, roofBack = 8, roofFront = 2, roofCycle = { 2, 7 },
+        slab = 1, frontEave = 0, ledge = nil,
+      },
+      -- F07: the long table in the middle of the chief's house
+      -- (CELADON_CHIEF_HOUSE cell 2,3), the lab table's read at four
+      -- cells wide and two deep.  Rows 0-23 are the tabletop seen from
+      -- above; 24-26 are the top slab's own front edge,
+      -- black/#555/black, and row 27 the #555 shadow that closes it --
+      -- exactly what the rim treatment paints, so slab = 3 and rows
+      -- 24-27 fold into the roof band.  That leaves 28-30 as the base,
+      -- the same three rows the lab table's is, and the two tables
+      -- stand the same 6 voxels: row 28 the apron running the whole
+      -- width, 29-30 the end legs under it.  The legs stop one row
+      -- short of the grid, so the measured ground line lands there and
+      -- the model does not float.  Both cell rows of the plot are
+      -- blocked, so D is the whole grid: the 24 drawn top rows map 1:1
+      -- from the north rim and the field's own rows cycle for the last
+      -- 8.  The `table` pin these tiles keep stays 12px -- it is
+      -- shared with the 2F/3F writing desks and the rooftop shed, and
+      -- nothing rides this table -- so it is only the degradation
+      -- path, neutralized wherever this template stamps.
+      {
+        id = "mansion_long_table",
+        tiles = {
+          { 38, 39, 39, 39, 39, 39, 39, 41 },
+          { 54, 55, 55, 55, 55, 55, 55, 57 },
+          { 54, 55, 55, 55, 55, 55, 55, 57 },
+          { 60, 58, 58, 58, 58, 58, 58, 59 },
+        },
+        roofRows = 28, roofBack = 24, roofFront = 0, roofCycle = { 2, 23 },
+        slab = 3, frontEave = 0, ledge = nil,
+      },
+    },
+
+    HOUSE = {
+      -- F08: the dining table of the generic town house -- 18
+      -- placements, every home's cells (3,3):(4,4), Blue's and the
+      -- Daycare among them -- the chief's long table (F07 above) at two
+      -- cells wide, the same read to the row.  Rows 0-23 are the rounded
+      -- tabletop seen from above (black rim, white highlight course,
+      -- grey field, #555 east rim); 24-26 the slab's own front edge,
+      -- black/#555/black, and 27 the #555 apron shadow that closes it,
+      -- folded into the band; 28-30 the base -- the apron's black
+      -- underrun and the corner legs -- stopping one row short of the
+      -- grid, so the measured ground line keeps the model on its plot.
+      -- The same 6 voxels the whole table family stands.  The `table`
+      -- pins stay as the degradation path, neutralized where this
+      -- stamps; the schoolhouse's half-width table with its book and the
+      -- trashed house's ransacked corner are different grids and keep
+      -- theirs.
+      {
+        id = "house_table",
+        tiles = {
+          { 38, 39, 39, 41 },
+          { 54, 47, 47, 57 },
+          { 54, 47, 47, 57 },
+          { 60, 58, 58, 59 },
+        },
+        roofRows = 28, roofBack = 24, roofFront = 0, roofCycle = { 2, 23 },
+        slab = 3, frontEave = 0, ledge = nil,
+      },
+      -- F10: the town house's BOOKCASE -- the commonest piece of
+      -- furniture in the game at 58 placements across three drawings,
+      -- and the piece this family was really for: pinned `desk` it was a
+      -- 24px box with a flat front and the books PAINTED on it.  Band for
+      -- band it is the Celadon display cabinet (F05/F06 under MANSION)
+      -- on a different atlas, and it takes those numbers unchanged: rows
+      -- 0-8 the top seen from above (black rim, white highlight courses
+      -- along the north and west, grey field, the front corner shaded at
+      -- row 8); row 9 the top's own black front edge -- which is what the
+      -- rim treatment paints, so slab = 1 and that row folds into the
+      -- roof band instead of extruding under it; 10-31 the front: two
+      -- shelves in their dark openings over the cupboard's two panelled
+      -- doors.  Every book, bowl and door panel is a non-black region the
+      -- drawing seals behind its own black frame, so the measured pane
+      -- pass sinks each one a voxel and the frames stand proud of them --
+      -- the relief the `bookcase` class now carries too, arrived at the
+      -- same way.
+      --
+      -- Nine drawn top rows over a 32px plot: the rims map 1:1 (the drawn
+      -- front-corner shading lands one voxel behind the front edge) and
+      -- the uniform field cycles between.  BOTH cell rows of the plot are
+      -- blocked and both are cabinet drawing, so D is the whole grid --
+      -- the case is built into the room's north wall.  23 voxels tall,
+      -- one under the `desk` pin it replaces and exactly the Celadon
+      -- trophy case's stand; the `desk` pins stay as the degradation
+      -- path, neutralized wherever this stamps.
+      --
+      -- This drawing carries books and a bowl on each shelf: 36
+      -- placements, the west end of eighteen homes.
+      {
+        id = "house_bookcase_bowls",
+        tiles = {
+          { 38, 41 },
+          { 14, 15 },
+          { 14, 15 },
+          { 30, 31 },
+        },
+        roofRows = 10, roofBack = 8, roofFront = 2, roofCycle = { 2, 7 },
+        slab = 1, frontEave = 0, ledge = nil,
+      },
+      -- F10 again: its twin at the east end, books on both shelves -- 22
+      -- placements, and the only one of the two that Cerulean's trashed
+      -- house also puts at the west end.
+      {
+        id = "house_bookcase_books",
+        tiles = {
+          { 38, 41 },
+          { 48, 49 },
+          { 48, 49 },
+          { 30, 31 },
+        },
+        roofRows = 10, roofBack = 8, roofFront = 2, roofCycle = { 2, 7 },
+        slab = 1, frontEave = 0, ledge = nil,
+      },
+      -- F09: the stool at every one of those tables (94 placements on
+      -- this tileset) -- the first template with NO base piece.  The
+      -- drawing is one object, a round seat on legs, drawn MID-CELL over
+      -- its own floor (rows 0-4 are the room behind it), and no band
+      -- split fits that: a roof band starts at the drawing's top row.
+      -- So it is a desk-set of exactly one upright part anchored to the
+      -- floor: rows 5-10 the seat seen from above (its lid), row 11 the
+      -- seat's own front edge, 12-15 the legs with the floor showing
+      -- between them, which the per-pixel facade cut keeps open.  The
+      -- drawing measures 7 deep (six seat rows plus the front edge at
+      -- drawn row = depth row); the shipped stool is grown two voxels
+      -- past that north AND south (z 3..13, developer-tuned against the
+      -- in-game read), with `stretch` mapping the seat band over the
+      -- deeper lid instead of smearing its last row.  `panes = false`:
+      -- a stool has no windows, and the pane rule would sink the legs'
+      -- lit faces behind their own outlines.  The 5-voxel stand is the
+      -- drawn elevation, and the tileset's `heights` above pins the
+      -- `stool` ride height to it, so whoever sits here sits ON the
+      -- seat; the old stool standee pins stay as the degradation path.
+      {
+        id = "house_stool",
+        tiles = {
+          { 2, 3 },
+          { 18, 19 },
+        },
+        roofRows = 0, roofBack = 0, roofFront = 0, roofCycle = { 0, 0 },
+        slab = 0, frontEave = 0, ledge = nil,
+        panes = false,
+        parts = {
+          { kind = "upright", x = { 2, 13 }, top = { 5, 10 },
+            facade = { 11, 15 }, z = 3, depth = 11,
+            stretch = true },                             -- the stool
+        },
+      },
+    },
+
+    REDS_HOUSE_1 = {
+      -- F08 again: Red's and the Copycat's ground-floor dining table
+      -- (cells (3,4):(4,5) of both maps) -- the house table on the
+      -- reds_house atlas, with two differences the fields absorb.
+      --
+      -- Its tabletop field stops at row 22 and row 23 is the top's own
+      -- #555 south rim, which roofBack = 24 would lay MID-TABLE as a
+      -- dark stripe: back stops at 23 and the field cycles from there
+      -- (the drawn rim's place at the south edge is under the rim
+      -- treatment's own black, like every sibling's).
+      --
+      -- And the POTTED PLANT is drawn standing on the tabletop (rows
+      -- 5-15, x10..x21, tiles 40/55/56 with the cutout pool's 54/57
+      -- beside them).  It stays the cutout standee it has always been:
+      -- `keep` leaves its tiles unclaimed so the pin and its standee
+      -- survive, `scrub` replaces its pixels with the field shade so the
+      -- model tops out as the plain surface it sits on, and `support`
+      -- states the model's 6-voxel top plane so the standee stands ON
+      -- the modelled tabletop (Structures reads it off the claim; a
+      -- plain claim's h = 0 supports nothing).
+      {
+        id = "reds_house_table",
+        tiles = {
+          { 38, 39, 40, 41 },
+          { 54, 55, 56, 57 },
+          { 44, 42, 42, 43 },
+          { 60, 58, 58, 59 },
+        },
+        roofRows = 28, roofBack = 23, roofFront = 1, roofCycle = { 2, 22 },
+        slab = 3, frontEave = 0, ledge = nil,
+        scrub = { { 10, 5, 21, 15 } },
+        keep = { 40, 54, 55, 56, 57 },
+        support = 6,
+      },
+      -- F10 again: Red's and the Copycat's bookcase pair, cells (0,0)
+      -- and (1,0) of both maps (4 placements).  The same object as the
+      -- town house's, one shelf of each of its two drawings -- 48/49
+      -- books above, 34/35 below -- and the same band numbers; see HOUSE
+      -- above for the read.
+      {
+        id = "reds_bookcase",
+        tiles = {
+          { 38, 41 },
+          { 48, 49 },
+          { 34, 35 },
+          { 50, 51 },
+        },
+        roofRows = 10, roofBack = 8, roofFront = 2, roofCycle = { 2, 7 },
+        slab = 1, frontEave = 0, ledge = nil,
+      },
+      -- F09 again: the stools around it (10 placements across Red's and
+      -- the Copycat's ground floors), pixel for pixel the house
+      -- tileset's drawing.  Same part table; see HOUSE above.
+      {
+        id = "house_stool",
+        tiles = {
+          { 2, 3 },
+          { 18, 19 },
+        },
+        roofRows = 0, roofBack = 0, roofFront = 0, roofCycle = { 0, 0 },
+        slab = 0, frontEave = 0, ledge = nil,
+        panes = false,
+        parts = {
+          { kind = "upright", x = { 2, 13 }, top = { 5, 10 },
+            facade = { 11, 15 }, z = 3, depth = 11,
+            stretch = true },                             -- the stool
+        },
+      },
+    },
+
+    INTERIOR = {
+      -- F0x: Bill's desk, and the Silph president's -- one drawing, two
+      -- placements (BILLS_HOUSE cell 1,4 and SILPH_CO_11F cell 10,12,
+      -- both found by the scan and nothing else).  The whole 4x4-tile
+      -- block is one designed unit, but this template deliberately takes
+      -- only the desk's own two cells.
+      --
+      -- What the 16 drawn rows are: the TABLETOP seen from above, the
+      -- lab table's pattern tile for tile -- black rim, a white
+      -- highlight course inside it, grey field -- over a 16px plot, so
+      -- they map 1:1 and nothing cycles.  Standing on it, and drawn INTO
+      -- that top view the way lab_computers' objects are: a terminal
+      -- (screen head over a keypad panel, rows 3-13) and the ball
+      -- (rows 1-13).  Drawn row = depth row on a top view, so each part's
+      -- `z` is where the drawing puts it: the head's front row is 8, the
+      -- keypad picks up at 9, and the ball's front row is its drawn
+      -- bottom.  Only the two DEPTHS and how much of each blob is lid
+      -- rather than face are authored -- the projection cannot state
+      -- either.
+      --
+      -- Why the grid stops at two rows.  This drawing's front face is its
+      -- APRON, and the artist drew the apron into the WALKABLE cell in
+      -- front (43/44 + 91/92) -- exactly where the lab table's fascia and
+      -- base are.  But 43/44 is also the upper half of the CHAIR pushed
+      -- up to the desk (43/44 over 59/60, pinned `stool` in the tileset
+      -- section above), and a template claims whole TILES: reading the
+      -- apron would take the chair's back with it and leave a backless
+      -- stub in both rooms.  So the apron stays with the chair, `plane`
+      -- authors the desk's height instead, and the body under the lid is
+      -- synthesized in the drawing's own shades (the band table's rim
+      -- treatment -- a shaded box closed by the outline at the floor).
+      -- 8px is not a taste number: it is the apron's own drawn row count
+      -- and the `table` height these tiles are already pinned to, so the
+      -- desk stands where the degradation path stood it.
+      {
+        id = "bills_desk",
+        tiles = {
+          { 11, 12, 13, 14 },
+          { 27, 28, 29, 30 },
+          { 43, 44, 91, 92 },
+          { 59, 60, 31, 31 },
+        },
+        roofRows = 0, roofBack = 0, roofFront = 0, roofCycle = { 0, 0 },
+        slab = 0, frontEave = 0, ledge = nil, depth = 4,
+        -- the desk's own plot is its two cells; the grid runs on because
+        -- its apron and the CHAIR share tiles 43/44
+        desk = { fascia = { 16, 18 }, base = { 19, 23 }, depth = 2 },
+        parts = {
+          -- the notes: two sheets lying on the desk, so PAPER -- one
+          -- voxel proud at drawn row = depth row, and nothing raised
+          { kind = "flat", x = { 2, 15 }, rows = { 3, 7 } },
+          -- the keyboard: a real slab, not a print on the desk.  Its
+          -- keys are drawn from ABOVE so they ride the top face across
+          -- its depth, and its drawn bottom frame row stands as the
+          -- front edge
+          { kind = "upright", x = { 4, 15 }, top = { 8, 12 },
+            facade = { 12, 13 }, z = 8, depth = 6 },
+          -- the cord: the kinked dark run the drawing puts between the
+          -- keyboard's top-right corner and the computer's left corner.
+          -- Raised to the keyboard's own height so it reads as a cable
+          -- spanning them rather than a scuff on the desk
+          { kind = "upright", x = { 16, 19 }, top = { 8, 8 },
+            facade = { 8, 9 }, z = 8, depth = 2 },
+          -- the computer: drawn in 2:1 ISOMETRIC, turned 45 degrees to
+          -- the map -- see the `iso` branch in buildParts.  `plan` = rx
+          -- makes its footprint a SQUARE turned 45, so from directly
+          -- above it is the cube the drawing depicts and not the slab
+          -- the 2:1 would otherwise build
+          { kind = "iso", x = { 19, 30 }, rows = { 1, 13 },
+            plan = 6, z = 9 },
+          -- the chair pushed up to the desk, drawn into the walkable
+          -- cell in front.  It stands on the FLOOR, not on the desk, so
+          -- its rise is the whole plane back down; two voxels deep
+          -- because it is a chair, and `inside` cuts it per pixel, so
+          -- this is the thin slab the `stool` standee was -- the desk
+          -- claiming tiles 43/44 for its apron is what makes the
+          -- template owe it
+          { kind = "upright", x = { 2, 13 }, top = { 20, 21 },
+            facade = { 22, 31 }, rise = -8, z = 22, depth = 10 },
+        },
+      },
+      -- F09 once more: the Pokemon Fan Club's four members' chairs,
+      -- drawn round the boardroom table -- POKEMON_FAN_CLUB cells (1,3),
+      -- (1,4), (6,3) and (6,4), and nowhere else in the game.
+      --
+      -- A DIFFERENT drawing from the house stool -- its seat field
+      -- carries a one-pixel white margin where the house's carries two
+      -- -- but the same object band for band: rows 5-10 the seat seen
+      -- from above (its lid), row 11 the seat's own front edge, 12-15
+      -- the legs with the floor showing between them.  Its elevation
+      -- rows are PIXEL-IDENTICAL to the house drawing's, so it takes
+      -- that part table unchanged, growth and all: z 3..13, `stretch`
+      -- mapping the seat band over the deeper lid, `panes = false` so
+      -- the pane rule does not sink the legs' lit faces.
+      --
+      -- Rows 11-15 come from tiles 59/60, which this drawing SHARES
+      -- with Bill's chair (43/44 over 59/60, modelled as a part of
+      -- `bills_desk` above).  That is why the tileset's `stool = 5`
+      -- height override is right for both seats rather than a special
+      -- case for this one: they are drawn at the same height because
+      -- they are drawn with the same pixels.
+      --
+      -- Listed after `bills_desk` although neither grid is a subgrid of
+      -- the other (that grid has 43/44 over 59/60, this one 61/62), so
+      -- the order is free and the bigger, more specific grid keeps
+      -- first claim.
+      {
+        id = "club_stool",
+        tiles = {
+          { 61, 62 },
+          { 59, 60 },
+        },
+        roofRows = 0, roofBack = 0, roofFront = 0, roofCycle = { 0, 0 },
+        slab = 0, frontEave = 0, ledge = nil,
+        panes = false,
+        parts = {
+          { kind = "upright", x = { 2, 13 }, top = { 5, 10 },
+            facade = { 11, 15 }, z = 3, depth = 11,
+            stretch = true },                             -- the stool
+        },
       },
     },
   },
