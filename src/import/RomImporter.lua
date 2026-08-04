@@ -3120,6 +3120,16 @@ function RomImporter:mousepressed(x, y, button)
   end
 end
 
+function RomImporter:touchpressed(id, x, y, dx, dy, pressure)
+  self:mousepressed(x, y, 1)
+end
+
+function RomImporter:touchmoved(id, x, y, dx, dy, pressure)
+end
+
+function RomImporter:touchreleased(id, x, y, dx, dy, pressure)
+end
+
 function RomImporter:keypressed(key)
   if self._rename then
     if key == "backspace" then
