@@ -224,6 +224,10 @@ local function bootGame(version)
 end
 
 function love.load(args)
+  -- Install file picker wrapper for borderless fullscreen mode before any
+  -- mods load. This ensures native dialogs appear on top of the game window.
+  require("src.core.FilePicker").install()
+
   -- Before anything can shell out (update check, mod index, ROM picker),
   -- claim one hidden console on Windows so those children inherit it instead
   -- of each flashing their own cmd.exe window (#606).  No-op elsewhere.
