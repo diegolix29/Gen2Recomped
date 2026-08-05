@@ -574,12 +574,12 @@ function Game:fireHotkey(action)
   elseif action == "zoomIn" then
     self:zoomStep(1)
     return
-  elseif key == "1" then
+  elseif action == "1" then
     -- cycle GAME SPEED (0.25X → 200X, logic only; audio unaffected);
     -- R2/L2 on gamepad do the same (see gamepadpressed)
     self:_cycleSpeed(1)
     return
-  elseif key == "2" then
+  elseif action == "2" then
     -- cycle COLORS (GBC / OG / OG INV / GBC INV / CLASSIC); the pack change
     -- forces Game.overworld:reloadMap, which rebuilds the live NPC array, so
     -- hold it while a warp/transition or an on-screen scripted cutscene is

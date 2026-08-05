@@ -474,6 +474,16 @@ mod.hooks:wrap("game.hotkey", function(action, game)
   return true
 end)
 
+-- Hotkey table mapping keys to their corresponding settings/actions
+local HOTKEYS = {
+  ["3"] = "pipeline",
+  ["5"] = VoxelGrid.setting,
+  ["6"] = TiltShift.setting,
+  ["7"] = WorldCurve.setting,
+  ["8"] = OverworldBattle.setting,
+  ["9"] = DrawDistance.setting,
+}
+
 -- The VR stick click makes this same step (VR.stepView): the function is
 -- a local of this file, so the handoff is explicit rather than a
 -- reimplementation drifting out of date in lib/VR.lua.
@@ -1035,20 +1045,6 @@ mod.events:on("save.loaded", function()
   -- pinEngineFx). Answered here rather than only when the menu opens, so a
   -- player who never opens it is not left playing under one.
   pinEngineFx()
-end)
-
--- ------- Stadium ROM picker on mod load
---
--- Trigger the Stadium ROM picker with a slight delay to allow the UI to render
--- before the blocking PowerShell call freezes the app.
-local pickerTriggered = false
-mod.hooks:wrap("draw", function(next)
-  if not pickerTriggered then
-    pickerTriggered = true
-    local StadiumRomPick = V.require("StadiumRomPick")
-    pcall(StadiumRomPick.import, nil)
-  end
-  return next()
 end)
 
 mod.events:on("save.created", function()
