@@ -27,7 +27,7 @@ local TrainerAI = {}
 -- pokered's <USER>/<TARGET> text macros print "Enemy " before the
 -- enemy mon's nickname (home/text.asm PlaceMoveUsersName)
 local function displayName(b)
-  return b.isPlayer and b.name or ("Enemy " .. b.name)
+  return b.isPlayer and b.name or Strings("Enemy %s", b.name)  -- #779
 end
 
 local HEAL_AMOUNT = { POTION = 20, SUPER_POTION = 50, HYPER_POTION = 200 }

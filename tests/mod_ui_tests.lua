@@ -510,6 +510,21 @@ check(#pm.subItems == 2, "a non-table submenu result keeps the vanilla list")
 hooks:removeOwner("bad")
 pm.submenu = nil
 
+-- ------- #768: the party cursor persists until a battle
+-- (PartyMenuInit reads wPartyAndBillsPCSavedMenuItem, HandlePartyMenuInput
+-- writes it back; InitBattleVariables / end_of_battle.asm zero it)
+pgame.save.party[2] = { species = "PIKACHU", hp = 10, stats = { hp = 10 },
+                        level = 5, moves = { { id = "TACKLE" } } }
+press(pm, "down")
+check(pgame.partyMenuSavedIndex == 2, "the party cursor is saved on move")
+local pm2 = PartyMenu.new(pgame)
+check(pm2.index == 2, "reopening the party menu keeps the cursor (#768)")
+pgame.save.party[2] = nil
+check(PartyMenu.new(pgame).index == 1,
+  "a shrunken party clamps the saved cursor back into range")
+pgame.partyMenuSavedIndex = nil -- a battle clears it (InitBattleVariables)
+check(PartyMenu.new(pgame).index == 1, "a battle resets the party cursor")
+
 -- ------- battle PKMN: SWITCH / STATS / CANCEL (#180)
 local switched
 local bgame = partyGame()
@@ -555,9 +570,9 @@ do
   pm.game = sgame
   sgame.stack:push(pm)
   press(pm, "a") -- open the submenu
-  check(pm.subItems[#pm.subItems].action == "strength",
-    "the strength row is listed with badge + move")
-  pm.subIndex = #pm.subItems
+  check(pm.subItems[1].action == "strength",
+    "the strength row is listed with badge + move, above STATS/SWITCH (#768)")
+  pm.subIndex = 1
   press(pm, "a") -- run STRENGTH
   local states = sgame.stack.states
   check(#states == 2 and states[1] == pm and states[2].pages ~= nil,

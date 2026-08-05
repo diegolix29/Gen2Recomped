@@ -283,7 +283,8 @@ end
 do
   local pressed = {}
   local tb = freshBattle()
-  tb.game = { input = { wasPressed = function(_, k) return pressed[k] or false end },
+  tb.game = { input = { wasPressed = function(_, k) return pressed[k] or false end,
+                        isDown = function(_, k) return pressed[k] or false end },
               stack = { top = function() return tb end },
               save = Game.save }
   tb.kind = "wild"
@@ -359,7 +360,8 @@ do
   local fg = {
     data = Data,
     save = require("src.core.SaveData").newGame(),
-    input = { wasPressed = function(_, k) return pressed[k] or false end },
+    input = { wasPressed = function(_, k) return pressed[k] or false end,
+              isDown = function(_, k) return pressed[k] or false end },
     stack = stack,
   }
   fg.save.party = { Pokemon.new(Data, "BULBASAUR", 20) }

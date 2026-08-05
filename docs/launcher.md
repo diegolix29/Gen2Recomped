@@ -195,11 +195,13 @@ through `src/import/SaveFileIO.lua`, which sits on top of
   (checked against `listSlots`). `SaveFileIO.exportActiveSlot` loads the active
   slot, encodes it back with `SaveConvert.exportSav` (a slot never keeps
   `rawImport`, so this is a zero-filled template export, which is valid), and
-  writes `exports/<version>/gen1recomp-<version>-<slotId>.sav` in the save
-  directory (`exports/` and `exports/<version>/` are created as needed). On
-  desktop it returns the absolute path (`love.filesystem.getSaveDirectory()`),
-  which the notice line shows with an "Open folder" affordance
-  (`love.system.openURL("file://" .. dir)`).
+  writes `exports/<version>/gen1recomp-<version>-<slotId>.sav` under the same
+  root `persistFs` writes slots to: the portable game folder when `portable.txt`
+  marks the install, otherwise the save directory (`exports/` and
+  `exports/<version>/` are created as needed; #752). On desktop it returns the
+  absolute path (`SaveData.portableBaseDir()` when portable, else
+  `love.filesystem.getSaveDirectory()`), which the notice line shows with an
+  "Open folder" affordance (`love.system.openURL("file://" .. dir)`).
   On Android the bytes are also staged as `pending_export.sav` and
   `love.system.createFile(suggestedName)` opens `ACTION_CREATE_DOCUMENT` so the
   player can save to Downloads / Drive / etc.; on return `export_done.flag`

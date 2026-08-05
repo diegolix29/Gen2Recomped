@@ -2903,6 +2903,34 @@ function OverworldState:trainerDefeated(npc)
   return false
 end
 
+-- data/trainers/encounter_types.asm
+local FEMALE_TRAINERS = {
+  OPP_LASS = true, OPP_JR_TRAINER_F = true, OPP_BEAUTY = true,
+  OPP_COOLTRAINER_F = true,
+}
+local EVIL_TRAINERS = {
+  OPP_UNUSED_JUGGLER = true, OPP_GAMBLER = true, OPP_ROCKER = true,
+  OPP_JUGGLER = true, OPP_CHIEF = true, OPP_SCIENTIST = true,
+  OPP_GIOVANNI = true, OPP_ROCKET = true,
+}
+
+-- PlayTrainerMusic (home/trainers.asm:399) picks the encounter sting from
+-- the engaged class: evil list, then female list, then male by default.
+-- The rivals `ret z` out of it and keep the MUSIC_MEET_RIVAL their own
+-- scripts start (data/scripts/oaks_lab.lua, story5.lua).  Its other gate,
+-- wGymLeaderNo, is not a leader test: that byte aliases wLoneAttackNo
+-- (ram/wram.asm:1264), is cleared on every map entry
+-- (engine/overworld/clear_variables.asm:8), and each gym script writes it
+-- only AFTER its own `call EngageMapTrainer` (scripts/PewterGym.asm:122),
+-- so leaders do get the sting and nothing on a map can be suppressed by it
+-- before the leader is beaten.  Returns nil when the class gets no sting.
+local function meetTrainerTheme(cls)
+  if not cls or cls:find("RIVAL") then return nil end
+  return EVIL_TRAINERS[cls] and "Music_MeetEvilTrainer"
+         or FEMALE_TRAINERS[cls] and "Music_MeetFemaleTrainer"
+         or "Music_MeetMaleTrainer"
+end
+
 -- Run the pre-battle text -> battle -> won text -> flags sequence.
 function OverworldState:engageTrainer(npc, onDone)
   local d = npc.def
@@ -2918,6 +2946,20 @@ function OverworldState:engageTrainer(npc, onDone)
 
   local BattleState = require("src.battle.BattleState")
   Game.stack:push(TextBox.new(Game, battleText, function()
+    -- TalkToTrainer (home/trainers.asm:88) prints the before-battle text
+    -- FIRST and only then runs `call EngageMapTrainer` / `jp
+    -- StartTrainerBattle`, so a trainer challenged on foot gets the sting
+    -- over the battle transition rather than under the dialogue.  Its
+    -- `bit BIT_SEEN_BY_TRAINER, [hl] / ret nz` guard is self.engaging
+    -- here: TrainerEngage (engine/overworld/trainer_sight.asm:224) already
+    -- started the sting before the "!" bubble on the sight path, so it
+    -- must not restart.  Script-driven challenges (gyms.lua leaders,
+    -- scripts/SilphCo11F.asm:269 Giovanni, scripts/FightingDojo.asm:122)
+    -- all `call EngageMapTrainer` too, and reach this same path (#764).
+    if not self.engaging then
+      local theme = meetTrainerTheme(d.trainerClass)
+      if theme then require("src.core.Music").play(Game.data, theme) end
+    end
     local battle = BattleState.newTrainer(Game, d.trainerClass, d.trainerParty)
     -- PrintEndBattleText (home/trainers.asm:341) is called from
     -- TrainerBattleVictory (engine/battle/core.asm:942), i.e. ON the battle
@@ -3089,29 +3131,15 @@ function OverworldState:checkTrainerSight()
   end
 end
 
--- data/trainers/encounter_types.asm
-local FEMALE_TRAINERS = {
-  OPP_LASS = true, OPP_JR_TRAINER_F = true, OPP_BEAUTY = true,
-  OPP_COOLTRAINER_F = true,
-}
-local EVIL_TRAINERS = {
-  OPP_UNUSED_JUGGLER = true, OPP_GAMBLER = true, OPP_ROCKER = true,
-  OPP_JUGGLER = true, OPP_CHIEF = true, OPP_SCIENTIST = true,
-  OPP_GIOVANNI = true, OPP_ROCKET = true,
-}
-
 function OverworldState:startTrainerApproach(npc, dist)
   self.engaging = true
   npc.frozen = true
-  -- the encounter sting (PlayTrainerMusic): evil / female / male by
-  -- class; rivals and gym leaders keep their own music
-  local cls = npc.def.trainerClass
-  if cls and not cls:find("RIVAL") then
-    local theme = EVIL_TRAINERS[cls] and "Music_MeetEvilTrainer"
-                  or FEMALE_TRAINERS[cls] and "Music_MeetFemaleTrainer"
-                  or "Music_MeetMaleTrainer"
-    require("src.core.Music").play(Game.data, theme)
-  end
+  -- TrainerEngage (engine/overworld/trainer_sight.asm:224) sets
+  -- BIT_SEEN_BY_TRAINER and calls EngageMapTrainer before the "!" bubble,
+  -- so the sighting sting starts ahead of the walk-up; engageTrainer sees
+  -- self.engaging and does not restart it (#764)
+  local theme = meetTrainerTheme(npc.def.trainerClass)
+  if theme then require("src.core.Music").play(Game.data, theme) end
   local function fight()
     self:engageTrainer(npc, function()
       npc.frozen = false
@@ -4212,7 +4240,19 @@ function OverworldState:drawWorld()
   -- Renderer:beginFrame cleared it, so a battle or a full-screen menu -- which
   -- draws with no map beneath it -- stays lit exactly like
   -- init_battle_variables.asm's `ld [wMapPalOffset], a` leaves the original.
-  PaletteFX.setShadeMap(self.dark and PaletteFX.DARK_BGP or nil)
+  --
+  -- BATTLE BG "world" is the one case where a map DOES draw in a battle's
+  -- frame (Game.drawBaseInStack), and the shift armed here reached the
+  -- battle's own colorize pass, so an un-flashed Rock Tunnel battle came out
+  -- with FadePal2 over its pics, HUD and text (#773).  The battle zeroes
+  -- wMapPalOffset for its whole run and restores it on the way out
+  -- (engine/battle/core.asm InitBattleCommon push/pop), so the map behind it
+  -- goes lit too for as long as the battle is up -- which is what the
+  -- original's saved offset means.
+  local battleOverWorld = Game and Game.stack
+                          and Game.worldBgBattleInStack(Game.stack)
+  PaletteFX.setShadeMap((self.dark and not battleOverWorld)
+                        and PaletteFX.DARK_BGP or nil)
   -- advance the water/flower tile animation (runs under dialogs too).
   -- TileRenderer.tick uses wall-clock 60Hz steps so display refresh rate
   -- does not speed or slow the cycle (issue #4).

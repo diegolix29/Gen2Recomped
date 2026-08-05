@@ -253,8 +253,10 @@ do
     "NX guard disables Performance.enabled")
   check(view:find("mp.enabled = false", 1, true) ~= nil,
     "NX guard disables memory profiling")
-  check(view:find("if not (imp and imp.isNX", 1, true) ~= nil,
-    "perf guard is gated on imp.isNX")
+  -- The guard used to be NX-only; the same perf-timer and GC hitches showed
+  -- up in desktop scrolling, so it now applies on every platform.
+  check(view:find("if not (imp and FlexLove.isReady()", 1, true) ~= nil,
+    "perf guard applies on every platform (not gated on imp.isNX)")
   check(view:find("parkNxPointerForHost", 1, true) ~= nil,
     "detach parks NX pointer before tearing down")
 

@@ -74,11 +74,36 @@ stub.graphics = {
   -- newMesh / stencil stay absent on purpose: tools/save-editor/Theme.lua
   -- probes for them and falls back to flat fills, which is the path a
   -- headless run should take.
-  newFont = function(size)
-    local px = size or 12
+  -- Accepts both real signatures: newFont(size) and
+  -- newFont(filename, size, hinting), the latter for the TTF text mode
+  -- (src/render/Font.lua).  Width counts codepoints, not bytes, and CJK /
+  -- kana measure double, so tests can assert the wide-glyph metrics a real
+  -- pixel font (5px base, 11px double-width) exhibits without rasterizing.
+  newFont = function(a, b)
+    if type(a) == "string" then
+      -- real LÖVE raises on a missing file; callers pcall and fall back
+      local handle = io.open(a, "rb")
+      if not handle then error("Could not open file " .. a) end
+      handle:close()
+    end
+    local px = (type(a) == "number" and a) or b or 12
+    local unit = math.max(1, px * 0.5)
     return {
-      getWidth = function(_, text) return #tostring(text) * math.max(1, px * 0.5) end,
+      getWidth = function(_, text)
+        text = tostring(text)
+        local w, i, n = 0, 1, #text
+        while i <= n do
+          local byte = text:byte(i)
+          local len = byte >= 0xF0 and 4 or byte >= 0xE0 and 3
+                      or byte >= 0xC0 and 2 or 1
+          w = w + (byte >= 0xE1 and 2 or 1) * unit  -- U+1000+: double width
+          i = i + len
+        end
+        return w
+      end,
       getHeight = function() return px end,
+      getBaseline = function() return px - 2 end,
+      setFilter = noop,
     }
   end,
   setFont = function(f) gstate.font = f end,
@@ -323,6 +348,7 @@ function ImageData:getDimensions() return self.w, self.h end
 function ImageData:getPixel() return 0, 0, 0, 1 end
 function ImageData:setPixel() end
 function ImageData:mapPixel() end
+function ImageData:paste() end
 function ImageData:encode() return { getString = function() return "" end } end
 
 stub.image = {
@@ -335,6 +361,12 @@ stub.image = {
     end
     return setmetatable({ w = a or 8, h = b or 8 }, ImageData)
   end,
+}
+
+-- Headless runs report the desktop OS so platform gates (GamepadMap's NX
+-- check, the touch-overlay filter) take their desktop branch.
+stub.system = {
+  getOS = function() return "OS X" end,
 }
 
 -- Desktop / headless: full-window safe area (matches LÖVE's fallback).

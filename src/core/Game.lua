@@ -40,6 +40,13 @@ function Game:load()
   -- render pipelines dispatch off the merged dataset; point them at the
   -- one the mods just merged into before anything can draw a frame
   require("src.render.Pipelines").install(Data)
+  -- Same reason, same moment: TypeChart caches the merged type records in an
+  -- upvalue, and until now only BattleState loaded it, on entering a battle.
+  -- Every non-battle reader of a type -- the summary screen's TYPE1/TYPE2
+  -- rows, the move-select TYPE/ box -- ran against an unloaded module and got
+  -- the raw id back instead of the display name, so a translation could not
+  -- reach them. Loading here means a type reads the same whoever asks first.
+  require("src.battle.TypeChart").load(Data)
 
   self.input = Input
   Input:init()
@@ -291,6 +298,21 @@ function Game.worldBgBattleDim(stack)
     end
   end
   return nil
+end
+
+-- Is a BATTLE BG "world" battle composing itself over the live map right now?
+-- Same whole-stack walk as worldBgBattleDim, asked for a different reason: the
+-- dark-cave shade shift (wMapPalOffset) must not reach a frame a battle is
+-- drawing in.  InitBattleCommon (engine/battle/core.asm) pushes wMapPalOffset,
+-- InitBattleVariables (engine/battle/init_battle_variables.asm) writes 0 over
+-- it and core.asm pops it back when the battle ends, so a battle in an
+-- un-flashed Rock Tunnel is lit on hardware.  Every other BATTLE BG gets that
+-- for free -- no map draws beneath an opaque battle, so nothing re-arms the
+-- per-frame shade map -- but "world" keeps the overworld drawing underneath,
+-- and its arming then darkened the battle's own pics, HUD and text at colorize
+-- time (#773).
+function Game.worldBgBattleInStack(stack)
+  return Game.worldBgBattleDim(stack) ~= nil
 end
 
 -- Does anything on the stack want the surface scaled to FILL the window
