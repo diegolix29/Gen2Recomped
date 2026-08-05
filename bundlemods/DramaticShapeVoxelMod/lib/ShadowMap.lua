@@ -156,6 +156,11 @@ local ready = false
 local lastSig = nil
 local prevBlend, prevAlphaMode = nil, nil
 
+-- Cache the availability check to prevent repeated re-checking during
+-- route/scene changes. Once available() returns true, we assume the hardware
+-- capabilities don't change during gameplay (context loss is handled elsewhere).
+local availabilityCache = nil  -- nil = untried, true = available, false = unavailable
+
 local IDENTITY = Mat4.identity()
 
 -- world -> [0,1] cube, applied on top of the clip matrix: the main pass
@@ -224,13 +229,23 @@ function ShadowMap.available()
   if love.system and love.system.getOS and love.system.getOS() == "iOS" then
     return false
   end
+  -- Return cached result if available
+  if availabilityCache ~= nil then
+    return availabilityCache
+  end
+  
+  -- Check basic LOVE graphics capabilities
   if not (love.graphics and love.graphics.newCanvas
           and love.graphics.setDepthMode) then
+    availabilityCache = false
     return false
   end
+  
   -- the smallest rung is enough to answer the question; fit() picks the
   -- one this frame actually wants
-  return getShader() ~= nil and getCanvas(ShadowMap.SIZES[1]) ~= nil
+  local shaderAvailable = getShader() ~= nil and getCanvas(ShadowMap.SIZES[1]) ~= nil
+  availabilityCache = shaderAvailable
+  return shaderAvailable
 end
 
 -- The map to sample, or the blank stand-in. Never nil once the main pass
@@ -504,6 +519,8 @@ end
 function ShadowMap.invalidate()
   canvas, canvasRes, blank = nil, 0, nil
   drawing, ready, lastSig = false, false, nil
+  -- Reset availability cache so it gets re-checked on next available() call
+  availabilityCache = nil
 end
 
 return ShadowMap

@@ -250,8 +250,16 @@ end
 -- reads its own shadowing with must describe the same frame, or the
 -- mirror-flip half of the pair asks the map about texels the sun filed
 -- under the other cheek.
+-- The player's own card asks a different function for the same answer:
+-- their body's bearing is what the camera is derived FROM, so it is known
+-- continuously rather than as one of four directions, and measuring
+-- against the compass point instead flicks the card to a profile for a
+-- frame or two when the camera is spun fast (see playerFacing).
 local function viewFacing(p)
   if FirstPerson.cardBlend() > 0.5 then
+    if p.isPlayer then
+      return FirstPerson.playerFacing(p.facing, p.px + 8, p.py + 8)
+    end
     return FirstPerson.apparentFacing(p.facing, p.px + 8, p.py + 8)
   end
   return p.facing
@@ -467,14 +475,25 @@ function VoxelScene.prefetch(state)
   -- Limit neighbors based on DrawDistance setting for performance
   local neighborLimit = DrawDistance.neighborLimit()
   local limitedNeighbors = {}
-  for i, nb in ipairs(state.neighbors or {}) do
-    if i <= neighborLimit then
-      limitedNeighbors[#limitedNeighbors + 1] = nb
+  
+  -- If neighborLimit is nil (OFF setting), use all neighbors (original behavior)
+  if neighborLimit == nil then
+    limitedNeighbors = state.neighbors or {}
+    for _, nb in ipairs(limitedNeighbors) do
       live[nb.map.id] = true
       liveKey = liveKey .. "|" .. nb.map.id
     end
+  else
+    -- Apply neighbor limiting
+    for i, nb in ipairs(state.neighbors or {}) do
+      if i <= neighborLimit then
+        limitedNeighbors[#limitedNeighbors + 1] = nb
+        live[nb.map.id] = true
+        liveKey = liveKey .. "|" .. nb.map.id
+      end
+    end
   end
-
+  
   if liveKey ~= lastLiveKey then
     lastLiveKey = liveKey
     ChunkMesher.setLive(live)
@@ -856,6 +875,22 @@ local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
   if not ShadowMap.begin(cx, cy, vw, vh) then return end
 
   ShadowMap.draw(terrain, atlasFor(state.map), nil)
+  -- If neighborLimit is nil (OFF setting), render all neighbors (original behavior)
+  if neighborLimit == nil then
+    for i, nb in ipairs(state.neighbors or {}) do
+      if nbMesh[i] then
+        ShadowMap.draw(nbMesh[i], atlasFor(nb.map),
+                       Mat4.translate(nb.ox, 0, nb.oy))
+      end
+    end
+  else
+    for i, nb in ipairs(state.neighbors or {}) do
+      if i <= neighborLimit and nbMesh[i] then
+        ShadowMap.draw(nbMesh[i], atlasFor(nb.map),
+                       Mat4.translate(nb.ox, 0, nb.oy))
+      end
+    end
+  end
   for i, nb in ipairs(state.neighbors or {}) do
     if i <= neighborLimit and nbMesh[i] then
       ShadowMap.draw(nbMesh[i], atlasFor(nb.map),
@@ -875,6 +910,21 @@ local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
   end
   -- flower billboards live outside the terrain mesh (they draw after the
   -- characters, pulled -- see render), but the sun still sees them: a
+  -- handful of cutouts per meadow, unlike the grass left out below
+  ShadowMap.draw(ChunkMesher.flowers(state.map), atlasFor(state.map), nil)
+  if neighborLimit == nil then
+    for i, nb in ipairs(state.neighbors or {}) do
+      ShadowMap.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),
+                     Mat4.translate(nb.ox, 0, nb.oy))
+    end
+  else
+    for i, nb in ipairs(state.neighbors or {}) do
+      if i <= neighborLimit then
+        ShadowMap.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),
+                       Mat4.translate(nb.ox, 0, nb.oy))
+      end
+    end
+  end
   -- handful of cutouts per meadow, unlike the grass left out below.
   -- Every thin card from here down is SNUGGED toward the sun along its own
   -- ray (ShadowMap.snug) so its shadow keeps contact with its feet instead
@@ -927,6 +977,16 @@ local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
     ShadowMap.draw(BattleBillboard.mesh(), card.tex, ShadowMap.snug(card.model))
   end
   ShadowMap.sprites(false)
+  -- and the STADIUM models, outside the sprite flag and un-snugged, for
+  -- the reasons the flat battle pass gives (BattleScene.castShadows):
+  -- these are geometry, not cut-outs
+  pcall(function()
+    local stageArena, stageY = V.require("OverworldBattle").stage()
+    if stageArena and stageArena.discs then
+      V.require("StadiumStage").cast(ShadowMap, stageArena, stageY or 0)
+    end
+    V.require("Stadium").cast(ShadowMap)
+  end)
 
   ShadowMap.finish(sig)
 end
@@ -1035,10 +1095,19 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
   local function drawScene()
 
   Voxel3D.draw(terrain, atlasFor(state.map), nil)
-  for i, nb in ipairs(state.neighbors or {}) do
-    if i <= neighborLimit then
+  local neighborLimit = DrawDistance.neighborLimit()
+  -- If neighborLimit is nil (OFF setting), render all neighbors (original behavior)
+  if neighborLimit == nil then
+    for i, nb in ipairs(state.neighbors or {}) do
       Voxel3D.draw(nbMesh[i], atlasFor(nb.map),
                    Mat4.translate(nb.ox, 0, nb.oy))
+    end
+  else
+    for i, nb in ipairs(state.neighbors or {}) do
+      if i <= neighborLimit then
+        Voxel3D.draw(nbMesh[i], atlasFor(nb.map),
+                     Mat4.translate(nb.ox, 0, nb.oy))
+      end
     end
   end
 
@@ -1144,6 +1213,24 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
         Voxel3D.draw(BattleBillboard.mesh(), card.tex, card.model,
                      BattleBillboard.PULL)
       end
+      -- and, on the STADIUM rungs, the models -- the same skinned meshes the
+      -- flat pass and the sun already used this frame, drawn again through
+      -- THIS eye. Unlike the cards there is nothing per-eye about them: a
+      -- model faces its opponent, not the viewer, so both eyes see the same
+      -- pose from their own seats, which is what makes it read as solid.
+      --
+      -- On a disc rung the platforms come with them. In a headset the world is
+      -- still drawn -- the player is standing IN it, which is the whole point
+      -- of the headset, so the rung's "no map" does not apply here -- and the
+      -- discs then read as a stage set down on the ground, which is what they
+      -- are.
+      pcall(function()
+        local stageArena, stageY = V.require("OverworldBattle").stage()
+        if stageArena and stageArena.discs then
+          V.require("StadiumStage").draw(stageArena, stageY or 0)
+        end
+        V.require("Stadium").draw(BattleBillboard.PULL)
+      end)
       if battleTex.flash then Voxel3D.flatten(nil) end
       -- and the MOVE ANIMATIONS, standing on the same arena: the
       -- engine's own effects layer on the plane through both cells
@@ -1171,10 +1258,18 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
   local lean = math.max(leanAngle(), 0.05)
   local pull = VoxelScene.pull(lean)
   Voxel3D.draw(ChunkMesher.grass(state.map), atlasFor(state.map), nil, pull)
-  for i, nb in ipairs(state.neighbors or {}) do
-    if i <= neighborLimit then
+  local neighborLimit = DrawDistance.neighborLimit()
+  if neighborLimit == nil then
+    for i, nb in ipairs(state.neighbors or {}) do
       Voxel3D.draw(ChunkMesher.grass(nb.map), atlasFor(nb.map),
                    Mat4.translate(nb.ox, 0, nb.oy), pull)
+    end
+  else
+    for i, nb in ipairs(state.neighbors or {}) do
+      if i <= neighborLimit then
+        Voxel3D.draw(ChunkMesher.grass(nb.map), atlasFor(nb.map),
+                     Mat4.translate(nb.ox, 0, nb.oy), pull)
+      end
     end
   end
   -- flower billboards: pulled like the characters and the grass, MINUS
@@ -1191,7 +1286,20 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
   -- flowers are snugged casters too, so they read their own shadowing
   -- through the same snugged transform the sun stored them with
   Voxel3D.draw(ChunkMesher.flowers(state.map), atlasFor(state.map), nil,
-               fpull, ShadowMap.snug(nil))
+               fpull)
+  if neighborLimit == nil then
+    for i, nb in ipairs(state.neighbors or {}) do
+      Voxel3D.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),
+                   Mat4.translate(nb.ox, 0, nb.oy), fpull)
+    end
+  else
+    for i, nb in ipairs(state.neighbors or {}) do
+      if i <= neighborLimit then
+        Voxel3D.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),
+                     Mat4.translate(nb.ox, 0, nb.oy), fpull)
+      end
+    end
+  end
   for i, nb in ipairs(state.neighbors or {}) do
     if i <= neighborLimit then
       Voxel3D.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),

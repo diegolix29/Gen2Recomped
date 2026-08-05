@@ -76,10 +76,17 @@ local SHADER = [[
 local shader = nil            -- nil = untried, false = unavailable
 local ping, pong, cw, ch = nil, nil, 0, 0
 
+-- Cache the shader availability to prevent repeated re-checking during
+-- route/scene changes. Once the shader is successfully compiled, we assume
+-- the hardware capabilities don't change during gameplay (context loss is
+-- handled elsewhere).
+local shaderCache = nil  -- nil = untried, true = available, false = unavailable
+
 local function getShader()
   if shader == nil then
     local ok, sh = pcall(function() return love.graphics.newShader(SHADER) end)
     shader = (ok and sh) or false
+    shaderCache = (ok and sh) and true or false
   end
   return shader or nil
 end
@@ -174,6 +181,8 @@ end
 -- Drop the GPU objects (window resize, hot reload).
 function TiltShift.invalidate()
   ping, pong, cw, ch = nil, nil, 0, 0
+  shader = nil
+  shaderCache = nil
 end
 
 return TiltShift

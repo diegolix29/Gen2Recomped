@@ -361,13 +361,21 @@ Sky.GLOW_REACH = 0.55
 
 local shader = nil            -- nil = untried, false = unavailable
 
+-- Cache the shader availability to prevent repeated re-checking during
+-- route/scene changes. Once the shader is successfully compiled, we assume
+-- the hardware capabilities don't change during gameplay (context loss is
+-- handled elsewhere).
+local shaderCache = nil  -- nil = untried, true = available, false = unavailable
+
 local function getShader()
   if shader == nil then
     shader = false
+    shaderCache = false
     if love.graphics and love.graphics.newShader then
       local ok, sh = pcall(love.graphics.newShader, SHADER_SRC)
       if ok and sh then
         shader = sh
+        shaderCache = true
       elseif V and V.mod and V.mod.log then
         -- once, and only where it can be read: the fallback below is a sky
         -- without its dither, which is easy to look at and impossible to
@@ -736,6 +744,7 @@ end
 -- ramp is a GPU object on the same context and goes with it.
 function Sky.invalidate()
   shader = nil
+  shaderCache = nil
   if cache.ramp and cache.ramp.release then pcall(cache.ramp.release, cache.ramp) end
   cache.ramp, cache.rampFor = nil, nil
   if discBake.img and discBake.img.release then

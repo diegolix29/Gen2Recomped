@@ -276,6 +276,11 @@ local SHADER = [[
 local shaders = { [false] = nil, [true] = nil }
 local activeShader = nil      -- the variant this pass bound
 
+-- Cache the availability check to prevent repeated re-checking during
+-- route/scene changes. Once available() returns true, we assume the hardware
+-- capabilities don't change during gameplay (context loss is handled elsewhere).
+local availabilityCache = nil  -- nil = untried, true = available, false = unavailable
+
 -- Scene canvases, one per NAMED SLOT. There are exactly two callers and
 -- they want different sizes -- the free-roam pass renders at the window's
 -- pixel dimensions, the overworld battle at the GB's 160x144 -- and a
@@ -377,11 +382,22 @@ end
 -- love.graphics), without shader support, or where a depth canvas cannot be
 -- created -- every caller treats that as "stay on the 2D path".
 function Voxel3D.available()
+  -- Return cached result if available
+  if availabilityCache ~= nil then
+    return availabilityCache
+  end
+  
+  -- Check basic LOVE graphics capabilities
   if not (love.graphics and love.graphics.newCanvas
           and love.graphics.setDepthMode) then
+    availabilityCache = false
     return false
   end
-  return Voxel3D.shader() ~= nil
+  
+  -- Check shader availability
+  local shaderAvailable = Voxel3D.shader() ~= nil
+  availabilityCache = shaderAvailable
+  return shaderAvailable
 end
 
 -- Build a mesh in the shared format. `verts` is the LOVE vertex list and
@@ -1173,6 +1189,30 @@ function Voxel3D.seams(on)
         on and VoxelGrid.DARK or 0)
 end
 
+-- ADDITIVE for the length of a draw, or nil to put the pass back the way
+-- it was found.
+--
+-- Exactly one thing asks for this: the flame and gas primitives on a
+-- STADIUM battle model (Charmander's tail, Weezing's cloud -- see
+-- StadiumRig). Those are light, not surface: they are drawn over a body
+-- that is already in the depth buffer and they must ADD to it rather than
+-- replace it, or the flame comes out as an opaque orange sticker.
+--
+-- Depth WRITES go off with the blend, and for the usual reason -- a
+-- translucent thing that wrote depth would punch whatever comes after it
+-- out of the frame. The test stays on, so a flame behind a tree is still
+-- behind the tree.
+function Voxel3D.blend(mode)
+  if not active then return end
+  if mode == "add" then
+    pcall(love.graphics.setBlendMode, "add", "alphamultiply")
+    pcall(love.graphics.setDepthMode, "lequal", false)
+  else
+    pcall(love.graphics.setBlendMode, "alpha", "alphamultiply")
+    pcall(love.graphics.setDepthMode, "lequal", true)
+  end
+end
+
 -- Whether what is drawn next may consult the glass mask. false for the
 -- length of a sprite-sheet pass, true to put it back.
 --
@@ -1377,6 +1417,8 @@ function Voxel3D.invalidate()
   if discMesh and discMesh.release then pcall(discMesh.release, discMesh) end
   discMesh = nil
   ShadowMap.invalidate()
+  -- Reset availability cache so it gets re-checked on next available() call
+  availabilityCache = nil
   -- the sky is part of this pass and holds a shader of its own
   Sky.invalidate()
   -- and so does the water, for the same reason
