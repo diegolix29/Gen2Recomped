@@ -22,6 +22,10 @@ local TerrainAtlas = V.require("TerrainAtlas")
 local Voxel = V.require("VoxelState")
 local Sky = V.require("Sky")
 local Water = V.require("Water")
+local Ceiling = V.require("Ceiling")
+local Backdrop = V.require("Backdrop")
+local SkyLayer = V.require("SkyLayer")
+local Flora = V.require("Flora")
 local VoxelGrid = V.require("VoxelGrid")
 local DayNight = V.require("DayNight")
 local FirstPerson = V.require("FirstPerson")
@@ -1146,7 +1150,16 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
   -- about anything but their viewpoint.
   local function drawScene()
 
+  -- the distant horizon and sky (lib/Backdrop.lua, lib/SkyLayer.lua):
+  -- before the terrain, depth writes off, so every real surface draws over them
+  pcall(Backdrop.draw, state)
+  pcall(SkyLayer.draw, state)
+
   Voxel3D.draw(terrain, atlasFor(state.map), nil)
+
+  -- interiors, then ground detail (lib/Ceiling.lua, lib/Flora.lua)
+  pcall(Ceiling.draw, state, atlasFor)
+  pcall(Flora.draw, state, atlasFor)
   local neighborLimit = DrawDistance.neighborLimit()
   -- If neighborLimit is nil (OFF setting), render all neighbors (original behavior)
   if neighborLimit == nil then

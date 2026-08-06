@@ -53,6 +53,7 @@ local V = ...
 local Mat4 = V.require("Mat4")
 local Voxel = V.require("VoxelState")
 local Voxel3D = V.require("Voxel3D")
+local Jump = V.require("Jump")
 local WorldCurve = V.require("WorldCurve")
 local ThirdPerson = V.require("ThirdPerson")
 
@@ -602,9 +603,9 @@ function FirstPerson.frame(me, cx, cy, vw, vh)
 
   local head
   if me then
-    head = { me.px + 8,
-             (me.gh or 0) + (me.lift or 0) + FirstPerson.EYE_HEIGHT,
-             me.py + 8 }
+    head = { me.px + 8 + Jump.swayX(me),
+             (me.gh or 0) + (me.lift or 0) + FirstPerson.EYE_HEIGHT + Jump.eyeOffset(me),
+             me.py + 8 + Jump.swayZ(me) }
     lastEye = head
   else
     head = lastEye or { cx, FirstPerson.EYE_HEIGHT, cy }
