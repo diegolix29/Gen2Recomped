@@ -91,6 +91,7 @@ local BattleExit = V.require("BattleExit")
 local DayNight = V.require("DayNight")
 local DayTint = V.require("DayTint")
 local Water = V.require("Water")
+local ForestAtmos = V.require("ForestAtmos")
 local AntiAlias = V.require("AntiAlias")
 local FirstPerson = V.require("FirstPerson")
 local FreeMove = V.require("FreeMove")
@@ -191,6 +192,9 @@ mod.content.render_pipelines:register("voxel", {
     -- battles and menus, and a CYCLE evening falls mid-fight exactly as it
     -- would mid-walk
     DayNight.update(dt)
+    -- the atmosphere's own clock (shaft shimmer, drifting motes), on the
+    -- same tick so the beams keep breathing through a dialog box
+    ForestAtmos.update(dt)
     -- the first-person head, on the same tick: its blend in and out of the
     -- orbit, the mouse capture lifecycle, and the frame's stick-rate look.
     -- Unconditional like Voxel.update, because the blend has to keep easing
@@ -273,6 +277,8 @@ mod.content.render_pipelines:register("voxel", {
     Voxel3D.invalidate()
     OverworldBattle.invalidate()
     ChunkMesher.invalidate()   -- no map id = every cached mesh
+    ForestAtmos.invalidate()   -- shaft/particle meshes and shader sentinels
+    VR.invalidate()            -- the mirror, and FBO ids of dead canvases
   end,
 })
 
@@ -388,6 +394,23 @@ local SETTINGS = {
   { VoxelGrid.setting, "One-pixel wireframe along every voxel edge." },
   { WorldCurve.setting,
     "Bend the world down over the horizon, Animal Crossing style." },
+  { Water.setting,
+    "Reflections on water. FULL adds screen-space reflections of the "
+    .. "shoreline, the trees and the buildings behind it; SKY is the sky, "
+    .. "the sun and the moon alone, which is most of the look for a "
+    .. "fraction of the cost." },
+  -- `full` for the AA reason: additive shafts are fill rate, and under 4X
+  -- supersampling that is a question about the hardware, not the look.
+  { ForestAtmos.setting,
+    "The air of the deep woods (Viridian Forest): a ground haze, and "
+    .. "volumetric light let down through the unseen canopy overhead -- "
+    .. "gold spears of sun by day, silver moon rays at night, pollen "
+    .. "drifting through the beams and fireflies once they cool. LOW "
+    .. "keeps the haze, halves the beam march and stands the particles "
+    .. "down. On a phone the row offers LOW alone: the beams need a "
+    .. "depth texture the pass can read back, and no mobile driver here "
+    .. "grants one.",
+    full = true },
   { DrawDistance.setting,
     "How many adjacent maps to render: OFF (no limit, original behavior), "
     .. "NEAR (0 neighbors) for best performance on low-end devices, MILD "
@@ -834,6 +857,9 @@ mod.events:on("map.reloaded", function(payload)
   if payload and payload.reason == "colors" then return end
   local mapId = payload and (payload.mapId or (payload.map and payload.map.id))
   if mapId then ChunkMesher.invalidate(mapId) end
+  -- the atmosphere's layout stands on the same carved stamps the meshes
+  -- do, so it goes stale on exactly the same event
+  if mapId then ForestAtmos.invalidate(mapId) end
 end)
 
 -- ------- rows come and go, so the menu has to notice

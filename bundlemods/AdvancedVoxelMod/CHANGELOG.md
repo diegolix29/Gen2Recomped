@@ -1,5 +1,57 @@
 # Changelog
 
+## 1.6.2
+
+### Added
+
+- **The air of Viridian Forest: volumetric god rays, ground fog, and a
+  FOREST FX row.** An invisible jungle canopy now hangs above the forest's
+  real trees, and light comes down through it as true volumetric beams: a
+  per-pixel march reads the frame's own depth buffer and the sun's own
+  shadow map, so shafts stand exactly where light really breaks between
+  the tree hulls, trunks and passing characters carve dark columns
+  through them, and a wind-blown leaf field at the canopy plane opens and
+  closes the beams like foliage moving overhead. The beams are alpha zero
+  at the canopy and fade in as they descend -- light below the leaves,
+  never a lid above them -- and a forward-scattering term blooms them for
+  a camera looking up into the light, first person especially.
+
+  The scene shader gains a height-and-distance fog every surface sinks
+  into, and the rays are that fog lit: one shared ramp off the day/night
+  clock colours both, gold spears of sun by day, silver moon rays after
+  dark, dying back through the twilights as one hands over to the other.
+  Pollen drifts through the day's beams and fireflies blink low over the
+  floor at night, all shader-animated and deterministic. A fight staged
+  on the forest floor sits in the same haze at half density.
+
+  The direction never moves: a canopy map's light is pinned to noon (see
+  DayNight.CANOPY), so the beams always agree with the shadows on the
+  floor. Everything is authored per map in `data/map_atmosphere.lua` --
+  a map with no entry spends nothing -- and the **FOREST FX** row (FULL /
+  LOW / OFF, FULL by default) governs the cost: LOW halves the march and
+  stands the particles down. On Android the row offers LOW / OFF only --
+  no mobile driver grants the readable depth the march needs -- so the
+  forest keeps its haze there and loses the beams.
+
+## 1.6.1
+
+### Fixed
+
+- **Exeggutor, Tangela and Magmar stand as models in STADIUM battles, and
+  Pidgeot and Dodrio stop animating garbled.** Five species animate with
+  hermite keyframes rather than packed per-frame streams, and the extractor
+  read the animation flags byte from the wrong half of its u16 -- the half
+  that is always zero -- so it decoded their keyframe tables as streams.
+  For Exeggutor, Tangela and Magmar the result exploded so hard the packer
+  declined them to flat battle pics; Pidgeot and Dodrio stayed models but
+  played the garbage. All five now decode the way the game's own sampler
+  (src/17300.c) does, and no species is held off the field any more.
+
+  Model packs built by an older version of the mod are detected by a
+  revision stamp in the install marker and rebuilt from the ROM on the next
+  launch (or shadowed by a checkout's freshly packed set) rather than
+  trusted.
+
 ## 1.6.0
 
 ### Added
