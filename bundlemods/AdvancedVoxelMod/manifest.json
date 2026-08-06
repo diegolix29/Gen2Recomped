@@ -1,0 +1,20 @@
+{
+  "id": "ADVANCED_SHAPE",
+  "name": "Advanced Voxel Mod",
+  "version": "1.6.0",
+  "api": 2,
+  "entry": "main.lua",
+  "profile": "content",
+  "category": "GRAPHICS",
+  "game_version": "0.0.0-dev || >=0.1.37 <2.0.0",
+  "priority": 100,
+  "dependencies": [],
+  "optional_dependencies": [],
+  "conflicts": [],
+  "permissions": [
+    "engine_internals"
+  ],
+  "affects_link": false,
+  "description": "Draws the overworld as a 3D diorama.",
+  "github": "DramaticShapeVoxelMod/DramaticShapeVoxelMod"
+}
