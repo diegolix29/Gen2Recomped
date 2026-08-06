@@ -90,7 +90,14 @@ end
 -- type-4 turn can still use it
 do
   local _, _, rows = typeOf("BUBBLEBEAM", true)
-  eq(rows[1].sfx, "Damage", "the row carries the damage sound")
+  -- PlayApplyingAttackSound sets wFrequencyModifier alongside the sound
+  -- ($20 for SFX_DAMAGE), and the noise channel's polynomial counter IS
+  -- that modifier, so the row carries both now (#826)
+  eq(type(rows[1].sfx) == "table" and rows[1].sfx.sound, "Damage",
+     "the row carries the damage sound")
+  eq(rows[1].sfx.pitch, 0x20, "with its PlayApplyingAttackSound pitch byte")
+  eq(rows[1].sfx.tempo, nil,
+     "and no tempo byte: Audio2_note_length skips the sfx tempo on CHAN8")
   local _, _, plain = typeOf("TACKLE", true)
   check(plain[1].blink ~= nil, "a type-4 row carries the pic to blink")
 end
@@ -190,7 +197,10 @@ do
   eq(tb.fx.shakeProg, nil, "type 4 arms no shake (#354 must not regress it)")
   check(tb.fx.blink ~= nil and tb.fx.blink.target == tb.enemy,
         "type 4 blinks the enemy pic")
-  eq(tb.waitFrames, 20, "for the 20 frames AnimationBlinkEnemyMon takes")
+  -- AnimationBlinkMon (animations.asm:1360-1376) is `ld c, 6` iterations
+  -- of hide + DelayFrames 5 + show + DelayFrames 5 = 60 frames; the port
+  -- once ran it in 20, a third of its length (Timing.BLINK_MON).
+  eq(tb.waitFrames, 60, "for the 60 frames AnimationBlinkEnemyMon takes")
 end
 
 -- the OPTIONS animation toggle still gates the whole thing; the sound does not

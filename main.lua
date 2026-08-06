@@ -11,6 +11,7 @@
 local editorMode = os.getenv("POKEPORT_EDITOR") == "1" or POKEPORT_EDITOR_MODE == true
 
 local SwitchDiagnostics = require("src.debug.SwitchDiagnostics")
+local LaunchOptions = require("src.core.LaunchOptions")
 local NxDisplay = require("src.core.NxDisplay")
 
 -- Lua errors: persist a redacted trace in the save dir and surface a hint.
@@ -329,6 +330,26 @@ function love.load(args)
     if preload then require("src.core.Strings").load({ strings = preload }) end
   end
 
+  -- LAUNCH OPTIONS: skip the launcher and boot a game directly.
+  --   --game red|blue|yellow  (or POKEPORT_GAME / POKEPORT_LAUNCH)
+  --   --slot <id>             optional; picks the save slot to load
+  --   --launcher              force the launcher even if a game is set
+  -- This is what a desktop shortcut, a Steam entry, or a frontend like
+  -- EmulationStation needs: one click into the game the player wants, with no
+  -- menu in between.  A game that is not imported falls through to the
+  -- launcher on its tab rather than booting into nothing.
+  local launchGame, launchSlot = LaunchOptions.resolve(arg)
+  if launchGame and not LaunchOptions.forceLauncher(arg) then
+    if RomImporter.isReady(launchGame) then
+      if launchSlot then LaunchOptions.selectSlot(launchGame, launchSlot) end
+      bootGame(launchGame)
+      return
+    end
+    -- Not importable yet: open the launcher already showing that game, so the
+    -- shortcut still lands the player where they meant to go.
+    LaunchOptions.pendingTab = launchGame
+  end
+
   -- Interactive: the launcher always runs.  Red, Blue, and Yellow are each
   -- live: a column shows Play when that game's ROM is already imported, or
   -- Choose ROM / drag-drop when it is not.  Any dropped .gb is routed by its
@@ -613,7 +634,7 @@ function love.touchpressed(id, x, y, dx, dy, pressure)
     -- Android's synthesized mouse twin so Import cannot double-fire (#553).
     return Importer:touchpressed(id, x, y, dx, dy, pressure)
   end
-  Game:touchpressed(id, x, y)
+  Game:touchpressed(id, x, y, dx, dy, pressure)
 end
 
 function love.touchmoved(id, x, y, dx, dy, pressure)
@@ -625,7 +646,7 @@ function love.touchmoved(id, x, y, dx, dy, pressure)
   if Importer then
     return Importer:touchmoved(id, x, y, dx, dy, pressure)
   end
-  Game:touchmoved(id, x, y)
+  Game:touchmoved(id, x, y, dx, dy, pressure)
 end
 
 function love.touchreleased(id, x, y, dx, dy, pressure)
@@ -637,7 +658,7 @@ function love.touchreleased(id, x, y, dx, dy, pressure)
   if Importer then
     return Importer:touchreleased(id, x, y, dx, dy, pressure)
   end
-  Game:touchreleased(id, x, y)
+  Game:touchreleased(id, x, y, dx, dy, pressure)
 end
 
 function love.wheelmoved(x, y)
@@ -650,7 +671,33 @@ function love.wheelmoved(x, y)
   Game:wheelmoved(x, y)
 end
 
+-- #781: Linux X11 multi-monitor with the primary display away from desktop
+-- (0,0): SDL's polled mouse state can come back in desktop-virtual
+-- coordinates while the event stream stays window-relative, which strands
+-- every polled consumer (launcher Kit rising-edge clicks, the pad-cursor
+-- motion yield, PadCursor) on coordinates no hit test can match.  Sanitize
+-- the poll once here: remember the last window-relative event coordinates
+-- and substitute them whenever the polled value falls outside the window.
+-- Linux only -- macOS / Windows / mobile keep the stock function, and the
+-- NX launcher shim still composes because it captures whatever
+-- love.mouse.getPosition is at bridge time (_ensureNxPointerBridge).
+local eventMouseX, eventMouseY
+if love.system and love.system.getOS() == "Linux"
+    and love.mouse and love.mouse.getPosition then
+  local polledGetPosition = love.mouse.getPosition
+  love.mouse.getPosition = function()
+    local x, y = polledGetPosition()
+    local w, h = love.graphics.getDimensions()
+    if x < 0 or y < 0 or x > w or y > h then
+      if eventMouseX then return eventMouseX, eventMouseY end
+      return math.max(0, math.min(x, w)), math.max(0, math.min(y, h))
+    end
+    return x, y
+  end
+end
+
 function love.mousepressed(x, y, button, istouch)
+  if not istouch then eventMouseX, eventMouseY = x, y end
   if TouchEditor then
     -- Android primary touch already arrived via love.touchpressed; a second
     -- mouse path would double-fire Done / begin a second drag.
@@ -674,12 +721,19 @@ function love.mousepressed(x, y, button, istouch)
     if istouch and love.system.getOS() == "Android" then return end
     return EditorApp.mousepressed(x, y, button)
   end
-  if mouseTouch and Game and button == 1 then
-    Game:touchpressed("mouse", x, y)
+  if mouseTouch then
+    -- the mouse is standing in for a finger: the touch path owns it, and
+    -- feeding the same press back in as a mouse pointer would double it
+    if Game and button == 1 then Game:touchpressed("mouse", x, y) end
+    return
   end
+  -- #807: a real mouse reaches gameplay as a pointer event for mods; Game
+  -- drops synthesized istouch twins so a mobile touch that already arrived
+  -- through love.touchpressed cannot fire twice
+  if Game then Game:mousepressed(x, y, button, istouch) end
 end
 
-function love.mousereleased(x, y, button)
+function love.mousereleased(x, y, button, istouch)
   if TouchEditor then
     if love.system.getOS() == "Android" then return end
     return TouchEditor.mousereleased(x, y, button)
@@ -688,20 +742,25 @@ function love.mousereleased(x, y, button)
   if editorMode and EditorApp.mousereleased then
     return EditorApp.mousereleased(x, y, button)
   end
-  if mouseTouch and Game and button == 1 then
-    Game:touchreleased("mouse", x, y)
+  if mouseTouch then
+    if Game and button == 1 then Game:touchreleased("mouse", x, y) end
+    return
   end
+  if Game then Game:mousereleased(x, y, button, istouch) end
 end
 
-function love.mousemoved(x, y)
+function love.mousemoved(x, y, dx, dy, istouch)
+  if not istouch then eventMouseX, eventMouseY = x, y end
   if TouchEditor then
     if love.system.getOS() == "Android" then return end
     return TouchEditor.mousemoved(x, y)
   end
   if editorMode or Importer then return end
-  if mouseTouch and Game and love.mouse.isDown(1) then
-    Game:touchmoved("mouse", x, y)
+  if mouseTouch then
+    if Game and love.mouse.isDown(1) then Game:touchmoved("mouse", x, y) end
+    return
   end
+  if Game then Game:mousemoved(x, y, dx, dy, istouch) end
 end
 
 function love.textinput(text)
@@ -712,9 +771,36 @@ function love.textinput(text)
   end
 end
 
+-- #785: set once love.quit has routed a window close into HostShell.restart,
+-- so the follow-up quit event the restart itself raises (quit("restart") on
+-- desktop; AppImage and Android relaunch the process instead, #575) falls
+-- through to the normal shutdown below instead of restarting forever.
+local quitToLauncher = false
+
 function love.quit()
   if editorMode and EditorApp.quit then
-    return EditorApp.quit() -- return true to abort quit
+    -- true blocks the quit (unsaved-changes prompt).  A quit that proceeds
+    -- must fall through to the worker shutdowns below instead of returning:
+    -- the bundled editor opens from a live launcher whose update-check and
+    -- fetch-pool workers are still parked in Channel:demand(), and returning
+    -- here skipped their "quit" push, so the process outlived the closed
+    -- window and kept the install folder locked on Windows (#727).
+    if EditorApp.quit() then return true end
+  end
+  -- Closing the window of a running game returns to the launcher instead of
+  -- exiting the app, so testing a mod does not need a relaunch every time
+  -- (#785).  Game is only non-nil once bootGame ran; Importer non-nil means
+  -- the launcher (or its import) owns the window and its close still quits.
+  -- Scripted and headless runs (autopilot, frame driver, import-only, ROM
+  -- path import) keep the plain exit so they terminate as before.  Nothing
+  -- is saved here on purpose: a window close never wrote the save, and the
+  -- restart path must be no worse than that, not quietly better.
+  local scripted = os.getenv("POKEPORT_AUTOPILOT") or os.getenv("POKEPORT_DRIVER")
+    or os.getenv("POKEPORT_IMPORT_ONLY") == "1" or os.getenv("POKEPORT_IMPORT_ROM")
+  if Game and not Importer and not quitToLauncher and not scripted then
+    quitToLauncher = true
+    require("src.core.HostShell").restart()
+    return true -- abort this quit; the restart lands back in the launcher
   end
   pcall(function()
     require("src.core.DiscordPresence").shutdown()
@@ -728,6 +814,12 @@ function love.quit()
   end
   if package.loaded["src.update.Check"] then
     pcall(package.loaded["src.update.Check"].shutdown)
+  end
+  -- The launcher's fetch pool is the same story: its workers idle in
+  -- Channel:demand(), which never returns on its own, so a launcher that ever
+  -- touched the network would hang the process on exit (#339's shape again).
+  if package.loaded["src.net.Fetch"] then
+    pcall(package.loaded["src.net.Fetch"].shutdown)
   end
 end
 

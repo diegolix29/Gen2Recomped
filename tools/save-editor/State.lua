@@ -50,6 +50,12 @@ function State.new()
     -- without a z-order (#541).
     speciesPicker = nil,
 
+    -- item picker overlay: nil when closed, otherwise
+    -- { query, offset, dest = "bag"|"pc" }.  Same modal contract as
+    -- speciesPicker above -- adding an item is now a full-screen picker
+    -- rather than a card competing for height inside the Items tab.
+    itemPicker = nil,
+
     -- boxes
     selectedBox = 1,
     selectedBoxSlot = 1,
@@ -71,6 +77,7 @@ function State.new()
     eventsOffset = 0,
 
     -- dex
+    dexSort = "dex",  -- how the DEX grid is ordered: "dex" (by number) | "name" (A-Z)
     dexOffset = 0,
 
     -- map

@@ -266,6 +266,36 @@ function Ops.openSpeciesPicker(S, Kit)
   return true
 end
 
+-- The item catalog minus the badges, which are toggles on their own row and
+-- would otherwise be "addable" into the bag as ordinary items.
+function Ops.itemSearch(S, query)
+  query = tostring(query or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
+  local out = {}
+  for _, id in ipairs(S.cat.items) do
+    if not Ops.isBadgeId(id)
+        and (query == "" or id:lower():find(query, 1, true)) then
+      out[#out + 1] = id
+    end
+  end
+  return out
+end
+
+-- `dest` is "bag" or "pc"; the picker can flip it while open.  `opened`
+-- marks the frame it went up, so the click that opened it is not also read
+-- as a tap outside (the same rule the species picker follows).
+function Ops.openItemPicker(S, Kit, dest)
+  S.itemPicker = { query = "", offset = 0, opened = true,
+    dest = dest or "bag" }
+  -- focus the field on open so the mobile soft keyboard rises with it (#529)
+  if Kit then Kit.focus = "item-picker" end
+  return true
+end
+
+function Ops.closeItemPicker(S, Kit)
+  S.itemPicker = nil
+  if Kit and Kit.blur then Kit.blur() end
+end
+
 function Ops.closeSpeciesPicker(S, Kit)
   S.speciesPicker = nil
   if Kit and Kit.blur then Kit.blur() end
@@ -685,6 +715,58 @@ function Ops.dexClear(S)
   end
   S.save.pokedex = { seen = {}, owned = {} }
   return Ops.mark(S, "Pokedex wiped")
+end
+
+-- ------------------------------------------------------------------ dex sort
+-- The DEX grid's row order.  Sorting is view-only: it never touches the save,
+-- so the list itself is computed here (pure, testable) and the switch is
+-- narrated through Ops.say, never Ops.mark.
+--
+--   "dex"  -- by Pokedex number (1-151), the panel default
+--   "name" -- by display name, alphabetical (case-insensitive)
+--
+-- A species whose record lacks the sort key (a partial mod record) sorts
+-- last, ordered by its id, so the grid can never drop a row or crash.
+-- table.sort is not stable, so every sort carries the id as a tiebreak and
+-- the order is fully deterministic.
+local SORT_KEYS = {
+  dex = function(def, id)
+    return def and def.dex or math.huge
+  end,
+  name = function(def, id)
+    local name = def and def.name
+    return (name and tostring(name):lower()) or tostring(id):lower()
+  end,
+}
+
+function Ops.dexList(S)
+  local list = S and S.cat and S.cat.species
+  if not list then return {} end
+  local make = SORT_KEYS[S.dexSort == "name" and "name" or "dex"]
+  local data = S.data
+  local rows = {}
+  for _, id in ipairs(list) do
+    rows[#rows + 1] = { key = make(data and data.pokemon and data.pokemon[id], id),
+                        id = id }
+  end
+  table.sort(rows, function(a, b)
+    if a.key ~= b.key then return a.key < b.key end
+    return a.id < b.id
+  end)
+  local out = {}
+  for i, r in ipairs(rows) do out[i] = r.id end
+  return out
+end
+
+-- View-only verb: switching the DEX grid's order resets its scroll but never
+-- dirties the save or narrates in the status bar (the active chip carries
+-- the mode).  Returns true when the mode changed, false on a no-op.
+function Ops.dexSort(S, mode)
+  if mode ~= "name" and mode ~= "dex" then return false end
+  if S.dexSort == mode then return false end
+  S.dexSort = mode
+  S.dexOffset = 0
+  return true
 end
 
 -- -------------------------------------------------------------------- map

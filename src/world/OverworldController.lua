@@ -348,7 +348,12 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
     Game.save.flashLit = nil
     self:setDark(false)
   end
-  if Game.data.field.flyWarps[mapId] then
+  -- MarkTownVisitedAndLoadToggleableObjects marks towns only (cp
+  -- FIRST_ROUTE_MAP): the fly-warp table also carries the ROUTE_4/ROUTE_10
+  -- Pokemon Centers and the dungeon escape spots, and entering those never
+  -- sets a wTownVisitedFlag bit, so it must not set save.visited either (#788)
+  local mapDef = Game.data.maps[mapId]
+  if Game.data.field.flyWarps[mapId] and mapDef and Map.isFlyTown(mapDef) then
     Game.save.visited = Game.save.visited or {}
     Game.save.visited[mapId] = true
   end
@@ -419,8 +424,10 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
   self.entities = { self.player }
   for _, n in ipairs(self.npcs) do table.insert(self.entities, n) end
   -- Yellow's companion Pikachu trails the player (never in
-  -- self.entities: it does not block movement, pikachu_follow.asm)
-  require("src.world.PikachuFollower").onMapEntered(Game, self, opts)
+  -- self.entities: it does not block movement, pikachu_follow.asm).
+  -- true = fresh map entry: the follower spawns under the player and
+  -- walks out of the warp, not beside him (#863)
+  require("src.world.PikachuFollower").onMapEntered(Game, self, opts, true)
 
   -- opts.keepMusic: the Oak-escort warp keeps MUSIC_MEET_PROF_OAK
   -- playing into the lab (BIT_NO_MAP_MUSIC in wStatusFlags7);
@@ -1247,8 +1254,14 @@ end
 function OverworldState:checkBoulderPush(dir)
   local p = self.player
   local fx, fy = Collision.target(p.cellX, p.cellY, dir)
-  local npc = self:npcAtCell(fx, fy)
-  if not npc or not Map.isPushable(npc.def) or npc.moving then
+  -- IsSpriteInFrontOfPlayer (home/overworld.asm) hands TryPushingBoulder
+  -- the LOWEST sprite index standing on the faced cell, so in the original a
+  -- second sprite parked on the boulder's cell hides the boulder from the
+  -- push path for the rest of the map visit.  Pick the pushable sprite out of
+  -- the cell instead: a scripted walk-up that lands a trainer on the boulder
+  -- must not brick it permanently (#809).
+  local npc = self:pushableAtCell(fx, fy)
+  if not npc or npc.moving then
     self.boulderTried = nil -- pokered resets when no boulder is in front
     return false
   end
@@ -1703,6 +1716,22 @@ function OverworldState:npcAtCell(cx, cy)
   return nil
 end
 
+-- The Strength boulder on a cell, ignoring anything else standing there.
+-- npcAtCell returns whichever object the map listed first, which is only
+-- well defined while at most one sprite occupies a cell; scripted walks
+-- (TrainerWalkUpToPlayer) can break that, and the push path must still find
+-- the boulder underneath (#809).
+function OverworldState:pushableAtCell(cx, cy)
+  for _, npc in ipairs(self.npcs) do
+    if ((npc.cellX == cx and npc.cellY == cy) or
+        (npc.targetX == cx and npc.targetY == cy))
+       and Map.isPushable(npc.def) then
+      return npc
+    end
+  end
+  return nil
+end
+
 -- what the A press resolved to, for world.interacted's listeners
 local function interacted(self, fx, fy, kind, target)
   Runtime.emit("world.interacted", { mapId = self.map.id, x = fx, y = fy,
@@ -1886,7 +1915,14 @@ function OverworldState:tryHiddenObject(fx, fy)
       save.hiddenTaken = save.hiddenTaken or {}
       if save.hiddenTaken[key] then return false end
       if not require("src.inventory.Bag").add(save, h.item, 1, Game.data) then
-        Game.stack:push(TextBox.new(Game, Strings("You can't carry\nany more items!")))
+        -- hidden_items.asm FoundHiddenItemText: the find is announced first,
+        -- then GiveItem's .bagFull branch prints _HiddenItemBagFullText and
+        -- leaves the spot unfound; _CantCarryMoreText is the Toss line (#872)
+        local name = Game.data.items[h.item] and Game.data.items[h.item].name or h.item
+        Game.stack:push(TextBox.new(Game,
+          Strings("%s found\n%s!", save.player.name, name) .. "\f"
+          .. romText(Game.data, "_HiddenItemBagFullText",
+                     "But, {PLAYER} has\nno more room for\vother items!")))
         return true
       end
       save.hiddenTaken[key] = true
@@ -2345,8 +2381,21 @@ function OverworldState:trySurf(fx, fy, onClose)
   Game.stack:push(TextBox.new(Game, text, function()
     if onClose then onClose() end
     p.surfing = true
+    -- walking / biking / surfing is ONE state byte in the original:
+    -- ItemUseSurfboard (engine/items/item_effects.asm) writes 2 over
+    -- whatever wWalkBikeSurfState held, so mounting a surf ends the bike
+    -- outright -- no bike step cadence in Player:tryMove and no bike
+    -- theme on the water (#846).  Music.playMap re-picks the override
+    -- with BOTH flags, which setSurfing alone cannot do: effectiveMapSong
+    -- (src/core/Music.lua) prefers state.onBike over state.surfing.
+    Game.save.onBike = false
     self:syncSurfingPikachu()
-    require("src.core.Music").setSurfing(Game.data, true)
+    local Music = require("src.core.Music")
+    if self.map then
+      Music.playMap(Game.data, self.map.id, false, true)
+    else
+      Music.setSurfing(Game.data, true) -- headless harness with no map loaded
+    end
     Game.stack:push(require("src.render.Transition").whiteFlash(Game, nil,
       function() self:stepForwardOrCrossEdge(p.facing) end))
   end))
@@ -2518,7 +2567,17 @@ function OverworldState:talkTo(npc)
   -- the string "0" as truthy, so screen it out and fall through to text.
   if d.item and d.item ~= "0" and d.item ~= 0 then
     if not require("src.inventory.Bag").add(Game.save, d.item, 1, Game.data) then
-      Game.stack:push(TextBox.new(Game, Strings("You can't carry\nany more items!")))
+      -- pick_up_item.asm .BagFull prints _NoMoreRoomForItemText, not the
+      -- Toss-screen _CantCarryMoreText; Yellow announces the find first,
+      -- then the refusal (#872)
+      local noRoom = romText(Game.data, "_NoMoreRoomForItemText",
+        "No more room for\nitems!")
+      if GameVersion.isYellow() then
+        local name = Game.data.items[d.item] and Game.data.items[d.item].name or d.item
+        noRoom = Strings("%s found\n%s!", Game.save.player.name, name)
+                 .. "\f" .. noRoom
+      end
+      Game.stack:push(TextBox.new(Game, noRoom))
       return
     end
     Game.save.itemsTaken = Game.save.itemsTaken or {}
@@ -2932,7 +2991,12 @@ local function meetTrainerTheme(cls)
 end
 
 -- Run the pre-battle text -> battle -> won text -> flags sequence.
-function OverworldState:engageTrainer(npc, onDone)
+-- skipBattleText is for map scripts shaped like SilphCo11FDefaultScript
+-- (scripts/SilphCo11F.asm), which DisplayTextID the challenge line BEFORE
+-- the approach walk and then EngageMapTrainer with no further text: the
+-- caller already showed the box, so the battle starts without a second
+-- one (#869).
+function OverworldState:engageTrainer(npc, onDone, endBattleText, skipBattleText)
   local d = npc.def
   Runtime.emit("world.trainer_engaged", { npc = npc, trainerClass = d.trainerClass,
                                           partyIndex = d.trainerParty })
@@ -2942,10 +3006,18 @@ function OverworldState:engageTrainer(npc, onDone)
     battleText = select(1, Game.data:resolveText(self.map.def.label, d.text))
                  or Strings("I like shorts!\nThey're comfy and\neasy to wear!")
   end
-  local wonText = header and header.won and Game.data.text[header.won]
+  -- `endBattleText` is a caller-supplied stand-in for header.won: the
+  -- text_asm trainers that hand their loss line to the battle through
+  -- SaveEndBattleTextPointers (scripts/GameCorner.asm GameCornerRocketText
+  -- passes _GameCornerRocketBattleEndText, "Dang!") have no def_trainers
+  -- header for the extractor to read, so their script passes the finished
+  -- line here and it still lands where PrintEndBattleText puts it -- between
+  -- TrainerDefeatedText and MoneyForWinningText, on the battle screen (#862).
+  local wonText = endBattleText
+                  or (header and header.won and Game.data.text[header.won])
 
   local BattleState = require("src.battle.BattleState")
-  Game.stack:push(TextBox.new(Game, battleText, function()
+  local function startBattle()
     -- TalkToTrainer (home/trainers.asm:88) prints the before-battle text
     -- FIRST and only then runs `call EngageMapTrainer` / `jp
     -- StartTrainerBattle`, so a trainer challenged on foot gets the sting
@@ -2988,7 +3060,28 @@ function OverworldState:engageTrainer(npc, onDone)
       end
     end
     self:pushBattle(battle)
-  end))
+  end
+  if skipBattleText then
+    startBattle()
+  else
+    Game.stack:push(TextBox.new(Game, battleText, startBattle))
+  end
+end
+
+-- Shared GiveItem step for the victory rewards (pokered home/give.asm):
+-- the item goes through the bag's capacity check, and only a successful
+-- add sets the reward's gotFlag (EVENT_GOT_TM*) and copies the item name
+-- into wStringBuffer for the "{RAM:wStringBuffer}" received texts.
+local function giveVictoryItem(reward)
+  if not require("src.inventory.Bag").add(Game.save, reward.item, 1, Game.data) then
+    return false
+  end
+  if reward.gotFlag then
+    Game.save.flags[reward.gotFlag] = true
+  end
+  local idef = Game.data.items[reward.item]
+  Game.stringBuffer = idef and idef.name or reward.item
+  return true
 end
 
 -- Badges/items awarded after specific battles (data/scripts/victories.lua).
@@ -3019,12 +3112,13 @@ function OverworldState:checkVictoryRewards(trainerClass, partyIndex)
   if reward.badge then
     Game.save.inventory[reward.badge] = 1
   end
+  local tmGiven = false
   if reward.item then
-    local inv = Game.save.inventory
-    inv[reward.item] = (inv[reward.item] or 0) + 1
-    local idef = Game.data.items[reward.item]
-    -- GiveItem -> CopyToStringBuffer for "{RAM:wStringBuffer}" received texts
-    Game.stringBuffer = idef and idef.name or reward.item
+    -- pokered GiveItem (home/give.asm): AddItemToInventory first, and a
+    -- full bag (jr nc, .BagFull) skips the received lines for the "make
+    -- room" text, leaving EVENT_GOT_TM* unset so the leader's talk script
+    -- retries the hand-over later (offerGymTm via gyms.lua)
+    tmGiven = giveVictoryItem(reward)
   end
   local lines = {}
   if reward.dialogue then
@@ -3034,13 +3128,29 @@ function OverworldState:checkVictoryRewards(trainerClass, partyIndex)
         table.insert(lines, text[label])
       end
     end
+    if reward.item then
+      for _, label in ipairs(reward.tmPre or {}) do
+        if text[label] and text[label] ~= "" then
+          table.insert(lines, text[label])
+        end
+      end
+      if tmGiven then
+        for _, label in ipairs(reward.tmDialogue or {}) do
+          if text[label] and text[label] ~= "" then
+            table.insert(lines, text[label])
+          end
+        end
+      elseif reward.noRoom and text[reward.noRoom] and text[reward.noRoom] ~= "" then
+        table.insert(lines, text[reward.noRoom])
+      end
+    end
   elseif reward.badge or reward.item then
     if reward.badge then
       local name = Game.data.items[reward.badge] and Game.data.items[reward.badge].name
                    or reward.badge
       table.insert(lines, Strings("%s received\nthe %s!", Game.save.player.name, name))
     end
-    if reward.item then
+    if tmGiven then
       local name = Game.stringBuffer or reward.item
       table.insert(lines, Strings("%s received\n%s!", Game.save.player.name, name))
     end
@@ -3049,6 +3159,33 @@ function OverworldState:checkVictoryRewards(trainerClass, partyIndex)
     Game.stack:push(TextBox.new(Game, table.concat(lines, "\f")))
   end
   self:runVictoryHook()
+end
+
+-- A beaten leader re-running their ReceiveTM script when the bag was full
+-- at the victory (pokered's middle branch, e.g. PewterGymBrockText
+-- CheckEventReuseA EVENT_GOT_TM34 -> call PewterGymScriptReceiveTM34).
+-- The script's lead-in lines (tmPre: badge info / "Wait! Take this!")
+-- show again, then the same GiveItem check decides between the received
+-- lines and the "make room" text.
+function OverworldState:offerGymTm(reward, done)
+  local text = Game.data.text or {}
+  local lines = {}
+  local function addLine(label)
+    if label and text[label] and text[label] ~= "" then
+      table.insert(lines, text[label])
+    end
+  end
+  for _, label in ipairs(reward.tmPre or {}) do addLine(label) end
+  if giveVictoryItem(reward) then
+    for _, label in ipairs(reward.tmDialogue or {}) do addLine(label) end
+  else
+    addLine(reward.noRoom)
+  end
+  if #lines > 0 then
+    Game.stack:push(TextBox.new(Game, table.concat(lines, "\f"), done))
+  elseif done then
+    done()
+  end
 end
 
 -- pokered reloads the map after every battle, re-running the map
@@ -3151,8 +3288,26 @@ function OverworldState:startTrainerApproach(npc, dist)
   self.emote = {
     npc = npc, frames = 60,
     onDone = function()
-      if dist > 1 then
-        self:scriptMove(npc, npc.facing, dist - 1, fight)
+      -- TrainerWalkUpToPlayer (engine/overworld/trainer_sight.asm) writes
+      -- dist-1 NPC_MOVEMENT_* bytes and hands them to MoveSprite, and every
+      -- scripted step skips collision entirely (CanWalkOntoTile,
+      -- engine/overworld/movement.asm: "always allow walking if the
+      -- movement is scripted"), so the original marches the trainer straight
+      -- through a Strength boulder sitting on the sight line.  Stop one cell
+      -- short of the boulder instead: two sprites on one cell is a state the
+      -- push path cannot represent, and the walk-up is the one scripted move
+      -- the player can steer a boulder into (#809).
+      local steps = dist - 1
+      local cx, cy = npc.cellX, npc.cellY
+      for i = 1, steps do
+        cx, cy = Collision.target(cx, cy, npc.facing)
+        if self:pushableAtCell(cx, cy) then
+          steps = i - 1
+          break
+        end
+      end
+      if steps > 0 then
+        self:scriptMove(npc, npc.facing, steps, fight)
       else
         fight()
       end
@@ -3603,9 +3758,13 @@ function OverworldState:checkForcedMovement()
           return true
         end
       elseif tile.mode == "surf" then
+        -- scripts/SeafoamIslandsB4F.asm writes wWalkBikeSurfState = 2 and
+        -- jp ForceBikeOrSurf, so a forced surf clears the bike state the
+        -- same way the party-menu mount does (#846)
         p.surfing = true
+        Game.save.onBike = false
         self:syncSurfingPikachu()
-        require("src.core.Music").setSurfing(Game.data, true)
+        require("src.core.Music").playMap(Game.data, self.map.id, false, true)
       end
       return false
     end
@@ -3896,25 +4055,47 @@ function OverworldState:warpToHealPoint(onDone, opts)
     -- Dig/Teleport/Escape Rope land OUTSIDE at the last Pokemon Center TOWN
     -- door, like Fly (#196) -- NOT the interior heal cell a blackout returns
     -- to.  pret routes escape-warp and blackout both through wLastBlackoutMap
-    -- (both appear inside in front of the nurse), but this port has decided
-    -- the escape-warp destination is the town PC door.  Prefer the canonical
-    -- Fly landing (field.flyWarps, one tile south of the PC door warp), else
-    -- the remembered outdoor door cell; fall back to the interior heal cell
-    -- only for an old save with no recorded outdoor.
-    local out = heal.outdoor
-    if out then
-      local fw = (Game.data.field.flyWarps or {})[out.id]
-      map = out.id
-      x = fw and fw.x or out.x
-      y = fw and fw.y or out.y
+    -- (LoadSpecialWarpData .usedFlyWarp, engine/overworld/special_warps.asm),
+    -- and that map is ALWAYS an outdoor one: SetLastBlackoutMap copies
+    -- wLastMap (engine/events/set_blackout_map.asm) and WarpFound2 only
+    -- writes wLastMap on outside maps (home/overworld.asm), with the landing
+    -- cell read from FlyWarpDataPtr.  Prefer the canonical Fly landing
+    -- (field.flyWarps, one tile south of the PC door warp), else the
+    -- remembered outdoor door cell.
+    --
+    -- A heal record naming no outdoor town, or naming a map that is not
+    -- outdoors at all, is never a legal escape-warp destination: a .sav
+    -- import stamps lastHeal from wherever the cartridge was saved
+    -- (SaveConvert mergeDefaults), so ESCAPE ROPE was dropping the player
+    -- into the dungeon that save sat in, whose LAST_MAP exits then still
+    -- pointed at the door they had walked in through (#805).  Vanilla's
+    -- zero-filled wLastBlackoutMap is map 0, so an unusable record falls
+    -- back to the boot heal town exactly as a never-healed game does.
+    local out = heal.outdoor or { id = heal.map, x = heal.x, y = heal.y }
+    local fw = (Game.data.field.flyWarps or {})[out.id]
+    local outX = fw and fw.x or out.x
+    local outY = fw and fw.y or out.y
+    local outDef = Game.data.maps[out.id]
+    if not (outDef and outX and outY
+            and Map.isOutside(outDef,
+                  FieldDefaults.field(Game.data, "outsideTilesets"))) then
+      local zeroFill = require("src.core.SaveData")
+                       .defaultHeal(Game.data.field.boot)
+      out, outX, outY = { id = zeroFill.map }, zeroFill.x, zeroFill.y
     end
+    map, x, y = out.id, outX, outY
   end
   self:startWarpTo(map, x, y, "down", onDone)
   -- Blackouts land at the interior heal cell, so re-point LAST_MAP exits at
-  -- the remembered town door.  The teleport branch already lands ON that
-  -- outdoor map, so startWarpTo remembers it on the next exit; re-pointing
-  -- here would wrongly steer exits away from where the player now stands.
-  if heal.outdoor and not teleport then
+  -- the remembered town door.  The teleport branch re-points at the town it
+  -- just landed on: PrepareForSpecialWarp (engine/overworld/special_warps.asm)
+  -- writes the special-warp destination straight back into wLastMap for every
+  -- fly/escape warp that is not a dungeon warp, so the next LAST_MAP exit
+  -- resolves against that town instead of the dungeon door the player walked
+  -- in through before using the rope (#805).
+  if teleport then
+    self:rememberOutdoor(map, x, y)
+  elseif heal.outdoor then
     self:rememberOutdoor(heal.outdoor.id, heal.outdoor.x, heal.outdoor.y)
   end
 end
@@ -3993,7 +4174,7 @@ function OverworldState:startWarpTo(mapId, x, y, facing, onDone, opts)
   end, function()
     self.transitioning = false
     if onDone then onDone() end
-  end))
+  end, true))  -- warp shape: no fade back in (LoadGBPal restores in one write)
 end
 
 -- Re-read a map record after its data changed (WorldAPI:invalidateMap,
@@ -4302,7 +4483,13 @@ function OverworldState:drawWorld()
   -- ghost NPCs on neighbor maps, y-sorted among themselves
   table.sort(self.ghosts,
              function(a, b) return a.npc.py + a.oy < b.npc.py + b.oy end)
-  table.sort(self.entities, function(a, b) return a.py < b.py end)
+  table.sort(self.entities, function(a, b)
+    if a.py ~= b.py then return a.py < b.py end
+    -- a fresh warp spawn parks the follower on the player's own cell
+    -- until it trails out; the tie must draw it under him, never on
+    -- top (#863)
+    return a.pikachuFollower == true and b.pikachuFollower ~= true
+  end)
 
   -- === shared FX draw bodies ==========================================
   -- Each draws at flat world-canvas offsets; the tilt path wraps the

@@ -114,6 +114,12 @@ do
         "cont boundary waits for A with contAdvance")
   check(not box.done, "cont wait is not the final done prompt")
   eq(box.lineIndex, 2, "cont wait stays on the finished line until A")
+  -- ProtectedDelay3 (home/text.asm:265): the ▼ swallows the button for
+  -- three frames before ManualTextScroll starts listening
+  for _ = 1, 80 do
+    if (box.preWait or 0) == 0 then break end
+    box:update(0)
+  end
   pressed.a = true
   box:update(0)
   check(not box.waiting and not box.contAdvance, "A clears cont wait")
@@ -1044,7 +1050,7 @@ do
     kb.player.mon.status = "PSN"
     kb.enemy.mon.hp = 0 -- the opponent was already knocked out this turn
     local hpBefore = kb.player.mon.hp
-    kb:endOfTurn()
+    kb:residualFor(kb.player, kb.enemy)
     eq(kb.player.mon.hp, hpBefore,
        "no residual poison on the turn the poisoned mon lands the KO")
 
@@ -1052,7 +1058,7 @@ do
     local lb = BattleState.newWild(Game, "RATTATA", 5)
     lb.player.mon.status = "PSN"
     local live = lb.player.mon.hp
-    lb:endOfTurn()
+    lb:residualFor(lb.player, lb.enemy)
     check(lb.player.mon.hp < live, "poison still ticks while the opponent lives")
   end
 
@@ -1126,14 +1132,17 @@ do
   eq(pb:sendOutText("PIKA"), "The enemy's weak!\nGet'm! PIKA!",
      "send-out below 10%")
 
-  -- HP-bar drain converges at UpdateHPBar's pixel pace (maxHP/96/frame)
+  -- HP-bar drain converges at UpdateHPBar's per-side pace (2 frames per
+  -- bar pixel, enemy HP steps free; hp_bar.asm:81-148 via Timing)
   local db = BattleState.newWild(Game, "RATTATA", 5)
   local maxHP = db.enemy.mon.stats.hp
+  local startHP = db.enemy.mon.hp
   db.enemy.mon.hp = math.max(0, db.enemy.mon.hp - 5)
   local frames = 0
   while db:stepHPDrain() and frames < 2000 do frames = frames + 1 end
   eq(db.enemy.shownHP, db.enemy.mon.hp, "drain settles on the true HP")
-  local expect = math.ceil(5 / (maxHP / 96))
+  local expect = require("src.core.Timing").hpDrainFrames(
+    startHP, db.enemy.mon.hp, maxHP, false)
   check(math.abs(frames - expect) <= 1,
         ("drain speed ~2 frames per bar pixel (%d ~ %d)"):format(frames, expect))
 
@@ -3390,6 +3399,9 @@ runSuites({ "tests/input_hold_test.lua" })
 
 -- ---------------------------------------------- launcher cursor (#114)
 runSuites({ "tests/rom_importer_cursor_test.lua" })
+
+-- ---------------------------------------------- launcher last played tab (#835)
+runSuites({ "tests/rom_importer_last_version_test.lua" })
 
 -- ---------------------------------------------- Android second ROM pick (#167)
 runSuites({ "tests/rom_importer_android_pick_test.lua" })

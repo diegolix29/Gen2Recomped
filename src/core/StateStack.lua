@@ -39,17 +39,29 @@ function StateStack:update(dt)
   if top and top.update then top:update(dt) end
 end
 
+local function visibleByDefault() return true end
+
+-- A mod may mirror a state elsewhere and hide only its main-screen render.
+-- The state stays on the stack, so update and input ownership do not move.
+function StateStack:renderVisible(state)
+  if not state then return false end
+  if not Runtime.wantsHook("screen.render_visible") then return true end
+  return Runtime.call("screen.render_visible", visibleByDefault, state) ~= false
+end
+
 -- index of the lowest state drawn this frame (highest opaque, else 1)
 function StateStack:visibleBase()
   for i = #self.states, 1, -1 do
-    if self.states[i].isOpaque then return i end
+    local state = self.states[i]
+    if self:renderVisible(state) and state.isOpaque then return i end
   end
   return 1
 end
 
 function StateStack:draw()
   for i = self:visibleBase(), #self.states do
-    if self.states[i].draw then self.states[i]:draw() end
+    local state = self.states[i]
+    if self:renderVisible(state) and state.draw then state:draw() end
   end
 end
 

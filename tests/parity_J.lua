@@ -428,10 +428,15 @@ do
     bag:update(1 / 60)
   end
   check(stack:top() ~= bag, "the ball is thrown without input")
+  -- Battle exit now rides Transition.battleReturn (MapEntryAfterBattle's
+  -- GBFadeInFromWhite, home/overworld.asm:749-753): the battle pops itself
+  -- and pushes the fade, which fires onFinish only once ITS update counts
+  -- down -- so pump whatever sits on top of the stack, not the demo state.
   for _ = 1, 2000 do
     if finished then break end
     pressed.a = true
-    demo:update(1 / 60)
+    local top = stack:top()
+    if top then top:update(1 / 60) else break end
   end
   pressed.a = false
   check(finished, "the throw ends the demo battle")

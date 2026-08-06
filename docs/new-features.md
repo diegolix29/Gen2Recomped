@@ -332,6 +332,26 @@ one used sideways. An `options.lua` from before this split keeps its single
 layout in both orientations until one of them is edited. In-game, Options →
 **TOUCH PAD** toggles the same on/off flag without leaving a play session.
 
+## Haptic feedback (mobile)
+
+Options → **VIBRATION** (also in the launcher's gear menu) buzzes the device
+the instant an on-screen control takes a button (#806). A glass pad has no
+edges under a thumb, so the pulse is what tells you the press landed:
+sliding the d-pad from one direction to the next buzzes again, a second
+finger landing on a button that is already held does not, and releasing
+never does.
+
+Four levels: **OFF**, **LIGHT** (the default), **MEDIUM**, **HEAVY**.
+"Intensity" is really a pulse length -- the platform call takes a duration
+and nothing else -- so LIGHT is a 12 ms tick, MEDIUM 25 ms, HEAVY 45 ms.
+Stepping the row fires one sample pulse at the level you land on, so the
+three can be compared without leaving the menu. On iOS the system
+vibration has one fixed length, so all three levels feel the same there and
+the row is effectively on/off. The setting lives in `options.lua` and the
+row only appears where the on-screen pad can (Android/iOS, or desktop with
+`POKEPORT_TOUCH=1`, where it does nothing since desktop LOVE has no
+vibrator).
+
 ## Screen orientation lock (Android)
 
 Options → **ORIENTATION** (also in the launcher's gear menu) locks the
@@ -551,3 +571,64 @@ file pickers are ordinary desktop dialogs and still appear normally, and a
 run started from a terminal (`lovec.exe`, what `scripts\run.ps1` prefers)
 keeps its terminal and its printed output. Set `POKEPORT_CONSOLE=1` to opt
 out.
+
+## A faster, higher-contrast launcher
+
+The launcher and the save editor were rebuilt on one small immediate-mode UI
+kit (`src/ui/kit/`), replacing the vendored FlexLove layout engine. The
+visible result is that the launcher is quick: building and drawing a frame
+went from about 9 ms to under 1 ms on the same machine and the same data, at
+every window size, so the window keeps up with the pointer instead of
+trailing it. Measure it yourself with `POKEPORT_LAUNCHER_PROF=200 love .`.
+
+**Nothing blocks the window any more.** Fetching a mod index, checking a mod
+for updates, listing versions, downloading an install and pulling thumbnails
+all run on background threads. Opening FIND MODS on a cold cache used to
+freeze the launcher for as long as the server took -- often minutes, with no
+indication anything was happening. Mod indexes are now also fetched at boot,
+so the tab is usually already populated by the time you reach it.
+
+**Anything you wait on says so.** Every operation that takes time raises a
+loading panel with a spinner or a progress bar that cannot be clicked around
+or dismissed, so a half-finished install can never be interrupted by a stray
+click. Work that only affects one row (a mod's update check) shows a small
+spinner on that row instead and leaves the rest of the list usable.
+
+**Lists page instead of scrolling.** Mods, Find Mods, save slots, settings,
+release notes and the version list all show a fixed number of rows with a
+pager underneath, and the number of rows comes from the window height -- a
+tall window shows more, a phone shows fewer. A long list costs exactly what a
+short one does. The mouse wheel turns pages.
+
+**Updates live in the top right.** The in-app updater moved next to the
+settings gear and pulses when an update is waiting, instead of sitting in a
+banner at the bottom of the page that you had to scroll to notice. Checking
+for updates from there shows a loader like everything else.
+
+**A quit button.** An X sits to the right of the settings gear and closes
+the app cleanly, the same shutdown path as the window's close button. Mostly
+for platforms where reaching the window chrome is awkward (Android, Steam
+Deck, fullscreen desktops).
+
+**The look.** Black background, white outlines, no gradients or glows, and
+buttons that are solid colour-coded keys: green commits, blue navigates, red
+destroys, yellow wants attention. The three game tabs keep their red, blue
+and gold cartridge colours. Everything is about a third larger than before.
+The save editor follows the same theme, and adding an item there is now a
+searchable pop-up like adding a Pokemon, rather than a cramped list wedged
+into the tab.
+
+**Reset rebinds.** Input rebinds are additive, so there was no in-game way to
+undo one. A RESET REBINDS row in Settings, and a matching button under Touch
+Controls on each game tab, restore the stock keyboard, gamepad and touch
+layout. Both ask twice.
+
+## Launch options: boot straight into a game
+
+`love . --game red` skips the launcher and starts that game; `--slot <id or
+number>` picks the save slot to load, and `--launcher` forces the launcher
+anyway. `POKEPORT_GAME` / `POKEPORT_SLOT` do the same for shortcuts that can
+only pass environment variables. This is for one-click entries: a desktop
+shortcut per game, a Steam entry, or a handheld frontend. Asking for a game
+whose ROM has not been imported opens the launcher on that game's tab rather
+than failing.

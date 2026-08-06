@@ -242,8 +242,40 @@ local function coreRows(opts)
           opts.touchControls = tc
           return true
         end)
+      -- VIBRATION sits with it (#806): same gate, same subsystem.  Stepping
+      -- the row buzzes once at the level being selected.
+      local okTC, TC = pcall(require, "src.core.TouchControls")
+      if okTC then
+        add(Strings("VIBRATION"),
+          function() return Strings(TC.hapticLabel(opts.haptics)) end,
+          function(dir)
+            opts.haptics = TC.cycleHaptics(opts.haptics, dir)
+            TC.buzz(opts.haptics)
+            return true
+          end)
+      end
     end
   end
+
+  -- RESET REBINDS, directly under the touch-pad row.  Rebinds are additive
+  -- (src/core/Input.lua:applyBindings layers options.bindings over the
+  -- defaults rather than replacing them), so a player who has bound
+  -- themselves into a corner has no in-game way back -- there is no "unbind"
+  -- gesture.  Clearing the table restores the stock keyboard and pad layout
+  -- on the next Input:applyBindings, which the game does on its next start.
+  -- The dragged touch-overlay layout goes with it: it is the same class of
+  -- customisation and the same class of getting stuck.
+  rows[#rows + 1] = {
+    label = Strings("RESET REBINDS"),
+    actionLabel = Strings("Reset"),
+    danger = true,
+    action = function()
+      opts.bindings = nil
+      local tc = opts.touchControls
+      if type(tc) == "table" then tc.layouts = nil end
+      return true
+    end,
+  }
 
   return rows
 end

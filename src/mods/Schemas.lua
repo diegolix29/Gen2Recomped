@@ -74,7 +74,11 @@ function f.map(key, value)
     desc = ("map of %s -> %s"):format(key.desc, value.desc) }
 end
 
-function f.rec(fields)
+-- opts.strict closes the record to unknown fields even at the extensible
+-- top level.  A union alternative whose fields are ALL optional needs this:
+-- with top-level leniency it matches every table, so the union stops
+-- rejecting anything (the font "ttf" shape was the first such alternative).
+function f.rec(fields, opts)
   local names = {}
   for name in pairs(fields) do names[#names + 1] = name end
   table.sort(names)
@@ -83,7 +87,7 @@ function f.rec(fields)
     local ft = fields[name]
     parts[#parts + 1] = name .. (ft.kind == "opt" and "?" or "")
   end
-  return { kind = "rec", fields = fields,
+  return { kind = "rec", fields = fields, strict = opts and opts.strict or nil,
     desc = "{" .. table.concat(parts, ", ") .. "}" }
 end
 
@@ -175,7 +179,7 @@ checkValue = function(t, value, path, patchMode, errors, top)
         -- unknown keys are preserved unless they read as a typo of a known
         -- field.  Nested recs stay strict, that is where typos hide.
         local hint = suggest(t.fields, key)
-        if hint or not top then
+        if hint or not top or t.strict then
           errors[#errors + 1] = ("%s.%s: unknown field%s"):format(path, tostring(key),
             hint and (' (did you mean "' .. hint .. '"?)') or "")
         end
@@ -1088,13 +1092,17 @@ R.font = {
            advance = f.opt(f.int(1)),
            charmap = f.opt(f.list(f.rec{ code = f.int(0), seq = f.str })) },
     f.rec{ seq = f.str, code = f.int(0) },
-    f.rec{ file = f.opt(f.path), size = f.opt(f.int(1)),
-           spacing = f.opt(f.num), yOffset = f.opt(f.num),
-           bold = f.opt(f.bool),
-           -- characters that keep their ROM tile instead of coming from the
-           -- TTF: a string of them, or a list when a multi-character charmap
-           -- sequence is meant (src/render/Font.lua)
-           tiles = f.opt(f.union{ f.str, f.list(f.str) }) },
+    -- strict: every field here is optional ({} is a legal "ttf" entry), so
+    -- with the usual top-level leniency this alternative would match ANY
+    -- table and let malformed pages through the union unchecked
+    f.rec({ file = f.opt(f.path), size = f.opt(f.int(1)),
+            spacing = f.opt(f.num), yOffset = f.opt(f.num),
+            bold = f.opt(f.bool),
+            -- characters that keep their ROM tile instead of coming from the
+            -- TTF: a string of them, or a list when a multi-character charmap
+            -- sequence is meant (src/render/Font.lua)
+            tiles = f.opt(f.union{ f.str, f.list(f.str) }) },
+          { strict = true }),
   },
   extra = function(id, value)
     if fontIsCharmap(id) then
