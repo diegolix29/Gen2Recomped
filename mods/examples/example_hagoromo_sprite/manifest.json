@@ -1,0 +1,15 @@
+{
+  "id": "example_hagoromo_sprite",
+  "name": "Hagoromo Sprite Example",
+  "version": "1.0.0",
+  "api": 2,
+  "entry": "main.lua",
+  "profile": "content",
+  "category": "GRAPHICS",
+  "game_version": ">=0.0.0-0 <2.0.0",
+  "priority": 100,
+  "dependencies": [],
+  "optional_dependencies": [],
+  "conflicts": [],
+  "description": "Example mod demonstrating how to use larger custom sprites with custom frame dimensions"
+}

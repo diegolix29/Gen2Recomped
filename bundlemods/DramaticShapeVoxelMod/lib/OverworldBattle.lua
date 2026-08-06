@@ -1011,6 +1011,17 @@ local function sideVisible(battle, side)
             and not battle.enemySendingOut
             and not battle:fxHidden(battle.enemy)) and true or false
   end
+  -- During intro, if player has a Stadium model selected, don't show trainer back sprite
+  if battle.showPlayerBack and battle.playerBackPic then
+    local okPlayerModelInstall, PlayerModelInstall = pcall(V.require, "stadium_player_%d+")
+    if okPlayerModelInstall and PlayerModelInstall then
+      local filename = PlayerModelInstall.modelFilename()
+      if filename and (filename:match("stadium_player_%d+") or filename:match("stadium_player_%d+")) then
+        -- Player has a Stadium model selected, don't show trainer back sprite
+        return false
+      end
+    end
+  end
   if battle.showPlayerBack and battle.playerBackPic then return true end
   local hide = battle.safari or battle.demo
   return (battle.player and battle.player.sprite and not hide

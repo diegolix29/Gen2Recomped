@@ -1226,6 +1226,15 @@ function Voxel3D.glass(on)
   pcall(activeShader.send, activeShader, "glassOn", on and 1 or 0)
 end
 
+-- Set texture LOD bias for sharpness when scaling sprites
+-- Negative values force the GPU to use higher-resolution mipmaps
+function Voxel3D.setLodBias(bias)
+  Voxel3D.lodBias = bias or 0.0
+  if active and activeShader then
+    pcall(activeShader.send, activeShader, "lodBias", Voxel3D.lodBias)
+  end
+end
+
 function Voxel3D.endGhost()
   if not active then return end
   pcall(love.graphics.setDepthMode, "lequal", true)
@@ -1256,8 +1265,8 @@ function Voxel3D.shadowsActive()
   return ShadowMap.active()
 end
 
--- The upright card a character presents to the sun: its 16x16 sprite quad
--- (corners (0,0,0)..(16,16,0), feet at y = 0) standing on the middle of
+-- The upright card a character presents to the sun: its sprite quad
+-- (corners (0,0,0)..(width,height,0), feet at y = 0) standing on the middle of
 -- the cell whose top-left is world (px, py), feet at height `y`.
 --
 -- This is the caster the shadow pass draws -- deliberately NOT the leaning
@@ -1272,10 +1281,14 @@ end
 -- every vertex asks about the exact surface the sun recorded rather than
 -- one a few pixels behind it, and a figure cannot fringe itself. On the
 -- caster itself it is a no-op -- that quad is already flat.
-function Voxel3D.casterMatrix(px, py, y, mirror)
-  local m = Mat4.translate(px + 8, y, py + 8)
+function Voxel3D.casterMatrix(px, py, y, mirror, spriteWidth, spriteHeight)
+  local w = spriteWidth or 16
+  local h = spriteHeight or 16
+  local halfW = w / 2
+  local halfH = h / 2
+  local m = Mat4.translate(px + halfW, y, py + halfH)
   if mirror then m = Mat4.mul(m, Mat4.scale(-1, 1, 1)) end
-  return Mat4.mul(Mat4.mul(m, Mat4.translate(-8, 0, 0)),
+  return Mat4.mul(Mat4.mul(m, Mat4.translate(-halfW, 0, 0)),
                   Mat4.scale(1, 1, 0))
 end
 
@@ -1287,8 +1300,8 @@ end
 -- Flattening is measured from the ground plane, so a hop slides the whole
 -- shadow along the sun line while it stays glued to the ground -- the
 -- classic jump-shadow tell.
-function Voxel3D.shadowMatrix(px, py, gh, lift, mirror)
-  local card = Voxel3D.casterMatrix(px, py, gh + (lift or 0), mirror)
+function Voxel3D.shadowMatrix(px, py, gh, lift, mirror, spriteWidth, spriteHeight)
+  local card = Voxel3D.casterMatrix(px, py, gh + (lift or 0), mirror, spriteWidth, spriteHeight)
   -- flatten about the ground plane: y' = 0, x/z shear by height above it
   local squash = { 1, Voxel3D.SHADOW_KX, 0, 0,
                    0, 0,                 0, 0,

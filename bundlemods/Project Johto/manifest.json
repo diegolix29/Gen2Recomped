@@ -1,0 +1,7 @@
+{
+  "id": "projoh",
+  "name": "Project Johto",
+  "version": "0.0.2",
+  "entry": "main.lua",
+  "api": 2
+}

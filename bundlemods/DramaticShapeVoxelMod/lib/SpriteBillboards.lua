@@ -7,7 +7,7 @@
 -- pixels and nothing about a sprite is voxelized.
 --
 -- That is deliberate. A sprite is a DRAWING, not an object seen from one
--- side: Gen 1's overworld figures are 16x16 icons with a fixed front-on
+-- side: Gen 1's overworld figures are sprites with a fixed front-on
 -- reading, and turning one into a solid -- whether a contoured slab or a
 -- carved visual hull -- reconstructs a body the artist never drew and the
 -- game never implied. It also had the mod ship a description of the ROM
@@ -21,6 +21,10 @@
 -- matrix mirrors, not extra meshes. UVs point into the live sheet image,
 -- so RED++ OBP bakes, SGB palette bakes and sprite-replacing mods all
 -- texture it with no rebuild.
+--
+-- The system now supports dynamic sprite dimensions with separate width and
+-- height scaling, allowing for custom sprite sizes beyond the original 16x16 pixels.
+-- Use def.scale for overall scaling, or def.heightScale for height-specific scaling.
 
 -- the mod namespace (see main.lua): V.require loads a sibling module
 local V = ...
@@ -32,24 +36,59 @@ local SpriteBillboards = {}
 
 local meshes = {}
 
--- One flat 16x16 quad UV-mapped to a whole frame. A hair of inset keeps
--- the sampler inside this frame rather than picking up the neighbouring
--- one along the shared edge.
+-- One flat quad UV-mapped to a whole frame, with dynamic dimensions based on
+-- the actual sprite size. A hair of inset keeps the sampler inside this frame
+-- rather than picking up the neighbouring one along the shared edge.
 local function buildCard(def, frame)
   local ok, img = pcall(Assets.image, def.image)
   if not (ok and img) then return nil end
   local iw, ih = img:getDimensions()
-  local fy = frame * 16
-  if fy + 16 > ih then fy = 0 end
-  local u0, u1 = 0.02 / iw, (16 - 0.02) / iw
-  local v0, v1 = (fy + 0.05) / ih, (fy + 15.95) / ih
+  
+  -- Calculate frame dimensions dynamically from the sprite sheet
+  -- Assume frames are arranged vertically in the sheet
+  local frameCount = def.frames or 1
+  local frameHeight = ih / frameCount
+  local frameWidth = iw  -- Assume full width is used for one frame
+  
+  -- Get scale factor from sprite definition (defaults to 1.0)
+  local scale = def.scale or 1.0
+  
+  -- Get height-specific scale factor (defaults to regular scale)
+  local heightScale = def.heightScale or scale
+  
+  -- Calculate world dimensions (physical size in 3D space)
+  local worldWidth = frameWidth * scale
+  local worldHeight = frameHeight * heightScale
+  
+  local fy = frame * frameHeight
+  if fy + frameHeight > ih then fy = 0 end
+  
+  -- Calculate UV coordinates with small inset to prevent bleeding
+  local insetX = 0.02
+  local insetY = 0.05
+  local u0, u1 = insetX / iw, (frameWidth - insetX) / iw
+  local v0, v1 = (fy + insetY) / ih, (fy + frameHeight - insetY) / ih
+  
+  -- Create quad vertices with world dimensions (scaled physical size)
   local verts = {
-    { 0, 0, 0, u0, v1, 1 }, { 16, 0, 0, u1, v1, 1 },
-    { 16, 16, 0, u1, v0, 1 }, { 0, 16, 0, u0, v0, 1 },
+    { 0, 0, 0, u0, v1, 1 }, { worldWidth, 0, 0, u1, v1, 1 },
+    { worldWidth, worldHeight, 0, u1, v0, 1 }, { 0, worldHeight, 0, u0, v0, 1 },
   }
   local indices = {}
   Voxel3D.pushQuad(indices, 0)
-  return Voxel3D.newMesh(verts, indices)
+  local mesh = Voxel3D.newMesh(verts, indices)
+  
+  -- Apply high-quality texture filtering for scaled sprites
+  if mesh and love and love.graphics then
+    -- Enable linear filtering for smooth downsampling
+    local filterMode = (scale < 1.0 or heightScale < 1.0) and "linear" or "nearest"
+    pcall(function()
+      mesh:setTexture(img)
+      img:setFilter(filterMode, filterMode, 16) -- 16x anisotropic for quality
+    end)
+  end
+  
+  return mesh
 end
 
 -- The card for one (sprite def, frame index), or nil (headless / no
@@ -66,8 +105,85 @@ function SpriteBillboards.mesh(def, frame)
   if meshes[key] == nil then
     local ok, m = pcall(buildCard, def, frame)
     meshes[key] = (ok and m) or false
+    
+    -- Apply high-quality filtering to the image if mesh was created successfully
+    if ok and m then
+      local scale = def.scale or 1.0
+      local heightScale = def.heightScale or scale
+      local imgOk, img = pcall(Assets.image, def.image)
+      if imgOk and img then
+        SpriteBillboards.setHighQualityFiltering(img, scale, heightScale)
+      end
+    end
   end
   return meshes[key] or nil
+end
+
+-- Get the dimensions of a sprite frame for dynamic sizing
+-- Returns: textureWidth, textureHeight, worldWidth, worldHeight
+function SpriteBillboards.getSpriteDimensions(def, frame)
+  local ok, img = pcall(Assets.image, def.image)
+  if not (ok and img) then return 16, 16, 16, 16 end
+  local iw, ih = img:getDimensions()
+  
+  -- Calculate frame dimensions dynamically from the sprite sheet
+  local frameCount = def.frames or 1
+  local frameHeight = ih / frameCount
+  local frameWidth = iw  -- Assume full width is used for one frame
+  
+  -- Get scale factor from sprite definition (defaults to 1.0)
+  local scale = def.scale or 1.0
+  
+  -- Get height-specific scale factor (defaults to regular scale)
+  local heightScale = def.heightScale or scale
+  
+  -- Calculate world dimensions (physical size in 3D space)
+  local worldWidth = frameWidth * scale
+  local worldHeight = frameHeight * heightScale
+  
+  return frameWidth, frameHeight, worldWidth, worldHeight
+end
+
+-- Set high-quality texture filtering for scaled sprites
+-- This ensures that sprites scaled down to 0.25 or less still look sharp
+function SpriteBillboards.setHighQualityFiltering(img, scale, heightScale)
+  if not (img and love and love.graphics) then return end
+  
+  local filterMode = "linear"
+  local anisotropy = 16 -- Maximum anisotropic filtering for quality
+  
+  -- Use the smaller of the two scales for quality determination
+  local effectiveScale = math.min(scale or 1.0, heightScale or 1.0)
+  
+  -- For very small scales, use maximum quality settings
+  if effectiveScale < 0.5 then
+    anisotropy = 16
+  elseif effectiveScale < 0.75 then
+    anisotropy = 8
+  else
+    anisotropy = 4
+  end
+  
+  pcall(function()
+    img:setFilter(filterMode, filterMode, anisotropy)
+    -- Set mipmap filter for better downscaling quality
+    img:setMipmapFilter(filterMode, 0.5) -- 0.5 sharpness balance
+  end)
+end
+
+-- Get the recommended LOD bias for a sprite based on scale
+function SpriteBillboards.getLodBiasForScale(scale)
+  local lodBias = 0.0
+  if scale < 0.25 then
+    lodBias = -2.0  -- Maximum sharpness for very small sprites
+  elseif scale < 0.5 then
+    lodBias = -1.5  -- High sharpness for small sprites
+  elseif scale < 0.75 then
+    lodBias = -1.0  -- Moderate sharpness
+  else
+    lodBias = -0.5  -- Slight sharpness boost
+  end
+  return lodBias
 end
 
 -- Kept as its own name because the shadow and ghost passes read as their

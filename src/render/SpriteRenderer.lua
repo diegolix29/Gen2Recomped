@@ -84,9 +84,30 @@ function SpriteRenderer.new(spriteDef, seed)
   self.seed = seed
   self.image = getImage(spriteDef.image)
   local iw, ih = self.image:getDimensions()
+  
+  -- Support custom frame dimensions for larger sprites
+  local frameWidth = spriteDef.frameWidth or 16
+  local frameHeight = spriteDef.frameHeight or 16
+  local framesPerRow = spriteDef.framesPerRow or 1
+  local scale = spriteDef.scale or 1.0
+  local heightScale = spriteDef.heightScale or scale  -- Defaults to scale if not set
+  
+  self.frameWidth = frameWidth
+  self.frameHeight = frameHeight
+  self.framesPerRow = framesPerRow
+  self.scale = scale
+  self.heightScale = heightScale
+  
   self.frames = {}
   for f = 0, spriteDef.frames - 1 do
-    self.frames[f] = love.graphics.newQuad(0, f * 16, 16, 16, iw, ih)
+    -- Calculate frame position in the sprite sheet
+    -- If framesPerRow > 1, frames are arranged in a grid
+    -- Otherwise, frames are stacked vertically (default behavior)
+    local row = framesPerRow > 1 and math.floor(f / framesPerRow) or f
+    local col = framesPerRow > 1 and (f % framesPerRow) or 0
+    local x = col * frameWidth
+    local y = row * frameHeight
+    self.frames[f] = love.graphics.newQuad(x, y, frameWidth, frameHeight, iw, ih)
   end
   return self
 end
@@ -125,13 +146,15 @@ end
 
 -- facing: down/up/left/right; walkPhase: 0 stand, 1 walk; flip: alternate
 -- steps mirror the walk frame for up/down (GB uses OAM flip for this).
-local function blitFrame(image, quad, x, y, flip, redraw)
+local function blitFrame(image, quad, x, y, flip, redraw, frameWidth, scaleX, scaleY)
+  local sx = scaleX or 1.0
+  local sy = scaleY or 1.0
   if flip then
-    love.graphics.draw(image, quad, x + 16, y, 0, -1, 1)
-    if redraw then PaletteFX.markSpriteRedraw(image, quad, x + 16, y, -1) end
+    love.graphics.draw(image, quad, x + frameWidth * sx, y, 0, -sx, sy)
+    if redraw then PaletteFX.markSpriteRedraw(image, quad, x + frameWidth * sx, y, -sx) end
   else
-    love.graphics.draw(image, quad, x, y)
-    if redraw then PaletteFX.markSpriteRedraw(image, quad, x, y, 1) end
+    love.graphics.draw(image, quad, x, y, 0, sx, sy)
+    if redraw then PaletteFX.markSpriteRedraw(image, quad, x, y, sx) end
   end
 end
 
@@ -139,13 +162,20 @@ end
 -- bottom tile row of the standing frames with the fishing pose art, which the
 -- caller then draws itself through :drawTile (Player:draw, #384)
 function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip, topHalf)
+  local scaleX = self.scale or 1.0
+  local scaleY = self.heightScale or 1.0
   local x = math.floor(px - camX)
-  local y = math.floor(py - camY) - 4
+  -- Center the sprite vertically based on its frame height and scale
+  -- For 16x16 sprites, offset by 4px as before
+  -- For larger sprites, offset by (frameHeight - 16) / 2 to center on the tile
+  -- Apply scale to the offset as well
+  local yOffset = self.frameHeight == 16 and 4 or math.floor((self.frameHeight - 16) / 2)
+  local y = math.floor(py - camY) - yOffset * scaleY
   local image = self.image
   local redraw = false
-  -- full-color art claims its 16x16 cell out of the shade-remap pass
+  -- full-color art claims its frame-sized cell out of the shade-remap pass
   if self.def.trueColor then
-    PaletteFX.markTrueColor(x, y, 16, 16)
+    PaletteFX.markTrueColor(x, y, self.frameWidth * scaleX, self.frameHeight * scaleY)
   elseif PaletteFX.usesGbcPack() then
     -- RED++: the world canvas is already true-color (TileRenderer bakes
     -- terrain, this bakes the sprite) and the world pass runs unshaded
@@ -181,7 +211,7 @@ function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip, to
   -- still 3-frame sprites turn to face (the nurse at her machine,
   -- facePlayer on STAY NPCs) but never show walk frames
   if self.def.frames <= 1 then
-    blitFrame(image, self.frames[0], x, y, false, redraw)
+    blitFrame(image, self.frames[0], x, y, false, redraw, self.frameWidth)
     return
   end
   local frame = (self.def.walker and walkPhase == 1)
@@ -197,22 +227,34 @@ function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip, to
     self.halfFrames = self.halfFrames or {}
     if not self.halfFrames[frame] then
       local iw, ih = self.image:getDimensions()
-      self.halfFrames[frame] = love.graphics.newQuad(0, frame * 16, 16, 8, iw, ih)
+      -- Calculate the original frame position for half-frame extraction
+      local framesPerRow = self.framesPerRow or 1
+      local row = framesPerRow > 1 and math.floor(frame / framesPerRow) or frame
+      local col = framesPerRow > 1 and (frame % framesPerRow) or 0
+      local fx = col * self.frameWidth
+      local fy = row * self.frameHeight
+      local halfHeight = math.floor(self.frameHeight / 2)
+      self.halfFrames[frame] = love.graphics.newQuad(fx, fy, self.frameWidth, halfHeight, iw, ih)
     end
     quad = self.halfFrames[frame]
   end
-  blitFrame(image, quad, x, y, flip, redraw)
+  blitFrame(image, quad, x, y, flip, redraw, self.frameWidth, scaleX, scaleY)
 end
 
--- Blit a loose 16-wide fx tile at screen (x, y) wearing THIS sprite's OBJ
+-- Blit a loose fx tile at screen (x, y) wearing THIS sprite's OBJ
 -- palette, mirroring the mode branches in :draw above.  The fishing pose row
 -- overwrites the sheet's own tiles in VRAM in the original, so it has to be
 -- recolored and OG-RED-redrawn exactly like the sheet rather than blitted as
 -- raw DMG shades (#384).
 function SpriteRenderer:drawTile(path, x, y, flip)
   local image, redraw = getImage(path), false
+  local scaleX = self.scale or 1.0
+  local scaleY = self.heightScale or 1.0
+  -- Use dynamic dimensions for larger sprites
+  local tileWidth = self.frameWidth or 16
+  local tileHeight = math.floor((self.frameHeight or 16) / 2)  -- Half the frame height for tiles
   if self.def.trueColor then
-    PaletteFX.markTrueColor(x, y, 16, 8)
+    PaletteFX.markTrueColor(x, y, tileWidth * scaleX, tileHeight * scaleY)
   elseif PaletteFX.usesGbcPack() then
     local colors, group = PaletteFX.spriteObp(self.def, self.seed)
     if colors then image = getObpImage(path, colors, group) end
@@ -225,7 +267,7 @@ function SpriteRenderer:drawTile(path, x, y, flip)
   self.tileQuads = self.tileQuads or {}
   self.tileQuads[path] = self.tileQuads[path]
                          or love.graphics.newQuad(0, 0, iw, ih, iw, ih)
-  blitFrame(image, self.tileQuads[path], x, y, flip, redraw)
+  blitFrame(image, self.tileQuads[path], x, y, flip, redraw, tileWidth, scaleX, scaleY)
 end
 
 return SpriteRenderer

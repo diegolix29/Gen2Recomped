@@ -96,6 +96,10 @@ local FirstPerson = V.require("FirstPerson")
 local FreeMove = V.require("FreeMove")
 local CamControl = V.require("CamControl")
 local VR = V.require("VR")
+-- PLAYER MODEL: custom 3D models for the player character
+local PlayerModel = V.require("PlayerModel")
+local PlayerModelInstall = V.require("PlayerModelInstall")
+local PlayerModelPick = V.require("PlayerModelPick")
 -- HORDE MODE: the konami code's minigame. Horde owns the state machine and
 -- every hook; the other four are the gun, the crowd, the readout and the
 -- chip-synthesized sounds it fires. See lib/Horde.lua for the whole design.
@@ -209,6 +213,12 @@ mod.content.render_pipelines:register("voxel", {
     -- world, so it is never fighting the engine's own launcher for the
     -- screen.
     pcall(function() V.require("StadiumScreen").maybePush() end)
+    -- Load the player model if one is installed
+    pcall(function()
+      if not PlayerModel.loaded() and PlayerModelInstall.installed() then
+        PlayerModel.loadInstalled()
+      end
+    end)
     -- and a ROM the system file picker dropped in the save directory while
     -- we were not the top activity (Android; see StadiumRomPick.poll)
     pcall(function()
@@ -715,6 +725,16 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
     return V.require("StadiumRomPick").row()
   end)
   if okPick and importRow then extra[#extra + 1] = importRow end
+  -- Mewtwo player model row
+  local okMewtwo, mewtwoRow = pcall(function()
+    return V.require("PlayerModelPick").mewtwoRow()
+  end)
+  if okMewtwo and mewtwoRow then extra[#extra + 1] = mewtwoRow end
+  -- Stadium follower row
+  local okFollower, followerRow = pcall(function()
+    return V.require("PlayerModelPick").followerRow()
+  end)
+  if okFollower and followerRow then extra[#extra + 1] = followerRow end
   return insertGrouped(out, extra)
 end)
 
@@ -1042,13 +1062,16 @@ mod.events:on("save.loaded", function()
   DayNight.restore()
   -- a save written before this mod was installed can carry TILT or GBC FX
   -- switched on, and their rows are not there to switch them back off (see
-  -- pinEngineFx). Answered here rather than only when the menu opens, so a
-  -- player who never opens it is not left playing under one.
+  -- the pinEngineFx hook below)
   pinEngineFx()
 end)
 
 mod.events:on("save.created", function()
   DayNight.restore()
+  -- a save written before this mod was installed can carry TILT or GBC FX
+  -- switched on, and their rows are not there to switch them back off (see
+  -- pinEngineFx). Answered here rather than only when the menu opens, so a
+  -- player who never opens it is not left playing under one.
   pinEngineFx()
 end)
 

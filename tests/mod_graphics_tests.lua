@@ -887,6 +887,68 @@ do
   local cc = PaletteFX.CLASSIC[1]
   check(classic and classic.r == cc[1] / 255 and classic.g == cc[2] / 255
         and classic.b == cc[3] / 255,
+      "CLASSIC letterbox respects the DMG ramp")
+
+  Game.stack, PaletteFX.mode = savedStack, savedMode
+  love.graphics.rectangle, love.graphics.setColor = savedRect, savedColor
+end
+
+do
+  -- Test larger sprite support with custom frame dimensions
+  local largerSpriteDef = {
+    image = "assets/generated/sprites/red.png",
+    frames = 4,
+    frameWidth = 32,
+    frameHeight = 48,
+    framesPerRow = 2,
+    walker = true,
+  }
+  
+  local largerSprite = SpriteRenderer.new(largerSpriteDef)
+  
+  check(largerSprite.frameWidth == 32,
+        "SpriteRenderer stores custom frameWidth")
+  check(largerSprite.frameHeight == 48,
+        "SpriteRenderer stores custom frameHeight")
+  check(largerSprite.framesPerRow == 2,
+        "SpriteRenderer stores custom framesPerRow")
+  check(#largerSprite.frames == 4,
+        "SpriteRenderer creates correct number of frames")
+  
+  -- Test that quads are calculated correctly for grid layout
+  local quad0 = largerSprite.frames[0]
+  local quad1 = largerSprite.frames[1]
+  local quad2 = largerSprite.frames[2]
+  local quad3 = largerSprite.frames[3]
+  
+  check(quad0, "Frame 0 quad exists")
+  check(quad1, "Frame 1 quad exists")
+  check(quad2, "Frame 2 quad exists")
+  check(quad3, "Frame 3 quad exists")
+  
+  -- Test drawing with larger sprite
+  Renderer:init()
+  Renderer:beginFrame(true)
+  Renderer:beginWorldPass()
+  largerSprite:draw(32, 32, 0, 0, "down", 0, false)
+  local spriteRects = PaletteFX.trueColorRects("world")
+  -- With frameHeight 48, the y offset should be (48-16)/2 = 16, so y = 32 - 16 = 16
+  check(#spriteRects == 1, "Larger sprite reports true color zone")
+  check(spriteRects[1].w == 32 and spriteRects[1].h == 48,
+        "True color zone uses custom frame dimensions")
+  Renderer:endWorldPass()
+  Renderer:endFrame({ PaletteFX.whole(GRAYS) }, fullWorldZones())
+  
+  -- Test default values (backwards compatibility)
+  local defaultSprite = SpriteRenderer.new(
+    { image = "assets/generated/sprites/red.png", frames = 1 })
+  check(defaultSprite.frameWidth == 16,
+        "Default frameWidth is 16")
+  check(defaultSprite.frameHeight == 16,
+        "Default frameHeight is 16")
+  check(defaultSprite.framesPerRow == 1,
+        "Default framesPerRow is 1 (vertical stacking)")
+end
         "CLASSIC letterbox is the pea-soup paper, not white")
   check(classic and classic.g ~= 1,
         "the letterbox tracks the palette instead of filling flat white")

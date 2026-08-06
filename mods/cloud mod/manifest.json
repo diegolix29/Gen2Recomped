@@ -1,0 +1,7 @@
+{
+  "id": "sonic_over_red",
+  "name": "Sonic over Red",
+  "version": "1.0.1",
+  "entry": "main.lua",
+  "api": 2
+}
