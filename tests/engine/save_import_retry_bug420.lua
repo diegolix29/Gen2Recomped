@@ -131,7 +131,12 @@ package.loaded["src.import.CacheFs"] = fakeCache
 
 local SaveConvert = require("src.save_convert.SaveConvert")
 
-local GENERATED = { "pokemon", "moves", "items", "maps" }
+-- tilesets/audio joined the set with the #889 map-context rebuild, which
+-- reads the current map's tileset row and song out of the same cache.
+-- The audio entry is single-quoted on purpose: gate_meta_coverage.lua treats a
+-- double-quoted registry name anywhere in the test corpus as that registry's
+-- unit test, and this suite is not the mod audio registry's.
+local GENERATED = { "pokemon", "moves", "items", "maps", "tilesets", 'audio' }
 
 local function prefixes()
   local seen = {}
@@ -148,7 +153,7 @@ do
       name .. " comes out of Blue's cache, not the un-prefixed read path")
   end
   eq(prefixes()[GameVersion.VERSIONS.blue.cachePrefix], #GENERATED,
-    "all four generated tables are read under Blue's cache prefix")
+    "every generated table is read under Blue's cache prefix")
   eq(fakeCache.prefix, SENTINEL,
     "CacheFs.prefix is launcher-owned state and is put back after the read")
   check(data and data.eventFlags ~= nil,

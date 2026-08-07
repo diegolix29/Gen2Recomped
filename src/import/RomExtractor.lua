@@ -198,6 +198,12 @@ function RomExtractor:extractTilesets()
     out[constName] = {
       id = constName,
       source = ("ROM:Tilesets[%d]"):format(index - 1),
+      -- The raw Tilesets row, verbatim.  A .sav export has to reproduce what
+      -- LoadTilesetHeader (engine/overworld/tilesets.asm) would have left in
+      -- wTilesetBank..wGrassTile, because a Continue never re-runs it -- see
+      -- src/save_convert/MapContext.lua (#889).  Byte 12 is the tile
+      -- animation id, which rides in sTileAnimations.
+      header = self.rom:bytes(headers.bank, rowAddress, 12),
       image = "assets/generated/tilesets/" .. base .. ".png",
       imageWidth = spec.imageWidth,
       imageHeight = spec.imageHeight,
@@ -268,6 +274,11 @@ function RomExtractor:extractMaps()
     assert(tilesetId < #tilesets, constName .. ": unknown tileset id")
     local blockPointer = self.rom:word(header.bank, address + 3)
     local connectionFlags = self.rom:byte(header.bank, address + 9)
+    -- wCurMapHeader verbatim (tileset, height, width, data/text/script
+    -- pointers, connection flags).  A save restores this window instead of
+    -- rebuilding it, so an export has to carry the real bytes (#889).
+    local headerBytes = self.rom:bytes(header.bank, address, 10)
+    local connectionStart = address + 10
     address = address + 10
 
     local connections = {}
@@ -289,6 +300,8 @@ function RomExtractor:extractMaps()
     end
     assert(bit.band(connectionFlags, 0xF0) == 0,
       constName .. ": unknown connection flags")
+    local connectionBytes = self.rom:bytes(
+      header.bank, connectionStart, address - connectionStart)
     local objectPointer = self.rom:word(header.bank, address)
     local objectAddress = objectPointer
     local borderBlock = self.rom:byte(header.bank, objectAddress)
@@ -376,6 +389,17 @@ function RomExtractor:extractMaps()
       width = width, height = height, blocks = blocks,
       borderBlock = borderBlock, connections = connections,
       warps = warps, signs = signs, objects = objects,
+      -- Raw ROM bytes a .sav export replays through LoadMapHeader's WRAM
+      -- writes (src/save_convert/MapContext.lua, #889).  Kept as the original
+      -- bytes rather than re-encoded from the decoded tables above: the
+      -- pointers in them (wCurMapDataPtr, the connection strip src/dest
+      -- addresses, sign text ids) have no equivalent in the port's own model.
+      sram = {
+        header = headerBytes,
+        connections = connectionBytes,
+        objects = self.rom:bytes(
+          header.bank, objectPointer, objectAddress - objectPointer),
+      },
     }
     self:tick("Maps", mapIndex, #keys)
   end

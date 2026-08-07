@@ -27,6 +27,7 @@
 -- game regenerates all of it from wCurMap on the next map load anyway.
 
 local bit = require("bit")
+local MapContext = require("src.save_convert.MapContext")
 
 local GenSave = {}
 
@@ -1021,6 +1022,44 @@ function GenSave.encode(save, data, template)
   end
   if save.lastOutdoor and save.lastOutdoor.id then
     setByte(buf, O.lastMap, cw.mapsIndex[save.lastOutdoor.id] or 0)
+  end
+
+  -- Current-map engine state (see src/save_convert/MapContext.lua).  A
+  -- Continue restores this window from the save and never rebuilds it, so a
+  -- zero-filled one boots into a garbled map on a silent hang (#889).
+  --
+  -- Rebuilt when there is no template at all (a save that began as a New Game
+  -- in this port), and when the template was saved on a DIFFERENT map than the
+  -- one the player is standing on now -- an imported save that has since been
+  -- played carries the old map's header, which is just as unbootable.  A
+  -- template still on its own map keeps its bytes untouched: they are the
+  -- game's own, including live NPC positions, and preserving them is what
+  -- makes import -> export byte-identical.
+  local mapId = save.player and save.player.map
+  if mapId then
+    local rebuild = true
+    if src then
+      -- compare the way the byte was written (masked), and rebuild when the
+      -- map has no index at all rather than trusting a stale template
+      local index = cw.mapsIndex[mapId]
+      rebuild = index == nil or u8(src, O.curMap) ~= bit.band(index, 0xFF)
+    end
+    if rebuild then
+      local ctx = MapContext.build(data, mapId,
+        (save.player and save.player.x) or 0, (save.player and save.player.y) or 0)
+      if ctx then
+        for offset, values in pairs(ctx.writes) do
+          for i, value in ipairs(values) do
+            setByte(buf, O.mainData + offset + i - 1, value)
+          end
+        end
+        for i, value in ipairs(ctx.spriteData) do
+          setByte(buf, O.spriteData + i - 1, value)
+        end
+        -- sTileAnimations, the byte between sCurBoxData and the checksum
+        setByte(buf, O.checksumEnd - 1, ctx.tileAnimations)
+      end
+    end
   end
 
   -- play time: split save.playTime (seconds) back into H/M/S/F. The real

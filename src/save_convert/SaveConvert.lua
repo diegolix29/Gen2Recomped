@@ -42,10 +42,16 @@ local DATA_MODULES = {
   moves      = { "data.generated.moves",            "data/generated/moves.lua" },
   items      = { "data.generated.items",            "data/generated/items.lua" },
   maps       = { "data.generated.maps",             "data/generated/maps.lua" },
+  -- tilesets/audio are only read by src/save_convert/MapContext.lua, to
+  -- rebuild the current map's engine state on export (#889)
+  tilesets   = { "data.generated.tilesets",         "data/generated/tilesets.lua" },
+  audio      = { "data.generated.audio",            "data/generated/audio.lua" },
   charmap    = { "src.save_convert.data.charmap",   "src/save_convert/data/charmap.lua" },
   eventFlags = { "src.save_convert.data.event_flags", "src/save_convert/data/event_flags.lua" },
   toggleObjects = { "src.save_convert.data.toggle_objects", "src/save_convert/data/toggle_objects.lua" },
 }
+
+local OPTIONAL_MODULES = { tilesets = true, audio = true }
 
 -- Yellow renumbers wEventFlags bits: pokeyellow's constants/event_constants.asm
 -- inserts events pokered does not have (the Jessie & James fights, catch
@@ -132,7 +138,10 @@ local function ensureData(gameVersion)
         if not mod then
           local e
           mod, e = loadTable(spec[1], spec[2])
-          if not mod then return nil, e end
+          -- tilesets/audio only sharpen the export (MapContext); a cache
+          -- without them still imports and exports, just without the
+          -- rebuilt map window, so they must not fail the whole load
+          if not mod and not OPTIONAL_MODULES[name] then return nil, e end
         end
         data[name] = mod
       end

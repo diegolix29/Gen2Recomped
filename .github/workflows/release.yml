@@ -1,4 +1,4 @@
-name: Release
+﻿name: Release
 
 on:
   push:
@@ -31,9 +31,40 @@ jobs:
           name: gen1recomp-win64
           path: dist/win/gen1recomp-win64.zip
 
-  build-linux:
-    needs: prep
-    runs-on: ubuntu-latest
+  linux-arm64:
+    name: build Linux arm64 AppImage
+    needs: [version, love-payload]
+    # GitHub's free arm64 runner for public repos. It has to be arm64: the
+    # AppImage compiles LÖVE natively inside a Debian bullseye arm64
+    # container, and the qemu-emulated alternative takes hours.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download shared payload
+        uses: actions/download-artifact@v8
+        with:
+          name: gen1recomp-release-love
+          path: .bazinga/work
+      - name: Build Linux arm64 AppImage
+        run: |
+          set -euo pipefail
+          scripts/build_linux_arm64.sh \
+            --version "${{ needs.version.outputs.version }}" \
+            --game-love .bazinga/work/game.love
+      - name: Upload Linux arm64 release
+        uses: actions/upload-artifact@v7
+        with:
+          name: gen1recomp-linux-arm64-release
+          path: |
+            dist/linux-arm64/gen1recomp-${{ needs.version.outputs.version }}-linux-arm64.AppImage
+            dist/linux-arm64/gen1recomp-${{ needs.version.outputs.version }}-linux-arm64.AppImage.sha256
+          if-no-files-found: error
+          retention-days: 1
+
+  xbox-uwp:
+    name: build Xbox UWP release
+    needs: [version, love-payload]
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - name: Install squashfs tools
@@ -47,9 +78,10 @@ jobs:
           name: gen1recomp-linux
           path: dist/linux/gen1recomp-linux.zip
 
-  build-macos:
-    needs: prep
-    runs-on: macos-latest
+  release:
+    needs: [version, xbox-uwp, linux-arm64]
+    runs-on: ${{ fromJSON(github.repository == 'bryanthaboi/gen1recomp' && '["self-hosted", "macOS"]' || '"macos-latest"') }}
+
     steps:
       - uses: actions/checkout@v4
       - name: Install LOVE.app
@@ -93,7 +125,187 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          name: gen1recomp-xbox-uwp-release
+          path: dist/xbox-uwp
+
+      - name: Download Linux arm64 release
+        if: github.repository == 'bryanthaboi/gen1recomp'
+        uses: actions/download-artifact@v8
+        with:
+          name: gen1recomp-linux-arm64-release
+          path: dist/linux-arm64
+
+      - name: Stage release assets
+        if: github.repository == 'bryanthaboi/gen1recomp'
+        id: assets
+        run: |
+          set -euo pipefail
+          v="${{ needs.version.outputs.version }}"
+          outdir="dist/release"
+          rm -rf "$outdir"
+          mkdir -p "$outdir"
+          cp "dist/mac/gen1recomp-macos.zip" "$outdir/gen1recomp-${v}-macos.zip"
+          cp "dist/win/gen1recomp-win64.zip" "$outdir/gen1recomp-${v}-windows.zip"
+          cp "dist/linux/gen1recomp-linux.zip" "$outdir/gen1recomp-${v}-linux.zip"
+
+          # arm64 desktop Linux (Raspberry Pi, Armbian, arm64 VMs). Built on
+          # its own runner because LÖVE publishes no aarch64 binary and the
+          # AppImage has to be compiled natively; ships as a runnable
+          # AppImage rather than a zip so `chmod +x && ./it` just works.
+          arm64_appimage="dist/linux-arm64/gen1recomp-${v}-linux-arm64.AppImage"
+          [ -f "$arm64_appimage" ] || { echo "::error::$arm64_appimage not found (expected from the linux-arm64 job)"; exit 1; }
+          cp "$arm64_appimage" "$outdir/gen1recomp-${v}-linux-arm64.AppImage"
+          chmod +x "$outdir/gen1recomp-${v}-linux-arm64.AppImage"
+          apk="$(find dist/android/debug -name '*.apk' | head -1)"
+          [ -n "$apk" ] || { echo "::error::no Android APK found under dist/android/debug"; exit 1; }
+          cp "$apk" "$outdir/gen1recomp-${v}-android.apk"
+
+          ipa="dist/ios/gen1recomp.ipa"
+          [ -f "$ipa" ] || { echo "::error::$ipa not found (expected from scripts/build_ios.sh --device)"; exit 1; }
+          cp "$ipa" "$outdir/gen1recomp-${v}-ios.ipa"
+
+          swzip="dist/switch/gen1recomp-${v}-switch.zip"
+          [ -f "$swzip" ] || { echo "::error::$swzip not found (expected from scripts/build_switch.sh --fused → pack_sd_zip.sh)"; exit 1; }
+          cp "$swzip" "$outdir/gen1recomp-${v}-switch.zip"
+          # Local fused .nro stays under dist/switch/ for PR CI / debug; release
+          # publishes the SD-ready zip only.
+
+          uwp="dist/xbox-uwp/gen1recomp-${v}-xbox-uwp.zip"
+          [ -f "$uwp" ] || { echo "::error::$uwp not found (expected from the Xbox UWP job)"; exit 1; }
+          cp "$uwp" "$outdir/gen1recomp-${v}-xbox-uwp.zip"
+
+          # Anbernic handheld port (suffix names the CFW it targets, so a
+          # future RG35XX/other-CFW pack can ship alongside it).
+          rg34="dist/rg34xxsp/gen1recomp-rg34xxsp-stockos64-mod.zip"
+          [ -f "$rg34" ] || { echo "::error::$rg34 not found (expected from ./build-rg34xxsp.sh)"; exit 1; }
+          cp "$rg34" "$outdir/gen1recomp-${v}-rg34xxsp-stockos64-mod.zip"
+
+          # Platform-independent update payload, built alongside the desktop
+          # apps above (same game.love that gets fused into each of them).
+          love_file=".bazinga/work/game.love"
+          [ -f "$love_file" ] || { echo "::error::$love_file not found (expected from scripts/build.sh)"; exit 1; }
+          cp "$love_file" "$outdir/gen1recomp-${v}.love"
+
+          ls -lh "$outdir"
+
+          # Checksums for every staged release asset (sums file itself is
+          # written after this and named outside the gen1recomp-* glob, so it
+          # never lists itself).
+          (cd "$outdir" && shasum -a 256 gen1recomp-* > sha256sums.txt)
+          cat "$outdir/sha256sums.txt"
+
+      - name: Publish GitHub Release
+        if: github.repository == 'bryanthaboi/gen1recomp'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          v="${{ needs.version.outputs.version }}"
+          tag="${{ needs.version.outputs.tag }}"
+
+          # Issues this release closes. Three sources, deduped by number:
+          #   1. GitHub's own "closing issues" links on every PR whose
+          #      commits are in the range (works for squash, rebase, and
+          #      merge commits alike) -- including PRs that were merged
+          #      into a branch this release PR is itself merging in.
+          #   2. CLOSES/fixes/resolves text in those PRs' titles + bodies
+          #      that GitHub didn't turn into a closing link (a PR into a
+          #      non-default branch never gets one).
+          #   3. The same text in raw commit messages, so a direct push
+          #      with "CLOSES #N #M" still lands in the notes.
+          # Scans every commit since the previous tag so a skipped release
+          # run doesn't drop issues on the floor.
+          prev_tag="$(git tag -l 'v*' --sort=-v:refname | grep -v "^${tag}$" | head -1 || true)"
+          range="${prev_tag:+${prev_tag}..}$GITHUB_SHA"
+
+          # every #N on a line that carries a closing keyword (handles the
+          # multi-issue "CLOSES #1 #2 #3" form the tracker uses)
+          scan_closes() {
+            grep -iE '\b(close[sd]?|fix(es|ed)?|resolve[sd]?)\b' \
+              | grep -oE '#[0-9]+' | tr -d '#' || true
+          }
+
+          nums=""
+          nums+=" $(git log --pretty=%B "$range" | scan_closes | tr '\n' ' ')"
+
+          prs="$(git log --pretty=%H "$range" \
+                   | xargs -I{} gh api "repos/$GITHUB_REPOSITORY/commits/{}/pulls" \
+                         --jq '.[].number' 2>/dev/null \
+                   | sort -un || true)"
+          for pr in $prs; do
+            nums+=" $(gh api graphql \
+              -f owner="${GITHUB_REPOSITORY%/*}" \
+              -f name="${GITHUB_REPOSITORY#*/}" \
+              -F pr="$pr" \
+              -f query='
+                query($owner:String!, $name:String!, $pr:Int!) {
+                  repository(owner:$owner, name:$name) {
+                    pullRequest(number:$pr) {
+                      closingIssuesReferences(first:50) { nodes { number } }
+                    }
+                  }
+                }' \
+              --jq '.data.repository.pullRequest.closingIssuesReferences.nodes[].number' \
+              2>/dev/null | grep -E '^[0-9]+$' | tr '\n' ' ' || true)"
+            nums+=" $(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" \
+              --jq '.title + " " + (.body // "")' 2>/dev/null \
+              | scan_closes | tr '\n' ' ' || true)"
+          done
+
+          # dedupe, drop anything that is a PR or does not exist, keep
+          # titles (gh api prints the response body to stdout on an HTTP
+          # error, so only a zero exit counts)
+          closed=""
+          for n in $(printf '%s' "$nums" | tr ' ' '\n' | grep -E '^[0-9]+$' | sort -un); do
+            if title="$(gh api "repos/$GITHUB_REPOSITORY/issues/$n" \
+                --jq 'if .pull_request then empty else .title end' \
+                2>/dev/null)"; then
+              [ -n "$title" ] && closed+="- #$n $title"$'\n'
+            fi
+          done
+          closed="$(printf '%s' "$closed" | grep . | sort -t'#' -k2 -n || true)"
+
+          # Everyone whose commits are in the range: GitHub login when the
+          # commit is linked to an account, the raw git author name when not;
+          # CI bots filtered out.
+          base="${prev_tag:-$(git rev-list --max-parents=0 "$GITHUB_SHA" | tail -1)}"
+          contributors="$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/compare/${base}...${GITHUB_SHA}" \
+            --jq '.commits[] | if .author and .author.login
+                              then "@" + .author.login
+                              else .commit.author.name end' 2>/dev/null \
+            | grep -viE '\[bot\]$' | sort -uf | sed 's/^/- /' || true)"
+
+          notes="Download the correct version for your computer below."
+          if [ -n "$closed" ]; then
+            notes+=$'\n\n## Issues closed\n\n'"$closed"
+          fi
+          if [ -n "$contributors" ]; then
+            notes+=$'\n\n## Contributors\n\n'"$contributors"
+          fi
+          printf 'Release notes:\n%s\n' "$notes"
+
+          release_files=(
+            "dist/release/gen1recomp-${v}-macos.zip"
+            "dist/release/gen1recomp-${v}-windows.zip"
+            "dist/release/gen1recomp-${v}-linux.zip"
+            "dist/release/gen1recomp-${v}-linux-arm64.AppImage"
+            "dist/release/gen1recomp-${v}-android.apk"
+            "dist/release/gen1recomp-${v}-ios.ipa"
+            "dist/release/gen1recomp-${v}-switch.zip"
+            "dist/release/gen1recomp-${v}-xbox-uwp.zip"
+            "dist/release/gen1recomp-${v}-rg34xxsp-stockos64-mod.zip"
+            "dist/release/gen1recomp-${v}.love"
+            "dist/release/sha256sums.txt"
+          )
+
+          gh release create "$tag" \
+            --target "$GITHUB_SHA" \
+            --title "$v" \
+            --notes "$notes" \
+            "${release_files[@]}"
+
+          echo "Published release $tag"
 
       - name: Flatten artifacts
         run: |
