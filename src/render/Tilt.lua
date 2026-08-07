@@ -126,6 +126,11 @@ function Tilt:isSkyEnabled()
   return Tilt.options and Tilt.options.skyImageEnabled and Tilt.skyImage ~= nil
 end
 
+-- Check if mods should skip their own sky rendering (when custom sky is enabled)
+function Tilt:shouldModSkipSky()
+  return Tilt.options and Tilt.options.skyImageEnabled and Tilt.skyImage ~= nil
+end
+
 function Tilt.levelLabel(level)
   return Tilt.ANGLE_LABELS[(level or Tilt.level) + 1] or "OFF"
 end

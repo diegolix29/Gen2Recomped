@@ -1037,6 +1037,13 @@ function Sky.draw(state)
     status("indoors -- no sky here")
     return
   end
+  
+  -- Skip drawing if custom sky image is enabled
+  local Tilt = rawget(_G, "Tilt") or require("src.render.Tilt")
+  if Tilt and Tilt.shouldModSkipSky and Tilt:shouldModSkipSky() then
+    status("custom sky enabled -- skipping mod sky")
+    return
+  end
 
   local p = state.player
   local px = (p and p.px) or 0
