@@ -146,12 +146,6 @@ end
 --
 -- Mutates the descriptor, which is a fresh table per frame from its caller.
 function Sky.dress(sky)
-  -- Skip dressing if custom sky image is enabled
-  local Tilt = rawget(_G, "Tilt") or require("src.render.Tilt")
-  if Tilt and Tilt.shouldModSkipSky and Tilt:shouldModSkipSky() then
-    return sky
-  end
-  
   local bands = Sky.bands()
   local haze = bands and bands[#bands]
   if not (sky and haze) then return sky end
@@ -611,12 +605,6 @@ end
 -- fill is the whole sky. That fill is the palest band, so a frame that declines
 -- this looks like a hazy day rather than like a bug.
 function Sky.paint(w, h, sky, horizonY, cell, body, top, axis, ray)
-  -- Skip painting if custom sky image is enabled
-  local Tilt = rawget(_G, "Tilt") or require("src.render.Tilt")
-  if Tilt and Tilt.shouldModSkipSky and Tilt:shouldModSkipSky() then
-    return false
-  end
-  
   local bands = sky and sky.bands
   if not (bands and bands[1]) then return false end
   if not (w and h and w > 0 and h > 0) then return false end
