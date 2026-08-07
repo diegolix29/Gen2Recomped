@@ -77,52 +77,14 @@ local MAGIC_V64 = "\055\128\064\018"
 local MAGIC_N64 = "\064\018\055\128"
 
 -- Normalise a dump to .z64 order, or nil when it is not an N64 ROM at all.
--- Process in chunks to avoid memory exhaustion on mobile platforms.
 function StadiumRom.normalise(bytes)
   if type(bytes) ~= "string" or #bytes < 0x1000 then return nil end
   local magic = sub(bytes, 1, 4)
   if magic == MAGIC_Z64 then return bytes end
-  
-  local len = #bytes
-  local CHUNK_SIZE = 65536 -- 64KB chunks to balance memory and performance
-  
-  if magic == MAGIC_V64 then
-    -- Swap each pair of bytes
-    local result = {}
-    for i = 1, len, CHUNK_SIZE do
-      local chunk_end = math.min(i + CHUNK_SIZE - 1, len)
-      local chunk = {}
-      for j = i, chunk_end, 2 do
-        if j + 1 <= chunk_end then
-          chunk[#chunk + 1] = sub(bytes, j + 1, j + 1)
-          chunk[#chunk + 1] = sub(bytes, j, j)
-        else
-          chunk[#chunk + 1] = sub(bytes, j, j)
-        end
-      end
-      result[#result + 1] = concat(chunk)
-    end
-    return concat(result)
-  end
-  
+  if magic == MAGIC_V64 then return (bytes:gsub("(.)(.)", "%2%1")) end
   if magic == MAGIC_N64 then
-    -- Reverse each word (4 bytes)
-    local result = {}
-    for i = 1, len, CHUNK_SIZE do
-      local chunk_end = math.min(i + CHUNK_SIZE - 1, len)
-      local chunk = {}
-      for j = i, chunk_end, 4 do
-        local b4 = (j + 3 <= chunk_end) and sub(bytes, j + 3, j + 3) or ""
-        local b3 = (j + 2 <= chunk_end) and sub(bytes, j + 2, j + 2) or ""
-        local b2 = (j + 1 <= chunk_end) and sub(bytes, j + 1, j + 1) or ""
-        local b1 = sub(bytes, j, j)
-        chunk[#chunk + 1] = b4 .. b3 .. b2 .. b1
-      end
-      result[#result + 1] = concat(chunk)
-    end
-    return concat(result)
+    return (bytes:gsub("(.)(.)(.)(.)", "%4%3%2%1"))
   end
-  
   return nil
 end
 
@@ -149,19 +111,12 @@ local function bytesToString(out, n)
   if n == 0 then return "" end
   local parts, np = {}, 0
   local i = 1
-  -- Use smaller chunks to reduce memory pressure for large decompressions
-  local currentChunk = CHUNK
-  
   while i <= n do
-    local j = i + currentChunk - 1
+    local j = i + CHUNK - 1
     if j > n then j = n end
     np = np + 1
     parts[np] = char(unpack(out, i, j))
     i = j + 1
-    -- Force garbage collection periodically for large outputs
-    if np % 32 == 0 then
-      collectgarbage("step", 512)
-    end
   end
   return concat(parts)
 end

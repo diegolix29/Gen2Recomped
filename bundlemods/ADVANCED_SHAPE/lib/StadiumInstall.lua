@@ -115,9 +115,28 @@ function StadiumInstall.romPresent()
   return StadiumInstall.romPath() ~= nil
 end
 
+-- Make sure `baseroms/` actually exists before we tell someone to put a
+-- file in it. Without this, the folder only ever appeared once a ROM was
+-- ALREADY there, and a player being pointed at a path that does not exist
+-- yet has to know, on their own, that creating it themselves is even an
+-- option -- a phone's file manager does not offer "create baseroms here"
+-- next to a folder it cannot see.
+--
+-- Safe to call any number of times: love.filesystem.createDirectory is a
+-- no-op on a folder that is already there, and this is wrapped in pcall for
+-- the same reason everything else touching `f` is -- a sandboxed loader
+-- that hands a mod no filesystem at all should not crash on the attempt.
+function StadiumInstall.ensureRomDir()
+  local f = fs()
+  if not (f and f.createDirectory) then return false end
+  local ok = pcall(f.createDirectory, StadiumInstall.ROM_DIR)
+  return ok and true or false
+end
+
 -- Where to tell the player to put it. The save directory is the answer that
 -- is always writable, and it is the one a packaged build needs.
 function StadiumInstall.romHint()
+  StadiumInstall.ensureRomDir()
   local f = fs()
   local base = (f and f.getSaveDirectory and select(2, pcall(f.getSaveDirectory)))
   if type(base) ~= "string" then base = "the game folder" end
@@ -249,11 +268,6 @@ function StadiumInstall.beginFrom(bytes, label)
   local f = fs()
   if not f then return false, "no filesystem" end
   if type(bytes) ~= "string" or #bytes == 0 then return false, "empty file" end
-
-  -- Force garbage collection before processing large ROM files to prevent crashes
-  if #bytes > 16777216 then -- 16MB threshold
-    collectgarbage("collect")
-  end
 
   local StadiumRom = V.require("StadiumRom")
   local StadiumBuild = V.require("StadiumBuild")

@@ -114,13 +114,19 @@ local OPEN_AIR_TILESETS = {
 -- there, so a sealed ceiling would slam shut in front of a camera that
 -- is now OUTSIDE the room -- the lid problem, again.
 --
--- showsPlayer() is the signal to use rather than extended(): it is false
--- when the boom collapses into the head (backed against a wall), and at
--- that moment the view really is first person and really does want its
--- ceiling.  Dramatic Shape reasons the same way about its own character
--- card.
+-- We check the actual voxel level to determine if we're in 3rd person
+-- mode, rather than relying on the boom extension. This ensures the
+-- ceiling respects the 3RD CEILING setting even when the camera is
+-- backed against a wall and the boom collapses.
 local okTP, ThirdPerson = pcall(V.require, "ThirdPerson")
+local okVoxel, Voxel = pcall(V.require, "VoxelState")
 local function boomedOut()
+  -- Check if we're actually in 3rd person mode
+  if okVoxel and Voxel and Voxel.isThirdPerson then
+    local ok, isTP = pcall(Voxel.isThirdPerson, Voxel.level)
+    if ok and isTP then return true end
+  end
+  -- Fallback to the old method for compatibility
   if not (okTP and ThirdPerson and ThirdPerson.showsPlayer) then
     return false
   end
@@ -1375,13 +1381,14 @@ function Ceiling.draw(state, atlasFor)
   local okBlend, blend = pcall(FirstPerson.blendEased)
   blend = okBlend and blend or 0
   -- Three separate questions, three separate answers:
-  --   inside the head            -> the whole room, sealed
+  --   inside the head (1ST)        -> the whole room, sealed
   --   boomed out in 3RD          -> whatever 3RD CEILING says
   --   the diorama rungs          -> whatever SIMS CUTAWAY says
   -- They used to share one toggle, which meant you could not have a
   -- cutaway in the diorama and nothing at all in 3RD.
   local mode
-  if blend > BLEND_GATE and not boomedOut() then
+  local is3rd = boomedOut()
+  if blend > BLEND_GATE and not is3rd then
     mode = "fp"
   elseif blend > BLEND_GATE then
     local want = cfg.third or "CUTAWAY"

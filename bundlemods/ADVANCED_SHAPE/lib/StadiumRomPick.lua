@@ -203,8 +203,6 @@ end
 -- restart the app while it is up. The only way to notice the result is to
 -- poll for PICKED landing in the save directory (poll(), below) -- the same
 -- pattern RomImporter.lua uses for its own ROM/mod/save pickers.
-function StadiumRomPick._pending() return StadiumRomPick.armed end
-
 function StadiumRomPick.chooseAndroid()
   local love_system = love and love.system
   local fn = love_system and love_system.pickFile
@@ -358,12 +356,6 @@ function StadiumRomPick.poll(game)
   StadiumRomPick.armed = false
   local okRead, bytes = pcall(f.read, StadiumRomPick.PICKED)
   pcall(f.remove, StadiumRomPick.PICKED)
-  
-  -- Force garbage collection after reading large ROM file on Android
-  if okRead and type(bytes) == "string" and #bytes > 16777216 then
-    collectgarbage("collect")
-  end
-  
   if not (okRead and type(bytes) == "string") then
     StadiumInstall.status.state = "failed"
     StadiumInstall.status.error = "could not read the picked file"
