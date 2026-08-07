@@ -72,7 +72,22 @@ if not (okFP and type(FirstPerson) == "table") then
 end
 local okDN, DayNight = pcall(V.require, "DayNight")
 
+-- Try to load the Tilt module to access sky image with full options support
+local okTilt, Tilt = pcall(function()
+  return require("src.render.Tilt")
+end)
+
 local Sky = {}
+
+-- Get the sky image from the main game's Tilt system
+-- This respects all the options: pixelation, offset, zoom, enabled state
+local function getSkyImage()
+  if not (okTilt and Tilt) then return nil end
+  -- Use Tilt:isSkyEnabled() to check if sky is enabled in options
+  if not Tilt:isSkyEnabled() then return nil end
+  -- Use Tilt:getSkyImage() to get the image with pixelation applied
+  return Tilt:getSkyImage()
+end
 
 -- ------- clouds
 -- Three decks rather than one sheet.  A single plane reads as flat
@@ -1047,6 +1062,44 @@ function Sky.draw(state)
 
   local drewClouds, birdCount = false, 0
   local starNote = ""
+
+  -- ---- draw custom sky image if available (replaces solid color background)
+  -- Use the same Tilt system as the main game for consistency
+  local customSkyImg = getSkyImage()
+  if customSkyImg and okTilt and Tilt then
+    guarded(function()
+      love.graphics.setDepthMode("lequal", false)
+      love.graphics.setColor(1, 1, 1, 1)
+      
+      -- Get the screen dimensions for proper scaling
+      local ww, wh = love.graphics.getDimensions()
+      local skyW = customSkyImg:getWidth()
+      local skyH = customSkyImg:getHeight()
+      
+      -- Apply the same transformations as the main game:
+      -- zoom, offset, rotation from Tilt.options
+      local zoom = Tilt.options and Tilt.options.skyZoom or 1.0
+      local offsetY = Tilt.options and Tilt.options.skyOffsetY or 0
+      local rotation = Tilt.skyRotation or 0
+      local bounce = Tilt.skyBounceOffset or 0
+      rotation = rotation + bounce
+      
+      local scaleX = (ww / skyW) * zoom
+      local scaleY = (wh / skyH) * zoom
+      
+      -- Convert rotation angle to x offset
+      local xOffset = (rotation / (2 * math.pi)) * skyW * scaleX
+      xOffset = xOffset + (ww / 2)
+      local yOffset = offsetY * wh
+      
+      -- Draw sky as a large background plane behind everything
+      -- Use a simple full-screen quad approach similar to the main game
+      love.graphics.draw(customSkyImg, xOffset, yOffset, 0, scaleX, scaleY)
+      love.graphics.draw(customSkyImg, xOffset - (skyW * scaleX), yOffset, 0, scaleX, scaleY)
+      
+      love.graphics.setDepthMode("lequal", true)
+    end)
+  end
 
   -- ---- the night sky: field, twinklers, and the occasional streak
   if cfg.stars ~= false then

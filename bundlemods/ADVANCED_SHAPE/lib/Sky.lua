@@ -53,7 +53,22 @@ local V = ...
 local DayNight = V.require("DayNight")
 local PaletteFX = require("src.render.PaletteFX")
 
+-- Try to load the Tilt module to access sky image with full options support
+local okTilt, Tilt = pcall(function()
+  return require("src.render.Tilt")
+end)
+
 local Sky = {}
+
+-- Get the sky image from the main game's Tilt system
+-- This respects all the options: pixelation, offset, zoom, enabled state
+local function getSkyImage()
+  if not (okTilt and Tilt) then return nil end
+  -- Use Tilt:isSkyEnabled() to check if sky is enabled in options
+  if not Tilt:isSkyEnabled() then return nil end
+  -- Use Tilt:getSkyImage() to get the image with pixelation applied
+  return Tilt:getSkyImage()
+end
 
 -- The most bands a phase palette may paint with. Eight leaves headroom over
 -- DayNight's six-band ones without paying for more; the ramp the shader reads
@@ -144,12 +159,28 @@ end
 -- bottom of the sky are one colour -- the join has no seam, and a frame that
 -- cannot paint the bands is a hazy sky rather than a wrong one.
 --
+-- If a custom sky image is available and enabled, it will be used instead of the solid color.
+--
 -- Mutates the descriptor, which is a fresh table per frame from its caller.
 function Sky.dress(sky)
   local bands = Sky.bands()
   local haze = bands and bands[#bands]
   if not (sky and haze) then return sky end
-  sky[1], sky[2], sky[3] = haze[1], haze[2], haze[3]
+  
+  -- Check if custom sky image is available and enabled
+  local customSky = getSkyImage()
+  if customSky then
+    -- When using custom sky image, set the descriptor to indicate image usage
+    sky.customImage = customSky
+    -- Store Tilt reference for accessing options during paint
+    sky.tiltRef = Tilt
+    -- Still set a fallback color, but the image will take precedence
+    sky[1], sky[2], sky[3] = haze[1], haze[2], haze[3]
+  else
+    -- Use the original solid color behavior
+    sky[1], sky[2], sky[3] = haze[1], haze[2], haze[3]
+  end
+  
   sky.bands = bands
   return sky
 end
@@ -625,6 +656,54 @@ function Sky.paint(w, h, sky, horizonY, cell, body, top, axis, ray)
   if not edge then return false end
   local alpha = sky[4] or 1
   cell = math.max(1, math.floor((cell or 1) + 0.5))
+
+  -- Check if custom sky image is available and use it instead of gradient
+  local customSky = sky.customImage
+  local tiltRef = sky.tiltRef
+  if customSky and tiltRef then
+    -- State to put aside for custom sky drawing
+    local prevShader = g.getShader and g.getShader() or nil
+    local cmp, write
+    if g.getDepthMode then cmp, write = g.getDepthMode() end
+    if g.setDepthMode then g.setDepthMode("always", false) end
+    local blend, blendAlpha
+    if g.getBlendMode then blend, blendAlpha = g.getBlendMode() end
+    if g.setBlendMode then g.setBlendMode("alpha") end
+
+    -- Draw custom sky image using the same logic as the main game Renderer
+    g.setColor(1, 1, 1, alpha)
+    local imgW, imgH = customSky:getDimensions()
+    
+    -- Apply Tilt options: zoom, offset, rotation
+    local zoom = tiltRef.options and tiltRef.options.skyZoom or 1.0
+    local offsetY = tiltRef.options and tiltRef.options.skyOffsetY or 0
+    local rotation = tiltRef.skyRotation or 0
+    local bounce = tiltRef.skyBounceOffset or 0
+    rotation = rotation + bounce
+    
+    local scaleX = (w / imgW) * zoom
+    local scaleY = (edge / imgH) * zoom  -- Use edge instead of h for sky region
+    
+    -- Convert rotation angle to x offset
+    local xOffset = (rotation / (2 * math.pi)) * imgW * scaleX
+    xOffset = xOffset + (w / 2)
+    local yOffset = offsetY * edge  -- Scale offset by sky region height
+    
+    -- Draw with seamless wrapping like the main game
+    g.draw(customSky, xOffset, yOffset, 0, scaleX, scaleY)
+    g.draw(customSky, xOffset - (imgW * scaleX), yOffset, 0, scaleX, scaleY)
+
+    -- Still draw the celestial body (sun/moon) if present
+    if not (axis or ray) then
+      paintDisc(body, math.min(h, edge), cell, w, h)
+    end
+
+    g.setColor(1, 1, 1, 1)
+    if g.setBlendMode and blend then g.setBlendMode(blend, blendAlpha) end
+    if g.setDepthMode then g.setDepthMode(cmp or "always", write or false) end
+    if prevShader and g.setShader then g.setShader(prevShader) end
+    return true
+  end
 
   -- State to put aside. The scene's shader is one, and the blend mode another --
   -- a pass that left "replace" behind would make the fade-in strength meaningless
