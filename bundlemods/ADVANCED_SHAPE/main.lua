@@ -833,6 +833,17 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
     return V.require("PlayerModelPick").followerRow()
   end)
   if okFollower and followerRow then extra[#extra + 1] = followerRow end
+  
+  -- Stadium wilds row (only show if stadium packs are available)
+  local okWilds, wildsRow = pcall(function()
+    local StadiumInstall = V.require("StadiumInstall")
+    if StadiumInstall.available() then
+      return V.require("PlayerModelPick").wildsRow()
+    end
+    return nil
+  end)
+  if okWilds and wildsRow then extra[#extra + 1] = wildsRow end
+  
   return insertGrouped(out, extra)
 end)
 
@@ -1174,6 +1185,35 @@ mod.events:on("save.created", function()
   -- pinEngineFx). Answered here rather than only when the menu opens, so a
   -- player who never opens it is not left playing under one.
   pinEngineFx()
+end)
+
+-- Hook into overworld_wild_spawns entity creation
+-- This allows us to load stadium models for wild Pokemon when they spawn
+mod.events:on("world.entity.created", function(entity)
+  if not entity then return end
+  print("ADVANCED_SHAPE: world.entity.created called for entity:", entity.id)
+  local ok, StadiumWilds = pcall(V.require, "StadiumWilds")
+  if ok then
+    print("ADVANCED_SHAPE: StadiumWilds loaded, enabled:", StadiumWilds.enabled())
+    if StadiumWilds.enabled() and StadiumWilds.isWildPokemon(entity) then
+      print("ADVANCED_SHAPE: Loading stadium model for wild entity")
+      StadiumWilds.loadEntityModel(entity)
+    else
+      print("ADVANCED_SHAPE: Not loading stadium model - enabled:", StadiumWilds.enabled(), "isWild:", StadiumWilds.isWildPokemon(entity))
+    end
+  else
+    print("ADVANCED_SHAPE: Failed to load StadiumWilds module")
+  end
+end)
+
+-- Hook into overworld_wild_spawns entity removal
+mod.events:on("world.entity.removed", function(entity)
+  if not entity then return end
+  print("ADVANCED_SHAPE: world.entity.removed called for entity:", entity.id)
+  local ok, StadiumWilds = pcall(V.require, "StadiumWilds")
+  if ok then
+    StadiumWilds.clearEntity(entity)
+  end
 end)
 
 -- The engine's own time-of-day seam. OverworldState:timeOfDay() is an

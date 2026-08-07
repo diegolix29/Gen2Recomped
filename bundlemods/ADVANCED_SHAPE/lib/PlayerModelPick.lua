@@ -23,6 +23,10 @@ PlayerModelPick.MEWTWO_ID = "DRAMATIC_SHAPE:pokemonPlayer"
 PlayerModelPick.FOLLOWER_LABEL = "POKEMON FOLLOWER"
 PlayerModelPick.FOLLOWER_ID = "DRAMATIC_SHAPE:pokemonFollower"
 
+-- Stadium wilds option
+PlayerModelPick.WILDS_LABEL = "STADIUM WILDS"
+PlayerModelPick.WILDS_ID = "DRAMATIC_SHAPE:stadiumWilds"
+
 -- All 151 Pokemon species for cycling through
 PlayerModelPick.POPULAR_SPECIES = {
   { dex = 1, name = "Bulbasaur" },
@@ -531,6 +535,27 @@ function PlayerModelPick.followerRow()
     end,
     step = function(game, dir)
       pcall(PlayerModelPick.cycleFollower, dir)
+      return true
+    end,
+  }
+end
+
+-- ------- Stadium wilds row
+--
+-- A toggle option to enable/disable stadium models for wild Pokemon
+function PlayerModelPick.wildsRow()
+  return {
+    id = PlayerModelPick.WILDS_ID,
+    label = PlayerModelPick.WILDS_LABEL,
+    value = function()
+      local StadiumWilds = V.require("StadiumWilds")
+      local enabled = StadiumWilds.enabled()
+      return enabled and "ON" or "OFF"
+    end,
+    step = function(game, dir)
+      local StadiumWilds = V.require("StadiumWilds")
+      local current = StadiumWilds.enabled()
+      StadiumWilds.setEnabled(not current)
       return true
     end,
   }

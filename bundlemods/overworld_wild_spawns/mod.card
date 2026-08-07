@@ -1,0 +1,42 @@
+-- Sharing metadata. Read by tooling and the manager detail pane;
+-- never by the loader's merge.
+return {
+  summary = "Visible and reactive wild Pokemon for the Gen 1 overworld. Roaming, hidden and aggressive encounters across grass, caves and water. Does not change the player spawn.",
+  author = "overworld-spawn-mod",
+  contact = "https://github.com/YoDrehDenSwagAuf/overworld-spawn-mod",
+  tags = { "overworld", "encounters", "gameplay", "voxel-compatible", "diagnostics" },
+  differences = {
+    changed = {
+      "spawn count scales with eligible encounter tiles and connected regions",
+      "wild entities use Idle, Wander, Aggressive, or Hidden behaviour",
+      "vanilla grass rolls are suppressed only after visible spawns initialize successfully",
+    },
+    added = {
+      "data-driven overworld wild Pokemon entities on grass, cave, and surf-water tiles",
+      "aggressive spotting with engine exclamation emote and chase",
+      "hidden grass shake / cave dust encounter markers",
+      "nearest-neighbor sprite scaling capped to one 16x16 map tile",
+      "fail-safe that keeps classic grass encounters if the spawn system is not ready",
+      "Developer mode with spawn debug HUD, Pokemon preview browser, and phased test spawn",
+      "Voxel-safe aggressive chase (stable ids, engine emote, per-entity 2D fallback)",
+    },
+    known = {
+      "species overworld sprites are registered at mod load from battle fronts "
+        .. "(optional runtime bake into overworld_wild_spawns-cache/; "
+        .. "LOVE virtual paths only; never after registry freeze)",
+      "when no real image is available, assets/fallback/pokemon_missing.png is used "
+        .. "(hidden behaviours draw no Pokemon sprite and stay out of ow.entities)",
+      "spawns are runtime-only and reset when you leave and re-enter a map",
+      "fishing encounter tables are never used for free overworld spawns",
+      "Dramatic Shape overworld battles cull non-player entities from the arena shot",
+      "Voxel billboards stay 16x16 cards; 2D finalScale is not applied as world scale",
+      "fishing, surf vanilla rolls, static, scripted, and trainer encounters stay available",
+    },
+  },
+  credits = {
+    { who = "bryanthaboi/gen1recomp", for_ = "mod API, encounter tables, WorldAPI" },
+    { who = "DramaticShape/DramaticShapeVoxelMod",
+      for_ = "entity pose()/draw() dual-mode rendering contract" },
+  },
+  compat = { engine = "0.0.0-dev || >=0.1.0 <2.0.0", modApi = 2 },
+}
