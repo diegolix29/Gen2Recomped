@@ -1065,13 +1065,14 @@ function Sky.draw(state)
 
   -- ---- draw custom sky image if available (replaces solid color background)
   -- Use the same Tilt system as the main game for consistency
+  -- This should be drawn BEFORE the backdrop so the horizon appears in front
   local customSkyImg = getSkyImage()
   if customSkyImg and okTilt and Tilt then
     guarded(function()
       love.graphics.setDepthMode("lequal", false)
       love.graphics.setColor(1, 1, 1, 1)
       
-      -- Get the screen dimensions for proper scaling
+      -- Get the screen dimensions for proper scaling (same as base game)
       local ww, wh = love.graphics.getDimensions()
       local skyW = customSkyImg:getWidth()
       local skyH = customSkyImg:getHeight()
@@ -1084,16 +1085,16 @@ function Sky.draw(state)
       local bounce = Tilt.skyBounceOffset or 0
       rotation = rotation + bounce
       
+      -- Use full screen dimensions for scaling (same as base game)
       local scaleX = (ww / skyW) * zoom
       local scaleY = (wh / skyH) * zoom
       
-      -- Convert rotation angle to x offset
+      -- Convert rotation angle to x offset (same as base game)
       local xOffset = (rotation / (2 * math.pi)) * skyW * scaleX
       xOffset = xOffset + (ww / 2)
       local yOffset = offsetY * wh
       
-      -- Draw sky as a large background plane behind everything
-      -- Use a simple full-screen quad approach similar to the main game
+      -- Draw sky with seamless wrapping (same as base game)
       love.graphics.draw(customSkyImg, xOffset, yOffset, 0, scaleX, scaleY)
       love.graphics.draw(customSkyImg, xOffset - (skyW * scaleX), yOffset, 0, scaleX, scaleY)
       

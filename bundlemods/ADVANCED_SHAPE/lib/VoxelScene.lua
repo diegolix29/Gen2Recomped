@@ -1159,10 +1159,11 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
   -- about anything but their viewpoint.
   local function drawScene()
 
-  -- the distant horizon and sky (lib/Backdrop.lua, lib/SkyLayer.lua):
+  -- the sky (lib/SkyLayer.lua) then distant horizon (lib/Backdrop.lua):
   -- before the terrain, depth writes off, so every real surface draws over them
-  pcall(Backdrop.draw, state)
+  -- Sky draws first as background, then horizon draws in front of it
   pcall(SkyLayer.draw, state)
+  pcall(Backdrop.draw, state)
 
   Voxel3D.draw(terrain, atlasFor(state.map), nil)
 

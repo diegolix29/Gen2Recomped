@@ -118,15 +118,35 @@ function FollowerPokemon.draw(px, py, y, facing, mirror)
   local offsetX, offsetZ = 0, -2  -- Default: behind player
   local followerYaw = 0
   
-  if facing == "right" then
-    offsetX, offsetZ = -2, 0
-    followerYaw = math.pi / 2
-  elseif facing == "up" then
-    offsetX, offsetZ = 0, 2
-    followerYaw = math.pi
-  elseif facing == "left" then
-    offsetX, offsetZ = 2, 0
-    followerYaw = -math.pi / 2
+  -- Check if we're in free-roam mode (1st or 3rd person)
+  local FirstPerson = V.require("FirstPerson")
+  local b = FirstPerson.cardBlend()
+  
+  if b > 0 then
+    -- In free-roam mode, use camera-relative rotation like the player model
+    if facing == "down" then
+      -- When moving backwards, face the camera
+      followerYaw = FirstPerson.cardYaw(px + 8, py + 8) * b
+    else
+      -- When moving in other directions, face forward (away from camera)
+      followerYaw = (FirstPerson.cardYaw(px + 8, py + 8) + math.pi) * b
+    end
+    -- In free-roam mode, calculate offset based on camera direction
+    local camYaw = FirstPerson.cardYaw(px + 8, py + 8)
+    offsetX = -math.sin(camYaw) * 2
+    offsetZ = math.cos(camYaw) * 2
+  else
+    -- In other modes, rotate based on movement direction
+    if facing == "right" then
+      offsetX, offsetZ = -2, 0
+      followerYaw = math.pi / 2
+    elseif facing == "up" then
+      offsetX, offsetZ = 0, 2
+      followerYaw = math.pi
+    elseif facing == "left" then
+      offsetX, offsetZ = 2, 0
+      followerYaw = -math.pi / 2
+    end
   end
   
   -- Calculate the model matrix based on player position and offset

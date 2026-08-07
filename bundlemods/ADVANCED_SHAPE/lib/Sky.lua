@@ -670,26 +670,30 @@ function Sky.paint(w, h, sky, horizonY, cell, body, top, axis, ray)
     if g.getBlendMode then blend, blendAlpha = g.getBlendMode() end
     if g.setBlendMode then g.setBlendMode("alpha") end
 
-    -- Draw custom sky image using the same logic as the main game Renderer
+    -- Draw custom sky image using EXACTLY the same logic as the main game Renderer
     g.setColor(1, 1, 1, alpha)
     local imgW, imgH = customSky:getDimensions()
     
-    -- Apply Tilt options: zoom, offset, rotation
+    -- Get full screen dimensions (not just sky region)
+    local ww, wh = w, h  -- Use full canvas dimensions
+    
+    -- Apply Tilt options: zoom, offset, rotation (same as base game)
     local zoom = tiltRef.options and tiltRef.options.skyZoom or 1.0
     local offsetY = tiltRef.options and tiltRef.options.skyOffsetY or 0
     local rotation = tiltRef.skyRotation or 0
     local bounce = tiltRef.skyBounceOffset or 0
     rotation = rotation + bounce
     
-    local scaleX = (w / imgW) * zoom
-    local scaleY = (edge / imgH) * zoom  -- Use edge instead of h for sky region
+    -- Use full screen dimensions for scaling (same as base game)
+    local scaleX = (ww / imgW) * zoom
+    local scaleY = (wh / imgH) * zoom
     
-    -- Convert rotation angle to x offset
+    -- Convert rotation angle to x offset (same as base game)
     local xOffset = (rotation / (2 * math.pi)) * imgW * scaleX
-    xOffset = xOffset + (w / 2)
-    local yOffset = offsetY * edge  -- Scale offset by sky region height
+    xOffset = xOffset + (ww / 2)  -- Center with full screen width
+    local yOffset = offsetY * wh  -- Use full screen height for offset
     
-    -- Draw with seamless wrapping like the main game
+    -- Draw with seamless wrapping (same as base game)
     g.draw(customSky, xOffset, yOffset, 0, scaleX, scaleY)
     g.draw(customSky, xOffset - (imgW * scaleX), yOffset, 0, scaleX, scaleY)
 

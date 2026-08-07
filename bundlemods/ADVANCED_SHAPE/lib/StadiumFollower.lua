@@ -118,14 +118,30 @@ function StadiumFollower.draw(x, y, facing)
   -- Calculate the model matrix
   local m = Mat4.translate(x, 0, y)
   
+  -- Check if we're in free-roam mode (1st or 3rd person)
+  local FirstPerson = V.require("FirstPerson")
+  local b = FirstPerson.cardBlend()
+  
   -- Apply rotation based on facing direction
   local yaw = 0
-  if facing == "right" then
-    yaw = math.pi / 2
-  elseif facing == "up" then
-    yaw = math.pi
-  elseif facing == "left" then
-    yaw = -math.pi / 2
+  if b > 0 then
+    -- In free-roam mode, use camera-relative rotation like the player model
+    if facing == "down" then
+      -- When moving backwards, face the camera
+      yaw = FirstPerson.cardYaw(x, y) * b
+    else
+      -- When moving in other directions, face forward (away from camera)
+      yaw = (FirstPerson.cardYaw(x, y) + math.pi) * b
+    end
+  else
+    -- In other modes, rotate based on movement direction
+    if facing == "right" then
+      yaw = math.pi / 2
+    elseif facing == "up" then
+      yaw = math.pi
+    elseif facing == "left" then
+      yaw = -math.pi / 2
+    end
   end
   
   if yaw ~= 0 then

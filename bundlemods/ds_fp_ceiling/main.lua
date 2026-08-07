@@ -368,15 +368,64 @@ return function(mod)
 
   -- ------- find Dramatic Shape and its version
   local function findDS()
-    local ok, names = pcall(fs.getDirectoryItems, "mods")
-    if not ok or not names then return nil end
-    for _, name in ipairs(names) do
-      local manifest = read("mods/" .. name .. "/manifest.json")
-      if manifest and manifest:find('"id"%s*:%s*"' .. DS_ID .. '"') then
-        local version = manifest:match('"version"%s*:%s*"([^"]+)"') or "?"
-        return "mods/" .. name, version
+    -- Try to get the current mod's own folder, to search in the same
+    -- parent directory it lives in -- this is what makes custom mod
+    -- paths work, not just the default mods/ next to the save folder.
+    -- `mod:getInfo()` is not a real loader API and always failed here,
+    -- silently, via the pcall below -- modPath was never set, so this
+    -- branch never ran and only "mods/" was ever searched. `mod.path`
+    -- is the real property (see ADVANCED_SHAPE/main.lua, which uses it
+    -- the same way to find its own files).
+    -- love.filesystem (PhysFS underneath) rejects ".." in paths, so the
+    -- parent can't be reached by appending it -- strip this mod's own
+    -- last path segment instead, the same way the old (non-functional)
+    -- code stripped a filename off info.source.
+    local modPath = nil
+    local okInfo, dir = pcall(function() return mod.path end)
+    if okInfo and dir and dir ~= "" then
+      local trimmed = dir:gsub("/+$", "")
+      local parent = trimmed:match("^(.*)/[^/]+$")
+      if parent then
+        modPath = parent .. "/"
+      elseif trimmed ~= "" then
+        modPath = ""  -- this mod sits at the mods root already
       end
     end
+
+    -- Function to search a specific directory
+    local function searchDir(baseDir)
+      local ok, names = pcall(fs.getDirectoryItems, baseDir)
+      if not ok or not names then return nil end
+      for _, name in ipairs(names) do
+        local manifest = read(baseDir .. name .. "/manifest.json")
+        if manifest and manifest:find('"id"%s*:%s*"' .. DS_ID .. '"') then
+          local version = manifest:match('"version"%s*:%s*"([^"]+)"') or "?"
+          return baseDir .. name, version
+        end
+      end
+      -- fallback: check for folders ending with _SHAPE
+      for _, name in ipairs(names) do
+        if name:match("_SHAPE$") then
+          local manifest = read(baseDir .. name .. "/manifest.json")
+          if manifest then
+            local version = manifest:match('"version"%s*:%s*"([^"]+)"') or "?"
+            return baseDir .. name, version
+          end
+        end
+      end
+      return nil
+    end
+
+    -- First try the same directory as this mod (for custom mod paths)
+    if modPath then
+      local base, ver = searchDir(modPath)
+      if base then return base, ver end
+    end
+
+    -- Then try the default mods/ directory
+    local base, ver = searchDir("mods/")
+    if base then return base, ver end
+
     return nil
   end
 
@@ -395,12 +444,12 @@ return function(mod)
     -- otherwise find the terrain draw itself, whatever its arguments are
     local line = vs:match("[^\n]-Voxel3D%.draw%(%s*terrain[^\n]*")
     if not line then return nil end
-    local before = "  -- the distant horizon and sky (lib/Backdrop.lua,"
-      .. " lib/SkyLayer.lua):\n"
+    local before = "  -- the sky (lib/SkyLayer.lua) then distant horizon (lib/Backdrop.lua):\n"
       .. "  -- before the terrain, depth writes off, so every real surface"
       .. " draws over them\n"
-      .. "  pcall(Backdrop.draw, state)\n"
-      .. "  pcall(SkyLayer.draw, state)\n\n"
+      .. "  -- Sky draws first as background, then horizon draws in front of it\n"
+      .. "  pcall(SkyLayer.draw, state)\n"
+      .. "  pcall(Backdrop.draw, state)\n\n"
     local after = "\n\n  -- interiors, then ground detail (lib/Ceiling.lua,"
       .. " lib/Flora.lua)\n"
       .. "  pcall(Ceiling.draw, state, atlasFor)\n"
@@ -495,8 +544,10 @@ return function(mod)
       local blob = mod:read(extra)
       if blob then writeTracked(base.. "/lib/" .. extra, blob) end
     end
-    _G.__ds_backdrop_path = chosenArt(base, read)
+    local backdropPath = chosenArt(base, read)
+    _G.__ds_backdrop_path = backdropPath
     _G.__ds_posters_dir = base .. "/lib/"
+    say(("backdrop path set to: %s"):format(backdropPath))
     -- the options row is a nicety: without it the ceiling is simply ON
     local mainSrc = read(mainPath)
     local mainAnchor = firstAnchor(mainSrc, REQ_ANCHORS)
