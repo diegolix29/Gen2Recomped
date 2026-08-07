@@ -1945,7 +1945,7 @@ function RomImporter:_pollPickedFiles(dt)
   if not found then
     for _, name in ipairs(love.filesystem.getDirectoryItems("")) do
       local n = name:lower()
-      if n:match("%.gbc?$") or n == "picked_mod.zip" or n == "picked_save.sav" then
+      if n:match("%.gbc?$") or n == "picked_mod.zip" or n == "picked_save.sav" or n == "picked_sky.png" then
         found = true
         break
       end
@@ -1954,6 +1954,22 @@ function RomImporter:_pollPickedFiles(dt)
   if found then
     self.pickPending = nil
     self:focus(true)
+  end
+  
+  -- Check for sky image pick
+  if self.pickPending == "sky" and love.filesystem.getInfo("picked_sky.png", "file") then
+    self.pickPending = nil
+    local SaveData = require("src.core.SaveData")
+    local opts = SaveData.loadOptions()
+    if opts then
+      opts.skyImageEnabled = true
+      SaveData.saveOptions(opts)
+      local Tilt = require("src.render.Tilt")
+      Tilt:setSkyImage("picked_sky.png")
+      -- Rename to the standard sky_image.png for consistency
+      love.filesystem.write("sky_image.png", love.filesystem.read("picked_sky.png"))
+      love.filesystem.remove("picked_sky.png")
+    end
   end
 end
 
@@ -3254,6 +3270,116 @@ function RomImporter:_installModVersion(modId, release)
   })
 end
 
+-- Pick a sky image using the platform's file picker
+function RomImporter:_pickSkyImage()
+  local platform = love.system.getOS()
+  local prompt = "Select Sky Image"
+  
+  local HostShell = require("src.core.HostShell")
+  local Logger = require("src.core.Logger")
+  
+  -- Release pointer grab before opening file picker (prevents freeze)
+  if love.mouse and love.mouse.hasCursor and love.mouse.hasCursor() then
+    love.mouse.setGrabbed(false)
+    love.mouse.setRelativeMode(false)
+  end
+  
+  local result = nil
+  
+  if platform == "Android" then
+    -- Use the Android SAF picker for image selection
+    if pickFile("image") then
+      -- The picker was launched successfully; the image will be saved as picked_sky.png
+      -- in the save directory. We'll need to wait for focus to return and check for the file.
+      self.pickPending = "sky"
+      return
+    else
+      if Logger then
+        Logger.log("info", "Android: Could not open image picker. Please copy sky images to the game's directory manually")
+      end
+      return
+    end
+  elseif platform == "Windows" then
+    local script = [[Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; $d.Title = "Select Sky Image"; $d.Filter = "Image files (*.png;*.jpg;*.jpeg;*.bmp)|*.png;*.jpg;*.jpeg;*.bmp|All files (*.*)|*.*"; if ($d.ShowDialog() -eq "OK") { Write-Output $d.FileName }]]
+    local pipe = HostShell.popen('powershell -NoProfile -STA -Command "' .. script .. '"')
+    if pipe then
+      local content = pipe:read("*a")
+      pipe:close()
+      result = content:gsub("^%s+", ""):gsub("%s+$", "")
+      if result == "" then result = nil end
+    end
+  elseif platform == "Linux" then
+    local pipe = HostShell.popen([[zenity --file-selection --title="]] .. prompt .. [[" --file-filter="Image files | *.png *.jpg *.jpeg *.bmp" 2>/dev/null]])
+    if pipe then
+      local content = pipe:read("*a")
+      pipe:close()
+      result = content:gsub("^%s+", ""):gsub("%s+$", "")
+      if result == "" then result = nil end
+    end
+    if not result then
+      pipe = HostShell.popen([[kdialog --getopenfilename "$HOME" "*.png *.jpg *.jpeg *.bmp|Image files" 2>/dev/null]])
+      if pipe then
+        local content = pipe:read("*a")
+        pipe:close()
+        result = content:gsub("^%s+", ""):gsub("%s+$", "")
+        if result == "" then result = nil end
+      end
+    end
+  elseif platform == "OS X" then
+    local pipe = HostShell.popen([[osascript -e 'POSIX path of (choose file with prompt "]] .. prompt .. [[" of type {"png","jpg","jpeg","bmp"})' 2>/dev/null]])
+    if pipe then
+      local content = pipe:read("*a")
+      pipe:close()
+      result = content:gsub("^%s+", ""):gsub("%s+$", "")
+      if result == "" then result = nil end
+    end
+  end
+  
+  if result then
+    self:_processSkyImage(result)
+  end
+end
+
+-- Process the selected sky image file
+function RomImporter:_processSkyImage(filePath)
+  local SaveData = require("src.core.SaveData")
+  local Logger = require("src.core.Logger")
+  
+  -- Read the image file and copy it to the save directory
+  local success, content = pcall(function()
+    local file = io.open(filePath, "rb")
+    if not file then return nil end
+    local data = file:read("*all")
+    file:close()
+    return data
+  end)
+  
+  if success and content then
+    -- Save as sky_image.png in the save directory
+    love.filesystem.write("sky_image.png", content)
+    
+    -- Update options
+    local opts = SaveData.loadOptions()
+    if opts then
+      opts.skyImageEnabled = true
+      SaveData.saveOptions(opts)
+    end
+    
+    -- Update the tilt renderer
+    local Tilt = require("src.render.Tilt")
+    if Tilt.setSkyImage then
+      Tilt:setSkyImage("sky_image.png")
+    end
+    
+    if Logger then
+      Logger.log("info", "Sky image loaded successfully: " .. filePath)
+    end
+  else
+    if Logger then
+      Logger.log("error", "Failed to load sky image: " .. filePath)
+    end
+  end
+end
 
 -- NX / desktop / Android labels and inbox hints for the FlexLove view.
 function RomImporter:_modsImportButtonLabel()

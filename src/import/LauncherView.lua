@@ -457,6 +457,7 @@ local function buildHeader(imp, m)
     { id = "red",    letter = "R", label = Strings("RED"),    color = PAL.railRed },
     { id = "blue",   letter = "B", label = Strings("BLUE"),   color = PAL.railBlue },
     { id = "yellow", letter = "Y", label = Strings("YELLOW"), color = PAL.railGold },
+    { id = "sky",    letter = "S", label = "SKY",             color = PAL.railBlue },
     { id = "mods",   icon = imp._modsIcon, label = Strings("MODS") },
     { id = "find",   icon = imp._findIcon, label = Strings("FIND MODS") },
   }
@@ -468,7 +469,7 @@ local function buildHeader(imp, m)
     local key = "tab-" .. t.id
     local labelW = Kit.textWidth("tab", t.label)
     -- The active tab spells its name out; inactive tabs are the glyph alone,
-    -- so five tabs fit a phone width without wrapping.
+    -- so six tabs fit a phone width without wrapping.
     local w = active and (tabH + math.floor(8 * m.s) + labelW + math.floor(12 * m.s))
       or tabH
     Kit._audit("control", tx, ty, w, tabH, key)
@@ -1275,6 +1276,95 @@ local function buildModsPanel(imp, x, y, w, availH, m)
   local pagerY = listTop + (last - first + 1) * (rowH + gap)
   local newPage = Kit.pager(x, pagerY, w, cur, #mods, perPage, "mods")
   setPage(imp, "mods", newPage)
+end
+
+-- ---------------------------------------------------------- sky panel
+
+local function buildSkyPanel(imp, x, y, w, availH, m)
+  local pad = math.floor(18 * m.s)
+  local gap = m.gap
+  local cy = y
+  local s = m.s
+
+  -- Header
+  Kit.text("title", "SKY IMAGE", x, cy, PAL.heading)
+  cy = cy + Kit.textHeight("title") + gap
+
+  -- Check current sky image status
+  local SaveData = require("src.core.SaveData")
+  local opts = SaveData.loadOptions()
+  local skyEnabled = opts and opts.skyImageEnabled
+  local skyImageExists = love.filesystem.getInfo("sky_image.png", "file")
+
+  -- Description
+  local descText = skyEnabled and skyImageExists 
+    and "Custom sky image is currently active" 
+    or "No custom sky image set. Add one to personalize your game."
+  cy = cy + Kit.textWrapped("small", descText, x, cy, w, PAL.muted, 2) + gap
+
+  -- Sky image preview area
+  local previewH = math.floor(200 * s)
+  local previewW = math.min(w - 2 * pad, math.floor(400 * s))
+  local previewX = x + (w - previewW) / 2
+  
+  Kit.card(previewX, cy, previewW, previewH)
+  
+  -- Draw current sky image or placeholder
+  if skyEnabled and skyImageExists then
+    local success, skyImg = pcall(love.graphics.newImage, "sky_image.png")
+    if success then
+      -- Draw sky image scaled to fit preview
+      local imgW, imgH = skyImg:getDimensions()
+      local scale = math.min(previewW / imgW, previewH / imgH)
+      local drawW = imgW * scale
+      local drawH = imgH * scale
+      local drawX = previewX + (previewW - drawW) / 2
+      local drawY = cy + (previewH - drawH) / 2
+      love.graphics.draw(skyImg, drawX, drawY, 0, scale, scale)
+    else
+      Kit.textCenter("button", "Failed to load sky image", previewX, cy + previewH / 2 - Kit.textHeight("button") / 2, previewW, PAL.red)
+    end
+  else
+    Kit.textCenter("button", "No sky image set", previewX, cy + previewH / 2 - Kit.textHeight("button") / 2, previewW, PAL.muted)
+    Kit.textCenter("small", "Tap 'Add Image' to select a custom sky", previewX, cy + previewH / 2 + Kit.textHeight("button") / 2 + gap, previewW, PAL.warning)
+  end
+  cy = cy + previewH + gap
+
+  -- Buttons
+  local btnH = m.btnH
+  local btnW = math.min(math.floor(180 * s), w - 2 * pad)
+
+  if skyEnabled and skyImageExists then
+    -- Remove button
+    local removeX = x + (w - btnW) / 2
+    btn(imp, removeX, cy, btnW, btnH, "sky-remove", "Remove Image", {
+      kind = "warn", font = "small",
+      action = function()
+        local SaveData = require("src.core.SaveData")
+        local opts = SaveData.loadOptions()
+        if opts then
+          opts.skyImageEnabled = false
+          SaveData.saveOptions(opts)
+          love.filesystem.remove("sky_image.png")
+        end
+      end
+    })
+  else
+    -- Add button
+    local addX = x + (w - btnW) / 2
+    btn(imp, addX, cy, btnW, btnH, "sky-add", "Add Image", {
+      kind = "accent", font = "small",
+      action = function()
+        imp:_pickSkyImage()
+      end
+    })
+  end
+  cy = cy + btnH + gap
+
+  -- Help text
+  cy = cy + Kit.textWrapped("small", "Supported formats: PNG, JPG, JPEG, BMP, HDR", x, cy, w, PAL.faint, 1) + gap
+
+  return cy - y
 end
 
 -- ---------------------------------------------------------- find mods panel
@@ -2525,6 +2615,8 @@ function LauncherView.draw(imp)
     buildModsPanel(imp, x, contentY, w, availH, m)
   elseif imp.tab == "find" then
     buildFindPanel(imp, x, contentY, w, availH, m)
+  elseif imp.tab == "sky" then
+    buildSkyPanel(imp, x, contentY, w, availH, m)
   else
     buildGamePanel(imp, x, contentY, w, availH, m, imp.tab)
   end
