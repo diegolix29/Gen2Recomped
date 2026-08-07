@@ -250,6 +250,11 @@ function StadiumInstall.beginFrom(bytes, label)
   if not f then return false, "no filesystem" end
   if type(bytes) ~= "string" or #bytes == 0 then return false, "empty file" end
 
+  -- Force garbage collection before processing large ROM files to prevent crashes
+  if #bytes > 16777216 then -- 16MB threshold
+    collectgarbage("collect")
+  end
+
   local StadiumRom = V.require("StadiumRom")
   local StadiumBuild = V.require("StadiumBuild")
   local rom, err = StadiumRom.open(bytes)

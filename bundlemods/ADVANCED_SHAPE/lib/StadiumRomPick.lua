@@ -98,42 +98,67 @@ end
 
 -- ------- can this machine open a DIALOG
 --
--- Desktop only, and honestly so.
---
--- On ANDROID the picker is a native bridge (love.system.pickFile) whose
--- kind -> filename mapping is a fixed list of three in the engine's own C++,
--- and an unrecognised kind falls through to `picked_rom.gb`. That is not
--- merely the wrong name -- it is the file the engine's Game Boy importer is
--- watching, and reading that code settles it: the importer's size test only
--- SKIPS a 1 MB file it has already imported, so a 32 MB N64 ROM landing
--- there falls straight through to `love.filesystem.remove` and
--- `startData` -- deleted, and then reported to the player as a broken Game
--- Boy ROM. So the bridge is not called until it learns the kind, which is a
--- two-line change in System.cpp and an APK rebuild (see README).
---
--- Android is not stuck without it: conf.lua points the save directory at the
--- app's external-files folder, so `baseroms/` there is reachable over USB or
--- any file manager with no root and no permission prompt. What Android
--- lacked was being TOLD that -- the row vanished, and the folder's absolute
--- path was only ever written to a console no phone shows. That is what the
--- note below is for.
+-- Desktop gets a real per-OS shell dialog (see choose() below). Android gets
+-- a real dialog too, but a DIFFERENT one -- love.system.pickFile, the same
+-- native SAF bridge src/import/RomImporter.lua uses for the Game Boy ROM,
+-- the mod .zip, and the .sav import. It is real, it is wired, and calling
+-- it correctly needs none of System.cpp changed and no APK rebuild -- an
+-- earlier version of this file called it wrong (`pickFile("rom", "stadium")`,
+-- a made-up two-argument, made-up-kind call) and that mismatch, not a
+-- missing native feature, is what crashed the picker. See PICKED and
+-- chooseAndroid below for the real call and why reusing the ROM kind here
+-- is safe rather than reckless.
 function StadiumRomPick.canDialog()
-  if not (haveShell() and haveFiles()) then return false end
   local p = osName()
-  return p == "Windows" or p == "OS X" or p == "Linux"
+  if p == "Windows" or p == "OS X" or p == "Linux" then
+    return haveShell() and haveFiles()
+  end
+  if p == "Android" then
+    return (love and love.system and love.system.pickFile) and true or false
+  end
+  return false
 end
 
 -- Kept as the old name for callers that only wanted "is there a dialog".
 StadiumRomPick.available = StadiumRomPick.canDialog
 
--- Where a SAF pick would land if the native bridge grows a Stadium kind.
--- Watched unconditionally (see poll): on a build that never writes it this
--- costs one getInfo a frame, and on one that does the mod needs no further
--- change to use it.
-StadiumRomPick.PICKED = "picked_stadium.z64"
+-- ------- the Android picker, done the way RomImporter.lua actually does it
+--
+-- love.system.pickFile(kind) is called with exactly ONE argument in every
+-- real call site (RomImporter.lua: pickFile("mod"), pickFile("sav"), and
+-- pickFile() with none at all for a ROM). There is no second "hint"
+-- argument and no "stadium" kind -- the previous version of this file
+-- invented both. The bare, no-argument call is the ROM kind, and
+-- RomImporter's own comments say exactly where its result lands: "GameActivity
+-- always writes the SAF pick to picked_rom.gb". That is not a placeholder
+-- name waiting for a native change -- it is the one guaranteed-wired
+-- destination on every build, because it is the same call the base game's
+-- own launcher already ships and tests.
+--
+-- Reusing that exact filename for a Stadium cartridge is safe, for a reason
+-- that only holds together once you see WHEN this row can be pressed. The
+-- collision this file used to warn about -- a 32 MB N64 ROM landing where
+-- the Game Boy importer expects its own file -- can only happen while
+-- RomImporter is alive, and RomImporter only exists as `Importer` in
+-- main.lua during the launcher/boot screen: main.lua only forwards
+-- love.focus/love.update to it while that variable is non-nil, and it goes
+-- nil the moment a game boots. The STADIUM ROM row lives on the in-game
+-- OPTIONS menu, reachable only after boot -- by the time a player can press
+-- it, Importer is already nil, nothing is watching picked_rom.gb on the
+-- Game Boy side, and there is nothing left to collide with.
+StadiumRomPick.PICKED = "picked_rom.gb"
 
--- Open the dialog. Returns the chosen absolute path, or nil when the player
--- cancelled or no dialog could be opened.
+-- True from the moment chooseAndroid successfully opens the SAF picker
+-- until poll() consumes (or a later game session forgets) the result. Not
+-- persisted -- an armed pick that never lands (app killed while the picker
+-- was up) simply stops being armed on the next boot, and the row still
+-- reads IMPORT so the player can just try again.
+StadiumRomPick.armed = false
+
+-- Open the dialog. Returns the chosen absolute path (desktop, synchronous),
+-- or nil when the player cancelled, no dialog could be opened, or (Android)
+-- the pick was merely STARTED -- see the note on poll() for why Android
+-- cannot return a path here the way the desktop dialogs do.
 function StadiumRomPick.choose()
   local p = osName()
   if p == "OS X" then
@@ -165,8 +190,34 @@ function StadiumRomPick.choose()
     return commandOutput(
       [[kdialog --getopenfilename "$HOME" "*.z64 *.n64 *.v64|]]
       .. [[Nintendo 64 ROM" 2>/dev/null]])
+  elseif p == "Android" then
+    StadiumRomPick.chooseAndroid()
+    return nil -- never a synchronous path on Android; see poll()
   end
   return nil
+end
+
+-- Arms the SAF pick and returns whether it was actually opened. The pick
+-- itself is a separate Android activity: it does not return a path (or
+-- anything at all) to this call, and the OS is free to even kill and
+-- restart the app while it is up. The only way to notice the result is to
+-- poll for PICKED landing in the save directory (poll(), below) -- the same
+-- pattern RomImporter.lua uses for its own ROM/mod/save pickers.
+function StadiumRomPick._pending() return StadiumRomPick.armed end
+
+function StadiumRomPick.chooseAndroid()
+  local love_system = love and love.system
+  local fn = love_system and love_system.pickFile
+  if not fn then return false end
+  -- Clear out anything already sitting at PICKED -- a cancelled previous
+  -- attempt, or a stray file -- so poll cannot mistake it for the pick
+  -- about to happen and act on stale bytes.
+  local f = love and love.filesystem
+  if f and f.remove then pcall(f.remove, StadiumRomPick.PICKED) end
+  local ok, opened = pcall(fn) -- no arguments: the ROM kind (see PICKED)
+  if not (ok and opened) then return false end
+  StadiumRomPick.armed = true
+  return true
 end
 
 -- Read an ABSOLUTE path, which love.filesystem cannot: it only sees inside
@@ -211,6 +262,15 @@ function StadiumRomPick.import(game)
         "PUT STADIUM US 1.0 HERE:",
         StadiumInstall.romHintFile()))
     end
+    return false
+  end
+
+  -- Android: choose() only ARMS the SAF pick and returns nil immediately --
+  -- there is no path to read yet, and may not be for several frames (see
+  -- poll()). Nothing to push here; poll() puts the loading screen up once
+  -- the pick actually lands.
+  if osName() == "Android" then
+    StadiumRomPick.choose()
     return false
   end
 
@@ -274,25 +334,45 @@ end
 -- The desktop dialog BLOCKS, so `import` above can read the answer on the
 -- next line. A SAF pick cannot work that way: it is a separate activity,
 -- Android is free to destroy the game while it is up, and the file appears
--- some frames later -- so the only way to notice one is to look for it.
+-- some frames later -- so the only way to notice one is to look for it. This
+-- runs every frame unconditionally (main.lua), same as RomImporter's own
+-- pending-file polling for the ROM/mod/save pickers.
 --
--- Nothing writes this filename today (see canDialog). It is watched anyway so
--- that teaching the native bridge one more kind is the whole of the Android
--- picker work, with no second change needed here.
+-- Gated on `armed`: PICKED is a real, shared filename ("picked_rom.gb", see
+-- above) that is only OURS to act on between chooseAndroid arming it and
+-- this consuming it. Watching it unconditionally would risk reacting to
+-- some unrelated leftover; watching it only while armed means this can only
+-- ever see the file our own chooseAndroid just asked for.
 --
 -- Consumed and DELETED either way: a 32 MB file left in the save directory
--- would be imported again on the next boot, and kept forever if the import
+-- would be tried again on the next poll, and kept forever if the import
 -- failed.
 function StadiumRomPick.poll(game)
+  if not StadiumRomPick.armed then return false end
   local f = love and love.filesystem
   if not (f and f.getInfo) then return false end
   if StadiumInstall.status.state == "building" then return false end
   local ok, info = pcall(f.getInfo, StadiumRomPick.PICKED, "file")
   if not (ok and info) then return false end
 
+  StadiumRomPick.armed = false
   local okRead, bytes = pcall(f.read, StadiumRomPick.PICKED)
   pcall(f.remove, StadiumRomPick.PICKED)
-  if not (okRead and type(bytes) == "string") then return false end
+  
+  -- Force garbage collection after reading large ROM file on Android
+  if okRead and type(bytes) == "string" and #bytes > 16777216 then
+    collectgarbage("collect")
+  end
+  
+  if not (okRead and type(bytes) == "string") then
+    StadiumInstall.status.state = "failed"
+    StadiumInstall.status.error = "could not read the picked file"
+    local StadiumScreen = V.require("StadiumScreen")
+    if game and game.stack then
+      game.stack:push(StadiumScreen.new(game, true))
+    end
+    return true
+  end
 
   local StadiumScreen = V.require("StadiumScreen")
   local started, err = StadiumInstall.beginFrom(bytes, StadiumRomPick.PICKED)

@@ -155,9 +155,10 @@ end
 --
 -- Same state shape and the same plate as the build screen, so there is one
 -- look and one set of stack manners rather than two.
-function StadiumScreen.newNote(game, title, lead, body)
+-- Optional callback parameter for when the note is dismissed (for Android picker)
+function StadiumScreen.newNote(game, title, lead, body, callback)
   return setmetatable({ game = game,
-                        note = { title = title, lead = lead, body = body } },
+                        note = { title = title, lead = lead, body = body, onDismiss = callback } },
                       StadiumScreen)
 end
 
@@ -200,6 +201,10 @@ function StadiumScreen:update()
         if input:wasPressed(btn) then
           if self.game.stack and self.game.stack:top() == self then
             self.game.stack:pop()
+            -- Call the callback if this note has one (for Android picker)
+            if self.note and self.note.onDismiss then
+              self.note.onDismiss()
+            end
           end
           return
         end
