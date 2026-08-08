@@ -1125,6 +1125,46 @@ mod.hooks:wrap("pokemon.sprite", function(next, path, ctx)
   return (def and def.spriteFront) or out
 end)
 
+-- With a Stadium species picked as the player's own overworld model
+-- (PlayerModelPick's row, PlayerModel.loadStadium), the player's TRAINER
+-- art -- their own back pic (the battle intro, before "Go!", and wherever
+-- BACK SPRITES pins it through the fight) and their own front pic (the
+-- trainer card) -- still drew the vanilla trainer regardless of what
+-- species was picked. player.sprite is the engine's seam for exactly this
+-- (see src/pokemon/Sprites.lua's header and the pokemon.sprite hook just
+-- above): every trainer pic load goes through it, keyed by which SIDE and
+-- what KIND of pic is being resolved.
+--
+-- next() first, so a mod that already replaced the trainer's own art
+-- (hagoromo_sprite, say) still gets asked; this only overrides when a
+-- Stadium species is actually selected, same as the 3D model swap in
+-- Stadium.lua's showingTrainer already does for the mid-battle model.
+--
+-- Front is scoped to the trainer card specifically -- the Hall of Fame and
+-- other "front" kinds are a portrait of the PLAYER, not a stand-in for
+-- whichever Pokemon they are currently modeled as, so those are left alone.
+mod.hooks:wrap("player.sprite", function(next, path, ctx)
+  local out = next(path, ctx)
+  if not (ctx and (ctx.side == "back"
+                    or (ctx.side == "front" and ctx.kind == "trainer_card"))) then
+    return out
+  end
+  local okPlayerModel, PlayerModel = pcall(V.require, "PlayerModel")
+  if not (okPlayerModel and PlayerModel) then return out end
+  local dex = PlayerModel.getStadiumDex()
+  if not dex then return out end
+  local data = ctx.data
+  local def = nil
+  if data and data.pokemon then
+    for _, d in pairs(data.pokemon) do
+      if d and d.dex == dex then def = d; break end
+    end
+  end
+  if not def then return out end
+  if ctx.side == "back" then return def.spriteBack or out end
+  return def.spriteFront or out
+end)
+
 -- Every ending path emits this, including a battle skipped before it drew,
 -- so this is where the map's cast comes back.
 mod.events:on("battle.ended", function()

@@ -544,21 +544,11 @@ end
 --
 -- A toggle option to enable/disable stadium models for wild Pokemon
 function PlayerModelPick.wildsRow()
-  return {
-    id = PlayerModelPick.WILDS_ID,
-    label = PlayerModelPick.WILDS_LABEL,
-    value = function()
-      local StadiumWilds = V.require("StadiumWilds")
-      local enabled = StadiumWilds.enabled()
-      return enabled and "ON" or "OFF"
-    end,
-    step = function(game, dir)
-      local StadiumWilds = V.require("StadiumWilds")
-      local current = StadiumWilds.enabled()
-      StadiumWilds.setEnabled(not current)
-      return true
-    end,
-  }
+  local StadiumWilds = V.require("StadiumWilds")
+  local row = StadiumWilds.setting:row()
+  row.id = PlayerModelPick.WILDS_ID
+  row.label = PlayerModelPick.WILDS_LABEL
+  return row
 end
 
 return PlayerModelPick

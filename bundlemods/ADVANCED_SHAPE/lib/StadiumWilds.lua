@@ -11,6 +11,7 @@ local Mat4 = V.require("Mat4")
 local StadiumPack = V.require("StadiumPack")
 local StadiumRig = V.require("StadiumRig")
 local Voxel3D = V.require("Voxel3D")
+local ModSetting = V.require("ModSetting")
 
 local StadiumWilds = {}
 
@@ -25,13 +26,20 @@ local entityAnimStates = {}
 
 -- Configuration
 local WILDS_SCALE = 0.8  -- Scale for wild Pokemon models
-local WILDS_ENABLED = false  -- Master toggle
+
+-- the key under options.modOptions.DRAMATIC_SHAPE
+StadiumWilds.KEY = "stadiumWilds"
+StadiumWilds.LABEL = "STADIUM WILDS"
+
+-- Persisted setting for stadium wilds toggle
+StadiumWilds.setting = ModSetting.new(StadiumWilds.KEY, StadiumWilds.LABEL,
+                                     { false, true }, { "OFF", "ON" })
 
 -- ------- Entity Management
 
 -- Check if stadium wilds feature is enabled
 function StadiumWilds.enabled()
-  if not WILDS_ENABLED then
+  if not StadiumWilds.setting:get() then
     return false
   end
   -- Also check if stadium packs are available
@@ -44,7 +52,8 @@ end
 
 -- Enable or disable the feature
 function StadiumWilds.setEnabled(enabled)
-  WILDS_ENABLED = enabled == true
+  local currentGame = V.mod.world and V.mod.world.game
+  StadiumWilds.setting:setValue(enabled == true, currentGame)
   if not enabled then
     StadiumWilds.clearCache()
   end
