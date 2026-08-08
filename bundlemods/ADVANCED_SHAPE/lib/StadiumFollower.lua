@@ -140,7 +140,7 @@ function StadiumFollower.setSpecies(dex)
   return true
 end
 
--- Get the current follower species (without auto-loading from marker)
+-- Get the current follower species
 function StadiumFollower.getSpecies()
   return currentSpecies
 end
@@ -215,27 +215,49 @@ end
 -- facing: direction the follower is facing ("up", "down", "left", "right")
 function StadiumFollower.draw(x, y, facing)
   if not currentRig or not currentModel then return false end
-  
+
   -- Calculate the model matrix
   local m = Mat4.translate(x, 0, y)
-  
+
   -- Check if we're in free-roam mode (1st or 3rd person)
   local FirstPerson = V.require("FirstPerson")
   local b = FirstPerson.cardBlend()
-  
+
   -- Apply rotation based on facing direction
   local yaw = 0
-  -- In all modes, rotate based on movement direction
-  -- The facing parameter is already the correct world-space direction
-  if facing == "right" then
-    yaw = math.pi / 2
-  elseif facing == "up" then
-    yaw = math.pi
-  elseif facing == "left" then
-    yaw = -math.pi / 2
+
+  if b > 0 then
+    -- In free-roam mode, use camera-relative rotation like the player model
+    local cameraYaw = FirstPerson.cardYaw(x, y)
+
+    if facing == "down" then
+      -- Moving backwards: face the camera
+      yaw = cameraYaw * b
+
+    elseif facing == "up" then
+      -- Moving forward: face away from the camera
+      yaw = (cameraYaw + math.pi) * b
+
+    elseif facing == "left" then
+      -- Moving left: turn 90 degrees left
+      yaw = (cameraYaw + math.pi / 2) * b
+
+    elseif facing == "right" then
+      -- Moving right: turn 90 degrees right
+      yaw = (cameraYaw - math.pi / 2) * b
+    end
+
+  else
+    -- In other modes, rotate based on movement direction
+    if facing == "right" then
+      yaw = math.pi / 2
+    elseif facing == "up" then
+      yaw = math.pi
+    elseif facing == "left" then
+      yaw = -math.pi / 2
+    end
   end
-  -- down = 0, no rotation needed
-  
+
   if yaw ~= 0 then
     m = Mat4.mul(m, Mat4.rotateY(yaw))
   end
