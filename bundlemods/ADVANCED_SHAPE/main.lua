@@ -85,6 +85,7 @@ local TiltShift = V.require("TiltShift")
 local ChunkMesher = V.require("ChunkMesher")
 local VoxelGrid = V.require("VoxelGrid")
 local WorldCurve = V.require("WorldCurve")
+local ViewBox = V.require("ViewBox")
 local DrawDistance = V.require("DrawDistance")
 local OverworldBattle = V.require("OverworldBattle")
 local BattleExit = V.require("BattleExit")
@@ -349,6 +350,15 @@ applyFull = function(level)
   -- the horizon flat. The curve bends the world away from a walking player,
   -- which fights a fixed diorama framing
   WorldCurve.setting:setIndex(1, Game)
+  -- and the world cut to the window it is framed in (lib/ViewBox). FULL is
+  -- the model-on-a-table read and the sides are most of what makes it one:
+  -- a slab of Kanto with edges, rather than a map whose corners happen to
+  -- fall off the frame.
+  ViewBox.setting:setIndex(1, Game)
+  -- and the water reflecting everything it can: FULL is the diorama at its
+  -- most photographed, and a lake with the sky and the shoreline in it is
+  -- most of what makes the model read as being outdoors
+  Water.setting:setIndex(1, Game)
   -- and the view fitted to the window
   opts.zoom = 0
   Zoom.applyOptions(opts)
@@ -405,6 +415,20 @@ local SETTINGS = {
     .. "headset's DIORAMA, where the world is a model being looked at "
     .. "rather than walked around in -- 5 curls it into a half sphere, a "
     .. "town on top of its own little planet." },
+  { ViewBox.setting,
+    "How much of the map the camera bothers to draw. FIT is exactly the "
+    .. "ground on screen and no more -- the shape a tilted camera really "
+    .. "frames, which reaches well north of you and flares wide out there, "
+    .. "not the square the flat game shows. So a connected map that falls "
+    .. "entirely outside it is skipped before it is drawn, terrain, water, "
+    .. "grass and shadows together, which is most of the frame's geometry "
+    .. "at the high rungs. Below about 63 degrees that is all the row does "
+    .. "and the picture is untouched. At 75 the camera can see all the way "
+    .. "to the horizon, so something has to name a distance: FIT is the "
+    .. "closest, WIDE through WIDEST push the world's edge further out, "
+    .. "and OFF stops cutting entirely. Not on 1ST or 3RD -- you are "
+    .. "standing in the world there -- and the box opens out and away as "
+    .. "the camera dives in." },
   { Water.setting,
     "Reflections on water. FULL adds screen-space reflections of the "
     .. "shoreline, the trees and the buildings behind it; SKY is the sky, "
