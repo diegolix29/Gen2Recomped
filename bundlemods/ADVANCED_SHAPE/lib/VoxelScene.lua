@@ -1116,6 +1116,11 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
   -- in voxel mode: :angle() is 0 whenever the camera hasn't been turned
   -- (or has settled back to north), so an unrotated camera is unaffected.
   local yaw = cam.angle and cam:angle() or 0
+  -- If a placed camera exists (e.g., from free_fly mod), use its yaw if available
+  local V3 = V.require("Voxel3D")
+  if V3 and V3.camera and V3.camera.yaw then
+    yaw = V3.camera.yaw
+  end
 
   -- the hour's light, before anything is cast or drawn: point the shared
   -- rig at the clock (or at noon, indoors -- a cave at midnight is exactly

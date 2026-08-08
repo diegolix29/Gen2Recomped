@@ -400,25 +400,40 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     
     -- Apply rotation based on facing direction
     local yaw = 0
-    if b > 0 then
-      -- In free-roam mode
-      if facing == "down" then
-        -- When moving backwards, face the camera
-        yaw = FirstPerson.cardYaw(px + 8, py + 8) * b
-      else
-        -- When moving in other directions, face forward (away from camera)
-        yaw = (FirstPerson.cardYaw(px + 8, py + 8) + math.pi) * b
-      end
-    else
-      -- In other modes, rotate based on movement direction
-      if facing == "right" then
-        yaw = math.pi / 2
-      elseif facing == "up" then
-        yaw = math.pi
-      elseif facing == "left" then
-        yaw = -math.pi / 2
-      end
+-- Normalize the facing string to lowercase to prevent case-sensitive fall-throughs
+  local face = type(facing) == "string" and string.lower(facing) or facing
+  
+  if b > 0 then
+    -- In free-roam mode, use camera-relative rotation like the player model
+    local cameraYaw = FirstPerson.cardYaw(px, py)
+
+    if face == "down" then
+      -- Moving backwards: face the camera
+      yaw = cameraYaw * b
+
+    elseif face == "up" then
+      -- Moving forward: face away from the camera
+      yaw = cameraYaw * b + (math.pi * b)
+
+    elseif face == "left" then
+      -- Moving left: turn 90 degrees left (matches 2D sign)
+      yaw = cameraYaw * b - ((math.pi / 2) * b)
+
+    elseif face == "right" then
+      -- Moving right: turn 90 degrees right (matches 2D sign)
+      yaw = cameraYaw * b + ((math.pi / 2) * b)
     end
+
+  else
+    -- In other modes, rotate based on movement direction
+    if face == "right" then
+      yaw = math.pi / 2
+    elseif face == "up" then
+      yaw = math.pi
+    elseif face == "left" then
+      yaw = -math.pi / 2
+    end
+  end
     
     if yaw ~= 0 then
       m = Mat4.mul(m, Mat4.rotateY(yaw))
