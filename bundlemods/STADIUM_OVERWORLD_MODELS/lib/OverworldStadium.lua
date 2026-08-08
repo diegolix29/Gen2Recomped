@@ -188,6 +188,16 @@ local function builtInFollowerDex(entity)
   -- was moved to slot #1.  Always resolve the live party lead first here.
   -- Extra Followers EX trailer entities are resolved later by
   -- externalPokemonDex(), so their own species assignments are preserved.
+  
+  -- First check if StadiumFollower has a selected species to override party slot #1
+  local okFollower, StadiumFollower = pcall(V.require, "StadiumFollower")
+  if okFollower and StadiumFollower and type(StadiumFollower.getSpecies) == "function" then
+    local followerSpecies = StadiumFollower.getSpecies()
+    if followerSpecies and followerSpecies > 0 and followerSpecies <= 151 then
+      return followerSpecies
+    end
+  end
+  
   local Game = gameObject()
   local save = Game and Game.save
   local party = save and save.party
@@ -876,7 +886,43 @@ local function prepareOne(p, dex, dt)
   -- main.lua publishes after Sky Ride and Followers EX finish updating.
   local renderFacing = (skyMount and entity._stadiumSkyRideAnchorFacing)
       or p.facing
+  
+  -- Check if we're in free-roam mode (1st or 3rd person) and apply camera-relative rotation
+  local okFirstPerson, FirstPerson = pcall(V.require, "FirstPerson")
+  local cameraYaw = 0
+  local useCameraRotation = false
   local fx, fz = facingVector(renderFacing)
+  
+  if okFirstPerson and FirstPerson then
+    local b = FirstPerson.cardBlend()
+    if b > 0 then
+      useCameraRotation = true
+      cameraYaw = FirstPerson.cardYaw(p.px or 0, p.py or 0)
+      
+      -- Calculate camera-relative facing direction
+      local face = type(renderFacing) == "string" and string.lower(renderFacing) or renderFacing
+      local yaw = 0
+      
+      if face == "down" then
+        -- Moving backwards: face the camera
+        yaw = cameraYaw * b
+      elseif face == "up" then
+        -- Moving forward: face away from the camera
+        yaw = (cameraYaw + math.pi) * b
+      elseif face == "left" then
+        -- Moving left: turn 90 degrees left
+        yaw = (cameraYaw + math.pi / 2) * b
+      elseif face == "right" then
+        -- Moving right: turn 90 degrees right
+        yaw = (cameraYaw - math.pi / 2) * b
+      end
+      
+      -- Convert yaw back to faceX/faceZ for StadiumMon:matrix
+      fx = math.sin(yaw)
+      fz = math.cos(yaw)
+    end
+  end
+  
   local x = ((skyMount and tonumber(entity._stadiumSkyRideAnchorPx))
       or (p.px or 0)) + 8
   local z = ((skyMount and tonumber(entity._stadiumSkyRideAnchorPy))

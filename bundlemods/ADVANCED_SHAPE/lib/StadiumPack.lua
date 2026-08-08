@@ -62,25 +62,46 @@ local floor = math.floor
 StadiumPack.CACHE_DIR = "dramatic_shape/stadium"
 StadiumPack.DIR = "assets/stadium"
 
-local function readPack(species)
+-- The shiny variant sits beside its species as NNNs.dsm -- the same DSM3,
+-- written by the same writer, differing only in its texture bytes. See the
+-- note over StadiumInstall's writePack for why it is a separate file and not
+-- a second block in the pack.
+local function packName(dir, species, shiny)
+  return shiny and ("%s/%03ds.dsm"):format(dir, species)
+              or ("%s/%03d.dsm"):format(dir, species)
+end
+
+local function readPack(species, shiny)
   -- The cache only counts when StadiumInstall's marker says it is a
   -- complete, CURRENT build -- an old cache (a rev the extractor has since
   -- fixed, a format that moved) must not shadow a fresh shipped set, and a
   -- half-written folder must not be read at all. Required lazily: Install
   -- requires this module at load, so the reverse edge cannot be taken then.
-  local rel = ("%s/%03d.dsm"):format(StadiumPack.CACHE_DIR, species)
+  local rel = packName(StadiumPack.CACHE_DIR, species, shiny)
+  local install = V.require("StadiumInstall")
+  local mod = V.mod
+  local haveShipped = false
+  if mod and mod.read then
+    local okS, b = pcall(mod.read, mod, packName(StadiumPack.DIR, species, shiny))
+    haveShipped = okS and type(b) == "string" and #b > 4
+  end
+  -- A CURRENT cache always wins. A stale one (readable, but built by an older
+  -- extractor) wins only when there is no shipped set to prefer instead --
+  -- that ordering is what stops a cache from an extractor rev we have since
+  -- fixed shadowing good files, while still leaving something on screen for a
+  -- player whose only copy IS that cache. A half-written folder is caught by
+  -- the marker and satisfies neither.
   if love and love.filesystem and love.filesystem.getInfo
-     and V.require("StadiumInstall").ready() then
+     and (install.ready() or (install.usable() and not haveShipped)) then
     local okInfo, info = pcall(love.filesystem.getInfo, rel, "file")
     if okInfo and info then
       local ok, bytes = pcall(love.filesystem.read, rel)
       if ok and type(bytes) == "string" and #bytes > 4 then return bytes end
     end
   end
-  local mod = V.mod
   if not (mod and mod.read) then return nil end
   local ok, bytes = pcall(mod.read, mod,
-                          ("%s/%03d.dsm"):format(StadiumPack.DIR, species))
+                          packName(StadiumPack.DIR, species, shiny))
   if ok and type(bytes) == "string" and #bytes > 4 then return bytes end
   return nil
 end
@@ -474,8 +495,27 @@ end
 
 -- ------- the cache
 
-local cache = {}          -- species -> model
-local order = {}          -- species, least recently used first
+local cache = {}          -- cache key -> model
+local order = {}          -- cache key, least recently used first
+
+-- The key is the species for a normal model and species+SHINY for a shiny
+-- one, so the two are separate entries that cannot overwrite each other.
+--
+-- They MUST be separate. The model table carries the decoded textures and
+-- the lazily-built love Images hanging off them, and it is deliberately
+-- shared by both sides and both VR eyes -- so a single entry per species
+-- would mean a shiny Rattata and an ordinary one in the same fight fighting
+-- over one texture set, and whichever loaded last would colour both.
+local SHINY = 1000        -- clear of the 1..151 dex range
+
+local function cacheKey(species, shiny)
+  if not species then return nil end
+  return shiny and (species + SHINY) or species
+end
+
+-- Four, because a mirror match between a shiny and a normal of the SAME
+-- species is now two distinct models rather than one shared table, and both
+-- sides must survive a fifth species being called out mid-fight. See keep().
 StadiumPack.KEEP = 4
 
 local function touch(species)
@@ -520,30 +560,48 @@ end
 -- So the mode says, every frame, which two species are actually standing
 -- there (see Stadium.update). With KEEP at 4 and two sides, the two in use
 -- are always the two most recent and cannot reach the front of the queue.
-function StadiumPack.keep(species)
-  if species and cache[species] then touch(species) end
+function StadiumPack.keep(species, shiny)
+  local key = cacheKey(species, shiny)
+  if key and cache[key] then touch(key) end
 end
 
 -- Whether a pack for this species is on disk at all. Cheap enough to ask
 -- before a battle commits to the mode, and the honest test: a mod
 -- installed without its assets folder must decline rather than error.
-function StadiumPack.available(species)
-  if cache[species] then return true end
-  return readPack(species) ~= nil
+--
+-- Asked WITHOUT the shiny flag on purpose by the callers that gate the mode:
+-- whether a species can be modelled at all is a question about its normal
+-- pack. A missing shiny variant does not disqualify the species, it just
+-- means that one mon is drawn in its ordinary colours.
+function StadiumPack.available(species, shiny)
+  local key = cacheKey(species, shiny)
+  if key and cache[key] then return true end
+  return readPack(species, shiny) ~= nil
 end
 
 -- The model for a National Dex number (1..151), or nil.
-function StadiumPack.load(species)
+--
+-- `shiny` selects the recoloured variant. When a species has no shiny pack
+-- -- an install from before rev 3, a recolour that failed at extraction, a
+-- species we have no colours for -- this FALLS BACK to the normal model
+-- rather than returning nil. The alternative is a shiny Pokemon that drops
+-- to a flat 2D pic while its ordinary twin stands in 3D, which reads as a
+-- bug; wrong colours read as a mod that has not finished installing.
+function StadiumPack.load(species, shiny)
   if not (species and species >= 1 and species <= 151) then return nil end
-  local hit = cache[species]
+  local key = cacheKey(species, shiny)
+  local hit = cache[key]
   if hit ~= nil then
-    touch(species)
+    touch(key)
     return hit or nil
   end
 
-  local bytes = readPack(species)
+  local bytes = readPack(species, shiny)
+  if not bytes and shiny then
+    return StadiumPack.load(species, false)
+  end
   if not bytes then
-    cache[species] = false
+    cache[key] = false
     return nil
   end
 
@@ -562,14 +620,22 @@ function StadiumPack.load(species)
     return m
   end)
   if not ok then
-    V.mod.log:warn("stadium: %03d.dsm did not read: %s -- that Pokemon "
-                   .. "falls back to its flat pic", species, tostring(model))
-    cache[species] = false
+    V.mod.log:warn("stadium: %s did not read: %s -- that Pokemon "
+                   .. "falls back to its flat pic",
+                   packName("", species, shiny):sub(2), tostring(model))
+    -- A corrupt SHINY pack must not cost the species its model: fall back to
+    -- the normal one, exactly as a missing file does above.
+    if shiny then
+      cache[key] = false
+      return StadiumPack.load(species, false)
+    end
+    cache[key] = false
     return nil
   end
 
-  cache[species] = model
-  touch(species)
+  model.shiny = shiny and true or nil
+  cache[key] = model
+  touch(key)
   return model
 end
 

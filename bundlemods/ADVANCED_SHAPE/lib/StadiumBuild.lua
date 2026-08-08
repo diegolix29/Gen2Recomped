@@ -26,6 +26,7 @@ local V = ...
 local StadiumRom = V.require("StadiumRom")
 local StadiumFragment = V.require("StadiumFragment")
 local StadiumFx = V.require("StadiumFx")
+local ShinyPalette = V.require("ShinyPalette")
 
 local StadiumBuild = {}
 
@@ -661,7 +662,41 @@ function StadiumBuild.species(rom, fileno)
   local ctx = StadiumBuild.contextTable(rows, #data.anims)
   local bytes, height, floorY, radius =
     StadiumBuild.pack(data, species, moveRows, ctx)
-  return { species = species, bytes = bytes, height = height,
+
+  -- ------- and the shiny, from the same extraction
+  --
+  -- ORDER MATTERS AND IS THE WHOLE TRICK. The normal pack is written FIRST,
+  -- off untouched texels, so `bytes` is bit-for-bit what it has always been
+  -- and tests/stadium_extract_test.lua keeps diffing green against the
+  -- Python oracle. Only then are the textures recoloured and the model
+  -- packed a second time. The oracle knows nothing about shiny and does not
+  -- need to: the format did not move, so there is no second implementation
+  -- to keep in step and no DSM4.
+  --
+  -- Recolouring HERE rather than at load is what makes the effect textures
+  -- separable. StadiumFx marks its generated frames `generated = true` and
+  -- the packer drops the field, so this is the last moment a flame is
+  -- distinguishable from a hide without inferring it back from the prim
+  -- table. A shiny Charizard has a shiny hide and an ordinary fire.
+  --
+  -- Failure is not fatal: a species whose colours we lack, or a transform
+  -- that throws, simply ships without a shiny variant and the runtime falls
+  -- back to the normal model. Losing a recolour is a blemish; losing the
+  -- install is a broken mod.
+  local shinyBytes
+  local ok, err = pcall(function()
+    local spec = ShinyPalette.forDex(species)
+    if not spec then return end
+    if ShinyPalette.recolorTextures(data.textures, spec) == 0 then return end
+    shinyBytes = StadiumBuild.pack(data, species, moveRows, ctx)
+  end)
+  if not ok and V and V.mod and V.mod.log then
+    V.mod.log.warn("shiny recolour failed for species %d: %s",
+                   species, tostring(err))
+  end
+
+  return { species = species, bytes = bytes, shinyBytes = shinyBytes,
+           height = height,
            floor = floorY, radius = radius, bones = #data.bones,
            prims = #data.prims, anims = #data.anims,
            warnings = data.warnings }
@@ -684,13 +719,17 @@ function StadiumBuild.job(rom, write, count)
     local fileno = self.done
     local ok, res, err = pcall(StadiumBuild.species, rom, fileno)
     if ok and res then
-      local wrote, wErr = write(res.species, res.bytes)
+      local wrote, wErr = write(res.species, res.bytes, res.shinyBytes)
       if not wrote then
         self.error = wErr or ("could not write species " .. res.species)
         self.done = self.total
         return false
       end
       self.bytes = self.bytes + #res.bytes
+      if res.shinyBytes then
+        self.bytes = self.bytes + #res.shinyBytes
+        self.shiny = (self.shiny or 0) + 1
+      end
       self.species = res.species
     else
       self.failed[#self.failed + 1] = fileno

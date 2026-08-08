@@ -89,10 +89,14 @@ local ViewBox = V.require("ViewBox")
 local DrawDistance = V.require("DrawDistance")
 local OverworldBattle = V.require("OverworldBattle")
 local BattleExit = V.require("BattleExit")
+local Shiny = V.require("Shiny")
+local ShinyBattle = V.require("ShinyBattle")
+local ShinyUI = V.require("ShinyUI")
 local DayNight = V.require("DayNight")
 local DayTint = V.require("DayTint")
 local Water = V.require("Water")
 local ForestAtmos = V.require("ForestAtmos")
+local Shadows = V.require("Shadows")
 local AntiAlias = V.require("AntiAlias")
 local FirstPerson = V.require("FirstPerson")
 local FreeMove = V.require("FreeMove")
@@ -102,6 +106,9 @@ local VR = V.require("VR")
 local PlayerModel = V.require("PlayerModel")
 local PlayerModelInstall = V.require("PlayerModelInstall")
 local PlayerModelPick = V.require("PlayerModelPick")
+-- the mod's settings menus: the categories, the screens they open, and the
+-- red ink that marks this mod's one row on the engine's OPTIONS list
+local SettingsMenu = V.require("SettingsMenu")
 -- HORDE MODE: the konami code's minigame. Horde owns the state machine and
 -- every hook; the other four are the gun, the crowd, the readout and the
 -- chip-synthesized sounds it fires. See lib/Horde.lua for the whole design.
@@ -424,131 +431,123 @@ local function stagedBattles()
   return OverworldBattle.enabled()
 end
 
+-- ------- this mod's settings, grouped the way the menus present them
+--
+-- One entry per setting: the ModSetting itself, the help text the mod
+-- manager's page carries, and the fields that decide where it is offered.
+--
+--   cat   which of SettingsMenu's categories the row lives on. The table is
+--         kept in category order as well, so the mod manager's own page --
+--         which has no categories to give and lists every row flat -- at
+--         least keeps related settings next to each other.
+--   when  a predicate. The row is off the menu entirely while it answers
+--         false, because a row that decides nothing reads as a broken mod.
+--   full  the row SURVIVES the FULL preset. FULL owns the look, so a row
+--         goes with it by default; `full` marks the ones that were never
+--         about the look. SettingsMenu leans on this and needs no rule of
+--         its own: 3D WORLD is exactly the rows WITHOUT it, so that whole
+--         category empties out under FULL and takes itself off the menu.
 local SETTINGS = {
-  { VoxelGrid.setting, "One-pixel wireframe along every voxel edge." },
+  -- ------- the top-level menu -- settings that are about the GAME
+  --
+  -- SettingsMenu.ROOT as a `cat` puts a row on the DRAMATIC SHAPE screen
+  -- itself rather than inside one of the four categories, which is right
+  -- here: the categories are the diorama, the fights, what the look costs
+  -- and the headset, and how often a shiny appears is none of those.
+  --
+  -- `full` for the battle rows' reason: FULL is a preset for the LOOK, and
+  -- an encounter rate is a rule of the game. A player inside FULL must be
+  -- able to reach it, and FULL must never set it.
+  { Shiny.setting,
+    "How often a wild Pokemon turns up shiny. 1:8192 is the games' own "
+    .. "rate, and every rung below it is twice as often as the one above.",
+    cat = SettingsMenu.ROOT, full = true },
+
+  -- ------- 3D WORLD -- the diorama's own knobs, every one of them FULL's
+  { VoxelGrid.setting, "One-pixel wireframe along every voxel edge.",
+    cat = "world" },
   { WorldCurve.setting,
-    "Bend the world down over the horizon, Animal Crossing style. 1 is a "
-    .. "hint of roll at the frame edges and 2 is the classic read; 3 is as "
-    .. "far as it goes before the horizon closes over ground you can still "
-    .. "walk into. 4 and 5 are past that on purpose and they are for a "
-    .. "headset's DIORAMA, where the world is a model being looked at "
-    .. "rather than walked around in -- 5 curls it into a half sphere, a "
-    .. "town on top of its own little planet." },
+    "Bends the world down over the horizon, until a town sits on top of its "
+    .. "own little planet.",
+    cat = "world" },
   { ViewBox.setting,
-    "How much of the map the camera bothers to draw. FIT is exactly the "
-    .. "ground on screen and no more -- the shape a tilted camera really "
-    .. "frames, which reaches well north of you and flares wide out there, "
-    .. "not the square the flat game shows. So a connected map that falls "
-    .. "entirely outside it is skipped before it is drawn, terrain, water, "
-    .. "grass and shadows together, which is most of the frame's geometry "
-    .. "at the high rungs. Below about 63 degrees that is all the row does "
-    .. "and the picture is untouched. At 75 the camera can see all the way "
-    .. "to the horizon, so something has to name a distance: FIT is the "
-    .. "closest, WIDE through WIDEST push the world's edge further out, "
-    .. "and OFF stops cutting entirely. Not on 1ST or 3RD -- you are "
-    .. "standing in the world there -- and the box opens out and away as "
-    .. "the camera dives in." },
+    "How far out the camera bothers to draw, which only changes the picture "
+    .. "above about 63 degrees where the horizon comes into view.",
+    cat = "world" },
   { Water.setting,
-    "Reflections on water. FULL adds screen-space reflections of the "
-    .. "shoreline, the trees and the buildings behind it; SKY is the sky, "
-    .. "the sun and the moon alone, which is most of the look for a "
-    .. "fraction of the cost." },
-  -- `full` for the AA reason: additive shafts are fill rate, and under 4X
-  -- supersampling that is a question about the hardware, not the look.
-  { ForestAtmos.setting,
-    "The air of the deep woods (Viridian Forest): a ground haze, and "
-    .. "volumetric light let down through the unseen canopy overhead -- "
-    .. "gold spears of sun by day, silver moon rays at night, pollen "
-    .. "drifting through the beams and fireflies once they cool. LOW "
-    .. "keeps the haze, halves the beam march and stands the particles "
-    .. "down. On a phone the row offers LOW alone: the beams need a "
-    .. "depth texture the pass can read back, and no mobile driver here "
-    .. "grants one.",
-    full = true },
+    "Reflections on water: SKY is the sun, moon and sky alone, and FULL "
+    .. "adds the shoreline and trees behind it.",
+    cat = "world" },
+  { DayNight.setting,
+    "What time it is outdoors -- pinned to an hour, running on a ten-minute "
+    .. "cycle, or synced to the clock on your wall.",
+    cat = "world" },
+
+  -- ------- BATTLES -- what a fight is drawn over, and how it is played
   { DrawDistance.setting,
     "How many adjacent maps to render: OFF (no limit, original behavior), "
     .. "NEAR (0 neighbors) for best performance on low-end devices, MILD "
     .. "(2 neighbors) for balanced quality, or FAR (4 neighbors) for moderate "
-    .. "quality/performance balance." },
+    .. "quality/performance balance.",
+    cat = "battles" },
   -- `full` marks a row FULL does not take away. FULL owns the diorama's own
   -- knobs; what a battle is drawn over, and how it is framed, are not that.
   { OverworldBattle.setting,
-    "Fight in three dimensions, shot over the shoulder with a slow parallax "
-    .. "drift. 2D-3D stands the game's own battle pics up as cards; STADIUM "
-    .. "replaces them with the Pokemon Stadium battle models, animated, "
-    .. "playing the animation the move being used actually calls for. A "
-    .. "stages the fight on the MAP -- the nearest clear ground, in that "
-    .. "place's own weather and light; B stands it on two discs against the "
-    .. "sky instead, which works everywhere, including the caves and shop "
-    .. "floors that have nowhere to stage a fight. The STADIUM rungs only "
-    .. "appear once the models have been built, and building them needs a "
-    .. "Pokemon Stadium (US) 1.0 ROM of your own -- import it from the "
-    .. "STADIUM ROM row, or drop it in the baseroms folder and restart. No "
-    .. "other version works: the reader is keyed to that one cartridge.",
+    "Fights staged in 3D over your shoulder, on the map or on discs against "
+    .. "the sky, as cards or Stadium's animated models.",
+    cat = "battles",
     when = function() return not VR.enabled() end, full = true },
   -- Only offered while a fight can actually be staged on the map: with 3D-BTL
   -- off the engine draws the classic screen, which is this row's ON already,
   -- and a row that no longer decides anything is worse than no row.
   { OverworldBattle.backSetting,
-    "Keep your own Pokemon on the battle menu, seen from behind in its "
-    .. "original slot, instead of standing it on the map facing the foe. "
-    .. "The foe is still out there on its own tile.",
+    "Keeps your own Pokemon on the battle menu, seen from behind, instead "
+    .. "of standing it on the map facing the foe.",
+    cat = "battles",
     when = function() return stagedBattles() and not VR.enabled() end,
     full = true },
   -- `full` like the battle rows: this is a GAMEPLAY mode, not a knob on
   -- the diorama, so the FULL preset neither sets it nor takes it away.
   { LetsGo.setting,
-    "Pokemon GO-style catching, staged in the 3D battle. Flick the mouse, "
-    .. "a finger or the right stick to throw the ball at the wild Pokemon "
-    .. "-- spin it first for a curve -- and land inside the shrinking "
-    .. "ring for a NICE, GREAT or EXCELLENT that raises the catch odds. "
-    .. "CATCH ONLY changes nothing else: picking a ball in battle simply "
-    .. "plays the throw. FULL is the whole Let's Go treatment: wild "
-    .. "encounters open straight in throwing mode (B backs out to the "
-    .. "classic menu), Poke/Great/Ultra Balls are half price, and a catch "
-    .. "pays the whole party experience -- scaled by throw quality, first "
-    .. "throws, new species and your running catch combo. Needs 3D-BTL "
-    .. "on; anywhere the staged fight cannot stand, balls quietly throw "
-    .. "the classic way.",
-    full = true },
-  { DayNight.setting,
-    "What time it is outdoors: pin the sky to DAY, NIGHT, DUSK or DAWN, "
-    .. "let CYCLE run it -- ten minutes of sun, ten of moon, with the "
-    .. "shadows, the sky and the light following -- or SYNC it to the "
-    .. "clock on the wall, so Kanto's evening falls when yours does." },
+    "Pokemon GO-style catching -- flick to throw the ball, with FULL adding "
+    .. "half-price balls and party experience (needs 3D-BTL).",
+    cat = "battles", full = true },
+
+  -- ------- PERFORMANCE -- what the look COSTS, which is a different question
+  --
+  -- All three are `full`, and all three for the same reason: FULL is a preset
+  -- for the diorama, not a licence to spend whatever the machine it happens
+  -- to be running on has got. The player decides what their hardware can
+  -- carry, from inside FULL like anywhere else.
+  -- `full` for the AA reason: additive shafts are fill rate, and under 4X
+  -- supersampling that is a question about the hardware, not the look.
+  { ForestAtmos.setting,
+    "Haze and volumetric light shafts in the deep woods, with pollen in the "
+    .. "beams by day and fireflies at night.",
+    cat = "perf", full = true },
+  -- `full` on AA's reasoning below, and for the same reason: the sun's pass
+  -- is the most expensive thing in the frame after the geometry, so this is
+  -- a question about the machine rather than a knob on the diorama, and it
+  -- has to stay reachable from inside FULL -- which never sets it either.
+  { Shadows.setting,
+    "Real cast shadows from the sun, and the first thing to switch off on a "
+    .. "phone or an old machine.",
+    cat = "perf", full = true },
   -- Marked `full` for the opposite reason the battle rows are: this is not a
-  -- knob on the look at all, it is what the look COSTS. FULL is a preset for
-  -- the diorama, not a licence to spend four times the fill rate on the
-  -- machine it happens to be running on, so it neither sets this nor takes
-  -- the row away -- the player decides what their hardware can carry, from
-  -- inside FULL like anywhere else.
+  -- knob on the look at all, it is what the look COSTS.
   { AntiAlias.setting,
-    "Smooth the stair-stepped edges of the 3D world -- roof ridges, ledge "
-    .. "lips, a tree against the sky -- by rendering the diorama larger than "
-    .. "the window and folding it back down. Every edge in the picture "
-    .. "softens with them, the tileset's own texels included, so the diorama "
-    .. "reads smoother rather than sharper. 2X costs half again as many "
-    .. "pixels in each direction and 4X twice, which makes this the most "
+    "Smooths the stair-stepped edges of the 3D world, and the most "
     .. "expensive row in the mod.",
-    full = true },
+    cat = "perf", full = true },
+
+  -- ------- VR -- the headset, and the one comfort knob that is only its
+  --
   -- `full` for the same reason as AA: not a knob on the look, a question
   -- about the hardware on the desk.
   { VR.setting,
-    "PCVR through OpenXR (SteamVR, Oculus, WMR). STANDARD follows the VOXEL "
-    .. "ladder: the orbit rungs become a tabletop model your head moves "
-    .. "around, and the 1ST rung stands you inside the world at life size, "
-    .. "looking where the headset looks. DIORAMA is one presentation "
-    .. "instead -- the world always a model, cut to a square viewport you "
-    .. "grab with the grips to carry, turn and open out, with a "
-    .. "fight arriving as a floating disc of the map. There is no 2D and "
-    .. "no first person in it, and the left stick's click throws V-CURVE "
-    .. "to its top rung and back -- which turns the square cut into a ball "
-    .. "with a dissolved rim, because a bent world has no straight sides. "
-    .. "DIORAMA-MR is the same with the background keyed green, for a "
-    .. "mixed-reality capture. "
-    .. "Menus and dialogs float on a panel. Needs a Windows OpenXR runtime "
-    .. "and the mod running from a real folder; without them the row stays "
-    .. "and the game stays flat, with the reason on the console.",
+    "PCVR through OpenXR on Windows, either following the VOXEL ladder or "
+    .. "as a DIORAMA you carry and turn with the grips.",
+    cat = "vr",
     -- on Windows the row stays even when a runtime is missing (the console
     -- says why); off Windows -- mobile above all -- there is no VR to have
     -- and the row does not exist
@@ -557,16 +556,16 @@ local SETTINGS = {
   -- device that is not plugged in decides nothing, and this one is read
   -- exclusively by the headset's right stick.
   { VR.smoothTurn,
-    "Turn smoothly with the right stick instead of snapping 45 degrees a "
-    .. "flick. OFF by default, and deliberately: a software turn moves the "
-    .. "world past a head that did not move, which is the most reliable way "
-    .. "to make somebody ill in a headset. Turn it on if you have your sea "
-    .. "legs and want the continuity.",
+    "Turns smoothly with the right stick instead of snapping 45 degrees, "
+    .. "if you have your sea legs for it.",
+    cat = "vr",
     -- and only under STANDARD: the stick turns a HEAD, and neither diorama
     -- mode has the player standing in the world to be turned
     when = function() return VR.enabled() and not VR.dioramaMode() end,
     full = true },
 }
+
+SettingsMenu.define(SETTINGS)
 
 local schema = {}
 for i, entry in ipairs(SETTINGS) do
@@ -731,29 +730,31 @@ do
   end
 end
 
--- ------- the mode's rows, kept together
+-- ------- the mode's rows, on menus of their own
 --
--- The engine splices a pipeline's row in beside TILT, because a display mode
--- belongs with the other display modes; a mod's own ui.options.rows
--- additions land at the END of the list. That left this mod's four rows in
--- two places with unrelated engine rows between them, which reads as two
--- unrelated features rather than one mode with settings.
+-- This mod used to put FOURTEEN rows on the engine's OPTIONS list, in one
+-- block spliced in beside the pipeline rows. OptionRows shows four boxes at a
+-- time, so that was four screens of scrolling inside a list that already
+-- carried twenty engine rows, and finding SHADOWS meant knowing it was in
+-- there past the wireframe and the horizon bend.
 --
--- So the plain settings are inserted directly after the last of this mod's
--- PIPELINE rows instead of appended. Nothing else moves: the block lands
--- where the engine already decided display modes go.
-local function insertGrouped(out, extra)
-  local anchor = nil
-  for i, row in ipairs(out) do
-    local id = type(row) == "table" and row.id
-    if id == "pipeline:voxel" or id == "pipeline:tiltshift" then anchor = i end
+-- Now there is ONE row, and it leads the list. What it opens -- the
+-- categories, the screens, and why the split falls where it does -- is
+-- lib/SettingsMenu.lua. VOXEL and T-SHIFT go with it: they are this mod's
+-- display modes, the engine only spliced them beside TILT because it had
+-- nowhere better, and TILT is not on the menu any more anyway (see below).
+--
+-- Two things it takes to move a pipeline row: the engine's descriptor is
+-- captured on the way past and handed to SettingsMenu VERBATIM -- it persists
+-- through its own step function into save.options.pipelines, and rebuilding
+-- it here would be a second implementation of something the engine already
+-- got right -- and the row is then dropped from the top-level list so it is
+-- not in two places at once.
+local function captureRow(out, id)
+  for _, row in ipairs(out) do
+    if type(row) == "table" and row.id == id then return row end
   end
-  if not anchor then
-    for _, row in ipairs(extra) do out[#out + 1] = row end
-    return out
-  end
-  for i, row in ipairs(extra) do table.insert(out, anchor + i, row) end
-  return out
+  return nil
 end
 
 -- FULL owns the settings that describe the LOOK, so while it is selected those
@@ -823,6 +824,25 @@ local function pinEngineFx(game)
   if changed and game.writeOptions then pcall(game.writeOptions, game) end
 end
 
+-- ------- the values that follow other values
+--
+-- Two settings hold a third in place. 3D-BTL pins BATTLE LAYOUT to OG while a
+-- fight can be staged on the map, and FULL pins DAYTIME to SYNC while it owns
+-- that row. Both pins used to be a side effect of the rows hook, which every
+-- step on the OPTIONS menu reran -- so they happened whether or not the step
+-- was the one that mattered, and nothing had to name them.
+--
+-- Now a step can happen on the mod's own menu, where no hook runs, or on the
+-- mod manager's page, where one never did. So the pinning is a function, and
+-- all three routes ask for it.
+local function pinDependents(game)
+  if stagedBattles() then OverworldBattle.forceOG(game) end
+  local Pipelines = require("src.render.Pipelines")
+  if Voxel.isFull(Pipelines.level("voxel")) then DayNight.forceSync(game) end
+end
+
+SettingsMenu.setOnChanged(pinDependents)
+
 -- call next() first and decorate what comes back, so every other mod's
 -- rows survive this one
 mod.hooks:wrap("ui.options.rows", function(next, game, rows)
@@ -849,55 +869,69 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
     OverworldBattle.forceOG(game)
     dropRow(out, "battleLayout")
   end
-  local full = Voxel.isFull(Pipelines.level("voxel"))
-  if full then
+  if Voxel.isFull(Pipelines.level("voxel")) then
     -- FULL owns the rows that PARAMETERISE the diorama -- the wireframe, the
-    -- horizon bend, the blur, the hour -- so those come off the menu and
-    -- DAYTIME is held at SYNC while its row is unreachable.
+    -- horizon bend, the blur, the hour -- so DAYTIME is held at SYNC while its
+    -- row is unreachable. The rows themselves come off inside SettingsMenu,
+    -- which is where they live now: T-SHIFT with the wireframe and the bend,
+    -- and each of them by the same `full` rule rather than by name.
     DayNight.forceSync(game)
-    dropRow(out, "pipeline:tiltshift")
+        dropRow(out, "pipeline:tiltshift")
+
   end
-  local extra = {}
-  for _, entry in ipairs(SETTINGS) do
-    -- Two things decide whether a row is offered.
-    --
-    -- FULL: a preset that owns the look, so the rows that describe the look go
-    -- with it. The BATTLE rows are not that -- 3D-BTL decides what a fight is
-    -- drawn OVER and BACK SPRITES how it is framed, and neither is a knob on
-    -- the diorama FULL is a preset for. FULL still SETS them on arrival (see
-    -- applyFull); it does not hold them, so leaving them on the menu is the
-    -- difference between a preset and a lock.
-    --
-    -- And a row whose own switch is off the table this frame (BACK SPRITES,
-    -- which needs a staged fight to be about) is left off with it. The mod
-    -- manager's page carries every one of them either way.
-    local offered = (entry.full or not full)
-                    and (not entry.when or entry.when())
-    if offered then extra[#extra + 1] = entry[1]:row() end
+  -- The two pipeline rows move INTO the mod's own root menu: captured as the
+  -- engine built them, then dropped from here so they are not in two places.
+  local captured, voxelRow = {}, nil
+  for _, id in ipairs({ "pipeline:voxel", "pipeline:tiltshift" }) do
+    local row = captureRow(out, id)
+    -- a pipeline the registry refused is simply not there, and the menu says
+    -- so by not offering it rather than by offering a hole
+    if row then captured[#captured + 1] = row end
+    if id == "pipeline:voxel" then voxelRow = row end
+    dropRow(out, id)
   end
-  -- and the ROM import, which is an ACTION and not a setting: there is no
-  -- rung to store, nothing for the mod manager's page to persist and nothing
-  -- to restore on the next boot, so it is appended here rather than living in
-  -- SETTINGS. nil on a platform with no file dialog, which takes it off the
-  -- menu rather than offering a button that cannot do anything.
-  -- On EVERY platform. Where there is no file dialog it says WHERE? and
-  -- shows the folder to put the cartridge in, which is the one thing a
-  -- player on a phone could not otherwise find out -- the row used to vanish
-  -- there, which reads as the feature being missing rather than manual.
+  SettingsMenu.setPipelineRows(captured)
+  -- ------- one row, and it leads the list
+  --
+  -- At the TOP rather than spliced in beside the display modes it used to sit
+  -- with. This is a mod that replaces the whole look of the game, and a player
+  -- who installed it and went looking for its settings should not have to
+  -- scroll to find out where they went -- least of all past the engine rows it
+  -- has quietly taken away.
+  --
+  -- Inserted after next() has run, so it leads every OTHER mod's rows too. The
+  -- second line is VOXEL's own value function, which makes the row say what
+  -- the mode is currently doing without opening it -- and reuses the engine's
+  -- label ladder rather than restating it.
+  table.insert(out, 1, {
+    id = SettingsMenu.id(SettingsMenu.ROOT),
+    label = SettingsMenu.ROOT_LABEL,
+    value = voxelRow and voxelRow.value or nil,
+    -- `activate` and not `step`: the engine fires activate on A alone, and a
+    -- row that OPENS something should not also answer Left and Right
+    -- (src/ui/OptionsMenu.update).
+    activate = function(g)
+      g.stack:push(SettingsMenu.new(g, SettingsMenu.ROOT))
+    end,
+  })
+  
+  -- Add Stadium ROM import row (ACTION, not a setting)
   local okPick, importRow = pcall(function()
     return V.require("StadiumRomPick").row()
   end)
-  if okPick and importRow then extra[#extra + 1] = importRow end
+  if okPick and importRow then table.insert(out, importRow) end
+  
   -- Mewtwo player model row
   local okMewtwo, mewtwoRow = pcall(function()
     return V.require("PlayerModelPick").mewtwoRow()
   end)
-  if okMewtwo and mewtwoRow then extra[#extra + 1] = mewtwoRow end
+  if okMewtwo and mewtwoRow then table.insert(out, mewtwoRow) end
+  
   -- Stadium follower row
   local okFollower, followerRow = pcall(function()
     return V.require("PlayerModelPick").followerRow()
   end)
-  if okFollower and followerRow then extra[#extra + 1] = followerRow end
+  if okFollower and followerRow then table.insert(out, followerRow) end
   
   -- Stadium wilds row (only show if stadium packs are available)
   local okWilds, wildsRow = pcall(function()
@@ -907,9 +941,9 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
     end
     return nil
   end)
-  if okWilds and wildsRow then extra[#extra + 1] = wildsRow end
+  if okWilds and wildsRow then table.insert(out, wildsRow) end
   
-  return insertGrouped(out, extra)
+  return out
 end)
 
 -- The mod manager writes and persists on its own, so the only thing left
@@ -920,14 +954,11 @@ mod.events:on("mod.options_changed", function(payload)
     if payload.key == entry[1].key then entry[1]:sync(payload.value) end
   end
   -- 3D-BTL switched on from the manager's page pins BATTLE LAYOUT exactly as
-  -- the OPTIONS row does. The manager persists its own value; this is the one
-  -- that has to follow it.
-  if stagedBattles() then OverworldBattle.forceOG() end
-  -- and DAYTIME changed from the manager's page while FULL owns it snaps
-  -- straight back to SYNC -- the OPTIONS row is hidden, but the manager's is
-  -- not, and FULL's pin must hold against both
-  local Pipelines = require("src.render.Pipelines")
-  if Voxel.isFull(Pipelines.level("voxel")) then DayNight.forceSync() end
+  -- the mod's own row does, and DAYTIME changed there while FULL owns it snaps
+  -- straight back to SYNC -- that row is off the mod's menus under FULL, but
+  -- the manager's page carries every setting unconditionally, and the pin has
+  -- to hold against both.
+  pinDependents()
 end)
 
 -- ------- keeping the geometry in step with the world
@@ -1027,26 +1058,55 @@ end)
 -- rerun every mod's ui.options.rows hook once per keypress. The cursor is
 -- clamped rather than reset, so it stays on the row it was just used on
 -- instead of jumping to the top when the list below it shortens.
+--
+-- Held on the INSTANCE rather than compared across one call of update, and
+-- that is not a tidying: those three rows live in a SUBMENU now, and the
+-- stack only ticks its top state (src/core/StateStack.update). So the step
+-- that changes them happens while this menu is suspended and a
+-- before/after pair taken around inner() would both be read after the fact
+-- and always agree. A signature that outlives the suspension does not.
 do
   local OptionsMenu = require("src.ui.OptionsMenu")
   if not OptionsMenu.dramaticShapeFullHook then
+    local OptionRows = require("src.ui.OptionRows")
     local Pipelines = require("src.render.Pipelines")
     local inner = OptionsMenu.update
+    local innerPalettes = OptionsMenu.sgbPalettes
 
     local function idAt(menu, index)
       local row = menu.rows and menu.rows[index or 1]
       return type(row) == "table" and row.id or nil
     end
 
+    -- What the row LIST depends on: whether FULL is selected (it owns the
+    -- rows that describe the look), and the two switches that give and take
+    -- an engine row -- 3D-BTL, which owns BATTLE LAYOUT, and VR, which hides
+    -- both battle rows while it is on. Only the FULL-ness of the voxel level
+    -- matters, so stepping 35 to 50 is not a change.
+    local function signature()
+      return string.format("%s|%s|%s",
+        tostring(Voxel.isFull(Pipelines.level("voxel"))),
+        tostring(OverworldBattle.enabled()), tostring(VR.enabled()))
+    end
+
+    -- Stamped where the ROWS are built, which is the thing the signature is a
+    -- signature OF. Read lazily on the first update instead and a menu opened
+    -- before the change and updated after it would compare the new state
+    -- against itself and never rebuild.
+    local innerNew = OptionsMenu.new
+    function OptionsMenu.new(game, opts)
+      local menu = innerNew(game, opts)
+      menu.dramaticShapeSig = signature()
+      return menu
+    end
+
     function OptionsMenu:update(dt)
-      local before = Pipelines.level("voxel")
-      local hadBattles = OverworldBattle.enabled()
+      local before = self.dramaticShapeSig or signature()
       local wasOn = idAt(self, self.index)
       inner(self, dt)
-      local after = Pipelines.level("voxel")
-      local crossedFull = after ~= before
-                          and (Voxel.isFull(before) or Voxel.isFull(after))
-      if crossedFull or OverworldBattle.enabled() ~= hadBattles then
+      local after = signature()
+      self.dramaticShapeSig = after
+      if before ~= after then
         local rebuilt = OptionsMenu.new(self.game)
         self.rows = rebuilt.rows
         -- Follow the row the cursor was ON rather than the slot it was in:
@@ -1060,6 +1120,36 @@ do
       end
     end
 
+    -- ------- and the mod's own row is red
+    --
+    -- Why this is a palette zone and not love.graphics.setColor -- twice over
+    -- -- is written out in lib/SettingsMenu.lua, next to the code that builds
+    -- the palette. The short of it: setColor picks a SHADE on this screen and
+    -- the zone picks the COLOR.
+    --
+    -- Addressed by SLOT, because the row scrolls: it leads the list, so it is
+    -- normally the top box, but a player who scrolls past it must not leave a
+    -- red band behind on whatever takes its place. Searched by id rather than
+    -- assumed to be row 1 for the same reason -- another mod's hook running
+    -- after ours could put something above it.
+    function OptionsMenu:sgbPalettes(game)
+      local zones = innerPalettes and innerPalettes(self, game) or nil
+      local scroll = self.scroll or 0
+      for slot = 1, OptionRows.VISIBLE do
+        local row = self.rows and self.rows[scroll + slot]
+        if type(row) == "table"
+            and row.id == SettingsMenu.id(SettingsMenu.ROOT) then
+          local zone = SettingsMenu.rowZone(game and game.data, slot)
+          if zone then
+            zones = zones or {}
+            zones[#zones + 1] = zone
+          end
+          break
+        end
+      end
+      return zones
+    end
+
     OptionsMenu.dramaticShapeFullHook = true
   end
 end
@@ -1071,6 +1161,39 @@ end
 -- where the reasoning for each one is written down. Installed once, here,
 -- so this file keeps naming every engine seam the mod touches.
 OverworldBattle.install()
+
+-- ------- shiny Pokemon
+--
+-- ON, always, with no row to switch it off: shininess is a property of the
+-- Pokemon rather than a display mode, and a Pokemon that is shiny in one
+-- player's save and not another's is not a Pokemon, it is a setting.
+--
+-- It rests on a fact the engine already ships. Gen 1 has no shininess of its
+-- own, but it has the four DVs Gen 2 reads to decide it, and
+-- src/pokemon/Stats.lua:90 carries that reading -- the engine's own comment
+-- calls it "the RBY virtual shiny" and says it is there for indicator mods.
+-- So nothing new is stored on a Pokemon and nothing has to migrate: every
+-- save ever made already contains the answer, and this only starts drawing
+-- it. See lib/Shiny.lua for why deriving beats storing.
+--
+-- Three seams, each in its own file with its own reasoning:
+--   ShinyBattle  wraps Pokemon.new, which is where every wild, gift,
+--                starter and traded mon is built, so the roll lands before
+--                the sprite is baked
+--   ShinyUI      the battle pics' tint and the status page's mark
+--   ShinyFx      the arrival sparkle (armed from Stadium.update)
+--
+-- The Stadium models need no seam here at all: their recolour happens at
+-- extraction (lib/StadiumBuild.lua), and the battle simply asks for the
+-- shiny pack.
+ShinyBattle.install()
+ShinyUI.install()
+
+-- A save opened for the first time under this mod has shiny Pokemon in it
+-- already -- they always did -- so refresh the cached flag across the party
+-- rather than leaving it absent until each mon next changes.
+mod.events:on("save.loaded", function() ShinyBattle.markParty() end)
+mod.events:on("save.created", function() ShinyBattle.markParty() end)
 
 -- ------- the free-roam rungs' inputs and their walk
 --

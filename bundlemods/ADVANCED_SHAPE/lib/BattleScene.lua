@@ -579,7 +579,14 @@ function BattleScene.render(state, arena, textures, token)
   local cap = BattleScene.capture
   if cap and cap.rig then
     local okRig, c, p, fh = pcall(cap.rig, arena, groundY)
-    if okRig and c then cam, pitch, capFrameH = c, p or 0.15, fh end
+    -- The pitch is off STRAIGHT DOWN, like Voxel.angle and like the one
+    -- BattleCam.rig hands back -- the only thing downstream reads it is the
+    -- grass and flower pull below. A seat that declines to say stands in
+    -- for a near-LEVEL one rather than a top-down one, which is what every
+    -- staged seat actually is: the pull grows toward straight down, and a
+    -- default that guessed the wrong end of that would spend tens of world
+    -- pixels of bias on a camera standing two cells from its subject.
+    if okRig and c then cam, pitch, capFrameH = c, p or math.rad(80), fh end
   end
   if not cam then cam, pitch = BattleCam.rig(arena, groundY) end
   cam.fov = BattleScene.letterboxFov(cam.fov, ph, s)
@@ -729,6 +736,12 @@ function BattleScene.render(state, arena, textures, token)
     -- a card wins the depth test the way a nearer thing should
     local cap = BattleScene.capture
     if cap and cap.draw then pcall(cap.draw, BattleBillboard.PULL) end
+    -- and a shiny's arrival sparkle, last of the three so its stars add
+    -- over the mon they belong to rather than under it, and still inside
+    -- the flash window so a burst during a hit is lit like everything else
+    pcall(function()
+      V.require("ShinyFx").draw(arena, groundY, BattleBillboard.PULL)
+    end)
     if flashing then Voxel3D.flatten(nil) end
     -- grass and flowers ride the same camera-ward pull the free-roam pass
     -- gives them, measured against THIS camera's pitch rather than the
@@ -736,11 +749,29 @@ function BattleScene.render(state, arena, textures, token)
     -- pull is also what keeps a tuft from z-fighting the floor it stands on
     local pull = VoxelScene.pull(math.max(pitch, 0.05))
     if not discs then
+      -- and the WIND blowing through it, exactly as the free-roam pass
+      -- switches on around its own grass draws (VoxelScene). Without this
+      -- the uniform sits at the per-frame default beginScene sends -- zero,
+      -- meaning "no wind" -- and the tall grass a fight is standing in goes
+      -- dead still for the length of the battle while the same tufts one
+      -- frame earlier, and one frame after, were moving. A staged fight is
+      -- shot on the MAP, in that place's own weather and light; a frozen
+      -- field is the one thing that reads as a photograph of it rather than
+      -- the place itself.
+      --
+      -- No contact point goes with it (grassWind's px/pz are left nil, which
+      -- sends the far-away sentinel): that push is a WALKER parting the grass
+      -- they are stepping through, and there is nobody walking here -- the
+      -- two mons stand still on their own tiles for the whole shot.
+      Voxel3D.grassWind(true)
       Voxel3D.draw(ChunkMesher.grass(host), atlasFor(host), nil, pull)
       for _, nb in ipairs(neighbors) do
         Voxel3D.draw(ChunkMesher.grass(nb.map), atlasFor(nb.map),
                      Mat4.translate(nb.ox, 0, nb.oy), pull)
       end
+      -- off again before the flowers, which are not grass and have no sway
+      -- of their own -- the same order the free-roam pass draws them in
+      Voxel3D.grassWind(false)
       local fpull = math.max(0, pull - 8 * math.sin(math.max(pitch, 0.05)))
       Voxel3D.draw(ChunkMesher.flowers(host), atlasFor(host), nil, fpull,
                    ShadowMap.snug(nil))

@@ -61,7 +61,14 @@ StadiumInstall.FORMAT = "DSM3"
 -- is the hermite-animation decode fix: the five keyframe species (Pidgeot,
 -- Dodrio, Exeggutor, Tangela, Magmar) come out garbled or bind-posed from
 -- any rev-1 build.
-StadiumInstall.REV = 2
+--
+-- Rev 3 adds the shiny variants (NNNs.dsm). The normal packs are unchanged
+-- byte for byte, so this is exactly the case REV exists for and not a FORMAT
+-- bump: nothing about DSM3 moved, there is simply a second file per species
+-- that a rev-2 cache does not have. Without the bump a player who already
+-- installed would keep a complete-looking cache with no shiny models in it,
+-- and every shiny they met would silently show its normal colours.
+StadiumInstall.REV = 3
 
 StadiumInstall.COUNT = 151
 
@@ -201,22 +208,46 @@ local function shipped()
   return true
 end
 
--- Whether the STADIUM rungs can be offered at all: either the packs have been
--- built from the player's ROM, or the mod folder already carries a set.
+-- Whether the packs on disk can be READ, even if they are not current.
+--
+-- Format and count, but deliberately NOT rev. The distinction matters on an
+-- upgrade: a rev bump means the packs are out of date, not that they are
+-- unreadable, and treating the two the same is what would make the STADIUM
+-- rungs disappear off the options row for anyone whose cache predates it.
+-- Losing the recolour until a rebuild is a blemish; losing the mode is not.
+function StadiumInstall.usable()
+  local m = readMarker()
+  return (m ~= nil and m.format == StadiumInstall.FORMAT
+          and m.count == StadiumInstall.COUNT) and true or false
+end
+
+-- Whether the STADIUM rungs can be offered at all: the packs have been built
+-- from the player's ROM (current or merely readable), or the mod folder
+-- already carries a set.
 function StadiumInstall.available()
   if StadiumInstall.ready() then return true end
+  if StadiumInstall.usable() then return true end
   return shipped()
 end
 
--- Whether there is work to do: something to build from, and nothing usable
--- yet.
+-- Whether there is work to do: a ROM to build from, and no CURRENT set.
 --
--- A checkout that already carries a set is NOT pending. Building anyway would
--- be correct and would also mean a ten-second loading screen on the first run
--- of every checkout, to arrive at the files that were already sitting there.
+-- Keyed on ready() rather than available(), and that is the whole upgrade
+-- story. It used to short-circuit on available(), which meant a checkout
+-- carrying assets/stadium was never pending -- so when REV went to 3 for the
+-- shiny variants, such a machine did not rebuild, was not asked to, and
+-- quietly kept serving the old set: every shiny Pokemon drawn in its
+-- ordinary colours, with nothing on screen to say why. That is exactly what
+-- happened here, and it took a driver run sitting at "idle 0/151" to notice.
+--
+-- The cost this trades away is real and was the original reason: a checkout
+-- with a ROM now spends one loading screen rebuilding a set it already had
+-- files for. Once. After that ready() is true and it is not pending again --
+-- and what it buys is that a rev bump actually reaches the people it was
+-- bumped for.
 function StadiumInstall.pending()
-  if StadiumInstall.available() then return false end
-  return StadiumInstall.romPresent()
+  if not StadiumInstall.romPresent() then return false end
+  return not StadiumInstall.ready()
 end
 
 function StadiumInstall.forget()
@@ -230,12 +261,34 @@ local status = { state = "idle", done = 0, total = StadiumInstall.COUNT }
 
 StadiumInstall.status = status
 
-local function writePack(species, bytes)
+-- The shiny variant rides beside its species as NNNs.dsm.
+--
+-- A separate FILE rather than a second block inside NNN.dsm, and that is a
+-- deliberate trade. A second block would mean a new magic (DSM4), the same
+-- change mirrored into tools/stadium_pack.py, a regenerated oracle and a
+-- re-run of the 34MB byte diff -- the project's central safety net disturbed
+-- for a feature that does not need the format to move at all. As its own
+-- file it is the SAME DSM3 a normal pack is, written by the same writer and
+-- read by the same reader, and the 151 normal packs stay byte-identical.
+--
+-- A species with no shiny variant simply has no NNNs.dsm, and StadiumPack
+-- falls back to the normal model. That is also what a half-finished install
+-- looks like, which is the behaviour we want from one.
+local function writePack(species, bytes, shinyBytes)
   local f = fs()
   if not f then return false, "no filesystem" end
   local ok, err = f.write(("%s/%03d.dsm"):format(StadiumInstall.DIR, species),
                           bytes)
   if not ok then return false, tostring(err) end
+  if shinyBytes then
+    -- A failed shiny write is not a failed install: the species still has
+    -- its model. Left unwritten, the runtime shows the normal one.
+    local sok, serr = f.write(
+      ("%s/%03ds.dsm"):format(StadiumInstall.DIR, species), shinyBytes)
+    if not sok and V.mod and V.mod.log then
+      V.mod.log.warn("shiny pack %03d not written: %s", species, tostring(serr))
+    end
+  end
   return true
 end
 

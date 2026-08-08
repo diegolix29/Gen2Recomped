@@ -227,6 +227,7 @@ function StadiumMon.new(side)
   return setmetatable({
     side = side,               -- "player" or "enemy"
     species = nil,             -- the dex number currently modelled
+    shiny = false,             -- and whether it is the recoloured variant
     model = nil,
     rig = nil,
     state = "idle",
@@ -243,6 +244,9 @@ end
 function StadiumMon:release()
   if self.rig then self.rig:release() end
   self.rig, self.model, self.species = nil, nil, nil
+  -- cleared with the species: a stale true here would make the next
+  -- setSpecies believe a shiny model was already loaded and early-return
+  self.shiny = false
 end
 
 -- ------- which species this side is showing
@@ -270,14 +274,29 @@ end
 -- DATA rather than a list of dex numbers, so a future extraction bug that
 -- corrupts a species' idle falls back to the sprite instead of coming
 -- apart on the field -- and nothing here has to be edited when it does.
-function StadiumMon:setSpecies(dex)
-  if dex == self.species then return self.rig ~= nil end
+--
+-- `shiny` is part of the IDENTITY, not a flag applied afterwards. The early
+-- return below is keyed on it for that reason: a shiny Rattata and an
+-- ordinary one share a dex number but are different models, loaded from
+-- different packs, and comparing on the dex alone would keep whichever
+-- loaded first and colour both sides with it. That is precisely the shape
+-- of bug the two-Rattata note above describes, and it is silent -- the
+-- model is valid, it is simply the wrong one.
+function StadiumMon:setSpecies(dex, shiny)
+  shiny = shiny and true or false
+  if dex == self.species and shiny == (self.shiny or false) then
+    return self.rig ~= nil
+  end
   if self.rig then self.rig:release() end
   self.rig, self.model, self.species = nil, nil, dex
+  self.shiny = shiny
   self.grow, self.grewOwn = nil, nil
   if not dex then return false end
-  local model = StadiumPack.load(dex)
+  local model = StadiumPack.load(dex, shiny)
   if not model then return false end
+  -- the pack falls back to the normal model when a species has no shiny
+  -- variant, so believe the model rather than the request
+  self.shiny = model.shiny and true or false
   if model.staticPose then return false end
   local rig = StadiumRig.new(model)
   if not rig then return false end

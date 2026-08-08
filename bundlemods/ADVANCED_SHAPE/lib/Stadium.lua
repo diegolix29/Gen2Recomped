@@ -51,6 +51,8 @@ local V = ...
 local Voxel3D = V.require("Voxel3D")
 local StadiumPack = V.require("StadiumPack")
 local StadiumMon = V.require("StadiumMon")
+local ShinyBattle = V.require("ShinyBattle")
+local ShinyFx = V.require("ShinyFx")
 
 local Stadium = {}
 
@@ -428,6 +430,15 @@ function Stadium.update(dt, battle, groundY)
       -- a fresh arrival: this Pokemon has not grown out of its ball yet
       if mon then mon.grow, mon.grewOwn = nil, nil end
       if mon and mon.rig and mon.state == "faint" then mon:play("idle") end
+      -- and if it is shiny, announce it. This edge rather than the grow,
+      -- because a WILD foe never grows -- it is on the field from the
+      -- first frame -- and that is the encounter a shiny most wants to be
+      -- announced on. See the header of ShinyFx.
+      if ShinyBattle.battlerIsShiny(battler) then
+        ShinyFx.arm(side)
+      else
+        ShinyFx.clear(side)
+      end
     end
     -- the collapse this side is owed, once its bar has finished emptying
     if session.faintPending and session.faintPending[side] then
@@ -439,17 +450,46 @@ function Stadium.update(dt, battle, groundY)
       end
     end
 
-    mon:setSpecies(dex)
+    -- Shininess is a property of the OCCUPANT, not of the species, so it is
+    -- resolved here beside the dex number and passed with it. A shiny
+    -- Rattata and an ordinary one are the same dex and different models.
+    --
+    -- Read off the battler rather than remembered, because Transform makes
+    -- the two disagree: a Ditto that copied a shiny Rattata wears the
+    -- Rattata's dex (session.transform above) and keeps its OWN shininess,
+    -- which is exactly what the games do.
+    local shiny = battler ~= nil and not session.transform[side]
+                  and ShinyBattle.battlerIsShiny(battler)
+
+    mon:setSpecies(dex, shiny)
     -- and tell the pack cache this one is standing there, every frame. Its
     -- eviction order is keyed on LOADS, and a side only loads when its
     -- species changes -- so without this a Pokemon that has been out for a
     -- few turns is the least recently loaded thing in the cache and gets its
     -- textures released out from under it the moment a fifth species enters
-    -- the battle (see StadiumPack.keep).
-    if mon.species then StadiumPack.keep(mon.species) end
-    local onFieldResult = onField(battle, side, mon)
-    local substituteHP = battler and battler.substituteHP
-    mon.visible = (mon.rig ~= nil) and onFieldResult and not substituteHP
+    -- the battle (see StadiumPack.keep). The shiny flag rides along: the
+    -- shiny and normal models are separate cache entries.
+    if mon.species then StadiumPack.keep(mon.species, mon.shiny) end
+
+    -- how big this Pokemon actually is, so a shiny's sparkle can be sized to
+    -- it rather than to a constant that is wrong for most of the dex (see
+    -- the header of ShinyFx). Pushed every frame: the model can arrive a
+    -- frame or two after the burst is armed, and a send-out is still growing
+    -- while it plays.
+    if mon.rig and mon.model then
+      ShinyFx.setMetrics(side, mon:worldHeight(), mon:worldRadius())
+    else
+      ShinyFx.setMetrics(side, nil)
+    end
+
+    -- and let a waiting sparkle GO, once the fight is actually the thing on
+    -- screen. The battle draws underneath the transition wipe for about a
+    -- second before that, and a burst released then plays out its whole life
+    -- behind it -- armed, drawn, counted, and never seen, which is exactly
+    -- how this looked when it was keyed on the scene drawing instead.
+    local g = game()
+    local top = g and g.stack and g.stack:top()
+    if top == battle then ShinyFx.release(side) end
     mon.visible = (mon.rig ~= nil) and onField(battle, side, mon)
                   and not (battler and battler.substituteHP)
     -- LET'S GO capture mode: the player's model is out of the shot the

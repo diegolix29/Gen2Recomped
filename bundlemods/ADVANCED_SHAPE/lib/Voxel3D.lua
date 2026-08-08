@@ -236,8 +236,21 @@ local SHADER = [[
     // (An earlier CPU version translated along the central view axis,
     // which preserved only the screen centre and made off-centre sprites
     // and grass swim against the ground while the camera scrolled.)
+    //
+    // NEVER PAST THE EYE, which is the one way this can stop being a pure
+    // depth bias: a vertex nearer the lens than `pull` is carried through
+    // it and out the other side, where the projection turns inside out and
+    // the thing lands wherever the far side of the frame happens to be --
+    // a single tuft of grass smeared across the whole picture. Impossible
+    // on an orbit rung, where the eye is a screen height away and the pull
+    // is tens of pixels; ordinary for a staged fight's seat, which stands
+    // a couple of cells from what it is looking at, and for a first-person
+    // eye standing in the grass. Half the range is the ceiling: at that
+    // distance nothing is losing a depth fight the other half would win.
     if (pull > 0.0) {
-      w.xyz += normalize(eye - w.xyz) * pull;
+      vec3 toEye = eye - w.xyz;
+      float range = length(toEye);
+      w.xyz += toEye / max(range, 1e-4) * min(pull, range * 0.5);
     }
     return vp * w;
   }

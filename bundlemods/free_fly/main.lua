@@ -170,12 +170,16 @@ return function(mod)
     return nil
   end
 
-  -- a mon qualifies when its species can learn HM02 (the MERGED tmhm, so
-  -- compatibility-expanding mods count) and it either knows FLY or a mod
-  -- has relaxed the field-move rules through the engine's own chain
+  -- a mon qualifies when it IS the gift (the marker outlives whatever a
+  -- randomizer does to its moves or its species' data), when it knows
+  -- FLY (knowing the move is vanilla's own bar for field use; the
+  -- species compat list can lie under randomizers), or when a mod has
+  -- relaxed the field-move rules through the engine's own chain, where
+  -- HM02 compatibility still gates as the machine-teach path would
   local function eligibleFlyer(game, ow, mon)
-    if not canLearnFly(game, mon) then return false end
+    if mon and mon.freeFlyGift then return true end
     if knowsFly(mon) then return true end
+    if not canLearnFly(game, mon) then return false end
     local Runtime = require("src.mods.Runtime")
     return Runtime.wantsHook("fieldmove.eligibility")
       and fieldMoveUser(ow, "FLY") ~= nil
@@ -292,9 +296,10 @@ return function(mod)
   mod.content.commands:register("free_fly:teach_fly", {
     foreground = true,
     fn = function(ctx)
-      local function teach(mon)
+      local function teach(mon, anySpecies)
         if not mon then return false end
-        if mon.species ~= GIFT_SPECIES and mon.species ~= "PIDGEY" then
+        if not anySpecies
+           and mon.species ~= GIFT_SPECIES and mon.species ~= "PIDGEY" then
           return false
         end
         -- marks the gift so the BADGE CHECKS option exempts its flights;
@@ -320,6 +325,15 @@ return function(mod)
         for _, mon in ipairs(box) do
           if teach(mon) then return end
         end
+      end
+      -- no bird by name: a randomizer swapped the gift's species.  This
+      -- command only runs right after give_pokemon, so the newest party
+      -- member IS the gift; it gets FLY and the marker all the same
+      local newest = ctx.save.party[#ctx.save.party]
+      if teach(newest, true) then
+        mod.log:info("gift became %s; taught FLY anyway",
+                     tostring(newest.species))
+        return
       end
       mod.log:warn("gift %s not found; FLY not taught", GIFT_SPECIES)
     end,
@@ -1308,6 +1322,7 @@ return function(mod)
       -- instead of stacking on top of it (min 10 keeps clearance)
       local lift = state.alt + hover
       local gh, voxelOn = voxelGroundHeight(ow, p)
+      local camLift
       if voxelOn then
         -- constant 52px TOTAL ride: the scene's building volumes cap at
         -- 48px from the ground plane (their mesher's MAX_ROWS), so this
@@ -1323,9 +1338,17 @@ return function(mod)
           total = total * math.min(1, state.alt / math.max(1, cruiseAlt()))
         end
         p.freeFlyAlt = math.max(0, total - gh)
-        -- read live from the voxel mod's own angle table (the ladder is
-        -- OFF/FULL/15/35/50/75/1ST/3RD) -- still needed to know whether
-        -- this is the 75-degree rung so the placed-camera seam engages.
+        -- the camera follows the constant TOTAL, never the varying
+        -- per-cell part: roofs mix zero-height flat-class cells into
+        -- their upper rows, and a camera tracking freeFlyAlt lurched
+        -- there while the card itself stayed level.  The follow factor
+        -- scales with the rung's PITCH, read live from the voxel mod's
+        -- own angle table (the ladder is OFF/FULL/15/35/50/75/1ST/3RD).
+        -- The engine camera is a GROUND-PLANE point, so it can express
+        -- forward but never height; the 75-degree orbit gets its height
+        -- through the scene's placed-camera seam below instead.
+        local FOLLOW_BY_DEG = { [15] = 0.65, [35] = 0.65,
+                                [50] = 0.78, [75] = 0.65 }
         local rung = Pipelines.level("voxel") or 0
         if state.voxelStateRef == nil then
           state.voxelStateRef = false
@@ -1339,6 +1362,7 @@ return function(mod)
         end
         local deg = state.voxelStateRef
           and state.voxelStateRef.ANGLES_DEG[rung + 1] or 0
+        camLift = total * (FOLLOW_BY_DEG[deg] or 0.65)
         state.placeWanted = deg == 75
           and not (state.voxelStateRef.isFirstPerson
                    and state.voxelStateRef.isFirstPerson(rung))
@@ -1349,16 +1373,8 @@ return function(mod)
         -- 2D flies steady: a 2px integer-quantized hover reads as
         -- jitter, and the wing flap already carries the life
         p.freeFlyAlt = state.alt
+        camLift = state.alt
       end
-      -- The camera's vertical lift MUST equal the sprite's own render
-      -- lift (p.freeFlyAlt), the same value Player.__freeFlyPoseImpl
-      -- subtracts from py to draw the card raised. They used to be two
-      -- separately-computed numbers (this one scaled by a per-rung
-      -- FOLLOW_BY_DEG factor); whenever they disagreed, the sprite was
-      -- drawn away from the screen's fixed rotation pivot, so turning the
-      -- compass swept it sideways instead of spinning cleanly around it --
-      -- the "player isn't the centre of the compass" symptom on every
-      -- rung except 75 (which has its own separate camera; see below).
       local camLift = p.freeFlyAlt
       -- Calculate camera position: same fixed, UNROTATED offset vanilla
       -- Camera:follow uses (viewW/2-16, viewH/2-8). The Renderer already
@@ -1374,6 +1390,8 @@ return function(mod)
       local viewW, viewH = Game.renderer:worldViewSize()
       ow.camera.x = p.px - (viewW / 2 - 16)
       ow.camera.y = (p.py - camLift) - (viewH / 2 - 8)
+      ow.camera:follow(p.px, p.py - camLift,
+                       Game.renderer:worldViewSize())
       -- the 75-degree orbit, lifted to the rider through the scene's
       -- placed-camera seam (the battle-camera mechanism): same centre,
       -- same pitch, same fov, focus raised to flight height.  Never
@@ -1394,19 +1412,8 @@ return function(mod)
          and (V3.camera == nil or V3.camera == state.placedCam) then
         local ok = pcall(function()
           local vw, vh = Game.renderer:worldViewSize()
-          -- The focus MUST be the player's true ground position, not
-          -- ow.camera.x/y: that pair carries two hacks that only make
-          -- sense for the flat/tilt renderers -- camLift (a fake
-          -- screen-height nudge) baked into the Y, and a yaw-compensated
-          -- offset baked into both axes to keep the sprite screen-centred
-          -- while the flat canvas itself spins. Reusing either here is
-          -- why the orbit's centre used to drift with altitude and with
-          -- yaw instead of staying pinned on the rider. Height is already
-          -- supplied separately via L (state.placeHeight), so the ground
-          -- position just needs the same fixed sprite-anchor offset the
-          -- flat path adds (+16, +8), nothing rotated or lifted.
-          local ccx = p.px + 16
-          local ccy = p.py + 8
+          local ccx = ow.camera.x + vw / 2
+          local ccy = ow.camera.y + vh / 2
           local a = vsRef.angle or math.rad(75)
           local focal = vsRef.FOCAL or 1.2
           local distC = focal * vh
@@ -1936,15 +1943,28 @@ return function(mod)
           if mon.freeFlyGift then return end
         end
       end
+      -- prefer a FLY knower; failing that take the first of the line
+      -- anyway (a randomizer may have stripped the move), since the
+      -- taken flag proves the gift was collected
+      local fallback
       for _, list in ipairs(lists) do
         for _, mon in ipairs(list or {}) do
-          if (mon.species == "PIDGEY" or mon.species == "PIDGEOTTO"
-              or mon.species == GIFT_SPECIES) and knowsFly(mon) then
-            mon.freeFlyGift = true
-            mod.log:info("marked the gift %s from an older save", mon.species)
-            return
+          if mon.species == "PIDGEY" or mon.species == "PIDGEOTTO"
+             or mon.species == GIFT_SPECIES then
+            if knowsFly(mon) then
+              mon.freeFlyGift = true
+              mod.log:info("marked the gift %s from an older save",
+                           mon.species)
+              return
+            end
+            fallback = fallback or mon
           end
         end
+      end
+      if fallback then
+        fallback.freeFlyGift = true
+        mod.log:info("marked the gift %s from an older save (FLY missing)",
+                     fallback.species)
       end
     end
     migrateGiftMarker()
