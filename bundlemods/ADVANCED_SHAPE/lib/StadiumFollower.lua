@@ -10,6 +10,7 @@ local V = ...
 local Mat4 = V.require("Mat4")
 local StadiumPack = V.require("StadiumPack")
 local StadiumRig = V.require("StadiumRig")
+local StadiumMon = V.require("StadiumMon")
 local Voxel3D = V.require("Voxel3D")
 
 local StadiumFollower = {}
@@ -150,11 +151,17 @@ function StadiumFollower.draw(x, y, facing)
   
   -- Apply scaling
   local model = currentModel
-  local root = model.rootScale or 1
-  local h = model.height or 52.25
-  local k = root * 14 / math.max(h, 1e-6)
-  local scale = k * FOLLOWER_SCALE
+  local scale = StadiumMon.scaleFor(model) * FOLLOWER_SCALE
   m = Mat4.mul(m, Mat4.scale(scale, scale, scale))
+  
+  -- Stand the model on its own lowest point and give back HOVER_CAP of any
+  -- authored hover, same as StadiumWilds/PlayerModel/battle Pokemon --
+  -- otherwise a hovering or origin-centred species renders sunk into the
+  -- ground instead of standing on it.
+  local lift = StadiumMon.liftFor(model)
+  if lift ~= 0 then
+    m = Mat4.mul(m, Mat4.translate(0, -lift, 0))
+  end
   
   -- Skin and draw
   currentRig:skin(yaw)

@@ -12,6 +12,7 @@ local Voxel3D = V.require("Voxel3D")
 local PlayerModelInstall = V.require("PlayerModelInstall")
 local StadiumPack = V.require("StadiumPack")
 local StadiumRig = V.require("StadiumRig")
+local StadiumMon = V.require("StadiumMon")
 
 local PlayerModel = {}
 
@@ -430,11 +431,17 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     
     -- Apply scaling for Stadium model (use similar scale to Pokemon in battles)
     local model = currentStadiumModel
-    local root = model.rootScale or 1
-    local h = model.height or 52.25
-    local k = root * 14 / math.max(h, 1e-6)  -- REF_HEIGHT = 14 from StadiumMon
-    local scale = k * 1.5  -- 0.5 * 4 = 2.0 (4x larger for Mewtwo)
+    local scale = StadiumMon.scaleFor(model) * 1.5  -- 0.5 * 4 = 2.0 (4x larger for Mewtwo)
     m = Mat4.mul(m, Mat4.scale(scale, scale, scale))
+    
+    -- Stand the model on its own lowest point and give back HOVER_CAP of
+    -- any authored hover, same as StadiumWilds/battle Pokemon -- otherwise
+    -- a species authored with a hover (or centred on its origin) renders
+    -- sunk into the ground instead of standing on it.
+    local lift = StadiumMon.liftFor(model)
+    if lift ~= 0 then
+      m = Mat4.mul(m, Mat4.translate(0, -lift, 0))
+    end
     
     -- Skin the mesh with the calculated yaw
     currentRig:skin(yaw)

@@ -106,7 +106,55 @@ StadiumMon.HOVER_CAP = 0.5
 -- same rate.
 StadiumMon.FPS = StadiumPack.FPS
 
--- ------- coming out of the ball
+-- ------- shared sizing/anchoring, for callers with no battle-side instance
+--
+-- PlayerModel (the player's own overworld model), StadiumFollower (the
+-- walking Pikachu-follower slot) and StadiumWilds (overworld wild spawns)
+-- all stand a Stadium model on a point the same way a battle does, but none
+-- of them own a StadiumMon side to call :worldHeight() / :matrix() on. These
+-- two are that same math, factored out so every consumer -- battle or
+-- overworld -- reads a species' size and hover the same way instead of each
+-- keeping its own copy (which is how PlayerModel/StadiumFollower/
+-- StadiumWilds ended up with a plain root*REF_HEIGHT/height that skips both
+-- the SQUASH curve and the floor/hover correction above).
+
+-- How tall this model should stand, in world pixels -- see the header.
+function StadiumMon.worldHeightFor(model)
+  local h = model and model.height or 0
+  if not (h > 0) then return StadiumMon.REF_HEIGHT end
+  local k = (h / StadiumMon.MEDIAN) ^ StadiumMon.SQUASH
+  local out = StadiumMon.REF_HEIGHT * k
+  if out < StadiumMon.MIN_HEIGHT then out = StadiumMon.MIN_HEIGHT end
+  if out > StadiumMon.MAX_HEIGHT then out = StadiumMon.MAX_HEIGHT end
+  return out
+end
+
+-- The uniform scale factor that puts this model's raw mesh at
+-- worldHeightFor() world pixels tall, before any caller's own visual
+-- multiplier (Mewtwo's 1.5x, the follower's 0.9x, etc).
+function StadiumMon.scaleFor(model)
+  if not model then return 1 end
+  local root = model.rootScale
+  if not (root and root > 0) then root = 1 end
+  return root * StadiumMon.worldHeightFor(model) / math.max(model.height or 0, 1e-6)
+end
+
+-- How far to shift the model DOWN, in the model's own raw units (i.e.
+-- before the scale above -- apply this translate after the scale multiply,
+-- same as StadiumMon:matrix does), so it stands on its own lowest point
+-- while keeping HOVER_CAP of any authored hover. Zero for the 119 species
+-- whose origin already is their floor.
+function StadiumMon.liftFor(model)
+  if not model then return 0 end
+  local root = model.rootScale
+  if not (root and root > 0) then root = 1 end
+  local floor = model.floor or 0
+  local hover = math.min(math.max(floor, 0),
+                         StadiumMon.HOVER_CAP * math.max(model.height or 0, 0))
+  return (floor - hover) / root
+end
+
+
 --
 -- The engine grows its flat pic in the Game Boy's own three steps -- 0, then
 -- 3/7, then 5/7, then full -- across the twelve frames after the ball opens
