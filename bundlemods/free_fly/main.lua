@@ -1308,7 +1308,6 @@ return function(mod)
       -- instead of stacking on top of it (min 10 keeps clearance)
       local lift = state.alt + hover
       local gh, voxelOn = voxelGroundHeight(ow, p)
-      local camLift
       if voxelOn then
         -- constant 52px TOTAL ride: the scene's building volumes cap at
         -- 48px from the ground plane (their mesher's MAX_ROWS), so this
@@ -1324,17 +1323,9 @@ return function(mod)
           total = total * math.min(1, state.alt / math.max(1, cruiseAlt()))
         end
         p.freeFlyAlt = math.max(0, total - gh)
-        -- the camera follows the constant TOTAL, never the varying
-        -- per-cell part: roofs mix zero-height flat-class cells into
-        -- their upper rows, and a camera tracking freeFlyAlt lurched
-        -- there while the card itself stayed level.  The follow factor
-        -- scales with the rung's PITCH, read live from the voxel mod's
-        -- own angle table (the ladder is OFF/FULL/15/35/50/75/1ST/3RD).
-        -- The engine camera is a GROUND-PLANE point, so it can express
-        -- forward but never height; the 75-degree orbit gets its height
-        -- through the scene's placed-camera seam below instead.
-        local FOLLOW_BY_DEG = { [15] = 0.65, [35] = 0.65,
-                                [50] = 0.78, [75] = 0.65 }
+        -- read live from the voxel mod's own angle table (the ladder is
+        -- OFF/FULL/15/35/50/75/1ST/3RD) -- still needed to know whether
+        -- this is the 75-degree rung so the placed-camera seam engages.
         local rung = Pipelines.level("voxel") or 0
         if state.voxelStateRef == nil then
           state.voxelStateRef = false
@@ -1348,7 +1339,6 @@ return function(mod)
         end
         local deg = state.voxelStateRef
           and state.voxelStateRef.ANGLES_DEG[rung + 1] or 0
-        camLift = total * (FOLLOW_BY_DEG[deg] or 0.65)
         state.placeWanted = deg == 75
           and not (state.voxelStateRef.isFirstPerson
                    and state.voxelStateRef.isFirstPerson(rung))
@@ -1359,20 +1349,31 @@ return function(mod)
         -- 2D flies steady: a 2px integer-quantized hover reads as
         -- jitter, and the wing flap already carries the life
         p.freeFlyAlt = state.alt
-        camLift = state.alt
       end
-      -- Calculate camera position accounting for yaw rotation
-      local camYaw = ow.camera:angle() or 0
+      -- The camera's vertical lift MUST equal the sprite's own render
+      -- lift (p.freeFlyAlt), the same value Player.__freeFlyPoseImpl
+      -- subtracts from py to draw the card raised. They used to be two
+      -- separately-computed numbers (this one scaled by a per-rung
+      -- FOLLOW_BY_DEG factor); whenever they disagreed, the sprite was
+      -- drawn away from the screen's fixed rotation pivot, so turning the
+      -- compass swept it sideways instead of spinning cleanly around it --
+      -- the "player isn't the centre of the compass" symptom on every
+      -- rung except 75 (which has its own separate camera; see below).
+      local camLift = p.freeFlyAlt
+      -- Calculate camera position: same fixed, UNROTATED offset vanilla
+      -- Camera:follow uses (viewW/2-16, viewH/2-8). The Renderer already
+      -- rotates the whole screen around the screen-centre pivot to draw
+      -- the compass turn (see Renderer:drawTiltedWorld's
+      -- love.graphics.rotate around viewCenterX/Y), the same pivot this
+      -- unrotated offset keeps the player pinned to. Pre-rotating this
+      -- offset by yaw (as before) double-transformed: it moved the
+      -- camera off that pivot, so the player drifted away from screen
+      -- centre the moment the compass left FRONT, and the drift only got
+      -- worse the more it turned. camLift is a screen-space altitude
+      -- nudge, not a world offset, so it must stay unrotated too.
       local viewW, viewH = Game.renderer:worldViewSize()
-      local offsetX = viewW / 2 - 16
-      local offsetY = viewH / 2 - 8
-      
-      -- Apply rotation to offset
-      local rotatedOffsetX = offsetX * math.cos(camYaw) - offsetY * math.sin(camYaw)
-      local rotatedOffsetY = offsetX * math.sin(camYaw) + offsetY * math.cos(camYaw)
-      
-      ow.camera.x = p.px - rotatedOffsetX
-      ow.camera.y = (p.py - camLift) - rotatedOffsetY
+      ow.camera.x = p.px - (viewW / 2 - 16)
+      ow.camera.y = (p.py - camLift) - (viewH / 2 - 8)
       -- the 75-degree orbit, lifted to the rider through the scene's
       -- placed-camera seam (the battle-camera mechanism): same centre,
       -- same pitch, same fov, focus raised to flight height.  Never
@@ -1393,8 +1394,19 @@ return function(mod)
          and (V3.camera == nil or V3.camera == state.placedCam) then
         local ok = pcall(function()
           local vw, vh = Game.renderer:worldViewSize()
-          local ccx = ow.camera.x + vw / 2
-          local ccy = ow.camera.y + vh / 2
+          -- The focus MUST be the player's true ground position, not
+          -- ow.camera.x/y: that pair carries two hacks that only make
+          -- sense for the flat/tilt renderers -- camLift (a fake
+          -- screen-height nudge) baked into the Y, and a yaw-compensated
+          -- offset baked into both axes to keep the sprite screen-centred
+          -- while the flat canvas itself spins. Reusing either here is
+          -- why the orbit's centre used to drift with altitude and with
+          -- yaw instead of staying pinned on the rider. Height is already
+          -- supplied separately via L (state.placeHeight), so the ground
+          -- position just needs the same fixed sprite-anchor offset the
+          -- flat path adds (+16, +8), nothing rotated or lifted.
+          local ccx = p.px + 16
+          local ccy = p.py + 8
           local a = vsRef.angle or math.rad(75)
           local focal = vsRef.FOCAL or 1.2
           local distC = focal * vh
@@ -1402,10 +1414,27 @@ return function(mod)
           local cam = state.placedCam or {}
           cam.fov = 2 * math.atan(1 / (2 * focal))
           cam.focus = { ccx, L, ccy }
-          -- Incorporate camera yaw rotation into eye position
+          -- Incorporate camera yaw rotation into eye position: the old
+          -- code only ever read camYaw into cam.yaw (for sprite billboard
+          -- rotation) and never rotated the eye or up vectors with it, so
+          -- turning moved the compass reading but the 75-degree orbit's
+          -- eye stayed nailed to the same world point -- no visible turn.
+          -- Decompose the pitched offset into a height part (unchanged)
+          -- and a ground-plane part (horizDist), then spin that ground
+          -- part around the focus by -camYaw: this engine documents
+          -- (FirstPerson.lua) that increasing yaw is a LEFT turn, and
+          -- every place that turns camYaw into real coordinates negates
+          -- it first (Renderer's -cameraRotation, every FirstPerson look
+          -- input); using the raw, un-negated angle here spins the
+          -- camera backwards, which is what made the first pass of this
+          -- fix turn the wrong way.
           local camYaw = ow.camera:angle() or 0
-          cam.eye = { ccx, L + distC * math.cos(a), ccy + distC * math.sin(a) }
-          cam.up = { 0, math.sin(a), -math.cos(a) }
+          local horizDist = distC * math.sin(a)
+          local eyeOffX = horizDist * math.sin(camYaw)
+          local eyeOffZ = horizDist * math.cos(camYaw)
+          cam.eye = { ccx + eyeOffX, L + distC * math.cos(a), ccy + eyeOffZ }
+          cam.up = { -math.cos(a) * math.sin(camYaw), math.sin(a),
+                     -math.cos(a) * math.cos(camYaw) }
           -- Store the camera yaw for proper sprite rotation
           cam.yaw = camYaw
           state.placedCam = cam
