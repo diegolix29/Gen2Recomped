@@ -522,6 +522,10 @@ function PlayerModelPick.followerRow()
     value = function()
       local StadiumFollower = V.require("StadiumFollower")
       local current = StadiumFollower.getSpecies()
+      -- If not loaded, try to read from marker file for display purposes
+      if not current then
+        current = StadiumFollower.readSaved()
+      end
       if not current then
         return "OFF"
       end

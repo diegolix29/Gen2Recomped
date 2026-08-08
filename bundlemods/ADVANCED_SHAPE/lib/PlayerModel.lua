@@ -400,25 +400,16 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     
     -- Apply rotation based on facing direction
     local yaw = 0
-    if b > 0 then
-      -- In free-roam mode
-      if facing == "down" then
-        -- When moving backwards, face the camera
-        yaw = FirstPerson.cardYaw(px + 8, py + 8) * b
-      else
-        -- When moving in other directions, face forward (away from camera)
-        yaw = (FirstPerson.cardYaw(px + 8, py + 8) + math.pi) * b
-      end
-    else
-      -- In other modes, rotate based on movement direction
-      if facing == "right" then
-        yaw = math.pi / 2
-      elseif facing == "up" then
-        yaw = math.pi
-      elseif facing == "left" then
-        yaw = -math.pi / 2
-      end
+    -- In all modes, rotate based on movement direction
+    -- The facing parameter is already the correct world-space direction
+    if facing == "right" then
+      yaw = math.pi / 2
+    elseif facing == "up" then
+      yaw = math.pi
+    elseif facing == "left" then
+      yaw = -math.pi / 2
     end
+    -- down = 0, no rotation needed
     
     if yaw ~= 0 then
       m = Mat4.mul(m, Mat4.rotateY(yaw))

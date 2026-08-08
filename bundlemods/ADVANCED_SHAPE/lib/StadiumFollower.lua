@@ -21,6 +21,46 @@ local rigCache = {}
 -- Current follower species (nil = disabled, 1-151 = dex number)
 local currentSpecies = nil
 
+-- ------- Persistence
+
+-- Where the follower marker file is kept
+StadiumFollower.MARKER = "stadium_follower.info"
+
+-- Format version for the marker file
+StadiumFollower.FORMAT = "SF1"
+
+local function fs()
+  return love and love.filesystem
+end
+
+local function isFile(path)
+  local f = fs()
+  if not (f and f.getInfo) then return false end
+  local ok, info = pcall(f.getInfo, path, "file")
+  return (ok and info) and true or false
+end
+
+-- Read the marker file to get the saved follower species
+local function readMarker()
+  local f = fs()
+  if not (f and isFile(StadiumFollower.MARKER)) then return nil end
+  local ok, text = pcall(f.read, StadiumFollower.MARKER)
+  if not (ok and type(text) == "string") then return nil end
+  local format, dexStr = text:match("^(%S+)%s+(.+)$")
+  if not format or format ~= StadiumFollower.FORMAT then return nil end
+  local dex = tonumber(dexStr)
+  return dex and (dex > 0 and dex <= 151) and dex or nil
+end
+
+-- Write the marker file with the current follower species
+local function writeMarker(dex)
+  local f = fs()
+  if not (f and f.write) then return false end
+  local content = StadiumFollower.FORMAT .. " " .. (dex or 0)
+  local ok, err = pcall(f.write, StadiumFollower.MARKER, content)
+  return ok, err
+end
+
 -- Current rig and model
 local currentRig = nil
 local currentModel = nil
@@ -49,6 +89,8 @@ function StadiumFollower.setSpecies(dex)
   currentSpecies = nil
   
   if not dex or dex < 1 or dex > 151 then
+    -- Save the disabled state
+    writeMarker(nil)
     return true  -- Disabled
   end
   
@@ -57,6 +99,8 @@ function StadiumFollower.setSpecies(dex)
     currentRig = rigCache[dex]
     currentModel = currentRig.model
     currentSpecies = dex
+    -- Save the enabled state
+    writeMarker(dex)
     return true
   end
   
@@ -85,6 +129,9 @@ function StadiumFollower.setSpecies(dex)
   currentModel = model
   currentSpecies = dex
   
+  -- Save the enabled state
+  writeMarker(dex)
+  
   -- Start idle animation
   rig:pose(1, 0, true)
   rig:skin(0)
@@ -93,9 +140,62 @@ function StadiumFollower.setSpecies(dex)
   return true
 end
 
--- Get the current follower species
+-- Get the current follower species (without auto-loading from marker)
 function StadiumFollower.getSpecies()
   return currentSpecies
+end
+
+-- Read the saved follower species from marker file without loading the model
+function StadiumFollower.readSaved()
+  return readMarker()
+end
+
+-- Load the saved follower species from marker file and set it (which loads the model)
+function StadiumFollower.loadSaved()
+  local saved = readMarker()
+  if saved and saved > 0 then
+    print("StadiumFollower: Loading saved follower dex", saved)
+    -- Check if Stadium models are available first
+    local okInstall, StadiumInstall = pcall(V.require, "StadiumInstall")
+    if okInstall and StadiumInstall and StadiumInstall.available() then
+      local ok = StadiumFollower.setSpecies(saved)
+      if ok then
+        print("StadiumFollower: Successfully loaded saved follower")
+      else
+        print("StadiumFollower: Failed to load saved follower")
+      end
+    else
+      print("StadiumFollower: Stadium models not available, deferring load")
+      -- Store for later loading when models become available
+      StadiumFollower.deferredLoad = saved
+    end
+  else
+    print("StadiumFollower: No saved follower or disabled")
+  end
+end
+
+-- Try to load deferred follower species (called when Stadium models become available)
+function StadiumFollower.tryDeferredLoad()
+  if StadiumFollower.deferredLoad then
+    print("StadiumFollower: Loading deferred follower dex", StadiumFollower.deferredLoad)
+    local ok = StadiumFollower.setSpecies(StadiumFollower.deferredLoad)
+    if ok then
+      print("StadiumFollower: Successfully loaded deferred follower")
+      StadiumFollower.deferredLoad = nil
+    else
+      print("StadiumFollower: Failed to load deferred follower")
+    end
+  end
+end
+
+-- Check for deferred load and try to load if models are now available
+function StadiumFollower.checkDeferred()
+  if StadiumFollower.deferredLoad then
+    local okInstall, StadiumInstall = pcall(V.require, "StadiumInstall")
+    if okInstall and StadiumInstall and StadiumInstall.available() then
+      StadiumFollower.tryDeferredLoad()
+    end
+  end
 end
 
 -- ------- Rendering
@@ -125,25 +225,16 @@ function StadiumFollower.draw(x, y, facing)
   
   -- Apply rotation based on facing direction
   local yaw = 0
-  if b > 0 then
-    -- In free-roam mode, use camera-relative rotation like the player model
-    if facing == "down" then
-      -- When moving backwards, face the camera
-      yaw = FirstPerson.cardYaw(x, y) * b
-    else
-      -- When moving in other directions, face forward (away from camera)
-      yaw = (FirstPerson.cardYaw(x, y) + math.pi) * b
-    end
-  else
-    -- In other modes, rotate based on movement direction
-    if facing == "right" then
-      yaw = math.pi / 2
-    elseif facing == "up" then
-      yaw = math.pi
-    elseif facing == "left" then
-      yaw = -math.pi / 2
-    end
+  -- In all modes, rotate based on movement direction
+  -- The facing parameter is already the correct world-space direction
+  if facing == "right" then
+    yaw = math.pi / 2
+  elseif facing == "up" then
+    yaw = math.pi
+  elseif facing == "left" then
+    yaw = -math.pi / 2
   end
+  -- down = 0, no rotation needed
   
   if yaw ~= 0 then
     m = Mat4.mul(m, Mat4.rotateY(yaw))

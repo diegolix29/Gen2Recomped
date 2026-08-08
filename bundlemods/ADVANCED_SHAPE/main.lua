@@ -187,6 +187,11 @@ mod.content.render_pipelines:register("voxel", {
     -- would fight anyone who changed one deliberately.
     applyFull(level)
     Voxel.update(dt, level)
+    -- Check for deferred follower load when Stadium models become available
+    local okFollower, StadiumFollower = pcall(V.require, "StadiumFollower")
+    if okFollower and StadiumFollower then
+      StadiumFollower.checkDeferred()
+    end
     -- the day/night clock, on the same always-running tick: Pipelines.update
     -- runs whatever the level, so time passes with the mode off, through
     -- battles and menus, and a CYCLE evening falls mid-fight exactly as it
@@ -1216,6 +1221,15 @@ mod.events:on("save.loaded", function()
   -- switched on, and their rows are not there to switch them back off (see
   -- the pinEngineFx hook below)
   pinEngineFx()
+  -- Load saved follower species (delayed to ensure Stadium models are available)
+  local okFollower, StadiumFollower = pcall(V.require, "StadiumFollower")
+  if okFollower and StadiumFollower then
+    StadiumFollower.loadSaved()
+  end
+  -- Check for deferred follower load after Stadium models become available
+  if okFollower and StadiumFollower then
+    StadiumFollower.checkDeferred()
+  end
 end)
 
 mod.events:on("save.created", function()
@@ -1225,6 +1239,11 @@ mod.events:on("save.created", function()
   -- pinEngineFx). Answered here rather than only when the menu opens, so a
   -- player who never opens it is not left playing under one.
   pinEngineFx()
+  -- Load saved follower species for new saves too
+  local okFollower, StadiumFollower = pcall(V.require, "StadiumFollower")
+  if okFollower and StadiumFollower then
+    StadiumFollower.loadSaved()
+  end
 end)
 
 -- Hook into overworld_wild_spawns entity creation

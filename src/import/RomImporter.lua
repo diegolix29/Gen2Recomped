@@ -3300,11 +3300,17 @@ function RomImporter:_pickSkyImage()
       return
     end
   elseif platform == "Windows" then
-    local script = [[Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; $d.Title = "Select Sky Image"; $d.Filter = "Image files (*.png;*.jpg;*.jpeg;*.bmp)|*.png;*.jpg;*.jpeg;*.bmp|All files (*.*)|*.*"; if ($d.ShowDialog() -eq "OK") { Write-Output $d.FileName }]]
+    local script = table.concat({
+      "Add-Type -AssemblyName System.Windows.Forms;",
+      "$d=New-Object System.Windows.Forms.OpenFileDialog;",
+      "$d.Title='" .. prompt .. "';",
+      "$d.Filter='Image files (*.png;*.jpg;*.jpeg;*.bmp)|*.png;*.jpg;*.jpeg;*.bmp|All files (*.*)|*.*';",
+      "if($d.ShowDialog() -eq 'OK'){[Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::Write($d.FileName)}",
+    })
     local pipe = HostShell.popen('powershell -NoProfile -STA -Command "' .. script .. '"')
     if pipe then
       local content = pipe:read("*a")
-      pipe:close()
+      HostShell.pclose(pipe)
       result = content:gsub("^%s+", ""):gsub("%s+$", "")
       if result == "" then result = nil end
     end
@@ -3312,7 +3318,7 @@ function RomImporter:_pickSkyImage()
     local pipe = HostShell.popen([[zenity --file-selection --title="]] .. prompt .. [[" --file-filter="Image files | *.png *.jpg *.jpeg *.bmp" 2>/dev/null]])
     if pipe then
       local content = pipe:read("*a")
-      pipe:close()
+      HostShell.pclose(pipe)
       result = content:gsub("^%s+", ""):gsub("%s+$", "")
       if result == "" then result = nil end
     end
@@ -3320,7 +3326,7 @@ function RomImporter:_pickSkyImage()
       pipe = HostShell.popen([[kdialog --getopenfilename "$HOME" "*.png *.jpg *.jpeg *.bmp|Image files" 2>/dev/null]])
       if pipe then
         local content = pipe:read("*a")
-        pipe:close()
+        HostShell.pclose(pipe)
         result = content:gsub("^%s+", ""):gsub("%s+$", "")
         if result == "" then result = nil end
       end
@@ -3329,7 +3335,7 @@ function RomImporter:_pickSkyImage()
     local pipe = HostShell.popen([[osascript -e 'POSIX path of (choose file with prompt "]] .. prompt .. [[" of type {"png","jpg","jpeg","bmp"})' 2>/dev/null]])
     if pipe then
       local content = pipe:read("*a")
-      pipe:close()
+      HostShell.pclose(pipe)
       result = content:gsub("^%s+", ""):gsub("%s+$", "")
       if result == "" then result = nil end
     end
