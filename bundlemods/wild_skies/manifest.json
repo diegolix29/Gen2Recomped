@@ -1,20 +1,18 @@
 {
-  "id": "free_fly",
-  "name": "Free Fly",
+  "id": "wild_skies",
+  "name": "Wild Skies",
   "version": "1.4.0",
   "entry": "main.lua",
   "api": 2,
   "category": "MECHANIC",
-  "priority": 100,
+  "priority": 110,
   "dependencies": [],
-  "optional_dependencies": [
-    "jj_quick_select"
-  ],
+  "optional_dependencies": [],
   "conflicts": [],
   "permissions": [
     "engine_internals"
   ],
   "game_version": "0.0.0-dev || >=0.1.0 <2.0.0",
-  "description": "A party member that knows FLY can take off and free-roam over the overworld, then land anywhere walkable.",
+  "description": "Ambient flying Pokémon from the local encounter table roam the sky in loose flocks, resting on streets and rooftops.",
   "github": "ShaneHudson/gen1recomp-mods"
 }
