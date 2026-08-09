@@ -22,6 +22,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 LUA=${LUA:-luajit}
+LUA54=${LUA54:-lua5.4}
 BLESS=0
 QUICK=0
 SHOTS=${WITH_SHOTS:-0}
@@ -65,6 +66,15 @@ run_tier() {
 
 # ------- ROM-free tiers: these are what CI runs
 
+run_tier "T0 ROM builder version routing" python3 tests/build_rom_data_cli_test.py
+run_tier "T0 switch CI workflow content gate" "$LUA" tests/switch_ci_workflows_test.lua
+run_tier "T0 switch transfer docs gate" "$LUA" tests/switch_transfer_docs_test.lua
+# NX Blue/Yellow asset overlay: ROM-free, must run on every checkout so a
+# Sound.lua / overlay regression is not gated only on switch-changes paths.
+run_tier "T0 NX asset overlay fallback" "$LUA" tests/engine/assets_version_fallback_test.lua
+run_tier "T0 NX generated-path static guard" "$LUA" tests/engine/nx_generated_guard_test.lua
+run_tier "T0 NX Yellow/Blue boot (dynamic paths)" "$LUA" tests/engine/nx_yellow_boot_test.lua
+run_tier "T0 touch-controls pad cursor" "$LUA" tests/engine/touch_controls_pad_cursor_test.lua
 run_tier "T1/T2 engine invariants + parity gates" "$LUA" tests/run_engine.lua
 run_tier "T4 mod-SDK" "$LUA" tests/run_modkit.lua
 
@@ -124,7 +134,18 @@ if [ -f data/generated/maps.lua ]; then
     run_tier "T3 save editor: map browser" "$LUA" tests/save_editor_task8_tests.lua
     run_tier "T3 save editor: mod awareness" "$LUA" tests/save_editor_mod_tests.lua
     run_tier "T3 save editor: wheel scrolling" "$LUA" tests/save_editor_wheel_bug595_test.lua
+    run_tier "T3 save editor: pad / NX input" "$LUA" tests/save_editor_pad_input_test.lua
     run_tier "T5 link (loopback lockstep)" "$LUA" tests/run_link_tests.lua
+    # The oversize-save vendor oracle (tests/save_oversize_vendor_test.lua)
+    # cross-checks the launcher's footer-truncation import against the
+    # INDEPENDENT PKHeX-derived gen1lib codec, which cannot run under luajit
+    # (native 5.3+ operators).  Needs a stock Lua 5.3/5.4; skip when absent.
+    if command -v "$LUA54" >/dev/null 2>&1; then
+      run_tier "T3 save oversize vendor oracle" "$LUA54" tests/save_oversize_vendor_test.lua
+    else
+      echo ""
+      echo "-- T3 save oversize vendor oracle: skipped (no '$LUA54' on PATH; set LUA54=...)"
+    fi
   fi
 else
   echo ""

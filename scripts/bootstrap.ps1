@@ -1,4 +1,4 @@
-# Windows double-click bootstrap for the LÖVE2D Pokemon recomp port.
+# Windows double-click bootstrap for the LÖVE2D Pokémon Red port.
 # Launched by Play-Windows.bat. Prompts to install any missing tools
 # (Python 3 and LÖVE via winget), runs first-time setup, then
 # starts the game. Later runs launch the game straight away.
@@ -49,50 +49,16 @@ function Find-Love {
     return $false
 }
 
-function Resolve-RomVersion([string]$sha1) {
-    switch ($sha1.ToLowerInvariant()) {
-        'ea9bcae617fdf159b045185467ae58b2e4a48b9a' { return 'red' }
-        'd7037c83e1ae5b39bde3c30787637ba1d4c48ce2' { return 'blue' }
-        'cc7d03262ebfaf2f06772c1a480c7d9d5f4a38e1' { return 'yellow' }
-        'd8b8a3600a465308c9953dfa04f0081c05bdcb94' { return 'gold' }
-        '49b163f7e57702bc939d642a18f591de55d92dae' { return 'silver' }
-        default { return $null }
-    }
-}
-
-function Get-RomContext {
-    $romPath = $env:ROM_PATH
-    if ([string]::IsNullOrWhiteSpace($romPath)) { return $null }
-    if (-not (Test-Path -LiteralPath $romPath -PathType Leaf)) {
-        Warn "ROM_PATH is set but file does not exist: $romPath"
-        return $null
-    }
-    $sha = (Get-FileHash -LiteralPath $romPath -Algorithm SHA1).Hash.ToLowerInvariant()
-    $version = Resolve-RomVersion $sha
-    if (-not $version) {
-        Warn "ROM_PATH hash is not a supported canonical ROM: $sha"
-        return $null
-    }
-    return [pscustomobject]@{ Path = (Resolve-Path -LiteralPath $romPath).Path; Sha1 = $sha; Version = $version }
-}
-
 Write-Host ''
-Write-Host '  Pokemon Recomp - LOVE2D port' -ForegroundColor Cyan
+Write-Host '  Pokemon Red - LOVE2D port' -ForegroundColor Cyan
 Write-Host ''
-
-$ForceSetup = -not [string]::IsNullOrWhiteSpace($env:ROM_PATH)
-$RomCtx = Get-RomContext
 
 # ---------------------------------------------------------------- fast path
-if ((Test-Path (Join-Path $Root 'data\generated\maps.lua')) -and (Find-Love) -and -not $ForceSetup) {
+if ((Test-Path (Join-Path $Root 'data\generated\maps.lua')) -and (Find-Love)) {
     Say 'already set up - launching the game'
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'scripts\run.ps1')
     if ($LASTEXITCODE -ne 0) { Err 'the game failed to start'; Pause-Exit 1 }
     exit 0
-}
-
-if ($ForceSetup) {
-    Say 'ROM_PATH detected - running setup to rebuild generated data for that ROM'
 }
 
 Say 'first-time setup'
@@ -137,18 +103,6 @@ Write-Host ''
 if ($LASTEXITCODE -ne 0) { Err 'setup failed - see the messages above'; Pause-Exit 1 }
 
 Say 'setup done - launching the game'
-if ($RomCtx) {
-    $env:POKEPORT_VERSION = $RomCtx.Version
-    if ($RomCtx.Version -in @('gold', 'silver')) {
-        Say "launching $($RomCtx.Version) with extracted datasets (no forced runtime scaffold import)"
-        Remove-Item Env:POKEPORT_IMPORT_ROM -ErrorAction SilentlyContinue
-        Remove-Item Env:POKEPORT_FORCE_IMPORT -ErrorAction SilentlyContinue
-    } else {
-        Say "launching runtime importer for $($RomCtx.Version) ROM"
-        $env:POKEPORT_IMPORT_ROM = $RomCtx.Path
-        $env:POKEPORT_FORCE_IMPORT = '1'
-    }
-}
 & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'scripts\run.ps1')
 if ($LASTEXITCODE -ne 0) { Err 'the game failed to start'; Pause-Exit 1 }
 exit 0

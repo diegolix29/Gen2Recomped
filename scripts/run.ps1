@@ -1,8 +1,7 @@
-﻿# Run the LÖVE2D Pokemon recomp port (Windows).
+﻿# Run the LÖVE2D Pokémon Red port (Windows).
 #
-# Assumes LÖVE is installed.  Extra arguments are passed through to LÖVE.
-# If data/generated is missing, the in-app launcher/importer will prompt for
-# ROM import at runtime.
+# Assumes scripts\setup.ps1 has been run once (generated data present and
+# LÖVE installed).  Extra arguments are passed through to LÖVE.
 #
 # Link play is peer-to-peer over lua-enet (bundled with LÖVE): one player
 # uses START > LINK > HOST A GAME, the other joins the shown address.
@@ -15,7 +14,7 @@ $Root = Split-Path -Parent $PSScriptRoot
 function Fail($msg) { Write-Host "error: $msg" -ForegroundColor Red; exit 1 }
 
 if (-not (Test-Path (Join-Path $Root 'data\generated\maps.lua'))) {
-    Write-Host '==> generated data not found locally; launching importer/launcher flow' -ForegroundColor Yellow
+    Fail 'generated data missing,  run scripts\setup.ps1 first'
 }
 
 # Prefer lovec.exe (console-attached) so print output lands in the terminal;
