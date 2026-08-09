@@ -3,43 +3,8 @@
 data/generated/
 assets/generated/
 
-# User-supplied cartridge dumps. Never commit these.
-*.gb
-*.gbc
-*.gba
-*.sav
-
-# Inverted Mew sprites the example mod ships: tools/generate_example_mod_sprite.py
-# derives them from an imported cache, so they are ROM content. mod.card already
-# documents assets/ as empty until that script runs locally.
-mods/example_mew_starter/assets/
-
-# In-game screenshots render ROM-derived tiles and sprites. Extensionless, so
-# none of the image rules above catch them.
-/ruins_kabuto
-
-# Third-party checkouts scripts/setup_gen2_symbols.ps1 fetches on demand: a
-# pret/pokegold clone (including compiled .o objects) and the RGBDS toolchain.
-# Only their .sym output matters, and make_gen2_manifest.py has already baked
-# that into the committed tools/rom_manifest_*.json.
-tools/vendor/
-
-# NOTE: data/generated_gen2_{gold,silver}/ are deliberately COMMITTED. They
-# are cart-free scaffolds -- ids, ordering and pret labels only, with text as
-# {GEN2_TEXT:bank:addr:label} refs -- and RomExtractorGen2 decodes the actual
-# names, stats, map blocks, warps and dialogue off the ROM at import. 7 of
-# their 8 files are byte-identical between gold and silver; that equality is
-# the check that no ROM content has leaked back in.
-
 # LÖVE packages
 *.love
-
-# Hand-made release archives. Zipping the project folder sweeps in .venv (which
-# hard-codes the packager's Python path and breaks setup for everyone else),
-# saves and generated ROM data. Build releases with scripts/build.sh instead.
-/*.zip
-/*.7z
-/*.tar.gz
 
 # Local saves (LÖVE writes to its save dir, but keep the repo clean anyway)
 save/
@@ -51,7 +16,6 @@ __pycache__/
 .*
 !.github/
 !.gitignore
-!.gitattributes
 !.luacheckrc
 
 # Android build outputs / local SDK path / packaged payload (keep love-android sources)
@@ -67,8 +31,31 @@ mobile/ios/love-src/
 mobile/ios/cache/
 mobile/ios/build/
 
-# Final packaged build artifacts (mac/win/web/android/ios) — see scripts/build.sh
+# love-nx vendor binaries (fetch per docs/switch-build.md; also covered by .*)
+.bazinga/love-nx/
+
+# Final packaged build artifacts (mac/win/web/android/ios/switch) — see scripts/build.sh
 /dist/
+/cmd runs/
+/test/
+/tests/
+
+# Switch OTA launcher build outputs
+ports/switch/ota-launcher/build/
+ports/switch/ota-launcher/build-host/
+ports/switch/ota-launcher/*.nro
+ports/switch/ota-launcher/*.nacp
+ports/switch/ota-launcher/*.elf
+ports/switch/ota-launcher/*.map
+ports/switch/ota-launcher/romfs/logo.rgba
+ports/switch/ota-launcher/romfs/logo.png
+ports/switch/ota-launcher/romfs/cacert.pem
+ports/switch/ota-launcher/romfs/ota-bootstrap.nro
+ports/switch/ota-bootstrap/build/
+ports/switch/ota-bootstrap/*.nro
+ports/switch/ota-bootstrap/*.nacp
+ports/switch/ota-bootstrap/*.elf
+ports/switch/ota-bootstrap/*.map
 
 # Legacy manual convenience-copy location (superseded by /dist/android/)
 mobile/dist/
@@ -79,3 +66,9 @@ mobile/dist/
 
 # per-machine iOS bundle-id pin (see scripts/build_ios.sh)
 mobile/ios/bundle_id.local
+
+# Xbox UWP build output
+/ports/uwp/build/
+/ports/uwp/third_party/*/source/
+/ports/uwp/third_party/angle/depot_tools/
+/bundlemods/DramaticShapeVoxelMod

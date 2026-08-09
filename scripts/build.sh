@@ -25,7 +25,7 @@ WORK="$HERE/work"
 DIST="$ROOT/dist"
 ENTITLEMENTS="$ROOT/scripts/macos-entitlements.plist"
 
-APP_NAME="gen1recomp"
+APP_NAME="gen2recomp"
 BUNDLE_ID="com.theboisclub.pokemonred"
 LOVE_VERSION="11.5"
 VERSION="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)"
@@ -68,7 +68,8 @@ rm -f "$LOVE_FILE"
 (cd "$ROOT" && zip -q -9 -r "$LOVE_FILE" \
   main.lua conf.lua src data assets tools/save-editor \
   tools/rom_manifest.json tools/rom_manifest_blue.json \
-  tools/rom_manifest_yellow.json \
+  tools/rom_manifest_yellow.json tools/rom_manifest_gold.json \
+  tools/rom_manifest_silver.json \
   -x '*.DS_Store' 'data/generated/*' 'assets/generated/*')
 if unzip -Z1 "$LOVE_FILE" \
     | grep -Eq '^(data|assets)/generated/[^/]+|^(data|assets)/generated/.+/'; then
@@ -82,7 +83,8 @@ fi
 for required in tools/save-editor/App.lua tools/save-editor/Kit.lua \
                 tools/save-editor/panels/Party.lua \
                 tools/rom_manifest.json tools/rom_manifest_blue.json \
-                tools/rom_manifest_yellow.json; do
+                tools/rom_manifest_yellow.json tools/rom_manifest_gold.json \
+                tools/rom_manifest_silver.json; do
   unzip -Z1 "$LOVE_FILE" | grep -qx "$required" \
     || fail "game.love is missing $required"
 done
@@ -270,7 +272,12 @@ build_linux() {
   unsquashfs -q -no-xattrs -o "$sfs_offset" -d "$appdir" "$love_appimage" >/dev/null
 
   cp "$LOVE_FILE" "$appdir/game.love"
-  sed -i '' 's|^#FUSE_PATH="$APPDIR/my_game.love"$|FUSE_PATH="$APPDIR/game.love"|' "$appdir/AppRun"
+  # Portable sed: macOS uses -i '' (no backup), Linux uses -i (no backup)
+  if [[ "$(uname)" == "Darwin" ]]; then
+    sed -i '' 's|^#FUSE_PATH="$APPDIR/my_game.love"$|FUSE_PATH="$APPDIR/game.love"|' "$appdir/AppRun"
+  else
+    sed -i 's|^#FUSE_PATH="$APPDIR/my_game.love"$|FUSE_PATH="$APPDIR/game.love"|' "$appdir/AppRun"
+  fi
   grep -q '^FUSE_PATH="\$APPDIR/game.love"$' "$appdir/AppRun" \
     || fail "failed to enable FUSE_PATH in AppRun (upstream AppRun changed?)"
 
