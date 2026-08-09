@@ -40,13 +40,35 @@ local TerrainAtlas = V.require("TerrainAtlas")
 local VoxelScene = V.require("VoxelScene")
 local BattleCam = V.require("BattleCam")
 local BattleBillboard = V.require("BattleBillboard")
-local VoxelGrid = V.require("VoxelGrid")
 local DayNight = V.require("DayNight")
 local AntiAlias = V.require("AntiAlias")
 local PaletteFX = require("src.render.PaletteFX")
 local Map = require("src.world.Map")
 
 local BattleScene = {}
+
+-- ------- LET'S GO capture mode's stake in this scene
+--
+-- One table while a capture session runs, nil otherwise (see
+-- lib/CatchThrow.lua, which owns it):
+--
+--   hidePlayer   the player's side stays out of the shot entirely -- no
+--                card here, no model (Stadium reads this same table), no
+--                pinned back pic (OverworldBattle reads it too)
+--   shrink       the foe's scale while the ball drinks it in, applied
+--                about its chest so it collapses toward the beam
+--   draw(pull)   the Poke Ball, drawn after the Stadium models -- same
+--                depth buffer, same flash window, same camera
+--   cast(sm)     the same ball into the sun's pass
+--   sig()        a term for the cached shadow signature, so a ball in
+--                flight re-casts and a resting scene does not
+--   drawGB(b)    the 2D layer (ring, labels), drawn by OverworldBattle's
+--                BattleState:draw wrap in the GB frame
+--
+-- It lives HERE, not on OverworldBattle, because every consumer below
+-- already requires BattleScene and the one file that writes it requires
+-- both -- this is the spot with no require cycle.
+BattleScene.capture = nil
 
 -- The GB frame the battle screen is drawn in, and the frame BattleCam's rig
 -- is solved against.
@@ -195,14 +217,29 @@ end
 local function monCards(arena, groundY, textures)
   local out = {}
   if not textures then return out end
+  local cap = BattleScene.capture
   for _, side in ipairs({ "enemy", "player" }) do
     local tex = textures[side]
     local cell = (side == "player") and arena.player or arena.enemy
+    -- capture mode: the player's side is out of the shot (the seat looks
+    -- over an empty shoulder), and OverworldBattle.textures already
+    -- skipped rendering it -- this is the belt to that suspender
+    if side == "player" and cap and cap.hidePlayer then tex = nil end
     if tex and tex.canvas and cell then
       local mirror = (side == "player") and not tex.trainer
-      out[#out + 1] = { tex = tex.canvas,
-                        model = monMatrix(tex, cell[1], groundY, cell[2],
-                                          mirror) }
+      local model = monMatrix(tex, cell[1], groundY, cell[2], mirror)
+      -- the foe drinking into the ball: scaled about its own chest, in
+      -- world space so the composed card matrix needs no decomposition
+      if side == "enemy" and cap and cap.shrink then
+        local k = cap.shrink
+        local ax, ay, az = cell[1], groundY + 8, cell[2]
+        model = Mat4.mul(
+          Mat4.mul(Mat4.translate(ax, ay, az),
+                   Mat4.mul(Mat4.scale(k, k, k),
+                            Mat4.translate(-ax, -ay, -az))),
+          model)
+      end
+      out[#out + 1] = { tex = tex.canvas, model = model }
     end
   end
   return out
@@ -303,23 +340,47 @@ end
 -- first drawn in.
 local function shadowSignature(state, arena, terrain, nbMesh, token)
   local host = arena.map or state.map
+  -- `turn` is in the signature with the corner and the shape: the same corner
+  -- turned a quarter is a different footprint standing on different ground,
+  -- and a cast kept from the other one freezes the shadows across it
   local parts = { "battle", host.id, arena.x, arena.y, arena.shape,
+                  tostring(arena.turn or 0),
                   tostring(terrain), tostring(token or 0),
                   -- the cycle keeps running through a fight, and an arena lit
                   -- from somewhere new must be re-cast from there
                   math.floor(ShadowMap.KX * 128),
                   math.floor(ShadowMap.KZ * 128) }
+  -- a capture session's ball moves through the sun's world too; its term
+  -- is quantised inside sig() so the cache re-renders on real movement
+  -- and not on every frame the ball rests
+  local cap = BattleScene.capture
+  if cap and cap.sig then
+    local okSig, sig = pcall(cap.sig)
+    parts[#parts + 1] = okSig and sig or "cap"
+  end
   for i = 1, #nbMesh do parts[#parts + 1] = tostring(nbMesh[i]) end
   return table.concat(parts, ",")
 end
 
 local function castShadows(state, arena, terrain, nbMesh, cx, cy, vw, vh,
                            atlasFor, cards, token, host, neighbors,
-                           water, nbWater)
+                           water, nbWater, groundY)
   if not ShadowMap.available() then return end
   local sig = shadowSignature(state, arena, terrain, nbMesh, token)
   if not ShadowMap.stale(sig) then return end
   if not ShadowMap.begin(cx, cy, vw, vh) then return end
+
+  -- A DISC RUNG: the two discs are the only ground there is, so they are the
+  -- only thing the sun has to see besides the Pokemon themselves. Everything
+  -- below this is a map that is not in the shot.
+  if arena.discs then
+    pcall(function()
+      V.require("StadiumStage").cast(ShadowMap, arena, groundY or 0)
+    end)
+    pcall(function() V.require("Stadium").cast(ShadowMap) end)
+    ShadowMap.finish(sig)
+    return
+  end
 
   ShadowMap.draw(terrain, atlasFor(host), nil)
   for i, nb in ipairs(neighbors) do
@@ -354,6 +415,17 @@ local function castShadows(state, arena, terrain, nbMesh, cx, cy, vw, vh,
                    ShadowMap.snug(card.model))
   end
   ShadowMap.sprites(false)
+  -- and the STADIUM models, when that rung is the one running. NOT marked
+  -- as sprites: that flag exists so a flat card's cut-out is kept off the
+  -- water (see ShadowMap.sprites), and these are real geometry standing in
+  -- the world -- a Gyarados at the water's edge should put a Gyarados on
+  -- the water. Un-snugged for the same reason: snug is a bias for a card
+  -- rooted to the ground plane, and a model has thickness of its own.
+  pcall(function() V.require("Stadium").cast(ShadowMap) end)
+  -- the capture session's ball, by the same reasoning: real geometry, its
+  -- shadow is half of what sells the arc
+  local cap = BattleScene.capture
+  if cap and cap.cast then pcall(cap.cast, ShadowMap) end
 
   ShadowMap.finish(sig)
 end
@@ -363,6 +435,11 @@ end
 -- the one nearer the camera and therefore the one a mismatch would show up
 -- against.
 function BattleScene.groundY(map, arena)
+  -- A disc rung's discs are carried, not found: their tops ARE the ground
+  -- plane, so there is no terrain height to read and reading one would put
+  -- the stage at whatever elevation the map happens to have at a spot the
+  -- fight is not actually happening on
+  if arena and arena.discs then return 0 end
   local ok, h = pcall(VoxelScene.groundAt, map,
                       arena.playerCell[1], arena.playerCell[2])
   return (ok and h) or 0
@@ -451,11 +528,37 @@ function BattleScene.render(state, arena, textures, token)
   -- no glint in the arena: the drift is the shot breathing, not the player
   -- moving, and a shimmer on background windows would fight the mons
   Voxel3D.glassGlint = 0
+  -- the host floor's atmosphere reaches the staged shot at HALF density --
+  -- a fight in Viridian Forest sits in the same haze the walk there did,
+  -- thinned so neither mon goes soft -- and its god rays stay out of it:
+  -- this camera is low and long, and a bright blade across a combatant
+  -- reads as a rendering fault, not weather. nil almost everywhere.
+  local ForestAtmos = V.require("ForestAtmos")
+  local atmos = ForestAtmos.frame(host)
+  Voxel3D.fog = atmos and { color = atmos.fog.color,
+                            density = atmos.fog.density * 0.5,
+                            start = atmos.fog.start,
+                            heightK = atmos.fog.heightK } or nil
+
+  -- A B RUNG stands the fight on two carried discs against the sky, with no
+  -- map in the shot at all (see StadiumStage). Everything below still runs --
+  -- the letterbox, the camera solve, the sun, the pins, the tint, the depth
+  -- of field -- because none of it is about the terrain; what changes is
+  -- which geometry the two passes draw.
+  local discs = arena.discs and true or false
 
   -- shares the free-roam mode's request/evict bookkeeping, so a battle warms
   -- exactly the meshes walking around would have and nothing extra
-  local terrain, nbMesh, water, nbWater = prefetchArena(state, host)
-  if not terrain then return nil end
+  local terrain, nbMesh, water, nbWater
+  if discs then
+    -- and nothing is meshed for a disc fight, which is the other half of why
+    -- the rung works everywhere: there is no waiting for a chunk to build, so
+    -- the first frame of the first battle on a cold map is the finished shot
+    nbMesh, water, nbWater = {}, nil, {}
+  else
+    terrain, nbMesh, water, nbWater = prefetchArena(state, host)
+    if not terrain then return nil end
+  end
 
   local lx, ly, s, pw, ph = BattleScene.letterbox()
   if not (pw > 0 and ph > 0 and s > 0) then return nil end
@@ -466,7 +569,25 @@ function BattleScene.render(state, arena, textures, token)
   end
 
   local groundY = BattleScene.groundY(host, arena)
-  local cam, pitch = BattleCam.rig(arena, groundY)
+  -- A capture session brings a camera of its own: the head-on seat, on
+  -- the arena's axis looking straight at the foe, in place of the solved
+  -- over-the-shoulder shot. Everything downstream -- the letterbox fov,
+  -- the pins, the sun, the cards yawing to the eye -- is generic over
+  -- whichever camera this is.
+  local cam, pitch, capFrameH
+  local cap = BattleScene.capture
+  if cap and cap.rig then
+    local okRig, c, p, fh = pcall(cap.rig, arena, groundY)
+    -- The pitch is off STRAIGHT DOWN, like Voxel.angle and like the one
+    -- BattleCam.rig hands back -- the only thing downstream reads it is the
+    -- grass and flower pull below. A seat that declines to say stands in
+    -- for a near-LEVEL one rather than a top-down one, which is what every
+    -- staged seat actually is: the pull grows toward straight down, and a
+    -- default that guessed the wrong end of that would spend tens of world
+    -- pixels of bias on a camera standing two cells from its subject.
+    if okRig and c then cam, pitch, capFrameH = c, p or math.rad(80), fh end
+  end
+  if not cam then cam, pitch = BattleCam.rig(arena, groundY) end
   cam.fov = BattleScene.letterboxFov(cam.fov, ph, s)
 
   local cx, cy = arena.mid[1], arena.mid[2]
@@ -475,7 +596,8 @@ function BattleScene.render(state, arena, textures, token)
   -- the player's zoom is part of this: the sun's box is fitted to what the
   -- frame holds, so a shot pulled wide has to light the ground it just
   -- brought into view rather than the ground the rig alone would have
-  local vh = BattleCam.frameH(arena) * ph / (BattleScene.GB_H * s)
+  local vh = (capFrameH or BattleCam.frameH(arena)) * ph
+             / (BattleScene.GB_H * s)
   local vw = vh * pw / ph
 
   -- the cards need the camera's eye to face it, so the rig has to be live
@@ -487,7 +609,7 @@ function BattleScene.render(state, arena, textures, token)
   local cards = monCards(arena, groundY, textures)
   Voxel3D.camera = nil
   castShadows(state, arena, terrain, nbMesh, cx, cy, vw, vh, atlasFor,
-              cards, token, host, neighbors, water, nbWater)
+              cards, token, host, neighbors, water, nbWater, groundY)
 
   -- An opaque void either way. Outdoors the camera is low enough that the
   -- horizon is genuinely in frame, so it is sky; indoors it is the dark end
@@ -496,6 +618,18 @@ function BattleScene.render(state, arena, textures, token)
   -- geometry stops.
   local sky = VoxelScene.skyColor(host, 1)
              or VoxelScene.skyShade(INDOOR_SHADE, 1)
+  -- On a disc rung the void is not a backdrop behind the scenery -- it IS the
+  -- scenery, because the map is not drawn. So outdoors it gets the full
+  -- treatment the free-roam camera gets: the banded gradient and the hour's
+  -- own sun or moon hanging in it (Voxel3D.beginScene paints those when the
+  -- sky it is handed carries bands). Indoors there is nothing to dress: a
+  -- room's void is one flat shade, which is what a room looks like past the
+  -- wall, and the disc fight in a cave is lit and coloured as that cave.
+  if discs and VoxelScene.skyColor(host, 1) then
+    local Sky = V.require("Sky")
+    local okDress, dressed = pcall(Sky.dress, sky)
+    if okDress and dressed then sky = dressed end
+  end
 
   Voxel3D.camera = cam
   -- the sun is turned up for the arena and put back afterwards, so the
@@ -505,12 +639,10 @@ function BattleScene.render(state, arena, textures, token)
   local sunWas = Voxel3D.SHADOW_ALPHA
   Voxel3D.SHADOW_ALPHA = BattleScene.SHADOW_ALPHA
                          * DayNight.shadowScale(outdoor)
-  -- and the wireframe is ON for a battle whatever the V-GRID row says. The
-  -- arena is a staged shot rather than the world being walked through, and
-  -- the seams are what make it read as built rather than photographed. Forced
-  -- through the override so the player's own row is never written to.
-  local gridWas = VoxelGrid.override
-  VoxelGrid.override = true
+  -- The wireframe is whatever the V-GRID row says, exactly as it is out in
+  -- the world (see VoxelGrid): the arena is drawn a unit per voxel like
+  -- everything else, so the seams follow the one toggle and a player who
+  -- turned them off does not get them back for the length of a fight.
   local out = nil
   local ok, err = pcall(function()
     -- its own canvas slot: this renders at the window's pixel size and the
@@ -528,6 +660,13 @@ function BattleScene.render(state, arena, textures, token)
     if not Voxel3D.beginScene(rw, rh, cx, cy, vw, vh, sky, "battle") then
       return
     end
+    if discs then
+      -- discs: the two platforms, and nothing else. No terrain, no
+      -- neighbouring maps, no water, no grass and no flowers -- see the
+      -- matching skips further down. What is behind them is the sky the
+      -- clear painted.
+      V.require("StadiumStage").draw(arena, groundY)
+    else
     Voxel3D.draw(terrain, atlasFor(host), nil)
     for i, nb in ipairs(neighbors) do
       Voxel3D.draw(nbMesh[i], atlasFor(nb.map),
@@ -548,6 +687,7 @@ function BattleScene.render(state, arena, textures, token)
         Voxel3D.draw(nbWater[i], atlasFor(nb.map),
                      Mat4.translate(nb.ox, 0, nb.oy))
       end
+    end
     end
     -- The mons, standing on their tiles. Depth-tested like everything else,
     -- so a ledge or a tree between the camera and a Pokemon really is in
@@ -579,24 +719,64 @@ function BattleScene.render(state, arena, textures, token)
     end
     Voxel3D.glass(true)
     Voxel3D.seams(true)
+    -- and the STADIUM models, inside the same flash window and with the
+    -- same camera-ward pull, so a Pokemon standing on its tile still wins
+    -- the depth test against the tile. They manage the wireframe and the
+    -- glass mask around their own draws (StadiumRig), which is why this
+    -- sits outside the pair above rather than inside it.
+    local okStadium, stadiumErr = pcall(function()
+      V.require("Stadium").draw(BattleBillboard.PULL)
+    end)
+    if not okStadium then V.require("Stadium").report(stadiumErr) end
+    -- the capture session's Poke Ball, still inside the flash window and
+    -- with the mons' own camera-ward pull, so a ball crossing in front of
+    -- a card wins the depth test the way a nearer thing should
+    local cap = BattleScene.capture
+    if cap and cap.draw then pcall(cap.draw, BattleBillboard.PULL) end
+    -- and a shiny's arrival sparkle, last of the three so its stars add
+    -- over the mon they belong to rather than under it, and still inside
+    -- the flash window so a burst during a hit is lit like everything else
+    pcall(function()
+      V.require("ShinyFx").draw(arena, groundY, BattleBillboard.PULL)
+    end)
     if flashing then Voxel3D.flatten(nil) end
     -- grass and flowers ride the same camera-ward pull the free-roam pass
     -- gives them, measured against THIS camera's pitch rather than the
     -- orbit's -- there is no character here for them to overdraw, but the
     -- pull is also what keeps a tuft from z-fighting the floor it stands on
     local pull = VoxelScene.pull(math.max(pitch, 0.05))
-    Voxel3D.draw(ChunkMesher.grass(host), atlasFor(host), nil, pull)
-    for _, nb in ipairs(neighbors) do
-      Voxel3D.draw(ChunkMesher.grass(nb.map), atlasFor(nb.map),
-                   Mat4.translate(nb.ox, 0, nb.oy), pull)
-    end
-    local fpull = math.max(0, pull - 8 * math.sin(math.max(pitch, 0.05)))
-    Voxel3D.draw(ChunkMesher.flowers(host), atlasFor(host), nil, fpull,
-                 ShadowMap.snug(nil))
-    for _, nb in ipairs(neighbors) do
-      Voxel3D.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),
-                   Mat4.translate(nb.ox, 0, nb.oy), fpull,
-                   ShadowMap.snug(Mat4.translate(nb.ox, 0, nb.oy)))
+    if not discs then
+      -- and the WIND blowing through it, exactly as the free-roam pass
+      -- switches on around its own grass draws (VoxelScene). Without this
+      -- the uniform sits at the per-frame default beginScene sends -- zero,
+      -- meaning "no wind" -- and the tall grass a fight is standing in goes
+      -- dead still for the length of the battle while the same tufts one
+      -- frame earlier, and one frame after, were moving. A staged fight is
+      -- shot on the MAP, in that place's own weather and light; a frozen
+      -- field is the one thing that reads as a photograph of it rather than
+      -- the place itself.
+      --
+      -- No contact point goes with it (grassWind's px/pz are left nil, which
+      -- sends the far-away sentinel): that push is a WALKER parting the grass
+      -- they are stepping through, and there is nobody walking here -- the
+      -- two mons stand still on their own tiles for the whole shot.
+      Voxel3D.grassWind(true)
+      Voxel3D.draw(ChunkMesher.grass(host), atlasFor(host), nil, pull)
+      for _, nb in ipairs(neighbors) do
+        Voxel3D.draw(ChunkMesher.grass(nb.map), atlasFor(nb.map),
+                     Mat4.translate(nb.ox, 0, nb.oy), pull)
+      end
+      -- off again before the flowers, which are not grass and have no sway
+      -- of their own -- the same order the free-roam pass draws them in
+      Voxel3D.grassWind(false)
+      local fpull = math.max(0, pull - 8 * math.sin(math.max(pitch, 0.05)))
+      Voxel3D.draw(ChunkMesher.flowers(host), atlasFor(host), nil, fpull,
+                   ShadowMap.snug(nil))
+      for _, nb in ipairs(neighbors) do
+        Voxel3D.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),
+                     Mat4.translate(nb.ox, 0, nb.oy), fpull,
+                     ShadowMap.snug(Mat4.translate(nb.ox, 0, nb.oy)))
+      end
     end
     local canvas = AntiAlias.resolve(Voxel3D.endScene(), pw, ph, "battle")
     if not canvas then return end
@@ -610,25 +790,47 @@ function BattleScene.render(state, arena, textures, token)
     -- How wide one overworld square is on screen where each mon stands, in
     -- GB pixels. This is what the pics are scaled to: a mon covers its own
     -- square and no more, at whatever the drift has done to the distance.
+    --
+    -- Measured along BOTH map axes and answered as the larger, as a full
+    -- 2D screen distance. One axis alone breaks the moment a camera looks
+    -- ALONG it: the capture seat stands on the arena's own axis, and on a
+    -- quarter-turned arena that axis is world X -- the ±X probe points
+    -- then project to the same pixel and the span reads zero, which
+    -- collapsed the ring and blew up the throw's world-per-pixel mapping.
     local half = BattleScene.CELL / 2
-    local pl = BattleScene.toGB(vp, arena.player[1] - half, groundY,
-                                arena.player[2], lx, ly, s, pw, ph)
-    local pr = BattleScene.toGB(vp, arena.player[1] + half, groundY,
-                                arena.player[2], lx, ly, s, pw, ph)
-    local el = BattleScene.toGB(vp, arena.enemy[1] - half, groundY,
-                                arena.enemy[2], lx, ly, s, pw, ph)
-    local er = BattleScene.toGB(vp, arena.enemy[1] + half, groundY,
-                                arena.enemy[2], lx, ly, s, pw, ph)
-    if not (pl and pr and el and er) then return end
+    local function cellSpan(wx, wz)
+      local x1, y1 = BattleScene.toGB(vp, wx - half, groundY, wz,
+                                      lx, ly, s, pw, ph)
+      local x2, y2 = BattleScene.toGB(vp, wx + half, groundY, wz,
+                                      lx, ly, s, pw, ph)
+      local x3, y3 = BattleScene.toGB(vp, wx, groundY, wz - half,
+                                      lx, ly, s, pw, ph)
+      local x4, y4 = BattleScene.toGB(vp, wx, groundY, wz + half,
+                                      lx, ly, s, pw, ph)
+      if not (x1 and x2 and x3 and x4) then return nil end
+      local ew = math.sqrt((x2 - x1) ^ 2 + (y2 - y1) ^ 2)
+      local ns = math.sqrt((x4 - x3) ^ 2 + (y4 - y3) ^ 2)
+      return math.max(ew, ns)
+    end
+    local pSpan = cellSpan(arena.player[1], arena.player[2])
+    local eSpan = cellSpan(arena.enemy[1], arena.enemy[2])
+    if not (pSpan and eSpan) then return end
     out = {
       canvas = canvas,
       player = { pmx, pmy },
       enemy = { emx, emy },
-      playerSpan = math.abs(pr - pl),
-      enemySpan = math.abs(er - el),
+      playerSpan = pSpan,
+      enemySpan = eSpan,
       -- the letterbox, so the depth-of-field pass can put its sharp band on
       -- the two marks rather than on a fraction of the window
       lx = lx, ly = ly, scale = s, pw = pw, ph = ph,
+      -- the camera and its combined matrix, for anything that reasons
+      -- about this shot from outside the render -- the capture mode's
+      -- throw is solved in these (aim errors along this eye's own right
+      -- and forward, contact judged through this vp)
+      eye = { cam.eye[1], cam.eye[2], cam.eye[3] },
+      focus = { cam.focus[1], cam.focus[2], cam.focus[3] },
+      vp = vp,
       -- and the hour's light, for anything drawn over this shot that is NOT
       -- geometry and so never went past the shader that applied it -- the back
       -- pic pinned to the menu (see OverworldBattle.backPinned). Neutral
@@ -640,7 +842,6 @@ function BattleScene.render(state, arena, textures, token)
   -- renders (the free-roam pipeline, next frame) must find the orbit back
   Voxel3D.camera = nil
   Voxel3D.SHADOW_ALPHA = sunWas
-  VoxelGrid.override = gridWas
   if not ok then
     -- endScene never ran, so the canvas is still bound and the shader still
     -- set; put the frame back the way it was found before rethrowing
