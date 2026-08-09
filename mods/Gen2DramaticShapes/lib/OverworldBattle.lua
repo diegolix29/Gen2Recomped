@@ -60,13 +60,80 @@ if DEBUG == nil or DEBUG == false then DEBUG = nil end
 OverworldBattle.KEY = "battles"
 OverworldBattle.LABEL = "3D-BTL"
 
--- On by default: a mod whose headline is "the world in 3D" should not need
--- the player to go and find the switch before the world shows up in a
--- battle. ON is first, so it is also what an unreadable stored value falls
--- back to.
-OverworldBattle.setting = ModSetting.new(OverworldBattle.KEY,
-                                         OverworldBattle.LABEL,
-                                         { true, false }, { "ON", "OFF" })
+-- Five rungs. Two independent choices, laid out as one ladder because they
+-- are one question to the player -- WHAT is standing there, and WHERE:
+--
+--              on the MAP              on two DISCS
+--   pics       2D-3D A                 2D-3D B
+--   models     STADIUM A               STADIUM B
+--
+--   2D-3D A    the mode this file was written for: the fight is staged on
+--              the map and the two Pokemon are the GB's OWN PICS, stood up
+--              on their tiles as quads (BattleBillboard).
+--   2D-3D B    those same pics on a pair of DISCS against the sky, with no
+--              map at all (see lib/StadiumStage.lua). The Game Boy's own
+--              framing with the Game Boy's own art, in three dimensions --
+--              and, like every B rung, it works everywhere, including the
+--              caves and shop floors that have nowhere to stage a fight.
+--   STADIUM A  the staged fight with the Pokemon Stadium battle models in
+--              place of those quads -- skinned, animated, and playing the
+--              animation the move being used actually calls for (see
+--              lib/Stadium.lua). The world is still the world: the fight
+--              happens on real ground, in the map's own weather and light.
+--   STADIUM B  the models on the discs: both halves swapped at once.
+--   OFF        the engine's own white battle screen.
+--
+-- A and B is the STAGE and it is the same stage either way -- the discs do
+-- not know what is standing on them and BattleScene draws them off
+-- `arena.discs` alone, which is why the second column cost a value in this
+-- table and nothing else. The four combinations are all reachable rather
+-- than only the diagonal, because a player who cannot use the STADIUM rungs
+-- -- no ROM, or a ROM they would rather not go and find -- should still be
+-- able to have the disc framing, and because the discs are the answer to
+-- "this map has nowhere to fight" whichever art is standing on them.
+--
+-- 2D-3D A stays FIRST because ModSetting's values[1] is both the default and
+-- what an unrecognised stored value falls back to, and the stored value for
+-- this row has been `true` since the row existed. Keeping `true` at the head
+-- means every save written before the later rungs existed reads back as the
+-- 2D-3D it was written for, and a mod whose headline is "the world in 3D"
+-- still does not need the player to go and find the switch.
+--
+-- Every other stored value is likewise the one it has always been --
+-- "stadium" from before there was a B, "stadiumB" from before there was a
+-- flat one -- so no save loses the mode it chose.
+--
+-- Both STADIUM rungs are GATED on the models existing: the mod ships no
+-- Pokemon Stadium data, and until the player's own ROM has been found and
+-- built from (StadiumInstall) the row simply has two fewer stops. See
+-- ModSetting.setGate for why they are skipped rather than shown and refused.
+-- 2D-3D B is NOT gated: its stage is generated in Lua and its Pokemon are
+-- the game's own art, so it needs nothing the base game did not ship.
+OverworldBattle.FLAT_B = "flatB"
+
+OverworldBattle.setting =
+  ModSetting.new(OverworldBattle.KEY, OverworldBattle.LABEL,
+                 { true, "flatB", "stadium", "stadiumB", false },
+                 { "2D-3D A", "2D-3D B", "STADIUM A", "STADIUM B", "OFF" })
+  :setGate(function(value)
+    if value ~= "stadium" and value ~= "stadiumB" then return true end
+    local ok, install = pcall(V.require, "StadiumInstall")
+    return ok and install and install.available()
+  end)
+
+-- Whether the fight stands on the two carried DISCS rather than on the map
+-- -- the B column above, whichever row of it. Asked by stageFor (what to
+-- stage on), wantsFront (whether this map needs an arena at all) and, once
+-- the arena carries the answer as `arena.discs`, by BattleScene and
+-- VoxelScene for what to draw.
+--
+-- Read straight off the row rather than through Stadium, because it is a
+-- question about the STAGE and half the rungs that answer yes have no
+-- Stadium models on them at all.
+function OverworldBattle.discs()
+  local value = OverworldBattle.setting:get()
+  return (value == OverworldBattle.FLAT_B or value == "stadiumB")
+end
 
 -- Whether the VR row is ON -- read lazily, because VR requires modules
 -- that sit above this one. While it is, this mode stops being optional:
@@ -81,6 +148,15 @@ end
 function OverworldBattle.enabled()
   if vrOn() then return true end
   return OverworldBattle.setting:get() and true or false
+end
+
+-- Whether the STADIUM rung is the one selected -- read through Stadium so
+-- there is one answer to that question and it lives with the mode it
+-- describes. Required lazily: Stadium sits above this file and requires it
+-- back (for the row), which a load-time require would deadlock.
+function OverworldBattle.stadium()
+  local ok, stadium = pcall(V.require, "Stadium")
+  return (ok and stadium and stadium.enabled()) and true or false
 end
 
 -- ------- BACK SPRITES: the player's own mon stays on the menu
@@ -173,6 +249,9 @@ function OverworldBattle.wantsFront()
   local g = require("src.core.Game")
   local ow = g and g.overworld
   if not (ow and ow.map and ow.player) then return false end
+  -- a B rung carries its own stage, so the answer is yes on every map and
+  -- there is nothing to search or to cache
+  if OverworldBattle.discs() then return true end
   if staged.mapId ~= ow.map.id then
     local ok, arena = pcall(BattleArena.find, ow.map,
                             ow.player.cellX, ow.player.cellY,
@@ -276,6 +355,10 @@ end
 
 function OverworldBattle.textRects(battle)
   if not battle or battle.blankForAskName then return {} end
+  -- a capture session aiming has no text to put in the box and takes it
+  -- off the frame (see the drawTextArea wrap): no box, no glass under it
+  local cap = BattleScene.capture
+  if cap and cap.hideTextBox then return {} end
   local r = OverworldBattle.TEXT_RECT
   local out = { box = r.box }
   if battle.phase == "moveSelect" then
@@ -420,6 +503,30 @@ function OverworldBattle.forceOG(g)
   return true
 end
 
+-- Where THIS fight stands, on whichever rung is running: the map's own
+-- ground, or the pair of discs a B rung carries with it.
+--
+-- The one place the two columns actually diverge, and it is worth stating
+-- plainly. On an A rung the answer can be NO -- a corridor, a shop floor, a
+-- map whose authored entry is a refusal -- and the battle then plays exactly
+-- as the vanilla game does. A B rung cannot fail: its stage is not something
+-- the map has to have room for, so a fight in the tightest cave in Kanto is
+-- staged as readily as one on Route 1.
+function OverworldBattle.stageFor(state)
+  if OverworldBattle.discs() and Voxel3D.available() then
+    local okStage, arena = pcall(function()
+      return V.require("StadiumStage").arena(state.map)
+    end)
+    if okStage and arena then return arena end
+    -- the discs could not be built; fall through to the map, which is a
+    -- worse picture but a real one
+  end
+  local okFind, arena = pcall(BattleArena.find, state.map,
+                              state.player.cellX, state.player.cellY,
+                              state.player.surfing)
+  return (okFind and arena) or nil
+end
+
 -- Stage a battle triggered from `state`, if this mode can. Returns true when
 -- a session started -- which is also the only case where anything visible
 -- changes, so a map with no room for an arena plays exactly the vanilla
@@ -430,10 +537,8 @@ function OverworldBattle.begin(state, battle)
   if not (state and state.map and state.player) then return false end
   if not Voxel3D.available() then return false end
 
-  local ok, arena = pcall(BattleArena.find, state.map,
-                          state.player.cellX, state.player.cellY,
-                          state.player.surfing)
-  if not (ok and arena) then return false end
+  local arena = OverworldBattle.stageFor(state)
+  if not arena then return false end
 
   -- the fight is staged from here on, so the layout it is composed for is not
   -- optional any more (see forceOG)
@@ -443,6 +548,9 @@ function OverworldBattle.begin(state, battle)
               armed = false, token = 0 }
   cullCast(state)
   BattleCam.reset()
+  -- and, on the STADIUM rung, the pair of models that will stand on this
+  -- arena's two cells. Declines quietly on any other rung.
+  pcall(function() V.require("Stadium").begin(arena) end)
   return true
 end
 
@@ -473,6 +581,7 @@ function OverworldBattle.finish()
   restoreCast()
   session = nil
   Voxel3D.camera = nil
+  pcall(function() V.require("Stadium").finish() end)
 end
 
 -- ------- per-frame
@@ -488,6 +597,11 @@ end
 -- someone else's frame without putting the frame back itself.
 function OverworldBattle.update(dt)
   if not session then return end
+
+  -- the shiny arrival sparkle's clock. Ticked here rather than in the draw
+  -- because a paused or covered frame still draws, and a burst that
+  -- advanced on draws would stall behind a text box mid-twinkle.
+  pcall(function() V.require("ShinyFx").update(dt) end)
 
   local g = game()
   local top = g and g.stack and g.stack:top()
@@ -510,7 +624,13 @@ function OverworldBattle.update(dt)
   -- was solved for (the slow drift aside, which was always there). Polled
   -- per frame rather than latched at battle start: the row is reachable
   -- from the mod manager's page mid-session.
+  -- A LET'S GO capture session holds it too: the throw is aimed in this
+  -- exact framing, and a camera that moved under a ball in flight would
+  -- bend where the flick was pointed after the fact. (The session also
+  -- sets BattleCam.still, which is what stops the drift -- see
+  -- CatchThrow.begin.)
   BattleCam.steerable = not OverworldBattle.backPinned()
+                        and not BattleScene.capture
   -- the right stick, read as a rate before the rig is built from it: the
   -- wheel, the keys, the mouse and a drag all arrive as events and have
   -- already landed, but a stick is a HELD position and only a tick can
@@ -523,6 +643,17 @@ function OverworldBattle.update(dt)
   -- the world pass is hidden behind the battle, so mesh builds get the wide
   -- slice: nothing visible can hitch on them
   ChunkMesher.pump(true)
+
+  -- The STADIUM models, ahead of the pics, because what they decide is
+  -- WHICH pics are needed: a side a model is standing on gets no billboard
+  -- texture rendered for it at all (see Stadium.covers). Posed and skinned
+  -- here too, once for the frame -- the sun pass, the camera and, in a
+  -- headset, both eyes all draw the same skinned meshes.
+  pcall(function()
+    local host = (session.arena and session.arena.map) or session.state.map
+    V.require("Stadium").update(dt, session.battle,
+                                BattleScene.groundY(host, session.arena))
+  end)
 
   -- The mons' textures are rendered HERE, with no canvas bound, for the same
   -- reason the scene is: the pics layer binds its own targets, and doing that
@@ -582,15 +713,11 @@ function OverworldBattle.update(dt)
     -- reason the scene is: it binds a canvas of its own. After the frost, so
     -- the glass is frosted from the world alone and never from the glyphs
     -- about to sit on it.
-    local ios = isIOS()
-    local okHud, up = false, false
-    if not ios then
-      okHud, up = pcall(OverworldBattle.snapHUDs, session.battle, shot)
-    end
+    local okHud, up = pcall(OverworldBattle.snapHUDs, session.battle, shot)
     session.snapped = (okHud and up) and true or false
     -- once per battle, not once per frame: a driver that cannot do this cannot
     -- do it sixty times a second either, and the fallback is silent and fine
-    if not ios and not okHud and not session.hudWarned then
+    if not okHud and not session.hudWarned then
       session.hudWarned = true
       V.mod.log:warn("overworld battle HUD snap failed: %s -- the HUDs draw "
                      .. "in the battle frame this battle", tostring(up))
@@ -633,6 +760,30 @@ end
 function OverworldBattle.battle()
   if not (session and not session.broken) then return nil end
   return session.battle
+end
+
+-- The staged fight's arena and floor height, for the capture mode: the
+-- foe's world cell is the far end of the throw and the floor is what a
+-- short ball bounces on. nil whenever there is nothing staged, which is
+-- one of the gates that sends a throw back to the engine's own toss.
+function OverworldBattle.arenaInfo()
+  if not (session and session.arena and not session.broken) then return nil end
+  local host = session.arena.map or (session.state and session.state.map)
+  if not host then return nil end
+  return session.arena, BattleScene.groundY(host, session.arena)
+end
+
+-- The foe's rendered pic texture, for the capture mode's ring. The mark
+-- BattleScene pins is the CELL's ground point, but a species' art sits
+-- wherever the artist drew it in the frame -- a bird hovers half a slot
+-- above its own feet row -- and a timing ring belongs on the CREATURE,
+-- not on its patch of grass. The capture session reads this canvas back
+-- once and centres the ring on the art's opaque box. nil on the STADIUM
+-- rungs (the foe is a model, no pic is rendered) and before the first
+-- textures pass, both of which the caller treats as "use the heuristic".
+function OverworldBattle.enemyTexture()
+  if not (session and session.textures) then return nil end
+  return session.textures.enemy
 end
 
 -- The move-animation layer as a texture: the engine's own drawAnimLayer,
@@ -710,6 +861,9 @@ function OverworldBattle.invalidate()
   BattleDOF.invalidate()
   BattleHud.invalidate()
   BattlePics.invalidate()
+  -- the STADIUM models hold meshes and textures of this graphics context
+  -- like everything else here does
+  pcall(function() V.require("Stadium").invalidate() end)
 end
 
 -- ------- the battle screen's background
@@ -865,6 +1019,16 @@ OverworldBattle.TEX_AX, OverworldBattle.TEX_AY = TEX_AX, TEX_AY
 -- Which side is being rendered, or nil. The placement wrappers read it.
 local texturing = nil
 
+-- Which side is being rendered into its own canvas right now, or nil.
+--
+-- Exposed because the shiny tint has two applications -- per side here, and
+-- both-sides-at-once on the flat path (ShinyUI.installBattlePics) -- and
+-- exactly one of them must run per draw. Asking this is what keeps them
+-- from stacking, rather than relying on which module installed first.
+function OverworldBattle.texturingSide()
+  return texturing
+end
+
 local texCanvas = {}
 local innerPics = nil                   -- captured by install()
 local innerHUDs = nil                   -- likewise, for the snapped HUD layer
@@ -892,6 +1056,17 @@ local function sideVisible(battle, side)
             and not battle.enemySendingOut
             and not battle:fxHidden(battle.enemy)) and true or false
   end
+  -- During intro, if player has a Stadium model selected, don't show trainer back sprite
+  if battle.showPlayerBack and battle.playerBackPic then
+    local okPlayerModelInstall, PlayerModelInstall = pcall(V.require, "stadium_player_%d+")
+    if okPlayerModelInstall and PlayerModelInstall then
+      local filename = PlayerModelInstall.modelFilename()
+      if filename and (filename:match("stadium_player_%d+") or filename:match("stadium_player_%d+")) then
+        -- Player has a Stadium model selected, don't show trainer back sprite
+        return false
+      end
+    end
+  end
   if battle.showPlayerBack and battle.playerBackPic then return true end
   local hide = battle.safari or battle.demo
   return (battle.player and battle.player.sprite and not hide
@@ -908,6 +1083,14 @@ local OFF = {
 -- feet ended up, in canvas coordinates.
 function OverworldBattle.sideTexture(battle, side)
   if not (innerPics and battle) then return nil end
+  -- On the STADIUM rung a side standing a MODEL needs no pic: rendering one
+  -- anyway would hang a second, flat copy of the same Pokemon on the same
+  -- cell. Asked per side, so a species with no pack -- or a substitute
+  -- doll, or the trainer before the send-out -- still comes through here.
+  local okS, covered = pcall(function()
+    return V.require("Stadium").covers(battle, side)
+  end)
+  if okS and covered then return nil end
   if not sideVisible(battle, side) then return nil end
   local canvas = texCanvasFor(side)
   if not canvas then return nil end
@@ -929,6 +1112,14 @@ function OverworldBattle.sideTexture(battle, side)
   for k, v in pairs(OFF[side]) do saved[k] = battle[k]; battle[k] = v end
   texturing = side
 
+  -- ------- no shiny tint here any more
+  --
+  -- This used to bracket the draw below with that side's shiny tint, on the
+  -- grounds that rendering one side at a time is the only place the two can
+  -- be coloured differently. True, and no longer needed: the PIC itself is
+  -- now built from a shiny palette (lib/ShinyPics.lua), which is per-mon
+  -- rather than per-side and gets the colour right instead of approximating
+  -- it with a multiply. Tinting on top of that would apply the shift twice.
   local ok, err = pcall(function()
     g.setCanvas(canvas)
     g.clear(0, 0, 0, 0)
@@ -980,12 +1171,26 @@ function OverworldBattle.textures(battle)
   local out = {}
   local okE, enemy = pcall(OverworldBattle.sideTexture, battle, "enemy")
   local okP, player = true, nil
-  if not OverworldBattle.backPinned() then
+  -- a LET'S GO capture session empties the player's side the same way
+  -- BACK SPRITES does: that mon is simply not in this shot, so no pic is
+  -- rendered for it and no shadow lands under it
+  local cap = BattleScene.capture
+  if not OverworldBattle.backPinned()
+     and not (cap and cap.hidePlayer) then
     okP, player = pcall(OverworldBattle.sideTexture, battle, "player")
   end
   out.enemy = okE and enemy or nil
   out.player = okP and player or nil
-  if not (out.enemy or out.player) then return nil end
+  -- On the STADIUM rung both sides can legitimately have no pic -- the pair
+  -- of them are models -- and this table must still come back, because it
+  -- carries the HIT FLASH, and because the VR eye pass uses its presence to
+  -- decide there is a staged fight to draw at all.
+  local okStanding, standing = pcall(function()
+    return V.require("Stadium").standing()
+  end)
+  if not (out.enemy or out.player or (okStanding and standing)) then
+    return nil
+  end
   out.flash = OverworldBattle.flashing(battle)
   return out
 end
@@ -1007,6 +1212,12 @@ function OverworldBattle.install()
     end
     OverworldState.dramaticShapeBattleHook = true
   end
+
+  -- the STADIUM rung's own four wraps, which drive the models' animations
+  -- off the fight (see Stadium.install). Idempotent in the same way, and
+  -- installed whichever rung the row is on: the wraps do nothing at all
+  -- while no stadium session is live.
+  pcall(function() V.require("Stadium").install() end)
 
   local BattleState = require("src.battle.BattleState")
   if BattleState.dramaticShapeBattleHook then return end
@@ -1065,6 +1276,22 @@ function OverworldBattle.install()
     return TEX_AX - w * scale / 2, TEX_AY - h * scale, s
   end
 
+  -- ------- the shiny arrival sparkle, on every rung this file draws
+  --
+  -- Called from BOTH branches below, because both are a complete battle
+  -- frame: the `not shot` branch is the engine's own screen (3D-BTL OFF, and
+  -- any battle the mod does not stage), and the other is the staged shot.
+  --
+  -- It lives here rather than on a hook or a monkeypatch of its own because
+  -- this override IS the battle's draw -- every rung, every frame. The two
+  -- other seams were tried and measured at zero calls: BattleState:update is
+  -- never reached (the battle is not the top of the stack during its own
+  -- intro), and the engine's `battle.overlay` hook is only reached through
+  -- the tail of the engine's draw. See lib/ShinyFlash.lua.
+  local function shinyFlash(battle)
+    pcall(function() V.require("ShinyFlash").render(battle) end)
+  end
+
   local innerDraw = BattleState.draw
   function BattleState:draw()
     local shot = OverworldBattle.shot()
@@ -1075,7 +1302,9 @@ function OverworldBattle.install()
       -- that loses its arena mid-fight goes back to white voids
       self.letterboxWhite = nil
       self.dramaticShapeShot = nil
-      return innerDraw(self)
+      local out = innerDraw(self)
+      shinyFlash(self)
+      return out
     end
     self.dramaticShapeShot = shot
     -- The world reaches the screen through the seam a render pipeline's
@@ -1097,6 +1326,12 @@ function OverworldBattle.install()
     self.letterboxWhite = false
     OverworldBattle.drawHudPanels(self)
     withoutBackgroundFill(self, innerDraw)
+    -- the LET'S GO capture overlay -- the timing ring, the ball readout,
+    -- the grade splash -- drawn last in the same GB frame the engine's
+    -- own HUD drew in, so it letterboxes and chunks identically
+    local cap = BattleScene.capture
+    if cap and cap.drawGB then pcall(cap.drawGB, self) end
+    shinyFlash(self)
   end
 
   -- The mons are geometry standing on the map now, drawn in the 3D pass
@@ -1114,6 +1349,10 @@ function OverworldBattle.install()
     if not shot then
       return innerPics(self, slide, sx, sy, onlySide, skipMenuClip)
     end
+    -- a capture session shows NO player side at all -- not even the
+    -- pinned back pic BACK SPRITES would keep on the menu
+    local cap = BattleScene.capture
+    if cap and cap.hidePlayer then return end
     if OverworldBattle.backPinned() and onlySide ~= "enemy" then
       -- under the hour's own light, like everything else in the frame -- see
       -- withTint, and the tint BattleScene hands over with the shot.
@@ -1130,18 +1369,20 @@ function OverworldBattle.install()
   end
 
   -- The battle's text box and its menus, over the frosted glass laid down for
-  -- them rather than over their own white paper -- and their ink flipped with
-  -- the HUD's when the ground under the frame is dark, by the same rule and
-  -- off the same verdict.
+  -- them rather than over their own white paper. The INK is Gen 1's own black
+  -- and stays that way whatever is behind the glass -- the panel's tint is
+  -- what earns it its contrast (see BattleHud).
   local innerText = BattleState.drawTextArea
   function BattleState:drawTextArea()
     if not self.dramaticShapeShot then return innerText(self) end
-    if isIOS() then return innerText(self) end
-    local battle = self
-    if not self.dramaticShapeDark then return withoutBoxFill(battle, innerText) end
-    BattleHud.flipGlyphs(BattleScene.GB_W, BattleScene.GB_H, function()
-      withoutBoxFill(battle, innerText)
-    end)
+    -- While a capture session is being AIMED the box is empty -- the
+    -- battle's phase is parked, so there is no message in it -- and it
+    -- covers the bottom third of the frame, which is exactly the room a
+    -- throw needs to wind up in. So it comes off entirely for those
+    -- frames and is back the instant a message has something to say.
+    local cap = BattleScene.capture
+    if cap and cap.hideTextBox then return end
+    return withoutBoxFill(self, innerText)
   end
 
   -- Move animations are authored against the pics' fixed slots, and a single
@@ -1234,28 +1475,13 @@ function OverworldBattle.install()
     if not ok then error(err, 0) end
   end
 
-  -- Black glyphs on grass are not readable; over a frosted panel measured
-  -- dark they are not readable either, so they go white. Mapped rather than
-  -- rewritten: the HUD sets pure black for its text and nothing else, and in
-  -- the colorized pipeline this lands in the grayscale BG canvas, where
-  -- white IS shade 0 and the zone pass then colours it like every other
-  -- lightest-shade surface. One rule, both pipelines.
-  --
-  -- The HP bar is untouched: it is drawn in its own greens and reds, and
-  -- only an exactly-black set is remapped.
   innerHUDs = BattleState.drawHUDs
   function BattleState:drawHUDs(slide)
     -- Normally the HUDs have already been drawn this frame, snapped out to the
     -- window's edges and composited into the world image (snapHUDs). Drawing
     -- them here as well would show each block twice, once in each place.
     if self.dramaticShapeShot and snapped() then return end
-    if not (self.dramaticShapeShot and self.dramaticShapeDark) then
-      return innerHUDs(self, slide)
-    end
-    local battle = self
-    BattleHud.flipGlyphs(BattleScene.GB_W, BattleScene.GB_H, function()
-      innerHUDs(battle, slide)
-    end)
+    return innerHUDs(self, slide)
   end
 
   BattleState.dramaticShapeBattleHook = true
@@ -1287,18 +1513,17 @@ end
 -- outside the frame that pass covers. In the colorized pipeline drawHUDs leaves
 -- the HP bar's fill as DMG gray for the zone pass to colour by region (#229);
 -- answered false, it tints its own greens and reds instead, exactly as it does
--- on the flat path. The glyphs are pure black either way, which is what the
--- flip in BattleHud.layerTexture is measured against.
+-- on the flat path.
 --
 -- Shadowed on the instance for this call only, the way drawZonePass shadows
 -- activeBgp: putting the field back to whatever it was (normally nil) lets the
 -- class method be found again.
-function OverworldBattle.hudTexture(battle, slide, dark)
+function OverworldBattle.hudTexture(battle, slide)
   if not (innerHUDs and battle) then return nil end
   local had = rawget(battle, "colorMode")
   battle.colorMode = function() return false end
   local ok, layer = pcall(BattleHud.layerTexture,
-                          BattleScene.GB_W, BattleScene.GB_H, dark,
+                          BattleScene.GB_W, BattleScene.GB_H,
                           function() innerHUDs(battle, slide) end)
   battle.colorMode = had
   return ok and layer or nil
@@ -1329,24 +1554,20 @@ function OverworldBattle.snapHUDs(battle, shot)
   local rects, bandX = OverworldBattle.snapRects(shot)
   local enemy, player = OverworldBattle.hudLive(battle, slide)
   local live = {}
-  if enemy then live.enemy = rects.enemy end
-  if player then live.player = rects.player end
-  -- and the text box's own glass, on the same pass. It stays in the middle of
-  -- the frame where the engine draws it -- only the HUDs were snapped out --
-  -- so its GB rect is mapped into the letterbox rather than to an edge.
-  for key, rect in pairs(OverworldBattle.textRects(battle)) do
-    live[key] = toWorld(rect, shot)
+  if not isIOS() then
+    if enemy then live.enemy = rects.enemy end
+    if player then live.player = rects.player end
   end
-  -- measured under the SNAPPED rects: the panels are over whatever the world
-  -- shows at the window's edges now, which is not what was behind them in the
-  -- middle of the frame. ONE verdict over all of them, HUDs and box together,
-  -- for the reason BattleHud.verdict gives: a frame with white glyphs in the
-  -- corner and black ones on the menu reads as a bug rather than as adaptation.
-  local dark = BattleHud.verdict(live, shot, true)
-  -- the box's own ink is flipped where the engine draws it, in the GB frame,
-  -- so the answer has to outlive this function (see drawHudPanels)
-  if session then session.dark = dark end
-  local layer = OverworldBattle.hudTexture(battle, slide, dark)
+  -- The text box's frost panel normally goes into this same world-canvas pass.
+  -- On iOS that panel is mirrored upward by the Canvas-to-Canvas path, creating
+  -- the large ghost rectangle behind the Pokemon. Keep the box border/text but
+  -- skip only this frosted backing on iOS.
+  if not isIOS() then
+    for key, rect in pairs(OverworldBattle.textRects(battle)) do
+      live[key] = toWorld(rect, shot)
+    end
+  end
+  local layer = OverworldBattle.hudTexture(battle, slide)
   if not layer then return false end
 
   local g = love.graphics
@@ -1355,13 +1576,29 @@ function OverworldBattle.snapHUDs(battle, shot)
   local ok, err = pcall(function()
     g.setCanvas(shot.canvas)
     g.setBlendMode("alpha")
-    for _, rect in pairs(live) do BattleHud.panel(rect, shot, dark, true) end
+    for _, rect in pairs(live) do BattleHud.panel(rect, shot, true) end
     g.setColor(1, 1, 1, 1)
     for side, band in pairs(OverworldBattle.HUD_BAND) do
       local quad = g.newQuad(band[1], band[2], band[3], band[4],
                              BattleScene.GB_W, BattleScene.GB_H)
-      g.draw(layer, quad, bandX[side] + band[1] * shot.scale,
-             shot.ly + band[2] * shot.scale, 0, shot.scale, shot.scale)
+      local x = bandX[side] + band[1] * shot.scale
+      local targetY = shot.ly + band[2] * shot.scale
+
+      if isIOS() then
+        -- Keep the player's HUD exactly where it currently appears on the
+        -- right. Only the enemy band needs its mirrored destination corrected.
+        local y = targetY
+        if side == "enemy" then
+          y = shot.ph - targetY - band[4] * shot.scale
+        end
+
+        -- iOS presents this Canvas-to-Canvas HUD texture upside down.
+        g.draw(layer, quad, x, y, 0,
+               shot.scale, -shot.scale, 0, band[4])
+      else
+        g.draw(layer, quad, x, targetY, 0,
+               shot.scale, shot.scale)
+      end
     end
   end)
   if prevCanvas then g.setCanvas(prevCanvas) else g.setCanvas() end
@@ -1380,21 +1617,8 @@ end
 -- drawn here, in the GB frame, whichever path laid the glass under it.
 function OverworldBattle.drawHudPanels(battle)
   local shot = battle.dramaticShapeShot
-  battle.dramaticShapeDark = nil
   if not shot then return end
-  if isIOS() then
-    local slide = (battle.introSlide or 0) * 4
-    local enemy, player = OverworldBattle.hudLive(battle, slide)
-    local rect = OverworldBattle.HUD_RECT
-    love.graphics.setColor(1, 1, 1, 0.84)
-    if enemy then love.graphics.rectangle("fill", rect.enemy[1], rect.enemy[2], rect.enemy[3], rect.enemy[4]) end
-    if player then love.graphics.rectangle("fill", rect.player[1], rect.player[2], rect.player[3], rect.player[4]) end
-    love.graphics.setColor(1, 1, 1, 1)
-    battle.dramaticShapeDark = nil
-    return
-  end
   if snapped() then
-    battle.dramaticShapeDark = session and session.dark or nil
     return
   end
   local slide = (battle.introSlide or 0) * 4
@@ -1405,9 +1629,7 @@ function OverworldBattle.drawHudPanels(battle)
   if player then live.player = rect.player end
   for key, r in pairs(OverworldBattle.textRects(battle)) do live[key] = r end
   if not next(live) then return end
-  local dark = BattleHud.verdict(live, shot)
-  battle.dramaticShapeDark = dark
-  for _, r in pairs(live) do BattleHud.panel(r, shot, dark) end
+  for _, r in pairs(live) do BattleHud.panel(r, shot) end
 end
 
 return OverworldBattle

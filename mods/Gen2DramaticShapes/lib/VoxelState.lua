@@ -47,16 +47,6 @@ Voxel.ANGLE_LABELS = { "OFF", "FULL", "15", "35", "50", "75",
                        "1ST (EXPERIMENTAL)", "3RD (EXPERIMENTAL)" }
 Voxel.MAX_LEVEL = #Voxel.ANGLES_DEG - 1
 
--- Sprite rotation offsets for different voxel angles (side views)
--- Maps voxel degree to the offset value used in math.pi + offset / 2
-Voxel.SPRITE_OFFSETS = {
-  [15] = 3.7,   -- Right angle (90°) offset for voxel 15
-  [35] = 4.5,   -- Right angle (90°) offset for voxel 35 (FULL) - added back
-  [50] = 4.5,   -- Right angle (90°) offset for voxel 50
-  [75] = 3.7,   -- Left angle (-90°) offset for voxel 75
-  -- Additional offsets can be added as they are investigated
-}
-
 -- the rung FULL sits on, so nothing has to hunt for it by label
 Voxel.FULL_LEVEL = 1
 

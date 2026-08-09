@@ -312,6 +312,10 @@ function FreeMove.tick(state)
 
   local speed = (Game.save and Game.save.onBike) and FreeMove.BIKE
                 or FreeMove.WALK
+  -- Hold B to run: 2x movement speed when option enabled and B held
+  if Game.save and Game.save.options and Game.save.options.holdBToRun and input:isDown("b") then
+    speed = speed * 2
+  end
   local dx, dz = wx * speed, wz * speed
 
   local hitX = slideX(state, p, dx)
