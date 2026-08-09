@@ -484,12 +484,12 @@ local SETTINGS = {
     cat = "world" },
 
   -- ------- BATTLES -- what a fight is drawn over, and how it is played
-  --
   { DrawDistance.setting,
     "How many adjacent maps to render: OFF (no limit, original behavior), "
     .. "NEAR (0 neighbors) for best performance on low-end devices, MILD "
     .. "(2 neighbors) for balanced quality, or FAR (4 neighbors) for moderate "
-    .. "quality/performance balance." },
+    .. "quality/performance balance.",
+    cat = "battles" },
   -- `full` marks a row FULL does not take away. FULL owns the diorama's own
   -- knobs; what a battle is drawn over, and how it is framed, are not that.
   { OverworldBattle.setting,
@@ -876,6 +876,8 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
     -- which is where they live now: T-SHIFT with the wireframe and the bend,
     -- and each of them by the same `full` rule rather than by name.
     DayNight.forceSync(game)
+        dropRow(out, "pipeline:tiltshift")
+
   end
   -- The two pipeline rows move INTO the mod's own root menu: captured as the
   -- engine built them, then dropped from here so they are not in two places.
@@ -912,47 +914,24 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
       g.stack:push(SettingsMenu.new(g, SettingsMenu.ROOT))
     end,
   })
-  local extra = {}
-  for _, entry in ipairs(SETTINGS) do
-    -- Two things decide whether a row is offered.
-    --
-    -- FULL: a preset that owns the look, so the rows that describe the look go
-    -- with it. The BATTLE rows are not that -- 3D-BTL decides what a fight is
-    -- drawn OVER and BACK SPRITES how it is framed, and neither is a knob on
-    -- the diorama FULL is a preset for. FULL still SETS them on arrival (see
-    -- applyFull); it does not hold them, so leaving them on the menu is the
-    -- difference between a preset and a lock.
-    --
-    -- And a row whose own switch is off the table this frame (BACK SPRITES,
-    -- which needs a staged fight to be about) is left off with it. The mod
-    -- manager's page carries every one of them either way.
-    local offered = (entry.full or not full)
-                    and (not entry.when or entry.when())
-    if offered then extra[#extra + 1] = entry[1]:row() end
-  end
-  -- and the ROM import, which is an ACTION and not a setting: there is no
-  -- rung to store, nothing for the mod manager's page to persist and nothing
-  -- to restore on the next boot, so it is appended here rather than living in
-  -- SETTINGS. nil on a platform with no file dialog, which takes it off the
-  -- menu rather than offering a button that cannot do anything.
-  -- On EVERY platform. Where there is no file dialog it says WHERE? and
-  -- shows the folder to put the cartridge in, which is the one thing a
-  -- player on a phone could not otherwise find out -- the row used to vanish
-  -- there, which reads as the feature being missing rather than manual.
+  
+  -- Add Stadium ROM import row (ACTION, not a setting)
   local okPick, importRow = pcall(function()
     return V.require("StadiumRomPick").row()
   end)
-  if okPick and importRow then extra[#extra + 1] = importRow end
+  if okPick and importRow then table.insert(out, importRow) end
+  
   -- Mewtwo player model row
   local okMewtwo, mewtwoRow = pcall(function()
     return V.require("PlayerModelPick").mewtwoRow()
   end)
-  if okMewtwo and mewtwoRow then extra[#extra + 1] = mewtwoRow end
+  if okMewtwo and mewtwoRow then table.insert(out, mewtwoRow) end
+  
   -- Stadium follower row
   local okFollower, followerRow = pcall(function()
     return V.require("PlayerModelPick").followerRow()
   end)
-  if okFollower and followerRow then extra[#extra + 1] = followerRow end
+  if okFollower and followerRow then table.insert(out, followerRow) end
   
   -- Stadium wilds row (only show if stadium packs are available)
   local okWilds, wildsRow = pcall(function()
@@ -962,11 +941,8 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
     end
     return nil
   end)
-  if okWilds and wildsRow then extra[#extra + 1] = wildsRow end
+  if okWilds and wildsRow then table.insert(out, wildsRow) end
   
-  for _, row in ipairs(extra) do
-    table.insert(out, row)
-  end
   return out
 end)
 
@@ -1125,18 +1101,12 @@ do
     end
 
     function OptionsMenu:update(dt)
-      local beforeSig = self.dramaticShapeSig
-      local hadBattles = OverworldBattle.enabled()
-      -- the VR row hides the two battle rows while it is on, so stepping
-      -- it changes the LIST exactly the way 3D-BTL does
-      local hadVR = VR.enabled()
-      local afterSig = signature()
-      self.dramaticShapeSig = afterSig
-      if beforeSig ~= afterSig then
-        local crossedFull = (Voxel.isFull(Pipelines.level("voxel")))
-        if crossedFull or OverworldBattle.enabled() ~= hadBattles
-         or VR.enabled() ~= hadVR then
-        local wasOn = idAt(self, self.index)
+      local before = self.dramaticShapeSig or signature()
+      local wasOn = idAt(self, self.index)
+      inner(self, dt)
+      local after = signature()
+      self.dramaticShapeSig = after
+      if before ~= after then
         local rebuilt = OptionsMenu.new(self.game)
         self.rows = rebuilt.rows
         -- Follow the row the cursor was ON rather than the slot it was in:
@@ -1147,7 +1117,6 @@ do
         end
         local cancel = #self.rows + 1
         if (self.index or 1) > cancel then self.index = cancel end
-        end
       end
     end
 
