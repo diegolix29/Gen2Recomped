@@ -586,12 +586,23 @@ R.sprites = {
     frames = f.int(1),
     walker = f.opt(f.bool),
     trueColor = f.opt(f.bool),
+    -- Custom frame dimensions for larger sprites (defaults to 16x16)
+    frameWidth = f.opt(f.int(1)),
+    frameHeight = f.opt(f.int(1)),
+    -- Number of frames per row in the sprite sheet (defaults to 1 for vertical stacking)
+    framesPerRow = f.opt(f.int(1)),
+    -- Render scale: visual size multiplier for width (defaults to 1.0)
+    -- Use values < 1.0 to render high-res sprites at smaller visual size
+    scale = f.opt(f.numRange(0.1, 4.0)),
+    -- Height scale: independent height multiplier (defaults to scale value)
+    -- If set, overrides height scaling independently from width
+    heightScale = f.opt(f.numRange(0.1, 4.0)),
     -- Mod art can opt into an existing ROM sprite's Advanced-mode OBJ
     -- palette assignment without claiming that the image itself came from
     -- the ROM (which is what `source` documents on imported records).
     paletteSource = f.opt(f.str),
   },
-  example = 'mod.content.sprites:register("SPRITE_HERO", { image = "...", frames = 6 })',
+  example = 'mod.content.sprites:register("SPRITE_HERO", { image = "...", frames = 6, frameWidth = 32, frameHeight = 32, framesPerRow = 4, scale = 0.5, heightScale = 0.7 })',
 }
 
 R.text = {
