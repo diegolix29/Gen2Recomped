@@ -181,9 +181,14 @@ local function patchCastLoop(source)
   local block = [====[  local hideMe = FirstPerson.hidePlayer()
   for _, p in ipairs(posed) do
     if not (p.isPlayer and hideMe) and not OverworldStadium.safeShouldHidePose(p) then
+      -- Check if this is the player and ADVANCED_SHAPE's PlayerModel is loaded
+      local okPlayerModel, PlayerModel = pcall(V.require, "PlayerModel")
+      if p.isPlayer and okPlayerModel and PlayerModel and PlayerModel.loaded() then
+        -- Draw custom 3D model instead of sprite
+        PlayerModel.draw(p.px, p.py, p.gh + (p.lift or 0), viewFacing(p), p.flip)
       -- safeDraw never throws.  Returning false means this one entity uses
       -- Dramatic Shape's original 2D card for this frame.
-      if not OverworldStadium.safeDraw(p) and p.sprite then
+      elseif not OverworldStadium.safeDraw(p) and p.sprite then
         drawEntity(p.sprite, p.px, p.py, viewFacing(p), p.phase, p.flip, p.gh,
                    p.colors, p.lift, yaw)
       end

@@ -893,47 +893,34 @@ local function prepareOne(p, dex, dt)
   local useCameraRotation = false
   local fx, fz = facingVector(renderFacing)
   
-  -- Get camera yaw from Voxel3D if available (works for normal camera yaw too)
-  local okVoxel3D, Voxel3D = pcall(V.require, "Voxel3D")
-  if okVoxel3D and Voxel3D and Voxel3D.camera and Voxel3D.camera.yaw then
-    cameraYaw = Voxel3D.camera.yaw
-    useCameraRotation = true
-  elseif okFirstPerson and FirstPerson then
+  if okFirstPerson and FirstPerson then
     local b = FirstPerson.cardBlend()
     if b > 0 then
       useCameraRotation = true
       cameraYaw = FirstPerson.cardYaw(p.px or 0, p.py or 0)
+      
+      -- Calculate camera-relative facing direction
+      local face = type(renderFacing) == "string" and string.lower(renderFacing) or renderFacing
+      local yaw = 0
+      
+      if face == "down" then
+        -- Moving backwards: face the camera
+        yaw = cameraYaw * b
+      elseif face == "up" then
+        -- Moving forward: face away from the camera
+        yaw = (cameraYaw + math.pi) * b
+      elseif face == "left" then
+        -- Moving left: turn 90 degrees left
+        yaw = (cameraYaw + math.pi / 2) * b
+      elseif face == "right" then
+        -- Moving right: turn 90 degrees right
+        yaw = (cameraYaw - math.pi / 2) * b
+      end
+      
+      -- Convert yaw back to faceX/faceZ for StadiumMon:matrix
+      fx = math.sin(yaw)
+      fz = math.cos(yaw)
     end
-  end
-  
-  if useCameraRotation then
-    -- Calculate camera-relative facing direction
-    local face = type(renderFacing) == "string" and string.lower(renderFacing) or renderFacing
-    local yaw = 0
-    local blend = 1
-    
-    -- Use FirstPerson blend when available for smooth transitions
-    if okFirstPerson and FirstPerson then
-      blend = FirstPerson.cardBlend()
-    end
-    
-    if face == "down" then
-      -- Moving backwards: face the camera
-      yaw = cameraYaw * blend
-    elseif face == "up" then
-      -- Moving forward: face away from the camera
-      yaw = (cameraYaw + math.pi) * blend
-    elseif face == "left" then
-      -- Moving left: turn 90 degrees left
-      yaw = (cameraYaw + math.pi / 2) * blend
-    elseif face == "right" then
-      -- Moving right: turn 90 degrees right
-      yaw = (cameraYaw - math.pi / 2) * blend
-    end
-    
-    -- Convert yaw back to faceX/faceZ for StadiumMon:matrix
-    fx = math.sin(yaw)
-    fz = math.cos(yaw)
   end
   
   local x = ((skyMount and tonumber(entity._stadiumSkyRideAnchorPx))
