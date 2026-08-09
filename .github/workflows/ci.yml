@@ -44,7 +44,7 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -Eq '^(mobile/ios/|scripts/build_ios\.sh$|\.github/workflows/(ci|release)\.yml$)'; then
+          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -Eq '^(mobile/ios/|scripts/build_ios\.sh$)'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -54,15 +54,15 @@ jobs:
     name: iOS build
     needs: ios-changes
     if: needs.ios-changes.outputs.changed == 'true'
-    runs-on: ${{ fromJSON(github.repository == 'bryanthaboi/gen1recomp' && '["self-hosted", "macOS"]' || '"macos-latest"') }}
+    runs-on: ${{ fromJSON(github.repository == 'bryanthaboi/gen2recomp' && '["self-hosted", "macOS"]' || '"macos-latest"') }}
     outputs:
       ipa_url: ${{ steps.upload-ipa.outputs.artifact-url }}
     steps:
       - uses: actions/checkout@v7
       - name: import signing certificate
-        if: github.repository == 'bryanthaboi/gen1recomp'
+        if: github.repository == 'bryanthaboi/gen2recomp'
         run: |
-          keychain_path="$RUNNER_TEMP/gen1recomp-ci-signing.keychain-db"
+          keychain_path="$RUNNER_TEMP/gen2recomp-ci-signing.keychain-db"
           ci_dir="${POKEMON_CI_DIR:-$HOME/.config/pokemon-ci}"
           p12="$ci_dir/signing.p12"
           passfile="$ci_dir/signing.pass"
@@ -82,7 +82,7 @@ jobs:
         run: brew list xcbeautify >/dev/null 2>&1 || brew install xcbeautify
       - name: build iOS release
         env:
-          CANONICAL_REPOSITORY: ${{ github.repository == 'bryanthaboi/gen1recomp' }}
+          CANONICAL_REPOSITORY: ${{ github.repository == 'bryanthaboi/gen2recomp' }}
         run: |
           if [ "$CANONICAL_REPOSITORY" = true ]; then
             scripts/build_ios.sh --fetch --device --release
@@ -91,16 +91,285 @@ jobs:
           fi
       - name: upload iOS release artifact
         id: upload-ipa
-        if: github.repository == 'bryanthaboi/gen1recomp'
+        if: github.repository == 'bryanthaboi/gen2recomp'
         uses: actions/upload-artifact@v7
         with:
-          name: gen1recomp-ios-ipa
-          path: dist/ios/gen1recomp.ipa
+          name: gen2recomp-ios-ipa
+          path: dist/ios/gen2recomp.ipa
           if-no-files-found: error
           retention-days: 7
       - name: clean up signing keychain
-        if: ${{ always() && github.repository == 'bryanthaboi/gen1recomp' }}
-        run: security delete-keychain "$RUNNER_TEMP/gen1recomp-ci-signing.keychain-db" 2>/dev/null || true
+        if: ${{ always() && github.repository == 'bryanthaboi/gen2recomp' }}
+        run: security delete-keychain "$RUNNER_TEMP/gen2recomp-ci-signing.keychain-db" 2>/dev/null || true
+
+  switch-changes:
+    name: detect Switch changes
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.paths.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: paths
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -Eq '^(scripts/build_switch\.sh$|scripts/switch/|docs/switch-.*\.md$|tests/switch_ci_workflows_test\.lua$|tests/switch_transfer_docs_test\.lua$|\.github/workflows/(ci|release|switch-artifact-comment)\.yml$|src/core/(NxAssetOverlay|Platform|GameVersion)\.lua$|src/import/CacheFs\.lua$|tests/engine/(assets_version_fallback|nx_generated_guard|nx_yellow_boot|switch_diagnostics)_test\.lua$|tests/engine/platform_nx)'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  switch-selftest:
+    name: Switch offline selftest
+    needs: switch-changes
+    if: needs.switch-changes.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: install luajit
+        run: sudo apt-get update && sudo apt-get install -y luajit
+      - name: Switch offline selftest
+        run: bash scripts/switch/selftest_build_switch.sh
+      - name: verify_payload self-test
+        run: bash scripts/switch/verify_payload.sh --self-test
+      - name: Switch CI workflow content gate
+        run: luajit tests/switch_ci_workflows_test.lua
+      - name: Switch transfer docs content gate
+        run: luajit tests/switch_transfer_docs_test.lua
+      # NX runtime regressions gate this job via switch-changes; run the NX
+      # engine suites here too so a PR touching them gets feedback on the
+      # fork-safe ubuntu runner before the self-hosted Mac build.
+      - name: NX engine suites (headless)
+        run: |
+          luajit tests/engine/assets_version_fallback_test.lua
+          luajit tests/engine/nx_generated_guard_test.lua
+          luajit tests/engine/nx_yellow_boot_test.lua
+
+  switch-build:
+    name: Switch fused build
+    needs: [switch-changes, switch-selftest]
+    if: |
+      always()
+      && needs.switch-changes.outputs.changed == 'true'
+      && needs.switch-selftest.result == 'success'
+      && github.repository == 'bryanthaboi/gen2recomp'
+      && (github.event_name != 'pull_request'
+          || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ["self-hosted", "macOS"]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build Switch fused NRO
+        run: |
+          set -euo pipefail
+          VER="$(printf '%s' "$GITHUB_SHA" | cut -c1-7)"
+          scripts/build_switch.sh --fetch --fused --version "$VER"
+          echo "SWITCH_VER=$VER" >> "$GITHUB_ENV"
+      - name: upload Switch NRO artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: gen2recomp-switch-nro
+          path: |
+            dist/switch/gen2recomp-${{ env.SWITCH_VER }}-switch.nro
+            dist/switch/gen2recomp-${{ env.SWITCH_VER }}-switch.nro.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  xbox-uwp-changes:
+    name: detect Xbox UWP changes
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.paths.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: paths
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -Eq '^(ports/uwp/|scripts/build_xbox_uwp\.sh$|scripts/xbox-uwp/|scripts/pack_love\.sh$|\.github/workflows/(ci|release)\.yml$|src/core/Platform\.lua$|src/import/(CacheFs|LauncherView|RomImporter)\.lua$|src/update/Check\.lua$|tests/engine/(platform_nx|uwp_baseroms|uwp_native_picker)_test\.lua$|tests/rom_importer_double_pick_test\.lua$)'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  xbox-uwp-selftest:
+    name: Xbox UWP offline selftest
+    needs: xbox-uwp-changes
+    if: needs.xbox-uwp-changes.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Xbox UWP offline selftest
+        run: bash scripts/xbox-uwp/selftest_build_xbox_uwp.sh
+      - name: Build shared payload
+        run: |
+          scripts/pack_love.sh \
+            --output .bazinga/work/ci-game.love \
+            --listing .bazinga/work/ci-love-listing.txt \
+            --version 0.0.0
+      - name: Upload shared payload
+        uses: actions/upload-artifact@v7
+        with:
+          name: gen2recomp-xbox-uwp-payload
+          path: .bazinga/work/ci-game.love
+          if-no-files-found: error
+          retention-days: 1
+
+  xbox-uwp-build:
+    name: Xbox UWP build
+    needs: [xbox-uwp-changes, xbox-uwp-selftest]
+    if: |
+      always()
+      && needs.xbox-uwp-changes.outputs.changed == 'true'
+      && needs.xbox-uwp-selftest.result == 'success'
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download shared payload
+        uses: actions/download-artifact@v8
+        with:
+          name: gen2recomp-xbox-uwp-payload
+          path: .bazinga/work
+      - name: Build Xbox UWP package
+        shell: bash
+        run: |
+          bash scripts/build_xbox_uwp.sh \
+            --release \
+            --version 0.0.0 \
+            --game-love .bazinga/work/ci-game.love
+      - name: Upload Xbox UWP package
+        uses: actions/upload-artifact@v7
+        with:
+          name: gen2recomp-xbox-uwp
+          path: |
+            dist/xbox-uwp/gen2recomp-0.0.0-xbox-uwp.zip
+            dist/xbox-uwp/gen2recomp-0.0.0-xbox-uwp.zip.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  linux-arm64-changes:
+    name: detect Linux arm64 changes
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.paths.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: paths
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -Eq '^(scripts/build_linux_arm64\.sh$|scripts/linux-arm64/|scripts/pack_love\.sh$|docs/linux-arm64-build\.md$|\.github/workflows/(ci|release)\.yml$)'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  linux-arm64-selftest:
+    name: Linux arm64 offline selftest
+    needs: linux-arm64-changes
+    if: needs.linux-arm64-changes.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Deliberately on x86_64: everything this gate checks (pins, the
+      # host-arch guard, the dependency exclude list, the AppRun fusion
+      # contract) is answerable without a container or an aarch64 machine,
+      # so the slow native job below only ever starts on a sane tree.
+      - name: Linux arm64 offline selftest
+        run: bash scripts/linux-arm64/selftest_build_linux_arm64.sh
+
+  linux-arm64-build:
+    name: Linux arm64 AppImage build
+    needs: [linux-arm64-changes, linux-arm64-selftest]
+    if: |
+      always()
+      && needs.linux-arm64-changes.outputs.changed == 'true'
+      && needs.linux-arm64-selftest.result == 'success'
+    # No fork restriction, unlike switch-build: this needs no secrets and no
+    # self-hosted hardware, just GitHub's free arm64 runner for public repos,
+    # so contributors get the same coverage on their own PRs.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the aarch64 AppImage
+        run: |
+          set -euo pipefail
+          scripts/build_linux_arm64.sh --version 0.0.0
+      - name: Verify the AppImage is self-contained and bullseye-compatible
+        run: |
+          set -euo pipefail
+          image="dist/linux-arm64/gen2recomp-0.0.0-linux-arm64.AppImage"
+
+          # --appimage-extract needs no FUSE, so this works on a runner
+          # without /dev/fuse and still exercises the real payload.
+          "$image" --appimage-extract >/dev/null
+          for required in AppRun bin/love game.love lib/liblove-11.5.so; do
+            [ -e "squashfs-root/$required" ] \
+              || { echo "::error::AppImage is missing $required"; exit 1; }
+          done
+
+          # Every bundled object must resolve once AppRun's LD_LIBRARY_PATH is
+          # applied; an unresolved soname here is a user-visible launch crash.
+          #
+          # This runs on a HEADLESS runner on purpose, and that is the point.
+          # The first version of this build bundled Debian's SDL2, which
+          # hard-links libpulse/libasound/libX11/libwayland, so it only ever
+          # started on a full desktop -- a bare runner is what exposed it.
+          missing="$(LD_LIBRARY_PATH="$PWD/squashfs-root/lib" \
+            ldd squashfs-root/bin/love squashfs-root/lib/*.so* 2>/dev/null \
+            | grep 'not found' || true)"
+          [ -z "$missing" ] || { echo "::error::unresolved deps:"; echo "$missing"; exit 1; }
+
+          # Nothing may hard-link a driver, session or audio-stack library:
+          # those must be reached through dlopen so the AppImage runs on a box
+          # with only ALSA, only Wayland, or only KMSDRM.
+          linked="$(for f in squashfs-root/bin/love squashfs-root/lib/*.so*; do
+            objdump -p "$f" 2>/dev/null | awk '/NEEDED/{print $2}'
+          done | sort -u | grep -E '^lib(pulse|asound|X11|wayland|GL|EGL|drm|gbm|xcb|cairo|sndio|dbus)' || true)"
+          [ -z "$linked" ] \
+            || { echo "::error::these must be dlopened, not linked:"; echo "$linked"; exit 1; }
+
+          # The whole point of compiling on bullseye. If a future change moves
+          # the builder to a newer base, the glibc floor silently rises and
+          # every user on an older distro gets "GLIBC_2.xx not found" -- catch
+          # it here instead of in a release.
+          floor="$(objdump -T squashfs-root/bin/love squashfs-root/lib/*.so* 2>/dev/null \
+            | grep -o 'GLIBC_[0-9.]*' | sort -V | tail -1)"
+          echo "highest required glibc symbol version: $floor"
+          [ -n "$floor" ] \
+            || { echo "::error::found no versioned glibc symbols -- objdump read nothing"; exit 1; }
+          highest="$(printf '%s\n' "$floor" "GLIBC_2.31" | sort -V | tail -1)"
+          [ "$highest" = "GLIBC_2.31" ] \
+            || { echo "::error::AppImage requires $floor, above the bullseye 2.31 floor"; exit 1; }
+      - name: Upload the AppImage
+        uses: actions/upload-artifact@v7
+        with:
+          name: gen2recomp-linux-arm64
+          path: |
+            dist/linux-arm64/gen2recomp-0.0.0-linux-arm64.AppImage
+            dist/linux-arm64/gen2recomp-0.0.0-linux-arm64.AppImage.sha256
+          if-no-files-found: error
+          retention-days: 7
 
   headless:
     name: headless suites (no ROM)
@@ -113,6 +382,9 @@ jobs:
       # game actually ships with or it would green-light 5.4-only syntax.
       - name: install luajit
         run: sudo apt-get update && sudo apt-get install -y luajit
+
+      - name: install Pillow
+        run: python3 -m pip install --upgrade pillow
 
       - name: interpreter version
         run: luajit -v

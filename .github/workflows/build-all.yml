@@ -56,8 +56,8 @@ jobs:
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gen1recomp-macos
-          path: dist/mac/gen1recomp-macos.zip
+          name: gen2recomp-macos
+          path: dist/mac/gen2recomp-macos.zip
           retention-days: 7
 
   # Build Windows app
@@ -98,8 +98,8 @@ jobs:
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gen1recomp-windows
-          path: dist/win/gen1recomp-win64.zip
+          name: gen2recomp-windows
+          path: dist/win/gen2recomp-win64.zip
           retention-days: 7
 
   # Build Linux AppImage
@@ -140,8 +140,8 @@ jobs:
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gen1recomp-linux
-          path: dist/linux/gen1recomp-linux.zip
+          name: gen2recomp-linux
+          path: dist/linux/gen2recomp-linux.zip
           retention-days: 7
 
   # Build Android APK
@@ -192,7 +192,7 @@ jobs:
       - name: Upload Android artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gen1recomp-android
+          name: gen2recomp-android
           path: dist/android/debug/*.apk
           retention-days: 7
 
@@ -229,6 +229,6 @@ jobs:
   #     - name: Upload iOS artifact
   #       uses: actions/upload-artifact@v4
   #       with:
-  #         name: gen1recomp-ios
+  #         name: gen2recomp-ios
   #         path: dist/ios/**/*.app
   #         retention-days: 7
