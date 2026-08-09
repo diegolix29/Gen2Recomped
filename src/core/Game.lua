@@ -45,7 +45,7 @@ function Game:load()
   Input:init()
 
   self.touchControls = TouchControls
-  TouchControls:init()
+  TouchControls:init(self)
 
   self.renderer = Renderer
   Renderer:init()
@@ -516,6 +516,98 @@ function Game:wheelmoved(_, dy)
   end
 end
 
+function Game:_cycleSpeed(dir)
+  if not (self.save and self.save.options) then return end
+  local busy
+  local ow = self.overworld
+  if ow then
+    local top = self.stack:top()
+    busy = ow.transitioning
+      or (top == ow and (
+           (ow.runner and ow.runner.isRunning and ow.runner:isRunning())
+        or (ow.scriptMoves and #ow.scriptMoves > 0)
+        or ow.engaging or ow.emote))
+  end
+  if busy then return end
+  local GameSpeed = require("src.core.GameSpeed")
+  self.save.options.speed = GameSpeed.cycle(self.save.options.speed, dir)
+  self:writeOptions()
+end
+
+-- One-shot display actions, fired identically whether the trigger was a
+-- keyboard key (Game:keypressed) or a gamepad button (Game:gamepadpressed)
+-- bound through HotkeyBindingsMenu. `action` is one of the ids in
+-- src/core/Input.lua's DEFAULT_HOTKEY_KEY_BINDINGS.
+function Game:fireHotkey(action)
+  if action == "zoomOut" then
+    self:zoomStep(-1)
+  elseif action == "zoomIn" then
+    self:zoomStep(1)
+    return
+  elseif action == "1" then
+    self:_cycleSpeed(1)
+    return
+  elseif action == "2" then
+    local ow = self.overworld
+    local top = self.stack:top()
+    local busy = ow and (ow.transitioning
+      or (top == ow and (
+           (ow.runner and ow.runner.isRunning and ow.runner:isRunning())
+        or (ow.scriptMoves and #ow.scriptMoves > 0)
+        or ow.engaging or ow.emote)))
+    if not busy then
+      local PaletteFX = require("src.render.PaletteFX")
+      self.save.options.colors = PaletteFX.cycleMode()
+      self:writeOptions()
+    end
+  elseif action == "tilt" then
+    local Tilt = require("src.render.Tilt")
+    if Tilt.gateOK(self.stack:top(), self.overworld) then
+      self.save.options.tilt = Tilt.cycle()
+      self:writeOptions()
+    end
+  elseif action == "fastForward" then
+    self:_cycleSpeed(1)
+  elseif action == "gbcfx" then
+    local GBCFX = require("src.render.GBCFX")
+    if not GBCFX.isSupported() then return end
+    self.save.options.gbcfx = GBCFX.cycle()
+    self:writeOptions()
+  elseif action == "quit" then
+    self:returnToTitle()
+  elseif action == "softReset" then
+    Input:reset()
+    TouchControls:reset()
+    self:returnToTitle()
+  elseif action == "saveGame" then
+    self:writeSave()
+  elseif action == "loadGame" then
+    local loaded, recovered = SaveData.load()
+    if loaded then
+      self:restoreSave(loaded, recovered)
+    end
+  elseif action == "toggleModMenu" then
+    local top = self.stack:top()
+    if top and top.screenId == "ManagerState" then
+      self.stack:pop()
+    else
+      Screens.push(self, "ManagerState")
+    end
+  elseif action == "reloadMods" then
+    if devMode then
+      self:restartWithMods()
+    end
+  elseif action == "vortex" then
+    -- Vortex hotkey for mods
+  elseif action == "cameraRotateLeft" then
+    local Tilt = require("src.render.Tilt")
+    Tilt.rotateCamera(-1)
+  elseif action == "cameraRotateRight" then
+    local Tilt = require("src.render.Tilt")
+    Tilt.rotateCamera(1)
+  end
+end
+
 function Game:keypressed(key)
   if self.stack and self.stack:top() and self.stack:top().onKeyPressed then
     self.stack:top():onKeyPressed(key)
@@ -529,71 +621,14 @@ function Game:keypressed(key)
     self.stack:push(require("src.dev.Console").new(self))
     return
   end
-  if key == "f10" then
-    -- toggle: the manager no longer swallows the keyboard, so a second
-    -- press reaches this branch and closes it instead of stacking another
-    local top = self.stack:top()
-    if top and top.screenId == "ManagerState" then
-      self.stack:pop()
-    else
-      Screens.push(self, "ManagerState")
-    end
-    return
-  end
-  if key == "f1" then
-    self:writeSave()
-    return
-  elseif key == "f2" then
-    local loaded, recovered = SaveData.load()
-    if loaded then self:restoreSave(loaded, recovered) end
-    return
-  elseif key == "-" then
-    self:zoomStep(-1)
-    return
-  elseif key == "=" then
-    self:zoomStep(1)
-    return
-  elseif key == "2" then
-    -- cycle COLORS (GBC / OG / OG INV / GBC INV / CLASSIC); the pack change
-    -- forces Game.overworld:reloadMap, which rebuilds the live NPC array, so
-    -- hold it while a warp/transition or an on-screen scripted cutscene is
-    -- driving the overworld rather than tear the escort's NPCs out mid-move
-    local ow = self.overworld
-    local top = self.stack:top()
-    local busy = ow and (ow.transitioning
-      or (top == ow and (
-           (ow.runner and ow.runner.isRunning and ow.runner:isRunning())
-        or (ow.scriptMoves and #ow.scriptMoves > 0)
-        or ow.engaging or ow.emote)))
-    if not busy then
-      local PaletteFX = require("src.render.PaletteFX")
-      self.save.options.colors = PaletteFX.cycleMode()
-      self:writeOptions()
-    end
-    return
-  elseif key == "3" then
-    -- cycle TILT OFF → 15 → 35 → 50 → OFF (mnemonic: 3D), free-roam only
-    local Tilt = require("src.render.Tilt")
-    if Tilt.gateOK(self.stack:top(), self.overworld) then
-      self.save.options.tilt = Tilt.cycle()
-      self:writeOptions()
-    end
-    return
-  elseif key == "4" then
-    -- cycle ZOOM through every integer level (survey → FIT → close-up → wrap)
-    local Zoom = require("src.render.Zoom")
-    if Zoom.gateOK(self.stack:top(), self.overworld) then
-      self.save.options.zoom = Zoom.cycle(Renderer:fitScale())
-      self:writeOptions()
-    end
-    return
-  elseif key == "5" then
-    -- cycle GBC FX OFF → 1 → 2 → 3 → 4 (unlit-GBC ladder); always on
-    -- desktop.  Mobile refuses the present shader (issue #136).
-    local GBCFX = require("src.render.GBCFX")
-    if not GBCFX.isSupported() then return end
-    self.save.options.gbcfx = GBCFX.cycle()
-    self:writeOptions()
+  -- Display hotkeys (COLORS/TILT/ZOOM/GBC FX + zoom step): looked up
+  -- through Input's hotkey table rather than hardcoded key literals, so
+  -- the same action fires from Game:gamepadpressed once a player binds a
+  -- pad button to it in HotkeyBindingsMenu. Defaults keep today's keys
+  -- (2/3/4/5/-/=) byte-identical -- see DEFAULT_HOTKEY_KEY_BINDINGS.
+  local hotkey = Input:hotkeyForKey(key)
+  if hotkey then
+    self:fireHotkey(hotkey)
     return
   end
   -- Mod render pipelines claim their hotkeys last, so one can never shadow
@@ -633,10 +668,28 @@ function Game:gamepadpressed(joystick, button)
   -- a controller is being used: the touch overlay steps aside until the
   -- next screen touch (mobile only; a no-op elsewhere)
   TouchControls:noteGamepad()
+  -- shoulder buttons cycle GAME SPEED (R2/rightshoulder = faster,
+  -- L2/leftshoulder = slower; same as keyboard hotkey 1)
+  if button == "rightshoulder" then
+    self:_cycleSpeed(1)
+    return
+  elseif button == "leftshoulder" then
+    self:_cycleSpeed(-1)
+    return
+  end
   -- BindingsMenu's pad capture rides the same top-state routing as keys
   local top = self.stack and self.stack:top()
   if top and top.onGamepadPressed then
     top:onGamepadPressed(button)
+    return
+  end
+  -- A pad button bound to a display hotkey (COLORS/TILT/ZOOM/GBC FX/zoom
+  -- step) in HotkeyBindingsMenu takes priority over the GB-button map --
+  -- there is no default overlap (DEFAULT_HOTKEY_PAD_BINDINGS starts
+  -- empty), so this only ever fires once a player has opted in.
+  local hotkey = Input:hotkeyForPad(button)
+  if hotkey then
+    self:fireHotkey(hotkey)
     return
   end
   Input:gamepadpressed(joystick, button)
@@ -831,6 +884,7 @@ function Game:applyOptions(opts)
     if FrameCap.current > caps.fpsMax then FrameCap.apply(caps.fpsMax) end
   end
   Input:applyBindings(opts.bindings)
+  Input:applyHotkeyBindings(opts.hotkeyBindings)
   TouchControls:applyOptions(opts)
   -- heal soft-bricked APK installs that already saved gbcfx > 0 (#136)
   if gbcCleared then self:writeOptions() end

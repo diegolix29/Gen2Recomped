@@ -60,8 +60,59 @@ local HAT_DIRECTIONS = {
   ld = { "left", "down" }, rd = { "right", "down" },
 }
 
+-- Display "hotkeys" (COLORS/TILT/ZOOM/GBC FX + zoom step) are one-shot
+-- actions fired straight from Game:keypressed/gamepadpressed -- they are
+-- not Game Boy buttons, so they get their own binding table instead of
+-- sharing keyBindings/padBindings above. That keeps a hotkey rebind from
+-- ever colliding with (or being overwritten by) a d-pad/A/B/Start/Select
+-- rebind, and vice versa. See Game:fireHotkey and src/ui/HotkeyBindingsMenu.lua.
+local DEFAULT_HOTKEY_KEY_BINDINGS = {
+  ["2"] = "colors",
+  ["3"] = "tilt",
+  ["4"] = "fastForward",
+  ["5"] = "gbcfx",
+  ["-"] = "zoomOut",
+  ["="] = "zoomIn",
+  ["9"] = "quit",
+  ["0"] = "softReset",
+  ["f1"] = "saveGame",
+  ["f2"] = "loadGame",
+  ["f10"] = "toggleModMenu",
+  -- vortex hotkey for mods (e.g., Dramatic Shape voxel mode)
+  ["6"] = "vortex",
+  -- camera rotation
+  ["["] = "cameraRotateLeft",
+  ["]"] = "cameraRotateRight",
+  -- mod reload
+  ["f5"] = "reloadMods",
+}
+
+-- No default pad buttons: every physical button LÖVE exposes on a
+-- standard gamepad is either already claimed by a Game Boy button above
+-- or left free, and guessing a mapping risks colliding with a shoulder
+-- button some pad already uses for something else. A player opts in
+-- through HotkeyBindingsMenu's "PRESS A BUTTON" capture instead.
+-- Directional stick movements and triggers are available for binding.
+local DEFAULT_HOTKEY_PAD_BINDINGS = {
+  ["stickup"] = nil,
+  ["stickdown"] = nil,
+  ["stickleft"] = nil,
+  ["stickright"] = nil,
+  ["rightstickup"] = nil,
+  ["rightstickdown"] = nil,
+  ["rightstickleft"] = nil,
+  ["rightstickright"] = nil,
+  ["lefttrigger"] = nil,
+  ["righttrigger"] = nil,
+  ["dpadup"] = nil,
+  ["dpaddown"] = nil,
+  ["dpadleft"] = nil,
+  ["dpadright"] = nil,
+}
+
 function Input:init()
   self:applyBindings(nil)
+  self:applyHotkeyBindings(nil)
   self:reset()
 end
 
@@ -99,6 +150,49 @@ function Input:applyBindings(overlay)
   self.keyBindings = keys
   self.padBindings = pads
   self.joyBindings = joys
+end
+
+-- Same layering as applyBindings above, but for the hotkey action table
+-- (save.options.hotkeyBindings, written by src/ui/HotkeyBindingsMenu.lua).
+-- A rebind here adds an extra trigger for that action rather than
+-- replacing the default, exactly like applyBindings.
+function Input:applyHotkeyBindings(overlay)
+  local keys, pads = {}, {}
+  for key, action in pairs(DEFAULT_HOTKEY_KEY_BINDINGS) do keys[key] = action end
+  for button, action in pairs(DEFAULT_HOTKEY_PAD_BINDINGS) do pads[button] = action end
+  for actionId, binding in pairs(overlay or {}) do
+    if type(binding) == "table" then
+      if binding.key then keys[binding.key] = actionId end
+      if binding.pad then pads[binding.pad] = actionId end
+    elseif type(binding) == "string" then
+      keys[binding] = actionId
+    end
+  end
+  self.hotkeyKeyBindings = keys
+  self.hotkeyPadBindings = pads
+end
+
+-- Allow mods to add default hotkey bindings at runtime
+function Input:addHotkeyKeyBinding(key, actionId)
+  if not self.hotkeyKeyBindings then self.hotkeyKeyBindings = {} end
+  self.hotkeyKeyBindings[key] = actionId
+end
+
+function Input:addHotkeyPadBinding(pad, actionId)
+  if not self.hotkeyPadBindings then self.hotkeyPadBindings = {} end
+  self.hotkeyPadBindings[pad] = actionId
+end
+
+-- Returns the hotkey action id (e.g. "tilt") bound to a keyboard key or
+-- gamepad button, or nil. These are looked up straight from
+-- Game:keypressed/gamepadpressed -- they never touch state/pressQueue,
+-- since a hotkey fires once and has no held/isDown concept.
+function Input:hotkeyForKey(key)
+  return self.hotkeyKeyBindings and self.hotkeyKeyBindings[key]
+end
+
+function Input:hotkeyForPad(button)
+  return self.hotkeyPadBindings and self.hotkeyPadBindings[button]
 end
 
 -- Purely event-driven state (press sets true, release sets false) has no

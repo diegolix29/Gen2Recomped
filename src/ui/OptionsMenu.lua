@@ -23,6 +23,7 @@ local FaithfulRes = require("src.core.FaithfulRes")
 local FrameCap = require("src.core.FrameCap")
 local Performance = require("src.core.Performance")
 local Logger = require("src.core.Logger")
+local HostShell = require("src.core.HostShell")
 local Runtime = require("src.mods.Runtime")
 local OptionRows = require("src.ui.OptionRows")
 local Renderer = require("src.render.Renderer")
@@ -48,6 +49,7 @@ local Rulesets = {
   modern_clean = require("src.battle.rulesets.modern_clean"),
 }
 local FILTERS = { "OFF", "1X", "2X", "3X" }
+local SKY_PIXELATION = { "OFF", "2X", "4X", "8X", "16X" }
 
 local function speedIndex(game)
   -- default matches InitOptions' TEXT_DELAY_MEDIUM in wOptions
@@ -101,6 +103,81 @@ local function stepVolume(v, dir)
   return math.max(0, math.min(7, (v or 7) + dir))
 end
 
+-- Helper to trim whitespace
+local function trim(s)
+  return s and s:gsub("^%s+", ""):gsub("%s+$", "") or nil
+end
+
+-- Release pointer grab before opening file picker (prevents freeze)
+local function releasePointerGrab()
+  local love = love
+  if love and love.mouse and love.mouse.hasCursor and love.mouse.hasCursor() then
+    love.mouse.setGrabbed(false)
+    love.mouse.setRelativeMode(false)
+  end
+end
+
+-- File picker for sky image selection
+local function pickSkyImage()
+  local platform = love.system.getOS()
+  local prompt = "Select Sky Image"
+  
+  releasePointerGrab()
+  
+  if platform == "Android" then
+    -- Use the Android SAF picker for image selection
+    if love.system.pickFile and love.system.pickFile("image") then
+      -- The picker was launched successfully; the image will be saved as picked_sky.png
+      -- in the save directory. We'll need to wait for focus to return and check for the file.
+      return "picked_sky.png"
+    else
+      if Logger then
+        Logger.log("info", "Android: Could not open image picker. Please copy sky images to the game's directory manually")
+      end
+      return nil
+    end
+  elseif platform == "Windows" then
+    local script = table.concat({
+      "Add-Type -AssemblyName System.Windows.Forms;",
+      "$d=New-Object System.Windows.Forms.OpenFileDialog;",
+      "$d.Title='" .. prompt .. "';",
+      "$d.Filter='Image files (*.png;*.jpg;*.jpeg;*.bmp)|*.png;*.jpg;*.jpeg;*.bmp|All files (*.*)|*.*';",
+      "if($d.ShowDialog() -eq 'OK'){[Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::Write($d.FileName)}",
+    })
+    local pipe = HostShell.popen('powershell -NoProfile -STA -Command "' .. script .. '"')
+    if pipe then
+      local result = pipe:read("*a")
+      pipe:close()
+      result = trim(result)
+      return result ~= "" and result or nil
+    end
+  elseif platform == "Linux" then
+    local pipe = HostShell.popen([[zenity --file-selection --title="]] .. prompt .. [[" --file-filter="Image files | *.png *.jpg *.jpeg *.bmp" 2>/dev/null]])
+    if pipe then
+      local result = pipe:read("*a")
+      pipe:close()
+      result = trim(result)
+      if result and result ~= "" then return result end
+    end
+    pipe = HostShell.popen([[kdialog --getopenfilename "$HOME" "*.png *.jpg *.jpeg *.bmp|Image files" 2>/dev/null]])
+    if pipe then
+      local result = pipe:read("*a")
+      pipe:close()
+      result = trim(result)
+      if result and result ~= "" then return result end
+    end
+  elseif platform == "OS X" then
+    local pipe = HostShell.popen([[osascript -e 'POSIX path of (choose file with prompt "]] .. prompt .. [[" of type {"png","jpg","jpeg","bmp"})' 2>/dev/null]])
+    if pipe then
+      local result = pipe:read("*a")
+      pipe:close()
+      result = trim(result)
+      if result and result ~= "" then return result end
+    end
+  end
+  return nil
+end
+
 local function colorIndex(opts)
   local cur = opts.colors or "gbc"
   for i, m in ipairs(PaletteFX.MODES) do
@@ -135,6 +212,15 @@ local function buildRows(game)
       step = function(g)
         local o = g.save.options
         o.animations = o.animations == false and true or false
+        return true
+      end },
+    { id = "battleFlash", label = "BATTLE FLASH",
+      value = function(g)
+        return g.save.options.disableBattleFlash == true and "OFF" or "ON"
+      end,
+      step = function(g)
+        local o = g.save.options
+        o.disableBattleFlash = not o.disableBattleFlash
         return true
       end },
     { id = "battleStyle", label = Strings("BATTLE STYLE"),
@@ -299,6 +385,88 @@ local function buildRows(game)
         end
         return true
       end },
+    { id = "skyZoom", label = Strings("SKY ZOOM"),
+      value = function(g)
+        local zoom = g.save.options.skyZoom or 1.0
+        return string.format("%.1fx", zoom)
+      end,
+      step = function(g, dir)
+        local o = g.save.options
+        local zoom = o.skyZoom or 1.0
+        zoom = zoom + dir * 0.1
+        zoom = math.max(0.5, math.min(3.0, zoom)) -- Clamp between 0.5x and 3.0x
+        o.skyZoom = zoom
+        if g.writeOptions then g:writeOptions() end
+        return true
+      end },
+    { id = "rightStickMovement", label = Strings("RIGHT STICK MOVE"),
+      value = function(g)
+        return (g.save.options.rightStickMovement or false) and "ON" or "OFF"
+      end,
+      step = function(g)
+        local o = g.save.options
+        o.rightStickMovement = not (o.rightStickMovement or false)
+        if g.writeOptions then g:writeOptions() end
+        return true
+      end },
+    { id = "leftStickCamera", label = Strings("LEFT STICK CAMERA"),
+      value = function(g)
+        return (g.save.options.leftStickCamera or false) and "ON" or "OFF"
+      end,
+      step = function(g)
+        local o = g.save.options
+        o.leftStickCamera = not (o.leftStickCamera or false)
+        if g.writeOptions then g:writeOptions() end
+        return true
+      end },
+    { id = "skyOffsetY", label = Strings("SKY OFFSET Y"),
+      value = function(g)
+        local offset = g.save.options.skyOffsetY or 0
+        return string.format("%.1f", offset)
+      end,
+      step = function(g, dir)
+        local o = g.save.options
+        local offset = o.skyOffsetY or 0
+        -- x5 scale: UI shows -5 to +5, stored as -1.0 to +1.0
+        offset = offset + dir * 0.2
+        offset = math.max(-1.0, math.min(1.0, offset)) -- Clamp between -1.0 and 1.0
+        o.skyOffsetY = offset
+        if g.writeOptions then g:writeOptions() end
+        return true
+      end },
+    { id = "skyImageEnabled", label = Strings("SKY ENABLED"),
+      value = function(g)
+        return g.save.options.skyImageEnabled and "ON" or "OFF"
+      end,
+      step = function(g, dir)
+        local o = g.save.options
+        o.skyImageEnabled = not o.skyImageEnabled
+        if g.writeOptions then g:writeOptions() end
+        return true
+      end },
+    { id = "skyPixelation", label = Strings("SKY PIXELATION"),
+      value = function(g)
+        local pixelation = g.save.options.skyPixelation or 0
+        return SKY_PIXELATION[pixelation + 1]
+      end,
+      step = function(g, dir)
+        local o = g.save.options
+        local pixelation = o.skyPixelation or 0
+        pixelation = ((pixelation + dir) % #SKY_PIXELATION + #SKY_PIXELATION) % #SKY_PIXELATION
+        o.skyPixelation = pixelation
+        if g.writeOptions then g:writeOptions() end
+        return true
+      end },
+    { id = "holdBToRun", label = Strings("HOLD B TO RUN"),
+      value = function(g)
+        return g.save.options.holdBToRun and "ON" or "OFF"
+      end,
+      step = function(g, dir)
+        local o = g.save.options
+        o.holdBToRun = not o.holdBToRun
+        if g.writeOptions then g:writeOptions() end
+        return true
+      end },
     { id = "gbcfx", label = Strings("GBC FX"),
       value = function(g)
         return GBCFX.levelLabel(g.save.options.gbcfx or 0)
@@ -403,6 +571,11 @@ local function buildRows(game)
     { id = "controls", label = Strings("CONTROLS"),
       activate = function(g)
         require("src.ui.Screens").push(g, "BindingsMenu")
+      end },
+    -- hotkey rebinding UI (display hotkeys like COLORS/TILT/ZOOM)
+    { id = "hotkeys", label = Strings("HOTKEYS"),
+      activate = function(g)
+        require("src.ui.Screens").push(g, "HotkeyBindingsMenu")
       end },
     -- permanent on-screen pad toggle (#327); layout editing stays in the
     -- launcher.  Hidden where the overlay never appears (desktop without
