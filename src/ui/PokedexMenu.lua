@@ -5,37 +5,85 @@ local Strings = require("src.core.Strings")
 
 local PokedexMenu = {}
 
--- SGB: PalPacket_Pokedex, whole screen
+-- SGB: PalPacket_Pokedex, whole screen.
+--
+-- Gen2's main screen also holds the selected mon's picture, and that art is
+-- the same four-shade rip DexEntryMenu shows -- so the picture box gets the
+-- mon's own palette as a zone on top of the screen palette, the way the
+-- entry page does.  Without it every listing sprite is grey.
+--
+-- BROWNMON is a Gen1 SuperPalette name and the Gen2 cache has no such entry
+-- (extractPalettes writes MON_SPECIES_nnn plus the bar palettes and nothing
+-- else), so asking for it by name on Gold returned nil and the whole dex
+-- rendered with no colour at all.  Gen2 gets PREDEFPAL_POKEDEX, which is what
+-- _CGB_Pokedex_Init loads into BG palette 0.
+PokedexMenu.GEN2_PAL = {
+  { 255, 255, 255 }, { 255, 165, 82 }, { 214, 82, 49 }, { 0, 0, 0 },
+}
+
 function PokedexMenu:sgbPalettes(game)
-  return require("src.render.PaletteFX").wholeNamed(game.data, "BROWNMON")
+  local P = require("src.render.PaletteFX")
+  local base = self.gen2Dex and { P.whole(PokedexMenu.GEN2_PAL) }
+    or P.wholeNamed(game.data, "BROWNMON")
+  if not (base and self.gen2Dex) then return base end
+  local item = self.items and self.items[self.index]
+  if not (item and item.value) then return base end
+  local zone = P.zone(P.monPal(game.data, item.value), 1, 1, 7, 7)
+  if not zone then return base end
+  local out = {}
+  for i = 1, #base do out[i] = base[i] end
+  out[#out + 1] = zone
+  return out
+end
+
+-- The listing, as one array of species ids indexed by dex number.
+--
+-- Generation 1 has exactly one order and def.dex is it.  Generation 2 has
+-- three (Pokedex_OrderMonsByMode's jumptable) and starts a new game in mode
+-- 0, .NewMode, which copies NewPokedexOrder into wPokedexOrder: the JOHTO
+-- listing, #001 CHIKORITA.  def.dex on a Gen 2 cache is the national number,
+-- which is .OldMode -- the listing you switch to, not the one you are
+-- handed -- so following it put BULBASAUR at #001 before the player had any
+-- business seeing a Kanto number at all.
+local function listing(game)
+  local constants = game.data.constants or {}
+  local regional = constants.regionalOrder
+  if type(regional) == "table" and #regional > 0 then return regional end
+  local byDex = {}
+  for _, def in pairs(game.data.pokemon) do
+    if def.dex then byDex[def.dex] = def.id end
+  end
+  local out = {}
+  for n = 1, constants.dexSize or 151 do out[n] = byDex[n] end
+  return out
 end
 
 function PokedexMenu.new(game, opts)
   opts = opts or {}
   local dex = game.save.pokedex or { seen = {}, owned = {} }
-  local byDex = {}
-  for species, def in pairs(game.data.pokemon) do
-    if def.dex then byDex[def.dex] = def end
-  end
   local items = {}
   local seen, owned = 0, 0
-  -- dex bound and number width come from constants; the fallbacks keep a
-  -- cache imported before those keys existed on the Kanto numbering
+  -- number width comes from constants; the fallback keeps a cache imported
+  -- before that key existed on the Kanto numbering
   local constants = game.data.constants or {}
   local numFmt = ("%%0%dd"):format(constants.dexDigits or 3)
-  for n = 1, constants.dexSize or 151 do
-    local def = byDex[n]
+  local order = listing(game)
+  -- Gen2's listing carries no dex number: Pokedex_PrintNumberIfOldMode only
+  -- prints one in mode 1, and a new game starts in mode 0
+  local gen2 = require("src.core.GameVersion").isGen2()
+  for n = 1, #order do
+    local def = game.data.pokemon[order[n]]
     if def then
       local label
       if dex.owned[def.id] then
-        label = (numFmt .. " %s"):format(n, def.name)
+        label = gen2 and def.name or (numFmt .. " %s"):format(n, def.name)
         owned = owned + 1
         seen = seen + 1
       elseif dex.seen[def.id] then
-        label = (numFmt .. " %s"):format(n, def.name)
+        label = gen2 and def.name or (numFmt .. " %s"):format(n, def.name)
         seen = seen + 1
       else
-        label = (numFmt .. " -----"):format(n)
+        label = gen2 and "-----" or (numFmt .. " -----"):format(n)
       end
       table.insert(items, {
         label = label,
@@ -47,25 +95,25 @@ function PokedexMenu.new(game, opts)
     end
   end
   local list = ListMenu.new(game, "POKéDEX", items, {
-    -- SEEN / OWN in the original's fixed three-digit field: engine/menus/
-    -- pokedex.asm HandlePokedexListMenu prints both counts with
-    -- `lb bc, 1, 3` (hlcoord 16,3 and 16,6), labelled by PokedexSeenText
-    -- and PokedexOwnText ("OWN", not "OWNED").  The width is load bearing
-    -- here: a bare ListMenu footer goes through the 18-column text wrap,
-    -- so the old 19-glyph "SEEN 100  OWNED 100" split in two and its first
-    -- half landed on the list's last row at y=120 (#639).
-    footer = Strings("SEEN %3d  OWN %3d", seen, owned),
+    footer = Strings("SEEN %d  OWNED %d", seen, owned),
+    gen2Dex = gen2 and { seen = seen, owned = owned } or nil,
     pageJump = true, -- Left/Right page jumps like the original
     onCancel = opts.onCancel, -- B returns to the start menu when opened from it
     onChoose = function(item, dexList)
       if not item.value then return end
+      local Screens = require("src.ui.Screens")
+      -- GSC has no side menu: Pokedex_MainScreen's A opens the entry screen,
+      -- whose PAGE/AREA/CRY/PRNT bar carries the same options
+      if gen2 then
+        Screens.push(game, "DexEntryMenu", item.value)
+        return
+      end
       -- the DATA / CRY / AREA / QUIT choice (engine/menus/pokedex.asm
       -- PokedexMenuItemsText); CRY keeps the side menu open like the
       -- original.  B is what returns to the list: HandlePokedexSideMenu
       -- hands back b=2 for B and b=1 for QUIT, and ShowPokedexMenu sends
       -- b=1 to .exitPokedex, so QUIT closes the whole Pokédex (#571)
       local Menu = require("src.ui.Menu")
-      local Screens = require("src.ui.Screens")
       local entries = {
         { label = Strings("DATA"), onSelect = function()
             Screens.push(game, "DexEntryMenu", item.value)

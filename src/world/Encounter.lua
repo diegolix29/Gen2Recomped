@@ -38,4 +38,18 @@ function Encounter.roll(encounterDef, rng)
   return nil
 end
 
+local TOD_KEY = {
+  MORNING = "morn", MORN = "morn", DAY = "day", NIGHT = "nite", NITE = "nite",
+}
+
+-- Gen2 wildmons records carry three slot sets per map; GetTimeOfDay (5:$4032)
+-- picks between them.  The day set stays in `grass` so the Gen1-shaped roll
+-- and anything that overrides a rate keeps working untouched.
+function Encounter.atTime(terrainDef, tod)
+  if not terrainDef then return nil end
+  local key = TOD_KEY[tod or "DAY"]
+  if not key or key == "day" then return terrainDef end
+  return (terrainDef.byTime and terrainDef.byTime[key]) or terrainDef
+end
+
 return Encounter

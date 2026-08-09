@@ -82,6 +82,14 @@ TextBox.TOKENS = {
   RIVAL = function(game) return game.save.player.rival or "BLUE" end,
   RAM = function(game, arg)
     if arg == "wStringBuffer" then return game.stringBuffer end
+    -- Gen2's text_ram splices wStringBuffer1..5 (the mon nick, the item
+    -- name, the trainer name) into the middle of a line.  The port keeps a
+    -- single stringBuffer, so every index resolves to it -- wStringBuffer3
+    -- is the one the berry-tree texts use, and leaving it out printed the
+    -- raw token.
+    if arg and arg:match("^wStringBuffer%d$") then
+      return game.stringBuffer
+    end
     if arg == "wBoxNumString" then return game.boxNumString end
     -- SendNewMonToBox / _SentToBoxText reads the deposited nick here
     if arg == "wBoxMonNicks" then return game.boxMonNicks end
@@ -370,12 +378,8 @@ function TextBox:draw()
   local ys = { self.line1Y, self.line2Y }
   for i, line in ipairs(self.shown) do
     local y = (ys[i] or self.line2Y) + (i == 1 and off or 0)
-    -- the pen advances per glyph, matching the pixel budget paginate
-    -- measured with; every fixed-width page still lands on the 8px grid
-    local pen = self.textX
-    for _, code in ipairs(line) do
-      Font.drawCode(code, pen, y)
-      pen = pen + Font.advanceOf(code)
+    for j, code in ipairs(line) do
+      Font.drawCode(code, self.textX + (j - 1) * 8, y)
     end
   end
   if (self.waiting or (self.done and not self.choice and not self.auto

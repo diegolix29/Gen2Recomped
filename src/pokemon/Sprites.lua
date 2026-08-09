@@ -14,6 +14,24 @@ local Sprites = {}
 
 local function samePath(path) return path end
 
+-- (dv & 6) >> 1 -- the middle two bits GetUnownLetter (20:$5749) keeps
+local function mid2(dv) return math.floor((dv or 0) / 2) % 4 end
+
+-- GetUnownLetter packs the middle two bits of the atk/def/spd/spc DVs into
+-- one byte and divides by 10, giving letter 1..26.  A species record only
+-- carries `forms` when the ROM has per-form pics (UNOWN).
+function Sprites.formIndex(def, mon)
+  local forms = def and def.forms
+  if not (forms and mon) then return nil end
+  local dvs = mon.dvs
+  if type(dvs) ~= "table" then return nil end
+  local packed = mid2(dvs.attack) * 64 + mid2(dvs.defense) * 16
+    + mid2(dvs.speed) * 4 + mid2(dvs.special)
+  local index = math.floor(packed / 10) + 1
+  if not forms[index] then return nil end
+  return index
+end
+
 -- Resolve a battle / menu front or back pic path for `species`.
 -- side: "front" | "back"
 -- opts.mon: the live mon when available (per-instance skins)
@@ -26,11 +44,17 @@ function Sprites.path(data, species, side, opts)
   local def = data and data.pokemon and data.pokemon[species]
   if not def then return nil, false end
   local path = side == "back" and def.spriteBack or def.spriteFront
+  local formIndex = Sprites.formIndex(def, opts.mon)
+  if formIndex then
+    local form = def.forms[formIndex]
+    path = (side == "back" and form.spriteBack or form.spriteFront) or path
+  end
   local ctx = {
     species = species,
     side = side == "back" and "back" or "front",
     kind = opts.kind or "battle",
     mon = opts.mon,
+    form = formIndex,
     trueColor = def.trueColor and true or false,
     data = data,
   }

@@ -12,21 +12,13 @@ allprojects {
     }
 }
 
-// Configure Java toolchain to use JDK 17 for compatibility with Gradle 8.5
-allprojects {
-    tasks.withType(JavaCompile).configureEach {
-        sourceCompatibility = "17"
-        targetCompatibility = "17"
-    }
-}
-
 buildscript {
     repositories {
         google()
         mavenCentral()
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:8.2.2'
+        classpath 'com.android.tools.build:gradle:8.1.1'
 
         // NOTE: Do not place your application dependencies here; they belong
         // in the individual module build.gradle files
@@ -35,4 +27,9 @@ buildscript {
 
 task clean(type: Delete) {
     delete rootProject.buildDir
+}
+
+repositories {
+    google()
+    mavenCentral()
 }

@@ -1,0 +1,4 @@
+Compress-Archive -Path main.lua, conf.lua, src, data, assets, tools/save-editor, tools/rom_manifest.json, tools/rom_manifest_blue.json, tools/rom_manifest_yellow.json -DestinationPath game.zip
+
+
+Compress-Archive -Path main.lua, conf.lua, src, data, assets, tools -DestinationPath game.zip -Force

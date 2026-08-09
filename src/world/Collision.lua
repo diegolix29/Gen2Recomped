@@ -58,7 +58,6 @@ local function verdict(map, entities, mover, dir, tx, ty)
     return false, "bounds"
   end
   if not map:isWalkableCell(tx, ty) then
-    -- surfers may ride water cells
     if not (mover.surfing and map:isWaterCell(tx, ty)) then
       return false, "tile"
     end

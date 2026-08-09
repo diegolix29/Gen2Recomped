@@ -65,18 +65,6 @@ function Kit.beginFrame(mx, my, clicked, wheel)
   Kit.mouseX, Kit.mouseY = mx, my
   Kit.mouseClicked = clicked
   Kit.wheelY = wheel or 0
-  -- Held-button state is polled, not evented: the editor is hosted both
-  -- standalone and inside the launcher, and neither routes mousereleased
-  -- here.  Touch drag scrolling (#715) rides this poll, so it works in both
-  -- hosts without new plumbing.  The stub has no love.mouse.isDown; a frame
-  -- without it simply has no drags.
-  local down = false
-  if love and love.mouse and love.mouse.isDown then
-    down = love.mouse.isDown(1) and true or false
-  end
-  Kit.mouseDown = down
-  if not down then Kit._drag = nil end
-  Kit.resetClip()
   if love and love.timer and love.timer.getTime then
     Kit.time = love.timer.getTime()
   end
@@ -95,23 +83,11 @@ end
 -- (720x1560) is TALLER than the desktop reference and barely half as wide, so
 -- a height-only scale drew a 1.6x desktop layout into a 720px window and every
 -- right-aligned cluster in the chrome landed on top of the block to its left.
---
--- The #497 answer was to shrink the whole layout down to fit the width
--- (floor 0.62), which #715 showed is its own failure: a small window got a
--- complete but unreadably tiny desktop layout, and the panels still assumed
--- their columns fit.  Shrink-to-fit is gone.  The scale now never dips below
--- 0.9, so text and the 26px tap targets stay readable everywhere, and a
--- narrow window is answered by REFLOW instead: every panel compares its real
--- pixel width against what its columns need (Party/Boxes/Items stack their
--- cards, Dex/Events drop grid columns, the chrome wraps its button row) and
--- whatever no longer fits vertically scrolls through Kit.scroll /
--- Kit.scrollPixels.  The width term survives only to keep a portrait phone
--- from inflating to the 1.6 cap its height alone would buy: 640 real px is
--- the narrowest the single-row chrome fits at scale 1.  Desktop sizes
--- (width >= 640 * height / 768) still land on the height term, so they stay
--- pixel-identical to before.
+-- The layout needs roughly 1000 logical px of width, so the window now pays
+-- for both axes.  Every desktop and landscape size still lands on the height
+-- term, which is why they stay pixel-identical to before.
 function Kit.layout(width, height)
-  local s = Theme.clamp(math.min(width / 640, height / 768), 0.9, 1.6)
+  local s = Theme.clamp(math.min(width / 1000, height / 768), 0.62, 1.6)
   local key = ("%dx%d"):format(width, height)
   if Kit._fontKey ~= key then
     Kit._fontKey = key
@@ -152,34 +128,9 @@ function Kit.blur()
 end
 
 -- ------------------------------------------------------------- hit testing
--- A widget inside a scrolled clip region can sit at coordinates outside the
--- visible rect (#715: stacked panels scroll in pixels), so the active clip
--- bounds the hit: what the user cannot see cannot take the tap.
 function Kit.hit(x, y, w, h)
-  local c = Kit._clipRect
-  if c and not (Kit.mouseX >= c.x and Kit.mouseX <= c.x + c.w
-      and Kit.mouseY >= c.y and Kit.mouseY <= c.y + c.h) then
-    return false
-  end
   return Kit.mouseX >= x and Kit.mouseX <= x + w
      and Kit.mouseY >= y and Kit.mouseY <= y + h
-end
-
--- ------------------------------------------------------------ layout audit
--- #715 reflow tests: when a test sets Kit.audit to a table, every control
--- that could take a click this frame appends its rect (plus the clip that
--- bounds it), so a window-size sweep can assert that no two controls
--- overlap and none escapes the window.  Shielded widgets are skipped: under
--- a modal they cannot take the tap, and the modal legitimately covers them.
-Kit.audit = nil
-
-local function audit(class, x, y, w, h, label)
-  local a = Kit.audit
-  if not a or Kit.blockClicks then return end
-  local c = Kit._clipRect
-  a[#a + 1] = { class = class, x = x, y = y, w = w, h = h,
-    label = tostring(label or ""),
-    clip = c and { x = c.x, y = c.y, w = c.w, h = c.h } or nil }
 end
 
 function Kit.hover(x, y, w, h)
@@ -273,7 +224,6 @@ end
 -- true when the row was clicked this frame.
 function Kit.row(x, y, w, h, selected, accent, r)
   r = r or 12 * Kit.scale
-  audit("row", x, y, w, h, "row")
   if not G then return Kit.press(x, y, w, h) end
   accent = accent or PAL.green
   if selected then Theme.glow(x, y, w, h, r, accent, 0.45) end
@@ -309,18 +259,20 @@ end
 --   good     green tint      -- safe helpers (Full heal, max a DV)
 --   danger   red tint        -- destructive verbs, always two-click
 --   disabled steel           -- never hidden, always explained in the status bar
--- Colour-coded solid keys, matching the launcher exactly (src/ui/kit/Kit.lua):
--- the button IS its colour, with black ink and a two-rect emboss, and hover
--- rings it in white.  The editor opens straight off a launcher save row, so a
--- control that behaves the same has to look the same.
 local KINDS = {
-  primary  = { fill = PAL.green,  ink = PAL.inverse },
-  good     = { fill = PAL.green,  ink = PAL.inverse },
-  accent   = { fill = PAL.blue,   ink = PAL.inverse },
-  warn     = { fill = PAL.yellow, ink = PAL.inverse },
-  danger   = { fill = PAL.red,    ink = PAL.inverse },
-  ghost    = { fill = PAL.ink,    ink = PAL.inverse },
-  disabled = { fill = PAL.steel,  ink = PAL.inverse },
+  primary  = { fillTop = PAL.green, fillBot = PAL.greenDark, aTop = 1, aBot = 1,
+               ink = PAL.greenInk, border = nil, glow = PAL.green },
+  ghost    = { fillTop = { 255, 255, 255 }, fillBot = { 255, 255, 255 },
+               aTop = 0.14, aBot = 0.03, ink = PAL.heading,
+               border = { 255, 255, 255 }, borderA = 0.18 },
+  accent   = { flat = PAL.blue, flatA = 0.14, ink = PAL.blueInk,
+               border = PAL.cardBorder, borderA = 0.35 },
+  good     = { flat = PAL.green, flatA = 0.1, ink = PAL.green,
+               border = PAL.green, borderA = 0.45 },
+  danger   = { flat = PAL.red, flatA = 0.12, ink = PAL.redSoft,
+               border = PAL.red, borderA = 0.45 },
+  disabled = { flat = { 120, 132, 158 }, flatA = 0.22, ink = PAL.steel,
+               border = PAL.steel, borderA = 0.3 },
 }
 
 -- opts: { kind, font, enabled, align, radius, glow }
@@ -328,38 +280,36 @@ local KINDS = {
 function Kit.button(x, y, w, h, label, opts)
   opts = opts or {}
   local enabled = opts.enabled ~= false
-  -- disabled buttons audit too: rule 3 keeps them visible, so they still
-  -- must not paint over a neighbour (#715)
-  audit("control", x, y, w, h, label)
   local kind = KINDS[enabled and (opts.kind or "ghost") or "disabled"]
   local r = opts.radius or 10 * Kit.scale
   local hot = enabled and Kit.hover(x, y, w, h)
 
   if G then
-    Theme.fillRounded(x, y, w, h, kind.fill, enabled and 1 or 0.45)
-    Theme.emboss(x, y, w, h, enabled and (hot and 1.3 or 1) or 0.4)
-    if hot then
-      Theme.strokeRounded(x - 2, y - 2, w + 4, h + 4, PAL.lineStrong, 1, 2,
-        Theme.radius() + 2)
+    if opts.glow and enabled then
+      Theme.glow(x, y, w, h, r, kind.glow or PAL.green, opts.glow)
+    end
+    if kind.flat then
+      Theme.col(kind.flat, kind.flatA * (hot and 1.6 or 1))
+      G.rectangle("fill", x, y, w, h, r, r)
+    else
+      Theme.gradRounded(x, y, w, h, r, kind.fillTop, kind.fillBot,
+        kind.aTop * (hot and 1.4 or 1), kind.aBot * (hot and 1.6 or 1))
+    end
+    if kind.border then
+      Theme.stroke(x, y, w, h, r, kind.border, kind.borderA * (hot and 1.5 or 1), 1)
     end
     local f = font(opts.font or "button")
     if f then
       G.setFont(f)
       Theme.col(kind.ink, 1)
       local ty = y + (h - f:getHeight()) / 2
-      -- Faux bold, the same trick the launcher uses: one weight of face, so
-      -- an emphasised run is the same text drawn a pixel across.
-      local function put(dx)
-        if opts.align == "left" then
-          G.print(label, x + 10 * Kit.scale + dx, ty)
-        elseif canPrintf() then
-          G.printf(label, x + dx, ty, w, "center")
-        else
-          G.print(label, x + (w - f:getWidth(label)) / 2 + dx, ty)
-        end
+      if opts.align == "left" then
+        G.print(label, x + 10 * Kit.scale, ty)
+      elseif canPrintf() then
+        G.printf(label, x, ty, w, "center")
+      else
+        G.print(label, x + (w - f:getWidth(label)) / 2, ty)
       end
-      put(0)
-      put(Theme.BOLD_OFFSET or 1)
     end
   end
   return enabled and Kit.press(x, y, w, h) or false
@@ -377,24 +327,14 @@ end
 -- A pill toggle (badges, dex SEEN/OWN, event sub-tabs).  `on` colours it;
 -- returns true when clicked.
 function Kit.chip(x, y, w, h, label, on, onColor, offColor)
-  audit("control", x, y, w, h, label)
   local c = on and (onColor or PAL.green) or (offColor or PAL.steel)
   if G then
-    -- Same rule as the launcher's chips: an ON chip is FILLED with its colour
-    -- and prints black; an OFF chip is an outline.  The old alpha-tinted fill
-    -- read as "slightly different dark rectangle" on a black field.
-    local hot = Kit.hover(x, y, w, h)
-    if on then
-      Theme.fillRounded(x, y, w, h, c, 1)
-      Theme.emboss(x, y, w, h, 1)
-      Kit.textCenter("micro", label, x,
-        y + (h - Kit.textHeight("micro")) / 2, w, PAL.inverse)
-    else
-      Theme.fillRounded(x, y, w, h, PAL.bg, 1)
-      Theme.strokeRounded(x, y, w, h, c, hot and 1 or 0.5, 1)
-      Kit.textCenter("micro", label, x,
-        y + (h - Kit.textHeight("micro")) / 2, w, c)
-    end
+    local r = 6 * Kit.scale
+    Theme.col(c, on and 0.16 or 0.06)
+    G.rectangle("fill", x, y, w, h, r, r)
+    Theme.stroke(x, y, w, h, r, PAL.cardBorder, Kit.hover(x, y, w, h) and 0.5 or 0.28, 1)
+    Kit.textCenter("micro", label, x, y + (h - Kit.textHeight("micro")) / 2, w,
+      c, on and 1 or 0.75)
   end
   return Kit.press(x, y, w, h)
 end
@@ -427,7 +367,6 @@ end
 -- routes love.textinput / love.keypressed in through Kit.textinput /
 -- Kit.keypressed.  Returns the (possibly edited) value; the caller stores it.
 function Kit.textfield(id, x, y, w, h, value, placeholder)
-  audit("control", x, y, w, h, id)
   value = tostring(value or "")
   if Kit.press(x, y, w, h) then Kit.focus = id end
   local focused = (Kit.focus == id)
@@ -489,12 +428,8 @@ function Kit.pager(x, y, w, offset, total, perPage)
   local shown = math.min(perPage, math.max(0, total - offset))
   local label = ("%d-%d of %d"):format(total > 0 and offset + 1 or 0,
     offset + shown, total)
-  -- the counter clips to the width the caller granted: a panel parking a
-  -- button on the pager line passes a reduced w and the text yields instead
-  -- of running underneath it (#715)
-  local labelX = x + 2 * bw + 20 * Kit.scale
-  Kit.text("mono", Kit.ellipsize("mono", label, math.max(0, x + w - labelX)),
-    labelX, y + (h - Kit.textHeight("mono")) / 2, PAL.caption)
+  Kit.text("mono", label, x + 2 * bw + 20 * Kit.scale,
+    y + (h - Kit.textHeight("mono")) / 2, PAL.caption)
   return offset, h
 end
 
@@ -508,143 +443,37 @@ end
 --     panel under an open species picker would scroll through the modal.
 local SCROLL_ROWS = 3
 
--- `step` is optional and exists for grids: a 4-column dex page must move in
--- multiples of 4 or the columns shear.  Lists leave it nil and keep the old
--- behaviour bit for bit (wheel notch = 3 rows, drag = 1 row per row height).
-function Kit.scroll(x, y, w, h, offset, total, perPage, step)
+function Kit.scroll(x, y, w, h, offset, total, perPage)
   local maxOffset = math.max(0, (total or 0) - (perPage or 0))
   offset = Theme.clamp(offset or 0, 0, maxOffset)
-  if Kit.blockClicks then return offset end
-
-  -- Touch drag (#715): a phone has no wheel and the pagers are small
-  -- targets, so a held pointer dragging vertically over the list body
-  -- scrolls it.  The drag is keyed to the rect it started in and follows the
-  -- pointer even once it leaves, like every native scroll view; the press
-  -- frame itself still dispatches as a click, which is the pre-existing
-  -- press-on-down contract, so a tap keeps selecting rows.
-  local dragStep = math.max(1, step or 1)
-  if Kit.mouseDown and maxOffset > 0 and h > 0 and (perPage or 0) > 0 then
-    local key = math.floor(x) .. ":" .. math.floor(y)
-    local d = Kit._drag
-    if not d and Kit.hit(x, y, w, h) then
-      Kit._drag = { key = key, startY = Kit.mouseY, base = offset }
-    elseif d and d.key == key then
-      local visRows = math.max(1, math.floor(perPage / dragStep))
-      local rowPx = math.max(1, h / visRows)
-      local moved = math.floor((d.startY - Kit.mouseY) / rowPx + 0.5) * dragStep
-      offset = Theme.clamp(d.base + moved, 0, maxOffset)
-    end
-  end
-
-  if (Kit.wheelY or 0) == 0 then return offset end
+  if Kit.blockClicks or (Kit.wheelY or 0) == 0 then return offset end
   if not Kit.hit(x, y, w, h) then return offset end
   -- LOVE reports wheel-up as positive y; up moves the window toward the top
   -- of the list, which is a smaller offset.
-  local rows = step or math.max(1, math.min(SCROLL_ROWS, perPage or SCROLL_ROWS))
-  local notch = (Kit.wheelY > 0) and -rows or rows
+  local rows = math.max(1, math.min(SCROLL_ROWS, perPage or SCROLL_ROWS))
+  local step = (Kit.wheelY > 0) and -rows or rows
   Kit.wheelY = 0
-  return Theme.clamp(offset + notch, 0, maxOffset)
+  return Theme.clamp(offset + step, 0, maxOffset)
 end
 
--- Pixel-unit sibling of Kit.scroll for a whole stacked card column (#715
--- reflow): `offset` is a pixel offset into `contentH` pixels of laid-out
--- content shown through an `h`-pixel viewport.  Same three rules as
--- Kit.scroll (pointer-inside only, notch consumed, shielded by
--- Kit.blockClicks), same drag contract (a tap still dispatches as a click).
--- Call it AFTER the content so any inner Kit.scroll list gets first claim on
--- a wheel notch or drag that lands over it.
-function Kit.scrollPixels(x, y, w, h, offset, contentH)
-  local maxOffset = math.max(0, (contentH or 0) - math.max(0, h))
-  offset = Theme.clamp(offset or 0, 0, maxOffset)
-  if Kit.blockClicks then return offset end
-
-  if Kit.mouseDown and maxOffset > 0 and h > 0 then
-    local key = "px:" .. math.floor(x) .. ":" .. math.floor(y)
-    local d = Kit._drag
-    if not d and Kit.hit(x, y, w, h) then
-      Kit._drag = { key = key, startY = Kit.mouseY, base = offset }
-    elseif d and d.key == key then
-      offset = Theme.clamp(d.base + (d.startY - Kit.mouseY), 0, maxOffset)
+-- Clip drawing to a rect (list bodies).  No-ops under the headless stub.
+function Kit.pushClip(x, y, w, h)
+  -- A compact mobile viewport can leave a panel with no room for a list.
+  -- LÖVE rejects negative scissor dimensions, so treat an exhausted clip
+  -- region as empty instead of passing invalid geometry through to it.
+  Kit._clipActive = G and G.setScissor ~= nil
+  if Kit._clipActive then
+    if w <= 0 or h <= 0 then
+      G.setScissor(0, 0, 0, 0)
+    else
+      G.setScissor(math.floor(x), math.floor(y), math.ceil(w), math.ceil(h))
     end
   end
-
-  if (Kit.wheelY or 0) == 0 then return offset end
-  if not Kit.hit(x, y, w, h) then return offset end
-  local notch = 48 * Kit.scale
-  local delta = (Kit.wheelY > 0) and -notch or notch
-  Kit.wheelY = 0
-  return Theme.clamp(offset + delta, 0, maxOffset)
-end
-
--- Thin overlay scrollbar along the right edge of a list body, drawn after
--- the rows so it stays visible.  Pure indicator (the drag above and the
--- pager are the controls): on a phone the old layout looked "stuck" because
--- nothing said the list continued past the fold (#715).
-function Kit.scrollbar(x, y, w, h, offset, total, perPage)
-  if not G then return end
-  total, perPage = total or 0, perPage or 0
-  if total <= perPage or h <= 0 or perPage <= 0 then return end
-  local bw = 3 * Kit.scale
-  local bx = x + w - bw
-  Theme.col(PAL.cardBorder, 0.22)
-  G.rectangle("fill", bx, y, bw, h, bw / 2, bw / 2)
-  local maxOffset = total - perPage
-  local th = math.max(18 * Kit.scale, h * perPage / total)
-  local ty = y + (h - th) * (Theme.clamp(offset or 0, 0, maxOffset) / maxOffset)
-  Theme.col(PAL.blue, 0.55)
-  G.rectangle("fill", bx, ty, bw, th, bw / 2, bw / 2)
-end
-
--- Clip drawing to a rect (list bodies, scrolled cards).  A stack since #715:
--- a stacked panel scrolls its whole column inside one clip and the lists
--- inside it push their own, so pushes nest by intersecting with the rect
--- above and a pop restores that rect rather than clearing the scissor.  The
--- tracked rect also bounds Kit.hit, so a widget scrolled out of view is
--- inert instead of taking taps aimed at whatever is drawn where it left.
--- Under the headless stub the scissor is a no-op but the rect tracking (and
--- so the hit fencing) still runs.
-local clipStack = {}
-
-local function applyClip(rect)
-  Kit._clipRect = rect
-  if not (G and G.setScissor) then return end
-  if not rect then
-    G.setScissor()
-  elseif rect.w <= 0 or rect.h <= 0 then
-    -- A compact mobile viewport can leave a panel with no room for a list.
-    -- LÖVE rejects negative scissor dimensions, so treat an exhausted clip
-    -- region as empty instead of passing invalid geometry through to it.
-    G.setScissor(0, 0, 0, 0)
-  else
-    G.setScissor(math.floor(rect.x), math.floor(rect.y),
-      math.ceil(rect.w), math.ceil(rect.h))
-  end
-end
-
-function Kit.pushClip(x, y, w, h)
-  local prev = clipStack[#clipStack]
-  local x2, y2 = x + math.max(0, w), y + math.max(0, h)
-  if prev then
-    x, y = math.max(x, prev.x), math.max(y, prev.y)
-    x2 = math.min(x2, prev.x + prev.w)
-    y2 = math.min(y2, prev.y + prev.h)
-  end
-  local rect = { x = x, y = y, w = math.max(0, x2 - x), h = math.max(0, y2 - y) }
-  clipStack[#clipStack + 1] = rect
-  applyClip(rect)
 end
 
 function Kit.popClip()
-  clipStack[#clipStack] = nil
-  applyClip(clipStack[#clipStack])
-end
-
--- A pcall-ed draw that raised mid-clip must not leak the stack into later
--- frames (every hit test would stay fenced to the dead rect), so the frame
--- boundary clears it.
-function Kit.resetClip()
-  for i = #clipStack, 1, -1 do clipStack[i] = nil end
-  applyClip(nil)
+  if Kit._clipActive and G and G.setScissor then G.setScissor() end
+  Kit._clipActive = false
 end
 
 return Kit

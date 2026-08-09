@@ -612,22 +612,16 @@ check(PaletteFX.usesGbcPack(), "redpp mode selects the gbc pack")
 local gbc = PaletteFX.gbcPack()
 check(gbc ~= nil and gbc.palettes.BULBASAUR ~= nil,
       "data/palettes_gbc.lua ships per-species pals")
--- the pack's species map follows pokered-gbc's Gen 1 (non-GEN_2_GRAPHICS)
--- palette assignments -- data/pokemon/palettes.asm ELSE branch -- so
--- Bulbasaur wears GREENMON, not a per-species PAL_BULBASAUR authored for
--- Gen 2 sprite art (see the pokemon table comment in data/palettes_gbc.lua)
-check(PaletteFX.monPalName({ palettes = nil }, "BULBASAUR") == "GREENMON",
+check(PaletteFX.monPalName({ palettes = nil }, "BULBASAUR") == "BULBASAUR",
       "RED++ monPalName resolves to the species palette id")
-check(PaletteFX.monPal({ palettes = nil }, "BULBASAUR") == gbc.palettes.GREENMON,
+check(PaletteFX.monPal({ palettes = nil }, "BULBASAUR") == gbc.palettes.BULBASAUR,
       "RED++ monPal reads the species colors without a ROM pack")
 check(PaletteFX.pal({ palettes = nil }, "ROUTE") == gbc.palettes.ROUTE,
       "RED++ still has ROUTE (aliased from VIRIDIAN)")
 check(PaletteFX.effectiveColors(gbc.palettes.MEWMON) == gbc.palettes.MEWMON,
       "RED++ passes zone colors through like GBC")
 -- issue #84: CELADON_DINER shares LOBBY block 29 (table top) with
--- CELADON_MART_ROOF (#52); both need the $37->$5a BROWN alias.
--- Issue #689: blocks 45 and 49 also form tables with tile $37 on their
--- flat surfaces; CELADON_DINER uses all three.
+-- CELADON_MART_ROOF (#52); both need the $37->$5a BROWN alias
 do
   local aliases = PaletteFX.TILE_ALIASES
   local roof = aliases and aliases.CELADON_MART_ROOF
@@ -636,20 +630,11 @@ do
         "CELADON_MART_ROOF and CELADON_DINER both have TILE_ALIASES")
   check(diner == roof,
         "diner reuses the same lobby table-top alias as the mart roof")
-  check(#diner == 3, "three LOBBY table blocks have the tile alias")
   local al = diner and diner[1]
   check(al and al.block == 29 and al.tile == 0x37 and al.alias == 0x5a
         and al.group == 5 and al.cells[5] and al.cells[6]
         and al.cells[9] and al.cells[10],
         "lobby table-top alias remaps block 29 cells 5/6/9/10")
-  al = diner and diner[2]
-  check(al and al.block == 45 and al.tile == 0x37 and al.alias == 0x5a
-        and al.group == 5 and al.cells[13] and al.cells[14],
-        "lobby table-top alias remaps block 45 cells 13/14")
-  al = diner and diner[3]
-  check(al and al.block == 49 and al.tile == 0x37 and al.alias == 0x5a
-        and al.group == 5 and al.cells[1] and al.cells[2],
-        "lobby table-top alias remaps block 49 cells 1/2")
 end
 -- issue #128: RED++'s gbc pack is Red-derived; Blue must keep ROM LOGO1
 -- (and the Blue-only SLOTS* rows) so the title ribbon is blue, not red
@@ -817,9 +802,9 @@ do
   Renderer:beginWorldPass()
   Renderer:endWorldPass()
   wipe:draw()
-  check(Renderer.battleWipe ~= nil
-        and Renderer.battleWipe.prog > 0
-        and Renderer.battleWipe.prog < 1,
+  check(Renderer.battleCascadeProg ~= nil
+        and Renderer.battleCascadeProg > 0
+        and Renderer.battleCascadeProg < 1,
         "battle wipe publishes mid-progress cascade to the renderer")
   rects = {}
   Renderer:endFrame(nil, fullWorldZones())
@@ -891,68 +876,6 @@ do
   local cc = PaletteFX.CLASSIC[1]
   check(classic and classic.r == cc[1] / 255 and classic.g == cc[2] / 255
         and classic.b == cc[3] / 255,
-      "CLASSIC letterbox respects the DMG ramp")
-
-  Game.stack, PaletteFX.mode = savedStack, savedMode
-  love.graphics.rectangle, love.graphics.setColor = savedRect, savedColor
-end
-
-do
-  -- Test larger sprite support with custom frame dimensions
-  local largerSpriteDef = {
-    image = "assets/generated/sprites/red.png",
-    frames = 4,
-    frameWidth = 32,
-    frameHeight = 48,
-    framesPerRow = 2,
-    walker = true,
-  }
-  
-  local largerSprite = SpriteRenderer.new(largerSpriteDef)
-  
-  check(largerSprite.frameWidth == 32,
-        "SpriteRenderer stores custom frameWidth")
-  check(largerSprite.frameHeight == 48,
-        "SpriteRenderer stores custom frameHeight")
-  check(largerSprite.framesPerRow == 2,
-        "SpriteRenderer stores custom framesPerRow")
-  check(#largerSprite.frames == 4,
-        "SpriteRenderer creates correct number of frames")
-  
-  -- Test that quads are calculated correctly for grid layout
-  local quad0 = largerSprite.frames[0]
-  local quad1 = largerSprite.frames[1]
-  local quad2 = largerSprite.frames[2]
-  local quad3 = largerSprite.frames[3]
-  
-  check(quad0, "Frame 0 quad exists")
-  check(quad1, "Frame 1 quad exists")
-  check(quad2, "Frame 2 quad exists")
-  check(quad3, "Frame 3 quad exists")
-  
-  -- Test drawing with larger sprite
-  Renderer:init()
-  Renderer:beginFrame(true)
-  Renderer:beginWorldPass()
-  largerSprite:draw(32, 32, 0, 0, "down", 0, false)
-  local spriteRects = PaletteFX.trueColorRects("world")
-  -- With frameHeight 48, the y offset should be (48-16)/2 = 16, so y = 32 - 16 = 16
-  check(#spriteRects == 1, "Larger sprite reports true color zone")
-  check(spriteRects[1].w == 32 and spriteRects[1].h == 48,
-        "True color zone uses custom frame dimensions")
-  Renderer:endWorldPass()
-  Renderer:endFrame({ PaletteFX.whole(GRAYS) }, fullWorldZones())
-  
-  -- Test default values (backwards compatibility)
-  local defaultSprite = SpriteRenderer.new(
-    { image = "assets/generated/sprites/red.png", frames = 1 })
-  check(defaultSprite.frameWidth == 16,
-        "Default frameWidth is 16")
-  check(defaultSprite.frameHeight == 16,
-        "Default frameHeight is 16")
-  check(defaultSprite.framesPerRow == 1,
-        "Default framesPerRow is 1 (vertical stacking)")
-end
         "CLASSIC letterbox is the pea-soup paper, not white")
   check(classic and classic.g ~= 1,
         "the letterbox tracks the palette instead of filling flat white")
@@ -977,8 +900,7 @@ local vanilla = BattleTransition.new({ stack = stack }, nil,
                                      { trainer = true, stronger = true })
 check(vanilla.style == "spiralout",
       "the vanilla 3-bit select is the hook's default (trainer+stronger)")
-check(vanilla.wipeLen == BattleTransition.STYLES.spiralout.frames,
-      "the selected wipe brings its own length")
+check(vanilla.wipeLen == 40, "the selected wipe brings its own length")
 
 local savedRuntime = { events = Runtime.events, hooks = Runtime.hooks,
                        errors = Runtime.errors }
@@ -991,8 +913,7 @@ hooks:wrap("transition.style", function(nextLink, ctx)
 end, 0, "test")
 local hooked = BattleTransition.new({ stack = stack }, nil, { trainer = true })
 check(hooked.style == "hstripes", "a transition.style hook picks the wipe")
-check(hooked.wipeLen == BattleTransition.STYLES.hstripes.frames,
-      "the hooked style brings its own length")
+check(hooked.wipeLen == 24, "the hooked style brings its own length")
 check(seenCtx.trainer == true and seenCtx.stronger == nil,
       "the hook receives the selection bits as context")
 

@@ -6566,7 +6566,6 @@
       }
     ],
     "oakSpeech": {
-      "demoSpecies": "PIKACHU",
       "shrink1": "assets/generated/intro/shrink1.png",
       "shrink2": "assets/generated/intro/shrink2.png"
     },
@@ -21704,10 +21703,6 @@
       19,
       21537
     ],
-    "GameBoyTiles": [
-      30,
-      23932
-    ],
     "GameCornerBeauty1Text": [
       18,
       19656
@@ -22255,10 +22250,6 @@
     "LickitungPicFront": [
       9,
       21604
-    ],
-    "LinkCableTiles": [
-      30,
-      23980
     ],
     "LoreleiPic": [
       19,
@@ -26380,10 +26371,6 @@
       28,
       20420
     ],
-    "TradeBubbleIconGFX": [
-      28,
-      23302
-    ],
     "TradeCenterOpponentText": [
       19,
       32451
@@ -26391,14 +26378,6 @@
     "TradeCenter_h": [
       19,
       32377
-    ],
-    "TradingAnimationGraphics": [
-      14,
-      27240
-    ],
-    "TradingAnimationGraphics2": [
-      14,
-      28024
     ],
     "TrainerAI": [
       14,

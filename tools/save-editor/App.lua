@@ -12,7 +12,6 @@
 -- Vertical rhythm (scaled by Kit's height/768 factor, everything else flexes):
 --   0    6px   tri-colour version rail, identical to the launcher's
 --   6    64px  title bar   identity, file chip, Save / Reload / Open / Close
---                          (104px when the bar reflows to two rows, #715)
 --   70   66px  tab rail    6 tab tiles + right-aligned validation pill
 --   136  flex  content     one panel per tab, 20px gutters
 --   -38  38px  status bar  the last Ops message + the keyboard map
@@ -25,7 +24,6 @@ local State = require("State")
 local Kit = require("Kit")
 local Theme = require("Theme")
 local Ops = require("Ops")
-local PadInput = require("PadInput")
 local PAL = Theme.PAL
 
 local Party = require("Party")
@@ -36,7 +34,6 @@ local MapBrowser = require("MapBrowser")
 local Dex = require("Dex")
 -- chrome, not a tab panel, so deliberately kept out of PANELS below (#541)
 local SpeciesPicker = require("SpeciesPicker")
-local ItemPicker = require("ItemPicker")
 
 local App = {}
 local S
@@ -44,10 +41,6 @@ local S
 -- vanilla records over an already-merged Data
 local mods
 local mouseClicked = false
--- Click position from the press event.  Kit samples the pointer in draw, so a
--- touch / mouse / pad-A click must use the event coords -- not love.mouse
--- (often stale on NX) and not the virtual cursor when a finger taps elsewhere.
-local clickX, clickY
 -- Wheel notches queued by App.wheelmoved since the last draw, handed to Kit
 -- there like mouseClicked is: LOVE delivers events before love.draw, so a
 -- notch is always spent by the frame that follows it (#595).
@@ -240,34 +233,6 @@ function App.unload()
   -- deaf to every click (#541).
   Kit.blur()
   Kit.blockClicks = false
-  PadInput.reset()
-end
-
-local function cycleTab(delta)
-  if not S then return end
-  local idx = 1
-  for i, t in ipairs(TABS) do
-    if t.id == S.tab then idx = i; break end
-  end
-  idx = ((idx - 1 + delta) % #TABS) + 1
-  S.tab = TABS[idx].id
-  Ops.say(S, "Tab: " .. TABS[idx].label)
-end
-
--- Pad / Joy-Con actions from PadInput.gamepadpressed (A/B via GamepadMap so
--- NX physical A confirms and B closes).
-local function handlePadAction(action)
-  if not action or not S then return end
-  if action == "a" then
-    local mx, my = PadInput.pointer()
-    App.mousepressed(mx, my, 1)
-  elseif action == "b" then
-    App.close()
-  elseif action == "tab_prev" then
-    cycleTab(-1)
-  elseif action == "tab_next" then
-    cycleTab(1)
-  end
 end
 
 function App.save()
@@ -312,7 +277,6 @@ end
 -- host's onClose runs App.unload, which drops S -- doing that inline left the
 -- rest of the frame drawing against a nil state.
 function App.close()
-  if not S then return false end
   if S.dirty and not S._quitArmed then
     S._quitArmed = true
     S.status = "Unsaved changes,  Save first or click Close again to discard"
@@ -337,84 +301,14 @@ function App.update(dt)
   -- directly in App.draw() via Kit.beginFrame. Tile animation (water,
   -- flowers) still needs ticking so the Map tab isn't static.
   TileRenderer.tick()
-  PadInput.update(dt)
-  local notches = PadInput.takeWheel()
-  if notches ~= 0 then
-    App.wheelmoved(0, notches)
-  end
-
-  -- Dev harness, the launcher's POKEPORT_LAUNCHER_SHOT for this window:
-  -- POKEPORT_EDITOR_SHOT=/path.png with POKEPORT_WIN=WxH resizes, lets the
-  -- view settle, captures one frame and quits, so a scripted run can see the
-  -- real editor at any window shape.  POKEPORT_EDITOR_TAB picks the tab and
-  -- POKEPORT_EDITOR_ITEMPICK=1 opens the add-item modal.
-  local shot = os.getenv("POKEPORT_EDITOR_SHOT")
-  if shot and not App._shotDone then
-    if not App._shotSized then
-      App._shotSized = true
-      local w, h = (os.getenv("POKEPORT_WIN") or ""):match("^(%d+)x(%d+)$")
-      if w and love.window and love.window.setMode then
-        pcall(love.window.setMode, tonumber(w), tonumber(h), { resizable = true })
-      end
-      local tab = os.getenv("POKEPORT_EDITOR_TAB")
-      if tab and tab ~= "" and S then S.tab = tab end
-      if os.getenv("POKEPORT_EDITOR_ITEMPICK") == "1" and S then
-        Ops.openItemPicker(S, Kit, "bag")
-      end
-    end
-    App._shotTimer = (App._shotTimer or 0) + dt
-    if App._shotTimer > 1.0 then
-      App._shotDone = true
-      love.graphics.captureScreenshot(function(imagedata)
-        local fd = imagedata:encode("png")
-        local f = io.open(shot, "wb")
-        if f then f:write(fd:getString()) f:close() end
-        love.event.quit()
-      end)
-    end
-  end
 end
 
 function App.mousepressed(x, y, button)
-  if button == 1 then
-    mouseClicked = true
-    clickX, clickY = x, y
-    -- A finger / mouse tap yields the virtual cursor so the click lands where
-    -- the event said, not under the Joy-Con pointer (NX touch soft-miss).
-    PadInput.yieldToPointer()
-  end
+  if button == 1 then mouseClicked = true end
 end
 
 function App.textinput(text)
   Kit.textinput(text)
-end
-
-function App.gamepadpressed(joystick, button)
-  handlePadAction(PadInput.gamepadpressed(joystick, button))
-end
-
-function App.gamepadreleased(joystick, button)
-  PadInput.gamepadreleased(joystick, button)
-end
-
-function App.gamepadaxis(joystick, axis, value)
-  PadInput.gamepadaxis(joystick, axis, value)
-end
-
-function App.joystickpressed(joystick, button)
-  handlePadAction(PadInput.joystickpressed(joystick, button))
-end
-
-function App.joystickreleased(joystick, button)
-  PadInput.joystickreleased(joystick, button)
-end
-
-function App.joystickaxis(joystick, axis, value)
-  PadInput.joystickaxis(joystick, axis, value)
-end
-
-function App.joystickhat(joystick, hat, direction)
-  PadInput.joystickhat(joystick, hat, direction)
 end
 
 -- ------------------------------------------------------------------ chrome
@@ -445,49 +339,16 @@ local function drawFileChip(x, y, w, h)
   Kit.text("mono", shown, cx, y + (h - Kit.textHeight("mono")) / 2, PAL.detail)
 end
 
--- Measure the title bar's right-aligned action cluster.  Shared by App.draw
--- (which must size the bar before drawing it) and drawTitleBar, so the
--- two-row decision and the layout can never disagree (#715).
-local function titleButtons()
-  local s = Kit.scale
-  local gap = 8 * s
-  local b = {
-    gap = gap,
-    closeW = 22 * s + Kit.textWidth("button", S._quitArmed and "Discard?" or "Close"),
-    openW = 22 * s + Kit.textWidth("button", "Open..."),
-    reloadW = 22 * s + Kit.textWidth("button", "Reload"),
-  }
-  b.saveLabel, b.saveKind, b.saveEnabled = "SAVED", "disabled", false
-  if not S.allowSave then
-    b.saveLabel = "SAVE LOCKED"
-  elseif S.dirty then
-    b.saveLabel, b.saveKind, b.saveEnabled = "SAVE", "primary", true
-  end
-  b.saveW = 30 * s + Kit.textWidth("button", b.saveLabel)
-  b.total = b.saveW + b.reloadW + b.openW + b.closeW + 3 * gap
-  return b
-end
-
--- Whether the identity block plus the action cluster fit on one 64px row.
--- When they do not, the bar reflows to two rows (identity + file chip above,
--- buttons below) instead of shrinking or overlapping (#715).
-local function titleNeedsTwoRows(w)
-  local s = Kit.scale
-  return titleButtons().total > w - 2 * (22 * s) - (34 * s) - 10 * s
-end
-
-local function drawTitleBar(x, y, w, h, twoRow)
+local function drawTitleBar(x, y, w, h)
   local s = Kit.scale
   local pad = 22 * s
   Theme.col(PAL.cardBorder, 0.22)
   love.graphics.rectangle("fill", x, y + h - 1, w, 1)
 
-  -- the identity row is the whole bar in one-row mode, the top slice in two
-  local rowH = twoRow and (h * 0.55) or h
   local cx = x + pad
   -- SE badge, the same rounded-square chip shape the launcher's tabs use
   local badge = 34 * s
-  local by = y + (rowH - badge) / 2
+  local by = y + (h - badge) / 2
   Theme.gradRounded(cx, by, badge, badge, 9 * s, PAL.chipTop, PAL.chipBot, 1, 1)
   Kit.textCenter("tab", "SE", cx, by + (badge - Kit.textHeight("tab")) / 2, badge,
     { 159, 180, 221 })
@@ -498,30 +359,34 @@ local function drawTitleBar(x, y, w, h, twoRow)
   -- this bar that must always be reachable, so on a phone the identity block,
   -- the version chip and the file chip are what yield.  Measuring them last
   -- is why they used to paint straight through the buttons (#497).
-  local b = titleButtons()
   local btnH = 38 * s
-  local btnY = twoRow and (y + rowH + (h - rowH - btnH) / 2) or (y + (h - btnH) / 2)
+  local btnY = y + (h - btnH) / 2
   local rightEdge = x + w - pad
-  local gap = b.gap
-  local saveLabel, saveKind, saveEnabled = b.saveLabel, b.saveKind, b.saveEnabled
+  local gap = 8 * s
+  local closeW = 22 * s + Kit.textWidth("button", "Close")
+  local openW = 22 * s + Kit.textWidth("button", "Open...")
+  local reloadW = 22 * s + Kit.textWidth("button", "Reload")
 
-  -- clamped at the left pad so a window narrower than the cluster overflows
-  -- to the right (clipped) instead of stacking buttons on each other
-  local saveX = math.max(x + pad, rightEdge - b.total)
-  local reloadX = saveX + b.saveW + gap
-  local openX = reloadX + b.reloadW + gap
-  local closeX = openX + b.openW + gap
-  -- the identity row yields to the buttons in one-row mode; in two-row mode
-  -- the buttons are on their own row and the identity keeps the full width
-  local identityLimit = twoRow and (rightEdge + 14 * s) or saveX
+  local saveLabel, saveKind, saveEnabled = "SAVED", "disabled", false
+  if not S.allowSave then
+    saveLabel = "SAVE LOCKED"
+  elseif S.dirty then
+    saveLabel, saveKind, saveEnabled = "SAVE", "primary", true
+  end
+  local saveW = 30 * s + Kit.textWidth("button", saveLabel)
+
+  local closeX = rightEdge - closeW
+  local openX = closeX - gap - openW
+  local reloadX = openX - gap - reloadW
+  local saveX = reloadX - gap - saveW
 
   local wordH = Kit.textHeight("wordmark")
   local brandH = Kit.textHeight("brand")
-  local blockY = y + (rowH - (wordH + 2 * s + brandH)) / 2
+  local blockY = y + (h - (wordH + 2 * s + brandH)) / 2
   local wordW = math.max(
     Theme.spacedWidth(Kit.fonts.wordmark, "SAVE EDITOR", 2 * s),
     Theme.spacedWidth(Kit.fonts.brand, "GEN1RECOMP", 1 * s))
-  if cx + wordW + 12 * s < identityLimit then
+  if cx + wordW + 12 * s < saveX then
     love.graphics.setFont(Kit.fonts.wordmark)
     Theme.col(PAL.heading, 1)
     Theme.spaced(Kit.fonts.wordmark, "SAVE EDITOR", cx, blockY, 2 * s)
@@ -539,8 +404,8 @@ local function drawTitleBar(x, y, w, h, twoRow)
     local c = (S.version == "blue") and PAL.blue or PAL.red
     local cw = Kit.textWidth("chip", name) + 16 * s
     local ch = 22 * s
-    local cy = y + (rowH - ch) / 2
-    if cx + cw + 12 * s < identityLimit then
+    local cy = y + (h - ch) / 2
+    if cx + cw + 12 * s < saveX then
       Theme.col(c, 0.1)
       love.graphics.rectangle("fill", cx, cy, cw, ch, 6 * s, 6 * s)
       Theme.stroke(cx, cy, cw, ch, 6 * s, c, 0.5, 1)
@@ -553,22 +418,22 @@ local function drawTitleBar(x, y, w, h, twoRow)
   -- Save is the only green-filled control in the chrome; a corrupt load
   -- renders it steel with the reason parked in the status bar rather than
   -- hiding it (rule 3 of the design spec).
-  if Kit.button(saveX, btnY, b.saveW, btnH, saveLabel,
+  if Kit.button(saveX, btnY, saveW, btnH, saveLabel,
       { kind = saveKind, enabled = saveEnabled or not S.allowSave,
         glow = S.dirty and S.allowSave and 0.6 or nil }) then
     App.save()
   end
-  if Kit.button(reloadX, btnY, b.reloadW, btnH, "Reload") then App.reload() end
-  if Kit.button(openX, btnY, b.openW, btnH, "Open...") then App.chooseAndOpen() end
-  if Kit.button(closeX, btnY, b.closeW, btnH,
+  if Kit.button(reloadX, btnY, reloadW, btnH, "Reload") then App.reload() end
+  if Kit.button(openX, btnY, openW, btnH, "Open...") then App.chooseAndOpen() end
+  if Kit.button(closeX, btnY, closeW, btnH,
       S._quitArmed and "Discard?" or "Close",
       { kind = S._quitArmed and "danger" or "ghost" }) then
     App.close()
   end
 
-  local chipW = (identityLimit - 14 * s) - cx
+  local chipW = (saveX - 14 * s) - cx
   if chipW > 80 * s then
-    drawFileChip(cx, y + (rowH - 38 * s) / 2, chipW, 38 * s)
+    drawFileChip(cx, y + (h - 38 * s) / 2, chipW, 38 * s)
   end
 end
 
@@ -742,18 +607,9 @@ local function drawStatusBar(x, y, w, h)
          "+R reload . Esc clear selection . Close returns to the launcher")
     or (ctrl .. "+S save . " .. ctrl ..
         "+R reload . Esc clear selection . arrows pan map . wheel scrolls lists")
-  -- The status message is the load-bearing half of this bar (every Ops verb
-  -- narrates through it); the keyboard map is decoration.  On a phone the
-  -- two used to overlap because the hint was drawn unconditionally and the
-  -- status ellipsized against a negative budget (#715), so now the hint only
-  -- draws when the status still keeps a readable share of the bar.
   local hintW = Kit.textWidth("tiny", hint)
+  Kit.textRight("tiny", hint, x + w - pad, y + (h - Kit.textHeight("tiny")) / 2, PAL.faint)
   local avail = w - 2 * pad - hintW - 14 * s
-  if avail >= 120 * s then
-    Kit.textRight("tiny", hint, x + w - pad, y + (h - Kit.textHeight("tiny")) / 2, PAL.faint)
-  else
-    avail = w - 2 * pad
-  end
   Kit.text("mono", Kit.ellipsize("mono", S.status or "", avail), x + pad,
     y + (h - Kit.textHeight("mono")) / 2, PAL.detail)
 end
@@ -768,36 +624,24 @@ function App.draw()
   local s = Kit.scale
 
   local mx, my = love.mouse.getPosition()
-  local padX, padY, padOn = PadInput.pointer()
-  if mouseClicked and clickX ~= nil then
-    mx, my = clickX, clickY
-  elseif padOn then
-    mx, my = padX, padY
-  end
   Kit.beginFrame(mx, my, mouseClicked, wheelY)
   mouseClicked = false
-  clickX, clickY = nil, nil
   wheelY = 0
   -- Modal shield.  Kit has no z-order, so the picker cannot simply be drawn
   -- last: the chrome and the panel underneath would take the same tap.  The
   -- shield goes up before anything dispatches and comes down only for the
   -- picker's own layer at the bottom of this function (#541).
-  Kit.blockClicks = (S.speciesPicker ~= nil) or (S.itemPicker ~= nil)
+  Kit.blockClicks = (S.speciesPicker ~= nil)
 
   Theme.field(width, height)
 
   local railH = 6 * s
-  -- The title bar reflows to two rows (identity above, buttons below) when
-  -- the window is too narrow for both on one, instead of the buttons and the
-  -- identity painting through each other (#715).  The taller bar simply
-  -- costs the content column height, which scrolls.
-  local titleTwoRow = titleNeedsTwoRows(width)
-  local titleH = (titleTwoRow and 104 or 64) * s
+  local titleH = 64 * s
   local tabH = 66 * s
   local statusH = 38 * s
 
   Theme.versionRail(0, 0, width, railH)
-  drawTitleBar(0, railH, width, titleH, titleTwoRow)
+  drawTitleBar(0, railH, width, titleH)
   drawTabRail(0, railH + titleH, width, tabH)
 
   local contentY = railH + titleH + tabH
@@ -811,9 +655,7 @@ function App.draw()
   drawStatusBar(0, height - statusH, width, statusH)
   Kit.blockClicks = false
   SpeciesPicker.draw(S, Kit, width, height)
-  ItemPicker.draw(S, Kit, width, height)
   Kit.endFrame()
-  PadInput.draw()
 
   -- Only now, with the whole frame painted, is it safe to drop the editor.
   if S._closeRequested then finishClose() end
@@ -824,15 +666,6 @@ function App.keypressed(key)
   -- The picker takes Enter and Escape before the focused field does: Kit maps
   -- both to the same "\r" edit (a blur), which cannot tell "commit the top
   -- match" apart from "give up" (#541).
-  if S.itemPicker then
-    if key == "return" or key == "kpenter" then
-      ItemPicker.commitFirst(S, Kit)
-      return
-    elseif key == "escape" then
-      Ops.closeItemPicker(S, Kit)
-      return
-    end
-  end
   if S.speciesPicker then
     if key == "return" or key == "kpenter" then
       SpeciesPicker.commitFirst(S, Kit)

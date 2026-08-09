@@ -287,12 +287,10 @@ return {
       table.insert(rows, { "label", "lost_lab" })
       table.insert(rows, { "set_field", "rivalStarter", 3 })
       table.insert(rows, { "label", "exit" })
-      -- OaksLabRivalStartsExitScript: parting shot, rival exit fanfare, then
-      -- walk out past the player (#683).
+      -- OaksLabRivalStartsExitScript: parting shot, walk out past the
+      -- player, restore the lab theme
       table.insert(rows, { "wait", 20 })
       table.insert(rows, { "show_text", "_OaksLabRivalSmellYouLaterText" })
-      table.insert(rows, { "stop_music" })
-      table.insert(rows, { "play_music", "Music_MeetRival" })
       table.insert(rows, { "move_npc_to", RIVAL, 4, 11 })
       table.insert(rows, { "hide_object", "OAKS_LAB", "OAKSLAB_RIVAL" })
       table.insert(rows, { "play_music", "Music_OaksLab" })

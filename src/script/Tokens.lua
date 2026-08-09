@@ -26,15 +26,16 @@ function Tokens.expand(game, text, handlers)
   -- with spaces or pipes ({NUM:hCoins, 2 | LEADING_ZEROES ...}) were never
   -- dropped before and must stay in the text byte-for-byte
   return (text:gsub("{([%w_]+):?([%w_:]*)}", function(name, arg)
+    local token = "{" .. name .. (arg ~= "" and (":" .. arg) or "") .. "}"
     local fn = handlers[name]
     if not fn then
       Tokens.warnOnce(name)
-      return ""
+      return token
     end
     local ok, out = pcall(fn, game, arg ~= "" and arg or nil)
     if not ok then
       Logger.error("token {%s}: %s", name, tostring(out))
-      return ""
+      return token
     end
     return out or ""
   end))

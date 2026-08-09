@@ -26,6 +26,10 @@ local PAGES = {
     image = "assets/generated/battle/battle_hud_2.png", base = 0x73 },
   { id = "battle_hud_3",
     image = "assets/generated/battle/battle_hud_3.png", base = 0x76 },
+  -- Gen2 only (LoadHPBar copies ExpBarGFX to vTiles tile $55).  pokered has
+  -- no such sheet, so the page simply fails to resolve there.
+  { id = "exp_bar",
+    image = "assets/generated/battle/exp_bar.png", base = 0x55 },
 }
 
 -- The STATUS SCREEN overlays the SAME sheets differently, and the layout
@@ -47,6 +51,8 @@ local STATUS_PAGES = {
     image = "assets/generated/battle/battle_hud_3.png", base = 0x76, count = 2 },
   { id = "battle_hud_2",
     image = "assets/generated/battle/battle_hud_2.png", base = 0x78, count = 1 },
+  { id = "exp_bar",
+    image = "assets/generated/battle/exp_bar.png", base = 0x55 },
 }
 
 local tiles, statusTiles
@@ -171,6 +177,49 @@ function HudTiles.drawHPBar(data, tx, ty, mon, barType, grayFill, segments)
     HudTiles.tile(seg >= 8 and 0x6B or 0x63 + seg, x + 16 + i * 8, y, tint)
   end
   HudTiles.tile(HudTiles.capTile(barType), x + 16 + segments * 8, y)
+end
+
+-- How full the Gen2 exp bar is, in pixels out of 64 (GetExpBarPixelLength).
+function HudTiles.expBarPixels(data, mon)
+  local def = data.pokemon and data.pokemon[mon.species]
+  if not def then return 0 end
+  local Growth = require("src.pokemon.Growth")
+  local base = Growth.expForLevel(def.growthRate, mon.level, data.growth_rates)
+  local next_ = Growth.expForLevel(def.growthRate, mon.level + 1,
+                                   data.growth_rates)
+  local span = next_ - base
+  if span <= 0 then return 0 end
+  local into = math.min(span, math.max(0, (mon.exp or 0) - base))
+  return math.floor(into * 64 / span)
+end
+
+-- Gen2's exp bar (PlaceExpBar, engine/battle/core.asm): eight tiles written
+-- RIGHT to LEFT off the far end, eight pixels each.  The empty and full
+-- extremes are the HP bar's own tiles -- pokered's $63 and $6B, since the
+-- Gen2 sheet is remapped into pokered's slots -- and ExpBarGFX at $55
+-- supplies the seven partial widths (`add $54`).
+function HudTiles.drawExpBar(data, tx, ty, pixels, grayFill)
+  pixels = math.max(0, math.min(64, math.floor(pixels or 0)))
+  local tint
+  if not grayFill then
+    -- Only the flat path gets a tint, exactly like drawHPBar.  Where a zone
+    -- pass runs it recolors the DMG shades itself, and a tint underneath it
+    -- moves the fill's luminance into another shade -- which drew the bar
+    -- inside out: blue paper with a black fill.
+    local PaletteFX = require("src.render.PaletteFX")
+    local colors = PaletteFX.pal(data, "EXPBAR")
+    if colors then
+      local c = colors[3]
+      tint = { math.min(1, c[1] / 170), math.min(1, c[2] / 170),
+               math.min(1, c[3] / 170), 1 }
+    end
+  end
+  for i = 7, 0, -1 do
+    local seg = math.min(8, pixels)
+    pixels = pixels - seg
+    local code = seg >= 8 and 0x6B or (seg == 0 and 0x63 or 0x54 + seg)
+    HudTiles.tile(code, (tx + i) * 8, ty * 8, tint)
+  end
 end
 
 return HudTiles

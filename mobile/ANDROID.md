@@ -37,11 +37,44 @@ scripts/build_android.sh --version 0.2.5
 scripts/build_android.sh --package-only
 ```
 
+`scripts/build_android.sh` now checks host tools up front. `python3` is
+required; `zip`/`unzip` are preferred but optional (the script falls back to
+Python's `zipfile` when they are missing). Required for packaging:
+
+- `python3`
+
+Preferred (faster native path):
+
+- `zip`
+- `unzip`
+
 Or via `scripts/build.sh android [--version X.Y.Z]`.
 
+### On Windows
+
+`build_android.sh` is bash, and its gradle half assumes a Linux JDK. Use the
+PowerShell front end instead — it runs the packaging half through Git Bash or
+WSL (which only needs `python3`), then drives `gradlew.bat` with a Windows
+JDK 17:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/build_android.ps1
+powershell -ExecutionPolicy Bypass -File scripts/build_android.ps1 -Version 0.2.11
+powershell -ExecutionPolicy Bypass -File scripts/build_android.ps1 -PackageOnly
+```
+
+It shadow-builds out of a space-free directory on the repo's drive
+(`<drive>:\gen2recomp-android-shadow`) because ndk-build is GNU make
+underneath and cannot cope with spaces in the project path, and it parks
+`GRADLE_USER_HOME` on the same drive so a small system drive is not asked to
+host the NDK output.
+
 The embedded `game.love` deliberately excludes `data/generated/`,
-`assets/generated/`, and any ROM. It contains the first-boot Lua importer and
-`tools/rom_manifest.json`.
+`assets/generated/`, and any ROM. It contains the first-boot Lua importer,
+all ROM import manifests referenced by `src/core/GameVersion.lua`, and the
+`data/generated_gen2_<version>/` source tables the Gen2 extractor cannot
+derive from the cart alone. The build fails rather than shipping an APK that
+lists Gold/Silver but is missing any of them.
 
 ROM / mod / save import on Android uses `love.system.pickFile([kind])` →
 `GameActivity.showFilePicker` (Storage Access Framework), which copies the
@@ -49,6 +82,35 @@ chosen file under the app save directory as `picked_rom.gb`,
 `picked_mod.zip`, or `picked_save.sav`. `RomImporter` imports pending files
 from that folder on Choose / refocus; see `docs/launcher.md`. The APK payload
 itself remains data-free (no embedded ROM or generated cache).
+
+ROM routing is SHA-1 based (not filename based): the importer accepts
+canonical 1 MiB carts (Red/Blue/Yellow) and 2 MiB carts (Gold/Silver), then
+selects the target version from `src/core/GameVersion.lua` by ROM hash.
+
+Gold/Silver import and play through the same in-app path as Red/Blue/Yellow:
+drop in the cart, the importer runs `RomExtractorGen2`, and the game boots.
+
+Android does not have a separate ROM extractor implementation: it uses the
+same Lua importer path as desktop (`src/import/RomImporter.lua`, which
+dispatches to `src/import/RomExtractor.lua` for Gen1 and
+`src/import/RomExtractorGen2.lua` for Gen2) against whichever manifest
+matches the cart. First import on a phone takes several minutes.
+
+### Gold/Silver mobile prep checklist
+
+Before cutting an Android build that should import Gold/Silver:
+
+```powershell
+# 1) Refresh embedded Gen2 symbol maps and regenerate manifests
+powershell -ExecutionPolicy Bypass -File scripts/setup_gen2_symbols.ps1
+
+# 2) Verify Gen2 scaffold extraction quality
+python tools/verify_rom_data.py --manifest tools/rom_manifest_gold.json --version gold
+python tools/verify_rom_data.py --manifest tools/rom_manifest_silver.json --version silver
+
+# 3) Package Android payload (all manifests from GameVersion.lua are embedded)
+scripts/build_android.sh --package-only
+```
 
 ### Step bridge (Pokéwalker mod)
 
@@ -99,6 +161,11 @@ love-android 11.5a expects:
 Set `ANDROID_SDK_ROOT` (or `ANDROID_HOME`), or let the script write
 `local.properties` when it finds `~/Library/Android/sdk`.
 
+The build script also reads `mobile/android/local.properties` when
+`ANDROID_SDK_ROOT` / `ANDROID_HOME` are unset, so an explicit
+`sdk.dir=...` value is honored. Windows-style paths are accepted there
+and normalized for bash-based builds.
+
 Gradle flavor used: **`embedNoRecord`** (game fused into the APK, no microphone).
 Build task: `assembleEmbedNoRecordDebug`.
 
@@ -108,19 +175,19 @@ The APK lands under `app/build/outputs/apk/embedNoRecord/debug/`.
 ### Payload path
 
 `app/src/embed/assets/game.love` - zip of `main.lua`, `conf.lua`, `src/`,
-`libs/` (the vendored FlexLove toolkit the launcher UI needs), `data/`,
-`assets/`, and the Red, Blue, and Yellow ROM manifests. The Android
-packer verifies the Yellow manifest before it packages; if a partial source
-export omitted it, it restores the file from this checkout's Git data and then
-falls back to the project's GitHub copy. Generated game data,
+`data/`, `assets/`, and all version manifests listed in
+`src/core/GameVersion.lua` (currently Red/Blue/Yellow/Gold/Silver).
+The Android packer verifies every listed manifest before packaging; if a
+partial source export omitted one, it restores that file from this checkout's
+Git data and then falls back to the project's GitHub copy. Generated game data,
 scripts, tests, and mobile build sources are excluded.
 
 ## Branding (applied by the build script)
 
 | Setting | Value |
 | --- | --- |
-| `app.application_id` | `com.theboisclub.pokemonred` |
-| `app.name` | Pokemon Red |
+| `app.application_id` | `com.underdecodedhd.gen2recomp` |
+| `app.name` | gen2recomp |
 | `app.orientation` | `fullUser`. This is only the manifest default: SDL requests FULL_SENSOR at window creation (resizable window, no `SDL_HINT_ORIENTATIONS`), and `GameActivity.setOrientationBis` remaps that to FULL_USER so the device's rotation lock is honoured. |
 | `app.version_name` / `app.version_code` | set from `--version X.Y.Z` (code = major*10000 + minor*100 + patch); left as-is if `--version` is omitted |
 | Permissions | RECORD_AUDIO / WRITE_EXTERNAL_STORAGE stripped; VIBRATE + BLUETOOTH + INTERNET (link play, mod index) + ACTIVITY_RECOGNITION (step bridge) kept |
@@ -134,3 +201,19 @@ release version and publishes it alongside the macOS/Windows/Linux builds as
 ## Signing
 
 Signed with the default Android keystore (no setup required).
+
+## Installing alongside gen1recomp
+
+Android identifies an app by its `applicationId` alone and will not replace an
+installed package with an APK signed by a different key, so builds that reused
+gen1recomp's `com.theboisclub.pokemonred` failed with "App not installed"
+(`INSTALL_FAILED_UPDATE_INCOMPATIBLE`) on any device that already had
+gen1recomp. Under `com.underdecodedhd.gen2recomp` the two install side by side
+and keep separate data: the save directory is `getExternalFilesDir()`-based and
+therefore package-scoped, so the shared `t.identity` in `conf.lua` cannot
+collide.
+
+A gen2recomp build predating this change is still installed under the old id
+and hits the same error. Export saves from it first (START → SAVE → EXPORT),
+uninstall it, then install the new APK — uninstalling removes that package's
+external files directory, which holds `save.lua` and the ROM-derived cache.

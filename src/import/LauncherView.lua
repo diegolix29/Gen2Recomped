@@ -1280,6 +1280,36 @@ end
 
 -- ---------------------------------------------------------- sky panel
 
+-- One thumbnail per phase, reloaded only when the file on disk changes
+-- (mtime-ish: we just track the path we last decoded) so painting four
+-- previews doesn't mean decoding four PNGs every single frame.
+local skyPreviewCache = {}
+
+local function skyPreviewFor(phase)
+  local path = require("src.render.Tilt").skyImageFile(phase)
+  local info = love.filesystem.getInfo(path, "file")
+  if not info then
+    skyPreviewCache[phase] = nil
+    return nil
+  end
+  local cached = skyPreviewCache[phase]
+  if cached and cached.modtime == info.modtime then return cached.img end
+  local success, img = pcall(love.graphics.newImage, path)
+  if not success then
+    skyPreviewCache[phase] = nil
+    return nil
+  end
+  skyPreviewCache[phase] = { img = img, modtime = info.modtime }
+  return img
+end
+
+local SKY_PHASE_INFO = {
+  { id = "day",   label = "DAY" },
+  { id = "dawn",  label = "DAWN" },
+  { id = "dusk",  label = "DUSK" },
+  { id = "night", label = "NIGHT" },
+}
+
 local function buildSkyPanel(imp, x, y, w, availH, m)
   local pad = math.floor(18 * m.s)
   local gap = m.gap
@@ -1287,80 +1317,98 @@ local function buildSkyPanel(imp, x, y, w, availH, m)
   local s = m.s
 
   -- Header
-  Kit.text("title", "SKY IMAGE", x, cy, PAL.heading)
+  Kit.text("title", "SKY IMAGES", x, cy, PAL.heading)
   cy = cy + Kit.textHeight("title") + gap
 
-  -- Check current sky image status
   local SaveData = require("src.core.SaveData")
   local opts = SaveData.loadOptions()
-  local skyEnabled = opts and opts.skyImageEnabled
-  local skyImageExists = love.filesystem.getInfo("sky_image.png", "file")
+  local anySet = false
+  for _, info in ipairs(SKY_PHASE_INFO) do
+    if love.filesystem.getInfo(require("src.render.Tilt").skyImageFile(info.id), "file") then
+      anySet = true
+      break
+    end
+  end
 
   -- Description
-  local descText = skyEnabled and skyImageExists 
-    and "Custom sky image is currently active" 
-    or "No custom sky image set. Add one to personalize your game."
-  cy = cy + Kit.textWrapped("small", descText, x, cy, w, PAL.muted, 2) + gap
+  local descText = anySet
+    and "The sky swaps between these as time passes in-game. Set as many or as few as you like -- any you skip blend from the nearest one you did set."
+    or "Set up to four sky images -- day, dawn, dusk, night -- and the game cross-fades between them as time passes. None set yet."
+  cy = cy + Kit.textWrapped("small", descText, x, cy, w, PAL.muted, 3) + gap
 
-  -- Sky image preview area
-  local previewH = math.floor(200 * s)
-  local previewW = math.min(w - 2 * pad, math.floor(400 * s))
-  local previewX = x + (w - previewW) / 2
-  
-  Kit.card(previewX, cy, previewW, previewH)
-  
-  -- Draw current sky image or placeholder
-  if skyEnabled and skyImageExists then
-    local success, skyImg = pcall(love.graphics.newImage, "sky_image.png")
-    if success then
-      -- Draw sky image scaled to fit preview
-      local imgW, imgH = skyImg:getDimensions()
-      local scale = math.min(previewW / imgW, previewH / imgH)
-      local drawW = imgW * scale
-      local drawH = imgH * scale
-      local drawX = previewX + (previewW - drawW) / 2
-      local drawY = cy + (previewH - drawH) / 2
-      love.graphics.draw(skyImg, drawX, drawY, 0, scale, scale)
-    else
-      Kit.textCenter("button", "Failed to load sky image", previewX, cy + previewH / 2 - Kit.textHeight("button") / 2, previewW, PAL.red)
-    end
-  else
-    Kit.textCenter("button", "No sky image set", previewX, cy + previewH / 2 - Kit.textHeight("button") / 2, previewW, PAL.muted)
-    Kit.textCenter("small", "Tap 'Add Image' to select a custom sky", previewX, cy + previewH / 2 + Kit.textHeight("button") / 2 + gap, previewW, PAL.warning)
-  end
-  cy = cy + previewH + gap
-
-  -- Buttons
+  -- Four slot rows, each with a small thumbnail, a label, and an
+  -- Add/Remove button -- rather than the old single full-width preview,
+  -- since there are now four independent images to manage.
+  local rowH = math.floor(96 * s)
+  local thumbW = math.floor(96 * s)
+  local thumbH = rowH
+  local btnW = math.min(math.floor(150 * s), w - thumbW - 3 * pad)
   local btnH = m.btnH
-  local btnW = math.min(math.floor(180 * s), w - 2 * pad)
 
-  if skyEnabled and skyImageExists then
-    -- Remove button
-    local removeX = x + (w - btnW) / 2
-    btn(imp, removeX, cy, btnW, btnH, "sky-remove", "Remove Image", {
-      kind = "warn", font = "small",
-      action = function()
-        local SaveData = require("src.core.SaveData")
-        local opts = SaveData.loadOptions()
-        if opts then
-          opts.skyImageEnabled = false
-          SaveData.saveOptions(opts)
-          love.filesystem.remove("sky_image.png")
+  for _, info in ipairs(SKY_PHASE_INFO) do
+    local phase = info.id
+    local rowY = cy
+    Kit.card(x, rowY, w, rowH)
+
+    -- Thumbnail
+    local thumbX = x + pad
+    local thumbY = rowY + (rowH - thumbH) / 2
+    local img = skyPreviewFor(phase)
+    if img then
+      local imgW, imgH = img:getDimensions()
+      local scale = math.min(thumbW / imgW, thumbH / imgH)
+      local drawW, drawH = imgW * scale, imgH * scale
+      love.graphics.setScissor(thumbX, thumbY, thumbW, thumbH)
+      love.graphics.draw(img, thumbX + (thumbW - drawW) / 2, thumbY + (thumbH - drawH) / 2, 0, scale, scale)
+      love.graphics.setScissor()
+    else
+      Kit.textCenter("small", "empty", thumbX, thumbY + thumbH / 2 - Kit.textHeight("small") / 2, thumbW, PAL.faint)
+    end
+
+    -- Label
+    local labelX = thumbX + thumbW + pad
+    local labelW = w - (labelX - x) - btnW - 2 * pad
+    Kit.text("button", info.label, labelX, rowY + pad, PAL.heading)
+    local statusText = img and "Custom image set" or "Not set -- uses nearest phase you did set"
+    Kit.textWrapped("small", statusText, labelX, rowY + pad + Kit.textHeight("button") + math.floor(4 * s), labelW, PAL.muted, 2)
+
+    -- Add / Remove button
+    local btnX = x + w - pad - btnW
+    local btnY = rowY + (rowH - btnH) / 2
+    if img then
+      btn(imp, btnX, btnY, btnW, btnH, "sky-remove-" .. phase, "Remove", {
+        kind = "warn", font = "small",
+        action = function()
+          local Tilt = require("src.render.Tilt")
+          Tilt:removeSkyImage(phase)
+          skyPreviewCache[phase] = nil
+          -- Turn the feature off only once EVERY phase has been cleared,
+          -- so removing one image doesn't blank out the other three.
+          local stillAny = false
+          for _, p in ipairs(Tilt.SKY_PHASES) do
+            if love.filesystem.getInfo(Tilt.skyImageFile(p), "file") then
+              stillAny = true
+            end
+          end
+          if not stillAny then
+            local o = SaveData.loadOptions()
+            if o then o.skyImageEnabled = false; SaveData.saveOptions(o) end
+          end
         end
-      end
-    })
-  else
-    -- Add button
-    local addX = x + (w - btnW) / 2
-    btn(imp, addX, cy, btnW, btnH, "sky-add", "Add Image", {
-      kind = "accent", font = "small",
-      action = function()
-        imp:_pickSkyImage()
-      end
-    })
-  end
-  cy = cy + btnH + gap
+      })
+    else
+      btn(imp, btnX, btnY, btnW, btnH, "sky-add-" .. phase, "Add Image", {
+        kind = "accent", font = "small",
+        action = function()
+          imp:_pickSkyImage(phase)
+        end
+      })
+    end
 
+    cy = cy + rowH + math.floor(10 * s)
+  end
+
+  cy = cy + gap
   -- Help text
   cy = cy + Kit.textWrapped("small", "Supported formats: PNG, JPG, JPEG, BMP, HDR", x, cy, w, PAL.faint, 1) + gap
 

@@ -15,10 +15,6 @@ local Screens = require("src.ui.Screens")
 
 local Game = {}
 
-local function renderVisible(stack, state)
-  return state and (not stack.renderVisible or stack:renderVisible(state))
-end
-
 -- dev-mode gate for the F5/backtick hotkeys; false keeps every src/dev
 -- module unloaded, so a player boot never touches a byte of dev code
 local devMode = os.getenv("POKEPORT_DEV") == "1" or _G.POKEPORT_DEV_MODE == true
@@ -44,19 +40,12 @@ function Game:load()
   -- render pipelines dispatch off the merged dataset; point them at the
   -- one the mods just merged into before anything can draw a frame
   require("src.render.Pipelines").install(Data)
-  -- Same reason, same moment: TypeChart caches the merged type records in an
-  -- upvalue, and until now only BattleState loaded it, on entering a battle.
-  -- Every non-battle reader of a type -- the summary screen's TYPE1/TYPE2
-  -- rows, the move-select TYPE/ box -- ran against an unloaded module and got
-  -- the raw id back instead of the display name, so a translation could not
-  -- reach them. Loading here means a type reads the same whoever asks first.
-  require("src.battle.TypeChart").load(Data)
 
   self.input = Input
   Input:init()
 
   self.touchControls = TouchControls
-  TouchControls:init(self)
+  TouchControls:init()
 
   self.renderer = Renderer
   Renderer:init()
@@ -103,10 +92,12 @@ function Game:load()
     local titleState = self:makeTitleState()
     -- the copyright splash + attract movie plays before the title
     -- (engine/movie/splash.asm + intro.asm; Yellow swaps in its own
-    -- 18-scene movie, engine/movie/intro_yellow.asm); the ids come from
+    -- 18-scene movie, engine/movie/intro_yellow.asm, and Gold/Silver
+    -- theirs, engine/movie/intro.asm GoldSilverIntro); the ids come from
     -- field.boot.screens so a total conversion owns the whole boot
-    local splash = require("src.core.GameVersion").isYellow()
-      and "YellowIntro" or "IntroMovie"
+    local Version = require("src.core.GameVersion")
+    local splash = Version.isGen2() and "Gen2Intro"
+      or (Version.isYellow() and "YellowIntro" or "IntroMovie")
     Screens.push(self, bootScreens(self).splash or splash, function()
       StateStack:push(titleState)
     end)
@@ -159,8 +150,13 @@ function Game:makeTitleState()
       self.stack:push(OverworldState, self.save.player.map,
                       self.save.player.x, self.save.player.y,
                       self.save.player.facing)
-      Screens.push(self, bootScreens(self).newGame or "OakSpeech",
-                   function() end)
+      local newGameScreen = bootScreens(self).newGame
+      if newGameScreen == nil and not require("src.core.GameVersion").isGen2() then
+        newGameScreen = "OakSpeech"
+      end
+      if newGameScreen then
+        Screens.push(self, newGameScreen, function() end)
+      end
     end,
     onContinue = function()
       local loaded, recovered = SaveData.load()
@@ -259,21 +255,6 @@ function Game:update(dt)
   -- Overworld tilt toggle tween: presentational, so it runs on the real
   -- frame dt (not the fixed logic step) for a smooth ~0.25s glide.
   require("src.render.Tilt").update(dt)
-  -- Update sky rotation based on player movement
-  local topState = self.stack and self.stack:top()
-  -- Check if top state is OverworldState (has isOverworld marker)
-  if topState and topState.isOverworld and topState.player then
-    local p = topState.player
-    local dx, dy = 0, 0
-    if p.facing == "left" then dx = -1
-    elseif p.facing == "right" then dx = 1
-    elseif p.facing == "up" then dy = -1
-    elseif p.facing == "down" then dy = 1
-    end
-    if p.moving then
-      require("src.render.Tilt").updateSkyRotation(dx, dy)
-    end
-  end
   -- mod render pipelines tween on the same real-frame clock, for the same
   -- reason: they are presentational, so fast-forward must not speed them up
   require("src.render.Pipelines").update(dt)
@@ -302,21 +283,6 @@ function Game.worldBgBattleDim(stack)
     end
   end
   return nil
-end
-
--- Is a BATTLE BG "world" battle composing itself over the live map right now?
--- Same whole-stack walk as worldBgBattleDim, asked for a different reason: the
--- dark-cave shade shift (wMapPalOffset) must not reach a frame a battle is
--- drawing in.  InitBattleCommon (engine/battle/core.asm) pushes wMapPalOffset,
--- InitBattleVariables (engine/battle/init_battle_variables.asm) writes 0 over
--- it and core.asm pops it back when the battle ends, so a battle in an
--- un-flashed Rock Tunnel is lit on hardware.  Every other BATTLE BG gets that
--- for free -- no map draws beneath an opaque battle, so nothing re-arms the
--- per-frame shade map -- but "world" keeps the overworld drawing underneath,
--- and its arming then darkened the battle's own pics, HUD and text at colorize
--- time (#773).
-function Game.worldBgBattleInStack(stack)
-  return Game.worldBgBattleDim(stack) ~= nil
 end
 
 -- Does anything on the stack want the surface scaled to FILL the window
@@ -478,7 +444,7 @@ function Game:draw()
     local state = self.stack.states[i]
     local wideState = state and state.isWideBattleLayout
       and state:isWideBattleLayout()
-    if renderVisible(self.stack, state) and state.draw then
+    if state and state.draw then
       if classicOffset ~= 0 and not wideState then
         love.graphics.push()
         love.graphics.translate(classicOffset, 0)
@@ -495,7 +461,7 @@ function Game:draw()
   local zones, worldZones, zoneOwner
   for i = #self.stack.states, 1, -1 do
     local s = self.stack.states[i]
-    if renderVisible(self.stack, s) and s.sgbPalettes then
+    if s.sgbPalettes then
       zones = s:sgbPalettes(self)
       zoneOwner = s
       break
@@ -550,40 +516,44 @@ function Game:wheelmoved(_, dy)
   end
 end
 
-function Game:_cycleSpeed(dir)
-  if not (self.save and self.save.options) then return end
-  local busy
-  local ow = self.overworld
-  if ow then
-    local top = self.stack:top()
-    busy = ow.transitioning
-      or (top == ow and (
-           (ow.runner and ow.runner.isRunning and ow.runner:isRunning())
-        or (ow.scriptMoves and #ow.scriptMoves > 0)
-        or ow.engaging or ow.emote))
+function Game:keypressed(key)
+  if self.stack and self.stack:top() and self.stack:top().onKeyPressed then
+    self.stack:top():onKeyPressed(key)
+    return
   end
-  if busy then return end
-  local GameSpeed = require("src.core.GameSpeed")
-  self.save.options.speed = GameSpeed.cycle(self.save.options.speed, dir)
-  self:writeOptions()
-end
-
--- One-shot display actions, fired identically whether the trigger was a
--- keyboard key (Game:keypressed) or a gamepad button (Game:gamepadpressed)
--- bound through HotkeyBindingsMenu. `action` is one of the ids in
--- src/core/Input.lua's DEFAULT_HOTKEY_KEY_BINDINGS.
-function Game:fireHotkey(action)
-  if action == "zoomOut" then
+  if devMode and key == "f5" then
+    require("src.dev.HotReload").run(self)
+    return
+  end
+  if devMode and key == "`" then
+    self.stack:push(require("src.dev.Console").new(self))
+    return
+  end
+  if key == "f10" then
+    -- toggle: the manager no longer swallows the keyboard, so a second
+    -- press reaches this branch and closes it instead of stacking another
+    local top = self.stack:top()
+    if top and top.screenId == "ManagerState" then
+      self.stack:pop()
+    else
+      Screens.push(self, "ManagerState")
+    end
+    return
+  end
+  if key == "f1" then
+    self:writeSave()
+    return
+  elseif key == "f2" then
+    local loaded, recovered = SaveData.load()
+    if loaded then self:restoreSave(loaded, recovered) end
+    return
+  elseif key == "-" then
     self:zoomStep(-1)
-  elseif action == "zoomIn" then
+    return
+  elseif key == "=" then
     self:zoomStep(1)
     return
-  elseif action == "1" then
-    -- cycle GAME SPEED (0.25X → 200X, logic only; audio unaffected);
-    -- R2/L2 on gamepad do the same (see gamepadpressed)
-    self:_cycleSpeed(1)
-    return
-  elseif action == "2" then
+  elseif key == "2" then
     -- cycle COLORS (GBC / OG / OG INV / GBC INV / CLASSIC); the pack change
     -- forces Game.overworld:reloadMap, which rebuilds the live NPC array, so
     -- hold it while a warp/transition or an on-screen scripted cutscene is
@@ -600,121 +570,30 @@ function Game:fireHotkey(action)
       self.save.options.colors = PaletteFX.cycleMode()
       self:writeOptions()
     end
-  elseif action == "tilt" then
+    return
+  elseif key == "3" then
     -- cycle TILT OFF → 15 → 35 → 50 → OFF (mnemonic: 3D), free-roam only
-    -- Block tilt when camera is rotated (not in front position)
     local Tilt = require("src.render.Tilt")
-    local cameraRotated = false
-    if self.overworld and self.overworld.camera then
-      local rotation = self.overworld.camera:getRotation() or 0
-      cameraRotated = rotation ~= 0
-    end
-    if Tilt.gateOK(self.stack:top(), self.overworld) and not cameraRotated then
+    if Tilt.gateOK(self.stack:top(), self.overworld) then
       self.save.options.tilt = Tilt.cycle()
       self:writeOptions()
     end
-  elseif action == "cameraRotateLeft" then
-    -- rotate camera left (free-roam only, restricted when tilt or voxel is active)
-    if self.overworld and self.overworld.camera then
-      local Tilt = require("src.render.Tilt")
-      local voxelRestricted = false
-      local ok, Voxel = pcall(require, "mods.DRAMATIC_SHAPE.lib.VoxelState")
-      if ok then
-        -- Allow rotation only on voxel levels 50 and 75
-        voxelRestricted = Voxel.active() and Voxel.level ~= 4 and Voxel.level ~= 5
-      end
-      if not Tilt.active() and not voxelRestricted then
-        self.overworld.camera:rotateLeft()
-      end
+    return
+  elseif key == "4" then
+    -- cycle ZOOM through every integer level (survey → FIT → close-up → wrap)
+    local Zoom = require("src.render.Zoom")
+    if Zoom.gateOK(self.stack:top(), self.overworld) then
+      self.save.options.zoom = Zoom.cycle(Renderer:fitScale())
+      self:writeOptions()
     end
-  elseif action == "cameraRotateRight" then
-    -- rotate camera right (free-roam only, restricted when tilt or voxel is active)
-    if self.overworld and self.overworld.camera then
-      local Tilt = require("src.render.Tilt")
-      local voxelRestricted = false
-      local ok, Voxel = pcall(require, "mods.DRAMATIC_SHAPE.lib.VoxelState")
-      if ok then
-        -- Allow rotation only on voxel levels 50 and 75
-        voxelRestricted = Voxel.active() and Voxel.level ~= 4 and Voxel.level ~= 5
-      end
-      if not Tilt.active() and not voxelRestricted then
-        self.overworld.camera:rotateRight()
-      end
-    end
-  elseif action == "fastForward" then
-    -- toggle fast forward (1x <-> 4x)
-    local GameSpeed = require("src.core.GameSpeed")
-    local current = self.save.options.speed or GameSpeed.DEFAULT
-    self.save.options.speed = (current == 1) and 4 or 1
-    self:writeOptions()
-  elseif action == "quit" then
-    -- quit the entire application
-    love.event.quit()
-  elseif action == "softReset" then
-    -- soft reset to main menu
-    self:returnToTitle()
-  elseif action == "saveGame" then
-    -- save the current game
-    self:writeSave()
-  elseif action == "loadGame" then
-    -- load the most recent save
-    local SaveData = require("src.core.SaveData")
-    local loaded, recovered = SaveData.load()
-    if loaded then self:restoreSave(loaded, recovered) end
-  elseif action == "toggleModMenu" then
-    -- toggle the mod manager menu
-    local top = self.stack:top()
-    if top and top.screenId == "ManagerState" then
-      self.stack:pop()
-    else
-      local Screens = require("src.ui.Screens")
-      Screens.push(self, "ManagerState")
-    end
-  elseif action == "gbcfx" then
+    return
+  elseif key == "5" then
     -- cycle GBC FX OFF → 1 → 2 → 3 → 4 (unlit-GBC ladder); always on
     -- desktop.  Mobile refuses the present shader (issue #136).
     local GBCFX = require("src.render.GBCFX")
     if not GBCFX.isSupported() then return end
     self.save.options.gbcfx = GBCFX.cycle()
     self:writeOptions()
-  elseif action == "vortex" then
-    -- Vortex hotkey for mods (e.g., Dramatic Shape voxel mode)
-    -- Pass through to pipeline system with key 3 (voxel's hotkey)
-    local Pipelines = require("src.render.Pipelines")
-    local top = self.stack and self.stack:top()
-    Pipelines.hotkey("3", top, self.overworld)
-  elseif action == "reloadMods" then
-    -- Hot reload mods during gameplay
-    require("src.dev.HotReload").run(self)
-  else
-    -- Let mods handle custom hotkeys via hook
-    local Runtime = require("src.mods.Runtime")
-    local handled = Runtime.call("game.hotkey", function() return false end, action, self)
-    if handled then return end
-  end
-end
-
-function Game:keypressed(key)
-  if self.stack and self.stack:top() and self.stack:top().onKeyPressed then
-    self.stack:top():onKeyPressed(key)
-    return
-  end
-  if key == "f5" then
-    require("src.dev.HotReload").run(self)
-    return
-  end
-  if devMode and key == "`" then
-    self.stack:push(require("src.dev.Console").new(self))
-    return
-  end
-  -- Display hotkeys (COLORS/TILT/ZOOM/GBC FX + zoom step): looked up
-  -- through Input's hotkey table rather than hardcoded key literals, so
-  -- the same action fires from Game:gamepadpressed once a player binds a
-  -- pad button to it in HotkeyBindingsMenu. Defaults keep today's keys
-  -- (2/3/4/5/-/=) byte-identical -- see DEFAULT_HOTKEY_KEY_BINDINGS.
-  local hotkey = Input:hotkeyForKey(key)
-  if hotkey then
-    self:fireHotkey(hotkey)
     return
   end
   -- Mod render pipelines claim their hotkeys last, so one can never shadow
@@ -754,28 +633,10 @@ function Game:gamepadpressed(joystick, button)
   -- a controller is being used: the touch overlay steps aside until the
   -- next screen touch (mobile only; a no-op elsewhere)
   TouchControls:noteGamepad()
-  -- shoulder buttons cycle GAME SPEED (R2/rightshoulder = faster,
-  -- L2/leftshoulder = slower; same as keyboard hotkey 1)
-  if button == "rightshoulder" then
-    self:_cycleSpeed(1)
-    return
-  elseif button == "leftshoulder" then
-    self:_cycleSpeed(-1)
-    return
-  end
   -- BindingsMenu's pad capture rides the same top-state routing as keys
   local top = self.stack and self.stack:top()
   if top and top.onGamepadPressed then
     top:onGamepadPressed(button)
-    return
-  end
-  -- A pad button bound to a display hotkey (COLORS/TILT/ZOOM/GBC FX/zoom
-  -- step) in HotkeyBindingsMenu takes priority over the GB-button map --
-  -- there is no default overlap (DEFAULT_HOTKEY_PAD_BINDINGS starts
-  -- empty), so this only ever fires once a player has opted in.
-  local hotkey = Input:hotkeyForPad(button)
-  if hotkey then
-    self:fireHotkey(hotkey)
     return
   end
   Input:gamepadpressed(joystick, button)
@@ -791,28 +652,7 @@ end
 function Game:gamepadaxis(joystick, axis, value)
   -- past-deadzone only, so resting-stick drift can't hide the overlay
   if math.abs(value) > 0.5 then TouchControls:noteGamepad() end
-  -- Route to capture handler if present (HotkeyBindingsMenu)
-  local top = self.stack and self.stack:top()
-  if top and top.onGamepadAxis then
-    top:onGamepadAxis(axis, value)
-    return
-  end
   Input:gamepadaxis(joystick, axis, value)
-  -- Check for trigger hotkeys (ZL/ZR) that crossed threshold
-  local triggerHotkey = Input:consumeTriggerHotkey()
-  if triggerHotkey then
-    self:fireHotkey(triggerHotkey)
-  end
-  -- Check for stick direction hotkeys
-  local stickHotkey = Input:consumeStickHotkey()
-  if stickHotkey then
-    self:fireHotkey(stickHotkey)
-  end
-  -- Check for right stick direction hotkeys
-  local rightStickHotkey = Input:consumeRightStickHotkey()
-  if rightStickHotkey then
-    self:fireHotkey(rightStickHotkey)
-  end
 end
 
 -- conf.lua turns the mobile accelerometer-joystick off (#468), but guard the
@@ -873,68 +713,17 @@ function Game:joystickhat(joystick, hat, direction)
 end
 
 -- Window focus/visibility flips: a release due while unfocused/hidden can
--- be swallowed by the OS. Reset on both edges; on the regain, reconcile
--- re-arms only what is still physically held -- a held key won't re-fire
--- keypressed by itself, and without the rebuild a spurious lifecycle event
--- parked the player until every direction was re-pressed (#799).
+-- be swallowed by the OS. Reset on both edges -- gaining focus with a
+-- physically held key won't re-fire keypressed, so trusting leftover
+-- state is worse than asking the player to re-press.
 function Game:focus(f)
   Input:reset()
-  if f then Input:reconcile() end
   TouchControls:reset()
-  self:cancelPointers()
 end
 
 function Game:visible(v)
-  if v then
-    self:onResume()
-  else
-    Input:reset()
-    TouchControls:reset()
-    self:cancelPointers()
-  end
-end
-
-function Game:onResume()
   Input:reset()
-  Input:reconcile()
   TouchControls:reset()
-  self:cancelPointers()
-  -- Chip music may survive NX suspend as a duplicate stream; stop it and let
-  -- the active screen re-cue on the next frame (hardware audio check: T19).
-  -- Desktop/mobile window-visible flips must not kill overworld music.
-  if require("src.core.Platform").isNX() then
-    require("src.core.ChipAudio").stopMusic()
-  end
-  local SwitchDiagnostics = require("src.debug.SwitchDiagnostics")
-  if SwitchDiagnostics.isEnabled() then
-    SwitchDiagnostics.onEvent("lifecycle", { event = "resume" })
-  end
-end
-
-function Game:recoverInput(event, joystick)
-  Input:reset()
-  -- A hotplug can arrive with no hotplug (macOS Bluetooth re-enumeration),
-  -- and the blanket reset above also drops unrelated keyboard holds; put
-  -- back whatever is still physically down (#799).
-  Input:reconcile()
-  TouchControls:reset()
-  -- reset just dropped every source, mod holds included: retire the mods'
-  -- outstanding press tokens so nothing stale can be released later, and
-  -- tell subscribers their live pointers died (#807)
-  if self.mods and self.mods.releaseModInput then self.mods:releaseModInput() end
-  self:cancelPointers()
-  local SwitchDiagnostics = require("src.debug.SwitchDiagnostics")
-  if SwitchDiagnostics.isEnabled() then
-    if joystick then
-      SwitchDiagnostics.onJoystickEvent(event, joystick)
-    else
-      SwitchDiagnostics.onEvent("lifecycle", { event = event })
-    end
-  end
-end
-
-function Game:joystickadded(joystick)
-  self:recoverInput("joystickadded", joystick)
 end
 
 -- A disconnected/dropped controller can't send the button-up for whatever
@@ -945,118 +734,16 @@ function Game:joystickremoved(joystick)
   TouchControls:joystickremoved()
 end
 
--- Gameplay pointer seam (#807).  TouchControls keeps first refusal: a
--- pointer that begins on a virtual control belongs to the pad for its
--- whole lifecycle and never reaches mods, while one that begins outside
--- stays mod-visible even if it later wanders across a control
--- (TouchControls only tracks ids it captured at press).  Everything a
--- subscriber costs -- the per-pointer records in self.modPointers, the
--- payload tables -- sits behind wantsHook, so a mod-free boot allocates
--- nothing here.
-
--- vanilla for input.pointer: nobody consumed the event
-local function pointerUnclaimed() return false end
-
--- coordinates are LOVE window units, the same space render.hud's viewport
--- and the touch overlay lay out in
-function Game:pointerEvent(phase, source, id, x, y, dx, dy, pressure, button)
-  return ModRuntime.call("input.pointer", pointerUnclaimed, self, {
-    phase = phase, source = source, id = id, x = x, y = y,
-    dx = dx or 0, dy = dy or 0, pressure = pressure, button = button,
-  })
+function Game:touchpressed(id, x, y)
+  TouchControls:touchpressed(id, x, y)
 end
 
-function Game:touchpressed(id, x, y, dx, dy, pressure)
-  if TouchControls:touchpressed(id, x, y) then return end
-  if not ModRuntime.wantsHook("input.pointer") then return end
-  -- POKEPORT_TOUCH routes the mouse through here as a stand-in finger
-  -- under the id "mouse" (see main.lua); mods still see its true source
-  local source = id == "mouse" and "mouse" or "touch"
-  self.modPointers = self.modPointers or {}
-  self.modPointers[id] = { source = source, x = x, y = y,
-                           pressure = pressure }
-  self:pointerEvent("pressed", source, id, x, y, dx, dy, pressure)
-end
-
-function Game:touchmoved(id, x, y, dx, dy, pressure)
+function Game:touchmoved(id, x, y)
   TouchControls:touchmoved(id, x, y)
-  local p = self.modPointers and self.modPointers[id]
-  if not p then return end
-  -- the POKEPORT_TOUCH mouse path carries no deltas; derive them from the
-  -- pointer's last seen position so drags read the same either way
-  if dx == nil then dx, dy = x - p.x, y - p.y end
-  p.x, p.y = x, y
-  if pressure ~= nil then p.pressure = pressure end
-  if ModRuntime.wantsHook("input.pointer") then
-    self:pointerEvent("moved", p.source, id, x, y, dx, dy, pressure)
-  end
 end
 
-function Game:touchreleased(id, x, y, dx, dy, pressure)
+function Game:touchreleased(id, x, y)
   TouchControls:touchreleased(id, x, y)
-  local p = self.modPointers and self.modPointers[id]
-  if not p then return end
-  self.modPointers[id] = nil
-  if ModRuntime.wantsHook("input.pointer") then
-    self:pointerEvent("released", p.source, id, x, y, dx, dy, pressure)
-  end
-end
-
--- A real mouse without POKEPORT_TOUCH (#807).  Gameplay itself has no
--- mouse verbs, so the pointer hook is the only consumer and everything is
--- behind the wantsHook gate.  A synthesized istouch twin is dropped
--- unconditionally: the same contact already arrived through
--- Game:touchpressed, and forwarding both would fire a mobile touch twice.
-function Game:mousepressed(x, y, button, istouch)
-  if istouch then return end
-  if not ModRuntime.wantsHook("input.pointer") then return end
-  self.modPointers = self.modPointers or {}
-  local p = self.modPointers.mouse
-  if p then
-    p.held, p.x, p.y = (p.held or 1) + 1, x, y
-  else
-    self.modPointers.mouse = { source = "mouse", x = x, y = y,
-                               held = 1, button = button }
-  end
-  self:pointerEvent("pressed", "mouse", "mouse", x, y, 0, 0, nil, button)
-end
-
--- hover moves are delivered too (button = nil); only pressed pointers are
--- tracked, because only they owe a released/cancelled later
-function Game:mousemoved(x, y, dx, dy, istouch)
-  if istouch then return end
-  local p = self.modPointers and self.modPointers.mouse
-  if p then p.x, p.y = x, y end
-  if not ModRuntime.wantsHook("input.pointer") then return end
-  self:pointerEvent("moved", "mouse", "mouse", x, y, dx, dy, nil, nil)
-end
-
-function Game:mousereleased(x, y, button, istouch)
-  if istouch then return end
-  local p = self.modPointers and self.modPointers.mouse
-  if not p then return end
-  p.held = (p.held or 1) - 1
-  if p.held <= 0 then self.modPointers.mouse = nil end
-  if ModRuntime.wantsHook("input.pointer") then
-    self:pointerEvent("released", "mouse", "mouse", x, y, 0, 0, nil, button)
-  end
-end
-
--- Focus/visibility loss and input recovery swallow pointer releases the
--- same way they swallow key-ups (the hazard Input:reset exists for):
--- every mod-visible pointer gets a "cancelled" instead of leaving
--- subscribers waiting on a "released" that can never arrive (#807).
--- Cleared even when the subscriber is already gone, so no stale record
--- outlives its mod.
-function Game:cancelPointers()
-  local pointers = self.modPointers
-  if not pointers then return end
-  self.modPointers = nil
-  if not ModRuntime.wantsHook("input.pointer") then return end
-  for id, p in pairs(pointers) do
-    self:pointerEvent("cancelled", p.source, id, p.x, p.y, 0, 0,
-                      p.pressure, p.button)
-  end
 end
 
 -- Point the loader's mod.save backing at this save's modData so per-mod
@@ -1144,7 +831,6 @@ function Game:applyOptions(opts)
     if FrameCap.current > caps.fpsMax then FrameCap.apply(caps.fpsMax) end
   end
   Input:applyBindings(opts.bindings)
-  Input:applyHotkeyBindings(opts.hotkeyBindings)
   TouchControls:applyOptions(opts)
   -- heal soft-bricked APK installs that already saved gbcfx > 0 (#136)
   if gbcCleared then self:writeOptions() end
@@ -1203,30 +889,6 @@ function Game:restoreSave(loaded, recovered)
     ModRuntime.emit("save.loaded",
       { save = loaded, meta = loaded.meta, modsDiff = modsDiff })
   end
-end
-
--- Reconstruct a previously validated runtime checkpoint without replaying the
--- ordinary CONTINUE lifecycle. In particular, map onEnter scripts and
--- save.loading/save.loaded events must not run a second time. Validation,
--- identity checks and transactional rollback live in Checkpoint.lua.
-function Game:restoreCheckpointSave(loaded)
-  self.save = loaded
-  self:adoptSave(loaded)
-  while self.stack:top() do self.stack:pop() end
-  self.stack:push(self.overworld, loaded.player.map,
-                  loaded.player.x, loaded.player.y, loaded.player.facing,
-                  { via = "checkpoint", checkpoint = true })
-end
-
--- Install a reconstructed battle without calling BattleState:enter(), whose
--- transition, intro queues and battle-start side effects already happened in
--- the checkpointed timeline.
-function Game:restoreCheckpointBattle(battle)
-  if self.stack:top() ~= self.overworld then
-    error("battle checkpoint requires a reconstructed overworld base", 0)
-  end
-  self.stack.states[#self.stack.states + 1] = battle
-  if battle.resumeCheckpoint then battle:resumeCheckpoint() end
 end
 
 return Game

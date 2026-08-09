@@ -15,6 +15,15 @@
 local GameVersion = require("src.core.GameVersion")
 local MapScripts = require("src.script.MapScripts")
 
+-- Gen2 ships its scripts as ROM bytecode, disassembled at import time into
+-- data/generated/map_scripts.lua.  Attach its object dialogue first so the
+-- hand-ported modules below still win per TEXT constant; the scene and
+-- coord-event tables are attached last (see the end of this file) so the
+-- ROM's own cutscene wiring wins over the hand-ported stand-ins.
+local gen2Data = require("src.core.Data")
+local gen2VM = gen2Data.map_scripts and require("src.script.Gen2ScriptVM") or nil
+if gen2VM then gen2VM.register(gen2Data, "talk") end
+
 -- OaksLab is a full Yellow rewrite (one Eevee ball + forced Pikachu);
 -- Red/Blue keep the three-starter choose flow.
 local oaksLab = GameVersion.isYellow()
@@ -30,12 +39,33 @@ for _, mapEntry in ipairs({
   MapScripts.attachBase(mapEntry[1], require(mapEntry[2]))
 end
 
+-- The Gen2 errand chain (player's house, Elm's lab, Mr Pokemon's house) was
+-- hand-ported before the ROM bytecode ran; the VM now drives those maps end to
+-- end, and mixing the two left the player stuck -- the hand-written Elm
+-- dialogue never advanced the scene the ROM's "you can't leave yet" script
+-- checks.  They only load when the disassembly is unavailable.
+if not gen2VM then
+  for _, mapEntry in ipairs({
+    { "PLAYERS_HOUSE1_F", "data.scripts.players_house1f" },
+    { "MAP_G18_N06",     "data.scripts.players_house1f" },
+    { "ELMS_LAB",        "data.scripts.elms_lab" },
+  }) do
+    MapScripts.attachBase(mapEntry[1], require(mapEntry[2]))
+  end
+  for mapId, mod in pairs(require("data.scripts.mr_pokemons_house")) do
+    if type(mod) == "table" and (mod.talk or mod.onEnter) then
+      MapScripts.attachBase(mapId, mod)
+    end
+  end
+end
+
 -- story-critical scripts, one table per map, in the order the old merge
 -- loop required them
 for _, file in ipairs({ "data.scripts.story", "data.scripts.story2",
                         "data.scripts.story3", "data.scripts.story4",
                         "data.scripts.story5", "data.scripts.story6",
-                        "data.scripts.story7", "data.scripts.flavor_all",
+                        "data.scripts.story7",
+                        "data.scripts.flavor_all",
                         "data.scripts.safari", "data.scripts.seafoam",
                         "data.scripts.gyms" }) do
   for mapId, mod in pairs(require(file)) do
@@ -55,6 +85,8 @@ if GameVersion.isYellow() then
     end
   end
 end
+
+if gen2VM then gen2VM.register(gen2Data, "scenes") end
 
 local M = {}
 

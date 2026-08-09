@@ -33,85 +33,35 @@ local DEFAULT_GAMEPAD_BINDINGS = {
   start = "start", back = "select",
 }
 
--- Raw joystick button bindings for joysticks that don't follow gamepad mapping
--- These are numeric button indices that some joysticks use
-local RAW_BUTTON_BINDINGS = {
-  [1] = "b",
-  [2] = "a",
-  [3] = "select",
-  [4] = "start",
-  [9] = "left",
-  [10] = "right",
-  [11] = "up",
-  [12] = "down",
-}
-
 -- left-stick deadzones: press past STICK_ON, release once back under
 -- STICK_OFF. The gap (hysteresis) stops the direction from flickering
 -- while the stick sits near the threshold.
 local STICK_ON = 0.5
 local STICK_OFF = 0.3
 
--- trigger threshold: press past TRIGGER_ON, release once back under
--- TRIGGER_OFF. Same hysteresis pattern as the stick.
-local TRIGGER_ON = 0.5
-local TRIGGER_OFF = 0.3
-
--- Display "hotkeys" (COLORS/TILT/ZOOM/GBC FX + zoom step) are one-shot
--- actions fired straight from Game:keypressed/gamepadpressed -- they are
--- not Game Boy buttons, so they get their own binding table instead of
--- sharing keyBindings/padBindings above. That keeps a hotkey rebind from
--- ever colliding with (or being overwritten by) a d-pad/A/B/Start/Select
--- rebind, and vice versa. See Game:fireHotkey and src/ui/HotkeyBindingsMenu.lua.
-local DEFAULT_HOTKEY_KEY_BINDINGS = {
-  ["2"] = "colors",
-  ["3"] = "tilt",
-  ["4"] = "fastForward",
-  ["5"] = "gbcfx",
-  ["-"] = "zoomOut",
-  ["="] = "zoomIn",
-  ["9"] = "quit",
-  ["0"] = "softReset",
-  ["f1"] = "saveGame",
-  ["f2"] = "loadGame",
-  ["f10"] = "toggleModMenu",
-  -- vortex hotkey for mods (e.g., Dramatic Shape voxel mode)
-  ["6"] = "vortex",
-  -- camera rotation
-  ["["] = "cameraRotateLeft",
-  ["]"] = "cameraRotateRight",
-  -- mod reload
-  ["f5"] = "reloadMods",
+-- Generic SDL joysticks expose the left stick as the first two numbered
+-- axes and the D-pad as a hat.  This is common on Linux handhelds whose
+-- controller has no game-controller database entry.  The indices below are
+-- the desktop XInput order and are only meaningful for such pads: raw
+-- numbering is per-driver, and SDL's iOS/MFi driver packs only the buttons
+-- a pad actually reports, which slides the D-pad down onto 7..10 (#620).
+-- These are the raw DEFAULTS only: applyBindings layers the player's
+-- "joyN" pad bindings over them (#632), and only a stick SDL does NOT
+-- recognize as a gamepad is ever served out of this table -- see
+-- joystickpressed below.
+local RAW_BUTTON_BINDINGS = {
+  [1] = "a", [2] = "b",
+  [7] = "select", [8] = "start", [9] = "select", [10] = "start",
 }
 
--- No default pad buttons: every physical button LÖVE exposes on a
--- standard gamepad is either already claimed by a Game Boy button above
--- or left free, and guessing a mapping risks colliding with a shoulder
--- button some pad already uses for something else. A player opts in
--- through HotkeyBindingsMenu's "PRESS A BUTTON" capture instead.
--- Directional stick movements and triggers are available for binding.
-local DEFAULT_HOTKEY_PAD_BINDINGS = {
-  ["stickup"] = nil,
-  ["stickdown"] = nil,
-  ["stickleft"] = nil,
-  ["stickright"] = nil,
-  ["rightstickup"] = nil,
-  ["rightstickdown"] = nil,
-  ["rightstickleft"] = nil,
-  ["rightstickright"] = nil,
-  ["lefttrigger"] = nil,
-  ["righttrigger"] = nil,
-  ["dpadup"] = nil,
-  ["dpaddown"] = nil,
-  ["dpadleft"] = nil,
-  ["dpadright"] = nil,
-  ["stickleftcamera"] = nil,
-  ["stickrightcamera"] = nil,
+local HAT_DIRECTIONS = {
+  u = { "up" }, d = { "down" }, l = { "left" }, r = { "right" },
+  lu = { "left", "up" }, ru = { "right", "up" },
+  ld = { "left", "down" }, rd = { "right", "down" },
 }
 
 function Input:init()
   self:applyBindings(nil)
-  self:applyHotkeyBindings(nil)
   self:reset()
 end
 
@@ -151,49 +101,6 @@ function Input:applyBindings(overlay)
   self.joyBindings = joys
 end
 
--- Same layering as applyBindings above, but for the hotkey action table
--- (save.options.hotkeyBindings, written by src/ui/HotkeyBindingsMenu.lua).
--- A rebind here adds an extra trigger for that action rather than
--- replacing the default, exactly like applyBindings.
-function Input:applyHotkeyBindings(overlay)
-  local keys, pads = {}, {}
-  for key, action in pairs(DEFAULT_HOTKEY_KEY_BINDINGS) do keys[key] = action end
-  for button, action in pairs(DEFAULT_HOTKEY_PAD_BINDINGS) do pads[button] = action end
-  for actionId, binding in pairs(overlay or {}) do
-    if type(binding) == "table" then
-      if binding.key then keys[binding.key] = actionId end
-      if binding.pad then pads[binding.pad] = actionId end
-    elseif type(binding) == "string" then
-      keys[binding] = actionId
-    end
-  end
-  self.hotkeyKeyBindings = keys
-  self.hotkeyPadBindings = pads
-end
-
--- Allow mods to add default hotkey bindings at runtime
-function Input:addHotkeyKeyBinding(key, actionId)
-  if not self.hotkeyKeyBindings then self.hotkeyKeyBindings = {} end
-  self.hotkeyKeyBindings[key] = actionId
-end
-
-function Input:addHotkeyPadBinding(pad, actionId)
-  if not self.hotkeyPadBindings then self.hotkeyPadBindings = {} end
-  self.hotkeyPadBindings[pad] = actionId
-end
-
--- Returns the hotkey action id (e.g. "tilt") bound to a keyboard key or
--- gamepad button, or nil. These are looked up straight from
--- Game:keypressed/gamepadpressed -- they never touch state/pressQueue,
--- since a hotkey fires once and has no held/isDown concept.
-function Input:hotkeyForKey(key)
-  return self.hotkeyKeyBindings and self.hotkeyKeyBindings[key]
-end
-
-function Input:hotkeyForPad(button)
-  return self.hotkeyPadBindings and self.hotkeyPadBindings[button]
-end
-
 -- Purely event-driven state (press sets true, release sets false) has no
 -- fallback if a release event never arrives -- focus loss, a minimized
 -- window, or a disconnected gamepad can all swallow the key-up/button-up
@@ -206,13 +113,7 @@ function Input:reset()
   self.sources = {}
   self.stickAxis = { x = 0, y = 0 }
   self.stickDir = nil
-  self.rightStickAxis = { x = 0, y = 0 }
-  self.rightStickDir = nil
-  self.triggerAxis = { left = 0, right = 0 }
-  self.triggerPressed = { left = false, right = false }
-  self.pendingStickHotkey = nil
-  self.pendingRightStickHotkey = nil
-  self.pendingTriggerHotkey = nil
+  self.hatDirs = {}
 end
 
 -- Multiple physical sources (W + Up, d-pad + stick, etc.) can claim the
@@ -299,21 +200,6 @@ function Input:overlayReleased(btn)
   release(self, btn, "touch:" .. btn)
 end
 
--- Programmatic mod input (#807).  mod.input taps and holds land here under
--- loader-issued "mod:<id>:<n>" source names, riding the same per-source
--- bookkeeping as every physical path above, so releasing one can never
--- clear a hold a key, stick, hat, the overlay, or another mod still owns.
--- A tap is a sourcePress immediately followed by its sourceRelease: the
--- queued edge survives into the next step, and the emptied source map
--- keeps the hold from being revived (see Input:step's sources == {} rule).
-function Input:sourcePress(btn, source)
-  press(self, btn, source)
-end
-
-function Input:sourceRelease(btn, source)
-  release(self, btn, source)
-end
-
 function Input:gamepadpressed(joystick, button)
   local btn = self.padBindings[button]
   if btn then
@@ -362,200 +248,58 @@ function Input:gamepadaxis(joystick, axis, value)
     self.stickAxis.x = value
   elseif axis == "lefty" then
     self.stickAxis.y = value
-  elseif axis == "rightx" then
-    self.rightStickAxis.x = value
-  elseif axis == "righty" then
-    self.rightStickAxis.y = value
-  elseif axis == "triggerleft" then
-    self:handleTrigger("left", value)
-  elseif axis == "triggerright" then
-    self:handleTrigger("right", value)
   else
     return
   end
 
-  if axis == "leftx" or axis == "lefty" then
-    local x, y = self.stickAxis.x, self.stickAxis.y
-    local ax, ay = math.abs(x), math.abs(y)
-    local newDir = self.stickDir
-    if ax > STICK_ON or ay > STICK_ON then
-      if ax >= ay then
-        newDir = x > 0 and "right" or "left"
-      else
-        newDir = y > 0 and "down" or "up"
-      end
-    elseif ax < STICK_OFF and ay < STICK_OFF then
-      newDir = nil
-    end
-
-    if newDir ~= self.stickDir then
-      if self.stickDir then
-        release(self, self.stickDir, "stick")
-      end
-      if newDir then
-        press(self, newDir, "stick")
-        -- Fire hotkey for stick direction
-        local stickButton = "stick" .. newDir
-        local hotkey = self:hotkeyForPad(stickButton)
-        if hotkey then
-          self.pendingStickHotkey = hotkey
-        end
-      end
-      self.stickDir = newDir
-    end
-  elseif axis == "rightx" or axis == "righty" then
-    local x, y = self.rightStickAxis.x, self.rightStickAxis.y
-    local ax, ay = math.abs(x), math.abs(y)
-    local newDir = self.rightStickDir
-    
-    -- Check if right stick movement is enabled in options
-    local rightStickMovementEnabled = false
-    local ok, Game = pcall(require, "src.core.Game")
-    if ok and Game and Game.save and Game.save.options then
-      rightStickMovementEnabled = Game.save.options.rightStickMovement or false
-    end
-    
-    if ax > STICK_ON or ay > STICK_ON then
-      if ax >= ay then
-        newDir = x > 0 and "right" or "left"
-      else
-        newDir = y > 0 and "down" or "up"
-      end
-    elseif ax < STICK_OFF and ay < STICK_OFF then
-      newDir = nil
-    end
-
-    if newDir ~= self.rightStickDir then
-      if self.rightStickDir then
-        release(self, self.rightStickDir, "rightstick")
-      end
-      if newDir then
-        -- When movement is enabled: press for game movement only (no hotkeys)
-        if rightStickMovementEnabled then
-          press(self, newDir, "rightstick")
-        else
-          -- When movement is disabled: fire hotkey only (no movement)
-          local stickButton = "rightstick" .. newDir
-          local hotkey = self:hotkeyForPad(stickButton)
-          if hotkey then
-            self.pendingRightStickHotkey = hotkey
-          end
-        end
-      end
-      self.rightStickDir = newDir
-    end
-  end
-end
-
--- Alias for joystickaxis (used by some controllers/joysticks)
-function Input:joystickaxis(joystick, axis, value)
-  self:gamepadaxis(joystick, axis, value)
-end
-
--- Handle analog triggers (ZL/ZR) with threshold detection
-function Input:handleTrigger(side, value)
-  local buttonName = side == "left" and "lefttrigger" or "righttrigger"
-  self.triggerAxis[side] = value
-  
-  local wasPressed = self.triggerPressed[side]
-  local isPressed = value > TRIGGER_ON
-  
-  if isPressed and not wasPressed then
-    -- Trigger just crossed threshold - fire hotkey if bound
-    local hotkey = self:hotkeyForPad(buttonName)
-    if hotkey then
-      -- Store for Game to fire in gamepadpressed
-      self.pendingTriggerHotkey = hotkey
-    end
-  end
-  
-  self.triggerPressed[side] = isPressed
-end
-
--- Check for pending trigger hotkey to fire
-function Input:consumeTriggerHotkey()
-  local hotkey = self.pendingTriggerHotkey
-  self.pendingTriggerHotkey = nil
-  return hotkey
-end
-
--- Check for pending stick hotkey to fire
-function Input:consumeStickHotkey()
-  local hotkey = self.pendingStickHotkey
-  self.pendingStickHotkey = nil
-  return hotkey
-end
-
--- Check for pending right stick hotkey to fire
-function Input:consumeRightStickHotkey()
-  local hotkey = self.pendingRightStickHotkey
-  self.pendingRightStickHotkey = nil
-  return hotkey
-end
-
--- Lifecycle resets (focus/visibility flips, joystick add/remove, resume)
--- wipe held state because a release can be swallowed while the OS owns the
--- event stream.  A direction the player is STILL holding never re-fires
--- keypressed/gamepadpressed after the wipe either, so a spurious reset --
--- macOS re-enumerating a Bluetooth pad fires joystickadded with no hotplug,
--- and the blanket reset took unrelated keyboard holds down with it --
--- parked the player in place until every direction was released and
--- pressed again (#799).  Rebuild holds from the devices' ground truth
--- instead: only what is physically down right now comes back, so the
--- swallowed-release hazards the resets guard against stay cleared.
--- Deliberately separate from reset(): the soft-reset chord path in
--- Game:step needs the clean slate (re-arming A there would read it as a
--- title-menu choice).
-function Input:reconcile()
-  local kb = love and love.keyboard
-  if kb and kb.isDown then
-    for key, btn in pairs(self.keyBindings) do
-      local ok, down = pcall(kb.isDown, key)
-      if ok and down then press(self, btn, "key:" .. key) end
-    end
-  end
-  local js = love and love.joystick
-  if not (js and js.getJoysticks) then return end
-  local ok, joysticks = pcall(js.getJoysticks)
-  if not ok or type(joysticks) ~= "table" then return end
-  for _, j in ipairs(joysticks) do
-    if GamepadMap.ignoreRawForJoystick(j) then
-      -- SDL-recognized pad: buttons + left stick, the gamepad surfaces
-      if j.isGamepadDown then
-        for button, btn in pairs(self.padBindings) do
-          local ok2, down = pcall(j.isGamepadDown, j, button)
-          if ok2 and down then press(self, btn, "pad:" .. button) end
-        end
-      end
-      if j.getGamepadAxis then
-        for _, axis in ipairs({ "leftx", "lefty" }) do
-          local ok2, v = pcall(j.getGamepadAxis, j, axis)
-          if ok2 and type(v) == "number" then self:gamepadaxis(j, axis, v) end
-        end
-      end
+  local x, y = self.stickAxis.x, self.stickAxis.y
+  local ax, ay = math.abs(x), math.abs(y)
+  local newDir = self.stickDir
+  if ax > STICK_ON or ay > STICK_ON then
+    if ax >= ay then
+      newDir = x > 0 and "right" or "left"
     else
-      -- raw stick (#620/#632): the surfaces the joystick* events feed
-      if j.isDown then
-        for index, btn in pairs(self.joyBindings) do
-          local ok2, down = pcall(j.isDown, j, index)
-          if ok2 and down then press(self, btn, "joy:" .. index) end
-        end
-      end
-      if j.getAxis then
-        for _, axis in ipairs({ 1, 2 }) do
-          local ok2, v = pcall(j.getAxis, j, axis)
-          if ok2 and type(v) == "number" then self:joystickaxis(j, axis, v) end
-        end
-      end
-      if j.getHatCount and j.getHat then
-        local ok2, count = pcall(j.getHatCount, j)
-        for hat = 1, (ok2 and count) or 0 do
-          local ok3, dir = pcall(j.getHat, j, hat)
-          if ok3 and dir then self:joystickhat(j, hat, dir) end
-        end
-      end
+      newDir = y > 0 and "down" or "up"
     end
+  elseif ax < STICK_OFF and ay < STICK_OFF then
+    newDir = nil
   end
+
+  if newDir ~= self.stickDir then
+    if self.stickDir then
+      release(self, self.stickDir, "stick")
+    end
+    if newDir then
+      press(self, newDir, "stick")
+    end
+    self.stickDir = newDir
+  end
+end
+
+function Input:joystickaxis(joystick, axis, value)
+  if not isRawStick(joystick) then return end
+  if axis == 1 then
+    self:gamepadaxis(joystick, "leftx", value)
+  elseif axis == 2 then
+    self:gamepadaxis(joystick, "lefty", value)
+  end
+end
+
+-- Same duplicate-event rule as joystickpressed (#620, #632): a recognized
+-- pad's D-pad already arrived as dpup/dpdown/dpleft/dpright through the
+-- gamepad map, so letting the hat answer too would re-assert the factory
+-- directions on top of a direction rebind.
+function Input:joystickhat(joystick, hat, direction)
+  if not isRawStick(joystick) then return end
+  local source = "hat:" .. hat
+  for _, btn in ipairs(self.hatDirs[hat] or {}) do
+    release(self, btn, source)
+  end
+  local dirs = HAT_DIRECTIONS[direction] or {}
+  for _, btn in ipairs(dirs) do
+    press(self, btn, source)
+  end
+  self.hatDirs[hat] = dirs
 end
 
 function Input:isDown(btn)

@@ -4,9 +4,9 @@
 -- its own file without editing a single record, and one flush() drops
 -- every downstream cache for dev-mode hot reload.
 --
--- No loader installed means resolve() is the identity.  The NX Blue/Yellow
--- versioned-cache fallback lives in src/core/NxAssetOverlay.lua (installed
--- once at boot on NX only), not here, so this module stays platform-free.
+-- No loader installed means resolve() is the identity, which is what
+-- keeps a mod-free boot (and every headless test) loading exactly the
+-- paths it always did.
 
 local Assets = {}
 
@@ -29,27 +29,18 @@ local function exists(path)
 end
 Assets.exists = exists
 
--- Mod overrides win; on NX, Blue/Yellow then use the prefixed save-dir file;
--- otherwise the caller's unprefixed path (Red / mounted overlay).
+-- an override dir shadows the generated cache; a transform's derived
+-- output is the fallback under it, so hand-authored art beats generated
 function Assets.resolve(path)
-  if type(path) ~= "string" then return path end
-  if path:sub(1, #GENERATED) ~= GENERATED then return path end
-
-  local rel = path:sub(#GENERATED + 1)
   local loader = Assets.loader
-  if loader then
-    for _, mod in ipairs(loader:overrideOrder()) do
-      local candidate = mod.path .. "/overrides/" .. rel
-      if exists(candidate) then return candidate end
-    end
-    local derived = loader:derivedPath(rel)
-    if derived then return derived end
+  if not loader or type(path) ~= "string" then return path end
+  if path:sub(1, #GENERATED) ~= GENERATED then return path end
+  local rel = path:sub(#GENERATED + 1)
+  for _, mod in ipairs(loader:overrideOrder()) do
+    local candidate = mod.path .. "/overrides/" .. rel
+    if exists(candidate) then return candidate end
   end
-
-  -- NX Blue/Yellow: no rewrite here -- NxAssetOverlay (installed once at
-  -- boot on NX only) covers every loader globally, so this module stays
-  -- the mod-override choke point it always was.
-  return path
+  return loader:derivedPath(rel) or path
 end
 
 function Assets.image(path)

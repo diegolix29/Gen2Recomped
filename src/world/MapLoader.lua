@@ -9,9 +9,6 @@
 -- TileRenderer), so there is no per-map batch to construct up front and thus
 -- nothing to stream -- OverworldState:rebuildNeighbors just loads each
 -- neighbor directly.
---
--- Preloading: maps can be preloaded in the background to reduce stutter during
--- transitions. The preload queue is processed gradually each frame.
 
 local Assets = require("src.render.Assets")
 local Map = require("src.world.Map")
@@ -28,11 +25,11 @@ local accessSeq = 0
 -- never the ones evicted; this only caps the lingering trail behind you.
 local RESIDENT_CAP = 32
 
--- Preloading system
-local preloadQueue = {} -- list of {mapId, data}
-local preloadInProgress = {} -- mapId -> true for maps currently being preloaded
-local preloadCache = {} -- mapId -> true for successfully preloaded maps
-local currentData = nil -- reference to current Game.data for preload operations
+local TILESET_FALLBACKS = {
+  TilesetPlayersHouse = { "TilesetHouse", "TilesetTraditionalHouse" },
+  TilesetPlayersRoom = { "TilesetPlayersRoom", "TilesetPlayersHouse", "TilesetHouse", "TilesetTraditionalHouse" },
+  HOUSE = { "TilesetTraditionalHouse", "TilesetHouse", "TilesetPlayersHouse" },
+}
 
 local function touch(mapId)
   accessSeq = accessSeq + 1
@@ -44,6 +41,15 @@ local function build(data, mapId)
   assert(def, "unknown map: " .. tostring(mapId) ..
          " (not in the maps registry)")
   local tilesetDef = data.tilesets[def.tileset]
+  if not tilesetDef then
+    local fallbacks = TILESET_FALLBACKS[def.tileset]
+    if fallbacks then
+      for _, fallbackId in ipairs(fallbacks) do
+        tilesetDef = data.tilesets[fallbackId]
+        if tilesetDef then break end
+      end
+    end
+  end
   assert(tilesetDef, ("map %s wants unknown tileset: %s (not in the " ..
          "tilesets registry)"):format(tostring(mapId), tostring(def.tileset)))
 
@@ -60,70 +66,6 @@ function MapLoader.load(data, mapId)
   local m = cache[mapId]
   if m then touch(mapId); return m end
   return build(data, mapId)
-end
-
--- Set the current data reference for preload operations
-function MapLoader.setData(data)
-  currentData = data
-end
-
--- Queue a map for background preloading
-function MapLoader.preload(mapId)
-  if not currentData then return end
-  if cache[mapId] or preloadInProgress[mapId] or preloadCache[mapId] then
-    return -- already loaded, loading, or preloaded
-  end
-  -- Check if map exists in data
-  if not currentData.maps[mapId] then return end
-  table.insert(preloadQueue, {mapId = mapId, data = currentData})
-  preloadInProgress[mapId] = true
-end
-
--- Queue multiple maps for preloading (e.g., neighbors)
-function MapLoader.preloadBatch(mapIds)
-  for _, mapId in ipairs(mapIds) do
-    MapLoader.preload(mapId)
-  end
-end
-
--- Process a few items from the preload queue each frame
--- Returns true if there's still work to do
-function MapLoader.processPreload(maxItems)
-  if not currentData or #preloadQueue == 0 then return false end
-  maxItems = maxItems or 1 -- process 1 map per frame by default
-  local processed = 0
-  while processed < maxItems and #preloadQueue > 0 do
-    local item = table.remove(preloadQueue, 1)
-    local mapId = item.mapId
-    local data = item.data
-    -- Build the map if not already cached
-    if not cache[mapId] then
-      local ok, map = pcall(build, data, mapId)
-      if ok then
-        preloadCache[mapId] = true
-      else
-        -- Preload failed, remove from progress
-        preloadInProgress[mapId] = nil
-      end
-    else
-      preloadCache[mapId] = true
-    end
-    preloadInProgress[mapId] = nil
-    processed = processed + 1
-  end
-  return #preloadQueue > 0
-end
-
--- Check if a map is preloaded
-function MapLoader.isPreloaded(mapId)
-  return preloadCache[mapId] or cache[mapId] ~= nil
-end
-
--- Clear preload cache (e.g., when data changes)
-function MapLoader.clearPreload()
-  preloadQueue = {}
-  preloadInProgress = {}
-  preloadCache = {}
 end
 
 -- the live instance for a map id, or nil when it has not been loaded;
@@ -179,15 +121,12 @@ function MapLoader.invalidate(mapId)
   local had = cache[mapId] ~= nil
   cache[mapId] = nil
   lru[mapId] = nil
-  preloadCache[mapId] = nil -- clear preload status
-  preloadInProgress[mapId] = nil -- clear in-progress status
   return had
 end
 
 function MapLoader.invalidateAll()
   cache = {}
   lru = {}
-  MapLoader.clearPreload()
 end
 
 -- kept as the pre-v2 name

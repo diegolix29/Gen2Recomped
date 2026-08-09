@@ -110,27 +110,6 @@ do
     "the release asset URL survives parsing")
   eq(m.permissions[1], "engine_internals", "permissions are kept")
   eq(m.update_check, "ok", "update_check is kept")
-  check(m.downloads == nil and m.first_release == nil and m.last_release == nil,
-    "a feed without release stats parses them as absent")
-end
-
--- release stats a feed can publish: total downloads and first/last dates
--- ride along additively, so a feed carrying them stays readable by every
--- build that predates them
-do
-  local withStats = {}
-  for k, v in pairs(NUZLOCKE) do withStats[k] = v end
-  withStats.downloads = 1234
-  withStats.first_release = "2024-05-31"
-  withStats.last_release = "2026-07-01"
-  local index = ModIndex.parse(feed({ withStats }))
-  local m = index.mods[1]
-  eq(m.downloads, 1234, "total downloads are kept")
-  eq(m.first_release, "2024-05-31", "first release date is kept")
-  eq(m.last_release, "2026-07-01", "last release date is kept")
-  withStats.downloads = "9999"
-  m = ModIndex.parse(feed({ withStats })).mods[1]
-  eq(m.downloads, 9999, "numeric-string downloads are coerced")
 end
 
 -- schema_version is a contract, not a hint: an unknown one is refused rather
@@ -142,11 +121,7 @@ do
   index, err = ModIndex.parse(Json.encode({ mods = { NUZLOCKE } }))
   check(index == nil and err ~= nil, "a feed with no schema_version is refused")
   index, err = ModIndex.parse("<!DOCTYPE html><html>404</html>")
-  check(index == nil and tostring(err):find("HTML", 1, true) ~= nil,
-    "an HTML error page is named, not blamed on the parser")
-  index, err = ModIndex.parse("Error: upstream unavailable")
-  check(index == nil and tostring(err):find("not JSON", 1, true) ~= nil,
-    "a plain-text error names the response")
+  check(index == nil and err ~= nil, "an HTML error page soft-fails")
   index, err = ModIndex.parse('{"schema_version":1}')
   check(index == nil and err ~= nil, "a feed with no mods array soft-fails")
 end

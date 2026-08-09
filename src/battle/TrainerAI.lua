@@ -20,15 +20,8 @@
 
 local TypeChart = require("src.battle.TypeChart")
 local Strings = require("src.core.Strings")
-local romText = require("src.core.RomText")
 
 local TrainerAI = {}
-
--- pokered's <USER>/<TARGET> text macros print "Enemy " before the
--- enemy mon's nickname (home/text.asm PlaceMoveUsersName)
-local function displayName(b)
-  return b.isPlayer and b.name or Strings("Enemy %s", b.name)  -- #779
-end
 
 local HEAL_AMOUNT = { POTION = 20, SUPER_POTION = 50, HYPER_POTION = 200 }
 local X_STAT = { X_ATTACK = "attack", X_DEFEND = "defense", X_SPEED = "speed" }
@@ -102,16 +95,12 @@ function TrainerAI.switchAction(battle)
   return { special = "aiSwitch", index = alive[1] }
 end
 
--- Apply an aiItem action to the enemy battler; returns messages, already
--- final: the item line prints the raw nickname (AIPrintItemUseText has no
--- "Enemy " prefix in pokered), the stat lines carry it via displayName, so
--- the caller must not run these through prefixEnemy.
+-- Apply an aiItem action to the enemy battler; returns messages.
 function TrainerAI.useItem(battle, item)
   local enemy = battle.enemy
   local trainerName = battle.trainer.name
   local itemName = battle.data.items[item] and battle.data.items[item].name or item
-  local msgs = { romText(battle.data, "_AIBattleUseItemText",
-    "%s\nused %s!", trainerName, itemName, enemy.name) }
+  local msgs = { Strings("%s\nused %s!", trainerName, itemName) }
   if item == "FULL_HEAL" then
     enemy.mon.status = nil
     enemy.toxicCounter = nil
@@ -124,10 +113,10 @@ function TrainerAI.useItem(battle, item)
   elseif X_STAT[item] then
     local stat = X_STAT[item]
     enemy.stages[stat] = math.min(6, (enemy.stages[stat] or 0) + 1)
-    table.insert(msgs, Strings("%s's\n%s rose!", displayName(enemy), stat:upper()))
+    table.insert(msgs, Strings("%s's\n%s rose!", enemy.name, stat:upper()))
   elseif item == "GUARD_SPEC" then
     enemy.mist = true
-    table.insert(msgs, Strings("%s's\nprotected against\nstat changes!", displayName(enemy)))
+    table.insert(msgs, Strings("%s's\nprotected against\nstat changes!", enemy.name))
   end
   return msgs
 end
@@ -151,6 +140,9 @@ local ENCOURAGE_EFFECTS = {
   ATTACK_DOWN1_EFFECT = true, DEFENSE_DOWN1_EFFECT = true, SPEED_DOWN1_EFFECT = true,
   SPECIAL_DOWN1_EFFECT = true, ACCURACY_DOWN1_EFFECT = true, EVASION_DOWN1_EFFECT = true,
   CONVERSION_EFFECT = true, HAZE_EFFECT = true,
+  -- Gen 2 splits $0D/$0E and $15/$16 into the two Special halves
+  SP_ATK_UP1_EFFECT = true, SP_DEF_UP1_EFFECT = true,
+  SP_ATK_DOWN1_EFFECT = true, SP_DEF_DOWN1_EFFECT = true,
   -- $32 ATTACK_UP2_EFFECT .. $41 REFLECT_EFFECT
   ATTACK_UP2_EFFECT = true, DEFENSE_UP2_EFFECT = true, SPEED_UP2_EFFECT = true,
   SPECIAL_UP2_EFFECT = true, ACCURACY_UP2_EFFECT = true, EVASION_UP2_EFFECT = true,
@@ -158,6 +150,8 @@ local ENCOURAGE_EFFECTS = {
   ATTACK_DOWN2_EFFECT = true, DEFENSE_DOWN2_EFFECT = true, SPEED_DOWN2_EFFECT = true,
   SPECIAL_DOWN2_EFFECT = true, ACCURACY_DOWN2_EFFECT = true, EVASION_DOWN2_EFFECT = true,
   LIGHT_SCREEN_EFFECT = true, REFLECT_EFFECT = true,
+  SP_ATK_UP2_EFFECT = true, SP_DEF_UP2_EFFECT = true,
+  SP_ATK_DOWN2_EFFECT = true, SP_DEF_DOWN2_EFFECT = true,
 }
 
 -- AIMoveChoiceModification3 .betterMoveFound: a "better move" is any

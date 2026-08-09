@@ -349,8 +349,16 @@ local function buildAnim(spec, tilesetImagePath, perRow, quads, gbc)
   local period = spec.period or ANIM_PERIOD
   local colors
   if gbc then
-    local group = PaletteFX.worldGroupAt(gbc.tilesetId, gbc.mapId, tiles[1])
-    colors = group and gbc.groupColors[group + 1]
+    if gbc.colorsFor then
+      -- Gen2: the palette comes from the tileset's own palMap/palColors
+      -- (LoadTilesetPalette's tile->palette byte), not from RED++'s eight
+      -- world groups.  Without this the surf shimmer overdrew the baked
+      -- atlas with raw grayscale every frame -- i.e. grey water.
+      colors = gbc.colorsFor(tiles[1])
+    else
+      local group = PaletteFX.worldGroupAt(gbc.tilesetId, gbc.mapId, tiles[1])
+      colors = group and gbc.groupColors[group + 1]
+    end
   end
   if spec.kind == "hshift" then
     local offsets = spec.offsets
@@ -370,7 +378,7 @@ local function buildAnim(spec, tilesetImagePath, perRow, quads, gbc)
     return { tiles = tiles, textures = textures, sequence = sequence,
              period = period }
   elseif spec.kind == "toggle" then
-    if gbc then return nil end
+    if gbc and gbc.groupColors then return nil end
     local image = getToggleImage(spec, tilesetImagePath, perRow)
     if not image then return nil end
     -- the patch texture is a whole-atlas clone, so each cell needs the
@@ -401,6 +409,47 @@ end
 -- tile-rows of one route -- not worth the complexity), so it bakes with
 -- the route's own default roof (Vermilion's) throughout.
 local gbcAtlasCache = {}
+
+-- Gen2 GBC palette atlas: bakes pre-colored tiles using the palMap (tile→palette)
+-- and palColors (7 palettes × 4 RGB colors) stored in the tileset def.
+--
+-- exported because the ANIMATED tiles have to land on the same palette: the
+-- surf shimmer overdraws the baked atlas every frame, so a shimmer built from
+-- the raw grayscale sheet turns the whole sea grey (only the un-animated wave
+-- crests kept their blue).
+function TileRenderer.gen2TileColors(palMap, palColors, tile)
+  if not (palMap and palColors and #palColors > 0) then return nil end
+  local raw = palMap[tile + 1] or 0
+  return palColors[math.min(raw, #palColors - 1) + 1]
+end
+
+local gen2AtlasCache = {}
+local function getGen2Atlas(imagePath, perRow, palMap, palColors)
+  if not (love.image and love.image.newImageData) then return nil end
+  local key = imagePath .. "#gen2pal"
+  if gen2AtlasCache[key] ~= nil then return gen2AtlasCache[key] or nil end
+  local img = false
+  local ok, src = pcall(Assets.imageData, imagePath)
+  if ok and src then
+    local iw, ih = src:getDimensions()
+    local total = (iw / 8) * (ih / 8)
+    local out = love.image.newImageData(iw, ih)
+    for t = 0, total - 1 do
+      local colors = TileRenderer.gen2TileColors(palMap, palColors, t)
+      local ox, oy = (t % perRow) * 8, math.floor(t / perRow) * 8
+      for py = 0, 7 do
+        for px = 0, 7 do
+          local r, g, b, a = src:getPixel(ox + px, oy + py)
+          r, g, b, a = recolorSample(r, g, b, a, colors)
+          out:setPixel(ox + px, oy + py, r, g, b, a)
+        end
+      end
+    end
+    img = love.graphics.newImage(out)
+  end
+  gen2AtlasCache[key] = img
+  return img or nil
+end
 
 -- Cache suffix for a map's RED++ bake.  A dark cave folds FadePal2 into the
 -- palette worldGroupColors hands the bake (#383), so the lit and dark bakes of
@@ -495,6 +544,28 @@ function TileRenderer.new(map, data)
   -- a full-color atlas colors everything it paints, ring and border fill
   -- included, so every draw entry point claims its rect out of the pass
   self.trueColor = map.tileset.trueColor or nil
+
+  -- Gen2: if the tileset has palMap/palColors from ROM extraction, bake a
+  -- pre-colored atlas so tiles render with correct GBC palette colors.
+  if not self.gbcAtlas and map.tileset.palMap and #map.tileset.palMap > 0
+      and map.tileset.palColors and #map.tileset.palColors > 0 then
+    local gen2img = getGen2Atlas(map.tileset.image, map.tileset.tilesPerRow,
+                                 map.tileset.palMap, map.tileset.palColors)
+    if gen2img then
+      self.image = gen2img
+      self.trueColor = true
+      -- ...and hand the same tile->palette lookup to buildAnim, so the
+      -- animated water/flower tiles that overdraw this atlas are baked with
+      -- the palette their static neighbours got (see buildAnim's colorsFor)
+      local palMap, palColors = map.tileset.palMap, map.tileset.palColors
+      gbcCtx = {
+        key = "#gen2pal:" .. tostring(map.tileset.id),
+        colorsFor = function(tile)
+          return TileRenderer.gen2TileColors(palMap, palColors, tile)
+        end,
+      }
+    end
+  end
 
   local iw, ih = self.image:getDimensions()
   self.quads = {}
@@ -949,6 +1020,7 @@ function TileRenderer.invalidate()
   frameImages = {}
   toggleImages = {}
   stripData = {}
+  gen2AtlasCache = {}
 end
 
 Assets.register(TileRenderer.invalidate)

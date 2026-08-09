@@ -29,8 +29,8 @@ return function(game)
   }
 
   -- Exercise the real visited-marking path (OverworldController marks any
-  -- flyWarps TOWN visited on entry, Map.isFlyTown) by standing on the Plateau
-  -- exterior first, then hop back to Pallet for a clean starting point.
+  -- flyWarps map visited on entry) by standing on the Plateau exterior first,
+  -- then hop back to Pallet for a clean starting point.
   U.teleport(game, "INDIGO_PLATEAU", 9, 6, "down")
   U.wait(5)
   assert(game.save.visited.INDIGO_PLATEAU,
@@ -38,11 +38,14 @@ return function(game)
   U.teleport(game, "PALLET_TOWN", 10, 8, "down")
   U.wait(5)
 
-  -- open the party menu and pick FLY on slot 1 (submenu: FLY / STATS / SWITCH,
-  -- field moves on top like start_sub_menus.asm -- #768)
+  -- open the party menu and pick FLY on slot 1 (submenu: STATS / SWITCH / FLY)
   Screens.push(game, "PartyMenu")
   U.wait(5)
-  U.tap(game, "a")    -- open the per-mon submenu, cursor on FLY
+  U.tap(game, "a")    -- open the per-mon submenu
+  U.wait(2)
+  U.tap(game, "down") -- STATS -> SWITCH
+  U.wait(2)
+  U.tap(game, "down") -- SWITCH -> FLY
   U.wait(2)
   U.tap(game, "a")    -- choose FLY
   U.wait(5)

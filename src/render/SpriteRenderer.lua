@@ -76,6 +76,9 @@ local WALK = { down = 3, up = 4, left = 5, right = 5 }
 SpriteRenderer.STAND = STAND
 SpriteRenderer.WALK = WALK
 
+-- SetPartyMonIconAnimSpeed's overworld rate: the icon bobs twice a second
+local MON_ICON_FPS = 4
+
 -- seed: any stable per-instance value (e.g. an NPC's `id`) used to resolve
 -- RED++'s per-instance "random" OBP sentinel (PaletteFX.spriteObp)
 function SpriteRenderer.new(spriteDef, seed)
@@ -84,30 +87,9 @@ function SpriteRenderer.new(spriteDef, seed)
   self.seed = seed
   self.image = getImage(spriteDef.image)
   local iw, ih = self.image:getDimensions()
-  
-  -- Support custom frame dimensions for larger sprites
-  local frameWidth = spriteDef.frameWidth or 16
-  local frameHeight = spriteDef.frameHeight or 16
-  local framesPerRow = spriteDef.framesPerRow or 1
-  local scale = spriteDef.scale or 1.0
-  local heightScale = spriteDef.heightScale or scale  -- Defaults to scale if not set
-  
-  self.frameWidth = frameWidth
-  self.frameHeight = frameHeight
-  self.framesPerRow = framesPerRow
-  self.scale = scale
-  self.heightScale = heightScale
-  
   self.frames = {}
   for f = 0, spriteDef.frames - 1 do
-    -- Calculate frame position in the sprite sheet
-    -- If framesPerRow > 1, frames are arranged in a grid
-    -- Otherwise, frames are stacked vertically (default behavior)
-    local row = framesPerRow > 1 and math.floor(f / framesPerRow) or f
-    local col = framesPerRow > 1 and (f % framesPerRow) or 0
-    local x = col * frameWidth
-    local y = row * frameHeight
-    self.frames[f] = love.graphics.newQuad(x, y, frameWidth, frameHeight, iw, ih)
+    self.frames[f] = love.graphics.newQuad(0, f * 16, 16, 16, iw, ih)
   end
   return self
 end
@@ -126,35 +108,32 @@ end
 -- only during a redraw pass -- there is no later pass to restore it.
 function SpriteRenderer:resolveImage()
   if self.def.trueColor then return self.image end
+  -- Gen2 carries the hardware's own OBJ palette per sheet (MapObjectPals,
+  -- picked by the OverworldSprites palette field), so it outranks every
+  -- Gen1 colour mode -- RED++/OG RED resolve nothing for a Gen2 def and
+  -- would drop the sheet back to DMG greys.
+  if self.def.gen2ObjPal then
+    return getObpImage(self.def.image, self.def.gen2ObjPal, "gen2:" .. self.def.id)
+  end
   if PaletteFX.usesGbcPack() then
     local colors, group = PaletteFX.spriteObp(self.def, self.seed)
     if colors then return getObpImage(self.def.image, colors, group) end
+    return getObpImage(self.def.image, PaletteFX.dmgObj())
   elseif PaletteFX.usesSpriteObp() then
-    -- OG boot-ROM OBJ palette: green on Red, pink on Blue (PaletteFX.ogObj
-    -- returns colors + a version-distinct cache group so the two never
-    -- collide in obpCache) -- see issue #155
     return getObpImage(self.def.image, PaletteFX.ogObj())
   end
-  -- Every other mode (SGB and the mono/inverted novelties) leaves the sprite
-  -- in DMG shades so the zone shader colors it out of the map's own palette,
-  -- but still bakes rOBP0 = $D0 in and keys OBJ color 0 to alpha -- the two
-  -- things a raw sheet blit cannot express (#301, #150).  The sheets carry no
-  -- real alpha (see getObpImage), so returning self.image here would put an
-  -- opaque white box behind every character a pipeline textures.
   return getObpImage(self.def.image, PaletteFX.dmgObj())
 end
 
 -- facing: down/up/left/right; walkPhase: 0 stand, 1 walk; flip: alternate
 -- steps mirror the walk frame for up/down (GB uses OAM flip for this).
-local function blitFrame(image, quad, x, y, flip, redraw, frameWidth, scaleX, scaleY)
-  local sx = scaleX or 1.0
-  local sy = scaleY or 1.0
+local function blitFrame(image, quad, x, y, flip, redraw)
   if flip then
-    love.graphics.draw(image, quad, x + frameWidth * sx, y, 0, -sx, sy)
-    if redraw then PaletteFX.markSpriteRedraw(image, quad, x + frameWidth * sx, y, -sx) end
+    love.graphics.draw(image, quad, x + 16, y, 0, -1, 1)
+    if redraw then PaletteFX.markSpriteRedraw(image, quad, x + 16, y, -1) end
   else
-    love.graphics.draw(image, quad, x, y, 0, sx, sy)
-    if redraw then PaletteFX.markSpriteRedraw(image, quad, x, y, sx) end
+    love.graphics.draw(image, quad, x, y)
+    if redraw then PaletteFX.markSpriteRedraw(image, quad, x, y, 1) end
   end
 end
 
@@ -162,20 +141,19 @@ end
 -- bottom tile row of the standing frames with the fishing pose art, which the
 -- caller then draws itself through :drawTile (Player:draw, #384)
 function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip, topHalf)
-  local scaleX = self.scale or 1.0
-  local scaleY = self.heightScale or 1.0
   local x = math.floor(px - camX)
-  -- Center the sprite vertically based on its frame height and scale
-  -- For 16x16 sprites, offset by 4px as before
-  -- For larger sprites, offset by (frameHeight - 16) / 2 to center on the tile
-  -- Apply scale to the offset as well
-  local yOffset = self.frameHeight == 16 and 4 or math.floor((self.frameHeight - 16) / 2)
-  local y = math.floor(py - camY) - yOffset * scaleY
+  local y = math.floor(py - camY) - 4
   local image = self.image
   local redraw = false
-  -- full-color art claims its frame-sized cell out of the shade-remap pass
+  -- full-color art claims its 16x16 cell out of the shade-remap pass
   if self.def.trueColor then
-    PaletteFX.markTrueColor(x, y, self.frameWidth * scaleX, self.frameHeight * scaleY)
+    PaletteFX.markTrueColor(x, y, 16, 16)
+  elseif self.def.gen2ObjPal then
+    -- Gen2 GBC mode: the ROM's own OBJ palette for this sheet, baked in.
+    -- It is full colour, so it claims its cell out of the shade-remap pass
+    -- exactly like a trueColor sprite does.
+    image = getObpImage(self.def.image, self.def.gen2ObjPal, "gen2:" .. self.def.id)
+    PaletteFX.markTrueColor(x, y, 16, 16)
   elseif PaletteFX.usesGbcPack() then
     -- RED++: the world canvas is already true-color (TileRenderer bakes
     -- terrain, this bakes the sprite) and the world pass runs unshaded
@@ -185,6 +163,8 @@ function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip, to
     local colors, group = PaletteFX.spriteObp(self.def, self.seed)
     if colors then
       image = getObpImage(self.def.image, colors, group)
+    else
+      image = getObpImage(self.def.image, PaletteFX.dmgObj())
     end
   elseif PaletteFX.usesSpriteObp() and PaletteFX.spriteRedrawPassActive() then
     -- OG RED (GBC boot-ROM look): every OBJ wears the one global object
@@ -196,22 +176,22 @@ function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip, to
     image = getObpImage(self.def.image, PaletteFX.ogObj())
     redraw = true
   else
-    -- SGB and the mono/inverted modes (and OG RED's tilt upright pass, which
-    -- has no post-zone replay to restore a bake): the sprite stays in DMG
-    -- shades -- rOBP0 = $D0 baked in, OBJ color 0 keyed to alpha -- and the
-    -- whole-canvas zone shader colors it with the map's palette.  That is the
-    -- only thing the Super Game Boy can do to an OBJ, since pokered never
-    -- sends the OBJ_TRN packet that would give sprites palettes of their own
-    -- (data/sgb/sgb_packets.asm defines ATTR_BLK / PAL_SET / PAL_TRN /
-    -- MLT_REQ / CHR_TRN / PCT_TRN and nothing else).  No redraw is queued:
-    -- being colorized by the zone IS the point (#301).
     image = getObpImage(self.def.image, PaletteFX.dmgObj())
   end
   -- single-frame sprites (item balls, fossils...) have one fixed pose;
   -- still 3-frame sprites turn to face (the nurse at her machine,
   -- facePlayer on STAY NPCs) but never show walk frames
   if self.def.frames <= 1 then
-    blitFrame(image, self.frames[0], x, y, false, redraw, self.frameWidth)
+    blitFrame(image, self.frames[0], x, y, false, redraw)
+    return
+  end
+  -- SPRITE_POKEMON objects wear the party menu icon (GetMonSprite.Mon ->
+  -- LoadOverworldMonIcon): two frames that cycle on their own clock, and no
+  -- facing at all -- the Lake of Rage Gyarados never turns to look at you.
+  if self.def.monIcon then
+    local t = love.timer and love.timer.getTime() or 0
+    local quad = self.frames[math.floor(t * MON_ICON_FPS) % 2] or self.frames[0]
+    blitFrame(image, quad, x, y, false, redraw)
     return
   end
   local frame = (self.def.walker and walkPhase == 1)
@@ -227,34 +207,22 @@ function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip, to
     self.halfFrames = self.halfFrames or {}
     if not self.halfFrames[frame] then
       local iw, ih = self.image:getDimensions()
-      -- Calculate the original frame position for half-frame extraction
-      local framesPerRow = self.framesPerRow or 1
-      local row = framesPerRow > 1 and math.floor(frame / framesPerRow) or frame
-      local col = framesPerRow > 1 and (frame % framesPerRow) or 0
-      local fx = col * self.frameWidth
-      local fy = row * self.frameHeight
-      local halfHeight = math.floor(self.frameHeight / 2)
-      self.halfFrames[frame] = love.graphics.newQuad(fx, fy, self.frameWidth, halfHeight, iw, ih)
+      self.halfFrames[frame] = love.graphics.newQuad(0, frame * 16, 16, 8, iw, ih)
     end
     quad = self.halfFrames[frame]
   end
-  blitFrame(image, quad, x, y, flip, redraw, self.frameWidth, scaleX, scaleY)
+  blitFrame(image, quad, x, y, flip, redraw)
 end
 
--- Blit a loose fx tile at screen (x, y) wearing THIS sprite's OBJ
+-- Blit a loose 16-wide fx tile at screen (x, y) wearing THIS sprite's OBJ
 -- palette, mirroring the mode branches in :draw above.  The fishing pose row
 -- overwrites the sheet's own tiles in VRAM in the original, so it has to be
 -- recolored and OG-RED-redrawn exactly like the sheet rather than blitted as
 -- raw DMG shades (#384).
 function SpriteRenderer:drawTile(path, x, y, flip)
   local image, redraw = getImage(path), false
-  local scaleX = self.scale or 1.0
-  local scaleY = self.heightScale or 1.0
-  -- Use dynamic dimensions for larger sprites
-  local tileWidth = self.frameWidth or 16
-  local tileHeight = math.floor((self.frameHeight or 16) / 2)  -- Half the frame height for tiles
   if self.def.trueColor then
-    PaletteFX.markTrueColor(x, y, tileWidth * scaleX, tileHeight * scaleY)
+    PaletteFX.markTrueColor(x, y, 16, 8)
   elseif PaletteFX.usesGbcPack() then
     local colors, group = PaletteFX.spriteObp(self.def, self.seed)
     if colors then image = getObpImage(path, colors, group) end
@@ -267,7 +235,7 @@ function SpriteRenderer:drawTile(path, x, y, flip)
   self.tileQuads = self.tileQuads or {}
   self.tileQuads[path] = self.tileQuads[path]
                          or love.graphics.newQuad(0, 0, iw, ih, iw, ih)
-  blitFrame(image, self.tileQuads[path], x, y, flip, redraw, tileWidth, scaleX, scaleY)
+  blitFrame(image, self.tileQuads[path], x, y, flip, redraw)
 end
 
 return SpriteRenderer

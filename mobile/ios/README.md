@@ -38,6 +38,12 @@ The embedded `game.love` contains no ROM or generated game data. The current
 first-boot importer has desktop file pickers only, so a production iOS release
 still needs a UIDocumentPicker handoff that passes the selected ROM to LÖVE.
 
+`game.love` includes all ROM import manifests referenced by
+`src/core/GameVersion.lua` (currently Red/Blue/Yellow/Gold/Silver). The iOS
+packer validates each listed manifest and restores missing files from this
+checkout's Git data (or the project repository as a fallback) before
+packaging.
+
 Default output: an unsigned Simulator `.app` under `mobile/ios/build/`
 (no Apple Developer account required). A convenience copy also lands under
 `dist/ios/<Config>-<sdk>/`.

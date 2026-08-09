@@ -19,9 +19,9 @@ local Version = {
   cache = "rom-cache-v5", -- ROM import cache generation (RomImporter marker)
 }
 
--- "gen1recomp v0.0.0-dev" (or the stamped release version in shipped builds)
+-- "gen2recomp v0.0.0-dev" (or the stamped release version in shipped builds)
 function Version.title(base)
-  return (base or "gen1recomp")
+  return (base or "gen2recomp")
     .. " v" .. Version.engine
 end
 

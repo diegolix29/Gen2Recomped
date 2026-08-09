@@ -92,30 +92,19 @@ end
 -- Chip SFX and cries are already stereo at the source (ChipSynth
 -- renderEffectData); this covers file defs, i.e. Yellow's 8-bit mono PCM
 -- Pikachu clips (RomExtractor extractPikachuCries) and mod-supplied wav/ogg
--- SFX.
---
--- Decode the FILE (not Source:getChannelCount): love-nx/audren has reported
--- channel counts that skip this widen silently, and preserving 8-bit depth
--- into a stereo buffer also sounds wrong on that backend.  Always emit
--- 16-bit stereo like ChipSynth.  Failure keeps the original Source and logs.
+-- SFX.  Every step is guarded: a headless love stub without love.sound, or a
+-- decoder that will not hand back SoundData, keeps the original Source.
 local function widenMono(source, file)
-  if type(file) ~= "string" then return source end
-  if not (love.sound and love.sound.newSoundData and love.audio
-      and love.audio.newSource) then
+  if not (source and love.sound and love.sound.newSoundData) then
     return source
   end
-  -- Quiet skip when the path is unreadable (headless stub SFX keys, missing
-  -- files).  On NX, overlay-wrapped getInfo makes the yellow|blue copy visible
-  -- at the bare assets/generated path so the widen still runs.
-  local fs = love.filesystem
-  if not (fs and fs.getInfo and fs.getInfo(file)) then
-    return source
-  end
+  local ok, channels = pcall(function() return source:getChannelCount() end)
+  if not ok or channels ~= 1 then return source end
   local built, widened = pcall(function()
     local mono = love.sound.newSoundData(file)
-    if mono:getChannelCount() ~= 1 then return source end
     local frames = mono:getSampleCount()
-    local stereo = love.sound.newSoundData(frames, mono:getSampleRate(), 16, 2)
+    local stereo = love.sound.newSoundData(frames, mono:getSampleRate(),
+                                           mono:getBitDepth(), 2)
     for index = 0, frames - 1 do
       local value = mono:getSample(index)
       stereo:setSample(index, 1, value)
@@ -123,10 +112,7 @@ local function widenMono(source, file)
     end
     return love.audio.newSource(stereo, "static")
   end)
-  if built and widened and widened ~= source then return widened end
-  if not built then
-    Logger.warn("sound: widenMono failed for %s: %s", file, tostring(widened))
-  end
+  if built and widened then return widened end
   return source
 end
 
@@ -208,91 +194,29 @@ end
 -- sfx table; older audio.lua builds without the variants fall back to
 -- the unmodified sound.
 -- anim: a moves.lua anim table { sound, pitch, tempo }.
---
--- Whether a row sound is heard at all is Audio2_PlaySound's channel gate
--- (audio/engine_2.asm .playSfx/.sfxChannelLoop): for every channel the new
--- sfx wants, a channel still busy with a LOWER sound id aborts the whole
--- request (`cp [hl] / jr z,.playChannel / jr c,.playChannel / ret`), while
--- an equal or lower id takes those channels over.  A sound id is
--- (header address - SFX_Headers_1) / 3 (constants/music_constants.asm
--- music_const), so a def's header address orders ids inside one engine
--- bank.  Blizzard's animation is two rows, BLIZZARD then HYDRO_PUMP
--- (data/moves/animations.asm BlizzardAnim), and SFX_BATTLE_29 (CHAN5+8) is
--- still sounding when the second row starts, so the original never plays
--- SFX_BATTLE_2A (CHAN5+6+8) at all -- unguarded, its tail is heard running
--- past the end of the animation (#844).
-local lastMoveSfx -- { src, rank, engine, channels } of the last row sound
-
-local function channelsOverlap(a, b)
-  if not (a and b) then return false end
-  for _, x in ipairs(a) do
-    for _, y in ipairs(b) do
-      if x == y then return true end
-    end
-  end
-  return false
-end
-
--- would PlaySound start this def now?  Taking a channel over also stops the
--- sound that held it, the way .playChannel resets the channel.
-local function sfxChannelGate(data, def)
-  local cur = lastMoveSfx
-  if not cur then return true end
-  local ok, playing = pcall(cur.src.isPlaying, cur.src)
-  if not (ok and playing) then
-    lastMoveSfx = nil
-    return true
-  end
-  -- an unrankable def (file asset, or another engine's bank) has no
-  -- comparable sound id: leave it to the mixer, as before
-  if type(def) ~= "table" or not def.address or def.engine ~= cur.engine then
-    return true
-  end
-  local channels = require("src.core.ChipSynth").effectChannels(data, def)
-  if not channelsOverlap(channels, cur.channels) then return true end
-  if def.address > cur.rank then return false end
-  pcall(cur.src.stop, cur.src)
-  lastMoveSfx = nil
-  return true
-end
-
-local function noteMoveSfx(data, def, src)
-  if not src or type(def) ~= "table" or not def.address then
-    lastMoveSfx = nil
-    return
-  end
-  lastMoveSfx = {
-    src = src, rank = def.address, engine = def.engine,
-    channels = require("src.core.ChipSynth").effectChannels(data, def),
-  }
-end
-
 function Sound.playMove(data, anim)
   if not anim or not anim.sound then return end
   local sfx = data.audio and data.audio.sfx
   if not sfx then return end
   local name = anim.sound
   local pitch, tempo = anim.pitch or 0, anim.tempo or 0x80
-  local def = sfx[name]
-  if not sfxChannelGate(data, def) then return end
-  local src
   -- a chip program synthesizes the modified variant on demand; a file def
   -- can only reach for a pre-rendered one
-  if isChipDef(def) then
-    src = playPath(data, ("%s@%02x%02x"):format(name, pitch, tempo),
-                   def, pitch, tempo)
-  else
+  if isChipDef(sfx[name]) then
+    if playPath(data, ("%s@%02x%02x"):format(name, pitch, tempo),
+        sfx[name], pitch, tempo) then
+      played("move", name)
+    end
+    return
+  end
+  if pitch ~= 0 or tempo ~= 0x80 then
     local key = ("%s@%02x%02x"):format(name, pitch, tempo)
-    if (pitch ~= 0 or tempo ~= 0x80) and sfx[key] then
-      src = playPath(data, key, sfx[key])
-    else
-      src = playPath(data, name, def)
+    if sfx[key] then
+      if playPath(data, key, sfx[key]) then played("move", name) end
+      return
     end
   end
-  if src then
-    played("move", name)
-    noteMoveSfx(data, def, src)
-  end
+  if playPath(data, name, sfx[name]) then played("move", name) end
 end
 
 -- A derived cry ({ base = "RHYDON", pitch, length }) borrows another
@@ -350,9 +274,9 @@ function Sound.playPikaCry(data, n)
       cache[key] = false
       return nil
     end
-    -- importer historically wrote these as 8-bit mono (RomExtractor
-    -- extractPikachuCries); widenMono re-decodes to 16-bit stereo so they
-    -- stay off surround outputs (#626).  Fresh extracts are already stereo.
+    -- the importer writes these clips as 8-bit mono (RomExtractor
+    -- extractPikachuCries), so they need the same widening as the chip
+    -- effects to stay off a multi-output device's surround channels (#626)
     s = widenMono(s, path)
     s:setVolume(volumeFor(key))
     cache[key] = s
@@ -366,18 +290,12 @@ end
 
 -- returns the source (nil headless) so callers that block on the cry
 -- like the original's PlayCry -> WaitForSoundToFinish can poll it
-function Sound.playCry(data, species, pikaClip)
+function Sound.playCry(data, species)
   if not love.audio then return nil end
   -- Yellow voices every Pikachu cry with the PCM clips (the chip cry is
-  -- never used for the species there).  Which clip is a property of the
-  -- call site in the original -- every caller of PlayPikachuSoundClip sets
-  -- its own `ldpikacry e, PikachuCryN` -- so pikaClip carries that choice
-  -- in; it is ignored for every other species.  Clip 1 is the LONG
-  -- title-screen "Pikachuuu" (engine/movie/title.asm:146), kept as the
-  -- default only for the sites that have not been given their own clip
-  -- yet; battle entrances pass 11/37 (#837).
+  -- never used for the species there); clip 1 is the everyday "Pika!"
   if species == "PIKACHU" then
-    local src = Sound.playPikaCry(data, pikaClip or 1)
+    local src = Sound.playPikaCry(data, 1)
     if src then return src end
   end
   local cries = data.audio and data.audio.cries
@@ -519,7 +437,6 @@ end
 -- hot reload / jukebox A-B: drop one key's sources (its pitch-tempo
 -- variants included) or all of them, so the next play re-resolves the def
 function Sound.invalidate(name)
-  lastMoveSfx = nil -- its source is about to be dropped or stopped
   local function evict(store, key)
     local src = store[key]
     if src then pcall(src.stop, src) end

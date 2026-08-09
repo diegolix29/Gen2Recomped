@@ -204,7 +204,7 @@ local function decodeManifest(raw, path)
   return manifest
 end
 
--- Scan "mods/" and "bundlemods/" one level deep for valid manifests (mirrors Loader:_discover,
+-- Scan "mods/" one level deep for valid manifests (mirrors Loader:_discover,
 -- but validates only -- no entry chunk is ever loaded).  First id wins on a
 -- duplicate.  Returns an array of validated manifests.
 local function discover()
@@ -218,45 +218,8 @@ local function discover()
   -- the launcher's readiness check has usually resolved it already; the call
   -- is cached and idempotent.
   CacheFs.root()
-  local roots = { "mods", "bundlemods" }
+  if not fs.getInfo("mods") then return out end
   local seen = {}
-  for _, root in ipairs(roots) do
-    -- Check if directory exists and is listable
-    local dirInfo = fs.getInfo(root)
-    local canList = dirInfo ~= nil
-    
-    -- On Android, bundlemods is inside the read-only game.love archive
-    -- Try to list it even if getInfo fails (some Android setups report archives oddly)
-    if not canList and root == "bundlemods" then
-      local ok, items = pcall(function()
-        return fs.getDirectoryItems(root)
-      end)
-      if ok and items then
-        canList = true
-      end
-    end
-    
-    if canList then
-      local items = fs.getDirectoryItems(root)
-      if items then
-        for _, name in ipairs(items) do
-          local path = root .. "/" .. name
-          local info = fs.getInfo(path)
-          if info and info.type == "directory" then
-            local raw = fs.read(path .. "/manifest.json")
-            if raw then
-              local manifest = decodeManifest(raw, path)
-              if manifest and not seen[manifest.id] then
-                seen[manifest.id] = true
-                manifest.bundled = (root == "bundlemods")
-                out[#out + 1] = manifest
-              end
-            end
-          end
-        end
-      end
-    end
-  end
   for _, name in ipairs(fs.getDirectoryItems("mods")) do
     local path = "mods/" .. name
     local info = fs.getInfo(path)
@@ -291,80 +254,6 @@ function LauncherMods.list()
   return result or {}
 end
 
--- ------- pre-boot translation strings
---
--- The launcher draws before Game:load, so the loader has not run and Strings
--- has no catalog.  #767/#791 routed the launcher's text through Strings, but
--- nothing filled the catalog this early, so a translation mod still could not
--- reach the launcher however complete it was -- and no restart helped, because
--- the ordering is the same on every launch.
---
--- This fills it, and deliberately does the smallest thing that can: one
--- declarative file per enabled mod, lang/strings.lua, and never the entry
--- chunk.  That keeps the promise the rest of this module is built on -- no mod
--- behaviour runs before the game boots -- because a catalog is data.
---
--- It is still a mod-authored chunk, so it runs with an empty environment: a
--- plain `return { ... }` evaluates fine, while anything reaching for love, io
--- or os raises and is skipped rather than being trusted this early.
---
--- Game:load calls Strings.load(Data) again after the real merge, which
--- replaces whatever this installed, so the two never disagree for long.
-local STRINGS_CATALOG = "lang/strings.lua"
-
-local function readStringsCatalog(path)
-  local fs = love and love.filesystem
-  if not (fs and fs.read) then return nil end
-  local rel = path .. "/" .. STRINGS_CATALOG
-  local raw = fs.read(rel)
-  if type(raw) ~= "string" or raw == "" then return nil end
-  local chunk = loadstring(raw, "@" .. rel)
-  if not chunk then return nil end
-  -- Lua 5.1/LuaJIT: no _ENV, so setfenv is the sandbox.
-  if setfenv then setfenv(chunk, {}) end
-  local ok, result = pcall(chunk)
-  if not ok or type(result) ~= "table" then return nil end
-  return result
-end
-
--- deriveStrings(rows, byId, read) -> the merged catalog, pure.
--- rows is deriveList's output, byId the id -> manifest map, and read(path) a
--- reader returning that mod's catalog table (or nil).  Split out so the engine
--- tier can table-drive the enable/precedence rules with no filesystem.
-function LauncherMods.deriveStrings(rows, byId, read)
-  local out, any = {}, false
-  for _, row in ipairs(rows or {}) do
-    local manifest = row.enabled and byId and byId[row.id] or nil
-    local catalog = manifest and manifest.path and read(manifest.path)
-    for source, value in pairs(catalog or {}) do
-      -- an empty value means "not translated yet", never "translate to
-      -- blank" -- the same rule the mod's own loader applies
-      if type(source) == "string" and type(value) == "string"
-          and value ~= "" then
-        out[source] = value
-        any = true
-      end
-    end
-  end
-  return any and out or nil
-end
-
--- translationStrings() -> a source -> translation map for the launcher, or nil
--- when no enabled mod ships one.  Enable-state and ordering are deriveList's,
--- so a mod that wins a key here wins it at boot too.
-function LauncherMods.translationStrings()
-  local ok, merged = pcall(function()
-    local manifests = discover()
-    if #manifests == 0 then return nil end
-    local rows = LauncherMods.deriveList(manifests, SaveData.loadOptions())
-    local byId = {}
-    for _, m in ipairs(manifests) do byId[m.id] = m end
-    return LauncherMods.deriveStrings(rows, byId, readStringsCatalog)
-  end)
-  if not ok then return nil end
-  return merged
-end
-
 -- setEnabled(id, enabled): persist options.mods[id] in the exact shape
 -- Loader:_saveState writes (a plain boolean), so the running game and the
 -- in-game ManagerState pick it up unchanged.
@@ -393,18 +282,10 @@ end
 
 -- ------- install (love.filesystem)
 
--- Read a .zip source into bytes.  Save-dir-relative paths (inbox /
--- picked_mod.zip) prefer love.filesystem so NX/Android never hit a cwd-relative
--- io.open that can see a different file than PhysFS.  Absolute host paths
--- (desktop picker) still use io.*.  DroppedFile matches RomImporter ROM drops.
-local function isHostAbsolutePath(path)
-  return type(path) == "string" and (
-      path:match("^/")
-      or path:match("^%a:[/\\]")
-      or path:match("^[Ss][Dd][Mm][Cc]:")
-    )
-end
-
+-- Read a .zip source into bytes.  A string is an external absolute path (like
+-- a chosen ROM) read with io.*, falling back to a save-dir-relative
+-- love.filesystem read; a love DroppedFile is opened the way RomImporter
+-- ingests dropped ROMs.
 local function readArchive(source)
   local t = type(source)
   if (t == "userdata" or t == "table") and type(source.open) == "function" then
@@ -416,10 +297,6 @@ local function readArchive(source)
     return data
   end
   if t == "string" then
-    if not isHostAbsolutePath(source) and love and love.filesystem then
-      local data = love.filesystem.read(source)
-      if data then return data end
-    end
     local f = io.open(source, "rb")
     if f then
       local data = f:read("*a")
@@ -434,12 +311,6 @@ local function readArchive(source)
     return nil, "could not open " .. source
   end
   return nil, "unsupported archive source"
-end
-
--- Local PK\3\4 / empty-file check before mount (corrupt MTP / AppleDouble).
-local function zipLooksValid(data)
-  if type(data) ~= "string" or #data < 4 then return false end
-  return data:sub(1, 2) == "PK"
 end
 
 -- Shallow listing of a mounted archive shaped for locateRoot: files by name,
@@ -509,33 +380,6 @@ local function removeTree(path)
   -- save-directory twin too or that copy would keep the mod alive; outside
   -- portable mode this repeats the delete CacheFs just did and no-ops.
   fs.remove(path)
-end
-
--- Every mods/ folder currently holding this id, plus the bare mods/<id> tree
--- even when its manifest is missing or unreadable.  Second return: whether any
--- of them carries a manifest the panel can actually list.  An install names
--- its dest after the manifest id, but a hand-unzipped copy keeps whatever
--- folder name the archive carried, and discover()'s first-id-wins rule means
--- whichever folder physfs happens to enumerate first is the one the panel and
--- the loader really use.  Replacing only mods/<id> let an update report
--- success while the old copy kept winning that race (#801); and a
--- manifest-less mods/<id> left by an interrupted copy blocked every re-import
--- as "already installed" while showing nowhere the player could see (#834).
-local function sameIdTrees(fs, id)
-  local out, installed = {}, false
-  if not fs.getInfo("mods") then return out, installed end
-  for _, name in ipairs(fs.getDirectoryItems("mods")) do
-    local path = "mods/" .. name
-    local raw = fs.read(path .. "/manifest.json")
-    local manifest = raw and decodeManifest(raw, path)
-    if manifest and manifest.id == id then
-      out[#out + 1] = path
-      installed = true
-    elseif name == id and fs.getInfo(path) then
-      out[#out + 1] = path
-    end
-  end
-  return out, installed
 end
 
 -- ------- strays: mods dropped beside the game that it cannot see
@@ -666,44 +510,21 @@ function LauncherMods._installZipInner(source, opts)
   local fs = love.filesystem
   local data, readErr = readArchive(source)
   if not data then return nil, readErr end
-  if not zipLooksValid(data) then
-    local label = type(source) == "string" and (source:match("[^/\\]+$") or source)
-      or "archive"
-    return nil, "not a zip file: " .. tostring(label)
-      .. " (need a real .zip; skip Mac ._ files from MTP)"
-  end
 
-  -- Prefer in-memory mount (PHYSFS_mountMemory via FileData). Avoids Horizon's
-  -- "file already open" failure when write-then-mount reopens a save-dir zip.
-  local mount = "mod_import_mount"
-  local tmp = nil
-  local mountKey = nil
-  local mounted = false
-  if fs.newFileData then
-    local archiveName = ("mod_import_%d_%d.zip"):format(
-      os.time(), math.random(0, 999999))
-    local okFd, fd = pcall(fs.newFileData, data, archiveName)
-    if okFd and fd and fs.mount(fd, mount) then
-      mounted = true
-      mountKey = fd
-    end
+  -- stage into a save-dir temp so mount can reach it
+  local tmp = ("mod_import_%d_%d.zip"):format(os.time(), math.random(0, 999999))
+  local ok, writeErr = fs.write(tmp, data)
+  if not ok then
+    return nil, "could not stage the .zip: " .. tostring(writeErr)
   end
-  if not mounted then
-    -- Fallback: stage into a save-dir temp so path-mount can reach it.
-    tmp = ("mod_import_%d_%d.zip"):format(os.time(), math.random(0, 999999))
-    local ok, writeErr = fs.write(tmp, data)
-    if not ok then
-      return nil, "could not stage the .zip: " .. tostring(writeErr)
-    end
-    if not fs.mount(tmp, mount) then
-      fs.remove(tmp)
-      return nil, "that .zip could not be opened"
-    end
-    mountKey = tmp
+  local mount = "mod_import_mount"
+  if not fs.mount(tmp, mount) then
+    fs.remove(tmp)
+    return nil, "that .zip could not be opened"
   end
   local function cleanup()
-    pcall(fs.unmount, mountKey)
-    if tmp then fs.remove(tmp) end
+    pcall(fs.unmount, tmp)
+    fs.remove(tmp)
   end
 
   local prefix, rootErr = LauncherMods.locateRoot(topLevelPaths(mount))
@@ -730,21 +551,16 @@ function LauncherMods._installZipInner(source, opts)
   end
 
   local dest = "mods/" .. manifest.id
-  local existing, installedSomewhere = sameIdTrees(fs, manifest.id)
-  if installedSomewhere and not opts.replace then
-    cleanup()
-    return nil, "a mod named '" .. manifest.id .. "' is already installed"
-  end
-  if #existing > 0 then
-    -- drop every old tree before copy -- mods/<id> and any same-id folder
-    -- under another name, or the survivor keeps winning discover()'s
-    -- first-id-wins race after the "successful" update (#801).  A tree with
-    -- no readable manifest is debris from an interrupted copy: it never
-    -- refuses the install, it only gets cleared (#834).  Enable-flag is
-    -- preserved (uninstall would clear it, which would surprise an update).
+  if fs.getInfo(dest) then
+    if not opts.replace then
+      cleanup()
+      return nil, "a mod named '" .. manifest.id .. "' is already installed"
+    end
+    -- drop the old tree before copy; enable-flag is preserved (uninstall
+    -- would clear it, which would surprise an update)
     local savedPrefix = CacheFs.prefix
     CacheFs.prefix = ""
-    for _, path in ipairs(existing) do removeTree(path) end
+    removeTree(dest)
     CacheFs.prefix = savedPrefix
   end
 
@@ -795,30 +611,6 @@ function LauncherMods.installFromRelease(modId, release)
   return result, err
 end
 
--- The install half of installFromRelease, split out so the launcher can run
--- the DOWNLOAD half asynchronously (src/net/Fetch.lua) and still land in the
--- same place.  `localPath` is a love.filesystem-relative path to an already
--- downloaded zip; it is consumed (removed) either way.
--- Returns true, version | nil, errString.
-function LauncherMods.installDownloadedZip(modId, localPath, version)
-  local ok, result, err = pcall(function()
-    if type(modId) ~= "string" or modId == "" then
-      return nil, "missing mod id"
-    end
-    if type(localPath) ~= "string" or localPath == "" then
-      return nil, "missing downloaded archive"
-    end
-    local installed, res = LauncherMods.installZip(localPath, {
-      replace = true, expectId = modId,
-    })
-    pcall(love.filesystem.remove, localPath)
-    if not installed then return nil, res end
-    return true, version or res
-  end)
-  if not ok then return nil, "install failed: " .. tostring(result) end
-  return result, err
-end
-
 -- Install a mod listed in a community index (src/mods/ModIndex.lua).
 -- The index only ever tells us WHERE the zip is; resolving that URL is
 -- ModIndex's job and installing it is installFromRelease's, so this is the
@@ -858,17 +650,14 @@ function LauncherMods.uninstall(id)
     return nil, "mod uninstall needs LOVE"
   end
   local fs = love.filesystem
-  local trees = sameIdTrees(fs, id)
-  if #trees == 0 then
+  local dest = "mods/" .. id
+  if not fs.getInfo(dest) then
     return nil, "mod '" .. id .. "' is not installed"
   end
-  -- same root pin as installZip: the mods tree is not version-prefixed (#330).
-  -- Every same-id tree goes, folder name notwithstanding, so Delete works on a
-  -- hand-unzipped copy too and cannot leave a shadow copy for discover()'s
-  -- first-id-wins rule to resurrect on the next boot (#801)
+  -- same root pin as installZip: the mods tree is not version-prefixed (#330)
   local savedPrefix = CacheFs.prefix
   CacheFs.prefix = ""
-  for _, path in ipairs(trees) do removeTree(path) end
+  removeTree(dest)
   CacheFs.prefix = savedPrefix
   -- Drop the enable flag so a reinstall of the same id starts from the
   -- loader's default (enabled) rather than a stale false.

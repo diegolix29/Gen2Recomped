@@ -23,8 +23,6 @@ local FaithfulRes = require("src.core.FaithfulRes")
 local FrameCap = require("src.core.FrameCap")
 local Performance = require("src.core.Performance")
 local Logger = require("src.core.Logger")
-local HostShell = require("src.core.HostShell")
-local love = love
 local Runtime = require("src.mods.Runtime")
 local OptionRows = require("src.ui.OptionRows")
 local Renderer = require("src.render.Renderer")
@@ -50,7 +48,6 @@ local Rulesets = {
   modern_clean = require("src.battle.rulesets.modern_clean"),
 }
 local FILTERS = { "OFF", "1X", "2X", "3X" }
-local SKY_PIXELATION = { "OFF", "2X", "4X", "8X", "16X" }
 
 local function speedIndex(game)
   -- default matches InitOptions' TEXT_DELAY_MEDIUM in wOptions
@@ -104,81 +101,6 @@ local function stepVolume(v, dir)
   return math.max(0, math.min(7, (v or 7) + dir))
 end
 
--- Helper to trim whitespace
-local function trim(s)
-  return s and s:gsub("^%s+", ""):gsub("%s+$", "") or nil
-end
-
--- Release pointer grab before opening file picker (prevents freeze)
-local function releasePointerGrab()
-  local love = love
-  if love and love.mouse and love.mouse.hasCursor and love.mouse.hasCursor() then
-    love.mouse.setGrabbed(false)
-    love.mouse.setRelativeMode(false)
-  end
-end
-
--- File picker for sky image selection
-local function pickSkyImage()
-  local platform = love.system.getOS()
-  local prompt = "Select Sky Image"
-  
-  releasePointerGrab()
-  
-  if platform == "Android" then
-    -- Use the Android SAF picker for image selection
-    if love.system.pickFile and love.system.pickFile("image") then
-      -- The picker was launched successfully; the image will be saved as picked_sky.png
-      -- in the save directory. We'll need to wait for focus to return and check for the file.
-      return "picked_sky.png"
-    else
-      if Logger then
-        Logger.log("info", "Android: Could not open image picker. Please copy sky images to the game's directory manually")
-      end
-      return nil
-    end
-  elseif platform == "Windows" then
-    local script = table.concat({
-      "Add-Type -AssemblyName System.Windows.Forms;",
-      "$d=New-Object System.Windows.Forms.OpenFileDialog;",
-      "$d.Title='" .. prompt .. "';",
-      "$d.Filter='Image files (*.png;*.jpg;*.jpeg;*.bmp)|*.png;*.jpg;*.jpeg;*.bmp|All files (*.*)|*.*';",
-      "if($d.ShowDialog() -eq 'OK'){[Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::Write($d.FileName)}",
-    })
-    local pipe = HostShell.popen('powershell -NoProfile -STA -Command "' .. script .. '"')
-    if pipe then
-      local result = pipe:read("*a")
-      pipe:close()
-      result = trim(result)
-      return result ~= "" and result or nil
-    end
-  elseif platform == "Linux" then
-    local pipe = HostShell.popen([[zenity --file-selection --title="]] .. prompt .. [[" --file-filter="Image files | *.png *.jpg *.jpeg *.bmp" 2>/dev/null]])
-    if pipe then
-      local result = pipe:read("*a")
-      pipe:close()
-      result = trim(result)
-      if result and result ~= "" then return result end
-    end
-    pipe = HostShell.popen([[kdialog --getopenfilename "$HOME" "*.png *.jpg *.jpeg *.bmp|Image files" 2>/dev/null]])
-    if pipe then
-      local result = pipe:read("*a")
-      pipe:close()
-      result = trim(result)
-      if result and result ~= "" then return result end
-    end
-  elseif platform == "OS X" then
-    local pipe = HostShell.popen([[osascript -e 'POSIX path of (choose file with prompt "]] .. prompt .. [[" of type {"png","jpg","jpeg","bmp"})' 2>/dev/null]])
-    if pipe then
-      local result = pipe:read("*a")
-      pipe:close()
-      result = trim(result)
-      if result and result ~= "" then return result end
-    end
-  end
-  return nil
-end
-
 local function colorIndex(opts)
   local cur = opts.colors or "gbc"
   for i, m in ipairs(PaletteFX.MODES) do
@@ -213,15 +135,6 @@ local function buildRows(game)
       step = function(g)
         local o = g.save.options
         o.animations = o.animations == false and true or false
-        return true
-      end },
-    { id = "battleFlash", label = "BATTLE FLASH",
-      value = function(g)
-        return g.save.options.disableBattleFlash == true and "OFF" or "ON"
-      end,
-      step = function(g)
-        local o = g.save.options
-        o.disableBattleFlash = not o.disableBattleFlash
         return true
       end },
     { id = "battleStyle", label = Strings("BATTLE STYLE"),
@@ -386,88 +299,6 @@ local function buildRows(game)
         end
         return true
       end },
-    { id = "skyZoom", label = Strings("SKY ZOOM"),
-      value = function(g)
-        local zoom = g.save.options.skyZoom or 1.0
-        return string.format("%.1fx", zoom)
-      end,
-      step = function(g, dir)
-        local o = g.save.options
-        local zoom = o.skyZoom or 1.0
-        zoom = zoom + dir * 0.1
-        zoom = math.max(0.5, math.min(3.0, zoom)) -- Clamp between 0.5x and 3.0x
-        o.skyZoom = zoom
-        if g.writeOptions then g:writeOptions() end
-        return true
-      end },
-    { id = "rightStickMovement", label = Strings("RIGHT STICK MOVE"),
-      value = function(g)
-        return (g.save.options.rightStickMovement or false) and "ON" or "OFF"
-      end,
-      step = function(g)
-        local o = g.save.options
-        o.rightStickMovement = not (o.rightStickMovement or false)
-        if g.writeOptions then g:writeOptions() end
-        return true
-      end },
-    { id = "leftStickCamera", label = Strings("LEFT STICK CAMERA"),
-      value = function(g)
-        return (g.save.options.leftStickCamera or false) and "ON" or "OFF"
-      end,
-      step = function(g)
-        local o = g.save.options
-        o.leftStickCamera = not (o.leftStickCamera or false)
-        if g.writeOptions then g:writeOptions() end
-        return true
-      end },
-    { id = "skyOffsetY", label = Strings("SKY OFFSET Y"),
-      value = function(g)
-        local offset = g.save.options.skyOffsetY or 0
-        return string.format("%.1f", offset)
-      end,
-      step = function(g, dir)
-        local o = g.save.options
-        local offset = o.skyOffsetY or 0
-        -- x5 scale: UI shows -5 to +5, stored as -1.0 to +1.0
-        offset = offset + dir * 0.2
-        offset = math.max(-1.0, math.min(1.0, offset)) -- Clamp between -1.0 and 1.0
-        o.skyOffsetY = offset
-        if g.writeOptions then g:writeOptions() end
-        return true
-      end },
-    { id = "skyImageEnabled", label = Strings("SKY ENABLED"),
-      value = function(g)
-        return g.save.options.skyImageEnabled and "ON" or "OFF"
-      end,
-      step = function(g, dir)
-        local o = g.save.options
-        o.skyImageEnabled = not o.skyImageEnabled
-        if g.writeOptions then g:writeOptions() end
-        return true
-      end },
-    { id = "skyPixelation", label = Strings("SKY PIXELATION"),
-      value = function(g)
-        local pixelation = g.save.options.skyPixelation or 0
-        return SKY_PIXELATION[pixelation + 1]
-      end,
-      step = function(g, dir)
-        local o = g.save.options
-        local pixelation = o.skyPixelation or 0
-        pixelation = ((pixelation + dir) % #SKY_PIXELATION + #SKY_PIXELATION) % #SKY_PIXELATION
-        o.skyPixelation = pixelation
-        if g.writeOptions then g:writeOptions() end
-        return true
-      end },
-    { id = "holdBToRun", label = Strings("HOLD B TO RUN"),
-      value = function(g)
-        return g.save.options.holdBToRun and "ON" or "OFF"
-      end,
-      step = function(g, dir)
-        local o = g.save.options
-        o.holdBToRun = not o.holdBToRun
-        if g.writeOptions then g:writeOptions() end
-        return true
-      end },
     { id = "gbcfx", label = Strings("GBC FX"),
       value = function(g)
         return GBCFX.levelLabel(g.save.options.gbcfx or 0)
@@ -523,7 +354,7 @@ local function buildRows(game)
     -- Game Boy screen with no letterbox at all.  Sits next to VIDEO MODE
     -- because it overrides it: holding an exact size means dropping
     -- fullscreen.
-    { id = "faithfulRes", label = Strings("FAITHFUL RATIO"),
+    { id = "faithfulRes", label = Strings("FAITHFUL RES"),
       value = function(g)
         return FaithfulRes.label(g.save.options.faithfulRes)
       end,
@@ -573,12 +404,6 @@ local function buildRows(game)
       activate = function(g)
         require("src.ui.Screens").push(g, "BindingsMenu")
       end },
-    -- hotkey rebinding UI (display hotkeys like COLORS/TILT/ZOOM)
-    { id = "hotkeys", label = Strings("HOTKEYS"),
-      activate = function(g)
-        require("src.ui.Screens").push(g, "HotkeyBindingsMenu")
-      end },
-
     -- permanent on-screen pad toggle (#327); layout editing stays in the
     -- launcher.  Hidden where the overlay never appears (desktop without
     -- POKEPORT_TOUCH), so the row costs a non-mobile install nothing.
@@ -597,42 +422,6 @@ local function buildRows(game)
         o.touchControls = tc
         require("src.core.TouchControls"):applyOptions(o)
         return true
-      end,
-      activate = function(g)
-        -- Only enable touch controls editor in launcher context
-        -- During gameplay, touch controls layout editing is not available
-        -- The comment says "layout editing stays in the launcher"
-        -- So we should not try to open the editor from in-game options
-        return false
-      end },
-    -- mobile-only: customize touch overlay button positions
-    { id = "touchLayout", label = Strings("TOUCH LAYOUT"),
-      value = function(g)
-        return g.touchControls and g.touchControls:isEditMode() and "EDITING" or "DEFAULT"
-      end,
-      activate = function(g)
-        if g.touchControls then
-          g.touchControls:toggleEditMode()
-        end
-      end },
-    -- Haptic feedback for on-screen pad presses (#806): OFF / LIGHT /
-    -- MEDIUM / HEAVY, where the intensity is a vibration duration --
-    -- love.system.vibrate takes nothing else.  Hidden with TOUCH PAD below,
-    -- since the only thing that buzzes is a virtual button press.
-    { id = "haptics", label = Strings("VIBRATION"),
-      value = function(g)
-        local TC = require("src.core.TouchControls")
-        return Strings(TC.hapticLabel(g.save.options.haptics))
-      end,
-      step = function(g, dir)
-        local o = g.save.options
-        local TC = require("src.core.TouchControls")
-        o.haptics = TC.cycleHaptics(o.haptics, dir)
-        TC:applyOptions(o)
-        -- sample the level being selected: stepping the row is the only way
-        -- to compare LIGHT against HEAVY without leaving the menu
-        TC.buzz(o.haptics)
-        return true
       end },
   }
   -- issue #136: hide GBC FX on Android/iOS -- the present shader soft-bricks
@@ -643,27 +432,8 @@ local function buildRows(game)
     end
     rows = filtered
   end
-  -- hide TOUCH LAYOUT on non-mobile platforms
-  local osName = love.system and love.system.getOS and love.system.getOS()
-  if osName ~= "Android" and osName ~= "iOS" then
-    local filtered = {}
-    for _, row in ipairs(rows) do
-      if row.id ~= "touchLayout" then filtered[#filtered + 1] = row end
-    end
-    rows = filtered
-  end
-  -- hide ORIENTATION on non-Android platforms
-  if osName ~= "Android" then
-    local filtered = {}
-    for _, row in ipairs(rows) do
-      if row.id ~= "orientation" then filtered[#filtered + 1] = row end
-    end
-    rows = filtered
-  end
-  -- TOUCH PAD and VIBRATION only where the overlay can appear (mobile, or
-  -- desktop with POKEPORT_TOUCH=1).  POKEPORT_TOUCH=0 forces it off
-  -- everywhere.  VIBRATION rides the same gate: nothing else in the port
-  -- vibrates, and love.system.vibrate is a no-op on desktop anyway.
+  -- TOUCH PAD only where the overlay can appear (mobile, or desktop with
+  -- POKEPORT_TOUCH=1).  POKEPORT_TOUCH=0 forces it off everywhere.
   do
     local env = os.getenv("POKEPORT_TOUCH")
     local osName = love.system and love.system.getOS and love.system.getOS()
@@ -672,9 +442,7 @@ local function buildRows(game)
     if not show then
       local filtered = {}
       for _, row in ipairs(rows) do
-        if row.id ~= "touchControls" and row.id ~= "haptics" then
-          filtered[#filtered + 1] = row
-        end
+        if row.id ~= "touchControls" then filtered[#filtered + 1] = row end
       end
       rows = filtered
     end
@@ -723,14 +491,7 @@ function OptionsMenu.new(game, opts)
     Logger.error("ui.options.rows returned %s; keeping the vanilla rows",
                  type(hooked))
   end
-  -- Restore cursor position from saved options
-  local savedIndex = game.save.options.optionsMenuIndex or 1
-  -- Clamp to valid range
-  local cancelRow = #rows + 1
-  if savedIndex < 1 or savedIndex > cancelRow then
-    savedIndex = 1
-  end
-  return setmetatable({ game = game, rows = rows, index = savedIndex, scroll = 0,
+  return setmetatable({ game = game, rows = rows, index = 1, scroll = 0,
                         onCancel = opts.onCancel }, OptionsMenu)
 end
 
@@ -742,10 +503,8 @@ function OptionsMenu:update(dt)
   local changed = false
   if input:wasPressed("up") then
     self.index = self.index > 1 and self.index - 1 or cancelRow
-    self.game.save.options.optionsMenuIndex = self.index
   elseif input:wasPressed("down") then
     self.index = self.index < cancelRow and self.index + 1 or 1
-    self.game.save.options.optionsMenuIndex = self.index
   elseif input:wasPressed("left") or input:wasPressed("right")
       or input:wasPressed("a") then
     local dir = input:wasPressed("left") and -1 or 1
@@ -755,8 +514,6 @@ function OptionsMenu:update(dt)
     elseif row and row.step then
       changed = row.step(self.game, dir) and true or false
     elseif input:wasPressed("a") then -- CANCEL
-      -- Save cursor position before closing
-      self.game.save.options.optionsMenuIndex = self.index
       -- DisplayOptionMenu .exitMenu (engine/menus/main_menu.asm) is the
       -- only spot in this menu that plays SFX_PRESS_AB: A on a setting row
       -- and the Left/Right toggles stay silent (#570).  game.data is nil
@@ -768,8 +525,6 @@ function OptionsMenu:update(dt)
       if self.onCancel then self.onCancel() end
     end
   elseif input:wasPressed("b") or input:wasPressed("start") then
-    -- Save cursor position before closing
-    self.game.save.options.optionsMenuIndex = self.index
     -- .exitMenu again: B and START leave the same way, sound and all
     if self.game.data then
       require("src.core.Sound").play(self.game.data, "Press_AB")
@@ -785,14 +540,8 @@ function OptionsMenu:update(dt)
 end
 
 function OptionsMenu:draw()
-  -- Through Strings, like every other label on this menu.  CANCEL is
-  -- appended AFTER the rows hook (see the header), which is what keeps a mod
-  -- from orphaning the exit -- but it also means a translation mod never sees
-  -- this string, and cannot: there is no row for it to rewrite.  So the one
-  -- word a Spanish player could not read on a fully translated OPTIONS menu
-  -- was the way out of it.
   OptionRows.draw(self.game, self.rows, self.index, self.scroll or 0,
-                  Strings("CANCEL"), #self.rows + 1)
+                  "CANCEL", #self.rows + 1)
 end
 
 return OptionsMenu

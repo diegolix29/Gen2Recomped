@@ -30,45 +30,6 @@ public final class GRPickerBridge: NSObject {
     // (<sandbox>/Library/Application Support/<identity>).
     private static let loveIdentity = "pokemon-love2d"
 
-    @objc(httpDownloadWithUrl:destination:userAgent:accept:)
-    public static func httpDownload(url: UnsafePointer<CChar>?,
-                                    destination: UnsafePointer<CChar>?,
-                                    userAgent: UnsafePointer<CChar>?,
-                                    accept: UnsafePointer<CChar>?) -> Bool {
-        guard let url, let destination,
-              let requestURL = URL(string: String(cString: url)) else { return false }
-        var request = URLRequest(url: requestURL)
-        request.timeoutInterval = 300
-        if let userAgent, userAgent.pointee != 0 {
-            request.setValue(String(cString: userAgent), forHTTPHeaderField: "User-Agent")
-        }
-        if let accept, accept.pointee != 0 {
-            request.setValue(String(cString: accept), forHTTPHeaderField: "Accept")
-        }
-        let target = URL(fileURLWithPath: String(cString: destination))
-        let semaphore = DispatchSemaphore(value: 0)
-        var succeeded = false
-        let task = URLSession.shared.downloadTask(with: request) { temporary, response, error in
-            defer { semaphore.signal() }
-            guard error == nil, let temporary,
-                  let http = response as? HTTPURLResponse,
-                  (200..<300).contains(http.statusCode) else { return }
-            try? FileManager.default.removeItem(at: target)
-            do {
-                try FileManager.default.moveItem(at: temporary, to: target)
-                succeeded = true
-            } catch {
-                succeeded = false
-            }
-        }
-        task.resume()
-        guard semaphore.wait(timeout: .now() + 305) == .success else {
-            task.cancel()
-            return false
-        }
-        return succeeded
-    }
-
     // MARK: - Entry points called from liblove (C strings on purpose)
 
     @objc(presentPickerWithKind:saveDir:)
@@ -85,30 +46,11 @@ public final class GRPickerBridge: NSObject {
             types = [.zip]
         case "sav":
             destName = "picked_save.sav"
-        // A Nintendo 64 cartridge, for mods that build assets out of one --
-        // the voxel mod's Pokemon Stadium battle models are the caller this
-        // was added for. Its own filename on purpose: an N64 ROM landing on
-        // picked_rom.gb is swept up by the Game Boy importer, deleted, and
-        // reported to the player as a broken cartridge.
-        case "stadium":
-            destName = "picked_stadium.z64"
-            for ext in ["z64", "n64", "v64"] {
-                if let t = UTType(filenameExtension: ext) { types.append(t) }
-            }
-        case "rom", "":
+        default:
             destName = "picked_rom.gb"
             for ext in ["gb", "gbc"] {
                 if let t = UTType(filenameExtension: ext) { types.append(t) }
             }
-        // An unknown kind is REFUSED rather than treated as a Game Boy ROM.
-        //
-        // It used to fall through to picked_rom.gb, so a caller asking for a
-        // kind this build had never heard of got its file deleted and
-        // reported as a broken cartridge -- the worst possible answer to
-        // "I do not know that one". Returning false lets the caller find out
-        // and offer its own fallback.
-        default:
-            return false
         }
         // .gb/.gbc/.sav resolve to dynamic UTTypes on most devices; offering
         // .data as well keeps every real file selectable. The importer
@@ -124,20 +66,6 @@ public final class GRPickerBridge: NSObject {
             copyItem(at: src, into: dir, named: destName)
         }
         return present(picker, with: delegate)
-    }
-
-    // Which kinds presentPicker understands, comma separated.
-    //
-    // So a CALLER can ask before it calls. A mod that wants a kind this build
-    // predates cannot otherwise tell "refused" from "the picker would not
-    // open", and guessing wrong used to cost the player their ROM (see the
-    // default case above). Asking first turns that into a fallback the caller
-    // chooses rather than a file it loses.
-    //
-    // Kept beside the switch it describes, because the two drifting apart is
-    // the only way this can lie.
-    @objc public static func supportedPickerKinds() -> NSString {
-        return "rom,mod,sav,stadium" as NSString
     }
 
     @objc(presentExportWithName:saveDir:)
@@ -246,27 +174,15 @@ public final class GRPickerBridge: NSObject {
             // Without this the stacked present makes the picker auto-dismiss
             // with zero documents (observed as didPickDocumentsAt 0 urls)
             // and the user's pick silently does nothing.
-            guard var top = UIApplication.shared.windows
-                .first(where: { $0.isKeyWindow })?.rootViewController
-            else { return false }
-            // Self-heal before consulting the list. If UIKit is presenting
-            // nothing at all, any delegate still in it belongs to a sheet
-            // that is long gone, and treating it as live would lock the
-            // picker out for the rest of the session. Belt and braces with
-            // the dismissal callback above: that one closes the known hole,
-            // this one closes whatever hole iOS invents next.
-            if top.presentedViewController == nil, !liveDelegates.isEmpty {
-                NSLog("GRPickerBridge: clearing %d stale delegate(s)",
-                      liveDelegates.count)
-                liveDelegates.removeAll()
-            }
             guard liveDelegates.isEmpty else {
                 NSLog("GRPickerBridge: picker already active; ignoring re-present")
                 return true
             }
+            guard var top = UIApplication.shared.windows
+                .first(where: { $0.isKeyWindow })?.rootViewController
+            else { return false }
             while let presented = top.presentedViewController { top = presented }
             picker.delegate = delegate
-            picker.presentationController?.delegate = delegate
             liveDelegates.append(delegate)
             delegate.onFinish = { [weak delegate] in
                 liveDelegates.removeAll { $0 === delegate }
@@ -281,8 +197,7 @@ public final class GRPickerBridge: NSObject {
     }
 }
 
-private final class PickerDelegate: NSObject, UIDocumentPickerDelegate,
-                                    UIAdaptivePresentationControllerDelegate {
+private final class PickerDelegate: NSObject, UIDocumentPickerDelegate {
     private let onPick: ([URL]) -> Void
     var onFinish: (() -> Void)?
     init(onPick: @escaping ([URL]) -> Void) { self.onPick = onPick }
@@ -298,20 +213,6 @@ private final class PickerDelegate: NSObject, UIDocumentPickerDelegate,
         // No file was written; the Lua side's pending-file poll simply
         // never finds anything.
         NSLog("GRPickerBridge: picker cancelled")
-        onFinish?()
-    }
-
-    // Swiping the sheet down calls NEITHER of the two above: since iOS 13 an
-    // interactively dismissed picker reports only through the adaptive
-    // presentation delegate. Without this the delegate is never taken out of
-    // liveDelegates, the re-present guard below then swallows every later
-    // picker while still answering true -- so Lua arms its poll and waits for
-    // a file that no sheet is ever going to produce. That is the whole of the
-    // "Import ROM does nothing until you restart the app" report: the restart
-    // is not refreshing anything, it is clearing this array.
-    func presentationControllerDidDismiss(_ presentationController:
-                                          UIPresentationController) {
-        NSLog("GRPickerBridge: picker dismissed interactively")
         onFinish?()
     }
 }

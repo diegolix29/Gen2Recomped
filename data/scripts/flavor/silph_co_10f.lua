@@ -12,9 +12,9 @@ return {
       TEXT_SILPHCO10F_SILPH_WORKER_F = {
         { "face_player" },
         { "check_flag", "EVENT_BEAT_SILPH_CO_GIOVANNI" },
-        { "jump_if_true", 6 },
+        { "jump_if_true", 5 },
         { "show_text", "_SilphCo10FSilphWorkerFImScaredText" },
-        { "jump", "end" },
+        { "jump", 6 },
         { "show_text", "_SilphCo10FSilphWorkerFQuietAboutMyCryingText" },
       },
     },

@@ -5,16 +5,16 @@
 
 local Font = require("src.render.Font")
 local Strings = require("src.core.Strings")
-local romText = require("src.core.RomText")
 
 local MoveLearnMenu = {}
 MoveLearnMenu.__index = MoveLearnMenu
 
 local CURSOR = 0xED
 
--- data/moves/hm_moves.asm (IsMoveHM)
+-- data/moves/hm_moves.asm (IsMoveHM); Gen2 adds WHIRLPOOL and WATERFALL
 local HM_MOVES = {
   CUT = true, FLY = true, SURF = true, STRENGTH = true, FLASH = true,
+  WHIRLPOOL = true, WATERFALL = true,
 }
 
 function MoveLearnMenu.new(game, mon, newMoveId, onDone)
@@ -44,13 +44,10 @@ function MoveLearnMenu:enter()
   local mdef = game.data.moves[self.newMoveId]
   local name = self:monName()
   self.selecting = false
-  -- _TryingToLearnText is the whole exchange in pokered, delete prompt
-  -- included, so the extracted line carries all four slots at once
   game.stack:push(TextBox.new(game,
-    romText(game.data, "_TryingToLearnText",
-      "%s is\ntrying to learn\v%s!\fBut, %s\ncan't learn more\vthan 4 moves!\f"
-      .. "Delete an older\nmove to make room\vfor %s?",
-      name, mdef.name, name, mdef.name),
+    Strings("%s is\ntrying to learn\v%s!\fBut, %s\ncan't learn more\vthan 4 moves!\f",
+            name, mdef.name, name) ..
+    Strings("Delete an older\nmove to make room\vfor %s?", mdef.name),
     nil, {
       choice = function(yes)
         if yes then
@@ -81,8 +78,7 @@ function MoveLearnMenu:update(dt)
         -- HMCantDeleteText, then back to the forget list
         local TextBox = require("src.render.TextBox")
         self.game.stack:push(TextBox.new(self.game,
-          romText(self.game.data, "_HMCantDeleteText",
-            "HM techniques\ncan't be deleted!")))
+          Strings("HM techniques\ncan't be deleted!")))
         return
       end
       local mdef = self.game.data.moves[self.newMoveId]
@@ -102,8 +98,7 @@ function MoveLearnMenu:confirmAbandon()
   local mdef = game.data.moves[self.newMoveId]
   self.selecting = false
   game.stack:push(TextBox.new(game,
-    romText(game.data, "_AbandonLearningText",
-      "Abandon learning\n%s?", mdef.name), nil, {
+    Strings("Abandon learning\n%s?", mdef.name), nil, {
       choice = function(yes)
         if yes then self:finish(false) else self:enter() end
       end,
@@ -119,17 +114,12 @@ function MoveLearnMenu:finish(learned)
   game.stack:pop()
   local msg
   if learned then
-    -- pokered pages this as four texts in a row; _ForgotAndText carries
-    -- the "And..." tail
-    msg = romText(game.data, "_OneTwoAndText", "1, 2 and...")
-      .. romText(game.data, "_PoofText", " Poof!")
-      .. romText(game.data, "_ForgotAndText",
-           "\f%s forgot\n%s!\fAnd...", name, self.forgot)
-      .. "\f" .. romText(game.data, "_LearnedMove1Text",
-           "%s learned\n%s!", name, mdef.name)
+    -- OneTwoAndText/PoofText/ForgotAndText
+    msg = Strings("1, 2 and... Poof!\f%s forgot\n%s!\fAnd...\f%s learned\n%s!",
+                  name, self.forgot, name, mdef.name)
   else
-    msg = romText(game.data, "_DidNotLearnText",
-      "%s\ndid not learn\v%s!", name, mdef.name)
+    -- DidNotLearnText
+    msg = Strings("%s\ndid not learn\v%s!", name, mdef.name)
   end
   game.stack:push(TextBox.new(game, msg, function()
     if self.onDone then self.onDone(learned) end

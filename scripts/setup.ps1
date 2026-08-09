@@ -1,9 +1,10 @@
-﻿# Build game data from a user-provided Pokemon Red ROM and install LÖVE.
+﻿# Build game data from a user-provided Pokemon Red/Blue/Yellow/Gold/Silver ROM and install LÖVE.
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -Rom C:\path\red.gb
+#   powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -Rom C:\path\silver.gbc
 #
-# With no explicit path, the first *.gb file in the project root is used.
+# With no explicit path, the first *.gb / *.gbc file in the project root is used.
 
 param(
     [string]$Rom = $env:ROM_PATH
@@ -34,22 +35,61 @@ function Find-Python {
     return $null
 }
 
+function Resolve-RomVersion([string]$sha1) {
+    switch ($sha1.ToLowerInvariant()) {
+        'ea9bcae617fdf159b045185467ae58b2e4a48b9a' { return 'red' }
+        'd7037c83e1ae5b39bde3c30787637ba1d4c48ce2' { return 'blue' }
+        'cc7d03262ebfaf2f06772c1a480c7d9d5f4a38e1' { return 'yellow' }
+        'd8b8a3600a465308c9953dfa04f0081c05bdcb94' { return 'gold' }
+        '49b163f7e57702bc939d642a18f591de55d92dae' { return 'silver' }
+        default { return $null }
+    }
+}
+
+if (-not $Rom) {
+    $candidate = Get-ChildItem -Path $Root -File |
+        Where-Object { $_.Extension -in '.gb', '.gbc' } |
+        Sort-Object Name |
+        Select-Object -First 1
+    if ($candidate) { $Rom = $candidate.FullName }
+}
+if (-not $Rom -or -not (Test-Path -LiteralPath $Rom -PathType Leaf)) {
+    Fail "Pokemon ROM not found. Put a .gb/.gbc in $Root or pass -Rom C:\path\file.gb[c]"
+}
+$Rom = (Resolve-Path -LiteralPath $Rom).Path
+
+$ext = [IO.Path]::GetExtension($Rom).ToLowerInvariant()
+if ($ext -ne '.gb' -and $ext -ne '.gbc') {
+    Fail "Unsupported ROM extension '$ext'. Use a .gb or .gbc ROM file."
+}
+
+$romSha1 = (Get-FileHash -LiteralPath $Rom -Algorithm SHA1).Hash.ToLowerInvariant()
+$romVersion = Resolve-RomVersion $romSha1
+if (-not $romVersion) {
+    Fail "Unsupported ROM SHA-1 $romSha1. Expected canonical Red/Blue/Yellow/Gold/Silver ROM hash."
+}
+Say "detected ROM version: $romVersion ($romSha1)"
+
 $Python = @(Find-Python)
 if (-not $Python) { Fail 'Python 3 is required to decode the ROM' }
 $PyExe = $Python[0]
 $PyArgs = @($Python | Select-Object -Skip 1)
 
-if (-not $Rom) {
-    $candidate = Get-ChildItem -Path $Root -Filter '*.gb' -File |
-        Select-Object -First 1
-    if ($candidate) { $Rom = $candidate.FullName }
-}
-if (-not $Rom -or -not (Test-Path -LiteralPath $Rom -PathType Leaf)) {
-    Fail "Pokemon Red ROM not found. Put your .gb file in $Root or pass -Rom C:\path\red.gb"
-}
-$Rom = (Resolve-Path -LiteralPath $Rom).Path
-
 $VenvPython = Join-Path $Venv 'Scripts\python.exe'
+# A venv keeps its python.exe after the base interpreter it was built against
+# is uninstalled or moved, but every call then dies with "No Python at ...",
+# so probe it rather than trusting that the file is there.
+if (Test-Path $VenvPython) {
+    $venvOk = $false
+    try {
+        & $VenvPython -c 'import sys' 2>$null | Out-Null
+        $venvOk = ($LASTEXITCODE -eq 0)
+    } catch { $venvOk = $false }
+    if (-not $venvOk) {
+        Say 'existing Python environment is broken, rebuilding it'
+        Remove-Item -Recurse -Force $Venv -ErrorAction SilentlyContinue
+    }
+}
 if (-not (Test-Path $VenvPython)) {
     Say 'creating Python environment'
     & $PyExe @PyArgs -m venv $Venv
@@ -63,7 +103,15 @@ if ($LASTEXITCODE -ne 0) { Fail 'Pillow installation failed' }
 Say "decoding game data from $(Split-Path -Leaf $Rom)"
 Push-Location $Root
 try {
-    & $VenvPython 'tools\build_data.py' --rom $Rom --clean
+    if ($romVersion -in @('gold', 'silver')) {
+        Say 'Gen2 ROM detected: extracting supported datasets with the original ROM pipeline.'
+        $loveSave = Join-Path $env:APPDATA 'LOVE\pokemon-love2d'
+        $outDir = Join-Path $loveSave (Join-Path $romVersion 'data\generated')
+        $assetsDir = Join-Path $loveSave (Join-Path $romVersion 'assets\generated')
+        & $VenvPython 'tools\build_data.py' --rom $Rom --version $romVersion --out $outDir --assets $assetsDir --clean --only constants --only charmap --only moves --only items --only text --only maps --only tilesets
+    } else {
+        & $VenvPython 'tools\build_data.py' --rom $Rom --version $romVersion --clean
+    }
     if ($LASTEXITCODE -ne 0) { Fail 'ROM extraction failed' }
 } finally {
     Pop-Location

@@ -24,7 +24,8 @@ local PALETTES = {
     LORELEIS_ROOM = "PALLET", BRUNOS_ROOM = "CAVE",
   },
   -- Pokemon Tower / Agatha, then the caves
-  byTileset = { CEMETERY = "GRAYMON", CAVERN = "CAVE" },
+  byTileset = { CEMETERY = "GRAYMON", CAVERN = "CAVE",
+                HOUSE = "HOUSE" },
   byPrefix = { { prefix = "ROUTE_", palette = "ROUTE" } },
   default = "ROUTE",
 }
@@ -129,13 +130,23 @@ FieldDefaults.FIELD = {
   bookshelves = BOOKSHELVES,
   fishing = FISHING,
   safari = SAFARI,
+  -- Optional map-interaction tables that scaffold imports may omit.
+  ledges = {},
+  waterTilesets = {},
+  cutTreeSwaps = {},
+  flyOrder = {},
+  flyWarps = {},
   playerSprites = PLAYER_SPRITES,
   playerPics = PLAYER_PICS,
   lastMapRewrites = LAST_MAP_REWRITES,
   -- CheckIfInOutsideMap: what counts as "outside" for the wLastMap memory
   outsideTilesets = { "OVERWORLD", "PLATEAU" },
   -- the Route 16/18 gate scripts `res BIT_ALWAYS_ON_BIKE` every frame
-  forcedMovement = { clearMaps = { "ROUTE_16_GATE_1F", "ROUTE_18_GATE_1F" } },
+  forcedMovement = {
+    clearMaps = { "ROUTE_16_GATE_1F", "ROUTE_18_GATE_1F" },
+    tiles = {},
+    slopeMaps = {},
+  },
   -- the one-shot flag the gate's pass text is gated on; a gate a mod adds
   -- gets "PASSED_<mapId>" instead of this pre-v2 spelling
   badgeGates = { ROUTE_22_GATE = { passedFlag = "PASSED_ROUTE22_GATE" } },
@@ -155,17 +166,19 @@ FieldDefaults.FIELD = {
                      "EVENT_BEAT_ROCKET_HIDEOUT_4_TRAINER_1" } },
       },
     },
-    -- Floors whose door callback a version does not have.  Yellow dropped
-    -- RocketHideoutB4FDoorCallbackScript entirely (pokeyellow
-    -- scripts/RocketHideoutB4F.asm goes straight to EnableAutoTextBoxDrawing)
-    -- and its .blk ships the same open $0e doorway, so B4F's lift gate is
-    -- never barred there.  Every manifest still carries the row above, so
-    -- this is what stops a Yellow cache walling Giovanni off behind two
-    -- guard flags Jessie & James never set (#650).
-    skipMaps = { yellow = { ROCKET_HIDEOUT_B4F = true } },
   },
   -- VermilionGymSetDoorTile opens the motorized door once both locks are hit
   hiddenExtras = {
+    pcTiles = {
+      PLAYERS_HOUSE2_F = {
+        { x = 2, y = 1, facing = "up" },
+      },
+      MAP_G18_N07 = {
+        { x = 2, y = 1, facing = "up" },
+      },
+    },
+    benchGuys = {},
+    gymStatues = {},
     -- PrintTrashText bins (#188); seeds stale caches missing the key
     printTrash = {
       SS_ANNE_KITCHEN = {

@@ -46,6 +46,9 @@ end
 function TitleState:sgbPalettes(game)
   local P = require("src.render.PaletteFX")
   local z
+  -- Gold/Silver are CGB-native: the backdrop is already ripped in full
+  -- color, so there is no SGB packet to re-tint it with.
+  if self.gen2Background then return nil end
   if self.yellowLayout then
     -- Yellow's BlkPacket_Titlescreen (pokeyellow data/sgb/sgb_packets.asm):
     -- rows 0-7 logo band pal 0 (PAL_LOGO2), rows 8-17 Pikachu + copyright
@@ -68,14 +71,7 @@ function TitleState:sgbPalettes(game)
   local top = game.stack and game.stack:top()
   local box = top and top.titleUiBox
   if box then
-    -- A DMG-grays zone, not the trueColor opt-out: through the shade-remap
-    -- shader GRAYS is the identity for the box's four shades, so SGB /
-    -- ADVANCED / OG modes keep #133's white paper and black ink exactly,
-    -- while effectiveColors still substitutes the mono and inverted display
-    -- modes -- a trueColor rect skipped the shader entirely, leaving the
-    -- main menu and CONTINUE info box a raw white hole over a CLASSIC
-    -- pea-green title instead of matching it like the START menu does (#870).
-    z[#z + 1] = P.zone(P.GRAYS, box[1], box[2], box[3], box[4])
+    z[#z + 1] = P.trueColorZone(box[1], box[2], box[3], box[4])
   end
   return z[3] and z or nil
 end
@@ -107,12 +103,7 @@ local CYCLE_FRAMES = 240 -- the original waits ~4s between picks
 
 local function tryImage(path)
   if not path then return nil end
-  -- resolve through Assets so a mod's derived art (save/mod-derived/)
-  -- wins here the way it does for every other generated sheet -- but
-  -- load uncached, because on NX the per-version overlay redirects the
-  -- open itself and a cached image would leak across Yellow/Blue boots
-  local ok, img = pcall(love.graphics.newImage,
-    require("src.render.Assets").resolve(path))
+  local ok, img = pcall(love.graphics.newImage, path)
   return ok and img or nil
 end
 
@@ -156,29 +147,40 @@ function TitleState.new(game, opts)
   -- branding comes from field.title with the shipped art as fallback, so
   -- a total conversion rebrands the title without replacing the screen
   local title = (game.data.field and game.data.field.title) or {}
-  -- field.title itself is extraction data the field schema never exposes;
-  -- boot.title is the mod-reachable half of the same seam, so its keys
-  -- override here (a localized ribbon, a rebranded logo)
-  local boot = game.data.field and game.data.field.boot
-  if boot and type(boot.title) == "table" then
-    local merged = {}
-    for key, value in pairs(title) do merged[key] = value end
-    for key, value in pairs(boot.title) do merged[key] = value end
-    title = merged
-  end
   self.title = title
   self.logo = tryImage(imagePath(title.logo)
                        or "assets/logo/pokemon_logo.png")
-  -- versionRibbon is the file-12 key; version is the importer's.  The
-  -- vanilla sheet is two fragments the draw pass repositions, so an
-  -- explicit ribbon (a conversion's or a translation's continuous art)
-  -- draws whole instead.
-  self.versionFull = imagePath(title.versionRibbon) ~= nil
+  -- versionRibbon is the file-12 key; version is the importer's
   self.version = tryImage(imagePath(title.versionRibbon or title.version)
                           or "assets/generated/title/red_version.png")
-  self.player = tryImage(imagePath(title.player)
-                         or "assets/generated/title/player.png")
+  self.player = tryImage("assets/generated/title/player.png")
   self.blue = GameVersion.isBlue()
+  -- Gold/Silver compose the whole screen from one BG map (title.asm
+  -- LoadTitleScreenTilemap), so the Gen2 layout is a single backdrop plus
+  -- the cloud band ScrollTitleScreenClouds slides sideways.
+  self.gen2 = title.layout == "gen2"
+  self.gen2Background = self.gen2 and tryImage(imagePath(title.background)) or nil
+  self.gen2Clouds = self.gen2 and title.clouds or nil
+  -- HO-OH (Gold) / LUGIA (Silver) ride over the sky band as OBJ, so they
+  -- are not in the ripped BG map; the importer composes the five OAM sets
+  -- of .Frameset_GSIntroHoOhLugia into title.mascot.frames and ships the
+  -- frameset itself as title.mascot.sequence.
+  self.gen2MascotAt = self.gen2 and title.mascot or nil
+  self.gen2MascotFrames = nil
+  self.gen2MascotSeq = nil
+  if self.gen2MascotAt then
+    local frames = {}
+    for index, path in ipairs(self.gen2MascotAt.frames or {}) do
+      frames[index] = tryImage(imagePath(path))
+    end
+    if not frames[1] then frames[1] = tryImage(imagePath(title.mascot)) end
+    self.gen2MascotFrames = frames[1] and frames or nil
+    local seq = self.gen2MascotAt.sequence
+    if self.gen2MascotFrames and type(seq) == "table" and seq[1] then
+      self.gen2MascotSeq = seq
+    end
+  end
+  self.gen2Mascot = self.gen2MascotFrames and self.gen2MascotFrames[1] or nil
   self.yellow = GameVersion.isYellow()
     or title.layout == "yellow_pikachu"
   -- Yellow title is a fixed Pikachu composition (title_yellow.asm), not
@@ -367,12 +369,8 @@ function ContinueInfo:draw()
   -- box at (4,7), 8x14 content; labels double-spaced from (5,9)
   Font.drawBox(4, 7, 16, 10)
   love.graphics.setColor(0, 0, 0, 1)
-  -- the name follows the label's real width (one space after it), so a
-  -- localized label longer than PLAYER's six glyphs cannot run into it
-  local playerLabel = Strings("PLAYER")
-  Font.draw(playerLabel, 40, 72)
-  Font.draw((save.player and save.player.name) or "RED",
-    math.max(96, 40 + (#Font.split(playerLabel) + 1) * 8), 72)
+  Font.draw(Strings("PLAYER"), 40, 72)
+  Font.draw((save.player and save.player.name) or "RED", 96, 72)
   local badges = require("src.inventory.Badges").count(self.game.data, save)
   Font.draw(Strings("BADGES"), 40, 88)
   Font.draw(("%2d"):format(badges), 128, 88)
@@ -425,10 +423,8 @@ function TitleState:openMenu()
   end
   local th = #items * 2 + 2
   local menu = Menu.new(game, items, { tx = 0, ty = 0, tw = 13, th = th })
-  -- full-width title LOGO zones would recolor this box; see sgbPalettes.
-  -- Menu.new may have grown tw for longer (e.g. localized) labels, so the
-  -- recolor zone follows the box's real width instead of the vanilla 13.
-  menu.titleUiBox = { 0, 0, menu.tw - 1, th - 1 }
+  -- full-width title LOGO zones would recolor this box; see sgbPalettes
+  menu.titleUiBox = { 0, 0, 12, th - 1 }
   game.stack:push(menu)
 end
 
@@ -470,10 +466,13 @@ function TitleState:update(dt)
   local input = self.game.input
   if input:wasPressed("start") or input:wasPressed("a") then
     -- the title mon cries when you leave the title (.finishedWaiting);
-    -- Yellow's fixed Pikachu title always cries Pikachu.
-    require("src.core.Sound").playCry(self.game.data,
-      self.yellowLayout and "PIKACHU"
-      or self.cycleSpecies[self.cycleIndex])
+    -- Yellow's fixed Pikachu title always cries Pikachu.  Gold/Silver have
+    -- no cycling mon at all, so there is nothing to voice.
+    if not self.gen2Background then
+      require("src.core.Sound").playCry(self.game.data,
+        self.yellowLayout and "PIKACHU"
+        or self.cycleSpecies[self.cycleIndex])
+    end
     self:openMenu()
   end
 end
@@ -483,9 +482,59 @@ end
 -- the title mon in the 7x7 box at tile (5,10), copyright on row 17.
 -- Yellow (title_yellow.asm): logo (2,1), speech bubble (6,4), Pikachu
 -- (4,8) 12x9 -- no version ribbon, no cycling mon, no Red OAM.
+-- Gold/Silver: the ripped BG map is 256 px wide (the full 32-tile row) so
+-- the cloud band can wrap.  Everything outside the band is static; the band
+-- itself slides one pixel every framesPerPixel frames, matching
+-- ScrollTitleScreenClouds' LY-override decrement.
+function TitleState:drawGen2()
+  local image = self.gen2Background
+  local w, h = image:getDimensions()
+  markVisibleTrueColor(0, 0, 160, 144)
+  local band = self.gen2Clouds or {}
+  local top = band.y or 96
+  local height = band.height or 40
+  love.graphics.setColor(1, 1, 1, 1)
+  love.graphics.draw(image,
+    love.graphics.newQuad(0, 0, 160, top, w, h), 0, 0)
+  local offset = math.floor(self.timer / (band.framesPerPixel or 8)) % w
+  local quad = love.graphics.newQuad(0, top, w, height, w, h)
+  love.graphics.draw(image, quad, -offset, top)
+  love.graphics.draw(image, quad, w - offset, top)
+  local below = top + height
+  if below < h then
+    love.graphics.draw(image,
+      love.graphics.newQuad(0, below, 160, h - below, w, h), 0, below)
+  end
+  if self.gen2Mascot then
+    local at = self.gen2MascotAt or {}
+    love.graphics.draw(self:gen2MascotFrame(), at.x or 48, at.y or 56)
+  end
+end
+
+-- The wing flap runs off the ROM frameset: { oam set, frames } pairs on a
+-- loop, so the whole cycle is as long as the durations sum to.
+function TitleState:gen2MascotFrame()
+  local seq = self.gen2MascotSeq
+  local frames = self.gen2MascotFrames
+  if not (seq and frames) then return self.gen2Mascot end
+  local total = 0
+  for _, step in ipairs(seq) do total = total + (step[2] or 1) end
+  if total <= 0 then return self.gen2Mascot end
+  local at = self.timer % total
+  for _, step in ipairs(seq) do
+    at = at - (step[2] or 1)
+    if at < 0 then return frames[step[1]] or self.gen2Mascot end
+  end
+  return self.gen2Mascot
+end
+
 function TitleState:draw()
   love.graphics.setColor(1, 1, 1, 1)
   love.graphics.rectangle("fill", 0, 0, 160, 144)
+  if self.gen2Background then
+    self:drawGen2()
+    return
+  end
   local scrollY = self.yellowLayout and -(self.scy or 0) or 0
   if self.logo then
     love.graphics.draw(self.logo, 16, 8 + scrollY)
@@ -516,10 +565,7 @@ function TitleState:draw()
     -- the Yellow fallback layout draws no ribbon at all.
     if self.version and not self.yellow then
       local iw, ih = self.version:getDimensions()
-      if self.versionFull then
-        -- a continuous ribbon (versionRibbon) centers as one piece
-        love.graphics.draw(self.version, math.floor((160 - iw) / 2), 64)
-      elseif self.blue then
+      if self.blue then
         love.graphics.draw(self.version,
           love.graphics.newQuad(0, 0, 64, 8, iw, ih), 56, 64)
       else

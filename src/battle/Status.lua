@@ -6,7 +6,6 @@
 -- back to the vanilla records, which is bit-identical behavior.
 
 local Strings = require("src.core.Strings")
-local romText = require("src.core.RomText")
 
 local Status = {}
 
@@ -35,8 +34,8 @@ end
 -- sentence rather than the noun: "hurt by poison" and "hurt by the burn"
 -- decline differently once translated, so a shared fragment cannot be the
 -- translatable unit.
-local function damageOverTime(label, template)
-  return function(battler, _, battle)
+local function damageOverTime(template)
+  return function(battler)
     local mon = battler.mon
     local base = math.max(1, math.floor(mon.stats.hp / 16))
     local dmg = base
@@ -45,7 +44,7 @@ local function damageOverTime(label, template)
       battler.toxicCounter = battler.toxicCounter + 1
     end
     mon.hp = math.max(0, mon.hp - dmg)
-    return { romText(battle and battle.data, label, template, name(battler)) }
+    return { Strings(template, name(battler)) }
   end
 end
 
@@ -64,63 +63,53 @@ Status.RECORDS = {
     id = "SLP", label = "SLP", hudLabel = "SLP",
     catchBonus = 25, shakeBonus = 10,
     beforeMovePriority = 40,
-    beforeMove = function(battler, _, battle)
+    beforeMove = function(battler)
       battler.sleepTurns = (battler.sleepTurns or 1) - 1
       if battler.sleepTurns <= 0 then
         battler.mon.status = nil
-        -- wakes, loses the turn
-        return false, { romText(battle and battle.data, "_WokeUpText",
-          "%s\nwoke up!", name(battler)) }
+        return false, { Strings("%s\nwoke up!", name(battler)) } -- wakes, loses the turn
       end
-      return false, { romText(battle and battle.data, "_FastAsleepText",
-        "%s\nis fast asleep!", name(battler)) }
+      return false, { Strings("%s\nis fast asleep!", name(battler)) }
     end,
     onInflict = function(battle, target, opts, display)
       target.sleepTurns = battle.rng(1, 7)
-      return { romText(battle.data, "_FellAsleepText",
-        "%s\nfell asleep!", display) }
+      return { Strings("%s\nfell asleep!", display) }
     end,
   },
   FRZ = {
     id = "FRZ", label = "FRZ", hudLabel = "FRZ",
     catchBonus = 25, shakeBonus = 10,
     beforeMovePriority = 30,
-    beforeMove = function(battler, _, battle)
-      return false, { romText(battle and battle.data, "_IsFrozenText",
-        "%s\nis frozen solid!", name(battler)) }
+    beforeMove = function(battler)
+      return false, { Strings("%s\nis frozen solid!", name(battler)) }
     end,
     canInflict = function(target) return not hasType(target, "ICE") end,
-    onInflict = function(battle, _, _, display)
-      return { romText(battle and battle.data, "_FrozenText",
-        "%s\nwas frozen solid!", display) }
+    onInflict = function(_, _, _, display)
+      return { Strings("%s\nwas frozen solid!", display) }
     end,
   },
   PSN = {
     id = "PSN", label = "PSN", hudLabel = "PSN",
     catchBonus = 12, shakeBonus = 5,
-    residual = damageOverTime("_HurtByPoisonText",
-      Strings.source("%s's\nhurt by poison!")),
+    residual = damageOverTime(Strings.source("%s's\nhurt by poison!")),
     canInflict = function(target) return not hasType(target, "POISON") end,
-    onInflict = function(battle, target, opts, display)
+    onInflict = function(_, target, opts, display)
       if opts.toxic then
         target.toxicCounter = 1
-        return { romText(battle and battle.data, "_BadlyPoisonedText",
-          "%s's\nbadly poisoned!", display) }
+        -- _BadlyPoisonedText
+        return { Strings("%s's\nbadly poisoned!", display) }
       end
-      return { romText(battle and battle.data, "_PoisonedText",
-        "%s\nwas poisoned!", display) }
+      return { Strings("%s\nwas poisoned!", display) }
     end,
   },
   BRN = {
     id = "BRN", label = "BRN", hudLabel = "BRN",
     catchBonus = 12, shakeBonus = 5,
     statPenalty = { stat = "attack", div = 2 },
-    residual = damageOverTime("_HurtByBurnText",
-      Strings.source("%s's\nhurt by the burn!")),
+    residual = damageOverTime(Strings.source("%s's\nhurt by the burn!")),
     canInflict = function(target) return not hasType(target, "FIRE") end,
-    onInflict = function(battle, _, _, display)
-      return { romText(battle and battle.data, "_BurnedText",
-        "%s\nwas burned!", display) }
+    onInflict = function(_, _, _, display)
+      return { Strings("%s\nwas burned!", display) }
     end,
   },
   PAR = {
@@ -128,11 +117,10 @@ Status.RECORDS = {
     catchBonus = 12, shakeBonus = 5,
     statPenalty = { stat = "speed", div = 4 },
     beforeMovePriority = 10,
-    beforeMove = function(battler, rng, battle)
+    beforeMove = function(battler, rng)
       -- cp 25 percent / jr nc: fully paralyzed on rand < 63 (63/256)
       if rng(0, 255) < 63 then
-        return false, { romText(battle and battle.data, "_FullyParalyzedText",
-          "%s's\nfully paralyzed!", name(battler)) }
+        return false, { Strings("%s's\nfully paralyzed!", name(battler)) }
       end
       return true, {}
     end,
@@ -140,10 +128,9 @@ Status.RECORDS = {
       -- ParalyzeEffect_: Electric-type moves can't paralyze Ground-types
       return not (opts.moveType == "ELECTRIC" and hasType(target, "GROUND"))
     end,
-    onInflict = function(battle, _, _, display)
-      -- primary and secondary paralysis share this line
-      return { romText(battle and battle.data, "_ParalyzedMayNotAttackText",
-        "%s's\nparalyzed! It may\nnot attack!", display) }
+    onInflict = function(_, _, _, display)
+      -- _ParalyzedMayNotAttackText (primary and secondary paralysis)
+      return { Strings("%s's\nparalyzed! It may\nnot attack!", display) }
     end,
   },
 }
@@ -168,7 +155,7 @@ end
 -- The active status record's beforeMove runs at its priority slot: above
 -- VOLATILE_PRIORITY before the held/disable/confusion block (sleep,
 -- freeze), at or below after it (paralysis) -- the original's order.
-function Status.beforeMove(battler, rng, battle, selectedMoveId)
+function Status.beforeMove(battler, rng, battle)
   local mon = battler.mon
   -- Haze curing this mon's sleep/freeze forfeits its pending move for
   -- the turn, silently (haze.asm writes $ff/CANNOT_MOVE to the selected
@@ -179,8 +166,7 @@ function Status.beforeMove(battler, rng, battle, selectedMoveId)
   end
   if battler.flinched then
     battler.flinched = false
-    return false, { romText(battle and battle.data, "_FlinchedText",
-      "%s\nflinched!", name(battler)) }
+    return false, { Strings("%s\nflinched!", name(battler)) }
   end
   local record = Status.recordFor(battleStatuses(battle), mon.status)
   local handler = record and record.beforeMove
@@ -198,53 +184,27 @@ function Status.beforeMove(battler, rng, battle, selectedMoveId)
   end
   if battler.boundTurns and battler.boundTurns > 0 then
     battler.boundTurns = battler.boundTurns - 1
-    msgs[#msgs + 1] = romText(battle and battle.data, "_CantMoveText",
-      "%s\ncan't move!", name(battler))
+    msgs[#msgs + 1] = Strings("%s\ncan't move!", name(battler))
     return false, msgs
   end
   if battler.disabledTurns then
     battler.disabledTurns = battler.disabledTurns - 1
     if battler.disabledTurns <= 0 then
       battler.disabledTurns, battler.disabledSlot = nil, nil
-      table.insert(msgs, romText(battle and battle.data, "_DisabledNoMoreText",
-        "%s's\ndisabled no more!", name(battler)))
+      table.insert(msgs, Strings("%s's\ndisabled no more!", name(battler)))
     end
   end
   if battler.confusedTurns then
     battler.confusedTurns = battler.confusedTurns - 1
     if battler.confusedTurns <= 0 then
       battler.confusedTurns = nil
-      table.insert(msgs, romText(battle and battle.data, "_ConfusedNoMoreText",
-        "%s\nsnapped out of\nconfusion!", name(battler)))
+      table.insert(msgs, Strings("%s\nsnapped out of\nconfusion!", name(battler)))
     else
-      table.insert(msgs, romText(battle and battle.data, "_IsConfusedText",
-        "%s\nis confused!", name(battler)))
+      table.insert(msgs, Strings("%s\nis confused!", name(battler)))
       -- cp 50 percent + 1 / jr c: hurt itself on rand >= 128 (128/256)
       if rng(0, 255) < 128 then
         return false, msgs, true -- hurt itself
       end
-    end
-  end
-  -- .TriedToUseDisabledMoveCheck (engine/battle/core.asm, and the enemy
-  -- copy .checkIfTriedToUseDisabledMove): the disabled-move test runs at
-  -- EXECUTION time, comparing wPlayerDisabledMoveNumber against the
-  -- already SELECTED move, so a Disable that lands earlier in the same
-  -- turn still blocks the slower mon's move (#860).  It sits after the
-  -- confusion block and before the paralysis roll, so a confusion self-hit
-  -- still pre-empts it and the paralysis roll is never spent on a turn the
-  -- disable eats.  PrintMoveIsDisabledText clears CHARGING_UP before
-  -- printing, so a disabled charge move drops its stored turn instead of
-  -- releasing later.
-  if selectedMoveId and battler.disabledSlot then
-    local disabled = (battler.curMoves or {})[battler.disabledSlot]
-    if disabled and disabled.id == selectedMoveId then
-      battler.charging, battler.chargeReady = nil, nil
-      local moves = battle and battle.data and battle.data.moves
-      local shown = moves and moves[selectedMoveId] and moves[selectedMoveId].name
-                    or tostring(selectedMoveId)
-      table.insert(msgs, romText(battle and battle.data, "_MoveIsDisabledText",
-        "%s's\n%s is\ndisabled!", name(battler), shown))
-      return false, msgs
     end
   end
   if handler then
@@ -281,8 +241,7 @@ function Status.residual(battler, opponent, battle)
     dmg = math.min(dmg, mon.hp)
     mon.hp = mon.hp - dmg
     opponent.mon.hp = math.min(opponent.mon.stats.hp, opponent.mon.hp + dmg)
-    table.insert(msgs, romText(battle and battle.data, "_HurtByLeechSeedText",
-      "LEECH SEED saps\n%s!", name(battler)))
+    table.insert(msgs, Strings("LEECH SEED saps\n%s!", name(battler)))
   end
   return msgs
 end

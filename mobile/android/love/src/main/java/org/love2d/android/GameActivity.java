@@ -90,7 +90,6 @@ public class GameActivity extends SDLActivity {
     private static final String PICKED_ROM_FILENAME = "picked_rom.gb";
     private static final String PICKED_MOD_FILENAME = "picked_mod.zip";
     private static final String PICKED_SAVE_FILENAME = "picked_save.sav";
-    private static final String PICKED_IMAGE_FILENAME = "picked_sky.png";
     private static final String PENDING_EXPORT_FILENAME = "pending_export.sav";
     private static final String EXPORT_DONE_FILENAME = "export_done.flag";
     // Written when a SAF pick cannot be read at all, with the destination
@@ -117,18 +116,6 @@ public class GameActivity extends SDLActivity {
     // bad ROM instead of installing it (#553).
     private String pendingPickFilename = PICKED_ROM_FILENAME;
     private static final String STATE_PENDING_PICK = "pendingPickFilename";
-    // Absolute save directory physfs actually mounted, as reported by the
-    // native bridge call that opened the picker (love/src/common/android.cpp,
-    // bridgeSaveDirectory).  This activity used to recompute
-    // getExternalFilesDir(null)/save/<identity> on its own at result time; on
-    // merged / adopted-SD storage that can name a different volume than the
-    // one LOVE mounted, so the copied pick (and pick_error.flag) landed where
-    // Lua never scans -- the launcher then "did nothing" after a pick (#604)
-    // and the folders a file manager can browse stayed empty while the game
-    // saved fine elsewhere (#839).  Empty string means "not told yet": fall
-    // back to the historical computation.
-    private String pendingPickSaveDir = "";
-    private static final String STATE_PENDING_PICK_DIR = "pendingPickSaveDir";
     private static final String STATE_PENDING_CREATE = "pendingCreateSuggestedName";
     // Suggested download name for the in-flight SAF create (set by showCreateDocument).
     private String pendingCreateSuggestedName = "export.sav";
@@ -199,8 +186,6 @@ public class GameActivity extends SDLActivity {
             // a recreated activity still lands under the basename it asked for.
             String pick = savedInstanceState.getString(STATE_PENDING_PICK);
             if (pick != null) pendingPickFilename = pick;
-            String pickDir = savedInstanceState.getString(STATE_PENDING_PICK_DIR);
-            if (pickDir != null) pendingPickSaveDir = pickDir;
             String create = savedInstanceState.getString(STATE_PENDING_CREATE);
             if (create != null) pendingCreateSuggestedName = create;
         }
@@ -482,23 +467,13 @@ public class GameActivity extends SDLActivity {
      * @param destFilename basename under the app save identity (e.g.
      *                     picked_rom.gb, picked_mod.zip, picked_save.sav)
      */
-    /** Legacy single-argument entry; resolves the save dir itself. */
     @Keep
     public static boolean showFilePicker(String destFilename) {
-        return showFilePicker(destFilename, null);
-    }
-
-    @Keep
-    public static boolean showFilePicker(String destFilename, String saveDir) {
         GameActivity self = (GameActivity) mSingleton;
         if (self == null) return false;
         if (destFilename == null || destFilename.length() == 0) {
             destFilename = PICKED_ROM_FILENAME;
         }
-        // Remember where LOVE's filesystem is really mounted so
-        // onActivityResult copies the pick there, not into a recomputed
-        // (possibly different-volume) root (#604, #839).
-        self.pendingPickSaveDir = (saveDir != null) ? saveDir : "";
         // Reject path separators so a hostile JNI caller cannot escape the
         // save identity directory.
         if (destFilename.indexOf('/') >= 0 || destFilename.indexOf('\\') >= 0) {
@@ -550,26 +525,6 @@ public class GameActivity extends SDLActivity {
     @Keep
     public static boolean showSaveFilePicker() {
         return showFilePicker(PICKED_SAVE_FILENAME);
-    }
-
-    /** Image picker convenience wrapper used for skybox selection. */
-    @Keep
-    public static boolean showImageFilePicker() {
-        if (android.os.Build.VERSION.SDK_INT < 19) return false;
-        GameActivity self = (GameActivity) mSingleton;
-        if (self == null) return false;
-
-        self.pendingPickFilename = PICKED_IMAGE_FILENAME;
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("image/*");
-        try {
-            self.startActivityForResult(intent, FILE_PICKER_REQUEST_CODE);
-            return true;
-        } catch (Exception e) {
-            Log.d("GameActivity", "could not open image picker: " + e.getMessage());
-            return false;
-        }
     }
 
     /**
@@ -689,14 +644,8 @@ public class GameActivity extends SDLActivity {
      * return degrades on the Lua side (RomImporter export) to "Exported
      * inside the app folder", which is the correct pre-KitKat behavior.
      */
-    /** Legacy single-argument entry; resolves the save dir itself. */
     @Keep
     public static boolean showCreateDocument(String suggestedName) {
-        return showCreateDocument(suggestedName, null);
-    }
-
-    @Keep
-    public static boolean showCreateDocument(String suggestedName, String saveDir) {
         if (android.os.Build.VERSION.SDK_INT < 19) return false;
         // (see showFilePicker for why the import side got a pre-19 path)
         GameActivity self = (GameActivity) mSingleton;
@@ -708,12 +657,9 @@ public class GameActivity extends SDLActivity {
             Log.d("GameActivity", "refusing unsafe create name: " + suggestedName);
             return false;
         }
-        // Route through the mounted save dir (#604, #839): Lua staged
-        // pending_export.sav where physfs writes, which is not necessarily
-        // where a fresh getExternalFilesDir(null) points on merged /
-        // adopted-SD storage.
-        self.pendingPickSaveDir = (saveDir != null) ? saveDir : "";
-        File source = new File(self.saveIdentityDir(), PENDING_EXPORT_FILENAME);
+        File source = new File(
+            new File(self.getExternalFilesDir(null), "save"),
+            ROM_SAVE_IDENTITY + "/" + PENDING_EXPORT_FILENAME);
         if (!source.isFile()) {
             Log.d("GameActivity", "no pending export at " + source);
             return false;
@@ -734,21 +680,7 @@ public class GameActivity extends SDLActivity {
     }
 
     private File saveIdentityDir() {
-        // Prefer the mounted save dir the last bridge call reported: the
-        // recomputation below can name a different volume than the one LOVE
-        // mounted on merged / adopted-SD storage (#604, #839).
-        if (pendingPickSaveDir != null && pendingPickSaveDir.length() > 0) {
-            return new File(pendingPickSaveDir);
-        }
-        File ext = getExternalFilesDir(null);
-        if (ext == null) {
-            // Shared storage unavailable (ejected / mid-adoption): without
-            // this guard File(null, "save") silently built the RELATIVE
-            // path save/<identity>, mkdirs() failed against "/", and the
-            // pick was dropped with no message at all (#604).
-            ext = getFilesDir();
-        }
-        return new File(new File(ext, "save"), ROM_SAVE_IDENTITY);
+        return new File(new File(getExternalFilesDir(null), "save"), ROM_SAVE_IDENTITY);
     }
 
     /** Drops a small flag file in the save identity for Lua to consume on focus. */
@@ -943,7 +875,6 @@ public class GameActivity extends SDLActivity {
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
         outState.putString(STATE_PENDING_PICK, pendingPickFilename);
-        outState.putString(STATE_PENDING_PICK_DIR, pendingPickSaveDir);
         outState.putString(STATE_PENDING_CREATE, pendingCreateSuggestedName);
     }
 
@@ -1346,9 +1277,6 @@ public class GameActivity extends SDLActivity {
     // in src/jni/love/src/common/android.cpp.
     private static volatile SecondaryPresentation secondaryPresentation;
     private static volatile boolean secondaryEnabled = false;
-    private static final int MAX_SECONDARY_TOUCHES = 32;
-    private static final java.util.ArrayDeque<String> secondaryTouches =
-        new java.util.ArrayDeque<>();
 
     @Keep
     public static void setSecondaryEnabled(final boolean on) {
@@ -1401,7 +1329,6 @@ public class GameActivity extends SDLActivity {
     private static void teardownSecondaryDisplay() {
         SecondaryPresentation p = secondaryPresentation;
         secondaryPresentation = null;
-        synchronized (secondaryTouches) { secondaryTouches.clear(); }
         if (p != null) {
             try { p.dismiss(); } catch (Throwable t) {}
         }
@@ -1417,13 +1344,6 @@ public class GameActivity extends SDLActivity {
         SecondaryPresentation p = secondaryPresentation;
         if (p != null && buf != null && w > 0 && h > 0) {
             p.updateFrame(buf, w, h);
-        }
-    }
-
-    @Keep
-    public static String pollSecondaryDisplayTouch() {
-        synchronized (secondaryTouches) {
-            return secondaryTouches.pollFirst();
         }
     }
 
@@ -1493,7 +1413,6 @@ public class GameActivity extends SDLActivity {
         private final android.graphics.Paint paint = new android.graphics.Paint();
         private final Object lock = new Object();
         private int fw, fh;
-        private int activePointer = -1;
 
         FrameView(Context context) {
             super(context);
@@ -1513,52 +1432,6 @@ public class GameActivity extends SDLActivity {
                 bitmap.copyPixelsFromBuffer(buf);
             }
             postInvalidate();
-        }
-
-        private void enqueueTouch(String event) {
-            synchronized (secondaryTouches) {
-                if (secondaryTouches.size() >= MAX_SECONDARY_TOUCHES) {
-                    secondaryTouches.clear();
-                    secondaryTouches.addLast("cancel,0,0");
-                } else {
-                    secondaryTouches.addLast(event);
-                }
-            }
-        }
-
-        private int logicalX(float x) {
-            return Math.min(fw - 1, Math.max(0,
-                (int) ((x - dst.left) * fw / dst.width())));
-        }
-
-        private int logicalY(float y) {
-            return Math.min(fh - 1, Math.max(0,
-                (int) ((y - dst.top) * fh / dst.height())));
-        }
-
-        @Override
-        public boolean onTouchEvent(android.view.MotionEvent event) {
-            synchronized (lock) {
-                int action = event.getActionMasked();
-                if (action == android.view.MotionEvent.ACTION_DOWN && fw > 0
-                        && dst.contains((int) event.getX(), (int) event.getY())) {
-                    activePointer = event.getPointerId(0);
-                    enqueueTouch("down," + logicalX(event.getX()) + ","
-                        + logicalY(event.getY()));
-                } else if (action == android.view.MotionEvent.ACTION_UP
-                        && activePointer >= 0) {
-                    int index = event.findPointerIndex(activePointer);
-                    if (index >= 0 && fw > 0) {
-                        enqueueTouch("up," + logicalX(event.getX(index)) + ","
-                            + logicalY(event.getY(index)));
-                    }
-                    activePointer = -1;
-                } else if (action == android.view.MotionEvent.ACTION_CANCEL) {
-                    activePointer = -1;
-                    enqueueTouch("cancel,0,0");
-                }
-            }
-            return true;
         }
 
         @Override

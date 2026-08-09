@@ -34,10 +34,22 @@ end
 
 function Stats.calc(speciesDef, level, dvs, statExp)
   statExp = statExp or {}
+  local base = speciesDef.baseStats
   local out = {}
   for _, key in ipairs(ORDER) do
-    out[key] = calcOne(speciesDef.baseStats[key], dvs[key] or 0,
+    out[key] = calcOne(base[key], dvs[key] or 0,
                        statExp[key], level, key == "hp")
+  end
+  -- Gen 2 split Special into two base stats but kept ONE Special DV and
+  -- ONE Special stat-exp slot (CalcMonStats runs the same CalcStat over
+  -- six base values, reading wDVs' low nibble for both).  A Gen 1 species
+  -- record has no spatk/spdef, so it keeps the single `special`.
+  if base.spatk and base.spdef then
+    out.spatk = calcOne(base.spatk, dvs.special or 0,
+                        statExp.special, level, false)
+    out.spdef = calcOne(base.spdef, dvs.special or 0,
+                        statExp.special, level, false)
+    out.special = out.spatk
   end
   return out
 end
@@ -55,8 +67,18 @@ end
 -- a tampered save cannot overfill the bar.  A mon that already has stats is
 -- returned untouched, so a vanilla save round-trips.  #233, #304
 function Stats.ensure(speciesDef, mon)
-  if type(mon) ~= "table" or type(mon.stats) == "table" then return mon end
+  if type(mon) ~= "table" then return mon end
   if type(speciesDef) ~= "table" or type(speciesDef.baseStats) ~= "table" then
+    return mon
+  end
+  if type(mon.stats) == "table" then
+    -- a party saved before the Sp.Atk/Sp.Def split has only `special`
+    local base = speciesDef.baseStats
+    if base.spatk and base.spdef and not mon.stats.spatk then
+      local full = Stats.calc(speciesDef, mon.level or 1, mon.dvs or {},
+                              mon.statExp)
+      mon.stats.spatk, mon.stats.spdef = full.spatk, full.spdef
+    end
     return mon
   end
   mon.stats = Stats.calc(speciesDef, mon.level or 1, mon.dvs or {}, mon.statExp)

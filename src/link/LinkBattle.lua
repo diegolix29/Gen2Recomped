@@ -202,7 +202,7 @@ function LinkBattle.new(game, net, opts)
   local theirName = opts.theirName or "FOE"
 
   if not Handshake.battleAllowed(opts.verdict) then
-    return nil, Strings("Link battle needs\nthe same version\nand mods.")
+    return nil, Strings("Link battle needs\nthe same mods on\nboth games.")
   end
 
   -- both parties pass through the same pack->unpack clamp on both
@@ -342,7 +342,7 @@ function LinkBattle.new(game, net, opts)
                                   localHash = localH, remoteHash = remoteH,
                                   fatal = true })
     endAsDraw(s, Strings(
-      "Link desync!\n%s differs.\fAre both games\nthe same version\nand mods?",
+      "Link desync!\n%s differs.\fAre both games\nrunning the same\nmods?",
       component))
   end
 
@@ -692,7 +692,7 @@ function LinkBattle.newSpectator(game, net, opts)
   local guestName = opts.guestName or "GUEST"
 
   if not Handshake.battleAllowed(opts.verdict) then
-    return nil, Strings("Link battle needs\nthe same version\nand mods.")
+    return nil, Strings("Link battle needs\nthe same mods on\nboth games.")
   end
 
   local unpackOpts = { strict = opts.strict or false, forceLevel = opts.forceLevel }

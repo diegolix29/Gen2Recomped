@@ -10,7 +10,6 @@ local Net = require("src.link.Net")
 local Protocol = require("src.link.Protocol")
 local Runtime = require("src.mods.Runtime")
 local Screens = require("src.ui.Screens")
-local Session = require("src.link.Session")
 local TextBox = require("src.render.TextBox")
 local Strings = require("src.core.Strings")
 
@@ -45,8 +44,10 @@ local function forceLevelLabel(v)
   return (v == ANY or v == nil) and "ANY" or ("AUTO " .. tostring(v))
 end
 
--- stages before a successful transport has become this link's Session;
--- terminal checks skip them rather than keying off self.net's presence
+-- stages before any Net object is meaningfully "this session's link" --
+-- .net can still be a leftover failed attempt sitting on self, so error/
+-- closed checks below skip these rather than keying off self.net's
+-- presence alone
 local PRE_CONNECT_STAGES = { menu = true, lanMenu = true, onlineMenu = true }
 
 -- how long the host waits for a v2 hello before deciding the peer predates
@@ -69,16 +70,6 @@ local function ipDigits(ip)
   return digits
 end
 
-local function openSession(role, connect)
-  local transport = Net.new()
-  if connect(transport) then
-    return Session.new(transport, { role = role, kind = "link" })
-  end
-  local detail = transport.error or "?"
-  transport:close()
-  return nil, detail
-end
-
 function LinkState.new(game)
   local self = setmetatable({}, LinkState)
   self.game = game
@@ -98,15 +89,12 @@ end
 -- "connecting with this code", same as if the player had typed it in
 function LinkState.newJoinOnline(game, code)
   local self = LinkState.new(game)
-  local session, detail = openSession("guest", function(transport)
-    return transport:joinOnline(nil, code)
-  end)
-  if session then
-    self.net = session
+  self.net = Net.new()
+  if self.net:joinOnline(nil, code) then
     self.stage = "onlineJoining"
   else
     self.stage = "menu" -- exitWith below needs a real stage to unwind from
-    self:exitWith(Strings("Link error:\n%s", detail))
+    self:exitWith(Strings("Link error:\n%s", self.net.error or "?"))
   end
   return self
 end
@@ -175,13 +163,21 @@ end
 -- take the peer's hello out of the inbox without eating anything that
 -- shares the batch with it
 function LinkState:pollHello()
-  local message
-  if not self.peerHello then message = self.net:take("hello") end
-  if message then
-    self.peerHello = message
-    self.peerName = message.name
+  local msgs = self.net:poll()
+  local keep, got = {}, false
+  for _, msg in ipairs(msgs) do
+    if msg.type == "hello" and not self.peerHello then
+      self.peerHello = msg
+      self.peerName = msg.name
+      got = true
+    else
+      keep[#keep + 1] = msg
+    end
   end
-  return message ~= nil, self.net:hasPending()
+  for i = #keep, 1, -1 do
+    table.insert(self.net.inbox, 1, keep[i])
+  end
+  return got, #keep > 0
 end
 
 function LinkState:sendHello(mode)
@@ -224,15 +220,13 @@ function LinkState:update(dt)
   local input = self.game.input
   if self.net then
     self.net:update()
-    local status = self.net:getStatus()
-    if status == "failed" and not PRE_CONNECT_STAGES[self.stage] then
-      self:exitWith(Strings("Link error:\n%s",
-        (self.net.error or "?"):sub(1, 60)))
+    if self.net.error and not PRE_CONNECT_STAGES[self.stage] then
+      self:exitWith(Strings("Link error:\n%s", self.net.error:sub(1, 60)))
       return
     end
-    -- the peer vanished without a bye (only once the session FIFO drains,
+    -- the peer vanished without a bye (only once the inbox is drained,
     -- so a final message travelling with the disconnect still counts)
-    if status == "closed"
+    if self.net.closed and #self.net.inbox == 0
        and not PRE_CONNECT_STAGES[self.stage] and self.stage ~= "addrEntry"
        and self.stage ~= "codeEntry" and self.stage ~= "notice"
        and self.stage ~= "battleRunning" then
@@ -275,15 +269,12 @@ function LinkState:update(dt)
       self.stage = "menu"
       self.index = 1
     elseif input:wasPressed("a") then
+      self.net = Net.new()
       if self.index == 1 then
-        local session, detail = openSession("host", function(transport)
-          return transport:host()
-        end)
-        if session then
-          self.net = session
+        if self.net:host() then
           self.stage = "hosting"
         else
-          self:exitWith(Strings("Link error:\n%s", detail))
+          self:exitWith(Strings("Link error:\n%s", self.net.error or "?"))
         end
       else
         self.stage = "addrEntry"
@@ -298,14 +289,11 @@ function LinkState:update(dt)
       self.index = 2
     elseif input:wasPressed("a") then
       if self.index == 1 then
-        local session, detail = openSession("host", function(transport)
-          return transport:hostOnline()
-        end)
-        if session then
-          self.net = session
+        self.net = Net.new()
+        if self.net:hostOnline() then
           self.stage = "onlineHosting"
         else
-          self:exitWith(Strings("Link error:\n%s", detail))
+          self:exitWith(Strings("Link error:\n%s", self.net.error or "?"))
         end
       else
         self.stage = "codeEntry"
@@ -339,14 +327,11 @@ function LinkState:update(dt)
       CodeEntry.right(self.codeEntry)
     elseif input:wasPressed("a") then
       local code = CodeEntry.text(self.codeEntry)
-      local session, detail = openSession("guest", function(transport)
-        return transport:joinOnline(nil, code)
-      end)
-      if session then
-        self.net = session
+      self.net = Net.new()
+      if self.net:joinOnline(nil, code) then
         self.stage = "onlineJoining"
       else
-        self:exitWith(Strings("Link error:\n%s", detail))
+        self:exitWith(Strings("Link error:\n%s", self.net.error or "?"))
       end
     end
 
@@ -382,15 +367,10 @@ function LinkState:update(dt)
                                   + self.addr[base + 2] * 10
                                   + self.addr[base + 3])
       end
-      local address = table.concat(octets, ".")
-      local session, detail = openSession("guest", function(transport)
-        return transport:join(address)
-      end)
-      if session then
-        self.net = session
+      if self.net:join(table.concat(octets, ".")) then
         self.stage = "joining"
       else
-        self:exitWith(Strings("Link error:\n%s", detail))
+        self:exitWith(Strings("Link error:\n%s", self.net.error or "?"))
       end
     end
 
@@ -448,11 +428,19 @@ function LinkState:update(dt)
 
   elseif self.stage == "waitMode" then -- guest waits for host's pick
     if input:wasPressed("b") then self:exitWith(nil) return end
-    local message = self.net:take("hello")
-    if message then
-      self.peerHello = message
-      self.peerName = message.name
-      self:decideCompat(message.mode, false)
+    local msgs = self.net:poll()
+    for i, msg in ipairs(msgs) do
+      if msg.type == "hello" then
+        self.peerHello = msg
+        self.peerName = msg.name
+        -- the host's next messages (party, ...) can share this batch;
+        -- put them back so the new stage's poll sees them
+        for j = #msgs, i + 1, -1 do
+          table.insert(self.net.inbox, 1, msgs[j])
+        end
+        self:decideCompat(msg.mode, false)
+        break
+      end
     end
 
   elseif self.stage == "notice" then
@@ -468,34 +456,40 @@ function LinkState:update(dt)
 
   elseif self.stage == "battleWait" then
     if input:wasPressed("b") then self:exitWith(nil) return end
-    local message = self.net:take("party")
-    if message then
-      -- the host owns this rule (same as mode); the guest only learns
-      -- it here, off the host's own party message
-      if not self.isHost then self.forceLevel = message.forceLevel end
-      local LinkBattle = require("src.link.LinkBattle")
-      local opts = {
-        myParty = Protocol.packParty(self.game.save.party),
-        theirParty = message.mons,
-        theirName = self.peerName or "FOE",
-        seed = self.isHost and self.linkSeed or message.seed,
-        verdict = self.verdict,
-        strict = Handshake.strict(self.verdict),
-        forceLevel = self.forceLevel,
-      }
-      local battle, why
-      if self.isHost then
-        battle, why = LinkBattle.newHost(self.game, self.net, opts)
-      else
-        battle, why = LinkBattle.newGuest(self.game, self.net, opts)
+    local msgs = self.net:poll()
+    for i, msg in ipairs(msgs) do
+      if msg.type == "party" then
+        -- the host owns this rule (same as mode); the guest only learns
+        -- it here, off the host's own party message
+        if not self.isHost then self.forceLevel = msg.forceLevel end
+        local LinkBattle = require("src.link.LinkBattle")
+        local opts = {
+          myParty = Protocol.packParty(self.game.save.party),
+          theirParty = msg.mons,
+          theirName = self.peerName or "FOE",
+          seed = self.isHost and self.linkSeed or msg.seed,
+          verdict = self.verdict,
+          strict = Handshake.strict(self.verdict),
+          forceLevel = self.forceLevel,
+        }
+        local battle, why
+        if self.isHost then
+          battle, why = LinkBattle.newHost(self.game, self.net, opts)
+        else
+          battle, why = LinkBattle.newGuest(self.game, self.net, opts)
+        end
+        if not battle then
+          self.net:send({ type = "bye" })
+          self:exitWith(why or Strings("Link battle\ncan't start."), "error")
+          return
+        end
+        self.game.stack:push(battle)
+        self.stage = "battleRunning"
+        for j = #msgs, i + 1, -1 do
+          table.insert(self.net.inbox, 1, msgs[j])
+        end
+        break
       end
-      if not battle then
-        self.net:send({ type = "bye" })
-        self:exitWith(why or Strings("Link battle\ncan't start."), "error")
-        return
-      end
-      self.game.stack:push(battle)
-      self.stage = "battleRunning"
     end
 
   elseif self.stage == "battleRunning" then
@@ -720,9 +714,7 @@ function LinkState:draw()
     end
 
   elseif self.stage == "notice" then
-    -- a version-skew notice has nothing to do with mods (#758)
-    drawTitle(self.verdict == "engine_skew" and "UPDATE YOUR GAME"
-                                             or "CHECK YOUR MODS")
+    drawTitle("CHECK YOUR MODS")
     for i, line in ipairs(self.noticeLines or {}) do
       if i > 8 then break end -- what fits above the prompt row
       Font.draw(line, 8, 24 + (i - 1) * 12)

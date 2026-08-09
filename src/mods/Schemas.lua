@@ -74,11 +74,7 @@ function f.map(key, value)
     desc = ("map of %s -> %s"):format(key.desc, value.desc) }
 end
 
--- opts.strict closes the record to unknown fields even at the extensible
--- top level.  A union alternative whose fields are ALL optional needs this:
--- with top-level leniency it matches every table, so the union stops
--- rejecting anything (the font "ttf" shape was the first such alternative).
-function f.rec(fields, opts)
+function f.rec(fields)
   local names = {}
   for name in pairs(fields) do names[#names + 1] = name end
   table.sort(names)
@@ -87,7 +83,7 @@ function f.rec(fields, opts)
     local ft = fields[name]
     parts[#parts + 1] = name .. (ft.kind == "opt" and "?" or "")
   end
-  return { kind = "rec", fields = fields, strict = opts and opts.strict or nil,
+  return { kind = "rec", fields = fields,
     desc = "{" .. table.concat(parts, ", ") .. "}" }
 end
 
@@ -179,7 +175,7 @@ checkValue = function(t, value, path, patchMode, errors, top)
         -- unknown keys are preserved unless they read as a typo of a known
         -- field.  Nested recs stay strict, that is where typos hide.
         local hint = suggest(t.fields, key)
-        if hint or not top or t.strict then
+        if hint or not top then
           errors[#errors + 1] = ("%s.%s: unknown field%s"):format(path, tostring(key),
             hint and (' (did you mean "' .. hint .. '"?)') or "")
         end
@@ -577,9 +573,6 @@ R.trainers = {
     aiMods = f.opt(f.any),
     aiClass = f.opt(f.id("ai_classes")),
     brain = f.opt(f.fn),
-    -- Per-trainer battle theme (an audio.songs id): overrides the
-    -- kind-based default (wild/trainer/gym/final) for this trainer's
-    -- battles.  The victory jingle stays kind-based.
     battleTheme = f.opt(f.id("music")),
   },
   example = 'mod.content.trainers:patch("OPP_BROCK", { baseMoney = 99 })',
@@ -593,23 +586,12 @@ R.sprites = {
     frames = f.int(1),
     walker = f.opt(f.bool),
     trueColor = f.opt(f.bool),
-    -- Custom frame dimensions for larger sprites (defaults to 16x16)
-    frameWidth = f.opt(f.int(1)),
-    frameHeight = f.opt(f.int(1)),
-    -- Number of frames per row in the sprite sheet (defaults to 1 for vertical stacking)
-    framesPerRow = f.opt(f.int(1)),
-    -- Render scale: visual size multiplier for width (defaults to 1.0)
-    -- Use values < 1.0 to render high-res sprites at smaller visual size
-    scale = f.opt(f.numRange(0.1, 4.0)),
-    -- Height scale: independent height multiplier (defaults to scale value)
-    -- If set, overrides height scaling independently from width
-    heightScale = f.opt(f.numRange(0.1, 4.0)),
     -- Mod art can opt into an existing ROM sprite's Advanced-mode OBJ
     -- palette assignment without claiming that the image itself came from
     -- the ROM (which is what `source` documents on imported records).
     paletteSource = f.opt(f.str),
   },
-  example = 'mod.content.sprites:register("SPRITE_HERO", { image = "...", frames = 6, frameWidth = 32, frameHeight = 32, framesPerRow = 4, scale = 0.5, heightScale = 0.7 })',
+  example = 'mod.content.sprites:register("SPRITE_HERO", { image = "...", frames = 6 })',
 }
 
 R.text = {
@@ -1082,12 +1064,6 @@ local function fontIsCharmap(id)
   return tostring(id):match("^charmap:.+$") ~= nil
 end
 
--- the third id form: "ttf" switches text rendering to a real TTF (the
--- bundled Plain Pixel when `file` is omitted -- src/render/Font.lua)
-local function fontIsTtf(id)
-  return tostring(id) == "ttf"
-end
-
 R.font = {
   semantics = "record", target = "font",
   value = f.union{
@@ -1095,17 +1071,6 @@ R.font = {
            advance = f.opt(f.int(1)),
            charmap = f.opt(f.list(f.rec{ code = f.int(0), seq = f.str })) },
     f.rec{ seq = f.str, code = f.int(0) },
-    -- strict: every field here is optional ({} is a legal "ttf" entry), so
-    -- with the usual top-level leniency this alternative would match ANY
-    -- table and let malformed pages through the union unchecked
-    f.rec({ file = f.opt(f.path), size = f.opt(f.int(1)),
-            spacing = f.opt(f.num), yOffset = f.opt(f.num),
-            bold = f.opt(f.bool),
-            -- characters that keep their ROM tile instead of coming from the
-            -- TTF: a string of them, or a list when a multi-character charmap
-            -- sequence is meant (src/render/Font.lua)
-            tiles = f.opt(f.union{ f.str, f.list(f.str) }) },
-          { strict = true }),
   },
   extra = function(id, value)
     if fontIsCharmap(id) then
@@ -1115,18 +1080,12 @@ R.font = {
       if type(value.code) ~= "number" then
         return "a charmap: entry needs a code"
       end
-    elseif fontIsTtf(id) then
-      -- every field optional: {} is "the bundled font at its native size"
-      if value.image ~= nil or value.base ~= nil then
-        return 'the "ttf" entry takes file/size/spacing/yOffset/bold/tiles, not a page'
-      end
     elseif value.image == nil or value.base == nil then
       return "a font page needs an image and a base"
     end
   end,
   baseAt = function(base, id)
     if fontIsCharmap(id) then return nil end
-    if fontIsTtf(id) then return base.ttf end
     return base.pages and base.pages[id] or nil
   end,
   baseIds = function(base)
@@ -1137,9 +1096,6 @@ R.font = {
   write = function(target, registry)
     local pages = target.pages or {}
     target.pages = pages
-    -- the extractor never emits a ttf entry, so like the charmap rows it is
-    -- rebuilt from the registry each merge: disabling the mod disables it
-    target.ttf = nil
     -- the extractor's rows have no id and stay put; the registry's own are
     -- rebuilt every merge so a re-merge replaces them instead of stacking
     local rows = {}
@@ -1152,8 +1108,6 @@ R.font = {
         if value ~= nil then
           rows[#rows + 1] = { id = id, seq = value.seq, code = value.code }
         end
-      elseif fontIsTtf(id) then
-        target.ttf = value
       else
         pages[id] = value
       end

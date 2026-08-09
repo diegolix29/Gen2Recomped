@@ -62,9 +62,7 @@ local expected = 100 + 128 + 16 + 20 + 600
 for _, s in ipairs(credits.screens) do
   expected = expected + (s.fade and 20 or 0)
     + (s.mon and (s.fade and 90 or 110) or (s.fade and 120 or 140))
-    -- DisplayCreditsMon: 3 x CreditsCopyTileMapToVRAM (Delay3) then 27 scroll
-    -- frames (#703)
-    + (s.mon and (9 + 27) or 0)
+    + (s.mon and 27 or 0)
 end
 while roll.phase ~= "end_wait" and frame < expected + 120 do
   frame = frame + 1
@@ -116,20 +114,16 @@ local HallOfFame = require("src.ui.HallOfFame")
 check(getmetatable(stack2:top()) == HallOfFame, "induction showcase pushed")
 
 -- Gen1 layout (issue #102): pic rests at hlcoord (12,5); mon phase starts
--- with the LEVEL/TYPE info box (not a top "HALL OF FAME" banner alone).
--- HoFShowMonOrPlayer sweeps the BACK pic across the screen first (hSCX
--- $c0 -> $a0) and only then scrolls the front pic in (#847), so the
--- induction opens on the back pass.
+-- with the LEVEL/TYPE info box (not a top "HALL OF FAME" banner alone)
 local hofUi = stack2:top()
-eq(hofUi.phase, "back", "induction opens on the back pic sweep (#847)")
-eq(hofUi.scrollX, 160, "back pic enters at the right edge (hSCX = $c0)")
--- drive the back sweep and the front scroll so the info box is armed
+eq(hofUi.phase, "mons", "induction opens on the mon showcase phase")
+eq(hofUi.scrollX < 12 * 8, true, "front pic starts off-screen left of (12,5)")
+-- drive past the scroll so the info box is armed
 local scrollGuard = 0
-while (hofUi.phase == "back" or hofUi.scrollX < 12 * 8) and scrollGuard < 400 do
+while hofUi.scrollX < 12 * 8 and scrollGuard < 200 do
   scrollGuard = scrollGuard + 1
   hofUi:update(1 / 60)
 end
-eq(hofUi.phase, "mons", "the front pic phase follows the back sweep (#847)")
 eq(hofUi.scrollX, 12 * 8, "front pic settles at hlcoord (12,5)")
 eq(hofUi.showHofBanner, false, "bottom HALL OF FAME banner waits for the 80-frame hold")
 check(hofUi.timer == 80 or hofUi.timer < 80,

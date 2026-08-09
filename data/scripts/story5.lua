@@ -49,7 +49,7 @@ local function gift(opts)
         end
       end)
     end
-    if opts.pre then say(opts.pre, opts.preFallback or "", give) else give() end
+    if opts.pre then say(opts.pre, "", give) else give() end
   end
 end
 
@@ -118,21 +118,11 @@ M.CINNABAR_LAB_METRONOME_ROOM = {
   },
 }
 
--- TM42 Dream Eater (scripts/ViridianCity.asm, the fisher).  The fisher's
--- YouCanHaveThisText prints before GiveItem, so this gift needs a pre
--- text (#775).  Like the SilphCo2F worker (#393) that label carries no
--- leading underscore, and on Red it sits outside the extractor's symbol
--- set, so the literal from text/ViridianCity.asm rides along as the
--- fallback; Yellow resolves the ROM string instead.
+-- TM42 Dream Eater (scripts/ViridianCity.asm, the fisher; no pre text)
 M.VIRIDIAN_CITY = {
   talk = {
     TEXT_VIRIDIANCITY_FISHER = gift({
       flag = "EVENT_GOT_TM42", item = "TM_DREAM_EATER",
-      pre = "ViridianCityFisherYouCanHaveThisText",
-      preFallback = "Yawn!\nI must have dozed\voff in the sun."
-        .. "\fI had this dream\nabout a DROWZEE\veating my dream."
-        .. "\vWhat's this?\vWhere did this TM\vcome from?"
-        .. "\fThis is spooky!\nHere, you can\vhave this TM.",
       received = "_ViridianCityFisherReceivedTM42Text",
       explain = "_ViridianCityFisherTM42ExplanationText",
       noRoom = "_ViridianCityFisherTM42NoRoomText",
@@ -185,20 +175,6 @@ M.ROUTE_18_GATE_2F = {
     TEXT_ROUTE18GATE2F_YOUNGSTER = {
       { "face_player" },
       { "trade", 6, "EVENT_TRADED_SLOWBRO_FOR_LICKITUNG" }, -- MARC
-    },
-    -- Yellow replaces the youngster with a cook trading SPIKE
-    -- (TANGELA -> PARASECT): pokeyellow/scripts/Route18Gate2F.asm
-    -- Route18Gate2FCookText runs TRADE_FOR_SPIKE, index 6 in the Yellow
-    -- TradeMons table that Data:applyVersionedFieldData swaps in.  Red
-    -- maps have no COOK object here and Yellow maps have no YOUNGSTER,
-    -- so each version only ever fires its own row (#651).  Both rows
-    -- share the Red-flavoured done flag on purpose: a .sav tracks
-    -- "trade slot 6 completed" in one wCompletedInGameTradeFlags bit
-    -- either version reads, and the save codec maps that bit to this
-    -- flag name (src/save_convert/GenSave.lua EXTRA_FLAG_BITS).
-    TEXT_ROUTE18GATE2F_COOK = {
-      { "face_player" },
-      { "trade", 6, "EVENT_TRADED_SLOWBRO_FOR_LICKITUNG" }, -- SPIKE (Yellow)
     },
   },
 }

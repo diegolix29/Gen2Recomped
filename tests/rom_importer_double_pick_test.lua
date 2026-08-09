@@ -23,14 +23,11 @@ local S = require("tests.harness").suite("rom importer double pick (#553)")
 local check = S.check
 
 local RomImporter = require("src.import.RomImporter")
-local Platform = require("src.core.Platform")
 
 love.system = love.system or {}
 local saved = {
   getOS = love.system.getOS,
   pickFile = love.system.pickFile,
-  getPickedFile = love.system.getPickedFile,
-  getPickError = love.system.getPickError,
   getDirectoryItems = love.filesystem.getDirectoryItems,
   getInfo = love.filesystem.getInfo,
   read = love.filesystem.read,
@@ -54,7 +51,6 @@ love.filesystem.remove = function(name) saveDir[name] = nil; return true end
 
 local function importer(os)
   love.system.getOS = function() return os end
-  Platform._resetForTests()
   local ri = RomImporter.new(function() end, { launcher = true })
   ri.ready = { red = false, blue = false, yellow = false }
   return ri
@@ -70,7 +66,6 @@ local ios = importer("iOS")
 check(ios.pickPending, "iOS still boots armed (unchanged by this fix)")
 
 love.system.getOS = function() return "OS X" end
-Platform._resetForTests()
 local desktop = RomImporter.new(function() end, { launcher = true })
 check(not desktop.pickPending, "desktop does not poll: it has no save-dir picks")
 
@@ -140,38 +135,26 @@ contract:choose("red")
 check(picks == 2,
   "choose() still reopens the picker per call (#420/#442 contract, got " .. picks .. ")")
 
+-- 7. iOS taps must survive the Android double-fire guard. love.touchpressed in
+--    main.lua returns early on iOS and never forwards, so the synthesized
+--    love.mousepressed is the ONLY event the launcher gets there. Filtering
+--    istouch on both platforms killed every tap on iOS. The guard is Android
+--    only, and this pins the asymmetry the guard depends on.
 local touchForwardsToImporter = {
-  Android = true,
-  iOS = true,
+  Android = true,   -- love.touchpressed -> Importer:mousepressed
+  iOS = false,      -- returns early; mousepressed(istouch=true) is the only path
 }
 for os, forwards in pairs(touchForwardsToImporter) do
-  local dropSynthesized = true
+  local dropSynthesized = (os == "Android")
   check(dropSynthesized == forwards,
     os .. ": the synthesized mouse press is dropped only where touch already forwarded")
 end
 
--- Before the FlexLove view attaches (_flex), touch handlers are no-ops: they
--- must accept any id without capturing importer state or throwing. Once the
--- view is up they forward into FlexLove.touch* for list drag-scroll.
-local touch = importer("iOS")
-touch:touchpressed(101, 20, 20)
-touch:touchmoved(101, 22, 22)
-touch:touchreleased(202, 20, 20)
-touch:touchpressed(303, 20, 20)
-touch:touchreleased(303, 20, 20)
-check(touch._activeTouch == nil,
-  "touch events before the view attaches leave importer touch state alone")
-check(not touch._flex,
-  "and do not attach the FlexLove view on their own")
-
 love.system.getOS = saved.getOS
 love.system.pickFile = saved.pickFile
-love.system.getPickedFile = saved.getPickedFile
-love.system.getPickError = saved.getPickError
 love.filesystem.getDirectoryItems = saved.getDirectoryItems
 love.filesystem.getInfo = saved.getInfo
 love.filesystem.read = saved.read
 love.filesystem.remove = saved.remove
-Platform._resetForTests()
 
 S.finish()

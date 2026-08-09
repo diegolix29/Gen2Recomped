@@ -32,6 +32,14 @@ function StartMenu.new(game)
     end })
   end
 
+  -- POKéGEAR sits directly under the DEX in Gen2's start menu
+  -- (StartMenu_Pokegear, gated on EVENT_GOT_POKEGEAR)
+  if flags.EVENT_GOT_POKEGEAR then
+    table.insert(items, { label = Strings("POKéGEAR"), onSelect = function()
+      Screens.push(game, "PokegearMenu", { onCancel = reopen })
+    end })
+  end
+
   -- POKéMON is always listed (draw_start_menu.asm prints it even with
   -- an empty party; selecting it then just no-ops)
   table.insert(items, { label = Strings("POKéMON"), onSelect = function()
@@ -66,24 +74,14 @@ function StartMenu.new(game)
       panel .. Strings("\fWould you like to\nSAVE the game?"), nil, {
       choice = function(yes)
         if not yes then return end
-        -- SaveMenu .save (engine/menus/save.asm:164-181): "Now saving..."
-        -- is a bare PlaceString held by DelayFrames 120, then GameSavedText,
-        -- which ends in `done` and so never reaches TX_PROMPT_BUTTON.
-        -- Neither page takes a button press (#765); the second waits on
-        -- SFX_SAVE (PlaySoundWaitForCurrent + WaitForSoundToFinish) and then
-        -- DelayFrames 30.  The write itself is invisible either side of the
-        -- "Now saving..." hold, so it stays on that box's onDone.
+        -- "Now saving..." beat before the write (save.asm
+        -- NowSavingString), then GameSavedText + SFX_SAVE
         game.stack:push(TextBox.new(game, Strings("Now saving..."), function()
           game:writeSave()
+          require("src.core.Sound").play(game.data, "Save")
           game.stack:push(TextBox.new(game,
-            Strings("%s saved\nthe game!", game.save.player.name or "RED"),
-            nil, { auto = {
-              sound = function()
-                return require("src.core.Sound").play(game.data, "Save")
-              end,
-              delay = 30,
-            } }))
-        end, { auto = { delay = 120 } }))
+            Strings("%s saved\nthe game!", game.save.player.name or "RED")))
+        end))
       end,
     }))
   end })

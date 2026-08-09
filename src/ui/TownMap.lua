@@ -20,9 +20,75 @@ local TownMap = {}
 TownMap.__index = TownMap
 TownMap.isOpaque = true
 
--- SGB: PalPacket_TownMap, whole screen
+-- SGB: PalPacket_TownMap, whole screen.  Gen2's map is a real GBC picture
+-- (RomExtractorGen2:gen2TownMap rips town_map_johto/kanto.png with the six
+-- PokegearPals palettes baked in), so it wants no shade-remap at all -- and
+-- TOWNMAP is a Gen1 SuperPalette name the Gen2 cache does not carry anyway.
+--
+-- That covers the Pokedex AREA screen too: pokedex.asm's .Area runs the whole
+-- screen through `predef Pokedex_GetArea`, which ends on GetSGBLayout with
+-- SCGB_POKEGEAR_PALS.  The SCGB_POKEDEX after it only restores the dex ENTRY
+-- screen once you back out, so the area map is NOT in the dex's orange.
 function TownMap:sgbPalettes(game)
+  if self.mode == "gen2" then return nil end
   return require("src.render.PaletteFX").wholeNamed(game.data, "TOWNMAP")
+end
+
+-- Gen2 town map.  field.townMap is a completely different shape from Gen1's:
+-- two full-screen pictures (johto/kanto) plus `landmarks`, a flat id -> {name,
+-- x, y} table whose coordinates are absolute screen pixels, and every map
+-- record carries the landmark id it belongs to.  Landmarks from $2E up are
+-- Kanto: `DEF KANTO_LANDMARK EQU const_value` sits immediately BEFORE
+-- LANDMARK_PALLET_TOWN in constants/landmark_constants.asm, so Pallet is
+-- the first of them, not Route 1.  A landmark short of it and Pallet read
+-- as Johto -- flown to off the Johto picture with no cursor drawn on it.
+local GEN2_KANTO_FIRST = 0x2E
+
+local function gen2Locations(game)
+  local tm = (game.data.field or {}).townMap
+  if type(tm) ~= "table" or type(tm.landmarks) ~= "table" or not tm.johto then
+    return nil
+  end
+  local byLandmark, locs = {}, {}
+  for id, e in pairs(tm.landmarks) do
+    local x, y = tonumber(e and e.x), tonumber(e and e.y)
+    if x and y and tonumber(id) and tonumber(id) > 0 then
+      local loc = {
+        name = tostring(e.name or ""):gsub("\n", " "),
+        -- Landmarks stores HARDWARE OAM bytes, not screen pixels:
+        -- GetLandmarkCoords hands them straight to wVirtualOAMSprite00,
+        -- and the GB adds the sprite origin (-8 x, -16 y).  px/py are the
+        -- 8x8 icon's CENTRE on screen, which is what every marker here
+        -- draws around -- taken raw, every nest sat 4px right and 12px
+        -- below the town it belongs to.
+        px = x - 4, py = y - 12, landmark = tonumber(id),
+        region = tonumber(id) >= GEN2_KANTO_FIRST and "kanto" or "johto",
+      }
+      byLandmark[tonumber(id)] = loc
+      locs[#locs + 1] = loc
+    end
+  end
+  if #locs == 0 then return nil end
+  table.sort(locs, function(a, b) return a.landmark < b.landmark end)
+  local byMap = {}
+  for mapId, def in pairs(game.data.maps or {}) do
+    local loc = def.landmark and byLandmark[def.landmark]
+    if loc then byMap[mapId] = loc end
+  end
+  return locs, byMap
+end
+
+local function gen2Images(game)
+  local tm = (game.data.field or {}).townMap or {}
+  local out = {}
+  for _, region in ipairs({ "johto", "kanto" }) do
+    local path = tm[region]
+    if path then
+      local ok, img = pcall(love.graphics.newImage, path)
+      if ok then out[region] = img end
+    end
+  end
+  return out
 end
 
 -- pull x/y out of a townMap entry regardless of the exact shape the
@@ -147,14 +213,13 @@ local function buildFlyList(game, byMap)
   for _, mapId in ipairs(field.flyOrder or {}) do
     local def = game.data.maps and game.data.maps[mapId]
     -- INDIGO_PLATEAU is a normal Fly spot (engine/menus/town_map.asm
-    -- LoadTownMap_Fly cycles it like any town): its map id sits inside
-    -- BuildFlyLocationsList's 0..NUM_CITY_MAPS-1 walk, which is what
-    -- Map.isFlyTown checks, so it passes even though its tileset is
-    -- "PLATEAU" not OVERWORLD (#203).  The ROUTE_4/ROUTE_10 Pokemon Centers
-    -- carry fly warps but are not towns, so they stay out (#788), as do the
-    -- CAVERN/FACILITY dungeon escape spots that share flyOrder.
+    -- LoadTownMap_Fly cycles it like any town), but its map uses tileset
+    -- "PLATEAU" not OVERWORLD, so Map.isOutdoor() alone dropped it from the
+    -- cursor even though it is visited and has a fly warp.  Allow PLATEAU here
+    -- while the CAVERN/FACILITY dungeon escape spots that share flyOrder still
+    -- fail the gate and stay out (#203).
     if not seen[mapId] and visited[mapId] and flyWarps[mapId]
-       and def and Map.isFlyTown(def) then
+       and def and (Map.isOutdoor(def) or def.tileset == "PLATEAU") then
       seen[mapId] = true
       local loc = byMap[mapId] or { name = mapId:gsub("_", " ") }
       table.insert(flyLocs, loc)
@@ -171,18 +236,39 @@ function TownMap.new(game, opts)
   local self = setmetatable({}, TownMap)
   self.game = game
   self.bg = loadBackground(game)
-  self.locs, self.byMap, self.mode = buildLocations(game)
+  local g2locs, g2byMap = gen2Locations(game)
+  if g2locs then
+    self.locs, self.byMap, self.mode = g2locs, g2byMap, "gen2"
+    self.images = gen2Images(game)
+    self.region = "johto"
+  else
+    self.locs, self.byMap, self.mode = buildLocations(game)
+  end
   if opts.nestSpecies then
     self.nestSpecies = opts.nestSpecies
     self.nests = {}
     local seen = {}
+    -- Gen2 grass tables carry THREE slot sets: `slots` is the day one and
+    -- `byTime.morn` / `byTime.nite` ride alongside (RomExtractorGen2
+    -- :extractEncounters).  Pokedex_GetArea searches all of them, so a mon
+    -- that only appears at night has to be scanned for here too -- reading
+    -- `slots` alone left every nocturnal species AREA UNKNOWN.
+    local function holds(group)
+      if type(group) ~= "table" then return false end
+      for _, slot in ipairs(group.slots or {}) do
+        if slot.species == opts.nestSpecies then return true end
+      end
+      for _, timed in pairs(group.byTime or {}) do
+        for _, slot in ipairs(timed.slots or {}) do
+          if slot.species == opts.nestSpecies then return true end
+        end
+      end
+      return false
+    end
     for mapId, enc in pairs(game.data.encounters or {}) do
       local found = false
       for _, group in pairs(enc) do
-        for _, slot in ipairs(group.slots or {}) do
-          if slot.species == opts.nestSpecies then found = true break end
-        end
-        if found then break end
+        if holds(group) then found = true break end
       end
       local loc = found and self.byMap[mapId]
       if loc and not seen[loc] then
@@ -196,8 +282,23 @@ function TownMap.new(game, opts)
                           (nest and nest.path)
                           or "assets/generated/townmap/nest.png")
     self.nestIcon = ok and img or nil
+    -- Pokedex_GetArea opens on whichever region actually has nests
+    if self.mode == "gen2" then
+      for _, loc in ipairs(self.nests) do
+        if loc.region == "johto" then self.region = "johto" break end
+        self.region = loc.region
+      end
+    end
   end
-  if opts.fly then
+  if opts.fly and self.mode == "gen2" then
+    -- Gen2 grid uses absolute pixels, so the grid coord check below does not
+    -- apply; the fly list is still the visited fly towns.
+    local flyLocs, flyMapIds = buildFlyList(game, self.byMap)
+    if #flyLocs > 0 then
+      self.fly, self.onFly = true, opts.onFly
+      self.locs, self.flyMapIds = flyLocs, flyMapIds
+    end
+  elseif opts.fly then
     -- FLY picker (LoadTownMap_Fly): restrict the selectable set to the
     -- visited fly towns so Up/Down cycle only those and A knows the mapId.
     local flyLocs, flyMapIds = buildFlyList(game, self.byMap)
@@ -221,15 +322,11 @@ function TownMap.new(game, opts)
   local mapId = game.overworld and game.overworld.map and game.overworld.map.id
   self.playerLoc = mapId and self.byMap[mapId] or nil
   self.sel = 1
-  -- LoadTownMap_Fly always opens with hl on wFlyLocationsList[0], the FIRST
-  -- fly destination (PALLET_TOWN), never the player's current town (#795).
-  -- Only the plain viewer snaps the cursor to where the player stands.
-  if not self.fly then
-    for i, loc in ipairs(self.locs) do
-      if loc == self.playerLoc then self.sel = i break end
-    end
+  for i, loc in ipairs(self.locs) do
+    if loc == self.playerLoc then self.sel = i break end
   end
   self.blink = 0
+  if self.fly then self:followRegion() end
   return self
 end
 
@@ -261,6 +358,16 @@ function TownMap:moveList(step)
   Sound.play(self.game.data, "Tink")
 end
 
+-- Gen 2 draws Johto and Kanto as two separate pictures, and the FLY list
+-- runs straight through both.  Cycling past Silver Cave has to turn the
+-- page or the cursor simply stops being drawn -- only markers whose region
+-- matches the picture on screen are (drawGen2) -- and every Kanto
+-- destination is picked blind.
+function TownMap:followRegion()
+  local loc = self.locs[self.sel]
+  if loc and loc.region then self.region = loc.region end
+end
+
 function TownMap:update(dt)
   self.blink = (self.blink + 1) % 32
   local input = self.game.input
@@ -272,22 +379,38 @@ function TownMap:update(dt)
   if self.fly then
     -- LoadTownMap_Fly: Up/Down cycle the visited destinations, A flies there,
     -- B cancels (handled above).  moveList walks self.locs, now the fly list.
-    -- Up steps FORWARD through the towns (.pressedUp does inc hl: PALLET ->
-    -- VIRIDIAN -> PEWTER -> ...), Down steps back and wraps to the last
-    -- visited town from the top; the port had the two swapped (#795).
     if input:wasPressed("a") then
       Sound.play(self.game.data, "Press_AB")
       local mapId = self.flyMapIds[self.sel]
       self.game.stack:pop()
       if mapId and self.onFly then self.onFly(mapId) end
       return
-    elseif input:wasPressed("up") then self:moveList(1)
-    elseif input:wasPressed("down") then self:moveList(-1)
+    elseif input:wasPressed("up") then
+      self:moveList(-1)
+      self:followRegion()
+    elseif input:wasPressed("down") then
+      self:moveList(1)
+      self:followRegion()
     end
   elseif self.nestSpecies then
-    if input:wasPressed("a") then
+    -- Pokedex_GetArea: LEFT/RIGHT swap JOHTO and KANTO, A/B leave
+    if self.mode == "gen2"
+       and (input:wasPressed("left") or input:wasPressed("right")) then
+      self.region = self.region == "johto" and "kanto" or "johto"
+      Sound.play(self.game.data, "Tink")
+    elseif input:wasPressed("a") then
       Sound.play(self.game.data, "Press_AB")
       self.game.stack:pop()
+    end
+  elseif self.mode == "gen2" then
+    if input:wasPressed("up") then self:moveList(-1)
+    elseif input:wasPressed("down") then self:moveList(1)
+    elseif input:wasPressed("left") or input:wasPressed("right") then
+      self.region = self.region == "johto" and "kanto" or "johto"
+      for i, loc in ipairs(self.locs) do
+        if loc.region == self.region then self.sel = i break end
+      end
+      Sound.play(self.game.data, "Tink")
     end
   elseif self.mode == "grid" then
     if input:wasPressed("up") then self:moveGrid(0, -1)
@@ -311,7 +434,68 @@ local function drawSquare(loc)
   love.graphics.rectangle("fill", loc.x * 8 + 1, loc.y * 8 + 1, 6, 6)
 end
 
+function TownMap:drawGen2()
+  local game = self.game
+  local img = self.images and self.images[self.region]
+  love.graphics.setColor(1, 1, 1, 1)
+  if img then
+    love.graphics.draw(img, 0, 0)
+    -- the rip already carries PokegearPals' real GBC colours, so keep the
+    -- shade-remap pass off it (14 §trueColor propagation)
+    require("src.render.PaletteFX").markTrueColor(0, 0, 160, 144)
+  else
+    love.graphics.rectangle("fill", 0, 0, 160, 144)
+  end
+
+  local function marker(loc, filled)
+    love.graphics.setColor(0, 0, 0, 1)
+    love.graphics.rectangle(filled and "fill" or "line",
+                            loc.px - 3.5, loc.py - 3.5, 7, 7)
+    love.graphics.setColor(1, 1, 1, 1)
+  end
+
+  if self.nestSpecies then
+    if self.blink % 16 < 10 then
+      for _, loc in ipairs(self.nests) do
+        if loc.region == self.region then
+          if self.nestIcon then
+            love.graphics.draw(self.nestIcon, loc.px - 4, loc.py - 4)
+          else
+            marker(loc, true)
+          end
+        end
+      end
+    end
+    local def = game.data.pokemon[self.nestSpecies]
+    local name = def and def.name or self.nestSpecies
+    local any = false
+    for _, loc in ipairs(self.nests) do
+      if loc.region == self.region then any = true break end
+    end
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.rectangle("fill", 0, 0, 160, 8)
+    love.graphics.setColor(0, 0, 0, 1)
+    Font.draw(any and (name .. "'s NEST") or (name .. " AREA UNKNOWN"), 8, 0)
+    love.graphics.setColor(1, 1, 1, 1)
+    return
+  end
+
+  if self.playerLoc and self.playerLoc.region == self.region and self.blink < 20 then
+    marker(self.playerLoc, true)
+  end
+  local selected = self.locs[self.sel]
+  if selected and selected.region == self.region and self.blink % 16 < 10 then
+    marker(selected, false)
+  end
+  love.graphics.setColor(1, 1, 1, 1)
+  love.graphics.rectangle("fill", 0, 0, 160, 8)
+  love.graphics.setColor(0, 0, 0, 1)
+  if selected then Font.draw(self:bannerText(selected), 8, 0) end
+  love.graphics.setColor(1, 1, 1, 1)
+end
+
 function TownMap:draw()
+  if self.mode == "gen2" then return self:drawGen2() end
   love.graphics.setColor(1, 1, 1, 1)
   love.graphics.rectangle("fill", 0, 0, 160, 144)
 

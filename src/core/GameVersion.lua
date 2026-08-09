@@ -1,14 +1,15 @@
--- Which Gen-1 game this process is running: Red (the historical default),
--- Blue, or Yellow.  One source of truth for everything that differs by
+-- Which Pokemon version this process is running: Red (the historical
+-- default), Blue, Yellow, Gold, or Silver.
+-- One source of truth for everything that differs by
 -- version -- the accepted ROM hash, the import manifest, where the
 -- extracted cache lives, and the save-file suffix -- so the importer,
 -- cache mount, SaveData, title screen and palette all agree.
 --
--- Red keeps the un-suffixed save paths it always used (save.lua) so existing
--- saves are untouched, but its extracted cache lives under red/ like Blue and
--- Yellow (issue #899); a legacy root cache is moved into red/ once by
--- CacheFs.migrateLegacyRedCache.  All three versions can be imported and
--- played side by side.
+-- Red keeps every un-suffixed path it always used (save.lua, the root cache),
+-- so existing installs are untouched; Blue is namespaced under blue/ and
+-- _blue, Yellow under yellow/ and _yellow, Gold under gold/ and _gold,
+-- Silver under silver/ and _silver, so versions can be imported and played
+-- side by side.
 --
 -- Zero requires, so it loads during love.conf and under plain Lua for tools
 -- and tests.  The active version is a process-global set once at boot from
@@ -19,16 +20,18 @@ local GameVersion = {}
 GameVersion.VERSIONS = {
   red = {
     id = "red",
+    generation = 1,
     label = "Red",
     displayName = "Pokemon Red",
     launcherName = "Red",       -- game-panel header in the launcher
     sha1 = "ea9bcae617fdf159b045185467ae58b2e4a48b9a",
     manifest = "tools/rom_manifest.json",
-    cachePrefix = "red/",   -- red/data/generated, red/assets/generated (#899)
+    cachePrefix = "",       -- Red owns the cache root (backwards compatible)
     saveSuffix = "",        -- save.lua / save.lua.bak / save.lua.tmp
   },
   blue = {
     id = "blue",
+    generation = 1,
     label = "Blue",
     displayName = "Pokemon Blue",
     launcherName = "Blue",
@@ -39,18 +42,41 @@ GameVersion.VERSIONS = {
   },
   yellow = {
     id = "yellow",
+    generation = 1,
     label = "Yellow",
     displayName = "Pokemon Yellow",
-    launcherName = "Yellow",
+    launcherName = "Yellow (alpha)",
     sha1 = "cc7d03262ebfaf2f06772c1a480c7d9d5f4a38e1",
     manifest = "tools/rom_manifest_yellow.json",
     cachePrefix = "yellow/",  -- yellow/data/generated, yellow/assets/generated
     saveSuffix = "_yellow",   -- save_yellow.lua / .bak / .tmp
   },
+  gold = {
+    id = "gold",
+    generation = 2,
+    label = "Gold",
+    displayName = "Pokemon Gold",
+    launcherName = "Gold (Phase 2B)",
+    sha1 = "d8b8a3600a465308c9953dfa04f0081c05bdcb94",
+    manifest = "tools/rom_manifest_gold.json",
+    cachePrefix = "gold/",
+    saveSuffix = "_gold",
+  },
+  silver = {
+    id = "silver",
+    generation = 2,
+    label = "Silver",
+    displayName = "Pokemon Silver",
+    launcherName = "Silver (Phase 2B)",
+    sha1 = "49b163f7e57702bc939d642a18f591de55d92dae",
+    manifest = "tools/rom_manifest_silver.json",
+    cachePrefix = "silver/",
+    saveSuffix = "_silver",
+  },
 }
 
 -- Launcher column order.
-GameVersion.ORDER = { "red", "blue", "yellow" }
+GameVersion.ORDER = { "red", "blue", "yellow", "gold", "silver" }
 
 GameVersion.current = "red"
 
@@ -63,12 +89,33 @@ function GameVersion.get()
   return GameVersion.current
 end
 
+function GameVersion.generation(id)
+  local info = GameVersion.info(id)
+  return info and info.generation or 1
+end
+
+function GameVersion.isGen1(id)
+  return GameVersion.generation(id) == 1
+end
+
+function GameVersion.isGen2(id)
+  return GameVersion.generation(id) == 2
+end
+
 function GameVersion.isBlue()
   return GameVersion.current == "blue"
 end
 
 function GameVersion.isYellow()
   return GameVersion.current == "yellow"
+end
+
+function GameVersion.isGold()
+  return GameVersion.current == "gold"
+end
+
+function GameVersion.isSilver()
+  return GameVersion.current == "silver"
 end
 
 -- Metadata for a version id, defaulting to the active one.

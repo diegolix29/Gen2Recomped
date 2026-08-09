@@ -36,7 +36,12 @@ local function badgeBoost(battler, stat)
   local badges = battler.badges
   if not badges then return nil end
   for _, row in ipairs(battler.badgeBoosts or Damage.BADGE_BOOSTS) do
-    if row.stat == stat and badges[row.badge] then return row end
+    if badges[row.badge]
+       and (row.stat == stat
+            or (row.stat == "special" and (stat == "spatk" or stat == "spdef")))
+    then
+      return row
+    end
   end
   return nil
 end
@@ -45,6 +50,19 @@ end
 local function statusRecord(battler)
   return Status.recordFor(battler.statuses, battler.mon.status)
 end
+
+-- Stat stage for one battle stat.  A cache imported before the Sp.Atk /
+-- Sp.Def split still names both halves "special", so the split keys fall
+-- back to it rather than silently reading stage 0.
+local SPECIAL_HALF = { spatk = true, spdef = true }
+local function stageOf(battler, stat)
+  local stages = battler.stages
+  if not stages then return 0 end
+  if stages[stat] then return stages[stat] end
+  if SPECIAL_HALF[stat] then return stages.special or 0 end
+  return 0
+end
+Damage.stageOf = stageOf
 
 -- Critical chance test, following CriticalHitTest's shift chain exactly
 -- (each left shift caps at 255): b = speed/2, then x2 (or /2 with
@@ -153,8 +171,12 @@ function Damage.compute(ruleset, attacker, defender, move, opts)
   end
 
   local special = categoryOf(move) == "special"
-  local atkStat = special and "special" or "attack"
-  local defStat = special and "special" or "defense"
+  -- Gen 2 kept the same type-based physical/special split but gave the
+  -- attacker Sp.Atk and the defender Sp.Def.  A Gen 1 stat block has
+  -- neither key, so it stays on the single `special`.
+  local split = special and attacker.curStats.spatk and defender.curStats.spdef
+  local atkStat = special and (split and "spatk" or "special") or "attack"
+  local defStat = special and (split and "spdef" or "special") or "defense"
 
   local atk, dfn
   if crit and ruleset.critIgnoresStages then
@@ -162,9 +184,9 @@ function Damage.compute(ruleset, attacker, defender, move, opts)
     dfn = defender.curStats[defStat]
   else
     atk = Stats.applyStage(attacker.curStats[atkStat],
-                           attacker.stages and attacker.stages[atkStat] or 0)
+                           stageOf(attacker, atkStat))
     dfn = Stats.applyStage(defender.curStats[defStat],
-                           defender.stages and defender.stages[defStat] or 0)
+                           stageOf(defender, defStat))
     -- badge boosts (x9/8), engine/battle/core.asm ApplyBadgeStatBoosts:
     -- Boulder -> attack, Thunder -> defense, Soul -> speed (TurnOrder),
     -- Volcano -> special

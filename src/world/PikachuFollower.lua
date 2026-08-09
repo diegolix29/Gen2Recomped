@@ -188,7 +188,7 @@ function PikachuFollower.current(ow)
   return npc
 end
 
-function PikachuFollower.onMapEntered(game, ow, opts, viaMapLoad)
+function PikachuFollower.onMapEntered(game, ow, opts)
   -- Bill's House owns a short scripted scene that deliberately keeps
   -- Pikachu off the normal trailing loop.  A new map instance ends it.
   ow.pikachuBillsScene = nil
@@ -200,8 +200,7 @@ function PikachuFollower.onMapEntered(game, ow, opts, viaMapLoad)
   -- takes .normal_spawn_state -- map coords rebased, sprite data and
   -- follow command buffer left alone.  Re-list the same instance and let
   -- rebase() shift its cell; a warp arrives without it and respawns
-  -- under the player, the full spawn path of that same routine (the
-  -- viaMapLoad spawn below, #863).
+  -- behind the player, the full spawn path of that same routine.
   local keep = opts and opts.keepPikachu
   if keep then
     table.insert(ow.npcs, keep)
@@ -209,12 +208,6 @@ function PikachuFollower.onMapEntered(game, ow, opts, viaMapLoad)
     return
   end
   local x, y = spawnCell(ow)
-  -- a fresh map entry (warp, boot) parks the follower ON the player's
-  -- cell instead: it stays hidden under him (the draw-sort tie-break in
-  -- OverworldController) and walks out of the warp behind him as the
-  -- trail opens up.  Mid-map respawns (bike dismount, revive) keep the
-  -- behind-the-facing cell (#863)
-  if viaMapLoad then x, y = ow.player.cellX, ow.player.cellY end
   local npc = makeFollower(game, ow, x, y, ow.player.facing)
   table.insert(ow.npcs, npc)
   -- entities is the draw list; passable keeps it out of collision

@@ -138,8 +138,6 @@ function Loader.new(opts)
     events = Events.new(), hooks = Hooks.new(), content = {}, assets = {},
     exports = {}, migrations = {}, order = {},
     modSave = {}, modOptions = {}, optionSchemas = {}, imageCache = {},
-    modHotkeys = {}, -- stores mod-registered hotkeys
-    modInput = {},
     fs = (opts and opts.fs) or (love and love.filesystem),
     dev = dev,
   }, Loader)
@@ -202,47 +200,27 @@ end
 
 function Loader:_discover()
   if not self.fs.getDirectoryItems then return end
-  local roots = { "mods", "bundlemods" }
+  local roots = { "mods" }
   for _, root in ipairs(roots) do
-    -- Check if directory exists and is listable
-    local dirInfo = self.fs.getInfo(root)
-    local canList = dirInfo ~= nil
-    
-    -- On Android, bundlemods is inside the read-only game.love archive
-    -- Try to list it even if getInfo fails (some Android setups report archives oddly)
-    if not canList and root == "bundlemods" then
-      local ok, items = pcall(function()
-        return self.fs.getDirectoryItems(root)
-      end)
-      if ok and items then
-        canList = true
-      end
-    end
-    
-    if canList then
-      local items = self.fs.getDirectoryItems(root)
-      if items then
-        for _, name in ipairs(items) do
-          local path = root .. "/" .. name
-          local info = self.fs.getInfo(path)
-          if info and info.type == "directory" then
-            local manifest, err = readManifest(self.fs, path)
-            if manifest then
-              if self.mods[manifest.id] then
-                self.errors[#self.errors + 1] =
-                  ("%s: duplicate mod id (ignored %s)"):format(manifest.id, path)
-              else
-                -- Mark bundled mods as bundled
-                local isBundled = (root == "bundlemods")
-                self.mods[manifest.id] = { manifest = manifest, path = path, bundled = isBundled }
-                -- Bundled mods are enabled by default
-                if isBundled and self.disabled[manifest.id] == nil then
-                  self.mods[manifest.id].enabled = true
-                end
-              end
+    if self.fs.getInfo(root) then
+      for _, name in ipairs(self.fs.getDirectoryItems(root)) do
+        local path = root .. "/" .. name
+        local info = self.fs.getInfo(path)
+        -- a dev-linked mod dir (ln -s) reports type "symlink" even with
+        -- setSymlinksEnabled(true) -- PhysFS never resolves the symlink's
+        -- own getInfo, only traversal into it. readManifest below still
+        -- correctly no-ops on a symlink that isn't a directory.
+        if info and (info.type == "directory" or info.type == "symlink") then
+          local manifest, err = readManifest(self.fs, path)
+          if manifest then
+            if self.mods[manifest.id] then
+              self.errors[#self.errors + 1] =
+                ("%s: duplicate mod id (ignored %s)"):format(manifest.id, path)
             else
-              Logger.warn("mod %s ignored: %s", path, tostring(err))
+              self.mods[manifest.id] = { manifest = manifest, path = path }
             end
+          else
+            Logger.warn("mod %s ignored: %s", path, tostring(err))
           end
         end
       end
@@ -549,50 +527,9 @@ function Loader:_registerCommand(modId, verb, fn)
   return self.content.commands:register(verb, fn, modId)
 end
 
--- the GB buttons mod.input may drive (#807)
-local GB_BUTTONS = {
-  up = true, down = true, left = true, right = true,
-  a = true, b = true, start = true, select = true,
-}
-
--- per-mod mod.input ledger (#807): seq numbers this mod's Input sources,
--- tokens maps each opaque press token to what release must undo.  Living
--- on the loader (not the api closure) is what lets rollback, hot reload
--- and input recovery retire a mod's holds from outside the mod's own code.
-function Loader:_modInput(modId)
-  local bucket = self.modInput[modId]
-  if not bucket then
-    bucket = { seq = 0, tokens = {} }
-    self.modInput[modId] = bucket
-  end
-  return bucket
-end
-
--- Release every outstanding mod.input hold: one mod's on entry-chunk
--- rollback, everyone's (no argument) on hot reload and input recovery
--- (#807).  When Input:reset already dropped the sources these releases
--- are no-ops; the point is the stale tokens die with the code that took
--- them, so a later mod.input:release on one is refused instead of
--- touching a button someone else now holds.
-function Loader:releaseModInput(modId)
-  if modId == nil then
-    for id in pairs(self.modInput) do self:releaseModInput(id) end
-    return
-  end
-  local bucket = self.modInput[modId]
-  if not bucket then return end
-  self.modInput[modId] = nil
-  for _, rec in pairs(bucket.tokens) do
-    rec.input:sourceRelease(rec.btn, rec.source)
-  end
-end
-
 function Loader:_api(mod)
   local loader = self
   local modId = mod.manifest.id
-  local Storage = engineRequire("src.mods.Storage")
-  local storage = Storage and Storage.new(modId, loader.fs)
-  local Checkpoint = engineRequire("src.core.Checkpoint")
   local api = {
     id = modId,
     version = mod.manifest.version,
@@ -622,45 +559,6 @@ function Loader:_api(mod)
     hooks = { wrap = function(_, name, callback, priority)
       return loader.hooks:wrap(name, callback, priority, modId)
     end },
-    -- source-safe scripted GB input (#807): tap queues exactly one
-    -- wasPressed edge for the next fixed step with no held state; press
-    -- holds until release.  Every call is its own "mod:<id>:<n>" source in
-    -- game.input, so releasing a token can never drop a button the
-    -- keyboard, a pad, the touch overlay, or another mod still holds.
-    input = {
-      tap = function(_, game, btn)
-        local input = game and game.input
-        assert(input, "mod.input needs the live game (see game.ready)")
-        assert(GB_BUTTONS[btn], "unknown GB button: " .. tostring(btn))
-        local bucket = loader:_modInput(modId)
-        bucket.seq = bucket.seq + 1
-        local source = "mod:" .. modId .. ":" .. bucket.seq
-        input:sourcePress(btn, source)
-        input:sourceRelease(btn, source)
-      end,
-      press = function(_, game, btn)
-        local input = game and game.input
-        assert(input, "mod.input needs the live game (see game.ready)")
-        assert(GB_BUTTONS[btn], "unknown GB button: " .. tostring(btn))
-        local bucket = loader:_modInput(modId)
-        bucket.seq = bucket.seq + 1
-        local source = "mod:" .. modId .. ":" .. bucket.seq
-        input:sourcePress(btn, source)
-        local token = {}
-        bucket.tokens[token] = { input = input, btn = btn, source = source }
-        return token
-      end,
-      -- idempotent, and a token another mod took is simply not in this
-      -- ledger, so cross-mod release is refused by construction
-      release = function(_, token)
-        local bucket = loader.modInput[modId]
-        local rec = bucket and bucket.tokens[token]
-        if not rec then return false end
-        bucket.tokens[token] = nil
-        rec.input:sourceRelease(rec.btn, rec.source)
-        return true
-      end,
-    },
     -- the widget toolkit facade (12 4.5) is one shared surface, not
     -- per-mod state; each widget inside it loads on first touch
     ui = ModUI,
@@ -682,25 +580,6 @@ function Loader:_api(mod)
         bucket[key] = value
       end,
     },
-    -- Data-only state independent of the vanilla progress checkpoint. The
-    -- engine binds version/playthrough/mod scope and portable persistence;
-    -- callers never receive paths or a raw filesystem handle.
-    storage = {
-      context = function(_, game) return storage:context(game) end,
-      write = function(_, game, key, value) return storage:write(game, key, value) end,
-      read = function(_, game, key) return storage:read(game, key) end,
-      list = function(_, game, prefix) return storage:list(game, prefix) end,
-      delete = function(_, game, key) return storage:delete(game, key) end,
-    },
-    -- Runtime safety and reconstruction stay engine-owned. Checkpoints contain
-    -- data only; no controller, stack, coroutine or renderer object crosses out.
-    checkpoints = {
-      inspect = function(_, game) return Checkpoint.inspect(game) end,
-      capture = function(_, game) return Checkpoint.capture(game) end,
-      restore = function(_, game, checkpoint)
-        return Checkpoint.restore(game, checkpoint)
-      end,
-    },
     options = {
       define = function(_, schema)
         assert(type(schema) == "table", "options schema must be a table of rows")
@@ -718,22 +597,6 @@ function Loader:_api(mod)
           if row.key == key then return row.default end
         end
         return nil
-      end,
-    },
-    -- Hotkey registration for mods
-    hotkey = {
-      register = function(_, actionId, label, defaultKey)
-        assert(type(actionId) == "string" and actionId ~= "", "hotkey action ID must be a non-empty string")
-        assert(type(label) == "string" and label ~= "", "hotkey label must be a non-empty string")
-        -- Store mod hotkey definitions for UI
-        if not loader.modHotkeys then loader.modHotkeys = {} end
-        loader.modHotkeys[modId] = loader.modHotkeys[modId] or {}
-        loader.modHotkeys[modId][actionId] = {
-          id = actionId,
-          label = label,
-          key = defaultKey, -- optional default key binding
-          modId = modId
-        }
       end,
     },
     commands = { register = function(_, verb, fn)
@@ -851,7 +714,6 @@ function Loader:_rollback(modId)
   end
   self.events:removeOwner(modId)
   self.hooks:removeOwner(modId)
-  self:releaseModInput(modId)
   self.exports[modId] = nil
   self.optionSchemas[modId] = nil
   self.migrations[modId] = nil

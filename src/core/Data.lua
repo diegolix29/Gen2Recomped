@@ -12,7 +12,7 @@ local MODULES = {
 }
 
 -- Optional for compatibility with developer and stale caches.
-local OPTIONAL = { "audio", "palettes", "icons" }
+local OPTIONAL = { "audio", "palettes", "icons", "map_scripts", "unown_puzzle" }
 
 -- Vanilla defaults for rules exposed through the constants registry.  A
 -- value has to exist before a mod can patch it; each one matches the
@@ -67,11 +67,420 @@ local BOOT_DEFAULTS = {
   screens = { splash = "IntroMovie", title = "TitleState", newGame = "OakSpeech" },
 }
 
+-- Gen2 scaffold warps still reference map-group ids (MAP_Gxx_Nyy) while
+-- map keys are symbolic ids (PLAYERS_HOUSE2_F, NEW_BARK_TOWN, ...).
+-- Seed the New Bark aliases so NEW GAME can route room->stairs->town.
+local GEN2_SCAFFOLD_MAP_ALIASES = {
+  MAP_G03_N46 = "DARK_CAVE_VIOLET_ENTRANCE",
+  MAP_G03_N47 = "DARK_CAVE_BLACKTHORN_ENTRANCE",
+  MAP_G05_N08 = "ROUTE45",
+  MAP_G05_N09 = "ROUTE46",
+  -- Violet City area (G0A)
+  MAP_G0A_N01 = "ROUTE32",
+  MAP_G0A_N05 = "VIOLET_CITY",
+  -- Azalea / Goldenrod area (G0B)
+  MAP_G0B_N02 = "GOLDENROD_CITY",
+  -- New Bark Town area (G18)
+  MAP_G18_N03 = "ROUTE29",
+  MAP_G18_N04 = "NEW_BARK_TOWN",
+  MAP_G18_N05 = "ELMS_LAB",
+  MAP_G18_N06 = "PLAYERS_HOUSE1_F",
+  MAP_G18_N07 = "PLAYERS_HOUSE2_F",
+  MAP_G18_N08 = "PLAYERS_NEIGHBORS_HOUSE",
+  MAP_G18_N09 = "ELMS_HOUSE",
+  MAP_G18_N0D = "ROUTE29_ROUTE46_GATE",
+  -- Cherrygrove / Violet area (G1A)
+  MAP_G1A_N01 = "ROUTE30",
+  MAP_G1A_N02 = "ROUTE31",
+  MAP_G1A_N03 = "CHERRYGROVE_CITY",
+  MAP_G1A_N0B = "ROUTE31_VIOLET_GATE",
+}
+
 local function copy(value)
   if type(value) ~= "table" then return value end
   local out = {}
   for k, v in pairs(value) do out[k] = copy(v) end
   return out
+end
+
+local function normalizeMapId(mapId)
+  if type(mapId) ~= "string" then return mapId end
+  local id = mapId:gsub("([0-9]+)_([FB])$", "%1%2")
+  local out, i, len = {}, 1, #id
+  while i <= len do
+    local ch = id:sub(i, i)
+    if ch:match("%d") then
+      local j = i + 1
+      while j <= len and id:sub(j, j):match("%d") do
+        j = j + 1
+      end
+      local prev = i > 1 and id:sub(i - 1, i - 1) or ""
+      if prev:match("%a") and prev ~= "B" and out[#out] ~= "_" then
+        out[#out + 1] = "_"
+      end
+      out[#out + 1] = id:sub(i, j - 1)
+      i = j
+    else
+      out[#out + 1] = ch
+      i = i + 1
+    end
+  end
+  return table.concat(out)
+end
+
+local function aliasMap(maps, source)
+  local alias = normalizeMapId(source)
+  if alias == source or maps[alias] or not maps[source] then return end
+  local mapped = copy(maps[source])
+  mapped.id = alias
+  maps[alias] = mapped
+end
+
+local function aliasAllMaps(maps)
+  local sources = {}
+  for source in pairs(maps) do sources[#sources + 1] = source end
+  table.sort(sources)
+  for _, source in ipairs(sources) do
+    aliasMap(maps, source)
+  end
+end
+
+local function seedMapAliases(maps, aliases)
+  -- aliases table: rawId → friendlyId; work both directions so either source can seed the other
+  for rawId, friendlyId in pairs(aliases or {}) do
+    if not maps[rawId] and maps[friendlyId] then
+      local mapped = copy(maps[friendlyId]); mapped.id = rawId; maps[rawId] = mapped
+    end
+    if not maps[friendlyId] and maps[rawId] then
+      local mapped = copy(maps[rawId]); mapped.id = friendlyId; maps[friendlyId] = mapped
+    end
+  end
+end
+
+local function syntheticGen2Tileset(id)
+  local blocks = {}
+  for index = 1, 256 do
+    local block = {}
+    for tile = 1, 16 do block[tile] = 0 end
+    blocks[index] = block
+  end
+  return {
+    id = id,
+    source = "Gen2 scaffold",
+    image = "assets/generated/title/pokemon_logo.png",
+    imageWidth = 128,
+    imageHeight = 128,
+    tilesPerRow = 16,
+    blocks = blocks,
+    walkable = { 0 },
+    counterTiles = {},
+    doorTiles = {},
+    warpTiles = {},
+    animation = {},
+  }
+end
+
+local function seedMissingGen2Tilesets(self)
+  local tilesets = self.tilesets or {}
+  local needed = {}
+  for _, map in pairs(self.maps or {}) do
+    if type(map) == "table" and type(map.tileset) == "string"
+        and tilesets[map.tileset] == nil then
+      needed[map.tileset] = true
+    end
+  end
+  local CacheFs = require("src.import.CacheFs")
+
+  local function currentImageExists(path)
+    local fs = love and love.filesystem
+    return fs and fs.getInfo and fs.getInfo(path, "file") ~= nil
+  end
+
+  local function copySiblingImage(version, sourcePath, targetPath)
+    if type(sourcePath) ~= "string" or type(targetPath) ~= "string" then
+      return false
+    end
+    local siblingPath = version .. "/" .. sourcePath
+    local data = love.filesystem and love.filesystem.read
+      and love.filesystem.read(siblingPath)
+    if type(data) ~= "string" then return false end
+    local ok = CacheFs.write(targetPath, data)
+    return ok == true
+  end
+
+  local function loadSiblingTileset(id)
+    for _, version in ipairs({ "gold", "silver" }) do
+      if require("src.core.GameVersion").get() ~= version then
+        local path = version .. "/data/generated/tilesets.lua"
+        local info = love.filesystem and love.filesystem.getInfo
+          and love.filesystem.getInfo(path, "file")
+        if info then
+          local chunk = love.filesystem.load(path)
+          if chunk then
+            local ok, sibling = pcall(chunk)
+            if ok and type(sibling) == "table" and sibling[id] then
+              return copy(sibling[id])
+            end
+            if id == "TilesetPlayersHouse" and ok and type(sibling) == "table"
+                and sibling.TilesetHouse then
+              local alias = copy(sibling.TilesetHouse)
+              alias.id = id
+              return alias
+            end
+            if id == "TilesetPlayersRoom" and ok and type(sibling) == "table" then
+              local source = sibling.TilesetPlayersRoom
+                or sibling.TilesetPlayersHouse
+                or sibling.TilesetHouse
+              if source then
+                local alias = copy(source)
+                alias.id = id
+                return alias
+              end
+            end
+          end
+        end
+      end
+    end
+    return nil
+  end
+
+  local function ensureTilesetImage(id, tileset)
+    if type(tileset) ~= "table" then return tileset end
+    local imagePath = tileset.image
+    if type(imagePath) == "string" and currentImageExists(imagePath) then
+      return tileset
+    end
+    if id == "TilesetPlayersHouse" then
+      local source = tilesets.TilesetHouse or loadSiblingTileset("TilesetHouse")
+      if type(source) == "table" then
+        if copySiblingImage("silver", source.image, imagePath)
+            or copySiblingImage("gold", source.image, imagePath) then
+          return tileset
+        end
+        local fallback = copy(source)
+        fallback.id = id
+        fallback.image = imagePath or fallback.image
+        return fallback
+      end
+    end
+    if id == "TilesetPlayersRoom" then
+      local source = tilesets.TilesetPlayersRoom
+        or tilesets.TilesetPlayersHouse
+        or tilesets.TilesetHouse
+        or loadSiblingTileset("TilesetPlayersRoom")
+        or loadSiblingTileset("TilesetPlayersHouse")
+        or loadSiblingTileset("TilesetHouse")
+      if type(source) == "table" then
+        if copySiblingImage("silver", source.image, imagePath)
+            or copySiblingImage("gold", source.image, imagePath) then
+          return tileset
+        end
+        local fallback = copy(source)
+        fallback.id = id
+        fallback.image = imagePath or fallback.image
+        return fallback
+      end
+    end
+    return tileset
+  end
+
+  local function ensureWalkableFallback(id, tileset)
+    if type(tileset) ~= "table" then return tileset end
+    local walkable = tileset.walkable
+    if type(walkable) == "table" and #walkable > 0 then return tileset end
+    local donor
+    if id == "TilesetPlayersRoom" then
+      donor = tilesets.TilesetPlayersHouse
+        or tilesets.TilesetHouse
+        or tilesets.TilesetTraditionalHouse
+        or loadSiblingTileset("TilesetPlayersHouse")
+        or loadSiblingTileset("TilesetHouse")
+        or loadSiblingTileset("TilesetTraditionalHouse")
+    elseif id == "TilesetPlayersHouse" then
+      donor = tilesets.TilesetHouse
+        or tilesets.TilesetTraditionalHouse
+        or loadSiblingTileset("TilesetHouse")
+        or loadSiblingTileset("TilesetTraditionalHouse")
+    end
+    if type(donor) ~= "table" or type(donor.walkable) ~= "table"
+        or #donor.walkable == 0 then
+      if id == "TilesetPlayersRoom" then
+        local repaired = copy(tileset)
+        repaired.walkable = { 1 }
+        return repaired
+      end
+      return tileset
+    end
+    local repaired = copy(tileset)
+    repaired.walkable = copy(donor.walkable)
+    if id == "TilesetPlayersRoom" then
+      local hasFloor = false
+      for _, v in ipairs(repaired.walkable) do
+        if v == 1 then hasFloor = true break end
+      end
+      if not hasFloor then repaired.walkable[#repaired.walkable + 1] = 1 end
+    end
+    return repaired
+  end
+
+  if next(needed) then
+    if needed.TilesetPlayersHouse and tilesets.TilesetHouse ~= nil then
+      tilesets.TilesetPlayersHouse = tilesets.TilesetHouse
+      needed.TilesetPlayersHouse = nil
+    end
+
+    for id in pairs(needed) do
+      tilesets[id] = loadSiblingTileset(id) or syntheticGen2Tileset(id)
+    end
+  end
+
+  if tilesets.TilesetPlayersHouse == nil then
+    tilesets.TilesetPlayersHouse = loadSiblingTileset("TilesetPlayersHouse")
+      or loadSiblingTileset("TilesetTraditionalHouse")
+      or loadSiblingTileset("TilesetHouse")
+      or syntheticGen2Tileset("TilesetPlayersHouse")
+  end
+  tilesets.TilesetPlayersHouse = ensureTilesetImage(
+    "TilesetPlayersHouse", tilesets.TilesetPlayersHouse)
+  tilesets.TilesetPlayersHouse = ensureWalkableFallback(
+    "TilesetPlayersHouse", tilesets.TilesetPlayersHouse)
+
+  if tilesets.TilesetPlayersRoom == nil then
+    tilesets.TilesetPlayersRoom = loadSiblingTileset("TilesetPlayersRoom")
+      or loadSiblingTileset("TilesetPlayersHouse")
+      or loadSiblingTileset("TilesetHouse")
+      or syntheticGen2Tileset("TilesetPlayersRoom")
+  end
+  tilesets.TilesetPlayersRoom = ensureTilesetImage(
+    "TilesetPlayersRoom", tilesets.TilesetPlayersRoom)
+  tilesets.TilesetPlayersRoom = ensureWalkableFallback(
+    "TilesetPlayersRoom", tilesets.TilesetPlayersRoom)
+end
+
+local function titleizeWords(key)
+  local text = tostring(key or "")
+    :gsub("^TEXT_", "")
+    :gsub("[_%.]", " ")
+    :gsub("%s+", " ")
+    :gsub("^%s+", "")
+    :gsub("%s+$", "")
+    :lower()
+  if text == "" then return "..." end
+  text = text:gsub("(%a)([%w']*)", function(a, b)
+    return a:upper() .. b
+  end)
+  return text .. "."
+end
+
+-- Gen2 charmap codes that spell a fixed word rather than a runtime value
+-- ($4A <PKMN>, $5B <PC>, $5D <TRAINER>); RomExtractorGen2 writes them as
+-- {NAME} spans and the token registry only knows PLAYER/RIVAL/RAM.
+local GEN2_STATIC_TOKENS = {
+  PKMN = "POK\195\169MON", PC = "PC", TRAINER = "TRAINER",
+}
+local GEN2_RUNTIME_TOKENS = { PLAYER = true, RIVAL = true, RAM = true }
+
+-- Strip {BYTE:xx} control tokens the GBC text engine inserts (page breaks,
+-- special chars, etc.) so extracted Gen2 strings display cleanly.
+local function cleanGen2String(s)
+  s = s:gsub("%{BYTE:%x%x?%}", "")
+  s = s:gsub("%z", "")
+  -- \011 (<CONT>) and \012 (<PARA>) are the markers TextBox.paginate splits
+  -- on.  Flattening them to newlines put whole speeches on a single page,
+  -- which the box then scrolled straight past with nothing to press A on.
+  s = s:gsub("%{([%w_]+)%}", function(name)
+    if GEN2_RUNTIME_TOKENS[name] then return nil end
+    return GEN2_STATIC_TOKENS[name] or ""
+  end)
+  s = s:gsub("\n+", "\n")
+  return (s:match("^%s*(.-)%s*$") or s)
+end
+
+local function sanitizeGen2Text(text)
+  if type(text) ~= "table" then return end
+  for key, value in pairs(text) do
+    if type(value) == "string" then
+      if key == "_OakSpeechText1" or key == "_OakSpeechText2A"
+          or key == "_OakSpeechText2B" or key == "_OakSpeechText3"
+          or key == "_IntroducePlayerText" or key == "_IntroduceRivalText"
+          or key == "_YourNameIsText" or key == "_HisNameIsText" then
+        -- Let OakSpeech.textOr handle these with its own known-good fallbacks.
+      else
+        local mapId, stubKey = value:match("^%{GEN2_TEXT_STUB:([^:}]+):([^}]+)%}$")
+        if mapId and stubKey then
+          if stubKey:find("_OBJ_", 1, true) then
+            text[key] = "You examine the object.\n" .. titleizeWords(mapId)
+          elseif stubKey:find("_BG_", 1, true) then
+            text[key] = "You read the sign.\n" .. titleizeWords(mapId)
+          else
+            text[key] = titleizeWords(stubKey)
+          end
+        elseif value:match("^%{GEN2_TEXT:[^}]+%}$") then
+          text[key] = titleizeWords(key)
+        elseif value:find("{", 1, true) or value:find("[\011\012%z]") then
+          text[key] = cleanGen2String(value)
+        end
+      end
+    end
+  end
+end
+
+local function ensureGen2WarpFallbacks(self)
+  local maps = self.maps
+  if type(maps) ~= "table" then return end
+  local up = maps.PLAYERS_HOUSE2_F
+  if type(up) ~= "table" or type(up.warps) ~= "table" or #up.warps == 0 then
+    return
+  end
+  local stairs = up.warps[1]
+  if type(stairs) ~= "table" then return end
+  if stairs.x == 7 and stairs.y == 0 then
+    local hasLeft = false
+    for _, w in ipairs(up.warps) do
+      if type(w) == "table" and w.x == 6 and w.y == 0 then
+        hasLeft = true
+        break
+      end
+    end
+    if not hasLeft then
+      local dup = copy(stairs)
+      dup.x = 6
+      up.warps[#up.warps + 1] = dup
+    end
+  end
+end
+
+local function ensureGen2HomeTextFallbacks(self)
+  if type(self.text) ~= "table" then self.text = {} end
+  local text = self.text
+  -- Seed mom text via text_pointers if the resolved string is missing.
+  -- OBJ_001 in PlayersHouse1F is the stove interaction (ROM-correct);
+  -- the mom NPC on object index 2 resolves through PlayersHouse1FSinkText.
+  -- Fallback plain strings are used only when extraction produced nothing.
+  local function ensureText(key, fallback)
+    if not text[key] or text[key] == "" then text[key] = fallback end
+  end
+  ensureText("PlayersHouse1FStoveText", "Mom's specialty!\nCINNABAR VOLCANO BURGER!")
+  ensureText("PlayersHouse1FSinkText", "The sink is spotless.\nMom likes it clean.")
+  ensureText("PlayersHouse1FFridgeText", "Let's see what's\nin the fridge...")
+  ensureText("PlayersHouse1FTVText", "There's a movie on TV.")
+  if not text.TEXT_PLAYERS_HOUSE2_F_OBJ_002 then
+    text.TEXT_PLAYERS_HOUSE2_F_OBJ_002 = "It's your PC.\nWithdraw any item you need."
+  end
+  -- Fix placeholder names for key Gen2 items that the extractor doesn't name yet
+  if type(self.items) == "table" then
+    local function fixItem(id, name, keyItem)
+      local it = self.items[id]
+      if it and (it.name == id or (it.name or ""):find("Item %d")) then
+        it.name = name
+        if keyItem then it.keyItem = true end
+      end
+    end
+    fixItem("ITEM_005", "POK\xc3\xa9GEAR", true)
+    fixItem("ITEM_006", "MAP CARD",    true)
+    fixItem("ITEM_007", "COIN CASE",   true)
+    fixItem("ITEM_008", "ITEMFINDER",  true)
+  end
 end
 
 function Data:applyVersionedFieldData()
@@ -84,15 +493,6 @@ function Data:applyVersionedFieldData()
     -- Yellow caches carry the wrong demo species too.  The fixed import
     -- manifest below stamps RATTATA for fresh imports.
     self.field.oldManBattle = { species = "RATTATA", level = 5 }
-    -- The Oak-speech show-off mon is the player's Pikachu in Yellow
-    -- (engine/battle/core.asm BATTLE_TYPE_PIKACHU / the ProfOak demo)
-    -- but caches imported before the manifest carried demoSpecies fell
-    -- back to Red's NIDORINO (#915).  The fixed import manifest below
-    -- stamps PIKACHU for fresh imports; fill it here for stale caches.
-    local oakSpeech = self.field.oakSpeech
-    if type(oakSpeech) == "table" and not oakSpeech.demoSpecies then
-      oakSpeech.demoSpecies = "PIKACHU"
-    end
   end
 end
 
@@ -124,12 +524,45 @@ function Data:seedDefaults()
   for key, value in pairs(BOOT_DEFAULTS) do
     if boot[key] == nil then boot[key] = copy(value) end
   end
-  -- Yellow boots its own attract movie (engine/movie/intro_yellow.asm);
-  -- only the un-overridden default flips, so a total conversion that set
+  -- Yellow and Gold/Silver boot their own attract movies
+  -- (engine/movie/intro_yellow.asm, engine/movie/intro.asm); only the
+  -- un-overridden default flips, so a total conversion that set
   -- field.boot.screens.splash keeps its choice on any version.
-  if boot.screens.splash == BOOT_DEFAULTS.screens.splash
-     and require("src.core.GameVersion").isYellow() then
-    boot.screens.splash = "YellowIntro"
+  if boot.screens.splash == BOOT_DEFAULTS.screens.splash then
+    local V = require("src.core.GameVersion")
+    if V.isYellow() then
+      boot.screens.splash = "YellowIntro"
+    elseif V.isGen2() then
+      boot.screens.splash = "Gen2Intro"
+    end
+  end
+  if require("src.core.GameVersion").isGen2() then
+    sanitizeGen2Text(self.text)
+    if boot.startMap == BOOT_DEFAULTS.startMap then
+      boot.startMap = "PLAYERS_HOUSE2_F"
+      boot.startX = 3
+      boot.startY = 3
+      boot.startFacing = "down"
+    end
+    if boot.playerName == BOOT_DEFAULTS.playerName then
+      boot.playerName = "GOLD"
+    end
+    if boot.rivalName == BOOT_DEFAULTS.rivalName then
+      boot.rivalName = "SILVER"
+    end
+    if boot.screens and (boot.screens.newGame == false
+        or boot.screens.newGame == nil
+        or boot.screens.newGame == BOOT_DEFAULTS.screens.newGame) then
+      boot.screens.newGame = "OakSpeech"
+    end
+    if self.tilesets and self.tilesets.HOUSE == nil then
+      self.tilesets.HOUSE = self.tilesets.TilesetTraditionalHouse
+        or self.tilesets.TilesetHouse
+        or self.tilesets.TilesetPlayersHouse
+    end
+    seedMissingGen2Tilesets(self)
+    ensureGen2WarpFallbacks(self)
+    ensureGen2HomeTextFallbacks(self)
   end
   -- the naming screen presets the importer already extracts but nothing
   -- ever read (field.presetNames)
@@ -154,6 +587,27 @@ function Data:seedDefaults()
   self:seedFightingDojoKarateMaster()
   -- #189: 1F cabin door order vs rooms map (survey zoom)
   require("src.world.SsAnneLayout").apply(self.maps)
+  -- Gen2 scaffold maps use a slightly different naming convention for floor
+  -- ids (REDS_HOUSE2_F, ROCK_TUNNEL_B1_F, ROUTE10_POKECENTER1_F, ...).  Add
+  -- normalized aliases so every runtime map lookup can resolve the same room.
+  aliasAllMaps(self.maps)
+  if require("src.core.GameVersion").isGen2() then
+    seedMapAliases(self.maps, GEN2_SCAFFOLD_MAP_ALIASES)
+    -- Alias text_pointers by each map's camelCase label so resolveText finds
+    -- Gen2 entries (text_pointers uses uppercase ID, map.def.label is camelCase)
+    local tp = self.text_pointers
+    local th = self.trainer_headers
+    for _, mapDef in pairs(self.maps) do
+      if type(mapDef) == "table" then
+        local id = type(mapDef.id) == "string" and mapDef.id
+        local lbl = type(mapDef.label) == "string" and mapDef.label
+        if id and lbl and id ~= lbl then
+          if tp and tp[id] and not tp[lbl] then tp[lbl] = tp[id] end
+          if th and th[id] and not th[lbl] then th[lbl] = th[id] end
+        end
+      end
+    end
+  end
 end
 
 -- The Karate Master (FightingDojo.asm) is a text_asm object: his object has
@@ -212,20 +666,7 @@ local function loadModule(dir, name)
     if not chunk then return false, err end
     return pcall(chunk)
   end
-  local ok, mod = pcall(require, "data.generated." .. name)
-  if ok then return true, mod end
-  -- Fused PhysFS / Blue|Yellow prefix: load bytes from the active version's
-  -- cache explicitly when require cannot see the mounted tree.
-  local CacheFs = require("src.import.CacheFs")
-  local GameVersion = require("src.core.GameVersion")
-  local path = "data/generated/" .. name .. ".lua"
-  local bytes = CacheFs.readActive(path)
-  if type(bytes) == "string" then
-    local chunk, err = loadstring(bytes, "@" .. GameVersion.cachePrefix() .. path)
-    if not chunk then return false, err or mod end
-    return pcall(chunk)
-  end
-  return false, mod
+  return pcall(require, "data.generated." .. name)
 end
 
 function Data:load()
@@ -337,7 +778,12 @@ end
 -- The raw text-pointer entry (carries mart/nurse/pc markers and the label).
 function Data:textEntry(mapLabel, textConst)
   local perMap = self.text_pointers[mapLabel]
-  return perMap and perMap[textConst] or nil
+  if not perMap then return nil end
+  local entry = perMap[textConst]
+  if entry then return entry end
+  -- Gen2 maps.lua uses TEXT_X_OBJ_NNN constants; text_pointers drops the _OBJ_ part
+  local stripped = textConst:gsub("_OBJ_(%d+)$", "_%1")
+  return stripped ~= textConst and perMap[stripped] or nil
 end
 
 -- Trainer sight/dialogue header for a map object (or nil).

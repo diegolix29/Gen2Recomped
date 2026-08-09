@@ -11,16 +11,41 @@ local BagMenu = {}
 local Bag = require("src.inventory.Bag")
 local Strings = require("src.core.Strings")
 
+-- Gen2's pack has four pages (engine/items/pack.asm): ITEM, BALL, KEY ITEM
+-- and TM/HM, switched with LEFT/RIGHT.  The pocket lives on the item record
+-- (ItemAttributes byte 5); a cache from before that was extracted -- and
+-- every Gen1 item -- is classified from the fields the port already has, so
+-- the page split degrades to something sensible rather than emptying.
+local POCKETS = {
+  { key = "ITEM", title = "ITEMS" },
+  { key = "BALL", title = "BALLS" },
+  { key = "KEY_ITEM", title = "KEY ITEMS" },
+  { key = "TM_HM", title = "TM/HM" },
+}
+
+local function pocketOf(def, id)
+  if def and def.pocket then return def.pocket end
+  if def and def.machine then return "TM_HM" end
+  if def and def.ball then return "BALL" end
+  if def and def.keyItem then return "KEY_ITEM" end
+  if type(id) == "string" and (id:find("^TM_") or id:find("^HM_")) then
+    return "TM_HM"
+  end
+  return "ITEM"
+end
+
 -- acquisition order like wBagItems (Bag.order), not alphabetical
-local function buildItems(game)
+local function buildItems(game, pocket)
   local items = {}
   for _, id in ipairs(Bag.order(game.save)) do
     local def = game.data.items[id]
-    table.insert(items, {
-      value = id,
-      label = def and def.name or id,
-      right = "x" .. game.save.inventory[id],
-    })
+    if not pocket or pocketOf(def, id) == pocket then
+      table.insert(items, {
+        value = id,
+        label = def and def.name or id,
+        right = "x" .. game.save.inventory[id],
+      })
+    end
   end
   return items
 end
@@ -107,22 +132,10 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
     list:close()
     local ow = game.overworld
     local Music = require("src.core.Music")
-    -- IsBikeRidingAllowed (home/overworld.asm): the tilesets of
-    -- bike_riding_tilesets.asm, plus Route 23 / Indigo Plateau by
-    -- map id.  Reads the extracted allowlist when present.
+    -- IsBikeRidingAllowed (home/overworld.asm) for Gen1, BikeFunction
+    -- .CheckEnvironment for Gen2; the overworld owns both rules.
     local function bikeAllowed()
-      if not ow then return false end
-      local br = game.data.field.bikeRiding
-        or { tilesets = { "OVERWORLD", "FOREST", "UNDERGROUND",
-                          "SHIP_PORT", "CAVERN" },
-             maps = { "ROUTE_23", "INDIGO_PLATEAU" } }
-      for _, m in ipairs(br.maps or {}) do
-        if ow.map.id == m then return true end
-      end
-      for _, t in ipairs(br.tilesets or {}) do
-        if ow.map.def.tileset == t then return true end
-      end
-      return false
+      return ow and ow:bikeAllowed(ow.map.id) or false
     end
     if game.save.onBike then
       game.save.onBike = false
@@ -161,7 +174,8 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
     end
     consume(game, id)
     list:close()
-    battle:throwBall(id)
+    -- Catching/AnimPlayer key off the Gen1 ball ids
+    battle:throwBall(ItemEffects.alias(id, game.data.items[id]))
     return
   end
 
@@ -236,9 +250,13 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
     local ESCAPE_ROPE_TILESETS = { FOREST = true, CEMETERY = true,
                                    CAVERN = true, FACILITY = true,
                                    INTERIOR = true }
+    -- Gen2 gates on the map header's environment byte instead
+    -- (ENVIRONMENT_CAVE / ENVIRONMENT_DUNGEON, scripts/std_scripts.asm)
+    local GEN2_ESCAPE_ROPE_ENVIRONMENTS = { [4] = true, [7] = true }
     local ow = game.overworld
-    if ow and ESCAPE_ROPE_TILESETS[ow.map.def.tileset]
-       and ow.map.id ~= "AGATHAS_ROOM" then
+    local allowed = ow and (ESCAPE_ROPE_TILESETS[ow.map.def.tileset]
+      or GEN2_ESCAPE_ROPE_ENVIRONMENTS[ow.map.def.environment])
+    if allowed and ow.map.id ~= "AGATHAS_ROOM" then
       list:close()
       consume(game, id)
       -- LeaveMapAnim spin-up + SFX_TELEPORT_EXIT_1, a fade, then land OUTSIDE
@@ -255,36 +273,17 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
 
   if result == "consumed" then
     consume(game, id)
-    -- refresh counts in the list
-    for i, it in ipairs(list.items) do
-      if it.value == id then
-        local left = game.save.inventory[id]
-        if left then it.right = "x" .. left else table.remove(list.items, i) end
-        break
-      end
-    end
-    list.index = math.min(list.index, math.max(1, #list.items))
     if extra and extra.evolveTo then
       list:close()
       local Evolution = require("src.pokemon.Evolution")
-      -- item_effects.asm ItemUseEvoStone sets wForceEvolution before
-      -- TryEvolvingMon, so a stone evolution's B press is read and
-      -- discarded (EvolutionState.lua's cancelable check).  via = "ITEM"
-      -- is what makes that non-cancelable here, same as the RARE_CANDY
-      -- call below; without it the stone (already consumed above) could
-      -- be cancelled out from under the player (#883)
-      Evolution.evolve(game, target, extra.evolveTo, nil, "ITEM")
+      Evolution.evolve(game, target, extra.evolveTo)
       return
     end
     -- RARE CANDY: after the level text, the stat window, any level-up
     -- moves and a level evolution follow (item_effects.asm .useRareCandy
     -- runs PrintStatsBox, LearnMoveFromLevelUp and TryEvolvingMon)
     if extra and extra.leveledTo and target then
-      -- ...but the bag stays open underneath it all: RARE_CANDY is in
-      -- pokered's UsableItems_PartyMenu (data/items/use_party.asm), and
-      -- .useItem_partyMenu jumps back to StartMenu_Item once UseItem
-      -- returns, cursor still on the candy (start_sub_menus.asm) -- so
-      -- mashing A burns through a stack of them (#796)
+      list:close()
       showMessages(game, payload, function()
         local StatBox = require("src.battle.BattleState").StatBox
         game.stack:push(StatBox.new(game, target, function()
@@ -323,6 +322,15 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
       end)
       return
     end
+    -- refresh counts in the list
+    for i, it in ipairs(list.items) do
+      if it.value == id then
+        local left = game.save.inventory[id]
+        if left then it.right = "x" .. left else table.remove(list.items, i) end
+        break
+      end
+    end
+    list.index = math.min(list.index, math.max(1, #list.items))
     -- HP medicine: fill the bar in the still-open picker first, then print
     -- and close, the order item_effects.asm .doneHealing runs in
     -- (SFX_HEAL_HP -> UpdateHPBar2 -> RedrawPartyMenu prints the message).
@@ -354,8 +362,9 @@ local function pickTargetAndUse(game, battle, id, list)
   -- pick a target from the party
   -- the ETHERs and PP UP open the move menu after picking a mon
   -- (ItemUsePPRestore / ItemUsePPUp); the ELIXERs hit every move
-  local wantsMove = id == "ETHER" or id == "MAX_ETHER" or id == "PP_UP"
   local def = game.data.items[id]
+  local key = ItemEffects.alias(id, def)
+  local wantsMove = key == "ETHER" or key == "MAX_ETHER" or key == "PP_UP"
   local opts = {
     pickOnly = true,
     -- HP medicine animates its bar with the picker still up (#252).  Only
@@ -422,37 +431,152 @@ local function useItem(game, battle, id, list)
   end
 end
 
+-- GSC's GiveItem: pick a party mon, then hand it the item.  A mon that is
+-- already holding something is offered the swap (TryGiveItemToMon).
+-- TryGiveItemToMon: hand `id` to `mon`, offering the swap when it is already
+-- holding something.  Key items and mail stay in the pack.
+local function handOver(game, mon, id, onChanged)
+  local def = game.data.items[id]
+  local name = (def and def.name) or id
+  local monName = mon.nickname
+    or (game.data.pokemon[mon.species] or {}).name or "?"
+  if require("src.pokemon.Party").isEgg(mon) then
+    showMessages(game, { Strings("An EGG can't hold\nan item.") })
+    return
+  end
+  if def and def.keyItem then
+    showMessages(game, { Strings("%s can't be\nheld.", name) })
+    return
+  end
+  local held = mon.item
+  local function hand()
+    require("src.inventory.Bag").giveHeld(game.save, mon, id, game.data)
+    if onChanged then onChanged() end
+  end
+  if not held then
+    hand()
+    showMessages(game, { Strings("%s is now holding\n%s.", monName, name) })
+    return
+  end
+  local heldName = (game.data.items[held] or {}).name or held
+  local ChoiceBox = require("src.ui.ChoiceBox")
+  showMessages(game, {
+    Strings("%s is already\nholding %s.", monName, heldName),
+    Strings("Switch items?"),
+  }, function()
+    game.stack:push(ChoiceBox.new(game, function(yes)
+      if not yes then return end
+      hand()
+      showMessages(game, { Strings("Took %s and\nmade it hold %s.",
+        heldName, name) })
+    end))
+  end)
+end
+
+-- GSC's GiveItem (pack.asm): pick a party mon, then hand it the item.
+local function giveItem(game, id, onChanged)
+  require("src.ui.Screens").push(game, "PartyMenu", {
+    pickOnly = true,
+    onSwitch = function(mon) handOver(game, mon, id, onChanged) end,
+  })
+end
+
+-- swap the two marked rows inside save.bagOrder by their item ids
+local function swapRows(game, list)
+  local a = list.items[list.swapIndex] and list.items[list.swapIndex].value
+  local b = list.items[list.index] and list.items[list.index].value
+  list.swapIndex = nil
+  if not (a and b) or a == b then return end
+  local order = Bag.order(game.save)
+  local ia, ib
+  for i, id in ipairs(order) do
+    if id == a then ia = i end
+    if id == b then ib = i end
+  end
+  if ia and ib then order[ia], order[ib] = order[ib], order[ia] end
+end
+
+-- _CGB_PackPals.PackPals (2:$596F): six palettes, then an attrmap that puts
+-- 1 over the left half of the header row, 2 over the right half, 3 down the
+-- cursor column, 4 on the pocket-name box and 5 on the pack picture.
+local PACK_PALS = {
+  { { 255, 255, 255 }, { 123, 123, 255 }, { 0, 0, 255 }, { 0, 0, 0 } },
+  { { 255, 255, 255 }, { 123, 123, 255 }, { 0, 0, 255 }, { 0, 0, 0 } },
+  { { 255, 90, 255 }, { 123, 123, 255 }, { 0, 0, 255 }, { 0, 0, 0 } },
+  { { 255, 255, 255 }, { 123, 123, 255 }, { 0, 0, 255 }, { 255, 0, 0 } },
+  { { 255, 255, 255 }, { 123, 123, 255 }, { 255, 0, 0 }, { 0, 0, 0 } },
+  { { 255, 255, 255 }, { 58, 156, 58 }, { 58, 156, 58 }, { 0, 0, 0 } },
+}
+
+local function packPalettes()
+  local P = require("src.render.PaletteFX")
+  return {
+    P.whole(PACK_PALS[1]),
+    P.zone(PACK_PALS[2], 0, 0, 9, 0),
+    P.zone(PACK_PALS[3], 10, 0, 19, 0),
+    P.zone(PACK_PALS[4], 7, 2, 7, 10),
+    P.zone(PACK_PALS[5], 0, 7, 4, 9),
+    P.zone(PACK_PALS[6], 0, 3, 4, 5),
+  }
+end
+
 function BagMenu.new(game, opts)
   opts = opts or {}
   local battle = opts.battle
   local list
-  list = ListMenu.new(game, "ITEMS", buildItems(game), {
+  -- Gen2 pages the pack; Gen1's bag is one flat list (pocket = nil)
+  local gen2 = require("src.core.GameVersion").isGen2()
+  local pocketIndex = gen2 and (opts.pocketIndex or 1) or nil
+  local function pocketKey()
+    return pocketIndex and POCKETS[pocketIndex].key or nil
+  end
+  local function refresh(l)
+    l.items = buildItems(game, pocketKey())
+    l.index = math.min(l.index, math.max(1, #l.items))
+    l.scroll = 0
+  end
+  list = ListMenu.new(game, pocketIndex and POCKETS[pocketIndex].title or "ITEMS",
+    buildItems(game, pocketKey()), {
     kind = "bag",
+    pocketIndex = pocketIndex and (pocketIndex - 1) or 0,
+    onPocketSwitch = pocketIndex and function(l, delta)
+      pocketIndex = ((pocketIndex - 1 + delta) % #POCKETS) + 1
+      l.pocketIndex = pocketIndex - 1
+      l.title = POCKETS[pocketIndex].title
+      l.swapIndex = nil
+      l.index = 1
+      refresh(l)
+      require("src.core.Sound").play(game.data, "Press_AB")
+    end or nil,
     footer = ("¥%d"):format(game.save.money),
     -- B returns to the start menu when the bag was opened from it
     onCancel = opts.onCancel,
-    -- SELECT reorders items like the original bag (swap_items.asm)
+    -- SELECT reorders items like the original bag (swap_items.asm).  A
+    -- pocket page is a filtered view of Bag.order, so the swap is done by
+    -- item id rather than by row number.
     onSelectKey = function(item, l)
       if not item then return end
       if not l.swapIndex then
         l.swapIndex = l.index
         return
       end
-      local order = Bag.order(game.save)
-      order[l.swapIndex], order[l.index] = order[l.index], order[l.swapIndex]
-      l.swapIndex = nil
+      swapRows(game, l)
       require("src.core.Sound").play(game.data, "Swap")
-      l.items = buildItems(game)
+      refresh(l)
     end,
     onChoose = function(item)
       local id = item.value
       local def = game.data.items[id]
       if list.swapIndex then -- A also completes a pending swap
-        local order = Bag.order(game.save)
-        order[list.swapIndex], order[list.index] = order[list.index], order[list.swapIndex]
-        list.swapIndex = nil
+        swapRows(game, list)
         require("src.core.Sound").play(game.data, "Swap")
-        list.items = buildItems(game)
+        refresh(list)
+        return
+      end
+      if opts.giveTo then
+        -- opened from MonMenu's ITEM -> GIVE: the pick hands straight over
+        list:close()
+        handOver(game, opts.giveTo, id, nil)
         return
       end
       if battle then -- no tossing mid-battle
@@ -466,15 +590,32 @@ function BagMenu.new(game, opts)
       -- from the box alone, so this needs opts rather than a change to the
       -- shared Menu.  The old 12/10/8/6 box was a column too wide and a row
       -- too tall, which left the labels stranded near its top edge (#284).
+      --
+      -- Gen 2 has held items, so pack.asm's .ItemBallsKey_LoadSubmenu picks
+      -- one of six headers instead: USE only when the item does something,
+      -- GIVE and TOSS only when it is not a key item, always QUIT.  Its box
+      -- is on the LEFT (menu_coords 0, y, SCREEN_WIDTH - 14, TEXTBOX_Y - 1)
+      -- and grows upward from the text box.
       local Menu = require("src.ui.Menu")
-      game.stack:push(Menu.new(game, {
+      local tossable = not (gen2 and (not def or def.keyItem
+        or ItemEffects.alias(id, def):find("^HM_")))
+      local options = {
         { label = Strings("USE"), onSelect = function()
             useItem(game, battle, id, list)
           end },
-        { label = Strings("TOSS"), onSelect = function()
+      }
+      if gen2 and tossable then
+        options[#options + 1] = { label = Strings("GIVE"),
+          onSelect = function()
+            giveItem(game, id, function() refresh(list) end)
+          end }
+      end
+      if tossable then
+        options[#options + 1] = { label = Strings("TOSS"), onSelect = function()
             -- KeyItemFlags + HMs decide tossability (not price:
             -- MOON STONE is price 0 but tossable)
-            if not def or def.keyItem or id:find("^HM_") then
+            if not def or def.keyItem
+               or ItemEffects.alias(id, def):find("^HM_") then
               showMessages(game, { Strings("That's too impor-\ntant to toss!") })
               return
             end
@@ -487,17 +628,55 @@ function BagMenu.new(game, opts)
                 game.stack:push(ChoiceBox.new(game, function(yes)
                   if not yes then return end
                   Bag.remove(game.save, id, qty)
-                  list.items = buildItems(game)
-                  list.index = math.min(list.index, math.max(1, #list.items))
+                  refresh(list)
                   showMessages(game, { Strings("Threw away\n%s.", def and def.name or id) })
                 end))
               end,
             }))
-          end },
-      }, { tx = 13, ty = 10, tw = 7, th = 5 }))
+          end }
+      end
+      -- SEL: the property byte's CANT_SELECT bit is what Pack's
+      -- .selectable branches read, so the six key items GSC lets you put on
+      -- the SELECT button (BICYCLE, ITEMFINDER, the three rods) offer it and
+      -- nothing else does.
+      if gen2 and def and def.registerable then
+        options[#options + 1] = { label = Strings("SEL"), onSelect = function()
+            game.save.registeredItem = id
+            require("src.core.Sound").play(game.data, "Press_AB")
+            showMessages(game, { Strings("Registered the\n%s.",
+              def.name or id) })
+          end }
+      end
+      if gen2 then
+        options[#options + 1] = { label = Strings("QUIT"), onSelect = function() end }
+      end
+      local th = #options * 2 + 1
+      game.stack:push(Menu.new(game, options, gen2
+        and { tx = 0, ty = 12 - th, tw = 7, th = th }
+        or { tx = 13, ty = 10, tw = 7, th = th }))
     end,
   })
+  if gen2 then list.sgbPalettes = packPalettes end
   return list
+end
+
+BagMenu.POCKETS = POCKETS
+BagMenu.pocketOf = pocketOf
+
+-- The SELECT button's registered item (home/menu.asm CheckRegisteredItem):
+-- the pack never opens, so the use flow runs against a stub list.  A
+-- registration the player no longer holds is dropped and nothing happens,
+-- which is .CheckRegisteredNo.
+function BagMenu.useRegistered(game)
+  local id = game.save.registeredItem
+  if not id then return false end
+  local def = game.data.items[id]
+  if not def or not def.registerable or not game.save.inventory[id] then
+    game.save.registeredItem = nil
+    return false
+  end
+  useItem(game, nil, id, { close = function() end, items = {}, index = 1 })
+  return true
 end
 
 return BagMenu

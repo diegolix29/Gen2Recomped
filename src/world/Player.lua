@@ -31,6 +31,30 @@ local TURN_FRAMES = 4
 -- overlay gets a longer window than a physical pad (#415).
 local TOUCH_TURN_FRAMES = 8
 
+local FALLBACK_SPRITE = {
+  id = "SPRITE_FALLBACK",
+  source = "runtime fallback",
+  image = "assets/generated/sprites/placeholder.png",
+  frames = 6,
+  walker = true,
+}
+
+local function pickSpriteDef(data, preferred)
+  local sprites = (data and data.sprites) or {}
+  if type(preferred) == "string" and sprites[preferred] then
+    return sprites[preferred]
+  end
+  local priority = { "SPRITE_RED", "SPRITE_SEEL", "SPRITE_RED_BIKE", "SPRITE_BIRD" }
+  for _, id in ipairs(priority) do
+    if sprites[id] then return sprites[id] end
+  end
+  for _, def in pairs(sprites) do
+    if type(def) == "table" then return def end
+  end
+  sprites.SPRITE_FALLBACK = sprites.SPRITE_FALLBACK or FALLBACK_SPRITE
+  return sprites.SPRITE_FALLBACK
+end
+
 function Player.new(data, cx, cy, facing)
   local self = setmetatable({}, Player)
   self.stepFrames = FieldDefaults.world(data, "stepFrames") or STEP_FRAMES
@@ -43,19 +67,13 @@ function Player.new(data, cx, cy, facing)
   local surfId = FieldDefaults.fieldValue(data, "playerSprites", "surf")
   local surfPikaId = FieldDefaults.fieldValue(data, "playerSprites", "surfPikachu")
   local bikeId = FieldDefaults.fieldValue(data, "playerSprites", "bike")
-  self.sprite = SpriteRenderer.new(data.sprites[walkId], "player")
-  if surfId and data.sprites[surfId] then
-    self.surfSprite = SpriteRenderer.new(data.sprites[surfId], "player")
-  end
+  self.sprite = SpriteRenderer.new(pickSpriteDef(data, walkId), "player")
+  self.surfSprite = SpriteRenderer.new(pickSpriteDef(data, surfId), "player")
   -- Yellow's surfing-Pikachu ride (Yellow LoadSurfingPlayerSpriteGraphics2,
   -- paired with field.playerSprites.surfPikachu). rotated in at pose()
   -- when the SURF-mon is a Pikachu.
-  if surfPikaId and data.sprites[surfPikaId] then
-    self.surfPikachuSprite = SpriteRenderer.new(data.sprites[surfPikaId], "player")
-  end
-  if bikeId and data.sprites[bikeId] then
-    self.bikeSprite = SpriteRenderer.new(data.sprites[bikeId], "player")
-  end
+  self.surfPikachuSprite = SpriteRenderer.new(pickSpriteDef(data, surfPikaId), "player")
+  self.bikeSprite = SpriteRenderer.new(pickSpriteDef(data, bikeId), "player")
   -- the ledge-hop shadow quarter-tile (gfx/overworld/shadow.png,
   -- LedgeHoppingShadow, engine/overworld/ledges.asm)
   local fx = data.field and data.field.overworldFx
@@ -151,10 +169,6 @@ function Player:tryMove(dir, map, entities)
   local save = Game.save
   local frames = (save and save.onBike) and self.bikeStepFrames
                  or self.stepFrames or STEP_FRAMES
-  -- Hold B to run: 2x movement speed when option enabled and B held
-  if save and save.options and save.options.holdBToRun and Game.input:isDown("b") then
-    frames = math.ceil(frames / 2)
-  end
   if Runtime.wantsHook("movement.speed") then
     frames = Runtime.call("movement.speed", function(f) return f end, frames, {
       onBike = save and save.onBike or false,
@@ -197,14 +211,7 @@ function Player:update()
   -- below) can never double-tick the leg cadence.
   if not self.moving and self.bumpFrames and self.bumpFrames > 0 then
     self.bumpFrames = self.bumpFrames - 1
-    local animIncrement = 1
-    -- Hold B to run: 2x animation speed when option enabled and B held
-    local Game = require("src.core.Game")
-    local save = Game.save
-    if save and save.options and save.options.holdBToRun and Game.input:isDown("b") then
-      animIncrement = 2
-    end
-    self.animClock = (self.animClock or 0) + animIncrement
+    self.animClock = (self.animClock or 0) + 1
   end
   if not self.moving then return false end
   local stepLen = self.stepFramesCur or self.stepFrames or STEP_FRAMES
@@ -212,12 +219,7 @@ function Player:update()
   -- the walk-cycle clock ticks once per real frame while moving, so the
   -- leg cadence stays constant when the bike halves stepFramesCur (only
   -- translation speed doubles, like UpdatePlayerSprite's frame counters)
-  local animIncrement = 1
-  -- Hold B to run: 2x animation speed when option enabled and B held
-  if save and save.options and save.options.holdBToRun and Game.input:isDown("b") then
-    animIncrement = 2
-  end
-  self.animClock = (self.animClock or 0) + animIncrement
+  self.animClock = (self.animClock or 0) + 1
   local d = Collision.DELTA[self.facing]
   local px = math.floor(self.progress * 16 / stepLen)
   self.px = self.cellX * 16 + d[1] * px

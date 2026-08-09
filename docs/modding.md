@@ -140,62 +140,6 @@ default** (1x front, 2x back).
   ball-to-pic grow multiplies your scale through each stage, so a rescaled
   mon still grows into place from the ball, grounded the whole way.
 
-## Durable tool storage and runtime checkpoints
-
-`mod.save` remains the right place for state that should travel with the next
-normal Pokémon SAVE. Tools that need independently written, larger data-only
-records can use `mod.storage`; the engine scopes every logical key by game
-version, opaque playthrough identity, and mod id, and routes it through the same
-standard or portable persistence backend as saves:
-
-```lua
-local context, code, message = mod.storage:context(game)
-local ok, code, message = mod.storage:write(game, "history/quick/q0001", {
-  format = 1, createdAt = os.time(), payload = { money = 3000 },
-})
-local value, code, message = mod.storage:read(game, "history/quick/q0001")
-local keys, code, message = mod.storage:list(game, "history/quick")
-local deleted, code, message = mod.storage:delete(game, "history/quick/q0001")
-```
-
-`context` returns `{ engineVersion, gameVersion, playthroughId }`. The engine
-version is compatibility metadata; physical launcher-slot and path identity stays
-private.
-
-Values must be tables containing serializable data only. Keys are conservative
-slash-separated segments (letters, digits, `_`, `-`); paths and filesystem
-handles are never exposed. Writes are staged and decode-verified, reads recover
-from a valid staged/backup generation, and methods return structured errors for
-normal data or I/O failures. The playthrough identity is allocated lazily on the
-first storage/checkpoint call, so an unused API changes no save bytes.
-
-`mod.checkpoints` captures and reconstructs engine-owned semantic runtime state:
-
-```lua
-local capability = mod.checkpoints:inspect(game)
-if capability.canCapture then
-  local checkpoint, code, message = mod.checkpoints:capture(game)
-  -- Store the detached data-only checkpoint through mod.storage.
-end
-
-local ok, code, message = mod.checkpoints:restore(game, checkpoint)
-```
-
-Checkpoint format 1 supports settled overworld control and proven battle
-player-decision safe points. Battle checkpoints are limited to ordinary
-single-player wild/trainer origins with no suspended script; link, Safari,
-ghost, demo, scripted, animation, message, queue, and forced-action phases fail
-closed. New checkpoints preserve gameplay RNG, while legacy overworld records
-without RNG remain loadable. Capture excludes global options and runtime
-objects. Restore validates format, game/playthrough identity, content,
-coordinates, battle relationships, continuation, and RNG before mutation;
-preserves current options; suppresses normal map-entry/save-load/intro side
-effects; verifies a recapture; and rolls back runtime plus RNG in memory if
-reconstruction fails. Callers that need crash recovery should durably capture
-their own recovery checkpoint before restore.
-
-See RFC 0003, RFC 0004, and RFC 0005 for exact contracts and error codes.
-
 ## Developer console
 
 Boot with developer mode on to unlock the in-game console and hot-reload
@@ -230,32 +174,6 @@ It runs immediately before queued button edges are promoted, so input added by
 the wrapper is visible during that same fixed step. The callback receives
 `(next, game, dt)` and must call `next(game, dt)`.
 
-`input.pointer` delivers uncaptured gameplay pointer events -- touches and
-real mouse input alike. The callback receives `(next, game, ev)` where `ev`
-is `{ phase, source, id, x, y, dx, dy, pressure, button }`: `phase` is
-`"pressed"`, `"moved"`, `"released"` or `"cancelled"`; `source` is `"touch"`
-or `"mouse"`; `id` is the LÖVE touch id or `"mouse"`; and the coordinates
-are LOVE window units, the same space `render.hud`'s viewport and the touch
-overlay lay out in. The on-screen touch controls keep first refusal: a
-pointer that begins on a virtual control belongs to the pad for its whole
-lifecycle and never reaches the hook, while one that begins outside stays
-visible even if it later crosses a control. A real mouse reaches the hook
-without `POKEPORT_TOUCH` (synthesized `istouch` mouse twins are dropped, so
-a mobile touch fires once), and focus or visibility loss and input recovery
-deliver a `"cancelled"` for every pointer the hook saw pressed but not yet
-released. Return `true` without calling `next` to consume the event.
-
-`mod.input` presses GB buttons source-safely. `mod.input:tap(game, btn)`
-queues exactly one `wasPressed` edge for the next fixed step and holds
-nothing; `local token = mod.input:press(game, btn)` holds the button until
-`mod.input:release(token)`. Buttons are `up`, `down`, `left`, `right`, `a`,
-`b`, `start` and `select`. Every press is its own input source inside the
-engine's multi-source bookkeeping, so releasing a token never clears a hold
-the keyboard, a controller, the touch overlay or another mod still owns;
-`release` is idempotent and refuses tokens taken by another mod.
-Outstanding tokens are released automatically on entry-chunk rollback, hot
-reload and input recovery.
-
 `ui.title_menu.items` receives `(next, game, items)` and follows the same
 decorate-after-`next` convention as `ui.start_menu.items`. It is the safe place
 for a tool to offer a fresh-session action before gameplay begins.
@@ -277,18 +195,10 @@ the finished `worldCanvas` and `uiCanvas` with their SGB `zones` / `worldZones`,
 `worldActive`, the frame metrics (`ww`, `wh`, `pw`, `ph`, `ox`, `oy`, `vpw`,
 `vph`, `scale`, `Sx`, `Sy`, `dpiX`, `dpiY`), `renderer:blitCanvas(...)` for a
 palette-correct blit of either canvas into an arbitrary screen rect, and the
-`secondScreen` bridge (`available()` / `push(imageData, w, h)` / `pollTouch()` /
-`setEnabled`) for driving a second physical display. `pollTouch()` returns the
-oldest queued event as `"action,x,y"` in submitted-frame coordinates, or `nil`.
-This is what lets a mod lay the two passes out as two stacked Game Boy screens,
-or push one onto a second screen, without the engine knowing the layout.
-
-`screen.render_visible` receives `(next, state)` while the main screen is being
-composed. Return `false` to omit that state from drawing, opacity selection and
-palette-zone ownership. The state remains on the stack and keeps its normal
-update and input ownership, so a mod can mirror a native menu on another
-display without reimplementing it. The default is `true`. Treat the wrapper as
-a pure predicate: the renderer may ask it more than once per frame.
+`secondScreen` bridge (`available()` / `push(imageData, w, h)` / `setEnabled`)
+for driving a second physical display. This is what lets a mod lay the two
+passes out as two stacked Game Boy screens, or push one onto a second screen,
+without the engine knowing the layout.
 
 Developer mode also arms the mod loader's dev tripwire, which flags mods
 that reach outside their permission set.

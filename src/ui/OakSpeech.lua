@@ -15,6 +15,7 @@ local Runtime = require("src.mods.Runtime")
 local TextBox = require("src.render.TextBox")
 local Font = require("src.render.Font")
 local Strings = require("src.core.Strings")
+local GameVersion = require("src.core.GameVersion")
 
 local OakSpeech = {}
 OakSpeech.__index = OakSpeech
@@ -55,14 +56,39 @@ local FALLBACKS = {
   _OakSpeechText2B = Strings.source("\fFor some people,\nPOKéMON are\vpets. Others use\vthem for fights.\fMyself...\fI study POKéMON\nas a profession."),
   _OakSpeechText3 = Strings.source("{PLAYER}!\fYour very own\nPOKéMON legend is\vabout to unfold!\fA world of dreams\nand adventures\vwith POKéMON\vawaits! Let's go!"),
   _IntroducePlayerText = Strings.source("First, what is\nyour name?"),
-  _IntroduceRivalText = Strings.source("This is my grand-\nson. He's been\vyour rival since\vyou were a baby.\f...Erm, what is\nhis name again?"),
+  _IntroduceRivalText = Strings.source("This is your rival.\nHe has always been\vat your side.\f...Erm, what is\nhis name again?"),
   _YourNameIsText = Strings.source("Right! So your\nname is {PLAYER}!"),
   _HisNameIsText = Strings.source("That's right! I\nremember now! His\vname is {RIVAL}!"),
 }
 
 local function textOr(game, key)
   local t = game.data.text
-  return (t and t[key]) or FALLBACKS[key]
+  local Version = require("src.core.GameVersion")
+  local alt = {
+    _OakSpeechText1 = { "_OakText1", "OakText1" },
+    _OakSpeechText2A = { "_OakText2", "OakText2" },
+    _OakSpeechText2B = { "_OakText4", "OakText4", "_OakText5", "OakText5" },
+    _OakSpeechText3 = { "_OakText7", "OakText7" },
+    _IntroducePlayerText = { "_OakText6", "OakText6" },
+  }
+  local value = t and t[key]
+  if Version.isGen2() then
+    for _, k in ipairs(alt[key] or {}) do
+      local candidate = t and t[k]
+      if type(candidate) == "string" and candidate ~= ""
+          and not candidate:match("^%{GEN2_TEXT") then
+        value = candidate
+        break
+      end
+    end
+  end
+  if type(value) ~= "string" then
+    return FALLBACKS[key]
+  end
+  if value == "" or value:match("^%{GEN2_TEXT") then
+    return FALLBACKS[key]
+  end
+  return value
 end
 
 -- through Assets.resolve so an enabled mod's overrides/ shadows these the
@@ -97,6 +123,14 @@ function OakSpeech.resolvePic(game, desc, speech)
   end
   local t = desc.type
   if t == "trainer" then
+    if GameVersion.isGen2() and desc.id == "OPP_PROF_OAK" then
+      local img = tryImage("assets/generated/battle/trainers/prof_oak.png")
+      if img then return img, false, false end
+    end
+    if GameVersion.isGen2() and desc.id == "OPP_RIVAL1" then
+      local img = tryImage("assets/generated/battle/trainers/rival1.png")
+      if img then return img, false, false end
+    end
     if speech and desc.id == "OPP_PROF_OAK" and speech.oakPic then
       return speech.oakPic, false, false
     end
@@ -205,6 +239,63 @@ function OakSpeech.defaultSteps(speech)
   }
 end
 
+-- Gold/Silver run a different beat list (OakSpeech, 01:5FA5): there is no
+-- rival to name here -- Silver is named later by the NameRival special -- and
+-- the closing line follows the player's own naming screen directly.  Reusing
+-- the Red list printed Red's rival dialogue, and the Gen1 FALLBACKS with it,
+-- over a Gen2 save.  The keys are the ROM's own text labels, so textOr finds
+-- them in data.text instead of falling through.
+function OakSpeech.gen2Steps()
+  return {
+    {
+      id = "oak_welcome",
+      kind = "say",
+      textKey = "_OakText1",
+      pic = "oak",
+      reveal = "fade",
+    },
+    {
+      id = "demo_mon",
+      kind = "demo",
+      textKey = "_OakText2",
+    },
+    {
+      id = "world_spiel",
+      kind = "say",
+      textKey = "_OakText4",
+      pic = "oak",
+    },
+    {
+      id = "study_spiel",
+      kind = "say",
+      textKey = "_OakText5",
+    },
+    {
+      id = "ask_player_name",
+      kind = "say",
+      textKey = "_OakText6",
+    },
+    {
+      id = "name_player",
+      kind = "name",
+      who = "player",
+      title = Strings("YOUR NAME?"),
+      presetsWho = "player",
+      presetsFallback = { "GOLD", "HIRO", "CHRIS" },
+    },
+    {
+      id = "legend",
+      kind = "say",
+      textKey = "_OakText7",
+      pic = "player",
+    },
+    {
+      id = "shrink",
+      kind = "shrink",
+    },
+  }
+end
+
 -- list helpers for intro.oak_speech.build wrappers (also on ModUI)
 local function indexOfId(steps, id)
   for i, step in ipairs(steps) do
@@ -265,14 +356,14 @@ function OakSpeech.new(game, onDone)
                              or "assets/generated/intro/shrink2.png")
   -- RedSprite: the walking sprite the pic shrinks into (frame 0 =
   -- standing, facing down)
-  local playerSprites = (game.data.field and game.data.field.playerSprites) or {}
-  local red = game.data.sprites and game.data.sprites[playerSprites.walk or "SPRITE_RED"] or game.data.sprites.SPRITE_RED
+  local red = game.data.sprites and game.data.sprites.SPRITE_RED
   self.walkSheet = tryImage(red and red.image)
   return self
 end
 
 function OakSpeech:buildSteps()
-  local steps = OakSpeech.defaultSteps(self)
+  local steps = GameVersion.isGen2() and OakSpeech.gen2Steps()
+                or OakSpeech.defaultSteps(self)
   local hooked = Runtime.call("intro.oak_speech.build",
     function(s) return s end, steps, self)
   if type(hooked) ~= "table" then
@@ -380,7 +471,9 @@ function OakSpeech:runStep(step)
     self.picTrueColor = self.demoTrueColor
     self:revealPic("wipe", function()
       Sound.playCry(self.game.data, self.demoSpecies)
-      self:say(Strings("_OakSpeechText2A"), function() self:advance() end)
+      local text = step.textKey and self:stepText(step)
+                   or Strings("_OakSpeechText2A")
+      self:sayText(text, function() self:advance() end)
     end)
   elseif kind == "name" then
     local who = step.who or "player"

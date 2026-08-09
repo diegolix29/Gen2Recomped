@@ -9,7 +9,6 @@ local ListMenu = require("src.ui.ListMenu")
 local ChoiceBox = require("src.ui.ChoiceBox")
 local Input = require("src.core.Input")
 local Strings = require("src.core.Strings")
-local Theme = require("src.ui.Theme")
 
 local BindingsMenu = setmetatable({}, { __index = ListMenu })
 BindingsMenu.__index = BindingsMenu
@@ -275,52 +274,10 @@ function BindingsMenu:update(dt)
     return self:confirmReset()
   end
   ListMenu.update(self, dt)
-  
-  -- Handle scrolling to keep selected item visible
-  local totalItems = #self.items
-  local rows = self.rows or 4
-  local maxScroll = math.max(0, totalItems - rows)
-  
-  if self.index < self.scroll + 1 then
-    self.scroll = math.max(0, self.index - 1)
-  elseif self.index > self.scroll + rows then
-    self.scroll = math.min(maxScroll, self.index - rows)
-  end
-end
-
-function BindingsMenu:resetItem(item)
-  local game = self.game
-  if not (item and game.save and game.save.options) then return end
-  local opts = game.save.options
-  opts.bindings = opts.bindings or {}
-  opts.bindings[item.button.id] = nil
-  item.right = boundRight(opts.bindings, item.button)
-  Input:applyBindings(opts.bindings)
-  if game.writeOptions then game:writeOptions() end
 end
 
 function BindingsMenu:draw()
-  Font.draw(self.title, 8, 4)
-  local baseY = 20
-  local rows = self.rows or 4
-  
-  for row = 1, rows do
-    local i = (self.scroll or 0) + row
-    local item = self.items[i]
-    local y = baseY + (row - 1) * 24 -- 24 pixels per item (2 lines + blank line)
-    if item then
-      Font.draw(item.label, 16, y)
-      Font.draw(item.right, 80, y + 8) -- Centered position (x=80)
-      if i == self.index then
-        Font.drawCode(Theme.cursor, 8, y)
-      end
-    end
-  end
-  
-  if self.footer then
-    Font.draw(self.footer, 8, 136)
-  end
-  
+  ListMenu.draw(self)
   if self.capture then
     Font.drawBox(1, 6, 18, 6)
     love.graphics.setColor(0, 0, 0, 1)

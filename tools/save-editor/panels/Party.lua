@@ -4,12 +4,6 @@
 -- Reorder lives on the row itself (the up/down pair appears on the selected
 -- row) rather than in a bottom button strip, which leaves Add / Remove as the
 -- only two panel-level verbs.
---
--- #715 reflow: side by side, the roster and the inspector need about 640
--- real px between them.  Anything narrower stacks the two cards (roster
--- above, inspector below) at full width instead of shrinking both into
--- unreadable slivers, and the roster body scrolls (wheel / touch drag /
--- Kit.scrollbar) rather than silently truncating past the fold.
 
 local PartyMod = require("src.pokemon.Party")
 local Theme = require("Theme")
@@ -35,8 +29,11 @@ local function hpColor(frac)
   return PAL.green
 end
 
-local function drawRoster(S, Kit, x, y, listW, h)
+function Party.draw(S, Kit, x, y, w, h)
   local s = Kit.scale
+  local gap = 20 * s
+  local listW = rosterWidth(w, s)
+
   Kit.card(x, y, listW, h)
   local pad = 18 * s
   local cx = x + pad
@@ -59,21 +56,12 @@ local function drawRoster(S, Kit, x, y, listW, h)
     local rowH = 64 * s
     local rowGap = 8 * s
     S.selectedParty = Ops.clamp(S.selectedParty or 1, 1, #S.save.party)
-    -- The list used to `break` past the fold, silently hiding party slots on
-    -- a short window; it scrolls instead now (#715), same offset contract as
-    -- every other list in the editor.
-    local visible = math.max(1, math.floor((listH + rowGap) / (rowH + rowGap)))
-    S.partyOffset = Kit.scroll(cx, listTop, innerW, listH,
-      S.partyOffset or 0, #S.save.party, visible)
-    Kit.pushClip(cx, listTop, innerW, listH)
-    for i = 1, visible do
-      local slot = S.partyOffset + i
-      local mon = S.save.party[slot]
-      if not mon then break end
+    for i, mon in ipairs(S.save.party) do
       local ry = listTop + (i - 1) * (rowH + rowGap)
+      if ry + rowH > listTop + listH then break end
       local selected = (S.editingMon == mon)
       if Kit.row(cx, ry, innerW, rowH, selected, PAL.green) then
-        Ops.selectParty(S, slot)
+        Ops.selectParty(S, i)
       end
 
       local rpad = 12 * s
@@ -108,7 +96,7 @@ local function drawRoster(S, Kit, x, y, listW, h)
       local tw = math.max(40 * s, (cx + innerW - rightW - 10 * s) - tx)
       local name = Kit.ellipsize("monoRow", mon.species, tw - 34 * s)
       Kit.text("monoRow", name, tx, ry + 10 * s, PAL.heading)
-      Kit.text("tiny", ("#%d"):format(slot),
+      Kit.text("tiny", ("#%d"):format(i),
         tx + Kit.textWidth("monoRow", name) + 8 * s, ry + 12 * s, PAL.caption)
 
       local maxHp = (mon.stats and mon.stats.hp) or 1
@@ -117,9 +105,6 @@ local function drawRoster(S, Kit, x, y, listW, h)
       Kit.text("tiny", ("HP %d/%d"):format(mon.hp or 0, maxHp), tx,
         ry + rowH - 10 * s - Kit.textHeight("tiny"), PAL.muted)
     end
-    Kit.popClip()
-    Kit.scrollbar(cx, listTop, innerW, listH,
-      S.partyOffset, #S.save.party, visible)
   end
 
   local halfW = (innerW - 10 * s) / 2
@@ -133,22 +118,8 @@ local function drawRoster(S, Kit, x, y, listW, h)
       { kind = "danger", font = "small", radius = 9 * s }) then
     Ops.partyRemove(S)
   end
-end
 
-function Party.draw(S, Kit, x, y, w, h)
-  local s = Kit.scale
-  local gap = 20 * s
-  if w < 640 * s then
-    -- stacked (#715): roster on top with enough height for a few rows, the
-    -- inspector takes the rest and scrolls internally (see MonEditor)
-    local rosterH = Theme.clamp(h * 0.42, 150 * s, 300 * s)
-    drawRoster(S, Kit, x, y, w, rosterH)
-    MonEditor.draw(S, Kit, x, y + rosterH + gap, w, h - rosterH - gap)
-  else
-    local listW = rosterWidth(w, s)
-    drawRoster(S, Kit, x, y, listW, h)
-    MonEditor.draw(S, Kit, x + listW + gap, y, w - listW - gap, h)
-  end
+  MonEditor.draw(S, Kit, x + listW + gap, y, w - listW - gap, h)
 end
 
 return Party

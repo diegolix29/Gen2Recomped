@@ -6,32 +6,13 @@
 -- for variable-width text; the default is the GB's flat 8px.
 -- The charmap is matched greedily (longest sequence first) so multi-byte
 -- UTF-8 chars and ligature glyphs like 'd 'l 's map to single glyphs.
---
--- A translation may instead set data.font.ttf and render its text through a
--- real TTF (the bundled Plain Pixel by default), so a script that would need
--- hundreds of page tiles works out of the box.  Single characters then draw
--- from the TTF; multi-character charmap sequences (<PK>, the 'd ligatures)
--- and the sub-0x80 chrome glyphs (borders, arrows) keep their tiles, which
--- is why the box border never depends on the TTF's coverage.
 
 local Assets = require("src.render.Assets")
 
 local Font = {}
 
 local GLYPH = 8
-
--- TTF glyph codes are the Unicode codepoint offset far above any page base,
--- so they flow through the same span/encode/drawCode pipeline as tiles.
-local TTF_BASE = 0x400000
-Font.TTF_BASE = TTF_BASE
-
--- The engine's bundled TTF (assets/fonts/plainpixel/README.md: CC-BY 4.0,
--- Douglas Vautour).  data.font.ttf.file overrides for a mod-shipped font.
--- 15 is the font's design em: its glyphs only rasterize at their true
--- pixel size (5x11 base, 11x11 double-width) at multiples of 15; at any
--- other size they downscale unevenly (at 11, M comes out 4px and A 5px).
-Font.PLAINPIXEL = "assets/fonts/plainpixel/PlainPixel-Regular.ttf"
-Font.PLAINPIXEL_SIZE = 15
+local FALLBACK = { enabled = false, font = nil }
 
 local state
 local loadedFrom
@@ -55,40 +36,37 @@ local function pagesOf(def)
   return pages
 end
 
--- ttf.tiles as a lookup keyed by charmap sequence.  Accepts a plain string
--- ("0123456789"), which is split into UTF-8 characters, or a list of
--- sequences ({ "0", "1", "<PK>" }) when a multi-character macro is meant.
-local function tileSet(spec)
-  local set = {}
-  if type(spec) == "table" then
-    for _, seq in ipairs(spec) do set[tostring(seq)] = true end
-  elseif type(spec) == "string" then
-    -- split on UTF-8 lead bytes rather than utf8Decode, which this file
-    -- declares further down and would be nil here
-    local i, n = 1, #spec
-    while i <= n do
-      local last = i
-      if spec:byte(i) >= 0xC0 then
-        local k = i + 1
-        while k <= n do
-          local b = spec:byte(k)
-          if b < 0x80 or b > 0xBF then break end
-          last, k = k, k + 1
-        end
-      end
-      set[spec:sub(i, last)] = true
-      i = last + 1
-    end
-  end
-  return set
-end
-
 function Font.load(data)
   loadedFrom = data
   local def = data.font
   state = { def = def, pages = {}, order = {}, byFirstByte = {} }
+  FALLBACK.enabled = false
+  FALLBACK.font = nil
+
+  -- Gen2 scaffold fonts are placeholder assets, not real glyph atlases.
+  -- Use the built-in raster font so dialogue remains readable while
+  -- extraction is incomplete.
+  if type(def.source) == "string" and def.source:find("Gen2 scaffold", 1, true) then
+    FALLBACK.enabled = true
+    FALLBACK.font = love.graphics.newFont(GLYPH)
+  end
+
+  if FALLBACK.enabled then
+    Font.BORDER = {}
+    for key, code in pairs(Font.DEFAULT_BORDER) do Font.BORDER[key] = code end
+    for key, code in pairs(def.border or {}) do Font.BORDER[key] = code end
+    return
+  end
+
   for id, page in pairs(pagesOf(def)) do
     local ok, img = pcall(Assets.image, page.image)
+    if ok then
+      local iw, ih = img:getDimensions()
+      local minHeight = id == "extra" and 16 or 64
+      if iw < 128 or ih < minHeight or iw % GLYPH ~= 0 or ih % GLYPH ~= 0 then
+        ok = false
+      end
+    end
     if ok then
       local iw, ih = img:getDimensions()
       local perRow = page.glyphsPerRow or math.floor(iw / GLYPH)
@@ -102,6 +80,10 @@ function Font.load(data)
       state.pages[id] = entry
       state.order[#state.order + 1] = entry
     end
+  end
+  if #state.order == 0 then
+    FALLBACK.enabled = true
+    FALLBACK.font = love.graphics.newFont(GLYPH)
   end
   -- highest base first: a code resolves against the last page that starts
   -- at or below it, which is exactly what the old main/extra chain did
@@ -127,55 +109,14 @@ function Font.load(data)
   for _, entries in pairs(state.byFirstByte) do
     table.sort(entries, function(a, b) return #a.seq > #b.seq end)
   end
+  if not (state.pages.main and state.pages.extra) then
+    FALLBACK.enabled = true
+    FALLBACK.font = love.graphics.newFont(GLYPH)
+  end
 
   Font.BORDER = {}
   for key, code in pairs(Font.DEFAULT_BORDER) do Font.BORDER[key] = code end
   for key, code in pairs(def.border or {}) do Font.BORDER[key] = code end
-
-  -- TTF mode.  All fields optional: {} means "the bundled Plain Pixel at
-  -- its native 11px".  A failed load logs and falls back to tiles, so a
-  -- typo'd path degrades exactly like a missing page image does above.
-  if type(def.ttf) == "table" then
-    local file = def.ttf.file or Font.PLAINPIXEL
-    local ok, obj = pcall(love.graphics.newFont, file,
-                          def.ttf.size or Font.PLAINPIXEL_SIZE, "mono")
-    if ok and obj then
-      -- nearest keeps the pixel font crisp under the integer UI scale
-      if obj.setFilter then pcall(obj.setFilter, obj, "nearest", "nearest") end
-      state.ttf = {
-        font = obj, file = file,
-        -- the font's own advances already carry a 1px gap at its design
-        -- size; spacing adds to (or, negative, takes from) every advance
-        spacing = def.ttf.spacing or 0,
-        -- bold double-prints each glyph at a 1px offset, for fonts whose
-        -- single-pixel strokes read too light against the tile art
-        bold = def.ttf.bold == true,
-        -- glyphs are taller than the 8px cell (11px base, and the em box
-        -- reserves even more for vertical extension); anchor the font's
-        -- baseline to the tile font's, which sits on row 7 of the cell, so
-        -- caps line up and descenders hang below as the GB font's own do
-        yOffset = def.ttf.yOffset or (obj.getBaseline
-          and (GLYPH - 1 - obj:getBaseline()) or (GLYPH - obj:getHeight())),
-        -- Single characters that keep their ROM tile instead of coming from
-        -- the TTF.  A CJK translation sizes the font so a kana fills the 8px
-        -- cell, which leaves Latin narrower than the tile font it replaces:
-        -- the numbers in a right-aligned column (the party menu's ":L12" over
-        -- "34/ 34") then no longer land where the 8px-per-character layout put
-        -- them.  Naming "0123456789" here keeps digits on the vanilla tiles --
-        -- identical to the English build -- while kana still come from the
-        -- font.  Sequence keys, so "é" or a "<PK>" macro can be listed too.
-        tiles = tileSet(def.ttf.tiles),
-        widths = {}, chars = {},
-      }
-    else
-      require("src.core.Logger").warn("font: could not load ttf %q (%s)",
-        tostring(file), tostring(obj))
-    end
-  end
-end
-
-function Font.ttfActive()
-  return state ~= nil and state.ttf ~= nil
 end
 
 -- re-run load against the data it last saw, so hot reload picks up an
@@ -197,49 +138,6 @@ end
 
 local SPACE = 0x7F
 
--- Decode one UTF-8 sequence: codepoint and the index of its last byte, or
--- nil on a malformed lead/continuation (the caller falls back to bytes).
-local function utf8Decode(text, i)
-  local b = text:byte(i)
-  if not b then return nil, i end
-  if b < 0x80 then return b, i end
-  local cont, cp
-  if b >= 0xF0 then cont, cp = 3, b - 0xF0
-  elseif b >= 0xE0 then cont, cp = 2, b - 0xE0
-  elseif b >= 0xC0 then cont, cp = 1, b - 0xC0
-  else return nil, i end
-  for k = i + 1, i + cont do
-    local c = text:byte(k)
-    if not c or c < 0x80 or c > 0xBF then return nil, i end
-    cp = cp * 64 + (c - 0x80)
-  end
-  return cp, i + cont
-end
-
-local function utf8Encode(cp)
-  if cp < 0x80 then return string.char(cp) end
-  if cp < 0x800 then
-    return string.char(0xC0 + math.floor(cp / 64), 0x80 + cp % 64)
-  end
-  if cp < 0x10000 then
-    return string.char(0xE0 + math.floor(cp / 4096),
-                       0x80 + math.floor(cp / 64) % 64, 0x80 + cp % 64)
-  end
-  return string.char(0xF0 + math.floor(cp / 262144),
-                     0x80 + math.floor(cp / 4096) % 64,
-                     0x80 + math.floor(cp / 64) % 64, 0x80 + cp % 64)
-end
-
--- the character a TTF code draws, cached per code
-local function ttfChar(ttf, code)
-  local ch = ttf.chars[code]
-  if not ch then
-    ch = utf8Encode(code - TTF_BASE)
-    ttf.chars[code] = ch
-  end
-  return ch
-end
-
 -- Segment text into glyph spans: `{ from, to, code }` byte ranges, one per
 -- drawn glyph, code nil when the charmap has nothing.  A span is a whole
 -- charmap sequence, so a multi-byte char ("é", "♂") and an ASCII ligature
@@ -255,7 +153,6 @@ end
 -- boundaries, which is all a headless paginate needs.
 function Font.split(text)
   local spans = {}
-  local ttf = state and state.ttf
   local i, n = 1, #text
   while i <= n do
     local span
@@ -264,22 +161,9 @@ function Font.split(text)
       for _, entry in ipairs(candidates) do
         local len = #entry.seq
         if text:sub(i, i + len - 1) == entry.seq then
-          if ttf and not ttf.tiles[entry.seq] then
-            -- single characters belong to the TTF; only multi-character
-            -- sequences (ligatures, <PK> macros) keep their tile mapping,
-            -- plus anything the mod named in ttf.tiles (see Font.load)
-            local cp, last = utf8Decode(entry.seq, 1)
-            if cp and last == len then break end
-          end
           span = { from = i, to = i + len - 1, code = entry.code }
           break
         end
-      end
-    end
-    if not span and ttf then
-      local cp, last = utf8Decode(text, i)
-      if cp and cp >= 0x20 then
-        span = { from = i, to = last, code = TTF_BASE + cp }
       end
     end
     if not span then
@@ -318,6 +202,29 @@ end
 -- render as space (and are reported once).
 local reported = {}
 function Font.encode(text)
+  if FALLBACK.enabled then
+    local codes = {}
+    local i, n = 1, #text
+    while i <= n do
+      local b = text:byte(i)
+      if b < 0x80 then
+        codes[#codes + 1] = b
+        i = i + 1
+      else
+        -- Keep one cell per UTF-8 sequence in fallback mode.
+        local j = i + 1
+        while j <= n do
+          local nb = text:byte(j)
+          if nb < 0x80 or nb > 0xBF then break end
+          j = j + 1
+        end
+        codes[#codes + 1] = string.byte("?")
+        i = j
+      end
+    end
+    return codes
+  end
+
   local codes = {}
   for _, span in ipairs(Font.split(text)) do
     local code = span.code
@@ -334,15 +241,57 @@ function Font.encode(text)
   return codes
 end
 
+-- The glyph atlas is black pixels on a transparent field, so setColor can
+-- only ever darken it.  Gen 2's Pokedex runs the font through
+-- Pokedex_InvertTiles and prints white on black, which needs the glyph shape
+-- painted in the current colour instead.
+local tintShader, tintPrev, tintDepth = nil, nil, 0
+
+local function tint()
+  if tintShader == nil then
+    local ok, sh = pcall(love.graphics.newShader, [[
+      vec4 effect(vec4 color, Image tex, vec2 tc, vec2 sc) {
+        return vec4(color.rgb, Texel(tex, tc).a * color.a);
+      }
+    ]])
+    tintShader = ok and sh or false
+  end
+  return tintShader or nil
+end
+
+function Font.beginTint()
+  local sh = tint()
+  if not sh then return end
+  if tintDepth == 0 then
+    tintPrev = love.graphics.getShader()
+    love.graphics.setShader(sh)
+  end
+  tintDepth = tintDepth + 1
+end
+
+function Font.endTint()
+  if not tint() or tintDepth == 0 then return end
+  tintDepth = tintDepth - 1
+  if tintDepth == 0 then
+    love.graphics.setShader(tintPrev)
+    tintPrev = nil
+  end
+end
+
 function Font.drawCode(code, x, y)
-  local ttf = state and state.ttf
-  if ttf and code >= TTF_BASE then
-    local prev = love.graphics.getFont()
-    love.graphics.setFont(ttf.font)
-    local ch = ttfChar(ttf, code)
-    love.graphics.print(ch, x, y + ttf.yOffset)
-    if ttf.bold then love.graphics.print(ch, x + 1, y + ttf.yOffset) end
-    if prev then love.graphics.setFont(prev) end
+  if FALLBACK.enabled then
+    love.graphics.setFont(FALLBACK.font)
+    local ch
+    if code == 0xED or code == 0xEC then
+      ch = ">"
+    elseif code == 0xEE then
+      ch = "v"
+    elseif code >= 32 and code <= 126 then
+      ch = string.char(code)
+    else
+      ch = "?"
+    end
+    love.graphics.print(ch, x, y)
     return
   end
   local page = pageFor(code)
@@ -351,21 +300,8 @@ function Font.drawCode(code, x, y)
   if quad then love.graphics.draw(page.image, quad, x, y) end
 end
 
--- how far the pen moves past a glyph; 8 unless its page says otherwise.
--- TTF glyphs answer with the font's own metrics (5px base, 11px for
--- double-width kana/CJK in Plain Pixel), which is what makes TextBox's
--- pixel-budget pagination fit more of a narrow script per line.
+-- how far the pen moves past a glyph; 8 unless its page says otherwise
 function Font.advanceOf(code)
-  local ttf = state and state.ttf
-  if ttf and code >= TTF_BASE then
-    local w = ttf.widths[code]
-    if not w then
-      w = ttf.font:getWidth(ttfChar(ttf, code)) + ttf.spacing
-        + (ttf.bold and 1 or 0)
-      ttf.widths[code] = w
-    end
-    return w
-  end
   local page = pageFor(code)
   return page and page.advance or GLYPH
 end
@@ -384,6 +320,11 @@ end
 -- Draw a plain single-line string at pixel (x, y).  Returns the width
 -- drawn, which is #codes * 8 for every fixed-width page.
 function Font.draw(text, x, y)
+  if FALLBACK.enabled then
+    love.graphics.setFont(FALLBACK.font)
+    love.graphics.print(text, x, y)
+    return #text * GLYPH
+  end
   local codes = Font.encode(text)
   local pen = x
   for _, code in ipairs(codes) do
@@ -405,18 +346,16 @@ for key, code in pairs(Font.DEFAULT_BORDER) do Font.BORDER[key] = code end
 
 -- Draw a Game Boy style bordered box in tile coordinates.
 function Font.drawBox(tx, ty, tw, th)
-  -- The white interior is a fill, so it needs the color; everything after it
-  -- is a glyph and needs the caller's.  Restoring is not cosmetic: the tile
-  -- pages are black glyphs on transparent, so they come out black whatever
-  -- the color is, and leaking white here was invisible for as long as every
-  -- glyph was a tile.  TTF text is not immune -- it draws in the current
-  -- color -- so a leaked white left every label printed after a box white on
-  -- white.  On the summary screen that erased ATTACK/DEFENSE/SPEED/SPECIAL
-  -- and TYPE1/TYPE2 while the numbers beside them, still tiles, stayed put.
-  local r, g, b, a = love.graphics.getColor()
+  if FALLBACK.enabled then
+    love.graphics.setFont(FALLBACK.font)
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.rectangle("fill", tx * 8, ty * 8, tw * 8, th * 8)
+    love.graphics.setColor(0, 0, 0, 1)
+    love.graphics.rectangle("line", tx * 8, ty * 8, tw * 8, th * 8)
+    return
+  end
   love.graphics.setColor(1, 1, 1, 1)
   love.graphics.rectangle("fill", tx * 8, ty * 8, tw * 8, th * 8)
-  love.graphics.setColor(r, g, b, a)
   local B = Font.BORDER
   Font.drawCode(B.tl, tx * 8, ty * 8)
   Font.drawCode(B.tr, (tx + tw - 1) * 8, ty * 8)

@@ -14,9 +14,9 @@ return {
       TEXT_ROUTE18GATE1F_GUARD = {
         { "face_player" },
         { "check_item", "BICYCLE" },
-        { "jump_if_true", 6 },
+        { "jump_if_true", 5 },
         { "show_text", "_Route18Gate1FGuardYouNeedABicycleText" },
-        { "jump", "end" },
+        { "jump", 6 },
         { "show_text", "_Route18Gate1FGuardCyclingRoadUphillText" },
       },
     },

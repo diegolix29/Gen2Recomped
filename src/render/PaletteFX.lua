@@ -240,14 +240,6 @@ end
 -- and the zone lists are exactly the ones the states returned.
 local trueColorRects = { ui = {}, world = {} }
 local currentPass = nil
--- Horizontal shift applied to UI-pass marks.  A wide battle keeps its 304px
--- surface through every classic state it opens, and Game:draw centres each
--- of those with a translate while centerClassicZones shifts their zone list
--- by the same amount.  A rect reported from inside that translate has to
--- move with it, or the unshaded re-blit lands 72 columns off and the pic
--- keeps the shade remap -- the party STATS screen in a wide battle (#637).
--- World-pass marks are already in world-canvas space and are never centred.
-local markOffsetX = 0
 
 -- which canvas the renderer is filling.  nil for a pass that composites
 -- with no zone list of its own (tilt's upright billboards carry their own
@@ -260,20 +252,11 @@ function PaletteFX.clearTrueColor()
   for _, rects in pairs(trueColorRects) do
     for i = #rects, 1, -1 do rects[i] = nil end
   end
-  markOffsetX = 0
-end
-
--- Game:draw declares the translate it is drawing a classic state under, so
--- that state's marks land where its pixels did.  Cleared with the rects at
--- the top of every frame (Renderer:beginFrame). #637
-function PaletteFX.setMarkOffset(dx)
-  markOffsetX = tonumber(dx) or 0
 end
 
 function PaletteFX.markTrueColor(x, y, w, h)
   local rects = currentPass and trueColorRects[currentPass]
   if not rects or w <= 0 or h <= 0 then return end
-  if currentPass == "ui" then x = x + markOffsetX end
   rects[#rects + 1] = { colors = false, x = x, y = y, w = w, h = h }
 end
 
@@ -435,8 +418,19 @@ end
 -- everything a background tile drew.  Objects do not come through here
 -- (they bake GBC_OBJ), so this stays a BG-only hook.
 -- OG YELLOW instead resolves each name through CGBBasePalettes.
+-- COLORS is Gen 1's colorization emulator: the SGB packs, the boot-ROM auto
+-- palette and the DMG novelty ramps all describe a picture the hardware drew
+-- in four greys.  Gen 2 IS a Game Boy Color game -- every palette it shows is
+-- its own, extracted from the ROM -- so the mode transforms are inert there.
+-- The option is shared across playthroughs, and without this a Gen 1 SGB INV
+-- setting inverted Gold's party menu and trainer card.
+local function gen2Native()
+  return GameVersion.isGen2()
+end
+
 function PaletteFX.pal(data, name)
-  if PaletteFX.mode == "ogred" and not GameVersion.isYellow() then
+  if PaletteFX.mode == "ogred" and not GameVersion.isYellow()
+      and not gen2Native() then
     return PaletteFX.ogBg()
   end
   -- Blue-only ROM override for versioned SuperPals.  Yellow (isYellow) and
@@ -468,13 +462,20 @@ end
 -- (engine/gfx/palettes.asm DeterminePaletteID: bit TRANSFORMED, a; a
 -- Transformed mon's pic is tinted gray, not the copied species' own
 -- SGB color).  RED++ uses per-species pals from mon_palettes.asm.
-function PaletteFX.monPal(data, species, transformed)
+-- `shiny` picks the species' alternate colour pair.  On the Game Boy Color
+-- that is all a shiny mon is: GetMonNormalOrShinyPalettePointer (02:$5C66)
+-- adds 4 to the PokemonPalettes row when CheckShininess (02:$5040) passes,
+-- so the Lake of Rage Gyarados is an ordinary GYARADOS wearing the second
+-- half of its own row.  Transform still wins -- DeterminePaletteID checks
+-- TRANSFORMED before it ever looks at the DVs.
+function PaletteFX.monPal(data, species, transformed, shiny)
   -- OG RED / OG BLUE: a battle mon pic is a BG tile on the Game Boy Color
   -- (drawn into the tilemap, colored by BGP), so it wears the global boot-ROM
   -- BG palette, not a per-species one -- matching the hardware capture where
   -- both mons are red/pink (or blue/pink) on the white field.
   -- OG YELLOW keeps per-species CGBBasePalettes (Yellow had real CGB code).
-  if PaletteFX.mode == "ogred" and not GameVersion.isYellow() then
+  if PaletteFX.mode == "ogred" and not GameVersion.isYellow()
+      and not gen2Native() then
     return PaletteFX.ogBg()
   end
   local p = PaletteFX.pack(data)
@@ -486,11 +487,17 @@ function PaletteFX.monPal(data, species, transformed)
     return p.palettes.GRAYMON
         or (data and data.palettes and data.palettes.palettes.GRAYMON)
   end
+  local def = data and data.pokemon and data.pokemon[species]
+  if shiny and def and def.shinyPalette then
+    local pal = p.palettes[def.shinyPalette]
+             or (data and data.palettes
+                 and data.palettes.palettes[def.shinyPalette])
+    if pal then return pal end
+  end
   -- a species' own `palette` field (per-record override) wins over the
   -- vanilla species->name map. Mod-registered palettes live in
   -- data.palettes.palettes even when the active pack is the RED++ gbc pack,
   -- so fall back to it when the pack itself doesn't carry the name.
-  local def = data and data.pokemon and data.pokemon[species]
   if def and def.palette then
     if PaletteFX.usesYellowCgb() then
       local yc = PaletteFX.pal(data, def.palette)
@@ -522,15 +529,21 @@ function PaletteFX.monPal(data, species, transformed)
 end
 
 -- palette name a species currently resolves to (for image-cache keys)
-function PaletteFX.monPalName(data, species, transformed)
+function PaletteFX.monPalName(data, species, transformed, shiny)
   if transformed then return "GRAYMON" end
   -- honor the per-record palette override, matching monPal
   local def = data and data.pokemon and data.pokemon[species]
+  local p = PaletteFX.pack(data)
+  if shiny and def and def.shinyPalette
+     and ((p and p.palettes[def.shinyPalette])
+          or (data and data.palettes
+              and data.palettes.palettes[def.shinyPalette])) then
+    return def.shinyPalette
+  end
   if def and def.palette and data.palettes
      and data.palettes.palettes[def.palette] then
     return def.palette
   end
-  local p = PaletteFX.pack(data)
   if p and p.pokemon[species] then return p.pokemon[species] end
   if data and data.palettes and data.palettes.pokemon[species] then
     return data.palettes.pokemon[species]
@@ -576,25 +589,15 @@ local TILESET_GROUP_EXCEPTIONS = {
 }
 
 -- pokered-gbc's lobby.bst repoints the Celadon LOBBY table's flat top
--- at a duplicate tile ($5a, BROWN) so the tabletop and the checkerboard
--- floor -- both raw tile $37 -- can take different palettes; the
--- vanilla-derived blockset shares the one tile id, so the RED++ atlas
--- path re-creates the duplicate: the alias slot is baked as a copy of
--- `tile` in `group`'s colors, and the listed 0-based block cells draw
--- the alias instead of the shared tile.
---
--- Three LOBBY blocks share tile $37 on their flat surfaces:
---   block 29: 2x2 table top at cells 5/6/9/10
---   block 45: 2-tile strip at cells 13/14
---   block 49: 2-tile strip at cells 1/2
--- CELADON_DINER uses all three (#84, #85, #86); CELADON_MART_ROOF
--- uses only block 29 (#52/#53).
+-- (block 29, cells 5/6/9/10) at a duplicate tile ($5a, BROWN) so the
+-- tabletop and the checkerboard floor -- both raw tile $37 -- can take
+-- different palettes; the vanilla-derived blockset shares the one tile
+-- id, so the RED++ atlas path re-creates the duplicate: the alias slot
+-- is baked as a copy of `tile` in `group`'s colors, and the listed
+-- 0-based block cells draw the alias instead of the shared tile.
+-- Same block appears on CELADON_MART_ROOF (#52) and CELADON_DINER (#84).
 local LOBBY_TABLE_TOP_ALIAS = {
   { block = 29, cells = { [5] = true, [6] = true, [9] = true, [10] = true },
-    tile = 0x37, alias = 0x5a, group = 5 },
-  { block = 45, cells = { [13] = true, [14] = true },
-    tile = 0x37, alias = 0x5a, group = 5 },
-  { block = 49, cells = { [1] = true, [2] = true },
     tile = 0x37, alias = 0x5a, group = 5 },
 }
 PaletteFX.TILE_ALIASES = {
@@ -810,7 +813,8 @@ end
 function PaletteFX.ensureZones(zones)
   if zones and zones[1] then return zones end
   local mode = PaletteFX.mode or "gbc"
-  if mode == "og" or mode == "og_inv" or mode == "classic" then
+  if not gen2Native()
+      and (mode == "og" or mode == "og_inv" or mode == "classic") then
     return { PaletteFX.whole(PaletteFX.GRAYS) }
   end
   return zones
@@ -840,6 +844,9 @@ function PaletteFX.effectiveColors(c)
   if not c then return nil end
   local mode = PaletteFX.mode or "gbc"
   local out = c
+  if gen2Native() then
+    mode = "gbc"
+  end
   if mode == "og" then
     out = PaletteFX.GRAYS
   elseif mode == "og_inv" then
@@ -862,22 +869,6 @@ end
 function PaletteFX.sendColors(shader, c)
   c = PaletteFX.effectiveColors(c)
   if not c then return end
-  shader:send("c0", { c[1][1] / 255, c[1][2] / 255, c[1][3] / 255 })
-  shader:send("c1", { c[2][1] / 255, c[2][2] / 255, c[2][3] / 255 })
-  shader:send("c2", { c[3][1] / 255, c[3][2] / 255, c[3][3] / 255 })
-  shader:send("c3", { c[4][1] / 255, c[4][2] / 255, c[4][3] / 255 })
-end
-
--- The same send with NO display-mode substitution and no shade map: the four
--- colors reach the shader exactly as given.  Only for an INTERMEDIATE pass
--- whose output is re-thresholded downstream -- the classic battle's zone pass
--- under a forced-mono mode, where ensureZones' whole-screen zone already
--- substitutes once at blit time and doing it again here applies the mode
--- twice (#822).  Everything that draws a final pixel wants sendColors.
-function PaletteFX.sendShades(shader, c)
-  -- headless (no love.graphics) leaves shader() nil; sendColors reaches the
-  -- same no-op through effectiveColors returning nil for an absent palette
-  if not shader or not c then return end
   shader:send("c0", { c[1][1] / 255, c[1][2] / 255, c[1][3] / 255 })
   shader:send("c1", { c[2][1] / 255, c[2][2] / 255, c[2][3] / 255 })
   shader:send("c2", { c[3][1] / 255, c[3][2] / 255, c[3][3] / 255 })

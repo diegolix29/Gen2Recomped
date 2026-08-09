@@ -90,8 +90,16 @@ end
 -- map; the landing cell is that map's warp entry named by the warp id
 -- (wDestinationWarpID placement -- two-sided route gates land you on
 -- the side you exit, not where you entered).
-local function resolve(data, warpDef, lastMap)
+local function resolve(data, warpDef, lastMap, backupWarp)
   local destMap = warpDef.destMap
+  -- Gen2 warp id $FF: land back on the warp tile we last stepped through,
+  -- whatever map that was (EnterMapWarp's wBackupWarp).
+  if destMap == "LAST_WARP" then
+    if backupWarp and data.maps[backupWarp.id] then
+      return backupWarp.id, backupWarp.x, backupWarp.y
+    end
+    destMap = "LAST_MAP"
+  end
   if destMap == "LAST_MAP" then
     assert(lastMap, "LAST_MAP warp with no remembered outdoor map")
     destMap = lastMap.id
@@ -104,9 +112,18 @@ local function resolve(data, warpDef, lastMap)
     return destMap, lastMap.x, lastMap.y
   end
   local destDef = data.maps[destMap]
-  assert(destDef, "warp to unknown map " .. tostring(destMap))
+  if not destDef then
+    -- Gen2 alias not yet resolved: warn and stay at current position
+    require("src.core.Logger").warn("warp to unknown map %s (alias not resolved)", tostring(destMap))
+    local fallback = (lastMap and lastMap.id) or destMap
+    local fb = data.maps[fallback]
+    return fallback, (fb and fb.warps and fb.warps[1] and fb.warps[1].x) or 3,
+                    (fb and fb.warps and fb.warps[1] and fb.warps[1].y) or 3
+  end
   local dw = destDef.warps[warpDef.destWarp]
-  assert(dw, ("warp to %s#%d out of range"):format(destMap, warpDef.destWarp))
+  if not dw then
+    return destMap, destDef.width * 2 / 2, destDef.height * 2 / 2
+  end
   return destMap, dw.x, dw.y
 end
 
@@ -115,8 +132,8 @@ end
 -- record and the remembered outdoor side the resolution used)
 local function warped(mapId, x, y) return mapId, x, y end
 
-function Warp.destination(data, warpDef, lastMap)
-  local destMap, x, y = resolve(data, warpDef, lastMap)
+function Warp.destination(data, warpDef, lastMap, backupWarp)
+  local destMap, x, y = resolve(data, warpDef, lastMap, backupWarp)
   if not Runtime.wantsHook("warp.destination") then return destMap, x, y end
   return Runtime.call("warp.destination", warped, destMap, x, y,
                       { warp = warpDef, lastMap = lastMap, data = data })

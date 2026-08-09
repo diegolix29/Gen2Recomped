@@ -111,7 +111,8 @@ local function sell(game)
       -- (nil def) has no price, so treat it as unsellable too rather than
       -- indexing nil below -- guards saves that already picked up a bogus
       -- ITEM_NONE "0" from Blue's House before that pickup was fixed (#11).
-      if not def or def.keyItem or item.value:find("^HM_") then
+      if not def or def.keyItem
+         or require("src.inventory.ItemEffects").alias(item.value, def):find("^HM_") then
         list.footer = txt(game, "_PokemartUnsellableItemText",
                           Strings("I can't put a\nprice on that."))
         return

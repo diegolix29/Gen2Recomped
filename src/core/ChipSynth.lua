@@ -123,18 +123,7 @@ local function loadBanks(data)
   if cachedProgramFile == audio.programFile and cachedBanks then
     return cachedBanks
   end
-  local raw, readError
-  -- The chip worker runs in a separate Lua state without the NX overlay;
-  -- ChipAudio hands it the versioned cache prefix explicitly.  On the main
-  -- thread the NX overlay (or desktop mountVersion) makes the plain read
-  -- resolve, so no platform branching belongs here.
-  local prefix = audio.programPrefix
-  if prefix and prefix ~= "" then
-    raw, readError = love.filesystem.read(prefix .. audio.programFile)
-  end
-  if not raw then
-    raw, readError = love.filesystem.read(audio.programFile)
-  end
+  local raw, readError = love.filesystem.read(audio.programFile)
   if not raw then error("could not read sound programs: " .. tostring(readError)) end
   local banks = {}
   for index, bank in ipairs(audio.bankOrder) do
@@ -149,11 +138,6 @@ end
 -- module's state, so ChipAudio.invalidate must reach it via a worker message
 function ChipSynth.invalidateBanks()
   cachedProgramFile, cachedBanks = nil, nil
-end
-
--- test-only: exercise loadBanks without building a full engine
-function ChipSynth._loadBanksForTest(data)
-  return loadBanks(data)
 end
 
 -- A def-local program (ChipAsm output) is mounted as pseudo-bank 0 next to
@@ -202,30 +186,6 @@ local function headerChannels(banks, header)
   return channels
 end
 
--- Which software channels (CHAN5-8) an sfx occupies: its header carries one
--- 3-byte descriptor per channel.  Audio2_PlaySound walks exactly this list to
--- decide whether a new sfx may start at all (audio/engine_2.asm
--- .sfxChannelLoop), so Sound.playMove needs the set to reproduce that gate.
--- nil = not knowable here (a file def, or the banks are not readable yet),
--- which callers read as "no conflict".
-function ChipSynth.effectChannels(data, def)
-  if type(def) ~= "table" then return nil end
-  local chip = def.chip
-  local specs = chip and chip.channels
-  if not specs then
-    if not def.address then return nil end
-    local ok, banks = pcall(engineBanks, data, chip)
-    if not ok then return nil end
-    local read
-    ok, read = pcall(headerChannels, banks, def)
-    if not ok then return nil end
-    specs = read
-  end
-  local channels = {}
-  for _, spec in ipairs(specs) do channels[#channels + 1] = spec.number end
-  return channels
-end
-
 local function fadeValue(nibble)
   if bit.band(nibble, 8) ~= 0 then return -bit.band(nibble, 7) end
   return nibble
@@ -248,6 +208,15 @@ function Channel.new(engine, spec, options)
     noise = hardware == 4,
     sfx = isSfxChannel,
     executeMusic = not isSfxChannel,
+    -- Gen2 dialect: notes carry the pitch in the high nibble and SFX/cry
+    -- channels take the four-byte ParseSFXOrCry form ($DF toggles it)
+    gen2 = options.gen2 or false,
+    sfxNote = isSfxChannel,
+    noiseSet = 0,
+    noiseOn = false,
+    transposeNote = 0,
+    transposeOctave = 0,
+    pitchOffset = 0,
     allowLoops = options.allowLoops ~= false,
     frequencyOffset = options.frequencyOffset or 0,
     frameTicks = options.frameTicks or FRAME_TICKS,
@@ -290,7 +259,7 @@ function Channel:frequency(note, octave)
   local register = bit.band(
     bit.arshift(signed, math.max(0, (octave or self.octave) - 1)), 0x7FF)
   if self.perfectPitch then register = bit.band(register + 1, 0x7FF) end
-  return bit.band(register + self.frequencyOffset, 0x7FF)
+  return bit.band(register + self.frequencyOffset + self.pitchOffset, 0x7FF)
 end
 
 function Channel:durationTicks(length)
@@ -361,7 +330,7 @@ function Channel:drumEvent(ticks, instrument)
   local panLeft, panRight = self:pan()
   return self:timedEvent({
     noise = true,
-    drum = self.engine:noiseInstrument(instrument),
+    drum = self.engine:noiseInstrument(instrument, self.gen2 and self.noiseSet),
     panLeft = panLeft,
     panRight = panRight,
   }, ticks)
@@ -372,6 +341,7 @@ function Channel:silenceEvent(ticks)
 end
 
 function Channel:nextEvent()
+  if self.gen2 then return self:nextEventGen2() end
   if self.ended then return nil end
   for _ = 1, 100000 do
     local commandAddress = self.address
@@ -430,15 +400,7 @@ function Channel:nextEvent()
     elseif command == 0xEC then
       self.duty = bit.band(self:byte(), 3)
     elseif command == 0xED then
-      local high = self:byte()
-      local low = self:byte()
-      -- a header carrying its own tempo is one of audio/alternate_tempo.asm's
-      -- Music_*AlternateTempo entry points, which re-point channel 1 at a
-      -- stub that sets the tempo and jumps into the normal body -- the body's
-      -- own tempo command never runs there, so ignore it here (#847)
-      if not self.engine.tempoLocked then
-        self.engine.tempo = high * 0x100 + low
-      end
+      self.engine.tempo = self:byte() * 0x100 + self:byte()
     elseif command == 0xEE then
       self.engine.pan = self:byte()
     elseif command == 0xEF or command == 0xF0 then
@@ -490,15 +452,7 @@ function Channel:nextEvent()
       local volume = bit.rshift(packed, 4)
       local fade = fadeValue(bit.band(packed, 0x0F))
       if self.noise then
-        -- Audio2_ApplyWavePatternAndFrequency adds wFrequencyModifier to the
-        -- frequency low byte for every channel at or past CHAN5, the noise
-        -- channel included (audio/engine_2.asm Audio2_ApplyFrequencyModifier).
-        -- On CHAN8 that byte is the polynomial counter, so the modifier moves
-        -- the noise pitch; it wraps at 8 bits, the carry landing in the high
-        -- byte that noise does not use for frequency.  Dropping it left the
-        -- battle hit sounds at their unmodified pitches, where super effective
-        -- reads as the duller of the two (#826).
-        local parameter = bit.band(self:byte() + self.frequencyOffset, 0xFF)
+        local parameter = self:byte()
         return self:noiseEvent(
           self:durationTicks(length), volume, fade, parameter)
       end
@@ -515,6 +469,210 @@ function Channel:nextEvent()
       self.ended = true
       return nil
     end
+  end
+  self.ended = true
+  return nil
+end
+
+-- Gen2 keeps Gen1's driver but rewrites the stream format (audio/engine.asm
+-- ParseMusic / MusicCommands, bank $3A).  Notes are every byte below $D0 with
+-- the PITCH in the high nibble (0 = rest, 1-12 = C..B) and the length in the
+-- low one -- Gen1 put rests in their own $C0-$CF range and started commands at
+-- $D0 in a different order, so the two dialects share the channel state but
+-- need separate decoders.  SFX and cry channels read the four byte
+-- ParseSFXOrCry form instead: duration, volume/fade, then a frequency word
+-- (one byte on the noise channels).
+function Channel:nextEventGen2()
+  if self.ended then return nil end
+  for _ = 1, 100000 do
+    local commandAddress = self.address
+    local command = self:byte()
+
+    if command < 0xD0 then
+      local length = bit.band(command, 0x0F) + 1
+      local pitch = bit.rshift(command, 4)
+      if self.sfxNote then
+        local packed = self:byte()
+        local volume = bit.rshift(packed, 4)
+        local fade = fadeValue(bit.band(packed, 0x0F))
+        if self.noise then
+          local parameter = self:byte()
+          return self:noiseEvent(
+            self:durationTicks(length), volume, fade, parameter)
+        end
+        local register = bit.band(self:word() + self.frequencyOffset, 0x7FF)
+        return self:tone(self:durationTicks(length), register, volume, fade)
+      end
+      if pitch == 0 then return self:silenceEvent(self:durationTicks(length)) end
+      -- ParseMusic routes to GetNoiseSample on the SOUND_NOISE flag, not on
+      -- the hardware channel: ch4 with noise sampling off plays plain tones.
+      if self.noise and self.noiseOn then
+        return self:drumEvent(self:durationTicks(length), pitch)
+      end
+      local note = pitch - 1 + self.transposeNote
+      local octave = self.octave - self.transposeOctave
+      -- GetFrequency indexes FrequencyTable with `transposition_lo + pitch`
+      -- and never wraps: audio/notes.asm carries TWO octaves, and entries
+      -- 13-24 are their counterparts shifted right once more, i.e. the same
+      -- note an octave HIGHER.  Folding the note back into one octave has to
+      -- raise the octave, not lower it -- the old `octave - 1` dropped every
+      -- transposed high note two octaves.
+      while note >= 12 do note = note - 12; octave = octave + 1 end
+      while note < 0 do note = note + 12; octave = octave - 1 end
+      return self:tone(self:durationTicks(length), self:frequency(note, octave))
+    elseif command <= 0xD7 then
+      self.octave = 8 - bit.band(command, 7)
+    elseif command == 0xD8 then                       -- notetype
+      self.speed = self:byte()
+      if not self.noise then
+        local packed = self:byte()
+        if self.wave then
+          self.waveLevel = WAVE_LEVEL[bit.band(bit.rshift(packed, 4), 3)]
+          self.waveInstrument = bit.band(packed, 0x0F)
+        else
+          self.volume = bit.rshift(packed, 4)
+          self.fade = fadeValue(bit.band(packed, 0x0F))
+        end
+      end
+    elseif command == 0xD9 then                       -- transpose
+      local packed = self:byte()
+      self.transposeOctave = bit.rshift(packed, 4)
+      self.transposeNote = bit.band(packed, 0x0F)
+    elseif command == 0xDA then                       -- tempo
+      self.engine.tempo = self:byte() * 0x100 + self:byte()
+    elseif command == 0xDB then                       -- duty cycle
+      self.duty = bit.band(self:byte(), 3)
+    elseif command == 0xDC then                       -- volume envelope
+      local packed = self:byte()
+      if self.wave then
+        self.waveLevel = WAVE_LEVEL[bit.band(bit.rshift(packed, 4), 3)]
+        self.waveInstrument = bit.band(packed, 0x0F)
+      else
+        self.volume = bit.rshift(packed, 4)
+        self.fade = fadeValue(bit.band(packed, 0x0F))
+      end
+    elseif command == 0xDD then                       -- pitch sweep
+      local packed = self:byte()
+      self.sweep = {
+        pace = bit.band(bit.rshift(packed, 4), 7),
+        subtract = bit.band(packed, 8) ~= 0,
+        shift = bit.band(packed, 7),
+      }
+    elseif command == 0xDE then                       -- duty cycle pattern
+      local packed = self:byte()
+      self.duty = {
+        bit.band(bit.rshift(packed, 6), 3),
+        bit.band(bit.rshift(packed, 4), 3),
+        bit.band(bit.rshift(packed, 2), 3),
+        bit.band(packed, 3),
+      }
+    elseif command == 0xDF then                       -- toggle sfx
+      self.sfxNote = not self.sfxNote
+    elseif command == 0xE0 then                       -- pitch slide
+      local length, packed = self:byte(), self:byte()
+      -- Music_PitchSlide runs the target through GetFrequency, so the
+      -- channel's transposition applies to it exactly like a played note
+      local note = bit.band(packed, 0x0F) - 1 + self.transposeNote
+      local octave = 8 - bit.rshift(packed, 4) - self.transposeOctave
+      while note >= 12 do note = note - 12; octave = octave + 1 end
+      while note < 0 do note = note + 12; octave = octave - 1 end
+      self.pendingSlide = {
+        length = length,
+        target = self:frequency(note, octave),
+      }
+    elseif command == 0xE1 then                       -- vibrato
+      local delay, packed = self:byte(), self:byte()
+      local depth = bit.rshift(packed, 4)
+      if depth == 0 then
+        self.vibrato = nil
+      else
+        self.vibrato = {
+          delay = delay,
+          above = bit.rshift(depth, 1) + bit.band(depth, 1),
+          below = bit.rshift(depth, 1),
+          rate = bit.band(packed, 0x0F),
+        }
+      end
+    elseif command == 0xE3 or command == 0xF0 then    -- toggle noise (drumkit)
+      -- Music_ToggleNoise reads its drumkit byte ONLY on the off->on edge --
+      -- `toggle_noise` with no argument emits no parameter at all -- so
+      -- consuming one unconditionally swallowed the following note and left
+      -- the rest of the channel parsing garbage bytes as octaves and pitches.
+      if self.noiseOn then
+        self.noiseOn = false
+      else
+        self.noiseOn = true
+        self.noiseSet = self:byte()
+      end
+    elseif command == 0xE4 or command == 0xEF then    -- stereo panning
+      self.engine.pan = self:byte()
+    elseif command == 0xE6 then                       -- pitch offset
+      -- Music_PitchOffset walks the pointer DOWN (`ld [hld], a`), so the high
+      -- byte comes first: this is the one big-endian word in the stream, and
+      -- reading it little-endian scaled the offset by 256 and threw every
+      -- note on the channel to a random register.
+      local high, low = self:byte(), self:byte()
+      local offset = high * 0x100 + low
+      if offset >= 0x8000 then offset = offset - 0x10000 end
+      self.pitchOffset = offset
+    elseif command == 0xE9 then                       -- tempo, relative
+      local delta = self:byte()
+      if delta >= 0x80 then delta = delta - 0x100 end
+      self.engine.tempo = self.engine.tempo + delta
+    elseif command == 0xEA then                       -- restart channel
+      self.address = self:word()
+    elseif command == 0xEB then                       -- hand off to another song
+      self:word()
+      self.ended = true
+      return nil
+    elseif command == 0xE2 or command == 0xE5 or command == 0xE7
+        or command == 0xE8 or command == 0xFA then
+      self:byte()                                     -- one byte, no effect here
+    elseif command == 0xEE then
+      self:word()                                     -- unused, two bytes
+    elseif command == 0xFB then                       -- conditional jump
+      self:byte()
+      self:word()                                     -- conditions never set
+    elseif command == 0xFC then                       -- jump
+      local target = self:word()
+      if target <= commandAddress and not self.allowLoops then
+        self.ended = true
+        return nil
+      end
+      self.address = target
+    elseif command == 0xFD then                       -- loop
+      local count, target = self:byte(), self:word()
+      if count == 0 then
+        if self.allowLoops then
+          self.address = target
+        else
+          self.ended = true
+          return nil
+        end
+      else
+        local remaining = self.loopCounts[commandAddress]
+        if remaining == nil then remaining = count end
+        remaining = remaining - 1
+        if remaining > 0 then
+          self.loopCounts[commandAddress] = remaining
+          self.address = target
+        else
+          self.loopCounts[commandAddress] = nil
+        end
+      end
+    elseif command == 0xFE then                       -- call
+      self.callStack[#self.callStack + 1] = self.address + 2
+      self.address = self:word()
+    elseif command == 0xFF then                       -- ret / endchannel
+      local returnAddress = table.remove(self.callStack)
+      if returnAddress then
+        self.address = returnAddress
+      else
+        self.ended = true
+        return nil
+      end
+    end
+    -- everything else ($EC/$ED sfx priority, $F1-$F9) is a `ret` in the ROM
   end
   self.ended = true
   return nil
@@ -682,29 +840,44 @@ end
 local Engine = {}
 Engine.__index = Engine
 
-function Engine:noiseInstrument(number)
+-- `kit` selects a Gen2 drumkit (wMusicNoiseSampleSet, set by `togglenoise`);
+-- Gen1 has one flat table and passes nil.  Either way the sample itself is a
+-- run of `$2x vv pp` triples terminated by $FF.
+function Engine:noiseInstrument(number, kit)
   -- a def-local drum wins over the ROM engine's table for that id
   local custom = self.customDrums and self.customDrums[number]
   if custom then return custom end
-  local cached = self.noiseInstruments[number]
+  local key = kit and (kit * 16 + number) or number
+  local cached = self.noiseInstruments[key]
   if cached then return cached end
 
-  local header = self.noiseHeaders[tostring(number)]
+  local bank, address
+  if kit then
+    local drum = self.drumkits and self.drumkits[tostring(kit)]
+    drum = drum and drum[tostring(number)]
+    if drum then bank, address = drum.bank, drum.address end
+  else
+    local header = self.noiseHeaders[tostring(number)]
+    if header then
+      local spec = headerChannels(self.banks, header)[1]
+      bank, address = header.bank, spec and spec.address
+    end
+  end
   local segments = {}
-  if header then
-    local spec = headerChannels(self.banks, header)[1]
-    local address = spec and spec.address
+  if bank and address then
     local ticks = 0
     for _ = 1, 64 do
-      local command = romByte(self.banks, header.bank, address)
+      local command = romByte(self.banks, bank, address)
       address = address + 1
       if command == 0xFF then break end
-      if command < 0x20 or command >= 0x30 then
+      -- Gen1's SFX drums are all $2x; Gen2's ReadNoiseSample masks the high
+      -- nibble off entirely, so its kits also use $1x and $3x
+      if command < (kit and 0x10 or 0x20) or command >= (kit and 0xF0 or 0x30) then
         error(("unsupported drum command %02X at %02X:%04X")
-          :format(command, header.bank, address - 1))
+          :format(command, bank, address - 1))
       end
-      local packed = romByte(self.banks, header.bank, address)
-      local parameter = romByte(self.banks, header.bank, address + 1)
+      local packed = romByte(self.banks, bank, address)
+      local parameter = romByte(self.banks, bank, address + 1)
       address = address + 2
       local duration = (bit.band(command, 0x0F) + 1) * FRAME_TICKS
       segments[#segments + 1] = {
@@ -718,14 +891,17 @@ function Engine:noiseInstrument(number)
     end
   end
 
-  self.noiseInstruments[number] = segments
+  self.noiseInstruments[key] = segments
   return segments
 end
 
 local function readWaves(banks, audio, engineNumber)
   local spec = audio.waveBanks[tostring(engineNumber)]
   local waves = {}
-  for wave = 0, 4 do
+  -- Gen2's WaveSamples holds ten distinct waves; Gen1 has five plus one that
+  -- the last four instrument slots all alias.
+  local count = spec.count or 5
+  for wave = 0, count - 1 do
     local values = {}
     for byteIndex = 0, 15 do
       local packed = romByte(
@@ -735,6 +911,7 @@ local function readWaves(banks, audio, engineNumber)
     end
     waves[#waves + 1] = values
   end
+  if spec.count then return waves end
   local values = {}
   for byteIndex = 0, 15 do
     local packed = romByte(
@@ -789,16 +966,11 @@ function Engine.new(data, header, options)
     waves = waves,
     noiseHeaders = audio.noiseHeaders
       and audio.noiseHeaders[tostring(engineNumber)] or {},
+    drumkits = audio.drumkits and audio.drumkits[tostring(engineNumber)] or nil,
     customDrums = chip and chip.drums or nil,
     noiseInstruments = {},
     channels = {},
   }, Engine)
-  -- header.tempo: the Music_*AlternateTempo override Music.play stamps onto
-  -- a copy of the song def (audio/alternate_tempo.asm) (#847)
-  if header.tempo then
-    engine.tempo = header.tempo
-    engine.tempoLocked = true
-  end
   for _, spec in ipairs(chip and chip.channels
       or headerChannels(banks, header)) do
     local frameTicks = options.frameTicks
@@ -810,6 +982,7 @@ function Engine.new(data, header, options)
     end
     engine.channels[#engine.channels + 1] = Channel.new(engine, spec, {
       bank = chip and 0 or header.bank,
+      gen2 = engineNumber == "gen2",
       sfx = options.sfx,
       allowLoops = options.allowLoops,
       frequencyOffset = options.frequencyOffset,

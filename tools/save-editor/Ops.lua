@@ -266,78 +266,9 @@ function Ops.openSpeciesPicker(S, Kit)
   return true
 end
 
--- The item catalog minus the badges, which are toggles on their own row and
--- would otherwise be "addable" into the bag as ordinary items.
-function Ops.itemSearch(S, query)
-  query = tostring(query or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
-  local out = {}
-  for _, id in ipairs(S.cat.items) do
-    if not Ops.isBadgeId(id)
-        and (query == "" or id:lower():find(query, 1, true)) then
-      out[#out + 1] = id
-    end
-  end
-  return out
-end
-
--- `dest` is "bag" or "pc"; the picker can flip it while open.  `opened`
--- marks the frame it went up, so the click that opened it is not also read
--- as a tap outside (the same rule the species picker follows).
-function Ops.openItemPicker(S, Kit, dest)
-  S.itemPicker = { query = "", offset = 0, opened = true,
-    dest = dest or "bag" }
-  -- focus the field on open so the mobile soft keyboard rises with it (#529)
-  if Kit then Kit.focus = "item-picker" end
-  return true
-end
-
-function Ops.closeItemPicker(S, Kit)
-  S.itemPicker = nil
-  if Kit and Kit.blur then Kit.blur() end
-end
-
 function Ops.closeSpeciesPicker(S, Kit)
   S.speciesPicker = nil
   if Kit and Kit.blur then Kit.blur() end
-end
-
--- The Boxes panel's add flow rides the same picker (#715): instead of
--- silently dropping catalog entry #1 into the box, "+ Add mon here" and the
--- dashed empty cells open the picker in box-add mode, and the committed
--- species goes through Ops.boxAddSpecies below.  No selection is required:
--- the target is the box, not a mon.
-function Ops.openBoxAddPicker(S, Kit)
-  local box = Ops.boxes(S)[S.selectedBox]
-  if #box >= BoxesMod.CAPACITY then
-    return Ops.say(S, ("Box %d is full (%d/%d)")
-      :format(S.selectedBox, #box, BoxesMod.CAPACITY))
-  end
-  S.speciesPicker = { query = "", offset = 0, opened = true, mode = "box-add" }
-  if Kit then Kit.focus = "species-picker" end  -- soft keyboard rises (#529)
-  return true
-end
-
--- Commit half of the box-add picker.  Builds the mon exactly the way
--- Ops.partyAdd does (MonOps.create at Lv5, owned by the save's player), so a
--- box mon and a party mon born in the editor are indistinguishable.
-function Ops.boxAddSpecies(S, id)
-  local box = Ops.boxes(S)[S.selectedBox]
-  if #box >= BoxesMod.CAPACITY then
-    return Ops.say(S, ("Box %d is full (%d/%d)")
-      :format(S.selectedBox, #box, BoxesMod.CAPACITY))
-  end
-  if not Ops.speciesUsable(S, id) then
-    return Ops.say(S, ("%s has no usable base stats,  cannot add it")
-      :format(tostring(id)))
-  end
-  local mon = MonOps.create(S.data, id, 5)
-  mon.ot = S.save.player.name
-  mon.otId = S.save.player.id
-  table.insert(box, mon)
-  S.selectedBoxSlot = #box
-  S.editingMon = mon
-  return Ops.mark(S, ("Added %s Lv5 to box %d slot %d")
-    :format(id, S.selectedBox, #box))
 end
 
 function Ops.setDv(S, mon, key, value)
@@ -431,9 +362,6 @@ function Ops.selectBoxSlot(S, index)
   return true
 end
 
--- Kept for the keyboard/test path; the Boxes panel itself goes through the
--- species picker (Ops.openBoxAddPicker -> Ops.boxAddSpecies) so the user
--- chooses what lands in the box instead of always getting catalog entry #1.
 function Ops.boxAdd(S)
   local box = Ops.boxes(S)[S.selectedBox]
   if #box >= BoxesMod.CAPACITY then
@@ -715,58 +643,6 @@ function Ops.dexClear(S)
   end
   S.save.pokedex = { seen = {}, owned = {} }
   return Ops.mark(S, "Pokedex wiped")
-end
-
--- ------------------------------------------------------------------ dex sort
--- The DEX grid's row order.  Sorting is view-only: it never touches the save,
--- so the list itself is computed here (pure, testable) and the switch is
--- narrated through Ops.say, never Ops.mark.
---
---   "dex"  -- by Pokedex number (1-151), the panel default
---   "name" -- by display name, alphabetical (case-insensitive)
---
--- A species whose record lacks the sort key (a partial mod record) sorts
--- last, ordered by its id, so the grid can never drop a row or crash.
--- table.sort is not stable, so every sort carries the id as a tiebreak and
--- the order is fully deterministic.
-local SORT_KEYS = {
-  dex = function(def, id)
-    return def and def.dex or math.huge
-  end,
-  name = function(def, id)
-    local name = def and def.name
-    return (name and tostring(name):lower()) or tostring(id):lower()
-  end,
-}
-
-function Ops.dexList(S)
-  local list = S and S.cat and S.cat.species
-  if not list then return {} end
-  local make = SORT_KEYS[S.dexSort == "name" and "name" or "dex"]
-  local data = S.data
-  local rows = {}
-  for _, id in ipairs(list) do
-    rows[#rows + 1] = { key = make(data and data.pokemon and data.pokemon[id], id),
-                        id = id }
-  end
-  table.sort(rows, function(a, b)
-    if a.key ~= b.key then return a.key < b.key end
-    return a.id < b.id
-  end)
-  local out = {}
-  for i, r in ipairs(rows) do out[i] = r.id end
-  return out
-end
-
--- View-only verb: switching the DEX grid's order resets its scroll but never
--- dirties the save or narrates in the status bar (the active chip carries
--- the mode).  Returns true when the mode changed, false on a no-op.
-function Ops.dexSort(S, mode)
-  if mode ~= "name" and mode ~= "dex" then return false end
-  if S.dexSort == mode then return false end
-  S.dexSort = mode
-  S.dexOffset = 0
-  return true
 end
 
 -- -------------------------------------------------------------------- map

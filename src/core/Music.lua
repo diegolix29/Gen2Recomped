@@ -82,7 +82,6 @@ state = {
   fanfare = nil,      -- fanfare SFX source; the song pauses while it plays
   fanfareResume = false, -- start/resume state.source when the fanfare ends
   fade = nil,         -- active volume-ramp fade-out (see Music.fadeOut)
-  tempo = nil,        -- alternate-tempo override in force for `current`
   failed = {},        -- labels whose def could not be started; logged once
 }
 
@@ -151,6 +150,10 @@ local SPECIAL = {
   bike = "Music_BikeRiding",
   surf = "Music_Surfing",
   evolution = "Music_SafariZone",
+  -- PlayTrainerMusic's three encounter stings
+  meetEvil = "Music_MeetEvilTrainer",
+  meetFemale = "Music_MeetFemaleTrainer",
+  meetMale = "Music_MeetMaleTrainer",
 }
 
 -- the label a scene role resolves to; call sites keep their own presence
@@ -235,23 +238,11 @@ function Music.play(data, song, loop, ctx)
   if not song then return end
   if not love.audio then return end -- headless test stub
   song = selectSong(song, ctx)
-  -- ctx.tempo is a Music_*AlternateTempo cue (audio/alternate_tempo.asm):
-  -- the same song restarted with channel 1 re-pointed at a stub whose only
-  -- difference is its `tempo`, so the same label at a different tempo is a
-  -- different cue and must not be deduped away (#847)
-  local tempo = ctx and ctx.tempo or nil
   -- a hook may silence the cue outright, or swap in a label the dedupe
   -- below has to compare against
-  if not song or (song == state.current and tempo == state.tempo) then return end
+  if not song or song == state.current then return end
   local def = songDef(data, song)
   if not def or state.failed[song] then return end
-  if tempo then
-    -- shallow copy: the registry def is shared, only this playback is slowed
-    local slowed = {}
-    for key, value in pairs(def) do slowed[key] = value end
-    slowed.tempo = tempo
-    def = slowed
-  end
   local wantLoop = loop ~= false
   local src, loopSrc, isChip, err = startSong(data, def, wantLoop)
   if not src then
@@ -287,7 +278,6 @@ function Music.play(data, song, loop, ctx)
   local previous = state.current
   state.source, state.loopSource, state.chip = src, loopSrc, isChip
   state.current = song
-  state.tempo = tempo
   if Runtime.wants("music.started") then
     Runtime.emit("music.started", {
       song = song, previous = previous, chip = isChip,
@@ -296,13 +286,17 @@ function Music.play(data, song, loop, ctx)
   end
 end
 
+-- the label of the song currently playing, or nil
+function Music.current()
+  return state.current
+end
+
 function Music.stop()
   local previous = state.current
   stopSource(state.source)
   stopSource(state.loopSource)
   require("src.core.ChipAudio").stopMusic()
   state.current, state.source, state.loopSource, state.fade = nil, nil, nil, nil
-  state.tempo = nil
   state.chip = false
   state.pendingRestore = nil
   if previous and Runtime.wants("music.stopped") then
@@ -368,12 +362,11 @@ function Music.setSurfing(data, surfing)
   if play then Music.play(data, play, nil, { reason = "map" }) end
 end
 
--- battle themes; kind = "wild"|"trainer"|"gym"|"final".  `song`, when
--- given, overrides the kind's default -- a mod-set trainer battleTheme.
-function Music.playBattle(data, kind, trainerId, song)
+-- battle themes; kind = "wild"|"trainer"|"gym"|"final"
+function Music.playBattle(data, kind, trainerId)
   local b = data.audio and data.audio.battle
   if b then
-    Music.play(data, song or b[kind] or b.wild, nil,
+    Music.play(data, b[kind] or b.wild, nil,
       { reason = "battle", kind = kind, trainerId = trainerId })
   end
 end

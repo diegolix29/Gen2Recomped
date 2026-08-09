@@ -25,7 +25,6 @@ local GenSave = require("src.save_convert.GenSave")
 local SaveConvert = {}
 
 SaveConvert.SAVE_SIZE = GenSave.SAVE_SIZE
-SaveConvert.mainChecksumValid = GenSave.mainChecksumValid
 
 -- ------------------------------------------------------------------
 -- Crosswalk data loading (cached).  Mirrors src/core/Data.lua: prefer
@@ -42,27 +41,8 @@ local DATA_MODULES = {
   moves      = { "data.generated.moves",            "data/generated/moves.lua" },
   items      = { "data.generated.items",            "data/generated/items.lua" },
   maps       = { "data.generated.maps",             "data/generated/maps.lua" },
-  -- tilesets/audio are only read by src/save_convert/MapContext.lua, to
-  -- rebuild the current map's engine state on export (#889)
-  tilesets   = { "data.generated.tilesets",         "data/generated/tilesets.lua" },
-  audio      = { "data.generated.audio",            "data/generated/audio.lua" },
   charmap    = { "src.save_convert.data.charmap",   "src/save_convert/data/charmap.lua" },
   eventFlags = { "src.save_convert.data.event_flags", "src/save_convert/data/event_flags.lua" },
-  toggleObjects = { "src.save_convert.data.toggle_objects", "src/save_convert/data/toggle_objects.lua" },
-}
-
-local OPTIONAL_MODULES = { tilesets = true, audio = true }
-
--- Yellow renumbers wEventFlags bits: pokeyellow's constants/event_constants.asm
--- inserts events pokered does not have (the Jessie & James fights, catch
--- training, the Officer Jenny Squirtle) and shifts the Mt Moon 3 / Silph Co
--- 11F block, so writing a Yellow save through the Red table lands bits on the
--- wrong events and drops every Yellow-only flag.  Kept outside DATA_MODULES so
--- the ensureData loop never loads it as a crosswalk of its own -- it
--- substitutes for `eventFlags` when the caller names Yellow (#838).
-local YELLOW_EVENT_FLAGS = {
-  "src.save_convert.data.event_flags_yellow",
-  "src/save_convert/data/event_flags_yellow.lua",
 }
 
 local function loadTable(requirePath, filePath)
@@ -131,25 +111,15 @@ local function ensureData(gameVersion)
     local data = {}
     for name, spec in pairs(DATA_MODULES) do
       if name ~= "charmap" then
-        if name == "eventFlags" and gameVersion == "yellow" then
-          spec = YELLOW_EVENT_FLAGS -- Yellow's bit numbering differs (#838)
-        end
         local mod = loadCacheTable(gameVersion, spec[2])
         if not mod then
           local e
           mod, e = loadTable(spec[1], spec[2])
-          -- tilesets/audio only sharpen the export (MapContext); a cache
-          -- without them still imports and exports, just without the
-          -- rebuilt map window, so they must not fail the whole load
-          if not mod and not OPTIONAL_MODULES[name] then return nil, e end
+          if not mod then return nil, e end
         end
         data[name] = mod
       end
     end
-    -- record which game's tables these are: the codec gates Yellow-only
-    -- bytes (wPikachuFriendship) on it, since those offsets are map
-    -- scratch in Red/Blue (#763, #838)
-    data.gameVersion = gameVersion
     crosswalks[key] = data
   end
   if not charmapReady then

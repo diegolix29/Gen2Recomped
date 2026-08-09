@@ -8,9 +8,9 @@ return {
       TEXT_LAVENDERMART_COOLTRAINER_M = {
         { "face_player" },
         { "check_flag", "EVENT_RESCUED_MR_FUJI" },
-        { "jump_if_true", 6 },
+        { "jump_if_true", 5 },
         { "show_text", "_LavenderMartCooltrainerMReviveText" },
-        { "jump", "end" },
+        { "jump", 6 },
         { "show_text", "_LavenderMartCooltrainerMNuggetText" },
       },
     },

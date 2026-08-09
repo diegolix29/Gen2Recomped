@@ -42,6 +42,39 @@ function ImageWriter.decode2bpp(raw, width, height, transparent)
   return image
 end
 
+-- Same as decode2bpp, but the four shades come from a CGB palette
+-- (colors[0..3], each { r, g, b } in 0..1) instead of the DMG greys.
+function ImageWriter.decode2bppColor(raw, width, height, colors, transparent)
+  return ImageWriter.recolorShades(
+    ImageWriter.decode2bpp(raw, width, height, transparent), colors)
+end
+
+-- Recolor an already-decoded 4-shade image through a CGB palette.
+--
+-- The shade is picked by BUCKETING the red channel, not by an exact float
+-- key.  ImageData carries rgba8, so a channel round-trips as byte / 255
+-- through a 32-bit float: 2/3 goes in and 0.66666668653488159 comes back,
+-- which is a different double from the 0.66666666666666663 a Lua `2 / 3`
+-- produces.  Whether those two compare equal is up to the LOVE build's
+-- float handling -- desktop matched, Android did not, and a missed lookup
+-- fell through to `return r, g, b, a`, leaving shades 1 and 2 grey while
+-- white and black (exact in every format) recolored.  Gen 2's trainer
+-- class pics are the only art baked this way, so on Android they -- and
+-- nothing else -- came out of the import in DMG greys.
+function ImageWriter.recolorShades(image, colors)
+  if not colors then return image end
+  local lookup = {}
+  for shade = 0, 3 do
+    lookup[shade] = colors[shade] or SHADES[shade + 1]
+  end
+  image:mapPixel(function(_, _, r, _, _, a)
+    -- midpoints of the four DMG greys (1, 2/3, 1/3, 0)
+    local c = lookup[r > 5 / 6 and 0 or r > 1 / 2 and 1 or r > 1 / 6 and 2 or 3]
+    return c[1], c[2], c[3], a
+  end)
+  return image
+end
+
 function ImageWriter.decode1bpp(raw, width, height, transparent)
   assertDimensions(raw, width, height, 1)
   local image = love.image.newImageData(width, height)

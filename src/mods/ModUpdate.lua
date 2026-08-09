@@ -7,8 +7,6 @@ local ModUpdate = {}
 
 ModUpdate.CACHE_TTL = 6 * 60 * 60  -- six hours
 
-local Strings = require("src.core.Strings")
-
 local function stripV(tag)
   return (tostring(tag):gsub("^[vV]", ""))
 end
@@ -104,9 +102,7 @@ function ModUpdate.previewLine(text, maxChars)
   return s
 end
 
--- Decode one GitHub release object into { version, tag, zip, prerelease,
--- name, body, downloads }. `downloads` is the sum of every asset's
--- download_count, GitHub's own measure of a release's downloads.
+-- Decode one GitHub release object into { version, tag, zip, prerelease, body }.
 function ModUpdate.parseRelease(doc, modId)
   if type(doc) ~= "table" or not doc.tag_name then
     return nil, "no tag_name in release"
@@ -118,13 +114,6 @@ function ModUpdate.parseRelease(doc, modId)
   local triple = version:match("^(%d+%.%d+%.%d+)")
   local zip = ModUpdate.pickZipAsset(doc.assets, modId, triple)
   local body = type(doc.body) == "string" and doc.body or ""
-  local downloads = 0
-  if type(doc.assets) == "table" then
-    for _, a in ipairs(doc.assets) do
-      local d = type(a) == "table" and tonumber(a.download_count)
-      if d and d > 0 then downloads = downloads + d end
-    end
-  end
   return {
     version = triple,
     tag = tostring(doc.tag_name),
@@ -132,18 +121,14 @@ function ModUpdate.parseRelease(doc, modId)
     prerelease = doc.prerelease == true,
     name = type(doc.name) == "string" and doc.name or triple,
     body = body,
-    downloads = downloads,
-    published = (doc.published_at or doc.created_at or ""):match("^(%d+%-%d+%-%d+)"),
   }
 end
 
 -- Decode a releases array (GET /repos/.../releases) into a sorted list
 -- (newest first). Releases without a .zip asset are dropped. Never throws.
 function ModUpdate.parseReleases(jsonText, modId, Json)
-  Json = Json or require("src.link.Json")
-  local notJson = Json.describeUnexpected(jsonText)
-  if notJson then return nil, notJson end
   local ok, result, err = pcall(function()
+    Json = Json or require("src.link.Json")
     local doc, decodeErr = Json.decode(jsonText)
     if type(doc) ~= "table" then
       return nil, decodeErr or "releases json is not an array"
@@ -169,7 +154,7 @@ function ModUpdate.parseReleases(jsonText, modId, Json)
 end
 
 function ModUpdate.apiReleasesUrl(repo)
-  return "https://api.github.com/repos/" .. repo .. "/releases?per_page=100"
+  return "https://api.github.com/repos/" .. repo .. "/releases?per_page=30"
 end
 
 function ModUpdate.apiLatestUrl(repo)
@@ -193,89 +178,6 @@ function ModUpdate.pickBest(releases)
     if not rel.prerelease then return rel end
   end
   return releases[1]
-end
-
--- Sum of per-release download counts.  Returns nil when no release carries
--- the field (a cache entry written before downloads existed), else
--- { total = <sum>, releases = <release count> } so a caller can tell a
--- real "0 downloads" apart from "no data yet".
-function ModUpdate.totalDownloads(releases)
-  if type(releases) ~= "table" or #releases == 0 then return nil end
-  local total, hasData = 0, false
-  for _, rel in ipairs(releases) do
-    local d = type(rel) == "table" and tonumber(rel.downloads)
-    if d then
-      hasData = true
-      total = total + d
-    end
-  end
-  if not hasData then return nil end
-  return { total = total, releases = #releases }
-end
-
--- First and latest release dates ("YYYY-MM-DD", ISO strings compare in
--- calendar order).  Returns nil when no release carries a date -- same
--- "no data yet" rule as totalDownloads.
-function ModUpdate.releaseDates(releases)
-  if type(releases) ~= "table" or #releases == 0 then return nil end
-  local first, latest, has = nil, nil, false
-  for _, rel in ipairs(releases) do
-    local p = type(rel) == "table" and rel.published
-    if type(p) == "string" and p ~= "" then
-      has = true
-      if not first or p < first then first = p end
-      if not latest or p > latest then latest = p end
-    end
-  end
-  if not has then return nil end
-  return { first = first, latest = latest }
-end
-
--- One resolver over a release list: { total, first, latest } or nil when
--- the list carries neither counts nor dates.  The FIND MODS rows use this
--- on the repo's fetched releases, the same source the MODS tab trusts.
-function ModUpdate.statsForReleases(releases)
-  local dl = ModUpdate.totalDownloads(releases)
-  local d = ModUpdate.releaseDates(releases)
-  if not dl and not d then return nil end
-  return {
-    total = dl and dl.total or nil,
-    first = d and d.first or nil,
-    latest = d and d.latest or nil,
-  }
-end
-
--- Thousands-separated count for the launcher ("12,345"), plain for small
--- numbers.  Never throws; garbage in, "0" out.
-function ModUpdate.formatCount(n)
-  n = tonumber(n)
-  if not n or n ~= n or n < 0 then return "0" end
-  local s = tostring(math.floor(n))
-  s = s:reverse():gsub("(%d%d%d)", "%1,"):reverse()
-  return (s:gsub("^,", ""))
-end
-
--- The one-line stats string both launcher panels show: "1,234 downloads
--- across all releases  -  Released 2024-05-31  -  Updated 2026-07-01".
--- Each part is optional; nil everywhere means nil, so a row with no data
--- shows no line rather than a wrong "0".
-function ModUpdate.downloadsLine(total)
-  if total == nil then return nil end
-  return Strings("%s downloads across all releases",
-    ModUpdate.formatCount(total))
-end
-
-function ModUpdate.datesLine(first, latest)
-  if not (first or latest) then return nil end
-  return Strings("Released %s  -  Updated %s", first or "?", latest or "?")
-end
-
-function ModUpdate.statsLine(total, first, latest)
-  local parts = {}
-  parts[#parts + 1] = ModUpdate.downloadsLine(total)
-  parts[#parts + 1] = ModUpdate.datesLine(first, latest)
-  if #parts == 0 then return nil end
-  return table.concat(parts, "  -  ")
 end
 
 -- ------- cache (options.modUpdateCache[repo])
@@ -308,22 +210,6 @@ function ModUpdate.cacheFresh(entry, now, ttl)
     and (now - entry.checkedAt) < ttl
 end
 
--- A cache entry written before download counts existed carries no
--- `downloads` on any release.  It is provably stale -- parseRelease always
--- sets the field now -- so treat it as expired: the next fetch rewrites
--- the entry in the current format, one refetch per repo, and the launcher's
--- download line stops hiding behind an old cache.
-function ModUpdate.cacheUsable(cached)
-  if type(cached) ~= "table" or type(cached.releases) ~= "table" then
-    return false
-  end
-  if #cached.releases == 0 then return true end
-  for _, rel in ipairs(cached.releases) do
-    if tonumber(rel.downloads) then return true end
-  end
-  return false
-end
-
 function ModUpdate.writeCache(repo, releases)
   if type(repo) ~= "string" or repo == "" then return false end
   local ok = pcall(function()
@@ -340,8 +226,6 @@ function ModUpdate.writeCache(repo, releases)
         name = rel.name,
         prerelease = rel.prerelease == true,
         body = type(rel.body) == "string" and rel.body or "",
-        downloads = tonumber(rel.downloads) or 0,
-        published = rel.published,
         zip = rel.zip and {
           name = rel.zip.name,
           url = rel.zip.url,
@@ -396,7 +280,7 @@ function ModUpdate.fetchReleases(repo, modId, opts)
   end
   if not opts.force then
     local cached = ModUpdate.readCache(repo)
-    if ModUpdate.cacheFresh(cached) and ModUpdate.cacheUsable(cached) then
+    if ModUpdate.cacheFresh(cached) then
       return cached.releases, nil, { fromCache = true }
     end
   end
@@ -421,117 +305,6 @@ function ModUpdate.fetchReleases(repo, modId, opts)
   if not list then return nil, parseErr end
   ModUpdate.writeCache(repo, list)
   return list, nil, { fromCache = false }
-end
-
--- ------- async siblings (the launcher's path; the sync functions above stay
--- for tests and non-UI callers)
---
--- Same cache and fallback rules as fetchReleases, driven one frame at a time
--- over src/net/Fetch.lua so a release check never stalls the render thread.
---     local h = ModUpdate.beginFetchReleases(repo, modId, { force = true })
---     local done, releases, err, meta = ModUpdate.pumpFetchReleases(h)
-function ModUpdate.beginFetchReleases(repo, modId, opts)
-  opts = opts or {}
-  local h = { repo = repo, modId = modId, opts = opts, stage = "start" }
-  if type(repo) ~= "string" or repo == "" then
-    h.stage, h.err = "done", "missing github repo"
-  end
-  return h
-end
-
-local function staleReleases(repo)
-  local cached = ModUpdate.readCache(repo)
-  if cached and cached.releases then
-    return cached.releases, nil, { fromCache = true, stale = true }
-  end
-  return nil
-end
-
--- Returns done, releases, err, meta.
-function ModUpdate.pumpFetchReleases(h)
-  if not h then return true, nil, "no handle" end
-  if h.stage == "done" then return true, h.releases, h.err, h.meta end
-  local Fetch = require("src.net.Fetch")
-
-  if h.stage == "start" then
-    if not h.opts.force then
-      local cached = ModUpdate.readCache(h.repo)
-      if ModUpdate.cacheFresh(cached) and ModUpdate.cacheUsable(cached) then
-        h.releases, h.meta = cached.releases, { fromCache = true }
-        h.stage = "done"
-        return true, h.releases, nil, h.meta
-      end
-    end
-    h.job = Fetch.get(ModUpdate.apiReleasesUrl(h.repo), {
-      userAgent = "gen1recomp-mod-updater",
-      accept = "application/vnd.github+json",
-    })
-    h.stage = "fetching"
-    return false
-  end
-
-  local st = Fetch.poll(h.job)
-  if st.status == "pending" then return false end
-  Fetch.release(h.job)
-  h.stage = "done"
-
-  if st.status == "ok" and st.body then
-    local list, parseErr = ModUpdate.parseReleases(st.body, h.modId)
-    if list then
-      ModUpdate.writeCache(h.repo, list)
-      h.releases, h.meta = list, { fromCache = false }
-      return true, list, nil, h.meta
-    end
-    h.err = parseErr
-    return true, nil, parseErr
-  end
-
-  -- Offline or a failed call: stale cache beats an empty list.
-  local rel, _, meta = staleReleases(h.repo)
-  if rel then
-    h.releases, h.meta = rel, meta
-    return true, rel, nil, meta
-  end
-  h.err = st.err or "release check failed"
-  return true, nil, h.err
-end
-
--- Async download of a mod zip into the save directory.  Returns a handle;
--- pump it for done, savePath, err.
-function ModUpdate.beginDownloadZip(url, destName, size)
-  local h = { stage = "done" }
-  if type(url) ~= "string" or url == "" then
-    h.err = "missing download url"
-    return h
-  end
-  if not (love and love.filesystem) then
-    h.err = "download needs LOVE"
-    return h
-  end
-  local name = destName or ("mod_update_" .. tostring(os.time()) .. ".zip")
-  name = tostring(name):gsub("[/\\]", "_")
-  local Fetch = require("src.net.Fetch")
-  h.name = name
-  h.stage = "fetching"
-  h.job = Fetch.download(url, name, {
-    size = size, userAgent = "gen1recomp-mod-updater" })
-  return h
-end
-
-function ModUpdate.pumpDownloadZip(h)
-  if not h then return true, nil, "no handle" end
-  if h.stage == "done" then return true, h.path, h.err end
-  local Fetch = require("src.net.Fetch")
-  local st = Fetch.poll(h.job)
-  if st.status == "pending" then return false, nil, nil, st.progress end
-  Fetch.release(h.job)
-  h.stage = "done"
-  if st.status == "ok" then
-    h.path = st.path or h.name
-    return true, h.path
-  end
-  h.err = st.err or "download failed"
-  return true, nil, h.err
 end
 
 function ModUpdate.downloadZip(url, destName)

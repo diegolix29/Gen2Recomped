@@ -11,9 +11,9 @@ return {
       TEXT_SILPHCO6F_SILPH_WORKER_M1 = {
         { "face_player" },
         { "check_flag", "EVENT_BEAT_SILPH_CO_GIOVANNI" },
-        { "jump_if_true", 6 },
+        { "jump_if_true", 5 },
         { "show_text", "_SilphCo6FSilphWorkerM1TookOverTheBuildingText" },
-        { "jump", "end" },
+        { "jump", 6 },
         { "show_text", "_SilphCo6FSilphWorkerM1BackToWorkText" },
       },
 
@@ -21,9 +21,9 @@ return {
       TEXT_SILPHCO6F_SILPH_WORKER_M2 = {
         { "face_player" },
         { "check_flag", "EVENT_BEAT_SILPH_CO_GIOVANNI" },
-        { "jump_if_true", 6 },
+        { "jump_if_true", 5 },
         { "show_text", "_SilphCo6FSilphWorkerMHelpMePleaseText" },
-        { "jump", "end" },
+        { "jump", 6 },
         { "show_text", "_SilphCo6FSilphWorkerMWeGotEngagedText" },
       },
 
@@ -31,9 +31,9 @@ return {
       TEXT_SILPHCO6F_SILPH_WORKER_F1 = {
         { "face_player" },
         { "check_flag", "EVENT_BEAT_SILPH_CO_GIOVANNI" },
-        { "jump_if_true", 6 },
+        { "jump_if_true", 5 },
         { "show_text", "_SilphCo6FSilphWorkerF1SuchACowardText" },
-        { "jump", "end" },
+        { "jump", 6 },
         { "show_text", "_SilphCo6FSilphWorkerF1HaveToMarryHimText" },
       },
 
@@ -41,9 +41,9 @@ return {
       TEXT_SILPHCO6F_SILPH_WORKER_F2 = {
         { "face_player" },
         { "check_flag", "EVENT_BEAT_SILPH_CO_GIOVANNI" },
-        { "jump_if_true", 6 },
+        { "jump_if_true", 5 },
         { "show_text", "_SilphCo6FSilphWorkerF2TeamRocketConquerWorldText" },
-        { "jump", "end" },
+        { "jump", 6 },
         { "show_text", "_SilphCo6FSilphWorkerF2TeamRocketRanText" },
       },
 
@@ -51,9 +51,9 @@ return {
       TEXT_SILPHCO6F_SILPH_WORKER_M3 = {
         { "face_player" },
         { "check_flag", "EVENT_BEAT_SILPH_CO_GIOVANNI" },
-        { "jump_if_true", 6 },
+        { "jump_if_true", 5 },
         { "show_text", "_SilphCo6FSilphWorkerM3TargetedSilphText" },
-        { "jump", "end" },
+        { "jump", 6 },
         { "show_text", "_SilphCo6FSilphWorkerM3WorkForSilphText" },
       },
     },

@@ -27,7 +27,6 @@
 -- game regenerates all of it from wCurMap on the next map load anyway.
 
 local bit = require("bit")
-local MapContext = require("src.save_convert.MapContext")
 
 local GenSave = {}
 
@@ -94,12 +93,6 @@ O.statusFlags1 = O.townVisited + 29                       -- 1B
 O.statusFlags4 = O.townVisited + 35                       -- 1B
 O.elite4Flags = O.townVisited + 41                        -- 1B
 O.tradeFlags = O.townVisited + 44                         -- 2B (flag_array NUM_NPC_TRADES)
--- wToggleableObjectFlags (ram/wram.asm, flag_array $100): the ShowObject/
--- HideObject persistence, one bit per data/maps/toggleable_objects.asm entry,
--- set = hidden (engine/overworld/toggleable_objects.asm IsObjectHidden).
--- Sits 2 bytes (wPlayerCoins) past O.coins per the walk above; absolute
--- 0x2852 (#763, #857).
-O.toggleObjectFlags = O.coins + 2                         -- 32B
 -- Play time (wPlayTimeHours/Maxed/Minutes/Seconds/Frames) lives INSIDE the
 -- sMainData window (wMainDataStart..wMainDataEnd is copied verbatim into
 -- SRAM), 1866 bytes past wMainDataStart -- reached from the checksum-verified
@@ -114,15 +107,6 @@ O.playTimeMaxed = O.mainData + 1867                       -- 1B (set once past 2
 O.playTimeMinutes = O.mainData + 1868                     -- 1B (0-59)
 O.playTimeSeconds = O.mainData + 1869                     -- 1B (0-59)
 O.playTimeFrames = O.mainData + 1870                      -- 1B (0-59, 1/60s ticks)
--- wPikachuHappiness, Yellow only (pret/pokeyellow ram/wram.asm; no local
--- pokeyellow checkout, so verified against the pokeyellow symbol file
--- instead: d46f - wMainDataStart d2f6 = 377, the well-known absolute
--- 0x271C).  In Red/Blue this byte is current-map scratch the game
--- regenerates on load, so the codec touches it only when the crosswalk
--- data set names the game "yellow" (#763, #838).  Every other modeled
--- offset is identical between pokered and pokeyellow (same sram.asm, same
--- wMainData field spacing per both symbol files).
-O.pikachuHappiness = O.mainData + 377
 O.mainDataSize = 1929                                     -- wMainDataEnd - wMainDataStart
 
 O.spriteData = O.mainData + O.mainDataSize
@@ -206,18 +190,6 @@ local function checksum(bytes, from, to)
   return bit.band(bit.bnot(sum), 0xFF)
 end
 
--- Main-data checksum gate used before an import policy is decided.  Returns
--- nil when the buffer is too short to even carry the stored checksum byte
--- (offset O.mainChecksum, the last byte of wMainData), false on a mismatch,
--- true when it matches.  Works on any length >= O.mainChecksum + 1, so a
--- caller can classify a truncated or footer-padded file without a full
--- decode -- the checksummed region (0x2598..0x3522) always sits entirely
--- inside the first 0x3524 bytes of a save.
-function GenSave.mainChecksumValid(bytes)
-  if #bytes < O.mainChecksum + 1 then return nil end
-  return checksum(bytes, O.checksumStart, O.checksumEnd) == u8(bytes, O.mainChecksum)
-end
-
 -- flag_array packs LSB-first within each byte (bit 0 of byte 0 = index 0).
 -- This is pokered's runtime FlagAction convention (home/predef macros): it
 -- takes flag number N, addresses byte N/8, and builds the mask by rotating
@@ -268,7 +240,7 @@ local function decodeName(bytes, off, len)
   return table.concat(out)
 end
 
-local function encodeName(buf, off, len, text, padTail)
+local function encodeName(buf, off, len, text)
   local i, pos = 0, 1
   while i < len - 1 and pos <= #text do
     -- a bracketed control token (e.g. "<DOT>", from decodeName reading a
@@ -287,17 +259,16 @@ local function encodeName(buf, off, len, text, padTail)
     setByte(buf, off + i, charmap.byToken[ch] or charmap.byToken["?"] or 0x50)
     i, pos = i + 1, pos + clen
   end
-  -- Write exactly ONE $50 terminator.  The tail past it is $50-padded only
-  -- on a templateless (engine-origin) export, where the zero-filled buffer
-  -- is what PKHeX renders as garbage glyphs after the name ("JOHN{}", #206).
-  -- With a template the tail keeps the original save's bytes verbatim --
-  -- real cartridge saves legitimately hold 0x00 (and other stale glyph)
-  -- bytes after the terminator, and rewriting any of them broke the
-  -- import->export byte-identical round trip (the game and PKHeX both stop
-  -- reading at the terminator, so preserved tails are always safe).
+  -- Write exactly ONE $50 terminator and then $50-pad the rest of the
+  -- field: every real save the naming screen ever wrote fills the tail
+  -- with $50, and a zero tail is what PKHeX renders as garbage glyphs
+  -- after the name ("JOHN{}", #206).  Template bytes that are NOT zero
+  -- stay untouched, so an unchanged name still round-trips
+  -- byte-identical and stale template data survives.
   if i < len then setByte(buf, off + i, 0x50) end
-  if padTail then
-    for j = i + 1, len - 1 do setByte(buf, off + j, 0x50) end
+  for j = i + 1, len - 1 do
+    local cur = buf[off + j + 1]
+    if cur == nil or cur:byte() == 0 then setByte(buf, off + j, 0x50) end
   end
 end
 
@@ -745,25 +716,6 @@ function GenSave.decode(bytes, data, opts)
     if save.flags[vanillaName] then save.flags[portName] = true end
   end
 
-  -- wToggleableObjectFlags -> save.objectToggles (bit set = hidden).  A few
-  -- of these are re-derived from flags on map entry (#106/#234 onEnter
-  -- re-applies), but most ShowObject/HideObject state -- the Mt Moon
-  -- fossils, the Cerulean guard swap -- has no flag to re-derive from, so
-  -- an import that drops the array resurrects taken fossils and blocking
-  -- guards (#763, #857).
-  local toggles = data.toggleObjects
-  if toggles then
-    save.objectToggles = {}
-    for bitIdx, e in pairs(toggles.byBit) do
-      local mapToggles = save.objectToggles[e[1]]
-      if not mapToggles then
-        mapToggles = {}
-        save.objectToggles[e[1]] = mapToggles
-      end
-      mapToggles[e[2]] = not bitGet(bytes, O.toggleObjectFlags, bitIdx)
-    end
-  end
-
   -- FLY destinations.  wTownVisitedFlag's bit index IS the town's map index:
   -- engine/items/town_map.asm BuildFlyLocationsList loads the 16-bit value
   -- into de and rotates it right one bit per iteration with b counting up
@@ -809,15 +761,6 @@ function GenSave.decode(bytes, data, opts)
                 + u8(bytes, O.playTimeSeconds)
                 + u8(bytes, O.playTimeFrames) / 60
 
-  -- Yellow starter friendship (save.pikachuHappiness,
-  -- src/world/PikachuFollower.lua reads it; pokeyellow's
-  -- init_player_data.asm seeds 90 on a new game), gated on the data set's
-  -- game because the byte is map scratch in Red/Blue (see
-  -- O.pikachuHappiness) (#763, #838).
-  if data.gameVersion == "yellow" then
-    save.pikachuHappiness = u8(bytes, O.pikachuHappiness)
-  end
-
   save.warnings = warnings
   save.rawImport = bytes -- template for a later encode(); see file header
   return save
@@ -838,9 +781,8 @@ function GenSave.encode(save, data, template)
     for i = 1, GenSave.SAVE_SIZE do buf[i] = zero end
   end
 
-  local padTail = not src
-  encodeName(buf, O.playerName, NAME_LENGTH, (save.player and save.player.name) or "RED", padTail)
-  encodeName(buf, O.rivalName, NAME_LENGTH, (save.player and save.player.rival) or "BLUE", padTail)
+  encodeName(buf, O.playerName, NAME_LENGTH, (save.player and save.player.name) or "RED")
+  encodeName(buf, O.rivalName, NAME_LENGTH, (save.player and save.player.rival) or "BLUE")
   setU16be(buf, O.playerId, (save.player and save.player.id) or 0)
   -- wOptions (engine/menus/main_menu.asm InitOptions): bit 7 = battle
   -- effects OFF, bit 6 = SET style, bits 2-0 = text speed -- the recomp's
@@ -893,9 +835,9 @@ function GenSave.encode(save, data, template)
 
   local events = data.eventFlags
   if events and save.flags then
-    for name in pairs(save.flags) do
+    for name, value in pairs(save.flags) do
       local bitIdx = events.byName[name]
-      if bitIdx then bitSet(buf, O.eventFlags, bitIdx, true) end
+      if bitIdx and value then bitSet(buf, O.eventFlags, bitIdx, true) end
     end
     for portName, vanillaName in pairs(FLAG_ALIAS) do
       local bitIdx = events.byName[vanillaName]
@@ -909,41 +851,6 @@ function GenSave.encode(save, data, template)
   if save.flags then
     for name, spec in pairs(EXTRA_FLAG_BITS) do
       bitSet(buf, spec[1], spec[2], save.flags[name] and true or false)
-    end
-  end
-
-  -- wToggleableObjectFlags, written both ways like the #396 extras: this
-  -- port's save is the authority, and vanilla folds three stores this port
-  -- keeps separate into these same bits -- script ShowObject/HideObject
-  -- (save.objectToggles), taken overworld items (engine/events/
-  -- pick_up_item.asm -> save.itemsTaken) and beaten static encounters
-  -- (home/trainers.asm HideObject after battle -> save.defeatedTrainers) --
-  -- so all three fold back in here or an exported save resurrects them
-  -- (#763, #857).
-  local toggleData = data.toggleObjects
-  if toggleData then
-    local objectToggles = save.objectToggles or {}
-    local itemsTaken = save.itemsTaken or {}
-    local beaten = save.defeatedTrainers or {}
-    for bitIdx, e in pairs(toggleData.byBit) do
-      local mapId, objName, visible = e[1], e[2], e[3]
-      local mapToggles = objectToggles[mapId]
-      if mapToggles and mapToggles[objName] ~= nil then
-        visible = mapToggles[objName]
-      end
-      if visible and data.maps and data.maps[mapId] then
-        for _, obj in ipairs(data.maps[mapId].objects or {}) do
-          if obj.name == objName then
-            local key = mapId .. "_obj_" .. obj.index
-            if (obj.item and itemsTaken[key])
-               or (obj.pokemon and beaten[key]) then
-              visible = false
-            end
-            break
-          end
-        end
-      end
-      bitSet(buf, O.toggleObjectFlags, bitIdx, not visible)
     end
   end
 
@@ -968,11 +875,11 @@ function GenSave.encode(save, data, template)
     encodeMon(buf, O.partyMons + i * PARTY_STRUCT_SIZE, mon, true, cw)
     setByte(buf, O.partySpecies + i, cw.pokemonIndex[mon.species] or 0)
     encodeName(buf, O.partyMonOT + i * NAME_LENGTH, NAME_LENGTH,
-              mon.ot or (save.player and save.player.name) or "RED", padTail)
+              mon.ot or (save.player and save.player.name) or "RED")
     -- no nickname stores the species' DISPLAY name, not its ROM constant id
     -- ("NIDORAN_M" would charmap the "_" to "?") (#257)
     encodeName(buf, O.partyMonNicks + i * NAME_LENGTH, NAME_LENGTH,
-              mon.nickname or speciesName(cw, mon.species), padTail)
+              mon.nickname or speciesName(cw, mon.species))
   end
   -- $FF-terminate the species index list right after the last real mon. The
   -- struct, OT-name and nickname bytes of the empty slots past partyN are left
@@ -993,9 +900,9 @@ function GenSave.encode(save, data, template)
       encodeMon(buf, base + 22 + i * BOX_STRUCT_SIZE, mon, false, cw)
       setByte(buf, base + 1 + i, cw.pokemonIndex[mon.species] or 0)
       encodeName(buf, base + 22 + MONS_PER_BOX * BOX_STRUCT_SIZE + i * NAME_LENGTH, NAME_LENGTH,
-                mon.ot or (save.player and save.player.name) or "RED", padTail)
+                mon.ot or (save.player and save.player.name) or "RED")
       encodeName(buf, base + 22 + MONS_PER_BOX * (BOX_STRUCT_SIZE + NAME_LENGTH) + i * NAME_LENGTH, NAME_LENGTH,
-                mon.nickname or speciesName(cw, mon.species), padTail)  -- #257, as above
+                mon.nickname or speciesName(cw, mon.species))  -- #257, as above
     end
     -- $FF-terminate the species list after the last real mon; empty slots past
     -- n keep their template bytes (byte-identical round-trip) or zero (fresh
@@ -1024,44 +931,6 @@ function GenSave.encode(save, data, template)
     setByte(buf, O.lastMap, cw.mapsIndex[save.lastOutdoor.id] or 0)
   end
 
-  -- Current-map engine state (see src/save_convert/MapContext.lua).  A
-  -- Continue restores this window from the save and never rebuilds it, so a
-  -- zero-filled one boots into a garbled map on a silent hang (#889).
-  --
-  -- Rebuilt when there is no template at all (a save that began as a New Game
-  -- in this port), and when the template was saved on a DIFFERENT map than the
-  -- one the player is standing on now -- an imported save that has since been
-  -- played carries the old map's header, which is just as unbootable.  A
-  -- template still on its own map keeps its bytes untouched: they are the
-  -- game's own, including live NPC positions, and preserving them is what
-  -- makes import -> export byte-identical.
-  local mapId = save.player and save.player.map
-  if mapId then
-    local rebuild = true
-    if src then
-      -- compare the way the byte was written (masked), and rebuild when the
-      -- map has no index at all rather than trusting a stale template
-      local index = cw.mapsIndex[mapId]
-      rebuild = index == nil or u8(src, O.curMap) ~= bit.band(index, 0xFF)
-    end
-    if rebuild then
-      local ctx = MapContext.build(data, mapId,
-        (save.player and save.player.x) or 0, (save.player and save.player.y) or 0)
-      if ctx then
-        for offset, values in pairs(ctx.writes) do
-          for i, value in ipairs(values) do
-            setByte(buf, O.mainData + offset + i - 1, value)
-          end
-        end
-        for i, value in ipairs(ctx.spriteData) do
-          setByte(buf, O.spriteData + i - 1, value)
-        end
-        -- sTileAnimations, the byte between sCurBoxData and the checksum
-        setByte(buf, O.checksumEnd - 1, ctx.tileAnimations)
-      end
-    end
-  end
-
   -- play time: split save.playTime (seconds) back into H/M/S/F. The real
   -- game freezes the clock at 255h and sets wPlayTimeMaxed once past it, so
   -- mirror that cap rather than letting hours overflow a single byte.
@@ -1082,16 +951,6 @@ function GenSave.encode(save, data, template)
     setByte(buf, O.playTimeMinutes, mins)
     setByte(buf, O.playTimeSeconds, secs)
     setByte(buf, O.playTimeFrames, rem - secs * 60)
-  end
-
-  -- Yellow starter friendship back out (see O.pikachuHappiness); Red/Blue
-  -- data sets never reach this write.  90 is the fresh-game seed the
-  -- follower system itself uses when the save has never tracked it.
-  -- Placed before the checksum pass so the byte is covered by the
-  -- main-data checksum automatically (#763, #838).
-  if data.gameVersion == "yellow" then
-    local h = tonumber(save.pikachuHappiness) or 90
-    setByte(buf, O.pikachuHappiness, math.max(0, math.min(255, math.floor(h))))
   end
 
   local out = table.concat(buf)

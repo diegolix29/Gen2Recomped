@@ -22,6 +22,31 @@ local MapScripts = {}
 local base = {}   -- mapId -> merged engine contribution
 local views = {}  -- mapId -> { chain = chainRef, value = merged view, sources }
 
+local function normalizeMapId(mapId)
+  if type(mapId) ~= "string" then return mapId end
+  local id = mapId:gsub("([0-9]+)_([FB])$", "%1%2")
+  local out, i, len = {}, 1, #id
+  while i <= len do
+    local ch = id:sub(i, i)
+    if ch:match("%d") then
+      local j = i + 1
+      while j <= len and id:sub(j, j):match("%d") do
+        j = j + 1
+      end
+      local prev = i > 1 and id:sub(i - 1, i - 1) or ""
+      if prev:match("%a") and prev ~= "B" and out[#out] ~= "_" then
+        out[#out + 1] = "_"
+      end
+      out[#out + 1] = id:sub(i, j - 1)
+      i = j
+    else
+      out[#out + 1] = ch
+      i = i + 1
+    end
+  end
+  return table.concat(out)
+end
+
 local HOOK_RULES = {
   onEnter = "all", onVictory = "all", onBoulderMoved = "all",
   onStep = "first", onInteract = "first",
@@ -29,6 +54,7 @@ local HOOK_RULES = {
 
 -- the v1 merge, verbatim: later base files override earlier ones
 function MapScripts.attachBase(mapId, contribution)
+  mapId = normalizeMapId(mapId)
   local existing = base[mapId]
   if not existing then
     base[mapId] = contribution
@@ -48,6 +74,7 @@ end
 
 function MapScripts.invalidate(mapId)
   if mapId then
+    mapId = normalizeMapId(mapId)
     views[mapId] = nil
   else
     views = {}
@@ -194,6 +221,7 @@ local function buildView(mapId, ordered)
 end
 
 function MapScripts.get(mapId)
+  mapId = normalizeMapId(mapId)
   local chains = Data.map_scripts
   local chain = chains and chains[mapId]
   local baseEntry = base[mapId]
@@ -214,6 +242,7 @@ end
 -- the cached sources beside a map's merged view; nil when the map has no
 -- chain (base fast path) and for base-owned winners
 local function viewSources(mapId)
+  mapId = normalizeMapId(mapId)
   local chains = Data.map_scripts
   local chain = chains and chains[mapId]
   if not chain or #chain == 0 then return nil end
@@ -225,18 +254,21 @@ end
 -- ctx.source for a talk dispatch, handed to ScriptRunner:run by
 -- showMapText so the winning contribution's rows run as their owner
 function MapScripts.talkSource(mapId, textConst)
+  mapId = normalizeMapId(mapId)
   local sources = viewSources(mapId)
   return sources and sources.talk[textConst] or nil
 end
 
 -- ctx.source for a named `scripts` entry (run_parallel / queueScript refs)
 function MapScripts.namedSource(mapId, name)
+  mapId = normalizeMapId(mapId)
   local sources = viewSources(mapId)
   return sources and sources.scripts[name] or nil
 end
 
 -- script to run when the player talks to an object with this TEXT_ constant
 function MapScripts.talkScript(mapId, textConst)
+  mapId = normalizeMapId(mapId)
   local view = MapScripts.get(mapId)
   return view and view.talk and view.talk[textConst] or nil
 end
@@ -244,12 +276,14 @@ end
 -- the base (engine) talk handler behind any mod override -- the supported
 -- replacement for the old re-wrap idiom
 function MapScripts.baseTalk(mapId, textConst)
+  mapId = normalizeMapId(mapId)
   local entry = base[mapId]
   return entry and entry.talk and entry.talk[textConst] or nil
 end
 
 -- "MAP_ID/name" refs used by run_parallel and queueScript
 function MapScripts.namedScript(mapId, name)
+  mapId = normalizeMapId(mapId)
   local view = MapScripts.get(mapId)
   return view and view.scripts and view.scripts[name] or nil
 end

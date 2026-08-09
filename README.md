@@ -1,78 +1,57 @@
-# Gen1Recomp
+# gen2recomp
 
-A native LÖVE2D recreation of Poke Red, Blue and Yellow. The engine and map
-behavior are hand-written Lua; game data and graphics are decoded from a ROM
-supplied by the player.
+<p align="center"><img src="./assets/logo/gen2logo.png"></p>
+
+<p align="center"><img src="./assets/logo/UD.png" width="220"></p>
+
+<p align="center"><b>by UNDERdecodedHD</b><br>
+a fork of <a href="https://github.com/bryanthaboi/gen1recomp">Gen1Recomp</a> by
+<a href="https://github.com/bryanthaboi">bryanthaboi</a> and
+<a href="https://boisclub.games">BOIS CLUB GAMES</a></p>
+
+A native LÖVE2D recreation of Poke Gold and Silver, built on Gen1Recomp's
+Red/Blue/Yellow engine. The engine, script VM, and map behavior are
+hand-written Lua; game data and graphics are decoded from a ROM supplied by the
+player.
+
+gen2recomp keeps everything the upstream project does for Generation I and adds
+the Generation II half: the Gen2 script VM and its command table, the Johto and
+Kanto world, day/night, breeding and the Day-Care, the Pokegear, shinies, held
+items, and the Gold/Silver title sequence.
 
 > [!CAUTION]
-> **We are NOT affiliated with the website `gen1recomp[.]com`** That website is not run by this project, was not authorized by us, and we have no idea who operates it. It is impersonating this project; do not download anything from it, and treat anything it hosts or claims as untrustworthy. Even if the site currently links back to this repository, the people behind it can change its content at any time, so nothing on it should ever be trusted. This GitHub repository and the Discord linked below are the only official sources for this project.
-
-<p align="center"><img src="https://raw.githubusercontent.com/bryanthaboi/gen1recomp/refs/heads/dev/assets/logo/logo.png"></p>
-
-**SUPPORT / ANNOUNCEMENTS / MODS:** [Discord](https://bois.icu)
-
-<p align="center">
-
-<a href="https://www.youtube.com/@bryanthaboi">
-  <img src="https://img.shields.io/badge/YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="YouTube">
-</a>
-<a href="https://www.tiktok.com/@bryanthaboi">
-  <img src="https://img.shields.io/badge/TikTok-000000?style=for-the-badge&logo=tiktok&logoColor=white" alt="TikTok">
-</a>
-<a href="https://x.com/bryanthaboi">
-  <img src="https://img.shields.io/badge/X-000000?style=for-the-badge&logo=x&logoColor=white" alt="X">
-</a>
-<a href="https://bsky.app/profile/bryanthaboi.live">
-  <img src="https://img.shields.io/badge/Bluesky-0285FF?style=for-the-badge&logo=bluesky&logoColor=white" alt="Bluesky">
-</a>
-<a href="https://www.instagram.com/bryanthaboi">
-  <img src="https://img.shields.io/badge/Instagram-E4405F?style=for-the-badge&logo=instagram&logoColor=white" alt="Instagram">
-</a>
-
-</p>
-
-
-<p align="center"> <a href="https://www.polygon.com/pokemon-red-blue-3d-voxel-mod-battle-pixels-gameplay-footage-remake/"> <img src="https://img.shields.io/badge/AS%20SEEN%20ON-POLYGON-ea2e49?style=for-the-badge" alt="As seen on Polygon"> </a> 
-<a href="https://kotaku.com/pokemon-red-blue-recompilation-project-voxel-3d-mod-2000720281"> <img src="https://img.shields.io/badge/AS%20SEEN%20ON-KOTAKU-ea2e49?style=for-the-badge" alt="As seen on KOTAKU"> </a> 
-
-  <a href="https://www.digitalfoundry.net/news/2026/07/pokemon-yellow-voxel-mod-turns-the-original-gameboy-code-into-a-stunning-world">
-    <img src="https://img.shields.io/badge/AS%20SEEN%20ON-DIGITAL%20FOUNDRY-ea2e49?style=for-the-badge" alt="As seen on Digital Foundry">
-  </a>
-  <a href="https://www.androidauthority.com/unofficial-android-port-pokemon-red-blue-yellow-3692724/">
-  <img src="https://img.shields.io/badge/AS%20SEEN%20ON-ANDROID%20AUTHORITY-ea2e49?style=for-the-badge" alt="As seen on Android Authority">
-</a>
-
-<a href="https://www.xda-developers.com/this-amazing-pokemon-red-and-blue-voxel-mod-adds-a-3d-perspective-without-an-emulator/">
-  <img src="https://img.shields.io/badge/AS%20SEEN%20ON-XDA%20DEVELOPERS-ea2e49?style=for-the-badge" alt="As seen on XDA Developers">
-</a>
-</p>
-
-### Watch the latest update video
-
-[![Watch the latest update video](https://img.youtube.com/vi/8IOgqbe4YvA/maxresdefault.jpg)](https://www.youtube.com/watch?v=8IOgqbe4YvA)
-
+> **Neither this project nor Gen1Recomp is affiliated with the website
+> `gen1recomp[.]com`.** That site is not run by either project and was not
+> authorized by anyone involved. Do not download anything from it, and treat
+> anything it hosts or claims as untrustworthy. Even if it links back to a real
+> repository, the people behind it can change its content at any time. This
+> GitHub repository is the only official source for gen2recomp.
 
 This project does not include a ROM, emulate the Game Boy, transpile assembly,
-or download a disassembly. A canonical US Poke Red, Blue, or Yellow ROM is the
-only game content input.
+or download a disassembly. A canonical US Poke Gold, Silver, Red, Blue, or
+Yellow ROM is the only game content input.
 
 The ROM is verified, used during import, and then released from memory. It is
 not copied into the cache. Later launches load the private generated cache and
-do not ask for the ROM again. Red, Blue, and Yellow can all be imported and
-played side by side.
+do not ask for the ROM again. Every version can be imported and played side by
+side.
 
 ## Quick Start
 
 Open the desktop app. On first boot, choose your legally obtained `.gb` /
-`.gbc` file or drop it onto the window. Import takes a few seconds and the
-game starts automatically.
+`.gbc` file or drop it onto the window. Import takes a few seconds for Gen 1
+and a couple of minutes for Gen 2, then the game starts automatically.
 
-Only the canonical 1 MiB US Red, Blue, and Yellow ROMs are accepted. The
-importer verifies SHA-1 before creating any game data:
+Only the canonical US ROMs are accepted. The importer verifies SHA-1 before
+creating any game data:
 
-- Red: `ea9bcae617fdf159b045185467ae58b2e4a48b9a`
-- Blue: `d7037c83e1ae5b39bde3c30787637ba1d4c48ce2`
-- Yellow: `cc7d03262ebfaf2f06772c1a480c7d9d5f4a38e1`
+| Version | Size  | SHA-1                                      |
+| ------- | ----- | ------------------------------------------ |
+| Gold    | 2 MiB | `d8b8a3600a465308c9953dfa04f0081c05bdcb94` |
+| Silver  | 2 MiB | `49b163f7e57702bc939d642a18f591de55d92dae` |
+| Red     | 1 MiB | `ea9bcae617fdf159b045185467ae58b2e4a48b9a` |
+| Blue    | 1 MiB | `d7037c83e1ae5b39bde3c30787637ba1d4c48ce2` |
+| Yellow  | 1 MiB | `cc7d03262ebfaf2f06772c1a480c7d9d5f4a38e1` |
 
 The packaged app contains neither a ROM nor pre-extracted game data. Music,
 sound effects, and cries are synthesized while the game runs from compact
@@ -80,16 +59,14 @@ audio channel programs copied out of the verified ROM.
 
 ### A note on Windows Defender warnings
 
-Windows Defender sometimes flags the Windows build with a generic
-machine-learning detection such as `Trojan:Win32/Wacatac!ml` (#621). This is
-a known false positive: the exe is the official LÖVE runtime with the game
-archive appended (the standard way LÖVE games ship), and Defender's
-heuristics distrust unsigned executables with appended data. Every release
-publishes SHA-256 checksums (`sha256sums.txt`) so you can verify your
-download, and you can confirm a flagged file yourself on
-[VirusTotal](https://www.virustotal.com), where these builds come back clean
-on every engine except Defender's heuristic. False positives are reported to
-Microsoft as they come up.
+Windows Defender sometimes flags LÖVE builds with a generic machine-learning
+detection such as `Trojan:Win32/Wacatac!ml`. This is a known false positive:
+the exe is the official LÖVE runtime with the game archive appended (the
+standard way LÖVE games ship), and Defender's heuristics distrust unsigned
+executables with appended data. Releases publish SHA-256 checksums
+(`sha256sums.txt`) so you can verify your download, and you can confirm a
+flagged file yourself on [VirusTotal](https://www.virustotal.com), where these
+builds come back clean on every engine except Defender's heuristic.
 
 ## Controls
 
@@ -112,7 +89,6 @@ supported out of the box.
 | Key       | What it does                                         |
 | --------- | ---------------------------------------------------- |
 | `-` / `=` | Zoom out / in (overworld; also mouse wheel)          |
-| `1`       | Cycle GAME SPEED up (controller: R2 faster, L2 slower) |
 | `2`       | Cycle COLORS                                         |
 | `3`       | Cycle TILT (free-roam overworld)                     |
 | `4`       | Cycle ZOOM through every level (free-roam overworld) |
@@ -122,8 +98,8 @@ supported out of the box.
 | `F10`     | Open / close the mod manager                         |
 
 
-COLORS, TILT, ZOOM, GBC FX, GAME SPEED, and VOID FILL are also in the
-Options menu and persist in `options.lua`.
+COLORS, TILT, ZOOM, GBC FX, and VOID FILL are also in the Options menu
+and persist in `options.lua`.
 
 ### Low-end devices
 
@@ -138,10 +114,10 @@ your tilt/zoom/GBC-FX preferences without forgetting them. Details in
 
 ### Rulesets
 
-**OPTIONS → RULESET** picks which set of Gen 1 battle behaviors to run.
+**OPTIONS → RULESET** picks which set of Generation I battle behaviors to run.
 Both rulesets share the same damage formulas; they differ only in whether
 the original's quirks are kept. The setting persists in `options.lua`, and
-mods can register their own.
+mods can register their own. Gold and Silver always run their own Gen 2 rules.
 
 `gen1_faithful` is the default and reproduces the original cartridge,
 famous bugs included:
@@ -170,17 +146,63 @@ famous bugs included:
 
 ## Running From Source
 
-Requires LÖVE 11.x. Place a Red, Blue, or Yellow ROM in the project folder and
+Requires LÖVE 11.x. Place a Gold or Silver ROM in the project folder and
 double-click `Play-Mac.command` or `Play-Windows.bat`, or run:
 
 ```sh
-scripts/setup.sh --rom "/path/to/Poke Red.gb"   # or Blue.gb / Yellow.gbc
+scripts/setup.sh --rom "/path/to/Poke Gold.gbc"   # or Silver.gbc / Red.gb / ...
 scripts/run.sh
 ```
 
-then `love .` for later launches. Windows PowerShell scripts, the optional
-developer data build, test suites, and cache management are covered in
-[Developer Setup](https://github.com/bryanthaboi/gen1recomp/wiki/Guide-Developer-Setup).
+On Windows, `scripts/setup.ps1` and `scripts/run.ps1` do the same thing. After
+the first import, `love .` is enough.
+
+### Linux
+
+`scripts/setup.sh` and `scripts/run.sh` are the Linux path too. They need
+LÖVE 11.x and Python 3 (with `venv`) on `PATH`; the setup script only
+auto-installs LÖVE on macOS, so install it first with your package manager:
+
+```sh
+# Debian / Ubuntu
+sudo apt install love python3 python3-venv
+
+# Fedora
+sudo dnf install love python3
+
+# Arch
+sudo pacman -S love python
+
+# Any distro (Flatpak)
+flatpak install flathub org.love2d.love2d
+```
+
+Then, from the project folder:
+
+```sh
+chmod +x scripts/*.sh                              # first time only
+scripts/setup.sh --rom "/path/to/Poke Gold.gbc"
+scripts/run.sh
+```
+
+`scripts/play.sh` does both steps in one go. After the first import, `love .`
+is enough — or `flatpak run org.love2d.love2d .` if you installed the Flatpak.
+If you use the official AppImage from [love2d.org](https://love2d.org), make it
+executable (`chmod +x love-11.5-x86_64.AppImage`) and either put it on `PATH`
+as `love` or run `./love-11.5-x86_64.AppImage .` directly.
+
+Saves, options, and the generated data cache live in
+`~/.local/share/love/pokemon-love2d/` (Gold and Silver keep theirs in the
+`gold/` and `silver/` subfolders) unless you enable
+[Portable Mode](#portable-mode). Controllers work through SDL2; if yours is not
+detected, check that your user is in the `input` group or that `udev` rules for
+the pad are installed. On Wayland with older LÖVE builds, launching with
+`SDL_VIDEODRIVER=x11` through XWayland avoids most window and input quirks.
+
+The Gen 2 importer reads the symbol files under `tools/vendor/symbols/`
+(`pokegold.sym` / `pokesilver.sym`); `scripts/setup_gen2_symbols.ps1` fetches
+them. The regression suite lives in `tests/drivers/`; each driver runs with
+`POKEPORT_VERSION=gold POKEPORT_DRIVER=tests/drivers/<name>.lua love .`.
 
 ## Portable Mode
 
@@ -188,7 +210,7 @@ By default the game keeps your save, options, and the private ROM-derived
 data cache in your OS's normal per-user app data folder. To keep everything
 next to the game instead (handy for a USB stick or portable drive you carry
 between computers), drop an empty file named `portable.txt` next to the app
-(next to `gen1recomp.app`/`.exe`, or next to `main.lua`/`conf.lua` when
+(next to the `.app`/`.exe`, or next to `main.lua`/`conf.lua` when
 running from source), then launch the game. Portable mode is desktop-only
 (Windows, Linux, macOS); it has no effect on Android or iOS, where the app
 runs from a read-only package.
@@ -205,157 +227,75 @@ even on a different computer, as long as the same folder comes along.
 already written to either location is touched automatically, so copy files
 over yourself if you want to carry existing progress across the switch.
 
-## Launch Options
-
-By default the app opens the launcher so you can pick a game. Launch options
-skip it and start one game directly, which is what you want for a one-click
-entry: a desktop shortcut per game, a Steam entry, or a handheld frontend.
-
-| Option | Effect |
-| --- | --- |
-| `--game=red` | boot Red, skipping the launcher (`blue` and `yellow` too, or just `r` / `b` / `y`) |
-| `--slot=2` | load that save slot; takes a slot number or a slot id |
-| `--launcher` | open the launcher anyway, so you can edit a shortcut you already made |
-
-
-## Linux on arm64 (Raspberry Pi)
-
-Alongside the x86_64 `gen1recomp-*-linux.zip`, every release ships
-`gen1recomp-*-linux-arm64.AppImage` for 64-bit ARM desktop Linux — Raspberry
-Pi 4/5, Armbian and other SBC distros, and arm64 VMs on Apple Silicon:
-
-```sh
-chmod +x gen1recomp-*-linux-arm64.AppImage
-./gen1recomp-*-linux-arm64.AppImage
-```
-
-LÖVE publishes no aarch64 binary of any kind, so this artifact compiles the
-engine — and SDL2, OpenAL and the codecs — from source inside a Debian
-bullseye arm64 container. It needs only glibc 2.29+, libstdc++, freetype and
-zlib on the host; OpenGL, X11, Wayland, KMSDRM, ALSA and PulseAudio are all
-dlopened, so the same image runs on a full desktop, a Wayland-only session or
-a KMSDRM handheld with no X server. Build instructions and the reasoning are
-in [docs/linux-arm64-build.md](docs/linux-arm64-build.md).
-
-
 ## iOS
 
-Every release ships `gen1recomp-*-ios.ipa`. Sideload it with AltStore
-(Windows or Mac) — see [docs/ios-sideload.md](docs/ios-sideload.md). To
-build and install from source on a Mac instead, see
-[docs/ios-install.md](docs/ios-install.md).
+Sideload the `.ipa` with AltStore (Windows or Mac) — see
+[docs/ios-sideload.md](docs/ios-sideload.md). To build and install from source
+on a Mac instead, see [docs/ios-install.md](docs/ios-install.md).
 
-<div>
-    <a href="https://intradeus.github.io/http-protocol-redirector?r=sidestore://source?url=https://github.com/bryanthaboi/gen1recomp/raw/refs/heads/main/mobile/ios/app-repo.json"><img src="./.github/resources/sidestore-badge.png" alt="Add to SideStore" height="60"></a>
-    &nbsp;
-    <a href="https://intradeus.github.io/http-protocol-redirector?r=feather://source/https://github.com/bryanthaboi/gen1recomp/raw/refs/heads/main/mobile/ios/app-repo.json"><img src="./.github/resources/feather-badge.png" alt="Add to Feather" height="60"></a>
-    &nbsp;
-    <a href="https://intradeus.github.io/http-protocol-redirector?r=altstore://source?url=https://github.com/bryanthaboi/gen1recomp/raw/refs/heads/main/mobile/ios/app-repo.json"><img src="./.github/resources/altstore-badge.png" alt="Add to AltStore" height="60"></a>
-    &nbsp;
-    <a href="https://github.com/bryanthaboi/gen1recomp/releases/latest"><img src="./.github/resources/github-badge.png" alt="Download from GitHub" height="60"></a>
-</div>
+## Android
 
-## Xbox Dev Mode
-
-Every release ships `gen1recomp-*-xbox-uwp.zip` for Xbox One and Xbox Series
-consoles in Developer Mode. It cannot be installed in retail mode.
-
-Extract the archive, then use Xbox Device Portal to install the `.msix` and
-the x64 package under `Dependencies`.
-
-### External setup
-
-1. Put your legally obtained Red, Blue, or Yellow ROMs on an external drive.
-   Mod ZIPs can go on the same drive.
-2. Connect the drive to the Xbox and open Gen1Recomp.
-3. Select **Import ROM** or **Import Mod**, then choose the file with the Xbox
-   file picker.
-4. Repeat the ROM import for each version you want to use.
-
-### Internal setup
-
-1. Create a folder named `baseroms` on your PC and place your legally obtained
-   Red, Blue, or Yellow ROMs inside it.
-2. ZIP the folder, keeping `baseroms` at the top level of the archive.
-3. Launch Gen1Recomp once, then close it.
-4. Open Xbox Device Portal and upload the ZIP to
-   `Gen1Recomp/LocalState/pokemon-love2d/`.
-5. Choose **Yes** when Device Portal asks whether to extract the archive.
-6. Open Gen1Recomp. The launcher checks baseroms once at startup. When it finds a compatible ROM, that game’s tab shows ROM FOUND and an Import detected ROM button.
-
-ROMs, generated game data, saves, and mods remain in LocalState and are not
-included in the app.
-
-Source builds and package details are covered in
-[the Xbox UWP build notes](ports/uwp/BUILD.md).
+The build steps and packaging layout live in
+[mobile/ANDROID.md](mobile/ANDROID.md); `scripts/build_android.ps1` and
+`scripts/build_android.sh` drive the build.
 
 ## Handhelds
 
 A PortMaster-style port for the **Anbernic RG34XXSP** on Stock OS 64-bit MOD
-ships with every release as `gen1recomp-*-rg34xxsp-stockos64-mod.zip`.
-Install steps, controls, and troubleshooting live in
-[docs/anbernic-rg34xxsp.md](docs/anbernic-rg34xxsp.md).
-
-## Nintendo Switch
-
-Releases ship an SD-ready `gen1recomp-*-switch.zip`. Runtime target is pinned
-[love-nx](https://github.com/retronx-team/love-nx) `11.5-nx1`. Requires a
-console that can run Switch homebrew.
-
-- Players: [docs/switch-install.md](docs/switch-install.md). Download the
-  zip, extract at the microSD root (install or update), title-override
-  launch, import your own legal ROM, Joy-Con controls and shortcuts.
-- Builders: [docs/switch-build.md](docs/switch-build.md). `--fetch` /
-  `--loose` / `--fused`, toolchain, Docker fallback, and CI vs release
-  (path-gated ubuntu selftest, fused PR artifact on the main repo, release
-  hard-fail).
-- File transfer (MTP / SD / FTP): [docs/switch-transfer.md](docs/switch-transfer.md).
+builds from `build-rg34xxsp.sh`. Install steps, controls, and troubleshooting
+live in [docs/anbernic-rg34xxsp.md](docs/anbernic-rg34xxsp.md).
 
 ## Modding
 
 The game ships a native mod platform: content registries, events and hooks,
-per-mod saves and options, and an in-game manager. The full modding book —
-getting started, a twelve-rung tutorial ladder, a cookbook, and the generated
-reference — lives on the
-[project wiki](https://github.com/bryanthaboi/gen1recomp/wiki).
+per-mod saves and options, and an in-game manager. Start with
+[docs/modding.md](docs/modding.md) and
+[CONTRIBUTING-mods.md](CONTRIBUTING-mods.md).
 
-Shipped example mods, one per kind of author, live in `[mods/](mods/)`.
+Shipped example mods, one per kind of author, live in [mods/](mods/) —
+including `DRAMATIC_SHAPE`, the voxel renderer, extended by UNDERdecodedHD for
+Generation II support.
 
-Maps can be edited in our own build of [Tiled](https://www.mapeditor.org),
-[bryanthaboi/tiled_gen1recomp](https://github.com/bryanthaboi/tiled_gen1recomp/releases),
-and exported back out as a mod; see
-[docs/tiled-map-editing.md](docs/tiled-map-editing.md).
+Maps can be edited in [Tiled](https://www.mapeditor.org) and exported back out
+as a mod; see [docs/tiled-map-editing.md](docs/tiled-map-editing.md).
 
 ## Bugs and Ideas
 
 Found a bug? A warp dropping you somewhere it shouldn't, a battle doing math
 that looks wrong, text in the wrong box, anything that does not match the
-original game.
-[Open a bug report](https://github.com/bryanthaboi/gen1recomp/issues/new?template=bug_report.yml).
-Attach a screenshot if you can. It saves a lot of back and forth, and if you
-can't get one, the form asks you to describe what you saw instead.
+original game — open an issue and attach a screenshot if you can. It saves a
+lot of back and forth, and if you can't get one, describe what you saw instead.
 
-Thought of a feature that could be good, or a way to improve one that already
-exists?
-[Open a feature request](https://github.com/bryanthaboi/gen1recomp/issues/new?template=feature_request.yml).
-Say what you want, why it is worth doing, and how you picture it working. A
-request with real detail is one that can actually get built.
+Same for features: say what you want, why it is worth doing, and how you
+picture it working. A request with real detail is one that can actually get
+built.
 
-## More
+## Docs
 
-- [Link play](https://github.com/bryanthaboi/gen1recomp/wiki/Guide-Link-Play)
-— START > LINK connects two copies directly over UDP.
-- [Save editor](https://github.com/bryanthaboi/gen1recomp/wiki/Guide-Save-Editor)
-— edit party, boxes, items, events, and Pokédex flags outside the game.
-- `docs/architecture.md` — runtime details;
-`docs/behavior-porting-notes.md` — formula provenance.
+- [docs/architecture.md](docs/architecture.md) — runtime details
+- [docs/gen2-migration-roadmap.md](docs/gen2-migration-roadmap.md) — what is
+done and what is left in the Gen 2 port
+- [docs/gen2-script-engine.md](docs/gen2-script-engine.md) — the Gen 2 script VM
+- [docs/behavior-porting-notes.md](docs/behavior-porting-notes.md) — formula
+provenance
+- [docs/known-differences.md](docs/known-differences.md) — where the port still
+diverges from the cartridge
+- START > LINK connects two copies directly over UDP.
 
+## Credits
 
+gen2recomp is by **UNDERdecodedHD**, forked from **Gen1Recomp** by
+**bryanthaboi** and **BOIS CLUB GAMES, LLC**. The Generation I engine, mod
+platform, renderer, and tooling are theirs; the Generation II import, script
+VM, world, and battle work are this fork's. See [LICENSE.MD](LICENSE.MD) for
+the full copyright split.
 
 ## Special Thanks
 
-This project would not be possible without [pret](https://github.com/pret) >
-the pret band of decompiling maniacs > and their
-[pokered](https://github.com/pret/pokered) disassembly.
+This project would not be possible without [pret](https://github.com/pret) —
+the pret band of decompiling maniacs — and their
+[pokered](https://github.com/pret/pokered),
+[pokegold](https://github.com/pret/pokegold), and
+[pokecrystal](https://github.com/pret/pokecrystal) disassemblies.
 
-<p align="center"><a href="https://boisclub.games"><img src="https://raw.githubusercontent.com/bryanthaboi/gen1recomp/refs/heads/dev/assets/logo/bcg.png"></a></p>
+<p align="center"><a href="https://boisclub.games"><img src="./assets/logo/bcg.png"></a></p>
