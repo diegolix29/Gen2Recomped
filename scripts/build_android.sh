@@ -248,7 +248,7 @@ pack_love_archive() {
   if command -v zip >/dev/null 2>&1; then
     # shellcheck disable=SC2086  # manifests is a deliberate word list
     (cd "$root" && zip -q -9 -r "$archive" \
-      main.lua conf.lua src data assets tools/save-editor \
+      main.lua conf.lua src data assets tools bundlemods/save-editor \
       $manifests \
       -x '*.DS_Store' -x '*/.git/*' -x '*/.DS_Store' \
       -x 'data/generated/*' -x 'assets/generated/*')

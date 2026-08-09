@@ -200,27 +200,47 @@ end
 
 function Loader:_discover()
   if not self.fs.getDirectoryItems then return end
-  local roots = { "mods" }
+  local roots = { "mods", "bundlemods" }
   for _, root in ipairs(roots) do
-    if self.fs.getInfo(root) then
-      for _, name in ipairs(self.fs.getDirectoryItems(root)) do
-        local path = root .. "/" .. name
-        local info = self.fs.getInfo(path)
-        -- a dev-linked mod dir (ln -s) reports type "symlink" even with
-        -- setSymlinksEnabled(true) -- PhysFS never resolves the symlink's
-        -- own getInfo, only traversal into it. readManifest below still
-        -- correctly no-ops on a symlink that isn't a directory.
-        if info and (info.type == "directory" or info.type == "symlink") then
-          local manifest, err = readManifest(self.fs, path)
-          if manifest then
-            if self.mods[manifest.id] then
-              self.errors[#self.errors + 1] =
-                ("%s: duplicate mod id (ignored %s)"):format(manifest.id, path)
+    -- Check if directory exists and is listable
+    local dirInfo = self.fs.getInfo(root)
+    local canList = dirInfo ~= nil
+    
+    -- On Android, bundlemods is inside the read-only game.love archive
+    -- Try to list it even if getInfo fails (some Android setups report archives oddly)
+    if not canList and root == "bundlemods" then
+      local ok, items = pcall(function()
+        return self.fs.getDirectoryItems(root)
+      end)
+      if ok and items then
+        canList = true
+      end
+    end
+    
+    if canList then
+      local items = self.fs.getDirectoryItems(root)
+      if items then
+        for _, name in ipairs(items) do
+          local path = root .. "/" .. name
+          local info = self.fs.getInfo(path)
+          if info and info.type == "directory" then
+            local manifest, err = readManifest(self.fs, path)
+            if manifest then
+              if self.mods[manifest.id] then
+                self.errors[#self.errors + 1] =
+                  ("%s: duplicate mod id (ignored %s)"):format(manifest.id, path)
+              else
+                -- Mark bundled mods as bundled
+                local isBundled = (root == "bundlemods")
+                self.mods[manifest.id] = { manifest = manifest, path = path, bundled = isBundled }
+                -- Bundled mods are enabled by default
+                if isBundled and self.disabled[manifest.id] == nil then
+                  self.mods[manifest.id].enabled = true
+                end
+              end
             else
-              self.mods[manifest.id] = { manifest = manifest, path = path }
+              Logger.warn("mod %s ignored: %s", path, tostring(err))
             end
-          else
-            Logger.warn("mod %s ignored: %s", path, tostring(err))
           end
         end
       end
