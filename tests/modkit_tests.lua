@@ -636,6 +636,52 @@ local packed = io.open(cleanPkg, "rb")
 check(packed ~= nil, "pack writes the package")
 if packed then packed:close() end
 
+-- Reproducible-build callers pin the informational pack timestamp through the
+-- standard SOURCE_DATE_EPOCH contract. Two clean invocations over the same
+-- input must then produce identical archive bytes and metadata.
+local epoch = "1234567890"
+local envPrefix = isWindows
+  and ('set "SOURCE_DATE_EPOCH=%s" && '):format(epoch)
+  or ("SOURCE_DATE_EPOCH=%s "):format(epoch)
+local deterministicA = root .. "/declared-a.modpkg"
+local deterministicB = root .. "/declared-b.modpkg"
+out, code = run(envPrefix ..
+  ("%s tools/modkit.py pack %q -o %q --base fixture")
+    :format(python, declared, deterministicA))
+check(code == 0, "SOURCE_DATE_EPOCH package A succeeds: " .. out)
+out, code = run(envPrefix ..
+  ("%s tools/modkit.py pack %q -o %q --base fixture")
+    :format(python, declared, deterministicB))
+check(code == 0, "SOURCE_DATE_EPOCH package B succeeds: " .. out)
+local archiveA = assert(io.open(deterministicA, "rb"))
+local bytesA = archiveA:read("*a")
+archiveA:close()
+local archiveB = assert(io.open(deterministicB, "rb"))
+local bytesB = archiveB:read("*a")
+archiveB:close()
+check(bytesA == bytesB, "SOURCE_DATE_EPOCH makes package bytes reproducible")
+local inspectPack = root .. "/inspect_pack.py"
+write(inspectPack, [[
+import json, sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    meta = json.loads(archive.read(".modkit/pack.json"))
+assert meta["packed_at"] == "2009-02-13T23:31:30Z", meta["packed_at"]
+]])
+out, code = run(("%s %q %q"):format(python, inspectPack, deterministicA))
+check(code == 0, "pack metadata honors SOURCE_DATE_EPOCH: " .. out)
+local invalidEpochPrefix = isWindows
+  and 'set "SOURCE_DATE_EPOCH=not-a-time" && '
+  or "SOURCE_DATE_EPOCH=not-a-time "
+local invalidEpochPkg = root .. "/declared-invalid-epoch.modpkg"
+out, code = run(invalidEpochPrefix ..
+  ("%s tools/modkit.py pack %q -o %q --base fixture")
+    :format(python, declared, invalidEpochPkg))
+check(code == 2, "invalid SOURCE_DATE_EPOCH is a usage failure: " .. out)
+check(out:find("SOURCE_DATE_EPOCH", 1, true) ~= nil,
+  "invalid source epoch names the failed contract")
+check(io.open(invalidEpochPkg, "rb") == nil,
+  "invalid source epoch writes no package")
+
 -- MK305 diffs shipped tables against the imported dataset; fake one under
 -- a scratch repo root so the check exercises the same on ROM-less machines
 local fake = root .. "/fakerepo"

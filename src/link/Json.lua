@@ -171,4 +171,26 @@ function Json.decode(s)
   return nil, v
 end
 
+-- For an HTTP response that was meant to carry JSON but did not.  Returns nil
+-- when `s` starts like a JSON object or array (the only shapes the update and
+-- index endpoints publish), otherwise a short message naming what the server
+-- actually sent -- so callers surface "the response was an HTML page/plain
+-- text, not JSON (it starts with ...)" instead of leaking the decoder's
+-- low-level "unexpected character 'E'" assert at the first byte of an error
+-- page or plain-text outage message.
+function Json.describeUnexpected(s)
+  if type(s) ~= "string" then
+    return "the response had no body to decode"
+  end
+  local first = s:match("^%s*(.)")
+  if first == "{" or first == "[" then return nil end
+  local preview = s:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+  if preview == "" then
+    return "the response was empty, not JSON"
+  end
+  if #preview > 60 then preview = preview:sub(1, 57) .. "..." end
+  local kind = (first == "<") and "an HTML page" or "plain text"
+  return ("the response was %s, not JSON (it starts with %q)"):format(kind, preview)
+end
+
 return Json

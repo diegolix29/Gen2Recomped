@@ -156,18 +156,22 @@ local function allRequiredFilesExist(version)
   return ok
 end
 
--- A developer checkout / Python build leaves Red's generated data in the
--- physfs SOURCE at the un-prefixed root (the checked-out data/generated and
--- assets/generated); it is always current and never moves into red/.  Only
--- Red ships this way (Blue/Yellow are import-only).  The check goes through
--- love.filesystem directly so the red/ cache prefix cannot hide the source
--- tree, and the realDirectory test keeps a save-dir cache from counting.
-local function sourceTreeHasData()
+-- A developer checkout / Python build leaves generated data in the physfs
+-- source: Red at the historical root, Blue/Yellow in their versioned trees.
+-- Imported Red caches still live under red/.  Check source paths directly so
+-- that cache prefix cannot hide Red's source tree, and keep save-dir caches
+-- from counting as current source data.
+local function sourceTreeHasData(version)
   if not love.filesystem.getRealDirectory then return false end
+  local prefix = version == "red" and "" or GameVersion.cachePrefix(version)
   for _, path in ipairs(REQUIRED_FILES) do
-    if love.filesystem.getInfo(path, "file") == nil then return false end
+    if love.filesystem.getInfo(prefix .. path, "file") == nil then return false end
   end
-  local real = love.filesystem.getRealDirectory(REQUIRED_FILES[1])
+  for _, path in ipairs(VERSION_REQUIRED_FILES[version] or {}) do
+    if love.filesystem.getInfo(prefix .. path, "file") == nil then return false end
+  end
+  local path = prefix .. REQUIRED_FILES[1]
+  local real = love.filesystem.getRealDirectory(path)
   return real == love.filesystem.getSource()
 end
 
@@ -244,10 +248,8 @@ function RomImporter.isReady(version)
     -- save-directory copy that would otherwise shadow it at runtime.
     purgeSaveDirCache()
   end
-  -- Red generated data in the physfs source (developer checkout / Python
-  -- build) is always current; Blue is import-only and falls through to the
-  -- version-marker gate.
-  if version == "red" and sourceTreeHasData() then return true end
+  -- Generated data in a developer checkout / Python build is always current.
+  if sourceTreeHasData(version) then return true end
   local saved = CacheFs.prefix
   CacheFs.prefix = GameVersion.cachePrefix(version)
   local marker = CacheFs.read(MARKER_PATH)

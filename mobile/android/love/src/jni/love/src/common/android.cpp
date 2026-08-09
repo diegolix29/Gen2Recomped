@@ -1015,4 +1015,33 @@ void love_android_secondary_enable(int on)
 	env->DeleteLocalRef(activity);
 }
 
+extern "C" __attribute__((visibility("default")))
+const char *love_android_poll_secondary_touch()
+{
+	static thread_local std::string event;
+	event.clear();
+	JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();
+	jclass activity = env->FindClass("org/love2d/android/GameActivity");
+	jmethodID method = env->GetStaticMethodID(activity, "pollSecondaryDisplayTouch",
+		"()Ljava/lang/String;");
+	if (!method)
+		env->ExceptionClear();
+	else
+	{
+		jstring value = (jstring) env->CallStaticObjectMethod(activity, method);
+		if (value)
+		{
+			const char *utf = env->GetStringUTFChars(value, nullptr);
+			if (utf)
+			{
+				event = utf;
+				env->ReleaseStringUTFChars(value, utf);
+			}
+			env->DeleteLocalRef(value);
+		}
+	}
+	env->DeleteLocalRef(activity);
+	return event.empty() ? nullptr : event.c_str();
+}
+
 #endif // LOVE_ANDROID

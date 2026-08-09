@@ -140,8 +140,10 @@ end
 -- Decode a releases array (GET /repos/.../releases) into a sorted list
 -- (newest first). Releases without a .zip asset are dropped. Never throws.
 function ModUpdate.parseReleases(jsonText, modId, Json)
+  Json = Json or require("src.link.Json")
+  local notJson = Json.describeUnexpected(jsonText)
+  if notJson then return nil, notJson end
   local ok, result, err = pcall(function()
-    Json = Json or require("src.link.Json")
     local doc, decodeErr = Json.decode(jsonText)
     if type(doc) ~= "table" then
       return nil, decodeErr or "releases json is not an array"

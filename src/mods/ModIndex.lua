@@ -191,8 +191,10 @@ end
 -- Never throws: a truncated download, an HTML error page, or a feed from a
 -- future schema all come back as a message the panel can print.
 function ModIndex.parse(jsonText, Json)
+  Json = Json or require("src.link.Json")
+  local notJson = Json.describeUnexpected(jsonText)
+  if notJson then return nil, notJson end
   local ok, result, err = pcall(function()
-    Json = Json or require("src.link.Json")
     local doc, decodeErr = Json.decode(jsonText)
     if type(doc) ~= "table" then
       return nil, decodeErr or "index.json is not an object"

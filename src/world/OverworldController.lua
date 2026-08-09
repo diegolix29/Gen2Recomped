@@ -194,7 +194,7 @@ function OverworldState.computeNeighbors(maps, rootId, hops, reachW, reachH)
   return out
 end
 
-function OverworldState:enter(mapId, x, y, facing)
+function OverworldState:enter(mapId, x, y, facing, opts)
   Game = require("src.core.Game")
   Game.overworld = self
   Collision.load(Game.data) -- tile-pair (elevation) collisions
@@ -215,10 +215,7 @@ function OverworldState:enter(mapId, x, y, facing)
   -- survives save/load: a loaded game may start inside a building whose
   -- exit mat is a LAST_MAP warp
   self.lastOutdoor = Game.save.lastOutdoor
-  -- Initialize map preloading system
-  local MapLoader = require("src.world.MapLoader")
-  MapLoader.setData(Game.data)
-  self:setMap(mapId, x, y, facing, { via = "boot" })
+  self:setMap(mapId, x, y, facing, opts or { via = "boot" })
   -- boot/load: derive the flag from the tile the save left us standing on,
   -- like MapEntryAfterBattle's IsPlayerStandingOnWarp, so a game saved on a
   -- door mat can still walk straight back out (issue #378)
@@ -266,7 +263,7 @@ end
 
 function OverworldState:setMap(mapId, x, y, facing, opts)
   local fromMapId = self.map and self.map.id
-  if fromMapId then
+  if fromMapId and not (opts and opts.checkpoint) then
     Runtime.emit("map.exited", { mapId = fromMapId, toMapId = mapId })
   end
   -- ambient choreography is per-map: parallel runners die here, and the
@@ -444,13 +441,13 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
   -- (home/overworld.asm) -- a warp can land directly on one (the Route
   -- 16/18 gate exits), and the scripted door-mat walkout that follows
   -- suppresses onStepComplete, so waiting for a plain step never mounts
-  self:checkForcedMovement()
+  if not (opts and opts.checkpoint) then self:checkForcedMovement() end
   -- Seafoam B4F's map script pushes off the B3F stair warps every frame
   -- while the upper plugs are out (SeafoamIslandsB4FDefaultScript); the
   -- B3F/B4F force-surf mouths also arm their MOVE_OBJECT current scripts
   -- from CheckForceBikeOrSurf.  Re-check here so a warp-in does not sit
   -- idle on those cells waiting for a player step.
-  self:checkSeafoamCurrent()
+  if not (opts and opts.checkpoint) then self:checkSeafoamCurrent() end
 
   -- snap the camera immediately: the overworld doesn't update while a
   -- Transition is on top, so a stale camera would show the new map at
@@ -460,29 +457,31 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
 
   -- fires before the onEnter chain so a listener sees the map in the same
   -- state the map script does
-  local MapLoader = require("src.world.MapLoader")
-  Runtime.emit("map.entered", {
-    mapId = mapId, map = self.map, fromMapId = fromMapId,
-    via = (opts and opts.via)
-          or (opts and opts.seamless and "connection")
-          or (fromMapId and "warp" or "boot"),
-    preloaded = MapLoader.isPreloaded(mapId),
-  })
+  if not (opts and opts.checkpoint) then
+    Runtime.emit("map.entered", {
+      mapId = mapId, map = self.map, fromMapId = fromMapId,
+      via = (opts and opts.via)
+            or (opts and opts.seamless and "connection")
+            or (fromMapId and "warp" or "boot"),
+    })
+  end
 
   -- map-enter hooks (hand-ported map scripts, e.g. Victory Road barriers).
   -- fromMapId lets elevators seed a valid walk-out floor when the ROM
   -- car warps still point at a missing map (Silph's UNUSED_MAP_ED) and
   -- the player B-cancels the floor menu without .UpdateWarp.
-  local hooks = mapScripts.get(mapId)
-  if hooks and hooks.onEnter then
-    hooks.onEnter(Game, self, fromMapId)
+  if not (opts and opts.checkpoint) then
+    local hooks = mapScripts.get(mapId)
+    if hooks and hooks.onEnter then
+      hooks.onEnter(Game, self, fromMapId)
+    end
   end
 
   self:rebuildNeighbors()
   Logger.info("map: %s at (%d,%d)", mapId, x, y)
   -- Route22Gate_Script rewrites wLastMap from the player's Y on entry
   -- too (not only on step), so a save/load mid-gate keeps exits correct
-  self:syncLastMapRewrite()
+  if not (opts and opts.checkpoint) then self:syncLastMapRewrite() end
 end
 
 -- Neighbor maps drawn at the composed connection offsets: at least the
@@ -763,8 +762,8 @@ function OverworldState:pushBattle(battle)
   local enemyLevel = battle.enemy and battle.enemy.mon and battle.enemy.mon.level or 0
   -- the battle theme starts with the wipe, not after it
   -- (audio/play_battle_music.asm runs before the transition)
-  if battle.computeMusicKind then
-    require("src.core.Music").playBattle(Game.data, battle:computeMusicKind())
+  if battle.playBattleTheme then
+    battle:playBattleTheme()
   end
 
   -- The fade back in from white on the way out is BattleState:finish()'s
@@ -969,7 +968,15 @@ function OverworldState:update(dt)
         -- the bird carries the player in on landing, with its own
         -- SFX_FLY (EnterMapAnim .flyAnimation)
         self.arriveWarp = "fly"
+        -- keep the sprite hidden through the warp fade-out (#916): flyAnim
+        -- just went nil but flyArrive is not armed until startWarpTo's
+        -- midpoint, and the overworld keeps drawing beneath the veil, so
+        -- without this the trainer pops back in at the old cell for 32 frames
+        self.playerHidden = true
         self:startWarpTo(d.map, d.x, d.y, "down", nil, { via = "fly" })
+      else
+        self.playerHidden = false
+        self.player.inputLocked = false
       end
       return
     end
@@ -991,6 +998,10 @@ function OverworldState:update(dt)
       self.player.spinFrames = nil
       self.player.spinRise = nil
       self.player.inputLocked = false
+      -- keep the sprite hidden through the warp fade-out (#916): the spin is
+      -- over but the arrival spin-drop is not armed until startWarpTo's
+      -- midpoint, so without this the standing trainer shows under the veil
+      self.playerHidden = true
       self:warpToHealPoint(onDone, { arrive = "teleport" })
       return
     end
@@ -3033,6 +3044,14 @@ function OverworldState:engageTrainer(npc, onDone, endBattleText, skipBattleText
       if theme then require("src.core.Music").play(Game.data, theme) end
     end
     local battle = BattleState.newTrainer(Game, d.trainerClass, d.trainerParty)
+    battle.checkpointOrigin = {
+      kind = "trainer_encounter",
+      map = self.map.id,
+      npcId = npc.id,
+      trainerClass = d.trainerClass,
+      partyIndex = d.trainerParty or 1,
+      event = header and header.event or nil,
+    }
     -- PrintEndBattleText (home/trainers.asm:341) is called from
     -- TrainerBattleVictory (engine/battle/core.asm:942), i.e. ON the battle
     -- screen once ScrollTrainerPicAfterBattle has brought the beaten trainer
@@ -3570,6 +3589,10 @@ function OverworldState:onStepComplete()
     end
     local BattleState = require("src.battle.BattleState")
     local battle = BattleState.newWild(Game, enc.species, enc.level)
+    battle.checkpointOrigin = {
+      kind = "wild_encounter",
+      map = self.map.id,
+    }
     -- map.ghostBattles: unidentifiable without the named item (the
     -- Pokemon Tower's Silph Scope)
     local ghost = Map.ghostBattles(self.map.def)
@@ -3974,6 +3997,39 @@ function OverworldState:afterBattle(result, battle)
   end
 end
 
+-- Rebind the data-only continuation attached to a supported battle checkpoint.
+-- The overworld was reconstructed first, so transient input/NPC freezes from
+-- the original encounter are intentionally not resumed.
+function OverworldState:restoreBattleContinuation(battle, origin)
+  local game = battle and battle.game
+  if not game or type(origin) ~= "table" or not self.map
+      or origin.map ~= self.map.id then
+    return false
+  end
+  if origin.kind == "wild_encounter" and battle.kind == "wild" then
+    battle.onFinish = function(result) self:afterBattle(result, battle) end
+    return true
+  end
+  if origin.kind ~= "trainer_encounter" or battle.kind ~= "trainer"
+      or origin.trainerClass ~= battle.oppClass
+      or origin.partyIndex ~= (battle.partyIndex or 1)
+      or type(origin.npcId) ~= "string" then
+    return false
+  end
+  battle.onFinish = function(result)
+    if result == "win" then
+      game.save.defeatedTrainers[origin.npcId] = true
+      if origin.event then game.save.flags[origin.event] = true end
+      self:checkVictoryRewards(battle.oppClass, battle.partyIndex)
+    end
+    self:afterBattle(result, battle)
+    self.engaging = false
+    local npc = self.npcPool and self.npcPool[origin.npcId]
+    if npc then npc.frozen = false end
+  end
+  return true
+end
+
 -- -------------------------------------------------------------------------
 -- warps
 -- -------------------------------------------------------------------------
@@ -4124,6 +4180,11 @@ function OverworldState:startWarpTo(mapId, x, y, facing, onDone, opts)
   self.arriveWarp = nil
   Game.stack:push(Transition.new(Game, function()
     self:setMap(mapId, x, y, facing or "down", opts)
+    -- the departure-side hide from flyAnim/teleportOut ends here, on the new
+    -- map; the arrival arms its own cover (flyArrive / spinDrop) a few lines
+    -- down, so the player is never drawable mid-fade nor standing bare on the
+    -- landing frame (#916)
+    self.playerHidden = false
     -- The warp we land ON stays inert for the completed-step check until we
     -- physically step off it, so a warp whose destination cell is itself a
     -- warp cannot bounce us straight back (elevator cars, stacked stair/door
@@ -4824,7 +4885,8 @@ function OverworldState:drawWorld()
       g.npc:draw(cam.x - g.ox, cam.y - g.oy)
     end
     for _, e in ipairs(self.entities) do
-      if not (self.flyAnim and e == self.player) then
+      if not ((self.flyAnim or self.flyArrive or self.playerHidden)
+              and e == self.player) then
         e:draw(cam.x, cam.y)
         -- tall grass overdraws the sprite's feet (GB sprite priority);
         -- the overdraw is BG tiles, so it rides the shake offset too
@@ -4875,7 +4937,8 @@ function OverworldState:drawWorld()
       items[#items + 1] = { y = g.npc.py + g.oy + 16, kind = "ghost", g = g }
     end
     for _, e in ipairs(self.entities) do
-      if not (self.flyAnim and e == self.player) then
+      if not ((self.flyAnim or self.flyArrive or self.playerHidden)
+              and e == self.player) then
         items[#items + 1] = { y = e.py + 16, kind = "entity", e = e }
       end
     end

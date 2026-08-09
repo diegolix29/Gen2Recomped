@@ -265,7 +265,8 @@ function OakSpeech.new(game, onDone)
                              or "assets/generated/intro/shrink2.png")
   -- RedSprite: the walking sprite the pic shrinks into (frame 0 =
   -- standing, facing down)
-  local red = game.data.sprites and game.data.sprites.SPRITE_RED
+  local playerSprites = (game.data.field and game.data.field.playerSprites) or {}
+  local red = game.data.sprites and game.data.sprites[playerSprites.walk or "SPRITE_RED"] or game.data.sprites.SPRITE_RED
   self.walkSheet = tryImage(red and red.image)
   return self
 end

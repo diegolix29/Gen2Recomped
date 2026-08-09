@@ -6,6 +6,7 @@
 -- stays unsupported; anything a mod legitimately needs belongs here.
 
 local Logger = require("src.core.Logger")
+local Assets = require("src.render.Assets")
 local MapLoader = require("src.world.MapLoader")
 local Runtime = require("src.mods.Runtime")
 
@@ -13,6 +14,45 @@ local WorldAPI = {}
 WorldAPI.__index = WorldAPI
 
 local NO_OVERWORLD = "no overworld"
+local overviewShades = {}
+
+Assets.register(function() overviewShades = {} end)
+
+local function mapTileRows(map)
+  local tileset = map.tileset
+  if not (tileset and tileset.image and tileset.tilesPerRow) then return nil end
+  local cached = overviewShades[tileset.image]
+  if not cached then
+    local ok, pixels = pcall(Assets.imageData, tileset.image)
+    if not ok then return nil end
+    cached = { pixels = pixels, shades = {} }
+    overviewShades[tileset.image] = cached
+  end
+  local rows, perRow = {}, tileset.tilesPerRow
+  for ty = 0, map.heightCells * 2 - 1 do
+    local row = {}
+    for tx = 0, map.widthCells * 2 - 1 do
+      local tile = map:tileAt(tx, ty)
+      local shade = cached.shades[tile]
+      if shade == nil then
+        local sum = 0
+        local ox, oy = (tile % perRow) * 8, math.floor(tile / perRow) * 8
+        for py = 0, 7 do
+          for px = 0, 7 do
+            local r, g, b = cached.pixels:getPixel(ox + px, oy + py)
+            sum = sum + r * 0.2126 + g * 0.7152 + b * 0.0722
+          end
+        end
+        shade = tostring(math.max(0, math.min(3,
+          math.floor((1 - sum / 64) * 3 + 0.5))))
+        cached.shades[tile] = shade
+      end
+      row[#row + 1] = shade
+    end
+    rows[#rows + 1] = table.concat(row)
+  end
+  return rows
+end
 
 function WorldAPI.new(game, modId)
   return setmetatable({ game = game, modId = modId }, WorldAPI)
@@ -41,6 +81,29 @@ function WorldAPI:current()
   local p = ow.player
   return { mapId = ow.map.id, x = p and p.cellX, y = p and p.cellY,
            facing = p and p.facing }
+end
+
+-- A compact, read-only view of the active map for minimaps and companion UIs.
+-- `rows` describes collision terrain; optional `tileRows` reduces each real
+-- 8x8 map tile to its average Game Boy shade ("0" lightest, "3" darkest).
+function WorldAPI:mapOverview()
+  local ow = self:overworld()
+  if not ow or not ow.map then return nil, NO_OVERWORLD end
+  local map, rows = ow.map, {}
+  for y = 0, map.heightCells - 1 do
+    local row = {}
+    for x = 0, map.widthCells - 1 do
+      row[#row + 1] = map:isWarpTileCell(x, y) and "+"
+        or map:isWaterCell(x, y) and "~"
+        or map:isWalkableCell(x, y) and "." or " "
+    end
+    rows[#rows + 1] = table.concat(row)
+  end
+  local tileRows = mapTileRows(map)
+  return { mapId = map.id, width = map.widthCells,
+           height = map.heightCells, rows = rows, tileRows = tileRows,
+           tileWidth = tileRows and map.widthCells * 2,
+           tileHeight = tileRows and map.heightCells * 2 }
 end
 
 -- opts.arrive = "fly" | "teleport" picks the arrival FX; anything else

@@ -14,6 +14,7 @@ local Font = require("src.render.Font")
 local Handshake = require("src.link.Handshake")
 local LinkBattle = require("src.link.LinkBattle")
 local Net = require("src.link.Net")
+local Session = require("src.link.Session")
 local Protocol = require("src.link.Protocol")
 local Runtime = require("src.mods.Runtime")
 local Sound = require("src.core.Sound")
@@ -132,12 +133,23 @@ end
 -- host / join
 -- -------------------------------------------------------------------
 
+local function openSession(role)
+  local transport = Net.new()
+  if transport:connectTCP(Net.defaultRelayAddress()) then
+    return Session.new(transport, { role = role, kind = "tournament" })
+  end
+  local detail = transport.error or "?"
+  transport:close()
+  return nil, detail
+end
+
 function Tournament:startHosting()
-  self.net = Net.new()
-  if not self.net:connectTCP(Net.defaultRelayAddress()) then
-    self:exitWith(Strings("Link error:\n%s", self.net.error or "?"))
+  local session, detail = openSession("host")
+  if not session then
+    self:exitWith(Strings("Link error:\n%s", detail))
     return
   end
+  self.net = session
   local size, minL, maxL = partyStats(self.game.save.party)
   self.isCreator = true
   self.participating = self.settings.participating
@@ -156,11 +168,12 @@ function Tournament:startHosting()
 end
 
 function Tournament:startJoining(code)
-  self.net = Net.new()
-  if not self.net:connectTCP(Net.defaultRelayAddress()) then
-    self:exitWith(Strings("Link error:\n%s", self.net.error or "?"))
+  local session, detail = openSession("guest")
+  if not session then
+    self:exitWith(Strings("Link error:\n%s", detail))
     return
   end
+  self.net = session
   local size, minL, maxL = partyStats(self.game.save.party)
   self.isCreator = false
   self.participating = true -- joining is always to compete; only hosting can opt out
@@ -256,22 +269,14 @@ function Tournament:sendHello(mode)
 end
 
 function Tournament:pollHello()
-  local msgs = self.net:poll()
-  local keep, got = {}, false
-  for _, msg in ipairs(msgs) do
-    if msg.type == "hello" and not self.peerHello then
-      self.peerHello = msg
-      got = true
-    else
-      keep[#keep + 1] = msg
-    end
-  end
-  for i = #keep, 1, -1 do
-    table.insert(self.net.inbox, 1, keep[i])
-  end
-  return got
+  local message
+  if not self.peerHello then message = self.net:take("hello") end
+  if message then self.peerHello = message end
+  return message ~= nil
 end
 
+-- The relay assigns a side for each match; this can differ from the immutable
+-- tournament creator/joiner role held by Session.
 function Tournament:enterMatch(msg)
   self.isHost = (msg.role == "host")
   self.opponentName = msg.opponent
@@ -356,12 +361,13 @@ function Tournament:update(dt)
 
   if self.net then
     self.net:update()
-    if self.net.error and self.stage ~= "menu" and self.stage ~= "hostSettings"
+    local status = self.net:getStatus()
+    if status == "failed" and self.stage ~= "menu" and self.stage ~= "hostSettings"
        and self.stage ~= "codeEntry" then
-      self:exitWith(Strings("Link error:\n%s", self.net.error:sub(1, 60)))
+      self:exitWith(Strings("Link error:\n%s", (self.net.error or "?"):sub(1, 60)))
       return
     end
-    if self.net.closed and self.stage ~= "done" then
+    if status == "closed" and self.stage ~= "done" then
       self:exitWith(Strings("The tournament\nconnection was\nlost."))
       return
     end
@@ -370,24 +376,23 @@ function Tournament:update(dt)
   if self.stage == "matchHello" then
     if input:wasPressed("b") then self:exitWith(nil) return end
     self:pollHello()
-    if self.peerHello then self:beginMatchBattle() end
-    for _, msg in ipairs(self.net:poll()) do self:handleMessage(msg) end
+    if self.peerHello then
+      self:beginMatchBattle()
+      return
+    end
+    for _, message in ipairs(self.net:poll()) do self:handleMessage(message) end
     return
   elseif self.stage == "matchWaitParty" then
     if input:wasPressed("b") then self:exitWith(nil) return end
-    local msgs = self.net:poll()
-    for i, msg in ipairs(msgs) do
-      if msg.type == "party" then
-        self.pendingBattleOpts.theirParty = msg.mons
+    while self.net:hasPending() do
+      local message = self.net:pollOne()
+      if message.type == "party" then
+        self.pendingBattleOpts.theirParty = message.mons
         if self.isHost then
           self.pendingBattleOpts.seed = self.pendingBattleOpts.seed or self.linkSeed
         else
-          self.pendingBattleOpts.seed = msg.seed
+          self.pendingBattleOpts.seed = message.seed
         end
-        -- Split rather than `cond and newHost() or newGuest()`: the and/or
-        -- idiom truncates a call to its first result, so the second return
-        -- (the specific reason) was always dropped and every failure showed
-        -- the generic fallback instead of "same mods on both games" etc.
         local battle, why
         if self.isHost then
           battle, why = LinkBattle.newHost(self.game, self.net, self.pendingBattleOpts)
@@ -398,27 +403,22 @@ function Tournament:update(dt)
           self:exitWith(why or Strings("Link battle\ncan't start."))
           return
         end
-        -- anything after `party` in this same batch belongs to the
-        -- battle now, not to Tournament -- put it back for its own poll()
-        for j = #msgs, i + 1, -1 do
-          table.insert(self.net.inbox, 1, msgs[j])
-        end
         self.activeBattle = battle
         self.game.stack:push(battle)
         self.stage = "matchRunning"
         return
       else
-        self:handleMessage(msg)
+        self:handleMessage(message)
       end
     end
     return
   elseif self.stage == "spectateWait" then
     if input:wasPressed("b") then self:exitWith(nil) return end
-    local msgs = self.net:poll()
-    for i, msg in ipairs(msgs) do
-      if msg.type == "spectate" and msg.msg.type == "party" then
-        local inner = msg.msg
-        if msg.side == "host" then
+    while self.net:hasPending() do
+      local message = self.net:pollOne()
+      if message.type == "spectate" and message.msg.type == "party" then
+        local inner = message.msg
+        if message.side == "host" then
           self.spectate.hostParty = inner.mons
           self.spectate.seed = inner.seed
         else
@@ -426,8 +426,10 @@ function Tournament:update(dt)
         end
         if self.spectate.hostParty and self.spectate.guestParty then
           local battle, why = LinkBattle.newSpectator(self.game, self.net, {
-            hostParty = self.spectate.hostParty, guestParty = self.spectate.guestParty,
-            hostName = self.spectate.hostName, guestName = self.spectate.guestName,
+            hostParty = self.spectate.hostParty,
+            guestParty = self.spectate.guestParty,
+            hostName = self.spectate.hostName,
+            guestName = self.spectate.guestName,
             seed = self.spectate.seed,
             forceLevel = levelForWire(self.settings.forceLevel),
           })
@@ -435,16 +437,13 @@ function Tournament:update(dt)
             self:exitWith(why or Strings("Can't watch this\nmatch."))
             return
           end
-          for j = #msgs, i + 1, -1 do
-            table.insert(self.net.inbox, 1, msgs[j])
-          end
           self.activeBattle = battle
           self.game.stack:push(battle)
           self.stage = "spectateRunning"
           return
         end
       else
-        self:handleMessage(msg)
+        self:handleMessage(message)
       end
     end
     return

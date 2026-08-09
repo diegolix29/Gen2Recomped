@@ -107,7 +107,12 @@ local CYCLE_FRAMES = 240 -- the original waits ~4s between picks
 
 local function tryImage(path)
   if not path then return nil end
-  local ok, img = pcall(love.graphics.newImage, path)
+  -- resolve through Assets so a mod's derived art (save/mod-derived/)
+  -- wins here the way it does for every other generated sheet -- but
+  -- load uncached, because on NX the per-version overlay redirects the
+  -- open itself and a cached image would leak across Yellow/Blue boots
+  local ok, img = pcall(love.graphics.newImage,
+    require("src.render.Assets").resolve(path))
   return ok and img or nil
 end
 
@@ -151,13 +156,28 @@ function TitleState.new(game, opts)
   -- branding comes from field.title with the shipped art as fallback, so
   -- a total conversion rebrands the title without replacing the screen
   local title = (game.data.field and game.data.field.title) or {}
+  -- field.title itself is extraction data the field schema never exposes;
+  -- boot.title is the mod-reachable half of the same seam, so its keys
+  -- override here (a localized ribbon, a rebranded logo)
+  local boot = game.data.field and game.data.field.boot
+  if boot and type(boot.title) == "table" then
+    local merged = {}
+    for key, value in pairs(title) do merged[key] = value end
+    for key, value in pairs(boot.title) do merged[key] = value end
+    title = merged
+  end
   self.title = title
   self.logo = tryImage(imagePath(title.logo)
                        or "assets/logo/pokemon_logo.png")
-  -- versionRibbon is the file-12 key; version is the importer's
+  -- versionRibbon is the file-12 key; version is the importer's.  The
+  -- vanilla sheet is two fragments the draw pass repositions, so an
+  -- explicit ribbon (a conversion's or a translation's continuous art)
+  -- draws whole instead.
+  self.versionFull = imagePath(title.versionRibbon) ~= nil
   self.version = tryImage(imagePath(title.versionRibbon or title.version)
                           or "assets/generated/title/red_version.png")
-  self.player = tryImage("assets/generated/title/player.png")
+  self.player = tryImage(imagePath(title.player)
+                         or "assets/generated/title/player.png")
   self.blue = GameVersion.isBlue()
   self.yellow = GameVersion.isYellow()
     or title.layout == "yellow_pikachu"
@@ -347,8 +367,12 @@ function ContinueInfo:draw()
   -- box at (4,7), 8x14 content; labels double-spaced from (5,9)
   Font.drawBox(4, 7, 16, 10)
   love.graphics.setColor(0, 0, 0, 1)
-  Font.draw(Strings("PLAYER"), 40, 72)
-  Font.draw((save.player and save.player.name) or "RED", 96, 72)
+  -- the name follows the label's real width (one space after it), so a
+  -- localized label longer than PLAYER's six glyphs cannot run into it
+  local playerLabel = Strings("PLAYER")
+  Font.draw(playerLabel, 40, 72)
+  Font.draw((save.player and save.player.name) or "RED",
+    math.max(96, 40 + (#Font.split(playerLabel) + 1) * 8), 72)
   local badges = require("src.inventory.Badges").count(self.game.data, save)
   Font.draw(Strings("BADGES"), 40, 88)
   Font.draw(("%2d"):format(badges), 128, 88)
@@ -401,8 +425,10 @@ function TitleState:openMenu()
   end
   local th = #items * 2 + 2
   local menu = Menu.new(game, items, { tx = 0, ty = 0, tw = 13, th = th })
-  -- full-width title LOGO zones would recolor this box; see sgbPalettes
-  menu.titleUiBox = { 0, 0, 12, th - 1 }
+  -- full-width title LOGO zones would recolor this box; see sgbPalettes.
+  -- Menu.new may have grown tw for longer (e.g. localized) labels, so the
+  -- recolor zone follows the box's real width instead of the vanilla 13.
+  menu.titleUiBox = { 0, 0, menu.tw - 1, th - 1 }
   game.stack:push(menu)
 end
 
@@ -490,7 +516,10 @@ function TitleState:draw()
     -- the Yellow fallback layout draws no ribbon at all.
     if self.version and not self.yellow then
       local iw, ih = self.version:getDimensions()
-      if self.blue then
+      if self.versionFull then
+        -- a continuous ribbon (versionRibbon) centers as one piece
+        love.graphics.draw(self.version, math.floor((160 - iw) / 2), 64)
+      elseif self.blue then
         love.graphics.draw(self.version,
           love.graphics.newQuad(0, 0, 64, 8, iw, ih), 56, 64)
       else

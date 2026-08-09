@@ -5,13 +5,15 @@
 
 local SecondScreen = {}
 local C = nil
+local ffi = nil
 
 local function log(msg)
   pcall(function() require("src.core.Logger").info("SecondScreen: %s", msg) end)
 end
 
 do
-  local ok, ffi = pcall(require, "ffi")
+  local ok
+  ok, ffi = pcall(require, "ffi")
   if not (ok and ffi) then
     log("ffi unavailable (not LuaJIT); second display disabled")
   else
@@ -19,6 +21,7 @@ do
       int love_android_secondary_ready();
       void love_android_push_secondary(const void *rgba, int w, int h);
       void love_android_secondary_enable(int on);
+      const char *love_android_poll_secondary_touch();
     ]])
     local okLib, lib = pcall(ffi.load, "love")
     if okLib and lib and pcall(function() return lib.love_android_secondary_ready end) then
@@ -49,6 +52,17 @@ function SecondScreen.push(imageData, w, h)
   return pcall(function()
     C.love_android_push_secondary(imageData:getFFIPointer(), w, h)
   end)
+end
+
+-- Returns the oldest queued secondary-display event as "action,x,y", where
+-- coordinates are in the submitted frame's pixel space.
+function SecondScreen.pollTouch()
+  if not C then return nil end
+  local ok, event = pcall(function()
+    return C.love_android_poll_secondary_touch()
+  end)
+  if not ok or event == nil or event == ffi.NULL then return nil end
+  return ffi.string(event)
 end
 
 function SecondScreen.setEnabled(on)

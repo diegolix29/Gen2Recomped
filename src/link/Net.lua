@@ -207,7 +207,7 @@ function Net:send(msg)
   end
   if self.peerEnd then -- loopback: re-encode through json like the wire
     local decoded = Json.decode(Json.encode(msg))
-    if decoded and not self.peerEnd.closed then
+    if decoded ~= nil and not self.peerEnd.closed then
       table.insert(self.peerEnd.inbox, decoded)
     end
     return
@@ -256,13 +256,12 @@ end
 
 function Net:handleTCPLine(line)
   local msg = Json.decode(line)
-  if not msg then
+  if msg == nil then
     Logger.warn("link: bad relay message %q", line:sub(1, 60))
     return
   end
-  if not handleGenericRelayControl(self, msg) then
-    table.insert(self.inbox, msg)
-  end
+  if type(msg) == "table" and handleGenericRelayControl(self, msg) then return end
+  table.insert(self.inbox, msg)
 end
 
 -- pulls every complete "\n"-terminated line out of rxBuf (leaving a
@@ -352,7 +351,7 @@ function Net:update()
       end
     elseif event.type == "receive" then
       local msg = Json.decode(event.data)
-      if msg then
+      if msg ~= nil then
         table.insert(self.inbox, msg)
       else
         Logger.warn("link: bad message %q", tostring(event.data):sub(1, 60))

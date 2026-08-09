@@ -94,7 +94,7 @@ function DexEntryMenu.render(game, def, sprite, forceOwned, trueColor)
   -- same number width as the list (constants.dexDigits), so a dex past 999
   -- prints the extra digit everywhere at once
   local digits = (game.data.constants or {}).dexDigits or 3
-  Font.draw(("No.%0" .. digits .. "d"):format(def.dex or 0), 72, 32)
+  Font.draw(Strings("No.") .. ("%0" .. digits .. "d"):format(def.dex or 0), 72, 32)
   local owned = forceOwned
     or (game.save.pokedex and game.save.pokedex.owned[def.id])
   -- height/weight print only once owned, like the description
@@ -105,8 +105,8 @@ function DexEntryMenu.render(game, def, sprite, forceOwned, trueColor)
     -- pokedex.asm; the tiles come from gfx/pokedex/pokedex.png via
     -- engine/gfx/load_pokedex_tiles.asm)
     if e.heightM then
-      Font.draw((("GR. %.1fm"):format(e.heightM):gsub("(%d)%.(%d)", "%1,%2")), 64, 44)
-      Font.draw((("GEW. %.1fkg"):format(e.weightKg or 0):gsub("(%d)%.(%d)", "%1,%2")), 64, 54)
+      Font.draw((Strings("GR. %.1fm", e.heightM):gsub("(%d)%.(%d)", "%1,%2")), 72, 44)
+      Font.draw((Strings("GEW. %.1fkg", e.weightKg or 0):gsub("(%d)%.(%d)", "%1,%2")), 72, 54)
     else
       Font.draw(Strings("HT %d′%02d″", e.heightFt, e.heightIn or 0), 72, 44)
       Font.draw(Strings("WT %.1flb", (e.weight or 0) / 10), 72, 54)

@@ -76,6 +76,31 @@ do
   check(path == nil and dlErr ~= nil, "empty url soft-fails")
 end
 
+-- the reported bug: a non-JSON answer (plain-text error, proxy/captive
+-- prompt, outage message) used to leak the decoder's "unexpected character"
+-- assert at the first byte of the body. The guard must name what the server
+-- actually sent and never let that assert surface.
+do
+  local list, err = ModUpdate.parseReleases("Error: API rate limit exceeded", "demo")
+  check(list == nil and err ~= nil, "plain-text error soft-fails")
+  check(tostring(err):find("not JSON", 1, true) ~= nil
+      and tostring(err):find("Error: API", 1, true) ~= nil,
+    "plain-text error names the response and previews what it said")
+  list, err = ModUpdate.parseReleases("<!DOCTYPE html><html>502 Bad Gateway</html>", "demo")
+  check(list == nil and tostring(err):find("HTML", 1, true) ~= nil,
+    "an HTML error page is named as such")
+  list, err = ModUpdate.parseReleases("", "demo")
+  check(list == nil and tostring(err):find("empty", 1, true) ~= nil,
+    "an empty response is named")
+  check(tostring(err):find("unexpected character", 1, true) == nil,
+    "the decoder's assert never leaks into the message")
+  list = ModUpdate.parseReleases(Json.encode({
+    { tag_name = "v1.0.0", assets = {
+        { name = "demo-1.0.0.zip", browser_download_url = "https://x/d.zip" } } },
+  }), "demo")
+  eq(#list, 1, "the guard lets real JSON through")
+end
+
 do
   local body = Json.encode({
     tag_name = "v2.0.0",

@@ -577,6 +577,9 @@ R.trainers = {
     aiMods = f.opt(f.any),
     aiClass = f.opt(f.id("ai_classes")),
     brain = f.opt(f.fn),
+    -- Per-trainer battle theme (an audio.songs id): overrides the
+    -- kind-based default (wild/trainer/gym/final) for this trainer's
+    -- battles.  The victory jingle stays kind-based.
     battleTheme = f.opt(f.id("music")),
   },
   example = 'mod.content.trainers:patch("OPP_BROCK", { baseMoney = 99 })',

@@ -216,6 +216,13 @@ local function persistFs(fs)
   return SaveData.portableFs() or fs or (love and love.filesystem)
 end
 
+-- Engine-owned persistence routing for subsystems that must follow the same
+-- standard/portable root as saves without exposing raw filesystem access to a
+-- mod. An explicitly injected headless filesystem still wins for tests.
+function SaveData.persistenceFs(fs)
+  return persistFs(fs)
+end
+
 -- Port + original Options menu defaults.  Missing keys on load are filled
 -- from this table so old options.lua files stay compatible.
 function SaveData.defaultOptions()
@@ -367,6 +374,22 @@ local function readTable(fs, name)
   return SaveSerializer.decode(body)
 end
 
+-- Deep-copy a value folded in from the on-disk decode so the returned
+-- options table never aliases the file's nested tables (SaveData must not
+-- depend on src/mods/Merge.lua for this).  Options data is plain tables of
+-- strings/numbers/booleans/tables, so a cycle guard is belt-and-braces.
+local function deepCopy(v, seen)
+  if type(v) ~= "table" then return v end
+  seen = seen or {}
+  if seen[v] then return seen[v] end
+  local copy = {}
+  seen[v] = copy
+  for k, val in pairs(v) do
+    copy[deepCopy(k, seen)] = deepCopy(val, seen)
+  end
+  return copy
+end
+
 -- the stub filesystem some headless harnesses inject has no remove; a
 -- lingering tmp/bak there is harmless
 local function remove(fs, name)
@@ -380,13 +403,48 @@ end
 -- options round-trip headless (no love global).
 function SaveData.saveOptions(opts, fs)
   fs = persistFs(fs)
+  -- #932: options.lua is a WHOLE-FILE rewrite, so a caller that hands over a
+  -- PARTIAL table (just the keys it changed) would silently drop every key it
+  -- does not mention -- launcher-only keys like lastVersion, and keys the
+  -- launcher set (battleBg, tilt...) all fall back to defaults.  Read the
+  -- on-disk file FIRST and fold caller-absent values underneath, so a delta
+  -- write changes only what it names.
+  --
+  -- A table holding EVERY defaultOptions key is a full snapshot
+  -- (loadOptions() results, game.save.options, the RESET REBINDS /
+  -- activeProfile-drop paths) and stays authoritative: its absent keys are
+  -- deliberate deletions, so nothing folds for it.  Partial tables get every
+  -- on-disk key they do not provide folded in (deep-copied so the caller's
+  -- table is never aliased).  This is the reconciling rule: bindings and
+  -- activeProfile -- not defaultOptions members -- can be deleted by their
+  -- sites precisely because those sites always write full tables.
+  local onDisk = readTable(fs, OPTIONS_FILENAME)
+  local isFull = type(opts) == "table"
+  if isFull then
+    for k in pairs(SaveData.defaultOptions()) do
+      if opts[k] == nil then isFull = false break end
+    end
+  end
+  if not isFull then
+    local merged = {}
+    if type(opts) == "table" then
+      for k, v in pairs(opts) do merged[k] = v end
+    end
+    if type(onDisk) == "table" then
+      for k, v in pairs(onDisk) do
+        if k ~= "modOptions" and merged[k] == nil then
+          merged[k] = deepCopy(v)
+        end
+      end
+    end
+    opts = merged
+  end
   opts = SaveData.mergeOptions(opts)
   -- modOptions is per-mod nested state: fold the on-disk sub-tree
   -- underneath (newest value winning per key) so one caller's partial
   -- write cannot clobber another mod's persisted keys.  Every other
   -- option stays on the shallow path.
-  local onDisk = readTable(fs, OPTIONS_FILENAME)
-  if onDisk and type(onDisk.modOptions) == "table" then
+  if type(onDisk) == "table" and type(onDisk.modOptions) == "table" then
     local merged = {}
     for modId, bucket in pairs(onDisk.modOptions) do
       merged[modId] = bucket
@@ -495,6 +553,10 @@ end
 -- working unchanged.
 local activeSlotCache = {}   -- version -> slotId in use, or false when none
 local slotsChecked = {}      -- version -> true once resolved this process
+-- At most one New Game can be the live candidate for a first public tool
+-- request. A single strong reference models that runtime fact without adding
+-- marker data to the save or retaining abandoned playthrough tables.
+local freshPlaythrough
 
 local function slotDir(version) return "saves/" .. version end
 
@@ -831,6 +893,77 @@ end
 function SaveData.resetSlotState()
   for k in pairs(activeSlotCache) do activeSlotCache[k] = nil end
   for k in pairs(slotsChecked) do slotsChecked[k] = nil end
+  freshPlaythrough = nil
+end
+
+-- ------- opaque playthrough identity
+
+-- An id must never perturb the engine's gameplay RNG: savestate tools need
+-- repeatable random outcomes, and allocating persistence scope is not gameplay.
+-- Combine wall/process time, a process-local sequence and a fresh table address
+-- into four hex words. This is an opaque collision-resistant identifier, not a
+-- secret or a player-visible value.
+local playthroughSeq = 0
+
+local function word(n)
+  return math.floor(tonumber(n) or 0) % 4294967296
+end
+
+function SaveData.newPlaythroughId()
+  playthroughSeq = playthroughSeq + 1
+  local address = tostring({}):match("0x(%x+)") or "0"
+  local addressLo = tonumber(address:sub(-8), 16) or 0
+  local clock = math.floor((os.clock() or 0) * 1000000)
+  return ("%08x%08x%08x%08x"):format(
+    word(os.time()), word(clock), word(addressLo), word(playthroughSeq))
+end
+
+local function playthroughScope(version, injectedFs)
+  version = version or GameVersion.get()
+  local fs = persistFs(injectedFs)
+  ensureVersionSlots(version, fs)
+  return activeSlotCache[version] or "legacy"
+end
+
+local function rememberPlaythroughId(save, opts, injectedFs)
+  local meta = type(save) == "table" and save.meta
+  local id = type(meta) == "table" and meta.playthroughId
+  if type(id) ~= "string" or id == "" then return opts, false end
+  local version = save.version or GameVersion.get()
+  local scope = playthroughScope(version, injectedFs)
+  opts = opts or SaveData.loadOptions(injectedFs)
+  opts.playthroughIds = opts.playthroughIds or {}
+  opts.playthroughIds[version] = opts.playthroughIds[version] or {}
+  local changed = opts.playthroughIds[version][scope] ~= id
+  opts.playthroughIds[version][scope] = id
+  return opts, changed
+end
+
+-- Return an existing save identity or give a pre-identity save a stable one.
+-- Legacy backfill lives in options.lua until the next normal SAVE stamps the id
+-- into progress, so installing a tool mod never rewrites the player's checkpoint.
+function SaveData.ensurePlaythroughId(save, injectedFs)
+  if type(save) ~= "table" then return nil end
+  save.meta = type(save.meta) == "table" and save.meta or {}
+  local id = save.meta.playthroughId
+  if type(id) == "string" and id ~= "" then return id end
+
+  local version = save.version or GameVersion.get()
+  local scope = playthroughScope(version, injectedFs)
+  local opts = SaveData.loadOptions(injectedFs)
+  local isFresh = save == freshPlaythrough
+  if isFresh then freshPlaythrough = nil end
+  local byVersion = opts.playthroughIds and opts.playthroughIds[version]
+  id = not isFresh and byVersion and byVersion[scope] or nil
+  if type(id) ~= "string" or id == "" then
+    id = SaveData.newPlaythroughId()
+    opts.playthroughIds = opts.playthroughIds or {}
+    opts.playthroughIds[version] = opts.playthroughIds[version] or {}
+    opts.playthroughIds[version][scope] = id
+    SaveData.saveOptions(opts, injectedFs)
+  end
+  save.meta.playthroughId = id
+  return id
 end
 
 -- ------- meta
@@ -854,6 +987,7 @@ function SaveData.buildMeta(mods, previous)
     format = Version.saveFormat,
     engine = Version.engine,
     savedAt = os.time(),
+    playthroughId = type(previous) == "table" and previous.playthroughId or nil,
     mods = list,
   }
 end
@@ -1064,7 +1198,15 @@ function SaveData.save(data, mods)
   -- one, so Blue/Yellow playthroughs land in save_blue.lua / save_yellow.lua
   local FILENAME, BACKUP_FILENAME, TMP_FILENAME = saveNames(data.version)
   if data.options then
-    SaveData.saveOptions(data.options)
+    local opts = data.options
+    if data.meta and data.meta.playthroughId then
+      opts = rememberPlaythroughId(data, data.options)
+    end
+    data.options = opts
+    SaveData.saveOptions(opts)
+  elseif data.meta and data.meta.playthroughId then
+    local opts, changed = rememberPlaythroughId(data)
+    if changed then SaveData.saveOptions(opts) end
   end
   if mods ~= nil or data.meta == nil then
     data.meta = SaveData.buildMeta(mods, data.meta)
@@ -1486,8 +1628,12 @@ function SaveData.newGame(boot)
     options = SaveData.loadOptions(),
   }
   -- a total conversion reshapes the skeleton (spawn, party, money)
-  -- before anything reads it; unhooked this returns save unchanged
-  return Runtime.call("save.new_game", function(s) return s end, save)
+  -- before anything reads it; unhooked this returns save unchanged. Keep the
+  -- "fresh playthrough" marker outside the serialized table so a later tool
+  -- request can distinguish two unsaved New Games sharing one vanilla slot.
+  save = Runtime.call("save.new_game", function(s) return s end, save)
+  freshPlaythrough = save
+  return save
 end
 
 return SaveData

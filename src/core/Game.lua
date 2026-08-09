@@ -1205,4 +1205,28 @@ function Game:restoreSave(loaded, recovered)
   end
 end
 
+-- Reconstruct a previously validated runtime checkpoint without replaying the
+-- ordinary CONTINUE lifecycle. In particular, map onEnter scripts and
+-- save.loading/save.loaded events must not run a second time. Validation,
+-- identity checks and transactional rollback live in Checkpoint.lua.
+function Game:restoreCheckpointSave(loaded)
+  self.save = loaded
+  self:adoptSave(loaded)
+  while self.stack:top() do self.stack:pop() end
+  self.stack:push(self.overworld, loaded.player.map,
+                  loaded.player.x, loaded.player.y, loaded.player.facing,
+                  { via = "checkpoint", checkpoint = true })
+end
+
+-- Install a reconstructed battle without calling BattleState:enter(), whose
+-- transition, intro queues and battle-start side effects already happened in
+-- the checkpointed timeline.
+function Game:restoreCheckpointBattle(battle)
+  if self.stack:top() ~= self.overworld then
+    error("battle checkpoint requires a reconstructed overworld base", 0)
+  end
+  self.stack.states[#self.stack.states + 1] = battle
+  if battle.resumeCheckpoint then battle:resumeCheckpoint() end
+end
+
 return Game

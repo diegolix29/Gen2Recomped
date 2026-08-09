@@ -481,6 +481,12 @@ def derive(red, pokeyellow, symbols_path):
                     for i, name in enumerate(yellow_bubbles)],
     }
 
+    # The Oak-speech show-off mon is the player's Pikachu in Yellow
+    # (engine/battle/core.asm BATTLE_TYPE_PIKACHU / the ProfOak demo);
+    # the deep-copied Red field.oakSpeech has no demoSpecies, so stamp
+    # it or the import falls back to NIDORINO (#915).
+    yellow["field"]["oakSpeech"]["demoSpecies"] = "PIKACHU"
+
     # Ensure Melanie / Summer Beach town-map entries exist after rebuild.
     locations = yellow["field"]["townMap"]["locations"]
     if "CERULEAN_MELANIES_HOUSE" not in locations \

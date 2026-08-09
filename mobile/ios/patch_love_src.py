@@ -84,6 +84,49 @@ int w_pickFile(lua_State *L)
 	return gr_callBridge(L, "GRPickerBridge", "presentPickerWithKind:saveDir:", kind);
 }
 
+// love.system.pickFileKinds() -> "rom,mod,sav,stadium", or nil off iOS.
+//
+// So a caller can ask what this build's picker understands BEFORE opening it.
+// An unknown kind is refused (GRPickerBridge), and a refusal looks exactly
+// like a picker that would not open -- so a caller with a fallback worth
+// showing needs to know which it is facing. A mod that guesses instead has
+// no way back: before the refusal landed, an unrecognised kind wrote
+// picked_rom.gb and the ROM importer deleted it.
+//
+// nil where there is no bridge at all, which reads the same as "no kinds".
+int w_pickFileKinds(lua_State *L)
+{
+	Class cls = objc_getClass("GRPickerBridge");
+	if (cls == nullptr)
+	{
+		lua_pushnil(L);
+		return 1;
+	}
+	// Fetched through the runtime: wrap_System.cpp is compiled as C++ rather
+	// than Objective-C++, so no Foundation type may be NAMED here -- writing
+	// `NSString` alone breaks the whole translation unit. objc_msgSend is a
+	// plain C entry point and `id` comes from objc/runtime.h, so the string
+	// is asked for its UTF8 bytes without ever being typed.
+	typedef id (*GRObj)(Class, SEL);
+	id kinds = ((GRObj)objc_msgSend)(cls,
+	                                 sel_registerName("supportedPickerKinds"));
+	if (kinds == nullptr)
+	{
+		lua_pushnil(L);
+		return 1;
+	}
+	typedef const char *(*GRUTF8)(id, SEL);
+	const char *bytes = ((GRUTF8)objc_msgSend)(kinds,
+	                                           sel_registerName("UTF8String"));
+	if (bytes == nullptr || bytes[0] == '\0')
+	{
+		lua_pushnil(L);
+		return 1;
+	}
+	lua_pushstring(L, bytes);
+	return 1;
+}
+
 int w_createFile(lua_State *L)
 {
 	const char *name = luaL_optstring(L, 1, "export.sav");
@@ -101,6 +144,7 @@ int w_syncHealthSteps(lua_State *L)
 
 WRAP_REGISTRATION = """#ifdef LOVE_IOS
 	{ "pickFile", w_pickFile },
+	{ "pickFileKinds", w_pickFileKinds },
 	{ "createFile", w_createFile },
 	{ "syncHealthSteps", w_syncHealthSteps },
 	{ "httpDownload", w_httpDownload },

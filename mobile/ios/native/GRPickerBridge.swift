@@ -85,11 +85,30 @@ public final class GRPickerBridge: NSObject {
             types = [.zip]
         case "sav":
             destName = "picked_save.sav"
-        default:
+        // A Nintendo 64 cartridge, for mods that build assets out of one --
+        // the voxel mod's Pokemon Stadium battle models are the caller this
+        // was added for. Its own filename on purpose: an N64 ROM landing on
+        // picked_rom.gb is swept up by the Game Boy importer, deleted, and
+        // reported to the player as a broken cartridge.
+        case "stadium":
+            destName = "picked_stadium.z64"
+            for ext in ["z64", "n64", "v64"] {
+                if let t = UTType(filenameExtension: ext) { types.append(t) }
+            }
+        case "rom", "":
             destName = "picked_rom.gb"
             for ext in ["gb", "gbc"] {
                 if let t = UTType(filenameExtension: ext) { types.append(t) }
             }
+        // An unknown kind is REFUSED rather than treated as a Game Boy ROM.
+        //
+        // It used to fall through to picked_rom.gb, so a caller asking for a
+        // kind this build had never heard of got its file deleted and
+        // reported as a broken cartridge -- the worst possible answer to
+        // "I do not know that one". Returning false lets the caller find out
+        // and offer its own fallback.
+        default:
+            return false
         }
         // .gb/.gbc/.sav resolve to dynamic UTTypes on most devices; offering
         // .data as well keeps every real file selectable. The importer
@@ -105,6 +124,20 @@ public final class GRPickerBridge: NSObject {
             copyItem(at: src, into: dir, named: destName)
         }
         return present(picker, with: delegate)
+    }
+
+    // Which kinds presentPicker understands, comma separated.
+    //
+    // So a CALLER can ask before it calls. A mod that wants a kind this build
+    // predates cannot otherwise tell "refused" from "the picker would not
+    // open", and guessing wrong used to cost the player their ROM (see the
+    // default case above). Asking first turns that into a fallback the caller
+    // chooses rather than a file it loses.
+    //
+    // Kept beside the switch it describes, because the two drifting apart is
+    // the only way this can lie.
+    @objc public static func supportedPickerKinds() -> NSString {
+        return "rom,mod,sav,stadium" as NSString
     }
 
     @objc(presentExportWithName:saveDir:)

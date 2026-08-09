@@ -92,6 +92,17 @@ def version_for_manifest(manifest, requested_version=None, manifest_explicit=Fal
     return detected or requested_version or "red"
 
 
+def detect_rom_version(path):
+    """Read a canonical ROM once and return its supported game version."""
+    rom = RomImage(path, None)
+    version = SHA1_TO_VERSION.get(rom.sha1)
+    if version is None:
+        expected = ", ".join(VERSION_SHA1[name] for name in VERSION_MANIFESTS)
+        raise ValueError(
+            f"unsupported ROM SHA-1 {rom.sha1}; expected one of {expected}")
+    return version, rom
+
+
 def extract_constants(manifest, out_dir):
     data = manifest["constants"]
     util.write_lua(
@@ -2086,48 +2097,73 @@ def build(rom, symbols, manifest, out_dir, assets_dir, datasets):
     return results
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--rom", required=True,
         help="canonical US Pokemon Red, Blue, or Yellow ROM")
     parser.add_argument(
-        "--version", choices=sorted(VERSION_MANIFESTS), default="red",
-        help="select the shipped manifest for this version (default: red)")
+        "--version", choices=["auto", *sorted(VERSION_MANIFESTS)], default="auto",
+        help="select the shipped manifest for this version (default: detect from ROM)")
     parser.add_argument(
         "--manifest", default=None,
         help="explicit manifest path (overrides --version default path; "
              "RomImage hash still comes from the file's romSha1)")
-    parser.add_argument("--out", default="data/generated")
-    parser.add_argument("--assets", default="assets/generated")
+    parser.add_argument(
+        "--out", default=None,
+        help="generated data directory (default: version-specific cache path)")
+    parser.add_argument(
+        "--assets", default=None,
+        help="generated assets directory (default: version-specific cache path)")
     parser.add_argument("--clean", action="store_true")
     parser.add_argument(
         "--only", action="append", choices=DATASETS,
         help="build one dataset (repeatable); default builds all implemented")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     try:
         manifest_explicit = args.manifest is not None
-        manifest_path = resolve_manifest_path(args.version, args.manifest)
-        manifest = load_manifest(manifest_path)
-        version = version_for_manifest(
-            manifest, args.version, manifest_explicit=manifest_explicit)
-        expected_sha1 = manifest.get("romSha1") or VERSION_SHA1[version]
-        rom = RomImage(args.rom, expected_sha1)
+        requested_version = None if args.version == "auto" else args.version
+        if manifest_explicit:
+            manifest_path = resolve_manifest_path(
+                requested_version or "red", args.manifest)
+            manifest = load_manifest(manifest_path)
+            version = version_for_manifest(
+                manifest, requested_version, manifest_explicit=True)
+            expected_sha1 = manifest.get("romSha1") or VERSION_SHA1[version]
+            rom = RomImage(args.rom, expected_sha1)
+        elif requested_version is None:
+            version, rom = detect_rom_version(args.rom)
+            manifest_path = resolve_manifest_path(version, None)
+            manifest = load_manifest(manifest_path)
+            expected_sha1 = manifest.get("romSha1") or VERSION_SHA1[version]
+            if rom.sha1 != expected_sha1:
+                raise ValueError(
+                    f"unsupported ROM SHA-1 {rom.sha1}; expected {expected_sha1}")
+        else:
+            version = requested_version
+            manifest_path = resolve_manifest_path(version, None)
+            manifest = load_manifest(manifest_path)
+            version = version_for_manifest(manifest, version)
+            expected_sha1 = manifest.get("romSha1") or VERSION_SHA1[version]
+            rom = RomImage(args.rom, expected_sha1)
         symbols = SymbolTable(manifest["symbols"])
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
+    prefix = "" if version == "red" else version + os.sep
+    out_dir = args.out or prefix + os.path.join("data", "generated")
+    assets_dir = args.assets or prefix + os.path.join("assets", "generated")
     if args.clean:
-        for path in (args.out, args.assets):
+        for path in (out_dir, assets_dir):
             if os.path.isdir(path):
                 shutil.rmtree(path)
-    os.makedirs(args.out, exist_ok=True)
-    os.makedirs(args.assets, exist_ok=True)
+    os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(assets_dir, exist_ok=True)
     datasets = tuple(args.only) if args.only else DATASETS
     try:
-        build(rom, symbols, manifest, args.out, args.assets, datasets)
+        build(rom, symbols, manifest, out_dir, assets_dir, datasets)
     except (ValueError, KeyError, IndexError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

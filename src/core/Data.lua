@@ -84,6 +84,15 @@ function Data:applyVersionedFieldData()
     -- Yellow caches carry the wrong demo species too.  The fixed import
     -- manifest below stamps RATTATA for fresh imports.
     self.field.oldManBattle = { species = "RATTATA", level = 5 }
+    -- The Oak-speech show-off mon is the player's Pikachu in Yellow
+    -- (engine/battle/core.asm BATTLE_TYPE_PIKACHU / the ProfOak demo)
+    -- but caches imported before the manifest carried demoSpecies fell
+    -- back to Red's NIDORINO (#915).  The fixed import manifest below
+    -- stamps PIKACHU for fresh imports; fill it here for stale caches.
+    local oakSpeech = self.field.oakSpeech
+    if type(oakSpeech) == "table" and not oakSpeech.demoSpecies then
+      oakSpeech.demoSpecies = "PIKACHU"
+    end
   end
 end
 

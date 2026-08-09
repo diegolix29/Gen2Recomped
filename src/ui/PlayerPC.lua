@@ -44,7 +44,7 @@ local function askQuantity(game, list, count, id, cb)
     cb(1)
     return
   end
-  list.footer = "How many?"
+  list.footer = Strings("How many?")
   local QuantityBox = require("src.ui.QuantityBox")
   game.stack:push(QuantityBox.new(game, {
     max = count,

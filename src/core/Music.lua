@@ -368,11 +368,12 @@ function Music.setSurfing(data, surfing)
   if play then Music.play(data, play, nil, { reason = "map" }) end
 end
 
--- battle themes; kind = "wild"|"trainer"|"gym"|"final"
-function Music.playBattle(data, kind, trainerId)
+-- battle themes; kind = "wild"|"trainer"|"gym"|"final".  `song`, when
+-- given, overrides the kind's default -- a mod-set trainer battleTheme.
+function Music.playBattle(data, kind, trainerId, song)
   local b = data.audio and data.audio.battle
   if b then
-    Music.play(data, b[kind] or b.wild, nil,
+    Music.play(data, song or b[kind] or b.wild, nil,
       { reason = "battle", kind = kind, trainerId = trainerId })
   end
 end

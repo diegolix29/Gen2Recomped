@@ -204,23 +204,26 @@ eq(reopened.lastVersion, "blue",
   "launcher-only keys the game never reads are carried through its write")
 
 -- The corollary, and the reason the copy has to come from loadOptions: a
--- caller that writes a partial literal instead of a loaded table drops every
--- key it does not mention, because mergeOptions only fills DEFAULTS in around
--- what it is handed (SaveData.mergeOptions).  Nothing on the boot path does
--- this today; the assertion is the guard rail if someone shortcuts it.
+-- caller that writes a partial literal instead of a loaded table would drop
+-- every key it does not mention.  Since #932 that drop is closed by a
+-- three-way merge -- saveOptions folds on-disk values the caller's table
+-- does not carry (lastVersion here), defaults-filling only what neither side
+-- has -- so even a delta write keeps the launcher's key alive.  Nothing on
+-- the boot path writes partials today; the assertion is the guard rail if
+-- someone shortcuts it.
 SaveData.saveOptions({ battleLayout = "og" }, hop)
-eq(SaveData.loadOptions(hop).lastVersion, nil,
-  "a partial write drops launcher-only keys, so the game must write the "
-  .. "table loadOptions handed it")
+eq(SaveData.loadOptions(hop).lastVersion, "blue",
+  "a partial write no longer drops launcher-only keys (#932)")
 
--- Known gap, deliberately not asserted: a copy taken BEFORE the launcher's
--- write and flushed after it still wins, because saveOptions merges only
--- modOptions from disk and every other key is last-writer-wins.  Measured,
--- not guessed (og beats a newer wide).  No shipping path holds an options
--- table across a launcher write -- HostShell.restart replaces the process on
--- the way back to the launcher (#785, #575) and LauncherSettings.open notes
--- its own cached table is only true while its modal covers the launcher --
--- so closing that gap needs a three-way merge (baseline vs caller vs disk),
--- not a straight "disk wins", which would throw away real in-game changes.
+-- Known gap, deliberately not asserted: a FULL copy taken BEFORE the
+-- launcher's write and flushed after it still wins -- a table holding every
+-- defaultOptions key is authoritative, so its og is never folded against a
+-- newer wide on disk (#932 closes the PARTIAL-write drop, not this).
+-- Measured, not guessed.  No shipping path holds an options table across a
+-- launcher write -- HostShell.restart replaces the process on the way back
+-- to the launcher (#785, #575) and LauncherSettings.open notes its own
+-- cached table is only true while its modal covers the launcher -- so
+-- closing that gap needs a real three-way baseline (vs caller vs disk), not
+-- a straight "disk wins", which would throw away real in-game changes.
 
 T.finish("options_write_readback_bug828")

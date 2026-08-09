@@ -1346,6 +1346,9 @@ public class GameActivity extends SDLActivity {
     // in src/jni/love/src/common/android.cpp.
     private static volatile SecondaryPresentation secondaryPresentation;
     private static volatile boolean secondaryEnabled = false;
+    private static final int MAX_SECONDARY_TOUCHES = 32;
+    private static final java.util.ArrayDeque<String> secondaryTouches =
+        new java.util.ArrayDeque<>();
 
     @Keep
     public static void setSecondaryEnabled(final boolean on) {
@@ -1398,6 +1401,7 @@ public class GameActivity extends SDLActivity {
     private static void teardownSecondaryDisplay() {
         SecondaryPresentation p = secondaryPresentation;
         secondaryPresentation = null;
+        synchronized (secondaryTouches) { secondaryTouches.clear(); }
         if (p != null) {
             try { p.dismiss(); } catch (Throwable t) {}
         }
@@ -1413,6 +1417,13 @@ public class GameActivity extends SDLActivity {
         SecondaryPresentation p = secondaryPresentation;
         if (p != null && buf != null && w > 0 && h > 0) {
             p.updateFrame(buf, w, h);
+        }
+    }
+
+    @Keep
+    public static String pollSecondaryDisplayTouch() {
+        synchronized (secondaryTouches) {
+            return secondaryTouches.pollFirst();
         }
     }
 
@@ -1482,6 +1493,7 @@ public class GameActivity extends SDLActivity {
         private final android.graphics.Paint paint = new android.graphics.Paint();
         private final Object lock = new Object();
         private int fw, fh;
+        private int activePointer = -1;
 
         FrameView(Context context) {
             super(context);
@@ -1501,6 +1513,52 @@ public class GameActivity extends SDLActivity {
                 bitmap.copyPixelsFromBuffer(buf);
             }
             postInvalidate();
+        }
+
+        private void enqueueTouch(String event) {
+            synchronized (secondaryTouches) {
+                if (secondaryTouches.size() >= MAX_SECONDARY_TOUCHES) {
+                    secondaryTouches.clear();
+                    secondaryTouches.addLast("cancel,0,0");
+                } else {
+                    secondaryTouches.addLast(event);
+                }
+            }
+        }
+
+        private int logicalX(float x) {
+            return Math.min(fw - 1, Math.max(0,
+                (int) ((x - dst.left) * fw / dst.width())));
+        }
+
+        private int logicalY(float y) {
+            return Math.min(fh - 1, Math.max(0,
+                (int) ((y - dst.top) * fh / dst.height())));
+        }
+
+        @Override
+        public boolean onTouchEvent(android.view.MotionEvent event) {
+            synchronized (lock) {
+                int action = event.getActionMasked();
+                if (action == android.view.MotionEvent.ACTION_DOWN && fw > 0
+                        && dst.contains((int) event.getX(), (int) event.getY())) {
+                    activePointer = event.getPointerId(0);
+                    enqueueTouch("down," + logicalX(event.getX()) + ","
+                        + logicalY(event.getY()));
+                } else if (action == android.view.MotionEvent.ACTION_UP
+                        && activePointer >= 0) {
+                    int index = event.findPointerIndex(activePointer);
+                    if (index >= 0 && fw > 0) {
+                        enqueueTouch("up," + logicalX(event.getX(index)) + ","
+                            + logicalY(event.getY(index)));
+                    }
+                    activePointer = -1;
+                } else if (action == android.view.MotionEvent.ACTION_CANCEL) {
+                    activePointer = -1;
+                    enqueueTouch("cancel,0,0");
+                }
+            }
+            return true;
         }
 
         @Override

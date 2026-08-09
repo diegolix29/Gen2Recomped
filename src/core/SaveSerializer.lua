@@ -41,6 +41,13 @@ local function serialize(v, indent)
   error("cannot serialize " .. t)
 end
 
+-- LuaJIT 2.1 can lose a just-added nested table entry when a GC step lands
+-- inside a compiled recursive serialization trace. The symptom is valid input
+-- becoming `{" followed by only the trailing comma, which then cannot be read
+-- back. Save encoding is infrequent and I/O-bound, so keep this correctness-
+-- critical recursion in the interpreter while leaving the game JIT enabled.
+if jit and jit.off then jit.off(serialize, true) end
+
 function SaveSerializer.encode(data)
   return "return " .. serialize(data) .. "\n"
 end

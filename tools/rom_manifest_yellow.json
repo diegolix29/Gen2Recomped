@@ -6566,6 +6566,7 @@
       }
     ],
     "oakSpeech": {
+      "demoSpecies": "PIKACHU",
       "shrink1": "assets/generated/intro/shrink1.png",
       "shrink2": "assets/generated/intro/shrink2.png"
     },

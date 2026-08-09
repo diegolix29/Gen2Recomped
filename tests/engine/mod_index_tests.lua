@@ -142,7 +142,11 @@ do
   index, err = ModIndex.parse(Json.encode({ mods = { NUZLOCKE } }))
   check(index == nil and err ~= nil, "a feed with no schema_version is refused")
   index, err = ModIndex.parse("<!DOCTYPE html><html>404</html>")
-  check(index == nil and err ~= nil, "an HTML error page soft-fails")
+  check(index == nil and tostring(err):find("HTML", 1, true) ~= nil,
+    "an HTML error page is named, not blamed on the parser")
+  index, err = ModIndex.parse("Error: upstream unavailable")
+  check(index == nil and tostring(err):find("not JSON", 1, true) ~= nil,
+    "a plain-text error names the response")
   index, err = ModIndex.parse('{"schema_version":1}')
   check(index == nil and err ~= nil, "a feed with no mods array soft-fails")
 end

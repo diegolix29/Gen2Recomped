@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Run the LÖVE2D Pokémon Red port (macOS-friendly).
 #
-# Assumes scripts/setup.sh has been run once (generated data present and
-# LÖVE installed).  Extra arguments are passed through to LÖVE.
+# Assumes scripts/setup.sh has been run once for at least one game (generated
+# data present and LÖVE installed). Extra arguments are passed through to LÖVE.
 #
 # Link play is peer-to-peer (lua-enet, bundled with LÖVE): one player
 # picks HOST A GAME in START > LINK and reads out the address shown;
@@ -15,8 +15,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 fail() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
-[ -f "$ROOT/data/generated/maps.lua" ] \
-  || fail "generated data missing,  run scripts/setup.sh first"
+if [ ! -f "$ROOT/data/generated/maps.lua" ] \
+    && [ ! -f "$ROOT/blue/data/generated/maps.lua" ] \
+    && [ ! -f "$ROOT/yellow/data/generated/maps.lua" ]; then
+  fail "generated data missing,  run scripts/setup.sh first"
+fi
 
 find_love() {
   command -v love >/dev/null 2>&1 && { echo "love"; return; }
