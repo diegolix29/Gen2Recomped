@@ -185,7 +185,7 @@ local function patchCastLoop(source)
       -- Dramatic Shape's original 2D card for this frame.
       if not OverworldStadium.safeDraw(p) and p.sprite then
         drawEntity(p.sprite, p.px, p.py, viewFacing(p), p.phase, p.flip, p.gh,
-                   p.colors, p.lift)
+                   p.colors, p.lift, yaw)
       end
     end
   end
