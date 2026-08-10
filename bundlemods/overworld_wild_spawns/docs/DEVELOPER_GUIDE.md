@@ -1,0 +1,272 @@
+# Wilds of Kanto — Developer Guide (0.4.2)
+
+> Tile size, one-tile 2D scale, Voxel adapter, and aggressive SM notes below
+> match the 0.4.2 implementation.
+
+Public name: **Wilds of Kanto**. Technical id: `overworld_wild_spawns`.
+
+This document describes the **implemented** architecture. It does not invent Gen1Recomp APIs.
+
+## 1. Project structure
+
+Repository root **is** the mod (DramaticShape layout):
+
+```text
+manifest.json  main.lua  options.lua  mod.card
+assets/  lib/  docs/  tests/  scripts/
+```
+
+Local engine: `./scripts/bootstrap.sh` → `.deps/gen1recomp` with symlink
+`mods/overworld_wild_spawns` → repo root.
+
+## 2. Mod lifecycle
+
+`main.lua` returns `function(mod)`. During load:
+
+1. Virtual `V.require` loads `lib/*.lua`
+2. `Config.defineOptions`
+3. `SpawnRender:registerContent()` — **only** content-registry writes
+4. Register HUD / preview / behaviour-tick pipelines
+5. Hook `encounter.roll` + `movement.collision` when enabled
+6. Subscribe to map/world/battle/save/options events
+
+Gen1Recomp freezes content registries after all mods load.
+
+## 3. Content registration
+
+`SpawnRender:registerContent()` registers:
+
+- `SPRITE_OW_WILD_PLACEHOLDER`
+- `SPRITE_OW_WILD_FALLBACK` → `assets/fallback/pokemon_missing.png`
+- `SPRITE_OW_WILD_<SPECIES>` per `mod.content.pokemon` entry (battle front or fallback)
+
+Sets `contentRegistrationOpen = false` afterward.
+
+## 4. Registry freeze
+
+Never call `mod.content.sprites:register|override|patch|remove` from map callbacks,
+test spawn, or preview. Runtime uses `speciesSpriteIds` lookup + image path resolve only.
+
+## 5. Sprite resolution
+
+Ordered candidates (species **id** first, not display name alone):
+
+explicit map → dex-padded PNG → species_id PNG → display-name token →
+battle front/back → menu icon → optional save-dir cache → fallback
+
+## 6. Runtime image cache
+
+`resolvedAssetBySpeciesId` / `runtimeImageCache` hold paths and bake results.
+Optional bake writes `overworld_wild_spawns-cache/<id>.png` as a **LÖVE virtual**
+path (never `getSaveDirectory()` absolute paths).
+
+## 7. Fallback sprite
+
+`assets/fallback/pokemon_missing.png` is always registered. Hidden behaviours
+**do not** load fallback art — they draw shake/dust only.
+
+## 8. Encounter data source
+
+`game.data.encounters[mapId]`:
+
+| Kind | Free overworld spawn? |
+|---|---|
+| `grass` | Yes (routes + caves) |
+| `water` | Yes (Surf table on water tiles) |
+| `fishing` | **No** — rod only; preview index only |
+
+## 9. Map analysis
+
+`Surface.resolve(game, map, encDef)`:
+
+1. Grass table + `isGrassCell` tiles → `GRASS`
+2. Grass table + indoor/cave rule → `CAVE` (walkable tiles)
+3. Water table → `WATER`
+4. Else unsupported → vanilla left intact
+
+Indoor rule mirrors Gen1Recomp:
+`map.def.index >= field.indoorEncounters.firstIndoorMap` and
+`tileset ~= excludedTileset` (FOREST), with tileset/id fallbacks for fixtures.
+
+## 10. Encounter-tile detection
+
+| Mode | Source |
+|---|---|
+| grass | `Map:isGrassCell` |
+| water | `Map:isWaterCell` |
+| walkable (cave) | walkable ∧ ¬warp ∧ ¬water |
+
+Rejects: blocked, warp, NPC, other wild, player, distance band.
+
+## 11. Spawn regions
+
+`SpawnRegions.build` flood-fills 4-connected eligible tiles.
+`allocate` spreads target count by region size (tiny patches ≤1, ~6 tiles/mon cap).
+
+## 12. Spawn capacity
+
+```text
+raw = minVisible + floor(eligibleTiles / tilesPerAdditional) + softSpanBonus
+raw *= densityFactor(low/normal/high/very_high)
+clamp to [minVisible, maxVisible] and eligible/3
+```
+
+Eligible tiles dominate; raw width×height is not used alone.
+
+## 13. Entity lifecycle
+
+`AVAILABLE` → (`ENCOUNTER_STARTING`) → despawn → battle → `REMOVED`
+Records in `logic.spawns` / `logic.entities` / `logic.byMap`.
+
+## 14. Render path
+
+Entities implement `pose()` / `draw()` on `ow.entities`.
+Scaled draw uses `love.graphics.draw` + nearest filter; feet-biased growth.
+Engine `TileRenderer:drawCellBottom` after every entity on grass provides
+the player/NPC grass overdraw — no custom black mask.
+
+## 15. Grass overlay
+
+Implemented by Gen1Recomp for all `ow.entities` on grass cells.
+Mod sets `grass_tuck_px = 0` by default so sprites are not pushed into the turf.
+`inGrassOverlay` tracks live cell grass for HUD.
+Relative occlusion: `min(grass_occlusion_px, renderedVisibleHeight * 0.35)` with
+a small upward lift so small sprites are not fully covered.
+Aggressive entities clear the grass flag when their committed tile leaves grass.
+
+## 16. Sprite scaling (one tile)
+
+Gen1Recomp tile size is **16×16** (`lib/tile.lua`, matching `NPC.lua`).
+
+```text
+visibleBounds = non-transparent pixel box (cached)
+desiredScale  = readability / species preference / min_sprite_size option
+maximumScale  = min(usableW / visW, usableH / visH)   -- usable ≈ 0.90×0.95 tile
+final2DScale  = min(desiredScale, maximumScale)
+```
+
+- Source PNGs may be larger; transparent margins are ignored.
+- Aspect ratio preserved; nearest-neighbor filter.
+- Logical footprint stays one tile (collision / sight / contact unchanged).
+- Camera zoom is engine-only and is not folded into `final2DScale`.
+- Voxel billboards stay a 16×16 card (`voxelScale = 1`); never reuse the 2D scale.
+
+## 17. Behaviour state machines
+
+See `lib/behavior.lua`. Tick via `lib/behavior_tick.lua` present pipeline
+(`owwild_behavior_tick`) because Gen1Recomp has no `world.tick` and only
+updates `ow.npcs`. Movement goes through `lib/movement.lua` (NPC-compatible
+previous/current pixel lerp; cell finalizes after the step).
+
+Aggressive SM: `IDLE → PLAYER_DETECTED → ALERT → CHASE_START → CHASING →
+BATTLE_PENDING → IN_BATTLE → CLEANUP`.
+
+Alert reuses `ow.emote = { npc = entity, frames = 60, onDone = ... }`
+(same emotion-bubble path as trainers). The bubble is **not** a wild/Voxel
+entity. Chase starts only from `onDone` (`Behavior.markChaseReady`).
+AI decisions hold while `ow.emote` / `ow.engaging` owns the world.
+
+Stable ids: `wilds_of_kanto_entity_<n>` for the full lifetime.
+
+## 18. Battle trigger
+
+`world:queueScript({ { "start_battle", "wild", species, level } })`
+`pendingBattle` + entity state prevent double starts.
+Contact: `world.stepped` tile match + `movement.collision` bump.
+
+## 19. Water support
+
+- Surf table → visible water entities on water tiles
+- Stay on connected water for wander
+- Slight visual sink (`waterSink = 2`)
+- Vanilla water `encounter.roll` **not** suppressed
+- Fishing tables never used for free spawns
+
+## 20. Cave support
+
+- No dependence on grass graphics
+- Walkable indoor tiles
+- Hidden uses dust/shadow, never grass shake
+
+## 21. Developer mode
+
+HUD pipeline `owwild_debug_hud`: Target / Active / Regions / Surface + nearest
+entity detail (stable id, behaviour state, source/visible/rendered size,
+desired vs one-tile max scale, Voxel registration / fallback, alert/battle).
+Overlays: spawn tiles + optional behaviour/sight fills.
+
+## 22. Preview browser
+
+`ui.options.rows` activate row + Start Menu item (no button option type).
+Global encounter index; Test spawn 7 phases; never mutates registries.
+
+## 23. Logging
+
+`[WildsOfKanto][LEVEL]` via `debug_log.lua`. Forced on when `dev_mode`.
+
+## 24. Tests
+
+```sh
+cd .deps/gen1recomp
+lua mods/overworld_wild_spawns/tests/overworld_wild_spawns_test.lua
+lua mods/overworld_wild_spawns/tests/voxel_aggressive_compat_test.lua
+```
+
+## 25. Release build
+
+```sh
+./scripts/bootstrap.sh   # once
+./scripts/build-mod.py
+```
+
+Produces `dist/wilds-of-kanto-v0.4.2.zip` (plus technical-id aliases) with
+`manifest.json` at ZIP root.
+Includes `docs/`. Excludes `tests/`, `scripts/`, `.deps/`, root `ARCHITECTURE.md`.
+
+## 26. Known technical constraints / Voxel compatibility
+
+- No public wild-battle helper beyond script verb `start_battle`
+- No continuous mod tick except present pipelines / events listed above
+- Trainer sight has no wall LOS in vanilla; this mod **does** block aggressive sight on non-walkable tiles
+- Single-frame sheets ignore SpriteRenderer facing; Idle Look flips in custom draw
+- Voxel path uses the public `pose()` billboard contract only; it does **not**
+  apply 2D `final2DScale` (cards are always 16×16 from the sheet)
+- Hidden markers are logical-only (not in `ow.entities`) because VoxelScene
+  retires the whole DRAMATIC_SHAPE pipeline on a nil `sprite.def`
+- Per-entity Voxel failures fall back to 2D for that entity; we cannot un-break
+  a pipeline Gen1Recomp already marked `broken` after a throw
+- Emote (`!`) is drawn by the engine FX overlay, not as a Voxel Pokemon entity
+- Full in-game Voxel chase→battle→overworld restore still needs a ROM + both mods
+
+## 27. Adding behaviours
+
+1. Add constant + weights in `lib/behavior.lua`
+2. Allow on surfaces in `Surface.BEHAVIORS`
+3. Implement branch in `Behavior.tick`
+4. Expose option toggle if player-facing
+5. Extend tests + docs
+
+## 28. Species configuration
+
+Central tables only:
+
+- `SPECIES_AFFINITY` in `behavior.lua`
+- `SPECIES_SCALE` in `sprite_scale.lua`
+- Optional `speciesAssetPaths` in `spawn_render.lua`
+
+Avoid scattered `if speciesId == ...` in spawn_logic.
+
+## Implemented knacks (carry forward)
+
+- ZIP root = mod root
+- ASCII-only manager metadata (`manifest.json` / `mod.card` / `options.lua`)
+- No registry writes after load
+- Pre-register all species sprites at load
+- Species id for asset identity
+- Real art vs fallback
+- LÖVE virtual paths only for images
+- Vanilla encounter fail-safe
+- Pokédex independence
+- Entity create ≠ render success diagnostics
+- Debug phases on Test spawn
+- Preview browser without freezing registries
