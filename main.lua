@@ -533,7 +533,7 @@ function love.touchpressed(id, x, y, dx, dy, pressure)
     if love.system.getOS() == "iOS" then return end
     return Importer:mousepressed(x, y, 1)
   end
-  if Game.touchpressed then
+  if Game and Game.touchpressed then
     -- Handle missing parameters smoothly
     pcall(function() Game:touchpressed(id, x, y, dx, dy, pressure) end)
   end
@@ -548,7 +548,7 @@ function love.touchmoved(id, x, y, dx, dy, pressure)
   if Importer and Importer.touchmoved then
     return Importer:touchmoved(id, x, y, dx, dy, pressure)
   end
-  if Game.touchmoved then
+  if Game and Game.touchmoved then
     pcall(function() Game:touchmoved(id, x, y, dx, dy, pressure) end)
   end
 end
@@ -562,7 +562,7 @@ function love.touchreleased(id, x, y, dx, dy, pressure)
   if Importer and Importer.touchreleased then
     return Importer:touchreleased(id, x, y, dx, dy, pressure)
   end
-  if Game.touchreleased then
+  if Game and Game.touchreleased then
     pcall(function() Game:touchreleased(id, x, y, dx, dy, pressure) end)
   end
 end
@@ -610,7 +610,9 @@ function love.mousepressed(x, y, button, istouch)
     if Game and button == 1 then pcall(function() Game:touchpressed("mouse", x, y) end) end
     return
   end
-  if Game and Game.mousepressed then Game:mousepressed(x, y, button, istouch) end
+  if Game and Game.mousepressed and not istouch then 
+    Game:mousepressed(x, y, button, istouch) 
+  end
 end
 
 function love.mousereleased(x, y, button, istouch)
@@ -626,7 +628,9 @@ function love.mousereleased(x, y, button, istouch)
     if Game and button == 1 then pcall(function() Game:touchreleased("mouse", x, y) end) end
     return
   end
-  if Game and Game.mousereleased then Game:mousereleased(x, y, button, istouch) end
+  if Game and Game.mousereleased and not istouch then 
+    Game:mousereleased(x, y, button, istouch) 
+  end
 end
 
 function love.mousemoved(x, y, dx, dy, istouch)
@@ -640,7 +644,9 @@ function love.mousemoved(x, y, dx, dy, istouch)
     if Game and love.mouse.isDown(1) then pcall(function() Game:touchmoved("mouse", x, y) end) end
     return
   end
-  if Game and Game.mousemoved then Game:mousemoved(x, y, dx, dy, istouch) end
+  if Game and Game.mousemoved and not istouch then 
+    Game:mousemoved(x, y, dx, dy, istouch) 
+  end
 end
 
 function love.textinput(text)
