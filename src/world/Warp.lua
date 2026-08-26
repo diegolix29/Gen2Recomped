@@ -56,15 +56,35 @@ local Warp = {}
 function Warp.onArrive(map, cx, cy)
   local w = map:warpAtCell(cx, cy)
   if not (w and map:isWarpTileCell(cx, cy)) then return nil end
+  
   local Map = require("src.world.Map")
   local GameVersion = require("src.core.GameVersion")
-  -- Only where the cell answers in collision CLASSES. On a tile-id map those
-  -- four numbers mean nothing, and reading them as carpets would silently
-  -- disable real doors -- see Map:speaksGen2Collision.
+  
   if GameVersion.isGen2() and map.speaksGen2Collision and map:speaksGen2Collision()
      and Map.gen2IsDirectionalCarpet(map:cellTile(cx, cy)) then
+     
+    local Game = require("src.core.Game")
+    if Game and Game.input then
+      local holdingDir = Game.input:isDown("up") or Game.input:isDown("down") or 
+                         Game.input:isDown("left") or Game.input:isDown("right")
+                         
+      local now = love.timer.getTime()
+      
+      if holdingDir then
+        if not map.carpetHoldStartTime then
+          map.carpetHoldStartTime = now
+        elseif now - map.carpetHoldStartTime >= 0.5 then
+          map.carpetHoldStartTime = nil
+          return w 
+        end
+      else
+        map.carpetHoldStartTime = nil
+      end
+    end
+    
     return nil
   end
+  
   return w
 end
 

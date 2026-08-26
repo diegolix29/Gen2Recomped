@@ -1,0 +1,50 @@
+{
+  "id": "STADIUM_OVERWORLD_MODELS",
+  "name": "Pokemon Stadium 1-2 Overworld Models (Gen 1-2)",
+  "version": "0.1.55",
+  "api": 2,
+  "entry": "main.lua",
+  "profile": "content",
+  "category": "GRAPHICS",
+  "game_version": "0.0.0-dev || >=0.0.0 <2.0.0 ||>=0.1.37 <2.0.0",
+  "priority": 110,
+  "dependencies": [
+    "DRAMATIC_SHAPE"
+  ],
+  "optional_dependencies": [
+    "FOLLOWERS_EX",
+    "PokePCFollowers_VoxelMerge",
+    "DRAMATIC_SKY_RIDE"
+  ],
+  "conflicts": [],
+  "permissions": [
+    "engine_internals",
+    "filesystem"
+  ],
+  "affects_link": false,
+  "description": "Pokemon Stadium 3D overworld models supporting National Dex 1-151 for Gen 1 (Stadium 1 ROM) and 1-251 for Gen 2 (Stadium 2 ROM) with Followers EX and Dramatic Sky Ride compatibility.",
+  "options_schema": "options.lua",
+  "github": "randyadr/3D-Pokemon-Sprites",
+  "required_imports": [
+    {
+      "id": "stadium_rom",
+      "name": "Pokemon Stadium (USA) ROM for Gen 1",
+      "description": "Required source ROM for Stadium 1 model extraction (Gen 1 games only). .z64, .v64 and .n64 dumps are all accepted; the mod normalises the byte order itself.",
+      "file": "baseroms/stadium.z64",
+      "root": "save",
+      "format": "n64",
+      "size": 67108864,
+      "md5": "d8f5a0d2d5e7c8b2a0f1e3d4c5b6a7d8"
+    },
+    {
+      "id": "stadium2_rom",
+      "name": "Pokemon Stadium 2 (USA) ROM for Gen 2",
+      "description": "Required source ROM for Stadium 2 model extraction (Gen 2 games only). .z64, .v64 and .n64 dumps are all accepted; the mod normalises the byte order itself.",
+      "file": "baseroms/stadium2.z64",
+      "root": "save",
+      "format": "n64",
+      "size": 67108864,
+      "md5": "1561c75d11cedf356a8ddb1a4a5f9d5d"
+    }
+  ]
+}

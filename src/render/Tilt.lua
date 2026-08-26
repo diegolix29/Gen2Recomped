@@ -152,4 +152,13 @@ function Tilt.meshCorners(vw, vh)
   return out
 end
 
+-- Rotate camera through tilt levels: dir = 1 for right (next level), dir = -1 for left (prev level)
+function Tilt.rotateCamera(dir)
+  dir = dir or 1
+  local newLevel = Tilt.level + dir
+  if newLevel < 0 then newLevel = 3 end
+  if newLevel > 3 then newLevel = 0 end
+  Tilt.setLevel(newLevel)
+end
+
 return Tilt

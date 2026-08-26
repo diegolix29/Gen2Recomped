@@ -196,9 +196,10 @@ end
 local function blitFrame(image, quad, x, y, flip, redraw, frameWidth, scaleX, scaleY)
   local sx = scaleX or 1.0
   local sy = scaleY or 1.0
+  local fw = frameWidth or 16
   if flip then
-    love.graphics.draw(image, quad, x + frameWidth * sx, y, 0, -sx, sy)
-    if redraw then PaletteFX.markSpriteRedraw(image, quad, x + frameWidth * sx, y, -sx) end
+    love.graphics.draw(image, quad, x + fw * sx, y, 0, -sx, sy)
+    if redraw then PaletteFX.markSpriteRedraw(image, quad, x + fw * sx, y, -sx) end
   else
     love.graphics.draw(image, quad, x, y, 0, sx, sy)
     if redraw then PaletteFX.markSpriteRedraw(image, quad, x, y, sx) end
@@ -259,7 +260,8 @@ function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip, to
   -- For 16x16 sprites, offset by 4px as before
   -- For larger sprites, offset by (frameHeight - 16) / 2 to center on the tile
   -- Apply scale to the offset as well
-  local yOffset = self.frameHeight == 16 and 4 or math.floor((self.frameHeight - 16) / 2)
+  local frameHeight = self.frameHeight or 16
+  local yOffset = frameHeight == 16 and 4 or math.floor((frameHeight - 16) / 2)
   local y = math.floor(py - camY) - yOffset * scaleY
   local image = self.image
   local redraw = false

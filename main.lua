@@ -718,6 +718,7 @@ function love.joystickadded(joystick)
   notifyJoystick("joystickadded", joystick)
   if editorMode or TouchEditor then return end
   if Importer then return end
+  if not Game then return end
   Game:joystickadded(joystick)
 end
 
