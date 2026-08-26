@@ -38,7 +38,15 @@ function OptionRows.draw(game, rows, index, scroll, bottomLabel, bottomRow)
     Font.drawBox(0, (slot - 1) * 4, 20, 4)
     love.graphics.setColor(0, 0, 0, 1)
     Font.draw(row.label, 16, ((slot - 1) * 4 + 1) * 8)
-    Font.draw(row.value and row.value(game) or "", 24, ((slot - 1) * 4 + 2) * 8)
+    local displayValue = ""
+    if row.value then
+      if type(row.value) == "function" then
+        displayValue = row.value(game)
+      else
+        displayValue = tostring(row.value)
+      end
+    end
+    Font.draw(displayValue, 24, ((slot - 1) * 4 + 2) * 8)
     if i == index then
       Font.drawCode(Theme.cursor, 8, ((slot - 1) * 4 + 1) * 8)
     end
