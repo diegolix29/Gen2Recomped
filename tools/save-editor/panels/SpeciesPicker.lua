@@ -1,3 +1,9 @@
+-- Copyright (c) 2026 Cedric. All rights reserved.
+-- Source-available under the Gen2Recomped Map Editor License: you may read,
+-- build and privately modify this file; you may not redistribute it or use it
+-- commercially. See LICENSE at the repository root. Cartridge-derived data is
+-- not covered and is not the copyright holder's to license.
+
 -- Type-to-search species picker (#541).  The inspector used to change species
 -- with a pair of arrows, which walked the catalog one entry at a time -- 151
 -- taps to cross the dex -- and ran a full MonOps recalculation on whatever
@@ -12,6 +18,7 @@
 local Theme = require("Theme")
 local Ops = require("Ops")
 local MonEditor = require("MonEditor")
+local Catalog = require("Catalog")
 local PAL = Theme.PAL
 
 local Picker = {}
@@ -113,8 +120,9 @@ function Picker.draw(S, Kit, width, height)
       local tail = usable and ("#%03d"):format(tonumber(def and def.dex) or 0)
         or "no data"
       local tailW = Kit.textWidth("tiny", tail)
+      local label = Catalog.speciesLabel(S.data, id)
       Kit.text("monoRow",
-        Kit.ellipsize("monoRow", id, inner - (tx - cx) - tailW - 20 * s), tx,
+        Kit.ellipsize("monoRow", label, inner - (tx - cx) - tailW - 20 * s), tx,
         ry + (rowH - Kit.textHeight("monoRow")) / 2,
         usable and PAL.text or PAL.faint)
       Kit.textRight("tiny", tail, cx + inner - 10 * s,

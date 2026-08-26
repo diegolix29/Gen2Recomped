@@ -109,7 +109,7 @@ int ota_net_download_buffer(const char *url, long timeout_ms, char **out, size_t
   struct mem_buf mem = {0};
   curl_easy_setopt(curl, CURLOPT_URL, url);
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-  curl_easy_setopt(curl, CURLOPT_USERAGENT, "gen1recomp-switch-ota");
+  curl_easy_setopt(curl, CURLOPT_USERAGENT, "Gen2Recomped-switch-ota");
   curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, timeout_ms);
   curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, timeout_ms);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_mem);
@@ -154,7 +154,7 @@ int ota_net_download_file(const char *url, const char *path, long timeout_ms, ch
   struct file_progress fp_cb = {progress, progress_ud};
   curl_easy_setopt(curl, CURLOPT_URL, url);
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-  curl_easy_setopt(curl, CURLOPT_USERAGENT, "gen1recomp-switch-ota");
+  curl_easy_setopt(curl, CURLOPT_USERAGENT, "Gen2Recomped-switch-ota");
   curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, timeout_ms);
   curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, timeout_ms);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_file);

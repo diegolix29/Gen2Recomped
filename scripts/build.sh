@@ -8,12 +8,12 @@
 #                          [--notary-profile NAME] [--no-notarize]
 #                          [--release]   # ios only: release config instead of debug
 #
-# Output: dist/mac/gen1recomp-macos.zip
-#         dist/win/gen1recomp-win64.zip
-#         dist/linux/gen1recomp-linux.zip (fused x86_64 AppImage)
+# Output: dist/mac/Gen2Recomped-macos.zip
+#         dist/win/Gen2Recomped-win64.zip
+#         dist/linux/Gen2Recomped-linux.zip (fused x86_64 AppImage)
 #         dist/android/debug/*.apk (full gradle output stays under
 #           mobile/android/app/build/outputs/apk/embedNoRecord/)
-#         dist/ios/<Config>-<sdk>/gen1recomp.app (full xcodebuild output stays
+#         dist/ios/<Config>-<sdk>/Gen2Recomped.app (full xcodebuild output stays
 #           under mobile/ios/build/Build/Products/)
 
 set -euo pipefail
@@ -25,8 +25,14 @@ WORK="$HERE/work"
 DIST="$ROOT/dist"
 ENTITLEMENTS="$ROOT/scripts/macos-entitlements.plist"
 
-APP_NAME="gen2recomp"
-BUNDLE_ID="com.theboisclub.pokemonred"
+# Drives every artifact filename.  .github/workflows/release.yml copies
+# dist/mac/$APP_NAME-macos.zip, dist/win/$APP_NAME-win64.zip and
+# dist/linux/$APP_NAME-linux.zip by those exact names, so the two must
+# agree -- a stale "gen1recomp" here builds three archives nobody collects
+# and fails the release at "Collect desktop artifacts", with the build step
+# itself reporting success.
+APP_NAME="Gen2Recomped"
+BUNDLE_ID="com.underdecoded.gen2recomped"
 LOVE_VERSION="11.5"
 VERSION="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)"
 VERSION_EXPLICIT=false
@@ -65,9 +71,27 @@ mkdir -p "$CACHE" "$WORK" "$DIST/mac" "$DIST/win" "$DIST/linux"
 say "packing game.love"
 LOVE_FILE="$WORK/game.love"
 rm -f "$LOVE_FILE"
-# The launcher UI kit lives at src/ui/kit (inside src/, packed wholesale);
-# the vendored libs/flexlove tree it replaced is gone.
+# The manifest list is a GLOB, not three names.  Naming them by hand shipped
+# exactly the Gen 1 set -- red, blue, yellow -- so a packaged build could not
+# import Gold, Silver or Crystal at all and failed with
+#   ROM import metadata is missing: Could not open file
+#   tools/rom_manifest_crystal.json. Does not exist.
+# while the same import worked from source, where the files are simply there.
+# src/core/GameVersion.lua names one manifest per cartridge; adding a
+# cartridge must not require editing a packing script as well.
+MANIFESTS=""
+for manifest in "$ROOT"/tools/rom_manifest*.json; do
+  [ -f "$manifest" ] || continue
+  MANIFESTS="$MANIFESTS tools/$(basename "$manifest")"
+done
+[ -n "$MANIFESTS" ] || fail "no tools/rom_manifest*.json found; no ROM could be imported"
+say "manifests:$MANIFESTS"
+
+# mods/ ships too: the launcher's MODS tab lists what is installed, and the
+# bundled example mods (DramaticShapes among them) live there.
 (cd "$ROOT" && zip -q -9 -r "$LOVE_FILE" \
+  main.lua conf.lua src data assets mods tools/save-editor \
+  $MANIFESTS \
   main.lua conf.lua src data assets tools/save-editor \
   tools/rom_manifest.json tools/rom_manifest_blue.json \
   tools/rom_manifest_yellow.json tools/rom_manifest_gold.json \
@@ -94,7 +118,16 @@ for required in tools/save-editor/App.lua tools/save-editor/Kit.lua \
                 tools/rom_manifest_yellow.json tools/rom_manifest_gold.json \
                 tools/rom_manifest_silver.json; do
   grep -qxF "$required" "$LOVE_LISTING" \
+                tools/save-editor/panels/Party.lua; do
+  unzip -Z1 "$LOVE_FILE" | grep -qx "$required" \
     || fail "game.love is missing $required"
+done
+# Every manifest that exists in the tree must be in the archive -- the check
+# follows the glob rather than a second hand-written list, so the two can
+# never disagree the way they just did.
+for manifest in $MANIFESTS; do
+  unzip -Z1 "$LOVE_FILE" | grep -qx "$manifest" \
+    || fail "game.love is missing $manifest"
 done
 say "game.love: $(du -h "$LOVE_FILE" | cut -f1)"
 
@@ -263,7 +296,11 @@ build_linux() {
   # (the hook ships commented-out in LÖVE's official AppImage), and glue
   # runtime + repacked squashfs back together.
   command -v unsquashfs >/dev/null && command -v mksquashfs >/dev/null \
-    || fail "squashfs tools not found; install with: brew install squashfs"
+    || fail "squashfs tools not found; install with:
+    macOS         brew install squashfs
+    Debian/Ubuntu sudo apt install squashfs-tools
+    Fedora        sudo dnf install squashfs-tools
+    Arch          sudo pacman -S squashfs-tools"
 
   # The squashfs starts right where the ELF ends:
   # e_shoff + e_shnum * e_shentsize (all little-endian in the ELF64 header).
@@ -280,12 +317,16 @@ build_linux() {
   unsquashfs -q -no-xattrs -o "$sfs_offset" -d "$appdir" "$love_appimage" >/dev/null
 
   cp "$LOVE_FILE" "$appdir/game.love"
-  # sed -i syntax differs between macOS (requires '') and Linux (no argument or extension)
-  if [[ "$OSTYPE" == "darwin"* ]]; then
-    sed -i '' 's|^#FUSE_PATH="$APPDIR/my_game.love"$|FUSE_PATH="$APPDIR/game.love"|' "$appdir/AppRun"
-  else
-    sed -i 's|^#FUSE_PATH="$APPDIR/my_game.love"$|FUSE_PATH="$APPDIR/game.love"|' "$appdir/AppRun"
-  fi
+  # `sed -i` takes a MANDATORY backup suffix on BSD and forbids one on GNU, so
+  # no single spelling works on both -- and `sed -i ''` on Linux silently ate
+  # the next argument as the script, which is why this step could only ever run
+  # on macOS.  Write the patched copy out and move it back instead; `cat >`
+  # rather than `mv` so AppRun keeps its executable bit.
+  local patched="$WORK/AppRun.patched"
+  sed 's|^#FUSE_PATH="$APPDIR/my_game.love"$|FUSE_PATH="$APPDIR/game.love"|' \
+    "$appdir/AppRun" > "$patched"
+  cat "$patched" > "$appdir/AppRun"
+  rm -f "$patched"
   grep -q '^FUSE_PATH="\$APPDIR/game.love"$' "$appdir/AppRun" \
     || fail "failed to enable FUSE_PATH in AppRun (upstream AppRun changed?)"
 
@@ -302,9 +343,19 @@ build_linux() {
   cat "$sfs_out" >> "$out_bin"
   chmod +x "$out_bin"
 
+  # Ship the raw .AppImage as well as the zip.  An AppImage is already a
+  # single self-contained double-clickable file, so burying the only copy
+  # inside a zip just adds a step for anyone who wanted the AppImage itself;
+  # the zip stays because the release pipeline names it.
+  local app_out="$DIST/linux/$(basename "$out_bin")"
+  rm -f "$app_out"
+  cp "$out_bin" "$app_out"
+  chmod +x "$app_out"
+
   local zip_out="$DIST/linux/$APP_NAME-linux.zip"
   rm -f "$zip_out"
   (cd "$WORK" && zip -q -9 -j "$zip_out" "$(basename "$out_bin")")
+  say "Linux build: $app_out"
   say "Linux build: $zip_out"
 }
 

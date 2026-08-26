@@ -11,10 +11,10 @@
 #include <switch.h>
 #endif
 
-#define INSTALL_DIR "sdmc:/switch/gen1recomp"
-#define STAGED INSTALL_DIR "/gen1recomp.nro.staged"
-#define LAUNCHER INSTALL_DIR "/gen1recomp.nro"
-#define GAME INSTALL_DIR "/gen1recomp-game.nro"
+#define INSTALL_DIR "sdmc:/switch/gen2recomp"
+#define STAGED INSTALL_DIR "/gen2recomp.nro.staged"
+#define LAUNCHER INSTALL_DIR "/gen2recomp.nro"
+#define GAME INSTALL_DIR "/Gen2Recomped-game.nro"
 
 int main(int argc, char **argv) {
   (void)argc;

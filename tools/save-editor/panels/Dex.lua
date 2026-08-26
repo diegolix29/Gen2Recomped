@@ -1,3 +1,9 @@
+-- Copyright (c) 2026 Cedric. All rights reserved.
+-- Source-available under the Gen2Recomped Map Editor License: you may read,
+-- build and privately modify this file; you may not redistribute it or use it
+-- commercially. See LICENSE at the repository root. Cartridge-derived data is
+-- not covered and is not the copyright holder's to license.
+
 -- Pokedex panel: a completion header with seen / owned meters and the bulk
 -- actions, then a four-column species grid where each row carries two
 -- independent toggle chips.
@@ -8,6 +14,7 @@
 
 local Theme = require("Theme")
 local Ops = require("Ops")
+local Catalog = require("Catalog")
 local PAL = Theme.PAL
 
 local M = {}
@@ -105,7 +112,12 @@ function M.draw(S, Kit, x, y, w, h)
       ry + (rowH - Kit.textHeight("micro")) / 2, PAL.faint)
     local nameX = rx + 44 * s
     local nameW = colW - 10 * s - 2 * (chipW + 6 * s) - (nameX - rx)
-    Kit.text("mono", Kit.ellipsize("mono", id, nameW), nameX,
+    -- The dex keys are storage ids (Gen2 spells them SPECIES_nnn); the
+    -- readable name lives on the extracted record, so go through Catalog
+    -- rather than printing the key.  speciesLabel falls back to the id when
+    -- no ROM has been imported yet.
+    local label = Catalog.speciesLabel(S.data, id)
+    Kit.text("mono", Kit.ellipsize("mono", label, nameW), nameX,
       ry + (rowH - Kit.textHeight("mono")) / 2,
       isOwned and PAL.text or (isSeen and PAL.muted or PAL.faint))
 

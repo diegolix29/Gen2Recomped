@@ -13,6 +13,24 @@ CANONICAL_BLUE_SHA1 = "d7037c83e1ae5b39bde3c30787637ba1d4c48ce2"
 CANONICAL_YELLOW_SHA1 = "cc7d03262ebfaf2f06772c1a480c7d9d5f4a38e1"
 CANONICAL_GOLD_SHA1 = "d8b8a3600a465308c9953dfa04f0081c05bdcb94"
 CANONICAL_SILVER_SHA1 = "49b163f7e57702bc939d642a18f591de55d92dae"
+# Crystal (USA/Europe) Rev 1, i.e. pokecrystal v1.1.  Rev 0 is a different
+# build; only three symbols move between them and none are ones the
+# extractor uses, but the hash still has to match the ROM being imported.
+CANONICAL_CRYSTAL_SHA1 = "f2f52230b536214ef7c9924f483392993e226cfb"
+# Crystal Rev 0.  Decodes identically for our purposes, so it shares the
+# Rev 1 manifest and symbol table; accepted wherever Rev 1 is.
+CANONICAL_CRYSTAL10_SHA1 = "f4cd194bdee0d04ca4eac29e09b8e4e9d818c133"
+# Pokemon Prism, a Gold ROM hack. Recognised, but no manifest exists yet:
+# neither Gold's nor Crystal's symbol table applies to it (see prism-support).
+CANONICAL_PRISM_SHA1 = "752076692ae3387cf426ce5f51a98c6b60e8df6a"
+
+# Pokemon Polished Crystal 3.2.3, a Crystal hack built from the public
+# Rangi42/polishedcrystal source with rgbds v1.0.0. The build is
+# REPRODUCIBLE -- the Makefile's `@$(shell date '+%Y')` copyright does not
+# reach the image (verified: forcing the stamp to regenerate under a
+# different year changed 0 of 2097152 bytes) -- so this hash is the released
+# cartridge's, not one build's.
+CANONICAL_POLISHED_SHA1 = "6930b48af5844d373e3c9130f26d6dd1084cf4ed"
 ROM_BANK_SIZE = 0x4000
 
 KNOWN_ROM_SHA1 = {
@@ -21,6 +39,10 @@ KNOWN_ROM_SHA1 = {
     CANONICAL_YELLOW_SHA1: "yellow",
     CANONICAL_GOLD_SHA1: "gold",
     CANONICAL_SILVER_SHA1: "silver",
+    CANONICAL_CRYSTAL_SHA1: "crystal",
+    CANONICAL_CRYSTAL10_SHA1: "crystal",
+    CANONICAL_PRISM_SHA1: "prism",
+    CANONICAL_POLISHED_SHA1: "polishedcrystal",
 }
 
 
@@ -75,12 +97,22 @@ class SymbolTable:
 
 class RomImage:
     def __init__(self, path, expected_sha1=CANONICAL_RED_SHA1):
+        """expected_sha1 may be one hash or an iterable of accepted hashes.
+
+        Crystal ships as two revisions that decode identically here, so the
+        caller passes both rather than forcing a second manifest.
+        """
         with open(path, "rb") as f:
             self.data = f.read()
         self.sha1 = hashlib.sha1(self.data).hexdigest()
-        if expected_sha1 and self.sha1 != expected_sha1:
+        if not expected_sha1:
+            return
+        accepted = ([expected_sha1] if isinstance(expected_sha1, str)
+                    else list(expected_sha1))
+        if self.sha1 not in accepted:
             raise ValueError(
-                f"unsupported ROM SHA-1 {self.sha1}; expected {expected_sha1}")
+                f"unsupported ROM SHA-1 {self.sha1}; "
+                f"expected {' or '.join(accepted)}")
 
     @staticmethod
     def offset(bank, address):

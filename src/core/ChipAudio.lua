@@ -75,6 +75,13 @@ local workerReady -- nil = untried, true = running, false = unavailable
 
 local function ensureWorker()
   if workerReady ~= nil then return workerReady end
+  -- ...including the one thing music cannot do without.  Without this the
+  -- module announced "threaded worker", started a thread, and only then
+  -- discovered it had nowhere to put the buffers.
+  if not (love.audio and love.audio.newQueueableSource) then
+    workerReady = false
+    return false
+  end
   if not (love.thread and love.thread.newThread and love.audio) then
     workerReady = false
     return false
@@ -94,6 +101,40 @@ local function ensureWorker()
   worker = thread
   workerReady = true
   return true
+end
+
+-- Music has three possible paths and picking the wrong one is SILENT, which
+-- makes "no audio on <platform>" impossible to triage from a bug report.  Say
+-- which one this host took, once.
+local announced
+local function announcePath(path, why)
+  if announced then return end
+  announced = true
+  require("src.core.Logger").info("chip audio: music path = %s%s",
+                                  path, why and (" (" .. why .. ")") or "")
+end
+
+-- Both music paths -- threaded and synchronous -- stand on ONE call the sound
+-- effects never make: love.audio.newQueueableSource.  Effects are static
+-- Sources built from a finished SoundData; music is a queue fed a buffer at a
+-- time.  So "effects play, music does not" is not a vague symptom, it is a
+-- fingerprint, and this is the only line in the module that can print it.
+--
+-- It was being thrown away.  Source creation is wrapped in pcall and the
+-- failure returned to a caller that does not read the second value, so a host
+-- without queueable sources went silent with nothing said anywhere -- on the
+-- Switch, where there is no console, that is indistinguishable from the audio
+-- simply not being wired up.
+local queueWarned
+local function warnNoQueue(err)
+  if queueWarned then return end
+  queueWarned = true
+  require("src.core.Logger").warn(
+    "chip audio: no music source -- love.audio.newQueueableSource %s. "
+      .. "Sound effects are static Sources and are unaffected; music has no "
+      .. "other path. (%s)",
+    (love.audio and love.audio.newQueueableSource) and "failed" or "is missing",
+    tostring(err))
 end
 
 -- only the tables ChipSynth.newEngine reads for ROM songs; sent with every
@@ -154,7 +195,7 @@ local function playMusicSync(data, header, allowLoops)
   if not ok then return nil, engine end
   local ok2, source = pcall(
     love.audio.newQueueableSource, SAMPLE_RATE, 16, 2, MUSIC_BUFFER_COUNT)
-  if not ok2 then return nil, source end
+  if not ok2 or not source then warnNoQueue(source) return nil, source end
   ChipAudio.stopMusic()
   currentMusic = { source = source, engine = engine, threaded = false,
                    started = true, finished = false }
@@ -171,8 +212,12 @@ local musicGen = 0
 
 function ChipAudio.playMusic(data, header, allowLoops)
   if not ensureWorker() then
+    announcePath("synchronous",
+                 (love.thread and love.thread.newThread)
+                   and "worker would not start" or "no love.thread")
     return playMusicSync(data, header, allowLoops)
   end
+  announcePath("threaded worker")
   -- validate the def on this thread (cheap: engine construction, no synthesis)
   -- so a broken def costs nothing but a log line and keeps the old song
   local ok, engine = pcall(ChipSynth.newEngine, data, header,
@@ -181,7 +226,7 @@ function ChipAudio.playMusic(data, header, allowLoops)
   -- build the new source before tearing the old song down
   local ok2, source = pcall(
     love.audio.newQueueableSource, SAMPLE_RATE, 16, 2, MUSIC_BUFFER_COUNT)
-  if not ok2 then return nil, source end
+  if not ok2 or not source then warnNoQueue(source) return nil, source end
   ChipAudio.stopMusic()
   musicGen = musicGen + 1
   local gen = musicGen
@@ -190,7 +235,11 @@ function ChipAudio.playMusic(data, header, allowLoops)
                channelVolumes = ChipSynth.getChannelVolumes(),
                channelPitches = ChipSynth.getChannelPitches() })
   currentMusic = { source = source, gen = gen, threaded = true,
-                   started = false, finished = false }
+                   started = false, finished = false,
+                   -- kept so a worker that dies before delivering its first
+                   -- buffer can be recovered onto the sync path below
+                   def = { data = data, header = header,
+                           allowLoops = allowLoops } }
   -- playback starts in update() once the first buffer arrives (~1 frame)
   return source
 end
@@ -209,7 +258,20 @@ local function updateThreaded()
   local m = currentMusic
   if not m then return end
   if not workerAlive() then
-    -- worker gone: nothing more will arrive; leave whatever is queued playing
+    -- The worker is gone.  If it already delivered buffers, let what is queued
+    -- finish -- but if it died BEFORE the first one, this song has never made
+    -- a sound and never will: nothing re-queues it, `started` stays false, and
+    -- the result is indistinguishable from "this build has no music".  That is
+    -- the shape of a silent port.  Re-drive it on the synchronous path, which
+    -- is the same path a host without love.thread uses all the time.
+    if not m.started and not m.finished and m.def then
+      local def = m.def
+      currentMusic = nil
+      require("src.core.Logger").warn(
+        "chip audio: worker died before first buffer, replaying on the "
+        .. "synchronous path")
+      playMusicSync(def.data, def.header, def.allowLoops)
+    end
     return
   end
   while true do

@@ -1,10 +1,160 @@
-MIT License
+# Gen2Recomped — Source-Available License
 
-Copyright 2026 BOIS CLUB GAMES, LLC — Generation I (Red/Blue/Yellow) creation and code
-Copyright 2026 UNDERdecodedHD — Generation II (Gold/Silver/Crystal) creation and code
+**Version 1.1**
 
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the “Software”), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+Copyright © 2026 Cedric. All rights reserved.
 
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+---
 
-THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+## 0. What this license is for
+
+This is a **source-available** license, not an open-source one. You may read the
+code, build it, and change it for your own use. You may **not** redistribute it
+or use it commercially.
+
+It covers the Gen2Recomped map editor, the editor shell it runs inside, the
+Gen 2 engine work, and every other file in this repository that was written for
+this project. It does **not** cover — and cannot cover — data extracted from a
+Pokémon cartridge. See [section 4](#4-what-this-license-does-not-cover-and-cannot).
+
+---
+
+## 1. Covered files
+
+**Everything in this repository that was written for this project is covered**,
+except what section 4 excludes. Coverage does not depend on a file carrying a
+notice, and it does not depend on a file appearing in the list below: a new file
+added tomorrow is covered the moment it exists.
+
+That positive definition is deliberate. An enumerated path list is a list that
+goes stale — the map editor alone reaches 133 source files across nearly every
+directory under `src/`, and a licence that named some of them would be a licence
+with holes in exactly the places nobody thought to look.
+
+The following are called out because they are the parts most likely to be
+argued about. **This list is illustrative, not exhaustive.**
+
+### The map editor
+
+| Path | What it is |
+| --- | --- |
+| `tools/map-editor/` | the editor: edit store, panels, exporter, importer, 3D viewport, voxel classes, ROM map import |
+| `tools/save-editor/` | the shell it runs inside — window, widget kit, theme, panel host, save-side panels |
+| `src/import/AdoptedTileset.lua` | cross-cartridge tileset resolver; under `src/` only because a build ships `src/` and not `tools/` |
+| `tests/map_editor_*.lua` | the editor's regression suites |
+
+### The Gen 2 engine work
+
+| Path | What it is |
+| --- | --- |
+| `src/import/RomExtractorGen2.lua` | the Gen 2 extractor |
+| `src/import/Gen2ScriptOps.lua` | Gen 2 script opcode tables |
+| `src/script/Gen2ScriptVM.lua` | the Gen 2 script virtual machine |
+| `src/script/Gen2Commands.lua` | Gen 2 command lowering |
+| `src/script/Gen2Flags.lua` | Gen 2 event-flag naming and display |
+| `src/script/Gen2Specials.lua` | Gen 2 `special` handlers |
+| `src/script/Gen2Daily.lua` | Gen 2 daily/weekly event clock |
+| `src/battle/Gen2AnimPlayer.lua` | Gen 2 battle animation player |
+| `src/render/TileRenderer.lua` | including the Gen 2 palette bakes and the borrowed-art paths |
+| `src/render/PaletteFX.lua`, `src/render/GBCFX.lua` | the colour modes and the SGB/GBC treatments |
+| `src/world/OverworldController.lua` | including the Gen 2 step, talk and event-tile paths |
+| `src/core/Data.lua` | including `publishGen2Palettes` and the map-editor overlay |
+
+Every other original file — `main.lua`, `conf.lua`, the rest of `src/`, the rest
+of `tools/`, `scripts/`, and the remaining tests — is covered on the same terms.
+
+---
+
+## 2. What you may do
+
+Subject to sections 3, 4 and 5, you may:
+
+- **read, study and privately discuss** the covered files;
+- **run** them, and build them into a working copy for yourself;
+- **modify** them, and run your modified version, **for your own personal use**;
+- **keep private copies and backups** of the covered files and your changes;
+- **send your changes back** to the copyright holder — in which case you grant
+  them a perpetual, worldwide, royalty-free licence to use those changes in this
+  project.
+
+> **"Personal use"** means use by you, on machines you control, for purposes that
+> are not commercial. Use inside an organisation, of any size, is not personal
+> use.
+
+---
+
+## 3. What you may not do
+
+Without prior written permission from the copyright holder, you may not:
+
+- **distribute** the covered files, in source or compiled form, modified or not,
+  to anyone else — including by publishing a fork, a mirror, a patch set that
+  contains covered code, a package, or a build;
+- use them, or anything derived from them, for any **commercial purpose**,
+  including in a product or service you charge for, advertise against, or accept
+  donations for;
+- offer them to others as a **hosted or networked service**;
+- **sublicense, sell, rent or lend** them;
+- **remove, obscure or alter** any copyright notice, licence notice or
+  attribution;
+- use the copyright holder's name or the project's name to **endorse or promote**
+  anything derived from the covered files.
+
+Nothing here restricts anything you may do under applicable law regardless of
+this licence — fair dealing, fair use, or a right to decompile for
+interoperability that cannot be waived by contract in your jurisdiction.
+
+---
+
+## 4. What this license does not cover, and cannot
+
+This project reads data extracted from Pokémon game cartridges. That data —
+map layouts, tile art, sprites, text, palettes, music, and everything else
+derived from a ROM — belongs to **Nintendo, Creatures Inc. and GAME FREAK Inc.**
+It is **not the copyright holder's to license**, and nothing in this file grants
+you any right to it.
+
+Excluded from this licence, and from any permission it gives:
+
+- anything under `data/generated*/` or `assets/generated*/`, or any other
+  directory produced by importing a ROM;
+- any ROM image, cartridge dump, or save file;
+- any file whose contents were extracted or derived from a cartridge, wherever
+  it sits in the tree — including screenshots that render cartridge art, and a
+  mod's own extracted assets;
+- third-party code vendored into this repository, which keeps its own licence.
+
+To use this software you must supply your own legally obtained cartridge and
+extract your own data from it. The covered files are **tooling**; the cartridge
+content is not part of what is being licensed here.
+
+This project is not affiliated with, endorsed by, or sponsored by Nintendo,
+Creatures Inc. or GAME FREAK Inc. Pokémon and all related names are their
+trademarks.
+
+---
+
+## 5. No warranty, no liability
+
+THE COVERED FILES ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+COVERED FILES OR THE USE OR OTHER DEALINGS IN THEM.
+
+---
+
+## 6. Termination
+
+Your rights under this licence end automatically if you breach it. They are
+reinstated if you cure the breach within 30 days of becoming aware of it, unless
+the copyright holder has already notified you of the breach — in which case
+reinstatement requires their written agreement.
+
+---
+
+## 7. Asking for more
+
+Permission beyond this licence — to redistribute, to fork publicly, to use
+commercially — is available by asking the copyright holder in writing.

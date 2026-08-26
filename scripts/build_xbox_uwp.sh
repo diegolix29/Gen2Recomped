@@ -17,7 +17,7 @@ PRESET="uwp-release"
 GAME_LOVE=""
 VERSION="0.0.0"
 VERSION_EXPLICIT=0
-PUBLISHER="${GEN2RECOMP_UWP_PUBLISHER:-CN=Gen2Recomp}"
+PUBLISHER="${GEN2RECOMPED_UWP_PUBLISHER:-CN=Gen2Recomped}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -93,9 +93,9 @@ fi
 
 say "configuring Xbox UWP ($CONFIGURATION)"
 cmake --preset "$PRESET" -S "$(windows_path "$UWP_ROOT")" \
-  "-DGEN2RECOMP_LOVE:FILEPATH=$(windows_path "$GAME_LOVE")" \
-  "-DGEN2RECOMP_VERSION:STRING=$VERSION" \
-  "-DGEN2RECOMP_UWP_PUBLISHER:STRING=$PUBLISHER"
+  "-DGEN2RECOMPED_LOVE:FILEPATH=$(windows_path "$GAME_LOVE")" \
+  "-DGEN2RECOMPED_VERSION:STRING=$VERSION" \
+  "-DGEN2RECOMPED_UWP_PUBLISHER:STRING=$PUBLISHER"
 
 say "building Xbox UWP ($CONFIGURATION)"
 (cd "$UWP_ROOT" && cmake --build --preset "$PRESET")

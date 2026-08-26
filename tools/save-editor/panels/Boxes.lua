@@ -1,3 +1,9 @@
+-- Copyright (c) 2026 Cedric. All rights reserved.
+-- Source-available under the Gen2Recomped Map Editor License: you may read,
+-- build and privately modify this file; you may not redistribute it or use it
+-- commercially. See LICENSE at the repository root. Cartridge-derived data is
+-- not covered and is not the copyright holder's to license.
+
 -- Boxes panel: the 12 PC boxes as a real grid rather than the old 20-row
 -- text list.  Three columns:
 --   box strip   which boxes have room, so you can see where a deposit lands
@@ -11,6 +17,7 @@ local BoxesMod = require("src.pokemon.Boxes")
 local PartyMod = require("src.pokemon.Party")
 local Theme = require("Theme")
 local Ops = require("Ops")
+local Catalog = require("Catalog")
 local PAL = Theme.PAL
 
 local M = {}
@@ -101,7 +108,7 @@ function M.draw(S, Kit, x, y, w, h)
       Kit.textRight("micro", ("Lv%d"):format(mon.level), bx + cellW - 10 * s,
         by + 8 * s, PAL.caption)
       Kit.textCenter("mono",
-        Kit.ellipsize("mono", mon.species, cellW - 12 * s), bx,
+        Kit.ellipsize("mono", Catalog.speciesLabel(S.data, mon.species), cellW - 12 * s), bx,
         by + cellH / 2 - Kit.textHeight("mono") / 2, cellW, PAL.text)
     else
       -- empty slots are dashed and clickable: clicking one adds a mon there
@@ -153,7 +160,7 @@ function M.draw(S, Kit, x, y, w, h)
     local lvW = Kit.textWidth("tiny", lv)
     Kit.textRight("tiny", lv, dx + pad + dInner - 10 * s,
       ry + (dRowH - Kit.textHeight("tiny")) / 2, PAL.caption)
-    Kit.text("mono", Kit.ellipsize("mono", mon.species, dInner - 30 * s - lvW),
+    Kit.text("mono", Kit.ellipsize("mono", Catalog.speciesLabel(S.data, mon.species), dInner - 30 * s - lvW),
       dx + pad + 10 * s, ry + (dRowH - Kit.textHeight("mono")) / 2, PAL.text)
   end
   if #S.save.party == 0 then

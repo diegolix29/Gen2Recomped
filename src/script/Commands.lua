@@ -79,13 +79,35 @@ end
 -- to the A/B path once the cry is over -- see TextBox's opts.auto.wait
 -- (#247, #251).
 function Commands.show_text(ctx, textId, subs, extraOpts)
-  local text = ctx.game.data.text[textId]
+  -- The ROM has no "text id" at the point a YES/NO or phone prompt opens: the
+  -- menu simply rides the box that is already on screen.  Recording the last
+  -- id shown lets those prompts reproduce it when the writetext that printed
+  -- it lived inside a `scall` and so could not be folded at compile time.
+  if textId ~= nil then ctx.g2LastText = textId end
+  local text = textId ~= nil and ctx.game.data.text[textId] or nil
   if not text and ctx.overworld then
     text = ctx.game.data:resolveText(ctx.overworld.map.def.label, textId)
   end
   if not text then
-    text = textId -- literal string fallback for hand-ported scripts
+    -- LITERAL STRING FALLBACK for hand-ported scripts -- and for the map
+    -- editor, whose `say` beat lowers to a show_text carrying the line the
+    -- author typed rather than a constant.
+    --
+    -- Laid out on the way through, for the reason TextBox.fromProse gives:
+    -- prose has no page breaks, and a page with ten wrapped lines scrolls
+    -- past the reader instead of waiting for A. Marked-up text is returned
+    -- unchanged, so nothing the extractor produced is re-broken.
+    text = textId
+    if type(text) == "string" then
+      local okTB, TB = pcall(require, "src.render.TextBox")
+      if okTB and TB.fromProse then text = TB.fromProse(text) end
+    end
   end
+  -- Belt and braces: a row that reaches here with no usable id at all used to
+  -- throw on the first gsub below, and a throw inside the runner leaves the
+  -- open text box on screen with nothing driving it -- a hard freeze, not a
+  -- missing line.  Degrade to an empty box instead.
+  if type(text) ~= "string" then text = "" end
   if subs then
     for token, value in pairs(subs) do
       -- A mod may transform a gift after the script row was authored.  Keep
@@ -103,8 +125,39 @@ function Commands.show_text(ctx, textId, subs, extraOpts)
   -- text_ram reads wStringBuffer1, which the ROM filled well before the box
   -- opened (GetPartyNickname, GetItemName).  Scripts lowered straight from
   -- the ROM never carry `subs`, so without this they printed the raw token.
-  if ctx.game.stringBuffer and text:find("{RAM:", 1, true) then
-    text = text:gsub("{RAM:[%w_]*}", tostring(ctx.game.stringBuffer))
+  -- Same per-slot rule TextBox.TOKENS.RAM uses: a named wStringBufferN wins
+  -- if something wrote that slot, otherwise the single legacy buffer stands
+  -- in.  A blanket gsub onto one value is what put a species name into the
+  -- phone's landmark lines.  Returning nil from the replacer leaves the token
+  -- untouched, which is what the old `and` guard did when nothing was set.
+  --
+  -- ONLY THE STRING-BUFFER FAMILY IS FILLED HERE.  Named WRAM symbols --
+  -- wPlayerName above all, plus wRivalName and wTrendyPhrase -- are left for
+  -- TextBox's token registry, which knows the PLAYER'S name.  Filling them
+  -- from game.stringBuffer here (the old fallback) is exactly what made
+  -- every SCRIPTED Elm and Lyra greeting call the player by the last
+  -- received Pokemon or item -- "Elm: Ultra Ball! There you are!", and then
+  -- "Chikorita" once Lyra's starter set the buffer.  <PLAYER> is charmap
+  -- $4F -> wPlayerName (n-gram pointer, 00:$3c16 -> $d47b), so it decodes to
+  -- {RAM:wPlayerName}, and this pass must not touch it.
+  if text:find("{RAM:", 1, true) then
+    text = text:gsub("{RAM:([%w_]*)}", function(name)
+      local slot = tonumber(name:match("^wStringBuffer(%d)$") or "")
+      if slot then
+        local slots = ctx.game.stringBuffers
+        local value = slots and slots[slot]
+        if value == nil then value = ctx.game.stringBuffer end
+        return value ~= nil and tostring(value) or nil
+      end
+      -- the bare legacy buffer token still resolves here
+      if name == "wStringBuffer" then
+        local value = ctx.game.stringBuffer
+        return value ~= nil and tostring(value) or nil
+      end
+      -- everything else (wPlayerName, wRivalName, wTrendyPhrase, ...) is
+      -- left untouched for TextBox.substitute to resolve
+      return nil
+    end)
   end
   local runner = ctx.runner
   local opts
@@ -186,12 +239,56 @@ end
 -- Defined below, next to toggleObject.
 local syncEventFlagObjects
 
+-- Prism's ENGINE_POKEMON_MODE changes WHO THE PLAYER IS -- GetPlayerSprite
+-- reads it before it reaches the character table -- so the sheet has to be
+-- re-picked the moment a script writes it, not at the next map load.  Every
+-- other flag leaves the player alone.
+local function refreshPlayerForm(ctx, name)
+  if name ~= "ENGINE_POKEMON_MODE" then return end
+  local player = ctx.overworld and ctx.overworld.player
+  if player and player.refreshForm and ctx.game then
+    player:refreshForm(ctx.game.data)
+  end
+end
+
+-- A FLAG WRITE CAN REVEAL OR HIDE AN OBJECT ON THE MAP YOU ARE STANDING ON.
+--
+-- Gen 2 object visibility is "flag set => hidden", and `appear`/`disappear`
+-- (g2_object) already re-sync the live actor they name.  setevent/clearevent
+-- did not -- they wrote the flag and left the world alone -- so an object
+-- revealed by a bare `clearevent` only actually appeared on the NEXT map load.
+--
+-- The Tin Tower sages are the case that showed it: their blocking callback
+-- reveals a monk with a bare `clearevent 1894`, not `appear`, and the ROM runs
+-- that callback during map setup.  Miss the re-sync and the monk is absent for
+-- the whole visit -- the player walks straight past to Suicune -- and is there
+-- the second time, which is exactly "on this run the monks DID block me".
+-- Bill's Goldenrod reveal (`clearevent EVENT_MET_BILL`) is the same shape.
+--
+-- Targeted, like g2_object's: only the objects whose own eventFlag is this
+-- flag, so no other live actor is re-derived out from under a script.
+local function syncFlagObjects(ctx, name)
+  local ow = ctx.overworld
+  if not (ow and ow.syncObjectVisibility and ow.map and ow.map.def) then return end
+  local objects = ow.map.def.objects
+  if type(objects) ~= "table" then return end
+  for _, obj in ipairs(objects) do
+    if obj.eventFlag == name then
+      pcall(function() ow:syncObjectVisibility(obj) end)
+    end
+  end
+end
+
 function Commands.set_flag(ctx, name)
   Flags.set(ctx.save, name)
+  refreshPlayerForm(ctx, name)
+  syncFlagObjects(ctx, name)
 end
 
 function Commands.clear_flag(ctx, name)
   Flags.clear(ctx.save, name)
+  refreshPlayerForm(ctx, name)
+  syncFlagObjects(ctx, name)
 end
 
 function Commands.check_flag(ctx, name)
@@ -245,10 +342,19 @@ function Commands.give_item(ctx, itemId, count, gotText)
   -- skips the received text entirely when AddItemToInventory refuses)
   if not require("src.inventory.Bag").add(
       ctx.save, itemId, count or 1, ctx.game.data) then
+    ctx.lastCheck = false
     Commands.show_text(ctx, ctx.game.data.text
       and ctx.game.data.text._BagFullText or Strings("You can't carry\nany more items!"))
     return math.huge
   end
+  -- Gen2's `verbosegiveitem` lowers here and reports through wScriptVar, and
+  -- every gift script reads it back with `iffalse .BagFull` on the very next
+  -- line.  Leaving lastCheck alone left the *preceding* `checkevent
+  -- EVENT_GOT_TM..` result standing -- false, since the player has not got it
+  -- yet -- so the branch always fired and skipped the `setevent` behind it.
+  -- The TM was handed over and never marked, so the Ilex Forest HEADBUTT guy
+  -- and every other TM giver paid out again on each talk.
+  ctx.lastCheck = true
   local def = ctx.game.data.items[itemId]
   -- GiveItem -> GetItemName + CopyToStringBuffer: the received texts
   -- read the name back out of wStringBuffer
@@ -296,6 +402,10 @@ function Commands.start_battle(ctx, kind, a, b, opts)
   end
   battle.onFinish = function(result)
     ctx.lastBattleResult = result
+    -- BATTLETYPE_CANLOSE: the script is allowed to carry on after a loss and
+    -- branches on the result itself (the Cherrygrove rival).  Recorded so
+    -- `reloadmapafterbattle` can tell that case from a real whiteout.
+    ctx.lastBattleCanLose = battle.canLose and true or false
     ctx.lastCheck = result == "win"
     if ctx.overworld then
       -- A map script often follows a trainer battle with its own text.
@@ -331,6 +441,23 @@ end
 
 function Commands.warp(ctx, mapId, x, y, facing)
   local runner = ctx.runner
+  -- A WARP WITH NO DESTINATION IS SKIPPED, NOT PLAYED.
+  --
+  -- setMap multiplies the coordinates the moment it is called, so a warp
+  -- carrying a nil x is not a wrong warp -- it is `attempt to perform
+  -- arithmetic on local 'x'` and the game is over. That is a hard crash
+  -- caused by ONE mis-sized script command, and the player meets it in the
+  -- middle of a cutscene with no way back.
+  --
+  -- A script instruction the extractor could not read is a fact about the
+  -- import, not a reason to take the game down with it: say so and step over
+  -- it, the same way an unreadable wild slot is dropped rather than shipped.
+  if type(mapId) ~= "string" or type(x) ~= "number" or type(y) ~= "number" then
+    require("src.core.Logger").warn(
+      "script warp skipped: map=%s x=%s y=%s -- the instruction did not decode",
+      tostring(mapId), tostring(x), tostring(y))
+    return
+  end
   ctx.overworld:startWarpTo(mapId, x, y, facing, function()
     runner:resume()
   end)
@@ -439,9 +566,20 @@ end
 
 -- Instantly relocate an NPC (OaksLabCalcRivalMovementScript / SetSpritePosition1).
 -- facing is optional.  Headless-safe no-op without an overworld.
+-- GSC's `moveobject` writes the loaded map's object_event coordinates, so the
+-- disappear/moveobject/appear idiom (Kurt arriving in Slowpoke Well, most
+-- cutscene walk-ons) relocates an object that has no live NPC at all.  Record
+-- the cell so toggleObject respawns it there instead of at its map-def tile.
 function Commands.place_npc(ctx, objIndex, x, y, facing)
   local ow = ctx.overworld
   if not ow then return end
+  local obj = ow.map and ow.map.def and ow.map.def.objects
+                and ow.map.def.objects[objIndex]
+  local key = obj and require("src.world.OverworldController").objectToggleKey(obj)
+  if key then
+    ow.npcPlacement = ow.npcPlacement or {}
+    ow.npcPlacement[key] = { x = x, y = y, facing = facing }
+  end
   local npc = ow:npcByIndex(objIndex)
   if not npc then return end
   npc.cellX, npc.cellY = x, y
@@ -543,9 +681,11 @@ local function toggleObject(ctx, mapId, objName, visible, skipFlag)
       if obj.name == objName then
         local NPC = require("src.world.NPC")
         local npc = NPC.new(ctx.game.data, mapId, obj)
-        local at = skipFlag and ow.npcResumeCell[objName]
+        local at = (ow.npcPlacement and ow.npcPlacement[objName])
+                   or (skipFlag and ow.npcResumeCell[objName])
         if at then
-          npc.cellX, npc.cellY, npc.facing = at.x, at.y, at.facing
+          npc.cellX, npc.cellY = at.x, at.y
+          npc.facing = at.facing or npc.facing
           npc.px, npc.py = at.x * 16, at.y * 16
         end
         table.insert(ow.npcs, npc)

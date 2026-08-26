@@ -60,6 +60,15 @@ local function getObpImage(path, colors, group)
   return obpCache[key]
 end
 
+-- The OBP bake, for overlays that are not sprites but still wear a Gen2 OBJ
+-- palette -- the Pokemon Center heal machine is one (its OAM rows carry CGB
+-- palette 6).  Same cache, so the bake happens once.
+function SpriteRenderer.obpImage(path, colors, group)
+  if not (path and colors) then return nil end
+  local ok, img = pcall(getObpImage, path, colors, group or "fx")
+  return ok and img or nil
+end
+
 -- hot reload drops the sheets; live instances hold their own image, so
 -- the world rebuilds them (MapLoader.invalidateAll) rather than this
 function SpriteRenderer.invalidate()
@@ -87,32 +96,66 @@ function SpriteRenderer.new(spriteDef, seed)
   self.seed = seed
   self.image = getImage(spriteDef.image)
   local iw, ih = self.image:getDimensions()
-  
-  -- Support custom frame dimensions for larger sprites
-  local frameWidth = spriteDef.frameWidth or 16
-  local frameHeight = spriteDef.frameHeight or 16
-  local framesPerRow = spriteDef.framesPerRow or 1
-  local scale = spriteDef.scale or 1.0
-  local heightScale = spriteDef.heightScale or scale  -- Defaults to scale if not set
-  
-  self.frameWidth = frameWidth
-  self.frameHeight = frameHeight
-  self.framesPerRow = framesPerRow
-  self.scale = scale
-  self.heightScale = heightScale
-  
-  self.frames = {}
-  for f = 0, spriteDef.frames - 1 do
-    -- Calculate frame position in the sprite sheet
-    -- If framesPerRow > 1, frames are arranged in a grid
-    -- Otherwise, frames are stacked vertically (default behavior)
-    local row = framesPerRow > 1 and math.floor(f / framesPerRow) or f
-    local col = framesPerRow > 1 and (f % framesPerRow) or 0
-    local x = col * frameWidth
-    local y = row * frameHeight
-    self.frames[f] = love.graphics.newQuad(x, y, frameWidth, frameHeight, iw, ih)
+  -- Big dolls (Snorlax / Lapras): FacingBigDollSymmetric uses a 16x32 left
+  -- half mirrored to 32x32 over a 2x2 footprint.  Detect by id even when the
+  -- extracted sheet is still a 16-wide strip (common before reimport).
+  local bigById = spriteDef.id == "SPRITE_BIG_SNORLAX"
+    or spriteDef.id == "SPRITE_BIG_LAPRAS"
+  self.tileW = 16
+  self.tileH = 16
+  self.mirrorHalf = false
+  if spriteDef.big or bigById or (iw >= 32 and (spriteDef.width or 0) >= 32) then
+    self.big = true
+    spriteDef.frames = 1
+    if iw >= 32 and ih >= 32 then
+      self.tileW, self.tileH = 32, 32
+      self.frames = { [0] = love.graphics.newQuad(0, 0, 32, 32, iw, ih) }
+      self.mirrorHalf = false
+    else
+      -- 16xN strip: take the first 32px of height as the left body half
+      self.tileW, self.tileH = 16, math.min(32, ih)
+      self.frames = { [0] = love.graphics.newQuad(0, 0, 16, self.tileH, iw, ih) }
+      self.mirrorHalf = true
+    end
+  else
+    self.frames = {}
+    for f = 0, math.max(0, (spriteDef.frames or 1) - 1) do
+      self.frames[f] = love.graphics.newQuad(0, f * 16, 16, 16, iw, ih)
+    end
   end
   return self
+end
+
+-- A PALETTE THIS INSTANCE WEARS INSTEAD OF ITS SHEET'S.
+--
+-- Every other sprite in the game is its sheet: one OBJ palette per id, baked
+-- once and shared by every actor wearing it. The player in Prism is not --
+-- the character customiser lets the player mix their own skin tone and outfit
+-- colour, which is two entries of that four-colour palette chosen at runtime.
+--
+-- It cannot be done by editing `def.gen2ObjPal`, which is the tempting fix:
+-- the def is the shared table out of data.sprites, so writing the player's
+-- colours into it repaints every NPC that happens to use the same sheet, and
+-- the bake cache (keyed on the def's id) would hand the stale image back
+-- anyway. So the override lives on the INSTANCE and carries its own cache
+-- key, which is what lets the mixed palette be baked and re-baked as the
+-- player drags a slider without disturbing the shared sheet at all.
+--
+-- `key` must change whenever `colors` does, or the cache returns the previous
+-- mix and the sliders appear to do nothing.
+function SpriteRenderer:setPalette(colors, key)
+  if colors and key then
+    self.palColors, self.palKey = colors, key
+  else
+    self.palColors, self.palKey = nil, nil
+  end
+end
+
+-- The palette actually in force: the instance's, else the sheet's own.
+function SpriteRenderer:objPalette()
+  if self.palColors then return self.palColors, "cust:" .. self.palKey end
+  if self.def.gen2ObjPal then return self.def.gen2ObjPal, "gen2:" .. self.def.id end
+  return nil
 end
 
 -- The image this sprite would draw from right now: the plain sheet, or the
@@ -130,11 +173,13 @@ end
 function SpriteRenderer:resolveImage()
   if self.def.trueColor then return self.image end
   -- Gen2 carries the hardware's own OBJ palette per sheet (MapObjectPals,
-  -- picked by the OverworldSprites palette field), so it outranks every
-  -- Gen1 colour mode -- RED++/OG RED resolve nothing for a Gen2 def and
-  -- would drop the sheet back to DMG greys.
-  if self.def.gen2ObjPal then
-    return getObpImage(self.def.image, self.def.gen2ObjPal, "gen2:" .. self.def.id)
+  -- picked by the OverworldSprites palette field).  Applying it in the two
+  -- hardware-colour modes is what makes a Gen2 overworld look like a GBC
+  -- game; applying it in EVERY mode is what made COLORS do nothing out in the
+  -- world while battle still responded to it.
+  local objColors, objGroup = self:objPalette()
+  if objColors and PaletteFX.usesGen2ObjPal() then
+    return getObpImage(self.def.image, objColors, objGroup)
   end
   if PaletteFX.usesGbcPack() then
     local colors, group = PaletteFX.spriteObp(self.def, self.seed)
@@ -163,6 +208,49 @@ end
 -- topHalf blits only the upper 8 rows of the frame: FishingAnim overwrites the
 -- bottom tile row of the standing frames with the fishing pose art, which the
 -- caller then draws itself through :drawTile (Player:draw, #384)
+-- The palette-mode plumbing shared by :draw and :drawFixedFrame: which image
+-- to blit from in the current color mode, plus whether the OG-RED redraw
+-- queue needs the sprite.  Split out so a fixed-frame object (polished's cut
+-- trees on the ball/cut/fruit sheet) recolors exactly like everything else.
+function SpriteRenderer:resolveModeImage(x, y)
+  local image = self.image
+  local redraw = false
+  -- full-color art claims its 16x16 cell out of the shade-remap pass
+  if self.def.trueColor then
+    PaletteFX.markTrueColor(x, y, 16, 16)
+  elseif self:objPalette() and PaletteFX.usesGen2ObjPal() then
+    local objColors, objGroup = self:objPalette()
+    image = getObpImage(self.def.image, objColors, objGroup)
+    PaletteFX.markTrueColor(x, y, 16, 16)
+  elseif PaletteFX.usesGbcPack() then
+    local colors, group = PaletteFX.spriteObp(self.def, self.seed)
+    if colors then
+      image = getObpImage(self.def.image, colors, group)
+    else
+      image = getObpImage(self.def.image, PaletteFX.dmgObj())
+    end
+  elseif PaletteFX.usesSpriteObp() and PaletteFX.spriteRedrawPassActive() then
+    image = getObpImage(self.def.image, PaletteFX.ogObj())
+    redraw = true
+  else
+    image = getObpImage(self.def.image, PaletteFX.dmgObj())
+  end
+  return image, redraw
+end
+
+-- Draw one specific 16x16 sheet row, no facing, no walk cycle.  The polished
+-- ball/cut/fruit sheet keeps three different OBJECTS in one image -- ball
+-- frame 0, cut tree frame 1, fruit tree frame 2 -- and the object's movement
+-- data (not its facing) says which one it is, so the ordinary facing math
+-- must never touch it.
+function SpriteRenderer:drawFixedFrame(px, py, camX, camY, frame)
+  local x = math.floor(px - camX)
+  local y = math.floor(py - camY) - 4
+  local image, redraw = self:resolveModeImage(x, y)
+  local quad = self.frames[frame] or self.frames[0]
+  if quad then blitFrame(image, quad, x, y, false, redraw) end
+end
+
 function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip, topHalf)
   local scaleX = self.scale or 1.0
   local scaleY = self.heightScale or 1.0
@@ -177,13 +265,15 @@ function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip, to
   local redraw = false
   -- full-color art claims its frame-sized cell out of the shade-remap pass
   if self.def.trueColor then
-    PaletteFX.markTrueColor(x, y, self.frameWidth * scaleX, self.frameHeight * scaleY)
-  elseif self.def.gen2ObjPal then
-    -- Gen2 GBC mode: the ROM's own OBJ palette for this sheet, baked in.
-    -- It is full colour, so it claims its cell out of the shade-remap pass
-    -- exactly like a trueColor sprite does.
-    image = getObpImage(self.def.image, self.def.gen2ObjPal, "gen2:" .. self.def.id)
-    PaletteFX.markTrueColor(x, y, self.frameWidth * scaleX, self.frameHeight * scaleY)
+    PaletteFX.markTrueColor(x, y, 16, 16)
+  elseif self:objPalette() and PaletteFX.usesGen2ObjPal() then
+    -- Gen2 GBC mode: the ROM's own OBJ palette for this sheet, baked in --
+    -- or, for a customised player, the mix they chose. It is full colour, so
+    -- it claims its cell out of the shade-remap pass exactly like a trueColor
+    -- sprite does.
+    local objColors, objGroup = self:objPalette()
+    image = getObpImage(self.def.image, objColors, objGroup)
+    PaletteFX.markTrueColor(x, y, 16, 16)
   elseif PaletteFX.usesGbcPack() then
     -- RED++: the world canvas is already true-color (TileRenderer bakes
     -- terrain, this bakes the sprite) and the world pass runs unshaded
@@ -212,7 +302,13 @@ function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip, to
   -- still 3-frame sprites turn to face (the nurse at her machine,
   -- facePlayer on STAY NPCs) but never show walk frames
   if self.def.frames <= 1 then
-    blitFrame(image, self.frames[0], x, y, false, redraw, self.frameWidth)
+    if self.mirrorHalf and self.frames[0] then
+      -- FacingBigDollSymmetric: left 16x32 + X-flipped copy = 32x32 body
+      blitFrame(image, self.frames[0], x, y, false, redraw)
+      blitFrame(image, self.frames[0], x + 16, y, true, redraw)
+    else
+      blitFrame(image, self.frames[0], x, y, false, redraw)
+    end
     return
   end
   -- SPRITE_POKEMON objects wear the party menu icon (GetMonSprite.Mon ->

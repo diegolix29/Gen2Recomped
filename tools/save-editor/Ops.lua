@@ -1,3 +1,9 @@
+-- Copyright (c) 2026 Cedric. All rights reserved.
+-- Source-available under the Gen2Recomped Map Editor License: you may read,
+-- build and privately modify this file; you may not redistribute it or use it
+-- commercially. See LICENSE at the repository root. Cartridge-derived data is
+-- not covered and is not the copyright holder's to license.
+
 -- Every mutation the save editor can make to a loaded save, behind one
 -- funnel: Ops.mark() is the ONLY thing that sets S.dirty, and it always
 -- writes the status line at the same time.  That is rule 2 of the design
@@ -185,12 +191,18 @@ end
 -- exactly as it was and speak in the status bar, not take the editor with it.
 function Ops.setSpecies(S, mon, id)
   if not mon then return false end
+  local function speciesName(sid)
+    local def = S.data.pokemon and S.data.pokemon[sid]
+    local name = def and def.name
+    if type(name) == "string" and name ~= "" and name ~= sid then return name end
+    return tostring(sid)
+  end
   if id == mon.species then
-    return Ops.say(S, ("Already a %s"):format(tostring(id)))
+    return Ops.say(S, ("Already a %s"):format(speciesName(id)))
   end
   if not Ops.speciesUsable(S, id) then
     return Ops.say(S, ("%s has no usable base stats,  cannot assign it")
-      :format(tostring(id)))
+      :format(speciesName(id)))
   end
   -- MonOps.recalc replaces mon.stats with a fresh table rather than editing
   -- it in place, so holding the old reference is a real rollback.
@@ -200,9 +212,9 @@ function Ops.setSpecies(S, mon, id)
   if not ok then
     mon.species, mon.level, mon.exp = wasSpecies, wasLevel, wasExp
     mon.stats, mon.hp = wasStats, wasHp
-    return Ops.say(S, ("Could not set %s: %s"):format(tostring(id), tostring(err)))
+    return Ops.say(S, ("Could not set %s: %s"):format(speciesName(id), tostring(err)))
   end
-  return Ops.mark(S, ("Species set to %s"):format(id))
+  return Ops.mark(S, ("Species set to %s"):format(speciesName(id)))
 end
 
 -- Kept for the keyboard and test path; the inspector opens the searchable
@@ -523,22 +535,60 @@ function Ops.isBadgeId(id)
   return id:find("BADGE", 1, true) ~= nil
 end
 
+-- The badge set comes from src/inventory/Badges.lua, not from the item
+-- catalog.  R/B hands badges over as inventory ITEMS, so scraping S.cat.items
+-- for names containing BADGE happened to work there -- but Gen2 has no badge
+-- item at all (its gyms run `setflag ENGINE_ZEPHYRBADGE`, which lands in
+-- save.flags under the badge id).  The catalog scrape therefore returned an
+-- empty list for every Gold/Silver save and the panel drew no badges.
+--
+-- Badges.list is generation-aware and already falls back to the sixteen
+-- Gold/Silver badges in trainer-card order when no ROM constants exist.
 function Ops.badgeIds(S)
+  local Badges = require("src.inventory.Badges")
   local ids = {}
-  for _, id in ipairs(S.cat.items) do
+  for _, entry in ipairs(Badges.list(S.data, S.version)) do
+    ids[#ids + 1] = Badges.itemFor(entry)
+  end
+  if #ids > 0 then return ids end
+  -- Last resort: the old catalog scrape, for a cache with neither.
+  for _, id in ipairs(S.cat.items or {}) do
     if Ops.isBadgeId(id) then ids[#ids + 1] = id end
   end
   return ids
 end
 
+-- Truthy in EITHER store: inventory for R/B, save.flags for Gen2.  Mirrors
+-- src/inventory/Badges.lua's own read so the editor and the game never
+-- disagree about whether a badge is earned.
+function Ops.hasBadge(S, id)
+  return (S.save.inventory and S.save.inventory[id])
+    or (S.save.flags and S.save.flags[id]) and true or false
+end
+
+-- Write the badge back into whichever store this generation actually uses.
+--
+-- #515: in R/B a badge is a truthy inventory entry written as the NUMBER 1 by
+-- the in-game grant (checkVictoryRewards, src/world/OverworldController.lua)
+-- and by GenSave's .sav import.  Keep that exact shape -- an editor-written
+-- boolean blows up Bag.add's `(inv[id] or 0) + qty` (src/inventory/Bag.lua).
+--
+-- In Gen2 the same badge is a save.flags entry (ENGINE_* row -> badge id, see
+-- Gen2Flags.ENGINE_FLAG_NAMES), which Gen2Save.lua reads and writes on .sav
+-- import/export.  Writing it into inventory there would create a badge item
+-- that no Gen2 code path ever reads.
 function Ops.toggleBadge(S, id)
-  -- #515: badges are truthy inventory entries written as 1 by the in-game
-  -- grant (checkVictoryRewards, src/world/OverworldController.lua) and by
-  -- GenSave's .sav import; read and write that same shape here, or a badge
-  -- earned in game reads as unowned and an editor-written boolean blows up
-  -- Bag.add's `(inv[id] or 0) + qty` (src/inventory/Bag.lua).
-  local on = S.save.inventory[id] and true or false
-  S.save.inventory[id] = (not on) and 1 or nil
+  local on = Ops.hasBadge(S, id)
+  local gen2 = require("src.core.GameVersion").isGen2(S.version)
+  if gen2 then
+    S.save.flags = S.save.flags or {}
+    S.save.flags[id] = (not on) and true or nil
+    -- Never leave a stale entry in the other store behind.
+    if S.save.inventory then S.save.inventory[id] = nil end
+  else
+    S.save.inventory = S.save.inventory or {}
+    S.save.inventory[id] = (not on) and 1 or nil
+  end
   return Ops.mark(S, ("%s %s"):format(id, on and "removed" or "earned"))
 end
 

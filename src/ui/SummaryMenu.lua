@@ -148,12 +148,19 @@ function SummaryMenu.new(game, mon)
     self.sprite = ok and img or nil
   end
   self.spriteTrueColor = self.sprite and trueColor or false
+  -- Crystal animates the pic on this screen: AnimateMon_Menu's PokeAnims
+  -- sequence (34:$4058) is stereocry / setup / play.  nil on Gold and
+  -- Silver, which ship no animation tables at all.
+  self.picAnim = require("src.pokemon.PicAnim").new(game.data, mon.species)
+  -- this screen is up the moment it is built, so it runs straight away
+  if self.picAnim then self.picAnim:start() end
   require("src.core.Sound").playCry(game.data, mon.species)
   return self
 end
 
 function SummaryMenu:update(dt)
   local input = self.game.input
+  if self.picAnim then self.picAnim:update(dt) end
   if self.isEgg then
     if input:wasPressed("a") or input:wasPressed("b") then self.game.stack:pop() end
     return
@@ -216,10 +223,13 @@ end
 -- pic Gen1's status screen used.
 function SummaryMenu:drawGen2Pic(x0, y0)
   if not self.sprite then return end
+  -- every animation frame is the pic's own size, so the well placement is
+  -- measured off the still and only the texture swaps
   local pw, ph = self.sprite:getDimensions()
+  local image = (self.picAnim and self.picAnim:image()) or self.sprite
   local x, y = (x0 or 8) + (56 - pw) / 2, (y0 or 32) + (56 - ph) / 2
   love.graphics.setColor(1, 1, 1, 1)
-  love.graphics.draw(self.sprite, x, y)
+  love.graphics.draw(image, x, y)
   if self.spriteTrueColor then
     require("src.render.PaletteFX").markTrueColor(x, y, pw, ph)
   end
@@ -353,10 +363,14 @@ function SummaryMenu:drawGen2PinkPage()
   Font.draw(Strings("TO"), 112, 112)
   printLevel(17, 14, math.min(100, (mon.level or 1) + 1))
 
-  -- FillInExpBar at (11,16), between the $40/$41 end caps at columns 10 and 19
+  -- FillInExpBar between the $40/$41 end caps, its RIGHT edge pinned at
+  -- column 18 and the bar growing leftward from there: eight tiles from
+  -- column 11 on Gold and Crystal, nine from column 10 on a cartridge with a
+  -- wider bar (stats_screen.asm's own `hlcoord 10, 16`).
   local zoned = require("src.render.PaletteFX").shader() ~= nil
-  HudTiles.tile(0x62, 80, 128)
-  HudTiles.drawExpBar(data, 11, 16, HudTiles.expBarPixels(data, mon), zoned)
+  local expTx = 19 - HudTiles.geometry().expBarTiles
+  HudTiles.tile(0x62, (expTx - 1) * 8, 128)
+  HudTiles.drawExpBar(data, expTx, 16, HudTiles.expBarPixels(data, mon), zoned)
   HudTiles.tile(HudTiles.capTile(1), 152, 128)
 end
 

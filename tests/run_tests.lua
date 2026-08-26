@@ -1558,6 +1558,44 @@ local mover = { cellX = 0, cellY = 0, surfing = false }
 local ok2 = Collision.canMove(fakeForest, { mover }, mover, "down")
 check(ok2 == false, "tile-pair blocks crossing a forest elevation edge")
 
+-- ------------------------------------------------ Gen2 one-way (side) walls
+-- GetMovementPermissions (home/map.asm): collision classes $b0-$b7 (side
+-- walls) and $c0-$c7 (side buoys) read as plain LAND/WATER in
+-- CollisionPermissionTable, so passability alone waves them through.  The low
+-- three bits name the walled side of the cell; ignoring that let the player
+-- walk straight off the north ledge of an Ice Path cliff.
+do
+  local function fakeCliff(colls)
+    return {
+      def = { tileset = "ICE_PATH_1" },
+      inBounds = function() return true end,
+      isWalkableCell = function() return true end,
+      isWaterCell = function() return false end,
+      cellTile = function(_, cx, cy) return colls[cy .. "," .. cx] or 0x00 end,
+      sideWallAt = function(self, cx, cy)
+        return Map.gen2SideWall(self:cellTile(cx, cy))
+      end,
+    }
+  end
+  -- $b2 COLL_UP_WALL under the player's feet: north is fenced, the rest open
+  local cliff = fakeCliff({ ["0,1"] = 0xB2 })
+  local walker = { cellX = 1, cellY = 0, surfing = false }
+  check(Collision.canMove(cliff, { walker }, walker, "up") == false,
+        "COLL_UP_WALL blocks stepping north off a cliff")
+  check(Collision.canMove(cliff, { walker }, walker, "down") == true,
+        "COLL_UP_WALL leaves the other directions open")
+  -- the same wall seen from the far side: stepping *into* it is blocked too
+  local below = fakeCliff({ ["0,1"] = 0xB3 })
+  local climber = { cellX = 1, cellY = 1, surfing = false }
+  check(Collision.canMove(below, { climber }, climber, "up") == false,
+        "COLL_DOWN_WALL blocks stepping up into it")
+  check(Collision.canMove(below, { climber }, climber, "left") == true,
+        "a neighbouring side wall only blocks its own side")
+  -- $c0-$c7 are the surf-side equivalents, and $a0-$af ledges are not walls
+  check(Map.gen2SideWall(0xC1) ~= nil and Map.gen2SideWall(0xA3) == nil,
+        "side buoys count as one-way walls, hop ledges do not")
+end
+
 -- ---------------------------------------------------------------- START menu gating
 local StartMenu = require("src.ui.StartMenu")
 local blankSave = require("src.core.SaveData").newGame()
@@ -2903,6 +2941,9 @@ do
                      stack = { push = function(_, s) table.insert(pushed, s) end } }
   local stubRunner = { yield = function() end, resume = function() end }
   local ctx = { game = fakeGame, save = giftSave, runner = stubRunner }
+  -- the TM givers open with `checkevent EVENT_GOT_TM..`, so a FALSE from the
+  -- flag test is still standing when verbosegiveitem runs
+  ctx.lastCheck = false
   local ret = ScriptCommands.give_item(ctx, "POTION", 1)
   eq(ret, nil, "give_item success returns nil (script continues)")
   eq(giftSave.inventory.POTION, 1, "give_item adds to the bag")
@@ -2913,6 +2954,13 @@ do
   check(boxText:find(Data.items.POTION.name, 1, true) ~= nil, "got-item box names the item")
   eq(fakeGame.stringBuffer, Data.items.POTION.name,
      "give_item fills the wStringBuffer analog")
+  -- Gen2's `verbosegiveitem` lowers here and every gift script reads the
+  -- result back with `iffalse .BagFull` on the very next row.  Leaving the
+  -- checkevent's FALSE standing sent the Ilex Forest HEADBUTT guy down the
+  -- bag-full arm, past his `setevent`, so the TM could be collected forever.
+  eq(ctx.lastCheck, true, "give_item reports success to iffalse")
+  eq(ScriptCommands.jump_if_false(ctx, 99), nil,
+     "the bag-full branch does not fire after a successful gift")
   -- gotText = false: the script prints its own received row; no box
   ScriptCommands.give_item(ctx, "S_S_TICKET", 1, false)
   eq(giftSave.inventory.S_S_TICKET, 1, "suppressed give still adds to the bag")
@@ -2924,6 +2972,49 @@ do
   check(mapText:find("TOWN MAP", 1, true) ~= nil,
         "{RAM:wStringBuffer} renders the item name")
 end
+end
+
+-- ===== scripted greetings keep the PLAYER's name, not the buffer =====
+-- Polished's Elm/Lyra greetings run through show_text, whose RAM pass used
+-- to fill EVERY {RAM:...} token from game.stringBuffer -- including
+-- {RAM:wPlayerName} (charmap $4F). That named the player by the last
+-- received item or Pokemon ("Elm: Ultra Ball! There you are!", then
+-- "Chikorita" once Lyra's starter set the buffer). Named WRAM symbols must
+-- be left for TextBox's token registry; only the wStringBuffer family fills
+-- from the buffer here.
+do
+  local ScriptCommands = require("src.script.Commands")
+  local data = { text = {
+    _Greet = "Elm: {RAM:wPlayerName}!\nThere you are!",
+    _Buf = "{RAM:wStringBuffer3} is here.",
+  } }
+  local pushed = {}
+  local save = { player = { name = "GOLD", rival = "SILVER" }, inventory = {} }
+  local game = { data = data, save = save,
+    stringBuffer = "ULTRA BALL", stringBuffers = { [3] = "JOEY" },
+    stack = { push = function(_, s) table.insert(pushed, s) end } }
+  local ctx = { game = game, save = save,
+    runner = { yield = function() end, resume = function() end } }
+
+  ScriptCommands.show_text(ctx, "_Greet")
+  local greet = table.concat(pushed[1].pages[1], " ")
+  check(greet:find("GOLD", 1, true) ~= nil, "scripted greeting names the player")
+  check(greet:find("ULTRA BALL", 1, true) == nil,
+        "and never the last-received item from the buffer")
+
+  -- the buffer changing (Lyra's Chikorita) must not move the player's name
+  game.stringBuffer = "CHIKORITA"
+  pushed = {}
+  ScriptCommands.show_text(ctx, "_Greet")
+  local greet2 = table.concat(pushed[1].pages[1], " ")
+  check(greet2:find("GOLD", 1, true) ~= nil, "still the player after the buffer moves")
+  check(greet2:find("CHIKORITA", 1, true) == nil, "not the new buffer value")
+
+  -- regression guard: wStringBufferN still fills from its slot
+  pushed = {}
+  ScriptCommands.show_text(ctx, "_Buf")
+  local buf = table.concat(pushed[1].pages[1], " ")
+  check(buf:find("JOEY", 1, true) ~= nil, "wStringBuffer3 still resolves to its slot")
 end
 
 -- ================= issue #142: player backsprite X =================
@@ -3375,6 +3466,22 @@ runSuites({ "tests/rom_importer_android_mod_pick_test.lua" })
 -- ---------------------------------------------- import with no picker (#482)
 runSuites({ "tests/rom_importer_no_picker_test.lua" })
 runSuites({ "tests/rom_importer_double_pick_test.lua" })
+-- ---------------------------------------------- standalone *_test.lua suites
+-- These are self-contained regression files (one bug, one file).  They used
+-- to need a hand-written runSuites line each, and three of them -- the chip
+-- audio silence, save editor `pad` shadowing and Prism table finder suites --
+-- shipped without one and never ran here.  Globbed now, minus the handful
+-- above that already have their own registration, so dropping a new
+-- tests/<name>_test.lua in is enough.
+runSuites(orderedGlob("tests/*_test.lua", {}, {
+  ["tests/input_hold_test.lua"] = true,
+  ["tests/rom_importer_cursor_test.lua"] = true,
+  ["tests/rom_importer_android_pick_test.lua"] = true,
+  ["tests/rom_importer_android_mod_pick_test.lua"] = true,
+  ["tests/rom_importer_no_picker_test.lua"] = true,
+  ["tests/rom_importer_double_pick_test.lua"] = true,
+}))
+
 -- ---------------------------------------------- parity workstream tests
 -- Each tests/parity_*.lua is a self-contained file (own bootstrap + check,
 -- error()s if any assertion fails).  Globbed, so dropping a new parity

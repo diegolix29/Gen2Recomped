@@ -61,6 +61,31 @@ local FALLBACKS = {
   _HisNameIsText = Strings.source("That's right! I\nremember now! His\vname is {RIVAL}!"),
 }
 
+-- FALLBACKS is keyed by the GEN1 symbol names, but gen2Steps asks for the
+-- GEN2 ones -- _OakText1, _OakText2, _OakText4, _OakText6, _OakText7 -- and
+-- `alt` below only maps Gen1 -> Gen2, never back.  So on a Gen2 dataset that
+-- does not carry those symbols, textOr("_OakText4") found no value, looked up
+-- FALLBACKS["_OakText4"], which does not exist, and answered NIL.  stepText
+-- passed that straight to TextBox, which concatenated it: the crash Prism hit
+-- on the very first line of a new game.  Crystal and Gold have the symbols, so
+-- the hole only opened on a romhack whose intro is written its own way.
+--
+-- _OakText5 (the "I study POKéMON as a profession" half) deliberately has no
+-- entry: _OakText4 already answers with the combined 2B fallback, and pointing
+-- both at it would print the same paragraph twice.  A step with no text at all
+-- is skipped rather than shown empty -- see runStep.
+local FALLBACK_ALIAS = {
+  _OakText1 = "_OakSpeechText1",  OakText1 = "_OakSpeechText1",
+  _OakText2 = "_OakSpeechText2A", OakText2 = "_OakSpeechText2A",
+  _OakText4 = "_OakSpeechText2B", OakText4 = "_OakSpeechText2B",
+  _OakText6 = "_IntroducePlayerText", OakText6 = "_IntroducePlayerText",
+  _OakText7 = "_OakSpeechText3",  OakText7 = "_OakSpeechText3",
+}
+
+local function fallbackFor(key)
+  return FALLBACKS[key] or FALLBACKS[FALLBACK_ALIAS[key] or ""]
+end
+
 local function textOr(game, key)
   local t = game.data.text
   local Version = require("src.core.GameVersion")
@@ -81,12 +106,22 @@ local function textOr(game, key)
         break
       end
     end
+    -- and the other direction: a Gen2 key whose own symbol is absent falls
+    -- back through the Gen1 name the scaffold DOES carry
+    if type(value) ~= "string" or value == "" then
+      local canon = FALLBACK_ALIAS[key]
+      local candidate = canon and t and t[canon]
+      if type(candidate) == "string" and candidate ~= ""
+          and not candidate:match("^%{GEN2_TEXT") then
+        value = candidate
+      end
+    end
   end
   if type(value) ~= "string" then
-    return FALLBACKS[key]
+    return fallbackFor(key)
   end
   if value == "" or value:match("^%{GEN2_TEXT") then
-    return FALLBACKS[key]
+    return fallbackFor(key)
   end
   return value
 end
@@ -270,6 +305,58 @@ function OakSpeech.gen2Steps()
       kind = "say",
       textKey = "_OakText5",
     },
+    -- Crystal asks which you are before it asks your name
+    -- (AreYouABoyOrAreYouAGirlText, a symbol Gold does not have).  The step
+    -- drops out entirely on Gold and Silver, which only have Chris.
+    {
+      id = "ask_gender",
+      kind = "choice",
+      onlyIf = "playerForms",
+      notIf = "playerCustomization",
+      textKey = "AreYouABoyOrAreYouAGirlText",
+      textFallback = Strings("Are you a boy?\nOr are you a girl?"),
+      pic = "oak",
+      choices = { Strings("BOY"), Strings("GIRL") },
+      values = { "boy", "girl" },
+      -- A CARTRIDGE MAY OFFER MORE THAN TWO.  Polished Crystal has Chris,
+      -- Kris AND Crys, and its forms table carries `order` naming every
+      -- key; the labels come off each form so the menu reads CHRIS / KRIS /
+      -- CRYS rather than forcing a third character into BOY/GIRL.
+      choicesFromForms = true,
+      saveKey = "gender",
+      playerKey = "gender",
+      -- swap the pic above the box to whichever character the cursor is on,
+      -- so the question is answered by looking at CHRIS and KRIS rather than
+      -- by reading two words
+      picForValue = "playerForm",
+      -- tx 13 (not 12) keeps the 7-tile box clear of the pic area, which
+      -- runs to x = 104 = tile 13 for a full 7x7 portrait
+      tx = 13, ty = 0, tw = 7,
+    },
+    -- Prism's replacement for the boy/girl question: PlayerCustomization
+    -- (event/customization.asm), run from the intro at exactly this point --
+    -- after the "introduce yourself" line and before the name prompt
+    -- (engine/intro_menu.asm `callba PlayerCustomization`).  It writes
+    -- save.player.gender as a p0..p13 form id, which is the same key the
+    -- BOY/GIRL answer writes, so the name presets and every sprite lookup
+    -- downstream carry on unchanged.
+    {
+      id = "customize_player",
+      kind = "fn",
+      onlyIf = "playerCustomization",
+      run = function(speech, done)
+        -- guarded for the same reason as Game:makeTitleState's copy: a build
+        -- without the screen must skip the step, not take the intro down
+        local okCust, Cust = pcall(require, "src.ui.PrismCustomization")
+        if not (okCust and type(Cust) == "table") then
+          Logger.error("player customisation screen unavailable: %s",
+                       tostring(Cust))
+          return done()
+        end
+        if not Cust.available(speech.game) then return done() end
+        speech.game.stack:push(Cust.new(speech.game, function() done() end))
+      end,
+    },
     {
       id = "ask_player_name",
       kind = "say",
@@ -282,6 +369,9 @@ function OakSpeech.gen2Steps()
       title = Strings("YOUR NAME?"),
       presetsWho = "player",
       presetsFallback = { "GOLD", "HIRO", "CHRIS" },
+      -- Crystal offers a different default-name list per gender
+      -- (ChrisNameMenuHeader.MaleNames / KrisNameMenuHeader.FemaleNames)
+      presetsFromForm = true,
     },
     {
       id = "legend",
@@ -361,9 +451,33 @@ function OakSpeech.new(game, onDone)
   return self
 end
 
+-- A step may declare `onlyIf = "<field key>"`: it survives only when the
+-- imported dataset actually carries that field.  The gender question uses it,
+-- because field.playerForms exists on Crystal (which has KRIS) and nowhere
+-- else -- Gold and Silver must not be asked a question with one answer.
+function OakSpeech:stepApplies(step)
+  local field = self.game.data and self.game.data.field
+  -- `notIf` is the mirror: the step drops out when the dataset DOES carry the
+  -- field.  Prism needs it -- it has playerForms like Crystal, so the boy/girl
+  -- question survives its gate, but Prism does not ask that question at all.
+  -- It runs a whole customisation screen instead, and asking both would set
+  -- the character twice.
+  if step.notIf ~= nil and (field and field[step.notIf]) ~= nil then
+    return false
+  end
+  local key = step.onlyIf
+  if key == nil then return true end
+  return (field and field[key]) ~= nil
+end
+
 function OakSpeech:buildSteps()
   local steps = GameVersion.isGen2() and OakSpeech.gen2Steps()
                 or OakSpeech.defaultSteps(self)
+  local kept = {}
+  for _, step in ipairs(steps) do
+    if self:stepApplies(step) then kept[#kept + 1] = step end
+  end
+  steps = kept
   local hooked = Runtime.call("intro.oak_speech.build",
     function(s) return s end, steps, self)
   if type(hooked) ~= "table" then
@@ -389,14 +503,32 @@ function OakSpeech:say(key, next)
   self.game.stack:push(TextBox.new(self.game, textOr(self.game, key), next))
 end
 
+-- A step with nothing to say is SKIPPED, not shown as an empty box.  Some
+-- Gen2 datasets carry only part of the intro (Prism writes its own, so it has
+-- none of Crystal's _OakText symbols), and a speech that pushes a box with no
+-- pages leaves the player looking at a frame with no text and no way to know
+-- whether A does anything.  Running `next` straight away keeps the sequence
+-- moving through to the parts that do exist -- the name entry above all.
 function OakSpeech:sayText(text, next, opts)
+  if type(text) ~= "string" or text == "" then
+    if next then next() end
+    return
+  end
   self.game.stack:push(TextBox.new(self.game, text, next, opts))
 end
 
 function OakSpeech:stepText(step)
   if step.text then return step.text end
-  if step.textKey then return textOr(self.game, step.textKey) end
-  return ""
+  if step.textKey then
+    local text = textOr(self.game, step.textKey)
+    -- textFallback covers a symbol the dataset did not carry; the ROM's own
+    -- line always wins when it is there
+    if (text == nil or text == "") and step.textFallback then
+      return step.textFallback
+    end
+    return text
+  end
+  return step.textFallback or ""
 end
 
 function OakSpeech:applyPic(step)
@@ -415,10 +547,71 @@ function OakSpeech:applyPic(step)
   end
 end
 
+-- The intro pic for one gender, loaded on demand and cached.
+-- Returns image, trueColor.  Falls back to the speech's own player pic when
+-- the dataset has no playerForms (Gold and Silver), which is also what makes
+-- picForValue harmless on a version that never asks the question.
+function OakSpeech:formPic(gender)
+  self._formPics = self._formPics or {}
+  local hit = self._formPics[gender]
+  if hit then return hit[1], hit[2] end
+  local forms = self.game.data.field and self.game.data.field.playerForms
+  local form = forms and forms[gender]
+  local path = form and (form.intro or form.card)
+  local img = path and tryImage(path) or self.playerPic
+  local trueColor = (path and img and form.trueColor) and true or false
+  if img == self.playerPic then trueColor = self.playerTrueColor or false end
+  self._formPics[gender] = { img, trueColor }
+  return img, trueColor
+end
+
+-- A choice step may set `picForValue = "playerForm"`: as the cursor moves,
+-- the pic becomes the character that row would pick.  Nothing else about the
+-- step changes, so a step without it keeps whatever applyPic put up.
+function OakSpeech:applyChoicePic(step, index)
+  if step.picForValue ~= "playerForm" then return end
+  local gender = step.values and step.values[index]
+  if type(gender) ~= "string" then return end
+  local img, trueColor = self:formPic(gender)
+  if not img then return end
+  self.pic = img
+  self.picFlip = false
+  self.picTrueColor = trueColor
+end
+
+-- Once the gender is on the save, everything the speech still has to draw --
+-- the legend beat's player pic, the sprite the pic shrinks into -- and the
+-- overworld Player already standing on the map behind this screen have to be
+-- re-resolved.  Player.new ran before the question was even asked
+-- (Game:makeTitleState pushes the overworld first).
+function OakSpeech:applyPlayerForm()
+  self.playerPic, self.playerTrueColor = self:formPic(
+    self.game.save and self.game.save.player and self.game.save.player.gender
+    or "boy")
+  self.playerTrueColor = self.playerPic and self.playerTrueColor or false
+  local form = require("src.pokemon.Sprites").playerForm(self.game.data,
+                                                         self.game.save)
+  local sprites = self.game.data.sprites or {}
+  local sheet = form and form.walk and sprites[form.walk]
+  self.walkSheet = tryImage(sheet and sheet.image) or self.walkSheet
+  self.walkQuad = nil
+  local overworld = self.game.overworld
+  local player = overworld and overworld.player
+  if player and player.refreshForm then
+    player:refreshForm(self.game.data)
+  end
+end
+
 function OakSpeech:recordAnswer(step, index, label, value)
   if value == nil then value = label end
   if step.saveKey then
     self.answers[step.saveKey] = value
+  end
+  -- answers only live on the speech; a step that names playerKey wants the
+  -- value kept on the save the way the naming step keeps the player's name
+  if step.playerKey and self.game.save and self.game.save.player then
+    self.game.save.player[step.playerKey] = value
+    if step.playerKey == "gender" then self:applyPlayerForm() end
   end
   if Runtime.wants("intro.oak_speech.answered") then
     Runtime.emit("intro.oak_speech.answered", {
@@ -478,6 +671,14 @@ function OakSpeech:runStep(step)
   elseif kind == "name" then
     local who = step.who or "player"
     local presets = step.presets
+    if not presets and step.presetsFromForm then
+      local form = require("src.pokemon.Sprites").playerForm(self.game.data,
+                                                             self.game.save)
+      if form and type(form.names) == "table" and form.names[1] then
+        presets = form.names
+      end
+    end
+    presets = presets
       or namePresets(self.game, step.presetsWho or who,
                      step.presetsFallback or { "RED" })
     require("src.ui.Screens").push(self.game, "NamingScreen", {
@@ -496,6 +697,28 @@ function OakSpeech:runStep(step)
     })
   elseif kind == "choice" then
     self:applyPic(step)
+    -- a forms table with an `order` list overrides the static pair: each
+    -- entry's key is the value saved and its label is the menu row, so
+    -- polished's three characters all appear (see ask_gender)
+    if step.choicesFromForms then
+      local forms = self.game.data and self.game.data.field
+        and self.game.data.field.playerForms
+      if type(forms) == "table" and type(forms.order) == "table"
+         and #forms.order > 0 then
+        local choices, values = {}, {}
+        for _, key in ipairs(forms.order) do
+          local form = forms[key]
+          if form then
+            choices[#choices + 1] = form.label or key:upper()
+            values[#values + 1] = key
+          end
+        end
+        if #choices >= 2 then
+          step = setmetatable({ choices = choices, values = values },
+                              { __index = step })
+        end
+      end
+    end
     self:afterReveal(step, function()
       self:runCry(step)
       local function openMenu()
@@ -520,6 +743,9 @@ function OakSpeech:runStep(step)
           ty = step.ty or 0,
           tw = step.tw or 12,
           th = step.th,
+          onHighlight = step.picForValue and function(i)
+            self:applyChoicePic(step, i)
+          end or nil,
         }))
       end
       local text = self:stepText(step)

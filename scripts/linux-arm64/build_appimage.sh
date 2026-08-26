@@ -357,6 +357,9 @@ cp -R "$jit_share/jit" "$APPDIR/share/$LUAJIT_SHARE_DIR/"
 
 # --------------------------------------------------------------- branding
 cp "$IN/game.love" "$APPDIR/game.love"
+unzip -Z1 "$APPDIR/game.love" > "$WORK/love-listing.txt"
+grep -qxF "tools/rom_manifest_gold.json" "$WORK/love-listing.txt" \
+  || fail "game.love is missing tools/rom_manifest_gold.json"
 # The .desktop's Icon= resolves against the AppDir root by basename, and
 # .DirIcon is what appimaged and file-manager thumbnailers read.
 cp "$IN/icon.png" "$APPDIR/$APP_NAME.png"
@@ -365,10 +368,11 @@ cp "$IN/icon.png" "$APPDIR/.DirIcon"
 cat > "$APPDIR/$APP_NAME.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=gen1recomp
+Name=gen2recomp
 Comment=Pokémon Gen 1 recompilation
 Exec=$APP_NAME
 Icon=$APP_NAME
+StartupWMClass=love
 Categories=Game;
 Terminal=false
 EOF
@@ -378,7 +382,7 @@ EOF
 # through to LÖVE's "no game" screen.
 cat > "$APPDIR/AppRun" <<EOF
 #!/bin/sh
-# gen1recomp aarch64 AppImage launcher.
+# gen2recomp aarch64 AppImage launcher.
 
 if [ -z "\$APPDIR" ]; then
     APPDIR="\$(dirname "\$(readlink -f "\$0")")"

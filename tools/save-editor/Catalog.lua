@@ -1,4 +1,50 @@
+-- Copyright (c) 2026 Cedric. All rights reserved.
+-- Source-available under the Gen2Recomped Map Editor License: you may read,
+-- build and privately modify this file; you may not redistribute it or use it
+-- commercially. See LICENSE at the repository root. Cartridge-derived data is
+-- not covered and is not the copyright holder's to license.
+
 local Catalog = {}
+
+-- io.popen is NOT a "returns nil when unsupported" API.  LuaJIT and PUC Lua
+-- both DEFINE the function on every target and RAISE "'popen' not supported"
+-- from inside it when the platform has no fork/exec -- which is the Switch
+-- (love-nx / Horizon) and the UWP build.  So an `io.popen and io.popen(...)`
+-- guard guards nothing: the call still throws.  Here it threw out of
+-- Catalog.scrapeEvents -> App.load -> the launcher's Edit button, so the save
+-- editor died on open on the one platform that cannot shell out.
+--
+-- src/core/HostShell.popen already wraps this in a pcall for exactly this
+-- reason (see its comment); the editor was simply not using it.  Loaded
+-- defensively because the editor's test harnesses run these modules under
+-- plain Lua with no src.* on the require path.
+local safePopen
+do
+  local ok, HostShell = pcall(require, "src.core.HostShell")
+  if ok and type(HostShell) == "table" and HostShell.popen then
+    safePopen = HostShell.popen
+  else
+    safePopen = function(command, mode)
+      local okp, pipe = pcall(io.popen, command, mode or "r")
+      if not okp or not pipe then return nil end
+      return pipe
+    end
+  end
+end
+
+-- Whether shelling out is meaningful at all.  A console has no shell, so skip
+-- the attempt instead of paying a pcall for a guaranteed failure.  Only a
+-- positive love answer is trusted: headless test runs have no love.system, and
+-- Platform then reports the OS as "Unknown" -> false, which would silently
+-- disable the shell listing those runs depend on.
+local function canShell()
+  if not (love and love.system) then return true end
+  local okp, Platform = pcall(require, "src.core.Platform")
+  if okp and type(Platform) == "table" and Platform.canSpawnProcess then
+    return Platform.canSpawnProcess()
+  end
+  return true
+end
 
 local function sortedKeys(t)
   local keys = {}
@@ -40,23 +86,31 @@ end
 
 local function shellListLua(dir)
   local out = {}
+  if not canShell() then return out end
   if package.config:sub(1, 1) == "\\" then
     -- cmd has no ls; dir /b prints bare names, so re-attach the directory
-    local p = io.popen(string.format('dir /b "%s\\*.lua" 2>nul', dir))
+    local p = safePopen(string.format('dir /b "%s\\*.lua" 2>nul', dir))
     if p then
-      for line in p:lines() do
-        if line ~= "" then table.insert(out, dir .. "/" .. line) end
-      end
-      p:close()
+      -- p:lines() itself can raise on a pipe the platform half-supports, so
+      -- the drain is protected too: an unreadable listing is "no files here",
+      -- never a crash out of the editor's load path.
+      pcall(function()
+        for line in p:lines() do
+          if line ~= "" then table.insert(out, dir .. "/" .. line) end
+        end
+      end)
+      pcall(function() p:close() end)
     end
     return out
   end
-  local p = io.popen(string.format('ls "%s"/*.lua 2>/dev/null', dir))
+  local p = safePopen(string.format('ls "%s"/*.lua 2>/dev/null', dir))
   if p then
-    for line in p:lines() do
-      table.insert(out, line)
-    end
-    p:close()
+    pcall(function()
+      for line in p:lines() do
+        table.insert(out, line)
+      end
+    end)
+    pcall(function() p:close() end)
   end
   return out
 end
@@ -107,7 +161,72 @@ function Catalog.scrapeEvents(scriptDir, headerPath, listFiles, extraDirs)
     if body then eat(body) end
   end
 
+  -- Gen2 stores story bits as EVENT_G2_%04d (see Gen2Flags.eventFlag).  The
+  -- hand-ported data/scripts tree only has Gen1 EVENT_* strings, so without
+  -- this pass the Events tab is empty / shows raw EVENT_G2_ ids with no
+  -- pret names.  Include both the storage id and the pret constant so the
+  -- filter can match either spelling.
+  local ok, Gen2Flags = pcall(require, "src.script.Gen2Flags")
+  if ok and Gen2Flags and Gen2Flags.EVENT_FLAG_NAMES then
+    for index, name in pairs(Gen2Flags.EVENT_FLAG_NAMES) do
+      found[name] = true
+      found[string.format("EVENT_G2_%04d", index)] = true
+    end
+  end
+  if ok and Gen2Flags and Gen2Flags.ENGINE_FLAG_NAMES then
+    for _, name in pairs(Gen2Flags.ENGINE_FLAG_NAMES) do
+      found[name] = true
+    end
+  end
+
   return sortedKeys(found)
+end
+
+-- Friendly item label for the save editor.  Gen2 keeps inventory keys as
+-- ITEM_nnn (RomExtractorGen2); after a real ROM extract, data.items[id].name
+-- is the ROM ItemNames string and .key is POTION / TM_01 / etc.
+function Catalog.itemLabel(data, id)
+  if type(id) ~= "string" then return tostring(id) end
+  local entry = data and data.items and data.items[id]
+  if type(entry) == "table" then
+    local name = entry.name
+    if type(name) == "string" and name ~= "" and not name:match("^Item %d+$") then
+      return name
+    end
+    if type(entry.key) == "string" and entry.key ~= "" then
+      return entry.key
+    end
+  end
+  return id
+end
+
+-- Friendly event flag label.  Storage stays EVENT_G2_%04d; pret names are
+-- display-only so existing saves / extracted scripts keep matching.
+function Catalog.flagLabel(id)
+  local ok, Gen2Flags = pcall(require, "src.script.Gen2Flags")
+  if ok and Gen2Flags and Gen2Flags.eventFlagDisplay then
+    local pretty = Gen2Flags.eventFlagDisplay(id)
+    if pretty and pretty ~= id then
+      return pretty
+    end
+  end
+  return id
+end
+
+-- Friendly species label.  Gen2 keys are SPECIES_nnn; after a ROM extract
+-- data.pokemon[id].name is the PokemonNames string (BULBASAUR, …).
+function Catalog.speciesLabel(data, id)
+  if type(id) ~= "string" then return tostring(id or "?") end
+  local entry = data and data.pokemon and data.pokemon[id]
+  if type(entry) == "table" then
+    local name = entry.name
+    if type(name) == "string" and name ~= ""
+      and not name:match("^[Ss]pecies%s*%d+$")
+      and name ~= id then
+      return name
+    end
+  end
+  return id
 end
 
 return Catalog

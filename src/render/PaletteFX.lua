@@ -1,3 +1,9 @@
+-- Copyright (c) 2026 Cedric. All rights reserved.
+-- Source-available under the Gen2Recomped License (see LICENSE.md): you may
+-- read, build and privately modify this file; you may not redistribute it or
+-- use it commercially. Cartridge-derived data is excluded and is not the
+-- copyright holder's to license.
+
 -- SGB-style colorization post-pass.  The Super Game Boy colored the DMG
 -- picture by assigning 4-color palettes to rectangular screen regions
 -- (ATTR_BLK packets, data/sgb/sgb_packets.asm).  States expose
@@ -332,6 +338,208 @@ end
 -- reported.  SpriteRenderer bakes that OBP0 ramp (PaletteFX.dmgObj) and lets
 -- the zone shader color the result.  RED++ colors sprites through the
 -- usesGbcPack() path in SpriteRenderer instead.
+-- Does COLORS currently mean "show me the real hardware colour"?
+--
+-- Gen2 sheets carry their own CGB OBJ palette (MapObjectPals), and the
+-- overworld used to apply it unconditionally -- which made COLORS a no-op out
+-- in the world while battle still honoured it.  Gating it here lets the
+-- setting mean the same thing everywhere: the two hardware-colour modes wear
+-- the ROM's palettes, and the DMG/SGB-flavoured modes fall through to the
+-- shade treatment they describe.
+-- The four DMG/SGB novelty modes below are shade treatments; everything else
+-- means "show me the real colour".  Listing the novelties rather than the
+-- hardware modes matters: `gbc` (labelled SGB) is the DEFAULT, and gating it
+-- out sent a freshly imported Gen2 game down the shade-remap path -- garish
+-- green and cyan terrain with every NPC a black silhouette, because a Gen2
+-- tileset has no SGB zone data to colour it with.  Gen2 is a CGB-native game;
+-- its own palettes are the sane answer for every mode that is not explicitly
+-- asking for a DMG look.
+local GEN2_SHADE_MODES = {
+  og = true, og_inv = true, gbc_inv = true, classic = true,
+}
+
+function PaletteFX.usesGen2ObjPal(mode)
+  mode = mode or PaletteFX.mode
+  return not GEN2_SHADE_MODES[mode]
+end
+
+-- The BG half of the same question.  Gen2 tilesets carry palMap/palColors
+-- (LoadTilesetPalette) and TileRenderer bakes them into the atlas; that bake
+-- IS the hardware colour, so it lives or dies with the same modes the OBJ bake
+-- does.  Split out from usesGen2ObjPal only so the two can diverge later
+-- without hunting call sites -- today they answer the same thing.
+function PaletteFX.usesGen2BgPal(mode)
+  return PaletteFX.usesGen2ObjPal(mode)
+end
+
+-- Does the active mode carry the dark-cave shift in a BAKE rather than in a
+-- per-frame shader?  A bake cannot be re-shaded in place, so whoever flips
+-- darkWorld has to drop every resident map and rebuild -- and if they DON'T,
+-- the cave simply stays dark after FLASH, because the atlas already on screen
+-- was baked with the darkness in it.
+--
+-- ADVANCED bakes it on Gen 1 (worldGroupColors folds FadePal2 into the RED++
+-- atlas, #383).  A GEN 2 game bakes it in EVERY hardware-colour mode, not just
+-- ADVANCED: TileRenderer picks the tileset's DARKNESS palette row off
+-- PaletteFX.darkWorld() and bakes THAT into the atlas, with darkWorld in the
+-- cache key.  Gating the rebuild on usesGbcPack alone -- which is what the
+-- Gen1-era code did -- is why FLASH lit the cave under ADVANCED and did
+-- nothing at all under SGB, the default.
+--
+-- The DMG/SGB shade modes are the exception and need no rebuild: there the
+-- atlas is the raw sheet and darkness is PaletteFX.setShadeMap, a per-frame
+-- register write.
+function PaletteFX.bakesDarkness()
+  if PaletteFX.usesGbcPack() then return true end
+  return GameVersion.isGen2() and PaletteFX.usesGen2BgPal()
+end
+
+-- ------- Gen2 time of day (GetTimeOfDay, 5:$4032)
+--
+-- EnvironmentColorsPointers gives each map environment four rows of BG
+-- palettes -- MORN / DAY / NITE / DARKNESS -- and the clock picks the row.
+-- Held here rather than threaded through because TileRenderer BAKES the row
+-- into an atlas and so needs it in the cache key, exactly like darkWorld above.
+local gen2Tod = "DAY"        -- effective row: what everything downstream reads
+local gen2ClockTod = "DAY"   -- what the clock alone says
+local gen2MapPalette = 0     -- PALETTE_* from the current map's header
+-- OverworldState:timeOfDay answers "MORNING"/"NITE"; a mod's world.tod hook may
+-- answer "NIGHT".  Normalise to the four row names the importer writes.
+local GEN2_TOD_ALIAS = {
+  MORN = "MORN", MORNING = "MORN", DAY = "DAY", DAYTIME = "DAY",
+  NITE = "NITE", NIGHT = "NITE", EVE = "NITE", EVENING = "NITE",
+  DARK = "DARK", DARKNESS = "DARK",
+}
+
+-- The clock is NOT the last word on which row a map gets.  Map header byte 7's
+-- low nibble is a PALETTE_* override, and ReplaceTimeOfDayPals turns it into
+-- wTimeOfDayPalset: $E4 for AUTO (the four rows in clock order), $55 / $AA /
+-- $00 / $FF for DAY / NITE / MORN / DARK -- packed constants, so the clock
+-- stops mattering entirely.  Every INDOOR map in both ROMs carries PALETTE_DAY
+-- and so do the Ruins of Alph chambers, which is why a house or a gym does not
+-- go dark at nightfall on hardware.  PALETTE_DARK resolves to NITE here because
+-- the unlit case is already handled one layer up by PaletteFX.darkWorld, which
+-- forces the DARKNESS row until FLASH -- exactly what .NeedsFlash does.
+local GEN2_MAP_PALETTE_ROW = {
+  [1] = "DAY", [2] = "NITE", [3] = "MORN", [4] = "NITE",
+}
+
+local function gen2RecomputeTod()
+  local key = GEN2_MAP_PALETTE_ROW[gen2MapPalette] or gen2ClockTod
+  if gen2Tod == key then return false end
+  gen2Tod = key
+  return true
+end
+
+-- returns true when the effective row actually changed, so the caller can
+-- drop the baked atlases and rebuild
+function PaletteFX.setGen2Tod(tod)
+  gen2ClockTod = GEN2_TOD_ALIAS[tostring(tod or ""):upper()] or "DAY"
+  return gen2RecomputeTod()
+end
+
+-- Called on every map change with the map's PALETTE_* byte (0 = AUTO).
+-- Same contract as setGen2Tod: true means the atlases are stale.
+function PaletteFX.setGen2MapPalette(palette)
+  local value = tonumber(palette) or 0
+  if value < 0 or value > 7 then value = 0 end
+  -- PALETTE_5..7 are unused slots that ReplaceTimeOfDayPals maps to $E4, the
+  -- same palset as AUTO.
+  if value > 4 then value = 0 end
+  if gen2MapPalette == value then return false end
+  gen2MapPalette = value
+  return gen2RecomputeTod()
+end
+
+function PaletteFX.gen2MapPalette() return gen2MapPalette end
+
+function PaletteFX.gen2Tod() return gen2Tod end
+
+-- ------- the same answer, asked about a map that is not the current one
+--
+-- Everything above is about the LIVE map: setGen2MapPalette and setGen2Tod are
+-- pushed in on map load and clock tick, and gen2Tod is the one row the baked
+-- atlases were built with.  That is all the 2D renderer needs, because the 2D
+-- renderer only ever draws the map the player is standing on.
+--
+-- A 3D or voxel pipeline does not have that luxury.  It meshes the neighbours
+-- too, so it has to ask "which palette row does THIS map def take" about a map
+-- that has not been entered, and it has to arrive at the same answer this
+-- module would -- otherwise the seam between the current map and the one north
+-- of it is a visible colour step.
+--
+-- The two functions below are that question, split the way the ROM splits it:
+-- daytimeFor picks the row (GetTimeOfDay + ReplaceTimeOfDayPals + .NeedsFlash),
+-- bgSet fetches it (LoadMapPals).  Neither reads or writes the live state, so
+-- calling them cannot disturb what the 2D atlas was baked with.
+
+-- Which of MORN / DAY / NITE / DARK a map takes.
+--
+--   mapDef     a record out of data.maps; its `mapPalette` is map header
+--              byte 7's low nibble (0 = AUTO)
+--   hour       0-23, or nil for the host clock -- a caller with its own
+--              in-game clock passes it rather than being overruled by the
+--              wall clock
+--   flashUsed  true when FLASH is lit.  nil/false does NOT mean "not dark":
+--              a caller that has no flash flag to offer gets the engine's own
+--              darkWorld state, which already folds in save.flashLit.
+function PaletteFX.daytimeFor(mapDef, hour, flashUsed)
+  -- Darkness wins outright and the clock stops mattering, which is what
+  -- .NeedsFlash does: an unlit cave is the DARKNESS row at noon.
+  if flashUsed ~= true and darkWorld then return "DARK" end
+
+  -- The map's own PALETTE_* override next -- this is why a house does not go
+  -- dark at nightfall, and it beats the clock for the same reason
+  -- ReplaceTimeOfDayPals' packed palset does.
+  local palette = tonumber(mapDef and mapDef.mapPalette) or 0
+  if palette < 0 or palette > 4 then palette = 0 end
+  local override = GEN2_MAP_PALETTE_ROW[palette]
+  if override then return override end
+
+  -- AUTO: GetTimeOfDay's own table (5:$4032 .TimeOfDayTable).
+  hour = tonumber(hour)
+  if not hour then hour = tonumber(os.date("%H")) end
+  hour = math.floor(hour or 12) % 24
+  if hour < 4 then return "NITE" end
+  if hour < 10 then return "MORN" end
+  if hour < 18 then return "DAY" end
+  return "NITE"
+end
+
+-- The eight BG palettes a map wears on a given row.
+--
+--   data      Data.gen2Palettes, or the whole Data table -- both are common
+--             at a call site that only has `game.data` in hand
+--   mapDef    a record out of data.maps
+--   daytime   a row name; anything daytimeFor returns, or a looser spelling
+--             ("NIGHT", "MORNING"), or nil for the live row
+--
+-- Returns nil rather than a guess in three cases, all of which mean "do not
+-- colour": no Gen 2 palette data (a Gen 1 game, or a cache imported before
+-- the palettes were extracted), no palettes for this map's tileset, and --
+-- the one that is a decision rather than a gap -- a COLORS mode that is
+-- asking for a DMG shade treatment instead of hardware colour.  That last
+-- one is what keeps an outside renderer honest: it colours when and only
+-- when the tiles beside it would.
+function PaletteFX.bgSet(data, mapDef, daytime)
+  if type(data) ~= "table" or type(mapDef) ~= "table" then return nil end
+  if not PaletteFX.usesGen2BgPal() then return nil end
+
+  local tilesetId = mapDef.tileset
+  if type(tilesetId) ~= "string" then return nil end
+
+  local rows = data[tilesetId]
+  if type(rows) ~= "table" and type(data.gen2Palettes) == "table" then
+    rows = data.gen2Palettes[tilesetId]
+  end
+  if type(rows) ~= "table" then return nil end
+
+  local row = GEN2_TOD_ALIAS[tostring(daytime or ""):upper()] or gen2Tod
+  local set = rows[row] or rows.DAY
+  if type(set) ~= "table" or set[1] == nil then return nil end
+  return set, row
+end
+
 function PaletteFX.usesSpriteObp(mode)
   mode = mode or PaletteFX.mode
   return mode == "ogred" and not GameVersion.isYellow()
@@ -694,11 +902,16 @@ function PaletteFX.spriteObp(spriteDef, seed)
   return PaletteFX.darkObp(w.spritePalettes[group], group)
 end
 
--- GetHealthBarColor (home/palettes.asm) on the standard 48px bar
+-- GetHPPal (home/hp_pal.asm) on this cartridge's bar.  Crystal's is 48 pixels
+-- wide and turns green at 27 and yellow at 10; a cartridge that widened the
+-- bar moved both, and reading Prism's 56-pixel bar through Crystal's numbers
+-- showed yellow between half and 56% health where the cartridge shows green.
 function PaletteFX.barPalName(hp, maxHp)
-  local px = maxHp > 0 and math.floor(hp * 48 / maxHp) or 0
+  local geo = require("src.render.HudTiles").geometry()
+  local px = maxHp > 0 and math.floor(hp * geo.hpBarTiles * 8 / maxHp) or 0
   if hp > 0 and px < 1 then px = 1 end
-  return px >= 27 and "GREENBAR" or px >= 10 and "YELLOWBAR" or "REDBAR"
+  return px >= geo.hpBarGreenPixels and "GREENBAR"
+    or px >= geo.hpBarYellowPixels and "YELLOWBAR" or "REDBAR"
 end
 
 -- convenience: a single whole-screen zone for a named palette
@@ -718,7 +931,17 @@ PaletteFX.GRAYS = { { 255, 255, 255 }, { 170, 170, 170 },
 -- pokered's SetAnimationBGPalette / AnimationFlashScreen* writes to
 -- rBGP composed with the SGB colorization: the SGB colors the remapped
 -- DMG shade, so a screen region shows palette[map[shade]].
+-- NIL-SAFE, BECAUSE A MISSING PALETTE MUST NOT BE A CRASH MID-BATTLE.
+--
+-- The `not map` early return covered one direction; the other (colors == nil)
+-- indexed straight into nil and took the game down inside draw. Prism reached
+-- it: its pack carries neither MEWMON nor GREENBAR, which are the last-resort
+-- fallbacks sgbBattlePals leans on, so a zone could resolve to nil and every
+-- frame of that battle died here (reported on Larvitar vs Venonat; any battle
+-- on that pack would do it). Callers get nil back and skip the zone, which
+-- leaves it unshaded rather than not drawn at all.
 function PaletteFX.permute(colors, map)
+  if not colors then return nil end
   if not map then return colors end
   return { colors[map[0] + 1], colors[map[1] + 1],
            colors[map[2] + 1], colors[map[3] + 1] }

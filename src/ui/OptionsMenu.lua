@@ -294,6 +294,49 @@ local function buildRows(game)
         o.uiLayout = o.uiLayout == "dynamic" and "centered" or "dynamic"
         return true
       end },
+    -- Gen2 only.  The port's party rows have always drawn the Pokedex front
+    -- pic shrunk into the 16x16 cell; CLASSIC gives back the ROM's own
+    -- MonMenuIcons art (the two-frame menu icon the extractor writes to
+    -- assets/generated/icons/<species>.png), which is what the cartridge
+    -- shows.  Gen1 has no dex-pic party mode, so the row is filtered out
+    -- there rather than offering a switch with only one side.
+    { id = "partyIcons", label = Strings("PARTY ICONS"),
+      value = function(g)
+        return g.save.options.partyIcons == "classic"
+               and Strings("CLASSIC") or Strings("POKEDEX")
+      end,
+      step = function(g)
+        local o = g.save.options
+        o.partyIcons = o.partyIcons == "classic" and "dex" or "classic"
+        require("src.ui.PartyMenu").forgetIconCache()
+        return true
+      end },
+    -- PKMN ART / BATTLE PKMN: swap the four-shade cartridge pic for a live
+    -- Stadium 2 model, in the menus and in battle respectively.  Two rows
+    -- rather than one because they cost very differently -- a menu shows one
+    -- model on an otherwise still screen, a battle shows two while everything
+    -- else is moving -- and wanting Stadium portraits does not mean wanting
+    -- the battle redrawn.  Both default to GAME BOY.
+    { id = "menuArt", label = Strings("PKMN ART"),
+      value = function(g)
+        return require("src.render.StadiumArt").menuMode(g) == "stadium"
+               and Strings("STADIUM") or Strings("GAME BOY")
+      end,
+      step = function(g)
+        local o = g.save.options
+        o.menuArt = (o.menuArt == "stadium") and "gb" or "stadium"
+        return true
+      end },
+    { id = "battleArt", label = Strings("BATTLE PKMN"),
+      value = function(g)
+        return require("src.render.StadiumArt").battleMode(g) == "stadium"
+               and Strings("STADIUM") or Strings("GAME BOY")
+      end,
+      step = function(g)
+        local o = g.save.options
+        o.battleArt = (o.battleArt == "stadium") and "gb" or "stadium"
+        return true
+      end },
     { id = "ruleset", label = Strings("RULESET"),
       value = function(g) return rulesetName(g) end,
       step = function(g, dir)
@@ -620,6 +663,15 @@ local function buildRows(game)
       rows = filtered
     end
   end
+  -- PARTY ICONS is a Gen2 switch: Gen1's party rows draw menu icon classes
+  -- and have no dex-pic mode to toggle to.
+  if not GameVersion.isGen2() then
+    local filtered = {}
+    for _, row in ipairs(rows) do
+      if row.id ~= "partyIcons" then filtered[#filtered + 1] = row end
+    end
+    rows = filtered
+  end
   -- PIKACHU VOL only means something where the voice clips exist: Yellow
   -- (data.audio.pikaCries is the clip count the importer wrote).  Red/Blue
   -- keep the row list they always had.
@@ -628,6 +680,20 @@ local function buildRows(game)
     local filtered = {}
     for _, row in ipairs(rows) do
       if row.id ~= "pikaVol" then filtered[#filtered + 1] = row end
+    end
+    rows = filtered
+  end
+  -- PKMN ART / BATTLE PKMN only where something can actually serve a render:
+  -- the Stadium mod loaded, with a cartridge imported and its packs built.
+  -- An option that visibly does nothing is worse than an absent one -- the
+  -- player flips it, sees no change, and reasonably concludes the feature is
+  -- broken, which is a support thread rather than a setting.
+  if not require("src.render.StadiumArt").available(game) then
+    local filtered = {}
+    for _, row in ipairs(rows) do
+      if row.id ~= "menuArt" and row.id ~= "battleArt" then
+        filtered[#filtered + 1] = row
+      end
     end
     rows = filtered
   end

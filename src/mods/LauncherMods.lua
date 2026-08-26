@@ -113,9 +113,51 @@ function LauncherMods.deriveList(manifests, options)
     local raw = m.raw or {}
     local badge = tostring(raw.category or m.profile or "MOD"):upper()
     if m.experimental then badge = "EXPERIMENTAL" end
+    -- A mod whose declared base file is missing is installed and enabled but
+    -- cannot do anything; the row carries that so the panel can offer IMPORT
+    -- instead of leaving the player to guess (see src/mods/ModImports.lua).
+    local ModImports = require("src.mods.ModImports")
+    -- A base file the player already gave another mod satisfies this one too
+    -- (see ModImports' shared store); do that before asking what is missing,
+    -- so a second Stadium 2 mod is simply ready.
+    ModImports.adoptShared(m)
+    local needs = ModImports.missing(m)
     out[#out + 1] = {
       id = m.id,
       name = m.name or m.id,
+      requiredImports = ModImports.of(m),
+      missingImports = needs,
+      -- A DIFFERENT KIND OF MISSING. `missingImports` is a FILE the player has
+      -- to hand over; this is a CARTRIDGE THEY HAVE TO HAVE IMPORTED, which
+      -- needs nothing handed over and cannot be satisfied by dropping a file
+      -- into the mod folder.
+      --
+      -- A map pack exported from the map editor is the case: it carries maps
+      -- copied out of another game and references that game's tilesets rather
+      -- than shipping them, so it is inert -- and worse than inert, it asserts
+      -- in MapLoader -- until the player has imported that game themselves.
+      -- The row carries it so the panel can say which game and offer to go
+      -- import it, instead of the player installing a map pack that crashes.
+      requiredGames = m.requiredGames,
+      -- Declared map ids, for a panel that has to describe a pack BEFORE it
+      -- has loaded and can be asked. nil on anything exported before the
+      -- field existed.
+      maps = m.maps,
+      missingGames = (function()
+        if not (m.requiredGames and m.requiredGames[1]) then return nil end
+        local okA, AT = pcall(require, "src.import.AdoptedTileset")
+        if not okA then return nil end
+        local want = {}
+        for _, row in ipairs(m.requiredGames) do want[#want + 1] = row.version end
+        return AT.missing(want)
+      end)(),
+      manifestPath = m.path,
+      -- The FILE the mod declares its options in, carried through so the
+      -- launcher can offer those options without loading the mod. Mods have
+      -- been able to declare options since the loader gained options:define,
+      -- and nothing has ever rendered them -- a mod could ship 40 settings and
+      -- the player had no way to reach one.
+      optionsSchema = m.options_schema,
       version = m.version,
       badge = badge,
       description = m.description or "",
@@ -123,10 +165,113 @@ function LauncherMods.deriveList(manifests, options)
       status = status,
       statusDetail = detail,
       github = m.github,
+      updateCheck = m.updateCheck ~= false,
       experimental = m.experimental == true,
     }
   end
   return out
+end
+
+-- The option rows a mod declares, or nil when it declares none.
+--
+-- The IN-GAME mod manager already renders these (ManagerState:schemaFor and
+-- buildOptionRows) -- this is the same schema read from the launcher, so the
+-- settings can be reached without booting a game first. The two must agree:
+-- the row types accepted here are the ones OPTION_TYPES accepts there, or a
+-- mod's option would exist in one place and not the other.
+--
+-- Read from the DECLARED FILE rather than by running the mod: the launcher
+-- must never execute mod entry code (that is the whole reason discover()
+-- validates manifests and loads no chunks), and the schema file is data --
+-- every shipped one is a bare `return { ... }`. ManagerState can read the
+-- loader's captured schema instead because by then the mod has run; in the
+-- launcher nothing has, and nothing should.
+--
+-- It is still Lua, so it is loaded with an EMPTY environment: a schema file
+-- that tries to do anything other than return a table has nothing to do it
+-- with. A malformed one returns nil and the mod simply shows no options, which
+-- is what it looked like before this existed.
+--
+-- The environment is installed with setfenv rather than load()'s fourth
+-- argument. This runs on LuaJIT, where `load` is the 5.1 two-argument form
+-- unless the build opted into 5.2 compatibility -- passing a mode and an env
+-- there is not an error, it is two ignored arguments, and the schema would
+-- have been compiled against the real globals while this comment claimed
+-- otherwise. setfenv is the 5.1 spelling and is what LuaJIT actually has.
+local function loadSandboxed(src, name)
+  local compile = loadstring or load
+  local chunk, err = compile(src, name)
+  if not chunk then return nil, err end
+  if setfenv then setfenv(chunk, {}) end
+  return chunk
+end
+
+-- The row types a mod may declare. `text` is listed because ManagerState
+-- accepts it and dropping it here would hide the option entirely; the
+-- launcher shows it read-only rather than pretending it is not there (its
+-- editor is a keyboard applet the settings panel does not have).
+--
+-- `action` is the ONE deliberate divergence from ManagerState's OPTION_TYPES.
+-- An action row is a button whose press is delivered to the mod as an event,
+-- and out here no mod has run: there is nothing listening and nothing the
+-- press could reach. A row that draws as a button and does nothing when
+-- pressed is worse than a row that is not there, so the launcher omits them
+-- and the in-game manager -- where the mod is live -- is where they appear.
+LauncherMods.OPTION_TYPES = {
+  toggle = true, choice = true, number = true, text = true,
+}
+
+function LauncherMods.optionRows(row)
+  if not (row and row.optionsSchema and row.manifestPath) then return nil end
+  local fs = love and love.filesystem
+  if not (fs and fs.read) then return nil end
+  local src = fs.read(row.manifestPath .. "/" .. row.optionsSchema)
+  if not src then return nil end
+  local chunk = loadSandboxed(src, "@" .. row.id .. "/options")
+  if not chunk then return nil end
+  local ok, rows = pcall(chunk)
+  if not (ok and type(rows) == "table") then return nil end
+  local out = {}
+  for _, r in ipairs(rows) do
+    -- A row with no key cannot be stored and a row of an unknown type cannot
+    -- be drawn; both are dropped rather than rendered as a control that does
+    -- nothing when pressed. The accepted set mirrors ManagerState's
+    -- OPTION_TYPES apart from `action` (see above) -- `number` and `text`
+    -- were missing here at first, which would have hidden two kinds of option
+    -- from the launcher that the in-game manager shows, and left the player
+    -- to conclude the launcher was showing them a partial list without ever
+    -- saying so.
+    if type(r) == "table" and type(r.key) == "string" and r.key ~= ""
+       and LauncherMods.OPTION_TYPES[r.type] then
+      out[#out + 1] = r
+    end
+  end
+  if #out == 0 then return nil end
+  return out
+end
+
+-- Current value of one mod option: the stored one, else the schema's default.
+-- Same precedence the loader's own options:get and ManagerState:optionValue
+-- use, so what the launcher shows is what the mod will read.
+--
+-- The `~= nil` tests are not decoration. `stored[key] or row.default` reads a
+-- stored `false` as unset and hands back the default forever -- so a toggle
+-- the player turned OFF would come back ON every time they looked at it, and
+-- nothing about that looks like a bug in a boolean read.
+function LauncherMods.optionValue(options, modId, row)
+  local stored = options and options.modOptions and options.modOptions[modId]
+  if stored ~= nil and stored[row.key] ~= nil then return stored[row.key] end
+  return row.default
+end
+
+-- Write one mod option into the options table IN PLACE. The caller saves --
+-- saveOptions rewrites the whole file per call, and a settings panel steps
+-- one row at a time.
+function LauncherMods.setOptionValue(options, modId, key, value)
+  options.modOptions = options.modOptions or {}
+  options.modOptions[modId] = options.modOptions[modId] or {}
+  options.modOptions[modId][key] = value
+  return options
 end
 
 -- locateRoot(paths) -> the mod-root prefix inside a mounted archive, pure.
@@ -532,20 +677,53 @@ function LauncherMods._installZipInner(source, opts)
   local data, readErr = readArchive(source)
   if not data then return nil, readErr end
 
-  -- stage into a save-dir temp so mount can reach it
-  local tmp = ("mod_import_%d_%d.zip"):format(os.time(), math.random(0, 999999))
-  local ok, writeErr = fs.write(tmp, data)
-  if not ok then
-    return nil, "could not stage the .zip: " .. tostring(writeErr)
+  -- Cheap magic-byte check before anything is staged.  Every real zip starts
+  -- "PK"; a Mac MTP copy leaves "._name.zip" resource forks that do not, and
+  -- without this they reach the mount and fail as "could not be opened",
+  -- which reads like a corrupt mod rather than a file to ignore.
+  if not (type(data) == "string" and #data >= 4 and data:sub(1, 2) == "PK") then
+    local label = type(source) == "string" and (source:match("[^/\\]+$") or source)
+      or "archive"
+    return nil, "not a zip file: " .. tostring(label)
+      .. " (need a real .zip; skip Mac ._ files from MTP)"
   end
+
   local mount = "mod_import_mount"
-  if not fs.mount(tmp, mount) then
-    fs.remove(tmp)
-    return nil, "that .zip could not be opened"
+  local tmp, mountKey = nil, nil
+  local mounted = false
+
+  -- In-memory mount first (PHYSFS_mountMemory, via FileData).  The staged
+  -- write-then-mount path below reopens a file it has just written, which
+  -- Horizon refuses -- the Switch answers "file already open" and the whole
+  -- import failed as "that .zip could not be opened".  Mounting the bytes
+  -- never touches the filesystem twice, so it works there and everywhere.
+  if fs.newFileData then
+    local archiveName = ("mod_import_%d_%d.zip"):format(
+      os.time(), math.random(0, 999999))
+    local okFd, fd = pcall(fs.newFileData, data, archiveName)
+    if okFd and fd and fs.mount(fd, mount) then
+      mounted = true
+      mountKey = fd
+    end
   end
+
+  if not mounted then
+    -- Fallback: stage into a save-dir temp so a path mount can reach it.
+    tmp = ("mod_import_%d_%d.zip"):format(os.time(), math.random(0, 999999))
+    local okw, writeErr = fs.write(tmp, data)
+    if not okw then
+      return nil, "could not stage the .zip: " .. tostring(writeErr)
+    end
+    if not fs.mount(tmp, mount) then
+      fs.remove(tmp)
+      return nil, "that .zip could not be opened"
+    end
+    mountKey = tmp
+  end
+
   local function cleanup()
-    pcall(fs.unmount, tmp)
-    fs.remove(tmp)
+    pcall(fs.unmount, mountKey)
+    if tmp then fs.remove(tmp) end
   end
 
   local prefix, rootErr = LauncherMods.locateRoot(topLevelPaths(mount))

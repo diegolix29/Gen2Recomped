@@ -8,15 +8,15 @@ extern "C" {
 #endif
 
 #define OTA_CHECK_TIMEOUT_SEC 6
-#define OTA_GAME_NRO_NAME "gen1recomp-game.nro"
-#define OTA_LAUNCHER_NRO_NAME "gen1recomp.nro"
+#define OTA_GAME_NRO_NAME "Gen2Recomped-game.nro"
+#define OTA_LAUNCHER_NRO_NAME "gen2recomp.nro"
 #define OTA_SAVE_DIR_NAME "pokemon-love2d"
-#define OTA_INSTALL_DIR "switch/gen1recomp"
+#define OTA_INSTALL_DIR "switch/gen2recomp"
 #define OTA_LAUNCHER_STAGED_SUFFIX ".staged"
 #define OTA_BOOTSTRAP_ROMFS "romfs:/ota-bootstrap.nro"
 #define OTA_BOOTSTRAP_SD_NAME "ota-bootstrap.nro"
 #define OTA_RELEASES_API \
-  "https://api.github.com/repos/bryanthaboi/gen1recomp/releases/latest"
+  "https://api.github.com/repos/UNDERdecodedHD/Gen2Recomped/releases/latest"
 
 /* Mirrors src/update/SwitchOta.lua — keep semantics in lockstep. */
 

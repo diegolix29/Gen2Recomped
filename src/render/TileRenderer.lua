@@ -1,3 +1,9 @@
+-- Copyright (c) 2026 Cedric. All rights reserved.
+-- Source-available under the Gen2Recomped License (see LICENSE.md): you may
+-- read, build and privately modify this file; you may not redistribute it or
+-- use it commercially. Cartridge-derived data is excluded and is not the
+-- copyright holder's to license.
+
 -- Draws a map's tile layer: one texture atlas per tileset, 8x8 quads,
 -- a single static SpriteBatch covering the map plus a border-block ring
 -- (the ring plays the role of the GB border blocks around small maps).
@@ -48,6 +54,15 @@ function TileRenderer.cycleVoidFill()
   TileRenderer.setVoidFill(
     TileRenderer.VOID_FILLS[idx % #TileRenderer.VOID_FILLS + 1])
   return TileRenderer.voidFill
+end
+
+-- field.gen2TileAnim, handed over when a map's renderer is built (MapLoader
+-- has the dataset; this module does not).  Nil on Gen 1 and on any cache
+-- older than the one that started extracting TilesetTowerAnim.
+function TileRenderer.setTileAnim(spec)
+  if type(spec) == "table" and spec.tiles and spec.image then
+    TileRenderer.TILE_ANIM = spec
+  end
 end
 
 function TileRenderer.applyOptions(opts)
@@ -286,6 +301,64 @@ local function getToggleImage(spec, tilesetImagePath, perRow)
   return img
 end
 
+-- One atlas-SIZED texture per animation FRAME, transparent everywhere except
+-- the animated tiles, which are pasted in from a strip at their atlas cells.
+-- This is the toggle builder's trick applied to a sequence instead of a gate:
+-- because every frame keeps the atlas layout, the batch's existing per-tile
+-- quads stay valid and the draw path only has to swap the texture -- which is
+-- exactly what it already does for water.  Leaving the rest transparent (as
+-- opposed to cloning the atlas) means the overdraw can never repaint a
+-- neighboring tile, and it stays correct under the GBC atlas bake, where the
+-- static window is drawn from a recolored atlas this builder cannot see.
+--
+-- SPROUT TOWER's pillar needs this and the single-tile `frames` kind cannot
+-- give it: AnimateTowerPillarTile rewrites TEN different tiles in step, so a
+-- frame is ten tiles, not one.
+local atlasFrames = {}
+
+local function getAtlasFrames(spec, tilesetImagePath, perRow, colors, gbcKey,
+                              colorsFor)
+  local key = tilesetImagePath .. "#af#" .. tostring(spec.image) .. (gbcKey or "")
+  if atlasFrames[key] ~= nil then return atlasFrames[key] or nil end
+  local tiles, count = spec.tiles, spec.frames or 0
+  if not (love.image and love.image.newImageData) or not tiles or count < 1 then
+    atlasFrames[key] = false
+    return nil
+  end
+  local okStrip, strip = pcall(Assets.imageData, spec.image)
+  local okAtlas, atlas = pcall(Assets.imageData, tilesetImagePath)
+  if not (okStrip and strip and okAtlas and atlas) then
+    atlasFrames[key] = false
+    return nil
+  end
+  local aw, ah = atlas:getWidth(), atlas:getHeight()
+  local out = {}
+  for frame = 0, count - 1 do
+    local page = love.image.newImageData(aw, ah)
+    for column, id in ipairs(tiles) do
+      local sx, sy = (column - 1) * 8, frame * 8
+      local dx, dy = (id % perRow) * 8, math.floor(id / perRow) * 8
+      -- Gen2's palette byte is per TILE, and the pillar's ten tiles need not
+      -- share one, so ask per tile and only fall back to the entry's palette
+      local tint = colors
+      if colorsFor then tint = colorsFor(id) or colors end
+      if sx + 8 <= strip:getWidth() and sy + 8 <= strip:getHeight()
+         and dx + 8 <= aw and dy + 8 <= ah then
+        for y = 0, 7 do
+          for x = 0, 7 do
+            local r, g, b, a = strip:getPixel(sx + x, sy + y)
+            r, g, b, a = recolorSample(r, g, b, a, tint)
+            page:setPixel(dx + x, dy + y, r, g, b, a)
+          end
+        end
+      end
+    end
+    out[frame + 1] = love.graphics.newImage(page)
+  end
+  atlasFrames[key] = out
+  return out
+end
+
 -- a toggle entry names the predicate that decides whether its patch shows
 -- this frame; an unknown name (or none) is always on
 TileRenderer.GATES = {
@@ -317,6 +390,16 @@ function TileRenderer.defaultAnimatedTiles(tileset)
     out[#out + 1] = { tile = FLOWER_TILE, kind = "frames",
                       period = ANIM_PERIOD, images = FLOWER_IMAGES,
                       sequence = FLOWER_FRAMES }
+  end
+  -- field.gen2TileAnim: the Sprout / Tin Tower pillar, read off
+  -- TilesetTowerAnim.  Named by tileset so it only claims the tower set.
+  local pillar = TileRenderer.TILE_ANIM
+  if pillar and pillar.tileset and pillar.tiles
+     and (tileset.id == pillar.tileset or tileset.name == pillar.tileset) then
+    out[#out + 1] = { tiles = pillar.tiles, kind = "atlasframes",
+                      period = pillar.period or ANIM_PERIOD,
+                      image = pillar.image, frames = pillar.frames,
+                      sequence = pillar.sequence }
   end
   local spinners = TileRenderer.SPINNER_ARROW_TILES[tileset.id]
   if spinners then
@@ -377,6 +460,18 @@ local function buildAnim(spec, tilesetImagePath, perRow, quads, gbc)
     if not textures then return nil end
     return { tiles = tiles, textures = textures, sequence = sequence,
              period = period }
+  elseif spec.kind == "atlasframes" then
+    local sequence = spec.sequence
+    if not (sequence and #sequence > 0) then return nil end
+    local textures = getAtlasFrames(spec, tilesetImagePath, perRow, colors,
+                                    gbc and gbc.key, gbc and gbc.colorsFor)
+    if not textures then return nil end
+    -- each frame texture is atlas-sized, so a cell needs the quad of the tile
+    -- it stands in rather than a single-tile image (same as `toggle`); unlike
+    -- `toggle` it steps through a sequence rather than being gated
+    return { tiles = tiles, textures = textures, sequence = sequence,
+             period = period,
+             quadFor = function(tile) return quads[tile] end }
   elseif spec.kind == "toggle" then
     if gbc and gbc.groupColors then return nil end
     local image = getToggleImage(spec, tilesetImagePath, perRow)
@@ -423,19 +518,81 @@ function TileRenderer.gen2TileColors(palMap, palColors, tile)
   return palColors[math.min(raw, #palColors - 1) + 1]
 end
 
+-- Which of the tileset's four time-of-day palette rows is live.  The ROM picks
+-- these per map (LoadMapPals: EnvironmentColorsPointers[environment] then the
+-- GetTimeOfDay row), and a PALETTE_DARK map takes the DARKNESS row outright --
+-- which is the same flag the RED++ bake already keys on.
+--
+-- palColorsByTod is what the Gen2 importer now writes; palColors alone is the
+-- older single-row shape, kept working so a dataset extracted before this
+-- change still renders instead of falling back to grey.
+local function gen2PalColors(tileset)
+  local byTod = tileset.palColorsByTod
+  if type(byTod) ~= "table" then return tileset.palColors end
+  if PaletteFX.darkWorld() then return byTod.DARK or tileset.palColors end
+  return byTod[PaletteFX.gen2Tod()] or byTod.DAY or tileset.palColors
+end
+
+-- One atlas per (tileset image, COLORS mode, time of day).  Leaving the mode
+-- out of this key is why switching COLORS did nothing out in the Gen2
+-- overworld: the first bake won and every later mode kept being handed it.
+local function gen2AtlasKey(imagePath)
+  return imagePath .. "#gen2pal:" .. tostring(PaletteFX.mode) .. ":"
+    .. (PaletteFX.darkWorld() and "DARK" or tostring(PaletteFX.gen2Tod()))
+end
+
 local gen2AtlasCache = {}
-local function getGen2Atlas(imagePath, perRow, palMap, palColors)
+-- The tile index where a tileset's COPIED art begins, or nil when it has none.
+--
+-- `_borrowSrcH` is the atlas height before any borrowing, stamped by
+-- MapEdits.extendAtlas. Every palette bake needs the same boundary, and each
+-- one deriving it separately is three chances to derive it differently.
+function TileRenderer.borrowStart(tileset)
+  if type(tileset) ~= "table" then return nil end
+  if not (tileset._borrowSrcH and tileset.imageWidth) then return nil end
+  return math.floor(tileset.imageWidth / 8) * math.floor(tileset._borrowSrcH / 8)
+end
+
+local function getGen2Atlas(key, imagePath, perRow, palMap, palColors,
+                            borrowStartOf)
   if not (love.image and love.image.newImageData) then return nil end
-  local key = imagePath .. "#gen2pal"
   if gen2AtlasCache[key] ~= nil then return gen2AtlasCache[key] or nil end
   local img = false
   local ok, src = pcall(Assets.imageData, imagePath)
   if ok and src then
     local iw, ih = src:getDimensions()
     local total = (iw / 8) * (ih / 8)
+    local borrowFrom = borrowStartOf
+    -- SAY IT WHEN THE PALETTE MAP IS SHORTER THAN THE ATLAS.
+    --
+    -- `gen2TileColors` reads `palMap[tile + 1] or 0`, so a tile past the end
+    -- of the map does not fail -- it takes row zero, or, when the row list is
+    -- shorter still, nothing at all, and the tile is drawn in the raw 2bpp
+    -- greys it was extracted as. That is a tile in black and white inside a
+    -- coloured map, and every symptom of it points at the ART rather than at
+    -- the palette, which is where several rounds of looking went.
+    --
+    -- The editor extends both when it copies art between tilesets. If they
+    -- ever disagree, this is the line that says so, with both numbers.
+    if type(palMap) == "table" and #palMap > 0 and #palMap < total then
+      require("src.core.Logger").warn(
+        "gen2 atlas %s: %d tiles but palMap has %d - tiles %d..%d will draw "
+        .. "in raw greys", tostring(imagePath), total, #palMap, #palMap,
+        total - 1)
+    end
     local out = love.image.newImageData(iw, ih)
     for t = 0, total - 1 do
       local colors = TileRenderer.gen2TileColors(palMap, palColors, t)
+      -- THE SAME LAST RESORT THE RED++ BAKE HAS. If a copied tile somehow has
+      -- no row of its own here -- a palMap that did not grow with the atlas,
+      -- a colour list that did not -- it must not fall through to row 0, which
+      -- is this tileset's text grey and is what "a black-and-white object in a
+      -- coloured town" looks like. Row 0 is a real answer for a real tile and
+      -- a wrong one for a borrowed one.
+      if colors == nil and borrowFrom and t >= borrowFrom
+         and type(palColors) == "table" and #palColors > 0 then
+        colors = palColors[#palColors]
+      end
       local ox, oy = (t % perRow) * 8, math.floor(t / perRow) * 8
       for py = 0, 7 do
         for px = 0, 7 do
@@ -449,6 +606,32 @@ local function getGen2Atlas(imagePath, perRow, palMap, palColors)
   end
   gen2AtlasCache[key] = img
   return img or nil
+end
+
+-- THE SAME BAKE, FOR A TILESET WITHOUT A MAP.
+--
+-- The map editor's tile palette drew straight from `Assets.image(ts.image)`,
+-- which is the raw 2bpp sheet -- so every swatch in it was grey while the
+-- viewport beside it was in colour, and picking a block meant matching a grey
+-- drawing against a coloured world.  The colour is not the map's: Gen 2's
+-- palette byte is per TILE GRAPHIC and lives on the TILESET (palMap into
+-- palColors), so a tileset is all the bake needs and every map drawn with it
+-- lands on the same picture.
+--
+-- Gated exactly as the renderer's own bake is, and returning nil when the gate
+-- is shut or the extraction carries no palette -- the caller falls back to the
+-- raw sheet, which is what it was already showing.
+function TileRenderer.gen2AtlasFor(tileset)
+  if type(tileset) ~= "table" or not tileset.image then return nil end
+  if not (tileset.palMap and #tileset.palMap > 0) then return nil end
+  if not PaletteFX.usesGen2BgPal() then return nil end
+  local colors = gen2PalColors(tileset)
+  if not (colors and #colors > 0) then return nil end
+  local perRow = tileset.tilesPerRow
+  if not perRow or perRow < 1 then return nil end
+  local key = gen2AtlasKey(tileset.image)
+  return getGen2Atlas(key, tileset.image, perRow, tileset.palMap, colors,
+                      TileRenderer.borrowStart(tileset))
 end
 
 -- Cache suffix for a map's RED++ bake.  A dark cave folds FadePal2 into the
@@ -469,12 +652,57 @@ local function getGbcAtlas(imagePath, tilesetId, mapId, perRow, data)
       local iw, ih = src:getDimensions()
       local total = (iw / 8) * (ih / 8)
       local out = love.image.newImageData(iw, ih)
+      -- A TILE THE CARTRIDGE NEVER HAD HAS NO PALETTE GROUP, and `false` is
+      -- not a colour -- it is "leave the pixels as they are", which for a 2bpp
+      -- sheet is raw grey.
+      --
+      -- The RED++ bake colours by PALETTE GROUP: `worldGroupAt` maps a tile id
+      -- to one of the map's groups, and that table was built from the ROM, so
+      -- it stops at the last tile the cartridge shipped. The editor can now
+      -- copy art between tilesets, and a borrowed tile lands past that end --
+      -- so it fell through to `false` and drew in greys inside a fully
+      -- coloured town. Nothing about it looked like a palette problem, because
+      -- every other tile on screen was correct.
+      --
+      -- The borrowed tile brings its own palette with it (see
+      -- MapEdits.extendAtlas: the source tileset's row is appended to this
+      -- tileset's `palColors` and pointed at by `palMap`). So that is the
+      -- fallback -- not a guess, the colours the art was drawn in.
+      local borrowedTs = data and data.tilesets and data.tilesets[tilesetId]
+      local borrowedMap = borrowedTs and borrowedTs.palMap
+      local borrowedRows = borrowedTs and gen2PalColors(borrowedTs)
+      -- WHERE THE CARTRIDGE'S OWN ART STOPS AND THE COPIED ART BEGINS.
+      --
+      -- `worldGroupAt` does NOT return nil for a tile it has never heard of --
+      -- it returns group 7, the TEXT palette, which is the menu grey:
+      --
+      --     return groups[tileId] or 7  -- tile ids past the tileset's 96
+      --
+      -- That is right for the menu tiles it was written for and wrong for
+      -- borrowed art, and it is why the "no group" fallback below could never
+      -- fire: `colors` was always a valid row, and the row was grey. A tree
+      -- copied out of TilesetForest was not falling through a gap, it was
+      -- being deliberately assigned the text palette.
+      --
+      -- `_borrowSrcH` is the atlas height before any borrowing (stamped by
+      -- MapEdits.extendAtlas), so this is the exact tile index where the
+      -- copied art starts. Below it nothing changes; at or above it the tile
+      -- carries its own palette and that is the one to use.
+      local borrowFrom = TileRenderer.borrowStart(borrowedTs)
       local tileColors = {}
       for t = 0, total - 1 do
         local colors = tileColors[t]
         if colors == nil then
-          local group = PaletteFX.worldGroupAt(tilesetId, mapId, t)
-          colors = (group and groupColors[group + 1]) or false
+          -- BORROWED ART ANSWERS FOR ITSELF, and is asked FIRST: the group
+          -- table has an answer for this tile and the answer is wrong.
+          if borrowFrom and t >= borrowFrom and borrowedMap and borrowedRows then
+            colors = TileRenderer.gen2TileColors(borrowedMap, borrowedRows, t)
+              or false
+          end
+          if not colors then
+            local group = PaletteFX.worldGroupAt(tilesetId, mapId, t)
+            colors = (group and groupColors[group + 1]) or false
+          end
           tileColors[t] = colors
         end
         local ox, oy = (t % perRow) * 8, math.floor(t / perRow) * 8
@@ -513,6 +741,31 @@ local function getGbcAtlas(imagePath, tilesetId, mapId, perRow, data)
   return img or nil
 end
 
+-- THE GEN 1 BAKE, FOR AN EDITOR THAT HAS A MAP BUT NO RENDERER.
+--
+-- Gen 1 colour is not per tile GRAPHIC the way Gen 2's is -- there is no
+-- palette byte on the tileset. It is per palette GROUP, resolved per MAP
+-- (`PaletteFX.worldGroupAt`), which is why this one needs a map id where
+-- `gen2AtlasFor` needs only a tileset: the same tile is grass on one route and
+-- a roof on another.
+--
+-- The map editor's tile palette drew the raw 2bpp sheet for these, so every
+-- Gen 1 tileset came out grey beside a coloured viewport. Exported rather than
+-- reimplemented for the reason everything else in this project is: a second
+-- copy of a colour rule drifts, and a palette that drifts is a palette that is
+-- wrong in a way nobody can see.
+--
+-- Returns nil when the mode is not one that colours this way, which is the
+-- caller's cue to fall back -- the DMG-flavoured modes are meant to be grey.
+function TileRenderer.gbcAtlasFor(tileset, mapId, data)
+  if type(tileset) ~= "table" or not tileset.image then return nil end
+  if not PaletteFX.usesGbcPack() then return nil end
+  local perRow = tileset.tilesPerRow
+  if not perRow or perRow < 1 then return nil end
+  if not mapId then return nil end
+  return getGbcAtlas(tileset.image, tileset.id, mapId, perRow, data)
+end
+
 -- data: Game.data (threaded through explicitly, not required lazily, so
 -- headless tests that build a map from a plain local table still work)
 function TileRenderer.new(map, data)
@@ -547,19 +800,31 @@ function TileRenderer.new(map, data)
 
   -- Gen2: if the tileset has palMap/palColors from ROM extraction, bake a
   -- pre-colored atlas so tiles render with correct GBC palette colors.
+  --
+  -- Gated on the COLORS setting for the same reason SpriteRenderer's OBJ bake
+  -- is: this IS the hardware colour, so it belongs to the modes that mean
+  -- "show me the hardware", and the DMG/SGB-flavoured modes have to fall
+  -- through to the raw sheet and their own shade treatment.  Unconditional, it
+  -- made COLORS a no-op for every Gen2 tile on screen.
+  local gen2Colors = PaletteFX.usesGen2BgPal() and gen2PalColors(map.tileset)
   if not self.gbcAtlas and map.tileset.palMap and #map.tileset.palMap > 0
-      and map.tileset.palColors and #map.tileset.palColors > 0 then
-    local gen2img = getGen2Atlas(map.tileset.image, map.tileset.tilesPerRow,
-                                 map.tileset.palMap, map.tileset.palColors)
+      and gen2Colors and #gen2Colors > 0 then
+    local key = gen2AtlasKey(map.tileset.image)
+    local gen2img = getGen2Atlas(key, map.tileset.image, map.tileset.tilesPerRow,
+                                 map.tileset.palMap, gen2Colors,
+                                 TileRenderer.borrowStart(map.tileset))
     if gen2img then
       self.image = gen2img
       self.trueColor = true
       -- ...and hand the same tile->palette lookup to buildAnim, so the
       -- animated water/flower tiles that overdraw this atlas are baked with
       -- the palette their static neighbours got (see buildAnim's colorsFor)
-      local palMap, palColors = map.tileset.palMap, map.tileset.palColors
+      local palMap, palColors = map.tileset.palMap, gen2Colors
       gbcCtx = {
-        key = "#gen2pal:" .. tostring(map.tileset.id),
+        -- the variant key, not just the tileset id: the derived shimmer
+        -- textures cache alongside the atlas and must not survive a mode or
+        -- time-of-day change either
+        key = key,
         colorsFor = function(tile)
           return TileRenderer.gen2TileColors(palMap, palColors, tile)
         end,
@@ -1021,6 +1286,16 @@ function TileRenderer.invalidate()
   toggleImages = {}
   stripData = {}
   gen2AtlasCache = {}
+  -- THE GEN 1 BAKE AND THE ANIMATED PAGES TOO, which this did not drop.
+  --
+  -- `gbcAtlasCache` is keyed on the image and the MAP -- not on the colour
+  -- mode -- so a mode change neither missed the cache nor cleared it, and a
+  -- Gen 1 world went on drawing in the palette it was first baked with. It
+  -- survived because nothing changed the mode mid-session until the map
+  -- editor grew a COLOURS control; the launcher sets it before the game
+  -- builds anything.
+  gbcAtlasCache = {}
+  atlasFrames = {}
 end
 
 Assets.register(TileRenderer.invalidate)

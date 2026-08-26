@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(Gen2RecompUWP LANGUAGES CXX)
+project(Gen2RecompedUWP LANGUAGES CXX)
 
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
     message(FATAL_ERROR "Configure with a WindowsStore preset.")
@@ -12,24 +12,24 @@ set(SDL2_ROOT "${THIRD_PARTY_ROOT}/sdl2")
 set(ANGLE_ROOT "${THIRD_PARTY_ROOT}/angle")
 set(RUNTIME_ROOT "${THIRD_PARTY_ROOT}/runtime")
 
-set(GEN2RECOMP_VERSION "0.0.0" CACHE STRING "Gen2Recomp release version")
-if(NOT GEN2RECOMP_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
-    message(FATAL_ERROR "GEN2RECOMP_VERSION must use X.Y.Z format.")
+set(GEN2RECOMPED_VERSION "0.0.0" CACHE STRING "Gen2Recomped release version")
+if(NOT GEN2RECOMPED_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR "GEN2RECOMPED_VERSION must use X.Y.Z format.")
 endif()
-string(REPLACE "." ";" VERSION_PARTS "${GEN2RECOMP_VERSION}")
+string(REPLACE "." ";" VERSION_PARTS "${GEN2RECOMPED_VERSION}")
 foreach(part IN LISTS VERSION_PARTS)
     if(part GREATER 65535)
         message(FATAL_ERROR "MSIX version components cannot exceed 65535.")
     endif()
 endforeach()
-set(GEN2RECOMP_UWP_PUBLISHER "CN=Gen2Recomp" CACHE STRING
+set(GEN2RECOMPED_UWP_PUBLISHER "CN=Gen2Recomped" CACHE STRING
     "Publisher subject from the MSIX signing certificate")
-set(UWP_PUBLISHER_XML "${GEN2RECOMP_UWP_PUBLISHER}")
+set(UWP_PUBLISHER_XML "${GEN2RECOMPED_UWP_PUBLISHER}")
 string(REPLACE "&" "&amp;" UWP_PUBLISHER_XML "${UWP_PUBLISHER_XML}")
 string(REPLACE "\"" "&quot;" UWP_PUBLISHER_XML "${UWP_PUBLISHER_XML}")
 string(REPLACE "<" "&lt;" UWP_PUBLISHER_XML "${UWP_PUBLISHER_XML}")
 string(REPLACE ">" "&gt;" UWP_PUBLISHER_XML "${UWP_PUBLISHER_XML}")
-set(UWP_PACKAGE_VERSION "${GEN2RECOMP_VERSION}.0")
+set(UWP_PACKAGE_VERSION "${GEN2RECOMPED_VERSION}.0")
 set(PACKAGE_MANIFEST "${CMAKE_CURRENT_BINARY_DIR}/Package.appxmanifest")
 configure_file(
     "${CMAKE_CURRENT_LIST_DIR}/Package.appxmanifest.in"
@@ -57,11 +57,11 @@ foreach(path IN LISTS REQUIRED_FILES)
     endif()
 endforeach()
 
-set(GEN2RECOMP_LOVE "${GAME_ROOT}/.bazinga/work/game.love" CACHE FILEPATH
+set(GEN2RECOMPED_LOVE "${GAME_ROOT}/.bazinga/work/game.love" CACHE FILEPATH
     "Path to the game.love payload produced by scripts/pack_love.sh")
-if(NOT EXISTS "${GEN2RECOMP_LOVE}")
+if(NOT EXISTS "${GEN2RECOMPED_LOVE}")
     message(FATAL_ERROR
-        "Missing game.love payload: ${GEN2RECOMP_LOVE}\n"
+        "Missing game.love payload: ${GEN2RECOMPED_LOVE}\n"
         "Build it with scripts/build_xbox_uwp.sh or scripts/pack_love.sh.")
 endif()
 
@@ -69,8 +69,8 @@ set(GAME_ARCHIVE "${CMAKE_CURRENT_BINARY_DIR}/gen2recomp.love")
 add_custom_command(
     OUTPUT "${GAME_ARCHIVE}"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-        "${GEN2RECOMP_LOVE}" "${GAME_ARCHIVE}"
-    DEPENDS "${GEN2RECOMP_LOVE}"
+        "${GEN2RECOMPED_LOVE}" "${GAME_ARCHIVE}"
+    DEPENDS "${GEN2RECOMPED_LOVE}"
     VERBATIM
 )
 add_custom_target(gen2recomp_love ALL DEPENDS "${GAME_ARCHIVE}")

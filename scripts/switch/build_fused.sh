@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
+<<<<<<< HEAD
 # Build fused gen1recomp Switch NRO (romfs game.love + nacp + icon).
+=======
+# Build fused gen2recomp Switch NRO (romfs game.love + nacp + icon).
+>>>>>>> G2/main
 #
 # Usage: scripts/switch/build_fused.sh GAME_LOVE VERSION OUT_NRO
 #
 # Prefers native nacptool/elf2nro (PATH or $DEVKITPRO/tools/bin).
+<<<<<<< HEAD
 # Falls back to Docker using GEN1_DKP_IMAGE or scripts/switch/dkp-docker.image.
+=======
+# Falls back to Docker using GEN2_DKP_IMAGE or scripts/switch/dkp-docker.image.
+>>>>>>> G2/main
 
 set -euo pipefail
 
@@ -16,8 +24,13 @@ LOVE_NX_TAG="11.5-nx1"
 LOVE_NX_DIR="$ROOT/.bazinga/love-nx/$LOVE_NX_TAG"
 LOVE_ELF="$LOVE_NX_DIR/love.elf"
 ICON="$ROOT/ports/switch/assets/icon.jpg"
+<<<<<<< HEAD
 APP_NAME="gen1recomp"
 APP_AUTHOR="bryanthaboi, port by andrewqsantos"
+=======
+APP_NAME="gen2recomp"
+APP_AUTHOR="UNDERdecodedHD, port by andrewqsantos"
+>>>>>>> G2/main
 DKP_IMAGE_FILE="$ROOT/scripts/switch/dkp-docker.image"
 
 GAME_LOVE="${1:-}"
@@ -36,8 +49,13 @@ OUT_NRO="${3:-}"
 ensure_dkp_tools_path
 
 resolve_dkp_image() {
+<<<<<<< HEAD
   if [ -n "${GEN1_DKP_IMAGE:-}" ]; then
     printf '%s' "$GEN1_DKP_IMAGE"
+=======
+  if [ -n "${GEN2_DKP_IMAGE:-}" ]; then
+    printf '%s' "$GEN2_DKP_IMAGE"
+>>>>>>> G2/main
     return 0
   fi
   [ -f "$DKP_IMAGE_FILE" ] || fail "missing Docker image pin: $DKP_IMAGE_FILE"
@@ -49,7 +67,11 @@ resolve_dkp_image() {
 
 run_fused_native() {
   local work romfs_dir nacp
+<<<<<<< HEAD
   work="$(mktemp -d "${TMPDIR:-/tmp}/gen1recomp-fused.XXXXXX")"
+=======
+  work="$(mktemp -d "${TMPDIR:-/tmp}/Gen2Recomped-fused.XXXXXX")"
+>>>>>>> G2/main
   # shellcheck disable=SC2064
   trap "rm -rf '$work'" EXIT
 

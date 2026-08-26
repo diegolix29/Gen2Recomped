@@ -20,6 +20,17 @@ local BALLS = {
                   tossAnim = "ULTRATOSS_ANIM", flicker = true },
   SAFARI_BALL = { randMax = 150, hpFactor = 12, wobbleFactor = 150,
                   tossAnim = "ULTRATOSS_ANIM" },
+  -- THE BUG CONTEST'S BALL, which had no record at all and fell through to
+  -- DEFAULT_BALL -- so it rolled POKE_BALL's 255 against the contest's own
+  -- rate and wobbled on a divisor no ball in the game actually uses.
+  --
+  -- Gen 2's Park Ball is Safari-shaped: it takes the same randMax/hpFactor
+  -- path, and the contest's edge comes from ParkBallMultiplier (catch rate
+  -- x1.5, saturating) applied BEFORE the roll -- BugContest.parkBallRate,
+  -- which BattleState already calls. Giving it the Safari record leaves that
+  -- multiplier as the only difference instead of stacking a silent second one.
+  PARK_BALL   = { randMax = 150, hpFactor = 12, wobbleFactor = 150,
+                  tossAnim = "ULTRATOSS_ANIM" },
 }
 Catching.BALLS = BALLS
 

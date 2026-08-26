@@ -45,19 +45,30 @@ int ota_compare_semver(const char *a, const char *b) {
   return 0;
 }
 
+/* Unified SD/OTA asset: Gen2Recomped-X.Y.Z-switch.zip.
+ *
+ * The prefix and its length live together deliberately.  Both were spelled
+ * out separately when this asset was called gen1recomp-X.Y.Z-switch.zip, and
+ * the two disagreed the moment the name changed: an 11-byte compare against a
+ * 13-byte prefix still passed (it only reached "Gen2Recompe"), and then
+ * sscanf started reading the version out of "d-0.8.0-..." and failed, so the
+ * launcher rejected every release it was looking for. */
+static const char OTA_ASSET_PREFIX[] = "Gen2Recomped-";
+#define OTA_ASSET_PREFIX_LEN (sizeof(OTA_ASSET_PREFIX) - 1)
+
 int ota_is_ota_asset_name(const char *name) {
   int maj = 0, min = 0, pat = 0;
   if (!name) return 0;
-  /* Unified SD/OTA asset: gen1recomp-X.Y.Z-switch.zip */
   size_t len = strlen(name);
   const char *suffix = "-switch.zip";
   size_t slen = strlen(suffix);
   if (len <= slen) return 0;
   if (strcmp(name + len - slen, suffix) != 0) return 0;
-  if (strncmp(name, "gen1recomp-", 11) != 0) return 0;
-  if (sscanf(name + 11, "%d.%d.%d", &maj, &min, &pat) != 3) return 0;
+  if (strncmp(name, OTA_ASSET_PREFIX, OTA_ASSET_PREFIX_LEN) != 0) return 0;
+  if (sscanf(name + OTA_ASSET_PREFIX_LEN, "%d.%d.%d", &maj, &min, &pat) != 3) return 0;
   char rebuilt[128];
-  snprintf(rebuilt, sizeof(rebuilt), "gen1recomp-%d.%d.%d-switch.zip", maj, min, pat);
+  snprintf(rebuilt, sizeof(rebuilt), "%s%d.%d.%d%s",
+           OTA_ASSET_PREFIX, maj, min, pat, suffix);
   return strcmp(name, rebuilt) == 0;
 }
 
@@ -66,7 +77,7 @@ int ota_version_from_ota_asset(const char *name, char *out, size_t out_len) {
   if (!out || out_len == 0) return 0;
   out[0] = '\0';
   if (!ota_is_ota_asset_name(name)) return 0;
-  if (sscanf(name + 11, "%d.%d.%d", &maj, &min, &pat) != 3) return 0;
+  if (sscanf(name + OTA_ASSET_PREFIX_LEN, "%d.%d.%d", &maj, &min, &pat) != 3) return 0;
   snprintf(out, out_len, "%d.%d.%d", maj, min, pat);
   return 1;
 }

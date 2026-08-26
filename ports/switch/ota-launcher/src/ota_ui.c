@@ -362,7 +362,7 @@ static void draw_chrome(u32 *fb, u32 stride_px) {
     if (g_logo_w * logo_h / g_logo_h < logo_max) logo_w = g_logo_w * logo_h / g_logo_h;
     blit_logo(fb, stride_px, (FB_W - logo_w) / 2, logo_y, logo_max);
   } else {
-    draw_text_centered(fb, stride_px, logo_y + 16, "gen1recomp", COL_INK, 4);
+    draw_text_centered(fb, stride_px, logo_y + 16, "gen2recomp", COL_INK, 4);
   }
 }
 
@@ -546,7 +546,7 @@ static void paint_missing(u32 *fb, u32 stride_px, void *ctx) {
   draw_text_centered(fb, stride_px, y, "Game files missing", COL_YELLOW, 3);
   y += LINE_TITLE;
   y = draw_text_wrapped_centered(fb, stride_px, y,
-                                 "Copy the Switch zip onto your microSD, then open gen1recomp again.",
+                                 "Copy the Switch zip onto your microSD, then open gen2recomp again.",
                                  COL_DETAIL, 2, WRAP_MAX_PX);
   y += LINE_BODY + 16;
   int bw = 320;

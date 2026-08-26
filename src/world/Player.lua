@@ -59,21 +59,31 @@ function Player.new(data, cx, cy, facing)
   local self = setmetatable({}, Player)
   self.stepFrames = FieldDefaults.world(data, "stepFrames") or STEP_FRAMES
   self.bikeStepFrames = FieldDefaults.world(data, "bikeStepFrames")
+  -- HOLD-B RUNNING is a per-version feature, not Prism's alone: Polished
+  -- Crystal has running shoes too (its DoPlayerMovement takes the .run
+  -- branch on B like Prism's).  The gate is the version record's
+  -- `hasRunning` flag rather than a hardcoded id, so a new build opts in by
+  -- declaring it -- Gold and Crystal, which have no running at all, leave it
+  -- unset and keep nil here.
+  local GV = require("src.core.GameVersion")
+  local info = GV.get and GV.info and GV.info(GV.get())
+  self.runStepFrames = (info and info.hasRunning)
+    and FieldDefaults.world(data, "runStepFrames") or nil
   self.turnFrames = FieldDefaults.world(data, "turnFrames") or TURN_FRAMES
   -- field.playerSprites: which sprite ids the player wears on foot, on the
   -- water and on the bicycle (LoadPlayerSpriteGraphics /
   -- LoadSurfingPlayerSpriteGraphics, home/overworld.asm)
-  local walkId = FieldDefaults.fieldValue(data, "playerSprites", "walk")
   local surfId = FieldDefaults.fieldValue(data, "playerSprites", "surf")
   local surfPikaId = FieldDefaults.fieldValue(data, "playerSprites", "surfPikachu")
-  local bikeId = FieldDefaults.fieldValue(data, "playerSprites", "bike")
-  self.sprite = SpriteRenderer.new(pickSpriteDef(data, walkId), "player")
+  self:refreshForm(data)
   self.surfSprite = SpriteRenderer.new(pickSpriteDef(data, surfId), "player")
   -- Yellow's surfing-Pikachu ride (Yellow LoadSurfingPlayerSpriteGraphics2,
   -- paired with field.playerSprites.surfPikachu). rotated in at pose()
   -- when the SURF-mon is a Pikachu.
   self.surfPikachuSprite = SpriteRenderer.new(pickSpriteDef(data, surfPikaId), "player")
-  self.bikeSprite = SpriteRenderer.new(pickSpriteDef(data, bikeId), "player")
+  -- refreshForm above ran before surfSprite existed, so the surf sheet has not
+  -- been through refreshPalette yet; do the set again now they all exist.
+  self:refreshPalette(data)
   -- the ledge-hop shadow quarter-tile (gfx/overworld/shadow.png,
   -- LedgeHoppingShadow, engine/overworld/ledges.asm)
   local fx = data.field and data.field.overworldFx
@@ -82,19 +92,11 @@ function Player.new(data, cx, cy, facing)
     self.shadowImg = ok and img or nil
   end
   -- FishingAnim (engine/overworld/player_animations.asm) patches tiles
-  -- $02/$06/$0a -- the bottom tile row of each standing frame -- with
-  -- RedFishingTiles before it parks the rod OAM, so the rod stroke meets a
-  -- pair of hands instead of ending in mid air (#384)
-  if fx then
-    local function posePath(name)
-      local def = fx[name]
-      return def and def.path or nil
-    end
-    local pose = { down = posePath("redFishFront"), up = posePath("redFishBack") }
-    pose.left = posePath("redFishSide")
-    pose.right = pose.left -- the side pose mirrors like the sprite (OAM_XFLIP)
-    if pose.down or pose.up or pose.left then self.fishTiles = pose end
-  end
+  -- $02/$06/$0a -- the bottom tile row of each standing frame -- with the
+  -- fishing pose before it parks the rod OAM, so the rod stroke meets a pair
+  -- of hands instead of ending in mid air (#384).  refreshForm above already
+  -- built those strips: the pose belongs to the CHARACTER, so it is rebuilt
+  -- wherever the character can change (Player:refreshFishTiles).
   self.cellX, self.cellY = cx, cy
   self.px, self.py = cx * 16, cy * 16
   self.facing = facing or "down"
@@ -109,6 +111,146 @@ function Player.new(data, cx, cy, facing)
   self.turnArmed = true
   self.inputLocked = false
   return self
+end
+
+-- Pick the on-foot and bicycle sheets for the character the save says we are.
+--
+-- Crystal: KRIS walks and rides on her own sheets (SPRITE_KRIS /
+-- SPRITE_KRIS_BIKE, OverworldSprites rows $60/$61).  field.playerForms only
+-- exists there, and only the ids it actually registered are taken, so a rip
+-- that failed to write one of Kris's sheets keeps Chris's rather than naming
+-- a sprite that does not exist.
+--
+-- Separate from Player.new because the Oak speech asks the question AFTER the
+-- overworld state -- and therefore this Player -- has already been built:
+-- Game:makeTitleState pushes OverworldState first and the new-game screen
+-- second.  OakSpeech calls this back once the answer is in.
+-- Prism's "Pokemon mode": the player IS a Pokemon.
+--
+-- GetPlayerSprite (engine/overworld.asm) tests ENGINE_POKEMON_MODE BEFORE it
+-- reaches the character table and answers SPRITE_POKEONLY_PLAYER, which
+-- GetMonSprite then resolves through PokemonOWSpritePointers into that
+-- species' own walking sheet.  The species is wPokeonlyMainSpecies, and when
+-- that byte is clear the routine walks the party for the first member that is
+-- neither an egg nor fainted and latches it there -- which is why the sections
+-- that set the flag without naming a species still work.
+--
+-- Answers nil for every other game and whenever the sheet is missing, so the
+-- caller keeps the character it already had.
+local function pokemonModeSprite(data)
+  local ok, Game = pcall(require, "src.core.Game")
+  local save = ok and Game and Game.save or nil
+  if not save then return nil end
+  if not require("src.script.Flags").get(save, "ENGINE_POKEMON_MODE") then
+    return nil
+  end
+  local species = save.g2PokeonlySpecies
+  if not species then
+    for _, mon in ipairs(save.party or {}) do
+      if mon and not mon.isEgg and (mon.hp or 0) > 0 then
+        species = mon.species
+        break
+      end
+    end
+  end
+  if type(species) ~= "string" then return nil end
+  -- the extractor names these sheets by the species NUMBER
+  -- (gen2MonSpriteId), which is what a Gen 2 species id already carries
+  local n = tonumber(species:match("^SPECIES_(%d+)$"))
+  if not n then
+    local order = data and data.constants and data.constants.speciesOrder
+    for i, id in ipairs(order or {}) do
+      if id == species then n = i break end
+    end
+  end
+  if not n then return nil end
+  local id = string.format("SPRITE_MON_%03d", n)
+  return (data.sprites or {})[id] and id or nil
+end
+
+-- The fishing pose strips for whoever we are right now.
+--
+-- Gen2 picks the sheet off wPlayerGender (LoadFishingGFX: `bit
+-- PLAYERGENDER_FEMALE_F, a / jr z, .got_gender / ld de, KrisFishingGFX`), so
+-- Kris fishes on her own art.  The extractor puts those three strips on the
+-- player FORM record, beside her card / back / intro pics, which is the only
+-- place a per-character asset belongs -- overworldFx has one slot and cannot
+-- hold two characters.
+--
+-- Falls back to overworldFx.redFish* so Gen1 is untouched, and so a Gen2 rip
+-- that produced the shared strips but no form records still shows a pose.
+-- Gold and Silver have no KrisFishingGFX at all; the extractor gives the girl
+-- record Chris's strips there rather than naming files it never wrote.
+function Player:refreshFishTiles(data)
+  local function pathOf(v)
+    if type(v) == "string" then return v end
+    return type(v) == "table" and v.path or nil
+  end
+  local pose
+  local form = require("src.pokemon.Sprites").playerForm(data)
+  local fish = form and form.fish
+  if fish then
+    pose = { down = pathOf(fish.down), up = pathOf(fish.up),
+             left = pathOf(fish.side) }
+  end
+  if not (pose and (pose.down or pose.up or pose.left)) then
+    local fx = data.field and data.field.overworldFx
+    if fx then
+      pose = { down = pathOf(fx.redFishFront), up = pathOf(fx.redFishBack),
+               left = pathOf(fx.redFishSide) }
+    end
+  end
+  if pose and (pose.down or pose.up or pose.left) then
+    -- the side pose mirrors like the sprite does (OAM_XFLIP)
+    pose.right = pose.left
+    self.fishTiles = pose
+  else
+    self.fishTiles = nil
+  end
+end
+
+function Player:refreshForm(data)
+  local walkId = FieldDefaults.fieldValue(data, "playerSprites", "walk")
+  local bikeId = FieldDefaults.fieldValue(data, "playerSprites", "bike")
+  local form = require("src.pokemon.Sprites").playerForm(data)
+  if form then
+    local sprites = data.sprites or {}
+    if form.walk and sprites[form.walk] then walkId = form.walk end
+    if form.bike and sprites[form.bike] then bikeId = form.bike end
+  end
+  -- after the character, because it REPLACES the character: in Pokemon mode
+  -- there is no bicycle either, so both sheets become the mon's
+  local monId = pokemonModeSprite(data)
+  if monId then walkId, bikeId = monId, monId end
+  -- The pose follows the character, so it is refreshed even when the walking
+  -- sheets did not change (a rip that only produced Kris's fish art).
+  self:refreshFishTiles(data)
+  if walkId ~= self.walkId or bikeId ~= self.bikeId then
+    self.walkId, self.bikeId = walkId, bikeId
+    self.sprite = SpriteRenderer.new(pickSpriteDef(data, walkId), "player")
+    self.bikeSprite = SpriteRenderer.new(pickSpriteDef(data, bikeId), "player")
+  end
+  -- ...and the COLOURS, every time, whether or not the sheets changed.
+  --
+  -- Prism's customiser mixes a skin tone and an outfit colour into the
+  -- player's OBJ palette (PlayerCust_SetPalettes), and changing either one
+  -- leaves the model -- and therefore the sheet ids -- exactly as they were.
+  -- Behind the early return this used to take, re-picking a colour refreshed
+  -- nothing at all: the choice was saved and the player kept walking around in
+  -- the palette they started with.
+  self:refreshPalette(data)
+end
+
+-- The player's mixed palette, pushed onto both sheets. A dataset that does not
+-- customise clears the override instead, so this is safe to call anywhere.
+function Player:refreshPalette(data)
+  local ok, PlayerPalette = pcall(require, "src.render.PlayerPalette")
+  if not ok then return end
+  local Game = require("src.core.Game")
+  local save = Game and Game.save
+  pcall(PlayerPalette.apply, self.sprite, data, save)
+  pcall(PlayerPalette.apply, self.bikeSprite, data, save)
+  pcall(PlayerPalette.apply, self.surfSprite, data, save)
 end
 
 function Player:position()
@@ -169,6 +311,33 @@ function Player:tryMove(dir, map, entities)
   local save = Game.save
   local frames = (save and save.onBike) and self.bikeStepFrames
                  or self.stepFrames or STEP_FRAMES
+  -- "Downhill riding is slower when not moving down" (DoPlayerMovement .DoStep:
+  -- on a bike with BIKEFLAGS_DOWNHILL_F set, only a DOWN step gets STEP_BIKE;
+  -- every other direction drops to STEP_WALK).  Cycling Road is the only place
+  -- it applies, and it is what makes climbing back up the slope feel heavy.
+  if save and save.onBike and dir ~= "down" then
+    local G2F = require("src.script.Gen2Flags")
+    local key = G2F.bikeFlag and G2F.bikeFlag("downhill")
+    if key and require("src.script.Flags").get(save, key) then
+      frames = self.stepFrames or STEP_FRAMES
+    end
+  end
+  -- RUNNING, which only Prism has -- and it has no running SHOES
+  -- either.  DoPlayerMovement's .walk branch falls straight through to
+  -- .run whenever B is held (engine/player_movement.asm .maybe_run),
+  -- gated on nothing but ENGINE_POKEMON_MODE: there is no item to find
+  -- and no flag to earn, so nothing here waits on one.  8 frames is the
+  -- ROM's own figure: its step-vector table's running-shoes row is
+  -- `db 0, 2, 8, 2`, two pixels a frame over eight -- the bicycle's rate
+  -- on foot.  Riding wins (the branch above), surfing and Pokemon mode
+  -- refuse, exactly as the original refuses them.
+  local run = self.runStepFrames
+  if run and not (save and save.onBike) and not self.surfing
+     and Game.input and Game.input:isDown("b")
+     and not require("src.script.Flags").get(save, "ENGINE_POKEMON_MODE")
+  then
+    frames = run
+  end
   if Runtime.wantsHook("movement.speed") then
     frames = Runtime.call("movement.speed", function(f) return f end, frames, {
       onBike = save and save.onBike or false,

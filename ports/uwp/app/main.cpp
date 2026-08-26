@@ -15,7 +15,7 @@ int runLove(int, char **)
         .InstalledLocation().Path().c_str();
     std::string gamePath = winrt::to_string(packagePath + L"\\gen2recomp.love");
 
-    char executable[] = "Gen2RecompUWP";
+    char executable[] = "Gen2RecompedUWP";
     char fused[] = "--fused";
     char *loveArgv[] = {executable, gamePath.data(), fused, nullptr};
     return SDL_main(3, loveArgv);

@@ -3,6 +3,35 @@
 data/generated/
 assets/generated/
 
+# User-supplied cartridge dumps. Never commit these.
+*.gb
+*.gbc
+*.gba
+*.sav
+*.z64
+
+# Inverted Mew sprites the example mod ships: tools/generate_example_mod_sprite.py
+# derives them from an imported cache, so they are ROM content. mod.card already
+# documents assets/ as empty until that script runs locally.
+mods/example_mew_starter/assets/
+
+# In-game screenshots render ROM-derived tiles and sprites. Extensionless, so
+# none of the image rules above catch them.
+/ruins_kabuto
+
+# Third-party checkouts scripts/setup_gen2_symbols.ps1 fetches on demand: a
+# pret/pokegold clone (including compiled .o objects) and the RGBDS toolchain.
+# Only their .sym output matters, and make_gen2_manifest.py has already baked
+# that into the committed tools/rom_manifest_*.json.
+tools/vendor/
+
+# NOTE: data/generated_gen2_{gold,silver}/ are deliberately COMMITTED. They
+# are cart-free scaffolds -- ids, ordering and pret labels only, with text as
+# {GEN2_TEXT:bank:addr:label} refs -- and RomExtractorGen2 decodes the actual
+# names, stats, map blocks, warps and dialogue off the ROM at import. 7 of
+# their 8 files are byte-identical between gold and silver; that equality is
+# the check that no ROM content has leaked back in.
+
 # LÖVE packages
 *.love
 
@@ -66,6 +95,33 @@ mobile/dist/
 
 # per-machine iOS bundle-id pin (see scripts/build_ios.sh)
 mobile/ios/bundle_id.local
+
+# Written by scripts/setup.{sh,ps1} so the launcher can tell a finished
+# install from a fresh one -- a Gen2 import writes its data into the LOVE
+# save folder, not into data/generated, so there is nothing else to test for.
+.setup-complete
+
+# Code-signing material.  The MSIX release certificate's private key lives in
+# a repository secret (docs/msix-signing.md), never in the tree: committing a
+# .pfx hands anyone who clones the repo the ability to sign packages as us.
+*.pfx
+*.p12
+*.snk
+
+# Android signing material.  A *release* keystore must never be committed.
+# mobile/android/debug.keystore is the deliberate exception and is negated
+# below: it carries no secret (the passwords are the standard "android"), and
+# committing it is the whole point -- CI must sign every release with the SAME
+# key or no release can upgrade another.  See docs/android-signing.md.
+*.jks
+*.keystore
+!mobile/android/debug.keystore
+
+
+#exclude mods folder 
+
+\tests
+/mods/*
 
 # Xbox UWP build output
 /ports/uwp/build/

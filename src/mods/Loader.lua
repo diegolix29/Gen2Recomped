@@ -1,5 +1,10 @@
 local Json = require("src.link.Json")
 local Logger = require("src.core.Logger")
+-- Hoisted deliberately: the dev-mode require shim attributes every src.* require
+-- made while Runtime.currentMod is set to THAT MOD, and both uses below sit
+-- inside that window.  Requiring it here resolves it once, at load, with no
+-- mod in scope, so a mod is never blamed for an engine require it did not make.
+local ModImports = require("src.mods.ModImports")
 local SaveData = require("src.core.SaveData")
 local Data = require("src.core.Data")
 local Version = require("src.core.Version")
@@ -13,7 +18,13 @@ local Schemas = require("src.mods.Schemas")
 local Semver = require("src.mods.Semver")
 local Events = require("src.mods.Events")
 local Hooks = require("src.mods.Hooks")
+local ModStorage = require("src.mods.Storage")
 local Runtime = require("src.mods.Runtime")
+-- Module-name aliases for mods written against the Gold port's per-generation
+-- layout (src.world.gen2.Player and friends).  Installed here because this is
+-- the module that loads mods: the searcher has to be in place before the
+-- first mod's main.lua runs, and nothing else needs it at all.
+require("src.core.ModCompat").install()
 
 local Loader = {}
 Loader.__index = Loader
@@ -137,7 +148,8 @@ function Loader.new(opts)
     mods = {}, loaded = {}, errors = {}, initialized = false,
     events = Events.new(), hooks = Hooks.new(), content = {}, assets = {},
     exports = {}, migrations = {}, order = {},
-    modSave = {}, modOptions = {}, optionSchemas = {}, imageCache = {},
+    modSave = {}, modOptions = {}, optionSchemas = {},
+    optionStatus = {}, imageCache = {},
     fs = (opts and opts.fs) or (love and love.filesystem),
     dev = dev,
   }, Loader)
@@ -618,6 +630,28 @@ function Loader:_api(mod)
         end
         return nil
       end,
+      -- Publish the live VALUE shown on an `action` row: "47/210", "DONE",
+      -- nil to clear. Display only -- nothing is stored, nothing is saved,
+      -- and a mod can only ever write under its own id -- so a long job
+      -- reports its progress on the very row that started it.
+      -- `text` may also be a FUNCTION returning the text, which is what a
+      -- running job wants: the manager calls it as it redraws, so progress
+      -- moves on screen without the mod polling a clock it may not have.
+      status = function(_, key, text)
+        assert(type(key) == "string" and key ~= "",
+          "options status needs a row key")
+        local bucket = loader.optionStatus[modId]
+        if not bucket then
+          bucket = {}
+          loader.optionStatus[modId] = bucket
+        end
+        if text == nil or type(text) == "function" then
+          bucket[key] = text
+        else
+          bucket[key] = tostring(text)
+        end
+        return bucket[key]
+      end,
     },
     commands = { register = function(_, verb, fn)
       return loader:_registerCommand(modId, verb, fn)
@@ -682,11 +716,25 @@ function Loader:_api(mod)
     local path = self.path .. "/" .. relative
     return loader.fs.read(path)
   end
-  -- mod.world materializes on first touch, like the image helper above: a
-  -- headless load must not drag the world stack in, and the Game the facade
-  -- acts on is still being wired when the entry chunk runs
-  local world
+  -- `required_imports`: base files the player supplies (see
+  -- src/mods/ModImports.lua).  They are written into the mod's own folder, so
+  -- mod:read already reaches them -- this is the polite way to ask whether one
+  -- has arrived before starting a long extract.
+  api.imports = ModImports.api(mod.manifest, function(rel)
+    return loader.fs.read(mod.path .. "/" .. rel)
+  end)
+  -- mod.world / mod.game / mod.storage all materialize on first touch, for
+  -- the same reason: a headless load must not drag the world stack in, and
+  -- the Game the facade acts on is still being wired when the entry chunk
+  -- runs.  mod.storage is the bulk counterpart to mod.save -- one sandboxed
+  -- namespace per mod for payloads too large to belong in a save file.
+  local world, storage
   setmetatable(api, { __index = function(_, key)
+    if key == "game" then return loader:_game() end
+    if key == "storage" then
+      if not storage then storage = ModStorage.new(modId, loader.fs) end
+      return storage
+    end
     if key ~= "world" then return nil end
     if world then return world end
     local game = loader:_game()
@@ -709,6 +757,15 @@ function Loader:_loadMod(mod)
   local path = mod.path .. "/" .. mod.manifest.entry
   local chunk, err = self.fs.load(path)
   if not chunk then error(err or ("unable to load " .. path)) end
+  -- A mod whose declared base file never arrived loads fine and then does
+  -- nothing, which from the log looks identical to a mod that is simply
+  -- quiet.  Say which file is missing (src/mods/ModImports.lua).
+  do
+    for _, row in ipairs(ModImports.missing(mod.manifest) or {}) do
+      Logger.warn("[%s] needs %s at %s; import it from the mods panel",
+        mod.manifest.id, tostring(row.entry.name), tostring(row.entry.file))
+    end
+  end
   local api = self:_api(mod)
   local result = chunk(api)
   if type(result) == "function" then result(api) end
@@ -736,6 +793,7 @@ function Loader:_rollback(modId)
   self.hooks:removeOwner(modId)
   self.exports[modId] = nil
   self.optionSchemas[modId] = nil
+  self.optionStatus[modId] = nil
   self.migrations[modId] = nil
   self.modSave[modId] = nil
 end
@@ -983,6 +1041,42 @@ function Loader:load(data)
       end
     end
   end
+  -- WHICH MAP PACK WINS, where the player has said.
+  --
+  -- Two packs may patch the same map, and the fold's own answer is "whichever
+  -- loaded last" -- defined, but not a decision anybody made. The map editor
+  -- records a per-map choice in options.lua; this is where it takes effect, so
+  -- the game honours it without the editor having to be involved.
+  --
+  -- AFTER THE MERGE, before the freeze: `preferOwner` only changes how the ops
+  -- are read, so the affected ids have to be folded again and written home.
+  -- (It works after the freeze too -- it appends nothing -- but doing it here
+  -- keeps the merged table and the registry in step at every later reader.)
+  --
+  -- Wholly pcall-guarded and entirely optional: a build with no options file,
+  -- or a choice naming a pack that is no longer installed, must load exactly
+  -- as it did before this existed.
+  if data then
+    pcall(function()
+      local SaveData = require("src.core.SaveData")
+      local opts = SaveData.loadOptions(love and love.filesystem)
+      local wins = opts and opts.mapPackWins
+      if type(wins) ~= "table" then return end
+      local registry = self.content.maps
+      if not (registry and registry.preferOwner) then return end
+      local target = data.maps
+      for mapId, owner in pairs(wins) do
+        if type(mapId) == "string" and type(owner) == "string"
+           and registry.ops[mapId] then
+          registry:preferOwner(mapId, owner)
+          if type(target) == "table" then
+            target[mapId] = registry:get(mapId)
+          end
+        end
+      end
+    end)
+  end
+
   -- content freezes at the merge boundary; the event/hook buses stay open
   -- so mods may subscribe at any point for the life of the process
   for _, registry in pairs(self.content) do

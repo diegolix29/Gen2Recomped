@@ -32,7 +32,11 @@ say "selftest_build_switch (offline)"
 # 1. sha256_file on a known temp file
 # ---------------------------------------------------------------------------
 TMP="$(mktemp "${TMPDIR:-/tmp}/selftest-sha.XXXXXX")"
+<<<<<<< HEAD
 printf 'gen1recomp-selftest\n' > "$TMP"
+=======
+printf 'Gen2Recomped-selftest\n' > "$TMP"
+>>>>>>> G2/main
 EXPECTED_SHA="$(shasum -a 256 "$TMP" | awk '{print $1}')"
 ACTUAL_SHA="$(sha256_file "$TMP")"
 rm -f "$TMP"
@@ -165,7 +169,11 @@ if [ -d "$PIN_DIR" ]; then
   mv "$PIN_DIR" "$PIN_MOVED"
 fi
 # Closed port / unreachable host — no real network asset required.
+<<<<<<< HEAD
 GEN1_LOVE_NX_BASE_URL="http://127.0.0.1:1" \
+=======
+GEN2_LOVE_NX_BASE_URL="http://127.0.0.1:1" \
+>>>>>>> G2/main
   "$ROOT/scripts/switch/fetch_love_nx.sh" >"$FETCH_FAIL_OUT" 2>"$FETCH_FAIL_ERR" || FETCH_FAIL_RC=$?
 if [ -n "$PIN_MOVED" ]; then
   rm -rf "$PIN_DIR"
@@ -249,7 +257,11 @@ fi
 # ---------------------------------------------------------------------------
 FAKE_NRO="$STAGING/fake.nro"
 printf 'fake-nro-bytes\n' > "$FAKE_NRO"
+<<<<<<< HEAD
 FAKE_ZIP="$STAGING/gen1recomp-0.0.0-test-switch.zip"
+=======
+FAKE_ZIP="$STAGING/Gen2Recomped-0.0.0-test-switch.zip"
+>>>>>>> G2/main
 PACK_RC=0
 "$ROOT/scripts/switch/pack_sd_zip.sh" "$FAKE_NRO" "0.0.0-test" "$FAKE_ZIP" \
   >"$STAGING/pack.out" 2>"$STAGING/pack.err" || PACK_RC=$?
@@ -262,6 +274,7 @@ fi
 ZIP_LIST="$(unzip -Z1 "$FAKE_ZIP" 2>/dev/null || unzip -l "$FAKE_ZIP")"
 PACK_MISSING=""
 for rel in \
+<<<<<<< HEAD
   "switch/gen1recomp/gen1recomp.nro" \
   "switch/gen1recomp/version.txt" \
   "switch/gen1recomp/INSTALL.txt" \
@@ -273,6 +286,19 @@ for rel in \
   "switch/gen1recomp/pokemon-love2d/exports/red/README.txt" \
   "switch/gen1recomp/pokemon-love2d/exports/blue/README.txt" \
   "switch/gen1recomp/pokemon-love2d/exports/yellow/README.txt"
+=======
+  "switch/gen2recomp/gen2recomp.nro" \
+  "switch/gen2recomp/version.txt" \
+  "switch/gen2recomp/INSTALL.txt" \
+  "switch/gen2recomp/pokemon-love2d/imports/README.txt" \
+  "switch/gen2recomp/pokemon-love2d/imports/mods/README.txt" \
+  "switch/gen2recomp/pokemon-love2d/imports/saves/red/README.txt" \
+  "switch/gen2recomp/pokemon-love2d/imports/saves/blue/README.txt" \
+  "switch/gen2recomp/pokemon-love2d/imports/saves/yellow/README.txt" \
+  "switch/gen2recomp/pokemon-love2d/exports/red/README.txt" \
+  "switch/gen2recomp/pokemon-love2d/exports/blue/README.txt" \
+  "switch/gen2recomp/pokemon-love2d/exports/yellow/README.txt"
+>>>>>>> G2/main
 do
   printf '%s\n' "$ZIP_LIST" | grep -Fq "$rel" || PACK_MISSING="${PACK_MISSING} ${rel}"
 done
@@ -286,7 +312,11 @@ EXTRACT_DIR="$STAGING/extract-v1"
 rm -rf "$EXTRACT_DIR"
 mkdir -p "$EXTRACT_DIR"
 unzip -q "$FAKE_ZIP" -d "$EXTRACT_DIR"
+<<<<<<< HEAD
 if cmp -s "$FAKE_NRO" "$EXTRACT_DIR/switch/gen1recomp/gen1recomp.nro"; then
+=======
+if cmp -s "$FAKE_NRO" "$EXTRACT_DIR/switch/gen2recomp/gen2recomp.nro"; then
+>>>>>>> G2/main
   ok "pack_sd_zip.sh NRO bytes match source"
 else
   bad "pack_sd_zip.sh NRO inside zip differs from source"
@@ -323,6 +353,7 @@ else
 fi
 
 # Merge-safe update: second extract replaces NRO, keeps user data
+<<<<<<< HEAD
 printf 'KEEP-SAVE' > "$EXTRACT_DIR/switch/gen1recomp/pokemon-love2d/slot.sav"
 printf 'KEEP-ROM' > "$EXTRACT_DIR/switch/gen1recomp/pokemon-love2d/imports/red.gb"
 printf 'KEEP-MOD' > "$EXTRACT_DIR/switch/gen1recomp/pokemon-love2d/imports/mods/mod.zip"
@@ -331,16 +362,34 @@ printf 'KEEP-OPTS' > "$EXTRACT_DIR/switch/gen1recomp/pokemon-love2d/options.lua"
 FAKE_NRO2="$STAGING/fake-v2.nro"
 printf 'fake-nro-bytes-v2\n' > "$FAKE_NRO2"
 FAKE_ZIP2="$STAGING/gen1recomp-0.0.1-test-switch.zip"
+=======
+printf 'KEEP-SAVE' > "$EXTRACT_DIR/switch/gen2recomp/pokemon-love2d/slot.sav"
+printf 'KEEP-ROM' > "$EXTRACT_DIR/switch/gen2recomp/pokemon-love2d/imports/red.gb"
+printf 'KEEP-MOD' > "$EXTRACT_DIR/switch/gen2recomp/pokemon-love2d/imports/mods/mod.zip"
+printf 'KEEP-OPTS' > "$EXTRACT_DIR/switch/gen2recomp/pokemon-love2d/options.lua"
+
+FAKE_NRO2="$STAGING/fake-v2.nro"
+printf 'fake-nro-bytes-v2\n' > "$FAKE_NRO2"
+FAKE_ZIP2="$STAGING/Gen2Recomped-0.0.1-test-switch.zip"
+>>>>>>> G2/main
 "$ROOT/scripts/switch/pack_sd_zip.sh" "$FAKE_NRO2" "0.0.1-test" "$FAKE_ZIP2" \
   >"$STAGING/pack2.out" 2>"$STAGING/pack2.err"
 unzip -qo "$FAKE_ZIP2" -d "$EXTRACT_DIR"
 
 MERGE_OK=1
+<<<<<<< HEAD
 cmp -s "$FAKE_NRO2" "$EXTRACT_DIR/switch/gen1recomp/gen1recomp.nro" || MERGE_OK=0
 [ "$(cat "$EXTRACT_DIR/switch/gen1recomp/pokemon-love2d/slot.sav")" = "KEEP-SAVE" ] || MERGE_OK=0
 [ "$(cat "$EXTRACT_DIR/switch/gen1recomp/pokemon-love2d/imports/red.gb")" = "KEEP-ROM" ] || MERGE_OK=0
 [ "$(cat "$EXTRACT_DIR/switch/gen1recomp/pokemon-love2d/imports/mods/mod.zip")" = "KEEP-MOD" ] || MERGE_OK=0
 [ "$(cat "$EXTRACT_DIR/switch/gen1recomp/pokemon-love2d/options.lua")" = "KEEP-OPTS" ] || MERGE_OK=0
+=======
+cmp -s "$FAKE_NRO2" "$EXTRACT_DIR/switch/gen2recomp/gen2recomp.nro" || MERGE_OK=0
+[ "$(cat "$EXTRACT_DIR/switch/gen2recomp/pokemon-love2d/slot.sav")" = "KEEP-SAVE" ] || MERGE_OK=0
+[ "$(cat "$EXTRACT_DIR/switch/gen2recomp/pokemon-love2d/imports/red.gb")" = "KEEP-ROM" ] || MERGE_OK=0
+[ "$(cat "$EXTRACT_DIR/switch/gen2recomp/pokemon-love2d/imports/mods/mod.zip")" = "KEEP-MOD" ] || MERGE_OK=0
+[ "$(cat "$EXTRACT_DIR/switch/gen2recomp/pokemon-love2d/options.lua")" = "KEEP-OPTS" ] || MERGE_OK=0
+>>>>>>> G2/main
 if [ "$MERGE_OK" -eq 1 ]; then
   ok "pack_sd_zip.sh merge update preserves user data"
 else
@@ -354,24 +403,40 @@ FAKE_LAUNCHER="$STAGING/fake-launcher.nro"
 FAKE_GAME="$STAGING/fake-game.nro"
 printf 'fake-launcher\n' > "$FAKE_LAUNCHER"
 printf 'fake-game\n' > "$FAKE_GAME"
+<<<<<<< HEAD
 OTA_ZIP="$STAGING/gen1recomp-0.0.2-ota-layout-switch.zip"
+=======
+OTA_ZIP="$STAGING/Gen2Recomped-0.0.2-ota-layout-switch.zip"
+>>>>>>> G2/main
 OTA_RC=0
 "$ROOT/scripts/switch/pack_sd_zip.sh" "$FAKE_GAME" "0.0.2" "$OTA_ZIP" "$FAKE_LAUNCHER" \
   >"$STAGING/ota-pack.out" 2>"$STAGING/ota-pack.err" || OTA_RC=$?
 OTA_LIST="$(unzip -Z1 "$OTA_ZIP" 2>/dev/null || true)"
 if [ "$OTA_RC" -eq 0 ] \
+<<<<<<< HEAD
   && printf '%s\n' "$OTA_LIST" | grep -Fq 'switch/gen1recomp/gen1recomp.nro' \
   && printf '%s\n' "$OTA_LIST" | grep -Fq 'switch/gen1recomp/gen1recomp-game.nro' \
   && printf '%s\n' "$OTA_LIST" | grep -Fq 'switch/gen1recomp/version.txt'
+=======
+  && printf '%s\n' "$OTA_LIST" | grep -Fq 'switch/gen2recomp/gen2recomp.nro' \
+  && printf '%s\n' "$OTA_LIST" | grep -Fq 'switch/gen2recomp/Gen2Recomped-game.nro' \
+  && printf '%s\n' "$OTA_LIST" | grep -Fq 'switch/gen2recomp/version.txt'
+>>>>>>> G2/main
 then
   EXTRACT_OTA="$STAGING/extract-ota"
   rm -rf "$EXTRACT_OTA"
   mkdir -p "$EXTRACT_OTA"
   unzip -q "$OTA_ZIP" -d "$EXTRACT_OTA"
   DUAL_OK=1
+<<<<<<< HEAD
   cmp -s "$FAKE_LAUNCHER" "$EXTRACT_OTA/switch/gen1recomp/gen1recomp.nro" || DUAL_OK=0
   cmp -s "$FAKE_GAME" "$EXTRACT_OTA/switch/gen1recomp/gen1recomp-game.nro" || DUAL_OK=0
   [ "$(cat "$EXTRACT_OTA/switch/gen1recomp/version.txt")" = "0.0.2" ] || DUAL_OK=0
+=======
+  cmp -s "$FAKE_LAUNCHER" "$EXTRACT_OTA/switch/gen2recomp/gen2recomp.nro" || DUAL_OK=0
+  cmp -s "$FAKE_GAME" "$EXTRACT_OTA/switch/gen2recomp/Gen2Recomped-game.nro" || DUAL_OK=0
+  [ "$(cat "$EXTRACT_OTA/switch/gen2recomp/version.txt")" = "0.0.2" ] || DUAL_OK=0
+>>>>>>> G2/main
   if [ "$DUAL_OK" -eq 1 ]; then
     ok "pack_sd_zip.sh dual-NRO OTA layout (launcher + game + version.txt)"
   else
@@ -383,8 +448,13 @@ fi
 
 MANIFEST="$ROOT/scripts/switch/ota_launcher.manifest"
 if [ -f "$MANIFEST" ] && grep -q '^OTA_ENABLED=1$' "$MANIFEST" \
+<<<<<<< HEAD
   && grep -q 'ENTRY_NRO=switch/gen1recomp/gen1recomp.nro' "$MANIFEST" \
   && grep -q 'GAME_NRO=switch/gen1recomp/gen1recomp-game.nro' "$MANIFEST"
+=======
+  && grep -q 'ENTRY_NRO=switch/gen2recomp/gen2recomp.nro' "$MANIFEST" \
+  && grep -q 'GAME_NRO=switch/gen2recomp/Gen2Recomped-game.nro' "$MANIFEST"
+>>>>>>> G2/main
 then
   ok "ota_launcher.manifest requires dual-NRO when OTA_ENABLED=1"
 else
@@ -408,7 +478,11 @@ fi
 LEGACY_OTA_PACKER="$ROOT/scripts/switch/pack_ota_zip.sh"
 if [ ! -f "$LEGACY_OTA_PACKER" ] \
   && ! grep -Eq 'pack_ota_zip\.sh|switch-ota\.zip' "$ROOT/scripts/build_switch.sh" \
+<<<<<<< HEAD
   && grep -q 'OTA_ASSET_GLOB=gen1recomp-\*-switch.zip' "$MANIFEST"
+=======
+  && grep -q 'OTA_ASSET_GLOB=Gen2Recomped-\*-switch.zip' "$MANIFEST"
+>>>>>>> G2/main
 then
   ok "OTA uses the same SD zip as install (legacy OTA-only packer gone)"
 else

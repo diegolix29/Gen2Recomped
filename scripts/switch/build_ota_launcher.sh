@@ -3,7 +3,11 @@
 #
 # Usage: scripts/switch/build_ota_launcher.sh [OUT_NRO] [VERSION]
 #
+<<<<<<< HEAD
 # Default OUT_NRO: dist/switch/gen1recomp-launcher.nro
+=======
+# Default OUT_NRO: dist/switch/Gen2Recomped-launcher.nro
+>>>>>>> G2/main
 # VERSION (optional X.Y.Z) is written into the NACP so hbmenu shows the
 # same release as the fused game; defaults to 0.0.0 when omitted.
 # Host-only protocol check: always runs `make host-test` first.
@@ -15,14 +19,28 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/common.sh"
 
 LAUNCHER_DIR="$ROOT/ports/switch/ota-launcher"
+<<<<<<< HEAD
 OUT_NRO="${1:-$ROOT/dist/switch/gen1recomp-launcher.nro}"
 APP_VERSION="${2:-${GEN1_LAUNCHER_VERSION:-0.0.0}}"
+=======
+OUT_NRO="${1:-$ROOT/dist/switch/Gen2Recomped-launcher.nro}"
+APP_VERSION="${2:-${GEN2_LAUNCHER_VERSION:-0.0.0}}"
+>>>>>>> G2/main
 DKP_IMAGE_FILE="$ROOT/scripts/switch/dkp-docker.image"
 
 [ -d "$LAUNCHER_DIR" ] || fail "missing $LAUNCHER_DIR"
 [ -f "$LAUNCHER_DIR/Makefile" ] || fail "missing Makefile"
 
+<<<<<<< HEAD
 if ! devkitpro_ready; then
+=======
+# The header advertises "DEVKITPRO or Docker" and the Docker branch is right
+# there further down -- but this precondition bailed before anything could
+# reach it, so the Docker path was dead code and a runner without a native
+# devkitPro install could never build the launcher (only the FUSED NRO, which
+# build_fused.sh containerises properly).  Fail only when NEITHER is available.
+if ! devkitpro_ready && ! command -v docker >/dev/null 2>&1; then
+>>>>>>> G2/main
   fail_missing_devkitpro
 fi
 
@@ -37,14 +55,23 @@ if ota_launcher_deps_ready; then
   if ! make -C "$LAUNCHER_DIR" all APP_VERSION="$APP_VERSION"; then
     fail_ota_launcher_toolchain
   fi
+<<<<<<< HEAD
   cp "$LAUNCHER_DIR/gen1recomp.nro" "$OUT_NRO"
+=======
+  cp "$LAUNCHER_DIR/gen2recomp.nro" "$OUT_NRO"
+>>>>>>> G2/main
   say "wrote $OUT_NRO"
   exit 0
 fi
 
 resolve_dkp_image() {
+<<<<<<< HEAD
   if [ -n "${GEN1_DKP_IMAGE:-}" ]; then
     printf '%s' "$GEN1_DKP_IMAGE"
+=======
+  if [ -n "${GEN2_DKP_IMAGE:-}" ]; then
+    printf '%s' "$GEN2_DKP_IMAGE"
+>>>>>>> G2/main
     return 0
   fi
   [ -f "$DKP_IMAGE_FILE" ] || fail "missing Docker image pin: $DKP_IMAGE_FILE"
@@ -65,7 +92,11 @@ if command -v docker >/dev/null 2>&1; then
     bash -lc 'pacman -Sy --noconfirm switch-curl switch-mbedtls switch-zlib switch-zziplib >/dev/null 2>&1 || true; make clean; make all APP_VERSION="$APP_VERSION"'; then
     fail_ota_launcher_toolchain
   fi
+<<<<<<< HEAD
   cp "$LAUNCHER_DIR/gen1recomp.nro" "$OUT_NRO"
+=======
+  cp "$LAUNCHER_DIR/gen2recomp.nro" "$OUT_NRO"
+>>>>>>> G2/main
   say "wrote $OUT_NRO"
   exit 0
 fi

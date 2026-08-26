@@ -37,6 +37,33 @@ function Game:load()
   self.mods = ModLoader.new()
   self.mods:load(Data)
   self.modStatus = self.mods:status()
+  -- AND THE MAP EDITOR'S OVERLAY AGAIN, ON TOP OF THE MERGE.
+  --
+  -- Data:load laid it down before this, and a content mod that patches a map
+  -- has just replaced it. That is not a corner case: `ModExport` writes a map
+  -- pack whose patch carries the whole `objects` array as it stood at export,
+  -- and installing your own pack back into the editor -- which is exactly what
+  -- the IMPORT button is for, and the honest way to check an export works --
+  -- makes every later edit to those maps invisible. Added an NPC, saved,
+  -- launched: the overlay put him there, the pack's snapshot took him away
+  -- again, and all three steps reported success.
+  --
+  -- THE WORKING COPY WINS. A mod is published content; the edit store is what
+  -- the reader is editing right now. Where the two describe the same map, the
+  -- one they can still see and change is the one that should be on screen --
+  -- and the alternative is an editor whose saves silently stop taking effect
+  -- once you have shared your work once.
+  --
+  -- Cheap on a machine with no edits: the store is absent, applyAll finds
+  -- nothing, and this is a file check.
+  Data:applyMapEditorOverlay("after mods")
+  -- Re-derive the Gen 2 palette view over the MERGED tileset table.  A
+  -- mod that adds or replaces a tileset adds or replaces its colours with
+  -- it, and the view is only useful to a 3D pipeline if it covers those
+  -- too: an uncovered tileset renders that ONE map grey while its
+  -- neighbours are in colour, which is harder to diagnose than a whole
+  -- grey world because it reads as a bug in that map.
+  Data:publishGen2Palettes()
   -- render pipelines dispatch off the merged dataset; point them at the
   -- one the mods just merged into before anything can draw a frame
   require("src.render.Pipelines").install(Data)
@@ -78,9 +105,23 @@ function Game:load()
   -- Soft-fail: missing Discord / IPC errors must never block boot.
   pcall(function() require("src.core.DiscordPresence").init(self) end)
 
-  -- every service is up but nothing is on the stack yet; this payload is
-  -- the sanctioned way for a mod to obtain the Game object
-  ModRuntime.emit("game.ready", { game = self })
+  -- Every service is up but nothing is on the stack yet; this payload is the
+  -- sanctioned way for a mod to obtain the Game object.
+  --
+  -- It reads through to the Game as well as carrying it under `.game`.  Half
+  -- the mods written against this event treat the payload AS the game --
+  --
+  --     mod.events:on("game.ready", function(game) ... game.input ... end)
+  --
+  -- which is a fair reading of an event called "game ready", and against a
+  -- bare `{ game = self }` it silently yields nil for every field they want.
+  -- STADIUM2_OVERWORLD_MODELS' battle-controller shortcuts refused to install
+  -- with "live Game2 host has no input object" for exactly this reason, and
+  -- its party-follower bridge reads `game.world` the same way.  The metatable
+  -- costs nothing, keeps `payload.game` working for everyone who reads it the
+  -- documented way, and adds no keys -- `pairs(payload)` is unchanged.
+  ModRuntime.emit("game.ready",
+    setmetatable({ game = self }, { __index = self }))
 
   -- boot into the title screen (engine/movie/title.asm); NEW GAME runs
   -- the Oak speech + naming, CONTINUE restores the save.  The headless
@@ -129,6 +170,39 @@ function Game:bootConfig()
   -- it (SaveData.newGame reads boot.version); this is what routes a Blue
   -- playthrough to save_blue.lua and Blue's version-gated content
   if boot then boot.version = require("src.core.GameVersion").get() end
+  -- ...and the map scenes that do NOT open at zero.  InitializeEvents writes
+  -- three scene bytes directly on this cartridge (Goldenrod City among them),
+  -- and a scene left at 0 arms a cutscene that has already been retired.
+  local field = self.data and self.data.field
+  if boot and field and type(field.initialScenes) == "table" then
+    boot.initialScenes = field.initialScenes
+  end
+  -- THE STARTING PC ITEM, NAMED IN THIS DATASET'S OWN IDS.
+  --
+  -- players_pc.asm seeds one Potion, and SaveData.newGame wrote the literal
+  -- id "POTION" for it. A Gen 2 import names every item off the cartridge as
+  -- ITEM_nnn, so that literal is an id nothing else in the game ever uses --
+  -- and the bag is a map keyed by id, so the PC's potion and the one Elm's
+  -- aide hands over sat in TWO SEPARATE SLOTS, both printing "POTION".
+  -- Resolved here, where the item table is in hand: a real "POTION" id when
+  -- the dataset has one (Gen 1), otherwise the id whose printed name is
+  -- Potion (Gen 2's ITEM_nnn).
+  if boot and boot.pcItems == nil then
+    local items = self.data and self.data.items
+    if type(items) == "table" then
+      local id = items.POTION and "POTION" or nil
+      if not id then
+        for key, def in pairs(items) do
+          if type(def) == "table"
+             and tostring(def.name or ""):upper():gsub("[^%a]", "") == "POTION" then
+            id = key
+            break
+          end
+        end
+      end
+      if id then boot.pcItems = { [id] = 1 } end
+    end
+  end
   return boot
 end
 
@@ -156,6 +230,30 @@ function Game:makeTitleState()
       end
       if newGameScreen then
         Screens.push(self, newGameScreen, function() end)
+      else
+        -- PRISM HAS NO OAK SPEECH, and that is why its character customisation
+        -- never appeared.  Data.lua sets boot.screens.newGame = false for any
+        -- dataset with no OakText* -- Prism writes its own introduction in
+        -- engine/intro_menu.asm rather than replaying the professor's -- so
+        -- OakSpeech does not run, and the `customize_player` step lives INSIDE
+        -- OakSpeech.  The step was correct and simply unreachable.
+        --
+        -- IntroductionSpeech calls PlayerCustomization before it asks the
+        -- player's name, and the name prompt on this path comes from the
+        -- intro map's own script, so pushing it here puts it in the same
+        -- place: after New Game, before the map runs.
+        -- pcall, not a bare require: a dataset can want this screen without
+        -- the build shipping it (that is exactly how NEW GAME on Prism went
+        -- from "no customisation menu" to "module not found" the moment the
+        -- branch became reachable).  A missing screen must cost the player
+        -- the customisation, not the save file they were starting.
+        local okCust, Cust = pcall(require, "src.ui.PrismCustomization")
+        if okCust and type(Cust) == "table" and Cust.available(self) then
+          Screens.push(self, "PrismCustomization", function() end)
+        elseif not okCust then
+          require("src.core.Logger").error(
+            "player customisation screen unavailable: %s", tostring(Cust))
+        end
       end
     end,
     onContinue = function()

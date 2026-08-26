@@ -14,13 +14,13 @@
     {
       "name": "uwp-relwithdebinfo",
       "inherits": "uwp-common",
-      "displayName": "Gen1Recomp Xbox UWP (RelWithDebInfo)",
+      "displayName": "Gen2Recomped Xbox UWP (RelWithDebInfo)",
       "binaryDir": "${sourceDir}/build/relwithdebinfo"
     },
     {
       "name": "uwp-release",
       "inherits": "uwp-common",
-      "displayName": "Gen1Recomp Xbox UWP (Release)",
+      "displayName": "Gen2Recomped Xbox UWP (Release)",
       "binaryDir": "${sourceDir}/build/release"
     }
   ],

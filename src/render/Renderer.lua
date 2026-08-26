@@ -239,6 +239,14 @@ end
 
 -- transparent: the world pass shows through (UI pass draws overlays only)
 function Renderer:beginFrame(transparent)
+  -- a frame that ends early -- a state that returns before endFrame, an error
+  -- caught upstream -- must not leak a queued native-resolution draw into the
+  -- next frame's composite
+  require("src.render.NativeOverlay").clear()
+  -- and for the same reason: a draw that raised inside a styled region left
+  -- the window style pushed, which would put the next frame's every box and
+  -- glyph in a look nothing on screen asked for
+  require("src.render.Font").clearStyles()
   self.worldActive = false
   self.uprightActive = false
   self.worldOverride = nil
@@ -713,6 +721,18 @@ function Renderer:endFrame(zones, worldZones)
     local ctx = {
       renderer = self,
       worldCanvas = self.worldCanvas, uiCanvas = self.canvas,
+      -- `sceneCanvas` is the 160x144 screen canvas under the name the hook's
+      -- first consumers were written against, and it is not decoration: a mod
+      -- laying the frame out itself needs the finished screen to put back on
+      -- top of whatever it drew underneath.  STADIUM2_OVERWORLD_MODELS' in-world
+      -- 3D battle reads exactly this, and with the field absent its very first
+      -- check -- `if not (canvas and ui) then return false end` -- failed every
+      -- frame, so the whole battle silently fell back to the flat scene while
+      -- every part of the mod reported itself installed and enabled.
+      sceneCanvas = self.canvas,
+      -- and which game this frame belongs to, which is how a mod that supports
+      -- both generations picks its layout without guessing from the metrics
+      generation = require("src.core.GameVersion").isGen2() and 2 or 1,
       worldOverride = self.worldOverride,
       worldActive = self.worldActive and true or false,
       zones = zones, worldZones = worldZones,
@@ -751,7 +771,22 @@ function Renderer:endFrame(zones, worldZones)
       -- one seam across the window) that a single scalar dpiscale cannot
       -- express.
       self.presentCanvas = love.graphics.newCanvas(ww, wh)
-      self.presentCanvas:setFilter("linear", "linear")
+      -- NEAREST, like every other surface in this pipeline.
+      --
+      -- This canvas only exists when GBC FX is on or a mod registers a
+      -- `present` pass, and it is blitted back at unit scale 1 -- so linear
+      -- bought nothing on an exact blit and, the moment the window's DPI
+      -- scale was not exactly 1, resampled THE ENTIRE FINISHED FRAME half a
+      -- texel off.  Every glyph in the game picked up a ghost of itself.
+      -- It showed up as "the mod menu is unreadable and pixelated" because
+      -- installing almost any mod is what turns this canvas on: the base
+      -- game never allocates it and stayed crisp.
+      --
+      -- The dpi truncation gap the comment above describes is a sub-1% seam
+      -- across one axis.  Nearest renders that as a single hard column,
+      -- which is what a pixel-art frame should do; linear paid for it by
+      -- softening all of it.
+      self.presentCanvas:setFilter("nearest", "nearest")
     end
     present = self.presentCanvas
     love.graphics.setCanvas(present)
@@ -819,13 +854,33 @@ function Renderer:endFrame(zones, worldZones)
     -- so it composites with a straight 1:1 blit and the world canvas is
     -- skipped entirely (nothing drew into it).  The UI blit below still
     -- runs, so dialogs, menus and the HUD sit on top as usual.
+    --
+    -- MEASURE THE CANVAS; DO NOT ASSUME ITS RESOLUTION.  This used to blit at
+    -- a fixed 1/dpi, which covers the window only when the pipeline sized its
+    -- canvas in FRAMEBUFFER PIXELS.  A pipeline that sized it in LOVE units
+    -- instead -- the natural reading of the old ctx.width/height, which were
+    -- love.graphics.getDimensions() -- paid the DPI scale twice and landed the
+    -- entire 3D world in the TOP-LEFT CORNER at 1/dpi of the screen, black all
+    -- around it.  Desktop never saw it (units and pixels are the same thing at
+    -- dpi 1); Android, where the DPI scale is the display density, showed a
+    -- world a third the size in each direction.
+    --
+    -- OverworldController now hands over pixels, but deriving the scale from
+    -- the canvas ALSO fixes every already-shipped and third-party pipeline
+    -- without their authors having to know any of this, and is bit-identical
+    -- for a correctly-sized one: ow == pw, so ww / ow == 1 / dpiX exactly.
+    -- A supersampled or deliberately low-res canvas is simply fitted, which is
+    -- what "one window-resolution image" was always supposed to mean.
     love.graphics.setColor(1, 1, 1, 1)
     love.graphics.setScissor(0, 0, ww, wh)
+    local ow, oh = self.worldOverride:getDimensions()
+    local osx = (ow and ow > 0) and (ww / ow) or (1 / dpiX)
+    local osy = (oh and oh > 0) and (wh / oh) or (1 / dpiY)
     local loveMajor = love.getVersion()
     if love.system and love.system.getOS and love.system.getOS() == "iOS" and loveMajor >= 12 then
-      love.graphics.draw(self.worldOverride, 0, wh, 0, 1 / dpiX, -1 / dpiY)
+      love.graphics.draw(self.worldOverride, 0, wh, 0, osx, -osy)
     else
-      love.graphics.draw(self.worldOverride, 0, 0, 0, 1 / dpiX, 1 / dpiY)
+      love.graphics.draw(self.worldOverride, 0, 0, 0, osx, osy)
     end
     love.graphics.setScissor()
     -- the screen-space overlays the flat path draws over its composite
@@ -963,6 +1018,13 @@ function Renderer:endFrame(zones, worldZones)
            p.dx - p.a.x * Ux, p.dy - p.a.y * Uy, p.dx, p.dy, p.dw, p.dh)
     end
   end
+
+  -- Native-resolution draws: geometry that was measured in 160x144 space but
+  -- must not be rasterised there.  Over the finished UI blit, using the same
+  -- origin and scale it used, so a queued rect covers exactly the pixels it
+  -- replaces -- and UNDER the wipe and veil below, which are screen-wide
+  -- effects that on hardware nothing escapes.
+  require("src.render.NativeOverlay").flush(uox, uoy, Ux, Uy)
 
   -- The battle wipe covers the whole surface, letterbox included, so it goes
   -- over the finished composite rather than under the UI blit.  On hardware

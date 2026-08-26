@@ -73,6 +73,53 @@ function Manifest.parseGithub(value)
 end
 
 -- conflicts + incompatible (alias) merged, first-wins on duplicate ids
+-- `required_games`: [{ version, name }], the cartridges a mod needs imported.
+--
+-- Tolerant of a bare list of version strings, because that is what a human
+-- hand-editing this file will write, and the display name is recoverable from
+-- the version anyway.
+local function parseRequiredGames(raw)
+  local list = raw and raw.required_games
+  if type(list) ~= "table" then return nil end
+  local out = {}
+  for _, entry in ipairs(list) do
+    local version, name
+    if type(entry) == "string" then
+      version = entry
+    elseif type(entry) == "table" then
+      version = type(entry.version) == "string" and entry.version or nil
+      name = type(entry.name) == "string" and entry.name or nil
+    end
+    if version and version ~= "" then
+      out[#out + 1] = { version = version, name = name or version:upper() }
+    end
+  end
+  return out[1] and out or nil
+end
+
+-- `maps`: the map ids a content mod patches, declared rather than discovered.
+--
+-- WHY DECLARE SOMETHING THE ENTRY FILE ALREADY SAYS. The entry file only says
+-- it once it has RUN, and the mod set is built once a boot -- so between
+-- installing a map pack and restarting, the only honest answer to "what is in
+-- this?" was silence. Worse than silence in practice: a pack replacing an
+-- earlier version of itself still had the OLD one's claims in the registry, so
+-- the editor showed the previous contents with no sign they were stale.
+--
+-- The manifest is the one part of a mod that is read WITHOUT running it, so a
+-- list here is answerable at install time, on the install screen, before the
+-- zip is even unpacked. Advisory, never authoritative: what a mod actually
+-- patches is what it patches, and the registry remains the truth once loaded.
+local function parseMaps(raw)
+  local list = raw and raw.maps
+  if type(list) ~= "table" then return nil end
+  local out = {}
+  for _, entry in ipairs(list) do
+    if type(entry) == "string" and entry ~= "" then out[#out + 1] = entry end
+  end
+  return out[1] and out or nil
+end
+
 local function mergeConflictLists(conflicts, incompatible)
   local seen, out = {}, {}
   for _, list in ipairs({ array(conflicts), array(incompatible) }) do
@@ -174,6 +221,12 @@ function Manifest.validate(raw, path)
 
   local github = Manifest.parseGithub(raw.github)
 
+  -- A fork keeps `github` for credit but must not chase upstream's releases:
+  -- its version line is its own, and "update" there would overwrite the fork.
+  assert(raw.update_check == nil or type(raw.update_check) == "boolean",
+    "update_check must be a boolean")
+  local updateCheck = raw.update_check ~= false
+
   assert(raw.experimental == nil or type(raw.experimental) == "boolean",
     "experimental must be a boolean")
   local experimental = raw.experimental == true
@@ -221,6 +274,7 @@ function Manifest.validate(raw, path)
     game_version = raw.game_version,
     description = raw.description or "",
     github = github,
+    updateCheck = updateCheck,
     experimental = experimental,
     profile = profile,
     language = language,
@@ -228,6 +282,24 @@ function Manifest.validate(raw, path)
     permissions = permissions,
     permissionSet = permissionSet,
     options_schema = optionalFile(raw.options_schema, "options_schema"),
+    -- Base files the mod needs but cannot ship -- a Stadium 2 cartridge, a
+    -- second game's ROM.  Declared here, satisfied by the launcher, read by
+    -- the mod out of its own folder (src/mods/ModImports.lua).
+    requiredImports = require("src.mods.ModImports").parse(raw),
+    -- Cartridges that must be IMPORTED for this mod to mean anything -- a
+    -- different thing from requiredImports above, which is a file the player
+    -- hands over and the launcher writes into the mod's folder.
+    --
+    -- A map pack exported from the map editor carries maps copied out of
+    -- another game and tilesets adopted from it BY REFERENCE: it ships no
+    -- cartridge content, so it needs the reader's own extraction to resolve
+    -- against. Nothing to supply, nothing to write -- the requirement is
+    -- satisfied by having imported that game, and this is how the launcher
+    -- knows to ask before the mod is ever run.
+    requiredGames = parseRequiredGames(raw),
+    -- Which maps this mod says it touches; see parseMaps. Absent on every mod
+    -- that predates the field, which is why nothing may depend on it.
+    maps = parseMaps(raw),
     assets_transforms = optionalFile(raw.assets_transforms, "assets_transforms"),
     path = path,
     raw = raw,

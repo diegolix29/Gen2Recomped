@@ -891,6 +891,15 @@ R.render_pipelines = {
     update = f.opt(f.fn),
     -- (ctx) -> canvas | nil: render the world.  nil falls back to the
     -- vanilla flat/tilt draw for this frame.
+    --
+    -- SIZE THE CANVAS IN FRAMEBUFFER PIXELS -- ctx.width/height (and their
+    -- explicit aliases ctx.pixelWidth/pixelHeight) are already in those, as
+    -- is ctx.scale.  ctx.unitWidth/unitHeight are the same window in LOVE
+    -- units if you want them.  On desktop the two are identical, so a mod
+    -- that mixes them up looks perfect there and puts the whole world in the
+    -- top-left corner at 1/dpi on a phone.  Renderer:endFrame fits whatever
+    -- you hand back to the window, so a supersampled or low-res canvas is
+    -- fine too -- but matching the pixel size is the one that is exact.
     drawWorld = f.opt(f.fn),
     -- (canvas, ctx) -> canvas: post-process the WORLD image, before the UI
     -- composites over it -- a depth-of-field or colour grade that must not
@@ -905,6 +914,25 @@ R.render_pipelines = {
     present = f.opt(f.fn),
     -- drop GPU objects (window resize, hot reload, mode switch)
     invalidate = f.opt(f.fn),
+    -- true = this is a DRIVER, not a display mode.
+    --
+    -- Some mods register a pipeline purely to get a per-frame callback with
+    -- the frame's context, because that is the only public seam that has one.
+    -- STADIUM2_OVERWORLD_MODELS runs its entire wild-Pokemon AI out of a
+    -- present-only pipeline for exactly that reason.  Such a pipeline is not
+    -- something the player should see in Options, and -- much more
+    -- importantly -- its level must NOT be persisted: the moment a 0 for it
+    -- lands in save.options.pipelines it wins over the level the mod set for
+    -- itself at registration, the driver stops running, and the feature dies
+    -- silently and permanently, with nothing in any log because nothing
+    -- failed.  That is how the wild Pokemon ended up standing around
+    -- unbattleable.
+    --
+    -- An internal pipeline therefore gets no options row, is never written to
+    -- or read from the save, and runs whenever `available` says yes.  Prefer
+    -- the world.tick event over this if the host emits it (it does since
+    -- 0.7.x); this exists so a driver cannot be switched off by accident.
+    internal = f.opt(f.bool),
   },
   -- a pipeline that does neither half is dead weight and would silently
   -- occupy an options row and a hotkey

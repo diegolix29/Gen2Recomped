@@ -20,9 +20,9 @@
 #   - macOS + Xcode (xcodebuild)
 #   - mobile/ios/love-src/ (see --fetch / mobile/ios/README.md)
 #
-# Output: dist/ios/<Config>-<sdk>/gen1recomp.app (convenience copy)
-#         dist/ios/gen1recomp.ipa                 (device builds only)
-#         mobile/ios/build/Build/Products/<Config>-<sdk>/gen1recomp.app
+# Output: dist/ios/<Config>-<sdk>/Gen2Recomped.app (convenience copy)
+#         dist/ios/gen2recomp.ipa                 (device builds only)
+#         mobile/ios/build/Build/Products/<Config>-<sdk>/Gen2Recomped.app
 
 set -euo pipefail
 
@@ -39,18 +39,18 @@ RESOURCES_DIR="$XCODE_DIR/ios/resources"
 LOVE_FILE="$RESOURCES_DIR/game.love"
 LIBS_DIR="$XCODE_DIR/ios/libraries"
 
-APP_NAME="gen1recomp"
-DISPLAY_NAME="gen1recomp"
+APP_NAME="gen2recomp"
+DISPLAY_NAME="gen2recomp"
 # Bundle ID resolution, most specific wins:
-#   1. GEN1_BUNDLE_ID env var
+#   1. GEN2_BUNDLE_ID env var
 #   2. mobile/ios/bundle_id.local (one line, gitignored — pins YOUR install
 #      so rebuilds keep updating the same app on your phone)
-#   3. device builds: com.gen1recomp.t<your team id> — explicit App IDs are
+#   3. device builds: com.gen2recomp.t<your team id> — explicit App IDs are
 #      globally unique across ALL Apple accounts (and required once
 #      capabilities like HealthKit are involved), so a per-team default
 #      lets anyone build without colliding with someone else's app
 #   4. simulator: the project default (no App ID registration involved)
-BUNDLE_ID="${GEN1_BUNDLE_ID:-com.theboisclub.gen1recomp}"
+BUNDLE_ID="${GEN2_BUNDLE_ID:-com.underdecodedhd.gen2recomped}"
 if [ -z "$BUNDLE_ID" ] && [ -f "$IOS_DIR/bundle_id.local" ]; then
   BUNDLE_ID="$(tr -d '[:space:]' < "$IOS_DIR/bundle_id.local")"
 fi
@@ -67,7 +67,7 @@ PACKAGE_ONLY=false
 INSTALL=false
 CREATE_IPA=false
 # Last resort for an incomplete source export, mirroring build_android.sh.
-MANIFEST_BASE_URL="${MANIFEST_BASE_URL:-https://raw.githubusercontent.com/bryanthaboi/gen1recomp/main}"
+MANIFEST_BASE_URL="${MANIFEST_BASE_URL:-https://raw.githubusercontent.com/UNDERdecodedHD/Gen2Recomped/main}"
 MANIFESTS=""
 
 VERSION=""
@@ -139,9 +139,9 @@ if $DEVICE && [ -z "${DEVELOPMENT_TEAM:-}" ]; then
 fi
 if [ -z "$BUNDLE_ID" ]; then
   if $DEVICE; then
-    BUNDLE_ID="com.gen1recomp.t$(printf '%s' "$DEVELOPMENT_TEAM" | tr '[:upper:]' '[:lower:]')"
+    BUNDLE_ID="com.gen2recomp.t$(printf '%s' "$DEVELOPMENT_TEAM" | tr '[:upper:]' '[:lower:]')"
   else
-    BUNDLE_ID="com.theboisclub.pokemonred"
+    BUNDLE_ID="com.underdecodedhd.gen2recomped"
   fi
 fi
 
@@ -218,7 +218,7 @@ apply_ios_branding() {
 }
 
 apply_ios_icon() {
-  local source="$ROOT/assets/logo/gen1recomp_cover.png"
+  local source="$ROOT/assets/logo/gen2logo.png"
   local target="$XCODE_DIR/Images.xcassets/iOS AppIcon.appiconset"
   [ -f "$source" ] || fail "missing iOS icon source: $source"
   [ -d "$target" ] || fail "missing iOS app icon set: $target"
@@ -315,8 +315,6 @@ pack_game_love() {
   # it reappears every launch.  Mods install as .zips at runtime instead
   # (launcher -> MODS -> Import mod .zip), the same lifecycle as every
   # other platform.
-  # The launcher UI kit lives at src/ui/kit (inside src/, packed wholesale);
-  # the vendored libs/flexlove tree it replaced is gone.
   # shellcheck disable=SC2086  # MANIFESTS is a deliberate word list
   (cd "$ROOT" && zip -q -9 -r "$LOVE_FILE" \
     main.lua conf.lua src data assets tools/save-editor \
@@ -335,15 +333,10 @@ pack_game_love() {
   # in 0.1.45 through 0.1.47: decodeManifest (src/import/RomImporter.lua) errors
   # outright when a version's manifest is absent, so Import ROM on Yellow died
   # in the built app while dev, which reads the source tree, stayed green.
-  # src/ui/kit/Kit.lua is on the list for the same reason: the launcher's UI
-  # toolkit once lived outside src/ (libs/flexlove) and shipped missing from
-  # the mobile packagers, so the launcher threw before drawing its first
-  # frame.  The kit is inside src/ now; the gate stays to catch a repeat.
   archive_entries="$(unzip -Z1 "$LOVE_FILE")"
   # shellcheck disable=SC2086  # MANIFESTS is a deliberate word list
   for required in src/update/Boot.lua tools/save-editor/App.lua \
                   tools/save-editor/Kit.lua tools/save-editor/panels/Party.lua \
-                  src/ui/kit/Kit.lua \
                   $MANIFESTS; do
     printf '%s\n' "$archive_entries" | grep -qx "$required" \
       || fail "game.love is missing $required"
@@ -621,6 +614,7 @@ run_xcodebuild() {
     ONLY_ACTIVE_ARCH=NO
     DISABLE_MANUAL_TARGET_ORDER_BUILD_WARNING=YES
   )
+
   if ! $DEVICE; then
     # Simulator: ad-hoc signing (no certificate needed). A plain unsigned
     # build would drop the entitlements file, and HealthKit refuses to run
@@ -630,6 +624,9 @@ run_xcodebuild() {
   else
     warn "device build: configure signing in Xcode or set DEVELOPMENT_TEAM / CODE_SIGN_IDENTITY"
     if [ -n "${DEVELOPMENT_TEAM:-}" ]; then
+      # Automatic signing + provisioning updates lets xcodebuild register the
+      # bundle ID / create a development profile from the CLI, so a device
+      # build works without ever opening the project in Xcode.
       args+=(DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM"
              CODE_SIGN_STYLE=Automatic
              -allowProvisioningUpdates)
@@ -683,9 +680,8 @@ run_xcodebuild() {
   if [ ! -d "$app" ]; then
     # PRODUCT_NAME override can still leave love.app on older projects
     if [ -d "$products/love.app" ]; then
-      app="$products/$APP_NAME.app"
-      mv "$products/love.app" "$app"
-      warn "renamed love.app to $APP_NAME.app"
+      app="$products/love.app"
+      warn "built app is love.app (PRODUCT_NAME override not applied); fusing game.love anyway"
     else
       warn "xcodebuild finished but no .app under $products"
       find "$BUILD_DIR/Build/Products" -name '*.app' 2>/dev/null | head -20 || true
@@ -694,11 +690,7 @@ run_xcodebuild() {
   fi
 
   # Fuse even if the pbxproj wire-up failed,  LÖVE runs any bundled *.love.
-  # Byte-compare, never just existence: xcodebuild's incremental Copy Bundle
-  # Resources can leave a previous build's game.love in a surviving .app, and
-  # an existence check shipped that stale payload in the .ipa (today's Lua
-  # fixes present in ios/resources/ but absent from the installed app).
-  if ! cmp -s "$LOVE_FILE" "$app/game.love"; then
+  if [ ! -f "$app/game.love" ]; then
     say "fusing game.love into $(basename "$app")"
     cp "$LOVE_FILE" "$app/game.love"
   fi
@@ -728,7 +720,7 @@ run_xcodebuild() {
   fi
 }
 
-# Pack Payload/<app>.app into dist/ios/gen1recomp.ipa for release / sideload tools.
+# Pack Payload/<app>.app into dist/ios/gen2recomp.ipa for release / sideload tools.
 package_ipa() {
   local app="$1"
   local ipa="$DIST/$APP_NAME.ipa"

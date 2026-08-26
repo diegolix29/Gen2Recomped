@@ -131,7 +131,7 @@ function SaveData.gameFolders()
   local src = love.filesystem.getSource and love.filesystem.getSource()
   local sbd = love.filesystem.getSourceBaseDirectory
     and love.filesystem.getSourceBaseDirectory()
-  -- A packaged macOS build nests the game inside gen1recomp.app/Contents/
+  -- A packaged macOS build nests the game inside Gen2Recomped.app/Contents/
   -- Resources, so getSource()/getSourceBaseDirectory() point INSIDE the
   -- bundle -- not where the player drops portable.txt (next to the .app).
   -- Recover the folder containing the .app so a packaged app finds its
@@ -1369,6 +1369,15 @@ function SaveData.needsPostGameRescue(save)
   return type(hof) == "table" and #hof > 0
 end
 
+-- the boot config is shared data; a new save must never alias it
+local function copyItemMap(src)
+  local out = {}
+  for id, n in pairs(src) do
+    if type(id) == "string" and type(n) == "number" then out[id] = n end
+  end
+  return next(out) and out or nil
+end
+
 function SaveData.newGame(boot)
   boot = type(boot) == "table" and boot or {}
   local map = boot.startMap or "REDS_HOUSE_2F"
@@ -1395,7 +1404,15 @@ function SaveData.newGame(boot)
     -- Vanilla Gen1 seeds one Potion in the player's item PC
     -- (wBoxItems / players_pc.asm); existing saves keep whatever they
     -- already have -- this only applies to New Game.
-    pcItems = { POTION = 1 },
+    --
+    -- THE ID HAS TO BE THE DATASET'S OWN, not the literal "POTION".  Gen 2
+    -- imports name every item off the cartridge as ITEM_nnn, so a hardcoded
+    -- "POTION" here is an id no Gen 2 script ever gives -- and the bag is a
+    -- map keyed by id, so the PC's potion and the one Elm's aide hands over
+    -- landed in TWO SLOTS both reading "POTION".  bootConfig resolves the
+    -- right id against the loaded item table and passes it as boot.pcItems;
+    -- the Gen 1 literal stays as the fallback for a dataset-free caller.
+    pcItems = boot.pcItems and copyItemMap(boot.pcItems) or { POTION = 1 },
     party = {},
     box = {},
     money = boot.startMoney or 3000,
@@ -1417,8 +1434,36 @@ function SaveData.newGame(boot)
     -- player's audio/display/battle preferences.
     options = SaveData.loadOptions(),
   }
+  -- MAP SCENES THAT DO NOT START AT ZERO.
+  --
+  -- The Gen 2 script VM keeps scene ids in save.g2Scenes, and an absent key
+  -- reads as 0.  That is right for nearly every map, but the ROM's new-game
+  -- routine writes a few scene bytes directly -- Goldenrod City, Bellchime
+  -- Trail and the Battle Tower approach all open on scene 1 -- and a scene
+  -- sitting at 0 arms a cutscene the game considers already retired.
+  if type(boot.initialScenes) == "table" then
+    local scenes = {}
+    for mapId, value in pairs(boot.initialScenes) do
+      if type(mapId) == "string" and type(value) == "number" then
+        scenes[mapId] = value
+      end
+    end
+    if next(scenes) then save.g2Scenes = scenes end
+  end
   -- a total conversion reshapes the skeleton (spawn, party, money)
   -- before anything reads it; unhooked this returns save unchanged
+  --
+  -- `boot.noHooks` ASKS FOR THE SHAPE WITHOUT THE EVENT.
+  --
+  -- Not every caller of this is starting a playthrough. The map editor builds
+  -- one purely so its tab rail has counters to draw (tools/save-editor
+  -- App.lua, map mode) -- and firing `save.new_game` there told every
+  -- installed mod that a new game had begun, from inside a tool with no world
+  -- booted and nothing for a handler to reach. One that took the event at
+  -- face value took the editor down with it.
+  --
+  -- Callers that ARE starting a playthrough pass nothing and are unaffected.
+  if boot.noHooks then return save end
   return Runtime.call("save.new_game", function(s) return s end, save)
 end
 

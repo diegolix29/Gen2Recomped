@@ -1,3 +1,9 @@
+-- Copyright (c) 2026 Cedric. All rights reserved.
+-- Source-available under the Gen2Recomped License (see LICENSE.md): you may
+-- read, build and privately modify this file; you may not redistribute it or
+-- use it commercially. Cartridge-derived data is excluded and is not the
+-- copyright holder's to license.
+
 function love.conf(t)
   -- PhysFS ignores symlinks unless told otherwise, so a mod dev-linked into
   -- mods/ (ln -s, matching the mklink /J workflow on Windows) is invisible
@@ -17,23 +23,38 @@ function love.conf(t)
   _G.POKEPORT_EDITOR_MODE = editor
   _G.POKEPORT_DEV_MODE = developer
 
+  -- Save-directory identity.  This game and the Gen 1 port it grew out of
+  -- both shipped as "pokemon-love2d" and fought over one %APPDATA%/LOVE
+  -- folder, so the
+  -- desktop build owns "Gen2Recomp" and src/core/SaveIdentity.lua carries
+  -- existing players across on first boot.
+  --
+  -- Mobile deliberately keeps the old name.  Android's save directory is
+  -- getExternalFilesDir()-based and therefore package-scoped (see
+  -- mobile/ANDROID.md), so the two games cannot collide there in the first
+  -- place -- renaming would only orphan every installed player's saves and
+  -- ROM cache inside their own package folder.
+  local mobileOs = love._os == "Android" or love._os == "iOS"
+  local identity = os.getenv("POKEPORT_IDENTITY")
+    or (mobileOs and "pokemon-love2d" or "Gen2Recomp")
+
   if editor then
     -- Same identity as the game, deliberately: the editor edits the game's
     -- saves and reads the game's ROM cache, both of which live under this
     -- folder.  A private editor identity would point love.filesystem at an
     -- empty directory in a packaged build, so `--editor` could not find
     -- data/generated at all (SaveIO.defaultPath already assumed this name).
-    t.identity = os.getenv("POKEPORT_IDENTITY") or "pokemon-love2d"
+    t.identity = identity
     t.window.title = "Pokemon Save Editor"
     t.window.width = 1280
     t.window.height = 800
   else
-    t.identity = os.getenv("POKEPORT_IDENTITY") or "pokemon-love2d"
+    t.identity = identity
     -- Version.lua has zero requires, so it is loadable this early; fall
     -- back to the plain title if the source is not mounted yet
     local ok, Version = pcall(require, "src.core.Version")
     t.window.title = ok and Version.title()
-      or "gen1recomp"
+      or "gen2recomp"
     -- Open at the launcher's design size (the split-screen ROM selector is
     -- laid out for 1024x768). The window is resizable and the 160x144 game
     -- canvas letterboxes into whatever size it ends up, so this only sets the
@@ -58,7 +79,20 @@ function love.conf(t)
   -- engine before conf runs (LÖVE 11.x / 11.5).
   local osName = love._os
   local mobile = osName == "Android" or osName == "iOS"
-  if mobile then
+  local nx = osName == "NX"
+  if nx then
+    -- Switch (love-nx).  Handheld is 720p and docked is 1080p, and SDL only
+    -- follows the dock/undock transition when the window is resizable and NOT
+    -- exclusive fullscreen -- a fullscreen window keeps the boot mode and the
+    -- picture is wrong in whichever state you did not start in.  The 160x144
+    -- viewport letterboxes into either, so the size here is only a starting
+    -- point.
+    t.window.width = 1280
+    t.window.height = 720
+    t.window.fullscreen = false
+    t.window.resizable = true
+    t.window.highdpi = false
+  elseif mobile then
     -- resizable is what unlocks orientation.  SDL's Android backend, given no
     -- SDL_HINT_ORIENTATIONS (LÖVE sets none), calls setRequestedOrientation
     -- at window creation -- FULL_SENSOR when the window is resizable (rotates

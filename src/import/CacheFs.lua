@@ -366,24 +366,222 @@ end
 -- *prepended* so they win over any Red copy at the root and over the game
 -- source.  Called once at boot, before Game:load (main.lua).  Returns true
 -- when nothing was needed or the mount succeeded.
+-- A file every import writes, used to ask the read path a yes/no question:
+-- "is the active version's cache actually reachable un-prefixed right now?"
+local PROBE = "data/generated/constants.lua"
+
+local function overlayVisible()
+  return love.filesystem.getInfo(PROBE, "file") ~= nil
+end
+
+-- Mount the version's two generated trees at their UN-PREFIXED paths, in
+-- addition to mounting the version folder at "".
+--
+-- Ported from gen1recomp, whose Switch build works and which does both.  Its
+-- note on this reads "PhysFS directory non-merge (archive data/ vs save
+-- generated)": mounting gold/ at "" is not sufficient there, while a mount
+-- whose mount point IS data/generated is.  I could not reproduce the exact
+-- PhysFS rule that makes the difference, so treat the mechanism as unproven
+-- and the behaviour as measured: on love-nx, mounting only the version folder
+-- left the files unreachable and Play died with
+-- "could not overlay gold/ onto the read path" while gold/data/generated was
+-- sitting there populated.  Doing both is cheap and is what the working
+-- implementation does.
+local function mountGeneratedTrees(prefix)
+  if not (love.filesystem and love.filesystem.mount) then return false end
+  local mounted = false
+  local trees = {
+    { prefix .. "data/generated",   "data/generated" },
+    { prefix .. "assets/generated", "assets/generated" },
+  }
+  for _, item in ipairs(trees) do
+    local src, dest = item[1], item[2]
+    if love.filesystem.getInfo(src, "directory")
+        and love.filesystem.mount(src, dest, false) then
+      mounted = true
+    end
+  end
+  return mounted
+end
+
 function CacheFs.mountVersion(version)
   local prefix = require("src.core.GameVersion").cachePrefix(version)
   if prefix == "" then return true end            -- Red: already at the root
   local sub = prefix:gsub("/+$", "")              -- "blue/" / "yellow/" -> bare dir
+
+  -- Nothing to overlay: this version was never imported.  Say so plainly
+  -- rather than reporting a mount failure for a cache that does not exist.
+  if not love.filesystem.getInfo(sub .. "/" .. PROBE, "file") then
+    return false, "no imported cache at " .. sub .. "/"
+  end
+
   -- The cache root is the portable game folder when active, else LÖVE's OS
   -- save directory (where love.filesystem wrote blue/... or yellow/...).
   local base = CacheFs.root()
   if not base and love.filesystem.getSaveDirectory then
     base = love.filesystem.getSaveDirectory()
   end
-  if not base then return false end
-  if mountReadable(base .. SEP .. sub, false) then return true end
-  -- Fallback when FFI/PHYSFS_mount is unavailable: LÖVE can mount a folder
-  -- that lives in the save directory by name (prepended: appendToPath=false).
-  if love.filesystem.mount then
-    return love.filesystem.mount(sub, "", false)
+  if not base then return false, "no cache root" end
+
+  -- Three mechanisms, applied in order and then VERIFIED.  Verification
+  -- matters because the FFI path reports success from the C return value
+  -- alone, which is worthless where the symbol does not really resolve: on
+  -- the Switch (love-nx, statically linked, no dlopen) it can hand back a
+  -- non-zero value having mounted nothing.  Asking the read path whether the
+  -- file is now visible cannot be faked.
+
+  -- 1. Whole version folder at "", by save-dir-relative name.  No FFI, and
+  --    it is enough wherever PhysFS has no colliding data/ to shadow it.
+  if love.filesystem.mount and love.filesystem.getInfo(sub, "directory") then
+    love.filesystem.mount(sub, "", false)
   end
-  return false
+
+  -- 2. The same folder by absolute path, for a portable desktop install
+  --    whose cache root is not the save directory at all.
+  mountReadable(base .. SEP .. sub, false)
+
+  -- 3. The generated trees onto their un-prefixed paths.  This is the one
+  --    that works on console, and it is deliberately unconditional: 1 and 2
+  --    can each "succeed" and still leave the files shadowed.
+  mountGeneratedTrees(prefix)
+
+  if overlayVisible() then return true end
+
+  -- Last resort: stop needing a mount at all.
+  --
+  -- love-nx's PhysFS will not overlay a save-directory folder by any route
+  -- tried above, so on the Switch every non-Red game was unplayable -- the
+  -- files sat in crystal/data/generated and nothing could see them.  Rather
+  -- than keep guessing at mount flags, redirect the only two things that
+  -- ever read those paths: the module loader behind
+  -- require("data.generated.*"), and the image loaders behind
+  -- love.graphics.newImage("assets/generated/*").  Both go through
+  -- love.filesystem.read, which reaches the save directory with no mounting
+  -- whatsoever.
+  if CacheFs.installPrefixShim(prefix) and overlayVisible() then return true end
+
+  return false, "could not overlay " .. sub .. "/ onto the read path"
+end
+
+-- Which version prefix the shim currently redirects to; nil = shim inert.
+--
+-- This is a MUTABLE cell that the installed closures read at call time, not a
+-- value baked into them, and that distinction is the whole point.  The first
+-- version of this shim captured `prefix` as an upvalue and re-ran the whole
+-- installation whenever a different prefix arrived, which stacked a second set
+-- of love.filesystem wrappers over the first and pushed a second searcher in
+-- front of it -- each layer still pointing at the version before it.  Nothing
+-- ever removed a layer either, so opening the save editor on Gold, closing it
+-- and then pressing Play on Crystal left Gold's redirect in the chain: the
+-- probe found Gold's files, mountVersion reported success, and Crystal ran on
+-- Gold's species and map tables.
+local shimPrefix = nil
+-- Separate from shimPrefix so re-pointing never re-wraps: love.filesystem.read
+-- can only be wrapped once safely (a second wrap makes the first one's
+-- "unwrapped" reference a wrapper, and there is then no way back out).
+local shimInstalled = false
+
+-- Does `path` exist un-prefixed?  If not, does it exist under the active
+-- version prefix?  Only the second case is rewritten, so a file the game
+-- genuinely ships (assets/logo/...) is never touched.  Reads shimPrefix live,
+-- so clearing it makes every wrapper below a pass-through.
+local shimRealRead, shimRealGetInfo
+
+local function shimRedirect(path)
+  local prefix = shimPrefix
+  if not prefix or prefix == "" then return path end
+  if type(path) ~= "string" then return path end
+  if not (path:sub(1, 15) == "data/generated/"
+          or path:sub(1, 17) == "assets/generated/") then
+    return path
+  end
+  if shimRealGetInfo(path, "file") then return path end
+  local alt = prefix .. path
+  if shimRealGetInfo(alt, "file") then return alt end
+  return path
+end
+
+-- Redirect data/generated + assets/generated reads to <prefix>... .  Returns
+-- true when the shim is in place and the probe should be re-run.
+function CacheFs.installPrefixShim(prefix)
+  if prefix == "" then return false end
+  if shimInstalled then
+    -- Already wrapped: just re-point it.  Cheap, and it cannot stack.
+    shimPrefix = prefix
+    return true
+  end
+  shimPrefix = prefix
+  shimInstalled = true
+
+  local fs = love.filesystem
+  shimRealRead, shimRealGetInfo = fs.read, fs.getInfo
+  CacheFs._redirect = shimRedirect
+
+  -- 1. require("data.generated.constants").  LÖVE's own module searcher asks
+  --    PhysFS directly, so it cannot be reached by wrapping love.filesystem;
+  --    this searcher goes in front of it and reads the bytes itself.
+  local searchers = package.searchers or package.loaders
+  if searchers then
+    table.insert(searchers, 1, function(name)
+      -- Inert while no prefix is active, so an uninstalled shim cannot answer
+      -- for a version whose cache is mounted normally.
+      local prefix_ = shimPrefix
+      if not prefix_ or prefix_ == "" then return nil end
+      local leaf = name:match("^data%.generated%.(.+)$")
+      if not leaf then return nil end
+      local path = prefix_ .. "data/generated/" .. leaf:gsub("%.", "/") .. ".lua"
+      local data = shimRealRead(path)
+      if type(data) ~= "string" then
+        return "\n\tno file '" .. path .. "' (version cache shim)"
+      end
+      local chunk, err = loadstring and loadstring(data, "@" .. path)
+        or load(data, "@" .. path)
+      if not chunk then return "\n\t" .. tostring(err) end
+      return chunk
+    end)
+  end
+
+  -- 2. Everything that loads a generated asset by path.  Wrapped rather than
+  --    fixed at the call sites because there are dozens of those, spread
+  --    across the UI, the battle screen and the overworld.
+  fs.read = function(path, ...) return shimRealRead(shimRedirect(path), ...) end
+  fs.getInfo = function(path, ...) return shimRealGetInfo(shimRedirect(path), ...) end
+
+  local g = love.graphics
+  if g then
+    for _, name in ipairs({ "newImage", "newFont", "newImageFont" }) do
+      local real = g[name]
+      if type(real) == "function" then
+        g[name] = function(a, ...)
+          if type(a) == "string" then a = shimRedirect(a) end
+          return real(a, ...)
+        end
+      end
+    end
+  end
+  if love.image and type(love.image.newImageData) == "function" then
+    local real = love.image.newImageData
+    love.image.newImageData = function(a, ...)
+      if type(a) == "string" then a = shimRedirect(a) end
+      return real(a, ...)
+    end
+  end
+
+  return true
+end
+
+-- Make the shim inert.  The wrappers stay in place (unwrapping
+-- love.filesystem.read safely is not possible once anything else may have
+-- wrapped it in turn), but with no prefix they are pass-throughs, which is
+-- exactly what an unmounted version needs.
+function CacheFs.clearPrefixShim()
+  shimPrefix = nil
+end
+
+-- Which prefix the shim is currently serving, or nil.  Tests and callers that
+-- need to reason about read-path state use this instead of poking the local.
+function CacheFs.activePrefixShim()
+  return shimPrefix
 end
 
 -- Undo mountVersion.  A process normally mounts exactly one version and then
@@ -405,6 +603,14 @@ function CacheFs.unmountVersion(version)
     base = love.filesystem.getSaveDirectory()
   end
   local done = false
+  -- The read-path redirect is part of "this version is mounted" and has to
+  -- come down with the mounts.  Leaving it up is the same silent-wrong-data
+  -- failure the mount unwinding below exists to prevent, except it survives
+  -- every unmount call because it is not a mount at all.
+  if shimPrefix == prefix then
+    CacheFs.clearPrefixShim()
+    done = true
+  end
   local fn = resolveUnmount()
   if fn and base then
     done = fn(base .. SEP .. sub) or done
@@ -413,6 +619,12 @@ function CacheFs.unmountVersion(version)
   -- under its bare name rather than its absolute path
   if love.filesystem.unmount then
     done = love.filesystem.unmount(sub) or done
+    -- ...and the two generated trees mountVersion overlays onto the
+    -- un-prefixed paths.  Leaving these mounted is worse than leaving the
+    -- folder mount: they sit directly on data/generated and assets/generated,
+    -- so the next version to boot would silently read this one's files.
+    done = love.filesystem.unmount(prefix .. "data/generated") or done
+    done = love.filesystem.unmount(prefix .. "assets/generated") or done
   end
   return done
 end

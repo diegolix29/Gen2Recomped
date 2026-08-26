@@ -1,3 +1,9 @@
+-- Copyright (c) 2026 Cedric. All rights reserved.
+-- Source-available under the Gen2Recomped License (see LICENSE.md): you may
+-- read, build and privately modify this file; you may not redistribute it or
+-- use it commercially. Cartridge-derived data is excluded and is not the
+-- copyright holder's to license.
+
 -- The overworld state: renders the current map (plus connected map
 -- strips), runs the player, NPCs, warps, connections, encounters, ledges,
 -- surfing, Cut trees, trainer sight lines, and dispatches interactions to
@@ -129,31 +135,122 @@ OverworldState.objectToggleKey = objectToggleKey
 -- MAPOBJECT_TIMEOFDAY bits, matching the ROM's MORN/DAY/NITE order.
 local TOD_BITS = { MORNING = 1, MORN = 1, DAY = 2, NIGHT = 4, NITE = 4 }
 
+-- THE PERIODS ARE THE CARTRIDGE'S, NOT GEN 2's.
+--
+-- Gold and Crystal have three, and TOD_BITS above is them. Polished Crystal
+-- has FOUR: MORN $01 from 05:00, DAY $02 from 09:00, EVE $08 from 17:00 and
+-- NITE $04 from 21:00. The extra period is NOT appended past NITE -- it is
+-- bit $08 wedged between DAY and NITE on the clock while NITE keeps $04 --
+-- so neither the bit nor the boundary can be guessed from the count.
+--
+-- With the three baked in, every object whose MAPOBJECT_TIMEOFDAY byte is
+-- $08 was masked at every hour of the day (floor(8/1), floor(8/2) and
+-- floor(8/4) are all even), and the DAY rows stayed up through the evening.
+-- field.timeOfDay is read out of the ROM by the importer; absent -- a Gold,
+-- Crystal or Gen 1 import -- the Gen 2 default below is unchanged.
+local GEN2_DEFAULT_PERIODS = {
+  { startHour = 4,  bit = 1, name = "MORNING" },
+  { startHour = 10, bit = 2, name = "DAY" },
+  { startHour = 18, bit = 4, name = "NITE" },
+}
+
+local function todPeriods()
+  local field = Game and Game.data and Game.data.field
+  local periods = field and field.timeOfDay
+  if type(periods) == "table" and #periods > 0 then return periods end
+  return GEN2_DEFAULT_PERIODS
+end
+
+-- The period covering `hour`, walking the list in clock order. The last entry
+-- wraps past midnight, which is why an hour before the FIRST start belongs to
+-- it and not to the first.
+local function todPeriodAt(hour)
+  local periods = todPeriods()
+  local found = periods[#periods]
+  for _, period in ipairs(periods) do
+    if hour >= (tonumber(period.startHour) or 0) then found = period end
+  end
+  if hour < (tonumber(periods[1].startHour) or 0) then
+    found = periods[#periods]
+  end
+  return found
+end
+
+-- The period the CURRENTLY LOADED map's objects were filtered against.
+--
+-- LoadObjectMasks (09:$454F) walks wMapObjects once, calling GetObjectTimeMask
+-- on each, and it has exactly ONE caller in the whole ROM: LoadMapObjects
+-- (05:$54DD).  So the time-of-day mask is evaluated at MAP LOAD and never
+-- again -- an NPC you can see does not vanish because the clock rolled over
+-- while you were standing there; the set changes the next time you walk in.
+--
+-- Reading the live clock (or self.tod, which the draw pass refreshes) here
+-- broke that.  setMap spawns against the period at load; the clock then moves
+-- on its own; and the next thing to re-run this filter -- syncObjectVisibility,
+-- which fires whenever a Gen2 script finishes, i.e. the after-battle script of
+-- the trainer you just beat -- culled every NPC whose MAPOBJECT_TIMEOFDAY byte
+-- had gone out of period.  That is the "NPCs are sometimes invisible after I
+-- defeat a trainer" report: the trainer is a coincidence, the clock is the
+-- cause, and the NPCs that went were the time-gated ones.
+--
+-- self.tod is also nil for the whole boot/continue spawn pass (it is only ever
+-- assigned inside timeOfDay(), which enter() reaches after setMap), so a save
+-- continued at night used to come up with the DAY set on its first map.
+local function objectTimeOfDay()
+  local ow = Game and Game.overworld
+  return (ow and (ow.objectTod or ow.tod)) or "DAY"
+end
+
+-- The MAPOBJECT_TIMEOFDAY bit for the period the map's objects were frozen
+-- against.  This is taken from the HOUR, not from the period NAME: the name
+-- is what the palette and encounter tables key off and they only know Gen 2's
+-- three, so routing the object filter through it would have thrown the fourth
+-- period away again on the way past.
+local function objectTodBit()
+  local ow = Game and Game.overworld
+  local bit = ow and tonumber(ow.objectTodBit)
+  if bit then return bit end
+  local period = todPeriodAt(tonumber(os.date("%H")) or 12)
+  if period and tonumber(period.bit) then return tonumber(period.bit) end
+  return TOD_BITS[objectTimeOfDay()] or TOD_BITS.DAY
+end
+
 local function objectInTimeOfDay(obj)
   if not obj.timeOfDay then return true end
-  local tod = Game and Game.overworld and Game.overworld.tod or "DAY"
-  local bit = TOD_BITS[tod] or TOD_BITS.DAY
-  return math.floor(obj.timeOfDay / bit) % 2 == 1
+  return math.floor(obj.timeOfDay / objectTodBit()) % 2 == 1
 end
 
 local function objectVisible(save, mapId, obj)
   local toggles = save.objectToggles and save.objectToggles[mapId] or {}
   local toggleKey = objectToggleKey(obj)
+  -- constants/event_flags.asm, "Sprite visibility flags": when the event is
+  -- cleared the sprite is visible, when set it is hidden.  obj.hidden already
+  -- carries InitializeEventsScript's opening state, so it is the whole answer
+  -- until a script toggles the flag.  (A Gen2-only override used to force every
+  -- in-bounds hidden object visible, to paper over an extractor that stopped
+  -- reading `setevent`s at the `variablesprite` block; that read is fixed, and
+  -- the override was what kept the DAY-CARE MAN OUTSIDE standing at the fence
+  -- with no EGG to hand over.)
   local visible = not obj.hidden
-  if GameVersion.isGen2() and obj.hidden
-      and obj.name == nil and obj.item == nil and obj.pokemon == nil then
-    -- Show objects within this map's bounds; works for both canonical IDs and aliases.
-    local mapDef = Game and Game.data and Game.data.maps and Game.data.maps[mapId]
-    local wc = mapDef and mapDef.width  and mapDef.width  * 2 or 0
-    local hc = mapDef and mapDef.height and mapDef.height * 2 or 0
-    if wc > 0 and hc > 0
-        and obj.x >= 0 and obj.y >= 0
-        and obj.x < wc and obj.y < hc then
-      visible = true
-    end
-  end
   if toggleKey and toggles[toggleKey] ~= nil then
     visible = toggles[toggleKey]
+  end
+  -- Gen2's `disappear`/`appear` last only as long as the map is loaded.  They
+  -- write the object struct, and every map load rebuilds those structs from
+  -- the map's own object_events -- so an object with no event flag is back the
+  -- next time you walk in.  A script that means "gone for good" pairs the
+  -- disappear with a `setevent` on the object's OWN flag, which is the branch
+  -- below.
+  --
+  -- Recording them in save.objectToggles instead made every one permanent.
+  -- Script_WalkToBattleTowerElevator is `follow 2, 0 / applymovement 2 /
+  -- disappear 2` -- the Battle Tower receptionist walking you into the lift --
+  -- and she has no event flag, so once she had shown you in she was gone from
+  -- the lobby desk for the rest of the save.
+  local session = save.g2ObjectToggles
+  if toggleKey and type(session) == "table" and session.mapId == mapId
+     and session[toggleKey] ~= nil then
+    visible = session[toggleKey]
   end
   -- Gen2 object_events carry an event flag; the ROM hides the object while
   -- that flag is set (the Elm's Lab officer, the Cherrygrove rival, ...).
@@ -263,6 +360,22 @@ end
 function OverworldState:enter(mapId, x, y, facing)
   Game = require("src.core.Game")
   Game.overworld = self
+  -- The live overworld under BOTH names, and a back-reference to the Game.
+  --
+  -- `Game.world` is not a second concept: it is `Game.overworld`, published
+  -- under the name Gen1Recomp used and every mod written against that engine
+  -- reads.  STADIUM2_OVERWORLD_MODELS decides whether it is even on the
+  -- Stadium rung with `if V.game and V.game.world and ... then return "A" end`
+  -- (lib/Stadium.lua, Stadium.mode) -- so with the field absent it answered
+  -- "no rung", Stadium.begin declined, and the in-world 3D battle rendered a
+  -- perfect empty stage: 217 frames, no errors, and no Pokemon on it.
+  --
+  -- `self.game` closes the loop the other way.  The mod's colour atlas reaches
+  -- the palette data as `world.game.data...`, and its follower bridge and
+  -- compose bridge both walk `world.game` too.  Set here rather than at
+  -- construction because this is where the state learns which Game owns it.
+  Game.world = self
+  self.game = Game
   Collision.load(Game.data) -- tile-pair (elevation) collisions
   Encounter.load(Game.data) -- constants.encounterBuckets
   mapScripts = require("data.scripts.init")
@@ -287,6 +400,12 @@ function OverworldState:enter(mapId, x, y, facing)
   -- boot/load: derive the flag from the tile the save left us standing on,
   -- like MapEntryAfterBattle's IsPlayerStandingOnWarp, so a game saved on a
   -- door mat can still walk straight back out (issue #378)
+  -- Gen2 daily resets also run here so a continued save whose calendar day
+  -- already advanced while the game was closed still clears Kurt / trees /
+  -- lottery on the first frame in the overworld.
+  if GameVersion.isGen2() and Game.save then
+    require("src.script.Gen2Daily").poll(Game.save)
+  end
   self:refreshStandingOnWarp()
 end
 
@@ -359,12 +478,25 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
     self.tileAnimOverride.tileset.animation = self.tileAnimOverride.animation
     self.tileAnimOverride = nil
   end
-  -- ADVANCED bakes colour into the tileset atlas, so the dark-cave shift has
-  -- to be armed before that atlas is built for this map (#383); self.dark is
-  -- settled below, once the map record is in hand.
+  -- Every mode that shows hardware colour bakes it into the tileset atlas --
+  -- ADVANCED on Gen 1, and ALL of them on Gen 2, which picks the tileset's
+  -- DARKNESS palette row off darkWorld -- so the dark-cave shift has to be
+  -- armed before that atlas is built for this map (#383); self.dark is settled
+  -- below, once the map record is in hand.
   if PaletteFX.setDarkWorld(isDarkMap(mapId) and not Game.save.flashLit)
-     and PaletteFX.usesGbcPack() then
+     and PaletteFX.bakesDarkness() then
     MapLoader.invalidateAll()
+  end
+  -- The map's own PALETTE_* override (map header byte 7, low nibble).  It has
+  -- to be armed here for the same reason darkWorld does -- the time-of-day row
+  -- is baked into the tileset atlas -- and it is what stops every indoor map
+  -- and the Ruins of Alph chambers taking the NITE row after 6pm.
+  if GameVersion.isGen2() then
+    local paletteDef = Game.data.maps[mapId]
+    if PaletteFX.setGen2MapPalette(paletteDef and paletteDef.mapPalette or 0)
+       and PaletteFX.usesGen2BgPal() then
+      MapLoader.invalidateAll()
+    end
   end
   self.map = MapLoader.load(Game.data, mapId)
   -- Every block change is re-derived from the map's callbacks on each load
@@ -397,13 +529,70 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
   if Game.save.onBike and not self:bikeAllowed(mapId) then
     Game.save.onBike = false
   end
-  -- the Route 16/18 gate map scripts clear the Cycling Road's
-  -- BIT_ALWAYS_ON_BIKE every frame (scripts/Route16Gate1F.asm /
-  -- Route18Gate1F.asm `res BIT_ALWAYS_ON_BIKE`); entering the gate is
-  -- the walking exit from the forced-bike stretch
-  for _, m in ipairs(FieldDefaults.fieldValue(Game.data, "forcedMovement",
-                                              "clearMaps") or {}) do
-    if m == mapId then Game.save.forcedBike = nil break end
+  -- THE TWO GENERATIONS CLEAR THE CYCLING ROAD IN COMPLETELY DIFFERENT WAYS,
+  -- and treating Gen 2 like Gen 1 is why the bike would not come off.
+  --
+  -- GEN 1 keeps BIT_ALWAYS_ON_BIKE in a bit that SURVIVES a map change; it is
+  -- armed by the forced-bike TILE at the top of the road and cleared by the
+  -- gate maps' own scripts (scripts/Route16Gate1F.asm / Route18Gate1F.asm
+  -- `res BIT_ALWAYS_ON_BIKE`). Naming those maps is the whole mechanism, so
+  -- the list below is still exactly right there.
+  --
+  -- GEN 2 DOES NOT WORK LIKE THAT AT ALL. Both flags live in wBikeFlags, which
+  -- is RAM, and HandleNewMap wipes it on EVERY new map before any of that
+  -- map's callbacks get to speak (engine/overworld/warp_connection.asm):
+  --
+  --     HandleNewMap:
+  --         call ClearUnusedMapBuffer
+  --         call ResetMapBufferEventFlags
+  --         call ResetFlashIfOutOfCave
+  --         call GetCurrentMapSceneID
+  --         call ResetBikeFlags          <-- here
+  --         ld a, MAPCALLBACK_NEWMAP
+  --         call RunMapCallback
+  --
+  -- The Cycling Road is then re-armed from scratch every single load, by the
+  -- only two maps that ask for it:
+  --
+  --     Route17AlwaysOnBikeCallback:     setflag ENGINE_ALWAYS_ON_BIKE
+  --                                      setflag ENGINE_DOWNHILL
+  --     Route16AlwaysOnBikeCallback:     readvar VAR_YCOORD / ifless 5, .CanWalk
+  --                                      readvar VAR_XCOORD / ifgreater 13, .CanWalk
+  --                                      setflag ENGINE_ALWAYS_ON_BIKE
+  --                        .CanWalk:     clearflag ENGINE_ALWAYS_ON_BIKE
+  --
+  -- Nothing else in the game clears either one -- not the gates, not Route 18,
+  -- not Route 16 for DOWNHILL. It does not have to: the reset above already
+  -- did it. THIS PORT HAD NO SUCH RESET. It stores those two flags in
+  -- `save.flags`, which is persistent AND serialised to disk, and the only
+  -- thing that ever cleared them was this list of four gate maps. So the first
+  -- load of Route 17 set them, and from then on every map in the game loaded
+  -- with ALWAYS_ON_BIKE and DOWNHILL still set: the bike was forced back on
+  -- through every door, and the downhill pull dragged the player south on maps
+  -- that have no slope -- exactly as reported, and it survived saving and
+  -- reloading too.
+  --
+  -- An internal reload is NOT a new map, and neither is it on the cartridge:
+  -- a refresh runs HandleContinueMap, which skips ResetBikeFlags entirely.
+  -- Wiping the flags on a palette or time-of-day rebuild would put the player
+  -- on foot in the middle of the Cycling Road.
+  if GameVersion.isGen2() then
+    if not (opts and opts.via == "reload") then
+      self:clearBikeFlags()
+    end
+  else
+    -- ...and an EMPTY imported list is not an answer, it is a gap.  The Gen 2
+    -- extractor writes `clearMaps = {}` unconditionally, and fieldValue returns
+    -- any non-nil data value rather than falling back, so read the defaults
+    -- when the import left nothing behind.
+    local clearMaps = FieldDefaults.fieldValue(Game.data, "forcedMovement",
+                                               "clearMaps")
+    if type(clearMaps) ~= "table" or #clearMaps == 0 then
+      clearMaps = FieldDefaults.FIELD.forcedMovement.clearMaps
+    end
+    for _, m in ipairs(clearMaps or {}) do
+      if m == mapId then self:clearBikeFlags() break end
+    end
   end
   -- leaving the Safari Zone maps ends any running Safari game
   if Game.save.safari and not Map.inRegion(self.map.def, "SAFARI", "SAFARI_ZONE") then
@@ -438,8 +627,41 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
   -- .loadSpriteData).
   if not (opts and opts.seamless and self.npcPool) then
     self.npcPool = {}
+    -- LoadMapObjects re-reads every object_event from ROM, so a `moveobject`
+    -- from the last visit does not survive the reload
+    self.npcPlacement = nil
+    self.npcResumeCell = nil
   end
   self.npcs = {}
+  -- LoadMapObjects is where the ROM evaluates the time-of-day mask, and the
+  -- only place it does (LoadObjectMasks has one caller) -- so pin the period
+  -- here and let every later filter run answer to THIS value rather than to
+  -- the clock, which keeps moving.  See objectInTimeOfDay.
+  --
+  -- Read from the clock rather than self.tod: on the boot/continue path
+  -- timeOfDay() has not run yet and self.tod is still nil.
+  local clock = GameVersion.isGen2() and OverworldState.clockTimeOfDay or nil
+  self.objectTod = (clock and clock()) or self.tod or "DAY"
+  -- ...and the BIT beside it, for the same reason the name is frozen here:
+  -- the mask is evaluated once per map load and must not follow the clock
+  -- while you are standing on the map.
+  self.objectTodBit = OverworldState.clockTimeOfDayBit()
+  -- Gen2's `disappear`/`appear` write the object struct, and LoadMapObjects
+  -- rebuilds every struct from the map's own object_events -- so a `disappear`
+  -- that was not paired with a `setevent` is undone by walking back in.  The
+  -- scratch table is keyed by the map it was written on, which made it inert
+  -- while you were away and live again the moment you returned: an NPC a
+  -- script had walked off stayed gone for the rest of the save.  An internal
+  -- reload (a palette/tod atlas rebuild, a `refreshmap`) is not a map load and
+  -- must not undo one.
+  if not (opts and opts.via == "reload") then
+    Game.save.g2ObjectToggles = nil
+  end
+  -- MAPCALLBACK_OBJECTS: ROUTE_34 and DAY_CARE both re-derive their day-care
+  -- sprite events from the engine flags every time the map is set up
+  if GameVersion.isGen2() and (mapId == "ROUTE_34" or mapId == "DAY_CARE") then
+    require("src.pokemon.DayCare").syncObjects(Game.data, Game.save)
+  end
   for _, obj in ipairs(self.map.def.objects or {}) do
     if objectVisible(Game.save, mapId, obj) then
       local npc = pooledNPC(self.npcPool, Game.data, mapId, obj)
@@ -493,8 +715,9 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
   -- crossConnection re-arms this after setMap; clear so a warp/reload
   -- cannot leave a stale deferred PlayMapMusic pending
   self.pendingSeamMusic = nil
-  self.entities = { self.player }
-  for _, n in ipairs(self.npcs) do table.insert(self.entities, n) end
+  -- a fresh map owns no leftover extras: start from nothing, then derive
+  self.entities = nil
+  self:rebuildEntities()
   -- Yellow's companion Pikachu trails the player (never in
   -- self.entities: it does not block movement, pikachu_follow.asm)
   require("src.world.PikachuFollower").onMapEntered(Game, self, opts)
@@ -537,6 +760,16 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
           or (fromMapId and "warp" or "boot"),
   })
 
+  -- UpdateRoamMons: hop Raikou/Entei/Suicune when the player changes maps
+  -- (only after Burned Tower release sets g2RoamReleased).
+  if GameVersion.isGen2() and Game and Game.save then
+    pcall(function()
+      require("src.script.Gen2Commands").g2_update_roam_positions({
+        save = Game.save, game = Game,
+      })
+    end)
+  end
+
   -- map-enter hooks (hand-ported map scripts, e.g. Victory Road barriers).
   -- fromMapId lets elevators seed a valid walk-out floor when the ROM
   -- car warps still point at a missing map (Silph's UNUSED_MAP_ED) and
@@ -545,6 +778,14 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
   if hooks and hooks.onEnter then
     hooks.onEnter(Game, self, fromMapId)
   end
+  -- CheckUpdatePlayerSprite's .CheckForcedBiking (engine/overworld/map_setup.asm):
+  -- with BIKEFLAGS_ALWAYS_ON_BIKE set, wPlayerState is forced to PLAYER_BIKE.
+  -- Gen2 arms that flag from the map's own MAPCALLBACK_NEWMAP -- Route 17
+  -- unconditionally, Route 16 only on the stretch past (13,5) -- so this has
+  -- to run AFTER the callbacks, which is exactly where the ROM runs it
+  -- (LoadMapObjects fires the callback; CheckUpdatePlayerSprite comes later
+  -- in the same map-setup script).  Without it the Cycling Road let you walk.
+  self:applyForcedBike()
 
   self:rebuildNeighbors()
   self:updateMapNameSign()
@@ -598,19 +839,54 @@ end
 -- constructed up front (see TileRenderer) -- so there is no build cost to
 -- amortize and no prefetch race to lose at a seam.  That is what the old
 -- one-per-frame streaming queue existed to hide, and it is gone.
+-- How far out from the player the neighbour set has to reach, in world
+-- pixels, as a HALF-EXTENT either side.
+--
+-- The flat view answers this for itself: half the visible world plus a tile
+-- row of slack is exactly what a 160x144 screen can show past its own edge.
+-- A 3D renderer cannot use that answer. A diorama camera pulled back over a
+-- route sees several screens in every direction, and what is not in
+-- `self.neighbors` is not merely undrawn -- it was never loaded, so the
+-- renderer has no map there to mesh and falls back to its own border-block
+-- apron. That is the wall of border tiles fencing in a route, and the
+-- neighbour that only appears once you have crossed the seam: the set is
+-- rebuilt around the new map on arrival, which is the first moment it
+-- contains anything you were already looking at.
+--
+-- So a renderer that sees further says so, by setting `neighborReachW` /
+-- `neighborReachH` on the world -- the same shape as `viewW`/`viewH`, and
+-- for the same reason: the engine cannot infer another renderer's frustum,
+-- and guessing a generous default would load half of Johto for the flat game
+-- that never asked. Unset is today's behaviour exactly.
+--
+-- Widening this is not free -- every neighbour is a loaded Map and a spawned
+-- ghost cast -- which is why it is a request from the thing doing the drawing
+-- rather than a constant here.
+function OverworldState:neighborReach()
+  local vw, vh = Game.renderer:worldViewSize()
+  local rw = math.floor(vw / 2) + 64
+  local rh = math.floor(vh / 2) + 64
+  local wantW = tonumber(self.neighborReachW)
+  local wantH = tonumber(self.neighborReachH)
+  if wantW and wantW > rw then rw = math.floor(wantW) end
+  if wantH and wantH > rh then rh = math.floor(wantH) end
+  return rw, rh, vw, vh
+end
+
 function OverworldState:rebuildNeighbors()
   local mapId = self.map.id
   self.neighbors = {}
   local hops = FieldDefaults.world(Game.data, "neighborHops") or NEIGHBOR_HOPS
-  local vw, vh = Game.renderer:worldViewSize()
+  local reachW, reachH, vw, vh = self:neighborReach()
   self.neighborViewW, self.neighborViewH = vw, vh
+  -- what the set was actually built for, so the update tick below can notice
+  -- a renderer asking for more without re-deriving it
+  self.neighborReachBuiltW, self.neighborReachBuiltH = reachW, reachH
   -- resident set the eviction pass must never touch: the current map plus
   -- every drawn neighbor
   local keep = { [mapId] = true }
   for _, n in ipairs(OverworldState.computeNeighbors(Game.data.maps, mapId,
-                                                     hops,
-                                                     math.floor(vw / 2) + 64,
-                                                     math.floor(vh / 2) + 64)) do
+                                                     hops, reachW, reachH)) do
     keep[n.id] = true
     local m = MapLoader.load(Game.data, n.id)
     table.insert(self.neighbors, { map = m, ox = n.ox, oy = n.oy })
@@ -671,10 +947,35 @@ local function clockTimeOfDay()
   if hour < 18 then return "DAY" end
   return "NITE"
 end
+-- Exposed on the module: the object filter is defined ABOVE this local and so
+-- cannot see it, and both it and setMap need the raw clock rather than the
+-- cached self.tod (see objectInTimeOfDay / the objectTod freeze in setMap).
+OverworldState.clockTimeOfDay = clockTimeOfDay
+
+-- The cartridge's MAPOBJECT_TIMEOFDAY bit for the hour on the clock right now.
+function OverworldState.clockTimeOfDayBit()
+  local period = todPeriodAt(tonumber(os.date("%H")) or 12)
+  return (period and tonumber(period.bit)) or TOD_BITS.DAY
+end
 
 -- world.tod default: the Gen 2 clock, or always DAY on Gen 1.  A mod returns
 -- "NIGHT", "MORNING", etc.; the result is cached on the overworld and handed
 -- to map.palette as ctx.tod so palette swaps can key off the period.
+-- Gen2 BG palettes are picked per time of day (EnvironmentColorsPointers), and
+-- TileRenderer bakes the chosen row into the tileset atlas -- so the clock
+-- rolling from DAY into NITE has to drop those atlases and rebuild the visible
+-- map, the same way a COLORS change does.  No-op on Gen 1, and in the COLORS
+-- modes that do not use the ROM's palettes at all.
+function OverworldState:syncGen2Tod(tod)
+  local PaletteFX = require("src.render.PaletteFX")
+  if not PaletteFX.setGen2Tod(tod) then return end
+  if not (GameVersion.isGen2() and PaletteFX.usesGen2BgPal()) then return end
+  pcall(function()
+    MapLoader.invalidateAll()
+    if self.map and self.reloadMap then self:reloadMap(self.map.id, "tod") end
+  end)
+end
+
 function OverworldState:timeOfDay()
   local tod = GameVersion.isGen2() and clockTimeOfDay() or (self.tod or "DAY")
   if not Runtime.wantsHook("world.tod") then
@@ -686,6 +987,7 @@ function OverworldState:timeOfDay()
           { tod = tod, previous = previous, mapId = self.map and self.map.id })
       end
     end
+    self:syncGen2Tod(tod)
     return tod
   end
   local map = self.map
@@ -707,6 +1009,7 @@ function OverworldState:timeOfDay()
   else
     self.tod = nextTod
   end
+  self:syncGen2Tod(self.tod)
   return self.tod
 end
 
@@ -801,14 +1104,20 @@ end
 
 -- wMapPalOffset, the one piece of state both halves of the darkness read:
 -- drawWorld arms PaletteFX.DARK_BGP off self.dark for the shade-remapped
--- modes, and PaletteFX.setDarkWorld feeds the bakes ADVANCED does instead of
--- shading (tileset atlas, sprite sheets) plus their cache keys.  A bake cannot
--- be re-shaded in place, so a change there rebuilds every resident map --
--- every dark floor, not just this one, since FLASH lights them all (#383).
+-- modes, and PaletteFX.setDarkWorld feeds the bakes the hardware-colour modes
+-- do instead of shading (tileset atlas, sprite sheets) plus their cache keys.
+-- A bake cannot be re-shaded in place, so a change there rebuilds every
+-- resident map -- every dark floor, not just this one, since FLASH lights them
+-- all (#383).
+--
+-- PaletteFX.bakesDarkness, not usesGbcPack: a Gen 2 game bakes the DARKNESS
+-- palette row into its atlas in EVERY hardware-colour mode, so asking only
+-- about ADVANCED left FLASH doing nothing whatsoever under SGB -- the default
+-- -- because the atlas on screen still had the darkness baked into it.
 function OverworldState:setDark(on)
   on = on and true or false
   self.dark = on
-  if PaletteFX.setDarkWorld(on) and PaletteFX.usesGbcPack() and self.map then
+  if PaletteFX.setDarkWorld(on) and PaletteFX.bakesDarkness() and self.map then
     MapLoader.invalidateAll()
     self:reloadMap(self.map.id, "dark")
   end
@@ -867,30 +1176,59 @@ end
 
 -- Start a battle behind the into-battle transition: flash, then the
 -- wipe picked by trainer/level/dungeon (GetBattleTransitionID).
-function OverworldState:pushBattle(battle)
+-- The entry wipe, as its own overridable step.
+--
+-- Split out of pushBattle so a mod can WRAP the transition without having to
+-- reimplement everything around it.  That is not hypothetical: a mod that
+-- fights on the live 3D map has to suppress the wipe, because the wipe exists
+-- to hide the world being replaced and there the world is the thing it is
+-- there to show.  STADIUM2_OVERWORLD_MODELS wraps exactly this name and
+-- signature (lib/OverworldBattle.lua) -- with no such method the hook never
+-- installed, its in-world battle never began, and the fight fell back to the
+-- flat scene with nothing logged.
+--
+-- Returns true when a transition was pushed.  **false means "no wipe -- push
+-- the battle yourself"**, which is what a wrapper returns when it has taken
+-- responsibility for the presentation.  `onDone` overrides what happens when
+-- the wipe finishes; by default that is pushing the battle.
+function OverworldState:pushBattleTransition(battle, opts, onDone)
   local BattleTransition = require("src.render.BattleTransition")
   local lead
   for _, mon in ipairs(Game.save.party) do
     if mon.hp > 0 then lead = mon break end
   end
-  local enemyLevel = battle.enemy and battle.enemy.mon and battle.enemy.mon.level or 0
-  -- the battle theme starts with the wipe, not after it
-  -- (audio/play_battle_music.asm runs before the transition)
-  if battle.computeMusicKind then
-    require("src.core.Music").playBattle(Game.data, battle:computeMusicKind())
-  end
-
+  local enemyLevel = battle and battle.enemy and battle.enemy.mon
+    and battle.enemy.mon.level or 0
   -- The fade back in from white on the way out is BattleState:finish()'s
   -- job now -- the one choke point every battle passes through on exit,
   -- guaranteed regardless of which caller pushed the battle -- so this
   -- function only owns the entry wipe.
-  Game.stack:push(BattleTransition.new(Game, function()
+  Game.stack:push(BattleTransition.new(Game, onDone or function()
     Game.stack:push(battle)
   end, {
-    trainer = battle.kind == "trainer",
+    trainer = battle and battle.kind == "trainer",
     stronger = lead ~= nil and enemyLevel >= lead.level + 3,
     dungeon = self:isDungeonTransitionMap(),
+    tutorial = opts and opts.tutorial or nil,
+    contest = opts and opts.contest or nil,
+    safari = opts and opts.safari or nil,
   }))
+  return true
+end
+
+function OverworldState:pushBattle(battle, opts)
+  -- the battle theme starts with the wipe, not after it
+  -- (audio/play_battle_music.asm runs before the transition), and it plays
+  -- whether or not anything took the transition over
+  if battle and battle.computeMusicKind then
+    require("src.core.Music").playBattle(Game.data, battle:computeMusicKind())
+  end
+  if self:pushBattleTransition(battle, opts) == false then
+    -- something is presenting this fight itself and skipped the wipe; the
+    -- battle still has to go on the stack, or the player is left standing in
+    -- the overworld with the battle music playing
+    Game.stack:push(battle)
+  end
 end
 
 -- -------------------------------------------------------------------------
@@ -920,8 +1258,26 @@ end
 
 function OverworldState:drainPendingScripts()
   local queue = self.pendingScripts
+  -- `not self.player.moving` matters as much as the other three.  On the frame
+  -- a warp transition finishes, `transitioning` is cleared by the transition's
+  -- own completion callback -- which runs LATER in update() than this drain --
+  -- so the first frame this could fire is the frame AFTER handleInput has
+  -- already had a turn.  A player walking in with UP held therefore got one
+  -- free step before the map's scene script started, and the scripted walk
+  -- then ran from a cell one tile further on.
+  --
+  -- Elm's Lab is where that shows: ElmsLabMeetElmScene is `sdefer
+  -- ElmsLabWalkUpToElmScript`, and Crystal's ElmsLab_WalkUpToElmMovement is
+  -- exactly 7 steps up from the door at (4,11) to (4,4), where the callback has
+  -- put ELM at (3,4).  With the free step it was 8, and the player finished one
+  -- tile NORTH of Elm facing an empty wall.
+  --
+  -- The cartridge cannot do this: RunSceneScript (engine/overworld/events.asm)
+  -- runs the scene script and its deferred target during map setup, before
+  -- JoypadOverworld is polled even once.
   if queue and queue[1] and not self.transitioning
-     and not self.runner:isRunning() and #self.scriptMoves == 0 then
+     and not self.runner:isRunning() and #self.scriptMoves == 0
+     and not (self.player and self.player.moving) then
     local pending = table.remove(queue, 1)
     self.runner:run(pending.script, pending.extra)
   end
@@ -931,18 +1287,115 @@ end
 -- sets one (taking a starter ball, the Elm's Lab theft) has to take effect
 -- before the next map load -- so re-run the spawn filter once the script
 -- that moved the flag has finished.
-function OverworldState:syncObjectVisibility()
+--
+-- `only` restricts the pass to ONE object def, which is what `appear` and
+-- `disappear` need.  Script_appear/Script_disappear touch exactly the object
+-- they name (UnmaskCopyMapObjectStruct / DeleteObjectStruct); they do not
+-- re-derive anyone else's visibility.  Sweeping the whole map on every
+-- disappear is what broke the Rocket base boss scene: the script sets Lance's
+-- own event flag before the fade (`setevent EVENT_TEAM_ROCKET_BASE_B2F_LANCE`),
+-- which the ROM deliberately lets a LIVE object ignore -- and then the very
+-- next `disappear` of an unrelated grunt re-ran this filter, saw Lance's flag
+-- set, and deleted him.  The matching `clearevent` a few rows later does not
+-- re-spawn anything (setevent/clearevent never do, by design), so Lance was
+-- simply absent for the whole post-battle scene: every turnobject and
+-- applymovement aimed at him did nothing, and he turned up on the next map
+-- load wherever the respawn tables happened to put him.  The full sweep is
+-- still correct for what it models -- LoadMapObjects, driven by
+-- refreshmap/reloadmap -- so it stays available with `only` unset.
+-- `entities` IS A DERIVED LIST: the player, then every live NPC.
+--
+-- It is what the draw loops walk; `npcs` is what collision, talking and the
+-- script runner walk. Nothing has ever enforced that the two agree -- setMap
+-- builds `entities` from `npcs` once, and after that six separate places keep
+-- them in step by hand, plus whatever a mod does with `world.entities`, which
+-- both of the voxel mods hold directly.
+--
+-- Lose an NPC from `entities` alone and it does not error, it does not warn,
+-- and it does not go away: it stands there invisible, still solid, still
+-- talking when you press A into it. That is the Elite Four report -- beat
+-- Will, he stops being drawn, and you can still walk up to nothing and get
+-- his post-battle line.
+--
+-- So the invariant gets asserted in one place instead of maintained in seven.
+-- Anything in `entities` that is NEITHER the player NOR a live NPC is kept, in
+-- order, after them: a mod's own spawns live in that list too (the roaming
+-- wild Pokemon are entities nothing here owns), and rebuilding must not
+-- quietly delete somebody else's actor to fix ours.
+function OverworldState:rebuildEntities()
+  if not self.player then return end
+  local mine = {}
+  for _, npc in ipairs(self.npcs) do mine[npc] = true end
+  local extras = {}
+  for _, e in ipairs(self.entities or {}) do
+    if e ~= self.player and not mine[e] then extras[#extras + 1] = e end
+  end
+  local out = { self.player }
+  for _, npc in ipairs(self.npcs) do out[#out + 1] = npc end
+  for _, e in ipairs(extras) do out[#out + 1] = e end
+  self.entities = out
+end
+
+-- The same rebuild, but it says something the first time it has to repair a
+-- live NPC that had fallen out of the draw list. A silent self-heal would fix
+-- the symptom and bury the cause; this names the actor, once per session, so
+-- the next report arrives with the culprit attached.
+function OverworldState:reassertEntities(why)
+  if not self.player then return end
+  local present = {}
+  for _, e in ipairs(self.entities or {}) do present[e] = true end
+  local missing
+  for _, npc in ipairs(self.npcs) do
+    if not present[npc] then missing = missing or npc end
+  end
+  self:rebuildEntities()
+  if missing and not OverworldState._entityDesyncLogged then
+    OverworldState._entityDesyncLogged = true
+    Logger.warn("entity list desync repaired (%s): %s was in npcs but not "
+                .. "entities -- it would have been invisible but still solid",
+                tostring(why or "?"), tostring(missing.id))
+  end
+end
+
+function OverworldState:syncObjectVisibility(only)
   if not (self.map and self.map.def) then return end
   local mapId = self.map.id
   local wanted = {}
-  for _, obj in ipairs(self.map.def.objects or {}) do
+  local scope = only and { only } or (self.map.def.objects or {})
+  for _, obj in ipairs(scope) do
     if objectVisible(Game.save, mapId, obj) then
       wanted[mapId .. "_obj_" .. obj.index] = obj
     end
   end
+  -- With `only` set, everything outside the scope must be left exactly as it
+  -- is, so mark the rest wanted-as-is rather than letting the removal pass
+  -- below treat them as unwanted.
+  local keep = nil
+  if only then
+    keep = {}
+    for _, npc in ipairs(self.npcs) do
+      if npc.def ~= only then keep[npc.id] = true end
+    end
+  end
+  self.npcResumeCell = self.npcResumeCell or {}
   for i = #self.npcs, 1, -1 do
     local npc = self.npcs[i]
-    if not wanted[npc.id] then
+    if keep and keep[npc.id] then
+      -- out of scope for a targeted appear/disappear
+    elseif not wanted[npc.id] then
+      -- Remember where it actually stood.  A Gen2 `disappear` is not a
+      -- despawn-and-forget: a cutscene routinely hides an object, walks the
+      -- player, and shows it again, and the ROM's struct keeps its coordinates
+      -- the whole time.  Without this the re-show snapped it back to its
+      -- object_event tile and every following applymovement ran from the wrong
+      -- origin -- the Gen1 path has recorded this since npcResumeCell was
+      -- added (see toggleObject in src/script/Commands.lua); the Gen2 path
+      -- never did.
+      local key = objectToggleKey(npc.def)
+      if key then
+        self.npcResumeCell[key] =
+          { x = npc.cellX, y = npc.cellY, facing = npc.facing }
+      end
       table.remove(self.npcs, i)
       for j = #self.entities, 1, -1 do
         if self.entities[j] == npc then table.remove(self.entities, j) end
@@ -954,9 +1407,37 @@ function OverworldState:syncObjectVisibility()
   for _, obj in pairs(wanted) do
     local npc = pooledNPC(self.npcPool, Game.data, mapId, obj)
     npc.frozen = false
+    -- Where does it come back?  `moveobject` first (an explicit relocation the
+    -- script asked for), then wherever it was when it went away, then its
+    -- object_event tile.  Script_moveobject writes the loaded map's object
+    -- struct, so the disappear / moveobject / appear / applymovement idiom --
+    -- the Radio Tower director walking in after the last Rocket executive,
+    -- Kurt arriving at Slowpoke Well, most cutscene walk-ons -- depends on the
+    -- new cell surviving the respawn.  It did not: the object reappeared at
+    -- its map-def tile and then walked from there, which puts it through
+    -- scenery or off the visible area entirely (an actor with dialogue and no
+    -- body).
+    local key = objectToggleKey(obj)
+    local at = key and ((self.npcPlacement and self.npcPlacement[key])
+                        or self.npcResumeCell[key])
+    if at then
+      npc.cellX, npc.cellY = at.x, at.y
+      npc.px, npc.py = at.x * 16, at.y * 16
+      npc.facing = at.facing or npc.facing
+    end
+    -- A pooled entity is reused, so it can still be carrying the half-finished
+    -- step it was hidden in the middle of.  Land it on its cell.
+    npc.moving = false
+    npc.progress = 0
+    npc.targetX, npc.targetY = nil, nil
     self.npcs[#self.npcs + 1] = npc
     self.entities[#self.entities + 1] = npc
   end
+  -- Every spawn and despawn above touched both lists, and so does every other
+  -- site in this file -- and the Elite Four still ended up drawn out of one of
+  -- them. This runs at the one point every visibility change passes through,
+  -- so whatever did it, the actor is back in the draw list before the frame.
+  self:reassertEntities("syncObjectVisibility")
 end
 
 -- Start a background script in one of the bounded parallel slots (09
@@ -1050,7 +1531,44 @@ function OverworldState:checkSpecialPhoneCall()
   if not script then return end
   Game.save.g2SpecialCallActive = Game.save.g2SpecialCall
   Game.save.g2SpecialCall = nil
-  self:queueScript(script, { phoneCaller = caller })
+  -- wCurCaller, which the caller script's `readvar 23` reads back
+  Game.save.g2CurCaller = caller
+  self:queueScript(script, { phoneCaller = caller,
+    onDone = function() Game.save.g2CurCaller = nil end })
+end
+
+-- CheckPhoneCall (36:$4074): the random incoming call, rolled on every step
+-- the player finishes off a warp tile.  Gen2Commands.rollIncomingCall carries
+-- the ROM's own gating -- the receive-call delay, the one-in-two coin flip, the
+-- map's phone-service nibble, and the sample of registered contacts whose
+-- time-of-day mask covers now and who are not on this map.
+--
+-- The play clock stands in for the ROM's day/hour/minute countdown: both are
+-- "in-game minutes since the last call", and the port has no separate RTC to
+-- keep them apart.
+function OverworldState:checkIncomingPhoneCall()
+  if not GameVersion.isGen2() then return end
+  if self.transitioning or self.runner:isRunning() or #self.scriptMoves > 0 then
+    return
+  end
+  if Game.save.g2SpecialCall ~= nil then return end
+  if self.pendingScripts and self.pendingScripts[1] then return end
+  local p = self.player
+  if not (p and self.map) then return end
+  -- CheckStandingOnEntrance: no call while the player is on a door or warp
+  if self.map:warpAtCell(p.cellX, p.cellY) then return end
+  local Gen2Commands = require("src.script.Gen2Commands")
+  local minutes = math.floor((tonumber(Game.save.playTime) or 0) / 60)
+  local id, script = Gen2Commands.rollIncomingCall(
+    Game.data, Game.save, self.map.def, self:timeOfDay(), minutes, false)
+  if not script then return end
+  Game.save.g2CurCaller = id
+  -- Phone_StartRinging (36:$4337) before the script, Phone_CallEnd after it
+  pcall(function() require("src.core.Sound").play(Game.data, "Call") end)
+  self:queueScript(script, { phoneCaller = id, onDone = function()
+    Game.save.g2CurCaller = nil
+    pcall(function() require("src.core.Sound").play(Game.data, "Hang_Up") end)
+  end })
 end
 
 function OverworldState:update(dt)
@@ -1075,7 +1593,50 @@ function OverworldState:update(dt)
   if scriptWasRunning and not self.runner:isRunning() and GameVersion.isGen2() then
     self:syncObjectVisibility()
   end
+  -- .CheckForcedBiking again, now that the map's callbacks have actually run.
+  --
+  -- The ROM fires MAPCALLBACK_NEWMAP synchronously inside LoadMapAttributes
+  -- and only reaches CheckUpdatePlayerSprite afterwards, so by the time it
+  -- asks "is ALWAYS_ON_BIKE set?" Route 17's callback has already said yes.
+  -- Here the callbacks are QUEUED and run one per frame off the pending-script
+  -- FIFO, so the setMap call below them was asking the question before the
+  -- answer existed. It only ever looked right because the flag was left over
+  -- from the previous visit -- which is the very bug above. With the flags
+  -- correctly reset on every map, a single call at setMap would mean the
+  -- Cycling Road never forces the bike at all.
+  --
+  -- Re-asking each frame is what the ROM effectively does anyway: the flag is
+  -- a standing instruction ("wPlayerState is PLAYER_BIKE while this is set"),
+  -- not an event, and the check is two flag reads.
+  self:applyForcedBike()
   self:checkSpecialPhoneCall()
+  self:checkBugContestClock()
+  -- world.tick: the per-frame seam for mods that simulate something in the
+  -- overworld rather than draw it.
+  --
+  -- There was none, and the workaround mods reached for was to register a
+  -- render_pipeline and do the work in its `present` -- "a present pipeline
+  -- runs every drawn frame and is an established public path", as
+  -- STADIUM2_OVERWORLD_MODELS puts it, running its whole wild-Pokemon AI from
+  -- one.  That ties a simulation to the render path's eligibility rules: the
+  -- pipeline's level, its `available` gate, whether it has been retired after
+  -- a throw, and whether the compositor had a canvas to hand it.  Any one of
+  -- those going the wrong way stopped the world ticking, with nothing in any
+  -- log, because nothing had failed -- which is exactly how the wild Pokemon
+  -- ended up standing around unbattleable.
+  --
+  -- Emitted from update() rather than the draw path so it keeps ticking while
+  -- the frame is skipped, and payload-guarded like every other hot event.
+  if Runtime.wants("world.tick") then
+    Runtime.emit("world.tick", { dt = dt, mapId = self.map and self.map.id,
+                                 overworld = self, scripted = self.runner:isRunning() })
+  end
+  -- Gen2 daily resets (Kurt balls, fruit trees, radio lottery). Lazy require
+  -- keeps Gen2Daily out of the module-load graph so a missing/broken daily
+  -- file cannot produce "loop or previous error loading module".
+  if GameVersion.isGen2() and Game and Game.save then
+    require("src.script.Gen2Daily").poll(Game.save)
+  end
   self:updateParallel()
   -- keep the player sprite in sync with the bike state (the drawer
   -- picks the red_bike sheet while riding)
@@ -1083,8 +1644,13 @@ function OverworldState:update(dt)
   -- the rendered neighbor set depends on the view size; zooming out (or
   -- resizing) past what setMap computed re-runs the walk in place
   if self.map and (self.neighborViewW or 0) > 0 then
-    local vw, vh = Game.renderer:worldViewSize()
-    if vw ~= self.neighborViewW or vh ~= self.neighborViewH then
+    -- the view growing is one way to need more neighbours; a renderer raising
+    -- its own reach is the other, and it can happen without the view moving at
+    -- all (a camera mode change, a zoom the 3D pass owns privately)
+    local reachW, reachH, vw, vh = self:neighborReach()
+    if vw ~= self.neighborViewW or vh ~= self.neighborViewH
+       or reachW ~= self.neighborReachBuiltW
+       or reachH ~= self.neighborReachBuiltH then
       self:rebuildNeighbors()
     end
   end
@@ -1171,12 +1737,17 @@ function OverworldState:update(dt)
     self.teleportOut.frames = self.teleportOut.frames - 1
     if self.teleportOut.frames <= 0 then
       local onDone = self.teleportOut.onDone
+      local escape = self.teleportOut.escape
       self.teleportOut = nil
       self.player.spinning = false
       self.player.spinFrames = nil
       self.player.spinRise = nil
       self.player.inputLocked = false
-      self:warpToHealPoint(onDone, { arrive = "teleport" })
+      if escape then
+        self:warpToEscapePoint(onDone)
+      else
+        self:warpToHealPoint(onDone, { arrive = "teleport" })
+      end
       return
     end
   end
@@ -1253,6 +1824,14 @@ function OverworldState:update(dt)
     and self.map and self.map.id == "PLAYERS_HOUSE2_F"
   if gen2BootBedroom then
     self.player.inputLocked = false
+  end
+  -- A queued scene script owns the map until it has run: on the cartridge it
+  -- runs during map setup, so the player never gets an input frame ahead of it
+  -- (see drainPendingScripts).  Without this the step is merely late rather
+  -- than prevented -- the drain refuses to start mid-step, so the scripted walk
+  -- would begin from the wrong cell a frame later instead.
+  if self.pendingScripts and self.pendingScripts[1] then
+    scripted = true
   end
   if not scripted and not self.transitioning then
     self:checkTrainerSight()
@@ -1333,6 +1912,75 @@ end
 -- tile ($1B) leaves it set, so you land on the interior mat still able to
 -- walk back out on that same tile (issue #378), while a staircase tile
 -- ($1A/$1C) clears it and cannot bounce you between floors (issue #230).
+-- DoPlayerMovement .EdgeWarps (engine/overworld/player_movement.asm): the
+-- player is standing ON one of the four COLL_WARP_CARPET_* tiles and is
+-- walking on in that carpet's own direction, already facing it.  That is the
+-- whole test -- it calls WarpCheck, which unlike CheckWarpTile does NOT run
+-- the directional filter, and it does not consult BIT_STANDING_ON_WARP.
+--
+-- This is the other half of treating carpets as non-immediate (see the
+-- coord-event ordering in the step handler).  The collision-warp path next to
+-- it cannot stand in for it: refreshStandingOnWarp clears standingOnWarp for
+-- exactly these tiles -- a carpet is a warp tile and not a doorway -- so
+-- canCollisionWarp is false on every mat in the game, and without this the
+-- player could walk onto a Pokemon Center's exit mat and never walk off it.
+local GEN2_CARPET_DIR = {
+  [0x70] = "down", [0x76] = "left", [0x78] = "up", [0x7E] = "right",
+}
+
+function OverworldState:checkGen2CarpetExit(dir)
+  if not GameVersion.isGen2() then return false end
+  local p = self.player
+  if GEN2_CARPET_DIR[self.map:cellTile(p.cellX, p.cellY)] ~= dir then
+    return false
+  end
+  local w = self.map:warpAtCell(p.cellX, p.cellY)
+  if not w then return false end
+  self:takeWarp(w.def)
+  return true
+end
+
+-- Put the Cycling Road down, on both generations.
+--
+-- Gen 1 kept ALWAYS_ON_BIKE in `save.forcedBike`; Gen 2 keeps it -- and
+-- DOWNHILL beside it -- in two engine flags the map callbacks write, which
+-- live in `save.flags` and are serialised to disk with everything else. Every
+-- clear in this file was written for the Gen 1 field alone, so on Gen 2 the
+-- ONLY thing that ever put the bike away was a gate map's own `clearflag`.
+--
+-- Fly, a blackout, Dig, Teleport and Escape Rope all leave the Cycling Road
+-- without walking through a gate. Each of them left both flags set, and then
+-- applyForcedBike below remounted the player on every subsequent map load
+-- while handleInput dragged them south on all of them -- the whole game
+-- played downhill on a bike that could not be put away.
+--
+-- Nothing here is conditional on being ON the Cycling Road: these are the
+-- points the ROM itself clears BIT_ALWAYS_ON_BIKE at, and a flag that is
+-- already clear is cheap to clear again.
+function OverworldState:clearBikeFlags()
+  Game.save.forcedBike = nil
+  if not GameVersion.isGen2() then return end
+  local Flags = require("src.script.Flags")
+  local Gen2Flags = require("src.script.Gen2Flags")
+  Flags.clear(Game.save, Gen2Flags.bikeFlag("bike"))
+  Flags.clear(Game.save, Gen2Flags.bikeFlag("downhill"))
+end
+
+-- .CheckForcedBiking.  Gen2 keeps ALWAYS_ON_BIKE in an engine flag the map
+-- callbacks write; Gen1 kept it in save.forcedBike, which the gate maps clear.
+function OverworldState:applyForcedBike()
+  if not GameVersion.isGen2() then return end
+  local Flags = require("src.script.Flags")
+  local Gen2Flags = require("src.script.Gen2Flags")
+  -- ...and only where a bike is allowed at all.  The flag surviving into an
+  -- interior used to remount the player inside houses, Centers and dungeons,
+  -- which is most of what "it never lets me off the bike" looked like.
+  if Flags.get(Game.save, Gen2Flags.bikeFlag("bike"))
+     and self:bikeAllowed(self.map and self.map.id) then
+    Game.save.onBike = true
+  end
+end
+
 function OverworldState:canCollisionWarp()
   return self.standingOnWarp == true
 end
@@ -1412,6 +2060,7 @@ function OverworldState:handleInput()
       -- warps alike -- and, being a bump, it never lets the player in.
       if self:checkGen2Whirlpool(dir) then return end
       if not self.player.moving and self.player.facing == dir then
+        if self:checkGen2CarpetExit(dir) then return end
         if self:checkEdgeExit(dir) then return end
         if self:checkLedgeHop(dir) then return end
         if self:checkBoulderPush(dir) then return end
@@ -1454,14 +2103,44 @@ function OverworldState:handleInput()
   -- edge-only wasPressed("a") above can never deliver, since a press
   -- stalls the roll for one frame only (issue #255).
   local fm = Game.data.field.forcedMovement
-  local braking = input:isDown("a") or input:isDown("b")
-  if fm and Game.save.onBike and not braking and not self.player.moving then
-    for _, m in ipairs(fm.slopeMaps or {}) do
-      if m == self.map.id then
-        self.player.facing = "down"
-        self.player:tryMove("down", self.map, self.entities)
-        return
+  -- WHAT COUNTS AS A BRAKE IS NOT THE SAME IN BOTH GENERATIONS.
+  --
+  -- Gen 2's mask is the d-pad and nothing else (player_movement.asm .GetDPad):
+  --
+  --     ld hl, wBikeFlags
+  --     bit BIKEFLAGS_DOWNHILL_F, [hl]
+  --     ret z
+  --     ld c, a
+  --     and PAD_CTRL_PAD        <-- d-pad only; A and B are not in it
+  --     ret nz
+  --     ld a, c
+  --     or PAD_DOWN
+  --
+  -- so on Gold, Silver and Crystal holding A or B does NOT stop the roll --
+  -- you steer out of it, or you coast. Gen 1's mask does include A and B,
+  -- which is what its Route 17 sign promises, so that reading stays.
+  -- The d-pad half of that mask is already answered: this line is only
+  -- reached on the no-direction-held path, so all that is left to decide is
+  -- whether A or B also count -- and on Gen 2 they do not.
+  local braking = (not GameVersion.isGen2())
+    and (input:isDown("a") or input:isDown("b")) or false
+  if Game.save.onBike and not braking and not self.player.moving then
+    -- Gen2 arms the same pull from ENGINE_DOWNHILL, set by Route 17's
+    -- MAPCALLBACK_NEWMAP alongside ALWAYS_ON_BIKE.  Gen1 named the maps in
+    -- field.forcedMovement.slopeMaps instead, and that table is empty on a
+    -- Gen2 import -- which is why the Cycling Road had no slope at all.
+    local downhill = GameVersion.isGen2()
+      and require("src.script.Flags").get(Game.save,
+            require("src.script.Gen2Flags").bikeFlag("downhill"))
+    if not downhill and fm then
+      for _, m in ipairs(fm.slopeMaps or {}) do
+        if m == self.map.id then downhill = true break end
       end
+    end
+    if downhill then
+      self.player.facing = "down"
+      self.player:tryMove("down", self.map, self.entities)
+      return
     end
   end
 end
@@ -1517,6 +2196,7 @@ function OverworldState:checkBoulderPush(dir)
     self:startDustAnim(fx, fy, function()
       require("src.core.Sound").play(Game.data, "Cut")
     end)
+    if self:gen2BoulderIntoPit(npc) then return end
     if self:boulderIntoHole(npc) then return end
     Runtime.emit("world.boulder_moved", { mapId = self.map.id, npcId = npc.id,
                                           x = npc.cellX, y = npc.cellY })
@@ -1526,6 +2206,42 @@ function OverworldState:checkBoulderPush(dir)
     end
   end)
   return true
+end
+
+-- Gen2's boulder-into-hole, the stone table (CmdQueue_StoneTable /
+-- HandleStoneQueue).  A map that has holes registers a
+-- `stonetable <warp id>, <object event id>, <script>` row per boulder from
+-- its MAPCALLBACK_CMDQUEUE callback (see Commands.g2_stonetable); the ROM
+-- polls every object struct each frame for a strength boulder that is
+-- standing still on a pit tile and runs the row whose warp and object both
+-- match.  That script is what makes the boulder vanish, clears the event
+-- hiding its twin on the floor below, shakes the screen and prints "The
+-- boulder fell through."  Without it the Ice Path boulders simply parked on
+-- the holes and the puzzle could not be finished.
+--
+-- Ice Path B1F pairs boulders 1-4 with warps 3-6, so matching on both is
+-- what keeps a boulder shoved down the wrong hole from opening the wrong
+-- floor; the ROM leaves such a boulder sitting there until the player exits
+-- and the map's objects respawn where they started.
+function OverworldState:gen2BoulderIntoPit(npc)
+  if not GameVersion.isGen2() then return false end
+  local stones = self.stoneTable
+  if not (stones and self.map and stones.mapId == self.map.id) then return false end
+  if not Map.gen2IsPit(self.map:cellTile(npc.cellX, npc.cellY)) then return false end
+  local warp = self.map:warpAtCell(npc.cellX, npc.cellY)
+  if not warp then return false end
+  -- object_const_def counts from 2 (0 is the player), while the extractor
+  -- numbers object_events from 1 -- the same +1 Gen2Commands.objectSlot undoes.
+  local objectId = (npc.def and npc.def.index or 0) + 1
+  for _, row in ipairs(stones.rows) do
+    if row.warp == warp.index and row.object == objectId then
+      local rows = require("src.script.Gen2ScriptVM").compile(Game.data, row.script)
+      if not rows then return false end
+      self:queueScript(rows, { mapId = self.map.id })
+      return true
+    end
+  end
+  return false
 end
 
 -- The dust puff (engine/overworld/dust_smoke.asm AnimateBoulderDust):
@@ -1715,9 +2431,33 @@ function OverworldState:crossConnection(dir, conn)
   p.animClock = 0
   p.stepFramesCur = Game.save.onBike
     and (FieldDefaults.world(Game.data, "bikeStepFrames") or 8)
+    or (OverworldState.runFrames and OverworldState.runFrames(self))
     or (FieldDefaults.world(Game.data, "stepFrames") or 16)
   require("src.core.FixedStep"):discardCatchup()
   return true
+end
+
+-- RUNNING.  Prism is the only game here that has it, and it has no running
+-- SHOES either: DoPlayerMovement's .walk branch falls straight through to
+-- .run whenever B is held, gated on nothing but ENGINE_POKEMON_MODE
+-- (engine/player_movement.asm .maybe_run).  So there is no item to find and
+-- no flag to set -- the port simply had no run state, because Gold and
+-- Crystal have none to port.
+--
+-- Returns the run step length, or nil to leave the speed alone.  Riding and
+-- surfing answer first at the call site; playing AS a Pokemon is the one
+-- case the ROM itself refuses, and it refuses it here for the same reason.
+function OverworldState:runFrames()
+  local frames = FieldDefaults.world(Game.data, "runStepFrames")
+  if type(frames) ~= "number" then return nil end
+  local ok, GV = pcall(require, "src.core.GameVersion")
+  if not (ok and GV and GV.get and GV.get() == "prism") then return nil end
+  if self.player and self.player.surfing then return nil end
+  if not (Game.input and Game.input:isDown("b")) then return nil end
+  local okf, Flags = pcall(require, "src.script.Flags")
+  if okf and Flags and Flags.get
+     and Flags.get(Game.save, "ENGINE_POKEMON_MODE") then return nil end
+  return frames
 end
 
 -- ItemUseSurfboard's simulated pad press: step onto the facing cell, or
@@ -1834,6 +2574,66 @@ local function rollFishingGroup(group)
   end
 end
 
+-- Gen2 fishing (engine/events/fish.asm `Fish`), which has nothing to do with
+-- the Gen1 rules below it.  The map header carries a FISHGROUP_*; the group
+-- carries a bite chance and one row list per rod; a row is
+-- { chance, species, level }, walked until the rolled byte is <= chance.  A
+-- row with no species names a TimeFishGroups index instead and the mon comes
+-- from the day or nite half of that pair.
+--
+-- Before this existed the Gen2 games ran the Gen1 table in FieldDefaults:
+-- the Old Rod always hooked a level 5 MAGIKARP and the Super Rod -- whose
+-- Gen1 form is a per-map list this cart does not have -- returned nil, so
+-- every Super Rod cast anywhere printed "Not even a nibble!".
+-- Keyed by BOTH spellings, because the caller hands over whatever the bag row
+-- was and a Gen2 import names its items by NUMBER.  BagMenu does
+-- `ow:goFishing(id)` with the item id straight off the row, and on Gold /
+-- Silver / Crystal that is ITEM_058 / ITEM_059 / ITEM_061 (OLD_ROD $3a,
+-- GOOD_ROD $3b, SUPER_ROD $3d in constants/item_constants.asm) -- never the
+-- pokered-style name.
+--
+-- So this table missed on every cast: `key` came back nil, `entry` with it, and
+-- gen2FishingRoll returned "no bite, handled" for EVERY ROD ON EVERY MAP.  That
+-- is the "... Not even a nibble!" that survived the FishGroups indexing fix --
+-- the roll never reached the group table at all, which is also why fixing that
+-- table appeared to change nothing.  The rod animation still played, because
+-- goFishing sets self.fishing after the roll regardless of the verdict.
+local GEN2_ROD_KEY = {
+  OLD_ROD = "old", GOOD_ROD = "good", SUPER_ROD = "super",
+  ITEM_058 = "old", ITEM_059 = "good", ITEM_061 = "super",
+}
+
+local function gen2FishingRoll(data, rod, mapDef, tod)
+  local field = data.field
+  local groups = field and field.fishGroups
+  if not groups then return nil, false end
+  local key = GEN2_ROD_KEY[rod]
+  local entry = key and mapDef and mapDef.fishGroup and groups[mapDef.fishGroup]
+  local rows = entry and entry.rods and entry.rods[key]
+  if not (rows and #rows > 0) then return nil, true end
+  -- `call Random / cp [hl] / jr nc, .no_bite`: the roll must come in UNDER
+  -- the group's chance byte.
+  if love.math.random(0, 255) >= (entry.chance or 0) then return nil, true end
+  local roll = love.math.random(0, 255)
+  for _, row in ipairs(rows) do
+    if roll <= row.chance then
+      if row.timeGroup then
+        local pair = field.timeFishGroups and field.timeFishGroups[row.timeGroup]
+        local slot = pair and (tod == "NITE" and pair.nite or pair.day)
+        if not slot then return nil, true end
+        return { species = slot.species, level = slot.level }, true
+      end
+      return { species = row.species, level = row.level }, true
+    end
+  end
+  return nil, true
+end
+
+-- Exposed for the headless drivers: the roll with no UI attached.
+OverworldState.rollFishingForTest = function(data, rod, mapDef, tod)
+  return (gen2FishingRoll(data, rod, mapDef, tod))
+end
+
 -- field.fishing: `always` hooks that catch every time (the Old Rod),
 -- `pool` a fixed candidate list, `perMap` the field key holding per-map
 -- groups.  The rejection-loop odds above stay engine behavior.
@@ -1861,11 +2661,19 @@ end
 function OverworldState:goFishing(rod)
   local pool, always = fishingPool(Game.data, rod, self.map.id)
   local enc
+  -- Gen2 carts answer from the ROM's own fish groups; `handled` is true as
+  -- soon as this import produced them, so a Gen2 no-bite stays a no-bite
+  -- rather than falling through to the Gen1 Magikarp.
+  local gen2Enc, handled = gen2FishingRoll(Game.data, rod, self.map.def,
+    OverworldState.clockTimeOfDay and OverworldState.clockTimeOfDay() or self.tod)
   if Runtime.wantsHook("encounter.fishing") then
     -- the chain may inspect or replace the candidate list before the roll
     enc = Runtime.call("encounter.fishing", function(_, _, candidates)
+      if handled then return gen2Enc end
       return catchFrom(candidates, always)
     end, rod, self.map.id, pool)
+  elseif handled then
+    enc = gen2Enc
   else
     enc = catchFrom(pool, always)
   end
@@ -1905,14 +2713,131 @@ function OverworldState:goFishing(rod)
   end))
 end
 
+-- StdScripts row 22 is BugContestResultsWarpScript and row 23 is
+-- BugContestResultsScript.  There is no `end` between the two labels in
+-- engine/events/std_scripts.asm, so the ROM falls straight from the warp into
+-- the results and the decoder produces ONE script for row 22 -- the warp, the
+-- judging, the prize, the party hand-back and the scene reset together.  The
+-- rows are identical in Gold and Crystal.
+local BUG_CONTEST_STD_WARP = 22
+local BUG_CONTEST_STD_RESULTS = 23
+local BUG_CONTEST_GATE = "ROUTE36_NATIONAL_PARK_GATE"
+-- BugContestResultsWarpScript is `warp ROUTE_36_NATIONAL_PARK_GATE, 0, 4` then
+-- `step RIGHT / step DOWN / turn_head UP`: (0, 4) is the gate's own west door,
+-- so the movement leaves the player standing at (1, 5) facing up.  Only used
+-- by the fallback below -- the script does its own warp when it is available.
+local BUG_CONTEST_GATE_X, BUG_CONTEST_GATE_Y = 1, 5
+
+-- Compile one of the two contest std scripts, or nil.
+local function bugContestStd(index)
+  local pool = Game.data and Game.data.map_scripts
+  local stds = pool and pool.stds
+  if not stds then return nil end
+  local label = stds[index] or stds[tostring(index)]
+  if type(label) ~= "string" then return nil end
+  local ok, rows = pcall(require("src.script.Gen2ScriptVM").compile,
+                         Game.data, label)
+  return ok and rows or nil
+end
+
+-- Leaving the contest -- START menu QUIT, out of Park Balls, or the clock.
+--
+-- All three are the same three instructions on a cartridge.  StartMenu_Quit
+-- (engine/menus/start_menu.asm:411) and both overworld exits queue
+-- BugCatchingContestReturnToGateScript, which is
+--
+--     closetext
+--     jumpstd BugContestResultsWarpScript
+--
+-- so the CARTRIDGE'S OWN BYTECODE does the rest, in an order that matters:
+-- warp to the gate, make the other contestants appear, judge, hand over the
+-- prize for the placing, give the held party back, put the caught mon in the
+-- party, and only then `setscene SCENE_ROUTE36NATIONALPARKGATE_NOOP`.
+--
+-- Running that script rather than re-implementing it is what makes the prize
+-- follow the placing and stops the officer re-arming his "are you finished?"
+-- scene.  Nothing is torn down before it runs: judging needs the caught mon
+-- and the rolled AI scores still on the save.
+--
+-- Returns true when the exit was taken.
+function OverworldState:bugContestReturnToGate()
+  if self.bugContestLeaving then return true end
+  local rows = bugContestStd(BUG_CONTEST_STD_WARP)
+  if rows then
+    self.bugContestLeaving = true
+    self:queueScript(rows, { mapId = self.map and self.map.id })
+    return true
+  end
+  -- No decoded std pool (an old cache, or a hack that moved the table): warp
+  -- by hand to where the script's movement would have left the player, then
+  -- run the results half on its own.  startWarpTo, NOT setMap -- setMap's
+  -- signature is (mapId, x, y, facing, opts) and passing an options table as
+  -- `x` is what made every exit crash on `attempt to perform arithmetic on
+  -- local 'x' (a table value)`.
+  if not (Game.data.maps and Game.data.maps[BUG_CONTEST_GATE]) then
+    Logger.warn("bug contest: no gate map to return to")
+    return false
+  end
+  self.bugContestLeaving = true
+  self:startWarpTo(BUG_CONTEST_GATE, BUG_CONTEST_GATE_X, BUG_CONTEST_GATE_Y,
+                   "up", function()
+    local results = bugContestStd(BUG_CONTEST_STD_RESULTS)
+    if results then
+      self:queueScript(results, { mapId = BUG_CONTEST_GATE })
+    else
+      -- last resort: at least end the run cleanly rather than stranding the
+      -- player in a contest with no clock and no way out
+      require("src.world.BugContest").finish(Game)
+      require("src.world.BugContest").clear(Game.save)
+    end
+  end)
+  return true
+end
+
+-- CheckBugContestTimer (04:$54A4) runs from the overworld loop, and
+-- BugCatchingContestBattleScript checks wParkBallsRemaining after every
+-- battle.  Both end the run the same way, through the script above.
+--
+-- bugContestLeaving is the re-entry guard the ROM does not need: `timedOut`
+-- stays true until the results script clears the deadline, and this is polled
+-- every frame, so without it the exit would fire again on the next frame and
+-- queue a second copy of the whole results script.
+function OverworldState:checkBugContestClock()
+  local BugContest = require("src.world.BugContest")
+  if not BugContest.active(Game.save) then
+    -- the results script has torn the run down: the guard has done its job and
+    -- must not survive into the next contest
+    self.bugContestLeaving = nil
+    return
+  end
+  if self.bugContestLeaving then return end
+  if not BugContest.timedOut(Game.save) then return end
+  if self.runner:isRunning() or self.transitioning then return end
+  self:bugContestOver("_BugCatchingContestTimeUpText",
+                      Strings("ANNOUNCER: BEEEP!\n\nTime's up!"))
+end
+
+-- The one line both endings print before the warp, over SFX_ELEVATOR_END
+-- (BugCatchingContestOverScript / BugCatchingContestOutOfBallsScript,
+-- engine/events/bug_contest/contest.asm:15-30).
+function OverworldState:bugContestOver(textLabel, fallback)
+  if self.bugContestLeaving then return end
+  pcall(function() require("src.core.Sound").play(Game.data, "Elevator_End") end)
+  local text = Game.data.text and Game.data.text[textLabel]
+  Game.stack:push(TextBox.new(Game, text or fallback, function()
+    self:bugContestReturnToGate()
+  end))
+end
+
 -- Fly to a visited town (called from the party menu).
+
 function OverworldState:flyTo(mapId)
   local flyWarps = Game.data.field.flyWarps or {}
   local spot = flyWarps[mapId]
   if not spot then return end
   require("src.core.Sound").play(Game.data, "Fly")
   Game.save.onBike = false
-  Game.save.forcedBike = nil -- HandleFlyWarpOrDungeonWarp res BIT_ALWAYS_ON_BIKE
+  self:clearBikeFlags() -- HandleFlyWarpOrDungeonWarp res BIT_ALWAYS_ON_BIKE
   self.player.surfing = false
   self:syncSurfingPikachu()
   -- the bird carries the player off westward before the warp
@@ -1932,8 +2857,12 @@ end
 -- with arrive="teleport" so the sprite spins back DOWN in front of the town
 -- PC door.  Shared by the party-menu DIG/TELEPORT action and BagMenu's
 -- ESCAPE ROPE so all three animate identically.
-function OverworldState:beginTeleportOut(onDone)
-  if not Game.save.lastHeal then
+function OverworldState:beginTeleportOut(onDone, opts)
+  if (opts and opts.escape) and not self:escapePoint() then
+    if onDone then onDone() end
+    return
+  end
+  if not (opts and opts.escape) and not Game.save.lastHeal then
     -- a save that has never visited a Pokemon Center has no heal point to
     -- warp to; skip the animation entirely (matches the old guard that did
     -- nothing when lastHeal was absent) instead of spinning into a nil warp
@@ -1951,13 +2880,23 @@ function OverworldState:beginTeleportOut(onDone)
   self.player.spinFrames = 48
   self.player.spinTotal = 48
   self.player.spinRise = true
-  self.teleportOut = { frames = 48, onDone = onDone }
+  self.teleportOut = { frames = 48, onDone = onDone,
+                      escape = opts and opts.escape or nil }
 end
 
 function OverworldState:npcAtCell(cx, cy)
   for _, npc in ipairs(self.npcs) do
-    if (npc.cellX == cx and npc.cellY == cy) or
-       (npc.targetX == cx and npc.targetY == cy) then
+    local big = npc.big or (npc.sprite and npc.sprite.big)
+      or (npc.def and (npc.def.sprite == "SPRITE_BIG_SNORLAX"
+                      or npc.def.sprite == "SPRITE_BIG_LAPRAS"
+                      or npc.def.big))
+    if big then
+      local x, y = npc.cellX, npc.cellY
+      if x and y and cx >= x and cx <= x + 1 and cy >= y and cy <= y + 1 then
+        return npc
+      end
+    elseif (npc.cellX == cx and npc.cellY == cy) or
+           (npc.targetX == cx and npc.targetY == cy) then
       return npc
     end
   end
@@ -2043,7 +2982,43 @@ function OverworldState:interact()
 
   local sign = self.map:signAtCell(fx, fy)
   if sign then
-    self:showMapText(sign.text, nil)
+    -- Gen2 BGEVENT_ITEM rows are stored as signs with .item set.  Giving the
+    -- item here prevents the Cerulean Gym machine part from falling through
+    -- to neighboring statue dialogue ("CERULEAN POKeMON GYM / LEADER: MISTY").
+    if sign.item then
+      local save = Game.save
+      local flagKey = sign.eventFlag
+      local takenKey = self.map.id .. "_sign_" .. tostring(sign.x) .. "_" .. tostring(sign.y)
+      save.hiddenTaken = save.hiddenTaken or {}
+      -- ROM: event SET = already taken / not present.  InitializeEventsScript
+      -- pre-sets EVENT_FOUND_MACHINE_PART so the gym water is empty until the
+      -- Power Plant manager clears the flag.  clearevent stores false.
+      local flagSet = flagKey and save.flags and save.flags[flagKey] == true
+      local already = flagSet or save.hiddenTaken[takenKey]
+      if already then
+        interacted(self, fx, fy, "sign", sign)
+        return
+      end
+      if not require("src.inventory.Bag").add(save, sign.item, 1, Game.data) then
+        Game.stack:push(TextBox.new(Game, Strings("You can't carry\nany more items!")))
+        interacted(self, fx, fy, "sign", sign)
+        return
+      end
+      save.hiddenTaken[takenKey] = true
+      if flagKey then
+        save.flags = save.flags or {}
+        save.flags[flagKey] = true
+      end
+      local name = Game.data.items[sign.item] and Game.data.items[sign.item].name or sign.item
+      require("src.core.Sound").play(Game.data, "Get_Item2")
+      Game.stack:push(TextBox.new(Game,
+        Strings("%s found\n%s!", save.player.name, name)))
+      interacted(self, fx, fy, "sign", sign)
+      return
+    end
+    if sign.text then
+      self:showMapText(sign.text, nil)
+    end
     interacted(self, fx, fy, "sign", sign)
     return
   end
@@ -2840,9 +3815,11 @@ function OverworldState:checkGen2Ice()
     return false
   end
   local dir = self.iceSlide or p.facing
-  local tx, ty = Collision.target(p.cellX, p.cellY, dir)
-  if not self.map:isWalkableCell(tx, ty)
-     or Collision.occupied(self.entities, tx, ty, p) then
+  -- Full permission check (bounds, walkable, side walls, pairs, entities).
+  -- Ice Path cliffs are LAND with a directional wall; isWalkableCell alone
+  -- lets the slide walk straight off them and off the map edge.
+  local allowed = Collision.canMove(self.map, self.entities, p, dir)
+  if not allowed then
     self.iceSlide = nil
     return false
   end
@@ -3023,24 +4000,56 @@ function OverworldState:gen2UseFieldMove(move, mon, fx, fy)
   end))
 end
 
+-- GetTreeScore (2E:$4443).  A tree's quality is FIXED for a given save: the
+-- coordinate score `((x*y + x + y) / 5) % 10` is compared against the player's
+-- own `OT ID % 10`, and the difference picks the tree.  Lua's % is already
+-- floored, so this matches the ROM's `sub` plus `add 10` on borrow.
+--
+-- The port's cell coordinates are not the ROM's wram coordinates, so a GIVEN
+-- tree will not be the same quality it is on a cartridge -- but the spread
+-- across trees, and the fact that a tree never changes, both hold.
+local function gen2TreeScore(fx, fy, otId)
+  local coord = math.floor(((fx * fy) + fx + fy) / 5) % 10
+  return (coord - ((tonumber(otId) or 0) % 10)) % 10
+end
+
+-- SelectTreeMon (2E:$441F): roll 0-99, then walk the table subtracting each
+-- row's chance until it goes negative.
+local function gen2SelectTreeMon(rows)
+  local roll = math.random(0, 99)
+  for _, row in ipairs(rows or {}) do
+    roll = roll - (tonumber(row.chance) or 0)
+    if roll < 0 then return row end
+  end
+  return nil
+end
+
 -- HeadbuttScript: the struck tree rattles (ShakeHeadbuttTree 23:$4A8E) and
--- then either a TreeMon drops out or nothing does.  GetTreeMon rolls the
--- rare table only when the tree's coordinate score says so; the port rolls
--- it at the same 1-in-32 the score works out to on an average tree.
+-- then either a TreeMon drops out or nothing does.  GetTreeMon (2E:$43E5)
+-- turns the tree score into both the odds AND which table is rolled:
+--   score 5-9 (bad)  -- 1 in 10, common table
+--   score 1-4 (good) -- 5 in 10, common table
+--   score 0   (rare) -- 8 in 10, RARE table
+--
+-- The old code rolled 1-100, gated on `roll <= 50`, then compared that SAME
+-- roll against a running total that started at the first row's 50 -- so row
+-- one won every time a mon appeared at all (Gold's Forest set opens with
+-- CATERPIE), and the rare table was a made-up 1-in-32.
 function OverworldState:gen2Headbutt(fx, fy)
   self:startDustAnim(fx, fy, function()
     local trees = Game.data.field.gen2TreeMons
     local set = trees and trees.maps and trees.maps[self.map.def.label]
-    local rows = set and trees.sets and trees.sets[set]
-    rows = rows and (math.random(32) == 1 and rows.rare or rows.common)
-    -- the leading byte is the table's total chance out of 100
-    local roll = rows and math.random(100)
+    local sets = set and trees.sets and trees.sets[set]
     local pick
-    if roll and roll <= (rows.rate or 50) then
-      local acc = 0
-      for _, row in ipairs(rows) do
-        acc = acc + row.chance
-        if row.chance == 255 or roll <= acc then pick = row break end
+    if sets then
+      local score = gen2TreeScore(fx, fy,
+        Game.save and Game.save.player and Game.save.player.id)
+      local rows, odds
+      if score == 0 then rows, odds = sets.rare, 8
+      elseif score < 5 then rows, odds = sets.common, 5
+      else rows, odds = sets.common, 1 end
+      if rows and math.random(0, 9) < odds then
+        pick = gen2SelectTreeMon(rows)
       end
     end
     if not pick then
@@ -3258,8 +4267,24 @@ function OverworldState:talkTo(npc)
   -- legendary birds, Mewtwo, the Vermilion Machop, ...)
   if d.pokemon then
     npc:facePlayer(self.player)
+    -- WHAT IT SAYS BEFORE THE BATTLE, INCLUDING A LINE SOMEBODY TYPED.
+    --
+    -- `resolveText` answers for a text CONSTANT -- the extractor's
+    -- `_TinTowerHoOhText` and the like -- and the map editor writes prose into
+    -- the same field, because asking an author to mint a constant for one line
+    -- would be absurd. So an editor-made wild encounter resolved to nothing
+    -- and roared `Gyaoo!` over whatever it had been given: the author's line
+    -- was not missing from the box, it was replaced in it.
+    --
+    -- Same discriminator and same laid-out prose as the ordinary talk path
+    -- (`showMapText`): anything shaped like a key stays a key and still falls
+    -- back to the roar, so a genuine porting gap is not papered over.
     local text = select(1, Game.data:resolveText(self.map.def.label, d.text))
-                 or Strings("Gyaoo!")
+    if not text and type(d.text) == "string" and d.text ~= ""
+       and not OverworldState.looksLikeTextId(d.text) then
+      text = TextBox.fromProse(d.text)
+    end
+    text = text or Strings("Gyaoo!")
     local BattleState = require("src.battle.BattleState")
     Game.stack:push(TextBox.new(Game, text, function()
       local battle = BattleState.newWild(Game, d.pokemon, d.level)
@@ -3627,7 +4652,20 @@ function OverworldState:engageTrainer(npc, onDone)
 
   local BattleState = require("src.battle.BattleState")
   Game.stack:push(TextBox.new(Game, battleText, function()
-    local battle = BattleState.newTrainer(Game, d.trainerClass, d.trainerParty)
+    -- A TEAM THE AUTHOR BUILT WINS OVER AN INDEX INTO SOMEBODY ELSE'S.
+    --
+    -- `trainerParty` selects one of the parties the cartridge shipped for
+    -- `trainerClass`, which is right for a ported trainer and useless for an
+    -- NPC the editor invented -- there is no party for them, so they borrowed
+    -- one. `trainerTeam` is the party the author actually typed; when it is
+    -- there it is what they meant.
+    local battle
+    if type(d.trainerTeam) == "table" and #d.trainerTeam > 0 then
+      battle = BattleState.newEditorTrainer(Game, d.trainerTeam,
+                                            d.trainerClass, d.trainerName)
+    end
+    battle = battle or BattleState.newTrainer(Game, d.trainerClass,
+                                              d.trainerParty)
     -- PrintEndBattleText (home/trainers.asm:341) is called from
     -- TrainerBattleVictory (engine/battle/core.asm:942), i.e. ON the battle
     -- screen once ScrollTrainerPicAfterBattle has brought the beaten trainer
@@ -3787,7 +4825,19 @@ function OverworldState:checkTrainerSight()
             or not mapScripts.talkScript(self.map.id, d.text))
        and trainerSpriteOnScreen(npc, p) then
       local header = Game.data:trainerHeader(self.map.def.label, d.index)
-      local range = header and header.range or 0
+      -- THE OBJECT'S OWN RANGE WINS OVER THE HEADER'S.
+      --
+      -- The cartridge files sight range in a trainer header keyed by (map,
+      -- object index), so an NPC the map editor invented has no header and
+      -- reads 0 -- "never notices anybody". An authored trainer could only
+      -- ever be fought by walking up and talking to them.
+      --
+      -- `sightRange` is the editor's answer, and ABSENT is not the same as
+      -- ZERO: absent means "whatever the cartridge said", zero means "talk to
+      -- me", which is a real setting the ROM itself uses for gym trainers and
+      -- the Karate Master. Tested with `~= nil` for exactly that reason.
+      local range = d.sightRange
+      if range == nil then range = header and header.range or 0 end
       local vec = DIRVEC[npc.facing]
       if range > 0 and vec then
         local dist, horizontal
@@ -3856,6 +4906,29 @@ function OverworldState:startTrainerApproach(npc, dist)
   }
 end
 
+-- Does this look like a text CONSTANT rather than a line of dialogue?
+--
+-- Matched against the two shapes the extractor actually writes, which
+-- Commands.show_text's own header names: the map's `TEXT_*` pointers, and
+-- labels like `_PalletTownGirlText`. Nothing else is a key.
+--
+-- WHY THE TEST IS THIS NARROW. The obvious version -- "an identifier, so no
+-- spaces" -- calls a one-word line of dialogue a constant, and "Hello" is a
+-- perfectly ordinary thing for an author to type. Getting that wrong means
+-- silence, which is the failure being fixed here.
+--
+-- The bias is deliberate: when in doubt, SHOW IT. Prose that was really a
+-- missing constant appears on screen as `TEXT_FOO`, which explains itself in
+-- one glance; a missing constant treated as prose-that-failed shows nothing at
+-- all, and nothing is what took a day to diagnose.
+function OverworldState.looksLikeTextId(s)
+  if type(s) ~= "string" or s == "" then return false end
+  if s:find("%s") then return false end
+  return s:find("^TEXT_[%u%d_]+$") ~= nil       -- the map's own pointers
+      or s:find("^_%u[%w]*$") ~= nil            -- _PalletTownGirlText
+      or s:find("^[%u][%u%d_]*$") ~= nil        -- SCREAMING_CASE
+end
+
 -- Dispatch a TEXT_* constant: hand-ported script first, then extracted text.
 function OverworldState:showMapText(textConst, npc, onDone)
   local mapLabel = self.map.def.label
@@ -3882,6 +4955,41 @@ function OverworldState:showMapText(textConst, npc, onDone)
     if npc then npc:facePlayer(self.player) end
     Game.stack:push(TextBox.new(Game, text, onDone))
   else
+    -- PROSE IS ITS OWN TEXT.
+    --
+    -- `textConst` is normally a CONSTANT NAME -- TEXT_AZALEA_GRAMPS, or an
+    -- extracted label like _AzaleaTownGrampsText -- looked up in the map's
+    -- text pointers. The map editor writes something else into the same
+    -- field: the line the author typed, verbatim, because "plain dialogue"
+    -- is the common case and asking an author to mint a constant and add it
+    -- to a text table would be absurd.
+    --
+    -- So an editor-authored NPC failed the lookup, warned, and called
+    -- `onDone` -- no box, and no `facePlayer` either, since that only
+    -- happened on the two success branches. The report was "he doesn't say
+    -- anything and doesn't turn to face me", which is one bug, not two.
+    --
+    -- `Commands.show_text` HAS ALWAYS DONE THIS -- "literal string fallback
+    -- for hand-ported scripts", and Data:textEntry's own comment points at
+    -- it -- so a line reached through a script worked while the identical
+    -- line on an NPC did not. This is the asymmetry, not a new policy.
+    --
+    -- THE DISCRIMINATOR IS SHAPE, not a flag, because there is no flag to
+    -- read: a text constant is an IDENTIFIER by construction (the extractor
+    -- writes them), and prose is not. Anything that could be a key is still
+    -- reported as missing, so a genuine porting gap does not quietly print
+    -- its own constant on screen -- which is the failure this branch exists
+    -- to catch.
+    if type(textConst) == "string" and not OverworldState.looksLikeTextId(textConst)
+    then
+      if npc then npc:facePlayer(self.player) end
+      -- LAID OUT LIKE THE CARTRIDGE'S OWN, or it does not wait for the
+      -- player. Prose carries no `\n`/`\f`, so `paginate` wrapped it to the
+      -- box and put every resulting line on ONE page -- and a page does not
+      -- stop, it scrolls. `fromProse` puts the page breaks back.
+      Game.stack:push(TextBox.new(Game, TextBox.fromProse(textConst), onDone))
+      return
+    end
     Logger.warn("no text for %s/%s", mapLabel, textConst)
     if onDone then onDone() end
   end
@@ -3997,6 +5105,15 @@ function OverworldState:stepEggs()
   hatched.nickname = nil
   hatched.happiness = 120  -- BaseHappiness after HatchEggs
   Pokemon.heal(hatched)
+  -- HatchEggs (5:$6FB0) is `ld a, [wCurPartySpecies] / cp TOGEPI / jr nz,
+  -- .nottogepi / ld de, $0054 / ld b, 1 / EventFlagAction` -- hatching a
+  -- TOGEPI, and only a TOGEPI, sets EVENT_TOGEPI_HATCHED.  That is the flag
+  -- ElmPhoneCalleeScript tests (`checkevent $2D / iffalse .next / checkevent
+  -- $54 / iftrue .egghatched`), so without it ringing Elm after the EGG
+  -- hatched could never reach ElmPhoneEggHatchedText.
+  if hatched.species == "SPECIES_175" and Game.save.flags then
+    Game.save.flags[require("src.script.Gen2Flags").eventFlag(0x54)] = true
+  end
   local name = def and def.name or hatched.species
   Game.stack:push(TextBox.new(Game,
     Strings("Huh?\f%s hatched\nfrom the EGG!", name),
@@ -4040,14 +5157,110 @@ function OverworldState:onStepComplete()
     require("src.core.Music").setSurfing(Game.data, false)
   end
 
+  -- CheckPhoneCall rides this same step, right after the warp checks
+  self:checkIncomingPhoneCall()
+
   -- Route 22 Gate rewrites LAST_MAP by Y before warps/guards fire
   self:syncLastMapRewrite()
 
+  -- A warp square outranks a step trigger standing on it.  CheckTileEvent
+  -- (25:$6874) is `CheckWarpTile / jr c, .warp_tile` FIRST and only then
+  -- `CheckCoordEventsEnabled / CheckCurrentMapCoordEvents`, so a coord_event
+  -- sharing a cell with a warp never gets to eat the exit.
+  --
+  -- Goldenrod Pokecenter 1F is where that bites: its two coord_events sit on
+  -- (3,7) and (4,7), which ARE the two exit carpets (collision $70).  Running
+  -- the trigger first and returning meant the door never fired, so the player
+  -- walked in and could not walk back out.
+  --
+  -- ...except a carpet is not an immediate warp.  CheckWarpTile calls
+  -- CheckDirectionalWarp, which clears carry on the four COLL_WARP_CARPET_*
+  -- classes, so on those CheckTileEvent falls straight through to the
+  -- coord-event check -- the player stands on the mat and only leaves when
+  -- they walk on in the mat's own direction (DoPlayerMovement .EdgeWarps).
+  -- The port already has that second half: a blocked step while standing on
+  -- a warp square goes to Warp.onCollision.  Treating the carpet as
+  -- immediate is what made Goldenrod's GS BALL scene unreachable -- the two
+  -- coord_events it lives on could never run, so the receptionist never
+  -- walked over and the whole Celebi chain behind her stayed dead.
+  local warpFirst = nil
+  do
+    local entryCell = self.warpEntryCell
+    local onEntryCell = entryCell
+      and entryCell.x == p.cellX and entryCell.y == p.cellY
+    if not onEntryCell then
+      -- The carpet filter is inside Warp.onArrive now -- it is the second
+      -- half of CheckWarpTile, so it belongs beside the lookup rather than
+      -- being re-stated at each call site. It was stated here and NOT at the
+      -- call further down that actually takes the warp, which is exactly how
+      -- a doormat became a trapdoor.
+      warpFirst = Warp.onArrive(self.map, p.cellX, p.cellY)
+    end
+  end
+
+  -- AN AUTHORED EVENT THAT DECLARES ITSELF A REPLACEMENT, ahead of the hooks.
+  --
+  -- The default below is that the cartridge's own scenes own their squares,
+  -- and that is right: an authored trigger able to eat one would make a map
+  -- the player walks into and cannot walk out of, with nothing to tell the
+  -- author they had done it.
+  --
+  -- But "the editor cannot touch the cartridge's events" is too strong the
+  -- other way. A cartridge script is bytecode behind a label -- there is no
+  -- reading it back into beats -- so the only honest way to change one is to
+  -- stand in front of it, and the author has to be able to say so. `replaces`
+  -- is exactly that sentence, set per event in the events menu (MapEvents.adopt),
+  -- never by default: an event without it keeps the old ordering entirely.
+  --
+  -- STILL AFTER THE WARP. That half of the ordering is not about authorship --
+  -- it is CheckTileEvent testing the warp tile first -- and an authored event
+  -- that swallowed a door would strand the player just as surely.
+  if not warpFirst and not self.runner:isRunning() then
+    local events = self.map and self.map.def and self.map.def.events
+    if type(events) == "table" then
+      for _, ev in ipairs(events) do
+        if ev.replaces and ev.x == p.cellX and ev.y == p.cellY
+           and type(ev.script) == "table" and #ev.script > 0 then
+          self.runner:run(ev.script, { event = ev.id })
+          return
+        end
+      end
+    end
+  end
+
   -- hand-ported step triggers (Pallet intro, Saffron gate guards, ...)
   local hooks = mapScripts.get(self.map.id)
-  if hooks and hooks.onStep then
+  if not warpFirst and hooks and hooks.onStep then
     if hooks.onStep(Game, self, p.cellX, p.cellY) then
       return
+    end
+  end
+
+  -- EVENT TILES FROM THE MAP DATA, which is where an event the editor made
+  -- lives.
+  --
+  -- AFTER THE HAND-PORTED HOOKS AND AFTER THE WARP, deliberately. The ported
+  -- scripts are the cartridge's own scenes and they own their squares; a warp
+  -- outranks a trigger for the reason spelled out above (CheckTileEvent tests
+  -- the warp tile first). An authored event that could eat either would be a
+  -- map the player walks into and cannot walk out of, and the author would
+  -- have no way of knowing they had done it.
+  --
+  -- The rows are ordinary script rows -- `MapEvents.lower` emits nothing the
+  -- runner does not already walk -- so this is a lookup and a `run`, not a
+  -- second interpreter. Whether the event repeats is the SCRIPT's business:
+  -- it opens with its own `check_flag`/`jump_if_true` when the author asked
+  -- for once-only, which is the same mechanism they use for everything else.
+  if not warpFirst and not self.runner:isRunning() then
+    local events = self.map and self.map.def and self.map.def.events
+    if type(events) == "table" then
+      for _, ev in ipairs(events) do
+        if ev.x == p.cellX and ev.y == p.cellY and type(ev.script) == "table"
+           and #ev.script > 0 then
+          self.runner:run(ev.script, { event = ev.id })
+          return
+        end
+      end
     end
   end
 
@@ -4115,7 +5328,18 @@ function OverworldState:onStepComplete()
     -- ExtraWarpCheck must pass AND either a d-pad is held or BIT_FORCED_WARP
     -- is set (Seafoam B3F currents -- home/overworld.asm).
     local w = Warp.onArrive(self.map, p.cellX, p.cellY)
-    if not w and (self:dirHeld() or self.forcedWarp) then
+    -- ...and ExtraWarpCheck is a GEN 1 routine with no Gen 2 counterpart.
+    -- Gen 2's CheckTileEvent runs CheckWarpTile and nothing else; the only
+    -- other way a warp fires there is DoPlayerMovement .CheckWarp, which is
+    -- the directional carpet and is handled on the input side.
+    --
+    -- Leaving this on would put the corner mats back: ExtraWarpCheck falls
+    -- back to "is the player facing the map edge", so a LEFT-facing carpet
+    -- sitting on the bottom row would still warp somebody who walked down
+    -- along it -- the same wrong exit, through a different door.
+    local gen2Classes = GameVersion.isGen2()
+      and self.map.speaksGen2Collision and self.map:speaksGen2Collision()
+    if not w and not gen2Classes and (self:dirHeld() or self.forcedWarp) then
       w = Warp.onCollision(self.map, Game.data.field.warpCarpets,
                            p.cellX, p.cellY, p.facing)
     end
@@ -4135,6 +5359,25 @@ function OverworldState:onStepComplete()
     end
   end
 
+  -- TryWildEncounter_BugContest (25:$7D64): while the contest is running the
+  -- park rolls its OWN table (ContestMons) and ignores the map's wildmons
+  -- entirely.  Guarded on the run being live, so visiting the park outside the
+  -- contest still rolls the ordinary National Park slots.
+  local BugContest = require("src.world.BugContest")
+  if BugContest.active(Game.save)
+     and self.map.id == BugContest.contestMap()
+     and self.map:isGrassCell(p.cellX, p.cellY) then
+    local wild = BugContest.rollEncounter(Game)
+    if wild then
+      local BattleState = require("src.battle.BattleState")
+      local battle = BattleState.newWild(Game, wild.species, wild.level)
+      battle:makeBugContest()
+      battle.onFinish = function(result) self:afterBattle(result, battle) end
+      self:pushBattle(battle)
+    end
+    return
+  end
+
   -- wild encounters in grass, on water while surfing, or -- on indoor
   -- maps whose tileset is not FOREST -- on EVERY tile
   -- (wild_encounters.asm: caves, towers, the Mansion, Power Plant)
@@ -4144,6 +5387,7 @@ function OverworldState:onStepComplete()
   local env = self.map.def.environment
   -- Gen2 keeps a morn/day/nite slot set per map; the clock decides which
   local land = encDef and { grass = Encounter.atTime(encDef.grass, self:timeOfDay()) }
+  local onWater = (p.surfing and self.map:isWaterCell(p.cellX, p.cellY)) or false
   if p.surfing and encDef and encDef.water and self.map:isWaterCell(p.cellX, p.cellY) then
     enc = self:rollEncounter({ grass = encDef.water }, "water")
   elseif self.map:isGrassCell(p.cellX, p.cellY) then
@@ -4154,15 +5398,71 @@ function OverworldState:onStepComplete()
          and self.map.def.tileset ~= indoor.excludedTileset then
     enc = self:rollEncounter(land, "indoor")
   end
+
+  -- A battle is where the report puts it: the Elite Four member is drawn
+  -- before the fight and not after. Whatever churns the entity list across a
+  -- battle -- a mod's spawns being torn down and rebuilt around it is the
+  -- obvious candidate, since both voxel mods hold this list -- the actors this
+  -- map owns are put back in the draw list here.
+  self:reassertEntities("afterBattle")
+
+  -- ------------------------------------------------------ ROAMING BEASTS
+  --
+  -- ChooseWildEncounter asks CheckEncounterRoamMon BEFORE it rolls a slot,
+  -- and a hit jumps straight to .startwildbattle with the beast already
+  -- staged -- so a beast REPLACES the encounter this step was going to be
+  -- rather than being an extra chance on top of it.
+  --
+  -- Here that is the same statement made one step later: `enc` being non-nil
+  -- is exactly "LoadWildMonDataPointer found a table for this map AND the
+  -- encounter-rate roll passed", which is the state the cartridge is in when
+  -- it makes the call. What differs is only which numbers come off the RNG,
+  -- and nothing in this port is cycle-accurate about that anyway.
+  --
+  -- It has to sit ABOVE the repel test, because that is where the cartridge
+  -- has it -- and a beast is emphatically not exempt from repel (see below).
+  local roamer
+  if enc and not onWater then
+    local RoamMons = require("src.world.RoamMons")
+    local name, info = RoamMons.check(Game.save, self.map.id, onWater,
+                                      love.math.random)
+    if name then
+      local beast = RoamMons.encounterFor(name, info)
+      if beast and beast.species then
+        enc, roamer = beast, name
+      end
+    end
+  end
+
   if enc then
-    -- REPEL blocks wild mons weaker than the lead
-    local lead = Game.save.party[1]
+    -- REPEL blocks wild mons weaker than the lead.
+    --
+    -- "the lead" is CheckRepelEffect's `Get the first Pokemon in your party
+    -- that isn't fainted` -- it walks wPartyMon1HP forward until it finds a
+    -- live one -- NOT party slot 1. With a fainted lead this read the wrong
+    -- level, and it read `nil.level` and crashed outright on a party whose
+    -- first slot is an EGG.
+    --
+    -- AND THIS IS WHY THE BEASTS WOULD NOT SHOW UP FOR ANYONE HUNTING THEM
+    -- WITH MAX REPEL. The comparison is `wCurPartyLevel cp leadLevel /
+    -- jr nc, .encounter`: the encounter happens only when the wild level is
+    -- at least the lead's. Every beast is level 40. So a repel with anything
+    -- above level 40 in front suppresses Raikou, Entei and Suicune along with
+    -- everything else -- on the cartridge as much as here. Repel-hunting a
+    -- roamer needs a level 40-or-lower lead, which is also the only way it
+    -- ever worked on hardware.
+    local Party = require("src.pokemon.Party")
+    local lead = Party.firstHealthy(Game.save.party) or Game.save.party[1]
     if Game.save.repelSteps and Game.save.repelSteps > 0
-       and lead and enc.level < lead.level then
+       and lead and lead.level and enc.level < lead.level then
       return
     end
     local BattleState = require("src.battle.BattleState")
-    local battle = BattleState.newWild(Game, enc.species, enc.level)
+    -- BATTLETYPE_ROAMING: Music_SuicuneBattle, the one-turn flee, and the
+    -- HP that carries between meetings all hang off this.
+    local battle = BattleState.newWild(Game, enc.species, enc.level,
+      roamer and { battleType = "roaming", roamer = roamer,
+                   roamerHP = enc.roamerHP } or nil)
     -- map.ghostBattles: unidentifiable without the named item (the
     -- Pokemon Tower's Silph Scope)
     local ghost = Map.ghostBattles(self.map.def)
@@ -4526,6 +5826,28 @@ function OverworldState:afterBattle(result, battle)
   Logger.info("battle over: %s (lead %s %d/%d)", tostring(result),
               lead and lead.species or "-", lead and lead.hp or 0,
               lead and lead.stats.hp or 0)
+
+  -- ------------------------------------------------------ ROAMING BEASTS
+  --
+  -- The roam slot is the beast's whole existence: the cartridge keeps its
+  -- species, level, map and HP there, and clearing the slot's map group to
+  -- GROUP_N_A is how a caught or beaten beast stops existing. So the outcome
+  -- of the fight has to land back on the slot, or a caught Raikou keeps
+  -- roaming, keeps showing on the Pokegear, and can be caught again.
+  --
+  -- Escaping writes the HP back instead. That is the point of chasing one:
+  -- damage carries between meetings, and a beast on a sliver stays on a
+  -- sliver until you finally land the ball.
+  if battle and battle.roamer then
+    local RoamMons = require("src.world.RoamMons")
+    local enemy = battle.enemy
+    local hp = enemy and enemy.mon and enemy.mon.hp or 0
+    if result == "caught" or result == "win" or hp <= 0 then
+      RoamMons.retire(Game.save, battle.roamer)
+    else
+      RoamMons.remember(Game.save, battle.roamer, hp)
+    end
+  end
   local Evolution = require("src.pokemon.Evolution")
   local function evolutions()
     -- Only mons that gained a level this battle (EXP.ALL included).
@@ -4537,6 +5859,12 @@ function OverworldState:afterBattle(result, battle)
       and self.map and self.map.id == "OAKS_LAB"
     if oaksLabRival then
       -- stay in the lab; OaksLabRivalEndBattleScript heals and continues
+      evolutions()
+      return
+    end
+    -- BATTLETYPE_CANLOSE: the Battle Tower ends the challenge and warps the
+    -- player back to its own lobby, with no blackout and no money lost.
+    if battle and battle.canLose then
       evolutions()
       return
     end
@@ -4559,6 +5887,20 @@ function OverworldState:afterBattle(result, battle)
     -- throwing the last SAFARI BALL ends the game
     if Game.save.safari and Game.save.safari.balls <= 0 then
       self:safariGameOver(Strings("PA: You're out of\nSAFARI BALLs!"))
+    end
+    -- BugCatchingContestBattleScript's tail (contest.asm:8-13):
+    --
+    --     reloadmapafterbattle
+    --     readmem wParkBallsRemaining
+    --     iffalse BugCatchingContestOutOfBallsScript
+    --
+    -- so the OVERWORLD ends the run, not the battle -- which is why a missing
+    -- check here let the player keep throwing Park Balls forever after the
+    -- twentieth.
+    local BugContest = require("src.world.BugContest")
+    if BugContest.active(Game.save) and BugContest.ballsLeft(Game.save) <= 0 then
+      self:bugContestOver("_BugCatchingContestIsOverText",
+                          Strings("ANNOUNCER: The\nContest is over!"))
     end
     evolutions()
   end
@@ -4591,6 +5933,11 @@ function OverworldState:takeWarp(warpDef)
   -- LAST_WARP door on the far side comes straight back here
   self.backupWarp = { id = fromMap, x = self.player.cellX, y = self.player.cellY }
   Game.save.backupWarp = self.backupWarp
+  -- EnterMapWarp.SaveDigWarp (engine/overworld/warp_connection.asm): stepping
+  -- from an OUTDOOR map into an INDOOR one records the warp you came in
+  -- through, and that -- not the last Pokemon Center -- is where Gen 2's Dig
+  -- and Escape Rope put you back.
+  self:rememberDigWarp(fromMap, self.player.cellX, self.player.cellY, destMap)
   Runtime.emit("player.warped", { fromMap = fromMap, toMap = destMap,
                                   x = x, y = y, warp = warpDef })
   -- facing carries across the warp (leaving a gate sideways keeps you
@@ -4617,6 +5964,37 @@ function OverworldState:takeWarp(warpDef)
   end
   self.doorWarp = true -- door SFX + PlayerStepOutFromDoor walk-out
   self:startWarpTo(destMap, x, y, facing)
+end
+
+-- wDigWarpNumber / wDigMapGroup / wDigMapNumber (EnterMapWarp.SaveDigWarp).
+--
+-- Gen 2 does NOT send Dig and Escape Rope to the last Pokemon Center the way
+-- Gen 1 does -- .DoDig copies this straight into wNextWarp, so you come back
+-- out of the door you went in by. It is recorded on the way IN, and only when
+-- an outdoor map (TOWN/ROUTE) leads to an indoor one
+-- (INDOOR/CAVE/DUNGEON/GATE) -- CheckOutdoorMap / CheckIndoorMap, home/map.asm.
+-- Environments are 1-based (constants/map_data_constants.asm `const_def 1`).
+local DIG_FROM = { [1] = true, [2] = true }              -- TOWN, ROUTE
+local DIG_TO = { [3] = true, [4] = true, [6] = true, [7] = true }
+-- "outdoor maps within indoor maps": Dig and Escape Rope must not strand the
+-- player on either, so entering from one records nothing.
+local DIG_EXCLUDED = { MOUNT_MOON_SQUARE = true, TIN_TOWER_ROOF = true }
+
+function OverworldState:rememberDigWarp(fromMap, x, y, destMap)
+  if DIG_EXCLUDED[fromMap] then return end
+  local maps = Game.data and Game.data.maps
+  local from = maps and maps[fromMap]
+  local dest = maps and maps[destMap]
+  if not (from and dest) then return end
+  if not (DIG_FROM[from.environment] and DIG_TO[dest.environment]) then return end
+  self.digWarp = { id = fromMap, x = x, y = y }
+  Game.save.digWarp = self.digWarp
+end
+
+-- Where Escape Rope / Dig return to, or nil when nothing has been recorded --
+-- which is .CheckCanDig's zero test, and means the item cannot be used.
+function OverworldState:escapePoint()
+  return Game.save.digWarp or self.digWarp
 end
 
 -- Remember the outdoor side for LAST_MAP exits (pokered's wLastMap).
@@ -4661,7 +6039,7 @@ function OverworldState:warpToHealPoint(onDone, opts)
   self:syncSurfingPikachu()
   -- HandleFlyWarpOrDungeonWarp + DisplayPlayerBlackedOutText both clear
   -- BIT_ALWAYS_ON_BIKE (home/overworld.asm / home/text_script.asm)
-  Game.save.forcedBike = nil
+  self:clearBikeFlags()
   local map, x, y = heal.map, heal.x, heal.y
   local teleport = opts and opts.arrive == "teleport"
   if teleport then
@@ -4690,6 +6068,34 @@ function OverworldState:warpToHealPoint(onDone, opts)
   if heal.outdoor and not teleport then
     self:rememberOutdoor(heal.outdoor.id, heal.outdoor.x, heal.outdoor.y)
   end
+end
+
+-- .DoDig's own warp: back out through the recorded entrance. Landing on that
+-- warp tile is safe -- startWarpTo leaves the warp you arrive ON inert until
+-- you physically step off it, which is what stops a door bouncing you back.
+function OverworldState:warpToEscapePoint(onDone)
+  local point = self:escapePoint()
+  if not point then
+    if onDone then onDone() end
+    return
+  end
+  self.player.surfing = false
+  self:syncSurfingPikachu()
+  self:clearBikeFlags()
+  -- DOOR arrival, not teleport.  The recorded point IS the entrance cell, so
+  -- warping to it alone leaves the player standing IN the cave mouth.  The
+  -- script ends `newloadmap MAPSETUP_DOOR` (engine/events/overworld.asm:859) --
+  -- the same setup a door warp uses -- and that is what steps the player out of
+  -- the opening.  Gen2IsDoorway already counts $7B, the cave mouth, alongside
+  -- $71, the building door, so PlayerStepOutFromDoor fires for both and obeys
+  -- collision on the way.
+  --
+  -- Deliberately NOT also arriveWarp = "teleport": that is Gen 1's spin-down,
+  -- and stacking it here would play two arrival sounds over each other. The
+  -- cartridge's own arrival is `return_dig` -- the player emerging from the
+  -- ground -- which this port has no animation for either way.
+  self.doorWarp = true
+  self:startWarpTo(point.id, point.x, point.y, "down", onDone)
 end
 
 -- opts.keepMusic: scripted warps mid-cutscene keep the current song
@@ -4861,11 +6267,29 @@ end
 
 -- A map's `variablesprite` callback usually runs after its objects have been
 -- built, so re-resolve everything still pointing at the slot it just filled.
+-- Only FIVE of the thirteen wVariableSprites slots reach here as SPRITE_VAR_nn:
+-- the extractor names the rest after what they hold (SPRITE_WEIRD_TREE is slot
+-- 4, SPRITE_OLIVINE_RIVAL 5, SPRITE_AZALEA_ROCKET 6, SPRITE_COPYCAT 11,
+-- SPRITE_JANINE_IMPERSONATOR 12 -- src/import/RomExtractorGen2.lua's
+-- GEN2_SPRITE_ID_OVERRIDES).  Matching on the SPRITE_VAR_nn spelling alone
+-- therefore missed every named slot, which is every slot a script actually
+-- reassigns mid-scene: `variablesprite SPRITE_WEIRD_TREE, SPRITE_TWIN` after
+-- Sudowoodo, the Azalea and Olivine rival swaps, Copycat.  Ask NPC.lua which
+-- slot an id means instead of re-deriving it here, so the two cannot drift.
 function OverworldState:refreshVariableSprite(slot)
-  local id = string.format("SPRITE_VAR_%02d", slot)
-  for _, npc in pairs(self.npcPool or {}) do
-    if npc.def and npc.def.sprite == id then npc:refreshSprite(Game.data) end
+  local NPC = require("src.world.NPC")
+  local seen = {}
+  local function refresh(npc)
+    if not (npc and npc.def and npc.def.sprite) or seen[npc] then return end
+    if NPC.variableSpriteSlot(npc.def.sprite) == slot then
+      seen[npc] = true
+      npc:refreshSprite(Game.data)
+    end
   end
+  for _, npc in pairs(self.npcPool or {}) do refresh(npc) end
+  -- npcPool is the session's cache and normally a superset of the live list,
+  -- but an NPC built outside it (the Gen1 toggleObject path) is only in npcs.
+  for _, npc in ipairs(self.npcs or {}) do refresh(npc) end
 end
 
 -- -------------------------------------------------------------------------
@@ -5017,6 +6441,78 @@ function OverworldState:billboard(fx, fy, vw, vh, colors, keyed, drawFn)
   if shader then love.graphics.setShader() end
 end
 
+-- THE TILESET ATLAS A MAP DRAWS FROM, for a mod that renders the world itself.
+--
+-- A 3D world pipeline cannot use the finished 2D map canvas: voxel geometry
+-- samples the tileset SHEET per face, with its own UVs. So a mod that replaces
+-- the world pass needs the same sheet the flat renderer builds its quads from,
+-- and the tileset record that says how it is laid out.
+--
+-- The name is the one Gen1Recomp published and mods were written against
+-- (`World:atlasFor`). Without it STADIUM2_OVERWORLD_MODELS fails at
+-- `attachRenderer` with "Gold World:atlasFor is unavailable", its renderFrame
+-- returns no canvas, and the engine quietly falls back to the flat draw --
+-- which reads, from the player's side, as "the 3D world just does not turn on"
+-- with an empty log and every option switched on. Providing it is cheap and it
+-- is the seam the contract already assumed.
+--
+-- Returns the RAW sheet, deliberately, plus the tileset record:
+--   * a caller doing its own colour work (Gen 2 art is four-shade source, and
+--     the palette is chosen per 8x8 tile at bake time) needs the unbaked
+--     pixels, and re-baking an already-baked atlas would double-apply it;
+--   * `map.renderer.image` -- the baked one -- stays available to anything
+--     that wants what the 2D path actually painted.
+--
+-- `mapDef` is a map DEFINITION (`Game.data.maps.CERULEAN_CITY`), matched
+-- against the current map and its loaded neighbours first so the live tileset
+-- record (with any runtime normalisation on it) wins; a def for a map that is
+-- not resident falls back to the static tileset table.
+-- Returns nil when the sheet cannot be resolved -- never raises, because this
+-- runs inside a mod's render callback.
+function OverworldState:atlasFor(mapDef)
+  if type(mapDef) ~= "table" then return nil end
+
+  local map
+  if self.map and self.map.def == mapDef then
+    map = self.map
+  else
+    for _, nb in ipairs(self.neighbors or {}) do
+      if nb.map and nb.map.def == mapDef then map = nb.map break end
+    end
+  end
+
+  local tileset = map and map.tileset
+  if not tileset then
+    local data = Game and Game.data
+    local tilesets = data and data.tilesets
+    tileset = tilesets and mapDef.tileset and tilesets[mapDef.tileset] or nil
+  end
+  if not (tileset and tileset.image) then return nil end
+
+  local ok, image = pcall(Assets.image, tileset.image)
+  if not (ok and image) then return nil end
+  return image, tileset
+end
+
+-- Canvas pixels per world pixel, for a mod placing its own camera.
+--
+-- The companion to `viewW`/`viewH` above and to `atlasFor`: a renderer that
+-- replaces the world pass derives the view it must fill as `window / scale`
+-- when the state does not publish a view size directly.  Answering nil there
+-- leaves it assuming 1, i.e. the whole window in world pixels, and its camera
+-- ends up tens of tiles off the player.
+--
+-- Zoom is folded in, so this tracks the survey/diorama ladder rather than the
+-- fixed fit scale.  Returns nil before the renderer exists (headless, boot).
+function OverworldState:zoomScale()
+  if not (Game and Game.renderer and Game.renderer.fitScale) then return nil end
+  local ok, fit = pcall(Game.renderer.fitScale, Game.renderer)
+  if not (ok and tonumber(fit)) then return nil end
+  local okZoom, scale = pcall(Zoom.scale, fit)
+  if not (okZoom and tonumber(scale)) or tonumber(scale) <= 0 then return nil end
+  return tonumber(scale)
+end
+
 function OverworldState:drawWorld()
   -- Dark-map BG shade shift, armed for the whole frame before anything draws.
   -- home/fade.asm's LoadGBPal writes ONE rBGP for the screen, so terrain, the
@@ -5040,6 +6536,14 @@ function OverworldState:drawWorld()
   local bgY = cam.y + (self.bgShakeY or 0)
   -- border block tiled behind everything the ring doesn't reach
   local vw, vh = Game.renderer:worldViewSize()
+  -- ...and publish it, because a mod that owns the world pass has to place its
+  -- own camera and needs the size of the view it is filling.  A voxel renderer
+  -- centres on `cam.x + viewW / 2`: hand it the WINDOW size instead and the
+  -- camera lands half a window -- 32 by 24 tiles here -- past the player, which
+  -- is exactly the "the 3D world is not centred on me" report.  These are the
+  -- authoritative numbers (they account for letterboxing; window / scale does
+  -- not), refreshed every frame because zoom changes them.
+  self.viewW, self.viewH = vw, vh
   -- Only things that actually stand (player, NPCs, ghosts, items and the FX
   -- attached to them) leave the ground canvas to billboard upright in a
   -- separate pass anchored to the projected ground (:billboard).  Everything
@@ -5105,16 +6609,25 @@ function OverworldState:drawWorld()
           love.graphics.newQuad(0, 8, 8, 8, w, h), -- ball ($7d)
         }
       end
+      -- The machine carries its OWN four colours.  HealMachineAnim.LoadPalettes
+      -- (04:$6434) copies them over OBJ palette 6 before the animation runs --
+      -- which is why every row of its OAM table names palette 6 -- and they are
+      -- white / light orange / red / black: a Poke Ball.  Nothing was applying
+      -- any palette at all, so the sheet drew in the DMG greys it is decoded
+      -- in and a Pokemon Center healed with grey balls.
+      local def = fxDef and fxDef.healMachine
+      local objPal = def and def.gen2ObjPal
+      local basePal = (objPal and objPal[1] and objPal) or PaletteFX.GRAYS
       -- the jingle flash recolors the machine sprites in place
       -- (FlashSprite8Times XORs rOBP1; the sprites never disappear):
       -- ha.visible == false is the flashed half of each beat, drawn with
       -- the light/dark shades swapped instead of skipped
       local shader
-      if not ha.visible then
+      if (not ha.visible) or basePal ~= PaletteFX.GRAYS then
         shader = PaletteFX.shader()
         if shader then
-          PaletteFX.sendColors(shader,
-            PaletteFX.permute(PaletteFX.GRAYS, HEAL_FLASH_MAP))
+          PaletteFX.sendColors(shader, ha.visible and basePal
+            or PaletteFX.permute(basePal, HEAL_FLASH_MAP))
           love.graphics.setShader(shader)
         end
       end
@@ -5123,10 +6636,21 @@ function OverworldState:drawWorld()
       -- the balls a pixel off the machine tiles
       local ox = ha.px - 64 - math.floor(cam.x)
       local oy = ha.py - 64 - math.floor(cam.y)
+      -- Gen2 puts these sprites somewhere else entirely.  Its
+      -- HealMachineAnim.PC_ElmsLab_OAM (04:$63BC) has the monitor at x 26/30
+      -- and the balls at x 24/32; Gen1's PokeCenterOAMData has the balls at
+      -- 40/48.  The extractor reads that OAM table straight off the cartridge
+      -- into field.overworldFx.healMachine, so use it where it exists and keep
+      -- the Gen1 constants as the fallback -- drawn at Gen1's offsets the
+      -- whole overlay sat a full 16px right of the Gen2 machine.
+      local monitor = (def and def.monitor) or { { 44, 20 } }
+      local balls = (def and def.balls) or HEAL_BALL_XY
       love.graphics.setColor(1, 1, 1, 1)
-      love.graphics.draw(img, self.healMachineQuads[1], ox + 44, oy + 20)
-      for i = 1, math.min(ha.lit, #HEAL_BALL_XY) do
-        local b = HEAL_BALL_XY[i]
+      for _, m in ipairs(monitor) do
+        love.graphics.draw(img, self.healMachineQuads[1], ox + m[1], oy + m[2])
+      end
+      for i = 1, math.min(ha.lit, #balls) do
+        local b = balls[i]
         if b[3] then -- right column: OAM_XFLIP
           love.graphics.draw(img, self.healMachineQuads[2],
                              ox + b[1] + 8, oy + b[2], 0, -1, 1)
@@ -5305,11 +6829,40 @@ function OverworldState:drawWorld()
     -- point projects under the pipeline's own camera.  That is the direct
     -- analogue of what :billboard does for tilt, and it keeps exactly one
     -- copy of every effect: the closures above are the ones that run.
-    local pw, ph = love.graphics.getDimensions()
+    -- ctx.width/height are FRAMEBUFFER PIXELS, not LOVE units.
+    --
+    -- They have to be, because everything else in this contract already is:
+    -- `scale` is Zoom.scale over Renderer:fitScale, which measures the
+    -- drawable, and Renderer:endFrame composites the returned canvas so that
+    -- one canvas pixel is one display pixel.  This line used to read
+    -- love.graphics.getDimensions() -- LOVE UNITS -- while calling the result
+    -- `pw, ph`, so a pipeline that sized its render target from it paid the DPI
+    -- scale TWICE: the canvas came out that much smaller and was then drawn
+    -- that much smaller again, landing the whole 3D world in the TOP-LEFT
+    -- CORNER at 1/dpi of the screen with black around it.  Invisible on
+    -- desktop, where units and pixels are the same thing.  On Android the DPI
+    -- scale is the display density, so the world came out roughly a third of
+    -- the size in each direction.
+    --
+    -- DRAMATIC_SHAPE worked around this by asking the GPU itself (its
+    -- `sceneSize` helper) rather than trusting the ctx, which is why that mod
+    -- looked right on a phone while forks of it made before that fix did not.
+    -- Both agree now, so neither double-corrects.
+    --
+    -- unitWidth/unitHeight are the same window in LOVE units for a pipeline
+    -- that genuinely wants them.  On desktop all four numbers are equal.
+    local uw, uh = love.graphics.getDimensions()
+    local pw, ph = uw, uh
+    if love.graphics.getPixelDimensions then
+      local gw, gh = love.graphics.getPixelDimensions()
+      if gw and gh and gw > 0 and gh > 0 then pw, ph = gw, gh end
+    end
     local pscale = Zoom.scale(Game.renderer:fitScale())
     local ctx = {
       state = self, cam = cam, vw = vw, vh = vh, bgY = bgY,
       width = pw, height = ph, scale = pscale,
+      pixelWidth = pw, pixelHeight = ph,
+      unitWidth = uw, unitHeight = uh,
       level = Pipelines.level(pipelineId),
       -- the SGB world palette a map draws under; nil in the true-colour
       -- modes, whose art is already baked (and must not be re-mapped)

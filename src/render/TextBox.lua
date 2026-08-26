@@ -6,6 +6,7 @@
 -- substituted before display.  Pushed on the state stack; pops itself when
 -- the text is exhausted and A is pressed, then calls onDone.
 
+local Logger = require("src.core.Logger")
 local Font = require("src.render.Font")
 local Theme = require("src.ui.Theme")
 local Timing = require("src.core.Timing")
@@ -77,18 +78,58 @@ end
 -- RAM keeps pokered's stale-buffer semantics: give_item copies the item
 -- name into stringBuffer, like GiveItem -> CopyToStringBuffer
 -- (home/give.asm), and it stays set afterwards.
+-- The name a party slot answers to: its nickname, or the species' name.
+local function partyMonName(game, slot)
+  local save = game and game.save
+  local mon = save and save.party and save.party[slot]
+  if not mon then return nil end
+  if mon.nickname and mon.nickname ~= "" then return mon.nickname end
+  local species = game.data and game.data.pokemon and game.data.pokemon[mon.species]
+  return species and species.name or nil
+end
+
 TextBox.TOKENS = {
   PLAYER = function(game) return game.save.player.name or "RED" end,
   RIVAL = function(game) return game.save.player.rival or "BLUE" end,
   RAM = function(game, arg)
+    -- polished addresses the player through TX_RAM rather than a dedicated
+    -- control char, so these two are dialogue-critical: without them the
+    -- name token fell through to the shared string buffer, and every NPC
+    -- who addressed the player used the last buffered item name instead --
+    -- "so, ULTRA BALL!".
+    if arg == "wPlayerName" then return game.save.player.name or "RED" end
+    if arg == "wRivalName" then return game.save.player.rival or "SILVER" end
+    if arg == "wTrendyPhrase" then return game.trendyPhrase or "COOL" end
     if arg == "wStringBuffer" then return game.stringBuffer end
-    -- Gen2's text_ram splices wStringBuffer1..5 (the mon nick, the item
-    -- name, the trainer name) into the middle of a line.  The port keeps a
-    -- single stringBuffer, so every index resolves to it -- wStringBuffer3
-    -- is the one the berry-tree texts use, and leaving it out printed the
-    -- raw token.
+    -- Gen2's text_ram splices wStringBuffer1..5 into the middle of a line,
+    -- and the three script-addressable ones carry DIFFERENT things at the
+    -- same time: 3 the trainer name, 4 a species, 5 a landmark.  Collapsing
+    -- them onto one buffer meant whichever was written last won -- on the
+    -- phone that is always the species, so every landmark line read "Come
+    -- pick it up on MAGIKARP."
+    --
+    -- Slots the writers name explicitly win; a slot nobody has written falls
+    -- back to the single legacy buffer, which is what every non-phone caller
+    -- (the berry trees, the item gifts) still writes.
     if arg and arg:match("^wStringBuffer%d$") then
+      local slot = tonumber(arg:sub(-1))
+      local slots = game.stringBuffers
+      local value = slot and slots and slots[slot]
+      if value ~= nil then return value end
       return game.stringBuffer
+    end
+    -- PRISM'S POKEMON MODE addresses the mon the player IS by the party
+    -- nickname block: `AcquaTutorialFirstSoil_Text` is `text_from_ram
+    -- wPartyMonNicknames` followed by " eagerly devoured the soil.", and the
+    -- breeding lines name the two day-care mons the same way.  With no handler
+    -- the token dropped and the Rock Smash box in the Larvitar cave opened on
+    -- a space.
+    if arg == "wPartyMonNicknames" or arg == "wPartyMon1Nick"
+       or arg == "wBreedMon1" or arg == "wBreedMon1Nick" then
+      return partyMonName(game, 1)
+    end
+    if arg == "wBreedMon2" or arg == "wBreedMon2Nick" then
+      return partyMonName(game, 2)
     end
     if arg == "wBoxNumString" then return game.boxNumString end
     -- SendNewMonToBox / _SentToBoxText reads the deposited nick here
@@ -114,6 +155,12 @@ end
 -- pages.contBefore[p][i] is true when line i was preceded by \v (cont):
 -- pokered ContText waits for A/B + ▼ before scrolling that line in.
 function TextBox.paginate(text, maxCols)
+  -- A missing line is a content bug, not a reason to take the whole game
+  -- down.  It arrives as nil whenever a dataset lacks a symbol some caller
+  -- assumed -- Prism's new game died here, at `text .. "\f"` below, on the
+  -- intro's very first line -- and an empty page list just closes the box,
+  -- which is recoverable where a hard error is not.
+  if type(text) ~= "string" then text = text ~= nil and tostring(text) or "" end
   maxCols = maxCols or (Theme.textBox and Theme.textBox.maxCols) or MAX_COLS
   -- maxCols is a column count, so the budget is that many vanilla 8px
   -- cells.  Measuring in pixels rather than columns is what lets a mod's
@@ -178,6 +225,83 @@ function TextBox.paginate(text, maxCols)
   return pages
 end
 
+-- PLAIN PROSE -> THE MARKED-UP TEXT THE CARTRIDGE WOULD HAVE HAD.
+--
+-- Cartridge text arrives carrying its own layout: `\n` starts the second
+-- line, `\f` ends a page and waits for A. Text an author typed in the map
+-- editor carries none of that -- it is a sentence -- so `paginate` wrapped it
+-- to the box width and put every one of the resulting lines on a SINGLE page.
+-- A page with ten lines does not wait; it scrolls them past and closes. The
+-- report was "the text box just runs to the end without me pressing A", which
+-- is exactly that.
+--
+-- So the layout is put back. The wrapping is `paginate`'s own -- called here
+-- rather than reimplemented, because it measures in PIXELS against the font
+-- actually loaded (a mod's variable-advance font wraps differently) and a
+-- second copy that counted characters would disagree with the box it is
+-- wrapping for.
+--
+-- TWO LINES A PAGE, which is what the window shows. Not three with a scroll:
+-- the ROM's own authored text is written two lines at a time, and a box that
+-- scrolled a line away before the reader pressed anything is the bug being
+-- fixed, not a smaller version of it.
+--
+-- THE AUTHOR'S OWN BREAKS ARE KEPT. A blank line between paragraphs becomes a
+-- page break, and a single newline starts a new line -- so someone who laid
+-- their dialogue out deliberately gets what they laid out, and someone who
+-- typed one long sentence gets it wrapped for them.
+function TextBox.fromProse(text, maxCols)
+  if type(text) ~= "string" or text == "" then return text end
+  -- Already marked up: leave it exactly alone. Cartridge text comes through
+  -- here too by way of the same call sites, and re-paginating it would move
+  -- breaks its author chose.
+  if text:find("[\f\v]") then return text end
+
+  -- THE AUTHOR'S OWN BREAKS ARE UNITS, not suggestions.
+  --
+  -- A single newline is a line break -- the ROM's `\n` means exactly that --
+  -- so each typed line is wrapped on its own and its pieces stay in order. A
+  -- BLANK line ends the page, which is how anyone lays out dialogue without
+  -- being taught a markup.
+  --
+  -- The alternative -- reflowing everything into one paragraph -- was the
+  -- first cut, and it silently discarded a layout the author had chosen. Being
+  -- friendlier to someone who typed one long line is not worth overriding
+  -- someone who typed three short ones deliberately.
+  local blocks, current = {}, {}
+  for line in (text .. "\n"):gmatch("(.-)\n") do
+    if line:match("^%s*$") then
+      if #current > 0 then blocks[#blocks + 1] = current; current = {} end
+    else
+      current[#current + 1] = (line:gsub("^%s+", ""):gsub("%s+$", ""))
+    end
+  end
+  if #current > 0 then blocks[#blocks + 1] = current end
+  if #blocks == 0 then return text end
+
+  local pages = {}
+  for _, block in ipairs(blocks) do
+    local wrapped = {}
+    for _, line in ipairs(block) do
+      -- `paginate` on a break-free string yields one page holding every
+      -- wrapped line, which is precisely the list this wants. Called rather
+      -- than reimplemented: it measures in PIXELS against the font actually
+      -- loaded, and a second copy counting characters would disagree with the
+      -- box it is wrapping for.
+      for _, piece in ipairs(TextBox.paginate(line, maxCols)[1] or { line }) do
+        wrapped[#wrapped + 1] = piece
+      end
+    end
+    local i = 1
+    while i <= #wrapped do
+      local a, b = wrapped[i], wrapped[i + 1]
+      pages[#pages + 1] = b and (a .. "\n" .. b) or a
+      i = i + 2
+    end
+  end
+  return table.concat(pages, "\f")
+end
+
 function TextBox:currentLine()
   return self.pages[self.pageIndex][self.lineIndex]
 end
@@ -227,7 +351,21 @@ function TextBox:update(dt)
       -- #249).
       if self.auto.tick then self.auto.tick() end
       if self.autoSrc and self.autoSrc.isPlaying and self.autoSrc:isPlaying() then
-        return -- the cry is still sounding (WaitForSoundToFinish)
+        -- WaitForSoundToFinish, but bounded.  This gate swallows input, so a
+        -- source that never reports itself finished -- a looping def, a
+        -- driver that leaves isPlaying() true, an OpenAL device that stalls
+        -- -- is not a slow box, it is a hard freeze with no way out: the
+        -- report was the game locking on the Clear Bell hand-over in the
+        -- Radio Tower, which is a keyItem verbosegiveitem and so the one
+        -- box in that scene with a fanfare gate on it.  No fanfare in either
+        -- generation runs longer than about six seconds, so give up at ten
+        -- and hand the box to the ordinary A/B path.
+        self.autoWaited = (self.autoWaited or 0) + 1
+        if self.autoWaited < 600 then
+          return -- the cry is still sounding (WaitForSoundToFinish)
+        end
+        Logger.warn("text box: fanfare never finished, releasing the box")
+        self.autoSrc = nil
       end
       -- auto.wait: the pet-NPC cries (PewterNidoranHouseNidoranText,
       -- ViridianNicknameHouseSpearowText) have nothing queued behind the

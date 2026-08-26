@@ -25,8 +25,17 @@ function StartMenu.new(game)
   -- submenu gets an onCancel that re-opens it
   local function reopen() Screens.push(game, "StartMenu") end
 
-  -- POKéDEX: only after Oak hands it over
-  if flags.EVENT_GOT_POKEDEX then
+  -- StartMenu.DrawBugContestStatus (engine/menus/start_menu.asm:396) tests
+  -- STATUSFLAGS2_BUG_CONTEST_TIMER_F and, while the contest is running, draws
+  -- a status box ABOVE the menu -- it is not a menu row, and it is not
+  -- selectable.  Drawn at the bottom of this file, like the Safari Zone's.
+  local BugContest = require("src.world.BugContest")
+  local inContest = BugContest.active(game.save)
+
+  -- POKéDEX: only after the professor hands it over -- and WHICH FLAG that is
+  -- differs per cartridge, so it goes through Flags.hasPokedex (Prism sets
+  -- ENGINE_POKEDEX where Gold and Crystal set EVENT_GOT_POKEDEX).
+  if require("src.script.Flags").hasPokedex(game.save) then
     table.insert(items, { label = Strings("POKéDEX"), onSelect = function()
       Screens.push(game, "PokedexMenu", { onCancel = reopen })
     end })
@@ -40,16 +49,26 @@ function StartMenu.new(game)
     end })
   end
 
-  -- POKéMON is always listed (draw_start_menu.asm prints it even with
-  -- an empty party; selecting it then just no-ops)
-  table.insert(items, { label = Strings("POKéMON"), onSelect = function()
-    if #game.save.party == 0 then return end
-    Screens.push(game, "PartyMenu", { onCancel = reopen })
-  end })
+  -- R/B's draw_start_menu.asm prints POKéMON even with an empty party and
+  -- no-ops on select.  GSC does not: StartMenu builds its item list from
+  -- flags and leaves POKéMON out entirely until the player owns one, which
+  -- is why it looked wrong sitting there before Elm hands the starter over.
+  if #game.save.party > 0
+     or not require("src.core.GameVersion").isGen2() then
+    table.insert(items, { label = Strings("POKéMON"), onSelect = function()
+      if #game.save.party == 0 then return end
+      Screens.push(game, "PartyMenu", { onCancel = reopen })
+    end })
+  end
 
-  table.insert(items, { label = Strings("ITEM"), onSelect = function()
-    Screens.push(game, "BagMenu", { onCancel = reopen })
-  end })
+  -- .SetUpMenuItems' `.no_pack`: the PACK row is left OUT entirely while the
+  -- contest timer is running (start_menu.asm:51-57).  You are carrying Park
+  -- Balls, not your bag, and the balls are thrown from the battle menu.
+  if not inContest then
+    table.insert(items, { label = Strings("ITEM"), onSelect = function()
+      Screens.push(game, "BagMenu", { onCancel = reopen })
+    end })
+  end
 
   -- the player's name opens the trainer card (StartMenu_TrainerInfo)
   table.insert(items, { label = game.save.player.name or "RED",
@@ -58,7 +77,11 @@ function StartMenu.new(game)
     end })
 
   -- SAVE shows the player/badges/dex/time panel then asks to confirm
-  -- (PrintSaveScreenText)
+  -- (PrintSaveScreenText).  During the contest the SAME SLOT becomes QUIT
+  -- instead -- `ld a, STARTMENUITEM_QUIT / jr nz, .write` in .SetUpMenuItems
+  -- (start_menu.asm:77-85) -- so you cannot save mid-run, and QUIT is added
+  -- below rather than here.
+  if not inContest then
   table.insert(items, { label = Strings("SAVE"), onSelect = function()
     local TextBox = require("src.render.TextBox")
     local badges = require("src.inventory.Badges").count(game.data, game.save)
@@ -86,6 +109,8 @@ function StartMenu.new(game)
     }))
   end })
 
+  end
+
   table.insert(items, { label = Strings("OPTION"), onSelect = function()
     Screens.push(game, "OptionsMenu", { onCancel = reopen })
   end })
@@ -110,15 +135,39 @@ function StartMenu.new(game)
   -- the original's EXIT just closed the menu (CloseStartMenu); with a
   -- window close button covering that, QUIT instead power-cycles back
   -- to the title after a confirm (defaultNo guards accidental quits)
-  table.insert(items, { label = Strings("QUIT"), onSelect = function()
-    local TextBox = require("src.render.TextBox")
-    game.stack:push(TextBox.new(game, Strings("RETURN TO MAIN\nMENU?"), nil, {
-      defaultNo = true,
-      choice = function(yes)
-        if yes then game:returnToTitle() end
-      end,
-    }))
-  end })
+  -- StartMenu_Quit: during the contest QUIT does NOT leave the game, it offers
+  -- to end the Contest (_StartMenuContestEndText).  That is the "how do I get
+  -- out of here" exit a cartridge gives you.
+  if inContest then
+    table.insert(items, { label = Strings("QUIT"), onSelect = function()
+      local TextBox = require("src.render.TextBox")
+      game.stack:push(TextBox.new(game,
+        Strings("Would you like to\nend the Contest?"), nil, {
+        defaultNo = true,
+        choice = function(yes)
+          if not yes then return reopen() end
+          -- StartMenu_Quit (engine/menus/start_menu.asm:411) does exactly one
+          -- thing on YES: FarQueueScript BugCatchingContestReturnToGateScript.
+          -- It does NOT judge, score or tear the run down first -- all of that
+          -- is inside the script it queues, and it has to happen AT THE GATE,
+          -- in the cartridge's order.  Ending the run here as well meant
+          -- judging later scored a run that had already been zeroed, so the
+          -- prize was always the consolation BERRY.
+          game.overworld:bugContestReturnToGate()
+        end,
+      }))
+    end })
+  else
+    table.insert(items, { label = Strings("QUIT"), onSelect = function()
+      local TextBox = require("src.render.TextBox")
+      game.stack:push(TextBox.new(game, Strings("RETURN TO MAIN\nMENU?"), nil, {
+        defaultNo = true,
+        choice = function(yes)
+          if yes then game:returnToTitle() end
+        end,
+      }))
+    end })
+  end
 
   local hooked = Runtime.call("ui.start_menu.items", sameItems, game, items)
   if type(hooked) == "table" then
@@ -164,6 +213,40 @@ function StartMenu.new(game)
   -- early out, and used to show "502/500" while the player was still
   -- standing at the counter (#540).  Same map set as the step counter's
   -- (FieldDefaults safari.stepMaps via OverworldState:inSafariStepZone).
+  -- StartMenu_PrintBugContestStatus (engine/menus/menu_2.asm:152) draws the
+  -- contest panel above the menu: a Textbox at hlcoord 0,0 with b = 5 rows and
+  -- c = 17 columns, then
+  --
+  --     hlcoord 1, 1  "CAUGHT"     hlcoord 8, 1  <mon name> or "None"
+  --     hlcoord 1, 3  "LEVEL"      right after it, the level, left-aligned
+  --     hlcoord 1, 5  "BALLS:"     hlcoord 8, 5  wParkBallsRemaining
+  --
+  -- Note there is NO TIMER in it.  The clock runs, and it ends the contest,
+  -- but the cartridge never shows you how long is left -- so neither does
+  -- this.  The LEVEL row appears only once something has been caught
+  -- (`ld a, [wContestMon] / and a / jr z, .skip_level`).
+  if inContest then
+    local baseDraw = menu.draw
+    menu.draw = function(self)
+      baseDraw(self)
+      Font.drawBox(0, 0, 17, 5)
+      love.graphics.setColor(0, 0, 0, 1)
+      Font.draw(Strings("CAUGHT"), 8, 8)
+      local caught = BugContest.caught(game.save)
+      if caught then
+        local def = game.data.pokemon[caught.species]
+        Font.draw((def and def.name) or tostring(caught.species), 64, 8)
+        Font.draw(Strings("LEVEL"), 8, 24)
+        Font.draw(tostring(math.floor(caught.level or 0)), 56, 24)
+      else
+        Font.draw(Strings("None"), 64, 8)
+      end
+      Font.draw(Strings("BALLS:"), 8, 40)
+      Font.draw(("%d"):format(BugContest.ballsLeft(game.save)), 64, 40)
+      love.graphics.setColor(1, 1, 1, 1)
+    end
+  end
+
   local ow = game.overworld
   if game.save.safari and ow and ow.map and ow.inSafariStepZone
      and ow:inSafariStepZone() then

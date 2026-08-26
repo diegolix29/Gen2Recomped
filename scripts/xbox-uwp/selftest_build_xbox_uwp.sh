@@ -17,7 +17,11 @@ printf '%s' "$help" | grep -q -- '--version X.Y.Z' \
   || fail "build help does not document --version"
 
 say "checking the shared game.love payload"
+<<<<<<< HEAD
 temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/gen1recomp-uwp-selftest.XXXXXX")"
+=======
+temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/Gen2Recomped-uwp-selftest.XXXXXX")"
+>>>>>>> G2/main
 trap 'rm -rf "$temp_dir"' EXIT
 love_file="$temp_dir/game.love"
 listing="$temp_dir/love-listing.txt"

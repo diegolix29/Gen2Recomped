@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Assemble loose-mode Switch dist: gen1recomp.nro + game.love side by side.
+# Assemble loose-mode Switch dist: gen2recomp.nro + game.love side by side.
 #
 # Usage:
 #   scripts/switch/assemble_loose.sh [path/to/game.love]
 #
 # Defaults game.love to .bazinga/work/game.love. Copies pinned love.nro from
-# .bazinga/love-nx/11.5-nx1/love.nro → dist/switch/loose/gen1recomp.nro.
+# .bazinga/love-nx/11.5-nx1/love.nro → dist/switch/loose/gen2recomp.nro.
 # Prints SHA-256 for both outputs. Exits non-zero if love.nro is missing.
 
 set -euo pipefail
@@ -17,7 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOVE_NRO="$ROOT/.bazinga/love-nx/11.5-nx1/love.nro"
 GAME_LOVE="${1:-$ROOT/.bazinga/work/game.love}"
 OUT_DIR="$ROOT/dist/switch/loose"
-OUT_NRO="$OUT_DIR/gen1recomp.nro"
+OUT_NRO="$OUT_DIR/gen2recomp.nro"
 OUT_LOVE="$OUT_DIR/game.love"
 
 if [ ! -f "$LOVE_NRO" ]; then

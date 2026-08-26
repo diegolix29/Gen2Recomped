@@ -87,6 +87,11 @@ local function sameItems(_, items) return items end
 -- excluded by map id in ItemUseEscapeRope)
 local DIG_TILESETS = { FOREST = true, CEMETERY = true, CAVERN = true,
                        FACILITY = true, INTERIOR = true }
+-- Gen 2 gates on the map header's environment byte instead of a tileset list
+-- (.CheckCanDig: `cp CAVE` / `cp DUNGEON`), so none of the Gen 1 tileset names
+-- above ever match a Gold/Crystal map and DIG was never offered at all.
+-- Environments are 1-based: CAVE 4, DUNGEON 7.
+local GEN2_DIG_ENVIRONMENTS = { [4] = true, [7] = true }
 
 -- Field moves GSC adds on top of R/B's list (start_sub_menus.asm's Gen2
 -- successor, engine/pokemon/mon_menu.asm MonMenuOptions).
@@ -157,16 +162,29 @@ local GEN2_ICON_CELL = 16
 -- through a nearest-neighbour scale throws away five pixels in six, which is
 -- the mush the rows used to show.  A mipmapped linear reduction box-filters
 -- the whole pic down instead, so the silhouette survives.
+-- A SHINY WEARS THE OTHER HALF OF ITS PALETTE ROW, HERE TOO.
+--
+-- GetMonNormalOrShinyPalettePointer (02:$5C66) adds 4 to the species'
+-- PokemonPalettes row when CheckShininess passes, which is why the battle pic
+-- (BattleState.monPalette) and the stats screen (SummaryMenu) both pass a
+-- shiny flag into PaletteFX.  This bake asked for `def.palette` and nothing
+-- else, so a shiny in the PARTY or the BOX was coloured normal even though
+-- the overworld follower beside it was not -- the red Gyarados case.
+--
+-- The palette NAME joins the cache key on purpose: a shiny and a normal
+-- Gyarados share one sprite path, so keying on the path alone would hand
+-- whichever baked first to both.
 local function gen2IconImage(game, mon, path)
-  local key = path .. "#g2icon"
+  local P = require("src.render.PaletteFX")
+  local shiny = require("src.pokemon.Stats").isShiny(mon.dvs)
+  local key = path .. "#g2icon#"
+    .. tostring(P.monPalName(game.data, mon.species, nil, shiny))
   if iconImages[key] ~= nil then return iconImages[key] or nil end
   local ok, img = pcall(function()
     if not (love.image and love.image.newImageData) then
       return love.graphics.newImage(Assets.resolve(path)) -- headless stub
     end
-    local def = game.data.pokemon[mon.species]
-    local pals = game.data.palettes and game.data.palettes.palettes
-    local pal = pals and def and def.palette and pals[def.palette]
+    local pal = P.monPal(game.data, mon.species, nil, shiny)
     local data = Assets.imageData(path)
     if pal and pal[1] and pal[4] then
       data:mapPixel(function(_, _, r, _, _, a)
@@ -210,11 +228,24 @@ local function drawEggIcon(game, x, y, counter)
   return true
 end
 
+-- OPTIONS -> PARTY ICONS.  "dex" (the default, and what the port has always
+-- drawn) shrinks the Pokedex front pic into the cell; "classic" falls through
+-- to the shared icon path, which picks up icons.bySpecies -- the ROM's own
+-- MonMenuIcons art RomExtractorGen2:extractIcons writes per species.  The EGG
+-- branch is deliberately ABOVE the switch: ReadMonMenuIcon.egg swaps in
+-- ICON_EGG before anything looks at the species in either mode, so an egg must
+-- never reveal itself as a dex pic OR as its species' menu icon.
+function PartyMenu.usesClassicIcons(game)
+  local o = game and game.save and game.save.options
+  return (o and o.partyIcons == "classic") and true or false
+end
+
 local function drawGen2Icon(game, mon, x, y, counter)
   if require("src.pokemon.Party").isEgg(mon)
      and drawEggIcon(game, x, y, counter) then
     return true
   end
+  if PartyMenu.usesClassicIcons(game) then return false end
   local path = require("src.pokemon.Sprites").path(
     game.data, mon.species, "front", { kind = "icon", mon = mon })
   if not path then return false end
@@ -253,6 +284,13 @@ local function obpIcon(path)
     return v, v, v, a
   end)
   return love.graphics.newImage(id)
+end
+
+-- The two modes cache under different keys (path.."#g2icon" vs path or
+-- path.."#obp"), so nothing is stale after a flip -- but a mod may point both
+-- at one path, and the row is cheap to make exact.
+function PartyMenu.forgetIconCache()
+  for k in pairs(iconImages) do iconImages[k] = nil end
 end
 
 local function drawIcon(game, mon, x, y, selected, counter)
@@ -513,6 +551,10 @@ function PartyMenu:update(dt)
         local ow = self.game.overworld
         local TextBox = require("src.render.TextBox")
         local Transition = require("src.render.Transition")
+        -- The other half of CheckUseFlash: using it in the Aerodactyl chamber
+        -- opens the wall.  The chamber's scene script plays the opening the
+        -- next time the map loads, exactly as the escape-rope one does.
+        require("src.script.RuinsOfAlph").aerodactylChamber(self.game)
         self.game.save.flashLit = true
         self.game.stack:push(TextBox.new(self.game,
           self.game.data.text._FlashLightsAreaText
@@ -654,18 +696,40 @@ function PartyMenu:update(dt)
         self:close()
         if not ow:gen2FieldMoveAt(entry.move, mon, fx, fy) then
           local TextBox = require("src.render.TextBox")
+          -- _CantSurfText is "You can't SURF here", so using it for every
+          -- field move told a player holding HEADBUTT that the game thought
+          -- they had picked SURF.  Only SURF gets the surf line.
+          local text = (entry.move == "SURF")
+            and self.game.data.text._CantSurfText or nil
           self.game.stack:push(TextBox.new(self.game,
-            self.game.data.text._CantSurfText
-              or Strings("You can't use that\nhere.")))
+            text or Strings("You can't use that\nhere.")))
         end
         return
       elseif action == "softboiled" then
         -- field SOFTBOILED (StartMenu_Pokemon .softboiled): transfer
         -- 1/5 of the user's max HP to a chosen teammate
         self.softboiledFrom = self.index
+      elseif action == "dig" then
+        -- GEN 2 (.DoDig): back out through the recorded entrance, arriving as
+        -- a DOOR warp so the player steps out of the opening rather than
+        -- standing in it.  GEN 1's DIG is ItemUseEscapeRope and shares
+        -- TELEPORT's Pokemon Center warp, so it falls through to the same
+        -- departure with no target.
+        local ow = self.game.overworld
+        self.game.stack:pop()
+        if ow then
+          local escape = require("src.core.GameVersion").isGen2()
+            and ow.escapePoint and ow:escapePoint() and true or nil
+          ow:beginTeleportOut(nil, { escape = escape })
+        end
+        return
       elseif action == "escape" then
-        -- DIG / TELEPORT warp to the last Pokémon Center TOWN (wLastBlackoutMap,
-        -- special_warps.asm escape warp).  pokered's .dig/.teleport spin the
+        -- TELEPORT warps to the last Pokémon Center TOWN (wLastBlackoutMap,
+        -- special_warps.asm escape warp) -- and Gen 2 agrees: TeleportFunction
+        -- .TryTeleport requires an OUTDOOR map and warps to wLastSpawnMapGroup
+        -- / wLastSpawnMapNumber, so this destination is right for both
+        -- generations.  Only DIG diverged; it has its own branch above.
+        -- pokered's .dig/.teleport spin the
         -- player up (LeaveMapAnim), white/fade out, then land it; this port
         -- lands OUTSIDE the town PC door like Fly (#196).  beginTeleportOut
         -- centralizes the spin -> fade -> warp so BagMenu's ESCAPE ROPE shares
@@ -757,7 +821,15 @@ function PartyMenu:update(dt)
           for _, mv in ipairs(mon.moves) do
             if mv.id == "FLY" and outside and badged("FLY") then
               table.insert(items, { label = Strings("FLY"), action = "fly" })
-            elseif mv.id == "FLASH" and ow.dark and badged("FLASH") then
+            -- LIGHT is carved on the Aerodactyl chamber wall, and the
+            -- chamber is not a dark cave -- so CheckUseFlash asks
+            -- SpecialAerodactylChamber FIRST and lets FLASH be used on its
+            -- carry, before it ever looks at the palset
+            -- (engine/events/overworld.asm:285).  Without this the move is
+            -- never even offered there and the wall can never open.
+            elseif mv.id == "FLASH" and badged("FLASH")
+                and (ow.dark or (ow.map and ow.map.id
+                  == require("src.script.RuinsOfAlph").MAPS.aerodactyl)) then
               table.insert(items, { label = Strings("FLASH"), action = "flash" })
             elseif mv.id == "CUT" and badged("CUT") then
               -- CUT/SURF/STRENGTH are party-menu field moves too
@@ -778,13 +850,19 @@ function PartyMenu:update(dt)
               -- .teleport -> CheckIfInOutsideMap); dark maps don't
               -- block it
               table.insert(items, { label = Strings("TELEPORT"), action = "escape" })
-            elseif mv.id == "DIG" and DIG_TILESETS[ow.map.def.tileset]
-               and ow.map.id ~= "AGATHAS_ROOM" then
-              -- DIG runs ItemUseEscapeRope (.dig sets wCurItem =
+            elseif mv.id == "DIG" and ow.map.id ~= "AGATHAS_ROOM"
+               and (DIG_TILESETS[ow.map.def.tileset]
+                    or (GEN2_DIG_ENVIRONMENTS[ow.map.def.environment]
+                        and ow.escapePoint and ow:escapePoint())) then
+              -- GEN 1: DIG runs ItemUseEscapeRope (.dig sets wCurItem =
               -- ESCAPE_ROPE): usable in the dungeon tilesets of
               -- escape_rope_tilesets.asm minus Agatha's room, even in
-              -- the dark (Rock Tunnel)
-              table.insert(items, { label = Strings("DIG"), action = "escape" })
+              -- the dark (Rock Tunnel).
+              -- GEN 2: .CheckCanDig instead -- CAVE or DUNGEON, and a
+              -- recorded entrance to come back out of.  Its own action,
+              -- because Gen 2's DIG and TELEPORT no longer share a
+              -- destination the way Gen 1's did.
+              table.insert(items, { label = Strings("DIG"), action = "dig" })
             elseif GEN2_FIELD_MOVES[mv.id] and badged(mv.id) then
               -- GSC's own field moves; the tile check happens on selection,
               -- exactly like CUT's (start_sub_menus.asm never gates the list

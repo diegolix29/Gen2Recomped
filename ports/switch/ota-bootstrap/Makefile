@@ -21,8 +21,8 @@ SOURCES		:=	.
 INCLUDES	:=	include
 ROMFS		:=
 
-APP_TITLE	:=	gen1recomp OTA
-APP_AUTHOR	:=	bryanthaboi, port by andrewqsantos
+APP_TITLE	:=	gen2recomp OTA
+APP_AUTHOR	:=	UNDERdecodedHD, port by andrewqsantos
 APP_VERSION	:=	0.0.0
 
 ARCH	:=	-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE

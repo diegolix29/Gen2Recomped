@@ -1,9 +1,9 @@
 /*
- * gen1recomp Switch OTA launcher
+ * gen2recomp Switch OTA launcher
  *
  * Quiet by default: checks GitHub Releases with no UI. Only shows the
  * branded launcher-style screen when an update is available. Downloads the
- * same SD zip (gen1recomp-*-switch.zip), verifies SHA-256, replaces game +
+ * same SD zip (Gen2Recomped-*-switch.zip), verifies SHA-256, replaces game +
  * launcher NROs, then envSetNextLoad. Never touches pokemon-love2d/.
  * LÖVE self-updater stays off on NX.
  */
@@ -27,10 +27,10 @@
 #include <unistd.h>
 #endif
 
-#define SD_INSTALL_DIR "sdmc:/switch/gen1recomp"
+#define SD_INSTALL_DIR "sdmc:/switch/gen2recomp"
 #define CHECK_TIMEOUT_MS (OTA_CHECK_TIMEOUT_SEC * 1000L)
-#define GAME_MEMBER_IN_ZIP "switch/gen1recomp/" OTA_GAME_NRO_NAME
-#define LAUNCHER_MEMBER_IN_ZIP "switch/gen1recomp/" OTA_LAUNCHER_NRO_NAME
+#define GAME_MEMBER_IN_ZIP "switch/gen2recomp/" OTA_GAME_NRO_NAME
+#define LAUNCHER_MEMBER_IN_ZIP "switch/gen2recomp/" OTA_LAUNCHER_NRO_NAME
 
 typedef struct {
   const char *detail;
@@ -108,7 +108,7 @@ static int run_update_flow(const char *install_dir) {
   ota_ui_show_progress("Step 2/3: Verifying...", "Checking file integrity.", 0.55f);
   char sums_url[512];
   snprintf(sums_url, sizeof(sums_url),
-           "https://github.com/bryanthaboi/gen1recomp/releases/download/%s/sha256sums.txt",
+           "https://github.com/UNDERdecodedHD/Gen2Recomped/releases/download/%s/sha256sums.txt",
            rel.tag);
   if (ota_net_download_file(sums_url, sums_path, CHECK_TIMEOUT_MS, err, sizeof(err), NULL,
                             NULL) != 0) {
@@ -160,8 +160,8 @@ static int run_update_flow(const char *install_dir) {
 
   char extracted[256];
   char extracted_launcher[256];
-  snprintf(extracted, sizeof(extracted), "%s/updates/gen1recomp-game.nro.verified", install_dir);
-  snprintf(extracted_launcher, sizeof(extracted_launcher), "%s/updates/gen1recomp.nro.verified",
+  snprintf(extracted, sizeof(extracted), "%s/updates/Gen2Recomped-game.nro.verified", install_dir);
+  snprintf(extracted_launcher, sizeof(extracted_launcher), "%s/updates/gen2recomp.nro.verified",
            install_dir);
 
 #if defined(__SWITCH__)

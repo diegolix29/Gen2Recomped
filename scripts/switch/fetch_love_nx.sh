@@ -16,7 +16,11 @@ LOVE_NX_TAG="11.5-nx1"
 LOVE_NX_DIR="$ROOT/.bazinga/love-nx/$LOVE_NX_TAG"
 MANIFEST="$ROOT/scripts/switch/love-nx-11.5-nx1.sha256"
 # Override for offline selftests (never used in release/docs as the default).
+<<<<<<< HEAD
 BASE_URL="${GEN1_LOVE_NX_BASE_URL:-https://github.com/retronx-team/love-nx/releases/download/${LOVE_NX_TAG}}"
+=======
+BASE_URL="${GEN2_LOVE_NX_BASE_URL:-https://github.com/retronx-team/love-nx/releases/download/${LOVE_NX_TAG}}"
+>>>>>>> G2/main
 
 fail_download() {
   local url="$1"

@@ -157,6 +157,31 @@ end
 
 -- CheckWarpCollision (05:$4A18): $60, $68 and the whole $70-$7F carpet/door
 -- range are the collision classes that let a Gen2 warp_event fire.
+-- DOES THIS MAP'S TILESET SPEAK IN GEN 2 COLLISION CLASSES?
+--
+-- `cellTile` has two answers and they share no vocabulary. With a collision
+-- table it returns the cell's CLASS byte -- $71 an outdoor door, $7B a cave
+-- mouth -- and the entrance range just below is meaningful. Without one it
+-- returns the cell's south-west TILE ID, which is Gen 1's way of saying the
+-- same thing in a completely different alphabet.
+--
+-- An ADOPTED tileset is that second case, and it is not hypothetical: the map
+-- editor brings a Gen 1 set across whole -- blocks, walkable list, doorTiles,
+-- warpTiles -- and there is no collision table to bring, because Gen 1 has
+-- none. `CAVERN@red` arrives with `warpTiles = { 24, 26, 34 }`, the cave
+-- ladders, and not one of those tile ids lands in $60/$68/$70-$7F.
+--
+-- So `warpAtCell` tested tile ids against a class range, they failed, and it
+-- returned nil for every warp on every imported map. That is the whole of
+-- "the editor says they're linked and in game they do nothing": the link was
+-- always fine, the gate in front of it was answering a question the data
+-- could not be asked. The gate is real -- it is how the Ruins of Alph
+-- chambers and the Ice Path holes stay shut -- so it stays, and it now only
+-- applies where the map can actually answer it.
+function Map:speaksGen2Collision()
+  return self.tileset ~= nil and self.tileset.collision ~= nil
+end
+
 function Map.gen2IsEntrance(coll)
   return coll == 0x60 or coll == 0x68 or (coll >= 0x70 and coll <= 0x7F)
 end
@@ -173,11 +198,67 @@ function Map.gen2IsDoorway(coll)
   return coll == 0x71 or coll == 0x7B
 end
 
+-- CheckDirectionalWarp (engine/overworld/tile_events.asm): the four carpet
+-- classes are NOT immediate warps.  Stepping onto one leaves the player
+-- standing on it; the warp fires only when they then walk further in the
+-- carpet's own direction (DoPlayerMovement .EdgeWarps -> WarpCheck, which
+-- skips the directional test).  Everything else in the $70-$7F range -- the
+-- doors, the stairs, the warp panel -- swallows the player on arrival.
+function Map.gen2IsDirectionalCarpet(coll)
+  return coll == 0x70 or coll == 0x76 or coll == 0x78 or coll == 0x7E
+end
+
+-- CheckPitTile (00:$1745): `cp COLL_PIT / ret z / cp COLL_PIT_68 / ret`.
+-- The two hole classes -- what a Strength boulder has to be standing on for
+-- the stone table to drop it to the floor below (CmdQueue_StoneTable).
+function Map.gen2IsPit(coll)
+  return coll == 0x60 or coll == 0x68
+end
+
 -- CheckCutTreeTile (00:$1731) is `cp COLL_CUT_TREE / ret z / cp
 -- COLL_CUT_TREE_1 / ret`.  Facing either class is what arms TryCutOW, which
 -- is Gen2's overworld A-press on a tree -- Gen1 had no such hook at all.
 function Map.gen2IsCutTree(coll)
   return coll == 0x12 or coll == 0x1A
+end
+
+-- Side walls and side buoys ($b0-$b7 and $c0-$c7).  CollisionPermissionTable
+-- gives the whole $bx range LAND and the whole $cx range WATER, so both read
+-- as ordinary passable ground here -- and that is exactly how a cliff top in
+-- the Ice Path became something the player could walk straight off.  What
+-- fences them is GetMovementPermissions (home/map.asm), which walks the four
+-- tiles around the player and, for these two hi-nybbles only, turns the low
+-- three bits into wTilePermissions bits: the class names which SIDE of its
+-- own cell is walled.  Standing on the tile blocks stepping out that way;
+-- standing beside one blocks stepping in through the walled side.
+--
+-- The order below is the COLL_* constants' own ($b0 RIGHT_WALL, $b1
+-- LEFT_WALL, $b2 UP_WALL, $b3 DOWN_WALL, then the four corners), which is
+-- what .MovementPermissionsData is indexed by.
+local GEN2_SIDE_WALLS = {
+  [0] = { right = true },
+  [1] = { left = true },
+  [2] = { up = true },
+  [3] = { down = true },
+  [4] = { down = true, right = true },
+  [5] = { down = true, left = true },
+  [6] = { up = true, right = true },
+  [7] = { up = true, left = true },
+}
+
+function Map.gen2SideWall(coll)
+  if type(coll) ~= "number" then return nil end
+  local hi = coll - coll % 0x10
+  if hi ~= 0xB0 and hi ~= 0xC0 then return nil end
+  return GEN2_SIDE_WALLS[coll % 8]
+end
+
+-- The walled sides of a cell, or nil.  Only maps whose tileset ships a Gen2
+-- collision table answer: a Gen1 tileset's passable ids are raw tile numbers
+-- and $b2 there is just a tile.
+function Map:sideWallAt(cx, cy)
+  if not self.tileset.collision then return nil end
+  return Map.gen2SideWall(self:cellTile(cx, cy))
 end
 
 function Map.new(def, tilesetDef)
@@ -379,7 +460,9 @@ end
 function Map:isDoorTileCell(cx, cy)
   local t = self:cellTile(cx, cy)
   if self.doorTiles[t] then return true end
-  if GameVersion.isGen2() then return Map.gen2IsDoorway(t) end
+  if GameVersion.isGen2() and self:speaksGen2Collision() then
+    return Map.gen2IsDoorway(t)
+  end
   return false
 end
 
@@ -387,7 +470,9 @@ end
 function Map:isWarpTileCell(cx, cy)
   local t = self:cellTile(cx, cy)
   if self.doorTiles[t] or self.warpTiles[t] then return true end
-  if GameVersion.isGen2() then return Map.gen2IsEntrance(t) end
+  if GameVersion.isGen2() and self:speaksGen2Collision() then
+    return Map.gen2IsEntrance(t)
+  end
   -- Fallback for partial imports: some Gen2 tilesets ship empty warp/door
   -- tile tables even though the map carries explicit warp cells.
   if next(self.doorTiles) == nil and next(self.warpTiles) == nil
@@ -421,7 +506,15 @@ function Map:warpAtCell(cx, cy)
   -- or wall does nothing.  That is how the Ruins of Alph chambers, the
   -- Ecruteak and Blackthorn gym floors and the Ice Path holes stay shut: the
   -- warp is always there, the map callback swaps the block underneath it.
-  if w and GameVersion.isGen2()
+  --
+  -- Only where the tileset HAS that class table, though. Without one the cell
+  -- answers with a tile id and this gate is being asked in the wrong alphabet
+  -- -- see `speaksGen2Collision`. There the door test belongs where it always
+  -- was for tile-id maps: `Warp.onArrive` calls `isWarpTileCell`, which reads
+  -- the tileset's own doorTiles/warpTiles lists. Nothing is let through that
+  -- was not let through before; the gate simply stops eating warps it cannot
+  -- judge.
+  if w and GameVersion.isGen2() and self:speaksGen2Collision()
      and not Map.gen2IsEntrance(self:cellTile(cx, cy)) then
     return nil
   end

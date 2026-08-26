@@ -1,3 +1,9 @@
+-- Copyright (c) 2026 Cedric. All rights reserved.
+-- Source-available under the Gen2Recomped Map Editor License: you may read,
+-- build and privately modify this file; you may not redistribute it or use it
+-- commercially. See LICENSE at the repository root. Cartridge-derived data is
+-- not covered and is not the copyright holder's to license.
+
 -- Party panel: the roster on the left, the mon inspector permanently docked
 -- on the right, so the party stays visible while you edit one of its members.
 --
@@ -9,6 +15,7 @@ local PartyMod = require("src.pokemon.Party")
 local Theme = require("Theme")
 local Ops = require("Ops")
 local MonEditor = require("MonEditor")
+local Catalog = require("Catalog")
 local PAL = Theme.PAL
 
 local Party = {}
@@ -94,7 +101,8 @@ function Party.draw(S, Kit, x, y, w, h)
 
       local tx = cx + rpad + icon + 12 * s
       local tw = math.max(40 * s, (cx + innerW - rightW - 10 * s) - tx)
-      local name = Kit.ellipsize("monoRow", mon.species, tw - 34 * s)
+      local label = Catalog.speciesLabel(S.data, mon.species)
+      local name = Kit.ellipsize("monoRow", label, tw - 34 * s)
       Kit.text("monoRow", name, tx, ry + 10 * s, PAL.heading)
       Kit.text("tiny", ("#%d"):format(i),
         tx + Kit.textWidth("monoRow", name) + 8 * s, ry + 12 * s, PAL.caption)

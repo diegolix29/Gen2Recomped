@@ -1,3 +1,9 @@
+-- Copyright (c) 2026 Cedric. All rights reserved.
+-- Source-available under the Gen2Recomped Map Editor License: you may read,
+-- build and privately modify this file; you may not redistribute it or use it
+-- commercially. See LICENSE at the repository root. Cartridge-derived data is
+-- not covered and is not the copyright holder's to license.
+
 -- Items panel: money, the shared item picker, badges, the configurable bag
 -- (Bag.add/remove, ordered by Bag.order) and PC item storage (a plain
 -- S.save.pcItems dict with no slot cap).
@@ -12,15 +18,26 @@
 local Bag = require("src.inventory.Bag")
 local Theme = require("Theme")
 local Ops = require("Ops")
+local Catalog = require("Catalog")
 local PAL = Theme.PAL
 
 local M = {}
 
 local MONEY_STEPS = { -1000, -100, 100, 1000 }
 
-local function matches(id, query)
+-- Gen2 inventory keys stay ITEM_nnn; match against the key, ROM name, and
+-- derived key (POTION / TM_01) so typing "potion" finds ITEM_018.
+local function matches(S, id, query)
   if query == "" then return true end
-  return id:lower():find(query:lower(), 1, true) ~= nil
+  local q = query:lower()
+  if id:lower():find(q, 1, true) then return true end
+  local label = Catalog.itemLabel(S.data, id)
+  if label:lower():find(q, 1, true) then return true end
+  local entry = S.data and S.data.items and S.data.items[id]
+  if entry and type(entry.key) == "string" and entry.key:lower():find(q, 1, true) then
+    return true
+  end
+  return false
 end
 
 -- One quantity row shape, shared by the bag and the PC list: id, qty, then
@@ -45,7 +62,8 @@ local function quantityRow(S, Kit, x, y, w, h, id, qty, selected, onMinus, onPlu
   local qtyW = Kit.textWidth("monoRow", qtyText)
   Kit.textRight("monoRow", qtyText, bx - 10 * s,
     y + (h - Kit.textHeight("monoRow")) / 2, PAL.heading)
-  Kit.text("mono", Kit.ellipsize("mono", id, bx - qtyW - 30 * s - (x + 10 * s)),
+  local label = Catalog.itemLabel(S.data, id)
+  Kit.text("mono", Kit.ellipsize("mono", label, bx - qtyW - 30 * s - (x + 10 * s)),
     x + 10 * s, y + (h - Kit.textHeight("mono")) / 2, PAL.text)
   return clicked
 end
@@ -99,19 +117,32 @@ function M.draw(S, Kit, x, y, w, h)
   Kit.caption(x + pad, pickY + pad, "ADD ITEM")
   local qy = pickY + pad + Kit.textHeight("caption") + 8 * s
   local prevQuery = S.itemQuery or ""
-  S.itemQuery = Kit.textfield("item-query", x + pad, qy, leftW - 2 * pad, 32 * s,
-    S.itemQuery or "", "search item ids...")
+  -- A visible CLEAR beside the box, because on a device with no keyboard
+  -- nothing can reach backspace (see Kit.clearField): the pad maps A/B/start/
+  -- select/shoulders/dpad and B is already "back", so without this the search
+  -- box can only ever grow and the only way to empty it is to close the
+  -- editor.  Sized to the field's own height so it reads as part of it.
+  local clearW = 32 * s
+  local fieldW = leftW - 2 * pad - clearW - 6 * s
+  S.itemQuery = Kit.textfield("item-query", x + pad, qy, fieldW, 32 * s,
+    S.itemQuery or "", "search items...")
+  if Kit.button(x + pad + fieldW + 6 * s, qy, clearW, 32 * s, "X",
+                { font = "small", radius = 8 * s }) then
+    S.itemQuery = ""
+    Kit.focus = "item-query"
+    Kit.clearField()
+  end
   -- a new query is a new list: keep the first hit on screen rather than
   -- leaving the view parked wherever the old result set had scrolled to
   if S.itemQuery ~= prevQuery then S.itemPickOffset = 0 end
 
   local choices = {}
   for _, id in ipairs(S.cat.items) do
-    if not Ops.isBadgeId(id) and matches(id, S.itemQuery) then
+    if not Ops.isBadgeId(id) and matches(S, id, S.itemQuery) then
       choices[#choices + 1] = id
     end
   end
-  if not S.selectedItemId or not matches(S.selectedItemId, S.itemQuery) then
+  if not S.selectedItemId or not matches(S, S.selectedItemId, S.itemQuery) then
     S.selectedItemId = choices[1]
   end
 
@@ -134,9 +165,10 @@ function M.draw(S, Kit, x, y, w, h)
     if Kit.row(x + pad, ry, leftW - 2 * pad, cRowH, id == S.selectedItemId,
         PAL.green, 8 * s) then
       S.selectedItemId = id
-      Ops.say(S, "Picked " .. id)
+      Ops.say(S, "Picked " .. Catalog.itemLabel(S.data, id))
     end
-    Kit.text("mono", Kit.ellipsize("mono", id, leftW - 2 * pad - 20 * s),
+    local label = Catalog.itemLabel(S.data, id)
+    Kit.text("mono", Kit.ellipsize("mono", label, leftW - 2 * pad - 20 * s),
       x + pad + 10 * s, ry + (cRowH - Kit.textHeight("mono")) / 2, PAL.text)
   end
   Kit.popClip()
@@ -168,7 +200,7 @@ function M.draw(S, Kit, x, y, w, h)
     -- #515: truthy check, not `== true` -- the in-game grant path stores a
     -- number (see OverworldController.lua checkVictoryRewards), matching
     -- src/inventory/Badges.lua's own truthy read.
-    if S.save.inventory[id] then earned = earned + 1 end
+    if Ops.hasBadge(S, id) then earned = earned + 1 end
   end
   Kit.caption(x + pad, badgeY + pad, "BADGES")
   Kit.textRight("mono", ("%d/%d"):format(earned, #badgeIds), x + leftW - pad,
@@ -178,7 +210,7 @@ function M.draw(S, Kit, x, y, w, h)
   for i, id in ipairs(badgeIds) do
     local bc = (i - 1) % badgeCols
     local br = math.floor((i - 1) / badgeCols)
-    local on = S.save.inventory[id]
+    local on = Ops.hasBadge(S, id)
     local short = id:gsub("BADGE$", "")
     if Kit.chip(x + pad + bc * (bW + 7 * s), bTop + br * (28 * s + 7 * s),
         bW, 28 * s, Kit.ellipsize("micro", short, bW - 8 * s), on,

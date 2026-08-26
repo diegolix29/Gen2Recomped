@@ -1,10 +1,10 @@
-# Gen1Recomp Xbox UWP build notes
+# Gen2Recomped Xbox UWP build notes
 
-This is the Xbox Dev Mode package for Gen1Recomp.
+This is the Xbox Dev Mode package for Gen2Recomped.
 
 The rough shape is:
 
-- `Gen1RecompUWP.exe` starts LÖVE through SDL's WinRT wrapper
+- `Gen2RecompedUWP.exe` starts LÖVE through SDL's WinRT wrapper
 - the bundled LÖVE 11.5 UWP backend provides LuaJIT and the Xbox file picker
 - the bundled SDL2 runtime contains the Xbox controller mapping
 - ANGLE provides OpenGL ES over D3D11
@@ -73,7 +73,7 @@ when preparing a signed package:
 
 ```bash
 scripts/build_xbox_uwp.sh --release --version 1.2.3 \
-  --publisher "CN=Gen1Recomp"
+  --publisher "CN=Gen2Recomped"
 ```
 
 The normal build is unsigned. Release CI supplies the private PFX and password
@@ -91,14 +91,14 @@ bash scripts/xbox-uwp/selftest_build_xbox_uwp.sh
 Visual Studio package output lands under:
 
 ```text
-ports\uwp\build\release\AppPackages\Gen1RecompUWP
+ports\uwp\build\release\AppPackages\Gen2RecompedUWP
 ```
 
 The build also stages the distributable archive and checksum under:
 
 ```text
-dist\xbox-uwp\gen1recomp-X.Y.Z-xbox-uwp.zip
-dist\xbox-uwp\gen1recomp-X.Y.Z-xbox-uwp.zip.sha256
+dist\xbox-uwp\Gen2Recomped-X.Y.Z-xbox-uwp.zip
+dist\xbox-uwp\Gen2Recomped-X.Y.Z-xbox-uwp.zip.sha256
 ```
 
 The archive contains the MSIX, framework dependencies, build provenance and,

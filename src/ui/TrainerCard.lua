@@ -85,7 +85,11 @@ function TrainerCard.new(game, opts)
     end
     local marks = tryImage("assets/generated/trainer_card/gen2_badges.png")
     if marks then
-      self.marks = { img = marks, quads = quads16(marks, 16, 16, 0, 0) }
+      -- as many badges as the sheet holds, not a fixed sixteen: Prism's
+      -- carries twenty and the last four had no quad to draw with
+      local _, mh = marks:getDimensions()
+      self.marks = { img = marks,
+                     quads = quads16(marks, math.floor(mh / 16), 16, 0, 0) }
     end
   end
   local img = tryImage("assets/generated/trainer_card/badges.png")
@@ -117,9 +121,25 @@ function TrainerCard.new(game, opts)
     end
   end
   self.circle = tryImage("assets/generated/trainer_card/circle_tile.png")
-  self.pic = tryImage(require("src.pokemon.Sprites").playerPath(
-    game.data, "front", { kind = "trainer_card" }))
+  local picPath, picTrueColor = require("src.pokemon.Sprites").playerPath(
+    game.data, "front", { kind = "trainer_card" })
+  self.pic = tryImage(picPath)
+  -- KRIS's portrait is baked in her own palette (blue hair); the card's SGB
+  -- zone would otherwise repaint it in CHRIS's browns
+  self.picTrueColor = self.pic and picTrueColor or false
   return self
+end
+
+-- TrainerCard_Page2_Joypad.KantoBadgeCheck (09:$523B), and the matching check
+-- on page 1: pressing d-right off a badge page reads wKantoBadges and RETURNS
+-- when it is zero, so the Kanto page does not exist at all until the player
+-- owns at least one Kanto badge.  The port offered it from a new game.
+local function hasKantoBadge(game)
+  local list = Badges.list(game.data)
+  for i = PER_PAGE + 1, #list do
+    if Badges.has(game.save, list[i]) then return true end
+  end
+  return false
 end
 
 function TrainerCard:update(dt)
@@ -127,8 +147,20 @@ function TrainerCard:update(dt)
   -- Gen2 pages the whole card, not just the badge grid: page 1 is the dex
   -- and play-time half (TrainerCard_Page1_PrintDexCaught_GameTime), pages 2
   -- and 3 the Johto and Kanto badges
-  local pages = self.gen2 and 3
-    or math.ceil(#Badges.list(self.game.data) / PER_PAGE)
+  -- Gold and Crystal have sixteen badges and gate the second badge page on
+  -- owning a Kanto one; a cartridge with its own set just needs as many pages
+  -- as its list fills.  Prism awards TWENTY, so a fixed two-or-three left the
+  -- last four unreachable.
+  local list = Badges.list(self.game.data)
+  local badgePages = math.max(1, math.ceil(#list / PER_PAGE))
+  local pages = badgePages + 1
+  if self.gen2 and #list <= 16 then
+    pages = hasKantoBadge(self.game) and 3 or 2
+  elseif not self.gen2 then
+    pages = badgePages
+  end
+  -- never strand the view on a page that is no longer reachable
+  if self.page >= pages then self.page = pages - 1 end
   -- TrainerCard_Page2_Joypad: d-left/d-right walk the badge pages
   if pages > 1 and input:wasPressed("right") then
     self.page = (self.page + 1) % pages
@@ -195,7 +227,13 @@ function TrainerCard:drawGen2()
   love.graphics.rectangle("fill", 152, 8, 8, 128)
 
   love.graphics.setColor(1, 1, 1, 1)
-  if self.pic then love.graphics.draw(self.pic, 112, 8) end
+  if self.pic then
+    if self.picTrueColor then
+      require("src.render.PaletteFX").markTrueColor(112, 8, self.pic:getWidth(),
+                                                    self.pic:getHeight())
+    end
+    love.graphics.draw(self.pic, 112, 8)
+  end
   love.graphics.setColor(0, 0, 0, 1)
   Font.draw(Strings("NAME/"), 16, 16)
   Font.draw(save.player.name or "GOLD", 56, 16)
@@ -251,6 +289,10 @@ function TrainerCard:draw()
   -- top card (rows 0-7): NAME / MONEY / TIME, pic upper-right
   self:frameBox(0, 0, 20, 8)
   if self.pic then
+    if self.picTrueColor then
+      require("src.render.PaletteFX").markTrueColor(104, 4, self.pic:getWidth(),
+                                                    self.pic:getHeight())
+    end
     love.graphics.draw(self.pic, 104, 4)
   end
   love.graphics.setColor(0, 0, 0, 1)

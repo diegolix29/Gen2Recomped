@@ -6,6 +6,7 @@
 -- read from Runtime.safeMode (19 owns the detection).
 local Font = require("src.render.Font")
 local Runtime = require("src.mods.Runtime")
+local ModImports = require("src.mods.ModImports")
 local Semver = require("src.mods.Semver")
 local Version = require("src.core.Version")
 local Theme = require("src.ui.Theme")
@@ -43,7 +44,13 @@ local PERMISSION_ROWS = {
   filesystem = { glyph = "!", text = "READS/WRITES FILES" },
 }
 
-local OPTION_TYPES = { toggle = true, choice = true, number = true, text = true }
+-- `action` is the odd one out: it stores nothing. A mod declares it to get a
+-- row the player can press -- REBUILD THE CACHE, PREBAKE, RESCAN -- and the
+-- press arrives back as the `mod.option_action` event. The row's VALUE is
+-- whatever the mod has published for that key in `loader.optionStatus`, which
+-- is how a long job reports "47/210" on the row that started it.
+local OPTION_TYPES = { toggle = true, choice = true, number = true,
+                       text = true, action = true }
 
 local function wrap(text, width)
   local lines = {}
@@ -337,7 +344,9 @@ function ManagerState:detailRows(m)
   local rows = {}
   rows[#rows + 1] = { label = m.enabled and "DISABLE" or "ENABLE",
     action = function() self:beginToggle(m) end }
-  if self:schemaFor(m) then
+  -- a mod with no options_schema still gets an OPTIONS screen when it
+  -- declares a required import, because that is where its IMPORT row lives
+  if self:schemaFor(m) or ModImports.of(m) then
     rows[#rows + 1] = { label = Strings("OPTIONS.."),
       action = function() self:openOptions(m) end }
   end
@@ -539,7 +548,25 @@ function ManagerState:quickToggle()
   end
 end
 
+-- Android and iOS answer a file pick on a later frame, so the row that opened
+-- the picker cannot wait for it.  Consume the drop wherever the player is.
+function ManagerState:_pollImport()
+  local pending = self._importPending
+  if not pending then return end
+  local ok, why = ModImports.poll(pending.manifest, pending.entry)
+  if ok then
+    self._importPending = nil
+    self:notify(Strings("IMPORTED %s", tostring(pending.entry.name)))
+    self.optionRows = nil
+    if self.currentMod then self:openOptions(self.currentMod) end
+  elseif why then
+    self._importPending = nil
+    self:notify(tostring(why))
+  end
+end
+
 function ManagerState:update()
+  self:_pollImport()
   if self.notice then
     self.noticeTimer = (self.noticeTimer or 0) - 1
     if self.noticeTimer <= 0 then self.notice = nil end
@@ -956,6 +983,31 @@ function ManagerState:buildOptionRows(m, schema)
             end,
           }))
         end }
+    elseif row.type == "action" then
+      rows[#rows + 1] = { id = row.key, label = row.label or row.key,
+        value = function()
+          local loader = self.game.mods
+          local published = loader and loader.optionStatus
+            and loader.optionStatus[modId] and loader.optionStatus[modId][row.key]
+          -- A FUNCTION is the useful shape for a running job: the row is
+          -- redrawn every frame the menu is open, so a provider reports live
+          -- progress without the mod needing a tick of its own -- and a mod
+          -- settings screen is exactly where the world is not ticking.
+          if type(published) == "function" then
+            local okText, text = pcall(published)
+            published = okText and text or nil
+          end
+          if published ~= nil then return tostring(published) end
+          return tostring(row.action or "GO")
+        end,
+        activate = function()
+          local loader = self.game.mods
+          if loader and loader.events then
+            loader.events:emit("mod.option_action",
+              { mod = modId, key = row.key })
+          end
+          return true
+        end }
     elseif row.type == "text" then
       rows[#rows + 1] = { id = row.key, label = row.label or row.key,
         value = function()
@@ -974,6 +1026,43 @@ function ManagerState:buildOptionRows(m, schema)
         end }
     end
   end
+  -- ---------------------------------------------------------------------
+  -- Base files the mod declares but cannot ship (`required_imports`).
+  --
+  -- The launcher's MODS panel grows an IMPORT chip for these, but a player
+  -- who is already in a game has no way back to it without quitting, and a
+  -- mod that rolls its own "CHOOSE" row inside options has nothing behind it
+  -- on desktop -- the sandbox hides love.system from mod code, so those rows
+  -- are Android-only and silently do nothing everywhere else.  That is the
+  -- "it says CHOOSE but I can't choose it" report.
+  --
+  -- One engine-owned row per declared entry, appended to whatever schema the
+  -- mod ships, so it is there for every mod on every platform.  A mod that
+  -- also draws its own row simply has two that work.
+  -- ---------------------------------------------------------------------
+  for _, entry in ipairs(ModImports.of(m) or {}) do
+    rows[#rows + 1] = { id = "__import_" .. entry.id,
+      label = Strings(tostring(entry.name):upper()),
+      value = function()
+        if ModImports.have(m, entry) == true then return Strings("READY") end
+        return Strings("CHOOSE")
+      end,
+      activate = function()
+        if ModImports.have(m, entry) == true then
+          self:notify(Strings("ALREADY IMPORTED"))
+          return true
+        end
+        local ok, message = ModImports.choose(m, entry)
+        if ok == nil then
+          -- a mobile picker is open; ManagerState:update consumes the answer
+          self._importPending = { manifest = m, entry = entry }
+        end
+        self:notify(tostring(message or ""))
+        return ok ~= false
+      end,
+      step = function() return false end }
+  end
+
   rows[#rows + 1] = { id = "__reset", label = Strings("RESET DEFAULTS"),
     value = function() return "" end,
     activate = function()
@@ -991,8 +1080,11 @@ end
 function ManagerState:openOptions(m)
   local schema = self:schemaFor(m)
   if not schema then
-    self:notify("NO OPTIONS")
-    return
+    if not ModImports.of(m) then
+      self:notify("NO OPTIONS")
+      return
+    end
+    schema = {}
   end
   self.optionRows = self:buildOptionRows(m, schema)
   self:goTo("options")
