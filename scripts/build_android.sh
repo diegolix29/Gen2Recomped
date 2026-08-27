@@ -770,6 +770,7 @@ run_gradle() {
     # into './gradlew: Permission denied'.  chmod for anyone who runs the
     # wrapper by hand later; the invocation below does not rely on it.
     chmod +x "$build_dir/gradlew" 2>/dev/null || true
+  fi
 
   # Detect if running on Windows (Git Bash) or Linux/macOS
   local is_windows=false

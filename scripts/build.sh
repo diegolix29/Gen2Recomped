@@ -118,7 +118,7 @@ for required in tools/save-editor/App.lua tools/save-editor/Kit.lua \
                 tools/rom_manifest_yellow.json tools/rom_manifest_gold.json \
                 tools/rom_manifest_silver.json; do
   grep -qxF "$required" "$LOVE_LISTING" \
-                tools/save-editor/panels/Party.lua; do
+    || fail "game.love is missing $required"
   unzip -Z1 "$LOVE_FILE" | grep -qx "$required" \
     || fail "game.love is missing $required"
 done
