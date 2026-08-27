@@ -13,7 +13,7 @@
 -- BINARY, NOT LUA. A species is a couple of hundred kilobytes of numbers,
 -- most of it animation, and a Lua source file of that is a parse the loader
 -- would pay for on every boot whether a battle happened or not. A byte
--- string is read once, on the frame a battle starts, and only for the two
+-- string is read once, on the frame a fight starts, and only for the two
 -- species actually fighting.
 --
 -- LAZY ANIMATIONS. Geometry, bones and textures are decoded on load --
@@ -59,7 +59,7 @@ local floor = math.floor
 -- tested against gets built. It is second because a locally built CURRENT
 -- cache should win over whatever a checkout happens to have lying around --
 -- current as judged by StadiumInstall's marker, so a cache an old extractor
--- built does not shadow a fresh shipped set (see readPack).
+-- built does not shadow a fresh set (see readPack).
 StadiumPack.CACHE_DIR = "cache/stadium"
 StadiumPack.DIR = "assets/stadium"
 

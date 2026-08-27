@@ -933,8 +933,7 @@ function Anim:sampleTrs(chanIndex, frame, bt, br, bs)
     r[1], r[2], r[3] = self:rotPacked(c1, frame), self:rotPacked(c2, frame),
                        self:rotPacked(c3, frame)
     s[1], s[2], s[3] = self:scalePacked(c1, frame),
-                       self:scalePacked(c2, frame),
-                       self:scalePacked(c3, frame)
+                       self:scalePacked(c2, frame), self:scalePacked(c3, frame)
   end
   for k = 1, 3 do
     if t[k] == nil then t[k] = bt[k] end

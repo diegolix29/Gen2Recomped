@@ -24,7 +24,7 @@
 --   0x810000D8  Charmander, Charmeleon, Charizard, Magmar, Moltres   tail flame
 --   0x81000108  Ponyta, Rapidash, Moltres's wings                    small flame
 --   0x810000E0  Gastly (only)                                        gas cloud
---
+
 -- the mod namespace (see main.lua): V.require loads a sibling module
 local V = ...
 

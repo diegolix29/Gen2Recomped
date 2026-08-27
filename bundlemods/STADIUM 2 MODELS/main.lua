@@ -33,13 +33,17 @@ local stadiumName = isGen2() and "Pokemon Stadium 2" or "Pokemon Stadium"
 mod.log:info("%s build: Pokemon Generation %s detected; %s importer targets National Dex 1-%d",
              stadiumName, tostring(detectedGeneration), stadiumName, maxDex)
 
+-- Both Gen 1 and Gen 2 use Dramatic Shape's voxel pipeline
+-- This mod patches VoxelScene to add Stadium model support
 local ds = mod.find("DRAMATIC_SHAPE")
 assert(ds and ds.exports and ds.exports.lib,
   "STADIUM_OVERWORLD_MODELS: Dramatic Shape must be installed, enabled, and loaded first")
 
 local BaseV = ds.exports.lib
+mod.log:info("Dramatic Shape rendering pipeline loaded (supports both Gen 1 and Gen 2)")
+
 assert(type(BaseV.require) == "function",
-  "STADIUM_OVERWORLD_MODELS: Dramatic Shape did not export its library loader")
+  "STADIUM_OVERWORLD_MODELS: Renderer did not export its library loader")
 
 -- Followers EX owns its own pack / controlled-Pokemon follower lifecycle.
 -- When present, we consume its entity metadata but do not alter Yellow's stock
@@ -576,6 +580,7 @@ end
 -- Patch only structural seams in the exact VoxelScene source from the installed
 -- Dramatic Shape build. Stadium operations are isolated per Pokemon, so one
 -- bad model falls back to its own sprite without disabling the full overlay.
+-- This patch works for both Gen 1 and Gen 2.
 local VoxelScenePatch = loadLocal("lib/VoxelScenePatch.lua", V)
 local rendererInstalled, rendererErr = VoxelScenePatch.install(ds, BaseV, V, Stadium)
 if rendererInstalled then
@@ -584,6 +589,28 @@ else
   mod.log:warn("Stadium overworld renderer not installed; Dramatic Shape voxel renderer preserved: %s",
                tostring(rendererErr))
 end
+
+-- Auto-build Stadium models when ROM is present but models aren't built yet
+local InstallV = { require = BaseV.require }
+local StadiumInstall = loadLocal("lib/StadiumInstall.lua", InstallV)
+
+mod.events:on("game.ready", function(game)
+  if StadiumInstall.romPresent() and not StadiumInstall.ready() then
+    local ok, err = pcall(StadiumInstall.begin)
+    if ok then
+      mod.log:info("Stadium model build started automatically")
+    else
+      mod.log:warn("Stadium model build failed to start: %s", tostring(err))
+    end
+  end
+end)
+
+-- Step the build process each frame if it's running
+mod.events:on("draw", function()
+  if StadiumInstall.status and StadiumInstall.status.state == "building" then
+    StadiumInstall.step()
+  end
+end)
 
 -- Companion mods can tag a Pokemon entity explicitly through this mod.
 mod.exports.version = "0.1.55"

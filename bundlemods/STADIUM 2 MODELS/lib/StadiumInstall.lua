@@ -1,17 +1,16 @@
 -- STADIUM battles: finding the ROM, and building the models out of it once.
 --
 -- The mod does not ship the Pokemon Stadium models and cannot: they are that
--- game's data. What it ships is the READER -- StadiumRom, StadiumRom2,
--- StadiumFragment, StadiumFx and StadiumBuild -- and the player supplies the
--- cartridge, which is exactly the arrangement this engine already has for the
--- Game Boy ROM it is a recompilation of (src/import/RomImporter.lua).
+-- game's data. What it ships is the READER -- StadiumRom, StadiumFragment,
+-- StadiumFx and StadiumBuild -- and the player supplies the cartridge, which
+-- is exactly the arrangement this engine already has for the Game Boy ROM it
+-- is a recompilation of (src/import/RomImporter.lua).
 --
--- So: supply a Pokemon Stadium (US) ROM for Gen 1 games, or Pokemon Stadium 2
--- (US) ROM for Gen 2 games -- the OPTIONS row opens a file picker for one,
--- or drop it in `baseroms/` -- and the first time the game runs with the mod
--- on, the models are built. Once, on a loading screen, in about ten seconds.
--- After that the packs sit in the save directory and the mod reads them like
--- any other asset.
+-- So: supply a Pokemon Stadium (US) 1.0 ROM -- the OPTIONS row opens a file
+-- picker for one, or drop it in `baseroms/` -- and the first time the
+-- game runs with the mod on, the models are built. Once, on a loading screen,
+-- in about ten seconds. After that the packs sit in the save directory and
+-- the mod reads them like any other asset.
 --
 -- ------- where "baseroms/" is
 --
@@ -187,16 +186,50 @@ local readyCache = nil
 function StadiumInstall.ready()
   if readyCache ~= nil then return readyCache end
   local m = readMarker()
+  -- v0.2.79 / DSM7 adds the missing SetTileSize origin/clamp-window semantics
+  -- and rebuilds texture variants to the RDP's effective sampling window.
+  -- DSM6 has the SetTile flags but not enough information to recover SL/TL or
+  -- SH/TH after extraction, so it must rebuild once from the Stadium 2 ROM.
   local formatOk = m and m.format == StadiumInstall.FORMAT
     and m.rev == StadiumInstall.REV
   readyCache = (formatOk and m.count >= targetCount()) and true or false
   return readyCache
 end
 
+-- Whether a complete set came WITH the mod folder -- a developer checkout
+-- that has run tools/stadium_pack.py. Never true of a released build, which
+-- carries no models at all.
+--
+-- Sampled at both ends of the dex rather than counted. The question being
+-- asked is "did somebody run the packer here", not "is every one of the 151
+-- present"; a genuinely half-written folder is a case for the marker file,
+-- which is what catches an interrupted RUNTIME build.
+local function shipped()
+  local mod = V.mod
+  if not (mod and mod.read) then return false end
+  for _, dex in ipairs({ 1, targetCount() }) do
+    local ok, bytes = pcall(mod.read, mod,
+                            ("%s/%03d.dsm"):format(StadiumPack.DIR, dex))
+    if not (ok and type(bytes) == "string" and #bytes > 4) then return false end
+  end
+  return true
+end
+
+-- Whether the STADIUM rungs can be offered at all: either the packs have been
+-- built from the player's ROM, or the mod folder already carries a set.
+function StadiumInstall.available()
+  if StadiumInstall.ready() then return true end
+  return shipped()
+end
+
 -- Whether there is work to do: something to build from, and nothing usable
 -- yet.
+--
+-- A checkout that already carries a set is NOT pending. Building anyway would
+-- be correct and would also mean a ten-second loading screen on the first run
+-- of every checkout, to arrive at the files that were already sitting there.
 function StadiumInstall.pending()
-  if StadiumInstall.ready() then return false end
+  if StadiumInstall.available() then return false end
   return StadiumInstall.romPresent()
 end
 
@@ -217,36 +250,54 @@ local function writePack(species, bytes)
   local ok, err = f.write(("%s/%03d.dsm"):format(StadiumInstall.DIR, species),
                           bytes)
   if not ok then return false, tostring(err) end
-  return true
-end
 
-local function say(level, fmt, ...)
-  local ok, Logger = pcall(require, "src.core.Logger")
-  if ok and type(Logger) == "table" and type(Logger[level]) == "function" then
-    Logger[level]("[STADIUM2_OVERWORLD_MODELS] " .. fmt, ...)
-    return
+  -- v0.2.22 diagnostic convenience: keep a clearly named COPY of Lugia's
+  -- generated DSM beside the raw geo-layout dump.  The normal 249.dsm remains
+  -- in its usual place and is byte-for-byte identical; this copy exists only
+  -- so the player can zip/upload two obvious files without hunting through the
+  -- whole cache directory.
+  if tonumber(species) == 249 then
+    local dbg = StadiumInstall.DIR .. "/lugia_debug"
+    pcall(f.createDirectory, dbg)
+    pcall(f.write, dbg .. "/249.dsm", bytes)
+    local saveDir = "<save directory>"
+    if type(f.getSaveDirectory) == "function" then
+      local okSave, got = pcall(f.getSaveDirectory)
+      if okSave and got then saveDir = tostring(got) end
+    end
+    local note = table.concat({
+      "STADIUM2_OVERWORLD_MODELS v0.2.23 - Lugia diagnostic files",
+      "",
+      "Upload BOTH of these files back to ChatGPT:",
+      "  1) 249_geo_dump.txt",
+      "  2) 249.dsm",
+      "",
+      "They are generated from your local Stadium 2 import. The text dump",
+      "contains offsets/numeric transform information only, not ROM model bytes.",
+      "",
+      "Save directory:",
+      saveDir,
+      "",
+      "Relative folder:",
+      dbg,
+      "",
+    }, "\n")
+    pcall(f.write, dbg .. "/UPLOAD_THESE_TWO_FILES.txt", note)
   end
-  local log = V and V.mod and V.mod.log
-  if log and log[level] then pcall(log[level], log, fmt, ...) end
-end
-StadiumInstall.say = say
-
-local function refuse(why)
-  say("warn", "stadium build refused: %s", tostring(why))
-  return false, why
+  return true
 end
 
 -- Open the ROM found in `baseroms/` and start a stepped build. Returns false
 -- plus a reason when there is nothing to build from.
 function StadiumInstall.begin()
   local f = fs()
-  if not f then return refuse("no filesystem") end
+  if not f then return false, "no filesystem" end
   local path = StadiumInstall.romPath()
-  if not path then return refuse("no ROM in " .. StadiumInstall.ROM_DIR) end
+  if not path then return false, "no ROM in " .. StadiumInstall.ROM_DIR end
 
   local okRead, bytes = pcall(f.read, path)
   if not (okRead and type(bytes) == "string") then
-    return refuse("could not read " .. path)
+    return false, "could not read " .. path
   end
   return StadiumInstall.beginFrom(bytes, path)
 end
@@ -254,10 +305,17 @@ end
 -- The same, from bytes somebody else has already got hold of -- which is the
 -- IMPORTED path (StadiumRomPick), where the file is at an absolute location
 -- love.filesystem cannot see and was read with io.open.
+--
+-- The two entry points share everything from here down on purpose: an
+-- imported cartridge and a dropped one produce the same 151 files, the same
+-- marker and the same md5, so there is exactly one build in this mod and no
+-- second one to keep in step.
+--
+-- `label` is only ever used to say WHICH file a complaint is about.
 function StadiumInstall.beginFrom(bytes, label)
   local f = fs()
-  if not f then return refuse("no filesystem") end
-  if type(bytes) ~= "string" or #bytes == 0 then return refuse("empty file") end
+  if not f then return false, "no filesystem" end
+  if type(bytes) ~= "string" or #bytes == 0 then return false, "empty file" end
 
   local StadiumBuild = V.require("StadiumBuild")
   local gen = gameGeneration()
@@ -277,9 +335,9 @@ function StadiumInstall.beginFrom(bytes, label)
   local rom, err = RomReader.open(bytes)
   if not rom then
     if gen == 2 then
-      return refuse("Gold/Silver needs a Pokemon Stadium 2 ROM: " .. tostring(err))
+      return false, "Gold/Silver/Crystal needs a Pokemon Stadium 2 ROM: " .. tostring(err)
     end
-    return refuse(tostring(err))
+    return false, tostring(err)
   end
 
   if not rom:isExpectedUS() then
@@ -302,10 +360,9 @@ function StadiumInstall.beginFrom(bytes, label)
   local models = rom:modelCount()
   if not (models and models >= wanted) then
     if gen == 2 then
-      return refuse(("model archive holds %s entries; %d are needed")
-        :format(tostring(models), wanted))
+      return false, "needs Pokemon Stadium 2 with the full 251-Pokemon model archive"
     end
-    return refuse("needs Pokemon Stadium US 1.0")
+    return false, "needs Pokemon Stadium US 1.0"
   end
 
   pcall(f.createDirectory, StadiumInstall.DIR)
@@ -316,50 +373,30 @@ function StadiumInstall.beginFrom(bytes, label)
   status.done = 0
   status.total = job.total
   status.error = nil
-  say("info", "stadium build started: %d models from %s (md5 %s)",
-      job.total or 0, tostring(label or "?"), tostring(job.md5))
   return true
 end
 
 -- One species. Returns true while there is more to do.
 function StadiumInstall.step()
   if not job then return false end
-  local okStep, more = pcall(job.step, job)
-  if not okStep then
-    status.state = "failed"
-    status.error = tostring(more)
-    say("error", "stadium build step threw: %s", tostring(more))
-    job = nil
-    return false
-  end
+  local more = job:step()
   status.done = job.done
   status.species = job.species
-  StadiumInstall._ticks = (StadiumInstall._ticks or 0) + 1
-  local done = tonumber(job.done) or 0
-  if StadiumInstall._ticks <= 3 or done % 50 == 0 then
-    if StadiumInstall._lastSaid ~= done or StadiumInstall._ticks <= 3 then
-      StadiumInstall._lastSaid = done
-      say("info", "stadium build: %d/%d (%s) after %d steps",
-          done, tonumber(job.total) or 0, tostring(job.species or "?"),
-          StadiumInstall._ticks)
-    end
-  end
-  if StadiumInstall._ticks == 240 and done == 0 then
-    say("error", "stadium build has run 240 steps without writing a model"
-        .. " -- the archive is being read but nothing is decoding")
-  end
   if job.error then
     status.state = "failed"
     status.error = job.error
-    say("error", "stadium build failed at %d/%d: %s",
-        done, tonumber(job.total) or 0, tostring(job.error))
     job = nil
     return false
   end
   if not more then
     local f = fs()
+    -- `job.total > 0` as well as "nothing failed", because a job with nothing
+    -- IN it satisfies the second on its own -- and the marker this writes is
+    -- what makes a set count as installed, so it must never be written for a
+    -- build that did not happen. beginFrom refuses such a ROM outright; this
+    -- is the same rule stated where the consequence is.
     local wrote = #job.failed == 0 and job.total > 0
-    if wrote then
+    if wrote and f then
       pcall(f.write, StadiumInstall.MARKER,
             ("%s %d %s %d\n"):format(StadiumInstall.FORMAT, job.total,
                                      tostring(job.md5 or ""),
@@ -369,6 +406,12 @@ function StadiumInstall.step()
     end
     if not wrote then
       status.state = "failed"
+      -- EVERY species failing is not a bad build, it is the wrong file: the
+      -- offsets the reader walks are Pokemon Stadium's, so a different game
+      -- -- or the Game Boy cartridge the player already imported once, which
+      -- is the mistake a file picker invites -- misses on all 151 rather than
+      -- on a few. Worth telling apart, because "0 of 151 models were built"
+      -- reads as a broken mod and this reads as a wrong click.
       if #job.failed >= job.total then
         if gameGeneration() == 2 then
           status.error = "needs a compatible Pokemon Stadium 2 ROM / GS model+animation archives"

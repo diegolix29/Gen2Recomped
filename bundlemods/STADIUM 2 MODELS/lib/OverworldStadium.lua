@@ -30,6 +30,7 @@ local PokemonHeights = V.require("PokemonHeights")
 local PokemonLocomotion = V.require("PokemonLocomotion")
 
 local OverworldStadium = {}
+local MAX_DEX = 251
 
 local tagged = setmetatable({}, { __mode = "k" })
 -- Last confirmed Pokemon identity for an entity.  Flight/control mods can
@@ -73,7 +74,7 @@ end
 local function dexNumber(v)
   if type(v) == "number" then
     local n = math.floor(v)
-    if n >= 1 and n <= 251 then return n end
+    if n >= 1 and n <= MAX_DEX then return n end
   elseif type(v) == "string" then
     local n = tonumber(v)
     if n then return dexNumber(n) end
