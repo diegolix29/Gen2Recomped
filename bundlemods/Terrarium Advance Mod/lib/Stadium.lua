@@ -84,9 +84,11 @@ end
 -- (like STADIUM_OVERWORLD_MODELS) can detect native hooks are present
 -- before they attempt to install their own compatibility wrappers.
 -- This prevents double-wrapping conflicts that cause crashes during attacks.
+-- NOTE: The flag will be set to true AFTER hooks are actually installed in Stadium.install()
 local okBattleState, BattleState = pcall(require, "src.battle.BattleState")
 if okBattleState and type(BattleState) == "table" then
-  BattleState.dramaticShapeStadiumHook = true
+  -- Don't set the flag here - let Stadium.install() set it after actually installing hooks
+  -- BattleState.dramaticShapeStadiumHook = true
 end
 
 
@@ -133,6 +135,8 @@ end
 function Stadium.begin(arena)
   Stadium.finish()
   if not Stadium.enabled() then return false end
+  -- Install hooks for attack animations
+  Stadium.install()
   -- a new fight gets its own first complaint: `reported` is a one-shot so the
   -- console is not filled sixty times a second, but latched for the whole
   -- process it would swallow every failure after the first one ever
@@ -751,9 +755,15 @@ local function ask(battle, battler, state, animIndex, auxIndex)
 end
 
 function Stadium.install()
-  local BattleState = require("src.battle.BattleState")
+  -- Try Gen 2 battle system first (Gold/Crystal), then fall back to Gen 1
+  local okGen2, BattleState = pcall(require, "src.ui.gen2.BattleState")
+  if not okGen2 then
+    local okGen1, BattleStateGen1 = pcall(require, "src.battle.BattleState")
+    if not okGen1 then return end
+    BattleState = BattleStateGen1
+  end
+  
   if BattleState.dramaticShapeStadiumHook then return end
-  BattleState.dramaticShapeStadiumHook = true
 
   -- THE ATTACK. performMove is the one place a move is actually used, and
   -- the move's own `index` is the Gen 1 move id the Stadium tables are
@@ -838,6 +848,9 @@ function Stadium.install()
     if session then session.transform.player = nil end
     return innerSwitch(self, newMon)
   end
+
+  -- Mark that hooks have been installed
+  BattleState.dramaticShapeStadiumHook = true
 end
 
 -- ------- when a draw goes wrong
