@@ -41,7 +41,7 @@
 -- the mod namespace (see main.lua)
 local V = ...
 
-local OptionRows = require("src.ui.OptionRows")
+local OptionRows = require("lib.OptionRows")
 local PaletteFX = require("src.render.PaletteFX")
 
 local SettingsMenu = {}
