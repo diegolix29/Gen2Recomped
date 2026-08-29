@@ -2464,6 +2464,24 @@ function Voxel3D.endDecals()
   love.graphics.setColor(1, 1, 1, 1)
 end
 
+-- Set the blend mode for drawing. When called with nil, resets to default
+-- alpha blend mode. Used by stadium rigs to clear blend state between
+-- different render passes (e.g., preventing additive FX from bleeding into
+-- subsequent body draws).
+function Voxel3D.blend(mode, alphaMode)
+  if not active then return end
+  pcall(love.graphics.setBlendMode, mode or "alpha", alphaMode or "alphamultiply")
+end
+
+-- Battle visibility bubble: dissolve tall terrain fragments that block
+-- camera-to-Pokemon sight lines. Called with arena data to enable, nil to disable.
+function Voxel3D.battleOcclusion(arena, groundY)
+  -- Stub implementation - full occlusion system would be more complex
+  -- This prevents the nil error while the feature is not yet implemented
+  if not active then return end
+  -- TODO: Implement actual occlusion culling for battle visibility
+end
+
 -- ------- THE ALPHA TAG: how a decal tells the screen pass what it IS
 --
 -- The screen pass has one image and one depth buffer to work from, so for as
