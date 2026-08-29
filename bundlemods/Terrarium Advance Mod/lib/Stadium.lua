@@ -121,9 +121,11 @@ end
 
 function Stadium.enabled()
   if not Stadium.selected() then return false end
+  local ok1, install1 = pcall(V.require, "StadiumInstall")
+  local stadium1Available = ok1 and install1 and install1.available()
   local ok2, install2 = pcall(V.require, "Stadium2Install")
   local stadium2Available = ok2 and install2 and install2.available()
-  return Voxel3D.available() and (StadiumPack.available() or stadium2Available)
+  return Voxel3D.available() and (stadium1Available or stadium2Available)
 end
 
 -- A staged fight has begun on `arena`. Called from OverworldBattle.begin,
