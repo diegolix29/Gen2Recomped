@@ -28,7 +28,6 @@ local currentModel = nil
 
 -- Animation state
 local animTime = 0
-local currentAnim = 1  -- 1 = idle
 
 -- ------- Configuration
 
@@ -140,7 +139,7 @@ function StadiumFollower.update(dt)
   if not currentRig then return end
   
   animTime = animTime + dt
-  currentRig:pose(currentAnim, animTime * 30, true)  -- 30 FPS
+  currentRig:pose(1, animTime * 30, true)  -- Idle animation at 30 FPS
   currentRig:anchor(0.75, dt)
   currentRig:textures(nil)
 end
