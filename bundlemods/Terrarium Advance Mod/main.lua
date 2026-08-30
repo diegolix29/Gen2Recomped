@@ -2233,6 +2233,51 @@ local function installOverworldStadium()
   return true
 end
 
+-- Patch engine's OptionRows to handle string values (fix for older engines)
+local okOptionRows, OptionRows = pcall(require, "src.ui.OptionRows")
+if okOptionRows and OptionRows and OptionRows.draw then
+  local originalDraw = OptionRows.draw
+  OptionRows.draw = function(game, rows, index, scroll, bottomLabel, bottomRow)
+    -- Call original but intercept row.value handling
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.rectangle("fill", 0, 0, 160, 144)
+    local Font = require("src.render.Font")
+    local Theme = require("src.ui.Theme")
+    for slot = 1, OptionRows.VISIBLE do
+      local i = scroll + slot
+      local row = rows[i]
+      if not row then break end
+      Font.drawBox(0, (slot - 1) * 4, 20, 4)
+      love.graphics.setColor(0, 0, 0, 1)
+      Font.draw(row.label, 16, ((slot - 1) * 4 + 1) * 8)
+      -- FIX: Check if row.value is a function before calling it
+      local displayValue = ""
+      if row.value then
+        if type(row.value) == "function" then
+          displayValue = row.value(game)
+        else
+          displayValue = tostring(row.value)
+        end
+      end
+      Font.draw(displayValue, 24, ((slot - 1) * 4 + 2) * 8)
+      if i == index then
+        Font.drawCode(Theme.cursor, 8, ((slot - 1) * 4 + 1) * 8)
+      end
+    end
+    if scroll + OptionRows.VISIBLE < #rows then
+      Font.drawCode(Theme.moreArrow, 144, 128)
+    end
+    if bottomLabel then
+      love.graphics.setColor(0, 0, 0, 1)
+      Font.draw(bottomLabel, 16, 136)
+      if bottomRow and index == bottomRow then
+        Font.drawCode(Theme.cursor, 8, 136)
+      end
+    end
+    love.graphics.setColor(1, 1, 1, 1)
+  end
+end
+
 pcall(installOverworldStadium)
 
 mod.exports.version = "1.15.0-mobile.snow.1"
