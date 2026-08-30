@@ -3182,14 +3182,25 @@ end
 
 local CUSTOM_ROAD_TILES = {
   OVERWORLD = {},
+  -- Gen2 tilesets
+  TilesetJohto = {},
+  TilesetModernJohto = {},
+  TilesetKanto = {},
+  TilesetBattleTowerOutside = {},
+  TilesetBattleTowerInside = {},
+  TilesetLighthouse = {},
 }
 
 local CUSTOM_GROUND_TILES = {
   CAVERN = {},
-}
-
-local CUSTOM_GROUND_TILES = {
   OVERWORLD = {},
+  -- Gen2 tilesets
+  TilesetJohto = {},
+  TilesetModernJohto = {},
+  TilesetKanto = {},
+  TilesetBattleTowerOutside = {},
+  TilesetBattleTowerInside = {},
+  TilesetLighthouse = {},
 }
 
 -- Helper function to convert pixel coordinates to tile IDs
@@ -3263,6 +3274,34 @@ Structures.addRoadByPixelCoords("OVERWORLD", 72, 24, 8, 8)   -- square road 2: 7
 
 -- Ground tiles (using Grass3D with ground texture)
 Structures.addGroundByPixelCoords("CAVERN", 0, 16, 8, 8)   -- square ground: 0,16 to 7,23
+
+-- Gen2 tilesets - ADD YOUR PIXEL COORDINATES HERE:
+-- Example format: Structures.addRoadByPixelCoords("TilesetJohto", px, py, width, height, pixelsPerRow, tileSize)
+-- Example format: Structures.addGroundByPixelCoords("TilesetJohto", px, py, width, height, pixelsPerRow, tileSize)
+
+-- Johto tileset
+-- Structures.addRoadByPixelCoords("TilesetJohto", px, py, width, height, pixelsPerRow, tileSize)
+-- Structures.addGroundByPixelCoords("TilesetJohto", px, py, width, height, pixelsPerRow, tileSize)
+
+-- Modern Johto tileset
+-- Structures.addRoadByPixelCoords("TilesetModernJohto", px, py, width, height, pixelsPerRow, tileSize)
+-- Structures.addGroundByPixelCoords("TilesetModernJohto", px, py, width, height, pixelsPerRow, tileSize)
+
+-- Kanto tileset
+-- Structures.addRoadByPixelCoords("TilesetKanto", px, py, width, height, pixelsPerRow, tileSize)
+-- Structures.addGroundByPixelCoords("TilesetKanto", px, py, width, height, pixelsPerRow, tileSize)
+
+-- Battle Tower Outside
+-- Structures.addRoadByPixelCoords("TilesetBattleTowerOutside", px, py, width, height, pixelsPerRow, tileSize)
+-- Structures.addGroundByPixelCoords("TilesetBattleTowerOutside", px, py, width, height, pixelsPerRow, tileSize)
+
+-- Battle Tower Inside
+-- Structures.addRoadByPixelCoords("TilesetBattleTowerInside", px, py, width, height, pixelsPerRow, tileSize)
+-- Structures.addGroundByPixelCoords("TilesetBattleTowerInside", px, py, width, height, pixelsPerRow, tileSize)
+
+-- Lighthouse
+-- Structures.addRoadByPixelCoords("TilesetLighthouse", px, py, width, height, pixelsPerRow, tileSize)
+-- Structures.addGroundByPixelCoords("TilesetLighthouse", px, py, width, height, pixelsPerRow, tileSize)
 
 function Structures.buildGrass(S, map, x0, x1, y0, y1, data)
   local templates = {}

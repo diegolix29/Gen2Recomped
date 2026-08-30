@@ -53,6 +53,8 @@ local Warp = {}
 -- the call sites: the step handler was already filtering carpets out of the
 -- copy it uses to outrank coord events, and the copy it actually warps on --
 -- a second Warp.onArrive a hundred lines further down -- was not.
+-- Adding timer when walking out of buildings for free move mods. 0.5 seconds pushing foward on a door carpet tile will trigger warp, standing still wont trigger warp.
+
 function Warp.onArrive(map, cx, cy)
   local w = map:warpAtCell(cx, cy)
   if not (w and map:isWarpTileCell(cx, cy)) then return nil end
@@ -68,8 +70,7 @@ function Warp.onArrive(map, cx, cy)
       local holdingDir = Game.input:isDown("up") or Game.input:isDown("down") or 
                          Game.input:isDown("left") or Game.input:isDown("right")
                          
-      local now = love.timer.getTime()
-      
+      local now = love.timer.getTime()      
       if holdingDir then
         if not map.carpetHoldStartTime then
           map.carpetHoldStartTime = now
@@ -80,11 +81,9 @@ function Warp.onArrive(map, cx, cy)
       else
         map.carpetHoldStartTime = nil
       end
-    end
-    
+    end    
     return nil
-  end
-  
+  end  
   return w
 end
 

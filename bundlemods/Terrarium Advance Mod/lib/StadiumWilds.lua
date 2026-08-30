@@ -306,6 +306,18 @@ function StadiumWilds.drawEntity(entity)
   local y = entity.py or 0
   local gh = entity.gh or 0
   
+  -- For Gen 2, ensure we get the correct ground height from the map
+  -- This fixes sprite placement issues where sprites appear on top of ledges
+  local mod = V.mod
+  local map = mod and mod.world and mod.world.map
+  if map and entity.cellX and entity.cellY then
+    local VoxelScene = V.require("VoxelScene")
+    local okGround, correctGh = pcall(VoxelScene.groundAt, map, entity.cellX, entity.cellY)
+    if okGround and correctGh ~= nil then
+      gh = correctGh
+    end
+  end
+  
   -- Determine facing direction
   local facing = entity.facing or "down"
   local fx, fz = 0, 1

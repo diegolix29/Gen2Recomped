@@ -515,7 +515,8 @@ end
 
 -- Every figure on `map`, drawn with `draw(mesh, model, caster)`.
 local function eachFigure(map, offX, offZ, draw)
-  for _, f in ipairs(ChunkMesher.figures(map) or {}) do
+  local figs = ChunkMesher.figures(map) or {}
+  for _, f in ipairs(figs) do
     draw(f.mesh, figureMatrix(f, offX, offZ), figureCaster(f, offX, offZ))
   end
 end
@@ -1099,12 +1100,14 @@ local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
   -- Every thin card from here down is SNUGGED toward the sun along its own
   -- ray (ShadowMap.snug) so its shadow keeps contact with its feet instead
   -- of starting a bias-width away.
-  ShadowMap.draw(ChunkMesher.flowers(state.map), atlasFor(state.map),
-                 ShadowMap.snug(nil))
-  for i, nb in ipairs(casters) do
-    if neighborLimit == nil or i <= neighborLimit then
-      ShadowMap.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),
-                     ShadowMap.snug(Mat4.translate(nb.ox, 0, nb.oy)))
+  if ChunkMesher.flowers then
+    ShadowMap.draw(ChunkMesher.flowers(state.map), atlasFor(state.map),
+                   ShadowMap.snug(nil))
+    for i, nb in ipairs(casters) do
+      if neighborLimit == nil or i <= neighborLimit then
+        ShadowMap.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map),
+                       ShadowMap.snug(Mat4.translate(nb.ox, 0, nb.oy)))
+      end
     end
   end
 
@@ -1659,23 +1662,25 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
       Voxel3D.crush = crush
     end
 
-    Voxel3D.draw(ChunkMesher.grass(state.map), grassTex, nil, pull, nil, sway)
-    for i, nb in ipairs(state.neighbors or {}) do
-      if neighborLimit == nil or i <= neighborLimit then
-        local ntex = grassTex
-        if not Grass3D then ntex = atlasFor(nb.map) end
-        Voxel3D.draw(ChunkMesher.grass(nb.map), ntex, Mat4.translate(nb.ox, 0, nb.oy), pull, nil, sway)
+    if ChunkMesher.grass then
+      Voxel3D.draw(ChunkMesher.grass(state.map), grassTex, nil, pull, nil, sway)
+      for i, nb in ipairs(state.neighbors or {}) do
+        if neighborLimit == nil or i <= neighborLimit then
+          local ntex = grassTex
+          if not Grass3D then ntex = atlasFor(nb.map) end
+          Voxel3D.draw(ChunkMesher.grass(nb.map), ntex, Mat4.translate(nb.ox, 0, nb.oy), pull, nil, sway)
+        end
       end
     end
 
     -- decorative grass mesh (no effects)
-    local decorMesh = ChunkMesher.decor(state.map)
+    local decorMesh = ChunkMesher.decor and ChunkMesher.decor(state.map)
     if decorMesh then
       Voxel3D.draw(decorMesh, grassTex, nil, pull, nil, 0)  -- No sway for decorative grass
     end
     for i, nb in ipairs(state.neighbors or {}) do
       if neighborLimit == nil or i <= neighborLimit then
-        local nbDecor = ChunkMesher.decor(nb.map)
+        local nbDecor = ChunkMesher.decor and ChunkMesher.decor(nb.map)
         if nbDecor then
           Voxel3D.draw(nbDecor, grassTex, Mat4.translate(nb.ox, 0, nb.oy), pull, nil, 0)
         end
@@ -1683,14 +1688,14 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
     end
 
     -- road mesh using Grass3D with road texture at 0.05 height
-    local roadMesh = ChunkMesher.road(state.map)
+    local roadMesh = ChunkMesher.road and ChunkMesher.road(state.map)
     if roadMesh then
       local roadTex = Grass3D and Grass3D.roadTexture() or nil
       Voxel3D.draw(roadMesh, roadTex, nil, pull, nil, 0)  -- No sway for road
     end
     for i, nb in ipairs(state.neighbors or {}) do
       if neighborLimit == nil or i <= neighborLimit then
-        local nbRoad = ChunkMesher.road(nb.map)
+        local nbRoad = ChunkMesher.road and ChunkMesher.road(nb.map)
         if nbRoad then
           local roadTex = Grass3D and Grass3D.roadTexture() or nil
           Voxel3D.draw(nbRoad, roadTex, Mat4.translate(nb.ox, 0, nb.oy), pull, nil, 0)
@@ -1699,14 +1704,14 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
     end
 
     -- ground mesh using Grass3D with ground texture at 0.1 height
-    local groundMesh = ChunkMesher.ground(state.map)
+    local groundMesh = ChunkMesher.ground and ChunkMesher.ground(state.map)
     if groundMesh then
       local groundTex = Grass3D and Grass3D.groundTexture() or nil
       Voxel3D.draw(groundMesh, groundTex, nil, pull, nil, 0)  -- No sway for ground
     end
     for i, nb in ipairs(state.neighbors or {}) do
       if neighborLimit == nil or i <= neighborLimit then
-        local nbGround = ChunkMesher.ground(nb.map)
+        local nbGround = ChunkMesher.ground and ChunkMesher.ground(nb.map)
         if nbGround then
           local groundTex = Grass3D and Grass3D.groundTexture() or nil
           Voxel3D.draw(nbGround, groundTex, Mat4.translate(nb.ox, 0, nb.oy), pull, nil, 0)
@@ -1742,11 +1747,13 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
     -- in a meadow the eye settles on
     local fsway = sway * Wind.FLOWER_SHARE
     
-    Voxel3D.draw(ChunkMesher.flowers(state.map), atlasFor(state.map), nil, fpull, ShadowMap.snug(nil), fsway)
-    for i, nb in ipairs(state.neighbors or {}) do
-      if neighborLimit == nil or i <= neighborLimit then
-        if ViewBox.showsMap(nb) then
-          Voxel3D.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map), Mat4.translate(nb.ox, 0, nb.oy), fpull, ShadowMap.snug(Mat4.translate(nb.ox, 0, nb.oy)), fsway)
+    if ChunkMesher and ChunkMesher.flowers then
+      Voxel3D.draw(ChunkMesher.flowers(state.map), atlasFor(state.map), nil, fpull, ShadowMap.snug(nil), fsway)
+      for i, nb in ipairs(state.neighbors or {}) do
+        if neighborLimit == nil or i <= neighborLimit then
+          if ViewBox.showsMap(nb) then
+            Voxel3D.draw(ChunkMesher.flowers(nb.map), atlasFor(nb.map), Mat4.translate(nb.ox, 0, nb.oy), fpull, ShadowMap.snug(Mat4.translate(nb.ox, 0, nb.oy)), fsway)
+          end
         end
       end
     end
