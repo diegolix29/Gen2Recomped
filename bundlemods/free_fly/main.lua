@@ -32,8 +32,9 @@ return function(mod)
     { key = "encounters", label = "AIR ENCOUNTERS", type = "toggle", default = true },
     { key = "spotted", label = "TRAINERS SPOT YOU", type = "toggle", default = false },
     { key = "gates", label = "STORY GATES", type = "toggle", default = true },
-    -- vanilla badge requirements: THUNDERBADGE to fly, SOULBADGE to set
-    -- down on water.  The Pallet gift bird is exempt from the fly check
+    -- vanilla badge requirements: THUNDERBADGE (Gen1) or STORMBADGE (Gen2) to fly,
+    -- SOULBADGE (Gen1) or FOGBADGE (Gen2) to set down on water.
+    -- The Pallet gift bird is exempt from the fly check
     -- (never the surf one), so the quick start survives the option.
     { key = "badges", label = "BADGE CHECKS", type = "toggle", default = true },
     -- the Pallet Town gift Pidgeot; off leaves a fully vanilla start
@@ -143,6 +144,13 @@ return function(mod)
          FieldDefaults.field(game.data, "outsideTilesets")) then
       return true
     end
+    -- Gen2 support: check environment byte (1 = TOWN, 2 = ROUTE)
+    if mapDef.environment then
+      local OUTDOOR_ENVIRONMENTS = { [1] = true, [2] = true }
+      if OUTDOOR_ENVIRONMENTS[mapDef.environment] then
+        return true
+      end
+    end
     return mapDef.tileset == "FOREST"
   end
 
@@ -177,18 +185,50 @@ return function(mod)
   -- relaxed the field-move rules through the engine's own chain, where
   -- HM02 compatibility still gates as the machine-teach path would
   local function eligibleFlyer(game, ow, mon)
+    mod.log:info("ELIGIBLE CHECK: mon=%s, freeFlyGift=%s, knowsFly=%s",
+                 mon and mon.species or "nil",
+                 tostring(mon and mon.freeFlyGift),
+                 tostring(knowsFly(mon)))
     if mon and mon.freeFlyGift then return true end
     if knowsFly(mon) then return true end
-    if not canLearnFly(game, mon) then return false end
+    if not canLearnFly(game, mon) then
+      mod.log:info("ELIGIBLE CHECK: cannot learn FLY")
+      return false
+    end
     local Runtime = require("src.mods.Runtime")
-    return Runtime.wantsHook("fieldmove.eligibility")
-      and fieldMoveUser(ow, "FLY") ~= nil
+    local wantsHook = Runtime.wantsHook("fieldmove.eligibility")
+    local fieldUser = fieldMoveUser(ow, "FLY")
+    mod.log:info("ELIGIBLE CHECK: wantsHook=%s, fieldUser=%s",
+                 tostring(wantsHook), tostring(fieldUser ~= nil))
+    return wantsHook and fieldUser ~= nil
   end
 
   local function badgeOk(game, mon)
-    return not mod.options:get("badges")
-      or (game.save.inventory and game.save.inventory.THUNDERBADGE)
-      or mon.freeFlyGift
+    local badgesOption = mod.options:get("badges")
+    mod.log:info("BADGE CHECK: badges option=%s, mon.freeFlyGift=%s",
+                 tostring(badgesOption),
+                 tostring(mon and mon.freeFlyGift))
+    if not badgesOption then
+      mod.log:info("BADGE CHECK: badges option disabled, returning true")
+      return true
+    end
+    if mon.freeFlyGift then
+      mod.log:info("BADGE CHECK: gift mon, returning true")
+      return true
+    end
+    local Badges = require("src.inventory.Badges")
+    -- Gen1 uses THUNDERBADGE, Gen2 uses STORMBADGE for FLY
+    -- Badges.has checks both inventory (Gen1) and flags (Gen2)
+    local hasThunder = Badges.has(game.save, { id = "THUNDERBADGE" })
+    local hasStorm = Badges.has(game.save, { id = "STORMBADGE" })
+    mod.log:info("BADGE CHECK: THUNDERBADGE=%s, STORMBADGE=%s",
+                 tostring(hasThunder), tostring(hasStorm))
+    if hasThunder or hasStorm then
+      mod.log:info("BADGE CHECK: has required badge, returning true")
+      return true
+    end
+    mod.log:info("BADGE CHECK: no required badge, returning false")
+    return false
   end
 
   local function partyKnowsSurf(save)
@@ -276,10 +316,33 @@ return function(mod)
     local out = next(game, items, mon, ctx)
     if type(out) ~= "table" then return out end
     local ow = ctx and ctx.overworld
-    if not (ow and ow.map and ow.map.def) or flying() then return out end
-    if not (eligibleFlyer(game, ow, mon) and badgeOk(game, mon)) then return out end
-    if ow.player and ow.player.onBike then return out end
-    if not skyAbove(game, ow.map.def) then return out end
+    mod.log:info("FREEFLY HOOK: ow=%s, map=%s, flying=%s",
+                 tostring(ow ~= nil),
+                 ow and ow.map and ow.map.id or "nil",
+                 tostring(flying()))
+    if not (ow and ow.map and ow.map.def) or flying() then
+      mod.log:info("FREEFLY: early return - no overworld or flying")
+      return out
+    end
+    local eligible = eligibleFlyer(game, ow, mon)
+    mod.log:info("FREEFLY: eligibleFlyer=%s", tostring(eligible))
+    local badge = badgeOk(game, mon)
+    mod.log:info("FREEFLY: badgeOk=%s", tostring(badge))
+    if not (eligible and badge) then
+      mod.log:info("FREEFLY: failed eligibility or badge check")
+      return out
+    end
+    if ow.player and ow.player.onBike then
+      mod.log:info("FREEFLY: on bike")
+      return out
+    end
+    local sky = skyAbove(game, ow.map.def)
+    mod.log:info("FREEFLY: skyAbove=%s", tostring(sky))
+    if not sky then
+      mod.log:info("FREEFLY: not sky above")
+      return out
+    end
+    mod.log:info("FREEFLY: adding FREEFLY option")
     table.insert(out, 1, { label = "FREEFLY", onSelect = function(m, g)
       -- unwind party menu / start menu back to the overworld, then lift off
       local stack = g.stack
@@ -1016,9 +1079,15 @@ return function(mod)
     end
 
     local function surfAllowed(ow)
-      return (fieldMoveUser(ow, "SURF") ~= nil or partyKnowsSurf(Game.save))
-        and (not mod.options:get("badges")
-             or (Game.save.inventory and Game.save.inventory.SOULBADGE))
+      if not (fieldMoveUser(ow, "SURF") ~= nil or partyKnowsSurf(Game.save)) then
+        return false
+      end
+      if not mod.options:get("badges") then return true end
+      local Badges = require("src.inventory.Badges")
+      -- Gen1 uses SOULBADGE, Gen2 uses FOGBADGE for SURF
+      -- Badges.has checks both inventory (Gen1) and flags (Gen2)
+      return Badges.has(Game.save, { id = "SOULBADGE" })
+        or Badges.has(Game.save, { id = "FOGBADGE" })
     end
 
     -- safe for an auto-glide step to pass over: in bounds, no sealed

@@ -104,31 +104,16 @@ local function texture()
   local ok, img = pcall(function()
     local path = rawget(_G, "__ds_backdrop_path")
                  or "mods/DRAMATIC_SHAPE/lib/backdrop.png"
-    -- Try multiple fallback paths
-    local fallbackPaths = {
-      path,
-      "mods/DRAMATIC_SHAPE/lib/backdrop.png",
-      "mods/ds_fp_ceiling/lib/backdrop.png",
-      "backdrop.png"
-    }
-    for _, testPath in ipairs(fallbackPaths) do
-      local testOk, testImg = pcall(function()
-        return love.graphics.newImage(testPath)
-      end)
-      if testOk and testImg then
-        testImg:setWrap("repeat", "clamp")
-        testImg:setFilter("nearest", "nearest")
-        status(("loaded backdrop from: %s"):format(testPath))
-        return testImg
-      end
-    end
-    return nil
+    local i = love.graphics.newImage(path)
+    i:setWrap("repeat", "clamp")
+    i:setFilter("nearest", "nearest")
+    return i
   end)
   if ok and img then
     image = img
   else
     failed = true
-    status("backdrop.png missing or unreadable from all paths")
+    status("backdrop.png missing or unreadable")
   end
   return image
 end
@@ -141,10 +126,7 @@ local function abandoned()
 end
 
 function Backdrop.draw(state)
-  if abandoned() then 
-    status("ceiling config missing - backdrop disabled")
-    return 
-  end
+  if abandoned() then return end
   local cfg = {}
   local pub = rawget(_G, "__ds_ceiling_config")
   if type(pub) == "function" then
@@ -152,15 +134,12 @@ function Backdrop.draw(state)
     if okCfg and type(c) == "table" then cfg = c end
   end
   if cfg.backdrop == false then
-    status("backdrop switched off in config")
+    status("backdrop switched off")
     return
   end
 
   local map = state and state.map
-  if not map then 
-    status("no map available")
-    return 
-  end
+  if not map then return end
   if not isOutdoor(map) then
     status("indoors -- the ceiling owns this map")
     return
@@ -170,15 +149,9 @@ function Backdrop.draw(state)
   -- the chosen panorama can change while the game is running, so notice
   -- when the published path is not the one we loaded
   local want = rawget(_G, "__ds_backdrop_path")
-  if tex and want and want ~= texPath then 
-    tex = nil
-    status("backdrop path changed, reloading texture")
-  end
+  if tex and want and want ~= texPath then tex = nil end
   if not tex then
-    texPath = want
-    status("backdrop texture not available")
-    return
-  end
+    texPath = want return end
   if not mesh then
     mesh = build()
     if not mesh then
