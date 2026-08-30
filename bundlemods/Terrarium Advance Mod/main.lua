@@ -212,6 +212,44 @@ local HordeSfx = V.require("HordeSfx")
 -- row, the wraps and the experience math; Pokeball the animated prop.
 local LetsGo = V.require("LetsGo")
 local Pokeball = V.require("Pokeball")
+-- Follower system (ported from VOXEL_ULTIMATE)
+local Follower = V.require("follower/init")
+-- Follower water compatibility module
+local FollowersWaterCompat = V.require("followers_water_compat")
+
+-- Instantiate water compat and attach to V namespace for follower system
+V.followersWater = FollowersWaterCompat.new(mod, {
+  resolveWaterSprite = function(speciesId, shiny, form, o)
+    -- Delegate to sprite resolver
+    local SpriteResolver = V.require("sprite_resolver")
+    if SpriteResolver and SpriteResolver.resolveFollowerSprite then
+      return SpriteResolver:resolveFollowerSprite({
+        species = speciesId,
+        shiny = shiny,
+        form = form,
+        surface = "surfing",
+        style = V.require("config").spriteStyle(mod),
+        role = "primary",
+      })
+    end
+    return nil
+  end,
+  resolveLandSprite = function(speciesId, shiny, form, o)
+    -- Delegate to sprite resolver
+    local SpriteResolver = V.require("sprite_resolver")
+    if SpriteResolver and SpriteResolver.resolveFollowerSprite then
+      return SpriteResolver:resolveFollowerSprite({
+        species = speciesId,
+        shiny = shiny,
+        form = form,
+        surface = "land",
+        style = V.require("config").spriteStyle(mod),
+        role = "primary",
+      })
+    end
+    return nil
+  end,
+})
 
 -- Forward declaration: the voxel pipeline's update hook (registered below)
 -- calls this, and it is defined further down with the settings it drives.
@@ -2069,6 +2107,47 @@ Horde.install()
 -- every byte untouched. The battle-side wraps (throwBall, safariAction)
 -- and the experience hooks install here too.
 LetsGo.install()
+
+-- ------- Follower system (ported from VOXEL_ULTIMATE)
+--
+-- Unified follower system with selection, persistence, control modes,
+-- trailers, talk interaction, and sprite refresh. Compatible with
+-- Followers EX and PokéPC through migration.
+local followerInstance = Follower.new(mod, {
+  logic = V,
+  render = V,
+})
+
+-- Register follower sprites during load phase
+mod.events:on("content.loaded", function()
+  pcall(function() followerInstance:registerContent() end)
+end)
+
+-- Install follower system after mods are loaded
+mod.events:on("mods.loaded", function()
+  local Game = require("src.core.Game")
+  pcall(function()
+    followerInstance:reassertAfterModsLoaded(Game)
+  end)
+end)
+
+-- Event handlers for follower lifecycle
+mod.events:on("save.loaded", function()
+  pcall(function() followerInstance:onSaveLoaded() end)
+end)
+
+mod.events:on("map.entered", function(ev)
+  pcall(function() followerInstance:onMapEntered(ev) end)
+end)
+
+mod.events:on("mod.options_changed", function(payload)
+  if payload and payload.mod == mod.id then
+    pcall(function() followerInstance:onOptionsChanged(payload) end)
+  end
+end)
+
+-- Export follower API for companion mods
+mod.exports.follower = followerInstance
 
 -- ------- what time it is
 --
