@@ -217,6 +217,9 @@ local Follower = V.require("follower/init")
 -- Follower water compatibility module
 local FollowersWaterCompat = V.require("followers_water_compat")
 
+-- Follower settings rows
+local FollowerSettings = V.require("follower/settings")
+
 -- Instantiate water compat and attach to V namespace for follower system
 V.followersWater = FollowersWaterCompat.new(mod, {
   resolveWaterSprite = function(speciesId, shiny, form, o)
@@ -250,6 +253,33 @@ V.followersWater = FollowersWaterCompat.new(mod, {
     return nil
   end,
 })
+
+-- Create follower settings rows
+local ModSetting = V.require("ModSetting")
+
+-- Follow Control Mode: trainer (player controls follower) vs pokemon (you control pokemon)
+local followControlSetting = ModSetting.new(
+  "follow_control",
+  "FOLLOW CONTROL",
+  { "trainer", "pokemon" },
+  { "TRAINER", "POKÉMON" }
+)
+
+-- Trainer Trail: when controlling pokemon, does trainer follow behind?
+local trainerTrailSetting = ModSetting.new(
+  "trainer_trail",
+  "TRAINER TRAIL",
+  { false, true },
+  { "OFF", "ON" }
+)
+
+-- Follower Count: 0-6 extra party followers
+local followerCountSetting = ModSetting.new(
+  "follower_count",
+  "FOLLOWER COUNT",
+  { 0, 1, 2, 3, 4, 5, 6 },
+  { "0", "1", "2", "3", "4", "5", "6" }
+)
 
 -- Forward declaration: the voxel pipeline's update hook (registered below)
 -- calls this, and it is defined further down with the settings it drives.
@@ -1055,6 +1085,26 @@ local SETTINGS = {
     .. "switches the blind roll off, so what you fight is what you walked "
     .. "into; MIX leaves it on as well; OFF is the dice alone.",
     full = true, cat = "wildlife" },
+  -- ------- Follower system settings (ported from VOXEL_ULTIMATE)
+  --
+  -- These control how the party follower behaves: who controls it,
+  -- whether the trainer trails behind when controlling pokemon, and
+  -- how many extra party members follow in a pack.
+  { followControlSetting,
+    "Who controls the follower: TRAINER (you walk, the Pokemon follows) "
+    .. "or POKÉMON (you control the Pokemon directly). POKÉMON mode can "
+    .. "also show the trainer trailing behind with TRAINER TRAIL.",
+    cat = "followers" },
+  { trainerTrailSetting,
+    "When controlling the Pokémon directly, the trainer trails behind. "
+    .. "OFF keeps the trainer at the camera; ON adds the trainer sprite "
+    .. "following the controlled Pokémon.",
+    cat = "followers" },
+  { followerCountSetting,
+    "How many extra party members follow in a pack (0–6). 0 is just the "
+    .. "primary follower; higher values add more party members in a line. "
+    .. "Only applies in POKÉMON control mode without TRAINER TRAIL.",
+    cat = "followers" },
   -- Only offered while something is out there to count. With WILD OFF the
   -- number of them is zero whatever this says, and a row that no longer
   -- decides anything is worse than no row.
