@@ -208,24 +208,28 @@ local function pushSpecials(state, dir, why)
   if why == "bounds" and state:checkEdgeExit(dir) then return true end
   if state:checkLedgeHop(dir) then return true end
   if state:checkBoulderPush(dir) then return true end
-  if why ~= "entity" and state:canCollisionWarp() then
-    local Game = require("src.core.Game")
-    local Warp = require("src.world.Warp")
-    local w = Warp.onCollision(state.map, Game.data.field.warpCarpets,
-                               p.cellX, p.cellY, dir)
+  
+  local Game = require("src.core.Game")
+  local Warp = require("src.world.Warp")
+
+  if why ~= "entity" then
+    -- Check for standard door/warp tiles on the current cell when blocked
+    local w = Warp.onArrive(state.map, p.cellX, p.cellY)
     if w then
       state:takeWarp(w.def)
       return true
     end
+
+    -- Fallback to directional carpets
+    if state:canCollisionWarp() then
+      w = Warp.onCollision(state.map, Game.data.field.warpCarpets,
+                                 p.cellX, p.cellY, dir)
+      if w then
+        state:takeWarp(w.def)
+        return true
+      end
+    end
   end
-  -- and NO bonk. The grid walk's collision sound marks a discrete event:
-  -- you pressed a direction, the step was refused, nothing happened. A
-  -- free walk has no such moment -- the body slides along every wall it
-  -- grazes, continuously, and a corridor taken at a slight angle is a
-  -- steady graze from end to end. Rate-limited or not, that came out as a
-  -- machine-gun of bonks for walking normally down a hallway. The wall
-  -- stopping you is the feedback; the sound only ever said so twice a
-  -- second whether or not anything had changed.
   return false
 end
 
