@@ -1356,6 +1356,48 @@ _G.keyBindingState = {
   bindingType = nil -- "keyboard" or "gamepad"
 }
 
+-- The engine's own input:wasPressed(name) only recognizes its fixed set of
+-- logical actions (up/down/left/right/a/b/start/select and so on). It has
+-- no idea what "f1" or "leftshoulder" mean, so routing a custom binding
+-- through it silently does nothing for anything outside that set -- and
+-- for names the action table happens to share with a raw key or pad
+-- button (like "a" or "b") it fires for EITHER the keyboard action or the
+-- pad press interchangeably, which is what made keyboard and gamepad
+-- bindings read as swapped. These two helpers poll LÖVE directly instead,
+-- edge-detected so a held key or button fires once per press rather than
+-- every frame it stays down.
+local rawKeyDown, rawPadDown = {}, {}
+
+local function rawKeyboardPressed(key)
+  if not (key and love and love.keyboard and love.keyboard.isDown) then return false end
+  local ok, down = pcall(love.keyboard.isDown, key)
+  down = ok and down or false
+  local was = rawKeyDown[key]
+  rawKeyDown[key] = down
+  return down and not was
+end
+
+local function rawGamepadPressed(button)
+  if not (button and love and love.joystick and love.joystick.getJoysticks) then return false end
+  local down = false
+  local ok, sticks = pcall(love.joystick.getJoysticks)
+  if ok and sticks then
+    for _, js in ipairs(sticks) do
+      local okPad, isPad = pcall(js.isGamepad, js)
+      if okPad and isPad then
+        local okDown, isDown = pcall(js.isGamepadDown, js, button)
+        if okDown and isDown then
+          down = true
+          break
+        end
+      end
+    end
+  end
+  local was = rawPadDown[button]
+  rawPadDown[button] = down
+  return down and not was
+end
+
 local function getJumpKey()
   local mod = V.mod
   if mod and mod.options then
@@ -1452,45 +1494,23 @@ SettingsMenu.update = function(self)
         return
       end
       
-      -- Check for escape to cancel
+      -- Check for escape to cancel. These three stay routed through the
+      -- engine's own action system on purpose (unlike a jump binding, menu
+      -- cancel is meant to answer to whatever the player already has
+      -- escape/B/start mapped to, keyboard or pad alike).
       if input:wasPressed("escape") or input:wasPressed("b") or input:wasPressed("start") then
         _G.keyBindingState.active = false
         return
       end
-      
-      -- Check all possible keyboard keys
-      local keyboardKeys = {
-        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
-        "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
-        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
-        "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
-        "lshift", "rshift", "lctrl", "rctrl", "lalt", "ralt", "lgui", "rgui",
-        "tab", "return", "backspace", "insert", "delete", "home", "end",
-        "pageup", "pagedown", "up", "down", "left", "right"
-      }
-      
-      for _, key in ipairs(keyboardKeys) do
-        if input:wasPressed(key) then
-          setJumpKey("keyboard:" .. key)
-          _G.keyBindingState.active = false
-          return
-        end
-      end
-      
-      -- Check all possible gamepad buttons
-      local gamepadButtons = {
-        "a", "b", "x", "y", "leftshoulder", "rightshoulder", "leftstick", "rightstick",
-        "dpup", "dpdown", "dpleft", "dpright", "leftx", "lefty", "rightx", "righty",
-        "triggerleft", "triggerright", "back", "start", "guide"
-      }
-      
-      for _, button in ipairs(gamepadButtons) do
-        if input:wasPressed(button) then
-          setJumpKey("gamepad:" .. button)
-          _G.keyBindingState.active = false
-          return
-        end
-      end
+
+      -- The actual key/button capture happens in the raw Game.keypressed
+      -- and Game.gamepadpressed hooks below, which see LÖVE's real key and
+      -- button names directly instead of the engine's abstracted actions.
+      -- Polling input:wasPressed() here for every possible key/button name
+      -- was the bug: it only ever fires for the handful of names the
+      -- engine treats as logical actions, and keyboard letters overlap
+      -- gamepad button names ("a", "b", ...) in that table, so a press on
+      -- either device could bind as the other.
     end
     return
   end
@@ -1521,7 +1541,7 @@ mod.hooks:wrap("Game.keypressed", function(next, game, key)
     end
     
     if not isMenuKey then
-      setJumpKey(key)
+      setJumpKey("keyboard:" .. key)
       _G.keyBindingState.active = false
       return true
     elseif key == "escape" then
@@ -1532,6 +1552,31 @@ mod.hooks:wrap("Game.keypressed", function(next, game, key)
   end
   return next(game, key)
 end)
+
+-- Handle gamepad button capture for jump binding. Mirrors the keypressed
+-- hook above but for a real pad press (button names here are LÖVE's own
+-- gamepad button constants -- "a", "leftshoulder", "dpup", and so on --
+-- the same vocabulary the binding is stored and later polled with).
+do
+  local Game = require("src.core.Game")
+  local inner = Game.gamepadpressed
+  function Game:gamepadpressed(joystick, button, ...)
+    if _G.keyBindingState and _G.keyBindingState.active then
+      if _G.keyBindingState.justActivated then
+        _G.keyBindingState.justActivated = false
+        return
+      end
+      if button == "back" or button == "start" then
+        _G.keyBindingState.active = false
+        return
+      end
+      setJumpKey("gamepad:" .. button)
+      _G.keyBindingState.active = false
+      return
+    end
+    if inner then return inner(self, joystick, button, ...) end
+  end
+end
 
 local schema = {}
 for i, entry in ipairs(SETTINGS) do
@@ -2692,18 +2737,24 @@ mod.hooks:wrap("input.step", function(next, game, dt)
   local out = next(game, dt)
   local top = game.stack and game.stack:top()
   local player = top and top.isOverworld and top.player
-  local input = game.input
   local jumpKey = getJumpKey()
   local bindingType, key = parseJumpKey(jumpKey)
-  
-  if input and player then
+
+  if player then
+    -- Poll LÖVE directly rather than the engine's input:wasPressed(),
+    -- which only recognizes its own fixed action names. A raw keyboard
+    -- key (e.g. "f1") or a raw gamepad button (e.g. "leftshoulder")
+    -- bound here would otherwise just never fire, since the engine has
+    -- no such action -- and both branches used to call the very same
+    -- input:wasPressed(key), so a gamepad binding was really being
+    -- checked as a keyboard action and vice versa.
     local pressed = false
     if bindingType == "keyboard" then
-      pressed = input:wasPressed(key)
+      pressed = rawKeyboardPressed(key)
     elseif bindingType == "gamepad" then
-      pressed = input:wasPressed(key)
+      pressed = rawGamepadPressed(key)
     end
-    
+
     if pressed then
       if tryLedgeHop(top, player) then
         -- Jump succeeded
