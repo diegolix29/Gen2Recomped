@@ -78,6 +78,7 @@ local KEY_WILD   = "n"   -- WILD roam ladder
 local KEY_MAP    = "p"   -- minimap ON/FULL/OFF
 local KEY_HAZE   = "h"   -- V-HAZE aerial perspective
 local KEY_SKYLINE = "k"  -- HORIZON far silhouettes
+local KEY_JUMP   = "space"  -- JUMP (ledge hop / cosmetic jump)
 -- Free of engine 2-5, of upstream DRAMATIC_SHAPE's 3/5/6/7/8/9, and of every
 -- letter above. Fires one impact sheet at the player's feet and steps to the
 -- next on each press -- the only way to SEE the pack without a fight, and
@@ -86,6 +87,7 @@ local KEY_FX = "j"
 V.KEYS = {
   voxel = KEY_VOXEL, grid = KEY_GRID, tilt = KEY_TILT,
   curve = KEY_CURVE, battle = KEY_BATTLE, wild = KEY_WILD, map = KEY_MAP,
+  jump = KEY_JUMP,
 }
 
 local function chunkFor(rel)
@@ -255,6 +257,8 @@ local fpLights = ModSetting.new("fplights", "LAMPLIGHT",
   { true, false }, { "ON", "OFF" })
 local fpJump = ModSetting.new("fpjump", "JUMP FEEL",
   { "OFF", "SUBTLE", "BIG" }, { "OFF", "SUBTLE", "BIG" })
+local fpJumpKey = ModSetting.new("fpjumpkey", "JUMP KEY",
+  { "space", "z", "x", "c" }, { "SPACE", "Z", "X", "C" })
 local fpDoorstep = ModSetting.new("fpdoorstep", "DOORWAY STEP",
   { true, false }, { "ON", "OFF" })
 -- Camera and movement modules for 1ST/3RD person views
@@ -1344,6 +1348,7 @@ local SETTINGS = {
   { fpLights, "Street lamps and town lighting.", cat = "world" },
   -- Movement
   { fpJump, "Jump feel: OFF, SUBTLE, or BIG.", cat = "world" },
+  { fpJumpKey, "Jump key binding.", cat = "world" },
   { fpDoorstep, "Step up/down when passing through doorways.", cat = "world" },
 }
 
@@ -1531,6 +1536,108 @@ local HOTKEYS = {
 -- the mod should care that a human is walking the list one press at a time.
 local vfxDemoIndex = 0
 
+-- ------- Manual jump helpers (ported from red_3d_player)
+--
+-- Helper to get setting value with fallback (shared with config bridge)
+local function getSettingValue(settingObj, default)
+  if settingObj then
+    local ok, v = pcall(function() return settingObj:get() end)
+    if ok then return v end
+  end
+  return default
+end
+
+-- Check if manual jump is enabled via the jump setting
+local function manualJumpEnabled()
+  local jumpSetting = getSettingValue(fpJump, "SUBTLE")
+  return jumpSetting ~= "OFF"
+end
+
+-- Simple jump trigger without setting check for testing
+local function canJump(player)
+  if not player then return false end
+  if player.inputLocked then return false end
+  if player.fishing then return false end
+  if player.surfing then return false end
+  if player.onBike then return false end
+  if player.hopFrames and player.hopFrames > 0 then return false end
+  if player.red3dManualJumpFrames and player.red3dManualJumpFrames > 0 then return false end
+  return true
+end
+
+-- Simple ledge hop trigger - just call the engine's function
+local function tryLedgeHop(top, player)
+  if not top or not player then return false end
+  if type(top.checkLedgeHop) == "function" then
+    local ok, result = pcall(top.checkLedgeHop, top, player.facing)
+    if ok and result == true then return true end
+  end
+  -- Fallback: try to manually trigger hop by setting hopFrames
+  -- This simulates what the engine does for ledge hops
+  local dx, dy = 0, 0
+  if player.facing == "left" then dx = -1
+  elseif player.facing == "right" then dx = 1
+  elseif player.facing == "up" then dy = -1
+  elseif player.facing == "down" then dy = 1
+  else return false end
+  local targetX = (player.cellX or 0) + dx * 2
+  local targetY = (player.cellY or 0) + dy * 2
+  if top.map and top.map:inBounds(targetX, targetY) then
+    player.targetX = targetX
+    player.targetY = targetY
+    player.moving = true
+    player.hopFrames = 32
+    return true
+  end
+  return false
+end
+
+-- Try to jump over a one-cell border/fence (Dramatic Shape fences)
+local function tryBorderJump(top, player, facing)
+  if not top or not top.map or not player then return false end
+  local map = top.map
+  local okCollision, Collision = pcall(require, "src.world.Collision")
+  if not okCollision or not Collision then return false end
+
+  local dx, dy = 0, 0
+  if facing == "left" then dx = -1
+  elseif facing == "right" then dx = 1
+  elseif facing == "up" then dy = -1
+  elseif facing == "down" then dy = 1
+  else return false end
+
+  -- Check the cell in front (the blocked border)
+  local bx = (player.cellX or 0) + dx
+  local by = (player.cellY or 0) + dy
+  if not map:inBounds(bx, by) then return false end
+
+  -- Check the landing cell (two cells ahead)
+  local lx = (player.cellX or 0) + dx * 2
+  local ly = (player.cellY or 0) + dy * 2
+  if not map:inBounds(lx, ly) then return false end
+
+  -- The border cell must be blocked (not walkable)
+  if map:isWalkableCell(bx, by) then return false end
+
+  -- The landing cell must be walkable and not occupied
+  if not map:isWalkableCell(lx, ly) then return false end
+  if Collision.occupied(top.entities, lx, ly, player) then return false end
+
+  -- Check if we can move to the border cell (collision check)
+  if not Collision.canMove(map, top.entities, player, facing) then return false end
+
+  -- Perform the jump
+  player.facing = facing
+  player.turnArmed = false
+  player.turnTimer = 0
+  player.bumpFrames = nil
+  player.targetX, player.targetY = lx, ly
+  player.moving = true
+  player.progress = 0
+  player.hopFrames = 32
+  return true
+end
+
 
 do
   local Game = require("src.core.Game")
@@ -1538,6 +1645,18 @@ do
   local inner = Game.keypressed
 
   function Game:keypressed(key)
+    -- Handle jump on space key directly, before HOTKEYS table
+    -- This ensures jump works regardless of voxel mode or other conditions
+    if key == KEY_JUMP then
+      local top = self.stack and self.stack:top()
+      local player = top and top.isOverworld and top.player
+      -- Try the engine's real ledge crossing without canJump check
+      if player then
+        if tryLedgeHop(top, player) then
+          return
+        end
+      end
+    end
     -- HORDE MODE owns the keyboard's spare keys while it runs (restored
     -- from DRAMATIC_SHAPE): R reloads, and every mode key below is
     -- swallowed rather than left to change the rung or the post-
@@ -1618,6 +1737,43 @@ do
             -- the tile the player is standing on rather than its corner.
             Vfx.play(keys[vfxDemoIndex],
                      p.cellX * 16 + 8, 0, p.cellY * 16 + 8)
+          end
+        end
+        return
+      elseif claim == "jump" then
+        -- Manual jump: keyboard space or controller X button
+        -- When a real ledge is directly in front, call the overworld's
+        -- checkLedgeHop() so landing validation, NPC collision, SFX and
+        -- the two-cell movement all stay owned by the engine.
+        -- Everywhere else the button remains a visual jump in place.
+        local ow = self.overworld
+        local p = ow and ow.player
+        if canJump(p) then
+          -- First try the engine's real ledge crossing
+          local crossed = false
+          if top and type(top.checkLedgeHop) == "function" then
+            local ok, result = pcall(top.checkLedgeHop, top, p.facing)
+            crossed = ok and result == true
+          end
+          if not crossed then
+            -- Try border jump (one cell fence hop)
+            crossed = tryBorderJump(top, p, p.facing)
+          end
+          if crossed then
+            -- Real ledge/border crossing owns the 32-frame hop
+            p.red3dManualJumpFrames = nil
+            p.red3dManualJumpTotal = nil
+          else
+            -- Cosmetic jump in place
+            local jumpFrames = 32
+            p.red3dManualJumpTotal = jumpFrames
+            p.red3dManualJumpFrames = jumpFrames
+          end
+          -- Invalidate cached skin keys so takeoff appears immediately
+          local renderer = rawget(_G, "red3dPlayerRenderer")
+          if renderer then
+            renderer.skinKey = nil
+            renderer.voxelUploadedKey = nil
           end
         end
         return
@@ -2343,6 +2499,51 @@ do
     OverworldState.terrariumSelectHook = true
   end
 end
+
+-- ------- Gamepad X button for jump
+--
+-- Allow X button (west face) to trigger jump on gamepad
+do
+  local Game = require("src.core.Game")
+  if not Game.terrariumGamepadJumpHook then
+    Game.terrariumGamepadJumpHook = true
+    local previousGamepadPressed = Game.gamepadpressed
+    function Game:gamepadpressed(joystick, button)
+      local top = self.stack and self.stack:top()
+      local player = top and top.isOverworld and top.player or nil
+      local selectHeld = self.input and self.input.isDown and self.input:isDown("select")
+      
+      if button == "x" and player and not selectHeld and canJump(player) then
+        if tryLedgeHop(top, player) then
+          return
+        end
+      end
+      if previousGamepadPressed then return previousGamepadPressed(self, joystick, button) end
+    end
+  end
+end
+
+-- ------- Jump via input.step hook
+--
+-- Use the mod's hook system to check for jump key each frame
+mod.hooks:wrap("input.step", function(next, game, dt)
+  local out = next(game, dt)
+  local top = game.stack and game.stack:top()
+  local player = top and top.isOverworld and top.player
+  local input = game.input
+  -- Get the configured jump key from settings
+  local jumpKey = getSettingValue(fpJumpKey, "space")
+  if input and input:wasPressed(jumpKey) then
+    if player then
+      -- Use proper ledge hop logic
+      if tryLedgeHop(top, player) then
+        -- Jump succeeded
+      end
+    end
+  end
+  return out
+end)
+
 
 -- ------- 1ST and 3RD person camera and movement
 --
