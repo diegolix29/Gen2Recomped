@@ -181,6 +181,82 @@ local HiddenItems = V.require("HiddenItems")
 local ExpShare = V.require("ExpShare")
 local Comforts = V.require("Comforts")
 local MiniMap = V.require("MiniMap")
+-- ds_fp_ceiling integrated modules
+local Ceiling = V.require("Ceiling")
+local Backdrop = V.require("Backdrop")
+local SkyLayer = V.require("SkyLayer")
+local Flora = V.require("Flora")
+local ModSetting = V.require("ModSetting")
+
+-- ds_fp_ceiling additional settings
+local fpShadows = ModSetting.new("fpshadows", "CONTACT SHADOW",
+  { true, false }, { "ON", "OFF" })
+local fpRails = ModSetting.new("fprails", "RAIL AND SKIRTING",
+  { true, false }, { "ON", "OFF" })
+local fpSpill = ModSetting.new("fpspill", "DOORWAY LIGHT",
+  { true, false }, { "ON", "OFF" })
+local fpFittings = ModSetting.new("fpfittings", "CEILING LAMPS",
+  { true, false }, { "ON", "OFF" })
+local fpBacks = ModSetting.new("fpbacks", "BUILDING BACKS",
+  { true, false }, { "ON", "OFF" })
+local fpRock = ModSetting.new("fprock", "CAVE ROCK",
+  { true, false }, { "ON", "OFF" })
+local fpPools = ModSetting.new("fppools", "CAVE POOLS",
+  { true, false }, { "ON", "OFF" })
+local fpSconces = ModSetting.new("fpsconces", "CAVE TORCHES",
+  { true, false }, { "ON", "OFF" })
+local fpBats = ModSetting.new("fpbats", "BATS",
+  { true, false }, { "ON", "OFF" })
+local fpDark = ModSetting.new("fpdark", "CAVE DARKNESS",
+  { true, false }, { "ON", "OFF" })
+local fpThird = ModSetting.new("fpthird", "3RD CEILING",
+  { "NONE", "CUTAWAY", "FULL" }, { "NONE", "CUTAWAY", "FULL" })
+local fpBackdrop = ModSetting.new("fpbackdrop", "HORIZON",
+  { true, false }, { "ON", "OFF" })
+local fpHorizonart = ModSetting.new("fphorizonart", "HORIZON ART",
+  { "KANTO", "FUJI", "VALLEY", "CITY" }, { "KANTO", "FUJI", "VALLEY", "CITY" })
+local fpClouds = ModSetting.new("fpclouds", "CLOUDS",
+  { true, false }, { "ON", "OFF" })
+local fpStars = ModSetting.new("fpstars", "NIGHT SKY",
+  { true, false }, { "ON", "OFF" })
+local fpBirds = ModSetting.new("fpbirds", "BIRDS",
+  { true, false }, { "ON", "OFF" })
+local fpAircraft = ModSetting.new("fpaircraft", "AIRCRAFT",
+  { true, false }, { "ON", "OFF" })
+local fpRainbows = ModSetting.new("fprainbows", "RAINBOWS",
+  { true, false }, { "ON", "OFF" })
+local fpRain = ModSetting.new("fprain", "RAIN",
+  { "OFF", "SOMETIMES", "ALWAYS" }, { "OFF", "SOMETIMES", "ALWAYS" })
+local fpLightning = ModSetting.new("fplightning", "LIGHTNING",
+  { true, false }, { "ON", "OFF" })
+local fpUmbrellas = ModSetting.new("fpumbrellas", "NPC UMBRELLAS",
+  { true, false }, { "ON", "OFF" })
+local fpPuddles = ModSetting.new("fppuddles", "PUDDLES",
+  { true, false }, { "ON", "OFF" })
+local fpGrass = ModSetting.new("fpgrass", "GRASS HEIGHT",
+  { "OFF", "SUBTLE", "WILD" }, { "OFF", "SUBTLE", "WILD" })
+local fpWind = ModSetting.new("fpwind", "WIND",
+  { "OFF", "BREEZE", "GUSTY" }, { "OFF", "BREEZE", "GUSTY" })
+local fpParticles = ModSetting.new("fpparticles", "PARTICLES",
+  { true, false }, { "ON", "OFF" })
+local fpInsects = ModSetting.new("fpinsects", "INSECTS",
+  { true, false }, { "ON", "OFF" })
+local fpGroundflock = ModSetting.new("fpgroundflock", "GROUND FLOCK",
+  { true, false }, { "ON", "OFF" })
+local fpCanopy = ModSetting.new("fpcanopy", "FOREST CANOPY",
+  { true, false }, { "ON", "OFF" })
+local fpVines = ModSetting.new("fpvines", "HANGING VINES",
+  { true, false }, { "ON", "OFF" })
+local fpShafts = ModSetting.new("fpshafts", "SUN SHAFTS",
+  { true, false }, { "ON", "OFF" })
+local fpFog = ModSetting.new("fpfog", "LAVENDER FOG",
+  { true, false }, { "ON", "OFF" })
+local fpLights = ModSetting.new("fplights", "LAMPLIGHT",
+  { true, false }, { "ON", "OFF" })
+local fpJump = ModSetting.new("fpjump", "JUMP FEEL",
+  { "OFF", "SUBTLE", "BIG" }, { "OFF", "SUBTLE", "BIG" })
+local fpDoorstep = ModSetting.new("fpdoorstep", "DOORWAY STEP",
+  { true, false }, { "ON", "OFF" })
 -- Camera and movement modules for 1ST/3RD person views
 local Jump = V.require("Jump")
 local FirstPerson = V.require("FirstPerson")
@@ -1211,6 +1287,64 @@ local SETTINGS = {
     .. "Stadium 2 models instead of sprites. When OFF, all Pokemon use sprites "
     .. "or Stadium 1 models (Gen 1 only).",
     full = true, cat = "battles" },
+  -- ------- ds_fp_ceiling integrated settings
+  -- Interior ceiling and walls
+  { Ceiling.setting,
+    "Interior ceilings and walls in first-person mode. Rooms get walls, "
+    .. "ceilings with configurable headroom, and proper doors. The diorama "
+    .. "rungs use a Sims-style cutaway view.",
+    cat = "world" },
+  { Ceiling.headroom,
+    "Ceiling height: AIRY (32px), MID (24px), or SNUG (16px).",
+    cat = "world" },
+  { Ceiling.cutaway,
+    "Sims-style cutaway in diorama view: near walls melt away so you can "
+    .. "see into rooms from outside.",
+    cat = "world" },
+  -- Interior details
+  { fpShadows, "Contact shadows under furniture and props.", cat = "world" },
+  { fpRails, "Rail and skirting boards along walls.", cat = "world" },
+  { fpSpill, "Light spilling from doorways into dark rooms.", cat = "world" },
+  { fpFittings, "Ceiling lamps and light fixtures.", cat = "world" },
+  { fpBacks, "Building backs - rear walls on exterior buildings.", cat = "world" },
+  -- Cave features
+  { fpRock, "Rock formations in caves.", cat = "world" },
+  { fpPools, "Water pools in cave floors.", cat = "world" },
+  { fpSconces, "Wall torches in caves.", cat = "world" },
+  { fpBats, "Flying bats in caves.", cat = "world" },
+  { fpDark, "Cave darkness effect in unlit areas.", cat = "world" },
+  -- Third person ceiling
+  { fpThird, "Ceiling visibility in third-person mode: NONE, CUTAWAY, or FULL.", cat = "world" },
+  -- Horizon backdrop
+  { fpBackdrop, "Distant horizon backdrop for outdoor maps.", cat = "world" },
+  { fpHorizonart, "Horizon art style: KANTO, FUJI, VALLEY, or CITY.", cat = "world" },
+  -- Sky features
+  { fpClouds, "Clouds drifting across the sky.", cat = "world" },
+  { fpStars, "Stars and nebula at night.", cat = "world" },
+  { fpBirds, "Birds flying in the sky.", cat = "world" },
+  { fpAircraft, "Rare aircraft (planes and blimps) in the sky.", cat = "world" },
+  { fpRainbows, "Rainbows after rain showers.", cat = "world" },
+  -- Weather effects
+  { fpRain, "Rain frequency: OFF, SOMETIMES, or ALWAYS.", cat = "world" },
+  { fpLightning, "Lightning during storms.", cat = "world" },
+  { fpUmbrellas, "NPCs open umbrellas during rain.", cat = "world" },
+  { fpPuddles, "Puddles form on the ground during rain.", cat = "world" },
+  -- Ground detail
+  { fpGrass, "Grass height: OFF, SUBTLE, or WILD.", cat = "world" },
+  { fpWind, "Wind effect on grass: OFF, BREEZE, or GUSTY.", cat = "world" },
+  { fpParticles, "Particle effects (seeds, drips, fireflies, etc.).", cat = "world" },
+  { fpInsects, "Insects buzzing around.", cat = "world" },
+  { fpGroundflock, "Ground flocks of birds that flush when approached.", cat = "world" },
+  -- Forest features
+  { fpCanopy, "Forest canopy overhead.", cat = "world" },
+  { fpVines, "Hanging vines in forests.", cat = "world" },
+  { fpShafts, "Sun shafts through forest canopy.", cat = "world" },
+  -- Town features
+  { fpFog, "Lavender Town fog effect.", cat = "world" },
+  { fpLights, "Street lamps and town lighting.", cat = "world" },
+  -- Movement
+  { fpJump, "Jump feel: OFF, SUBTLE, or BIG.", cat = "world" },
+  { fpDoorstep, "Step up/down when passing through doorways.", cat = "world" },
 }
 
 local schema = {}
@@ -1224,6 +1358,89 @@ mod.options:define(schema)
 -- reads it back for PRESENTATION -- the categories, the screens, the help
 -- text -- rather than owning a second copy that could drift from this one.
 SettingsMenu.define(SETTINGS)
+
+-- ------- ds_fp_ceiling config bridge
+--
+-- The Ceiling, Backdrop, SkyLayer, and Flora modules expect a companion
+-- mod (ds_fp_ceiling) to publish configuration via _G.__ds_ceiling_config.
+-- Since we've integrated those modules directly, we provide this bridge
+-- so they can read from our own options instead.
+local HEADROOM = { AIRY = 32, MID = 24, SNUG = 16 }
+_G.__ds_ceiling_config = function()
+  -- Use the actual setting objects where available
+  local ceilingOn = true
+  local headroomVal = 32
+  local cutawayOn = true
+  if Ceiling and Ceiling.setting then
+    local ok, v = pcall(function() return Ceiling.setting:get() end)
+    if ok then ceilingOn = (v ~= false) end
+  end
+  if Ceiling and Ceiling.headroom then
+    local ok, v = pcall(function() return Ceiling.headroom:get() end)
+    if ok and v then headroomVal = HEADROOM[v] or 32 end
+  end
+  if Ceiling and Ceiling.cutaway then
+    local ok, v = pcall(function() return Ceiling.cutaway:get() end)
+    if ok then cutawayOn = (v ~= false) end
+  end
+  
+  -- Helper to get setting value with fallback
+  local function getSetting(settingObj, default)
+    if settingObj then
+      local ok, v = pcall(function() return settingObj:get() end)
+      if ok then return v end
+    end
+    return default
+  end
+  
+  -- Map horizonart choice to backdrop file
+  local horizonArt = getSetting(fpHorizonart, "VALLEY")
+  local backdropMap = { KANTO = "backdrop.png", FUJI = "backdrop2.png", VALLEY = "backdrop3.png", CITY = "backdrop4.png" }
+  local backdropFile = backdropMap[horizonArt] or "backdrop.png"
+  _G.__ds_backdrop_path = mod.path .. "/lib/" .. backdropFile
+  
+  return {
+    ceiling = ceilingOn,
+    headroom = headroomVal,
+    cutaway = cutawayOn,
+    shadows = getSetting(fpShadows, true) ~= false,
+    rails = getSetting(fpRails, true) ~= false,
+    spill = getSetting(fpSpill, true) ~= false,
+    fittings = getSetting(fpFittings, true) ~= false,
+    rock = getSetting(fpRock, true) ~= false,
+    backs = getSetting(fpBacks, true) ~= false,
+    pools = getSetting(fpPools, true) ~= false,
+    sconces = getSetting(fpSconces, true) ~= false,
+    bats = getSetting(fpBats, true) ~= false,
+    third = getSetting(fpThird, "CUTAWAY"),
+    backdrop = getSetting(fpBackdrop, true) ~= false,
+    horizonart = horizonArt,
+    jump = getSetting(fpJump, "SUBTLE"),
+    -- Grass disabled by default as requested
+    grass = getSetting(fpGrass, "OFF"),
+    particles = getSetting(fpParticles, true) ~= false,
+    dark = getSetting(fpDark, true) ~= false,
+    rain = getSetting(fpRain, "SOMETIMES"),
+    umbrellas = getSetting(fpUmbrellas, true) ~= false,
+    puddles = getSetting(fpPuddles, true) ~= false,
+    lightning = getSetting(fpLightning, true) ~= false,
+    lights = getSetting(fpLights, true) ~= false,
+    shafts = getSetting(fpShafts, true) ~= false,
+    canopy = getSetting(fpCanopy, true) ~= false,
+    vines = getSetting(fpVines, true) ~= false,
+    fog = getSetting(fpFog, true) ~= false,
+    doorstep = getSetting(fpDoorstep, true) ~= false,
+    clouds = getSetting(fpClouds, true) ~= false,
+    stars = getSetting(fpStars, true) ~= false,
+    birds = getSetting(fpBirds, true) ~= false,
+    aircraft = getSetting(fpAircraft, true) ~= false,
+    rainbows = getSetting(fpRainbows, true) ~= false,
+    insects = getSetting(fpInsects, true) ~= false,
+    groundflock = getSetting(fpGroundflock, true) ~= false,
+    wind = getSetting(fpWind, "BREEZE"),
+  }
+end
+_G.__ds_posters_dir = mod.path .. "/"
 
 -- ------- this mod's hotkeys
 --

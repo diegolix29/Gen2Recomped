@@ -118,15 +118,10 @@ local function texture()
   return image
 end
 
--- If the companion mod has been deleted, its config bridge is gone and
--- this module is an orphan: draw nothing. The ceiling module does the
--- actual clean-up; this just keeps quiet in the meantime.
-local function abandoned()
-  return rawget(_G, "__ds_ceiling_config") == nil
-end
+-- Note: This module is now integrated directly into Terrarium Advance Mod
+-- The config bridge is provided by main.lua, so we no longer check for abandonment
 
 function Backdrop.draw(state)
-  if abandoned() then return end
   local cfg = {}
   local pub = rawget(_G, "__ds_ceiling_config")
   if type(pub) == "function" then
