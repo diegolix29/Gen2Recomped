@@ -257,8 +257,6 @@ local fpLights = ModSetting.new("fplights", "LAMPLIGHT",
   { true, false }, { "ON", "OFF" })
 local fpJump = ModSetting.new("fpjump", "JUMP FEEL",
   { "OFF", "SUBTLE", "BIG" }, { "OFF", "SUBTLE", "BIG" })
-local fpJumpKey = ModSetting.new("fpjumpkey", "JUMP KEY",
-  { "space", "z", "x", "c" }, { "SPACE", "Z", "X", "C" })
 local fpDoorstep = ModSetting.new("fpdoorstep", "DOORWAY STEP",
   { true, false }, { "ON", "OFF" })
 -- Camera and movement modules for 1ST/3RD person views
@@ -1348,13 +1346,199 @@ local SETTINGS = {
   { fpLights, "Street lamps and town lighting.", cat = "world" },
   -- Movement
   { fpJump, "Jump feel: OFF, SUBTLE, or BIG.", cat = "world" },
-  { fpJumpKey, "Jump key binding.", cat = "world" },
   { fpDoorstep, "Step up/down when passing through doorways.", cat = "world" },
 }
 
+-- Custom key binding system for jump key (must be defined before SettingsMenu hook)
+_G.keyBindingState = {
+  active = false,
+  justActivated = false,
+  bindingType = nil -- "keyboard" or "gamepad"
+}
+
+local function getJumpKey()
+  local mod = V.mod
+  if mod and mod.options then
+    local ok, value = pcall(mod.options.get, mod.options, "jumpKey")
+    if ok and value then return value end
+  end
+  return "keyboard:space"
+end
+
+local function setJumpKey(key)
+  local mod = V.mod
+  if mod and mod.world and mod.world.game then
+    local game = mod.world.game
+    local opts = game and game.save and game.save.options
+    if opts then
+      opts.modOptions = opts.modOptions or {}
+      opts.modOptions[mod.id] = opts.modOptions[mod.id] or {}
+      opts.modOptions[mod.id]["jumpKey"] = key
+    end
+    local loader = game and game.mods
+    if loader then
+      loader.modOptions = loader.modOptions or {}
+      loader.modOptions[mod.id] = loader.modOptions[mod.id] or {}
+      loader.modOptions[mod.id]["jumpKey"] = key
+    end
+    if game and game.writeOptions then pcall(game.writeOptions, game) end
+  end
+end
+
+local function parseJumpKey(binding)
+  -- Parse "keyboard:key" or "gamepad:button" format
+  local bindingType, key = binding:match("^(.-):(.+)$")
+  if bindingType and key then
+    return bindingType, key
+  end
+  -- Fallback for old format
+  return "keyboard", binding
+end
+
+-- Hook into SettingsMenu to add jump key option and help
+local SettingsMenu = V.require("SettingsMenu")
+local originalRows = SettingsMenu.rows
+SettingsMenu.rows = function(catId, game)
+  local out = originalRows(catId, game)
+  if type(out) ~= "table" then return out end
+  
+  -- Add jump key row to the "world" category
+  if catId == "world" then
+    local jumpRow = {
+      id = "DRAMATIC_SHAPE:jumpKey",
+      label = "JUMP KEY",
+      value = function()
+        -- Use _G.keyBindingState to ensure we access the global
+        local state = _G.keyBindingState or { active = false }
+        if state.active then
+          return "PRESS BUTTON..."
+        end
+        local binding = getJumpKey()
+        local bindingType, key = parseJumpKey(binding)
+        return (bindingType:upper() .. ":" .. key:upper())
+      end,
+      activate = function(game)
+        if _G.keyBindingState then
+          _G.keyBindingState.active = true
+          _G.keyBindingState.justActivated = true
+          _G.keyBindingState.bindingType = nil
+        end
+      end,
+    }
+    table.insert(out, jumpRow)
+  end
+  return out
+end
+
+-- Add help text for jump key
+local originalHelpFor = SettingsMenu.helpFor
+SettingsMenu.helpFor = function(id)
+  if id == "DRAMATIC_SHAPE:jumpKey" then
+    return "Press A to bind any keyboard key or gamepad button to the jump action. The jump allows you to hop over ledges in the overworld."
+  end
+  return originalHelpFor(id)
+end
+
+-- Hook into SettingsMenu.update to capture key presses when in binding mode
+local originalUpdate = SettingsMenu.update
+SettingsMenu.update = function(self)
+  -- If in binding mode, capture key presses
+  if _G.keyBindingState and _G.keyBindingState.active then
+    local input = self.game and self.game.input
+    if input then
+      -- Skip the activation key
+      if _G.keyBindingState.justActivated then
+        _G.keyBindingState.justActivated = false
+        return
+      end
+      
+      -- Check for escape to cancel
+      if input:wasPressed("escape") or input:wasPressed("b") or input:wasPressed("start") then
+        _G.keyBindingState.active = false
+        return
+      end
+      
+      -- Check all possible keyboard keys
+      local keyboardKeys = {
+        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
+        "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
+        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+        "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
+        "lshift", "rshift", "lctrl", "rctrl", "lalt", "ralt", "lgui", "rgui",
+        "tab", "return", "backspace", "insert", "delete", "home", "end",
+        "pageup", "pagedown", "up", "down", "left", "right"
+      }
+      
+      for _, key in ipairs(keyboardKeys) do
+        if input:wasPressed(key) then
+          setJumpKey("keyboard:" .. key)
+          _G.keyBindingState.active = false
+          return
+        end
+      end
+      
+      -- Check all possible gamepad buttons
+      local gamepadButtons = {
+        "a", "b", "x", "y", "leftshoulder", "rightshoulder", "leftstick", "rightstick",
+        "dpup", "dpdown", "dpleft", "dpright", "leftx", "lefty", "rightx", "righty",
+        "triggerleft", "triggerright", "back", "start", "guide"
+      }
+      
+      for _, button in ipairs(gamepadButtons) do
+        if input:wasPressed(button) then
+          setJumpKey("gamepad:" .. button)
+          _G.keyBindingState.active = false
+          return
+        end
+      end
+    end
+    return
+  end
+  
+  -- Normal update when not in binding mode
+  return originalUpdate(self)
+end
+
+-- Handle key capture for jump binding
+mod.hooks:wrap("Game.keypressed", function(next, game, key)
+  if _G.keyBindingState and _G.keyBindingState.active then
+    if _G.keyBindingState.justActivated then
+      _G.keyBindingState.justActivated = false
+      return true -- Consume the activation key
+    end
+    
+    -- Don't bind menu navigation keys
+    local menuKeys = {
+      "escape", "return", "tab", "up", "down", "left", "right",
+      "w", "a", "s", "d", "z", "x", "c", "v", "b", "n", "m"
+    }
+    local isMenuKey = false
+    for _, mk in ipairs(menuKeys) do
+      if key == mk then
+        isMenuKey = true
+        break
+      end
+    end
+    
+    if not isMenuKey then
+      setJumpKey(key)
+      _G.keyBindingState.active = false
+      return true
+    elseif key == "escape" then
+      _G.keyBindingState.active = false
+      return true
+    end
+    return next(game, key)
+  end
+  return next(game, key)
+end)
+
 local schema = {}
 for i, entry in ipairs(SETTINGS) do
-  schema[i] = entry[1]:schema(entry[2])
+  -- Only generate schema for ModSetting objects (which have :schema method)
+  if type(entry[1]) == "table" and type(entry[1].schema) == "function" then
+    schema[#schema + 1] = entry[1]:schema(entry[2])
+  end
 end
 mod.options:define(schema)
 
@@ -1539,10 +1723,11 @@ local vfxDemoIndex = 0
 -- ------- Manual jump helpers (ported from red_3d_player)
 --
 -- Helper to get setting value with fallback (shared with config bridge)
-local function getSettingValue(settingObj, default)
-  if settingObj then
-    local ok, v = pcall(function() return settingObj:get() end)
-    if ok then return v end
+local function getSettingValue(setting, default)
+  if not setting then return default end
+  if type(setting.get) == "function" then
+    local ok, value = pcall(setting.get, setting)
+    if ok and value ~= nil then return value end
   end
   return default
 end
@@ -2500,42 +2685,26 @@ do
   end
 end
 
--- ------- Gamepad X button for jump
---
--- Allow X button (west face) to trigger jump on gamepad
-do
-  local Game = require("src.core.Game")
-  if not Game.terrariumGamepadJumpHook then
-    Game.terrariumGamepadJumpHook = true
-    local previousGamepadPressed = Game.gamepadpressed
-    function Game:gamepadpressed(joystick, button)
-      local top = self.stack and self.stack:top()
-      local player = top and top.isOverworld and top.player or nil
-      local selectHeld = self.input and self.input.isDown and self.input:isDown("select")
-      
-      if button == "x" and player and not selectHeld and canJump(player) then
-        if tryLedgeHop(top, player) then
-          return
-        end
-      end
-      if previousGamepadPressed then return previousGamepadPressed(self, joystick, button) end
-    end
-  end
-end
-
 -- ------- Jump via input.step hook
 --
--- Use the mod's hook system to check for jump key each frame
+-- Use the custom key binding to trigger jump
 mod.hooks:wrap("input.step", function(next, game, dt)
   local out = next(game, dt)
   local top = game.stack and game.stack:top()
   local player = top and top.isOverworld and top.player
   local input = game.input
-  -- Get the configured jump key from settings
-  local jumpKey = getSettingValue(fpJumpKey, "space")
-  if input and input:wasPressed(jumpKey) then
-    if player then
-      -- Use proper ledge hop logic
+  local jumpKey = getJumpKey()
+  local bindingType, key = parseJumpKey(jumpKey)
+  
+  if input and player then
+    local pressed = false
+    if bindingType == "keyboard" then
+      pressed = input:wasPressed(key)
+    elseif bindingType == "gamepad" then
+      pressed = input:wasPressed(key)
+    end
+    
+    if pressed then
       if tryLedgeHop(top, player) then
         -- Jump succeeded
       end
