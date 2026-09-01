@@ -48,9 +48,12 @@ function Stadium2Pack.unpack(bytes)
   end
 
   local magic = bytes:sub(1, 4)
-  if magic ~= "DSM3" and magic ~= "DSM4" then
-    return nil, "not a DSM3/DSM4 file"
+  if magic ~= "DSM3" and magic ~= "DSM4" and magic ~= "DSM5" then
+    return nil, "not a DSM3/DSM4/DSM5 file"
   end
+  -- DSM5 carries Stadium 2's real 251-move dispatch table; DSM3/DSM4 predate
+  -- it and are always the original 165-move Stadium 1 shape.
+  local nMoves = (magic == "DSM5") and 251 or 165
 
   local pos = 5
 
@@ -117,12 +120,12 @@ function Stadium2Pack.unpack(bytes)
     return nil, "truncated file (header incomplete)"
   end
   
-  -- Read move table (165 moves)
+  -- Read move table (nMoves moves -- 165 for DSM3/DSM4, 251 for DSM5)
   local moves = {}
-  for i = 1, 165 do
+  for i = 1, nMoves do
     moves[i] = u16()
   end
-  for i = 1, 165 do
+  for i = 1, nMoves do
     if moves[i] == nil then
       return nil, "truncated file (move table incomplete)"
     end
@@ -130,10 +133,10 @@ function Stadium2Pack.unpack(bytes)
 
   -- Read move aux table
   local moveAux = {}
-  for i = 1, 165 do
+  for i = 1, nMoves do
     moveAux[i] = i16()
   end
-  for i = 1, 165 do
+  for i = 1, nMoves do
     if moveAux[i] == nil then
       return nil, "truncated file (move aux table incomplete)"
     end

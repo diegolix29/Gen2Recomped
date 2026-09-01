@@ -35,6 +35,28 @@ local sub = string.sub
 local Rom = {}
 Rom.__index = Rom
 
+-- StadiumBuild reads these off the rom instance (rom.N_MOVES etc.) instead of
+-- assuming Stadium 1's shape everywhere. Falls back to Stadium 1's 165/DSM3
+-- if absent, so Stadium 1's own StadiumRom.lua needs no change.
+--
+-- The context list is Stadium 2's REAL order as decoded from the dispatch
+-- table (entries 251..270), not Stadium 1's StadiumBuild.CONTEXTS -- the two
+-- lists name different roles in different positions. "idle" stays first in
+-- both because StadiumBuild.pack reads ctx[1] as the idle clip regardless of
+-- game. Names past "hit" are the ROM's real slots but their in-game role
+-- hasn't been matched to a battle-overlay call site yet, so they're numbered
+-- rather than guessed -- same caution as STADIUM2_IMPORTER's animation_dispatch.lua.
+Rom.N_MOVES = 251
+Rom.PACK_MAGIC = "DSM5"
+Rom.CONTEXTS = {
+  "idle", "entrance", "faint", "hit",
+  "reaction_255", "reaction_256", "reaction_257",
+  "reaction_258", "reaction_259", "reaction_260",
+  "reaction_261", "reaction_262", "reaction_263",
+  "reaction_264", "reaction_265", "reaction_266",
+  "reaction_267", "sleep", "reaction_269", "reaction_270",
+}
+
 local function be32(s, o)
   local a, b, c, d = byte(s, o + 1, o + 4)
   if not d then return nil end
@@ -198,166 +220,118 @@ function Rom:attachAnimations(data, fileno)
   return true
 end
 
--- ------- animation dispatch (which clip each move/context uses)
+-- Stadium 2's real per-species move-to-animation dispatch table. Verified
+-- against pret/pokestadiumgs: a compressed archive at 0x01718000, 279
+-- records (species N's record sits at archive index N -- unlike the model
+-- and animation archives, this one has no record-zero placeholder), each
+-- holding 271 rows of 0x14 bytes: 251 Gen II move IDs (row n selects move
+-- n + 1) followed by 20 fixed battle-context rows. Byte 0 of a row is the
+-- animation selector, byte 1 is the signed auxiliary (texture/facial)
+-- selector, -1 meaning none.
 --
--- Faithful port of STADIUM2_IMPORTER/lib/animation_dispatch.lua and
--- animation_semantics.lua's selector resolution. The real per-species table
--- lives in a compressed archive (279 records; species N is archive record N,
--- with no record-zero placeholder -- unlike the model/animationBanks
--- archives above) rather than the flat pointer table Stadium 1's battle data
--- uses, but once decompressed it has the identical per-entry {anim, aux}
--- byte-pair shape as StadiumRom:battleRows already returns for Stadium 1.
-StadiumRom2.DISPATCH_ARCHIVE = 0x1718000
+-- Rom:battleRows below returns this table at full width -- all 251 move
+-- rows and all 20 real context rows, in the ROM's own order (see
+-- Rom.CONTEXTS) -- now that the DSM5 pack format and StadiumBuild carry a
+-- per-rom slot count instead of assuming Stadium 1's 165+20 shape.
+StadiumRom2.DISPATCH_ARCHIVE = 0x01718000
 StadiumRom2.DISPATCH_RECORDS = 279
-StadiumRom2.DISPATCH_RECORD_SIZE = 0x1530
-StadiumRom2.DISPATCH_ENTRY = 0x14
-StadiumRom2.DISPATCH_N_MOVES = 251
-StadiumRom2.DISPATCH_N_CONTEXTS = 20
+StadiumRom2.DISPATCH_ROW_SIZE = 0x14
+StadiumRom2.DISPATCH_ROWS = 271          -- 251 moves + 20 contexts
 
 local function signed8(v)
-  return v >= 0x80 and (v - 0x100) or v
+  if v >= 0x80 then return v - 0x100 end
+  return v
 end
 
--- One decompressed record: 251 move rows then 20 context rows, source-index
--- 0-based (row 0 = move 1's entry), matching animation_dispatch.lua's
--- Dispatch.decodeRecord exactly.
+-- One archive record decoded into 271 { selector, aux } rows, 0-based.
 local function decodeDispatchRecord(payload)
-  local n = StadiumRom2.DISPATCH_N_MOVES + StadiumRom2.DISPATCH_N_CONTEXTS
-  if type(payload) ~= "string" or #payload < n * StadiumRom2.DISPATCH_ENTRY then
-    return nil
-  end
-  local rows = { n = n }
-  for i = 0, n - 1 do
-    local o = i * StadiumRom2.DISPATCH_ENTRY
+  if type(payload) ~= "string" then return nil end
+  local rows = {}
+  for i = 0, StadiumRom2.DISPATCH_ROWS - 1 do
+    local o = i * StadiumRom2.DISPATCH_ROW_SIZE
+    if o + 2 > #payload then break end
     rows[i] = { byte(payload, o + 1), signed8(byte(payload, o + 2)) }
   end
   return rows
 end
 
--- Cached per-species raw dispatch rows, decompressed from the archive.
--- `false` in the cache means "looked it up, there was nothing usable" so a
--- missing/corrupt record isn't re-decompressed every call.
-function Rom:dispatchRows(species)
-  self._dispatchCache = self._dispatchCache or {}
-  local cached = self._dispatchCache[species]
-  if cached ~= nil then return cached or nil end
-
-  local archive = self:archive(StadiumRom2.DISPATCH_ARCHIVE)
-  local rec = archive and archive[species]
-  if not rec then
-    self._dispatchCache[species] = false
-    return nil
+function Rom:dispatchArchive()
+  if not self.dispatchDir then
+    self.dispatchDir = self:archive(StadiumRom2.DISPATCH_ARCHIVE) or {}
   end
-  local raw = sub(self.data, rec.start + 1, rec.start + rec.size)
-  local payload = StadiumRom.decompress(raw)
-  local rows = payload and decodeDispatchRecord(payload)
-  self._dispatchCache[species] = rows or false
+  return self.dispatchDir
+end
+
+-- The record's own selector base: a species whose real clip domain fits
+-- inside its decoded animation count indexes clip file 0 directly; a
+-- species that reaches the animation count reserves selector 0 for the
+-- model's own bind pose and indexes external clips from selector 1. Mirrors
+-- STADIUM2_IMPORTER's animation_semantics.lua -- derived from the species'
+-- own complete record, never assumed from a role's position.
+local function selectorBase(rows, animCount)
+  local maximum = 0
+  for i = 0, StadiumRom2.DISPATCH_ROWS - 1 do
+    local row = rows[i]
+    local selector = row and row[1]
+    if selector and selector > maximum and selector < 0xFF then
+      maximum = selector
+    end
+  end
+  return (maximum < (animCount or 0)) and 0 or 1
+end
+
+local function exportedSelector(selector, base)
+  if selector == nil then return nil end
+  if selector == 0 then return 0 end
+  return selector - base
+end
+
+-- Real per-species dispatch record for `species` (271 { selector, aux } rows,
+-- 0-based), or nil if the archive is missing/unreadable -- battleRows falls
+-- back to the generic clip in that case.
+function Rom:dispatchRows(species)
+  local archive = self:dispatchArchive()
+  if #archive ~= StadiumRom2.DISPATCH_RECORDS then return nil end
+  local rec = archive[species]
+  if not rec then return nil end
+  local ok, bytes = pcall(sub, self.data, rec.start + 1, rec.start + rec.size)
+  if not ok or type(bytes) ~= "string" then return nil end
+  local ok2, payload = pcall(StadiumRom.decompress, bytes)
+  if not ok2 or type(payload) ~= "string" then return nil end
+  local ok3, rows = pcall(decodeDispatchRecord, payload)
+  if not ok3 or type(rows) ~= "table" then return nil end
   return rows
 end
 
--- Port of animation_semantics.lua's Semantics.selectorBase. Stadium 2 battle
--- records use two selector layouts found in the ROM: when every authored
--- selector in a species' record already fits inside that species' decoded
--- clip count, selector N addresses clip N directly (base 0); when a record's
--- selectors reach or exceed the clip count, selector 0 is reserved for the
--- model's default pose and real clips are addressed from selector 1 (base
--- 1). This has to be derived per species from that species' whole record; it
--- is not safe to assume from one slot's position.
-local function dispatchSelectorBase(nAnims, rows)
-  local maximum = 0
-  for i = 0, rows.n - 1 do
-    local sel = rows[i] and rows[i][1]
-    if sel and sel >= 0 and sel < 0xFFFF and sel > maximum then
-      maximum = sel
-    end
-  end
-  return maximum < nAnims and 0 or 1
-end
-
--- Port of animation_semantics.lua's exportedBodySelector.
-local function dispatchSelector(sel, base)
-  if sel == nil or sel < 0 or sel >= 0xFFFF then return 0xFFFF end
-  if sel == 0 then return 0 end
-  return sel - base
-end
-
--- Stadium 2's real per-move battle routing table -- which of a species'
--- decoded clips each move and battle context selects -- lives in the
--- dispatch archive above and is decoded by dispatchRows()/dispatchSelector().
---
--- The .dsm pack format's move/context table is still Stadium 1's shape
--- (165 move slots + 20 context slots = 185 total; see StadiumBuild.CONTEXTS
--- and StadiumBuild.pack), inherited because the packer and both readers
--- share it. Stadium 2 has 251 real moves, so this is a safe, non-breaking
--- fix rather than the full one:
---
---   * DSM move slots 0..164 map 1:1 onto dispatch source rows 0..164 -- both
---     are "move N+1's entry, in move-ID order" -- so moves 1..165 get their
---     real clip.
---   * DSM's 20 context slots (165..184) map 1:1 by POSITION onto the
---     dispatch table's 20 context rows (251..270) -- both are "the fixed
---     battle-context slots, in ROM record order". Only the display names
---     differ: StadiumBuild.CONTEXTS spells them out using the naming this
---     format was built for (attack_default, struggle, flinch, ...), while
---     animation_dispatch.lua's Dispatch.CONTEXTS uses the names actually
---     provable from Stadium 2's own call sites (entrance, hit, sleep,
---     rom_context_NNN, ...). The row VALUES at each position come from the
---     real table either way; only the label a human reads differs.
---   * Moves 166..251 (Gen 2-only moves) have no slot in this format yet and
---     keep the previous generic "attack" clip below. Widening the .dsm
---     layout to carry all 251 real move slots is the follow-up to this
---     patch, not part of it -- see STADIUM2_PORT_NOTES.md.
---
--- Any row this can't resolve (no dispatch table for that species, a
--- corrupt/missing record, or a selector that lands outside the species'
--- decoded clip count) falls back to the previous heuristic for that slot
--- only, so a partially-decodable ROM degrades instead of breaking.
+-- Full width now: 251 real move slots (row m selects move m + 1) plus the
+-- 20 real context rows (251..270), in the ROM's own order -- see the
+-- Rom.CONTEXTS comment above for why that's a different order than Stadium
+-- 1's list. rows.n = 271 tells StadiumBuild.contextTable/labelAnimations
+-- where the context slots start (rows.n - #Rom.CONTEXTS), and
+-- StadiumBuild.species reads rom.N_MOVES/rom.CONTEXTS/rom.PACK_MAGIC to size
+-- and tag the pack accordingly.
 function Rom:battleRows(species)
   local n = (self._animCounts and self._animCounts[species]) or 1
   local idle     = 0
   local attack   = n > 1 and 1 or idle
-  local faint    = n > 2 and 2 or idle
-  local entrance = n > 3 and 3 or idle
 
   local rows = {}
-  for e = 0, 184 do rows[e] = { idle, -1 } end
-  for m = 0, StadiumRom.N_MOVES - 1 do rows[m] = { attack, -1 } end
+  for e = 0, StadiumRom2.DISPATCH_ROWS - 1 do rows[e] = { idle, -1 } end
+  for m = 0, StadiumRom2.DISPATCH_MOVE_COUNT - 1 do rows[m] = { attack, -1 } end
 
-  -- Context slots start at 165, in StadiumBuild.CONTEXTS order: idle,
-  -- attack_default, faint, entrance, six reaction slots, struggle, idle_alt,
-  -- faint_alt, flinch, four more reaction slots, entrance_alt, idle_return.
-  rows[165] = { idle, 0 }      -- idle
-  rows[166] = { attack, 0 }    -- attack_default
-  rows[167] = { faint, 0 }     -- faint
-  rows[168] = { entrance, 0 }  -- entrance
-  rows[176] = { idle, 0 }      -- idle_alt
-  rows[177] = { faint, 0 }     -- faint_alt
-  rows[183] = { entrance, 0 }  -- entrance_alt
-  rows[184] = { idle, 0 }      -- idle_return
-
-  -- Overlay the real per-species table wherever this format has room for it.
-  local dispatchRows = self:dispatchRows(species)
-  if dispatchRows then
-    local base = dispatchSelectorBase(n, dispatchRows)
-
-    for e = 0, StadiumRom.N_MOVES - 1 do
-      local raw = dispatchRows[e]
-      if raw then
-        local sel = dispatchSelector(raw[1], base)
-        if sel ~= 0xFFFF and sel < n then rows[e] = { sel, raw[2] } end
-      end
-    end
-
-    for i = 0, StadiumRom2.DISPATCH_N_CONTEXTS - 1 do
-      local raw = dispatchRows[StadiumRom2.DISPATCH_N_MOVES + i]
-      if raw then
-        local sel = dispatchSelector(raw[1], base)
-        if sel ~= 0xFFFF and sel < n then rows[165 + i] = { sel, raw[2] } end
+  local dispatch = self:dispatchRows(species)
+  if dispatch then
+    local base = selectorBase(dispatch, n)
+    for e = 0, StadiumRom2.DISPATCH_ROWS - 1 do
+      local row = dispatch[e]
+      local selector = row and exportedSelector(row[1], base)
+      if selector and selector >= 0 then
+        rows[e] = { selector, (row[2] and row[2] >= 0) and row[2] or -1 }
       end
     end
   end
 
-  rows.n = 185
+  rows.n = StadiumRom2.DISPATCH_ROWS
   return rows
 end
 
