@@ -969,7 +969,13 @@ local SETTINGS = {
     full = true, cat = "weather" },
   -- `full = true` like WEATHER: clouds are what the sky is doing, not a
   -- camera filter, and FULL is where people watch a storm roll in.
-  -- Note: Sky.cloudSetting removed - cloud functionality not available in this version
+  { Sky.cloudSetting,
+    "Volumetric clouds, painted into the sky pass itself rather than drawn "
+    .. "as a flat layer. ON keeps a few fair-weather puffs drifting even "
+    .. "under a clear hour, thickening on their own as WEATHER builds a "
+    .. "front. THICK forces a heavier deck at every hour, clear or not, for "
+    .. "screenshots or a showcase run. OFF leaves the sky the bands alone.",
+    full = true, cat = "weather" },
   -- `full = true` like WEATHER, and for the same reason: what the ground is
   -- doing after a shower is what the world is doing, not a knob on the
   -- camera. Offered only while the WEATHER row can produce something to
