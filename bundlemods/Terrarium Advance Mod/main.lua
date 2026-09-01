@@ -145,6 +145,10 @@ local VoxelGrid = V.require("VoxelGrid")
 local WorldCurve = V.require("WorldCurve")
 local Aerial = V.require("Aerial")
 local Skyline = V.require("Skyline")
+-- Additional modules for Dramatic Shape compatibility
+local Mat4 = V.require("Mat4")
+local ShadowMap = V.require("ShadowMap")
+local SpriteBillboards = V.require("SpriteBillboards")
 -- restored from DRAMATIC_SHAPE: the camera-distance row and the
 -- diorama's own draw-distance ladder, both dropped by TERRARIUM's fork
 local ViewBox = V.require("ViewBox")
@@ -3067,3 +3071,49 @@ mod.exports.version = "1.15.0-mobile.snow.1"
 mod.exports.lib = V
 mod.exports.pipelines = { voxel = PIPE_VOXEL, tiltshift = PIPE_TILT }
 mod.exports.keys = V.KEYS
+
+-- Mark this mod as providing Dramatic Shape compatibility for mod.find()
+-- This allows gen1_true_3d_characters and other mods to find us via mod.find("DRAMATIC_SHAPE")
+mod.exports._dramaticShapeCompat = true
+
+-- Compatibility layer for gen1_true_3d_characters and other Dramatic Shape-dependent mods
+-- Ensure VoxelScene and related modules are properly exported for compatibility
+if VoxelScene then
+  V.VoxelScene = VoxelScene
+end
+if Voxel3D then
+  V.Voxel3D = Voxel3D
+end
+if Mat4 then
+  V.Mat4 = Mat4
+end
+if ShadowMap then
+  V.ShadowMap = ShadowMap
+end
+if SpriteBillboards then
+  V.SpriteBillboards = SpriteBillboards
+end
+
+-- Ensure the library modules are accessible through V.require for compatibility
+-- This allows mods like gen1_true_3d_characters to find the modules they expect
+local originalRequire = V.require
+V.require = function(name)
+  -- First try the original require
+  local result = originalRequire(name)
+  if result then return result end
+  
+  -- Fallback compatibility mappings for common Dramatic Shape module names
+  local compatMap = {
+    VoxelScene = VoxelScene,
+    Voxel3D = Voxel3D,
+    Mat4 = Mat4,
+    ShadowMap = ShadowMap,
+    SpriteBillboards = SpriteBillboards,
+  }
+  
+  if compatMap[name] then
+    return compatMap[name]
+  end
+  
+  return nil
+end
