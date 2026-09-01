@@ -40,6 +40,14 @@ local OPTION_ALIAS = {
   announcer = "stadiumAnnouncer",
   announcer_scope = "stadiumAnnouncerScope",
   battle_cinematics_zoom = "stadiumFxCinematicZoom",
+  boss_arenas = "stadiumBossArenas",
+  screen_effects = "stadiumFxScreenEffects",
+  hit_reactions = "stadiumFxHitReactions",
+  faint_animations = "stadiumFxFaintAnimations",
+  native_scheduler = "stadiumFxNativeScheduler",
+  native_sync = "stadiumFxNativeSync",
+  fallback_notice = "stadiumFxFallbackNotice",
+  fx_2d_layer = "stadiumFx2DLayer",
 }
 
 local proxyOptions = {}

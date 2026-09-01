@@ -687,6 +687,61 @@ local SHADER = [[
     return 1.0 - edge * (1.0 - lit * 0.25);
   }
 
+  // ------- cloud shadow, flat on the ground -------
+  //
+  // Sky.lua's own deck is a screen-space illusion pinned to the camera
+  // (see the header over its raymarch) -- it has no real world position to
+  // cast a shadow FROM, so this is not a projection of that exact
+  // silhouette. It is the same material instead: the same hash/fbm noise,
+  // carried by the same wind and eroded by the same evolve clock the sky
+  // paints with (Voxel3D.beginScene sends all four straight from Sky's own
+  // numbers), sampled flat against world XZ. What lands on the ground
+  // drifts and boils in step with what is overhead without pretending to
+  // be a literal cutout of it.
+  uniform highp float cloudShadowAmt;    // 0 = off; steps==0 or bare sky
+  uniform highp float cloudShadowTime;   // seconds*0.12 -- Sky's own cloudTime
+  uniform highp float cloudShadowEvolve; // seconds*Sky.CLOUD_EVOLVE
+  uniform highp vec2  cloudShadowWind;   // unit XZ bearing, same as Sky
+  uniform highp float cloudShadowScale;  // world px -> noise units
+
+  float cloudShadowHash(vec2 p) {
+    return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453);
+  }
+  float cloudShadowNoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = cloudShadowHash(i);
+    float b = cloudShadowHash(i + vec2(1.0, 0.0));
+    float c = cloudShadowHash(i + vec2(0.0, 1.0));
+    float d = cloudShadowHash(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+  }
+  float cloudShadowFbm(vec2 p) {
+    float v = 0.0, a = 0.55;
+    v += a * cloudShadowNoise(p); p = p * 2.03 + vec2(17.0, 9.0); a *= 0.5;
+    v += a * cloudShadowNoise(p); p = p * 2.03 + vec2(17.0, 9.0); a *= 0.5;
+    v += a * cloudShadowNoise(p);
+    return v;
+  }
+
+  // 1.0 in the clear, dipping toward the floor below as the deck thickens
+  // overhead. Threshold drops with coverage, the same idiom Sky.cloudDensity
+  // uses for its own march, so a bare-sky baseline casts a faint patchwork
+  // and THICK (or a real overcast/storm) closes it into a near-solid floor.
+  // Never fully black -- a cloud dims direct sun, it does not delete it;
+  // the sky fill (skyTint) still reaches everything underneath.
+  float cloudShadowLit(vec2 worldXZ) {
+    if (cloudShadowAmt <= 0.01) return 1.0;
+    vec2 p = worldXZ * cloudShadowScale + cloudShadowWind * cloudShadowTime;
+    float n = cloudShadowFbm(p);
+    float carve = cloudShadowNoise(p * 2.4 + vec2(cloudShadowEvolve * 2.3, 11.0));
+    n = mix(n, n * carve, 0.5);
+    float thr = mix(0.62, 0.30, clamp(cloudShadowAmt, 0.0, 1.0));
+    float cov = smoothstep(thr - 0.16, thr + 0.16, n)
+              * clamp(cloudShadowAmt * 1.3, 0.0, 1.0);
+    return 1.0 - cov * 0.55;
+  }
+
   // A stable 0..1 value per VOXEL of world space. Everything the snow varies
   // by is cut from this, so a drift is a property of the place it lies in:
   // it does not crawl when the camera pans, it does not swim when a mesh is
@@ -897,7 +952,13 @@ local SHADER = [[
     // time for it would pay the shadow map's four-to-twelve texture fetches
     // twice per fragment -- the most expensive line in this shader, doubled,
     // on every frame of a snowfall.
-    float lit = sunlight(vSun);
+    // Cloud shadow rides in here rather than getting its own multiply on
+    // `light`: it is a THIRD thing the sun's own share can be gated on,
+    // same as the shadow map above it -- so a cloud passing over a lamp-lit
+    // street at night correctly does nothing (the sun's share is already
+    // zero there), and a cloud passing over noon correctly reads as a
+    // second, softer shadow layered under the sharp one the map draws.
+    float lit = sunlight(vSun) * cloudShadowLit(vWorld.xz);
     vec3 light = skyTint + sunTint * lit;
     vec2 lamps = localLamp(lamp0) + localLamp(lamp1)
                + localLamp(lamp2) + localLamp(lamp3)
@@ -2149,6 +2210,40 @@ function Voxel3D.beginScene(w, h, cx, cy, vw, vh, sky, slot, yaw)
                                Voxel3D.skyAmount or 0)
   pcall(sh.send, sh, "skyTint", sky)
   pcall(sh.send, sh, "sunTint", sun)
+  -- Cloud shadow: the same four numbers Sky.lua sends its own raymarch
+  -- every frame (cloudAmount, the clock, the erosion clock, the wind),
+  -- copied rather than shared so this pass never has to run after Sky's
+  -- and never has to know whether it did. steps==0 (CLOUDS off, or a low
+  -- quality rung that dropped the sky's own march) sends amt 0, which the
+  -- shader reads as "skip the noise" -- so turning the row off removes the
+  -- ground shadow along with the deck it belongs to.
+  do
+    local cloudAmt = Sky.cloudAmount()
+    local cloudSteps = 0
+    if Quality.cloudSteps then
+      local okS, ns = pcall(Quality.cloudSteps)
+      if okS then cloudSteps = ns or 0 end
+    end
+    if cloudAmt <= 0 then cloudSteps = 0 end
+    pcall(sh.send, sh, "cloudShadowAmt", cloudSteps > 0 and cloudAmt or 0)
+    local ct = 0
+    if love.timer and love.timer.getTime then ct = love.timer.getTime() end
+    pcall(sh.send, sh, "cloudShadowTime", ct * 0.12)
+    pcall(sh.send, sh, "cloudShadowEvolve", ct * Sky.CLOUD_EVOLVE)
+    local wx, wz = 0.94, 0.34
+    if Wind and Wind.DIR then
+      wx = tonumber(Wind.DIR[1]) or wx
+      wz = tonumber(Wind.DIR[2]) or wz
+    end
+    local wlen = math.sqrt(wx * wx + wz * wz)
+    if wlen > 1e-4 then wx, wz = wx / wlen, wz / wlen end
+    pcall(sh.send, sh, "cloudShadowWind", { wx, wz })
+    -- World px -> noise units. Sky's own CLOUD_PARALLAX is a camera-offset
+    -- rate, not a spatial frequency, so this is its own constant tuned to
+    -- give the ground puffs roughly the sky deck's apparent size rather
+    -- than the same number repurposed for a different axis.
+    pcall(sh.send, sh, "cloudShadowScale", 1 / 340)
+  end
   -- The cel rung's numbers. Sent unconditionally and through pcall like
   -- everything else on this page: on a shader built without ANIME_CEL the
   -- uniforms do not exist, the send fails, and the pcall is what makes that

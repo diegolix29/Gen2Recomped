@@ -1,6 +1,7 @@
 -- Options for Advanced Terrarium Voxel Mod.
 -- Stadium ROM picker option for both Gen 1 (Stadium 1) and Gen 2 (Stadium 2).
 -- Gen 2 specific options for voxel rendering.
+-- StadiumBattleFX options for advanced battle presentation.
 return {
   {
     key = "voxel3d",
@@ -18,5 +19,134 @@ return {
       { "CHOOSE", "choose" },
     },
     description = "Choose your legally obtained Pokemon Stadium ROM (Stadium 1 for Gen 1 games, Stadium 2 for Gen 2 games) to build 3D models. The mod will automatically detect which generation you're playing and use the appropriate ROM reader.",
+  },
+  -- StadiumBattleFX Options
+  {
+    key = "stadiumFxPortEnabled",
+    type = "toggle",
+    label = "STADIUM FX ENABLED",
+    default = true,
+    description = "Enables Pokemon Stadium-style battle effects, including attack animations, camera movements, and presentation enhancements.",
+  },
+  {
+    key = "stadiumTrainerPortraits",
+    type = "toggle",
+    label = "TRAINER PORTRAITS",
+    default = true,
+    description = "Shows Stadium-style trainer portraits during battles. Requires Stadium 1 ROM for Gen 1 trainers.",
+  },
+  {
+    key = "stadiumFxAttackCamera",
+    type = "toggle",
+    label = "ATTACK CAMERA",
+    default = true,
+    description = "Enables dynamic camera movements during attack animations for a more cinematic presentation.",
+  },
+  {
+    key = "stadiumFxAttackSpeed",
+    type = "choice",
+    label = "ATTACK SPEED",
+    default = "100",
+    choices = {
+      { "50%", "50" },
+      { "75%", "75" },
+      { "100%", "100" },
+      { "125%", "125" },
+      { "150%", "150" },
+    },
+    description = "Adjusts the speed of attack animations. Higher values make attacks faster.",
+  },
+  {
+    key = "stadiumAnnouncer",
+    type = "toggle",
+    label = "ANNOUNCER",
+    default = false,
+    description = "Enables the Stadium announcer voice during battles. Requires Stadium 1 ROM for voice data.",
+  },
+  {
+    key = "stadiumAnnouncerScope",
+    type = "choice",
+    label = "ANNOUNCER SCOPE",
+    default = "gym",
+    choices = {
+      { "GYM ONLY", "gym" },
+      { "TRAINER", "trainer" },
+      { "ALL BATTLES", "all" },
+    },
+    description = "Controls when the announcer speaks: gym leader battles only, trainer battles, or all battles including wild encounters.",
+  },
+  {
+    key = "stadiumFxCinematicZoom",
+    type = "choice",
+    label = "CINEMATIC ZOOM",
+    default = "25",
+    choices = {
+      { "OFF", "off" },
+      { "10%", "10" },
+      { "25%", "25" },
+      { "50%", "50" },
+    },
+    description = "Controls the intensity of camera zoom effects during powerful attacks.",
+  },
+  {
+    key = "stadiumBossArenas",
+    type = "toggle",
+    label = "BOSS ARENAS",
+    default = true,
+    description = "Enables special gym leader and Elite Four arena backgrounds during important battles.",
+  },
+  {
+    key = "stadiumFxScreenEffects",
+    type = "toggle",
+    label = "SCREEN EFFECTS",
+    default = true,
+    description = "Enables screen-wide effects like flashes, shakes, and color tints during attacks.",
+  },
+  {
+    key = "stadiumFxHitReactions",
+    type = "toggle",
+    label = "HIT REACTIONS",
+    default = true,
+    description = "Enables Pokemon flinch and recoil animations when taking damage.",
+  },
+  {
+    key = "stadiumFxFaintAnimations",
+    type = "toggle",
+    label = "FAINT ANIMATIONS",
+    default = true,
+    description = "Enables special Pokemon fainting animations when HP reaches zero.",
+  },
+  {
+    key = "stadiumFxNativeScheduler",
+    type = "toggle",
+    label = "NATIVE SCHEDULER",
+    default = true,
+    description = "Uses the game's native animation timing for Stadium effects.",
+  },
+  {
+    key = "stadiumFxNativeSync",
+    type = "toggle",
+    label = "NATIVE SYNC",
+    default = true,
+    description = "Syncs Stadium model animations with the game's battle timing.",
+  },
+  {
+    key = "stadiumFxFallbackNotice",
+    type = "toggle",
+    label = "FALLBACK NOTICE",
+    default = true,
+    description = "Shows a notification when Stadium effects fall back to generic animations.",
+  },
+  {
+    key = "stadiumFx2DLayer",
+    type = "choice",
+    label = "2D EFFECT LAYER",
+    default = "authentic",
+    choices = {
+      { "AUTHENTIC", "authentic" },
+      { "ALL", "all" },
+      { "OFF", "off" },
+    },
+    description = "Controls which 2D battle effects are shown: authentic Stadium effects, all effects, or none.",
   },
 }

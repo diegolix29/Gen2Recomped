@@ -208,6 +208,38 @@ local SkyLayer = V.require("SkyLayer")
 local Flora = V.require("Flora")
 local ModSetting = V.require("ModSetting")
 
+-- StadiumBattleFX settings
+local stadiumFxEnabled = ModSetting.new("stadiumFxPortEnabled", "STADIUM FX",
+  { true, false }, { "ON", "OFF" })
+local stadiumTrainerPortraits = ModSetting.new("stadiumTrainerPortraits", "TRAINER PORTRAITS",
+  { true, false }, { "ON", "OFF" })
+local stadiumFxAttackCamera = ModSetting.new("stadiumFxAttackCamera", "ATTACK CAMERA",
+  { true, false }, { "ON", "OFF" })
+local stadiumFxAttackSpeed = ModSetting.new("stadiumFxAttackSpeed", "ATTACK SPEED",
+  { "50", "75", "100", "125", "150" }, { "50%", "75%", "100%", "125%", "150%" })
+local stadiumAnnouncer = ModSetting.new("stadiumAnnouncer", "ANNOUNCER",
+  { true, false }, { "ON", "OFF" })
+local stadiumAnnouncerScope = ModSetting.new("stadiumAnnouncerScope", "ANNOUNCER SCOPE",
+  { "gym", "trainer", "all" }, { "GYM ONLY", "TRAINER", "ALL BATTLES" })
+local stadiumFxCinematicZoom = ModSetting.new("stadiumFxCinematicZoom", "CINEMATIC ZOOM",
+  { "off", "10", "25", "50" }, { "OFF", "10%", "25%", "50%" })
+local stadiumBossArenas = ModSetting.new("stadiumBossArenas", "BOSS ARENAS",
+  { true, false }, { "ON", "OFF" })
+local stadiumFxScreenEffects = ModSetting.new("stadiumFxScreenEffects", "SCREEN EFFECTS",
+  { true, false }, { "ON", "OFF" })
+local stadiumFxHitReactions = ModSetting.new("stadiumFxHitReactions", "HIT REACTIONS",
+  { true, false }, { "ON", "OFF" })
+local stadiumFxFaintAnimations = ModSetting.new("stadiumFxFaintAnimations", "FAINT ANIMATIONS",
+  { true, false }, { "ON", "OFF" })
+local stadiumFxNativeScheduler = ModSetting.new("stadiumFxNativeScheduler", "NATIVE SCHEDULER",
+  { true, false }, { "ON", "OFF" })
+local stadiumFxNativeSync = ModSetting.new("stadiumFxNativeSync", "NATIVE SYNC",
+  { true, false }, { "ON", "OFF" })
+local stadiumFxFallbackNotice = ModSetting.new("stadiumFxFallbackNotice", "FALLBACK NOTICE",
+  { true, false }, { "ON", "OFF" })
+local stadiumFx2DLayer = ModSetting.new("stadiumFx2DLayer", "2D EFFECT LAYER",
+  { "authentic", "all", "off" }, { "AUTHENTIC", "ALL", "OFF" })
+
 -- ds_fp_ceiling additional settings
 local fpShadows = ModSetting.new("fpshadows", "CONTACT SHADOW",
   { true, false }, { "ON", "OFF" })
@@ -1177,6 +1209,55 @@ local SETTINGS = {
     "Pokemon GO-style catching -- flick to throw the ball, with FULL "
     .. "adding half-price balls and party experience (needs 3D-BTL).",
     full = true, cat = "battles" },
+  -- ------- StadiumBattleFX settings
+  --
+  -- These control the Pokemon Stadium-style battle effects presentation
+  { stadiumFxEnabled,
+    "Enables Pokemon Stadium-style battle effects, including attack animations, "
+    .. "camera movements, and presentation enhancements.",
+    cat = "battles" },
+  { stadiumTrainerPortraits,
+    "Shows Stadium-style trainer portraits during battles. Requires Stadium 1 ROM for Gen 1 trainers.",
+    cat = "battles" },
+  { stadiumFxAttackCamera,
+    "Enables dynamic camera movements during attack animations for a more cinematic presentation.",
+    cat = "battles" },
+  { stadiumFxAttackSpeed,
+    "Adjusts the speed of attack animations. Higher values make attacks faster.",
+    cat = "battles" },
+  { stadiumAnnouncer,
+    "Enables the Stadium announcer voice during battles. Requires Stadium 1 ROM for voice data.",
+    cat = "battles" },
+  { stadiumAnnouncerScope,
+    "Controls when the announcer speaks: gym leader battles only, trainer battles, or all battles including wild encounters.",
+    cat = "battles" },
+  { stadiumFxCinematicZoom,
+    "Controls the intensity of camera zoom effects during powerful attacks.",
+    cat = "battles" },
+  { stadiumBossArenas,
+    "Enables special gym leader and Elite Four arena backgrounds during important battles.",
+    cat = "battles" },
+  { stadiumFxScreenEffects,
+    "Enables screen-wide effects like flashes, shakes, and color tints during attacks.",
+    cat = "battles" },
+  { stadiumFxHitReactions,
+    "Enables Pokemon flinch and recoil animations when taking damage.",
+    cat = "battles" },
+  { stadiumFxFaintAnimations,
+    "Enables special Pokemon fainting animations when HP reaches zero.",
+    cat = "battles" },
+  { stadiumFxNativeScheduler,
+    "Uses the game's native animation timing for Stadium effects.",
+    cat = "battles" },
+  { stadiumFxNativeSync,
+    "Syncs Stadium model animations with the game's battle timing.",
+    cat = "battles" },
+  { stadiumFxFallbackNotice,
+    "Shows a notification when Stadium effects fall back to generic animations.",
+    cat = "battles" },
+  { stadiumFx2DLayer,
+    "Controls which 2D battle effects are shown: authentic Stadium effects, all effects, or none.",
+    cat = "battles" },
   -- `full` for the reason the battle rows have it and more plainly: this is
   -- not a knob on the diorama at all, it is what the grass is made of. A
   -- preset that owns the look has no business owning it.
