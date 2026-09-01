@@ -138,6 +138,7 @@ local SIDES = {
 local function keyOf(tx, ty)
   return (ty + 64) * 4096 + (tx + 64)
 end
+
 -- ------------------------------------------------------- spatial chunking
 --
 -- The module has been called ChunkMesher since the first cut, but until now
@@ -1149,15 +1150,13 @@ end
 -- Build the mesh for `map` synchronously. Returns nil when there is
 -- nothing to draw or meshes are unavailable (headless).
 --
--- `split` asks for the water surface as a SECOND mesh, returned after the
--- terrain one -- the shape the reflective pass needs (see Water). Without
--- it the water is inside the terrain mesh, which is the historical
--- contract and what every other caller still wants.
-function ChunkMesher.build(map, bodyOnly, masks, split)
-  local sink = newSink()
-  local waterSink = split and newSink() or nil
-  runGeometry(map, bodyOnly, masks, sink, waterSink)
-  return sink.finish(), waterSink and waterSink.finish() or nil
+-- Uses a chunked sink for spatial culling: the terrain is divided into
+-- chunks that can be culled by the camera's view box, which is what made
+-- routes renderable in the first place.
+function ChunkMesher.build(map, bodyOnly, masks)
+  local sink = newChunkedSink()
+  runGeometry(map, bodyOnly, masks, sink)
+  return sink.finish()
 end
 
 -- ---------------------------------------------------------------- prebake
@@ -1198,10 +1197,14 @@ local function quadsMesh(quads)
   if #quads == 0 then return nil end
   local verts, indices, n = {}, {}, 0
   for _, q in ipairs(quads) do
+    -- the same up-face sign the sinks apply (see faceSign): this mesh is
+    -- drawn in a pass that has the snow on, so a tuft that skipped it would
+    -- be the one thing in a white field taking a wall's share of it
+    local s = faceSign(q, q.sky)
     for i = 1, 4 do
       local c = q[i]
       local uv = q.uv and q.uv[i] or { q.u, q.v }
-      verts[#verts + 1] = { c[1], c[2], c[3], uv[1], uv[2], q.shade }
+      verts[#verts + 1] = { c[1], c[2], c[3], uv[1], uv[2], s * q.shade }
     end
     Voxel3D.pushQuad(indices, n)
     n = n + 1
@@ -1213,6 +1216,10 @@ end
 -- characters so the southern row of a grass cell still overdraws a
 -- walker's feet (characters stamp over terrain, Gen 1 style, so ordinary
 -- terrain could never do this).
+--
+-- When assets/ground/grass/ ships a 3D tuft bake (Grass3D), the mesh is a
+-- triangle stamp of that model per grass tile and carries its own texture.
+-- Otherwise the classic tileset-slab quads.
 local function buildGrassMesh(map)
   local S = Structures.forMap(map)
   if S.grassInstances and #S.grassInstances > 0 then
@@ -1224,6 +1231,7 @@ local function buildGrassMesh(map)
   end
   return quadsMesh(S.grassQuads)
 end
+
 -- Decorative grass mesh (no effects)
 local function buildDecorMesh(map)
   local S = Structures.forMap(map)
@@ -1259,6 +1267,7 @@ local function buildGroundMesh(map)
   end
   return nil
 end
+
 -- The flower billboards as their own mesh, for the same reason as the
 -- grass one: it draws AFTER the characters WITH the same camera-ward
 -- pull, so a flower south of a walker occludes their feet and one north
@@ -1271,30 +1280,29 @@ local function buildFlowerMesh(map)
   return quadsMesh(Structures.forMap(map).flowerQuads)
 end
 
+-- Custom surfaces (road and ground) as their own mesh
+local function buildCustomSurfaceMesh(map)
+  local S = Structures.forMap(map)
+  if S.customSurfaceMesh then
+    return S.customSurfaceMesh
+  end
+  return nil
+end
+
 -- Authored FIGURES (a person drawn into furniture) as one mesh each, in
 -- the card's own local space -- because each one is placed by its own
 -- matrix at draw time, leaned back by the camera pitch exactly like a
 -- character card (VoxelScene). A figure baked into the terrain mesh could
 -- not lean, and a shared mesh could not carry per-figure placement.
 --
--- A list, not a mesh: `{ mesh, wx, wz, y, w }` per figure. Maps have one
--- or none, so the loop that draws them is shorter than the terrain's.
--- `w` is the card's own width in its local space (its quads start at
--- x = 0), measured here because the first-person pass yaws a card about
--- its middle -- a card yawed about its left edge swings off its seat.
+-- A list, not a mesh: `{ mesh, wx, wz, y }` per figure. Maps have one or
+-- none, so the loop that draws them is shorter than the terrain's.
 local function buildFigureMeshes(map)
   local out = {}
   for _, f in ipairs(Structures.forMap(map).figures or {}) do
     local mesh = quadsMesh(f.quads)
     if mesh then
-      local w = 0
-      for _, q in ipairs(f.quads) do
-        for c = 1, 4 do
-          local x = q[c] and q[c][1]
-          if x and x > w then w = x end
-        end
-      end
-      out[#out + 1] = { mesh = mesh, wx = f.wx, wz = f.wz, y = f.y, w = w }
+      out[#out + 1] = { mesh = mesh, wx = f.wx, wz = f.wz, y = f.y }
     end
   end
   return out
@@ -1326,17 +1334,8 @@ local function entry(id)
   return c
 end
 
--- The water surface that came out of a terrain slot's own build. Kept
--- beside it rather than in a slot of its own because the two are ONE
--- answer: a full mesh drawn beside a body build's water would draw the
--- ring's ponds twice and miss the body's own.
-local function waterSlot(slot)
-  return slot .. "Water"
-end
-
 local function releaseEntry(c)
-  for _, slot in ipairs({ "full", "body", "fullWater", "bodyWater",
-                          "grass", "flowers" }) do
+  for _, slot in ipairs({ "full", "body", "grass", "flowers", "custom", "road", "ground", "decor" }) do
     local mesh = c[slot]
     if mesh and mesh.release then pcall(mesh.release, mesh) end
     c[slot] = nil
@@ -1378,54 +1377,16 @@ end
 -- A build only lands if the map's generation still matches the one the
 -- job was queued under -- invalidate/evict bump it to cancel in-flight
 -- work whose inputs went stale.
--- Terrain off the disk cache, or nil for "not cached, build it".
---
--- Both persisted slots go through here. BODY is the interesting one for a
--- walk across the world: it is what every neighbouring map contributes, its
--- key does not depend on where the player is standing, and it is what the
--- prebake writes for the whole map list in one pass.
-local function loadCachedTerrain(job)
-  if not DiskCache then return nil end
-  local okLoad, hit, terrain, water =
-    pcall(DiskCache.load, job.map, job.slot, job.masks)
-  if not okLoad or not hit then return nil end
-  return terrain or false, water or false
-end
-
-local function storeTerrain(job, sink, waterSink)
-  if not DiskCache then return end
-  pcall(DiskCache.store, job.map, job.slot, job.masks, sink, waterSink)
-end
-
 local function runJob(job)
   local map = job.map
   local c = entry(job.id)
 
-  -- Terrain BEFORE the auxiliary meshes when it comes off disk: the cached
-  -- vertex stream is the whole reason a town can appear the moment you walk
-  -- into it, and grass/flowers/figures are cheap enough to land a frame or
-  -- two later. On a miss the original order stands.
-  local cachedTerrain, cachedWater = loadCachedTerrain(job)
-  if cachedTerrain ~= nil then
-    if (gen[job.id] or 0) ~= job.gen then
-      if cachedTerrain and cachedTerrain.release then
-        pcall(cachedTerrain.release, cachedTerrain)
-      end
-      if cachedWater and cachedWater.release then
-        pcall(cachedWater.release, cachedWater)
-      end
-      return
-    end
-    swapSlot(c, job.slot, cachedTerrain)
-    swapSlot(c, waterSlot(job.slot), cachedWater)
-  end
-
-  if c.grass == nil or c.flowers == nil or c.figures == nil
+  if c.grass == nil or c.flowers == nil or c.figures == nil or c.custom == nil or c.road == nil or c.ground == nil or c.decor == nil
      or (c.stale and c.stale.aux) then
     local okG, grass = pcall(buildGrassMesh, map)
     local okF, flowers = pcall(buildFlowerMesh, map)
     local okX, figures = pcall(buildFigureMeshes, map)
-        local okC, custom = pcall(buildCustomSurfaceMesh, map)
+    local okC, custom = pcall(buildCustomSurfaceMesh, map)
     local okR, road = pcall(buildRoadMesh, map)
     local okGnd, ground = pcall(buildGroundMesh, map)
     local okD, decor = pcall(buildDecorMesh, map)
@@ -1443,7 +1404,7 @@ local function runJob(job)
     end
     swapSlot(c, "grass", (okG and grass) or false)
     swapSlot(c, "flowers", (okF and flowers) or false)
-        swapSlot(c, "figures", (okX and figures) or false)
+    swapSlot(c, "figures", (okX and figures) or false)
     swapSlot(c, "custom", (okC and custom) or false)
     swapSlot(c, "road", (okR and road) or false)
     swapSlot(c, "ground", (okGnd and ground) or false)
@@ -1453,21 +1414,14 @@ local function runJob(job)
     if c.stale then c.stale.aux = nil end
   end
   if cachedTerrain == nil then
-    local sink = newSink()
-    local waterSink = newSink()
-    runGeometry(map, job.slot == "body", job.masks, sink, waterSink)
-    -- Persist BEFORE finish(): the sink still owns the raw stream, and
-    -- writing it costs no GPU upload. A failed write is not a build failure.
-    storeTerrain(job, sink, waterSink)
+    local sink = newChunkedSink()
+    runGeometry(map, job.slot == "body", job.masks, sink)
     local mesh = sink.finish()
-    local water = waterSink.finish()
     if (gen[job.id] or 0) ~= job.gen then
       if mesh and mesh.release then pcall(mesh.release, mesh) end
-      if water and water.release then pcall(water.release, water) end
       return
     end
     swapSlot(c, job.slot, mesh or false)
-    swapSlot(c, waterSlot(job.slot), water or false)
   end
   if c.stale then
     c.stale[job.slot] = nil
@@ -1607,7 +1561,7 @@ end
 function ChunkMesher.get(map, bodyOnly, masks)
   local slot = bodyOnly and "body" or "full"
   local c = entry(map.id)
-  if c.grass == nil or c.flowers == nil or (c.stale and c.stale.aux) then
+  if c.grass == nil or c.flowers == nil or c.custom == nil or c.road == nil or c.ground == nil or c.decor == nil or (c.stale and c.stale.aux) then
     local okG, grass = pcall(buildGrassMesh, map)
     local okF, flowers = pcall(buildFlowerMesh, map)
     local okC, custom = pcall(buildCustomSurfaceMesh, map)
@@ -1623,14 +1577,12 @@ function ChunkMesher.get(map, bodyOnly, masks)
     if c.stale then c.stale.aux = nil end
   end
   if c[slot] == nil or (c.stale and c.stale[slot]) then
-    local ok, mesh, water = pcall(ChunkMesher.build, map, bodyOnly, masks,
-                                  true)
+    local ok, mesh = pcall(ChunkMesher.build, map, bodyOnly, masks)
     if not ok then
       print("[warn] voxel mesh build failed for " .. tostring(map.id)
             .. ": " .. tostring(mesh))
     end
     swapSlot(c, slot, (ok and mesh) or false)
-    swapSlot(c, waterSlot(slot), (ok and water) or false)
     if c.stale then
       c.stale[slot] = nil
       if not (c.stale.full or c.stale.body or c.stale.aux) then
@@ -1649,21 +1601,6 @@ function ChunkMesher.peek(map, bodyOnly)
   local c = cache[map.id]
   local mesh = c and c[bodyOnly and "body" or "full"]
   return mesh or nil
-end
-
--- A slot's terrain mesh AND the water surface lifted out of it, as one
--- answer. Never builds, like peek.
---
--- Both or neither, always from the SAME slot: the water was cut out of that
--- exact geometry, so pairing a full mesh with a body build's water would
--- draw the border ring's ponds twice and leave the body's as holes. Callers
--- that fall back from one variant to the other fall back through this, so
--- there is nowhere for the two to be chosen separately.
-function ChunkMesher.pair(map, bodyOnly)
-  local c = cache[map.id]
-  if not c then return nil, nil end
-  local slot = bodyOnly and "body" or "full"
-  return c[slot] or nil, c[waterSlot(slot)] or nil
 end
 
 function ChunkMesher.grass(map)
@@ -1696,9 +1633,8 @@ function ChunkMesher.ground(map)
   return c and c.ground or nil
 end
 
-
--- Authored figures as `{ mesh, wx, wz, y, w }` records -- each placed by
--- its own leaning matrix at draw time, so they cannot share one mesh.
+-- Authored figures as `{ mesh, wx, wz, y }` records -- each placed by its
+-- own leaning matrix at draw time, so they cannot share one mesh.
 function ChunkMesher.figures(map)
   local c = cache[map.id]
   local list = c and c.figures
