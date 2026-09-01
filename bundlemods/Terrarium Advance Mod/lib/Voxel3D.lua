@@ -60,6 +60,7 @@ Voxel3D.FORMAT = {
   { "VertexPosition", "float", 3 },
   { "VertexTexCoord", "float", 2 },
   { "VertexShade", "float", 1 },
+  { "VertexWater", "float", 1 },
 }
 
 -- Face shading by direction id: top faces stay
@@ -84,14 +85,14 @@ Voxel3D.FACE_SHADE = {
 }
 
 local SHADER = [[
-  varying float vShade;       // how dark this face draws, always positive
+  varying highp float vShade;       // how dark this face draws, always positive
   // 1 on a face that points at the sky, 0 on every other one. It rides in
   // the SIGN of VertexShade rather than in an attribute of its own: the
   // meshers negate the shade of an up-facing quad and this splits the two
   // apart again, so an honest face normal costs no extra float per vertex on
   // a route that uploads twenty megabytes of them. Every corner of a quad
   // carries the same sign, so this interpolates flat across the face.
-  varying float vUp;
+  varying highp float vUp;
   // World pixels, for patterns that must sit STILL on a surface while the
   // camera moves. Same precision note as vGrid below, and for the same
   // reason: what reads this wants the whole-number part of a coordinate that
@@ -111,11 +112,11 @@ local SHADER = [[
   // that, and it is a separate channel from vUp rather than a fudge of it
   // precisely because it is a different fact: not "which way does this
   // face point" but "how much has piled on this blade".
-  varying float vGrassCap;
-  varying float vWater;       // 1 when swell/ice paint runs, 0 otherwise
-  varying float vWaterSurf;   // 1 on recessed water geometry always (y < -1)
-  varying vec3 vWave;         // and the normal of the swell under it
-  varying float vSwellH;      // the swell's own height here, -1 .. 1
+  varying highp float vGrassCap;
+  varying highp float vWater;       // 1 when swell/ice paint runs, 0 otherwise
+  varying highp float vWaterSurf;   // 1 on recessed water geometry always (y < -1)
+  varying highp vec3 vWave;         // and the normal of the swell under it
+  varying highp float vSwellH;      // the swell's own height here, -1 .. 1
   // Wave trains live in BOTH stages: the vertex displaces continuously so
   // the mesh stays watertight, and the fragment re-evaluates height on a
   // quantized world-XZ cell so cel band edges do not crawl (see the water
@@ -197,6 +198,7 @@ local SHADER = [[
   uniform highp float swell;        // water's rise at the crest, world px; 0 = flat
   uniform highp float iceLift;      // freeze raises the surface a little (still y<-1 id)
   attribute float VertexShade;
+  attribute float VertexWater;      // 1.0 for water tiles, 0.0 otherwise
   // One number per TUFT, from the 8x8 cell it stands in. The grass mesh is
   // one buffer for a whole map and carries no per-instance attribute, so
   // the only thing a vertex knows about which tuft it belongs to is where
@@ -427,11 +429,16 @@ local SHADER = [[
         vGrassCap = snow * smoothstep(0.30, 0.95, hN);
       }
     }
-    // THE WATER SURFACE, which is the only geometry in this world that
-    // stands below zero -- it is recessed to -2 so the shoreline shows a
-    // lip, and every other class sits at zero or above (see Water.lua).
-    // So the test is a compare on a number the mesh already carries, and
-    // costs no attribute and no memory.
+    // THE WATER SURFACE, which is marked by the VertexWater attribute
+    // (1.0 for water tiles, 0.0 otherwise). This is set by ChunkMesher
+    // based on the tile's shape class (water vs ground/wall), not by
+    // Y-coordinate threshold, to avoid incorrectly applying water effects
+    // to underground areas and low-lying terrain.
+    //
+    // Identity is the VertexWater attribute alone. Motion (swell) is a
+    // separate axis: freeze damps swell to zero on the CPU, and ice still
+    // needs vWater set so the fragment can paint frozen bands. FLAT with
+    // no freeze leaves both zero and the still plane untouched.
     //
     // Identity is the height test ALONE. Motion (swell) is a separate
     // axis: freeze damps swell to zero on the CPU, and ice still needs
@@ -464,13 +471,15 @@ local SHADER = [[
     // the open test, because unlike terrain it never shares a draw call
     // with anything that isn't meant to be wet.
     bool isWaterHeight = (waterBody > 0.5)
-      ? (vertex_position.y < -0.05)
+      ? (vertex_position.y < 0.05)
       : (abs(vertex_position.y - waterLevel) < 0.5);
-    vWaterSurf = isWaterHeight ? 1.0 : 0.0;
+    // Use VertexWater attribute to properly identify water tiles instead of
+    // relying on Y-coordinate threshold which incorrectly affects underground areas.
+    vWaterSurf = VertexWater > 0.5 ? 1.0 : 0.0;
+    vWater = VertexWater > 0.5 ? 1.0 : 0.0;
     vWave = vec3(0.0, 1.0, 0.0);
     vSwellH = 0.0;
-    if (isWaterHeight && (swell > 0.0 || iceLift > 0.0)) {
-      vWater = 1.0;
+    if (VertexWater > 0.5 && (swell > 0.0 || iceLift > 0.0)) {
       // Body size + wind advection + crest steepening -- byte for byte with
       // Water.heightField / phaseAt (feet and mesh share one ocean).
       float bf = 0.90 + 0.35 * sin(w.x * bodyKx) * cos(w.z * bodyKz);
