@@ -1121,7 +1121,7 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
     -- the neighbour will ever draw that geometry
     if q.own or outwardOnEdge(q, x0, z0, x1, z1)
        or keepQuad(x0, z0, x1, z1) then
-      push({ q[1], q[2], q[3], q[4] }, quadUV(q), groundShades(q, q.shade), false)
+      push({ q[1], q[2], q[3], q[4] }, quadUV(q), groundShades(q, q.shade), nil, false)
     end
   end
 
