@@ -299,60 +299,20 @@ local function readPack(species, shiny)
   return nil
 end
 
--- Load a Stadium 2 model
+-- Load a Stadium 2 model.
+--
+-- Stadium2Install builds through StadiumBuild.pack(), which writes the same
+-- full DSM3 mesh the Gen-1 pipeline expects (bones, prims, rgba textures,
+-- skeletal tracks).  StadiumRig and StadiumMon were authored against that
+-- reader.  The legacy Stadium2Pack.unpack() below only parsed headers and
+-- stub metadata -- no vertices, UVs, or texture bytes -- so routing Gen-2
+-- species through it produced empty meshes and white/missing textures.
 function Stadium2Pack.load(species, shiny)
   if type(species) ~= "number" or species < 1 or species > 251 then
     return nil, "invalid species number (must be 1-251)"
   end
-  
-  local key = cacheKey(species, shiny)
-  local hit = cache[key]
-  if hit ~= nil then
-    -- Don't return false from cache - retry on failure
-    if hit == false then
-      cache[key] = nil
-    else
-      touch(key)
-      return hit
-    end
-  end
-
-  local bytes = readPack(species, shiny)
-  
-  if not bytes then
-    V.mod.log:warn("stadium2: %s could not be read (file not found or empty)", packName("", species, shiny):sub(2))
-    if shiny then
-      return Stadium2Pack.load(species, false)
-    end
-    cache[key] = false
-    return nil
-  end
-
-  local ok, model, err = pcall(Stadium2Pack.unpack, bytes)
-  if ok and model == nil then
-    ok, err = false, err
-  end
-  if not ok then
-    V.mod.log:warn("stadium2: %s did not read: %s -- that Pokemon "
-                   .. "falls back to its flat pic",
-                   packName("", species, shiny):sub(2), tostring(err or model))
-    if shiny then
-      cache[key] = false
-      return Stadium2Pack.load(species, false)
-    end
-    cache[key] = false
-    return nil
-  end
-  
-  -- LRU management
-  while #order > KEEP do
-    local old = table.remove(order, 1)
-    cache[old] = nil
-  end
-  cache[key] = model
-  touch(key)
-  
-  return model
+  local StadiumPack = V.require("StadiumPack")
+  return StadiumPack.load(species, shiny)
 end
 
 -- Check if Stadium 2 models are available

@@ -3092,6 +3092,23 @@ local function installOverworldStadium()
     mod.log:warn("BattleStadium3DFx not loaded: %s", tostring(fxErr))
   end
 
+  -- StadiumBattleFX 2.1.7: authentic move FX, boss arenas, announcer, portraits.
+  -- The source tree lives under lib/StadiumBattleFX217/; this port adapts it to
+  -- Gold's live overworld battle compositor.  Without install() the Lua files
+  -- load but none of the battle hooks or ROM-derived caches ever start.
+  local StadiumBattleFXPort, portErr = loadLocal("lib/StadiumBattleFXPort.lua", OverworldV)
+  if StadiumBattleFXPort then
+    OverworldV.StadiumBattleFXPort = StadiumBattleFXPort
+    local portInstalled, portInstallErr = pcall(StadiumBattleFXPort.install)
+    if portInstalled and portInstallErr ~= false then
+      mod.log:info("StadiumBattleFX 2.1.7 Gold presentation layer installed")
+    else
+      mod.log:warn("StadiumBattleFX port not installed: %s", tostring(portInstallErr))
+    end
+  else
+    mod.log:warn("StadiumBattleFXPort not loaded: %s", tostring(portErr))
+  end
+
   -- Exports for companion mods
   mod.exports.overworld = OverworldStadium
   mod.exports.romMenu = StadiumRomMenu
