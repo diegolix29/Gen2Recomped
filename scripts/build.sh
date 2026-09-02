@@ -31,8 +31,8 @@ ENTITLEMENTS="$ROOT/scripts/macos-entitlements.plist"
 # agree -- a stale "gen1recomp" here builds three archives nobody collects
 # and fails the release at "Collect desktop artifacts", with the build step
 # itself reporting success.
-APP_NAME="Gen2Recomped"
-BUNDLE_ID="com.underdecoded.gen2recomped"
+APP_NAME="gen2recomp"
+BUNDLE_ID="com.underdecoded.gen2recomp"
 LOVE_VERSION="11.5"
 VERSION="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)"
 VERSION_EXPLICIT=false

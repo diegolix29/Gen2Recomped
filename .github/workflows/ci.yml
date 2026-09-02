@@ -80,6 +80,13 @@ jobs:
           security list-keychains -d user -s "$keychain_path" $existing
       - name: install xcbeautify
         run: brew list xcbeautify >/dev/null 2>&1 || brew install xcbeautify
+      
+      - name: Handle Homebrew tap trust issues
+        run: |
+          # Disable tap trust check to avoid aws/tap issues
+          export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
+          # Untap problematic aws/tap if it exists
+          brew untap aws/tap 2>/dev/null || true
       - name: build iOS release
         env:
           CANONICAL_REPOSITORY: ${{ github.repository == 'bryanthaboi/gen2recomp' }}

@@ -24,7 +24,7 @@ jobs:
     name: macOS
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -40,7 +40,24 @@ jobs:
 
       - name: Install LÖVE
         run: |
-          brew install --cask love
+          # Download Love2D directly from GitHub releases to avoid Homebrew issues
+          LOVE_VERSION="11.5"
+          LOVE_URL="https://github.com/love2d/love/releases/download/${LOVE_VERSION}/love-${LOVE_VERSION}-macos.zip"
+
+          echo "Downloading Love2D ${LOVE_VERSION}..."
+          curl -L -o /tmp/love.zip "$LOVE_URL"
+
+          echo "Extracting Love2D..."
+          unzip -q /tmp/love.zip -d /tmp/
+
+          echo "Installing Love2D to /Applications..."
+          sudo cp -R /tmp/love.app /Applications/
+
+          echo "Setting up love command..."
+          sudo ln -sf /Applications/love.app/Contents/MacOS/love /usr/local/bin/love
+
+          echo "Love2D installed successfully"
+          love --version
 
       - name: Build macOS app
         run: |
@@ -55,10 +72,11 @@ jobs:
           fi
 
       - name: Upload macOS artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gen2recomp-macos
           path: dist/mac/gen2recomp-macos.zip
+          if-no-files-found: warn
           retention-days: 7
 
   # Build Windows app
@@ -66,7 +84,7 @@ jobs:
     name: Windows
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -98,10 +116,11 @@ jobs:
           fi
 
       - name: Upload Windows artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gen2recomp-windows
           path: dist/win/gen2recomp-win64.zip
+          if-no-files-found: warn
           retention-days: 7
 
   # Build Linux AppImage
@@ -109,7 +128,7 @@ jobs:
     name: Linux
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -141,10 +160,11 @@ jobs:
           fi
 
       - name: Upload Linux artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gen2recomp-linux
           path: dist/linux/gen2recomp-linux.zip
+          if-no-files-found: warn
           retention-days: 7
 
   # Build Android APK
@@ -152,7 +172,7 @@ jobs:
     name: Android
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -171,6 +191,7 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
+          java-package: jdk
 
       - name: Install Android SDK
         uses: android-actions/setup-android@v3
@@ -194,7 +215,7 @@ jobs:
           PYTHON_CMD: python3
 
       - name: Upload Android artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gen2recomp-android
           path: dist/android/debug/*.apk

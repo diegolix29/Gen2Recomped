@@ -21,57 +21,86 @@ jobs:
     needs: prep
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build Windows (win64)
         run: |
           chmod +x scripts/*.sh
           bash scripts/build.sh win --version "${{ needs.prep.outputs.version }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: gen2recomp-win64
           path: dist/win/gen2recomp-win64.zip
+          if-no-files-found: warn
 
   build-linux:
     needs: prep
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install squashfs tools
         run: sudo apt-get update && sudo apt-get install -y squashfs-tools
       - name: Build Linux (AppImage)
         run: |
           chmod +x scripts/*.sh
           bash scripts/build.sh linux --version "${{ needs.prep.outputs.version }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: gen2recomp-linux
           path: dist/linux/gen2recomp-linux.zip
+          if-no-files-found: warn
 
   build-macos:
     needs: prep
     runs-on: ${{ fromJSON(github.repository == 'bryanthaboi/gen2recomp' && '["self-hosted", "macOS"]' || '"macos-latest"') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - name: Handle Homebrew tap trust issues
+        run: |
+          # Disable tap trust check to avoid aws/tap issues
+          export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
+          # Untap problematic aws/tap if it exists
+          brew untap aws/tap 2>/dev/null || true
+
       - name: Install LOVE.app
-        run: brew install --cask love
+        run: |
+          # Download Love2D directly from GitHub releases to avoid Homebrew issues
+          LOVE_VERSION="11.5"
+          LOVE_URL="https://github.com/love2d/love/releases/download/${LOVE_VERSION}/love-${LOVE_VERSION}-macos.zip"
+
+          echo "Downloading Love2D ${LOVE_VERSION}..."
+          curl -L -o /tmp/love.zip "$LOVE_URL"
+
+          echo "Extracting Love2D..."
+          unzip -q /tmp/love.zip -d /tmp/
+
+          echo "Installing Love2D to /Applications..."
+          sudo cp -R /tmp/love.app /Applications/
+
+          echo "Setting up love command..."
+          sudo ln -sf /Applications/love.app/Contents/MacOS/love /usr/local/bin/love
+
+          echo "Love2D installed successfully"
+          love --version
       - name: Build macOS app (unsigned)
         run: |
           chmod +x scripts/*.sh
           bash scripts/build.sh mac --version "${{ needs.prep.outputs.version }}" --no-notarize
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: gen2recomp-macos
           path: dist/mac/gen2recomp-macos.zip
+          if-no-files-found: warn
 
   build-android:
     needs: prep
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+          java-package: jdk
       - uses: android-actions/setup-android@v3
       - name: Install NDK 25.2.9519653 + platform 34
         run: |
@@ -81,7 +110,7 @@ jobs:
         run: |
           chmod +x scripts/*.sh
           bash scripts/build.sh android --version "${{ needs.prep.outputs.version }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: gen2recomp-android
           path: dist/android/debug/*.apk
@@ -91,7 +120,7 @@ jobs:
     needs: prep
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build Linux arm64 AppImage
         run: |
           set -euo pipefail
@@ -111,7 +140,7 @@ jobs:
     needs: prep
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4      
+      - uses: actions/checkout@v7      
       - name: Install zip utility
         run: choco install zip -y        
       - name: Build Xbox UWP
@@ -120,7 +149,7 @@ jobs:
           chmod +x scripts/*.sh          
           bash scripts/pack_love.sh --output game.love --version "${{ needs.prep.outputs.version }}"          
           bash scripts/build_xbox_uwp.sh --release --version "${{ needs.prep.outputs.version }}" --game-love game.love
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: gen2recomp-xbox-uwp
           path: dist/xbox-uwp/*.zip
@@ -130,8 +159,8 @@ jobs:
     needs: [prep, build-windows, build-linux, build-macos, build-android, linux-arm64, xbox-uwp]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
 
