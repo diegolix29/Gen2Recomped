@@ -17,24 +17,15 @@ $ErrorActionPreference = 'Stop'
 $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $configurationDirectory = $Configuration.ToLowerInvariant()
 if (-not $PackageRoot) {
-<<<<<<< HEAD
-    $PackageRoot = Join-Path $repositoryRoot "ports\uwp\build\$configurationDirectory\AppPackages\Gen2RecompUWP"
-=======
     $PackageRoot = Join-Path $repositoryRoot "ports\uwp\build\$configurationDirectory\AppPackages\Gen2RecompedUWP"
->>>>>>> G2/main
 }
 if (-not $OutputRoot) {
     $OutputRoot = Join-Path $repositoryRoot 'dist\xbox-uwp'
 }
 
 $packageVersion = "$Version.0"
-<<<<<<< HEAD
-$packageDirectory = Join-Path $PackageRoot "Gen2RecompUWP_${packageVersion}_x64_Test"
-$package = Join-Path $packageDirectory "Gen2RecompUWP_${packageVersion}_x64.msix"
-=======
 $packageDirectory = Join-Path $PackageRoot "Gen2RecompedUWP_${packageVersion}_x64_Test"
 $package = Join-Path $packageDirectory "Gen2RecompedUWP_${packageVersion}_x64.msix"
->>>>>>> G2/main
 if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {
     throw "Expected MSIX was not found: $package"
 }
@@ -102,11 +93,7 @@ if (Test-Path -LiteralPath $stage) {
 }
 New-Item -ItemType Directory -Path $stage | Out-Null
 
-<<<<<<< HEAD
-$releasePackage = "gen2recomp-$Version-xbox-uwp.msix"
-=======
 $releasePackage = "Gen2Recomped-$Version-xbox-uwp.msix"
->>>>>>> G2/main
 Copy-Item -LiteralPath $package -Destination (Join-Path $stage $releasePackage)
 $dependencies = Join-Path $packageDirectory 'Dependencies\x64'
 if (Test-Path -LiteralPath $dependencies -PathType Container) {
@@ -119,21 +106,13 @@ if ($BuildInfo -and (Test-Path -LiteralPath $BuildInfo -PathType Leaf)) {
 }
 if ($certificate) {
     [System.IO.File]::WriteAllBytes(
-<<<<<<< HEAD
-        (Join-Path $stage 'Gen2RecompUWP.cer'),
-=======
         (Join-Path $stage 'Gen2RecompedUWP.cer'),
->>>>>>> G2/main
         $certificate.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
     )
 }
 
 $install = @"
-<<<<<<< HEAD
-Gen2Recomp $Version for Xbox Dev Mode
-=======
 Gen2Recomped $Version for Xbox Dev Mode
->>>>>>> G2/main
 
 Install the MSIX and any packages under Dependencies through Xbox Device Portal.
 The certificate is public and is included only when the package was release-signed.
@@ -145,11 +124,7 @@ ROMs, saves and mods are not included.
     [System.Text.UTF8Encoding]::new($false)
 )
 
-<<<<<<< HEAD
-$archivePath = Join-Path $OutputRoot "gen2recomp-$Version-xbox-uwp.zip"
-=======
 $archivePath = Join-Path $OutputRoot "Gen2Recomped-$Version-xbox-uwp.zip"
->>>>>>> G2/main
 if (Test-Path -LiteralPath $archivePath) {
     Remove-Item -LiteralPath $archivePath -Force
 }

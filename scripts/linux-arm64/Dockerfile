@@ -1,14 +1,13 @@
 # Build environment for the aarch64 Linux AppImage.
 #
-# Debian bullseye on purpose: it ships glibc 2.31, the oldest runtime we
-# promise to support. Everything linked here therefore runs on bullseye and
-# every later distro (glibc is backward compatible, not forward), which is
-# what makes the resulting AppImage portable across Raspberry Pi OS, Armbian,
-# Ubuntu 20.04+, and the aarch64 handheld distros.
+# Debian bookworm on purpose: it ships glibc 2.36, providing a stable runtime
+# that runs on bookworm and later distros (glibc is backward compatible, not forward),
+# which makes the resulting AppImage portable across Raspberry Pi OS, Armbian,
+# Ubuntu 22.04+, and the aarch64 handheld distros.
 #
 # This image is arch-native: build it on an aarch64 host (Raspberry Pi 5,
 # ubuntu-24.04-arm runner, Apple Silicon Docker) — no qemu emulation.
-FROM debian:bullseye
+FROM debian:bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
 
