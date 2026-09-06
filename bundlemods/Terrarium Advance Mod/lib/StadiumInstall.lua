@@ -94,7 +94,7 @@ StadiumInstall.MARKER = StadiumInstall.DIR .. "/pack.info"
 
 -- Bumped whenever the .dsm format changes, so an old cache is rebuilt rather
 -- than misread. Must track StadiumPack's magic.
-StadiumInstall.FORMAT = "DSM7"
+StadiumInstall.FORMAT = "DSM3"
 
 -- Bumped when the packs' CONTENT changes without the byte layout moving, so
 -- a cache built by an older extractor is rebuilt rather than trusted. Rev 2
@@ -120,7 +120,7 @@ StadiumInstall.COUNT = targetCount()
 -- Flat in `baseroms/`, with no revision subfolder: the offline pipeline under
 -- model_extract/ keeps the decompilation's own `baseroms/us/` convention
 -- because it shares that tree, but what is being asked of a PLAYER here is
--- "drop the file in this folder", and one folder is the whole of the
+-- "drop the file in this folder", and one folder is the whole of that
 -- instruction. A path they have to build out of two parts is a path half of
 -- them will get wrong, and the failure is silent -- the rungs are simply not
 -- on the row.
@@ -128,28 +128,16 @@ StadiumInstall.COUNT = targetCount()
 -- Gen-aware: a Gen 2 game looks for `stadium2.*` first (so both cartridges
 -- can sit in the same folder without colliding), then falls back to the
 -- historic `baserom.*` name so an existing Gen 1 setup is not disturbed.
--- Gen 1 now also looks for `stadium2.*` since it can use Stadium 2 ROM
--- (which contains all 251 Pokemon including Gen 1 ones).
 local function namedRoms()
-  local gen = gameGeneration()
-  local paths = {}
-  local function addStem(stem)
-    table.insert(paths, StadiumInstall.ROM_DIR .. "/" .. stem .. ".z64")
-    table.insert(paths, StadiumInstall.ROM_DIR .. "/" .. stem .. ".n64")
-    table.insert(paths, StadiumInstall.ROM_DIR .. "/" .. stem .. ".v64")
-  end
-  if gen == 2 then
-    addStem("stadium2")
-  else
-    -- Gen 1: try Stadium 2 first (has all Pokemon), then Stadium 1
-    addStem("stadium2")
-    addStem("stadium")
-  end
-  -- Fallback to historic baserom.* name
-  table.insert(paths, StadiumInstall.ROM_DIR .. "/baserom.z64")
-  table.insert(paths, StadiumInstall.ROM_DIR .. "/baserom.n64")
-  table.insert(paths, StadiumInstall.ROM_DIR .. "/baserom.v64")
-  return paths
+  local stem = (gameGeneration() == 2) and "stadium2" or "stadium"
+  return {
+    StadiumInstall.ROM_DIR .. "/" .. stem .. ".z64",
+    StadiumInstall.ROM_DIR .. "/" .. stem .. ".n64",
+    StadiumInstall.ROM_DIR .. "/" .. stem .. ".v64",
+    StadiumInstall.ROM_DIR .. "/baserom.z64",
+    StadiumInstall.ROM_DIR .. "/baserom.n64",
+    StadiumInstall.ROM_DIR .. "/baserom.v64",
+  }
 end
 
 local function fs()
@@ -397,34 +385,16 @@ function StadiumInstall.beginFrom(bytes, label)
   status.sourceGame = (gen == 2) and "Pokemon Stadium 2" or "Pokemon Stadium"
 
   -- Gen-aware: Gold/Silver/Crystal reads its 251 models through StadiumRom2
-  -- (a different archive layout, the same downstream .dsm format).
-  -- Gen 1 can also use Stadium 2 ROM since it contains all 251 Pokemon including
-  -- the Gen 1 ones. Try StadiumRom2 first if available, fall back to StadiumRom.
-  local rom, err, RomReader
-  if gen == 2 then
-    RomReader = V.require("StadiumRom2")
-    rom, err = RomReader.open(bytes)
-    if not rom then
+  -- (a different archive layout, the same downstream .dsm format); every
+  -- other generation keeps using the original Stadium 1 reader unchanged.
+  local RomReader = (gen == 2) and V.require("StadiumRom2") or V.require("StadiumRom")
+
+  local rom, err = RomReader.open(bytes)
+  if not rom then
+    if gen == 2 then
       return false, "Gold/Silver/Crystal needs a Pokemon Stadium 2 ROM: " .. tostring(err)
     end
-  else
-    -- Gen 1: try Stadium 2 first (has all Pokemon), fall back to Stadium 1
-    local okS2, StadiumRom2 = pcall(V.require, "StadiumRom2")
-    if okS2 then
-      rom, err = StadiumRom2.open(bytes)
-      if rom then
-        RomReader = StadiumRom2
-        status.sourceGame = "Pokemon Stadium 2"
-      end
-    end
-    -- Fall back to Stadium 1 if Stadium 2 failed or isn't available
-    if not rom then
-      RomReader = V.require("StadiumRom")
-      rom, err = RomReader.open(bytes)
-      if not rom then
-        return false, tostring(err)
-      end
-    end
+    return false, tostring(err)
   end
   if not rom:isExpectedUS() then
     -- Built anyway rather than refused: a dump can differ from the reference

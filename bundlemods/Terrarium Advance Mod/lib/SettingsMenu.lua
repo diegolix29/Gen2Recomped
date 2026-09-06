@@ -280,14 +280,21 @@ function SettingsMenu.rows(catId, game)
     -- ROM should find the row where the mod begins, not two levels down a
     -- category they have no reason to open until it has worked. Last, because
     -- the categories are what the menu is FOR.
-    -- StadiumRomPick is gen-aware (StadiumInstall.gameGeneration()), so this
-    -- one row alone covers both the Stadium (US) 1.0 cartridge Gen 1 needs
-    -- and the Stadium 2 (US) cartridge Gen 2 needs -- there is no longer a
-    -- separate Stadium2RomPick row to add beside it.
     local ok, importRow = pcall(function()
       return V.require("StadiumRomPick").row()
     end)
     if ok and importRow then out[#out + 1] = importRow end
+    
+    -- Stadium 2 ROM import (for Gen 2 Pokemon support)
+    local ok2, importRow2 = pcall(function()
+      return V.require("Stadium2RomPick").row()
+    end)
+    if ok2 and importRow2 then 
+      out[#out + 1] = importRow2 
+    else
+      -- Debug: Stadium 2 ROM pick failed to load
+      print("Stadium2RomPick.row() failed:", ok2, importRow2)
+    end
     
     -- Stadium 2 status display (informational only)
     local okS2, Stadium2Setting = pcall(V.require, "Stadium2Setting")
