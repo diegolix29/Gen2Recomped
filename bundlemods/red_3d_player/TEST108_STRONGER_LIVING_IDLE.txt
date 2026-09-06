@@ -1,0 +1,12 @@
+TEST108 - STRONGER LIVING BATTLE IDLE
+
+Based directly on TEST107.
+- Keeps Ash at the proven 20.0 battle backoff.
+- Keeps the relaxed arms-down stance and 3.0 second loop.
+- Raises breathing amplitude about 25%.
+- Raises weight/body sway about 20%.
+- Gives head tracking a little more readable range.
+- Raises loose-arm follow to match the stronger torso movement.
+- No Pokemon placement, camera, smoke, ball, or battle-flow changes.
+
+Use alongside DRAMATIC_SHAPE-TEST105-ASH-BALL-ORIGIN-PROBE.

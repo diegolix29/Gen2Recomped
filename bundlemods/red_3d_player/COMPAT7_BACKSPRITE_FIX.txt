@@ -1,0 +1,16 @@
+RED 3D PLAYER - COMPAT7 / BACK SPRITES FLAT ASH FIX
+
+Root cause identified from Dramatic Shape's own battle code:
+- When BACK SPRITES is active, OverworldBattle.textures() intentionally does
+  NOT create a player BattleScene card.
+- BattleState.drawPicsLayer instead preserves the player's trainer back as a
+  flat GB-layer sprite during the staged 3D battle intro.
+- Therefore COMPAT5/6 could never remove Flat Ash through monCards().
+
+COMPAT7:
+- Detects trainer intro through BattleState.showPlayerBack/playerBackPic even
+  when textures.player is absent.
+- Suppresses ONLY that flat staged trainer-back draw in drawPicsLayer.
+- Injects the selected real 3D player into BattleScene as before.
+- Enemy trainer portraits, Pokemon, UI, weather, NPCs and ordinary flat battles
+  are left untouched.

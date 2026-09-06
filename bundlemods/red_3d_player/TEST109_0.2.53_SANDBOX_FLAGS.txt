@@ -1,0 +1,19 @@
+3D CHARACTER SELECTOR - TEST109 0.2.53 SANDBOX-FLAG FIX
+
+This build keeps TEST108's stronger living idle and original character assets.
+On Gen1Recomp 0.2.53 it registers with BATTLE_ART_VOXEL_FORK TEST11 through the
+exported character renderer API instead of using removed debug upvalue access
+or cross-mod Lua globals.
+
+TEST109 also replaces the custom love.red3d* installation flags rejected by
+the 0.2.53 sandbox with private local state. Standard LOVE callbacks remain
+chained for the keyboard/touch camera controls.
+
+Provider-owned presentation:
+- selected 3D player in the overworld
+- volumetric player shadow
+- suppression of the duplicate stock player ghost
+- standing 3D trainer during normal battles
+- live trainer-hand position for Battle Art's Legendary Pokeball launch
+
+Fishing, surfing and bicycle states retain the mod's original 2D fallback.

@@ -1,0 +1,10 @@
+TEST132 READY STANCE V2
+
+Stronger static battle-ready pose only.
+- More forward torso commitment / shoulder angle
+- Right elbow pulled toward ribs
+- Right fist raised into compact chest-height guard
+- Left arm relaxed/back
+- Firmer command fist
+- Poké Ball remains disabled
+- No throw/deployment effects added

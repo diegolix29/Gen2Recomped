@@ -1,0 +1,17 @@
+RED 3D PLAYER - WEATHER FX 4.28 + TRUE 3D NPC COMPAT3
+
+New diagnosis after COMPAT2:
+- Weather FX 4.28 changes renderer wrapping/timing.
+- Gen1 TRUE 3D Characters and Red 3D Player BOTH hook the same drawEntity closure.
+- The NPC mod is now successfully installing first.
+- Red then sees the NPC wrapper as drawEntity and tries to discover Mat4/
+  billboardMatrix inside that wrapper. Those belong to Dramatic's original
+  drawEntity, so Red's bridge aborts and the stock giant player card remains.
+
+COMPAT3:
+- Weather-wrapper-aware nested render lookup.
+- Detects TRUE 3D Characters' published previous/stock drawEntity.
+- Uses stock drawEntity only for Mat4/camera introspection.
+- Chains non-player entities through the installed NPC wrapper so both mods work.
+- Retries bridge installation at game.ready in case Weather installs late.
+- No player model/scale/animation/camera settings changed.

@@ -1,0 +1,10 @@
+{
+  "version": "1.1.6-test8",
+  "base": "Gen1 TRUE 3D Characters v1.1.5 NPC Scale TEST5 / Gen1Recomp 0.2.53",
+  "generic_archetypes": 19,
+  "walk_frames_per_archetype": 24,
+  "fix": "Contracted eye UVs for the six archetypes whose native 512x512 eye sheets occupy half of the builder's 1024x1024 reserved atlas slot.",
+  "specials": "Nurse Joy and Professor Oak were visually checked and preserved unchanged because their skin palettes already match.",
+  "release_note": "TEST8 applies the missing 180-degree model-forward yaw correction. TEST7 nested-facing recovery and forward gait, TEST6 unified skin, and the eye UV repair remain included.",
+  "github": "randyadr/gen1_true_3d_characters"
+}

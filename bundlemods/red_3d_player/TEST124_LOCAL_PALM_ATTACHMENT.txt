@@ -1,0 +1,21 @@
+TEST124 - LOCAL PALM ATTACHMENT
+
+TEST123 RESULT
+The ball remained at the wrist. Increasing battle/world XYZ offsets was not
+solving the held-object attachment.
+
+TEST124
+- Adds Renderer:battlePalmWorldPos().
+- Uses the RHand bone transform's LOCAL basis.
+- Ball offset is 0.28 along the hand's local axis.
+- No arbitrary battle/world XYZ nudge.
+- Ball scale is 0.18.
+- No flight yet.
+- No trainer/Pokemon handoff changes.
+
+Goal:
+Confirm that the ball moves from the wrist origin toward the palm/fingers and
+continues to follow the wrist correctly throughout TEST120's throw animation.
+
+If this axis points the wrong way, the next calibration only needs to flip the
+local along sign (+0.28 -> -0.28), rather than guessing three world offsets.

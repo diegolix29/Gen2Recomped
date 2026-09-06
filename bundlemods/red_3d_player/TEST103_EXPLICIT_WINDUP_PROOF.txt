@@ -1,0 +1,24 @@
+TEST103 - EXPLICIT WIND-UP PROOF
+
+Built directly from TEST102.
+
+Observed TEST102:
+- release/forward reach finally reads
+- wind-up is still too weak; motion looks like a reach, not a throw
+
+TEST103:
+- keeps the TEST102 release endpoint
+- makes the right shoulder pull back/up clearly
+- lifts the upper arm more aggressively
+- bends the right elbow much harder
+- cocks the wrist as if holding a Poké Ball near the head
+- adds more torso anticipation
+- slows the proof loop slightly for visibility
+
+No Poké Ball object yet.
+
+Goal:
+Make the wind-up silhouette unmistakable:
+hand beside/behind head -> hard forward release -> neutral.
+
+All rendering/bridge/placement/scale/weather behavior remains unchanged.

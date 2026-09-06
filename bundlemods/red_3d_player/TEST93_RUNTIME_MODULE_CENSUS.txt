@@ -1,0 +1,33 @@
+TEST93 - RUNTIME MODULE CENSUS
+
+TEST92 result:
+  T92:M0 -- none of the guessed BattleScene module paths worked.
+
+TEST93 stops guessing names.
+
+It inspects:
+  package.loaded
+  _G
+
+and records every live key whose name contains:
+  battle
+  scene
+  render
+
+The compact on-screen status becomes:
+  REG: T93:CENSUS
+and the detail line shows up to the first 6 matching runtime entries.
+
+Notation:
+  P:<name>:<type>   = package.loaded entry
+  G:<name>:<type>   = global entry
+  +R                = table has a render() function
+
+The full sorted list is also published to:
+  _G.RED3D_RUNTIME_CENSUS
+
+Use with:
+- stock Weather FX 4.28.23
+- Dramatic Shape TEST89 Registration Status Probe
+
+This is diagnostic only.

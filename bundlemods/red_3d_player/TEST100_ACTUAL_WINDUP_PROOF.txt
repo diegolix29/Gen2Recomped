@@ -1,0 +1,26 @@
+TEST100 - ACTUAL WIND-UP PROOF
+
+Built directly from TEST99 Throw Loop Proof.
+
+TEST99 result:
+- visible skeleton animation works
+- first authored throw looked like a gentle arm sway
+
+TEST100:
+- uses the same Red rig axes already proven by battlePointDelta
+- intentionally exaggerates three clear poses:
+    neutral -> deep wind-up -> hard forward release -> neutral
+- adds torso twist and left-arm counterbalance
+- bends the right elbow strongly in the wind-up
+- snaps the upper arm forward and flicks the wrist at release
+- loops every 2.4 sec for easy visual inspection
+
+No Poké Ball object yet.
+No changes to:
+- live Voxel3D bridge
+- battle placement/scale/facing
+- weather integration
+- Dramatic Shape handoff
+
+Once this reads as an actual throw, the next build can use the right-hand bone
+position and TrainerSendoutFx to attach/launch the real 3D Poké Ball.

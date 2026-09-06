@@ -1,0 +1,27 @@
+TEST119 - FIRST THROW ANIMATION
+
+Built directly from the uploaded TEST118 Wrist Sweet Spot.
+
+Locked TEST118 wind-up key pose:
+- RArm X = -34 degrees
+- RArm Z lift = 46 degrees
+- RForeArm Z = -70 degrees
+- RHand X = -30 degrees
+
+Animation loop: 2.25 seconds
+0.00-0.42  neutral -> TEST118 wind-up
+0.42-0.58  brief hold at exact TEST118
+0.58-0.82  fast forward/unfold release
+0.82-1.00  settle toward neutral
+
+Release uses ONLY axes already proven by the frozen diagnostics:
+- upper arm X stays forward and extends farther (-34 -> -50)
+- upper-arm lift relaxes (46 -> 24)
+- elbow unfolds (-70 -> -10)
+- wrist uncocks (-30 -> 0)
+
+No shoulder rotation and no new axis experiments.
+
+Purpose:
+This is the first motion test. It intentionally loops while Red is visible
+so the animation cannot finish invisibly before the battle trainer render.

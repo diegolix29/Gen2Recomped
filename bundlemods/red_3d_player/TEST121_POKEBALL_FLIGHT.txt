@@ -1,0 +1,21 @@
+TEST121 - POKEBALL FLIGHT
+
+Built directly from TEST120.
+
+GOAL
+Add the first visible Poké Ball to the approved throw animation.
+
+CHANGES
+- Adds a small low-poly red/white Poké Ball.
+- Ball follows Red's live right-hand bone through the wind-up.
+- Ball releases at throw phase 0.72, just as the wrist snap begins.
+- After release it follows a short arcing world-space trajectory toward the player's normal battle cell.
+- Ball spins during the throw for readability.
+
+UNCHANGED
+- TEST120 body/arm/wrist animation.
+- Existing Pokémon appearance and smoke timing.
+- Existing 2.25 second looping throw test.
+
+THIS IS A VISUAL FLIGHT-PATH PROOF.
+If the ball size, hand attachment, release timing and landing point look right, the next build can synchronize the real one-shot throw with the existing Pokémon smoke/spawn event.

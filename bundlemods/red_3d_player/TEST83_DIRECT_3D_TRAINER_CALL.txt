@@ -1,0 +1,19 @@
+TEST83 - DIRECT 3D TRAINER CALL
+
+Last probe result:
+Dramatic Shape's visible overlay ran, but the 3D Player BattleScene.render
+wrapper never reported. Therefore that wrapper is not in the active final
+render chain.
+
+TEST83 exports:
+  _G.RED3D_DIRECT_BATTLE_DRAW(arena, groundY, Voxel3D, Mat4)
+
+That callback:
+- reads the known-good TEST85 trainer handoff
+- obtains the real selected overworld player
+- prepares the actual skinned 3D character mesh
+- applies the existing battle point pose
+- builds the existing battle model matrix
+- draws the real 3D character directly into the live Voxel3D scene
+
+Use together with Dramatic Shape TEST87.

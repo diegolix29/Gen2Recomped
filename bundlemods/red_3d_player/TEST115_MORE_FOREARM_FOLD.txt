@@ -1,0 +1,24 @@
+TEST115 - MORE FOREARM FOLD
+
+TEST114 result:
+- hand moved upward cleanly
+- upper arm / elbow chain stayed stable
+- no torso clipping
+
+Locked exactly:
+- RArm X = -34 degrees
+- RArm Z = rest - 46 degrees
+- shoulder neutral
+- wrist neutral
+- no animation
+
+Only new change:
+- RForeArm Z = -70 degrees (was -48)
+
+Goal:
+Bring the hand much closer to the side of Red's face/head while preserving
+the now-proven shoulder/elbow geometry.
+
+If the hand reaches a good wind-up height, next step is likely a small wrist
+cock and then reintroducing animation between neutral -> this wind-up ->
+forward release.

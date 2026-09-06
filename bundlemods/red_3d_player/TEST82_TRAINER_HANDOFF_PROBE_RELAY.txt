@@ -1,0 +1,21 @@
+TEST82 - TRAINER HANDOFF PROBE RELAY
+
+Replaces TEST81's invisible direct graphics print.
+
+BattleScene.render now publishes its exact trainer gates to:
+  _G.RED3D_TRAINER_PROBE
+  _G.RED3D_TRAINER_PROBE_CODE
+
+Compact code:
+  H = Dramatic Shape trainer handoff reached 3D Player
+  A = arena.player exists
+  B = overworld/battle player exists
+  T = final trainerActive gate is true
+
+Example:
+  H1 A0 B1 T0
+means handoff is good, the player object exists, but arena.player is missing,
+which prevents trainer injection.
+
+Use together with Dramatic Shape TEST86, which displays this data from the
+known-visible battle.overlay path.

@@ -1,0 +1,8 @@
+TEST130 - GRIP FIT 6
+
+Changes from TEST129:
+- along: 0.08 -> 0.02
+- local up: stays -0.025
+- z: stays 0.00
+- size: stays 0.29
+- no throw/flight changes

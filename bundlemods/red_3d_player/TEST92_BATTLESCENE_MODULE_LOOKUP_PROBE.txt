@@ -1,0 +1,30 @@
+TEST92 - BATTLESCENE MODULE LOOKUP PROBE
+
+TEST91 result:
+  T91:B1 = V.require("BattleScene") failed.
+
+TEST92 probes multiple plausible module paths without changing the intended
+renderer behavior yet.
+
+REG codes:
+  T92:M0 = no probed path returned a BattleScene table with render()
+  T92:M1 = path returned non-table
+  T92:M2 = table found but render() missing
+  T92:M3 = valid BattleScene found
+  T92:M4 = installation started using the found path
+  T92:M5 = already installed + callback exists
+  T92:M6 = callback export completed
+  T92:M7 = stale installed flag
+
+Probe attempts:
+  V.require("BattleScene")
+  V.require("lib/BattleScene")
+  require("lib.BattleScene")
+  require("BattleScene")
+  V.require("OverworldBattle") -> .BattleScene, if exposed
+
+Use with:
+- stock Weather FX 4.28.23
+- Dramatic Shape TEST89 Registration Status Probe
+
+The REG detail line will list each attempted path compactly.

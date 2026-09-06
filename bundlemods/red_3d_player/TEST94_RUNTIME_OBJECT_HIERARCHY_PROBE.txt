@@ -1,0 +1,32 @@
+TEST94 - RUNTIME OBJECT HIERARCHY PROBE
+
+Why:
+TEST93 only found generated battle-data modules. That did not expose the live
+render object responsible for the 3D trainer.
+
+TEST94 stops scanning module names and instead walks actual runtime objects:
+- the existing `render` object already held by 3D Player
+- `V`
+- `game.mods` / mod exports when available
+- `src.core.Game` if available
+
+It looks for nested tables/functions whose keys suggest:
+battle, scene, render, renderer, trainer, player, actor, voxel, overworld, etc.
+
+REG line:
+  T94:OBJECTS
+
+Detail entries look like:
+  render.foo.bar:table[RDP]
+where flags mean:
+  R = has render()
+  D = has draw()
+  P = has .player
+  T = has .trainer
+  B = has .battle
+
+Use with:
+- stock Weather FX 4.28.23
+- Dramatic Shape TEST89 Registration Status Probe
+
+This is diagnostic only.

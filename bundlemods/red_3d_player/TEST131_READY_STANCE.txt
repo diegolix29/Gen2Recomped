@@ -1,0 +1,6 @@
+TEST131 - READY STANCE
+
+- Removed slow looping battle throw.
+- Disabled held wrist Poké Ball.
+- Added static command-ready trainer pose.
+- Goal: judge silhouette/stance only before adding any cinematic deployment effect.

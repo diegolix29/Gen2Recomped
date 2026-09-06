@@ -1,0 +1,10 @@
+GEN1 TRUE 3D CHARACTERS - NPC SCALE TEST1
+
+Changes:
+- Generic human NPCs: 1.00 -> 0.90
+- Nurse Joy: 1.00 -> 0.90
+- Professor Oak: 1.25 -> 1.05
+- Player/Ash: unchanged (still handled by Dramatic Shape fallback)
+- Pokémon: unchanged
+
+Scaling is uniform XYZ scaling, so proportions are preserved.

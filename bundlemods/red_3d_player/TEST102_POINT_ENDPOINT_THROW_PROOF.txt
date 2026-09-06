@@ -1,0 +1,25 @@
+TEST102 - POINT-ENDPOINT THROW PROOF
+
+TEST100/101 result:
+- motion system works
+- guessed forward/back Euler rotations read as sway/shrug
+
+New strategy:
+- RELEASE endpoint uses the mod's existing battle-pointing pose angles
+  (the pose already authored to aim Red's right arm toward the opponent)
+- only the WIND-UP is newly authored
+- torso and left arm add anticipation/counterbalance
+- right elbow bends deeply during wind-up, then straightens toward the known
+  point-pose endpoint
+
+Also added:
+- Renderer:battleHandWorldPos(model)
+- publishes _G.RED3D_BATTLE_HAND_WORLD
+This is the exact live RHand bone position transformed into battle world space,
+ready to become the 3D Poké Ball spawn point once the motion is approved.
+
+Diagnostic loop remains on purpose:
+~1.70 sec motion in a 2.60 sec cycle.
+
+Sacred bridge, placement, scale, facing, weather, and Dramatic Shape handoff are
+unchanged.

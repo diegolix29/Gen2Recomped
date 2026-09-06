@@ -1,0 +1,21 @@
+TEST101 - FORWARD THROW PROOF
+
+Built directly from TEST100 Actual Wind-Up Proof.
+
+Observed TEST100 result:
+- stronger movement is visible
+- throw/wind-up direction is backwards
+
+TEST101 surgical change:
+- reverse the local forward/back (Y) rotation signs through:
+  Spine3, Neck, Head, RShoulder, RArm, RForeArm, and RHand
+- preserve the local-Z arm-rest/drop
+- preserve TEST100 motion magnitude and 2.4-second proof loop
+- preserve battle placement, scale, facing, weather integration, and live Voxel3D bridge
+
+No Poké Ball object yet.
+
+Goal:
+Confirm the exact same readable wind-up/throw now travels INTO the battlefield.
+Once confirmed, attach the real 3D ball to the live right-hand bone and hand it
+off to TrainerSendoutFx for the flight/open/release sequence.

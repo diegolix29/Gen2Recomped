@@ -1,0 +1,36 @@
+TEST78 / COMPAT9 - WEATHER 4.28.23 TRAINER OWNERSHIP
+
+Built directly from TEST76.
+
+Basis for this test:
+- user supplied Weather FX v4.7.1 where the real 3D trainer worked
+- user supplied current Weather FX 4.28.23 where the flat backsprite returned
+- newer Weather has a substantially expanded battle rendering stack,
+  including battle.overlay weather visuals and VoxelScene atmosphere wrapping
+
+TEST78 changes the 3D PLAYER mod, not Weather:
+1) Keeps TEST76's real selected 3D trainer injection.
+2) Keeps showPlayerBack true so the 3D BattleScene bridge can detect intro.
+3) Adds an outer BattleState.draw ownership guard.
+4) During ONLY the player trainer-back intro, legacy playerBackPic drawing
+   resources are temporarily nil while the full battle draw chain executes.
+5) Fields are restored immediately afterward.
+6) Guard is reasserted at mods.loaded, game.ready and battle.started so
+   Weather/UI load order cannot put another BattleState.draw wrapper outside it.
+
+This deliberately does NOT disable or downgrade Weather 4.28.23.
+Clouds, rain, seasons, fronts, banner UI, battle weather, SFX and atmosphere
+remain owned by Weather FX.
+
+Use with:
+- CURRENT unmodified Weather FX 4.28.23 clouds10 banner-ui
+- Dramatic Shape TEST75 Clean 3D Sendout (or later descendant)
+- this TEST78 replacing TEST76
+
+Expected:
+The old flat trainer backsprite is gone. The real selected 3D trainer should
+remain/inject on the player arena cell during the trainer intro.
+
+If flat trainer disappears but 3D trainer is also absent, that is still a very
+useful binary result: sprite ownership is solved and the next patch can focus
+only on BattleScene injection under the new Weather wrapper.

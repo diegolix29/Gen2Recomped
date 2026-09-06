@@ -1,0 +1,15 @@
+GEN1 TRUE 3D CHARACTERS - EYE UV FIX TEST1
+
+Target: Gen1Recomp 0.2.53 with Legendary Battle Art.
+
+The previous build reserved a 1024x1024 atlas region for every eye texture.
+Six NPC archetypes actually use 512x512 eye sheets, so their UVs sampled twice
+the intended width and height. This could display multiple blinking-expression
+rows on the face or place facial features toward the sides of the head.
+
+TEST1 contracts the eye UVs for adult_woman, cook, elderly_woman, fat,
+staff_man, and staff_woman in their standing meshes and all 24 walking poses.
+The other thirteen generic archetypes, Nurse Joy, Professor Oak, player,
+Pokemon, model scales, animation, and Battle Art integration are unchanged.
+
+Disable v1.1.5 before installing this test. Fully restart the game.

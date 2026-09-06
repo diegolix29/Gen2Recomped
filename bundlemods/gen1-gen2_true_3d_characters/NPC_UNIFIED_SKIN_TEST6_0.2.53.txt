@@ -1,0 +1,18 @@
+GEN1 TRUE 3D CHARACTERS - UNIFIED NPC SKIN TEST6
+
+Target: Gen1Recomp 0.2.53 with Legendary Battle Art.
+
+TEST6 replaces the earlier incremental skin adjustments with a decisive fix.
+Each of the 19 generic NPC archetypes now uses one warm base palette across the
+face, ears, arms, hands, legs, and feet. Baked brightness is also equalized on
+those skin surfaces rather than merely capped, eliminating the persistent
+pale-limb split under Battle Art's daylight tint.
+
+Every neutral mesh and all 24 walking poses per archetype receive the same
+correction. Nurse Joy and Professor Oak were checked separately and remain
+unchanged because their custom palettes already match.
+
+The complete eye-atlas UV correction remains included. Eyes, facial lines,
+hair, clothing, geometry, scale, player, Pokemon, and Battle Art are unchanged.
+
+Disable TEST5, TEST4, or any earlier version before installing. Fully restart.

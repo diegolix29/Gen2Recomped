@@ -1,0 +1,16 @@
+GEN1 TRUE 3D CHARACTERS - NPC SCALE TEST5
+
+Target: Gen1Recomp 0.2.53 with Battle Art TEST13.
+
+TEST5 keeps the Test 4 meshes and scale choices (generic humans and Nurse Joy
+at 90%, Professor Oak at 105%) and repairs the overworld claim boundary:
+
+- Uses Battle Art's explicit player/NPC role rather than inferring ownership.
+- Accepts the normalized actor alias and resolves the original Gen 1 sprite id
+  through every supported 0.2.53 entity/SpriteRenderer shape.
+- Verifies the live player independently so a player can never be consumed by
+  the NPC provider.
+- Protects model selection/loading and records the actual failing sprite id if
+  a particular model cannot draw; the stock 2D card remains the fallback.
+
+Replace NPC Scale Test 4; do not enable both builds. Fully restart the game.

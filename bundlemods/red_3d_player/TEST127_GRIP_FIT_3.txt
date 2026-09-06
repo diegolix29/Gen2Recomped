@@ -1,0 +1,14 @@
+TEST127 - GRIP FIT 3
+
+Observed in TEST126 screenshots:
+- Local-space RHand tracking is working across arm rotation.
+- Ball size 0.29 reads well; keep it unchanged.
+- Ball still sits slightly behind/above the gripping area near the wrist/thumb base.
+
+Changes:
+- along: 0.20 -> 0.27
+- local up: -0.095 -> -0.125
+- side: 0.00 unchanged
+- size: 0.29 unchanged
+
+Still no throw/flight changes. This remains a pure grip-position calibration.

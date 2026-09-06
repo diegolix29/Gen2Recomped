@@ -1,0 +1,16 @@
+TEST80 / COMPAT10 - TEST85 3D TRAINER INTRO HANDOFF
+
+Built from TEST79 Direct Trainer Ownership.
+
+TEST84 successfully killed Cardboard Red, but also proved the trainer canvas is
+removed before BattleScene.render. TEST80 therefore no longer requires that
+canvas or stack-wrapper heuristics to know the trainer intro is active.
+
+When Dramatic Shape TEST85 publishes RED3D_TRAINER_INTRO_ACTIVE, TEST80:
+- treats that as an authoritative trainer-intro signal;
+- uses the supplied BattleState when message wrappers obscure the stack;
+- prepares the existing selected 3D character mesh;
+- injects it into the staged BattleScene color and shadow passes;
+- automatically yields when TEST85 drops the signal at Pokemon send-out.
+
+No 2D trainer texture is restored.

@@ -1,0 +1,33 @@
+TEST95 - LIVE VOXEL BRIDGE CALLBACK
+
+Why this is different:
+TEST91-94 proved that trying to locate Dramatic Shape's BattleScene by module
+name is the wrong route in the current stack.
+
+But the 3D Player already has a working compatibility mechanism:
+installVoxelBridge() finds the *actual live* Dramatic Shape voxel pipeline from
+src.render.Pipelines and extracts:
+- VoxelScene
+- Voxel3D
+- Mat4
+
+TEST95 uses that proven bridge directly.
+
+It exports RED3D_DIRECT_BATTLE_DRAW as soon as the voxel bridge exists, without
+requiring BattleScene by name at all.
+
+Use with:
+- stock Weather FX 4.28.23
+- Dramatic Shape TEST89 Registration Status Probe
+
+Expected top-left:
+  REG: T95:CALLBACK EXPORTED
+
+Then, during trainer intro, ideally:
+  3D RED: DRAW OK
+
+If it progresses to NO ARENA / NO PLAYER / MESH FAIL / MODEL FAIL / DRAW FAIL,
+that is still major progress: the callback is alive and we can fix the exact
+remaining draw gate.
+
+This is the first test that bypasses the failed BattleScene lookup entirely.

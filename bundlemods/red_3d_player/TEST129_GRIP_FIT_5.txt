@@ -1,0 +1,6 @@
+TEST129 - GRIP FIT 5
+
+Grip-only calibration.
+Position: 0.14,-0.055,0.00 -> 0.08,-0.025,0.00
+Ball size remains 0.29.
+No flight changes.

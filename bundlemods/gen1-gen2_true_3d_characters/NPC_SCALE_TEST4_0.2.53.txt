@@ -1,0 +1,20 @@
+GEN1 TRUE 3D CHARACTERS - NPC SCALE TEST4
+
+Target: Gen1Recomp 0.2.53 with BATTLE_ART_VOXEL_FORK TEST12.
+
+- Generic human NPCs: 90%
+- Nurse Joy: 90%
+- Professor Oak: 105%
+- Player and Pokemon: unchanged
+
+This build replaces the removed debug/upvalue attachment with Battle Art's
+exported character renderer provider. All original meshes, textures, pools and
+walk frames remain inside this NPC mod.
+
+TEST3 identifies each NPC from the live actor supplied by Battle Art. Generic
+NPC sprite sheets are no longer replaced with blue marker images. If a model
+cannot be created, the ordinary 2D character appears as the safe fallback.
+
+TEST4 also publishes its complete renderer spec. Battle Art TEST12 can discover
+and attach it during live rendering if the entry-time registration did not
+survive an in-process launcher reload.

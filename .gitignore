@@ -66,6 +66,7 @@ mobile/ios/build/
 # Final packaged build artifacts (mac/win/web/android/ios/switch) — see scripts/build.sh
 /dist/
 /cmd runs/
+/bundlemods/off
 /test/
 /tests/
 

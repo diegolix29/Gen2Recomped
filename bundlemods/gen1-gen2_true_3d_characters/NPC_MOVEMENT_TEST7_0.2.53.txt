@@ -1,0 +1,26 @@
+GEN1 TRUE 3D CHARACTERS - NATURAL MOVEMENT TEST7
+
+Target: Gen1Recomp 0.2.53 with Legendary Battle Art 1.10.3.
+
+ROOT CAUSE
+
+Battle Art 1.10.3 stores the live NPC direction in ctx.pose.facing. The prior
+3D NPC provider read only ctx.facing, which can be nil. A missing value made
+the model use its default south-facing rotation even while a trainer was
+scripted to approach from another direction.
+
+TEST7 FIX
+
+- Recovers facing from ctx.pose.facing and then the actor as fallbacks.
+- Verifies moving direction from real per-frame X/Y displacement.
+- Accumulates absolute travel distance so every 24-frame walk cycle advances
+  forward; left/up movement no longer reverses the animation timeline.
+- Uses a calmer 40-world-pixel gait cycle instead of 32 pixels.
+- Rejects large teleport/map-transition deltas so they cannot spin or advance
+  a character unexpectedly.
+- Applies to every generic NPC and Professor Oak. Nurse Joy receives the same
+  direction recovery while retaining her dedicated 60-frame animation.
+
+TEST6's unified NPC skin and the full eye-atlas UV correction remain included.
+
+Disable TEST6 or any earlier version before installing. Fully restart.

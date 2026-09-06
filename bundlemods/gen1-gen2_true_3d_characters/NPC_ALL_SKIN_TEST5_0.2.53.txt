@@ -1,0 +1,19 @@
+GEN1 TRUE 3D CHARACTERS - ALL NPC SKIN MATCH TEST5
+
+Target: Gen1Recomp 0.2.53 with Legendary Battle Art.
+
+TEST5 corrects the remaining color difference between faces, ears, arms,
+hands, legs, and feet across all 19 generic NPC archetypes. TEST4 adjusted the
+skin hue, but strong baked vertex highlights could still make exposed skin
+look pale or white in game. TEST5 matches the complete skin RGB palette and
+constrains those highlights while preserving gentle 3D directional shading.
+
+Every neutral mesh and all 24 walking poses per archetype are corrected, so
+stationary and moving NPCs use the same matched result. Nurse Joy and Professor
+Oak were checked separately; their custom skin palettes already match and are
+left unchanged.
+
+The complete TEST1 eye-atlas correction remains included. Hair, clothing,
+eyes, makeup, outlines, scale, player, Pokemon, and Battle Art are unchanged.
+
+Disable TEST4, TEST3, TEST2, TEST1, or v1.1.5 before installing. Fully restart.

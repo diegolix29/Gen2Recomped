@@ -1,0 +1,20 @@
+TEST97 - RELAXED BATTLE STANCE
+
+Built directly from the successful TEST96 Battle Placement Cleanup.
+
+Change:
+- Battle skeleton now uses the same known-good relaxed idle bone solution used
+  by the overworld renderer.
+- Removes the old battle pointing/T-pose-like arm chain for this test.
+
+Intentionally unchanged:
+- TEST96 battle scale and placement
+- battle facing/model matrix
+- live Voxel3D bridge callback
+- Dramatic Shape handoff
+- weather compatibility
+- trainer sprite suppression
+
+Purpose:
+Get Red into a clean arms-down neutral battle stance. Once verified, this pose
+becomes frame zero / recovery pose for the Poké Ball throw animation.

@@ -1,0 +1,20 @@
+TEST99 - THROW LOOP PROOF
+
+Why TEST98 looked static:
+The throw pose used the pre-existing battlePointStart one-shot clock. That clock
+can begin during hidden/pre-composite battle frames, so the 1.15 second motion
+may finish before Red is visibly shown.
+
+TEST99 separates animation correctness from timing:
+- while the trainer intro is active, Red repeatedly performs the throw motion
+- 1.15 sec throw
+- brief hold
+- repeats every 1.80 sec
+- when trainer intro ends, the loop timer resets
+
+This is intentionally a diagnostic animation loop.
+If Red visibly moves now, the skeleton/pose code works and TEST100 can sync a
+single throw to the visible trainer-intro edge.
+
+All TEST97/TEST98 rendering, placement, scale, facing, weather compatibility,
+and live Voxel3D bridge remain unchanged.

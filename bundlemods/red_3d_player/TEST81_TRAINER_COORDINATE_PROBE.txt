@@ -1,0 +1,5 @@
+TEST81 - TRAINER COORDINATE / HANDOFF PROBE
+
+Use with Dramatic Shape TEST85 and Weather FX 4.28.23.
+This does not change trainer rendering logic. It prints the exact intro handoff, arena player coordinate, playerCell, battle player availability, disabled flag, and final trainerActive gate.
+Send one screenshot of the probe during the trainer intro.

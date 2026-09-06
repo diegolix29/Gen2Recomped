@@ -1,0 +1,23 @@
+TEST125 - GRIP FIT
+
+TEST124 RESULT
+- Local-space hand attachment works.
+- Ball follows the hand.
+- Ball is too small.
+- Ball sits a little too far beyond / above the grip.
+
+TEST125 CHANGES
+- local hand-axis distance: 0.28 -> 0.17
+- local up offset: 0.00 -> -0.015
+- ball scale: 0.18 -> 0.24
+
+UNCHANGED
+- same TEST120 throw animation
+- local-space palm attachment method
+- no flight yet
+- no trainer/Pokemon handoff changes
+
+GOAL
+Make the ball read as sitting in Red's actual grip instead of hovering near it.
+If this looks correct, TEST126 can finally use this exact palm attachment as
+the release origin for the flight arc.

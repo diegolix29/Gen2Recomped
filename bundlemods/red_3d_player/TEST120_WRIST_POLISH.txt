@@ -1,0 +1,25 @@
+TEST120 - WRIST POLISH
+
+Built directly from TEST119.
+
+GOAL
+Polish ONLY the awkward wrist behavior seen in the TEST119 video.
+The established upper-arm and elbow throw path remains the same.
+
+CHANGES
+- Wind-up wrist curl reduced: -30 -> -18 degrees.
+- Wrist starts opening early during release instead of remaining curled.
+- Wrist passes neutral during the throw.
+- Small +10 degree follow-through snap at release.
+- Wrist smoothly returns to neutral during recovery.
+
+UNCHANGED
+- No shoulder rotation.
+- Same upper-arm target path.
+- Same elbow target path.
+- Same 2.25 second looping test animation.
+- No Poké Ball yet.
+
+NEXT
+If TEST120 looks natural, TEST121 can add the actual Poké Ball and synchronize
+its release / flight endpoint with the player's Pokémon smoke spawn.

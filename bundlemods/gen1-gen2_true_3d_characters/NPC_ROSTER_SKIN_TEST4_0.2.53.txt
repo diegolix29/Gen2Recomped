@@ -1,0 +1,15 @@
+GEN1 TRUE 3D CHARACTERS - ROSTER SKIN FIX TEST4
+
+Target: Gen1Recomp 0.2.53 with Legendary Battle Art.
+
+TEST4 extends the successful adult_woman complexion correction across all 19
+generic NPC archetypes. Each model's washed-out face and exposed-body pixels
+are warmed toward that model's own existing ear palette. Conservative caps
+preserve natural complexion differences and prevent darker NPCs from becoming
+oversaturated.
+
+The complete TEST1 eye-atlas correction remains included. Hair, clothing,
+eyes, makeup, outlines, geometry, animation, scale, Nurse Joy, Professor Oak,
+player, Pokemon, and Battle Art are unchanged.
+
+Disable TEST3, TEST2, TEST1, or v1.1.5 before installing. Fully restart.

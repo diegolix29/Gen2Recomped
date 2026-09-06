@@ -1,0 +1,11 @@
+TEST96 - BATTLE PLACEMENT CLEANUP
+
+Built directly from the successful TEST95 live voxel bridge callback.
+
+Changes only the battle presentation transform:
+- preserves the proven TEST95 live Voxel3D callback architecture
+- scales the battle trainer to 82% of the TEST95 size
+- backs the trainer 2.25 world units away from the opponent
+- leaves overworld, VR, skinning, weather compatibility, and callback plumbing untouched
+
+IMPORTANT: the giant diagnostic overlay shown by the separate Dramatic Shape probe mod is not owned by this package. Disable/remove that probe after confirming TEST96 placement, or provide that probe package for a clean no-debug build.

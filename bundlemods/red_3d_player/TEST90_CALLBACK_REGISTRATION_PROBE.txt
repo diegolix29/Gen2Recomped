@@ -1,0 +1,37 @@
+TEST90 - CALLBACK REGISTRATION PROBE
+
+Purpose:
+TEST84 + Dramatic Shape TEST88 proved the live Dramatic Shape battle renderer
+runs, but it sees RED3D_DIRECT_BATTLE_DRAW as nil ("3D RED: NO CALLBACK").
+
+TEST90 instruments the earlier registration gates in red_3d_player.
+
+New globals:
+  RED3D_CALLBACK_REG_STATUS
+  RED3D_CALLBACK_REG_DETAIL
+
+Possible status values:
+  START
+  NO V BRIDGE
+  V OK
+  BATTLESCENE REQUIRE FAIL
+  BATTLESCENE NOT TABLE
+  NO BATTLESCENE.RENDER
+  STALE INSTALLED FLAG
+  ALREADY INSTALLED
+  INSTALLING
+  CALLBACK EXPORTED
+
+Interpretation:
+- CALLBACK EXPORTED means registration succeeded and the callback is later
+  being cleared/replaced.
+- STALE INSTALLED FLAG is especially important: it means some earlier copy of
+  BattleScene was marked installed while the exported callback is absent.
+- NO V BRIDGE / require/render failures identify the exact compatibility seam.
+
+Use with:
+- Weather FX 4.28.23 stock (TEST89 is no longer needed for this probe)
+- Dramatic Shape TEST88 trainer gate probe
+
+This build does not intentionally change normal rendering behavior; it adds
+registration diagnostics around the existing TEST84 callback export.

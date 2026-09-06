@@ -1,0 +1,9 @@
+TEST102 - ASH BACKWARD TRAINER SLOT PROBE (RED 3D PLAYER)
+
+- Pokemon placement is untouched.
+- Ash lateral TEST101 probe is removed: battleSideOffset = 0.00.
+- Ash alone gets a deliberately large backward offset: battleBackoff = 7.00.
+- Ready stance, persistence, smoke, enemy placement, and battle flow unchanged.
+
+Purpose: identify the true trainer-behind-Pokemon axis using an unmistakable Ash-only movement. If this axis is correct, the next test will dial the distance down for Pikachu while retaining clearance for large Pokemon such as Snorlax.
+Pair with Dramatic Shape TEST102.

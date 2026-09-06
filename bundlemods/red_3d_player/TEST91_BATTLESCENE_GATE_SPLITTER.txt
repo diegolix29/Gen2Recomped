@@ -1,0 +1,15 @@
+TEST91 - BATTLESCENE GATE SPLITTER
+
+Use with stock Weather FX 4.28.23 and Dramatic Shape TEST89.
+
+Read the REG line:
+  T91:B1 = V.require("BattleScene") failed
+  T91:B2 = BattleScene returned, but is not a table
+  T91:B3 = BattleScene.render is missing/not a function
+  T91:B4 = BattleScene + render passed; installation began
+  T91:B5 = stale installed flag: installed=true, callback=nil
+  T91:B6 = already installed and callback exists
+  T91:B7 = callback export completed successfully
+
+T91:V0 means V.require itself is available and the BattleScene test is next.
+This build changes diagnostics only; rendering behavior is otherwise inherited from TEST90.

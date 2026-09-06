@@ -1,0 +1,8 @@
+COMPAT4 targets the remaining battle-only 2D trainer sprite.
+
+Weather FX can run the overworld through a patched Voxel3D table while
+Dramatic Shape BattleScene still owns its original Voxel3D/ShadowMap/Mat4
+objects. COMPAT3 fixed the overworld but intercepted the wrong Voxel3D
+during the battle trainer intro. COMPAT4 reads BattleScene.render's own
+closed-over renderer objects and hooks those exact tables for the trainer
+replacement, then restores them immediately after each battle render.

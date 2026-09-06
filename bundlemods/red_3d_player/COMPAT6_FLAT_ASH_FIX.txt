@@ -1,0 +1,9 @@
+RED 3D PLAYER - COMPAT6 / FLAT ASH FIX
+
+COMPAT5 only removed a battle card when card.tex == textures.player.canvas.
+The current BattleScene stack can store the player trainer asset itself (or a
+small wrapper around it) instead. COMPAT6 recognizes both representations and
+removes only the matching player trainer card before the native battle draw.
+
+The opponent trainer portrait, Pokemon cards/models, UI, weather and NPC paths
+are untouched. The existing 3D player injection and shadow path are retained.

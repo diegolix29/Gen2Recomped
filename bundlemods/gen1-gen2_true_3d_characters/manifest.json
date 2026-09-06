@@ -1,0 +1,20 @@
+{
+  "id": "gen1_true_3d_characters",
+  "name": "Gen1 TRUE 3D Characters - Correct Forward Facing TEST8 (0.2.53)",
+  "version": "1.1.6-test8-forward-facing-gait-skin-compat253",
+  "entry": "main.lua",
+  "api": 2,
+  "profile": "content",
+  "category": "GRAPHICS",
+  "priority": 300,
+  "game_version": "0.0.0-dev || >=0.1.37 <2.0.0",
+  "dependencies": [
+    "DRAMATIC_SHAPE"
+  ],
+  "permissions": [
+    "engine_internals"
+  ],
+  "affects_link": false,
+  "description": "Gen1Recomp 0.2.53 compatibility fork. Corrects the imported models' reversed forward axis with a 180-degree yaw, recovers Battle Art's nested facing value, and retains the forward-only gait, unified NPC skin, and eye fix.",
+  "github": "randyadr/Gen-1-3D-NPC-s"
+}

@@ -1,0 +1,6 @@
+TEST118 - WRIST SWEET SPOT
+
+Preserves TEST115 arm chain exactly.
+Only change from TEST117: RHand local X rotation -45 -> -30 degrees.
+Frozen diagnostic pose; no animation changes.
+Goal: keep the confirmed wrist movement but soften the curl into a more natural throw wind-up.

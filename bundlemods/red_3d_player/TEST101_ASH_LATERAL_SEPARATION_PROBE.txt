@@ -1,0 +1,8 @@
+TEST101 - ASH LATERAL SEPARATION PROBE (RED 3D PLAYER)
+
+- Ash keeps TEST98/100 battle depth: battleBackoff = 2.25.
+- Ash alone gets an obvious local lateral offset: battleSideOffset = 3.25.
+- Ready stance/persistence unchanged.
+
+Purpose: prove the correct trainer-only sideways axis before dialing final spacing.
+Pair with Dramatic Shape TEST101.

@@ -1,0 +1,23 @@
+TEST98 - THROW MOTION PROTOTYPE
+
+Built directly from the verified TEST97 relaxed battle stance.
+
+Purpose:
+- Animate Red's skeleton through a short Poké Ball-style throwing gesture.
+- NO Poké Ball object yet. This build proves the body motion first.
+
+Sequence (~1.15 sec):
+- neutral
+- wind-up
+- forward throw / release gesture
+- follow-through
+- recovery toward neutral
+
+Preserved from TEST97:
+- successful live Voxel3D battle bridge
+- battle placement / scale / facing
+- relaxed neutral pose foundation
+- weather and Dramatic Shape compatibility
+
+If the motion direction/arm looks wrong on Red's particular rig, the next test
+only needs angle/sign tuning; the battle bridge should remain untouched.

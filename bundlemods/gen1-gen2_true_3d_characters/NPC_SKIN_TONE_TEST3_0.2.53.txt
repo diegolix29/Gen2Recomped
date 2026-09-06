@@ -1,0 +1,12 @@
+GEN1 TRUE 3D CHARACTERS - EYE AND SKIN FIX TEST3
+
+Target: Gen1Recomp 0.2.53 with Legendary Battle Art.
+
+TEST2's subtle complexion adjustment remained too pale under Battle Art's
+daylight tint. TEST3 directly matches the adult_woman archetype's face, arms,
+hands, legs, and feet to the warmer peach palette already used by her ears.
+
+The complete TEST1 eye-atlas correction remains included. Other NPCs, eyes,
+hair, clothing, geometry, animation, scale, and Battle Art are unchanged.
+
+Disable TEST2, TEST1, or v1.1.5 before installing. Fully restart the game.

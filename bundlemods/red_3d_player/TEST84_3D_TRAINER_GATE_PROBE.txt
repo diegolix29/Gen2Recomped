@@ -1,0 +1,15 @@
+TEST84 - 3D TRAINER GATE PROBE
+
+Builds on TEST83's direct Voxel3D trainer callback.
+
+Adds detailed status for the exact failing gate:
+- HANDOFF OFF
+- NO ARENA
+- NO PLAYER
+- MESH FAIL
+- MODEL FAIL
+- DRAW FAIL
+- DRAW OK
+
+Also publishes RED3D_DIRECT_BATTLE_DETAIL with the relevant missing values.
+Use with Dramatic Shape TEST88.

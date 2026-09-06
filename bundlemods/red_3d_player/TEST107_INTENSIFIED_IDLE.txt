@@ -1,0 +1,12 @@
+TEST107 - INTENSIFIED LIVING BATTLE IDLE
+
+Based directly on TEST106.
+- Keeps Ash at the proven 20.0 battle backoff.
+- Keeps the relaxed arms-down stance.
+- Intensifies the successful living-idle idea without changing battle placement.
+- Slightly faster 3.0 second breathing/weight-shift loop.
+- More readable torso breathing, weight sway, head tracking, and loose-arm follow.
+- Still deliberately restrained so Ash remains background presence, not the focus.
+- No Pokemon placement, camera, smoke, ball, or battle-flow changes.
+
+Use alongside DRAMATIC_SHAPE-TEST105-ASH-BALL-ORIGIN-PROBE.

@@ -1,0 +1,27 @@
+TEST122 - BALL VISIBILITY PROOF
+
+Observed TEST121:
+- Red's throw animation was visible.
+- No Poké Ball was visible.
+- Native trainer handoff still occurred, then the player's Pokémon appeared.
+
+Conclusion:
+Do NOT debug the flight arc yet. First prove the custom ball mesh is actually
+visible in the same live Voxel3D pass as Red.
+
+TEST122:
+- keeps TEST120/121 trainer animation untouched
+- keeps the ball attached to Red's LIVE RHand for the whole visible trainer phase
+- ball is intentionally oversized (0.28)
+- ball is nudged outward/upward from the hand to avoid depth occlusion
+- ball draw now explicitly disables Voxel3D seams/glass just like Red's proven draw
+- publishes _G.RED3D_BALL_STATUS for diagnostics
+- NO ball flight in this build
+- NO Pokémon spawn/handoff timing changes in this build
+
+Expected result:
+A very obvious red/white ball should remain visible at/just beyond Red's hand
+while he loops the throw animation.
+
+If this is visible, TEST123 can restore the release/flight path and then we can
+synchronize trainer handoff with the existing Pokémon smoke/send-out effect.

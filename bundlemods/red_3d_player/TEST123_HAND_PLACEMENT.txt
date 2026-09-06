@@ -1,0 +1,22 @@
+TEST123 - HAND PLACEMENT CALIBRATION
+
+TEST122 RESULT
+The Poké Ball rendered successfully, but it was embedded at Red's wrist.
+
+TEST123 GOAL
+Move that proven-visible ball out from the wrist and into/just beyond Red's grip.
+
+CHANGES
+- Ball X offset: +0.08 -> +0.22
+- Ball Y offset: +0.11 -> +0.16
+- Ball Z offset: +0.04 -> +0.10
+- Ball scale: 0.28 -> 0.20
+
+UNCHANGED
+- TEST120 throw animation
+- No Poké Ball flight
+- No trainer/Pokémon handoff timing changes
+- Same proven Voxel3D ball rendering path
+
+If the ball now sits correctly in the hand, the next test can use this exact
+attachment point as the release origin and restore the flight arc.

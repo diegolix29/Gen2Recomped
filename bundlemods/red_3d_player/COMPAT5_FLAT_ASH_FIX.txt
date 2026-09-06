@@ -1,0 +1,17 @@
+RED 3D PLAYER - COMPAT5 / FLAT ASH FIX
+
+Problem:
+- Overworld player is correctly 3D.
+- NPCs are correctly 3D.
+- During 'TRAINER wants to fight!' the original 2D Ash/Red back card still
+  appears as a billboard inside the 3D battle arena.
+
+Why COMPAT4 could miss it:
+- It relied on matching the trainer Canvas by identity inside Voxel3D.draw().
+- Current presentation stacks can proxy/rebuild that card before final draw.
+
+COMPAT5 approach:
+- Suppresses only the player's trainer card in BattleScene.monCards().
+- Injects the selected real 3D character immediately before endScene().
+- Adds the real mesh to the battle shadow pass before ShadowMap.finish().
+- Leaves Pokemon cards/models, UI, Battle Cinematics, weather, and NPCs alone.

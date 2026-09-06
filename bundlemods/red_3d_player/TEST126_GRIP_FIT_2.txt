@@ -1,0 +1,12 @@
+TEST126 - GRIP FIT 2
+
+Observed in TEST125 video:
+- Ball is still visually above/around the wrist.
+- Ball is still a little too small.
+
+Changes:
+- along: 0.17 -> 0.20
+- local up: -0.015 -> -0.095 (stronger downward correction)
+- size: 0.24 -> 0.29
+
+Still no flight. This remains a pure grip-position calibration.

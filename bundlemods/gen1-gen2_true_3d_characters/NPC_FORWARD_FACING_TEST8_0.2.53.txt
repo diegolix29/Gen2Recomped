@@ -1,0 +1,19 @@
+GEN1 TRUE 3D CHARACTERS - CORRECT FORWARD FACING TEST8
+
+Target: Gen1Recomp 0.2.53 with Legendary Battle Art 1.10.3.
+
+TEST7 correctly recovered the game's direction and fixed reverse animation
+playback, but the imported Let's Go character rigs themselves were still
+oriented 180 degrees opposite Battle Art's rendered yaw convention. Therefore
+a trainer logically facing south could still present their back to a player
+standing south of them.
+
+TEST8 applies the missing 180-degree model-forward yaw correction at the shared
+world transform. It covers all 19 generic NPC archetypes, Professor Oak, and
+Nurse Joy in every direction without duplicating or rebuilding their meshes.
+
+TEST7's motion-direction fallback, forward-only distance gait, and calmer
+cadence remain included. TEST6 unified skin and the full eye-atlas UV repair
+also remain included.
+
+Disable TEST7 or any earlier version before installing. Fully restart.

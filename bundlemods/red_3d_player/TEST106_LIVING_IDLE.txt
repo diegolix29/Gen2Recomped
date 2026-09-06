@@ -1,0 +1,10 @@
+TEST106 - LIVING BACKGROUND TRAINER IDLE
+
+Based on TEST104.
+- Keeps Ash at the proven 20.0 battle backoff.
+- Keeps relaxed arms-down stance.
+- Adds a very subtle ~3.4 second breathing / weight-shift loop.
+- Tiny head tracking and loose-arm follow movement.
+- No Pokemon placement, camera, smoke, ball, or battle-flow changes.
+
+Use alongside DRAMATIC_SHAPE-TEST105-ASH-BALL-ORIGIN-PROBE.

@@ -1,0 +1,30 @@
+TEST76 / COMPAT8 - REAL 3D TRAINER INTRO
+
+Built from the user's:
+red_3d_player v3.1.23 WEATHER428 NPC BATTLE COMPAT7 BACKSPRITE FIX
+
+Goal:
+Make the existing real selected 3D player battle bridge reliably replace the
+flat trainer backsprite in Dramatic Shape TEST75 battles.
+
+Why COMPAT7 could miss:
+During "Go! Pokemon!" the top game state is often a TextBox/message wrapper,
+not the BattleState itself. COMPAT7 only checked stack:top() for showPlayerBack,
+so the real 3D trainer could fail to inject even though the battle bridge existed.
+
+TEST76 / COMPAT8:
+- searches the whole game-state stack for the active BattleState
+- treats showPlayerBack as the authoritative trainer-intro signal
+- keeps the existing real skinned selected-character battle mesh
+- keeps the existing quick pointing/throw-style pose
+- keeps the real 3D shadow
+- suppresses the flat trainer backsprite without requiring dramaticShapeShot
+  on that exact wrapper
+- Pokemon models, TEST75 clean send-out, menus, effects and capture logic are
+  untouched
+
+Use with Dramatic Shape TEST75 Clean 3D Sendout (or a later descendant).
+Expected:
+battle intro shows the real selected 3D trainer on the player arena cell;
+the old 2D trainer back is gone; then the trainer yields to the clean 3D
+Pokemon send-out.

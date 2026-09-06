@@ -1,0 +1,13 @@
+TEST128 - GRIP FIT 4
+
+Observed in TEST127 screenshots:
+- Moving 0.20 -> 0.27 and -0.095 -> -0.125 moved the ball upward/away from the hand.
+- Reverse the calibration direction toward the palm.
+
+Changes from TEST127:
+- along: 0.27 -> 0.14
+- local up: -0.125 -> -0.055
+- side: 0.00 unchanged
+- size: 0.29 unchanged
+
+Still no flight. Pure grip-position calibration.

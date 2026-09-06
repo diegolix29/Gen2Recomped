@@ -1,0 +1,16 @@
+3D CHARACTER SELECTOR - TEST111 EXPLICIT OVERWORLD PLAYER
+
+Target: Gen1Recomp 0.2.53 with Battle Art TEST13.
+
+The Ash model already appearing in battles proves that the selected skin,
+assets, GPU mesh and Battle Art renderer services work. TEST111 leaves that
+working battle callback unchanged and repairs only overworld ownership:
+
+- Accepts Battle Art's explicit role/isPlayer fields.
+- Independently resolves the live player through Gen1Recomp's supported
+  mod.game.overworld.player service.
+- Normalizes the pose fields expected by the existing voxel matrix code.
+- Protects animation preparation and drawing as one operation, allowing a
+  clean stock-card fallback plus a useful log if a frame genuinely fails.
+
+Replace TEST110; do not enable both builds. Fully restart after installing.

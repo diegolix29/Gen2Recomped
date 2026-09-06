@@ -1,0 +1,11 @@
+TEST103 - ASH BACKGROUND PRESENCE (RED 3D PLAYER)
+
+- Builds directly from TEST102.
+- Pokemon placement remains completely untouched.
+- Ash remains on the proven backward trainer axis.
+- Ash battleBackoff increases from 7.00 to 14.00.
+- battleSideOffset remains 0.00.
+- No stance, smoke, persistence, enemy placement, camera, or battle-flow changes.
+
+Purpose: make Ash a distant background trainer presence rather than a visual focus, with generous clearance for large Pokemon such as Snorlax, Zapdos, and Charizard.
+Pair with Dramatic Shape TEST103.

@@ -1,0 +1,23 @@
+TEST116 - WRIST COCK
+
+TEST115 result:
+- wind-up arm geometry is finally clean
+- hand is up beside Red's face/head
+- shoulder / upper arm / elbow chain should NOT move
+
+Locked exactly from TEST115:
+- RArm X = -34 degrees
+- RArm Z = rest - 46 degrees
+- RForeArm Z = -70 degrees
+- shoulder neutral
+- no animation
+
+Only new change:
+- RHand X = -18 degrees
+
+Goal:
+Cock the wrist/hand backward slightly so the pose reads as a loaded Poké Ball
+throw rather than Red examining his hand.
+
+If this wrist direction is correct, preserve this pose as the wind-up endpoint
+and move next to neutral -> wind-up -> forward release animation.
