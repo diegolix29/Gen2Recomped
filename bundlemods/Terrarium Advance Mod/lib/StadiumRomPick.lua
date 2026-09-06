@@ -54,22 +54,19 @@ local Compat = V.require("EngineCompat")
 
 local StadiumRomPick = {}
 
-local function isGen2()
-  return type(StadiumInstall.gameGeneration) == "function"
-     and StadiumInstall.gameGeneration() == 2
-end
-
 StadiumRomPick.ID = ((V.mod and V.mod.id) or "STADIUM2_OVERWORLD_MODELS") .. ":stadiumRom"
 
+-- One label and one prompt on both games: StadiumInstall tries the Stadium 2
+-- cartridge FIRST regardless of which game asked (it is a superset of
+-- Stadium 1 -- see StadiumInstall's header), so either cartridge works from
+-- either game's row, and the row no longer needs to claim it only wants one
+-- of them.
 local function label()
-  return isGen2() and "STADIUM 2 ROM" or "STADIUM ROM"
+  return "STADIUM 1/2 ROM"
 end
 
 local function prompt()
-  if isGen2() then
-    return "Choose your Pokemon Stadium 2 ROM (Gen 2 models)"
-  end
-  return "Choose your Pokemon Stadium (US) 1.0 ROM"
+  return "Choose your Pokemon Stadium or Pokemon Stadium 2 (US) ROM"
 end
 
 -- Keep LABEL readable for older callers while the row/value functions below
@@ -218,7 +215,7 @@ function StadiumRomPick.import(game)
   if not StadiumRomPick.canDialog() then
     if game and game.stack then
       game.stack:push(StadiumScreen.newNote(game, label(),
-        isGen2() and "PUT POKEMON STADIUM 2 HERE:" or "PUT STADIUM US 1.0 HERE:",
+        "PUT STADIUM 1 OR 2 ROM HERE:",
         StadiumInstall.romHintFile()))
     end
     return false
@@ -240,6 +237,28 @@ function StadiumRomPick.import(game)
 
   local ok, beginErr = StadiumInstall.beginFrom(bytes, path)
   if not ok then return fail(tostring(beginErr)) end
+
+  -- StadiumInstall tries the Stadium 2 cartridge first regardless of which
+  -- game asked (it is a superset -- see its header), so route the FX import
+  -- to whichever cartridge it actually found (status.sourceGame), not to
+  -- whichever generation is currently running. StadiumInstall only feeds the
+  -- 3D player models; it never told StadiumBattleFXPort about the ROM, so
+  -- move FX, boss arenas, trainer portraits and the attack camera stayed off
+  -- even after a clean import. Desktop has no equivalent of StadiumRomMenu's
+  -- Android SAF hookup, so it has to happen here.
+  local okPort, StadiumBattleFXPort = pcall(V.require, "StadiumBattleFXPort")
+  if okPort and StadiumBattleFXPort then
+    if StadiumInstall.status.sourceGame == "Pokemon Stadium 2" then
+      if type(StadiumBattleFXPort.importStadium2) == "function" then
+        pcall(StadiumBattleFXPort.importStadium2, bytes)
+      end
+    else
+      if type(StadiumBattleFXPort.importStadium1) == "function" then
+        pcall(StadiumBattleFXPort.importStadium1, bytes)
+      end
+    end
+  end
+
   if game and game.stack then
     game.stack:push(StadiumScreen.new(game, true))
   end
@@ -313,6 +332,19 @@ function StadiumRomPick.poll(game)
   elseif not started then
     StadiumInstall.status.state = "failed"
     StadiumInstall.status.error = tostring(err)
+  else
+    local okPort, StadiumBattleFXPort = pcall(V.require, "StadiumBattleFXPort")
+    if okPort and StadiumBattleFXPort then
+      if StadiumInstall.status.sourceGame == "Pokemon Stadium 2" then
+        if type(StadiumBattleFXPort.importStadium2) == "function" then
+          pcall(StadiumBattleFXPort.importStadium2, bytes)
+        end
+      else
+        if type(StadiumBattleFXPort.importStadium1) == "function" then
+          pcall(StadiumBattleFXPort.importStadium1, bytes)
+        end
+      end
+    end
   end
   if okScreen and StadiumScreen and game and game.stack
       and type(StadiumScreen.new) == "function" then

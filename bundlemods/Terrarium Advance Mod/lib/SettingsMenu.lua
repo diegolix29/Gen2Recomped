@@ -123,10 +123,10 @@ local ROW_HELP = {
     .. "by a 3D camera, with the numbered rungs its angle in degrees.",
   ["pipeline:tiltshift"] = "A tilt-shift blur that sells the miniature-model "
     .. "look, sharp across the middle and softening above and below it.",
-  ["DRAMATIC_SHAPE:stadiumRom"] = "Imports the Pokemon Stadium (US) 1.0 "
-    .. "cartridge that 3D-BTL's STADIUM rungs need for Gen 1 Pokemon (1-151).",
-  ["DRAMATIC_SHAPE:stadium2Rom"] = "Imports the Pokemon Stadium 2 (US) cartridge "
-    .. "that 3D-BTL's STADIUM rungs need for Gen 2 Pokemon (152-251).",
+  ["DRAMATIC_SHAPE:stadiumRom"] = "Imports a Pokemon Stadium (US) 1.0 or "
+    .. "Pokemon Stadium 2 (US) cartridge -- either works on either game, and "
+    .. "a Stadium 2 cartridge builds the full set for both at once -- for "
+    .. "3D-BTL's STADIUM rungs.",
 }
 
 -- ------- what the menus are built from
@@ -280,21 +280,14 @@ function SettingsMenu.rows(catId, game)
     -- ROM should find the row where the mod begins, not two levels down a
     -- category they have no reason to open until it has worked. Last, because
     -- the categories are what the menu is FOR.
+    -- StadiumRomPick's row accepts either the Stadium (US) 1.0 cartridge or
+    -- the Stadium 2 (US) cartridge on EITHER game now (StadiumInstall tries
+    -- Stadium 2 first as the superset -- see its header) -- there is no
+    -- longer a separate Stadium2RomPick row to add beside it.
     local ok, importRow = pcall(function()
       return V.require("StadiumRomPick").row()
     end)
     if ok and importRow then out[#out + 1] = importRow end
-    
-    -- Stadium 2 ROM import (for Gen 2 Pokemon support)
-    local ok2, importRow2 = pcall(function()
-      return V.require("Stadium2RomPick").row()
-    end)
-    if ok2 and importRow2 then 
-      out[#out + 1] = importRow2 
-    else
-      -- Debug: Stadium 2 ROM pick failed to load
-      print("Stadium2RomPick.row() failed:", ok2, importRow2)
-    end
     
     -- Stadium 2 status display (informational only)
     local okS2, Stadium2Setting = pcall(V.require, "Stadium2Setting")
