@@ -31,12 +31,15 @@ StadiumWilds.KEY = "stadiumWilds"
 StadiumWilds.LABEL = "STADIUM WILDS"
 
 -- Persisted setting for stadium wilds toggle
+--
+-- StadiumInstall is gen-aware (StadiumInstall.gameGeneration()), so it alone
+-- reports availability correctly on both a Gen 1 (151-species) and a Gen 2
+-- (251-species) game -- Stadium2Install is no longer consulted here.
 StadiumWilds.setting = ModSetting.new(StadiumWilds.KEY, StadiumWilds.LABEL,
                                      { false, true }, { "OFF", "ON" })
   :setGate(function(value)
-    local ok1, install1 = pcall(V.require, "StadiumInstall")
-    local ok2, install2 = pcall(V.require, "Stadium2Install")
-    return (ok1 and install1 and install1.available()) or (ok2 and install2 and install2.available())
+    local ok, install = pcall(V.require, "StadiumInstall")
+    return ok and install and install.available()
   end)
 
 -- ------- Entity Management
@@ -47,14 +50,10 @@ function StadiumWilds.enabled()
     return false
   end
 
-  -- Check if Stadium 1 or Stadium 2 packs are available
+  -- Check if Stadium packs are available. StadiumInstall is gen-aware, so
+  -- this covers both the Gen 1 and Gen 2 model sets.
   local okInstall, StadiumInstall = pcall(V.require, "StadiumInstall")
-  local stadium1Available = okInstall and StadiumInstall and StadiumInstall.available()
-
-  local okInstall2, Stadium2Install = pcall(V.require, "Stadium2Install")
-  local stadium2Available = okInstall2 and Stadium2Install and Stadium2Install.available()
-
-  return stadium1Available or stadium2Available
+  return okInstall and StadiumInstall and StadiumInstall.available() and true or false
 end
 
 -- Enable or disable the feature

@@ -75,6 +75,18 @@ function StadiumRom2.open(bytes)
     return nil, ("not a compatible Pokemon Stadium 2 ROM (found %d model entries, %d animation entries, need at least %d)"):format(
       models and #models or 0, anims and #anims or 0, StadiumRom2.N_POKEMON + 1)
   end
+
+  -- Configure DSM7 format for Gen 2 packs (matches Voxel Ultimate)
+  self.N_MOVES = 251
+  self.CONTEXTS = {
+    "idle", "attack_default", "faint", "entrance", "reaction_169",
+    "reaction_170", "reaction_171", "reaction_172", "reaction_173",
+    "reaction_174", "struggle", "idle_alt", "faint_alt", "flinch",
+    "reaction_179", "reaction_180", "reaction_181", "reaction_182",
+    "entrance_alt", "idle_return",
+  }
+  self.PACK_MAGIC = "DSM7"
+
   return self
 end
 
@@ -285,16 +297,17 @@ end
 -- decoded clips each move and battle context selects -- lives in the
 -- dispatch archive above and is decoded by dispatchRows()/dispatchSelector().
 --
--- The .dsm pack format's move/context table is still Stadium 1's shape
--- (165 move slots + 20 context slots = 185 total; see StadiumBuild.CONTEXTS
--- and StadiumBuild.pack), inherited because the packer and both readers
--- share it. Stadium 2 has 251 real moves, so this is a safe, non-breaking
--- fix rather than the full one:
+-- The .dsm pack format now uses DSM7, which carries all 251 Stadium 2 moves
+-- plus 20 context slots (271 total; see StadiumBuild.CONTEXTS and
+-- StadiumBuild.pack). This matches Voxel Ultimate's implementation and
+-- includes full Stadium 2 feature support (sampler wrap modes, texture scale,
+-- sourceTextureMissing/callbackTextureRequired flags, effect="fire" flag,
+-- attachments table, and per-move/per-context effect-tag bytes).
 --
---   * DSM move slots 0..164 map 1:1 onto dispatch source rows 0..164 -- both
---     are "move N+1's entry, in move-ID order" -- so moves 1..165 get their
+--   * DSM7 move slots 0..250 map 1:1 onto dispatch source rows 0..250 -- both
+--     are "move N+1's entry, in move-ID order" -- so all 251 moves get their
 --     real clip.
---   * DSM's 20 context slots (165..184) map 1:1 by POSITION onto the
+--   * DSM7's 20 context slots (251..270) map 1:1 by POSITION onto the
 --     dispatch table's 20 context rows (251..270) -- both are "the fixed
 --     battle-context slots, in ROM record order". Only the display names
 --     differ: StadiumBuild.CONTEXTS spells them out using the naming this
@@ -303,10 +316,6 @@ end
 --     provable from Stadium 2's own call sites (entrance, hit, sleep,
 --     rom_context_NNN, ...). The row VALUES at each position come from the
 --     real table either way; only the label a human reads differs.
---   * Moves 166..251 (Gen 2-only moves) have no slot in this format yet and
---     keep the previous generic "attack" clip below. Widening the .dsm
---     layout to carry all 251 real move slots is the follow-up to this
---     patch, not part of it -- see STADIUM2_PORT_NOTES.md.
 --
 -- Any row this can't resolve (no dispatch table for that species, a
 -- corrupt/missing record, or a selector that lands outside the species'
@@ -319,28 +328,33 @@ function Rom:battleRows(species)
   local faint    = n > 2 and 2 or idle
   local entrance = n > 3 and 3 or idle
 
-  local rows = {}
-  for e = 0, 184 do rows[e] = { idle, -1 } end
-  for m = 0, StadiumRom.N_MOVES - 1 do rows[m] = { attack, -1 } end
+  local nMoves = self.N_MOVES or 251
+  local nContexts = StadiumRom2.DISPATCH_N_CONTEXTS
+  local totalRows = nMoves + nContexts
 
-  -- Context slots start at 165, in StadiumBuild.CONTEXTS order: idle,
+  local rows = {}
+  for e = 0, totalRows - 1 do rows[e] = { idle, -1 } end
+  for m = 0, nMoves - 1 do rows[m] = { attack, -1 } end
+
+  -- Context slots start at nMoves, in CONTEXTS order: idle,
   -- attack_default, faint, entrance, six reaction slots, struggle, idle_alt,
   -- faint_alt, flinch, four more reaction slots, entrance_alt, idle_return.
-  rows[165] = { idle, 0 }      -- idle
-  rows[166] = { attack, 0 }    -- attack_default
-  rows[167] = { faint, 0 }     -- faint
-  rows[168] = { entrance, 0 }  -- entrance
-  rows[176] = { idle, 0 }      -- idle_alt
-  rows[177] = { faint, 0 }     -- faint_alt
-  rows[183] = { entrance, 0 }  -- entrance_alt
-  rows[184] = { idle, 0 }      -- idle_return
+  local ctxBase = nMoves
+  rows[ctxBase + 0] = { idle, 0 }      -- idle
+  rows[ctxBase + 1] = { attack, 0 }    -- attack_default
+  rows[ctxBase + 2] = { faint, 0 }     -- faint
+  rows[ctxBase + 3] = { entrance, 0 }  -- entrance
+  rows[ctxBase + 11] = { idle, 0 }     -- idle_alt
+  rows[ctxBase + 12] = { faint, 0 }     -- faint_alt
+  rows[ctxBase + 18] = { entrance, 0 }  -- entrance_alt
+  rows[ctxBase + 19] = { idle, 0 }     -- idle_return
 
   -- Overlay the real per-species table wherever this format has room for it.
   local dispatchRows = self:dispatchRows(species)
   if dispatchRows then
     local base = dispatchSelectorBase(n, dispatchRows)
 
-    for e = 0, StadiumRom.N_MOVES - 1 do
+    for e = 0, nMoves - 1 do
       local raw = dispatchRows[e]
       if raw then
         local sel = dispatchSelector(raw[1], base)
@@ -348,16 +362,16 @@ function Rom:battleRows(species)
       end
     end
 
-    for i = 0, StadiumRom2.DISPATCH_N_CONTEXTS - 1 do
+    for i = 0, nContexts - 1 do
       local raw = dispatchRows[StadiumRom2.DISPATCH_N_MOVES + i]
       if raw then
         local sel = dispatchSelector(raw[1], base)
-        if sel ~= 0xFFFF and sel < n then rows[165 + i] = { sel, raw[2] } end
+        if sel ~= 0xFFFF and sel < n then rows[ctxBase + i] = { sel, raw[2] } end
       end
     end
   end
 
-  rows.n = 185
+  rows.n = totalRows
   return rows
 end
 

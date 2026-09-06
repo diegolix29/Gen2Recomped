@@ -48,12 +48,12 @@ function Stadium2Pack.unpack(bytes)
   end
 
   local magic = bytes:sub(1, 4)
-  if magic ~= "DSM3" and magic ~= "DSM4" and magic ~= "DSM5" then
-    return nil, "not a DSM3/DSM4/DSM5 file"
+  if magic ~= "DSM3" and magic ~= "DSM4" and magic ~= "DSM5" and magic ~= "DSM7" then
+    return nil, "not a DSM3/DSM4/DSM5/DSM7 file"
   end
-  -- DSM5 carries Stadium 2's real 251-move dispatch table; DSM3/DSM4 predate
+  -- DSM5/DSM7 carry Stadium 2's real 251-move dispatch table; DSM3/DSM4 predate
   -- it and are always the original 165-move Stadium 1 shape.
-  local nMoves = (magic == "DSM4") and 251 or 165
+  local nMoves = (magic == "DSM4" or magic == "DSM5" or magic == "DSM7") and 251 or 165
 
   local pos = 5
 

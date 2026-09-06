@@ -158,7 +158,7 @@ StadiumPack.CONTEXT = {
 StadiumPack.SLOT = {}
 for i, name in ipairs(StadiumPack.CONTEXT) do StadiumPack.SLOT[name] = i end
 
-StadiumPack.N_MOVES = 165
+StadiumPack.N_MOVES = 251
 StadiumPack.NONE = 0xFFFF
 
 -- The frame rate every animation in the set is authored at
@@ -226,7 +226,7 @@ end
 
 -- ------- the load
 
-local function readHeader(s, p, model)
+local function readHeader(s, p, model, nMoves)
   model.species, p = u16(s, p)
   model.boneCount, p = u16(s, p)
   model.primCount, p = u16(s, p)
@@ -245,8 +245,8 @@ local function readHeader(s, p, model)
   model.radius, p = f32(s, p)
 
   local moveAnim, moveAux, ctx = {}, {}, {}
-  for i = 1, StadiumPack.N_MOVES do moveAnim[i], p = u16(s, p) end
-  for i = 1, StadiumPack.N_MOVES do moveAux[i], p = i16(s, p) end
+  for i = 1, nMoves do moveAnim[i], p = u16(s, p) end
+  for i = 1, nMoves do moveAux[i], p = i16(s, p) end
   for i = 1, #StadiumPack.CONTEXT do ctx[i], p = u16(s, p) end
   model.moveAnim, model.moveAux, model.ctx = moveAnim, moveAux, ctx
   return p
@@ -908,12 +908,14 @@ function StadiumPack.load(species, shiny)
         error(err or "DSM4 unpack failed", 0)
       end
       return m
-    elseif magic == "DSM3" then
-      -- Use DSM3 unpacker for Stadium 1
+    elseif magic == "DSM3" or magic == "DSM7" then
+      -- Use DSM3/DSM7 unpacker (DSM7 has same structure, just more moves)
       local m = { bytes = bytes }
       local p = 5
+      -- Determine move count from magic: DSM3 = 165 moves, DSM7 = 251 moves
+      local nMoves = (magic == "DSM7") and 251 or 165
       if not readHeader then error("readHeader is nil", 0) end
-      p = readHeader(bytes, p, m)
+      p = readHeader(bytes, p, m, nMoves)
       if not readBones then error("readBones is nil", 0) end
       p = readBones(bytes, p, m)
       if not readPrims then error("readPrims is nil", 0) end
@@ -926,7 +928,7 @@ function StadiumPack.load(species, shiny)
       readAux(bytes, p, m)
       return m
     else
-      error("not a DSM3/DSM4 pack (magic: " .. magic .. ") -- delete it and let the mod rebuild it", 0)
+      error("not a DSM3/DSM4/DSM7 pack (magic: " .. magic .. ") -- delete it and let the mod rebuild it", 0)
     end
   end)
   if not ok then

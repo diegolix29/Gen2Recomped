@@ -509,11 +509,13 @@ end
 
 -- ------- the pack
 
--- `magic` selects the on-disk move-table width: "DSM3" is Stadium 1's
--- original 165-move format (also what Stadium 2 wrote before its real
--- 251-move dispatch table was decoded); "DSM5" is Stadium 2's full-width
--- format, #moveRows == 251. Readers dispatch the move-table loop count off
--- this same magic, so old DSM3 caches keep reading correctly unchanged.
+-- `magic` selects the on-disk move-table width: "DSM7" is the current
+-- format with full Stadium 2 support (251 moves + 20 contexts, includes
+-- sampler wrap modes, texture scale, sourceTextureMissing/callbackTextureRequired
+-- flags, effect="fire" flag, attachments table, and per-move/per-context
+-- effect-tag bytes). "DSM3" was Stadium 1's original 165-move format.
+-- Readers dispatch the move-table loop count off this magic, so old DSM3
+-- caches would keep reading correctly unchanged if they still existed.
 function StadiumBuild.pack(data, species, moveRows, ctx, magic)
   local w = newWriter()
   local bones, prims = data.bones, data.prims
@@ -525,7 +527,7 @@ function StadiumBuild.pack(data, species, moveRows, ctx, magic)
   local idle = (idleIndex ~= NONE16) and anims[idleIndex + 1] or nil
   local static = idleIsBroken(data, idle)
 
-  w:raw(magic or "DSM3")
+  w:raw(magic or "DSM7")
   w:u16(species)
   w:u16(#bones)
   w:u16(#prims)
