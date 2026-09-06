@@ -40,27 +40,16 @@
 -- garbage), the count catches a build that was interrupted half way, and the
 -- md5 catches the player swapping the ROM for a different revision.
 
--- ------- Gen 1 vs Gen 2, and Stadium 2 as the shared source
+-- ------- Gen 1 vs Gen 2
 --
 -- Red/Blue/Yellow's 151 Pokemon come from a Pokemon Stadium (US) 1.0 ROM via
 -- StadiumRom. Gold/Silver/Crystal's 251 come from a Pokemon Stadium 2 (US)
 -- ROM via StadiumRom2 -- a different cartridge, a different archive layout,
 -- but the SAME .dsm pack format and the SAME StadiumBuild pipeline once the
--- reader hands it a model.
---
--- Stadium 2's archive is a SUPERSET of Stadium 1's: it carries the original
--- 151 Kanto models as well as its own 100 Johto ones. So beginFrom() no
--- longer picks a reader from which GAME is running -- it tries the Stadium 2
--- reader FIRST, on either game, and only falls back to the Stadium 1 reader
--- for a cartridge StadiumRom2 does not recognise. A Gen 1 game that imports
--- a Stadium 2 ROM gets a build that already has everything a Gen 2 game
--- would later need too, in the SAME cache, under the SAME marker -- nothing
--- to import twice, and nothing gen-specific about which cartridge either
--- game is allowed to hand it.
---
--- What stays gen-aware is how many species THIS game actually NEEDS present
--- (targetCount(), used by ready()/usable() below) -- a Gen 1 game is content
--- with 151 of a 251-species cache, a Gen 2 game needs the full 251.
+-- reader hands it a model. This file used to only know about the first of
+-- those; everything below marked "gen-aware" is what makes it pick the right
+-- reader, the right species count and the right cartridge name instead of
+-- silently building 151 Gen 1 packs no matter which game is running.
 --
 -- the mod namespace (see main.lua): V.require loads a sibling module
 local V = ...
@@ -87,10 +76,7 @@ local function gameGeneration()
   return 1
 end
 
--- How many species a COMPLETE set means for THIS game -- what "ready" and
--- "usable" check against. This is deliberately NOT how many get BUILT: see
--- the header above. A Gen 1 game only needs 151 of however many a cache
--- actually holds to count as complete.
+-- How many species a COMPLETE set means for this generation.
 local function targetCount()
   return gameGeneration() == 2 and 251 or 151
 end
@@ -139,19 +125,15 @@ StadiumInstall.COUNT = targetCount()
 -- them will get wrong, and the failure is silent -- the rungs are simply not
 -- on the row.
 --
--- Not gen-based any more: both games try `stadium2.*` first (the superset --
--- see the header) and `stadium.*` second, then fall back to the historic
--- `baserom.*` name so an existing setup is not disturbed. Whichever one is
--- actually a recognisable cartridge gets picked out at build time by
--- beginFrom(), not by which name it was dropped under.
+-- Gen-aware: a Gen 2 game looks for `stadium2.*` first (so both cartridges
+-- can sit in the same folder without colliding), then falls back to the
+-- historic `baserom.*` name so an existing Gen 1 setup is not disturbed.
 local function namedRoms()
+  local stem = (gameGeneration() == 2) and "stadium2" or "stadium"
   return {
-    StadiumInstall.ROM_DIR .. "/stadium2.z64",
-    StadiumInstall.ROM_DIR .. "/stadium2.n64",
-    StadiumInstall.ROM_DIR .. "/stadium2.v64",
-    StadiumInstall.ROM_DIR .. "/stadium.z64",
-    StadiumInstall.ROM_DIR .. "/stadium.n64",
-    StadiumInstall.ROM_DIR .. "/stadium.v64",
+    StadiumInstall.ROM_DIR .. "/" .. stem .. ".z64",
+    StadiumInstall.ROM_DIR .. "/" .. stem .. ".n64",
+    StadiumInstall.ROM_DIR .. "/" .. stem .. ".v64",
     StadiumInstall.ROM_DIR .. "/baserom.z64",
     StadiumInstall.ROM_DIR .. "/baserom.n64",
     StadiumInstall.ROM_DIR .. "/baserom.v64",
@@ -255,12 +237,8 @@ local readyCache = nil
 function StadiumInstall.ready()
   if readyCache ~= nil then return readyCache end
   local m = readMarker()
-  -- >= rather than ==: the cache can hold MORE than this game needs (a
-  -- Stadium 2 import on a Gen 1 game writes 251 species for a game that only
-  -- needs 151 of them), and that is still a complete set for this game, not
-  -- a mismatch to rebuild away.
   readyCache = (m ~= nil and m.format == StadiumInstall.FORMAT
-                and (m.count or 0) >= StadiumInstall.COUNT
+                and m.count == StadiumInstall.COUNT
                 and m.rev == StadiumInstall.REV) and true or false
   return readyCache
 end
@@ -293,9 +271,8 @@ end
 -- Losing the recolour until a rebuild is a blemish; losing the mode is not.
 function StadiumInstall.usable()
   local m = readMarker()
-  -- >= for the same reason as ready() above.
   return (m ~= nil and m.format == StadiumInstall.FORMAT
-          and (m.count or 0) >= StadiumInstall.COUNT) and true or false
+          and m.count == StadiumInstall.COUNT) and true or false
 end
 
 -- Whether the STADIUM rungs can be offered at all: the packs have been built
@@ -389,8 +366,9 @@ end
 -- love.filesystem cannot see and was read with io.open.
 --
 -- The two entry points share everything from here down on purpose: an
--- imported cartridge and a dropped one go through the same reader
--- selection, the same build, the same marker.
+-- imported cartridge and a dropped one produce the same 151 files, the same
+-- marker and the same md5, so there is exactly one build in this mod and no
+-- second one to keep in step.
 --
 -- `label` is only ever used to say WHICH file a complaint is about.
 function StadiumInstall.beginFrom(bytes, label)
@@ -399,39 +377,25 @@ function StadiumInstall.beginFrom(bytes, label)
   if type(bytes) ~= "string" or #bytes == 0 then return false, "empty file" end
 
   local StadiumBuild = V.require("StadiumBuild")
-  StadiumInstall.COUNT = targetCount()
-  status.wrongVersion = false
-
-  -- ------- which cartridge this actually is, tried on EITHER game
-  --
-  -- Stadium 2 is tried FIRST, regardless of which game is running (see the
-  -- header): its archive is a superset of Stadium 1's, so a cartridge it
-  -- recognises builds the full 251 species even for a Gen 1 game, and that
-  -- one cache then covers a later Gen 2 game too. Only a file StadiumRom2
-  -- does not recognise falls through to the Stadium 1 reader, which can only
-  -- ever produce the 151.
-  local RomReader2 = V.require("StadiumRom2")
-  local RomReader1 = V.require("StadiumRom")
-
-  local rom, wanted, RomReader, sourceGame
-  local rom2 = RomReader2.open(bytes)
-  local models2 = rom2 and rom2:modelCount()
-  if rom2 and models2 and models2 >= 251 then
-    rom, wanted, RomReader, sourceGame = rom2, 251, RomReader2, "Pokemon Stadium 2"
-  else
-    local rom1, err1 = RomReader1.open(bytes)
-    local models1 = rom1 and rom1:modelCount()
-    if rom1 and models1 and models1 >= 151 then
-      rom, wanted, RomReader, sourceGame = rom1, 151, RomReader1, "Pokemon Stadium"
-    else
-      return false,
-        "needs a Pokemon Stadium (US) 1.0 or Pokemon Stadium 2 (US) ROM"
-    end
-  end
-
+  local gen = gameGeneration()
+  local wanted = targetCount()
+  StadiumInstall.COUNT = wanted
   status.total = wanted
-  status.sourceGame = sourceGame
+  status.wrongVersion = false
+  status.sourceGame = (gen == 2) and "Pokemon Stadium 2" or "Pokemon Stadium"
 
+  -- Gen-aware: Gold/Silver/Crystal reads its 251 models through StadiumRom2
+  -- (a different archive layout, the same downstream .dsm format); every
+  -- other generation keeps using the original Stadium 1 reader unchanged.
+  local RomReader = (gen == 2) and V.require("StadiumRom2") or V.require("StadiumRom")
+
+  local rom, err = RomReader.open(bytes)
+  if not rom then
+    if gen == 2 then
+      return false, "Gold/Silver/Crystal needs a Pokemon Stadium 2 ROM: " .. tostring(err)
+    end
+    return false, tostring(err)
+  end
   if not rom:isExpectedUS() then
     -- Built anyway rather than refused: a dump can differ from the reference
     -- for reasons that do not move a single model offset (a byte-order
@@ -440,42 +404,50 @@ function StadiumInstall.beginFrom(bytes, label)
     -- promised, so it is said loudly, with the md5 that IS expected so the
     -- player can check their own file against it.
     status.wrongVersion = true
-    if V.mod and V.mod.log then
-      V.mod.log:warn("%s: %s is md5 %s -- canonical %s (US) is md5 %s. "
-                     .. "Building anyway, but the models may be wrong or "
-                     .. "fail to build.",
-                     sourceGame == "Pokemon Stadium 2" and "stadium2" or "stadium",
+    if gen == 2 then
+      V.mod.log:warn("stadium2: %s is md5 %s -- canonical Pokemon Stadium 2 US "
+                     .. "is md5 %s. Building anyway, but the models may be "
+                     .. "wrong or fail to build.",
                      tostring(label or "the ROM"), tostring(rom:md5()),
-                     sourceGame, tostring(RomReader.US_MD5))
+                     tostring(RomReader.US_MD5))
+    else
+      V.mod.log:warn("stadium: %s is md5 %s -- the model offsets are keyed to "
+                     .. "Pokemon Stadium (US) 1.0, which is md5 %s. Building "
+                     .. "anyway, but the models may be wrong or fail to build.",
+                     tostring(label or "the ROM"), tostring(rom:md5()),
+                     tostring(RomReader.US_MD5))
     end
   end
 
   -- ------- refuse a ROM with no models in it, BEFORE anything is written
   --
-  -- The reader selection above already required `wanted` models just to be
-  -- picked, so this is now a belt-and-braces re-check rather than the first
-  -- line of defence -- but the consequence it guards against is unchanged.
-  -- An empty build is indistinguishable from a finished one further down:
-  -- `job.total` is clamped to the count, `step` completes on the first call
-  -- with nothing attempted and therefore nothing FAILED, and the marker gets
-  -- written saying the format with a zero count.
+  -- A file picker invites the wrong file -- most obviously the Game Boy
+  -- cartridge the player already imported once -- and the reader's answer to
+  -- one is a model count of zero. That has to be caught HERE rather than
+  -- allowed to become an empty build, because an empty build is
+  -- indistinguishable from a finished one further down: `job.total` is
+  -- clamped to the count, `step` completes on the first call with nothing
+  -- attempted and therefore nothing FAILED, and the marker gets written
+  -- saying `DSM3 0`.
   --
   -- On a fresh machine that is merely a lie on the loading screen -- READY,
   -- with no models. On one that already HAD them it is worse: the marker is
-  -- the only thing that makes files on disk count as installed, so
+  -- the only thing that makes 151 files on disk count as installed, so
   -- overwriting it with a zero uninstalls a good set and the STADIUM rungs
   -- vanish off the row. Nothing below this line runs for a file that cannot
   -- possibly produce a build.
   local models = rom:modelCount()
   if not (models and models >= wanted) then
-    return false,
-      ("needs the full %d-Pokemon model archive"):format(wanted)
+    if gen == 2 then
+      return false, "needs Pokemon Stadium 2 with the full 251-Pokemon model archive"
+    end
+    return false, "needs Pokemon Stadium US 1.0"
   end
 
   pcall(f.createDirectory, StadiumInstall.DIR)
   job = StadiumBuild.job(rom, writePack, wanted)
   job.md5 = rom:md5()
-  job.sourceGame = sourceGame
+  job.sourceGame = status.sourceGame
   status.state = "building"
   status.done = 0
   status.total = job.total
@@ -514,14 +486,13 @@ function StadiumInstall.step()
     if not wrote then
       status.state = "failed"
       -- EVERY species failing is not a bad build, it is the wrong file: the
-      -- offsets the reader walks are keyed to whichever cartridge beginFrom
-      -- selected, so a different game -- or the Game Boy cartridge the
-      -- player already imported once, which is the mistake a file picker
-      -- invites -- misses on all of them rather than on a few. Worth telling
-      -- apart, because "0 of N models were built" reads as a broken mod and
-      -- this reads as a wrong click.
+      -- offsets the reader walks are Pokemon Stadium's, so a different game
+      -- -- or the Game Boy cartridge the player already imported once, which
+      -- is the mistake a file picker invites -- misses on all 151 rather than
+      -- on a few. Worth telling apart, because "0 of 151 models were built"
+      -- reads as a broken mod and this reads as a wrong click.
       if #job.failed >= job.total then
-        if job.sourceGame == "Pokemon Stadium 2" then
+        if gameGeneration() == 2 then
           status.error = "needs a compatible Pokemon Stadium 2 ROM / GS model+animation archives"
         else
           status.error = "needs Pokemon Stadium US 1.0"

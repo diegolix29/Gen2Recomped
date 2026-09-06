@@ -22,12 +22,18 @@ local PENDING_FLAG = "stadium_overworld_picker_pending.flag"
 local BATTLE_BACKGROUND_PENDING_FLAG = "stadium2_battle_background_picker_pending.flag"
 local CUSTOM_PLAYER_PENDING_FLAG = "stadium2_custom_player_sprite_picker_pending.flag"
 
+local function isGen2()
+  local ok, install = pcall(V.require, "StadiumInstall")
+  return ok and type(install) == "table"
+     and type(install.gameGeneration) == "function"
+     and install.gameGeneration() == 2
+end
+
 local function romLabel()
-  -- One label on both games now: StadiumInstall tries the Stadium 2
-  -- cartridge FIRST regardless of which game asked (it is the superset --
-  -- see StadiumInstall's header), so a Gen 1 game can import either
-  -- cartridge here exactly as a Gen 2 game already could.
-  return "STADIUM 1 / 2 ROM FILE"
+  -- Gen-2 builds use one Android document-picker row for both private sources:
+  -- Stadium 2 feeds the 001-251 model/world importer; Stadium 1 USA v1.0 feeds
+  -- StadiumBattleFX plus the locally decoded announcer voice cache.
+  return isGen2() and "STADIUM 1 / 2 ROM FILE" or "STADIUM ROM FILE"
 end
 
 -- Android compatibility note:
