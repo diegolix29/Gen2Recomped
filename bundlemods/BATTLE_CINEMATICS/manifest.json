@@ -1,0 +1,26 @@
+{
+  "id": "BATTLE_CINEMATICS",
+  "name": "Battle Cinematics 0.7.2 - TEST2 0.2.53 Compatibility",
+  "version": "0.7.2-perf2-compat253",
+  "api": 2,
+  "entry": "main.lua",
+  "profile": "content",
+  "category": "GRAPHICS",
+  "game_version": "0.0.0-dev || >=0.1.37 <2.0.0",
+  "priority": 120,
+  "dependencies": [],
+  "optional_dependencies": [
+    "DRAMATIC_SHAPE",
+    "BATTLE_ART_VOXEL_FORK"
+  ],
+  "conflicts": [],
+  "permissions": [
+    "engine_internals"
+  ],
+  "affects_link": false,
+  "description": "Battle Cinematics 0.7.2 choreography ported to the Gen1Recomp 0.2.53 Mod API 2 input sandbox.",
+  "github": "ltzLegend/Legendary-Battle-Cinematics-Compat",
+  "games": [
+    "gen1"
+  ]
+}
