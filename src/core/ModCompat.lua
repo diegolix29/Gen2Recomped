@@ -61,7 +61,10 @@ ModCompat.ALIASES = {
   ["src.core.gen2.Save"] = "src.core.SaveData",
 
   -- battle
+  ["src.battle.gen2.Battle"] = "src.battle.BattleState",
   ["src.battle.gen2.Catching"] = "src.battle.Catching",
+  ["src.battle.gen2.Damage"] = "src.battle.Damage",
+  ["src.battle.gen2.Effects"] = "src.battle.MoveEffects",
   ["src.battle.gen2.Mon"] = "src.pokemon.Pokemon",
   ["src.ui.gen2.BattleState"] = "src.battle.BattleState",
 

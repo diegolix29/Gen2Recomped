@@ -651,6 +651,18 @@ function ModImports.api(manifest, read)
       local entry = byId[id]
       return entry and entry.file or nil
     end,
+    info = function(_, id)
+      local entry = byId[id]
+      if not entry then return nil end
+      local f = fs()
+      local path = ModImports.pathFor(manifest, entry)
+      if not (f and path) then return nil end
+      local info = f.getInfo(path)
+      if not info then return nil end
+      return { id = entry.id, name = entry.name, file = entry.file,
+               root = entry.root, format = entry.format,
+               size = entry.size, type = info.type }
+    end,
     read = function(_, id)
       local entry = byId[id]
       if not entry then return nil end
