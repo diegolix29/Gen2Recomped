@@ -5,6 +5,7 @@ local Logger = require("src.core.Logger")
 -- inside that window.  Requiring it here resolves it once, at load, with no
 -- mod in scope, so a mod is never blamed for an engine require it did not make.
 local ModImports = require("src.mods.ModImports")
+local ImportAccess = require("src.mods.ImportAccess")
 local SaveData = require("src.core.SaveData")
 local Data = require("src.core.Data")
 local Version = require("src.core.Version")
@@ -566,6 +567,10 @@ function Loader:_api(mod)
     id = modId,
     version = mod.manifest.version,
     path = mod.path,
+    -- Fixed at Loader construction and copied as plain data: a sandboxed
+    -- entry chunk can decide whether to register developer-only diagnostics
+    -- without receiving the process environment or the loader itself.
+    developer = loader.dev == true,
     -- a deep copy: what a mod does to its own view never reaches the loader
     manifest = Merge.deepCopy(mod.manifest),
     content = {},
@@ -711,18 +716,58 @@ function Loader:_api(mod)
       loader.imageCache[full] = image
       return image
     end,
+    list = function(_, relative)
+      local dir = mod.path .. "/" .. relative
+      local fs = loader.fs
+      if not (fs and fs.getDirectoryItems) then return {} end
+      local items = fs.getDirectoryItems(dir) or {}
+      local out = {}
+      for i = 1, #items do out[i] = items[i] end
+      table.sort(out)
+      return out
+    end,
+    info = function(_, relative)
+      local path = mod.path .. "/" .. relative
+      local fs = loader.fs
+      if not (fs and fs.getInfo) then return nil end
+      local info = fs.getInfo(path)
+      if not info then return nil end
+      return { type = info.type, size = info.size }
+    end,
   }, { __index = api.content })
   function api:read(relative)
     local path = self.path .. "/" .. relative
     return loader.fs.read(path)
   end
+  -- mod.info returns file info for a path inside this mod (type, size)
+  function api:info(relative)
+    local path = self.path .. "/" .. relative
+    local fs = loader.fs
+    if not (fs and fs.getInfo) then return nil end
+    local info = fs.getInfo(path)
+    if not info then return nil end
+    return { type = info.type, size = info.size }
+  end
+  -- mod.list returns a sorted list of files/directories in a path inside this mod
+  function api:list(relative)
+    local dir = self.path .. "/" .. relative
+    local fs = loader.fs
+    if not (fs and fs.getDirectoryItems) then return {} end
+    local items = fs.getDirectoryItems(dir) or {}
+    local out = {}
+    for i = 1, #items do out[i] = items[i] end
+    table.sort(out)
+    return out
+  end
   -- `required_imports`: base files the player supplies (see
   -- src/mods/ModImports.lua).  They are written into the mod's own folder, so
   -- mod:read already reaches them -- this is the polite way to ask whether one
   -- has arrived before starting a long extract.
-  api.imports = ModImports.api(mod.manifest, function(rel)
-    return loader.fs.read(mod.path .. "/" .. rel)
-  end)
+  local importApi, installCache = ImportAccess.new(mod.manifest, loader.fs)
+  api.imports = importApi
+  -- Installation-scoped generated data, independent from Pokémon save slots.
+  -- This is where ROM-derived caches belong; mod.storage remains playthrough-scoped.
+  api.cache = installCache
   -- mod.world / mod.game / mod.storage all materialize on first touch, for
   -- the same reason: a headless load must not drag the world stack in, and
   -- the Game the facade acts on is still being wired when the entry chunk
