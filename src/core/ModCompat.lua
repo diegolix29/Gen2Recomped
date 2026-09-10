@@ -71,6 +71,7 @@ ModCompat.ALIASES = {
   -- menus.  The Gold port names two of these differently rather than
   -- namespacing them, so both spellings land on the one implementation.
   ["src.ui.gen2.StartMenu"] = "src.ui.StartMenu",
+  ["src.ui.Gen2StartMenu"] = "src.ui.StartMenu",
   ["src.ui.gen2.OptionsMenu"] = "src.ui.OptionsMenu",
   ["src.ui.gen2.PartyMenu"] = "src.ui.PartyMenu",
   ["src.ui.gen2.PokedexMenu"] = "src.ui.PokedexMenu",
