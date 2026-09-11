@@ -10905,8 +10905,28 @@ function OverworldState:drawWorld()
     -- cry with no bubble still pauses the world for its beat)
     if self.emote.bubble == false then return end
     local npc = self.emote.npc
-    local ex = npc.px - cam.x + 4
-    local ey = npc.py - cam.y - 14
+    -- WHERE IT HANGS, which the cartridge states outright.
+    --
+    -- Reported from play: the bubble "should appear above the trainers head".
+    -- It was four pixels right of them and six low, which on a 16x32 walker
+    -- put it across the face rather than over it.
+    --
+    -- The icon's own sprite callback (0B4724) copies the owner's position
+    -- every frame and offsets it by exactly one thing:
+    --
+    --     icon->x  = owner->x
+    --     icon->y  = owner->y - 16
+    --
+    -- and a GBA sprite's x/y is its CENTRE (the corner comes from
+    -- centerToCornerVec), so this is "the icon's centre sits sixteen pixels
+    -- above the owner's" -- which is a different top-left offset for a 16x16
+    -- object than for a 16x32 one, and is why one number could never be right
+    -- for both.  Stated as centres it falls out the same for either: the x
+    -- offsets cancel whatever the sprite's width, and the y is the owner's
+    -- half-height less the icon's eight plus the sixteen.
+    local half = math.floor(((npc.sprite and npc.sprite.tileH) or 16) / 2)
+    local ex = npc.px - cam.x
+    local ey = npc.py - cam.y - 12 - half
     local bubble = Game.data.field.emotionBubbles
     local drawn = false
 

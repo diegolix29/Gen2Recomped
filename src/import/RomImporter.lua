@@ -872,7 +872,7 @@ end
 -- literal pool, and it CLOSES: the PC's multichoice had already found the
 -- same number by a completely different route, as the gate on its HALL OF
 -- FAME row.  constants gain gen3GameClear.
-local CACHE_FORMAT = "rom-cache-v255:"
+local CACHE_FORMAT = "rom-cache-v258:"
 -- The completion marker is written under each version's cache prefix
 -- (rom-cache.complete for Red, blue/rom-cache.complete for Blue).
 local MARKER_PATH = "rom-cache.complete"

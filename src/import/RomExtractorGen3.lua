@@ -217,8 +217,12 @@ end
 -- $53 PK, $54 MN, $55 PO, $56 Ké, $57 BL and $58 OC are all multi-character;
 -- $59 K follows $58 and is the last letter of the same word.  Neither kind
 -- may ever be the answer to "which byte spells K".
-function RomExtractorGen3:charmapReverse()
-  if self._charmapReverse then return self._charmapReverse end
+-- WHICH CODES ARE LIGATURES, by the rule stated above, worked out once and
+-- used by both of the places that must not treat one as an ordinary letter:
+-- the reverse map that SPELLS words, and the font charmap the renderer
+-- MATCHES text against.
+function RomExtractorGen3:ligatureCodes()
+  if self._ligatureCodes then return self._ligatureCodes end
   local map = self:charmap()
   local ligature = {}
   for code, glyph in pairs(map) do
@@ -237,6 +241,14 @@ function RomExtractorGen3:charmapReverse()
       end
     end
   end
+  self._ligatureCodes = ligature
+  return ligature
+end
+
+function RomExtractorGen3:charmapReverse()
+  if self._charmapReverse then return self._charmapReverse end
+  local map = self:charmap()
+  local ligature = self:ligatureCodes()
   -- ONE CHARACTER PER BYTE, and ligatures out entirely.  The callers spell
   -- ordinary English words to search for -- ABLE, ATTACK, the keyboard's
   -- alphabet -- and the cartridge spells those with ordinary letters.  A map
@@ -2885,6 +2897,82 @@ function RomExtractorGen3:extractConstants()
                   turners)
     end
 
+    -- ------------------------------------------------- THE FIXED CIRCUITS
+    --
+    -- Reported from play: PEEKO, Mr. Briney's wingull, "is supposed to be
+    -- chasing him around his table in his house like it does in the rom".
+    -- She stood still, and so did every other object in Hoenn that walks a
+    -- set route: the port knew "wanders", "turns" and "rotates" and had no
+    -- word for "walks these four directions, in this order, forever".
+    --
+    -- The cartridge states the order outright.  Each of these types has a
+    -- step callback whose literal pool names a FOUR-BYTE TABLE holding one
+    -- permutation of the four direction constants -- DIR_SOUTH 1, DIR_NORTH
+    -- 2, DIR_WEST 3, DIR_EAST 4 -- and walking one tile in each in turn IS
+    -- the behaviour.  So the order is read off that table rather than taken
+    -- from a name, which matters here more than usual: the twenty-five of
+    -- them differ ONLY in that order, and a list written down by hand would
+    -- be twenty-five chances to put a right turn where a left belongs.
+    --
+    -- FOUND BY SHAPE, through the same callback chain the invisible type is
+    -- found through: type -> sub-callback -> step table -> step function ->
+    -- its pool.  A permutation is a strong shape -- four bytes, each of 1..4,
+    -- none repeated -- and the closure is the count: twenty-five types reach
+    -- one and fifty-six do not, and the twenty-four from type 29 up are
+    -- twenty-four DIFFERENT permutations.
+    do
+      local DIRS = { "down", "up", "left", "right" }
+      local function dirTable(at)
+        local seen, out = {}, {}
+        for i = 0, 3 do
+          local ok, b = pcall(self.rom.u8, self.rom, at + i)
+          if not (ok and b and b >= 1 and b <= 4 and not seen[b]) then return nil end
+          seen[b] = true
+          out[i + 1] = DIRS[b]
+        end
+        return out
+      end
+      local sequenced = 0
+      for m = 0, moveCount - 1 do
+        local okCb, raw = pcall(self.rom.u32, self.rom, callbacksAt + m * 4)
+        local cb = okCb and RomExtractorGen3.romOffset(raw - (raw % 2)) or nil
+        local seq = nil
+        if cb then
+          for _, sub in ipairs(self:poolWords(cb, 24)) do
+            if sub % 2 == 1 then
+              local subAt = RomExtractorGen3.romOffset(sub - 1)
+              for _, tbl in ipairs(subAt and self:poolWords(subAt, 24) or {}) do
+                local tblAt = (tbl % 2 == 0) and RomExtractorGen3.romOffset(tbl) or nil
+                for k = 0, 3 do
+                  local okE, e = pcall(self.rom.u32, self.rom,
+                                       (tblAt or 0) + k * 4)
+                  if not (tblAt and okE and e and e % 2 == 1) then break end
+                  local stepAt = RomExtractorGen3.romOffset(e - 1)
+                  -- a TIGHT pool window on purpose: a wide one runs past the
+                  -- end of the step function and reads the NEXT type's table,
+                  -- which silently gives five types the same circuit
+                  for _, word in ipairs(stepAt and self:poolWords(stepAt, 12) or {}) do
+                    local at = (word % 2 == 0) and RomExtractorGen3.romOffset(word) or nil
+                    if at and not seq then seq = dirTable(at) end
+                  end
+                end
+              end
+            end
+          end
+        end
+        if seq then
+          moves[m].sequence = seq
+          sequenced = sequenced + 1
+        end
+      end
+      Logger.info("Gen3 movement types: %d walk a fixed circuit -- the four "
+                    .. "directions in the order their own callback names "
+                    .. "(type 29 is %s)",
+                  sequenced,
+                  moves[29] and moves[29].sequence
+                    and table.concat(moves[29].sequence, " ") or "not one")
+    end
+
     -- index 0 is a real movement type, so the table is written as a map
     -- rather than an array: a Lua array starting at 0 loses its first entry
     -- to every `ipairs` that ever touches it.
@@ -5297,14 +5385,42 @@ function RomExtractorGen3:extractFont()
   -- rows the engine matches text against.  It is the SAME table the text
   -- stage decoded every string in the cartridge with, so a character that
   -- came out of one is guaranteed to have a glyph in the other.
-  local charmap = {}
+  --
+  -- ...MINUS THE LIGATURES, and this is the whole of a reported bug.
+  --
+  -- Reported from play: "the letters po when in sequence seem to be causing
+  -- the text to change to the smaller letter symbols for poke in Pokemon
+  -- names".  Six of this cartridge's glyphs draw TWO letters in one cell --
+  -- $53 PK, $54 MN, $55 PO, $56 Ke, $57 BL, $58 OC -- and the renderer
+  -- matches charmap sequences against the text it is given, longest first.
+  -- So every ordinary "PO" in the game became one small-caps tile: POKeMON
+  -- came out as three of them, and so did every BLOCK, every MN, every PK.
+  --
+  -- A ligature is for READING the cartridge's own bytes, never for spelling
+  -- a word -- which is exactly the rule charmapReverse already states, and
+  -- this is the same rule's other half.  The decoder turns those bytes back
+  -- into ordinary letters, so nothing downstream can ask for one by name
+  -- anyway; what is lost is the small-caps rendering of POKeBLOCK in the few
+  -- strings that use it, and what is gained is every other word in Hoenn.
+  local ligature = self:ligatureCodes()
+  local charmap, dropped = {}, 0
   for key, seq in pairs(self.manifest.charmap or {}) do
     local code = tonumber(key)
     if code and code < count and seq ~= "" then
-      charmap[#charmap + 1] = { code = code, seq = seq }
+      if ligature[code] then
+        dropped = dropped + 1
+      else
+        charmap[#charmap + 1] = { code = code, seq = seq }
+      end
     end
   end
   table.sort(charmap, function(a, b) return a.code < b.code end)
+  if dropped > 0 then
+    Logger.info("Gen3 font: %d ligature glyph(s) are left out of the match "
+                  .. "table -- they draw two letters in one cell, and matching "
+                  .. "them against ordinary text spelled POKeMON in three",
+                dropped)
+  end
 
   self:write("font", {
     -- one page, not Gen 1's main/extra pair: this cartridge has no border
@@ -8502,6 +8618,26 @@ RomExtractorGen3.EMOTE = {
   FRAME_BYTES = 0x80,          -- four tiles, 4bpp: 16x16
   SIZE = 16,
   COLORS = 16,
+  -- THE COLOURS THE "!" IS ACTUALLY DRAWN IN.
+  --
+  -- Reported from play: the bubble "shows its just yellow but it should be
+  -- white".  The exclamation and question icons hang off a template whose
+  -- paletteTag is TAG_NONE, so CreateSpriteAtEnd leaves oam.paletteNum at
+  -- ZERO and they draw in whatever OBJ palette slot 0 holds -- the first
+  -- object-event palette the field loads, which is the player's own (tag
+  -- $1100).  Only the HEART names a tag ($1004), and only the heart's own
+  -- native sets a palette slot (paletteNum = 2, at 0B46BA).
+  --
+  -- Colouring all three from the heart's palette is what made the "!" yellow:
+  -- its art uses palette entries 14 and 15 and nothing else, and entry 14 of
+  -- the heart's field-effect palette is a tan.  In the object-event palettes
+  -- those top two entries are the reserved white-and-black pair that a shared
+  -- overlay rides on -- 14 is pure white in the player's, and in nineteen of
+  -- the thirty-five it is white against a pure black 15.
+  TAG_NONE = 0xFFFF,
+  OBJ_PAL_SLOT0 = 0x1100,      -- the player's, which lands in OBJ slot 0
+  OBJ_PAL_COUNT = 64,
+  INK = { [0] = true, [14] = true, [15] = true },
   -- the three, by the name the port draws them under
   ROLES = { { "exclamation", 0 }, { "question", 33 }, { "heart", 46 } },
 }
@@ -8589,8 +8725,19 @@ function RomExtractorGen3:extractEmotes()
     icons[#icons + 1] = icon
   end
 
-  -- the colours: whichever of the three loads a palette is the one that says
-  -- how all three are coloured, because the other two load none
+  -- ---- the colours, which are NOT all the same palette --------------------
+  local function paletteAt(at)
+    local raw = rom:bytes(at, E.COLORS * 2)
+    local out = {}
+    for i = 0, E.COLORS - 1 do
+      local lo, hi = raw[i * 2 + 1], raw[i * 2 + 2]
+      if not (lo and hi) then return nil end
+      out[i + 1] = { RomGba.bgr555(lo + hi * 256) }
+    end
+    return out
+  end
+
+  -- the one the heart loads, which is the one its own template names
   local palette = nil
   for _, icon in ipairs(icons) do palette = palette or icon.palette end
   if not palette then
@@ -8598,16 +8745,59 @@ function RomExtractorGen3:extractEmotes()
                 .. "unripped rather than guessed")
     return
   end
-  local colors = {}
+  local colors = paletteAt(palette)
+  if not colors then
+    Logger.warn("gen3 emotes: the palette is short")
+    return
+  end
+
+  -- ...and OBJ palette slot 0, for the two that name no tag at all
+  local slot0, slot0At = nil, nil
   do
-    local raw = rom:bytes(palette, E.COLORS * 2)
-    for i = 0, E.COLORS - 1 do
-      local lo, hi = raw[i * 2 + 1], raw[i * 2 + 2]
-      if not (lo and hi) then
-        Logger.warn("gen3 emotes: the palette is short")
-        return
+    local base = self:symbol("sObjectEventSpritePalettes")
+    if base then
+      for i = 0, E.OBJ_PAL_COUNT - 1 do
+        local at = rom:pointer(base + i * 8)
+        local tag = rom:u16(base + i * 8 + 4)
+        if not at then break end
+        if tag == E.OBJ_PAL_SLOT0 then
+          slot0, slot0At = paletteAt(at), at
+          break
+        end
       end
-      colors[i + 1] = { RomGba.bgr555(lo + hi * 256) }
+    end
+    if not slot0 then
+      Logger.warn("gen3 emotes: OBJ palette slot 0 (tag $%04X) is not in "
+                    .. "sObjectEventSpritePalettes -- the tagless icons keep "
+                    .. "the heart's colours, which makes them tan",
+                  E.OBJ_PAL_SLOT0)
+    end
+  end
+
+  -- WHICH PALETTE EACH ICON GETS, off its own template rather than a list
+  -- here: a tag of its own means its own colours, TAG_NONE means slot 0.
+  -- Refused rather than guessed for any icon whose art reaches outside the
+  -- reserved white/black pair, because riding on somebody else's palette is
+  -- only safe for art that uses nothing but those two entries.
+  for _, icon in ipairs(icons) do
+    icon.colors = colors
+    if rom:u16(icon.template + 2) == E.TAG_NONE and slot0 then
+      local px = RomGba.tiles4bpp(rom:bytes(icon.frame, E.FRAME_BYTES), 2, 2)
+      local plain = true
+      for y = 1, E.SIZE do
+        for x = 1, E.SIZE do
+          if not E.INK[px[y][x]] then plain = false break end
+        end
+        if not plain then break end
+      end
+      if plain then
+        icon.colors, icon.slot0 = slot0, true
+      else
+        Logger.warn("gen3 emotes: %s names no palette but its art reaches "
+                      .. "outside entries 14 and 15 -- left on the heart's "
+                      .. "colours rather than recoloured on a guess",
+                    icon.role)
+      end
     end
   end
 
@@ -8615,8 +8805,10 @@ function RomExtractorGen3:extractEmotes()
     width = E.SIZE, height = E.SIZE,
     effects = {},
     source = ("ROM:gFieldEffectScriptPointers %07X, effects %d/%d/%d, "
-              .. "palette %07X"):format(E.SCRIPTS, E.ROLES[1][2],
-                                        E.ROLES[2][2], E.ROLES[3][2], palette),
+              .. "the heart's palette %07X, OBJ slot 0 %s")
+             :format(E.SCRIPTS, E.ROLES[1][2], E.ROLES[2][2], E.ROLES[3][2],
+                     palette,
+                     slot0At and ("%07X"):format(slot0At) or "not found"),
   }
   for _, icon in ipairs(icons) do
     record[icon.role] = {
@@ -8641,7 +8833,7 @@ function RomExtractorGen3:extractEmotes()
       for y = 1, E.SIZE do
         for x = 1, E.SIZE do
           local index = px[y][x]
-          local c = index ~= 0 and colors[index + 1] or nil
+          local c = index ~= 0 and icon.colors[index + 1] or nil
           if c then
             image:setPixel(x - 1, y - 1, c[1] / 255, c[2] / 255, c[3] / 255, 1)
           end
@@ -8655,10 +8847,17 @@ function RomExtractorGen3:extractEmotes()
     Logger.warn("gen3 emotes: the icons could not be composed (%s)",
                 tostring(artErr))
   end
-  Logger.info("Gen3 emotes: %d icons (%s), 16x16 off field effects %d/%d/%d",
+  local onSlot0 = {}
+  for _, icon in ipairs(icons) do
+    if icon.slot0 then onSlot0[#onSlot0 + 1] = icon.role end
+  end
+  Logger.info("Gen3 emotes: %d icons (%s), 16x16 off field effects %d/%d/%d; "
+                .. "%s ride OBJ palette slot 0 -- white on black, not the "
+                .. "heart's tan",
               drawn, table.concat({ icons[1].role, icons[2].role,
                                     icons[3].role }, ", "),
-              icons[1].effect, icons[2].effect, icons[3].effect)
+              icons[1].effect, icons[2].effect, icons[3].effect,
+              #onSlot0 > 0 and table.concat(onSlot0, " and ") or "none")
 end
 
 function RomExtractorGen3:extractFieldEffects()

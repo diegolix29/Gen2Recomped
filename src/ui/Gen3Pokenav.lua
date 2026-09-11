@@ -805,12 +805,29 @@ Gen3Pokenav.NOTICE = {
   lineStep = 14,
 }
 
+-- ...AND THE NAME ACTUALLY GOES IN.
+--
+-- Reported from play, with a picture of MR. STONE's first call: it read
+-- "MR. STONE: Oh? PLAYER  KUN !".  The line on the cartridge is
+-- "Oh? {PLAYER}{KUN}!" -- the player's name and the honorific that is empty
+-- in English -- and this screen paginated and drew it without ever expanding
+-- either, so both tokens reached the box verbatim.  The braces are not in
+-- this cartridge's font, which is why they came out as the gaps around them
+-- rather than as braces.
+--
+-- Expanded HERE, above the wrap, and that ordering is the point: the note on
+-- the box above says a seven-letter name is wider than the {PLAYER} it
+-- replaces, so wrapping the token and then substituting would measure the
+-- wrong string and put the overflow back.
 function Gen3Pokenav:noticeLayout()
   local N = Gen3Pokenav.NOTICE
   local inner = N.tw * 8 - N.padX * 2
   local cols = math.max(1, math.floor(inner / 8))
-  local pages = require("src.render.TextBox").paginate(
-    tostring(self.notice or ""), cols)
+  local TextBox = require("src.render.TextBox")
+  local text = tostring(self.notice or "")
+  local okSub, expanded = pcall(TextBox.substitute, self.game, text)
+  if okSub and type(expanded) == "string" then text = expanded end
+  local pages = TextBox.paginate(text, cols)
   -- how many lines actually fit between the frame's two borders
   local height = N.th * 8 - N.padY - 4
   local rows = math.max(1, math.floor(height / N.lineStep))

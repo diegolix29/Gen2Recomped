@@ -15,6 +15,12 @@ local FACING_FROM_RANGE = {
   DOWN = "down", UP = "up", LEFT = "left", RIGHT = "right",
 }
 
+-- How long an object on a fixed circuit waits between steps.  The cartridge
+-- walks these on the object's ordinary step timer rather than a roll, so this
+-- is a hold and not a range: a random one would make a circuit wander in time
+-- even while it kept its shape.
+local SEQUENCE_HOLD = 16
+
 local ROAM_DIRS = {
   ANY_DIR = { "up", "down", "left", "right" },
   UP_DOWN = { "up", "down" },
@@ -558,6 +564,17 @@ function NPC.new(data, mapId, objDef)
   self.stepFlip = false
   self.frozen = false -- scripts freeze NPCs while talking
   self.wanders = (g3 and g3.wanders == true) or objDef.movement == "WALK"
+  -- A FIXED CIRCUIT, which is not wandering (#419/#246).
+  --
+  -- Reported from play: PEEKO "is supposed to be chasing him around his
+  -- table in his house like it does in the rom".  Twenty-five of Emerald's
+  -- movement types walk the same four directions in a set order, forever --
+  -- one tile each, round and round -- and the import reads that order off
+  -- the four-byte direction table the type's own step callback names.  An
+  -- object with one of them is NOT a wanderer and must not be rolled for.
+  self.sequence = g3 and type(g3.sequence) == "table" and #g3.sequence == 4
+                  and g3.sequence or nil
+  self.sequenceAt = 0
   -- SPRITEMOVEDATA_SPINRANDOM_* / _SPIN_CLOCKWISE / _SPIN_COUNTERCLOCKWISE
   self.spins = objDef.movement == "SPIN" and (objDef.range or "SPIN_SLOW") or nil
   if g3 then
@@ -736,6 +753,29 @@ function NPC:update(map, entities)
       local at = 1
       for i, dir in ipairs(self.turns) do if dir == self.facing then at = i end end
       self.facing = self.turns[(at % #self.turns) + 1]
+    end
+    return
+  end
+  -- THE FIXED CIRCUIT, taken in order and with no dice rolled.
+  --
+  -- The difference from wandering is the whole point: a wanderer picks a
+  -- direction, often only turns, and stays inside its template's box; one of
+  -- these takes the next direction on its list and walks a tile, and its box
+  -- is its own route.  Blocked, it faces that way and waits -- which is what
+  -- the cartridge does too, and what keeps the circuit in step when the
+  -- player stands in its path instead of it giving up and drifting.
+  if self.sequence then
+    self.timer = self.timer - 1
+    if self.timer > 0 then return end
+    self.timer = SEQUENCE_HOLD
+    local dir = self.sequence[(self.sequenceAt % 4) + 1]
+    self.facing = dir
+    local tx, ty = Collision.target(self.cellX, self.cellY, dir)
+    if Collision.canMove(map, entities, self, dir) and not map:warpAtCell(tx, ty) then
+      self.targetX, self.targetY = tx, ty
+      self.moving = true
+      self.progress = 0
+      self.sequenceAt = self.sequenceAt + 1
     end
     return
   end
