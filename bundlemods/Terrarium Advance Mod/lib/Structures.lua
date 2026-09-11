@@ -48,6 +48,47 @@ local Assets = require("src.render.Assets")
 local Map = require("src.world.Map")
 local Buildings = V.require("Buildings")
 local TileShape = V.require("TileShape")
+local Gen3 = V.require("Gen3")
+
+-- Memo for gen3RingBodies to avoid recomputing
+local ringBodyMemo = {}
+local function gen3RingBodies(map)
+  local id = map and map.id
+  if not id then return nil end
+  local hit = ringBodyMemo[id]
+  if hit ~= nil then return hit end
+  local okD, data = pcall(Gen3.engineData)
+  local maps = okD and data and data.maps or nil
+  -- the same two handles `VoxelScene.masksFor` takes, and the same walk:
+  -- `computeNeighbors` is a pure function of the map table, so this answers
+  -- whether or not an overworld is up (the prebake asks it from the menu).
+  local okO, OS = pcall(require, "src.world.OverworldController")
+  local compute = okO and type(OS) == "table" and OS.computeNeighbors or nil
+  -- A MISS IS NEVER MEMOISED, for the reason `masksFor` gives: the world may
+  -- simply not be up yet, and a map that answered nil once would keep the
+  -- two-cell ring for the rest of the run.
+  if not (maps and type(compute) == "function") then return nil end
+  -- TWO HOPS, AND TWICE THE RING'S OWN REACH.  `masksFor` walks to 96px
+  -- because that is as far as a body can sit and still be UNDER this map's
+  -- ring; the test below asks a wider question -- can another map's ring
+  -- reach this tile -- and a body 96px past the ring's own 96px can.  The
+  -- extra entries can only ever REFUSE depth, never add any.
+  local okN, list = pcall(compute, maps, id, 2, RING * 16, RING * 16)
+  if not (okN and type(list) == "table") then return nil end
+  local out = {}
+  for _, n in ipairs(list) do
+    local d = maps[n.id]
+    if d and tonumber(d.width) and tonumber(d.height) then
+      -- `blockPx`, not blockTiles * 8: it is the field the engine's own
+      -- placement reads, so a rect can never disagree with where the body it
+      -- covers was actually drawn (see masksFor).
+      local px = tonumber(d.blockPx) or 32
+      out[#out + 1] = { n.ox, n.oy, n.ox + d.width * px, n.oy + d.height * px }
+    end
+  end
+  ringBodyMemo[id] = out
+  return out
+end
 local Budget = V.require("BuildBudget")
 
 local Structures = {}
@@ -162,7 +203,28 @@ function Structures.forMap(map)
   -- route, and dropped the mode to the flat 2D path entirely.)
   local TileRenderer = require("src.render.TileRenderer")
   local borderId = TileRenderer.borderBlockFor(map)
-  local borderBlk = borderId and tileset.blocks[borderId + 1] or nil
+  -- `tileset.blocks` DOES NOT EXIST ON GEN 3 -- a pair record names its two
+  -- halves by key and carries no block table at all -- so this line raised
+  -- before it could answer anything, on every map in Hoenn.
+  --
+  -- Gen 3's border is a different object as well: not one block repeated, but
+  -- a 2x2 patch of metatiles the map carries itself (`def.border`), tiled
+  -- outward.  So the ring is built from that patch instead, and the lookup
+  -- below picks its cell by parity the same way the shell does.
+  local isGen3 = Gen3.isGen3(tileset)
+  local borderBlk = (not isGen3) and borderId and tileset.blocks[borderId + 1]
+                    or nil
+  local gen3Border = nil
+  if isGen3 and type(def.border) == "string" and #def.border >= 8 then
+    gen3Border = {}
+    for i = 0, 3 do
+      local lo, hi = def.border:byte(i * 2 + 1), def.border:byte(i * 2 + 2)
+      gen3Border[i + 1] = (lo + hi * 256) % 1024
+    end
+  elseif isGen3 then
+    gen3Border = { def.borderBlock or 0, def.borderBlock or 0,
+                   def.borderBlock or 0, def.borderBlock or 0 }
+  end
   -- TREES fill stops at ROUND_RING instead of running the full RING.
   -- Only that far out does a tree cell get carved into a hull; past it
   -- the cells fall through to the mesher's plain box, and a slab of
@@ -180,6 +242,74 @@ function Structures.forMap(map)
   -- interior's border is black already.
   local hullRingOnly = borderBlk and def.tileset == "OVERWORLD"
                        and (TileRenderer.voidFill or "trees") == "trees"
+  -- GEN 3 GETS THE SAME TRUNCATION, and needs it more.
+  --
+  -- The rule the Gen 1/Gen 2 branch encodes is: where the surround is
+  -- FOLIAGE, build only as far as the crowns are carved, because an uncarved
+  -- tree is a flat-topped box and a slab of them behind the round ones reads
+  -- worse than an empty horizon.  A Hoenn map's surround is its own 2x2
+  -- border patch, and in Hoenn that patch is a tree in almost every town and
+  -- on almost every route -- so the full twelve-tile ring was being built out
+  -- of foliage and only its first four tiles carved.  Littleroot drew 59
+  -- crowns and 112 boxes; Route 104 would have drawn 694 crowns had the carve
+  -- run the whole way, at nine million vertices for one map, which is the
+  -- other reason this line exists.
+  --
+  -- Water, sand, cliff and rock borders keep the full ring exactly as they do
+  -- on Gen 1: a flat sheet of water is what water looks like from above, and
+  -- an interior's border patch is black already.
+  local ringRock = false
+  if isGen3 and gen3Border then
+    local leafy = 0
+    local okA, art = pcall(Gen3.analyse, tileset)
+    if okA and art and art.stats then
+      for _, m in ipairs(gen3Border) do
+        local st = art.stats[m]
+        if st and st.leafy then leafy = leafy + 1 end
+      end
+    end
+    if leafy >= 3 then hullRingOnly = true end
+    -- ...AND SO DOES A BORDER OF ROCK, FOR THE SAME REASON AND AT THE SAME
+    -- DISTANCE.
+    --
+    -- Hoenn's border patch is foliage on 29 outdoor maps and water on 44, and
+    -- on FIVE it is a wall of rock: metatile 625 on Lavaridge Town, Jagged
+    -- Pass, Mt Chimney and Route 112, and 113 on Route 111 -- `face / rock /
+    -- cap 0 / face 16`, behaviour 0x0C MB_MOUNTAIN_TOP, a vertical face with
+    -- no drawn top at all.  Tiled the full twelve tiles and laid flat by
+    -- `standGen3Apron`, that is ninety-six pixels of wall texture painted
+    -- FACE-UP round the volcano -- the same painted-on plateau this
+    -- truncation exists to prevent, in the other material.  Ring tiles laid
+    -- flat: Lavaridge 2,496, Jagged Pass 4,224, Mt Chimney 4,752, Route 112
+    -- 5,376, Route 111 9,216.
+    --
+    -- The test is the DRAWING's, three quarters of four, exactly as the leafy
+    -- test above: rock with no CAP has no floor in its art to lay flat, which
+    -- is the whole of the defect.  A rock BROW -- Sootopolis' paved crater
+    -- rim, metatile 729 -- draws a top, is laid as one correctly, and is left
+    -- alone; so is water (368, the sea carrying on at -2), and so is the dive
+    -- maps' `void`.  `standGen3RockApron` then stands what is left of the
+    -- ring up as the mountainside it is drawn as.
+    --
+    -- OUTDOORS ONLY, and for the same reason `standGen3Apron` is: past an
+    -- interior's four walls there is no horizon, and its border block is
+    -- whatever the layout happens to name.
+    if outdoor then
+      local rocky = 0
+      for _, m in ipairs(gen3Border) do
+        local bArt, bMat, bCap = Gen3.metaRole(map, m)
+        if bArt == "face" and bMat == "rock" and (bCap or 16) == 0 then
+          rocky = rocky + 1
+        end
+      end
+      if rocky >= 3 then ringRock = true end
+    end
+  end
+  -- THE HORIZON THIS MAP HAS TO DRAW FOR ITSELF.  Foliage borders only, and
+  -- outdoors only; nil everywhere else, which is the two-cell carve exactly
+  -- as it was.  See gen3RingBodies.
+  local ringDeepBodies = (isGen3 and outdoor and hullRingOnly)
+                         and gen3RingBodies(map) or nil
   local tw2, th2 = tw, th
   local function tileLookup(tx, ty)
     if tx >= 0 and ty >= 0 and tx < tw2 and ty < th2 then

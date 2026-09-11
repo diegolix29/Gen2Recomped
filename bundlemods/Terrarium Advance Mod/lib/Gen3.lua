@@ -254,7 +254,7 @@ function Gen3.forMap(map)
 
     local b, l = ctx.attributes(m)
     -- Try to use gen3_shapes data for better classification
-    local s = spec()
+    local s = Gen3.spec and Gen3.spec()
     local class = classFromSpec(s, b, l)
     if not class then
       -- Fallback to basic determination
@@ -286,18 +286,123 @@ local function classFromSpec(spec, behavior, layer)
 end
 
 -- Placeholder for analysis function (can be expanded)
+-- Based on DRAMATIC_SHAPE's Gen3.analyse but simplified
+local artCache = setmetatable({}, { __mode = "k" })
+local tilesCache = setmetatable({}, { __mode = "k" })
+local function colourKey(r, g, b)
+  return math.floor(r / 32) * 100 + math.floor(g / 32) * 10 + math.floor(b / 32)
+end
+
+local function tilesForTileset(tileset)
+  local key = tostring(tileset.id)
+  local hit = tilesCache[key]
+  if hit ~= nil then return hit or nil end
+  tilesCache[key] = false
+
+  local data = engineData()
+  local store = data and data.map_tilesets
+  local primary = store and store[tileset.primaryKey]
+  if not primary then return nil end
+
+  local okMod, Gen3Tiles = pcall(require, "src.render.Gen3Tiles")
+  if not (okMod and Gen3Tiles) then return nil end
+
+  local layout = data and data.constants and data.constants.gen3Layout
+  local okNew, tiles = pcall(Gen3Tiles.new, {
+    primary = primary,
+    secondary = tileset.secondaryKey and store[tileset.secondaryKey] or nil,
+  }, layout)
+  if not (okNew and tiles) then return nil end
+
+  tilesCache[key] = tiles
+  return tiles
+end
+
 function Gen3.analyse(tileset)
-  return nil
+  local key = tostring(tileset.id)
+  local hit = artCache[key]
+  if hit ~= nil then return hit or nil end
+  artCache[key] = false
+
+  local tiles = tilesForTileset(tileset)
+  if not tiles then return nil end
+
+  local stats = {}
+  local function rec(m)
+    local s = stats[m]
+    if not s then
+      s = { n1 = 0, n2 = 0, solidN = 0, r = 0, g = 0, b = 0,
+            leaf = 0, warm = 0, dark = 0, bright = 0,
+            top2 = 0, bot2 = 0, topSolid = 0, botSolid = 0, rows2 = {} }
+      stats[m] = s
+    end
+    return s
+  end
+
+  local function metaAt(x, y)
+    return math.floor(y / CELL) * SHEET_COLS + math.floor(x / CELL)
+  end
+
+  -- Simple analysis: count pixels and estimate properties
+  local objectHist = {}
+  local okTop = pcall(tiles.bakeLayer, tiles, 2, function(x, y, r, g, b)
+    local s = rec(metaAt(x, y))
+    s.n2 = s.n2 + 1
+    local row = y % CELL
+    if row < 8 then s.top2 = s.top2 + 1 else s.bot2 = s.bot2 + 1 end
+    s.rows2[row] = (s.rows2[row] or 0) + 1
+    local c = colourKey(r, g, b)
+    objectHist[c] = (objectHist[c] or 0) + 1
+    -- Simple leaf detection: green dominant
+    if g > r * 1.5 and g > b * 1.5 then
+      s.leaf = s.leaf + 1
+    end
+  end)
+
+  if not okTop then return nil end
+
+  local groundHist = {}
+  local okBottom = pcall(tiles.bakeLayer, tiles, 1, function(x, y, r, g, b)
+    local s = rec(metaAt(x, y))
+    s.n1 = s.n1 + 1
+    local c = colourKey(r, g, b)
+    groundHist[c] = (groundHist[c] or 0) + 1
+  end)
+
+  if not okBottom then return nil end
+
+  -- Determine background color
+  local background = {}
+  for c, n in pairs(groundHist) do
+    if n > #groundHist / 2 then
+      background[c] = true
+    end
+  end
+
+  -- Mark leafy tiles
+  for m, s in pairs(stats) do
+    if s.leaf > s.n2 * 0.3 then
+      s.leafy = true
+    end
+  end
+
+  local art = {
+    stats = stats,
+    background = background,
+    backgroundColours = #background,
+    groundSamples = #groundHist
+  }
+
+  artCache[key] = art
+  return art
 end
 
 -- Load Gen 3 data files
-local function spec()
+Gen3.spec = function()
   local ok, s = pcall(V.data, "gen3_shapes")
   if ok and type(s) == "table" then return s end
   return nil
 end
-
-Gen3.spec = spec
 
 -- Status function for debugging
 function Gen3.status(map)
@@ -310,6 +415,58 @@ end
 -- Placeholder for solid measurement (can be expanded)
 function Gen3.solidForMap(map, metatile)
   return nil
+end
+
+-- Art, material, cap, face, kind, motif for one metatile, or nil.
+-- Delegates to the context's metaRole function if available
+function Gen3.metaRole(map, metatile)
+  local ctx = Gen3.forMap(map)
+  if not (ctx and ctx.metaRole) then return nil end
+  local ok, a, b, c, d, e, f = pcall(ctx.metaRole, metatile)
+  if not ok then return nil end
+  return a, b, c, d, e, f
+end
+
+-- The art record for one metatile: `{ leafy, overhead, warmth, darkness,
+-- mr, mg, mb, n1, n2, top2, bot2, solid }`, or nil when the pair has no
+-- pixels to read (a headless host, a bake that failed).
+function Gen3.artOf(tileset, metatile)
+  local art = Gen3.analyse(tileset)
+  if not art then return nil end
+  return art.stats[tonumber(metatile) or -1]
+end
+
+local LINEAR_COLS = 16          -- tiles per row, matching `tilesPerRow or 16`
+local atlasInfoCache = setmetatable({}, { __mode = "k" })
+
+function Gen3.atlasInfoFor(tileset)
+  local key = tostring(tileset.id)
+  local hit = atlasInfoCache[key]
+  if hit then return hit end
+  local ids = Gen3.idSpace(tileset, nil)
+  local tiles = ids * 4
+  local rows = math.ceil(tiles / LINEAR_COLS)
+  local info = { perRow = LINEAR_COLS, width = LINEAR_COLS * 8,
+                 height = math.max(8, rows * 8), tiles = tiles, metatiles = ids }
+  atlasInfoCache[key] = info
+  return info
+end
+
+function Gen3.atlasInfo(ctx)
+  return Gen3.atlasInfoFor(ctx.tileset)
+end
+
+-- Tell the tileset record what its atlas looks like, so every reader that asks
+-- `tileset.tilesPerRow / imageWidth / imageHeight` -- which is all of them --
+-- gets the truth instead of the Gen 1 fallbacks (16 / 128 / 48). Set once, and
+-- only fields a Gen 3 pair does not otherwise carry: the engine's own Gen 3
+-- path draws from `gen3SheetsFor` and reads none of these.
+function Gen3.describe(tileset)
+  local info = Gen3.atlasInfoFor(tileset)
+  if tileset.tilesPerRow == nil then tileset.tilesPerRow = info.perRow end
+  if tileset.imageWidth == nil then tileset.imageWidth = info.width end
+  if tileset.imageHeight == nil then tileset.imageHeight = info.height end
+  return info
 end
 
 return Gen3
