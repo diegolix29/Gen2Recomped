@@ -872,7 +872,7 @@ end
 -- literal pool, and it CLOSES: the PC's multichoice had already found the
 -- same number by a completely different route, as the gate on its HALL OF
 -- FAME row.  constants gain gen3GameClear.
-local CACHE_FORMAT = "rom-cache-v258:"
+local CACHE_FORMAT = "rom-cache-v259:"
 -- The completion marker is written under each version's cache prefix
 -- (rom-cache.complete for Red, blue/rom-cache.complete for Blue).
 local MARKER_PATH = "rom-cache.complete"
@@ -2821,6 +2821,31 @@ end
 -- affordance.  On Android, stage pending_export.sav and open the system
 -- create-document picker (love.system.createFile) so the player can save to
 -- Downloads / Drive / etc. -- the app-private exports/ path is not useful there.
+-- WHOSE PROJECT A TAB IS, which is what the wordmark and the footer credit
+-- actually say -- not which generation the cartridge is.
+--
+-- The Gen1 wordmark and the Boi's Club footer belong to the columns this
+-- launcher inherited; everything this project built itself wears the
+-- Gen2Recomp logo and the UD credit.  That was first written as "Gold and
+-- Silver", which left CRYSTAL out; widening it to `generation == 2` fixed
+-- Crystal and Prism -- and then left EMERALD wearing the Gen1 wordmark, for
+-- exactly the same reason, one version further along.
+--
+-- So the rule is "anything past Gen 1", which is the widening
+-- GameVersion.isGen3's own comment describes: a site that asks `== 2` takes
+-- the Gen 1 branch for a Gen 3 game, and this was one of them.  Non-version
+-- tabs like "mods" have no entry and answer generation 1, so they keep the
+-- Gen1 art, and the next version added is right by default.
+--
+-- A NAMED RULE RATHER THAN A LINE INSIDE `draw`, because it decides three
+-- things that have to agree -- the wordmark, the footer badge and whether
+-- that badge is inverted (only the Boi's Club mark is dark ink; the UD badge
+-- is already bright art) -- and because a rule that has now been widened
+-- twice is one a test should be able to ask directly.
+function RomImporter.wearsOurMark(tab)
+  return GameVersion.generation(tab) >= 2
+end
+
 function RomImporter:exportSave(version)
   if self.workState == "working" then return end
   local ok, res = require("src.import.SaveFileIO").exportActiveSlot(version)
@@ -3705,14 +3730,9 @@ function RomImporter:draw()
   local warningWidth = math.min(appW - 32 * s, 640 * s)
   local _, warningLines = self.warningFont:getWrap(TRUST_WARNING, warningWidth)
   local warningH = #warningLines * self.warningFont:getHeight()
-  -- Every Gen2 tab, not just Gold and Silver: Crystal was missing from this
-  -- test, so its tab wore the Gen1 wordmark and the Boi's Club footer instead
-  -- of the Gen2Recomp logo and the UD credit.  Asking GameVersion means the
-  -- next version added is right by default; non-version tabs like "mods" have
-  -- no entry and answer generation 1, so they keep the Gen1 art.
-  local gen2Tab = GameVersion.generation(self.tab) == 2
-  local bcgImage = gen2Tab and self.gen2Bcg or self.bcg
-  local logoImage = gen2Tab and self.gen2Logo or self.logo
+  local ourTab = RomImporter.wearsOurMark(self.tab)
+  local bcgImage = ourTab and self.gen2Bcg or self.bcg
+  local logoImage = ourTab and self.gen2Logo or self.logo
   local bcgW, bcgH = bcgImage:getDimensions()
   local bcgScale = math.min(math.min(appW - 48 * s, 190 * s) / bcgW, height * 0.06 / bcgH)
   local bcgDW, bcgDH = bcgW * bcgScale, bcgH * bcgScale
@@ -3987,12 +4007,12 @@ function RomImporter:draw()
   local bcgX, bcgY = appX + (appW - bcgDW) / 2, footerTop + 10 * s
   local warningY = bcgY + bcgDH + 6 * s
   self.bcgButton = { x = bcgX, y = bcgY, width = bcgDW, height = bcgDH }
-  self.bcgUrl = gen2Tab and UD_URL or COMMUNITY_URL
+  self.bcgUrl = ourTab and UD_URL or COMMUNITY_URL
 
   local bcgHot = self:_hover(self.bcgButton)
   -- only the Boi's Club mark is dark ink needing the invert; the UD badge is
   -- already bright art
-  if not gen2Tab then love.graphics.setShader(self.invertShader) end
+  if not ourTab then love.graphics.setShader(self.invertShader) end
   love.graphics.setBlendMode("add")
   love.graphics.setColor(1, 1, 1, bcgHot and 0.5 or 0.22)
   love.graphics.draw(bcgImage, bcgX - bcgDW * 0.02, bcgY - bcgDH * 0.02, 0,

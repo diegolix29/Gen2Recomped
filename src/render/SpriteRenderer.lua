@@ -247,11 +247,14 @@ function SpriteRenderer:resolveModeImage(x, y)
   local redraw = false
   -- full-color art claims its 16x16 cell out of the shade-remap pass
   if self.def.trueColor then
-    PaletteFX.markTrueColor(x, y, 16, 16)
+    -- the CELL, not a tile: a fixed-frame sheet may be 16x32 (Emerald's berry
+    -- trees), and claiming only the top square left the trunk to the shade
+    -- remap while the crown above it stayed in colour
+    PaletteFX.markTrueColor(x, y, self.tileW or 16, self.tileH or 16)
   elseif self:objPalette() and PaletteFX.usesGen2ObjPal() then
     local objColors, objGroup = self:objPalette()
     image = getObpImage(self.def.image, objColors, objGroup)
-    PaletteFX.markTrueColor(x, y, 16, 16)
+    PaletteFX.markTrueColor(x, y, self.tileW or 16, self.tileH or 16)
   elseif PaletteFX.usesGbcPack() then
     local colors, group = PaletteFX.spriteObp(self.def, self.seed)
     if colors then
@@ -273,9 +276,17 @@ end
 -- frame 0, cut tree frame 1, fruit tree frame 2 -- and the object's movement
 -- data (not its facing) says which one it is, so the ordinary facing math
 -- must never touch it.
+-- A FIXED FRAME STILL SITS IN ITS CELL.
+--
+-- `draw` hangs a cell taller or wider than 16x16 so the feet stay on the tile
+-- the engine put them on; this drew from the cell's own corner instead, which
+-- is the same picture for the 16x16 sheets that used to be the only fixed-
+-- frame objects (polished's cut trees) and one whole tile too low for
+-- Emerald's berry trees, whose cell is 16x32.  Both offsets are zero on a
+-- 16x16 sheet, so nothing that worked moves.
 function SpriteRenderer:drawFixedFrame(px, py, camX, camY, frame)
-  local x = math.floor(px - camX)
-  local y = math.floor(py - camY) - 4
+  local x = math.floor(px - camX) - (self.offsetX or 0)
+  local y = math.floor(py - camY) - 4 - (self.offsetY or 0)
   local image, redraw = self:resolveModeImage(x, y)
   local quad = self.frames[frame] or self.frames[0]
   if quad then blitFrame(image, quad, x, y, false, redraw) end

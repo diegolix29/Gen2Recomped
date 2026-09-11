@@ -2643,6 +2643,7 @@ function OverworldState:update(dt)
      and #self.scriptMoves == 0 and not self.transitioning then
     self:gen3UnfreezeObjects()
   end
+  self:poseBerryTrees()
   for _, npc in ipairs(self.npcs) do
     npc:update(self.map, self.entities)
   end
@@ -2793,6 +2794,31 @@ function OverworldState:update(dt)
     if mapId == self.map.id then
       require("src.core.Music").playMap(Game.data, mapId, Game.save.onBike,
                                         self.player.surfing)
+    end
+  end
+  -- ...AND THE LEVEL THEY ARE NOW ON, which a step changes and nothing here
+  -- was changing.
+  --
+  -- Reported from play, off Mr. Briney's boat: standing on the Dewford dock,
+  -- "it won't let me walk into Dewford, only on the water, and can't get back
+  -- onto land".  The elevation was only ever written on ARRIVAL -- a warp, a
+  -- load, a connection -- so the voyage, which lands on water, left the
+  -- player at the sea's level for good, and every land cell then refused the
+  -- step that a different non-zero elevation refuses.
+  --
+  -- ObjectEventUpdateElevation runs as part of the object's own movement
+  -- update on the cartridge, not out of the field-input path, so it applies
+  -- to a SCRIPTED walk exactly as it does to a walked one -- which is why
+  -- this sits above the `scripted` gate rather than inside onStepComplete.
+  --
+  -- The two wildcards are refused the way the cartridge refuses them: 0 means
+  -- "match anything" and 15 is a bridge SPAN, and neither is a level to stand
+  -- at.  Keeping the previous one there is what lets a bridge carry the
+  -- walker over the river at the level they walked on.
+  if stepped and self.map and self.map.cellElevation then
+    local here = self.map:cellElevation(self.player.cellX, self.player.cellY)
+    if here and here ~= 0 and here ~= 15 then
+      self.player.elevation = here
     end
   end
   if stepped and not scripted then
@@ -10766,6 +10792,63 @@ function OverworldState:zoomScale()
   local okZoom, scale = pcall(Zoom.scale, fit)
   if not (okZoom and tonumber(scale)) or tonumber(scale) <= 0 then return nil end
   return tonumber(scale)
+end
+
+-- ---------------------------------------------------------------------------
+-- WHAT IS GROWING IN THE PLOT, DRAWN.
+--
+-- Reported from play: "berry trees are invisible same with sprouts etc".
+-- Three things were missing at once and the cartridge does all three in one
+-- function, SetBerryTreeGraphics:
+--
+--   * THE FRAME IS THE STAGE.  StartSpriteAnim(sprite, berryStage) -- the
+--     tree's animation table IS its five growth stages, and the import reads
+--     which frames each one cycles (gen3Berries.trees.stages) rather than
+--     counting them out.  Without it every tree showed frame zero, which is
+--     the seed: a fruiting tree drew a bare patch of soil.
+--   * THE SHEET IS THE BERRY.  `sprite->images` is swapped to the berry's own
+--     pic table, so a PECHA tree and an ORAN tree are different art from the
+--     flowering stage on.
+--   * AND AN EMPTY PLOT IS INVISIBLE, which this port already did (see
+--     plotEmpty in the draw pass) and is the only one of the three that was
+--     right.
+--
+-- Asked every frame rather than at spawn, for the same reason plotEmpty is:
+-- a tree is planted, grows, is watered and is picked without the map ever
+-- reloading.  It costs a table lookup per tree, and a map has at most three.
+OverworldState.BERRY_TREE_HOLD = 16  -- ticks a stage's frame is held
+
+function OverworldState:poseBerryTrees()
+  local trees = Game and Game.data and Game.data.constants
+                and Game.data.constants.gen3Berries
+                and Game.data.constants.gen3Berries.trees
+  if not (trees and self.npcs) then return end
+  local G = require("src.script.Gen3Commands")
+  local SR = require("src.render.SpriteRenderer")
+  self.berryClock = (self.berryClock or 0) + 1
+  for _, npc in ipairs(self.npcs) do
+    if npc.berryTreeId then
+      -- a plot whose record is missing or malformed keeps whatever it is
+      -- already wearing rather than taking the whole field update down
+      pcall(function()
+        local stage = G.berryTreeStage(Game.save, npc.berryTreeId) or 0
+        if stage <= 0 then return end
+        local key = trees.sheetKeys
+                    and trees.sheetKeys[G.berryTreeBerry(Game.save,
+                                                         npc.berryTreeId)]
+        local def = key and Game.data.sprites and Game.data.sprites[key]
+        if def and npc.berrySheet ~= key then
+          npc.sprite = SR.new(def, npc.id)
+          npc.berrySheet = key
+        end
+        local frames = trees.stages and trees.stages[stage]
+        if frames and #frames > 0 then
+          local at = math.floor(self.berryClock / OverworldState.BERRY_TREE_HOLD)
+          npc.fixedFrame = frames[(at % #frames) + 1]
+        end
+      end)
+    end
+  end
 end
 
 function OverworldState:drawWorld()

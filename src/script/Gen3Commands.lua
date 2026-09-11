@@ -4682,6 +4682,18 @@ function Gen3Commands.berryTreeStage(save, id)
   return (type(tree) == "table" and tonumber(tree.stage)) or 0
 end
 
+-- WHICH BERRY, which is a different question from which STAGE and is asked by
+-- the thing that draws the plot: SetBerryTreeGraphics swaps `sprite->images`
+-- to the berry's own pic table, so a PECHA tree and an ORAN tree are the same
+-- nine frames of different art from the flowering stage on.  Zero means
+-- nothing is planted, which is also what an empty plot's stage says.
+function Gen3Commands.berryTreeBerry(save, id)
+  id = tonumber(id)
+  local trees = save and save.gen3BerryTrees
+  local tree = (type(trees) == "table" and id) and trees[id] or nil
+  return (type(tree) == "table" and tonumber(tree.berry)) or 0
+end
+
 local function stagesWatered(tree)
   local n = 0
   for i = 1, GEN3_WATER_STAGES do

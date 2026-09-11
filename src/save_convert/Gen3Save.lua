@@ -51,6 +51,76 @@ Gen3Save.substructOrders = nil
 
 Gen3Save.SUBSTRUCTS = { "growth", "attacks", "evs", "misc" }
 
+-- The plain part of a box record, which is forced by where the checksum sits
+-- (28): personality 0, trainer id 4, nickname 8, language 18, flags 19,
+-- trainer name 20, markings 27.  Nothing else tiles twenty-eight bytes.
+Gen3Save.NICKNAME_LENGTH = 10
+Gen3Save.OT_NAME_LENGTH = 7
+-- The flags byte is a bitfield and only two of its bits mean anything to a
+-- writer.  HAS_SPECIES is the one that decides whether the cartridge sees a
+-- Pokemon at all: a record with it clear is an empty slot however complete
+-- the rest of it is, which is what a party written into zeroed bytes would
+-- have been.
+Gen3Save.MON_BAD_EGG = 1
+Gen3Save.MON_HAS_SPECIES = 2
+Gen3Save.MON_IS_EGG = 4
+-- THE TWO NUMBERS IN THIS FILE THAT ARE NOT DERIVED, and the shape of where
+-- they are used is what makes them safe.
+--
+-- A Pokemon record names the language its two names are written in and the
+-- GAME it was met in.  Neither is a layout fact -- they are the cartridge's
+-- own `gGameLanguage` and `gGameVersion`, two constants compiled into it --
+-- and neither can be read out of a save layout.
+--
+-- They are used in exactly one situation: a Pokemon born in THIS PORT, in a
+-- save that was never imported, so there is no byte to carry over and no
+-- other record to copy one from.  Every Pokemon that came off a cartridge
+-- keeps the bytes it arrived with, and a save that holds even one such record
+-- hands its own answer to every mon written beside it (Gen3Save.saveDefaults).
+-- So these are the fallback for a playthrough with nothing in it to ask, and
+-- the moment there is something to ask, they are not used at all.
+Gen3Save.LANGUAGE_ENGLISH = 2
+Gen3Save.MET_GAME_EMERALD = 3
+
+-- What language and game of origin THIS save already says, taken from the
+-- first complete record in it.  A save carrying real cartridge Pokemon
+-- answers out of its own bytes; one carrying none falls back to the two
+-- constants above.
+function Gen3Save.saveDefaults(blocks)
+  local out = { language = Gen3Save.LANGUAGE_ENGLISH,
+                metGame = Gen3Save.MET_GAME_EMERALD }
+  local f = Gen3Save.fields
+  if not (f and blocks) then return out end
+  local function ask(source, at)
+    if out.found or not source then return end
+    local ok, mon = pcall(Gen3Save.decodeBoxMon, source, at)
+    if ok and mon and not mon.empty and mon.checksumOk
+       and mon.language and mon.language ~= 0 then
+      out.language = mon.language
+      local origins = Gen3Save.unpackOrigins(mon.origins)
+      if origins.metGame and origins.metGame > 0 then
+        out.metGame = origins.metGame
+      end
+      out.found = true
+    end
+  end
+  if f.party and blocks.block1 then
+    for i = 1, f.party.size do
+      ask(blocks.block1, f.party.start + (i - 1) * f.party.monSize)
+    end
+  end
+  local st = f.storage
+  if st and blocks.storage then
+    for b = 0, st.boxCount - 1 do
+      for slot = 0, st.boxCapacity - 1 do
+        ask(blocks.storage,
+            st.boxes + (b * st.boxCapacity + slot) * st.boxMonSize)
+      end
+    end
+  end
+  return out
+end
+
 -- Where the fields sit inside the save blocks.  Also from the manifest, also
 -- derived rather than remembered: the two save-block pointers were told apart
 -- by which block's size their accesses fit inside, and each field came out of
@@ -315,6 +385,42 @@ function Gen3Save.decodeBoxMon(bytes, off)
     pokerus = m[1],
     metLocation = m[2],
     origins = h(m, 2),
+    -- ---- AND THE PLAIN HEADER, which nothing read ------------------------
+    --
+    -- The first thirty-two bytes are not encrypted and four of their fields
+    -- were going straight past: the NICKNAME, the LANGUAGE the nickname is
+    -- written in, the ORIGINAL TRAINER'S NAME and the markings.  It cost
+    -- nothing while an export could only be written onto the record's own
+    -- bytes -- they were already there -- and it costs everything the moment
+    -- a save is written from nothing, because then they are all that stands
+    -- between a party and six blank-named Pokemon belonging to nobody.
+    --
+    -- The layout is forced by the checksum's position, which is known: four
+    -- bytes of personality, four of trainer id, then ten of nickname (the
+    -- longest name this cartridge will take), a language byte, a flags byte,
+    -- seven of trainer name, one marking byte -- twenty-eight -- and the
+    -- checksum at 28.  Nothing else tiles it.
+    nicknameBytes = (function()
+      local out = {}
+      for i = 0, Gen3Save.NICKNAME_LENGTH - 1 do
+        local b = u8(bytes, off + 8 + i)
+        if b == 0xFF then break end
+        out[#out + 1] = b
+      end
+      return out
+    end)(),
+    language = u8(bytes, off + 18),
+    flags = u8(bytes, off + 19),
+    otNameBytes = (function()
+      local out = {}
+      for i = 0, Gen3Save.OT_NAME_LENGTH - 1 do
+        local b = u8(bytes, off + 20 + i)
+        if b == 0xFF then break end
+        out[#out + 1] = b
+      end
+      return out
+    end)(),
+    markings = u8(bytes, off + 27),
     substructs = subs,
   }
 end
@@ -347,6 +453,32 @@ function Gen3Save.unpackIVs(word)
     isEgg = math.floor(word / 2 ^ 30) % 2 == 1,
     altAbility = math.floor(word / 2 ^ 31) % 2 == 1,
   }
+end
+
+-- ...and both of them the other way, which a save written from NOTHING needs:
+-- there is no record to patch, so every packed field has to be built.  Each
+-- is the exact inverse of the reader above it, so the pair is checkable
+-- against itself -- pack what unpack gave back and the word returns.
+function Gen3Save.packIVs(ivs)
+  ivs = ivs or {}
+  local ORDER = { "hp", "attack", "defense", "speed", "spAttack", "spDefense" }
+  local word = 0
+  for i, k in ipairs(ORDER) do
+    local v = math.floor(tonumber(ivs[k]) or 0)
+    word = word + (math.max(0, math.min(31, v)) * 2 ^ ((i - 1) * 5))
+  end
+  if ivs.isEgg then word = word + 2 ^ 30 end
+  if ivs.altAbility then word = word + 2 ^ 31 end
+  return word
+end
+
+function Gen3Save.packOrigins(o)
+  o = o or {}
+  local word = math.max(0, math.min(127, math.floor(tonumber(o.metLevel) or 0)))
+  word = word + math.max(0, math.min(15, math.floor(tonumber(o.metGame) or 0))) * 128
+  word = word + math.max(0, math.min(15, math.floor(tonumber(o.ball) or 0))) * 2048
+  if o.otFemale then word = word + 32768 end
+  return word
 end
 
 -- Shininess is not stored; it is derived, which is why a save editor that
@@ -568,10 +700,27 @@ function Gen3Save.party(block1)
 end
 
 -- Every pocket is a run of four-byte slots: a two-byte item id and a two-byte
--- quantity.  The quantity of everything except the first pocket's contents is
--- stored plainly; the item pocket's quantities are XORed with the same key
--- that hides the money, which is why a reader without the key sees a bag full
--- of tens of thousands of potions.
+-- quantity.
+--
+-- ALL FIVE POCKETS HIDE THE QUANTITY, AND THE PC DOES NOT, and the cartridge
+-- draws that line itself rather than it being remembered here.
+-- ApplyNewEncryptionKeyToBagItems (ROM:00D658C) walks gBagPockets -- eight
+-- bytes a pocket, the capacity at +4, the slot array behind the pointer at
+-- +0 -- and for every slot passes `slots + item * 4 + 2` (the quantity) to
+-- ApplyNewEncryptionKeyToHword (ROM:0077100).  Its outer loop ends
+-- `cmp r1,#4 / bls`, which is pocket indices 0 THROUGH 4: all five.
+--
+-- Sitting in the twelve bytes immediately before that function are a pair of
+-- one-instruction accessors -- `ldrh r0,[r0]; bx lr` at 00D6584 and
+-- `strh r1,[r0]; bx lr` at 00D6588 -- with no XOR in them at all, beside the
+-- pair at 00D6550 / 00D656C that do XOR through SaveBlock2+$AC.  Two kinds of
+-- quantity, two kinds of accessor, next to each other: the encrypted one is
+-- the bag's and the plain one is the PC's.
+--
+-- `key` is optional so a caller that only wants the item IDS (the layout
+-- checks) need not have read SaveBlock2; without it `count` is the stored
+-- halfword, which is what this function always returned and is a bag full of
+-- tens of thousands of potions.
 function Gen3Save.bag(block1, key)
   local f = need("the bag")
   local bag = f.bag
@@ -581,9 +730,10 @@ function Gen3Save.bag(block1, key)
     local pocket = {}
     for slot = 0, bag.capacities[p] - 1 do
       local o = at + slot * bag.itemSlotSize
-      local id, qty = u16(block1, o), u16(block1, o + 2)
+      local id, raw = u16(block1, o), u16(block1, o + 2)
       if id ~= 0 then
-        pocket[#pocket + 1] = { item = id, count = qty, raw = qty,
+        local count = key and (xorU32(raw, key) % 65536) or raw
+        pocket[#pocket + 1] = { item = id, count = count, raw = raw,
                                 offset = o }
       end
     end
@@ -599,6 +749,54 @@ function Gen3Save.bag(block1, key)
     out.pc = pc
   end
   return out
+end
+
+-- WHICH SAVEBLOCK1 ARRAY EACH POCKET IS.
+--
+-- Two different orders meet here and only one of them is in the manifest.
+-- gItems[].pocket is the POCKET_* enum -- 1 items, 2 balls, 3 TMs and HMs,
+-- 4 berries, 5 key items -- and the five arrays inside SaveBlock1 are laid
+-- out in a different order again: items, key items, balls, TMs and HMs,
+-- berries.  Only the offsets and capacities are derived, and an offset does
+-- not say which pocket it holds.
+--
+-- SO THE ORDER IS CHECKED, not assumed, by the same argument the importer
+-- uses on it: three of the five pockets hold EVERY item of their kind that
+-- the game has -- sixteen slots for twelve balls, sixty-four for fifty-eight
+-- TMs and HMs, forty-six for forty-three berries -- and no other assignment
+-- of the five arrays satisfies all three at once.  The other two both hold
+-- thirty and cannot be told apart by size, which is exactly why the three
+-- that can are what the check rests on.
+--
+-- A bag that fails it is not written.  Scrambling a real cartridge's items
+-- across the wrong arrays is worse than leaving them as they were.
+Gen3Save.POCKET_ORDER = { "ITEM", "KEY_ITEM", "BALL", "TM_HM", "BERRY" }
+Gen3Save.POCKET_HOLDS_ALL = { BALL = true, TM_HM = true, BERRY = true }
+
+function Gen3Save.pocketOrder(cw)
+  local bag = Gen3Save.fields and Gen3Save.fields.bag
+  if not (bag and bag.capacities and bag.pockets) then
+    return nil, "this cartridge's save layout has no bag in it"
+  end
+  local held = {}
+  for _, def in pairs((cw and cw.itemDefs) or {}) do
+    if type(def) == "table" and def.pocket then
+      held[def.pocket] = (held[def.pocket] or 0) + 1
+    end
+  end
+  for i, name in ipairs(Gen3Save.POCKET_ORDER) do
+    local cap = bag.capacities[i]
+    if not cap then
+      return nil, ("the bag has %d arrays and the game has five pockets")
+                  :format(#bag.capacities)
+    end
+    local n = held[name]
+    if Gen3Save.POCKET_HOLDS_ALL[name] and n and n > cap then
+      return nil, ("the %s array holds %d and this game has %d of them, so "
+                   .. "the pocket order does not fit"):format(name, cap, n)
+    end
+  end
+  return Gen3Save.POCKET_ORDER
 end
 
 -- The boxes.  Their shape is forced rather than chosen: one wallpaper byte per
@@ -688,6 +886,13 @@ function Gen3Save.crosswalks(data)
   return { pokemonByIndex = pokemonByIndex, pokemonIndex = pokemonIndex,
            movesByIndex = movesByIndex, movesIndex = movesIndex,
            itemsByIndex = itemsByIndex, itemsIndex = itemsIndex,
+           -- ...and the records themselves, because writing the bag back
+           -- needs to know which POCKET each item goes in (gItems[].pocket)
+           itemDefs = (data and data.items) or {},
+           -- ...and the maps by id, for the other direction: decode turns a
+           -- group and a number into a map id, and the writer has to turn one
+           -- back
+           mapDefs = (data and data.maps) or {},
            mapsByGroupNumber = mapsByGroupNumber, mapsHaveGroups = haveGroups,
            decorationCategory = decorationCategory,
            speciesDefs = (data and data.pokemon) or {} }
@@ -911,6 +1116,19 @@ function Gen3Save.patchBoxMon(bytes, off, changes)
       if changes.evs[k] then setU8("evs", i - 1, changes.evs[k]) end
     end
   end
+  if changes.ppBonuses then setU8("growth", 8, changes.ppBonuses) end
+  -- ...AND THE REST OF MISC AND EVS, which a patch never needed and a record
+  -- built from nothing cannot do without: where it was met, what it was
+  -- caught in, and the five contest numbers that sit behind the EVs.
+  if changes.contest then
+    local ORDER = { "cool", "beauty", "cute", "smart", "tough", "sheen" }
+    for i, k in ipairs(ORDER) do
+      if changes.contest[k] then setU8("evs", 5 + i, changes.contest[k]) end
+    end
+  end
+  if changes.pokerus then setU8("misc", 0, changes.pokerus) end
+  if changes.metLocation then setU8("misc", 1, changes.metLocation) end
+  if changes.origins then setU16("misc", 2, changes.origins) end
   if changes.ivWord then setU32("misc", 4, changes.ivWord) end
 
   local sum = 0
@@ -946,7 +1164,136 @@ local function boxChanges(mon, cw)
                     defense = mon.evs.defense, speed = mon.evs.speed,
                     spAttack = mon.evs.spatk, spDefense = mon.evs.spdef }
   end
+  if mon.contest then
+    changes.contest = { cool = mon.contest.cool, beauty = mon.contest.beauty,
+                        cute = mon.contest.cute, smart = mon.contest.smart,
+                        tough = mon.contest.tough, sheen = mon.contest.sheen }
+  end
+  if mon.gen3Pokerus then changes.pokerus = mon.gen3Pokerus end
+  -- PP UPS are two bits a move in one byte, so they are rebuilt from the four
+  -- moves together rather than patched one at a time
+  if mon.moves then
+    local bonuses, any = 0, false
+    for k, mv in ipairs(mon.moves) do
+      if k <= 4 and mv.ppUps and mv.ppUps > 0 then
+        bonuses = bonuses + (math.min(3, mv.ppUps) * 4 ^ (k - 1))
+        any = true
+      end
+    end
+    if any then changes.ppBonuses = bonuses end
+  end
   return changes
+end
+
+-- ...and the fields a PATCH never has to supply because the record already
+-- carries them, which a record built from nothing does.  Kept apart from
+-- boxChanges so that patching a real cartridge record still touches only what
+-- this project actually models: writing a met location onto a Pokemon that
+-- came off a cartridge would replace a real one with this port's guess.
+local function boxOrigins(mon, cw)
+  local out = {}
+  if mon.metLocation then out.metLocation = math.floor(mon.metLocation) end
+  out.origins = Gen3Save.packOrigins({
+    metLevel = mon.metLevel or mon.level,
+    -- the game of origin: EMERALD is what a Pokemon caught in this port was
+    -- caught in, and the number is the one the import reads back out of the
+    -- same field (unpackOrigins) rather than a new claim
+    metGame = mon.gen3MetGame or Gen3Save.MET_GAME_EMERALD,
+    ball = (cw and mon.ball and cw.itemsIndex[mon.ball]) or nil,
+    otFemale = mon.gen3OtFemale,
+  })
+  out.ivWord = Gen3Save.packIVs({
+    hp = (mon.ivs or {}).hp, attack = (mon.ivs or {}).attack,
+    defense = (mon.ivs or {}).defense, speed = (mon.ivs or {}).speed,
+    spAttack = (mon.ivs or {}).spatk, spDefense = (mon.ivs or {}).spdef,
+    isEgg = mon.isEgg, altAbility = mon.altAbility,
+  })
+  return out
+end
+
+-- BUILDING A RECORD RATHER THAN MOVING ONE.
+--
+-- The box writer relocates the eighty bytes a Pokemon ARRIVED in, because
+-- those bytes carry more than this project models.  A Pokemon that never
+-- arrived -- caught in this port, in a save that was never imported -- has no
+-- such bytes, and until now that meant it could not be written at all: its
+-- slot was left empty and it was named in `unwritable`.  For a save built from
+-- nothing that is EVERY Pokemon, which is an export with no party in it.
+--
+-- So the record is built.  What goes in it is the port's own fields plus the
+-- two things structure forces:
+--
+--   * THE PERSONALITY MUST NOT BE ZERO.  It keys the encryption, the
+--     substructure order, the nature, the ability slot and the gender, and a
+--     record whose personality and trainer id are both zero is what this
+--     codec's own reader calls an empty slot.  A Gen 3 Pokemon made by this
+--     port already has one; a Pokemon carried over from a Gen 1 or Gen 2 save
+--     does not, and gets one derived from what it IS -- species, level and
+--     owner -- so that the same save exported twice is the same bytes rather
+--     than a new Pokemon each time.
+--   * HAS_SPECIES MUST BE SET.  The cartridge reads that one bit before it
+--     reads anything else; a complete record with it clear is an empty slot.
+--
+-- The trainer is the PLAYER unless the Pokemon names its own -- which is what
+-- makes a traded Pokemon still somebody else's, and what makes shininess come
+-- out the same here as it does in the port.
+function Gen3Save.buildBoxMon(mon, cw, owner)
+  owner = owner or {}
+  local personality = math.floor(tonumber(mon.personality) or 0)
+  local publicId = math.floor(tonumber(mon.otId) or tonumber(owner.id) or 0) % 65536
+  local secretId = math.floor(tonumber(mon.secretId)
+                              or tonumber(owner.secretId) or 0) % 65536
+  local otId = secretId * 65536 + publicId
+  if personality <= 0 then
+    -- DERIVED, NOT ROLLED.  A random one would make every export of the same
+    -- save a different Pokemon -- different nature, different ability,
+    -- different gender -- and two exports of one save have to match.  The
+    -- species and the owner are what this Pokemon is; the odd multiplier is
+    -- only there to spread neighbouring species across the 24 substructure
+    -- orders instead of lining them all up on the same one.
+    local index = (cw and mon.species and cw.pokemonIndex[mon.species]) or 0
+    personality = ((index * 2654435761)
+                   + (math.floor(tonumber(mon.level) or 0) * 40503)
+                   + otId) % 4294967296
+    if personality == 0 then personality = 1 end
+  end
+
+  local defaults = owner.defaults or {}
+  local nickname = mon.nickname
+  if not nickname or nickname == "" then
+    -- the species' own name, which is what the cartridge puts in an
+    -- un-nicknamed record: a blank one shows as blanks, not as the species
+    local def = cw and cw.speciesDefs and cw.speciesDefs[mon.species]
+    nickname = (def and def.name) or tostring(mon.species or "")
+  end
+  local otName = mon.gen3OtName or owner.name or ""
+  local flags = Gen3Save.MON_HAS_SPECIES
+  if mon.isEgg then flags = flags + Gen3Save.MON_IS_EGG end
+
+  local record = b32(personality) .. b32(otId)
+    .. (encodeText(nickname, Gen3Save.NICKNAME_LENGTH)
+        or string.rep("\255", Gen3Save.NICKNAME_LENGTH))
+    .. b8(math.floor(tonumber(mon.gen3Language)
+                     or defaults.language or Gen3Save.LANGUAGE_ENGLISH))
+    .. b8(flags)
+    .. (encodeText(otName, Gen3Save.OT_NAME_LENGTH)
+        or string.rep("\255", Gen3Save.OT_NAME_LENGTH))
+    .. b8(math.floor(tonumber(mon.gen3Markings) or 0))
+    .. b16(0) .. b16(0)
+    .. string.rep("\0", Gen3Save.SECURE_SIZE)
+
+  local changes = boxChanges(mon, cw)
+  for k, v in pairs(boxOrigins(mon, cw)) do changes[k] = v end
+  if changes.origins == nil or mon.gen3MetGame == nil then
+    changes.origins = Gen3Save.packOrigins({
+      metLevel = mon.metLevel or mon.level,
+      metGame = mon.gen3MetGame or defaults.metGame
+                or Gen3Save.MET_GAME_EMERALD,
+      ball = (cw and mon.ball and cw.itemsIndex[mon.ball]) or nil,
+      otFemale = mon.gen3OtFemale,
+    })
+  end
+  return Gen3Save.patchBoxMon(record, 0, changes)
 end
 
 -- Apply a decoded-and-edited save table back onto the blocks it came from.
@@ -1130,15 +1477,96 @@ function Gen3Save.applyBlocks(blocks, save, cw)
     end
   end
 
-  -- The party.  Each slot is PATCHED rather than rebuilt, so a Pokemon keeps
-  -- its nickname, its original trainer, where it was met and its ribbons --
-  -- none of which this project models and all of which a rebuild would erase.
+  -- EVERY RECORD THIS SAVE ALREADY HOLDS, FOUND BEFORE ANYTHING IS WRITTEN.
+  --
+  -- A Pokemon is identified by its personality and its trainer id together --
+  -- the pair that keys its substructure order, its shininess and its
+  -- encryption on the cartridge as much as here -- and the commonest edit of
+  -- all, depositing, MOVES a record from the party into a box.  So the map is
+  -- taken in one pass over both before a single byte changes, or a deposit
+  -- would look for its original in a slot that has already been overwritten.
+  --
+  -- It was built inside the box writer and the party writer could not see it,
+  -- which did not matter while the party was only ever patched in place.  It
+  -- matters now: a party slot in a save built from NOTHING holds zeros, and
+  -- patching zeros produces a Pokemon whose personality and trainer id are
+  -- both zero -- which this codec's own reader calls an empty slot.
+  local origins = {}
+  do
+    local function remember(source, at)
+      if not source then return end
+      local mon = Gen3Save.decodeBoxMon(source, at)
+      if not mon.empty then
+        local key = ("%d:%d"):format(mon.personality, mon.otId)
+        origins[key] = origins[key]
+          or source:sub(at + 1, at + Gen3Save.BOX_MON_SIZE)
+      end
+    end
+    if f.party then
+      for i = 1, f.party.size do
+        remember(blocks.block1, f.party.start + (i - 1) * f.party.monSize)
+      end
+    end
+    if f.storage and blocks.storage then
+      local sst = f.storage
+      for b = 1, sst.boxCount do
+        local base = sst.boxes + (b - 1) * sst.boxCapacity * sst.boxMonSize
+        for slot = 1, sst.boxCapacity do
+          remember(blocks.storage, base + (slot - 1) * sst.boxMonSize)
+        end
+      end
+    end
+  end
+  local function originOf(mon)
+    if not (mon and mon.personality and mon.otId) then return nil end
+    return origins[("%d:%d"):format(mon.personality,
+                                    (mon.secretId or 0) * 65536 + mon.otId)]
+  end
+  -- who a Pokemon with no trainer of its own belongs to, and what language a
+  -- Pokemon with no language of its own is written in
+  local owner = {
+    id = save.player and save.player.id,
+    secretId = save.player and save.player.secretId,
+    name = save.player and save.player.name,
+    defaults = Gen3Save.saveDefaults(blocks),
+  }
+
+  -- The party.  A slot whose Pokemon came off a cartridge is PATCHED -- the
+  -- record keeps its nickname, its original trainer, where it was met and its
+  -- ribbons, none of which this project models and all of which a rebuild
+  -- would erase.  One that did not is BUILT (see buildBoxMon), which is what
+  -- lets a playthrough that never touched a cartridge export a party at all.
   if save.party and f.party then
-    b1 = put(b1, f.party.count, b8(#save.party))
-    for i, mon in ipairs(save.party) do
-      if i <= f.party.size then
-        local at = f.party.start + (i - 1) * f.party.monSize
-        b1 = Gen3Save.patchBoxMon(b1, at, boxChanges(mon, cw))
+    b1 = put(b1, f.party.count, b8(math.min(#save.party, f.party.size)))
+    local blank = string.rep("\0", f.party.monSize)
+    for i = 1, f.party.size do
+      local mon = save.party[i]
+      local at = f.party.start + (i - 1) * f.party.monSize
+      if mon == nil then
+        b1 = put(b1, at, blank)
+      else
+        local from = originOf(mon)
+        if from then
+          b1 = put(b1, at, from)
+          b1 = Gen3Save.patchBoxMon(b1, at, boxChanges(mon, cw))
+        else
+          b1 = put(b1, at, Gen3Save.buildBoxMon(mon, cw, owner)
+                           .. string.rep("\0", f.party.monSize
+                                               - Gen3Save.BOX_MON_SIZE))
+          -- THE FIVE COMPUTED STATS, which only a party record carries and
+          -- only a built one has to supply: a relocated record already has
+          -- them, and the cartridge recomputes them at the next level.  Left
+          -- at zero a freshly exported party is six Pokemon with no Attack.
+          local st5 = mon.stats or {}
+          local ORDER = { st5.attack, st5.defense, st5.speed,
+                          st5.spatk or st5.spAttack,
+                          st5.spdef or st5.spDefense }
+          for k, v in ipairs(ORDER) do
+            b1 = put(b1, at + 88 + k * 2,
+                     b16(math.max(0, math.min(65535, math.floor(v or 0)))))
+          end
+        end
+        if mon.statusWord then b1 = put(b1, at + 80, b32(mon.statusWord)) end
         if mon.level then b1 = put(b1, at + 84, b8(mon.level)) end
         if mon.hp then b1 = put(b1, at + 86, b16(mon.hp)) end
         if mon.maxHp then b1 = put(b1, at + 88, b16(mon.maxHp)) end
@@ -1179,27 +1607,8 @@ function Gen3Save.applyBlocks(blocks, save, cw)
   local storage = blocks.storage
   local st = f.storage
   if save.boxes and st and storage then
-    local origins = {}
-    local function remember(source, at)
-      local mon = Gen3Save.decodeBoxMon(source, at)
-      if not mon.empty then
-        local key = ("%d:%d"):format(mon.personality, mon.otId)
-        origins[key] = origins[key]
-          or source:sub(at + 1, at + Gen3Save.BOX_MON_SIZE)
-      end
-    end
-    if f.party then
-      for i = 1, f.party.size do
-        remember(blocks.block1, f.party.start + (i - 1) * f.party.monSize)
-      end
-    end
-    for b = 1, st.boxCount do
-      local base = st.boxes + (b - 1) * st.boxCapacity * st.boxMonSize
-      for slot = 1, st.boxCapacity do
-        remember(storage, base + (slot - 1) * st.boxMonSize)
-      end
-    end
-
+    -- the same map the party writer used, taken once above -- a deposit moves
+    -- a record from one to the other and both have to look in the same place
     local empty = string.rep("\0", st.boxMonSize)
     for b = 1, st.boxCount do
       local box = save.boxes[b] or {}
@@ -1207,23 +1616,33 @@ function Gen3Save.applyBlocks(blocks, save, cw)
       for slot = 1, st.boxCapacity do
         local at = base + (slot - 1) * st.boxMonSize
         local mon = box[slot]
-        local from = mon and mon.personality and mon.otId
-          and origins[("%d:%d"):format(mon.personality,
-                                       (mon.secretId or 0) * 65536 + mon.otId)]
+        local from = mon and originOf(mon)
         if mon == nil then
           storage = put(storage, at, empty)
         elseif from then
           storage = put(storage, at, from)
           storage = Gen3Save.patchBoxMon(storage, at, boxChanges(mon, cw))
         else
-          storage = put(storage, at, empty)
-          unwritable = unwritable or {}
-          unwritable[#unwritable + 1] =
-            { species = mon.species, box = b, slot = slot }
+          -- ...and one that never came off a cartridge is BUILT, the same way
+          -- the party's are.  It used to be left empty and reported, which was
+          -- the right answer while a record could only be moved and never
+          -- made -- and which emptied every box of a save written from
+          -- nothing.
+          storage = put(storage, at, Gen3Save.buildBoxMon(mon, cw, owner))
         end
       end
       if box.wallpaper then
         storage = put(storage, st.boxWallpapers + b - 1, b8(box.wallpaper))
+      end
+      -- ...AND ITS NAME, which decode reads and nothing wrote.  Renaming a box
+      -- in the port was discarded on export, and on a save built from nothing
+      -- every one of the fourteen would have come out blank.
+      if box.name and st.boxNames and st.boxNameLength then
+        local named = encodeText(box.name, st.boxNameLength)
+        if named then
+          storage = put(storage, st.boxNames + (b - 1) * st.boxNameLength,
+                        named)
+        end
       end
     end
     if save.currentBox then
@@ -1231,9 +1650,276 @@ function Gen3Save.applyBlocks(blocks, save, cw)
     end
   end
 
+  -- ---- WHO THE PLAYER IS ------------------------------------------------
+  --
+  -- Read by decode and never written, which mattered nothing while an export
+  -- could only ever be written onto the cartridge image it came from -- the
+  -- name was already in it.  A save built from NOTHING has eight zero bytes
+  -- there, and zero is a SPACE in this cartridge's charmap, so the trainer
+  -- card would have read as eight spaces and the trainer id as 00000.
+  --
+  -- The name is padded with the terminator rather than with spaces, which is
+  -- what makes a four-letter name four letters long on the card instead of an
+  -- eight-wide field with a name at one end.
+  -- eight, which is the gap the layout leaves between playerName and
+  -- playerGender and the same eight playerNameBytes reads back
+  local nameLen = (s2.playerGender and s2.playerName
+                   and (s2.playerGender - s2.playerName)) or 8
+  if type(save.player) == "table" then
+    if save.player.name then
+      local bytes = encodeText(save.player.name, nameLen)
+      if bytes then b2 = put(b2, s2.playerName, bytes) end
+    end
+    if save.player.gender then
+      b2 = put(b2, s2.playerGender,
+               b8(save.player.gender == "girl" and 1 or 0))
+    end
+    -- THE TWO HALVES OF THE TRAINER ID ARE ONE WORD, and the secret half is
+    -- the one nobody sees: it decides shininess and it is what a traded
+    -- Pokemon is checked against, so a save that dropped it would turn every
+    -- Pokemon the player owns into somebody else's.
+    if save.player.id then
+      b2 = put(b2, s2.playerTrainerId,
+               b16(math.floor(save.player.id) % 65536)
+               .. b16(math.floor(save.player.secretId or 0) % 65536))
+    end
+  end
+
+  -- ---- WHERE THE PLAYER IS STANDING, WHICH NOTHING WROTE EITHER ---------
+  --
+  -- `decode` reads three numbers out of the save -- the map's group and
+  -- number out of SaveBlock1's WarpData, and the coordinates out of the
+  -- Coords16 at the front of the block -- and nothing put any of them back.
+  -- An exported save dropped the player wherever the CARTRIDGE was standing
+  -- when it was imported, however far they had walked since.
+  --
+  -- Written only when the map resolves to a group and a number this cartridge
+  -- knows, for the same reason decode refuses the other way: a map this port
+  -- invented has no pair to write, and writing a wrong one puts the player
+  -- inside a map that does not exist.
+  --
+  -- THE WARP ID IS LEFT ALONE.  WarpData carries one after the group and
+  -- number, and a save made in the field holds -1 there -- "use the
+  -- coordinates" -- which is exactly the state being written here.  Nothing
+  -- in the import derives that byte, so it keeps whatever the cartridge put
+  -- in it rather than being set from a guess.
+  if type(save.player) == "table" and s1.location and cw.mapDefs then
+    local def = save.player.map and cw.mapDefs[save.player.map]
+    local group, number = def and tonumber(def.group), def and tonumber(def.number)
+    if group and number then
+      b1 = put(b1, s1.location, b8(group % 256) .. b8(number % 256))
+      if s1.posX and save.player.x then
+        b1 = put(b1, s1.posX, b16(math.floor(save.player.x) % 65536))
+      end
+      if s1.posY and save.player.y then
+        b1 = put(b1, s1.posY, b16(math.floor(save.player.y) % 65536))
+      end
+    elseif save.player.map then
+      unwritable = unwritable or {}
+      unwritable[#unwritable + 1] =
+        { what = "location", id = save.player.map,
+          reason = "this map has no group and number on the cartridge, so "
+                   .. "the saved position is left where it was" }
+    end
+  end
+
+  -- ---- THE BAG, WHICH NOTHING WROTE AT ALL ------------------------------
+  --
+  -- Every other field here was at least attempted; the bag was not in this
+  -- function, so an exported save came back carrying the items the CARTRIDGE
+  -- had when it was imported and none of the ones earned since.  A player who
+  -- imported a save, played to Dewford and exported got their potions,
+  -- repels, Devon Goods and every berry picked on the way silently rolled
+  -- back.
+  --
+  -- WRITTEN WHOLE, like the flags and the game statistics, and for the same
+  -- reason: a slot that went EMPTY has to be cleared rather than merely not
+  -- rewritten, or an item the player used up is still sitting in the bag.
+  --
+  -- The quantities go back through the key (see Gen3Save.bag for where that
+  -- line is drawn); the PC's do not.
+  local bagLayout = f.bag
+  if type(save.inventory) == "table" and bagLayout then
+    local order, why = Gen3Save.pocketOrder(cw)
+    if not order then
+      unwritable = unwritable or {}
+      unwritable[#unwritable + 1] =
+        { what = "bag", reason = tostring(why) }
+    else
+      -- THE PLAYER'S OWN ORDER FIRST.  `bagOrder` is the sequence the import
+      -- read the bag in, and Emerald's bag is not sorted -- it is the order
+      -- things were picked up, and the player has been re-arranging it since
+      -- the first Potion.  Anything the order does not name (picked up in
+      -- this port, so never in that list) follows, by item id, so that two
+      -- exports of the same save produce the same bytes.
+      local placed, sequence = {}, {}
+      for _, id in ipairs(save.bagOrder or {}) do
+        if not placed[id] and (save.inventory[id] or 0) > 0 then
+          placed[id] = true
+          sequence[#sequence + 1] = id
+        end
+      end
+      local rest = {}
+      for id, count in pairs(save.inventory) do
+        if not placed[id] and (tonumber(count) or 0) > 0 then
+          rest[#rest + 1] = id
+        end
+      end
+      table.sort(rest, function(a, b)
+        return (cw.itemsIndex[a] or 0) < (cw.itemsIndex[b] or 0)
+      end)
+      for _, id in ipairs(rest) do sequence[#sequence + 1] = id end
+
+      local slots = {}
+      for i = 1, #order do slots[i] = {} end
+      local byName = {}
+      for i, name in ipairs(order) do byName[name] = i end
+      for _, id in ipairs(sequence) do
+        local index = cw.itemsIndex[id]
+        local def = cw.itemDefs[id]
+        local pocket = def and def.pocket and byName[def.pocket]
+        if index and pocket then
+          local into = slots[pocket]
+          if #into < bagLayout.capacities[pocket] then
+            into[#into + 1] = { index = index,
+                                count = math.floor(save.inventory[id]) }
+          else
+            -- A POCKET THAT IS FULL IS SAID OUT LOUD rather than spilled into
+            -- the next array, which is a different pocket and would put
+            -- berries among the TMs.
+            unwritable = unwritable or {}
+            unwritable[#unwritable + 1] =
+              { what = "item", id = id,
+                reason = ("the %s pocket holds %d and is full")
+                         :format(def.pocket, bagLayout.capacities[pocket]) }
+          end
+        elseif index then
+          unwritable = unwritable or {}
+          unwritable[#unwritable + 1] =
+            { what = "item", id = id,
+              reason = "this item names no pocket, so there is no array for it" }
+        end
+      end
+      for p, at in ipairs(bagLayout.pockets) do
+        for slot = 0, bagLayout.capacities[p] - 1 do
+          local o = at + slot * bagLayout.itemSlotSize
+          local entry = slots[p] and slots[p][slot + 1]
+          if entry then
+            -- the count is clamped to the field, not to a stack size: this
+            -- cartridge's own cap is not among the numbers the import derives,
+            -- and inventing one would silently take items away
+            local n = math.max(0, math.min(65535, entry.count))
+            b1 = put(b1, o, b16(entry.index % 65536)
+                            .. b16(xorU32(n, key) % 65536))
+          else
+            b1 = put(b1, o, b16(0) .. b16(xorU32(0, key) % 65536))
+          end
+        end
+      end
+    end
+  end
+
+  -- ...AND THE PC'S FIFTY SLOTS, whose quantities are stored plain
+  if type(save.pcItems) == "table" and bagLayout and bagLayout.pcItems then
+    local placed, sequence = {}, {}
+    for _, id in ipairs(save.pcOrder or {}) do
+      if not placed[id] and (save.pcItems[id] or 0) > 0 then
+        placed[id] = true
+        sequence[#sequence + 1] = id
+      end
+    end
+    local rest = {}
+    for id, count in pairs(save.pcItems) do
+      if not placed[id] and (tonumber(count) or 0) > 0 then
+        rest[#rest + 1] = id
+      end
+    end
+    table.sort(rest, function(a, b)
+      return (cw.itemsIndex[a] or 0) < (cw.itemsIndex[b] or 0)
+    end)
+    for _, id in ipairs(rest) do sequence[#sequence + 1] = id end
+    for slot = 0, (bagLayout.pcItemCount or 0) - 1 do
+      local o = bagLayout.pcItems + slot * bagLayout.itemSlotSize
+      local id = sequence[slot + 1]
+      local index = id and cw.itemsIndex[id]
+      if index then
+        local n = math.max(0, math.min(65535,
+                                       math.floor(save.pcItems[id] or 0)))
+        b1 = put(b1, o, b16(index % 65536) .. b16(n))
+      else
+        b1 = put(b1, o, b16(0) .. b16(0))
+      end
+    end
+    for i = (bagLayout.pcItemCount or 0) + 1, #sequence do
+      unwritable = unwritable or {}
+      unwritable[#unwritable + 1] =
+        { what = "item", id = sequence[i],
+          reason = ("the PC holds %d items and is full")
+                   :format(bagLayout.pcItemCount or 0) }
+    end
+  end
+
   return { slot = blocks.slot, counter = blocks.counter,
            block1 = b1, block2 = b2, storage = storage,
            unwritable = unwritable }
+end
+
+-- ---------------------------------------------------------------------------
+-- A SAVE BUILT FROM NOTHING
+--
+-- Reported as: make export work "without having to import saves like the other
+-- games do".  Gen 1 and Gen 2 write a save from an empty image; this refused
+-- to, and the refusal was a real argument -- a Gen 3 save holds the Pokedex,
+-- the Frontier records, the secret base, the mail and a hundred other things
+-- this project does not model, and a save written from nothing is missing all
+-- of them.  But "missing" and "wrong" are not the same thing, and the
+-- difference is what makes this safe to do after all:
+--
+--   * WHAT THE PORT MODELS is written from the port, exactly as it is onto an
+--     imported template.
+--   * WHAT IT DOES NOT is ZERO -- which for every one of those systems is the
+--     state a cartridge is in before the player has touched it.  An empty
+--     Pokedex, no Frontier record, no secret base, no mail.  That is what a
+--     playthrough which never saw a cartridge actually has.
+--
+-- The one field that is not simply zero-shaped is the ENCRYPTION KEY, and
+-- zero is the right answer there too rather than a convenient one: every
+-- encrypted field is stored value-XOR-key, so a key of zero stores the plain
+-- value, and the cartridge re-rolls the key on its own schedule
+-- (ApplyNewEncryptionKeyToAllEncryptedData walks every one of them when it
+-- does).  A key this port invented would have to be written consistently into
+-- six different places to mean anything, and means nothing if it is.
+--
+-- WRITTEN INTO SLOT 0 WITH COUNTER 1, leaving slot 1 unsigned.  That is not a
+-- half-written save: currentSlot takes the only valid slot when the other
+-- carries no 08012025 signature, which is the same path a cartridge's very
+-- first save takes.
+function Gen3Save.blank()
+  local layout = Gen3Save.layout
+  local f = need("a blank save")
+  if not layout then error("Gen3Save: no sector layout (setLayout first)") end
+  local storage = string.rep("\0", layout.pokemonStorageSize)
+  -- ...EXCEPT THE BOX NAMES, which are not a system the player has yet to
+  -- touch -- they are furniture the cartridge puts in before the first frame
+  -- (ResetPokemonStorageSystem names every box), and a PC whose fourteen
+  -- boxes are all called nothing is a broken screen rather than an empty one.
+  -- The engine's own names are written over these by applyBlocks where it has
+  -- them; this is what a box the port never named falls back to.
+  local st = f.storage
+  if st and st.boxNames and st.boxCount and st.boxNameLength then
+    for b = 1, st.boxCount do
+      local name = encodeText(("BOX %d"):format(b), st.boxNameLength)
+      if name then
+        storage = put(storage, st.boxNames + (b - 1) * st.boxNameLength, name)
+      end
+    end
+  end
+  local blocks = {
+    block2 = string.rep("\0", layout.saveBlock2Size),
+    block1 = string.rep("\0", layout.saveBlock1Size),
+    storage = storage,
+  }
+  return Gen3Save.writeSlot(string.rep("\0", Gen3Save.SAVE_SIZE), 0, blocks, 1)
 end
 
 -- Lay the three structures back across fourteen sectors and sign each one.
@@ -1333,6 +2019,23 @@ local function engineMon(mon, cw, isParty)
                                     pp = mon.pp[i], ppUps = ups }
     end
   end
+  -- ...AND THE PLAIN HEADER.  None of these change how a Pokemon fights and
+  -- all of them decide who it IS on the cartridge's own screens: what it is
+  -- called, whose it is, and which language the two names are written in.
+  -- They rode along for free while an export could only be written onto the
+  -- record's own bytes; a save written from nothing has to carry them itself.
+  local nick = decodeText(mon.nicknameBytes)
+  if nick and nick ~= "" then out.nickname = nick end
+  local ot = decodeText(mon.otNameBytes)
+  if ot and ot ~= "" then out.gen3OtName = ot end
+  if mon.language and mon.language ~= 0 then out.gen3Language = mon.language end
+  if mon.markings and mon.markings ~= 0 then out.gen3Markings = mon.markings end
+  if mon.pokerus and mon.pokerus ~= 0 then out.gen3Pokerus = mon.pokerus end
+  if mon.contest then
+    out.contest = { cool = mon.contest.cool, beauty = mon.contest.beauty,
+                    cute = mon.contest.cute, smart = mon.contest.smart,
+                    tough = mon.contest.tough, sheen = mon.contest.sheen }
+  end
   if isParty then
     out.level = mon.level
     out.hp = mon.hp
@@ -1378,9 +2081,13 @@ function Gen3Save.decode(bytes, data)
   }
 
   -- the bag, folded into one flat inventory the way the Gen 1 and Gen 2
-  -- codecs do, with the pocket order kept so an export can rebuild it
+  -- codecs do, with the pocket order kept so an export can rebuild it.
+  -- THROUGH THE KEY: the five pockets store the quantity XORed with
+  -- SaveBlock2+$AC (see Gen3Save.bag), and reading it without gave every
+  -- imported item a count in the tens of thousands.
+  local bagKey = Gen3Save.encryptionKey(blocks.block2)
   local order = {}
-  for _, pocket in ipairs(Gen3Save.bag(blocks.block1) or {}) do
+  for _, pocket in ipairs(Gen3Save.bag(blocks.block1, bagKey) or {}) do
     for _, slot in ipairs(pocket) do
       local id = cw.itemsByIndex[slot.item]
       if id then
@@ -1393,7 +2100,10 @@ function Gen3Save.decode(bytes, data)
   end
   save.bagOrder = order
   local pcOrder = {}
-  for _, slot in ipairs((Gen3Save.bag(blocks.block1) or {}).pc or {}) do
+  -- ...and the PC's quantities are stored PLAIN, which is why the same call
+  -- reads them without the key applied to them (Gen3Save.bag leaves the pc
+  -- list alone)
+  for _, slot in ipairs((Gen3Save.bag(blocks.block1, bagKey) or {}).pc or {}) do
     local id = cw.itemsByIndex[slot.item]
     if id then
       save.pcItems[id] = (save.pcItems[id] or 0) + slot.count
@@ -1483,9 +2193,21 @@ end
 -- mail -- and would look fine until the cartridge loaded it.
 function Gen3Save.encode(save, data, template)
   local image = template or (save and save.rawImport)
-  if type(image) ~= "string" or #image ~= Gen3Save.SAVE_SIZE then
-    error("a Gen 3 save can only be written onto the image it came from; "
-          .. "import one first so there is something to write onto")
+  -- A PLAYTHROUGH THAT NEVER CAME OFF A CARTRIDGE gets a blank one built for
+  -- it (see Gen3Save.blank).  This used to refuse, and the argument for
+  -- refusing was real -- everything this project does not model would be
+  -- missing -- but "missing" is the same thing as "not yet touched" for every
+  -- one of those systems, which is exactly true of a save that started here.
+  -- What is NOT allowed is the middle case: an image of the wrong size is a
+  -- file that is not a Gen 3 save, and quietly replacing it with a blank one
+  -- would throw away whatever the caller actually meant to write onto.
+  if image == nil then
+    image = Gen3Save.blank()
+  elseif type(image) ~= "string" or #image ~= Gen3Save.SAVE_SIZE then
+    error(("a Gen 3 save image is %d bytes; this one is %s")
+          :format(Gen3Save.SAVE_SIZE,
+                  type(image) == "string" and (#image .. " bytes")
+                                          or type(image)))
   end
   local blocks, err = Gen3Save.readBlocks(image)
   if not blocks then error(err or "the template save is not intact") end

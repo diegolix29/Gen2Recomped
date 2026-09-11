@@ -6857,6 +6857,115 @@ function RomExtractorGen3:extractOverworldSprites()
                 .. "(%s) -- sprites.lua is still written", tostring(artErr))
   end
 
+  -- ---- ...AND THE BERRY TREES, WHOSE NINE FRAMES ARE TWO SIZES ----------
+  --
+  -- Reported from play: "berry trees are invisible same with sprouts etc".
+  -- They were, and the loop above is exactly why.  A berry tree's
+  -- SpriteFrameImage array is the only one on this cartridge whose entries
+  -- are not all one size: three of 128 bytes (16x16 -- the seed and the two
+  -- sprout frames) and six of 256 (16x32, once the plant stands taller than
+  -- its tile).  The length walk above stops at the first frame whose byte
+  -- count differs from the first frame's, so a tree measured THREE frames,
+  -- and with no facing set in its animation table it fell back to the single
+  -- frame zero.  Every tree in Hoenn drew a seed -- and an empty plot draws
+  -- nothing at all, which is what "invisible" was.
+  --
+  -- THE THREE ROWS ARE THE CARTRIDGE SAYING SO.  Rows 60 and 61 declare
+  -- height 16 and row 62 declares 32 (ROM 050A1E8 / 050A20C / 050A230), and
+  -- all three name the SAME nine-frame array.  That is SetBerryTreeGraphics
+  -- swapping the object between an early graphics id and a late one as the
+  -- plant grows -- and swapping `sprite->images` to the BERRY'S OWN pic table
+  -- at the same moment, which is why gBerryTreePicTablePointers is 43 entries
+  -- long (one per berry) over 30 distinct sheets.
+  --
+  -- ONE CELL SIZE HERE, because a sprite in this port draws out of one sheet:
+  -- the TALL cell, with the three short frames sat on its floor.  A 16x16
+  -- object event and a 16x32 one are both anchored by their bottom edge, so
+  -- bottom-aligning the short frames inside a tall cell puts the seed exactly
+  -- where the cartridge puts it and costs the renderer nothing.
+  --
+  -- WHAT IS NOT READ HERE: the per-berry PALETTE SLOT.  The cartridge also
+  -- writes `sprite->oam.paletteNum` out of gBerryTreePaletteSlotTablePointers
+  -- as the stage changes; every sheet here wears the palette its own graphics
+  -- row names (tag $1103), which is the one the early stages and most of the
+  -- trees use.  A berry whose late stages ask for another slot is the right
+  -- picture in the wrong colours -- a known gap, not a silent one.
+  local treeArt = self:berryTreeArt()
+  if treeArt and treeArt.keys then
+    local info = self.rom:pointer(table_ + treeArt.row * 4)
+    local treeColors = info and palettes[self.rom:u16(info + 2)]
+    local TREE_CELL = treeArt.cell or 32
+    local TREE_FRAMES = treeArt.frames or 9
+    local placed = {}
+    for berry = 1, treeArt.entries do
+      local slot = treeArt.sheets[berry]
+      local key = slot and treeArt.keys[slot]
+      if key and not placed[slot] then
+        placed[slot] = self.rom:pointer(treeArt.table_ + (berry - 1) * 4)
+        out[key] = {
+          id = key,
+          image = ("assets/generated/overworld/g3_berry_tree_%02d.png")
+                  :format(slot),
+          frames = TREE_FRAMES,
+          -- a tree does not face anywhere: the frame is chosen by the growth
+          -- stage, which is what `fixedFrame` is for
+          walker = false,
+          trueColor = true,
+          frameWidth = 16,
+          frameHeight = TREE_CELL,
+          source = ("ROM:gBerryTreePicTablePointers %07X[%d] -> %07X, nine "
+                    .. "frames bottom-aligned in a 16x32 cell")
+                   :format(treeArt.table_, berry - 1, placed[slot] or 0),
+        }
+      end
+    end
+    local okTree, treeErr = pcall(function()
+      if not treeColors then error("the tree's palette tag is not in the "
+                                   .. "object palette table") end
+      for slot, images in pairs(placed) do
+        local image = self:objectGfxSheet(16, TREE_CELL * TREE_FRAMES)
+        if not image then return end
+        for f = 0, TREE_FRAMES - 1 do
+          local at = self.rom:pointer(images + f * 8)
+          local bytes = self.rom:u16(images + f * 8 + 4)
+          local height = math.floor(bytes * 2 / 16)
+          local px = (at and height >= 8 and height % 8 == 0)
+                     and RomGba.tiles4bpp(self.rom:bytes(at, bytes), 2,
+                                          height / 8) or nil
+          local floor = TREE_CELL - (px and height or 0)
+          for y = 0, TREE_CELL - 1 do
+            for x = 0, 15 do
+              image:setPixel(x, f * TREE_CELL + y, 0, 0, 0, 0)
+            end
+          end
+          if px then
+            for y = 1, height do
+              for x = 1, 16 do
+                local index = px[y][x]
+                local c = treeColors[index + 1]
+                if index ~= 0 and c then
+                  image:setPixel(x - 1, f * TREE_CELL + floor + y - 1,
+                                 c[1] / 255, c[2] / 255, c[3] / 255, 1)
+                end
+              end
+            end
+          end
+        end
+        self:saveImage(image,
+                       ("overworld/g3_berry_tree_%02d.png"):format(slot))
+        drawn = drawn + 1
+      end
+    end)
+    if not okTree then
+      Logger.warn("gen3 berry trees: the sheets could not be composed (%s) "
+                  .. "-- their records are still written", tostring(treeErr))
+    end
+    Logger.info("Gen3 berry trees: %d sheets of %d frames in a 16x%d cell, "
+                .. "one per distinct pic table of %d berries",
+                treeArt.distinct, TREE_FRAMES, TREE_CELL,
+                treeArt.entries)
+  end
+
   -- ---- and the thing the player sits on --------------------------------
   do
     local blob = self:surfBlob()
@@ -7552,6 +7661,7 @@ local GEN3_BERRY = {
   TREE_SMALL = 128,        -- 16x16, four bits a pixel
   TREE_TALL = 256,         -- 16x32
   TREE_SMALL_FRAMES = 3,   -- the seed and the two sprout frames
+  TREE_TALL_PX = 32,       -- the tall frame's height, which is the sheet cell
   TREE_STAGES = 5,         -- PLANTED, SPROUTED, TALLER, FLOWERING, BERRIES
   TREE_MAX_ANIM = 8,
   TREE_ANIM_END = 0xFFFD,
@@ -7634,6 +7744,15 @@ end
 -- the row of gObjectEventGraphicsInfoPointers that is the berry tree, the
 -- table of 43 sheets its own sheet sits in, and the stage-to-frame mapping
 function RomExtractorGen3:berryTreeArt()
+  -- asked for by two stages; the pointer run below is found by scanning the
+  -- whole cartridge for the sheet's address, which is not worth doing twice
+  if self._berryTreeArt ~= nil then return self._berryTreeArt or nil end
+  local found = self:berryTreeArtUncached()
+  self._berryTreeArt = found or false
+  return found
+end
+
+function RomExtractorGen3:berryTreeArtUncached()
   local rom = self.rom
   local rows = self:symbol("gObjectEventGraphicsInfoPointers")
   local count = self:layoutValue("objectEventGfxCount", 0)
@@ -7713,9 +7832,21 @@ function RomExtractorGen3:berryTreeArt()
     if not seen[at] then distinct = distinct + 1; seen[at] = distinct end
     sheets[i + 1] = seen[at]
   end
+  -- THE NAME EVERY OTHER STAGE CALLS EACH SHEET BY.  Two stages compose and
+  -- record this art -- the overworld sprite stage bakes the pictures, the
+  -- berry stage writes which berry wears which -- and they must agree on the
+  -- key without either one owning it, so the key is built here, once.
+  local keys = {}
+  for slot = 1, distinct do
+    keys[slot] = ("SPRITE_G3_BERRY_TREE_%02d"):format(slot)
+  end
   return { row = treeRow, rows = treeRows, table_ = table_, entries = entries,
            sheets = sheets, distinct = distinct, stages = stages,
-           anims = anims }
+           -- carried on the record rather than read from GEN3_BERRY by the
+           -- caller: the overworld sprite stage is defined ABOVE that local
+           -- and cannot see it
+           frames = GEN3_BERRY.TREE_FRAMES, cell = GEN3_BERRY.TREE_TALL_PX,
+           keys = keys, anims = anims }
 end
 
 -- ---------------------------------------------------------------------------
@@ -7960,6 +8091,20 @@ function RomExtractorGen3:extractBerries()
       -- stand on one map
       graphicsIds = art.rows,
       sheet = art.sheets,          -- berry -> which of the shared sheets
+      -- ...and the sprite key that sheet was composed under, so the overworld
+      -- can put the right berry's tree on the plot without knowing how the
+      -- sheets were numbered.  Keyed by BERRY NUMBER, which is what a planted
+      -- tree records.
+      sheetKeys = (function()
+        local keys = {}
+        for berry = 1, art.entries do
+          local slot = art.sheets[berry]
+          if slot and art.keys and art.keys[slot] then
+            keys[berry] = art.keys[slot]
+          end
+        end
+        return keys
+      end)(),
       sheets = art.distinct,
       stages = art.stages,         -- growth stage -> the frames it cycles
       frameWidth = 16,

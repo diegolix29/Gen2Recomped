@@ -816,10 +816,62 @@ end
 -- Cached by pair id: 441 layouts share 76 pairs, and baking is the expensive
 -- part (about 336,000 pixels for a 656-metatile pair).
 local gen3Sheets = {}
+local gen3Used, gen3Clock = {}, 0
+
+-- HOW MANY PAIRS ARE KEPT.
+--
+-- Hoenn has 76, and the cache never let one go: a long session that walked
+-- through all of them held every sheet it had ever baked. That was already
+-- ninety-odd megabytes of texture before the animation frames made each pair
+-- two and a half times bigger, so the cache is bounded now and the oldest
+-- pair is dropped. Twelve is comfortably more than a town, its interiors and
+-- the routes either side of it, which is the working set walking produces.
+TileRenderer.GEN3_SHEET_CACHE = 12
+
+local function gen3Evict()
+  local count = 0
+  for _, v in pairs(gen3Sheets) do
+    if v then count = count + 1 end
+  end
+  while count > TileRenderer.GEN3_SHEET_CACHE do
+    local oldest, oldestAt = nil, nil
+    for k, v in pairs(gen3Sheets) do
+      -- NEVER THE TWO NEWEST.  During a map transition two renderers are
+      -- alive at once -- the map being left and the map being entered -- and
+      -- releasing the images out from under either draws a freed texture,
+      -- which is a crash rather than a missing tile.
+      if v and gen3Clock - (gen3Used[k] or 0) >= 2
+         and (not oldestAt or (gen3Used[k] or 0) < oldestAt) then
+        oldest, oldestAt = k, gen3Used[k] or 0
+      end
+    end
+    if not oldest then return end
+    local record = gen3Sheets[oldest]
+    for _, image in ipairs({ record.bottom, record.top }) do
+      if image and image.release then pcall(image.release, image) end
+    end
+    gen3Sheets[oldest] = nil
+    gen3Used[oldest] = nil
+    count = count - 1
+  end
+end
+
+-- KEEP A PAIR ALIVE WHILE IT IS ON SCREEN.  The cache is bounded and evicts
+-- the oldest, and "oldest" was last measured when a renderer was BUILT -- so
+-- a player who stands still while something else bakes has a live sheet age
+-- out from under them.  The window fill says the pair is still in use.
+function TileRenderer.touchGen3(key)
+  if key and gen3Sheets[key] then
+    gen3Clock = gen3Clock + 1
+    gen3Used[key] = gen3Clock
+  end
+end
 
 function TileRenderer.gen3SheetsFor(tilesetDef, data, layout)
   if not (tilesetDef and tilesetDef.blockTiles == 2) then return nil end
   local key = tilesetDef.id
+  gen3Clock = gen3Clock + 1
+  gen3Used[key] = gen3Clock
   local hit = gen3Sheets[key]
   if hit ~= nil then return hit or nil end
   gen3Sheets[key] = false            -- do not retry a failed bake every frame
@@ -839,127 +891,81 @@ function TileRenderer.gen3SheetsFor(tilesetDef, data, layout)
     secondary = tilesetDef.secondaryKey and store[tilesetDef.secondaryKey] or nil,
   }, layout)
 
-  local _, _, w, h = tiles:sheetLayout()
+  -- ---- WHAT MOVES, AND WHERE ITS OTHER PICTURES GO ------------------------
+  --
+  -- The cartridge animates by replacing tiles in VRAM; this port cannot,
+  -- because a pair is composited into two flat sheets once and blitted as
+  -- 16x16 quads.  Re-baking the sheet four times a second is not an option
+  -- -- it is 336,000 pixels.
+  --
+  -- So the sheet gets LONGER instead.  Only the metatiles that actually
+  -- contain an animated tile are baked again, once per frame, into slots past
+  -- the end of the static grid; drawing then picks a different QUAD for those
+  -- cells and costs nothing per frame.  For Hoenn's outdoor pair that is
+  -- eight pictures of about a hundred metatiles -- water, shoreline,
+  -- waterfall, flowers -- rather than eight of all 656.
+  local movers = tiles:animatedMetatiles()
+  local frames = (#movers > 0) and tiles:animFrameCount() or 1
+  local statics = tiles:metatileCount()
+  local slots = statics + #movers * (frames - 1)
+  local cols = require("src.render.Gen3Tiles").SHEET_COLS
+  local w = cols * 16
+  local h = math.ceil(slots / cols) * 16
   if w <= 0 or h <= 0 then return nil end
+
+  -- slotOf[metatile][frame] -- frame 1 is the static sheet's own slot, so a
+  -- pair with one frame builds no extra rows and nothing below changes
+  local slotOf, nextSlot = {}, statics
+  for _, id in ipairs(movers) do
+    slotOf[id] = { [1] = id }
+    for f = 2, frames do
+      slotOf[id][f] = nextSlot
+      nextSlot = nextSlot + 1
+    end
+  end
 
   local built = {}
   for layer = 1, 2 do
     local surface = love.image.newImageData(w, h)
-    tiles:bakeLayer(layer, function(x, y, r, g, b)
+    local plot = function(x, y, r, g, b)
       if x >= 0 and y >= 0 and x < w and y < h then
         surface:setPixel(x, y, r / 255, g / 255, b / 255, 1)
       end
-    end)
-    built[layer] = love.graphics.newImage(surface)
-  end
-
-  local record = { bottom = built[1], top = built[2], width = w, height = h,
-                   tiles = tiles, metatiles = tiles:metatileCount() }
-  gen3Sheets[key] = record
-  Logger.info("gen3 tiles: baked %s -- %d metatiles into two %dx%d sheets",
-              tostring(key), record.metatiles, w, h)
-
-  -- ------------------------------------------------------------------
-  -- THE ANIMATED OVERLAY SHEETS.
-  --
-  -- THE SEA OUTSIDE DEWFORD AND THE FLOWER BEDS ON ROUTE 104.  A Gen 1/Gen 2
-  -- tileset animates one ATLAS CELL, so the existing machinery above swaps a
-  -- single 8x8 texture under the batch's existing quad.  Emerald animates a
-  -- run of TILE GRAPHICS, and one such run reaches 148 of this pair's 862
-  -- metatiles -- there is no single cell to swap.
-  --
-  -- So the same trick the Sprout Tower pillar needed (getAtlasFrames), one
-  -- size up: a separate OVERLAY TEXTURE per step, holding only the metatiles
-  -- that change, drawn over the static window each frame.  Drawing is then a
-  -- texture swap and one extra batch, exactly like the water shimmer.
-  --
-  -- PACKED, not sheet-shaped.  The obvious overlay is another 256x864 with
-  -- holes in it, so the window batch's existing quads stay valid -- and that
-  -- is sixteen textures of 221,000 pixels, 14 MB, for a pair whose static
-  -- sheets cost 1.8.  Nothing evicts these, and a trek across Hoenn touches
-  -- dozens of pairs.  So the animated metatiles are packed sixteen to a row
-  -- (Gen3Tiles:animOrder) into 256x160, and the record carries a SECOND quad
-  -- table for them.  A quad lookup is a quad lookup; the memory is a fifth.
-  --
-  -- Two overlays, bottom and top, and they are drawn on the two sides of the
-  -- sprite pass the static sheets are.  A waterfall's spray is on the layer
-  -- the player walks BEHIND; flattening the pair here would put the player in
-  -- front of it, which is the one thing this file's comments say never to do.
-  --
-  -- Cost is proportional to the animated metatiles, not to the pair, and the
-  -- whole block is skipped -- no allocation, no loop -- for a tileset with no
-  -- `tileAnims`, which is every tileset in the game until an extraction that
-  -- reads them has run.
-  --
-  -- Known and deliberate: a pixel that is opaque in the STATIC sheet and
-  -- transparent in the animation frame shows the static art through, because
-  -- the overlay only paints what the frame paints.  On this cartridge the
-  -- animated runs are ground (sea, shore, sand, flower bed) and are opaque in
-  -- every frame, so the case does not arise; the alternative -- baking eight
-  -- complete pairs of full sheets and swapping those -- costs 3.5 million
-  -- pixels at map load to buy nothing.
-  -- ------------------------------------------------------------------
-  local okAnim, animErr = pcall(function()
-    local steps = tiles.animSteps and tiles:animSteps() or 0
-    if not steps or steps < 2 then return end
-    local cells, cellCount = tiles:animMetatiles()
-    if cellCount < 1 then return end
-    local aw, ah = tiles:animSheetLayout()
-    if aw <= 0 or ah <= 0 then return end
-    local bottom, top = {}, {}
-    for step = 0, steps - 1 do
-      for layer = 1, 2 do
-        local surface = love.image.newImageData(aw, ah)
-        tiles:bakeAnimLayer(layer, function(x, y, r, g, b)
-          if x >= 0 and y >= 0 and x < aw and y < ah then
-            surface:setPixel(x, y, r / 255, g / 255, b / 255, 1)
-          end
-        end, step)
-        local img = love.graphics.newImage(surface)
-        if img.setFilter then pcall(img.setFilter, img, "nearest", "nearest") end
-        if layer == 1 then bottom[step + 1] = img else top[step + 1] = img end
+    end
+    -- the static sheet holds FRAME ZERO, not the tileset's shipped bytes: the
+    -- cartridge copies frame zero in before the first field frame is drawn,
+    -- so the shipped tile is never the one anybody sees
+    tiles:setAnimFrame(0)
+    tiles:bakeLayer(layer, plot)
+    for f = 2, frames do
+      tiles:setAnimFrame(f - 1)
+      for _, id in ipairs(movers) do
+        tiles:bakeMetatileInto(id, layer, slotOf[id][f], plot)
       end
     end
-    -- the packed sheet has its own coordinates, so the animated batch needs
-    -- its own quads; `gen3Quads` addresses the full-size static sheet and
-    -- would sample somewhere else entirely
-    local quads = {}
-    for m in pairs(cells) do
-      local ox, oy = tiles:animOrigin(m)
-      if ox then quads[m] = love.graphics.newQuad(ox, oy, 16, 16, aw, ah) end
-    end
-    record.animBottom = bottom
-    record.animTop = top
-    record.animSteps = steps
-    record.animPeriod = tiles:animPeriod() or ANIM_PERIOD
-    record.animCells = cells
-    record.animQuads = quads
-    Logger.info("gen3 tiles: %s animates %d of %d metatiles -- %d step(s) "
-                .. "every %d frame(s), packed into %dx%d", tostring(key),
-                cellCount, record.metatiles, steps, record.animPeriod, aw, ah)
-  end)
-  if not okAnim then
-    -- a half-built overlay is worse than none: drop it and leave the pair
-    -- exactly as static as it is today
-    record.animBottom, record.animTop, record.animSteps = nil, nil, nil
-    record.animCells, record.animQuads = nil, nil
-    Logger.warn("gen3 tiles: %s animation overlay failed (%s) -- static",
-                tostring(key), tostring(animErr))
+    built[layer] = love.graphics.newImage(surface)
   end
-  return record
-end
+  tiles:setAnimFrame(0)
 
--- Which overlay frame is showing.  Exposed so a test (and the voxel mod) can
--- ask without reproducing the arithmetic.
-function TileRenderer.gen3AnimStep(record, frame)
-  if not (record and record.animSteps and record.animSteps > 1) then return nil end
-  frame = frame or animFrame
-  return math.floor(frame / (record.animPeriod or ANIM_PERIOD)) % record.animSteps
+  local record = { bottom = built[1], top = built[2], width = w, height = h,
+                   tiles = tiles, metatiles = statics, slots = slots,
+                   animSlots = (frames > 1) and slotOf or nil,
+                   animFrames = frames, animStep = tiles:animStep() }
+  gen3Sheets[key] = record
+  gen3Evict()
+  Logger.info("gen3 tiles: baked %s -- %d metatiles into two %dx%d sheets%s",
+              tostring(key), record.metatiles, w, h,
+              frames > 1
+                and (", %d of them animated over %d frames"):format(#movers,
+                                                                    frames)
+                or "")
+  return record
 end
 
 -- a re-import replaces the data the sheets were baked from
 function TileRenderer.releaseGen3Sheets()
   gen3Sheets = {}
+  gen3Used, gen3Clock = {}, 0
 end
 
 function TileRenderer.new(map, data)
@@ -1076,10 +1082,13 @@ function TileRenderer.new(map, data)
   self.gen3 = TileRenderer.gen3SheetsFor(map.tileset, data,
                                          data and data.constants
                                          and data.constants.gen3Layout)
+  self.gen3Key = map.tileset and map.tileset.id
   if self.gen3 then
     local cols = require("src.render.Gen3Tiles").SHEET_COLS
     self.gen3Quads = {}
-    for id = 0, self.gen3.metatiles - 1 do
+    -- every SLOT, which is the metatiles plus the extra pictures the animated
+    -- ones were baked into
+    for id = 0, (self.gen3.slots or self.gen3.metatiles) - 1 do
       self.gen3Quads[id] = love.graphics.newQuad(
         (id % cols) * 16, math.floor(id / cols) * 16, 16, 16,
         self.gen3.width, self.gen3.height)
@@ -1386,6 +1395,27 @@ function TileRenderer:markCellBottomRedraw(cx, cy, camX, camY, colors)
   end
 end
 
+-- Which of the pair's pictures is showing.  One counter for the whole pair:
+-- the cartridge advances every animation off the same tick, so an eight-frame
+-- water and a four-frame waterfall stay in step with each other by taking the
+-- same number modulo their own lengths.
+function TileRenderer:gen3AnimFrame()
+  local record = self.gen3
+  if not (record and record.animSlots and (record.animFrames or 1) > 1) then
+    return nil
+  end
+  return math.floor(animFrame / (record.animStep or 16)) % record.animFrames
+end
+
+function TileRenderer:gen3QuadFor(id)
+  local quads = self.gen3Quads
+  if not quads then return nil end
+  local slots = self.gen3.animSlots and self.gen3.animSlots[id]
+  local frame = slots and self:gen3AnimFrame()
+  if frame then return quads[slots[frame + 1] or id] end
+  return quads[id]
+end
+
 local WINDOW_MARGIN = 8 -- tiles of slack kept around the view between refills
 
 function TileRenderer:ensureWindow(camX, camY, vw, vh)
@@ -1398,6 +1428,16 @@ function TileRenderer:ensureWindow(camX, camY, vw, vh)
   local tx1 = math.max(0, math.min(W, math.floor((camX + vw) / 8) + 1))
   local ty1 = math.max(0, math.min(H, math.floor((camY + vh) / 8) + 1))
   local win = self.win
+  -- A NEW ANIMATION FRAME IS A NEW FILL.  The window batch holds one quad per
+  -- cell and the animated cells' quads have just moved, so a window that is
+  -- still geometrically valid is no longer visually valid -- and this is the
+  -- only thing that makes Hoenn's water move.  Cells that do not animate are
+  -- re-added with the quad they already had.
+  local frame = self:gen3AnimFrame()
+  if frame ~= self.gen3Frame then
+    self.gen3Frame = frame
+    win = nil
+  end
   if win and tx0 >= win.tx0 and ty0 >= win.ty0
      and tx1 <= win.tx1 and ty1 <= win.ty1 then
     return -- still inside the last fill
@@ -1408,6 +1448,7 @@ function TileRenderer:ensureWindow(camX, camY, vw, vh)
   tx1 = math.min(W, tx1 + WINDOW_MARGIN)
   ty1 = math.min(H, ty1 + WINDOW_MARGIN)
   if self.gen3 then
+    TileRenderer.touchGen3(self.gen3Key)
     -- one quad per CELL into each of the two layer batches.  The tile-grid
     -- bounds above are still the right window -- a Gen 3 cell is two tiles
     -- wide, so dividing by blockTiles gives the cell range directly.
@@ -1417,28 +1458,6 @@ function TileRenderer:ensureWindow(camX, camY, vw, vh)
     end
     self.winBatch:clear()
     self.winBatchTop:clear()
-    -- ...and a second pair holding only the cells whose metatile animates
-    -- (the sea, the shore, the flower beds).  Gathered HERE, in the same
-    -- sweep, for the same reason the Gen 1/Gen 2 animated cells are: nothing
-    -- about the animation may scale with the size of the map.
-    local animCells = self.gen3.animCells
-    if animCells and not self.gen3AnimBatch then
-      -- the same 1024 the static pair asks for: a headless draw passes no
-      -- view size, which means the WHOLE map body, and on an ocean route
-      -- almost every cell in it is water
-      self.gen3AnimBatch =
-        love.graphics.newSpriteBatch(self.gen3.animBottom[1], 1024, "dynamic")
-      self.gen3AnimBatchTop =
-        love.graphics.newSpriteBatch(self.gen3.animTop[1], 1024, "dynamic")
-    end
-    if self.gen3AnimBatch then
-      self.gen3AnimBatch:clear()
-      self.gen3AnimBatchTop:clear()
-    end
-    -- counted here rather than asked of the batch: SpriteBatch:getCount is not
-    -- in every LOVE the project runs headless against, and an overlay drawn
-    -- with nothing in it is a wasted state change on every Hoenn frame
-    self.gen3AnimCount = 0
     local map = self.map
     local n = self.blockTiles
     local cx0, cy0 = math.floor(tx0 / n), math.floor(ty0 / n)
@@ -1446,17 +1465,11 @@ function TileRenderer:ensureWindow(camX, camY, vw, vh)
     for cy = cy0, cy1 - 1 do
       for cx = cx0, cx1 - 1 do
         local id = map:blockAt(cx, cy)
-        local quad = id and self.gen3Quads[id]
+        local quad = id and self:gen3QuadFor(id)
         if quad then
           local wx, wy = cx * 16, cy * 16
           self.winBatch:add(quad, wx, wy)
           self.winBatchTop:add(quad, wx, wy)
-          local animQuad = animCells and animCells[id] and self.gen3.animQuads[id]
-          if animQuad then
-            self.gen3AnimBatch:add(animQuad, wx, wy)
-            self.gen3AnimBatchTop:add(animQuad, wx, wy)
-            self.gen3AnimCount = self.gen3AnimCount + 1
-          end
         end
       end
     end
@@ -1527,22 +1540,8 @@ end
 -- only ever touches on-screen animated tiles.
 function TileRenderer:drawAnimated(camX, camY)
   local anims = self.anims
-  local x, y = -math.floor(camX), -math.floor(camY)
-  -- GEN 3: the animated metatiles of the window, out of the overlay sheet for
-  -- the current step, over the static bottom sheet that has already been
-  -- drawn.  This is the sea moving on Route 104 and the flowers opening in
-  -- Petalburg's verges; `anims` above is empty on this generation and always
-  -- has been, because a Gen 3 pair has no 8x8 atlas for the entries in it to
-  -- name a cell in.
-  if self.gen3AnimBatch and (self.gen3AnimCount or 0) > 0 then
-    local step = TileRenderer.gen3AnimStep(self.gen3)
-    local tex = step and self.gen3.animBottom[step + 1]
-    if tex then
-      self.gen3AnimBatch:setTexture(tex)
-      love.graphics.draw(self.gen3AnimBatch, x, y)
-    end
-  end
   if not anims then return end
+  local x, y = -math.floor(camX), -math.floor(camY)
   for _, anim in ipairs(anims) do
     local batch = anim.batch
     if batch then
@@ -1588,21 +1587,8 @@ end
 function TileRenderer:drawAbove(camX, camY, vw, vh)
   if not self.gen3 then return false end
   self:ensureWindow(camX, camY, vw, vh)
-  local x, y = -math.floor(camX), -math.floor(camY)
   if self.winBatchTop then
-    love.graphics.draw(self.winBatchTop, x, y)
-  end
-  -- ...and the animated half of it.  A waterfall's crest and the spray over a
-  -- bridge rail are drawn on the layer the player passes BEHIND, so their
-  -- overlay has to land on this side of the sprite pass and not in
-  -- drawAnimated with the sea.
-  if self.gen3AnimBatchTop and (self.gen3AnimCount or 0) > 0 then
-    local step = TileRenderer.gen3AnimStep(self.gen3)
-    local tex = step and self.gen3.animTop[step + 1]
-    if tex then
-      self.gen3AnimBatchTop:setTexture(tex)
-      love.graphics.draw(self.gen3AnimBatchTop, x, y)
-    end
+    love.graphics.draw(self.winBatchTop, -math.floor(camX), -math.floor(camY))
   end
   return true
 end
