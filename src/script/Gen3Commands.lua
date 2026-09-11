@@ -958,7 +958,7 @@ end
 -- the spawn branch and InitEventData between them settle.  So this writes
 -- that flag and re-syncs the live list, which is the same pair of things the
 -- map load does, and the change survives walking out and back in.
-local function gen3Toggle(ctx, target, visible)
+local function gen3Toggle(ctx, target, visible, group, number)
   local index = objectId(ctx, target)
   if not index then
     -- $FF IS THE PLAYER HERE TOO, and 29 scripts rely on it: the cartridge
@@ -978,19 +978,45 @@ local function gen3Toggle(ctx, target, visible)
                 visible and "add" or "remove", tostring(target))
     return
   end
+  -- THE MAP THE COMMAND NAMED, not the one under the player's feet.
+  --
+  -- `hideobjectat`, `showobjectat`, `addobjectat` and `removeobjectat` all
+  -- carry a map, and it is almost never this one -- the whole reason the
+  -- cartridge has an `at` form is to reach an object somewhere else.
+  -- RemoveObjectEventByLocalIdAndMap sets THAT map's object's event flag and
+  -- removes the live sprite only if that map happens to be loaded; this does
+  -- the same two things in the same order.
+  --
+  -- Mr. Briney's ferry is the case that found it.  Every leg ends by putting
+  -- the Briney you left behind away -- `hideobjectat <him> <the map you
+  -- sailed FROM>` -- and that ran against the map you had just sailed TO,
+  -- where the same local id is somebody else entirely.  Hiding a bystander
+  -- who carries an event flag hides them for the rest of the save.
   local ow = ctx.overworld
+  local here = (ow and ow.map and ow.map.id) or ctx.mapId
+  local mapId = here
   local def = ow and ow.map and ow.map.def
+  if group ~= nil and number ~= nil then
+    local named = mapKey(group, number)
+    local maps = ctx.game and ctx.game.data and ctx.game.data.maps
+    if named ~= here and maps and maps[named] then
+      mapId, def = named, maps[named]
+    elseif named ~= here then
+      Logger.info("gen3: %s names map %s, which is not in this dataset",
+                  visible and "addobjectat" or "hideobjectat", named)
+      return
+    end
+  end
   local obj
   for _, o in ipairs((def and def.objects) or {}) do
     if o.index == index then obj = o break end
   end
   if not obj then
-    Logger.info("gen3: no object %s on this map to %s", tostring(index),
-                visible and "add" or "remove")
+    Logger.info("gen3: no object %s on %s to %s", tostring(index),
+                tostring(mapId), visible and "add" or "remove")
     return
   end
   local save = ctx.save
-  local mapId = (ow and ow.map and ow.map.id) or ctx.mapId
   if save and obj.eventFlag then
     save.flags = save.flags or {}
     -- EXPLICIT BOTH WAYS, not "set or absent".  An object the map's own
@@ -1024,7 +1050,11 @@ local function gen3Toggle(ctx, target, visible)
     end
     session[index] = visible and true or false
   end
-  if not ow then return end
+  -- ...AND ONLY THE LOADED MAP HAS ANYTHING LIVE TO TOUCH.  An object on a
+  -- map that is not loaded has no entity and no sprite; the flag written
+  -- above is the whole of what happens to it, which is what the cartridge
+  -- does too.
+  if not ow or mapId ~= here then return end
   -- A REMOVED OBJECT MUST NOT BE LEFT WALKING.  removeobject lands in the
   -- middle of a cutscene, and an entity taken off the map with steps still in
   -- the queue leaves those steps to tick against nothing.
@@ -1043,12 +1073,12 @@ local function gen3Toggle(ctx, target, visible)
   if ow.syncObjectVisibility then ow:syncObjectVisibility(obj) end
 end
 
-function Commands.g3_show_object(ctx, target)
-  gen3Toggle(ctx, target, true)
+function Commands.g3_show_object(ctx, target, group, number)
+  gen3Toggle(ctx, target, true, group, number)
 end
 
-function Commands.g3_hide_object(ctx, target)
-  gen3Toggle(ctx, target, false)
+function Commands.g3_hide_object(ctx, target, group, number)
+  gen3Toggle(ctx, target, false, group, number)
 end
 
 -- SETOBJECTXY $FF IS "PUT THE PLAYER THERE", and it was being dropped.

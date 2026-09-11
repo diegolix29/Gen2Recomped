@@ -421,12 +421,34 @@ L.waitmovementat = function(ir, s)
   emit(s, { "g3_wait_move", ir[2] or 0, ir[3], ir[4] })
 end
 
+-- ...AND THE SAME MAP, THROWN AWAY THE SAME WAY, ONE COMMAND FAMILY OVER.
+--
+-- `removeobjectat`, `addobjectat`, `hideobjectat` and `showobjectat` all
+-- carry `obj, group, num` for exactly the reason applymovementat does -- the
+-- object they name is on a NAMED map, usually not the one under the player's
+-- feet -- and all four were lowered with the map dropped.  Mr. Briney's ferry
+-- is where it shows: every leg ends by hiding the Briney you left behind with
+-- `hideobjectat <him> <the map you sailed FROM>`, which ran against the map
+-- you had just sailed TO and took a bystander off it instead.  An arrival
+-- that hid a bystander carrying an event flag hid them for the rest of the
+-- save, because that is what writing an event flag means.
+--
+-- The map goes through now and Commands.g3_show_object / g3_hide_object
+-- writes the named map's object rather than this one's.
 L.removeobject = function(ir, s) emit(s, { "g3_hide_object", ir[2] }) end
-L.removeobjectat = L.removeobject
+L.removeobjectat = function(ir, s)
+  emit(s, { "g3_hide_object", ir[2], ir[3], ir[4] })
+end
 L.addobject = function(ir, s) emit(s, { "g3_show_object", ir[2] }) end
-L.addobjectat = L.addobject
-L.hideobjectat = function(ir, s) emit(s, { "g3_hide_object", ir[2] }) end
-L.showobjectat = function(ir, s) emit(s, { "g3_show_object", ir[2] }) end
+L.addobjectat = function(ir, s)
+  emit(s, { "g3_show_object", ir[2], ir[3], ir[4] })
+end
+L.hideobjectat = function(ir, s)
+  emit(s, { "g3_hide_object", ir[2], ir[3], ir[4] })
+end
+L.showobjectat = function(ir, s)
+  emit(s, { "g3_show_object", ir[2], ir[3], ir[4] })
+end
 L.turnobject = function(ir, s) emit(s, { "g3_turn", ir[2], ir[3] }) end
 L.setobjectxy = function(ir, s) emit(s, { "g3_place", ir[2], ir[3], ir[4] }) end
 L.setobjectxyperm = function(ir, s) emit(s, { "g3_place_perm", ir[2], ir[3], ir[4] }) end

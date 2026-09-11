@@ -818,6 +818,15 @@ end
 local gen3Sheets = {}
 local gen3Used, gen3Clock = {}, 0
 
+-- one line per pair, however many frames it draws: a warning that repeats
+-- every time a map loads is a warning nobody reads to the end of
+local gen3Said = {}
+local function warnOnce(fmt, key)
+  if gen3Said[key] then return end
+  gen3Said[key] = true
+  Logger.warn(fmt, key)
+end
+
 -- HOW MANY PAIRS ARE KEPT.
 --
 -- Hoenn has 76, and the cache never let one go: a long session that walked
@@ -959,6 +968,29 @@ function TileRenderer.gen3SheetsFor(tilesetDef, data, layout)
                 and (", %d of them animated over %d frames"):format(#movers,
                                                                     frames)
                 or "")
+  -- A PAIR THAT ANIMATES NOTHING SAYS WHY, ONCE.
+  --
+  -- Reported from play twice, the second time as "the water type in route 104
+  -- still isn't animated".  Both halves of this are data that has to be IN
+  -- THE CACHE: extractTilesetAnimations hangs `animations` on each tileset
+  -- record, and a cache written before that stage existed simply has no such
+  -- key -- so this bakes a perfectly correct static pair and there is nothing
+  -- on screen to say that anything is missing.  Sixteen of Hoenn's tilesets
+  -- carry animations and every outdoor pair is one of them, so a pair whose
+  -- halves BOTH lack the key at all is a stale cache rather than a tileset
+  -- that happens to hold still.
+  if frames <= 1 then
+    local function carries(record_)
+      return type(record_) == "table" and record_.animations ~= nil
+    end
+    if not (carries(primary) or carries(tilesetDef.secondaryKey
+                                        and store[tilesetDef.secondaryKey])) then
+      warnOnce("gen3 tiles: %s carries no tileset animations at all -- this "
+               .. "cache predates the stage that reads them, so no water, "
+               .. "waterfall or flower bed will move until the ROM is "
+               .. "imported again", tostring(key))
+    end
+  end
   return record
 end
 
