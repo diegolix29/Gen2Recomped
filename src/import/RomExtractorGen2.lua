@@ -946,6 +946,9 @@ local GEN2_BADGES = {
 function RomExtractorGen2:constants()
   if not self._constants then
     self._constants = self:readSourceTable("constants")
+    -- Generation is runtime metadata, not cartridge data.  Battle formulas use
+    -- it to select the Gen II critical-hit ladder without guessing from a ROM id.
+    self._constants.generation = 2
     local badges = {}
     -- A CARTRIDGE MAY HAVE ITS OWN SET.  Prism awards TWENTY badges across
     -- three engine-flag bytes, and its flag keys keep the ENGINE_ prefix that
@@ -2346,6 +2349,19 @@ function RomExtractorGen2:extractScaffoldCore()
             local row = attrs.address + (entry.index - 1) * GEN2_ITEM_ATTR_BYTES
             local ok, price = pcall(function() return self.rom:word(attrs.bank, row) end)
             if ok and type(price) == "number" then entry.price = price end
+            -- constants/item_data_constants.asm: ItemAttributes stores the
+            -- held-effect selector at +2 and its signed parameter at +3.
+            -- Keep both on the item record so battle/field mechanics remain
+            -- data-driven.  The battle held-item layer contains the one
+            -- intentional Gen II cleanup for Dragon Fang/Dragon Scale.
+            local oke, heldEffect = pcall(function()
+              return self.rom:byte(attrs.bank, row + 2)
+            end)
+            if oke then entry.heldEffect = heldEffect end
+            local okh, heldParam = pcall(function()
+              return self.rom:byte(attrs.bank, row + 3)
+            end)
+            if okh then entry.heldParam = signedByte(heldParam) end
             local okp, pocket = pcall(function()
               return self.rom:byte(attrs.bank, row + 5)
             end)
@@ -14766,7 +14782,8 @@ function RomExtractorGen2:extractRuntimeScaffolds()
 
   -- TypeMatchups: db attacker, defender, multiplier(x10); $fe splits off the
   -- rows Foresight cancels, $ff ends the table.
-  local typeChart = { source = "ROM:TypeMatchups", matchups = {}, types = {} }
+  local typeChart = { source = "ROM:TypeMatchups", matchups = {},
+                      types = {}, ids = {} }
   -- walk ids rather than GEN2_TYPES so a hack's own types (Prism's Fairy,
   -- Gas and Sound) end up in the roster too
   for value = 0, 27 do
@@ -14777,6 +14794,14 @@ function RomExtractorGen2:extractRuntimeScaffolds()
         category = value >= GEN2_SPECIAL_TYPE and "special" or "physical",
       }
     end
+    -- `ids` is the NUMBER->NAME direction, and it is the one a script needs.
+    -- Everything downstream of extraction speaks type NAMES ("ELECTRIC"),
+    -- but a script operand is the cartridge's own id byte -- Prism's
+    -- `findpokemontype $17` -- and the two only line up through the ROM's
+    -- own TypeNames table, which is exactly what gen2TypeName reads.  Hard
+    -- coding Crystal's numbering here would be wrong on Prism, whose type
+    -- list carries nine extra entries before FIRE.
+    if typeName then typeChart.ids[value] = typeName end
   end
   -- Prism replaces that sparse list with a PACKED BIT ARRAY: one row per
   -- attacking type, `layout.matchupTableWidth` bytes wide, each defending type

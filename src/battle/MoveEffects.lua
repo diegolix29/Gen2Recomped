@@ -16,6 +16,7 @@ local StatusRegistry = require("src.battle.StatusRegistry")
 local TurnOrder = require("src.battle.TurnOrder")
 local TypeChart = require("src.battle.TypeChart")
 local Strings = require("src.core.Strings")
+local HeldItems = require("src.battle.HeldItems")
 local Weather = require("src.battle.Weather")
 
 local MoveEffects = {}
@@ -42,6 +43,18 @@ local function changeStage(battle, who, stat, delta, fromEnemy)
       return { Strings("%s is\nprotected by MIST!", displayName(who)) }
     end
     return { Strings("But, it failed!") }
+  end
+  -- CLEAR BODY, WHITE SMOKE, HYPER CUTTER and KEEN EYE refuse a drop an
+  -- OPPONENT causes, and print "won't go lower!" instead of dropping.
+  -- `delta < 0` is the whole test rather than `fromEnemy`, because a side
+  -- effect that pierces MIST passes fromEnemy = false and is still the foe's
+  -- doing; every negative-delta call in this engine targets the opponent,
+  -- and the self-lowering moves that would need the distinction (Overheat,
+  -- Superpower) are later generations' than the one this file serves.
+  if delta < 0
+     and require("src.battle.Abilities").refusesStatDrop(who, stat) then
+    return { Strings("%s's\n%s\nwon't go lower!", displayName(who),
+                     STAT_LABEL[stat] or tostring(stat)) }
   end
   local cur = who.stages[stat] or 0
   local new = math.max(-6, math.min(6, cur + delta))
@@ -108,6 +121,35 @@ local function statusMove(status)
   end
 end
 
+-- HOW OFTEN A SIDE EFFECT LANDS.
+--
+-- Gen 1 and Gen 2 name the odds in the EFFECT: BURN_SIDE_EFFECT1 is the one
+-- in ten and BURN_SIDE_EFFECT2 the three in ten, which is why the table
+-- below has pairs in it.  Both cartridges also carry a per-move chance byte,
+-- and Gen 3 carries ONLY that byte -- one burn effect and a number beside it
+-- -- so a move that says 50% has nowhere to say it in the older spelling.
+--
+-- So the move's own byte wins wherever it has one, and the record's number
+-- is the fallback for a dataset that does not carry it.  This also fixes the
+-- older generations, where the byte was extracted and never read: ZAP CANNON
+-- paralyses ALWAYS on the cartridge (255) and was paralysing three times in
+-- ten here, because it shares its effect with SPARK.
+--
+-- ...AND TWO ABILITIES SIT ON THAT NUMBER.  SERENE GRACE doubles the
+-- attacker's secondary chance and SHIELD DUST refuses the defender's half of
+-- one outright, and this is the one place every secondary chance in the file
+-- is decided -- so both live here rather than in a dozen effect records.
+-- The order is the cartridge's: the doubling first, the refusal after, so a
+-- SHIELD DUST still refuses a doubled roll.
+local function sideChance(move, fallback, user, target)
+  local own = move and tonumber(move.effectChance)
+  local base = (own and own > 0) and own or fallback
+  if user or target then
+    base = require("src.battle.Abilities").secondaryOdds(user, target, base)
+  end
+  return base
+end
+
 local function statusSide(status, chance)
   return function(battle, user, target, move)
     -- CheckDefrost: a burn-chance Fire move that lands thaws a frozen
@@ -116,7 +158,9 @@ local function statusSide(status, chance)
       target.mon.status = nil
       return { Strings("Fire defrosted\n%s!", displayName(target)) }
     end
-    if battle.rng(0, 255) >= chance then return {} end
+    if battle.rng(0, 255) >= sideChance(move, chance, user, target) then
+      return {}
+    end
     return inflictStatus(battle, target, status, {
       moveType = move and move.type,
       secondary = true,
@@ -126,9 +170,13 @@ local function statusSide(status, chance)
 end
 
 local function statDownSide(stat)
-  return function(battle, user, target)
+  return function(battle, user, target, move)
     if target.substituteHP then return {} end
-    if battle.rng(0, 255) >= 85 then return {} end -- 33 percent + 1 (85/256)
+    -- 33 percent + 1 (85/256), through sideChance so SERENE GRACE and
+    -- SHIELD DUST get their say on this one too
+    if battle.rng(0, 255) >= sideChance(move, 85, user, target) then
+      return {}
+    end
     -- StatModifierDownEffect's side-effect branch never runs MoveHitTest,
     -- so the drop pierces MIST (only primary stat-lowering moves check it)
     return changeStage(battle, target, stat, -1, false)
@@ -136,9 +184,12 @@ local function statDownSide(stat)
 end
 
 local function flinchSide(chance)
-  return function(battle, user, target)
+  return function(battle, user, target, move)
     if target.substituteHP then return {} end
-    if battle.rng(0, 255) < chance then
+    -- INNER FOCUS cannot be made to flinch by anything.  A flat refusal on
+    -- the cartridge, not a roll, so it is asked before the roll is made.
+    if require("src.battle.Abilities").refusesFlinch(target) then return {} end
+    if battle.rng(0, 255) < sideChance(move, chance, user, target) then
       target.flinched = true
     end
     return {}
@@ -150,7 +201,12 @@ local function confuse(battle, target, pierceSub)
     return { Strings("But, it failed!") }
   end
   target.confusedTurns = battle.rng(2, 5)
-  return { Strings("%s\nbecame confused!", displayName(target)) }
+  HeldItems.setConfusionCounter(battle, target, target.confusedTurns)
+  local msgs = { Strings("%s\nbecame confused!", displayName(target)) }
+  for _, msg in ipairs(HeldItems.onConfusion(battle, target)) do
+    msgs[#msgs + 1] = msg
+  end
+  return msgs
 end
 
 -- ---------------------------------------------------------------------
@@ -257,6 +313,7 @@ MoveEffects.primary = {
     for _, b in ipairs({ user, target }) do
       b.stages = {}
       b.confusedTurns = nil
+      HeldItems.setConfusionCounter(battle, b, 0)
       b.leechSeeded = nil
       b.toxicCounter = nil
       b.reflect, b.lightScreen, b.mist, b.focusEnergy = nil, nil, nil, nil
@@ -458,6 +515,17 @@ local function drainHalf(text)
     local heal = math.max(1, math.floor(ctx.rawDamage / 2))
     ctx.battle.lastDamage = heal
     local mon = ctx.user.mon
+    -- LIQUID OOZE TURNS IT AROUND.  The amount is the same; it comes OUT of
+    -- the attacker instead of going in, and the cartridge prints the drain
+    -- line all the same before it does.  TENTACRUEL is the one that matters:
+    -- a GIGA DRAIN into one is a self-inflicted wound.
+    if require("src.battle.Abilities").reversesDrain(ctx.target) then
+      ctx.say(Strings(text, displayName(ctx.target)))
+      ctx.say(Strings("%s\nsucked up the liquid ooze!",
+                      displayName(ctx.user)))
+      ctx.battle:applyDamage(ctx.user, heal)
+      return
+    end
     mon.hp = math.min(mon.stats.hp, mon.hp + heal)
     ctx.drain()
     -- `text` arrives as a source string (Strings.source at the call
@@ -524,6 +592,13 @@ MoveEffects.full = {
     gate = function(ctx)
       local blocked = immuneMsg(ctx)
       if blocked then return false, blocked end
+      -- STURDY REFUSES ALL FOUR.  In Gen 3 that is the whole of the ability
+      -- -- it does not survive an ordinary hit at full health, which is a
+      -- later generation -- and it is the reason a GOLEM cannot be FISSUREd.
+      if require("src.battle.Abilities").refusesOHKO(ctx.target) then
+        return false, Strings("%s's STURDY\nmade the move fail!",
+                              displayName(ctx.target))
+      end
       if TurnOrder.effectiveSpeed(ctx.user) < TurnOrder.effectiveSpeed(ctx.target) then
         return false, "But, it failed!"
       end
@@ -536,6 +611,14 @@ MoveEffects.full = {
 
   RECOIL_EFFECT = {
     afterDamage = function(ctx)
+      -- ROCK HEAD pays no recoil at all -- the cartridge checks the ability
+      -- before it subtracts, so an AGGRON's DOUBLE-EDGE costs it nothing
+      -- and no "hit with recoil!" line prints either.  Struggle is the one
+      -- exception on the real hardware, and it keeps its recoil here too.
+      if not ctx.moveInst.struggle
+         and require("src.battle.Abilities").ignoresRecoil(ctx.user) then
+        return
+      end
       -- recoil.asm reads the RAW computed wDamage (not the HP actually
       -- removed): overkill and substitute hits recoil at full strength
       local recoil = math.max(1, math.floor(ctx.rawDamage
@@ -599,7 +682,11 @@ MoveEffects.full = {
           user.thrashTurns, user.thrashMove, user.thrashAnnounced = nil, nil, nil
           if not user.confusedTurns then
             user.confusedTurns = ctx.rng(2, 5)
+            HeldItems.setConfusionCounter(ctx.battle, user, user.confusedTurns)
             ctx.say(Strings("%s\nbecame confused!", displayName(user)))
+            for _, msg in ipairs(HeldItems.onConfusion(ctx.battle, user)) do
+              ctx.say(msg)
+            end
           end
         end
       end
@@ -614,6 +701,19 @@ MoveEffects.full = {
   },
   EXPLODE_EFFECT = {
     explode = true, -- Damage.compute halves the defense
+    -- DAMP REFUSES IT, and it refuses it from ANYWHERE on the field -- a
+    -- POLIWRATH's own partner cannot explode either, which is why the
+    -- ability is asked of a list rather than of the target.  Nothing goes
+    -- off, nothing faints, and the user does not lose the turn's PP twice.
+    gate = function(ctx)
+      local Abil = require("src.battle.Abilities")
+      local battle = ctx.battle
+      local name = Abil.dampens({ battle.player, battle.enemy })
+      if name then
+        return false, Strings("But, it failed!")
+      end
+      return true
+    end,
     onMiss = function(ctx)
       ctx.battle:selfDestruct(ctx.user)
     end,
@@ -671,6 +771,16 @@ MoveEffects.full = {
     -- Fail paths DelayFrames then print -- no PlayCurrentMoveAnimation.
     perform = function(ctx)
       local battle, user, target, move = ctx.battle, ctx.user, ctx.target, ctx.move
+      -- SUCTION CUPS is the one thing in Gen 3 that refuses to be blown out.
+      -- TELEPORT is the user's own doing and is not covered by it: the
+      -- ability holds the TARGET down, not the user.
+      if move.id ~= "TELEPORT"
+         and require("src.battle.Abilities").refusesPhasing(target) then
+        battle:cancelMoveAnim()
+        ctx.say(Strings("%s\nanchored itself\nwith SUCTION CUPS!",
+                        displayName(target)))
+        return
+      end
       if battle.kind == "wild" then
         local uLvl, tLvl = user.mon.level, target.mon.level
         local ok = uLvl >= tLvl
@@ -717,6 +827,25 @@ MoveEffects.full = {
     callsMove = function(ctx)
       local last = ctx.target.lastMove
       if not last then
+        ctx.say(Strings("The MIRROR MOVE\nfailed!"))
+        return nil
+      end
+      -- NOT EVERY MOVE CAN BE MIRRORED, and the cartridge says which.
+      --
+      -- Gen 1 and Gen 2 have no such field, so copying whatever the target
+      -- last used was right there.  Gen 3 carries a per-move flag -- bit 4 of
+      -- struct BattleMove's flags -- and 84 of Emerald's 354 moves clear it:
+      -- the self-targeting ones (AGILITY, BARRIER, CALM MIND), the ones with
+      -- no target to aim back at (BIDE, DESTINY BOND, TELEPORT), and the
+      -- move-calling ones that would recurse (ASSIST, METRONOME, SLEEP TALK).
+      -- Copying one of those is a move that cannot be aimed anywhere.
+      --
+      -- The flag is only consulted when the dataset HAS it: on a Gen 1 or
+      -- Gen 2 dataset every def leaves it nil, and treating nil as "banned"
+      -- would break Mirror Move in the two generations where it already
+      -- worked.
+      local def = ctx.data and ctx.data.moves and ctx.data.moves[last]
+      if type(def) == "table" and def.mirrorMoveAffected == false then
         ctx.say(Strings("The MIRROR MOVE\nfailed!"))
         return nil
       end
@@ -1094,6 +1223,21 @@ local function shim(fn)
   return function(ctx)
     return fn(ctx.battle, ctx.user, ctx.target, ctx.move, ctx.moveInst)
   end
+end
+
+-- HOENN'S OWN EFFECTS, merged in before RECORDS is assembled so everything
+-- downstream -- the registry, performMove's dispatch, a mod override -- sees
+-- them as ordinary records with no special case anywhere.  Non-destructive:
+-- a name this file already defines wins, so the new file can never quietly
+-- redefine an effect that already worked.
+do
+  local Gen3 = require("src.battle.Gen3MoveEffects")
+  for _, kind in ipairs({ "primary", "secondary", "full" }) do
+    for id, value in pairs(Gen3[kind] or {}) do
+      if MoveEffects[kind][id] == nil then MoveEffects[kind][id] = value end
+    end
+  end
+  for id in pairs(Gen3.accuracyChecked or {}) do ACC_CHECKED[id] = true end
 end
 
 local RECORDS = {}

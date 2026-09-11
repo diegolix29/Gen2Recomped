@@ -12,6 +12,12 @@ SpriteRenderer.__index = SpriteRenderer
 local imageCache = {}
 
 local function getImage(path)
+  -- BELT AND BRACES.  `Assets.image(nil)` indexes its cache with nil and
+  -- raises "table index is nil" from inside the asset layer, where the
+  -- traceback says nothing about which sprite was missing.  A def with no
+  -- image is a content bug worth surviving: degrade to the placeholder the
+  -- asset layer already has for a missing path.
+  if type(path) ~= "string" then return Assets.image("MISSING") end
   if not imageCache[path] then
     imageCache[path] = Assets.image(path)
   end
@@ -118,9 +124,23 @@ function SpriteRenderer.new(spriteDef, seed)
       self.mirrorHalf = true
     end
   else
+    -- A CELL IS NOT ALWAYS 16x16.  Gen 1 and Gen 2 people are one tile square;
+    -- Emerald's are 16 wide and 32 TALL, and its bikes and vehicles wider
+    -- still.  A sheet that says so gets quads its own size, and `draw` hangs
+    -- the extra height above the cell so the feet stay where the engine put
+    -- them.  Nothing that does not say so changes at all.
+    self.tileW = math.floor(tonumber(spriteDef.frameWidth) or 16)
+    self.tileH = math.floor(tonumber(spriteDef.frameHeight) or 16)
+    if self.tileW < 8 or self.tileH < 8 then self.tileW, self.tileH = 16, 16 end
+    -- Only a sheet that DECLARES its cell gets an offset: the big-doll branch
+    -- above has always drawn from the cell's own corner and a Gen 1 or Gen 2
+    -- sheet must keep landing exactly where it did.
+    self.offsetX = math.floor((self.tileW - 16) / 2)
+    self.offsetY = self.tileH - 16
     self.frames = {}
     for f = 0, math.max(0, (spriteDef.frames or 1) - 1) do
-      self.frames[f] = love.graphics.newQuad(0, f * 16, 16, 16, iw, ih)
+      self.frames[f] = love.graphics.newQuad(0, f * self.tileH, self.tileW,
+                                             self.tileH, iw, ih)
     end
   end
   return self
@@ -267,7 +287,7 @@ function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip, to
   local redraw = false
   -- full-color art claims its frame-sized cell out of the shade-remap pass
   if self.def.trueColor then
-    PaletteFX.markTrueColor(x, y, 16, 16)
+    PaletteFX.markTrueColor(x, y, self.tileW or 16, self.tileH or 16)
   elseif self:objPalette() and PaletteFX.usesGen2ObjPal() then
     -- Gen2 GBC mode: the ROM's own OBJ palette for this sheet, baked in --
     -- or, for a customised player, the mix they chose. It is full colour, so
@@ -275,7 +295,7 @@ function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip, to
     -- sprite does.
     local objColors, objGroup = self:objPalette()
     image = getObpImage(self.def.image, objColors, objGroup)
-    PaletteFX.markTrueColor(x, y, 16, 16)
+    PaletteFX.markTrueColor(x, y, self.tileW or 16, self.tileH or 16)
   elseif PaletteFX.usesGbcPack() then
     -- RED++: the world canvas is already true-color (TileRenderer bakes
     -- terrain, this bakes the sprite) and the world pass runs unshaded
@@ -307,7 +327,7 @@ function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip, to
     if self.mirrorHalf and self.frames[0] then
       -- FacingBigDollSymmetric: left 16x32 + X-flipped copy = 32x32 body
       blitFrame(image, self.frames[0], x, y, false, redraw)
-      blitFrame(image, self.frames[0], x + 16, y, true, redraw)
+      blitFrame(image, self.frames[0], x + 16, y, true, redraw, self.tileW)
     else
       blitFrame(image, self.frames[0], x, y, false, redraw)
     end
