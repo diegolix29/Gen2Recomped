@@ -691,7 +691,16 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
   -- rebuilds that record -- InitPlayerAvatar zeroes the whole struct before
   -- filling it in.  Clearing it here is that same reset, and it means no
   -- unbalanced hide anywhere can cost the player their character again.
-  if self.player then self.player.hidden = nil end
+  --
+  -- ...BUT A SEAM IS NOT A MAP LOAD.  Walking from one route into the next is
+  -- one continuous walk and the avatar's record is never rebuilt, so a scene
+  -- that hid the player has to keep them hidden across it.  Reported from
+  -- play of the boat ride: "it shows me walking on water" -- the sail hides
+  -- the player and carries them on the boat, and the first seam handed them
+  -- back their sprite in the middle of the sea (#417).
+  if self.player and not (opts and opts.seamless) then
+    self.player.hidden = nil
+  end
   local queue = self.pendingScripts
   if queue then
     for i = #queue, 1, -1 do
@@ -982,7 +991,13 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
   -- continuous walk on the cartridge too, and a cutscene that escorts the
   -- player over a map boundary has to keep its queue.
   if not (opts and opts.seamless) then self:releaseScriptMoves(mapId) end
-  if GameVersion.isGen3() and self.runner and self.runner.ctx then
+  -- ...and neither does it settle a waitmovement, for the same reason the
+  -- queue above survives: the walk being waited on is still running.  Settling
+  -- it let the script run on while its own movement was still in flight --
+  -- reported as the boat's arrival text arriving "before we get to the dock",
+  -- with everything after it playing out in the wrong place.
+  if GameVersion.isGen3() and self.runner and self.runner.ctx
+     and not (opts and opts.seamless) then
     pcall(function()
       require("src.script.Gen3Commands").releaseMapWaits(self.runner.ctx, mapId)
     end)
@@ -3771,6 +3786,23 @@ function OverworldState:crossConnection(dir, conn, scripted)
   -- letting it respawn behind the player (#427)
   local PikachuFollower = require("src.world.PikachuFollower")
   local pika = PikachuFollower.current(self)
+  -- WHOEVER IS WALKING WITH THE PLAYER COMES TOO.
+  --
+  -- Reported from play of the boat ride: "the boat gets left behind".  It
+  -- was: setMap rebuilds the NPC list from the new map's own objects, and
+  -- Mr. Briney's boat belongs to the map the voyage started on.  On the
+  -- cartridge the object-event array spans the loaded map AND its
+  -- connections, so a walker mid-scene crosses with you.
+  --
+  -- Only the ones actually mid-walk, and only on a scripted crossing: an
+  -- ordinary NPC has no business following the player over a seam, and the
+  -- follower already has its own carry (keepPikachu) for the same reason.
+  local riders = {}
+  if scripted then
+    for _, mv in ipairs(self.scriptMoves or {}) do
+      if mv.entity and mv.entity ~= p then riders[#riders + 1] = mv.entity end
+    end
+  end
   local fromX, fromY = p.cellX, p.cellY
   self:setMap(conn.map, x, y, p.facing,
               { seamless = true, keepMusic = true, keepPikachu = pika })
@@ -3785,6 +3817,21 @@ function OverworldState:crossConnection(dir, conn, scripted)
   p.px, p.py = p.cellX * 16, p.cellY * 16
   -- same translation for the follower and the cell it is chasing
   PikachuFollower.rebase(self, p.cellX - fromX, p.cellY - fromY)
+  -- ...and the riders, by the same translation the player just took
+  if riders[1] then
+    local rdx, rdy = p.cellX - fromX, p.cellY - fromY
+    for _, e in ipairs(riders) do
+      if e.cellX and e.cellY then
+        e.cellX, e.cellY = e.cellX + rdx, e.cellY + rdy
+        if e.targetX and e.targetY then
+          e.targetX, e.targetY = e.targetX + rdx, e.targetY + rdy
+        end
+        e.px, e.py = e.cellX * 16, e.cellY * 16
+      end
+      self.npcs[#self.npcs + 1] = e
+      self.entities[#self.entities + 1] = e
+    end
+  end
   self.camera:follow(p.px, p.py)
   p.facing = dir
   p.targetX, p.targetY = x, y
