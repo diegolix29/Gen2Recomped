@@ -43,6 +43,14 @@ function Gen3.mapIsGen3(map)
   return map ~= nil and Gen3.isGen3(map.tileset)
 end
 
+-- Improved class determination using gen3_shapes data
+local function classFromSpec(spec, behavior, layer)
+  if not spec or not spec.behaviors then return nil end
+  local entry = spec.behaviors[behavior]
+  if not entry then return nil end
+  return entry.class
+end
+
 -- Synthetic tile ID functions
 function Gen3.tileId(metatile, tx, ty)
   return (tonumber(metatile) or 0) * 4 + (ty % 2) * 2 + (tx % 2)
@@ -275,14 +283,6 @@ function Gen3.forMap(map)
 
   ctxCache[map] = ctx
   return ctx
-end
-
--- Improved class determination using gen3_shapes data
-local function classFromSpec(spec, behavior, layer)
-  if not spec or not spec.behaviors then return nil end
-  local entry = spec.behaviors[behavior]
-  if not entry then return nil end
-  return entry.class
 end
 
 -- Placeholder for analysis function (can be expanded)
