@@ -151,7 +151,21 @@ function BirchSpeech:askGender(next)
       self:chooseGender("girl"); next()
     end },
   }
-  game.stack:push(Menu.new(game, items, { tx = 9, ty = 1, tw = 7 }))
+  -- B DOES NOTHING HERE, and that is the cartridge's answer rather than a
+  -- guard bolted on.
+  --
+  -- Task_NewGameBirchSpeech_ProcessGenderMenuInput reads the menu with
+  -- Menu_ProcessInputNoWrapClearOnChoose, which answers MENU_B_PRESSED (-1)
+  -- when B is pressed -- and the switch that follows has a case for MALE and
+  -- a case for FEMALE and NONE for -1.  So the press is read and discarded,
+  -- and the question stays up until it is answered.
+  --
+  -- Reported from play: "game softlocks if you press B on gender select".
+  -- The menu defaulted to cancelable with no onCancel, so B popped it and
+  -- nothing called `next` -- the speech was left on top of the stack at step
+  -- 4 with nothing pending and no input of its own, which is a dead game.
+  game.stack:push(Menu.new(game, items,
+                           { tx = 9, ty = 1, tw = 7, cancelable = false }))
 end
 
 -- The choice sets three things: the picture the rest of the intro shows, the

@@ -1977,8 +1977,12 @@ function BattleState:updateQueue()
       require("src.core.Sound").playId(self.data, anim.sound)
     end
     -- the trainer is gone by the time his Pokemon is out of the ball
+    -- ...unless the trainer's own walk-off is still running (#407): the
+    -- cartridge frees that sprite at the end of the fifty frames, not when
+    -- the ball opens, and cutting it short hides most of the throw
     if anim.sendOut == "player" and self.showPlayerBack
-        and anim.phase ~= "throw" then
+        and anim.phase ~= "throw"
+        and not (self.backWalkOff and self.backWalkOff > 0) then
       self.showPlayerBack = false
       self:slidePic("back")
     end
@@ -2468,9 +2472,48 @@ function BattleState:gen3MusicKind()
   local themes = audio and audio.battle
   if not themes then return nil end
   if self.kind == "trainer" and self.trainer then
+    -- THE RIVAL IS THE ONE YOU DID NOT PICK, and she has her own theme.
+    --
+    -- Reported from play: "May uses the basic Trainer Theme."  GetBattleBGM
+    -- answers MUS_VS_RIVAL for TRAINER_CLASS_RIVAL and then excludes one
+    -- person by NAME -- `StringCompare(trainerName, gText_BattleWallyName)`
+    -- -- because WALLY shares the rival's class and does not share its music.
+    --
+    -- Matching on the class alone cannot do that here, and not only for
+    -- Wally: this cartridge names FIVE classes "PKMN TRAINER" (0, 1, 49, 50,
+    -- 64), so the string is not even unique.  The name is, and the port
+    -- already knows which one it is -- the Birch speech writes
+    -- save.player.rival as the character the player did not choose.  So this
+    -- asks the question the cartridge asks, on the field that can answer it,
+    -- and gets Wally's exception for free: he is never the rival's name.
+    local player = self.game and self.game.save and self.game.save.player
+    local rival = player and player.rival
+    if themes.rival and rival and self.trainer.name
+       and tostring(self.trainer.name):upper() == tostring(rival):upper() then
+      self.isGymLeader = false
+      return "rival"
+    end
+    -- ...AND THE CLASS NAME, WHICH WAS OFF BY ONE.
+    --
+    -- gTrainerClassNames is read into a ZERO-based table -- extractTrainerClasses
+    -- fills names[0..66] and writes def.className = names[def.class], which is
+    -- right.  This read it again and added one, so every trainer was scored
+    -- against the NEXT class's name.  It is not a near miss:
+    --
+    --     LEADER     (32) read as "SCHOOL KID"  -> every gym battle in Hoenn
+    --                                              got the plain trainer theme
+    --     CHAMPION   (38) read as "FISHERMAN"   -> so did the Champion
+    --     ELITE FOUR (31) read as "LEADER"      -> the GYM theme, which is
+    --                                              why it sounded plausible
+    --     TEAM AQUA/MAGMA and their admins and leaders -> all plain trainer
+    --
+    -- The trainer record already carries the correctly-resolved name, so take
+    -- that; the zero-based lookup is the fallback for a record that predates
+    -- it.
     local classes = self.data.constants and self.data.constants.trainerClasses
-    local name = classes and self.trainer.class
-                 and classes[(tonumber(self.trainer.class) or -1) + 1]
+    local name = self.trainer.className
+                 or (classes and self.trainer.class
+                     and classes[tonumber(self.trainer.class) or -1])
     local kind = name and GEN3_CLASS_MUSIC[name]
     if kind and themes[kind] then
       -- the badge fights are the ones that bump the companion's happiness
@@ -2660,6 +2703,31 @@ function BattleState:placeBattler(pos, battler)
     if side == 1 then self.player = battler else self.enemy = battler end
   end
   return battler
+end
+
+-- THE SIDE'S ACTIVE BATTLER, which is not always its left flank.
+--
+-- `self.player` and `self.enemy` are aliases for each side's LEFT flank, and
+-- that is a real contract rather than an accident: "self.enemy is nil" means
+-- the left-hand foe is off the field, and targeting and the double-battle
+-- tests both depend on it saying exactly that.
+--
+-- But a caller that means "whoever on this side is taking a turn" needs the
+-- other question, and in a double battle the two part company the moment the
+-- left flank faints and is taken off -- the right one is still standing and
+-- still fighting while the alias reads nil.  Asking for the alias there is
+-- what crashed the game:
+--
+--     src/battle/BattleState.lua:3434: attempt to index field 'player'
+--     (a nil value)
+--
+-- reported from play on Android as "once my starter fainted ... the game
+-- crashed".  Left flank first, so a single battle and the ordinary double
+-- both answer exactly what they always did; nil only when the side really is
+-- empty, which is the state the faint flow already handles.
+function BattleState:activeOn(side)
+  local slots = self.sides and self.sides[side] and self.sides[side].battlers
+  return slots and (slots[1] or slots[2]) or nil
 end
 
 function BattleState:partnerOf(battler)
@@ -2870,6 +2938,20 @@ function BattleState:enter()
   self.playerBackPic = getImage(backPath,
     namedPalette(self.data, "MEWMON"), backTrueColor)
   self.showPlayerBack = self.playerBackPic ~= nil
+  -- ...AND THE OTHER THREE FRAMES OF THAT SHEET (#407).  The single pic is
+  -- still what the placement and the scale are measured from; the strip is
+  -- only ever the texture the throw draws out of.
+  self.backThrow, self.backWalkOff = nil, nil
+  do
+    local stripPath, anim, frames = self:gen3BackStrip(backPath)
+    if stripPath and anim and frames and frames > 1 then
+      local strip = getImage(stripPath, namedPalette(self.data, "MEWMON"), true)
+      if strip then
+        self.backThrow = { pic = strip, anim = anim, frames = frames,
+                           tick = 0, playing = false, quads = {} }
+      end
+    end
+  end
   -- the enemy's cry as it appears (data/pokemon/cries.asm); PlayCry sits at
   -- a different point in each battle kind, so queue it per branch
   local function queueEnemyCry()
@@ -3428,10 +3510,28 @@ function BattleState:update(dt)
   end
 
   if self.phase == "menu" then
+    -- WHO THIS MENU IS FOR, when the left flank is gone.
+    --
+    -- `self.player` is the left flank, and in a double battle that flank can
+    -- be off the field while the partner is still standing and still owed a
+    -- turn.  Reading the alias there crashed the game outright -- reported on
+    -- Android as "once my starter fainted ... the game crashed", landing on
+    -- the very next line as "attempt to index field 'player' (a nil value)".
+    --
+    -- activeOn answers the question this menu actually means: somebody on the
+    -- player's side, left flank first.  A single battle and an ordinary
+    -- double both get exactly what they got before.
+    local acting = self.player or self:activeOn(1)
+    if not (acting and acting.mon) then
+      -- nobody left on this side at all: that is the faint flow's business,
+      -- not the menu's, and it is already running.  Returning is what keeps
+      -- this from being a crash while it finishes.
+      return
+    end
     -- forced replacement after a faint: ChooseNextMon (core.asm:1086)
     -- loops the party menu until a healthy mon is picked, so B and
     -- fainted picks land back here and reopen it
-    if self.player.mon.hp <= 0 then
+    if acting.mon.hp <= 0 then
       if Party.firstHealthy(self.game.save.party) then
         self:openReplacementMenu()
       end
@@ -3440,7 +3540,7 @@ function BattleState:update(dt)
     self:clearTurnFlinches()
     -- only recharge/Rage/thrash/charge skip DisplayBattleMenu; trapping
     -- victims (and wrappers) still get FIGHT/PKMN/ITEM/RUN (core.asm:312)
-    local locked = self:menuLockedAction(self.player)
+    local locked = self:menuLockedAction(acting)
     if locked then
       self:resolveTurn(locked)
       return
@@ -5617,6 +5717,96 @@ end
 -- toward `to`; updateFx advances them, drawPicsLayer adds them, and the
 -- queue rows that start them park a { wait } of the matching length.  Call
 -- with no target to clear a slot (#317, #282).
+-- ---------------------------------------------------------------------------
+-- THE PLAYER'S THROW (#407)
+--
+-- Reported from play: the player "throwing the pokeball isnt animated".  It
+-- never was -- only ONE frame of a four-frame sheet was ever loaded, so the
+-- trainer stood still through his own send-out.
+--
+-- Emerald's is a real animation and the cartridge spells it out.
+-- gTrainerBackAnimsPtrTable sits immediately in front of
+-- gTrainerBackPicTable and gives every back pic two anims: [0] the pose it
+-- rests in and [1] the throw.  PlayerHandleIntroTrainerBallThrow (005CA80)
+-- runs StartSpriteAnim(sprite, 1) and on the same frame hands the sprite to
+-- StartAnimLinearTranslation with data[0] = 50 and data[2] = -40 -- forty
+-- pixels left over fifty frames, and then the sprite is freed.
+--
+-- Brendan's and May's throw is frame 0 for 24, 1 for 9, 2 for 24, 0 for 9 and
+-- 3 for 50: a hundred and sixteen frames of which the fifty he is on screen
+-- for show the first three -- ball at his side, ball at his shoulder, arm
+-- out and the ball gone.  Every number is the import's; nothing here picks a
+-- duration, because a wrong hold reads as a stutter.
+function BattleState:gen3BackRecord()
+  local record = (self.data or {}).constants
+  record = type(record) == "table" and record.gen3TrainerBack or nil
+  return type(record) == "table" and record or nil
+end
+
+-- {frames, dx} for the walk-off, or nil on a cache that has not read it
+function BattleState:gen3BackIntro()
+  if not self:gen3Layout() then return nil end
+  local record = self:gen3BackRecord()
+  local intro = record and record.intro
+  if type(intro) ~= "table" then return nil end
+  local n, dx = tonumber(intro.frames), tonumber(intro.dx)
+  if not (n and dx) or n <= 0 or dx >= 0 then return nil end
+  return { frames = n, dx = dx }
+end
+
+-- The strip beside `backPath`, and the anim that plays over it.  Only the
+-- player's OWN back animates: the catching tutorial's stand-in is drawn from
+-- field.playerPics and has no strip, and a Game Boy back has no sheet at all.
+function BattleState:gen3BackStrip(backPath)
+  if not self:gen3Layout() then return nil end
+  if self.demo or self.oakDemo then return nil end
+  local record = self:gen3BackRecord()
+  if not record or type(record.anims) ~= "table" then return nil end
+  local ok, Sprites = pcall(require, "src.pokemon.Sprites")
+  if not (ok and Sprites and Sprites.playerForm) then return nil end
+  local form = Sprites.playerForm(self.data)
+  if type(form) ~= "table" then return nil end
+  -- the strip has to belong to the pic actually being drawn, or a hooked
+  -- replacement back would be animated out of somebody else's sheet
+  if backPath ~= form.back then return nil end
+  local index = tonumber(form.backIndex)
+  local anim = index and record.anims[index]
+  if type(anim) ~= "table" or type(anim.throw) ~= "table" then return nil end
+  local frames = record.images and record.images[index]
+                 and tonumber(record.images[index].frames)
+  return form.backStrip, anim, frames
+end
+
+-- the frame the strip is showing this instant, 0-based into the sheet
+function BattleState:backThrowFrame()
+  local a = self.backThrow
+  if not a then return nil end
+  if not a.playing then return a.anim.rest end
+  local t = a.tick
+  for _, row in ipairs(a.anim.throw) do
+    if t < row[2] then return row[1] end
+    t = t - row[2]
+  end
+  local last = a.anim.throw[#a.anim.throw]
+  return last and last[1] or a.anim.rest
+end
+
+-- the texture and the window into it, or nil to draw the single pic instead
+function BattleState:backThrowQuad()
+  local a = self.backThrow
+  if not a then return nil end
+  if not (love and love.graphics and love.graphics.newQuad) then return nil end
+  local img = self:picImage(a.pic)
+  if not img then return nil end
+  local sw, sh = img:getWidth(), img:getHeight()
+  local w = math.floor(sw / a.frames)
+  if w <= 0 then return nil end
+  local f = self:backThrowFrame()
+  if not f or f < 0 or f >= a.frames then return nil end
+  a.quads[f] = a.quads[f] or love.graphics.newQuad(f * w, 0, w, sh, sw, sh)
+  return img, a.quads[f]
+end
+
 function BattleState:slidePic(slot, from, to, step)
   self.picOff = self.picOff or {}
   if to == nil then
@@ -5635,6 +5825,21 @@ end
 function BattleState:updateFx()
   if self.introSlide and self.introSlide > 0 then
     self.introSlide = self.introSlide - 1
+  end
+  -- #407: THE THROW'S OWN CLOCK, and the fifty frames the trainer is on
+  -- screen while it runs.  PlayerHandleIntroTrainerBallThrow starts the anim
+  -- and the walk-off on the same frame and the sprite is freed at the end of
+  -- the walk, so the two counters are one thing and are stepped together.
+  if self.backThrow and self.backThrow.playing then
+    self.backThrow.tick = self.backThrow.tick + 1
+  end
+  if self.backWalkOff and self.backWalkOff > 0 then
+    self.backWalkOff = self.backWalkOff - 1
+    if self.backWalkOff == 0 then
+      self.showPlayerBack = false
+      self:slidePic("back")
+      if self.backThrow then self.backThrow.playing = false end
+    end
   end
   -- step each live trainer-pic slide toward its target; a landed program
   -- holds its offset (the after-battle scroll-in rests two tiles right of
@@ -7899,10 +8104,24 @@ function BattleState:gen3SendOut(battler)
   })
   self.gen3Ball = anim
   self.gen3BallPlaying = true
-  -- the trainer throws and walks off on the same frame; showPlayerBack is
-  -- dropped when the ball opens, by which time the slide has finished
+  -- THE TRAINER THROWS AND WALKS OFF ON THE SAME FRAME.
+  --
+  -- #407: on a cache that has read them, both halves are the cartridge's own
+  -- -- fifty frames, forty pixels left, and anim 1 running over the top --
+  -- and the trainer is dropped when the walk ends rather than when the ball
+  -- opens, because that is when PlayerHandleIntroTrainerBallThrow's sprite
+  -- is freed.  Without them the screen keeps the offset it always used.
   if self.showPlayerBack and battler == self.player then
-    self:slidePic("back", 0, -72, 4)
+    local intro = self:gen3BackIntro()
+    if intro then
+      self:slidePic("back", 0, intro.dx, math.abs(intro.dx) / intro.frames)
+      self.backWalkOff = intro.frames
+      if self.backThrow then
+        self.backThrow.playing, self.backThrow.tick = true, 0
+      end
+    else
+      self:slidePic("back", 0, -72, 4)
+    end
   end
   self.nextInsert = (self.nextInsert or 0) + 1
   table.insert(self.queue, self.nextInsert, { wait = anim:estimate() })
@@ -9359,8 +9578,17 @@ function BattleState:drawPicsLayer(slide, sx, sy, onlySide, skipMenuClip)
                                          pad, padL, s)
     end
     -- picOffset: SlideTrainerPicOffScreen walking the back pic off the left
-    love.graphics.draw(img, dx + slide + sx + self:picOffset("back"),
-                       dy + sy, 0, s, s)
+    -- #407: while the sheet is loaded the texture is the strip and the
+    -- window into it is the throw's current frame; the placement above is
+    -- still measured off the single pic, which is one frame wide
+    local strip, quad = self:backThrowQuad()
+    if strip and quad then
+      love.graphics.draw(strip, quad, dx + slide + sx + self:picOffset("back"),
+                         dy + sy, 0, s, s)
+    else
+      love.graphics.draw(img, dx + slide + sx + self:picOffset("back"),
+                         dy + sy, 0, s, s)
+    end
   elseif onlySide ~= "enemy"
      and self.player and self.player.sprite and not hidePlayer
      and not self.sendingOut and not self:fxHidden(self.player)

@@ -65,6 +65,35 @@ function Theme.load(data)
     Merge.deepMerge(Theme, t)
     Font.BORDER = Theme.border
   end
+  -- THE TEXT CANNOT BE WIDER THAN THE BOX IT IS DRAWN IN.
+  --
+  -- Reported from play, with a screenshot: "text boxes on mobile are
+  -- appearing weird ... theyre cutt off" -- the last word running into the
+  -- window's own right border.
+  --
+  -- The frame and the wrapping read two DIFFERENT fields: TextBox draws the
+  -- window from `tw` and wraps to a budget of `maxCols * 8` pixels.  A theme
+  -- that sets both keeps them in step -- Emerald's derives tw = width + 2 and
+  -- maxCols = width from gen3MessageWindow, so 28 tiles of frame hold exactly
+  -- 26 columns of text, and the interior (224 - 2 border tiles = 208px) is
+  -- the budget (26 * 8 = 208px) to the pixel.
+  --
+  -- But the merge above is a DEEP merge over the Game Boy defaults, so a
+  -- textBox carrying only some of its keys silently keeps the rest from a
+  -- 160-wide screen -- a Gen 3 `maxCols` over a Game Boy `tw` wraps 26
+  -- columns of a proportional face into a 20-tile window and prints straight
+  -- through the border.
+  --
+  -- Clamping here is free when the two agree (26 vs 28 - 2 = 26 is the same
+  -- number) and is the whole fix when they do not: text is wrapped to the
+  -- window that is actually drawn, whatever assembled the theme.
+  local box = Theme.textBox
+  if type(box) == "table" then
+    local interior = (tonumber(box.tw) or 0) - 2
+    if interior >= 1 and (tonumber(box.maxCols) or 0) > interior then
+      box.maxCols = interior
+    end
+  end
 end
 
 return Theme

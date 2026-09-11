@@ -675,6 +675,23 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
     self.parallelQueue = {}
   end
   self.marchers = {}
+  -- THE PLAYER IS VISIBLE ON A NEW MAP, whatever the last one did to them.
+  --
+  -- Reported from play: "invisible player sprites during the beginning of the
+  -- game and having to save and reload for their player sprite to appear".
+  -- `hideobjectat OBJ_EVENT_ID_PLAYER` is how 29 scripts take the player off
+  -- screen for a doorway, and it writes `hidden` on the live Player -- which
+  -- is not in the save.  So a scene that hid the player and did not live to
+  -- run its matching `showobjectat` left them invisible for the rest of the
+  -- session, and reloading fixed it only because a reload builds a new Player
+  -- that never had the flag.
+  --
+  -- The cartridge cannot get stuck this way: the avatar's `invisible` bit
+  -- lives on gObjectEvents[gPlayerAvatar.objectEventId], and a map load
+  -- rebuilds that record -- InitPlayerAvatar zeroes the whole struct before
+  -- filling it in.  Clearing it here is that same reset, and it means no
+  -- unbalanced hide anywhere can cost the player their character again.
+  if self.player then self.player.hidden = nil end
   local queue = self.pendingScripts
   if queue then
     for i = #queue, 1, -1 do
@@ -908,6 +925,9 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
     if objectVisible(Game.save, mapId, obj) then
       local npc = pooledNPC(self.npcPool, Game.data, mapId, obj)
       npc.frozen = false
+      -- a map load rebuilds the object-event array, and the cartridge
+      -- unfreezes it by walking the loaded map's templates (#405)
+      npc.gen3ScriptFrozen = nil
       table.insert(self.npcs, npc)
     end
   end
@@ -1994,6 +2014,7 @@ function OverworldState:syncObjectVisibility(only)
   for _, obj in pairs(wanted) do
     local npc = pooledNPC(self.npcPool, Game.data, mapId, obj)
     npc.frozen = false
+    npc.gen3ScriptFrozen = nil
     -- Where does it come back?  `moveobject` first (an explicit relocation the
     -- script asked for), then wherever it was when it went away, then its
     -- object_event tile.  Script_moveobject writes the loaded map's object
@@ -2254,6 +2275,40 @@ function OverworldState:update(dt)
     local frameHooks = mapScripts.get(self.map and self.map.id)
     if frameHooks and frameHooks.onFrame then
       frameHooks.onFrame(Game, self)
+    end
+    -- THE CELL YOU ARRIVED ON STILL HAS TO BE ASKED.
+    --
+    -- Reported from play: Route 101's rescue "still not activating when i
+    -- walk into route 101 but does if i try and walk back out back to
+    -- littleroot town".  That asymmetry is the whole diagnosis -- the TILE
+    -- works, the ARRIVAL does not.
+    --
+    -- A coord event is asked from onStepComplete, and onStepComplete is
+    -- skipped while `scripted` is true -- which includes a non-empty pending
+    -- queue.  Walking north out of Littleroot crosses a map connection, and
+    -- setMap queues the new map's ON_TRANSITION, so the step that lands the
+    -- player on Route 101 (10,19) completes inside exactly that window and
+    -- never asks.  Afterwards nothing asks either: the frame table sets var
+    -- 16480 to 1 and disarms itself, so no further script finishes to trigger
+    -- the re-ask, and the player stands on a live trigger that has never been
+    -- put to it.  Step off and back on and it fires, which is what was seen.
+    --
+    -- So: whenever the player's cell has changed and nothing has asked about
+    -- it yet, ask.  cellSerial counts cell changes however they happen -- a
+    -- step, a scripted walk, a warp, a seam crossing -- which is precisely
+    -- the question.  Gated on an idle runner so the ask lands AFTER the frame
+    -- table's own script has run and written its var, and on the player being
+    -- still so a mid-step cell is never the one asked about; the serial is
+    -- only consumed once the ask really happens, so a frame spent running the
+    -- frame table just defers it rather than eating it.
+    --
+    -- Double-firing is already impossible: the coord closure remembers which
+    -- rows fired for this (cellSerial, cell), so a step that asked and fired
+    -- makes this a no-op.
+    if not self.runner:isRunning() and not self.player.moving
+       and self.coordAskedSerial ~= self.cellSerial then
+      self.coordAskedSerial = self.cellSerial
+      self:checkCoordEventHere(true)
     end
     -- ...AND THE MAP'S SETUP DECIDES THE WEATHER, which is the last thing a
     -- cartridge map load does (DoCurrentWeather).
@@ -2561,6 +2616,18 @@ function OverworldState:update(dt)
     return
   end
 
+  -- A SCENE THAT ENDS WITHOUT ITS releaseall MUST NOT LEAVE THE MAP FROZEN.
+  --
+  -- The cartridge has the same hazard and lives with it -- the next map load
+  -- rebuilds the object-event array -- but a port that got a script's exit
+  -- path slightly wrong would strand every wandering NPC on the map for the
+  -- rest of the session, which is a far worse failure than the one being
+  -- fixed.  The guards are what make this a net rather than a second rule:
+  -- a scene mid-message or mid-walk still holds the runner (#405).
+  if self.gen3Locked and not self.runner:isRunning()
+     and #self.scriptMoves == 0 and not self.transitioning then
+    self:gen3UnfreezeObjects()
+  end
   for _, npc in ipairs(self.npcs) do
     npc:update(self.map, self.entities)
   end
@@ -6068,6 +6135,25 @@ function OverworldState:drawFieldWeather()
   local frame = self.weatherFrame or 0
   local stage = self:gen3WeatherStage()
   if not Gen3Weather.draws(name, frame, stage) then return false end
+  -- HANDED TO THE RENDERER RATHER THAN DRAWN HERE.
+  --
+  -- This ran inside drawUI, which paints the 240x160 UI canvas -- so the
+  -- weather covered the letterbox and stopped dead at its edge while the
+  -- world pass filled the whole window.  Reported from play as "a weird box
+  -- overlay that i think the weather plays within but it should fit the full
+  -- screen", and that is exactly what it was.
+  --
+  -- Renderer.screenWeather is drawn over the finished world composite and
+  -- UNDER the UI blit, at the UI's own scale, so it covers every pixel of map
+  -- the player can see and still sits beneath the dialogue box the way the
+  -- cartridge's background-layer weather sits beneath the window layer.
+  local r = Game.renderer
+  if r then
+    r.screenWeather = function(w, h)
+      Gen3Weather.draw(name, frame, w, h, stage)
+    end
+    return true
+  end
   local w, h = self:uiSize()
   return Gen3Weather.draw(name, frame, w, h, stage) and true or false
 end
@@ -7719,6 +7805,32 @@ function OverworldState:checkTrainerSight()
   if self.player.moving or self.engaging then return end
   if Game.stack:top() ~= self then return end
   local p = self.player
+  -- A TRAINER WHOSE APPROACH ENDED WITHOUT A BATTLE MUST NOT RE-APPROACH
+  -- FROM THE SAME TILE.
+  --
+  -- This scan runs every frame the player is not in a script, and a trainer
+  -- is skipped only once they are DEFEATED.  Every path that ends an
+  -- approach without setting that flag therefore re-armed instantly: the
+  -- script unwound, `engaging` cleared, the trainer was still in range on
+  -- the very next frame, and the same text box opened again forever with no
+  -- input able to reach the player.  The double-battle refusal is the one
+  -- players hit -- walk into a double trainer's line with a single Pokemon
+  -- and the game is gone -- but any script that returns without a battle
+  -- does it.
+  --
+  -- The cartridge cannot loop here because a spot costs the player a STEP:
+  -- ProcessPlayerFieldInput runs the check as part of resolving player
+  -- movement, so standing still after being released re-checks nothing.
+  -- The suppression below is that rule stated directly -- this trainer does
+  -- not notice you again until you move off the tile you were released on --
+  -- and it self-clears the moment the player's cell changes, so walking back
+  -- into the line works exactly as it does on the cartridge.
+  local hush = self.spotHush
+  if hush then
+    if hush.cellX ~= p.cellX or hush.cellY ~= p.cellY then
+      self.spotHush, hush = nil, nil
+    end
+  end
   -- the spotters, in the order the scan finds them -- which is object order,
   -- the order the cartridge walks gObjectEvents in
   local spotted = {}
@@ -7750,6 +7862,7 @@ function OverworldState:checkTrainerSight()
     end
     if isTrainer and not npc.moving
        and not self:trainerDefeated(npc)
+       and not (hush and hush[npc])
        and trainerSpriteOnScreen(npc, p) then
       local header = Game.data:trainerHeader(self.map.def.label, d.index)
       -- THE OBJECT'S OWN RANGE WINS OVER THE HEADER'S.
@@ -7939,6 +8052,16 @@ function OverworldState:startTrainerApproach(npc, dist, partner)
                                   npc.frozen = false
                                   if partner then partner.frozen = false end
                                   self.engaging = false
+                                  -- released without being beaten: hush this
+                                  -- pair until the player steps off this tile,
+                                  -- or the scan re-approaches on the next frame
+                                  if not self:trainerDefeated(npc) then
+                                    local hush = { cellX = self.player.cellX,
+                                                   cellY = self.player.cellY }
+                                    hush[npc] = true
+                                    if partner then hush[partner] = true end
+                                    self.spotHush = hush
+                                  end
                                 end })
         return
       end
@@ -7994,7 +8117,24 @@ function OverworldState:showMapText(textConst, npc, onDone)
   local mapLabel = self.map.def.label
   local script = mapScripts.talkScript(self.map.id, textConst)
   if script then
-    if npc then npc:facePlayer(self.player) end
+    -- A GEN 3 SCRIPT TURNS ITS OWN SPEAKER, OR DELIBERATELY DOES NOT.
+    --
+    -- Reported from play, about MAY's first scene: "She also turns around
+    -- right as you talk to her and not a textbox after, not like the original
+    -- rom."
+    --
+    -- Facing here is right for Gen 1 and Gen 2, where turning to the player is
+    -- part of what talking IS and the ported scripts do not say it.  Emerald
+    -- says it: the ordinary NPC msgbox is `callstd 2`, which lowers to
+    -- g3_lock + face_player before the message, and a script that wants
+    -- something else writes the movement itself.  Turning the speaker before
+    -- handing over pre-empted that choice.
+    --
+    -- It is not a rare case.  Of the 1,708 object talk scripts in Hoenn, 811
+    -- -- 47.5% -- never face the player at ALL, and those are exactly the ones
+    -- this was overriding; of the 897 that do, 823 face at or before their
+    -- first message, so leaving it to them changes nothing for those.
+    if npc and not GameVersion.isGen3() then npc:facePlayer(self.player) end
     if type(script) == "function" then
       -- Lua talk handlers for logic that doesn't fit command rows
       script(Game, self, npc, onDone or function() end)
@@ -9699,6 +9839,7 @@ function OverworldState:addRuntimeObject(mapId, objDef, owner)
   if self.map and self.map.id == mapId and self.npcPool then
     local npc = pooledNPC(self.npcPool, Game.data, mapId, objDef)
     npc.frozen = false
+    npc.gen3ScriptFrozen = nil
     table.insert(self.npcs, npc)
     table.insert(self.entities, npc)
   end
@@ -9891,11 +10032,62 @@ local function droppingMove(self, onDone)
   return true
 end
 
-function OverworldState:scriptMove(entity, dir, tiles, onDone, keepFacing)
+-- `rate` is a multiplier on the step's frame count, carried from a Gen 3
+-- movement action's own name -- walk_fast is half a normal step's frames,
+-- walk_slow twice.  nil is the ordinary pace, which is every caller that
+-- predates it.
+-- ---------------------------------------------------------------------------
+-- THE FREEZE A SCRIPT PUTS ON THE MAP (#405)
+--
+-- Reported from play, of the Birch rescue: the little girl "walks around
+-- freely" for the whole scene.  Every wandering object on the map did --
+-- nothing in the port had ever stopped them, because `lock` only ever meant
+-- "the player cannot walk".
+--
+-- On the cartridge it means considerably more.  ScrCmd_lockall
+-- (gScriptCmdTable[$69] -> 09AAC4) calls FreezeObjectEvents (097494): all
+-- sixteen object-event slots, every active one whose index is not
+-- gPlayerAvatar.objectEventId.  ScrCmd_lock (09AAEC) calls
+-- FreezeObjectEventsExceptOne (0974D0) when the selected object is active --
+-- the same loop with the one you are talking to skipped, because the script
+-- is about to turn them to face you -- and FreezeObjectEvents when it is
+-- not.  Both release commands (09AB44, 09AB7C) end at UnfreezeObjectEvents
+-- (09757C), which has no player exception because the player was never in
+-- the set.
+--
+-- The player is not touched here for that reason: the input lockout is
+-- g3Locked's job and always was.
+function OverworldState:gen3FreezeObjects(except)
+  local function freeze(npc)
+    if npc == except then return end
+    -- FreezeObjectEvent (097404) returns at once when the held-movement bit
+    -- is set, which is what keeps an applymovement running through a scene
+    for _, mv in ipairs(self.scriptMoves or {}) do
+      if mv.entity == npc then return end
+    end
+    npc.gen3ScriptFrozen = true
+  end
+  for _, npc in ipairs(self.npcs or {}) do freeze(npc) end
+  -- a connected map's walkers share the cartridge's one object-event array,
+  -- so they are frozen by the same loop
+  for _, g in ipairs(self.ghosts or {}) do if g.npc then freeze(g.npc) end end
+  self.gen3Locked = true
+end
+
+function OverworldState:gen3UnfreezeObjects()
+  for _, npc in ipairs(self.npcs or {}) do npc.gen3ScriptFrozen = nil end
+  for _, g in ipairs(self.ghosts or {}) do
+    if g.npc then g.npc.gen3ScriptFrozen = nil end
+  end
+  self.gen3Locked = nil
+end
+
+function OverworldState:scriptMove(entity, dir, tiles, onDone, keepFacing, rate)
   if droppingMove(self, onDone) then return end
   table.insert(self.scriptMoves, {
     entity = entity, dir = dir, remaining = tiles, onDone = onDone,
     keepFacing = keepFacing or nil,
+    rate = (type(rate) == "number" and rate > 0 and rate ~= 1) and rate or nil,
   })
 end
 
@@ -10086,6 +10278,26 @@ function OverworldState:updateScriptMoves()
           -- when it is built; the literal is only for a headless stub
           e.stepFramesCur = e.stepFrames or 16
           e.running = false
+        end
+        -- ...AND THE ACTION'S OWN SPEED, on top of that baseline.
+        --
+        -- The comment above already says the cartridge's movement actions
+        -- carry their own speed; nothing read it.  Every scripted walk in
+        -- Hoenn therefore moved at one pace, which is why Birch strolls
+        -- through a rescue the script writes entirely in walk_fast.
+        --
+        -- Applied to whatever the walker's baseline turned out to be -- the
+        -- player's line above, an NPC's own stepFrames -- so a fast step is
+        -- half of THAT rather than a number invented here.  Restored on the
+        -- step after, so one fast leg does not make the rest of a scene fast.
+        if mv.rate then
+          local base = (e == self.player and (e.stepFrames or 16))
+                       or e.stepFrames or 16
+          e.stepFramesPrev = e.stepFramesCur
+          e.stepFramesCur = math.max(1, math.floor(base * mv.rate + 0.5))
+        elseif e.stepFramesPrev then
+          e.stepFramesCur = e.stepFramesPrev
+          e.stepFramesPrev = nil
         end
         local tx, ty = Collision.target(e.cellX, e.cellY, mv.dir)
         e.targetX, e.targetY = tx, ty

@@ -190,6 +190,24 @@ Gen3ScriptOps.TRAINER_BATTLE_SCRIPT_SLOT = {
   [1] = 3, [2] = 3, [6] = 4, [8] = 4,
 }
 
+-- ...AND THE LINE A DOUBLE TRAINER SAYS WHEN YOU CANNOT FIELD TWO.
+--
+-- sDoubleBattleParams (battle_setup.c) is the only parameter list with a
+-- FOURTH text: mode, opponent, local id, intro, defeat, CANNOT-BATTLE, and
+-- then the end script for the two continue-script types.  So the third
+-- pointer of every double record is a line no other type carries, and
+-- EventScript_NotEnoughMonsForDoubleBattle is the only thing that prints it.
+--
+-- Read out of the cartridge rather than taken on trust: slot 3 of the double
+-- records decodes as text at every site, and the lines say what the slot is
+-- for -- Route 103's pair, which is where this was found, reads
+--   "AMY: Uh-oh, you have only one POKeMON with you. You can't battle us..."
+-- The slot was being skipped, so the refusal had nothing to print, and the
+-- trainerbattle fell through to the beaten trainer's line instead.
+Gen3ScriptOps.TRAINER_BATTLE_CANT_SLOT = {
+  [4] = 3, [6] = 3, [7] = 3, [8] = 3,
+}
+
 -- Commands after which control never returns to the next byte.
 Gen3ScriptOps.TERMINATORS = {
   [0x02] = true,  -- end

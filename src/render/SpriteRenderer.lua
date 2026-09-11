@@ -88,8 +88,19 @@ Assets.register(SpriteRenderer.invalidate)
 -- same tables, so a 3D pose can never drift from the 2D one
 local STAND = { down = 0, up = 1, left = 2, right = 2 }
 local WALK = { down = 3, up = 4, left = 5, right = 5 }
+-- THE OTHER LEG, on a sheet that actually has one.
+--
+-- A Game Boy walker carries one step frame per axis and the engine X-flips it
+-- to fake the other leg.  Emerald's walkers carry TWO real ones -- its
+-- animation table reads `3 0 4 0`, step / stand / step / stand -- and the
+-- extractor now keeps both, appended after the classic six so 0-5 still mean
+-- what they always did.  These are the appended three.
+local WALK2 = { down = 6, up = 7, left = 8, right = 8 }
+-- the frame count that says a sheet has them
+local FULL_WALK_FRAMES = 9
 SpriteRenderer.STAND = STAND
 SpriteRenderer.WALK = WALK
+SpriteRenderer.WALK2 = WALK2
 
 -- SetPartyMonIconAnimSpeed's overworld rate: the icon bobs twice a second
 local MON_ICON_FPS = 4
@@ -332,12 +343,28 @@ function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip, to
     blitFrame(image, quad, x, y, false, redraw)
     return
   end
-  local frame = (self.def.walker and walkPhase == 1)
-                and WALK[facing] or STAND[facing]
+  -- A sheet with the full nine alternates its two REAL step frames; the
+  -- six-frame ones keep the Game Boy's mirror, which is all they can do.
+  local full = (tonumber(self.def.frames) or 0) >= FULL_WALK_FRAMES
+  local stepping = self.def.walker and walkPhase == 1
+  local frame
+  if stepping then
+    frame = (full and stepFlip) and WALK2[facing] or WALK[facing]
+  else
+    frame = STAND[facing]
+  end
   local flip = false
   if facing == "right" then
+    -- east is west mirrored on both kinds of sheet: the cartridge has no
+    -- east art either, which is why its POSE list skips that slot
     flip = true
-  elseif (facing == "down" or facing == "up") and walkPhase == 1 and stepFlip then
+  elseif not full and (facing == "down" or facing == "up")
+         and walkPhase == 1 and stepFlip then
+    -- the Game Boy fake, and ONLY for the sheets that need it.  Left out for
+    -- a full sheet, or the second step would be drawn back to front -- and it
+    -- was never applied to SIDE at all, because a mirrored side frame faces
+    -- the wrong way.  That asymmetry is what made side-to-side read as two
+    -- frames while up and down read as three.
     flip = true
   end
   local quad = self.frames[frame] or self.frames[0]

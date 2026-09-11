@@ -236,7 +236,42 @@ local SPIRAL_IN_FRAMES = math.ceil(#inwardSpiralOrder()
 -- The eight wipes as records: frames is the wipe length, flash marks the
 -- two circle wipes that call BattleTransition_FlashScreen first.  new()
 -- reads them, and the transitions registry serves the same table.
+-- ---------------------------------------------------------------------------
+-- THE TWO THAT ARE NOT THE GAME BOY'S.
+--
+-- Reported from play: "Gen 1 Battle Transition instead of Gen3s".  Exactly
+-- right, and the reason is that there was nothing else to pick: the Gen 3
+-- extractor writes no `transitions` table at all, so an Emerald battle fell
+-- all the way through styleDef to the eight pokered wipes below, chosen by
+-- pokered's own three-bit rule.  Every battle in Hoenn opened with a Game Boy
+-- spiral.
+--
+-- These two are fades, and a fade is the one shape that ports EXACTLY: it is
+-- a veil over every pixel the screen shows, which is what Renderer.screenVeil
+-- already is -- so they are correct at any window size and any zoom, with no
+-- letterbox to escape from. Emerald's showier transitions (the slice, the
+-- mosaic, the ripple, the big Poke Ball) are scanline and palette effects and
+-- are a feature rather than a fix; they are NOT covered here.
+--
+-- What this does buy: no Gen 3 battle opens with a Game Boy wipe any more.
+local function fadeDraw(shade)
+  return function(self, prog)
+    local r = self.game and self.game.renderer
+    -- out to the shade over the first half, then down to black -- which is
+    -- what the screen is holding when the battle draws its first frame
+    local a, s
+    if prog < 0.5 then a, s = prog / 0.5, shade
+    else a, s = 1, shade * (1 - (prog - 0.5) / 0.5) end
+    if r then r.screenVeil = { s, a } return end
+    love.graphics.setColor(s, s, s, a)
+    love.graphics.rectangle("fill", 0, 0, 160, 144)
+    love.graphics.setColor(1, 1, 1, 1)
+  end
+end
+
 BattleTransition.STYLES = {
+  g3_whitefade = { kind = "fade", frames = 48, draw = fadeDraw(1) },
+  g3_blackfade = { kind = "fade", frames = 48, draw = fadeDraw(0) },
   doublecircle = { kind = "wipe", frames = 30, flash = true },
   spiralin     = { kind = "wipe", frames = SPIRAL_IN_FRAMES },
   circle       = { kind = "wipe", frames = 60, flash = true },
@@ -297,7 +332,21 @@ end
 local BIT_STYLES = { [0] = "doublecircle", "spiralin", "circle", "spiralout",
                      "hstripes", "shrink", "vstripes", "split" }
 
+-- WHICH GENERATION'S TABLE DECIDES.
+--
+-- BIT_STYLES is pokered's, and it has no business choosing for Emerald.
+-- GetBattleTransitionTypeByMap picks on two things this already has -- whether
+-- the encounter is indoors and whether the player's lead outclasses the foe --
+-- so the SHAPE of the choice ports even though most of the effects do not:
+-- outdoors reads as a bright open transition and a cave as a dark one, which
+-- is the distinction the cartridge's table draws.
+local function gen3Style(ctx)
+  if ctx.dungeon then return "g3_blackfade" end
+  return "g3_whitefade"
+end
+
 local function vanillaStyle(ctx)
+  if require("src.core.GameVersion").isGen3() then return gen3Style(ctx) end
   return BIT_STYLES[(ctx.trainer and 1 or 0) + (ctx.stronger and 2 or 0)
                     + (ctx.dungeon and 4 or 0)]
 end

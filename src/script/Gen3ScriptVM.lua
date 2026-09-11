@@ -388,7 +388,9 @@ end
 -- player and objects -------------------------------------------------------
 
 L.lock = function(_, s) emit(s, { "g3_lock" }) end
-L.lockall = L.lock
+-- lockall is NOT lock: ScrCmd_lockall freezes every object on the map,
+-- ScrCmd_lock spares the one being talked to (#405)
+L.lockall = function(_, s) emit(s, { "g3_lock", true }) end
 L.release = function(_, s) emit(s, { "g3_release" }) end
 L.releaseall = L.release
 L.lockfortrainer = L.lock
@@ -503,8 +505,10 @@ end
 -- ir[2] is the battle type, ir[3] the trainer, ir[4] the script to run when
 -- you win -- which is where every gym leader's badge is, and which the
 -- decoder used to throw away.
+-- ir[5] is the line a DOUBLE trainer says when the party cannot field two,
+-- and it is the only one of the five that four types carry and six do not.
 L.trainerbattle = function(ir, s)
-  emit(s, { "g3_trainer_battle", ir[2], ir[3], ir[4] })
+  emit(s, { "g3_trainer_battle", ir[2], ir[3], ir[4], ir[5] })
 end
 L.dotrainerbattle = function(_, s) emit(s, { "g3_do_trainer_battle" }) end
 L.checktrainerflag = function(ir, s) emit(s, { "g3_check_trainer_flag", ir[2] }) end
@@ -921,7 +925,7 @@ local function contributionFor(data, mapId, entry, mapDef)
     -- a scripted walk, a warp, a ledge hop -- which is the question this
     -- actually wants to ask.  The cell string stays as the answer for a
     -- controller that does not keep one.
-    local firedAt, fired = nil, {}
+    local firedAt, fired, lastDecline = nil, {}, nil
     contribution.onStep = function(game, overworld, x, y)
       if overworld.runner:isRunning() then return false end
       -- BOTH, because either alone has a hole: the coordinates miss a
@@ -938,8 +942,39 @@ local function contributionFor(data, mapId, entry, mapDef)
            and (coord.var == nil or coord.var == 0
                 or Gen3Commands.getVar(game.save, coord.var) == coord.value) then
           fired[i] = true
+          Logger.debug("gen3 coord: %s (%d,%d) row %d fired (var %s == %s)",
+                       mapId, x, y, i, tostring(coord.var), tostring(coord.value))
           overworld.runner:run(coord.rows, { mapId = mapId })
           return true
+        end
+      end
+      -- WHY A TRIGGER THE PLAYER IS STANDING ON DID NOT FIRE.
+      --
+      -- A coord event is gated on a var, and the two ways it can decline look
+      -- identical from inside the game: the row already ran this visit, or the
+      -- var does not hold the value it wants yet.  Route 101's rescue needs
+      -- BOTH halves of the sequence to land in order -- arrive with the var at
+      -- 0, the frame table writes 1, the cell is asked again -- and if any
+      -- link breaks the player simply walks on with nothing happening and no
+      -- way to tell which link it was.
+      --
+      -- So a cell that HAS a row and ran none says so, once per answer: the
+      -- var it wanted, what the var actually holds, and whether the row had
+      -- already gone.  Silent when the player is not standing on a trigger,
+      -- which is almost always.
+      for i, coord in ipairs(coords) do
+        if coord.x == x and coord.y == y then
+          local got = coord.var and Gen3Commands.getVar(game.save, coord.var)
+          local why = fired[i] and "already ran this visit"
+                      or ("var %s is %s, wants %s"):format(
+                           tostring(coord.var), tostring(got),
+                           tostring(coord.value))
+          local said = ("%s|%d|%s"):format(here, i, why)
+          if lastDecline ~= said then
+            lastDecline = said
+            Logger.debug("gen3 coord: %s (%d,%d) row %d did NOT fire -- %s",
+                         mapId, x, y, i, why)
+          end
         end
       end
       return false

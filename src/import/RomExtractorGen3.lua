@@ -5988,7 +5988,35 @@ local GFX_INFO_ENTRY = 36
 -- frame 8, so a "run" set that did would be the walk over again, which is
 -- what a sprite with no run cycle would otherwise produce.
 local GEN3_OW = {
+  -- THE THREE STANDING POSES, then the three walk animations.
+  --
+  -- Slot 3 and slot 7 are absent because EAST is WEST mirrored -- the
+  -- cartridge has no east art and neither does this sheet.
   POSE = { 0, 1, 2, 4, 5, 6 },
+  -- ...AND THE SECOND STEP FRAME OF EACH WALK, which was being thrown away.
+  --
+  -- Reported from play: "the walking side to side animation is... only 2
+  -- frames", guessed to be "reused code from previous recomps".  Exactly
+  -- right on both counts.  A Game Boy walker has ONE step frame per axis and
+  -- mirrors it to fake the other leg; this cartridge has two real ones, and
+  -- the animation table says so outright.  BRENDAN's, read off the ROM:
+  --
+  --     GO_S   3 0 4 0        step, stand, step, stand
+  --     GO_N   5 1 6 1
+  --     GO_W   7 2 8 2
+  --
+  -- Four beats, two DIFFERENT steps.  animFirstFrame took only the first of
+  -- each -- 3, 5, 7 -- so frames 4, 6 and 8 never left the cartridge, and the
+  -- renderer fell back to the Game Boy's mirror trick.  Down and up at least
+  -- got a mirrored second leg out of that; SIDE got nothing, because a
+  -- mirrored side frame faces the other way and cannot be used -- which is
+  -- why side-to-side was the one the eye caught.
+  --
+  -- The steps are entries 1 and 3 of the animation: the even entries are the
+  -- standing pose it passes through. Appended AFTER the existing six so frame
+  -- indices 0-5 keep the meaning every reader already has.
+  POSE_STEP2 = { 4, 5, 6 },
+  POSE_STEP2_AT = 3,   -- which entry of the animation the second step is
   RUN = { 20, 21, 22 },
   RUN_FIRST = 9,
   -- OBJ_EVENT_GFX_VARS (include/constants/event_objects.h).  NUM_OBJ_EVENT_GFX
@@ -6039,6 +6067,17 @@ end
 -- The SECOND frame of an animation, which is what a run cycle's standing pose
 -- is: `f12/5 f9/3 f13/5 f9/3` steps, holds, steps, holds, and the hold is the
 -- pose the walker's own stand frame corresponds to.
+-- The Nth frame of an animation (1-based), for the walk cycles whose steps sit
+-- at entries 1 and 3.  Same word shape animFirstFrame reads, one stride along.
+function RomExtractorGen3:animFrameAt(anims, index, nth)
+  local list = self.rom:pointer(anims + index * 4)
+  if not list then return nil end
+  local word = self.rom:u32(list + (nth - 1) * 4)
+  local low = word % 65536
+  if low >= 0xFFFD or math.floor(word / 0x1000000) ~= 0 then return nil end
+  return low
+end
+
 function RomExtractorGen3:animSecondFrame(anims, index)
   local list = self.rom:pointer(anims + index * 4)
   if not list then return nil end
@@ -6507,6 +6546,24 @@ function RomExtractorGen3:extractOverworldSprites()
           order[i] = frame
         end
       end
+      -- ...AND THE SECOND STEP OF EACH WALK, appended after the six.
+      --
+      -- All or nothing: a sprite whose walks do not all carry a second step
+      -- keeps the six-frame sheet it always had, and the renderer keeps
+      -- mirroring for it.  That way a sheet is either the Game Boy shape or
+      -- the full one, and `frames` alone tells the two apart.
+      if order and #order == #GEN3_OW.POSE then
+        local extra, ok = {}, true
+        for i, slot in ipairs(GEN3_OW.POSE_STEP2) do
+          local frame = self:animFrameAt(anims, anchor + slot,
+                                         GEN3_OW.POSE_STEP2_AT)
+          if frame == nil or frame >= available then ok = false break end
+          extra[i] = frame
+        end
+        if ok then
+          for _, frame in ipairs(extra) do order[#order + 1] = frame end
+        end
+      end
       -- an empty table is TRUTHY in Lua, so this cannot be `order or {0}`:
       -- a sprite with no facing set came out with zero frames and a sheet of
       -- zero height, which every later stage happily wrote and nothing drew
@@ -6540,6 +6597,31 @@ function RomExtractorGen3:extractOverworldSprites()
           end
           runOrder[i] = hold          -- standing down / up / left
           runOrder[i + #GEN3_OW.RUN] = step   -- stepping down / up / left
+        end
+        -- ...AND THE RUN'S OWN SECOND STEP, which #410 fixed for the walk and
+        -- left behind here.
+        --
+        -- The run animations have the same four-beat shape as the walks --
+        -- `f12/5 f9/3 f13/5 f9/3` for the boy's run south -- so taking only
+        -- each animation's FIRST frame threw f13, f15 and f17 away and the
+        -- sprint alternated one stride with the standing pose.  Read at entry
+        -- three, exactly as POSE_STEP2 reads the walks, and all or nothing
+        -- for the same reason: a sheet is either the six-frame shape or the
+        -- nine-frame one, and `frames` alone tells them apart.
+        if runOrder then
+          local extra, ok = {}, true
+          for i, slot in ipairs(GEN3_OW.RUN) do
+            local frame = self:animFrameAt(anims, anchor + slot,
+                                           GEN3_OW.POSE_STEP2_AT)
+            if frame == nil or frame >= available
+               or frame < GEN3_OW.RUN_FIRST then
+              ok = false break
+            end
+            extra[i] = frame
+          end
+          if ok then
+            for _, frame in ipairs(extra) do runOrder[#runOrder + 1] = frame end
+          end
         end
       end
 
@@ -6583,8 +6665,9 @@ function RomExtractorGen3:extractOverworldSprites()
         trueColor = true,
         frameWidth = width,
         frameHeight = frameHeight,
-        -- the run cycle, when this sprite has one: its own six-frame sheet,
-        -- laid out exactly like the walking one so the same renderer draws it
+        -- the run cycle, when this sprite has one: its own sheet, laid out
+        -- exactly like the walking one -- and the same length as it -- so the
+        -- same renderer draws it
         run = runCells and (key .. "_RUN") or nil,
         source = ("ROM:gObjectEventGraphicsInfoPointers[%d]"):format(id),
       }
@@ -9085,6 +9168,8 @@ end
 local TEXT_OPERAND = {
   loadword = 3, message = 2, messageautoscroll = 3, messageinstant = 2,
   braillemessage = 2, bufferstring = 3, pokenavcall = 2, vmessage = 2,
+  -- the double-battle refusal line: name, kind, trainer, win script, THIS
+  trainerbattle = 5,
 }
 
 function RomExtractorGen3:extractScriptText()
@@ -10008,12 +10093,30 @@ function RomExtractorGen3:decodeScriptAt(start, queue)
       -- script was thrown away unread: the badge, the TM, the words.  The
       -- last pointer is that script, and queueing it is what makes it exist.
       local slot = Gen3ScriptOps.TRAINER_BATTLE_SCRIPT_SLOT[kind]
+      local base = o + Gen3ScriptOps.TRAINER_BATTLE_HEADER
       if slot then
-        local base = o + Gen3ScriptOps.TRAINER_BATTLE_HEADER
         local target = rom:pointer(base + (slot - 1) * 4)
         if target then
           args[3] = ("S%07X"):format(target)
           if queue then queue[#queue + 1] = target end
+        end
+      end
+      -- ...AND THE REFUSAL LINE, for the four double types that carry one.
+      -- Left as a RAW POINTER on purpose: extractScriptText rewrites every
+      -- text operand into a pool key in a later stage, and TEXT_OPERAND now
+      -- names this slot so it is rewritten with all the others.  `false`
+      -- rather than nil in the script slot keeps the operand at a fixed
+      -- index for the two double types that have no win script.
+      local cant = Gen3ScriptOps.TRAINER_BATTLE_CANT_SLOT[kind]
+      if cant then
+        local cantAt = base + (cant - 1) * 4
+        -- `pointer` to VALIDATE, `u32` to STORE.  pointer answers a flat
+        -- offset and extractScriptText keys text by the raw ROM address the
+        -- other text operands arrive as, so handing it the offset matched
+        -- nothing and left all 63 refusal lines as bare numbers.
+        if rom:pointer(cantAt) then
+          if args[3] == nil then args[3] = false end
+          args[4] = rom:u32(cantAt)
         end
       end
       at = o + length
@@ -23147,6 +23250,22 @@ local GEN3_BACK_FRAME_BYTES = 2048           -- one 64x64 4bpp frame
 local GEN3_BACK_MAX_FRAMES = 8
 local GEN3_BACK_PAL_BYTES = 32
 -- the palette match that says whose back this is
+-- THE THROW.  PlayerHandleIntroTrainerBallThrow (005CA80) starts anim 1 on
+-- the player's back sprite and, on the same frame, hands the sprite to
+-- StartAnimLinearTranslation with data[0] = 50 and data[2] = -40: forty
+-- pixels left over fifty frames, and then the sprite is freed.  Both numbers
+-- are read back off those two instructions rather than written down here.
+RomExtractorGen3.BACK_INTRO = {
+  AT_FRAMES = 0x5CAA8,      -- mov r1,#50   -> sprite->data[0]
+  MOV_R1    = 0x2100,
+  AT_DX     = 0x5CABA,      -- ldr r1,=0xFFD8 (-40) -> sprite->data[2]
+  -- gTrainerBackAnimsPtrTable sits in front of gTrainerBackPicTable, the way
+  -- back_pic_anims.h sits in front of back_pic_table.h; how far in front is
+  -- found by shape, not counted here
+  LOOK_BACK = 0x200,
+  THROW_ANIM = 1,           -- StartSpriteAnim(sprite, 1)
+}
+
 local GEN3_BACK_PAL_MIN = 12
 local GEN3_BACK_PAL_MARGIN = 3
 
@@ -23427,23 +23546,144 @@ function RomExtractorGen3:extractPlayerBackPic()
     self:write("field", field)
   end
 
+  -- ---- THE THROW ---------------------------------------------------------
+  --
+  -- #407: the player's back pic stood still while he sent a Pokemon out,
+  -- because only ONE frame of a four-frame sheet was ever loaded.  The frames
+  -- are a real animation and the cartridge says so:
+  -- gTrainerBackAnimsPtrTable is an eight-entry array of two-entry anim
+  -- tables -- [0] the pose the trainer rests in, [1] the throw -- and it sits
+  -- immediately in front of gTrainerBackPicTable.
+  --
+  -- Brendan's and May's throw is FRAME 0 for 24, 1 for 9, 2 for 24, 0 for 9
+  -- and 3 for 50; Red's and Leaf's five-frame sheets run 1/20 2/6 3/6 4/24
+  -- 0/1.  Nothing here picks a duration.
+  --
+  -- FOUND BY SHAPE, and the shape closes on a number this stage already has:
+  -- every frame index an entry names has to be inside THAT entry's own frame
+  -- count, which came from its sheet size a hundred lines above.  An array
+  -- of eight unrelated anim tables cannot satisfy eight different bounds.
+  local throwsAt, anims = nil, nil
+  do
+    local I = RomExtractorGen3.BACK_INTRO
+    local function listAt(a)
+      local out = {}
+      for _ = 1, 12 do
+        local img, hold = rom:u16(a), rom:u16(a + 2)
+        if img == nil or hold == nil then return nil end
+        if img == 0xFFFF then return out end          -- ANIMCMD_END
+        if img == 0xFFFE then return nil end          -- a loop is not a throw
+        if hold > 0xFF then return nil end            -- hflip/vflip: not these
+        out[#out + 1] = { img, hold % 64 }
+        a = a + 4
+      end
+      return nil
+    end
+    local function tableAt(a, frames)
+      local rest = rom:pointer(a)
+      local throw = rom:pointer(a + 4)
+      if not (rest and throw) then return nil end
+      local r, t = listAt(rest), listAt(throw)
+      if not (r and t) then return nil end
+      if #r ~= 1 or #t < 3 then return nil end
+      -- every frame it names has to exist on that trainer's own sheet
+      for _, row in ipairs(t) do
+        if row[1] >= frames then return nil end
+        if row[2] < 1 then return nil end
+      end
+      if r[1][1] >= frames then return nil end
+      return { rest = r[1][1], throw = t }
+    end
+    local function arrayAt(a)
+      local rows = {}
+      for k = 0, GEN3_BACK_COUNT - 1 do
+        local ptr = rom:pointer(a + k * 4)
+        if not ptr then return nil end
+        local rec = found.recs[k + 1]
+        local row = tableAt(ptr,
+          math.floor(rec.size / GEN3_BACK_FRAME_BYTES))
+        if not row then return nil end
+        rows[k] = row
+      end
+      return rows
+    end
+    local a = found.at - 4
+    while a >= found.at - I.LOOK_BACK and a >= 0 do
+      local rows = arrayAt(a)
+      if rows then
+        throwsAt, anims = a, rows
+        -- on the image rows too, where everything else about a back already
+        -- is -- but the record below is what survives a headless import
+        for k = 0, GEN3_BACK_COUNT - 1 do
+          if images[k] then
+            images[k].rest = rows[k].rest
+            images[k].throw = rows[k].throw
+          end
+        end
+        break
+      end
+      a = a - 4
+    end
+    if not throwsAt then
+      Logger.warn("gen3 player back pic: no anim table in front of %07X "
+                    .. "names frames every sheet has, so the back pic keeps "
+                    .. "its single frame", found.at)
+    end
+  end
+
+  -- ...and how long he is on screen for, which is what decides how much of
+  -- the throw is ever seen: fifty frames, forty pixels left, then freed
+  local intro = nil
+  do
+    local I = RomExtractorGen3.BACK_INTRO
+    local hw = rom:u16(I.AT_FRAMES)
+    local frames = (hw and hw - (hw % 256) == I.MOV_R1) and (hw % 256) or nil
+    local dx = self:thumbLiteral(I.AT_DX)
+    if dx and dx >= 0x8000 then dx = dx - 0x10000 end
+    if frames and frames > 0 and dx and dx < 0 and dx > -240 then
+      intro = { frames = frames, dx = dx }
+    else
+      Logger.warn("gen3 player back pic: the walk-off does not read back off "
+                    .. "%07X, so the screen keeps its own", I.AT_FRAMES)
+    end
+  end
+
   local constants = self._constants or {}
   constants.gen3TrainerBack = {
     images = images,
     count = GEN3_BACK_COUNT,
+    anims = anims,
+    throwAnim = throwsAt and RomExtractorGen3.BACK_INTRO.THROW_ANIM or nil,
+    intro = intro,
     player = mine,
     -- ...and the two who stand in the player's place: WALLY in the catching
     -- tutorial, STEVEN in the Mossdeep multi battle
     named = others,
     playerFront = picIndex,
     source = ("ROM:gTrainerBackPicTable %07X (laid out end to end), "
-              .. "palettes %07X"):format(found.at, palBase),
+              .. "palettes %07X, anims %s, walk-off off "
+              .. "PlayerHandleIntroTrainerBallThrow %07X")
+             :format(found.at, palBase,
+                     throwsAt and ("%07X"):format(throwsAt) or "not read",
+                     RomExtractorGen3.BACK_INTRO.AT_FRAMES),
   }
   self._constants = constants
   self:write("constants", constants)
   Logger.info("Gen3 player back pic: %d trainer backs at %07X; the player's "
-                .. "are %s and %s, matched to their own front pics by palette",
-              written, found.at, tostring(mine.boy), tostring(mine.girl))
+                .. "are %s and %s, matched to their own front pics by "
+                .. "palette; the throw is %s and he is on screen %s",
+              written, found.at, tostring(mine.boy), tostring(mine.girl),
+              (anims and anims[mine.boy or 0])
+                and (function()
+                      local bits = {}
+                      for _, row in ipairs(anims[mine.boy or 0].throw) do
+                        bits[#bits + 1] = ("%d/%d"):format(row[1], row[2])
+                      end
+                      return table.concat(bits, " ")
+                    end)()
+                or "not read",
+              intro and ("%d frames walking %d"):format(intro.frames, intro.dx)
+                or "as long as the screen says")
 end
 
 -- ---------------------------------------------------------------------------

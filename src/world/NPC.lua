@@ -677,6 +677,21 @@ function NPC:update(map, entities)
     return
   end
   if self.frozen then return end
+  -- AND THE FREEZE A SCRIPT PUTS ON EVERY OBJECT ON THE MAP (#405).
+  --
+  -- Reported from play, of the Birch rescue: the little girl "walks around
+  -- freely" through the whole scene.  She is an ordinary wandering object
+  -- event, and on the cartridge she stops dead the moment the script runs
+  -- its `lockall`: ScrCmd_lockall (gScriptCmdTable[$69]) calls
+  -- FreezeObjectEvents (097494), which walks all sixteen object-event slots
+  -- and freezes every active one that is not the player's own.
+  --
+  -- Distinct from `frozen` above, which is the one-object freeze a talk puts
+  -- on whoever is being talked to: a talk's unfreeze must not lift a scene's.
+  -- An object already walking a scripted movement is never frozen either --
+  -- FreezeObjectEvent (097404) returns at once if the held-movement bit is
+  -- set -- which is why applymovement still moves people mid-cutscene.
+  if self.gen3ScriptFrozen then return end
   if self.spins then
     -- Spinners never leave their cell, so this is the whole behaviour: turn
     -- on a timer.  A script that freezes the object (talking to it, a

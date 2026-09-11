@@ -255,6 +255,9 @@ function Renderer:beginFrame(transparent)
   self.worldFadeAlpha = nil
   -- battle-transition wipe, drawn over the whole surface (BattleTransition)
   self.battleWipe = nil
+  -- whole-window weather, drawn under the UI (see endFrame); re-declared by
+  -- the overworld each frame it has weather to draw
+  self.screenWeather = nil
   -- whole-surface veil in screen space (battle-transition flash, the
   -- fade in from white after a battle) -- covers the window, not just the
   -- 160x144 letterbox
@@ -982,6 +985,37 @@ function Renderer:endFrame(zones, worldZones)
     love.graphics.setColor(1, 1, 1, 1)
   end
 
+  -- WEATHER FALLS ON THE WHOLE WINDOW, NOT INSIDE A BOX.
+  --
+  -- Reported from play, with a screenshot: "theres a weird box overlay that i
+  -- think the weather plays within but it should fit the full screen".
+  --
+  -- It was drawn in OverworldState:drawUI, into the 240x160 UI canvas, so it
+  -- covered the letterbox and stopped -- while the world pass fills the
+  -- entire window.  The tint therefore had a visible rectangular edge partway
+  -- across the map, which reads as weather happening inside a window rather
+  -- than to the screen.  This is the same reasoning the screen veil below
+  -- already carries for the battle fades; the weather simply never got it.
+  --
+  -- HERE, and not with that veil: the cartridge draws weather on the
+  -- background and window layers UNDER the text box, and rain falling in
+  -- front of the dialogue would be the one thing on screen you could not read
+  -- through.  So it goes after the world composite and before the UI blit --
+  -- exactly where the battle dim above goes, and for the same reason.
+  --
+  -- Drawn through the UI's own scale so a raindrop stays the size of a
+  -- raindrop: the callback is handed the window measured in UI pixels, so it
+  -- lays out more drops over a wider view instead of the same drops stretched
+  -- across it.
+  local weather = self.screenWeather
+  if weather and Ux > 0 and Uy > 0 then
+    love.graphics.push()
+    love.graphics.scale(Ux, Uy)
+    weather(ww / Ux, wh / Uy)
+    love.graphics.pop()
+    love.graphics.setColor(1, 1, 1, 1)
+  end
+
   -- UI: anchored regions against their screen edges, the rest in the classic
   -- centred letterbox.  With nothing anchored this is the single blit it has
   -- always been.
@@ -991,6 +1025,26 @@ function Renderer:endFrame(zones, worldZones)
   else
     local rest = { { uox, uoy, uvpw, uvph } }
     local placed = {}
+    -- A DOCKED ELEMENT DOCKS TO THE SAFE AREA, NOT THE WINDOW EDGE.
+    --
+    -- Reported from play, with a screenshot: "text boxes on mobile are
+    -- appearing weird ... theyre cutt off" -- and, asked whether desktop did
+    -- it too, "only on mobile it seems".
+    --
+    -- That is the whole diagnosis.  Docking measured against `wh` and `ww`,
+    -- which are the WINDOW, and a phone's window runs underneath the things
+    -- the window does not own: the home indicator, the gesture bar, a notch,
+    -- the rounded corners.  So the dialogue box was docked to an edge that is
+    -- not visible, and its bottom rows went under the furniture -- which is
+    -- also why the on-screen controls, which DO lay themselves out inside the
+    -- safe area (TouchControls:layout), sat on top of it.
+    --
+    -- SafeArea.rect is the same rect the touch overlay already uses, and on a
+    -- desktop it IS the window: love.window.getSafeArea is absent or returns
+    -- the full surface, so rect() answers 0, 0, ww, wh and every number below
+    -- is what it has always been.  Which is exactly why only mobile saw this.
+    local sax, say, saw, sah = require("src.core.SafeArea").rect()
+    local saRight, saBottom = sax + saw, say + sah
     for _, a in ipairs(anchors) do
       local dw, dh = a.w * Ux, a.h * Uy
       -- Anchors are edge-RELATIVE: an element keeps its distance from the
@@ -1003,10 +1057,10 @@ function Renderer:endFrame(zones, worldZones)
       local dx, dy
       if a.anchor == "bottom" then
         dx = uox + a.x * Ux -- horizontally it stays with the letterbox
-        dy = wh - gapB - dh
+        dy = saBottom - gapB - dh
       elseif a.anchor == "topright" then
-        dx = ww - gapR - dw
-        dy = a.y * Uy
+        dx = saRight - gapR - dw
+        dy = say + a.y * Uy
       else -- unknown anchor: leave it where it is
         dx, dy = uox + a.x * Ux, uoy + a.y * Uy
       end

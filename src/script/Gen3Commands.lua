@@ -432,8 +432,15 @@ end
 -- later.  Scripts that never lock -- map transitions, callbacks -- do not
 -- branch on it either, because there is no player standing anywhere in
 -- particular when they run.
-function Commands.g3_lock(ctx)
+function Commands.g3_lock(ctx, all)
   ctx.g3Locked = true
+  -- ...AND EVERY OBJECT ON THE MAP STOPS (#405).  lockall freezes all of
+  -- them; lock freezes all but the one being talked to, who is about to be
+  -- turned to face the player.  See OverworldState:gen3FreezeObjects.
+  local ow = ctx.overworld
+  if ow and ow.gen3FreezeObjects then
+    ow:gen3FreezeObjects(not all and ctx.npc or nil)
+  end
   local player = ctx.overworld and ctx.overworld.player
   local facing = player and player.facing
   setVar(ctx.save, VAR_FACING, FACING_VALUE[facing] or 1)
@@ -447,7 +454,11 @@ function Commands.g3_lock(ctx)
   if index then setVar(ctx.save, VAR_LAST_TALKED, index) end
 end
 
-function Commands.g3_release(ctx) ctx.g3Locked = nil end
+function Commands.g3_release(ctx)
+  ctx.g3Locked = nil
+  local ow = ctx.overworld
+  if ow and ow.gen3UnfreezeObjects then ow:gen3UnfreezeObjects() end
+end
 
 -- APPLYMOVEMENT STARTS A WALK. IT DOES NOT WAIT FOR ONE.
 --
@@ -493,16 +504,41 @@ local MOVE_TILES = {
   jump = 1, jump2 = 2, jump_in_place = 0,
 }
 
+-- ...AND HOW FAST, which was being thrown away.
+--
+-- Reported from play: "Birch just going at a light pace".  He is not supposed
+-- to be -- every step of the Route 101 rescue is a walk_fast, both his and the
+-- POOCHYENA's, and the two of them run rings round the clearing.  The whole
+-- scene is written in one speed and this port played it in another.
+--
+-- The cause was here: `walk`, `walk_slow`, `walk_fast` and `walk_fastest` all
+-- lowered to the same `{ kind = "walk" }`, so the NAME carried the speed and
+-- the step did not.  That is not a Birch bug, it is every scripted walk in
+-- Hoenn -- 5,581 movement steps -- moving at one pace.
+--
+-- The multiplier is on the step's FRAME COUNT, so it composes with whatever
+-- baseline the dataset gives a walker rather than hard-coding a rate: a
+-- fast step takes half the frames of a normal one, a slow step twice.  The
+-- ratios are the relationship the four names describe; the baseline they
+-- multiply is the cartridge's own.
+-- On the module table, not a file-scope local: this file is at Lua's
+-- 200-local ceiling and one more name there is a compile error.
+Gen3Commands.MOVE_SPEED = {
+  walk_slow = 2.0, walk = 1.0, walk_fast = 0.5, walk_fastest = 0.25,
+  jump = 1.0, jump2 = 1.0,
+}
+
 local startMovement
 
 local function movementSteps(rows)
   local steps = {}
-  local pending, count = nil, 0
+  local pending, count, pendingRate = nil, 0, 1.0
   local function flush()
     if pending and count > 0 then
-      steps[#steps + 1] = { kind = "walk", dir = pending, count = count }
+      steps[#steps + 1] = { kind = "walk", dir = pending, count = count,
+                            rate = pendingRate }
     end
-    pending, count = nil, 0
+    pending, count, pendingRate = nil, 0, 1.0
   end
   for _, row in ipairs(rows) do
     local name = row[1]
@@ -511,9 +547,12 @@ local function movementSteps(rows)
       local tiles = MOVE_TILES[kind]
       if tiles > 0 then
         -- consecutive identical steps coalesce: the engine's move verbs take
-        -- a count, and issuing eight one-tile moves makes the walk stutter
-        if pending == dir then count = count + tiles
-        else flush(); pending, count = dir, tiles end
+        -- a count, and issuing eight one-tile moves makes the walk stutter.
+        -- Only steps at the SAME SPEED coalesce, or a run that starts slow
+        -- would be flattened into one pace -- which is the bug above.
+        local rate = Gen3Commands.MOVE_SPEED[kind] or 1.0
+        if pending == dir and pendingRate == rate then count = count + tiles
+        else flush(); pending, count, pendingRate = dir, tiles, rate end
       else
         flush()
         steps[#steps + 1] = { kind = "face", facing = dir }
@@ -792,7 +831,10 @@ function startMovement(ctx, ow, entity, index, movementLabel, rows)
       return
     end
     if step.kind == "walk" then
-      ow:scriptMove(entity, step.dir, step.count, advance)
+      -- step.rate is the frame multiplier the action's own name carries
+      -- (walk_fast is half a normal step's frames); nil for anything that
+      -- never had one, which scriptMove reads as the ordinary pace.
+      ow:scriptMove(entity, step.dir, step.count, advance, nil, step.rate)
     elseif step.kind == "pause" then
       ow:scriptPause(entity, step.frames, advance)
     elseif step.kind == "march" then
@@ -1551,7 +1593,7 @@ Gen3Commands.FALL_THROUGH_KINDS = FALL_THROUGH_KINDS
 -- (the SIGHT path was gated, which is why only talking re-triggered), so
 -- every trainer in Hoenn fought you again, forever, every time you spoke to
 -- them.
-function Commands.g3_trainer_battle(ctx, kind, trainerId, winScript)
+function Commands.g3_trainer_battle(ctx, kind, trainerId, winScript, cantText)
   ctx.g3Trainer = tonumber(trainerId)
   ctx.g3TrainerKind = tonumber(kind)
   local k = tonumber(kind) or 0
@@ -1584,12 +1626,30 @@ function Commands.g3_trainer_battle(ctx, kind, trainerId, winScript)
     local state = Gen3Commands.SPECIALS[64] and Gen3Commands.SPECIALS[64](ctx)
     setVar(ctx.save, VAR_RESULT, tonumber(state) or 0)
     if (tonumber(state) or 0) ~= 0 then
-      -- EventScript_NoDoubleTrainerBattle: he says he needs you to have two,
-      -- and no battle happens
+      -- EventScript_NotEnoughMonsForDoubleBattle (data/scripts/trainer_battle.inc)
+      --
+      --     special ShowTrainerCantBattleSpeech
+      --     waitmessage / waitbuttonpress
+      --     releaseall
+      --     end
+      --
+      -- THE `end` IS THE PART THAT MATTERED.  Returning nothing here let the
+      -- runner advance to the row after the trainerbattle -- the beaten
+      -- trainer's line -- and then finish the script, which released the
+      -- approach; the sight scan runs every frame, the trainer was still in
+      -- range, and the same box opened again with no input able to land.
+      -- Route 103's AMY and LIV with a single Pokemon is the reachable case,
+      -- and it took the game away with no way out but killing it.
+      --
+      -- The speech is the record's own third pointer, so what plays here is
+      -- the cartridge's line for THIS pair rather than a written-in one.
       Logger.debug("gen3: trainer %s wants a double battle and the party "
                      .. "cannot field one -- no battle",
                    tostring(ctx.g3Trainer))
-      return
+      if type(cantText) == "string" then
+        Commands.show_text(ctx, cantText)
+      end
+      return "end"
     end
   end
   startTrainer(ctx, ctx.g3Trainer,

@@ -1013,9 +1013,34 @@ local function drawHUDs(battle, slide)
     if battle.phase == "targetSelect" then
       aimed = (battle.targetChoices or {})[battle.targetIndex or 1]
     end
+    -- A PANEL BELONGS TO A POKEMON THAT IS ON THE FIELD.
+    --
+    -- Reported from play, with a screenshot of TWINS GINA & MIA: at the
+    -- "wants to fight!" message, before anybody has been thrown out, all four
+    -- panels were already up -- and drawn over the Poke Ball party counts,
+    -- which own that space during the intro.  Some carried a placeholder name
+    -- ("A", "Bal") because they were built from a battler the intro had not
+    -- filled in yet.
+    --
+    -- The single-battle branches above have always asked this: the foe's
+    -- panel waits on showEnemyTrainer / enemySendingOut / growInScale /
+    -- introBalls, and the player's on showPlayerBack.  The doubles branch
+    -- asked only `slide == 0` and then whether the Pokemon had HP -- so every
+    -- gate the intro relies on was simply absent on the one layout that draws
+    -- four of them.
+    --
+    -- Same conditions, per side, so a double intro reads like two singles
+    -- happening at once, which is what it is.
+    local enemyReady = not battle.showEnemyTrainer
+                       and not battle.enemySendingOut
+                       and not battle.introBalls
+    local playerReady = not battle.showPlayerBack
     for _, row in ipairs(pairs_) do
       local b = battle:battlerAt(row.pos)
-      if b and b.mon and (b.mon.hp or 0) > 0 and not b.fainted then
+      local ready = row.player and playerReady
+                    or (not row.player and enemyReady
+                        and not (b and battle:growInScale(b)))
+      if ready and b and b.mon and (b.mon.hp or 0) > 0 and not b.fainted then
         local panel = hudImage(row.img)
         local h = 32
         if panel and panel.getHeight then
