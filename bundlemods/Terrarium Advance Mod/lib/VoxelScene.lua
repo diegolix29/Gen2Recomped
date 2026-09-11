@@ -220,10 +220,19 @@ local function groundAt(map, cellX, cellY)
   -- sub-cell TileShape.at expects; Gen 1 resolves identically either way,
   -- since its cellTile already returns a tile id.
   local tx, ty = cellX * 2, cellY * 2 + 1
-  local tile = map:tileAt(tx, ty)
-  -- Gen 3: use Gen3.tileAt to get the correct synthetic tile ID
-  if Gen3 and Gen3.mapIsGen3(map) then
-    tile = Gen3.tileAt(map, tx, ty) or tile
+  -- `map:tileAt` indexes the Gen 1/2 block table, which a Gen 3 pair does
+  -- not carry -- calling it raw THROWS on every Gen 3 map, before the
+  -- "use Gen3.tileAt instead" fallback below is ever reached. Gen3.tileAt
+  -- already resolves both cases correctly (the real block table on Gen 1/2,
+  -- the synthetic tile id on Gen 3), so it is the only call needed; only
+  -- fall to the raw call if the Gen3 module itself failed to load (the
+  -- `and/or` idiom is wrong here: Gen3.tileAt legitimately answers nil off
+  -- the map, and that must not fall through to a throwing raw call).
+  local tile
+  if Gen3 then
+    tile = Gen3.tileAt(map, tx, ty)
+  else
+    tile = map:tileAt(tx, ty)
   end
   local s = TileShape.at(map, shapes, tile, tx, ty)
   if not s then return 0 end
@@ -314,10 +323,14 @@ local function flatTop(map, cellX, cellY)
   -- class, not a tile id, so this has to resolve the real tile the same way
   -- groundAt does (map:tileAt at the full-resolution sub-cell).
   local tx, ty = cellX * 2, cellY * 2 + 1
-  local tile = map:tileAt(tx, ty)
-  -- Gen 3: use Gen3.tileAt to get the correct synthetic tile ID
-  if Gen3 and Gen3.mapIsGen3(map) then
-    tile = Gen3.tileAt(map, tx, ty) or tile
+  -- Same fix as groundAt above: the raw call throws on Gen 3 (no block
+  -- table on a pair record) before a conditional fallback could ever run,
+  -- so Gen3.tileAt has to be the call made, not a patch applied after.
+  local tile
+  if Gen3 then
+    tile = Gen3.tileAt(map, tx, ty)
+  else
+    tile = map:tileAt(tx, ty)
   end
   local s = TileShape.at(map, shapes, tile, tx, ty)
   -- no shape is flat ground at zero, which groundAt already reports as 0 and

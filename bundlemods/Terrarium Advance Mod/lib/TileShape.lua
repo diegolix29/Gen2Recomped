@@ -794,38 +794,51 @@ function TileShape.at(map, shapes, tile, tx, ty)
     }
   end
 
-  -- GEN 3 ROUTING: detect Gen 3 maps and route through Gen3 module
+  -- GEN 3 ROUTING: detect Gen 3 maps and route through the Gen3 module.
   if Gen3 and Gen3.mapIsGen3(map) then
     local ctx = Gen3.forMap(map)
-    if ctx then
-      local cx = math.floor(tx / 2)
-      local cy = math.floor(ty / 2)
-      local metatile = ctx.metatileAt(cx, cy)
-      if metatile ~= nil then
-        local class = ctx.classAt(cx, cy, metatile)
-        if class then
-          -- Use Gen 3 context to determine shape
-          local gen3Tile = Gen3.tileId(metatile, tx, ty)
-          local base = shapes[gen3Tile] or shapes.classes[class]
-          if base then
-            return {
-              class = class,
-              h = base.h or 0,
-              art = base.art or "upright",
-              flat = base.flat or false,
-              authored = true,
-            }
-          end
-          -- Fallback: minimal shape based on class
-          local h = FALLBACK_HEIGHTS[class] or 0
-          return {
-            class = class,
-            h = h,
-            art = (class == "ground" or class == "water") and "flat" or "upright",
-            flat = (class == "ground" or class == "water"),
-            authored = true,
-          }
+    local cx0, cy0 = math.floor(tx / 2), math.floor(ty / 2)
+    if not ctx then
+      -- Context could not be built (no engine seam and no bake yet).  Below
+      -- this point the file's rules are Gen 1/Gen 2 inferences over a tile
+      -- id that, on Gen 3, means "quadrant q of metatile m" and carries no
+      -- meaning at all -- so falling through would not degrade, it would
+      -- invent a shape from noise. Answer from the one thing still true,
+      -- the cell's own passability, same as the flat-world fallback the
+      -- engine itself uses.
+      local walk = false
+      local okW, w = pcall(map.isWalkableCell, map, cx0, cy0)
+      if okW then walk = w and true or false end
+      return walk and shapes.classes.ground or shapes.classes.wall
+    end
+    local metatile = ctx.metatileAt(cx0, cy0)
+    if metatile ~= nil then
+      local class, pinned = ctx.classAt(cx0, cy0, metatile)
+      if class then
+        local canon = shapes.classes and shapes.classes[class]
+        local h = (canon and canon.h) or FALLBACK_HEIGHTS[class] or 0
+        local art = (canon and canon.art) or ART[class] or "upright"
+        -- The ground the cell stands ON is added for anything that lies flat
+        -- or rides a top face; COVER (a treetop, a roof) keeps its own bare
+        -- height, because Structures measures the building/tree run and
+        -- reads the datum off the flat cell south of it -- adding the
+        -- elevation here too would count the terrace twice and float every
+        -- building above it. Skipping this term entirely, as the previous
+        -- routing here did, is what put Route 110's cycling road (and every
+        -- other raised terrace) at ground level instead of at its real
+        -- height: the world rendering "too low" relative to anything (a
+        -- player, an NPC) placed from the map's own elevation data.
+        if art ~= "upright" then
+          local okG, ground = pcall(ctx.groundHeight, cx0, cy0)
+          if okG and ground then h = h + ground end
         end
+        return {
+          class = class,
+          h = h,
+          art = art,
+          flat = art == "flat" or class == "grass" or class == "flower",
+          authored = pinned or (art ~= "upright"),
+        }
       end
     end
   end
