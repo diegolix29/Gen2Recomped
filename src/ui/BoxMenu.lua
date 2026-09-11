@@ -44,15 +44,6 @@ local function monSubmenu(game, action, mons, list, onAction)
       label = Strings("STATS"),
       keepOpen = true,
       onSelect = function()
-<<<<<<< Updated upstream
-        local mon = mons[list.index]
-        if not mon then return end
-        require("src.ui.Screens").push(game, "SummaryMenu", mon, {
-          mons = mons,
-          index = list.index,
-          onMonChange = function(index) setListIndex(list, index) end,
-        })
-=======
         -- the same split the party menu makes: Emerald's summary is four
         -- pages, two of which show things Johto has no concept of, so Gen 3
         -- opens its own screen from the box as well as from the party
@@ -64,7 +55,6 @@ local function monSubmenu(game, action, mons, list, onAction)
         else
           Screens.push(game, "SummaryMenu", mon)
         end
->>>>>>> Stashed changes
       end,
     },
     { label = Strings("CANCEL") },
