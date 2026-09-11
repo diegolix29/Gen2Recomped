@@ -3729,7 +3729,7 @@ end
 -- The crossing scrolls continuously: the map data swaps while the player
 -- is placed one cell before the entry point (their old world position,
 -- which the neighbor strips render identically) and walks the seam step.
-function OverworldState:crossConnection(dir, conn)
+function OverworldState:crossConnection(dir, conn, scripted)
   -- THE ROW THAT WAS SELECTED, not the first one on the edge.
   --
   -- `checkEdgeExit` hands in `map:connection(dir)`, which is the edge's
@@ -3751,7 +3751,12 @@ function OverworldState:crossConnection(dir, conn)
   -- exactly like an in-map wall. Without this read, Pallet's south
   -- shore (land at x2-3) walked straight onto ROUTE_21 (3,0) -- a
   -- collision tile -- stranding the player on a cell no walk can leave.
-  if not Map.defPassable(dest, ts, x, y, p.surfing) then
+  -- ...but a SCRIPTED walk does not ask.  updateScriptMoves has no collision
+  -- check by design -- a cutscene walks through whatever it likes -- and the
+  -- cartridge's held-movement path does not consult one either.  Mr. Briney's
+  -- boat is the case that needs it: it crosses open water, and the player
+  -- riding it is not surfing, so every cell of the voyage would refuse (#417).
+  if not scripted and not Map.defPassable(dest, ts, x, y, p.surfing) then
     return false
   end
   -- keepMusic: defer PlayMapMusic until the seam step lands.  Starting a
@@ -10300,11 +10305,48 @@ function OverworldState:updateScriptMoves()
           e.stepFramesPrev = nil
         end
         local tx, ty = Collision.target(e.cellX, e.cellY, mv.dir)
+        -- A SCRIPTED WALK OFF THE MAP EDGE CROSSES THE SEAM, the way a walked
+        -- one does.
+        --
+        -- Reported from play, with photographs: after the boat ride the player
+        -- stands in a field of repeating border blocks, far outside the map,
+        -- with Dewford never loaded -- "I can see where the deck should be
+        -- that he drops me off at, just no Dewford".
+        --
+        -- The voyage is 171 movement steps and carries the player 149 tiles
+        -- WEST, and the map it starts on is forty tiles wide.  That is not a
+        -- misread path: the cartridge's sail genuinely crosses Route 105, 106
+        -- and Dewford's own seams on the way, and the object's position update
+        -- is what loads each of them -- there is no separate "the player
+        -- walked" path on hardware.  Here the crossing lived only on the input
+        -- path, so a scripted walk ran off the edge and kept going into
+        -- nothing.  The player ended at about x = -144 of a map they had
+        -- already left, which is exactly where the photographs put them.
+        --
+        -- Only the PLAYER crosses.  An object event belongs to its map, and
+        -- carrying one over a seam would leave a walker on a map that no
+        -- longer holds it; the cartridge's own object-event array is rebuilt
+        -- per load for the same reason.  The crossing is `seamless`, which is
+        -- what keeps setMap from draining this very queue.
+        -- asked for rather than assumed: a headless caller hands in a stub
+        -- map (see the borrowed-scriptMove note below), and a seam it cannot
+        -- answer for is simply not a seam
+        if e == self.player and self.map and self.map.inBounds
+           and self.map.connection and not self.map:inBounds(tx, ty) then
+          local conn = self.map:connection(COMPASS[mv.dir])
+          if conn and self:crossConnection(mv.dir, conn, true) then
+            -- crossConnection has already placed the walker and started its
+            -- step into the new map, so this step is spent
+            mv.remaining = mv.remaining - 1
+            goto stepped
+          end
+        end
         e.targetX, e.targetY = tx, ty
         e.moving = true
         e.progress = 0
       end
       mv.remaining = mv.remaining - 1
+      ::stepped::
     end
   end
   -- march_in_place toggles: re-arm the in-place cycle each time it ends.
