@@ -11,6 +11,40 @@ local CELL = 16          -- a metatile edge, in world pixels
 local TILE = 8           -- the mesher's own quad edge
 local COURSE = 16        -- one elevation step, in world pixels
 
+-- Elevation constants from DRAMATIC_SHAPE
+local ELEV_TRANSITION = 254
+local ELEV_MULTI = 255
+local ELEV_SURF = 253
+local ELEV_DEFAULT = 0
+local NEIGHBOURS = { { 0, -1 }, { 0, 1 }, { -1, 0 }, { 1, 0 } }
+
+-- Build elevation ranks function from DRAMATIC_SHAPE
+local function buildElevationRanks(cells)
+  local seen, list = {}, {}
+  for i = 1, #cells do
+    local e = cells[i]
+    if e and e ~= ELEV_TRANSITION and e ~= ELEV_MULTI and e ~= ELEV_SURF
+       and not seen[e] then
+      seen[e] = true
+      list[#list + 1] = e
+    end
+  end
+  table.sort(list)
+  local rank, datum = {}, nil
+  for i, e in ipairs(list) do
+    rank[e] = i
+    if e == ELEV_DEFAULT then datum = i end
+  end
+  -- No cell on this map is at the default level (an all-terrace interior, or
+  -- Pacifidlog, which is water and rafts).  Pin the datum to the LOWEST level
+  -- present rather than to nothing, so the map still lands on the world floor.
+  if not datum then datum = 1 end
+  local height = {}
+  for e, i in pairs(rank) do height[e] = (i - datum) * COURSE end
+  height[ELEV_SURF] = -COURSE / 8          -- the water class's own recess
+  return height, #list
+end
+
 Gen3.SHEET_COLS = SHEET_COLS
 Gen3.CELL = CELL
 Gen3.COURSE = COURSE
@@ -135,6 +169,12 @@ function Gen3.forMap(map)
   local elevationCells = def.elevationCells
   local collisionCells = def.collisionCells
 
+  -- Build elevation ranks if elevation data exists
+  local elevHeight, levels = nil, 0
+  if elevationCells then
+    elevHeight, levels = buildElevationRanks(elevationCells)
+  end
+
   local ctx = {
     world = world,
     seam = "engine",
@@ -147,8 +187,8 @@ function Gen3.forMap(map)
     height = height,
     elevationCells = elevationCells,
     collisionCells = collisionCells,
-    elevHeight = nil,
-    levels = 0,
+    elevHeight = elevHeight,
+    levels = levels,
     spec = nil,
     attrCache = {},
     classCache = {},
@@ -243,10 +283,20 @@ function Gen3.forMap(map)
 
   -- Simple ground height (can be expanded)
   function ctx.groundHeight(cx, cy)
+    if not elevHeight then return 0 end
     local e = ctx.elevationAt(cx, cy)
     if e == nil then return 0 end
-    -- Basic elevation to height conversion
-    return (tonumber(e) or 0) * COURSE
+    -- Match DRAMATIC_SHAPE's elevation handling
+    if e == ELEV_TRANSITION then
+      -- For transition cells, use 0 as base height
+      return 0
+    elseif e == ELEV_MULTI then
+      -- For bridge/multi cells, base height plus lift
+      return COURSE
+    else
+      -- Regular elevation - use the elevHeight mapping
+      return (elevHeight[e]) or 0
+    end
   end
 
   -- Simple class determination (can be expanded)
