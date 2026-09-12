@@ -890,18 +890,8 @@ function TileShape.at(map, shapes, tile, tx, ty)
         hit = map:isWalkableCell(math.floor(tx / 2), math.floor(ty / 2))
               == rule.walkable
       else
-        -- `map:tileAt` on a neighbour cell throws on Gen 3 the same way
-        -- the primary lookup used to -- only reached here when the Gen 3
-        -- fast-path above didn't return early (no context yet, or an
-        -- off-profile metatile), so still worth guarding.
-        local n
-        if Gen3 then
-          n = Gen3.tileAt(map, tx, rule.side == "above" and ty - rule.rows
-                                                         or ty + rule.rows)
-        else
-          n = map:tileAt(tx, rule.side == "above" and ty - rule.rows
-                                                     or ty + rule.rows)
-        end
+        local n = map:tileAt(tx, rule.side == "above" and ty - rule.rows
+                                                       or ty + rule.rows)
         hit = n and rule.set[n]
       end
       if hit then
@@ -979,17 +969,7 @@ function TileShape.at(map, shapes, tile, tx, ty)
   end)
   for dy = 0, (okOut and outdoor) and 1 or -1 do
     for dx = 0, 1 do
-      -- Same fix as the primary lookup: `map:tileAt` throws on Gen 3, and
-      -- `shapes[tile]` only means anything for Gen 1/2 anyway -- route
-      -- through Gen3.tileAt so this neighbour scan doesn't crash a Gen 3
-      -- mesh build over a fence/sign/post check.
-      local nt
-      if Gen3 then
-        nt = Gen3.tileAt(map, cx * 2 + dx, cy * 2 + dy)
-      else
-        nt = map:tileAt(cx * 2 + dx, cy * 2 + dy)
-      end
-      local n = shapes[nt]
+      local n = shapes[map:tileAt(cx * 2 + dx, cy * 2 + dy)]
       if n and n.authored and THIN[n.class] then
         return shapes.classes.ground
       end

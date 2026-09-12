@@ -21,7 +21,6 @@
 local V = ...
 local Voxel3D = V.require("Voxel3D")
 local Budget = V.require("BuildBudget")
-local Gen3 = V.require("Gen3")
 
 local Cache = {
   hits = 0,
@@ -124,31 +123,13 @@ local function bodySignature(map)
   -- wrong tiles after an extracted-cache/tileset layout change -- a failure
   -- that looks exactly like collision paths becoming invisible under grass.
   local ts = map and map.tileset or {}
-  local perRow, imgW, imgH = ts.tilesPerRow or 16, ts.imageWidth or 0, ts.imageHeight or 0
-  -- Gen 3's sheet is a different shape from Gen 1/2's -- without this, a
-  -- Gen 3 map's cache signature was computed off the same Gen 1 fallback
-  -- numbers regardless of the real atlas, so a stale cache entry baked
-  -- before an atlas-layout change never invalidated.
-  if Gen3 and Gen3.isGen3(ts) then
-    local okD, info = pcall(Gen3.describe, ts)
-    if okD and info then perRow, imgW, imgH = info.perRow, info.width, info.height end
-  end
-  h = hashAdd(h, perRow)
-  h = hashAdd(h, imgW)
-  h = hashAdd(h, imgH)
+  h = hashAdd(h, ts.tilesPerRow or 16)
+  h = hashAdd(h, ts.imageWidth or 0)
+  h = hashAdd(h, ts.imageHeight or 0)
   if map and type(map.tileAt) == "function" then
     for y = 0, th - 1 do
       for x = 0, tw - 1 do
-        -- `map:tileAt` throws on a Gen 3 pair (no block table); walking the
-        -- whole map raw here aborted signature computation for every Gen 3
-        -- map, uncaught, before the mesh build it gates ever ran.
-        local ok, tile
-        if Gen3 then
-          ok, tile = pcall(Gen3.tileAt, map, x, y)
-        else
-          ok, tile = pcall(map.tileAt, map, x, y)
-        end
-        h = hashAdd(h, (ok and tile) or -1)
+        h = hashAdd(h, map:tileAt(x, y) or -1)
         if Budget and type(Budget.tick) == "function" then Budget.tick() end
       end
     end

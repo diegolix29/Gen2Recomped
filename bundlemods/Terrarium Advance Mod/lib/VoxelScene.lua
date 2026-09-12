@@ -220,15 +220,10 @@ local function groundAt(map, cellX, cellY)
   -- sub-cell TileShape.at expects; Gen 1 resolves identically either way,
   -- since its cellTile already returns a tile id.
   local tx, ty = cellX * 2, cellY * 2 + 1
-  -- `map:tileAt` indexes the Gen 1/2 block table, which a Gen 3 pair
-  -- does not carry -- calling it raw THROWS on every Gen 3 map, before
-  -- the Gen3.tileAt fallback below was ever reached. Gen3.tileAt has to
-  -- be the call made in the first place, not patched up after.
-  local tile
-  if Gen3 then
-    tile = Gen3.tileAt(map, tx, ty)
-  else
-    tile = map:tileAt(tx, ty)
+  local tile = map:tileAt(tx, ty)
+  -- Gen 3: use Gen3.tileAt to get the correct synthetic tile ID
+  if Gen3 and Gen3.mapIsGen3(map) then
+    tile = Gen3.tileAt(map, tx, ty) or tile
   end
   local s = TileShape.at(map, shapes, tile, tx, ty)
   if not s then return 0 end
@@ -319,15 +314,10 @@ local function flatTop(map, cellX, cellY)
   -- class, not a tile id, so this has to resolve the real tile the same way
   -- groundAt does (map:tileAt at the full-resolution sub-cell).
   local tx, ty = cellX * 2, cellY * 2 + 1
-  -- `map:tileAt` indexes the Gen 1/2 block table, which a Gen 3 pair
-  -- does not carry -- calling it raw THROWS on every Gen 3 map, before
-  -- the Gen3.tileAt fallback below was ever reached. Gen3.tileAt has to
-  -- be the call made in the first place, not patched up after.
-  local tile
-  if Gen3 then
-    tile = Gen3.tileAt(map, tx, ty)
-  else
-    tile = map:tileAt(tx, ty)
+  local tile = map:tileAt(tx, ty)
+  -- Gen 3: use Gen3.tileAt to get the correct synthetic tile ID
+  if Gen3 and Gen3.mapIsGen3(map) then
+    tile = Gen3.tileAt(map, tx, ty) or tile
   end
   local s = TileShape.at(map, shapes, tile, tx, ty)
   -- no shape is flat ground at zero, which groundAt already reports as 0 and

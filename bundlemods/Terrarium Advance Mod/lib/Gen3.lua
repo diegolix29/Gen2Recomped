@@ -287,15 +287,23 @@ function Gen3.forMap(map)
     local e = ctx.elevationAt(cx, cy)
     if e == nil then return 0 end
     -- Match DRAMATIC_SHAPE's elevation handling
+    local ELEV_TRANSITION, ELEV_SURF, ELEV_DEFAULT, ELEV_MULTI = 0, 1, 3, 15
     if e == ELEV_TRANSITION then
       -- For transition cells, use 0 as base height
       return 0
+    elseif e == ELEV_SURF then
+      -- For surf cells, below datum
+      return -COURSE
     elseif e == ELEV_MULTI then
       -- For bridge/multi cells, base height plus lift
       return COURSE
     else
-      -- Regular elevation - use the elevHeight mapping
-      return (elevHeight[e]) or 0
+      -- For regular elevation cells, use the rank
+      local rank = ctx.levels and ctx.levels[e]
+      if rank then
+        return rank * COURSE
+      end
+      return 0
     end
   end
 
@@ -304,26 +312,6 @@ function Gen3.forMap(map)
     local m = metatile
     if m == nil then m = ctx.metatileAt(cx, cy) end
     if m == nil then return nil end
-
-    local blocked = ctx.blockedAt(cx, cy)
-    local key = m * 2 + (blocked and 1 or 0)
-    local hit = ctx.classCache[key]
-    if hit ~= nil then return hit end
-
-    local b, l = ctx.attributes(m)
-    -- Try to use gen3_shapes data for better classification
-    local s = Gen3.spec and Gen3.spec()
-    local class = classFromSpec(s, b, l)
-    if not class then
-      -- Fallback to basic determination
-      class = blocked and "wall" or "ground"
-    end
-    ctx.classCache[key] = class
-    return class
-  end
-
-  -- Basic role function (can be expanded)
-  function ctx.roleAt(cx, cy)
     local blocked = ctx.blockedAt(cx, cy)
     if not blocked then
       return "floor"
@@ -727,6 +715,156 @@ function Gen3.releaseAtlases()
   atlasCache = setmetatable({}, { __mode = "k" })
   atlasDataCache = setmetatable({}, { __mode = "k" })
   shapeCache = setmetatable({}, { __mode = "k" })
+end
+
+-- Add waterRocks detection for Gen 3 maps (from DRAMATIC_SHAPE)
+-- This detects rocks standing in water that should be rendered as 3D structures
+local originalForMap = Gen3.forMap
+Gen3.forMap = function(map)
+  local ctx = originalForMap(map)
+  if not ctx then return ctx end
+  
+  -- Only add waterRocks detection if not already present
+  if ctx.waterRocks then return ctx end
+  
+  -- Get behaviour names from spec if available
+  local spec = Gen3.spec()
+  local behaviourNames = (spec or {}).behaviour or {}
+  
+  -- Get art analysis
+  local art = Gen3.analyse(map.tileset)
+  local stats = art and art.stats or {}
+  
+  local width = ctx.width or 0
+  local height = ctx.height or 0
+  
+  -- Helper functions for water/rock detection
+  local function idx(cx, cy)
+    return cy * width + cx + 1
+  end
+  
+  local function waterCell(cx, cy)
+    if cx < 0 or cy < 0 or cx >= width or cy >= height then return true end
+    local m = ctx.metatileAt(cx, cy)
+    if m == nil then return false end
+    local b, _ = ctx.attributes(m)
+    return behaviourNames[b] == "water"
+  end
+  
+  local function rockCell(cx, cy)
+    if cx < 0 or cy < 0 or cx >= width or cy >= height then return false end
+    if not ctx.blockedAt(cx, cy) then return false end
+    local m = ctx.metatileAt(cx, cy)
+    if m == nil then return false end
+    local b, _ = ctx.attributes(m)
+    local bn = behaviourNames[b]
+    -- Check if it's a ground-like behaviour
+    if bn ~= nil and bn ~= "ground" and bn ~= "grass" then return false end
+    local st = stats[m]
+    -- Check if it's solid and not foliage
+    return (st and st.solid and st.solid > 0.4 and not st.leafy and not st.overhead) or false
+  end
+  
+  -- Detect water rocks and scenery (trees, bushes, boulders)
+  ctx.waterRocks = {}
+  ctx.scenery = {}
+  ctx.sceneryScale = {}
+  
+  if ctx.outdoor then
+    local scenery = {}
+    local claimed = {}
+    
+    -- First detect water rocks
+    for cy = 0, height - 2 do
+      for cx = 0, width - 2 do
+        if rockCell(cx, cy) and rockCell(cx + 1, cy)
+           and rockCell(cx, cy + 1) and rockCell(cx + 1, cy + 1)
+           and not scenery[idx(cx, cy)] then
+          -- Check if surrounded mostly by water
+          local ringed, sea = true, 0
+          for _, d in ipairs({ { -1, -1 }, { 0, -1 }, { 1, -1 }, { 2, -1 },
+                               { -1, 0 }, { 2, 0 }, { -1, 1 }, { 2, 1 },
+                               { -1, 2 }, { 0, 2 }, { 1, 2 }, { 2, 2 } }) do
+            local nx, ny = cx + d[1], cy + d[2]
+            if waterCell(nx, ny) then
+              sea = sea + 1
+            elseif not rockCell(nx, ny) then
+              ringed = false
+              break
+            end
+          end
+          if sea < 7 then ringed = false end
+          if ringed then
+            for dy = 0, 1 do
+              for dx = 0, 1 do
+                scenery[idx(cx + dx, cy + dy)] = "water"
+              end
+            end
+            ctx.waterRocks[#ctx.waterRocks + 1] = { cx, cy }
+          end
+        end
+      end
+    end
+    
+    -- Then detect trees and other scenery (simplified version from DRAMATIC_SHAPE)
+    for cy = 0, height - 2 do
+      for cx = 0, width - 2 do
+        local i = idx(cx, cy)
+        if not claimed[i] then
+          local mA = ctx.metatileAt(cx, cy)
+          local mB = ctx.metatileAt(cx + 1, cy)
+          local mC = ctx.metatileAt(cx, cy + 1)
+          local mD = ctx.metatileAt(cx + 1, cy + 1)
+          
+          -- Check if this is a 2x2 tree pattern
+          local isTree = false
+          if mA and mB and mC and mD then
+            local stA = stats[mA]
+            local stB = stats[mB]
+            local stC = stats[mC]
+            local stD = stats[mD]
+            
+            -- Check if all are leafy and solid
+            if stA and stB and stC and stD then
+              if stA.leafy and stB.leafy and stC.leafy and stD.leafy and
+                 stA.solid > 0.5 and stB.solid > 0.5 and 
+                 stC.solid > 0.5 and stD.solid > 0.5 then
+                -- Check if they're different metatiles (indicating a tree pattern)
+                if mA ~= mB and mA ~= mC and mA ~= mD then
+                  isTree = true
+                end
+              end
+            end
+          end
+          
+          if isTree then
+            claimed[i] = true
+            claimed[idx(cx + 1, cy)] = true
+            claimed[idx(cx, cy + 1)] = true
+            claimed[idx(cx + 1, cy + 1)] = true
+            scenery[i] = "canopy"
+            scenery[idx(cx + 1, cy)] = "cylinder"
+            scenery[idx(cx, cy + 1)] = "cylinder"
+            scenery[idx(cx + 1, cy + 1)] = "cylinder"
+            ctx.sceneryScale[i] = 2
+          end
+        end
+      end
+    end
+    
+    ctx.scenery = scenery
+  end
+  
+  -- Add scenerySpan function for Structures.lua to query tree sizes
+  function ctx.scenerySpan(cx, cy)
+    local i = idx(cx, cy)
+    if ctx.sceneryScale and ctx.sceneryScale[i] then
+      return ctx.sceneryScale[i]
+    end
+    return 2  -- default to 2x2 for trees
+  end
+  
+  return ctx
 end
 
 return Gen3

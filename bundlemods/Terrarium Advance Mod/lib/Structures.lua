@@ -480,6 +480,45 @@ function Structures.forMap(map)
   -- passes should see, and this needs no pixel access to do it.)
   Structures.buildFigures(S, map, x0, x1, y0, y1)
 
+  -- ---- water rocks: rocks standing in water (Gen 3) ----
+  -- From DRAMATIC_SHAPE: detect rocks in water and render them as 3D structures
+  Structures.buildWaterRocks(S, map, x0, x1, y0, y1)
+
+  -- ---- Gen3 scenery processing: trees, bushes, boulders ----
+  -- From DRAMATIC_SHAPE: process the scenery data from Gen3.forMap
+  if S.isGen3 then
+    local okG3, g3 = pcall(Gen3.forMap, map)
+    if okG3 and g3 and g3.scenery then
+      local scenery = g3.scenery
+      local sceneryScale = g3.sceneryScale or {}
+      
+      -- Mark cells based on scenery data
+      for cy = math.floor(y0 / 2), math.floor(y1 / 2) do
+        for cx = math.floor(x0 / 2), math.floor(x1 / 2) do
+          local idx = cy * (g3.width or 0) + cx + 1
+          local stype = scenery[idx]
+          if stype then
+            for dy = 0, 1 do
+              for dx = 0, 1 do
+                local k = keyOf(cx * 2 + dx, cy * 2 + dy)
+                local s = S.shapeAt[k]
+                if s then
+                  if stype == "canopy" then
+                    s.art = "canopy"
+                    s.h = (s.h or 0) + 16  -- Add height for canopy
+                  elseif stype == "cylinder" then
+                    s.art = "cylinder"
+                    s.h = (s.h or 0) + 16  -- Add height for cylinder
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
   -- ---- flood-fill regions of structural tiles ----
   local seen = {}
   local regions = {}
@@ -771,7 +810,7 @@ local function isColumnFoot(map, cx, cy, footSet)
   if not footSet then return false end
   for dy = 0, 1 do
     for dx = 0, 1 do
-      local t = Gen3.tileAt(map, cx * 2 + dx, cy * 2 + dy)
+      local t = map:tileAt(cx * 2 + dx, cy * 2 + dy)
       if t and footSet[t] then return true end
     end
   end
@@ -1907,7 +1946,7 @@ local function bookcaseRank(S, map, tx, northTy, frontTy, capTile)
   end
 
   for band = 0, bands - 1 do
-    local tile = band < size and Gen3.tileAt(map, tx, frontTy - band) or capTile
+    local tile = band < size and map:tileAt(tx, frontTy - band) or capTile
     local u0, u1, v0, v1 = uvRect(tile)
     local y0, y1 = band * 8, band * 8 + 8
     quads[#quads + 1] = { { x0, y0, z1 }, { x1, y0, z1 },
@@ -1932,7 +1971,7 @@ local function bookcaseRank(S, map, tx, northTy, frontTy, capTile)
     end
   end
 
-  local topTile = capTile or Gen3.tileAt(map, tx, northTy)
+  local topTile = capTile or map:tileAt(tx, northTy)
   local u0, u1, v0, v1 = uvRect(topTile)
   for seg = 0, depth / 8 - 1 do
     local sz0 = z0 + seg * 8
@@ -2226,9 +2265,9 @@ function Structures.buildVolume(S, map, tiles)
       -- drawing).
       local unit, repeatRead = math.min(extent, MAX_ROWS), false
       if extent > 1 then
-        local t0 = Gen3.tileAt(map, tx, front)
+        local t0 = map:tileAt(tx, front)
         for k = 1, extent - 1 do
-          if Gen3.tileAt(map, tx, front - k) == t0 then
+          if map:tileAt(tx, front - k) == t0 then
             unit = math.min(math.max(k, 2), MAX_ROWS)
             repeatRead = true
             break
@@ -2245,7 +2284,7 @@ function Structures.buildVolume(S, map, tiles)
         -- columns are untouched -- their run answers to the region
         -- (see below) before the unit matters.
         if not repeatRead and extent > 2
-           and Gen3.tileAt(map, tx, front - 1) == Gen3.tileAt(map, tx, front - 2) then
+           and map:tileAt(tx, front - 1) == map:tileAt(tx, front - 2) then
           unit = 2
           repeatRead = true
         end
@@ -2315,8 +2354,8 @@ function Structures.buildVolume(S, map, tiles)
     if S.outdoor and (not run.fromRepeat or adopted) and h >= 16
        and not flatDoor then
       roofRows = math.min(2, math.floor(h / 8) - 1)
-      if roofRows > 0 and Gen3.tileAt(map, r.tx, run.north)
-                         == Gen3.tileAt(map, r.tx, run.north + 1) then
+      if roofRows > 0 and map:tileAt(r.tx, run.north)
+                         == map:tileAt(r.tx, run.north + 1) then
         roofRows = 0
       end
     end
@@ -2637,9 +2676,9 @@ function Structures.buildObject(S, map, region, cluster,
       local extent = 0
       while ys[front - extent] do extent = extent + 1 end
       if extent > 1 then
-        local t0 = Gen3.tileAt(map, tx, front)
+        local t0 = map:tileAt(tx, front)
         for k = 1, extent - 1 do
-          if Gen3.tileAt(map, tx, front - k) == t0 then return false end
+          if map:tileAt(tx, front - k) == t0 then return false end
         end
       end
     end
@@ -3223,6 +3262,50 @@ function Structures.buildFigures(S, map, x0, x1, y0, y1)
         end
         if hit then buildFigure(S, map, fig, tx, ty, perRow) end
       end
+    end
+  end
+end
+
+-- ---- water rocks: rocks standing in water (Gen 3) ----
+-- From DRAMATIC_SHAPE: detect rocks in water and render them as 3D structures
+function Structures.buildWaterRocks(S, map, x0, x1, y0, y1)
+  if not S.isGen3 then return end
+  local data = pixels(map.tileset)
+  if not data then return end
+  local okG3, g3 = pcall(Gen3.forMap, map)
+  local rocks = okG3 and g3 and g3.waterRocks or nil
+  if not rocks or #rocks == 0 then return end
+  local n = 0
+  
+  -- Mark water rock cells as structural so they get voxelized
+  for _, rc in ipairs(rocks) do
+    local cx, cy = rc[1], rc[2]
+    if cx * 2 + 1 >= x0 and cx * 2 <= x1
+       and cy * 2 + 1 >= y0 and cy * 2 <= y1 then
+      -- Mark the 2x2 rock area as structural with canopy/cylinder art
+      for dy = 0, 1 do
+        for dx = 0, 1 do
+          local k = keyOf(cx * 2 + dx, cy * 2 + dy)
+          local s = S.shapeAt[k]
+          if s then
+            -- Mark as canopy for the anchor, cylinder for partners
+            if dx == 0 and dy == 0 then
+              s.art = "canopy"
+            else
+              s.art = "cylinder"
+            end
+            s.h = math.max(s.h or 0, 24)  -- Give them substantial height
+          end
+        end
+      end
+      n = n + 1
+    end
+  end
+  if n > 0 then
+    local okL, Logger = pcall(require, "src.core.Logger")
+    if okL and Logger and Logger.info then
+      pcall(Logger.info, "gen3 shapes: %s marked %d water rock(s) as voxel structures",
+            tostring(map.id), n)
     end
   end
 end
