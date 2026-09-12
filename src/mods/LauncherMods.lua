@@ -728,7 +728,16 @@ function LauncherMods._installZipInner(source, opts)
       :format(manifest.id, opts.expectId)
   end
 
-  local dest = "mods/" .. manifest.id
+  -- ...AND IT REPLACES THE COPY THAT IS ACTUALLY THERE.
+  --
+  -- Same mismatch uninstall had (see folderFor): the id and the folder are two
+  -- names, and asking for "mods/<id>" misses a mod whose folder is called
+  -- something else.  Installing over one then reported it as NOT already
+  -- installed and copied a second tree beside it -- two folders declaring one
+  -- id, which discover() resolves by taking whichever it reaches first and the
+  -- loader reports as a duplicate.  An update would have done worse: it would
+  -- have removed a folder that was not there and left the old version loading.
+  local dest = LauncherMods.folderFor(manifest.id) or ("mods/" .. manifest.id)
   if fs.getInfo(dest) then
     if not opts.replace then
       cleanup()
@@ -817,6 +826,44 @@ end
 -- or the save directory, CacheFs decides -- #330) and clears options.mods[id]
 -- so the loader and in-game manager no longer see it.  Rejects missing ids.
 -- Does not touch other mods' enable state.
+-- WHICH FOLDER A MOD ID ACTUALLY LIVES IN.
+--
+-- Reported from play: "experiencing issue for people that want to delete mods
+-- or delete dramatic shapes, it says they're not installed but they appear in
+-- the launcher as if it's installed".  Both halves were true at once, and the
+-- reason is that a mod's ID and its FOLDER are two different names.
+--
+-- discover() lists a mod under the id its manifest declares and throws the
+-- folder away; uninstall then went looking for "mods/<id>".  Those agree for
+-- anything the launcher installed itself (installZip unzips to mods/<id>) and
+-- routinely do not for anything unzipped by hand: DRAMATIC_SHAPE's manifest
+-- declares `Gen2Recomped-DramaticShapes`, so the panel offered a row it could
+-- not then find, and said so in the one wording that reads as nonsense next to
+-- a visible row -- "not installed".
+--
+-- A folder whose name IS the id still wins first, so nothing the launcher put
+-- there changes path; only a mismatch pays for the scan.
+function LauncherMods.folderFor(id)
+  local fs = love and love.filesystem
+  if not (fs and fs.getInfo and fs.getDirectoryItems) then return nil end
+  -- the portable game folder has to be on the read path before either the
+  -- direct hit or the scan can see anything (#330)
+  CacheFs.root()
+  local direct = "mods/" .. id
+  if fs.getInfo(direct) then return direct end
+  if not fs.getInfo("mods") then return nil end
+  for _, name in ipairs(fs.getDirectoryItems("mods")) do
+    local path = "mods/" .. name
+    local info = fs.getInfo(path)
+    if info and (info.type == "directory" or info.type == "symlink") then
+      local raw = fs.read(path .. "/manifest.json")
+      local manifest = raw and decodeManifest(raw, path) or nil
+      if manifest and manifest.id == id then return path end
+    end
+  end
+  return nil
+end
+
 function LauncherMods.uninstall(id)
   if type(id) ~= "string" or id == "" then
     return nil, "missing mod id"
@@ -828,8 +875,8 @@ function LauncherMods.uninstall(id)
     return nil, "mod uninstall needs LOVE"
   end
   local fs = love.filesystem
-  local dest = "mods/" .. id
-  if not fs.getInfo(dest) then
+  local dest = LauncherMods.folderFor(id)
+  if not dest then
     return nil, "mod '" .. id .. "' is not installed"
   end
   -- same root pin as installZip: the mods tree is not version-prefixed (#330)

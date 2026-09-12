@@ -200,9 +200,17 @@ function Catalog.itemLabel(data, id)
   return id
 end
 
--- Friendly event flag label.  Storage stays EVENT_G2_%04d; pret names are
--- display-only so existing saves / extracted scripts keep matching.
-function Catalog.flagLabel(id)
+-- Friendly event flag label.  Storage stays EVENT_G2_%04d / FLAG_G3_%04X;
+-- every name here is display-only so existing saves and extracted scripts
+-- keep matching on the key.
+--
+-- `data` is optional and only Hoenn needs it: a Gen 3 flag has no name
+-- anywhere -- pokeemerald's FLAG_* constants were compiled away -- so
+-- Gen3Names derives a label from what the flag is USED for in the extracted
+-- data (a badge, a trainer, an object it hides, a hidden item, the maps whose
+-- scripts touch it).  Callers that do not have `data` in hand get the Gen 2
+-- behaviour unchanged.
+function Catalog.flagLabel(id, data)
   local ok, Gen2Flags = pcall(require, "src.script.Gen2Flags")
   if ok and Gen2Flags and Gen2Flags.eventFlagDisplay then
     local pretty = Gen2Flags.eventFlagDisplay(id)
@@ -210,7 +218,57 @@ function Catalog.flagLabel(id)
       return pretty
     end
   end
+  if data and type(id) == "string" and id:match("^FLAG_G3_") then
+    local okG, Gen3Names = pcall(require, "Gen3Names")
+    local label = okG and Gen3Names.flag(data, id) or nil
+    if label then return label end
+  end
   return id
+end
+
+-- WHAT A MAP IS CALLED IN THE GAME, for every list that shows a map id.
+--
+-- Reported from play: "ensure the save manager lists emerald maps by in game
+-- map name".  MAP_G01_N03 is this port's storage key (the cartridge's map
+-- group and number); the name on the sign is the header's region map section,
+-- which Gen3Names reads.  Gen 1 and Gen 2 map ids are already words
+-- (PALLET_TOWN), so they are their own label and fall straight through.
+function Catalog.mapLabel(data, id)
+  if type(id) ~= "string" then return tostring(id) end
+  if id:match("^MAP_G%d+_N%d+$") then
+    local ok, Gen3Names = pcall(require, "Gen3Names")
+    local label = ok and Gen3Names.map(data, id) or nil
+    if label then return label end
+  end
+  return id
+end
+
+-- Every Hoenn flag this dataset can put a name to, sorted.
+--
+-- scrapeEvents finds Gen 1 and Gen 2 flags by reading the ported script tree
+-- for EVENT_ strings; Hoenn has no script tree to read -- its scripts are
+-- extracted IR -- so without this the Events tab could only list the flags a
+-- save had already WRITTEN, and a flag you want to set is by definition one
+-- the save has not got.  Gen3Names has already worked out which flags exist
+-- and what each is for, so the catalog is its keys.
+function Catalog.gen3Flags(data)
+  local ok, Gen3Names = pcall(require, "Gen3Names")
+  if not ok then return {} end
+  return sortedKeys(Gen3Names.index(data).flags)
+end
+
+-- The map half of a save key shaped "<MAP>_obj_<n>" (defeatedTrainers,
+-- itemsTaken), named the same way.  Keys that are not that shape come back
+-- unchanged.
+function Catalog.mapKeyLabel(data, key)
+  if type(key) ~= "string" then return tostring(key) end
+  local mapId, rest = key:match("^(MAP_G%d+_N%d+)(.*)$")
+  if not mapId then return key end
+  local label = Catalog.mapLabel(data, mapId)
+  if label == mapId then return key end
+  -- "_obj_3" welded to the end of a name reads as part of the name, so the
+  -- remainder is spaced out and the join is visible
+  return label .. " / " .. (rest:gsub("^_", ""):gsub("_", " "))
 end
 
 -- Friendly species label.  Gen2 keys are SPECIES_nnn; after a ROM extract
