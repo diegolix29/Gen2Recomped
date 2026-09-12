@@ -509,7 +509,7 @@ local function floorPlateFor(map, ctx)
     if okB and not blocked then
       local okM, m = pcall(ctx.metatileAt, cx, cy)
       if okM and m then
-        local okR, art, _, _, face = pcall(ctx.metaRole, m)
+        local okR, art, _, _, face, _, _, _, _ = pcall(ctx.metaRole, m)
         if okR and art == "banded" and (tonumber(face) or 0) <= 1 then
           local st = stats and stats[m]
           if not (st and (st.solid or 0) < 0.75) then t = true end
@@ -770,7 +770,7 @@ function Gen3.forMap(map)
   -- answer for good, the same trap `leafyMeta` is written around).
   local function treadMeta(m)
     if m == nil then return false end
-    local art, _, _, face = ctx.metaRole(m)
+    local art, _, _, face, _, _, _, _, _ = ctx.metaRole(m)
     if art ~= "banded" then return false end
     if (tonumber(face) or 0) > 1 then return false end
     local an = Gen3.analyse(map.tileset)
@@ -867,7 +867,7 @@ function Gen3.forMap(map)
                 for _, c in ipairs(chain) do
                   local m2 = ctx.metatileAt(c[1], c[2])
                   if treadMeta(m2) then treads = true break end
-                  local okA, a2 = pcall(ctx.metaRole, m2)
+                  local okA, a2, _, _, _, _, _, _, _ = pcall(ctx.metaRole, m2)
                   if not okA or a2 == nil or a2 == "surface" then
                     flat = true
                     break
@@ -1173,7 +1173,7 @@ function Gen3.forMap(map)
       -- tree, hedge or bush in the region is drawn in anything but green.
       -- Measured with the guard on, across all 518 maps: 22 cells change,
       -- every one of them 790 on Route 112, and no map loses a tree.
-      local okM, _, material = pcall(ctx.metaRole, m)
+      local okM, _, material, _, _, _, _, _, _ = pcall(ctx.metaRole, m)
       if okM and material ~= nil and material ~= "green" then return false end
       return true
     end
@@ -1228,7 +1228,7 @@ function Gen3.forMap(map)
       if not (st and st.leafy) then return false end
       local lf, lf2 = st.leafFrac or 0, st.leafFrac2 or 0
       if not (lf2 > 0.5 and lf2 >= lf * 0.9) then return false end
-      local okM2, _, material2 = pcall(ctx.metaRole, m)
+      local okM2, _, material2, _, _, _, _, _, _ = pcall(ctx.metaRole, m)
       return (okM2 and material2 == "green") or false
     end
 
@@ -1275,7 +1275,7 @@ function Gen3.forMap(map)
       if not st then return false end
       local lf, lf2 = st.leafFrac or 0, st.leafFrac2 or 0
       if not (lf > 0.25 and lf2 <= lf * 0.1) then return false end
-      local okM2, _, material2 = pcall(ctx.metaRole, m)
+      local okM2, _, material2, _, _, _, _, _, _ = pcall(ctx.metaRole, m)
       return (okM2 and material2 == "green") or false
     end
 
@@ -2103,7 +2103,7 @@ function Gen3.forMap(map)
     -- classifier, and it is the only reading left standing.
     local function railStands(m)
       if ctx.attributes(m) == MB_MOUNTAIN_TOP then return false end
-      local okR, _, _, cap, face = pcall(ctx.metaRole, m)
+      local okR, _, _, cap, face, _, _, _, _ = pcall(ctx.metaRole, m)
       if not okR then return false end
       return (tonumber(cap) or 0) >= 1 and (tonumber(face) or 0) <= 1
     end
@@ -2960,7 +2960,7 @@ function Gen3.forMap(map)
       local an = Gen3.analyse(map.tileset)
       local st = an and an.stats and an.stats[m]
       if not (st and st.leafy and (st.solid or 0) > 0.5) then return false end
-      local okM, _, mat = pcall(ctx.metaRole, m)
+      local okM, _, mat, _, _, _, _, _, _ = pcall(ctx.metaRole, m)
       return okM and mat == "green" or false
     end
 
@@ -3038,7 +3038,7 @@ function Gen3.forMap(map)
     -- face 16 and still rejects.
     local function treadMeta(m)
       if m == nil then return false end
-      local okR, art_, _, _, face_ = pcall(ctx.metaRole, m)
+      local okR, art_, _, _, face_, _, _, _, _ = pcall(ctx.metaRole, m)
       if not okR or art_ ~= "banded" then return false end
       if (tonumber(face_) or 0) > 1 then return false end
       local an = Gen3.analyse(map.tileset)
@@ -3054,7 +3054,7 @@ function Gen3.forMap(map)
       if ctx.offMap(cx, cy) or not ctx.blockedAt(cx, cy) then return false end
       local mm = ctx.metatileAt(cx, cy)
       if mm == nil then return true end
-      local okR, _, mat2, _, _, kind2, motif2 = pcall(ctx.metaRole, mm)
+      local okR, _, mat2, _, _, kind2, motif2, _, _, _ = pcall(ctx.metaRole, mm)
       if not okR then return true end
       if kind2 == "tree" or (motif2 and mat2 == "green") or leafyMeta(mm) then
         return false
@@ -3069,7 +3069,7 @@ function Gen3.forMap(map)
         local nx, ny = cx + dx * step, cy + dy * step
         if ctx.offMap(nx, ny) then return nil end
         if not ctx.blockedAt(nx, ny) then
-          local okR, _, mat2 = pcall(ctx.metaRole, ctx.metatileAt(nx, ny))
+          local okR, _, mat2, _, _, _, _, _, _ = pcall(ctx.metaRole, ctx.metatileAt(nx, ny))
           if not okR or mat2 == nil then return nil end
           return mat2
         end
@@ -3081,7 +3081,7 @@ function Gen3.forMap(map)
     local function fenceAt(cx, cy, m)
       -- 1. it draws no top of its own.  (Read here rather than taken from
       -- `roleAt`, whose own unpacking discards `cap`.)
-      local okC, _, _, cap = pcall(ctx.metaRole, m)
+      local okC, _, _, cap, _, _, _, _, _ = pcall(ctx.metaRole, m)
       if not okC or (tonumber(cap) or 0) ~= 0 then return false end
       -- 5. and it has no body
       for _, o in ipairs({ { 0, 0 }, { -1, 0 }, { 0, -1 }, { -1, -1 } }) do
@@ -3095,7 +3095,7 @@ function Gen3.forMap(map)
       for _, d in ipairs(RING8) do
         local nx, ny = cx + d[1], cy + d[2]
         if not ctx.offMap(nx, ny) then
-          local okR, a2, _, cap2, face2 = pcall(ctx.metaRole,
+          local okR, a2, _, cap2, face2, _, _, _, _ = pcall(ctx.metaRole,
                                                 ctx.metatileAt(nx, ny))
           if okR then
             cap2 = tonumber(cap2) or 0
@@ -3122,7 +3122,7 @@ function Gen3.forMap(map)
       while qh <= #q do
         local c = q[qh]; qh = qh + 1
         local d = seen[c[2] * 8192 + c[1]] or 0
-        local okR, _, _, _, _, kind2 = pcall(ctx.metaRole,
+        local okR, _, _, _, _, kind2, _, _, _ = pcall(ctx.metaRole,
                                              ctx.metatileAt(c[1], c[2]))
         if okR and kind2 == "ledge" then return false end
         for _, dd in ipairs(NEIGHBOURS) do
@@ -3146,7 +3146,7 @@ function Gen3.forMap(map)
       local hit = roleMemo[k]
       if hit ~= nil then return hit end
       local m = ctx.metatileAt(cx, cy)
-      local art, material, _, _, kind, motif = ctx.metaRole(m)
+      local art, material, _, _, kind, motif, _, _, _ = ctx.metaRole(m)
       local role
       if not art then
         role = ctx.blockedAt(cx, cy) and "prop" or "floor"
@@ -3417,7 +3417,7 @@ function Gen3.forMap(map)
       local an = Gen3.analyse(map.tileset)
       local st = an and an.stats and an.stats[mm]
       if not (st and st.leafy and (st.solid or 0) > 0.5) then return false end
-      local okM, _, mat = pcall(ctx.metaRole, mm)
+      local okM, _, mat, _, _, _, _, _, _ = pcall(ctx.metaRole, mm)
       return (okM and mat == "green") == true
     end
     -- How rare a metatile has to be to count as a building's own art rather
@@ -5275,7 +5275,7 @@ end
 function Gen3.metaRole(map, metatile)
   local ctx = Gen3.forMap(map)
   if not (ctx and ctx.metaRole) then return nil end
-  local ok, a, b, c, d, e, f = pcall(ctx.metaRole, metatile)
+  local ok, a, b, c, d, e, f, g, h, i = pcall(ctx.metaRole, metatile)
   if not ok then return nil end
   return a, b, c, d, e, f
 end
@@ -5355,7 +5355,7 @@ local function groundMetaFor(map, ctx)
       if okM and m then
         -- only ART cells are in question: a metatile nobody calls an edge is
         -- not being mistaken for one
-        local okR, art, _, _, face = pcall(ctx.metaRole, m)
+        local okR, art, _, _, face, _, _, _, _ = pcall(ctx.metaRole, m)
         if okR and (art == "brow" or (tonumber(face) or 0) >= 12) then
           total[m] = (total[m] or 0) + 1
           local okW, w = pcall(map.isWalkableCell, map, cx, cy)
@@ -5486,7 +5486,7 @@ function Gen3.faceKindAt(map, cx, cy)
   if not (ctx and ctx.metatileAt and ctx.metaRole) then return false, false end
   local okM, m = pcall(ctx.metatileAt, cx, cy)
   if not okM or not m then return false, false end
-  local okR, art, _, cap, face = pcall(ctx.metaRole, m)
+  local okR, art, _, cap, face, _, _, _, _ = pcall(ctx.metaRole, m)
   if not okR then return false, false end
   -- the same reading `courseAt` uses, so the band raster and the drawing can
   -- never disagree about what is an edge
@@ -5611,7 +5611,7 @@ function Gen3.stairAxis(map, cx, cy)
   if not (ctx and ctx.metatileAt and ctx.metaRole) then return nil end
   local okM, m = pcall(ctx.metatileAt, cx, cy)
   if not okM or not m then return nil end
-  local okR, art, _, _, _, _, _, axis = pcall(ctx.metaRole, m)
+  local okR, art, _, _, _, _, _, axis, _ = pcall(ctx.metaRole, m)
   if not okR or art ~= "banded" then return nil end
   if axis == "x" or axis == "y" then return axis end
   return nil

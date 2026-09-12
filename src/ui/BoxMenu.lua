@@ -44,16 +44,35 @@ local function monSubmenu(game, action, mons, list, onAction)
       label = Strings("STATS"),
       keepOpen = true,
       onSelect = function()
-        -- the same split the party menu makes: Emerald's summary is four
-        -- pages, two of which show things Johto has no concept of, so Gen 3
-        -- opens its own screen from the box as well as from the party
-        -- ...and the two screens take their argument differently:
-        -- SummaryMenu.new(game, mon), Gen3SummaryMenu.new(game, opts)
+        -- THE MON IS WHEREVER THE CURSOR IS NOW, not wherever it was when
+        -- this submenu was opened: the summary screen can step to the next
+        -- one in the list, and `onMonChange` writes that position back onto
+        -- the list so closing the summary leaves the cursor where you ended.
+        local mon = mons[list.index]
+        if not mon then return end
+        -- ...and the same split the party menu makes: Emerald's summary is
+        -- four pages, two of which show things Johto has no concept of, so
+        -- Gen 3 opens its own screen from the box as well as from the party.
+        -- The two take their argument differently --
+        -- SummaryMenu.new(game, mon, opts), Gen3SummaryMenu.new(game, opts).
         local Screens = require("src.ui.Screens")
         if require("src.core.GameVersion").isGen3() then
+          -- BY ID, NOT THROUGH THE ALIAS.  Screens.resolveId decides from the
+          -- FIRST argument, and that argument here is a bare mon rather than
+          -- an options table, so "SummaryMenu" would fail the alias' own
+          -- option whitelist and open the Game Boy screen in Hoenn.
+          --
+          -- No paging opts: on Emerald's summary left and right change the
+          -- PAGE, and up and down -- which is what would step through the box
+          -- -- are not read yet, so handing this screen `mons` would promise
+          -- a movement it does not make.
           Screens.push(game, "Gen3SummaryMenu", { mon = mon })
         else
-          Screens.push(game, "SummaryMenu", mon)
+          Screens.push(game, "SummaryMenu", mon, {
+            mons = mons,
+            index = list.index,
+            onMonChange = function(index) setListIndex(list, index) end,
+          })
         end
       end,
     },
