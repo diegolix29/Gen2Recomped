@@ -113,7 +113,7 @@ function Screen.draw(s,w,h,inventory,now)
     else
       labels={
         {'quick','QUICK START / 30 NEW','Team, caught, seen, nearby and level-relevant.'},
-        {'full','FULL CATALOG','All 251 species, normal + shiny. Optional.'},
+        {'full','FULL CATALOG','All 386 species, normal + shiny. Optional.'},
         {'b','MAIN MENU','Leave now. Your existing cache stays saved.'}}
       if s.startupRequest then
         if s.reuseEligible then
@@ -141,7 +141,7 @@ function Screen.draw(s,w,h,inventory,now)
     elseif s.reuseChecked and s.reuseProbeError then
       status='Existing-cache check unavailable. Team/starter-only and manual cache modes remain available.'
     elseif inventory then
-      status=('Saved: %d / 270 models | %d / 502 appearances'):format(inventory.cachedModels,inventory.cachedAppearances)
+      status=('Saved: %d / 772 models | %d / 772 appearances'):format(inventory.cachedModels,inventory.cachedAppearances)
     else
       status='Completed files are checked before selecting each batch.'
     end
@@ -168,7 +168,7 @@ function Screen.draw(s,w,h,inventory,now)
     local info=s.batchInfo or inventory
     local by=math.min(barY+91*z,contentEnd-29*z)
     if info then
-      text(('DISK CACHE  %d / 270 models  |  %d / 502 appearances'):format(info.cachedModels,info.cachedAppearances),x,by,bw,12*z,color.ok)
+      text(('DISK CACHE  %d / 772 models  |  %d / 772 appearances'):format(info.cachedModels,info.cachedAppearances),x,by,bw,12*z,color.ok)
     else text('Disk files persist. Graphics memory is session-only.',x,by,bw,12*z,color.muted)end
     text(elapsed(s,now),x,by+23*z,bw,12*z,color.muted,'right')
     local note=s.battle and 'Exact Colosseum models required. No sprite substitution.' or

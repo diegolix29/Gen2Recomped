@@ -19,7 +19,7 @@ function M.resolve(game,battler)
       end
     end
   end
-  if not dex or dex%1~=0 or dex<1 or dex>251 then
+  if not dex or dex%1~=0 or dex<1 or dex>386 then
     return nil,"No supported National Dex mapping for "..tostring(species)
   end
   return dex,V.ShinySupport.variant(battler)
