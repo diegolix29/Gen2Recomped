@@ -158,11 +158,10 @@ function Gen3.forMap(map)
       ctxCache[map] = false
       return nil
     end
-    -- Self-bake fallback: build context from map data directly
-    local ts = map.tileset
-    world = { bottom = true, cols = tonumber(ts and ts.tilesPerRow) or SHEET_COLS, metatiles = tonumber(ts and ts.metatileCount) or 0 }
+    return nil
   end
   ctxMisses[map] = nil
+  ctxCache[map] = false
 
   local def = map.def or {}
   local width = tonumber(def.width) or 0
@@ -251,8 +250,7 @@ function Gen3.forMap(map)
     if c then return c[1], c[2] end
     local b, l = 0, 0
     if type(world.attributes) == "function" then
-      local ok, attrB, attrL = pcall(world.attributes, m)
-      if ok then b, l = attrB or 0, attrL or 0 end
+      b, l = world.attributes(m)
     end
     ctx.attrCache[m] = { b or 0, l or 0 }
     return b or 0, l or 0
@@ -260,8 +258,7 @@ function Gen3.forMap(map)
 
   function ctx.coverAt(metatile)
     if type(world.topIsAbovePlayer) == "function" then
-      local ok, result = pcall(world.topIsAbovePlayer, metatile)
-      if ok then return result and true or false end
+      return world.topIsAbovePlayer(metatile) and true or false
     end
     local _, layer = ctx.attributes(metatile)
     return layer ~= 1
@@ -424,11 +421,19 @@ function Gen3.analyse(tileset)
 
   if not okBottom then return nil end
 
-  -- Determine background color
+  -- Determine background color: a colour common enough among ground
+  -- samples to be the tileset's own floor art. (`#groundHist` here would be
+  -- Lua's length operator on a hash table keyed by arbitrary colour-bucket
+  -- numbers, not a 1..n sequence -- an unreliable border, not a count --
+  -- so the threshold is taken against the real total instead.)
   local background = {}
-  for c, n in pairs(groundHist) do
-    if n > #groundHist / 2 then
-      background[c] = true
+  local groundTotal = 0
+  for _, n in pairs(groundHist) do groundTotal = groundTotal + n end
+  if groundTotal > 0 then
+    for c, n in pairs(groundHist) do
+      if n >= groundTotal * 0.01 then
+        background[c] = true
+      end
     end
   end
 
@@ -439,11 +444,14 @@ function Gen3.analyse(tileset)
     end
   end
 
+  local backgroundColours = 0
+  for _ in pairs(background) do backgroundColours = backgroundColours + 1 end
+
   local art = {
     stats = stats,
     background = background,
-    backgroundColours = #background,
-    groundSamples = #groundHist
+    backgroundColours = backgroundColours,
+    groundSamples = groundTotal
   }
 
   artCache[key] = art
@@ -462,7 +470,7 @@ function Gen3.status(map)
   if not Gen3.mapIsGen3(map) then return "not a Gen 3 map" end
   local ctx = Gen3.forMap(map)
   if not ctx then return "no Gen 3 context" end
-  return "ok (world=" .. tostring(ctx.world and ctx.world.bottom and "yes" or "no") .. ", elev=" .. tostring(ctx.elevHeight and "yes" or "no") .. ")"
+  return "ok"
 end
 
 -- Placeholder for solid measurement (can be expanded)
@@ -520,6 +528,205 @@ function Gen3.describe(tileset)
   if tileset.imageWidth == nil then tileset.imageWidth = info.width end
   if tileset.imageHeight == nil then tileset.imageHeight = info.height end
   return info
+end
+
+-- ---------------------------------------------------------------------------
+-- THE TEXTURE.
+--
+-- Re-lay the engine's two baked metatile sheets (16x16-pixel cells, "two
+-- 256x656 sheets" per the engine's own log) as one ordinary 8x8-tile sheet,
+-- in the same synthetic order Gen3.tileId already uses (4*metatile+quadrant)
+-- and Gen3.describe already reports (LINEAR_COLS tiles per row). Two
+-- consumers need exactly this image, and neither had it:
+--
+-- 1. TerrainAtlas.forMap binds it as the terrain's texture. Without it, the
+--    only thing TerrainAtlas otherwise has to hand back -- `map.renderer
+--    .image` -- is nil for every Gen 3 pair (a pair has no flat-game sheet
+--    on disk to be one), so TerrainAtlas.forMap returns nil, the mesh binds
+--    no texture, and the world meshes with real geometry but nothing
+--    painted on it: a blank, grey, placeholder-looking ground.
+--
+-- 2. Structures' local `pixels(tileset)` needs the same pixels to carve
+--    real shapes -- tree hulls, roofs, fences -- out of the art instead of
+--    falling back to a plain measured box for everything it can't read,
+--    which is the "everything is a placeholder box" half of the same bug.
+--
+-- Baked once per tileset and cached; both consumers share the one image.
+-- ---------------------------------------------------------------------------
+local atlasCache = setmetatable({}, { __mode = "k" })
+local atlasDataCache = setmetatable({}, { __mode = "k" })
+
+local function bakeLinear(tileset)
+  local key = tostring(tileset.id)
+  local tiles = tilesForTileset(tileset)
+  if not tiles then return nil end
+  if not (love and love.image and love.image.newImageData
+          and love.graphics and love.graphics.newImage) then
+    return nil
+  end
+  local info = Gen3.describe(tileset)
+  local W, H = info.width, info.height
+  local srcCols = SHEET_COLS
+
+  -- On the CPU with ImageData:setPixel, not through a canvas draw: this
+  -- can run from inside an already-active scene/shader (TerrainAtlas is
+  -- called mid-frame), and compositing through that live pipeline yields a
+  -- texture that reports success but renders solid black.
+  local okBake, res = pcall(function()
+    local surface = love.image.newImageData(W, H)
+    local function plot(x, y, r, g, b)
+      -- metatile-sheet coordinates in; synthetic tile-sheet coordinates out
+      local m = math.floor(y / CELL) * srcCols + math.floor(x / CELL)
+      local q = math.floor((y % CELL) / TILE) * 2 + math.floor((x % CELL) / TILE)
+      local t = m * 4 + q
+      local dx = (t % LINEAR_COLS) * TILE + (x % TILE)
+      local dy = math.floor(t / LINEAR_COLS) * TILE + (y % TILE)
+      if dx >= 0 and dy >= 0 and dx < W and dy < H then
+        surface:setPixel(dx, dy, r / 255, g / 255, b / 255, 1)
+      end
+    end
+    tiles:bakeLayer(1, plot)
+    tiles:bakeLayer(2, plot)
+    local img = love.graphics.newImage(surface)
+    pcall(img.setFilter, img, "nearest", "nearest")
+    return { image = img, data = surface }
+  end)
+  if not (okBake and res) then
+    atlasCache[key] = false
+    atlasDataCache[key] = false
+    return nil
+  end
+  atlasCache[key] = res.image
+  atlasDataCache[key] = res.data
+  return res
+end
+
+local function ensureAtlas(tileset)
+  local key = tostring(tileset.id)
+  if atlasCache[key] ~= nil then
+    return atlasCache[key] or nil, atlasDataCache[key] or nil
+  end
+  local res = bakeLinear(tileset)
+  return res and res.image or nil, res and res.data or nil
+end
+
+-- The re-laid image itself: what TerrainAtlas binds as the terrain texture.
+function Gen3.atlasForTileset(tileset)
+  if not Gen3.isGen3(tileset) then return nil end
+  local img = ensureAtlas(tileset)
+  return img
+end
+
+-- The same bake's raw pixels: what Structures' shape passes carve from.
+function Gen3.atlasDataForTileset(tileset)
+  if not Gen3.isGen3(tileset) then return nil end
+  local _, data = ensureAtlas(tileset)
+  return data
+end
+
+function Gen3.atlas(map)
+  if not Gen3.mapIsGen3(map) then return nil end
+  return Gen3.atlasForTileset(map.tileset)
+end
+
+function Gen3.atlasData(map)
+  if not Gen3.mapIsGen3(map) then return nil end
+  return Gen3.atlasDataForTileset(map.tileset)
+end
+
+-- ---------------------------------------------------------------------------
+-- THE SHAPE SURFACE: the same sheet, with the ground cut out of it.
+--
+-- The plain atlas above is fully opaque -- Emerald's art has no
+-- transparency at the composite, because the bottom layer always paints
+-- some ground under whatever stands on it. Handing THAT to Structures'
+-- alpha-based carving (every pass finds background by testing `a == 0`)
+-- gets back a solid rectangle every time: houses and trees stay boxes,
+-- just boxes with real pixels now instead of none. Unlocking the pixels is
+-- necessary and not sufficient.
+--
+-- So this is a second bake of the exact same sheet, in the exact same
+-- layout, except that a ground-coloured pixel (Gen3.analyse's own
+-- `background` set) is written fully transparent instead of opaque. That
+-- is what gives a roof an outline and a tree a silhouette to carve.
+local shapeCache = setmetatable({}, { __mode = "k" })
+
+local function bakeShape(tileset)
+  local key = tostring(tileset.id)
+  local art = Gen3.analyse(tileset)
+  local tiles = art and tilesForTileset(tileset)
+  if not (art and tiles) then
+    shapeCache[key] = false
+    return nil
+  end
+  if not (love and love.image and love.image.newImageData) then return nil end
+
+  local info = Gen3.describe(tileset)
+  local W, H = info.width, info.height
+  local background = art.background or {}
+
+  local okBake, res = pcall(function()
+    local surface = love.image.newImageData(W, H)
+    local function place(x, y)
+      local m = math.floor(y / CELL) * SHEET_COLS + math.floor(x / CELL)
+      local q = math.floor((y % CELL) / TILE) * 2 + math.floor((x % CELL) / TILE)
+      local t = m * 4 + q
+      return (t % LINEAR_COLS) * TILE + (x % TILE),
+             math.floor(t / LINEAR_COLS) * TILE + (y % TILE)
+    end
+    -- bottom layer: ground colours become holes, everything else is body
+    tiles:bakeLayer(1, function(x, y, r, g, b)
+      local dx, dy = place(x, y)
+      if dx < 0 or dy < 0 or dx >= W or dy >= H then return end
+      if background[colourKey(r, g, b)] then
+        surface:setPixel(dx, dy, 0, 0, 0, 0)
+      else
+        surface:setPixel(dx, dy, r / 255, g / 255, b / 255, 1)
+      end
+    end)
+    -- top layer: object art, always body, drawn over whatever is beneath
+    tiles:bakeLayer(2, function(x, y, r, g, b)
+      local dx, dy = place(x, y)
+      if dx < 0 or dy < 0 or dx >= W or dy >= H then return end
+      surface:setPixel(dx, dy, r / 255, g / 255, b / 255, 1)
+    end)
+    return surface
+  end)
+  if not (okBake and res) then
+    shapeCache[key] = false
+    return nil
+  end
+  shapeCache[key] = res
+  return res
+end
+
+-- The pixels the shape passes read: opaque where the art is an object,
+-- transparent where it is ground. This is what Structures' local
+-- `pixels(tileset)` answers with on Gen 3.
+function Gen3.shapeDataForTileset(tileset)
+  if not Gen3.isGen3(tileset) then return nil end
+  local key = tostring(tileset.id)
+  local hit = shapeCache[key]
+  if hit ~= nil then return hit or nil end
+  return bakeShape(tileset)
+end
+
+-- The pair-level carve is what this answers with -- NOT the further
+-- per-map refinement dramatic_mod adds (widening the background set with
+-- an indoor room's own floor colours, for a floor pattern the pair-level
+-- guess misses). That needs `ctx.floorMetatiles`, which this mod's
+-- `Gen3.forMap` does not compute; every indoor Gen 3 room is carved from
+-- the pair's own background guess only, which is right outdoors and for
+-- most interiors, and merely unrefined for the rest.
+function Gen3.shapeDataForMap(map)
+  if not Gen3.mapIsGen3(map) then return nil end
+  return Gen3.shapeDataForTileset(map.tileset)
+end
+
+function Gen3.releaseAtlases()
+  atlasCache = setmetatable({}, { __mode = "k" })
+  atlasDataCache = setmetatable({}, { __mode = "k" })
+  shapeCache = setmetatable({}, { __mode = "k" })
 end
 
 return Gen3

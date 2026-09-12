@@ -37,6 +37,7 @@ local PaletteFX = require("src.render.PaletteFX")
 -- (see Water.lua). Required here rather than pushed in: this file already
 -- owns the animation clock, and Water has no reverse dependency on us.
 local Water = V.require("Water")
+local Gen3 = V.require("Gen3")
 
 local TerrainAtlas = {}
 
@@ -81,6 +82,23 @@ end
 -- before animation existed, and the base every animated frame is patched
 -- over. Returns the image and, when we baked it ourselves, its pixels.
 local function staticAtlas(map, colors)
+  -- GEN 3 FIRST: `renderer.image` is nil on every Hoenn map -- a pair has
+  -- no flat-game sheet on disk to be the base of anything -- so falling
+  -- through to the generic path below returned nil here, TerrainAtlas
+  -- .forMap returned nil, the mesh bound no texture, and the world meshed
+  -- with real geometry but nothing painted on it: a blank, placeholder-grey
+  -- ground. Gen3.atlas re-lays the engine's two baked metatile sheets into
+  -- one ordinary 8px tile sheet and is the actual answer.
+  --
+  -- This also skips everything below on purpose: the SGB rebake exists to
+  -- turn 4-shade grayscale into color via a screen-space remap, and Gen 3
+  -- art is already true color baked straight from its own palettes -- there
+  -- is nothing to remap and no `map.tileset.image` path to key a cache on.
+  if Gen3 and Gen3.mapIsGen3(map) then
+    local sheet = Gen3.atlas(map)
+    if sheet then return sheet, false end
+    return nil
+  end
   local renderer = map.renderer
   local base = renderer and renderer.image
   if not base then return nil end
@@ -632,6 +650,12 @@ end
 function TerrainAtlas.forMap(map, colors)
   local base, baked = staticAtlas(map, colors)
   if not base then return nil end
+  -- TerrainAtlas.animate keys its cache on `map.tileset.image`, a path
+  -- string that a Gen 3 pair never carries (it has no sheet on disk) --
+  -- concatenating it below would error. Gen 3's own water/flower animation
+  -- isn't wired up in this mod yet, so this returns the static sheet built
+  -- above rather than crash reaching for an animated one.
+  if Gen3 and Gen3.mapIsGen3(map) then return base end
   return TerrainAtlas.animate(map, colors, base, baked) or base
 end
 
