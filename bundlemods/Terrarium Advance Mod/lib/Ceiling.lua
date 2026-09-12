@@ -41,6 +41,7 @@ local V = ...
 
 local Voxel3D = V.require("Voxel3D")
 local TileShape = V.require("TileShape")
+local Gen3 = V.require("Gen3")
 -- The first-person rig, if this build has one.  absol89's battle-art fork
 -- is based on Dramatic Shape 1.3.0, which predates the rig entirely --
 -- and an unguarded require there would fail at load and take this whole
@@ -185,7 +186,7 @@ local function cellFacts(map, shapes, border, cx, cy)
   for dy = 0, 1 do
     for dx = 0, 1 do
       local tx, ty = cx * 2 + dx, cy * 2 + dy
-      local tile = map:tileAt(tx, ty)
+      local tile = Gen3.tileAt(map, tx, ty)
       if tile then
         if border[tile] then voidTiles = voidTiles + 1 end
         local s = TileShape.at(map, shapes, tile, tx, ty)
@@ -542,7 +543,7 @@ local function build(map, H, mode, pcx, pcy, tex)
       if isWall[cy][cx] and not isVoid[cy][cx] then
         for dy = 0, 1 do
           for dx = 0, 1 do
-            local t = map:tileAt(cx * 2 + dx, cy * 2 + dy)
+            local t = Gen3.tileAt(map, cx * 2 + dx, cy * 2 + dy)
             if t and not border[t] then
               tally[t] = (tally[t] or 0) + 1
               if not commonest or tally[t] > tally[commonest] then
@@ -674,7 +675,7 @@ local function build(map, H, mode, pcx, pcy, tex)
     local idx, runLen = doorRun(cx, cy, dir)
     local shade = RISER_SHADE[dir]
     local x0, z0 = cx * 16, cy * 16
-    local leafTile = map:tileAt(cx * 2, cy * 2 + 1) or ceilTile
+    local leafTile = Gen3.tileAt(map, cx * 2, cy * 2 + 1) or ceilTile
 
     -- plane placement helper: a quad on this cell's boundary face,
     -- spanning [u0, u1] across the cell and [y0, y1] up it, pushed out
@@ -1000,7 +1001,7 @@ local function build(map, H, mode, pcx, pcy, tex)
   local SHADOW_SHADE = 0.44
   local shadows = 0
   local function contactShadow(cx, cy, dir)
-    local okT, tile = pcall(function() return map:tileAt(cx * 2, cy * 2) end)
+    local okT, tile = pcall(function() return Gen3.tileAt(map, cx * 2, cy * 2) end)
     local uv = { uvFor(map, (okT and tile) or 0) }
     local x0, z0 = cx * 16, cy * 16
     local y = 0.45

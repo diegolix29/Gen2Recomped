@@ -59,6 +59,7 @@ local V = ...
 local Voxel3D = V.require("Voxel3D")
 local okTS, TileShape = pcall(V.require, "TileShape")
 local Mat4 = V.require("Mat4")
+local Gen3 = V.require("Gen3")
 -- The first-person rig, if this build has one.  absol89's battle-art fork
 -- is based on Dramatic Shape 1.3.0, which predates the rig entirely --
 -- and an unguarded require there would fail at load and take this whole
@@ -610,7 +611,7 @@ function MOUND.buildBacks(map)
     return ok and w
   end
   local function tileOf(cx, cy)
-    local ok, t = pcall(function() return map:tileAt(cx * 2, cy * 2) end)
+    local ok, t = pcall(function() return Gen3.tileAt(map, cx * 2, cy * 2) end)
     return ok and t or nil
   end
 
@@ -1090,7 +1091,7 @@ local function buildCanopy(map, tex, mode, pcx, pcy)
   local tally, leafTile = {}, nil
   for cy = 0, hc - 1 do
     for cx = 0, wc - 1 do
-      local okT, tile = pcall(function() return map:tileAt(cx * 2, cy * 2) end)
+      local okT, tile = pcall(function() return Gen3.tileAt(map, cx * 2, cy * 2) end)
       if okT and tile then
         local okC, sh = pcall(TileShape.at, map, shapes, tile, cx * 2, cy * 2)
         local class = okC and sh and sh.class
@@ -1288,7 +1289,7 @@ local function buildCanopy(map, tex, mode, pcx, pcy)
 
     -- mirror the nearest cell inside the map: its art, its solidity
     local sx, sy = sourceCell(cx, cy)
-    local okT, srcTile = pcall(function() return map:tileAt(sx * 2, sy * 2) end)
+    local okT, srcTile = pcall(function() return Gen3.tileAt(map, sx * 2, sy * 2) end)
     local okW, walk = pcall(function() return map:isWalkableCell(sx, sy) end)
     local solidSource = okW and not walk
     local tile = (okT and srcTile) or leafOf(cx, cy)
@@ -1746,7 +1747,7 @@ local function scanFeatures(map)
       if okW and not walk then solidAt[cy * wc + cx] = true end
       if shapes then
         local okT, tile = pcall(function()
-          return map:tileAt(cx * 2, cy * 2)
+          return Gen3.tileAt(map, cx * 2, cy * 2)
         end)
         tile = okT and tile or nil
         if tile then
