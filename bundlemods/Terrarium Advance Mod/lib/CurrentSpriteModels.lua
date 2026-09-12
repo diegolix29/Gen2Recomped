@@ -924,29 +924,6 @@ local function imageFor(context,side)
           end
         end
       end
-      -- If species lookup failed, try to find by dex number
-      if not (image and type(image.getDimensions)=="function") then
-        local dex=tonumber((def and (def.dex or def.index or def.number)) or (mon and (mon.dex or mon.speciesIndex)))
-        if dex and dex > 0 then
-          -- Try to find a definition by iterating through all pokemon
-          for id,pokemonDef in pairs(game.data.pokemon or {}) do
-            if pokemonDef and tonumber(pokemonDef.dex or pokemonDef.index or pokemonDef.number) == dex then
-              local fallbackSprite=(facing=="back" and pokemonDef.spriteBack or pokemonDef.spriteFront)
-              if fallbackSprite then
-                local EngineAssets=require("src.render.Assets")
-                if EngineAssets and type(EngineAssets.image)=="function" then
-                  local okImg,fallbackImage=pcall(EngineAssets.image,fallbackSprite)
-                  if okImg and fallbackImage and type(fallbackImage.getDimensions)=="function" then
-                    image=fallbackImage
-                    if image.setFilter then pcall(image.setFilter,image,"nearest","nearest") end
-                    break
-                  end
-                end
-              end
-            end
-          end
-        end
-      end
     end
   end
 
@@ -1022,28 +999,6 @@ local function imageFor(context,side)
             if okFallback and fallbackImage and type(fallbackImage.getDimensions)=="function" then
               image=fallbackImage
               if image.setFilter then pcall(image.setFilter,image,"nearest","nearest") end
-            end
-          end
-        end
-        -- If direct species lookup failed, try dex-based lookup
-        if not (image and type(image.getDimensions)=="function") then
-          local dex=tonumber((def and (def.dex or def.index or def.number)) or (mon and (mon.dex or mon.speciesIndex)))
-          if dex and dex > 0 then
-            for id,pokemonDef in pairs(game.data.pokemon or {}) do
-              if pokemonDef and tonumber(pokemonDef.dex or pokemonDef.index or pokemonDef.number) == dex then
-                local dexFallback=(facing=="back" and pokemonDef.spriteBack or pokemonDef.spriteFront)
-                if dexFallback then
-                  local EngineAssets=require("src.render.Assets")
-                  if EngineAssets and type(EngineAssets.image)=="function" then
-                    local okDex,dexImage=pcall(EngineAssets.image,dexFallback)
-                    if okDex and dexImage and type(dexImage.getDimensions)=="function" then
-                      image=dexImage
-                      if image.setFilter then pcall(image.setFilter,image,"nearest","nearest") end
-                      break
-                    end
-                  end
-                end
-              end
             end
           end
         end
