@@ -861,18 +861,48 @@ function Gen3Battle.summarySlots(summary, side, party)
   return slots
 end
 
-local function drawSummaryRow(summary, side, party)
+-- ...AND THEY ARRIVE, THEY DO NOT APPEAR.
+--
+-- Reported from play: "when it shows the pokeballs for you and the enemy in
+-- the rom it usually plays an animation of the balls sliding into place and
+-- the menu for them sliding into place".  Both rows were drawn complete on
+-- the first frame they existed.
+--
+-- On the cartridge (CreatePartyStatusSummarySprites) each row is built
+-- OFF-SCREEN against the edge it belongs to and slid inward, and the icons
+-- are then set down one at a time rather than all at once -- which is what
+-- makes a six-Pokemon party read as six.
+--
+-- RECONSTRUCTED, and said so: the two timings below are measured off the
+-- scene, not read out of the image.  What IS the cartridge's is the shape --
+-- which edge each row comes from (its own, so the foe's enters from the left
+-- and yours from the right), and that the icons follow the bar rather than
+-- riding on it.
+Gen3Battle.SUMMARY_SLIDE_FRAMES = 14
+Gen3Battle.SUMMARY_BALL_FRAMES = 4
+
+local function drawSummaryRow(summary, side, party, age)
   local bar, balls = hudImage(summary.bar), hudImage(summary.balls)
   if not (bar and balls) then return end
   local cell = summary.ballSide or 8
+  local barW = summary.barWidth or bar:getWidth()
+  -- how far in the row has travelled: 0 is fully off its own edge, 1 home
+  local slide = Gen3Battle.SUMMARY_SLIDE_FRAMES
+  local p = 1
+  if age and slide > 0 then p = math.max(0, math.min(1, age / slide)) end
+  -- eased so it settles rather than stopping dead
+  local eased = 1 - (1 - p) * (1 - p)
+  -- the foe's row lives on the left of the screen and enters from there; the
+  -- player's lives on the right and enters from the right
+  local dir = side.flip and -1 or 1
+  local dx = dir * (1 - eased) * (barW + 16)
   love.graphics.setColor(1, 1, 1, 1)
   -- the strip, mirrored for the foe: drawn from its far corner with a
   -- negative x scale, which is what ST_OAM_HFLIP does to the four pieces
   if side.flip then
-    love.graphics.draw(bar, side.barX + (summary.barWidth or bar:getWidth()),
-                       side.barY, 0, -1, 1)
+    love.graphics.draw(bar, side.barX + barW + dx, side.barY, 0, -1, 1)
   else
-    love.graphics.draw(bar, side.barX, side.barY)
+    love.graphics.draw(bar, side.barX + dx, side.barY)
   end
   -- ...and the icons, laid out from the middle of the screen outwards
   local slots = Gen3Battle.summarySlots(summary, side, party)
@@ -881,11 +911,14 @@ local function drawSummaryRow(summary, side, party)
   local bw, bh = balls:getDimensions()
   for slot = 1, count do
     local column = icons[slots[slot] or "empty"]
-    if column then
+    -- each icon waits for the bar to land and then for its own turn; with no
+    -- age at all (a caller that does not track one) every icon is already down
+    local due = slide + (slot - 1) * Gen3Battle.SUMMARY_BALL_FRAMES
+    if column and (age == nil or age >= due) then
       local quad = love.graphics.newQuad(column * cell, 0, cell, cell,
                                          bw, bh)
       love.graphics.draw(balls, quad,
-                         side.ballX + (slot - 1) * (summary.step or 10),
+                         side.ballX + (slot - 1) * (summary.step or 10) + dx,
                          side.ballY)
     end
   end
@@ -904,13 +937,22 @@ local function drawIntroBalls(battle)
   end
   local summary = summaryRecord(battle)
   if not summary then return end
+  -- WHEN THE ROWS WENT UP, stamped on the first frame they are actually
+  -- drawn rather than on the frame the flag was raised: the flag is set in
+  -- BattleState:enter, while the two silhouettes are still sliding in and
+  -- these rows are not on screen yet, so counting from there would have the
+  -- whole slide happen behind the intro and land the rows already home.
+  if battle.introBallsFrom == nil then
+    battle.introBallsFrom = battle.frame or 0
+  end
+  local age = battle.frame and (battle.frame - battle.introBallsFrom) or nil
   if battle.enemyParty and summary.opponent
       and (battle.kind == "trainer" or battle.kind == "link") then
-    drawSummaryRow(summary, summary.opponent, battle.enemyParty)
+    drawSummaryRow(summary, summary.opponent, battle.enemyParty, age)
   end
   if summary.player then
     drawSummaryRow(summary, summary.player,
-                   battle.playerParty or battle.game.save.party)
+                   battle.playerParty or battle.game.save.party, age)
   end
 end
 
@@ -1145,18 +1187,39 @@ local function paintPair(battle, key)
   return norm(row.foreground), norm(row.shadow)
 end
 
+-- ...ONCE, THROUGH THE PAGE'S OWN TWO TONES.
+--
+-- Reported from play: "the textbox in battle doesnt seem to be using the
+-- emerald font make it match the rom".  The glyphs WERE the cartridge's --
+-- right face, right widths, right panel -- and they did not look like it,
+-- because of what was done to them on the way to the screen.
+--
+-- This used to draw every line TWICE: once in the shadow colour at (1,1) and
+-- again in the foreground at (0,0), each pass through the flat tint shader.
+-- That shader takes a glyph's ALPHA and paints every opaque pixel one colour,
+-- and an Emerald glyph is not one colour -- the page is PRE-TINTED and
+-- already carries the letter and its drop shadow as two separate tones.  So
+-- the first pass stamped the letter AND its baked shadow in the shadow ink,
+-- the second stamped both again one pixel up and left in the foreground ink,
+-- and what reached the screen was a four-way smear of a two-tone letter: too
+-- thick, too dark, and the shadow in the wrong place on the far side.  That
+-- is the same mistake the healthbox was reported for -- "their names are
+-- looking a little too bold not matching the rom" -- and it was fixed there
+-- and left standing here.
+--
+-- Font.beginTwoTone is what the fix put in: it recolours the page's two baked
+-- tones SEPARATELY, so the letter keeps the shape the cartridge drew and only
+-- the two inks change -- which is all the battle window's palette is.  One
+-- pass, at (0,0), and the offsets stay in the signature because a cache
+-- without the palette still has nothing to recolour with and falls back to
+-- plain black-on-white.
 local function shadowed(battle, key, fn)
   local fg, shadow = paintPair(battle, key)
   if not fg then
     love.graphics.setColor(0, 0, 0, 1)
     return fn(0, 0)
   end
-  if shadow then
-    Font.pushStyle({ text = shadow })
-    fn(1, 1)
-    Font.popStyle()
-  end
-  Font.pushStyle({ text = fg })
+  Font.pushStyle({ text = fg, shadow = shadow })
   fn(0, 0)
   Font.popStyle()
 end
@@ -2095,11 +2158,34 @@ function Gen3Battle.draw(battle)
   -- BattleState asks Gen3Battle.picPlacement instead, which measures the
   -- platforms out of the cartridge's own battle background.
   --
-  -- The region survives for what it was always also doing: clipping the
-  -- pics to the field, so nothing reaches the message window.
+  -- ...AND THE REGION DOES NOT SURVIVE EITHER.
+  --
+  -- Reported from play, with a screenshot: "there seems to be a smaller box
+  -- that's obscuring my pokemon", and then exactly what it was -- "its
+  -- cutting him in half when i zoom in as if theres a smaller viewport just
+  -- for the battle sprites".  That is precisely what this was: a scissor
+  -- around the pics layer and nothing else, which is why only the two
+  -- Pokemon were ever cut while the panels and the text were whole.
+  --
+  -- What it was for was "so nothing reaches the message window", and on THIS
+  -- layout that job is already done twice over: drawTextArea runs after this,
+  -- and Emerald's message strip is an opaque panel out of the cartridge (a
+  -- cache without one falls back to Font.drawBox, which is opaque too).  A
+  -- pic that reaches under it is covered, not shown.
+  --
+  -- And the scissor is in the DRAW TARGET's pixels, which are only the
+  -- battle's own 240x160 while this engine owns the frame.  A mod that
+  -- composes the battle into a surface of its own size -- a 3D field, which
+  -- is what the report is from -- gets a 240x120 rectangle cut out of the
+  -- top-left corner of something much bigger, and the sprite is sheared
+  -- wherever that line falls.  The redundant clip was the whole bug.
+  --
+  -- `wideRegion` STAYS.  It is not about this scissor: it tells
+  -- drawBattlerPic not to apply the GAME BOY's per-side tile windows (80x96
+  -- and 88..160) during a displacement effect, and those windows describe a
+  -- 160x144 screen that this layout is not.
   battle.wideRegion = true
-  inRegion(sx, sy, Gen3Battle.WIDTH, Gen3Battle.FIELD_BOTTOM, 0, 0,
-    function() battle:drawPicsLayer(slide, sx, sy, nil, true) end)
+  battle:drawPicsLayer(slide, sx, sy, nil, true)
   battle.wideRegion = nil
 
   -- A battle sets rWY to 0, so the window the shakes move IS the whole

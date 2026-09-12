@@ -433,6 +433,11 @@ function Map.new(def, tilesetDef)
   -- case: its beams are drawn by those rows, so the puzzle could be watched
   -- and not walked through.
   self.collisionPatch = {}
+  -- ...and the same answer keyed by COORDINATE rather than by a computed
+  -- index.  See Map:setBlock: the index form depends on writer and reader
+  -- agreeing about def.width, and a cell a script shut must not be able to
+  -- go missing down that seam.
+  self.shutCells = {}
   self.warpAt = {}
   for i, w in ipairs(def.warps or {}) do
     self.warpAt[w.y * self.widthCells + w.x] = { index = i, def = w }
@@ -561,6 +566,11 @@ function Map:cellTile(cx, cy)
   -- and its doorway are the same tile.  When a def has it, it decides
   -- passability and the tileset's behaviour byte only says what KIND of ground
   -- it is (grass, water, a door), which is what the rest of this file wants.
+  -- A cell a script SHUT is a wall whatever the map shipped, and it is asked
+  -- before anything else: the branch below only runs for a map that brought
+  -- its own collision array, and the Regi chambers' entrances are on maps
+  -- that did not.
+  if self:patchedImpassable(cx, cy) then return 0xFF end
   local cells = self.def.collisionCells
   if cells then
     if cx < 0 or cy < 0 or cx >= self.widthCells or cy >= self.heightCells then
@@ -645,6 +655,17 @@ function Map:elevationBlocks(at, cx, cy)
   return there ~= at
 end
 
+-- Is this cell the "under a bridge" marker?
+--
+-- Elevation 15 does not say where the cell IS, it says the cell declines to
+-- say -- whoever steps on it keeps the elevation they arrived with, which is
+-- what elevationAfter below already does.  A caller that wants to know what
+-- KIND of ground a cell is has to ask this first, because 15 is not an
+-- answer to that question.
+function Map:isUnderBridgeCell(cx, cy)
+  return self:cellElevation(cx, cy) == ELEVATION_UNDER_BRIDGE
+end
+
 -- what a mover's elevation becomes after landing on (cx,cy)
 function Map:elevationAfter(at, cx, cy)
   local there = self:cellElevation(cx, cy)
@@ -669,15 +690,27 @@ end
 -- So the runtime patch wins over the fallback and nothing else changes: a
 -- cell with no patch answers no here and takes the old path unaltered.
 function Map:patchedImpassable(cx, cy)
-  if not self.def.collisionCells then return false end
+  -- NOT gated on the map having shipped a collision array of its own.  The
+  -- patch IS the answer; see Map:setBlock.
   if cx < 0 or cy < 0 or cx >= self.def.width or cy >= self.def.height then
     return false
   end
+  if self.shutCells and self.shutCells[cx .. ":" .. cy] then return true end
   local patched = self.collisionPatch[cy * self.def.width + cx + 1]
   return patched ~= nil and patched ~= 0
 end
 
 function Map:isWalkableCell(cx, cy)
+  -- FIRST, and before the tileset gets a word in.
+  --
+  -- Reported from play, twice: "the regi caves still arent fixed i can walk
+  -- right through the walls ... and into the cave".  Every other test here
+  -- could hand back "walkable" before this one was ever reached -- the
+  -- tileset's own walkable set on the way in, and, at the bottom, `return
+  -- self:warpAtCell(...) ~= nil`, which makes ANY cell carrying a warp
+  -- passable.  A cave mouth is a warp cell, so the sealed entrance was
+  -- walkable on that line alone no matter what the script had written.
+  if self:patchedImpassable(cx, cy) then return false end
   if self.walkable[self:cellTile(cx, cy)] then return true end
   if self.gen2BorderBlock ~= nil then
     -- Border-block heuristic: any block other than the border block is walkable
@@ -765,8 +798,32 @@ function Map:setBlock(bx, by, block, impassable)
   -- means "change the picture, leave the map alone"; a Gen 3 setmetatile
   -- always carries a fourth and means both.  Reading a missing argument as
   -- "passable" would have every Cut tree open its own cell as a side effect.
-  if impassable ~= nil and self.def.collisionCells then
+  -- ...AND A SCRIPT THAT SAYS "IMPASSABLE" IS OBEYED ON EVERY MAP.
+  --
+  -- This used to refuse to record the change unless the map arrived with a
+  -- collision array of its own, which sounds harmless and is not: a map
+  -- WITHOUT one answered every cell "passable" and had nowhere to put the
+  -- answer, so `setmetatile x, y, tile, 1` drew a wall and left it walkable.
+  --
+  -- Reported from play: the Regi chambers.  Their ON_LOAD callback is
+  -- `checkflag / call_if FALSE` onto a run of setmetatile rows that SEALS the
+  -- entrance -- the map ships open and the script closes it -- so the sealed
+  -- wall was drawn correctly and could be walked straight through, both at
+  -- the cave mouth and at the inner door the braille puzzles open.
+  require("src.core.Probe").say(
+    "setblock", "%s,%s block=%s impassable=%s(%s) patchTable=%s i=%s",
+    tostring(bx), tostring(by), tostring(block), tostring(impassable),
+    type(impassable), type(self.collisionPatch), tostring(i))
+  if impassable ~= nil then
     self.collisionPatch[i] = impassable and 1 or 0
+    -- Recorded a second time under the raw coordinates.  The index above is
+    -- `by * def.width + bx + 1`, which is only the same cell as the reader's
+    -- if both agree about def.width and about whether they are counting
+    -- blocks or cells -- and the Regi chambers proved a seal can be written
+    -- and read back as open with every line of both functions looking
+    -- correct.  A coordinate key cannot drift.
+    self.shutCells = self.shutCells or {}
+    self.shutCells[bx .. ":" .. by] = impassable or nil
   end
 end
 
@@ -782,19 +839,42 @@ function Map:clearBlock(bx, by)
   local i = by * self.def.width + bx + 1
   self.blockPatch[i] = nil
   if self.collisionPatch then self.collisionPatch[i] = nil end
+  if self.shutCells then self.shutCells[bx .. ":" .. by] = nil end
   self.blocksDirty = true
+end
+
+-- SHUT (or re-open) ONE CELL, and nothing else.
+--
+-- setBlock does two jobs -- change the picture, change the collision -- and
+-- the Regi chambers showed the second one going missing while the first
+-- worked, in the same call, two lines apart, with every line of the source
+-- correct on disk.  Rather than keep guessing at that, the collision half is
+-- reachable on its own: one argument, one meaning, no branch to fall down.
+function Map:setCellShut(cx, cy, shut)
+  if cx < 0 or cy < 0 or cx >= self.def.width or cy >= self.def.height then
+    return false
+  end
+  self.shutCells = self.shutCells or {}
+  self.collisionPatch = self.collisionPatch or {}
+  self.shutCells[cx .. ":" .. cy] = shut and true or nil
+  self.collisionPatch[cy * self.def.width + cx + 1] = shut and 1 or 0
+  return true
 end
 
 -- What the collision bits say about a cell, with any runtime change applied.
 function Map:cellCollision(cx, cy)
   local cells = self.def.collisionCells
-  if not cells then return 0 end
   if cx < 0 or cy < 0 or cx >= self.def.width or cy >= self.def.height then
-    return 1
+    return cells and 1 or 0
   end
+  -- The runtime patch is asked FIRST and on every map, including one that
+  -- brought no collision array of its own -- see setBlock above.  A script
+  -- saying a cell is shut is an answer in its own right, not a correction to
+  -- an answer the map already had.
   local i = cy * self.def.width + cx + 1
   local patched = self.collisionPatch[i]
   if patched ~= nil then return patched end
+  if not cells then return 0 end
   return cells[i] or 0
 end
 
@@ -805,6 +885,7 @@ function Map:clearBlockPatches()
   end
   self.blockPatch = {}
   self.collisionPatch = {}
+  self.shutCells = {}
   self.blocksDirty = nil
   return true
 end

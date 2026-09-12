@@ -17,6 +17,7 @@ local FieldDefaults = require("src.world.FieldDefaults")
 local Gen3Elevation = require("src.world.Gen3Elevation")
 local Badges = require("src.inventory.Badges")
 local Logger = require("src.core.Logger")
+local Probe = require("src.core.Probe")
 local Map = require("src.world.Map")
 local MapLoader = require("src.world.MapLoader")
 local NPC = require("src.world.NPC")
@@ -2462,6 +2463,14 @@ function OverworldState:update(dt)
       if da.onDone then da.onDone() end
     end
   end
+  if self.waterAnim then
+    local wa = self.waterAnim
+    wa.frames = wa.frames - 1
+    if wa.frames <= 0 then
+      self.waterAnim = nil
+      if wa.onDone then wa.onDone() end
+    end
+  end
   if self.cutAnim then
     local ca = self.cutAnim
     ca.frames = ca.frames - 1
@@ -2513,6 +2522,9 @@ function OverworldState:update(dt)
     self.flyAnim.frames = self.flyAnim.frames - 1
     if self.flyAnim.frames <= 0 then
       self.flyAnim = nil
+      -- the carrier's picture is cached per flight, because the next one may
+      -- be a different Pokemon
+      self.flyMonImg = nil
       self.player.inputLocked = false
       local d = self.flyDest
       self.flyDest = nil
@@ -2644,6 +2656,7 @@ function OverworldState:update(dt)
     self:gen3UnfreezeObjects()
   end
   self:poseBerryTrees()
+  self:updateRipples()
   for _, npc in ipairs(self.npcs) do
     npc:update(self.map, self.entities)
   end
@@ -3513,6 +3526,23 @@ end
 -- flickering for 8 steps of ~4 frames.
 function OverworldState:startDustAnim(cx, cy, onDone)
   self.dustAnim = { x = cx, y = cy, frames = 32, onDone = onDone }
+end
+
+-- WATERING A BERRY, which had no picture at all.
+--
+-- Asked for directly: "also need the berry watering animation when watering
+-- berries".  Special 97 is the cartridge's DoWateringBerryTreeAnim and this
+-- port had it as a named no-op -- the flag for the stage went down, the yield
+-- went up, and nothing whatever happened on screen, so watering a tree and
+-- deciding not to looked identical.
+--
+-- RECONSTRUCTED, and it says so: the cartridge's is a task with its own
+-- sprites, and the import rips none of them.  What is drawn is the figure --
+-- water falling onto the soil from the side the player is standing on, and a
+-- sparkle when it lands -- over the cell the tree is on, which is the one
+-- thing about it that is not a guess.
+function OverworldState:startWaterAnim(cx, cy, onDone)
+  self.waterAnim = { x = cx, y = cy, frames = 40, total = 40, onDone = onDone }
 end
 
 -- TWO VOCABULARIES FOR THE SAME FOUR DIRECTIONS, and they never met.
@@ -4411,7 +4441,56 @@ function OverworldState:hasFlyBird()
   return (id and Game.data.sprites and Game.data.sprites[id]) and true or false
 end
 
-function OverworldState:flyTo(mapId)
+-- Close whatever menus are stacked over the map, down to the map itself.
+--
+-- Factored out of flyTo, which is where the note above it was written and
+-- where the bug it describes was found.  The field-move sweep needs the same
+-- thing for the same reason: it is an OVERWORLD animation, so it has to be
+-- pushed onto the overworld rather than onto the region map the destination
+-- was just picked from -- otherwise it sweeps across the map screen.
+-- THE FIELD-MOVE SWEEP, FOR A MOVE USED ON THE MAP.
+--
+-- Reported from play: "the transition also isnt appearing when i use surf by
+-- hiting a on water, i think it still needs to be implemented in the field
+-- when i hit a on trees, water, waterfalls, rocks, boulders etc for all hms".
+--
+-- Right, and the reason is where the first wiring went.  A field move reaches
+-- the world two ways: the PARTY MENU picks one (wrapped in Gen3PartyMenu),
+-- and a SCRIPT runs one through `dofieldeffect` (wrapped in
+-- Gen3Commands.g3_field_effect).  Pressing A on water, a waterfall or a tree
+-- is neither: this engine answers those presses ITSELF, natively, and never
+-- goes near a cartridge script -- so the announcement had nowhere to hang.
+--
+-- Every such press now goes through here.  Not Gen 3 -- or no Pokemon to show
+-- -- and it is exactly the call it wraps, so Gen 1 and Gen 2 are untouched.
+function OverworldState:gen3ShowFieldMove(mon, run)
+  if not (GameVersion.isGen3() and mon and run) then
+    if run then return run() end
+    return
+  end
+  -- the question that was just answered comes down first: the sweep is an
+  -- overworld animation and must not play over the YES/NO box
+  self:closeToMap()
+  local ok, shown = pcall(function()
+    return require("src.world.Gen3FieldMove").show(Game, mon, run)
+  end)
+  if not (ok and shown == true) then run() end
+end
+
+function OverworldState:closeToMap()
+  local stack = Game.stack
+  local guard = 0
+  while stack and stack.top and stack:top() and stack:top() ~= self
+        and guard < 8 do
+    stack:pop()
+    guard = guard + 1
+  end
+end
+
+-- `mon` is who is carrying you, and it is passed in so the departure can
+-- SHOW them -- see fxBird.  Absent (a scripted fly, an older caller) and the
+-- flight is the plain rise it always was.
+function OverworldState:flyTo(mapId, mon)
   -- `field` is absent on a Gen 3 cache imported before the heal-location
   -- stage existed, and indexing it was a crash rather than a refusal
   local flyWarps = (Game.data.field or {}).flyWarps or {}
@@ -4431,16 +4510,10 @@ function OverworldState:flyTo(mapId)
   -- MENU opened.  The region map and the party menu close themselves; the
   -- start menu underneath them does not, so the bird sat waiting for the
   -- player to back out of a menu by hand.
-  local stack = Game.stack
-  local guard = 0
-  while stack and stack.top and stack:top() and stack:top() ~= self
-        and guard < 8 do
-    stack:pop()
-    guard = guard + 1
-  end
+  self:closeToMap()
   -- the bird carries the player off westward before the warp
   -- (engine/overworld/player_animations.asm LoadBirdSpriteGraphics)
-  self.flyAnim = { frames = 48 }
+  self.flyAnim = { frames = 48, mon = mon }
   -- ...and with no bird, the player is the animation: the same rise the
   -- Teleport departure uses, over the same forty-eight frames, so FLY leaves
   -- the map visibly instead of the screen sitting still until it fades.
@@ -6650,7 +6723,7 @@ function OverworldState:tryFieldMoveOW(fx, fy)
         or Strings("The water looks\ndeep. Want to\nSURF?"),
       nil, { choice = function(yes)
         if yes then
-          self:trySurf(fx, fy)
+          self:gen3ShowFieldMove(mon, function() self:trySurf(fx, fy) end)
         end
       end }))
     return true
@@ -6662,7 +6735,11 @@ function OverworldState:tryFieldMoveOW(fx, fy)
   })[move]
   Game.stack:push(TextBox.new(Game, Game.data.text[ask] or Strings("Use %s?", move),
     nil, { choice = function(yes)
-      if yes then self:gen2UseFieldMove(move, mon, fx, fy) end
+      if yes then
+        self:gen3ShowFieldMove(mon, function()
+          self:gen2UseFieldMove(move, mon, fx, fy)
+        end)
+      end
     end }))
   return true
 end
@@ -6789,7 +6866,11 @@ function OverworldState:tryCutOW(fx, fy)
   Game.stack:push(TextBox.new(Game,
     t._AskCutText or Strings("This tree can be\nCUT!\fWant to use CUT?"),
     nil, { choice = function(yes)
-      if yes then self:gen2Cut(fx, fy) end
+      if yes then
+        self:gen3ShowFieldMove(self:partyKnows("CUT"), function()
+          self:gen2Cut(fx, fy)
+        end)
+      end
     end }))
   return true
 end
@@ -7068,7 +7149,11 @@ function OverworldState:tryDiveOW()
   Game.stack:push(TextBox.new(Game,
     ask or Strings("The sea is deep here.\nWould you like to use\nDIVE?"),
     nil, { choice = function(yes)
-      if yes then self:gen3UseDive() end
+      if yes then
+        self:gen3ShowFieldMove(self:partyKnows("DIVE"), function()
+          self:gen3UseDive()
+        end)
+      end
     end }))
   return true
 end
@@ -8679,8 +8764,27 @@ function OverworldState:onStepComplete()
   -- walkable and the sea is passable ground, so the cell you are surfing ON
   -- answers yes and the surf would end the moment it began.  What ends it is
   -- landing somewhere that is NOT water.
+  -- ...AND NOT UNDER A BRIDGE, which is a third answer and not a kind of
+  -- ground at all.
+  --
+  -- Reported from play: "if i surf under a bridge it makes surf end and me
+  -- walk on water".  Water here is elevation 1, and the cells a bridge spans
+  -- carry elevation 15 -- the marker that means "keep the elevation you
+  -- arrived with" (Map:isUnderBridgeCell).  So the cell answered "not water",
+  -- the test above read that as dry land, and the surfer stood up in the
+  -- middle of a pond.
+  --
+  -- The cartridge never asks this question in this shape: it stops a surf
+  -- only on an ELEVATION MISMATCH the surfer could step out of
+  -- (CheckForObjectEventCollision turns COLLISION_ELEVATION_MISMATCH into
+  -- COLLISION_STOP_SURFING), and a wildcard elevation mismatches nothing.
+  -- Collision.verdict already implements that rule for the step itself; this
+  -- is the post-step sweep, and excluding the wildcard is what keeps the two
+  -- agreeing.
   if p.surfing and self.map:isWalkableCell(p.cellX, p.cellY)
-     and not self.map:isWaterCell(p.cellX, p.cellY) then
+     and not self.map:isWaterCell(p.cellX, p.cellY)
+     and not (self.map.isUnderBridgeCell
+              and self.map:isUnderBridgeCell(p.cellX, p.cellY)) then
     p.surfing = false
     self:syncSurfingPikachu()
     require("src.core.Music").setSurfing(Game.data, false)
@@ -10816,6 +10920,320 @@ end
 -- Asked every frame rather than at spawn, for the same reason plotEmpty is:
 -- a tree is planted, grows, is watered and is picked without the map ever
 -- reloading.  It costs a table lookup per tree, and a map has at most three.
+-- WHICH GROUND SHOWS YOU BACK.
+--
+-- Reported from play: "puddles and the bright blue water arent showing their
+-- reflections like they do in the emerald rom".  The set is not named here --
+-- it is derived at import from MetatileBehavior_IsReflective (see
+-- extractReflections) and comes out as POND_WATER, PUDDLE and Sootopolis'
+-- lake.  Notably NOT ocean or deep water: those are surfable, and what
+-- reflects there is the surfer, standing on the blob, on one of these.
+--
+-- A cache that predates the stage answers nothing and nothing reflects, which
+-- is exactly what this port did before and is a missing picture rather than a
+-- wrong one.
+function OverworldState:reflectiveCell(cx, cy)
+  local set = Game and Game.data and Game.data.constants
+              and Game.data.constants.gen3Reflection
+  local list = set and set.behaviours
+  if not (list and self.map and self.map.cellBehaviour) then return false end
+  local here = self.map:cellBehaviour(cx, cy)
+  if not here then return false end
+  for _, b in ipairs(list) do
+    if b == here then return true end
+  end
+  return false
+end
+
+-- ...AND THE WATER IS RARELY THE TILE YOU ARE STANDING ON.
+--
+-- Reported from play, after the first cut of this shipped: "its working only
+-- when surfing, its supposed to work for puddles and when standing on ground
+-- near water as well".  That is right, and the first cut asked the wrong
+-- question -- it asked what is under the FEET, which is only ever true while
+-- you are surfing or standing in a puddle.
+--
+-- What a top-down reflection actually needs is the water the character is
+-- standing ABOVE: the cells BELOW them, which is where their image would
+-- fall.  So the search starts one row down and runs as many rows as the
+-- sprite is tall in cells, spreading out to its width -- the first reflective
+-- cell wins, and the object's own cell is asked first so a puddle underfoot
+-- still reflects.
+--
+-- WHAT IS DERIVED HERE AND WHAT IS NOT, said plainly because the two are
+-- different: the SET of reflective behaviours is read off the cartridge
+-- (extractReflections finds MetatileBehavior_IsReflective by shape and picks
+-- it out of two candidates by which one a ground effect calls).  The SHAPE of
+-- this search -- one row down, the sprite's own size -- is not: the
+-- cartridge's ground-effect flag reads a single behaviour byte off the object
+-- struct, and the wider scan that Emerald plainly does could not be located
+-- in the code.  It is sized off the sprite rather than a number chosen here,
+-- and it is short on purpose: a character in the middle of a field does not
+-- reflect, one at the water's edge does.
+--
+-- ...AND IT RETURNS THE CELLS, NOT A YES.
+--
+-- The first cut answered "does this character reflect" with a boolean, and
+-- that turned out to be half an answer: reported twice from play, "the npc
+-- relections need to be masked by the ground and bridges, walkable areas
+-- etc".  A reflection is visible exactly where there is water to hold it and
+-- NOWHERE ELSE -- so the same cells that decide whether it reflects at all
+-- are the clip region it has to be drawn through, and finding them twice
+-- (once to decide, once to mask) is how the two drift apart.
+--
+-- The list is the cells the reflection can actually be PAINTED in, which is
+-- the column the sprite stands in and the rows its mirrored image falls
+-- across -- its own cell (a puddle underfoot) down through as many rows as
+-- it is tall.  Water to one SIDE is not in that list on purpose: the image
+-- falls straight down in this projection, so a character beside a pond
+-- reflects into whatever is directly below them, not into the pond.
+--
+-- ...AND THE SHAPE IS THE CARTRIDGE'S, not a guess any more.
+--
+-- ObjectEventCheckForReflectiveSurface (ROM:0096A8C) is exactly this loop,
+-- and it settles three things the first two cuts got wrong:
+--
+--   * it NEVER asks about the object's own cell.  It starts one row DOWN
+--     (`mov r0,#1 / mov r10,r0`, then `y + r10 + i`) and runs `height` rows
+--     from there, so a character reflects into the water they are standing
+--     ABOVE and a puddle underfoot does not reflect them at all.
+--   * the extent is the sprite's own size in cells, `(w + 8) / 16` and
+--     `(h + 8) / 16` -- so an ordinary 16x32 character is ONE column and TWO
+--     rows, and the sideways sweep the previous cut did is not in the
+--     cartridge for that size at all.
+--   * it asks the same of previousCoords (`ldsh [r5,#0x14]`/`[r5,#0x16]`)
+--     as of currentCoords, which is what keeps a reflection alive across the
+--     sixteen frames of a step instead of blinking at every cell boundary.
+--     Here the pair is (cellX, targetX): mid-step this port leaves cellX on
+--     the cell being left and targetX on the one being entered.
+--
+-- The returned cells are also the clip region (see the draw pass), so a
+-- character beside water rather than above it reflects into nothing, which
+-- is the same picture the cartridge draws for the same reason.
+function OverworldState:reflectionSearch(e)
+  if not (e and e.cellX and e.cellY) then return nil end
+  local sprite = e.sprite
+  local tall = math.max(1, math.floor((((sprite and sprite.tileH) or 16) + 8) / 16))
+  local wide = math.max(1, math.floor((((sprite and sprite.tileW) or 16) + 8) / 16))
+  local cells, seen = nil, {}
+  local function ask(cx, cy)
+    local k = cx * 4096 + cy
+    if seen[k] then return end
+    seen[k] = true
+    if self:reflectiveCell(cx, cy) then
+      cells = cells or {}
+      cells[#cells + 1] = { cx, cy }
+    end
+  end
+  local px = e.targetX or e.cellX
+  local py = e.targetY or e.cellY
+  for row = 1, tall do
+    ask(e.cellX, e.cellY + row)
+    ask(px, py + row)
+    for col = 1, wide - 1 do
+      ask(e.cellX + col, e.cellY + row)
+      ask(e.cellX - col, e.cellY + row)
+      ask(px + col, py + row)
+      ask(px - col, py + row)
+    end
+  end
+  return cells
+end
+
+-- ---- RINGS WHERE A FOOT MEETS WATER ---------------------------------------
+--
+-- Reported from play: "no puddle ripples when walking in it".  The cartridge
+-- spawns a field effect every time a step FINISHES on one of three
+-- behaviours, and the set is read off MetatileBehavior_HasRipples at import
+-- rather than named here (see RomExtractorGen3.RIPPLE) -- it comes out as
+-- pond water, a puddle and the shallow water you can walk through.
+--
+-- The ring is an object at priority 3 with subpriority 151, against a
+-- reflection's 152: both sit under everything of the map except its bottom
+-- layer, and the rings sit over the reflection.  So this draws in the same
+-- pass, after the reflections, and is covered by the same layers.
+--
+-- WHY "when the step finishes" is a cell change and not a movement callback:
+-- the cartridge asks its ground-effect question once a step has completed and
+-- the object's currentCoords have moved on.  Watching the cell an entity is
+-- ON is the same event, arrives for the player and every NPC alike, and needs
+-- no hook in either mover.
+function OverworldState:rippleCell(cx, cy)
+  local set = Game and Game.data and Game.data.constants
+              and Game.data.constants.gen3Ripple
+  local list = set and set.behaviours
+  if not (list and self.map and self.map.cellBehaviour) then return false end
+  local here = self.map:cellBehaviour(cx, cy)
+  if not here then return false end
+  for _, b in ipairs(list) do
+    if b == here then return true end
+  end
+  return false
+end
+
+-- How long the cartridge's own animation runs, in ticks.
+function OverworldState:rippleLife()
+  local set = Game and Game.data and Game.data.constants
+              and Game.data.constants.gen3Ripple
+  if not (set and set.order) then return 0 end
+  if self._rippleLife then return self._rippleLife end
+  local total = 0
+  for _, step in ipairs(set.order) do total = total + (step.hold or 8) end
+  self._rippleLife = total
+  return total
+end
+
+-- Which picture the cartridge is showing this many ticks in.
+function OverworldState:rippleFrame(clock)
+  local set = Game and Game.data and Game.data.constants
+              and Game.data.constants.gen3Ripple
+  local order = set and set.order
+  if not order then return 0 end
+  local t = clock
+  for _, step in ipairs(order) do
+    local hold = step.hold or 8
+    if t < hold then return step.frame or 0 end
+    t = t - hold
+  end
+  return (order[#order] or {}).frame or 0
+end
+
+function OverworldState:updateRipples()
+  local life = self:rippleLife()
+  if life <= 0 then return end
+  local live = self.ripples
+  if live then
+    for i = #live, 1, -1 do
+      live[i].clock = live[i].clock + 1
+      if live[i].clock >= life then table.remove(live, i) end
+    end
+  end
+  for _, e in ipairs(self.entities or {}) do
+    if e.cellX and e.cellY then
+      local key = e.cellX * 4096 + e.cellY
+      if e.rippleCellKey ~= key then
+        -- the first frame on a map is an arrival, not a step; the cartridge
+        -- asks the same question on spawn, so it rings there too
+        e.rippleCellKey = key
+        if not e.hidden and self:rippleCell(e.cellX, e.cellY) then
+          self:spawnRipple(e)
+        end
+      end
+    end
+  end
+end
+
+-- Where the rings land.  StartRippleFieldEffect (ROM:0097E14) puts the effect
+-- at the main sprite's own x and at `y + height / 2 - 2` -- and those are
+-- CENTRE coordinates on that hardware, so against this port's top-left ones a
+-- 16x16 ring under a 16x32 character comes out eight pixels higher: the rings
+-- close around the feet rather than under them.
+function OverworldState:spawnRipple(e)
+  local sprite = e.sprite
+  if not (sprite and e.px and e.py) then return end
+  local w, h = sprite.tileW or 16, sprite.tileH or 16
+  self.ripples = self.ripples or {}
+  self.ripples[#self.ripples + 1] = {
+    px = e.px - (sprite.offsetX or 0) + math.floor((w - 16) / 2),
+    py = e.py - 4 - (sprite.offsetY or 0) + h - 10,
+    clock = 0,
+  }
+end
+
+function OverworldState:rippleSprite()
+  local set = Game and Game.data and Game.data.constants
+              and Game.data.constants.gen3Ripple
+  local key = set and set.key
+  local def = key and Game.data.sprites and Game.data.sprites[key]
+  if not def then return nil end
+  if self._rippleSprite == nil then
+    local SR = require("src.render.SpriteRenderer")
+    local ok, made = pcall(SR.new, def)
+    self._rippleSprite = ok and made or false
+  end
+  return self._rippleSprite or nil
+end
+
+function OverworldState:drawRipples(camX, camY)
+  local live = self.ripples
+  if not (live and #live > 0) then return end
+  local sprite = self:rippleSprite()
+  if not sprite then return end
+  for _, r in ipairs(live) do
+    -- drawFixedFrame subtracts the sheet's own four-pixel lift, so the y here
+    -- is handed over with it added back
+    sprite:drawFixedFrame(r.px, r.py + 4, camX, camY, self:rippleFrame(r.clock))
+  end
+end
+
+-- The cells the rings cover, so the map's own layers can be put back over
+-- them exactly as they are over a reflection.
+function OverworldState:rippleCells(out, seen)
+  for _, r in ipairs(self.ripples or {}) do
+    local cx0, cy0 = math.floor(r.px / 16), math.floor(r.py / 16)
+    for cy = cy0, math.floor((r.py + 15) / 16) do
+      for cx = cx0, math.floor((r.px + 15) / 16) do
+        local k = cx * 4096 + cy
+        if not seen[k] then
+          seen[k] = true
+          out[#out + 1] = { cx, cy }
+        end
+      end
+    end
+  end
+end
+
+-- DOES THIS WATER HOLD THE IMAGE STILL, OR SWAY IT?
+--
+-- Two answers, and only one of them is the cartridge's.
+--
+--   ICE is the cartridge's.  SetUpReflection takes a `stillReflection`
+--   argument and the ice ground effect passes TRUE, which is what turns the
+--   affine matrix off and leaves a plain mirrored sprite -- ice does not
+--   move, so its reflection does not either.  MetatileBehavior_IsIce
+--   (ROM:0088ED4) tests exactly one behaviour, $20.
+--
+--   A PUDDLE is not.  The cartridge treats it like any other reflective
+--   ground, but a puddle is a few inches of water in a footprint and reading
+--   a swaying reflection into one looks wrong, so it is held still here by
+--   choice: "make the puddles perfect reflections no distortion but the
+--   lakes/ponds be the distorted ones".
+--
+-- Both are asked by NAME rather than by number -- gen3Reflection.named comes
+-- off the cartridge's own behaviour table -- so a ROM that numbers them
+-- differently still lands right.
+OverworldState.STILL_REFLECTIONS = { ICE = true, PUDDLE = true }
+
+function OverworldState:stillReflection(cells)
+  local set = Game and Game.data and Game.data.constants
+              and Game.data.constants.gen3Reflection
+  local named = set and set.named
+  if not (named and cells and cells[1] and self.map
+          and self.map.cellBehaviour) then
+    return false
+  end
+  -- the first cell is the one nearest the feet, which is the water the image
+  -- mostly lies in
+  local here = self.map:cellBehaviour(cells[1][1], cells[1][2])
+  return here ~= nil and OverworldState.STILL_REFLECTIONS[named[here]] == true
+end
+
+-- The cells a reflection's image actually lands in, which is where the map's
+-- covering layers have to be put back over it.  Same geometry as
+-- SpriteRenderer:reflect: the mirrored image starts `height - 2` below the
+-- sprite's own top edge (GetReflectionVerticalOffset, ROM:0153F98) and is as
+-- tall as the sprite.
+function OverworldState:reflectionRect(e)
+  local sprite = e.sprite
+  if not (sprite and e.px and e.py) then return nil end
+  local w = sprite.tileW or 16
+  local h = sprite.tileH or 16
+  local x = e.px - (sprite.offsetX or 0)
+  local top = e.py - 4 - (sprite.offsetY or 0) + h - 2
+  return math.floor(x / 16), math.floor(top / 16),
+         math.floor((x + w - 1) / 16), math.floor((top + h - 1) / 16)
+end
+
 OverworldState.BERRY_TREE_HOLD = 16  -- ticks a stage's frame is held
 
 function OverworldState:poseBerryTrees()
@@ -11039,6 +11457,34 @@ function OverworldState:drawWorld()
     end
   end
 
+  -- the watering can's water: droplets arcing down onto the soil, and a
+  -- sparkle on the last few frames as it soaks in
+  local function fxWater()
+    if not self.waterAnim then return end
+    local wa = self.waterAnim
+    local total = wa.total or 40
+    local age = total - wa.frames
+    local dx = wa.x * 16 - cam.x
+    local dy = wa.y * 16 - cam.y
+    love.graphics.setColor(0.55, 0.80, 0.98, 0.95)
+    for i = 0, 5 do
+      -- each droplet falls on its own phase, so they read as a stream
+      local t = ((age * 3 + i * 7) % 24) / 24
+      local px = dx + 2 + i * 2 + t * 10
+      local py = dy - 6 + t * 20
+      if py < dy + 16 then
+        love.graphics.rectangle("fill", px, py, 2, 3)
+      end
+    end
+    -- the soak: a brief bright ring once the water has been falling a while
+    if age > total * 0.55 then
+      local k = (age - total * 0.55) / (total * 0.45)
+      love.graphics.setColor(1, 1, 1, 0.8 * (1 - k))
+      love.graphics.rectangle("fill", dx + 2, dy + 12, 12, 2)
+    end
+    love.graphics.setColor(1, 1, 1, 1)
+  end
+
   -- the cut tree splitting apart (AnimCut): top half slides right,
   -- bottom half slides left, 1px per frame, flickering as they go
   local function fxCutTree()
@@ -11180,7 +11626,68 @@ function OverworldState:drawWorld()
       love.graphics.setColor(1, 1, 1, 1)
       self.birdSprite:draw(bx, by, cam.x, cam.y, "left",
                            math.floor(t / 4) % 2, false)
+      return
     end
+
+    -- NOBODY NAMES THE CARTRIDGE'S BIRD, SO THE POKEMON FLIES YOU ITSELF.
+    --
+    -- Reported from play, twice: "ensure the animation of the flying type
+    -- pokemon swooping up my player plays after the fly hm transition" and
+    -- then "Theres still no fly swoop".  The machinery above has been here the
+    -- whole time and has never had a sprite to draw: it wants
+    -- playerSprites.fly, and no Gen 3 cache carries one.
+    --
+    -- IT WAS LOOKED FOR PROPERLY THIS TIME, and it is not where a sheet like
+    -- that would be.  Emerald's fly bird is not an object-event graphics row
+    -- -- the three 64x64 rows in that table are Rayquaza twice and the cable
+    -- car, and every 32x32 row is a person or a legendary -- and it is not
+    -- hanging off any field-effect script either: not one of the sixty-seven
+    -- scripts loads tiles, and no native any of them calls reaches a sprite
+    -- template with frames that size.  It is loaded by C, from a sheet only
+    -- the fly task names, and nothing the import can currently follow gets to
+    -- it.
+    --
+    -- So the departure is drawn with something this port certainly does have
+    -- and the cartridge's own bird is not: the FRONT SPRITE OF THE POKEMON
+    -- THAT IS ACTUALLY CARRYING YOU -- the same one the field-move sweep just
+    -- showed.  It stoops in from the upper left, meets the player, and lifts
+    -- away with them.  Reconstructed, and said so; the moment the bird IS
+    -- found, playerSprites.fly makes the branch above win again and this is
+    -- never reached.
+    local mon = self.flyAnim.mon
+    if not mon then return end
+    if self.flyMonImg == nil then
+      local okPath, path = pcall(function()
+        return require("src.pokemon.Sprites").path(
+          Game.data, mon.species, "front", { mon = mon })
+      end)
+      local img
+      if okPath and type(path) == "string" then
+        local okImg, loaded = pcall(love.graphics.newImage, path)
+        img = okImg and loaded or nil
+      end
+      self.flyMonImg = img or false
+    end
+    if not self.flyMonImg then return end
+    local total = 48
+    local t = math.max(0, math.min(total, total - self.flyAnim.frames))
+    -- the stoop: in over sixteen frames, away over the rest, and the two
+    -- meet on the player rather than anywhere else
+    local reach = 16
+    local dx, dy
+    if t <= reach then
+      local k = 1 - t / reach
+      dx, dy = -96 * k, -72 * k
+    else
+      local k = (t - reach) / (total - reach)
+      dx, dy = -120 * k * k, -96 * k * k
+    end
+    local iw, ih = self.flyMonImg:getDimensions()
+    local px = math.floor(self.player.px - cam.x + 8 - iw / 2 + dx)
+    local py = math.floor(self.player.py - cam.y + 8 - ih / 2 + dy)
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.draw(self.flyMonImg, px, py)
+    require("src.render.PaletteFX").markTrueColor(px, py, iw, ih)
   end
 
   -- fishing pose: the rod tile over the faced water (gfx/fishing.asm)
@@ -11271,6 +11778,7 @@ function OverworldState:drawWorld()
         return PaletteFX.pal(Game.data, self:paletteNameFor(map or self.map))
       end,
       fx = { heal = fxHeal, dust = fxDust, cutTree = fxCutTree,
+             water = fxWater,
              emote = fxEmote, bird = fxBird, rod = fxRod },
     }
     -- Draw every active field FX into the finished scene.  `project(wx, wy)`
@@ -11308,6 +11816,9 @@ function OverworldState:drawWorld()
       end
       if self.cutAnim then
         at(fxCutTree, self.cutAnim.x * 16 + 8, self.cutAnim.y * 16 + 16)
+      end
+      if self.waterAnim then
+        at(fxWater, self.waterAnim.x * 16 + 8, self.waterAnim.y * 16 + 16)
       end
       if self.healAnim then
         at(fxHeal, self.healAnim.px + 8, self.healAnim.py + 16)
@@ -11416,6 +11927,169 @@ function OverworldState:drawWorld()
     -- (priority 2) is hidden by it and one on a bridge deck (priority 1) is
     -- not -- see extractSpritePriority.  Here that is the same thing as
     -- drawing the deck's walkers AFTER the layer instead of before it.
+    -- ---- REFLECTIONS FIRST, AND ON THE OTHER SIDE OF THE TOP LAYER ------
+    --
+    -- Reported from play: "the twins are reflected onto the deck instead of
+    -- below it" and "they need to be obfuscated by the ground".  Both are the
+    -- same thing.  A character standing on a bridge is deliberately drawn
+    -- AFTER the top layer (see `onTop` below) so the deck does not bury them
+    -- -- and their reflection has to be on the OPPOSITE side of that layer,
+    -- because what the deck hides is exactly what makes it read as a
+    -- reflection in the water under the bridge rather than a second person
+    -- standing on the planks.
+    --
+    -- So it is its own pass, before every sprite and before drawAbove, for
+    -- every entity including the ones that will be drawn on top.  Whether a
+    -- given entity reflects at all is still decided here, at draw time, since
+    -- a character walks between water's edge and dry ground without the map
+    -- reloading.
+    --
+    -- ...AND CLIPPED TO THE WATER ITSELF.  Reported twice: "they need to be
+    -- masked by the ground and bridges, walkable areas etc".  Drawing the
+    -- reflection before the top layer is not enough, because most of what has
+    -- to cover it -- a bridge deck, a bank, a path -- is in the BOTTOM layer
+    -- and was already on screen before the sprite pass began.
+    --
+    -- So the pass is CLIPPED to the reflective cells.  That is the rule the
+    -- cartridge's own priorities produce and it needs no per-tile redrawing:
+    -- a reflection is visible exactly where there is water to hold it, and
+    -- nowhere else.
+    --
+    -- WITH THE SCISSOR, NOT THE STENCIL, and that is the whole of why the
+    -- first cut of this masking shipped and did nothing.  It called
+    -- love.graphics.stencil inside a pcall -- but this engine draws the world
+    -- into a canvas built by src/render/PixelCanvas.lua, which asks for no
+    -- depth/stencil buffer, so the stencil call THREW on every frame, the
+    -- pcall swallowed it, and the fallback drew the reflections unmasked.
+    -- The symptom was a masking pass that appeared to be installed and had
+    -- never once run.
+    --
+    -- The scissor has no such requirement and costs nothing here, because
+    -- what has to be clipped is a set of axis-aligned 16x16 cells -- a
+    -- rectangle each, which is precisely what a scissor is.  It is set per
+    -- cell and intersected with whatever clip the caller already had, so a
+    -- reflection is painted once per water cell it falls across.
+    local reflectors = {}
+    for _, e in ipairs(self.entities) do
+      if not e.hidden and e.drawReflection then
+        e.reflects = self:reflectionSearch(e)
+        if e.reflects then
+          e.reflectStill = self:stillReflection(e.reflects)
+          reflectors[#reflectors + 1] = e
+        end
+      end
+    end
+    self.reflectProbe = (self.reflectProbe or 0) + 1
+    if self.reflectProbe % 90 == 1 then
+      local p, set = self.player, Game and Game.data and Game.data.constants
+      set = set and set.gen3Reflection
+      local names = {}
+      for _, b in ipairs((set and set.behaviours) or {}) do
+        names[#names + 1] = string.format("$%02X", b)
+      end
+      local under = {}
+      if p and self.map and self.map.cellBehaviour then
+        for row = 0, 2 do
+          local b = self.map:cellBehaviour(p.cellX, p.cellY + row)
+          under[#under + 1] = b and string.format("$%02X", b) or "nil"
+        end
+      end
+      Probe.say("reflect",
+                "map=%s ents=%d reflectors=%d | player cell=%s,%s hidden=%s "
+                .. "draw=%s reflects=%s sprite=%s | set={%s} under=%s",
+                tostring(self.map and self.map.id), #self.entities,
+                #reflectors, p and tostring(p.cellX) or "-",
+                p and tostring(p.cellY) or "-", tostring(p and p.hidden),
+                tostring(p and p.drawReflection ~= nil),
+                tostring(p and p.reflects ~= nil),
+                tostring(p and p.sprite ~= nil), table.concat(names, ","),
+                table.concat(under, "/"))
+    end
+    local ringing = self.ripples and #self.ripples > 0
+    if #reflectors > 0 or ringing then
+      -- ...AND THE MASK IS THE MAP'S OWN LAYERS, not a shape chosen here.
+      --
+      -- The cut before this clipped every reflection to the cells whose
+      -- BEHAVIOUR was reflective, which sounded right and is not what the
+      -- cartridge does -- and it is why the player appeared to have no
+      -- reflection at all for several rounds.  Standing on a bank with water
+      -- two rows down, the search says "yes, reflect"; the image is drawn
+      -- across both rows; and clipping it to the one reflective row left a
+      -- twelve-pixel sliver of hair floating two tiles away, which reads as
+      -- nothing at all.  The NPCs standing at the very edge kept their whole
+      -- reflection, so it looked like a player-only bug and was not one.
+      --
+      -- What the hardware actually does: the reflection is an object at
+      -- priority 3, so it draws above the BOTTOM background layer and below
+      -- every other one.  Whether it is visible in a given cell is therefore
+      -- decided by that cell's metatile LAYER TYPE and nothing else, which
+      -- produces all three behaviours from one rule -- hidden over ordinary
+      -- ground, visible on water, hidden under a pier
+      -- (Gen3Tiles:reflectionCoverLayer).
+      --
+      -- So: draw whole, then put the covering half of every cell the image
+      -- reached back over it.
+      -- White, opaque, unshaded, every frame.  The ground pass before this
+      -- is free to leave a tint or a shader set, and a reflection drawn
+      -- through one is a reflection nobody can see.
+      love.graphics.setColor(1, 1, 1, 1)
+      self.reflectProbe2 = (self.reflectProbe2 or 0) + 1
+      local tell = self.reflectProbe2 % 90 == 1
+      if tell then
+        local r, g, b, a = love.graphics.getColor()
+        Probe.say("reflstate", "color=%.2f,%.2f,%.2f,%.2f shader=%s "
+                  .. "blend=%s canvas=%s",
+                  r, g, b, a, tostring(love.graphics.getShader() ~= nil),
+                  tostring(love.graphics.getBlendMode()),
+                  tostring(love.graphics.getCanvas() ~= nil))
+      end
+      for _, e in ipairs(reflectors) do
+        e:drawReflection(cam.x, cam.y)
+        if tell and e == self.player then
+          local cx0, cy0, cx1, cy1 = self:reflectionRect(e)
+          local parts = {}
+          if cx0 then
+            for cy = cy0, cy1 do
+              for cx = cx0, cx1 do
+                local id, layer, quad =
+                  self.map.renderer:reflectionCoverInfo(cx, cy)
+                parts[#parts + 1] = ("%d,%d=[%s l%s q%s]")
+                  :format(cx, cy, tostring(id), tostring(layer), tostring(quad))
+              end
+            end
+          end
+          Probe.say("playercover", "rect=%s..%s,%s..%s | %s",
+                    tostring(cx0), tostring(cx1), tostring(cy0), tostring(cy1),
+                    table.concat(parts, " "))
+        end
+      end
+      love.graphics.setColor(1, 1, 1, 1)
+      self:drawRipples(cam.x, bgY)
+      love.graphics.setColor(1, 1, 1, 1)
+      local renderer = self.map.renderer
+      if renderer.drawReflectionCover then
+        local seen, cells = {}, {}
+        for _, e in ipairs(reflectors) do
+          local cx0, cy0, cx1, cy1 = self:reflectionRect(e)
+          if cx0 then
+            for cy = cy0, cy1 do
+              for cx = cx0, cx1 do
+                local k = cx * 4096 + cy
+                if not seen[k] then
+                  seen[k] = true
+                  cells[#cells + 1] = { cx, cy }
+                end
+              end
+            end
+          end
+        end
+        self:rippleCells(cells, seen)
+        for _, cell in ipairs(cells) do
+          renderer:drawReflectionCover(cell[1], cell[2], cam.x, bgY)
+        end
+      end
+    end
+
     local onTop = nil
     for _, e in ipairs(self.entities) do
       if self:gen3AboveTopLayer(e) then
@@ -11442,6 +12116,7 @@ function OverworldState:drawWorld()
     fxHeal()
     fxDust()
     fxCutTree()
+    fxWater()
     fxEmote()
     fxBird()
     fxRod()
@@ -11457,6 +12132,7 @@ function OverworldState:drawWorld()
     fxHeal()
     fxDust()
     fxCutTree()
+    fxWater()
 
     Game.renderer:beginUprightPass()
 

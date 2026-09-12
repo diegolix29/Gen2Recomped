@@ -1926,8 +1926,37 @@ end
 
 function Commands.g3_set_metatile(ctx, x, y, tile, impassable)
   local ow = ctx.overworld
-  if not (ow and ow.map and ow.map.setBlock) then return end
-  ow.map:setBlock(tonumber(x), tonumber(y), tonumber(tile), tonumber(impassable) ~= 0)
+  if not (ow and ow.map and ow.map.setBlock) then
+    require("src.core.Probe").say("setmetatile", "DROPPED %s,%s -> %s (no map)",
+                                  tostring(x), tostring(y), tostring(tile))
+    return
+  end
+  -- `tonumber(nil) ~= 0` is TRUE, so a missing argument used to read as
+  -- "shut".  The cartridge always sends one; treat an absent one as open.
+  local shut = (tonumber(impassable) or 0) ~= 0
+  ow.map:setBlock(tonumber(x), tonumber(y), tonumber(tile), shut)
+  -- ...and set the collision through its own door as well, because the one
+  -- inside setBlock demonstrably did not land for the Regi chambers.
+  if ow.map.setCellShut then
+    ow.map:setCellShut(tonumber(x), tonumber(y), shut)
+  end
+  -- Everything the answer could possibly turn on, because five of the six
+  -- cells a Regi seal writes are walls in the shipped map anyway and only
+  -- the DOORWAY tells us whether the patch is being honoured.
+  local m = ow.map
+  local cx, cy = tonumber(x), tonumber(y)
+  local i = m.def and (cy * m.def.width + cx + 1) or nil
+  require("src.core.Probe").say(
+    "setmetatile",
+    "%s %s,%s tile=%s shut=%s | dims=%sx%s blockCells=%s widthCells=%s "
+    .. "idx=%s patch=%s patchedImpassable=%s cellTile=%s walkable=%s",
+    tostring(m.id), tostring(cx), tostring(cy), tostring(tile), tostring(shut),
+    tostring(m.def and m.def.width), tostring(m.def and m.def.height),
+    tostring(m.blockCells), tostring(m.widthCells), tostring(i),
+    tostring(i and m.collisionPatch and m.collisionPatch[i]),
+    tostring(m.patchedImpassable and m:patchedImpassable(cx, cy)),
+    tostring(m.cellTile and m:cellTile(cx, cy)),
+    tostring(m.isWalkableCell and m:isWalkableCell(cx, cy)))
 end
 
 -- ---------------------------------------------------------------------------
@@ -2142,12 +2171,148 @@ end
 -- BLOCKING, because the row after it is `waitfieldeffect`: the animation
 -- places one ball per party member, plays the jingle, and only then does the
 -- script go on.
+-- WHICH EFFECT IDS ARE A FIELD MOVE BEING USED.
+--
+-- The import already reads one per move -- constants.gen3FieldMoveText names
+-- SURF's, WATERFALL's and DIVE's beside their words and their scripts -- so
+-- the set is the dataset's rather than a list typed here, and a cartridge
+-- whose numbers differ is served by its own.
+-- WHICH EFFECT IDS ARE A FIELD MOVE, ALL OF THEM.
+--
+-- Reported from play: "for rock smash cut dive waterfall etc, make sure the
+-- pokemon HM transitions are working for when you press a, currently surf
+-- works but rock smash didnt".  Right: this used to read the ids off
+-- gen3FieldMoveText, which the import writes for exactly THREE moves -- SURF,
+-- WATERFALL and DIVE, the ones whose sentences it went looking for.  Every
+-- other field move ran with no announcement because its number was not on a
+-- list that was never meant to be the list.
+--
+-- WHAT THE LIST REALLY IS, and why it can be written down here.
+--
+-- gFieldEffectScriptPointers is indexed by a plain enum, and this port has
+-- already derived SEVEN of its entries by seven separate routes that knew
+-- nothing about each other:
+--
+--   0  the "!" bubble        \
+--   33 the "?" bubble         >  found by reading three natives (see EMOTE)
+--   46 the heart             /
+--   5  the ripple               found by its own predicate and template
+--   25 the Pokemon Centre heal  the one effect whose script also heals
+--   9  SURF     \
+--   43 WATERFALL >  found beside their sentences (fieldMoveMessages)
+--   44 DIVE     /
+--
+-- All seven land exactly where that enum puts them.  Seven independent
+-- agreements is not a coincidence -- it is the identification -- so the rest
+-- of the enum is this cartridge's too, and the field-move rows can be named
+-- from it.  ANCHORS below is that check, re-run against the loaded cache
+-- every time: if a dataset disagrees about even one of the four it still
+-- carries, nothing is claimed and the behaviour is what it was.
+Gen3Commands.FIELD_MOVE_EFFECTS = {
+  [1] = "CUT", [2] = "CUT",
+  [9] = "SURF",
+  [11] = "SECRET_POWER", [26] = "SECRET_POWER", [27] = "SECRET_POWER",
+  [31] = "FLY",
+  [37] = "ROCK_SMASH",
+  [38] = "DIG",
+  [40] = "STRENGTH",
+  [43] = "WATERFALL",
+  [44] = "DIVE",
+  [51] = "SWEET_SCENT",
+  [60] = "TELEPORT",
+}
+
+function Gen3Commands.fieldEffectsAgree(data)
+  local constants = data and data.constants or {}
+  local said = constants.gen3FieldMoveText
+  local roles = constants.gen3FieldEffects
+  local checked = 0
+  local function agrees(got, want)
+    if got == nil then return true end
+    checked = checked + 1
+    return tonumber(got) == want
+  end
+  if not agrees(roles and roles.pokecenterHeal, 25) then return false end
+  for name, want in pairs({ SURF = 9, WATERFALL = 43, DIVE = 44 }) do
+    local row = type(said) == "table" and said[name] or nil
+    if not agrees(row and row.effect, want) then return false end
+  end
+  -- one lone agreement is not an identification; the cache has to have said
+  -- enough for the check to mean something
+  return checked >= 2
+end
+
+--
+-- ...AND IT HANGS OFF THE MODULE RATHER THAN STANDING AS A FILE LOCAL.  This
+-- file is two locals under Lua's limit of two hundred at chunk scope, and a
+-- pair of ordinary `local function`s here is what finds that out.
+function Gen3Commands.fieldMoveEffects(data)
+  if Gen3Commands.fieldEffectsAgree(data) then
+    return Gen3Commands.FIELD_MOVE_EFFECTS
+  end
+  -- the old answer, which is the honest one for a dataset whose numbers do
+  -- not line up: only the moves whose own records name an effect
+  local table_ = data and data.constants and data.constants.gen3FieldMoveText
+  local out = {}
+  for name, row in pairs(type(table_) == "table" and table_ or {}) do
+    local id = type(row) == "table" and tonumber(row.effect) or nil
+    if id then out[id] = name end
+  end
+  return out
+end
+
+-- WHOSE PICTURE THE SWEEP CARRIES.  Every field-move script sets argument 0
+-- to the party slot before it calls the effect (`setfieldeffectargument 0,
+-- VAR_RESULT`), which is the one thing the effect needs from the script.  A
+-- script that set no argument -- or set one that is not a party slot -- hands
+-- back nil and the move simply happens, which is what used to happen always.
+function Gen3Commands.fieldMoveMon(ctx, move)
+  local args = ctx.g3FieldEffectArgs
+  local slot = args and tonumber(args[0])
+  local party = ctx.save and ctx.save.party
+  local mon = (slot and party) and party[slot + 1] or nil
+  if mon then return mon end
+  -- ...AND WHEN THE SCRIPT SET NO SLOT, WHOEVER KNOWS THE MOVE.
+  --
+  -- A move chosen from the party menu carries its slot; one triggered by
+  -- walking into a rock or a tree does not -- the cartridge reads the party
+  -- itself there.  Without this every script-driven field move fell out of
+  -- the announcement on the first line of it.
+  local ow = ctx.overworld
+  if not (move and ow and ow.partyKnows) then return nil end
+  local ok, found = pcall(ow.partyKnows, ow, move)
+  return (ok and found) or nil
+end
+
 function Commands.g3_field_effect(ctx, id)
   id = tonumber(id)
   ctx.g3FieldEffect = id
   local data = ctx.game and ctx.game.data
   local roles = data and data.constants and data.constants.gen3FieldEffects
   local ow, runner = ctx.overworld, ctx.runner
+  -- THE SWEEP, BEFORE THE MOVE.
+  --
+  -- Asked for directly: "we also need the transition for using HMs like the
+  -- rom that slides across the screen shows our pokemon and then performs the
+  -- HM move".  It goes here because here is where the cartridge puts it: the
+  -- field move's own effect is what starts the presentation, and the row after
+  -- this one in every such script is `waitfieldeffect`, so the script is
+  -- meant to be held until it has passed.
+  local moveName = id and Gen3Commands.fieldMoveEffects(data)[id] or nil
+  if moveName and runner then
+    local mon = Gen3Commands.fieldMoveMon(ctx,
+                                          moveName ~= true and moveName or nil)
+    local shown = false
+    if mon then
+      local okShow, result = pcall(function()
+        return require("src.world.Gen3FieldMove").show(ctx.game, mon, function()
+          runner:resume()
+        end)
+      end)
+      shown = okShow and result == true
+    end
+    if shown then runner:yield() end
+  end
   if not (roles and id and id == roles.pokecenterHeal) then return end
   if not (ow and ow.startHealAnim and runner) then return end
   local resumed = false
@@ -5050,8 +5215,33 @@ Gen3Commands.SPECIALS[51] = function(ctx)
 end
 
 -- 97: DoWateringBerryTreeAnim -- the watering can's own animation, which is
--- drawn by a task and is not in the script.  Named so it is a decision.
-Gen3Commands.SPECIALS[97] = function() end
+-- drawn by a task and is not in the script.
+--
+-- It was a named no-op, and the comment that used to sit here said so: "named
+-- so it is a decision".  Reported from play: "also need the berry watering
+-- animation when watering berries".  So it is a decision the other way now --
+-- the overworld draws water onto the tree's own cell and the script waits for
+-- it, which is what the cartridge's task does with the row after this one.
+--
+-- The CELL is the one the player is facing, which is the tree they just chose
+-- to water: the special carries no coordinates because on the cartridge the
+-- task reads the interacted object, and the facing cell is the same answer.
+Gen3Commands.SPECIALS[97] = function(ctx)
+  local ow, runner = ctx.overworld, ctx.runner
+  if not (ow and ow.startWaterAnim and ow.player and runner) then return end
+  local fx, fy = ow.player:facingCell()
+  if not fx then return end
+  pcall(function()
+    require("src.core.Sound").play(ctx.game.data, "Press_AB")
+  end)
+  local resumed = false
+  ow:startWaterAnim(fx, fy, function()
+    if resumed then return end
+    resumed = true
+    runner:resume()
+  end)
+  runner:yield()
+end
 
 -- 350 and 351: IncrementDailyPlantedBerries / IncrementDailyPickedBerries.
 -- Counters the TV shows read; kept so the numbers exist when something asks.
@@ -6042,6 +6232,13 @@ local function once(ctx, key, fmt, ...)
   if ctx.g3Told[key] then return end
   ctx.g3Told[key] = true
   Logger.debug(fmt, ...)
+  -- ...and somewhere that survives the session.  Logger.debug is off by
+  -- default and buffered when it is not, so "this script stopped because the
+  -- port has no such command" -- the single most useful sentence when a gift
+  -- is not given or a door does not open -- has never once been readable
+  -- after the fact.  Required inline: this file is already at Lua's limit for
+  -- locals at file scope.
+  require("src.core.Probe").say("script", fmt, ...)
 end
 
 -- ANSWERED --------------------------------------------------------------
@@ -6160,6 +6357,8 @@ end
 
 function Commands.g3_std(ctx, index)
   Logger.debug("gen3: std %s has no lowering", tostring(index))
+  once(ctx, "std:" .. tostring(index),
+       "gen3: std script %s has no lowering in this port", tostring(index))
 end
 
 -- OBTAINING AN ITEM IS THE STD SCRIPT'S JOB, and it was not being done.

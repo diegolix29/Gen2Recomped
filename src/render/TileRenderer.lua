@@ -10,6 +10,7 @@
 
 local Assets = require("src.render.Assets")
 local Logger = require("src.core.Logger")
+local Probe = require("src.core.Probe")
 local PaletteFX = require("src.render.PaletteFX")
 
 local TileRenderer = {}
@@ -818,6 +819,24 @@ end
 local gen3Sheets = {}
 local gen3Used, gen3Clock = {}, 0
 
+-- ONE LINE THAT SAYS WHETHER THE WATER IS ACTUALLY MOVING.
+--
+-- Reported three times as "the water is static", with everything checkable
+-- from outside the running game coming back RIGHT: the cache carries the
+-- animations, the pair bakes eight frames, and every one of Route 104's 1550
+-- ocean cells sits on a metatile that moves.  The one link that cannot be
+-- checked offline is the CLOCK -- whether TileRenderer.tick is running while
+-- the field is on screen -- so the renderer measures it itself.
+--
+-- Two seconds after the first animated pair is drawn it says, once: how far
+-- the tick count moved, what frame that maps to, and how many times the
+-- window refilled because the frame changed.  `ticks=0 refills=0` is a clock
+-- that never started; `ticks=120 refills=7` is a clock that works and a
+-- problem further down.  Either way the next report arrives with the
+-- measurement attached instead of needing another round of questions.
+local gen3Clock0, gen3Refills, gen3Timed = nil, 0, false
+local GEN3_CLOCK_PROBE = 120           -- ticks to watch before saying anything
+
 -- one line per pair, however many frames it draws: a warning that repeats
 -- every time a map loads is a warning nobody reads to the end of
 local gen3Said = {}
@@ -825,6 +844,10 @@ local function warnOnce(fmt, key)
   if gen3Said[key] then return end
   gen3Said[key] = true
   Logger.warn(fmt, key)
+  -- ...and to the probe file as well, because Logger's buffer means a warning
+  -- raised once while walking into a map is still sitting in RAM when the
+  -- game is closed, and the next boot truncates it away.
+  Probe.say("tileanim", fmt, key)
 end
 
 -- HOW MANY PAIRS ARE KEPT.
@@ -874,6 +897,57 @@ function TileRenderer.touchGen3(key)
     gen3Clock = gen3Clock + 1
     gen3Used[key] = gen3Clock
   end
+end
+
+-- THE HALF OF A METATILE THAT HAS TO COVER A REFLECTION.
+--
+-- See Gen3Tiles:reflectionCoverLayer for the rule and where it was read off
+-- the cartridge.  Only the COVERED case needs a sheet of its own: a NORMAL
+-- metatile's covering half is its layer 1, which is already exactly what the
+-- bottom sheet holds at that slot, and a SPLIT metatile is covered by the top
+-- layer that drawAbove draws anyway.
+--
+-- It stays small because most COVERED metatiles have NOTHING in layer 2 --
+-- open water, a field of grass -- and an empty slot is dropped rather than
+-- reserved.  A dry run counts first so the sheet is allocated at the size it
+-- actually needs.
+local function buildReflectionCover(record, tiles, statics, frames)
+  if not (love.image and love.image.newImageData) then return end
+  frames = math.max(1, frames or 1)
+  local ids = {}
+  for id = 0, statics - 1 do
+    if tiles:reflectionCoverLayer(id) == 2 then
+      local any = false
+      tiles:drawLayer(id, 2, 0, 0, function() any = true end)
+      if any then ids[#ids + 1] = id end
+    end
+  end
+  if #ids == 0 then return end
+
+  local cols = require("src.render.Gen3Tiles").SHEET_COLS
+  local w = cols * 16
+  local h = math.ceil(#ids * frames / cols) * 16
+  local surface = love.image.newImageData(w, h)
+  local plot = function(x, y, r, g, b)
+    if x >= 0 and y >= 0 and x < w and y < h then
+      surface:setPixel(x, y, r / 255, g / 255, b / 255, 1)
+    end
+  end
+  local quads = {}
+  for f = 0, frames - 1 do
+    tiles:setAnimFrame(f)
+    for i, id in ipairs(ids) do
+      local slot = (i - 1) * frames + f
+      local ox, oy = (slot % cols) * 16, math.floor(slot / cols) * 16
+      tiles:drawLayer(id, 2, ox, oy, plot)
+      quads[id] = quads[id] or {}
+      quads[id][f + 1] = love.graphics.newQuad(ox, oy, 16, 16, w, h)
+    end
+  end
+  tiles:setAnimFrame(0)
+  record.cover = love.graphics.newImage(surface)
+  record.coverQuads = quads
+  record.coverFrames = frames
 end
 
 function TileRenderer.gen3SheetsFor(tilesetDef, data, layout)
@@ -960,8 +1034,16 @@ function TileRenderer.gen3SheetsFor(tilesetDef, data, layout)
                    tiles = tiles, metatiles = statics, slots = slots,
                    animSlots = (frames > 1) and slotOf or nil,
                    animFrames = frames, animStep = tiles:animStep() }
+  buildReflectionCover(record, tiles, statics, frames)
   gen3Sheets[key] = record
   gen3Evict()
+  Probe.say("tilebake", "%s: movers=%d frames=%d step=%s primaryAnims=%s "
+            .. "secondaryAnims=%s",
+            tostring(key), #movers, frames, tostring(record.animStep),
+            tostring(type(primary) == "table" and primary.animations ~= nil),
+            tostring(tilesetDef.secondaryKey ~= nil
+                     and type(store[tilesetDef.secondaryKey]) == "table"
+                     and store[tilesetDef.secondaryKey].animations ~= nil))
   Logger.info("gen3 tiles: baked %s -- %d metatiles into two %dx%d sheets%s",
               tostring(key), record.metatiles, w, h,
               frames > 1
@@ -1467,8 +1549,29 @@ function TileRenderer:ensureWindow(camX, camY, vw, vh)
   -- re-added with the quad they already had.
   local frame = self:gen3AnimFrame()
   if frame ~= self.gen3Frame then
+    if self.gen3Frame ~= nil then gen3Refills = gen3Refills + 1 end
     self.gen3Frame = frame
     win = nil
+  end
+  -- ...and SAY so, whatever the answer is.  This reported only when `frame`
+  -- was non-nil, which made the one outcome that matters -- no animation
+  -- record at all, so nothing can ever move -- indistinguishable from the
+  -- probe not running.  It also went through Logger, which buffers 64 lines
+  -- and truncates on boot, so it never reached the disk even when it did fire
+  -- (src/core/Probe.lua says the rest).
+  if not gen3Timed then
+    gen3Clock0 = gen3Clock0 or animFrame
+    if animFrame - gen3Clock0 >= GEN3_CLOCK_PROBE then
+      gen3Timed = true
+      local g = self.gen3
+      Probe.say("tileclock",
+                "ticks=%d frame=%s | gen3=%s animSlots=%s animFrames=%s "
+                .. "animStep=%s refills=%d quads=%s",
+                animFrame - gen3Clock0, tostring(frame), tostring(g ~= nil),
+                tostring(g and g.animSlots ~= nil),
+                tostring(g and g.animFrames), tostring(g and g.animStep),
+                gen3Refills, tostring(self.gen3Quads ~= nil))
+    end
   end
   if win and tx0 >= win.tx0 and ty0 >= win.ty0
      and tx1 <= win.tx1 and ty1 <= win.ty1 then
@@ -1589,6 +1692,64 @@ function TileRenderer:drawAnimated(camX, camY)
       end
     end
   end
+end
+
+-- Put a water metatile's covering half back over a reflection.
+--
+-- Called by the field pass for each cell a reflection was painted into, right
+-- after the reflections and before the sprites: it restores the bridge plank,
+-- the shoreline lip, the jetty -- whatever the cartridge's object priority 3
+-- puts a reflection behind (Gen3Tiles:reflectionCoverLayer).  Cells whose
+-- metatile has nothing above the bottom layer are not in the sheet and cost a
+-- table lookup.
+-- What the cover WOULD do here, without doing it: for the probe.
+function TileRenderer:reflectionCoverInfo(cx, cy)
+  local record = self.gen3
+  if not (record and record.tiles and self.map and self.map.blockAt) then
+    return nil
+  end
+  local id = self.map:blockAt(cx, cy)
+  if not id then return nil end
+  return id, record.tiles:reflectionCoverLayer(id),
+         record.coverQuads and record.coverQuads[id] ~= nil,
+         record.coverFrames
+end
+
+function TileRenderer:drawReflectionCover(cx, cy, camX, camY)
+  local record = self.gen3
+  if not (record and record.tiles and self.map and self.map.blockAt) then return end
+  local id = self.map:blockAt(cx, cy)
+  if not id then return end
+  local x, y = cx * 16 - math.floor(camX), cy * 16 - math.floor(camY)
+  local layer = record.tiles:reflectionCoverLayer(id)
+  if layer == 2 then
+    -- COVERED: only the metatile's second half is above the reflection --
+    -- the pier's planks over the water they are built on, and, on open
+    -- water, the wave crests.
+    --
+    -- ...AND THOSE CRESTS MOVE.  Baked at frame zero this was a still
+    -- photograph laid over a reflection, which is why the water's own
+    -- distortion never reached it: on the cartridge the crests are the
+    -- SAME animated tiles as the water below, so they travel across the
+    -- mirrored character and break it up as they pass.  That IS the
+    -- distortion -- it is the map's animation seen through the reflection,
+    -- not a wobble applied to the sprite.
+    local set = record.coverQuads and record.coverQuads[id]
+    local frame = set and self:gen3AnimFrame()
+    local quad = set and (set[(frame or 0) + 1] or set[1])
+    if quad then love.graphics.draw(record.cover, quad, x, y) end
+  elseif layer == 1 then
+    -- NORMAL: nothing of this metatile is on the bottom layer, so ALL of it
+    -- is above the reflection.  Its layer 1 is what the bottom sheet holds at
+    -- this slot (layer 2 went to the top sheet), so the static draw is the
+    -- overdraw -- and gen3QuadFor keeps it on the right animation frame, so a
+    -- reflection that reaches a moving tile does not freeze it.
+    local quad = self:gen3QuadFor(id)
+    if quad and record.bottom then
+      love.graphics.draw(record.bottom, quad, x, y)
+    end
+  end
+  -- SPLIT: drawAbove already covers it.
 end
 
 -- the drawn extent of one batch in world-canvas pixels; `blocks` is the

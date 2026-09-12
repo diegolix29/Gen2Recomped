@@ -355,7 +355,16 @@ function Gen3Pokenav:update()
   if self.notice then
     if input:wasPressed("a") or input:wasPressed("b") then
       Sound.play(self.game.data, "Press_AB")
-      self.notice = nil
+      -- A TURNS THE PAGE.  Reported from play: "when calling someone with the
+      -- pokenav it only shows their first line of text doesnt go through
+      -- their whole dialogue".
+      --
+      -- The paging is written and it was unreachable.  noticeAdvance lives in
+      -- back(), which is the B handler -- and this branch sits ABOVE the line
+      -- that calls back(), and returns.  So every press, A or B, landed here
+      -- and cleared the whole notice, and a match call that the cartridge
+      -- spreads over three or four boxes showed its first box and stopped.
+      if not self:noticeAdvance() then self.notice = nil end
     end
     return
   end
@@ -708,11 +717,75 @@ function Gen3Pokenav:drawRibbons()
   love.graphics.setColor(1, 1, 1, 1)
 end
 
+-- WHO YOU ARE LOOKING AT, which this screen never showed.
+--
+-- Reported from play: "the menu seems like it doesnt match the roms menu for
+-- selecting someone to call".  The cartridge's MATCH CALL page is a CARD: the
+-- contact's picture on the left with their trainer class written under it,
+-- and the list of names on the right.  This drew the list and left the whole
+-- upper-left quarter of the screen empty, so the only thing on it that said
+-- who the highlighted row was, was the row itself.
+--
+-- The pictures are already in the cache -- they are the same trainer pics a
+-- battle puts up, resolved through BattleState.trainerPicPath -- so this is a
+-- lookup rather than new art, and a contact whose row names no trainer (a
+-- header with a tagline and nothing behind it) simply gets no portrait rather
+-- than a placeholder.
+function Gen3Pokenav:callTrainer(entry)
+  if not entry then return nil end
+  local data = self.game.data
+  local row = entry.rematch
+              and MatchCall.rematchRows(data)[entry.rematch + 1]
+  local index = row and row.trainers and row.trainers[1]
+  return index and MatchCall.trainer(data, index) or nil
+end
+
+Gen3Pokenav.PORTRAIT = { tx = 0, ty = 0, tw = 11, th = 5 }
+
+function Gen3Pokenav:drawCallPortrait(entry)
+  local P = Gen3Pokenav.PORTRAIT
+  love.graphics.setColor(1, 1, 1, 1)
+  Font.drawBox(P.tx, P.ty, P.tw, P.th)
+  local trainer = self:callTrainer(entry)
+  local path = trainer and require("src.battle.BattleState")
+                 .trainerPicPath(self.game.data, trainer)
+  local img
+  if type(path) == "string" then
+    local ok, loaded = pcall(Assets.image, path)
+    img = ok and loaded or nil
+  end
+  local boxX, boxY = (P.tx + 1) * 8, (P.ty + 1) * 8
+  local boxW, boxH = (P.tw - 2) * 8, (P.th - 2) * 8
+  if img then
+    local iw, ih = img:getDimensions()
+    -- never enlarged: a pic that already fits is drawn at its own size, which
+    -- is how the cartridge shows it
+    local scale = math.min(1, boxW / iw, boxH / ih)
+    local x = math.floor(boxX + (boxW - iw * scale) / 2)
+    local y = math.floor(boxY + (boxH - ih * scale) / 2)
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.draw(img, x, y, 0, scale, scale)
+    require("src.render.PaletteFX").markTrueColor(
+      x, y, math.ceil(iw * scale), math.ceil(ih * scale))
+  end
+  -- the class, which is the line the cartridge writes under the picture
+  local class = (entry and entry.className)
+                or (trainer and (trainer.class or trainer.trainerClass))
+  if type(class) == "string" and class ~= "" then
+    love.graphics.setColor(0, 0, 0, 1)
+    local w = Font.width(class)
+    Font.draw(class, math.floor(boxX + (boxW - w) / 2),
+              boxY + boxH - Font.glyphHeight())
+  end
+  love.graphics.setColor(1, 1, 1, 1)
+end
+
 function Gen3Pokenav:drawMatchCall()
   love.graphics.setColor(1, 1, 1, 1)
   Font.drawBox(11, 0, 19, 17)
   Font.drawBox(0, 5, 11, 2)
   Font.drawBox(0, 9, 11, 8)
+  self:drawCallPortrait(self.calls and self.calls[self.callIndex])
   love.graphics.setColor(0, 0, 0, 1)
 
   for i = 0, Gen3Pokenav.LIST_ROWS - 1 do

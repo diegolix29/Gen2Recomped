@@ -621,6 +621,65 @@ function Renderer:blitCanvas(canvas, sx, sy, zoneList, zoneSx, zoneSy,
   love.graphics.setShader()
 end
 
+-- THE BARS, FILLED WITH THE EDGE THEY FRAME.
+--
+-- Asked for directly: "for all gen3 menus take the outside border 1px and
+-- extend it to fill the screen for all menus to ensure they can fill the
+-- screen -- pixels on the left should extend left, pixels on the right should
+-- extend right, on the top should extend up, and on the bottom should extend
+-- down."
+--
+-- Emerald's screen is 240x160 and a window is almost never that shape, so a
+-- full-screen menu sits in a black frame.  This paints that frame with the
+-- canvas's own outermost row and column, stretched outward -- eight strips
+-- and corners drawn from one-pixel quads -- so a menu whose border runs to
+-- the edge of the surface appears to run to the edge of the WINDOW.
+--
+-- WHY IT IS DRAWN FIRST AND ONLY HERE.  It goes down before the canvas, so
+-- every pixel the surface actually has is still drawn crisply on top and only
+-- the void is covered.  And it is a plain blit with no palette shader, so it
+-- is offered only where the surface is already true colour -- a Gen 3 UI --
+-- and never while the WORLD is on screen, where the bars frame a map whose
+-- edge is a map edge rather than a window border.
+function Renderer:bleedEdges(canvas, sx, sy, bx, by, ww, wh)
+  if not (canvas and love.graphics.newQuad) then return end
+  local uiw, uih = canvas:getDimensions()
+  if not (uiw and uih and uiw > 1 and uih > 1) then return end
+  local right = bx + uiw * sx
+  local bottom = by + uih * sy
+  local leftW, rightW = bx, ww - right
+  local topH, bottomH = by, wh - bottom
+  local g = love.graphics
+  g.setColor(1, 1, 1, 1)
+  -- the eight quads are the same every frame for a given surface, so they are
+  -- built once per size rather than allocated sixty times a second
+  local cache = self._bleedQuads
+  if not (cache and cache.w == uiw and cache.h == uih) then
+    cache = { w = uiw, h = uih }
+    self._bleedQuads = cache
+  end
+  local function strip(qx, qy, qw, qh, dx, dy, dw, dh)
+    if dw <= 0 or dh <= 0 then return end
+    local key = qx .. ":" .. qy .. ":" .. qw .. ":" .. qh
+    local quad = cache[key]
+    if not quad then
+      quad = g.newQuad(qx, qy, qw, qh, uiw, uih)
+      cache[key] = quad
+    end
+    g.draw(canvas, quad, dx, dy, 0, dw / qw, dh / qh)
+  end
+  -- the four sides
+  strip(0, 0, 1, uih, 0, by, leftW, uih * sy)
+  strip(uiw - 1, 0, 1, uih, right, by, rightW, uih * sy)
+  strip(0, 0, uiw, 1, bx, 0, uiw * sx, topH)
+  strip(0, uih - 1, uiw, 1, bx, bottom, uiw * sx, bottomH)
+  -- ...and the four corners, each from the single pixel that meets there
+  strip(0, 0, 1, 1, 0, 0, leftW, topH)
+  strip(uiw - 1, 0, 1, 1, right, 0, rightW, topH)
+  strip(0, uih - 1, 1, 1, 0, bottom, leftW, bottomH)
+  strip(uiw - 1, uih - 1, 1, 1, right, bottom, rightW, bottomH)
+end
+
 -- Take a rect out of a list of rects, splitting each overlapped one into up
 -- to four pieces.  Used to vacate an anchored UI region from the letterbox
 -- blit, so the element is drawn at its anchor and not also in place.
@@ -1021,6 +1080,50 @@ function Renderer:endFrame(zones, worldZones)
   -- always been.
   local anchors = self.uiAnchors
   if not anchors or #anchors == 0 then
+    -- WHICH FRAMES GET IT: the ones a screen has asked to fill.
+    --
+    -- Reported from play with a screenshot of the BAG: the menu sat in the
+    -- middle with the map showing down both sides.  The first cut of this
+    -- asked `not worldActive`, which reads as "nothing is drawing a map" --
+    -- and the map IS still being drawn behind an opaque menu, so every
+    -- full-screen Gen 3 menu was excluded by the one test meant to protect
+    -- the overworld from being smeared.
+    --
+    -- Game.fillScaleInStack is the question actually being asked here, and it
+    -- already exists: it is true exactly when some state on the stack has said
+    -- it wants the whole window rather than a fixed box in the middle of one.
+    -- The bag, the party menu, the mart, the Pokenav, the title and the battle
+    -- all say so; the overworld does not, so the map is still never bled.
+    local okGame, GameMod = pcall(require, "src.core.Game")
+    local fills = okGame and GameMod
+                  and GameMod.fillScaleInStack(GameMod.stack) or false
+    -- ...AND NOT A BATTLE.
+    --
+    -- Reported from play, with a screenshot: "the battle menu seems to be
+    -- stretching the left and right sides like the other menus -- we don't
+    -- want that for the battle menu ... we want it to be full screen but not
+    -- have the stretching of the pixels for being in battle".
+    --
+    -- A menu is a PANEL: its outermost column is the window frame's own edge,
+    -- so pulling that column outward reads as the frame continuing to the
+    -- screen edge, which is the whole point.  A battle is a COMPOSED SCENE --
+    -- a field, two healthboxes, a text strip laid out across the full width --
+    -- and its outermost column is whatever happened to land there: half a
+    -- healthbox, the end of the text box, a slice of the ground.  Smearing
+    -- that outward does not extend a frame, it duplicates furniture.
+    --
+    -- holdsUIAnchors is already exactly the question "does this state compose
+    -- its own screen", asked of the whole stack -- which matters here for the
+    -- same reason it matters there: the text box and YES/NO a battle puts up
+    -- are states of their own sitting on top of it, and they must not turn
+    -- the bleed back on for the frames they are up.
+    if fills and okGame and GameMod
+       and GameMod.uiAnchorsHeldInStack(GameMod.stack) then
+      fills = false
+    end
+    if fills and require("src.core.GameVersion").isGen3() then
+      self:bleedEdges(self.canvas, Ux, Uy, uox, uoy, ww, wh)
+    end
     blit(self.canvas, Ux, Uy, zones, Ux, Uy, uox, uoy, uox, uoy, uvpw, uvph)
   else
     local rest = { { uox, uoy, uvpw, uvph } }

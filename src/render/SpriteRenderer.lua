@@ -149,7 +149,14 @@ function SpriteRenderer.new(spriteDef, seed)
     self.offsetX = math.floor((self.tileW - 16) / 2)
     self.offsetY = self.tileH - 16
     self.frames = {}
-    for f = 0, math.max(0, (spriteDef.frames or 1) - 1) do
+    -- ...INCLUDING THE ONES ONLY A POSE PLAYS.  A sheet whose frames are a
+    -- SEQUENCE rather than a set of facings keeps `frames = 1`, so that every
+    -- ordinary drawing path treats it as the still it is -- but the picture
+    -- carries the whole animation and drawPose below reaches into it, so the
+    -- quads have to exist.  See the import's note on poseFrames.
+    local quadCount = math.max(tonumber(spriteDef.frames) or 1,
+                               tonumber(spriteDef.poseFrames) or 0)
+    for f = 0, math.max(0, quadCount - 1) do
       self.frames[f] = love.graphics.newQuad(0, f * self.tileH, self.tileW,
                                              self.tileH, iw, ih)
     end
@@ -354,6 +361,81 @@ function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip, to
     blitFrame(image, quad, x, y, false, redraw)
     return
   end
+  local frame, flip = self:poseFrame(facing, walkPhase, stepFlip)
+  local quad = self.frames[frame] or self.frames[0]
+  if topHalf then
+    self.halfFrames = self.halfFrames or {}
+    if not self.halfFrames[frame] then
+      local iw, ih = self.image:getDimensions()
+      self.halfFrames[frame] = love.graphics.newQuad(
+        0, frame * (self.tileH or 16), self.tileW or 16,
+        math.floor((self.tileH or 16) / 2), iw, ih)
+    end
+    quad = self.halfFrames[frame]
+  end
+  blitFrame(image, quad, x, y, flip, redraw, self.tileW)
+end
+
+-- ONE FRAME OF A SEQUENCE, by its number.
+--
+-- For a sheet whose frames are an animation and not a set of facings -- the
+-- field-move pose, where the character reaches for a Poke Ball and raises it.
+-- `index` is clamped, so a caller may simply count upward and the pose settles
+-- on its last frame and stays there, which is what holding a ball up is.
+function SpriteRenderer:poseCount()
+  return math.max(1, tonumber(self.def.poseFrames) or 1)
+end
+
+function SpriteRenderer:drawPose(index, px, py, camX, camY)
+  local n = self:poseCount()
+  index = math.max(0, math.min(n - 1, math.floor(tonumber(index) or 0)))
+  local x = math.floor(px - camX) - (self.offsetX or 0)
+  local y = math.floor(py - camY) - 4 - (self.offsetY or 0)
+  if self.def.trueColor then
+    PaletteFX.markTrueColor(x, y, self.tileW or 16, self.tileH or 16)
+  end
+  local quad = self.frames[index] or self.frames[0]
+  if not quad then return end
+  blitFrame(self.image, quad, x, y, false, false, self.tileW)
+end
+
+-- ---------------------------------------------------------------------------
+-- THE SAME CHARACTER, UPSIDE DOWN, IN THE WATER
+--
+-- Reported from play: "puddles and the bright blue water arent showing their
+-- reflections like they do in the emerald rom".
+--
+-- A Gen 3 reflection is not an effect over the tiles -- it is a SECOND SPRITE
+-- of the same object, vertically flipped, drawn below it on the water line,
+-- and the cartridge decides three things about it:
+--
+--   * WHETHER, from the metatile behaviour under the object's feet.  That set
+--     is derived at import (see extractReflections) and is the caller's
+--     business, not this file's.
+--   * WHICH PICTURE.  The same frame the character is showing this instant --
+--     which is why this copies the quad the last :draw chose rather than
+--     working one out again.  A reflection that picked its own frame would be
+--     a different person in the water.
+--   * WHICH COLOURS.  The graphics row's reflectionPaletteTag when it names
+--     one -- 25 of Emerald's 246 rows do, all of them the player's own
+--     avatars -- and the sprite's OWN palette when it does not, which is what
+--     LoadObjectRegularReflectionPalette does for everybody else.  The import
+--     composes the recoloured sheet for the 25 and names it on the def; this
+--     just uses it when it is there.
+--
+-- DRAWN FROM THE FEET DOWN.  The water line is the bottom of the cell the
+-- character stands in, so the reflection occupies the cell below it, and the
+-- two touch. `sy = -1` with the origin at the far edge is what mirrors it.
+-- WHICH FRAME THE CHARACTER IS SHOWING, AND WHICH WAY ROUND.
+--
+-- Pulled out of :draw so the REFLECTION can ask the same question without
+-- having to be drawn after the sprite.  It used to copy the quad the last
+-- :draw chose, which forced the reflection to come second -- and that put it
+-- on the wrong side of the map's top layer for anyone standing on a bridge,
+-- where the whole point is that the deck covers the reflection and not the
+-- character.  Both callers get the same answer from the same code, so they
+-- cannot show different frames.
+function SpriteRenderer:poseFrame(facing, walkPhase, stepFlip)
   -- A sheet with the full nine alternates its two REAL step frames; the
   -- six-frame ones keep the Game Boy's mirror, which is all they can do.
   local full = (tonumber(self.def.frames) or 0) >= FULL_WALK_FRAMES
@@ -378,18 +460,152 @@ function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip, to
     -- frames while up and down read as three.
     flip = true
   end
-  local quad = self.frames[frame] or self.frames[0]
-  if topHalf then
-    self.halfFrames = self.halfFrames or {}
-    if not self.halfFrames[frame] then
-      local iw, ih = self.image:getDimensions()
-      self.halfFrames[frame] = love.graphics.newQuad(
-        0, frame * (self.tileH or 16), self.tileW or 16,
-        math.floor((self.tileH or 16) / 2), iw, ih)
-    end
-    quad = self.halfFrames[frame]
+  return frame, flip
+end
+
+function SpriteRenderer:reflectionImage()
+  local key = self.def.reflect
+  if not key then return self.image end
+  if self._reflectImage ~= nil then return self._reflectImage or self.image end
+  local defs = _G.Game and _G.Game.data and _G.Game.data.sprites
+  local def = defs and defs[key]
+  local ok, img = pcall(getImage, def and def.image or nil)
+  -- A SHEET THAT IS NOT THIS SPRITE'S SIZE IS NOT THIS SPRITE'S SHEET.
+  --
+  -- The frame quads were built against self.image's dimensions, so handing
+  -- them a differently-sized texture samples outside it and draws NOTHING --
+  -- which on screen is indistinguishable from "this character has no
+  -- reflection".  And that is exactly the shape a failed load takes here: the
+  -- asset layer degrades a missing path to a placeholder rather than raising
+  -- (src/render/Assets.lua loadImage), so the sprite gets an Image back and
+  -- every check short of measuring it passes.
+  local rw, rh, iw, ih
+  if ok and img and self.image then
+    iw, ih = self.image:getDimensions()
+    rw, rh = img:getDimensions()
+    if rw ~= iw or rh ~= ih then img = nil end
   end
-  blitFrame(image, quad, x, y, flip, redraw, self.tileW)
+  self._reflectImage = (ok and img) or false
+  -- ...and say what was actually loaded, once per sheet.  A count of the
+  -- opaque pixels in the first frame settles "is the art there at all"
+  -- without another round of guessing at it.
+  local opaque = nil
+  local okData, data = pcall(require("src.render.Assets").imageData,
+                             def and def.image or nil)
+  if okData and data then
+    local dw, dh = data:getDimensions()
+    opaque = 0
+    for y = 0, math.min(dh, self.tileH or 16) - 1 do
+      for x = 0, dw - 1 do
+        local _, _, _, a = data:getPixel(x, y)
+        if a and a > 0 then opaque = opaque + 1 end
+      end
+    end
+  end
+  -- The record is right and the file is on disk, so if this still comes back
+  -- as the 16x16 placeholder the failure is in resolving the PATH -- report
+  -- what the asset layer actually looked for, with the sprite's OWN sheet
+  -- beside it as a control, since that one demonstrably loads.
+  local want = def and def.image or nil
+  local resolved = want and Assets.resolve(want) or nil
+  local fs = love and love.filesystem
+  local function seen(path)
+    if not (fs and fs.getInfo and type(path) == "string") then return "?" end
+    local info = fs.getInfo(path)
+    return info and ("yes," .. tostring(info.size)) or "NO"
+  end
+  require("src.core.Probe").say(
+    "reflectsheet", "%s -> %s: image %sx%s, sprite %sx%s, frame0 opaque=%s%s"
+    .. " | want=%s resolved=%s exists=%s | own=%s exists=%s",
+    tostring(self.def.id), tostring(key), tostring(rw), tostring(rh),
+    tostring(iw), tostring(ih), tostring(opaque),
+    self._reflectImage and "" or "  <-- REJECTED, using its own art",
+    tostring(want), tostring(resolved), seen(resolved),
+    tostring(self.def.image), seen(Assets.resolve(self.def.image)))
+  return self._reflectImage or self.image
+end
+
+function SpriteRenderer:reflect(px, py, camX, camY, facing, walkPhase,
+                                stepFlip, still)
+  local frame, flip = self:poseFrame(facing, walkPhase, stepFlip)
+  local quad = self.frames[frame] or self.frames[0]
+  local image = quad and self:reflectionImage()
+  if not (quad and image) then
+    require("src.core.Probe").say(
+      "reflectdraw", "%s: quad=%s(frame %s) image=%s",
+      tostring(self.def and self.def.image), tostring(quad ~= nil),
+      tostring(frame), tostring(image ~= nil))
+    return
+  end
+  local w, h = self.tileW or 16, self.tileH or 16
+  local x = math.floor(px - camX) - (self.offsetX or 0)
+  local y = math.floor(py - camY) - 4 - (self.offsetY or 0)
+  -- WHERE THE MIRRORED IMAGE SITS, to the pixel.
+  --
+  -- GetReflectionVerticalOffset (ROM:0153F98) is the whole of it: it loads
+  -- the graphics record's height and returns `height - 2`, and
+  -- UpdateObjectReflectionSprite (ROM:01540A8) writes
+  -- `reflection.y = main.y + that + data[2]`.  So the reflection's top edge
+  -- is two pixels ABOVE the sprite's own bottom edge -- the character and
+  -- their image meet a fraction inside the feet rather than exactly at them,
+  -- which is what stops a two-pixel seam of water showing between the two.
+  local top = y + h - 2
+  -- A REFLECTION IS FULL-COLOUR ART LIKE THE SPRITE IT MIRRORS, and has to
+  -- claim its cell out of the shade-remap pass for the same reason :draw
+  -- does -- otherwise a dark map runs the DMG remap over pixels that were
+  -- never DMG shades.
+  if self.def.trueColor then PaletteFX.markTrueColor(x, top, w, h) end
+  local sx = flip and -1 or 1
+  local ox = flip and (x + w) or x
+  love.graphics.draw(image, quad, ox, top + h, 0, sx, -1, 0, 0,
+                     still and 0 or SpriteRenderer.reflectionSway(), 0)
+end
+
+-- ---- THE SWAY, AND WHAT IS AND IS NOT DERIVED ABOUT IT -------------------
+--
+-- Reported from play: "in the real game when reflections appear in the water
+-- they sway and move, they arent perfect reflections like we have right now".
+-- That is right, and this is the one thing in the reflection that this port
+-- does NOT read off the cartridge.  What was established, so the next person
+-- does not repeat it:
+--
+--   * A water reflection is an affine sprite.  SetUpReflection (ROM:0153ED4)
+--     sets oam.affineMode = ST_OAM_AFFINE_NORMAL for the non-still case, and
+--     water IS the non-still case -- the ground-effect flag table at
+--     0850E5DC maps ice to bit 5 (still) and reflective to bit 4 (affine).
+--   * UpdateObjectReflectionSprite (ROM:01540A8) forces oam.matrixNum to 0,
+--     or 1 when the sprite is horizontally flipped.  So the sway can only be
+--     OAM matrix 0 and 1 -- there is nowhere else for it to live.
+--   * ResetOamMatrices (ROM:00071F8) fills all 32 matrices with a pure
+--     identity, and the reflection's affine anim table is
+--     gDummySpriteAffineAnimTable (082EC6A8, referenced 857 times), whose
+--     only command is END -- so the sprite engine never writes one either.
+--   * Every place the cartridge can write a matrix was checked: both
+--     SetOamMatrix entry points (the 5-argument one at 0007224 with its 27
+--     callers, and the pointer form at 0007DD4) and all 18 sites that
+--     materialise the matrix array.  NONE targets matrix 0 or 1 from field
+--     code; the constant-index callers are task-driven battle and contest
+--     sprites.
+--
+-- Which leaves a contradiction I could not resolve -- an identity matrix
+-- would not even flip the reflection, and it plainly is flipped -- so one
+-- link is still missing and this is NOT that link.  It is a stand-in.
+--
+-- What it copies is the SHAPE the hardware can make, which is the honest part
+-- of the guess: one affine matrix per sprite cannot ripple a reflection row
+-- by row, it can only shear it -- x' = a*x + b*y -- so an animated `b` skews
+-- the image, leaving the end nearest the feet still and the far end swinging
+-- widest.  That is what this draws, and it rides the tileset animation clock
+-- so it keeps time with the water it is lying on rather than free-running
+-- against it.
+local SWAY_SKEW = 0.055      -- radians-ish of shear at the extreme
+local SWAY_PERIOD = 128      -- ticks for one full swing: the water's own cycle
+
+function SpriteRenderer.reflectionSway()
+  local ok, TileRenderer = pcall(require, "src.render.TileRenderer")
+  local t = (ok and TileRenderer and TileRenderer.animFrame
+             and TileRenderer.animFrame()) or 0
+  return SWAY_SKEW * math.sin(t * 2 * math.pi / SWAY_PERIOD)
 end
 
 -- Blit a loose 16-wide fx tile at screen (x, y) wearing THIS sprite's OBJ

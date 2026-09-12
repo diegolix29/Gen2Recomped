@@ -10,6 +10,21 @@
 -- (src/core/FixedStep.lua), so every tier plays identically; they differ
 -- only in how much optional eye-candy the renderer is allowed to do.
 --
+-- WHAT THIS CANNOT SEE, AND WHICH MATTERS ON AN INSTALL WITH A WORLD MOD.
+-- The four things below are all 2D presentation extras this port adds, and
+-- a mod that OWNS the world pass can legitimately switch two of them off
+-- for good: DRAMATIC_SHAPE holds TILT and GBC FX at zero and drops both
+-- OPTIONS rows for as long as it is installed, because TILT is the flat
+-- fake of what its own pass does for real and GBC FX is a full-screen
+-- present over the top of it.  On such an install `tilt` and `gbcfx` are
+-- already zero before this clamps them, so two of the four caps here are
+-- no-ops and the row moves the survey zoom and the FPS ceiling alone.
+-- That is not a bug in either side, but it does mean the tier is only as
+-- useful as what the mod itself does with it -- and the way a mod does
+-- that is to read `Performance.tier` (the RESOLVED tier, never "auto",
+-- written by applyOptions below) and scale its own work against it.  See
+-- lib/Tier.lua in DRAMATIC_SHAPE for the worked example.
+--
 -- The tier is persisted as save.options.performance:
 --   auto      pick a default from the device (see detect())
 --   high      everything on -- the historical behavior

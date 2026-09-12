@@ -177,11 +177,128 @@ local function spiralOutGrid(cols, rows)
   return order
 end
 
+-- ---------------------------------------------------------------------------
+-- HOENN'S OWN WIPES
+--
+-- Reported from play: "also seem to be missing a lot of the battle
+-- transitions from emerald that play when you start a wild encounter or
+-- trainer battle".  They were missing, and deliberately: the pair above this
+-- are FADES, because a fade is the one shape that ports exactly, and the note
+-- there says the showier ones "are a feature rather than a fix".  This is
+-- that feature.
+--
+-- WHAT THESE ARE AND ARE NOT.  Emerald's transitions are scanline and palette
+-- tricks -- a real slice shears the BG registers line by line, a real ripple
+-- is a sine table written into BGHOFS every scanline.  This engine composites
+-- whole frames, so none of those can be replayed literally.  What CAN be
+-- replayed is the FIGURE each one draws: the order the screen goes dark in.
+-- That is what the wipe machinery already expresses -- a walk over the tile
+-- grid -- and it is why the Game Boy's eight look right here at any window
+-- size.  So each of these is Emerald's figure on this engine's wipe, and the
+-- name says which cartridge transition it is standing in for.
+--
+-- Every one is written against an arbitrary cols x rows grid rather than
+-- against 20x18, so they are continuous out through the letterbox like the
+-- rest (see Renderer:drawBattleWipe).
+
+-- B_TRANSITION_GRID_SQUARES: the screen breaks up into squares rather than
+-- being swept.  An ordered (Bayer) threshold is the honest way to write that
+-- as a walk -- it scatters without being random, so it looks the same every
+-- time, which the cartridge's does too.
+local BAYER4 = {
+  {  0,  8,  2, 10 },
+  { 12,  4, 14,  6 },
+  {  3, 11,  1,  9 },
+  { 15,  7, 13,  5 },
+}
+
+local function gridSquaresOrder(cols, rows)
+  local buckets = {}
+  for i = 0, 15 do buckets[i] = {} end
+  for y = 0, rows - 1 do
+    for x = 0, cols - 1 do
+      local b = BAYER4[y % 4 + 1][x % 4 + 1]
+      buckets[b][#buckets[b] + 1] = { x, y }
+    end
+  end
+  local order = {}
+  for i = 0, 15 do
+    for _, t in ipairs(buckets[i]) do order[#order + 1] = t end
+  end
+  return order
+end
+
+-- B_TRANSITION_SLICE: every row moves at once, and neighbouring rows move
+-- OPPOSITE WAYS -- that counter-shear is the whole look.  Walking one row at
+-- a time would read as a set of stripes instead, so the walk is column-major:
+-- one tile from every row, then the next, which advances all of them together.
+local function sliceOrder(cols, rows)
+  local order = {}
+  for step = 0, cols - 1 do
+    for y = 0, rows - 1 do
+      local x = (y % 2 == 0) and step or (cols - 1 - step)
+      order[#order + 1] = { x, y }
+    end
+  end
+  return order
+end
+
+-- B_TRANSITION_ANGLED_WIPES: a diagonal front crossing the screen.  The band
+-- is two tiles of run per tile of drop, which is the slope the cartridge's
+-- wipes lean at.
+local ANGLE_RUN = 2
+
+local function angledOrder(cols, rows)
+  local bands = {}
+  local most = cols + rows * ANGLE_RUN
+  for i = 0, most do bands[i] = {} end
+  for y = 0, rows - 1 do
+    for x = 0, cols - 1 do
+      local k = x + y * ANGLE_RUN
+      bands[k][#bands[k] + 1] = { x, y }
+    end
+  end
+  local order = {}
+  for i = 0, most do
+    for _, t in ipairs(bands[i] or {}) do order[#order + 1] = t end
+  end
+  return order
+end
+
+-- B_TRANSITION_BIG_POKEBALL: a ball opens out of the middle of the screen.
+-- As a walk that is tiles in order of distance from the centre -- a disc
+-- growing rather than a sweep going round, which is what tells it apart from
+-- `circle` above.
+local function pokeballOrder(cols, rows)
+  local cx, cy = (cols - 1) / 2, (rows - 1) / 2
+  -- the grid is tiles, and a tile is square, so the two axes are already in
+  -- the same units; no aspect correction belongs here
+  local list = {}
+  for y = 0, rows - 1 do
+    for x = 0, cols - 1 do
+      local dx, dy = x - cx, y - cy
+      list[#list + 1] = { x, y, dx * dx + dy * dy }
+    end
+  end
+  table.sort(list, function(a, b)
+    if a[3] ~= b[3] then return a[3] < b[3] end
+    if a[2] ~= b[2] then return a[2] < b[2] end
+    return a[1] < b[1]
+  end)
+  local order = {}
+  for _, t in ipairs(list) do order[#order + 1] = { t[1], t[2] } end
+  return order
+end
+
 local GRID_BUILDERS = {
   spiralin     = spiralInGrid,
   spiralout    = spiralOutGrid,
   circle       = function(c, r) return sweepOrder(1, c, r) end,
   doublecircle = function(c, r) return sweepOrder(2, c, r) end,
+  g3_grid      = gridSquaresOrder,
+  g3_slice     = sliceOrder,
+  g3_angled    = angledOrder,
+  g3_pokeball  = pokeballOrder,
 }
 
 -- Tile order for `style` on an arbitrary cols x rows grid, or nil for the
@@ -196,7 +313,16 @@ function BattleTransition.gridOrder(style, cols, rows)
   if not build or cols < 1 or rows < 1 then return nil end
   -- At exactly the Game Boy's grid the ROM's own walk is the answer, overrun
   -- and all -- so an unzoomed window is the classic wipe, not a lookalike.
-  if cols == COLS and rows == ROWS then return orderFor(style, nil) end
+  --
+  -- ...FOR THE STYLES THAT HAVE ONE.  This used to return whatever orderFor
+  -- answered, which is nil for any style with no builtin 20x18 walk -- so a
+  -- wipe added later (Hoenn's four below) would draw NOTHING at exactly that
+  -- grid and be correct at every other size, which is the worst shape a bug
+  -- can have.  A style with no classic walk falls through to its builder.
+  if cols == COLS and rows == ROWS then
+    local classic = orderFor(style, nil)
+    if classic then return classic end
+  end
   local key = style .. ":" .. cols .. "x" .. rows
   local hit = gridCache[key]
   if hit == nil then
@@ -269,9 +395,20 @@ local function fadeDraw(shade)
   end
 end
 
+-- RECONSTRUCTED LENGTHS.  The Game Boy's eight are derived above -- steps
+-- times frames per step, off the routines themselves.  These four cannot be
+-- derived the same way: the routines they stand in for count scanlines rather
+-- than tiles, so there is no step count to multiply.  They are timed to sit
+-- in the same band as the wipes beside them -- about a second -- and they are
+-- listed as records so a mod, or a later derivation, can retime them without
+-- touching this file.
 BattleTransition.STYLES = {
   g3_whitefade = { kind = "fade", frames = 48, draw = fadeDraw(1) },
   g3_blackfade = { kind = "fade", frames = 48, draw = fadeDraw(0) },
+  g3_grid      = { kind = "wipe", frames = 48 },
+  g3_slice     = { kind = "wipe", frames = 42 },
+  g3_angled    = { kind = "wipe", frames = 48 },
+  g3_pokeball  = { kind = "wipe", frames = 54, flash = true },
   doublecircle = { kind = "wipe", frames = 30, flash = true },
   spiralin     = { kind = "wipe", frames = SPIRAL_IN_FRAMES },
   circle       = { kind = "wipe", frames = 60, flash = true },
@@ -340,9 +477,25 @@ local BIT_STYLES = { [0] = "doublecircle", "spiralin", "circle", "spiralout",
 -- so the SHAPE of the choice ports even though most of the effects do not:
 -- outdoors reads as a bright open transition and a cave as a dark one, which
 -- is the distinction the cartridge's table draws.
+-- WHICH ONE PLAYS.
+--
+-- GetBattleTransitionTypeByMap indexes a two-by-two table -- indoors/cave
+-- against whether the player's lead outclasses the foe -- and keeps separate
+-- tables for a wild encounter and a trainer.  The port has all three of those
+-- facts already; what it does NOT have is the table's contents, which are
+-- four bytes in the image that nothing here reads.  So the SHAPE of the
+-- choice is the cartridge's and the four entries are this file's, chosen to
+-- keep the distinction the cartridge draws with them: a trainer gets the
+-- showier figure, a cave gets a dark one, and outclassing the foe gets the
+-- quicker one.  Said plainly rather than dressed up as derived -- when the
+-- table is read, only this function changes.
 local function gen3Style(ctx)
-  if ctx.dungeon then return "g3_blackfade" end
-  return "g3_whitefade"
+  if ctx.trainer then
+    if ctx.dungeon then return ctx.stronger and "g3_angled" or "g3_blackfade" end
+    return ctx.stronger and "g3_slice" or "g3_pokeball"
+  end
+  if ctx.dungeon then return ctx.stronger and "g3_grid" or "g3_blackfade" end
+  return ctx.stronger and "g3_slice" or "g3_whitefade"
 end
 
 local function vanillaStyle(ctx)

@@ -253,6 +253,14 @@ function Player:refreshForm(data)
   -- -- and this port had never found it, so the seafloor was walked in
   -- ordinary clothes.
   local underId = FieldDefaults.fieldValue(data, "playerSprites", "underwater")
+  -- ...AND THE POKE BALL POSE.
+  --
+  -- Asked for directly: "our player usually holds up a ball during this too".
+  -- It is sPlayerAvatarGfxIds' sixth pair -- the same table the diving suit
+  -- came out of -- and it follows the character for the same reason every
+  -- other sheet here does.
+  local fieldMoveId =
+    FieldDefaults.fieldValue(data, "playerSprites", "fieldMove")
   local form = require("src.pokemon.Sprites").playerForm(data)
   if form then
     local sprites = data.sprites or {}
@@ -261,6 +269,9 @@ function Player:refreshForm(data)
     if form.surf and sprites[form.surf] then surfId = form.surf end
     if form.underwater and sprites[form.underwater] then
       underId = form.underwater
+    end
+    if form.fieldMove and sprites[form.fieldMove] then
+      fieldMoveId = form.fieldMove
     end
   end
   -- after the character, because it REPLACES the character: in Pokemon mode
@@ -309,6 +320,14 @@ function Player:refreshForm(data)
     self.underwaterSprite = (underId and sprites[underId])
       and SpriteRenderer.new(sprites[underId], "player") or nil
   end
+  -- the Poke Ball pose, on the same terms: absent everywhere but Hoenn, and
+  -- absent on a Hoenn cache imported before the sixth avatar row was read
+  if fieldMoveId ~= self.fieldMoveId then
+    self.fieldMoveId = fieldMoveId
+    local sprites = data.sprites or {}
+    self.fieldMoveSprite = (fieldMoveId and sprites[fieldMoveId])
+      and SpriteRenderer.new(sprites[fieldMoveId], "player") or nil
+  end
   -- ...and the COLOURS, every time, whether or not the sheets changed.
   --
   -- Prism's customiser mixes a skin tone and an outfit colour into the
@@ -331,6 +350,7 @@ function Player:refreshPalette(data)
   pcall(PlayerPalette.apply, self.bikeSprite, data, save)
   pcall(PlayerPalette.apply, self.surfSprite, data, save)
   pcall(PlayerPalette.apply, self.underwaterSprite, data, save)
+  pcall(PlayerPalette.apply, self.fieldMoveSprite, data, save)
   pcall(PlayerPalette.apply, self.runSprite, data, save)
 end
 
@@ -653,7 +673,11 @@ function Player:pose()
   end
   -- RodResponse (engine/items/item_effects.asm) zeroes wWalkBikeSurfState
   -- across FishingAnim, so casting from the water shows the on-foot sheet
-  local sprite = (self.fishing and self.sprite)
+  -- THE POSE BEATS EVERY SHEET BELOW IT, including the surfboard: a SURF
+  -- used from the water still shows the character holding the ball out, and
+  -- the blob under them is drawn by drawSurfBlob either way.
+  local sprite = (self.fieldMove and self.fieldMoveSprite)
+                 or (self.fishing and self.sprite)
                  -- UNDERWATER BEATS EVERYTHING.  A dive leaves `surfing`
                  -- false and the seafloor is walked, not ridden, so without
                  -- this the wetsuit would never be reached; asked FIRST
@@ -716,7 +740,52 @@ function Player:draw(camX, camY)
   -- the cartridge entirely and the import had never opened it.  It does now,
   -- and it comes with three frames: one for each way the blob turns.
   self:drawSurfBlob(px, py, camX, camY, facing)
+  -- THE FIELD-MOVE POSE IS A SEQUENCE, not a facing.
+  --
+  -- Reported from play: "it seems like my players animation stops as he
+  -- reaches in his pocket to grab the ball and doesnt get to hold it up".
+  -- The sheet's frames are the reach and the raise, one after the other, and
+  -- every other sheet this engine draws indexes its frames by which way the
+  -- character is looking -- so asking :draw for it would show frame 0 for as
+  -- long as the pose was worn, which is the reach and nothing else.
+  --
+  -- `fieldMovePose` is counted by whoever put the pose on (Gen3FieldMove),
+  -- because the overworld does not update while that state is on top; drawPose
+  -- clamps, so the animation plays once and then holds the ball up.
+  if self.fieldMove and sprite.drawPose and sprite.poseCount
+     and sprite:poseCount() > 1 then
+    sprite:drawPose(self.fieldMovePose or 0, px, py, camX, camY)
+    return
+  end
   sprite:draw(px, py, camX, camY, facing, phase, flip)
+end
+
+-- The player's own, on the same early pass NPC:drawReflection runs on.  This
+-- is the character it matters most for: all 25 graphics rows that name a
+-- reflection palette of their own are the player's avatars.
+function Player:drawReflection(camX, camY)
+  if not self.reflects then return end
+  local sprite, px, py, facing, phase, flip = self:pose()
+  self.reflectProbeTick = (self.reflectProbeTick or 0) + 1
+  if self.reflectProbeTick % 90 == 1 then
+    local w = (sprite and sprite.tileW) or 16
+    local h = (sprite and sprite.tileH) or 16
+    local dx = math.floor(px - camX) - ((sprite and sprite.offsetX) or 0)
+    local dy = math.floor(py - camY) - 4 - ((sprite and sprite.offsetY) or 0)
+    require("src.core.Probe").say(
+      "playerreflect",
+      "cell=%s,%s def=%s reflectKey=%s sheet=%s | sprite y=%d..%d "
+      .. "reflection x=%d..%d y=%d..%d",
+      tostring(self.cellX), tostring(self.cellY),
+      tostring(sprite and sprite.def and sprite.def.id),
+      tostring(sprite and sprite.def and sprite.def.reflect),
+      tostring(sprite and sprite._reflectImage),
+      dy, dy + h, dx, dx + w, dy + h - 2, dy + 2 * h - 2)
+  end
+  if sprite and sprite.reflect then
+    sprite:reflect(px, py, camX, camY, facing, phase, flip,
+                   self.reflectStill)
+  end
 end
 
 -- Which of the blob's three frames faces this way, and whether it is mirrored.

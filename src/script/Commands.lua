@@ -354,6 +354,13 @@ end
 -- text (label or literal; {RAM:wStringBuffer} becomes the item name);
 -- pass false when the script shows its own received-text row.
 function Commands.give_item(ctx, itemId, count, gotText)
+  -- Every gift, once per item, somewhere that survives the session.  When a
+  -- script plays its whole "here you go" sequence and the bag stays empty,
+  -- this is the line that says which half is at fault: present means the
+  -- script reached the gift and the bag is the problem, absent means the
+  -- script never got there and a flag or a branch is.
+  require("src.core.Probe").say("item", "give %s x%s",
+                                tostring(itemId), tostring(count or 1))
   -- the bag can refuse at its configured capacity (20 in vanilla): halt
   -- the script, so later set_flag rows don't burn the gift -- make
   -- room and talk again, like the original (pokered's `jr nc, .bag_full`

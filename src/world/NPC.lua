@@ -838,4 +838,22 @@ function NPC:draw(camX, camY)
   sprite:draw(px, py, camX, camY, facing, phase, flip)
 end
 
+-- WHAT THE WATER SHOWS BACK, on its own pass.
+--
+-- Drawn BEFORE the sprites and before the map's top layer rather than with
+-- the character, because a reflection is the one thing that has to end up
+-- UNDER the ground: reported from play as "the twins are reflected onto the
+-- deck instead of below it" and "they need to be obfuscated by the ground".
+-- A character standing on a bridge is drawn AFTER the top layer so the deck
+-- does not bury them -- and their reflection has to be on the other side of
+-- that same layer, which it cannot be if it is drawn with them.
+function NPC:drawReflection(camX, camY)
+  if not self.reflects then return end
+  local sprite, px, py, facing, phase, flip = self:pose()
+  if sprite and sprite.reflect then
+    sprite:reflect(px, py, camX, camY, facing, phase, flip,
+                   self.reflectStill)
+  end
+end
+
 return NPC

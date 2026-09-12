@@ -30,9 +30,18 @@ local filterLevel = 0
 -- hook crashed applyVolume on `state.current` (a nil index).
 local state
 
+-- Emerald's PlayCry_Normal (ROM:00A3400) does not pause the song for a cry
+-- the way a fanfare does: it calls m4aMPlayVolumeControl on gMPlayInfo_BGM
+-- with a volume of 85 out of the mixer's 256, holding the song down while
+-- the cry sounds and restoring it after.  cryDuck carries that factor (the
+-- extractor writes it as constants.gen3Cry.duckBgm/scale) and Music.update
+-- clears it once the cry source has finished.
+local cryDuck = nil
+
 local function applyVolume(src)
   if not src then return end
   local vol = VOLUME * volumeScale
+  if cryDuck then vol = vol * cryDuck.scale end
   if Runtime.wantsHook("music.volume") then
     local ctx = {
       song = state.current,
@@ -99,6 +108,30 @@ end
 -- Called by Sound.play when a fanfare starts: fanfares own the music
 -- channels on the Game Boy, so the current song halts and resumes when
 -- the jingle ends (see update()).
+-- Called by Sound.playCry: unlike a fanfare, the song keeps playing and is
+-- merely attenuated for as long as the cry sounds.
+function Music.duckForCry(data, src)
+  local c = data and data.constants and data.constants.gen3Cry
+  local duck = c and tonumber(c.duckBgm)
+  local scale = c and tonumber(c.scale)
+  if not (duck and scale and scale > 0) then return end
+  if duck >= scale then return end
+  cryDuck = { src = src, scale = duck / scale }
+  if not state.fade then
+    applyVolume(state.source)
+    applyVolume(state.loopSource)
+  end
+end
+
+-- true while a cry is still holding the song down
+local function cryDuckActive()
+  if not cryDuck then return false end
+  local src = cryDuck.src
+  if not src then return false end
+  local ok, playing = pcall(src.isPlaying, src)
+  return ok and playing
+end
+
 function Music.duckForFanfare(src)
   if not src then return end
   state.fanfare = src
@@ -468,6 +501,14 @@ end
 -- restores the map theme after a one-shot jingle
 function Music.update(data)
   if state.chip then require("src.core.ChipAudio").update() end
+  -- restore the song's level once the cry that ducked it has finished
+  if cryDuck and not cryDuckActive() then
+    cryDuck = nil
+    if not state.fade then
+      applyVolume(state.source)
+      applyVolume(state.loopSource)
+    end
+  end
   -- distance / indoor muffling mods re-apply volume every frame while
   -- subscribed; otherwise applyVolume only runs on song/option changes
   if Runtime.wantsHook("music.volume") and not state.fade then

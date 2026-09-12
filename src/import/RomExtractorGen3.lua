@@ -2695,6 +2695,13 @@ function RomExtractorGen3:extractConstants()
         boyUnderwater = under and name(under.boy) or nil,
         girlUnderwater = under and name(under.girl) or nil,
         underwaterSource = under and under.source or nil,
+        -- the Poke Ball pose, worn for as long as the field move's own
+        -- presentation is on screen (src/world/Gen3FieldMove.lua)
+        boyFieldMove = under and under.fieldMoveBoy
+                       and name(under.fieldMoveBoy) or nil,
+        girlFieldMove = under and under.fieldMoveGirl
+                        and name(under.fieldMoveGirl) or nil,
+        fieldMoveSource = under and under.fieldMoveSource or nil,
         source = ("ROM:gObjectEventGraphicsInfoPointers[%d]=walk,%d=bike,"
                   .. "%d=surf and [%d],%d,%d")
                  :format(boy.walk, boy.bike, boy.surf,
@@ -6450,9 +6457,20 @@ end
 -- A run that opens right and disagrees at row 3 is some other table.
 --
 -- Returns { boy, girl, source } for the UNDERWATER row, or nil.
+-- ...AND ROW FIVE, WHICH THE COMMENT ABOVE THIS TABLE ALREADY NAMED.
+--
+-- Asked for directly: "we also need the transition for using HMs like the rom
+-- that slides across the screen shows our pokemon and then performs the HM
+-- move and our player usually holds up a ball during this too".  The pose is
+-- the last half of that, and it was already found and then thrown away:
+-- sPlayerAvatarGfxIds' sixth pair is "using a field move" -- the character
+-- standing still with a Poke Ball held out -- and this function read row 4
+-- and returned.  It is the same table, checked the same way, so it costs
+-- nothing but the two reads.
 function RomExtractorGen3:playerAvatarStates(boy, girl)
   local rom = self.rom
   local ROWS, STATE_SURFING, STATE_UNDERWATER = 6, 3, 4
+  local STATE_FIELD_MOVE = 5
   local count = self:layoutValue("objectEventGfxCount", 0)
   local size = rom.size or (rom.data and #rom.data) or 0
   local found = nil
@@ -6479,8 +6497,12 @@ function RomExtractorGen3:playerAvatarStates(boy, girl)
   return {
     boy = rom:u8(found + STATE_UNDERWATER * 2),
     girl = rom:u8(found + STATE_UNDERWATER * 2 + 1),
+    fieldMoveBoy = rom:u8(found + STATE_FIELD_MOVE * 2),
+    fieldMoveGirl = rom:u8(found + STATE_FIELD_MOVE * 2 + 1),
     source = ("ROM:sPlayerAvatarGfxIds %07X[%d]"):format(found,
                                                          STATE_UNDERWATER),
+    fieldMoveSource = ("ROM:sPlayerAvatarGfxIds %07X[%d]")
+                      :format(found, STATE_FIELD_MOVE),
   }
 end
 
@@ -6683,7 +6705,35 @@ function RomExtractorGen3:extractOverworldSprites()
       -- an empty table is TRUTHY in Lua, so this cannot be `order or {0}`:
       -- a sprite with no facing set came out with zero frames and a sheet of
       -- zero height, which every later stage happily wrote and nothing drew
-      if order == nil or #order == 0 then order = { 0 } end
+      --
+      -- ...BUT A SHEET WITH NO FACING SET IS NOT NECESSARILY ONE PICTURE.
+      --
+      -- Reported from play: "it seems like my players animation stops as he
+      -- reaches in his pocket to grab the ball and doesnt get to hold it up".
+      -- That is this line.  The FIELD MOVE pose -- the character reaching for
+      -- a Poke Ball and raising it -- has no walking animation and therefore
+      -- no facing anchor, so it fell here and was cut to its FIRST FRAME:
+      -- the reach, and nothing after it.  Every such sheet in the cartridge
+      -- was, which is why the one that is an animation looked frozen.
+      --
+      -- The array's own length already says how many there are (see above),
+      -- so the whole animation is written out in image order.
+      --
+      -- `frames` STAYS ONE and `walker` stays false, deliberately: those two
+      -- are what every drawing path in the engine reads to decide between a
+      -- still and a set of FACINGS, and these frames are neither -- they are
+      -- a sequence.  So they travel under their own name, and only a caller
+      -- that knows what it is looking at (SpriteRenderer:drawPose) plays them.
+      local poseFrames = nil
+      if order == nil or #order == 0 then
+        if available > 1 then
+          order = {}
+          for f = 0, available - 1 do order[#order + 1] = f end
+          poseFrames = available
+        else
+          order = { 0 }
+        end
+      end
 
       -- ---- AND THE RUN CYCLE, which is a different set of frames -------
       --
@@ -6774,8 +6824,11 @@ function RomExtractorGen3:extractOverworldSprites()
       out[key] = {
         id = key,
         image = ("assets/generated/overworld/g3_%03d.png"):format(id),
-        frames = #order,
-        walker = #order > 1,
+        frames = poseFrames and 1 or #order,
+        walker = not poseFrames and #order > 1,
+        -- how many frames of ANIMATION the sheet carries, when its frames are
+        -- a sequence rather than a set of facings -- see the note above
+        poseFrames = poseFrames,
         -- full colour: this cartridge's sprites are 16-colour, so they must
         -- not go through the DMG shade remap every Game Boy sheet does
         trueColor = true,
@@ -6800,7 +6853,8 @@ function RomExtractorGen3:extractOverworldSprites()
                    :format(id),
         }
       end
-      if #order > 1 then walkers = walkers + 1 else still = still + 1 end
+      if #order > 1 and not poseFrames then walkers = walkers + 1
+      else still = still + 1 end
     end)
     if not ok then failed = failed + 1 end
     if id % 32 == 0 then self:tick("Gen3 overworld sprites", id, count) end
@@ -6856,6 +6910,83 @@ function RomExtractorGen3:extractOverworldSprites()
     Logger.warn("gen3 overworld sprites: the sheets could not be composed "
                 .. "(%s) -- sprites.lua is still written", tostring(artErr))
   end
+
+  -- ---- ...AND WHAT EACH OF THEM LOOKS LIKE IN THE WATER -----------------
+  --
+  -- Reported from play: "puddles and the bright blue water arent showing
+  -- their reflections like they do in the emerald rom".  They were not,
+  -- because nothing composed the art for one.
+  --
+  -- A REFLECTION IS THE SAME PICTURE, UPSIDE DOWN, IN A DIFFERENT PALETTE --
+  -- and WHICH palette is the thing this got wrong for three rounds.  The
+  -- graphics row's `reflectionPaletteTag` is a FLAG, not a palette: see
+  -- RomExtractorGen3:reflectionPaletteFor for what the cartridge really does
+  -- and why using the tag directly painted the player as an invisible blue
+  -- slab.
+  --
+  -- 25 of the 246 rows raise the flag -- the player's own avatars, walking,
+  -- running, on a bike, surfing, diving.  The other 221 do not, and their
+  -- reflection wears their own colours, so they need no new art at all: the
+  -- renderer flips the sheet they already have.
+  local reflected, reflectTag = 0, nil
+  do
+    local okRefl, reflErr = pcall(function()
+      for id, cell in pairs(pixels) do
+        local info = self.rom:pointer(table_ + id * 4)
+        local tag, own = self:reflectionPaletteFor(info)
+        local colors = tag and palettes[tag]
+        if colors then
+          reflectTag = reflectTag or tag
+          local key = ("SPRITE_G3_%03d"):format(id)
+          local file = ("overworld/g3_%03d_reflect.png"):format(id)
+          out[key].reflect = key .. "_REFLECT"
+          out[key .. "_REFLECT"] = {
+            id = key .. "_REFLECT",
+            image = "assets/generated/" .. file,
+            frames = #cell.cells,
+            walker = #cell.cells > 1,
+            trueColor = true,
+            frameWidth = cell.width,
+            frameHeight = cell.height,
+            source = ("ROM:gObjectEventGraphicsInfoPointers[%d], palette "
+                      .. "$%04X -> reflection palette $%04X")
+                     :format(id, own or 0, tag),
+          }
+          local image = self:objectGfxSheet(cell.width,
+                                            cell.height * #cell.cells)
+          if image then
+            for i, px in ipairs(cell.cells) do
+              local top = (i - 1) * cell.height
+              for y = 1, cell.height do
+                for xx = 1, cell.width do
+                  local index = px[y][xx]
+                  local c = colors[index + 1]
+                  if index ~= 0 and c then
+                    image:setPixel(xx - 1, top + y - 1, c[1] / 255, c[2] / 255,
+                                   c[3] / 255, 1)
+                  else
+                    image:setPixel(xx - 1, top + y - 1, 0, 0, 0, 0)
+                  end
+                end
+              end
+            end
+            self:saveImage(image, file)
+            drawn = drawn + 1
+          end
+          reflected = reflected + 1
+        end
+      end
+    end)
+    if not okRefl then
+      Logger.warn("gen3 reflections: the sheets could not be composed (%s)",
+                  tostring(reflErr))
+    end
+  end
+  Logger.info("Gen3 reflections: %d rows wear a reflection palette of their "
+                .. "own%s; the other %d wear their own colours upside down",
+              reflected,
+              reflectTag and (" (the first is $%04X)"):format(reflectTag) or "",
+              count - reflected)
 
   -- ---- ...AND THE BERRY TREES, WHOSE NINE FRAMES ARE TWO SIZES ----------
   --
@@ -6964,6 +7095,50 @@ function RomExtractorGen3:extractOverworldSprites()
                 .. "one per distinct pic table of %d berries",
                 treeArt.distinct, TREE_FRAMES, TREE_CELL,
                 treeArt.entries)
+  end
+
+  -- The ripple's five pictures, stacked like any other frame strip.  It is a
+  -- field effect rather than an object event, so it is not in the table this
+  -- stage walks -- see rippleArt for how it is found.
+  local ripple = self:rippleArt()
+  if ripple then
+    local R = RomExtractorGen3.RIPPLE
+    out[ripple.key] = {
+      id = ripple.key,
+      image = ripple.image,
+      frames = R.FRAMES,
+      walker = false,
+      trueColor = true,
+      frameWidth = R.SIZE,
+      frameHeight = R.SIZE,
+      source = ripple.source,
+    }
+    local okRipple, rippleErr = pcall(function()
+      local image = self:objectGfxSheet(R.SIZE, R.SIZE * R.FRAMES)
+      if not image then return end
+      for f = 1, R.FRAMES do
+        local px = RomGba.tiles4bpp(self.rom:bytes(ripple.frames[f],
+                                                   R.FRAME_BYTES), 2, 2)
+        for y = 1, R.SIZE do
+          for x = 1, R.SIZE do
+            local index = px[y] and px[y][x] or 0
+            local c = ripple.palette[index + 1]
+            if index ~= 0 and c then
+              image:setPixel(x - 1, (f - 1) * R.SIZE + y - 1,
+                             c[1] / 255, c[2] / 255, c[3] / 255, 1)
+            else
+              image:setPixel(x - 1, (f - 1) * R.SIZE + y - 1, 0, 0, 0, 0)
+            end
+          end
+        end
+      end
+      self:saveImage(image, R.FILE)
+      drawn = drawn + 1
+    end)
+    if not okRipple then
+      Logger.warn("gen3 ripple: the sheet could not be composed (%s) -- the "
+                  .. "record is still written", tostring(rippleErr))
+    end
   end
 
   -- ---- and the thing the player sits on --------------------------------
@@ -27186,6 +27361,801 @@ local GEN3_HOVERS = {
 local GEN3_STANDS = { "BULBASAUR", "PIKACHU", "ONIX", "SNORLAX", "MACHOP" }
 local GEN3_ELEVATION_MAX = 24
 
+-- ---------------------------------------------------------------------------
+-- STAGE: WHICH GROUND SHOWS YOU BACK
+--
+-- Reported from play: "puddles and the bright blue water arent showing their
+-- reflections like they do in the emerald rom".  The port drew none, and the
+-- first thing it needed was the SET -- which metatile behaviours put a
+-- reflection under whoever is standing on them.
+--
+-- FOUND AS CODE, because it is code: MetatileBehavior_IsReflective is one of
+-- a block of fifty-odd one-line predicates, each of them the same four
+-- instructions -- widen the byte, compare it against a handful of constants,
+-- return 1 or 0.  So the block is found by that shape rather than by an
+-- address, and the answer is the immediates of the right one.
+--
+-- WHICH IS THE RIGHT ONE, AND THE CARTRIDGE NAMES IT ITSELF.
+--
+-- One of the behaviours in this generation is called REFLECTION_UNDER_BRIDGE
+-- ($2B) -- the water beneath a bridge, which exists to show what is standing
+-- over it.  Exactly TWO predicates in the whole cartridge test it: one that
+-- tests ONLY it (that is "is this the under-bridge tile"), and one that tests
+-- it alongside five more.  The second is the reflective set, and nothing else
+-- in sixteen megabytes has that shape.
+--
+-- That is what makes this non-circular: the answer is not "the set that looks
+-- like water to me", it is "the set the behaviour whose NAME is REFLECTION
+-- belongs to".  It comes out as
+--
+--     $10 POND_WATER  $16 PUDDLE  $1A  $20 ICE
+--     $14 SOOTOPOLIS_DEEP_WATER  $2B REFLECTION_UNDER_BRIDGE
+--
+-- and every part of that reads right: a pond, a puddle, ICE (which is the
+-- other thing in this generation that shows you back, and which the port
+-- would otherwise have missed entirely), Sootopolis' lake, and the
+-- under-bridge water.  $1A has no name in the table below because the region
+-- never places it -- an unnamed behaviour in the set is not a reason to
+-- refuse, only a reason not to claim a name for it.
+--
+-- WHAT THIS REPLACED, and why it is worth writing down: the first cut of this
+-- looked for "a predicate testing three or more behaviours that are all
+-- standing water", which REJECTED the right answer -- $1A has no name, so the
+-- six-behaviour set failed the all-named test -- and accepted a narrower
+-- three-behaviour one instead.  Reflections then fired on ponds and puddles
+-- and nowhere else: no ice, no bridges.  A filter that throws out the answer
+-- for having an unfamiliar member in it is a filter that encodes what was
+-- already believed.
+RomExtractorGen3.REFLECT = {
+  WIDEN_LSL = 0x0600, WIDEN_LSR = 0x0E00,   -- lsl r0,#24 / lsr r0,#24
+  CMP_R0 = 0x2800, CMP_R0_END = 0x28FF,
+  BEQ = 0xD000, BEQ_END = 0xD0FF, BNE = 0xD100, BNE_END = 0xD1FF,
+  RET_FALSE = 0x2000, RET_TRUE = 0x2001,    -- mov r0,#0 / mov r0,#1
+  ORR = 0x4300, ORR_END = 0x433F,           -- orr rN,rM
+  MIN_TESTS = 2, MAX_TESTS = 20,
+  -- the behaviour whose own NAME is the answer: whichever byte this file's
+  -- table calls REFLECTION_UNDER_BRIDGE.  Looked up rather than written as a
+  -- number, so the two cannot drift apart.
+  ANCHOR_NAME = "REFLECTION_UNDER_BRIDGE",
+}
+
+-- One predicate, as its list of tested behaviours -- or nil when the bytes at
+-- `off` are not one.
+function RomExtractorGen3:behaviourPredicateAt(off)
+  local R = RomExtractorGen3.REFLECT
+  local rom = self.rom
+  if rom:u16(off) ~= R.WIDEN_LSL or rom:u16(off + 2) ~= R.WIDEN_LSR then
+    return nil
+  end
+  local tested, i = {}, 2
+  while i < R.MAX_TESTS * 2 do
+    local cmp, br = rom:u16(off + i * 2), rom:u16(off + i * 2 + 2)
+    local isCmp = cmp >= R.CMP_R0 and cmp <= R.CMP_R0_END
+    local isBranch = (br >= R.BEQ and br <= R.BEQ_END)
+                     or (br >= R.BNE and br <= R.BNE_END)
+    if not (isCmp and isBranch) then break end
+    tested[#tested + 1] = cmp % 256
+    i = i + 2
+  end
+  local tail = rom:u16(off + i * 2)
+  if #tested < 1 or not (tail == R.RET_FALSE or tail == R.RET_TRUE) then
+    return nil
+  end
+  return tested
+end
+
+function RomExtractorGen3:extractReflections()
+  self:beginStage("Gen3 reflections")
+  local R = RomExtractorGen3.REFLECT
+  local rom = self.rom
+
+  -- the byte this file's own table calls REFLECTION_UNDER_BRIDGE
+  local anchor
+  for b, name in pairs(GEN3_BEHAVIOUR_NAMES) do
+    if name == R.ANCHOR_NAME then anchor = b break end
+  end
+  if not anchor then
+    Logger.warn("gen3 reflections: no behaviour is named %s, so there is "
+                  .. "nothing to anchor the set on", R.ANCHOR_NAME)
+    return
+  end
+
+  -- ---- every predicate that tests it, and how many others with it --------
+  local candidates = {}
+  for off = 0, rom.size - 8, 2 do
+    local tested = self:behaviourPredicateAt(off)
+    if tested then
+      local hasAnchor = false
+      for _, b in ipairs(tested) do
+        if b == anchor then hasAnchor = true break end
+      end
+      if hasAnchor and #tested >= R.MIN_TESTS then
+        local names = {}
+        for _, b in ipairs(tested) do
+          names[#names + 1] = GEN3_BEHAVIOUR_NAMES[b] or ("$%02X"):format(b)
+        end
+        candidates[#candidates + 1] =
+          { at = off, tested = tested, names = names }
+      end
+    end
+    if off % 0x200000 == 0 then self:tick("Gen3 reflections", off, rom.size) end
+  end
+
+  local spelt = {}
+  for _, c in ipairs(candidates) do
+    spelt[#spelt + 1] = ("%07X[%s]"):format(c.at, table.concat(c.names, ","))
+  end
+  if #candidates ~= 1 then
+    Logger.warn("gen3 reflections: %d predicates test %s alongside another "
+                  .. "behaviour, and the set has to be the only one (%s) -- "
+                  .. "nothing will reflect", #candidates, R.ANCHOR_NAME,
+                table.concat(spelt, " "))
+    return
+  end
+  local chosen = candidates[1]
+
+  local behaviours = {}
+  for _, b in ipairs(chosen.tested) do behaviours[#behaviours + 1] = b end
+  table.sort(behaviours)
+  local constants = self._constants or {}
+  -- ...AND WHICH NAME GOES WITH WHICH NUMBER.  `behaviours` is sorted and
+  -- `names` is in the order the predicate tests them, so the two arrays do
+  -- NOT line up and nothing downstream could tell a puddle from a pond.  The
+  -- map is what the renderer needs: ice reflects STILL on the cartridge (no
+  -- affine matrix at all), and a puddle is too small a body of water to carry
+  -- a swaying reflection.
+  local named = {}
+  for i, b in ipairs(chosen.tested) do named[b] = chosen.names[i] end
+  constants.gen3Reflection = {
+    behaviours = behaviours,
+    named = named,
+    names = chosen.names,
+    source = ("ROM:MetatileBehavior_IsReflective %07X -- the one predicate "
+              .. "that tests %s alongside other behaviours (candidates: %s)")
+             :format(chosen.at - 2, R.ANCHOR_NAME, table.concat(spelt, " ")),
+  }
+  -- ...and the rings, which are the same question asked of the same map: what
+  -- does the ground do when somebody stands on it.
+  local ripple = self:rippleArt()
+  if ripple then
+    local holds = {}
+    for _, step in ipairs(ripple.order) do
+      holds[#holds + 1] = { frame = step[1], hold = step[2] }
+    end
+    constants.gen3Ripple = {
+      behaviours = ripple.behaviours,
+      key = ripple.key,
+      frames = RomExtractorGen3.RIPPLE.FRAMES,
+      order = holds,
+      source = ripple.source,
+    }
+    Logger.info("Gen3 ripples: behaviours %s over %d animation steps -- %s",
+                table.concat(ripple.behaviours, ","), #holds, ripple.source)
+  end
+  self._constants = constants
+  self:write("constants", constants)
+  Logger.info("Gen3 reflections: %s -- %s", table.concat(chosen.names, " "),
+              constants.gen3Reflection.source)
+end
+
+
+-- ---------------------------------------------------------------------------
+-- THE RINGS THAT SPREAD WHERE A FOOT MEETS WATER
+--
+-- Reported from play: "no puddle ripples when walking in it".  Right -- the
+-- port drew none, and the cartridge draws one every time a step FINISHES on
+-- water shallow enough to disturb.
+--
+-- FOUND BY SHAPE, twice over, so neither address is trusted on its own:
+--
+--   THE SPAWN.  GroundEffect_Ripple sets up the field effect's arguments
+--   before it starts it, and the pair of stores it makes -- 151 into
+--   gFieldEffectArguments[2] (the subpriority) and 3 into [3] (the object
+--   priority) -- occurs in exactly ONE place in the cartridge.  The `mov r0`
+--   immediately after is the effect id, and reading it is how this knows
+--   which of the 67 field-effect scripts to follow rather than being told.
+--
+--   THE BEHAVIOURS.  MetatileBehavior_HasRipples narrows its argument to a
+--   byte and compares it against three values; that shape, with those three,
+--   is also unique.  The three are read OUT of the comparisons rather than
+--   named here, so this says what the cartridge says even if the numbers are
+--   not what anyone expected.
+--
+-- Then the effect's script is followed the way the heal machine's is: opcode
+-- 7 is "load a palette and call a native", the native's first instructions
+-- fetch a sprite template out of a table, and the template is accepted only
+-- if it wears the very palette the script just loaded -- the closure check
+-- that makes this an identification rather than a guess.
+--
+-- The subpriority is worth keeping in mind when this is drawn: 151 against a
+-- reflection's 152 puts the rings ABOVE a reflection, and priority 3 puts
+-- both under everything of the map except its bottom layer.
+RomExtractorGen3.RIPPLE = {
+  ARG_SUBPRIORITY = 0x2097,     -- mov r0,#151
+  STR_ARG2        = 0x6090,     -- str r0,[r2,#8]
+  ARG_PRIORITY    = 0x2003,     -- mov r0,#3
+  STR_ARG3        = 0x60D0,     -- str r0,[r2,#12]
+  MOV_R0 = 0x2000, MOV_R0_END = 0x20FF,
+  WIDEN_LSL = 0x0600, WIDEN_LSR = 0x0E00,
+  CMP_A = 0x2810, CMP_B = 0x2816, CMP_C = 0x2814,
+  CODE_FROM = 0x80000, CODE_TO = 0x200000, PRED_TO = 0x100000,
+  LOADPAL_CALLNATIVE = 7,
+  LDR_PC = 0x4800, LDR_PC_END = 0x48FF,
+  LDR_IMM_TOP = 13,             -- `ldr rd,[rn,#imm5*4]` is opcode 01101
+  NATIVE_SCAN = 8,
+  AT_PALTAG = 0x02, AT_ANIMS = 0x08, AT_IMAGES = 0x0C,
+  FRAMES = 5, FRAME_BYTES = 0x80, SIZE = 16, COLORS = 16,
+  ANIM_END = 0xFFFF, ANIM_MAX = 16, HOLD = 8,
+  KEY = "SPRITE_G3_RIPPLE",
+  IMAGE = "assets/generated/overworld/g3_ripple.png",
+  FILE = "overworld/g3_ripple.png",
+}
+
+-- ---------------------------------------------------------------------------
+-- WHAT COLOUR A REFLECTION ACTUALLY IS
+--
+-- Reported from play, twice: "still not seeing the reflection of the player at
+-- all in the waters that have the reflections but the npcs are", and "theres
+-- also supposed to be distortion in the reflections".  Both are this one bug.
+--
+-- The first cut read `reflectionPaletteTag` out of the graphics row and used
+-- it as the palette to paint the reflection in.  It is NOT that.  Every one of
+-- the 25 rows that names one names $1102 -- and $1102 is SIXTEEN COPIES OF ONE
+-- COLOUR, a flat $4870A8 silhouette.  The cartridge uses it for exactly one
+-- thing, a character crossing Fortree's rope bridges high above the ground
+-- (LoadObjectHighBridgeReflectionPalette, ROM:0154078).
+--
+-- So the player's reflection was being painted as a solid blue slab -- which,
+-- on blue water, is invisible.  That is the whole of "the player has no
+-- reflection": it was drawn every frame, in the one colour guaranteed to
+-- disappear into what it was drawn on.  NPCs looked right only because none of
+-- them names a tag at all, so they fell through to their own colours.  And the
+-- surfing player looked right because the blob is a different row, also
+-- tagless.
+--
+-- WHAT THE FIELD ACTUALLY IS: a flag.  $11FF means "this row's reflection
+-- wears its own colours"; anything else means "go and look one up", and
+-- LoadObjectRegularReflectionPalette (ROM:015401C) then ignores the tag's
+-- value entirely and looks up the row's NORMAL palette tag in one of two
+-- tables, chosen by the row's palette SLOT -- 0 for the player's avatars, 10
+-- for the special objects.  Each entry points at a pair of tags, water first
+-- and ice second, and that is the palette the reflection wears.
+--
+-- FOUND BY SHAPE: a run of eight-byte records, each a $11xx tag, two zero
+-- bytes and a pointer at two more $11xx tags, closed by $11FF.  Exactly TWO
+-- such tables exist in the cartridge -- the three-entry one is the player's
+-- and the thirteen-entry one the special objects', and where their tags
+-- overlap they agree.
+--
+-- Brendan comes out $1100 -> $1101, and $1101 is his own palette lifted and
+-- cooled -- paler, bluer, lower contrast.  THAT is the "distortion": a
+-- reflection is not a tinted copy of the sprite, it is a second palette drawn
+-- from the cartridge.
+RomExtractorGen3.REFLECT_PAL = {
+  TAG_NONE = 0x11FF, TAG_MIN = 0x1100, TAG_MAX = 0x11FE,
+  STRIDE = 8, MIN_ROWS = 3, MAX_ROWS = 20,
+  SCAN_FROM = 0x400000, SCAN_TO = 0x600000,
+  WATER = 0,                      -- the set's first tag; the second is ice
+  SLOT_PLAYER = 0, SLOT_SPECIAL = 10,
+  AT_PALTAG = 0x02, AT_REFLECT = 0x04, AT_SLOT = 0x0C,
+}
+
+function RomExtractorGen3:reflectionPaletteSets()
+  if self._reflectSets ~= nil then return self._reflectSets or nil end
+  local rom = self.rom
+  local R = RomExtractorGen3.REFLECT_PAL
+  local function rows(at)
+    local n = 0
+    while n < R.MAX_ROWS do
+      local tag = rom:u16(at + n * R.STRIDE)
+      if tag == R.TAG_NONE then return n end
+      if tag < R.TAG_MIN or tag > R.TAG_MAX then return nil end
+      if rom:u16(at + n * R.STRIDE + 2) ~= 0 then return nil end
+      local p = rom:pointer(at + n * R.STRIDE + 4)
+      if not p then return nil end
+      local a, b = rom:u16(p), rom:u16(p + 2)
+      if a < R.TAG_MIN or a > R.TAG_MAX
+         or b < R.TAG_MIN or b > R.TAG_MAX then return nil end
+      n = n + 1
+    end
+    return nil
+  end
+  local found, seen = {}, {}
+  for at = R.SCAN_FROM, R.SCAN_TO, 4 do
+    local n = rows(at)
+    if n and n >= R.MIN_ROWS then
+      seen[at] = true
+      -- a table's own tail matches the same shape; only the head counts
+      if not seen[at - R.STRIDE] then found[#found + 1] = { at = at, n = n } end
+    end
+  end
+  if #found ~= 2 then
+    Logger.warn("gen3 reflections: %d reflection palette set tables match the "
+                .. "shape, and there should be two -- reflections will wear "
+                .. "their sprites' own colours", #found)
+    self._reflectSets = false
+    return nil
+  end
+  table.sort(found, function(a, b) return a.n < b.n end)
+  local function read(entry)
+    local out = {}
+    for i = 0, entry.n - 1 do
+      local tag = rom:u16(entry.at + i * R.STRIDE)
+      local p = rom:pointer(entry.at + i * R.STRIDE + 4)
+      if p then out[tag] = rom:u16(p + R.WATER * 2) end
+    end
+    return out
+  end
+  self._reflectSets = {
+    player = read(found[1]), special = read(found[2]),
+    source = ("ROM:the two reflection palette set tables, %07X (%d, the "
+              .. "player's) and %07X (%d, the special objects')")
+             :format(found[1].at, found[1].n, found[2].at, found[2].n),
+  }
+  Logger.info("Gen3 reflections: %s", self._reflectSets.source)
+  return self._reflectSets
+end
+
+-- Which palette a graphics row's reflection wears, or nil for "its own".
+function RomExtractorGen3:reflectionPaletteFor(info)
+  local R = RomExtractorGen3.REFLECT_PAL
+  if not info then return nil end
+  local flag = self.rom:u16(info + R.AT_REFLECT)
+  if flag == R.TAG_NONE then return nil end
+  local sets = self:reflectionPaletteSets()
+  if not sets then return nil end
+  local slot = self.rom:u8(info + R.AT_SLOT) % 16
+  local set = (slot == R.SLOT_PLAYER and sets.player)
+              or (slot == R.SLOT_SPECIAL and sets.special) or nil
+  local own = self.rom:u16(info + R.AT_PALTAG)
+  local want = set and set[own]
+  -- a set that names the row's OWN tag back (several do) is the cartridge
+  -- saying "no change", and needs no second sheet
+  if not want or want == own then return nil end
+  return want, own
+end
+
+-- ---------------------------------------------------------------------------
+-- HOW LOUD A CRY IS, AND WHAT IT DOES TO THE MUSIC
+--
+-- Reported from play: "the pokemon cries theyre seeming a little loud and
+-- obnoxious not matching emeralds presentation of them".  They were: this
+-- port played every cry at the full sound-effect level and left the music
+-- untouched underneath it, and the cartridge does neither.
+--
+-- PlayCry_Normal and its four siblings all open the same way:
+--
+--     m4aMPlayVolumeControl(&gMPlayInfo_BGM, 0xFFFF, 85)   -- duck the song
+--     PlayCryInternal(species, pan, 120, 10, mode)         -- CRY_VOLUME
+--
+-- so a cry sounds at 120 of the mixer's 256 -- under half -- and the music
+-- drops to 85 of 256 underneath it and comes back when the cry ends.  Both
+-- numbers are READ, not typed: the shape is a literal 0xFFFF into r1, a `mov
+-- r2,#duck`, a call, and then `mov r2,#volume / mov r3,#10` into a second
+-- call.  Five sites match it and all five agree, which is the check -- one
+-- site could be anything, five saying the same thing is the constant.
+RomExtractorGen3.CRY = {
+  LDR_PC = 0x4800, LDR_PC_END = 0x4FFF, INTO_R1 = 1,
+  MOV = 0x2000, MOV_MASK = 0xF800,
+  ALL_TRACKS = 0x0000FFFF,
+  BL = 0xF000,
+  MOV_R3_10 = 0x230A,            -- the priority argument, always 10
+  SCAN_FROM = 0x80000, SCAN_TO = 0x400000,
+  LOOK = 12,
+  SCALE = 256,                   -- the m4a mixer's unity volume
+}
+
+function RomExtractorGen3:extractCryVolume()
+  self:beginStage("Gen3 cry volume")
+  local rom = self.rom
+  local C = RomExtractorGen3.CRY
+  local function movTo(w, reg)
+    return w >= C.MOV and w < C.MOV + 0x800
+           and math.floor(w / 256) % 8 == reg
+  end
+  local found = {}
+  for at = C.SCAN_FROM, C.SCAN_TO, 2 do
+    local w = rom:u16(at)
+    if w >= C.LDR_PC and w <= C.LDR_PC_END
+       and math.floor(w / 256) % 8 == C.INTO_R1 then
+      local pc = at + 4
+      local lit = pc - (pc % 4) + (w % 256) * 4
+      if rom:u32(lit) == C.ALL_TRACKS then
+        local nxt = rom:u16(at + 2)
+        if movTo(nxt, 2) and rom:u16(at + 4) >= C.BL then
+          local duck = nxt % 256
+          for k = 3, C.LOOK do
+            local a = rom:u16(at + k * 2)
+            local b = rom:u16(at + k * 2 + 2)
+            local c = rom:u16(at + k * 2 + 4)
+            if movTo(a, 2) and b == C.MOV_R3_10 and c >= C.BL then
+              found[#found + 1] = { at = at, duck = duck, volume = a % 256 }
+              break
+            end
+          end
+        end
+      end
+    end
+    if at % 0x100000 == 0 then self:tick("Gen3 cry volume", at, C.SCAN_TO) end
+  end
+
+  if #found == 0 then
+    Logger.warn("gen3 cry volume: no PlayCry site matched the shape -- cries "
+                .. "keep the port's own level")
+    return
+  end
+  local volume, duck = found[1].volume, found[1].duck
+  for _, f in ipairs(found) do
+    if f.volume ~= volume or f.duck ~= duck then
+      Logger.warn("gen3 cry volume: %d sites disagree (%07X says %d/%d, "
+                  .. "%07X says %d/%d) -- cries keep the port's own level",
+                  #found, found[1].at, volume, duck, f.at, f.volume, f.duck)
+      return
+    end
+  end
+
+  local constants = self._constants or {}
+  constants.gen3Cry = {
+    volume = volume,
+    duckBgm = duck,
+    scale = C.SCALE,
+    source = ("ROM:%d PlayCry sites, all agreeing -- CRY_VOLUME %d/%d and the "
+              .. "song ducked to %d/%d (first at %07X)")
+             :format(#found, volume, C.SCALE, duck, C.SCALE, found[1].at),
+  }
+  self._constants = constants
+  self:write("constants", constants)
+  Logger.info("Gen3 cry volume: %s", constants.gen3Cry.source)
+end
+
+-- ---------------------------------------------------------------------------
+-- THE THREE LINES OF AN EVOLUTION
+--
+-- Reported from play: "the evolution screen for emerald ... currently its
+-- using the gen1 evolution screen".  It was -- pokered's, in pokered's words,
+-- on a 160x144 canvas -- and the first thing Hoenn's needs is what the
+-- cartridge actually says.
+--
+-- The three sit in ONE contiguous run, in the order the scene speaks them:
+--
+--     "What?\n{VAR1} is evolving!"
+--     "Congratulations! Your {VAR1}\nevolved into {VAR2}!"
+--     "Huh? {VAR1}\nstopped evolving!"
+--
+-- so the run is found by its middle words rather than by an address: " is
+-- evolving!" is encoded with the cartridge's own charmap and located in the
+-- image, the run it sits in is walked back to its terminator, and the next
+-- two are read straight off the end of it.  The CHECK is that all three
+-- agree about their shape -- the first names one thing, the second names two,
+-- the third names one and says "stopped" -- which no other run of three does.
+RomExtractorGen3.EVO_TEXT = {
+  NEEDLE = " is evolving!",
+  ALSO = "stopped evolving",
+  MAX = 160,
+  BACK = 200,      -- how far back a run's terminator may be
+}
+
+function RomExtractorGen3:extractEvolutionText()
+  self:beginStage("Gen3 evolution text")
+  local rom = self.rom
+  local E = RomExtractorGen3.EVO_TEXT
+  local needle = self:encodeText(E.NEEDLE)
+  if not needle then
+    Logger.warn("gen3 evolution text: the charmap will not encode %q -- the "
+                .. "screen keeps whatever words it had", E.NEEDLE)
+    return
+  end
+  local hits, from = {}, 1
+  while true do
+    local i = rom.data:find(needle, from, true)
+    if not i then break end
+    hits[#hits + 1] = i - 1
+    from = i + 1
+  end
+  if #hits ~= 1 then
+    Logger.warn("gen3 evolution text: %q appears %d times -- nothing written",
+                E.NEEDLE, #hits)
+    return
+  end
+  -- back to this run's own start: the byte after the previous terminator
+  local start = hits[1]
+  local floor = math.max(0, start - E.BACK)
+  while start > floor and rom:u8(start - 1) ~= 0xFF do start = start - 1 end
+  if start == floor then
+    Logger.warn("gen3 evolution text: no terminator within %d bytes before "
+                .. "%07X -- nothing written", E.BACK, hits[1])
+    return
+  end
+
+  local lines, off = {}, start
+  for _ = 1, 3 do
+    local line, used = self:readText(off, E.MAX)
+    if type(line) ~= "string" or not used or #line == 0 then
+      Logger.warn("gen3 evolution text: %07X is not three strings in a row "
+                  .. "-- nothing written", start)
+      return
+    end
+    lines[#lines + 1] = line
+    off = off + used
+  end
+  local evolving, congrats, stopped = lines[1], lines[2], lines[3]
+  local one = function(t) return t:find("{VAR1}", 1, true) ~= nil end
+  local two = function(t) return t:find("{VAR2}", 1, true) ~= nil end
+  if not (one(evolving) and not two(evolving)
+          and one(congrats) and two(congrats)
+          and one(stopped) and not two(stopped)
+          and stopped:find(E.ALSO, 1, true)) then
+    Logger.warn("gen3 evolution text: the run at %07X is not the scene's "
+                .. "three lines (%q / %q / %q) -- nothing written",
+                start, evolving, congrats, stopped)
+    return
+  end
+
+  local constants = self._constants or {}
+  constants.gen3Evolution = {
+    evolving = evolving,
+    congratulations = congrats,
+    stopped = stopped,
+    source = ("ROM:evolution text run at %07X, three strings read in order")
+             :format(start),
+  }
+  self._constants = constants
+  self:write("constants", constants)
+  Logger.info("Gen3 evolution text: %q", evolving)
+end
+
+-- ---------------------------------------------------------------------------
+-- THE BUY / SELL / QUIT BOX, where the cartridge puts it
+--
+-- Reported from play: "also need the gen3 mart menu to show properly as it
+-- would in emerald".  The counter behind it is Emerald's -- Gen3ShopMenu, a
+-- 240x160 screen with the money in the corner -- and the three-row menu in
+-- FRONT of it was still sitting at the Game Boy's (0,0) with a Game Boy's
+-- width, because nobody had read where Hoenn's goes.
+--
+-- CreatePokemartMenu's mode-0 branch loads a pair of WindowTemplates and
+-- pushes them onto the stack a word at a time, and that is the shape this
+-- pins:
+--
+--     cmp  r4,#0                 -- shop mode
+--     bne  <not the buy/sell menu>
+--     ldr  r0,=sShopMenuWindowTemplates
+--     ldr  r1,[r0,#4]  /  ldr r0,[r0,#0]
+--     str  r0,[sp,#0]  /  str r1,[sp,#4]
+--
+-- Five exact halfwords, one compare and one branch, and it occurs ONCE in the
+-- image.  The template behind it is eight bytes -- bg, left, top, width,
+-- height, palette, base block -- and the check is that BOTH templates read as
+-- windows and differ only in how many rows they hold, which is what the two
+-- shop modes are: three rows with SELL and two without.
+--
+-- The numbers here are the window's INTERIOR, as the cartridge's are.  The
+-- frame the port draws sits outside it, so the box is width + 2 by height + 2
+-- at (left - 1, top - 1); Gen3ShopMenu's caller does that conversion rather
+-- than this writing pre-converted numbers down.
+RomExtractorGen3.SHOP_MENU = {
+  CMP_R4_0 = 0x2C00, BNE = 0xD100, BNE_MASK = 0xFF00,
+  LDR_R0_PC = 0x4800, LDR_MASK = 0xF800,
+  LDR_R1_4 = 0x6841, LDR_R0_0 = 0x6800,
+  STR_SP0 = 0x9000, STR_SP4 = 0x9101,
+  SCAN_FROM = 0x80000, SCAN_TO = 0x400000,
+  MAX_BG = 3, MAX_LEFT = 30, MAX_TOP = 20,
+  MAX_W = 28, MAX_H = 18, MAX_PAL = 15,
+}
+
+function RomExtractorGen3:extractShopMenu()
+  self:beginStage("Gen3 shop menu window")
+  local rom = self.rom
+  local S = RomExtractorGen3.SHOP_MENU
+  local found = {}
+  for at = S.SCAN_FROM, S.SCAN_TO, 2 do
+    if rom:u16(at) == S.CMP_R4_0
+       and rom:u16(at + 2) >= S.BNE and rom:u16(at + 2) < S.BNE + 0x100 then
+      local w = rom:u16(at + 4)
+      if w >= S.LDR_R0_PC and w < S.LDR_R0_PC + 0x100
+         and rom:u16(at + 6) == S.LDR_R1_4
+         and rom:u16(at + 8) == S.LDR_R0_0
+         and rom:u16(at + 10) == S.STR_SP0
+         and rom:u16(at + 12) == S.STR_SP4 then
+        local pc = at + 8
+        local lit = pc - (pc % 4) + (w % 256) * 4
+        found[#found + 1] = { at = at, ptr = rom:u32(lit) }
+      end
+    end
+  end
+  if #found ~= 1 then
+    Logger.warn("gen3 shop menu: %d sites push a pair of window templates "
+                .. "-- the menu keeps the port's own box", #found)
+    return
+  end
+  local ptr = found[1].ptr
+  if not ptr or ptr < 0x08000000 or ptr >= 0x0A000000 then
+    Logger.warn("gen3 shop menu: %08X is not a ROM pointer -- the menu keeps "
+                .. "the port's own box", tostring(ptr))
+    return
+  end
+  local base = ptr - 0x08000000
+  local function template(n)
+    local o = base + n * 8
+    return {
+      bg = rom:u8(o), left = rom:u8(o + 1), top = rom:u8(o + 2),
+      width = rom:u8(o + 3), height = rom:u8(o + 4), palette = rom:u8(o + 5),
+    }
+  end
+  local a, b = template(0), template(1)
+  local function ok(t)
+    return t.bg <= S.MAX_BG and t.left >= 1 and t.left <= S.MAX_LEFT
+           and t.top <= S.MAX_TOP and t.width >= 1 and t.width <= S.MAX_W
+           and t.height >= 1 and t.height <= S.MAX_H
+           and t.palette <= S.MAX_PAL
+  end
+  if not (ok(a) and ok(b)) then
+    Logger.warn("gen3 shop menu: %07X is not two window templates -- the menu "
+                .. "keeps the port's own box", base)
+    return
+  end
+  -- the two shop modes differ in ROWS and nothing else: three with SELL in
+  -- them, two without
+  if a.left ~= b.left or a.top ~= b.top or a.width ~= b.width
+     or a.height <= b.height then
+    Logger.warn("gen3 shop menu: the two templates at %07X are not the same "
+                .. "box with different row counts -- the menu keeps the "
+                .. "port's own box", base)
+    return
+  end
+
+  local constants = self._constants or {}
+  constants.gen3ShopMenu = {
+    left = a.left, top = a.top, width = a.width,
+    height = a.height, heightNoSell = b.height,
+    source = ("ROM:sShopMenuWindowTemplates %07X, pinned by the mode-0 branch "
+              .. "at %07X"):format(base, found[1].at),
+  }
+  self._constants = constants
+  self:write("constants", constants)
+  Logger.info("Gen3 shop menu: (%d,%d) %dx%d (%d rows without SELL)",
+              a.left, a.top, a.width, a.height, b.height)
+end
+
+function RomExtractorGen3:rippleArtUncached()
+  local rom = self.rom
+  local R = RomExtractorGen3.RIPPLE
+
+  local spawn, effectId
+  for at = R.CODE_FROM, R.CODE_TO, 2 do
+    if rom:u16(at) == R.ARG_SUBPRIORITY and rom:u16(at + 2) == R.STR_ARG2
+       and rom:u16(at + 4) == R.ARG_PRIORITY
+       and rom:u16(at + 6) == R.STR_ARG3 then
+      local mov = rom:u16(at + 8)
+      if mov >= R.MOV_R0 and mov <= R.MOV_R0_END then
+        if spawn then
+          return nil, ("two ground effects spawn rings (%07X and %07X)")
+                      :format(spawn, at)
+        end
+        spawn, effectId = at, mov % 256
+      end
+    end
+  end
+  if not spawn then return nil, "no ground effect spawns rings" end
+
+  local pred
+  for at = R.CODE_FROM, R.PRED_TO, 2 do
+    if rom:u16(at) == R.WIDEN_LSL and rom:u16(at + 2) == R.WIDEN_LSR
+       and rom:u16(at + 4) == R.CMP_A and rom:u16(at + 8) == R.CMP_B
+       and rom:u16(at + 12) == R.CMP_C then
+      if pred then
+        return nil, ("two predicates test the same three behaviours (%07X "
+                     .. "and %07X)"):format(pred, at)
+      end
+      pred = at
+    end
+  end
+  if not pred then return nil, "no MetatileBehavior_HasRipples" end
+  local behaviours = { rom:u16(pred + 4) % 256, rom:u16(pred + 8) % 256,
+                       rom:u16(pred + 12) % 256 }
+  table.sort(behaviours)
+
+  local script = rom:pointer(RomExtractorGen3.EMOTE.SCRIPTS + effectId * 4)
+  if not script then
+    return nil, ("effect %d has no script"):format(effectId)
+  end
+  if rom:u8(script) ~= R.LOADPAL_CALLNATIVE then
+    return nil, ("effect %d does not open by loading a palette and calling a "
+                 .. "native (opcode %d)"):format(effectId, rom:u8(script))
+  end
+  local palRecord = rom:pointer(script + 1)
+  local native = rom:pointer(script + 5)
+  if not (palRecord and native) then
+    return nil, "the script's pointers do not read"
+  end
+  native = native - (native % 2)
+  local palData = rom:pointer(palRecord)
+  local palTag = rom:u16(palRecord + 4)
+  if not palData then return nil, "the palette record has no colours" end
+
+  local template
+  for k = 0, R.NATIVE_SCAN - 1 do
+    local w, nxt = rom:u16(native + k * 2), rom:u16(native + k * 2 + 2)
+    if w >= R.LDR_PC and w <= R.LDR_PC_END
+       and math.floor(nxt / 2048) == R.LDR_IMM_TOP
+       and nxt % 8 == 0 and math.floor(nxt / 8) % 8 == 0 then
+      local pc = native + k * 2 + 4
+      local table_ = rom:pointer(pc - (pc % 4) + (w % 256) * 4)
+      local at = table_ and rom:pointer(table_ + (math.floor(nxt / 64) % 32) * 4)
+      if at and rom:u16(at + R.AT_PALTAG) == palTag then
+        template = at
+        break
+      end
+    end
+  end
+  if not template then
+    return nil, ("the native at %07X names no sprite template wearing the "
+                 .. "palette the script just loaded ($%04X)")
+                :format(native, palTag)
+  end
+
+  local images = rom:pointer(template + R.AT_IMAGES)
+  if not images then return nil, "the template has no image list" end
+  local frames = {}
+  for f = 0, R.FRAMES - 1 do
+    local data = rom:pointer(images + f * 8)
+    local size = rom:u16(images + f * 8 + 4)
+    if not data or size ~= R.FRAME_BYTES then
+      return nil, ("picture %d is not a %d-byte %dx%d frame")
+                  :format(f, R.FRAME_BYTES, R.SIZE, R.SIZE)
+    end
+    frames[f + 1] = data
+  end
+
+  -- the cartridge's own order and holds, which is not simply 0..4: it runs
+  -- 0 1 2 3 0 1 2 4 and lingers a little on the first and last
+  local anims = rom:pointer(template + R.AT_ANIMS)
+  local first = anims and rom:pointer(anims)
+  local order = {}
+  if first then
+    for c = 0, R.ANIM_MAX - 1 do
+      local which = rom:u16(first + c * 4)
+      if which == R.ANIM_END or which >= R.FRAMES then break end
+      order[#order + 1] = { which, rom:u16(first + c * 4 + 2) }
+    end
+  end
+  if #order == 0 then
+    for f = 0, R.FRAMES - 1 do order[#order + 1] = { f, R.HOLD } end
+  end
+
+  return {
+    effect = effectId,
+    behaviours = behaviours,
+    frames = frames,
+    palette = RomGba.palette(rom:bytes(palData, R.COLORS * 2)),
+    order = order,
+    key = R.KEY,
+    image = R.IMAGE,
+    source = ("ROM:GroundEffect_Ripple %07X -> FieldEffectStart(%d); its "
+              .. "template wears palette $%04X; behaviours off "
+              .. "MetatileBehavior_HasRipples %07X")
+             :format(spawn, effectId, palTag, pred),
+  }
+end
+
+function RomExtractorGen3:rippleArt()
+  if self._rippleArt ~= nil then return self._rippleArt or nil end
+  local ok, art, why = pcall(self.rippleArtUncached, self)
+  if not ok then
+    Logger.warn("gen3 ripple: %s", tostring(art))
+    self._rippleArt = false
+    return nil
+  end
+  if not art then
+    Logger.warn("gen3 ripple: %s -- stepping in water will not ring",
+                tostring(why or "not found"))
+    self._rippleArt = false
+    return nil
+  end
+  self._rippleArt = art
+  return art
+end
+
 function RomExtractorGen3:extractElevation()
   self:beginStage("Gen3 battle elevation")
   local constants = self._constants or {}
@@ -30693,7 +31663,9 @@ function RomExtractorGen3:extractItemEffects()
 end
 
 RomExtractorGen3.DATA_STAGES = {
-  "extractConstants", "extractMoves", "extractPartyActions",
+  "extractConstants", "extractCryVolume", "extractEvolutionText",
+  "extractShopMenu",
+  "extractMoves", "extractPartyActions",
   "extractSizeRecords", "extractPokemonJump", "extractNatureGirl",
   "extractPokemon", "extractItems", "extractBalls",
   "extractItemEffects",
@@ -30727,7 +31699,7 @@ RomExtractorGen3.DATA_STAGES = {
   "extractNamingKeyboard", "extractBattleMenu", "extractSummaryText",
   "extractHoennDex", "extractTilesetAnimations", "extractSafari",
   "extractTrainerMemo", "extractAbilityDescriptions",
-  "extractMonAnims", "extractCries", "extractElevation",
+  "extractMonAnims", "extractCries", "extractReflections", "extractElevation",
   "extractBattleWindows",
   "extractMoveDescriptions", "extractContestMoves",
   "extractContests", "extractPokeblocks", "extractRoulette",

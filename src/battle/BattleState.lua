@@ -128,6 +128,24 @@ BattleState.holdsUIAnchors = true
 -- prompts pushed during a wide battle keep its wide canvas, while drawing
 -- their classic 160px UI centred within it (Game:draw).
 function BattleState:isWideBattleLayout()
+  -- ...AND IT IS NOT WHAT A HOENN CARTRIDGE WANTS.
+  --
+  -- Reported from play: "gen3 looks a lot like gen1 with the widescreen
+  -- battle style active".  It did, exactly: gen3Layout() below declined the
+  -- moment this returned true, so switching the option on TOOK EMERALD'S
+  -- SCREEN AWAY and put the Game Boy composition up in its place, stretched
+  -- to 304x144.  The Game Boy HUD, the Game Boy 2x2 menu, the Game Boy text
+  -- strip -- on a Gen 3 cartridge.
+  --
+  -- Read what this option is FOR.  WideBattle's own header says it: "the
+  -- extra 144 pixels of width buy a Gen 3-style arrangement" -- foe's status
+  -- upper left with its picture upper right, the player's lower left and
+  -- lower right, a full-width message window, a 2x2 move menu.  It is an
+  -- approximation of Emerald's screen, offered to games that do not have one.
+  -- Hoenn has the real thing, at the size the cartridge draws it, with the
+  -- cartridge's own healthboxes and window frames.  There is nothing here for
+  -- it to buy, so the option is satisfied by the layout it was imitating.
+  if GameVersion.isGen3() then return false end
   local options = self.game and self.game.save and self.game.save.options
   return options and options.battleLayout == "wide" or false
 end
@@ -1716,6 +1734,14 @@ function BattleState:buildScreen(id, ...)
   if args.n <= 1 then
     local rid, rarg = Screens.resolveId(game, id, args[1])
     if rid ~= id then resolvedId, args = rid, { n = 1, rarg } end
+  elseif Screens.positionalAlias(id) then
+    -- A POSITIONAL ALIAS TAKES AS MANY ARGUMENTS AS IT IS GIVEN.  The single
+    -- options table above is the only shape that has to be folded; this one
+    -- hands (mon, moveId) straight through, so the arity is no reason to
+    -- decline it -- which is what left move learning on the Game Boy screen
+    -- inside a battle and nowhere else.
+    local rid = Screens.resolveId(game, id, nil)
+    if rid ~= id then resolvedId = rid end
   end
   local factory = Screens.get(game, resolvedId)
   local function build()
@@ -3008,7 +3034,7 @@ function BattleState:enter()
   -- pokeball OAM, so the intro chrome never returns for the rest of the
   -- battle -- not on a switch, and not when the beaten trainer's pic
   -- scrolls back in (#317, #282)
-  self:act(function() self.introBalls = nil end)
+  self:act(function() self.introBalls = nil self.introBallsFrom = nil end)
   if self.kind == "trainer" then
     -- EnemySendOutFirstMon (core.asm:1308-1310): SlideTrainerPicOffScreen
     -- walks the foe's pic off the RIGHT edge (hlcoord 18,0, a = 8 tiles,
@@ -9470,6 +9496,32 @@ function BattleState:drawPicsLayer(slide, sx, sy, onlySide, skipMenuClip)
     local img = self:picImage(self.trainerPic)
     love.graphics.setColor(1, 1, 1, 1)
     local ex, ey = enemyPicXY(img, slide, sx, sy)
+    -- ...AND ON EMERALD'S FIELD THAT SLOT IS THE PLATFORM.
+    --
+    -- Reported from play: "the trainers dont slide to where they should in
+    -- battles they should slide to the position the pokemon would be in
+    -- before they throw them out".  That is the rule, and it was followed on
+    -- three of the four pics: the foe's Pokemon, the player's Pokemon and the
+    -- player's own back sprite all go through Gen3Battle.picPlacement, and
+    -- the OPPOSING TRAINER -- the only one of the four a player watches slide
+    -- in from the edge -- was left on the Game Boy's 7x7 tile slot at
+    -- hlcoord 12,0.  So he slid in high and to the right of the platform, and
+    -- his Pokemon then appeared somewhere he had never been standing.
+    --
+    -- A bare { isPlayer = false } rather than the battler: picPlacement lifts
+    -- a FOE by its species' elevation entry, and a trainer is a person
+    -- standing on the ground -- carrying the Pokemon's lift across would sit
+    -- him in the air by however far its species floats.  Same shape as the
+    -- player's back pic, which passes { isPlayer = true } for the same reason.
+    --
+    -- Placed at scale 1 because it is DRAWN at scale 1, one line below: the
+    -- two have to be the same number or the feet land somewhere the pic is
+    -- not.
+    if self:gen3Layout() then
+      local tx, ty = Gen3Battle.picPlacement(self, { isPlayer = false }, img,
+                                             imagePathOf(img), 1)
+      ex, ey = tx - slide + sx, ty + sy
+    end
     -- SlideTrainerPicOffScreen / _ScrollTrainerPicAfterBattle offset (#317)
     love.graphics.draw(img, ex + self:picOffset("foe"), ey)
   elseif onlySide ~= "player"

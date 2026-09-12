@@ -131,7 +131,37 @@ function Gen3Options.new(game, opts)
     sound = true, stereo = true,
   }
   local okRows, extra = pcall(function()
-    return require("src.ui.OptionsMenu").buildRows(game)
+    local rows = require("src.ui.OptionsMenu").buildRows(game)
+    -- AND THE MODS' OWN ROWS, WHICH THIS SCREEN HAS NEVER SHOWN.
+    --
+    -- `buildRows` is only half of how the other versions' OPTIONS list is
+    -- assembled: OptionsMenu.new takes what it returns and runs it through
+    -- the `ui.options.rows` hook, which is the seam every mod adds, removes
+    -- and reorders rows through.  This screen called buildRows directly and
+    -- stopped there, so on Emerald -- and nowhere else -- every row a mod
+    -- adds was missing and every row a mod takes away was still on screen.
+    --
+    -- With the voxel mod installed that was eight rows absent (WATER,
+    -- ANTI-ALIAS, V-GRID, CURVE, 3D-BTL, BACK SPRITES, DAYTIME, VR) and two
+    -- dead rows present (TILT and GBC FX, which that mod holds at zero for
+    -- as long as it is installed), on the one version the mod is mostly
+    -- about.  PERFORMANCE is a vanilla row and did appear; what it had left
+    -- to scale on this screen was the FPS ceiling.
+    --
+    -- Run INSIDE the pcall that was already here, so a mod whose hook
+    -- throws leaves the screen with the cartridge's own six rows and a
+    -- warning on the console -- the same degradation a failed buildRows has
+    -- always had -- rather than a Gen 3 OPTION screen that cannot open.
+    local Runtime = require("src.mods.Runtime")
+    local hooked = Runtime.call("ui.options.rows",
+                                function(_, vanilla) return vanilla end,
+                                game, rows)
+    if type(hooked) ~= "table" then
+      Logger.error("gen3 options: ui.options.rows returned %s; keeping the "
+                   .. "vanilla rows", type(hooked))
+      return rows
+    end
+    return hooked
   end)
   if okRows and type(extra) == "table" then
     for _, row in ipairs(extra) do

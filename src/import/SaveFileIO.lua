@@ -3,11 +3,20 @@
 -- calls importToSlot / exportActiveSlot and renders the {ok, result} outcome.
 --
 -- Import reads bytes (an absolute picker path, a dropped LOVE file, or raw
--- bytes), runs them through SaveConvert.importSav (32768-byte + checksum
--- validated), then registers a fresh slot, writes it, and makes it active.
--- Export loads the active slot, encodes it back to a 32768-byte SRAM image, and
--- drops it in the save directory's exports/ folder, returning the absolute path
--- so the launcher can offer an "open folder" affordance.
+-- bytes), runs them through SaveConvert.importSav (size + checksum validated),
+-- then registers a fresh slot, writes it, and makes it active.  Export loads
+-- the active slot, encodes it back to a battery image, and drops it in the
+-- save directory's exports/ folder, returning the absolute path so the
+-- launcher can offer an "open folder" affordance.
+--
+-- A SAVE IS NOT ONE SIZE.  Gen 1 and Gen 2 batteries are 32 KiB; a Game Boy
+-- Advance cartridge's flash is 128 KiB, four times that.  This file had the
+-- Game Boy number as a module constant and measured every incoming file
+-- against it, so every Emerald save was refused before any codec saw it --
+-- "A save file must be 32768 bytes; this one is 131072" -- while EXPORT, which
+-- never measured anything, worked.  That is the reported shape exactly: saves
+-- could be exported and not imported.  The size is asked of the codec for the
+-- version now (SaveConvert.saveSizeFor), which is the one place that knows.
 --
 -- Every failure returns false + a friendly one-line message (never raises), so
 -- the card can surface it as a red notice line rather than crashing.
@@ -18,16 +27,27 @@ local GameVersion = require("src.core.GameVersion")
 
 local SaveFileIO = {}
 
-local SAVE_SIZE = SaveConvert.SAVE_SIZE
+-- The battery size for a version, asked of the codec that will read it.
+-- Falls back to the Game Boy size only when the version is unknown, which is
+-- what the old constant meant and is still the right answer for a caller that
+-- names nothing.
+local function saveSize(version)
+  local ok, n = pcall(SaveConvert.saveSizeFor, version)
+  return (ok and tonumber(n)) or SaveConvert.SAVE_SIZE
+end
+-- exposed so a test can ask the question the import asks, without standing up
+-- a save directory and a slot registry to ask it through
+SaveFileIO.saveSize = saveSize
 
 -- Resolve raw save bytes from whatever the launcher hands us:
 --   * a LOVE DroppedFile (a table/userdata with :open/:read/:getSize), read the
 --     way RomImporter reads a dropped ROM;
---   * a raw 32768-byte string (the tests and the in-memory path) used as-is;
+--   * a raw battery image as a string (the tests and the in-memory path), used
+--     as-is;
 --   * any other string treated as an absolute picker path opened with io.open.
--- A picker path is never 32768 bytes long, so the length test disambiguates it
--- from a raw image cleanly.  Returns bytes, or nil + an error string.
-local function readSource(source)
+-- A picker path is never a battery's length, so the length test disambiguates
+-- it from a raw image cleanly.  Returns bytes, or nil + an error string.
+local function readSource(source, version)
   local t = type(source)
   if t == "table" or t == "userdata" then
     if type(source.read) ~= "function" then
@@ -43,7 +63,7 @@ local function readSource(source)
   if t ~= "string" then
     return nil, "no save file was provided"
   end
-  if #source == SAVE_SIZE then
+  if #source == saveSize(version) then
     return source
   end
   local f, openErr = io.open(source, "rb")
@@ -63,17 +83,21 @@ local function readSource(source)
 end
 
 -- importToSlot(source, version) -> ok, slotIdOrErr
--- source: an absolute path, a LOVE DroppedFile, or raw 32768 bytes.  On success
+-- source: an absolute path, a LOVE DroppedFile, or a raw battery image of
+-- the size this version's codec reads.  On success
 -- registers a new slot for the version, writes the imported save into it, makes
 -- it the active slot, and returns true + the new slot id.  On any failure
 -- returns false + a friendly message.
 function SaveFileIO.importToSlot(source, version)
   version = version or GameVersion.get()
-  local bytes, readErr = readSource(source)
+  local want = saveSize(version)
+  local bytes, readErr = readSource(source, version)
   if not bytes then return false, readErr end
-  if #bytes ~= SAVE_SIZE then
-    return false, ("A save file must be %d bytes (32 KB); this one is %d.")
-      :format(SAVE_SIZE, #bytes)
+  if #bytes ~= want then
+    local info = GameVersion.info(version)
+    return false, ("A %s save file must be %d bytes (%d KB); this one is %d.")
+      :format((info and info.displayName) or tostring(version), want,
+              math.floor(want / 1024), #bytes)
   end
   -- 3rd arg: the crosswalk has to come from THIS game's ROM cache.  The
   -- launcher imports before the cache is mounted on the un-prefixed paths, so
@@ -98,7 +122,7 @@ end
 
 -- exportActiveSlot(version) -> ok, pathOrErr
 -- Loads the version's active slot save (SaveData.load semantics), encodes it
--- back to a 32768-byte SRAM image, and writes it to
+-- back to that generation's battery image, and writes it to
 -- exports/gen1recomp-<version>-<slotId>.sav in the save directory (created if
 -- absent).  Returns true + the absolute path on success, false + a friendly
 -- message otherwise.

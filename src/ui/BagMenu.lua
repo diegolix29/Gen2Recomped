@@ -420,7 +420,16 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
     -- item, and every in-battle use, popped it in PartyMenu before onSwitch,
     -- and takes the pop-then-print path below -- which is the path that
     -- spends the battle turn.  #252, #379
-    if picker and picker.keepOpen and extra and extra.healedFrom and target then
+    -- ...AND ONLY A PICKER THAT CAN ANIMATE IS ASKED TO.
+    --
+    -- This screen is whichever party picker the generation opened, and it
+    -- took `animateTo` on faith: Hoenn's opens Gen3PartyMenu, which had no
+    -- such method, and every out-of-battle potion in the game crashed here.
+    -- Gen3PartyMenu has one now -- but the message must print either way, so
+    -- a picker that cannot animate falls through to the plain path rather
+    -- than taking the game down with it.
+    if picker and picker.keepOpen and extra and extra.healedFrom and target
+       and type(picker.animateTo) == "function" then
       picker:animateTo(target, extra.healedFrom, function()
         showMessages(game, payload, closePicker)
       end)

@@ -395,10 +395,52 @@ end
 -- Baking everything above the sprites, which is what this did, put a
 -- character under the floor he was standing on 29% of the time.
 local COVERED = 1
+local SPLIT = 2
 
 function Gen3Tiles:topIsAbovePlayer(metatile)
   local _, layerType = self:attributes(metatile)
   return layerType ~= COVERED
+end
+
+-- WHICH HALF OF A METATILE COVERS A REFLECTION, which is not the same
+-- question as which half covers the PLAYER -- and the difference is the whole
+-- of why reflections were painting over bridge planks.
+--
+-- The hardware has THREE background layers under a Gen 3 map, and a
+-- metatile's layer type says which two of them it uses
+-- (METATILE_LAYER_TYPE_*, read out of bits 12-15 of the attributes word):
+--
+--   NORMAL  (0)  middle + top
+--   COVERED (1)  bottom + middle
+--   SPLIT   (2)  bottom + top
+--
+-- A character is an object at priority 2, which on this hardware draws above
+-- the bottom and middle backgrounds and below the top one -- so the top layer
+-- is the half that hides them, which is what topIsAbovePlayer answers and
+-- what drawAbove draws.
+--
+-- A REFLECTION is an object at priority 3 (SetUpReflection, ROM:0153EE8,
+-- `mov r3,#152` subpriority and the priority field beside it).  Priority 3
+-- draws above the BOTTOM background ONLY: every other layer of the metatile
+-- it lands in covers it.  So:
+--
+--   NORMAL   nothing of the metatile is on the bottom layer, so BOTH halves
+--            cover the reflection -- layer 1 here, layer 2 via drawAbove
+--   COVERED  layer 1 is the bottom (the water), layer 2 the middle -- so the
+--            reflection sits on the water and layer 2 covers it.  THIS IS
+--            THE BRIDGE: every one of the eight REFLECTION_UNDER_BRIDGE
+--            metatiles in the game is COVERED, its water in layer 1 and its
+--            planks in layer 2, and that is how the cartridge puts a
+--            reflection in the water UNDER a pier instead of on top of it.
+--   SPLIT    layer 1 is the bottom and layer 2 the top, so drawAbove already
+--            covers it and there is nothing extra to draw.
+--
+-- Returns the layer to overdraw, or nil when the top layer alone suffices.
+function Gen3Tiles:reflectionCoverLayer(metatile)
+  local _, layerType = self:attributes(metatile)
+  if layerType == COVERED then return 2 end
+  if layerType == SPLIT then return nil end
+  return 1
 end
 
 -- One metatile into one sheet slot, with the layer rules above.  Separate
