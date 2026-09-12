@@ -70,19 +70,7 @@ local function battleCommandsEnabled()
   if not (options and type(options.get) == "function") then return true end
   local ok, value = pcall(options.get, options, "battleCommands")
   if not ok or value == nil then return true end
-  if value == false then return false end
-  -- Also check the Colosseum Battle UI setting from BattleSettings
-  local game = mod and mod.game
-  if game and game.save and game.save.colosseumBattle then
-    local p = game.save.colosseumBattle
-    if p.colosseumBattleUIEnabled == false then return false end
-  end
-  -- Check the global colosseumBattleUI feature flag as well
-  local ok2, colosseumValue = pcall(options.get, options, "colosseumBattleUI")
-  if ok2 and colosseumValue == false then return false end
-  -- For Colosseum battles, the UI should work the same way as regular battles
-  -- when colosseumBattleUIEnabled is true
-  return true
+  return value ~= false
 end
 
 local function battleShortcutMode()

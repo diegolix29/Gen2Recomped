@@ -6,7 +6,7 @@ local GEN1_START=table.concat({"Start","Menu"})
 local function prefs(game)
   if not (game and game.save) then
     return {
-      music="normal",arena="auto",arenasEnabled=true,cameraEnabled=true,pokemonModelsEnabled=true,colosseumBattleUIEnabled=true,
+      music="normal",arena="auto",arenasEnabled=true,cameraEnabled=true,pokemonModelsEnabled=true,
       playerModel="red",enemyTrainerModel="auto",rivalModel="leaf",
       doubleBattlesEnabled=true,abilitiesEnabled=true,freeLookEnabled=true,
       autoProgressEnabled=true,bossIntroEnabled=false,battleSoundsEnabled=true,
@@ -23,9 +23,6 @@ local function prefs(game)
   -- declines them and the user's normal resolved sprite/model pipeline wins.
   if p.pokemonModelsEnabled==nil then p.pokemonModelsEnabled=true end
   p.pokemonModelsEnabled=p.pokemonModelsEnabled and true or false
-  -- Colosseum Battle UI toggle for healthbars and names during battles
-  if p.colosseumBattleUIEnabled==nil then p.colosseumBattleUIEnabled=true end
-  p.colosseumBattleUIEnabled=p.colosseumBattleUIEnabled and true or false
 
   -- Migrate older boolean trainer settings into the current model selectors.
   if p.battleSoundsEnabled==nil then p.battleSoundsEnabled=true end
@@ -109,7 +106,6 @@ local function openBattleMenu(game,returnId,returnParent)
   local environmentToggle={keepOpen=true}
   local cameraToggle={keepOpen=true}
   local pokemonModelsToggle={keepOpen=true}
-  local colosseumBattleUIToggle={keepOpen=true}
   local doublesToggle={keepOpen=true}
   local abilitiesToggle={keepOpen=true}
   local bossIntroToggle={keepOpen=true}
@@ -128,7 +124,6 @@ local function openBattleMenu(game,returnId,returnParent)
     environmentToggle.label="COLOSSEUM ARENAS  "..(p.arenasEnabled and "ON" or "OFF")
     cameraToggle.label="COLOSSEUM CAMERA  "..(p.cameraEnabled and "ON" or "OFF")
     pokemonModelsToggle.label="COLOSSEUM MODELS  "..(p.pokemonModelsEnabled and "ON" or "OFF")
-    colosseumBattleUIToggle.label="COLOSSEUM BATTLE UI  "..(p.colosseumBattleUIEnabled and "ON" or "OFF")
     freeLookToggle.label="FREE LOOK CAMERA  "..(p.freeLookEnabled~=false and "ON" or "OFF")
     autoProgressToggle.label="AUTO BATTLE FLOW  "..(p.autoProgressEnabled~=false and "ON" or "OFF")
     soundsToggle.label="BATTLE SOUNDS  "..(p.battleSoundsEnabled and "COLOSSEUM" or "ORIGINAL")
@@ -178,23 +173,6 @@ local function openBattleMenu(game,returnId,returnParent)
   end
   pokemonModelsToggle.onSelect=function()
     p.pokemonModelsEnabled=not p.pokemonModelsEnabled
-    refresh()
-  end
-  colosseumBattleUIToggle.onSelect=function()
-    p.colosseumBattleUIEnabled=not p.colosseumBattleUIEnabled
-    -- Also update the global feature flag for compatibility
-    local mod = modRef or (game and game.mod)
-    if mod and mod.options and type(mod.options.set) == "function" then
-      pcall(mod.options.set, mod.options, "colosseumBattleUI", p.colosseumBattleUIEnabled)
-    end
-    -- Update battleCommands as well since they're linked
-    if mod and mod.options and type(mod.options.set) == "function" then
-      pcall(mod.options.set, mod.options, "battleCommands", p.colosseumBattleUIEnabled)
-    end
-    -- Sync with the global colosseumBattleUI setting for Colosseum battles
-    if mod and mod.options and type(mod.options.set) == "function" then
-      pcall(mod.options.set, mod.options, "colosseumBattleUI", p.colosseumBattleUIEnabled)
-    end
     refresh()
   end
   doublesToggle.onSelect=function()
@@ -411,7 +389,7 @@ local function openBattleMenu(game,returnId,returnParent)
   refresh()
   -- Trainer presentation is intentionally three independent ownership rows:
   -- player Red, ordinary/special enemy trainers, and the Kanto rival substitute.
-  local mainRows={environmentToggle,cameraToggle,pokemonModelsToggle,colosseumBattleUIToggle,doublesToggle,abilitiesToggle,autoProgressToggle,freeLookToggle,bossIntroToggle,musicRow,soundsToggle,audioQualityRow,arenaRow,playerTrainerRow,enemyTrainerRow,rivalRow,hardCacheRow,cacheRow,back}
+  local mainRows={environmentToggle,cameraToggle,pokemonModelsToggle,doublesToggle,abilitiesToggle,autoProgressToggle,freeLookToggle,bossIntroToggle,musicRow,soundsToggle,audioQualityRow,arenaRow,playerTrainerRow,enemyTrainerRow,rivalRow,hardCacheRow,cacheRow,back}
   menu=Menu.new(game,mainRows,{tx=1,ty=2,tw=24,maxVisible=10,onCancel=function() reopen(game,returnId,returnParent) end})
   menu.screenId="CbeBattleSettings"
   if BattleMenuUI and BattleMenuUI.mark then

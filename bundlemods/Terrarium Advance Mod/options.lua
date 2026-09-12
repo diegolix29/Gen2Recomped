@@ -149,11 +149,4 @@ return {
     },
     description = "Controls which 2D battle effects are shown: authentic Stadium effects, all effects, or none.",
   },
-  {
-    key = "battleCommands",
-    type = "toggle",
-    label = "BATTLE COMMANDS",
-    default = true,
-    description = "Enables custom battle commands UI including healthbars, names, and controller shortcuts during battles.",
-  },
 }

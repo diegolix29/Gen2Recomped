@@ -93,14 +93,6 @@ local CATEGORIES = {
     },
   },
   {
-    id = "colosseum", label = "COLOSSEUM",
-    description = "Pokemon Colosseum battle environments, models, and settings.",
-    keys = {
-      colosseumBattleUI=true, battlePortraits=true, colosseumPokemonMenu=true,
-      colosseumIcons=true, colosseumTitleIntro=true,
-    },
-  },
-  {
     id = "models", label = "3D MODELS",
     description = "Independent Pokémon/player 3D model layers and Stadium 2 model-pack source.",
     keys = {
@@ -176,7 +168,6 @@ local GRID_STYLE = {
   weather     = { icon="weather",     lines={"WEATHR", "FX"} },
   camera      = { icon="camera",      lines={"CAMERA", "DISPLAY"} },
   battle      = { icon="battle",      lines={"BATTLE", ""} },
-  colosseum   = { icon="battle",      lines={"COLOS", "EUM"} },
   models      = { icon="models",      lines={"3D", "MODELS"} },
   mounts      = { icon="mounts",      lines={"FLY", "PKMN"} },
   wilds       = { icon="wilds",       lines={"WILD", "PKMN"} },
@@ -301,7 +292,6 @@ local GRID_ICON_SOURCES = {
   weather = "assets/menu/mod_settings_icons/weather.png",
   camera = "assets/menu/mod_settings_icons/camera.png",
   battle = "assets/menu/mod_settings_icons/battle.png",
-  colosseum = "assets/menu/mod_settings_icons/battle.png",
   models = "assets/menu/mod_settings_icons/models.png",
   mounts = "assets/menu/mod_settings_icons/mounts.png",
   wilds = "assets/menu/mod_settings_icons/wilds.png",

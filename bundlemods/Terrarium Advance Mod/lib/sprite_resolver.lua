@@ -134,52 +134,10 @@ function SpriteResolver:resolveLandSprite(entity, context)
   local game = context.game
   local species = (entity and (entity.species or entity.enhancedDexId)) or context.speciesId
   local variant = context.variant or resolveVariant(entity)
-  
-  -- Handle missing/invalid species gracefully
-  if not species or species == "" or species == "?" then
-    return {
-      def = nil,
-      meta = {
-        providerId = "fallback",
-        fallbackReason = "invalid or missing species ID",
-        requestedStyle = style,
-      },
-      providerId = "fallback",
-      fallbackStep = 999,
-      steps = {},
-      spriteState = "land",
-      spriteKind = "fallback",
-      waterOverride = false,
-      error = "invalid species",
-    }
-  end
-  
   if not self.spriteProviders then
     return nil
   end
-  
-  local ok, result = pcall(function()
-    return self.spriteProviders:resolve(style, species, variant, game)
-  end)
-  
-  if not ok or not result then
-    return {
-      def = nil,
-      meta = {
-        providerId = "fallback",
-        fallbackReason = "sprite provider resolution failed: " .. tostring(result),
-        requestedStyle = style,
-      },
-      providerId = "fallback",
-      fallbackStep = 999,
-      steps = {},
-      spriteState = "land",
-      spriteKind = "fallback",
-      waterOverride = false,
-      error = tostring(result),
-    }
-  end
-  
+  local result = self.spriteProviders:resolve(style, species, variant, game)
   if result then
     result.spriteState = "land"
     result.spriteKind = result.providerId
@@ -231,26 +189,6 @@ function SpriteResolver:resolveWaterSprite(entity, context)
   local speciesId = context.speciesId or resolveDex(entity, game, self.mod)
   local variant = context.variant or resolveVariant(entity)
   local form = context.form or resolveForm(entity)
-  
-  -- Handle missing/invalid species gracefully
-  if not speciesId or speciesId == "" or speciesId == "?" then
-    return {
-      def = nil,
-      meta = {
-        providerId = "fallback",
-        fallbackReason = "invalid or missing species ID for water sprite",
-        requestedStyle = style,
-      },
-      providerId = "fallback",
-      fallbackStep = 999,
-      steps = {},
-      spriteState = "water",
-      spriteKind = "fallback",
-      waterOverride = true,
-      error = "invalid species",
-    }
-  end
-  
   local steps = {}
   local fallbackStep = 0
   local WaterDisplay = V.require("water_display")
@@ -520,10 +458,8 @@ function SpriteResolver:resolveWaterSprite(entity, context)
   -- 4–6) Built-in PokeMMO → Pokedex → black (ignore gold/followers land art).
   -- Never used as a Voxel silhouette primary path when Wilds water exists.
   if self.spriteProviders then
-    local ok, landFallback = pcall(function()
-      return self.spriteProviders:resolve("pokemmo", speciesId or (entity and entity.species), variant, game)
-    end)
-    if ok and landFallback then
+    local landFallback = self.spriteProviders:resolve("pokemmo", speciesId or (entity and entity.species), variant, game)
+    if landFallback then
       landFallback.spriteState = "water"
       landFallback.spriteKind = landFallback.providerId == "pokemmo"
         and "pokemmo" or landFallback.providerId
@@ -535,11 +471,6 @@ function SpriteResolver:resolveWaterSprite(entity, context)
         landFallback.spriteKind = "pokemmo"
       end
       return finish(landFallback)
-    end
-    if not ok then
-      steps[#steps + 1] = {
-        providerId = "pokemmo_fallback", ok = false, reason = tostring(landFallback),
-      }
     end
   end
 
@@ -645,31 +576,10 @@ function SpriteResolver:resolveForEntity(entity, context)
   end
 
   local result
-  local ok, err = pcall(function()
-    if state == "water" then
-      result = self:resolveWaterSprite(entity, context)
-    else
-      result = self:resolveLandSprite(entity, context)
-    end
-  end)
-
-  if not ok then
-    -- Fallback to a basic placeholder if resolution fails
-    result = {
-      def = nil,
-      meta = {
-        providerId = "fallback",
-        fallbackReason = "sprite resolution failed: " .. tostring(err),
-        requestedStyle = style,
-      },
-      providerId = "fallback",
-      fallbackStep = 999,
-      steps = {},
-      spriteState = state,
-      spriteKind = "fallback",
-      waterOverride = state == "water",
-      error = tostring(err),
-    }
+  if state == "water" then
+    result = self:resolveWaterSprite(entity, context)
+  else
+    result = self:resolveLandSprite(entity, context)
   end
 
   -- Hard rule: explicit PokeMMO on land never resolves Followers EX.

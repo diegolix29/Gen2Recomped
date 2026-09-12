@@ -500,10 +500,7 @@ local function liveBattler(context,side)
 end
 
 local function dexFor(context,battler)
-  if V.ModelIdentity then 
-    local ok,dex,variant = pcall(V.ModelIdentity.resolve, context and (context.game or (context.battle and context.battle.game)),battler)
-    if ok and dex then return tonumber(dex),variant or (V.ShinySupport and V.ShinySupport.variant(battler)) or "normal" end
-  end
+  if V.ModelIdentity then return V.ModelIdentity.resolve(context and (context.game or (context.battle and context.battle.game)),battler) end
   local mon=battler and battler.mon
   local species=mon and mon.species
   local game=(context and context.game) or (context and context.battle and context.battle.game)
@@ -512,120 +509,7 @@ local function dexFor(context,battler)
   -- calls the same National Dex ordinal `index` (Cyndaquil=155, Pidgey=16).
   local dex=(def and (def.dex or def.index or def.number))
     or (mon and (mon.dex or mon.speciesIndex))
-  
-  -- Fallback: try to convert species name to dex number for Gen3
-  if not dex and species and type(species) == "string" then
-    -- Try to get dex from the species name using a comprehensive Gen3 mapping
-    local speciesLower = species:lower()
-    -- Complete Gen3 species mapping (National Dex 386-493)
-    local gen3SpeciesMap = {
-      -- Hoenn starters
-      treecko = 252, grovyle = 253, sceptile = 254,
-      torchic = 387, combusken = 388, blaziken = 389,
-      mudkip = 398, marshtomp = 399, swampert = 400,
-      -- Early route Pokemon
-      poochyena = 261, mightyena = 262,
-      zigzagoon = 263, linoone = 264,
-      wurmple = 265, silcoon = 266, beautifly = 267,
-      cascoon = 268, dustox = 269,
-      lotad = 270, lombre = 271, ludicolo = 272,
-      seedot = 273, nuzleaf = 274, shiftry = 275,
-      taillow = 276, swellow = 277,
-      wingull = 278, pelipper = 279,
-      ralts = 280, kirlia = 281, gardevoir = 282,
-      surskit = 283, masquerain = 284,
-      shroomish = 285, breloom = 286,
-      slakoth = 287, vigoroth = 288, slaking = 289,
-      nincada = 290, ninjask = 291, shedinja = 292,
-      whismur = 293, loudred = 294,
-      makuhita = 296, hariyama = 297,
-      azurill = 298, marill = 183, azumarill = 184,
-      skitty = 300, delcatty = 301,
-      sableye = 302,
-      mawile = 303,
-      aron = 304, lairon = 305, aggron = 306,
-      meditite = 307, medicham = 308,
-      electrike = 309, manectric = 310,
-      plusle = 311, minun = 312,
-      volbeat = 313, illumise = 314,
-      budew = 315, roselia = 315, roserade = 407,
-      gulpin = 316, swalot = 317,
-      carvanha = 318, sharpedo = 319,
-      wailmer = 320, wailord = 321,
-      numel = 322, camerupt = 323, torkoal = 324,
-      spoink = 325, grumpig = 326,
-      spinda = 327,
-      trapinch = 328, vibrava = 329, flygon = 330,
-      cacnea = 331, cacturne = 332,
-      swablu = 333, altaria = 334,
-      zangoose = 335, seviper = 336,
-      lunatone = 337, solrock = 338,
-      barboach = 339, whiscash = 340,
-      corphish = 341, crawdaunt = 342,
-      baltoy = 343, claydol = 344,
-      lileep = 345, cradily = 346,
-      anorith = 347, armaldo = 348,
-      feebas = 349, milotic = 350,
-      castform = 351,
-      kecleon = 352,
-      snorunt = 353, glalie = 354, froslass = 478,
-      spheal = 363, sealeo = 364, walrein = 365,
-      clamperl = 366, huntail = 367, gorebyss = 368,
-      relicanth = 369,
-      bagon = 371, shelgon = 372, salamence = 373,
-      beldum = 374, metang = 375, metagross = 376,
-      regirock = 377, regice = 378, registeel = 379,
-      latias = 380, latios = 381,
-      kyogre = 382, groudon = 383,
-      rayquaza = 384,
-      jirachi = 385,
-      deoxys = 386,
-      -- Additional Gen3 Pokemon to cover more species
-      torkoal = 324, torkoal = 324,
-      chimecho = 358,
-      absol = 359,
-      wynaut = 360,
-      snorunt = 353, glalie = 354,
-      spheal = 363, sealeo = 364, walrein = 365,
-      clamperl = 366, huntail = 367, gorebyss = 368,
-      relicanth = 369,
-      bagon = 371, shelgon = 372, salamence = 373,
-      beldum = 374, metang = 375, metagross = 376,
-      regirock = 377, regice = 378, registeel = 379,
-      latias = 380, latios = 381,
-      kyogre = 382, groudon = 383,
-      rayquaza = 384,
-      jirachi = 385,
-      deoxys = 386,
-      luvdisc = 370,
-      corphish = 341, crawdaunt = 342,
-      baltoy = 343, claydol = 344,
-      lileep = 345, cradily = 346,
-      anorith = 347, armaldo = 348,
-      feebas = 349, milotic = 350,
-      castform = 351,
-      kecleon = 352,
-      snorunt = 353, glalie = 354,
-      spheal = 363, sealeo = 364, walrein = 365,
-      clamperl = 366, huntail = 367, gorebyss = 368,
-      relicanth = 369,
-      bagon = 371, shelgon = 372, salamence = 373,
-      beldum = 374, metang = 375, metagross 376,
-      regirock = 377, regice = 378, registeel = 379,
-      latias = 380, latios = 381,
-      kyogre = 382, groudon = 383,
-      rayquaza = 384,
-      jirachi = 385,
-      deoxys = 386,
-    }
-    dex = gen3SpeciesMap[speciesLower]
-  end
-  
-  -- Ultimate fallback: use species as a number if possible
-  if not dex and species then
-    dex = tonumber(species) or 1
-  end
-  return tonumber(dex) or 1,(V.ShinySupport and V.ShinySupport.variant(battler)) or (mon and mon.shiny and "shiny" or "normal")
+  return tonumber(dex),(V.ShinySupport and V.ShinySupport.variant(battler)) or (mon and mon.shiny and "shiny" or "normal")
 end
 
 -- Native battle scripts are free to rebuild lightweight battler wrappers while
@@ -648,32 +532,10 @@ local function stadiumActor(context,side)
   local battler=liveBattler(context,side)
   local dex,variant=dexFor(context,battler)
   local record=P.stadiumActors[side]
-  
-  -- Check if this is a Gen3+ Pokemon (dex > 251) - Stadium ROMs only have Gen1-2
-  if dex and dex > 251 then
-    P.stadiumError="Stadium ROMs only support Gen1-2 Pokemon (National Dex 1-251), dex "..tostring(dex).." is Gen3+"
-    releaseStadiumActor(side,"gen3-fallback")
-    if P.modeId=="cbe:colosseum-pokemon" and V.BattleCache then V.BattleCache.noteRenderError(context.game,P.stadiumError) end
-    -- Fall back to sprite mode for Gen3+ Pokemon
-    P.mode="sprites"
-    P.modeId="builtin:resolved-sprites"
-    if V and V.mod and V.mod.log then
-      pcall(V.mod.log, V.mod, "info", "Falling back to sprite mode for dex " .. tostring(dex) .. " (Gen3+ Pokemon, no Stadium model)")
-    end
-    return nil
-  end
-  
   if not dex or dex<1 then
     P.stadiumError="no National Dex mapping for "..tostring(battler and battler.mon and battler.mon.species)
     releaseStadiumActor(side,"missing-dex")
     if P.modeId=="cbe:colosseum-pokemon" and V.BattleCache then V.BattleCache.noteRenderError(context.game,P.stadiumError) end
-    -- Fall back to sprite mode when species mapping fails
-    P.mode="sprites"
-    P.modeId="builtin:resolved-sprites"
-    -- Log the fallback for debugging
-    if V and V.mod and V.mod.log then
-      pcall(V.mod.log, V.mod, "info", "Falling back to sprite mode for " .. tostring(battler and battler.mon and battler.mon.species) .. " (no dex mapping)")
-    end
     return nil
   end
   local key=tostring(dex)..":"..variant
@@ -692,12 +554,6 @@ local function stadiumActor(context,side)
     local ok,available=pcall(api.available,source,dex)
     if not (ok and available) then
       P.stadiumError=ok and ("actor provider reports model "..tostring(dex).." unavailable") or tostring(available)
-      -- Fall back to sprite mode when model is unavailable
-      P.mode="sprites"
-      P.modeId="builtin:resolved-sprites"
-      if V and V.mod and V.mod.log then
-        pcall(V.mod.log, V.mod, "info", "Falling back to sprite mode for " .. tostring(battler and battler.mon and battler.mon.species) .. " (model unavailable)")
-      end
       return nil
     end
   end
@@ -706,12 +562,6 @@ local function stadiumActor(context,side)
     P.stadiumError=tostring(ok and err or actor)
     if P.modeId=="cbe:colosseum-pokemon" and V.BattleCache then
       V.BattleCache.noteRenderError(context.game,P.stadiumError)
-    end
-    -- Fall back to sprite mode when actor acquisition fails
-    P.mode="sprites"
-    P.modeId="builtin:resolved-sprites"
-    if V and V.mod and V.mod.log then
-      pcall(V.mod.log, V.mod, "info", "Falling back to sprite mode for " .. tostring(battler and battler.mon and battler.mon.species) .. " (actor acquisition failed)")
     end
     return nil
   end
@@ -1020,29 +870,6 @@ local function imageFor(context,side)
     if ok and resolved then image=resolved end
   end
 
-  -- If we're in sprite mode due to fallback, ensure we get a valid sprite
-  if P.mode=="sprites" and not (image and type(image.getDimensions)=="function") then
-    -- Try to resolve sprite using the engine's system
-    local mon=b and b.mon
-    local game=(context and context.game) or (context and context.battle and context.battle.game)
-    local species=mon and mon.species
-    if species and game and game.data then
-      local def=game.data.pokemon and game.data.pokemon[species]
-      local facing=side=="player" and "back" or "front"
-      local vanilla=def and (facing=="back" and def.spriteBack or def.spriteFront)
-      if vanilla then
-        local EngineAssets=require("src.render.Assets")
-        if EngineAssets and type(EngineAssets.image)=="function" then
-          local okImg,vanillaImage=pcall(EngineAssets.image,vanilla)
-          if okImg and vanillaImage and type(vanillaImage.getDimensions)=="function" then
-            image=vanillaImage
-            if image.setFilter then pcall(image.setFilter,image,"nearest","nearest") end
-          end
-        end
-      end
-    end
-  end
-
   -- First recover the engine's live sprite-selection seam. This is what lets
   -- Battle Arts, Crystal/custom sprite packs and future pokemon.sprite owners
   -- stay authoritative when COLOSSEUM MODELS is OFF.
@@ -1076,50 +903,10 @@ local function imageFor(context,side)
         if resolved~=nil and resolved~=false then image=resolved end
       else
         P.spriteError=tostring(resolved)
-        -- Fall back to original sprite if provider fails
-        if not (image and type(image.getDimensions)=="function") then
-          image=b and b.sprite
-        end
       end
     end
   else
     P.spriteApi=nil
-  end
-  -- Final fallback: ensure we have a valid image even if all resolution fails
-  if not (image and type(image.getDimensions)=="function") then
-    image=b and b.sprite
-  end
-  -- Extra fallback for player side: try to get any valid sprite from battle state
-  if side=="player" and not (image and type(image.getDimensions)=="function") then
-    if battle and type(battle.playerSprite)=="function" then
-      local ok,playerSprite=pcall(battle.playerSprite,battle,b)
-      if ok and playerSprite and type(playerSprite.getDimensions)=="function" then
-        image=playerSprite
-      end
-    end
-  end
-  -- Absolute last resort: try to get a default sprite
-  if not (image and type(image.getDimensions)=="function") then
-    local game=(context and context.game) or (context and context.battle and context.battle.game)
-    if game and game.data and game.data.pokemon then
-      local mon=b and b.mon
-      local species=mon and mon.species
-      if species then
-        local def=game.data.pokemon[species]
-        local facing=side=="player" and "back" or "front"
-        local fallback=def and (facing=="back" and def.spriteBack or def.spriteFront)
-        if fallback then
-          local EngineAssets=require("src.render.Assets")
-          if EngineAssets and type(EngineAssets.image)=="function" then
-            local okFallback,fallbackImage=pcall(EngineAssets.image,fallback)
-            if okFallback and fallbackImage and type(fallbackImage.getDimensions)=="function" then
-              image=fallbackImage
-              if image.setFilter then pcall(image.setFilter,image,"nearest","nearest") end
-            end
-          end
-        end
-      end
-    end
   end
   if not (image and type(image.getDimensions)=="function") then return nil end
   return image,b
