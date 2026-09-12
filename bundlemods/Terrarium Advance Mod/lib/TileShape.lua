@@ -876,7 +876,7 @@ function TileShape.at(map, shapes, tile, tx, ty)
   local rules = shapes.cond and shapes.cond[tile]
   if rules then
     for _, rule in ipairs(rules) do
-      -- NOTE map:tileAt border-EXTENDS: one row off an edge answers the
+      -- NOTE Gen3.tileAt border-EXTENDS: one row off an edge answers the
       -- map's borderBlock, never nil.  A rule listing whatever that block
       -- draws will fire along that whole edge (it did, on the Marts).
       local hit
@@ -884,7 +884,7 @@ function TileShape.at(map, shapes, tile, tx, ty)
         hit = map:isWalkableCell(math.floor(tx / 2), math.floor(ty / 2))
               == rule.walkable
       else
-        local n = map:tileAt(tx, rule.side == "above" and ty - rule.rows
+        local n = Gen3.tileAt(map, tx, rule.side == "above" and ty - rule.rows
                                                        or ty + rule.rows)
         hit = n and rule.set[n]
       end
@@ -963,7 +963,7 @@ function TileShape.at(map, shapes, tile, tx, ty)
   end)
   for dy = 0, (okOut and outdoor) and 1 or -1 do
     for dx = 0, 1 do
-      local n = shapes[map:tileAt(cx * 2 + dx, cy * 2 + dy)]
+      local n = shapes[Gen3.tileAt(map, cx * 2 + dx, cy * 2 + dy)]
       if n and n.authored and THIN[n.class] then
         return shapes.classes.ground
       end

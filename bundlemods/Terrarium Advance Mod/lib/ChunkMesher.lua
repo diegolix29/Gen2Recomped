@@ -55,6 +55,7 @@ local Structures = V.require("Structures")
 local TileShape = V.require("TileShape")
 local Voxel3D = V.require("Voxel3D")
 local Budget = V.require("BuildBudget")
+local Gen3 = V.require("Gen3")
 
 -- Persistent geometry cache. Optional on purpose: a build without the module
 -- (or one whose option is off) simply meshes every time, exactly as before.
@@ -487,6 +488,10 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
   local waterPush = waterSink and waterSink.push or nil
   local tileset = map.tileset
   local S = Structures.forMap(map)
+  -- Size the texture atlas correctly for Gen 3 pairs
+  if Gen3 and Gen3.mapIsGen3(map) then
+    Gen3.describe(tileset)
+  end
   local perRow = tileset.tilesPerRow or 16
   local atlasW = tileset.imageWidth or (perRow * 8)
   local atlasH = tileset.imageHeight or 48
@@ -911,7 +916,7 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
           local rel = 1 - math.abs(d0 + 0.5 - mid) / math.max(mid, 0.5)
           local idx = math.min(run.roofRows - 1,
                                math.floor((1 - rel) * run.roofRows))
-          local roofTile = map:tileAt(tx, run.north + idx)
+          local roofTile = Gen3.tileAt(map, tx, run.north + idx)
           local swY, seY, neY, nwY = hS, hS, hN, hN
           if heightAt(tx - 1, ty) < run.h then     -- west flank: hip
             swY = math.max(run.h, hS - 8)
@@ -927,7 +932,7 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
                { { u0, v1 }, { u1, v1 }, { u1, v0 }, { u0, v0 } }, 0.95, nil, s.class == "water")
         elseif run then
           local m = math.min(2, run.extent)
-          local topTile = map:tileAt(tx, run.north + ((ty - run.north) % m))
+          local topTile = Gen3.tileAt(map, tx, run.north + ((ty - run.north) % m))
           topQuad(x0, z0, h, topTile, VOLUME_TOP_SHADE, s.class == "water")
         else
           local topTile = tile
@@ -1011,10 +1016,10 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
                   local bb = band - math.floor((run.base or 0) / 8)
                   if bb < 0 then bb = 0 end
                   if d == 6 then
-                    src = map:tileAt(tx, math.min(run.front,
+                    src = Gen3.tileAt(map, tx, math.min(run.front,
                                                   run.north + bb))
                   else
-                    src = map:tileAt(tx, math.max(run.north,
+                    src = Gen3.tileAt(map, tx, math.max(run.north,
                                                   run.front - bb))
                   end
                   if d == 5 then shade = 1 end
