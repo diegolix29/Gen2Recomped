@@ -158,10 +158,11 @@ function Gen3.forMap(map)
       ctxCache[map] = false
       return nil
     end
-    return nil
+    -- Self-bake fallback: build context from map data directly
+    local ts = map.tileset
+    world = { bottom = true, cols = tonumber(ts and ts.tilesPerRow) or SHEET_COLS, metatiles = tonumber(ts and ts.metatileCount) or 0 }
   end
   ctxMisses[map] = nil
-  ctxCache[map] = false
 
   local def = map.def or {}
   local width = tonumber(def.width) or 0
@@ -250,7 +251,8 @@ function Gen3.forMap(map)
     if c then return c[1], c[2] end
     local b, l = 0, 0
     if type(world.attributes) == "function" then
-      b, l = world.attributes(m)
+      local ok, attrB, attrL = pcall(world.attributes, m)
+      if ok then b, l = attrB or 0, attrL or 0 end
     end
     ctx.attrCache[m] = { b or 0, l or 0 }
     return b or 0, l or 0
@@ -258,7 +260,8 @@ function Gen3.forMap(map)
 
   function ctx.coverAt(metatile)
     if type(world.topIsAbovePlayer) == "function" then
-      return world.topIsAbovePlayer(metatile) and true or false
+      local ok, result = pcall(world.topIsAbovePlayer, metatile)
+      if ok then return result and true or false end
     end
     local _, layer = ctx.attributes(metatile)
     return layer ~= 1
@@ -459,7 +462,7 @@ function Gen3.status(map)
   if not Gen3.mapIsGen3(map) then return "not a Gen 3 map" end
   local ctx = Gen3.forMap(map)
   if not ctx then return "no Gen 3 context" end
-  return "ok"
+  return "ok (world=" .. tostring(ctx.world and ctx.world.bottom and "yes" or "no") .. ", elev=" .. tostring(ctx.elevHeight and "yes" or "no") .. ")"
 end
 
 -- Placeholder for solid measurement (can be expanded)

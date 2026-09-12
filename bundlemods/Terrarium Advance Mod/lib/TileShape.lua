@@ -794,57 +794,51 @@ function TileShape.at(map, shapes, tile, tx, ty)
     }
   end
 
-  -- GEN 3 ROUTING: detect Gen 3 maps and route through Gen3 module
+  -- GEN 3 ROUTING: detect Gen 3 maps and route through the Gen3 module.
   if Gen3 and Gen3.mapIsGen3(map) then
     local ctx = Gen3.forMap(map)
-    if ctx then
-      local cx = math.floor(tx / 2)
-      local cy = math.floor(ty / 2)
-      local metatile = ctx.metatileAt(cx, cy)
-      if metatile ~= nil then
-        local class = ctx.classAt(cx, cy, metatile)
-        if class then
-          -- The map's own terrace/elevation grid (def.elevationCells), one
-          -- COURSE step per rank -- Gen3.forMap already built it as
-          -- ctx.groundHeight, and nothing was reading it. Added to
-          -- everything that lies flat or rides a top face (ground, ledges,
-          -- terraces, roofs); a piece of COVER (a wall, a cliff face, a
-          -- tree) keeps its own bare height, because Structures' volume
-          -- pass measures the run off the flat cell it stands on and adds
-          -- the terrace itself there -- adding it here too would count
-          -- every raised building or cliff twice. Without this, every
-          -- terraced Gen 3 route (Fortree, Mt. Chimney, Route 120...)
-          -- rendered dead flat at the map's lowest level, with characters
-          -- (who get their footing from Gen3.groundHeight via
-          -- VoxelScene.groundAt, which calls into this same function)
-          -- standing at the correct terrace height above a floor that
-          -- never rose to meet them.
-          local art = ART[class] or "upright"
-          local okE, elevRaw = pcall(ctx.groundHeight, cx, cy)
-          local elev = (art ~= "upright") and (okE and elevRaw or 0) or 0
-
-          -- Use Gen 3 context to determine shape
-          local gen3Tile = Gen3.tileId(metatile, tx, ty)
-          local base = shapes[gen3Tile] or shapes.classes[class]
-          if base then
-            return {
-              class = class,
-              h = (base.h or 0) + elev,
-              art = base.art or "upright",
-              flat = base.flat or false,
-              authored = true,
-            }
-          end
-          -- Fallback: minimal shape based on class
-          local h = (FALLBACK_HEIGHTS[class] or 0) + elev
-          return {
-            class = class,
-            h = h,
-            art = (class == "ground" or class == "water") and "flat" or "upright",
-            flat = (class == "ground" or class == "water"),
-            authored = true,
-          }
+    local cx0, cy0 = math.floor(tx / 2), math.floor(ty / 2)
+    if not ctx then
+      -- Context could not be built (no engine seam and no bake yet).  Below
+      -- this point the file's rules are Gen 1/Gen 2 inferences over a tile
+      -- id that, on Gen 3, means "quadrant q of metatile m" and carries no
+      -- meaning at all -- so falling through would not degrade, it would
+      -- invent a shape from noise. Answer from the one thing still true,
+      -- the cell's own passability, same as the flat-world fallback the
+      -- engine itself uses.
+      local walk = false
+      local okW, w = pcall(map.isWalkableCell, map, cx0, cy0)
+      if okW then walk = w and true or false end
+      return walk and shapes.classes.ground or shapes.classes.wall
+    end
+    local metatile = ctx.metatileAt(cx0, cy0)
+    if metatile ~= nil then
+      local class, pinned = ctx.classAt(cx0, cy0, metatile)
+      if class then
+        local canon = shapes.classes and shapes.classes[class]
+        local h = (canon and canon.h) or FALLBACK_HEIGHTS[class] or 0
+        local art = (canon and canon.art) or ART[class] or "upright"
+        -- The ground the cell stands ON is added for anything that lies flat
+        -- or rides a top face; COVER (a treetop, a roof) keeps its own bare
+        -- height, because Structures measures the building/tree run and
+        -- reads the datum off the flat cell south of it -- adding the
+        -- elevation here too would count the terrace twice and float every
+        -- building above it. Skipping this term entirely, as the previous
+        -- routing here did, is what put Route 110's cycling road (and every
+        -- other raised terrace) at ground level instead of at its real
+        -- height: the world rendering "too low" relative to anything (a
+        -- player, an NPC) placed from the map's own elevation data.
+        if art ~= "upright" then
+          local okG, ground = pcall(ctx.groundHeight, cx0, cy0)
+          if okG and ground then h = h + ground end
         end
+        return {
+          class = class,
+          h = h,
+          art = art,
+          flat = art == "flat" or class == "grass" or class == "flower",
+          authored = pinned or (art ~= "upright"),
+        }
       end
     end
   end
@@ -882,7 +876,7 @@ function TileShape.at(map, shapes, tile, tx, ty)
   local rules = shapes.cond and shapes.cond[tile]
   if rules then
     for _, rule in ipairs(rules) do
-      -- NOTE map:tileAt border-EXTENDS: one row off an edge answers the
+      -- NOTE Gen3.tileAt border-EXTENDS: one row off an edge answers the
       -- map's borderBlock, never nil.  A rule listing whatever that block
       -- draws will fire along that whole edge (it did, on the Marts).
       local hit
@@ -890,7 +884,7 @@ function TileShape.at(map, shapes, tile, tx, ty)
         hit = map:isWalkableCell(math.floor(tx / 2), math.floor(ty / 2))
               == rule.walkable
       else
-        local n = map:tileAt(tx, rule.side == "above" and ty - rule.rows
+        local n = Gen3.tileAt(map, tx, rule.side == "above" and ty - rule.rows
                                                        or ty + rule.rows)
         hit = n and rule.set[n]
       end
@@ -969,7 +963,7 @@ function TileShape.at(map, shapes, tile, tx, ty)
   end)
   for dy = 0, (okOut and outdoor) and 1 or -1 do
     for dx = 0, 1 do
-      local n = shapes[map:tileAt(cx * 2 + dx, cy * 2 + dy)]
+      local n = shapes[Gen3.tileAt(map, cx * 2 + dx, cy * 2 + dy)]
       if n and n.authored and THIN[n.class] then
         return shapes.classes.ground
       end
