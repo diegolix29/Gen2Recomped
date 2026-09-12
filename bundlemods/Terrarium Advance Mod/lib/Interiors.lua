@@ -55,7 +55,6 @@ local ModSetting = V.require("ModSetting")
 local RoamerArt = V.require("RoamerArt")
 local Roamer = V.require("Roamer")
 local TileShape = V.require("TileShape")
-local Gen3 = V.require("Gen3")
 
 local Collision = require("src.world.Collision")
 local Map = require("src.world.Map")
@@ -216,13 +215,8 @@ local function mugCells(map)
   local out = {}
   for cy = 0, map.heightCells - 1 do
     for cx = 0, map.widthCells - 1 do
-      -- `shapes[tile]` is the raw per-tile-id table, which only means
-      -- anything for Gen 1/2 -- on Gen 3 a tile id is "quadrant of a
-      -- metatile" and this needs `TileShape.at`'s Gen 3 routing to resolve
-      -- a class from it, the same as the ground-height readers do.
-      local tx, ty = cx * 2, cy * 2
-      local tile = Gen3.tileAt(map, tx, ty)
-      local shape = tile and TileShape.at(map, shapes, tile, tx, ty)
+      local tile = map:tileAt(cx * 2, cy * 2)
+      local shape = tile and shapes[tile]
       if shape and TABLETOPS[shape.class] then
         -- about one tabletop cell in four carries a mug: a table with a mug
         -- on every square of it is a canteen, not a kitchen

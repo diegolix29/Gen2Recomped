@@ -488,13 +488,26 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
   local waterPush = waterSink and waterSink.push or nil
   local tileset = map.tileset
   local S = Structures.forMap(map)
-  -- Size the texture atlas correctly for Gen 3 pairs
-  if Gen3 and Gen3.mapIsGen3(map) then
-    Gen3.describe(tileset)
-  end
   local perRow = tileset.tilesPerRow or 16
   local atlasW = tileset.imageWidth or (perRow * 8)
   local atlasH = tileset.imageHeight or 48
+
+  -- THE GEN 3 SHEET.  A Gen 3 pair carries none of the three fields above --
+  -- it is a grid of 16x16 METATILES baked from two source sheets, not the
+  -- 8x8 Gen 1/2 tile grid those fallbacks describe -- so every UV on a Gen 3
+  -- map was being computed against a sheet 16 tiles wide and 48px tall when
+  -- the real one is Gen3.describe's answer (256 wide, up to 2000+ tall).
+  -- That mismatch is what "no meshes, only lamps" and misscaled/misplaced
+  -- geometry on Gen 3 maps comes from: an 8px quad sampling a handful of
+  -- unrelated rows of a sheet dozens of times taller than assumed.
+  -- Gen3.describe reads it from the tileset record alone (no map, no
+  -- context needed), so it is safe to call unconditionally here.
+  if Gen3 and Gen3.isGen3(tileset) then
+    local okD, info = pcall(Gen3.describe, tileset)
+    if okD and info then
+      perRow, atlasW, atlasH = info.perRow, info.width, info.height
+    end
+  end
 
   -- ------------------------------------------------------------- ledge lips
   --
@@ -530,8 +543,25 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
   end
 
   -- s.h for the tile the rim is drawn on, 0 for the rest of its cell
+  --
+  -- ...AND ON A GEN 3 MAP, s.h FOR THE WHOLE CELL.
+  --
+  -- The split above is a Gen 1/2 reading and both its assumptions break on
+  -- Gen 3. `ledgeDrop` names the side a lip faces from ROM tile classes
+  -- $A0-$A5, which no Gen 3 tileset uses -- every Gen 3 ledge fell through
+  -- to the default "down" and the split ran across the wrong axis on any
+  -- hop-east/hop-west ledge line. And the half that is not the rim was
+  -- given 0 (the world datum), which is only right when every map is flat;
+  -- on a terraced Gen 3 route it punched a hole from the terrace down to
+  -- zero on half of every ledge cell.
+  --
+  -- TileShape's own Gen 3 routing (see TileShape.lua) already resolves a
+  -- Gen 3 ledge cell to the correct single height for the whole cell -- it
+  -- IS the rim of the terrace it edges -- so here that height is simply
+  -- trusted instead of re-split.
   local function shapeHeight(tx, ty, s)
     if s.class ~= "ledge" then return s.h end
+    if S.isGen3 then return s.h end
     local d = ledgeDrop(math.floor(tx / 2), math.floor(ty / 2))
     local onDrop
     if d == "up" then onDrop = ty % 2 == 0
@@ -548,6 +578,37 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
     if run then return run.h end
     local s = S.shapeAt[k]
     return s and shapeHeight(tx, ty, s) or 0
+  end
+
+  -- WHAT A NEIGHBOUR OCCLUDES IS NOT ALWAYS HOW TALL IT IS.
+  --
+  -- A face is cut wherever the neighbour is at least as tall, which is right
+  -- for a column and wrong for everything drawn as a HULL. A rock column, a
+  -- tree crown, a fence post, a barrel: buildCylinders and its siblings
+  -- carve those per pixel and they are round, so the ground beside them,
+  -- told the neighbour reaches full height, draws no wall -- daylight shows
+  -- through the map on both sides of the hull.
+  --
+  -- What a hull occludes is its FOOT, because that is the only part of it
+  -- that fills its cell.
+  --
+  -- Gen 3 only: Gen 1/2 ground is flat, so this would change nothing there
+  -- but the extra table lookup on every face.
+  local HULL_CLASS = {
+    cylinder = true, canopy = true, stump = true, can = true,
+    planter = true, billboard = true, post = true,
+  }
+  local function occludeH(tx, ty)
+    if not S.isGen3 then return heightAt(tx, ty) end
+    local k = keyOf(tx, ty)
+    if S.skip[k] or S.runs[k] then return heightAt(tx, ty) end
+    local s = S.shapeAt[k]
+    if s and HULL_CLASS[s.class] then
+      local b = s.base or 0
+      local h = shapeHeight(tx, ty, s)
+      return (b < h) and b or h
+    end
+    return heightAt(tx, ty)
   end
 
     local function isWaterAt(tx, ty)
@@ -779,7 +840,7 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
           -- waterline showed. Same bands, cut from the synthesized
           -- ground's own art
           for _, side in ipairs(SIDES) do
-            local nh = heightAt(tx + side[1], ty + side[2])
+            local nh = occludeH(tx + side[1], ty + side[2])
             if nh < gy then
               local d = side[3]
               local lat = LATERAL[d]
@@ -865,7 +926,7 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
               local ni, nj = i + side[1], j + side[2]
               local nh = subH(ni, nj)
               if nh == nil then
-                nh = heightAt(tx + side[1], ty + side[2])
+                nh = occludeH(tx + side[1], ty + side[2])
               end
               if nh < hh then
                 local d = side[3]
@@ -916,7 +977,7 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
           local rel = 1 - math.abs(d0 + 0.5 - mid) / math.max(mid, 0.5)
           local idx = math.min(run.roofRows - 1,
                                math.floor((1 - rel) * run.roofRows))
-          local roofTile = Gen3.tileAt(map, tx, run.north + idx)
+          local roofTile = map:tileAt(tx, run.north + idx)
           local swY, seY, neY, nwY = hS, hS, hN, hN
           if heightAt(tx - 1, ty) < run.h then     -- west flank: hip
             swY = math.max(run.h, hS - 8)
@@ -932,7 +993,7 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
                { { u0, v1 }, { u1, v1 }, { u1, v0 }, { u0, v0 } }, 0.95, nil, s.class == "water")
         elseif run then
           local m = math.min(2, run.extent)
-          local topTile = Gen3.tileAt(map, tx, run.north + ((ty - run.north) % m))
+          local topTile = map:tileAt(tx, run.north + ((ty - run.north) % m))
           topQuad(x0, z0, h, topTile, VOLUME_TOP_SHADE, s.class == "water")
         else
           local topTile = tile
@@ -987,7 +1048,7 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
         -- heights [8k, 8k+8) and shows one full tile of art; a partial
         -- band crops the art rows to match, so nothing ever stretches.
         for _, side in ipairs(SIDES) do
-          local nh = heightAt(tx + side[1], ty + side[2])
+          local nh = occludeH(tx + side[1], ty + side[2])
           if nh < h then
             local d = side[3]
             -- the columns flanking this face, for the inside-corner term:
@@ -1016,10 +1077,10 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
                   local bb = band - math.floor((run.base or 0) / 8)
                   if bb < 0 then bb = 0 end
                   if d == 6 then
-                    src = Gen3.tileAt(map, tx, math.min(run.front,
+                    src = map:tileAt(tx, math.min(run.front,
                                                   run.north + bb))
                   else
-                    src = Gen3.tileAt(map, tx, math.max(run.north,
+                    src = map:tileAt(tx, math.max(run.north,
                                                   run.front - bb))
                   end
                   if d == 5 then shade = 1 end

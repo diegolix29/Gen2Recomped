@@ -313,7 +313,31 @@ function Structures.forMap(map)
   local tw2, th2 = tw, th
   local function tileLookup(tx, ty)
     if tx >= 0 and ty >= 0 and tx < tw2 and ty < th2 then
+      -- `map:tileAt` indexes `tileset.blocks`, which a Gen 3 pair record
+      -- does not carry (see the comment on `isGen3` above) -- called
+      -- directly it returned nil (or garbage) for every cell of every
+      -- Hoenn map, so `shapeAt`/`tileAt` came back empty and the mesher had
+      -- nothing to build: no terrain, no structures, nothing but whatever
+      -- other systems (lamps, effects) don't read this grid. Gen3.tileAt is
+      -- the universal reader -- it defers to map:tileAt when .blocks exists
+      -- (Gen 1/2, byte-for-byte unchanged) and synthesizes the tile id from
+      -- map:blockAt otherwise.
       return Gen3.tileAt(map, tx, ty)
+    end
+    if isGen3 then
+      -- outside the body: the 2x2 border patch Gen 3 carries on the map
+      -- itself (`gen3Border`, built above), tiled -- the same truncation
+      -- rule as the Gen 1/2 branch below (hullRingOnly / ROUND_RING).
+      if not gen3Border then return nil end
+      if hullRingOnly and (tx < -ROUND_RING or ty < -ROUND_RING
+                           or tx >= tw2 + ROUND_RING
+                           or ty >= th2 + ROUND_RING) then
+        return nil
+      end
+      local cx, cy = math.floor(tx / 2), math.floor(ty / 2)
+      local m = gen3Border[(cy % 2) * 2 + (cx % 2) + 1]
+      if m == nil then return nil end
+      return Gen3.tileId(m, tx, ty)
     end
     if not borderBlk then return nil end
     if hullRingOnly and (tx < -ROUND_RING or ty < -ROUND_RING
@@ -354,6 +378,7 @@ function Structures.forMap(map)
   -- terrain.)
   S = { shapeAt = shapeAt, tileAt = tileAt, outdoor = Map.isOutdoor(def),
         hideBareRing = hullRingOnly or nil,
+        isGen3 = isGen3 or nil,
         runs = {}, skip = {}, ground = {}, doorFold = {}, objectQuads = {},
         grassQuads = {}, grassInstances = {}, flowerQuads = {},
         roundStamps = {}, figures = {}, roadInstances = {}, groundInstances = {}, decorInstances = {} }
@@ -730,7 +755,7 @@ local function isColumnFoot(map, cx, cy, footSet)
   if not footSet then return false end
   for dy = 0, 1 do
     for dx = 0, 1 do
-      local t = Gen3.tileAt(map, cx * 2 + dx, cy * 2 + dy)
+      local t = map:tileAt(cx * 2 + dx, cy * 2 + dy)
       if t and footSet[t] then return true end
     end
   end
@@ -1866,7 +1891,7 @@ local function bookcaseRank(S, map, tx, northTy, frontTy, capTile)
   end
 
   for band = 0, bands - 1 do
-    local tile = band < size and Gen3.tileAt(map, tx, frontTy - band) or capTile
+    local tile = band < size and map:tileAt(tx, frontTy - band) or capTile
     local u0, u1, v0, v1 = uvRect(tile)
     local y0, y1 = band * 8, band * 8 + 8
     quads[#quads + 1] = { { x0, y0, z1 }, { x1, y0, z1 },
@@ -1891,7 +1916,7 @@ local function bookcaseRank(S, map, tx, northTy, frontTy, capTile)
     end
   end
 
-  local topTile = capTile or Gen3.tileAt(map, tx, northTy)
+  local topTile = capTile or map:tileAt(tx, northTy)
   local u0, u1, v0, v1 = uvRect(topTile)
   for seg = 0, depth / 8 - 1 do
     local sz0 = z0 + seg * 8
@@ -2185,9 +2210,9 @@ function Structures.buildVolume(S, map, tiles)
       -- drawing).
       local unit, repeatRead = math.min(extent, MAX_ROWS), false
       if extent > 1 then
-        local t0 = Gen3.tileAt(map, tx, front)
+        local t0 = map:tileAt(tx, front)
         for k = 1, extent - 1 do
-          if Gen3.tileAt(map, tx, front - k) == t0 then
+          if map:tileAt(tx, front - k) == t0 then
             unit = math.min(math.max(k, 2), MAX_ROWS)
             repeatRead = true
             break
@@ -2204,7 +2229,7 @@ function Structures.buildVolume(S, map, tiles)
         -- columns are untouched -- their run answers to the region
         -- (see below) before the unit matters.
         if not repeatRead and extent > 2
-           and Gen3.tileAt(map, tx, front - 1) == Gen3.tileAt(map, tx, front - 2) then
+           and map:tileAt(tx, front - 1) == map:tileAt(tx, front - 2) then
           unit = 2
           repeatRead = true
         end
@@ -2274,8 +2299,8 @@ function Structures.buildVolume(S, map, tiles)
     if S.outdoor and (not run.fromRepeat or adopted) and h >= 16
        and not flatDoor then
       roofRows = math.min(2, math.floor(h / 8) - 1)
-      if roofRows > 0 and Gen3.tileAt(map, r.tx, run.north)
-                         == Gen3.tileAt(map, r.tx, run.north + 1) then
+      if roofRows > 0 and map:tileAt(r.tx, run.north)
+                         == map:tileAt(r.tx, run.north + 1) then
         roofRows = 0
       end
     end
@@ -2596,9 +2621,9 @@ function Structures.buildObject(S, map, region, cluster,
       local extent = 0
       while ys[front - extent] do extent = extent + 1 end
       if extent > 1 then
-        local t0 = Gen3.tileAt(map, tx, front)
+        local t0 = map:tileAt(tx, front)
         for k = 1, extent - 1 do
-          if Gen3.tileAt(map, tx, front - k) == t0 then return false end
+          if map:tileAt(tx, front - k) == t0 then return false end
         end
       end
     end
