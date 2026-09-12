@@ -538,6 +538,12 @@ local function stadiumActor(context,side)
     if P.modeId=="cbe:colosseum-pokemon" and V.BattleCache then V.BattleCache.noteRenderError(context.game,P.stadiumError) end
     return nil
   end
+  -- Special case: Flygon (dex 330) uses sprite fallback instead of 3D model
+  if dex==330 then
+    P.stadiumError="Flygon (dex 330) uses sprite fallback"
+    releaseStadiumActor(side,"sprite-fallback")
+    return nil
+  end
   -- Check if this is beyond Colosseum's supported range (dex > 386)
   if dex and dex > 386 then
     P.stadiumError="Colosseum ROMs only support Gen1-3 Pokemon (National Dex 1-386), dex "..tostring(dex).." is beyond supported range"
@@ -570,6 +576,8 @@ local function stadiumActor(context,side)
     if P.modeId=="cbe:colosseum-pokemon" and V.BattleCache then
       V.BattleCache.noteRenderError(context.game,P.stadiumError)
     end
+    -- Clear the error and return nil to allow sprite fallback
+    P.stadiumError=nil
     return nil
   end
   P.stadiumError=nil
@@ -2266,7 +2274,9 @@ function P:drawWorld(context)
           captureHidden=okHidden and value==true
         end
       end
-      local image=(not self.drawn[side] and not cbeAbsolute and not captureHidden)
+      -- Check if this specific side should use sprite fallback
+      local useSpriteFallback=not cbeAbsolute or P.stadiumError or (P.stadiumActors[side]==nil and self.mode=="stadium")
+      local image=(not self.drawn[side] and useSpriteFallback and not captureHidden)
         and imageFor(context,side) or nil
       local px,py,targetH=targetGeometry(context,side)
       if image and px and py and targetH then

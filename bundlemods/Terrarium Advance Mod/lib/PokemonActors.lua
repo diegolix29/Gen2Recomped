@@ -3578,6 +3578,11 @@ function A.prepareSessionModel(dex,variant,progress)
   local stamp=expectedSpeciesStamp()
   local checkpoint=progress or workCheckpoint
   local mobile=platformOS()=="Android" or platformOS()=="iOS"
+  -- Special case: Flygon (dex 330) uses sprite fallback, mark as ready without extraction
+  if n==330 then
+    sessionPrepared[key]=stamp
+    return true,"sprite-fallback"
+  end
   -- Session flags are acceleration only. On a fresh startup recognize complete
   -- disk artifacts before entering any extractor/text-geometry/action bake path.
   -- Persistent validation never requires GPU residency or a save-specific list.
