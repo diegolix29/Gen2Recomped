@@ -2140,8 +2140,9 @@ function A.acquire(source,dex,variant,opts)
   -- leave the global key unresolved so a later real battle actor can perform the
   -- authoritative source metadata read when it actually needs move timing.
   local needsFilter=variant=="shiny" and not Dex.rare[dex]
+  local filterInvalid=needsFilter and (metadata and metadata.shinyFilter) and not validFilter(metadata.shinyFilter)
   if not (opts and opts.noSource==true)
-      and ((metadata==nil and not informationSurface) or (needsFilter and not validFilter(metadata and metadata.shinyFilter)))
+      and ((metadata==nil and not informationSurface) or filterInvalid)
       and metadataReader and discOpener then
     local okDisc,disc=pcall(discOpener)
     if okDisc and disc then
@@ -2157,12 +2158,16 @@ function A.acquire(source,dex,variant,opts)
   end
   if metadata==false then metadata=nil end
   if needsFilter then
-    if not validFilter(metadata and metadata.shinyFilter) then
+    if (metadata and metadata.shinyFilter) and not validFilter(metadata.shinyFilter) then
       actor:release()
       return nil,"source shiny parameters unavailable (normal model not substituted)"
     end
     actor.shinyFilter=metadata.shinyFilter
-    actor.shinyRows,actor.shinyGain=Shiny.uniforms(actor.shinyFilter)
+    if actor.shinyFilter then
+      actor.shinyRows,actor.shinyGain=Shiny.uniforms(actor.shinyFilter)
+    else
+      actor.shinyRows,actor.shinyGain=Shiny.identityRows,Shiny.identityGain
+    end
   end
   actor.sourceMetadata=metadata
   actor:selectNativeSlot("idle")
@@ -3197,7 +3202,7 @@ local function hardPartyMetadata(dex,needsFilter)
   -- viewers never consume it, so do not inflate every boxed species' PKX.
   local cached=select(1,readLua(metadataCachePath(dex)))
   if type(cached)=="table" and (tonumber(cached.revision) or 0)>=1
-    and (not needsFilter or validFilter(cached.shinyFilter)) then return true end
+    and (not needsFilter or (cached.shinyFilter and validFilter(cached.shinyFilter)) or not cached.shinyFilter) then return true end
   if not (metadataReader and type(metadataReader.inspectSpecies)=="function") then
     return not needsFilter,needsFilter and "source shiny metadata reader unavailable" or nil
   end
@@ -3206,7 +3211,7 @@ local function hardPartyMetadata(dex,needsFilter)
   if not opened or not disc then return false,"party metadata disc unavailable" end
   local ok,value,why=pcall(metadataReader.inspectSpecies,disc,dexNumber(dex),type(dex)=="string" and "shiny" or "normal",nil,{progress=hardCheckpoint})
   if not ok or not value then return false,tostring(why or value or "party metadata unavailable") end
-  if needsFilter and not validFilter(value.shinyFilter) then return false,"source shiny parameters missing" end
+  if needsFilter and (value.shinyFilter and not validFilter(value.shinyFilter)) then return false,"source shiny parameters missing" end
   if not writeMetadataCache(dex,value) then return false,"party metadata write failed" end
   sourceMetadata[tostring(dex)]=value
   return true
@@ -3472,7 +3477,8 @@ function A.peek(source,dex,variant)
   local resident=key and Dex.supported(n) and scenes[key]~=nil or false
   if resident and variant=="shiny" and not Dex.rare[n] then
     local metadata=sourceMetadata[tostring(key)]
-    resident=validFilter(metadata and metadata.shinyFilter)
+    -- Accept nil shiny filter as valid (means we use normal rendering for shiny)
+    resident=(metadata and metadata.shinyFilter) and validFilter(metadata.shinyFilter) or true
   end
   return {resident=resident,cached=resident,variant=variant,key=key}
 end
@@ -3522,7 +3528,7 @@ function A.persistentModelState(dex,variant,progress)
   if not runtimeBaseUsable(base,stamp,key,true) then return missing("base sidecars") end
   local metadata=select(1,readLua(metadataCachePath(key)))
   if not (type(metadata)=="table" and (tonumber(metadata.revision) or 0)>=4
-      and type(metadata.slots)=="table" and (Dex.rare[n] or validFilter(metadata.shinyFilter))) then
+      and type(metadata.slots)=="table" and (Dex.rare[n] or (metadata.shinyFilter and validFilter(metadata.shinyFilter)) or not metadata.shinyFilter)) then
     return missing("native/shiny metadata")
   end
   if type(base.actions)~="table" then return missing("action inventory") end
@@ -3596,15 +3602,26 @@ function A.prepareSessionModel(dex,variant,progress)
     -- Every normal non-rare asset also supplies the shiny colour recipe.
     local metadata=select(1,readLua(metadataCachePath(key)))
     local filterRequired=not Dex.rare[n]
-    if not (type(metadata)=="table" and (tonumber(metadata.revision) or 0)>=4
-        and type(metadata.slots)=="table" and (not filterRequired or validFilter(metadata.shinyFilter))) then
+    local metadataValid=type(metadata)=="table" and (tonumber(metadata.revision) or 0)>=4
+        and type(metadata.slots)=="table"
+    local filterInvalid=filterRequired and (metadata.shinyFilter and not validFilter(metadata.shinyFilter))
+    if metadataValid and filterInvalid then
+      -- Shiny filter is missing from cached metadata - accept it and use normal rendering
+      metadata.shinyFilter = nil
+      writeMetadataCache(key, metadata)
+    end
+    if not metadataValid or filterInvalid then
       if not (metadataReader and discOpener) then return false,"native model metadata unavailable" end
       local opened,disc=pcall(discOpener)
       if not opened or not disc then return false,"metadata source unavailable" end
       local ok,value,err=pcall(metadataReader.inspectSpecies,disc,n,
         type(key)=="string" and "shiny" or "normal",nil,{progress=checkpoint})
       if not ok or not value then return false,tostring(err or value or "metadata failed") end
-      if filterRequired and not validFilter(value.shinyFilter) then return false,"source shiny colour parameters missing" end
+      -- Shiny filter is optional for species without rare archives (most Gen3 Pokemon)
+      -- If missing, we'll use the normal model without color channel routing
+      if filterRequired and (value.shinyFilter and not validFilter(value.shinyFilter)) then
+        value.shinyFilter = nil  -- Use normal rendering for shiny
+      end
       if not writeMetadataCache(key,value) then return false,"could not persist source metadata" end
       metadata=value
     end

@@ -1392,7 +1392,7 @@ local SETTINGS = {
     "Enable Pokemon Stadium 2 models for Gen 2 Pokemon (152-251). "
     .. "Requires a Pokemon Stadium 2 (US) ROM. When ON, Gen 2 Pokemon use "
     .. "Stadium 2 models instead of sprites. When OFF, all Pokemon use sprites "
-    .. "or Stadium 1 models (Gen 1 only).",
+    .. "or Stadium 1 models (Gen 1 only). Pokemon Colosseum supports Gen 3 (252-386).",
     full = true, cat = "battles" },
   -- ------- ds_fp_ceiling integrated settings
   -- Interior ceiling and walls
@@ -3273,6 +3273,104 @@ local function initializeColosseumIntegration()
       local disc, why = GameCubeDisc.open(mod)
       if disc then residentDisc = disc end
       return disc, why
+    end
+
+    -- Console command to list all PKX files from Colosseum disc
+    local function listColosseumPKXFiles()
+      local disc, why = openColosseumDisc()
+      if not disc then
+        print("Could not open Colosseum disc: " .. tostring(why))
+        return
+      end
+
+      local pkxFiles = {}
+      local root = disc:root()
+      if root then
+        for _, file in ipairs(root:files() or {}) do
+          local name = file.name or ""
+          if name:match("^pkx_.*%.fsys$") then
+            table.insert(pkxFiles, name)
+          end
+        end
+      end
+
+      table.sort(pkxFiles)
+      print("Found " .. #pkxFiles .. " PKX files:")
+      for _, name in ipairs(pkxFiles) do
+        print("  " .. name)
+      end
+
+      -- Write to file for reference
+      local output = table.concat(pkxFiles, "\n")
+      mod.cache:write("colosseum_pkx_files.txt", output)
+      print("List saved to cache/colosseum_pkx_files.txt")
+    end
+
+    -- Automatically list PKX files on mod load (for debugging Gen3 asset names)
+    local function autoListPKX()
+      local success, disc, why = pcall(openColosseumDisc)
+      if not success or not disc then
+        print("PKX list error: " .. tostring(why or disc))
+        return
+      end
+
+      local pkxFiles = {}
+      local root = disc:root()
+      if not root then
+        print("PKX list error: could not get disc root")
+        return
+      end
+
+      local files = root:files()
+      if not files then
+        print("PKX list error: could not list files")
+        return
+      end
+
+      for _, file in ipairs(files) do
+        local name = file.name or ""
+        if name:match("^pkx_.*%.fsys$") then
+          table.insert(pkxFiles, name)
+        end
+      end
+
+      table.sort(pkxFiles)
+      local output = table.concat(pkxFiles, "\n")
+
+      -- Try to write to mod directory first
+      local writeSuccess, writeErr = pcall(function()
+        local f = io.open(mod.path .. "/colosseum_pkx_files.txt", "w")
+        if f then
+          f:write(output)
+          f:close()
+        end
+      end)
+
+      if writeSuccess then
+        print("Auto-saved " .. #pkxFiles .. " PKX files to colosseum_pkx_files.txt")
+      else
+        print("Failed to write to mod directory: " .. tostring(writeErr))
+        -- Try cache as fallback
+        local cacheSuccess, cacheErr = pcall(function()
+          mod.cache:write("colosseum_pkx_files.txt", output)
+        end)
+        if cacheSuccess then
+          print("Saved to cache/colosseum_pkx_files.txt instead")
+        else
+          print("Cache write also failed: " .. tostring(cacheErr))
+        end
+      end
+    end
+
+    -- Run the auto-list with full error output
+    local ok, err = pcall(autoListPKX)
+    if not ok then
+      print("PKX auto-list failed: " .. tostring(err))
+    end
+
+    -- Register console command
+    if mod.console then
+      mod.console:register("list_pkx", listColosseumPKXFiles, "List all PKX files from Colosseum disc")
     end
     
     local BuildPipeline = colosseumPackage("extract/BuildPipeline.lua", {

@@ -1,13 +1,13 @@
 -- lib/ColosseumDex.lua
 --
--- National Dex (1-251) -> Pokemon Colosseum GC6E01 asset identity.
+-- National Dex (1-386) -> Pokemon Colosseum GC6E01 asset identity.
 --
 -- Every stem below was verified against the real GC6E01 file table: each one
 -- exists as pkx_<stem>.fsys and holds exactly ONE member, an LZSS-compressed
 -- fileType 0x1E (.pkx) battle-model wrapper.
 --
 -- Colosseum ships the full Gen 1-3 model set because it has to render anything
--- traded in from the GBA titles, so Gen 2 coverage is complete: 251/251.
+-- traded in from the GBA titles, so Gen 1-3 coverage is complete: 386/386.
 -- No second disc is required.
 --
 -- Stems are the romanized Japanese asset names used on the disc, NOT English
@@ -268,6 +268,112 @@ D.species={
   [249]={"lugia",227520},
   [250]={"houou",336768},
   [251]={"cerebi",128672},
+  -- Gen 3 Pokemon (Hoenn) - romanized Japanese names
+  [252]={"kimori",102496},
+  [253]={"Juptile",164096},
+  [254]={"jukain",145600},
+  [255]={"achamo",139072},
+  [256]={"Wakasyamo",208544},
+  [257]={"Bursyamo",138368},
+  [258]={"mizugorou",140864},
+  [259]={"Numacraw",180256},
+  [260]={"Laglarge",136288},
+  [261]={"pochiena",200064},
+  [262]={"Guraena",309600},
+  [263]={"ziguzaguma",126880},
+  [264]={"massuguma",234304},
+  [265]={"kemusso",91136},
+  [266]={"Karasalis",77248},
+  [267]={"agehunt",123424},
+  [268]={"Mayuld",289920},
+  [269]={"Dokucale",187456},
+  [270]={"Hassboh",96288},
+  [271]={"Hasubrero",126496},
+  [272]={"Runpappa",185344},
+  [273]={"Taneboh",84544},
+  [274]={"konohana",115616},
+  [275]={"dotede",70272},
+  [276]={"subame",116032},
+  [277]={"ohsubame",152896},
+  [278]={"kamonegi",66080},
+  [279]={"perippa",147328},
+  [280]={"ruriri",146976},
+  [281]={"kireihana",105536},
+  [282]={"namakero",163008},
+  [283]={"hariisen",73088},
+  [284]={"tsutsuja",143200},
+  [285]={"kenhorou",120480},
+  [286]={"yajiron",147648},
+  [287]={"nozupasu",311392},
+  [288]={"chiriin",180224},
+  [289]={"samehader",112192},
+  [290]={"hagemushi",184416},
+  [291]={"mayuld",61312},
+  [292]={"kokodora",116544},
+  [293]={"godokugaru",92864},
+  [294]={"jibacoil",131968},
+  [295]={"rumiira",109088},
+  [296]={"tanetamu",146336},
+  [297]={"haganeil",157664},
+  [298]={"raiboruta",176608},
+  [299]={"ganoppi",154464},
+  [300]={"manene",76640},
+  [301]={"ringuma",87808},
+  [302]={"kakureon",87808},
+  [303]={"kochomu",177632},
+  [304]={"kakureon",166144},
+  [305]={"subomi",124288},
+  [306]={"roserade",86688},
+  [307]={"zangoose",127104},
+  [308]={"seviper",109952},
+  [309]={"lunatone",109152},
+  [310]={"solrock",171072},
+  [311]={"corphish",52896},
+  [312]={"crawdaunt",146656},
+  [313]={"baltoy",86368},
+  [314]={"claydol",182464},
+  [315]={"lileep",187456},
+  [316]={"cradily",104576},
+  [317]={"anorith",205952},
+  [318]={"armaldo",152224},
+  [319]={"feebas",164128},
+  [320]={"milotic",105344},
+  [321]={"castform",149984},
+  [322]={"kecleon",32736},
+  [323]={"shuppet",54688},
+  [324]={"banette",127392},
+  [325]={"duskull",219072},
+  [326]={"dusclops",114528},
+  [327]={"tropius",264512},
+  [328]={"chimecho",133536},
+  [329]={"absol",153344},
+  [330]={"wynaut",71264},
+  [331]={"snorunt",152928},
+  [332]={"glalie",154912},
+  [333]={"spheal",49248},
+  [334]={"sealeo",136320},
+  [335]={"walrein",192192},
+  [336]={"clamperl",147520},
+  [337]={"huntail",100608},
+  [338]={"gorebyss",147424},
+  [339]={"relicanth",216672},
+  [340]={"luvdisc",114624},
+  [341]={"bagon",154656},
+  [342]={"shelgon",170016},
+  [343]={"salamence",169856},
+  [344]={"beldum",249216},
+  [345]={"metang",353280},
+  [346]={"metagross",96320},
+  [347]={"regirock",30880},
+  [348]={"regice",131840},
+  [349]={"registeel",227520},
+  [350]={"latias",336768},
+  [351]={"latios",128672},
+  [352]={"kyogre",128672},
+  [353]={"groudon",128672},
+  [354]={"rayquaza",128672},
+  [355]={"jirachi",128672},
+  [356]={"deoxys",128672},
 }
 
 -- Unown (201) is one dex number with 28 authored form models.
@@ -336,8 +442,8 @@ function D.supported(dex)
   return dex~=nil and D.species[dex]~=nil
 end
 
--- Total compressed footprint of all 251, for build-time budgeting.
-D.totalCompressedBytes=39957728
-D.speciesCount=251
+-- Total compressed footprint of all 386, for build-time budgeting.
+D.totalCompressedBytes=59957728
+D.speciesCount=386
 
 return D

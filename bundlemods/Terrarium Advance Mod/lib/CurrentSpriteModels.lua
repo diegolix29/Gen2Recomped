@@ -538,6 +538,13 @@ local function stadiumActor(context,side)
     if P.modeId=="cbe:colosseum-pokemon" and V.BattleCache then V.BattleCache.noteRenderError(context.game,P.stadiumError) end
     return nil
   end
+  -- Check if this is beyond Colosseum's supported range (dex > 386)
+  if dex and dex > 386 then
+    P.stadiumError="Colosseum ROMs only support Gen1-3 Pokemon (National Dex 1-386), dex "..tostring(dex).." is beyond supported range"
+    releaseStadiumActor(side,"unsupported-dex")
+    if P.modeId=="cbe:colosseum-pokemon" and V.BattleCache then V.BattleCache.noteRenderError(context.game,P.stadiumError) end
+    return nil
+  end
   local key=tostring(dex)..":"..variant
   if record and record.key==key then
     -- Gen I rebuilds lightweight battler/mon wrappers much more aggressively

@@ -26,7 +26,7 @@ function C.enabled(game,save)
 end
 function C.plan()
   local rows={}
-  for dex=1,251 do
+  for dex=1,386 do
     rows[#rows+1]={dex=dex,variant='normal'}
     rows[#rows+1]={dex=dex,variant='shiny'}
   end
@@ -113,8 +113,8 @@ function C.status()
     batchLimit=Planner and Planner.batchSize or 30,
     cachedModels=lastInventory and lastInventory.cachedModels,
     cachedAppearances=lastInventory and lastInventory.cachedAppearances,
-    totalModels=270,totalAppearances=502,
-    catalogDiskReady=lastInventory and lastInventory.cachedModels==270 or false,
+    totalModels=772,totalAppearances=772,
+    catalogDiskReady=lastInventory and lastInventory.cachedModels==772 or false,
     profile=lastInventory and lastInventory.profile,
     label=current and current.label,resident=A.sessionResidentCount and A.sessionResidentCount() or 0,
     elapsed=current and math.max(0,(current.finishedAt or clock())-(current.startedAt or clock())) or 0,
@@ -278,7 +278,7 @@ function State:update()
     if not row then
       if self.full then
         completedIdentity=A.sessionCacheIdentity()
-        lastInventory={cachedModels=270,cachedAppearances=502,totalModels=270,totalAppearances=502}
+        lastInventory={cachedModels=772,cachedAppearances=772,totalModels=772,totalAppearances=772}
       end
       self.finishedAt=clock();self.label=self.full and 'Full catalog prepared' or (self.battle and 'Battle models prepared' or (self.batchInfo and 'Batch complete; cached models are kept' or 'Startup models prepared'))
       lastCompleted={mode=self.mode,index=self.index,rows=self.rows,label=self.label,

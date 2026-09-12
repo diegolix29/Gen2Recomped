@@ -388,11 +388,11 @@ local function colosseumIconFrame(game,mon)
     local def=game.data.pokemon[mon.species]
     dex=def and tonumber(def.dex) or nil
   end
-  if not dex or dex<1 or dex>251 then return nil end
+  if not dex or dex<1 or dex>386 then return nil end
 
-  -- Every species in the base Gen 1 and Gen 2 Pokédex now has at least one
+  -- Every species in the base Gen 1, Gen 2, and Gen 3 Pokédex now has at least one
   -- authentic Colosseum frame. Preserve the extra animated Kanto frames where
-  -- supplied, and use frame one for the complete #001-#251 baseline.
+  -- supplied, and use frame one for the complete #001-#386 baseline.
   local count=COLOSSEUM_ICON_FRAMES[dex] or 1
   if count<=0 then
     -- This exact species is absent from the supplied Colosseum icon sheet.
