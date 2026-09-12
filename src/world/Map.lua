@@ -314,8 +314,40 @@ end
 -- CheckCutTreeTile (00:$1731) is `cp COLL_CUT_TREE / ret z / cp
 -- COLL_CUT_TREE_1 / ret`.  Facing either class is what arms TryCutOW, which
 -- is Gen2's overworld A-press on a tree -- Gen1 had no such hook at all.
-function Map.gen2IsCutTree(coll)
-  return coll == 0x12 or coll == 0x1A
+-- CUT'S OWN COLLISION CLASSES -- all six of them.
+--
+-- Reported from play: "some users are experiencing issues on silver where cut
+-- isn't working at all even if they have the badge".  Not Silver, and not the
+-- badge: CUT has never worked on a TREE in any Gen 2 ROM in this port, and has
+-- always worked on cuttable grass, which is what made it read as "cut does
+-- nothing at all".
+--
+-- This used to test $12 and $1A, which are CheckCutTreeTile's two values
+-- (00:$1894, `cp $12 / ret z / cp $1A / ret`).  That routine exists and those
+-- values are right -- and the field move does not call it.  CutFunction asks
+-- CheckCutCollision (05:$49F5), which runs the facing cell's class through
+-- IsInArray against a $FF-terminated list:
+--
+--     db $12, $1A, $10, $18, $14, $1C, $FF
+--
+-- TilesetJohto's cut tree is block 3, and all four of its cells are $18 --
+-- one of the four this never knew about.  The only cells in that whole
+-- tileset carrying $12 are the cuttable GRASS blocks, which is exactly the
+-- half that worked.
+--
+-- The six are written down here as well as read at import, and deliberately:
+-- a cache built before the import learned to read the array still has to cut
+-- a tree, and these are what the cartridge says.  gen2CutCollision, when the
+-- dataset carries it, wins -- a hack may cut different ground.
+Map.GEN2_CUT_COLLISION = { 0x12, 0x1A, 0x10, 0x18, 0x14, 0x1C }
+
+function Map.gen2IsCutTree(coll, list)
+  if coll == nil then return false end
+  for _, value in ipairs((type(list) == "table" and #list > 0)
+                         and list or Map.GEN2_CUT_COLLISION) do
+    if coll == value then return true end
+  end
+  return false
 end
 
 -- Side walls and side buoys ($b0-$b7 and $c0-$c7).  CollisionPermissionTable

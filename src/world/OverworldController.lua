@@ -5555,7 +5555,11 @@ end
 -- for the block the player is facing, or nil.
 function OverworldState:gen2CutSwap(fx, fy)
   if not self.map:inBounds(fx, fy) then return nil end
-  if not Map.gen2IsCutTree(self.map:cellTile(fx, fy)) then return nil end
+  -- the dataset's own list when the import read one; see Map.gen2IsCutTree
+  if not Map.gen2IsCutTree(self.map:cellTile(fx, fy),
+                           Game.data.field.gen2CutCollision) then
+    return nil
+  end
   local table_ = Game.data.field.gen2CutTrees
   local rows = table_ and table_[self.map.def.tileset]
   if not rows then return nil end
