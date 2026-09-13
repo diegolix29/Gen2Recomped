@@ -24638,6 +24638,45 @@ function Structures.buildGen3Grass(S, map, x0, x1, y0, y1)
   end
 end
 
+--- Hoenn's tall grass, on the Grass3D bake instead of the flat mat above.
+---
+--- The mat exists because reading Hoenn's grass PIXELS is the problem --
+--- metatile 13's 71 scattered dark pixels stood up per-pixel are 241 quads
+--- of confetti (see the header on `GRASS_MAT`). Grass3D never reads a
+--- tile's pixels at all: it stamps one authored model per cell, the exact
+--- same thing it already does for Kanto and Johto's tufts. So the bake is
+--- exactly as safe here as anywhere else in this file, and Hoenn takes it
+--- whenever it is available -- the SAME "tuft" attribute-byte cells
+--- `buildGen3Grass` finds, just instanced instead of extruded from art.
+---
+--- Only long grass and ash grass stay un-modelled (see the header on
+--- `GRASS_MAT`): the cartridge states no drawn height for either, so
+--- neither this function nor the mat one touches them.
+function Structures.buildGen3GrassInstances(S, map, x0, x1, y0, y1, Grass3D)
+  local sp = Gen3.spec()
+  local kinds = sp and sp.grass_kind
+  if type(kinds) ~= "table" then return end
+  local okG, g3c = pcall(Gen3.forMap, map)
+  if not (okG and g3c and g3c.metatileAt and g3c.attributes) then return end
+
+  local instances = S.grassInstances
+  for ty = y0, y1 do
+    for tx = x0, x1 do
+      Budget.tick()
+      local k = keyOf(tx, ty)
+      local s = S.shapeAt[k]
+      -- `not S.skip[k]`, exactly as the mat's pass one gates it: a tile a
+      -- hull already claimed has no floor of its own left to stand a tuft
+      -- on.
+      if s and s.art == "grass" and not S.skip[k]
+         and gen3GrassKind(g3c, kinds, math.floor(tx / 2), math.floor(ty / 2))
+             == "tuft" then
+        instances[#instances + 1] = Grass3D.instanceForTile(tx, ty)
+      end
+    end
+  end
+end
+
 -- ---------------------------------------------------------------------------
 -- LEGACY (GEN 1/2) CUSTOM SURFACES: decorative grass, road, ground, water.
 --
@@ -24757,11 +24796,40 @@ Structures.addRoadByPixelCoords("TilesetKanto", 74, 24, 6, 8, 16, 8)
 Structures.addRoadByPixelCoords("TilesetKanto", 24, 16, 8, 8, 16, 8)
 
 function Structures.buildGrass(S, map, x0, x1, y0, y1, data)
-  -- Hoenn (Gen 3) takes the attribute-driven mat above -- its own header
-  -- explains why a Gen 3 map cannot use the per-pixel tuft this legacy
-  -- path builds. Kanto, Johto and Prism (and any hack sharing their tile
-  -- art) take the tuft, plus the decor/road/ground/water overrides above.
+  -- Resolved ONCE, up front: every generation below wants the same
+  -- answer, so asking the module twice would just ask it the same
+  -- question a second time.
+  local Grass3D = nil
+  do
+    local ok, G = pcall(V.require, "Grass3D")
+    if ok and G and G.available and G.available() then Grass3D = G end
+    print(("[grass-debug] map=%s require ok=%s module=%s available=%s "
+           .. "-> Grass3D=%s"):format(
+      tostring(map.id), tostring(ok), tostring(G ~= nil),
+      tostring(ok and G and G.available and G.available()),
+      tostring(Grass3D ~= nil)))
+  end
+
+  -- Hoenn (Gen 3): the bake is exactly as safe here as it is in Kanto and
+  -- Johto -- it stamps an authored model per cell and never reads the
+  -- tile's own pixels, so it takes the SAME instanced tuft they do,
+  -- gated on the cartridge's own "tuft" attribute instead of
+  -- `isGrassCell`. Only when the bake is missing does Hoenn fall back to
+  -- its attribute-driven flat mat: an honest per-pixel reading of Hoenn's
+  -- full-bleed grass texture really would be confetti (see the header on
+  -- `GRASS_MAT`), which is a problem the bake never has because it never
+  -- looks at the art.
   if S.isGen3 and Gen3.mapIsGen3(map) then
+    if Grass3D then
+      print(("[grass-debug] map=%s GEN3 -> Grass3D tuft instances")
+            :format(tostring(map.id)))
+      Structures.buildGen3GrassInstances(S, map, x0, x1, y0, y1, Grass3D)
+      print(("[grass-debug] map=%s GEN3 done: grassInstances=%d")
+            :format(tostring(map.id), #S.grassInstances))
+      return
+    end
+    print(("[grass-debug] map=%s GEN3 -> flat mat fallback (no Grass3D)")
+          :format(tostring(map.id)))
     return Structures.buildGen3Grass(S, map, x0, x1, y0, y1)
   end
 
@@ -24772,17 +24840,6 @@ function Structures.buildGrass(S, map, x0, x1, y0, y1, data)
   local roadInstances = S.roadInstances
   local groundInstances = S.groundInstances
   local waterInstances = S.waterInstances
-
-  -- Prefer the authored 3D tuft bake (assets/ground/grass/) when it is
-  -- present: one low-poly instance per tile, random yaw/scale, stamped by
-  -- the mesher as a triangle mesh rather than the per-pixel atlas slab
-  -- below. Falls back to `grassTemplate` when the bake is missing so a
-  -- stripped package still renders grass.
-  local Grass3D = nil
-  do
-    local ok, G = pcall(V.require, "Grass3D")
-    if ok and G and G.available and G.available() then Grass3D = G end
-  end
 
   for ty = y0, y1 do
     for tx = x0, x1 do
@@ -24862,6 +24919,11 @@ function Structures.buildGrass(S, map, x0, x1, y0, y1, data)
       end
     end
   end
+  print(("[grass-debug] map=%s done: grassQuads=%d grassInstances=%d "
+         .. "decorInstances=%d roadInstances=%d groundInstances=%d "
+         .. "waterInstances=%d"):format(
+    tostring(map.id), #quads, #instances, #decorInstances,
+    #roadInstances, #groundInstances, #waterInstances))
 end
 
 -- ---- flowers ----
