@@ -488,6 +488,21 @@ local profile = {
         [0x1F] = { { below = { 0x2F }, class = "planter" } },
       },
       cylinder = { 0x1E, 0x1F, 0x3E, 0x3F },
+      -- THE UNDERSIDE IS THE TREE'S FOOT, and it has to say so, or the
+      -- run-length scan in Structures.buildCylinders never finds it: that
+      -- loop only continues past the crown when the cell BELOW it also
+      -- resolves to "planter", and unpromoted $3E/$3F left every tall
+      -- Johto tree at L=1 -- a floating 16px crown+middle hull with its
+      -- trunk orphaned as a separate, disconnected cylinder below it (the
+      -- "top hat, no bottom" bug: the crown stood as a plain ball with no
+      -- trunk under it, and the underside carved as its own unrelated
+      -- 16px stump one cell south).
+      --
+      -- Promoted only when $2E is drawn directly above -- the lone tree's
+      -- crown-over-underside pair (no middle course between them) must
+      -- NOT trigger this, and it never does: that pair's row above the
+      -- underside is $1E, not $2E, so it keeps its plain 16px hull.
+      column_foot = { 0x3E, 0x3F },
       -- $4C is the cliff's FOOT as well as the ledge's lip -- the same
       -- eight pixels of dark rim, and the mountain drawings ($0A, $6C-$6F,
       -- $72, $73) end on a course of it. There it is the bottom band of a
@@ -495,6 +510,8 @@ local profile = {
       -- cut round its base. What separates the two is what stands above:
       -- open ground over a ledge, more cliff over a cliff.
       when_above = {
+        [0x3E] = { { above = { 0x2E }, class = "planter" } },
+        [0x3F] = { { above = { 0x2F }, class = "planter" } },
         [0x4C] = { { above = { 0x3C, 0x4B, 0x4C, 0x4D }, class = "wall" } },
       },
     },

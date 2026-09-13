@@ -3480,6 +3480,8 @@ function GoldCompat.installBattlePredicateGuard(class,name,slot)
   if not (type(class)=="table" and type(class[name])=="function") then return false end
   local current=class[name]
   if current==State[slot] then return false end
+  local installedKey="__predicateGuardInstalled_"..slot
+  if GoldCompat[installedKey] then return false end
   local inner=current
   local wrapper=function(self,...)
     if GoldCompat.ownsNativeBattleLayer(self) then return false end
@@ -3487,13 +3489,18 @@ function GoldCompat.installBattlePredicateGuard(class,name,slot)
   end
   State[slot]=wrapper
   class[name]=wrapper
+  GoldCompat[installedKey]=true
   return true
 end
 
 function GoldCompat.installGen1HudDrawGuard()
   if type(BattleState.drawHUDs)~="function" then return false end
+  if GoldCompat.__gen1HudDrawGuardInstalled then return false end
   local current=BattleState.drawHUDs
-  if current==State.__colosseumGen1HudDrawGuard then return false end
+  if current==State.__colosseumGen1HudDrawGuard then
+    GoldCompat.__gen1HudDrawGuardInstalled=true
+    return false
+  end
   local inner=current
   local wrapper=function(self,...)
     if GoldCompat.ownsNativeBattleLayer(self) then
@@ -3512,6 +3519,7 @@ function GoldCompat.installGen1HudDrawGuard()
   end
   State.__colosseumGen1HudDrawGuard=wrapper
   BattleState.drawHUDs=wrapper
+  GoldCompat.__gen1HudDrawGuardInstalled=true
   return true
 end
 

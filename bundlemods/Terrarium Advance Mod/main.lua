@@ -3492,7 +3492,38 @@ local function initializeColosseumIntegration()
     local WazaHandlers = loadColosseumModule("WazaHandlers")
     local BattleMenuUI = loadColosseumModule("BattleMenuUI")
     local CacheManager = loadColosseumModule("CacheManager")
-    local BattleSettings = loadColosseumModule("BattleSettings")
+    -- Load generation-specific battle settings
+    local generation = nil
+    if GenerationCompat and type(GenerationCompat.current) == "function" then
+      local ok, gen = pcall(GenerationCompat.current)
+      if ok then 
+        generation = tonumber(gen)
+        if mod.log then mod.log:info("Detected generation: " .. tostring(generation)) end
+      end
+    end
+    
+    local BattleSettings
+    if generation == 3 then
+      -- Use Gen3-specific battle settings
+      if mod.log then mod.log:info("Loading Gen3 battle settings") end
+      local ok3, result3 = pcall(colosseumPackage, "lib/BattleSettingsGen3.lua")
+      if ok3 then
+        BattleSettings = result3
+        if mod.log then mod.log:info("Gen3 battle settings module loaded successfully, type: " .. type(BattleSettings)) end
+        if type(BattleSettings) == "table" then
+          if mod.log then mod.log:info("Gen3 battle settings has install function: " .. tostring(type(BattleSettings.install) == "function")) end
+        end
+      else
+        if mod.log then mod.log:warn("Failed to load Gen3 battle settings: " .. tostring(result3)) end
+        -- Fallback to standard battle settings
+        BattleSettings = loadColosseumModule("BattleSettings")
+      end
+    else
+      -- Use standard battle settings for Gen1/Gen2
+      if mod.log then mod.log:info("Loading standard battle settings for generation: " .. tostring(generation or "unknown")) end
+      BattleSettings = loadColosseumModule("BattleSettings")
+    end
+    
     loadColosseumModule("AbilityData")
     local Abilities = loadColosseumModule("Abilities")
     loadColosseumModule("AbilityWeather")
@@ -3504,6 +3535,18 @@ local function initializeColosseumIntegration()
     local StadiumBridge = loadColosseumModule("StadiumBridge")
     local ResidentPrewarm = loadColosseumModule("ResidentPrewarm")
     local BattleRuntime = loadColosseumModule("BattleRuntime")
+    
+    -- Load UIMain (contains GoldCompat system and UI installation) - for Gen1/Gen2/Gen3
+    -- Load UIMain for all generations but with safeguards for Gen3
+    local UIMain = colosseumPackage("UIMain.lua")
+    if UIMain and type(UIMain) == "function" then
+      local okUIMain, errUIMain = pcall(UIMain, mod)
+      if not okUIMain then
+        if mod.log then mod.log:warn("UIMain installation failed: " .. tostring(errUIMain)) end
+      else
+        if mod.log then mod.log:info("UIMain installed successfully for generation " .. tostring(generation)) end
+      end
+    end
     
     -- Load doubles modules
     namespace.DoublesCore = colosseumModule("doubles/Core", namespace)
@@ -3531,7 +3574,15 @@ local function initializeColosseumIntegration()
       pcall(BattleAudio.install, mod)
     end
     if BattleSettings and type(BattleSettings.install) == "function" then
-      pcall(BattleSettings.install, mod, Trainer, Music, ArenaCatalog, BattleMenuUI, CacheManager, TrainerRoster, GenerationCompat, AudioFidelity)
+      if mod.log then mod.log:info("Calling BattleSettings.install") end
+      local okInstall, installErr = pcall(BattleSettings.install, mod, Trainer, Music, ArenaCatalog, BattleMenuUI, CacheManager, TrainerRoster, GenerationCompat, AudioFidelity)
+      if not okInstall then
+        if mod.log then mod.log:warn("BattleSettings.install failed: " .. tostring(installErr)) end
+      else
+        if mod.log then mod.log:info("BattleSettings.install completed successfully") end
+      end
+    else
+      if mod.log then mod.log:warn("BattleSettings.install is not available. BattleSettings type: " .. type(BattleSettings)) end
     end
     
     local abilityGeneration = GenerationCompat and GenerationCompat.current() or 1

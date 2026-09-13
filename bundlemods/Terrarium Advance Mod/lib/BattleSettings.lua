@@ -67,8 +67,17 @@ local function startMenuId()
   if Compat and type(Compat.current)=="function" then
     local ok,generation=pcall(Compat.current)
     if ok and tonumber(generation)==2 then return "Gen2StartMenu" end
+    if ok and tonumber(generation)==3 then return "StartMenu" end
   end
   return GEN1_START
+end
+
+local function isGen3()
+  if Compat and type(Compat.current)=="function" then
+    local ok,generation=pcall(Compat.current)
+    if ok and tonumber(generation)==3 then return true end
+  end
+  return false
 end
 local function onStack(stack,state)
   local states=stack and stack.states
@@ -406,6 +415,14 @@ function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trai
   mod.hooks:wrap("ui.start_menu.items",function(next,game,items)
     local out=next(game,items)
     if type(out)~="table" then out=items end
+    
+    -- Check generation compatibility - don't skip for Gen3, but handle it specially
+    local gen3Mode=false
+    if Compat and type(Compat.current)=="function" then
+      local ok,generation=pcall(Compat.current)
+      if ok and tonumber(generation)==3 then gen3Mode=true end
+    end
+    
     for _,entry in ipairs(out) do
       if entry.__colosseumBattleEntry or tostring(entry.label or ""):upper()=="BATTLE" then return out end
     end
@@ -418,10 +435,17 @@ function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trai
       -- injected-row arm intentionally does not. Keep a live Gold parent on
       -- the stack; a synthetic replacement lacks onChoose/onClose and is dead.
       local parent=game and game.stack and type(game.stack.top)=="function" and game.stack:top() or nil
-      local returnId=(parent and (parent.screenId==GEN1_START or parent.screenId=="Gen2StartMenu"))
+      local returnId=(parent and (parent.screenId==GEN1_START or parent.screenId=="Gen2StartMenu" or parent.screenId=="StartMenu"))
         and parent.screenId or startMenuId()
       local returnParent=(parent and parent.screenId==returnId) and parent or nil
-      openBattleMenu(game,returnId,returnParent)
+      
+      -- For Gen3, use a simpler approach that doesn't rely on complex parent management
+      if gen3Mode then
+        -- Just open the battle menu directly for Gen3
+        openBattleMenu(game,returnId,nil)
+      else
+        openBattleMenu(game,returnId,returnParent)
+      end
     end})
     return out
   end,650)

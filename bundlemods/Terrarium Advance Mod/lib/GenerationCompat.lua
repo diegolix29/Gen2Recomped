@@ -25,6 +25,18 @@ function C.current()
   return detectedGeneration or 1
 end
 
+function C.isGen3View(value)
+  return type(value)=="table" and type(value.battle)=="table"
+    and type(value.game)=="table" and value.game.data
+    and value.game.data.gen3Maps ~= nil
+end
+
+function C.isGen3Model(value)
+  return type(value)=="table" and type(value.data)=="table"
+    and value.data.gen3Maps ~= nil
+    and value.game==nil
+end
+
 local function isGen2View(value)
   return type(value)=="table" and type(value.battle)=="table"
     and type(value.pic)=="function" and type(value.activeMon)=="function"
