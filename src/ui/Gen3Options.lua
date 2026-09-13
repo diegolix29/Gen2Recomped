@@ -33,6 +33,7 @@ local Font = require("src.render.Font")
 local Logger = require("src.core.Logger")
 local Strings = require("src.core.Strings")
 local Theme = require("src.ui.Theme")
+local Runtime = require("src.mods.Runtime")
 
 local Gen3Options = {}
 Gen3Options.__index = Gen3Options
@@ -134,6 +135,15 @@ function Gen3Options.new(game, opts)
     return require("src.ui.OptionsMenu").buildRows(game)
   end)
   if okRows and type(extra) == "table" then
+    -- Call the ui.options.rows hook to allow mods to inject their rows
+    local hooked = Runtime.call("ui.options.rows", function(g, r) return r end, game, extra)
+    if type(hooked) == "table" then
+      extra = hooked
+    else
+      Logger.warn("gen3 options: ui.options.rows hook returned %s; using unhooked rows",
+                  type(hooked))
+    end
+    
     for _, row in ipairs(extra) do
       if row.label and not covered[row.id] then
         self.rows[#self.rows + 1] = {
