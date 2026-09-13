@@ -59,118 +59,215 @@ local function prefs(game)
   return p
 end
 
-local function openBattleMenu(game)
-  if mod.log then mod.log:info("openBattleMenu called for Gen3") end
-  
+-- Builds the Colosseum battle-settings Menu instance but does NOT push it.
+local function buildBattleMenu(game)
+  if modRef and modRef.log then modRef.log:info("Building Gen3 battle settings menu") end
+
   local ok,Menu=pcall(require,"src.ui.Menu")
-  if not ok or not Menu then 
-    if mod.log then mod.log:warn("Failed to load src.ui.Menu for Gen3 battle settings") end
-    return 
+  if not ok or not Menu then
+    if modRef and modRef.log then modRef.log:warn("Failed to load src.ui.Menu for Gen3 battle settings") end
+    return nil
   end
-  
-  if mod.log then mod.log:info("Menu loaded successfully") end
-  
+
   local p=prefs(game)
   if ArenaCatalog and ArenaCatalog.sync then ArenaCatalog.sync(game) end
   if ArenaCatalog and ArenaCatalog.selected then p.arena=ArenaCatalog.selected(game) end
-  
-  -- Simple settings menu for Gen3
+
   local function refresh()
-    if mod.log then mod.log:info("Refreshing Gen3 battle settings menu") end
+    if modRef and modRef.log then modRef.log:info("Refreshing Gen3 battle settings menu") end
   end
-  
+
+  -- Helper to cycle through lists (e.g. for arenas, music, player models)
+  local function cycle(list, current)
+      for i, v in ipairs(list) do
+          if v == current then return list[(i % #list) + 1] end
+      end
+      return list[1]
+  end
+
+  -- ===========================
+  -- TOGGLE DEFINITIONS
+  -- ===========================
+
   local arenaToggle={keepOpen=true,label="COLOSSEUM ARENAS  "..(p.arenasEnabled and "ON" or "OFF")}
-  local cameraToggle={keepOpen=true,label="COLOSSEUM CAMERA  "..(p.cameraEnabled and "ON" or "OFF")}
-  local modelsToggle={keepOpen=true,label="COLOSSEUM MODELS  "..(p.pokemonModelsEnabled and "ON" or "OFF")}
-  local soundsToggle={keepOpen=true,label="BATTLE SOUNDS  "..(p.battleSoundsEnabled and "COLOSSEUM" or "ORIGINAL")}
-  
   arenaToggle.onSelect=function()
     p.arenasEnabled=not p.arenasEnabled
+    arenaToggle.label="COLOSSEUM ARENAS  "..(p.arenasEnabled and "ON" or "OFF")
     if ArenaCatalog and ArenaCatalog.setEnabled then ArenaCatalog.setEnabled(game,p.arenasEnabled) end
     refresh()
   end
-  
+
+  local arenaOpts = {"auto", "random", "water", "orre_colosseum", "relic_chamber", "relic_cave", "outskirts", "pyrite_colosseum", "deep_colosseum", "realgam_colosseum", "outdoor_wild", "mt_battle_summit", "cipher_lab_underground"}
+  local arenaSelectToggle = {keepOpen=true, label="ARENA  "..string.upper(p.arena)}
+  arenaSelectToggle.onSelect = function()
+    p.arena = cycle(arenaOpts, p.arena)
+    arenaSelectToggle.label = "ARENA  "..string.upper(p.arena)
+    refresh()
+  end
+
+  local cameraToggle={keepOpen=true,label="COLOSSEUM CAMERA  "..(p.cameraEnabled and "ON" or "OFF")}
   cameraToggle.onSelect=function()
     p.cameraEnabled=not p.cameraEnabled
+    cameraToggle.label="COLOSSEUM CAMERA  "..(p.cameraEnabled and "ON" or "OFF")
     refresh()
   end
-  
+
+  local freeLookToggle={keepOpen=true,label="FREE LOOK  "..(p.freeLookEnabled and "ON" or "OFF")}
+  freeLookToggle.onSelect=function()
+    p.freeLookEnabled=not p.freeLookEnabled
+    freeLookToggle.label="FREE LOOK  "..(p.freeLookEnabled and "ON" or "OFF")
+    refresh()
+  end
+
+  local modelsToggle={keepOpen=true,label="COLOSSEUM MODELS  "..(p.pokemonModelsEnabled and "ON" or "OFF")}
   modelsToggle.onSelect=function()
     p.pokemonModelsEnabled=not p.pokemonModelsEnabled
+    modelsToggle.label="COLOSSEUM MODELS  "..(p.pokemonModelsEnabled and "ON" or "OFF")
     refresh()
   end
   
+  local playerOpts = {"red", "leaf", "brendan", "may", "off"}
+  local playerModelToggle = {keepOpen=true, label="PLAYER MODEL  "..string.upper(p.playerModel)}
+  playerModelToggle.onSelect = function()
+    p.playerModel = cycle(playerOpts, p.playerModel)
+    p.playerTrainerModel = (p.playerModel ~= "off")
+    playerModelToggle.label = "PLAYER MODEL  "..string.upper(p.playerModel)
+    refresh()
+  end
+  
+  local enemyOpts = {"auto", "off"}
+  local enemyModelToggle = {keepOpen=true, label="ENEMY MODEL  "..string.upper(p.enemyTrainerModel)}
+  enemyModelToggle.onSelect = function()
+    p.enemyTrainerModel = cycle(enemyOpts, p.enemyTrainerModel)
+    p.enemyTrainerModels = (p.enemyTrainerModel ~= "off")
+    enemyModelToggle.label = "ENEMY MODEL  "..string.upper(p.enemyTrainerModel)
+    refresh()
+  end
+
+  local soundsToggle={keepOpen=true,label="BATTLE SOUNDS  "..(p.battleSoundsEnabled and "COLOSSEUM" or "ORIGINAL")}
   soundsToggle.onSelect=function()
     p.battleSoundsEnabled=not p.battleSoundsEnabled
+    soundsToggle.label="BATTLE SOUNDS  "..(p.battleSoundsEnabled and "COLOSSEUM" or "ORIGINAL")
     refresh()
   end
-  
-  local mainRows={arenaToggle,cameraToggle,modelsToggle,soundsToggle,{label="BACK",onSelect=function()
-    if mod.log then mod.log:info("BACK selected in Gen3 battle settings") end
-    if game.stack and type(game.stack.pop)=="function" then
-      game.stack:pop()
-    end
-  end}}
-  
-  if mod.log then mod.log:info("Creating Gen3 battle settings menu with " .. #mainRows .. " rows") end
-  
+
+  local musicOpts = {"normal", "random", "first", "cipher_peon", "miror_b", "cipher_admin", "mirakle_b", "semifinal", "final", "link1", "link2", "link3", "original"}
+  local musicToggle = {keepOpen=true, label="MUSIC  "..string.upper(p.music)}
+  musicToggle.onSelect = function()
+    p.music = cycle(musicOpts, p.music)
+    musicToggle.label = "MUSIC  "..string.upper(p.music)
+    refresh()
+  end
+
+  local doubleBattlesToggle = {keepOpen=true, label="DOUBLE BATTLES  "..(p.doubleBattlesEnabled and "ON" or "OFF")}
+  doubleBattlesToggle.onSelect = function()
+    p.doubleBattlesEnabled = not p.doubleBattlesEnabled
+    doubleBattlesToggle.label = "DOUBLE BATTLES  "..(p.doubleBattlesEnabled and "ON" or "OFF")
+    refresh()
+  end
+
+  local abilitiesToggle = {keepOpen=true, label="ABILITIES  "..(p.abilitiesEnabled and "ON" or "OFF")}
+  abilitiesToggle.onSelect = function()
+    p.abilitiesEnabled = not p.abilitiesEnabled
+    abilitiesToggle.label = "ABILITIES  "..(p.abilitiesEnabled and "ON" or "OFF")
+    refresh()
+  end
+
+  local autoProgressToggle = {keepOpen=true, label="AUTO PROGRESS  "..(p.autoProgressEnabled and "ON" or "OFF")}
+  autoProgressToggle.onSelect = function()
+    p.autoProgressEnabled = not p.autoProgressEnabled
+    autoProgressToggle.label = "AUTO PROGRESS  "..(p.autoProgressEnabled and "ON" or "OFF")
+    refresh()
+  end
+
+  local bossIntroToggle = {keepOpen=true, label="BOSS INTROS  "..(p.bossIntroEnabled and "ON" or "OFF")}
+  bossIntroToggle.onSelect = function()
+    p.bossIntroEnabled = not p.bossIntroEnabled
+    bossIntroToggle.label = "BOSS INTROS  "..(p.bossIntroEnabled and "ON" or "OFF")
+    refresh()
+  end
+
+  -- Assemble all active items into our UI array
+  local mainRows={
+    arenaToggle,
+    arenaSelectToggle,
+    cameraToggle,
+    freeLookToggle,
+    modelsToggle,
+    playerModelToggle,
+    enemyModelToggle,
+    soundsToggle,
+    musicToggle,
+    doubleBattlesToggle,
+    abilitiesToggle,
+    autoProgressToggle,
+    bossIntroToggle,
+    {label="BACK",onSelect=function()
+      if modRef and modRef.log then modRef.log:info("BACK selected in Gen3 battle settings") end
+      if game.stack and type(game.stack.pop)=="function" then
+        game.stack:pop()
+      end
+    end}
+  }
+
   local ok2, menu = pcall(function()
     return Menu.new(game,mainRows,{tx=1,ty=2,tw=24,maxVisible=10,onCancel=function()
-      if mod.log then mod.log:info("CANCEL in Gen3 battle settings") end
+      if modRef and modRef.log then modRef.log:info("CANCEL in Gen3 battle settings") end
       if game.stack and type(game.stack.pop)=="function" then
         game.stack:pop()
       end
     end})
   end)
-  
+
   if not ok2 then
-    if mod.log then mod.log:warn("Failed to create Gen3 battle settings menu: " .. tostring(menu)) end
-    return
+    if modRef and modRef.log then modRef.log:warn("Failed to create Gen3 battle settings menu: " .. tostring(menu)) end
+    return nil
   end
-  
-  if mod.log then mod.log:info("Gen3 battle settings menu created successfully") end
-  
+
   menu.screenId="CbeBattleSettingsGen3"
-  
+
   if BattleMenuUI and BattleMenuUI.mark then
     BattleMenuUI.mark(menu,"COLOSSEUM BATTLE",mainRows,10,"ENVIRONMENT / CAMERA / POKEMON / AUDIO")
   end
-  
-  local ok3, pushErr = pcall(function()
-    game.stack:push(menu)
-  end)
-  
-  if not ok3 then
-    if mod.log then mod.log:warn("Failed to push Gen3 battle settings menu: " .. tostring(pushErr)) end
-  else
-    if mod.log then mod.log:info("Gen3 battle settings menu pushed successfully") end
+
+  if modRef and modRef.log then modRef.log:info("Gen3 battle settings menu created successfully") end
+  return menu
+end
+
+-- Pushes the battle-settings menu directly.
+local function openBattleMenu(game)
+  local menu = buildBattleMenu(game)
+  if not menu then return end
+  local ok, err = pcall(function() game.stack:push(menu) end)
+  if not ok then
+    if modRef and modRef.log then modRef.log:warn("Failed to push Gen3 battle settings menu: " .. tostring(err)) end
   end
 end
 
 function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trainerRoster,compat,audioFidelity)
-  if installed then 
+  if installed then
     if mod.log then mod.log:info("Gen3 battle settings already installed") end
-    return true 
+    return true
   end
-  
+
   if mod.log then mod.log:info("Gen3 battle settings install function called") end
-  
+
   modRef,Trainer,Music,ArenaCatalog,BattleMenuUI,CacheManager,TrainerRoster,Compat,AudioFidelity=mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trainerRoster,compat,audioFidelity
   if BattleMenuUI and BattleMenuUI.install then BattleMenuUI.install() end
-  if not (mod and mod.hooks and type(mod.hooks.wrap)=="function") then 
+  if not (mod and mod.hooks and type(mod.hooks.wrap)=="function") then
     if mod.log then mod.log:warn("Gen3 battle settings install failed: mod.hooks.wrap not available") end
-    return false 
+    return false
   end
-  
+
   if mod.log then mod.log:info("Installing Gen3 battle settings") end
-  
+
   -- Store the battle menu opener globally for keybind access
   _G.DRAMATIC_GEN3_BATTLE_MENU_OPENER = function(g)
     if mod.log then mod.log:info("Global Gen3 battle menu opener called") end
     openBattleMenu(g or (modRef and modRef.game))
   end
-  
-  -- Try to register a console command for Gen3
+
+  -- Register console command
   local okCmd, cmdErr = pcall(function()
     if mod and mod.commands and mod.commands.register then
       mod.commands.register("battle_settings", function()
@@ -180,149 +277,52 @@ function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trai
       if mod.log then mod.log:info("Gen3 battle settings console command registered") end
     end
   end)
-  
+
   if not okCmd then
     if mod.log then mod.log:warn("Failed to register console command: " .. tostring(cmdErr)) end
   end
-  
-  -- For Gen3, try hooking into menu execution instead of callbacks
+
   local success = false
-  
-  -- Try hooking the menu selection directly
+
   local ok, err = pcall(function()
     mod.hooks:wrap("ui.start_menu.items",function(next,game,items)
       local out=next(game,items)
       if type(out)~="table" then out=items end
-      
-      if mod.log then mod.log:info("Gen3 battle settings hook called, items count: " .. #out) end
-      
+
       for _,entry in ipairs(out) do
-        if entry.__colosseumBattleEntryGen3 or tostring(entry.label or ""):upper()=="BATTLE" then 
-          if mod.log then mod.log:info("BATTLE entry already exists") end
-          return out 
+        if entry.__colosseumBattleEntryGen3 or tostring(entry.label or ""):upper()=="BATTLE" then
+          return out
         end
       end
-      
+
       local at=#out+1
       for i,entry in ipairs(out) do
         if tostring(entry.label or ""):upper()=="OPTION" then at=i;break end
       end
-      
-      -- Store the battle menu opener in a global that can be called from anywhere
-      if not _G.DRAMATIC_GEN3_BATTLE_MENU then
-        _G.DRAMATIC_GEN3_BATTLE_MENU = function(g)
-          if mod.log then mod.log:info("Global Gen3 battle menu opener called") end
-          openBattleMenu(g or game)
-        end
+
+      if game and game.data then
+        game.data.screens = game.data.screens or {}
+        game.data.screens["CbeBattleSettingsGen3"] = { new = function(g) return buildBattleMenu(g) end }
       end
-      
+
       table.insert(out,at,{
         label="BATTLE",
         __colosseumBattleEntryGen3=true,
-        -- Try all possible callback names
-        onSelect=function()
-          if mod.log then mod.log:info("Gen3 BATTLE option selected via onSelect") end
-          local ok, err = pcall(openBattleMenu, game)
-          if not ok then mod.log:warn("Gen3 BATTLE menu open failed: " .. tostring(err)) end
-        end,
-        action=function()
-          if mod.log then mod.log:info("Gen3 BATTLE option selected via action") end
-          local ok, err = pcall(openBattleMenu, game)
-          if not ok then mod.log:warn("Gen3 BATTLE menu open failed: " .. tostring(err)) end
-        end,
-        handler=function()
-          if mod.log then mod.log:info("Gen3 BATTLE option selected via handler") end
-          local ok, err = pcall(openBattleMenu, game)
-          if not ok then mod.log:warn("Gen3 BATTLE menu open failed: " .. tostring(err)) end
-        end,
-        activate=function()
-          if mod.log then mod.log:info("Gen3 BATTLE option selected via activate") end
-          local ok, err = pcall(openBattleMenu, game)
-          if not ok then mod.log:warn("Gen3 BATTLE menu open failed: " .. tostring(err)) end
-        end,
-        -- Try storing a direct function reference
-        _battleMenuOpener = openBattleMenu
+        screen="CbeBattleSettingsGen3",
       })
-      
+
       if mod.log then mod.log:info("BATTLE entry inserted at position " .. at) end
       return out
     end,650)
   end)
-  
+
   if ok then
     success = true
     if mod.log then mod.log:info("Gen3 battle settings ui.start_menu.items hook installed successfully") end
   else
     if mod.log then mod.log:warn("Gen3 battle settings ui.start_menu.items hook failed: " .. tostring(err)) end
   end
-  
-  -- Try hooking into menu choice execution as a fallback
-  if not success then
-    local ok2, err2 = pcall(function()
-      mod.hooks:wrap("ui.menu.choice",function(next,game,choice,index)
-        if mod.log then mod.log:info("Gen3 menu choice hook called: " .. tostring(choice) .. " at index " .. tostring(index)) end
-        
-        local choiceLabel = tostring(choice or "")
-        if choiceLabel:upper()=="BATTLE" then
-          if mod.log then mod.log:info("BATTLE choice detected, opening menu") end
-          local ok3, err3 = pcall(openBattleMenu, game)
-          if not ok3 then mod.log:warn("Gen3 BATTLE menu open failed: " .. tostring(err3)) end
-          return -- Don't call next, we handled it
-        end
-        
-        return next(game,choice,index)
-      end,650)
-    end)
-    
-    if ok2 then
-      success = true
-      if mod.log then mod.log:info("Gen3 battle settings ui.menu.choice hook installed successfully") end
-    else
-      if mod.log then mod.log:warn("Gen3 battle settings ui.menu.choice hook failed: " .. tostring(err2)) end
-    end
-  end
-  
-  -- Try hooking into pause menu execution as another fallback
-  if not success then
-    local ok3, err3 = pcall(function()
-      mod.hooks:wrap("ui.pause_menu.items",function(next,game,items)
-        local out=next(game,items)
-        if type(out)~="table" then out=items end
-        
-        if mod.log then mod.log:info("Gen3 pause menu hook called, items count: " .. #out) end
-        
-        for _,entry in ipairs(out) do
-          if entry.__colosseumBattleEntryGen3 or tostring(entry.label or ""):upper()=="BATTLE" then 
-            if mod.log then mod.log:info("BATTLE entry already exists in pause menu") end
-            return out 
-          end
-        end
-        
-        local at=#out+1
-        for i,entry in ipairs(out) do
-          if tostring(entry.label or ""):upper()=="OPTION" then at=i;break end
-        end
-        table.insert(out,at,{
-          label="BATTLE",
-          __colosseumBattleEntryGen3=true,
-          onSelect=function()
-            if mod.log then mod.log:info("Gen3 BATTLE option selected from pause menu") end
-            local ok4, err4 = pcall(openBattleMenu, game)
-            if not ok4 then mod.log:warn("Gen3 BATTLE menu open failed: " .. tostring(err4)) end
-          end
-        })
-        return out
-      end,650)
-    end)
-    
-    if ok3 then
-      success = true
-      if mod.log then mod.log:info("Gen3 battle settings ui.pause_menu.items hook installed successfully") end
-    else
-      if mod.log then mod.log:warn("Gen3 battle settings ui.pause_menu.items hook failed: " .. tostring(err3)) end
-    end
-  end
-  
+
   installed = success
   return success
 end
@@ -347,4 +347,5 @@ function S.status(game)
     audioFidelity=AudioFidelity and AudioFidelity.status(modRef) or nil,
   }
 end
+
 return S
