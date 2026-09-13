@@ -24,6 +24,13 @@ local WazaHandlers=V.WazaHandlers
 local MoveFXExtractor=V.MoveFXExtractor
 local ResidentPrewarm=V.ResidentPrewarm
 local FrameWork=V.FrameWork
+local OverworldBattle=V.OverworldBattle
+
+local function log(level,fmt,...)
+  local m=V.mod
+  local l=m and m.log
+  if l and type(l[level])=="function" then pcall(l[level],l,fmt,...) end
+end
 
 local function platformOS()
   if love and love.system and type(love.system.getOS)=="function" then
@@ -238,13 +245,39 @@ local function beginBattle(payload)
   -- which is the regression this branch removes.
   if StadiumBridge then StadiumBridge.setDelegated(false) end
 
-  -- Android battle entry must establish a drawable CBE host BEFORE any Pokemon
-  -- cache/model work. The transition reaches its black resolve before this event;
-  -- doing source extraction or a large GPU upload first can therefore leave the
-  -- device staring at a black frame with no arena compositor alive yet.
+  -- BATTLE MODE PRIORITY: Determine which battle system should be used
+  -- 1. Colosseum ARENAS (if enabled)
+  -- 2. 3D-BTL (if Colosseum disabled but 3D-BTL enabled)
+  -- 3. Plain 2D battles (if both disabled)
+  local game=battle and battle.game
+  local colosseumEnabled=ArenaCatalog and ArenaCatalog.enabled(game)
+  local overworldBattleEnabled=OverworldBattle and OverworldBattle.enabled()
+  
+  log("info","Battle mode selection: Colosseum=%s, 3D-BTL=%s",tostring(colosseumEnabled),tostring(overworldBattleEnabled))
+  
+  local began=false
   local hostStart=wallNow()
-  local began=StandaloneHost.begin(battle)
   local hostEnd=wallNow()
+  
+  -- Only use StandaloneHost if Colosseum ARENAS is enabled
+  if colosseumEnabled then
+    log("info","Using Colosseum ARENAS battle system")
+    -- Android battle entry must establish a drawable CBE host BEFORE any Pokemon
+    -- cache/model work. The transition reaches its black resolve before this event;
+    -- doing source extraction or a large GPU upload first can therefore leave the
+    -- device staring at a black frame with no arena compositor alive yet.
+    hostStart=wallNow()
+    began=StandaloneHost.begin(battle)
+    hostEnd=wallNow()
+  elseif overworldBattleEnabled then
+    log("info","Using 3D-BTL (OverworldBattle) battle system")
+    -- If Colosseum is disabled but 3D-BTL is enabled, use OverworldBattle instead
+    pcall(OverworldBattle.ensure,battle)
+    began=true  -- Mark as began so PokemonActors prewarming still runs
+    hostEnd=wallNow()
+  else
+    log("info","Using plain 2D battle system (both Colosseum and 3D-BTL disabled)")
+  end
 
   -- Desktop keeps the established eager active-pair readiness policy. Android
   -- promotes only already-generated models here and queues genuinely cold models

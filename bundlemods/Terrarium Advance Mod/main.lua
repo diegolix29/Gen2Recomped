@@ -3441,7 +3441,7 @@ local function initializeColosseumIntegration()
       return result
     end
     
-    local namespace = { mod = mod, FALLBACK = nil, engineRequire = require }
+    local namespace = { mod = mod, FALLBACK = nil, engineRequire = require, OverworldBattle = OverworldBattle }
     local function loadColosseumModule(name, arg)
       local value = colosseumModule(name, arg == nil and namespace or arg)
       if value then namespace[name] = value end
