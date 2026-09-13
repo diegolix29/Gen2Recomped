@@ -184,6 +184,17 @@ function C.enabled(game)
   local p=save and save.colosseumBattle
   if not p then return true end
   if p.arenasEnabled==nil then p.arenasEnabled=true end
+  
+  -- Check the new colosseumArena setting from the main mod
+  -- This setting controls whether to use Colosseum arenas or map-based voxel arenas
+  local mod = game and game.mod
+  if mod and mod.options then
+    local ok, value = pcall(mod.options.get, mod.options, "colosseumArena")
+    if ok and value == false then
+      return false
+    end
+  end
+  
   return p.arenasEnabled and true or false
 end
 
