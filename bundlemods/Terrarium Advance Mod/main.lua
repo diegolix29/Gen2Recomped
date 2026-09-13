@@ -240,18 +240,6 @@ local stadiumFxFallbackNotice = ModSetting.new("stadiumFxFallbackNotice", "FALLB
 local stadiumFx2DLayer = ModSetting.new("stadiumFx2DLayer", "2D EFFECT LAYER",
   { "authentic", "all", "off" }, { "AUTHENTIC", "ALL", "OFF" })
 
--- Colosseum arena toggle - controls whether to use Colosseum arenas or map-based voxel arenas
-local colosseumArenaSetting = ModSetting.new("colosseumArena", "COLOSSEUM ARENA",
-  { false, true }, { "OFF", "ON" })
-
--- Helper function to check if Colosseum arenas are enabled
-local function colosseumArenaEnabled()
-  return colosseumArenaSetting:get() and true or false
-end
-
--- Export this function so other modules can check the setting
-V.colosseumArenaEnabled = colosseumArenaEnabled
-
 -- ds_fp_ceiling additional settings
 local fpShadows = ModSetting.new("fpshadows", "CONTACT SHADOW",
   { true, false }, { "ON", "OFF" })
@@ -1198,11 +1186,6 @@ local SETTINGS = {
   -- Hidden entirely under VR (restored from DRAMATIC_SHAPE): the headset
   -- replaces this camera outright, and a row that no longer decides
   -- anything is worse than no row.
-  { colosseumArenaSetting,
-    "Use Colosseum arenas instead of map-based voxel arenas. When ON, battles "
-    .. "use extracted Colosseum stages. When OFF, battles use the actual overworld map.",
-    when = function() return not VR.enabled() end,
-    full = true, cat = "battles" },
   { OverworldBattle.setting,
     "Fight on the map: the battle draws over the nearest clear ground, "
     .. "shot over the shoulder with a slow parallax drift.",
@@ -2571,15 +2554,6 @@ end
 -- where the reasoning for each one is written down. Installed once, here,
 -- so this file keeps naming every engine seam the mod touches.
 OverworldBattle.install()
-
--- ------- mod settings in start menu
---
--- Direct shortcut to this mod's ManagerState options page from the start menu.
--- Restored from DRAMATIC_SHAPE so Gen3 games can access mod settings.
-local okDirect, DirectModSettingsMenu = pcall(V.require, "DirectModSettingsMenu")
-if okDirect and DirectModSettingsMenu then
-  pcall(DirectModSettingsMenu.install)
-end
 
 -- ------- shiny Pokemon (restored from DRAMATIC_SHAPE)
 --

@@ -113,8 +113,7 @@ local function insertAfterOption(items, row)
   local inserted = false
   for _, item in ipairs(items or {}) do
     out[#out + 1] = item
-    -- Handle both Gen1/Gen2 (item.value == "option") and Gen3 (item.key == "option")
-    if not inserted and type(item) == "table" and (item.value == "option" or item.key == "option") then
+    if not inserted and type(item) == "table" and item.value == "option" then
       out[#out + 1] = row
       inserted = true
     end
