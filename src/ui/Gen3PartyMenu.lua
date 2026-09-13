@@ -155,7 +155,14 @@ function Gen3PartyMenu:party() return self.game.save.party or {} end
 -- slots 1..6, then the CANCEL button as slot #party+1
 function Gen3PartyMenu:slots() return #self:party() + 1 end
 
+-- ...ONCE.  A field move now closes this screen BEFORE its presentation
+-- plays (see useFieldMove), and the three actions that serve one each close it
+-- again on their own way out -- which used to be right and would now pop
+-- whatever the presentation left on top.  Closing twice was always a bug; it
+-- simply never happened before.
 function Gen3PartyMenu:close()
+  if self.closed then return end
+  self.closed = true
   self.game.stack:pop()
   if self.onCancel then self.onCancel() end
 end
@@ -296,11 +303,98 @@ end
 -- The list stays as the fallback for a cache imported before the section
 -- rectangles were kept -- openRegionMap says so by returning false -- because
 -- refusing to fly at all would be worse than flying from a list.
-function Gen3PartyMenu:useFly()
+-- ---------------------------------------------------------------------------
+-- THE FOUR THIS SCREEN REFUSED TO SERVE
+--
+-- Reported from play, after the sweep went in: "same with DIG, Teleport,
+-- Secret Power etc" and "Dig and teleport would be done via the menu though".
+-- They are -- and this screen listed them and then answered every one of them
+-- with the cartridge's "can't be used here", because useFieldMove only knew
+-- four moves.  So the list was right, the words were right, and picking any
+-- row but those four did nothing at all.
+--
+-- Every one of these already exists in the overworld; what was missing was
+-- the door.  The Game Boy party menu has been calling three of them for a
+-- long time (src/ui/PartyMenu.lua's dig / escape / strength arms), so this is
+-- the same call with Hoenn's gate in front of it.
+--
+-- SECRET POWER is deliberately NOT here: it builds a secret base, which is a
+-- whole feature rather than a call, and offering it would be a row that looks
+-- served and is not -- exactly the thing being fixed.
+function Gen3PartyMenu:strengthUsableBy(mon)
+  local ow = self.game.overworld
+  if not (ow and ow.gen3HasBadge and ow:gen3HasBadge("STRENGTH")) then
+    return false
+  end
+  if ow.strengthActive then return false end
+  return self:knowsFieldMove(mon, "STRENGTH")
+end
+
+function Gen3PartyMenu:useStrength(mon)
+  local ow = self.game.overworld
+  if ow then ow.strengthActive = true end
+  local def = self.game.data.pokemon[mon.species]
+  local name = mon.nickname or (def and def.name) or tostring(mon.species)
+  local said = self.game.data.text._UseStrengthText
+               or self.game.data.text._UsedStrengthText
+  local text = (said or Strings("{RAM:wNameBuffer} used\nSTRENGTH."))
+               :gsub("{RAM:wNameBuffer}", (name:gsub("%%", "%%%%")))
+  self:say(text)
+end
+
+-- DIG backs out through the recorded entrance; with none recorded there is
+-- nowhere to back out TO, which is the cartridge's own refusal.
+function Gen3PartyMenu:digUsable()
+  local ow = self.game.overworld
+  return (ow and ow.escapePoint and ow:escapePoint()) and true or false
+end
+
+function Gen3PartyMenu:useDig()
+  local ow = self.game.overworld
+  if ow then ow:beginTeleportOut(nil, { escape = true }) end
+end
+
+-- TELEPORT goes to the last Pokemon Centre, so it needs there to have been
+-- one.  beginTeleportOut guards this too; asking here is what keeps the row
+-- from being offered as usable and then doing nothing.
+function Gen3PartyMenu:teleportUsable()
+  return (self.game.save and self.game.save.lastHeal) and true or false
+end
+
+function Gen3PartyMenu:useTeleport()
+  local ow = self.game.overworld
+  if ow then ow:beginTeleportOut() end
+end
+
+function Gen3PartyMenu:sweetScentUsable()
+  local ow = self.game.overworld
+  return (ow and ow.gen2SweetScent) and true or false
+end
+
+function Gen3PartyMenu:useSweetScent()
+  local ow = self.game.overworld
+  if ow then ow:gen2SweetScent() end
+end
+
+-- `mon` is the bird, and it is passed in because the sweep that announces it
+-- plays around the DEPARTURE rather than around the pick -- see useFieldMove.
+function Gen3PartyMenu:useFly(mon)
   local ow = self.game.overworld
   local game = self.game
   self:close()
-  local function depart(mapId) if ow then ow:flyTo(mapId) end end
+  local function depart(mapId)
+    -- the carrier goes with the destination: the departure draws it
+    local function go() if ow then ow:flyTo(mapId, mon) end end
+    if not (mon and ow) then return go() end
+    -- THE REGION MAP COMES DOWN FIRST.  The sweep is an overworld animation;
+    -- pushed onto the map screen it would sweep across THAT.  flyTo closes
+    -- the menus itself for the same reason, and this is the same call.
+    if ow.closeToMap then ow:closeToMap() end
+    local okShow, shown = pcall(function()
+      return require("src.world.Gen3FieldMove").show(game, mon, go)
+    end)
+    if not (okShow and shown == true) then go() end
+  end
   if ow and ow.openRegionMap
      and ow:openRegionMap({ fly = true, onFly = depart }) then
     return
@@ -440,12 +534,60 @@ end
 
 -- USING one, which is the half the cartridge decides at the press rather
 -- than at the listing.
+-- THE SWEEP FIRST, THEN THE MOVE.
+--
+-- Asked for directly: "we also need the transition for using HMs like the rom
+-- that slides across the screen shows our pokemon and then performs the HM
+-- move".  A move used from a SCRIPT gets it where the cartridge puts it -- in
+-- the field effect itself (Gen3Commands.g3_field_effect) -- and the three
+-- served from this screen never reach a script at all, so they are wrapped
+-- here.
+--
+-- The menu closes FIRST, as it does on the cartridge: the presentation plays
+-- over the map, not over the party.  Everything after it is the action
+-- untouched, which is why close() above had to become idempotent rather than
+-- these three being rewritten.
 function Gen3PartyMenu:useFieldMove(mon, move)
   local chamber = self:regiUsableBy(mon)
-  if chamber and chamber.move == move then return self:useRegi(chamber) end
-  if move == "FLASH" and self:flashUsableBy(mon) then return self:useFlash() end
-  if move == "DIVE" and self:diveUsableBy(mon) then return self:useDive() end
-  if move == "FLY" and self:flyUsableBy(mon) then return self:useFly() end
+  local function run()
+    if chamber and chamber.move == move then return self:useRegi(chamber) end
+    if move == "FLASH" then return self:useFlash() end
+    if move == "DIVE" then return self:useDive() end
+    if move == "FLY" then return self:useFly(mon) end
+    if move == "STRENGTH" then return self:useStrength(mon) end
+    if move == "DIG" then return self:useDig() end
+    if move == "TELEPORT" then return self:useTeleport() end
+    if move == "SWEET_SCENT" then return self:useSweetScent() end
+  end
+  local usable = (chamber and chamber.move == move)
+                 or (move == "FLASH" and self:flashUsableBy(mon))
+                 or (move == "DIVE" and self:diveUsableBy(mon))
+                 or (move == "FLY" and self:flyUsableBy(mon))
+                 or (move == "STRENGTH" and self:strengthUsableBy(mon))
+                 or (move == "DIG" and self:digUsable())
+                 or (move == "TELEPORT" and self:teleportUsable())
+                 or (move == "SWEET_SCENT" and self:sweetScentUsable())
+  if usable then
+    self:close()
+    -- ...EXCEPT FLY, WHICH ASKS WHERE FIRST.
+    --
+    -- Reported from play: "fix the hm transition screen for fly it appears
+    -- before selecting a location but should play after".  Exactly right, and
+    -- it is the one field move here whose action is not the move: picking FLY
+    -- opens the REGION MAP, and the bird is not called until a town has been
+    -- chosen.  Sweeping the Pokemon across the screen before that put the
+    -- announcement in front of the question.
+    --
+    -- So FLY carries its own sweep, around the DEPARTURE rather than around
+    -- the pick (see useFly).  The other two do their work the moment they are
+    -- chosen, so for them the sweep belongs here.
+    if move == "FLY" then return self:useFly(mon) end
+    local okShow, shown = pcall(function()
+      return require("src.world.Gen3FieldMove").show(self.game, mon, run)
+    end)
+    if not (okShow and shown == true) then run() end
+    return
+  end
   -- CursorCb_FieldMove's own answer when the move's setup returns false,
   -- in the cartridge's own words: sActionStringTable[PARTY_MSG_CANT_USE_HERE]
   local record = (self.game.data.constants or {}).gen3PartyActions
@@ -699,11 +841,54 @@ function Gen3PartyMenu:choose()
   self.subIndex = 1
 end
 
+-- THE HP BAR FILLING, WHICH IS WHAT A POTION LOOKS LIKE.
+--
+-- Reported from play as a crash: "when using a potion I get
+-- BagMenu.lua:424: attempt to call method 'animateTo' (a nil value)".  The
+-- bag keeps an HP-medicine picker OPEN so the bar can fill under the message
+-- -- the order item_effects.asm runs in, and the order Emerald's own
+-- Task_DisplayHPRestoredMessage runs in too -- and then calls `animateTo` on
+-- whichever picker it opened.  Gen 1 and Gen 2 get PartyMenu, which has one.
+-- Gen 3 gets THIS screen, which did not, so every out-of-battle potion in
+-- Hoenn took the game down.
+--
+-- The same shape as PartyMenu's, deliberately: a `from` count that the draw
+-- shows instead of the real one, walked up to the real one over about a
+-- second and a half, with the screen holding its own input until it lands --
+-- UpdateHPBar2 is a blocking predef, so no button is read while it runs.
+-- Keeping the two implementations the same shape is what lets the bag call
+-- one method and not care which generation answered.
+function Gen3PartyMenu:animateTo(mon, fromHP, onDone)
+  if not (mon and (mon.stats or mon.maxHp)) then
+    if onDone then onDone() end
+    return
+  end
+  local from = math.max(0, fromHP or mon.hp or 0)
+  self.heal = { mon = mon, from = from, shown = from, onDone = onDone }
+end
+
 function Gen3PartyMenu:update(dt)
   -- RECONSTRUCTED: every icon bounces, all the time, on the same beat.  On
   -- the cartridge each one is an OBJ with its own callback; here it is one
   -- clock, which is indistinguishable on screen and cannot drift.
   self.t = (self.t or 0) + (dt or 0)
+  -- THE FILL OWNS THE SCREEN WHILE IT RUNS, for the same reason the Game Boy
+  -- one does: the cartridge's bar update is blocking, so nothing is read
+  -- until it lands.  Ninety-six steps is the whole bar however big the
+  -- Pokemon's HP is, which is what makes a Wailord's fill take as long as a
+  -- Zigzagoon's rather than ninety times longer.
+  local heal = self.heal
+  if heal then
+    local mon = heal.mon
+    local maxHp = math.max(1, (mon.stats and mon.stats.hp) or mon.maxHp or 1)
+    local want = math.max(0, math.min(maxHp, mon.hp or 0))
+    heal.shown = math.min(want, heal.shown + math.max(1, maxHp) / 96)
+    if heal.shown >= want then
+      self.heal = nil
+      if heal.onDone then heal.onDone() end
+    end
+    return
+  end
   local input = self.game.input
 
   -- the pick's own submenu takes the stick while it is up
@@ -993,6 +1178,14 @@ function Gen3PartyMenu:drawMember(mon, panel, selected, inset)
 
   local maxHp = math.max(1, (mon.stats and mon.stats.hp) or mon.maxHp or 1)
   local hp = math.max(0, math.min(maxHp, mon.hp or 0))
+  -- ...OR THE NUMBER THE BAR HAS CLIMBED TO SO FAR.  A potion raises mon.hp
+  -- the instant it is used; the bar is what shows it happening, so while a
+  -- fill is running this Pokemon draws the count the fill has reached rather
+  -- than the one it is heading for.
+  local heal = self.heal
+  if heal and heal.mon == mon then
+    hp = math.max(0, math.min(maxHp, math.floor(heal.shown)))
+  end
   local fraction = hp / maxHp
 
   local function at(key) return panel.x + rects[key].x, panel.y + rects[key].y end

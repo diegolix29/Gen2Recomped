@@ -501,6 +501,13 @@ function App.unload()
   S = nil
   mods = nil
   App.dataVersion = nil
+  -- ...and the derived map / flag names, for exactly the reason above: they
+  -- are keyed on the Data table, which the next load refills in place with
+  -- possibly the other game's cache (see Gen3Names.forget).
+  local okNames, Gen3Names = pcall(require, "Gen3Names")
+  if okNames and type(Gen3Names) == "table" and Gen3Names.forget then
+    Gen3Names.forget()
+  end
   -- Kit is never evicted from package.loaded, so a Close taken while a text
   -- field still owns focus would leak Kit.focus and a raised soft keyboard
   -- (against a rect that is gone) into the launcher and the next session

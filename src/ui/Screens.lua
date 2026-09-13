@@ -164,6 +164,10 @@ local GEN3_ALIASES = {
   -- battle's level-up learn -- so this alias passes every argument through
   -- as it stands rather than folding the first into a table.
   MoveLearnMenu = { id = "Gen3MoveLearnMenu", positional = true },
+  -- THE EVOLUTION SCENE, which is positional for the same reason: it is
+  -- pushed as (mon, newSpecies, onDone, via, evo) and the last two decide
+  -- whether B may stop it.
+  EvolutionState = { id = "Gen3EvolutionState", positional = true },
   DexEntryMenu = { id = "Gen3DexEntry", opts = { species = true,
                                                  forceOwned = true } },
 }
@@ -192,6 +196,24 @@ local function servedBy(alias, arg)
     if not alias.opts[key] then return false end
   end
   return true
+end
+
+-- Is this id served by a POSITIONAL alias?
+--
+-- THE BATTLE'S MOVE LEARNING WAS THE GAME BOY SCREEN and this is why.
+-- Reported from play: "in battle when a pokemon learns a move it should show
+-- the gen3 menu but it doesnt".  The alias was here, and every push site got
+-- Emerald's screen -- but the battle does not push, it builds, and
+-- BattleState:buildScreen only consulted the alias when the call carried at
+-- most ONE argument, because an options table is the only shape that can be
+-- folded.  Move learning is built as (mon, moveId): two arguments, so the
+-- alias was never asked and the Game Boy screen came up.  A positional alias
+-- is exactly the case where that restriction does not apply -- nothing is
+-- folded, every argument passes through as it stands -- so buildScreen asks
+-- this before giving up on a multi-argument call.
+function Screens.positionalAlias(id)
+  local alias = GEN3_ALIASES[id]
+  return (alias ~= nil and alias.positional == true) and true or false
 end
 
 -- The id a push should really open, and the arguments it should open with.

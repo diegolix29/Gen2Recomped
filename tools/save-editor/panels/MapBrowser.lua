@@ -20,6 +20,7 @@ local MapLoader = require("src.world.MapLoader")
 local Warp = require("src.world.Warp")
 local Theme = require("Theme")
 local Ops = require("Ops")
+local Catalog = require("Catalog")
 local PAL = Theme.PAL
 
 local MapBrowser = {}
@@ -42,10 +43,51 @@ local function centerOn(S, cx, cy)
 end
 MapBrowser.centerOn = centerOn
 
-local function sortedMapIds(data)
-  local ids = {}
-  for id in pairs(data.maps) do ids[#ids + 1] = id end
-  table.sort(ids)
+-- WHAT A MAP IS CALLED, AND WHAT IT IS KEYED BY.
+--
+-- Reported from play: "ensure the save manager lists emerald maps by in game
+-- map name".  A Hoenn map's id is MAP_G01_N03 -- the cartridge's map group and
+-- number, which is the only thing it stores -- so the whole list read as
+-- hexadecimal.  The name is the header's region map section, the same one the
+-- sign shows when you walk in (Catalog.mapLabel / Gen3Names).
+--
+-- Both are kept everywhere: the name is what the row says, the id is what the
+-- row writes, and the search box matches either.  Gen 1 and Gen 2 ids are
+-- already words, so `label` is the id there and nothing changes.
+local function mapLabel(S, id)
+  return Catalog.mapLabel(S.data, id)
+end
+
+-- Sorted BY NAME now, because the list is read by name.  The id breaks ties,
+-- which keeps the forty-five rooms of the Battle Frontier in map order under
+-- their shared name instead of shuffling between frames.
+local sortedCache = setmetatable({}, { __mode = "k" })
+local sortedGeneration = nil
+
+local function sortedMapIds(data, S)
+  -- 518 labels and a sort is nothing once and a waste sixty times a second,
+  -- and the answer only changes when the editor loads a different dataset --
+  -- which `Data` does IN PLACE, so the generation is what says so (see
+  -- Gen3Names.forget).
+  local okG, Gen3Names = pcall(require, "Gen3Names")
+  local generation = okG and Gen3Names.generation or 0
+  if sortedGeneration ~= generation then
+    sortedGeneration = generation
+    sortedCache = setmetatable({}, { __mode = "k" })
+  end
+  local hit = sortedCache[data]
+  if hit then return hit end
+  local ids, label = {}, {}
+  for id in pairs(data.maps) do
+    ids[#ids + 1] = id
+    label[id] = S and mapLabel(S, id) or id
+  end
+  table.sort(ids, function(a, b)
+    local la, lb = label[a]:lower(), label[b]:lower()
+    if la ~= lb then return la < lb end
+    return a < b
+  end)
+  sortedCache[data] = ids
   return ids
 end
 
@@ -78,7 +120,7 @@ local function goToWarp(S, warp)
   -- claim the lazy first-draw centering below, so it does not immediately
   -- re-centre the destination map and lose the warp's landing cell
   S._mapCenteredFor = destMap
-  S.status = "Followed warp to " .. destMap
+  S.status = "Followed warp to " .. (S.data and Catalog.mapLabel(S.data, destMap) or destMap)
 end
 
 -- Screen-space point inside the viewport -> map cell, or nil if the point is
@@ -121,7 +163,7 @@ function MapBrowser.select(S, id)
   S.mapId = id
   S.mapClickCell = nil
   S._mapCenteredFor = nil
-  S.status = "Viewing " .. id
+  S.status = "Viewing " .. mapLabel(S, id)
 end
 
 -- Called inside the viewport's translate+scale transform, so every rect is
@@ -177,12 +219,17 @@ function MapBrowser.draw(S, Kit, x, y, w, h)
   Kit.caption(x + pad, y + pad, "MAPS")
   local qy = y + pad + Kit.textHeight("caption") + 8 * s
   S.mapQuery = Kit.textfield("map-query", x + pad, qy, listW - 2 * pad, 32 * s,
-    S.mapQuery, "search maps...")
+    S.mapQuery, "search by name or id...")
 
   local ids = {}
-  for _, id in ipairs(sortedMapIds(S.data)) do
-    if S.mapQuery == "" or id:lower():find(S.mapQuery:lower(), 1, true) then
-      ids[#ids + 1] = id
+  do
+    local needle = (S.mapQuery or ""):lower()
+    for _, id in ipairs(sortedMapIds(S.data, S)) do
+      if needle == ""
+         or id:lower():find(needle, 1, true)
+         or mapLabel(S, id):lower():find(needle, 1, true) then
+        ids[#ids + 1] = id
+      end
     end
   end
 
@@ -202,7 +249,19 @@ function MapBrowser.draw(S, Kit, x, y, w, h)
     if Kit.row(x + pad, ry, listW - 2 * pad, mRowH, id == S.mapId, PAL.blue, 7 * s) then
       MapBrowser.select(S, id)
     end
-    Kit.text("tiny", Kit.ellipsize("tiny", id, listW - 2 * pad - 18 * s),
+    -- the name reads, the id identifies: two rooms in one town share a name
+    -- and only the id tells them apart, so it keeps a dim strip of its own
+    local label = mapLabel(S, id)
+    local nameW = listW - 2 * pad - 18 * s
+    if label ~= id then
+      local idW = Kit.textWidth("tiny", id)
+      if idW <= nameW * 0.55 then
+        Kit.text("tiny", id, x + pad + 9 * s + nameW - idW,
+          ry + (mRowH - Kit.textHeight("tiny")) / 2, PAL.faint)
+        nameW = nameW - idW - 8 * s
+      end
+    end
+    Kit.text("tiny", Kit.ellipsize("tiny", label, nameW),
       x + pad + 9 * s, ry + (mRowH - Kit.textHeight("tiny")) / 2,
       id == S.mapId and PAL.heading or PAL.muted)
   end
@@ -214,7 +273,7 @@ function MapBrowser.draw(S, Kit, x, y, w, h)
   if Kit.button(x + pad, gotoY, listW - 2 * pad, gotoH, "Go to save location",
       { font = "small", radius = 9 * s }) then
     MapBrowser.select(S, S.save.player.map)
-    Ops.say(S, ("Jumped to %s (%d,%d)"):format(S.save.player.map,
+    Ops.say(S, ("Jumped to %s (%d,%d)"):format(mapLabel(S, S.save.player.map),
       S.save.player.x, S.save.player.y))
   end
 
@@ -224,7 +283,8 @@ function MapBrowser.draw(S, Kit, x, y, w, h)
   local vx0 = viewX + vpad
   local vinner = viewW - 2 * vpad
   local headH = 28 * s
-  Kit.text("monoBig", tostring(S.mapId), vx0,
+  local headName = mapLabel(S, S.mapId)
+  Kit.text("monoBig", tostring(headName), vx0,
     y + vpad + (headH - Kit.textHeight("monoBig")) / 2, PAL.heading)
 
   local ok, map = pcall(MapLoader.load, S.data, S.mapId)
@@ -237,12 +297,18 @@ function MapBrowser.draw(S, Kit, x, y, w, h)
   local outdoor = Ops.isOutdoor(S, map)
   local oLabel = outdoor and "OUTDOOR" or "INDOOR"
   local oW = Kit.textWidth("tiny", oLabel) + 16 * s
-  local oX = vx0 + Kit.textWidth("monoBig", tostring(S.mapId)) + 14 * s
+  local oX = vx0 + Kit.textWidth("monoBig", tostring(headName)) + 14 * s
   Theme.stroke(oX, y + vpad + (headH - 20 * s) / 2, oW, 20 * s, 6 * s,
     PAL.cardBorder, 0.3, 1)
   Kit.textCenter("tiny", oLabel, oX,
     y + vpad + (headH - 20 * s) / 2 + (20 * s - Kit.textHeight("tiny")) / 2, oW,
     outdoor and PAL.green or PAL.muted)
+  -- the storage key, still on screen: it is what a warp, a spawn point and a
+  -- bug report all name, and the heading no longer says it
+  if headName ~= S.mapId then
+    Kit.text("tiny", tostring(S.mapId), oX + oW + 12 * s,
+      y + vpad + (headH - Kit.textHeight("tiny")) / 2, PAL.faint)
+  end
 
   -- zoom cluster, right-aligned in the viewport header
   local centerW = 130 * s
@@ -312,7 +378,8 @@ function MapBrowser.draw(S, Kit, x, y, w, h)
         goToWarp(S, warp)
       else
         S.mapClickCell = { cx = cx, cy = cy }
-        S.status = string.format("Selected cell (%d,%d) on %s", cx, cy, S.mapId)
+        S.status = string.format("Selected cell (%d,%d) on %s", cx, cy,
+          mapLabel(S, S.mapId))
       end
     end
   end
@@ -353,13 +420,15 @@ function MapBrowser.draw(S, Kit, x, y, w, h)
   local heal = S.save.lastHeal
   local spawns = {
     { key = "PLAYER", color = PAL.red,
-      value = ("%s (%d,%d)"):format(player.map, player.x, player.y),
+      value = ("%s (%d,%d)"):format(mapLabel(S, player.map), player.x, player.y),
       set = function() Ops.setPlayerHere(S) end },
     { key = "LAST HEAL", color = PAL.green,
-      value = heal and ("%s (%d,%d)"):format(heal.map, heal.x, heal.y) or "unset",
+      value = heal and ("%s (%d,%d)"):format(mapLabel(S, heal.map), heal.x, heal.y)
+              or "unset",
       set = function() Ops.setLastHeal(S) end },
     { key = "LAST OUTDOOR", color = PAL.yellow,
-      value = out and ("%s (%d,%d)"):format(out.id, out.x, out.y) or "unset",
+      value = out and ("%s (%d,%d)"):format(mapLabel(S, out.id), out.x, out.y)
+              or "unset",
       set = function() Ops.setLastOutdoor(S, map) end },
   }
   local spawnH = 62 * s

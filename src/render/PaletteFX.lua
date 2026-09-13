@@ -270,8 +270,39 @@ function PaletteFX.trueColorRects(name)
   return trueColorRects[name] or {}
 end
 
+-- "THE WHOLE SCREEN" IS WHATEVER SCREEN IS ACTUALLY UP.
+--
+-- Reported from play, with a screenshot: "text boxes on mobile are appearing
+-- weird ... theyre cutt off" -- and then the detail that settled it:
+-- "textboxes work fine with the ogred color scheme in options but not the
+-- others actually".
+--
+-- A colour scheme decides this because it decides whether the UI blit takes
+-- the SHADER path.  With no zones, Renderer:blitCanvas draws the canvas once,
+-- whole.  With a zone list it draws ONCE PER ZONE, each scissored to that
+-- zone's rect -- so any part of the canvas no zone covers is never drawn at
+-- all.
+--
+-- This answered a fixed 20x18 tiles: 160x144, the Game Boy screen.  Emerald's
+-- UI surface is 240x160 (Theme.uiSize, because its dialogue window is 28
+-- tiles wide and does not fit on a Game Boy), so "the whole screen" was
+-- missing its right 80 columns and bottom 16 rows -- and the box, which spans
+-- x 8..232 and runs to the foot of the surface, was clipped on exactly those
+-- two edges.  Cut off on the right and along the bottom, which is the
+-- screenshot.
+--
+-- Renderer.uiWidth/uiHeight is the surface in use this frame (setUISize keeps
+-- it), so the zone now covers it whatever generation is running.  On a Game
+-- Boy dataset those are 160x144 and this is the same rect it always was.
 function PaletteFX.whole(colors)
-  return PaletteFX.zone(colors, 0, 0, 19, 17)
+  local ok, Renderer = pcall(require, "src.render.Renderer")
+  local w = ok and Renderer and (Renderer.uiWidth or Renderer.WIDTH) or 160
+  local h = ok and Renderer and (Renderer.uiHeight or Renderer.HEIGHT) or 144
+  -- zone() takes INCLUSIVE tile bounds, so the last tile index is size/8 - 1;
+  -- ceil first so a surface that is not a whole number of tiles is covered
+  -- rather than one row short.
+  return PaletteFX.zone(colors, 0, 0,
+                        math.ceil(w / 8) - 1, math.ceil(h / 8) - 1)
 end
 
 -- Red++ / pokered-gbc SuperPalette pack (committed; optional if absent).

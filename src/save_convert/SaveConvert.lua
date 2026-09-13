@@ -347,11 +347,19 @@ function SaveConvert.importSav(bytes, version, gameVersion)
 end
 
 -- exportSav(saveTable, gameVersion) -> bytes, err
--- Encodes a save table back to a raw 32768-byte SRAM image. Template-aware:
+-- Encodes a save table back to the raw battery image for that generation --
+-- 32768 bytes for Gen 1 and Gen 2, 128 KiB of flash for Gen 3. Template-aware:
 -- if the table still carries the stashed import template (saveTable.rawImport)
 -- the codec reproduces every unmodeled region from it; otherwise those regions
--- are zero-filled. gameVersion selects the codec and crosswalk tables exactly
--- as in importSav. On failure returns nil + a message (never raises).
+-- are zero-filled, which for every system this project does not model is the
+-- state a cartridge is in before the player has touched it. gameVersion
+-- selects the codec and crosswalk tables exactly as in importSav. On failure
+-- returns nil + a message (never raises).
+--
+-- EVERY GENERATION WRITES FROM NOTHING NOW.  Gen 3 used to refuse without a
+-- template, which made "export my playthrough" an option only a player who
+-- had imported a real cartridge save could use; Gen3Save.blank builds the
+-- container so that a playthrough begun in this port exports like any other.
 function SaveConvert.exportSav(saveTable, gameVersion)
   if type(saveTable) ~= "table" then
     return nil, "expected a save table"

@@ -35,6 +35,24 @@ local function isPikaKey(key)
     and require("src.core.GameVersion").isYellow()
 end
 
+-- A CRY IS NOT A SOUND EFFECT AT FULL TILT.
+--
+-- Reported from play: "the pokemon cries theyre seeming a little loud and
+-- obnoxious not matching emeralds presentation of them".  On the cartridge a
+-- cry sounds at CRY_VOLUME out of the mixer's 256 -- well under half -- and
+-- the song ducks underneath it.  Both numbers are read off the ROM at import
+-- (RomExtractorGen3:extractCryVolume, five agreeing PlayCry sites) and
+-- arrive as constants.gen3Cry; a cache without them changes nothing.
+local function cryScale(data)
+  local c = data and data.constants and data.constants.gen3Cry
+  local volume = c and tonumber(c.volume)
+  local scale = c and tonumber(c.scale)
+  if not (volume and scale and scale > 0) then return 1 end
+  return volume / scale
+end
+
+Sound.cryScale = cryScale
+
 local function volumeFor(key)
   local scale = volumeScale
   if isPikaKey(key) then scale = scale * pikaScale end
@@ -364,8 +382,12 @@ function Sound.playCry(data, species)
     cache[key] = s
     src = s
   end
+  -- set every time rather than at build: the cached source outlives a change
+  -- of game, and the scale is the loaded cartridge's
+  pcall(src.setVolume, src, volumeFor(key) * cryScale(data))
   src:stop()
   src:play()
+  require("src.core.Music").duckForCry(data, src)
   played("cry", species, species)
   return src
 end

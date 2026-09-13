@@ -354,6 +354,13 @@ end
 -- text (label or literal; {RAM:wStringBuffer} becomes the item name);
 -- pass false when the script shows its own received-text row.
 function Commands.give_item(ctx, itemId, count, gotText)
+  -- Every gift, once per item, somewhere that survives the session.  When a
+  -- script plays its whole "here you go" sequence and the bag stays empty,
+  -- this is the line that says which half is at fault: present means the
+  -- script reached the gift and the bag is the problem, absent means the
+  -- script never got there and a flag or a branch is.
+  require("src.core.Probe").say("item", "give %s x%s",
+                                tostring(itemId), tostring(count or 1))
   -- the bag can refuse at its configured capacity (20 in vanilla): halt
   -- the script, so later set_flag rows don't burn the gift -- make
   -- room and talk again, like the original (pokered's `jr nc, .bag_full`
@@ -483,6 +490,34 @@ function Commands.start_battle(ctx, kind, a, b, opts)
     -- the RESULT, and this is the only place the result arrives.
     if result == "win" and kind ~= "wild" and ctx.g3Trainer then
       require("src.script.Gen3Commands").markTrainerBeaten(ctx, ctx.g3Trainer)
+      -- ...AND THE SECOND TRAINER, WHEN TWO OF THEM WALKED UP.
+      --
+      -- Reported from play: "as soon as i step into this 2 dudes, a double
+      -- battle starts and after the double battle, i have to battle the top
+      -- guy again."
+      --
+      -- Two spotters are ONE battle against gTrainerBattleOpponent_A and _B,
+      -- and the cartridge closes it with SetBattledTrainersFlags -- PLURAL,
+      -- and the only caller of GetTrainerBFlag:
+      --
+      --     if (gTrainerBattleOpponent_B != 0) FlagSet(GetTrainerBFlag());
+      --     FlagSet(GetTrainerAFlag());
+      --
+      -- This port set A's flag alone, so the partner was never marked beaten
+      -- -- and since the sight scan skips a trainer only when their own flag
+      -- is set, the one who had just lost stood back up and challenged again.
+      --
+      -- Only the two-opponent case has a B.  A trainer whose own record is a
+      -- double (Amy and Liv: one trainer, one team of two) has no partner and
+      -- takes the single flag above, which is the `!= 0` test.
+      local partner = ctx.gen3PartnerTrainer
+      if partner then
+        require("src.script.Gen3Commands").markTrainerBeaten(ctx, partner)
+        -- gTrainerBattleOpponent_B is cleared once the battle it configured
+        -- is over; leaving it set would hand the next battle in the same
+        -- script a partner it never had.
+        ctx.gen3PartnerTrainer = nil
+      end
       -- ...AND PUT THEM IN THE POKeNAV.  RegisterTrainerInMatchCall runs
       -- off the same win the defeat flag does -- no script asks for it --
       -- which is how a route trainer ends up on the MATCH CALL list.  It

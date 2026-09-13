@@ -300,7 +300,23 @@ function Gen3Weather.particles(name, frame, w, h, stage)
   -- the field a particle wraps inside is the screen plus one particle, so a
   -- streak leaves and enters rather than blinking out at the edge
   local spanX, spanY = w + pw, h + ph
-  for i = 1, look.count do
+  -- THE COUNT IS A DENSITY, NOT A NUMBER OF SPRITES.
+  --
+  -- `count` is what fills the cartridge's own 240x160 screen.  Once the
+  -- weather started covering the whole window rather than the letterbox (see
+  -- Renderer.screenWeather) the same fixed count had to spread over as much
+  -- as twice the area, which is the same rain drawn half as heavily -- a
+  -- drizzle on a wide phone and a downpour on a narrow window, from one
+  -- setting.  Scaling with the area keeps a given weather looking like
+  -- itself at any view size, and on a 240x160 view the ratio is 1 and the
+  -- field is particle-for-particle what it always was.
+  local count = look.count
+  local screenArea = 240 * 160
+  local viewArea = w * h
+  if viewArea > screenArea then
+    count = math.floor(count * viewArea / screenArea + 0.5)
+  end
+  for i = 1, count do
     local ox = ((offX + STRIDE_X * i) % 1) * spanX
     local oy = ((offY + STRIDE_Y * i) % 1) * spanY
     -- A PER-PARTICLE SPEED, so the field does not move as one sheet -- and

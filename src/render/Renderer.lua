@@ -255,6 +255,9 @@ function Renderer:beginFrame(transparent)
   self.worldFadeAlpha = nil
   -- battle-transition wipe, drawn over the whole surface (BattleTransition)
   self.battleWipe = nil
+  -- whole-window weather, drawn under the UI (see endFrame); re-declared by
+  -- the overworld each frame it has weather to draw
+  self.screenWeather = nil
   -- whole-surface veil in screen space (battle-transition flash, the
   -- fade in from white after a battle) -- covers the window, not just the
   -- 160x144 letterbox
@@ -616,6 +619,65 @@ function Renderer:blitCanvas(canvas, sx, sy, zoneList, zoneSx, zoneSy,
   end
   love.graphics.setScissor()
   love.graphics.setShader()
+end
+
+-- THE BARS, FILLED WITH THE EDGE THEY FRAME.
+--
+-- Asked for directly: "for all gen3 menus take the outside border 1px and
+-- extend it to fill the screen for all menus to ensure they can fill the
+-- screen -- pixels on the left should extend left, pixels on the right should
+-- extend right, on the top should extend up, and on the bottom should extend
+-- down."
+--
+-- Emerald's screen is 240x160 and a window is almost never that shape, so a
+-- full-screen menu sits in a black frame.  This paints that frame with the
+-- canvas's own outermost row and column, stretched outward -- eight strips
+-- and corners drawn from one-pixel quads -- so a menu whose border runs to
+-- the edge of the surface appears to run to the edge of the WINDOW.
+--
+-- WHY IT IS DRAWN FIRST AND ONLY HERE.  It goes down before the canvas, so
+-- every pixel the surface actually has is still drawn crisply on top and only
+-- the void is covered.  And it is a plain blit with no palette shader, so it
+-- is offered only where the surface is already true colour -- a Gen 3 UI --
+-- and never while the WORLD is on screen, where the bars frame a map whose
+-- edge is a map edge rather than a window border.
+function Renderer:bleedEdges(canvas, sx, sy, bx, by, ww, wh)
+  if not (canvas and love.graphics.newQuad) then return end
+  local uiw, uih = canvas:getDimensions()
+  if not (uiw and uih and uiw > 1 and uih > 1) then return end
+  local right = bx + uiw * sx
+  local bottom = by + uih * sy
+  local leftW, rightW = bx, ww - right
+  local topH, bottomH = by, wh - bottom
+  local g = love.graphics
+  g.setColor(1, 1, 1, 1)
+  -- the eight quads are the same every frame for a given surface, so they are
+  -- built once per size rather than allocated sixty times a second
+  local cache = self._bleedQuads
+  if not (cache and cache.w == uiw and cache.h == uih) then
+    cache = { w = uiw, h = uih }
+    self._bleedQuads = cache
+  end
+  local function strip(qx, qy, qw, qh, dx, dy, dw, dh)
+    if dw <= 0 or dh <= 0 then return end
+    local key = qx .. ":" .. qy .. ":" .. qw .. ":" .. qh
+    local quad = cache[key]
+    if not quad then
+      quad = g.newQuad(qx, qy, qw, qh, uiw, uih)
+      cache[key] = quad
+    end
+    g.draw(canvas, quad, dx, dy, 0, dw / qw, dh / qh)
+  end
+  -- the four sides
+  strip(0, 0, 1, uih, 0, by, leftW, uih * sy)
+  strip(uiw - 1, 0, 1, uih, right, by, rightW, uih * sy)
+  strip(0, 0, uiw, 1, bx, 0, uiw * sx, topH)
+  strip(0, uih - 1, uiw, 1, bx, bottom, uiw * sx, bottomH)
+  -- ...and the four corners, each from the single pixel that meets there
+  strip(0, 0, 1, 1, 0, 0, leftW, topH)
+  strip(uiw - 1, 0, 1, 1, right, 0, rightW, topH)
+  strip(0, uih - 1, 1, 1, 0, bottom, leftW, bottomH)
+  strip(uiw - 1, uih - 1, 1, 1, right, bottom, rightW, bottomH)
 end
 
 -- Take a rect out of a list of rects, splitting each overlapped one into up
@@ -982,15 +1044,110 @@ function Renderer:endFrame(zones, worldZones)
     love.graphics.setColor(1, 1, 1, 1)
   end
 
+  -- WEATHER FALLS ON THE WHOLE WINDOW, NOT INSIDE A BOX.
+  --
+  -- Reported from play, with a screenshot: "theres a weird box overlay that i
+  -- think the weather plays within but it should fit the full screen".
+  --
+  -- It was drawn in OverworldState:drawUI, into the 240x160 UI canvas, so it
+  -- covered the letterbox and stopped -- while the world pass fills the
+  -- entire window.  The tint therefore had a visible rectangular edge partway
+  -- across the map, which reads as weather happening inside a window rather
+  -- than to the screen.  This is the same reasoning the screen veil below
+  -- already carries for the battle fades; the weather simply never got it.
+  --
+  -- HERE, and not with that veil: the cartridge draws weather on the
+  -- background and window layers UNDER the text box, and rain falling in
+  -- front of the dialogue would be the one thing on screen you could not read
+  -- through.  So it goes after the world composite and before the UI blit --
+  -- exactly where the battle dim above goes, and for the same reason.
+  --
+  -- Drawn through the UI's own scale so a raindrop stays the size of a
+  -- raindrop: the callback is handed the window measured in UI pixels, so it
+  -- lays out more drops over a wider view instead of the same drops stretched
+  -- across it.
+  local weather = self.screenWeather
+  if weather and Ux > 0 and Uy > 0 then
+    love.graphics.push()
+    love.graphics.scale(Ux, Uy)
+    weather(ww / Ux, wh / Uy)
+    love.graphics.pop()
+    love.graphics.setColor(1, 1, 1, 1)
+  end
+
   -- UI: anchored regions against their screen edges, the rest in the classic
   -- centred letterbox.  With nothing anchored this is the single blit it has
   -- always been.
   local anchors = self.uiAnchors
   if not anchors or #anchors == 0 then
+    -- WHICH FRAMES GET IT: the ones a screen has asked to fill.
+    --
+    -- Reported from play with a screenshot of the BAG: the menu sat in the
+    -- middle with the map showing down both sides.  The first cut of this
+    -- asked `not worldActive`, which reads as "nothing is drawing a map" --
+    -- and the map IS still being drawn behind an opaque menu, so every
+    -- full-screen Gen 3 menu was excluded by the one test meant to protect
+    -- the overworld from being smeared.
+    --
+    -- Game.fillScaleInStack is the question actually being asked here, and it
+    -- already exists: it is true exactly when some state on the stack has said
+    -- it wants the whole window rather than a fixed box in the middle of one.
+    -- The bag, the party menu, the mart, the Pokenav, the title and the battle
+    -- all say so; the overworld does not, so the map is still never bled.
+    local okGame, GameMod = pcall(require, "src.core.Game")
+    local fills = okGame and GameMod
+                  and GameMod.fillScaleInStack(GameMod.stack) or false
+    -- ...AND NOT A BATTLE.
+    --
+    -- Reported from play, with a screenshot: "the battle menu seems to be
+    -- stretching the left and right sides like the other menus -- we don't
+    -- want that for the battle menu ... we want it to be full screen but not
+    -- have the stretching of the pixels for being in battle".
+    --
+    -- A menu is a PANEL: its outermost column is the window frame's own edge,
+    -- so pulling that column outward reads as the frame continuing to the
+    -- screen edge, which is the whole point.  A battle is a COMPOSED SCENE --
+    -- a field, two healthboxes, a text strip laid out across the full width --
+    -- and its outermost column is whatever happened to land there: half a
+    -- healthbox, the end of the text box, a slice of the ground.  Smearing
+    -- that outward does not extend a frame, it duplicates furniture.
+    --
+    -- holdsUIAnchors is already exactly the question "does this state compose
+    -- its own screen", asked of the whole stack -- which matters here for the
+    -- same reason it matters there: the text box and YES/NO a battle puts up
+    -- are states of their own sitting on top of it, and they must not turn
+    -- the bleed back on for the frames they are up.
+    if fills and okGame and GameMod
+       and GameMod.uiAnchorsHeldInStack(GameMod.stack) then
+      fills = false
+    end
+    if fills and require("src.core.GameVersion").isGen3() then
+      self:bleedEdges(self.canvas, Ux, Uy, uox, uoy, ww, wh)
+    end
     blit(self.canvas, Ux, Uy, zones, Ux, Uy, uox, uoy, uox, uoy, uvpw, uvph)
   else
     local rest = { { uox, uoy, uvpw, uvph } }
     local placed = {}
+    -- A DOCKED ELEMENT DOCKS TO THE SAFE AREA, NOT THE WINDOW EDGE.
+    --
+    -- Reported from play, with a screenshot: "text boxes on mobile are
+    -- appearing weird ... theyre cutt off" -- and, asked whether desktop did
+    -- it too, "only on mobile it seems".
+    --
+    -- That is the whole diagnosis.  Docking measured against `wh` and `ww`,
+    -- which are the WINDOW, and a phone's window runs underneath the things
+    -- the window does not own: the home indicator, the gesture bar, a notch,
+    -- the rounded corners.  So the dialogue box was docked to an edge that is
+    -- not visible, and its bottom rows went under the furniture -- which is
+    -- also why the on-screen controls, which DO lay themselves out inside the
+    -- safe area (TouchControls:layout), sat on top of it.
+    --
+    -- SafeArea.rect is the same rect the touch overlay already uses, and on a
+    -- desktop it IS the window: love.window.getSafeArea is absent or returns
+    -- the full surface, so rect() answers 0, 0, ww, wh and every number below
+    -- is what it has always been.  Which is exactly why only mobile saw this.
+    local sax, say, saw, sah = require("src.core.SafeArea").rect()
+    local saRight, saBottom = sax + saw, say + sah
     for _, a in ipairs(anchors) do
       local dw, dh = a.w * Ux, a.h * Uy
       -- Anchors are edge-RELATIVE: an element keeps its distance from the
@@ -1003,10 +1160,10 @@ function Renderer:endFrame(zones, worldZones)
       local dx, dy
       if a.anchor == "bottom" then
         dx = uox + a.x * Ux -- horizontally it stays with the letterbox
-        dy = wh - gapB - dh
+        dy = saBottom - gapB - dh
       elseif a.anchor == "topright" then
-        dx = ww - gapR - dw
-        dy = a.y * Uy
+        dx = saRight - gapR - dw
+        dy = say + a.y * Uy
       else -- unknown anchor: leave it where it is
         dx, dy = uox + a.x * Ux, uoy + a.y * Uy
       end

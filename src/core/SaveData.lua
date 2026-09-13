@@ -1304,6 +1304,44 @@ function SaveData.validate(save, data)
       end
     end
   end
+  -- BERRY TREES A SAVE PREDATING THEM NEVER GOT.
+  --
+  -- Reported from play, after the plots were made to draw what is growing in
+  -- them: "berry trees never appeared really".  Two things were wrong and the
+  -- art was only one of them -- the other is here.
+  --
+  -- Hoenn is not planted by the player.  The cartridge's new-game script puts
+  -- eighty trees in the ground fruiting, and SaveData.newGame copies that set
+  -- (boot.initialBerryTrees, built from the run of `setberrytree` commands the
+  -- importer read).  A save STARTED BEFORE that existed has no
+  -- `gen3BerryTrees` at all, so every one of Hoenn's 88 plots reads stage
+  -- zero -- and a plot with nothing in it is deliberately invisible.  The
+  -- trees were not failing to draw; there was nothing planted to draw.
+  --
+  -- ONLY WHEN THE FIELD IS ABSENT.  A save that HAS the table has been
+  -- playing with these trees -- picked, watered, replanted -- and an empty
+  -- one is a legitimate state (every berry taken).  So this fills a gap and
+  -- never overwrites an answer: the moment the key exists, this does nothing.
+  local boot = data and data.field and data.field.boot
+  if type(boot) == "table" and type(boot.initialBerryTrees) == "table"
+     and save.gen3BerryTrees == nil then
+    local trees, n = {}, 0
+    for id, tree in pairs(boot.initialBerryTrees) do
+      if type(id) == "number" and type(tree) == "table" then
+        local copy = {}
+        for k, v in pairs(tree) do
+          copy[k] = (k == "watered") and {} or v
+        end
+        trees[id] = copy
+        n = n + 1
+      end
+    end
+    if n > 0 then
+      save.gen3BerryTrees = trees
+      report.plantedBerryTrees = n
+    end
+  end
+
   -- an empty quarantine leaves no residue, so a vanilla save re-encodes
   -- byte-identically
   local orphaned = save.orphaned

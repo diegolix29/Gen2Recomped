@@ -11297,6 +11297,51 @@ function RomExtractorGen2:gen2CutTreeSwaps()
   return self:gen2BlockSwaps("CutTreeBlockPointers")
 end
 
+-- WHICH COLLISION CLASSES CUT ACTUALLY WORKS ON, which is SIX and not two.
+--
+-- Reported from play: "some users are experiencing issues on silver where cut
+-- isn't working at all even if they have the badge".  It is not Silver, and
+-- it is not the badge: CUT has never worked on a TREE in any Gen 2 ROM here,
+-- and has always worked on cuttable GRASS -- which is why it reads as "cut
+-- does nothing" rather than as half a feature.
+--
+-- The port tested the facing cell against $12 and $1A, taken from
+-- CheckCutTreeTile (00:$1894 in Crystal, `cp $12 / ret z / cp $1A / ret`).
+-- That routine is real and those two values are real, and it is NOT what the
+-- field move asks.  CutFunction goes through CheckMapForSomethingToCut
+-- (03:$47CE), which far-calls CheckCutCollision (05:$49F5):
+--
+--     ld a, c              ; the facing cell's collision class
+--     ld hl, .blocks
+--     ld de, 1
+--     call IsInArray
+--     ret
+--   .blocks
+--     db $12, $1A, $10, $18, $14, $1C, $FF
+--
+-- Six classes, $FF-terminated.  The four the port never learned are $10, $18,
+-- $14 and $1C -- and TilesetJohto's cut tree, block 3, is $18 in all four of
+-- its cells.  Every tree in Johto and Kanto was therefore invisible to the
+-- check, while the cuttable grass blocks (91, 95, 99, 103 -- the only cells
+-- in the whole tileset carrying $12) passed it.
+--
+-- Read rather than typed, because a hack may cut different ground: the array
+-- is walked from its own symbol until the terminator.
+function RomExtractorGen2:gen2CutCollision()
+  local table_ = self:symbol("CheckCutCollision.blocks")
+  if not (table_ and self.rom) then return nil end
+  local out = {}
+  local ok = pcall(function()
+    for i = 0, 31 do
+      local value = self.rom:byte(table_.bank, table_.address + i)
+      if value == nil or value == 0xFF then break end
+      out[#out + 1] = value
+    end
+  end)
+  if not ok or #out == 0 then return nil end
+  return out
+end
+
 -- The floors that run pitch black until FLASH: their map header asks for
 -- PALETTE_DARK, which is the one palset ReplaceTimeOfDayPals turns into
 -- .NeedsFlash.  Keyed by pret label, like the rest of the field tables.
@@ -12792,6 +12837,7 @@ function RomExtractorGen2:extractField()
     src.townMap = self:gen2TownMap() or src.townMap
     src.playerPics = self:gen2PlayerPics() or src.playerPics
     src.gen2CutTrees = self:gen2CutTreeSwaps() or src.gen2CutTrees
+    src.gen2CutCollision = self:gen2CutCollision() or src.gen2CutCollision
     src.gen2Whirlpools = self:gen2BlockSwaps("WhirlpoolBlockPointers")
       or src.gen2Whirlpools
     src.flyWarps = self:gen2FlyWarps() or src.flyWarps

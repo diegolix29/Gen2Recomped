@@ -15,6 +15,12 @@ local FACING_FROM_RANGE = {
   DOWN = "down", UP = "up", LEFT = "left", RIGHT = "right",
 }
 
+-- How long an object on a fixed circuit waits between steps.  The cartridge
+-- walks these on the object's ordinary step timer rather than a roll, so this
+-- is a hold and not a range: a random one would make a circuit wander in time
+-- even while it kept its shape.
+local SEQUENCE_HOLD = 16
+
 local ROAM_DIRS = {
   ANY_DIR = { "up", "down", "left", "right" },
   UP_DOWN = { "up", "down" },
@@ -558,6 +564,17 @@ function NPC.new(data, mapId, objDef)
   self.stepFlip = false
   self.frozen = false -- scripts freeze NPCs while talking
   self.wanders = (g3 and g3.wanders == true) or objDef.movement == "WALK"
+  -- A FIXED CIRCUIT, which is not wandering (#419/#246).
+  --
+  -- Reported from play: PEEKO "is supposed to be chasing him around his
+  -- table in his house like it does in the rom".  Twenty-five of Emerald's
+  -- movement types walk the same four directions in a set order, forever --
+  -- one tile each, round and round -- and the import reads that order off
+  -- the four-byte direction table the type's own step callback names.  An
+  -- object with one of them is NOT a wanderer and must not be rolled for.
+  self.sequence = g3 and type(g3.sequence) == "table" and #g3.sequence == 4
+                  and g3.sequence or nil
+  self.sequenceAt = 0
   -- SPRITEMOVEDATA_SPINRANDOM_* / _SPIN_CLOCKWISE / _SPIN_COUNTERCLOCKWISE
   self.spins = objDef.movement == "SPIN" and (objDef.range or "SPIN_SLOW") or nil
   if g3 then
@@ -677,6 +694,21 @@ function NPC:update(map, entities)
     return
   end
   if self.frozen then return end
+  -- AND THE FREEZE A SCRIPT PUTS ON EVERY OBJECT ON THE MAP (#405).
+  --
+  -- Reported from play, of the Birch rescue: the little girl "walks around
+  -- freely" through the whole scene.  She is an ordinary wandering object
+  -- event, and on the cartridge she stops dead the moment the script runs
+  -- its `lockall`: ScrCmd_lockall (gScriptCmdTable[$69]) calls
+  -- FreezeObjectEvents (097494), which walks all sixteen object-event slots
+  -- and freezes every active one that is not the player's own.
+  --
+  -- Distinct from `frozen` above, which is the one-object freeze a talk puts
+  -- on whoever is being talked to: a talk's unfreeze must not lift a scene's.
+  -- An object already walking a scripted movement is never frozen either --
+  -- FreezeObjectEvent (097404) returns at once if the held-movement bit is
+  -- set -- which is why applymovement still moves people mid-cutscene.
+  if self.gen3ScriptFrozen then return end
   if self.spins then
     -- Spinners never leave their cell, so this is the whole behaviour: turn
     -- on a timer.  A script that freezes the object (talking to it, a
@@ -721,6 +753,29 @@ function NPC:update(map, entities)
       local at = 1
       for i, dir in ipairs(self.turns) do if dir == self.facing then at = i end end
       self.facing = self.turns[(at % #self.turns) + 1]
+    end
+    return
+  end
+  -- THE FIXED CIRCUIT, taken in order and with no dice rolled.
+  --
+  -- The difference from wandering is the whole point: a wanderer picks a
+  -- direction, often only turns, and stays inside its template's box; one of
+  -- these takes the next direction on its list and walks a tile, and its box
+  -- is its own route.  Blocked, it faces that way and waits -- which is what
+  -- the cartridge does too, and what keeps the circuit in step when the
+  -- player stands in its path instead of it giving up and drifting.
+  if self.sequence then
+    self.timer = self.timer - 1
+    if self.timer > 0 then return end
+    self.timer = SEQUENCE_HOLD
+    local dir = self.sequence[(self.sequenceAt % 4) + 1]
+    self.facing = dir
+    local tx, ty = Collision.target(self.cellX, self.cellY, dir)
+    if Collision.canMove(map, entities, self, dir) and not map:warpAtCell(tx, ty) then
+      self.targetX, self.targetY = tx, ty
+      self.moving = true
+      self.progress = 0
+      self.sequenceAt = self.sequenceAt + 1
     end
     return
   end
@@ -781,6 +836,24 @@ function NPC:draw(camX, camY)
     return
   end
   sprite:draw(px, py, camX, camY, facing, phase, flip)
+end
+
+-- WHAT THE WATER SHOWS BACK, on its own pass.
+--
+-- Drawn BEFORE the sprites and before the map's top layer rather than with
+-- the character, because a reflection is the one thing that has to end up
+-- UNDER the ground: reported from play as "the twins are reflected onto the
+-- deck instead of below it" and "they need to be obfuscated by the ground".
+-- A character standing on a bridge is drawn AFTER the top layer so the deck
+-- does not bury them -- and their reflection has to be on the other side of
+-- that same layer, which it cannot be if it is drawn with them.
+function NPC:drawReflection(camX, camY)
+  if not self.reflects then return end
+  local sprite, px, py, facing, phase, flip = self:pose()
+  if sprite and sprite.reflect then
+    sprite:reflect(px, py, camX, camY, facing, phase, flip,
+                   self.reflectStill)
+  end
 end
 
 return NPC

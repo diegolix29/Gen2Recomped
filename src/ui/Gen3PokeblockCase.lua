@@ -135,6 +135,20 @@ function Gen3PokeblockCase:choose()
   game.stack:push(menu)
 end
 
+-- FEEDING IS ITS OWN SCREEN ON THE CARTRIDGE, and it was a sentence here.
+--
+-- Reported from play: "the menu for feeding pokemon pokeblocks needs to be
+-- worked on and look like it does in the actual rom as well".  Picking the
+-- Pokemon was already Hoenn's party menu; what came after it was this screen
+-- printing a line in its own message strip, with the five numbers that had
+-- just changed nowhere on display.  Emerald shows the Pokemon eating it with
+-- the CONDITION pentagon growing beside it, which is the reason to feed one
+-- at all -- src/ui/Gen3PokeblockFeed.lua.
+--
+-- The feed screen owns the whole transaction now: it applies the block, takes
+-- it out of the case, says the cartridge's reaction line and hands back here
+-- so the list can be rebuilt.  A dataset whose party menu will not open still
+-- falls back to the message strip rather than swallowing the press.
 function Gen3PokeblockCase:use(row)
   row = row or self.rows[self.index]
   if not (row and row.block) then return end
@@ -143,6 +157,16 @@ function Gen3PokeblockCase:use(row)
     pickOnly = true,
     onCancel = function() end,
     onSwitch = function(mon)
+      local okFeed = pcall(function()
+        game.stack:push(require("src.ui.Gen3PokeblockFeed").new(game, {
+          mon = mon,
+          block = row.block,
+          slot = row.slot,
+          onDone = function() self:rebuild() end,
+        }))
+      end)
+      if okFeed then return end
+      -- the old path, kept whole as the fallback
       local deltas = Pokeblocks.feed(game.data, mon, row.block)
       if not deltas then
         -- SHEEN IS A HARD GATE, not a taper: a Pokémon at 255 refuses the
@@ -153,8 +177,6 @@ function Gen3PokeblockCase:use(row)
       local name = Pokeblocks.name(game.data, row.block)
       Pokeblocks.remove(game.save, row.slot)
       self:rebuild()
-      -- THE CARTRIDGE HAS THREE LINES FOR THIS, one per reaction, and each
-      -- is a whole sentence rather than a verb to slot into one.
       local w = words(game)
       local line = ((deltas.liked or 0) > 0 and w.ateHappily)
                    or ((deltas.liked or 0) < 0 and w.ateDisdainfully)

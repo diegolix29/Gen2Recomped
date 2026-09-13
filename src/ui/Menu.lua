@@ -31,7 +31,16 @@ function Menu.new(game, items, opts)
     end
     local needed = widest + 3
     if needed > self.tw then self.tw = needed end
-    if self.tx + self.tw > 20 then self.tx = math.max(0, 20 - self.tw) end
+    -- ...ON THE SCREEN THAT IS ACTUALLY THERE.  Twenty tiles is the Game Boy's
+    -- width and was written in here as a constant; Hoenn's screen is thirty,
+    -- so a box the cartridge places near the right-hand side was shoved left
+    -- by ten tiles.  Theme.uiSize is the same answer every Gen 3 screen asks
+    -- for, and it returns the Game Boy's own 160 for Gen 1 and Gen 2, so
+    -- nothing there moves.
+    local cols = math.floor(select(1, Theme.uiSize()) / 8)
+    if self.tx + self.tw > cols then
+      self.tx = math.max(0, cols - self.tw)
+    end
   end
   self.rowStep = opts.rowStep or 2
   -- maxVisible: cap the box to this many rows and scroll the rest instead

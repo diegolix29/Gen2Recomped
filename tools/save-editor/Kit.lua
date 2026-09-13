@@ -642,7 +642,15 @@ end
 
 -- Checkbox row: a 20px box plus a mono label, the Events grid's unit.
 -- Returns (newChecked, changed) so callers can write true/nil on a flip.
-function Kit.checkbox(x, y, w, h, checked, label, labelColor)
+-- `sub` is the row's STORAGE KEY, drawn small and dim at the right edge.
+--
+-- Every list in this editor toggles a key and shows a name, and once the name
+-- stops being the key (a Hoenn flag is FLAG_G3_0867 and reads "badge 1:
+-- STONEBADGE") the key still has to be visible: it is what a bug report
+-- quotes, what the filter matches, and the only thing that separates two rows
+-- a shared name cannot.  It is given its own strip so the name never has to
+-- carry it, and the name's ellipsis is measured against what is left.
+function Kit.checkbox(x, y, w, h, checked, label, labelColor, sub)
   local clicked = Kit.row(x, y, w, h, false, nil, 9 * Kit.scale)
   local box = 20 * Kit.scale
   local bx, by = x + 12 * Kit.scale, y + (h - box) / 2
@@ -655,7 +663,18 @@ function Kit.checkbox(x, y, w, h, checked, label, labelColor)
         box, PAL.greenInk)
     end
     local lx = bx + box + 12 * Kit.scale
-    Kit.text("mono", Kit.ellipsize("mono", label, x + w - lx - 10 * Kit.scale), lx,
+    local right = x + w - 10 * Kit.scale
+    if type(sub) == "string" and sub ~= "" then
+      local sw = Kit.textWidth("tiny", sub)
+      -- a key only earns its strip when a third of the row is still left for
+      -- the name; below that the name is what the reader needs
+      if sw <= (w - (lx - x)) * 0.5 then
+        Kit.text("tiny", sub, right - sw,
+          y + (h - Kit.textHeight("tiny")) / 2, PAL.faint or PAL.caption)
+        right = right - sw - 10 * Kit.scale
+      end
+    end
+    Kit.text("mono", Kit.ellipsize("mono", label, right - lx), lx,
       y + (h - Kit.textHeight("mono")) / 2, labelColor or (checked and PAL.text or PAL.muted))
   end
   if clicked then return not checked, true end

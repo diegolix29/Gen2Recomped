@@ -225,6 +225,30 @@ local function gen3Counter(game)
   return screen
 end
 
+-- WHERE HOENN PUTS THE BOX, read rather than guessed.
+--
+-- Reported from play: "also need the gen3 mart menu to show properly as it
+-- would in emerald".  The counter behind this menu had been Emerald's for a
+-- while; the three-row box in front of it was still at the Game Boy's (0,0)
+-- with a Game Boy's width, on a screen that is 240 wide.
+--
+-- sShopMenuWindowTemplates says (2,1), nine tiles by six -- and those are the
+-- window's INTERIOR, which is the one conversion this does: the port's box
+-- includes its frame, so it is two tiles wider and two taller and starts one
+-- tile up and to the left.  RomExtractorGen3:extractShopMenu reads it.
+local function gen3Box(game)
+  local c = (game.data.constants or {}).gen3ShopMenu
+  local left = c and tonumber(c.left)
+  local top = c and tonumber(c.top)
+  local width = c and tonumber(c.width)
+  local height = c and tonumber(c.height)
+  if not (left and top and width and height) then
+    return { tx = 0, ty = 0, tw = 8, th = 8 }
+  end
+  return { tx = math.max(0, left - 1), ty = math.max(0, top - 1),
+           tw = width + 2, th = height + 2 }
+end
+
 function ShopMenu.new(game, stock, onQuit)
   local counter = gen3Counter(game)
   if counter then
@@ -239,7 +263,13 @@ function ShopMenu.new(game, stock, onQuit)
           game.stack:push(counter.new(game, { mode = "sell" }))
         end },
       { label = line(game, "quit", Strings("QUIT")), onSelect = onQuit },
-    }, { tx = 0, ty = 0, tw = 8, th = 8 })
+    }, gen3Box(game))
+    -- ...AND ON HOENN'S SCREEN.  Without this the box is a state with no
+    -- surface of its own, so it is CENTRED inside the 240x160 the overworld
+    -- holds -- which moves a menu the cartridge puts two tiles from the left
+    -- edge into the middle of the screen, and is most of what "the gen1 mart
+    -- menu" looked like.
+    menu.uiSize = function() return require("src.ui.Theme").uiSize() end
     menu.onCancel = onQuit
     return menu
   end

@@ -270,6 +270,38 @@ end
 -- and enemy anchors: drawing the whole animation through both side regions
 -- would duplicate any tiles overlapping the other side's source range (most
 -- visibly the send-out POOF reappearing on the far right).
+-- ...and the band it is blended across is the two PICTURES, with room to
+-- overshoot at both ends.
+--
+-- Reported from play: "with gen2 the pokeballs when thrown have some weird
+-- effects with widescreen mode on".  A thrown ball is the one animation that
+-- CROSSES this map rather than sitting at one end of it, so it is the one
+-- that shows what the map does wrong.
+--
+-- The band used to be 40..120 in source pixels, hard-clamped, and neither
+-- number is either Pokemon.  The two pics stand at 26 and 124 (see
+-- CLASSIC_GEOMETRY.anchor), so:
+--
+--   * the throw began LEFT of the band, where the clamp holds the offset
+--     flat -- the ball crept along at source speed, crossed 40, and jumped to
+--     roughly two and a half times that speed for the rest of its flight;
+--   * the ball comes to rest ON the far end of the band, where the clamp bites
+--     again -- so the capture wobble was amplified on the frames that leaned
+--     left and flattened on the ones that leaned right, which is the tilt
+--     reading as a twitch;
+--   * the y term slid 8 -> 0 across the same kinked t, so the arc came down
+--     sooner on one side than it went up on the other.
+--
+-- Anchoring the band on the pictures and letting t run a fifth of the way
+-- past each end makes the map ONE straight line over everything an animation
+-- actually occupies: the ball still has to cover the extra 116 pixels between
+-- the two, because the foe really is that much further away, but it covers
+-- them at one speed and its resting wobble is symmetrical.
+WideBattle.ANCHOR_X = { player = 26, enemy = 124 }
+WideBattle.ANCHOR_DX = { player = 20, enemy = 136 }
+WideBattle.ANCHOR_DY = { player = 8, enemy = 0 }
+WideBattle.ANCHOR_OVERSHOOT = 0.2
+
 function WideBattle.animationOffset(sprites)
   if not sprites or #sprites == 0 then return 0, 0 end
   local minX, maxX = math.huge, -math.huge
@@ -278,9 +310,15 @@ function WideBattle.animationOffset(sprites)
     maxX = math.max(maxX, sprite.x)
   end
   local center = (minX + maxX) / 2
-  local t = math.max(0, math.min(1, (center - 40) / 80))
-  return math.floor(20 + 116 * t + 0.5),
-         math.floor(8 * (1 - t) + 0.5)
+  local from, to = WideBattle.ANCHOR_X.player, WideBattle.ANCHOR_X.enemy
+  local t = (center - from) / (to - from)
+  local slack = WideBattle.ANCHOR_OVERSHOOT
+  t = math.max(-slack, math.min(1 + slack, t))
+  local dx = WideBattle.ANCHOR_DX.player
+             + (WideBattle.ANCHOR_DX.enemy - WideBattle.ANCHOR_DX.player) * t
+  local dy = WideBattle.ANCHOR_DY.player
+             + (WideBattle.ANCHOR_DY.enemy - WideBattle.ANCHOR_DY.player) * t
+  return math.floor(dx + 0.5), math.floor(dy + 0.5)
 end
 
 local function currentAnimationSprites(battle)

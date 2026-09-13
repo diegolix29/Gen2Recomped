@@ -963,17 +963,53 @@ function Data:seedDefaults()
         -- reach it.  Absent on a cache imported before it was found, where
         -- every caller falls back to the sheet it used before.
         underwater = avatars.boyUnderwater,
+        -- ...and the POSE, which is a sheet like the rest of them: the
+        -- character standing still with a Poke Ball held out, worn while a
+        -- field move's presentation is on screen.
+        fieldMove = avatars.boyFieldMove,
       }
     end
-    if type(avatars) == "table" and self.field.playerForms == nil then
-      self.field.playerForms = {
-        order = { "boy", "girl" },
+    -- ...AND IT FILLS IN, RATHER THAN STANDING ASIDE.
+    --
+    -- Reported from play: "selecting may doesnt give me mays sprite when i
+    -- start the game".  This used to write the whole table only when there
+    -- was none -- and by the time it runs there always IS one, because the
+    -- import writes field.playerForms itself to carry the two PORTRAITS (the
+    -- trainer card's faces, read off the rival rows that name them).  So the
+    -- test was always false, the sprite half was never written, and
+    -- Player:refreshForm found a form with no `walk` in it and kept the
+    -- default -- which is the BOY's.  A girl got her own face on the trainer
+    -- card and walked Hoenn as Brendan.
+    --
+    -- The two halves come from different stages and neither owns the table,
+    -- so this fills in the keys it is responsible for and leaves every other
+    -- key alone.
+    if type(avatars) == "table" then
+      local forms = self.field.playerForms
+      if type(forms) ~= "table" then
+        forms = {}
+        self.field.playerForms = forms
+      end
+      forms.order = forms.order or { "boy", "girl" }
+      local sheets = {
         boy = { label = "BOY", walk = avatars.boy, bike = avatars.boyBike,
-                surf = avatars.boySurf, underwater = avatars.boyUnderwater },
+                surf = avatars.boySurf, underwater = avatars.boyUnderwater,
+                fieldMove = avatars.boyFieldMove },
         girl = { label = "GIRL", walk = avatars.girl, bike = avatars.girlBike,
                  surf = avatars.girlSurf,
-                 underwater = avatars.girlUnderwater },
+                 underwater = avatars.girlUnderwater,
+                 fieldMove = avatars.girlFieldMove },
       }
+      for who, sheet in pairs(sheets) do
+        local form = forms[who]
+        if type(form) ~= "table" then
+          forms[who] = sheet
+        else
+          for key, value in pairs(sheet) do
+            if form[key] == nil then form[key] = value end
+          end
+        end
+      end
     end
   end
   if require("src.core.GameVersion").isGen2() then
