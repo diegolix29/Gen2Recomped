@@ -6283,6 +6283,36 @@ function OverworldState:logGen3Weather()
               draws and "drawn" or "nothing to draw")
 end
 
+-- ONE CLOSURE FOR THE LIFE OF THE STATE, not one a frame.  Weather is up
+-- across most of Hoenn, so the handler the renderer holds is built once and
+-- reads the record the state keeps beside it.
+--
+-- A RECORD AND NOT THREE FIELDS, and that is the whole of a crash.
+--
+-- Reported from play: "src/world/OverworldController.lua:6490: attempt to call
+-- method 'weatherName' (a string value)" on loading a save and on walking into
+-- Petalburg Woods.  The three fields used to be self.weatherName,
+-- self.weatherAt and self.weatherStage -- and OverworldState:weatherName is a
+-- METHOD.  The first frame that actually drew weather assigned a string over
+-- it, and from then on every `self:weatherName(...)` in this file --
+-- fieldWeather, battleWeather, logGen3Weather -- called a string.  It ran
+-- until the first drawn frame, which is why it looked like a loading bug.
+--
+-- The table is reused rather than rebuilt, so a frame still allocates nothing.
+local function screenWeather(self)
+  local fn = self.weatherDraw
+  if not fn then
+    fn = function(w, h)
+      local shown = self.weatherShown
+      if not shown or not shown.name then return false end
+      local G3 = gen3Weather()
+      return G3.draw(shown.name, shown.frame, w, h, shown.stage)
+    end
+    self.weatherDraw = fn
+  end
+  return fn
+end
+
 function OverworldState:drawFieldWeather()
   local name = self:fieldWeather()
   if not name then return false end
@@ -6304,9 +6334,10 @@ function OverworldState:drawFieldWeather()
   -- cartridge's background-layer weather sits beneath the window layer.
   local r = Game.renderer
   if r then
-    r.screenWeather = function(w, h)
-      Gen3Weather.draw(name, frame, w, h, stage)
-    end
+    local shown = self.weatherShown
+    if not shown then shown = {} self.weatherShown = shown end
+    shown.name, shown.frame, shown.stage = name, frame, stage
+    r.screenWeather = screenWeather(self)
     return true
   end
   local w, h = self:uiSize()

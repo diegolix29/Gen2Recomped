@@ -259,7 +259,7 @@ local GEN3_MAX_LAND = 32
 -- Keeping the constant HERE, beside the rules it describes, is the point: the
 -- edit that changes the shapes and the edit that invalidates the cache are in
 -- the same file, a few lines apart.
-Structures.SHAPE_REV = "g3-sward-282"
+Structures.SHAPE_REV = "g3-settee-305"
 -- one cell of world height: the step a building may straddle and still be
 -- treated as having one foundation
 local COURSE = 16
@@ -12150,8 +12150,36 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
       end
     end
   end
+  -- ...AND THE QUESTION IS ASKED ONCE, NOT ONCE PER BAND.
+  --
+  -- "Did the Gen 3 arm above state a silhouette?" is a fact about the
+  -- whole canvas, and it was being re-tested at the top of every band --
+  -- where, on Gen 1, Gen 2 and Prism, it is false for band 0 (nothing has
+  -- written the mask yet) and TRUE for band 1 (band 0 just did).  So a
+  -- stacked canvas never masked its lower band at all: `yBot` stopped at
+  -- the crown's bottom row and the foot rule below extruded that one row's
+  -- columns straight to the floor, wearing its own outline-dark texels.
+  --
+  -- IN-GAME LOCATION: the Johto tree wall, the forest bordering every
+  -- route and filling every town's verge -- TilesetJohto's $1E/$1F crown
+  -- over $2E/$2F over the $3E/$3F foot, carved by the `planter` arm of
+  -- `buildCylinders` as a 16-wide, 32-tall canvas whose band 0 is the
+  -- tree's own crown cell and whose band 1 is the run's foot course.  The
+  -- foot course was never read: MEASURED headless over that drawing, 0 of
+  -- the quads under the crown carried a texel from it before this change
+  -- and every row from y=0 to y=15 was a byte-for-byte copy of row 16.
+  -- Reported as trees "only drawing the tops properly and not the
+  -- bottoms".  Indoors the same two cells are TilesetHouse's potted trees.
+  --
+  -- DERIVED, over the shipped profile: 0 Gen 1 tilesets can reach a
+  -- two-band canvas (none pins `planter`, the only non-Gen-3 class whose
+  -- carve passes NY = 2 * NX), 2 Gen 2 tilesets can and 5 Prism ones can.
+  -- A ONE-band canvas -- every other hull in the file, Gen 1's cylinders,
+  -- canopies, stumps and bins included -- runs this loop exactly once
+  -- whichever way the guard is written, and is bit-identical.
+  local stated = next(mask) ~= nil
   for band = 0, NY / NX - 1 do
-    if next(mask) ~= nil then break end
+    if stated then break end
     local y0, y1 = band * NX, band * NX + NX - 1
     local out = floodOutside({ off = true, dark = true,
                                light = true, white = true }, y0, y1)
