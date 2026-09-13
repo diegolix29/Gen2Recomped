@@ -10132,7 +10132,9 @@ function Structures.forMap(map)
         railFace = TileShape.railFace(tileset.id),
         classShapes = shapes.classes,
         runs = {}, skip = {}, ground = {}, doorFold = {}, objectQuads = {},
-        grassQuads = {}, flowerQuads = {}, roundStamps = {}, figures = {} }
+        grassQuads = {}, flowerQuads = {}, roundStamps = {}, figures = {},
+        grassInstances = {}, decorInstances = {}, roadInstances = {},
+        groundInstances = {}, waterInstances = {} }
   -- PUBLISH IT NOW, NOT AT THE END.
   --
   -- `cache[map.id] = S` used to happen only after every pass had run, and the
@@ -24636,40 +24638,226 @@ function Structures.buildGen3Grass(S, map, x0, x1, y0, y1)
   end
 end
 
+-- ---------------------------------------------------------------------------
+-- LEGACY (GEN 1/2) CUSTOM SURFACES: decorative grass, road, ground, water.
+--
+-- Hoenn's grass already carries its own surface kind on the cartridge's
+-- attribute byte (`gen3GrassKind`, above) -- there is nothing to name by
+-- hand there, and `buildGrass` returns to that path before a single one of
+-- these tables is consulted. A Gen 1/2 tileset states no such byte: its
+-- tall grass, its plaza filler, and (where a hack draws it) its road,
+-- bare-ground, or water tiles are all just tile ids in the same 8px atlas.
+-- These tables let a tile id -- or the pixel rectangle it occupies, for
+-- tiles easier to point at in an image editor than to look up by number --
+-- be named as one of those kinds so it gets a low, textured Grass3D-style
+-- mesh instead of rendering as a plain flat box.
+--
+-- `DECOR_GRASS_TILES` matched purely by tile id, with NO `isGrassCell`
+-- requirement (unlike real tall grass below): this is ground art the
+-- engine never treats as tall grass, so there's no encounter collision
+-- riding along, and no risk of sprouting tufts across a town plaza the
+-- way a tile-level test on the real grass art would.
+local DECOR_GRASS_TILES = {
+  OVERWORLD = {
+    [13] = true, [29] = true,   -- 104,0-111,15 / one tile column, two rows
+    [44] = true, [60] = true,   -- 96,16-103,31
+  },
+  TilesetJohto = { [5] = true },        -- 40,0-47,7
+  TilesetModernJohto = { [5] = true },  -- 40,0-47,7
+  TilesetKanto = { [44] = true },       -- 96,16-103,23
+}
+
+local CUSTOM_ROAD_TILES = {}
+local CUSTOM_GROUND_TILES = {}
+local CUSTOM_WATER_TILES = {}
+
+-- pixel rect -> the tile ids it covers, at this tileset's own atlas layout
+local function pixelCoordsToTileIds(px, py, width, height, pixelsPerRow,
+                                    tileSize)
+  pixelsPerRow = pixelsPerRow or 16
+  tileSize = tileSize or 8
+  local x0t, y0t = math.floor(px / tileSize), math.floor(py / tileSize)
+  local x1t = math.floor((px + width - 1) / tileSize)
+  local y1t = math.floor((py + height - 1) / tileSize)
+  local ids = {}
+  for ty = y0t, y1t do
+    for tx = x0t, x1t do
+      ids[#ids + 1] = ty * pixelsPerRow + tx
+    end
+  end
+  return ids
+end
+
+local function addCustomTiles(set, tilesetName, px, py, width, height,
+                              pixelsPerRow, tileSize)
+  set[tilesetName] = set[tilesetName] or {}
+  local ids = pixelCoordsToTileIds(px, py, width, height, pixelsPerRow,
+                                   tileSize)
+  for _, id in ipairs(ids) do set[tilesetName][id] = true end
+  return ids
+end
+
+-- Public registration API -- call these once (e.g. from a mod's own init)
+-- to name a tileset's road / bare-ground / water tiles by pixel rectangle.
+function Structures.addRoadByPixelCoords(tilesetName, px, py, width, height,
+                                         pixelsPerRow, tileSize)
+  return addCustomTiles(CUSTOM_ROAD_TILES, tilesetName, px, py, width,
+                        height, pixelsPerRow, tileSize)
+end
+
+function Structures.addGroundByPixelCoords(tilesetName, px, py, width,
+                                           height, pixelsPerRow, tileSize)
+  return addCustomTiles(CUSTOM_GROUND_TILES, tilesetName, px, py, width,
+                        height, pixelsPerRow, tileSize)
+end
+
+function Structures.addWaterByPixelCoords(tilesetName, px, py, width, height,
+                                          pixelsPerRow, tileSize)
+  return addCustomTiles(CUSTOM_WATER_TILES, tilesetName, px, py, width,
+                        height, pixelsPerRow, tileSize)
+end
+
+-- the tileset key these tables (and a map's own def) are keyed by --
+-- `def.tileset` when the map states one (the OVERWORLD/CAVERN convention),
+-- else the tileset record's own id (Gen 2's TilesetJohto etc.)
+local function legacyTilesetKey(map)
+  local def = map.def
+  return (def and def.tileset) or (map.tileset and map.tileset.id)
+end
+
+local function isDecorGrassTile(map, tileId)
+  local set = DECOR_GRASS_TILES[legacyTilesetKey(map)]
+  return (set and set[tileId]) or false
+end
+
+local function isCustomRoadTile(map, tileId)
+  local set = CUSTOM_ROAD_TILES[legacyTilesetKey(map)]
+  return (set and set[tileId]) or false
+end
+
+local function isCustomGroundTile(map, tileId)
+  local set = CUSTOM_GROUND_TILES[legacyTilesetKey(map)]
+  return (set and set[tileId]) or false
+end
+
+local function isCustomWaterTile(map, tileId)
+  local set = CUSTOM_WATER_TILES[legacyTilesetKey(map)]
+  return (set and set[tileId]) or false
+end
+
+-- Default registrations. Add more with the functions above; these are the
+-- ones already known.
+Structures.addRoadByPixelCoords("OVERWORLD", 24, 16, 8, 8)
+Structures.addRoadByPixelCoords("OVERWORLD", 72, 24, 8, 8)
+Structures.addGroundByPixelCoords("CAVERN", 0, 16, 8, 8)
+Structures.addGroundByPixelCoords("CAVE", 8, 0, 8, 8, 16, 8)
+Structures.addRoadByPixelCoords("TilesetJohto", 48, 0, 8, 8, 16, 8)
+Structures.addRoadByPixelCoords("TilesetModernJohto", 48, 0, 8, 8, 16, 8)
+Structures.addRoadByPixelCoords("TilesetKanto", 74, 24, 6, 8, 16, 8)
+Structures.addRoadByPixelCoords("TilesetKanto", 24, 16, 8, 8, 16, 8)
+
 function Structures.buildGrass(S, map, x0, x1, y0, y1, data)
-  -- Hoenn takes the mat above; Kanto, Johto and Prism the per-pixel tufts
-  -- their own art draws (see the header on GRASS_MAT for why they differ).
+  -- Hoenn (Gen 3) takes the attribute-driven mat above -- its own header
+  -- explains why a Gen 3 map cannot use the per-pixel tuft this legacy
+  -- path builds. Kanto, Johto and Prism (and any hack sharing their tile
+  -- art) take the tuft, plus the decor/road/ground/water overrides above.
   if S.isGen3 and Gen3.mapIsGen3(map) then
     return Structures.buildGen3Grass(S, map, x0, x1, y0, y1)
   end
+
   local templates = {}
   local quads = S.grassQuads
+  local instances = S.grassInstances
+  local decorInstances = S.decorInstances
+  local roadInstances = S.roadInstances
+  local groundInstances = S.groundInstances
+  local waterInstances = S.waterInstances
+
+  -- Prefer the authored 3D tuft bake (assets/ground/grass/) when it is
+  -- present: one low-poly instance per tile, random yaw/scale, stamped by
+  -- the mesher as a triangle mesh rather than the per-pixel atlas slab
+  -- below. Falls back to `grassTemplate` when the bake is missing so a
+  -- stripped package still renders grass.
+  local Grass3D = nil
+  do
+    local ok, G = pcall(V.require, "Grass3D")
+    if ok and G and G.available and G.available() then Grass3D = G end
+  end
+
   for ty = y0, y1 do
     for tx = x0, x1 do
       Budget.tick()
       local k = keyOf(tx, ty)
       local s = S.shapeAt[k]
+      local tileId = S.tileAt[k]
+      local decor = isDecorGrassTile(map, tileId)
+      local road = isCustomRoadTile(map, tileId)
+      local ground = isCustomGroundTile(map, tileId)
+      local water = isCustomWaterTile(map, tileId)
+
       -- tufts only where the CELL is tall grass by the engine's own rule
       -- (isGrassCell: the cell's collision tile). The grass GRAPHIC also
       -- appears as decorative filler inside ordinary ground blocks, and a
       -- tile-level test sprouted tufts all over town plazas.
-      if s and s.art == "grass"
-         and map:isGrassCell(math.floor(tx / 2), math.floor(ty / 2)) then
-        local tileId = S.tileAt[k]
-        local tpl = templates[tileId]
-        if not tpl then
-          tpl = grassTemplate(map, data, tileId)
-          templates[tileId] = tpl
+      --
+      -- Exception: DECOR_GRASS_TILES above, matched purely by tile id, no
+      -- isGrassCell needed -- see the comment on that table.
+      if (s and s.art == "grass"
+          and map:isGrassCell(math.floor(tx / 2), math.floor(ty / 2)))
+         or decor then
+        if Grass3D then
+          local instance = Grass3D.instanceForTile(tx, ty)
+          if decor then
+            -- decorative filler stands HALF the height of real tall
+            -- grass and carries no gameplay-facing texture cues
+            instance.heightScale = 0.5
+            instance.texture = "decor"
+            decorInstances[#decorInstances + 1] = instance
+          else
+            instances[#instances + 1] = instance
+          end
+        else
+          local tpl = templates[tileId]
+          if not tpl then
+            tpl = grassTemplate(map, data, tileId)
+            templates[tileId] = tpl
+          end
+          local wx, wz = tx * 8, ty * 8
+          for _, q in ipairs(tpl) do
+            quads[#quads + 1] = {
+              { q[1][1] + wx, q[1][2], q[1][3] + wz },
+              { q[2][1] + wx, q[2][2], q[2][3] + wz },
+              { q[3][1] + wx, q[3][2], q[3][3] + wz },
+              { q[4][1] + wx, q[4][2], q[4][3] + wz },
+              uv = q.uv, shade = q.shade,
+            }
+          end
         end
-        local wx, wz = tx * 8, ty * 8
-        for _, q in ipairs(tpl) do
-          quads[#quads + 1] = {
-            { q[1][1] + wx, q[1][2], q[1][3] + wz },
-            { q[2][1] + wx, q[2][2], q[2][3] + wz },
-            { q[3][1] + wx, q[3][2], q[3][3] + wz },
-            { q[4][1] + wx, q[4][2], q[4][3] + wz },
-            uv = q.uv, shade = q.shade,
-          }
+      end
+
+      -- road / bare-ground / water overrides: independent of the grass
+      -- art test above, keyed purely on the tile id a hack has named.
+      -- Each gets its own thin Grass3D mesh instance, textured and
+      -- flattened to read as a road, patch of dirt, or waterline rather
+      -- than as turf -- lowest for water, then road, then bare ground.
+      if Grass3D then
+        if road then
+          local instance = Grass3D.instanceForTile(tx, ty)
+          instance.heightScale = 0.05
+          instance.texture = "road"
+          roadInstances[#roadInstances + 1] = instance
+        end
+        if ground then
+          local instance = Grass3D.instanceForTile(tx, ty)
+          instance.heightScale = 0.1
+          instance.texture = "ground"
+          groundInstances[#groundInstances + 1] = instance
+        end
+        if water then
+          local instance = Grass3D.instanceForTile(tx, ty)
+          instance.heightScale = 0.02
+          instance.texture = "water"
+          waterInstances[#waterInstances + 1] = instance
         end
       end
     end
