@@ -98,6 +98,7 @@ end
 
 function Stats.calcGen3(speciesDef, level, ivs, evs, nature)
   local base = speciesDef.baseStats
+  level = level or 1
   ivs, evs = ivs or {}, evs or {}
   local mods = (natures and natures[nature] and natures[nature].modifiers) or {}
   local out = {}
@@ -112,6 +113,7 @@ function Stats.calcGen3(speciesDef, level, ivs, evs, nature)
 end
 
 function Stats.calc(speciesDef, level, dvs, statExp, evs, nature)
+  level = level or 1
   if Stats.isGen3(speciesDef) then
     -- a Gen 3 mon carries ivs/evs; the dvs/statExp parameters are what the
     -- ~40 existing call sites pass, so accept them in those positions too

@@ -8,6 +8,7 @@ local Pokemon = {}
 -- Starting moves: level-1 moves plus learnset entries at or below the level,
 -- keeping the most recent four (engine/pokemon/learn_move.asm behavior).
 function Pokemon.movesAtLevel(speciesDef, level)
+  level = level or 1
   local moves = {}
   local function add(id)
     for _, existing in ipairs(moves) do
@@ -19,7 +20,7 @@ function Pokemon.movesAtLevel(speciesDef, level)
     add(m)
   end
   for _, entry in ipairs(speciesDef.learnset) do
-    if entry.level <= level then
+    if entry.level and entry.level <= level then
       add(entry.move)
     end
   end
@@ -34,11 +35,13 @@ end
 -- the oldest slot out when full. Silent -- no LearnMove prompts.
 function Pokemon.learnMovesFromDayCare(data, mon, speciesDef, startLevel, newLevel)
   if not (speciesDef and speciesDef.learnset and mon) then return end
+  startLevel = startLevel or 1
+  newLevel = newLevel or 1
   mon.moves = mon.moves or {}
   for _, entry in ipairs(speciesDef.learnset) do
     local moveLevel = entry.level
-    if moveLevel > newLevel then break end
-    if moveLevel > startLevel then
+    if moveLevel and moveLevel > newLevel then break end
+    if moveLevel and moveLevel > startLevel then
       local known = false
       for _, mv in ipairs(mon.moves) do
         if mv.id == entry.move then known = true break end
