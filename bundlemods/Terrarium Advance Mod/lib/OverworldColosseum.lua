@@ -18,10 +18,14 @@
 -- Accepted tags are National Dex numbers (1-386) or engine species strings.
 local V = ...
 
-local ColosseumDex = V.ColosseumDex
-local PokemonActors = V.PokemonActors
+local ColosseumDex = nil  -- Load lazily
+local PokemonActors = nil  -- Load lazily
+local GeneratedAssets = nil  -- Load lazily
 local Mat4 = V.Mat4
 local Voxel3D = V.require("Voxel3D")
+
+-- Cache root for Colosseum models
+local CACHE_ROOT = "cache/pokemon"
 
 local OverworldColosseum = {}
 
@@ -32,6 +36,7 @@ local nameCache = {}
 local frameNo = 0
 local reported = {}
 local STALE_FRAMES = 120
+local modelCache = {}  -- Global cache for loaded models (not weak)
 
 local function logOnce(key, fmt, ...)
   if reported[key] then return end
@@ -41,9 +46,12 @@ local function logOnce(key, fmt, ...)
 end
 
 local function colosseumEnabled()
-  local ok, wilds = pcall(V.require, "ColosseumWilds")
-  if ok and wilds and type(wilds.enabled) == "function" then
-    return wilds.enabled()
+  -- Load PokemonActors if not already loaded
+  if not PokemonActors then
+    local ok, actors = pcall(V.require, "PokemonActors")
+    if ok and actors then
+      PokemonActors = actors
+    end
   end
   return PokemonActors ~= nil
 end
@@ -470,16 +478,165 @@ function OverworldColosseum.safeClaimWilds(state)
   end
 end
 
+-- Load cached Colosseum mesh directly from cache
+local function prepareOneFromCache(p, dex, dt)
+  if not (p and p.entity and dex) then return false end
+  if p.stadiumMon then return false end
+
+  -- Lazy-load GeneratedAssets
+  if not GeneratedAssets then
+    GeneratedAssets = V.GeneratedAssets
+  end
+
+  local slot = slots[p.entity]
+  if not slot then
+    -- Try cache first
+    local cached = modelCache[dex]
+    if not cached then
+      -- Load base mesh from Colosseum cache using GeneratedAssets (same as PokemonActors)
+      local basePath = ("%s/%d/runtime_mesh_v1/base.lua"):format(CACHE_ROOT, dex)
+      
+      if not GeneratedAssets or not GeneratedAssets.read then
+        if not reported["no-generated-assets"] then
+          reported["no-generated-assets"] = true
+          local log = V.mod and V.mod.log
+          if log and log.warn then
+            pcall(log.warn, log, "Colosseum: GeneratedAssets not available")
+          end
+        end
+        return false
+      end
+
+      local okMesh, meshContent = pcall(GeneratedAssets.read, basePath)
+      if not okMesh or not meshContent then
+        if not reported["load-fail"] then
+          reported["load-fail"] = true
+          local log = V.mod and V.mod.log
+          if log and log.warn then
+            pcall(log.warn, log, "Colosseum: failed to load mesh from %s - ok=%s", basePath, tostring(okMesh))
+          end
+        end
+        return false
+      end
+
+      -- Load the Lua table from the content
+      local okCompile, meshData = pcall(load, meshContent)
+      if not okCompile or not meshData then
+        if not reported["compile-fail"] then
+          reported["compile-fail"] = true
+          local log = V.mod and V.mod.log
+          if log and log.warn then
+            pcall(log.warn, log, "Colosseum: failed to compile mesh Lua from %s", basePath)
+          end
+        end
+        return false
+      end
+
+      -- Store the mesh data for rendering
+      cached = {
+        dex = dex,
+        mesh = meshData,
+        lastSeen = frameNo
+      }
+      modelCache[dex] = cached
+    end
+    slot = { model = cached, lastSeen = frameNo }
+    slots[p.entity] = slot
+  end
+  slot.lastSeen = frameNo
+
+  -- Calculate transform matrix for overworld placement
+  local renderFacing = p.facing
+  local fx, fz = facingVector(renderFacing)
+
+  local okFirstPerson, FirstPerson = pcall(V.require, "FirstPerson")
+  if okFirstPerson and FirstPerson then
+    local b = FirstPerson.cardBlend()
+    if b > 0 then
+      local cameraYaw = FirstPerson.cardYaw(p.px or 0, p.py or 0)
+      local face = type(renderFacing) == "string" and string.lower(renderFacing) or renderFacing
+      local yaw = 0
+      if face == "down" then yaw = cameraYaw * b
+      elseif face == "up" then yaw = (cameraYaw + math.pi) * b
+      elseif face == "left" then yaw = (cameraYaw + math.pi / 2) * b
+      elseif face == "right" then yaw = (cameraYaw - math.pi / 2) * b
+      end
+      fx = math.sin(yaw)
+      fz = math.cos(yaw)
+    end
+  end
+
+  local x = (p.px or 0) + 8
+  local z = (p.py or 0) + 8
+  local y = (p.gh or 0) + (p.lift or 0)
+
+  -- Store pose data for rendering
+  p._colosseumMesh = slot.model.mesh
+  p._colosseumDex = dex
+  p._colosseumMatrix = { x = x, y = y, z = z, fx = fx, fz = fz }
+  
+  return true
+end
+
 local function prepareOne(p, dex, dt)
   if not (p and p.entity and dex) then return false end
   if p.stadiumMon then return false end
 
+  -- Ensure PokemonActors is loaded
+  if not PokemonActors then
+    -- First ensure ColosseumDex is available in V
+    if not V.ColosseumDex then
+      local ok, CD = pcall(V.require, "ColosseumDex")
+      if ok and CD then
+        V.ColosseumDex = CD
+      end
+    end
+
+    local ok, actors = pcall(V.require, "PokemonActors")
+    if not ok or not actors then return false end
+    PokemonActors = actors
+  end
+
   local slot = slots[p.entity]
   if not slot then
-    if not (PokemonActors and PokemonActors.loadOverworldModel) then return false end
-    local okModel, model = pcall(PokemonActors.loadOverworldModel, PokemonActors, dex, "normal")
-    if not okModel or not model or not model.actor then return false end
-    slot = { model = model, lastSeen = frameNo }
+    -- Try cache first
+    local cached = modelCache[dex]
+    if not cached then
+      -- Try to acquire with minimal battle context
+      local ctx = {
+        arena = { figureScale = 1.0 },
+        battler = { species = dex },
+        side = 0,
+        game = V.mod and V.mod.world and V.mod.world.game
+      }
+
+      local okModel, result = pcall(PokemonActors.acquire, PokemonActors, "cbe-prewarm", dex, "normal", { context = ctx })
+
+      if not okModel or not result then
+        if not reported["acquire-error"] then
+          reported["acquire-error"] = true
+          local log = V.mod and V.mod.log
+          if log and log.warn then
+            pcall(log.warn, log, "Colosseum: acquire failed for dex %d - ok=%s, result=%s, type=%s",
+              dex, tostring(okModel), tostring(result), type(result))
+          end
+        end
+        return false
+      end
+
+      local actor = result
+
+      -- Setup actor for overworld use
+      actor.spawnScale = 1
+      pcall(actor.spawn, actor, 1)
+      pcall(actor.selectNativeSlot, actor, "idle")
+      pcall(actor.transition, actor, "idle")
+      actor.worldScale = (actor.worldScale or 1) * 0.8
+
+      cached = { dex = dex, variant = "normal", actor = actor }
+      modelCache[dex] = cached  -- Cache for reuse
+    end
+    slot = { model = cached, lastSeen = frameNo }
     slots[p.entity] = slot
   end
   slot.lastSeen = frameNo
@@ -522,10 +679,65 @@ local function prepareOne(p, dex, dt)
   return true
 end
 
+-- Preload models for overworld use (called during initialization)
+function OverworldColosseum.preloadSpecies(dexList)
+  -- Ensure ColosseumDex is loaded for PokemonActors
+  if not V.ColosseumDex then
+    local ok, CD = pcall(V.require, "ColosseumDex")
+    if ok and CD then
+      V.ColosseumDex = CD
+    end
+  end
+
+  -- Ensure PokemonActors is loaded
+  if not PokemonActors then
+    local ok, actors = pcall(V.require, "PokemonActors")
+    if not ok or not actors then return 0 end
+    PokemonActors = actors
+  end
+
+  if not (PokemonActors and PokemonActors.acquire) then return 0 end
+
+  local count = 0
+  for _, dex in ipairs(dexList or {}) do
+    if not modelCache[dex] then
+      local ctx = { arena = { figureScale = 1.0 } }
+      local okModel, actor = pcall(PokemonActors.acquire, PokemonActors, "cbe-prewarm", dex, "normal", { context = ctx })
+      if okModel and actor then
+        actor.spawnScale = 1
+        pcall(actor.spawn, actor, 1)
+        pcall(actor.selectNativeSlot, actor, "idle")
+        pcall(actor.transition, actor, "idle")
+        actor.worldScale = (actor.worldScale or 1) * 0.8
+
+        modelCache[dex] = { dex = dex, variant = "normal", actor = actor }
+        count = count + 1
+      end
+    end
+  end
+  return count
+end
+
 function OverworldColosseum.prepare(posed)
-  if not colosseumEnabled() then return true end
+  local enabled = colosseumEnabled()
+  if not reported["prepare-check"] then
+    reported["prepare-check"] = true
+    local log = V.mod and V.mod.log
+    if log and log.info then
+      pcall(log.info, log, "Colosseum: prepare called, enabled=%s, posed count=%d", tostring(enabled), #posed)
+    end
+  end
+
+  if not enabled then return true end
   frameNo = frameNo + 1
   local dt = dtForFrame()
+
+  local preparedCount = 0
+  local entityCount = 0
+  local stadiumCount = 0
+  local resolvedCount = 0
+  local supportedCount = 0
+  local dexCheckCount = 0
 
   for _, p in ipairs(posed or {}) do
     p._colosseumModel = nil
@@ -533,17 +745,48 @@ function OverworldColosseum.prepare(posed)
     p._colosseumMatrix = nil
     p._colosseumDex = nil
 
-    if p.entity and not p.stadiumMon then
-      local okDex, dex = pcall(OverworldColosseum.resolveDex, p.entity)
-      if okDex and dex and ColosseumDex.supported(dex) then
-        local ok, did = pcall(prepareOne, p, dex, dt)
-        if not ok or not did then
-          logOnce("prepare:" .. tostring(dex),
-            "Colosseum overworld model %d could not prepare this frame; using sprite", dex)
+    if p.entity then
+      entityCount = entityCount + 1
+      if p.stadiumMon then
+        stadiumCount = stadiumCount + 1
+      else
+        local okDex, dex = pcall(OverworldColosseum.resolveDex, p.entity)
+        if okDex and dex then
+          resolvedCount = resolvedCount + 1
+
+          -- Log first few resolved dex values
+          if resolvedCount <= 3 and not reported["dex-values"] then
+            reported["dex-values"] = true
+            local log = V.mod and V.mod.log
+            if log and log.info then
+              pcall(log.info, log, "Colosseum: resolved dex value %d (type=%s)", dex, type(dex))
+            end
+          end
+
+          -- Try loading cached Colosseum mesh directly
+          supportedCount = supportedCount + 1
+          local ok, did = pcall(prepareOneFromCache, p, dex, dt)
+          if ok and did then
+            preparedCount = preparedCount + 1
+          else
+            logOnce("prepare:" .. tostring(dex),
+              "Colosseum overworld model %d could not prepare this frame; using sprite", dex)
+          end
         end
       end
     end
   end
+
+  if not reported["prepare-detail"] and entityCount > 0 then
+    reported["prepare-detail"] = true
+    local log = V.mod and V.mod.log
+    if log and log.info then
+      pcall(log.info, log, "Colosseum: detailed stats - total=%d, stadium=%d, resolved=%d, supported=%d, prepared=%d",
+        entityCount, stadiumCount, resolvedCount, supportedCount, preparedCount)
+    end
+  end
+
+
 
   for entity, slot in pairs(slots) do
     if frameNo - (slot.lastSeen or 0) > STALE_FRAMES then
@@ -564,8 +807,17 @@ function OverworldColosseum.safePrepare(posed)
 end
 
 function OverworldColosseum.draw(p)
-  local actor = p and p._colosseumActor
+  -- Try cached mesh first (new approach)
+  local mesh = p and p._colosseumMesh
   local matrix = p and p._colosseumMatrix
+  if mesh and matrix then
+    -- TODO: Implement rendering of cached mesh with Voxel3D
+    -- For now, fall back to sprite
+    return false
+  end
+
+  -- Fallback to actor-based rendering (old approach)
+  local actor = p and p._colosseumActor
   if not (actor and matrix and PokemonActors and PokemonActors.withRenderer) then
     return false
   end
@@ -600,6 +852,22 @@ end
 
 -- VoxelScenePatch installs the pose-level hooks (safePrepare/safeDraw/safeCast).
 function OverworldColosseum.install()
+  -- Ensure ColosseumDex is loaded for PokemonActors
+  if not V.ColosseumDex then
+    local ok, CD = pcall(V.require, "ColosseumDex")
+    if ok and CD then
+      V.ColosseumDex = CD
+    end
+  end
+
+  -- Ensure GeneratedAssets is available
+  if not GeneratedAssets then
+    GeneratedAssets = V.GeneratedAssets
+  end
+
+  -- Preload common species for better performance
+  local commonSpecies = { 25, 63, 142, 16, 19, 32, 131, 147, 150, 151 }  -- Pikachu, Abra, Aerodactyl, Pidgey, Rattata, NidoranM, Lapras, Dratini, Mewtwo, Mew
+  OverworldColosseum.preloadSpecies(commonSpecies)
   return true
 end
 
