@@ -154,47 +154,6 @@ function StadiumMon.liftFor(model)
   return (floor - hover) / root
 end
 
--- ------- the same sizing, for a Colosseum actor (PokemonActors.lua) instead
--- of a Stadium DSM model
---
--- A Colosseum actor's own worldScale (PokemonActors.lua's actorWorldScale)
--- is calibrated in the BATTLE ARENA's world units against a 1.70m-tall
--- "trainer height" reference (see PokemonActors.lua's HUMAN_WORLD_HEIGHT/
--- HUMAN_REFERENCE_METERS comment) -- a different unit system than this
--- overworld's world pixels, so it is not usable here directly. What DOES
--- carry over is actor.physicalScale: the species' real Pokedex height
--- relative to that same 1.70m reference, already run through PokemonActors'
--- own readability curve (small species floored, giants compressed) --
--- exactly the same problem worldHeightFor's SQUASH curve above solves for
--- Stadium's raw N64 units, just computed from real-world height instead of
--- DSM bind-pose height.
---
--- COLOSSEUM_HUMAN_HEIGHT is the one invented number bridging the two: how
--- tall, in overworld world pixels, a physicalScale 1.0 (~1.70m) actor should
--- stand before MIN_HEIGHT/MAX_HEIGHT below clamp it. 22 assumes a roughly
--- 1m-tall Pokemon (physicalScale ~0.64) should land on REF_HEIGHT itself
--- (14px, the value this file's own header says was MEASURED against the
--- flat 2D-3D mode's art). This one is not measured, only estimated the same
--- way -- TUNE BY PLAYTEST against a species that exists in both catalogs
--- (dex 1-151) with COLOSSEUM off vs on, the same way REF_HEIGHT itself was
--- arrived at.
-StadiumMon.COLOSSEUM_HUMAN_HEIGHT = 22
-
--- The uniform scale factor that puts a Colosseum actor's raw mesh at an
--- overworld-appropriate world-pixel height, mirroring scaleFor(model) above.
--- Callers should assign this onto actor.worldScale BEFORE the first
--- actor:matrix() call -- Actor:matrix reads self.worldScale directly and
--- has no separate scale parameter to pass one through.
-function StadiumMon.colosseumScaleFor(actor)
-  local h = tonumber(actor and actor.height) or 0
-  if h <= 0.01 then return (actor and actor.worldScale) or 1 end
-  local physical = tonumber(actor and actor.physicalScale) or 0.72
-  local target = StadiumMon.COLOSSEUM_HUMAN_HEIGHT * physical
-  if target < StadiumMon.MIN_HEIGHT then target = StadiumMon.MIN_HEIGHT end
-  if target > StadiumMon.MAX_HEIGHT then target = StadiumMon.MAX_HEIGHT end
-  return target / h
-end
-
 
 --
 -- The engine grows its flat pic in the Game Boy's own three steps -- 0, then

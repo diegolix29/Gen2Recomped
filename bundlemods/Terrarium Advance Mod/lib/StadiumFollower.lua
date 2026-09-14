@@ -13,6 +13,8 @@ local Stadium2Pack = V.require("Stadium2Pack")
 local StadiumRig = V.require("StadiumRig")
 local StadiumMon = V.require("StadiumMon")
 local Voxel3D = V.require("Voxel3D")
+local ColosseumMon = V.require("ColosseumMon")
+local ColosseumDex = V.require("ColosseumDex")
 
 local StadiumFollower = {}
 
@@ -24,55 +26,6 @@ local spriteCache = {}
 
 -- Current follower species (nil = disabled, 1-151 = dex number)
 local currentSpecies = nil
-
--- ------- Colosseum actor source (GC6E01 extraction, via PokemonActors)
---
--- A separate source from the Stadium DSM path above: PokemonActors.lua is
--- loaded through main.lua's own Colosseum runtime namespace, not through
--- this file's V.require, so it is reached as a plain field main.lua bridges
--- onto V once the Colosseum runtime has actually installed it (see
--- initializeColosseumIntegration in main.lua). It may legitimately be nil
--- -- no ROM imported, Colosseum runtime disabled, or not installed yet --
--- so every use below is nil-checked and falls through to the Stadium DSM
--- path, exactly like a missing Stadium pack already falls through to the
--- sprite fallback.
-local function actorService()
-  local pa = V.PokemonActors
-  return pa and pa.service
-end
-
--- Prefer a Colosseum actor over the Stadium DSM model when both are
--- available. Colosseum covers the full Gen 1-3 dex (386) against Stadium's
--- 151, and is the same model battles already use. A plain in-memory flag
--- for now -- wire a real menu row to StadiumFollower.setColosseumPreferred
--- the same way RoamerStadium3D/StadiumWilds wire their own toggles.
-local colosseumPreferred = true
-function StadiumFollower.setColosseumPreferred(value)
-  colosseumPreferred = value ~= false
-end
-function StadiumFollower.colosseumPreferred()
-  return colosseumPreferred
-end
-
--- Current Colosseum actor (nil unless the follower is riding the Colosseum
--- path). currentModel/currentRig above stay nil while this is set, and vice
--- versa -- the two paths are mutually exclusive per species, same as the
--- existing sprite-fallback flag below.
-local currentActor = nil
-
--- Facing string -> the (towardX, towardZ) unit-ish vector Actor:matrix
--- wants. This matches YAW_BY_FACING / StadiumWilds' own fx,fz exactly:
--- Actor:matrix does yaw = atan2(towardX, towardZ), which gives yaw 0 for
--- "down" (0,1), pi/2 for "right" (1,0), pi for "up" (0,-1) and -pi/2 for
--- "left" (-1,0) -- the same rotation table StadiumFollower's own 3D branch
--- below already produces by hand for the Stadium path.
-local FACING_VECTOR = {
-  down = { 0, 1 }, right = { 1, 0 }, up = { 0, -1 }, left = { -1, 0 },
-}
-
--- Overworld-appropriate sizing for a Colosseum actor: see StadiumMon.
--- colosseumScaleFor's own header for why actor.worldScale as PokemonActors
--- computes it (battle-arena units) can't be used here directly.
 
 -- ------- Persistence
 
@@ -102,7 +55,9 @@ local function readMarker()
   local format, dexStr = text:match("^(%S+)%s+(.+)$")
   if not format or format ~= StadiumFollower.FORMAT then return nil end
   local dex = tonumber(dexStr)
-  return dex and (dex > 0 and dex <= 386) and dex or nil
+  -- Was capped at 151 (StadiumPack's own range) before the Colosseum fallback
+  -- existed. Now covers the complete Gen I-III roster (see setSpecies below).
+  return dex and (dex > 0 and dex <= ColosseumDex.speciesCount) and dex or nil
 end
 
 -- Write the marker file with the current follower species
@@ -119,6 +74,10 @@ local currentRig = nil
 local currentModel = nil
 local currentSprite = nil
 local usingSpriteFallback = false
+-- Colosseum-backed follower state (used when dex is out of StadiumPack's
+-- 1-151 range, or no Stadium ROM is installed at all).
+local usingColosseum = false
+local colosseumVariant = "normal"
 
 -- Animation state
 local animTime = 0
@@ -218,58 +177,29 @@ end
 
 -- ------- Species Management
 
--- Set the follower species by dex number (1-386; 152-386 only actually
--- resolve to a 3D model through the Colosseum path below -- Stadium DSM
--- tops out at 151 and falls through to the sprite card same as before)
+-- Set the follower species by dex number (1-151)
 function StadiumFollower.setSpecies(dex)
   if dex == currentSpecies then return true end
   
-  -- Clear current rig, actor and sprite
+  -- Clear current rig and sprite
   if currentRig then
     currentRig:release()
     currentRig = nil
-  end
-  if currentActor then
-    pcall(function() currentActor:release() end)
-    currentActor = nil
   end
   currentModel = nil
   currentSprite = nil
   currentSpecies = nil
   usingSpriteFallback = false
+  usingColosseum = false
   
-  if not dex or dex < 1 or dex > 386 then
+  if not dex or dex < 1 or dex > ColosseumDex.speciesCount then
     -- Save the disabled state
     writeMarker(nil)
     return true  -- Disabled
   end
-
-  -- Try the Colosseum actor first. Cheap availability check before
-  -- acquiring: a cold species triggers on-demand extraction inside
-  -- acquire(), which is fine to pay once here but not worth attempting when
-  -- the Colosseum runtime simply isn't installed for this session.
-  if colosseumPreferred then
-    local api = actorService()
-    if api and api.available("follower", dex) then
-      local ok, actor = pcall(api.acquire, "follower", dex, "normal", {})
-      if ok and actor then
-        actor.worldScale = StadiumMon.colosseumScaleFor(actor)
-        pcall(actor.spawn, actor, 1)
-        pcall(actor.idle, actor)
-        currentActor = actor
-        currentSpecies = dex
-        usingSpriteFallback = false
-        writeMarker(dex)
-        print("StadiumFollower: Loaded Colosseum follower dex", dex)
-        return true
-      end
-      print("StadiumFollower: Colosseum actor unavailable for dex", dex,
-        ", falling back:", tostring(not ok and actor or "acquire returned nil"))
-    end
-  end
   
   -- Check 3D model cache first
-  if rigCache[dex] then
+  if dex <= 151 and rigCache[dex] then
     currentRig = rigCache[dex]
     currentModel = currentRig.model
     currentSpecies = dex
@@ -289,8 +219,9 @@ function StadiumFollower.setSpecies(dex)
     return true
   end
   
-  -- Try to load the 3D Stadium model first
-  local model = StadiumPack.load(dex, false)
+  -- Try to load the 3D Stadium model first (StadiumPack only covers 1-151;
+  -- anything past that goes straight to the Colosseum fallback below).
+  local model = dex <= 151 and StadiumPack.load(dex, false) or nil
   
   if model and not model.staticPose then
     -- Create the rig
@@ -315,7 +246,20 @@ function StadiumFollower.setSpecies(dex)
     end
   end
   
-  -- If 3D model failed, try sprite fallback
+  -- Colosseum fallback: covers the complete 386-species Gen I-III roster,
+  -- so this is what makes a Gen III follower (dex 252-386) possible at all,
+  -- and it also catches a plain "no Stadium ROM imported" install.
+  if ColosseumMon.available(dex, "normal") then
+    currentSpecies = dex
+    usingSpriteFallback = false
+    usingColosseum = true
+    colosseumVariant = "normal"
+    writeMarker(dex)
+    print("StadiumFollower: Loaded Colosseum follower dex", dex)
+    return true
+  end
+  
+  -- If every 3D source failed, try sprite fallback
   print("StadiumFollower: 3D model unavailable for dex", dex, ", trying sprite fallback")
   local spriteOk, spriteErr = loadSpriteFallback(dex)
   if spriteOk then
@@ -384,8 +328,8 @@ end
 
 -- Update animation state
 function StadiumFollower.update(dt)
-  if currentActor then
-    pcall(currentActor.update, currentActor, dt)
+  if usingColosseum then
+    ColosseumMon.update(currentSpecies, colosseumVariant, dt)
     return
   end
   if not currentRig then return end
@@ -406,43 +350,19 @@ function StadiumFollower.draw(x, y, facing)
   if usingSpriteFallback and currentSprite then
     return StadiumFollower.drawSprite(x, y, facing)
   end
-
-  -- Handle the Colosseum actor. Facing/free-roam yaw math mirrors the
-  -- Stadium branch below exactly (same FirstPerson.cardYaw blend), just
-  -- expressed as a (towardX, towardZ) vector at the end instead of a bare
-  -- yaw, because Actor:matrix wants the direction and derives its own yaw
-  -- from it (see FACING_VECTOR's comment for why that lines up).
-  if currentActor then
-    local FirstPerson = V.require("FirstPerson")
-    local b = FirstPerson.cardBlend()
-    local fx, fz
-    if b > 0 then
-      local cameraYaw = FirstPerson.cardYaw(x, y)
-      local yaw = 0
-      if facing == "down" then yaw = cameraYaw * b
-      elseif facing == "up" then yaw = (cameraYaw + math.pi) * b
-      elseif facing == "left" then yaw = (cameraYaw + math.pi / 2) * b
-      elseif facing == "right" then yaw = (cameraYaw - math.pi / 2) * b end
-      fx, fz = math.sin(yaw), math.cos(yaw)
-    else
-      local v = FACING_VECTOR[facing] or FACING_VECTOR.down
-      fx, fz = v[1], v[2]
-    end
-    -- groundY 0, matching the Stadium branch below (Mat4.translate(x, 0, y))
-    -- -- StadiumFollower has never accounted for sloped/ledge ground height
-    -- here (unlike StadiumWilds/PlayerModel, which read entity.gh), and this
-    -- keeps the Colosseum path visually consistent with that existing
-    -- behaviour rather than introducing a new mismatch between the two.
-    local ok, matrix = pcall(currentActor.matrix, currentActor, x, 0, y, fx, fz)
-    if not ok or not matrix then return false end
-    local api = actorService()
-    if not api then return false end
-    local drewOk, drew = pcall(api.withRenderer, Voxel3D.vp, function()
-      return currentActor:draw(matrix)
-    end, { eye = Voxel3D.eye })
-    return drewOk and drew == true
-  end
   
+  -- Handle Colosseum 3D model (dex outside StadiumPack's 1-151 range, or no
+  -- Stadium ROM installed at all)
+  if usingColosseum then
+    local fx, fz = ColosseumMon.towardFor(facing)
+    -- Camera-relative free-roam rotation isn't wired through ColosseumMon's
+    -- simpler toward-vector API yet; it draws facing the raw movement
+    -- direction in that mode, same as StadiumWilds' wild Pokemon already do.
+    local matrix = ColosseumMon.matrix(currentSpecies, colosseumVariant, x, 0, y, fx, fz)
+    if not matrix then return false end
+    return ColosseumMon.draw(currentSpecies, colosseumVariant, matrix)
+  end
+
   -- Handle 3D model
   if not currentRig or not currentModel then return false end
 
@@ -554,23 +474,21 @@ function StadiumFollower.clearCache()
   
   -- Clear sprite cache
   spriteCache = {}
-
-  if currentActor then
-    pcall(function() currentActor:release() end)
-  end
-  currentActor = nil
+  
   currentRig = nil
   currentModel = nil
   currentSprite = nil
   currentSpecies = nil
   usingSpriteFallback = false
+  usingColosseum = false
   animTime = 0
+  pcall(ColosseumMon.clearCache)
 end
 
 -- Check if a follower is currently loaded
 function StadiumFollower.loaded()
-  local result = currentActor ~= nil or (currentRig ~= nil and currentModel ~= nil) or (currentSprite ~= nil)
-  print("[StadiumFollower.loaded] Returning:", result, "currentActor:", currentActor ~= nil, "currentRig:", currentRig ~= nil, "currentModel:", currentModel ~= nil, "currentSprite:", currentSprite ~= nil, "currentSpecies:", currentSpecies, "usingSpriteFallback:", usingSpriteFallback)
+  local result = (currentRig ~= nil and currentModel ~= nil) or (currentSprite ~= nil) or usingColosseum
+  print("[StadiumFollower.loaded] Returning:", result, "currentRig:", currentRig ~= nil, "currentModel:", currentModel ~= nil, "currentSprite:", currentSprite ~= nil, "currentSpecies:", currentSpecies, "usingSpriteFallback:", usingSpriteFallback)
   return result
 end
 

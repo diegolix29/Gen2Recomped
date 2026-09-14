@@ -13,42 +13,13 @@ local Stadium2Pack = V.require("Stadium2Pack")
 local StadiumMon = V.require("StadiumMon")
 local Voxel3D = V.require("Voxel3D")
 local ModSetting = V.require("ModSetting")
+local ColosseumMon = V.require("ColosseumMon")
+local ColosseumDex = V.require("ColosseumDex")
 
 local StadiumWilds = {}
 
 -- Currently loaded StadiumMon instances per entity
 local entityMons = setmetatable({}, { __mode = "k" })
-
--- Currently loaded Colosseum PokemonActors instances per entity (GC6E01
--- extraction). A separate table from entityMons above rather than a shared
--- one with a type tag, because an Actor is a stateful, single-instance
--- object (its own animation clock/state machine -- see PokemonActors.lua's
--- Actor:update) and NOT poolable/reusable the way a Stadium rig is, so each
--- wild entity on screen needs its own. PokemonActors.lua is loaded through
--- main.lua's separate Colosseum runtime namespace, not through this file's
--- V.require, so it is reached as a plain field main.lua bridges onto V once
--- installed (see StadiumFollower.lua's identical comment on this bridge,
--- and initializeColosseumIntegration in main.lua). May legitimately be nil.
-local entityActors = setmetatable({}, { __mode = "k" })
-
-local function actorService()
-  local pa = V.PokemonActors
-  return pa and pa.service
-end
-
--- Prefer a Colosseum actor over the Stadium DSM model when both are
--- available for a species. Colosseum covers the full Gen 1-3 dex (386)
--- against Stadium's 151/251, and is the same model battles already use. A
--- plain in-memory flag for now -- wire a real menu row to
--- StadiumWilds.setColosseumPreferred alongside the existing StadiumWilds.
--- setting toggle above.
-local colosseumPreferred = true
-function StadiumWilds.setColosseumPreferred(value)
-  colosseumPreferred = value ~= false
-end
-function StadiumWilds.colosseumPreferred()
-  return colosseumPreferred
-end
 
 -- Last seen frame for cleanup
 local slots = setmetatable({}, { __mode = "k" })
@@ -85,14 +56,11 @@ function StadiumWilds.enabled()
   local okInstall2, Stadium2Install = pcall(V.require, "Stadium2Install")
   local stadium2Available = okInstall2 and Stadium2Install and Stadium2Install.available()
 
-  -- Or the Colosseum actor service, so a Colosseum-only setup (no Stadium
-  -- ROM imported at all) still gets 3D wild models. NOTE: the setting row
-  -- itself is still gated (see StadiumWilds.setting:setGate above) on
-  -- Stadium1/Stadium2 install specifically -- a Colosseum-only player may
-  -- need that gate widened too before this ever gets checked; flagged
-  -- rather than changed here since that gate's UI-visibility contract
-  -- wasn't otherwise touched by this pass.
-  local colosseumAvailable = actorService() ~= nil
+  -- Colosseum covers the full 386-species Gen I-III roster on its own, so a
+  -- player who has imported the Colosseum disc (but no Stadium ROM) still
+  -- gets 3D wild/roamer models -- and every Gen III game gets them at all,
+  -- since neither Stadium game ever shipped a Gen III model to fall back to.
+  local colosseumAvailable = ColosseumMon.enabled()
 
   return stadium1Available or stadium2Available or colosseumAvailable
 end
@@ -187,7 +155,7 @@ function StadiumWilds.getEntitySpeciesDex(entity)
     if nestedSpecies then
       -- If it's already a number, return it
       local num = tonumber(nestedSpecies)
-      if num and num >= 1 and num <= 386 then
+      if num and num >= 1 and num <= ColosseumDex.speciesCount then
         return num
       end
       
@@ -196,7 +164,7 @@ function StadiumWilds.getEntitySpeciesDex(entity)
         local dexStr = nestedSpecies:match("SPECIES_(%d+)")
         if dexStr then
           local dexNum = tonumber(dexStr)
-          if dexNum and dexNum >= 1 and dexNum <= 386 then
+          if dexNum and dexNum >= 1 and dexNum <= ColosseumDex.speciesCount then
             return dexNum
           end
         end
@@ -209,7 +177,7 @@ function StadiumWilds.getEntitySpeciesDex(entity)
   
   -- If it's already a number, return it
   local num = tonumber(species)
-  if num and num >= 1 and num <= 386 then
+  if num and num >= 1 and num <= ColosseumDex.speciesCount then
     return num
   end
   
@@ -218,7 +186,7 @@ function StadiumWilds.getEntitySpeciesDex(entity)
     local dexStr = species:match("SPECIES_(%d+)")
     if dexStr then
       local dexNum = tonumber(dexStr)
-      if dexNum and dexNum >= 1 and dexNum <= 386 then
+      if dexNum and dexNum >= 1 and dexNum <= ColosseumDex.speciesCount then
         return dexNum
       end
     end
@@ -231,7 +199,7 @@ function StadiumWilds.getEntitySpeciesDex(entity)
     local mon = game.data.pokemon[species]
     if mon and mon.dex then
       local dexNum = tonumber(mon.dex)
-      if dexNum and dexNum >= 1 and dexNum <= 386 then
+      if dexNum and dexNum >= 1 and dexNum <= ColosseumDex.speciesCount then
         return dexNum
       end
     end
@@ -240,13 +208,13 @@ function StadiumWilds.getEntitySpeciesDex(entity)
     for id, def in pairs(game.data.pokemon) do
       if def and def.name and def.name:upper() == tostring(species):upper() then
         local dexNum = tonumber(def.dex)
-        if dexNum and dexNum >= 1 and dexNum <= 386 then
+        if dexNum and dexNum >= 1 and dexNum <= ColosseumDex.speciesCount then
           return dexNum
         end
       end
       if tostring(id):upper() == tostring(species):upper() then
         local dexNum = tonumber(def.dex)
-        if dexNum and dexNum >= 1 and dexNum <= 386 then
+        if dexNum and dexNum >= 1 and dexNum <= ColosseumDex.speciesCount then
           return dexNum
         end
       end
@@ -267,74 +235,55 @@ function StadiumWilds.loadEntityModel(entity)
     return false
   end
 
-  -- Check if already loaded (either source)
-  if entityMons[entity] or entityActors[entity] then
+  -- Check if already loaded
+  if entityMons[entity] then
     return true
   end
 
-  -- Try the Colosseum actor first: it covers the full Gen 1-3 dex (386)
-  -- against Stadium's 151/251, and is the same model battles already use.
-  -- One Actor per ENTITY, not per species: unlike a pooled Stadium rig
-  -- (stateless, re-posed fresh each draw call so several roamers of the
-  -- same species can share one), a PokemonActors Actor carries its own
-  -- animation clock/state machine and is meant for exactly one occupant
-  -- (see entityActors' own comment above).
-  if colosseumPreferred then
-    local api = actorService()
-    if api and api.available("wilds", dex) then
-      local ok, actor = pcall(api.acquire, "wilds", dex, "normal", {})
-      if ok and actor then
-        actor.worldScale = StadiumMon.colosseumScaleFor(actor) * WILDS_SCALE
-        pcall(actor.spawn, actor, 1)
-        pcall(actor.idle, actor)
-        entityActors[entity] = actor
-        slots[entity] = { actor = actor, lastSeen = frameNo }
+  -- Stadium 1 (1-151) / Stadium 2 (1-251) are tried first when the species
+  -- is in range, so a player who already set up Stadium packs keeps seeing
+  -- those exact models. Gen III (252-386) has no Stadium source at all, and
+  -- a player without any Stadium ROM has none either -- both fall through to
+  -- the Colosseum cache below, which covers the complete 386 roster.
+  if dex <= 251 then
+    local ok, mon = pcall(StadiumMon.new, "overworld")
+    if ok and mon then
+      local okSpecies, ready = pcall(mon.setSpecies, mon, dex, true)
+      if okSpecies and ready and mon.rig then
+        -- Keep in cache - use the appropriate pack based on which one loaded the model
+        if Stadium2Pack.available() then
+          if type(Stadium2Pack.keep) == "function" then pcall(Stadium2Pack.keep, dex, false) end
+        else
+          if type(StadiumPack.keep) == "function" then pcall(StadiumPack.keep, dex, false) end
+        end
+
+        mon.scale = WILDS_SCALE
+        entityMons[entity] = { kind = "stadium", mon = mon }
+        slots[entity] = { lastSeen = frameNo }
+        mon:play("idle", 1)
         return true
       end
     end
   end
 
-  -- Create StadiumMon instance
-  local ok, mon = pcall(StadiumMon.new, "overworld")
-  if not ok or not mon then
-    return false
+  -- Colosseum fallback (also the primary path for dex > 251). ColosseumMon
+  -- pools one Actor per species, same tradeoff RoamerStadium3D documents for
+  -- its Stadium rig pool: several wild Pokemon of the same species on screen
+  -- share one animation clock (they breathe in sync), but each still gets
+  -- its own position/facing at draw time.
+  if ColosseumMon.available(dex) then
+    entityMons[entity] = { kind = "colosseum", dex = dex, variant = "normal" }
+    slots[entity] = { lastSeen = frameNo }
+    return true
   end
 
-  -- Set species
-  local okSpecies, ready = pcall(mon.setSpecies, mon, dex, true)
-  if not okSpecies or not ready or not mon.rig then
-    return false
-  end
-
-  -- Keep in cache - use the appropriate pack based on which one loaded the model
-  local stadium2Available = Stadium2Pack.available()
-  if stadium2Available then
-    if type(Stadium2Pack.keep) == "function" then
-      pcall(Stadium2Pack.keep, dex, false)
-    end
-  else
-    if type(StadiumPack.keep) == "function" then
-      pcall(StadiumPack.keep, dex, false)
-    end
-  end
-
-  -- Set scale
-  mon.scale = WILDS_SCALE
-
-  -- Store instance
-  entityMons[entity] = mon
-  slots[entity] = { mon = mon, lastSeen = frameNo }
-
-  -- Start idle animation
-  mon:play("idle", 1)
-
-  return true
+  return false
 end
 
--- Check if an entity has a loaded model (either source)
+-- Check if an entity has a loaded stadium model
 function StadiumWilds.hasModel(entity)
   if not entity then return false end
-  return entityMons[entity] ~= nil or entityActors[entity] ~= nil
+  return entityMons[entity] ~= nil
 end
 
 -- ------- Rendering
@@ -343,37 +292,31 @@ end
 function StadiumWilds.updateEntity(entity, dt)
   if not entity then return end
 
-  local actor = entityActors[entity]
-  if actor then
-    local slot = slots[entity]
-    if slot then slot.lastSeen = frameNo end
-    local dtForFrame = dt or (1 / 60)
-    if dtForFrame > 0.10 then dtForFrame = 0.10 end
-    pcall(actor.update, actor, dtForFrame)
-    return
-  end
-  
   local slot = slots[entity]
   if not slot then return end
-  
-  local mon = slot.mon
-  if not mon then return end
-  
   slot.lastSeen = frameNo
-  
-  -- Update StadiumMon animation
-  local dtForFrame = dt or (1/60)
+
+  local model = entityMons[entity]
+  if not model then return end
+
+  local dtForFrame = dt or (1 / 60)
   if dtForFrame > 0.10 then dtForFrame = 0.10 end
-  mon:update(dtForFrame)
+
+  if model.kind == "colosseum" then
+    ColosseumMon.update(model.dex, model.variant, dtForFrame)
+  elseif model.mon then
+    model.mon:update(dtForFrame)
+  end
 end
 
 -- Draw a wild Pokemon entity
 function StadiumWilds.drawEntity(entity)
   if not entity then return false end
-  
-  local mon = entityMons[entity]
-  if not mon then return false end
-  
+
+  local model = entityMons[entity]
+  if not model then return false end
+
+  local mon = model.mon
   local x = entity.px or 0
   local y = entity.py or 0
   local gh = entity.gh or 0
@@ -410,6 +353,12 @@ function StadiumWilds.drawEntity(entity)
     end
   end
   
+  if model.kind == "colosseum" then
+    local matrix = ColosseumMon.matrix(model.dex, model.variant, x + 8, gh, y + 8, fx, fz)
+    if not matrix then return false end
+    return ColosseumMon.draw(model.dex, model.variant, matrix)
+  end
+
   -- Build model matrix using StadiumMon's matrix method
   local okMatrix, matrix = pcall(mon.matrix, mon, x + 8, gh, y + 8, fx, fz)
   if not okMatrix or not matrix then return false end
@@ -432,6 +381,7 @@ end
 function StadiumWilds.clearCache()
   entityMons = setmetatable({}, { __mode = "k" })
   slots = setmetatable({}, { __mode = "k" })
+  pcall(ColosseumMon.clearCache)
 end
 
 -- Clear entity-specific data (called when entity is removed)
