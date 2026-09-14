@@ -907,9 +907,35 @@ gTileset_Sootopolis = {
       [643] = "bed", [644] = "bed", [645] = "bed",
       [651] = "bed", [652] = "bed", [653] = "bed",
 
-      -- The television stands in front of the wall; the console above it
-      -- (613) stays part of the wall band, which is where it is drawn.
-      [614] = "tv",
+      -- THE GAME SYSTEM, and it is not a television: the handheld on its
+      -- stand under the shelf.  IN-GAME LOCATION: BrendansHouse_2F (3, 2)
+      -- and, on its own id, MaysHouse_2F (5, 2).
+      --
+      -- 614 AND 615 ARE ONE DRAWING.  DERIVED: the two carve to the same 89
+      -- pixels row for row, in the same four islands (83 of game system and
+      -- three 2-pixel floorboard nail dots).  Brendan's cell was pinned and
+      -- May's was not, so the same object stood as a 12px model in one
+      -- bedroom and was painted flat on the floor in the other.
+      --
+      -- `cutout` -- "paper: one voxel, pure profile", `PINNED_DEPTH.cutout
+      -- = 1` -- because a flat 2D sprite standing where the thing is drawn is
+      -- what was asked for, and because `cutout` carries the same one-object
+      -- contract `console` does: the drawing is ringed by the floor it stands
+      -- on, and the nail dots in that floor must not be extruded with it.
+      --
+      -- NOT `tv` (12), which is in JOINERY_H and lays the picture on a lid.
+      -- That pin was right when the ask was "table height"; this one is a
+      -- different ask about a different object, and the two other cells that
+      -- carry `tv` -- 576/577, the white cabinet in both living rooms -- keep
+      -- it.
+      --
+      -- THE WALL BAND ABOVE STAYS UNPINNED, and here the measurement says so
+      -- rather than only the rule: 613 and 599 carve to 256 of 256 pixels,
+      -- because a bedroom's floor set is its floorboards and the wall behind
+      -- the shelf is not in it.  A cutout pinned there would stand the whole
+      -- cell as a solid 16x16 panel.  So the upper half of the game system
+      -- stays drawn on the wall, exactly as before.
+      [614] = "cutout", [615] = "cutout",
 
       -- the stool at the shelves
       [610] = "chair",
@@ -1202,6 +1228,362 @@ gTileset_Sootopolis = {
       --   942   8 cells / 5 maps       943   8 cells / 5 maps
       [564] = "chair", [942] = "chair",
       [572] = "chair", [943] = "chair",
+
+      -- =================================================================
+      -- RUSTBORO CITY'S FLATS AND HOUSES, which are drawn from this same
+      -- tileset: nine layouts (Flat1_1F/2F, Flat2_1F/2F/3F, House1/2/3 and
+      -- the Cutter's House) out of the seventy-three maps it lays.
+      --
+      -- Reported as "buildings in rustburo need work as well, fridges arent
+      -- the 3d shape they should be nor are the bookeshelfes, desks, sinks
+      -- etc" and "Beds, wider tables, bed, couch and more need to be fixed
+      -- too in rusburo".
+      --
+      -- WHY NOTHING ABOVE REACHED THEM.  Emerald names its furniture PER
+      -- TILESET: the fridge, sink, worktop and glass cabinet already pinned
+      -- for LITTLEROOT live in gTileset_BrendansMaysHouse on ids 568..572,
+      -- and Rustboro's kitchens draw the same objects out of
+      -- gTileset_GenericBuilding on ids of their own.  Every pin written for
+      -- Littleroot missed them, so the whole kitchen run fell to the
+      -- structural rule and indoors that rule is the blocked-run flood:
+      -- MEASURED, all 20 fridge cells, all 42 sink-and-hob cells and all 82
+      -- glass-cabinet cells in Hoenn resolve `wall` today and wear their
+      -- picture up the face of the wall behind them.
+      --
+      -- HOW THE IDS WERE FOUND, reproducibly and not by eye: every metatile
+      -- this tileset owns was grouped by its LAYER-2 ART -- the half of a Gen
+      -- 3 metatile that carries the furniture, with the floor on layer 1
+      -- excluded -- which collapses "the same fridge baked over eleven
+      -- different floors" onto one drawing.  435 owned metatiles reduce to
+      -- 101 distinct blocked drawings that way, and the groups below are what
+      -- that reading returned; the id lists are the groups, not a selection
+      -- out of them.  It is the same instrument the chair sweep above used.
+      --
+      -- WHICH ROW IS PINNED.  Rule 1 at the head of this section: the FRONT
+      -- row, never the wall band.  Emerald draws each unit here across three
+      -- cells -- a thin cap in the wall band, the whole carcass in the row
+      -- below it, and a skirt in the walkable row under that -- and the
+      -- carcass row is the last BLOCKED one.  MEASURED on the Cutter's House
+      -- fridge: 888 (wall band) draws 6 pixel rows, 896 (pinned) draws all
+      -- 16, 904 (walkable) draws 8.  Only 896 is pinned.
+      --
+      -- MEASURED over all 518 maps, before and after: 292 cells change class
+      -- and every one of them is a cell laying one of the ids below; 3 more
+      -- move as a side effect and are named at the foot of this block.  NO
+      -- CELL'S WALKABILITY CHANGES -- 315,712 cells compared, zero drift --
+      -- and no cell changes on any map that does not use this tileset, so
+      -- the Lab, Brendan's, the Centres, Slateport and Sootopolis blocks are
+      -- untouched cell for cell.
+
+      -- ---- THE KITCHEN RUN ----------------------------------------------
+      -- THE FRIDGE.  IN-GAME LOCATION: RustboroCity_CuttersHouse (8, 1),
+      -- Flat1_1F (10, 1) and Flat2_1F (11, 1), plus seventeen more kitchens
+      -- from OldaleTown_House1 to Route123_BerryMastersHouse -- 20 cells
+      -- over 20 maps, every one of them blocked and every one of them `wall`
+      -- before this pin.  "fridges arent the 3d shape they should be."
+      --
+      -- `appliance` and THIRTY-TWO are STATED by the class, and the class's
+      -- own derivation is two drawn rows at 16 world pixels each.  It holds
+      -- here: MEASURED, the object draws 6 + 16 + 8 = 30 pixel rows across
+      -- its three cells, which is two cells of fridge and the stated 32px
+      -- walker -- a fridge is as tall as a person.  This is the same class
+      -- the identical object already carries in Littleroot on 568.
+      [640] = "appliance", [696] = "appliance",
+      [896] = "appliance", [927] = "appliance",
+
+      -- THE SINK AND THE HOB, which are ONE unit with one lid line across
+      -- them -- the same fact 569/570 record for Littleroot, and the reason
+      -- both take the same height or there is a full course of step in the
+      -- middle of one worktop.  IN-GAME LOCATION: CuttersHouse (9..10, 1),
+      -- Flat1_1F (11..12, 1), Flat2_1F (12..13, 1) and eighteen more -- 21
+      -- cells each, 42 in all, all blocked, all `wall` before this.
+      -- "as well as the sink should be like a counter height."
+      --
+      -- SIXTEEN, STATED by `sink` and `worktop`, and DERIVED there off the
+      -- stated 32px walker: waist is half a standing figure.  The basin's
+      -- taps are drawn in the top five rows of 854's own cell rather than in
+      -- the wall band, so the tap rises out of the counter top and needs no
+      -- second cell.
+      [620] = "sink",    [699] = "sink",
+      [854] = "sink",    [952] = "sink",
+      [621] = "worktop", [700] = "worktop",
+      [855] = "worktop", [953] = "worktop",
+
+      -- THE GLASS-FRONTED CABINET, two cells wide.  IN-GAME LOCATION:
+      -- CuttersHouse (2..3, 1), RustboroCity_House2 and _House3 (10..11, 1),
+      -- Flat2_2F (6..7, 1) and thirty-seven more -- 41 cells per half, 82 in
+      -- all, every one blocked and `wall`.  It is the object in the kitchen
+      -- frame between the bookshelf and the window.
+      --
+      -- `cabinet` and THIRTY-TWO, STATED by the class -- the same pin
+      -- 571/572 already carry for the identical dresser in Littleroot.
+      -- MEASURED here: 870 (wall band) draws 4 rows, 878 draws all 16, 886
+      -- (walkable) draws 8 -- 28 rows, which is the two drawn cells the
+      -- class's number is derived from.
+      [654] = "cabinet", [710] = "cabinet", [878] = "cabinet",
+      [655] = "cabinet", [711] = "cabinet", [879] = "cabinet",
+
+      -- THE BASE UNIT WITH A DRAWER -- the low cupboard that stands in the
+      -- kitchen run beside the sink, and on its own in a corner where there
+      -- is no kitchen.  IN-GAME LOCATION: MauvilleCity_House1 (7, 1), where
+      -- it sits between the wall and the sink at (8, 1), and
+      -- RustboroCity_Flat1_1F (0, 1), where it is the white two-drawer
+      -- cupboard in the north-west corner -- 35 cells over 35 maps, 33 of
+      -- them `wall` and two of them (`tabletop` and `cylinder`, one cell
+      -- each) already disagreeing with the other thirty-three about what the
+      -- same drawing is.
+      --
+      -- `worktop` and SIXTEEN, STATED: it is a kitchen unit at counter
+      -- height, and it has ONE drawn blocked row (MEASURED: 616 draws rows
+      -- 1..15 and the walkable cell under it rows 0..6, 22 rows in all), so
+      -- the two-row `cabinet` number would be a course too tall by its own
+      -- derivation.
+      [616] = "worktop", [672] = "worktop", [717] = "worktop",
+      [840] = "worktop", [936] = "worktop", [992] = "worktop",
+
+      -- THE CHEST OF DRAWERS, two cells wide, three drawers to a rank.
+      -- IN-GAME LOCATION: OldaleTown_House1 (2..3, 1), MauvilleCity_House2
+      -- and Route119_House and seventeen more -- 20 cells per half, 40 in
+      -- all, every one blocked and `wall`.
+      --
+      -- AND IT REACHES NO RUSTBORO CELL, said plainly: not one of the nine
+      -- Rustboro layouts lays it.  It is pinned because it is the same
+      -- carcass in the same tileset as the units above, because the report
+      -- names desks, and because leaving it out would leave forty drawer
+      -- fronts painted on the wall in twenty houses for no reason but which
+      -- town they are in.  MEASURED, it moves its own 40 cells and nothing
+      -- else.
+      --
+      -- `cabinet` and THIRTY-TWO for the two-drawn-row reason: MEASURED, the
+      -- wall-band cells 633/634 draw 5 rows and 641/642 draw all 16.
+      [641] = "cabinet", [697] = "cabinet", [956] = "cabinet",
+      [642] = "cabinet", [698] = "cabinet", [957] = "cabinet",
+
+      -- THE WHITE CABINET BESIDE THE TELEVISION.  IN-GAME LOCATION:
+      -- RustboroCity_House1 (1..2, 1) and RustboroCity_House2 and _House3
+      -- (6..7, 1) -- 6 cells over 3 maps, all blocked, all `wall`.  In every
+      -- one of the three the television (542, already `console`) stands in
+      -- the very next cell.
+      --
+      -- `tv` (12), which despite the name is this file's word for A LID OVER
+      -- A FRONT BAND -- see the class note in lib/TileShape.lua -- and is
+      -- the pin 576/577 already carry for the SAME OBJECT in the same
+      -- position in both children's living rooms in Littleroot: a white
+      -- cabinet with a cream lid band along its bottom, standing next to the
+      -- set.  Read from the drawing rather than from byte identity: Emerald
+      -- redraws it per tileset, so 842's layer-2 art is not 576's byte for
+      -- byte, but it is the same object drawn the same way.
+      [842] = "tv", [843] = "tv",
+
+      -- ---- THE TABLES ---------------------------------------------------
+      -- THE 2x2 DINING TABLE WITH THE FLOOR-LENGTH CLOTH.  IN-GAME LOCATION:
+      -- RustboroCity_CuttersHouse (8..9, 4..5) and Flat2_1F (9..10, 3..4),
+      -- with four chairs round it, and eleven more houses -- 56 cells over
+      -- 13 maps, all blocked.
+      --
+      -- Reported by frame: the Cutter's House table is LATHED INTO A
+      -- CYLINDER today -- a yellow barrel where the table is.  MEASURED,
+      -- that is what the mixture of answers looks like: of the 56 cells, 36
+      -- resolve `tabletop`, 15 resolve `cylinder` and 5 resolve `canopy` --
+      -- a TREE CROWN over a dining table -- and which one a cell gets
+      -- depends on how big the blocked run around it happens to be rather
+      -- than on what is drawn.  Sixteen ids, four drawings, one answer.
+      --
+      -- `tabletop` and TWELVE, STATED by the class: a surface drawn from
+      -- above with things on it, waist height.  DERIVED that the carve can
+      -- see it: 874/875 keep 224 of 256 pixels and 882/883 keep 205, so each
+      -- cell extrudes from a full silhouette rather than an outline.
+      [588] = "tabletop", [874] = "tabletop",
+      [938] = "tabletop", [989] = "tabletop",
+      [589] = "tabletop", [875] = "tabletop",
+      [939] = "tabletop", [990] = "tabletop",
+      [596] = "tabletop", [882] = "tabletop",
+      [946] = "tabletop", [997] = "tabletop",
+      [597] = "tabletop", [883] = "tabletop",
+      [947] = "tabletop", [991] = "tabletop",
+
+      -- THE 2x2 DINING TABLE WITH THE PLAIN TOP AND CORNER LEGS, which is
+      -- the one the standard house chair above flanks.  IN-GAME LOCATION:
+      -- RustboroCity_House2 and _House3 (5..6, 4..5), Flat1_1F (10..11,
+      -- 4..5), Flat2_2F (12..13, 3..4) and thirty-one more -- 135 cells over
+      -- 35 maps.
+      --
+      -- PINNED TO THE ANSWER IT ALREADY HAS, which is the move the
+      -- `gTileset_Lab` workbench units above are here for.  MEASURED: 127 of
+      -- the 135 cells already resolve `tabletop` and 8 resolve `wall` --
+      -- Flat2_2F's four at (12..13, 3..4) among them, where the table stands
+      -- against the east wall and was swallowed by its run.  Saying outright
+      -- what it is fixes those eight AND stops the other 127 depending on
+      -- what is pinned beside them.
+      [584] = "tabletop", [586] = "tabletop", [635] = "tabletop",
+      [872] = "tabletop", [1011] = "tabletop",
+      [587] = "tabletop", [606] = "tabletop", [636] = "tabletop",
+      [873] = "tabletop", [1012] = "tabletop",
+      [592] = "tabletop", [594] = "tabletop",
+      [880] = "tabletop", [1019] = "tabletop",
+      [593] = "tabletop", [595] = "tabletop",
+      [881] = "tabletop", [1020] = "tabletop",
+
+      -- ---- THE BED ------------------------------------------------------
+      -- IN-GAME LOCATION: RustboroCity_Flat1_2F (9, 5) and (9, 6) -- 2
+      -- cells, one map, both blocked.  It is the bed on the orange rug in
+      -- the room frame, and in 3D it is a flat white slab on a dark box:
+      -- MEASURED, 801 resolves `prop` (a standing per-pixel billboard, which
+      -- lays a bed on its edge) and 950 resolves `tabletop`.
+      --
+      -- `bed` and SEVEN, STATED by the class: drawn from above and lying
+      -- low.  This is the third and fourth `bed` cell in Hoenn; the other
+      -- seven are Brendan's six and May's one and not one of them moves.
+      --
+      -- THE FOUR CELLS AROUND IT ARE DELIBERATELY NOT PINNED.  The bed is 24
+      -- pixels wide and Emerald draws its side rails in the walkable cells
+      -- either side -- 570 and 900 carry cols 12..15, 815 and 1021 cols
+      -- 0..3.  `Structures.buildGen3Joinery` already grows a `bed` claim
+      -- into a neighbouring plain-ground cell whose silhouette MEETS the
+      -- claimed one across their shared edge, and its own note says why the
+      -- pin list is not the thing to grow.  DERIVED, off the drawings: 801's
+      -- rows 9..15 meet 570's col 15 and 815's col 0, and 950's rows 0..11
+      -- meet 900's and 1021's, so all four are claimed without a pin.
+      [801] = "bed", [950] = "bed",
+
+      -- ---- THE COUCH ----------------------------------------------------
+      -- IN-GAME LOCATION: RustboroCity_Flat1_2F (9..11, 2),
+      -- RustboroCity_Flat2_3F (11..13, 2) and RustboroCity_House1 (9..10, 2),
+      -- with the same seat in SootopolisCity_House3 and _House6,
+      -- DewfordTown_Hall and LilycoveCity_PokemonTrainerFanClub -- 18 cells
+      -- over 7 maps, EVERY ONE OF THEM PASSABLE (rule 2 above) and every one
+      -- of them plain `ground` before this pin.  "couch and more need to be
+      -- fixed too."
+      --
+      -- WHAT IS PINNED IS THE SEAT ROW, AND ONLY THE SEAT ROW.  Emerald
+      -- draws this couch 22 pixel rows tall across two map rows: the BACK
+      -- and the top of the arms in rows 8..15 of the wall-band cell
+      -- (852/823/853 and their twins), and the cushion, the arms and the
+      -- front rail in rows 0..13 of the walkable cell below.  The wall band
+      -- is not pinned -- rule 1, and here it would take three cells out of a
+      -- fourteen-cell north wall -- so the back stays drawn where Emerald
+      -- draws it and the seat comes forward onto the floor.  Same compromise
+      -- the 530/531 and 613/599 cells already ship, for the same reason.
+      --
+      -- `counter` and SIXTEEN.  SIXTEEN is `counter`'s own number, DERIVED
+      -- there off the stated 32px walker as 32/2, waist, and shipped on 563
+      -- cells; here it is the height of the couch BODY, whose 22 drawn rows
+      -- are a cell and a bit, with the seat drawn on its lid.  `counter` is
+      -- also this file's own word for the object -- lib/TileShape.lua calls
+      -- it "half-cell furniture: a service counter, A LOW COUCH".
+      --
+      -- NOT `chair` (8), and this is measured rather than argued.  8 = 32/4
+      -- is the right height for a seat, but `chair` alone reads its
+      -- silhouette through `chairMaskOf`, which keeps the PRINCIPAL ISLAND
+      -- and closes only the holes that island encloses.  MEASURED off the
+      -- carve: this couch does not carve to one island, because the pale
+      -- middle of its cushion is also a colour the Rustboro floor is laid in
+      -- -- 860 and 861 carve to 76 + 72 pixels and 831 to 112 + 48, with
+      -- rows 8..10 eaten open from edge to edge.  Pinned `chair` the front
+      -- rail is discarded and a three-cell couch comes out as a 7px-deep
+      -- bar.  `counter` reads the plain carve and keeps all 148..162 pixels.
+      --
+      -- AND NOT `bed`, which is the other low class that reads the plain
+      -- carve: `bed` is the one class the joinery pass GROWS across cells,
+      -- and the rug edge south of the Flat2_3F couch is plain ground with a
+      -- drawing on it, so the couch would have grown into it.
+      [651] = "counter", [666] = "counter", [860] = "counter",
+      [831] = "counter",
+      [652] = "counter", [667] = "counter", [861] = "counter",
+
+      -- ---- THE POTTED PLANTS, one drawing on eight ids -------------------
+      -- IN-GAME LOCATION: RustboroCity_Flat1_1F (0..1, 7),
+      -- RustboroCity_Flat1_2F (1..2, 7), the Cutter's House (0..1, 8),
+      -- House1 (0, 2), (12, 2), (0, 7) and (12, 7), House2 and House3
+      -- (0, 8) and (11, 8), Flat2_2F (12..13, 2) -- and the same pot in
+      -- twenty-eight more houses.  83 cells over 35 maps, all blocked.
+      --
+      -- ONE DRAWING, EIGHT IDS: 554, 664, 665, 668, 802, 807, 846 and 847
+      -- have byte-identical layer-2 art -- the same pot baked over eight
+      -- different floors.  THREE ANSWERS, though: MEASURED, 64 of the 83
+      -- cells resolve `cylinder` and are right, 9 resolve `tabletop` and 10
+      -- resolve `wall`, and which one a pot gets depends on the run it
+      -- happens to stand in.  In Rustboro alone the identical pot is a lathe
+      -- in Flat1_2F, a table top in Flat1_1F and the Cutter's House, and
+      -- wall in House1 and Flat2_2F.
+      --
+      -- So this is not a choice of class, it is a correction of a
+      -- background -- exactly the `gTileset_Lab` 580/558 case, and the same
+      -- fix: pin all eight to the lathe that sixty-four of them already
+      -- have.  The silhouette states the pot: MEASURED, 15 columns wide at
+      -- row 5, tapering to 8 at row 15, carving to one 158-pixel island.
+      [554] = "cylinder", [664] = "cylinder",
+      [665] = "cylinder", [668] = "cylinder",
+      [802] = "cylinder", [807] = "cylinder",
+      [846] = "cylinder", [847] = "cylinder",
+
+      -- THE CROWN ABOVE IT IS DELIBERATELY NOT PINNED.  Emerald draws these
+      -- plants over two cells and the leaves are the cell ABOVE the pot --
+      -- 546, 656, 657, 660, 793, 794, 835, 838 and 839, another single
+      -- drawing on nine ids.  73 of its 83 cells are WALKABLE FLOOR, and no
+      -- class in this file's vocabulary says "the upper half of a two-cell
+      -- plant": `cylinder` on them would stand a second lathe on the floor
+      -- you walk over, and `canopy` would carve a 32px hull from a 2x2 that
+      -- is not there (this plant is one cell wide).  The Lab's plants were
+      -- single-cell and did not raise the question.  Said out loud rather
+      -- than guessed at: the leaves stay drawn flat where they are drawn.
+
+      -- ---- AND WHAT THIS BLOCK MOVES THAT IT DID NOT PIN -----------------
+      -- THREE CELLS, all in LilycoveCity_PokemonTrainerFanClub: 770 at
+      -- (9, 7), 771 at (10, 7) and 778 at (9, 8), which leave `canopy` and
+      -- `cylinder` for `tabletop`.  They are the long white bench along that
+      -- room's east wall, and 616 -- pinned `worktop` above -- stands in the
+      -- very next cell, so taking it out of the blocked run shrinks that run
+      -- under BOULDER_RUN_MAX and re-arms the round carve on its neighbours.
+      -- MEASURED, the move is TOWARDS the answer the same drawing already
+      -- has elsewhere: 771 resolves `tabletop` on 6 of its 7 cells and 770
+      -- and 778 on 1 of their 2 each.  A bench is a top-down surface and
+      -- `tabletop` is right for it.
+      --
+      -- 770/771/772/778/780 WERE TRIED AS PINS and taken out again, which is
+      -- worth recording so nobody re-adds them: pinning that bench pulls its
+      -- own neighbours 643 and 644 out of THEIR runs and drops them from
+      -- `tabletop` to `cylinder` in DewfordTown_Hall and the Fan Club -- a
+      -- couch lathed into a barrel, 4 cells, worse than the 3 it fixes.
+      -- Holding those down needs 643/644 pinned too, and 643's third cell is
+      -- in the Fan Club's own wall band, which rule 1 forbids.  Three cells
+      -- moving to the right answer is the smaller error.
+      --
+      -- ---- AND WHAT COULD NOT BE PINNED FROM THIS FILE ------------------
+      -- THE WIDE 3x2 DINING TABLE, and this is the one thing in the report
+      -- this round does not fix.  IN-GAME LOCATION:
+      -- RustboroCity_Flat1_2F (2..4, 4..5) -- the "wider table" in the room
+      -- frame, with a chair west of it and two east -- and
+      -- RustboroCity_House1 (3..5, 4..5).  Ids 744/894, 745/895, 746/910,
+      -- 752/902, 753/903, 754/911; 29 cells, 4 of them (`745`/`895`'s and
+      -- `753`/`903`'s middle column) resolving `wall`, which is the tall box
+      -- in the frame.
+      --
+      -- `tabletop` is unambiguously the right CLASS for it and a pin would
+      -- still make it worse, because the class is extruded per pixel from
+      -- the map's own carve and IN THESE TWO ROOMS THE CARVE CANNOT SEE THE
+      -- TABLE.  MEASURED, the same drawing over two different floors: baked
+      -- over Mossdeep's, Dewford's and the Safari rest house's floor (ids
+      -- 744/745/746) it carves to 206, 240 and 206 pixels of 256 and stands
+      -- as a solid table; baked over Rustboro's pale-yellow check (ids
+      -- 894/895/910) it carves to 42, 16 and 42, because the tablecloth is
+      -- painted in a colour that floor is laid in.  895's sixteen surviving
+      -- pixels are ONE ROW.  Pinned, the middle of the table would stand as
+      -- a 1-pixel line and the cell would be flattened to floor under it.
+      --
+      -- That is a defect in how a thin carve is modelled, not in what the
+      -- cell is, and the instrument that would fix it -- a boxed fallback
+      -- for a `tabletop` whose carve falls under some fraction of its
+      -- drawing -- lives in lib/Structures.lua, which this file does not get
+      -- to edit.  Left unpinned and written down instead.
+      --
+      -- THE FRIDGE AND THE HOB ARE THE SAME STORY ONE STEP LESS SEVERE, and
+      -- are pinned anyway: MEASURED, 896 carries 62 pixels after the grain
+      -- filter and 855 carries 93, against 254 for the identical fridge in
+      -- Littleroot.  What survives on the fridge is its whole OUTLINE --
+      -- all four edges, both door seams and both handles -- so it stands as
+      -- a fridge-shaped box rather than as a line, and standing in front of
+      -- the wall at 32 is the report's ask either way.
     },
 
     -- SOOTOPOLIS' MYSTERY EVENTS HOUSE, which lays the house chair above on
@@ -1241,10 +1623,28 @@ gTileset_Sootopolis = {
       --
       -- `chair` (8) AND NOT `stool` (8): same height, but `chair` is the
       -- class `buildGen3Joinery` extrudes per pixel from the carve, and it
-      -- is the class the chair-back rule reads.  A round stool has no back
-      -- and the rule declines on its own -- its column-top profile is flat,
-      -- exactly like 610, the stool at Brendan's desk -- so these come out
-      -- as per-pixel seat pads, which is what a stool is.
+      -- is the class the chair-back rule reads.  A round stool has no back,
+      -- and these do not get one: MEASURED over all 188 cells, the
+      -- chair-back rule emits ZERO quads on every one of them.
+      --
+      -- CORRECTING THE REASON THIS BLOCK GAVE (g3-settee-305).  It said the
+      -- rule declines because "its column-top profile is flat, exactly like
+      -- 610".  It is not flat.  DERIVED, off the dumped carve, 550 and 564
+      -- both profile 3,2,1,1,1,1,1,1,1,1,1,1,2,3 -- a plateau at row 1, with
+      -- a rounded cap either side of it.  The rule declined only because row
+      -- 0 happens to be empty, which is luck and not a reading; one more row
+      -- of cap and a cushion would have grown a backrest.  The gate in
+      -- `buildGen3Joinery` now refuses on the plateau itself (1 < 3), so the
+      -- outcome no longer depends on that.
+      --
+      -- AND WHAT THE REPORT ACTUALLY SAW ON THESE CUSHIONS was never the
+      -- back rule.  On 154 of the 188 cells the carve cuts the cushion in
+      -- two and leaves a detached 10 x 1 bar floating at row 1, which the
+      -- seat pass stood up as a one-pixel wall across the cushion's north
+      -- edge.  That is fixed in `buildGen3Joinery` (`chairMaskOf`), which
+      -- keeps a chair's principal island and closes the holes inside it.
+      -- These stay pinned `chair`: they are seats, the pin is right, and the
+      -- defect was in what the pass did with the drawing.
       [550] = "chair", [564] = "chair",
       -- ...and the 2F staircase's own stray slab.  672 is a stair TREAD --
       -- the same drawing as 1F's 648 -- and the furniture detector reads

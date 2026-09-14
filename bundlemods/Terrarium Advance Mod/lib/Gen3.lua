@@ -146,6 +146,38 @@ function Gen3.mapIsGen3(map)
   return map ~= nil and Gen3.isGen3(map.tileset)
 end
 
+-- IS THIS CELL A BERRY PLOT?  ONE TEST, SHARED, SO NO TWO PASSES DISAGREE.
+--
+-- IN-GAME LOCATION: ROUTE 104's berry patch, cells (34,6), (35,6) and (36,6).
+--
+-- Read straight off the cartridge's own metatile attributes: the engine's
+-- `Map:cellBehaviour` answers `tileset.collision[blockId + 1]`, and on Gen 3
+-- that array IS the behaviour byte -- which is what `tileset.behaviourBytes`
+-- says about itself, and the same flag every Gen 3 reader in src/world/Map.lua
+-- already gates on.
+--
+-- NOT `map.id`, NOT the object standing on the cell, NOT the art.  The byte
+-- is the cartridge's own statement and it is exact: DERIVED, over all 518
+-- extracted Hoenn maps there are 87 cells carrying it, on 15 maps, every one
+-- blocked and every one with a berry tree object standing on it, and no
+-- others anywhere.
+--
+-- THREE GUARDS, and all three are needed to keep this inert outside Hoenn.
+-- Gen 1, Gen 2 and Prism store a collision CLASS in the very same array --
+-- `$A0` there is some unrelated wall class -- so `mapIsGen3` (blockTiles 2,
+-- blockCells 1) and `behaviourBytes` are what stop this reading a Johto wall
+-- as a berry plot.  DERIVED: 0 of the 76 Gen 3 tilesets lack
+-- `behaviourBytes`, and no Gen 1/Gen 2/Prism tileset carries the field at all.
+local MB_BERRY_TREE_SOIL = 0xA0
+
+function Gen3.isBerryPlot(map, cx, cy)
+  if not Gen3.mapIsGen3(map) then return false end
+  local ts = map.tileset
+  if not (ts and ts.behaviourBytes and map.cellBehaviour) then return false end
+  local ok, b = pcall(map.cellBehaviour, map, cx, cy)
+  return (ok and b == MB_BERRY_TREE_SOIL) or false
+end
+
 -- ---------------------------------------------------------------------------
 -- THE SYNTHETIC TILE ID
 -- ---------------------------------------------------------------------------
@@ -370,6 +402,35 @@ local ELEV_TRANSITION, ELEV_SURF, ELEV_DEFAULT, ELEV_MULTI = 0, 1, 3, 15
 -- overruling it on Route 114 and Route 115 and nowhere else in Hoenn -- see
 -- `railStands` and the `motif` branch of `ctx.roleAt`.
 local MB_MOUNTAIN_TOP = 0x0C
+
+-- MB_BERRY_TREE_SOIL IS THE CARTRIDGE NAMING A PATCH OF TILLED EARTH.
+--
+-- IN-GAME LOCATION: ROUTE 104's berry patch, cells (34,6), (35,6) and (36,6)
+-- -- the three plots on the soil strip beside the PRETTY PETAL FLOWER SHOP,
+-- which is the frame the report arrived with ("berry trees ... sitting on
+-- large mounds of dirt when they shouldnt").
+--
+-- A berry plot is FLAT GROUND in the cartridge.  What stands on it is an
+-- OBJECT EVENT -- the tree sprite, drawn from the berry's own sheet -- and
+-- the cell is marked impassable only so you cannot walk into that object.
+-- data/gen3_shapes.lua has said exactly this from the start, at [0xA0]:
+-- "Berry soil is here too: the plant growing in it is an object sprite, not
+-- part of the metatile."
+--
+-- DERIVED, over all 519 extracted Hoenn maps: 87 cells in the whole region
+-- carry this byte, on 15 maps, and EVERY ONE of them is blocked and has a
+-- berry tree object standing on it.  There is not one 0xA0 cell in Hoenn
+-- without a tree, and not one that is walkable -- so the byte selects the
+-- plots and nothing else.  STATED: the name and the value are read straight
+-- out of the extraction, `constants.gen3Behaviours[0xA0] == "BERRY_TREE_SOIL"`
+-- (and pokeemerald's include/constants/metatile_behaviors.h agrees).
+--
+-- The three rules below are the whole of the correction: the scenery carve
+-- does not get to lathe a plot into a hull, the blocked-ground promotion does
+-- not get to stand one up as a wall, and the rock pass does not get to cap it
+-- like a boulder.  The byte itself is `MB_BERRY_TREE_SOIL`, declared with
+-- `Gen3.isBerryPlot` above.
+
 local NEIGHBOURS = { { 0, -1 }, { 0, 1 }, { -1, 0 }, { 1, 0 } }
 
 local function buildElevationRanks(cells)
@@ -547,7 +608,48 @@ local function floorPlateFor(map, ctx)
         end
         local w, h = x1 - x0 + 1, y1 - y0 + 1
         local across = (w < h) and w or h
-        if across >= 3 then
+        -- ...AND A FLIGHT IS A SOLID RECTANGLE OF TREAD ART.
+        --
+        -- IN-GAME LOCATION: THE LIVING ROOM IN LITTLEROOT TOWN,
+        -- BrendansHouse_1F (1..3, 3) and (1, 4) -- "theres also 3d stair
+        -- shapes in the houses in littleroot where there shouldnt be".
+        --
+        -- The width reading above catches a room whose floor is ONE run: May's
+        -- 1F is 10x7 and Brendan's 2F is 8x5, both plated.  It cannot catch a
+        -- FRAGMENT.  Brendan's 1F living room is cut into pieces by the
+        -- kitchen units along its north wall, by the television, and by the
+        -- floor metatiles either side that are not banded at all -- and what
+        -- is left in the north-west corner is four cells of 517/513 in a 3x2
+        -- box.  Two cells across, so the width rule waived it, and the room's
+        -- own floorboards meshed as a staircase in the corner of the room.
+        --
+        -- What the width rule is reaching for is that A FLIGHT IS SOMETHING
+        -- YOU WALK UP: it is straight, so its cells fill their bounding box.
+        -- Four cells cannot fill a 3x2 box, and they do not: this one is an L.
+        -- DERIVED, over every connected run of tread art on all 518 maps --
+        -- 518 runs yield stair cells, and 511 of them are solid rectangles:
+        --
+        --     across 1   494 runs   fill 1.00 every one (a line always does)
+        --     across 2    22 runs   fill 1.00
+        --     across 3+    2 runs   fill 1.00   MtPyre's grand stairs
+        --
+        -- The seven that are not fill between 0.615 and 0.875 and every one is
+        -- a floor with things standing on it:
+        --
+        --     ContestHallTough            13x2  16 cells  0.615   16 cells
+        --     ShoalCave_HighTideInnerRoom 11x2  18 cells  0.818   18
+        --     ShoalCave_LowTideInnerRoom  11x2  18 cells  0.818   18
+        --     FortreeCity_DecorationShop   8x2  14 cells  0.875   14
+        --     LavaridgeTown (6,1)          4x2   5 cells  0.625    5
+        --     Route104 (12,51)             3x2   4 cells  0.667    4
+        --     BrendansHouse_1F (1,3)       3x2   4 cells  0.667    4
+        --
+        -- 79 cells on 7 maps stop being stair candidates and nothing else in
+        -- Hoenn moves -- no one-cell-across flight can be touched at all,
+        -- because a straight line fills its box by definition.
+        if #cells < w * h then
+          for _, c in ipairs(cells) do plate[key(c[1], c[2])] = true end
+        elseif across >= 3 then
           -- a flight climbs along its LONGER axis, so the flanks are the
           -- neighbours across the shorter one
           local ds = (h >= w) and { { -1, 0 }, { 1, 0 } }
@@ -1577,6 +1679,142 @@ function Gen3.forMap(map)
       for k2 in pairs(seen) do lumpMemo[k2] = q end
       return q
     end
+
+    -- A LATHE IS NOT A MODELLER: A DRAWING THAT DOES NOT TAPER IS NOT ROUND.
+    --
+    -- IN-GAME LOCATION: the stacked supply boxes in PROFESSOR BIRCH'S LAB,
+    -- LittlerootTown_ProfessorBirchsLab (9..10, 4), metatiles 561 and 578 --
+    -- "the boxes as well instead of being 3d per pixel stacked boxes".
+    --
+    -- `Structures.buildCylinders` builds a SOLID OF REVOLUTION.  It reads
+    -- each row of the carved silhouette as a radius and sweeps it, which is a
+    -- faithful un-projection of a drawing whose rows narrow towards the top
+    -- and the bottom -- and a pure invention for a drawing whose rows are all
+    -- the same width, because sweeping a rectangle gives a right cylinder and
+    -- there is no right cylinder anywhere in the art.  561 carves to 256 of
+    -- 256 pixels, every row 16 wide; 578 to 248, every row 15 or 16.
+    --
+    -- TAPER is that reading: the widest occupied row of the carve minus the
+    -- narrowest, in pixels.  DERIVED over all 518 maps, on the cells this
+    -- branch claims:
+    --
+    --     Route111, Route114, JaggedPass -- every real boulder   3 .. 13
+    --     Birch's lab 561 / 578, the supply boxes                0 and 1
+    --     Sootopolis 543/541/577/559, MtChimney 582/583,
+    --     Slateport 601/603, Route126 833 -- worked stone,
+    --     masonry and paving blocks                              0 and 1
+    --
+    -- Not one boulder in Hoenn tapers by less than three, so the test is set
+    -- at one with two clear pixels of margin.  361 cells stop being lathed,
+    -- 42 of them outdoors, and every one of them falls through to the
+    -- ordinary measured box -- which is what a rectangle is.
+    --
+    -- Read off the MAP's carve, the same surface the indoor furniture rule
+    -- below reads, falling back to the pair's own when a map has none.
+    local taperMemo = {}
+    local function tapers(m)
+      if m == nil then return false end
+      local hit = taperMemo[m]
+      if hit ~= nil then return hit end
+      taperMemo[m] = true                -- publish first: never recurse, and
+                                         -- a failed read must not claim less
+      local okS, surf = pcall(Gen3.shapeDataForMap, map)
+      if not (okS and surf and surf.getPixel) then
+        local okT, s2 = pcall(Gen3.shapeDataForTileset, map.tileset)
+        surf = (okT and s2 and s2.getPixel) and s2 or nil
+      end
+      local okI, info = pcall(Gen3.describe, map.tileset)
+      if not (surf and okI and info and info.perRow) then return true end
+      local perRow, aW, aH = info.perRow, info.width, info.height
+      local wmin, wmax = 99, -1
+      for fy = 0, 15 do
+        local lo, hi = 99, -1
+        for fx = 0, 15 do
+          local t = m * 4 + math.floor(fy / 8) * 2 + math.floor(fx / 8)
+          local sx = (t % perRow) * 8 + (fx % 8)
+          local sy = math.floor(t / perRow) * 8 + (fy % 8)
+          if sx >= 0 and sy >= 0 and sx < aW and sy < aH then
+            local _, _, _, a = surf:getPixel(sx, sy)
+            if a ~= 0 then
+              if fx < lo then lo = fx end
+              if fx > hi then hi = fx end
+            end
+          end
+        end
+        if hi >= 0 then
+          local w = hi - lo + 1
+          if w < wmin then wmin = w end
+          if w > wmax then wmax = w end
+        end
+      end
+      local ok = (wmax >= 0) and (wmax - wmin) > 1 or false
+      taperMemo[m] = ok
+      return ok
+    end
+
+    -- ...AND A BOULDER IS NOT PART OF A WALL.
+    --
+    -- IN-GAME LOCATION: the lab computer in PROFESSOR BIRCH'S LAB,
+    -- LittlerootTown_ProfessorBirchsLab (3..4, 1), metatiles 538 and 539 --
+    -- "the computer in birches lab is showing as a cylinder", and the SAME
+    -- two cells are the hole in that room's north wall, "some of the wall is
+    -- pushing in".
+    --
+    -- Measured: those two cells sit in a blocked run of 32 -- the whole north
+    -- wall of the room -- and the carve lathed them anyway.  A lathed cell
+    -- leaves the wall's height band and meshes at the ground its stamp stands
+    -- on, so the wall row that reads 32 across its whole length drops to 0
+    -- for exactly those two cells: a two-cell gap you see straight through,
+    -- with the computer's drawing wrapped round a drum in front of it.
+    --
+    -- `lump` cannot see that.  It walks `rocky` cells, and `rocky` asks the
+    -- TILESET's art solidity, which a decorated indoor wall fails on half its
+    -- metatiles -- so a blocked run of 32 breaks into rocky lumps of one and
+    -- two and every one of them reads as a boulder standing alone.
+    --
+    -- The extent reading the indoor furniture rule below already makes is the
+    -- right one, and it makes it on the BLOCKED run: "FURNITURE IS A DISCRETE
+    -- OBJECT; A WALL IS A RUN".  Indoors there are no boulders in a wall, so
+    -- a cell inside a blocked run bigger than a piece of furniture is wall
+    -- and the carve leaves it alone.  8 is FURNITURE_MAX below, unchanged and
+    -- for the same reason.
+    --
+    -- INDOORS ONLY.  Outdoors a real boulder is routinely part of a big
+    -- blocked mass -- Route 114's rocks ARE the mountain -- and 427 outdoor
+    -- cells this branch claims sit in runs over 8.  Not one of them moves.
+    --
+    -- DERIVED over all 518 maps: 487 indoor cells stop being lathed, 176 of
+    -- which the taper test above already rejects.  30 in New Mauville, 19 in
+    -- the Lilycove Museum, 13 in the Magma Hideout, 12 in Mossdeep Gym, 8
+    -- apiece in four Battle Tent lobbies, the rest in ones and twos.
+    local BOULDER_RUN_MAX = 8
+    local runMemo, runSeen = {}, {}
+    local function blockedRun(cx, cy)
+      if ctx.outdoor then return 0 end
+      if cx < 0 or cy < 0 or cx >= width or cy >= height then return 0 end
+      local k0 = cy * 8192 + cx
+      local hit = runMemo[k0]
+      if hit ~= nil then return hit end
+      if runSeen[k0] or not ctx.blockedAt(cx, cy) then return 0 end
+      local q, qi, cells = { { cx, cy } }, 1, {}
+      runSeen[k0] = true
+      while qi <= #q do
+        local c = q[qi]; qi = qi + 1
+        cells[#cells + 1] = c
+        for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
+          local nx, ny = c[1] + d[1], c[2] + d[2]
+          local nk = ny * 8192 + nx
+          if nx >= 0 and ny >= 0 and nx < width and ny < height
+             and not runSeen[nk] and ctx.blockedAt(nx, ny) then
+            runSeen[nk] = true
+            q[#q + 1] = { nx, ny }
+          end
+        end
+      end
+      for _, c in ipairs(cells) do runMemo[c[2] * 8192 + c[1]] = #cells end
+      return #cells
+    end
+
     for cy = y0, y1 do
       for cx = x0, x1 do
         local i = idx(cx, cy)
@@ -1638,6 +1876,67 @@ function Gen3.forMap(map)
                        and mA ~= mB2 and mA ~= mC2
                        and cx < x1 and cy < y1
                        and (capA or 0) > 0 and (capB2 or 0) > 0
+                       -- ...AND A 2x2 LUMP INDOORS IS A TABLE.
+                       --
+                       -- IN-GAME LOCATION: the DINING TABLE in RUSTBORO
+                       -- CITY's CuttersHouse (8..9, 4..5) and in
+                       -- RustboroCity_Flat2_1F (9..10, 3..4) -- metatiles
+                       -- 874/875 over 882/883 -- reported as "tables are
+                       -- also appearing as cylinders too or canapys not
+                       -- sure which in rustboro".  It built as a 32px
+                       -- yellow barrel.
+                       --
+                       -- WHICH BRANCH IT REACHED THE LATHE BY.  Not this
+                       -- file's taper gate: that gate is on the per-cell
+                       -- `elseif` below and this 2x2 branch consults
+                       -- neither it nor `blockedRun`.  It tests only that
+                       -- the four quarters are four different drawings and
+                       -- that two of them draw a cap, and a 2x2 table is
+                       -- exactly that (874 cap 1, 882 cap 12).
+                       --
+                       -- AND THE TAPER GATE WOULD NOT HAVE CAUGHT IT
+                       -- EITHER, which is why this is a different test.
+                       -- MEASURED on the Rustboro table: per quarter 874
+                       -- and 875 taper 1 and 882 and 883 taper 10, and over
+                       -- the 32 x 32 composite this branch actually lathes
+                       -- the taper is 2 -- because the table's two legs sit
+                       -- at the OUTER corners and bracket the full span.  A
+                       -- table legitimately narrows at the bottom; that is
+                       -- what legs are.  The taper gate is untouched.
+                       --
+                       -- WHAT DOES SEPARATE THEM is the reading this file
+                       -- already makes and this branch never made:
+                       -- "FURNITURE IS A DISCRETE OBJECT; A WALL IS A RUN".
+                       -- DERIVED over all 518 maps, on every 2x2 lump this
+                       -- branch claims INDOORS -- 26 anchors, 104 cells:
+                       --
+                       --   blob   4..6   8 anchors   every one a table
+                       --                 (Rustboro CuttersHouse and
+                       --                 Flat2_1F 874; MossdeepCity_House4,
+                       --                 PetalburgCity_House2 and
+                       --                 SlateportCity_NameRatersHouse 588;
+                       --                 Route117_PokemonDayCare 553;
+                       --                 AbandonedShip_CaptainsOffice 524;
+                       --                 LilycoveCity_PokemonTrainerFanClub
+                       --                 770)
+                       --   blob 244..1038  18 anchors  every one cave rock
+                       --                 (RusturfTunnel 687, NewMauville
+                       --                 1038, FarawayIsland_Interior 244,
+                       --                 BirthIsland_Exterior 731)
+                       --
+                       -- There is no third mode: nothing indoors lands
+                       -- between 6 and 244.  So indoors a 2x2 lump standing
+                       -- free in a furniture-sized blob is furniture, and a
+                       -- 2x2 lump inside the room's own mass is rock.  8 is
+                       -- BOULDER_RUN_MAX, the same number and the same
+                       -- reason as the branch below.
+                       --
+                       -- OUTDOORS NOTHING MOVES.  `blockedRun` answers 0
+                       -- outdoors by construction, so the clause is short-
+                       -- circuited there and Route 111's desert, the mesa
+                       -- and every other outdoor rock is untouched.
+                       and (ctx.outdoor
+                            or blockedRun(cx, cy) > BOULDER_RUN_MAX)
                        and rocky(cx + 1, cy) and rocky(cx, cy + 1)
                        and rocky(cx + 1, cy + 1)
                        and not claimed[ie] and not claimed[is]
@@ -1652,7 +1951,8 @@ function Gen3.forMap(map)
             scenery[is] = "cylinder"
             scenery[id] = "cylinder"
           elseif (capA or 0) > 0 and #(lump(cx, cy) or {}) <= 4
-             and onLand(cx, cy) then
+             and onLand(cx, cy) and tapers(mA)
+             and blockedRun(cx, cy) <= BOULDER_RUN_MAX then
             -- ...AND A ROCK THAT IS NOT A 2x2 IS STILL A ROCK.
             --
             -- The 2x2 branch un-projects Emerald's four-quarter drawing, and
@@ -2182,6 +2482,7 @@ function Gen3.forMap(map)
       -- -- stay walls.
       local FURNITURE_MAX = 8
       local blob, seenBlob = {}, {}
+      local blobCells = {}
       for cy = 0, height - 1 do
         for cx = 0, width - 1 do
           local root = cy * width + cx
@@ -2201,8 +2502,13 @@ function Gen3.forMap(map)
                 end
               end
             end
+            -- THE CELLS, not just how many.  The reclaim rule below
+            -- walks one OBJECT, and an object is its blob.
             local n = #cells
-            for _, c in ipairs(cells) do blob[c[2] * width + c[1]] = n end
+            for _, c in ipairs(cells) do
+              blob[c[2] * width + c[1]] = n
+              blobCells[c[2] * width + c[1]] = cells
+            end
           end
         end
       end
@@ -2232,6 +2538,130 @@ function Gen3.forMap(map)
               -- a real object leaves floor around it, and is not a sliver
               if f and f > 0.12 and st then
                 scenery[i] = (st.n2 > 0) and "prop" or "tabletop"
+              end
+            end
+          end
+        end
+      end
+
+      -- AN OBJECT IS NOT HALF A TABLE AND HALF A TREE.
+      --
+      -- IN-GAME LOCATION: the dining table in OLDALE TOWN's House1,
+      -- (2..3, 4..5), and the same 2x2 table in ninety other rooms.
+      -- Reported as "some tables corners are appearing as cylinders".
+      --
+      -- The table is four blocked cells.  Its NORTH pair reached the rule
+      -- above and came out `tabletop`; its SOUTH pair had already been taken
+      -- by the round carve and was lathed into a hull, because the drawing's
+      -- bottom rows narrow to the table's LEGS --
+      --
+      --     ..##############|##############..     the cloth, full width
+      --     ..##############|##############..
+      --     ..######........|........######..     the legs, and the floor
+      --     ..#####.........|.........#####..     showing between them
+      --     ..####..........|..........####..
+      --     ...##...........|...........##...
+      --
+      -- -- which is character for character the tapering profile the carve
+      -- looks for in a barrel or a crown.  Read cell by cell the carve is
+      -- not wrong about those two cells; it is wrong about the OBJECT, and
+      -- the object is what a blob is.
+      --
+      -- So: a blob no bigger than a piece of furniture, every cell of which
+      -- the furniture rule would accept on its own merits, and at least one
+      -- of which it already HAS accepted, is furniture throughout -- and the
+      -- cells the round carve took are taken back.
+      --
+      -- ONLY FROM THE ROUND CLASSES, AND ONLY EVER ADDING.  A cell that is
+      -- furniture today is furniture after this; a blob carrying any other
+      -- carve answer (a tree, a fence, a signpost) is left alone entire.
+      --
+      -- DERIVED, over all 518 maps: 226 cells on 91 maps move, 219 from
+      -- `cylinder` and 7 from `canopy`.  Left alone: the 537 other indoor
+      -- round cells whose whole blob is round -- Faraway Island's trees,
+      -- Rusturf Tunnel's rock, the potted plants and the vases that really
+      -- are round -- because no cell of those blobs ever reached the
+      -- furniture rule.
+      --
+      -- A RECLAIMED ANCHOR LOSES ITS GROUP.  `canopy` on a cell means "carve
+      -- a 32px hull over the 2x2 under me" and `sceneryScale` carries the
+      -- span; both are cleared with the class, so `Structures.buildCylinders`
+      -- is never left holding half a giant.
+      local reclaimed = {}
+      for cy = 0, height - 1 do
+        for cx = 0, width - 1 do
+          local cells = blobCells[cy * width + cx]
+          if cells and not reclaimed[cells] and #cells <= FURNITURE_MAX then
+            reclaimed[cells] = true
+            local ok, part = true, false
+            local want = {}
+            for _, c in ipairs(cells) do
+              local i2 = idx(c[1], c[2])
+              local m2 = ctx.metatileAt(c[1], c[2])
+              local pin2 = m2 and ctx.pins and ctx.pins[m2]
+              local named2 = false
+              if m2 then
+                local b2 = ctx.attributes(m2)
+                local bc2 = behaviourNames and behaviourNames[b2]
+                named2 = bc2 ~= nil and bc2 ~= "ground" and bc2 ~= "wall"
+              end
+              local f2 = m2 and Gen3.solidForMap(map, m2)
+              local st2 = m2 and art.stats[m2]
+              -- ...AND THE MIDDLE OF A TABLE SHOWS NO FLOOR.
+              --
+              -- IN-GAME LOCATION: the 3x2 DINING TABLE in RUSTBORO CITY,
+              -- House1 (3..5, 4..5) and Flat1_2F (2..4, 4..5) -- metatiles
+              -- 894/895/910 over 902/903/911 -- and the same table in its
+              -- other rooms.  Its OUTER columns reached the furniture rule
+              -- and came out `tabletop` at 12; its MIDDLE column fell
+              -- through to `wall` and stood as a 24px column through the
+              -- middle of the table.
+              --
+              -- The per-cell rule above is right to ask `f > 0.12`: on its
+              -- own merits a cell with no floor showing round it is a wall.
+              -- DERIVED, off this map's carve: 895 keeps 0.062 of its cell
+              -- and 903 keeps 0.078, because the middle of a table IS
+              -- tablecloth edge to edge -- there is no floor to see past it.
+              --
+              -- But this rule is not asking about a cell, it is asking about
+              -- an OBJECT, and an object is its blob.  The blob test that
+              -- follows -- every cell unpinned, unnamed and carrying no
+              -- other carve answer, at least one cell already furniture --
+              -- is what establishes that this blob is a piece of furniture;
+              -- once it has, the interior of that piece does not have to
+              -- prove itself again.  So the floor-visibility threshold is
+              -- dropped HERE and kept there.  A map with no carve of its own
+              -- (`f2` nil) still refuses: without a carve there is nothing
+              -- to have established anything with.
+              if not (m2 and not pin2 and not named2 and f2 and st2) then
+                ok = false
+                break
+              end
+              local prior = scenery[i2]
+              if prior == "prop" or prior == "tabletop" then
+                part = true
+              elseif prior == "cylinder" or prior == "canopy" then
+                want[#want + 1] = { i2, (st2.n2 > 0) and "prop" or "tabletop" }
+              elseif prior == nil then
+                -- ...AND A CELL THE RULE ABOVE DECLINED IS TAKEN TOO.
+                -- Nothing has claimed this cell, so without this it is the
+                -- wall the region flood makes of every unclaimed blocked
+                -- cell -- the 24px column through RUSTBORO CITY House1's
+                -- dining table.  Only ever ADDING, exactly as the round
+                -- classes above: no cell that already carries an answer
+                -- moves, and a blob carrying any OTHER answer still drops
+                -- out entire on the branch below.
+                want[#want + 1] = { i2, (st2.n2 > 0) and "prop" or "tabletop" }
+              elseif prior ~= nil then
+                ok = false
+                break
+              end
+            end
+            if ok and part then
+              for _, w in ipairs(want) do
+                scenery[w[1]] = w[2]
+                if sceneryScale then sceneryScale[w[1]] = nil end
+                if sceneryShared then sceneryShared[w[1]] = nil end
               end
             end
           end
@@ -2333,6 +2763,42 @@ function Gen3.forMap(map)
     local pin = ctx.pins and ctx.pins[m]
     if pin then return pin, true end
 
+    -- A FLOWER BED, WHICH THE CARTRIDGE ANIMATES AND WHICH STANDS UP.
+    --
+    -- IN-GAME LOCATION: ROUTE 104's flower beds, 22 cells in the fields north
+    -- and south of Petalburg Woods, and the 561 others across 27 more maps.
+    -- `Gen3.flowerMetatiles` is the whole of the reading and its header states
+    -- all five parts of it; nothing here names a map, a tile index or an id.
+    --
+    -- ABOVE THE SCENERY CARVE, for the reason the ledge and the berry plot
+    -- above it are: a bed of blossoms on a pale field is character for
+    -- character what the carve looks for in a round prop, and where this file
+    -- can say outright what a cell is, a reading of the art does not get to
+    -- overrule it.  DERIVED, over all 518 maps: without this line 300 of the
+    -- 583 beds came back `cylinder` and were lathed into mounds.
+    --
+    -- ...AND ONLY WHERE YOU CAN WALK.  A flower is something you walk over,
+    -- and that is also what makes the standee safe: the cell keeps its
+    -- collision, its elevation and its encounters exactly as they are, and
+    -- only gains a cutout standing on it.  DERIVED: 2 of the 585 cells on
+    -- these metatiles are blocked -- scenery stands on them -- and those keep
+    -- the flat ground they draw today.
+    --
+    -- ABOVE THE CLASS CACHE AND WRITING NOTHING TO IT, which is the lesson the
+    -- ELEV_MULTI and ELEV_SURF rules below already paid for: that cache is
+    -- keyed on the METATILE and this answer depends on the CELL's collision
+    -- bit, so a cached answer would be whichever cell happened to be asked
+    -- first.
+    do
+      local okF, flowers = pcall(Gen3.flowerMetatiles, map.tileset)
+      if okF and flowers and flowers[m] then
+        local okB, blockedF = pcall(ctx.blockedAt, cx, cy)
+        if okB and not blockedF and not ctx.offMap(cx, cy) then
+          return "flower", true
+        end
+      end
+    end
+
     -- SCENERY, read off the art and its neighbours (see buildScenery above).
     -- Above the cache on purpose: this answer is a property of the CELL --
     -- which tree in which stand -- and not of the metatile, so the metatile
@@ -2373,10 +2839,78 @@ function Gen3.forMap(map)
       ctx.inSceneClass = nil
       if okB and isB then scene = nil end
     end
+    -- ...AND NOT OVER A BERRY PLOT, WHICH THE CARTRIDGE ALSO NAMES.
+    --
+    -- IN-GAME LOCATION: ROUTE 104's berry patch, cells (34,6), (35,6) and
+    -- (36,6), and the other twelve maps' plots with them.
+    --
+    -- The plot's own art is a dark ROUND patch of tilled earth on an
+    -- otherwise pale strip of soil, which is character for character what the
+    -- carve looks for in a cylinder: DERIVED, 48 of Hoenn's 87 plots came
+    -- back `cylinder` from this line and `buildCylinders` lathed each one
+    -- into a 16px round hull wearing the soil's own two tones.  That hull is
+    -- the "large mound of dirt" in the report -- DERIVED, it stood 14px above
+    -- the surrounding ground on 40 of them and 15px on the other 8.
+    --
+    -- Same shape of exception as the ledge above it and for the same reason:
+    -- where the cartridge NAMES what a cell is, a reading of the art does not
+    -- get to overrule it.
+    -- ...AND NOT OVER A CELL THE CARTRIDGE HAS ALREADY NAMED, INDOORS.
+    --
+    -- IN-GAME LOCATION: the POKEMON CENTER's nurse desk -- the one cell the
+    -- nurse speaks across, OldaleTown_PokemonCenter_1F (7, 3), and its twin
+    -- in 35 other Centers -- and the SHOP SHELVES in OLDALE TOWN's Mart,
+    -- (6..7, 4..6) and (10, 3..6), with the same racks in 16 other Marts.
+    -- Reported as "some table corners are appearing as cylinders" and "some
+    -- parts of the mark and pokemon center and other desks are too tall".
+    --
+    -- The desk cell's own drawing says why it was taken: metatile 517 is the
+    -- counter's service window, and the carve reads it as
+    --
+    --     .##..........##.        four rows whose ends are cut away and
+    --     .#............#.        twelve that are full -- a rounded profile
+    --     .#............#.        tapering to a waist, which is character
+    --     .##..........##.        for character what the round carve looks
+    --     ..############..        for in a barrel or a crown
+    --     ################
+    --
+    -- so all 36 of them came back `cylinder` and were lathed into round
+    -- hulls standing in the middle of the desk.  The Mart's shelf racks lose
+    -- their lower cells the same way: 68 came back `cylinder` and 18
+    -- `canopy`, which is a 32px TREE CROWN over a shop shelf.
+    --
+    -- Same shape of exception as the LEDGE above and the BERRY PLOT below,
+    -- and for the same reason: where the cartridge NAMES what a cell is, a
+    -- reading of the art does not get to overrule it.  MB_COUNTER,
+    -- MB_SHOP_SHELF, MB_TRASH_CAN, MB_VASE, MB_TELEVISION, MB_PC and the
+    -- rest of `data/gen3_shapes.lua`'s furniture rows are Emerald's own
+    -- word for the object; the carve is a guess about its outline.
+    --
+    -- DERIVED, over all 518 maps: 204 indoor cells have a carve answer that
+    -- disagrees with a named behaviour -- 91 `cylinder` over MB_COUNTER on
+    -- 36 maps, 68 `cylinder` and 18 `canopy` over MB_SHOP_SHELF on 17, and
+    -- 27 `cylinder` over MB_TRASH_CAN on 5.  There is no cell in the game
+    -- where the carve's answer is the better one, and no other pair of
+    -- answers in the population at all.
+    --
+    -- INDOORS ONLY, and deliberately.  Outdoors the carve is what finds
+    -- Hoenn's trees, and Emerald writes MB_NORMAL on them -- an unnamed
+    -- byte, which this rule never touches -- but it also writes named bytes
+    -- on outdoor scenery the carve is right about, and this pass was never
+    -- measured out there.  `ctx.outdoor` comes from the map's own MAP_TYPE.
+    if scene and not ctx.outdoor then
+      local bIndoor = ctx.attributes(m)
+      local rowIndoor = bIndoor ~= nil and behaviour[bIndoor] or nil
+      if rowIndoor ~= nil and rowIndoor ~= "ground" and rowIndoor ~= "wall" then
+        scene = nil
+      end
+    end
     if scene then
       local bScene = ctx.attributes(m)
       local rowScene = bScene ~= nil and behaviour[bScene] or nil
-      if rowScene ~= "ledge" then return scene, true end
+      if rowScene ~= "ledge" and bScene ~= MB_BERRY_TREE_SOIL then
+        return scene, true
+      end
     end
 
     -- OFF THE MAP THERE IS NO COLLISION, ONLY ART.
@@ -2517,7 +3051,28 @@ function Gen3.forMap(map)
       -- cliff, the trunk row under a canopy.  Emerald draws a great many of
       -- those as MB_NORMAL, and taking the behaviour literally laid every
       -- building in Rustboro flat on the pavement.
-      if blocked then class = "wall" end
+      --
+      -- ...EXCEPT A BERRY PLOT, WHICH IS BLOCKED FOR THE OBJECT STANDING ON
+      -- IT AND NOT FOR ANYTHING IT IS MADE OF.
+      --
+      -- IN-GAME LOCATION: ROUTE 104's berry patch, cells (34,6), (35,6) and
+      -- (36,6).  The rule above reads a blocked ground cell as "ground art
+      -- worn by a mass" -- the base course of a house, the foot of a cliff --
+      -- and that is right everywhere Emerald leaves the byte at MB_NORMAL.
+      -- A plot is the one place the cartridge says outright what the cell IS,
+      -- and the collision bit there is about the TREE, which is an object
+      -- event with its own sprite and its own height, not about the soil.
+      --
+      -- DERIVED, over all 519 maps: 39 of Hoenn's 87 plots reached `wall`
+      -- here and `asLandscape` then made 39 of them `cliff` -- 3 stood a
+      -- 32px tower over the path, 4 stood 8px and 2px proud of it, and 7
+      -- sank 16px below the ground they are drawn in.  The other 48 never
+      -- reached this line: the scenery carve above had already lathed them.
+      --
+      -- INERT OUTSIDE HOENN.  `classAt` is Gen 3 only, and 0xA0 is a Gen 3
+      -- behaviour byte; a Gen 1, Gen 2 or Prism tileset carries a collision
+      -- CLASS in that field and never reaches this file.
+      if blocked and b ~= MB_BERRY_TREE_SOIL then class = "wall" end
     end
 
 
@@ -3533,6 +4088,31 @@ function Gen3.forMap(map)
       local counts = ctx.metatileCounts()
       return (counts[mm] or 0) <= RARE_BUILD
     end
+    -- THE BUILDING'S OWN ART, as this function reads it everywhere else:
+    -- "a building's art is BESPOKE -- the Mart's metatiles appear once or
+    -- twice on the whole map -- and the landscape it backs onto TILES".
+    -- Written out here because `runAbove` now asks it directly (see A
+    -- WALK-BEHIND ROW IN THE MIDDLE OF A BUILDING, below); the test and the
+    -- threshold are the ones already used at the art trim and at the
+    -- Mirage Tower's overhead growth, unchanged.
+    local function bespokeCell(cx, cy)
+      local mm = ctx.metatileAt(cx, cy)
+      if mm == nil then return false end
+      local counts = ctx.metatileCounts()
+      return (counts[mm] or 0) <= RARE_BUILD
+    end
+    -- ...and drawn ABOVE THE PLAYER, filling its cell, and bespoke: the
+    -- three-part test for "a row of this building you walk behind".
+    local function overheadBespoke(cx, cy)
+      local mm = ctx.metatileAt(cx, cy)
+      if mm == nil then return false end
+      local an = Gen3.analyse(map.tileset)
+      local st = an and an.stats and an.stats[mm]
+      if not (st and st.overhead and (st.solid or 0) >= 0.9) then
+        return false
+      end
+      return bespokeCell(cx, cy)
+    end
     local function runAbove(cx, doorY)
       local y = doorY - 1
       if y < 0 then return nil end
@@ -3554,6 +4134,80 @@ function Gen3.forMap(map)
       local top = mass
       while top - 1 >= 0 and blockedCell(cx, top - 1) and (y - (top - 1)) < 8 do
         top = top - 1
+      end
+      -- ...AND A WALK-BEHIND ROW IN THE MIDDLE OF A BUILDING IS STILL THE
+      -- BUILDING.
+      --
+      -- MOTIVATED BY TRAINER HILL, ROUTE 111 (29..33, 106..113) -- the hall
+      -- on the route north of Mauville, reported as "isnt drawn as a
+      -- building and is a pit instead".
+      --
+      -- This walk stops at the first cell that is not blocked, and Emerald
+      -- draws a band ACROSS THE MIDDLE of this building on the above-player
+      -- layer so the player passes behind it: row 110, metatiles 940 and
+      -- 1015, each laid exactly ONCE on the map, with five blocked rows of
+      -- the same bespoke drawing above it and two below.  So the door
+      -- column's run came back 111..112 -- two rows of a seven-row hall --
+      -- and `roofTop` then measured the building's ROOFLINE AT ITS
+      -- SHOPFRONT, y = 112.  A flank column is admitted only by matching
+      -- that roofline within a row and the real roof is at 106..110, so all
+      -- five columns were refused and `ctx.buildings` claimed 5 cells of a
+      -- 40-cell building.  The hall then fell through to the generated role
+      -- table as `cliff` and the terrace reader built its drawing as relief:
+      -- 96px at the north-west corner falling to a floor of ZERO at
+      -- (30..33, 109..110) where the ground around it is 16.  A hole in the
+      -- ground -- the pit in the report.
+      --
+      -- This function already grows a footprint UP through exactly these
+      -- rows at its other end ("A BUILDING YOU WALK BEHIND IS STILL THE
+      -- BUILDING" -- the Mirage Tower, below).  The same three-part test --
+      -- drawn overhead, solid, and bespoke -- is asked of a gap INSIDE the
+      -- mass, so the walk may step over one as well as start and finish on
+      -- one.
+      --
+      -- Bounded hard, because this is the walk everything downstream is
+      -- measured from -- the footprint, the roofline, the founded facade:
+      --
+      --   * the building's own art must continue on BOTH sides of the gap:
+      --     the row the walk stands on and the row it resumes at are both
+      --     bespoke.  That is this function's own reading of "a building's
+      --     art is BESPOKE and the landscape it backs onto TILES", and it
+      --     is what keeps the walk out of the map border and off a
+      --     mountain: without it Route 113, Route 123 and Lilycove each run
+      --     a column clean to row 0, and Mt Chimney runs one five rows up
+      --     the ash bank.
+      --   * the gap is ONE row (derived: at two rows the region-wide result
+      --     is identical, so one row is all Hoenn draws this way).
+      --   * the existing eight-row ceiling from the door still binds.
+      --   * OUTDOORS ONLY, with the other rules in this function that are:
+      --     indoors it is answering about rooms and the warps between them.
+      --
+      -- MEASURED over all 518 maps and all 1,312 warps: NINE columns move,
+      -- over four maps, and every one of them is a structure Emerald draws
+      -- with a walk-behind band across its middle --
+      --
+      --   Route111                    cols 31,32,33   Trainer Hill
+      --   BattleFrontier_OutsideEast  cols 35,36,42,43
+      --   MossdeepCity                col  25
+      --   LilycoveCity                col  54
+      local WALK_BEHIND_GAP = 1   -- derived; 2 changes nothing in Hoenn
+      while ctx.outdoor and bespokeCell(cx, top) do
+        local g = 0
+        while g < WALK_BEHIND_GAP and top - 1 - g >= 0
+              and not blockedCell(cx, top - 1 - g)
+              and overheadBespoke(cx, top - 1 - g) do
+          g = g + 1
+        end
+        if g == 0 then break end
+        local nxt = top - g - 1
+        if nxt < 0 or not blockedCell(cx, nxt) then break end
+        if not bespokeCell(cx, nxt) then break end
+        if (y - nxt) >= 8 then break end
+        top = nxt
+        while top - 1 >= 0 and blockedCell(cx, top - 1)
+              and (y - (top - 1)) < 8 do
+          top = top - 1
+        end
       end
       return top, y
     end
@@ -5108,6 +5762,248 @@ end
 -- that moves.
 -- ---------------------------------------------------------------------------
 
+-- ---------------------------------------------------------------------------
+-- THE FLOWER BEDS, AND HOW THEY ARE TOLD FROM THE SEA.
+--
+-- IN-GAME LOCATION: the flower beds in ROUTE 104's fields, north and south of
+-- Petalburg Woods -- 22 cells -- and the same beds in Littleroot, Oldale,
+-- Petalburg, Rustboro, Slateport, Mauville, Lilycove, Mossdeep, Lavaridge, Mt
+-- Pyre's slope, Routes 102/110/111/114/115/118/119/120/121/123, Faraway
+-- Island, Southern Island and the Battle Frontier grounds.  In Kanto and
+-- Johto those stand up as animated cutouts (Structures.buildFlowers); in
+-- Hoenn they were a flat patch of colour painted into the ground, which is
+-- the report this exists for.
+--
+-- WHY NOTHING REACHED THE STANDEE MACHINERY.  `TileShape.forMap` names a
+-- flower from `tileset.animatedTiles` / `TileRenderer.defaultAnimatedTiles`,
+-- which is the GEN 1/2 animation declaration -- and DERIVED, over the owner's
+-- real dataset: 0 of 76 Gen 3 tileset records carry `animatedTiles` at all.
+-- So `flowerTiles` is empty on every Hoenn map.  It would not have helped if
+-- it were not: `TileShape.at` answers a Gen 3 square from `classAt` below and
+-- never reads the tile-level pin at all.  This is where the answer has to
+-- come from.
+--
+-- AND WHY THE ANIMATION RUNS ALONE ARE NOT THE ANSWER.  A Gen 1/2 animated
+-- tile IS the flower, because it is a single 8x8 atlas slot.  Emerald
+-- animates RUNS OF TILE GRAPHICS, and on the Route 104 pair those runs are
+-- tile=432 count=30 (the sea), 464 count=10 (the sand/water edge), 480
+-- count=10 (the land/water edge), 496 count=6 (the waterfall) and 508 count=4
+-- (the flowers) -- the sea, its two shores, a waterfall and a flower bed, all
+-- declared alike.  Standing "an animated tile" up in Hoenn stands up the sea.
+--
+-- WHAT SEPARATES THEM.  Five readings, DERIVED over all 518 maps and 5,356
+-- animated metatiles in the game:
+--
+--   1. THE BOTTOM LAYER DOES NOT MOVE.  On the sea, the shore and the
+--      waterfall, the thing that animates IS the surface -- Emerald draws it
+--      on layer 1, the ground the player stands on.  On a flower bed layer 1
+--      is still grass and the moving half is drawn OVER it.  DERIVED: this
+--      one reading rejects 5,191 of the 5,356.
+--   2. THE MOVING HALF REDRAWS THE WHOLE CELL -- all four quadrants, all 256
+--      pixels.  A flower BED is a square of field, not a detail stuck in a
+--      corner.  DERIVED: rejects a further 111 (Fiery Path's lava sparkles,
+--      12 pixels of a cell; the Battle Frontier's fountain lips).
+--   3. LAYER TYPE IS `COVERED`.  Emerald's layer type says which background
+--      the top half is drawn to, and COVERED means UNDER the player -- so it
+--      is part of the ground he walks on, not something he walks behind.
+--      DERIVED: rejects a further 15.
+--   4. THE BEHAVIOUR BYTE IS ORDINARY GROUND (not water, waterfall, bridge).
+--      DERIVED: rejects 1 more -- a belt, not braces.
+--   5. THE STATIC HALF IS THE MAP'S OWN GROUND.  Every pixel of layer 1 is
+--      painted in a colour from `analyse(tileset).background`, the ground
+--      colour set this file already reads off the pair (the colours under a
+--      full layer-2 object, which are ground by construction).  This is the
+--      reading that says the moving art is a PLANT GROWING IN THE FIELD
+--      rather than a picture in its own right, and it is perfectly bimodal:
+--      DERIVED, every accepted metatile measures 256/256 and every rejected
+--      one 0/256.  It is what rejects SOOTOPOLIS GYM's two indoor waterfalls
+--      (metatiles 632 and 633, drawn over solid water, walkable, COVERED,
+--      four quadrants, 256 pixels -- they pass every other reading) and NEW
+--      MAUVILLE's generator banks.  DERIVED: rejects the last 6.
+--
+-- DERIVED, what survives: 32 metatiles across the pairs -- every one of them
+-- metatile 4 of the General primary tileset, Emerald's own flower bed --
+-- standing on 583 walkable cells over 28 maps.  No map id is named anywhere.
+--
+-- The CELL's walkability is asked separately, in `classAt`: a flower is
+-- something you walk over, and two of the 585 cells on these metatiles are
+-- blocked (scenery stands on them) and keep their flat ground.
+-- ---------------------------------------------------------------------------
+
+local flowerMtCache = {}
+local flowerMaskCache = {}
+
+--- Every metatile of a pair that is a flower bed, as `{ [metatile] = true }`,
+--- or nil.  Memoised per tileset; see the header above for the five readings.
+function Gen3.flowerMetatiles(tileset)
+  if not Gen3.isGen3(tileset) then return nil end
+  local key = tostring(tileset.id)
+  local hit = flowerMtCache[key]
+  if hit ~= nil then return hit or nil end
+  flowerMtCache[key] = false
+
+  local tiles = tilesForTileset(tileset)
+  if not (tiles and type(tiles.animations) == "function"
+          and type(tiles.entries) == "function"
+          and type(tiles.attributes) == "function"
+          and type(tiles.drawLayer) == "function") then
+    return nil
+  end
+  local okRun, res = pcall(function()
+    local anims = tiles:animations()
+    if type(anims) ~= "table" or #anims == 0 then return nil end
+    -- a run occupies `count` CONSECUTIVE tile indices from `tile`, already
+    -- shifted into the pair's numbering by `animations()` (the same set
+    -- `animPatchesForTileset` builds, for the same reason)
+    local moves = {}
+    for _, a in ipairs(anims) do
+      local n = tonumber(a.count) or 0
+      for k = 0, n - 1 do moves[a.tile + k] = true end
+    end
+
+    local behaviour = (spec() or {}).behaviour or {}
+    -- METATILE_LAYER_TYPE_COVERED.  Named here rather than imported because
+    -- Gen3Tiles keeps it private; it is bits 12-15 of the attributes word and
+    -- `attributes()` already returns it as its second result.
+    local COVERED = 1
+
+    local stage = {}
+    for m = 0, tiles:metatileCount() - 1 do
+      local es = tiles:entries(m)
+      local nBottom, nTop = 0, 0
+      for q = 0, 3 do
+        local b, t = es[q + 1], es[q + 5]
+        if b and moves[b.tile] then nBottom = nBottom + 1 end
+        if t and moves[t.tile] then nTop = nTop + 1 end
+      end
+      -- readings 1 and 2: the surface itself is still, and the whole of the
+      -- cell's top half moves
+      if nBottom == 0 and nTop == 4 then
+        local byte_, layerType = tiles:attributes(m)
+        local cls = behaviour[byte_]
+        -- readings 3 and 4
+        if layerType == COVERED
+           and (cls == nil or cls == "ground" or cls == "grass") then
+          local painted = 0
+          tiles:drawLayer(m, 2, 0, 0, function() painted = painted + 1 end)
+          if painted == CELL * CELL then stage[#stage + 1] = m end
+        end
+      end
+    end
+    if #stage == 0 then return nil end
+
+    -- reading 5: the static half is the map's own ground, pixel for pixel.
+    -- `analyse` is what carves the shape surface, so this asks exactly the
+    -- question the shape passes downstream will ask of the same art.
+    local art = analyse(tileset)
+    local background = art and art.background
+    if not background then return nil end
+    local out, any = {}, false
+    for _, m in ipairs(stage) do
+      local n, onGround = 0, 0
+      tiles:drawLayer(m, 1, 0, 0, function(_, _, r, g, b)
+        n = n + 1
+        if background[colourKey(r, g, b)] then onGround = onGround + 1 end
+      end)
+      if n > 0 and onGround == n then out[m] = true any = true end
+    end
+    return any and out or nil
+  end)
+  if not (okRun and res) then return nil end
+  flowerMtCache[key] = res
+  say("flower", "%s has %d flower metatile(s)", key,
+      (function() local n = 0 for _ in pairs(res) do n = n + 1 end return n end)())
+  return res
+end
+
+--- The STANDING SILHOUETTE of each flower metatile: `{ [m] = { [fy*16+fx] =
+--- true } }`, in CELL-local pixels, or nil.
+---
+--- THE UNION OVER EVERY ANIMATION FRAME, not the base picture.  The mesh is
+--- static and the flower is not, so the geometry has to span every shape the
+--- bed takes; `animPatchesForTileset` then rewrites the slot each step with
+--- only that step's petals opaque and the rest keyed to alpha, which the
+--- voxel shader discards.  The silhouette trims itself frame by frame in
+--- texture space and the sway animates without a vertex moving -- the same
+--- trick TerrainAtlas' `cut` path plays for Kanto's flower, arrived at from
+--- the other side: Gen 3 needs no dark-tone flood, because the ground colours
+--- say outright which pixels are field and which are flower.
+---
+--- SETANIMFRAME MUTATES THE PAIR AND THE PAIR IS SHARED -- the same hazard
+--- `animPatchesForTileset` documents at length.  The three fields it writes
+--- are snapshotted and put back, on the failure path as well.
+function Gen3.flowerMasks(tileset)
+  if not Gen3.isGen3(tileset) then return nil end
+  local key = tostring(tileset.id)
+  local hit = flowerMaskCache[key]
+  if hit ~= nil then return hit or nil end
+  flowerMaskCache[key] = false
+
+  local flowers = Gen3.flowerMetatiles(tileset)
+  if not flowers then return nil end
+  local tiles = tilesForTileset(tileset)
+  local art = analyse(tileset)
+  local background = art and art.background
+  if not (tiles and background) then return nil end
+
+  local savedFrame = tiles.animFrame
+  local savedOverride = tiles.tileOverride
+  local savedCache = tiles.tileCache
+
+  local okBuild, res = pcall(function()
+    local steps = 1
+    if type(tiles.animFrameCount) == "function" then
+      steps = math.max(1, tonumber(tiles:animFrameCount()) or 1)
+    end
+    local canStep = type(tiles.setAnimFrame) == "function"
+    local out = {}
+    for m in pairs(flowers) do out[m] = {} end
+    for step = 0, (canStep and steps - 1 or 0) do
+      if canStep then tiles:setAnimFrame(step) end
+      for m, mask in pairs(out) do
+        -- bottom then top, the order everything else composites them in.
+        -- Layer 1 is 100% ground by reading 5, so it contributes nothing;
+        -- it is drawn anyway so that a pixel layer 2 leaves in the field's
+        -- own colour is treated as field, exactly as bakeShape does.
+        -- PURELY ADDITIVE, both layers and every step.  Written as an
+        -- assignment the first cut of this CLEARED a petal an earlier step
+        -- had set -- the union came out 147 pixels where the frames between
+        -- them light 156, so nine petals of the sway had no geometry to
+        -- appear on and blinked out.  The mask only ever grows.
+        tiles:drawLayer(m, 1, 0, 0, function(x, y, r, g, b)
+          if x >= 0 and y >= 0 and x < CELL and y < CELL then
+            if not background[colourKey(r, g, b)] then
+              mask[y * CELL + x] = true
+            end
+          end
+        end)
+        tiles:drawLayer(m, 2, 0, 0, function(x, y, r, g, b)
+          if x >= 0 and y >= 0 and x < CELL and y < CELL then
+            if not background[colourKey(r, g, b)] then
+              mask[y * CELL + x] = true
+            end
+          end
+        end)
+      end
+    end
+    return out
+  end)
+
+  tiles.animFrame = savedFrame
+  tiles.tileOverride = savedOverride
+  tiles.tileCache = savedCache
+
+  if not (okBuild and res) then
+    if not okBuild then
+      warn("flowermask", "building the %s flower masks failed: %s", key,
+           tostring(res))
+    end
+    return nil
+  end
+  flowerMaskCache[key] = res
+  return res
+end
+
 local animPatchCache = {}
 
 function Gen3.animPatchesForTileset(tileset)
@@ -5121,15 +6017,109 @@ function Gen3.animPatchesForTileset(tileset)
   if not tiles then return nil end
   -- an engine that predates g3-anim-261 has no animation model at all; that
   -- is not a failure, it is a host without the data, and the world keeps its
-  -- static sheet
-  if type(tiles.animSteps) ~= "function" then return nil end
+  -- static sheet.
+  --
+  -- WHAT THIS GUARD USED TO ASK FOR, AND WHY NOTHING MOVED.
+  --
+  -- It asked for `tiles.animSteps`, and the body below it called three more
+  -- siblings -- `animTileMap`, `animMetatiles`, `animPeriod` -- and a SIX-
+  -- argument `drawLayer(m, layer, ox, oy, plot, step)`.  Not one of those
+  -- has ever existed on src/render/Gen3Tiles: the engine-side half of
+  -- g3-anim-261 was lost when the render files were reverted, and this half
+  -- survived calling an API that was no longer there.  `animSteps` is nil on
+  -- every host, so the guard answered "no animation model" for EVERY pair in
+  -- the game, this function returned nil for all of them, and the sea south
+  -- of Route 104 -- with its shore, and the flower beds in the fields above
+  -- it -- has been a photograph in voxel mode ever since.
+  --
+  -- The engine's actual names are animFrameCount / animations /
+  -- animatedMetatiles / setAnimFrame / animStep, and those are what is asked
+  -- for here.  `animStep` is left out of the guard on purpose: it is only a
+  -- cadence and the read below falls back to 16 without it.
+  if type(tiles.animFrameCount) ~= "function"
+     or type(tiles.animations) ~= "function"
+     or type(tiles.animatedMetatiles) ~= "function"
+     or type(tiles.setAnimFrame) ~= "function" then
+    return nil
+  end
+
+  -- SETANIMFRAME MUTATES THE PAIR, AND THE PAIR IS SHARED.  THIS IS THE
+  -- DANGEROUS PART OF THIS FUNCTION.
+  --
+  -- `tilesForTileset` hands back the ENGINE'S OWN cached Gen3Tiles for this
+  -- pair -- the very object `bakeLinear` above composites the STATIC relaid
+  -- sheet out of (`tiles:bakeLayer(1, plot)`), and the one the engine's own
+  -- 2D sheets were baked from.  `Gen3Tiles:setAnimFrame(f)` writes
+  -- `self.animFrame`, rebuilds `self.tileOverride` and drops
+  -- `self.tileCache`; every later `tilePixels` then reads frame f.
+  --
+  -- So a strip build that simply walked off the end, leaving the last step
+  -- laid over the tiles, would make the NEXT static bake -- the art every
+  -- shape pass, every tree hull, every prop and the void test read -- a
+  -- picture of that step, with the sea frozen at whatever phase the build
+  -- happened to stop on.  The engine leaves this object on frame 0 after
+  -- baking (TileRenderer.gen3SheetsFor ends with `tiles:setAnimFrame(0)`)
+  -- and it must still be on frame 0 when we are done.
+  --
+  -- Snapshot the three fields setAnimFrame assigns (derived: they are
+  -- exactly the three it writes) and put them back after the pcall -- on the
+  -- failure path as well, because a build that threw half way through a step
+  -- left a frame laid over the tiles just the same.  Restoring the ORIGINAL
+  -- tileCache table rather than an empty one is deliberate: it is the cache
+  -- that matches the saved override, so the static bake keeps its warm
+  -- entries instead of re-decoding every tile in the pair.
+
+  -- WHICH OF THIS PAIR'S CELLS ARE FLOWER BEDS, ASKED BEFORE THE FIRST
+  -- MUTATION AND NOT AFTER IT.
+  --
+  -- `Gen3.flowerMetatiles` reads the pair's art -- how many pixels the top
+  -- half paints, and what colours the bottom half is painted in -- and it
+  -- MEMOISES the answer.  Asked from inside the loop below it would have read
+  -- whatever animation frame was laid over the tiles at the time and cached
+  -- that as the pair's permanent answer, which is the same hazard the
+  -- snapshot immediately below exists for.  Asked here it reads the resting
+  -- frame, which is the frame every other reading in this file is taken on.
+  local flowers = Gen3.flowerMetatiles(tileset) or {}
+  local bgArt = next(flowers) ~= nil and analyse(tileset) or nil
+  local background = bgArt and bgArt.background or nil
+
+  local savedFrame = tiles.animFrame
+  local savedOverride = tiles.tileOverride
+  local savedCache = tiles.tileCache
 
   local okBuild, res = pcall(function()
-    local steps = tiles:animSteps()
+    -- how many distinct pictures the pair has: the LCM of its runs' frame
+    -- counts, capped at Gen3Tiles.MAX_ANIM_FRAMES.  A pair with one picture
+    -- has nothing to animate and keeps the static sheet.
+    local steps = tiles:animFrameCount()
     if not steps or steps < 2 then return nil end
-    local animTiles = tiles:animTileMap()
-    local cells = tiles:animMetatiles()
-    if not (animTiles and cells) then return nil end
+
+    -- WHICH CARTRIDGE TILES MOVE.  `animations()` gives one record per run,
+    -- already shifted into the pair's numbering (a secondary's tile numbers
+    -- are offset by tilesInPrimary in that method, so nothing here has to
+    -- know about the bank boundary), and a run occupies `count` CONSECUTIVE
+    -- tile indices starting at `tile`.  This is what the missing
+    -- `animTileMap` was: a set over those runs, built here instead.
+    --
+    -- (stated, from data/generated/map_tilesets.lua: TILESET_03DF704 -- the
+    -- Route 104 outdoor pair -- carries tile=432 count=30 frames=8, the sea
+    -- south of Route 104 and its shore, and tile=508 count=4 frames=4, the
+    -- flower beds in the fields above it.)
+    local animTiles = {}
+    for _, a in ipairs(tiles:animations()) do
+      local count = tonumber(a.count) or 0
+      for k = 0, count - 1 do animTiles[a.tile + k] = true end
+    end
+
+    -- ...and which metatiles they reach.  `animatedMetatiles()` returns an
+    -- ARRAY OF METATILE IDS, not a set keyed by id -- the old
+    -- `for m in pairs(cells)` below would have walked 1..n, the array
+    -- INDICES, and composed the first hundred metatiles of the pair (indoor
+    -- floor, walls) instead of the hundred that hold water and flowers.
+    local cells = tiles:animatedMetatiles()
+    if not (next(animTiles) ~= nil and type(cells) == "table" and #cells > 0) then
+      return nil
+    end
     if not (love and love.image and love.image.newImageData) then return nil end
 
     -- WHICH SLOTS MOVE.  Walked in metatile order so the strip layout is
@@ -5137,7 +6127,10 @@ function Gen3.animPatchesForTileset(tileset)
     -- strips, or a cached mesh and a fresh one would sample different pixels.
     local slots, owner = {}, {}
     local ordered = {}
-    for m in pairs(cells) do ordered[#ordered + 1] = m end
+    -- ipairs, not pairs: `animatedMetatiles` hands back an array of ids (see
+    -- above).  The sort stays: it is what makes the strip layout the same on
+    -- every run, which is what the comment above is about.
+    for _, m in ipairs(cells) do ordered[#ordered + 1] = m end
     table.sort(ordered)
     for _, m in ipairs(ordered) do
       local entries = tiles:entries(m)
@@ -5154,26 +6147,57 @@ function Gen3.animPatchesForTileset(tileset)
 
     local strips = {}
     for step = 0, steps - 1 do
+      -- ONE MUTATION PER STEP, NOT ONE PER DRAW.  The engine's `drawLayer`
+      -- takes five parameters and renders whatever frame is currently laid
+      -- over the tiles -- there is no per-call frame argument and never was
+      -- -- so the frame is selected once here and every metatile composed
+      -- below reads it.  Restored to what it was after the pcall; see the
+      -- snapshot above.
+      tiles:setAnimFrame(step)
       local strip = love.image.newImageData(#slots * 8, 8)
       -- one metatile is rendered once per step and read four times at most,
       -- so compose it whole and cut quadrants out of it
       local cellBuf = love.image.newImageData(CELL, CELL)
       local lastM = nil
+      -- THE FLOWER BEDS ARE CUT, THE REST OF THE SHEET IS NOT.
+      --
+      -- IN-GAME LOCATION: the Route 104 flower beds.  A flower cell's slot no
+      -- longer carries a picture anybody draws flat -- `Structures` marks it
+      -- skipped and synthesizes the ground under it from the neighbours -- and
+      -- what samples it instead is a STANDING CUTOUT whose geometry spans the
+      -- union of every step.  So the slot has to carry, each step, only that
+      -- step's petals, with the field keyed to alpha for the shader to
+      -- discard; otherwise a petal that moves leaves a square of grass
+      -- standing on edge behind it.  This is the Gen 3 form of TerrainAtlas'
+      -- `cut` path, and it needs no dark-tone flood: reading 5 above
+      -- guarantees layer 1 is the map's own ground, so the ground colour set
+      -- says outright which pixels are field.
+      --
+      -- The STATIC sheet is untouched -- this is the private animated copy --
+      -- and every other slot in it stays fully opaque, so nothing that samples
+      -- the sea, the shore or a waterfall changes.
+      -- `flowers` and `background` are read once, above the first
+      -- setAnimFrame; see the note there.
       local function compose(m)
         if lastM == m then return end
         lastM = m
         for y = 0, CELL - 1 do
           for x = 0, CELL - 1 do cellBuf:setPixel(x, y, 0, 0, 0, 0) end
         end
+        local cut = (background and flowers[m]) and true or false
         local function plot(x, y, r, g, b)
           if x >= 0 and y >= 0 and x < CELL and y < CELL then
-            cellBuf:setPixel(x, y, r / 255, g / 255, b / 255, 1)
+            if cut and background[colourKey(r, g, b)] then
+              cellBuf:setPixel(x, y, 0, 0, 0, 0)
+            else
+              cellBuf:setPixel(x, y, r / 255, g / 255, b / 255, 1)
+            end
           end
         end
         -- bottom then top, the order bakeLinear composites them in, so the
         -- patched slot is what a fresh bake at this step would have produced
-        tiles:drawLayer(m, 1, 0, 0, plot, step)
-        tiles:drawLayer(m, 2, 0, 0, plot, step)
+        tiles:drawLayer(m, 1, 0, 0, plot)
+        tiles:drawLayer(m, 2, 0, 0, plot)
       end
       for i, t in ipairs(slots) do
         local m, qd = owner[i], t % 4
@@ -5183,9 +6207,28 @@ function Gen3.animPatchesForTileset(tileset)
       end
       strips[step + 1] = strip
     end
-    return { steps = steps, period = tiles:animPeriod() or 16,
+    -- The cadence, in 60Hz ticks per picture.  `animStep()` is the same
+    -- number the engine's 2D path divides its own clock by
+    -- (TileRenderer:gen3AnimFrame), so the flat tile layer and this texture
+    -- step the same water at the same moment and toggling voxel mode
+    -- mid-cycle continues the sea instead of jumping it.  (stated: the
+    -- extractor writes `step` on every run; 16 is the fallback a host without
+    -- animStep gets, which is the Emerald default in Gen3Tiles' own
+    -- DEFAULTS.)
+    local period = 16
+    if type(tiles.animStep) == "function" then
+      period = tonumber(tiles:animStep()) or 16
+    end
+    return { steps = steps, period = math.max(1, period),
              slots = slots, strips = strips }
   end)
+
+  -- ...and the pair goes back exactly as it was found, success or failure.
+  -- Without these three lines the static bake of the Route 104 sheet would
+  -- come out as a picture of animation step 7.
+  tiles.animFrame = savedFrame
+  tiles.tileOverride = savedOverride
+  tiles.tileCache = savedCache
 
   if not (okBuild and res) then
     if not okBuild then
@@ -5222,6 +6265,8 @@ function Gen3.releaseAtlases()
   atlasCache = {}
   atlasDataCache = {}
   animPatchCache = {}
+  flowerMtCache = {}
+  flowerMaskCache = {}
   atlasInfoCache = {}
   shapeCache = {}
   mapShapeCache = {}
@@ -5235,6 +6280,8 @@ function Gen3.invalidate()
   ctxMisses = setmetatable({}, { __mode = "k" })
   atlasCache = {}
   atlasDataCache = {}
+  flowerMtCache = {}
+  flowerMaskCache = {}
   atlasInfoCache = {}
   shapeCache = {}
   mapShapeCache = {}

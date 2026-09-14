@@ -2882,24 +2882,31 @@ DayTint.install()
 -- registered items (like the Bike, which uses SELECT to dismount).
 do
   local OverworldState = require("src.world.OverworldController")
-  local GameVersion = require("src.core.GameVersion")
+  -- Asked of the engine's own bag rather than of the item, because which
+  -- items may sit on SELECT is a question the two cartridges answer
+  -- differently and the bag is where both answers already live.
   local function registeredItemOwnsSelect(Game)
-    if not GameVersion.isGen2() then return false end
+
     local save = Game and Game.save
     local id = save and save.registeredItem
-    if not id then return false end
-    local def = Game.data and Game.data.items and Game.data.items[id]
-    return (def and def.registerable and save.inventory
-            and save.inventory[id]) and true or false
+    if not id or not (save.inventory and save.inventory[id]) then
+      return false
+    end
+    local ok, yes = pcall(function()
+      return require("src.ui.BagMenu").canRegister(Game, id)
+    end)
+    return (ok and yes) and true or false
   end
-  if not OverworldState.terrariumSelectHook then
+  if not OverworldState.dramaticShapeSelectHook then
     local inner = OverworldState.handleInput
     function OverworldState:handleInput(...)
       local Game = require("src.core.Game")
       local input = Game.input
-      if input and input.wasPressed and input:wasPressed("select")
-         and not registeredItemOwnsSelect(Game) then
-        if cycleVoxel(Game) then return end
+      if input and input.wasPressed and input:wasPressed("select") then
+        local held = input.isDown and input:isDown("b")
+        if held or not registeredItemOwnsSelect(Game) then
+          if cycleVoxel(Game) then return end
+        end
       end
       return inner(self, ...)
     end
