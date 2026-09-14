@@ -406,10 +406,30 @@ function Commands.give_item(ctx, itemId, count, gotText)
   end
 end
 
+-- take_item <item> [count]: TAKE ALL OF IT OR NONE OF IT, and say which.
+--
+-- Script_takeitem (Crystal 25:$6466, and Prism's is the same routine byte for
+-- byte) opens `xor a / ldh [hScriptVar], a`, calls TakeItem -- which removes
+-- nothing unless the bag holds the whole quantity -- and `ret nc` leaves the
+-- variable at zero when it did not.  So the command answers a question as well
+-- as changing the bag, and the script after it branches on the answer.
+--
+-- This used to subtract and clamp at zero, which is wrong twice over: it took
+-- four sticks of dynamite off a player who needed five and had four, and it
+-- left the script variable holding whatever the row before it had put there.
+-- Mound Cave's `takeitem DYNAMITE, 5 / siffalse` is the case that shows it --
+-- the "there is still dynamite in the cave" arm was unreachable.
 function Commands.take_item(ctx, itemId, count)
   local inv = ctx.save.inventory
-  inv[itemId] = math.max(0, (inv[itemId] or 0) - (count or 1))
+  local want = count or 1
+  local held = inv[itemId] or 0
+  if held < want then
+    ctx.lastCheck = false
+    return
+  end
+  inv[itemId] = held - want
   if inv[itemId] == 0 then inv[itemId] = nil end
+  ctx.lastCheck = true
 end
 
 -- start_battle "wild" species level | start_battle "trainer" OPP_CLASS partyIndex
@@ -431,6 +451,9 @@ function Commands.start_battle(ctx, kind, a, b, opts)
   end
   if kind == "wild" then
     battle = BattleState.newWild(ctx.game, a, b, opts)
+    -- BATTLE_TYPE_LEGENDARY, which only the three legendary specials set.
+    -- The transition reads it (see OverworldState:pushBattleTransition).
+    if opts and opts.legendary then battle.legendary = true end
   else
     battle = BattleState.newTrainer(ctx.game, a, b)
     -- the beaten trainer's own line, printed on the battle screen before

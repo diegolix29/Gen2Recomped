@@ -985,6 +985,98 @@ function Map:isWarpTileCell(cx, cy)
   return false
 end
 
+-- WHICH WAY A GEN 3 ARROW WARP POINTS, and nil when the cell is not one.
+--
+-- Reported from play: "when i walk through a door into the pokemon center or
+-- any area really indoors, when i walk left or right onto the warp tiles it
+-- warps me back outside, it should only do this if walk back out facing the
+-- exit".  THE POKEMON CENTER'S EXIT MAT is the case, and it is two cells
+-- wide: Oldale's is (8,8) and (9,8) on MAP_G01_N00, both carrying the
+-- LAST_MAP warp back to the town, so one step ALONG the mat from one cell to
+-- its neighbour landed on a live warp and fired it.  So is every Mart, gym
+-- and house in Hoenn, the Mossdeep gym's own mat at (6,35)/(7,35), all
+-- twenty-four secret bases, and the truck the game opens inside -- three
+-- EAST_ARROW_WARP cells stacked at (4,1)-(4,3) on MAP_G25_N40, which today
+-- throws you out of the truck the moment you take a step up or down in it.
+--
+-- isWarpTileCell says yes to every Gen 3 warp event on purpose (see the
+-- comment on it above): the warp EVENT is the whole thing on this cartridge
+-- and the behaviour byte only says what KIND of opening it is.  This is the
+-- qualification that belonged next to it -- the Gen 3 counterpart of
+-- gen2IsDirectionalCarpet, which cannot be reused because Emerald's
+-- behaviour bytes are not Gen 2's collision classes.
+--
+-- THE CARTRIDGE DRAWS THE LINE BY BEHAVIOUR, and not with one rule for all
+-- warps.  field_control_avatar.c has three separate doors into a warp:
+--
+--   * TryStartWarpEventScript fires on ANY completed step, for the
+--     behaviours IsWarpMetatileBehavior names -- the ladder, the two
+--     escalators, the non-animated door (which on this cartridge is also the
+--     indoor staircase), Lavaridge's two, the Aqua Hideout's, Mt Pyre's
+--     holes and Mossdeep gym's pads.  Those really do take you sideways, in
+--     the game as here, and nothing below touches them.
+--   * TryDoorWarp is the animated door, gated `direction == DIR_NORTH`.
+--   * TryArrowWarp is THESE, and it is not a step at all: it fires from the
+--     d-pad HELD in the arrow's own direction (IsArrowWarpMetatileBehavior),
+--     and the arrow behaviours are deliberately absent from
+--     IsWarpMetatileBehavior so that a step can never take one.
+--
+-- The five values are STATED -- pret/pokeemerald
+-- include/constants/metatile_behaviors.h, the same header
+-- RomExtractorGen3's GEN3_BEHAVIOUR_NAMES is checked against.  The region's
+-- own geometry is the independent confirmation, and it is unanimous: of the
+-- 535 warp events in Hoenn that sit on one of these five behaviours, the
+-- cell in the arrow's own direction is out of bounds on 385 and impassable
+-- on the other 150 -- all 535, none walkable (DERIVED over data/generated).
+-- A completed step in an arrow's own direction therefore cannot happen
+-- anywhere in the game, so every step that ever fired one of these came in
+-- from the side or from behind; 528 of the 535 can be stepped onto from some
+-- other direction, and that number is the size of the reported bug.
+--
+-- MB_WEST_ARROW_WARP carries no warp event in Hoenn at all (derived: zero of
+-- the 535, and the importer's own warpTiles tally leaves it out).  It is
+-- named anyway so a mod's map can use one, the way ledgeBehaviours names the
+-- northward ledge the region does not have.
+--
+-- A tileset may override the list (arrowWarpBehaviours), which is where a
+-- future import should stamp it; until one does the stated table stands in.
+-- That is the same shape as the WATER_TILES/SHORE_TILES fallbacks at the top
+-- of this file and for the same reason: the dataset on disk predates the
+-- field, and the fix has to work on the data the player already has.
+local GEN3_ARROW_WARPS = {
+  [0x62] = "right", -- MB_EAST_ARROW_WARP          (stated)
+  [0x63] = "left",  -- MB_WEST_ARROW_WARP          (stated; unused in Hoenn)
+  [0x64] = "up",    -- MB_NORTH_ARROW_WARP         (stated)
+  [0x65] = "down",  -- MB_SOUTH_ARROW_WARP         (stated) -- the exit mat
+  [0x6D] = "down",  -- MB_WATER_SOUTH_ARROW_WARP   (stated)
+}
+
+-- published so a test -- and a mod that wants to know -- can read the rule
+-- rather than restate it
+Map.gen3ArrowWarps = GEN3_ARROW_WARPS
+
+function Map:arrowWarpDirAt(cx, cy)
+  -- ONLY WHERE WARPS ARE EVENTS, which is the one thing a Gen 3 tileset says
+  -- about itself and exactly the test isWarpTileCell already keys off.  On a
+  -- Gen 1 or Gen 2 set these five numbers mean something else entirely -- $65
+  -- is not a class Johto uses and $62 is an ordinary tile id in Kanto -- so
+  -- reading them as arrows there would quietly disable real doors, which is
+  -- the mistake Map:speaksGen2Collision exists to stop.
+  if not (self.tileset and self.tileset.warpsAreEvents) then return nil end
+  local arrows = self.tileset.arrowWarpBehaviours or GEN3_ARROW_WARPS
+  -- cellBehaviour, not cellTile: cellTile answers $FF for anything the
+  -- collision bits block, and a Gen 3 warp cell very often IS blocked -- the
+  -- collision bits shut 192 of Hoenn's 201 animated-door cells (derived), and
+  -- isWalkableCell only lets the player onto them because they carry a warp.
+  -- The mats themselves are all passable, but the reader of a behaviour must
+  -- be the one that cannot lie about it.  cellTile is the fallback for a map
+  -- that brought no collision array of its own, where it returns the
+  -- behaviour byte straight.
+  local b = self:cellBehaviour(cx, cy)
+  if b == nil then b = self:cellTile(cx, cy) end
+  return b and arrows[b] or nil
+end
+
 -- "pad"/"hole" when the cell's collision tile is a teleporter warp pad or
 -- a fall-through hole (IsPlayerStandingOnWarpPadOrHole), nil otherwise
 function Map:warpPadOrHoleAt(cx, cy)

@@ -41,7 +41,9 @@ local Gen3MainMenu = {}
 Gen3MainMenu.__index = Gen3MainMenu
 Gen3MainMenu.isOpaque = true
 
-local GBA_W, GBA_H = 240, 160
+-- Only the height is a constant now: the width is whatever the window asks
+-- for (Gen3Wide.uiSize), because a GBA screen is 160 rows whatever it is wide.
+local GBA_H = 160
 
 -- RECONSTRUCTED, not derived: the menu sits in the top-left, each row two
 -- tiles apart, and the info panel fills the screen under it.
@@ -50,12 +52,35 @@ local ROW_STEP = 2
 local INFO = { tx = 0, ty = 0, tw = 20, th = 12 }
 local INFO_VALUE_X = 112
 
-function Gen3MainMenu:uiSize() return GBA_W, GBA_H end
+-- THE SAME SURFACE THE TITLE ASKS FOR.
+--
+-- This menu is pushed over the title and Game:draw takes the size from the
+-- TOPMOST state that has one -- so if this asked for the cartridge's 240 the
+-- canvas would snap back to it the moment START was pressed, and the screen
+-- underneath would be laid out for a width it no longer has.  Asked for
+-- directly: "ensure that the main menu and intro animations extend to wide
+-- screen and fill the screen without black borders".
+local Gen3Wide = require("src.ui.Gen3Wide")
+
+function Gen3MainMenu:uiSize() return Gen3Wide.uiSize() end
 function Gen3MainMenu:wantsFillScale() return true end
+
+-- NOT A PANEL, so its edge is not a frame to continue.
+--
+-- Renderer:bleedEdges paints the letterbox with the surface's outermost row
+-- and column so a menu's border appears to run to the window edge.  Here the
+-- outermost column is CB2_InitMainMenu's own plain field, which this screen draws itself -- pulling it
+-- outward stretches that sideways instead of extending a border.  Reported
+-- from play: "fix the stretching of borders on the start menu, main menu,
+-- main menu intro and the continue, new game, options, exit menus ... instead
+-- make them full screen/fit the screen without stretching".  wantsFillScale
+-- above is what makes it fill; this is what stops it smearing.
+function Gen3MainMenu:wantsEdgeBleed() return false end
 
 function Gen3MainMenu:sgbPalettes()
   local P = require("src.render.PaletteFX")
-  return { P.trueColorZone(0, 0, math.ceil(GBA_W / 8) - 1,
+  local w = select(1, Gen3Wide.uiSize())
+  return { P.trueColorZone(0, 0, math.ceil(w / 8) - 1,
                            math.ceil(GBA_H / 8) - 1) }
 end
 
@@ -187,7 +212,7 @@ function Gen3MainMenu:infoRows(save)
   end
   local owned = 0
   for _ in pairs((save.pokedex or {}).owned or {}) do owned = owned + 1 end
-  local t = math.floor(tonumber(save.playTime) or 0)
+  local t = math.floor(require("src.core.SaveData").playSeconds(save))
   return {
     { words[1] or "PLAYER", (save.player and save.player.name) or "PLAYER" },
     { words[4] or "BADGES", tostring(badges) },
@@ -200,8 +225,10 @@ end
 function Gen3MainMenu:draw()
   -- the plain field the cartridge clears to, not the title art: the menu is
   -- its own screen and nothing shows through it
+  -- the plain field runs the whole width of whatever surface this is on, so a
+  -- wide window is filled by the field rather than framed in black
   love.graphics.setColor(0.05, 0.11, 0.20, 1)
-  love.graphics.rectangle("fill", 0, 0, GBA_W, GBA_H)
+  love.graphics.rectangle("fill", 0, 0, select(1, Gen3Wide.uiSize()), GBA_H)
   love.graphics.setColor(1, 1, 1, 1)
 
   local glyphH = Font.glyphHeight()

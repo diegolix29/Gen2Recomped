@@ -250,6 +250,30 @@ function Storage:writeBytes(_game, key, bytes)
   return true
 end
 
+-- WHAT IS AT A KEY, WITHOUT READING IT.
+--
+-- `mod.cache:exists` and any "is my payload still complete?" check on a menu
+-- row want the size and nothing else; going through read/readBytes to find
+-- out costs the whole payload, and these payloads are the reason this store
+-- exists.  "nothing there" is nil with a "not_found" code, the same answer
+-- shape read gives, never an error.
+function Storage:stat(_game, key)
+  local fs, code, message = self:_fs()
+  if not fs then return nil, code, message end
+  local valid, keyErr = validKey(key)
+  if not valid then return nil, "invalid_key", keyErr end
+  for kind, ext in pairs({ bytes = Storage.BYTES_EXT,
+                           record = Storage.RECORD_EXT }) do
+    local path = self:_path(valid, ext)
+    local info = fs.getInfo and fs.getInfo(path)
+    if info and (info.type == nil or info.type == "file") then
+      return { key = valid, kind = kind, size = info.size,
+               modtime = info.modtime }
+    end
+  end
+  return nil, "not_found", "nothing stored at " .. valid
+end
+
 function Storage:delete(_game, key)
   local fs, code, message = self:_fs()
   if not fs then return false, code, message end

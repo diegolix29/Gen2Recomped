@@ -209,6 +209,15 @@ function Commands.g2_addvar(ctx, value)
   setScriptVar(ctx, (scriptVar(ctx) + (value or 0)) % 256)
 end
 
+-- g2_divide_var <n>: Script_divideby (25:$632C) is `GetScriptByte -> c /
+-- a = hScriptVar / Divide / b -> hScriptVar`, so the script variable becomes
+-- the QUOTIENT and the remainder is discarded.
+function Commands.g2_divide_var(ctx, by)
+  by = tonumber(by)
+  if not by or by == 0 then return end
+  setScriptVar(ctx, math.floor(scriptVar(ctx) / by) % 256)
+end
+
 function Commands.g2_random(ctx, bound)
   setScriptVar(ctx, math.random(0, math.max((bound or 1) - 1, 0)))
 end
@@ -237,6 +246,282 @@ function Commands.g2_writemem(ctx, addr)
   local mem = wram(ctx)
   addr = addr or ctx.g2HalfwordVar
   if mem and addr then mem[addr] = scriptVar(ctx) end
+end
+
+-- PRISM'S EVENT VARIABLES: sixty-four bytes at wEventVariables ($D73D), a
+-- separate space from the event FLAGS that checkevent/setevent use.  They are
+-- what its longer errands count with -- how many of a thing you have handed
+-- in, which stage of a multi-part quest you are on -- so with the three
+-- commands silent those quests could neither advance nor be asked about.
+--
+-- They live in the same persistent WRAM mirror the rest of the byte-poking
+-- commands use, keyed by the address the cartridge itself writes.
+local EVENT_VARS = 0xD73D
+
+local function eventVarParts(operand)
+  operand = tonumber(operand)
+  if not operand then return nil end
+  return EVENT_VARS + operand % 0x40, math.floor(operand / 0x40) % 4
+end
+
+-- `eventvarop <op << 6 | index>` (Script_eventvarop): op 0 reads the variable
+-- into the script variable, 1 writes it back, 2 adds them, and 3 COMPARES --
+-- answering 0 equal, 1 the variable is greater, 2 it is smaller (`sub e /
+-- jr z / sbc a / add a, 2`), which is not a sign and not a boolean.
+function Commands.g2_eventvarop(ctx, operand)
+  local mem = wram(ctx)
+  local addr, op = eventVarParts(operand)
+  if not (mem and addr) then return end
+  local var, v = mem[addr] or 0, scriptVar(ctx)
+  if op == 0 then
+    setScriptVar(ctx, var)
+  elseif op == 1 then
+    mem[addr] = v
+  elseif op == 2 then
+    setScriptVar(ctx, (var + v) % 256)
+  else
+    setScriptVar(ctx, var == v and 0 or (var > v and 1 or 2))
+  end
+end
+
+-- `seteventvar <value << 6 | index>` (Script_seteventvar): the two top bits
+-- ARE the value, and 3 means -1 (`cp 3 / jr c / ld a, -1`).
+function Commands.g2_seteventvar(ctx, operand)
+  local mem = wram(ctx)
+  local addr, value = eventVarParts(operand)
+  if not (mem and addr) then return end
+  mem[addr] = value < 3 and value or 0xFF
+end
+
+-- `modifyeventvar <op << 6 | index> [value]` (Script_modifyeventvar): 2 is
+-- inc and 3 is dec and neither carries a value; 0 sets and 1 adds and both do.
+-- A value of ZERO on the add form means "add the script variable" (`and a /
+-- jr nz, .add / ldh a, [hScriptVar]`), which is how a count collected in the
+-- script variable is banked into a quest's own counter.
+function Commands.g2_modifyeventvar(ctx, operand, value)
+  local mem = wram(ctx)
+  local addr, op = eventVarParts(operand)
+  if not (mem and addr) then return end
+  local var = mem[addr] or 0
+  if op == 2 then
+    mem[addr] = (var + 1) % 256
+  elseif op == 3 then
+    mem[addr] = (var - 1) % 256
+  elseif op == 0 then
+    mem[addr] = (tonumber(value) or 0) % 256
+  else
+    local add = tonumber(value) or 0
+    if add == 0 then add = scriptVar(ctx) end
+    mem[addr] = (var + add) % 256
+  end
+end
+
+-- `copy <dest>, <count>, <bytes...>` (Script_copy 25:$6DF1): the destination
+-- halfword, a count, and then that many RAW bytes the handler writes straight
+-- through with `ld [hli], a`.  The macro pair `copy`/`endcopy` emits exactly
+-- that, so the payload is data and not bytecode -- which is why the operand
+-- comes in through the `c` inline-blob tail rather than a fixed width.
+function Commands.g2_copybytes(ctx, dest, blob)
+  local mem = wram(ctx)
+  dest = tonumber(dest)
+  if not (mem and dest and type(blob) == "string") then return end
+  local i = 0
+  for byte in blob:gmatch("%d+") do
+    mem[dest + i] = tonumber(byte) % 256
+    i = i + 1
+  end
+end
+
+-- `loadhalfwordvar <value>` (Script_loadhalfwordvar): GetHalfwordVar, then
+-- WriteScriptByteToHL -- the operand byte is written to the address the
+-- halfword variable is holding.  It is the write to the same place
+-- `copyhalfwordvartovar` reads from.
+function Commands.g2_writemem_value(ctx, value)
+  local mem = wram(ctx)
+  local addr = ctx.g2HalfwordVar
+  if mem and addr then mem[addr] = (tonumber(value) or 0) % 256 end
+end
+
+-- `isinsingulararray <array>` (Script_isinsingulararray): search the array for
+-- the script variable's value and answer with the INDEX it was found at, or
+-- $FF when it was not (`ld a, $ff / jr nc, .notFound / ld a, b`).  The
+-- extractor has already read the array's bytes out of the ROM.
+function Commands.g2_find_in_array(ctx, blob)
+  local want = scriptVar(ctx)
+  local index, found = 0, nil
+  if type(blob) == "string" then
+    for byte in blob:gmatch("%d+") do
+      local value = tonumber(byte)
+      -- the cartridge's arrays end on $FF, and a search past the end would
+      -- answer with whatever followed the table in the ROM
+      if value == 0xFF then break end
+      if value == want then found = index break end
+      index = index + 1
+    end
+  end
+  setScriptVar(ctx, found or 0xFF)
+end
+
+-- g2_cmd_array_args <built>: run the command cmdwitharrayargs assembled.
+--
+-- CreateScriptCommandWithCustomArguments builds one of seven allowed commands
+-- in a buffer and ScriptCalls it, taking some arguments from the array
+-- `loadarray` left loaded instead of from the script.  The extractor has
+-- decoded which command and which arguments; what is left for run time is
+-- reading the array ones -- `width` bytes little-endian at the entry's base
+-- plus the argument's own index, which is how GetScriptArrayPointer addresses
+-- it -- and handing the whole lot to the command that was named.
+--
+-- An argument this cannot resolve leaves the command UNRUN rather than run
+-- with a zero in it: a warp to map 0 is worse than a warp that did not happen.
+local CUSTOM_ARG_DISPATCH = {
+  warp = function(ctx, a)
+    Commands.g2_warp(ctx, a[1], a[2], a[3])
+  end,
+  giveitem = function(ctx, a)
+    Commands.g2_giveitem(ctx, ("ITEM_%03d"):format(a[1] % 256), a[2])
+  end,
+  takeitem = function(ctx, a)
+    Commands.take_item(ctx, ("ITEM_%03d"):format(a[1] % 256), a[2])
+  end,
+  changeblock = function(ctx, a)
+    Commands.replace_block(ctx, math.floor(a[1] / 2), math.floor(a[2] / 2), a[3])
+  end,
+  givemoney = function(ctx, a)
+    -- `givemoney who, amount`: slot 0 is the player's own wallet, and the
+    -- port keeps no second one
+    if (a[1] or 0) == 0 then Commands.give_money(ctx, a[2] or 0) end
+  end,
+}
+
+function Commands.g2_cmd_array_args(ctx, built)
+  if type(built) ~= "table" then return end
+  local run = CUSTOM_ARG_DISPATCH[built.command]
+  if not run then return end
+  local array, base = ctx.g2Array, nil
+  local values = {}
+  for i, arg in ipairs(built.args or {}) do
+    if arg.map ~= nil then
+      values[i] = arg.map
+    elseif arg.value ~= nil then
+      values[i] = arg.value
+    elseif arg.array ~= nil then
+      local bytes = type(array) == "table" and array.bytes or nil
+      if not bytes then return end
+      base = base or (ctx.g2ArraySize or 0) * (ctx.g2ArrayEntry or 0)
+      local at = base + arg.array
+      local value, place = 0, 1
+      for n = 0, (arg.width or 1) - 1 do
+        local byte = bytes[at + n + 1]
+        if byte == nil then return end
+        value = value + byte * place
+        place = place * 256
+      end
+      values[i] = value
+    else
+      return
+    end
+  end
+  run(ctx, values)
+end
+
+-- PRISM'S CRAFTING LEVELS -- mining, smelting, ball making and jewel making.
+--
+-- `givecraftingEXP <craft>` (Script_givecraftingEXP 25:$68C0) parks the craft
+-- in wScriptBuffer and calls GiveCraftingEXPScript, which is itself a script:
+-- it saves the script variable (the EXP AMOUNT), looks the craft's level byte
+-- up in a four-entry table, restores the amount and calls IncreaseCraftEXP --
+-- then loops while that keeps answering "you gained a level".
+--
+-- IncreaseCraftEXP is the whole mechanic, and it is short enough to state
+-- exactly: a craft caps at level 100; the amount is added to the EXP byte; and
+-- the level goes up when that reaches what GetCraftingEXPForLevel asks for,
+-- carrying the remainder over.  That threshold is an integer square root of
+-- (level + 1) * 16 -- the `add hl, de` loop subtracting 1, 3, 5, 7 -- so it is
+-- floor(4 * sqrt(level + 1)): four points for the first level, forty for the
+-- hundredth.
+--
+-- The four pairs are consecutive bytes from wMiningLevel ($D4A6): level then
+-- EXP, mining, smelting, ball making, jewel making.
+local CRAFT_LEVELS = 0xD4A6
+local CRAFT_MAX_LEVEL = 100
+local CRAFT_NAMES = { [0] = "mining", "smelting", "ball making",
+                      "jewel making" }
+
+function Commands.g2_craft_exp(ctx, craft)
+  local mem = wram(ctx)
+  craft = tonumber(craft)
+  if not (mem and craft and craft >= 0 and craft <= 3) then return end
+  local at = CRAFT_LEVELS + craft * 2
+  local amount = scriptVar(ctx)
+  local gained = 0
+  -- the cartridge's own loop: every level the one gain is worth, not just one
+  for _ = 1, CRAFT_MAX_LEVEL do
+    local level, exp = mem[at] or 0, mem[at + 1] or 0
+    if level >= CRAFT_MAX_LEVEL then break end
+    exp = (exp + amount) % 256
+    local needed = math.floor(math.sqrt((level + 1) * 16))
+    if exp < needed then
+      mem[at + 1] = exp
+      break
+    end
+    mem[at] = level + 1
+    mem[at + 1] = exp - needed
+    gained = gained + 1
+    -- the loop re-enters with no further EXP, exactly as `writebyte 0` does
+    amount = 0
+  end
+  if gained > 0 then
+    -- the cartridge's own line (GiveCraftingEXPScript's .mining and friends)
+    Commands.show_text(ctx, Strings("Your %s level\ngrew to %d!",
+                                    CRAFT_NAMES[craft] or "crafting",
+                                    mem[at] or 0))
+  end
+end
+
+-- PRISM'S CHARACTER CUSTOMISATION, SAVED AND PUT BACK.
+--
+-- Script_backupcustchar (25:$67DF) copies wPlayerCharacteristics into a spare
+-- slot and Script_restorecustchar (25:$67EA) copies it back and refreshes the
+-- sprites.  The pair brackets the sections where the player IS a Pokemon --
+-- Laurel Forest and the Magikarp Caverns -- so with the restore silent the
+-- player would have come back out of one still wearing whatever the section
+-- put on them, for the rest of the game.
+--
+-- What the port keeps of a "characteristic" is what PrismCustomization commits:
+-- the model (save.player.gender), the skin tone and the outfit colour.
+local CUST_FIELDS = { "gender", "skinTone", "clothes" }
+
+local function refreshPlayerForm(ctx)
+  local ow = ctx.game and ctx.game.overworld
+  if ow and ow.player and ow.player.refreshForm then
+    pcall(function() ow.player:refreshForm(ctx.game.data) end)
+  end
+end
+
+function Commands.g2_backup_custchar(ctx)
+  local player = ctx.save and ctx.save.player
+  if not player then return end
+  local kept = {}
+  for _, field in ipairs(CUST_FIELDS) do
+    local value = player[field]
+    if type(value) == "table" then
+      local copy = {}
+      for k, v in pairs(value) do copy[k] = v end
+      value = copy
+    end
+    kept[field] = value
+  end
+  ctx.save.g2CustCharBackup = kept
+end
+
+function Commands.g2_restore_custchar(ctx)
+  local kept = ctx.save and ctx.save.g2CustCharBackup
+  local player = ctx.save and ctx.save.player
+  if not (kept and player) then return end
+  for _, field in ipairs(CUST_FIELDS) do player[field] = kept[field] end
+  ctx.save.g2CustCharBackup = nil
+  refreshPlayerForm(ctx)
 end
 
 -- Script_comparevartobyte answers in the script variable itself, and the
@@ -457,6 +742,20 @@ end
 -- The buffer operand as it appears in the script byte, per GetStringBuffer.
 local function bufferSlot(operand)
   local n = tonumber(operand)
+  -- PRISM COUNTS FROM wStringBuffer1, NOT FROM wStringBuffer3.
+  --
+  -- Its GetScriptStringBuffer (00:$22E4) is `ld hl, wStringBuffer1 / ld bc, 19`
+  -- and then a shift-multiply, so operand 0 IS buffer 1 and there are five of
+  -- them; Crystal's GetStringBuffer starts at wStringBuffer3 and has three.
+  -- Read Crystal's way every Prism `itemtotext x, 0` wrote buffer 3 while the
+  -- line after it splices {RAM:wStringBuffer1} -- which printed anything at all
+  -- only because slot 3 also writes the legacy single buffer that an unset slot
+  -- falls back to, so whatever was written LAST won whichever slot the line
+  -- asked for.  The smelting lines ("You smelted a <ore> Ore!") are where that
+  -- shows.
+  if require("src.core.GameVersion").get() == "prism" then
+    return math.max(1, math.min(5, (n or 0) + 1))
+  end
   if n == 1 then return 4 end
   if n == 2 then return 5 end
   return 3 -- STRING_BUFFER_3, and the clamp for anything out of range
@@ -1420,6 +1719,11 @@ end
 -- `cry <species>`: PlayMonCry, standalone.  Unlike Gen1's play_cry this
 -- must not arm the next text box (see Gen2ScriptVM's L.cry).
 function Commands.g2_cry(ctx, species)
+  -- a species of nil is Prism's GetScriptByteOrVar zero: "whatever the script
+  -- variable holds", which is how the six Prism starter balls share one script
+  if not species then
+    species = string.format("SPECIES_%03d", math.floor(scriptVar(ctx)) % 256)
+  end
   require("src.core.Sound").playCry(ctx.game.data, species)
 end
 
@@ -1556,6 +1860,9 @@ end
 -- printed whatever was named last, several scenes ago.
 function Commands.g2_getitemname(ctx, itemId, buffer)
   local def = ctx.game.data.items[itemId]
+  -- remember WHICH item the name belongs to: Prism's itemplural searches a
+  -- dozen exceptions by item id before it looks at the word's last letter
+  ctx.g2CurItem = tonumber(tostring(itemId or ""):match("(%d+)$"))
   setBuffer(ctx.game, bufferSlot(buffer), def and def.name or itemId)
 end
 
@@ -3117,6 +3424,19 @@ function Commands.g2_fruittree(ctx, tree)
   )
 end
 
+-- g2_changemap <blocks>: swap the loaded map's whole block table.
+--
+-- ChangeMap (00:$1868) copies width*height bytes over the map's block buffer,
+-- so the count comes from the MAP, not from the blob -- a blob that decodes
+-- long is simply not all used, and one that decodes short leaves the rest of
+-- the map as it was, which is what the cartridge's own row-by-row copy does.
+function Commands.g2_changemap(ctx, blocks)
+  local ow = ctx.overworld
+  if ow and ow.replaceBlocks and type(blocks) == "table" then
+    ow:replaceBlocks(blocks)
+  end
+end
+
 -- refreshmap / reloadmap / newloadmap / reanchormap: redraw the loaded map.
 function Commands.g2_refreshmap(ctx)
   local ow = ctx.overworld
@@ -3196,6 +3516,19 @@ end
 -- here, so this only has to leave the balance where the menu can show it.
 function Commands.g2_show_coins(ctx)
   ctx.game.coinDisplay = coins(ctx.save)
+end
+
+-- `readcoins` (Script_readcoins): the COIN CASE balance, printed into string
+-- buffer 1 for the box that follows -- the coin twin of Script_getmoney.
+function Commands.g2_readcoins(ctx)
+  setBuffer(ctx.game, 1, tostring(math.floor(coins(ctx.save))))
+end
+
+-- `checkiteminbox <item>` (Script_checkiteminbox): the same test checkitem
+-- makes, against wPCItems instead of the bag.
+function Commands.g2_check_item_box(ctx, itemId)
+  local pc = ctx.save.pcItems or {}
+  ctx.lastCheck = (pc[itemId] or 0) > 0
 end
 
 -- The port has no swarm table; record the request so a save that already
@@ -4832,6 +5165,213 @@ end
 
 function Commands.g2_getitemname_var(ctx, buffer)
   Commands.g2_getitemname(ctx, itemFromVar(ctx), buffer)
+end
+
+-- the same zero-operand rule for the other two GetScriptByteOrVar readers the
+-- extractor can see a zero on: `pokenamemem 0, 0` and `checkitem 0`
+function Commands.g2_getmonname_var(ctx, buffer)
+  Commands.g2_getmonname(ctx,
+    string.format("SPECIES_%03d", math.floor(scriptVar(ctx)) % 256), buffer)
+end
+
+function Commands.g2_check_item_var(ctx)
+  -- no `return`: ScriptRunner reads a command's return value as the next row
+  Commands.check_item(ctx, itemFromVar(ctx))
+end
+
+-- ---------------------------------------------------------------------------
+-- Prism's remaining script tail
+-- ---------------------------------------------------------------------------
+
+-- `getnthstring <list>, <buffer>`: GetNthString (00:$11AB) walks past the
+-- script variable's count of "@"-terminated strings and Script_getnthstring
+-- keeps the one it lands on -- in hScriptHalfwordVar always, and in a string
+-- buffer too unless the buffer operand is $FF.  Prism's only list is OreNames,
+-- read out of the ROM by the extractor.
+function Commands.g2_nth_string(ctx, list, buffer)
+  if type(list) ~= "table" then return end
+  local name = list[math.floor(scriptVar(ctx)) + 1]
+  if type(name) ~= "string" then return end
+  ctx.g2NamedString = name
+  if tonumber(buffer) == 0xFF then return end
+  setBuffer(ctx.game, bufferSlot(buffer), name)
+end
+
+-- `copystring <buffer>` (25:$6C6A): the string getnthstring last named, into a
+-- buffer -- how the smelting scripts splice one ore name into two lines.
+function Commands.g2_copy_string(ctx, buffer)
+  local name = ctx.g2NamedString
+  if type(name) ~= "string" then return end
+  setBuffer(ctx.game, bufferSlot(buffer), name)
+end
+
+-- `itemplural <buffer>` (Script_itemplural 25:$5B8B -> GiveItemCheckPluralMain).
+-- Nothing happens when the script variable says there is one of the item;
+-- otherwise the name already in the buffer grows a suffix, placed relative to
+-- its LAST CHARACTER: +1 writes after it, 0 overwrites it, and Keg of Beer's
+-- -7 backs up over " of Beer".  Which suffix is the ROM's decision, read out of
+-- the routine itself -- the letter rules and the twelve items that break them
+-- both arrive in `rules`.
+function Commands.g2_item_plural(ctx, buffer, rules)
+  if type(rules) ~= "table" then return end
+  if math.floor(scriptVar(ctx)) == 1 then return end
+  local slot = bufferSlot(buffer)
+  local name = ctx.game.stringBuffers and ctx.game.stringBuffers[slot]
+    or ctx.game.stringBuffer
+  if type(name) ~= "string" or name == "" then return end
+  local rule = ctx.g2CurItem and rules.items
+    and rules.items[tostring(ctx.g2CurItem)]
+  if rule == nil then
+    rule = rules.rules[name:sub(-1)] or rules.rules[""]
+  end
+  if not rule then return end   -- Fries, Leftovers: already plural
+  local place = tonumber(rule.place) or 1
+  -- `place` is measured from the last character: 1 appends, 0 replaces it
+  local cut = #name - 1 + place
+  if cut < 0 then cut = 0 end
+  setBuffer(ctx.game, slot, name:sub(1, cut) .. rule.text)
+end
+
+-- `readpersonxy <person>, <dest>` (25:$6BE8): the object's LIVE position --
+-- OBJECT_NEXT_MAP_X then OBJECT_NEXT_MAP_Y -- written as two bytes, or $FF $FF
+-- when no struct on the map answers to that index.  The operand is one-based
+-- (GetScriptPerson does `dec a`), and the coordinates are the object struct's,
+-- which carry the four-tile border the extractor takes off the map rows -- so
+-- they go back on here.  Prison F1's guard gate is `readpersonxy 5 / writebyte
+-- 39 / comparevartobyte / sifne 2`: it opens only while that guard stands on
+-- one tile, and with the bytes left at zero it never opened at all.
+Gen2Commands.G2_OBJECT_COORD_BIAS = 4
+
+function Commands.g2_read_person_xy(ctx, person, dest)
+  local mem = wram(ctx)
+  dest = tonumber(dest)
+  if not (mem and dest) then return end
+  local index = tonumber(person)
+  if index == 0xFF then index = math.floor(scriptVar(ctx)) end
+  local ow = ctx.overworld
+  local npc
+  if index == 0xFE or index == 0 then
+    npc = ctx.npc
+  elseif index and ow and ow.npcByIndex then
+    npc = ow:npcByIndex(index)
+  end
+  local bias = Gen2Commands.G2_OBJECT_COORD_BIAS
+  if not (npc and npc.cellX and npc.cellY) then
+    mem[dest], mem[dest + 1] = 0xFF, 0xFF
+    return
+  end
+  mem[dest] = (math.floor(npc.cellX) + bias) % 256
+  mem[dest + 1] = (math.floor(npc.cellY) + bias) % 256
+end
+
+-- `variablestablerandom <index>, <bound>` (25:$6339).
+--
+-- Script_random and this share one body; the only difference is d, which picks
+-- Random or VariableStableRandom (2C:$5C8F) for the draw.  The BOUND is handled
+-- the same either way and is read straight off the ROM: zero means "any byte",
+-- and otherwise the value is masked down to the next power of two and redrawn
+-- until it lands under the bound (`add a / jr nc` builds the mask, then
+-- `.rejectionSamplingLoop`).  A bound of $FF in the script means "from the
+-- script variable".
+--
+-- What makes it STABLE is the draw, not the arithmetic: each index keeps its
+-- own value until the game advances that index's counter, so a shopkeeper asked
+-- twice in a row answers the same thing.  The seed itself is SRAM the port does
+-- not model, so the value is drawn once per index and kept in the save -- which
+-- is the property the scripts actually rely on.
+function Commands.g2_stable_random(ctx, index, bound)
+  bound = tonumber(bound) or 0
+  if bound == 0xFF then bound = math.floor(scriptVar(ctx)) end
+  local save = ctx.save
+  save.g2StableRandom = save.g2StableRandom or {}
+  local key = tostring(tonumber(index) or 0)
+  local roll = save.g2StableRandom[key]
+  if roll == nil then
+    roll = math.random(0, 255)
+    save.g2StableRandom[key] = roll
+  end
+  if bound == 0 then setScriptVar(ctx, roll) return end
+  -- the cartridge's mask-and-reject, run on the kept draw
+  local mask = 1
+  while mask < bound do mask = mask * 2 end
+  local value = roll % mask
+  if value >= bound then value = value % bound end
+  setScriptVar(ctx, value)
+end
+
+-- `loadmemtrainer` (25:$66C5): wTempTrainerClass / wTempTrainerID -- the
+-- trainer THIS OBJECT already is -- become the battle about to start, in place
+-- of a `loadtrainer` naming one.  The port keeps the same pair on the object's
+-- own definition, which is what a talked-to trainer hands the runner.
+function Commands.g2_load_mem_trainer(ctx)
+  local def = (ctx.npc and ctx.npc.def) or nil
+  local group = def and (def.trainerClass or def.trainerGroup)
+  local id = def and (def.trainerId or def.trainerNumber)
+  if not (group and id) then
+    -- a trainer object reached through a talk row rather than a collision
+    group, id = ctx.g2TempTrainerGroup, ctx.g2TempTrainerId
+  end
+  if not (group and id) then return end
+  Commands.g2_load_trainer(ctx, group, id)
+end
+
+-- `trainertext <n>` (25:$66A9): the n-th of the CURRENT trainer's own text
+-- pointers, through wSeenTextPointer -- seen, beaten, loss, after.  Prism's
+-- generic-trainer objects carry their lines that way instead of spelling a
+-- writetext per trainer, so with this silent they fought in total silence.
+Gen2Commands.G2_TRAINER_TEXTS = { [0] = "seen", "beaten", "loss", "after" }
+
+function Commands.g2_trainer_text(ctx, which)
+  local def = (ctx.npc and ctx.npc.def) or nil
+  local key = Gen2Commands.G2_TRAINER_TEXTS[tonumber(which) or 0] or "seen"
+  local id = def and (def[key .. "Text"]
+    or (def.trainerTexts and def.trainerTexts[key]))
+  if not id then id = def and def.text end
+  if not id then return end
+  Commands.show_text(ctx, id)
+end
+
+-- `backupsecondpokemon` / `restoresecondpokemon` (25:$6A79 / $6AD3).  Prism's
+-- Pokemon mode -- the stretch where the player IS a Pokemon -- stashes party
+-- slot 2 and shrinks the party to one, then puts it back.  They bracket the
+-- same scenes backupcustchar/restorecustchar do, and every site has both.
+function Commands.g2_backup_second_mon(ctx)
+  local party = ctx.save and ctx.save.party
+  if not party or #party < 2 then return end
+  local kept = {}
+  for i = 2, #party do kept[#kept + 1] = party[i] end
+  ctx.save.g2SecondMonBackup = kept
+  for i = #party, 2, -1 do party[i] = nil end
+end
+
+function Commands.g2_restore_second_mon(ctx)
+  local kept = ctx.save and ctx.save.g2SecondMonBackup
+  local party = ctx.save and ctx.save.party
+  if not (kept and party) then return end
+  for _, mon in ipairs(kept) do party[#party + 1] = mon end
+  ctx.save.g2SecondMonBackup = nil
+end
+
+-- `checkpokemontype <type>` (25:$6A0B): open the party menu and answer 1 when
+-- the chosen mon IS that type or KNOWS a move of it, 0 when it is neither, 2
+-- when the player backed out -- which is why its site is a three-way
+-- anonjumptable.  Same party menu Special_SelectMonFromParty uses.
+function Commands.g2_check_mon_type(ctx, typeId)
+  local want = typeNameFor(ctx, typeId)
+  local game, runner = ctx.game, ctx.runner
+  local picked
+  require("src.ui.Screens").push(game, "PartyMenu", {
+    pickOnly = true,
+    onCancel = function() runner:resume() end,
+    onSwitch = function(mon) picked = mon runner:resume() end,
+  })
+  runner:yield()
+  -- backed out: 2, which is the arm the anonjumptable after it reserves
+  if not picked then setScriptVar(ctx, 2) return end
+  ctx.g2FieldMon = picked
+  if not want then setScriptVar(ctx, 0) return end
+  local hit = monHasType(ctx, picked, want) or monKnowsType(ctx, picked, want)
+  setScriptVar(ctx, hit and 1 or 0)
 end
 
 return Gen2Commands

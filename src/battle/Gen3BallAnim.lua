@@ -454,10 +454,22 @@ function Gen3BallAnim:update()
       self.sound = self.sounds.click
       self.stars = { age = 0 }
     end
-    local fadeAt = T.fadeAt or 60
-    if self.phaseFrame > fadeAt then
-      self.whiteout = math.min(1, (self.phaseFrame - fadeAt) / 16)
-    end
+    -- ...AND THE BALL STAYS ON THE GROUND.
+    --
+    -- Reported from play: "PokeBall disappears when pokemon is caught".  It
+    -- did, and the two halves of this were arguing.  `whiteout` means "how
+    -- much of the ball is NOT drawn" everywhere it is used -- it is 1 for a
+    -- shiny wild Pokemon, which has no ball at all, and it ramps to 1 through
+    -- the RELEASE, where the cartridge frees the ball sprite the moment the
+    -- Pokemon is out.  Ramping it here did the same thing to a ball that has
+    -- just closed on something: sixteen frames after the click it was gone.
+    --
+    -- BattleState already knows better and says so -- it keeps this object
+    -- alive past the end of the animation precisely so "a caught Pokemon
+    -- leaves the ball resting on screen through the text" -- and then the
+    -- object faded itself out underneath that. The ball is what the player is
+    -- looking at while the Gotcha line prints, so it does not fade.
+
     if self.phaseFrame == (T.jingleAt or 95) then self.sound = self.sounds.caught end
     if self.phaseFrame >= (T.jingleAt or 95) then self.done = true end
   end

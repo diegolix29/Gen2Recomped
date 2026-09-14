@@ -73,17 +73,33 @@ local HUD_DEFAULTS = {
   expBarTiles = 8,
 }
 
+-- ASKED SIX TIMES A ROW.  drawHPBar alone calls this twice per bar, and a
+-- party screen draws six of them a frame -- so this built the same nine-field
+-- table (and did a package.loaded lookup) about eighteen times a frame for an
+-- answer that only changes when the font record is reloaded.  It is memoised
+-- on the record it was built from, so a reload rebuilds it and HudTiles.
+-- invalidate (already registered with Assets) clears it outright.
+local geoCache, geoFrom
 local function hudGeometry()
   local font = require("src.core.Data").font
   local hud = type(font) == "table" and font.hud or nil
   if type(hud) ~= "table" then return HUD_DEFAULTS end
-  return {
+  if geoCache and geoFrom == hud then return geoCache end
+  geoFrom = hud
+  geoCache = {
     hpBarTiles = hud.hpBarTiles or HUD_DEFAULTS.hpBarTiles,
     hpBarGreenPixels = hud.hpBarGreenPixels or HUD_DEFAULTS.hpBarGreenPixels,
     hpBarYellowPixels = hud.hpBarYellowPixels or HUD_DEFAULTS.hpBarYellowPixels,
     expBarTiles = hud.expBarTiles or HUD_DEFAULTS.expBarTiles,
     expBarEmptyTile = hud.expBarEmptyTile,
+    -- the stats screen's page-tile block, and the two tiles in it that close
+    -- the exp bar on that screen (RomExtractorGen2:gen2StatsExpCaps)
+    statsTilesBase = hud.statsTilesBase,
+    statsTilesCount = hud.statsTilesCount,
+    statsExpCapLeft = hud.statsExpCapLeft,
+    statsExpCapRight = hud.statsExpCapRight,
   }
+  return geoCache
 end
 
 -- Exposed so the battle screen and the status screen place the bars where
@@ -98,10 +114,29 @@ end
 -- swaps the image in either table, but only the battle table honors its
 -- `base`: the status layout is the asm's own placement, and sliding hud_2
 -- there would bury № again.
+-- THE STATS SCREEN'S OWN SHEET, wherever this cartridge keeps it.
+--
+-- LoadStatsScreenPageTilesGFX copies one block into VRAM, and the extractor
+-- reads that routine's own `ld de / ld hl / lb bc` for the source, the
+-- destination tile and the count (RomExtractorGen2:gen2StatsTilesSheet) -- so
+-- the base is not written down here, it arrives with the rest of the HUD
+-- geometry.  The exp bar's END CAPS on the summary screen are two tiles of this
+-- block and of nothing else, which is why the screen was closing its bar with
+-- the HP bar's $62 and $6D instead.
+local function statsPage()
+  local geo = hudGeometry()
+  if not (geo.statsTilesBase and geo.statsTilesCount) then return nil end
+  return { id = "stats_tiles", image = "assets/generated/battle/stats_tiles.png",
+           base = geo.statsTilesBase, count = geo.statsTilesCount }
+end
+
 local function build(pages, fixedBase)
   local out = {}
   local registered = require("src.core.Data").font
   registered = registered and registered.pages or nil
+  local all = { statsPage() }        -- nil on a cartridge without one
+  for _, page in ipairs(pages) do all[#all + 1] = page end
+  pages = all
   for _, page in ipairs(pages) do
     local override = registered and registered[page.id]
     local path, base = page.image, page.base
@@ -115,6 +150,9 @@ local function build(pages, fixedBase)
       for i = 0, count - 1 do
         out[base + i] = {
           img = img,
+          -- the page this tile came from, so a bar fill can be drawn from a
+          -- REPAINTED copy of the same sheet through the same quad
+          path = path,
           quad = love.graphics.newQuad((i % per) * 8,
                                        math.floor(i / per) * 8, 8, 8, iw, ih),
         }
@@ -124,17 +162,66 @@ local function build(pages, fixedBase)
   return out
 end
 
-local function put(t, x, y, tint)
+-- THE BAR FILL CANNOT BE TINTED, IT HAS TO BE REPAINTED.
+--
+-- A bar's fill pixels are DMG SHADE 2 -- 85 of 255 -- and nothing else: decode
+-- Crystal's or Prism's own FontBattleExtra $63-$6B and ExpBarGFX and the only
+-- values present are shade 0 (transparent paper), shade 2 (the fill) and shade
+-- 3 (the black rules).  There is no 170 anywhere, which is what the tint below
+-- this used to divide by.
+--
+-- But the divisor was only half of it.  love.graphics.setColor MULTIPLIES, and
+-- 85 * k cannot reach 189 unless k > 1 -- and LOVE clamps k at 1.  A screenshot
+-- of Prism's battle HUD measures the fill exactly: the HP bar comes out
+-- (0,85,0) where GREENBAR is (0,189,0), and the exp bar (33,85,85) where EXPBAR
+-- is (33,140,255) -- red, the one channel whose multiplier was BELOW one
+-- (33/85), is the one channel that came out right.  Every HP bar in the port
+-- has been at a third of its colour, in battle, in the party menu and on the
+-- summary screen; Prism is where it reads as broken rather than as dark,
+-- because its bar carries a far heavier black frame (288 black pixels across
+-- the fill tiles against Crystal's 72) and the thin band of colour between the
+-- rules is all there is to see.
+--
+-- So the sheet is repainted instead of multiplied: the cartridge's four
+-- palette entries replace the four DMG shades, which is what the hardware does
+-- and is exact for every colour rather than only for the dark ones.  One image
+-- per (sheet, palette name), built on first use and dropped with the pages.
+local repainted = {}
+
+local function barImage(path, name, colors)
+  if not (path and name and colors) then return nil end
+  local key = path .. "|" .. name
+  local hit = repainted[key]
+  if hit ~= nil then return hit or nil end
+  local ok, image = pcall(function()
+    local data = Assets.imageData(path)
+    local shades = {}
+    for shade = 0, 3 do
+      local c = colors[shade + 1]
+      if c then shades[shade] = { c[1] / 255, c[2] / 255, c[3] / 255 } end
+    end
+    require("src.import.ImageWriter").recolorShades(data, shades)
+    return love.graphics.newImage(data)
+  end)
+  repainted[key] = ok and image or false
+  return ok and image or nil
+end
+
+local function put(t, x, y, tint, paint)
   if not t then return end
+  local img = (paint and barImage(t.path, paint.name, paint.colors)) or t.img
   local r, g, b, a = love.graphics.getColor()
   love.graphics.setColor(tint or { 1, 1, 1, 1 })
-  love.graphics.draw(t.img, t.quad, x, y)
+  love.graphics.draw(img, t.quad, x, y)
   love.graphics.setColor(r, g, b, a)
 end
 
-function HudTiles.tile(code, x, y, tint)
+-- `paint` is { name = <palette name>, colors = <the four colours> }: the tile
+-- is drawn from a repainted copy of its sheet instead of tinted.  Only the bar
+-- fills pass one; every other tile keeps the sheet's own greys.
+function HudTiles.tile(code, x, y, tint, paint)
   if not tiles then tiles = build(PAGES) end
-  put(tiles[code], x, y, tint)
+  put(tiles[code], x, y, tint, paint)
 end
 
 -- The same sheets under the status screen's overlay (STATUS_PAGES).  The HP
@@ -149,6 +236,8 @@ end
 function HudTiles.invalidate()
   tiles = nil
   statusTiles = nil
+  repainted = {}
+  geoCache, geoFrom = nil, nil
 end
 
 Assets.register(HudTiles.invalidate)
@@ -191,7 +280,7 @@ function HudTiles.drawHPBar(data, tx, ty, mon, barType, grayFill, segments)
   if mon.stats.hp > 0 and mon.hp > 0 then
     px = math.max(1, math.floor(mon.hp * segments * 8 / mon.stats.hp))
   end
-  local tint
+  local paint
   if not grayFill then
     local PaletteFX = require("src.render.PaletteFX")
     -- the cartridge's own GetHPPal thresholds, scaled if the caller asked for
@@ -202,17 +291,13 @@ function HudTiles.drawHPBar(data, tx, ty, mon, barType, grayFill, segments)
     local name = px >= green and "GREENBAR"
                  or px >= yellow and "YELLOWBAR" or "REDBAR"
     local colors = PaletteFX.pal(data, name)
-    if colors then
-      local c = colors[3] -- GB color 2 is the fill shade
-      -- the fill pixels are the 2/3-gray shade; divide so they land on
-      -- the palette color exactly (the black outline stays black)
-      tint = { math.min(1, c[1] / 170), math.min(1, c[2] / 170),
-               math.min(1, c[3] / 170), 1 }
-    end
+    -- REPAINTED, NOT TINTED -- see the note by barImage above: the fill is the
+    -- 1/3 gray and a multiply can only ever darken it
+    if colors then paint = { name = name, colors = colors } end
   end
   for i = 0, segments - 1 do
     local seg = math.min(8, math.max(0, px - i * 8))
-    HudTiles.tile(seg >= 8 and 0x6B or 0x63 + seg, x + 16 + i * 8, y, tint)
+    HudTiles.tile(seg >= 8 and 0x6B or 0x63 + seg, x + 16 + i * 8, y, nil, paint)
   end
   HudTiles.tile(HudTiles.capTile(barType), x + 16 + segments * 8, y)
 end
@@ -242,26 +327,21 @@ function HudTiles.drawExpBar(data, tx, ty, pixels, grayFill)
   local geo = hudGeometry()
   local tileCount = geo.expBarTiles
   pixels = math.max(0, math.min(tileCount * 8, math.floor(pixels or 0)))
-  local tint
+  local paint
   if not grayFill then
-    -- Only the flat path gets a tint, exactly like drawHPBar.  Where a zone
-    -- pass runs it recolors the DMG shades itself, and a tint underneath it
+    -- Only the flat path repaints, exactly like drawHPBar.  Where a zone pass
+    -- runs it recolors the DMG shades itself, and a second pass underneath it
     -- moves the fill's luminance into another shade -- which drew the bar
     -- inside out: blue paper with a black fill.
+    --
+    -- This used to divide the palette colour by the fill's own 85 and hand the
+    -- result to setColor.  It does not work, and the screenshot that started
+    -- this says so: EXPBAR is (33,140,255) and the bar measured (33,85,85) --
+    -- red, whose multiplier was below one, landed exactly, and green and blue,
+    -- whose multipliers were 1.6 and 3.0, both clamped to 85.  LOVE clamps.
     local PaletteFX = require("src.render.PaletteFX")
     local colors = PaletteFX.pal(data, "EXPBAR")
-    if colors then
-      local c = colors[3]
-      -- THE EXP BAR'S FILL IS THE 1/3 GRAY, not the HP bar's 2/3.  Measured on
-      -- both cartridges' sheets, ExpBarGFX uses shade 0 (transparent paper),
-      -- shade 2 (85) for the fill and shade 3 for the outline -- it never
-      -- touches 170.  Dividing by the HP bar's 170 landed the blue at a third
-      -- of its brightness, and clamping at 1 then capped every channel at 85,
-      -- so #218CFF came out as a near-black navy.  Multipliers above 1 are
-      -- fine: LOVE does not clamp setColor, and black outline * anything is
-      -- still black.
-      tint = { c[1] / 85, c[2] / 85, c[3] / 85, 1 }
-    end
+    if colors then paint = { name = "EXPBAR", colors = colors } end
   end
   local empty = geo.expBarEmptyTile
   for i = tileCount - 1, 0, -1 do
@@ -274,7 +354,7 @@ function HudTiles.drawExpBar(data, tx, ty, pixels, grayFill)
     else
       code = seg >= 8 and 0x6B or (seg == 0 and 0x63 or 0x54 + seg)
     end
-    HudTiles.tile(code, (tx + i) * 8, ty * 8, tint)
+    HudTiles.tile(code, (tx + i) * 8, ty * 8, nil, paint)
   end
 end
 

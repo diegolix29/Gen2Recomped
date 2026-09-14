@@ -5,6 +5,7 @@ local Logger = require("src.core.Logger")
 -- inside that window.  Requiring it here resolves it once, at load, with no
 -- mod in scope, so a mod is never blamed for an engine require it did not make.
 local ModImports = require("src.mods.ModImports")
+local ImportAccess = require("src.mods.ImportAccess")
 local SaveData = require("src.core.SaveData")
 local Data = require("src.core.Data")
 local Version = require("src.core.Version")
@@ -253,6 +254,86 @@ function Loader:_discover()
             else
               Logger.warn("mod %s ignored: %s", path, tostring(err))
             end
+          end
+        end
+      end
+    end
+  end
+  local ok, err = pcall(self._warnShadowed, self)
+  if not ok then
+    Logger.debug("mod shadow check: %s", tostring(err))
+  end
+end
+
+-- A MOD THE SAVE DIRECTORY IS SHADOWING, SAID OUT LOUD.
+--
+-- love.filesystem reads `mods/` out of TWO homes -- the save directory and
+-- the game folder -- and it searches the SAVE DIRECTORY FIRST.  So a copy
+-- left there wins over the checkout the author is editing, and LauncherMods
+-- already names the symptom in its own words: "the author's own edits
+-- silently stop taking effect while the folder they are editing looks
+-- untouched.  That is a worse failure than not updating, and it is
+-- invisible."
+--
+-- Reported from play: "when pressing the button mapped to select in the
+-- options its still just adjusting the voxels and not working properly not
+-- using my registered item in gen3" -- with the change that stops it doing
+-- exactly that sitting in the checkout, unread, behind a save-directory copy
+-- of the same mod from two days earlier.  Every file said what it should
+-- have said; the running game was reading a different one, and nothing
+-- anywhere mentioned that a second one existed.
+--
+-- THIS IS NOT AN ERROR.  Installing a release over a checkout is a
+-- legitimate thing to do and the mod loads fine either way.  It is one line
+-- in the log naming BOTH files, which is all it ever needed to stop being
+-- invisible -- and only when the two differ, so an install of the same build
+-- says nothing.
+--
+-- The read is its own field so a test can stand in for the disk: this is the
+-- one check in the loader that deliberately goes around love.filesystem,
+-- because love.filesystem is precisely what cannot see the difference.
+function Loader.readRealFile(path)
+  local f = io.open(path, "rb")
+  if not f then return nil end
+  local data = f:read("*a")
+  f:close()
+  return data
+end
+
+function Loader:_warnShadowed()
+  local fs = self.fs
+  if not (fs and fs.getSaveDirectory) then return end
+  local saveRoot = fs.getSaveDirectory()
+  if type(saveRoot) ~= "string" or saveRoot == "" then return end
+  local ok, Launcher = pcall(require, "src.mods.LauncherMods")
+  if not (ok and type(Launcher) == "table"
+          and type(Launcher.realFolder) == "function") then
+    return
+  end
+  local sep = package.config:sub(1, 1)
+  local read = Loader.readRealFile
+  for id, mod in pairs(self.mods) do
+    local okReal, gameDir = pcall(Launcher.realFolder, mod.path)
+    gameDir = okReal and type(gameDir) == "string" and gameDir or nil
+    if gameDir then
+      local saveDir = saveRoot .. sep .. (mod.path:gsub("/", sep))
+      -- the entry chunk is what a mod's behaviour lives in; the manifest is
+      -- the fallback so a mod whose entry is named something else is still
+      -- compared rather than skipped
+      local said = false
+      for _, name in ipairs({ "main.lua", "manifest.json" }) do
+        if not said then
+          local mine = read(saveDir .. sep .. name)
+          local theirs = read(gameDir .. sep .. name)
+          if mine and theirs and mine ~= theirs then
+            said = true
+            Logger.warn("mod %s: the copy in the save directory is the one "
+                        .. "being loaded and it is NOT the one in the game "
+                        .. "folder -- love.filesystem searches the save "
+                        .. "directory first, so edits here do nothing until "
+                        .. "that copy is refreshed or removed.  loaded: %s "
+                        .. "// ignored: %s", id, saveDir .. sep .. name,
+                        gameDir .. sep .. name)
           end
         end
       end
@@ -566,6 +647,14 @@ function Loader:_api(mod)
     id = modId,
     version = mod.manifest.version,
     path = mod.path,
+    -- WHETHER THE HOST IS IN DEV MODE, as a plain boolean.
+    --
+    -- A mod ported from the Gen 1 project asks this to decide whether to
+    -- register its developer-only diagnostics (an overlay, a debug command).
+    -- It is read once here and copied, so the answer a mod gets is a value
+    -- and not a door: nothing about it reaches the loader, the process
+    -- environment or the dev-mode require shim.
+    developer = loader.dev == true,
     -- a deep copy: what a mod does to its own view never reaches the loader
     manifest = Merge.deepCopy(mod.manifest),
     content = {},
@@ -699,8 +788,66 @@ function Loader:_api(mod)
   end
   -- assets keeps the v1 alias to the content accessors and adds the file
   -- helpers on top, so mod.assets.pokemon and mod.assets:image both resolve
+  -- A RELATIVE PATH STAYS RELATIVE.
+  --
+  -- mod.assets:path, mod:read and the two listers below all end in a bare
+  -- concatenation onto mod.path, and love.filesystem is rooted at the save
+  -- directory plus the game folder -- so `mod:list("../OTHER_MOD")` is not a
+  -- host-filesystem escape, but it IS a walk out of this mod and into the
+  -- next one's folder, which is the sandbox these accessors exist to draw.
+  -- Enumeration makes it worth closing: reading a path you guessed is one
+  -- thing, listing a neighbour's folder to find out what to guess is another.
+  --
+  -- Returns nil for anything that leaves the mod, and the caller answers the
+  -- way it answers a missing file -- an escape is not a special error, it is
+  -- simply not there.
+  local function within(relative)
+    if type(relative) ~= "string" then return nil end
+    if relative == "" then return mod.path end
+    if relative:sub(1, 1) == "/" or relative:find("^%a:") then return nil end
+    if relative:find("\\", 1, true) then return nil end
+    local parts = {}
+    for segment in relative:gmatch("[^/]+") do
+      if segment == ".." then return nil end
+      if segment ~= "." then parts[#parts + 1] = segment end
+    end
+    if not parts[1] then return mod.path end
+    return mod.path .. "/" .. table.concat(parts, "/")
+  end
+
+  -- WHAT IS AT A PATH INSIDE THIS MOD, and WHAT IS IN A FOLDER OF IT.
+  --
+  -- A mod that ships a folder of optional content -- one file per species, a
+  -- pack of maps -- has to be able to see what actually arrived, and until
+  -- now the only answer was mod:read on a name it had to already know.  Sorted
+  -- because love.filesystem.getDirectoryItems is not: a mod that walks the
+  -- list and builds an index off it would otherwise order itself differently
+  -- on a different machine.
+  local function listIn(relative)
+    local dir = within(relative)
+    local fs = loader.fs
+    if not (dir and fs and fs.getDirectoryItems) then return {} end
+    local items = fs.getDirectoryItems(dir) or {}
+    local out = {}
+    for i = 1, #items do out[i] = items[i] end
+    table.sort(out)
+    return out
+  end
+
+  local function infoIn(relative)
+    local path = within(relative)
+    local fs = loader.fs
+    if not (path and fs and fs.getInfo) then return nil end
+    local info = fs.getInfo(path)
+    if not info then return nil end
+    -- a copy, not love's own record: what a mod does to it stays with the mod
+    return { type = info.type, size = info.size, modtime = info.modtime }
+  end
+
   api.assets = setmetatable({
     path = function(_, relative) return mod.path .. "/" .. relative end,
+    list = function(_, relative) return listIn(relative) end,
+    info = function(_, relative) return infoIn(relative) end,
     image = function(_, relative)
       local full = mod.path .. "/" .. relative
       local cached = loader.imageCache[full]
@@ -716,13 +863,20 @@ function Loader:_api(mod)
     local path = self.path .. "/" .. relative
     return loader.fs.read(path)
   end
+  -- the same two on the api itself, because a Gen 1 mod spells them mod:list
+  -- and mod:info rather than mod.assets:list
+  function api:list(relative) return listIn(relative) end
+  function api:info(relative) return infoIn(relative) end
   -- `required_imports`: base files the player supplies (see
   -- src/mods/ModImports.lua).  They are written into the mod's own folder, so
   -- mod:read already reaches them -- this is the polite way to ask whether one
   -- has arrived before starting a long extract.
-  api.imports = ModImports.api(mod.manifest, function(rel)
-    return loader.fs.read(mod.path .. "/" .. rel)
-  end)
+  --
+  -- ...AND `mod.cache`, WHICH IS mod.storage UNDER THE GEN 1 NAME.  Both come
+  -- from one call so the pair is built the same way for every mod; see
+  -- src/mods/ImportAccess.lua for why neither is a second implementation.
+  api.imports, api.cache = ImportAccess.new(mod.manifest, loader.fs,
+    function(rel) return loader.fs.read(mod.path .. "/" .. rel) end)
   -- mod.world / mod.game / mod.storage all materialize on first touch, for
   -- the same reason: a headless load must not drag the world stack in, and
   -- the Game the facade acts on is still being wired when the entry chunk

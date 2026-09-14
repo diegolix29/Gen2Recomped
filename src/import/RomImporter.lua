@@ -872,7 +872,127 @@ end
 -- literal pool, and it CLOSES: the PC's multichoice had already found the
 -- same number by a completely different route, as the gate on its HALL OF
 -- FAME row.  constants gain gen3GameClear.
-local CACHE_FORMAT = "rom-cache-v268:"
+-- v269: THE PC'S OWN SENTENCES, both screens'.  Reported from play: "the item
+-- deposit and withdrawal doesn't seem to work like it would in emerald and is
+-- falling back to gen1 menu, also allows for the depositing of key items".
+-- The words were the missing half of fixing that: "Withdraw how many
+-- {VAR1}(s)?", "There is no more room in the BAG.", "Important items can't be
+-- stored in the PC!", "Deposit in which BOX?", "That's your last POKeMON!".
+-- Each is swept out of the string run its screen's own labels sit in, which
+-- is how the bag's lines were already found -- and WHERE they sit is itself
+-- the evidence for the flow: the deposit lines are BAG strings, sat among the
+-- bag's own, because on this cartridge depositing an item is a bag screen.
+-- gen3PCMenu gains `text` and `storage.text`.
+-- v270: THE TITLE SCREEN'S OWN LETTERING, and where its logo actually is.
+-- Reported from play: "the pokemon logo is left aligned instead of center
+-- aligned above the emerald logo" and "the press start text has the wrong
+-- font compared to the actual rom".  Both come of a sheet being read as a
+-- picture when it is a LAYOUT: the logo is 166 pixels of art inside a
+-- 256-pixel background bitmap, so the ink's own box is measured now
+-- (contentX/contentWidth) and a screen centres that instead of the padding;
+-- and tag 03E9 is a linear tile strip holding PRESS START and the copyright
+-- end to end, which reads as scrambled text laid out eight tiles across and
+-- so was never drawn.  Its runs are cut at their own blank tiles and written
+-- out one row of tiles each (sheets[n].pieces).
+-- v271: WHERE THE INTRO'S SPARKLES GO.  Asked for directly: "double check the
+-- full rom intro, make sure our engine is matching it exactly".  Walking the
+-- intro's task chain turned up two places where the port had a formula and the
+-- cartridge has data: the second water drop is created at y=60 and the port
+-- had 30, and the eleven sparkles are a run of {x, y} byte pairs the scene's
+-- second task spawns one every twelve frames -- which the port was scattering
+-- with arithmetic of its own.  gen3IntroShots.<shot> gains `sparkles`.
+-- v272-v275: Emerald's trainer intro and defeat lines, the tilemap flip bits
+-- in the screen bakes, the Poke Mart's own field, and the trainer card's art.
+-- v276: PRISM'S DEX ENTRIES AND ITS BOULDER.  Reported from play, with a
+-- screenshot of a Zubat page reading "BYTE:CE" where its species line belongs:
+-- Prism keeps its dex entries in a shape of its own -- a COMPRESSED kind
+-- string, METRIC height and weight, and a length-prefixed first page -- and
+-- names its four entry banks with a plain `PokedexEntryBanks` label rather
+-- than Crystal's three dotted ones, so the reader was looking 42 banks away
+-- from the text.  In the same import, `changemap` now carries the replacement
+-- block table it names (Mound Cave's boulder) and `givetm` carries the machine
+-- it hands over.
+-- v277: WHAT PRISM'S SCRIPTS WERE NEVER SAYING.  Two operand widths came out
+-- of the generator wrong because the commands have no macro of their own name
+-- (eventvarop is written as readeventvar/writeeventvar/..., modifyeventvar as
+-- inceventvar/addtoeventvar/...), so eighteen and eleven sites respectively ate
+-- the opcode after them; and `anonjumptable` / `menuanonjumptable` name a jump
+-- table written INLINE, which the walker had no way to follow -- resolving
+-- them turned up 159 scripts, every menu branch behind them, that had never
+-- been decoded at all.
+-- v278: `cmdwitharrayargs` resolved.  It builds one of seven commands and runs
+-- it with some arguments taken from the array loadarray left loaded, and
+-- eighteen of Prism's thirty-one uses are a warp whose destination coordinates
+-- come out of that array -- eighteen places where pressing a thing took the
+-- player nowhere.  The per-argument widths come from the cartridge's own
+-- AllowedCustomScriptCommands (23:$5868) rather than a table written here.
+-- v279: the MENU family.  `menuanonjumptable` is loadmenudata + verticalmenu
+-- before it falls into the jump table, so the choice is what indexes it --
+-- lowered as a bare table, every one of those menus took whichever branch the
+-- previous command had left in the script variable.  Prism's loadmenudata and
+-- its scrolling list are Crystal's loadmenu under other names, and the same
+-- MenuHeader is behind them: eighteen of the thirty-seven menu sites now
+-- resolve to their real labels.
+-- v280: PRISM'S SIGNPOSTS, and the tail of its script table.
+--
+-- Its five is SIGNPOST_ITEM and its six is SIGNPOST_LOAD where Crystal has
+-- IFSET and IFNOTSET, so the map-scripts pass had been inventing a condition
+-- for 248 signs out of the first two bytes of their own words, and queueing
+-- kinds 6 and 7 -- 235 of them -- as BYTECODE.  Every one of those signs ran
+-- the disassembly of its own text instead of printing it, and eight of the
+-- cartridge's twenty-six script desyncs started there; the count is four now.
+-- EagulouCity is the closure check (source says LOAD, LOAD, ITEM, LOAD, LOAD;
+-- the ROM's kind bytes are 6, 6, 5, 6, 6).
+--
+-- With the noise gone the real remainder was small enough to finish:
+-- getnthstring's string list and itemplural's suffix rules -- both read out of
+-- the ROM, the plural arms by walking GiveItemCheckPluralMain's own compares --
+-- plus readpersonxy, variablestablerandom, copystring, loadsignpost,
+-- loadmemtrainer, trainertext, checkpokemontype and the two Pokemon-mode party
+-- commands.  Nineteen unlowered kinds down to four, of which two are Z80.
+--
+-- And a rule that was never Prism's alone: GetScriptByteOrVar answers the
+-- SCRIPT VARIABLE for a zero operand, so `cry 0`, `pokenamemem 0` and
+-- `checkitem 0` name what the script just looked up -- Crystal's Strength
+-- script is `readmem wScriptVar / cry 0`, and it had been crying species zero.
+-- v281: THE ONE TRAINER PIC THAT IS NOT COMPRESSED.  GetTrainerPic (0B:$707C)
+-- compares wTrainerClass against a single class and copies that one's 49 tiles
+-- RAW, skipping the FarDecompress every other class takes; Prism's PALETTE
+-- class is it, and read as an LZ stream its 784 plain bytes decoded to 311 and
+-- the pic was dropped -- which is why every Palette agent in Mound Cave fought
+-- under the placeholder.  The class number comes from that routine's own
+-- `cp n / jr nz`, so Gold and Crystal (which `cp n / ret nc` there) are
+-- untouched.  Sixty-six of Prism's sixty-seven classes decompressed to exactly
+-- 784 bytes; this was the one that did not, and now all sixty-seven do.
+-- v282: THE SUMMARY SCREEN'S OWN TILE SHEET.  LoadStatsScreenPageTilesGFX
+-- copies one seventeen-tile block to VRAM $31, and the exp bar's END CAPS on
+-- that screen are two tiles of it -- the pink page writes them itself, $40 at
+-- the bar's left and $41 at its right, on both Prism and Crystal.  With no
+-- sheet to draw them from the screen closed its exp bar with the HP bar's own
+-- $62 and double-bar cap, which is exactly what "the xp bar looks like the hp
+-- bar" describes.  The source, destination and count all come out of that
+-- routine's own `ld de / ld hl / lb bc`, and the cap tiles out of the two
+-- tilemap writes, so nothing about either is written down in the port.
+-- v283: EMERALD'S INTRO HAS A THIRD ACT, and the port had never played it.
+-- The intro's own task chain runs on past the bike ride -- 016D7E8 arms
+-- 016DBAC, and the chain goes through 016DD28 and 016E2A0 before the title
+-- takes over -- and what those handlers decompress is a Poke Ball, Groudon in
+-- three poses and Kyogre in four.  The scene pass could never have found them:
+-- they are 256-colour AFFINE backgrounds, a map of one BYTE per cell over
+-- 64-byte tiles, where every background it knows is a 4bpp sheet under a
+-- 16-bit tilemap.  Addresses, palette and widths are the routines' own
+-- arguments, traced; the figures are the runs of non-empty rows in each map.
+-- v284: THE THIRD ACT'S REAL SHAPE.  It is FIVE beats, not three -- a Poke Ball,
+-- Groudon, Kyogre, a cloud field closing over the screen and the same field
+-- parting again -- and 893 frames, and the movement is the cartridge's:
+-- tools/gen3_intro_act3.py runs the intro's own task code under a THUMB
+-- interpreter and records what the hardware is handed every frame, which
+-- compresses to 269 runs of constant step.  The act also is NOT black and
+-- white: a figure is drawn in two palette entries, a black body and markings
+-- (Groudon's 31, Kyogre's 47) that each handler animates through a table at
+-- $0D85CD0 -- black, blue, purple, magenta, RED -- so the markings are composed
+-- as their own mask and wear that colour at run time.
+local CACHE_FORMAT = "rom-cache-v303:"
 -- The completion marker is written under each version's cache prefix
 -- (rom-cache.complete for Red, blue/rom-cache.complete for Blue).
 local MARKER_PATH = "rom-cache.complete"
@@ -6799,11 +6919,18 @@ function RomImporter:_confirmModUpdate(modId, release)
     text = "Downloading " .. tostring(release and release.version or "?") .. "..." }
   local ran, err = pcall(function()
     local LauncherMods = require("src.mods.LauncherMods")
-    local ok, res = LauncherMods.installFromRelease(modId, release)
+    local ok, res, mismatch = LauncherMods.installFromRelease(modId, release)
     if ok then
       pcall(self._refreshMods, self)
-      self.modNotice = { ok = true,
-        text = "Updated " .. name .. " to " .. tostring(res) }
+      -- A MIS-STAMPED RELEASE IS NOT A SUCCESSFUL UPDATE, whatever the files
+      -- say.  installFromRelease hands back the version the installed
+      -- manifest.json declares and, when that is not the release's own
+      -- number, the reason -- because the alternative is "Updated to 0.7.47"
+      -- followed by 0.7.47 still being offered, with nothing anywhere saying
+      -- why (see installFromRelease).
+      self.modNotice = mismatch
+        and { ok = false, text = name .. ": " .. mismatch }
+        or { ok = true, text = "Updated " .. name .. " to " .. tostring(res) }
     else
       self.modNotice = { ok = false, text = tostring(res) }
     end
@@ -6820,11 +6947,13 @@ function RomImporter:_installModVersion(modId, release)
   self.modNotice = { ok = true, text = "Downloading " .. tostring(version) .. "..." }
   local ran, err = pcall(function()
     local LauncherMods = require("src.mods.LauncherMods")
-    local ok, res = LauncherMods.installFromRelease(modId, release)
+    local ok, res, mismatch = LauncherMods.installFromRelease(modId, release)
     if ok then
       pcall(self._refreshMods, self)
-      self.modNotice = { ok = true,
-        text = "Installed " .. tostring(modId) .. " " .. tostring(res) }
+      self.modNotice = mismatch
+        and { ok = false, text = tostring(modId) .. ": " .. mismatch }
+        or { ok = true,
+             text = "Installed " .. tostring(modId) .. " " .. tostring(res) }
     else
       self.modNotice = { ok = false, text = tostring(res) }
     end
@@ -7510,13 +7639,14 @@ function RomImporter:_findInstall(entry)
   self.findNotice = { ok = true, text = Strings("Downloading %s...", name) }
   local ran, err = pcall(function()
     local LauncherMods = require("src.mods.LauncherMods")
-    local ok, res = LauncherMods.installFromIndex(entry)
+    local ok, res, mismatch = LauncherMods.installFromIndex(entry)
     if ok then
       -- The installed list is what the Install / Installed labels read, so it
       -- has to be re-derived before the next paint or the card lies.
       pcall(self._refreshMods, self)
-      self.findNotice = { ok = true,
-        text = Strings("Installed %s %s", name, tostring(res)) }
+      self.findNotice = mismatch
+        and { ok = false, text = name .. ": " .. mismatch }
+        or { ok = true, text = Strings("Installed %s %s", name, tostring(res)) }
     else
       self.findNotice = { ok = false, text = tostring(res) }
     end

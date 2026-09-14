@@ -269,7 +269,7 @@ function HallOfFame:drawPlayerStats()
   Font.drawBox(0, 4, 12, 8)
   love.graphics.setColor(0, 0, 0, 1)
   Font.draw(Strings("PLAY TIME"), 1 * 8, 6 * 8)
-  local t = math.floor(save.playTime or 0)
+  local t = math.floor(require("src.core.SaveData").playSeconds(save))
   Font.draw(("%3d:%02d"):format(math.floor(t / 3600), math.floor(t / 60) % 60),
             5 * 8, 7 * 8)
   Font.draw(Strings("MONEY"), 1 * 8, 9 * 8)

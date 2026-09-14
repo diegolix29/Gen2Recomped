@@ -46,6 +46,9 @@ local GameVersion = require("src.core.GameVersion")
 -- first time a HP bar drained.
 local activeBattlers, foesOf
 
+-- the two text rows, a constant rather than a table a frame
+local TEXT_AREA_ROWS = { 112, 128 }
+
 local BattleState = {}
 BattleState.__index = BattleState
 BattleState.isOpaque = true
@@ -145,6 +148,22 @@ function BattleState:isWideBattleLayout()
   -- Hoenn has the real thing, at the size the cartridge draws it, with the
   -- cartridge's own healthboxes and window frames.  There is nothing here for
   -- it to buy, so the option is satisfied by the layout it was imitating.
+  --
+  -- ...AND THE OPTION IS ANSWERED SOMEWHERE ELSE INSTEAD.
+  --
+  -- Reported from play, with a frame: "with the wide mode selection in options
+  -- for battle, its not filling the screen like it does in my dramatic shapes
+  -- voxel mod please make it do so".  Declining here left the switch doing
+  -- NOTHING on Hoenn -- gen3Layout() below won, at the cartridge's 240x160,
+  -- integer-scaled and letterboxed, which is the pale band down each side of
+  -- that frame.
+  --
+  -- So WIDE still does not mean WideBattle here, and it now means something:
+  -- BattleState:gen3WideLayout reads the same option and grows EMERALD'S
+  -- surface to the window's shape instead (Gen3Battle.surfaceWidth), with
+  -- Emerald's own healthboxes on the surface's own edges and Emerald's own
+  -- bottom strip spanning it.  This function is the Game Boy layout's
+  -- question and keeps the Game Boy layout's answer.
   if GameVersion.isGen3() then return false end
   local options = self.game and self.game.save and self.game.save.options
   return options and options.battleLayout == "wide" or false
@@ -167,6 +186,60 @@ end
 function BattleState:gen3Layout()
   if self:isWideBattleLayout() then return false end
   return GameVersion.isGen3() and true or false
+end
+
+-- BATTLE LAYOUT = WIDE, ANSWERED IN EMERALD'S OWN TERMS.
+--
+-- The same option the Game Boy layouts read, on the layout that has a screen
+-- of its own to widen: Emerald's composition on a surface as wide as the
+-- window can show it, rather than the Game Boy's composition stretched over
+-- it (see isWideBattleLayout above for why that distinction is the whole
+-- point).  OG is the cartridge's own 240x160 and goes nowhere near any of it.
+function BattleState:gen3WideLayout()
+  if not self:gen3Layout() then return false end
+  local options = self.game and self.game.save and self.game.save.options
+  return options and options.battleLayout == "wide" or false
+end
+
+-- THE SURFACE THIS BATTLE ASKS FOR, DERIVED FROM THE WINDOW.
+--
+-- Memoised on the window size and the BATTLE SIZE setting, because uiSize()
+-- is asked several times in a single frame -- Game:draw resolves the surface
+-- with it, then Game.wantsThisSurface asks every state on the stack whether
+-- it owns that surface -- and every one of those answers has to be the SAME
+-- number.  A width that drifted between two calls in one frame would
+-- reallocate the canvas mid-frame and leave half the screen drawn at the
+-- other width.
+function BattleState:gen3SurfaceWidth()
+  if not self:gen3WideLayout() then return Gen3Battle.WIDTH end
+  local Renderer = require("src.render.Renderer")
+  local pw, ph = 0, 0
+  if Renderer.pixelSize then
+    local ok, a, b = pcall(Renderer.pixelSize, Renderer)
+    if ok and type(a) == "number" and type(b) == "number" then pw, ph = a, b end
+  end
+  local fill = self:wantsFillScale()
+  local key = pw .. "x" .. ph .. (fill and "/fill" or "/fixed")
+  if self._gen3SurfaceKey ~= key then
+    self._gen3SurfaceKey = key
+    self._gen3SurfaceW = Gen3Battle.surfaceWidth(pw, ph, fill,
+                                                 Renderer.MAX_UI_WIDTH)
+  end
+  return self._gen3SurfaceW
+end
+
+-- A WIDENED EMERALD BATTLE OWNS THE SURFACE UNTIL IT LEAVES THE STACK.
+--
+-- Same rule, and the same reason, as the Game Boy wide layout's
+-- (Game.wideBattleInStack): the party menu, the bag and the dialogue boxes a
+-- battle opens are Gen 3 screens of their OWN, and every one of them asks for
+-- the GBA's 240x160.  Game.nativeSurfaceInStack takes the TOPMOST state
+-- carrying a uiSize, so without this the canvas would snap back to 240 for
+-- exactly the frames one of those is open -- with the battle underneath
+-- redrawing its wider composition into a surface 240 wide, clipped at the
+-- right edge, and snapping back out again when the menu closed.
+function BattleState:holdsUISurface()
+  return self:gen3SurfaceWidth() > Gen3Battle.WIDTH
 end
 
 -- ---------------------------------------------------------------------------
@@ -209,7 +282,8 @@ function BattleState:layoutGeometry()
   if self:isWideBattleLayout() then return nil end
   if self:gen3Layout() then
     return Gen3Battle.geometry(BattleState.CLASSIC_GEOMETRY,
-                               self.data and self.data.constants)
+                               self.data and self.data.constants,
+                               self:gen3SurfaceWidth())
   end
   return BattleState.CLASSIC_GEOMETRY
 end
@@ -351,7 +425,13 @@ end
 -- Renderer:setUISize asks the top state for its surface before anything draws
 function BattleState:uiSize()
   if self:wideLayout() then return WideBattle.WIDTH, WideBattle.HEIGHT end
-  if self:gen3Layout() then return Gen3Battle.WIDTH, Gen3Battle.HEIGHT end
+  -- ...and on Hoenn the WIDTH is the option's (gen3SurfaceWidth answers the
+  -- cartridge's own 240 on OG).  The height is never a variable: 160 is the
+  -- cartridge's row count and every piece of art on the screen is drawn
+  -- against it.
+  if self:gen3Layout() then
+    return self:gen3SurfaceWidth(), Gen3Battle.HEIGHT
+  end
   return 160, 144
 end
 
@@ -361,7 +441,12 @@ end
 -- extra columns unremapped in the forced-mono modes (WideBattle.zones).
 function BattleState:sgbPalettes()
   if self:wideLayout() then return WideBattle.zones() end
-  if self:gen3Layout() then return Gen3Battle.zones() end
+  -- ...sized to the surface actually allocated, for exactly the reason the
+  -- note above gives: the widened columns would otherwise stay un-remapped
+  -- in the forced-mono modes.
+  if self:gen3Layout() then
+    return Gen3Battle.zones(self:gen3SurfaceWidth())
+  end
   return nil
 end
 
@@ -9928,7 +10013,7 @@ function BattleState:drawTextAreaInner()
       if self.scrollPx <= 0 then self.scrollPx = nil end
     end
     local off = self.scrollPx or 0
-    local ys = { 112, 128 }
+    local ys = TEXT_AREA_ROWS
     for li, line in ipairs(self.shown or {}) do
       local y = (ys[li] or 128) + off
       for i = 1, #line do

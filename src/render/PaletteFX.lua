@@ -245,6 +245,7 @@ end
 -- No vanilla record sets the flag, so both buckets stay empty every frame
 -- and the zone lists are exactly the ones the states returned.
 local trueColorRects = { ui = {}, world = {} }
+local EMPTY_RECTS = {}
 local currentPass = nil
 
 -- which canvas the renderer is filling.  nil for a pass that composites
@@ -254,20 +255,33 @@ function PaletteFX.setPass(name)
   currentPass = trueColorRects[name] and name or nil
 end
 
+-- THE LIST IS THE POOL.  These are rebuilt from nothing every frame and the
+-- count barely moves between frames, so the tables themselves are kept and
+-- overwritten: `clearTrueColor` only forgets how many are live, and
+-- `markTrueColor` reuses the one already sitting at that index.  Readers walk
+-- the list with `for i = 1, count` (trueColorRects returns the count too), so
+-- a stale entry past the end is never seen.
+local trueColorCount = {}
+
 function PaletteFX.clearTrueColor()
-  for _, rects in pairs(trueColorRects) do
-    for i = #rects, 1, -1 do rects[i] = nil end
-  end
+  for name in pairs(trueColorRects) do trueColorCount[name] = 0 end
 end
 
 function PaletteFX.markTrueColor(x, y, w, h)
   local rects = currentPass and trueColorRects[currentPass]
   if not rects or w <= 0 or h <= 0 then return end
-  rects[#rects + 1] = { colors = false, x = x, y = y, w = w, h = h }
+  local n = (trueColorCount[currentPass] or 0) + 1
+  trueColorCount[currentPass] = n
+  local rect = rects[n]
+  if rect then
+    rect.colors, rect.x, rect.y, rect.w, rect.h = false, x, y, w, h
+  else
+    rects[n] = { colors = false, x = x, y = y, w = w, h = h }
+  end
 end
 
 function PaletteFX.trueColorRects(name)
-  return trueColorRects[name] or {}
+  return trueColorRects[name] or EMPTY_RECTS, trueColorCount[name] or 0
 end
 
 -- "THE WHOLE SCREEN" IS WHATEVER SCREEN IS ACTUALLY UP.

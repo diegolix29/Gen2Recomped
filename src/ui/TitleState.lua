@@ -20,6 +20,18 @@ TitleState.isOpaque = true
 -- glass -- and unlike the overworld it has no zoom the player chose to respect.
 function TitleState:wantsFillScale() return true end
 
+-- NOT A PANEL, so its edge is not a frame to continue.
+--
+-- Renderer:bleedEdges paints the letterbox with the surface's outermost row
+-- and column so a menu's border appears to run to the window edge.  Here the
+-- outermost column is the Game Boy title art (the Gen 3 gate never reaches here, but the answer is the same one) -- pulling it
+-- outward stretches that sideways instead of extending a border.  Reported
+-- from play: "fix the stretching of borders on the start menu, main menu,
+-- main menu intro and the continue, new game, options, exit menus ... instead
+-- make them full screen/fit the screen without stretching".  wantsFillScale
+-- above is what makes it fill; this is what stops it smearing.
+function TitleState:wantsEdgeBleed() return false end
+
 -- SGB title zones (PalPacket_Titlescreen): the logo rows get LOGO2,
 -- the version-ribbon band LOGO1, the rest MEWMON.
 --
@@ -410,7 +422,7 @@ function ContinueInfo:draw()
   end
   Font.draw(Strings("POKéDEX"), 40, 104)
   Font.draw(("%3d"):format(owned), 120, 104)
-  local t = math.floor(save.playTime or 0)
+  local t = math.floor(require("src.core.SaveData").playSeconds(save))
   Font.draw(Strings("TIME"), 40, 120)
   Font.draw(("%3d:%02d"):format(math.floor(t / 3600),
                                 math.floor(t / 60) % 60), 104, 120)

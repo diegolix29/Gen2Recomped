@@ -615,6 +615,63 @@ function NPC.new(data, mapId, objDef)
   return self
 end
 
+-- CHANGING AN OBJECT'S MOVEMENT TYPE AFTER IT IS ALREADY STANDING THERE.
+--
+-- Reported from play, of Littleroot: "mom looks the wrong way".  She does,
+-- and so does everybody else a script re-poses, because `setobjectmovementtype`
+-- did nothing at all: it wrote `npc.gen3MovementType` and NOTHING IN THE
+-- ENGINE READ THAT FIELD.  One byte decides an object's facing, whether it
+-- wanders and on which axis, whether it turns in place or walks a circuit --
+-- see NPC.new -- and none of it was being re-derived.
+--
+-- The cartridge writes the TEMPLATE rather than the live object
+-- (SetObjEventTemplateMovementType), which sounds like it would not take
+-- effect until the next map load.  It does take effect now, because the
+-- scripts that call it are ON_TRANSITION callbacks and those run BEFORE the
+-- map's objects are built.  This port spawns its objects earlier, so the
+-- live object is re-posed here as well as the template being remembered
+-- (Gen3Commands.g3_movement_type keeps the other half) -- which lands in the
+-- same place from the player's side, and keeps working for the scripts that
+-- call it mid-scene.
+--
+-- The wander box is re-anchored to where the object is standing NOW, not to
+-- the cell in its map definition: a script that re-poses somebody has almost
+-- always just moved them, and the cartridge re-reads the template it has
+-- likewise just rewritten.
+function NPC:setMovementType(data, movementType)
+  local id = tonumber(movementType)
+  if not id then return false end
+  self.gen3MovementType = id
+  local c = data and data.constants
+  local g3 = c and c.gen3MovementTypes and c.gen3MovementTypes[id]
+  local hiddenType = c and c.gen3HiddenMovement
+  if (g3 and g3.hides) or (hiddenType and id == hiddenType) then
+    self.hidden, self.gen3Hidden = true, true
+  elseif self.gen3Hidden then
+    self.hidden, self.gen3Hidden = false, nil
+  end
+  if not g3 then return false end
+  self.facing = g3.facing or self.facing
+  self.wanders = g3.wanders == true
+  self.sequence = type(g3.sequence) == "table" and #g3.sequence == 4
+                  and g3.sequence or nil
+  self.sequenceAt = 0
+  self.roamDirs = (g3.axis == "vertical" and ROAM_DIRS.UP_DOWN)
+    or (g3.axis == "horizontal" and ROAM_DIRS.LEFT_RIGHT)
+    or ROAM_DIRS.ANY_DIR
+  self.roamOriginX, self.roamOriginY = self.cellX, self.cellY
+  self.turns = g3.turns
+  self.looksAround = g3.look
+  self.rotates = g3.rotate
+  -- a re-pose lands the object on its cell: a half-finished step belongs to
+  -- the behaviour it has just stopped having
+  self.moving = false
+  self.progress = 0
+  self.targetX, self.targetY = nil, nil
+  self.px, self.py = self.cellX * 16, self.cellY * 16
+  return true
+end
+
 -- Re-resolve the sheet after a `variablesprite` assignment: a map's callback
 -- can fill the slot in after its objects have already been built.
 function NPC:refreshSprite(data)

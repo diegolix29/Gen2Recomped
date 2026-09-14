@@ -30,6 +30,7 @@
 
 local Font = require("src.render.Font")
 local Logger = require("src.core.Logger")
+local Runtime = require("src.mods.Runtime")
 local Screens = require("src.ui.Screens")
 local Strings = require("src.core.Strings")
 local Theme = require("src.ui.Theme")
@@ -61,6 +62,18 @@ end
 
 function Gen3StartMenu:uiSize() return GBA_W, GBA_H end
 function Gen3StartMenu:wantsFillScale() return true end
+
+-- NOT A PANEL, so its edge is not a frame to continue.
+--
+-- Renderer:bleedEdges paints the letterbox with the surface's outermost row
+-- and column so a menu's border appears to run to the window edge.  Here the
+-- outermost column is a small window in the corner with the MAP behind it -- pulling it
+-- outward stretches that sideways instead of extending a border.  Reported
+-- from play: "fix the stretching of borders on the start menu, main menu,
+-- main menu intro and the continue, new game, options, exit menus ... instead
+-- make them full screen/fit the screen without stretching".  wantsFillScale
+-- above is what makes it fill; this is what stops it smearing.
+function Gen3StartMenu:wantsEdgeBleed() return false end
 
 -- colour, not four shades: the same reasoning as Gen3Title's
 function Gen3StartMenu:sgbPalettes()
@@ -160,6 +173,8 @@ function Gen3StartMenu.new(game)
   return self
 end
 
+local function sameRows(_, rows) return rows end
+
 -- The eight cartridge rows, plus the one this port adds.
 --
 -- MODS is not Emerald's and never will be, but it is the only way into the
@@ -240,6 +255,49 @@ function Gen3StartMenu:buildRows(game, labels, playerName)
   if not (boot and boot.startMenuQuit == false) then
     self.rows[#self.rows + 1] = { label = Strings("QUIT GAME"), key = "quit" }
   end
+
+  -- AND THE MODS' OWN ROWS, THROUGH THE SEAM THE OTHER VERSIONS ALREADY HAVE.
+  --
+  -- src/ui/StartMenu.lua runs its finished item list through the
+  -- `ui.start_menu.items` hook, which is how a mod adds, removes or reorders
+  -- START rows.  This screen never did, so on Emerald -- and nowhere else --
+  -- a mod's row was simply absent.  Same hook name, same fallback, same
+  -- "keep the vanilla rows" answer to a hook that returns something that is
+  -- not a list, so one mod works on all three versions without a branch.
+  --
+  -- AFTER quit, like the Game Boy menu: the hook sees the finished list,
+  -- which is the only way a mod can put a row BELOW the port's own two or
+  -- take one of them away.
+  --
+  -- Wrapped, because a mod's hook can still reach this caller: Hooks:call
+  -- swallows a link that fails on its own, but re-raises one that fails after
+  -- calling next() (src/mods/Hooks.lua) -- and the START menu is not a screen
+  -- that may refuse to open.  A throwing hook leaves the cartridge's rows and
+  -- a line on the console, which is the degradation every other seam here has.
+  local ok, hooked = pcall(Runtime.call, "ui.start_menu.items", sameRows,
+                           game, self.rows)
+  if not ok then
+    Logger.error("gen3 start menu: ui.start_menu.items failed (%s); keeping "
+                 .. "the vanilla rows", tostring(hooked))
+  elseif type(hooked) ~= "table" then
+    Logger.error("gen3 start menu: ui.start_menu.items returned %s; keeping "
+                 .. "the vanilla rows", type(hooked))
+  else
+    -- A ROW HAS TO BE DRAWABLE.  choose() tolerates a row it does not know --
+    -- it closes and says so -- but draw() indexes row.label, so one malformed
+    -- entry from a hook would take the menu down on the next frame rather
+    -- than when it was added.  Dropped with a warning naming the index.
+    local kept = {}
+    for index, row in ipairs(hooked) do
+      if type(row) == "table" and type(row.label) == "string" then
+        kept[#kept + 1] = row
+      else
+        Logger.warn("gen3 start menu: ui.start_menu.items row %d has no "
+                    .. "label; dropped", index)
+      end
+    end
+    self.rows = kept
+  end
 end
 
 function Gen3StartMenu:reopen()
@@ -300,6 +358,21 @@ function Gen3StartMenu:choose(row)
     return self.game.stack:push(LinkState.new(self.game))
   end
   if row.key == "save" then return self:startSave() end
+  -- A ROW THAT BRINGS ITS OWN HANDLER, which is how the Game Boy menu has
+  -- always let a mod add one: src/ui/StartMenu.lua builds Menu items with
+  -- `onSelect`, so a mod porting a row across arrives here with one and no
+  -- `screen`.  Without this it fell through to "not implemented yet" and the
+  -- row closed the menu and did nothing -- the hook above would have been
+  -- decoration.  Called with the menu still open, like the Game Boy's, so a
+  -- handler that wants to push a screen or close first can decide for itself.
+  if type(row.onSelect) == "function" then
+    local ok, err = pcall(row.onSelect, self.game, row)
+    if not ok then
+      Logger.error("gen3 start menu: %s handler failed: %s",
+                   tostring(row.label), tostring(err))
+    end
+    return
+  end
   if row.key == "option" then
     local boot = self.game.data.field and self.game.data.field.boot
     local screens = boot and boot.screens or {}
@@ -368,7 +441,7 @@ function Gen3StartMenu:saveInfoRows()
   end
   local owned = 0
   for _ in pairs((save.pokedex or {}).owned or {}) do owned = owned + 1 end
-  local t = math.floor(tonumber(save.playTime) or 0)
+  local t = math.floor(require("src.core.SaveData").playSeconds(save))
   -- screen order: PLAYER, BADGES, POKéDEX, TIME
   return {
     { words[1] or "PLAYER", name },

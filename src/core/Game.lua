@@ -5,6 +5,7 @@ local Data = require("src.core.Data")
 local FixedStep = require("src.core.FixedStep")
 local Input = require("src.core.Input")
 local Logger = require("src.core.Logger")
+local Platform = require("src.core.Platform")
 local Renderer = require("src.render.Renderer")
 local SaveData = require("src.core.SaveData")
 local StateStack = require("src.core.StateStack")
@@ -314,8 +315,16 @@ function Game:step(dt)
     self.linkNet:update()
   end
   self.stack:update(dt)
-  -- play time for the trainer card / save screen
-  self.save.playTime = (self.save.playTime or 0) + dt
+  -- play time for the trainer card / save screen.  A save written by an older
+  -- build carries the broken-down { hours, minutes, ... } form, which would
+  -- throw here on its first frame; playSeconds normalises it, and the field is
+  -- a number from this assignment onward (SaveData.validate does the same on
+  -- load, so this is the belt to that brace).
+  local clock = self.save.playTime
+  if clock ~= nil and tonumber(clock) == nil then
+    clock = require("src.core.SaveData").playSeconds(self.save)
+  end
+  self.save.playTime = (tonumber(clock) or 0) + dt
   -- Music.update is NOT serviced here: it decrements fade counters and
   -- drives ChipAudio once per call, so running it inside the logic step
   -- would pitch music and sfx up under fast-forward. Game:update advances
@@ -423,6 +432,28 @@ function Game.wideBattleInStack(stack)
   return nil
 end
 
+-- ...AND A STATE THAT WIDENED ITS OWN SURFACE HOLDS IT THE SAME WAY.
+--
+-- Whole-stack, for the reason above, and separate from wideBattleInStack
+-- because it is not the same layout: BATTLE LAYOUT = WIDE on a Hoenn
+-- cartridge keeps EMERALD's composition and grows its surface to the window
+-- (BattleState:holdsUISurface), and every menu, bag and dialogue box that
+-- battle opens is itself a Gen 3 screen asking for the GBA's 240x160.
+-- nativeSurfaceInStack takes the TOPMOST state with a uiSize, so without this
+-- the surface would snap back to 240 for exactly those frames and the battle
+-- underneath would redraw its wider composition clipped at the right edge.
+--
+-- Nothing in Gen 1, Gen 2 or Prism answers this, so nothing there changes.
+function Game.heldSurfaceInStack(stack)
+  for i = #(stack and stack.states or {}), 1, -1 do
+    local state = stack.states[i]
+    if state and state.holdsUISurface and state:holdsUISurface() then
+      return state
+    end
+  end
+  return nil
+end
+
 -- THE SURFACE A STATE ASKS FOR, held for the whole stack above it.
 --
 -- Same shape and the same reason as wideBattleInStack: a screen that wants a
@@ -469,6 +500,39 @@ function Game.uiAnchorsHeldInStack(stack)
     if state and state.holdsUIAnchors then return true end
   end
   return false
+end
+
+-- MAY THE LETTERBOX BE PAINTED WITH THE SURFACE'S OWN EDGE?
+--
+-- Renderer:bleedEdges pulls the outermost row and column of a Gen 3 screen
+-- outward so a menu's border appears to run to the edge of the window.  That
+-- is right for a PANEL -- a window frame drawn over something -- because its
+-- outermost column IS the frame, and wrong for anything that composes a
+-- picture of its own, because there the outermost column is artwork and
+-- smearing it duplicates artwork instead of extending a border.
+--
+-- The battle was the first screen to say so and says it through holdsUIAnchors
+-- (see Renderer).  The rest say it here: the title, the attract movie, the
+-- main menu and the START menu are all composed screens, and all four were
+-- being stretched.  Reported from play: "fix the stretching of borders on the
+-- start menu, main menu, main menu intro and the continue, new game, options,
+-- exit menus -- instead make them full screen/fit the screen without
+-- stretching".  They already fill as far as they can without distorting;
+-- wantsFillScale scales the surface to the window with the aspect kept.  What
+-- was left over was the smear, and this is what turns it off.
+--
+-- Asked of the WHOLE stack and answered by the first refusal, for the same
+-- reason the other two are: a menu opened over one of these -- OPTION from
+-- the main menu, SAVE from the START menu, a text box over either -- must not
+-- switch the smear back on for the frames it is up.
+function Game.edgeBleedAllowedInStack(stack)
+  for i = #(stack and stack.states or {}), 1, -1 do
+    local state = stack.states[i]
+    if state and state.wantsEdgeBleed and not state:wantsEdgeBleed() then
+      return false
+    end
+  end
+  return true
 end
 
 -- Where Game:draw starts drawing this frame.  Normally the topmost opaque
@@ -546,6 +610,36 @@ function Game.zonesNeedCentering(zoneOwner, classicOffset)
   return not Game.wantsThisSurface(zoneOwner)
 end
 
+-- WHERE A STATE THAT DOES NOT OWN THE SURFACE IS CENTRED IN IT.
+--
+-- Every such state used to be centred as though it were 160x144, because
+-- every such state WAS one: the only surfaces wider than the Game Boy's were
+-- the wide battle's 304x144 and the GBA's 240x160, and anything that did not
+-- own one of those was a Game Boy screen drawn in Game Boy coordinates.
+--
+-- BATTLE LAYOUT = WIDE on a Hoenn cartridge ends that.  The battle asks for a
+-- surface derived from the window -- 320 pixels on a 1920x1080 screen -- and
+-- the party menu, the bag and the dialogue box it opens are GEN 3 screens:
+-- they ask for 240x160, which is neither the surface in use nor the Game
+-- Boy's.  Centring one of those by (320 - 160) / 2 = 80 puts a 240-wide
+-- screen at x = 80 and hangs eighty pixels of it off the right edge.  Its own
+-- centre is (320 - 240) / 2 = 40.
+--
+-- So the offset is asked of the STATE, by the size it actually laid itself out
+-- in.  A state with no uiSize -- every Game Boy screen, and every state on a
+-- Gen 1, Gen 2 or Prism cartridge -- answers 160x144 and gets the arithmetic
+-- it always got, to the pixel.
+local function homeOffset(state, uw, uh)
+  local sw, sh = Renderer.WIDTH, Renderer.HEIGHT
+  if state and state.uiSize then
+    local ok, w, h = pcall(state.uiSize, state)
+    if ok and type(w) == "number" and type(h) == "number" then sw, sh = w, h end
+  end
+  return math.floor((uw - sw) / 2), math.floor((uh - sh) / 2)
+end
+
+Game.homeOffset = homeOffset
+
 Game.centerClassicZones = centerClassicZones
 
 function Game:draw()
@@ -564,7 +658,11 @@ function Game:draw()
   -- unchanged. Outside a battle, including the title screen, the option is
   -- intentionally inactive because it is a battle-layout setting.
   local wideBattle = Game.wideBattleInStack(self.stack)
-  local native = not wideBattle and Game.nativeSurfaceInStack(self.stack) or nil
+  -- ...and a Gen 3 battle that widened its own screen holds it the same way,
+  -- ahead of the topmost-uiSize pick (see Game.heldSurfaceInStack).
+  local held = not wideBattle and Game.heldSurfaceInStack(self.stack) or nil
+  local native = not wideBattle
+    and (held or Game.nativeSurfaceInStack(self.stack)) or nil
   local classicOffset, classicOffsetY = 0, 0
   if wideBattle and wideBattle.uiSize then
     Renderer:setUISize(wideBattle:uiSize())
@@ -580,6 +678,9 @@ function Game:draw()
   else
     Renderer:setUISize(Renderer.WIDTH, Renderer.HEIGHT)
   end
+  -- the surface every state below is either drawing in or being centred
+  -- inside, resolved before any of them draws
+  local surfW, surfH = Renderer:uiSize()
   -- BATTLE SIZE: scale the battle surface to the window instead of the
   -- classic integer letterbox.  Read from the whole stack, not just the top,
   -- so a party menu or text box opened mid-battle keeps the same surface.
@@ -627,9 +728,17 @@ function Game:draw()
       or (native ~= nil and state == native)
       or Game.wantsThisSurface(state)
     if state and state.draw then
+      -- ...and it is centred by ITS OWN size, not by the Game Boy's (see
+      -- Game.homeOffset).  classicOffset still gates it: a surface that is
+      -- the Game Boy's centres nothing, which is every frame outside a wide
+      -- battle and every Gen 1 / Gen 2 / Prism frame inside one.
+      local ox, oy = 0, 0
       if (classicOffset ~= 0 or classicOffsetY ~= 0) and not ownsSurface then
+        ox, oy = homeOffset(state, surfW, surfH)
+      end
+      if ox ~= 0 or oy ~= 0 then
         love.graphics.push()
-        love.graphics.translate(classicOffset, classicOffsetY)
+        love.graphics.translate(ox, oy)
         state:draw()
         love.graphics.pop()
       else
@@ -672,8 +781,16 @@ function Game:draw()
   -- surface currently in use?  More than one state can, and every one of them
   -- draws in it rather than being centred in it.  Zones follow their drawer,
   -- so they have to be asked the same question, and now they are.
-  if Game.zonesNeedCentering(zoneOwner, classicOffset) then
-    zones = centerClassicZones(zones, classicOffset)
+  -- ...and by the ZONE OWNER's own size, for the same reason the draw above
+  -- is: a 240-wide Gen 3 menu laid its zones out across 240 pixels and they
+  -- belong forty pixels into a 320-wide surface, not eighty.  The gate is
+  -- still classicOffset, so a Game Boy surface shifts nothing.
+  local zoneOffset = classicOffset
+  if classicOffset ~= 0 and zoneOwner then
+    zoneOffset = select(1, homeOffset(zoneOwner, surfW, surfH))
+  end
+  if Game.zonesNeedCentering(zoneOwner, zoneOffset) then
+    zones = centerClassicZones(zones, zoneOffset)
   end
   -- 14's render.zones: weather/lighting overlays and custom colorization
   -- recolor or add zones before the blit
@@ -975,11 +1092,63 @@ end
 function Game:focus(f)
   Input:reset()
   TouchControls:reset()
+  self:audioSession(f, "focus")
 end
 
 function Game:visible(v)
   Input:reset()
   TouchControls:reset()
+  self:audioSession(v, "visibility")
+end
+
+-- AN INCOMING PHONE CALL IS AN AUDIO-SESSION LOSS, NOT A WINDOW EVENT.
+--
+-- Reported from play: "on iOS when they got a phone call the game would
+-- crash".  iOS gives the audio session to the phone app for the length of the
+-- call, and SDL reports that to the app as SDL_APP_WILLENTERBACKGROUND /
+-- SDL_APP_DIDENTERBACKGROUND -- which arrives *here*, because LOVE maps those
+-- onto love.focus(false) / love.visible(false).  OpenAL's device is
+-- invalidated at that moment, and the chip music path queues into its
+-- QueueableSource on EVERY frame (ChipAudio.update, driven from Game:update
+-- above), so within one frame the game is making AL calls against a device
+-- that no longer exists; LOVE raises OpenAL's refusal as a Lua error thrown
+-- out of Music.update, and that is the crash.  Android delivers the same app
+-- events -- and there GL context loss is the normal case rather than the
+-- exception -- so it gets the same handling even though nobody has reported it
+-- there yet.
+--
+-- MOBILE ONLY, deliberately.  On desktop, alt-tab has always kept the music
+-- playing and there is no session to lose; Platform.detect().mobile is false
+-- for Windows / macOS / Linux and for the console builds, and false under the
+-- headless test stub (which has no love.system at all), so every line this
+-- reaches is inert off a phone.  It is inert while focused too: both edges are
+-- latched on self.audioSuspended, so the focus+visible pair that a single
+-- transition delivers is acted on once.
+function Game:audioSession(active, why)
+  if not Platform.detect().mobile then return end
+  local Music = require("src.core.Music")
+  if active then
+    if not self.audioSuspended then return end
+    self.audioSuspended = false
+    Logger.info("audio session: %s regained -- rebuilding audio", why)
+    Music.resume(Data)
+    -- The app was parked inside SDL's event loop for the whole call, so the
+    -- first love.timer.step() after it returns the LENGTH OF THE CALL.
+    -- FixedStep already clamps its accumulator (FixedStep.maxAccum, 0.25s =
+    -- 15 steps), so an unbounded dt cannot spiral into thousands of catch-up
+    -- ticks here -- but 15 logic steps inside one frame still plays out as a
+    -- lurch, and a direction held when the call arrived walks the player most
+    -- of a tile before anything is drawn.  discardCatchup is the machinery
+    -- that already exists for exactly this (it absorbs one oversized frame as
+    -- a single step, for map seams); a resume from an interruption is the
+    -- largest hitch this engine will ever be handed.
+    FixedStep:discardCatchup()
+  else
+    if self.audioSuspended then return end
+    self.audioSuspended = true
+    Logger.info("audio session: %s lost -- suspending audio", why)
+    Music.suspend()
+  end
 end
 
 -- A disconnected/dropped controller can't send the button-up for whatever

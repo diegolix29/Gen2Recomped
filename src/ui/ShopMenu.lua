@@ -253,13 +253,21 @@ function ShopMenu.new(game, stock, onQuit)
   local counter = gen3Counter(game)
   if counter then
     local Menu = require("src.ui.Menu")
-    local menu = Menu.new(game, {
+    local menu
+    menu = Menu.new(game, {
       { label = line(game, "buy", Strings("BUY")), keepOpen = true,
         onSelect = function()
-          game.stack:push(counter.new(game, { mode = "buy", stock = stock }))
+          -- the Hoenn counter is an overlay, so the three-row box goes away
+          -- while its list is up (see Gen3ShopMenu.counter)
+          menu.hidden = true
+          game.stack:push(counter.new(game, { mode = "buy", stock = stock,
+                                              under = menu }))
         end },
       { label = line(game, "sell", Strings("SELL")), keepOpen = true,
         onSelect = function()
+          -- Hoenn sells out of THE BAG, pockets and all (see
+          -- Gen3ShopMenu.sellItem); the list of its own was the report
+          if counter.openSellBag then return counter.openSellBag(game) end
           game.stack:push(counter.new(game, { mode = "sell" }))
         end },
       { label = line(game, "quit", Strings("QUIT")), onSelect = onQuit },

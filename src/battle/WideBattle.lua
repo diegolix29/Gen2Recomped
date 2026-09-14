@@ -92,10 +92,106 @@ local function levelAt(battle, battler, x, y)
   end
 end
 
+-- CenterMonName, the same two-then-one tile nudge the classic layout uses.
+local function nameX(x, name)
+  local glyphs = #Font.split(name or "")
+  return x + (glyphs <= 2 and 16 or glyphs <= 4 and 8 or 0)
+end
+
+-- THE GAME BOY HUD IS NOT A BOX, AND ON GEN 2 IT CARRIES AN EXP BAR.
+--
+-- Reported from play, with a screenshot: "widescreen in gen2 and prism is
+-- missing the gen2 ui i dont see my xp bar or the style of gen2".  The wide
+-- layout was drawing ONE panel for every generation -- a framed Font.drawBox
+-- with the HP bar stretched to fill it -- which is Gen 3's arrangement and
+-- nothing like the Game Boy's.  Gen 2 has no frame at all: the block is a
+-- name, a level, the bar, and a rule drawn UNDER it out of the HUD's own
+-- chrome tiles, with the player's exp bar closing the bottom row.
+--
+-- Every offset here is the cartridge's, lifted from the classic layout's own
+-- placement so the two cannot drift: at the classic origins -- tile (0,0) for
+-- the foe and (9,7) for the player -- this draws exactly what the 160x144
+-- screen does, and the wide layout simply hands it different origins.
+--
+--   foe     name row 0 from column 1, <LV> and level at column 4 of row 1,
+--           the tick $73 at (1,2), the bar at (2,2), and row 3 closed by
+--           $74, a run of $76 and $78.
+--   player  name at column 1, <LV> at column 5 of row 1, the bar at (1,2),
+--           the HP numbers at (2,3), the vertical $73 at the bar's right
+--           edge, then the exp bar across row 4 with $6F at its left and the
+--           row-end corner at its right.
+--
+-- AND THE WIDTHS ARE THE CARTRIDGE'S TOO, which is what makes this Prism's
+-- own HUD rather than Crystal's: HudTiles.geometry() answers seven HP tiles
+-- and nine exp tiles there against Crystal's six and eight, so the rule under
+-- the bar and the corner that closes it move with them.  Prism's exp sheet
+-- carries that corner itself, nine tiles past its empty one ($5E).
+local function drawGen2Panel(battle, battler, x, y, player, gray)
+  local geo = HudTiles.geometry()
+  local tx, ty = math.floor(x / 8), math.floor(y / 8)
+  local data = battle.data
+  local bar = { hp = shownHP(battler), stats = battler.mon.stats }
+  love.graphics.setColor(0, 0, 0, 1)
+  if player then
+    Font.draw(fitName(battler.name, 64), nameX(x + 8, battler.name), y)
+    levelAt(battle, battler, x + 40, y + 8)
+    -- wHPBarType 1: the player's bar closes with the double-bar cap
+    HudTiles.drawHPBar(data, tx + 1, ty + 2, bar, 1, gray)
+    Font.draw(("%3d/%3d"):format(shownHP(battler), battler.mon.stats.hp),
+              x + 16, y + 24)
+    local edgeCol = tx + 3 + geo.hpBarTiles
+    local edge = edgeCol * 8
+    HudTiles.tile(0x73, edge, y + 24)
+    -- ROW 11 IS THE ONE ROW THE TWO GENERATIONS SPEND DIFFERENTLY.  Gen 2
+    -- puts the exp bar there -- the $76 run IS its empty state, and
+    -- FillInExpBar overwrites hlcoord 10,11 with the bar's own tiles -- while
+    -- Gen 1 has no exp bar in battle at all and closes the block with the
+    -- plain underline PlacePlayerHUDTiles draws.  Same split, same tiles, as
+    -- the classic layout's own player block.
+    if require("src.core.GameVersion").isGen2() then
+      -- and where the exp sheet carries its own ends it carries the corner
+      -- the row closes on too -- Prism's $5E, nine tiles past the empty one
+      HudTiles.tile(geo.expBarEmptyTile and (geo.expBarEmptyTile + 9) or 0x77,
+                    edge, y + 32)
+      HudTiles.drawExpBar(data, tx + 1, ty + 4,
+                          battle.expShown
+                            or HudTiles.expBarPixels(data, battler.mon), gray)
+    else
+      HudTiles.tile(0x77, edge, y + 32)
+      for i = tx + 1, edgeCol - 1 do HudTiles.tile(0x76, i * 8, y + 32) end
+    end
+    HudTiles.tile(0x6F, x, y + 32)
+  else
+    Font.draw(fitName(battler.name, 80), nameX(x + 8, battler.name), y)
+    levelAt(battle, battler, x + 32, y + 8)
+    HudTiles.tile(0x73, x + 8, y + 16)
+    HudTiles.drawHPBar(data, tx + 2, ty + 2, bar, nil, gray)
+    HudTiles.tile(0x74, x + 8, y + 24)
+    local edge = tx + 4 + geo.hpBarTiles
+    for i = tx + 2, edge - 1 do HudTiles.tile(0x76, i * 8, y + 24) end
+    HudTiles.tile(0x78, edge * 8, y + 24)
+  end
+  love.graphics.setColor(1, 1, 1, 1)
+end
+
+-- Exposed so the layout test can drive it at the CARTRIDGE'S OWN origins --
+-- tile (0,0) for the foe, (9,7) for the player -- and check that what it puts
+-- on screen there is what the 160x144 screen puts there.  That is the whole
+-- guarantee this panel offers: the same block, handed a different corner.
+WideBattle.gen2Panel = drawGen2Panel
+
 -- One side's status box: name and level on the first line, a long HP bar
 -- under it, and the numeric HP on the player's box only (the foe's exact
 -- HP is never shown, like the original).
 local function drawStatusPanel(battle, battler, x, y, player)
+  -- EVERY cartridge this layout is reached for, not just Gen 2.  The wide
+  -- option declines on Hoenn (BattleState:isWideBattleLayout), so the only
+  -- games that reach here are Game Boy ones, and the Game Boy block is what
+  -- they draw -- Gen 1's is the same block minus the exp bar.  The framed
+  -- panel below stays as the shape no cartridge asks for.
+  if not require("src.core.GameVersion").isGen3() then
+    return drawGen2Panel(battle, battler, x, y, player, monoMode())
+  end
   local tx, ty = math.floor(x / 8), math.floor(y / 8)
   local tw, th = player and 15 or 16, player and 5 or 4
   Font.drawBox(tx, ty, tw, th)
@@ -141,7 +237,18 @@ local function drawHUDs(battle, slide)
   -- drawCommandMenu below like the classic layout's (#540).
   if not battle.safari and battle.player and not battle.demo
       and not battle.showPlayerBack and slide == 0 then
-    drawStatusPanel(battle, battle.player, 184, 56, true)
+    -- WHERE THE PLAYER'S BLOCK SITS.  The framed panel was fifteen tiles
+    -- wide and filled the corner; the Game Boy block is only four tiles plus
+    -- the bar, so left at the same origin it would float with a gap after it.
+    -- The cartridge hangs this block off the RIGHT edge of the screen -- its
+    -- corner tile is the last column -- and the wide layout puts the player's
+    -- status in the lower right for the same reason, so it hangs off this
+    -- screen's right edge the same way.
+    local px = 184
+    if not require("src.core.GameVersion").isGen3() then
+      px = (WideBattle.WIDTH / 8 - 1 - (3 + HudTiles.geometry().hpBarTiles)) * 8
+    end
+    drawStatusPanel(battle, battle.player, px, 56, true)
   end
   drawIntroBalls(battle)
 end

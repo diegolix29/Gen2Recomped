@@ -208,6 +208,44 @@ Gen3ScriptOps.TRAINER_BATTLE_CANT_SLOT = {
   [4] = 3, [6] = 3, [7] = 3, [8] = 3,
 }
 
+-- ...AND THE TWO EVERY TRAINER HAS: WHAT THEY SAY WHEN THEY SEE YOU, AND
+-- WHAT THEY SAY WHEN THEY LOSE.
+--
+-- Reported from play: "when talking to a gym leader to battle them it just
+-- initiates the battle they have no pre battle text".  Nor did anybody else:
+-- the decoder kept the win script and the double-battle refusal and skipped
+-- straight past the first two pointers of every record, so all 565 trainers
+-- in Hoenn walked up, said nothing, fought, lost and said nothing.
+--
+-- WHICH SLOT IS WHICH, read out of the parameter lists at 0x054FEAC rather
+-- than assumed.  Seven of them sit there, nine entries each, every entry a
+-- { RAM destination, how to fill it } pair -- 0/1/2 load one, two or four
+-- bytes FROM THE RECORD, 5 clears the slot, 6 stores the cursor past the
+-- record.  Adding the load widths back up gives 13, 17, 17, 9, 21, 13 and 17
+-- bytes, which is TRAINER_BATTLE_LENGTH above less its opcode byte: that
+-- agreement is what says these are the right tables.
+--
+-- Every list fills the same destinations in the same order -- mode, opponent,
+-- local id, INTRO, DEFEAT, then whatever else the mode carries -- so the
+-- intro is the first pointer in the record and the defeat is the second.
+--
+-- MODE 3 IS THE EXCEPTION AND IT IS ALSO THE PROOF.  Its list (0x054FF84) is
+-- the only one that CLEARS the intro destination and loads the defeat, which
+-- is why it is nine bytes and one pointer -- and, independently, its engine
+-- script (0827_13C2) is the only one that does not run `special $013C`, which
+-- is the one the other two run right before waiting for the button.  Two
+-- unrelated things saying the same sentence: mode 3 is the cutscene mode, its
+-- intro is already on screen, and its single pointer is what the trainer says
+-- after losing.
+Gen3ScriptOps.TRAINER_BATTLE_INTRO_SLOT = {
+  [0] = 1, [1] = 1, [2] = 1, [4] = 1, [5] = 1,
+  [6] = 1, [7] = 1, [8] = 1, [9] = 1,
+}
+Gen3ScriptOps.TRAINER_BATTLE_DEFEAT_SLOT = {
+  [0] = 2, [1] = 2, [2] = 2, [3] = 1, [4] = 2, [5] = 2,
+  [6] = 2, [7] = 2, [8] = 2, [9] = 2,
+}
+
 -- Commands after which control never returns to the next byte.
 Gen3ScriptOps.TERMINATORS = {
   [0x02] = true,  -- end

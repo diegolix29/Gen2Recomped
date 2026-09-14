@@ -49,6 +49,36 @@ Gen3Pokenav.isOpaque = true
 
 local GBA_W, GBA_H = 240, 160
 
+-- MEASURED OFF THE BAKED MENU PICTURE: where the cartridge's own message box
+-- is, so the description goes inside it instead of under a second box.
+local MESSAGE = { x = 23, y = 136, w = 194, h = 16 }
+
+-- WHICH PICTURE EACH MODE SITS ON.
+--
+-- The POKeNAV has one background per screen and they are the cartridge's, not
+-- drawn boxes: RomExtractorGen3.POKENAV.SCREENS says how each was found and
+-- which handler it belongs to.  CONDITION's list and its graph share a screen
+-- because the cartridge draws the pentagon into the same panel the list uses.
+local SCREEN_FOR_MODE = {
+  menu = "menu",
+  conditionList = "condition",
+  conditionDetail = "condition",
+  ribbonList = "ribbonList",
+  ribbonGrid = "ribbons",
+  matchCall = "matchCall",
+}
+
+-- MEASURED OFF THOSE BAKES: the list panel is the same rectangle on all three
+-- list screens, and it is the hardware BACKDROP showing through -- black -- so
+-- what is printed in it is printed in the cartridge's own list text colour,
+-- which is white (the text palette the list loads into bank 15, 0623208, is
+-- black, white, grey).  Everything to the left of the panel sits on a light
+-- field and stays dark.
+local LIST = { x = 104, y = 8, w = 136, h = 128 }
+-- inside that panel: the cursor column, then the name, then a right margin the
+-- counts are right-aligned against
+local LIST_CURSOR, LIST_TEXT, LIST_RIGHT = 2, 14, 16
+
 -- The row ids sMenuItems holds, named.  0..4 are the main menu, 5..7 the
 -- CONDITION submenu, 8..13 the SEARCH one.
 local ROW = {
@@ -506,8 +536,26 @@ function Gen3Pokenav:art(which)
   return ok and img or nil
 end
 
+-- The picture this mode sits on, or the menu's where a mode has none.
+function Gen3Pokenav:screenArt()
+  return self:art(SCREEN_FOR_MODE[self.mode] or "menu")
+end
+
+-- White inside the list panel, black outside it.
+function Gen3Pokenav:listInk()
+  if self:screenArt() then
+    love.graphics.setColor(1, 1, 1, 1)
+  else
+    love.graphics.setColor(0, 0, 0, 1)
+  end
+end
+
 function Gen3Pokenav:drawBackground()
-  local field = self:art("menu")
+  -- No fallback to the menu's picture for a mode that has none of its own:
+  -- an old cache would then show the menu behind a MATCH CALL list.  A mode
+  -- with no picture gets the flat field and draws its own boxes, which is
+  -- what every screen did before the art was derived.
+  local field = self:screenArt()
   if field then
     love.graphics.setColor(1, 1, 1, 1)
     love.graphics.draw(field, 0, 0)
@@ -550,11 +598,28 @@ function Gen3Pokenav:drawMenu()
     local y = (m.highlightY or 42) + (m.highlightStep or 20) * (i - 1) - 8
     self:drawButton(rowId, x, y, i == self.cursor)
   end
+  -- THE DESCRIPTION SITS IN THE BOX THE PICTURE ALREADY HAS.
+  --
+  -- The menu background is the cartridge's own three backgrounds composed
+  -- (RomExtractorGen3.bgLayer), and the frontmost of them IS the message box
+  -- across the bottom -- so drawing the engine's own box over it stacked two
+  -- boxes of different widths on top of each other.  Measured off the bake,
+  -- the cartridge's box runs x=23..216 and y=136..151; an eight-pixel line
+  -- centred in it sits at 140.
   local text = self:describe(self:rowId()) or self:label(self:rowId())
   love.graphics.setColor(1, 1, 1, 1)
-  Font.drawBox(0, 17, 30, 3)
+  local x, y
+  if self:art("menu") then
+    x = MESSAGE.x + math.floor((MESSAGE.w - Font.width(text)) / 2)
+    y = MESSAGE.y + math.floor((MESSAGE.h - Font.glyphHeight()) / 2)
+    x = math.max(MESSAGE.x, x)
+  else
+    Font.drawBox(0, 17, 30, 3)
+    x = math.max(4, math.floor((GBA_W - Font.width(text)) / 2))
+    y = 142
+  end
   love.graphics.setColor(0, 0, 0, 1)
-  Font.draw(text, math.max(4, math.floor((GBA_W - Font.width(text)) / 2)), 142)
+  Font.draw(text, x, y)
   love.graphics.setColor(1, 1, 1, 1)
 end
 
@@ -567,23 +632,24 @@ end
 
 function Gen3Pokenav:drawMonList()
   love.graphics.setColor(1, 1, 1, 1)
-  Font.drawBox(11, 0, 19, 17)
-  love.graphics.setColor(0, 0, 0, 1)
+  if not self:screenArt() then Font.drawBox(11, 0, 19, 17) end
+  self:listInk()
   local cat = self.searchCategory
   for i = 0, Gen3Pokenav.LIST_ROWS - 1 do
     local row = self.rows[self.listTop + i]
     if not row then break end
-    local y = 12 + i * 16
-    Font.draw(monName(self.game, row), 104, y)
+    local y = LIST.y + i * 16 + 4
+    Font.draw(monName(self.game, row), LIST.x + LIST_TEXT, y)
+    local right = LIST.x + LIST.w - LIST_RIGHT
     if cat then
       local v = tostring(Contest.graph(row.mon, cat))
-      Font.draw(v, GBA_W - 16 - Font.width(v), y)
+      Font.draw(v, right - Font.width(v), y)
     elseif self.mode == "ribbonList" then
       local v = tostring(Contest.ribbonCount(row.mon))
-      Font.draw(v, GBA_W - 16 - Font.width(v), y)
+      Font.draw(v, right - Font.width(v), y)
     end
     if self.listTop + i == self.listIndex then
-      Font.drawCode(Theme.cursor, 94, y)
+      Font.drawCode(Theme.cursor, LIST.x + LIST_CURSOR, y)
     end
   end
   love.graphics.setColor(1, 1, 1, 1)
@@ -637,12 +703,23 @@ function Gen3Pokenav:drawCondition()
   love.graphics.setColor(1, 0.94, 0.62, 1)
   if #poly >= 6 then love.graphics.polygon("line", poly) end
 
-  love.graphics.setColor(1, 1, 1, 1)
-  Font.drawBox(0, 0, 12, 5)
-  love.graphics.setColor(0, 0, 0, 1)
-  Font.draw(monName(self.game, self.rows[self.listIndex]), 6, 8)
+  -- THE NAME AND THE SHEEN, on the cartridge's own left-hand field rather
+  -- than under a box drawn over it: the picture keeps that side clear down to
+  -- y=38 and then puts a small panel at (7,46) 58x19, which is where SHEEN
+  -- goes -- it is the one line short enough to sit in it.
   local sheen = Contest.sheenLevel(mon, cond)
-  Font.draw(Strings("SHEEN %d", sheen), 6, 24)
+  local name = monName(self.game, self.rows[self.listIndex])
+  if self:screenArt() then
+    love.graphics.setColor(0, 0, 0, 1)
+    Font.draw(name, 8, 14)
+    Font.draw(Strings("SHEEN %d", sheen), 11, 52)
+  else
+    love.graphics.setColor(1, 1, 1, 1)
+    Font.drawBox(0, 0, 12, 5)
+    love.graphics.setColor(0, 0, 0, 1)
+    Font.draw(name, 6, 8)
+    Font.draw(Strings("SHEEN %d", sheen), 6, 24)
+  end
   love.graphics.setColor(1, 1, 1, 1)
 
   -- AND WHAT EACH DIRECTION IS, placed off the FRAME and not off the data.
@@ -682,10 +759,12 @@ function Gen3Pokenav:drawRibbons()
                or { cols = 9, x = 88, y = 32, step = 16, giftSlot = 27 }
   local mon = self:selectedMon()
   local ids = Contest.ribbonIds(mon)
+  local art = self:screenArt()
   love.graphics.setColor(1, 1, 1, 1)
-  Font.drawBox(0, 0, 30, 3)
+  if not art then Font.drawBox(0, 0, 30, 3) end
   love.graphics.setColor(0, 0, 0, 1)
-  Font.draw(Strings("RIBBONS %d", #ids), 6, 6)
+  -- the title box the picture already has: x=103..216, y=8..23
+  Font.draw(Strings("RIBBONS %d", #ids), art and 108 or 6, art and 12 or 6)
   love.graphics.setColor(1, 1, 1, 1)
 
   for i, id in ipairs(ids) do
@@ -708,11 +787,14 @@ function Gen3Pokenav:drawRibbons()
   local text = r and r.ribbons and r.ribbons.text and chosen
                and r.ribbons.text[chosen]
   love.graphics.setColor(1, 1, 1, 1)
-  Font.drawBox(0, 16, 30, 4)
+  if not art then Font.drawBox(0, 16, 30, 4) end
   love.graphics.setColor(0, 0, 0, 1)
   if text then
-    Font.draw(text[1] or "", 8, 134)
-    Font.draw(text[2] or "", 8, 148)
+    -- the description box the picture already has: x=95..224, y=104..135
+    local tx = art and 100 or 8
+    local ty = art and 108 or 134
+    Font.draw(text[1] or "", tx, ty)
+    Font.draw(text[2] or "", tx, ty + 14)
   end
   love.graphics.setColor(1, 1, 1, 1)
 end
@@ -782,31 +864,35 @@ end
 
 function Gen3Pokenav:drawMatchCall()
   love.graphics.setColor(1, 1, 1, 1)
-  Font.drawBox(11, 0, 19, 17)
-  Font.drawBox(0, 5, 11, 2)
-  Font.drawBox(0, 9, 11, 8)
+  local art = self:screenArt()
+  if not art then
+    Font.drawBox(11, 0, 19, 17)
+    Font.drawBox(0, 5, 11, 2)
+    Font.drawBox(0, 9, 11, 8)
+  end
   self:drawCallPortrait(self.calls and self.calls[self.callIndex])
-  love.graphics.setColor(0, 0, 0, 1)
+  self:listInk()
 
   for i = 0, Gen3Pokenav.LIST_ROWS - 1 do
     local entry = self.calls[self.callTop + i]
     if not entry then break end
-    local y = 12 + i * 16
-    Font.draw(self:callName(entry), 104, y)
+    local y = LIST.y + i * 16 + 4
+    Font.draw(self:callName(entry), LIST.x + LIST_TEXT, y)
     -- "wants a rematch" is a marker at the far right of the row, which is
     -- where the cartridge puts its two-tile icon
     if MatchCall.entryReady(self.game.data, self.game.save, entry) then
       love.graphics.setColor(0.90, 0.30, 0.25, 1)
-      love.graphics.rectangle("fill", 232, y + 2, 4, 10)
-      love.graphics.setColor(0, 0, 0, 1)
+      love.graphics.rectangle("fill", LIST.x + LIST.w - 8, y + 2, 4, 10)
+      self:listInk()
     end
     if self.callTop + i == self.callIndex then
-      Font.drawCode(Theme.cursor, 94, y)
+      Font.drawCode(Theme.cursor, LIST.x + LIST_CURSOR, y)
     end
   end
 
   local entry = self.calls[self.callIndex]
   local where = self:callWhere(entry)
+  love.graphics.setColor(0, 0, 0, 1)
   Font.draw(where, math.max(2, 88 - Font.width(where)), 46)
 
   if self.callMenu then

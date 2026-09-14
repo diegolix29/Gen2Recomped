@@ -33,11 +33,41 @@
 -- AN UNEARNED BADGE IS NOT DRAWN AT ALL, which is what the cartridge does --
 -- there is no empty socket waiting to be filled.
 --
--- What is still NOT derived is the rest of the card's ARTWORK: the gradient
--- front and the trainer's picture are graphics the import does not reach yet.
--- This draws the card in the cartridge's own window frame instead, with the
--- fields in their places, and it is the part to replace when that art is
--- extracted.
+-- THE CARD ITSELF IS THE CARTRIDGE'S NOW, and the note that used to stand
+-- here -- "the part to replace when that art is extracted" -- is what this
+-- replaces.  Asked for directly, with a reference shot: the card is a printed
+-- card, a titled pill with a ruled field, a Poke Ball watermark and a row of
+-- eight badge sockets, and this port drew it in its own window frame.
+--
+-- The art is three screens (RomExtractorGen3:trainerCardArt): a FIELD that
+-- tiles the backdrop, the FRONT over it, and a BACK that B flips to.  Finding
+-- them started from the one place in the card's code that copies 416 bytes of
+-- palette, which named the palette; the compressed blocks the same code names
+-- gave four screen-sized tilemaps, and their own shapes told them apart -- the
+-- field uses a single tile, the front and the link-front are identical except
+-- across the badge rows, and the remainder is the back.
+--
+-- WHERE THE TEXT GOES IS MEASURED OFF THAT ART, not guessed.  The front draws
+-- a small marker box at the left of every field row and a rule under the name,
+-- so the rows are where the cartridge's own markers are: y=44, 68, 84 and 100,
+-- with the name's rule at 57.  There are four markers and five fields because
+-- the ID number is not one of the rows -- it sits in the header band to the
+-- right of the pill, which is clear from x=116 to x=230.  The badge sockets
+-- measure 16 wide from x=32 at a pitch of 24 on row 15, which is exactly where
+-- this file was already putting them: the two derivations agree.
+--
+-- AND THE PORTRAIT IS ON IT AFTER ALL.  The note that stood here said there
+-- was none -- the front's right-hand corner carries a Poke Ball watermark and
+-- nothing else, so the picture was drawn only on the fallback frame, and the
+-- card the player actually sees had no trainer on it.  Reported from play:
+-- "the trainer sprite is also missing from the trainer card".
+--
+-- The watermark is a WATERMARK: the cartridge blits the 64x64 front pic over
+-- it.  Not a sprite -- CreateTrainerCardTrainerPicSprite blits into a window,
+-- and the card's WIN_TRAINER_PIC sits at tile (19, 5) with the Hoenn layout
+-- adding (1, 0) pixels, so the picture lands at (153, 40) and runs to
+-- (217, 104).  Measuring the watermark in the extracted front art gives very
+-- nearly that box: the two derivations agree, which is the identification.
 
 local Badges = require("src.inventory.Badges")
 local Gen3BadgeArt = require("src.render.Gen3BadgeArt")
@@ -52,12 +82,27 @@ Gen3TrainerCard.isOpaque = true
 local GBA_W, GBA_H = 240, 160
 
 -- RECONSTRUCTED, not derived: the card fills the screen with a tile of margin.
+-- Only used when the dataset carries no card art.
 local CARD = { tx = 1, ty = 1, tw = 28, th = 18 }
 local LABEL_X = 24
 local VALUE_X = 128
 local ROW_PITCH = 18
 local FIRST_ROW = 5          -- pixels below the card's inner edge
+
+-- MEASURED OFF THE CARTRIDGE'S OWN FRONT (see the note at the top): the marker
+-- box at the left of each field row, the clear span of the header band right
+-- of the title pill, and the pill's own vertical centre.
+local ART_ROW_Y = { 44, 68, 84, 100 }   -- name, money, pokedex, time
+local ART_LABEL_X = 26
+local ART_VALUE_X = 86
+local ART_NAME_RULE = 119               -- the name's rule ends here
+local ART_ID_RIGHT = 224                -- the ID number is right-aligned here
+local ART_ID_Y = 20
 -- the badge row, in the cartridge's own tile coordinates
+-- the front pic's own corner: WIN_TRAINER_PIC's tile origin plus the Hoenn
+-- layout's pixel offset (see the note at the top)
+local ART_PIC_X = 19 * 8 + 1
+local ART_PIC_Y = 5 * 8
 local BADGE_FIRST_TX = 4
 local BADGE_STEP_TX = 3
 local BADGE_TY = 15
@@ -113,7 +158,7 @@ function Gen3TrainerCard:rows()
   local player = save.player or {}
   local dex = 0
   for _ in pairs((save.pokedex or {}).owned or {}) do dex = dex + 1 end
-  local t = math.floor(tonumber(save.playTime) or 0)
+  local t = math.floor(require("src.core.SaveData").playSeconds(save))
   local id = tonumber(player.id) or 0
   local labels = self.labels
   return {
@@ -126,7 +171,117 @@ function Gen3TrainerCard:rows()
   }
 end
 
+-- The three baked screens, or nil where the dataset has none.
+function Gen3TrainerCard:art()
+  if self.artLoaded then return self.artImages end
+  self.artLoaded = true
+  local record = (self.game.data.constants or {}).gen3TrainerCard
+  local paths = record and record.images
+  if not (paths and paths.front) then
+    Logger.warn("gen3 trainer card: this dataset carries no card art -- "
+                .. "drawing the card in the engine's own frame")
+    return nil
+  end
+  local Assets = require("src.render.Assets")
+  local images = {}
+  for key, path in pairs(paths) do
+    local ok, img = pcall(Assets.image, path)
+    if ok and img then images[key] = img end
+  end
+  if not images.front then return nil end
+  self.artImages = images
+  return images
+end
+
+-- THE PLAYER'S OWN FACE.
+--
+-- The player's pic is also the RIVAL'S -- whichever of the pair you did not
+-- choose is who you fight -- so both are in gTrainerFrontPicTable, and
+-- extractTrainerSprites writes field.playerForms with each one's file, read
+-- off the PKMN TRAINER rows the cartridge names BRENDAN and MAY.
+-- Sprites.playerForm picks the one matching the save's gender, which is the
+-- same mechanism Crystal's KRIS uses.
+--
+-- Skipped silently when there is no picture: a cache imported before the
+-- portraits were derived must still show a usable card.  `rightEdge` is for
+-- the engine's own frame, whose box is not the cartridge's -- there the x
+-- given is the right edge to hang the picture from rather than its left.
+function Gen3TrainerCard:drawPortrait(x, y, rightEdge)
+  local Sprites = require("src.pokemon.Sprites")
+  local path = Sprites.playerPath(self.game.data, "front",
+                                  { kind = "trainer_card",
+                                    save = self.game.save })
+  if type(path) ~= "string" then return false end
+  local Assets = require("src.render.Assets")
+  local okImg, img = pcall(Assets.image, path)
+  if not (okImg and img) then return false end
+  love.graphics.setColor(1, 1, 1, 1)
+  love.graphics.draw(img, rightEdge and (x - img:getWidth()) or x, y)
+  love.graphics.setColor(0, 0, 0, 1)
+  return true
+end
+
+-- THE CARD AS THE CARTRIDGE DRAWS IT: the field behind, the front (or the
+-- back) over it, and the fields printed where the art's own markers are.
+function Gen3TrainerCard:drawArt(art)
+  love.graphics.setColor(1, 1, 1, 1)
+  if art.field then love.graphics.draw(art.field, 0, 0) end
+  local face = (self.back and art.back) or art.front
+  if face then love.graphics.draw(face, 0, 0) end
+  love.graphics.setColor(0, 0, 0, 1)
+
+  if self.back then
+    -- the link record, which this save does not keep yet, so the card says so
+    -- rather than printing zeros that look like facts
+    Font.draw(Strings("No link records yet."), ART_LABEL_X, ART_ROW_Y[1])
+    love.graphics.setColor(1, 1, 1, 1)
+    return
+  end
+
+  -- the portrait, over the watermark, before the rows so the fields sit on top
+  self:drawPortrait(ART_PIC_X, ART_PIC_Y)
+
+  local rows = self:rows()
+
+  -- the ID number, right-aligned in the header band beside the title pill
+  local id = rows[2]
+  if id then
+    local text = (id[1] or "") .. (id[2] or "")
+    Font.draw(text, ART_ID_RIGHT - Font.width(text), ART_ID_Y)
+  end
+
+  -- the name, on its own rule: the value follows the label rather than sitting
+  -- in the shared value column, because the rule the cartridge draws under it
+  -- stops at ART_NAME_RULE and a long name would run past the end of it
+  local name = rows[1]
+  if name then
+    local label = name[1] or ""
+    Font.draw(label, ART_LABEL_X, ART_ROW_Y[1])
+    local x = ART_LABEL_X + Font.width(label) + 2
+    local value = name[2] or ""
+    if x + Font.width(value) > ART_NAME_RULE then
+      x = math.max(ART_LABEL_X, ART_NAME_RULE - Font.width(value))
+    end
+    Font.draw(value, x, ART_ROW_Y[1])
+  end
+
+  -- money, pokedex and time, on the three markers below it
+  for i = 3, #rows do
+    local y = ART_ROW_Y[i - 1]
+    if y then
+      Font.draw(rows[i][1], ART_LABEL_X, y)
+      Font.draw(rows[i][2], ART_VALUE_X, y)
+    end
+  end
+
+  self:drawBadges()
+  love.graphics.setColor(1, 1, 1, 1)
+end
+
 function Gen3TrainerCard:draw()
+  local art = self:art()
+  if art then return self:drawArt(art) end
+
   local inset = math.max(0, math.floor((ROW_PITCH - Font.glyphHeight()) / 2))
   love.graphics.setColor(0.13, 0.34, 0.29, 1)
   love.graphics.rectangle("fill", 0, 0, GBA_W, GBA_H)
@@ -163,33 +318,42 @@ function Gen3TrainerCard:draw()
   -- Drawn before the rows so the fields sit over it if the two ever overlap,
   -- and skipped silently when there is no picture -- a cache imported before
   -- the portraits were derived must still show a usable card.
-  do
-    local Sprites = require("src.pokemon.Sprites")
-    local path = Sprites.playerPath(self.game.data, "front",
-                                    { kind = "trainer_card",
-                                      save = self.game.save })
-    if type(path) == "string" then
-      local Assets = require("src.render.Assets")
-      local okImg, img = pcall(Assets.image, path)
-      if okImg and img then
-        love.graphics.setColor(1, 1, 1, 1)
-        local px = (CARD.tx + CARD.tw) * 8 - img:getWidth() - 8
-        local py = (CARD.ty + 3) * 8
-        love.graphics.draw(img, px, py)
-        love.graphics.setColor(0, 0, 0, 1)
-      end
-    end
+  self:drawPortrait((CARD.tx + CARD.tw) * 8 - 8, (CARD.ty + 3) * 8, true)
+
+  -- THE ROWS STOP WHERE THE BADGES START.
+  --
+  -- Reported from play, with a screenshot: the badge row drawn through the
+  -- TIME line.  It was -- five rows at a pitch of eighteen from y=37 put the
+  -- last one's ink at 112..123, and the badges own row fifteen, which is 120.
+  --
+  -- Rather than move the pitch to another number that happens to miss, the
+  -- pitch is DERIVED from the space there is: the rows share everything above
+  -- the badge row and no more.  Five rows in 83 pixels is sixteen, which is a
+  -- GBA text line, and it stays right if a row is ever added or the font ever
+  -- changes height.
+  local rows = self:rows()
+  local top = (CARD.ty + 3) * 8 + FIRST_ROW
+  local pitch = ROW_PITCH
+  if #rows > 0 then
+    pitch = math.min(pitch, math.floor((BADGE_TY * 8 - top) / #rows))
+  end
+  local rowInset = math.max(0, math.floor((pitch - Font.glyphHeight()) / 2))
+  local y = top
+  for _, row in ipairs(rows) do
+    Font.draw(row[1], LABEL_X, y + rowInset)
+    Font.draw(row[2], VALUE_X, y + rowInset)
+    y = y + pitch
   end
 
-  local y = (CARD.ty + 3) * 8 + FIRST_ROW
-  for _, row in ipairs(self:rows()) do
-    Font.draw(row[1], LABEL_X, y + inset)
-    Font.draw(row[2], VALUE_X, y + inset)
-    y = y + ROW_PITCH
-  end
+  self:drawBadges()
+  love.graphics.setColor(1, 1, 1, 1)
+end
 
-  -- THE BADGE ROW, at the cartridge's own coordinates: the first badge four
-  -- tiles in, three tiles between them, on rows fifteen and sixteen.
+-- THE BADGE ROW, at the cartridge's own coordinates: the first badge four
+-- tiles in, three tiles between them, on rows fifteen and sixteen.  Measuring
+-- the sockets in the extracted front art gives 16-wide boxes from x=32 at a
+-- pitch of 24 on row 15 -- the same places, arrived at a second way.
+function Gen3TrainerCard:drawBadges()
   local game = self.game
   local list = Badges.list(game.data)
   for i, entry in ipairs(list) do
@@ -206,7 +370,6 @@ function Gen3TrainerCard:draw()
       end
     end
   end
-  love.graphics.setColor(1, 1, 1, 1)
 end
 
 return Gen3TrainerCard

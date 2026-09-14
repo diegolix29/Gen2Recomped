@@ -53,37 +53,49 @@ local Warp = {}
 -- the call sites: the step handler was already filtering carpets out of the
 -- copy it uses to outrank coord events, and the copy it actually warps on --
 -- a second Warp.onArrive a hundred lines further down -- was not.
--- Adding timer when walking out of buildings for free move mods. 0.5 seconds pushing foward on a door carpet tile will trigger warp, standing still wont trigger warp.
-
-function Warp.onArrive(map, cx, cy)
+function Warp.onArrive(map, cx, cy, dir)
   local w = map:warpAtCell(cx, cy)
   if not (w and map:isWarpTileCell(cx, cy)) then return nil end
-  
   local Map = require("src.world.Map")
   local GameVersion = require("src.core.GameVersion")
-  
+  -- GEN 3'S CARPET IS AN ARROW, and it is the paragraph above one cartridge
+  -- later.  Reported from play: "when i walk through a door into the pokemon
+  -- center or any area really indoors, when i walk left or right onto the
+  -- warp tiles it warps me back outside, it should only do this if walk back
+  -- out facing the exit".  ANY POKEMON CENTER'S TWO-CELL EXIT MAT is the
+  -- situation -- (8,8) and (9,8) on MAP_G01_N00, both MB_SOUTH_ARROW_WARP,
+  -- both carrying the warp back to the town -- and so is the truck the game
+  -- opens inside, whose three stacked MB_EAST_ARROW_WARP cells threw the
+  -- player out on the first step in any direction.
+  --
+  -- TryArrowWarp (field_control_avatar.c) is where the cartridge keeps this,
+  -- and the arrow behaviours are deliberately left OUT of
+  -- IsWarpMetatileBehavior so that TryStartWarpEventScript -- the completed
+  -- step, which is this function -- never fires one.  So the comparison
+  -- below is the whole of it.  Ladders, escalators, the non-animated door
+  -- and staircase, Lavaridge's holes, the Aqua Hideout's and Mossdeep's pads
+  -- are all in that list and all still fire from a step taken any which way,
+  -- because in the game they do.
+  --
+  -- Written as `arrow ~= dir` rather than a flat refusal for two reasons: it
+  -- says what the rule IS, and on a mod's map where the cell in the arrow's
+  -- own direction is walkable -- which no cell in Hoenn is (derived, all 535
+  -- of them) -- the step through the arrow is the one that should still work.
+  -- A caller that passes no direction gets the refusal, which is the safe way
+  -- round: the exit is still there on the input side (see
+  -- OverworldState:checkGen3ArrowWarp), and a warp that will not fire is a
+  -- door you walk through twice, where one that fires unasked is the bug.
+  if map.arrowWarpDirAt then
+    local arrow = map:arrowWarpDirAt(cx, cy)
+    if arrow and arrow ~= dir then return nil end
+  end
+  -- Only where the cell answers in collision CLASSES. On a tile-id map those
+  -- four numbers mean nothing, and reading them as carpets would silently
+  -- disable real doors -- see Map:speaksGen2Collision.
   if GameVersion.isGen2() and map.speaksGen2Collision and map:speaksGen2Collision()
      and Map.gen2IsDirectionalCarpet(map:cellTile(cx, cy)) then
-     
-    local Game = require("src.core.Game")
-    if Game and Game.input then
-      local holdingDir = Game.input:isDown("up") or Game.input:isDown("down") or 
-                         Game.input:isDown("left") or Game.input:isDown("right")
-                         
-      local now = love.timer.getTime()      
-      if holdingDir then
-        if not map.carpetHoldStartTime then
-          map.carpetHoldStartTime = now
-        elseif now - map.carpetHoldStartTime >= 0.5 then
-          map.carpetHoldStartTime = nil
-          return w 
-        end
-      else
-        map.carpetHoldStartTime = nil
-      end
-    end    
     return nil
-  end  
+  end
   return w
 end
 

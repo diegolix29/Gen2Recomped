@@ -563,10 +563,23 @@ L.battletowertext = function(ir, s)
   emit(s, { "g2_battle_tower_text", ir[2] or 1 })
 end
 L.getmonname = function(ir, s)
-  emit(s, { "g2_getmonname", string.format("SPECIES_%03d", ir[2] or 0), ir[3] })
+  -- same zero-is-the-variable rule as `cry` above: `pokenamemem 0, 0` names
+  -- whatever the script just looked up, not species zero
+  if (ir[2] or 0) == 0 then
+    emit(s, { "g2_getmonname_var", ir[3] })
+  else
+    emit(s, { "g2_getmonname", string.format("SPECIES_%03d", ir[2]), ir[3] })
+  end
 end
 L.takeitem = function(ir, s) emit(s, { "take_item", itemId(ir[2]), ir[3] }) end
-L.checkitem = function(ir, s) emit(s, { "check_item", itemId(ir[2]) }) end
+L.checkitem = function(ir, s)
+  -- and again: `checkitem 0` asks about the item in the script variable
+  if (ir[2] or 0) == 0 then
+    emit(s, { "g2_check_item_var" })
+  else
+    emit(s, { "check_item", itemId(ir[2]) })
+  end
+end
 L.givemoney = function(ir, s) emit(s, { "give_money", ir[3] }) end
 L.takemoney = function(ir, s) emit(s, { "give_money", -(ir[3] or 0) }) end
 L.checkmoney = function(ir, s) emit(s, { "g2_check_money", ir[3] }) end
@@ -591,7 +604,11 @@ end
 -- starter's yes/no box auto-close before its ChoiceBox appeared, which the
 -- script read back as NO.
 L.cry = function(ir, s)
-  emit(s, { "g2_cry", string.format("SPECIES_%03d", ir[2] or 0) })
+  -- Prism's GetScriptByteOrVar (00:$1A9D) answers the SCRIPT VARIABLE for a
+  -- zero operand, which is how one starter script cries six different mons.
+  -- Lowered literally it asked for SPECIES_000 and nothing sounded.
+  emit(s, { "g2_cry",
+            (ir[2] or 0) ~= 0 and string.format("SPECIES_%03d", ir[2]) or nil })
 end
 
 -- `pokepic <species>` opens the framed front pic and keeps running;
@@ -701,6 +718,24 @@ L.blackoutmod = function(ir, s) emit(s, { "g2_blackout_point", ir[2] }) end
 -- the Hall of Fame after the heal.
 L.halloffame = function(_, s)
   emit(s, { "record_hall_of_fame" })
+end
+
+-- `credits` (Crystal $B2): roll the end credits on their own.  The Hall of
+-- Fame path already pushes the same screen after the induction; this is the
+-- command for the times the cartridge rolls them without one.
+L.credits = function(_, s) emit(s, { "push_screen", "Credits" }) end
+
+-- `gettrainerclassname <class>, <buffer>` (Crystal $A5): the trainer CLASS's
+-- own name -- "SAGE", "BIRD KEEPER" -- rather than the individual's, which is
+-- what gettrainername buffers.  Ten sites on Crystal, every one of them a line
+-- that named nobody.
+--
+-- Operand order follows its neighbour `getlandmarkname`, which has the same
+-- two-byte shape and puts the VALUE first and the buffer second; the class is
+-- the `index` the port's trainer records are keyed by, so the class name is
+-- the group's own `name` with no party member picked out of it.
+L.gettrainerclassname = function(ir, s)
+  emit(s, { "g2_buffer_trainer_name", ir[2], 0, ir[3] })
 end
 
 L.pause = function(ir, s) emit(s, { "wait", ir[2] }) end
@@ -1559,6 +1594,69 @@ L.scalltable = function(ir, s)
   return L.jumptable(ir, s)
 end
 
+-- Prism's two INLINE jump tables (Script_anonjumptable 25:$6B22 and the menu
+-- form above it).  The cases are the bytes the script pointer is standing on
+-- rather than a pointer's target, and the extractor has already resolved them
+-- into the same list of labels `jumptable` takes -- appended after whatever
+-- operands the command has, so anonjumptable carries them in ir[2] and
+-- menuanonjumptable (whose one operand is its menu data) in ir[3].
+L.anonjumptable = function(ir, s)
+  return L.jumptable({ "jumptable", ir[2] }, s)
+end
+-- and the menu form RUNS THE MENU FIRST.  Script_menuanonjumptable is
+-- `Script_loadmenudata / Script_verticalmenu / Script_closewindow` and only
+-- then falls into anonjumptable -- so the script variable the table is indexed
+-- by is the player's CHOICE, not whatever the row before it left there.
+-- Lowering it as a bare jump table sent every one of these menus down the
+-- branch the previous command happened to select.
+L.menuanonjumptable = function(ir, s)
+  if type(ir[2]) == "table" then
+    emit(s, { "g2_loadmenu", ir[2] })
+    emit(s, { "g2_verticalmenu" })
+  end
+  return L.jumptable({ "jumptable", ir[3] }, s)
+end
+
+-- Prism's names for the menu Crystal calls `loadmenu`, and its scrolling list.
+-- The scrolling form differs only in resetting the cursor and scroll position
+-- (Script_loadscrollingmenudata is loadmenudata plus two stores), and
+-- `scrollingmenu <flags>` is the vertical menu with the flags deciding whether
+-- a speech box is drawn behind it -- presentation either way, and the answer it
+-- leaves in the script variable is the same.
+-- PRISM'S NAMES FOR THE THREE NAME-BUFFERING COMMANDS, with the operand order
+-- taken from the macros rather than from the handlers' register juggling:
+--
+--   trainertotext    trainer_id, trainer_group, memory
+--   landmarktotext   id, memory
+--   trainerclassname id, memory
+--
+-- which is the same "value first, buffer second" shape `getlandmarkname`
+-- already uses.  A class name is the group's own name with no party member
+-- picked out of it, so it asks for member 0.
+L.trainertotext = function(ir, s)
+  emit(s, { "g2_buffer_trainer_name", ir[3], ir[2], ir[4] })
+end
+L.landmarktotext = L.getlandmarkname
+L.trainerclassname = function(ir, s)
+  emit(s, { "g2_buffer_trainer_name", ir[2], 0, ir[3] })
+end
+
+-- `copyvarbytetovar` reads the byte at the address the halfword variable is
+-- holding -- the read `loadhalfwordvar` writes for -- and is the same
+-- indirection `copyhalfwordvartovar` makes, which is why it shares its row.
+L.copyvarbytetovar = function(_, s) emit(s, { "g2_readmem" }) end
+
+-- `backupcustchar` / `restorecustchar` bracket the sections where the player
+-- IS a Pokemon (Laurel Forest, the Magikarp Caverns).  With the restore
+-- silent, coming back out of one left the player as whatever the section had
+-- made them, permanently.
+L.backupcustchar = function(_, s) emit(s, { "g2_backup_custchar" }) end
+L.restorecustchar = function(_, s) emit(s, { "g2_restore_custchar" }) end
+
+L.loadmenudata = L.loadmenu
+L.loadscrollingmenudata = L.loadmenu
+L.scrollingmenu = function(_, s) emit(s, { "g2_verticalmenu" }) end
+
 -- Cosmetic commands with no port-side effect: object palette overrides and
 -- the Unown-report typeface switch.  Lowered to nothing ON PURPOSE so the
 -- audit stops counting them as missing behaviour -- the palette is per-map
@@ -1649,6 +1747,198 @@ end
 -- FruitTreeScript (17:$4000): tree n hands over FruitTreeItems[n] once, then
 -- remembers the pick in wFruitTreeFlags until TryResetFruitTrees clears it.
 L.fruittree = function(ir, s) emit(s, { "g2_fruittree", ir[2] }) end
+
+-- `givetm <n>` / `givetmnomessage <n>` (Script_giveTM 25:$67F8, and $68B2 for
+-- the quiet form).  The extractor has already turned the machine number into
+-- the TM_nn / HM_nn item id (gen2MachineItem), because a machine is numbered
+-- in a space of its own on this cartridge and there is nothing in the item
+-- table at that number.  A cartridge where that did not resolve leaves a
+-- number here, and a number is not an item, so nothing is emitted rather than
+-- handing over whichever potion happens to share the id.
+L.givetm = function(ir, s)
+  if type(ir[2]) == "string" then emit(s, { "give_item", ir[2], 1 }) end
+end
+L.givetmnomessage = function(ir, s)
+  if type(ir[2]) == "string" then emit(s, { "g2_giveitem", ir[2], 1 }) end
+end
+
+-- PRISM'S EVENT VARIABLES (wEventVariables, sixty-four bytes at $D73D) are a
+-- separate space from the event FLAGS checkevent/setevent use, and its longer
+-- errands count with them.  The operand packs the operation into the top two
+-- bits and the variable's index into the low six; `modifyeventvar`'s set and
+-- add forms carry a second byte, which is why it reads with the `E` tail.
+L.eventvarop = function(ir, s) emit(s, { "g2_eventvarop", ir[2] }) end
+L.seteventvar = function(ir, s) emit(s, { "g2_seteventvar", ir[2] }) end
+L.modifyeventvar = function(ir, s)
+  emit(s, { "g2_modifyeventvar", ir[2], ir[3] })
+end
+
+-- `cmdwitharrayargs` BUILDS ONE OF SEVEN COMMANDS AND RUNS IT, with some of
+-- its arguments taken from the array `loadarray` left loaded rather than from
+-- the script (CreateScriptCommandWithCustomArguments, script_conditionals.asm).
+--
+-- Eighteen of Prism's thirty-one uses are `warp` with the destination
+-- coordinates coming out of the array, so with no lowering there were eighteen
+-- places where pressing a thing took the player nowhere.
+--
+-- The extractor has already decoded the blob into { command, args }, each
+-- argument either a literal, a resolved map key, or an index into the array
+-- entry; the runtime resolves the array ones and dispatches.
+L.cmdwitharrayargs = function(ir, s)
+  local built = ir[2]
+  if type(built) ~= "table" or type(built.command) ~= "string" then return end
+  emit(s, { "g2_cmd_array_args", built })
+end
+
+-- `givecraftingEXP <craft>` (Script_givecraftingEXP 25:$68C0): credit a
+-- crafting level -- mining, smelting, ball making, jewel making -- with the
+-- EXP the script variable is holding.  The whole mechanic is IncreaseCraftEXP;
+-- see the note on g2_craft_exp for the level curve, which is the cartridge's
+-- own integer square root rather than a table.  Twelve sites, and they are how
+-- the mining and smelting a player does actually adds up to anything.
+L.givecraftingEXP = function(ir, s) emit(s, { "g2_craft_exp", ir[2] }) end
+
+-- `copy <dest>, <count>, <bytes...>` (Script_copy 25:$6DF1) writes a run of
+-- raw bytes straight into WRAM.  The payload arrives through the `c` inline
+-- blob tail, so ir[2] is the destination and ir[3] the bytes; the count is the
+-- blob's own length and needs no separate argument.
+L.copy = function(ir, s) emit(s, { "g2_copybytes", ir[2], ir[3] }) end
+
+-- `loadhalfwordvar <value>` writes that byte to the address the halfword
+-- variable is holding -- the write to the place copyhalfwordvartovar reads.
+L.loadhalfwordvar = function(ir, s)
+  emit(s, { "g2_writemem_value", ir[2] })
+end
+
+-- `isinsingulararray <array>`: the INDEX the script variable's value sits at
+-- in the table, or $FF.  The extractor has already read the table's bytes.
+L.isinsingulararray = function(ir, s)
+  if type(ir[2]) == "string" and ir[2] ~= "" then
+    emit(s, { "g2_find_in_array", ir[2] })
+  end
+end
+
+-- ------------------------------------------------- Prism's remaining tail
+--
+-- `getnthstring <list>, <buffer>` (00:$2B30) is GetNthString -- skip the script
+-- variable's count of "@"-terminated strings -- and then a copy of the one it
+-- lands on into a string buffer, unless the buffer operand is $FF, in which
+-- case only the POINTER is kept for the `copystring` that follows.  The list
+-- itself is names in the ROM, so the extractor has already decoded it.
+L.getnthstring = function(ir, s)
+  if type(ir[2]) ~= "table" then return end
+  emit(s, { "g2_nth_string", ir[2], ir[3] })
+end
+
+-- `copystring <buffer>` (25:$6C6A): the string getnthstring last named, into a
+-- buffer.  The pair is how Prism's mining scripts splice an ore name into two
+-- different lines without reading the table twice.
+L.copystring = function(ir, s) emit(s, { "g2_copy_string", ir[2] }) end
+
+-- `itemplural <buffer>` (25:$5B8B): pluralise the item name already sitting in
+-- a string buffer, unless the script variable says there is only one of it.
+-- The suffix rules and the dozen items that break them come from the ROM (see
+-- gen2ItemPluralRules); nothing about them is spelled here.
+L.itemplural = function(ir, s)
+  if type(ir[3]) ~= "table" then return end
+  emit(s, { "g2_item_plural", ir[2], ir[3] })
+end
+
+-- `readpersonxy <person>, <dest>` (25:$6BE8): where an object IS RIGHT NOW --
+-- OBJECT_NEXT_MAP_X then OBJECT_NEXT_MAP_Y out of its live struct, not its
+-- spawn row -- written as two bytes, or $FF $FF when the object is not on the
+-- map.  Prison F1's guard script is `readpersonxy 5 / writebyte 39 /
+-- comparevartobyte / sifne 2`: it runs only while that guard stands on a
+-- particular tile, so unlowered the byte stayed zero and the gate never opened.
+L.readpersonxy = function(ir, s)
+  emit(s, { "g2_read_person_xy", ir[2], ir[3] })
+end
+
+-- `variablestablerandom <index>, <bound>` (25:$6339) is `random` with d=1, so
+-- it takes its bits from VariableStableRandom (2C:$5C8F) instead of Random:
+-- one draw per index that STAYS PUT until the game advances that index's
+-- counter.  The bound and the rejection sampling are shared with `random`
+-- itself (the `add a / jr nc` mask, then redraw while the value is too big).
+L.variablestablerandom = function(ir, s)
+  emit(s, { "g2_stable_random", ir[2], ir[3] })
+end
+
+-- `loadmemtrainer` (25:$66C5): the battle about to start is the trainer THIS
+-- OBJECT already is -- wTempTrainerClass / wTempTrainerID, filled in when the
+-- player talked to it -- rather than one a `loadtrainer` names.
+L.loadmemtrainer = function(_, s) emit(s, { "g2_load_mem_trainer" }) end
+
+-- `trainertext <n>` (25:$66A9): the n-th of the CURRENT trainer's own text
+-- pointers -- seen, beaten, loss, after -- through wSeenTextPointer.  Prism's
+-- generic-trainer objects carry their lines this way instead of writing a
+-- `writetext` per trainer.
+L.trainertext = function(ir, s) emit(s, { "g2_trainer_text", ir[2] }) end
+
+-- `backupsecondpokemon` / `restoresecondpokemon` (25:$6A79 / $6AD3): Prism's
+-- Pokemon mode stashes party slot 2 and shrinks the party to one, then puts it
+-- back -- the same bracket `backupcustchar`/`restorecustchar` make around the
+-- player's appearance, and they appear together at every site.
+L.backupsecondpokemon = function(_, s) emit(s, { "g2_backup_second_mon" }) end
+L.restoresecondpokemon = function(_, s) emit(s, { "g2_restore_second_mon" }) end
+
+-- `checkpokemontype <type>` (25:$6A0B): open the party menu, and answer 1 when
+-- the chosen mon is that type OR knows a move of it, 0 when it is neither, and
+-- 2 when the player backed out -- which is why the site that follows it is a
+-- three-way anonjumptable.
+L.checkpokemontype = function(ir, s)
+  emit(s, { "g2_check_mon_type", ir[2] })
+end
+
+-- `loadsignpost <text>` (25:$6B10) is the signpost window: RefreshScreen,
+-- _Signpost on the pointer, CloseText, end.  Its one site takes the pointer
+-- from the halfword variable a readarrayhalfword just loaded, which is the
+-- same place `jumptext -1` reads its own.
+L.loadsignpost = function(ir, s)
+  showText(s, ir[2])
+  emit(s, { "g2_return" })
+end
+
+-- the COIN CASE balance into string buffer 1, and checkitem against the PC
+L.readcoins = function(_, s) emit(s, { "g2_readcoins" }) end
+L.checkiteminbox = function(ir, s)
+  emit(s, { "g2_check_item_box", itemId(ir[2]) })
+end
+
+-- `killsfx` (00:$0596) silences the sound channels.  Presentation only: the
+-- port's audio layer has no per-channel kill and the next playsound replaces
+-- whatever is running anyway.
+L.killsfx = function() end
+
+-- `divideby <n>` (25:$632C): `a = hScriptVar / n`, quotient back into the
+-- script variable -- the same Divide the rest of the engine uses, so the
+-- remainder is dropped.  Mining's `copybytetovar / divideby` pairs are what
+-- turn a raw count into a level.
+L.divideby = function(ir, s)
+  local by = tonumber(ir[2])
+  if by and by ~= 0 then emit(s, { "g2_divide_var", by }) end
+end
+
+-- `changemap <bank>, <blocks>` (Script_changemap 25:$66A4 -> ChangeMap
+-- 00:$1868) is Prism's own, and it is NOT changeblock with more arguments: it
+-- replaces the LOADED MAP'S WHOLE BLOCK TABLE from a compressed blob, reading
+-- the map's own width and height to know how much to copy.
+--
+-- Reported from play: the five sticks of dynamite in Mound Cave.  The whole
+-- scene ran -- the guy takes them, the player steps aside, the ground shakes
+-- four times -- and the boulder was still there afterwards, because the one
+-- command that actually opens the way was the one with no lowering.  The map's
+-- script header re-applies the same swap on every later entry (`checkevent /
+-- siftrue / changemap $1c, MoundF1_BlownUp_BlockData`), so it stayed shut for
+-- good.
+--
+-- The extractor has already turned the operand into the decoded block bytes
+-- (gen2MapBlockBlob); a cartridge where that did not resolve leaves a number
+-- here, and a number is not a map, so the row is dropped rather than guessed.
+L.changemap = function(ir, s)
+  if type(ir[2]) == "table" and #ir[2] > 0 then
+    emit(s, { "g2_changemap", ir[2] })
+  end
+end
 
 -- The map-refresh family.  All of these redraw the loaded map after a
 -- changeblock or a warp -- refreshmap/reloadmap/newloadmap re-run the tile

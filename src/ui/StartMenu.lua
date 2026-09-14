@@ -89,7 +89,7 @@ function StartMenu.new(game)
     for _ in pairs(game.save.pokedex and game.save.pokedex.owned or {}) do
       owned = owned + 1
     end
-    local t = math.floor(game.save.playTime or 0)
+    local t = math.floor(require("src.core.SaveData").playSeconds(game.save))
     local panel = Strings("PLAYER %s\nBADGES    %d\nPOKéDEX %3d\nTIME %6d:%02d",
                           game.save.player.name or "RED", badges, owned,
                           math.floor(t / 3600), math.floor(t / 60) % 60)

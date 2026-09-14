@@ -335,6 +335,23 @@ function CacheFs.removeDir(rel)
   love.filesystem.remove(rel)
 end
 
+-- rmdir on a REAL absolute path, for a caller that already knows where the
+-- directory is rather than a cache-relative one.
+--
+-- The mod uninstaller needs this: a mod unzipped next to the executable lives
+-- in the game folder whether or not portable mode is on, and
+-- love.filesystem.remove never reaches outside the save directory, so without
+-- a real rmdir an uninstall could empty a mod's folders and never remove them.
+function CacheFs.rmdirReal(path)
+  if type(path) ~= "string" or path == "" then return end
+  local rmdir = resolveRmdir()
+  if rmdir then rmdir(path) end
+end
+
+-- The platform's path separator, so a caller building a real path out of a
+-- love.filesystem one does not have to re-derive it.
+CacheFs.SEP = SEP
+
 -- Remove the game-folder copy of a cache subtree before a fresh import, so a
 -- cache-format bump does not leave orphaned files behind.  No-op when the
 -- portable cache is inactive (the save-directory copy is cleared by

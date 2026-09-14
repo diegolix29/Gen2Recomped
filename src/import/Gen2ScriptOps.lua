@@ -192,6 +192,26 @@ Gen2ScriptOps.COMMANDS_CRYSTAL = {
 -- and never recovers.  Widths are DERIVED from the handlers' own stream reads
 -- (tools/derive_args.py walks each handler's control flow to `ret`, taking the
 -- max over branches because both arms of an `if_*` consume the same bytes).
+--
+-- CHECKED AGAINST THE ASSEMBLER'S OWN MACROS, which is the only place a width
+-- is stated rather than inferred: for every `enum X_command` in
+-- macros/event.asm, how many bytes does the MACRO that writes it emit?  Two
+-- commands have no macro of their own name -- they are written only through
+-- aliases -- and those are exactly where a derived width can go wrong:
+--
+--   eventvarop      readeventvar / writeeventvar / addeventvar /
+--                   compareeventvar, each `db eventvarop_command /
+--                   db (var & $3f) | <op << 6>`.  One operand byte.
+--   modifyeventvar  inceventvar and deceventvar emit ONE byte;
+--                   addtoeventvar and seteventvartovalue emit TWO, the second
+--                   being the value.  The top two bits of the first byte say
+--                   which, so it takes the `E` variable tail rather than a
+--                   fixed count -- read as a fixed one byte, every
+--                   addtoeventvar and seteventvartovalue ate the opcode after
+--                   it.
+--
+-- It is also the only command in the table whose macros disagree on width; the
+-- rest match what is written here.
 Gen2ScriptOps.COMMANDS_PRISM = {
   { "scall", "p" }, { "farscall", "f" }, { "ptcall", "d" }, -- 00
   { "jump", "p" }, { "farjump", "f" }, { "ptjump", "d" }, -- 03
@@ -253,7 +273,7 @@ Gen2ScriptOps.COMMANDS_PRISM = {
   { "addhalfwordtohalfwordvar", "w" }, { "givecraftingEXP", "b" }, { "copybytetohalfwordvar", "w" }, -- AB
   { "givetm", "b" }, { "unused_AF", "" }, { "itemplural", "b" }, -- AE
   { "pullvar", "" }, { "setplayersprite", "b" }, { "setplayercolor", "bb" }, -- B1
-  { "loadsignpost", "w" }, { "checkpokemontype", "b" }, { "isinarray", "wwbb" }, -- B4
+  { "loadsignpost", "t" }, { "checkpokemontype", "b" }, { "isinarray", "wwbb" }, -- B4
   { "pusharray", "" }, { "poparray", "" }, { "startmirrorbattle", "" }, -- B7
   { "comparevartobyte", "w" }, { "backupsecondpokemon", "" }, { "restoresecondpokemon", "" }, -- BA
   { "loadhalfwordvar", "b" }, { "pullhalfwordvar", "" }, { "divideby", "b" }, -- BD
@@ -270,7 +290,7 @@ Gen2ScriptOps.COMMANDS_PRISM = {
   { "sifeq", "b" }, { "sifne", "b" }, { "readarray", "b" }, -- DE
   { "givetmnomessage", "b" }, { "findpokemontype", "b" }, { "startpokeonly", "bbb" }, -- E1
   { "endpokeonly", "bbb" }, { "fadetomapmusic", "b" }, { "menuanonjumptable", "w" }, -- E4
-  { "modifyeventvar", "b" }, { "showtext", "t" }, { "closetextend", "" }, -- E7
+  { "modifyeventvar", "E" }, { "showtext", "t" }, { "closetextend", "" }, -- E7
   { "toggleevent", "w" }, { "getpartymonname", "b" }, -- EA
 }
 
@@ -587,7 +607,14 @@ Gen2ScriptOps.ARG_BYTES = {
   -- the macro pair `copy`/`endcopy` (macros/event.asm) emits exactly that:
   -- `dw dest, db length` followed by the payload.  The old "wbb" read two
   -- fixed bytes and then tried to execute the payload.
-  L = 1, c = 1,
+  --
+  -- `E` is modifyeventvar's operand, and it is the one command in Prism's
+  -- table whose own MACROS DISAGREE on how wide it is: `inceventvar` and
+  -- `deceventvar` emit the index byte alone, `addtoeventvar` and
+  -- `seteventvartovalue` emit a VALUE byte after it.  The top two bits of the
+  -- index byte are what say which -- $00 set, $40 add, $80 inc, $C0 dec
+  -- (macros/event.asm) -- so the width has to be read off the operand.
+  L = 1, c = 1, E = 1,
 }
 
 -- commands after which the interpreter never falls through to the next byte

@@ -3463,6 +3463,43 @@ function RomExtractorGen2:gen2PicBankFix()
   return fix
 end
 
+-- THE ONE CLASS WHOSE PIC IS NOT COMPRESSED, READ OUT OF GetTrainerPic ITSELF.
+--
+-- Prism's Palette agents came up as the port's placeholder, and the reason is
+-- in the routine: GetTrainerPic (0B:$707C) loads wTrainerClass, compares it
+-- against one class number and, when it matches, copies 49 tiles STRAIGHT --
+-- `ld h,d / ld l,e / call FarCopyBytes` -- instead of falling through to the
+-- FarDecompress every other class takes.  That class's art is stored RAW: 784
+-- plain 2bpp bytes with no LZ stream in front of them, and the Palette
+-- patroller's block opens with two blank columns, so read as LZ it decoded 311
+-- bytes of nothing and the assert below dropped the pic.  Sixty-six of Prism's
+-- sixty-seven classes decompress to exactly 784; this was the one that did not.
+--
+-- Read out of the ROM rather than written down: the class number is whatever
+-- the `cp n / jr nz` in that routine names, so a cartridge without the special
+-- case (Gold and Crystal both `cp n / ret nc` there instead) answers nothing
+-- and every class stays compressed.
+function RomExtractorGen2:gen2TrainerPicRawClass()
+  if self._rawPicClass ~= nil then return self._rawPicClass or nil end
+  self._rawPicClass = false
+  local sym = self:symbol("GetTrainerPic")
+  if not (sym and self.rom) then return nil end
+  pcall(function()
+    for i = 0, 0x3C do
+      local at = sym.address + i
+      -- `cp n` immediately followed by a FORWARD `jr nz` -- the raw arm falls
+      -- through, the compressed one is jumped to
+      if self.rom:byte(sym.bank, at) == 0xFE
+         and self.rom:byte(sym.bank, at + 2) == 0x20
+         and self.rom:byte(sym.bank, at + 3) < 0x80 then
+        self._rawPicClass = self.rom:byte(sym.bank, at + 1)
+        return
+      end
+    end
+  end)
+  return self._rawPicClass or nil
+end
+
 function RomExtractorGen2:gen2TrainerPic(group, relative)
   local sym = self:symbol("TrainerPicPointers")
   if not sym or not self.rom then return nil end
@@ -3472,7 +3509,8 @@ function RomExtractorGen2:gen2TrainerPic(group, relative)
     local bank = self.rom:byte(sym.bank, row)
     bank = self:gen2PicBankFix()[bank] or bank
     local address = self.rom:word(sym.bank, row + 1)
-    self:gen2WritePic(bank, address, relative, self:gen2TrainerPalette(group))
+    self:gen2WritePic(bank, address, relative, self:gen2TrainerPalette(group),
+                      group == self:gen2TrainerPicRawClass())
   end)
   return ok and ("assets/generated/" .. relative) or nil
 end
@@ -3499,10 +3537,16 @@ function RomExtractorGen2:gen2TrainerPalette(group)
   return colors
 end
 
-function RomExtractorGen2:gen2WritePic(bank, address, relative, palette)
-  local raw = self.rom:bytes(bank, address, 0x8000 - address)
-  local pixels = decompressLz3(raw, self:lzOptions())
+function RomExtractorGen2:gen2WritePic(bank, address, relative, palette, plain)
   local tiles = GEN2_TRAINER_PIC_TILES
+  local pixels
+  if plain then
+    -- the raw arm of GetTrainerPic: `ld c, 49` tiles copied, not decompressed
+    pixels = self.rom:bytes(bank, address, tiles * tiles * 16)
+  else
+    pixels = decompressLz3(self.rom:bytes(bank, address, 0x8000 - address),
+                           self:lzOptions())
+  end
   assert(#pixels >= tiles * tiles * 16, "short trainer pic")
   local reordered = colMajorToRowMajor(pixels, tiles, tiles)
   -- matte before the recolor: matteColor0 keys on pure white, which is
@@ -4295,10 +4339,19 @@ local GEN2_DEX_POINTER_BANK = 0x68
 function RomExtractorGen2:gen2DexEntryBanks()
   if self._gen2DexBanks ~= nil then return self._gen2DexBanks or nil end
   self._gen2DexBanks = false
+  -- AND A CARTRIDGE MAY CARRY IT AS A PLAIN LABEL.  Crystal's three copies are
+  -- local labels inside the routines that use them, so their symbols are
+  -- dotted; Prism has ONE, exported on its own as `PokedexEntryBanks` (00:$081D
+  -- -- its GetDexEntryPointer at 02:$7ADA does `ld hl,$081d` after isolating
+  -- the top two bits of the species).  Looking only for the dotted names found
+  -- nothing on Prism and fell through to GOLD'S ARITHMETIC, which put every
+  -- entry 42 banks away from the real one: Prism's banks are $3E,$3F,$3F,$3F
+  -- and the formula asks for $68.
   for _, name in ipairs({
     "GetDexEntryPointer.PokedexEntryBanks",
     "PokedexShow_GetDexEntryBank.PokedexEntryBanks",
     "HeavyBall_GetDexEntryBank.PokedexEntryBanks",
+    "PokedexEntryBanks",
   }) do
     local sym = self:symbol(name)
     if sym then
@@ -4333,6 +4386,27 @@ function RomExtractorGen2:gen2DexEntries(pokemon)
   -- this shape produced garbage kinds and 65472-pound weights.
   local ptrBytes = self:layout("dexPointerBytes", 2)
   local bodySym = ptrBytes == 3 and self:symbol("PokemonBodyData") or nil
+  -- PRISM: same two-byte pointer table and same four-bank lookup, and then
+  -- nothing else the same.  Read out of DisplayDexEntry (02:$79C1), which is
+  -- the only place the shape is written down:
+  --
+  --   * THE KIND IS COMPRESSED.  It is handed straight to FarPlaceText, so it
+  --     is a Prism text block -- `$03` and a bit stream -- not a run of glyphs
+  --     ending in "@".  Crystal's reader walked sixteen bytes of it without
+  --     ever finding a terminator, which is why the species line came out as
+  --     {BYTE:..} and the four bytes it then took for height and weight were
+  --     whatever the compressed run happened to hold.
+  --   * THE MEASUREMENTS ARE METRIC.  `dw height` in DECIMETRES and
+  --     `dw weight` in HECTOGRAMS -- Prism prints either unit system and keeps
+  --     the metric one (Pokedex_DrawDexEntryScreenBG has both a .height_metric
+  --     and a .height_imperial).  Bulbasaur reads 7 and 69, which is 0.7 m and
+  --     6.9 kg exactly; Crystal's reader would have wanted 204 and 152.
+  --   * PAGE ONE IS LENGTH-PREFIXED.  One byte of length, then the page, and
+  --     page two starts right after it -- DisplayDexEntry's page-two path is
+  --     literally `ld a,[hl] / inc a / add hl,de`, reading that byte and
+  --     stepping over the page it measures.
+  local prism = self:layout("prismCharmap", 0) ~= 0
+                and self:gen2PrismTextTables() ~= nil
   for _, def in pairs(pokemon) do
     local dex = tonumber(def.dex)
     if dex and dex >= 1 then
@@ -4358,16 +4432,40 @@ function RomExtractorGen2:gen2DexEntries(pokemon)
             or (GEN2_DEX_POINTER_BANK + group)
         end
         local kind, offset = {}, 0
-        local kindEnd = ptrBytes == 3
-          and RomExtractorGen2.POLISHED_TEXT_ENDS or { [0x50] = true }
-        while offset < 16 do
-          local value = self.rom:byte(bank, address + offset)
-          offset = offset + 1
-          if kindEnd[value] then break end
-          kind[#kind + 1] = self:textGlyph(charmap, value)
+        local kindText
+        if prism then
+          local text, used =
+            self:gen2PrismDecodeTextAt(bank, address, charmap, 0)
+          kindText = text or ""
+          offset = used or 0
+          if offset <= 0 then error("no dex entry") end
+        else
+          local kindEnd = ptrBytes == 3
+            and RomExtractorGen2.POLISHED_TEXT_ENDS or { [0x50] = true }
+          while offset < 16 do
+            local value = self.rom:byte(bank, address + offset)
+            offset = offset + 1
+            if kindEnd[value] then break end
+            kind[#kind + 1] = self:textGlyph(charmap, value)
+          end
         end
         local height, weight, body
-        if ptrBytes == 3 then
+        if prism then
+          local hDm = self.rom:word(bank, address + offset)
+          local wHg = self.rom:word(bank, address + offset + 2)
+          local len1 = self.rom:byte(bank, address + offset + 4)
+          local page1 =
+            self:gen2PrismDecodeTextAt(bank, address + offset + 5, charmap, 0)
+          local page2 = self:gen2PrismDecodeTextAt(
+            bank, address + offset + 5 + len1, charmap, 0)
+          body = page1 or ""
+          if page2 and page2 ~= "" then
+            body = (body ~= "" and (body .. "\n") or "") .. page2
+          end
+          local inches = math.floor(hDm * 3.937008 + 0.5)
+          height = math.floor(inches / 12) * 100 + inches % 12
+          weight = math.floor(wHg * 2.204623 + 0.5)
+        elseif ptrBytes == 3 then
           -- both pages, decoded by the polished reader; page two starts one
           -- past page one's terminator
           local p1, e1 = self:gen2PolishedText(bank, address + offset, 0)
@@ -4401,7 +4499,7 @@ function RomExtractorGen2:gen2DexEntries(pokemon)
         local key = "_Gen2DexEntry_" .. tostring(def.id)
         if texts and body ~= "" then texts[key] = body end
         def.dexEntry = {
-          kind = table.concat(kind),
+          kind = kindText or table.concat(kind),
           heightFt = math.floor(height / 100),
           heightIn = height % 100,
           weight = weight,
@@ -7145,6 +7243,7 @@ function RomExtractorGen2:gen2DecodeScript(bank, address, label, pool)
        and self.rom:byte(bank, pc + 3) == 0 then
       spec = "bbbb"
     end
+    local extra
     for i = 1, #spec do
       local kind = spec:sub(i, i)
       local value
@@ -7217,6 +7316,16 @@ function RomExtractorGen2:gen2DecodeScript(bank, address, label, pool)
         for i = 1, count do bytes[i] = self.rom:byte(bank, pc + i) end
         value = table.concat(bytes, ",")
         pc = pc + count
+      elseif kind == "E" then
+        -- modifyeventvar's operand: `op << 6 | index`, and the two forms that
+        -- carry a VALUE ($00 seteventvartovalue, $40 addtoeventvar) put it in
+        -- a second byte.  inc ($80) and dec ($C0) do not.  Read as a fixed one
+        -- byte, the uses of the two-byte forms ate the opcode after them.
+        value = self.rom:byte(bank, pc)
+        if value < 0x80 then
+          extra = self.rom:byte(bank, pc + 1)
+          pc = pc + 1
+        end
       elseif kind == "g" then
         -- givepoke's trainer trigger: six more bytes (two far name
         -- pointers) follow only when it is nonzero (Script_givepoke
@@ -7232,6 +7341,13 @@ function RomExtractorGen2:gen2DecodeScript(bank, address, label, pool)
       end
       argCount = argCount + 1
       row[argCount + 1] = value == nil and "" or value
+      -- a variable tail that carries a SECOND value (modifyeventvar's) lands
+      -- after the operand it belongs to, not before it
+      if extra ~= nil then
+        argCount = argCount + 1
+        row[argCount + 1] = extra
+        extra = nil
+      end
       pc = pc + Gen2ScriptOps.ARG_BYTES[kind]
     end
     if name == "elevator" then
@@ -7254,6 +7370,56 @@ function RomExtractorGen2:gen2DecodeScript(bank, address, label, pool)
       arrays[#arrays + 1] = { row, row[2] }
     elseif name == "loadmenu" then
       row[2] = self:gen2MenuItems(bank, row[2]) or row[2]
+    elseif name == "cmdwitharrayargs" then
+      row[2] = self:gen2CustomArgsCommand(row[2]) or row[2]
+    elseif name == "isinsingulararray" then
+      -- `isinsingulararray <array>` searches a plain $FF-terminated byte table
+      -- in the ROM for the script variable's value.  The runtime has no ROM to
+      -- reach into, so the bytes come out here, the same way loadarray's do.
+      row[2] = self:gen2ByteTable(bank, row[2]) or row[2]
+    elseif name == "anonjumptable" or name == "menuanonjumptable" then
+      -- AN "ANON" JUMP TABLE IS THE ONE WRITTEN WHERE IT IS USED.
+      --
+      -- Script_anonjumptable (25:$6B22) opens `ld hl, wScriptPos` -- the table
+      -- is the bytes the script pointer is already standing on, not something
+      -- a pointer names -- and then it is ordinary ScriptJumptable: index by
+      -- the script variable, read the halfword, LocalScriptJump to it.
+      -- menuanonjumptable is the same table behind a menu: it runs the menu
+      -- named by its one operand, closes the window, and falls into
+      -- anonjumptable with the choice in the script variable.
+      --
+      -- So the cases start at `pc`, which is where this walk has just left
+      -- off, and both commands are terminators -- the walker stops here and
+      -- the table's bytes are never decoded as opcodes.  Thirty-three sites,
+      -- every one of them a menu or a switch that did nothing at all.
+      row[argCount + 2] = self:gen2JumpTable(bank, pc, pool) or ""
+      -- and the menu form's own operand is a menu header, resolved the same
+      -- way `loadmenu`'s is -- the choice it takes is what indexes the table
+      if name == "menuanonjumptable" then
+        row[2] = self:gen2MenuItems(bank, row[2]) or row[2]
+      end
+    elseif name == "loadmenudata" or name == "loadscrollingmenudata" then
+      -- Prism's own names for Crystal's `loadmenu`, and the same MenuHeader
+      -- behind them (Script_loadmenudata is LoadMenuDataHeader).  The
+      -- scrolling form only differs in resetting the cursor and the scroll
+      -- position, which is presentation.
+      row[2] = self:gen2MenuItems(bank, row[2]) or row[2]
+    elseif name == "getnthstring" then
+      -- `getnthstring <list>, <buffer>`: the list is names, not bytecode, and
+      -- the runtime has no ROM to walk -- so it comes out here, the same way
+      -- loadarray's bytes and isinsingulararray's table do.
+      row[2] = self:gen2StringList(bank, row[2]) or row[2]
+    elseif name == "itemplural" then
+      -- the suffix rules and the dozen items that break them, read out of
+      -- GiveItemCheckPluralMain itself
+      row[argCount + 2] = self:gen2ItemPluralRules() or nil
+    elseif name == "givetm" or name == "givetmnomessage" then
+      row[2] = self:gen2MachineItem(row[2]) or row[2]
+    elseif name == "changemap" then
+      -- resolved here for the same reason loadmenu's items are: the VM must
+      -- never reach back into the ROM, and this operand names a compressed
+      -- blob rather than more bytecode
+      row[2] = self:gen2MapBlockBlob(row[2], row[3]) or row[2]
     elseif name == "writecmdqueue" or name == "usestonetable" then
       -- polished's usestonetable takes the table pointer directly where
       -- Crystal queues it through writecmdqueue; both point at the same
@@ -7412,6 +7578,17 @@ function RomExtractorGen2:gen2ResolveScriptMapIds(maps, keys, pool)
         if key then
           row[slot] = key
           row[slot + 1] = 0
+        end
+      end
+      -- and so does a warp BUILT by cmdwitharrayargs, whose map argument is
+      -- the same pair one level down
+      if row[1] == "cmdwitharrayargs" and type(row[2]) == "table" then
+        for _, arg in ipairs(row[2].args or {}) do
+          if type(arg) == "table" and arg.group then
+            local entry = mapIndex[arg.group * 256 + (arg.number or 0)]
+            arg.map = entry and keyByLabel[entry.label] or nil
+            arg.group, arg.number = nil, nil
+          end
         end
       end
       -- elevator floors name their destination the same (group, number) way
@@ -8036,7 +8213,18 @@ function RomExtractorGen2:extractMapScripts()  self:beginStage("Gen2 map scripts
             -- rather than at the script, so following the pointer straight
             -- disassembled the flag word as opcodes (the Player's House
             -- poster decoded as $CC and died on the first byte).
-            if kind == 5 or kind == 6 or (polishedBgKinds and kind == 9) then
+            --
+            -- ...AND PRISM DOES NOT HAVE THEM AT ALL.  Its five is
+            -- SIGNPOST_ITEM and its six is SIGNPOST_LOAD, which the events
+            -- pass above already reads as an item and as TEXT.  Read Crystal's
+            -- way, 248 of Prism's signposts had a flag word invented for them
+            -- out of the first two bytes of a hidden-item record or of the
+            -- sign's own words, and the pointer was then moved two bytes on.
+            -- EagulouCity is the closure check: its source lists LOAD, LOAD,
+            -- ITEM, LOAD, LOAD and the ROM's kind bytes are 6, 6, 5, 6, 6.
+            local prismSignKinds = self:layout("objectTextKinds", 0) ~= 0
+            if not prismSignKinds
+               and (kind == 5 or kind == 6 or (polishedBgKinds and kind == 9)) then
               local event = self.rom:word(bank, ptr)
               ptr = self.rom:word(bank, ptr + 2)
               signConds[i] = { event = event, ifSet = kind == 5 }
@@ -8067,6 +8255,18 @@ function RomExtractorGen2:extractMapScripts()  self:beginStage("Gen2 map scripts
               -- events pass; >= $0A: a hidden item, no script to queue.
               -- Feeding either to the disassembler decoded prose (or a flag
               -- word) as opcodes.
+            elseif prismSignKinds and kind > 4 then
+              -- PRISM'S SIGNPOST KINDS ABOVE FOUR ARE NOT SCRIPTS.  Only
+              -- READ/UP/DOWN/RIGHT/LEFT (0-4) point at bytecode; 5 is the
+              -- hidden item, 6 and 7 are text (SIGNPOST_LOAD and
+              -- SIGNPOST_TEXT -- see the events pass), 8 and 9 are the two
+              -- jumpstd forms handled above, and $40 is neither.  Queued as
+              -- scripts, 235 signs ran the disassembly of their own words:
+              -- the Apartments' door plates walked off the end of a four-byte
+              -- text record into the next one, which is where eight of this
+              -- cartridge's twenty-six script desyncs came from, and the rest
+              -- decoded prose into whatever opcodes the letters spelled and
+              -- ran THAT instead of printing the sign.
             elseif kind ~= self:layout("bgEventItemKind", GEN2_BG_EVENT_ITEM)
                and kind ~= 8 then
               local label = self:gen2QueueScript(bank, ptr, pool)
@@ -8575,6 +8775,314 @@ end
 -- rejected and re-read RAW, which is precisely the compressed-stream-as-
 -- blocks failure the exact gate exists to prevent, arrived at from the other
 -- direction.
+-- `givetm <n>` (Script_giveTM 25:$67F8) HANDS OVER A MACHINE, NOT AN ITEM.
+--
+-- Prism numbers its machines in a space of their own -- `const_value = 1`
+-- ahead of the add_tm block -- so the operand is not an item id and there is
+-- nothing in the item table to give.  The handler masks it with $7F and
+-- splits at $61: 1..96 are the TMs, 97 and up are HMs (`cp $61 / sub $60`,
+-- against this cartridge's tmCount of 96), which is exactly the combined
+-- numbering gen2Machines already uses.  Bit 7 is a flag the giving routine
+-- reads, not part of the number.
+--
+-- Resolved to the synthesised TM_nn / HM_nn item here, the same way a
+-- PERSONTYPE_TMHMBALL's machine number is: the VM then gives a machine the
+-- same way it gives a potion.  Thirty-six of Prism's scripts hand a TM over
+-- this way and every one of them was silently doing nothing.
+-- `cmdwitharrayargs` BUILDS A COMMAND AND RUNS IT, with some of its arguments
+-- taken from the array `loadarray` left loaded.
+--
+-- Script_cmdwitharrayargs (25:$6C26) farcalls
+-- CreateScriptCommandWithCustomArguments, which assembles the command into
+-- wScriptArrayCommandBuffer and ScriptCalls it.  The blob after the length
+-- byte is:
+--
+--     db command            ; and it must be one of seven -- the cartridge
+--                           ; CRASHES on anything else
+--     db substituteMask     ; bit n set: argument n+1 comes from the array
+--     ...                   ; per argument: ONE index byte when its mask bit
+--                           ; is set, otherwise the argument's own bytes
+--
+-- The per-argument WIDTHS are the cartridge's own data, not a table written
+-- down here: AllowedCustomScriptCommands (23:$5868) is four bytes per row --
+-- `db command, db argcount, dw widths` -- with each width packed into two bits
+-- as (actual - 1).  A substituted argument still spends one inline byte,
+-- because GetScriptArrayPointer (00 -> 25:$6E..) calls GetScriptByteOrVar_FF
+-- for the index within the entry before it reads anything.
+--
+-- Eighteen of Prism's thirty-one uses are `warp` with the destination
+-- COORDINATES coming out of the array -- eighteen places where pressing a
+-- thing took the player nowhere at all, because the command had no lowering.
+function RomExtractorGen2:gen2CustomArgCommands()
+  if self._gen2CustomArgs ~= nil then return self._gen2CustomArgs or nil end
+  self._gen2CustomArgs = false
+  local sym = self:symbol("AllowedCustomScriptCommands")
+  local table_ = Gen2ScriptOps.commandsFor(self.version)
+  if not (self.rom and sym and table_) then return nil end
+  local out = {}
+  local ok = pcall(function()
+    for i = 0, 31 do
+      local at = sym.address + i * 4
+      local command = self.rom:byte(sym.bank, at)
+      if command == 0xFF then break end
+      local count = self.rom:byte(sym.bank, at + 1)
+      local packed = self.rom:word(sym.bank, at + 2)
+      local entry = table_[command + 1]
+      if not (entry and count > 0 and count <= 8) then
+        error("row " .. i .. " is not a command")
+      end
+      local widths = {}
+      for n = 0, count - 1 do
+        widths[n + 1] = math.floor(packed / 4 ^ n) % 4 + 1
+      end
+      out[command] = { name = entry[1], widths = widths }
+    end
+  end)
+  if not ok or next(out) == nil then return nil end
+  self._gen2CustomArgs = out
+  return out
+end
+
+-- The commands whose first argument is a destination MAP, as a (group, number)
+-- pair the runtime cannot use -- folded to a registry key by the same post-pass
+-- that folds an ordinary warp's (gen2ResolveScriptMapIds).
+-- A table field rather than a `local`: the main chunk is at Lua 5.1's
+-- 200-local ceiling.
+RomExtractorGen2.CUSTOM_ARG_MAP = { warp = 1, warpmod = 2 }
+
+function RomExtractorGen2:gen2CustomArgsCommand(blob)
+  if type(blob) ~= "string" or blob == "" then return nil end
+  local bytes = {}
+  for byte in blob:gmatch("%d+") do bytes[#bytes + 1] = tonumber(byte) end
+  local allowed = self:gen2CustomArgCommands()
+  local spec = allowed and bytes[1] and allowed[bytes[1]]
+  if not spec then return nil end
+  local mask, at = bytes[2] or 0, 3
+  local args = {}
+  for i, width in ipairs(spec.widths) do
+    local fromArray = math.floor(mask / 2 ^ (i - 1)) % 2 == 1
+    if fromArray then
+      args[i] = { array = bytes[at], width = width }
+      at = at + 1
+    else
+      local value, place = 0, 1
+      for n = 0, width - 1 do
+        value = value + (bytes[at + n] or 0) * place
+        place = place * 256
+      end
+      args[i] = { value = value }
+      -- a map argument keeps its two bytes apart, because the pair is what
+      -- the map post-pass folds into a key
+      if RomExtractorGen2.CUSTOM_ARG_MAP[spec.name] == i and width == 2 then
+        args[i] = { group = bytes[at], number = bytes[at + 1] }
+      end
+      at = at + width
+    end
+    if bytes[at - 1] == nil then return nil end
+  end
+  return { command = spec.name, args = args }
+end
+
+-- A plain $FF-terminated byte table named by a script operand, as a comma
+-- separated string -- the same shape the `c` inline-blob tail produces, so the
+-- runtime reads both the same way.
+function RomExtractorGen2:gen2ByteTable(bank, address, limit)
+  address = tonumber(address)
+  if not (self.rom and address) then return nil end
+  local low = bank == 0 and 0x0000 or 0x4000
+  local high = bank == 0 and 0x4000 or 0x8000
+  if address < low or address >= high then return nil end
+  local out = {}
+  for i = 0, math.min(limit or 64, high - address) - 1 do
+    local byte = self.rom:byte(bank, address + i)
+    out[#out + 1] = byte
+    if byte == 0xFF then break end
+  end
+  if #out == 0 then return nil end
+  return table.concat(out, ",")
+end
+
+-- A "@"-TERMINATED LIST OF PLAIN NAMES, WHICH IS WHAT getnthstring INDEXES.
+--
+-- Script_getnthstring (00:$2B30) is GetNthString (00:$11AB) -- "skip N strings,
+-- each one ending on $50" -- and then a copy of the one it lands on into a
+-- string buffer.  There is no count anywhere: the caller has already bounded
+-- the index.  So the list is read here the only way it can be, by decoding
+-- until the bytes stop being a name, and the shape check is the decoder's own:
+-- a run longer than a name can be, or one the charmap has no letters for, ends
+-- the list rather than joining it.
+--
+-- Prism's only use is OreNames (0E:$59E6) -- Zinc, Copper, Lead, Iron, Bronze,
+-- Silver, Ruthenium, Gold, Cobalt, Prism -- which the mining scripts splice
+-- into their lines.  Unlowered, every one of them printed nothing.
+function RomExtractorGen2:gen2StringList(bank, address, max)
+  address = tonumber(address)
+  if not (self.rom and address) then return nil end
+  if not self:gen2InRom(bank, address) then return nil end
+  bank = self:gen2Home(bank, address)
+  local high = bank == 0 and 0x4000 or 0x8000
+  local out, pc = {}, address
+  for _ = 1, max or 32 do
+    local len = 0
+    while true do
+      if pc + len >= high or len > 20 then return #out > 0 and out or nil end
+      local ok, value = pcall(self.rom.byte, self.rom, bank, pc + len)
+      if not (ok and value) then return #out > 0 and out or nil end
+      if value == 0x50 then break end
+      len = len + 1
+    end
+    if len == 0 then break end
+    local name = self:gen2ReadInlineString(bank, pc, len)
+    -- the decoder answers SOMETHING for any bytes; a name is what it answers
+    -- for a name -- letters, digits and the punctuation a name carries
+    if type(name) ~= "string" or not name:match("^[%w][%w \'%.%-]*$") then
+      break
+    end
+    out[#out + 1] = name
+    pc = pc + len + 1
+  end
+  return #out > 0 and out or nil
+end
+
+-- THE PLURAL OF AN ITEM NAME, AS THE CARTRIDGE SPELLS IT.
+--
+-- Script_itemplural (25:$5B8B) does nothing when the script variable is 1 and
+-- otherwise hands a string buffer to GiveItemCheckPluralMain (25:$5B97), which
+-- walks to the name's "@", steps back to its LAST CHARACTER, and writes a
+-- suffix relative to it: "o" and "s" take "es", "y" becomes "ies", everything
+-- else takes "s" -- and a dozen named items take something else again, by a
+-- `dbw item, arm` table the routine searches first.
+--
+-- All of it is read out of the ROM rather than spelled here.  Each arm is at
+-- most `inc de / ld hl, <text> / jr .copy`, so the arm's ADDRESS is enough:
+-- the `ld hl` names the suffix and the `inc de` -- or, for Keg of Beer, an
+-- `ld de, -7` -- says where it lands relative to the last character.  The
+-- three default arms come from the sym's own labels; the exceptions come from
+-- the table, whose rows are found by the shape they have to have (three bytes,
+-- a word pointing back inside this routine, closed by $FF).
+function RomExtractorGen2:gen2PluralArm(bank, address)
+  local place, text = 0, nil
+  for i = 0, 15 do
+    local ok, value = pcall(self.rom.byte, self.rom, bank, address + i)
+    if not (ok and value) then break end
+    if value == 0xC9 then return false end          -- ret: no suffix at all
+    if value == 0x13 then place = 1 end             -- inc de: after the last
+    if value == 0x11 then                            -- ld de, nn: step back
+      local n = self.rom:word(bank, address + i + 1)
+      place = n >= 0x8000 and n - 0x10000 or n
+    end
+    if value == 0x21 then                            -- ld hl, <suffix text>
+      text = self:gen2ReadInlineString(bank,
+                                       self.rom:word(bank, address + i + 1), 12)
+      break
+    end
+  end
+  if type(text) ~= "string" or text == "" then return nil end
+  return { place = place, text = text }
+end
+
+function RomExtractorGen2:gen2ItemPluralRules()
+  if self._pluralRules ~= nil then return self._pluralRules or nil end
+  self._pluralRules = false
+  local main = self:symbol("GiveItemCheckPluralMain")
+  if not (main and self.rom) then return nil end
+  local bank = main.bank
+  -- WALK THE ROUTINE'S OWN HEAD.  The .sym has labels for every arm, but the
+  -- manifest keeps only top-level symbols -- so the arms are found the way the
+  -- CPU finds them, by reading the compares.  Two things come out of this
+  -- stretch: the `ld hl` that names the exception table, and the three
+  -- `cp <letter> / jr z, <arm>` pairs; where the walk stops IS the fall-through
+  -- arm, which is the rule for every other letter.
+  local exceptions, letters, pc = nil, {}, main.address
+  while pc < main.address + 0x40 do
+    local op = self.rom:byte(bank, pc)
+    if op == 0x21 then                                  -- ld hl, nn
+      exceptions = exceptions or self.rom:word(bank, pc + 1)
+      pc = pc + 3
+    elseif op == 0xFE then                              -- cp n
+      if self.rom:byte(bank, pc + 2) == 0x28 then       -- ...followed by jr z
+        local rel = self.rom:byte(bank, pc + 3)
+        if rel >= 0x80 then rel = rel - 256 end
+        local letter = self:gen2ReadInlineString(bank, pc + 1, 1)
+        if type(letter) == "string" and #letter == 1 then
+          letters[letter] = pc + 4 + rel
+        end
+        pc = pc + 4
+      else
+        pc = pc + 2                                     -- the "@" scan's own cp
+      end
+    elseif op == 0x20 then pc = pc + 2                  -- jr nz
+    elseif op == 0xFA or op == 0x11 or op == 0xCD or op == 0xDA then
+      pc = pc + 3
+    elseif op == 0x2A or op == 0x2B or op == 0xE5 or op == 0xD1 or op == 0x1A then
+      pc = pc + 1
+    else
+      break                                             -- the fall-through arm
+    end
+  end
+  local fallback = self:gen2PluralArm(bank, pc)
+  if not (exceptions and fallback) then return nil end
+  local rules = { [""] = fallback }
+  for letter, address in pairs(letters) do
+    local arm = self:gen2PluralArm(bank, address)
+    if arm ~= nil then rules[letter] = arm end
+  end
+  -- `db item, dw arm` rows, closed by $FF
+  local items, at = {}, exceptions
+  for _ = 1, 64 do
+    local id = self.rom:byte(bank, at)
+    if id == 0xFF then break end
+    local arm = self:gen2PluralArm(bank, self.rom:word(bank, at + 1))
+    -- `false` is the no-suffix arm and MUST survive as a rule of its own:
+    -- Fries, Leftovers and BlackGlasses are already plural
+    items[tostring(id)] = arm ~= nil and arm or false
+    at = at + 3
+  end
+  if not next(items) then return nil end
+  self._pluralRules = { rules = rules, items = items }
+  return self._pluralRules
+end
+
+function RomExtractorGen2:gen2MachineItem(slot)
+  slot = tonumber(slot)
+  if not slot then return nil end
+  slot = slot % 0x80
+  local machine = slot > 0 and self:gen2Machines()[slot] or nil
+  if not machine then return nil end
+  return string.format("%s_%02d", machine.kind, machine.number)
+end
+
+-- `changemap <bank>, <blocks>` names A WHOLE REPLACEMENT BLOCK TABLE.
+--
+-- Script_changemap (25:$66A4) parks the three operand bytes and calls ChangeMap
+-- (00:$1868), which reads the map's own width and height out of wMapWidth /
+-- wMapHeight, FarDecompresses the blob to $D000 and copies it row by row into
+-- the loaded map's block buffer.  It is not `changeblock`: it does not touch
+-- one block, it swaps the map's entire layout.
+--
+-- Prism is the only cartridge here that has the command, and it is what opens
+-- the ways a cartridge cannot open with a single block -- Mound Cave's boulder
+-- going up with the dynamite is `changemap $1c, MoundF1_BlownUp_BlockData`,
+-- and the same map's script header re-applies it on every later entry so the
+-- hole stays open.
+--
+-- The blob is compressed exactly like a map's own block table, so it decodes
+-- to precisely width*height bytes; the length is not asserted here because the
+-- map that will receive it is not known until it is loaded, and the runtime
+-- takes as many as its own header asks for.
+function RomExtractorGen2:gen2MapBlockBlob(bank, address)
+  bank, address = tonumber(bank), tonumber(address)
+  if not (self.rom and bank and address) then return nil end
+  if bank < 1 or address < 0x4000 or address >= 0x8000 then return nil end
+  -- only where the cartridge itself compresses block tables: on a raw one an
+  -- LZ decoder chews through plain bytes without complaining, and a map of
+  -- noise that loads is worse than a command that does nothing
+  if self:layout("mapBlocksCompressed", 0) == 0 then return nil end
+  local out = self:gen2LzAt(bank, address)
+  if not (type(out) == "table" and #out > 0) then return nil end
+  return out
+end
+
 function RomExtractorGen2:gen2LzAt(bank, address, expected, atLeast)
   if not self.rom then return nil end
   local ok, raw = pcall(function()
@@ -14070,13 +14578,95 @@ end
 -- These are `EQU`s rather than a table in the ROM -- there is nothing to
 -- measure -- so they come from the manifest, and a manifest without them
 -- leaves every screen exactly as it was.
+-- THE STATS SCREEN HAS A TILE SHEET OF ITS OWN, AND THE EXP BAR'S ENDS ARE IN IT.
+--
+-- LoadStatsScreenPageTilesGFX is four instructions on every cartridge here --
+-- `ld de, <source> / ld hl, <vram> / lb bc, <bank>, <count>` and then Get2bpp
+-- -- so the source, the VRAM tile it lands on and how many tiles there are all
+-- come out of the routine rather than out of a table written here.  Prism puts
+-- seventeen tiles at $31 from 41:$4000, Crystal seventeen at $31 from 3E:$49B0.
+--
+-- It matters because the exp bar's END CAPS live in that sheet and nowhere
+-- else.  The summary screen was closing the bar with the HP bar's own $62 and
+-- $6D -- which is exactly the report: "the xp bar looks like the hp bar".
+function RomExtractorGen2:gen2StatsTilesSheet()
+  if self._statsTiles ~= nil then return self._statsTiles or nil end
+  self._statsTiles = false
+  local sym = self:symbol("LoadStatsScreenPageTilesGFX")
+  if not (sym and self.rom) then return nil end
+  pcall(function()
+    local at = sym.address
+    -- ld de, nn / ld hl, nn / ld bc, nn -- anything else is not this routine
+    if self.rom:byte(sym.bank, at) ~= 0x11
+       or self.rom:byte(sym.bank, at + 3) ~= 0x21
+       or self.rom:byte(sym.bank, at + 6) ~= 0x01 then
+      return
+    end
+    local source = self.rom:word(sym.bank, at + 1)
+    local vram = self.rom:word(sym.bank, at + 4)
+    -- `lb bc, BANK, count` is little-endian: c is the count, b the bank
+    local count = self.rom:byte(sym.bank, at + 7)
+    local bank = self.rom:byte(sym.bank, at + 8)
+    -- vTiles2 is $9000 and a BG tile is sixteen bytes
+    local base = math.floor((vram - 0x9000) / 16)
+    if count < 1 or count > 64 or base < 0 or base > 0xFF then return end
+    if source < 0x4000 or source >= 0x8000 or bank == 0 then return end
+    self._statsTiles = { base = base, tiles = count,
+                         bank = bank, address = source }
+  end)
+  return self._statsTiles or nil
+end
+
+-- WHICH TWO TILES CLOSE THE BAR, read off the writes themselves.
+--
+-- The pink page ends with the pair `ld hl, <tilemap> / ld [hl], <tile>` twice,
+-- one either side of the row FillInExpBar just filled -- on Prism columns 9 and
+-- 19 of row 16, on Crystal 10 and 19, which is the same bar with one tile less.
+-- Find it by that shape: two tilemap writes on row 16 whose columns are exactly
+-- the bar's width plus one apart.  Both cartridges answer $40 and $41.
+function RomExtractorGen2:gen2StatsExpCaps(expBarTiles)
+  if self._statsCaps ~= nil then return self._statsCaps or nil end
+  self._statsCaps = false
+  local sym = self:symbol("StatsScreen_LoadGFX")
+    or self:symbol("StatsScreen_LoadPage")
+  if not (sym and self.rom and expBarTiles) then return nil end
+  local span = expBarTiles + 1
+  pcall(function()
+    for i = 0, 0x400 do
+      local at = sym.address + i
+      if at + 9 >= 0x8000 then break end
+      if self.rom:byte(sym.bank, at) == 0x21
+         and self.rom:byte(sym.bank, at + 3) == 0x36
+         and self.rom:byte(sym.bank, at + 5) == 0x21
+         and self.rom:byte(sym.bank, at + 8) == 0x36 then
+        local a1 = self.rom:word(sym.bank, at + 1)
+        local a2 = self.rom:word(sym.bank, at + 6)
+        -- wTilemap is $C4A0, twenty columns; the exp bar is row 16
+        local o1, o2 = a1 - 0xC4A0, a2 - 0xC4A0
+        if o1 >= 0 and o2 >= 0 and o1 < 360 and o2 < 360
+           and math.floor(o1 / 20) == 16 and math.floor(o2 / 20) == 16
+           and o2 - o1 == span then
+          self._statsCaps = { left = self.rom:byte(sym.bank, at + 4),
+                              right = self.rom:byte(sym.bank, at + 9) }
+          return
+        end
+      end
+    end
+  end)
+  return self._statsCaps or nil
+end
+
 function RomExtractorGen2:gen2HudGeometry()
   local hp = self:layout("hpBarTiles", 0)
   local exp = self:layout("expBarTiles", 0)
   local empty = self:layout("expBarEmptyTile", 0)
   local green = self:layout("hpBarGreenPixels", 0)
   local yellow = self:layout("hpBarYellowPixels", 0)
-  if hp == 0 and exp == 0 and empty == 0 and green == 0 then return nil end
+  local stats = self:gen2StatsTilesSheet()
+  local caps = self:gen2StatsExpCaps(exp ~= 0 and exp or 8)
+  if hp == 0 and exp == 0 and empty == 0 and green == 0 and not stats then
+    return nil
+  end
   return {
     hpBarTiles = hp ~= 0 and hp or nil,
     -- GetHPPal's two thresholds, in whole pixels of the bar above
@@ -14086,6 +14676,12 @@ function RomExtractorGen2:gen2HudGeometry()
     -- the tile that draws ZERO pixels of fill; +n draws n pixels, so the
     -- full tile is this plus 8
     expBarEmptyTile = empty ~= 0 and empty or nil,
+    -- the stats screen's own sheet, and the two tiles in it that close the
+    -- exp bar on that screen
+    statsTilesBase = stats and stats.base or nil,
+    statsTilesCount = stats and stats.tiles or nil,
+    statsExpCapLeft = caps and caps.left or nil,
+    statsExpCapRight = caps and caps.right or nil,
   }
 end
 
@@ -14160,6 +14756,14 @@ function RomExtractorGen2:extractBattleHudSheets()
         ImageWriter.blit(hud, border, i * 8, 0, (page * 3 + i) * 8, 0, 8, 8)
       end
       self:saveImage(hud, "battle/battle_hud_" .. (page + 2) .. ".png")
+    end
+
+    -- the stats screen's own page tiles, wherever this cartridge keeps them
+    local stats = self:gen2StatsTilesSheet()
+    if stats then
+      self:saveImage(ImageWriter.decode2bpp(
+        self.rom:bytes(stats.bank, stats.address, stats.tiles * 16),
+        stats.tiles * 8, 8, true), "battle/stats_tiles.png")
     end
 
     -- ExpBarGFX -> VRAM $55, the seven partial widths PlaceExpBar picks with

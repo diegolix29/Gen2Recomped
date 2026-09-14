@@ -120,14 +120,48 @@ function Gen3EvolutionState.new(game, mon, newSpecies, onDone, via, evo)
   self.oldSprite, self.oldWhite = frontSprite(game, mon.species, mon)
   self.newSprite, self.newWhite = frontSprite(game, newSpecies, mon)
   self.t = 0
-  self.phase = "asking"
+  -- NOT "asking" YET.  The opening line cannot be put up from here: see
+  -- begin() below.
+  self.phase = "opening"
   self.canceled = false
+  return self
+end
+
+-- THE OPENING LINE HAS TO WAIT UNTIL THIS SCREEN IS ON THE STACK.
+--
+-- Reported from play, with a screenshot of the scene stranded: the mon on
+-- black, no message, nothing responding, for good.
+--
+-- The constructor used to push "What? MON is evolving!" itself -- but a
+-- screen is built BEFORE it is pushed (Screens.pushWith: `inst =
+-- factory.new(game, ...)` and then `game.stack:push(inst)`), so that text box
+-- went on first and this screen landed ON TOP OF IT.  The stack updates only
+-- its top state and draws only from the highest opaque one down, and this
+-- screen is opaque -- so the box was never drawn, never read a button, and
+-- never ran the callback that starts the morph.  The scene sat in "asking"
+-- with nothing able to move it on, and "asking" draws exactly what the
+-- screenshot shows.
+--
+-- `enter` is the stack's own answer: StateStack:push inserts the state and
+-- THEN calls it, so anything pushed from here lands above this screen, which
+-- is where every other text box in this file already goes.  The guard keeps
+-- it to once whichever way it is reached -- a caller that builds the scene
+-- without pushing it still opens on the first update rather than hanging in
+-- the same way by another route.
+function Gen3EvolutionState:begin()
+  if self.began then return end
+  self.began = true
+  local game = self.game
   Music.play(game.data, Music.special(game.data, "evolution"))
-  -- "What? MON is evolving!" first, and the morph starts when it is read.
+  self.phase = "asking"
+  self.t = 0
   local TextBox = require("src.render.TextBox")
   game.stack:push(TextBox.new(game, fill(line(game, "evolving"), self.oldName),
     function() self.phase = "morph" self.t = 0 end))
-  return self
+end
+
+function Gen3EvolutionState:enter()
+  self:begin()
 end
 
 -- The white form's scale at this point in the morph: the old one closes and
@@ -175,6 +209,8 @@ function Gen3EvolutionState:finish()
 end
 
 function Gen3EvolutionState:update()
+  -- the belt to enter()'s braces (see begin)
+  if not self.began then return self:begin() end
   self.t = self.t + 1
   if self.phase == "asking" or self.phase == "done" then return end
   if self.phase == "morph" then
@@ -216,7 +252,7 @@ function Gen3EvolutionState:draw()
   love.graphics.rectangle("fill", 0, 0, GBA_W, GBA_H)
   love.graphics.setColor(1, 1, 1, 1)
 
-  if self.phase == "asking" then
+  if self.phase == "asking" or self.phase == "opening" then
     drawMon(self.oldSprite, 1)
   elseif self.phase == "morph" then
     local oldScale, newScale = self:scales()

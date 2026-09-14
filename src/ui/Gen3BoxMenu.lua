@@ -27,12 +27,15 @@
 -- three rows of tiles are the plate the box name is written on, and the slots
 -- are twenty-four pixels apart from the cursor's own table.
 --
--- WHAT IS STILL RECONSTRUCTED: the CHROME.  The cartridge draws the left
--- panel, the party panel and the two top tabs as BG1 tilemaps out of one
--- 144-tile sheet, and that art is not extracted yet -- so the frames here
--- are this port's own.  Everything INSIDE them is the cartridge's: the four
--- lines of the PkMn DATA panel and where each sits, the party's six slots,
--- and the twenty-four pixels between them.
+-- AND THE CHROME, which used to be the part that was not.  The cartridge
+-- draws the left PkMn DATA panel and the party panel as BG1 tilemaps out of
+-- one 144-tile sheet, and both are ripped now (see extractStoragePanels):
+-- 085722A0 is the left panel, 08DD36C8 the party one, and the sheet under
+-- them is 08DD2FE8.  What is still this port's own is the two top tabs and
+-- the buttons row under the grid.  Everything INSIDE the panels is the
+-- cartridge's too: the four lines of the PkMn DATA panel and where each
+-- sits, the 64x64 window its front pic stands in, the party's six slots, the
+-- twenty-four pixels between them, and the places the cursor lights up.
 
 local Boxes = require("src.pokemon.Boxes")
 local Font = require("src.render.Font")
@@ -86,13 +89,17 @@ local FALLBACK = {
 -- slots 2..6 run down the right at x 152, twenty-four pixels apart -- the
 -- same twenty-four the box grid uses, which is a good check that both
 -- tables are being read right.
-local SIDE = { tx = 0, ty = 0, tw = 10, th = 20 }
+local SIDE = { x = 0, y = 0, tx = 0, ty = 0, tw = 10, th = 20 }
 local PANEL = {
   pic = { x = 40, y = 48 },
   name = { x = 6, y = 88 },
   species = { x = 6, y = 103 },
   level = { x = 10, y = 117 },
   item = { x = 6, y = 131 },
+  -- the 64x64 hole the panel's art leaves for the FRONT PIC, which is
+  -- (40, 48) read as a centre.  The dataset carries the same rectangle off
+  -- the rip; this is what a cache imported before it falls back to.
+  window = { x = 8, y = 16, width = 64, height = 64 },
 }
 local PARTY = {
   x = 80, y = 0, w = 96, h = 160,
@@ -100,11 +107,37 @@ local PARTY = {
   -- pixels above each, exactly as it does over the box grid
   slots = { { 104, 64 }, { 152, 16 }, { 152, 40 }, { 152, 64 },
             { 152, 88 }, { 152, 112 } },
+  -- GetCursorCoordsByPos (080CD444) case 1 is the party, and it is a CURSOR
+  -- table, not an icon table: pos 0 is (104, 52), pos 1..5 are (152, 24n+4)
+  -- and pos 6 -- CANCEL -- is (152, 132).  Every one of those is exactly
+  -- twelve above the icon coordinate above, which is the check that the two
+  -- tables are the same six places; CANCEL has no icon, so its cursor
+  -- coordinate is all there is of it.
   cancel = { 152, 132 },
+  -- WHERE THE LIT RECTANGLE GOES, which is what "when hovering over the
+  -- cancel button the highlight isnt over the cancel button at all" was.
+  -- The highlight was being drawn around the CURSOR coordinate as though it
+  -- were the button's centre, which put it twelve pixels high and four wide
+  -- of a plate the art draws at (136, 136).  The art's own boxes start FOUR
+  -- BELOW the cursor and are thirty-two across: a slot frame is 32x24 and
+  -- CANCEL's plate is 32x16, measured off the extracted panel and agreeing
+  -- with 080CD4A6's table to the pixel.
+  lift = 12, drop = 4, markW = 32, markH = 24, cancelH = 16,
 }
 -- row 0 is the title: Emerald puts the cursor on the box name when you walk
 -- off the top of the grid, and left/right there change box
 local TITLE_ROW = 0
+
+-- The rectangle that lights up for party place i -- 1..6 for the slots, one
+-- past them for CANCEL -- built from the cursor table above rather than from
+-- the icon table, because CANCEL is not an icon.
+local function partyMark(i)
+  local spot = PARTY.slots[i]
+  local cx = spot and spot[1] or PARTY.cancel[1]
+  local cy = spot and (spot[2] - PARTY.lift) or PARTY.cancel[2]
+  return cx - PARTY.markW / 2, cy + PARTY.drop, PARTY.markW,
+         spot and PARTY.markH or PARTY.cancelH
+end
 
 function Gen3BoxMenu:uiSize() return GBA_W, GBA_H end
 function Gen3BoxMenu:wantsFillScale() return true end
@@ -115,11 +148,41 @@ function Gen3BoxMenu:sgbPalettes()
                            math.ceil(GBA_H / 8) - 1) }
 end
 
+-- WHAT THE CARTRIDGE SAYS ABOUT DEPOSITING, out of the storage system's own
+-- string block (gen3PCMenu.storage.text, swept beside "What would you like to
+-- do?").  The fallbacks are this port's English for a cache imported before
+-- the sweep; none of them is the wording it used to use, which was invented.
+local BOX_FALLBACK = {
+  deposited = "was deposited.",
+  boxFull   = "The BOX is full.",
+  lastMon   = "That's your last POKeMON!",
+  whichTake = "Which one will you take?",
+}
+
+function Gen3BoxMenu.word(game, key)
+  local storage = ((game.data.constants or {}).gen3PCMenu or {}).storage
+  local said = type(storage) == "table" and type(storage.text) == "table"
+               and storage.text[key] or nil
+  return type(said) == "string" and said or BOX_FALLBACK[key]
+end
+
 function Gen3BoxMenu.new(game, opts)
   local self = setmetatable({ game = game, opts = opts or {}, t = 0 },
                             Gen3BoxMenu)
   Boxes.ensure(game.save)
   self.row, self.col = 1, 1
+  -- DEPOSIT OPENS ON THE PARTY, because on the cartridge it IS a party
+  -- screen: sInPartyMenu is set from the box option before the first frame,
+  -- so BOXOPTION_DEPOSIT slides the party in and puts the cursor in it rather
+  -- than on the grid.  The question it asks afterwards -- "Deposit in which
+  -- BOX?" -- is the other half of the same fact: the mon is chosen first and
+  -- the box second, which is the wrong way round if the grid has the cursor.
+  --
+  -- Reported from play: "the deposit Pokemon screen should show your party
+  -- from the start not the box".
+  if self.opts.mode == "deposit" then
+    self.partyOpen, self.partyIndex = true, 1
+  end
   return self
 end
 
@@ -180,41 +243,55 @@ function Gen3BoxMenu:release(slot)
     ("%s was released."):format(name)))
 end
 
--- The deposit half.  Emerald pulls the party up over the grid; this port has
--- a party screen that already looks right and already answers a pick, so the
--- flow borrows it rather than drawing a second party list here.
+-- THE DEPOSIT HALF, and it happens IN THIS SCREEN.
+--
+-- This used to push the Gen 3 party MENU over the box and take a pick there,
+-- on the reasoning that the port already had a party list that looked right.
+-- The cartridge does not: storage's party is a panel of this screen that
+-- slides in over the grid (PARTY above), the cursor starts in it for the
+-- deposit option, and the grid behind it stays visible because it is the
+-- destination.  Reported from play: "the deposit Pokemon screen should show
+-- your party from the start not the box".
+--
+-- SELECT still lands here, because SELECT is how the older screen reached
+-- deposit and a save in the wild may have that habit; it just opens the panel
+-- instead of a second screen.
 function Gen3BoxMenu:deposit()
   local game = self.game
-  if #game.save.party <= 1 then
-    game.stack:push(TextBox.new(game,
-      Strings("You can't deposit your last POKéMON!")))
+  if #(game.save.party or {}) <= 1 then
+    game.stack:push(TextBox.new(game, Gen3BoxMenu.word(game, "lastMon")))
     return
   end
-  -- `pickOnly` + `onSwitch` is how EVERY picker in this port is asked for --
-  -- an item's target, a script's `choosemon`, the battle's forced switch --
-  -- and it is what Screens' alias table says the Gen 3 party menu serves.  A
-  -- callback under any other name is a push that alias declines, and the
-  -- player gets the Game Boy party list in Hoenn.
-  require("src.ui.Screens").push(game, "PartyMenu", {
-    pickOnly = true,
-    onSwitch = function(mon)
-      if not mon then return end
-      if #self:box() >= Boxes.capacity() then
-        game.stack:push(TextBox.new(game, Strings("This BOX is full!")))
-        return
-      end
-      local party = game.save.party
-      for i = 1, #party do
-        if party[i] == mon then
-          table.remove(party, i)
-          break
-        end
-      end
-      table.insert(self:box(), mon)
-      game.stack:push(TextBox.new(game,
-        ("%s was stored."):format(self:nameOf(mon))))
-    end,
-  })
+  self.onButtons = nil
+  self.partyOpen, self.partyIndex = true, 1
+end
+
+-- Put the party mon in slot `index` into the box on screen.  The box is the
+-- one the grid is showing, which is what the cartridge asks for by name
+-- ("Deposit in which BOX?") and what left/right on the title row chooses
+-- here -- so stepping out of the panel, changing box and coming back is the
+-- same choice in a different order.
+function Gen3BoxMenu:depositFromParty(index)
+  local game = self.game
+  local party = game.save.party or {}
+  local mon = party[index]
+  if not mon then return end
+  if #party <= 1 then
+    game.stack:push(TextBox.new(game, Gen3BoxMenu.word(game, "lastMon")))
+    return
+  end
+  if #self:box() >= Boxes.capacity() then
+    game.stack:push(TextBox.new(game, Gen3BoxMenu.word(game, "boxFull")))
+    return
+  end
+  table.remove(party, index)
+  table.insert(self:box(), mon)
+  -- the cartridge's line is the bare "was deposited." with the name in front
+  -- of it, the way every storage message is built
+  game.stack:push(TextBox.new(game,
+    ("%s %s"):format(self:nameOf(mon), Gen3BoxMenu.word(game, "deposited"))))
+  local last = #PARTY.slots + 1
+  self.partyIndex = math.max(1, math.min(self.partyIndex, math.min(#party, last)))
 end
 
 function Gen3BoxMenu:nameOf(mon)
@@ -260,6 +337,19 @@ function Gen3BoxMenu:update(dt)
   local input = self.game.input
   if input:wasPressed("b") then
     Sound.play(self.game.data, "Press_AB")
+    -- B HAS THREE MEANINGS HERE, and it used to have one.
+    --
+    -- Holding a mon, it puts the mon back -- walking out of the screen with
+    -- one in hand is how it went missing.  With the party panel up, it slides
+    -- the panel out, which is what the panel's own B branch below was written
+    -- for and never reached: this test ran first and popped the whole screen,
+    -- so that branch was dead code and the panel could only be left through
+    -- CANCEL.  With neither, it closes the box.
+    if self:returnHeld() then return end
+    if self.partyOpen then
+      self.partyOpen, self.partyIndex, self.partyReturn = nil, nil, nil
+      return
+    end
     self.game.stack:pop()
     if self.opts.onCancel then self.opts.onCancel() end
     return
@@ -297,8 +387,28 @@ function Gen3BoxMenu:update(dt)
       self.partyOpen, self.partyIndex, self.partyReturn = nil, nil, nil
     elseif input:wasPressed("a") then
       Sound.play(self.game.data, "Press_AB")
-      local mon = (self.game.save.party or {})[self.partyIndex]
-      if mon then self:carryFromParty(self.partyIndex) end
+      -- ...and what A means here is the mode's, exactly as it is over the
+      -- grid: MOVE picks the mon up to carry it, DEPOSIT puts it away.
+      --
+      -- AN EMPTY PLACE IS A DESTINATION.  Reported from play: "with the move
+      -- menu in the pokemon storage system im not able to take a pokemon from
+      -- the box and place it into the empty spots in my party".  This read
+      -- the mon standing on the place FIRST and did nothing at all when there
+      -- was none -- so the empty places, which are the only ones you ever
+      -- want to put a mon down on, were the one part of the party A did not
+      -- work on.  carryFromParty has always handled both: with an empty hand
+      -- it needs a mon to pick up and returns when there is none, and with a
+      -- full one it puts the mon down whether or not anybody is standing
+      -- there.  So the question is its own, and asking it out here only ever
+      -- took the answer away.  DEPOSIT keeps the guard, because depositing
+      -- nothing is not an action.
+      if self.opts.mode == "deposit" then
+        if (self.game.save.party or {})[self.partyIndex] then
+          self:depositFromParty(self.partyIndex)
+        end
+      else
+        self:carryFromParty(self.partyIndex)
+      end
     end
     return
   end
@@ -318,13 +428,18 @@ function Gen3BoxMenu:update(dt)
     elseif input:wasPressed("a") then
       Sound.play(self.game.data, "Press_AB")
       if self.buttonIndex == 1 then
-        -- MOVE POKeMON and MOVE ITEMS are the only modes that may summon it
-        -- (080C839E); WITHDRAW gets "Which one will you take?" instead
-        if self.opts.mode == "move" then
+        -- MOVE POKeMON and MOVE ITEMS may summon it (080C839E), and so may
+        -- DEPOSIT -- which opens inside it and needs a way back once the
+        -- player has stepped out to change box.  WITHDRAW gets "Which one
+        -- will you take?" instead, and has no use for the party at all.
+        if self.opts.mode == "move" or self.opts.mode == "deposit" then
           self.onButtons = nil
           self.partyOpen, self.partyIndex = true, 1
         end
       else
+        -- CLOSE BOX with a mon in hand puts it back first, for the same
+        -- reason B does
+        self:returnHeld()
         self.game.stack:pop()
         if self.opts.onCancel then self.opts.onCancel() end
       end
@@ -388,14 +503,72 @@ end
 -- MOVE POKEMON: pick one up, put it down somewhere else.
 --
 -- The cartridge lets you carry a Pokemon around the grid and drop it in any
--- slot, swapping with whatever is already there.  A box in this engine is a
--- DENSE list -- storage has no holes -- so "an empty slot" means the end of
--- the list, and dropping there appends rather than leaving a gap.
--- PICKING ONE UP OUT OF THE PARTY, which is the whole point of the party
--- panel being reachable in MOVE POKeMON: a mon carried from a party slot is
--- put down in the box, and one carried from the box is put down in the
--- party.  The party is a dense list -- Party.remove closes the gap -- so a
--- pickup leaves a hole only until it is put down again.
+-- slot, swapping with whatever is already there.  A mon carried from a party
+-- slot is put down in the box and one carried from the box is put down in the
+-- party, which is the whole point of the party panel being reachable here.
+--
+-- ------- WHERE THE MON WENT
+--
+-- Reported from play: "If i select move in the pokebox storage, the pokemon
+-- dissapears completely it should grab them in your selection and let you
+-- place them in a box or from a box to your party."  Both halves of that were
+-- true, and the second one is why the first happened.
+--
+-- A pickup from the BOX did not take the mon out of the box -- it only noted
+-- which slot it came from -- so nothing was ever in your hand to see.  A
+-- pickup from the PARTY did take it out, and then putting it down ran
+--
+--     box[slot], box[held.from] = held.mon, target
+--
+-- where `held.from` is the BOX slot a box pickup came from, and a party
+-- pickup has none: it carries `fromParty`.  So that line is `box[nil] = ...`,
+-- which is not a silent no-op in Lua -- it raises "table index is nil", and
+-- because Lua assigns a multiple assignment only after evaluating all of it,
+-- `box[slot] = held.mon` never happened either.  The mon had already left the
+-- party and it never reached the box: gone, with the error swallowed.
+--
+-- So the hand is now real.  A pickup EMPTIES the place it came from -- which
+-- is what makes the grab visible, the grid draws what is in the box -- and
+-- every put-down has somewhere for the displaced mon to go: back to the
+-- origin the hand remembers, party slot or box slot, whichever it was.
+-- Nothing is dropped on the floor between the two, and B while holding puts
+-- it back rather than walking out with it.
+
+-- WHERE THE HELD MON CAME FROM, put back.  B presses this, and so does
+-- anything that would otherwise leave the screen with a mon in hand.
+function Gen3BoxMenu:returnHeld()
+  local held = self.held
+  if not held then return false end
+  self.held = nil
+  if held.from then
+    self:box()[held.from] = held.mon
+  else
+    local party = self.game.save.party or {}
+    table.insert(party, math.min(held.fromParty or (#party + 1), #party + 1),
+                 held.mon)
+  end
+  return true
+end
+
+-- ...and the same question asked the other way: a mon that has been displaced
+-- by one being put down goes where the hand came from.
+function Gen3BoxMenu:placeDisplaced(held, mon)
+  if not mon then return end
+  if held.from then
+    self:box()[held.from] = mon
+    return
+  end
+  local party = self.game.save.party or {}
+  if #party < Party.MAX then
+    table.insert(party, math.min(held.fromParty or (#party + 1), #party + 1),
+                 mon)
+    return
+  end
+  -- the party filled up behind you, which the cartridge cannot arrange and a
+  -- mod can: the displaced mon stays in your hand rather than evaporating
+  self.held = { mon = mon, from = nil, fromParty = held.fromParty }
+end
+
 function Gen3BoxMenu:carryFromParty(index)
   local party = self.game.save.party or {}
   local held = self.held
@@ -413,15 +586,26 @@ function Gen3BoxMenu:carryFromParty(index)
     table.remove(party, index)
     return
   end
-  -- putting one down into the party
-  if #party >= Party.MAX then
+  -- putting one down into the party.  The mon standing there, if any, takes
+  -- the hand's own origin -- so party-to-party is a swap and box-to-party
+  -- sends the displaced one into the box slot the hand emptied.
+  -- whoever is standing on the place, which may be nobody -- an empty place
+  -- is where a box mon is meant to go.  (This used to be written
+  -- `(held.from == nil) and nil or party[index]`, which is a Lua trap rather
+  -- than a branch: `x and nil or y` is always y, so it read party[index]
+  -- either way.  That is what it should read; it is spelled that way now so
+  -- the next edit does not "fix" it into meaning what it looked like.)
+  local target = party[index]
+  if target then
+    table.remove(party, index)
+  elseif #party >= Party.MAX then
     self.game.stack:push(TextBox.new(self.game,
       Strings("Your party is full!")))
     return
   end
   table.insert(party, math.min(index, #party + 1), held.mon)
-  if held.from then self:box()[held.from] = nil end
   self.held = nil
+  self:placeDisplaced(held, target)
 end
 
 function Gen3BoxMenu:carry(slot)
@@ -431,14 +615,22 @@ function Gen3BoxMenu:carry(slot)
   if not held then
     local mon = box[slot]
     if not mon then return end
+    -- INTO THE HAND, and out of the box: the grid draws what the box holds,
+    -- so this is the grab the report asked for
     self.held = { mon = mon, from = slot }
+    box[slot] = nil
     return
   end
   self.held = nil
-  if slot == held.from then return end
+  if slot == held.from then
+    -- put back where it was picked up from, which is a cancel
+    box[slot] = held.mon
+    return
+  end
   local target = box[slot]
   if target then
-    box[slot], box[held.from] = held.mon, target
+    box[slot] = held.mon
+    self:placeDisplaced(held, target)
   else
     -- A MON GOES WHERE YOU PUT IT.  This used to `table.remove` the slot it
     -- came from and append at `#box + 1`, which is wrong twice over: the
@@ -448,7 +640,7 @@ function Gen3BoxMenu:carry(slot)
     -- imported PC keeps its mons at the slots the cartridge put them in, and
     -- `#` on that reads 0, so the mon could land at slot 1 on top of nothing,
     -- or past the end of the box where nothing can reach it again.
-    box[slot], box[held.from] = held.mon, nil
+    box[slot] = held.mon
   end
   self:clampCursor()
 end
@@ -613,7 +805,9 @@ function Gen3BoxMenu:draw()
       local x, y = self:cellAt(row, col)
       local slot = (row - 1) * COLS + col
       if slot <= Boxes.capacity() then
-        if row == self.row and col == self.col then
+        -- ...but not while the party panel is up: the cursor is IN the
+        -- party then, and the grid's own square kept lighting up beside it
+        if row == self.row and col == self.col and not self.partyOpen then
           love.graphics.setColor(0.98, 0.86, 0.36, 0.55)
           love.graphics.rectangle("fill", x, y, cell, cell, 3, 3)
           love.graphics.setColor(1, 1, 1, 1)
@@ -627,11 +821,36 @@ function Gen3BoxMenu:draw()
   end
 
   -- ---- the PkMn DATA panel, about whatever the cursor is on -------------
+  --
+  -- Reported from play: "the left pokemon data menu in the box isnt showing
+  -- the proper graphics still or text like it does in the rom".  This was
+  -- Font.drawBox -- the same white slab the party half used to be -- and it
+  -- is the cartridge's picture now, off the tilemap at 085722A0 (see
+  -- extractStoragePanels).  The drawBox stays as the fallback for a dataset
+  -- imported before the rip, exactly as it does for the party panel.
   love.graphics.setColor(1, 1, 1, 1)
-  Font.drawBox(SIDE.tx, SIDE.ty, SIDE.tw, SIDE.th)
+  local data = self:panelArt("data")
+  if data then
+    love.graphics.draw(data, SIDE.x, SIDE.y)
+  else
+    Font.drawBox(SIDE.tx, SIDE.ty, SIDE.tw, SIDE.th)
+  end
   local mon = (self.held and self.held.mon) or self:panelMon()
   if mon then
-    self:drawIcon(mon, PANEL.pic.x, PANEL.pic.y)
+    -- AND THE PICTURE IN IT IS THE FRONT PIC, not the icon.  The art leaves
+    -- a 64x64 window and CreateSprite at 080CA40E puts the mon at its centre;
+    -- a 32x32 icon in a 64x64 hole is what it looked like before.  Emerald
+    -- stands the pic on the window's floor, the way the summary page does.
+    local pic = data and self:frontPic(mon)
+    if pic then
+      local win = self:picWindow()
+      local w, h = pic:getDimensions()
+      love.graphics.draw(pic,
+                         win.x + math.floor((win.width - w) / 2),
+                         win.y + math.max(0, win.height - h))
+    else
+      self:drawIcon(mon, PANEL.pic.x, PANEL.pic.y)
+    end
     Font.draw(self:nameOf(mon), PANEL.name.x, PANEL.name.y)
     -- "/SPECIES" -- the slash is part of the line on the cartridge, not a
     -- separator this port invented
@@ -676,6 +895,11 @@ function Gen3BoxMenu:draw()
 
   -- ---- ...and the party, when it is up ----------------------------------
   if self.partyOpen then self:drawParty() end
+  -- THE MON IN YOUR HAND, drawn on the cursor wherever it is.  The grid and
+  -- the party panel both draw what is actually stored, and a held mon is
+  -- stored nowhere -- so without this the grab is invisible and looks exactly
+  -- like the mon having been lost, which is what was reported.
+  self:drawHeld()
   love.graphics.setColor(1, 1, 1, 1)
 end
 
@@ -688,32 +912,140 @@ function Gen3BoxMenu:panelMon()
   return (self:selected())
 end
 
--- THE PARTY PANEL.
+-- Where the cursor is standing: a party slot while the panel is up, the
+-- CANCEL button when the cursor is past the six, otherwise the grid cell.
+function Gen3BoxMenu:cursorPoint()
+  if self.partyOpen and self.partyIndex then
+    local spot = PARTY.slots[self.partyIndex]
+    if spot then return spot[1], spot[2] end
+    return PARTY.cancel[1], PARTY.cancel[2]
+  end
+  if self.onButtons or self.row == TITLE_ROW then return nil, nil end
+  local cell = math.floor(tonumber(self:grid().cell) or FALLBACK.grid.cell)
+  local x, y = self:cellAt(self.row, self.col)
+  return x + cell / 2, y + cell / 2
+end
+
+function Gen3BoxMenu:drawHeld()
+  local held = self.held
+  if not held then return end
+  local x, y = self:cursorPoint()
+  if not x then return end
+  love.graphics.setColor(1, 1, 1, 1)
+  -- lifted a few pixels, the way a carried mon sits above the hand
+  self:drawIcon(held.mon, x, y - 6)
+end
+
+-- THE PARTY PANEL, WHICH IS THE CARTRIDGE'S OWN PICTURE.
 --
--- Six slots and a CANCEL, at CreateMonIconSprite's own coordinates.  The
--- frame is this port's -- the cartridge's is a BG1 tilemap that is not
--- extracted yet -- but every position inside it is the cartridge's.
+-- Reported from play: "the party menu in the box is white background instead
+-- of looking like the rom".  It was Font.drawBox -- the engine's generic
+-- rounded white slab -- because the cartridge's panel is a BG1 tilemap and
+-- nothing here read one.  extractStoragePanels does now: the loader at
+-- 00CA744 names its tiles, its map and its palette, and that is also the
+-- function that calls 00CB7E8, which is where PARTY.slots above came from.
+-- So the picture and the six places on it were derived separately, years
+-- apart in this file, and agree -- which is how each one checks the other.
+--
+-- The panel is 96 by 176 and the screen is 160 tall: the bottom two rows are
+-- the PARTY POKeMON tab, which belongs to the buttons row rather than to the
+-- panel, so the draw takes the top 160 and leaves the tab where it is.
+function Gen3BoxMenu:panelRecord(key)
+  local panels = (self.game.data.constants or {}).gen3StoragePanels
+  local rec = panels and panels[key]
+  if type(rec) ~= "table" or type(rec.image) ~= "string" then return nil end
+  return rec
+end
+
+-- Either panel's picture, loaded once.  `false` is cached for one that the
+-- dataset names and the disk does not have, so the warning is printed once
+-- rather than every frame.
+function Gen3BoxMenu:panelArt(key)
+  local rec = self:panelRecord(key)
+  if not rec then return nil end
+  self._panels = self._panels or {}
+  if self._panels[key] == nil then
+    local ok, img = pcall(require("src.render.Assets").image, rec.image)
+    self._panels[key] = (ok and img) or false
+    if not self._panels[key] then
+      Logger.warn("gen3 boxes: %s is named by the dataset and is not on "
+                  .. "disk -- import the ROM again", tostring(rec.image))
+    end
+  end
+  return self._panels[key] or nil
+end
+
+function Gen3BoxMenu:partyPanel() return self:panelArt("party") end
+
+-- WHERE THE FRONT PIC GOES: the 64x64 hole the PkMn DATA art leaves, off the
+-- rip when the dataset carries it and off PANEL.window when it does not.
+function Gen3BoxMenu:picWindow()
+  local rec = self:panelRecord("data")
+  local pic = rec and rec.pic
+  if type(pic) == "table" and tonumber(pic.width) and tonumber(pic.height) then
+    return pic
+  end
+  return PANEL.window
+end
+
+-- The mon's front pic, cached per species and per palette -- a shiny is a
+-- different picture.  Nil whenever the sprite will not load, which is what
+-- sends the draw back to the icon.
+function Gen3BoxMenu:frontPic(mon)
+  if not mon then return nil end
+  local key = ("%s:%s"):format(tostring(mon.species), tostring(mon.shiny))
+  self._pics = self._pics or {}
+  if self._pics[key] == nil then
+    local got = false
+    local ok, path = pcall(function()
+      return (require("src.pokemon.Sprites").path(self.game.data, mon.species,
+                                                  "front", { mon = mon }))
+    end)
+    if ok and path then
+      local okImg, img = pcall(love.graphics.newImage, path)
+      if okImg then got = img end
+    end
+    self._pics[key] = got
+  end
+  return self._pics[key] or nil
+end
+
 function Gen3BoxMenu:drawParty()
   love.graphics.setColor(1, 1, 1, 1)
-  Font.drawBox(math.floor(PARTY.x / 8), math.floor(PARTY.y / 8),
-               math.floor(PARTY.w / 8), math.floor(PARTY.h / 8))
+  local panel = self:partyPanel()
+  if panel then
+    local pw, ph = panel:getDimensions()
+    local quad = love.graphics.newQuad(0, 0, math.min(pw, PARTY.w),
+                                       math.min(ph, PARTY.h), pw, ph)
+    love.graphics.draw(panel, quad, PARTY.x, PARTY.y)
+  else
+    -- a dataset without the picture keeps the frame this screen has always
+    -- drawn, rather than the panel going missing altogether
+    Font.drawBox(math.floor(PARTY.x / 8), math.floor(PARTY.y / 8),
+                 math.floor(PARTY.w / 8), math.floor(PARTY.h / 8))
+  end
   local party = self.game.save.party or {}
+  local lit = self.partyIndex
   for i, spot in ipairs(PARTY.slots) do
     local mon = party[i]
-    if i == self.partyIndex then
+    if i == lit then
       love.graphics.setColor(0.98, 0.86, 0.36, 0.55)
-      love.graphics.rectangle("fill", spot[1] - 16, spot[2] - 16, 32, 32, 3, 3)
+      love.graphics.rectangle("fill", partyMark(i))
       love.graphics.setColor(1, 1, 1, 1)
     end
     if mon then self:drawIcon(mon, spot[1], spot[2]) end
   end
-  if self.partyIndex == #PARTY.slots + 1 then
+  if lit == #PARTY.slots + 1 then
     love.graphics.setColor(0.98, 0.86, 0.36, 0.55)
-    love.graphics.rectangle("fill", PARTY.cancel[1] - 20, PARTY.cancel[2] - 8,
-                            40, 16, 3, 3)
+    love.graphics.rectangle("fill", partyMark(lit))
     love.graphics.setColor(1, 1, 1, 1)
   end
-  Font.draw(Strings("CANCEL"), PARTY.cancel[1] - 18, PARTY.cancel[2] - 4)
+  -- the word CANCEL is drawn INTO the cartridge's panel, so printing it
+  -- again on top would double it; only a dataset without the picture needs
+  -- this screen to say it
+  if not self:partyPanel() then
+    Font.draw(Strings("CANCEL"), PARTY.cancel[1] - 18, PARTY.cancel[2] - 4)
+  end
   love.graphics.setColor(1, 1, 1, 1)
 end
 

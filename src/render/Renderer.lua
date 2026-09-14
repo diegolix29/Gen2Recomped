@@ -13,6 +13,24 @@ local Pipelines = require("src.render.Pipelines")
 local PixelCanvas = require("src.render.PixelCanvas")
 local Runtime = require("src.mods.Runtime")
 
+-- RESOLVED ONCE, NOT EVERY FRAME.  These three were `require`d from inside
+-- beginFrame and endFrame -- three string hashes into package.loaded on every
+-- frame -- and they cannot be plain top-level requires here because each
+-- reaches back into this file.
+local NativeOverlayMod, FontMod, GBCFXMod
+local function nativeOverlay()
+  NativeOverlayMod = NativeOverlayMod or require("src.render.NativeOverlay")
+  return NativeOverlayMod
+end
+local function fontModule()
+  FontMod = FontMod or require("src.render.Font")
+  return FontMod
+end
+local function gbcFX()
+  GBCFXMod = GBCFXMod or require("src.render.GBCFX")
+  return GBCFXMod
+end
+
 local Renderer = {}
 
 -- The Game Boy surface.  WIDTH/HEIGHT are the classic dimensions every
@@ -177,6 +195,21 @@ function Renderer:uiSize()
   return self.uiWidth or self.WIDTH, self.uiHeight or self.HEIGHT
 end
 
+-- THE WINDOW'S OWN SIZE IN FRAMEBUFFER PIXELS, which is what every scale in
+-- this file is derived from (see displayMetrics: never the LOVE unit size,
+-- because Android's density is often non-integer and integer-scaling units
+-- then lands a GB pixel on a fractional number of real pixels).
+--
+-- Published because a LAYOUT can need it.  Emerald's widescreen battle picks
+-- its own surface WIDTH from the shape of the window it is being asked to
+-- fill (Gen3Battle.surfaceWidth), and it has to answer setUISize before
+-- anything draws -- so it cannot wait to be told the shape by fitScale, which
+-- is derived from the surface it is being asked for.
+function Renderer:pixelSize()
+  local _, _, pw, ph = displayMetrics()
+  return pw, ph
+end
+
 -- Ask for a UI surface of w x h native pixels; the canvas is reallocated
 -- only when the size actually changes, so the classic path never rebuilds
 -- it.  Sizes are resolved before any state draws (Game:draw) and bounded on
@@ -242,11 +275,11 @@ function Renderer:beginFrame(transparent)
   -- a frame that ends early -- a state that returns before endFrame, an error
   -- caught upstream -- must not leak a queued native-resolution draw into the
   -- next frame's composite
-  require("src.render.NativeOverlay").clear()
+  nativeOverlay().clear()
   -- and for the same reason: a draw that raised inside a styled region left
   -- the window style pushed, which would put the next frame's every box and
   -- glyph in a look nothing on screen asked for
-  require("src.render.Font").clearStyles()
+  fontModule().clearStyles()
   self.worldActive = false
   self.uprightActive = false
   self.worldOverride = nil
@@ -578,11 +611,13 @@ end
 -- or empty zone list is left alone: that already draws the whole canvas
 -- unshaded, which is what the rects were asking for.
 local function withTrueColor(zoneList, pass)
-  local rects = PaletteFX.trueColorRects(pass)
-  if not (rects[1] and zoneList and zoneList[1]) then return zoneList end
+  -- the rect list is POOLED, so how many are live comes back beside it and
+  -- `#rects` would count last frame's leftovers as well
+  local rects, count = PaletteFX.trueColorRects(pass)
+  if not (count > 0 and zoneList and zoneList[1]) then return zoneList end
   local merged = {}
   for i = 1, #zoneList do merged[i] = zoneList[i] end
-  for i = 1, #rects do merged[#merged + 1] = rects[i] end
+  for i = 1, count do merged[#merged + 1] = rects[i] end
   return merged
 end
 
@@ -761,7 +796,7 @@ function Renderer:endFrame(zones, worldZones)
   local uvpw, uvph = uiw * Ux, uih * Uy
   local uox = math.floor((pw - uiw * Up) / 2) / dpiX
   local uoy = math.floor((ph - uih * Up) / 2) / dpiY
-  local GBCFX = require("src.render.GBCFX")
+  local GBCFX = gbcFX()
   -- Forced mono/Classic modes still need a whole-screen zone when a state
   -- exposes no SGB packets (raw DMG canvas), so sendColors can remap.
   zones = PaletteFX.ensureZones(zones)
@@ -1119,6 +1154,20 @@ function Renderer:endFrame(zones, worldZones)
     -- the bleed back on for the frames they are up.
     if fills and okGame and GameMod
        and GameMod.uiAnchorsHeldInStack(GameMod.stack) then
+      fills = false
+    end
+    -- ...AND NOT A SCREEN THAT COMPOSES ITS OWN PICTURE.
+    --
+    -- The battle exclusion above is one case of a wider rule, and the title,
+    -- the attract movie, the main menu and the START menu are the rest of it:
+    -- none of them is a panel, so none of them has a frame at its edge to
+    -- continue.  Reported from play: "fix the stretching of borders on the
+    -- start menu, main menu, main menu intro and the continue, new game,
+    -- options, exit menus".  Each says so for itself with wantsEdgeBleed;
+    -- Game.edgeBleedAllowedInStack asks the whole stack, so a menu opened
+    -- over one of them cannot switch it back on.
+    if fills and okGame and GameMod and GameMod.edgeBleedAllowedInStack
+       and not GameMod.edgeBleedAllowedInStack(GameMod.stack) then
       fills = false
     end
     if fills and require("src.core.GameVersion").isGen3() then

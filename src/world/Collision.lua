@@ -18,14 +18,21 @@ end
 -- e.passable entities never block (Yellow's companion Pikachu: the player
 -- walks straight through and it re-trails, pikachu_follow.asm).
 -- Big objects (Snorlax, Lapras doll) occupy a 2x2 footprint on the grid.
+-- Exposed because a seam proxy has to answer this the same way its owner
+-- does (OverworldState:updateCast): two spellings of "big" would put a
+-- Snorlax's second cell on one side of a connection and not the other.
+function Collision.isBig(e)
+  return (e.big or (e.sprite and e.sprite.big)
+          or (e.def and e.def.big)
+          or (e.def and (e.def.sprite == "SPRITE_BIG_SNORLAX"
+                         or e.def.sprite == "SPRITE_BIG_LAPRAS"))) and true
+         or false
+end
+
 local function entityBlocks(e, cx, cy)
   local x, y = e.cellX, e.cellY
   if not (x and y) then return false end
-  local big = e.big or (e.sprite and e.sprite.big)
-    or (e.def and e.def.big)
-    or (e.def and (e.def.sprite == "SPRITE_BIG_SNORLAX"
-                   or e.def.sprite == "SPRITE_BIG_LAPRAS"))
-  if big then
+  if Collision.isBig(e) then
     -- Origin cell is the top-left of the 2x2 (pret big object_event)
     return cx >= x and cx <= x + 1 and cy >= y and cy <= y + 1
   end
@@ -34,9 +41,13 @@ local function entityBlocks(e, cx, cy)
   return false
 end
 
+-- `e.of` is a SEAM PROXY'S owner: a body standing on a connected map, put
+-- into these cells so that the two casts can see each other (see
+-- OverworldState:updateCast).  A mover meeting its own proxy is meeting
+-- itself, which is why the owner is tested alongside the entity.
 function Collision.occupied(entities, cx, cy, ignore)
   for _, e in ipairs(entities) do
-    if e ~= ignore and not e.passable then
+    if e ~= ignore and e.of ~= ignore and not e.passable then
       if entityBlocks(e, cx, cy) then
         return e
       end
@@ -168,6 +179,62 @@ local function verdict(map, entities, mover, dir, tx, ty)
   end
   if Collision.occupied(entities, tx, ty, mover) then
     return false, "entity"
+  end
+  return true
+end
+
+-- ONE TILE OF A TRAINER'S LINE OF SIGHT.
+--
+-- Asked for directly: "they also see me through each other".  They did, and
+-- through the gym wall beside them too: the sight test was a facing, a shared
+-- row or column and a pixel range, and nothing at all about what stood in
+-- between.
+--
+-- The cartridge checks the gap tile by tile.  CheckPathBetweenTrainerAndPlayer
+-- (0B3FB0) steps from the trainer towards the player, calls
+-- GetCollisionFlagsAtCoords (092C8C) on each tile short of the player, and
+-- gives up on `collision ~= 0 and (collision & ~1) ~= 0`.  That mask is the
+-- whole rule, and it is worth spelling out because the flags are not the
+-- collision CODES they look like (092C8C, read bottom-up):
+--
+--     1  the tile is outside the WATCHER'S OWN movement range
+--     2  impassable metatile, off the map, or a wall facing this way
+--     4  a different elevation from the one the watcher is standing at
+--     8  another object event is standing there
+--
+-- ...and `& ~1` drops the first: a trainer sees past the edge of its own
+-- wander box, which it must, or a trainer with a one-tile range could never
+-- spot anybody.  The other three all stop the line, which is the sentence
+-- above -- a wall, a ledge to another level, or ANOTHER NPC.
+--
+-- The player is never one of the tiles this is asked about: the walk covers
+-- the tiles strictly between, and the far end is the player by construction
+-- (the cartridge's own last step is a separate test for exactly that).
+function Collision.sightBlocked(map, entities, watcher, dir, sx, sy, tx, ty)
+  if sideWallBlocked(map, watcher, dir, tx, ty) then return true end
+  if not map:inBounds(tx, ty) then return true end
+  if not map:isWalkableCell(tx, ty) then return true end
+  if pairBlocked(map, watcher, sx, sy, tx, ty) then return true end
+  if map.elevationBlocks and map:elevationBlocks(watcher.elevation, tx, ty) then
+    return true
+  end
+  if Collision.occupied(entities, tx, ty, watcher) then return true end
+  return false
+end
+
+-- The whole gap, from the watcher to one tile short of the player.
+--
+-- `dist` is in cells and is at least 1; a trainer standing next to the player
+-- has no gap to walk and is always clear, which is the cartridge's
+-- `approachDistance - 1` loop count.
+function Collision.sightPathClear(map, entities, watcher, dir, dist)
+  local x, y = watcher.cellX, watcher.cellY
+  for _ = 1, (tonumber(dist) or 0) - 1 do
+    local tx, ty = Collision.target(x, y, dir)
+    if Collision.sightBlocked(map, entities, watcher, dir, x, y, tx, ty) then
+      return false
+    end
+    x, y = tx, ty
   end
   return true
 end

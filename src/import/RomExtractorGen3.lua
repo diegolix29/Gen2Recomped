@@ -3431,9 +3431,31 @@ function RomExtractorGen3:extractConstants()
         for n, layer in ipairs(shot.layers or {}) do
           local tmap = self.rom:lz77(layer.tilemap)
           if tmap then
+            -- A LAYER MAY BRING ITS OWN SHEET, ITS OWN PALETTE AND ITS OWN
+            -- HALF OF THE MAP.  The ride needs all three: its far pair share
+            -- one 4096-byte tilemap (screen blocks 6 and 7 out of one load,
+            -- so the second layer starts 1024 cells in) over char block 0,
+            -- while the grass in front is a different char block under a
+            -- palette the cartridge loads into slot 15 rather than slot 0.
+            local art = layer.graphics and self.rom:lz77(layer.graphics) or art
+            local bank, solo = bank, nil
+            if layer.palette then
+              local raw = self.rom:bytes(layer.palette, 32)
+              if raw then
+                bank = {}
+                for i = 0, 15 do
+                  local lo, hi = raw[i * 2 + 1], raw[i * 2 + 2]
+                  if lo and hi then bank[i] = { RomGba.bgr555(lo + hi * 256) } end
+                end
+                solo = true
+              end
+            end
+            local skip = math.floor(tonumber(layer.cellOffset) or 0)
             local image = ImageWriter.blank(cols * 8, rows * 8)
-            for cell = 0, math.min(math.floor(#tmap / 2), cols * rows) - 1 do
-              local e = tmap[cell * 2 + 1] + tmap[cell * 2 + 2] * 256
+            local have = math.floor(#tmap / 2) - skip
+            for cell = 0, math.min(have, cols * rows) - 1 do
+              local at = (cell + skip) * 2
+              local e = tmap[at + 1] + tmap[at + 2] * 256
               local tid = e % 1024
               local flipX = math.floor(e / 1024) % 2 == 1
               local flipY = math.floor(e / 2048) % 2 == 1
@@ -3447,7 +3469,7 @@ function RomExtractorGen3:extractConstants()
                   local index = byte and ((sx % 2 == 0) and byte % 16
                                           or math.floor(byte / 16)) or 0
                   if index ~= 0 or layer.backdrop then
-                    local c = bank[pl * 16 + index]
+                    local c = bank[(solo and 0 or pl * 16) + index]
                     if c then
                       image:setPixel(cx + x, cy + y,
                                      c[1] / 255, c[2] / 255, c[3] / 255, 1)
@@ -3456,11 +3478,34 @@ function RomExtractorGen3:extractConstants()
                 end
               end
             end
+            -- HOW TALL THE BACKGROUND WRAPS AT, which is not how tall its
+            -- picture is.
+            --
+            -- Reported from play: "when it raises upward from the water
+            -- droplets and leaves it shows a black background and missing the
+            -- field of leaves still".  The four maps of the opening shot are
+            -- 1024 cells each -- 256x256 -- but BG0CNT..BG3CNT are 9000,
+            -- 9201, 9402 and 9603, and bits 14-15 of those are 2, which on a
+            -- text background means 256 WIDE BY 512 TALL.  The cartridge
+            -- loads the top half and leaves the bottom half as it found it,
+            -- which is tile 0, which is thirty-two zero bytes: transparent.
+            --
+            -- So the camera climbing out of the leaves (BG0VOFS runs 40 down
+            -- to -217) does not loop the picture back around under itself --
+            -- it climbs off the top of it into empty rows, and what stays on
+            -- screen is the backdrop, which never scrolls at all.  Wrapping
+            -- these at the picture's own 256 brought the leaves back around
+            -- over the sky and put the dark underside of the leaf bank where
+            -- the mountains belong, which is the black the report describes.
+            local control = math.floor(tonumber(layer.bgControl) or 0)
+            local sizeBits = math.floor(control / 16384) % 4
+            local wrap = rows * 8 * ((sizeBits >= 2) and 2 or 1)
             local file = ("ui/gen3_shot_%s%d.png"):format(name, n)
             self:saveImage(image, file)
             layers[n] = {
               image = "assets/generated/" .. file,
               width = cols * 8, height = rows * 8,
+              wrap = (wrap ~= rows * 8) and wrap or nil,
               backdrop = layer.backdrop or nil,
             }
           end
@@ -3496,12 +3541,65 @@ function RomExtractorGen3:extractConstants()
               fw, fh, frames = 64, math.ceil(tiles / 8) * 8, 1
               tw, th = 8, math.ceil(tiles / 8)
             end
+            -- ONE SHEET MAY BE SEVERAL SPRITES OF DIFFERENT SHAPES.
+            --
+            -- Reported from play: "the top layer of trees closest to the
+            -- player in the cycle scene arent moving".  The ride's scenery
+            -- tag is a single 1024-byte sheet, and reading it as one 64x32
+            -- frame -- eight tiles across, four down -- is what the shape
+            -- guesser falls back to when nothing names it.  It is not one
+            -- sprite.  The twelve objects that carry it come off ONE template
+            -- with THREE animations, and the sprite struct each of them ends
+            -- up with says so: four are 32x32 (attr0 0000A0, attr1 008130)
+            -- and eight are 16x32 (attr0 0080A0), and the three animations at
+            -- 5F5114 name tiles 0, 16 and 24.  Sixteen tiles plus eight plus
+            -- eight is the whole sheet, which is the check: a big pine for
+            -- the near band and a narrow one each for the middle and far.
+            -- Read flat, all three bands drew the same sliced-up strip, and
+            -- the near band -- the one the report is about -- never showed a
+            -- whole tree to notice moving.
+            --
+            -- `parts` names them, and they are laid out side by side at their
+            -- own widths so a band can take its own slice.
+            local parts = {}
+            if type(spr.parts) == "table" and spr.parts[1] then
+              local at = 0
+              for k, part in ipairs(spr.parts) do
+                local pw = math.floor(tonumber(part.width) or 0)
+                local ph = math.floor(tonumber(part.height) or 0)
+                local t0 = math.floor(tonumber(part.tile) or 0)
+                if pw >= 8 and ph >= 8 then
+                  parts[k] = { x = at, y = 0, width = pw, height = ph,
+                               tile = t0 }
+                  at = at + pw
+                end
+              end
+              if parts[1] then
+                fw, fh, frames = at, 0, 1
+                for _, part in ipairs(parts) do
+                  if part.height > fh then fh = part.height end
+                end
+              end
+            end
             local image = ImageWriter.blank(fw * frames, fh)
             for t = 0, tiles - 1 do
               local frame = math.floor(t / (tw * th))
               local within = t % (tw * th)
               local ox = frame * fw + (within % tw) * 8
               local oy = math.floor(within / tw) * 8
+              if parts[1] then
+                ox, oy = nil, nil
+                for _, part in ipairs(parts) do
+                  local span = (part.width / 8) * (part.height / 8)
+                  if t >= part.tile and t < part.tile + span then
+                    local k = t - part.tile
+                    local pw = part.width / 8
+                    ox = part.x + (k % pw) * 8
+                    oy = part.y + math.floor(k / pw) * 8
+                  end
+                end
+              end
+              if ox then
               for y = 0, 7 do
                 for px = 0, 7 do
                   local byte = sart[t * 32 + y * 4 + math.floor(px / 2) + 1]
@@ -3514,6 +3612,7 @@ function RomExtractorGen3:extractConstants()
                   end
                 end
               end
+              end
             end
             local sfile = ("ui/gen3_shot_%s_spr%d.png"):format(name, n)
             self:saveImage(image, sfile)
@@ -3522,7 +3621,7 @@ function RomExtractorGen3:extractConstants()
               width = fw * frames, height = fh, tiles = tiles,
               frameWidth = fw, frameHeight = fh, frames = frames,
               role = spr.role, drop = spr.drop, ripple = spr.ripple,
-              tag = spr.tag,
+              tag = spr.tag, parts = parts[1] and parts or nil,
             }
             if spr.role then sprites[spr.role] = sprites[n] end
           end)
@@ -3531,12 +3630,159 @@ function RomExtractorGen3:extractConstants()
                         name, n)
           end
         end
+        -- WHERE THE SPARKLES GO, which is a table and not a formula.
+        --
+        -- The scene's second task walks a run of {x, y} BYTE pairs, spawning
+        -- one every twelve frames and adding its own half-speed counter to
+        -- the y as it goes -- so each sparkle sits six pixels lower than the
+        -- one before it, which is the camera starting to climb.  The run ends
+        -- on a {0, 0}.  The port was scattering them with a formula of its
+        -- own; these are the cartridge's own eleven places.
+        local sparkles = nil
+        do
+          local at = self:symbol("sIntroSparkleSpots")
+          if at then
+            local list = {}
+            for i = 0, 31 do
+              local x, y = self.rom:u8(at + i * 2), self.rom:u8(at + i * 2 + 1)
+              if x == 0 and y == 0 then break end
+              if x >= 240 or y >= 160 then break end
+              list[#list + 1] = { x = x, y = y }
+            end
+            if #list > 0 then
+              sparkles = { spots = list, gap = 12, rise = 1,
+                           source = ("ROM:%07X, %d places, one every 12 frames")
+                                    :format(at, #list) }
+            end
+          end
+        end
         if layers[1] then
           out[name] = { layers = layers, sprites = next(sprites) and sprites,
+                        sparkles = sparkles,
                         source = ("ROM:%07X, %d stacked tilemaps, %d sprite "
                                   .. "sheets"):format(shot.graphics,
                                                       #(shot.layers or {}),
                                                       #(shot.sprites or {})) }
+          -- ...AND WHERE EACH ONE SITS ON EACH FRAME, which is the cartridge's
+          -- own four BGxVOFS registers rather than anything chosen here.  Only
+          -- the opening shot has one; a shot the run never reaches keeps the
+          -- port's staging.
+          -- THE RIDE'S THREE DRIFTING PINE LAYERS.  The strip itself is the
+          -- shot's own sprite (role "scenery"); what travels with the dataset
+          -- here is where each layer starts and how fast it goes, both read
+          -- off the cartridge rather than chosen (see INTRO_SCENE2).
+          local ride = RomExtractorGen3.INTRO_SCENE2
+          if name == "ride" and type(ride) == "table"
+             and type(ride.scenery) == "table" and sprites.scenery then
+            local sc = ride.scenery
+            local bands = {}
+            for i, band in ipairs(sc.layers or {}) do
+              bands[i] = { x = band.x, speed = band.speed / (sc.fixed or 65536),
+                           part = band.part, width = band.width,
+                           height = band.height, sub = band.sub }
+            end
+            -- the front band last, because a lower subpriority draws in front
+            table.sort(bands, function(a, b)
+              return (a.sub or 0) > (b.sub or 0)
+            end)
+            if bands[1] then
+              out[name] = out[name] or {}
+              out[name].scenery = {
+                bands = bands, y = sc.y, spacing = sc.spacing,
+                count = sc.count, wrapAt = sc.wrapAt, wrapTo = sc.wrapTo,
+                first = sc.first, freeze = sc.freeze,
+                source = ("ROM:%07X sheet, sprite callback %07X, data[1] "
+                          .. "%d/%d/%d in 16.16")
+                         :format(sc.sheet or 0, 0x17B62C,
+                                 (sc.layers[1] or {}).speed or 0,
+                                 (sc.layers[2] or {}).speed or 0,
+                                 (sc.layers[3] or {}).speed or 0),
+              }
+            end
+          end
+          local scroll = RomExtractorGen3.INTRO_SCENE1
+          if name == "leaves" and type(scroll) == "table" then
+            local runs = {}
+            for line in tostring(scroll.VOFS or ""):gmatch("[^\n]+") do
+              local row = {}
+              for v in line:gmatch("-?%d+") do row[#row + 1] = tonumber(v) end
+              if #row == 10 then runs[#runs + 1] = row end
+            end
+            -- ...AND THE OBJECTS THE SHOT PUTS OVER THEM.  One strip per
+            -- kind, frames side by side, off the sheet and palette the
+            -- cartridge loads -- the same shape the finale's objects take.
+            local strips = {}
+            for k, spec in ipairs(scroll.sprites or {}) do
+              local okS = pcall(function()
+                local tiles = self.rom:lz77(spec.sheet)
+                local praw = spec.compressed and self.rom:bytes(spec.palette, 32)
+                              or self.rom:bytes(spec.palette, 32)
+                if not (tiles and praw) then error("blob did not decompress") end
+                local colors = RomGba.palette(praw)
+                local cw, rws = spec.width / 8, spec.height / 8
+                local perFrame = cw * rws
+                local frames = math.floor(#tiles / 32 / perFrame)
+                if frames < 1 then error("no whole frame") end
+                local image = ImageWriter.blank(spec.width * frames, spec.height)
+                local inked = 0
+                for fr = 0, frames - 1 do
+                  for t = 0, perFrame - 1 do
+                    local ox = fr * spec.width + (t % cw) * 8
+                    local oy = math.floor(t / cw) * 8
+                    local base = (fr * perFrame + t) * 32
+                    for y = 0, 7 do
+                      for x = 0, 7 do
+                        local byte = tiles[base + y * 4 + math.floor(x / 2) + 1]
+                        if byte then
+                          local idx = (x % 2 == 0) and byte % 16
+                                      or math.floor(byte / 16)
+                          local c = idx ~= 0 and colors[idx + 1]
+                          if c then
+                            image:setPixel(ox + x, oy + y, c[1] / 255,
+                                           c[2] / 255, c[3] / 255, 1)
+                            inked = inked + 1
+                          end
+                        end
+                      end
+                    end
+                  end
+                end
+                if inked == 0 then error("the strip composed to nothing") end
+                local file = ("ui/gen3_shot_obj_%s.png"):format(spec.id)
+                self:saveImage(image, file)
+                strips[k] = { id = spec.id,
+                              image = "assets/generated/" .. file,
+                              width = spec.width, height = spec.height,
+                              frames = frames, inked = inked,
+                              source = ("ROM:%07X sheet + %07X palette")
+                                       :format(spec.sheet, spec.palette) }
+              end)
+              if not okS then
+                Logger.warn("gen3 intro shot object %s: could not compose",
+                            tostring(spec.id))
+              end
+            end
+            local objects = {}
+            if strips[1] then
+              for line in tostring(scroll.OBJECTS or ""):gmatch("[^\n]+") do
+                local row = {}
+                for v in line:gmatch("-?%d+") do row[#row + 1] = tonumber(v) end
+                if #row == 9 and strips[row[3]] then
+                  objects[#objects + 1] = row
+                end
+              end
+            end
+            if runs[1] then
+              out[name].scroll = runs
+              out[name].objects = objects[1] and objects or nil
+              out[name].objectSprites = strips[1] and strips or nil
+              out[name].frames = scroll.frames
+              out[name].scrollSource =
+                ("ROM:intro task chain %07X.., %d frames as %d runs of "
+                 .. "constant step (tools/gen3_intro_act3.py)")
+                :format(scroll.entry or 0, scroll.frames or 0, #runs)
+            end
+          end
         end
       end)
       if not ok then Logger.warn("gen3 intro shot %s: %s", name, tostring(err)) end
@@ -3548,6 +3794,543 @@ function RomExtractorGen3:extractConstants()
         for _ in pairs(out) do n = n + 1 end
         return n
       end)())
+    end
+  end
+
+  -- ------------------------------------------------------------------------
+  -- WHICH BATTLE TRANSITION PLAYS, OFF THE CARTRIDGE'S OWN TABLES.
+  --
+  -- See RomExtractorGen3.BATTLE_TRANSITIONS for where every number here comes
+  -- from.  The two tables are READ rather than written down: a byte pair that
+  -- does not match the id range is a wrong address, and the stage says so
+  -- rather than shipping a table of nonsense.
+  local trans = RomExtractorGen3.BATTLE_TRANSITIONS
+  if self.rom and type(trans) == "table" then
+    local ok, err = pcall(function()
+      local names = {}
+      for id, name in pairs(trans.names or {}) do names[id] = name end
+      local count = 0
+      for _ in pairs(names) do count = count + 1 end
+      if count < 25 then error("the id list is short") end
+      local function table2d(at, label)
+        local rows = {}
+        for r = 0, (trans.rows or 4) - 1 do
+          local row = {}
+          for c = 0, (trans.columns or 2) - 1 do
+            local id = self.rom:u8(at + r * (trans.columns or 2) + c)
+            if not names[id] then
+              error(("%s[%d][%d] reads %s, which is not a transition")
+                    :format(label, r, c, tostring(id)))
+            end
+            row[c + 1] = id
+          end
+          rows[r + 1] = row
+        end
+        return rows
+      end
+      local record = {
+        names = names,
+        wild = table2d(trans.wild, "wild"),
+        trainer = table2d(trans.trainer, "trainer"),
+        mapTypes = trans.mapTypes,
+        underground = trans.underground,
+        underwater = trans.underwater,
+        secretBaseOpponent = trans.secretBaseOpponent,
+        secretBaseTransition = trans.championTransition,
+        trainerClasses = trans.trainerClasses,
+        eliteFour = trans.eliteFour,
+        championTransition = trans.championTransition,
+        aquaTransition = trans.aquaTransition,
+        magmaTransition = trans.magmaTransition,
+        legendaryDefault = trans.legendaryDefault,
+        regiDefault = trans.regiDefault,
+        groudonKyogre = trans.groudonKyogre,
+        source = ("ROM:%07X wild + %07X trainer, %d rows of %d; "
+                  .. "GetBattleTransitionTypeByMap 00B0D24")
+                 :format(trans.wild, trans.trainer, trans.rows or 4,
+                         trans.columns or 2),
+      }
+      -- THE LEGENDS, BY NAME.  The cartridge switches on the INTERNAL species
+      -- number and this engine keys its Pokemon by name, so the numbers are
+      -- resolved here rather than being carried through as magic constants --
+      -- and resolving them is also the check that they are the species the
+      -- disassembly says they are.
+      do
+        local names = self:names("gSpeciesNames", 11, 412)
+        local function byName(map)
+          local out = {}
+          for number, id in pairs(map or {}) do
+            local who = names and names[number]
+            if who and who ~= "" then out[who] = id end
+          end
+          return out
+        end
+        record.legendary = byName(trans.legendary)
+        record.regi = byName(trans.regi)
+        -- ...and the four Elite Four members the same way.  The cartridge
+        -- switches on the TRAINER ID (0105..0108); this engine knows a
+        -- trainer by the name on the card, so the ids are resolved through
+        -- gTrainers -- which is also the check that they are the four.
+        local trainers = self:symbol("gTrainers")
+        if trainers then
+          local byWho = {}
+          for id, transition in pairs(trans.eliteFour or {}) do
+            local who = self:readString(trainers + id * 40 + 4, 12)
+            if who and who ~= "" then byWho[who] = transition end
+          end
+          local n = 0
+          for _ in pairs(byWho) do n = n + 1 end
+          if n == 4 then record.eliteFour = byWho end
+        end
+        local seen = 0
+        for _ in pairs(record.legendary) do seen = seen + 1 end
+        for _ in pairs(record.regi) do seen = seen + 1 end
+        if seen < 9 then error("the legendary species did not resolve") end
+        if not (record.regi["REGIROCK"] and record.regi["REGICE"]
+                and record.regi["REGISTEEL"] and record.legendary["KYOGRE"]
+                and record.legendary["RAYQUAZA"]) then
+          error("the legendary species resolved to the wrong names")
+        end
+      end
+      -- ...AND THE PICTURES.  Each is a 4bpp tileset under a 32x32 tilemap on
+      -- its own sixteen colours, composed the way every other background on
+      -- this cartridge is.
+      if love and love.image and love.image.newImageData then
+        local pictures = {}
+        for _, spec in ipairs(trans.pictures or {}) do
+          local okPic = pcall(function()
+            local tiles = spec.compressed and self.rom:lz77(spec.tiles)
+                          or self.rom:bytes(spec.tiles, 0x4000)
+            local map = spec.compressed and self.rom:lz77(spec.map)
+                        or self.rom:bytes(spec.map, 2048)
+            local raw = self.rom:bytes(spec.palette, 32)
+            if not (tiles and map and raw) then error("blob missing") end
+            local colors = RomGba.palette(raw)
+            local cells = math.min(1024, math.floor(#map / 2))
+            local image = ImageWriter.blank(256, 256)
+            local inked = 0
+            for cell = 0, cells - 1 do
+              local e = map[cell * 2 + 1] + map[cell * 2 + 2] * 256
+              local tid = e % 1024
+              local flipX = math.floor(e / 1024) % 2 == 1
+              local flipY = math.floor(e / 2048) % 2 == 1
+              local cx, cy = (cell % 32) * 8, math.floor(cell / 32) * 8
+              for y = 0, 7 do
+                local sy = flipY and (7 - y) or y
+                for x = 0, 7 do
+                  local sx = flipX and (7 - x) or x
+                  local byte = tiles[tid * 32 + sy * 4 + math.floor(sx / 2) + 1]
+                  local index = byte and ((sx % 2 == 0) and byte % 16
+                                          or math.floor(byte / 16)) or 0
+                  local c = index ~= 0 and colors[index + 1]
+                  if c then
+                    image:setPixel(cx + x, cy + y, c[1] / 255, c[2] / 255,
+                                   c[3] / 255, 1)
+                    inked = inked + 1
+                  end
+                end
+              end
+            end
+            if inked == 0 then error("composed to nothing") end
+            local file = ("ui/gen3_transition_%s.png"):format(spec.id)
+            self:saveImage(image, file)
+            pictures[spec.id] = {
+              image = "assets/generated/" .. file,
+              width = 256, height = 256, inked = inked,
+              source = ("ROM:%07X tiles, %07X map, %07X palette")
+                       :format(spec.tiles, spec.map, spec.palette),
+            }
+          end)
+          if not okPic then
+            Logger.warn("gen3 battle transitions: %s did not compose", spec.id)
+          end
+        end
+        if next(pictures) then record.pictures = pictures end
+      end
+      constants.gen3BattleTransitions = record
+      Logger.info("Gen3 battle transitions: %d ids, wild %d/%d/%d/%d, "
+                  .. "trainer %d/%d/%d/%d", count,
+                  record.wild[1][1], record.wild[2][1], record.wild[3][1],
+                  record.wild[4][1], record.trainer[1][1], record.trainer[2][1],
+                  record.trainer[3][1], record.trainer[4][1])
+    end)
+    if not ok then
+      Logger.warn("gen3 battle transitions: %s -- the port keeps its own "
+                  .. "choice", tostring(err))
+    end
+  end
+
+  -- ------------------------------------------------------------------------
+  -- EMERALD'S THIRD ACT, WHICH THIS PORT HAS NEVER PLAYED.
+  --
+  -- Reported from play: "theres supposed to be an animation that comes after
+  -- the cycle scene before the main menu".  There is, and the intro's own task
+  -- chain says so: the ride's handler (016D7E8) arms 016DBAC, and the chain
+  -- runs on through 016DD28, 016E2A0 and 016E888 before it hands over to the
+  -- title.  The port stopped at the ride because the beats it had been given
+  -- stopped there.
+  --
+  -- WHY THE SCENE PASS NEVER FOUND IT.  Every background it does find is a
+  -- 4bpp sheet under a 16-bit tilemap.  These are not: three of them are
+  -- AFFINE backgrounds -- 256-colour tiles under a map of one BYTE per cell --
+  -- which is a different shape entirely, and the pass has nothing to match.
+  -- The register writes say so outright: BG2CNT $4883 on the first and $B880
+  -- on the next two, both with bit 7 set (256 colour) under DISPCNT mode 1.
+  --
+  -- THE ADDRESSES ARE THE ROUTINES' OWN ARGUMENTS, traced through the three
+  -- LZDecompressVram/SWI calls each beat makes and the single LoadPalette
+  -- (016DBD4: source, offset 0, 512 bytes -- one 256-colour bank for the whole
+  -- act, which is why the silhouettes come out as flat black on white).
+  --
+  -- WHAT IS IN THEM, decompressed and composed: a Poke Ball, then Groudon in
+  -- three poses, then Kyogre in four.  The pose boxes are not written down
+  -- here either -- they are the runs of non-empty rows in each map, found
+  -- below, and the count is the check: a map that does not divide into whole
+  -- figures is not the film strip this reads it as.
+  local finale = RomExtractorGen3.INTRO_FINALE
+  if self.rom and type(finale) == "table" then
+    -- ONE BANK PER BEAT.  The ball's is the LoadPalette at 016DBD4; every beat
+    -- after it runs on the 512 bytes the Groudon handler CpuSets from D85CD0.
+    local banks = {}
+    local function bankFor(at)
+      local have = banks[at]
+      if have then return have end
+      local bank = {}
+      for i = 0, 255 do
+        local lo = self.rom:u8(at + i * 2)
+        local hi = self.rom:u8(at + i * 2 + 1)
+        local r, g, b = RomGba.bgr555(lo + hi * 256)
+        bank[i] = { r, g, b }
+      end
+      banks[at] = bank
+      return bank
+    end
+
+    -- WHICH PALETTE A PICTURE IS DRAWN IN, which is what decides whether a
+    -- fade reaches it: the sixteen-colour bank most of its pixels came out of.
+    local function dominant(banks)
+      local best, count
+      for row, n in pairs(banks) do
+        if not count or n > count or (n == count and row < best) then
+          best, count = row, n
+        end
+      end
+      return best or 0
+    end
+
+    -- an AFFINE map is one byte per cell over 64-byte tiles; a text map is two
+    -- bytes per cell over 32-byte ones.  `want` picks which half of a figure
+    -- this pass draws: the BODY (every index but the animated one, in its own
+    -- palette colour) or the MARKINGS (that index alone, opaque white, to be
+    -- tinted with the colour the beat is cycling).
+    local function composeAffine(art, bank, want)
+      local tiles = self.rom:lz77(art.sheet)
+      local map = self.rom:lz77(art.map)
+      if not (tiles and map) then error("blob did not decompress") end
+      local width = art.width
+      local rows = math.min(art.rows or math.floor(#map / width),
+                            math.floor(#map / width))
+      local image = ImageWriter.blank(width * 8, rows * 8)
+      local inked, banks = 0, {}
+      for cell = 0, rows * width - 1 do
+        local tile = map[cell + 1]
+        if tile and tile ~= 0 then
+          local ox, oy = (cell % width) * 8, math.floor(cell / width) * 8
+          for y = 0, 7 do
+            for x = 0, 7 do
+              local index = tiles[tile * 64 + y * 8 + x + 1]
+              local glowing = art.glow and index == art.glow
+              if index and index ~= 0
+                 and ((want == "glow") == (glowing and true or false)) then
+                local c = (want == "glow") and { 255, 255, 255 } or bank[index]
+                if c then
+                  image:setPixel(ox + x, oy + y,
+                                 c[1] / 255, c[2] / 255, c[3] / 255, 1)
+                  inked = inked + 1
+                  local row = math.floor(index / 16)
+                  banks[row] = (banks[row] or 0) + 1
+                end
+              end
+            end
+          end
+        end
+      end
+      return image, width * 8, rows * 8, inked, dominant(banks)
+    end
+
+    -- A 64-CELL-WIDE TEXT BG IS TWO SCREEN BLOCKS SIDE BY SIDE, not one map
+    -- twice as tall: cell (tx, ty) lives at ty*32 + tx for the left half and
+    -- 1024 + ty*32 + tx-32 for the right.  Read the flat way the sky's right
+    -- half lands under its left half.
+    local function composeText(layer, bank, want)
+      local tiles = self.rom:lz77(layer.sheet)
+      local map = self.rom:lz77(layer.map)
+      if not (tiles and map) then error("blob did not decompress") end
+      local cells = math.floor(#map / 2)
+      local width = layer.width
+      local rows = math.floor(cells / width)
+      local image = ImageWriter.blank(width * 8, rows * 8)
+      local inked, banks = 0, {}
+      for ty = 0, rows - 1 do
+        for tx = 0, width - 1 do
+          local cell
+          if layer.wide then
+            cell = (tx < 32 and 0 or 1024) + ty * 32 + tx % 32
+          else
+            cell = ty * width + tx
+          end
+          local lo, hi = map[cell * 2 + 1], map[cell * 2 + 2]
+          if lo and hi then
+            local e = lo + hi * 256
+            local tile = e % 1024
+            local hflip, vflip = e % 2048 >= 1024, e % 4096 >= 2048
+            local pal = math.floor(e / 4096) % 16
+            local ox, oy = tx * 8, ty * 8
+            for y = 0, 7 do
+              local sy = vflip and 7 - y or y
+              for x = 0, 7 do
+                local sx = hflip and 7 - x or x
+                local byte = tiles[tile * 32 + sy * 4 + math.floor(sx / 2) + 1]
+                if byte then
+                  local index = (sx % 2 == 0) and byte % 16
+                                or math.floor(byte / 16)
+                  local slot = pal * 16 + index
+                  local flickering = layer.flicker and slot == layer.flicker
+                  if index ~= 0
+                     and ((want == "flicker") == (flickering and true or false))
+                  then
+                    local c = (want == "flicker") and { 255, 255, 255 }
+                              or bank[slot]
+                    if c then
+                      image:setPixel(ox + x, oy + y,
+                                     c[1] / 255, c[2] / 255, c[3] / 255, 1)
+                      inked = inked + 1
+                      banks[pal] = (banks[pal] or 0) + 1
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+      return image, width * 8, rows * 8, inked, dominant(banks)
+    end
+
+    local beats = {}
+    for _, beat in ipairs(finale.beats or {}) do
+      local ok, err = pcall(function()
+        local bank = bankFor(beat.palette or 0xD85CD0)
+        -- colour 0 of the beat's own bank: what WINOUT leaves on screen and
+        -- what shows wherever no layer has drawn
+        local back = bank[0] or { 0, 0, 0 }
+        local record = { id = beat.id, at = beat.at,
+                         backdrop = { back[1], back[2], back[3] } }
+        local sources = {}
+        if beat.layers then
+          record.layers = {}
+          for n, layer in ipairs(beat.layers) do
+            local image, w, h, inked, row = composeText(layer, bank, "body")
+            local file = ("scenes/gen3_finale_%s%d.png"):format(beat.id, n)
+            self:saveImage(image, file)
+            record.layers[n] = { image = "assets/generated/" .. file,
+                                 width = w, height = h, inked = inked,
+                                 scroll = layer.scroll, row = row }
+            -- the one colour the bolt animates, kept apart so it can be
+            -- painted in whatever colour the flicker is on
+            if layer.flicker then
+              local mask, _, _, lit = composeText(layer, bank, "flicker")
+              if lit > 0 then
+                local mfile = ("scenes/gen3_finale_%s%d_flicker.png")
+                              :format(beat.id, n)
+                self:saveImage(mask, mfile)
+                record.layers[n].flickerImage = "assets/generated/" .. mfile
+                record.layers[n].flickerInked = lit
+              end
+            end
+            sources[#sources + 1] = ("%07X+%07X"):format(layer.sheet, layer.map)
+          end
+          if not record.layers[1] then error("no layer composed") end
+        end
+        if beat.affine then
+          local image, w, h, inked, row =
+            composeAffine(beat.affine, bank, "body")
+          if inked == 0 then error("the figure composed to nothing") end
+          local file = ("scenes/gen3_finale_%s.png"):format(beat.id)
+          self:saveImage(image, file)
+          local art = { image = "assets/generated/" .. file,
+                        width = w, height = h, inked = inked, row = row,
+                        glow = beat.affine.glow }
+          if beat.affine.glow then
+            local mask, _, _, lit = composeAffine(beat.affine, bank, "glow")
+            if lit > 0 then
+              local gfile = ("scenes/gen3_finale_%s_glow.png"):format(beat.id)
+              self:saveImage(mask, gfile)
+              art.glowImage = "assets/generated/" .. gfile
+              art.glowInked = lit
+            end
+          end
+          record.affine = art
+          sources[#sources + 1] = ("%07X+%07X affine")
+                                  :format(beat.affine.sheet, beat.affine.map)
+        end
+        record.source = ("ROM:loader %07X, palette %07X, %s")
+                        :format(beat.loader, beat.palette or 0,
+                                table.concat(sources, ", "))
+        beats[#beats + 1] = record
+      end)
+      if not ok then
+        Logger.warn("gen3 intro finale %s: %s", beat.id, tostring(err))
+      end
+    end
+
+    -- the motion, one row of twelve numbers per constant-step run
+    local track, flash = {}, {}
+    for line in tostring(finale.TRACK or ""):gmatch("[^\n]+") do
+      local row = {}
+      for value in line:gmatch("-?%d+") do row[#row + 1] = tonumber(value) end
+      if #row == 12 then
+        track[#track + 1] = row
+        local index = row[8]
+        if index and index > 0 and not flash[index] then
+          local ok2 = pcall(function()
+            local lo = self.rom:u8(finale.flash + index)
+            local hi = self.rom:u8(finale.flash + index + 1)
+            local r, g, b = RomGba.bgr555(lo + hi * 256)
+            flash[index] = { r, g, b }
+          end)
+          if not ok2 then flash[index] = { 255, 255, 255 } end
+        end
+      end
+    end
+
+    -- the screen-wide blends, with their colours already in RGB
+    local fades = {}
+    for _, fade in ipairs(finale.fades or {}) do
+      local r, g, b = RomGba.bgr555(fade.color)
+      -- selectedPalettes, spread into the answer the drawing side needs: which
+      -- of the sixteen BG banks this fade reaches, and whether it reaches the
+      -- objects at all.  Done with arithmetic rather than bit operations --
+      -- the mask is 32 bits and this file is read by both Lua 5.1 and 5.3.
+      local mask = fade.mask or 0xFFFFFFFF
+      local rows, objects = {}, false
+      -- one-based, so the table serialises as an array: rows[n] is bank n-1
+      for row = 0, 15 do
+        rows[row + 1] = math.floor(mask / 2 ^ row) % 2 == 1
+        if math.floor(mask / 2 ^ (row + 16)) % 2 == 1 then objects = true end
+      end
+      fades[#fades + 1] = { at = fade.at, delay = fade.delay,
+                            from = fade.from, to = fade.to,
+                            color = { r, g, b }, rows = rows,
+                            objects = objects, mask = mask }
+    end
+
+    -- THE OBJECTS.  One strip per kind, frames side by side, off the sheet the
+    -- act loads into OAM VRAM and the sixteen colours that go with it.
+    local sprites, kindIndex = {}, {}
+    for n, spec in ipairs(finale.sprites or {}) do
+      local ok = pcall(function()
+        local tiles = self.rom:lz77(spec.sheet)
+        local raw = spec.compressed and self.rom:lz77(spec.palette)
+                    or self.rom:bytes(spec.palette, 32)
+        if not (tiles and raw) then error("blob did not decompress") end
+        local colors = RomGba.palette(raw)
+        local cols, rows = spec.width / 8, spec.height / 8
+        local per = cols * rows
+        local frames = math.floor(#tiles / 32 / per)
+        if frames < 1 then error("no whole frame in the sheet") end
+        local image = ImageWriter.blank(spec.width * frames, spec.height)
+        local inked = 0
+        for f = 0, frames - 1 do
+          for t = 0, per - 1 do
+            local ox = f * spec.width + (t % cols) * 8
+            local oy = math.floor(t / cols) * 8
+            local base = (f * per + t) * 32
+            for y = 0, 7 do
+              for x = 0, 7 do
+                local byte = tiles[base + y * 4 + math.floor(x / 2) + 1]
+                if byte then
+                  local index = (x % 2 == 0) and byte % 16
+                                or math.floor(byte / 16)
+                  local c = index ~= 0 and colors[index + 1]
+                  if c then
+                    image:setPixel(ox + x, oy + y,
+                                   c[1] / 255, c[2] / 255, c[3] / 255, 1)
+                    inked = inked + 1
+                  end
+                end
+              end
+            end
+          end
+        end
+        if inked == 0 then error("the strip composed to nothing") end
+        local file = ("scenes/gen3_finale_obj_%s.png"):format(spec.id)
+        self:saveImage(image, file)
+        sprites[n] = { id = spec.id, image = "assets/generated/" .. file,
+                       width = spec.width, height = spec.height,
+                       frames = frames, inked = inked,
+                       source = ("ROM:%07X sheet + %07X palette")
+                                :format(spec.sheet, spec.palette) }
+        kindIndex[n] = true
+      end)
+      if not ok then
+        Logger.warn("gen3 intro finale object %s: could not compose",
+                    tostring(spec.id))
+      end
+    end
+
+    local objects = {}
+    if sprites[1] then
+      for line in tostring(finale.OBJECTS or ""):gmatch("[^\n]+") do
+        local row = {}
+        for value in line:gmatch("-?%d+") do row[#row + 1] = tonumber(value) end
+        if #row == 5 and sprites[row[2]] then objects[#objects + 1] = row end
+      end
+    end
+
+    -- the sky's own colour, resolved to RGB the same way the markings are
+    local flicker
+    if type(finale.flicker) == "table" then
+      local rows = {}
+      for line in tostring(finale.flicker.ROWS or ""):gmatch("[^\n]+") do
+        local at, off = line:match("(-?%d+)%s+(-?%d+)")
+        if at and off then
+          local ok = pcall(function()
+            local lo = self.rom:u8(finale.flash + tonumber(off))
+            local hi = self.rom:u8(finale.flash + tonumber(off) + 1)
+            local r, g, b = RomGba.bgr555(lo + hi * 256)
+            rows[#rows + 1] = { at = tonumber(at), color = { r, g, b } }
+          end)
+          if not ok then break end
+        end
+      end
+      local base = bankFor(0xD85CD0)[finale.flicker.index or 0]
+      if rows[1] and base then
+        flicker = { index = finale.flicker.index, rows = rows,
+                    base = { base[1], base[2], base[3] } }
+      end
+    end
+
+    if beats[1] and track[1] then
+      constants.gen3IntroFinale = {
+        sprites = sprites[1] and sprites or nil,
+        objects = objects[1] and objects or nil,
+        flicker = flicker,
+        beats = beats, track = track, flash = flash, fades = fades,
+        letterbox = finale.letterbox and {
+          at = finale.letterbox.at, top = finale.letterbox.top,
+          bottom = finale.letterbox.bottom, height = finale.letterbox.height,
+          step = finale.letterbox.step,
+        } or nil,
+        frames = finale.frames,
+        source = ("ROM:intro task chain 016DBAC.., %d beats, %d frames as %d "
+                  .. "runs, %d fades (tools/gen3_intro_act3.py)")
+                 :format(#beats, finale.frames or 0, #track, #fades),
+      }
+      Logger.info("Gen3 intro finale: %d beats, %d frames, %d track runs, "
+                    .. "%d fades, %d object strips over %d placements",
+                  #beats, finale.frames or 0, #track, #fades, #sprites,
+                  #objects)
     end
   end
 
@@ -7433,6 +8216,26 @@ function RomExtractorGen3:extractTrainerSprites()
     end
     if named > 0 then self:write("trainers", trainers) end
   end
+  -- ...and the facility trainers, off the same pathFor.  Their picture comes
+  -- from gFacilityClassToPicIndex rather than from a gTrainers row, but it
+  -- indexes the very same sheet -- the pic table's largest entry is 92 and
+  -- this loop writes 0..92, which is the check that the two agree.
+  do
+    local facility = self:facilityTrainerRows()
+    local got = 0
+    for _, def in ipairs(facility or {}) do
+      if type(def) == "table" and def.picIndex then
+        def.pic = pathFor[def.picIndex]
+        if def.pic then got = got + 1 end
+      end
+    end
+    if got > 0 then
+      self._constants = self._constants or {}
+      self:write("constants", self._constants)
+      Logger.info("Gen3 trainer sprites: %d facility trainers given a face",
+                  got)
+    end
+  end
   -- ...AND THE PLAYER'S OWN PORTRAIT.
   --
   -- The trainer card and the Birch speech both ask Sprites.playerForm, which
@@ -7446,17 +8249,40 @@ function RomExtractorGen3:extractTrainerSprites()
   -- gTrainers -- the PKMN TRAINER rows called BRENDAN and MAY.  Reading the
   -- index off those rows means the cartridge names its own portraits, and a
   -- ROM that renumbered the pic table still lands right.
+  --
+  -- AND THE ROW IS PICKED BY COUNT, not by whichever one `pairs` happens to
+  -- hand over first.  Two pictures answer to each name: BRENDAN is pic 71 on
+  -- fifteen rows and pic 91 on one, MAY is 72 on fifteen and 92 on one -- the
+  -- fifteen are the rival battles you actually fight, the one is the Ruby and
+  -- Sapphire outfit the cartridge keeps for a linked RS player's card.  An
+  -- unordered walk took whichever came first, so the same ROM gave the boy his
+  -- own face and the girl the RS one on the very same card; picking the index
+  -- the most rows carry (lowest wins a tie) is the cartridge's own answer and
+  -- gives it every time.
   do
     local want = { BRENDAN = "boy", MAY = "girl" }
-    local forms, found = {}, 0
+    local tally = { boy = {}, girl = {} }
     for _, def in pairs(type(trainers) == "table" and trainers or {}) do
       if type(def) == "table" then
         local who = want[def.name]
-        local path = who and def.picIndex and pathFor[def.picIndex]
-        if who and path and not forms[who] then
-          forms[who] = { card = path, intro = path, picIndex = def.picIndex }
-          found = found + 1
+        if who and def.picIndex and pathFor[def.picIndex] then
+          tally[who][def.picIndex] = (tally[who][def.picIndex] or 0) + 1
         end
+      end
+    end
+    local forms, found = {}, 0
+    for who, counts in pairs(tally) do
+      local best, bestCount
+      for index, count in pairs(counts) do
+        if not bestCount or count > bestCount
+           or (count == bestCount and index < best) then
+          best, bestCount = index, count
+        end
+      end
+      if best then
+        forms[who] = { card = pathFor[best], intro = pathFor[best],
+                       picIndex = best }
+        found = found + 1
       end
     end
     if found == 2 then
@@ -9545,6 +10371,22 @@ end
 -- STAGE: trainer classes
 -- ---------------------------------------------------------------------------
 
+-- EVERY FACILITY TRAINER THE PARTIES RECORD HOLDS, in one walk: the
+-- Frontier's three hundred and each tent's thirty.  Two stages that run after
+-- extractFrontierParties finish those rows off -- the class stage names their
+-- class and the sprite stage names their picture -- and both want the same
+-- list, so it is made once here rather than nested twice.
+function RomExtractorGen3:facilityTrainerRows()
+  local parties = (self._constants or {}).gen3FrontierParties
+  if type(parties) ~= "table" then return nil end
+  local rows = {}
+  for _, def in ipairs(parties.trainers or {}) do rows[#rows + 1] = def end
+  for _, tent in pairs(parties.tents or {}) do
+    for _, def in ipairs(tent.trainers or {}) do rows[#rows + 1] = def end
+  end
+  return rows[1] and rows or nil, parties
+end
+
 function RomExtractorGen3:extractTrainerClasses()
   self:beginStage("Gen3 trainer classes")
   local base = self:need("gTrainerClassNames", "trainer classes")
@@ -9566,6 +10408,30 @@ function RomExtractorGen3:extractTrainerClasses()
     end
   end
   if named > 0 then self:write("trainers", self._trainers) end
+  -- ...AND THE FACILITY TRAINERS, who are not in gTrainers at all.
+  --
+  -- The Frontier's three hundred and each tent's thirty live in tables of
+  -- their own and carry a facility class, which extractFrontierParties has
+  -- already turned into a class NUMBER out of gFacilityClassToTrainerClass.
+  -- The name is this stage's to add, exactly as it is for the other 855 --
+  -- and without it a tent opponent announces themselves by bare name, which
+  -- is half of "the enemy trainers all look like the player".
+  local facility = self:facilityTrainerRows()
+  if facility then
+    local got = 0
+    for _, def in ipairs(facility) do
+      if type(def) == "table" and def.class then
+        def.className = names[def.class]
+        if def.className then got = got + 1 end
+      end
+    end
+    if got > 0 then
+      self._constants = self._constants or {}
+      self:write("constants", self._constants)
+    end
+    Logger.info("Gen3 trainer classes: %d of %d facility trainers named",
+                got, #facility)
+  end
   Logger.info("Gen3 trainer classes: %d (0 = %s); %d trainers named, %d left "
                 .. "with a number the table does not cover",
               67, tostring(names[0]), named, missed)
@@ -9687,8 +10553,10 @@ end
 local TEXT_OPERAND = {
   loadword = 3, message = 2, messageautoscroll = 3, messageinstant = 2,
   braillemessage = 2, bufferstring = 3, pokenavcall = 2, vmessage = 2,
-  -- the double-battle refusal line: name, kind, trainer, win script, THIS
-  trainerbattle = 5,
+  -- A trainerbattle carries THREE lines, not one: name, kind, trainer, win
+  -- script, refusal, intro, defeat.  A list rather than a number because this
+  -- is the only command with more than one, and the loop below reads either.
+  trainerbattle = { 5, 6, 7 },
 }
 
 function RomExtractorGen3:extractScriptText()
@@ -9703,7 +10571,9 @@ function RomExtractorGen3:extractScriptText()
 
   for _, rows in pairs(pool.scripts) do
     for _, row in ipairs(rows) do
-      local slot = TEXT_OPERAND[row[1]]
+      local want = TEXT_OPERAND[row[1]]
+      for _, slot in ipairs(type(want) == "table" and want
+                            or (want and { want } or {})) do
       local value = slot and row[slot]
       if type(value) == "number" and value >= base
          and value < base + self.rom.size then
@@ -9725,6 +10595,7 @@ function RomExtractorGen3:extractScriptText()
           row[slot] = key
           rewritten = rewritten + 1
         end
+      end
       end
     end
   end
@@ -10638,6 +11509,30 @@ function RomExtractorGen3:decodeScriptAt(start, queue)
           args[4] = rom:u32(cantAt)
         end
       end
+      -- ...AND WHAT THE TRAINER SAYS BEFORE AND AFTER.
+      --
+      -- The record's first two pointers, which nothing was reading: the line
+      -- on sight or on being spoken to, and the line on losing.  See
+      -- Gen3ScriptOps.TRAINER_BATTLE_INTRO_SLOT for how the two slots were
+      -- told apart (and why mode 3 has only the second).
+      --
+      -- Stored raw for the same reason the refusal line is: extractScriptText
+      -- rewrites every text operand into a pool key in a later stage, and it
+      -- keys on the ROM address these arrive as.  `false` holds the earlier
+      -- slots so the operand indices never shift under a mode that has no
+      -- win script and no refusal line.
+      for slot, at in pairs({
+        [6] = Gen3ScriptOps.TRAINER_BATTLE_INTRO_SLOT[kind],
+        [7] = Gen3ScriptOps.TRAINER_BATTLE_DEFEAT_SLOT[kind],
+      }) do
+        local where = base + (at - 1) * 4
+        if rom:pointer(where) then
+          if args[3] == nil then args[3] = false end
+          if args[4] == nil then args[4] = false end
+          if slot == 7 and args[5] == nil then args[5] = false end
+          args[slot - 1] = rom:u32(where)
+        end
+      end
       at = o + length
     else
       for i = 1, #spec do
@@ -11168,6 +12063,138 @@ function RomExtractorGen3:pcScreenBlink()
                     :format(S.SETTER, S.TASK) }
 end
 
+-- THE WORDS A PC SCREEN SAYS, swept out of the text run its own labels sit in.
+--
+-- Every string block on this cartridge is a run of terminated strings, and
+-- the ones a screen uses sit together because the compiler emitted them
+-- together.  So a screen whose LABELS have a symbol also has its sentences
+-- within a few hundred bytes of them, and a bounded walk from that label
+-- finds them without a symbol of its own -- which is the same trick
+-- extractItemMenu uses for the bag's lines, and the reason neither has a
+-- hand-written address in it.
+--
+-- Each want is a fragment chosen to be unique inside its own window, with no
+-- apostrophes: the cartridge's are curly and this file is ASCII.
+RomExtractorGen3.PC_TEXT = {
+  { key = "withdrawPrompt", find = "Withdraw how many" },
+  { key = "withdrew",       find = "Withdrew " },
+  { key = "noItems",        find = "There are no items" },
+  { key = "bagFull",        find = "room in the BAG" },
+}
+
+-- The Pokemon storage system's own, which is a different block again -- it
+-- sits around the "What would you like to do?" the storage menu already has
+-- a symbol for, so that is the anchor and the window reaches BACK from it.
+RomExtractorGen3.BOX_TEXT = {
+  { key = "depositWhich", find = "Deposit in which BOX" },
+  { key = "deposited",    find = "was deposited" },
+  { key = "boxFull",      find = "The BOX is full" },
+  { key = "lastMon",      find = "your last POK" },
+  { key = "whichTake",    find = "Which one will you take" },
+  { key = "justOne",      find = "just one POK" },
+  { key = "partyFull",    find = "Your party" },
+  { key = "released",     find = "was released" },
+  { key = "releaseAsk",   find = "Release this" },
+}
+
+-- Walk the terminated strings in [at, at + span) and keep the first match for
+-- each want.  Returns the table and how many were filled.
+function RomExtractorGen3:sweepText(at, span, wants)
+  local rom = self.rom
+  local out, found = {}, 0
+  if not (at and rom) then return out, 0 end
+  local o = math.max(0, at)
+  local stop = math.min(rom.size, at + span)
+  while o < stop do
+    if rom:u8(o) == 0xFF then
+      o = o + 1
+    else
+      local ok, text, used = pcall(self.readText, self, o, 200)
+      if ok and type(text) == "string" and #text > 0 then
+        for _, want in ipairs(wants) do
+          if not out[want.key] and text:find(want.find, 1, true) then
+            out[want.key] = text
+            found = found + 1
+          end
+        end
+      end
+      local p = o
+      while p < rom.size and rom:u8(p) ~= 0xFF do p = p + 1 end
+      o = math.max(o + (tonumber(used) or 0), p + 1)
+    end
+  end
+  return out, found
+end
+
+-- The inked runs of a linear tile strip, each written out as its own row of
+-- tiles.  `art` is the decompressed sheet, `bank` its palette.  Returns an
+-- array of { image, width, height, tiles, at } or nil when the strip holds one
+-- unbroken run (in which case the sheet itself is already that run).
+function RomExtractorGen3:stripPieces(art, depth, tiles, bank, role, n)
+  local function tileInked(t)
+    for i = 0, 63 do
+      local index
+      if depth == 8 then
+        index = art[t * 64 + i + 1]
+      else
+        local byte = art[t * 32 + math.floor(i / 2) + 1]
+        if byte then
+          index = (i % 2 == 0) and byte % 16 or math.floor(byte / 16)
+        end
+      end
+      if index and index ~= 0 then return true end
+    end
+    return false
+  end
+  local runs, start = {}, nil
+  for t = 0, tiles - 1 do
+    if tileInked(t) then
+      if not start then start = t end
+    elseif start then
+      runs[#runs + 1] = { at = start, count = t - start }
+      start = nil
+    end
+  end
+  if start then runs[#runs + 1] = { at = start, count = tiles - start } end
+  -- one run that is the whole sheet says nothing the sheet did not already
+  if #runs == 0 or (#runs == 1 and runs[1].count == tiles) then return nil end
+
+  local out = {}
+  for k, run in ipairs(runs) do
+    local image = ImageWriter.blank(run.count * 8, 8)
+    local drawn = 0
+    for i = 0, run.count - 1 do
+      local base = run.at + i
+      for y = 0, 7 do
+        for x = 0, 7 do
+          local index
+          if depth == 8 then
+            index = art[base * 64 + y * 8 + x + 1]
+          else
+            local byte = art[base * 32 + y * 4 + math.floor(x / 2) + 1]
+            if byte then
+              index = (x % 2 == 0) and byte % 16 or math.floor(byte / 16)
+            end
+          end
+          local c = index and index ~= 0 and bank[index]
+          if c then
+            image:setPixel(i * 8 + x, y, c[1] / 255, c[2] / 255, c[3] / 255, 1)
+            drawn = drawn + 1
+          end
+        end
+      end
+    end
+    local file = ("scenes/gen3_%s_sheet%d_piece%d.png"):format(role, n, k)
+    self:saveImage(image, file)
+    out[k] = { image = "assets/generated/" .. file,
+               width = run.count * 8, height = 8,
+               tiles = run.count, at = run.at, inked = drawn }
+  end
+  Logger.info("gen3 overlay %s sheet %d: %d piece(s) in a %d-tile strip",
+              role, n, #out, tiles)
+  return out
+end
+
 function RomExtractorGen3:extractPCMenu()
   self:beginStage("Gen3 PC menu")
   local P = RomExtractorGen3.PC_MENU
@@ -11254,6 +12281,55 @@ function RomExtractorGen3:extractPCMenu()
     end
   end
 
+  -- ---- ...AND WHAT THE TWO SCREENS SAY ---------------------------------
+  --
+  -- The item screen's sentences sit just past its four descriptions (the
+  -- lowest of those pointers is the anchor); the storage system's sit around
+  -- the prompt the box menu already has a symbol for.  Both are swept rather
+  -- than addressed, so a different build moves them and nothing here breaks.
+  local said = nil
+  do
+    -- THE HIGHEST of the four description pointers, not the lowest.
+    --
+    -- Three of them are the PC's own -- "Store items in the PC.", "Take out
+    -- items from the PC.", "Throw away items stored in the PC." -- and sit
+    -- together, with the sentences this sweep wants a few dozen bytes past
+    -- them.  The fourth is CANCEL's "Go back to the previous menu.", which
+    -- the cartridge SHARES with the bag and which therefore lives in the
+    -- BAG's block, thousands of bytes below.  Anchoring on the lowest lands
+    -- there and finds none of this.
+    local highest = nil
+    if descAt then
+      for i = 0, P.ROWS - 1 do
+        local ptr = self.rom:pointer(descAt + i * 4)
+        if ptr and (not highest or ptr > highest) then highest = ptr end
+      end
+    end
+    if highest then
+      local out, found = self:sweepText(highest, 0x400,
+                                        RomExtractorGen3.PC_TEXT)
+      if found > 0 then
+        out.source = ("ROM:swept from %07X"):format(highest)
+        said = out
+      else
+        Logger.warn("gen3 PC menu: none of the item-storage lines read near "
+                      .. "%07X -- the screen falls back to its own English",
+                    highest)
+      end
+    end
+  end
+  if box then
+    local promptAt = self:symbol("gTextStorageWhatWouldYouLike")
+    if promptAt then
+      local at = math.max(0, promptAt - 0x800)
+      local out, found = self:sweepText(at, 0xA00, RomExtractorGen3.BOX_TEXT)
+      if found > 0 then
+        out.source = ("ROM:swept from %07X"):format(at)
+        box.text = out
+      end
+    end
+  end
+
   -- ---- WHICH ROWS EACH PC SHOWS, and the screen that blinks -------------
   local orders = self:pcMenuOrders()
   local screen = self:pcScreenBlink()
@@ -11264,6 +12340,7 @@ function RomExtractorGen3:extractPCMenu()
     itemStorage = storage,
     mailbox = mailbox,
     describe = describe,
+    text = said,
     storage = box,
     orders = orders,
     screen = screen,
@@ -11281,6 +12358,204 @@ function RomExtractorGen3:extractPCMenu()
   Logger.info("Gen3 PC menu: %s / items %s%s", table.concat(main, ", "),
               table.concat(storage, ", "),
               box and (" / boxes " .. table.concat(box.rows, ", ")) or "")
+end
+
+-- ---------------------------------------------------------------------------
+-- STAGE: THE STORAGE SYSTEM'S OWN PANELS.
+--
+-- Reported from play: "the party menu in the box is white background instead
+-- of looking like the rom".  It was the engine's generic text box -- a white
+-- rounded slab -- because the cartridge's is a BG1 tilemap and nothing here
+-- read one.
+--
+-- ------- pinned by reference, not by shape
+--
+-- Guessing this off shape is how you get it wrong: there are a hundred and
+-- forty-three LZ77 blobs in the storage system's neighbourhood and most of
+-- them are the sixteen wallpapers' tiles, maps and palettes.  So it was found
+-- the other way round, from the code that loads it.  Exactly five compressed
+-- blobs are named by a pointer anywhere in the storage system's own code
+-- (0C7000..0D0000), and the function at 00CA744 -- which is also the one that
+-- calls 00CB7E8, the party-slot icon coordinates this screen already uses --
+-- names two of them:
+--
+--     0DD2FE8   LZ77, 4608 bytes -> 144 tiles, the BG1 character data
+--     0DD36C8   LZ77,  528 bytes -> 264 cells, which is 12 x 22
+--     0DD36A8   raw,    32 bytes -> the palette, sitting immediately before
+--                                   the tilemap and loaded beside it
+--
+-- THE BASE IS 256.  The map's entries run 256..362, and the sheet is 144
+-- tiles, so the ids are absolute within the character block and the panel's
+-- own tiles begin a quarter of the way into it.  Read at base 0 every cell is
+-- off the end of the sheet and the panel comes out entirely blank, which is a
+-- failure that looks like "no art in the ROM" rather than like an off-by-256.
+--
+-- The check is that it reads as itself: one wide slot on the left, five
+-- stacked on the right, CANCEL under them and a PARTY POKeMON tab below --
+-- which is also exactly where this screen's own PARTY.slots already put the
+-- six icons, derived separately from 080CB7E8.  Two derivations that never
+-- saw each other agreeing on the same six coordinates is the closure.
+-- ---------------------------------------------------------------------------
+
+-- ------- and the SECOND panel, off the same sheet
+--
+-- Reported from play after the first one landed: "the left pokemon data menu
+-- in the box isnt showing the proper graphics still or text like it does in
+-- the rom".  The left eighty pixels are a panel too -- "PkMn DATA", the frame
+-- whatever the cursor is standing on is described in -- and it was still the
+-- white slab, because only the party half had been ripped.
+--
+-- It comes off the SAME 144-tile sheet, from the loader one function earlier:
+--
+--     00CA044   InitBgsFromTemplates(0, 08572734, 4)
+--               DecompressAndCopyTileDataToVram(bg 1, 08DD2FE8, 0, 0, 0)
+--               LZ77UnCompWram(085722A0, storage + 0x5AC4)
+--               CopyBgTilemapBufferToVram(1)
+--
+-- so the map is 085722A0.  It decompresses to 640 cells, which is a whole
+-- 32-wide BG screen and not a panel -- only the first TEN columns carry one,
+-- and every cell from column ten on is the flat tile 256.  Ten columns by
+-- twenty rows is 80x160: exactly the rectangle this screen has always drawn
+-- its four lines of text into, which is the first check.
+--
+-- ITS PALETTE IS PINNED THE SAME WAY, and it is NOT the party panel's.  All
+-- two hundred of its cells name palette bank 0 where the party panel's name
+-- bank 1, and the storage screen's palette loader at 00CA0D8 says what the
+-- banks are:
+--
+--     LoadPalette(085723DC, 0,    32)   -> bank 0   <- this panel
+--     LoadPalette(085723FC, 0x20, 32)   -> bank 2
+--     LoadPalette(085726F4, 0xF0, 32)   -> bank 15
+--
+-- Read with the party panel's palette the frame comes out teal; read with
+-- 08572734 -- which is the BgTemplate ARRAY that InitBgsFromTemplates takes,
+-- not a palette at all -- it comes out red and yellow.  Both of those are
+-- plausible-looking and both are wrong, which is the whole reason the palette
+-- is taken from the load and not from the neighbourhood.
+--
+-- AND THE PIC WINDOW IS THE CLOSURE.  The art leaves a 64x64 hole at (8, 16),
+-- measured off the rip itself; CreateSprite at 080CA40E puts the mon's FRONT
+-- PIC at (40, 48), which is that hole's centre to the pixel.  Two derivations
+-- that never saw each other, agreeing -- so the hole is the front pic's, and
+-- the 32x32 ICON this screen was drawing into it was never what the cartridge
+-- puts there.
+-- ---------------------------------------------------------------------------
+
+RomExtractorGen3.STORAGE_PANEL = {
+  TILES = 0x0DD2FE8,           -- LZ77, 144 tiles of 4bpp -- BOTH panels' sheet
+  BASE = 256,                  -- what the maps' tile ids are relative to
+  INK_FLOOR = 4,               -- less than a quarter drawn is a wrong base
+  PANELS = {
+    -- the party panel, which slides down over the box grid
+    { key = "party", file = "ui/gen3_pss_party.png",
+      tilemap = 0x0DD36C8, palette = 0x0DD36A8,
+      pitch = 12, cols = 12, rows = 22,
+      named = "00CA744" },
+    -- ...and the PkMn DATA panel, which is always there
+    { key = "data", file = "ui/gen3_pss_data.png",
+      tilemap = 0x05722A0, palette = 0x05723DC,
+      pitch = 32, cols = 10, rows = 20,
+      pic = { x = 8, y = 16, width = 64, height = 64 },
+      named = "00CA044 tiles and map, 00CA0D8 palette bank 0" },
+  },
+}
+
+-- One panel, composed.  Returns the image and how many pixels it drew, or
+-- nil and the reason -- a panel that is half right is not worth shipping.
+function RomExtractorGen3:storagePanel(tiles, sheet, panel)
+  local P = RomExtractorGen3.STORAGE_PANEL
+  local tmap = self.rom:lz77(panel.tilemap)
+  if not tmap then
+    return nil, ("the %s tilemap did not decompress"):format(panel.key)
+  end
+  local cells = math.floor(#tmap / 2)
+  if cells ~= panel.pitch * panel.rows then
+    return nil, ("the %s tilemap is %d cells, not %d x %d")
+                :format(panel.key, cells, panel.pitch, panel.rows)
+  end
+  local raw = self.rom:bytes(panel.palette, 32)
+  if not raw then
+    return nil, ("the %s palette is not there"):format(panel.key)
+  end
+  local colors = RomGba.palette(raw)
+  local image = ImageWriter.blank(panel.cols * 8, panel.rows * 8)
+  local inked = 0
+  for row = 0, panel.rows - 1 do
+    for col = 0, panel.cols - 1 do
+      local at = (row * panel.pitch + col) * 2
+      local e = tmap[at + 1] + tmap[at + 2] * 256
+      local tid = e % 1024 - P.BASE
+      local flipX = math.floor(e / 1024) % 2 == 1
+      local flipY = math.floor(e / 2048) % 2 == 1
+      local cx, cy = col * 8, row * 8
+      if tid >= 0 and tid < sheet then
+        for y = 0, 7 do
+          local sy = flipY and (7 - y) or y
+          for x = 0, 7 do
+            local sx = flipX and (7 - x) or x
+            local byte = tiles[tid * 32 + sy * 4 + math.floor(sx / 2) + 1]
+            local index = byte and ((sx % 2 == 0) and byte % 16
+                                    or math.floor(byte / 16)) or 0
+            local c = index ~= 0 and colors[index + 1]
+            if c then
+              image:setPixel(cx + x, cy + y, c[1] / 255, c[2] / 255,
+                             c[3] / 255, 1)
+              inked = inked + 1
+            end
+          end
+        end
+      end
+    end
+  end
+  -- a panel that came out blank is a base that is wrong, which is the one
+  -- way this fails silently
+  if inked < panel.cols * 8 * panel.rows * 8 / P.INK_FLOOR then
+    return nil, ("the %s panel drew only %d pixels -- the tile base is wrong")
+                :format(panel.key, inked)
+  end
+  return image, inked
+end
+
+function RomExtractorGen3:extractStoragePanels()
+  self:beginStage("Gen3 storage panels")
+  if not (love and love.image and love.image.newImageData) then return end
+  local P = RomExtractorGen3.STORAGE_PANEL
+  local ok, err = pcall(function()
+    local tiles = self.rom:lz77(P.TILES)
+    if not tiles then error("the tile sheet did not decompress") end
+    local sheet = math.floor(#tiles / 32)
+    local record = {
+      source = ("ROM:%07X, %d tiles at base %d -- the sheet both panels are "
+                .. "cut from, named by the loaders at 00CA044 and 00CA744")
+        :format(P.TILES, sheet, P.BASE),
+    }
+    local drew = {}
+    for _, panel in ipairs(P.PANELS) do
+      local image, inked = self:storagePanel(tiles, sheet, panel)
+      if not image then error(inked) end
+      self:saveImage(image, panel.file)
+      record[panel.key] = {
+        image = "assets/generated/" .. panel.file,
+        width = panel.cols * 8, height = panel.rows * 8, inked = inked,
+        pic = panel.pic,
+        source = ("ROM:%07X map (%d of %d columns x %d rows), %07X palette "
+                  .. "-- named by %s"):format(panel.tilemap, panel.cols,
+                  panel.pitch, panel.rows, panel.palette, panel.named),
+      }
+      drew[#drew + 1] = ("%s %dx%d, %d pixels"):format(
+        panel.key, panel.cols * 8, panel.rows * 8, inked)
+    end
+    local constants = self._constants or {}
+    constants.gen3StoragePanels = record
+    self._constants = constants
+    self:write("constants", constants)
+    Logger.info("Gen3 storage panels: %s -- %s", table.concat(drew, ", "),
+                record.source)
+  end)
+  if not ok then
+    Logger.warn("gen3 storage panels: %s -- the box keeps the engine's own "
+                  .. "frame", tostring(err))
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -14538,16 +15813,51 @@ function RomExtractorGen3:extractMapScripts()
   -- so a literal `setvar` seen earlier in the same script is carried forward
   -- and resolved.  A target that cannot be resolved is left alone rather than
   -- guessed at -- a wrongly hidden NPC is worse than a wrongly shown one.
-  local spawned = {}
+  -- ...AND AN OBJECT A MAP PUTS BACK ON ARRIVAL IS NOT ONE IT SPAWNS LATER.
+  --
+  -- Reported from play: "some npcs are still missing in the trainer hall".
+  -- Four of the Trainer Hill entrance's five people were, and the fifth was
+  -- the only one no script mentions.  The map's ON_RETURN_TO_FIELD (026811B)
+  -- is four bare lines --
+  --
+  --     addobject 2 / addobject 1 / addobject 5 / addobject 4 / end
+  --
+  -- -- and this pass read them as "these four are spawned by a script", which
+  -- makes them hidden until one runs.  They are not.  That callback is a
+  -- RESTORE: those four are in the map's own object_events and stand there
+  -- from the moment it loads, and the callback puts them back after a
+  -- challenge has taken them away.  `addobject` on somebody already present
+  -- is a no-op on the cartridge, which is why it can be written this way.
+  --
+  -- The distinction is the SCRIPT KIND, and the map header carries it.  ON_LOAD
+  -- (1), ON_TRANSITION (3), ON_RESUME (5), ON_DIVE_WARP (6) and
+  -- ON_RETURN_TO_FIELD (7) all run as you arrive, before you can see the map,
+  -- so anybody they add is present when the fade comes up.  The var-gated
+  -- TABLES -- ON_FRAME_TABLE (2) and ON_WARP_INTO_MAP_TABLE (4) -- are the
+  -- cutscene shape this pass was written for ("the rival is waiting for you
+  -- the first time you walk in"), and they are untouched.
+  --
+  -- So both facts travel: `spawned` still says which ids a script can add, and
+  -- `restored` says which of them an arrival callback puts back -- and an id
+  -- in `restored` starts on the map rather than off it.
+  local ARRIVAL_CALLBACKS = { [1] = true, [3] = true, [5] = true, [6] = true,
+                              [7] = true }
+  local spawned, restored = {}, {}
   do
     local index = self._mapScriptIndex or {}
     for mapId, entry in pairs(index) do
       local roots, seen, ids = {}, {}, {}
+      local backRoots, backSeen, backIds = {}, {}, {}
       local function add(key) if type(key) == "string" then roots[#roots + 1] = key end end
       for _, key in pairs(entry.objects or {}) do add(key) end
       for _, key in pairs(entry.signs or {}) do add(key) end
       for _, rec in ipairs(entry.coords or {}) do add(rec.script or rec[2]) end
-      for _, rec in ipairs(entry.callbacks or {}) do add(rec.script or rec[2]) end
+      for _, rec in ipairs(entry.callbacks or {}) do
+        add(rec.script or rec[2])
+        if ARRIVAL_CALLBACKS[rec.type] and type(rec.script) == "string" then
+          backRoots[#backRoots + 1] = rec.script
+        end
+      end
       -- A VAR-GATED TABLE KEEPS ITS SCRIPTS IN ITS ROWS, and this walked the
       -- table record itself -- which has no `script` of its own -- so every
       -- one of them was skipped.  That is where a map's cutscenes live: an
@@ -14588,7 +15898,38 @@ function RomExtractorGen3:extractMapScripts()
           end
         end
       end
+      -- the same walk again, rooted only at the callbacks that run on arrival
+      local backAt = 1
+      while backRoots[backAt] do
+        local key = backRoots[backAt]
+        backAt = backAt + 1
+        if not backSeen[key] then
+          backSeen[key] = true
+          local vars = {}
+          for _, row in ipairs(scripts[key] or {}) do
+            local op = row[1]
+            if op == "setvar" then
+              local id, value = tonumber(row[2]), tonumber(row[3])
+              if id and value then vars[id] = value end
+            elseif op == "addobject" or op == "addobjectat" then
+              local target = tonumber(row[2])
+              local resolved = target
+              if target and target >= 0x4000 then resolved = vars[target] end
+              if resolved and resolved > 0 and resolved < 256 then
+                backIds[resolved] = true
+              end
+            end
+            for k = 2, #row do
+              local v = row[k]
+              if type(v) == "number" and v > 0x8000000 and v < 0x9000000 then
+                backRoots[#backRoots + 1] = ("S%07X"):format(v - 0x8000000)
+              end
+            end
+          end
+        end
+      end
       if next(ids) then spawned[mapId] = ids end
+      if next(backIds) then restored[mapId] = backIds end
     end
   end
 
@@ -14598,6 +15939,8 @@ function RomExtractorGen3:extractMapScripts()
     movements = movements,          -- filled by extractMovementScripts
     -- local ids the map's own scripts spawn; see the note above
     spawned = spawned,
+    -- ...and the ones an arrival callback puts BACK, which start on the map
+    restored = restored,
     maps = self._mapScriptIndex or {},
     info = {
       rootCount = rootCount,
@@ -14901,6 +16244,300 @@ end
 
 
 -- ---------------------------------------------------------------------------
+-- STAGE: THE TEAMS THE FRONTIER FIGHTS YOU WITH.
+--
+-- Reported from play: "now he takes me into the backroom but as soon as the
+-- battle starts he takes me right back out as if i never started it".  The
+-- Verdanturf Battle Tent's back room runs the cartridge's own challenge
+-- script, and the battle in the middle of it is
+--
+--     setvar VAR_0x8004, 4 / setvar VAR_0x8005, 0
+--     special DoSpecialTrainerBattle        (239)
+--     waitstate
+--
+-- with the opponent already standing in gEnemyParty, put there by the calls
+-- above it.  Nothing here could put anybody there: the Frontier stage below
+-- is an INVENTORY -- which facility, which function, how often -- and carries
+-- no trainers and no teams at all.  So the battle never happened, the script
+-- read VAR_RESULT, saw it was not 1, and took its own lose arm, which is a
+-- silent warp back to the lobby.  Being walked in and straight back out IS
+-- the cartridge's "you lost", arrived at without a fight.
+--
+-- ------- the four tables, and how each was pinned
+--
+-- gFacilityTrainers  05D5ACC, 300 entries of 52 bytes.  One byte of facility
+--     class and three of padding, an eight-byte FF-terminated name, three
+--     six-word easy-chat speeches, and a pointer to the trainer's own mon
+--     set.  (The name is at offset 4, not 1: reading it at 1 gives CONNER as
+--     "CONNE" and GRETEL as "GRETE", which still looks like a name, which is
+--     why the padding is called out here.)  Three hundred is Emerald's own
+--     count, and the address is not guessed: it is the literal frontierUtil
+--     function 4 loads (01A1B2A, `ldr r0,=085D5ACC`).
+--
+-- gBattleFrontierMons  05D97BC, 882 entries of 16 bytes.  Species, four
+--     moves, an index into the held-item table, an EV-spread mask and a
+--     nature, then three bytes of padding that are zero in all 882.
+--
+--     THE CLOSURE CHECK IS THE SETS.  Every one of the 300 trainers carries a
+--     list of indices into this table, and the largest index any of them uses
+--     is 881 -- exactly one less than the length the run gives.  A table that
+--     started 127 entries later (which is where a naive scan for "valid
+--     species, valid moves" first locks on, because the early entries are
+--     two-move Caterpies) leaves a quarter of those indices off the end.
+--
+-- gBattleFrontierHeldItems  05CECB0, 61 entries of one item id, which is the
+--     range the mons' itemTableId actually spans (0..60).  Found by
+--     REFERENCE rather than by shape: it sits in the same literal pool
+--     (01A67DC) as the mons table the party filler loads twelve bytes earlier.
+--     Its contents agree -- entries 2, 3 and 4 are Sitrus, Oran and Chesto,
+--     which is what a Frontier team holds.
+--
+-- The monSets themselves are u16 lists ending FFFF, twelve to a hundred
+-- entries each.
+--
+-- WHAT THIS STAGE DOES NOT CARRY.  The speeches are easy-chat word ids and
+-- the port has no easy-chat decoder yet, so they are left in the cartridge
+-- rather than half-read.  Levels are not here either, and that is the
+-- cartridge's doing: a Frontier mon record has no level, because the facility
+-- decides it.
+-- ---------------------------------------------------------------------------
+
+RomExtractorGen3.FRONTIER_PARTIES = {
+  TRAINERS = 0x5D5ACC, TRAINER_COUNT = 300, TRAINER_STRIDE = 52,
+  TRAINER_NAME = 4, TRAINER_NAME_LEN = 8, TRAINER_SET = 48,
+  MONS = 0x5D97BC, MON_COUNT = 882, MON_STRIDE = 16,
+  ITEMS = 0x5CECB0, ITEM_COUNT = 61,
+  SET_MAX = 400,          -- a monSet longer than this is a misread, not a set
+  TERMINATOR = 0xFFFF,
+  -- ...AND THE THREE BATTLE TENTS, WHICH DO NOT USE ANY OF THE ABOVE.
+  --
+  -- This is the part that matters for the report.  SetTentPtrsGetLevel
+  -- (0165D78) reads VAR_0x40CF -- which each tent's own lobby sets, and
+  -- Verdanturf's sets 2 (S0201873: `setvar 16591, 2`) -- and points the two
+  -- table pointers at a pair of tables PER TENT.  Only the fall-through case
+  -- uses the Frontier's 300 and 882.
+  --
+  -- Each pair checks out four ways: the trainer table is exactly 1560 bytes
+  -- before the mon table, which is 30 rows of 52; thirty is what the tent's
+  -- own picker rolls (0165D40: `Random() % 30`); each mon table's rows all
+  -- carry three zero padding bytes; and the largest index any of that tent's
+  -- thirty sets names is exactly its last row.  The three pairs also chain --
+  -- Slateport's mons end where Verdanturf's sets begin, and Verdanturf's end
+  -- where Fallarbor's begin.
+  TENTS = {
+    { var = 2, name = "verdanturf",
+      trainers = 0x5DE610, mons = 0x5DEC28, monCount = 45 },
+    { var = 3, name = "fallarbor",
+      trainers = 0x5DF084, mons = 0x5DF69C, monCount = 45 },
+    { var = 4, name = "slateport",
+      trainers = 0x5DDA14, mons = 0x5DE02C, monCount = 70 },
+  },
+  TENT_VAR = 0x40CF,      -- which tent the lobby you walked into is
+  TENT_TRAINERS = 30,
+  -- ------- WHO THEY LOOK LIKE, AND WHAT THEY ARE CALLED
+  --
+  -- Reported from play: "the enemy trainers all look like the player and dont
+  -- have their trainer sprites in battle".  They did not have one at all --
+  -- the record this stage wrote carried no picture and no class, so the
+  -- battle screen fell back to the only face it had.
+  --
+  -- A facility trainer does not carry a pic or a class.  It carries a
+  -- FACILITY CLASS in its first byte -- which is a THIRD numbering, neither
+  -- of the other two -- and two byte tables turn that into the other two.
+  -- GetFrontierOpponentClass is the proof, and it is unambiguous (0162C3E):
+  --
+  --     if (trainerId <= 299)
+  --         return gFacilityClassToTrainerClass[
+  --                    gFacilityTrainers[trainerId].facilityClass];
+  --
+  -- reading 0831F5CA through a 52-byte stride from offset 0 -- this stage's
+  -- own TRAINER_STRIDE and the byte it was already reading.  Its twin at
+  -- 0162AC4 is the same three instructions against 0831F578 and is the PIC.
+  -- The two tables sit 82 bytes apart, which is their length.
+  --
+  -- AND THE NUMBERS LAND INSIDE TABLES THIS PORT ALREADY READS, which is the
+  -- closure: no facility class in any of the four trainer tables is above 71,
+  -- the pic table's largest entry is 92 and extractTrainerSprites writes
+  -- 0..92, and the class table's largest is 65 where gTrainerClassNames
+  -- covers 0..66.  Three bounds, three separate tables, none of them a fit
+  -- by luck -- and the names read right one by one: RONALD is a RICH BOY,
+  -- ASHLYN a COOLTRAINER, MARQUIS a SAILOR.
+  --
+  -- This byte used to be written out as `class`, which is the one thing it is
+  -- not; it is `facilityClass` now and `class` is the real one.
+  FACILITY_PIC = 0x031F578,
+  FACILITY_CLASS = 0x031F5CA,
+  FACILITY_COUNT = 82,
+  -- ------- AND THE PRIZE
+  --
+  -- Reported in the same breath: "after defeating 3 in a row it takes me back
+  -- outside of teh arena but no speech plays no reward etc".  The speech and
+  -- the prize are the LOBBY's, not the back room's (S0201757), and the prize
+  -- item is a constant: the Verdanturf tent's arm 6 (01B9B00) is
+  --
+  --     Random();  frontier.tentPrize = *(u16 *)0x086160D4;
+  --
+  -- -- the roll is there because the list it indexes has exactly one entry,
+  -- so the index folds away and only the side effect is left.  That word sits
+  -- in the four bytes between the Verdanturf dispatcher's eight-entry arm
+  -- table and Fallarbor's, and it is 8: a NEST BALL.
+  --
+  -- ONLY VERDANTURF'S.  Fallarbor's arm 6 buffers a string and Slateport's
+  -- calls two functions of its own -- the three tents share their trainers
+  -- and their level rule and nothing else about what happens afterwards, so
+  -- the prize is recorded for the one tent whose arm actually names one.
+  PRIZE_VAR = 2,
+  PRIZE_AT = 0x06160D4,
+  -- SetTentPtrsGetLevel ends `GetPartyMaxLevel(); cmp #29; bhi; mov #30` --
+  -- open level with a floor, not the Frontier's flat 50
+  LEVEL_FLOOR = 30,
+}
+
+function RomExtractorGen3:extractFrontierParties()
+  self:beginStage("Gen3 Frontier teams")
+  local P = RomExtractorGen3.FRONTIER_PARTIES
+  local rom = self.rom
+  local order = (self._constants or {}).itemOrder
+
+  -- the held items first: the mons index them, so a mon can carry a real
+  -- item id rather than a number nothing can look up
+  local items = {}
+  for i = 0, P.ITEM_COUNT - 1 do
+    local raw = rom:u16(P.ITEMS + i * 2)
+    items[i + 1] = (raw ~= 0) and ((order and order[raw]) or raw) or false
+  end
+
+  -- one reader for both shapes, because the tents use the same two structs
+  -- as the Frontier and only the addresses and the counts differ
+  local badPad = 0
+  local function readMons(at, count)
+    local out = {}
+    for i = 0, count - 1 do
+      local o = at + i * P.MON_STRIDE
+      local moves = {}
+      for m = 0, 3 do
+        local mv = rom:u16(o + 2 + m * 2)
+        if mv ~= 0 then
+          moves[#moves + 1] = (self._moveIds and self._moveIds[mv]) or mv
+        end
+      end
+      for k = 13, 15 do
+        if rom:u8(o + k) ~= 0 then badPad = badPad + 1 end
+      end
+      local species = rom:u16(o)
+      out[i + 1] = {
+        species = (self._speciesIds and self._speciesIds[species]) or species,
+        moves = moves[1] and moves or nil,
+        item = items[rom:u8(o + 10) + 1] or nil,
+        -- the cartridge's own spread mask and nature, carried as they are:
+        -- which stats take the 510 and how the mon acts under Palace rules
+        ev = rom:u8(o + 11),
+        nature = rom:u8(o + 12),
+      }
+    end
+    return out
+  end
+
+  local function readTrainers(at, count)
+    local out, total, top = {}, 0, -1
+    for i = 0, count - 1 do
+      local o = at + i * P.TRAINER_STRIDE
+      local setAt = rom:pointer(o + P.TRAINER_SET)
+      local set = {}
+      if setAt then
+        local k = 0
+        while k < P.SET_MAX do
+          local v = rom:u16(setAt + k * 2)
+          if v == P.TERMINATOR then break end
+          if v > top then top = v end
+          set[#set + 1] = v + 1        -- one based, like `mons` above
+          k = k + 1
+        end
+      end
+      total = total + #set
+      local facility = rom:u8(o)
+      out[i + 1] = {
+        -- the first byte is the FACILITY class, which is its own numbering;
+        -- the pic and the trainer class come off it through the two tables
+        facilityClass = facility,
+        picIndex = (facility < P.FACILITY_COUNT)
+                   and rom:u8(P.FACILITY_PIC + facility) or nil,
+        class = (facility < P.FACILITY_COUNT)
+                and rom:u8(P.FACILITY_CLASS + facility) or nil,
+        -- the name sits at offset 4, past three bytes of padding
+        name = (self:readString(o + P.TRAINER_NAME, P.TRAINER_NAME_LEN) or "")
+               :gsub("^%s+", ""):gsub("%s+$", ""),
+        set = set[1] and set or nil,
+      }
+    end
+    return out, total, top
+  end
+
+  local mons = readMons(P.MONS, P.MON_COUNT)
+  local trainers, setTotal, topIndex = readTrainers(P.TRAINERS, P.TRAINER_COUNT)
+  if badPad > 0 then
+    Logger.warn("gen3 frontier teams: %d padding bytes are not zero -- the "
+                  .. "mon table may not be 16 bytes a row", badPad)
+  end
+
+  -- THE CHECK THAT THE TWO TABLES BELONG TO EACH OTHER: the largest index any
+  -- trainer names is the last row of the mon table.  One row out either way
+  -- and this stops.
+  if topIndex + 1 ~= P.MON_COUNT then
+    Logger.warn("gen3 frontier teams: the sets reach mon %d and the table "
+                  .. "holds %d -- not recorded", topIndex, P.MON_COUNT)
+    return
+  end
+
+  -- ...and the same again for each tent, which is what the report is about
+  local tents, tentRows = {}, 0
+  for _, spec in ipairs(P.TENTS) do
+    local tMons = readMons(spec.mons, spec.monCount)
+    local tTrainers, tTotal, tTop = readTrainers(spec.trainers, P.TENT_TRAINERS)
+    if tTop + 1 ~= spec.monCount then
+      Logger.warn("gen3 frontier teams: the %s tent's sets reach mon %d and "
+                    .. "its table holds %d -- not recorded",
+                  spec.name, tTop, spec.monCount)
+    else
+      tents[spec.var] = {
+        name = spec.name, trainers = tTrainers, mons = tMons,
+        setEntries = tTotal,
+      }
+      tentRows = tentRows + spec.monCount
+    end
+  end
+
+  local constants = self._constants or {}
+  constants.gen3FrontierParties = {
+    trainers = trainers, mons = mons, items = items,
+    -- keyed by VAR_0x40CF, which is what the lobby you walked into set
+    tents = next(tents) and tents or nil,
+    tentVar = P.TENT_VAR, tentTrainers = P.TENT_TRAINERS,
+    levelFloor = P.LEVEL_FLOOR,
+    -- the one tent whose arm 6 names an item, and the item it names
+    prize = (function()
+      local raw = rom:u16(P.PRIZE_AT)
+      local id = raw ~= 0 and ((order and order[raw]) or raw) or nil
+      if not id then return nil end
+      return { var = P.PRIZE_VAR, item = id,
+               source = ("ROM:%07X, the word 01B9B00 stores -- Verdanturf's "
+                         .. "only prize"):format(P.PRIZE_AT) }
+    end)(),
+    source = ("ROM:%07X %d trainers over %d set entries, %07X %d mons, "
+              .. "%07X %d held items; the sets reach mon %d, which is the "
+              .. "last row.  Three tents on top, %d teams between them, "
+              .. "level max(party, %d)")
+      :format(P.TRAINERS, #trainers, setTotal, P.MONS, #mons, P.ITEMS,
+              P.ITEM_COUNT, topIndex, tentRows, P.LEVEL_FLOOR),
+  }
+  self._constants = constants
+  self:write("constants", constants)
+  Logger.info("Gen3 Frontier teams: %d trainers, %d mons, %d held items, "
+                .. "%d tents -- %s", #trainers, #mons, P.ITEM_COUNT,
+              #P.TENTS, constants.gen3FrontierParties.source)
+end
+
+-- ---------------------------------------------------------------------------
 -- STAGE: THE BATTLE FRONTIER, MAPPED.
 --
 -- The Frontier is the largest thing left in Hoenn and the census that says so
@@ -14954,7 +16591,108 @@ RomExtractorGen3.FRONTIER = {
   MAX_ARMS = 128,
   MIN_ARMS = 2,
   CODE = 0x400000,      -- the code half of the cartridge
+  -- gSpecialVars[13], out of the sixteen EWRAM pointers at 01DBA0C: the one
+  -- a script means by VAR_RESULT.  See frontierAnswers.
+  RESULT_AT = 0x020375F0,
+  WALK = 600,           -- halfwords of one function
+  DEPTH = 2,            -- ...and of the calls it makes
+  BUDGET = 400000,      -- halfwords for the whole stage, so a bad read stops
 }
+
+-- ---------------------------------------------------------------------------
+-- WHICH FRONTIER FUNCTIONS ANSWER, AND WHICH ONLY ACT.
+--
+-- Reported from play: "For the gen3 contests i get to this point save and then
+-- it doesnt take me to the battle tent or anything" -- the Verdanturf Battle
+-- Tent's attendant asks to save, the player says yes, and the script ends
+-- there.
+--
+-- The lobby script (0201954) is
+--
+--     setvar VAR_0x8004, 2 / setvar VAR_0x8005, 4 / special 234
+--     setvar VAR_0x8004, 0 / special 245
+--     ... two more frontier calls ...
+--     special 41                      LoadPlayerParty
+--     call 027134F                    special 96 (SaveGame) / waitstate
+--     compare VAR_RESULT, 0
+--     goto_if eq -> 0201A1D           give up, release, end
+--     ... "Good. Now, follow me." ... warp 6 1
+--
+-- and this port's Frontier dispatcher wrote VAR_RESULT = 0 on EVERY call, for
+-- the reason the Trainer Hill note below gives: zero is the "no, none, not
+-- yet" arm of a QUESTION, and answering a question with a stale value is the
+-- worse bug.  But most of these are not questions.  Four of them here are
+-- setters, they ran after the yes and before the save, and they left the
+-- compare above reading zero -- so the script took the arm that means "the
+-- player declined", every time, on all three tents.
+--
+-- WHICH ARE WHICH IS IN THE IMAGE.  A Frontier function that answers does it
+-- the same way every time:
+--
+--     ldr r1, =gSpecialVar_Result     (020375F0)
+--     ...
+--     strh r0, [r1]
+--
+-- so this walks each arm of each dispatcher's table and looks for a store
+-- through that address, following the calls it makes two deep.  The closure
+-- check is the pair: verdanturfTent arm 1 reads saveblock+E6A INTO
+-- gSpecialVar_Result, and arm 2 writes VAR_0x8006 back OUT to the same field
+-- and touches the result not at all -- a getter and a setter on one number,
+-- which is exactly the distinction being drawn.  The four Trainer Hill
+-- functions derived by hand for src/script/Gen3Commands.lua (6, 8, 9 and 16)
+-- all come back as answerers here, off a different method.
+--
+-- A function this cannot walk -- one that jumps through a table of its own --
+-- is left on the ANSWERING side, because that is the behaviour the port
+-- already had and this may only ever make it quieter, never staler.
+function RomExtractorGen3:frontierAnswers(entry, depth, budget)
+  local F = RomExtractorGen3.FRONTIER
+  local seen = {}
+  local function walk(at, left)
+    at = at - (at % 2)
+    if seen[at] or at <= 0 or at >= (self.rom.size or 0) then return false end
+    seen[at] = true
+    local holds, calls = {}, {}
+    local a = at
+    for _ = 1, F.WALK do
+      if budget[1] <= 0 then return true end
+      budget[1] = budget[1] - 1
+      local ok, op = pcall(self.rom.u16, self.rom, a)
+      if not ok then break end
+      if op >= 0x4800 and op < 0x5000 then          -- ldr rD, [pc, #imm]
+        local rd = math.floor(op / 256) % 8
+        local pool = (a + 4) - ((a + 4) % 4) + (op % 256) * 4
+        local okW, word = pcall(self.rom.u32, self.rom, pool)
+        holds[rd] = okW and word or nil
+      elseif (op >= 0x8000 and op < 0x8800)         -- strh rS, [rN, #imm]
+          or (op >= 0x6000 and op < 0x6800)         -- str
+          or (op >= 0x7000 and op < 0x7800) then    -- strb
+        if holds[math.floor(op / 8) % 8] == F.RESULT_AT then return true end
+      elseif op >= 0xF000 and op < 0xF800 then      -- bl, first half
+        local okN, nxt = pcall(self.rom.u16, self.rom, a + 2)
+        if okN and nxt >= 0xF800 then
+          local off = (op % 2048) * 4096 + (nxt % 2048) * 2
+          if off >= 0x400000 then off = off - 0x800000 end
+          calls[#calls + 1] = a + 4 + off
+          a = a + 4
+        else
+          a = a + 2
+        end
+      elseif op == 0x4770 then break                -- bx lr
+      elseif op >= 0xBD00 and op < 0xBE00 then break -- pop {.., pc}
+      elseif op >= 0x4700 and op < 0x4780 then break -- bx rN / an indirect jump
+      end
+      if not (op >= 0xF000 and op < 0xF800) then a = a + 2 end
+    end
+    if left > 0 then
+      for _, target in ipairs(calls) do
+        if walk(target, left - 1) then return true end
+      end
+    end
+    return false
+  end
+  return walk(entry, depth or F.DEPTH)
+end
 
 -- A dispatcher's jump table: the one ROM pointer in its literal pool.
 function RomExtractorGen3:frontierTable(special)
@@ -14994,9 +16732,35 @@ function RomExtractorGen3:frontierUses()
   local want = {}
   for _, row in ipairs(F.DISPATCHERS) do want[row.special] = row.name end
   local uses = {}
+  -- ...AND WHICH OF THEM THE SCRIPT THEN BRANCHES ON.  This is the second
+  -- opinion on frontierAnswers: if any script in the region reads VAR_RESULT
+  -- straight after an arm, that arm ANSWERS whatever a walk of its code
+  -- concluded, and the engine must keep answering it.  A walk that missed a
+  -- store -- a function that jumps through a table of its own, a result
+  -- written four calls down -- would otherwise turn a served question back
+  -- into a stale one, which is the bug the zero was put there to stop.
+  local function readsResult(rows, from)
+    for j = from + 1, math.min(from + 6, #rows) do
+      local op = rows[j][1]
+      -- anything that could write the result itself ends the window
+      if op == "special" or op == "specialvar" or op == "call"
+         or op == "goto" or op == "callstd" then return false end
+      if op == "setvar"
+         and math.floor(tonumber(rows[j][2]) or -1) == 0x800D then return false end
+      if (op == "compare_var_to_value"
+            and math.floor(tonumber(rows[j][2]) or -1) == 0x800D)
+         or (op == "copyvar"
+               and math.floor(tonumber(rows[j][3]) or -1) == 0x800D)
+         or (op == "addvar"
+               and math.floor(tonumber(rows[j][2]) or -1) == 0x800D) then
+        return true
+      end
+    end
+    return false
+  end
   for _, rows in pairs(scripts) do
     local arg
-    for _, ir in ipairs(rows) do
+    for index, ir in ipairs(rows) do
       if ir[1] == "setvar" and math.floor(tonumber(ir[2]) or -1) == F.ARG_VAR then
         arg = math.floor(tonumber(ir[3]) or 0)
       end
@@ -15005,10 +16769,14 @@ function RomExtractorGen3:frontierUses()
       elseif ir[1] == "specialvar" then id = math.floor(tonumber(ir[3]) or -1) end
       local name = id and want[id]
       if name then
-        uses[name] = uses[name] or { calls = 0, arms = {}, blind = 0 }
+        uses[name] = uses[name] or { calls = 0, arms = {}, blind = 0,
+                                     branched = {} }
         uses[name].calls = uses[name].calls + 1
         if arg then
           uses[name].arms[arg] = (uses[name].arms[arg] or 0) + 1
+          if ir[1] == "special" and readsResult(rows, index) then
+            uses[name].branched[arg] = true
+          end
         else
           uses[name].blind = uses[name].blind + 1
         end
@@ -15028,6 +16796,8 @@ function RomExtractorGen3:extractBattleFrontier()
   end
 
   local facilities, arms, calls, reached = {}, 0, 0, 0
+  local answering = 0
+  local budget = { RomExtractorGen3.FRONTIER.BUDGET }
   local missing = {}
   for _, row in ipairs(F.DISPATCHERS) do
     local found, why = self:frontierTable(row.special)
@@ -15047,9 +16817,28 @@ function RomExtractorGen3:extractBattleFrontier()
                       .. "its table holds %d -- not recorded",
                     row.name, top, found.arms)
       else
+        -- ...AND WHICH OF THOSE ARMS ANSWERS.  See frontierAnswers: an arm
+        -- that stores to gSpecialVar_Result is a question, and the engine's
+        -- dispatcher answers it with the zero that means "no, none, not yet";
+        -- an arm that only acts is left alone, because writing a result it
+        -- never wrote is what stopped all three Battle Tents.
+        local answers, branched = {}, (use or {}).branched or {}
+        for arm = 0, found.arms - 1 do
+          local okA, word = pcall(self.rom.u32, self.rom, found.at + arm * 4)
+          local fn = okA and RomExtractorGen3.romOffset(word)
+          -- the union of the two opinions, deliberately: an arm goes quiet
+          -- only when the code has no store to the result AND no script in
+          -- the region reads one, so this can make the engine quieter and
+          -- never staler than it already was
+          if branched[arm]
+             or (fn and self:frontierAnswers(fn, nil, budget)) then
+            answers[#answers + 1] = arm
+          end
+        end
+        answering = answering + #answers
         facilities[row.name] = {
           special = row.special, at = found.at, arms = found.arms,
-          used = used, calls = (use or {}).calls or 0,
+          used = used, calls = (use or {}).calls or 0, answers = answers,
         }
         arms = arms + found.arms
         reached = reached + #used
@@ -15062,10 +16851,13 @@ function RomExtractorGen3:extractBattleFrontier()
   local constants = self._constants or {}
   constants.gen3Frontier = {
     facilities = facilities, argVar = F.ARG_VAR,
-    arms = arms, reached = reached, calls = calls,
+    arms = arms, reached = reached, calls = calls, answering = answering,
+    resultAt = F.RESULT_AT,
     source = ("ROM:%d dispatchers, %d functions between them, %d of which "
-              .. "the region's scripts reach over %d call sites")
-      :format(F.DISPATCHERS and #F.DISPATCHERS or 0, arms, reached, calls),
+              .. "the region's scripts reach over %d call sites; %d store to "
+              .. "gSpecialVar_Result (%07X) and the rest only act")
+      :format(F.DISPATCHERS and #F.DISPATCHERS or 0, arms, reached, calls,
+              answering, F.RESULT_AT),
   }
   self._constants = constants
   self:write("constants", constants)
@@ -20685,7 +22477,130 @@ RomExtractorGen3.BIKE_RULES = {
   HOP_STATE = 3,       -- ACRO_STATE_BUNNY_HOP, written to gPlayerAvatar +8
   STATE_FIELD = 8,
   MEMCPY_MAX = 32,
+  -- ------- AND HOW LONG A STEP TAKES AT EACH OF THOSE SPEEDS.
+  --
+  -- Reported from play: "fix the acro and mach bike so they function as they
+  -- would in the emerald rom currently they both act the same".  They did:
+  -- GetPlayerSpeed was derived, ported and read by exactly one thing -- the
+  -- mud ramp -- so the number existed and never reached a step.  Both bikes
+  -- moved at the one bicycle speed the Game Boy games have.
+  --
+  -- The number GetPlayerSpeed returns is not a duration; it is an index into
+  -- a chain, and the chain is four hops long.  Taking the mach bike's:
+  --
+  --   sMachBikeSpeedCallbacks  0859745C  three functions, one per rung
+  --   GetWalk*MovementAction   0850DBAA / ..AF / ..B4 / ..B9, five bytes
+  --                            each: the movement action per direction
+  --   gMovementActionFuncs     the action's own function list; the first
+  --                            entry is the init, and it ends
+  --                            `mov r2,#1 / mov r3,#<speed>`
+  --   sStepTimes               0850E768, {16, 8, 6, 4, 2} -- FRAMES PER TILE
+  --
+  -- so speed 1 is 16 frames, 2 is 8, 3 is 6 and 4 is 4.  THE FIRST TWO ARE
+  -- THE CLOSURE: this engine's own walk is 16 frames and its own bicycle is
+  -- 8, both written years before any of this was read, and the cartridge's
+  -- chain lands on exactly those two.  A mapping that was off by one would
+  -- make walking 8 frames and the fastest mach rung 2 -- eight pixels a
+  -- frame, half a tile -- which is not a thing the cartridge does.
+  --
+  -- The Acro Bike's 6 is its own: AcroBikeTransition_Moving (01198B4) is the
+  -- ONLY caller of the speed-3 mover in the whole cartridge.
+  STEP_TIMES = 0x050E768,
+  STEP_COUNT = 5,
+  -- one per GetPlayerSpeed value, 1..4, each a five-byte per-direction table
+  WALK_ACTIONS = { 0x050DBAA, 0x050DBAF, 0x050DBB4, 0x050DBB9 },
+  ACTION_FUNCS = 0x050DC50,   -- gMovementActionFuncs, when the manifest is mute
+  INIT_SHAPE = 0x2201,        -- `mov r2,#1`, four halfwords in...
+  INIT_SPEED = 0x2300,        -- ...and `mov r3,#<speed>` in the fifth
+  WALK_FRAMES = 16,           -- what step time 0 has to be
+  STEP_MAX = 64,
+  -- ------- AND THE NOISE A BUNNY HOP MAKES.
+  --
+  -- Reported in the same breath: "the acro bike is missing its bunny hop
+  -- feature".  The rule was here and so was the arc, and pressing B still
+  -- produced NOTHING you could hear for the two-thirds of a second the
+  -- cartridge makes you hold it -- which is indistinguishable from a button
+  -- that does not work.
+  --
+  -- The cartridge makes a noise, and it makes it on the transition rather
+  -- than in the animation: sAcroBikeTransitions[6], the standing hop, is
+  -- 0119974, and the mover it ends in (008B8F0) opens `mov r0,#<sound> / bl
+  -- PlaySE` before it asks for the hop's own movement action.  The id is read
+  -- out of that instruction rather than typed, and a byte there that is not a
+  -- `mov r0,#imm` followed by a call means no sound rather than a wrong one.
+  HOP_SE_AT = 0x008B8F8,
+  HOP_SE_OP = 0x2000,         -- mov r0,#imm
 }
+
+-- The sound the standing bunny hop plays, or nil if that instruction has
+-- moved.  One halfword, checked before it is believed.
+function RomExtractorGen3:acroHopSound()
+  local P = RomExtractorGen3.BIKE_RULES
+  local rom = self.rom
+  local op = rom:u16(P.HOP_SE_AT)
+  if not op or math.floor(op / 256) * 256 ~= P.HOP_SE_OP then
+    return nil, "the hop does not open with a sound"
+  end
+  local call = rom:u16(P.HOP_SE_AT + 2)
+  if not (call and call >= 0xF000 and call < 0xF800) then
+    return nil, "the hop's sound is not handed to anything"
+  end
+  local id = op % 256
+  return id > 0 and id or nil, "the sound is zero"
+end
+
+-- FRAMES PER TILE FOR EACH OF GetPlayerSpeed's ANSWERS, walked rather than
+-- asserted: every hop of the chain above is checked as it is taken, and a
+-- hop that does not look like itself stops the derivation rather than
+-- guessing the rest.
+function RomExtractorGen3:bikeSpeedFrames()
+  local P = RomExtractorGen3.BIKE_RULES
+  local rom = self.rom
+  local times = {}
+  for i = 0, P.STEP_COUNT - 1 do
+    local v = rom:u16(P.STEP_TIMES + i * 2)
+    if not (v and v > 0 and v <= P.STEP_MAX) then
+      return nil, ("sStepTimes[%d] is %s, which is not a frame count")
+                  :format(i, tostring(v))
+    end
+    if i > 0 and v >= times[i] then
+      return nil, "sStepTimes does not get shorter, so it is not step times"
+    end
+    times[i + 1] = v
+  end
+  if times[1] ~= P.WALK_FRAMES then
+    return nil, ("the slowest step is %d frames and walking is %d")
+                :format(times[1], P.WALK_FRAMES)
+  end
+  local actions = self:symbol("gMovementActionFuncs") or P.ACTION_FUNCS
+  local frames = {}
+  for speed, at in ipairs(P.WALK_ACTIONS) do
+    -- entry 0 of each table repeats DOWN; entry 1 IS down
+    local action = rom:u8(at + 1)
+    local list = action and rom:pointer(actions + action * 4)
+    local fn = list and rom:pointer(list)
+    if not fn then
+      return nil, ("speed %d names no movement action"):format(speed)
+    end
+    fn = fn - 1                               -- a THUMB function pointer
+    if rom:u16(fn + 6) ~= P.INIT_SHAPE then
+      return nil, ("speed %d's action %d does not start a movement")
+                  :format(speed, action)
+    end
+    local word = rom:u16(fn + 8)
+    if math.floor(word / 256) * 256 ~= P.INIT_SPEED then
+      return nil, ("speed %d's action %d names no step speed")
+                  :format(speed, action)
+    end
+    local t = times[word % 256 + 1]
+    if not t then
+      return nil, ("speed %d asks for step time %d of %d")
+                  :format(speed, word % 256, P.STEP_COUNT)
+    end
+    frames[speed] = t
+  end
+  return frames, times
+end
 
 -- MetatileBehavior_Is<x>: `push {lr} / lsl r0,r0,#24 / lsr r0,r0,#24 /
 -- cmp r0,#<behaviour>`, which is four halfwords and cannot be anything else.
@@ -20962,6 +22877,11 @@ function RomExtractorGen3:bikeBehaviours(tilesetPairs)
   -- ...AND HOW THE TWO BIKES RIDE, which the behaviours above do not say.
   local rules, ruleWhy = self:bikeRules(constants.gen3Bike)
   local hop, hopWhy = self:acroHopFrames(constants.gen3Bike)
+  local frames, frameWhy = self:bikeSpeedFrames()
+  if not frames then
+    Logger.warn("gen3 bike: how long a step takes at each speed was not read "
+                  .. "(%s) -- the two bikes will ride alike", tostring(frameWhy))
+  end
   if rules and hop then
     -- THE CLOSURE: the threshold a mud ramp asks for has to be cleared by the
     -- LAST rung of the mach ladder and by nothing else in the game -- not the
@@ -20989,11 +22909,18 @@ function RomExtractorGen3:bikeBehaviours(tilesetPairs)
         muddyMinSpeed = rules.minSpeed,
         muddyDirection = rules.direction,
         acroHopFrames = hop,
+        -- ...and what each of those speeds COSTS, which is what makes the
+        -- mach bike a mach bike on the screen rather than only on a ramp
+        speedFrames = frames,
+        acroHopSound = self:acroHopSound(),
         source = ("ROM:ForcedMovement_%07X (push south unless facing %d "
                   .. "above speed %d), GetPlayerSpeed ladder %07X {%s}, "
-                  .. "wheelie becomes a hop after %d frames")
+                  .. "wheelie becomes a hop after %d frames, step times {%s} "
+                  .. "through %07X")
           :format(rules.handler, rules.direction, rules.minSpeed,
-                  rules.ladderAt, table.concat(rules.ladder, ","), hop),
+                  rules.ladderAt, table.concat(rules.ladder, ","), hop,
+                  frames and table.concat(frames, ",") or "-",
+                  RomExtractorGen3.BIKE_RULES.STEP_TIMES),
       }
       Logger.info("Gen3 bike rules: %s",
                   constants.gen3Bike.rules.source)
@@ -22762,6 +24689,7 @@ function RomExtractorGen3:extractScenes()
           -- index 0 is the transparent one, as everywhere else on this
           -- cartridge -- the logo sits over the sky, not over a black box
           local drawn = 0
+          local inkX1, inkY1, inkX2, inkY2 = nil, nil, nil, nil
           for t = 0, (bmp.tiles or 0) - 1 do
             local ox, oy = (t % tw) * 8, math.floor(t / tw) * 8
             for y = 0, 7 do
@@ -22772,6 +24700,11 @@ function RomExtractorGen3:extractScenes()
                   image:setPixel(ox + x, oy + y, c[1] / 255, c[2] / 255,
                                  c[3] / 255, 1)
                   drawn = drawn + 1
+                  local px, py = ox + x, oy + y
+                  if not inkX1 or px < inkX1 then inkX1 = px end
+                  if not inkX2 or px > inkX2 then inkX2 = px end
+                  if not inkY1 or py < inkY1 then inkY1 = py end
+                  if not inkY2 or py > inkY2 then inkY2 = py end
                 end
               end
             end
@@ -22782,6 +24715,22 @@ function RomExtractorGen3:extractScenes()
             image = "assets/generated/" .. file,
             width = tw * 8, height = th * 8, depth = 8,
             graphics = bmp.graphics, inked = drawn,
+            -- WHERE THE PICTURE IS INSIDE ITS PADDING.
+            --
+            -- A GBA background bitmap is as wide as the background, not as
+            -- wide as the thing drawn on it: Emerald's POKeMON logo is 166
+            -- pixels of art inside a 256-pixel sheet, sitting against its
+            -- left edge, and on the cartridge a scroll register is what
+            -- puts it on screen.  A port with no scroll register has to
+            -- centre it, and centring the SHEET puts it eight pixels off
+            -- the left of a 240-wide screen with the art starting three
+            -- pixels in -- which is exactly the "logo is left aligned
+            -- instead of centered" this was reported as.  The ink's own box
+            -- is what a screen should centre, so it is measured here rather
+            -- than guessed at there.
+            contentX = inkX1, contentY = inkY1,
+            contentWidth = inkX2 and (inkX2 - inkX1 + 1) or nil,
+            contentHeight = inkY2 and (inkY2 - inkY1 + 1) or nil,
             source = ("ROM:%07X, 8bpp bitmap, identity map %07X")
                      :format(bmp.graphics, bmp.map or 0),
           }
@@ -22835,7 +24784,29 @@ function RomExtractorGen3:extractScenes()
           end
           local file = ("scenes/gen3_%s_sheet%d.png"):format(role, n)
           self:saveImage(image, file)
+          -- ...AND, FOR A STRIP, THE PIECES IT IS A STRIP OF.
+          --
+          -- A "strip" is the fallback for a sheet whose tile count does not
+          -- divide into 64x32 objects: it is a LINEAR RUN of tiles, and the
+          -- shape above (eight tiles per row) is only somewhere to put them.
+          -- Emerald's title carries one -- tag 03E9 -- and it holds TWO
+          -- captions, PRESS START and the copyright line, one after the
+          -- other with blank tiles between and around them.  Laid out eight
+          -- across they read as scrambled text, which is why nothing drew
+          -- them and the port set PRESS START in the engine's own font
+          -- instead ("the press start text has the wrong font compared to
+          -- the actual rom").
+          --
+          -- Where one caption ends and the next begins is IN THE ART: a run
+          -- of inked tiles bounded by blank ones.  So the runs are found
+          -- rather than addressed, and each is written out as the single row
+          -- of tiles it actually is.
+          local pieces = nil
+          if layout == "strip" and tiles > 0 then
+            pieces = self:stripPieces(art, depth, tiles, objBank, role, n)
+          end
           record.sheets[n] = {
+            pieces = pieces,
             image = "assets/generated/" .. file,
             width = blockW * blocks * 8, height = blockH * 8,
             depth = depth, tag = sh.tag, layout = layout,
@@ -25877,6 +27848,7 @@ function RomExtractorGen3:extractBattleMenu()
   self._constants = constants
   self:itemMenuActions(constants)
   self:trainerCardBadges(constants)
+  self:trainerCardArt(constants)
   self:write("constants", constants)
   Logger.info("Gen3 battle menu: %s | %s // %s | %s, second column at %dpx%s",
               menu.rows[1][1], menu.rows[1][2], menu.rows[2][1],
@@ -25940,6 +27912,23 @@ local ITEM_TEXT = {
   { key = "contained",  find = "It contained" },
   { key = "tossPrompt", find = "Throw away this" },
   { key = "tossed",     find = "was thrown away" },
+  -- ...AND THE PC'S HALF OF THE BAG, which is in this same block because on
+  -- this cartridge DEPOSITING AN ITEM IS A BAG SCREEN.  "Deposit how many",
+  -- "Deposited", "no room to store" and "Important items can't be stored in
+  -- the PC!" are all bag strings, sat between the bag's own toss lines --
+  -- which is the evidence that the PC's DEPOSIT ITEM row opens the bag and
+  -- takes the pick there, rather than listing the bag inside a PC screen.
+  --
+  -- The fragments avoid every apostrophe on purpose: the cartridge's is a
+  -- curly one and this file is plain ASCII.
+  { key = "depositPrompt",  find = "Deposit how many" },
+  { key = "deposited",      find = "Deposited " },
+  { key = "noRoomStore",    find = "no room to" },
+  { key = "cantStore",      find = "be stored in" },
+  { key = "tossImportant",  find = "important to toss" },
+  { key = "tossHowMany",    find = "Toss out how many" },
+  { key = "tossedMany",     find = "Threw away " },
+  { key = "tossConfirm",    find = "Is it okay to" },
 }
 
 -- AND THE MART'S, which is the same block: the clerk's whole script sits a
@@ -26010,6 +27999,244 @@ local MART_WORDS = { BUY = "buy", SELL = "sell", QUIT = "quit" }
 -- right: one palette serves all eight, and the eight of them use five inks
 -- between them.
 -- ---------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- THE CARD ITSELF, and not just the emblems on it.
+--
+-- Asked for directly, with a reference shot: the card is meant to be a
+-- printed card -- a titled pill, ruled field lines, a round portrait window
+-- and a row of badge sockets -- and this port drew it in its own window
+-- frame, which is what the note at the top of src/ui/Gen3TrainerCard.lua
+-- called "the part to replace when that art is extracted".  This is that.
+--
+-- ANCHORED ON A COPY, not on an address.  Exactly one place in the card's
+-- code copies 416 bytes out of a literal (`mov r2,#0xD0 / lsl r2,r2,#1` after
+-- an `ldr r0,=`), and that literal is the star-palette block -- thirteen
+-- palettes, one per card colour.  Being the only such site in the whole
+-- region is what makes it an anchor, and it pins the code the rest is found
+-- from.
+--
+-- WHAT IS AROUND IT.  The literal pools nearby name eight compressed 1200-byte
+-- blocks.  1200 is 600 halfwords, which is 30x20 -- a GBA screen in tilemap
+-- entries, and nothing else on this cartridge is that shape by accident.  The
+-- four with the lower addresses are Hoenn's, the four above them Kanto's.
+--
+-- WHICH OF THE FOUR IS WHICH, named by three checks rather than by counting:
+--
+--   * one of them uses exactly ONE distinct tile.  That is the plain field
+--     the card is laid on, and nothing else in a set of four screens can be
+--     a single repeated tile.
+--   * two of them agree on every row but a band near the bottom.  Those are
+--     the front and the LINK front, which the cartridge draws without the
+--     badge row -- so the one of the pair with more distinct tiles, the extra
+--     ones being the sockets, is the front.
+--   * what is left is the back.
+--
+-- AND THE SHEET THEY INDEX is the smallest one that can serve them: Hoenn's
+-- four reach tile 155 and the sheet found is 160 tiles; Kanto's reach 186 and
+-- theirs is 192.  A sheet picked by anything other than the maps themselves
+-- would not fit that closely, which is the check.
+function RomExtractorGen3:trainerCardArt(constants)
+  local rom = self.rom
+  if not rom then return end
+
+  -- ---- the anchor: the one 416-byte palette copy ------------------------
+  local palette, site
+  for at = 0x0C0000, 0x0CC000, 2 do
+    if rom:u16(at) == 0x22D0 and rom:u16(at + 2) == 0x0052 then
+      local w = rom:u16(at - 2)
+      if w >= 0x4800 and w < 0x4900 then
+        local pc = at + 2
+        local lit = pc - (pc % 4) + (w % 256) * 4
+        local v = rom:u32(lit)
+        if v >= 0x08000000 and v - 0x08000000 < rom.size then
+          if palette then
+            Logger.warn("gen3 trainer card: more than one 416-byte palette "
+                        .. "copy -- the card keeps its drawn frame")
+            return
+          end
+          palette, site = v - 0x08000000, at
+        end
+      end
+    end
+  end
+  if not palette then
+    Logger.warn("gen3 trainer card: no 416-byte palette copy in the card's "
+                .. "code -- the card keeps its drawn frame")
+    return
+  end
+
+  -- ---- the compressed blocks that code names ----------------------------
+  local blocks, seen = {}, {}
+  local from = math.max(0, site - 0x4000)
+  from = from - (from % 4)
+  for at = from, math.min(rom.size - 4, site + 0x1000), 4 do
+    local v = rom:u32(at)
+    if v >= 0x08000000 and v - 0x08000000 < rom.size then
+      local off = v - 0x08000000
+      if rom:u8(off) == 0x10 and not seen[off] then
+        local size = rom:u8(off + 1) + rom:u8(off + 2) * 256
+                     + rom:u8(off + 3) * 65536
+        if size > 0 and size <= 0x8000 then
+          seen[off] = true
+          blocks[#blocks + 1] = { at = off, size = size }
+        end
+      end
+    end
+  end
+  table.sort(blocks, function(x, y) return x.at < y.at end)
+
+  local screens = {}
+  for _, b in ipairs(blocks) do
+    if b.size == 1200 then screens[#screens + 1] = b.at end
+  end
+  if #screens < 4 then
+    Logger.warn("gen3 trainer card: %d screen-shaped tilemaps around %07X, "
+                  .. "not the four the card is built from -- the card keeps "
+                  .. "its drawn frame", #screens, site)
+    return
+  end
+
+  -- ---- name them by shape ------------------------------------------------
+  local maps = {}
+  for i = 1, 4 do
+    local ok, raw = pcall(rom.lz77, rom, screens[i])
+    if not (ok and #raw == 1200) then
+      Logger.warn("gen3 trainer card: %07X did not decompress to a screen -- "
+                  .. "the card keeps its drawn frame", screens[i])
+      return
+    end
+    local ids, tiles, top = {}, {}, 0
+    for c = 0, 599 do
+      local e = raw[c * 2 + 1] + raw[c * 2 + 2] * 256
+      ids[c] = e
+      local id = e % 1024
+      tiles[id] = true
+      if id > top then top = id end
+    end
+    local distinct = 0
+    for _ in pairs(tiles) do distinct = distinct + 1 end
+    maps[i] = { at = screens[i], ids = ids, distinct = distinct, top = top }
+  end
+  local field, front, back, link
+  for i = 1, 4 do
+    if maps[i].distinct == 1 then field = field == nil and i or false end
+  end
+  if not field then
+    Logger.warn("gen3 trainer card: no single-tile field among the four "
+                .. "screens -- the card keeps its drawn frame")
+    return
+  end
+  for i = 1, 4 do
+    for j = i + 1, 4 do
+      if i ~= field and j ~= field then
+        local same, differ = 0, 0
+        for r = 0, 19 do
+          local equal = true
+          for c = 0, 29 do
+            if maps[i].ids[r * 30 + c] ~= maps[j].ids[r * 30 + c] then
+              equal = false
+            end
+          end
+          if equal then same = same + 1 else differ = differ + 1 end
+        end
+        if same >= 14 and differ > 0 then
+          local rich = (maps[i].distinct >= maps[j].distinct) and i or j
+          front = front == nil and rich or false
+          link = (rich == i) and j or i
+        end
+      end
+    end
+  end
+  if not (front and link) then
+    Logger.warn("gen3 trainer card: no front/link pair among the four "
+                .. "screens -- the card keeps its drawn frame")
+    return
+  end
+  for i = 1, 4 do
+    if i ~= field and i ~= front and i ~= link then back = i end
+  end
+
+  -- ---- the sheet the four of them index ---------------------------------
+  local need = 0
+  for i = 1, 4 do if maps[i].top + 1 > need then need = maps[i].top + 1 end end
+  local sheet
+  for _, b in ipairs(blocks) do
+    if b.size % 32 == 0 and b.size ~= 1200 then
+      local tiles = math.floor(b.size / 32)
+      if tiles >= need and (not sheet or b.size < sheet.size) then sheet = b end
+    end
+  end
+  if not sheet then
+    Logger.warn("gen3 trainer card: no sheet big enough for %d tiles -- the "
+                .. "card keeps its drawn frame", need)
+    return
+  end
+
+  -- ---- and the pictures --------------------------------------------------
+  local okS, tiles = pcall(rom.lz77, rom, sheet.at)
+  if not okS then
+    Logger.warn("gen3 trainer card: the sheet did not decompress -- the card "
+                .. "keeps its drawn frame")
+    return
+  end
+  local colors = {}
+  for i = 0, 16 * 16 - 1 do
+    local r, g, b = RomGba.bgr555(rom:u8(palette + i * 2)
+                                  + rom:u8(palette + i * 2 + 1) * 256)
+    colors[i + 1] = { r, g, b }
+  end
+  -- THREE SCREENS, AND ONLY THE BACKDROP IS SOLID.
+  --
+  -- The cartridge draws the card on two backgrounds at once: the FIELD is a
+  -- single tile repeated over the whole screen on palette bank 1, and the
+  -- FRONT (or the back, when B has flipped it) sits over it on bank 0 with
+  -- colour 0 left clear so the field shows through outside the card's rounded
+  -- corners.  Baking the front opaque would paint bank 0's colour 0 -- a dark
+  -- slate -- into that margin and lose the backdrop entirely, so the field is
+  -- the only one baked opaque and the other two keep their transparency.
+  --
+  -- Bank 1 is also the one the cartridge reloads per card rank (the base load
+  -- is followed by a 32-byte copy to colour 16 chosen by a field the save
+  -- carries), which is why the backdrop, and only the backdrop, changes colour
+  -- as a card gains stars.  The base palette already holds rank zero's, so
+  -- that is what this bakes.
+  local images = {}
+  for key, which in pairs({ front = front, back = back, field = field }) do
+    local ids = maps[which].ids
+    local ok = pcall(function()
+      local img = ImageWriter.blank(240, 160)
+      for ty = 0, 19 do
+        for tx = 0, 29 do
+          local e = ids[ty * 30 + tx]
+          RomExtractorGen3.partyTile(img, tiles, colors, e % 1024,
+                                     math.floor(e / 4096) % 16, tx * 8, ty * 8,
+                                     math.floor(e / 1024) % 2 == 1,
+                                     math.floor(e / 2048) % 2 == 1,
+                                     key == "field")
+        end
+      end
+      self:saveImage(img, "ui/trainer_card_" .. key .. ".png")
+    end)
+    if ok then
+      images[key] = "assets/generated/ui/trainer_card_" .. key .. ".png"
+    end
+  end
+  if not images.front then
+    Logger.warn("gen3 trainer card: the front could not be composed -- the "
+                .. "card keeps its drawn frame")
+    return
+  end
+  constants.gen3TrainerCard = {
+    images = images,
+    source = ("ROM:%07X sheet (%d tiles), front %07X, back %07X, field %07X, "
+              .. "palettes %07X; pinned by the 416-byte copy at %07X")
+             :format(sheet.at, math.floor(sheet.size / 32), maps[front].at,
+                     maps[back].at, maps[field].at, palette, site),
+  }
+  Logger.info("Gen3 trainer card: front %07X, back %07X on a %d-tile sheet",
+              maps[front].at, maps[back].at, math.floor(sheet.size / 32))
+end
+
 function RomExtractorGen3:trainerCardBadges(constants)
   local rom = self.rom
   if not rom then return end
@@ -26409,10 +28636,22 @@ function RomExtractorGen3:itemMenuActions(constants)
     elseif i == checkTag then kinds[i] = "checkTag"
     else kinds[i] = "other" end
   end
-  -- DESELECT is REGISTER seen from the other side, and shares its function
+  -- DESELECT is REGISTER seen from the other side, and shares its function.
+  --
+  -- AND WHICH OF THE TWO IS WHICH MATTERS, which is why the id is kept and
+  -- not only the kind.  The cartridge does not carry a second key-item list:
+  -- it copies the one list and overwrites the REGISTER cell with DESELECT
+  -- when the item under the cursor is the one already on the button
+  -- (SetMenuActions).  Without that swap, and without the badge the bag draws
+  -- beside the item, registering something looks exactly like registering
+  -- nothing -- which is what was reported.
+  local deselect
   if registerGroup and register then
     for _, i in ipairs(registerGroup) do
-      if kinds[i] == "other" then kinds[i] = "register" end
+      if kinds[i] == "other" then
+        kinds[i] = "register"
+        deselect = deselect or i
+      end
     end
   end
 
@@ -26428,6 +28667,9 @@ function RomExtractorGen3:itemMenuActions(constants)
     columns = 2,
     cancel = best.cancel,
     blank = blank,
+    -- the pair the key-item list swaps between
+    register = register,
+    deselect = deselect,
     source = ("ROM:sItemMenuActions %07X, %d actions"):format(at, n),
   }
 
@@ -28004,17 +30246,130 @@ function RomExtractorGen3:extractShopMenu()
     return
   end
 
-  local constants = self._constants or {}
-  constants.gen3ShopMenu = {
+  local record = {
     left = a.left, top = a.top, width = a.width,
     height = a.height, heightNoSell = b.height,
     source = ("ROM:sShopMenuWindowTemplates %07X, pinned by the mode-0 branch "
               .. "at %07X"):format(base, found[1].at),
   }
+  self:shopMenuField(record, found[1].at)
+  local constants = self._constants or {}
+  constants.gen3ShopMenu = record
   self._constants = constants
   self:write("constants", constants)
-  Logger.info("Gen3 shop menu: (%d,%d) %dx%d (%d rows without SELL)",
-              a.left, a.top, a.width, a.height, b.height)
+  Logger.info("Gen3 shop menu: (%d,%d) %dx%d (%d rows without SELL)%s",
+              a.left, a.top, a.width, a.height, b.height,
+              record.image and (", field " .. record.image) or "")
+end
+
+-- ---------------------------------------------------------------------------
+-- THE COUNTER'S OWN PICTURE.
+--
+-- Asked for directly: "The pokemarts sell and buy menus still arent correct
+-- as well ensure the rom art is extracted and its loading the emerald menus
+-- properly."  The screen's LAYOUT was already the cartridge's -- the money in
+-- the corner, the stock down the right, the clerk talking underneath -- but
+-- every panel on it was the port's own drawn window, so it wore a Game Boy's
+-- frames.  The cartridge's field is one 240x160 picture: a violet ground, a
+-- white box for the money, another for the description, and a cream list
+-- panel with its own striped rows.
+--
+-- FINDING IT WITHOUT WRITING AN ADDRESS DOWN.  The mode-0 branch this stage
+-- already pins (found[1].at) is inside shop.c's code, and the three pieces
+-- the screen loads are the only compressed data that code names.  So the
+-- literal pools around it are walked, every word that points at an LZ block
+-- is collected, and the answer has to be exactly three of them with the three
+-- shapes a background has:
+--
+--   * one block of exactly 2048 bytes -- a 32x32 tilemap, which is what a GBA
+--     background map is;
+--   * one of exactly 32 -- sixteen colours, which is one 4bpp palette;
+--   * one whose length is a whole number of 32-byte tiles -- the sheet.
+--
+-- Three unrelated shapes agreeing in one place is the check; anything else
+-- and the stage says so and the screen keeps its drawn windows.
+function RomExtractorGen3:shopMenuField(record, site)
+  local rom = self.rom
+  local found = {}
+  local seen = {}
+  -- FOUR-ALIGNED, or every literal in the pool is stepped over: the site
+  -- this starts from is an instruction address and is only ever even.
+  local from = math.max(0, site - 0x1000)
+  from = from - (from % 4)
+  for at = from, math.min(rom.size - 4, site + 0x3000), 4 do
+    local word = rom:u32(at)
+    if word >= 0x08000000 and word - 0x08000000 < rom.size then
+      local off = word - 0x08000000
+      if rom:u8(off) == 0x10 and not seen[off] then
+        local length = rom:u8(off + 1) + rom:u8(off + 2) * 256
+                       + rom:u8(off + 3) * 65536
+        if length > 0 and length <= 0x4000 then
+          seen[off] = true
+          found[#found + 1] = { at = off, size = length }
+        end
+      end
+    end
+  end
+  local tiles, map, pal
+  for _, hit in ipairs(found) do
+    if hit.size == 2048 then map = map == nil and hit.at or false
+    elseif hit.size == 32 then pal = pal == nil and hit.at or false
+    elseif hit.size % 32 == 0 then tiles = tiles == nil and hit.at or false end
+  end
+  if #found ~= 3 or not (tiles and map and pal) then
+    Logger.warn("gen3 shop menu: the code around %07X names %d compressed "
+                  .. "blocks, not one sheet, one 32x32 map and one palette -- "
+                  .. "the counter keeps its drawn windows", site, #found)
+    return
+  end
+  local okT, sheet = pcall(rom.lz77, rom, tiles)
+  local okM, cells = pcall(rom.lz77, rom, map)
+  local okP, palette = pcall(rom.lz77, rom, pal)
+  if not (okT and okM and okP) then
+    Logger.warn("gen3 shop menu: the field did not decompress -- the counter "
+                .. "keeps its drawn windows")
+    return
+  end
+  local colors = {}
+  for i = 0, 15 do
+    local r, g, b = RomGba.bgr555(palette[i * 2 + 1] + palette[i * 2 + 2] * 256)
+    colors[i + 1] = { r, g, b }
+  end
+  local count = math.floor(#sheet / 32)
+  local ok = pcall(function()
+    local img = ImageWriter.blank(240, 160)
+    for ty = 0, 19 do
+      for tx = 0, 29 do
+        local cell = ty * 32 + tx
+        local e = cells[cell * 2 + 1] + cells[cell * 2 + 2] * 256
+        local tid = e % 1024
+        if tid < count then
+          -- COLOUR 0 IS THE HOLE, not the violet it happens to hold.
+          --
+          -- Reported from play: "the pink is supposed to be blank and
+          -- allowing the map to show through".  Baked opaque, the field's own
+          -- backdrop colour became a solid sheet over Hoenn; left
+          -- transparent, the picture is what it is on the cartridge -- a
+          -- cream list panel, a white description box and a socket for the
+          -- item's icon, with nothing at all in between.
+          RomExtractorGen3.partyTile(img, sheet, colors, tid, 0,
+                                     tx * 8, ty * 8,
+                                     math.floor(e / 1024) % 2 == 1,
+                                     math.floor(e / 2048) % 2 == 1,
+                                     false)
+        end
+      end
+    end
+    self:saveImage(img, "ui/shop_field.png")
+  end)
+  if not ok then
+    Logger.warn("gen3 shop menu: the field could not be composed -- the "
+                  .. "counter keeps its drawn windows")
+    return
+  end
+  record.image = "assets/generated/ui/shop_field.png"
+  record.field = ("ROM:%07X sheet, %07X map, %07X palette")
+                 :format(tiles, map, pal)
 end
 
 function RomExtractorGen3:rippleArtUncached()
@@ -31671,6 +34026,7 @@ RomExtractorGen3.DATA_STAGES = {
   "extractItemEffects",
   "extractTypeChart", "extractTrainers", "extractMachines",
   "extractBerries", "extractTrades", "extractMultichoice",
+  "extractFrontierParties", "extractStoragePanels",
   "extractEncounters", "extractEggMoves", "extractDexEntries",
   "extractTrainerClasses", "extractTrainerMoney", "extractTutorMoves", "extractBattleTables",
   "extractBattlerCoords",
@@ -34724,6 +37080,31 @@ RomExtractorGen3.BAG_SCREEN = {
   -- four shapes plus the message, the two YES/NO places, two quantity boxes
   -- and the money window
   CONTEXT = 0x6141AC, CONTEXT_COUNT = 10,
+  -- ------- THE BADGE ON THE REGISTERED KEY ITEM.
+  --
+  -- Reported from play: "Registering still isnt working in gen 3 when
+  -- register is selected it does nothing".  It was working -- the pick was
+  -- recorded on the save and SELECT ran it -- and it LOOKED like nothing,
+  -- because the cartridge's own two acknowledgements were both missing: the
+  -- badge it draws beside the item, and the REGISTER row turning into
+  -- DESELECT.  There is no message either, so with neither of those an
+  -- unchanged screen is the whole of the feedback.
+  --
+  -- The blit is one call and it names everything (01AB66C):
+  --
+  --     if (gSaveBlock1Ptr->registeredItem
+  --         && gSaveBlock1Ptr->registeredItem == itemId)
+  --         BlitBitmapToWindow(listWindow, 086140A4, 96, y - 1, 24, 16);
+  --
+  -- and BlitBitmapRect4Bit reads its source TILED, not as a linear bitmap --
+  -- read flat it comes out as noise, which is the one way this fails while
+  -- still producing an image.  The x is inside the LIST window, so the badge
+  -- lands at that window's own left edge plus 96; the palette is the list
+  -- window's own, out of its template rather than typed here.
+  SELECT_GFX = 0x06140A4,
+  SELECT_W = 24, SELECT_H = 16,
+  SELECT_X = 96, SELECT_DY = -1,
+  SELECT_WINDOW = "list",
   -- ListMenuTemplate: the item's x inside the list window, the cursor's, and
   -- the first row's y.  A row is sixteen tall, so the window's height says
   -- how many there are rather than a number chosen here.
@@ -34796,7 +37177,9 @@ function RomExtractorGen3:extractBagScreen()
             local bank = math.floor(e / 4096) % 16
             if tid < B.TILES and bank < B.PALETTES then
               RomExtractorGen3.partyTile(img, tiles, colors, tid, bank,
-                                         tx * 8, ty * 8)
+                                         tx * 8, ty * 8,
+                                         math.floor(e / 1024) % 2 == 1,
+                                         math.floor(e / 2048) % 2 == 1)
             end
           end
         end
@@ -34806,6 +37189,38 @@ function RomExtractorGen3:extractBagScreen()
         images[row.key] = "assets/generated/ui/bag_" .. row.key .. ".png"
       end
     end
+  end
+
+  -- ---- the badge the registered key item wears ---------------------------
+  --
+  -- A tiled 4bpp bitmap, read the way BlitBitmapRect4Bit reads one:
+  -- ((x>>1)&3) + ((x>>3)<<5) + ((y>>3) * (w>>3) << 5) + ((y&7)<<2).  Index 0
+  -- is left transparent so the badge sits ON the list rather than punching a
+  -- hole in it.
+  local function selectBadge(colours, key)
+    local raw = rom:bytes(B.SELECT_GFX, B.SELECT_W * B.SELECT_H / 2)
+    if not raw or #raw < B.SELECT_W * B.SELECT_H / 2 then return nil end
+    local img = ImageWriter.blank(B.SELECT_W, B.SELECT_H)
+    local inked = 0
+    for y = 0, B.SELECT_H - 1 do
+      for x = 0, B.SELECT_W - 1 do
+        local at = math.floor(x / 2) % 4
+                   + math.floor(x / 8) * 32
+                   + math.floor(y / 8) * math.floor(B.SELECT_W / 8) * 32
+                   + (y % 8) * 4
+        local byte = raw[at + 1] or 0
+        local index = (x % 2 == 0) and byte % 16 or math.floor(byte / 16)
+        local c = index ~= 0 and colours[index + 1]
+        if c then
+          img:setPixel(x, y, c[1] / 255, c[2] / 255, c[3] / 255, 1)
+          inked = inked + 1
+        end
+      end
+    end
+    -- a badge that came out empty is a source that is not this one
+    if inked < B.SELECT_W * B.SELECT_H / 8 then return nil end
+    self:saveImage(img, "ui/bag_select_" .. key .. ".png")
+    return "assets/generated/ui/bag_select_" .. key .. ".png", inked
   end
 
   -- ---- and every window's rectangle --------------------------------------
@@ -34835,6 +37250,35 @@ function RomExtractorGen3:extractBagScreen()
                   .. "do not sit side by side -- not the bag's array",
                 win.list.x, win.description.x)
     return
+  end
+
+  -- ...and now that the list window has named its own palette bank, the badge
+  -- can be cut with it.  Both genders, for the same reason both backgrounds
+  -- are: it is one sheet and only the palette changes.
+  local badges, badgeInked = {}, 0
+  if love and love.image and love.image.newImageData then
+    local bank = math.floor(tonumber(win.list.palette) or 0)
+    for _, row in ipairs({ { key = "male", at = B.PAL_MALE },
+                           { key = "female", at = B.PAL_FEMALE } }) do
+      local okP, palRaw = pcall(rom.lz77, rom, row.at)
+      if okP and #palRaw >= (bank + 1) * 32 then
+        local colours = {}
+        for i = 0, 15 do
+          local o = bank * 32 + i * 2
+          colours[i + 1] = { RomGba.bgr555(palRaw[o + 1] + palRaw[o + 2] * 256) }
+        end
+        local okB, path, inked = pcall(selectBadge, colours, row.key)
+        if okB and path then
+          badges[row.key] = path
+          badgeInked = math.max(badgeInked, inked or 0)
+        end
+      end
+    end
+  end
+  if not next(badges) then
+    Logger.warn("gen3 bag screen: the registered-item badge at %07X did not "
+                  .. "come out -- a registered key item goes unmarked",
+                B.SELECT_GFX)
   end
 
   -- ---- WHICH POCKET YOU ARE IN, derived rather than drawn by hand ---------
@@ -34999,6 +37443,18 @@ function RomExtractorGen3:extractBagScreen()
     bag = { x = B.BAG_CENTRE.x - B.BAG_SIZE / 2,
             y = B.BAG_CENTRE.y - B.BAG_SIZE / 2, size = B.BAG_SIZE },
     itemIcon = B.ITEM_ICON,
+    -- the badge, and where the blit puts it: x inside the LIST window, y one
+    -- pixel above the row's own top
+    registered = next(badges) and {
+      male = badges.male, female = badges.female,
+      x = B.SELECT_X, dy = B.SELECT_DY,
+      width = B.SELECT_W, height = B.SELECT_H,
+      window = B.SELECT_WINDOW, palette = win.list.palette, inked = badgeInked,
+      source = ("ROM:%07X blitted at (%d, y%+d) %dx%d into the %s window by "
+                .. "01AB66C, in that window's own palette %d")
+        :format(B.SELECT_GFX, B.SELECT_X, B.SELECT_DY, B.SELECT_W, B.SELECT_H,
+                B.SELECT_WINDOW, win.list.palette),
+    } or nil,
     pocketDots = {
       x = B.POCKET_DOTS.x, y = B.POCKET_DOTS.y,
       step = B.POCKET_DOTS.step, count = B.POCKET_DOTS.count,
@@ -35133,14 +37589,40 @@ RomExtractorGen3.PARTY_MENU = {
 -- One 8x8 tile out of the party sheet, under one of the eleven palettes.
 -- Index 0 is transparent everywhere in this sheet, which is what lets a
 -- panel sit on the field rather than blank a rectangle of it.
-function RomExtractorGen3.partyTile(image, tiles, colors, tid, bank, cx, cy)
+-- A TILEMAP ENTRY CARRIES A FLIP, AND THIS USED TO THROW IT AWAY.
+--
+-- Reported from play, of the bag: "the page label text isnt supposed to have
+-- the line through it".  There is a line across the pocket pill, and it is
+-- baked into the picture rather than drawn over it -- comparing the composed
+-- PNG against the cartridge's own tilemap pixel for pixel, they disagree on
+-- exactly two rows of that tile row (its first and its last) and on a
+-- scattering of others elsewhere.  That is the signature of a MISSING
+-- VERTICAL FLIP: rows 0 and 7 swap, and a tile whose middle rows are all the
+-- same flat colour shows the swap nowhere else.
+--
+-- Bits 10 and 11 of a GBA tilemap entry are the horizontal and vertical flip;
+-- this read bits 0-9 for the tile and 12-15 for the palette and stepped over
+-- the two in between.  Callers that blit from a raw tile-id array rather than
+-- a tilemap have no flips to pass and are unchanged.
+-- ...AND COLOUR 0 IS NOT ALWAYS NOTHING.
+--
+-- On a SPRITE index 0 is transparent, which is why this skips it and why
+-- every caller that blits OAM art wants that.  On a BACKGROUND it is the
+-- backdrop colour and has to be painted: the mart counter's field is 29.5%
+-- index 0 and that index is its purple ground, so skipping it would leave
+-- nearly a third of the screen as a hole.  (The bag's field never uses index
+-- 0 at all, which is why this only surfaced with the second background.)
+function RomExtractorGen3.partyTile(image, tiles, colors, tid, bank, cx, cy,
+                                    flipX, flipY, opaque)
   local base = bank * 16
   for y = 0, 7 do
     for x = 0, 7 do
-      local byte = tiles[tid * 32 + y * 4 + math.floor(x / 2) + 1]
-      local index = byte and ((x % 2 == 0) and byte % 16
+      local sx = flipX and (7 - x) or x
+      local sy = flipY and (7 - y) or y
+      local byte = tiles[tid * 32 + sy * 4 + math.floor(sx / 2) + 1]
+      local index = byte and ((sx % 2 == 0) and byte % 16
                               or math.floor(byte / 16)) or 0
-      if index ~= 0 then
+      if index ~= 0 or opaque then
         local c = colors[base + index + 1]
         if c then
           image:setPixel(cx + x, cy + y, c[1] / 255, c[2] / 255, c[3] / 255, 1)
@@ -35191,7 +37673,9 @@ function RomExtractorGen3:extractPartyMenu()
       local bank = math.floor(e / 4096) % 16
       if tid < P.BG_TILES then
         RomExtractorGen3.partyTile(bg, tiles, colors, tid, bank,
-                  (cell % P.BG_COLS) * 8, math.floor(cell / P.BG_COLS) * 8)
+                  (cell % P.BG_COLS) * 8, math.floor(cell / P.BG_COLS) * 8,
+                  math.floor(e / 1024) % 2 == 1,
+                  math.floor(e / 2048) % 2 == 1)
       end
     end
     self:saveImage(bg, "party/bg.png")
@@ -36800,6 +39284,2751 @@ end
 -- sprites each.  The only text on the menu is the one-line description under
 -- it, and those ARE strings -- fourteen of them, one per selectable row.
 -- ---------------------------------------------------------------------------
+-- THE INTRO'S THIRD ACT, addressed AND TIMED because the cartridge ships no
+-- table for either.
+--
+-- The addresses are arguments traced out of the intro's own task chain; the
+-- MOTION is the chain itself, executed.  tools/gen3_intro_act3.py is a THUMB
+-- interpreter small enough to run these tasks with everything but SetBgAffine,
+-- SetGpuReg, the decompressors and Div stubbed out, so the film's 893 frames
+-- come from stepping the cartridge's code rather than from anybody's judgement
+-- about how a Poke Ball ought to spin.  What it answers per frame is what the
+-- hardware is handed: the affine placement (texture point 128,128 pinned to a
+-- screen point, one uniform scale, one angle) on the first three beats, and
+-- two background scroll offsets on the last two.
+--
+-- THE FIVE BEATS, with the frame each one's graphics land on:
+--     0  a Poke Ball, spinning a full turn every 64 frames and rushing at the
+--        camera (scale is 65536/n where n grows quadratically)
+--    46  GROUDON, sliding in from off the left and then shaking in place
+--   170  KYOGRE, the same figure treatment
+--   385  a cloud field closing over the screen from both sides
+--   565  the clouds parting again, which is the last thing before the title
+--
+-- AND WHY THE ACT LOOKED BLACK AND WHITE.  A figure is drawn in TWO palette
+-- entries: a body (Groudon's 17, Kyogre's 33) that is flat black, and the
+-- MARKINGS -- Groudon's 31, Kyogre's 47 -- which are black in the loaded
+-- palette and then animated.  Each handler walks a table at $0D85CD0 two bytes
+-- at a time and copies one colour into that entry (faded palette slot 31 at
+-- 016E020, slot 47 at 016E59C), and the colours it walks are black -> blue ->
+-- purple -> magenta -> RED and back again.  So the screen is black, the body
+-- is black, and what the player actually sees is the markings glowing.
+--
+-- The markings are therefore composed as a separate opaque-white MASK and
+-- wear that colour at run time; drawn in their own palette colour they were
+-- black on black, and tinting black pixels would have left them black.
+--
+-- AND MOST OF IT CAME OUT BLACK, which is what the second and third reports
+-- said: "still missing some pieces needs to match the rom", then "a lot of
+-- the post cycle intro is black still".  Three separate things were missing,
+-- and the interpreter found all three the same way -- by recording what the
+-- hardware is handed rather than reading the code.
+--
+--   * THE PALETTE IS NOT ONE BANK.  The LoadPalette at 016DBD4 is the BALL'S,
+--     and in it every row but the first is black -- so every later beat was
+--     composed against black and came out black.  At frame 46 the Groudon
+--     handler CpuSets 512 bytes from D85CD0 straight over the palette buffer,
+--     and THAT is the bank the rest of the act runs on: row 3 is the red of
+--     Groudon's ground, row 4 Kyogre's blue, rows 5..7 the clouds and the sky
+--     Rayquaza is revealed against.  Same address as the markings table,
+--     because the markings ARE entries in it.
+--
+--   * THE FIGURES ARE NOT ALONE.  The beat loads a second, ordinary text
+--     background under the affine one -- BG1, char block 1, screen block 28,
+--     priority 1 against the figure's 0 -- and nothing here modelled it, so
+--     the silhouettes stood on nothing.
+--
+--   * AND THE ACT IS LETTERBOXED.  WINOUT is 0000 from the Groudon beat to the
+--     end, so whatever window 0 does not cover shows the backdrop colour and
+--     nothing else -- and WIN0V CLOSES: frame 47 opens it on the whole screen
+--     and it walks in four rows a frame for eight frames to 32..127, where it
+--     stays for the rest of the act.  Only the ball plays full screen.
+--
+-- The 64-wide cloud layers are two screen blocks side by side (BG0CNT and
+-- BG1CNT ask for 64x32), which is why `wide` exists: read as one 32-wide map
+-- the right half of the sky lands underneath the left half instead of beside
+-- it.
+--
+-- THE FLASHES BETWEEN THE BEATS are BeginNormalPaletteFade calls, recorded
+-- the same way: nine of them, each a blend of the whole screen towards one
+-- colour over (delay + 1) frames a step.  They are what whites the ball out,
+-- what brings each figure in, and what holds the screen dark between the
+-- clouds closing and Rayquaza being revealed.
+-- THE FIRST SCENE IS FOUR BACKGROUNDS AND A CAMERA, and the camera is the
+-- part this port was inventing.
+--
+-- Reported from play: "the water droplets outline still arent drawing ... the
+-- grass circle is missing that surround the area the droplets fall into as
+-- well as the field of leaves is missing and the hill with grass".  All four
+-- pictures were already being composed -- the import has written them since
+-- the shot pass went in -- and three of them were never on screen, because
+-- where each one SITS was a reconstruction: two hand-chosen "bank" offsets, a
+-- squared tilt curve and a solid rectangle painted in for the water.
+--
+-- The cartridge's own answer came out of the interpreter the same way act
+-- three's did.  Running the intro from its first task (016CF18) rather than
+-- from the ride's successor gives the whole film, and scene one is four text
+-- backgrounds at priorities 0..3 -- BG0 the leaves the drops run down and the
+-- ring of grass they fall into, BG1 the field of plants, BG2 more leaves over
+-- a grass band, BG3 the hill and the mountains behind it -- each on its own
+-- 32x32 map, each scrolled VERTICALLY and nothing else.
+--
+-- The pan is the parallax: the three near layers climb at three different
+-- rates from frame 562 and settle at 904, and the backdrop never moves at
+-- all.  A row is
+--
+--   firstFrame lastFrame v0 v1 v2 v3 d0 d1 d2 d3
+--
+-- with v0 the offset of the FRONT layer, and it is a string for the same
+-- reason the finale's track is.
+--
+-- AND A DROP IS THREE SPRITES, not one.
+--
+-- Reported from play: "the water droplets outline still arent drawing only
+-- the highlights on the droplets are there".  The sheet and the palette were
+-- both right; the count was not.  The cartridge creates its drops in THREES
+-- at the same place -- frame 0 of the sheet is the bead, which is drawn in
+-- the pale end of the ramp and is the highlight, and frames 1 and 3 carry the
+-- dark green the outline and the ring are made of.  Drawing one of the three
+-- leaves exactly what was reported.
+--
+-- The FLYGON is the other object worth keeping: one 64x32 silhouette on a
+-- palette whose only colour is a grey, crossing the sky near the end.
+--
+-- The nine 16x16 objects the scene also creates are the studio's own
+-- lettering (they read G A M E  F R E A K when composed) and the 32x64 one is
+-- its mark; this port shows its own card in that slot, so neither is baked.
+RomExtractorGen3.INTRO_SCENE1 = {
+  entry = 0x16CF18,          -- the intro's first task, where the run starts
+  frames = 1008,             -- ...to the frame scene two loads on
+  -- kind 1 is the drop, kind 2 the flygon
+  sprites = {
+    { id = "drop", sheet = 0x5DFFD0, palette = 0x5DFF90, compressed = true,
+      width = 32, height = 32 },
+    { id = "flygon", sheet = 0xD8D130, palette = 0x5E492C, compressed = true,
+      width = 64, height = 32 },
+  },
+  -- one row per run in which x, y and the frame index all step by a constant:
+  --   firstFrame lastFrame kind x y frameIndex dx dy dFrame
+  OBJECTS = [[
+0 76 1 236 -14 0 0 0 0
+0 76 1 236 -14 1 0 0 0
+0 76 1 236 -14 1 0 0 0
+77 78 1 235 -13 0 -1 0 0
+77 78 1 235 -13 1 -1 0 0
+77 78 1 235 -13 1 -1 0 0
+79 81 1 233 -12 0 -1 1 0
+79 81 1 233 -12 1 -1 1 0
+79 81 1 233 -12 1 -1 1 0
+82 83 1 230 -10 0 -1 2 0
+82 83 1 230 -10 1 -1 2 0
+82 83 1 230 -10 1 -1 2 0
+84 85 1 228 -8 0 -1 2 0
+84 85 1 228 -8 1 -1 2 0
+84 85 1 228 -8 1 -1 2 0
+86 89 1 226 -6 0 -1 1 0
+86 89 1 226 -6 1 -1 1 0
+86 89 1 226 -6 1 -1 1 0
+90 91 1 222 -3 0 -1 2 0
+90 91 1 222 -3 1 -1 2 0
+90 91 1 222 -3 1 -1 2 0
+92 93 1 220 -1 0 -1 1 0
+92 93 1 220 -1 1 -1 1 0
+92 93 1 220 -1 1 -1 1 0
+94 95 1 218 0 0 -1 2 0
+94 95 1 218 0 1 -1 2 0
+94 95 1 218 0 1 -1 2 0
+96 97 1 216 2 0 -1 1 0
+96 97 1 216 2 1 -1 1 0
+96 97 1 216 2 1 -1 1 0
+98 99 1 214 3 0 -1 2 0
+98 99 1 214 3 1 -1 2 0
+98 99 1 214 3 1 -1 2 0
+100 101 1 212 5 0 -1 1 0
+100 101 1 212 5 1 -1 1 0
+100 101 1 212 5 1 -1 1 0
+102 103 1 210 6 0 -1 1 0
+102 103 1 210 6 1 -1 1 0
+102 103 1 210 6 1 -1 1 0
+104 105 1 208 7 0 -1 1 0
+104 105 1 208 7 1 -1 1 0
+104 105 1 208 7 1 -1 1 0
+106 107 1 206 8 0 -1 1 0
+106 107 1 206 8 1 -1 1 0
+106 107 1 206 8 1 -1 1 0
+108 109 1 204 9 0 -1 2 0
+108 109 1 204 9 1 -1 2 0
+108 109 1 204 9 1 -1 2 0
+110 111 1 202 10 0 -1 1 0
+110 111 1 202 10 1 -1 1 0
+110 111 1 202 10 1 -1 1 0
+112 113 1 200 11 0 -1 1 0
+112 113 1 200 11 1 -1 1 0
+112 113 1 200 11 1 -1 1 0
+114 115 1 198 12 0 -1 1 0
+114 115 1 198 12 1 -1 1 0
+114 115 1 198 12 1 -1 1 0
+116 117 1 196 13 0 -1 1 0
+116 117 1 196 13 1 -1 1 0
+116 117 1 196 13 1 -1 1 0
+118 119 1 194 14 0 -1 1 0
+118 119 1 194 14 1 -1 1 0
+118 119 1 194 14 1 -1 1 0
+120 121 1 192 14 0 -1 1 0
+120 121 1 192 14 1 -1 1 0
+120 121 1 192 14 1 -1 1 0
+122 123 1 190 15 0 -1 1 0
+122 123 1 190 15 1 -1 1 0
+122 123 1 190 15 1 -1 1 0
+124 125 1 188 15 0 -1 1 0
+124 125 1 188 15 1 -1 1 0
+124 125 1 188 15 1 -1 1 0
+126 127 1 186 16 0 -1 1 0
+126 127 1 186 16 1 -1 1 0
+126 127 1 186 16 1 -1 1 0
+128 129 1 184 16 0 -1 1 0
+128 129 1 184 16 1 -1 1 0
+128 129 1 184 16 1 -1 1 0
+130 132 1 182 17 0 -1 0 0
+130 132 1 182 17 1 -1 0 0
+130 132 1 182 17 1 -1 0 0
+133 134 1 179 18 0 -1 -1 0
+133 134 1 179 18 1 -1 -1 0
+133 134 1 179 18 1 -1 -1 0
+135 136 1 177 18 0 -1 -1 0
+135 136 1 177 18 1 -1 -1 0
+135 136 1 177 18 1 -1 -1 0
+137 140 1 175 18 0 -1 0 0
+137 140 1 175 18 1 -1 0 0
+137 140 1 175 18 1 -1 0 0
+141 142 1 171 19 0 -1 0 0
+141 142 1 171 19 1 -1 0 0
+141 142 1 171 19 1 -1 0 0
+143 144 1 169 20 0 -1 -1 0
+143 144 1 169 20 1 -1 -1 0
+143 144 1 169 20 1 -1 -1 0
+145 150 1 167 20 0 -1 0 0
+145 150 1 167 20 1 -1 0 0
+145 150 1 167 20 1 -1 0 0
+151 152 1 161 21 0 -1 -1 0
+151 152 1 161 21 1 -1 -1 0
+151 152 1 161 21 1 -1 -1 0
+153 156 1 159 21 0 -1 0 0
+153 156 1 159 21 1 -1 0 0
+153 156 1 159 21 1 -1 0 0
+157 160 1 155 22 0 -1 0 0
+157 160 1 155 22 1 -1 0 0
+157 160 1 155 22 1 -1 0 0
+161 164 1 151 23 0 -1 0 0
+161 164 1 151 23 1 -1 0 0
+161 164 1 151 23 1 -1 0 0
+165 166 1 147 24 0 -1 0 0
+165 166 1 147 24 1 -1 0 0
+165 166 1 147 24 1 -1 0 0
+167 168 1 145 25 0 -1 0 0
+167 168 1 145 25 1 -1 0 0
+167 168 1 145 25 1 -1 0 0
+169 170 1 143 26 0 -1 0 0
+169 170 1 143 26 1 -1 0 0
+169 170 1 143 26 1 -1 0 0
+171 173 1 141 27 0 -1 0 0
+171 173 1 141 27 1 -1 0 0
+171 173 1 141 27 1 -1 0 0
+174 175 1 138 28 0 -1 1 0
+174 175 1 138 28 1 -1 1 0
+174 175 1 138 28 1 -1 1 0
+176 177 1 136 29 0 -1 1 0
+176 177 1 136 29 1 -1 1 0
+176 177 1 136 29 1 -1 1 0
+178 179 1 134 30 0 -1 1 0
+178 179 1 134 30 1 -1 1 0
+178 179 1 134 30 1 -1 1 0
+180 181 1 132 31 0 -1 1 0
+180 181 1 132 31 1 -1 1 0
+180 181 1 132 31 1 -1 1 0
+182 185 1 130 32 0 -1 1 0
+182 185 1 130 32 1 -1 1 0
+182 185 1 130 32 1 -1 1 0
+186 189 1 126 35 0 -1 1 0
+186 189 1 126 35 1 -1 1 0
+186 189 1 126 35 1 -1 1 0
+190 193 1 122 38 0 -1 1 0
+190 193 1 122 38 1 -1 1 0
+190 193 1 122 38 1 -1 1 0
+194 195 1 118 41 0 -1 2 0
+194 195 1 118 41 1 -1 2 0
+194 195 1 118 41 1 -1 2 0
+196 197 1 116 43 0 0 0 0
+196 197 1 116 43 1 0 0 0
+196 197 1 116 43 1 0 0 0
+198 200 1 117 43 0 0 1 0
+198 200 1 117 43 1 0 1 0
+198 200 1 117 43 1 0 1 0
+201 202 1 118 45 0 0 1 0
+201 202 1 118 45 1 0 1 0
+201 202 1 118 45 1 0 1 0
+203 204 1 119 46 0 1 0 0
+203 204 1 119 46 1 1 0 0
+203 204 1 119 46 1 1 0 0
+205 206 1 120 47 0 0 0 0
+205 206 1 120 47 1 0 0 0
+205 206 1 120 47 1 0 0 0
+207 209 1 120 46 0 0 0 0
+207 209 1 120 46 1 0 0 0
+207 209 1 120 46 1 0 0 0
+210 218 1 119 46 0 0 0 0
+210 218 1 119 46 1 0 0 0
+210 218 1 119 46 1 0 0 0
+219 221 1 120 46 0 0 0 0
+219 221 1 120 46 1 0 0 0
+219 221 1 120 46 1 0 0 0
+222 223 1 120 47 0 0 -1 0
+222 223 1 120 47 1 0 -1 0
+222 223 1 120 47 1 0 -1 0
+224 225 1 120 46 0 0 0 0
+224 225 1 120 46 1 0 0 0
+224 225 1 120 46 1 0 0 0
+226 234 1 121 46 0 0 0 0
+226 234 1 121 46 1 0 0 0
+226 234 1 121 46 1 0 0 0
+235 237 1 120 46 0 0 0 0
+235 237 1 120 46 1 0 0 0
+235 237 1 120 46 1 0 0 0
+238 239 1 120 47 0 0 -1 0
+238 239 1 120 47 1 0 -1 0
+238 239 1 120 47 1 0 -1 0
+240 241 1 120 46 0 0 0 0
+240 241 1 120 46 1 0 0 0
+240 241 1 120 46 1 0 0 0
+242 251 1 119 46 0 0 0 0
+242 251 1 119 46 1 0 0 0
+242 251 1 119 46 1 0 0 0
+252 271 1 119 50 0 0 4 0
+252 271 1 119 50 1 0 4 0
+252 271 1 119 50 1 0 4 0
+281 312 1 118 129 3 0 0 0
+289 320 1 118 129 3 0 0 0
+297 328 1 118 129 3 0 0 0
+368 395 1 48 4 0 0 4 0
+368 395 1 48 4 1 0 4 0
+368 395 1 48 4 1 0 4 0
+384 400 1 200 64 0 0 4 0
+384 400 1 200 64 1 0 4 0
+384 400 1 200 64 1 0 4 0
+405 436 1 48 112 3 0 0 0
+410 441 1 200 128 3 0 0 0
+413 444 1 48 112 3 0 0 0
+418 449 1 200 128 3 0 0 0
+421 452 1 48 112 3 0 0 0
+426 457 1 200 128 3 0 0 0
+832 833 2 120 160 0 0 0 0
+834 835 2 111 152 0 -11 -9 0
+836 837 2 90 134 0 -10 -8 0
+838 840 2 70 117 0 -9 -8 0
+841 843 2 43 94 0 -8 -7 0
+844 845 2 19 74 0 -6 -6 0
+846 847 2 6 63 0 -5 -5 0
+848 849 2 -4 54 0 -5 -4 0
+850 851 2 -12 47 0 -3 -3 0
+852 853 2 -117 -78 0 149 63 0
+854 855 2 33 -14 0 1 0 0
+856 857 2 35 -13 0 0 1 0
+858 860 2 36 -12 0 1 1 0
+861 862 2 38 -9 0 1 1 0
+863 864 2 40 -8 0 0 1 0
+865 866 2 41 -6 0 1 1 0
+867 869 2 42 -4 0 1 1 0
+870 871 2 44 -1 0 1 1 0
+872 873 2 45 1 0 1 2 0
+874 875 2 46 4 0 1 1 0
+876 877 2 47 6 0 1 1 0
+878 879 2 48 9 0 1 1 0
+880 881 2 49 11 0 0 1 0
+882 883 2 50 14 0 0 1 0
+884 885 2 51 16 0 0 2 0
+886 887 2 51 19 0 1 1 0
+888 889 2 52 22 0 0 1 0
+890 891 2 52 25 0 0 1 0
+892 893 2 53 27 0 0 2 0
+894 895 2 53 30 0 0 2 0
+896 897 2 53 33 0 0 2 0
+898 899 2 53 36 0 0 2 0
+900 901 2 53 39 0 1 1 0
+902 903 2 53 42 0 0 1 0
+904 905 2 53 45 0 0 1 0
+906 907 2 53 48 0 0 1 0
+908 909 2 53 51 0 0 1 0
+910 911 2 53 54 0 -1 1 0
+912 913 2 52 56 0 0 2 0
+914 915 2 52 59 0 0 2 0
+916 917 2 51 62 0 0 1 0
+918 919 2 51 65 0 -1 1 0
+920 921 2 50 67 0 -1 2 0
+922 923 2 49 70 0 0 1 0
+924 925 2 48 72 0 0 2 0
+926 927 2 47 75 0 0 1 0
+928 929 2 46 77 0 0 1 0
+930 931 2 45 80 0 0 1 0
+932 933 2 44 82 0 0 1 0
+934 935 2 43 84 0 -1 1 0
+936 938 2 42 86 0 -1 1 0
+939 940 2 40 89 0 -1 0 0
+941 942 2 38 90 0 0 1 0
+943 944 2 37 92 0 -1 1 0
+945 946 2 35 93 0 0 1 0
+947 948 2 34 95 0 -1 0 0
+949 950 2 32 96 0 0 0 0
+951 952 2 31 97 0 -1 0 0
+953 954 2 29 98 0 0 0 0
+955 957 2 28 99 0 -1 0 0
+958 959 2 25 100 0 -1 0 0
+960 964 2 24 100 0 -1 0 0
+965 970 2 20 100 0 -1 0 0
+971 972 2 15 100 0 -1 0 0
+973 975 2 13 99 0 -1 0 0
+976 977 2 10 98 0 0 0 0
+978 979 2 9 97 0 -1 0 0
+980 981 2 7 96 0 0 0 0
+982 983 2 6 95 0 -1 0 0
+984 985 2 4 94 0 0 -1 0
+986 988 2 3 93 0 -1 -1 0
+989 990 2 1 90 0 -1 -1 0
+991 992 2 -1 89 0 0 -1 0
+993 994 2 -2 87 0 -1 -1 0
+995 997 2 -3 85 0 -1 -1 0
+998 999 2 -5 82 0 -1 -1 0
+1000 1001 2 -6 80 0 -1 -2 0
+1002 1003 2 -7 77 0 -1 -1 0
+1004 1005 2 -8 75 0 -1 -1 0
+1006 1007 2 -9 72 0 -1 -1 0
+1008 1009 2 -10 70 0 0 -1 0
+1010 1010 2 -11 67 0 0 0 0
+]],
+  VOFS = [[
+0 561 40 24 80 0 0 0 0 0
+562 563 39 23 79 0 -1 0 0 0
+564 565 37 22 78 0 0 0 0 0
+566 567 36 21 78 0 -1 0 -1 0
+568 569 34 20 77 0 0 0 0 0
+570 571 33 19 76 0 -1 0 0 0
+572 573 31 18 75 0 0 0 0 0
+574 575 30 17 75 0 -1 0 -1 0
+576 577 28 16 74 0 0 0 0 0
+578 579 27 15 73 0 -1 0 0 0
+580 581 25 14 72 0 0 0 0 0
+582 583 24 13 72 0 -1 0 -1 0
+584 585 22 12 71 0 0 0 0 0
+586 587 21 11 70 0 -1 0 0 0
+588 589 19 10 69 0 0 0 0 0
+590 591 18 9 69 0 -1 0 -1 0
+592 593 16 8 68 0 0 0 0 0
+594 595 15 7 67 0 -1 0 0 0
+596 597 13 6 66 0 0 0 0 0
+598 599 12 5 66 0 -1 0 -1 0
+600 601 10 4 65 0 0 0 0 0
+602 603 9 3 64 0 -1 0 0 0
+604 605 7 2 63 0 0 0 0 0
+606 607 6 1 63 0 -1 0 -1 0
+608 609 4 0 62 0 0 0 0 0
+610 611 3 -1 61 0 -1 0 0 0
+612 613 1 -2 60 0 0 0 0 0
+614 615 0 -3 60 0 -1 0 -1 0
+616 617 -2 -4 59 0 0 0 0 0
+618 619 -3 -5 58 0 -1 0 0 0
+620 621 -5 -6 57 0 0 0 0 0
+622 623 -6 -7 57 0 -1 0 -1 0
+624 625 -8 -8 56 0 0 0 0 0
+626 627 -9 -9 55 0 -1 0 0 0
+628 629 -11 -10 54 0 0 0 0 0
+630 631 -12 -11 54 0 -1 0 -1 0
+632 633 -14 -12 53 0 0 0 0 0
+634 635 -15 -13 52 0 -1 0 0 0
+636 637 -17 -14 51 0 0 0 0 0
+638 639 -18 -15 51 0 -1 0 -1 0
+640 641 -20 -16 50 0 0 0 0 0
+642 643 -21 -17 49 0 -1 0 0 0
+644 645 -23 -18 48 0 0 0 0 0
+646 647 -24 -19 48 0 -1 0 -1 0
+648 649 -26 -20 47 0 0 0 0 0
+650 651 -27 -21 46 0 -1 0 0 0
+652 653 -29 -22 45 0 0 0 0 0
+654 655 -30 -23 45 0 -1 0 -1 0
+656 657 -32 -24 44 0 0 0 0 0
+658 659 -33 -25 43 0 -1 0 0 0
+660 661 -35 -26 42 0 0 0 0 0
+662 663 -36 -27 42 0 -1 0 -1 0
+664 665 -38 -28 41 0 0 0 0 0
+666 667 -39 -29 40 0 -1 0 0 0
+668 669 -41 -30 39 0 0 0 0 0
+670 671 -42 -31 39 0 -1 0 -1 0
+672 673 -44 -32 38 0 0 0 0 0
+674 675 -45 -33 37 0 -1 0 0 0
+676 677 -47 -34 36 0 0 0 0 0
+678 679 -48 -35 36 0 -1 0 -1 0
+680 681 -50 -36 35 0 0 0 0 0
+682 683 -51 -37 34 0 -1 0 0 0
+684 685 -53 -38 33 0 0 0 0 0
+686 687 -54 -39 33 0 -1 0 -1 0
+688 689 -56 -40 32 0 0 0 0 0
+690 691 -57 -41 31 0 -1 0 0 0
+692 693 -59 -42 30 0 0 0 0 0
+694 695 -60 -43 30 0 -1 0 -1 0
+696 697 -62 -44 29 0 0 0 0 0
+698 699 -63 -45 28 0 -1 0 0 0
+700 701 -65 -46 27 0 0 0 0 0
+702 703 -66 -47 27 0 -1 0 -1 0
+704 705 -68 -48 26 0 0 0 0 0
+706 707 -69 -49 25 0 -1 0 0 0
+708 709 -71 -50 24 0 0 0 0 0
+710 711 -72 -51 24 0 -1 0 -1 0
+712 713 -74 -52 23 0 0 0 0 0
+714 715 -75 -53 22 0 -1 0 0 0
+716 717 -77 -54 21 0 0 0 0 0
+718 719 -78 -55 21 0 -1 0 -1 0
+720 721 -80 -56 20 0 0 0 0 0
+722 723 -81 -57 19 0 -1 0 0 0
+724 725 -83 -58 18 0 0 0 0 0
+726 727 -84 -59 18 0 -1 0 -1 0
+728 729 -86 -60 17 0 0 0 0 0
+730 731 -87 -61 16 0 -1 0 0 0
+732 733 -89 -62 15 0 0 0 0 0
+734 735 -90 -63 15 0 -1 0 -1 0
+736 737 -92 -64 14 0 0 0 0 0
+738 739 -93 -65 13 0 -1 0 0 0
+740 741 -95 -66 12 0 0 0 0 0
+742 743 -96 -67 12 0 -1 0 -1 0
+744 745 -98 -68 11 0 0 0 0 0
+746 747 -99 -69 10 0 -1 0 0 0
+748 749 -101 -70 9 0 0 0 0 0
+750 751 -102 -71 9 0 -1 0 -1 0
+752 753 -104 -72 8 0 0 0 0 0
+754 755 -105 -73 7 0 -1 0 0 0
+756 757 -107 -74 6 0 0 0 0 0
+758 759 -108 -75 6 0 -1 0 -1 0
+760 761 -110 -76 5 0 0 0 0 0
+762 763 -111 -77 4 0 -1 0 0 0
+764 765 -113 -78 3 0 0 0 0 0
+766 767 -114 -79 3 0 -1 0 -1 0
+768 769 -116 -80 2 0 0 0 0 0
+770 771 -117 -81 1 0 -1 0 0 0
+772 773 -119 -82 0 0 0 0 0 0
+774 775 -120 -83 0 0 -1 0 -1 0
+776 777 -122 -84 -1 0 0 0 0 0
+778 779 -123 -85 -2 0 -1 0 0 0
+780 781 -125 -86 -3 0 0 0 0 0
+782 783 -126 -87 -3 0 -1 0 -1 0
+784 785 -128 -88 -4 0 0 0 0 0
+786 787 -129 -89 -5 0 -1 0 0 0
+788 789 -131 -90 -6 0 0 0 0 0
+790 791 -132 -91 -6 0 -1 0 -1 0
+792 793 -134 -92 -7 0 0 0 0 0
+794 795 -135 -93 -8 0 -1 0 0 0
+796 797 -137 -94 -9 0 0 0 0 0
+798 799 -138 -95 -9 0 -1 0 -1 0
+800 801 -140 -96 -10 0 0 0 0 0
+802 803 -141 -97 -11 0 -1 0 0 0
+804 805 -143 -98 -12 0 0 0 0 0
+806 807 -144 -99 -12 0 -1 0 -1 0
+808 809 -146 -100 -13 0 0 0 0 0
+810 811 -147 -101 -14 0 -1 0 0 0
+812 813 -149 -102 -15 0 0 0 0 0
+814 815 -150 -103 -15 0 -1 0 -1 0
+816 817 -152 -104 -16 0 0 0 0 0
+818 819 -153 -105 -17 0 -1 0 0 0
+820 821 -155 -106 -18 0 0 0 0 0
+822 823 -156 -107 -18 0 -1 0 -1 0
+824 825 -158 -108 -19 0 0 0 0 0
+826 827 -159 -109 -20 0 -1 0 0 0
+828 829 -161 -110 -21 0 0 0 0 0
+830 831 -162 -111 -21 0 -1 0 -1 0
+832 833 -164 -112 -22 0 0 0 0 0
+834 835 -165 -113 -23 0 -1 0 0 0
+836 837 -167 -114 -24 0 0 0 0 0
+838 839 -168 -115 -24 0 -1 0 -1 0
+840 841 -170 -116 -25 0 0 0 0 0
+842 843 -171 -117 -26 0 -1 0 0 0
+844 845 -173 -118 -27 0 0 0 0 0
+846 847 -174 -119 -27 0 -1 0 -1 0
+848 849 -176 -120 -28 0 0 0 0 0
+850 851 -177 -121 -29 0 -1 0 0 0
+852 853 -179 -122 -30 0 0 0 0 0
+854 855 -180 -123 -30 0 -1 0 -1 0
+856 857 -182 -124 -31 0 0 0 0 0
+858 859 -183 -125 -32 0 -1 0 0 0
+860 861 -185 -126 -33 0 0 0 0 0
+862 863 -186 -127 -33 0 -1 0 -1 0
+864 865 -188 -128 -34 0 0 0 0 0
+866 867 -189 -129 -35 0 -1 0 0 0
+868 869 -191 -130 -36 0 0 0 0 0
+870 871 -192 -131 -36 0 -1 0 -1 0
+872 873 -194 -132 -37 0 0 0 0 0
+874 875 -195 -133 -38 0 -1 0 0 0
+876 877 -197 -134 -39 0 0 0 0 0
+878 879 -198 -135 -39 0 -1 0 -1 0
+880 881 -200 -136 -40 0 0 0 0 0
+882 883 -201 -137 -41 0 -1 0 0 0
+884 885 -203 -138 -42 0 0 0 0 0
+886 887 -204 -139 -42 0 -1 0 -1 0
+888 889 -206 -140 -43 0 0 0 0 0
+890 891 -207 -141 -44 0 -1 0 0 0
+892 893 -209 -142 -45 0 0 0 0 0
+894 895 -210 -143 -45 0 -1 0 -1 0
+896 897 -212 -144 -46 0 0 0 0 0
+898 899 -213 -145 -47 0 -1 0 0 0
+900 901 -215 -146 -48 0 0 0 0 0
+902 903 -216 -147 -48 0 -1 0 -1 0
+904 1010 -217 -147 -49 0 0 0 0 0
+]],
+}
+
+-- ------------------------------------------------------------------------
+-- SCENE TWO'S BACKDROP, WHICH IS THREE BACKGROUNDS AND TWELVE SPRITES.
+--
+-- Reported from play: "in the cycle intro the backdrop is incorrect its
+-- supposed to be mountains in the background and pine trees in layers
+-- moving".  The port was panning whatever standing layers the scene pass had
+-- happened to find, at parallax factors invented here.  These are the
+-- cartridge's own, and they came out of a run rather than a read.
+--
+-- WHAT THE RIDE LOADS, on the frame scene two arms (the four decompressions
+-- 016D48C makes, with their VRAM destinations):
+--
+--   5F1824 -> 06000000  char block 0      the mountains' and the pines' tiles
+--   5F1EAC -> 06003000  screen blocks 6,7 TWO 32x32 maps out of one 4096-byte
+--                                         blob -- block 6 is BG3, block 7 BG2
+--   5F0740 -> 06004000  char block 1      the grass
+--   5F0BC0 -> 06007800  screen block 15   BG1
+--
+-- and the control registers on the frame after (BG1CNT 0F05, BG2CNT 0702,
+-- BG3CNT 0603, DISPCNT 1E40) put them at priorities 1, 2 and 3 with BG0 off.
+-- So: sky, mountains and a far tree line at the back; a stand of big pines in
+-- front of that; the grass field in front of everything.  The grass map picks
+-- palette 15 and the other two pick palette 0, which is why each carries its
+-- own palette address here.
+--
+-- AND NONE OF THE THREE SCROLLS.  Every BGxHOFS and BGxVOFS is written once,
+-- to zero, on the frame the scene loads, and never touched again for the
+-- whole 1040-frame ride; there is no scanline effect either (the intro's
+-- VBlank callback at 016CBE8 does arm one, but nothing fills its buffer).
+-- What moves is twelve sprites: three layers of four 64x32 pine strips,
+-- 64 pixels apart, drifting right at a sixteenth, a thirty-second and a
+-- sixty-fourth of a pixel a frame.  Their callback (017B62C) is a 16.16
+-- accumulator -- (x << 16 | data[2]) += data[1] -- and data[1] reads 8192,
+-- 4096 and 2048 for the three layers, which is where those speeds come from.
+-- The rider passes in FRONT of them and the big pines pass in front again,
+-- and that is the whole parallax.
+RomExtractorGen3.INTRO_SCENE2 = {
+  loader = 0x16D48C,
+  handler = 0x16D650,
+  first = 1029,
+  last = 2068,
+  -- one 64x32 strip, one frame, under the object palette the ride loads into
+  -- slot 0 (5F21B0); the sheet is the trees, not the clouds at 5F16A8 or the
+  -- houses at 5F2814 -- the ride hands 5F50EC to the sheet loader, and that
+  -- record's data pointer is this one
+  --
+  -- THE THREE BANDS ARE THREE DIFFERENT TREES, and the sheet is exactly the
+  -- three of them: sixteen tiles of 32x32 for the near band and eight tiles
+  -- of 16x32 for each of the other two, named by the three animations at
+  -- 5F5114 (image 0, 16 and 24, thirty frames each and then END).  The near
+  -- band is the fast one and it carries the lowest subpriority, so it is the
+  -- one in front.
+  --
+  -- The callback at 017B62C is the whole motion:
+  --     x = ((pos1.x << 16) | data[2]) + data[1]
+  --     pos1.x = x >> 16 ; data[2] = x & FFFF
+  --     if pos1.x > 255 then pos1.x = -32 end
+  -- so a tree runs from -32 to 255 and starts again -- 288 pixels a lap, not
+  -- the 256 a tiled background would take, which is why the four of a band
+  -- are not evenly spaced for the whole ride.
+  scenery = {
+    sheet = 0x5F21D0, palette = 0x5F21B0,
+    y = 88, spacing = 64, count = 4, fixed = 65536,
+    wrapAt = 255, wrapTo = -32,
+    -- ...AND THEY STOP BEFORE THE RIDE DOES.  Scene two's handler compares
+    -- its counter to 1856 (016D65E: E8 << 3) and writes 2 to the state word
+    -- the callback reads first, and 2 is the branch that returns without
+    -- touching the accumulator.  The last two hundred frames of the ride are
+    -- a still forest behind the rider leaving.  1855 here rather than 1856
+    -- because the state is set before that frame's callbacks run, so 1855 is
+    -- the last frame the accumulator moves on.
+    freeze = 1855,
+    -- the twelve are created on frame 1028 and the sprite callbacks run later
+    -- the same frame, so frame f has moved them f - 1027 times
+    first = 1027,
+    layers = {
+      { x = 16, speed = 8192, part = 1, width = 32, height = 32, sub = 100 },
+      { x = 40, speed = 4096, part = 2, width = 16, height = 32, sub = 101 },
+      { x = 56, speed = 2048, part = 3, width = 16, height = 32, sub = 102 },
+    },
+  },
+}
+
+-- ------------------------------------------------------------------------
+-- EMERALD'S BATTLE TRANSITIONS, AND WHICH ONE PLAYS.
+--
+-- Asked for directly: "Ensure all emerald battle transitions are extracted and
+-- used in the engine when theyre supposed to be used based on the actual rom
+-- data Including the special legendary transitions as well".
+--
+-- The port had four figures of its own and a four-way choice written here
+-- rather than read.  The cartridge's choice is four tables and five rules, and
+-- all of it is in the image:
+--
+--   GetBattleTransitionTypeByMap  (00B0D24)  gives 0..3, not a boolean:
+--       Overworld_GetFlashLevel() non-zero            -> 2  (a dark cave)
+--       the tile under the player is surfable water   -> 3
+--       gMapHeader.mapType == 4 (UNDERGROUND)         -> 1
+--       gMapHeader.mapType == 5 (UNDERWATER)          -> 3
+--       otherwise                                     -> 0
+--   GetWildBattleTransition       (00B0EC8)  sBattleTransitionTable_Wild
+--   GetTrainerBattleTransition    (00B0F34)  sBattleTransitionTable_Trainer
+--
+--   both indexed [type][enemyLevel < playerLeadLevel and 0 or 1] -- note the
+--   test is a plain comparison, NOT the Game Boy's three-level margin.
+--
+-- WHICH IDS THOSE ARE.  The two tables are eight bytes apart and each one is
+-- u8[4][2]; searching the image for the pair found each exactly once, which is
+-- what fixes the numbering as well as the contents.  They read
+--
+--     wild     {8,9} {5,10} {0,10} {7,6}
+--     trainer  {4,11} {2,3} {0,10} {1,6}
+--
+-- and the legendary starters pin the rest of the enum independently:
+-- BattleSetup_StartLegendaryBattle (00B0934) hands CreateBattleStartTask 22
+-- for KYOGRE, 24 for RAYQUAZA, 10 for MEW, 0 for DEOXYS and for LUGIA/HO-OH,
+-- and 23 in its default -- which is GROUDON.  StartRegiBattle (00B0A74) hands
+-- 21, 19 and 20 for REGIROCK, REGICE and REGISTEEL.  Two independent routes to
+-- the same numbering is the check.
+RomExtractorGen3.BATTLE_TRANSITIONS = {
+  -- the tables themselves, read rather than typed
+  wild = 0x54FE88,
+  trainer = 0x54FE90,
+  rows = 4,                 -- one per map type
+  columns = 2,              -- [0] the player's lead outclasses the foe
+  -- what each id is.  The names are this file's; the ORDER is the
+  -- cartridge's, fixed by the two routes above.
+  names = {
+    [0] = "blur", "swirl", "shuffle", "bigPokeball", "pokeballsTrail",
+    "clockwiseBlackfade", "ripple", "wave", "slice", "whiteBarsFade",
+    "gridSquares", "shards", "sidney", "phoebe", "glacia", "drake",
+    "champion", "aqua", "magma", "regice", "registeel", "regirock",
+    "kyogre", "groudon", "rayquaza",
+  },
+  -- GetBattleTransitionTypeByMap's four answers
+  mapTypes = { normal = 0, cave = 1, flash = 2, water = 3 },
+  underground = 4,          -- gMapHeader.mapType values it tests
+  underwater = 5,
+  -- GetTrainerBattleTransition's exceptions, before the table is reached
+  secretBaseOpponent = 1024,
+  trainerClasses = {
+    eliteFour = 31, champion = 38,
+    magma = { 9, 53, 49 }, aqua = { 3, 13, 11 },
+  },
+  eliteFour = { [0x105] = 12, [0x106] = 13, [0x107] = 14, [0x108] = 15 },
+  championTransition = 16,
+  aquaTransition = 17,
+  magmaTransition = 18,
+  -- BattleSetup_StartLegendaryBattle and StartRegiBattle, by INTERNAL species
+  legendary = { [404] = 22, [406] = 24, [410] = 0, [249] = 0, [250] = 0,
+                [151] = 10 },
+  legendaryDefault = 23,
+  regi = { [401] = 21, [402] = 19, [403] = 20 },
+  regiDefault = 10,
+  -- StartGroudonKyogreBattle (00B0A18) is version-dependent and Emerald is
+  -- not VERSION_SAPPHIRE, so it takes the second arm
+  groudonKyogre = { sapphire = 11, other = 6 },
+  -- THE PICTURES THE SPECIAL ONES DRAW.  Five of them are real backgrounds in
+  -- the image; the rest of the twenty-five are scanline and palette routines
+  -- with no art to find.
+  pictures = {
+    { id = "aqua", tiles = 0x5BAED0, map = 0x5BB248, palette = 0x5BAEB0,
+      compressed = true },
+    { id = "magma", tiles = 0x5BB4A4, map = 0x5BB930, palette = 0x5BAEB0,
+      compressed = true },
+    -- one tileset, three maps, a palette each: the dot faces the three Regis
+    -- flash before the fight
+    { id = "regice", tiles = 0x5BBC14, map = 0x5BC314, palette = 0x5BC2B4 },
+    { id = "registeel", tiles = 0x5BBC14, map = 0x5BCB14, palette = 0x5BC2D4 },
+    { id = "regirock", tiles = 0x5BBC14, map = 0x5BD314, palette = 0x5BC2F4 },
+    { id = "bigPokeball", tiles = 0x5BE51C, map = 0x5BEA88,
+      palette = 0x5BAEB0, compressed = true },
+  },
+}
+
+RomExtractorGen3.INTRO_FINALE = {
+  -- the figure's colour, by the index the track carries -- and the act's real
+  -- palette bank, which is the first 512 bytes of the same table
+  flash = 0xD85CD0,
+  frames = 893,
+  beats = {
+    { id = "ball", at = 0, loader = 0x16DBAC, palette = 0x5E3524,
+      affine = { sheet = 0x5E3854, map = 0x5E3724, width = 32 } },
+    { id = "groudon", at = 46, loader = 0x16DD28, palette = 0xD85CD0,
+      layers = { { sheet = 0xD89F7C, map = 0xD8A818, width = 32, scroll = 0 } },
+      affine = { sheet = 0xD88494, map = 0xD88D40, width = 64, rows = 64,
+                 glow = 31 } },
+    { id = "kyogre", at = 170, loader = 0x16E2A0, palette = 0xD85CD0,
+      layers = { { sheet = 0xD89F7C, map = 0xD8A934, width = 32, scroll = 0 } },
+      affine = { sheet = 0xD89224, map = 0xD89ABC, width = 64, rows = 64,
+                 glow = 47 } },
+    -- back to front: BG2 (priority 2), then BG1 and BG0, which share priority
+    -- 0 and break the tie by number
+    { id = "cloudsIn", at = 385, loader = 0x16E888, palette = 0xD85CD0,
+      layers = {
+        { sheet = 0xD8AA54, map = 0xD8B6E8, width = 32, scroll = 0 },
+        { sheet = 0xD8AA54, map = 0xD8B440, width = 64, wide = true,
+          scroll = 2 },
+        { sheet = 0xD8AA54, map = 0xD8B180, width = 64, wide = true,
+          scroll = 1 },
+      } },
+    { id = "cloudsOut", at = 565, loader = 0x16EAB8, palette = 0xD85CD0,
+      layers = {
+        { sheet = 0xD8BA74, map = 0xD8C16C, width = 32, scroll = 0,
+          flicker = 93 },
+        { sheet = 0xD8C838, map = 0xD8CCC8, width = 32, scroll = 1 },
+      } },
+  },
+  -- WIN0V, which opens on the whole screen and walks in four rows a frame
+  letterbox = { at = 47, top = 32, bottom = 128, height = 160, step = 4 },
+  -- THE OBJECTS, which are the parts the film was still missing: the BUBBLES
+  -- that rise through Kyogre's water, the BOLTS that strike over Rayquaza, and
+  -- the ROCKS Groudon's roar throws up.  All three are OAM sprites, so nothing
+  -- that looks for a background could find them; all three are 4bpp on their
+  -- own sixteen-colour palette.
+  --
+  -- THE ROCKS ARE A BATTLE ANIMATION'S SPRITE, which is why they were the last
+  -- to come out.  Their template is gBattleAnimSpriteTemplate for tag 274A at
+  -- 0596C10, and its graphics are NOT in the intro's data at all: the tag is an
+  -- index into gBattleAnimPicTable (0524B44, entry 58 = 274A - 2710), and both
+  -- the sheet and its palette are LZ77 there.  Six 32x32 frames, one per rock
+  -- size.  The intro swaps the template's callback to its own 016E1F9 after
+  -- creating them, so they run like anything else -- the note that used to say
+  -- they hand themselves to the battle-anim machinery and could not be run was
+  -- simply wrong.
+  --
+  -- Reported from play: "groudon is missing his roar animation".  The shake and
+  -- the glow cycle were already in the track; these are what was missing from
+  -- it -- six rocks thrown up from the ground on frame 74, which is the frame
+  -- the roar starts.
+  sprites = {
+    { id = "bubble", sheet = 0xD8CF44, palette = 0xD8D110, compressed = false,
+      width = 16, height = 32 },
+    { id = "bolt", sheet = 0xD8B80C, palette = 0xD8BA54, compressed = false,
+      width = 32, height = 32 },
+    { id = "rock", sheet = 0xC0AA2C, palette = 0xC0AE94, compressed = true,
+      width = 32, height = 32 },
+  },
+  -- one row per frame per object on screen, from the same interpreter run:
+  --   frame kind x y frameIndex
+  -- The bubbles wobble on a sine and rise a fraction of a pixel a frame, then
+  -- scatter when the beat ends, so there is nothing to compress them into --
+  -- these are the positions the hardware is handed.
+  OBJECTS = [[
+74 3 104 160 0
+74 3 142 158 3
+74 3 83 159 1
+74 3 155 160 0
+74 3 56 158 2
+74 3 174 159 1
+75 3 104 162 0
+75 3 142 158 3
+75 3 83 160 1
+75 3 155 162 0
+75 3 56 159 2
+75 3 174 161 1
+76 3 104 161 0
+76 3 142 156 3
+76 3 83 159 1
+76 3 155 162 0
+76 3 56 157 2
+76 3 174 160 1
+77 3 104 157 0
+77 3 142 150 3
+77 3 83 154 1
+77 3 155 158 0
+77 3 56 152 2
+77 3 174 156 1
+78 3 104 157 0
+78 3 142 148 3
+78 3 83 153 1
+78 3 155 158 0
+78 3 56 150 2
+78 3 174 155 1
+79 3 104 159 0
+79 3 142 148 3
+79 3 83 154 1
+79 3 155 160 0
+79 3 56 151 2
+79 3 174 157 1
+80 3 104 158 0
+80 3 142 146 3
+80 3 83 153 1
+80 3 155 160 0
+80 3 56 149 2
+80 3 174 156 1
+81 3 104 154 0
+81 3 142 140 3
+81 3 83 148 1
+81 3 155 156 0
+81 3 56 144 2
+81 3 174 152 1
+82 3 104 154 0
+82 3 142 138 3
+82 3 83 147 1
+82 3 155 156 0
+82 3 56 142 2
+82 3 174 151 1
+83 3 104 156 0
+83 3 142 138 3
+83 3 83 148 1
+83 3 155 158 0
+83 3 56 143 2
+83 3 174 153 1
+84 3 104 155 0
+84 3 142 136 3
+84 3 83 147 1
+84 3 155 158 0
+84 3 56 141 2
+84 3 174 152 1
+85 3 104 151 0
+85 3 142 130 3
+85 3 83 142 1
+85 3 155 154 0
+85 3 56 136 2
+85 3 174 148 1
+86 3 104 151 0
+86 3 142 128 3
+86 3 83 141 1
+86 3 155 154 0
+86 3 56 134 2
+86 3 174 147 1
+87 3 104 153 0
+87 3 142 128 3
+87 3 83 142 1
+87 3 155 156 0
+87 3 56 135 2
+87 3 174 149 1
+88 3 104 152 0
+88 3 142 126 3
+88 3 83 141 1
+88 3 155 156 0
+88 3 56 133 2
+88 3 174 148 1
+89 3 104 148 0
+89 3 142 120 3
+89 3 83 136 1
+89 3 155 152 0
+89 3 56 128 2
+89 3 174 144 1
+90 3 104 148 0
+90 3 142 118 3
+90 3 83 135 1
+90 3 155 152 0
+90 3 56 126 2
+90 3 174 143 1
+91 3 104 150 0
+91 3 142 118 3
+91 3 83 136 1
+91 3 155 154 0
+91 3 56 127 2
+91 3 174 145 1
+92 3 104 149 0
+92 3 142 116 3
+92 3 83 135 1
+92 3 155 154 0
+92 3 56 125 2
+92 3 174 144 1
+93 3 104 145 0
+93 3 142 110 3
+93 3 83 130 1
+93 3 155 150 0
+93 3 56 120 2
+93 3 174 140 1
+94 3 104 145 0
+94 3 142 108 3
+94 3 83 129 1
+94 3 155 150 0
+94 3 56 118 2
+94 3 174 139 1
+95 3 104 147 0
+95 3 142 108 3
+95 3 83 130 1
+95 3 155 152 0
+95 3 56 119 2
+95 3 174 141 1
+96 3 104 146 0
+96 3 142 106 3
+96 3 83 129 1
+96 3 155 152 0
+96 3 56 117 2
+96 3 174 140 1
+97 3 104 142 0
+97 3 142 100 3
+97 3 83 124 1
+97 3 155 148 0
+97 3 56 112 2
+97 3 174 136 1
+98 3 104 142 0
+98 3 142 98 3
+98 3 83 123 1
+98 3 155 148 0
+98 3 56 110 2
+98 3 174 135 1
+99 3 104 144 0
+99 3 142 98 3
+99 3 83 124 1
+99 3 155 150 0
+99 3 56 111 2
+99 3 174 137 1
+100 3 104 143 0
+100 3 142 96 3
+100 3 83 123 1
+100 3 155 150 0
+100 3 56 109 2
+100 3 174 136 1
+101 3 104 139 0
+101 3 142 90 3
+101 3 83 118 1
+101 3 155 146 0
+101 3 56 104 2
+101 3 174 132 1
+102 3 104 139 0
+102 3 142 88 3
+102 3 83 117 1
+102 3 155 146 0
+102 3 56 102 2
+102 3 174 131 1
+103 3 104 141 0
+103 3 142 88 3
+103 3 83 118 1
+103 3 155 148 0
+103 3 56 103 2
+103 3 174 133 1
+104 3 104 140 0
+104 3 142 86 3
+104 3 83 117 1
+104 3 155 148 0
+104 3 56 101 2
+104 3 174 132 1
+105 3 104 136 0
+105 3 142 80 3
+105 3 83 112 1
+105 3 155 144 0
+105 3 56 96 2
+105 3 174 128 1
+106 3 104 136 0
+106 3 142 78 3
+106 3 83 111 1
+106 3 155 144 0
+106 3 56 94 2
+106 3 174 127 1
+107 3 104 138 0
+107 3 142 78 3
+107 3 83 112 1
+107 3 155 146 0
+107 3 56 95 2
+107 3 174 129 1
+108 3 104 137 0
+108 3 142 76 3
+108 3 83 111 1
+108 3 155 146 0
+108 3 56 93 2
+108 3 174 128 1
+109 3 104 133 0
+109 3 142 70 3
+109 3 83 106 1
+109 3 155 142 0
+109 3 56 88 2
+109 3 174 124 1
+110 3 104 133 0
+110 3 142 68 3
+110 3 83 105 1
+110 3 155 142 0
+110 3 56 86 2
+110 3 174 123 1
+111 3 104 135 0
+111 3 142 68 3
+111 3 83 106 1
+111 3 155 144 0
+111 3 56 87 2
+111 3 174 125 1
+112 3 104 134 0
+112 3 142 66 3
+112 3 83 105 1
+112 3 155 144 0
+112 3 56 85 2
+112 3 174 124 1
+113 3 104 130 0
+113 3 142 60 3
+113 3 83 100 1
+113 3 155 140 0
+113 3 56 80 2
+113 3 174 120 1
+114 3 104 130 0
+114 3 142 58 3
+114 3 83 99 1
+114 3 155 140 0
+114 3 56 78 2
+114 3 174 119 1
+115 3 104 132 0
+115 3 142 58 3
+115 3 83 100 1
+115 3 155 142 0
+115 3 56 79 2
+115 3 174 121 1
+116 3 104 131 0
+116 3 142 56 3
+116 3 83 99 1
+116 3 155 142 0
+116 3 56 77 2
+116 3 174 120 1
+117 3 104 127 0
+117 3 142 50 3
+117 3 83 94 1
+117 3 155 138 0
+117 3 56 72 2
+117 3 174 116 1
+118 3 104 127 0
+118 3 142 48 3
+118 3 83 93 1
+118 3 155 138 0
+118 3 56 70 2
+118 3 174 115 1
+119 3 104 129 0
+119 3 142 48 3
+119 3 83 94 1
+119 3 155 140 0
+119 3 56 71 2
+119 3 174 117 1
+120 3 104 128 0
+120 3 142 46 3
+120 3 83 93 1
+120 3 155 140 0
+120 3 56 69 2
+120 3 174 116 1
+121 3 104 124 0
+121 3 142 40 3
+121 3 83 88 1
+121 3 155 136 0
+121 3 56 64 2
+121 3 174 112 1
+122 3 104 124 0
+122 3 142 38 3
+122 3 83 87 1
+122 3 155 136 0
+122 3 56 62 2
+122 3 174 111 1
+123 3 104 126 0
+123 3 142 38 3
+123 3 83 88 1
+123 3 155 138 0
+123 3 56 63 2
+123 3 174 113 1
+124 3 104 125 0
+124 3 142 36 3
+124 3 83 87 1
+124 3 155 138 0
+124 3 56 61 2
+124 3 174 112 1
+125 3 104 121 0
+125 3 142 30 3
+125 3 83 82 1
+125 3 155 134 0
+125 3 56 56 2
+125 3 174 108 1
+126 3 104 121 0
+126 3 142 28 3
+126 3 83 81 1
+126 3 155 134 0
+126 3 56 54 2
+126 3 174 107 1
+127 3 104 123 0
+127 3 142 28 3
+127 3 83 82 1
+127 3 155 136 0
+127 3 56 55 2
+127 3 174 109 1
+128 3 104 122 0
+128 3 142 26 3
+128 3 83 81 1
+128 3 155 136 0
+128 3 56 53 2
+128 3 174 108 1
+129 3 104 118 0
+129 3 142 20 3
+129 3 83 76 1
+129 3 155 132 0
+129 3 56 48 2
+129 3 174 104 1
+130 3 104 118 0
+130 3 142 18 3
+130 3 83 75 1
+130 3 155 132 0
+130 3 56 46 2
+130 3 174 103 1
+131 3 104 120 0
+131 3 142 18 3
+131 3 83 76 1
+131 3 155 134 0
+131 3 56 47 2
+131 3 174 105 1
+132 3 104 119 0
+132 3 142 16 3
+132 3 83 75 1
+132 3 155 134 0
+132 3 56 45 2
+132 3 174 104 1
+133 3 104 115 0
+133 3 142 10 3
+133 3 83 70 1
+133 3 155 130 0
+133 3 56 40 2
+133 3 174 100 1
+134 3 104 115 0
+134 3 142 8 3
+134 3 83 69 1
+134 3 155 130 0
+134 3 56 38 2
+134 3 174 99 1
+135 3 104 117 0
+135 3 142 8 3
+135 3 83 70 1
+135 3 155 132 0
+135 3 56 39 2
+135 3 174 101 1
+136 3 102 119 0
+136 3 144 6 3
+136 3 81 68 1
+136 3 157 134 0
+136 3 54 37 2
+136 3 176 103 1
+137 3 100 118 0
+137 3 146 1 3
+137 3 79 63 1
+137 3 159 133 0
+137 3 52 32 2
+137 3 178 102 1
+138 3 98 120 0
+138 3 148 -1 3
+138 3 77 61 1
+138 3 161 135 0
+138 3 50 30 2
+138 3 180 104 1
+139 3 96 125 0
+139 3 150 0 3
+139 3 75 62 1
+139 3 163 140 0
+139 3 48 31 2
+139 3 182 109 1
+140 3 94 127 0
+140 3 152 -2 3
+140 3 73 60 1
+140 3 165 142 0
+140 3 46 29 2
+140 3 184 111 1
+141 3 92 126 0
+141 3 154 -7 3
+141 3 71 55 1
+141 3 167 141 0
+141 3 44 24 2
+141 3 186 110 1
+142 3 90 128 0
+142 3 156 -9 3
+142 3 69 53 1
+142 3 169 143 0
+142 3 42 22 2
+142 3 188 112 1
+143 3 88 133 0
+143 3 158 -8 3
+143 3 67 54 1
+143 3 171 148 0
+143 3 40 23 2
+143 3 190 117 1
+144 3 86 135 0
+144 3 160 -10 3
+144 3 65 52 1
+144 3 173 150 0
+144 3 38 21 2
+144 3 192 119 1
+145 3 84 134 0
+145 3 162 -15 3
+145 3 63 47 1
+145 3 175 149 0
+145 3 36 16 2
+145 3 194 118 1
+146 3 82 136 0
+146 3 164 -17 3
+146 3 61 45 1
+146 3 177 151 0
+146 3 34 14 2
+146 3 196 120 1
+147 3 80 141 0
+147 3 166 -16 3
+147 3 59 46 1
+147 3 179 156 0
+147 3 32 15 2
+147 3 198 125 1
+148 3 78 143 0
+148 3 168 -18 3
+148 3 57 44 1
+148 3 181 158 0
+148 3 30 13 2
+148 3 200 127 1
+149 3 76 142 0
+149 3 170 -23 3
+149 3 55 39 1
+149 3 183 157 0
+149 3 28 8 2
+149 3 202 126 1
+150 3 74 144 0
+150 3 172 -25 3
+150 3 53 37 1
+150 3 185 159 0
+150 3 26 6 2
+150 3 204 128 1
+151 3 72 149 0
+151 3 174 -24 3
+151 3 51 38 1
+151 3 187 164 0
+151 3 24 7 2
+151 3 206 133 1
+152 3 70 151 0
+152 3 176 -26 3
+152 3 49 36 1
+152 3 189 166 0
+152 3 22 5 2
+152 3 208 135 1
+153 3 68 150 0
+153 3 178 -31 3
+153 3 47 31 1
+153 3 191 165 0
+153 3 20 0 2
+153 3 210 134 1
+154 3 66 152 0
+154 3 180 -33 3
+154 3 45 29 1
+154 3 193 167 0
+154 3 18 -2 2
+154 3 212 136 1
+155 3 64 157 0
+155 3 182 -32 3
+155 3 43 30 1
+155 3 195 172 0
+155 3 16 -1 2
+155 3 214 141 1
+156 3 62 159 0
+156 3 184 -34 3
+156 3 41 28 1
+156 3 197 174 0
+156 3 14 -3 2
+156 3 216 143 1
+157 3 60 158 0
+157 3 186 -39 3
+157 3 39 23 1
+157 3 199 173 0
+157 3 12 -8 2
+157 3 218 142 1
+158 3 58 160 0
+158 3 188 -41 3
+158 3 37 21 1
+158 3 201 175 0
+158 3 10 -10 2
+158 3 220 144 1
+159 3 56 165 0
+159 3 190 -40 3
+159 3 35 22 1
+159 3 203 180 0
+159 3 8 -9 2
+159 3 222 149 1
+160 3 54 167 0
+160 3 192 -42 3
+160 3 33 20 1
+160 3 205 182 0
+160 3 6 -11 2
+160 3 224 151 1
+161 3 52 166 0
+161 3 194 -47 3
+161 3 31 15 1
+161 3 207 181 0
+161 3 4 -16 2
+161 3 226 150 1
+162 3 50 168 0
+162 3 196 -49 3
+162 3 29 13 1
+162 3 209 183 0
+162 3 2 -18 2
+162 3 228 152 1
+163 3 48 173 0
+163 3 198 -48 3
+163 3 27 14 1
+163 3 211 188 0
+163 3 0 -17 2
+163 3 230 157 1
+164 3 46 175 0
+164 3 200 -50 3
+164 3 25 12 1
+164 3 213 190 0
+164 3 -2 -19 2
+164 3 232 159 1
+165 3 44 174 0
+165 3 202 -55 3
+165 3 23 7 1
+165 3 215 189 0
+165 3 -4 -24 2
+165 3 234 158 1
+166 3 42 176 0
+166 3 204 -57 3
+166 3 21 5 1
+166 3 217 191 0
+166 3 -6 -26 2
+166 3 236 160 1
+167 3 40 181 0
+167 3 206 -56 3
+167 3 19 6 1
+167 3 219 196 0
+167 3 -8 -25 2
+167 3 238 165 1
+168 3 38 183 0
+168 3 208 -58 3
+168 3 17 4 1
+168 3 221 198 0
+168 3 -10 -27 2
+168 3 240 167 1
+169 3 36 182 0
+169 3 210 -63 3
+169 3 15 -1 1
+169 3 223 197 0
+169 3 -12 -32 2
+169 3 242 166 1
+170 3 34 184 0
+170 3 13 -3 1
+170 3 225 199 0
+170 3 -14 -34 2
+170 3 244 168 1
+171 3 32 189 0
+171 3 214 -64 3
+171 3 11 -2 1
+171 3 227 204 0
+171 3 -16 -33 2
+171 3 246 173 1
+172 3 30 191 0
+172 3 9 -4 1
+172 3 229 206 0
+172 3 -18 -35 2
+172 3 248 175 1
+173 3 28 190 0
+173 3 7 -9 1
+173 3 231 205 0
+173 3 -20 -40 2
+173 3 250 174 1
+174 3 26 192 0
+174 3 5 -11 1
+174 3 233 207 0
+174 3 -22 -42 2
+174 3 252 176 1
+175 3 24 197 0
+175 3 3 -10 1
+175 3 235 212 0
+175 3 -24 -41 2
+175 3 254 181 1
+176 3 22 199 0
+176 3 1 -12 1
+176 3 237 214 0
+176 3 -26 -43 2
+176 3 256 183 1
+177 3 20 198 0
+177 3 -1 -17 1
+177 3 239 213 0
+177 3 -28 -48 2
+177 3 258 182 1
+178 3 18 200 0
+178 3 -3 -19 1
+178 3 241 215 0
+178 3 -30 -50 2
+178 3 260 184 1
+179 3 16 205 0
+179 3 -5 -18 1
+179 3 243 220 0
+179 3 -32 -49 2
+179 3 262 189 1
+180 3 14 207 0
+180 3 -7 -20 1
+180 3 245 222 0
+180 3 -34 -51 2
+180 3 264 191 1
+181 3 12 206 0
+181 3 -9 -25 1
+181 3 247 221 0
+181 3 -36 -56 2
+181 3 266 190 1
+182 3 10 208 0
+182 3 -11 -27 1
+182 3 249 223 0
+182 3 -38 -58 2
+182 3 268 192 1
+183 3 8 213 0
+183 3 -13 -26 1
+183 3 -40 -57 2
+183 3 270 197 1
+184 3 6 215 0
+184 3 -15 -28 1
+184 3 -42 -59 2
+184 3 272 199 1
+185 3 4 214 0
+185 3 -17 -33 1
+185 3 -44 -64 2
+185 3 274 198 1
+186 3 2 216 0
+186 3 -19 -35 1
+186 3 276 200 1
+187 3 0 221 0
+187 3 -21 -34 1
+187 3 278 205 1
+188 3 -2 223 0
+188 3 -23 -36 1
+188 3 280 207 1
+189 3 -4 222 0
+189 3 -25 -41 1
+189 3 282 206 1
+190 3 -6 224 0
+190 3 -27 -43 1
+190 3 284 208 1
+191 3 -29 -42 1
+191 3 286 213 1
+192 3 -31 -44 1
+192 3 288 215 1
+193 3 -33 -49 1
+193 3 290 214 1
+194 3 -35 -51 1
+194 3 292 216 1
+195 3 -37 -50 1
+195 3 294 221 1
+196 3 -39 -52 1
+196 3 296 223 1
+197 3 -41 -57 1
+197 3 298 222 1
+198 3 -43 -59 1
+198 3 300 224 1
+199 3 -45 -58 1
+200 3 -47 -60 1
+201 1 66 64 0
+201 1 128 64 0
+201 1 160 72 0
+202 1 67 64 0
+202 1 129 64 0
+202 1 161 72 0
+203 1 68 64 0
+203 1 130 64 0
+203 1 162 72 0
+204 1 68 64 0
+204 1 130 64 0
+204 1 162 72 0
+205 1 69 64 0
+205 1 131 64 0
+205 1 163 72 0
+206 1 69 64 0
+206 1 131 64 0
+206 1 163 72 0
+207 1 69 63 1
+207 1 131 63 1
+207 1 163 71 1
+208 1 69 63 1
+208 1 96 96 0
+208 1 131 63 1
+208 1 144 48 0
+208 1 163 71 1
+208 1 176 96 0
+209 1 69 63 1
+209 1 97 96 0
+209 1 131 63 1
+209 1 145 48 0
+209 1 163 71 1
+209 1 177 96 0
+210 1 68 63 1
+210 1 98 96 0
+210 1 130 63 1
+210 1 146 48 0
+210 1 162 71 1
+210 1 178 96 0
+211 1 67 63 1
+211 1 98 96 0
+211 1 129 63 1
+211 1 146 48 0
+211 1 161 71 1
+211 1 178 96 0
+212 1 66 62 2
+212 1 99 96 0
+212 1 128 62 2
+212 1 147 48 0
+212 1 160 70 2
+212 1 179 96 0
+213 1 65 62 2
+213 1 99 96 0
+213 1 127 62 2
+213 1 147 48 0
+213 1 159 70 2
+213 1 179 96 0
+214 1 64 62 2
+214 1 99 95 1
+214 1 126 62 2
+214 1 147 47 1
+214 1 158 70 2
+214 1 179 95 1
+215 1 63 62 2
+215 1 99 95 1
+215 1 125 62 2
+215 1 147 47 1
+215 1 157 70 2
+215 1 179 95 1
+216 1 62 62 2
+216 1 99 95 1
+216 1 124 62 2
+216 1 147 47 1
+216 1 156 70 2
+216 1 179 95 1
+217 1 62 61 3
+217 1 98 95 1
+217 1 124 61 3
+217 1 146 47 1
+217 1 156 69 3
+217 1 178 95 1
+218 1 62 61 3
+218 1 97 95 1
+218 1 124 61 3
+218 1 145 47 1
+218 1 156 69 3
+218 1 177 95 1
+219 1 62 61 3
+219 1 96 94 2
+219 1 124 61 3
+219 1 144 46 2
+219 1 156 69 3
+219 1 176 94 2
+220 1 62 61 3
+220 1 95 94 2
+220 1 124 61 3
+220 1 143 46 2
+220 1 156 69 3
+220 1 175 94 2
+221 1 62 61 3
+221 1 94 94 2
+221 1 124 61 3
+221 1 142 46 2
+221 1 156 69 3
+221 1 174 94 2
+222 1 63 61 4
+222 1 93 94 2
+222 1 125 61 4
+222 1 141 46 2
+222 1 157 69 4
+222 1 173 94 2
+223 1 92 94 2
+223 1 140 46 2
+223 1 172 94 2
+224 1 92 93 3
+224 1 140 45 3
+224 1 172 93 3
+225 1 92 93 3
+225 1 140 45 3
+225 1 172 93 3
+226 1 66 64 0
+226 1 92 93 3
+226 1 140 45 3
+226 1 128 64 0
+226 1 172 93 3
+226 1 160 72 0
+226 1 96 96 0
+226 1 128 96 0
+226 1 104 24 0
+227 1 67 64 0
+227 1 92 93 3
+227 1 140 45 3
+227 1 129 64 0
+227 1 172 93 3
+227 1 161 72 0
+227 1 97 96 0
+227 1 129 96 0
+227 1 105 24 0
+228 1 68 64 0
+228 1 92 93 3
+228 1 140 45 3
+228 1 130 64 0
+228 1 172 93 3
+228 1 162 72 0
+228 1 98 96 0
+228 1 130 96 0
+228 1 106 24 0
+229 1 68 64 0
+229 1 93 93 4
+229 1 141 45 4
+229 1 130 64 0
+229 1 173 93 4
+229 1 162 72 0
+229 1 98 96 0
+229 1 130 96 0
+229 1 106 24 0
+230 1 69 64 0
+230 1 131 64 0
+230 1 163 72 0
+230 1 99 96 0
+230 1 131 96 0
+230 1 107 24 0
+231 1 69 64 0
+231 1 131 64 0
+231 1 163 72 0
+231 1 99 96 0
+231 1 131 96 0
+231 1 107 24 0
+232 1 69 63 1
+232 1 131 63 1
+232 1 163 71 1
+232 1 99 95 1
+232 1 131 95 1
+232 1 107 23 1
+233 1 69 63 1
+233 1 96 96 0
+233 1 131 63 1
+233 1 144 48 0
+233 1 163 71 1
+233 1 176 96 0
+233 1 99 95 1
+233 1 112 104 0
+233 1 131 95 1
+233 1 88 32 0
+233 1 107 23 1
+233 1 120 32 0
+234 1 69 63 1
+234 1 97 96 0
+234 1 131 63 1
+234 1 145 48 0
+234 1 163 71 1
+234 1 177 96 0
+234 1 99 95 1
+234 1 113 104 0
+234 1 131 95 1
+234 1 89 32 0
+234 1 107 23 1
+234 1 121 32 0
+235 1 68 63 1
+235 1 98 96 0
+235 1 130 63 1
+235 1 146 48 0
+235 1 162 71 1
+235 1 178 96 0
+235 1 98 95 1
+235 1 114 104 0
+235 1 130 95 1
+235 1 90 32 0
+235 1 106 23 1
+235 1 122 32 0
+236 1 67 63 1
+236 1 98 96 0
+236 1 129 63 1
+236 1 146 48 0
+236 1 161 71 1
+236 1 178 96 0
+236 1 97 95 1
+236 1 114 104 0
+236 1 129 95 1
+236 1 90 32 0
+236 1 105 23 1
+236 1 122 32 0
+237 1 66 62 2
+237 1 99 96 0
+237 1 128 62 2
+237 1 147 48 0
+237 1 160 70 2
+237 1 179 96 0
+237 1 96 94 2
+237 1 115 104 0
+237 1 128 94 2
+237 1 91 32 0
+237 1 104 22 2
+237 1 123 32 0
+238 1 65 62 2
+238 1 99 96 0
+238 1 127 62 2
+238 1 147 48 0
+238 1 159 70 2
+238 1 179 96 0
+238 1 95 94 2
+238 1 115 104 0
+238 1 127 94 2
+238 1 91 32 0
+238 1 103 22 2
+238 1 123 32 0
+239 1 64 62 2
+239 1 99 95 1
+239 1 126 62 2
+239 1 147 47 1
+239 1 158 70 2
+239 1 179 95 1
+239 1 94 94 2
+239 1 115 103 1
+239 1 126 94 2
+239 1 91 31 1
+239 1 102 22 2
+239 1 123 31 1
+240 1 63 62 2
+240 1 99 95 1
+240 1 125 62 2
+240 1 147 47 1
+240 1 157 70 2
+240 1 179 95 1
+240 1 93 94 2
+240 1 115 103 1
+240 1 125 94 2
+240 1 91 31 1
+240 1 101 22 2
+240 1 123 31 1
+241 1 62 62 2
+241 1 99 95 1
+241 1 124 62 2
+241 1 147 47 1
+241 1 156 70 2
+241 1 179 95 1
+241 1 92 94 2
+241 1 115 103 1
+241 1 124 94 2
+241 1 91 31 1
+241 1 100 22 2
+241 1 123 31 1
+242 1 62 61 3
+242 1 98 95 1
+242 1 124 61 3
+242 1 146 47 1
+242 1 156 69 3
+242 1 178 95 1
+242 1 92 93 3
+242 1 114 103 1
+242 1 124 93 3
+242 1 90 31 1
+242 1 100 21 3
+242 1 122 31 1
+243 1 62 61 3
+243 1 97 95 1
+243 1 124 61 3
+243 1 145 47 1
+243 1 156 69 3
+243 1 177 95 1
+243 1 92 93 3
+243 1 113 103 1
+243 1 124 93 3
+243 1 89 31 1
+243 1 100 21 3
+243 1 121 31 1
+244 1 62 61 3
+244 1 96 94 2
+244 1 124 61 3
+244 1 144 46 2
+244 1 156 69 3
+244 1 176 94 2
+244 1 92 93 3
+244 1 112 102 2
+244 1 124 93 3
+244 1 88 30 2
+244 1 100 21 3
+244 1 120 30 2
+245 1 62 61 3
+245 1 95 94 2
+245 1 124 61 3
+245 1 143 46 2
+245 1 156 69 3
+245 1 175 94 2
+245 1 92 93 3
+245 1 111 102 2
+245 1 124 93 3
+245 1 87 30 2
+245 1 100 21 3
+245 1 119 30 2
+246 1 62 61 3
+246 1 94 94 2
+246 1 124 61 3
+246 1 142 46 2
+246 1 156 69 3
+246 1 174 94 2
+246 1 92 93 3
+246 1 110 102 2
+246 1 124 93 3
+246 1 86 30 2
+246 1 100 21 3
+246 1 118 30 2
+247 1 63 61 4
+247 1 93 94 2
+247 1 125 61 4
+247 1 141 46 2
+247 1 157 69 4
+247 1 173 94 2
+247 1 93 93 4
+247 1 109 102 2
+247 1 125 93 4
+247 1 85 30 2
+247 1 101 21 4
+247 1 117 30 2
+248 1 92 94 2
+248 1 140 46 2
+248 1 172 94 2
+248 1 108 102 2
+248 1 84 30 2
+248 1 116 30 2
+249 1 92 93 3
+249 1 140 45 3
+249 1 172 93 3
+249 1 108 101 3
+249 1 84 29 3
+249 1 116 29 3
+250 1 92 93 3
+250 1 140 45 3
+250 1 172 93 3
+250 1 108 101 3
+250 1 84 29 3
+250 1 116 29 3
+251 1 92 93 3
+251 1 140 45 3
+251 1 172 93 3
+251 1 108 101 3
+251 1 84 29 3
+251 1 116 29 3
+252 1 92 93 3
+252 1 140 45 3
+252 1 172 93 3
+252 1 108 101 3
+252 1 84 29 3
+252 1 116 29 3
+253 1 92 93 3
+253 1 140 45 3
+253 1 172 93 3
+253 1 108 101 3
+253 1 84 29 3
+253 1 116 29 3
+254 1 93 93 4
+254 1 141 45 4
+254 1 173 93 4
+254 1 109 101 4
+254 1 85 29 4
+254 1 117 29 4
+262 1 66 64 0
+262 1 128 64 0
+262 1 160 72 0
+262 1 96 96 0
+262 1 128 96 0
+262 1 104 24 0
+263 1 67 64 0
+263 1 129 64 0
+263 1 161 72 0
+263 1 97 96 0
+263 1 129 96 0
+263 1 105 24 0
+264 1 68 64 0
+264 1 130 64 0
+264 1 162 72 0
+264 1 98 96 0
+264 1 130 96 0
+264 1 106 24 0
+265 1 68 64 0
+265 1 130 64 0
+265 1 162 72 0
+265 1 98 96 0
+265 1 130 96 0
+265 1 106 24 0
+266 1 69 64 0
+266 1 131 64 0
+266 1 163 72 0
+266 1 99 96 0
+266 1 131 96 0
+266 1 107 24 0
+267 1 69 64 0
+267 1 131 64 0
+267 1 163 72 0
+267 1 99 96 0
+267 1 131 96 0
+267 1 107 24 0
+268 1 69 63 1
+268 1 131 63 1
+268 1 163 71 1
+268 1 99 95 1
+268 1 131 95 1
+268 1 107 23 1
+269 1 69 63 1
+269 1 96 96 0
+269 1 131 63 1
+269 1 144 48 0
+269 1 163 71 1
+269 1 176 96 0
+269 1 99 95 1
+269 1 112 104 0
+269 1 131 95 1
+269 1 88 32 0
+269 1 107 23 1
+269 1 120 32 0
+270 1 69 63 1
+270 1 97 96 0
+270 1 131 63 1
+270 1 145 48 0
+270 1 163 71 1
+270 1 177 96 0
+270 1 99 95 1
+270 1 113 104 0
+270 1 131 95 1
+270 1 89 32 0
+270 1 107 23 1
+270 1 121 32 0
+271 1 68 63 1
+271 1 98 96 0
+271 1 130 63 1
+271 1 146 48 0
+271 1 162 71 1
+271 1 178 96 0
+271 1 98 95 1
+271 1 114 104 0
+271 1 130 95 1
+271 1 90 32 0
+271 1 106 23 1
+271 1 122 32 0
+272 1 67 63 1
+272 1 98 96 0
+272 1 129 63 1
+272 1 146 48 0
+272 1 161 71 1
+272 1 178 96 0
+272 1 97 95 1
+272 1 114 104 0
+272 1 129 95 1
+272 1 90 32 0
+272 1 105 23 1
+272 1 122 32 0
+273 1 66 62 2
+273 1 99 96 0
+273 1 128 62 2
+273 1 147 48 0
+273 1 160 70 2
+273 1 179 96 0
+273 1 96 94 2
+273 1 115 104 0
+273 1 128 94 2
+273 1 91 32 0
+273 1 104 22 2
+273 1 123 32 0
+274 1 65 62 2
+274 1 99 96 0
+274 1 127 62 2
+274 1 147 48 0
+274 1 159 70 2
+274 1 179 96 0
+274 1 95 94 2
+274 1 115 104 0
+274 1 127 94 2
+274 1 91 32 0
+274 1 103 22 2
+274 1 123 32 0
+275 1 64 62 2
+275 1 99 95 1
+275 1 126 62 2
+275 1 147 47 1
+275 1 158 70 2
+275 1 179 95 1
+275 1 94 94 2
+275 1 115 103 1
+275 1 126 94 2
+275 1 91 31 1
+275 1 102 22 2
+275 1 123 31 1
+276 1 63 62 2
+276 1 99 95 1
+276 1 125 62 2
+276 1 147 47 1
+276 1 157 70 2
+276 1 179 95 1
+276 1 93 94 2
+276 1 115 103 1
+276 1 125 94 2
+276 1 91 31 1
+276 1 101 22 2
+276 1 123 31 1
+277 1 62 62 2
+277 1 99 95 1
+277 1 124 62 2
+277 1 147 47 1
+277 1 156 70 2
+277 1 179 95 1
+277 1 92 94 2
+277 1 115 103 1
+277 1 124 94 2
+277 1 91 31 1
+277 1 100 22 2
+277 1 123 31 1
+278 1 62 61 3
+278 1 98 95 1
+278 1 124 61 3
+278 1 146 47 1
+278 1 156 69 3
+278 1 178 95 1
+278 1 92 93 3
+278 1 114 103 1
+278 1 124 93 3
+278 1 90 31 1
+278 1 100 21 3
+278 1 122 31 1
+279 1 62 61 3
+279 1 97 95 1
+279 1 124 61 3
+279 1 145 47 1
+279 1 156 69 3
+279 1 177 95 1
+279 1 92 93 3
+279 1 113 103 1
+279 1 124 93 3
+279 1 89 31 1
+279 1 100 21 3
+279 1 121 31 1
+280 1 62 61 3
+280 1 96 94 2
+280 1 124 61 3
+280 1 144 46 2
+280 1 156 69 3
+280 1 176 94 2
+280 1 92 93 3
+280 1 112 102 2
+280 1 124 93 3
+280 1 88 30 2
+280 1 100 21 3
+280 1 120 30 2
+281 1 62 61 3
+281 1 95 94 2
+281 1 124 61 3
+281 1 143 46 2
+281 1 156 69 3
+281 1 175 94 2
+281 1 92 93 3
+281 1 111 102 2
+281 1 124 93 3
+281 1 87 30 2
+281 1 100 21 3
+281 1 119 30 2
+282 1 62 61 3
+282 1 94 94 2
+282 1 124 61 3
+282 1 142 46 2
+282 1 156 69 3
+282 1 174 94 2
+282 1 92 93 3
+282 1 110 102 2
+282 1 124 93 3
+282 1 86 30 2
+282 1 100 21 3
+282 1 118 30 2
+283 1 63 61 4
+283 1 93 94 2
+283 1 125 61 4
+283 1 141 46 2
+283 1 157 69 4
+283 1 173 94 2
+283 1 93 93 4
+283 1 109 102 2
+283 1 125 93 4
+283 1 85 30 2
+283 1 101 21 4
+283 1 117 30 2
+284 1 92 94 2
+284 1 140 46 2
+284 1 172 94 2
+284 1 108 102 2
+284 1 84 30 2
+284 1 116 30 2
+285 1 92 93 3
+285 1 140 45 3
+285 1 172 93 3
+285 1 108 101 3
+285 1 84 29 3
+285 1 116 29 3
+286 1 92 93 3
+286 1 140 45 3
+286 1 172 93 3
+286 1 108 101 3
+286 1 84 29 3
+286 1 116 29 3
+287 1 92 93 3
+287 1 140 45 3
+287 1 172 93 3
+287 1 108 101 3
+287 1 84 29 3
+287 1 116 29 3
+288 1 92 93 3
+288 1 140 45 3
+288 1 172 93 3
+288 1 108 101 3
+288 1 84 29 3
+288 1 116 29 3
+289 1 92 93 3
+289 1 140 45 3
+289 1 172 93 3
+289 1 108 101 3
+289 1 84 29 3
+289 1 116 29 3
+290 1 93 93 4
+290 1 141 45 4
+290 1 173 93 4
+290 1 109 101 4
+290 1 85 29 4
+290 1 117 29 4
+351 1 66 64 0
+351 1 128 64 0
+351 1 160 72 0
+352 1 67 64 0
+352 1 129 64 0
+352 1 161 72 0
+353 1 68 64 0
+353 1 130 64 0
+353 1 162 72 0
+354 1 68 64 0
+354 1 130 64 0
+354 1 162 72 0
+355 1 69 64 0
+355 1 131 64 0
+355 1 163 72 0
+356 1 69 64 0
+356 1 131 64 0
+356 1 163 72 0
+357 1 69 63 1
+357 1 131 63 1
+357 1 163 71 1
+358 1 69 63 1
+358 1 96 96 0
+358 1 131 63 1
+358 1 144 48 0
+358 1 163 71 1
+358 1 176 96 0
+359 1 69 63 1
+359 1 97 96 0
+359 1 131 63 1
+359 1 145 48 0
+359 1 163 71 1
+359 1 177 96 0
+360 1 68 63 1
+360 1 98 96 0
+360 1 130 63 1
+360 1 146 48 0
+360 1 162 71 1
+360 1 178 96 0
+361 1 67 63 1
+361 1 98 96 0
+361 1 129 63 1
+361 1 146 48 0
+361 1 161 71 1
+361 1 178 96 0
+362 1 66 62 2
+362 1 99 96 0
+362 1 128 62 2
+362 1 147 48 0
+362 1 160 70 2
+362 1 179 96 0
+363 1 65 62 2
+363 1 99 96 0
+363 1 127 62 2
+363 1 147 48 0
+363 1 159 70 2
+363 1 179 96 0
+364 1 64 62 2
+364 1 99 95 1
+364 1 126 62 2
+364 1 147 47 1
+364 1 158 70 2
+364 1 179 95 1
+365 1 63 62 2
+365 1 99 95 1
+365 1 125 62 2
+365 1 147 47 1
+365 1 157 70 2
+365 1 179 95 1
+366 1 62 62 2
+366 1 99 95 1
+366 1 124 62 2
+366 1 147 47 1
+366 1 156 70 2
+366 1 179 95 1
+367 1 62 61 3
+367 1 98 95 1
+367 1 124 61 3
+367 1 146 47 1
+367 1 156 69 3
+367 1 178 95 1
+368 1 59 58 3
+368 1 95 98 1
+368 1 127 58 3
+368 1 149 44 1
+368 1 159 66 3
+368 1 181 98 1
+369 1 56 55 3
+369 1 92 101 2
+369 1 130 55 3
+369 1 152 41 2
+369 1 162 63 3
+369 1 184 101 2
+370 1 53 52 3
+370 1 89 104 2
+370 1 133 52 3
+370 1 155 38 2
+370 1 165 60 3
+370 1 187 104 2
+371 1 50 49 3
+371 1 86 107 2
+371 1 136 49 3
+371 1 158 35 2
+371 1 168 57 3
+371 1 190 107 2
+372 1 47 46 4
+372 1 83 110 2
+372 1 139 46 4
+372 1 161 32 2
+372 1 171 54 4
+372 1 193 110 2
+373 1 44 43 4
+373 1 80 113 2
+373 1 142 43 4
+373 1 164 29 2
+373 1 174 51 4
+373 1 196 113 2
+374 1 41 40 4
+374 1 77 116 3
+374 1 145 40 4
+374 1 167 26 3
+374 1 177 48 4
+374 1 199 116 3
+375 1 38 37 4
+375 1 74 119 3
+375 1 148 37 4
+375 1 170 23 3
+375 1 180 45 4
+375 1 202 119 3
+376 1 35 34 4
+376 1 71 122 3
+376 1 151 34 4
+376 1 173 20 3
+376 1 183 42 4
+376 1 205 122 3
+377 1 32 31 4
+377 1 68 125 3
+377 1 154 31 4
+377 1 186 39 4
+377 1 208 125 3
+378 1 29 28 4
+378 1 65 128 3
+378 1 157 28 4
+378 1 189 36 4
+378 1 211 128 3
+379 1 26 25 4
+379 1 62 131 4
+379 1 160 25 4
+379 1 192 33 4
+379 1 214 131 4
+380 1 23 22 4
+380 1 59 134 4
+380 1 163 22 4
+380 1 195 30 4
+380 1 217 134 4
+381 1 20 19 4
+381 1 56 137 4
+381 1 166 19 4
+381 1 198 27 4
+381 1 220 137 4
+382 1 53 140 4
+382 1 201 24 4
+382 1 223 140 4
+383 1 50 143 4
+383 1 204 21 4
+383 1 226 143 4
+384 1 47 146 4
+384 1 207 18 4
+384 1 229 146 4
+385 1 44 149 4
+385 1 232 149 4
+386 1 41 152 4
+386 1 235 152 4
+387 1 38 155 4
+387 1 238 155 4
+388 1 35 158 4
+388 1 241 158 4
+566 2 200 48 0
+566 2 200 80 1
+566 2 200 112 2
+567 2 200 48 0
+567 2 200 80 1
+567 2 200 112 2
+568 2 200 48 0
+568 2 200 80 1
+568 2 200 112 2
+569 2 200 48 3
+569 2 200 80 4
+569 2 200 112 5
+638 2 40 48 0
+638 2 40 80 1
+638 2 40 112 2
+639 2 40 48 0
+639 2 40 80 1
+639 2 40 112 2
+640 2 40 48 0
+640 2 40 80 1
+640 2 40 112 2
+641 2 40 48 3
+641 2 40 80 4
+641 2 40 112 5
+]],
+  -- AND THE BOLT DOES NOT ONLY DRAW ITSELF.  Its callback CpuSets one colour
+  -- out of the same table the markings come from into palette index 93 -- the
+  -- sky's own colour -- so the whole sky flickers with it: up one step a frame
+  -- while the bolt is lit, then back down one step every four.
+  flicker = { index = 93, ROWS = [[
+566 450
+567 452
+568 454
+569 456
+570 458
+571 460
+574 460
+578 458
+582 456
+586 454
+590 452
+594 450
+638 450
+639 452
+640 454
+641 456
+642 458
+643 460
+646 460
+650 458
+654 456
+658 454
+662 452
+666 450
+]] },
+  -- BeginNormalPaletteFade(selected, delay, startY, targetY, colour), in the
+  -- order the act calls them; the last one to have started is the one in force
+  --
+  -- AND A FADE IS NOT THE WHOLE SCREEN.  `mask` is the call's own
+  -- selectedPalettes: bit n is BG palette n and bit 16+n is an OBJ one, so a
+  -- fade reaches only what is drawn in the palettes it names.  It is the
+  -- difference between the act reading right and reading wrong -- the dark the
+  -- clouds close into names no OBJ palette at all, which is why the BOLTS
+  -- flash at full brightness against it, and the last fade leaves out palette
+  -- 5, which is the sky Rayquaza is revealed in, entire.
+  fades = {
+    { at = 0,   delay = 0, from = 16, to = 0,  color = 0xFFFF,
+      mask = 0xFFFFFFFF },
+    { at = 28,  delay = 0, from = 0,  to = 16, color = 0xFFFF,
+      mask = 0xFFFFFFFF },
+    { at = 47,  delay = 0, from = 16, to = 0,  color = 0xFFFF,
+      mask = 0xFFFFFFFF },
+    { at = 135, delay = 3, from = 0,  to = 16, color = 0x7FFF,
+      mask = 0xFFFFFFFE },
+    { at = 170, delay = 0, from = 16, to = 0,  color = 0xFFFF,
+      mask = 0xFFFFFFFE },
+    { at = 367, delay = 3, from = 0,  to = 16, color = 0x7FFF,
+      mask = 0xFFFFFFFE },
+    { at = 403, delay = 0, from = 16, to = 0,  color = 0xFFFF,
+      mask = 0xFFFFFFFE },
+    { at = 484, delay = 3, from = 0,  to = 16, color = 0x2949,
+      mask = 0x0000FFFE },
+    { at = 687, delay = 0, from = 16, to = 0,  color = 0x2949,
+      mask = 0x0000FFDE },
+  },
+  -- ONE ROW PER RUN in which every channel steps by a constant, which is how a
+  -- film built out of ramps compresses: 893 frames become 285 rows.  A row is
+  --   firstFrame lastFrame isAffine x y scale angle flashIndex dx dy dScale dAngle
+  -- and it is a STRING because a table constructor this long does not fit in
+  -- one Lua expression.  Produced by tools/gen3_intro_act3.py, which runs the
+  -- cartridge's own tasks; re-run it against the ROM to reproduce every number.
+  TRACK = [[
+0 1 1 120 80 0 0 0 0 0 65535 1024
+2 3 1 120 80 32768 2048 0 0 0 -21846 1024
+4 5 1 120 80 5461 4096 0 0 0 -2185 1024
+6 7 1 120 80 2184 6144 0 0 0 -624 1024
+8 9 1 120 80 1170 8192 0 0 0 -260 1024
+10 11 1 120 80 728 10240 0 0 0 -133 1024
+12 13 1 120 80 496 12288 0 0 0 -76 1024
+14 15 1 120 80 360 14336 0 0 0 -48 1024
+16 17 1 120 80 273 16384 0 0 0 -33 1024
+18 19 1 120 80 214 18432 0 0 0 -23 1024
+20 21 1 120 80 172 20480 0 0 0 -16 1024
+22 23 1 120 80 141 22528 0 0 0 -12 1024
+24 26 1 120 80 118 24576 0 0 0 -9 1024
+27 28 1 120 80 93 27648 0 0 0 -7 1024
+29 31 1 120 80 80 29696 0 0 0 -5 1024
+32 34 1 120 80 66 32768 0 0 0 -4 1024
+35 38 1 120 80 55 35840 0 0 0 -3 1024
+39 40 1 120 80 44 39936 0 0 0 -2 1024
+41 42 1 120 80 39 41984 0 0 0 -1 1024
+43 44 1 120 80 36 44032 0 0 0 0 1024
+45 46 0 0 0 0 0 0 0 0 0 0
+47 48 1 -96 -175 256 0 0 96 175 -256 0
+49 58 0 0 0 0 0 0 0 0 0 0
+59 73 1 -96 -175 256 0 0 16 0 0 0
+74 75 1 144 -175 256 0 482 16 0 0 0
+76 77 1 160 -172 256 0 484 0 0 0 0
+78 79 1 160 -175 256 0 486 0 0 0 0
+80 81 1 160 -172 256 0 488 0 0 0 0
+82 83 1 160 -175 256 0 490 0 0 0 0
+84 85 1 160 -172 256 0 492 0 0 0 0
+86 87 1 160 -175 256 0 492 0 0 0 0
+88 89 1 160 -172 256 0 490 0 0 0 0
+90 91 1 160 -175 256 0 488 0 0 0 0
+92 93 1 160 -172 256 0 486 0 0 0 0
+94 95 1 160 -175 256 0 484 0 0 0 0
+96 97 1 160 -172 256 0 482 0 0 0 0
+98 99 1 160 -175 256 0 480 0 0 0 0
+100 101 1 160 -172 256 0 480 0 0 0 0
+102 103 1 160 -175 256 0 480 0 0 0 0
+104 105 1 160 -172 256 0 480 0 0 0 0
+106 107 1 160 -175 256 0 480 -256 344 0 0
+108 109 1 -96 172 256 0 480 0 0 0 0
+110 111 1 80 41 256 0 480 0 0 0 0
+112 113 1 80 44 256 0 480 0 0 0 0
+114 115 1 80 41 256 0 480 0 0 0 0
+116 117 1 80 44 256 0 480 0 0 0 0
+118 119 1 80 41 256 0 480 0 0 0 0
+120 121 1 80 44 256 0 480 0 0 0 0
+122 123 1 80 41 256 0 480 0 0 0 0
+124 125 1 80 44 256 0 480 0 0 0 0
+126 127 1 80 40 256 0 480 4 4 9 0
+128 129 1 88 51 274 0 480 4 4 10 0
+130 131 1 96 56 292 0 480 4 4 8 0
+132 133 1 104 67 307 0 480 4 4 5 0
+134 135 1 112 72 316 0 480 4 4 3 0
+136 168 1 120 80 256 0 480 0 0 -8 0
+169 170 1 120 80 0 0 480 216 0 256 0
+171 186 1 336 80 256 0 480 0 0 0 0
+187 188 1 319 21 256 0 480 -24 1 0 0
+189 190 1 270 23 256 0 480 -23 2 0 0
+191 192 1 224 28 256 0 480 -22 3 0 0
+193 194 1 182 35 256 0 480 -19 4 0 0
+195 196 1 147 44 256 0 480 -15 5 0 0
+197 198 1 119 54 256 0 480 -11 6 0 0
+199 200 1 100 66 256 0 480 -7 6 0 0
+201 202 1 90 78 256 0 1 -2 6 0 0
+203 226 1 88 84 256 0 1 0 0 0 0
+227 234 1 344 -174 256 0 1 0 0 0 0
+235 242 1 88 84 256 0 1 0 0 0 0
+243 249 1 88 -168 256 0 1 0 0 0 0
+250 251 1 88 -168 256 0 0 0 252 0 0
+252 262 1 88 84 256 0 0 0 0 0 0
+263 270 1 344 -174 256 0 0 0 0 0 0
+271 278 1 88 84 256 0 0 0 0 0 0
+279 286 1 88 -168 256 0 0 0 0 0 0
+287 290 1 88 84 256 0 490 0 0 0 0
+291 294 1 88 84 256 0 488 0 0 0 0
+295 298 1 88 84 256 0 486 0 0 0 0
+299 302 1 88 84 256 0 484 0 0 0 0
+303 306 1 88 84 256 0 482 0 0 0 0
+307 310 1 88 84 256 0 480 0 0 0 0
+311 314 1 88 84 256 0 482 0 0 0 0
+315 318 1 88 84 256 0 484 0 0 0 0
+319 322 1 88 84 256 0 486 0 0 0 0
+323 326 1 88 84 256 0 488 0 0 0 0
+327 330 1 88 84 256 0 490 0 0 0 0
+331 334 1 88 84 256 0 492 0 0 0 0
+335 352 1 88 84 256 0 494 0 0 0 0
+353 355 1 93 84 248 0 494 6 0 -8 0
+356 357 1 110 84 224 0 494 6 0 -8 0
+358 359 1 121 84 208 0 494 4 0 -8 0
+360 361 1 130 84 192 0 494 4 0 -8 0
+362 364 1 137 84 176 0 494 3 0 -8 0
+365 368 1 145 84 152 0 494 1 0 -8 0
+369 371 1 147 84 120 0 494 0 0 -8 0
+372 376 1 146 84 96 0 494 -1 0 -8 0
+377 378 1 140 84 56 0 494 -1 0 -8 0
+379 383 1 137 84 40 0 494 -2 0 -8 0
+384 385 1 128 84 0 0 494 -48 -164 0 0
+386 387 0 80 -80 0 0 494 0 0 0 0
+388 403 0 0 0 0 0 494 0 0 0 0
+404 405 0 80 -80 0 0 494 -1 1 0 0
+406 407 0 79 -79 0 0 494 -1 1 0 0
+408 409 0 78 -78 0 0 494 -1 1 0 0
+410 411 0 77 -77 0 0 494 -1 1 0 0
+412 413 0 76 -76 0 0 494 -1 1 0 0
+414 415 0 75 -75 0 0 494 -1 1 0 0
+416 417 0 74 -74 0 0 494 -1 1 0 0
+418 419 0 73 -73 0 0 494 -1 1 0 0
+420 421 0 72 -72 0 0 494 -1 1 0 0
+422 423 0 71 -71 0 0 494 -1 1 0 0
+424 425 0 70 -70 0 0 494 -1 1 0 0
+426 427 0 69 -69 0 0 494 -1 1 0 0
+428 429 0 68 -68 0 0 494 -1 1 0 0
+430 431 0 67 -67 0 0 494 -1 1 0 0
+432 433 0 66 -66 0 0 494 -1 1 0 0
+434 435 0 65 -65 0 0 494 -1 1 0 0
+436 437 0 64 -64 0 0 494 -1 1 0 0
+438 439 0 63 -63 0 0 494 -1 1 0 0
+440 441 0 62 -62 0 0 494 -1 1 0 0
+442 443 0 61 -61 0 0 494 -1 1 0 0
+444 445 0 60 -60 0 0 494 -1 1 0 0
+446 447 0 59 -59 0 0 494 -1 1 0 0
+448 449 0 58 -58 0 0 494 -1 1 0 0
+450 451 0 57 -57 0 0 494 -1 1 0 0
+452 453 0 56 -56 0 0 494 -1 1 0 0
+454 455 0 55 -55 0 0 494 -1 1 0 0
+456 457 0 54 -54 0 0 494 -1 1 0 0
+458 459 0 53 -53 0 0 494 -1 1 0 0
+460 461 0 52 -52 0 0 494 -1 1 0 0
+462 463 0 51 -51 0 0 494 -1 1 0 0
+464 465 0 50 -50 0 0 494 -1 1 0 0
+466 467 0 49 -49 0 0 494 -1 1 0 0
+468 469 0 48 -48 0 0 494 -1 1 0 0
+470 471 0 47 -47 0 0 494 -1 1 0 0
+472 473 0 46 -46 0 0 494 -1 1 0 0
+474 475 0 45 -45 0 0 494 -1 1 0 0
+476 477 0 44 -44 0 0 494 -1 1 0 0
+478 479 0 43 -43 0 0 494 -1 1 0 0
+480 481 0 42 -42 0 0 494 -1 1 0 0
+482 483 0 41 -41 0 0 494 -1 1 0 0
+484 485 0 40 -40 0 0 494 -1 1 0 0
+486 487 0 39 -39 0 0 494 -1 1 0 0
+488 489 0 38 -38 0 0 494 -1 1 0 0
+490 491 0 37 -37 0 0 494 -1 1 0 0
+492 493 0 36 -36 0 0 494 -1 1 0 0
+494 495 0 35 -35 0 0 494 -1 1 0 0
+496 497 0 34 -34 0 0 494 -1 1 0 0
+498 499 0 33 -33 0 0 494 -1 1 0 0
+500 501 0 32 -32 0 0 494 -1 1 0 0
+502 503 0 31 -31 0 0 494 -1 1 0 0
+504 505 0 30 -30 0 0 494 -1 1 0 0
+506 507 0 29 -29 0 0 494 -1 1 0 0
+508 509 0 28 -28 0 0 494 -1 1 0 0
+510 511 0 27 -27 0 0 494 -1 1 0 0
+512 513 0 26 -26 0 0 494 -1 1 0 0
+514 515 0 25 -25 0 0 494 -1 1 0 0
+516 517 0 24 -24 0 0 494 -1 1 0 0
+518 519 0 23 -23 0 0 494 -1 1 0 0
+520 521 0 22 -22 0 0 494 -1 1 0 0
+522 523 0 21 -21 0 0 494 -1 1 0 0
+524 525 0 20 -20 0 0 494 -1 1 0 0
+526 527 0 19 -19 0 0 494 -1 1 0 0
+528 529 0 18 -18 0 0 494 -1 1 0 0
+530 531 0 17 -17 0 0 494 -1 1 0 0
+532 533 0 16 -16 0 0 494 -1 1 0 0
+534 535 0 15 -15 0 0 494 -1 1 0 0
+536 537 0 14 -14 0 0 494 -1 1 0 0
+538 539 0 13 -13 0 0 494 -1 1 0 0
+540 541 0 12 -12 0 0 494 -1 1 0 0
+542 543 0 11 -11 0 0 494 -1 1 0 0
+544 545 0 10 -10 0 0 494 -1 1 0 0
+546 547 0 9 -9 0 0 494 -1 1 0 0
+548 549 0 8 -8 0 0 494 -1 1 0 0
+550 551 0 7 -7 0 0 494 -1 1 0 0
+552 553 0 6 -6 0 0 494 -1 1 0 0
+554 555 0 5 -5 0 0 494 -1 1 0 0
+556 557 0 4 -4 0 0 494 -1 1 0 0
+558 559 0 3 -3 0 0 494 -1 1 0 0
+560 561 0 2 -2 0 0 494 -1 1 0 0
+562 563 0 1 -1 0 0 494 -1 1 0 0
+564 687 0 0 0 0 0 494 0 0 0 0
+688 689 0 0 0 0 0 1 0 0 0 0
+690 691 0 0 0 0 0 3 0 0 0 0
+692 693 0 0 0 0 0 5 0 0 0 0
+694 695 0 0 0 0 0 7 0 0 0 0
+696 697 0 0 0 0 0 9 0 0 0 0
+698 699 0 0 0 0 0 11 0 0 0 0
+700 701 0 0 0 0 0 13 0 0 0 0
+702 703 0 0 0 0 0 15 0 0 0 0
+704 705 0 0 0 0 0 17 0 0 0 0
+706 707 0 0 0 0 0 19 0 0 0 0
+708 709 0 0 0 0 0 21 0 0 0 0
+710 711 0 0 0 0 0 23 0 0 0 0
+712 713 0 0 0 0 0 25 0 0 0 0
+714 715 0 0 0 0 0 27 0 0 0 0
+716 717 0 0 0 0 0 29 0 0 0 0
+718 719 0 0 0 0 0 31 0 0 0 0
+720 721 0 0 0 0 0 33 0 0 0 0
+722 723 0 0 0 0 0 35 0 0 0 0
+724 725 0 0 0 0 0 37 0 0 0 0
+726 727 0 0 0 0 0 39 0 0 0 0
+728 729 0 0 0 0 0 41 0 0 0 0
+730 731 0 0 0 0 0 43 0 0 0 0
+732 733 0 0 0 0 0 45 0 0 0 0
+734 735 0 0 0 0 0 47 0 0 0 0
+736 737 0 0 0 0 0 49 0 0 0 0
+738 739 0 0 0 0 0 51 0 0 0 0
+740 741 0 0 0 0 0 53 0 0 0 0
+742 743 0 0 0 0 0 55 0 0 0 0
+744 745 0 0 0 0 0 57 0 0 0 0
+746 747 0 0 0 0 0 59 0 0 0 0
+748 749 0 0 0 0 0 61 0 0 0 0
+750 751 0 0 0 0 0 63 0 0 0 0
+752 753 0 0 0 0 0 65 0 0 0 0
+754 755 0 0 0 0 0 67 0 0 0 0
+756 757 0 0 0 0 0 69 0 0 0 0
+758 759 0 0 0 0 0 71 0 0 0 0
+760 761 0 0 0 0 0 73 0 0 0 0
+762 763 0 0 0 0 0 75 0 0 0 0
+764 765 0 0 0 0 0 77 0 0 0 0
+766 767 0 0 0 0 0 79 0 0 0 0
+768 769 0 0 0 0 0 81 0 0 0 0
+770 771 0 0 0 0 0 83 0 0 0 0
+772 773 0 0 0 0 0 85 0 0 0 0
+774 775 0 0 0 0 0 87 0 0 0 0
+776 777 0 0 0 0 0 89 0 0 0 0
+778 779 0 0 0 0 0 91 0 0 0 0
+780 781 0 0 0 0 0 93 0 0 0 0
+782 783 0 0 0 0 0 95 0 0 0 0
+784 785 0 0 0 0 0 97 0 0 0 0
+786 787 0 0 0 0 0 99 0 0 0 0
+788 789 0 0 0 0 0 101 0 0 0 0
+790 791 0 0 0 0 0 103 0 0 0 0
+792 793 0 0 0 0 0 105 0 0 0 0
+794 795 0 0 0 0 0 107 0 0 0 0
+796 797 0 0 0 0 0 109 0 0 0 0
+798 799 0 0 0 0 0 111 0 0 0 0
+800 801 0 0 0 0 0 113 0 0 0 0
+802 803 0 0 0 0 0 115 0 0 0 0
+804 805 0 0 0 0 0 117 0 0 0 0
+806 807 0 0 0 0 0 119 0 0 0 0
+808 809 0 0 0 0 0 121 0 0 0 0
+810 811 0 0 0 0 0 123 0 0 0 0
+812 813 0 0 0 0 0 125 0 0 0 0
+814 815 0 0 0 0 0 127 0 0 0 0
+816 817 0 0 0 0 0 129 0 0 0 0
+818 819 0 0 0 0 0 131 0 0 0 0
+820 821 0 0 0 0 0 133 0 0 0 0
+822 823 0 0 0 0 0 135 0 0 0 0
+824 825 0 0 0 0 0 137 0 0 0 0
+826 827 0 0 0 0 0 139 0 0 0 0
+828 829 0 0 0 0 0 141 0 0 0 0
+830 831 0 0 0 0 0 143 0 0 0 0
+832 833 0 0 0 0 0 145 0 0 0 0
+834 835 0 0 0 0 0 147 0 0 0 0
+836 837 0 0 0 0 0 149 0 0 0 0
+838 839 0 0 0 0 0 151 0 0 0 0
+840 841 0 0 0 0 0 153 0 0 0 0
+842 843 0 0 0 0 0 155 0 0 0 0
+844 845 0 0 0 0 0 157 0 0 0 0
+846 847 0 0 0 0 0 159 0 0 0 0
+848 849 0 0 0 0 0 161 0 0 0 0
+850 851 0 0 0 0 0 163 0 0 0 0
+852 853 0 0 0 0 0 165 0 0 0 0
+854 855 0 0 0 0 0 167 0 0 0 0
+856 857 0 0 0 0 0 169 0 0 0 0
+858 859 0 0 0 0 0 171 0 0 0 0
+860 861 0 0 0 0 0 173 0 0 0 0
+862 863 0 0 0 0 0 175 0 0 0 0
+864 865 0 0 0 0 0 177 0 0 0 0
+866 867 0 0 0 0 0 179 0 0 0 0
+868 869 0 0 0 0 0 181 0 0 0 0
+870 871 0 0 0 0 0 183 0 0 0 0
+872 873 0 0 0 0 0 185 0 0 0 0
+874 875 0 0 0 0 0 187 0 0 0 0
+876 877 0 0 0 0 0 189 0 0 0 0
+878 879 0 0 0 0 0 191 0 0 0 0
+880 881 0 0 0 0 0 193 0 0 0 0
+882 883 0 0 0 0 0 195 0 0 0 0
+884 885 0 0 0 0 0 197 0 0 0 0
+886 887 0 0 0 0 0 199 0 0 0 0
+888 889 0 0 0 0 0 201 0 0 0 0
+890 891 0 0 0 0 0 203 0 0 0 0
+892 892 0 0 0 0 0 205 0 0 0 0
+]],
+}
+
 RomExtractorGen3.POKENAV = {
   -- the menus: { highlightBase, highlightDelta, six icon pointers }
   MENUS = 0x620240, MENU_STRIDE = 28, MENU_COUNT = 5,
@@ -36932,13 +42161,65 @@ RomExtractorGen3.POKENAV = {
   -- the art
   FRAME = { tiles = 0xDC7B80, map = 0xDC7D84, pal = 0xDC7B60, slot = 0 },
   MENU_BG = {
-    { tiles = 0x61FC98, map = 0x61FCAC, pal = 0x61FC78, slot = 3 },
+    { tiles = 0x61FC98, map = 0x61FCAC, pal = 0x61FC78, slot = 3,
+      under = true },
     { tiles = 0x61FD6C, map = 0x61FFF4, pal = 0x61FD4C, slot = 2 },
     { tiles = 0xDC90E0, map = 0xDC9130, pal = 0xDC90C0, slot = 1 },
   },
   BUTTONS = { at = 0xDC70B8, bytes = 0x3400, width = 128, height = 16,
               tilesEach = 32 },
   BUTTON_PALS = { 0xDC7AC0, 0xDC7AE0, 0xDC7B00, 0xDC7B20, 0xDC7B40 },
+
+  -- THE SCREENS BEHIND THE MENU, and how each one was told from the others.
+  --
+  -- Every POKeNAV screen is built the same way, and reading one builder tells
+  -- you how to read them all: a wrapper at 01C7B54 sets the backgrounds up
+  -- from a template array, 0199A90 decompresses a tile sheet into one of them,
+  -- 00022F0 copies a tilemap in, and a wrapper at 01C7944 loads a palette
+  -- whose SECOND argument is the destination in COLOURS -- so 16 is bank 1, 32
+  -- bank 2, 48 bank 3, 80 bank 5.  Six builders answer to that shape:
+  -- 01C9A60 (the menu, above), 01CB36C, 01CC758, 01CDF1C, 01CF458, 01CFEF8
+  -- and 01D0ABC.
+  --
+  -- WHICH IS WHICH is not guesswork.  A table of fifteen seven-pointer groups
+  -- at 061F3EC dispatches the whole POKeNAV, and each group's handlers sit in
+  -- the same code the builder does, so every builder belongs to a group; the
+  -- data each group reads then names the screen:
+  --
+  --   * the group whose handlers run 01D0450..01D09F4 reads sRibbonBitLayout
+  --     (061D085C loads 06237F8), and 01D0ABC is its builder.  That screen is
+  --     RIBBONS, and RIBBON_GRID's own (88,32) lands in its open panel.
+  --   * 01CB36C's screen is the only one with two boxes stacked at the left,
+  --     and "No. registered" and "No. of battles" -- the two lines MATCH CALL
+  --     prints about a contact -- are the strings its code reaches.
+  --   * 01CF458's and 01CFEF8's screens are THE SAME PICTURE IN TWO COLOURS:
+  --     their tile sheets are byte-for-byte equal and so are their tilemaps,
+  --     and only the palettes differ.  Those are the two list screens the
+  --     POKeNAV has, CONDITION and RIBBONS, and the ribbon tables sitting
+  --     immediately after 01CFEF8's data (06237B0 templates, then 06237F8) is
+  --     what makes the orange one the ribbon list and the blue one CONDITION.
+  --
+  -- COLOUR 0 IS NOT A COLOUR HERE.  The big panels read as flat green only
+  -- because index 0 of these palettes is 00C500; on the hardware index 0 on a
+  -- background is clear and the backdrop shows, which on every POKeNAV screen
+  -- is colour 0 of the shared frame's bank 0 (0DC7B60) -- black.  So these
+  -- bake onto that backdrop with their own index 0 left clear, and the panel
+  -- is the hole the list is drawn into.
+  BACKDROP = 0xDC7B60,
+  SCREENS = {
+    { key = "matchCall", builder = 0x01CB36C, layers = {
+        { tiles = 0x622530, map = 0x6225D4, base = 128,
+          pals = { [1] = 0x6226E0, [2] = 0x622510, [3] = 0x622700,
+                   [5] = 0x622720 } } } },
+    { key = "condition", builder = 0x01CF458, layers = {
+        { tiles = 0x6233E4, map = 0x6234AC,
+          pals = { [1] = 0x6233C4, [2] = 0x623570 } } } },
+    { key = "ribbonList", builder = 0x01CFEF8, layers = {
+        { tiles = 0x623604, map = 0x6236CC,
+          pals = { [1] = 0x6235E4, [2] = 0x623790 } } } },
+    { key = "ribbons", builder = 0x01D0ABC, layers = {
+        { tiles = 0xDDE030, map = 0xDDE12C, pals = { [1] = 0xDDE010 } } } },
+  },
 }
 
 -- Sixteen colours out of a palette blob that may or may not be compressed.
@@ -36959,22 +42240,59 @@ function RomExtractorGen3:palette16(at)
   return colors
 end
 
--- One 32x20 background layer, drawn onto `image` with index 0 transparent.
+-- One 32x20 background layer, drawn onto `image` with index 0 transparent --
+-- or painted through, for the layer that is behind all the others.
+--
+-- TWO THINGS THIS USED TO DROP, both found by reading the code that builds the
+-- screen (01C9A60 sets its three backgrounds up, and the loads that follow name
+-- every sheet, tilemap and palette here) and then measuring the result against
+-- it: 1288 pixels of the menu were wrong.
+--
+--   * THE FLIP BITS.  Bits 10 and 11 of a tilemap entry mirror the tile, and
+--     the message box uses them on 26 of its cells -- its left and right ends
+--     are the same corner tile flipped.  Stepping over them drew the box with
+--     one end missing and the other running off the screen.
+--   * TILE ZERO.  Skipping it is right on a layer whose first tile is blank,
+--     which is why it was skipped, but the message box's first tile is not
+--     blank and 42 of its cells ask for it -- that is the box's bottom edge.
+--
+-- The layer marked `under` is painted opaque because nothing is behind it to
+-- show through; on this cartridge's own menu it makes no difference (the field
+-- tile has no clear pixels), and it keeps the picture whole on a dataset where
+-- it would.
 function RomExtractorGen3:bgLayer(image, layer)
   local rom = self.rom
   local okT, tiles = pcall(rom.lz77, rom, layer.tiles)
   local okM, map = pcall(rom.lz77, rom, layer.map)
   if not (okT and okM) then return false end
-  local colors = self:palette16(layer.pal)
+  -- ONE PALETTE PER BANK, because a background can use more than one.  Bits
+  -- 12-15 of a tilemap entry pick the sixteen colours the cell is drawn in,
+  -- and the code that sets each POKeNAV screen up loads its palettes one bank
+  -- at a time (LoadPalette's offset argument, in colours: 16 is bank 1, 32 is
+  -- bank 2, and so on).  A layer that names only one keeps its old behaviour --
+  -- every cell drawn in it -- which is what the menu's three layers want.
+  local byBank, fallback = {}, nil
+  if layer.pals then
+    for bank, at in pairs(layer.pals) do byBank[bank] = self:palette16(at) end
+  end
+  if layer.pal then
+    fallback = self:palette16(layer.pal)
+    if layer.slot then byBank[layer.slot] = byBank[layer.slot] or fallback end
+  end
   local tileCount = math.floor(#tiles / 32)
   local cells = math.floor(#map / 2)
   local cols = 32
+  local base = layer.base or 0
   for cell = 0, math.min(cells, 32 * 20) - 1 do
     local e = map[cell * 2 + 1] + map[cell * 2 + 2] * 256
-    local tid = e % 1024
-    if tid > 0 and tid < tileCount then
+    local tid = e % 1024 - base
+    local colors = byBank[math.floor(e / 4096) % 16] or fallback
+    if tid >= 0 and tid < tileCount and colors then
       RomExtractorGen3.partyTile(image, tiles, colors, tid, 0,
-                                 (cell % cols) * 8, math.floor(cell / cols) * 8)
+                                 (cell % cols) * 8, math.floor(cell / cols) * 8,
+                                 math.floor(e / 1024) % 2 == 1,
+                                 math.floor(e / 2048) % 2 == 1,
+                                 layer.under or false)
     end
   end
   return true
@@ -37384,6 +42702,28 @@ function RomExtractorGen3:extractPokenav()
     self:saveImage(image, "ui/pokenav_buttons.png")
     images.buttons = "assets/generated/ui/pokenav_buttons.png"
   end)
+
+  -- the four screens the menu opens onto, each on the shared backdrop
+  local backdrop = self:palette16(P.BACKDROP)[1]
+  for _, screen in ipairs(P.SCREENS) do
+    local ok = pcall(function()
+      local image = ImageWriter.blank(240, 160, backdrop[1] / 255,
+                                      backdrop[2] / 255, backdrop[3] / 255, 1)
+      for _, layer in ipairs(screen.layers) do
+        if not self:bgLayer(image, layer) then
+          error(("a layer of the %s screen did not decompress"):format(screen.key))
+        end
+      end
+      self:saveImage(image, "ui/pokenav_" .. screen.key .. ".png")
+    end)
+    if ok then
+      images[screen.key] = "assets/generated/ui/pokenav_" .. screen.key .. ".png"
+    else
+      Logger.warn("gen3 pokenav: the %s screen (built at %07X) did not "
+                  .. "compose -- that screen keeps its drawn boxes",
+                  screen.key, screen.builder)
+    end
+  end
 
   local record = {
     menus = menus,

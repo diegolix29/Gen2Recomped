@@ -71,6 +71,23 @@ function Menu.new(game, items, opts)
   -- it to swap the pic above the box to whichever character is under the
   -- cursor; menus that do not pass it behave exactly as before.
   self.onHighlight = opts.onHighlight
+  -- A LINE UNDER THE MENU SAYING WHAT THE ROW DOES.
+  --
+  -- Emerald's PC menus are two windows, not one: the list, and a message
+  -- window under it carrying the highlighted row's own description --
+  -- "Take out items from the PC.", "Store POKeMON in your party in BOXES."
+  -- Both description arrays have been read out of the cartridge since the
+  -- menus went in (gen3PCMenu.describe and .storage.describe) and neither
+  -- was ever drawn, because this widget had nowhere to put them: a row's
+  -- `describe` was set by two callers and silently ignored.
+  --
+  -- The box is the screen's own bottom strip, which is where the cartridge
+  -- puts it, and it only appears for a menu that has descriptions at all --
+  -- so every Game Boy menu in this engine is untouched.
+  self.describeBox = opts.describeBox
+  for _, it in ipairs(items) do
+    if it.describe then self.describes = true break end
+  end
   self:clampScroll()
   if self.onHighlight then self.onHighlight(self.index, self.items[self.index]) end
   return self
@@ -126,6 +143,11 @@ function Menu:update(dt)
 end
 
 function Menu:draw()
+  -- A MENU THAT IS STILL ON THE STACK BUT NOT ON SCREEN.  A state above it
+  -- may be an OVERLAY rather than a screen -- Hoenn's counter is one -- and
+  -- then whatever is left underneath shows through it.  `hidden` keeps the
+  -- state (so closing what is above lands back on it) and stops the drawing.
+  if self.hidden then return end
   -- opts.anchor opts a menu out of the centred letterbox and onto a screen
   -- edge (the START menu asks for "topright").  Only menus that ask for it
   -- move; every other menu is placed exactly as before.
@@ -180,7 +202,35 @@ function Menu:draw()
     Font.drawCode(Theme.moreArrow, (self.tx + self.tw - 2) * 8,
       (self.ty + self.th - 1) * 8)
   end
+  self:drawDescription()
   love.graphics.setColor(1, 1, 1, 1)
+end
+
+-- The highlighted row's description, in a box along the bottom of the screen.
+-- Sized to the screen Theme reports, so the Game Boy's 160x144 and Hoenn's
+-- 240x160 each get a full-width strip without this widget knowing which it
+-- is drawing on.
+function Menu:drawDescription()
+  if not self.describes then return end
+  local item = self.items[self.index]
+  local text = item and item.describe
+  if type(text) ~= "string" or text == "" then return end
+  local w, h = Theme.uiSize()
+  local cols, rowsTall = math.floor(w / 8), math.floor(h / 8)
+  local lines = 0
+  for _ in (text .. "\n"):gmatch("[^\n]*\n") do lines = lines + 1 end
+  local box = self.describeBox or {}
+  local bh = box.th or (lines * 2 + 2)
+  local bw = box.tw or cols
+  local bx = box.tx or 0
+  local by = box.ty or (rowsTall - bh)
+  Font.drawBox(bx, by, bw, bh)
+  love.graphics.setColor(0, 0, 0, 1)
+  local y = (by + 1) * 8
+  for line in text:gmatch("[^\n]+") do
+    Font.draw(line, (bx + 1) * 8, y)
+    y = y + 16
+  end
 end
 
 return Menu

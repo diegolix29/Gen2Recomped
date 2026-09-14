@@ -24,6 +24,57 @@ local volumeScale = 1
 -- without muting the rest of the SFX bus.  7 = untouched, 0 = silent.
 local pikaScale = 1
 
+-- AUDIO SESSION SUSPEND (mobile interruption: an incoming phone call).
+--
+-- iOS takes the audio session away from the app for the length of a call and
+-- hands back a NEW one afterwards; SDL reports the transition as
+-- SDL_APP_WILLENTERBACKGROUND, which reaches us as love.focus(false) ->
+-- Game:focus -> Music.suspend -> Sound.suspend.  Android sends the same app
+-- events.
+--
+-- Two distinct things have to be prevented here, and they are not the same
+-- thing:
+--
+--  1. PLAYING INTO A DEAD DEVICE.  Source:stop / Source:play / setVolume /
+--     setLooping are unremarkable on a healthy device and are exactly what
+--     OpenAL refuses once the device behind them is invalidated; LOVE raises
+--     that refusal as a Lua error.  They were bare calls below.  They are
+--     guarded now, because the focus event arrives a frame after the
+--     interruption has already taken effect.
+--
+--  2. POISONING THE CACHE.  playPath / playCry / playPikaCry / startLoop
+--     cache a def that fails to build as `false` -- "known bad, already
+--     logged" -- and never try it again for the rest of the session.
+--     love.audio.newSource against a device that has gone away fails, so
+--     without the gates below a call arriving at the wrong moment would mark
+--     whatever effect the game happened to play as permanently broken.  So
+--     while the session is suspended nothing is built at all, and
+--     Sound.resume drops the cache so sources built against the OLD session
+--     are re-rendered the next time they are asked for.
+local sessionSuspended = false
+
+-- See sessionSuspended: logged at debug rather than swallowed, so a raise
+-- from one of these on desktop (where there is no session to lose) still
+-- leaves a line naming the call that failed.
+local function safeAudio(what, fn, ...)
+  local ok, err = pcall(fn, ...)
+  if not ok then
+    Logger.debug("audio: %s failed (%s) -- the audio device is gone or going "
+      .. "(incoming call / backgrounding on mobile)", what, tostring(err))
+  end
+  return ok
+end
+
+-- Restart a one-shot from its beginning.  stop-then-play is the idiom every
+-- caller below used inline; it is also two device calls in a row, which is
+-- exactly the shape that needs the guard.  Returns false when nothing was
+-- started, so callers do not report a sound that never sounded.
+local function restart(src)
+  if sessionSuspended or not src then return false end
+  safeAudio("Source:stop", src.stop, src)
+  return safeAudio("Source:play", src.play, src)
+end
+
 -- cache keys whose volume the Pikachu trim applies to: the PCM clips, plus
 -- the chip PIKACHU cry that a Yellow cache without extracted clips falls
 -- back to (playCry).  Red/Blue never reach the second branch, so a shared
@@ -170,6 +221,9 @@ end
 
 local function playPath(data, key, def, pitch, tempo)
   if not love.audio or not def then return nil end
+  -- INTERRUPTION: building a Source now would fail and cache `false` below,
+  -- permanently disabling this effect (see sessionSuspended, case 2)
+  if sessionSuspended then return nil end
   local src = cache[key]
   if src == false then return nil end -- known bad, already logged
   if not src then
@@ -179,12 +233,11 @@ local function playPath(data, key, def, pitch, tempo)
       reportBadDef("sfx", key, owner(data, "sfx", key), err)
       return nil
     end
-    s:setVolume(volumeFor(key))
+    safeAudio("Source:setVolume", s.setVolume, s, volumeFor(key))
     cache[key] = s
     src = s
   end
-  src:stop()
-  src:play()
+  if not restart(src) then return nil end
   return src
 end
 
@@ -327,6 +380,8 @@ end
 -- cache carries no clips (Red/Blue) or headless.
 function Sound.playPikaCry(data, n)
   if not love.audio then return nil end
+  -- INTERRUPTION: same cache-poisoning gate as playPath (sessionSuspended)
+  if sessionSuspended then return nil end
   local count = data.audio and data.audio.pikaCries
   if not count then return nil end
   n = math.max(1, math.min(count, n or 1))
@@ -344,12 +399,11 @@ function Sound.playPikaCry(data, n)
     -- extractPikachuCries), so they need the same widening as the chip
     -- effects to stay off a multi-output device's surround channels (#626)
     s = widenMono(s, path)
-    s:setVolume(volumeFor(key))
+    safeAudio("Source:setVolume", s.setVolume, s, volumeFor(key))
     cache[key] = s
     src = s
   end
-  src:stop()
-  src:play()
+  if not restart(src) then return nil end
   played("cry", "PIKACHU_PCM_" .. n, "PIKACHU")
   return src
 end
@@ -358,6 +412,8 @@ end
 -- like the original's PlayCry -> WaitForSoundToFinish can poll it
 function Sound.playCry(data, species)
   if not love.audio then return nil end
+  -- INTERRUPTION: same cache-poisoning gate as playPath (sessionSuspended)
+  if sessionSuspended then return nil end
   -- Yellow voices every Pikachu cry with the PCM clips (the chip cry is
   -- never used for the species there); clip 1 is the everyday "Pika!"
   if species == "PIKACHU" then
@@ -378,15 +434,14 @@ function Sound.playCry(data, species)
         owner(data, "cries", species), err)
       return nil
     end
-    s:setVolume(volumeFor(key))
+    safeAudio("Source:setVolume", s.setVolume, s, volumeFor(key))
     cache[key] = s
     src = s
   end
   -- set every time rather than at build: the cached source outlives a change
   -- of game, and the scale is the loaded cartridge's
   pcall(src.setVolume, src, volumeFor(key) * cryScale(data))
-  src:stop()
-  src:play()
+  if not restart(src) then return nil end
   require("src.core.Music").duckForCry(data, src)
   played("cry", species, species)
   return src
@@ -442,6 +497,10 @@ local looping = {}
 function Sound.startLoop(data, name)
   if looping[name] then return end
   if not love.audio then return end
+  -- INTERRUPTION: same cache-poisoning gate as playPath (sessionSuspended).
+  -- BattleState calls this every frame the siren should be sounding, so
+  -- returning here costs nothing: it restarts on the frame after the resume.
+  if sessionSuspended then return end
   local sfx = data.audio and data.audio.sfx
   local def = sfx and sfx[name]
   local alarm = not def and name == "Low_Health_Alarm"
@@ -463,12 +522,15 @@ function Sound.startLoop(data, name)
       reportBadDef("sfx", name, owner(data, "sfx", name), err or "no source")
       return
     end
-    s:setLooping(true)
-    s:setVolume(volumeFor(name))
+    safeAudio("Source:setLooping", s.setLooping, s, true)
+    safeAudio("Source:setVolume", s.setVolume, s, volumeFor(name))
     loopCache[name] = s
     src = s
   end
-  src:play()
+  -- INTERRUPTION: if the device is gone the siren simply does not start and
+  -- `looping` stays empty, so BattleState's per-frame startLoop retries it on
+  -- the next frame (and Sound.resume has dropped the dead Source by then)
+  if not safeAudio("Source:play", src.play, src) then return end
   looping[name] = src
 end
 
@@ -536,6 +598,38 @@ end
 -- the flush fan-out calls with no key, dropping everything, so an edited
 -- def is re-resolved on the next play (20 §2 cache contract, audio row)
 Assets.register(Sound.invalidate)
+
+-- ---------------------------------------------------------------------------
+-- audio session suspend / resume (see sessionSuspended at the top)
+-- ---------------------------------------------------------------------------
+
+-- Driven by Music.suspend out of Game:focus / Game:visible, mobile only.
+function Sound.suspend()
+  if sessionSuspended then return end
+  sessionSuspended = true
+  -- A LOOPING source (the low-health siren, the link tournament theme) is the
+  -- only kind that is still sounding when the call arrives.  Ask it to stop
+  -- while the device may still take the call, and forget it, so its owner's
+  -- per-frame startLoop restarts it on the way back instead of believing a
+  -- dead Source is still playing.
+  for key, src in pairs(looping) do
+    safeAudio("Source:stop", src.stop, src)
+    looping[key] = nil
+  end
+end
+
+-- Sources built against the session the OS has just replaced are not reliably
+-- usable again, and OpenAL offers nothing that answers "is this Source still
+-- alive".  Dropping the cache is the only reliable answer: every def is
+-- re-resolved and re-rendered the next time it is asked for, exactly as after
+-- a hot reload.  This also clears the `false` "known bad" entries, so an
+-- effect that failed to build during the interruption gets another chance
+-- rather than staying silent for the rest of the session.
+function Sound.resume()
+  if not sessionSuspended then return end
+  sessionSuspended = false
+  Sound.invalidate()
+end
 
 -- re-apply persisted audio options (Game calls this on boot and after
 -- loading a save)

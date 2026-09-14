@@ -96,6 +96,63 @@ local pendingBuf -- a current-gen buffer popped from the worker but not yet
 local musicHeld = false
 
 -- ---------------------------------------------------------------------------
+-- AUDIO SESSION SUSPEND (mobile interruption: an incoming phone call)
+--
+-- Reported from play: "on iOS when they got a phone call the game would
+-- crash".  On iOS an incoming call takes the audio session away from the app
+-- outright; SDL reports it as SDL_APP_WILLENTERBACKGROUND /
+-- SDL_APP_DIDENTERBACKGROUND, which LOVE delivers as love.focus(false) /
+-- love.visible(false) -- main.lua -> Game:focus -> Music.suspend -> here.
+-- Android delivers the same app events.
+--
+-- THIS module is the one that cannot ride that out on its own.  Sound effects
+-- are static Sources played once on demand, but MUSIC is a queue fed a buffer
+-- at a time: ChipAudio.update runs every frame and calls
+-- Source:getFreeBufferCount and QueueableSource:queue on it.  So the frame the
+-- device goes away is the frame we make an AL call against a device that no
+-- longer exists; LOVE turns OpenAL's refusal into a love::Exception, and that
+-- reaches Lua as an error thrown out of the middle of Music.update -- which is
+-- the crash in the report.
+--
+-- Two halves, therefore, and both are needed:
+--   * sessionSuspended, set once the event arrives, stops feeding the queue
+--     at all while the OS holds the session; and
+--   * the pcall'd helpers below, because the event arrives a frame LATE --
+--     the interruption is already in effect while we are still finishing the
+--     frame that will dispatch it, so that frame has to survive on its own.
+local sessionSuspended = false
+
+-- Wrap one audio call that cannot fail on a healthy device and CAN fail while
+-- the OS holds the session.  Logged, never swallowed: a raise from here on
+-- desktop, or while focused, is a real bug and the log line names the call.
+-- debug level rather than warn because during an actual interruption this is
+-- the expected outcome and would otherwise print once per frame.
+local function safeAudio(what, fn, ...)
+  local ok, err = pcall(fn, ...)
+  if not ok then
+    require("src.core.Logger").debug(
+      "chip audio: %s failed (%s) -- the audio device is gone or going "
+      .. "(incoming call / backgrounding on mobile)", what, tostring(err))
+  end
+  return ok
+end
+
+-- Free buffers on the streaming Source, or nil when it will not answer.  The
+-- queue loops below lead with this call, so it is also the first one an
+-- invalidated OpenAL device raises from; nil means "stop queueing this frame"
+-- and is deliberately distinct from 0, which means "the queue is full".
+local function freeBuffers(source)
+  local ok, free = pcall(source.getFreeBufferCount, source)
+  if not ok then
+    require("src.core.Logger").debug(
+      "chip audio: getFreeBufferCount failed (%s) -- treating the audio "
+      .. "device as gone until the focus event arrives", tostring(free))
+    return nil
+  end
+  return free
+end
+
+-- ---------------------------------------------------------------------------
 -- worker management
 -- ---------------------------------------------------------------------------
 
@@ -210,11 +267,24 @@ local MUSIC_FILL_PER_CALL = 3
 local function fillSync(limit)
   local music = currentMusic
   if not music or not music.engine or music.engine:finished() then return end
+  -- INTERRUPTION: never synthesize into a Source whose device the OS has
+  -- taken (see sessionSuspended).  Returning leaves the engine untouched, so
+  -- nothing about the song's position is lost while the call is in progress.
+  if sessionSuspended then return end
   limit = limit or MUSIC_FILL_PER_CALL
-  local free = music.source:getFreeBufferCount()
+  local free = freeBuffers(music.source)
+  if not free then return end
   while free > 0 and limit > 0 and not music.engine:finished() do
-    music.source:queue((music.synth or ChipSynth)
-                        .soundData(music.engine, MUSIC_BUFFER_SAMPLES, 2))
+    -- soundData is pure synthesis and stays OUTSIDE the guard on purpose: a
+    -- raise from there is a malformed song def, which is a real bug and must
+    -- not be quietly turned into silence.  Only queue -- the call that talks
+    -- to the device -- is guarded.
+    local sd = (music.synth or ChipSynth)
+                 .soundData(music.engine, MUSIC_BUFFER_SAMPLES, 2)
+    if not safeAudio("QueueableSource:queue", music.source.queue,
+                     music.source, sd) then
+      return
+    end
     free = free - 1
     limit = limit - 1
   end
@@ -294,6 +364,10 @@ end
 local function updateThreaded()
   local m = currentMusic
   if not m then return end
+  -- INTERRUPTION: the worker keeps producing into the hand-off channel (its
+  -- own LOOKAHEAD bounds that), but nothing is queued into the Source while
+  -- the OS holds the audio session.  ChipAudio.resume rebuilds the stream.
+  if sessionSuspended then return end
   if not workerAlive() then
     -- The worker is gone.  If it already delivered buffers, let what is queued
     -- finish -- but if it died BEFORE the first one, this song has never made
@@ -312,7 +386,11 @@ local function updateThreaded()
     return
   end
   while true do
-    local free = m.source:getFreeBufferCount()
+    local free = freeBuffers(m.source)
+    -- nil, not 0: the Source refused to answer, so its device went away
+    -- between the last frame and this one and the focus event has not been
+    -- delivered yet.  Stop queueing; ChipAudio.suspend follows in a frame.
+    if not free then break end
     local buf = pendingBuf
     if buf then pendingBuf = nil else buf = outCh:pop() end
     if not buf then break end
@@ -325,7 +403,13 @@ local function updateThreaded()
       m.finished = true
     elseif buf.sd then
       if free > 0 then
-        m.source:queue(buf.sd)
+        if not safeAudio("QueueableSource:queue", m.source.queue,
+                         m.source, buf.sd) then
+          -- the device went away mid-loop: keep the buffer rather than drop
+          -- audio on the floor, and let the suspend/resume pair sort it out
+          pendingBuf = buf
+          break
+        end
       else
         pendingBuf = buf -- Source full; hold this one for next frame
         break
@@ -333,7 +417,12 @@ local function updateThreaded()
     end
   end
   if not m.started and not musicHeld then
-    if (MUSIC_BUFFER_COUNT - m.source:getFreeBufferCount()) > 0 then
+    -- getFreeBufferCount used to be called bare here.  On the frame that
+    -- straddles an interruption this is a raise, and it is raised from inside
+    -- Music.update with nothing between it and love.run: one of the concrete
+    -- shapes of the phone-call crash.
+    local free = freeBuffers(m.source)
+    if free and (MUSIC_BUFFER_COUNT - free) > 0 then
       pcall(function() m.source:play() end)
       m.started = true
     end
@@ -343,6 +432,8 @@ end
 function ChipAudio.update()
   local m = currentMusic
   if not m then return end
+  -- INTERRUPTION: nothing is fed to the device while the OS holds the session
+  if sessionSuspended then return end
   if m.threaded then
     updateThreaded()
   else
@@ -356,12 +447,20 @@ end
 function ChipAudio.ensureMusicPlaying()
   local m = currentMusic
   if not m or m.finished or musicHeld then return end
+  -- INTERRUPTION: a queue that stopped draining because the OS took the
+  -- audio session is not a render stall, and must not be "recovered" by
+  -- poking the dead device once every frame of the call
+  if sessionSuspended then return end
   if m.threaded then
     if not m.started then return end
     local ok, playing = pcall(function() return m.source:isPlaying() end)
-    if ok and not playing
-       and (MUSIC_BUFFER_COUNT - m.source:getFreeBufferCount()) > 0 then
-      pcall(function() m.source:play() end)
+    if ok and not playing then
+      -- getFreeBufferCount sat OUTSIDE the pcall above: on the frame that
+      -- straddles an interruption isPlaying can answer while this one raises
+      local free = freeBuffers(m.source)
+      if free and (MUSIC_BUFFER_COUNT - free) > 0 then
+        pcall(function() m.source:play() end)
+      end
     end
   else
     if not m.engine or m.engine:finished() then return end
@@ -402,6 +501,55 @@ function ChipAudio.awaitingFirstBuffer()
   if workerReady == false then return false end
   if worker and worker.getError and worker:getError() then return false end
   return true
+end
+
+-- ---------------------------------------------------------------------------
+-- audio session suspend / resume (see sessionSuspended at the top)
+-- ---------------------------------------------------------------------------
+
+-- Called from Music.suspend, which Game:focus / Game:visible drive on mobile
+-- only.  Stops feeding the streaming Source and tells the worker to stop
+-- producing, so a multi-minute phone call does not leave a full look-ahead of
+-- stale buffers to dump into the player's ear on the way back.
+function ChipAudio.suspend()
+  if sessionSuspended then return end
+  sessionSuspended = true
+  pendingBuf = nil
+  local m = currentMusic
+  if m and m.source then
+    -- pause rather than stop: stop is what resume does anyway, and doing it
+    -- here would make the last thing we ask of a device that is being taken
+    -- away the call most likely to raise
+    safeAudio("Source:pause", m.source.pause, m.source)
+  end
+  if workerReady and cmdCh then cmdCh:push({ cmd = "stop" }) end
+  if outCh then outCh:clear() end
+end
+
+-- Called from Music.resume once the app has the audio session back.
+--
+-- The streaming Source is DROPPED rather than resumed.  iOS hands the app a
+-- new audio session after a call and OpenAL sources built against the old one
+-- are not reliably usable again -- they come back mute, or refuse to play,
+-- and there is no call that answers "is this Source still alive".  Music
+-- re-cues the song by label immediately after this, so the price of always
+-- rebuilding is that an interrupted song restarts from its beginning; the
+-- price of guessing the other way is music that never comes back at all for
+-- the rest of the session.
+function ChipAudio.resume()
+  if not sessionSuspended then return end
+  sessionSuspended = false
+  -- A worker that errored while the app was backgrounded gets collected by
+  -- workerAlive(), which latches workerReady = false for the REST OF THE
+  -- SESSION: music would silently drop to the synchronous path (and take its
+  -- ~200ms-per-song-change stutter with it) even though nothing is wrong with
+  -- this host's threads.  An interruption is not evidence that love.thread
+  -- does not work here, so clear the latch and let the next play try one
+  -- fresh worker.  Only when workerAlive() actually cleared `worker`: if a
+  -- thread is still live, starting a second would leave two workers popping
+  -- the same command channel.
+  if workerReady == false and worker == nil then workerReady = nil end
+  ChipAudio.stopMusic()
 end
 
 function ChipAudio.stopMusic()

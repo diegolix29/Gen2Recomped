@@ -61,10 +61,43 @@ local Sound = require("src.core.Sound")
 local Strings = require("src.core.Strings")
 local Theme = require("src.ui.Theme")
 
+-- Gen3Wide is asked for on every frame and from uiSize/sgbPalettes on
+-- whatever cadence the renderer queries them; resolved once instead.
+local Gen3WideMod
+local function gen3Wide()
+  Gen3WideMod = Gen3WideMod or require("src.ui.Gen3Wide")
+  return Gen3WideMod
+end
+
 local Gen3BagMenu = {}
 Gen3BagMenu.__index = Gen3BagMenu
 
+-- THE BAG IS THE WHOLE SCREEN, and saying so is a bug fix.
+--
+-- Reported from play, with a screenshot: a column of somebody else's letters
+-- down the left-hand edge of the bag.  It was the OVERWORLD, still drawing
+-- underneath.  Every other full-screen page in Hoenn -- the dex, the region
+-- map, the mart, the summary, the trainer card -- sets this, and the stack
+-- draws only from the highest opaque state up (StateStack:visibleBase); the
+-- bag never did, so whatever was beneath it kept painting.  It did not show
+-- while the surface was the cartridge's own 240 columns, because the bag's
+-- own field covered all of them.  It shows now that the field can be wider
+-- than the picture.
+Gen3BagMenu.isOpaque = true
+
 local GBA_W, GBA_H = 240, 160
+
+-- the field's own edge columns, keyed on its size
+local edgeW, edgeH, edgeLeft, edgeRight
+local function edgeQuads(fw, fh)
+  if edgeW ~= fw or edgeH ~= fh then
+    edgeLeft = love.graphics.newQuad(0, 0, 1, fh, fw, fh)
+    edgeRight = love.graphics.newQuad(GBA_W - 1, 0, 1, fh, fw, fh)
+    edgeW, edgeH = fw, fh
+  end
+  return edgeLeft, edgeRight
+end
+
 
 -- THE CARTRIDGE'S, when the import has been run; the reconstruction below
 -- only when it has not.
@@ -99,12 +132,17 @@ local CURSOR_INSET = 4
 -- the engine's item classes each of its words covers.
 local POCKET_KEYS = { "ITEM", "BALL", "TM_HM", "BERRY", "KEY_ITEM" }
 
-function Gen3BagMenu:uiSize() return GBA_W, GBA_H end
+-- ...AND IT ASKS FOR THE WIDE SURFACE, like the title and the main menu, so
+-- the margins belong to this screen rather than to whatever is behind it.
+function Gen3BagMenu:uiSize()
+  return gen3Wide().uiSize()
+end
 function Gen3BagMenu:wantsFillScale() return true end
 
 function Gen3BagMenu:sgbPalettes()
   local P = require("src.render.PaletteFX")
-  return { P.trueColorZone(0, 0, math.ceil(GBA_W / 8) - 1,
+  local w = select(1, gen3Wide().uiSize())
+  return { P.trueColorZone(0, 0, math.ceil(w / 8) - 1,
                            math.ceil(GBA_H / 8) - 1) }
 end
 
@@ -170,6 +208,33 @@ function Gen3BagMenu.new(game, opts)
   -- than telling it to do something.
   self.pick = opts.pick and true or false
   self.onPick = opts.onPick
+  -- SELLING IS THIS SCREEN.  Reported from play: "the sell menu should have
+  -- badges like the bag".  It should -- CB2_GoToSellMenu opens the bag with
+  -- its shop flag set, so the pockets, the dots and the bag sprite are all
+  -- here already and the pick sells instead of asking USE or TOSS.
+  self.sell = opts.sell and true or false
+  -- THE PC'S TWO USES OF THIS SCREEN.
+  --
+  -- Reported from play: "the item deposit and withdrawal doesn't seem to work
+  -- like it would in emerald and is falling back to gen1 menu".  It was: the
+  -- Hoenn PC handed all three item flows to the Game Boy screen in
+  -- src/ui/PlayerPC.lua, so ITEM STORAGE opened a pokered list menu inside
+  -- Emerald's PC.
+  --
+  -- Emerald splits them, and WHERE THE CARTRIDGE KEEPS ITS WORDS says how:
+  -- "Deposit how many {VAR1}(s)?", "Deposited {VAR2} {VAR1}(s)." and
+  -- "Important items can't be stored in the PC!" are BAG strings, sat among
+  -- the bag's own toss lines, while "Withdraw how many {VAR1}(s)?",
+  -- "Withdrew {VAR2} {VAR1}(s).", "There are no items." and "There is no more
+  -- room in the BAG." sit in the PC's own block beside ITEM STORAGE's four
+  -- row descriptions.  So DEPOSIT is this bag, listing the bag, taking a pick;
+  -- WITHDRAW and TOSS are a screen listing the PC.
+  --
+  -- `store` is "deposit" (the bag, depositing what you pick), "withdraw" or
+  -- "toss" (the same screen over save.pcItems).  The second pair is `pcList`.
+  self.store = opts.store
+  self.pcList = (self.store == "withdraw" or self.store == "toss")
+  if self.pcList then self.lockPocket = true end
   if opts.pocket then
     for i, row in ipairs(self.pockets) do
       if row.key == opts.pocket then self.pocket = i break end
@@ -225,6 +290,33 @@ function Gen3BagMenu:rebuild()
     self.top = 1
     return
   end
+  -- THE PC'S OWN LIST: one list, no pockets, and the store is save.pcItems.
+  -- Sorted, because a PC box has no acquisition order to preserve the way
+  -- wBagItems does -- pcItems is a map, and a map has no order at all.
+  if self.pcList then
+    local pc = game.save.pcItems or {}
+    local ids = {}
+    for id in pairs(pc) do ids[#ids + 1] = id end
+    table.sort(ids)
+    local rows = {}
+    for _, id in ipairs(ids) do
+      local def = game.data.items and game.data.items[id]
+      rows[#rows + 1] = {
+        id = id,
+        label = (def and def.name) or id,
+        qty = pc[id],
+        description = def and (def.description or def.desc),
+      }
+    end
+    -- the cartridge ends the list with CANCEL, and CANCEL is one of the four
+    -- words already read off sItemStorageActions
+    rows[#rows + 1] = { close = true,
+                        label = Gen3BagMenu.pcWord(game, "cancel") }
+    self.rows = rows
+    self.index = math.min(math.max(1, self.index), #rows)
+    self.top = math.max(1, math.min(self.top, math.max(1, #rows - self:listRows() + 1)))
+    return
+  end
   local want = self.pockets[self.pocket].key
   local rows = {}
   for _, id in ipairs(Bag.order(game.save)) do
@@ -268,6 +360,7 @@ end
 function Gen3BagMenu:moveCursor(delta)
   local n = #self.rows
   if n == 0 then return end
+  self.message = nil
   self.index = (self.index - 1 + delta) % n + 1
   local visible = self:listRows()
   if self.index < self.top then self.top = self.index end
@@ -276,9 +369,205 @@ function Gen3BagMenu:moveCursor(delta)
   end
 end
 
+-- ------------------------------------------------------------- the PC's words
+--
+-- Two blocks, because the cartridge keeps them in two places: the PC's own
+-- (gen3PCMenu.text, swept beside ITEM STORAGE's row descriptions) and the
+-- bag's (gen3ItemText, swept beside the bag's action labels).  Each falls
+-- back to this port's English only when the cache predates the sweep.
+local PC_FALLBACK = {
+  withdrawPrompt = "Withdraw how many\n{VAR1}(s)?",
+  withdrew       = "Withdrew {VAR2}\n{VAR1}(s).",
+  noItems        = "There are no items.",
+  bagFull        = "There is no more\nroom in the BAG.",
+  cancel         = "CANCEL",
+  title          = "ITEM STORAGE",
+}
+local BAG_FALLBACK = {
+  depositPrompt = "Deposit how many\n{VAR1}(s)?",
+  deposited     = "Deposited {VAR2}\n{VAR1}(s).",
+  noRoomStore   = "There's no room to\nstore items.",
+  cantStore     = "Important items\ncan't be stored in\nthe PC!",
+  tossImportant = "That's much too\nimportant to toss\nout!",
+  tossHowMany   = "Toss out how many\n{VAR1}(s)?",
+  tossedMany    = "Threw away {VAR2}\n{VAR1}(s).",
+  tossConfirm   = "Is it okay to\nthrow away {VAR2}\n{VAR1}(s)?",
+}
+
+function Gen3BagMenu.pcWord(game, key)
+  local pc = (game.data.constants or {}).gen3PCMenu or {}
+  if key == "cancel" then
+    local rows = pc.itemStorage
+    local word = type(rows) == "table" and rows[#rows] or nil
+    return type(word) == "string" and word or PC_FALLBACK.cancel
+  end
+  if key == "title" then
+    local rows = pc.main
+    local word = type(rows) == "table" and rows[1] or nil
+    return type(word) == "string" and word or PC_FALLBACK.title
+  end
+  local said = type(pc.text) == "table" and pc.text[key] or nil
+  return type(said) == "string" and said or PC_FALLBACK[key]
+end
+
+local function bagWord(game, key)
+  local said = ((game.data.constants or {}).gen3ItemText or {})[key]
+  return type(said) == "string" and said or BAG_FALLBACK[key]
+end
+
+-- {VAR1} is the item, {VAR2} the count -- which is how the cartridge writes
+-- both PC lines and both bag ones.
+local function fillLine(text, name, qty)
+  return (tostring(text or "")
+    :gsub("{STR_VAR1}", "{VAR1}"):gsub("{STR_VAR2}", "{VAR2}")
+    :gsub("{VAR2}", tostring(qty or 1)):gsub("{VAR1}", name))
+end
+
+-- IS THIS ONE OF THE ITEMS THE PC REFUSES?
+--
+-- ItemId_GetImportance, which the importer already reads off gItems and
+-- files as `importance` (and mirrors as `keyItem`).  It is one byte and it is
+-- the whole rule: an item with importance set cannot be deposited and cannot
+-- be tossed, which is what stops the BIKE, the ROD, the DEVON GOODS and every
+-- badge-shaped errand item from being posted into a box and lost.
+--
+-- Reported from play: "also allows for the depositing of key items I don't
+-- think that was allowed in the game".  It was not, and nothing here asked.
+function Gen3BagMenu.isImportant(game, id)
+  local def = game.data.items and game.data.items[id]
+  if not def then return false end
+  local importance = tonumber(def.importance)
+  if importance then return importance ~= 0 end
+  -- a cache imported before gItems carried the byte: keyItem is the same
+  -- answer under an older name, and an HM is important on every cartridge
+  return def.keyItem == true or (type(id) == "string" and id:find("^HM_") ~= nil)
+end
+
+-- How many stacks the PC can hold, and whether this one would be a new stack.
+function Gen3BagMenu:pcFull(id)
+  local pc = self.game.save.pcItems or {}
+  if pc[id] then return false end
+  local cap = math.floor(tonumber((self.game.data.field or {}).pcItemCap) or 50)
+  local stacks = 0
+  for _ in pairs(pc) do stacks = stacks + 1 end
+  return stacks >= cap
+end
+
+-- A LINE THE SCREEN IS SAYING, in the description panel, until the cursor
+-- moves off it.  The cartridge prints these into the same window the item
+-- description uses, and doing it that way here means a prompt cannot outlive
+-- the thing that asked it -- a pushed TextBox under a pushed quantity window
+-- would still be sitting there after the quantity was cancelled.
+function Gen3BagMenu:say(text)
+  self.message = text
+end
+
+-- ...and one it stops for, which is a real box the player dismisses.  Used
+-- for the answers ("Withdrew 5 POTIONs."), which the cartridge waits on.
+function Gen3BagMenu:tell(text)
+  local TextBox = require("src.render.TextBox")
+  self.game.stack:push(TextBox.new(self.game, text))
+end
+
+-- Ask how many, then act.  An important item never reaches here (the callers
+-- refuse it first) and a stack of one still asks, because the cartridge's
+-- quantity window opens on every depositable pick.
+function Gen3BagMenu:askQuantity(id, held, prompt, done)
+  local game = self.game
+  local def = game.data.items and game.data.items[id]
+  local name = (def and def.name) or id
+  local QuantityBox = require("src.ui.QuantityBox")
+  self:say(fillLine(prompt, name, held))
+  game.stack:push(QuantityBox.new(game, {
+    max = math.max(1, math.floor(held or 1)),
+    onDone = function(qty)
+      self.message = nil
+      if not qty or qty <= 0 then return end
+      done(qty, name)
+    end,
+  }))
+end
+
+-- DEPOSIT: the bag's list, the bag's words, the PC's store.
+function Gen3BagMenu:depositItem(id)
+  local game = self.game
+  if Gen3BagMenu.isImportant(game, id) then
+    Sound.play(game.data, "Press_AB")
+    return self:tell(bagWord(game, "cantStore"))
+  end
+  if self:pcFull(id) then
+    return self:tell(bagWord(game, "noRoomStore"))
+  end
+  local held = (game.save.inventory or {})[id] or 1
+  self:askQuantity(id, held, bagWord(game, "depositPrompt"), function(qty, name)
+    Bag.remove(game.save, id, qty)
+    game.save.pcItems = game.save.pcItems or {}
+    game.save.pcItems[id] = (game.save.pcItems[id] or 0) + qty
+    self:rebuild()
+    Sound.play(game.data, "Withdraw_Deposit")
+    self:tell(fillLine(bagWord(game, "deposited"), name, qty))
+  end)
+end
+
+-- WITHDRAW: the PC's list, the PC's words, the bag as the destination.
+function Gen3BagMenu:withdrawItem(id)
+  local game = self.game
+  local pc = game.save.pcItems or {}
+  local held = pc[id] or 1
+  self:askQuantity(id, held, Gen3BagMenu.pcWord(game, "withdrawPrompt"),
+    function(qty, name)
+      if not Bag.add(game.save, id, qty, game.data) then
+        return self:tell(Gen3BagMenu.pcWord(game, "bagFull"))
+      end
+      pc[id] = pc[id] - qty
+      if pc[id] <= 0 then pc[id] = nil end
+      self:rebuild()
+      Sound.play(game.data, "Withdraw_Deposit")
+      self:tell(fillLine(Gen3BagMenu.pcWord(game, "withdrew"), name, qty))
+    end)
+end
+
+-- TOSS, out of the PC rather than the bag: the same three lines the bag's own
+-- toss uses, because they are the same three strings on the cartridge.
+function Gen3BagMenu:tossStored(id)
+  local game = self.game
+  if Gen3BagMenu.isImportant(game, id) then
+    Sound.play(game.data, "Press_AB")
+    return self:tell(bagWord(game, "tossImportant"))
+  end
+  local pc = game.save.pcItems or {}
+  local held = pc[id] or 1
+  self:askQuantity(id, held, bagWord(game, "tossHowMany"), function(qty, name)
+    local TextBox = require("src.render.TextBox")
+    game.stack:push(TextBox.new(game,
+      fillLine(bagWord(game, "tossConfirm"), name, qty), nil, {
+        choice = function(yes)
+          if not yes then return end
+          pc[id] = (pc[id] or 0) - qty
+          if pc[id] <= 0 then pc[id] = nil end
+          self:rebuild()
+          self:tell(fillLine(bagWord(game, "tossedMany"), name, qty))
+        end,
+      }))
+  end)
+end
+
 function Gen3BagMenu:choose()
   local row = self:selected()
   if not row or row.close then return self:close() end
+  -- The PC's three rows act on the pick instead of asking what to do with
+  -- it: on the cartridge the question was asked before the list opened.
+  if self.store == "deposit" then return self:depositItem(row.id) end
+  if self.store == "withdraw" then return self:withdrawItem(row.id) end
+  if self.store == "toss" then return self:tossStored(row.id) end
+  -- ...and a bag opened AT A COUNTER sells what is picked and stays open, the
+  -- way the cartridge's shop flag makes it
+  if self.sell then
+    return require("src.ui.Gen3ShopMenu").sellItem(self.game, row.id, {
+      say = function(text) self:say(text) end,
+      refresh = function() self:rebuild() end,
+    })
+  end
   -- a bag opened to ANSWER A QUESTION hands the answer back and closes; it
   -- does not offer to use or toss what was picked
   if self.pick then
@@ -324,15 +613,49 @@ function Gen3BagMenu:choose()
 end
 
 -- The pocket's own action list, as the cartridge lists it, or nil for a
--- dataset imported before that stage existed.
-function Gen3BagMenu:actionsFor(id)
-  local menu = (self.game.data.constants or {}).gen3ItemMenu
+-- dataset imported before that stage existed.  Asked from two places -- the
+-- screen that draws it, and the SELECT button, which wants to know whether
+-- REGISTER is one of the rows -- so the POCKET RULE lives here once.  It is
+-- not BagMenu's: this one folds Emerald's own pocket names onto the engine's
+-- (KEY_ITEMS -> KEY_ITEM), and the action lists are keyed by the folded name.
+function Gen3BagMenu.actionList(game, id)
+  local menu = (game and game.data and game.data.constants or {}).gen3ItemMenu
   if type(menu) ~= "table" then return nil end
-  local def = self.game.data.items and self.game.data.items[id]
+  local def = game.data.items and game.data.items[id]
   local list = menu.pockets and menu.pockets[pocketOf(def, id)]
   if not list then return nil end
+  return list, menu
+end
+
+-- ...and the one question the overworld asks of it: may this item sit on
+-- SELECT?  Emerald asks the POCKET rather than the item -- the whole KEY
+-- ITEMS pocket offers REGISTER and nothing else does -- which is why no Hoenn
+-- item carries a per-item flag for it to be read off.
+function Gen3BagMenu.canRegister(game, id)
+  local list, menu = Gen3BagMenu.actionList(game, id)
+  for _, action in ipairs(list or {}) do
+    if (menu.kinds or {})[action] == "register" then return true end
+  end
+  return false
+end
+
+function Gen3BagMenu:actionsFor(id)
+  local list, menu = Gen3BagMenu.actionList(self.game, id)
+  if not list then return nil end
+  -- ...AND REGISTER TURNS INTO DESELECT ON THE ITEM ALREADY ON THE BUTTON.
+  --
+  -- The cartridge keeps ONE key-item list and overwrites that cell when the
+  -- item under the cursor is the registered one (SetMenuActions); it is not a
+  -- second list, which is why the import records the pair rather than a sixth
+  -- pocket.  Without the swap the row still says REGISTER after you have
+  -- registered something, and pressing it un-registers -- so the menu was
+  -- telling you the opposite of what the button would do.
+  local swap = (menu.deselect and menu.register
+                and id == (self.game.save or {}).registeredItem)
+               and menu.register or nil
   local entries = {}
   for i, action in ipairs(list) do
+    if swap and action == swap then action = menu.deselect end
     entries[i] = { label = menu.labels[action] or "",
                    kind = menu.kinds[action] or "other" }
   end
@@ -369,9 +692,14 @@ function Gen3BagMenu:act(kind, id)
     return
   end
   if kind == "register" then
-    -- ItemMenu_Register says nothing; the list redraws with the item marked
+    -- ItemMenu_Register says nothing: the badge on the row and the DESELECT
+    -- row next time are the whole acknowledgement, so the list has to be
+    -- rebuilt or the screen genuinely does not change.
     game.save.registeredItem = (game.save.registeredItem ~= id) and id or nil
     Sound.play(game.data, "Press_AB")
+    self:rebuild()
+    Logger.info("gen3 bag: SELECT is now %s",
+                tostring(game.save.registeredItem or "empty"))
     return
   end
   if kind == "toss" then
@@ -423,6 +751,8 @@ function Gen3BagMenu:toss(id)
 end
 
 function Gen3BagMenu:update(dt)
+  -- the cursor blinks, so the screen counts frames (see drawRows)
+  self.tick = (self.tick or 0) + 1
   if self.script then self.script(self) end
   if self.noInput then return end
   local input = self.game.input
@@ -436,6 +766,26 @@ function Gen3BagMenu:update(dt)
 end
 
 -- THE LIST'S OWN GEOMETRY, off the cartridge's ListMenuTemplate: the item's
+-- The badge itself, loaded once and drawn wherever the registered row is.
+-- Which of the two the player wears is the same question the background asks.
+function Gen3BagMenu:drawRegisteredBadge(win, rowY)
+  local rec = (self:screen() or {}).registered
+  if type(rec) ~= "table" then return end
+  local player = (self.game.save or {}).player or {}
+  local path = (player.gender == "girl" and rec.female)
+               or rec.male or rec.female
+  if type(path) ~= "string" then return end
+  if self._badge == nil or self._badgePath ~= path then
+    local ok, img = pcall(require("src.render.Assets").image, path)
+    self._badge, self._badgePath = (ok and img) or false, path
+  end
+  if not self._badge then return end
+  love.graphics.setColor(1, 1, 1, 1)
+  love.graphics.draw(self._badge,
+                     win.x + (tonumber(rec.x) or 96),
+                     rowY + (tonumber(rec.dy) or -1))
+end
+
 -- x inside the window, the cursor's, the first row's y and the pitch.  The
 -- quantity is right-aligned to `quantityRight` pixels in, which is where the
 -- cartridge puts it -- not to the window's far edge, which is what this drew
@@ -455,14 +805,62 @@ local function drawRows(self, inset)
     if not row then break end
     local y = top + i * pitch + inset
     Font.draw(row.label, itemX, y)
+    -- THE BADGE ON THE ITEM THAT IS ON THE SELECT BUTTON.
+    --
+    -- Reported from play: "Registering still isnt working in gen 3 when
+    -- register is selected it does nothing".  It was working -- the pick
+    -- reached the save and SELECT ran it -- and it LOOKED like nothing,
+    -- because the cartridge acknowledges a registration in two places and
+    -- this screen had neither.  This is the first: the little SEL button it
+    -- blits beside the item (01AB66C), at the list window's own x + 96 and a
+    -- pixel above the row.  There is no message anywhere in the flow, so
+    -- without this and the DESELECT swap below, an unchanged screen is the
+    -- whole of the feedback.
+    if row.id and row.id == (self.game.save or {}).registeredItem then
+      self:drawRegisteredBadge(win, top + i * pitch)
+    end
     if row.qty and row.qty > 1 then
       local qty = Strings("x%d", row.qty)
       Font.draw(qty, qtyRight - Font.width(qty), y)
     end
     if first + i == self.index then
-      Font.drawCode(Theme.cursor, cursorX, y)
+      -- WHAT MARKS THE CHOSEN ROW, and it is not an arrow.
+      --
+      -- Reported from play: "the highlighted item is supposed to have a red
+      -- box flashing around it not a arrow for the bag".  The port drew
+      -- Theme.cursor -- the Game Boy's triangle -- because that is what every
+      -- other list here uses; Hoenn's bag frames the whole row instead, and
+      -- the frame blinks.
+      --
+      -- THE COLOUR IS THE CARTRIDGE'S OWN, not a red written down here: the
+      -- pocket-dot marker's colour is already read out of both palettes
+      -- (gen3BagScreen.pocketDots.selected.colour), and it is the same
+      -- selection colour -- red in the boy's palette, blue in the girl's --
+      -- so the two marks on this screen agree by construction rather than by
+      -- a second opinion.  A cache without it falls back to red, which is
+      -- what the boy's palette holds.
+      local mark = (r.pocketDots or {}).selected
+      local player = (self.game.save or {}).player or {}
+      local rgb = (mark and mark.colour
+                   and ((player.gender == "girl" and mark.colour.female)
+                        or mark.colour.male or mark.colour.female))
+                  or { 255, 0, 0 }
+      -- half a second lit, half dark, off the screen's own frame count
+      if math.floor((self.tick or 0) / 30) % 2 == 0 then
+        local boxY = top + i * pitch
+        love.graphics.setColor(rgb[1] / 255, rgb[2] / 255, rgb[3] / 255, 1)
+        love.graphics.rectangle("fill", cursorX, boxY, win.width - (cursorX - win.x), 1)
+        love.graphics.rectangle("fill", cursorX, boxY + pitch - 1,
+                                win.width - (cursorX - win.x), 1)
+        love.graphics.rectangle("fill", cursorX, boxY, 1, pitch)
+        love.graphics.rectangle("fill", win.x + win.width - 1, boxY, 1, pitch)
+        -- back to the ink the rows are printed in, not to white: the next
+        -- row's label draws immediately after this
+        love.graphics.setColor(0, 0, 0, 1)
+      end
     end
   end
+  love.graphics.setColor(0, 0, 0, 1)
 end
 
 -- The bag picture for this save, and the frame for the pocket in front.
@@ -541,11 +939,49 @@ function Gen3BagMenu:draw()
   local inset = math.max(0, math.floor((ROW_PITCH - Font.glyphHeight()) / 2))
   local r = self:screen()
 
+  -- THE PICTURE IS 240 COLUMNS AND THE SURFACE MAY BE WIDER.
+  --
+  -- Same shape as the intro's: every rectangle, window and cursor below is
+  -- measured against the cartridge's own screen, so rather than rewrite them
+  -- the whole page is SHIFTED into the middle and the slack either side is
+  -- filled from the field's own edge columns.  Stretching a one-pixel column
+  -- sideways can only ever repeat a colour that is already the whole column,
+  -- so the margin is the background continuing rather than anything invented
+  -- -- the left edge is the striped field, the right is the list panel's own
+  -- border.
+  local Gen3Wide = gen3Wide()
+  local surfaceW = select(1, Gen3Wide.uiSize())
+  local margin = Gen3Wide.inset(surfaceW)
+  if margin > 0 then
+    local field = not self.pcList and self:background() or nil
+    love.graphics.setColor(0, 0, 0, 1)
+    love.graphics.rectangle("fill", 0, 0, surfaceW, GBA_H)
+    if field then
+      local fw, fh = field:getDimensions()
+      love.graphics.setColor(1, 1, 1, 1)
+      -- the two one-pixel edge columns, cut once: built inline they were two
+      -- Quad objects on every frame the bag is open
+      local left, right = edgeQuads(fw, fh)
+      love.graphics.draw(field, left, 0, 0, 0, margin, 1)
+      love.graphics.draw(field, right, margin + GBA_W, 0, 0, margin + 1, 1)
+    end
+    love.graphics.setColor(1, 1, 1, 1)
+  end
+  love.graphics.push()
+  love.graphics.translate(margin, 0)
+
   -- THE BACKGROUND, and only the drawn boxes when there isn't one.  The
   -- cartridge's field carries the three panels, the pocket tabs and the hole
   -- the item icon sits in, all in one 240x160 picture; drawing boxes on top
   -- of it would double every border.
-  local field = self:background()
+  -- ...AND NOT THE BAG'S FIELD WHEN THIS IS THE PC.  The cartridge's item
+  -- storage is its own screen with its own background, and this port has not
+  -- read that one -- so the honest thing is the port's own drawn windows
+  -- rather than the BAG's picture, whose printed pocket tabs would sit over
+  -- a list that has no pockets and label it wrongly.  Everything with meaning
+  -- in it -- the list, the counts, the icon, the description, the words -- is
+  -- still the cartridge's.
+  local field = not self.pcList and self:background() or nil
   if field then
     love.graphics.setColor(1, 1, 1, 1)
     love.graphics.draw(field, 0, 0)
@@ -560,8 +996,10 @@ function Gen3BagMenu:draw()
     end
   end
 
-  -- the bag itself, tilted toward the pocket in front
-  local image, quad = self:bagFrame()
+  -- the bag itself, tilted toward the pocket in front -- and no bag at all on
+  -- the PC's list, which is not the bag
+  local image, quad = nil, nil
+  if not self.pcList then image, quad = self:bagFrame() end
   if image and quad then
     local B = r.bag or FALLBACK.bag
     love.graphics.setColor(1, 1, 1, 1)
@@ -584,7 +1022,7 @@ function Gen3BagMenu:draw()
   -- showing properly".  They were not showing at all: this used to draw a
   -- one-pixel underline of its own invention below the cell, because nothing
   -- had gone looking for the tile the cartridge swaps in.
-  local dots = r.pocketDots or FALLBACK.pocketDots
+  local dots = not self.pcList and (r.pocketDots or FALLBACK.pocketDots) or nil
   local mark = dots and dots.selected
   if dots and mark and (tonumber(dots.count) or 0) > 0 then
     local step = math.max(1, math.floor(tonumber(dots.step) or 8))
@@ -630,7 +1068,8 @@ function Gen3BagMenu:draw()
   -- the border by a pixel.
   love.graphics.setColor(0, 0, 0, 1)
   local pocketBox = self:box("pocketName")
-  local name = self.pockets[self.pocket].name
+  local name = self.pcList and Gen3BagMenu.pcWord(self.game, "title")
+               or self.pockets[self.pocket].name
   local nameY = pocketBox.y
                 + math.max(0, math.floor((pocketBox.height - Font.glyphHeight()) / 2))
   Font.draw(name, pocketBox.x + math.max(0, math.floor((pocketBox.width - Font.width(name)) / 2)),
@@ -641,13 +1080,30 @@ function Gen3BagMenu:draw()
   -- does not have at all
   local desc = self:box("description")
   local D = r.description or FALLBACK.description
-  local text = row and (row.close and Strings("Close the BAG.")
-                        or row.description) or ""
+  -- AN EMPTY PC SAYS SO.  "There are no items." is the cartridge's line for a
+  -- storage list with nothing but CANCEL in it, and without it the screen
+  -- opens on a blank panel that reads as a screen that failed to load.
+  local text
+  if self.message then
+    text = self.message
+  elseif self.pcList and #self.rows <= 1 then
+    text = Gen3BagMenu.pcWord(self.game, "noItems")
+  elseif self.pcList and row and row.close then
+    -- the cartridge's own line for the CANCEL that ends this list, which is
+    -- the fourth of ITEM STORAGE's row descriptions; never "Close the BAG.",
+    -- because the bag is not what this closes
+    local describe = ((self.game.data.constants or {}).gen3PCMenu or {}).describe
+    text = (type(describe) == "table" and describe[#describe]) or ""
+  else
+    text = row and (row.close and Strings("Close the BAG.")
+                    or row.description) or ""
+  end
   local y = desc.y + (tonumber(D.y) or 1) + inset
   for line in tostring(text or ""):gmatch("[^\n]+") do
     Font.draw(line, desc.x + (tonumber(D.x) or 3), y)
     y = y + ROW_PITCH
   end
+  love.graphics.pop()
   love.graphics.setColor(1, 1, 1, 1)
 end
 

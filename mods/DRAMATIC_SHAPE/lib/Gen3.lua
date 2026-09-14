@@ -1876,6 +1876,67 @@ function Gen3.forMap(map)
                        and mA ~= mB2 and mA ~= mC2
                        and cx < x1 and cy < y1
                        and (capA or 0) > 0 and (capB2 or 0) > 0
+                       -- ...AND A 2x2 LUMP INDOORS IS A TABLE.
+                       --
+                       -- IN-GAME LOCATION: the DINING TABLE in RUSTBORO
+                       -- CITY's CuttersHouse (8..9, 4..5) and in
+                       -- RustboroCity_Flat2_1F (9..10, 3..4) -- metatiles
+                       -- 874/875 over 882/883 -- reported as "tables are
+                       -- also appearing as cylinders too or canapys not
+                       -- sure which in rustboro".  It built as a 32px
+                       -- yellow barrel.
+                       --
+                       -- WHICH BRANCH IT REACHED THE LATHE BY.  Not this
+                       -- file's taper gate: that gate is on the per-cell
+                       -- `elseif` below and this 2x2 branch consults
+                       -- neither it nor `blockedRun`.  It tests only that
+                       -- the four quarters are four different drawings and
+                       -- that two of them draw a cap, and a 2x2 table is
+                       -- exactly that (874 cap 1, 882 cap 12).
+                       --
+                       -- AND THE TAPER GATE WOULD NOT HAVE CAUGHT IT
+                       -- EITHER, which is why this is a different test.
+                       -- MEASURED on the Rustboro table: per quarter 874
+                       -- and 875 taper 1 and 882 and 883 taper 10, and over
+                       -- the 32 x 32 composite this branch actually lathes
+                       -- the taper is 2 -- because the table's two legs sit
+                       -- at the OUTER corners and bracket the full span.  A
+                       -- table legitimately narrows at the bottom; that is
+                       -- what legs are.  The taper gate is untouched.
+                       --
+                       -- WHAT DOES SEPARATE THEM is the reading this file
+                       -- already makes and this branch never made:
+                       -- "FURNITURE IS A DISCRETE OBJECT; A WALL IS A RUN".
+                       -- DERIVED over all 518 maps, on every 2x2 lump this
+                       -- branch claims INDOORS -- 26 anchors, 104 cells:
+                       --
+                       --   blob   4..6   8 anchors   every one a table
+                       --                 (Rustboro CuttersHouse and
+                       --                 Flat2_1F 874; MossdeepCity_House4,
+                       --                 PetalburgCity_House2 and
+                       --                 SlateportCity_NameRatersHouse 588;
+                       --                 Route117_PokemonDayCare 553;
+                       --                 AbandonedShip_CaptainsOffice 524;
+                       --                 LilycoveCity_PokemonTrainerFanClub
+                       --                 770)
+                       --   blob 244..1038  18 anchors  every one cave rock
+                       --                 (RusturfTunnel 687, NewMauville
+                       --                 1038, FarawayIsland_Interior 244,
+                       --                 BirthIsland_Exterior 731)
+                       --
+                       -- There is no third mode: nothing indoors lands
+                       -- between 6 and 244.  So indoors a 2x2 lump standing
+                       -- free in a furniture-sized blob is furniture, and a
+                       -- 2x2 lump inside the room's own mass is rock.  8 is
+                       -- BOULDER_RUN_MAX, the same number and the same
+                       -- reason as the branch below.
+                       --
+                       -- OUTDOORS NOTHING MOVES.  `blockedRun` answers 0
+                       -- outdoors by construction, so the clause is short-
+                       -- circuited there and Route 111's desert, the mesa
+                       -- and every other outdoor rock is untouched.
+                       and (ctx.outdoor
+                            or blockedRun(cx, cy) > BOULDER_RUN_MAX)
                        and rocky(cx + 1, cy) and rocky(cx, cy + 1)
                        and rocky(cx + 1, cy + 1)
                        and not claimed[ie] and not claimed[is]
@@ -2546,8 +2607,33 @@ function Gen3.forMap(map)
               end
               local f2 = m2 and Gen3.solidForMap(map, m2)
               local st2 = m2 and art.stats[m2]
-              if not (m2 and not pin2 and not named2 and f2 and f2 > 0.12
-                      and st2) then
+              -- ...AND THE MIDDLE OF A TABLE SHOWS NO FLOOR.
+              --
+              -- IN-GAME LOCATION: the 3x2 DINING TABLE in RUSTBORO CITY,
+              -- House1 (3..5, 4..5) and Flat1_2F (2..4, 4..5) -- metatiles
+              -- 894/895/910 over 902/903/911 -- and the same table in its
+              -- other rooms.  Its OUTER columns reached the furniture rule
+              -- and came out `tabletop` at 12; its MIDDLE column fell
+              -- through to `wall` and stood as a 24px column through the
+              -- middle of the table.
+              --
+              -- The per-cell rule above is right to ask `f > 0.12`: on its
+              -- own merits a cell with no floor showing round it is a wall.
+              -- DERIVED, off this map's carve: 895 keeps 0.062 of its cell
+              -- and 903 keeps 0.078, because the middle of a table IS
+              -- tablecloth edge to edge -- there is no floor to see past it.
+              --
+              -- But this rule is not asking about a cell, it is asking about
+              -- an OBJECT, and an object is its blob.  The blob test that
+              -- follows -- every cell unpinned, unnamed and carrying no
+              -- other carve answer, at least one cell already furniture --
+              -- is what establishes that this blob is a piece of furniture;
+              -- once it has, the interior of that piece does not have to
+              -- prove itself again.  So the floor-visibility threshold is
+              -- dropped HERE and kept there.  A map with no carve of its own
+              -- (`f2` nil) still refuses: without a carve there is nothing
+              -- to have established anything with.
+              if not (m2 and not pin2 and not named2 and f2 and st2) then
                 ok = false
                 break
               end
@@ -2555,6 +2641,16 @@ function Gen3.forMap(map)
               if prior == "prop" or prior == "tabletop" then
                 part = true
               elseif prior == "cylinder" or prior == "canopy" then
+                want[#want + 1] = { i2, (st2.n2 > 0) and "prop" or "tabletop" }
+              elseif prior == nil then
+                -- ...AND A CELL THE RULE ABOVE DECLINED IS TAKEN TOO.
+                -- Nothing has claimed this cell, so without this it is the
+                -- wall the region flood makes of every unclaimed blocked
+                -- cell -- the 24px column through RUSTBORO CITY House1's
+                -- dining table.  Only ever ADDING, exactly as the round
+                -- classes above: no cell that already carries an answer
+                -- moves, and a blob carrying any OTHER answer still drops
+                -- out entire on the branch below.
                 want[#want + 1] = { i2, (st2.n2 > 0) and "prop" or "tabletop" }
               elseif prior ~= nil then
                 ok = false
@@ -3992,6 +4088,31 @@ function Gen3.forMap(map)
       local counts = ctx.metatileCounts()
       return (counts[mm] or 0) <= RARE_BUILD
     end
+    -- THE BUILDING'S OWN ART, as this function reads it everywhere else:
+    -- "a building's art is BESPOKE -- the Mart's metatiles appear once or
+    -- twice on the whole map -- and the landscape it backs onto TILES".
+    -- Written out here because `runAbove` now asks it directly (see A
+    -- WALK-BEHIND ROW IN THE MIDDLE OF A BUILDING, below); the test and the
+    -- threshold are the ones already used at the art trim and at the
+    -- Mirage Tower's overhead growth, unchanged.
+    local function bespokeCell(cx, cy)
+      local mm = ctx.metatileAt(cx, cy)
+      if mm == nil then return false end
+      local counts = ctx.metatileCounts()
+      return (counts[mm] or 0) <= RARE_BUILD
+    end
+    -- ...and drawn ABOVE THE PLAYER, filling its cell, and bespoke: the
+    -- three-part test for "a row of this building you walk behind".
+    local function overheadBespoke(cx, cy)
+      local mm = ctx.metatileAt(cx, cy)
+      if mm == nil then return false end
+      local an = Gen3.analyse(map.tileset)
+      local st = an and an.stats and an.stats[mm]
+      if not (st and st.overhead and (st.solid or 0) >= 0.9) then
+        return false
+      end
+      return bespokeCell(cx, cy)
+    end
     local function runAbove(cx, doorY)
       local y = doorY - 1
       if y < 0 then return nil end
@@ -4013,6 +4134,80 @@ function Gen3.forMap(map)
       local top = mass
       while top - 1 >= 0 and blockedCell(cx, top - 1) and (y - (top - 1)) < 8 do
         top = top - 1
+      end
+      -- ...AND A WALK-BEHIND ROW IN THE MIDDLE OF A BUILDING IS STILL THE
+      -- BUILDING.
+      --
+      -- MOTIVATED BY TRAINER HILL, ROUTE 111 (29..33, 106..113) -- the hall
+      -- on the route north of Mauville, reported as "isnt drawn as a
+      -- building and is a pit instead".
+      --
+      -- This walk stops at the first cell that is not blocked, and Emerald
+      -- draws a band ACROSS THE MIDDLE of this building on the above-player
+      -- layer so the player passes behind it: row 110, metatiles 940 and
+      -- 1015, each laid exactly ONCE on the map, with five blocked rows of
+      -- the same bespoke drawing above it and two below.  So the door
+      -- column's run came back 111..112 -- two rows of a seven-row hall --
+      -- and `roofTop` then measured the building's ROOFLINE AT ITS
+      -- SHOPFRONT, y = 112.  A flank column is admitted only by matching
+      -- that roofline within a row and the real roof is at 106..110, so all
+      -- five columns were refused and `ctx.buildings` claimed 5 cells of a
+      -- 40-cell building.  The hall then fell through to the generated role
+      -- table as `cliff` and the terrace reader built its drawing as relief:
+      -- 96px at the north-west corner falling to a floor of ZERO at
+      -- (30..33, 109..110) where the ground around it is 16.  A hole in the
+      -- ground -- the pit in the report.
+      --
+      -- This function already grows a footprint UP through exactly these
+      -- rows at its other end ("A BUILDING YOU WALK BEHIND IS STILL THE
+      -- BUILDING" -- the Mirage Tower, below).  The same three-part test --
+      -- drawn overhead, solid, and bespoke -- is asked of a gap INSIDE the
+      -- mass, so the walk may step over one as well as start and finish on
+      -- one.
+      --
+      -- Bounded hard, because this is the walk everything downstream is
+      -- measured from -- the footprint, the roofline, the founded facade:
+      --
+      --   * the building's own art must continue on BOTH sides of the gap:
+      --     the row the walk stands on and the row it resumes at are both
+      --     bespoke.  That is this function's own reading of "a building's
+      --     art is BESPOKE and the landscape it backs onto TILES", and it
+      --     is what keeps the walk out of the map border and off a
+      --     mountain: without it Route 113, Route 123 and Lilycove each run
+      --     a column clean to row 0, and Mt Chimney runs one five rows up
+      --     the ash bank.
+      --   * the gap is ONE row (derived: at two rows the region-wide result
+      --     is identical, so one row is all Hoenn draws this way).
+      --   * the existing eight-row ceiling from the door still binds.
+      --   * OUTDOORS ONLY, with the other rules in this function that are:
+      --     indoors it is answering about rooms and the warps between them.
+      --
+      -- MEASURED over all 518 maps and all 1,312 warps: NINE columns move,
+      -- over four maps, and every one of them is a structure Emerald draws
+      -- with a walk-behind band across its middle --
+      --
+      --   Route111                    cols 31,32,33   Trainer Hill
+      --   BattleFrontier_OutsideEast  cols 35,36,42,43
+      --   MossdeepCity                col  25
+      --   LilycoveCity                col  54
+      local WALK_BEHIND_GAP = 1   -- derived; 2 changes nothing in Hoenn
+      while ctx.outdoor and bespokeCell(cx, top) do
+        local g = 0
+        while g < WALK_BEHIND_GAP and top - 1 - g >= 0
+              and not blockedCell(cx, top - 1 - g)
+              and overheadBespoke(cx, top - 1 - g) do
+          g = g + 1
+        end
+        if g == 0 then break end
+        local nxt = top - g - 1
+        if nxt < 0 or not blockedCell(cx, nxt) then break end
+        if not bespokeCell(cx, nxt) then break end
+        if (y - nxt) >= 8 then break end
+        top = nxt
+        while top - 1 >= 0 and blockedCell(cx, top - 1)
+              and (y - (top - 1)) < 8 do
+          top = top - 1
+        end
       end
       return top, y
     end

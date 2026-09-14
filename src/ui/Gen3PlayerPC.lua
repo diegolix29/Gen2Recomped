@@ -24,14 +24,15 @@
 -- happen to agree on that one; what they do not agree on is the menu ABOVE
 -- it, which Gen 1 does not have.
 --
--- WHAT WORKS AND WHAT DOES NOT.  Item storage is the same store, the same
--- rules and the same three flows the older screen already implements -- what
--- differed between the cartridges was the furniture, not what withdrawing an
--- item does, so those are reused rather than rewritten.  MAILBOX and
--- DECORATION are the cartridge's rows and are shown as the cartridge shows
--- them, but this port has neither mail nor secret-base decorations yet, so
--- choosing one says so rather than doing nothing: an empty mailbox is a
--- state the cartridge has too, and it is the honest answer here.
+-- WHAT WORKS AND WHAT DOES NOT.  Item storage is the same STORE as the Game
+-- Boy PC's -- save.pcItems -- but not the same screens: this used to hand all
+-- three rows to src/ui/PlayerPC.lua, whose flows are pokered's, and that is
+-- what "falling back to gen1" was.  They open Emerald's now; see itemStorage
+-- below for which screen each row is and how the cartridge says so.  MAILBOX
+-- and DECORATION are the cartridge's rows and are shown as the cartridge
+-- shows them, but this port has no mail yet, so choosing it says so rather
+-- than doing nothing: an empty mailbox is a state the cartridge has too, and
+-- it is the honest answer here.
 
 local Menu = require("src.ui.Menu")
 local Strings = require("src.core.Strings")
@@ -59,20 +60,48 @@ function Gen3PlayerPC.words(game, menu)
   return list or {}
 end
 
--- ITEM STORAGE, in the cartridge's order.  The three flows are the older
--- screen's -- see PlayerPC.withdraw and friends.
+-- ITEM STORAGE, in the cartridge's order, and its three screens.
+--
+-- Reported from play: "the item deposit and withdrawal doesn't seem to work
+-- like it would in emerald and is falling back to gen1 menu".  It was: these
+-- three rows called PlayerPC.withdraw / .deposit / .toss, which are the Game
+-- Boy PC's flows, so every one of them opened a pokered ListMenu inside
+-- Emerald's PC.  The store is the same store, but the SCREENS are not the
+-- same screen and neither are the words.
+--
+-- WHICH SCREEN EACH ROW OPENS is settled by where the cartridge keeps its
+-- sentences.  "Deposit how many {VAR1}(s)?" and "Important items can't be
+-- stored in the PC!" are BAG strings, sat among the bag's own; "Withdraw how
+-- many {VAR1}(s)?" and "There are no items." sit in the PC's block beside
+-- these four row descriptions.  So DEPOSIT opens the BAG and deposits what
+-- you pick there, and WITHDRAW and TOSS open a list of the PC.  All three are
+-- Gen3BagMenu (see its `store` option) -- one screen, because on the
+-- cartridge two of the three ARE the bag's screen.
+--
+-- ...AND THE LINE UNDER THE MENU, which the cartridge has and this port has
+-- been reading and throwing away since the menu went in: each row carries its
+-- own description ("Take out items from the PC."), and Menu now draws the
+-- highlighted row's in a box along the bottom.
+local STORE_MODES = { "withdraw", "deposit", "toss" }
+
+local function openStore(game, mode)
+  local Gen3BagMenu = require("src.ui.Gen3BagMenu")
+  game.save.pcItems = game.save.pcItems or {}
+  game.stack:push(Gen3BagMenu.new(game, { store = mode }))
+end
+
 local function itemStorage(game, onCancel)
   local words = Gen3PlayerPC.words(game, "itemStorage")
-  local PC = require("src.ui.PlayerPC")
+  local describe = (record(game) or {}).describe or {}
   game.save.pcItems = game.save.pcItems or {}
-  local flows = { PC.withdraw, PC.deposit, PC.toss }
   local rows = {}
   for i, label in ipairs(words) do
-    local flow = flows[i]
+    local mode = STORE_MODES[i]
     rows[#rows + 1] = {
       label = Strings(label),
-      keepOpen = flow ~= nil,
-      onSelect = flow and function() flow(game) end or nil,
+      describe = describe[i],
+      keepOpen = mode ~= nil,
+      onSelect = mode and function() openStore(game, mode) end or nil,
     }
   end
   game.stack:push(Menu.new(game, rows, { noSound = true,

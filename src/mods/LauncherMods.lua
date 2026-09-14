@@ -528,17 +528,112 @@ end
 -- CacheFs so a portable install's real files actually go away instead of
 -- love.filesystem no-opping outside the save directory (#330).  Directories
 -- are removed after their children, since rmdir refuses a non-empty one.
-local function removeTree(path)
+-- ------- reaching the game folder's real files
+
+-- A love.filesystem path (forward slashes, rooted at a mount) as a real path
+-- under `root`.
+function LauncherMods.realPath(root, rel)
+  return root .. CacheFs.SEP .. (rel:gsub("/", CacheFs.SEP))
+end
+
+-- Every real directory love.filesystem might be reading `mods/` out of: the
+-- portable game folder when portable mode is on, and otherwise the same game
+-- folders portable mode LOOKS in -- next to the .exe, inside the .app, the
+-- source directory of a `love <gamedir>` run.  A mod dropped in any of them
+-- shows up in the panel, so a delete has to be able to reach all of them.
+function LauncherMods.gameFolderRoots()
+  local roots, seen = {}, {}
+  local function add(dir)
+    if type(dir) == "string" and dir ~= "" and not seen[dir] then
+      seen[dir] = true
+      roots[#roots + 1] = dir
+    end
+  end
+  add(CacheFs.root())
+  for _, dir in ipairs(SaveData.gameFolders() or {}) do add(dir) end
+  return roots
+end
+
+-- The real folder holding this mod path, found by its manifest, or nil when
+-- only the save directory has it.  Used for the message when a delete cannot
+-- finish -- "it is still there" is no use without "and it is HERE".
+function LauncherMods.realFolder(path)
+  for _, root in ipairs(LauncherMods.gameFolderRoots()) do
+    local base = LauncherMods.realPath(root, path)
+    local f = io.open(base .. CacheFs.SEP .. "manifest.json", "rb")
+    if f then f:close() return base end
+  end
+  return nil
+end
+
+-- A CHECKOUT IS NOT AN INSTALL, and this is the one folder the launcher must
+-- not delete.
+--
+-- A mod author keeps the mod's own repository in mods/ and works in it -- the
+-- DramaticShapes folder in this very tree is a git checkout with its history,
+-- its branches and its unpushed work in it.  Uninstall removes a directory
+-- recursively and nothing restores it, so obeying that click would destroy
+-- work the launcher never installed and cannot put back.  Saying so, with the
+-- path, costs one message and is recoverable; the alternative is not.
+--
+-- Probed on the REAL filesystem rather than through love.filesystem: physfs
+-- is a merged read-only view with its own rules about what it lists, and a
+-- guard that silently fails to see .git is worse than no guard at all.  ".git"
+-- is tested as a FILE too, which is what a worktree or a submodule has.
+local VCS_PROBES = { ".git/HEAD", ".git", ".hg/00changelog.i", ".svn/format" }
+
+function LauncherMods.checkoutAt(path)
+  for _, root in ipairs(LauncherMods.gameFolderRoots()) do
+    local base = LauncherMods.realPath(root, path)
+    for _, probe in ipairs(VCS_PROBES) do
+      local f = io.open(base .. CacheFs.SEP .. (probe:gsub("/", CacheFs.SEP)), "rb")
+      if f then f:close() return base end
+    end
+  end
+  return nil
+end
+
+-- `roots` are REAL game-folder paths to delete from as well, and only an
+-- explicit uninstall passes any.
+--
+-- THE DELETE THAT COULD NOT REACH THE FILES.
+--
+-- Reported from play twice over: "issue for people that want to delete mods or
+-- delete dramatic shapes, it says they're not installed but they appear in the
+-- launcher", and then "deleting the dramatic shapes mod still doesn't work".
+-- The first half was the id/folder mismatch (folderFor); this is the second,
+-- and it is the bigger one.
+--
+-- love.filesystem READS a mod from two places -- the save directory and the
+-- game folder -- and can only WRITE to the first.  A mod unzipped next to the
+-- executable, or a checkout sitting in the game folder's own mods/, therefore
+-- survived every delete: CacheFs reaches the game folder ONLY in portable
+-- mode, and without portable.txt both branches collapse to
+-- love.filesystem.remove, which no-ops outside the save directory.  The
+-- launcher then reported "Deleted <mod>" and the row came straight back,
+-- because the manifest it was reading had never been touched.
+--
+-- So the real files are removed too, under whichever game folder actually has
+-- them (SaveData.gameFolders is the same list portable mode looks in).  The
+-- enumeration still comes off love.filesystem, which is the only merged view
+-- of the two homes; the deletes just no longer stop at the save directory.
+local function removeTree(path, roots)
   local fs = love.filesystem
   local info = fs.getInfo(path)
   if not info then return end
   if info.type == "directory" then
     for _, child in ipairs(fs.getDirectoryItems(path)) do
-      removeTree(path .. "/" .. child)
+      removeTree(path .. "/" .. child, roots)
     end
     CacheFs.removeDir(path)
+    for _, root in ipairs(roots or {}) do
+      CacheFs.rmdirReal(LauncherMods.realPath(root, path))
+    end
   else
     CacheFs.remove(path)
+    for _, root in ipairs(roots or {}) do
+      os.remove(LauncherMods.realPath(root, path))
+    end
   end
   -- A portable install can still be carrying a pre-#330 copy in the OS save
   -- directory, which is where every install used to land and which physfs
@@ -662,10 +757,13 @@ function LauncherMods.adoptStrays() return scanStrays(true) end
 -- love.filesystem.mount only reaches a save-directory-relative path.
 -- opts.replace = true uninstalls an existing same-id mod first (updates /
 -- rollbacks).  opts.expectId, when set, refuses a zip whose manifest id differs.
+-- Returns true, id, installedVersion  |  nil, errString.  The version is the
+-- one the INSTALLED manifest.json declares, which is not always the one the
+-- release it came from claims -- see installFromRelease.
 function LauncherMods.installZip(source, opts)
-  local ok, result, err = pcall(LauncherMods._installZipInner, source, opts)
+  local ok, result, err, version = pcall(LauncherMods._installZipInner, source, opts)
   if not ok then return nil, "import failed: " .. tostring(result) end
-  return result, err
+  return result, err, version
 end
 
 function LauncherMods._installZipInner(source, opts)
@@ -764,8 +862,27 @@ function LauncherMods._installZipInner(source, opts)
       cleanup()
       return nil, "a mod named '" .. manifest.id .. "' is already installed"
     end
+    -- ...AND AN UPDATE MUST NOT SHADOW A WORKING TREE.
+    --
+    -- The same folder the delete refuses to remove (see checkoutAt): if the
+    -- installed copy is a checkout, it lives in the game folder, which this
+    -- build can only WRITE to in portable mode.  So the update would go to the
+    -- save directory instead and win the physfs search by sitting in front of
+    -- the checkout -- the author's own edits silently stop taking effect while
+    -- the folder they are editing looks untouched.  That is a worse failure
+    -- than not updating, and it is invisible.  The checkout is the install;
+    -- say so and let them pull.
+    local checkout = LauncherMods.checkoutAt(dest)
+    if checkout and not opts.allowCheckout then
+      cleanup()
+      return nil, ("'%s' is installed as a source checkout at %s -- update it "
+                   .. "there (git pull), or delete that folder and install the "
+                   .. "release"):format(manifest.id, checkout)
+    end
     -- drop the old tree before copy; enable-flag is preserved (uninstall
-    -- would clear it, which would surprise an update)
+    -- would clear it, which would surprise an update).  Save-directory only:
+    -- an install is not an uninstall and has no business deleting files out of
+    -- somebody's game folder.
     local savedPrefix = CacheFs.prefix
     CacheFs.prefix = ""
     removeTree(dest)
@@ -788,15 +905,34 @@ function LauncherMods._installZipInner(source, opts)
     cleanup()
     return nil, copyErr or "could not copy the mod files"
   end
+
+  -- ...AND THE COPY HAS TO BE THE ONE THE GAME WILL READ.
+  --
+  -- Everything above writes through CacheFs, which lands in the save directory
+  -- unless portable mode is on -- and love.filesystem reads BOTH homes.  The
+  -- save directory is searched first, so the new files win; this checks that
+  -- rather than trusting it, because when it is not true the symptom is a
+  -- launcher that says "Updated to 0.7.47" and then goes on reporting 0.7.47
+  -- as available forever, with nothing anywhere to say why.
+  local landed = fs.read(dest .. "/manifest.json")
+  local got = landed and decodeManifest(landed, dest) or nil
+  if got and manifest.version and got.version ~= manifest.version then
+    cleanup()
+    return nil, ("installed %s %s, but %s still reads %s -- an older copy in "
+                 .. "%s is in front of it"):format(
+      manifest.id, tostring(manifest.version), dest, tostring(got.version),
+      LauncherMods.realFolder(dest) or "the game folder")
+  end
+
   cleanup()
-  return true, manifest.id
+  return true, manifest.id, manifest.version
 end
 
 -- Install (or replace) a mod from a GitHub release zip URL.
 -- Returns true, version  |  nil, errString. Soft-fails: download / install /
 -- cleanup errors never throw into the launcher UI.
 function LauncherMods.installFromRelease(modId, release)
-  local ok, result, err = pcall(function()
+  local ok, result, err, mismatch = pcall(function()
     if type(modId) ~= "string" or modId == "" then
       return nil, "missing mod id"
     end
@@ -808,15 +944,39 @@ function LauncherMods.installFromRelease(modId, release)
       tostring(modId), tostring(release.version or os.time()))
     local localPath, dlErr = ModUpdate.downloadZip(release.zip.url, tmpName)
     if not localPath then return nil, dlErr end
-    local installed, res = LauncherMods.installZip(localPath, {
+    local installed, res, version = LauncherMods.installZip(localPath, {
       replace = true, expectId = modId,
     })
     pcall(love.filesystem.remove, localPath)
     if not installed then return nil, res end
-    return true, release.version or res
+
+    -- A RELEASE'S NUMBER AND ITS MANIFEST'S NUMBER ARE TWO DIFFERENT CLAIMS.
+    --
+    -- Reported from play: "updating ... keeps saying it updated but that
+    -- 0.7.47 is available".  It did update, and 0.7.47 was still available,
+    -- and both were true: DramaticShapes-Gen2Recomped-0.7.47.zip carries a
+    -- manifest.json that says `"version": "0.7.40"`.  The release is named by
+    -- its tag and the INSTALLED version is read from the manifest, so the
+    -- update check compares 0.7.47 against 0.7.40 again on the next pass, and
+    -- offers the same update forever.  Nothing is broken on either side of
+    -- that comparison; the zip is mis-stamped, and no number the launcher has
+    -- can tell it so on its own.
+    --
+    -- So the version handed back is the one that is actually installed, never
+    -- the tag -- "Updated to 0.7.40" after clicking 0.7.47 is a sentence that
+    -- points straight at the packaging -- and the disagreement is named
+    -- outright as a third return, because otherwise the loop is silent.
+    local mismatch = nil
+    if release.version and version and version ~= release.version then
+      mismatch = ("release %s installed, but its manifest.json says %s -- the "
+                  .. "zip is mis-stamped, so this update will keep being "
+                  .. "offered until the manifest matches the tag")
+        :format(tostring(release.version), tostring(version))
+    end
+    return true, version or release.version or res, mismatch
   end)
   if not ok then return nil, "install failed: " .. tostring(result) end
-  return result, err
+  return result, err, mismatch
 end
 
 -- Install a mod listed in a community index (src/mods/ModIndex.lua).
@@ -827,7 +987,7 @@ end
 -- zip fails the manifest check instead of installing the wrong mod.
 -- Returns true, version | nil, errString.
 function LauncherMods.installFromIndex(entry)
-  local ok, result, err = pcall(function()
+  local ok, result, err, mismatch = pcall(function()
     if type(entry) ~= "table" or type(entry.id) ~= "string" then
       return nil, "index entry has no mod id"
     end
@@ -839,7 +999,7 @@ function LauncherMods.installFromIndex(entry)
     return LauncherMods.installFromRelease(entry.id, release)
   end)
   if not ok then return nil, "install failed: " .. tostring(result) end
-  return result, err
+  return result, err, mismatch
 end
 
 -- uninstall(id) -> true  |  nil, errString
@@ -900,11 +1060,33 @@ function LauncherMods.uninstall(id)
   if not dest then
     return nil, "mod '" .. id .. "' is not installed"
   end
+  local checkout = LauncherMods.checkoutAt(dest)
+  if checkout then
+    return nil, ("'%s' is a source checkout at %s -- delete that folder "
+                 .. "yourself; the launcher will not remove a repository it "
+                 .. "did not install"):format(id, checkout)
+  end
   -- same root pin as installZip: the mods tree is not version-prefixed (#330)
   local savedPrefix = CacheFs.prefix
   CacheFs.prefix = ""
-  removeTree(dest)
+  removeTree(dest, LauncherMods.gameFolderRoots())
   CacheFs.prefix = savedPrefix
+
+  -- ...AND THEN CHECK, because this used to report a delete it had not done.
+  --
+  -- The old uninstall returned true whatever happened: every branch of
+  -- removeTree is best-effort and none of them answers.  With the files out of
+  -- reach that produced "Deleted <mod>" followed by the same row, at the same
+  -- version, still there -- the single most confusing way for this to fail.
+  -- The manifest is the test, because the manifest is what discover() reads:
+  -- while it is still readable the mod IS still installed, whatever is left of
+  -- the rest of the tree.
+  if fs.getInfo(dest .. "/manifest.json") then
+    local where = LauncherMods.realFolder(dest)
+    return nil, ("could not delete '%s': its files are still at %s"):format(
+      id, where or dest)
+  end
+
   -- Drop the enable flag so a reinstall of the same id starts from the
   -- loader's default (enabled) rather than a stale false.
   local options = SaveData.loadOptions()

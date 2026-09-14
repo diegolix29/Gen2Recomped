@@ -290,6 +290,98 @@ local function pokeballOrder(cols, rows)
   return order
 end
 
+-- B_TRANSITION_SHUFFLE: the screen's tiles are dealt out rather than swept.
+-- A hash rather than a random draw, so the same battle always shuffles the
+-- same way, which is what the cartridge's own permutation does.
+local function shuffleOrder(cols, rows)
+  local list = {}
+  for y = 0, rows - 1 do
+    for x = 0, cols - 1 do
+      -- a cheap integer hash: multiply, mix the halves, keep it deterministic
+      local h = (x * 73856093 + y * 19349663) % 1048573
+      h = (h * 2654435761) % 1048573
+      list[#list + 1] = { x, y, h }
+    end
+  end
+  table.sort(list, function(a, b)
+    if a[3] ~= b[3] then return a[3] < b[3] end
+    if a[2] ~= b[2] then return a[2] < b[2] end
+    return a[1] < b[1]
+  end)
+  local order = {}
+  for _, t in ipairs(list) do order[#order + 1] = { t[1], t[2] } end
+  return order
+end
+
+-- B_TRANSITION_RIPPLE: rings spreading out from the middle of the screen,
+-- which is what a sine written down the scanlines reads as.  Ordered by
+-- distance from the middle ROW rather than from a point: the cartridge's
+-- ripple moves the rows, not the pixels.
+local function rippleOrder(cols, rows)
+  local mid = (rows - 1) / 2
+  local bands = {}
+  for y = 0, rows - 1 do
+    local d = math.floor(math.abs(y - mid))
+    bands[d] = bands[d] or {}
+    for x = 0, cols - 1 do
+      bands[d][#bands[d] + 1] = { x, y }
+    end
+  end
+  local order = {}
+  for d = 0, rows do
+    for _, t in ipairs(bands[d] or {}) do order[#order + 1] = t end
+  end
+  return order
+end
+
+-- B_TRANSITION_WAVE: a front crossing the screen whose edge is a sine, so it
+-- arrives at different columns at different times down the screen.
+local WAVE_ROWS = 8              -- one whole wave over this many rows
+local WAVE_LEAN = 3              -- how many columns the crest runs ahead
+
+local function waveOrder(cols, rows)
+  local bands = {}
+  local most = cols + WAVE_LEAN * 2 + 2
+  for i = 0, most do bands[i] = {} end
+  for y = 0, rows - 1 do
+    local lead = math.floor(WAVE_LEAN
+                            * math.sin(y / WAVE_ROWS * 2 * math.pi) + 0.5)
+    for x = 0, cols - 1 do
+      local k = math.max(0, math.min(most, x - lead + WAVE_LEAN))
+      bands[k][#bands[k] + 1] = { x, y }
+    end
+  end
+  local order = {}
+  for i = 0, most do
+    for _, t in ipairs(bands[i] or {}) do order[#order + 1] = t end
+  end
+  return order
+end
+
+-- B_TRANSITION_POKEBALLS_TRAIL: balls cross the screen one row band at a
+-- time and the dark follows them, so the walk is a shallow diagonal -- much
+-- shallower than the shards' (ANGLE_RUN), because a ball travels far across
+-- for every row it drops.
+local TRAIL_RUN = 6
+
+local function trailOrder(cols, rows)
+  local bands = {}
+  local most = cols + rows * TRAIL_RUN
+  for i = 0, most do bands[i] = {} end
+  for y = 0, rows - 1 do
+    for x = 0, cols - 1 do
+      local k = (y % 2 == 0) and (x + y * TRAIL_RUN)
+                or ((cols - 1 - x) + y * TRAIL_RUN)
+      bands[k][#bands[k] + 1] = { x, y }
+    end
+  end
+  local order = {}
+  for i = 0, most do
+    for _, t in ipairs(bands[i] or {}) do order[#order + 1] = t end
+  end
+  return order
+end
+
 local GRID_BUILDERS = {
   spiralin     = spiralInGrid,
   spiralout    = spiralOutGrid,
@@ -299,6 +391,14 @@ local GRID_BUILDERS = {
   g3_slice     = sliceOrder,
   g3_angled    = angledOrder,
   g3_pokeball  = pokeballOrder,
+  -- the rest of the cartridge's twenty-five (see GEN3_STYLE_FOR below)
+  g3_swirl              = spiralInGrid,
+  g3_shuffle            = shuffleOrder,
+  g3_clockwiseBlackfade = function(c, r) return sweepOrder(1, c, r) end,
+  g3_ripple             = rippleOrder,
+  g3_wave               = waveOrder,
+  g3_pokeballsTrail     = trailOrder,
+  g3_mugshot            = angledOrder,
 }
 
 -- Tile order for `style` on an arbitrary cols x rows grid, or nil for the
@@ -402,6 +502,82 @@ end
 -- in the same band as the wipes beside them -- about a second -- and they are
 -- listed as records so a mod, or a later derivation, can retime them without
 -- touching this file.
+-- THE ONES THAT DRAW A PICTURE, which is five of the cartridge's own
+-- backgrounds and three silhouettes.
+--
+-- The team logos, the three Regi dot faces and the big Poke Ball are real
+-- 4bpp backgrounds in the image and the import composes them
+-- (gen3BattleTransitions.pictures).  Groudon, Kyogre and Rayquaza have no
+-- background of their own -- their transitions are scanline and palette work
+-- -- so they take the one picture of themselves this dataset does have, the
+-- front sprite, as a silhouette over their own colour.  The COLOURS are this
+-- file's; everything else on the screen is the cartridge's.
+local LEGEND_TINT = {
+  kyogre   = { 0.11, 0.24, 0.62 },
+  groudon  = { 0.62, 0.16, 0.11 },
+  rayquaza = { 0.10, 0.42, 0.24 },
+}
+
+local function transitionPicture(game, id)
+  local data = game and game.data
+  local record = data and data.constants and data.constants.gen3BattleTransitions
+  local pic = record and record.pictures and record.pictures[id]
+  if not (pic and pic.image) then return nil end
+  local ok, image = pcall(require("src.render.Assets").image, pic.image)
+  return ok and image or nil
+end
+
+local function transitionMon(game, species)
+  local data = game and game.data
+  if not (data and species) then return nil end
+  local ok, path = pcall(function()
+    return require("src.pokemon.Sprites").path(data, species, "front")
+  end)
+  if not (ok and type(path) == "string") then return nil end
+  local okImg, image = pcall(require("src.render.Assets").image, path)
+  return okImg and image or nil
+end
+
+-- opts: picture (an id in the dataset), species (a silhouette), tint (rgb)
+local function pictureDraw(opts)
+  return function(self, prog)
+    local Gen3Wide = require("src.ui.Gen3Wide")
+    local W, H = Gen3Wide.uiSize()
+    W = tonumber(W) or 240
+    H = tonumber(H) or 160
+    local tint = opts.tint or { 0, 0, 0 }
+    -- the colour floods first, the figure rides over it, and the whole thing
+    -- goes down to black in the last fifth -- which is what the battle's
+    -- first frame is drawn against
+    local flood = math.min(1, prog / 0.35)
+    love.graphics.setColor(tint[1], tint[2], tint[3], flood)
+    love.graphics.rectangle("fill", 0, 0, W, H)
+    local image = opts.picture and transitionPicture(self.game, opts.picture)
+                  or (opts.species and transitionMon(self.game, opts.species))
+    if image and prog > 0.15 then
+      local iw, ih = image:getDimensions()
+      local age = math.min(1, (prog - 0.15) / 0.55)
+      -- it comes in at three quarters and settles, with one pulse of alpha so
+      -- it reads as flashing rather than sliding
+      local scale = (0.75 + 0.25 * age) * math.min(W / iw, H / ih)
+      if opts.species then scale = scale * 2.2 end
+      local a = 1
+      if prog < 0.3 then a = (prog - 0.15) / 0.15 end
+      if opts.species then
+        love.graphics.setColor(0, 0, 0, a * 0.85)
+      else
+        love.graphics.setColor(1, 1, 1, a)
+      end
+      love.graphics.draw(image, W / 2, H / 2, 0, scale, scale, iw / 2, ih / 2)
+    end
+    if prog > 0.8 then
+      love.graphics.setColor(0, 0, 0, (prog - 0.8) / 0.2)
+      love.graphics.rectangle("fill", 0, 0, W, H)
+    end
+    love.graphics.setColor(1, 1, 1, 1)
+  end
+end
+
 BattleTransition.STYLES = {
   g3_whitefade = { kind = "fade", frames = 48, draw = fadeDraw(1) },
   g3_blackfade = { kind = "fade", frames = 48, draw = fadeDraw(0) },
@@ -409,6 +585,45 @@ BattleTransition.STYLES = {
   g3_slice     = { kind = "wipe", frames = 42 },
   g3_angled    = { kind = "wipe", frames = 48 },
   g3_pokeball  = { kind = "wipe", frames = 54, flash = true },
+  -- ...and the rest of Emerald's twenty-five
+  g3_blur               = { kind = "fade", frames = 54, draw = fadeDraw(0) },
+  g3_swirl              = { kind = "wipe", frames = 48 },
+  g3_shuffle            = { kind = "wipe", frames = 48 },
+  g3_clockwiseBlackfade = { kind = "wipe", frames = 54 },
+  g3_ripple             = { kind = "wipe", frames = 48 },
+  g3_wave               = { kind = "wipe", frames = 48 },
+  g3_pokeballsTrail     = { kind = "wipe", frames = 54, flash = true },
+  g3_bigPokeball = { kind = "picture", frames = 60, flash = true,
+                     draw = pictureDraw({ picture = "bigPokeball",
+                                          tint = { 1, 1, 1 } }) },
+  g3_aqua      = { kind = "picture", frames = 60,
+                   draw = pictureDraw({ picture = "aqua",
+                                        tint = { 0.09, 0.16, 0.55 } }) },
+  g3_magma     = { kind = "picture", frames = 60,
+                   draw = pictureDraw({ picture = "magma",
+                                        tint = { 0.55, 0.10, 0.10 } }) },
+  g3_regice    = { kind = "picture", frames = 60,
+                   draw = pictureDraw({ picture = "regice",
+                                        tint = { 0.10, 0.10, 0.16 } }) },
+  g3_registeel = { kind = "picture", frames = 60,
+                   draw = pictureDraw({ picture = "registeel",
+                                        tint = { 0.10, 0.10, 0.16 } }) },
+  g3_regirock  = { kind = "picture", frames = 60,
+                   draw = pictureDraw({ picture = "regirock",
+                                        tint = { 0.10, 0.10, 0.16 } }) },
+  g3_kyogre    = { kind = "picture", frames = 66,
+                   draw = pictureDraw({ species = "KYOGRE",
+                                        tint = LEGEND_TINT.kyogre }) },
+  g3_groudon   = { kind = "picture", frames = 66,
+                   draw = pictureDraw({ species = "GROUDON",
+                                        tint = LEGEND_TINT.groudon }) },
+  g3_rayquaza  = { kind = "picture", frames = 66,
+                   draw = pictureDraw({ species = "RAYQUAZA",
+                                        tint = LEGEND_TINT.rayquaza }) },
+  -- the five mugshot transitions (Sidney, Phoebe, Glacia, Drake, the
+  -- Champion) have no background of their own either; they get the shards'
+  -- figure with the flash in front of it, which is the shape they share
+  g3_mugshot   = { kind = "wipe", frames = 54, flash = true },
   doublecircle = { kind = "wipe", frames = 30, flash = true },
   spiralin     = { kind = "wipe", frames = SPIRAL_IN_FRAMES },
   circle       = { kind = "wipe", frames = 60, flash = true },
@@ -418,6 +633,36 @@ BattleTransition.STYLES = {
   vstripes     = { kind = "wipe", frames = 54 },
   split        = { kind = "wipe", frames = 54 },
 }
+
+-- EVERY ID THE CARTRIDGE CAN CHOOSE, BY ITS OWN NAME FOR IT.
+--
+-- The import writes the names in the cartridge's order (the enum is pinned
+-- twice over -- see RomExtractorGen3.BATTLE_TRANSITIONS), and this is the one
+-- place that says which figure in this engine stands for each of them.  Four
+-- of them reuse a style that was already here: whiteBarsFade is the white
+-- fade, gridSquares the ordered grid, shards the angled wipe, slice the
+-- counter-shear.  The five mugshot transitions share one, because on the
+-- cartridge they share a routine and differ only in whose face is on it.
+local GEN3_STYLE_FOR = {
+  blur = "g3_blur",
+  swirl = "g3_swirl",
+  shuffle = "g3_shuffle",
+  bigPokeball = "g3_bigPokeball",
+  pokeballsTrail = "g3_pokeballsTrail",
+  clockwiseBlackfade = "g3_clockwiseBlackfade",
+  ripple = "g3_ripple",
+  wave = "g3_wave",
+  slice = "g3_slice",
+  whiteBarsFade = "g3_whitefade",
+  gridSquares = "g3_grid",
+  shards = "g3_angled",
+  sidney = "g3_mugshot", phoebe = "g3_mugshot", glacia = "g3_mugshot",
+  drake = "g3_mugshot", champion = "g3_mugshot",
+  aqua = "g3_aqua", magma = "g3_magma",
+  regice = "g3_regice", registeel = "g3_registeel", regirock = "g3_regirock",
+  kyogre = "g3_kyogre", groudon = "g3_groudon", rayquaza = "g3_rayquaza",
+}
+BattleTransition.GEN3_STYLE_FOR = GEN3_STYLE_FOR
 
 -- the eight wipes plus Transition's two warp fades: one registrant owns
 -- the whole transitions namespace, so Builtins wires it once
@@ -469,37 +714,144 @@ end
 local BIT_STYLES = { [0] = "doublecircle", "spiralin", "circle", "spiralout",
                      "hstripes", "shrink", "vstripes", "split" }
 
--- WHICH GENERATION'S TABLE DECIDES.
+-- WHICH OF EMERALD'S TWENTY-FIVE PLAYS, AND IT IS THE CARTRIDGE THAT SAYS.
 --
--- BIT_STYLES is pokered's, and it has no business choosing for Emerald.
--- GetBattleTransitionTypeByMap picks on two things this already has -- whether
--- the encounter is indoors and whether the player's lead outclasses the foe --
--- so the SHAPE of the choice ports even though most of the effects do not:
--- outdoors reads as a bright open transition and a cave as a dark one, which
--- is the distinction the cartridge's table draws.
--- WHICH ONE PLAYS.
+-- Asked for directly: "Ensure all emerald battle transitions are extracted and
+-- used in the engine when theyre supposed to be used based on the actual rom
+-- data Including the special legendary transitions as well".
 --
--- GetBattleTransitionTypeByMap indexes a two-by-two table -- indoors/cave
--- against whether the player's lead outclasses the foe -- and keeps separate
--- tables for a wild encounter and a trainer.  The port has all three of those
--- facts already; what it does NOT have is the table's contents, which are
--- four bytes in the image that nothing here reads.  So the SHAPE of the
--- choice is the cartridge's and the four entries are this file's, chosen to
--- keep the distinction the cartridge draws with them: a trainer gets the
--- showier figure, a cave gets a dark one, and outclassing the foe gets the
--- quicker one.  Said plainly rather than dressed up as derived -- when the
--- table is read, only this function changes.
+-- What used to be here was four figures and a four-way choice written by hand,
+-- with a note saying "when the table is read, only this function changes".
+-- The table is read now (RomExtractorGen3.BATTLE_TRANSITIONS writes
+-- gen3BattleTransitions), so this is that change.
+--
+-- THE ORDER THE CARTRIDGE ASKS ITS QUESTIONS IN, and it matters -- every one
+-- of these runs BEFORE the table is reached:
+--
+--   a legendary wild battle          BattleSetup_StartLegendaryBattle 00B0934
+--                                    StartRegiBattle 00B0A74
+--   a Secret Base trainer            GetTrainerBattleTransition 00B0F34
+--   an Elite Four / Champion trainer         "
+--   a Team Aqua / Team Magma trainer         "
+--   otherwise the table, indexed [map type][the lead outclasses the foe]
+--
+-- and the last of those is a PLAIN COMPARISON of levels, not the Game Boy's
+-- three-level margin: `if (enemyLevel < playerLevel)`.  The old code passed a
+-- pre-computed `stronger` with the margin baked in, so this takes the levels
+-- when it is given them and falls back to the flag when it is not.
+local function nameToStyle(name)
+  if type(name) ~= "string" then return nil end
+  return GEN3_STYLE_FOR[name]
+end
+
+local function gen3Record(ctx)
+  local data = ctx and ctx.game and ctx.game.data
+  local record = data and data.constants and data.constants.gen3BattleTransitions
+  if type(record) ~= "table" or type(record.wild) ~= "table" then return nil end
+  return record
+end
+
+-- GetBattleTransitionTypeByMap's four answers.  The caller works them out --
+-- it is the one that can see the map, the flash level and the water -- and
+-- this only has to cope with not being told.
+local function gen3MapType(ctx, record)
+  local t = tonumber(ctx and ctx.mapTransitionType)
+  if t and t >= 0 and t < #record.wild then return t end
+  -- no map facts: a dungeon reads as the cave row, everything else as normal
+  return ctx and ctx.dungeon and (record.mapTypes and record.mapTypes.cave or 1)
+         or 0
+end
+
+-- `if (enemyLevel < playerLevel)` -- column 1 when the lead outclasses the
+-- foe, column 2 when it does not
+local function gen3Column(ctx)
+  local enemy, lead = tonumber(ctx and ctx.enemyLevel), tonumber(ctx and ctx.leadLevel)
+  if enemy and lead then return enemy < lead and 1 or 2 end
+  return ctx and ctx.stronger and 2 or 1
+end
+
 local function gen3Style(ctx)
-  if ctx.trainer then
-    if ctx.dungeon then return ctx.stronger and "g3_angled" or "g3_blackfade" end
-    return ctx.stronger and "g3_slice" or "g3_pokeball"
+  local record = gen3Record(ctx)
+  if not record then
+    -- no dataset: the port's own four, which is what it always had
+    if ctx.trainer then
+      if ctx.dungeon then return ctx.stronger and "g3_angled" or "g3_blackfade" end
+      return ctx.stronger and "g3_slice" or "g3_pokeball"
+    end
+    if ctx.dungeon then return ctx.stronger and "g3_grid" or "g3_blackfade" end
+    return ctx.stronger and "g3_slice" or "g3_whitefade"
   end
-  if ctx.dungeon then return ctx.stronger and "g3_grid" or "g3_blackfade" end
-  return ctx.stronger and "g3_slice" or "g3_whitefade"
+  local names = record.names or {}
+  local function byId(id)
+    return nameToStyle(names[id] or names[tostring(id)])
+  end
+
+  -- THE LEGENDS, which never reach the table at all
+  local species = ctx.legendSpecies
+  if species then
+    local id = (record.regi and (record.regi[species]
+                                 or record.regi[tostring(species)]))
+    if id == nil then
+      id = record.legendary and (record.legendary[species]
+                                 or record.legendary[tostring(species)])
+    end
+    if id == nil and ctx.legendary then id = record.legendaryDefault end
+    local style = id ~= nil and byId(id)
+    if style then return style end
+  end
+
+  if ctx.trainer then
+    local class = tonumber(ctx.trainerClass)
+    local opponent = tonumber(ctx.trainerId)
+    local classes = record.trainerClasses or {}
+    local function isOneOf(list)
+      for _, v in ipairs(list or {}) do if class == v then return true end end
+      return false
+    end
+    if opponent and record.secretBaseOpponent
+       and opponent == record.secretBaseOpponent then
+      local style = byId(record.secretBaseTransition)
+      if style then return style end
+    end
+    if class and class == classes.eliteFour then
+      -- the cartridge switches on the trainer ID here; the import resolved
+      -- those four ids to the names on their cards, because that is what this
+      -- engine knows a trainer by.  Anyone else of the class -- and that is
+      -- how the cartridge reads it too -- gets the Champion's.
+      local id = ctx.trainerName and record.eliteFour
+                 and record.eliteFour[ctx.trainerName]
+      local style = byId(id or record.championTransition)
+      if style then return style end
+    end
+    if class and class == classes.champion then
+      local style = byId(record.championTransition)
+      if style then return style end
+    end
+    if isOneOf(classes.magma) then
+      local style = byId(record.magmaTransition)
+      if style then return style end
+    end
+    if isOneOf(classes.aqua) then
+      local style = byId(record.aquaTransition)
+      if style then return style end
+    end
+  end
+
+  local rows = ctx.trainer and record.trainer or record.wild
+  local row = rows[gen3MapType(ctx, record) + 1] or rows[1]
+  local style = row and byId(row[gen3Column(ctx)])
+  return style or "g3_blackfade"
 end
 
 local function vanillaStyle(ctx)
-  if require("src.core.GameVersion").isGen3() then return gen3Style(ctx) end
+  -- A DATASET THAT CARRIES THE TABLES IS A HOENN DATASET.  Asking
+  -- GameVersion as well was one question too many: the record only exists
+  -- because the Emerald import wrote it, and a caller holding that data and
+  -- getting a Game Boy wipe is the failure this used to have in every
+  -- headless context.
+  if gen3Record(ctx) or require("src.core.GameVersion").isGen3() then
+    return gen3Style(ctx)
+  end
   return BIT_STYLES[(ctx.trainer and 1 or 0) + (ctx.stronger and 2 or 0)
                     + (ctx.dungeon and 4 or 0)]
 end
@@ -511,8 +863,18 @@ function BattleTransition.new(game, onDone, opts)
   self.onDone = onDone
   self.t = 0
   opts = opts or {}
+  -- EVERYTHING EMERALD'S CHOICE ASKS FOR.  The three the Game Boy needed are
+  -- still here; the rest are what GetBattleTransitionTypeByMap,
+  -- GetTrainerBattleTransition and the legendary starters read, and a caller
+  -- that cannot answer one simply leaves it out (see gen3Style).
   local ctx = { trainer = opts.trainer, stronger = opts.stronger,
-                dungeon = opts.dungeon, game = game }
+                dungeon = opts.dungeon, game = game,
+                mapTransitionType = opts.mapTransitionType,
+                enemyLevel = opts.enemyLevel, leadLevel = opts.leadLevel,
+                trainerClass = opts.trainerClass, trainerId = opts.trainerId,
+                trainerName = opts.trainerName,
+                legendSpecies = opts.legendSpecies,
+                legendary = opts.legendary }
   local style = Runtime.call("transition.style", vanillaStyle, ctx)
   local def = styleDef(game, style)
   -- a hook that names an unregistered style falls back to the vanilla bits

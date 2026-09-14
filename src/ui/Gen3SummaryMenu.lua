@@ -806,7 +806,14 @@ function Gen3SummaryMenu:drawPagination()
   local minPage, maxPage = 0, count - 1
   local cell = pages.cell or 8
   local iw, ih = image:getDimensions()
-  local quads = {}
+  -- THE CACHE OUTLIVES THE FRAME.  Built as a local it was thrown away and
+  -- rebuilt sixty times a second -- a table, a closure and up to eight Quad
+  -- objects -- for a strip whose tiles never move.  It hangs off the screen
+  -- and is dropped whenever the image it was cut from changes.
+  if self._pageQuadsFrom ~= image then
+    self._pageQuads, self._pageQuadsFrom = {}, image
+  end
+  local quads = self._pageQuads
   local function quad(tile, half)
     local key = tile * 2 + half
     if quads[key] then return quads[key] end
@@ -1378,7 +1385,12 @@ function Gen3SummaryMenu:drawHearts(def)
   for i, key in ipairs(hearts.order or {}) do order[key] = i - 1 end
   local cell = hearts.cell or HEART_CELL
   local iw, ih = image:getDimensions()
-  local quads = {}
+  -- same as the pagination strip: kept rather than rebuilt every frame, which
+  -- on the contest page was sixteen Quads a frame for eight fixed hearts
+  if self._heartQuadsFrom ~= image then
+    self._heartQuads, self._heartQuadsFrom = {}, image
+  end
+  local quads = self._heartQuads
   local function quad(key)
     if quads[key] then return quads[key] end
     local index = order[key]

@@ -37,6 +37,17 @@
 --   src.ui.gen2.BattleAnimView  Gen2AnimPlayer is a player, not a view
 --   src.battle.UIVisibility     no equivalent
 --   src.ui.PartyPanel           no equivalent
+--   src.battle.gen2.Battle      AMBIGUOUS, which is the same as absent here.
+--                               src.ui.gen2.BattleState is already mapped to
+--                               src.battle.BattleState below; a port that
+--                               spells BOTH names is not spelling one thing
+--                               twice, it is naming the battle CONTROLLER and
+--                               the battle STATE.  This engine has one object
+--                               for both, so whichever of the two a mod meant
+--                               it would get -- and the half of the contract
+--                               it did not mean would be missing, somewhere
+--                               far away from the require.  It goes in when a
+--                               mod that wants it says what it calls on it.
 --
 -- Each of those turns one optional feature off in the mod and says so in the
 -- log, which is the outcome we want.
@@ -60,8 +71,13 @@ ModCompat.ALIASES = {
   ["src.core.gen2.ItemEffects"] = "src.inventory.ItemEffects",
   ["src.core.gen2.Save"] = "src.core.SaveData",
 
-  -- battle
+  -- battle.  Damage is GetDamage/CriticalHitTest/AdjustDamageForMoveType and
+  -- MoveEffects is the effect-constant handler table -- one concept each,
+  -- shared by the Gen 1 and Gen 2 paths here, which is what makes them
+  -- spellings rather than guesses.
   ["src.battle.gen2.Catching"] = "src.battle.Catching",
+  ["src.battle.gen2.Damage"] = "src.battle.Damage",
+  ["src.battle.gen2.Effects"] = "src.battle.MoveEffects",
   ["src.battle.gen2.Mon"] = "src.pokemon.Pokemon",
   ["src.ui.gen2.BattleState"] = "src.battle.BattleState",
 

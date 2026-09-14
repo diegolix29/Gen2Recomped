@@ -393,7 +393,16 @@ function SummaryMenu:drawGen2PinkPage()
   local data = game.data
   local def = data.pokemon[mon.species]
   local HudTiles = require("src.render.HudTiles")
-  HudTiles.drawHPBar(data, 0, 9, mon, 1)
+  -- LEAVE THE FILL GREY FOR THE ZONE PASS, exactly as the exp bar below does.
+  --
+  -- sgbPalettes puts the HP-bar palette over the WHOLE screen here
+  -- (_CGB_StatsScreenHPPals), so the bar is coloured by the zone pass and must
+  -- not also be painted per pixel -- the shade shader keys on the RED channel,
+  -- and GREENBAR's fill is #00BD00 with no red in it at all, so a painted bar
+  -- came back as shade 3 and drew SOLID BLACK.  That is the report: "the stats
+  -- page isn't showing color for the hp bar".
+  local zoned = require("src.render.PaletteFX").shader() ~= nil
+  HudTiles.drawHPBar(data, 0, 9, mon, 1, zoned)
   rightAlign(("%3d/%3d"):format(mon.hp, mon.stats.hp), 72, 80)
   Font.draw(Strings("STATUS/"), 0, 96)
   Font.draw(mon.status or Strings("OK"), 48, 104)
@@ -422,11 +431,20 @@ function SummaryMenu:drawGen2PinkPage()
   -- column 18 and the bar growing leftward from there: eight tiles from
   -- column 11 on Gold and Crystal, nine from column 10 on a cartridge with a
   -- wider bar (stats_screen.asm's own `hlcoord 10, 16`).
-  local zoned = require("src.render.PaletteFX").shader() ~= nil
-  local expTx = 19 - HudTiles.geometry().expBarTiles
-  HudTiles.tile(0x62, (expTx - 1) * 8, 128)
+  -- ...AND THE CAPS ARE THE STATS SCREEN'S OWN TILES, not the HP bar's.
+  --
+  -- The pink page closes the row with two writes of its own -- on Prism
+  -- `hlcoord 9, 16 / ld [hl], $40` and `hlcoord 19, 16 / ld [hl], $41`, on
+  -- Crystal the same two tiles a column further in because its bar is a tile
+  -- shorter -- and both live in the stats screen's page-tile block, which the
+  -- port now extracts (see statsPage in HudTiles).  Drawn as $62 and the HP
+  -- bar's own double-bar cap, the exp bar wore the HP bar's ends: "the xp bar
+  -- looks like the hp bar".
+  local geo = HudTiles.geometry()
+  local expTx = 19 - geo.expBarTiles
+  HudTiles.tile(geo.statsExpCapLeft or 0x62, (expTx - 1) * 8, 128)
   HudTiles.drawExpBar(data, expTx, 16, HudTiles.expBarPixels(data, mon), zoned)
-  HudTiles.tile(HudTiles.capTile(1), 152, 128)
+  HudTiles.tile(geo.statsExpCapRight or HudTiles.capTile(1), 152, 128)
 end
 
 -- LoadGreenPage: held item, then the four moves with their PP.
@@ -546,7 +564,10 @@ function SummaryMenu:draw()
     -- over (9,2) 5x10 (status_screen.asm:303-305), which wipes it. #280
     printLevel(14, 2, mon.level)
     drawLineBox(19, 1, 6, 10)
-    HudTiles.drawHPBar(data, 11, 3, mon, 1) -- wHPBarType 1
+    -- same as the pink page above: the HP palette covers the whole screen, so
+    -- the fill stays grey and the zone pass colours it
+    HudTiles.drawHPBar(data, 11, 3, mon, 1,
+                       require("src.render.PaletteFX").shader() ~= nil)
     Font.draw(("%3d/%3d"):format(mon.hp, mon.stats.hp), 96, 32)
     Font.draw(Strings("STATUS/"), 72, 48)
     Font.draw(mon.status or "OK", 128, 48)

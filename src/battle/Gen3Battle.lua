@@ -61,6 +61,163 @@ local ROW1 = (Gen3Battle.STRIP_TOP + 1) * 8      -- 128
 local ROW2 = ROW1 + 16                            -- 144
 
 -- ---------------------------------------------------------------------------
+-- BATTLE LAYOUT = WIDE, ON A HOENN CARTRIDGE
+--
+-- Reported from play: "with the wide mode selection in options for battle, its
+-- not filling the screen like it does in my dramatic shapes voxel mod please
+-- make it do so".  The frame that came with it is a flat Emerald battle 1440
+-- pixels wide in a 1920-pixel window with a pale band 240 pixels wide down
+-- each side -- the letterbox Renderer puts around a 240x160 UI surface, and
+-- exactly what the option was doing about it: NOTHING.  BattleState
+-- :isWideBattleLayout answers false on Gen 3 and says why (an earlier attempt
+-- took Emerald's screen away and put the Game Boy's composition up in its
+-- place, stretched to 304x144), so the switch had no effect at all on Hoenn.
+--
+-- That verdict stands.  What the option buys HERE is not WideBattle's
+-- composition, it is Emerald's own -- made as wide as the window can show it.
+--
+-- THE HEIGHT DOES NOT MOVE.  160 is the cartridge's row count and every piece
+-- of art on this screen is authored against it: the healthbox blobs, the
+-- 48-row bottom panel, the battle backgrounds, the four-row window templates.
+-- Only the WIDTH is a free variable, and it is DERIVED from the window rather
+-- than chosen:
+--
+--   BATTLE SIZE = FIXED (the default) blits at a whole-number scale, and the
+--     scale the window allows is S = floor(windowHeight / 160).  So the width
+--     that covers the window is the widest whole number of 8-pixel tiles that
+--     still fits S whole pixels each: W = floor8(windowWidth / S).  At
+--     1920x1080 that is S = 6 and W = 320, and 320 x 6 = 1920 EXACTLY -- the
+--     side bands are gone, with the pixels still square and whole.
+--
+--   BATTLE SIZE = FILL blits at a fractional scale, so the width that covers
+--     the window is simply the window's own shape: W = round8(160 * aspect).
+--     At 1920x1200 that is 256, and 256:160 IS 16:10 -- no bands on either
+--     axis at all.
+--
+-- Clamped to [240, Renderer.MAX_UI_WIDTH] at both ends.  A window NARROWER
+-- than the GBA's own 3:2 -- a 5:4 monitor, a portrait phone -- has nothing to
+-- fill across and gets the cartridge's own 240 back, so the option is inert
+-- there rather than cropping the screen it was asked to widen.
+--
+-- A MULTIPLE OF 8, because every window on this screen is placed in TILES:
+-- Font.drawBox and the cartridge's own window templates count in them, and
+-- Gen3Battle.zones publishes the SGB remap region in them.  A width that is
+-- not a whole number of tiles leaves that region short of the surface it is
+-- meant to cover, and the forced-mono display modes then show a strip of
+-- un-remapped columns down one side -- which is the reason WideBattle.zones
+-- exists at all.
+-- ---------------------------------------------------------------------------
+
+-- DERIVED: the surface width for a window of pw x ph framebuffer pixels.
+-- Pure arithmetic and no state, so the derivation above is checkable without
+-- a window to look at.
+function Gen3Battle.surfaceWidth(pw, ph, fill, maxWidth)
+  local least = Gen3Battle.WIDTH
+  local most = math.floor(tonumber(maxWidth) or 640)
+  if most < least then most = least end
+  pw, ph = tonumber(pw), tonumber(ph)
+  if not (pw and ph and pw > 0 and ph > 0) then return least end
+  local want
+  if fill then
+    -- the window's own proportions, to the nearest whole tile
+    want = math.floor(Gen3Battle.HEIGHT * pw / ph / 8 + 0.5) * 8
+  else
+    -- whole pixels: S of them per surface pixel, and floor8 so the last tile
+    -- is still inside the window rather than half off the edge of it
+    local s = math.max(1, math.floor(ph / Gen3Battle.HEIGHT))
+    want = math.floor(pw / s / 8) * 8
+  end
+  if want < least then return least end
+  if want > most then return most end
+  return want
+end
+
+-- The width of the surface THIS battle is drawing into: the cartridge's own
+-- 240 unless the state answers wider, which only a Gen 3 battle with BATTLE
+-- LAYOUT = WIDE ever does (BattleState:gen3SurfaceWidth).
+--
+-- Every widening below is gated on `extra` being non-zero, so a Hoenn battle
+-- on the OG layout runs the arithmetic it has always run, from the same
+-- constants, and puts the same picture on the screen.
+function Gen3Battle.width(battle)
+  local fn = battle and battle.gen3SurfaceWidth
+  if type(fn) ~= "function" then return Gen3Battle.WIDTH end
+  local ok, w = pcall(fn, battle)
+  if not (ok and type(w) == "number" and w > Gen3Battle.WIDTH) then
+    return Gen3Battle.WIDTH
+  end
+  return math.floor(w / 8) * 8
+end
+
+-- How much wider than the cartridge's screen this surface is.  0 on OG, and
+-- always a whole number of tiles.
+function Gen3Battle.extra(battle)
+  return Gen3Battle.width(battle) - Gen3Battle.WIDTH
+end
+
+-- WHERE THE BATTLEFIELD SITS IN A WIDER SURFACE.
+--
+-- The field is not spread apart.  The two platforms are painted INTO the
+-- cartridge's own battle background, the two Pokemon stand on them (measured,
+-- not stated -- see measurePlatforms), and pulling the pair apart means
+-- cutting that picture between them.  So the field keeps its own 240 pixels,
+-- centred, and the space either side is filled by repeating the background's
+-- own edge column (Gen3Battle.drawField).  That is exact rather than a
+-- stretch, because a Gen 3 battle background IS horizontal bands and every
+-- one of them already runs to the picture's edge -- the same property the
+-- platform measurement is built on.
+--
+-- What DOES go to the surface's edges is the furniture: the foe's healthbox
+-- stays the cartridge's distance from the left edge, the player's the
+-- cartridge's distance from the right, and the bottom strip spans the lot.
+function Gen3Battle.fieldOffset(battle)
+  return math.floor(Gen3Battle.extra(battle) / 2)
+end
+
+-- A WINDOW RECORD THAT SPANS THE SURFACE, and one that RIDES ITS RIGHT EDGE.
+--
+-- sStandardBattleWindowTemplates states four windows on a 240-wide screen and
+-- in doing so states which edge each one belongs to: the prompt runs from
+-- tile 0 to 16, the command menu from 16 to 30 -- hard against the right edge
+-- -- the message box is inset exactly one tile at each end, and the four move
+-- slots sit against the left.  So widening the surface moves each window by
+-- what its OWN edge moved: the prompt and the move slots by nothing, the
+-- command menu and the move-detail box by the whole of the extra width, and
+-- the message box grows into it.
+--
+-- The text inside a spanned box stays at the cartridge's own textX, which is
+-- what was asked for: "leave the text where it is ... words stay at the left
+-- of a wider box".
+--
+-- Copies rather than mutates: STRIP_FALLBACK is a shared module table and the
+-- window records come out of the dataset.
+local function spanBox(rec, battle)
+  local tiles = Gen3Battle.extra(battle) / 8
+  if tiles == 0 or type(rec) ~= "table" then return rec end
+  local out = {}
+  for k, v in pairs(rec) do out[k] = v end
+  out.tw = (rec.tw or 0) + tiles
+  out.cols = (rec.cols or 0) + tiles
+  return out
+end
+
+local function shiftBox(rec, battle)
+  local d = Gen3Battle.extra(battle)
+  if d == 0 or type(rec) ~= "table" then return rec end
+  local out = {}
+  for k, v in pairs(rec) do out[k] = v end
+  out.tx = (rec.tx or 0) + d / 8
+  out.textX = (rec.textX or 0) + d
+  return out
+end
+
+-- the per-path slice measurement and the quads cut from it, both cleared by
+-- invalidatePlacement when Assets reloads
+local stripCache = {}
+local stripQuads = {}
+local bandQuads = setmetatable({}, { __mode = "k" })
+
+-- ---------------------------------------------------------------------------
 -- THE BOTTOM STRIP, OFF THE CARTRIDGE'S OWN WINDOW RECORD
 --
 -- Every number this strip used was reconstructed: a box at tile (0,15), 30
@@ -134,10 +291,16 @@ function Gen3Battle.windows(battle)
     moves = {}
     for i = 1, 4 do moves[i] = frameOf(rec.moves[i], nil) end
   end
+  -- WHICH EDGE EACH WINDOW BELONGS TO IS IN THE RECORD (see spanBox above).
+  -- The message box is inset a tile at each end, so it SPANS; the command
+  -- menu's frame ends on tile 30, the screen's own right edge, so it RIDES
+  -- that edge; the prompt starts on tile 0 and the four move slots sit
+  -- against the left, so neither moves at all.
+  local msg = frameOf(rec.message, nil)
   return {
-    message = frameOf(rec.message, message),
+    message = msg and spanBox(msg, battle) or message,
     prompt = frameOf(rec.prompt, message),
-    action = frameOf(rec.action, message),
+    action = shiftBox(frameOf(rec.action, message), battle),
     moves = moves,
   }
 end
@@ -146,20 +309,20 @@ function Gen3Battle.strip(battle)
   local consts = battle and battle.data and battle.data.constants
   local win = consts and consts.gen3MessageWindow
   if type(win) ~= "table" or not (win.width and win.height) then
-    return STRIP_FALLBACK
+    return spanBox(STRIP_FALLBACK, battle)
   end
   local left = math.floor(tonumber(win.left) or 2)
   local top = math.floor(tonumber(win.top) or 15)
   local w = math.floor(tonumber(win.width) or 26)
   local h = math.floor(tonumber(win.height) or 4)
-  return {
+  return spanBox({
     tx = math.max(0, left - 1), ty = math.max(0, top - 1),
     tw = w + 2, th = h + 2,
     textX = left * 8,
     row1 = top * 8,
     row2 = top * 8 + 16,
     cols = w,
-  }
+  }, battle)
 end
 
 -- THE ORDER THE FOUR CELLS SELECT IN.  Gen 1 reads them
@@ -448,17 +611,72 @@ local function hudImage(path)
   return ok and image or nil
 end
 
+-- WHAT THE FRAME NO LONGER ASKS FOR.  Each of these was resolved from inside
+-- a function that runs on every battle frame; none of them can be a plain
+-- top-level require, because each reaches back into the battle.
+local NO_ROWS = {}
+local NOOP = function() end
+
+local WeatherMod, FieldWeatherMod
+local function weatherMod()
+  if WeatherMod == nil then
+    local ok, mod = pcall(require, "src.battle.Weather")
+    WeatherMod = (ok and mod) or false
+  end
+  return WeatherMod or nil
+end
+local function fieldWeatherMod()
+  if FieldWeatherMod == nil then
+    local ok, mod = pcall(require, "src.world.Gen3Weather")
+    FieldWeatherMod = (ok and mod) or false
+  end
+  return FieldWeatherMod or nil
+end
+
+local TimingMod
+local function timing()
+  TimingMod = TimingMod or require("src.core.Timing")
+  return TimingMod
+end
+
+local DayCareMod
+local function dayCare()
+  DayCareMod = DayCareMod or require("src.pokemon.DayCare")
+  return DayCareMod
+end
+
+-- a colour triple to LOVE's 0..1, hoisted out of the per-healthbox draw
+local function normInk(c)
+  if type(c) ~= "table" then return nil end
+  return { (c[1] or 0) / 255, (c[2] or 0) / 255, (c[3] or 0) / 255, 1 }
+end
+
 -- One bar, drawn out of its nine-step ramp: each tile shows as many pixels of
 -- fill as are left to it, and the ramp has a frame for every count from none
 -- to eight.  That is how the cartridge draws it, and it is why a bar moves in
 -- single pixels rather than whole tiles.
+-- NINE QUADS, NOT NINE PER TILE PER FRAME.  A ramp has exactly nine steps and
+-- a strip has one height, so the quads are a function of (height, step) and
+-- nothing else -- built fresh they were twenty to thirty Quad objects on every
+-- battle frame, which is ~1900 a second for a picture that never changes.
+local rampQuads = setmetatable({}, { __mode = "v" })
+local function rampQuad(sh, step)
+  local row = rampQuads[sh]
+  if not row then row = {} rampQuads[sh] = row end
+  local quad = row[step]
+  if not quad then
+    quad = love.graphics.newQuad(step * 8, 0, 8, sh, 72, sh)
+    row[step] = quad
+  end
+  return quad
+end
+
 local function drawRamp(strip, x, y, tiles, filled)
   if not strip then return end
   local _, sh = strip:getDimensions()
   for i = 0, tiles - 1 do
     local step = math.max(0, math.min(8, filled - i * 8))
-    local quad = love.graphics.newQuad(step * 8, 0, 8, sh, 72, sh)
-    love.graphics.draw(strip, quad, x + i * 8, y)
+    love.graphics.draw(strip, rampQuad(sh, step), x + i * 8, y)
   end
 end
 
@@ -516,9 +734,9 @@ local function genderSymbol(record, battle, battler)
   if not (type(rows) == "table" and mon) then return nil end
   -- GetGenderFromSpeciesAndPersonality, which the day care already asks --
   -- one derivation for the whole engine rather than a second opinion here.
-  local ok, gender = pcall(function()
-    return require("src.pokemon.DayCare").gender(battle.data, mon)
-  end)
+  -- pcall TAKES ARGUMENTS: the closure form allocated one per healthbox per
+  -- frame, and did a package.loaded lookup inside it
+  local ok, gender = pcall(dayCare().gender, battle.data, mon)
   if not ok or type(gender) ~= "string" then return nil end
   local row = rows[gender]
   if not (type(row) == "table" and type(row.text) == "string") then
@@ -527,17 +745,13 @@ local function genderSymbol(record, battle, battler)
   -- the two whose own name carries the symbol
   local order = battle.data and battle.data.constants
                 and battle.data.constants.speciesOrder
-  for _, id in ipairs(rows.namedSpecies or {}) do
+  for _, id in ipairs(rows.namedSpecies or NO_ROWS) do
     if order and order[id] == mon.species and not mon.nickname then
       return nil
     end
   end
   local ink = record.text or {}
-  local function norm(c)
-    if type(c) ~= "table" then return nil end
-    return { (c[1] or 0) / 255, (c[2] or 0) / 255, (c[3] or 0) / 255, 1 }
-  end
-  return row.text, { text = norm(row.color), shadow = norm(ink.shadow) }
+  return row.text, { text = normInk(row.color), shadow = normInk(ink.shadow) }
 end
 
 local function hpRampFor(record, battler)
@@ -881,7 +1095,15 @@ end
 Gen3Battle.SUMMARY_SLIDE_FRAMES = 14
 Gen3Battle.SUMMARY_BALL_FRAMES = 4
 
-local function drawSummaryRow(summary, side, party, age)
+-- `extra` is how much wider than the cartridge's 240 the surface is.  The
+-- two rows belong to opposite edges and the cartridge says so as plainly as
+-- it does for the healthboxes: the foe's bar starts at x = -24, twenty-four
+-- pixels off the LEFT of its screen, and the player's runs 136..264, the same
+-- twenty-four off the RIGHT of it.  So on a wider surface the foe's row does
+-- not move and the player's moves out by the whole of the extra width, which
+-- is the flip flag this function already reads for the mirroring.
+local function drawSummaryRow(summary, side, party, age, extra)
+  local edge = side.flip and 0 or math.floor(tonumber(extra) or 0)
   local bar, balls = hudImage(summary.bar), hudImage(summary.balls)
   if not (bar and balls) then return end
   local cell = summary.ballSide or 8
@@ -902,7 +1124,7 @@ local function drawSummaryRow(summary, side, party, age)
   if side.flip then
     love.graphics.draw(bar, side.barX + barW + dx, side.barY, 0, -1, 1)
   else
-    love.graphics.draw(bar, side.barX + dx, side.barY)
+    love.graphics.draw(bar, side.barX + edge + dx, side.barY)
   end
   -- ...and the icons, laid out from the middle of the screen outwards
   local slots = Gen3Battle.summarySlots(summary, side, party)
@@ -918,7 +1140,8 @@ local function drawSummaryRow(summary, side, party, age)
       local quad = love.graphics.newQuad(column * cell, 0, cell, cell,
                                          bw, bh)
       love.graphics.draw(balls, quad,
-                         side.ballX + (slot - 1) * (summary.step or 10) + dx,
+                         side.ballX + edge
+                           + (slot - 1) * (summary.step or 10) + dx,
                          side.ballY)
     end
   end
@@ -948,11 +1171,13 @@ local function drawIntroBalls(battle)
   local age = battle.frame and (battle.frame - battle.introBallsFrom) or nil
   if battle.enemyParty and summary.opponent
       and (battle.kind == "trainer" or battle.kind == "link") then
-    drawSummaryRow(summary, summary.opponent, battle.enemyParty, age)
+    drawSummaryRow(summary, summary.opponent, battle.enemyParty, age,
+                   Gen3Battle.extra(battle))
   end
   if summary.player then
     drawSummaryRow(summary, summary.player,
-                   battle.playerParty or battle.game.save.party, age)
+                   battle.playerParty or battle.game.save.party, age,
+                   Gen3Battle.extra(battle))
   end
 end
 
@@ -989,15 +1214,29 @@ Gen3Battle.HUD_PLACE_FALLBACK = {
 -- ...and where they go once it has been.  `constants` is the dataset's, so
 -- this answers the same numbers to the drawing code and to a mod asking the
 -- layout where things are.
-function Gen3Battle.hudPlace(constants, which, height)
+--
+-- `extra` is how much wider than the cartridge's 240 the surface is (0 on the
+-- OG layout, and then every line below is the arithmetic it always was).
+--
+-- THE TWO PANELS BELONG TO OPPOSITE EDGES, and the cartridge says so: it puts
+-- the foe's box 12 pixels in from the left of its screen and the player's box
+-- against the right of it (InitBattlerHealthboxCoords via
+-- gen3BattlerCoords.healthbox -- singlesOpponent x=44, singlesPlayer x=158,
+-- each the centre of the first of two 64-wide sprites).  So on a wider
+-- surface the foe's box does not move and the player's moves out by the whole
+-- of the extra width, keeping the cartridge's own margin from each edge.  No
+-- new number: this is the same pair of places, measured from the same two
+-- edges, on a screen that has more room between them.
+function Gen3Battle.hudPlace(constants, which, height, extra)
   local fb = Gen3Battle.HUD_PLACE_FALLBACK[which]
+  local d = (which == "player") and math.floor(tonumber(extra) or 0) or 0
   local coords = constants and constants.gen3BattlerCoords
   local key = which == "player" and "singlesPlayer" or "singlesOpponent"
   local pos = coords and coords.healthbox and coords.healthbox[key]
-  if not pos then return fb.x, fb.y end
+  if not pos then return fb.x + d, fb.y end
   -- pos1 is the sprite's CENTRE and a healthbox is two 64-wide sprites side
   -- by side, so the panel's corner is pos1 minus half of the FIRST one
-  return pos.x - 32, pos.y - math.floor((height or fb.height) / 2)
+  return pos.x - 32 + d, pos.y - math.floor((height or fb.height) / 2)
 end
 
 local function healthboxAt(battle, key, panel, fx, fy)
@@ -1008,7 +1247,7 @@ local function healthboxAt(battle, key, panel, fx, fy)
     local okH, got = pcall(panel.getHeight, panel)
     if okH and type(got) == "number" then h = got end
   end
-  return Gen3Battle.hudPlace(constants, which, h)
+  return Gen3Battle.hudPlace(constants, which, h, Gen3Battle.extra(battle))
 end
 
 local function drawHUDs(battle, slide)
@@ -1093,7 +1332,12 @@ local function drawHUDs(battle, slide)
         local coords = constants and constants.gen3BattlerCoords
         local pos = coords and coords.healthbox and coords.healthbox[row.key]
         if pos then
-          local px, py = pos.x - 32, pos.y - math.floor(h / 2)
+          -- ...and in a DOUBLE the same edge rule, per side: playerLeft and
+          -- playerRight are the right-hand pair (x 159 and 171 of 240) and
+          -- ride the right edge; opponentLeft and opponentRight are the
+          -- left-hand pair (44 and 32) and stay put.
+          local edge = row.player and Gen3Battle.extra(battle) or 0
+          local px, py = pos.x - 32 + edge, pos.y - math.floor(h / 2)
           drawStatusPanel(battle, b, px, py, row.player)
           if b == aimed and math.floor((battle.frame or 0) / 8) % 2 == 0 then
             love.graphics.setColor(1, 1, 0.3, 1)
@@ -1162,13 +1406,174 @@ local function panelImage(battle, which)
   return (ok and img) or nil, record
 end
 
+-- ---------------------------------------------------------------------------
+-- ...AND ON A WIDER SURFACE IT IS THREE-SLICED
+--
+-- The strip is a PICTURE -- one 240x48 panel with the cartridge's own tiles,
+-- tilemap and palette -- so a wider surface cannot be answered by arithmetic:
+-- the panel has corners, a frame and a drop shadow, and stretching the lot
+-- turns the frame into a smear.  It does have a repeatable middle, and the
+-- middle is MEASURED rather than stated, because the three panels are not
+-- shaped alike.  DRAMATIC_SHAPE scanned the same three bitmaps and got:
+--
+--     textbox_message  one panel   0..239   identical columns  11..228
+--     textbox_action   panel       0..119   identical columns  11..119
+--                      panel     121..238   identical columns 127..232
+--     textbox_moves    panel       1..158   identical columns   7..152
+--                      panel     161..238   identical columns 167..232
+--
+-- and this re-measures it at run time for the same reason that mod does: a
+-- cache whose panels are shaped differently gets ITS slices, and one whose
+-- panel has no repeatable middle gets no widening at all and keeps exactly
+-- today's picture.  Same rule measurePlatforms already follows, and cached
+-- per path for the same reason -- it is a per-pixel scan.
+--
+-- A PANEL IS A RUN OF COLUMNS WITH INK IN THEM.  The cartridge separates the
+-- message half of the action strip from the menu half with a column of
+-- nothing, which is what makes the two halves findable without knowing which
+-- strip this is.
+--
+-- THE FIRST PANEL ABSORBS THE WIDTH; EVERY PANEL AFTER IT MOVES OUT WHOLE.
+-- That is the same left/right rule the window templates state (see spanBox):
+-- the message half and the move grid are the left-hand furniture and grow or
+-- stay, the menu half and the move-detail box are the right-hand furniture
+-- and travel with the right edge.  The gap the art leaves between two panels
+-- travels with them, so nothing is filled in that the cartridge left empty.
+--
+-- The middle is ONE source column repeated -- not a resample.  The columns
+-- either side of it are identical to it by construction, so there is nothing
+-- for a texture filter to bleed in.
+-- ---------------------------------------------------------------------------
+local function stripSlices(path)
+  if type(path) ~= "string" then return nil end
+  local hit = stripCache[path]
+  if hit ~= nil then return hit or nil end
+  stripCache[path] = false
+  local okD, id = pcall(Assets.imageData, path)
+  if not (okD and id and id.getPixel and id.getDimensions) then return nil end
+  local ok, panels = pcall(function()
+    local w, h = id:getDimensions()
+    if not (w and h and w > 1 and h > 0) then return nil end
+    local ink, same = {}, {}
+    for x = 0, w - 1 do
+      local any = false
+      for y = 0, h - 1 do
+        local _, _, _, a = id:getPixel(x, y)
+        if a > 0 then any = true; break end
+      end
+      ink[x] = any
+    end
+    for x = 0, w - 2 do
+      local eq = true
+      for y = 0, h - 1 do
+        local r1, g1, b1, a1 = id:getPixel(x, y)
+        local r2, g2, b2, a2 = id:getPixel(x + 1, y)
+        if r1 ~= r2 or g1 ~= g2 or b1 ~= b2 or a1 ~= a2 then eq = false; break end
+      end
+      same[x] = eq
+    end
+    local out, st = {}, nil
+    for x = 0, w - 1 do
+      if ink[x] then
+        if st == nil then st = x end
+      elseif st ~= nil then
+        out[#out + 1] = { st, x - 1 }; st = nil
+      end
+    end
+    if st ~= nil then out[#out + 1] = { st, w - 1 } end
+    -- ...and inside each panel, the longest run of columns each identical to
+    -- the next: that is the one the middle repeats
+    for _, p in ipairs(out) do
+      local best, bestAt, run = 0, nil, nil
+      for x = p[1], p[2] - 1 do
+        if same[x] then
+          run = run or x
+          local len = x + 1 - run + 1
+          if len > best then best, bestAt = len, run end
+        else
+          run = nil
+        end
+      end
+      -- a middle worth repeating, not a two-pixel coincidence
+      if best >= 8 then p[3], p[4] = bestAt, bestAt + best - 1 end
+    end
+    return out
+  end)
+  if not (ok and panels and #panels > 0) then return nil end
+  -- only the FIRST panel is ever cut, so only the first one needs a middle;
+  -- a strip whose left-hand panel has none cannot be widened at all
+  if not panels[1][3] then return nil end
+  stripCache[path] = panels
+  return panels
+end
+
+-- the quads are fixed per path (the slices and the image size are), so they
+-- are cut once rather than per frame
+local function stripQuad(path, key, x, y, w, h, iw, ih)
+  local per = stripQuads[path]
+  if not per then per = {}; stripQuads[path] = per end
+  local q = per[key]
+  if not q then
+    q = love.graphics.newQuad(x, y, w, h, iw, ih)
+    per[key] = q
+  end
+  return q
+end
+
+-- Lays the panel across a wider surface, or answers false -- for a 240
+-- surface, for a cache whose art cannot be sliced, and for a LOVE without
+-- quads (the headless stub) -- and then the caller blits it as it always did.
+local function spanPanel(battle, img, path, y)
+  local grow = Gen3Battle.width(battle)
+  local g = love.graphics
+  if Gen3Battle.extra(battle) == 0 or type(g.newQuad) ~= "function" then
+    return false
+  end
+  local panels = stripSlices(path)
+  if not panels then return false end
+  local okD, iw, ih = pcall(img.getDimensions, img)
+  if not (okD and iw and ih and iw > 0 and ih > 0) then return false end
+  grow = grow - iw
+  if grow <= 0 then return false end
+  for i, p in ipairs(panels) do
+    local p0, p1, m0, m1 = p[1], p[2], p[3], p[4]
+    if i == 1 then
+      -- left cap 1:1 where it was, right cap 1:1 at the new right edge, the
+      -- one repeatable column stretched across everything between
+      local lw, rw = m0 - p0, p1 - m1
+      local right = p1 + 1 + grow
+      local mid = (right - rw) - (p0 + lw)
+      if mid < 0 then mid = 0 end
+      if lw > 0 then
+        g.draw(img, stripQuad(path, "1L", p0, 0, lw, ih, iw, ih), p0, y)
+      end
+      if mid > 0 then
+        g.draw(img, stripQuad(path, "1M", m0, 0, 1, ih, iw, ih),
+               p0 + lw, y, 0, mid, 1)
+      end
+      if rw > 0 then
+        g.draw(img, stripQuad(path, "1R", m1 + 1, 0, rw, ih, iw, ih),
+               right - rw, y)
+      end
+    else
+      -- right-hand furniture: moved, never cut
+      g.draw(img, stripQuad(path, "W" .. i, p0, 0, p1 - p0 + 1, ih, iw, ih),
+             p0 + grow, y)
+    end
+  end
+  return true
+end
+
 -- Draws the panel and answers whether it did, so a caller can fall back to
 -- its own drawn box on a cache that has none.
 local function drawPanel(battle, which)
   local img, record = panelImage(battle, which)
   if not img then return false end
   love.graphics.setColor(1, 1, 1, 1)
-  love.graphics.draw(img, 0, math.floor(tonumber(record.y) or 112))
+  local y = math.floor(tonumber(record.y) or 112)
+  if not spanPanel(battle, img, record.images and record.images[which], y) then
+    love.graphics.draw(img, 0, y)
+  end
   return true
 end
 
@@ -1306,14 +1711,21 @@ local function drawCommandMenu(battle)
       Font.drawBox(s.tx, s.ty, s.tw, s.th)
       love.graphics.setColor(0, 0, 0, 1)
     end
+    -- the SAFARI strip is the one set of cells this screen places itself
+    -- (the cartridge's menu record has no safari rows), and its two columns
+    -- sit on the two halves of the action panel -- so the right-hand column
+    -- rides the panel's menu half out to the right edge with everything else
+    -- that belongs to it (see spanBox / spanPanel).
+    local right = 128 + Gen3Battle.extra(battle)
     shadowed(battle, "menu", function(dx, dy)
       Font.draw(Strings("BALLx"), s.textX + 8 + dx, s.row1 + dy)
       Font.draw(("%2d"):format(battle.safari.balls), s.textX + 48 + dx, s.row1 + dy)
-      Font.draw(Strings("BAIT"), s.textX + 128 + dx, s.row1 + dy)
+      Font.draw(Strings("BAIT"), s.textX + right + dx, s.row1 + dy)
       Font.draw(Strings("THROW ROCK"), s.textX + 8 + dx, s.row2 + dy)
-      Font.draw(Strings("RUN"), s.textX + 128 + dx, s.row2 + dy)
+      Font.draw(Strings("RUN"), s.textX + right + dx, s.row2 + dy)
     end)
-    drawArrow(battle, s.textX + (col == 0 and 0 or 120), s.row1 + row * 16)
+    drawArrow(battle, s.textX + (col == 0 and 0 or right - 8),
+              s.row1 + row * 16)
     return
   end
 
@@ -1377,8 +1789,15 @@ local function drawMoveDetails(battle, move, panelDrawn)
     tx = math.max(w.moves[2].tx + w.moves[2].tw,
                   w.moves[4].tx + w.moves[4].tw)
   end
+  -- RIGHT-HAND FURNITURE.  This box is whatever the move grid leaves between
+  -- itself and the screen's right edge, and on a wider surface that edge is
+  -- further out by the whole of the extra width -- while the grid it sits
+  -- beside does not move at all (see spanBox).  Its width is unchanged:
+  -- both of its edges travel together.
+  local edge = Gen3Battle.extra(battle) / 8
+  tx = tx + edge
   if not panelDrawn then
-    Font.drawBox(tx, s.ty, 30 - tx, s.th)
+    Font.drawBox(tx, s.ty, 30 + edge - tx, s.th)
     love.graphics.setColor(0, 0, 0, 1)
   end
   if not move then return end
@@ -1547,11 +1966,23 @@ Gen3Battle.ENEMY_REGION_DY =
 -- ones the drawing uses.  Absent on a cache imported before the healthbox
 -- places were read, and then the fallbacks answer -- which is exactly what
 -- this returned before they were.
-function Gen3Battle.geometry(classic, constants)
+--
+-- `width` is the surface actually in use.  BATTLE LAYOUT = WIDE makes that
+-- wider than the cartridge's 240, and the published rectangles have to say so
+-- or a mod reading them lays its work out for a screen that is not the one
+-- being drawn -- DRAMATIC_SHAPE frosts the ground behind the HUD blocks and
+-- cuts the HUD layer on the row between them, both off these numbers.
+-- Absent: the cartridge's own width, which is what this answered before the
+-- option reached Hoenn.
+function Gen3Battle.geometry(classic, constants, width)
   local c = classic or {}
   local ca = c.anchor or Gen3Battle.CLASSIC_ANCHOR
+  local surface = math.floor(tonumber(width) or Gen3Battle.WIDTH)
+  if surface < Gen3Battle.WIDTH then surface = Gen3Battle.WIDTH end
+  local extra = surface - Gen3Battle.WIDTH
+  local field = math.floor(extra / 2)
   return {
-    width = Gen3Battle.WIDTH,
+    width = surface,
     height = Gen3Battle.HEIGHT,
     -- THIS LAYOUT'S WINDOWS BRING THEIR OWN BACKGROUND.
     --
@@ -1571,28 +2002,30 @@ function Gen3Battle.geometry(classic, constants)
     -- assume.  Absent on the Game Boy layouts, which is the honest answer for
     -- them: their windows really are transparent.
     opaqueWindows = true,
+    -- the two standing places move with the field, exactly as
+    -- Gen3Battle.platforms moves the measured ones
     anchor = {
-      player = { ca.player[1] + Gen3Battle.PLAYER_REGION_DX,
+      player = { ca.player[1] + Gen3Battle.PLAYER_REGION_DX + field,
                  ca.player[2] + Gen3Battle.PLAYER_REGION_DY },
-      enemy = { ca.enemy[1] + Gen3Battle.ENEMY_REGION_DX,
+      enemy = { ca.enemy[1] + Gen3Battle.ENEMY_REGION_DX + field,
                 ca.enemy[2] + Gen3Battle.ENEMY_REGION_DY },
     },
     -- the two status panels drawHUDs lays down, as the boxes they occupy --
     -- from the SAME hudPlace the drawing uses, so the published geometry and
     -- the screen cannot say different things
     hudRect = (function()
-      local ex, ey = Gen3Battle.hudPlace(constants, "opponent", 32)
+      local ex, ey = Gen3Battle.hudPlace(constants, "opponent", 32, extra)
       -- the player's single-battle panel is the tall one, 64 rather than 32:
       -- it is the only healthbox with an EXP bar under it
-      local px, py = Gen3Battle.hudPlace(constants, "player", 64)
+      local px, py = Gen3Battle.hudPlace(constants, "player", 64, extra)
       return { enemy = { ex, ey, 14 * 8, 4 * 8 },
                player = { px, py, 15 * 8, 5 * 8 } }
     end)(),
     -- the rows each block is cut out of: the battlefield split in two, which
     -- is what a mod compositing them at the window's edges needs
     hudBand = {
-      enemy = { 0, 0, Gen3Battle.WIDTH, Gen3Battle.FIELD_BOTTOM / 2 },
-      player = { 0, Gen3Battle.FIELD_BOTTOM / 2, Gen3Battle.WIDTH,
+      enemy = { 0, 0, surface, Gen3Battle.FIELD_BOTTOM / 2 },
+      player = { 0, Gen3Battle.FIELD_BOTTOM / 2, surface,
                  Gen3Battle.FIELD_BOTTOM / 2 },
     },
     -- ONE STRIP.  Every window this layout draws -- the message, the prompt,
@@ -1600,7 +2033,7 @@ function Gen3Battle.geometry(classic, constants)
     -- unlike the Game Boy's there is no second rectangle further up the
     -- screen for the move menu's own panel.
     textRect = {
-      box = { 0, Gen3Battle.STRIP_TOP * 8, Gen3Battle.WIDTH,
+      box = { 0, Gen3Battle.STRIP_TOP * 8, surface,
               Gen3Battle.HEIGHT - Gen3Battle.STRIP_TOP * 8 },
     },
   }
@@ -1647,7 +2080,12 @@ local function drawAnimationLayer(battle)
   local sprites = currentAnimationSprites(battle)
   if not sprites or #sprites == 0 then return end
   local dx, dy = Gen3Battle.animationOffset(sprites)
-  inRegion(0, 0, Gen3Battle.WIDTH, Gen3Battle.FIELD_BOTTOM, dx, dy,
+  -- ...and the Game Boy animation's own offset is into the FIELD, which moved
+  -- with the background (fieldOffset), while the region it is clipped to is
+  -- the whole surface -- a particle thrown across a widened screen must not
+  -- be cut off at the cartridge's 240th column.
+  inRegion(0, 0, Gen3Battle.width(battle), Gen3Battle.FIELD_BOTTOM,
+    dx + Gen3Battle.fieldOffset(battle), dy,
     function() battle:drawAnimLayer(false) end)
 end
 
@@ -1670,15 +2108,48 @@ end
 -- is not the ground.  A battle that is not the ground must not paint one.
 -- That is the flag DRAMATIC_SHAPE already sets, so it needs no change to work
 -- -- and a mod that wants the field back simply leaves the flag alone.
+-- THE BANDS REACH THE SURFACE'S EDGES.
+--
+-- A Gen 3 battle background is horizontal BANDS with two platforms drawn over
+-- them.  That is not an assumption here, it is the measurement the platform
+-- finder below is already built on: "a band reaches the edge of the screen
+-- and a platform never does, so the colour of the longer of a row's two edge
+-- runs IS that row's band".
+--
+-- So the picture's first column is the left band of every row it has, and
+-- repeating that ONE column outward fills the space beside a centred field
+-- EXACTLY -- no stretch, no resample, and the platforms, the sky and the
+-- dithering keep every pixel they were drawn with.  The same on the right
+-- with the last column.  The rows the background leaves transparent -- the
+-- strip along the bottom where the message window goes -- repeat as
+-- transparent, so the paper still shows through there.
+local function spanGround(g, ground, ox, surface)
+  if type(g.newQuad) ~= "function" then return end
+  local okD, iw, ih = pcall(ground.getDimensions, ground)
+  if not (okD and iw and ih and iw > 0 and ih > 0) then return end
+  local q = bandQuads[ground]
+  if not q then
+    q = { left = g.newQuad(0, 0, 1, ih, iw, ih),
+          right = g.newQuad(iw - 1, 0, 1, ih, iw, ih) }
+    bandQuads[ground] = q
+  end
+  if ox > 0 then g.draw(ground, q.left, 0, 0, 0, ox, 1) end
+  local rx = ox + iw
+  if rx < surface then
+    g.draw(ground, q.right, rx, 0, 0, surface - rx, 1)
+  end
+end
+
 function Gen3Battle.drawField(battle)
   if battle.letterboxWhite == false then return end
   local g = love.graphics
+  local surface = Gen3Battle.width(battle)
   if monoMode() then
     g.setColor(1, 1, 1, 1)
   else
     g.setColor(PaletteFX.paperShade(battle.data))
   end
-  g.rectangle("fill", 0, 0, Gen3Battle.WIDTH, Gen3Battle.HEIGHT)
+  g.rectangle("fill", 0, 0, surface, Gen3Battle.HEIGHT)
 
   -- THE GROUND, over the paper.  A dataset with no backgrounds keeps the flat
   -- field it had, and a transparent strip along the bottom is the paper
@@ -1687,7 +2158,14 @@ function Gen3Battle.drawField(battle)
   local ground = Gen3Battle.backdrop(battle)
   if ground then
     g.setColor(1, 1, 1, 1)
-    g.draw(ground, 0, 0)
+    -- BATTLE LAYOUT = WIDE: the field keeps its own width, centred, and the
+    -- two Pokemon move with it (Gen3Battle.platforms adds the same offset),
+    -- so nothing on the ground is cut or stretched -- only the bands beside
+    -- it are filled.  fieldOffset is 0 on the OG layout and this is the blit
+    -- it has always been.
+    local ox = Gen3Battle.fieldOffset(battle)
+    g.draw(ground, ox, 0)
+    if surface > Gen3Battle.WIDTH then spanGround(g, ground, ox, surface) end
   end
   Gen3Battle.drawWeather(battle)
 end
@@ -1713,17 +2191,23 @@ end
 -- It goes on over the ground and under the Pokemon, which is where the
 -- hardware's weather layer sits.
 function Gen3Battle.drawWeather(battle)
-  local ok, Weather = pcall(require, "src.battle.Weather")
-  if not ok or not Weather.current then return end
+  -- both modules are resolved once and kept; this ran two requires and four
+  -- pcalls on every battle frame, weather or not
+  local Weather = weatherMod()
+  if not (Weather and Weather.current) then return end
   local okW, current = pcall(Weather.current, battle)
   if not (okW and current) then return end
-  local okG, Gen3Weather = pcall(require, "src.world.Gen3Weather")
-  if not okG then return end
+  local Gen3Weather = fieldWeatherMod()
+  if not Gen3Weather then return end
   local data = battle and battle.data
   local name = Gen3Weather.forBattle(current, data and data.constants)
   if not name then return end
+  -- the weather is a full-width layer, so it is the SURFACE's width and not
+  -- the cartridge's: rain that stops 240 pixels in is a rectangle of dry
+  -- field down each side of a widened screen
   pcall(Gen3Weather.draw, name, battle.frame or 0,
-        Gen3Battle.WIDTH, Gen3Battle.FIELD_BOTTOM or Gen3Battle.HEIGHT)
+        Gen3Battle.width(battle),
+        Gen3Battle.FIELD_BOTTOM or Gen3Battle.HEIGHT)
 end
 
 Gen3Battle.drawHUDs = drawHUDs
@@ -1763,6 +2247,11 @@ local opaqueCache = setmetatable({}, { __mode = "k" })
 local function invalidatePlacement()
   platformCache = setmetatable({}, { __mode = "k" })
   opaqueCache = setmetatable({}, { __mode = "k" })
+  -- ...and the strip slices, for the same reason: they are a per-pixel
+  -- measurement of an asset an asset mod is allowed to replace
+  stripCache = {}
+  stripQuads = {}
+  bandQuads = setmetatable({}, { __mode = "k" })
 end
 Assets.register(invalidatePlacement)
 
@@ -1862,7 +2351,17 @@ function Gen3Battle.platforms(battle)
     path = record.images[terrain] or record.images.PLAIN
   end
   local measured = path and measurePlatforms(path)
-  return measured or Gen3Battle.PLATFORM_FALLBACK
+  local spots = measured or Gen3Battle.PLATFORM_FALLBACK
+  -- BATTLE LAYOUT = WIDE: the background is drawn at fieldOffset rather than
+  -- at 0 (Gen3Battle.drawField), and these places are measured in the
+  -- background's OWN pixels -- so the offset belongs here too or the two
+  -- Pokemon stand beside their platforms instead of on them.  One place adds
+  -- it, and picPlacement, battlerCentre and every caller of theirs inherit
+  -- it; 0 on the OG layout, where this is the table it always was.
+  local ox = Gen3Battle.fieldOffset(battle)
+  if ox == 0 then return spots end
+  return { opponent = { x = spots.opponent.x + ox, y = spots.opponent.y },
+           player = { x = spots.player.x + ox, y = spots.player.y } }
 end
 
 -- The opaque bounds of a pic, so a Pokemon is placed by where its FEET are
@@ -2146,7 +2645,7 @@ function Gen3Battle.draw(battle)
     sx = battle.frame % 4 < 2 and 2 or -2
   end
   local slide = (battle.introSlide or 0)
-                * require("src.core.Timing").BATTLE_SLIDE_PX_PER_FRAME
+                * timing().BATTLE_SLIDE_PX_PER_FRAME
 
   -- THE PICS ARE PLACED, NOT SHUNTED.
   --
@@ -2218,11 +2717,12 @@ function Gen3Battle.draw(battle)
 
   if fx and fx.flash and fx.flash > 0 and battle.frame % 4 < 2 then
     g.setColor(1, 1, 1, 0.85)
-    g.rectangle("fill", 0, 0, Gen3Battle.WIDTH, Gen3Battle.HEIGHT)
+    -- the whole SCREEN flashes, so the whole surface does
+    g.rectangle("fill", 0, 0, Gen3Battle.width(battle), Gen3Battle.HEIGHT)
   end
   g.setColor(1, 1, 1, 1)
   if Runtime.wantsHook("battle.overlay") then
-    Runtime.call("battle.overlay", function() end, battle)
+    Runtime.call("battle.overlay", NOOP, battle)
   end
 end
 
@@ -2231,8 +2731,16 @@ end
 -- the trueColor opt-out over the whole surface; the forced-mono modes still
 -- want their whole-screen remap, sized to THIS surface rather than the
 -- 160x144 rectangle PaletteFX.ensureZones would invent.
-function Gen3Battle.zones()
-  local w, h = Gen3Battle.WIDTH, Gen3Battle.HEIGHT
+--
+-- `width` is the surface in use: a zone list sized to the cartridge's 240
+-- while the surface is wider leaves the extra columns un-remapped, which in
+-- the forced-mono modes is a strip of full-colour art down one side of a grey
+-- screen.  That is the same trap WideBattle.zones was written for.
+function Gen3Battle.zones(width)
+  local w = math.floor(tonumber(width) or Gen3Battle.WIDTH)
+  if w < Gen3Battle.WIDTH then w = Gen3Battle.WIDTH end
+  w = math.floor(w / 8) * 8
+  local h = Gen3Battle.HEIGHT
   if monoMode() then
     return { PaletteFX.zone(PaletteFX.GRAYS, 0, 0, w / 8 - 1, h / 8 - 1) }
   end

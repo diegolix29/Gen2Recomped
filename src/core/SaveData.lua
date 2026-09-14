@@ -519,6 +519,42 @@ end
 -- fields the title screen's ContinueInfo derives.  The launcher has no
 -- loaded Data, so `version` is what picks Badges' Kanto or Johto+Kanto
 -- fallback list; without it a Gold save always summarised as zero badges.
+-- HOW LONG THIS SAVE HAS BEEN PLAYED, IN SECONDS, WHATEVER SHAPE IT IS IN.
+--
+-- Reported from play, on the launcher's save list: "src/core/SaveData.lua:529:
+-- bad argument #1 to 'floor' (number expected, got table)", on Gold and Silver
+-- and sometimes Crystal.
+--
+-- This project's convention is that save.playTime is a single float of SECONDS
+-- -- Game:update accumulates dt into it and every codec in src/save_convert
+-- writes a number -- but saves written by older builds carry the BROKEN-DOWN
+-- form the cartridges use, { hours, minutes, seconds, frames }.  Nothing in
+-- this tree writes that any more, which is exactly why it went unnoticed: a
+-- character made today is fine and one made a year ago is not, so it looks
+-- like a version bug rather than an age one.  (mods/gen2recomped-online
+-- already carried a `type(save.playTime) == "table"` branch of its own, which
+-- is the other half of the evidence that these files are out there.)
+--
+-- It crashed in the LAUNCHER first because that is the one screen that decodes
+-- every slot before you have chosen one: a single old save takes down the list
+-- that every other save is on.  Loading it would have crashed a frame later
+-- anyway -- Game:update does `(self.save.playTime or 0) + dt` -- so this is a
+-- reader that accepts both shapes, and SaveData.validate turns the field into
+-- a number once so nothing downstream has to think about it again.
+--
+-- `vblanks` is Gen 3's name for the same sixtieths Gen 1 and 2 call `frames`.
+function SaveData.playSeconds(save)
+  local t = type(save) == "table" and save.playTime or nil
+  local n = tonumber(t)
+  if n then return n end
+  if type(t) ~= "table" then return 0 end
+  local ticks = tonumber(t.frames) or tonumber(t.vblanks) or 0
+  return (tonumber(t.hours) or 0) * 3600
+         + (tonumber(t.minutes) or tonumber(t.mins) or 0) * 60
+         + (tonumber(t.seconds) or tonumber(t.secs) or 0)
+         + ticks / 60
+end
+
 function SaveData.slotSummary(save, version)
   if type(save) ~= "table" then return nil, nil end
   local name = save.player and save.player.name or nil
@@ -526,7 +562,7 @@ function SaveData.slotSummary(save, version)
   for _ in pairs((save.pokedex and save.pokedex.owned) or {}) do
     dexCount = dexCount + 1
   end
-  local t = math.floor(save.playTime or 0)
+  local t = math.floor(SaveData.playSeconds(save))
   local timeText = ("%d:%02d"):format(math.floor(t / 3600),
                                       math.floor(t / 60) % 60)
   return name, {
@@ -1226,6 +1262,13 @@ end
 function SaveData.validate(save, data)
   local report = { lostMons = {}, lostItems = {}, remappedMaps = {},
                    restoredMons = {}, restoredItems = {} }
+  -- the clock, in the one shape the rest of the engine can do arithmetic on
+  -- (see SaveData.playSeconds) -- before anything else, because a save that
+  -- reaches Game:update with a table here throws on its first frame
+  if save.playTime ~= nil and tonumber(save.playTime) == nil then
+    save.playTime = SaveData.playSeconds(save)
+    report.repairedPlayTime = true
+  end
   reclaim(save, data, report)
   scrubMonList(save.party, "party", save, data, report)
   for b, box in ipairs(save.boxes or {}) do

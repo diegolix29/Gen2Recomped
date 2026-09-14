@@ -412,6 +412,20 @@ function Player:tryMove(dir, map, entities)
   local save = Game.save
   local frames = (save and save.onBike) and self.bikeStepFrames
                  or self.stepFrames or STEP_FRAMES
+  -- ...AND HOENN HAS TWO BIKES THAT DO NOT RIDE ALIKE.
+  --
+  -- Reported from play: "fix the acro and mach bike so they function as they
+  -- would in the emerald rom currently they both act the same".  The one
+  -- number above is the Game Boy's single BICYCLE, and it was every bike in
+  -- every game -- so the Mach Bike never pulled away and the Acro Bike had no
+  -- pace of its own.  The overworld has carried the cartridge's speeds for a
+  -- while (GetPlayerSpeed, its three-rung mach ladder and the frames each of
+  -- those speeds costs); nothing had ever asked it.  Asked here, the way
+  -- runFrames below is asked, so the RULE stays where the rules live.
+  if save and save.onBike and Game.overworld
+     and Game.overworld.bikeFrames then
+    frames = Game.overworld:bikeFrames() or frames
+  end
   -- "Downhill riding is slower when not moving down" (DoPlayerMovement .DoStep:
   -- on a bike with BIKEFLAGS_DOWNHILL_F set, only a DOWN step gets STEP_BIKE;
   -- every other direction drops to STEP_WALK).  Cycling Road is the only place
@@ -640,7 +654,16 @@ function Player:pose()
     -- `hopping` is deliberately NOT set: that flag is the LEDGE hop's, and
     -- what reads it draws the little shadow a Pokemon leaves under itself
     -- clearing a ledge.  A rider bouncing on the spot casts no such thing.
-    self.hopClock = ((self.hopClock or 0) + 1) % 8
+    -- THE CLOCK IS THE OVERWORLD'S NOW.  It used to be ticked right here,
+    -- which meant the hop ran at the DISPLAY's rate rather than the game's --
+    -- and, worse, there was no moment in a draw to hang the cartridge's own
+    -- hop sound on.  updateAcroBike owns both; this reads the phase and keeps
+    -- its own only for a caller that has no overworld behind it.
+    if self.acroHopClock then
+      self.hopClock = self.acroHopClock
+    else
+      self.hopClock = ((self.hopClock or 0) + 1) % 8
+    end
     py = py - math.floor(4 * math.sin(self.hopClock / 8 * math.pi) + 0.5)
   elseif self.surfing then
     self.bobTimer = ((self.bobTimer or 0) + 1) % 32

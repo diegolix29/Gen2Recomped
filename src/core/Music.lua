@@ -38,6 +38,25 @@ local state
 -- clears it once the cry source has finished.
 local cryDuck = nil
 
+-- AUDIO SESSION SUSPEND / RESUME state (mobile interruption: an incoming
+-- call).  Declared up here with the other module state because Music.stop --
+-- defined well above the suspend/resume pair itself -- has to be able to
+-- cancel a pending re-cue.  See the block above sourceStopped for the whole
+-- story.
+local sessionSuspended = false
+local suspendedSong -- the label to re-cue on the way back, or nil
+
+-- Re-cue retry budget after a resume: once a second for five seconds, ticked
+-- from Music.update.  SDL blocks inside its event pump for the whole length
+-- of an iOS call, so the background AND the foreground app events usually
+-- arrive in ONE love.event.poll batch -- suspend and resume therefore run on
+-- the same frame, which can be a beat before the OS has actually handed the
+-- audio device back.  Long enough to cover that; short enough that a
+-- genuinely broken def is not re-reported forever.
+local RESUME_RETRY_FRAMES = 60
+local RESUME_RETRY_TRIES = 5
+local resumeRetry -- { song, wait, left } while a resume re-cue is still owed
+
 local function applyVolume(src)
   if not src then return end
   local vol = VOLUME * volumeScale
@@ -348,6 +367,9 @@ function Music.stop()
   state.current, state.source, state.loopSource, state.fade = nil, nil, nil, nil
   state.chip = false
   state.pendingRestore = nil
+  -- An explicit stop outranks a pending resume re-cue: whoever called this
+  -- wants silence, and the retry in Music.update fires on a nil state.current
+  resumeRetry = nil
   if previous and Runtime.wants("music.stopped") then
     Runtime.emit("music.stopped", { song = previous })
   end
@@ -491,6 +513,87 @@ function Music.applyOptions(opts)
   Music.setFilterLevel(opts and opts.musicFilter or 0)
 end
 
+-- ---------------------------------------------------------------------------
+-- AUDIO SESSION SUSPEND / RESUME (mobile interruption: an incoming call)
+--
+-- Reported from play: on iOS, taking a phone call crashed the game.  iOS
+-- hands the audio session to the phone app for the length of the call and
+-- gives the game a NEW one afterwards; SDL reports the transition as
+-- SDL_APP_WILLENTERBACKGROUND / SDL_APP_DIDENTERBACKGROUND and LOVE delivers
+-- it as love.focus(false) / love.visible(false), so Game:focus is the hook.
+-- Android sends the same app events (and loses its GL context on top of it).
+--
+-- This pair is the policy; the two modules underneath hold the mechanism.
+-- ChipAudio owns the streaming QueueableSource that is queued into on every
+-- single frame -- the site that actually crashes -- and Sound owns the cached
+-- one-shots.  Game:audioSession gates the whole thing on
+-- Platform.detect().mobile, so on desktop, where alt-tab has always kept the
+-- music playing, none of this runs.
+
+function Music.suspend()
+  if sessionSuspended then return end
+  sessionSuspended = true
+  resumeRetry = nil -- a fresh interruption outranks the last one's re-cue
+  -- A one-shot jingle is not worth resuming: by the time the call ends the
+  -- beat it was scoring is long over, and state.pendingRestore already means
+  -- "put the map theme back when this ends", which is what resume then does.
+  suspendedSong = (not state.pendingRestore) and state.current or nil
+  require("src.core.ChipAudio").suspend()
+  require("src.core.Sound").suspend()
+  stopSource(state.source)
+  stopSource(state.loopSource)
+  -- Drop our handles here rather than in resume: these Sources belong to the
+  -- session that is being taken away, and the next Music.update must not find
+  -- them and start poking them.
+  state.source, state.loopSource = nil, nil
+  state.fanfare, state.fanfareResume = nil, false
+  state.fade = nil
+  state.chip = false
+  -- ...and forget the label, or the re-cue in resume is deduped away by
+  -- Music.play's `song == state.current` guard and the game comes back silent
+  state.current = nil
+end
+
+function Music.resume(data)
+  if not sessionSuspended then return end
+  sessionSuspended = false
+  require("src.core.ChipAudio").resume()
+  require("src.core.Sound").resume()
+  local song = suspendedSong
+  suspendedSong = nil
+  -- A def that failed to START during the interruption is not a bad def: the
+  -- device was gone.  state.failed is a permanent "never try this label
+  -- again" latch, so clear it, or one badly timed call silences a song for
+  -- the rest of the session.
+  state.failed = {}
+  if state.pendingRestore then
+    -- the jingle the call interrupted is over as far as the player is
+    -- concerned; do what Music.update would have done when it ended
+    Music.restoreMap(data)
+  elseif song then
+    -- loop = true unconditionally: the only non-looping songs are the
+    -- one-shot jingles, and those took the branch above
+    Music.play(data, song, true, { reason = "resume" })
+    -- And if the device was still not ready on this exact frame, do not leave
+    -- the label latched as bad -- the next map / battle cue must be free to
+    -- try it again.  This is the one place where a failure is known to be the
+    -- platform's fault rather than the def's.
+    --
+    -- ...and arm the retry, because on iOS there may BE no next cue.  SDL
+    -- blocks inside its event pump for the whole call, so the background and
+    -- foreground events usually land in one poll batch: this runs a frame or
+    -- two before the OS hands the audio device back, the map has not changed,
+    -- and nothing else would ever re-cue the theme.  Without the retry the
+    -- game comes back permanently silent, which is the second-worst outcome
+    -- after the crash.
+    if state.current ~= song then
+      state.failed[song] = nil
+      resumeRetry = { song = song, wait = RESUME_RETRY_FRAMES,
+                      left = RESUME_RETRY_TRIES }
+    end
+  end
+end
+
 local function sourceStopped(src)
   if not src then return false end
   local ok, playing = pcall(src.isPlaying, src)
@@ -500,6 +603,30 @@ end
 -- call once per frame: chains a finished intro into its loop body and
 -- restores the map theme after a one-shot jingle
 function Music.update(data)
+  -- INTERRUPTION: the OS holds the audio session (an incoming call), every
+  -- Source we had is gone, and Music.resume is what rebuilds them.  Nothing
+  -- in here is worth doing against a device that is not there -- and the
+  -- ChipAudio.update on the next line is the call that crashed.
+  if sessionSuspended then return end
+  -- The other half of the same case: the re-cue in Music.resume can land
+  -- before the OS has handed the audio device back, and nothing else re-cues
+  -- a map theme that never stopped being the map theme.  So the retry is
+  -- ticked here, on the once-a-frame clock, and only while NOTHING is
+  -- playing -- if the resume took, or the player crossed a seam and the new
+  -- map cued its own theme, this must not fight it.
+  if resumeRetry then
+    if state.current ~= nil or resumeRetry.left <= 0 then
+      resumeRetry = nil
+    else
+      resumeRetry.wait = resumeRetry.wait - 1
+      if resumeRetry.wait <= 0 then
+        resumeRetry.wait = RESUME_RETRY_FRAMES
+        resumeRetry.left = resumeRetry.left - 1
+        state.failed[resumeRetry.song] = nil
+        Music.play(data, resumeRetry.song, true, { reason = "resume" })
+      end
+    end
+  end
   if state.chip then require("src.core.ChipAudio").update() end
   -- restore the song's level once the cry that ducked it has finished
   if cryDuck and not cryDuckActive() then

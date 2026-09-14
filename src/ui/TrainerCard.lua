@@ -249,7 +249,7 @@ function TrainerCard:drawGen2()
     for _ in pairs(dex.owned or {}) do caught = caught + 1 end
     Font.draw(Strings("POKéDEX"), 16, 80)
     Font.draw(("%3d"):format(caught), 120, 80)
-    local t = math.floor(save.playTime or 0)
+    local t = math.floor(require("src.core.SaveData").playSeconds(save))
     Font.draw(Strings("PLAY TIME"), 16, 96)
     Font.draw(("%3d:%02d"):format(math.floor(t / 3600),
                                   math.floor(t / 60) % 60), 104, 96)
@@ -298,7 +298,7 @@ function TrainerCard:draw()
   love.graphics.setColor(0, 0, 0, 1)
   Font.draw(Strings("NAME/%s", save.player.name or "RED"), 16, 16)
   Font.draw(("MONEY/¥%d"):format(save.money or 0), 16, 32)
-  local t = math.floor(save.playTime or 0)
+  local t = math.floor(require("src.core.SaveData").playSeconds(save))
   Font.draw(("TIME/%3d:%02d"):format(math.floor(t / 3600),
                                      math.floor(t / 60) % 60), 16, 48)
 

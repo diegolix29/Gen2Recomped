@@ -259,7 +259,7 @@ local GEN3_MAX_LAND = 32
 -- Keeping the constant HERE, beside the rules it describes, is the point: the
 -- edit that changes the shapes and the edit that invalidates the cache are in
 -- the same file, a few lines apart.
-Structures.SHAPE_REV = "g3-settee-305"
+Structures.SHAPE_REV = "g3-settee-308"
 -- one cell of world height: the step a building may straddle and still be
 -- treated as having one foundation
 local COURSE = 16
@@ -531,6 +531,12 @@ local CAVE_SHELL = RING
 -- ----------------------------------------------------------------- build --
 
 local DIRS4 = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }
+-- ...and the eight-connected neighbourhood, for grouping a carved SILHOUETTE
+-- whose outline Emerald steps on the diagonal (Structures.buildGen3Joinery's
+-- `chairMaskOf`).  Nothing that walks the MAP uses it: cells are
+-- four-connected everywhere in this file and stay so.
+local DIRS8 = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 },
+                { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 } }
 
 local function keyOf(tx, ty)
   return (ty + 64) * 4096 + (tx + 64)
@@ -25724,6 +25730,18 @@ local JOINERY_H = {
 -- the trap the header above spends a paragraph on.
 local CHAIR_BACK_H = 16
 
+-- THE THREE TESTS THAT SAY A DRAWING HAS A BACK AT ALL, all DERIVED from the
+-- census of every pinned `chair` cell in Hoenn (375 cells / 32 distinct
+-- carved silhouettes / 436 indoor maps).  See the rule itself in
+-- `buildGen3Joinery` for the per-drawing numbers.  The margin is not tight:
+-- all 27 silhouettes that carry a board measure plateau 4, rise 3 or 4 and
+-- span exactly 4, and all 5 that do not -- 610 (Brendan's desk stool), Lab
+-- 569, and the Pokemon Centre's 550 and 564 -- fail on the plateau alone,
+-- measuring 0, 0, 1 and 1.
+local CHAIR_BACK_MIN_PLATEAU = 3   -- there is a seat under the board
+local CHAIR_BACK_MIN_RISE = 3      -- and the board stands clear of it
+local CHAIR_BACK_MAX_W = 6         -- a board up one side, not a cap in the middle
+
 -- one hair, so two coplanar faces that meet at a silhouette boundary do not
 -- z-fight: the voxel pass draws with culling off (the same constant and the
 -- same reason as the flower standee's `SIDE_INSET`)
@@ -25813,7 +25831,11 @@ function Structures.buildGen3Joinery(S, map)
   -- THE ISLANDS OF ONE SILHOUETTE, biggest first, as lists of cell-local
   -- pixel indices.  Four-connected inside the cell; the object's own reach
   -- ACROSS cells is `onAt` below and is a separate question.
-  local function islandsOf(mk)
+  -- `dirs` defaults to DIRS4 so every existing caller -- the grain walk and
+  -- `maskOf` -- reads exactly as before.  `chairMaskOf` alone passes DIRS8;
+  -- its header says why.
+  local function islandsOf(mk, dirs)
+    dirs = dirs or DIRS4
     local seen, out = {}, {}
     for fy = 0, 15 do
       for fx = 0, 15 do
@@ -25825,7 +25847,7 @@ function Structures.buildGen3Joinery(S, map)
             local p = q[qi]; qi = qi + 1
             cells[#cells + 1] = p
             local px, py = p % 16, math.floor(p / 16)
-            for _, d in ipairs(DIRS4) do
+            for _, d in ipairs(dirs) do
               local nx, ny = px + d[1], py + d[2]
               if nx >= 0 and ny >= 0 and nx < 16 and ny < 16 then
                 local np = ny * 16 + nx
@@ -25959,6 +25981,202 @@ function Structures.buildGen3Joinery(S, map)
     return mk
   end
 
+  -- ---- A CHAIR IS ONE MASS, AND ITS HOLES ARE NOT FLOOR.
+  --
+  -- IN-GAME LOCATION: THE STOOLS ROUND THE TABLES IN EVERY POKEMON CENTRE,
+  -- OldaleTown_PokemonCenter_1F (1, 3), (2, 3), (10, 6), (10, 7), (11, 8),
+  -- (12, 8) and the same seats in thirty-three more Centres, Leagues and
+  -- Frontier Centres -- "some of the cushions in the game are trying to add
+  -- the backrests of chairs when they shouldnt".
+  --
+  -- MEASURED, by dumping the carve for all 188 stool cells: on 154 of them
+  -- (102 of metatile 564 and 52 of 550, over 17 maps each) the round cushion
+  -- does NOT carve to one silhouette.  Its middle is drawn in a colour this
+  -- room also lays as floor, so the carve cuts the cushion in half and what
+  -- is left is TWO ISLANDS --
+  --
+  --      ................          a 34px seat pad at rows 11..14,
+  --      ...##########...   row 1  and a DETACHED 10 x 1 BAR at row 1
+  --      ................          with ten empty rows between them.
+  --      ................
+  --      ..#..........#..   row 11
+  --      ..############..
+  --      ..############..
+  --      ....########....
+  --      ................
+  --
+  -- -- and this pass extrudes every surviving pixel, so that bar stood up as
+  -- a free-standing wall ONE PIXEL DEEP and 8px tall, floating on nothing,
+  -- across the north edge of a cushion.  That is the backrest the report can
+  -- see on a stool.  The chair-back rule below is NOT what put it there: it
+  -- emits zero quads on every one of those 188 cells and always did (their
+  -- plateau is row 1 and row 0 is empty).  The other 34 stool cells carve to
+  -- one 172px island and were never wrong.
+  --
+  -- THE READING IS THE ONE THIS FILE ALREADY MAKES ABOUT GRAIN, one size up.
+  -- The grain filter above drops islands no bigger than the room's own bare
+  -- floor keeps, capped at GRAIN_CEILING = 8; this bar is TEN pixels and
+  -- walks straight through it.  But the argument was never about eight
+  -- pixels, it was that "grain is not part of an object: it is an ISLAND,
+  -- and an object is a MASS".  A chair is one piece of furniture, so it is
+  -- the PRINCIPAL island and whatever the carve tore off it is not a second
+  -- chair -- and a hole the object's own silhouette completely encloses is
+  -- not floor you can see through it, it is carve loss inside the seat.
+  --
+  -- DERIVED, over all 32 distinct chair silhouettes in Hoenn: 26 of them are
+  -- already a single island and lose nothing at all.  The principal island
+  -- holds 34..196 pixels and EVERY fragment beside it is 10 pixels or fewer
+  -- (the stool's bar at 10; four single-pixel specks on 733/734), so there
+  -- is no drawing where this can take furniture.  Enclosed holes: 181 of the
+  -- 375 cells carry one, from 6px (550's rim) to 48px (the Weather
+  -- Institute's seat middle, 599/598/606), every one of them inside the
+  -- outline and none of them reaching the cell edge.
+  --
+  -- SCOPED TO `chair` AND NOTHING ELSE.  Counters, tabletops, beds,
+  -- appliances, cabinets, sinks, worktops and televisions read `maskOf`
+  -- exactly as before, so the 1,773 tabletops, 563 counters, 14 beds and the
+  -- sink/worktop/fridge/cabinet units are byte for byte unchanged.  A bed in
+  -- particular MUST keep the plain mask: it is the one class that grows
+  -- across cells, and a per-cell slice of it is legitimately more than one
+  -- island.
+  local chairMasks = {}
+  local function chairMaskOf(m)
+    local hit = chairMasks[m]
+    if hit then return hit end
+    -- ---- AND A CUSHION'S OUTLINE IS ONE RING, NOT FOUR ARCS.
+    --
+    -- IN-GAME LOCATION: THE STOOLS ROUND THE TABLES IN EVERY POKEMON CENTRE
+    -- -- RustboroCity_PokemonCenter_1F (10, 6) and (10, 7), the pair beside
+    -- the 2x2 table, and the same seats in sixteen more Centres, the two
+    -- Pokemon League floors and the Battle Frontier Centres.  Reported as
+    -- "in the pokemon center the cusions metal posts are still raised like
+    -- backrests of chairs and the cushions are flat".
+    --
+    -- WHAT WAS ACTUALLY STANDING, AND IT WAS NEVER THE BACK RULE.  DUMPED
+    -- off Rustboro's own carve, metatile 550 keeps 62 of 256 pixels in SIX
+    -- four-connected islands, 34 / 10 / 8 / 8 / 1 / 1 --
+    --
+    --     ................       The cushion's middle is drawn in a colour
+    --     ...##########...       this room also lays as floor, so what
+    --     ..#..........#..       survives is the cushion's OUTLINE (rows
+    --     .#............#.       1..11 -- the 10, the two 8s and the two 1s)
+    --     .#............#.       plus the solid grey PEDESTAL under it (rows
+    --     ..  ten rows   ..      11..14, the 34).  Emerald steps that outline
+    --     .#............#.       diagonally: (3,1) touches (2,2) at a CORNER
+    --     ..#..........#..       and nowhere else, and so does every other
+    --     ..############..       turn of it.  Four-connected the ring is four
+    --     ..############..       arcs, and the biggest island in the cell is
+    --     ....########....       the pedestal.
+    --     ................
+    --
+    -- TWO PASSES THEN THREW THE CUSHION AWAY.  The grain filter (`maskOf`
+    -- above) drops any island no bigger than the room's own floor grain, and
+    -- a Pokemon Centre measures grain 8 -- so the two 8px side arcs and the
+    -- two 1px corners went first, leaving 44 px in two pieces; then the
+    -- principal-island rule below kept the larger of those, the 34px
+    -- pedestal.  The model was a 12 x 4 block at the cell's south edge
+    -- extruded to the seat's 8px.  The cushion contributed no geometry at
+    -- all and stayed painted flat on the floor -- the report word for word,
+    -- the metal standing up and the cushion flat.
+    --
+    -- SO BOTH READINGS ARE MADE EIGHT-CONNECTED, HERE AND ONLY HERE.  The
+    -- grain filter's own reading is "grain is not part of an object: it is
+    -- an ISLAND, and an object is a MASS", and that is exactly what is
+    -- wrong: an outline stepped on the diagonal IS part of the mass, and
+    -- four-connectivity is what cannot see it.  Floor grain is not
+    -- diagonally adjacent to anything -- it is painted in a regular
+    -- scattered pattern -- so the filter still takes it.
+    --
+    -- ...AND THE HOLE FLOOD BELOW STAYS FOUR-CONNECTED.  That is the
+    -- standard pairing and it is what makes the fill correct: the ring is
+    -- one island under 8-connectivity, and the background is still sealed
+    -- under 4-connectivity, so the flood cannot leak through the corner the
+    -- ring steps on.
+    --
+    -- CENSUSED through this exact pipeline over every pinned `chair` cell in
+    -- Hoenn -- 375 cells, 106 (pair x floor-set x metatile) silhouettes, 436
+    -- indoor maps.  TWENTY-TWO silhouettes change, 163 cells:
+    --
+    --   550 / 564  gTileset_PokemonCenter   154 cells / 17 maps   34 -> 178
+    --   598/599/606 gTileset_WeatherInstitute  9 cells / 1 map   143 -> 159
+    --
+    -- and every one lands on the number the SAME METATILE already builds
+    -- where the floor does not eat it: 550 and 564 measure 178 on their
+    -- other 34 cells (10 Centres and Leagues whose floor spares the
+    -- cushion's fill), and 598/599/606 measure 159 on WeatherInstitute_1F.
+    -- This does not invent a silhouette; it restores the one the drawing
+    -- has everywhere else.
+    --
+    -- THE CHAIR-BACK RULE AND ITS THREE GATES ARE UNMOVED.  Re-run over all
+    -- 375 cells: 0 cells gain a back and 0 lose one.  550 and 564 measure
+    -- plateau 1 -- the profile 3,2,1,1,1,1,1,1,1,1,1,1,2,3 the pin block
+    -- quotes, which is the RING's profile and was only ever readable with
+    -- the ring present -- and 1 < CHAIR_BACK_MIN_PLATEAU, so a stool still
+    -- gets no back.  The only board that moves at all is the Weather
+    -- Institute's, from 4 x 15 to 4 x 16, which is what its own 1F twin
+    -- already builds.
+    local raw = rawMaskOf(m)
+    local base = { n = 0 }
+    for _, cells in ipairs(islandsOf(raw, DIRS8)) do
+      if grain < 1 or #cells > grain then
+        for _, p in ipairs(cells) do
+          base[p] = true
+          base.n = base.n + 1
+        end
+      end
+    end
+    local isl = islandsOf(base, DIRS8)
+    local mk = { n = 0 }
+    if isl[1] then
+      -- the principal island only (islandsOf sorts biggest first)
+      for _, p in ipairs(isl[1]) do
+        mk[p] = true
+        mk.n = mk.n + 1
+      end
+      -- ...and close the holes it encloses, by flooding the OUTSIDE in from
+      -- the cell border: anything empty the flood cannot reach is inside.
+      local out, q, qi = {}, {}, 1
+      for fy = 0, 15 do
+        for fx = 0, 15 do
+          if (fx == 0 or fy == 0 or fx == 15 or fy == 15)
+             and not mk[fy * 16 + fx] and not out[fy * 16 + fx] then
+            out[fy * 16 + fx] = true
+            q[#q + 1] = fy * 16 + fx
+          end
+        end
+      end
+      while qi <= #q do
+        local p = q[qi]; qi = qi + 1
+        local px, py = p % 16, math.floor(p / 16)
+        for _, d in ipairs(DIRS4) do
+          local nx, ny = px + d[1], py + d[2]
+          if nx >= 0 and ny >= 0 and nx < 16 and ny < 16 then
+            local np = ny * 16 + nx
+            if not mk[np] and not out[np] then
+              out[np] = true
+              q[#q + 1] = np
+            end
+          end
+        end
+      end
+      for p = 0, 255 do
+        if not mk[p] and not out[p] then
+          mk[p] = true
+          mk.n = mk.n + 1
+        end
+      end
+    end
+    chairMasks[m] = mk
+    return mk
+  end
+
+  -- the model surface of one claimed piece: a chair reads its own, everything
+  -- else reads the plain carve (see chairMaskOf above)
+  local function modelMaskOf(e)
+    if e.class == "chair" then return chairMaskOf(e.m) end
+    return maskOf(e.m)
+  end
+
   local function slotOf(m, fx, fy)
     local t = m * 4 + math.floor(fy / 8) * 2 + math.floor(fx / 8)
     return (t % perRow) * 8 + (fx % 8), math.floor(t / perRow) * 8 + (fy % 8)
@@ -26086,17 +26304,17 @@ function Structures.buildGen3Joinery(S, map)
     if fy < 0 then dy = -1 fy = fy + 16 elseif fy > 15 then dy = 1 fy = fy - 16 end
     if dx == 0 and dy == 0 then
       local e = claim[cy * 8192 + cx]
-      return e and maskOf(e.m)[fy * 16 + fx] == true
+      return e and modelMaskOf(e)[fy * 16 + fx] == true
     end
     local e = claim[(cy + dy) * 8192 + (cx + dx)]
     if not (e and e.h == h and e.gz == gz) then return false end
-    return maskOf(e.m)[fy * 16 + fx] == true
+    return modelMaskOf(e)[fy * 16 + fx] == true
   end
 
   for _, e in ipairs(order) do
     Budget.tick()
     local m, h, gz = e.m, e.h, e.gz
-    local mk = maskOf(m)
+    local mk = modelMaskOf(e)
     if mk.n > 0 then
       local wx, wz = e.cx * 16, e.cy * 16
       local yTop, yBot = gz + h, gz
@@ -26216,11 +26434,82 @@ function Structures.buildGen3Joinery(S, map)
         end
       end
       -- ---- the BACK of a chair, standing over the seat (see CHAIR_BACK_H).
+      --
+      -- IN-GAME LOCATION: BRENDAN'S DINING CHAIRS, LittlerootTown_
+      -- BrendansHouse_1F (2, 6), (5, 6), (2, 7), (5, 7), and the standard
+      -- Hoenn house chair in OldaleTown_House2 (4, 4) and (7, 4) -- "the
+      -- backrests arent wide enough on the chairs theyre like 1px wide and
+      -- only on one side of the chairs".
+      --
+      -- WHY IT CAME OUT A SLIVER.  The plateau reading below is right and is
+      -- kept; what was wrong is what was done with it.  The back was the set
+      -- of pixels that SURVIVED THE CARVE in the rows strictly above the
+      -- plateau -- and both halves of that are too small.
+      --
+      --   * TOO FEW ROWS.  The board is drawn down the whole side of the
+      --     seat, not just above it.  Taking rows 0..plateau-1 is four rows
+      --     of a board that runs the full depth of the cell, so what stood
+      --     up was a 4x4 post in one corner: "only on one side".
+      --   * TOO FEW COLUMNS.  The carve cuts THIS MAP's floor colours out,
+      --     and a board's own fill is frequently one of them, so only its
+      --     OUTLINE survives.  DERIVED, off the dumped carve:
+      --       555 (the house chair, 138 cells over 30 maps with its seven
+      --           twins) keeps cols 2,3 and 5 of a 2..5 board -- a 2px strip
+      --           and a 1px strip with the middle eaten;
+      --       599/598/606 (the Weather Institute, 9 cells) keep cols 1 and 4
+      --           of a 1..4 board -- TWO 1px slivers.
+      --     That is the "1px wide" in the report, exactly.
+      --
+      -- SO READ THE BOARD, NOT THE PIXELS THAT SURVIVED IT.  The columns
+      -- standing above the plateau state WHERE the board is; take their
+      -- SPAN (first to last, so an eaten middle is spanned rather than
+      -- dropped) and the drawing's own bottom in that span, and stand the
+      -- whole rectangle up.  It wears the real art, because these quads are
+      -- textured from the relaid tile sheet and not from the carve, so a
+      -- column the carve ate comes back with the board's own pixels on it.
+      --
+      -- MEASURED over every pinned chair cell in Hoenn (375 cells, 32
+      -- distinct carved silhouettes, 436 indoor maps).  The span is FOUR
+      -- columns wide on all 27 silhouettes that have a board -- there is no
+      -- second answer -- and its bottom measures row 15 on all 27, so the
+      -- board runs the full depth of the cell and is 4 x 16 rather than the
+      -- 6..14 loose pixels it was.  The bottom is still read from the
+      -- drawing rather than stated, because 15 is what the drawing says and
+      -- not what this pass wants.
+      --
+      -- AND A GATE, so a seat with no back can never gain one.  The old code
+      -- had none: ANY pixel above the plateau became a back, which on a
+      -- round cushion with a rounded cap would raise a nub out of nothing.
+      -- The three tests below are DERIVED from the same census -- every one
+      -- of the 27 boards clears all three, and every one of the 5 backless
+      -- silhouettes (610 Brendan's desk stool, Lab 569, and the Pokemon
+      -- Centre's 550 and 564) fails on the plateau alone:
+      --
+      --   plateau >= 3   there is a seat UNDER the board.  All 27 boards
+      --                  measure plateau 4; the four backless drawings
+      --                  measure 0, 0, 1 and 1.
+      --   rise    >= 3   the board stands clear of the seat.  All 27
+      --                  measure 3 or 4.
+      --   span 2..6 and touching a side (cx0 <= 2 or cx1 >= 13)
+      --                  a back is a board along ONE SIDE of the seat, not a
+      --                  cap across its middle.  All 27 measure span 4 and
+      --                  touch a side.
+      --
+      -- STILL WITHOUT A BACK, AND SAID OUT LOUD: gTileset_Lab 569, ONE cell,
+      -- LittlerootTown_ProfessorBirchsLab (2, 10).  That chair is drawn
+      -- facing the camera and its board is a band across the NORTH edge, so
+      -- its column-top profile is flat (plateau 0) and there is nothing
+      -- above the plateau to find.  A column-top profile cannot see a back
+      -- that spans every column; that needs a different reading and a
+      -- different round.  610, 550 and 564 are stools and correctly get none.
       if e.class == "chair" then
-        local topRow = {}
+        local topRow, botRow = {}, {}
         for fx = 0, 15 do
           for fy = 0, 15 do
-            if mk[fy * 16 + fx] then topRow[fx] = fy break end
+            if mk[fy * 16 + fx] then
+              if not topRow[fx] then topRow[fx] = fy end
+              botRow[fx] = fy
+            end
           end
         end
         local hist, plateau, bestN = {}, nil, 0
@@ -26231,20 +26520,48 @@ function Structures.buildGen3Joinery(S, map)
             if hist[t] > bestN then bestN, plateau = hist[t], t end
           end
         end
-        if plateau and plateau > 0 then
-          local back = {}
-          for fy = 0, plateau - 1 do
-            for fx = 0, 15 do
-              if mk[fy * 16 + fx] then back[fy * 16 + fx] = true end
+        -- the board's own span, and the drawing's own bottom inside it
+        local cx0, cx1, ry0, ry1
+        if plateau and plateau >= CHAIR_BACK_MIN_PLATEAU then
+          for fx = 0, 15 do
+            local t = topRow[fx]
+            if t and t < plateau then
+              cx0 = cx0 or fx
+              cx1 = fx
+              if not ry0 or t < ry0 then ry0 = t end
             end
+          end
+        end
+        if cx0 then
+          local w = cx1 - cx0 + 1
+          if w < 2 or w > CHAIR_BACK_MAX_W
+             or not (cx0 <= 2 or cx1 >= 13)
+             or (plateau - ry0) < CHAIR_BACK_MIN_RISE then
+            cx0 = nil
+          else
+            for fx = cx0, cx1 do
+              local b = botRow[fx]
+              if b and (not ry1 or b > ry1) then ry1 = b end
+            end
+            if not ry1 or ry1 < ry0 then cx0 = nil end
+          end
+        end
+        if cx0 and ry1 then
+          local back = {}
+          for fy = ry0, ry1 do
+            for fx = cx0, cx1 do back[fy * 16 + fx] = true end
           end
           local yB = gz + CHAIR_BACK_H
           local function onBack(fx, fy)
             if fx < 0 or fy < 0 or fx > 15 or fy > 15 then return false end
             return back[fy * 16 + fx] == true
           end
-          for fy = 0, plateau - 1 do
-            for fx = 0, 15 do
+          -- one pixel at a time, as before and for the same reason: a single
+          -- pixel CANNOT cross the quadrant seams at x = 8 or y = 8, which is
+          -- the trap this file's header spends a paragraph on.  A board is at
+          -- most 6 x 16, so this is ~100 quads on a chair cell.
+          for fy = ry0, ry1 do
+            for fx = cx0, cx1 do
               if onBack(fx, fy) then
                 local sx, sy = slotOf(m, fx, fy)
                 local u0 = (sx + 0.05) / atlasW

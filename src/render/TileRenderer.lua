@@ -911,6 +911,62 @@ end
 -- open water, a field of grass -- and an empty slot is dropped rather than
 -- reserved.  A dry run counts first so the sheet is allocated at the size it
 -- actually needs.
+-- HOW A BAKED SHEET IS WRITTEN, and this is where the hitch was.
+--
+-- Reported from play: "the game Sometimes Freezes when I enter towns please
+-- go through and optimize emerald to run as well as possible."
+--
+-- A Hoenn pair bakes into two sheets of 256 by up to about 1700 pixels, and
+-- both of them were filled a pixel at a time with ImageData:setPixel -- close
+-- to a million calls across the two layers, each one crossing into C, dividing
+-- three channels by 255 and bounds-checking itself.  That is most of a second
+-- of frozen game, and a town entry pays it more than once: the town's own pair
+-- and every neighbouring route's, all inside the one frame that loads the map.
+-- It only happens when the pair is not already cached, which is exactly why
+-- the freeze was "sometimes".
+--
+-- So the pixels go into a plain Lua buffer and become an ImageData in ONE
+-- call.  Two things make that nearly free: the buffer holds interned
+-- four-byte strings rather than numbers, and a tileset has at most 256
+-- colours in it, so the string for a colour is built once and reused for
+-- every pixel of that colour after.  What is left per pixel is a table store.
+--
+-- The slow path is kept for a runtime whose newImageData will not take a
+-- data string, because a missing tileset is a worse outcome than a stall.
+local function pixelCanvas(w, h)
+  local char, floor = string.char, math.floor
+  local blank = "\0\0\0\0"
+  local buf, memo = {}, {}
+  for i = 1, w * h do buf[i] = blank end
+  local function plot(x, y, r, g, b)
+    if x >= 0 and y >= 0 and x < w and y < h then
+      local key = r * 65536 + g * 256 + b
+      local px = memo[key]
+      if not px then
+        px = char(floor(r), floor(g), floor(b), 255)
+        memo[key] = px
+      end
+      buf[y * w + x + 1] = px
+    end
+  end
+  local function finish()
+    local ok, surface = pcall(love.image.newImageData, w, h, "rgba8",
+                              table.concat(buf))
+    if ok and surface then return surface end
+    surface = love.image.newImageData(w, h)
+    for i = 1, w * h do
+      local px = buf[i]
+      if px ~= blank then
+        local x, y = (i - 1) % w, floor((i - 1) / w)
+        surface:setPixel(x, y, px:byte(1) / 255, px:byte(2) / 255,
+                         px:byte(3) / 255, 1)
+      end
+    end
+    return surface
+  end
+  return plot, finish
+end
+
 local function buildReflectionCover(record, tiles, statics, frames)
   if not (love.image and love.image.newImageData) then return end
   frames = math.max(1, frames or 1)
@@ -927,12 +983,7 @@ local function buildReflectionCover(record, tiles, statics, frames)
   local cols = require("src.render.Gen3Tiles").SHEET_COLS
   local w = cols * 16
   local h = math.ceil(#ids * frames / cols) * 16
-  local surface = love.image.newImageData(w, h)
-  local plot = function(x, y, r, g, b)
-    if x >= 0 and y >= 0 and x < w and y < h then
-      surface:setPixel(x, y, r / 255, g / 255, b / 255, 1)
-    end
-  end
+  local plot, finish = pixelCanvas(w, h)
   local quads = {}
   for f = 0, frames - 1 do
     tiles:setAnimFrame(f)
@@ -945,7 +996,7 @@ local function buildReflectionCover(record, tiles, statics, frames)
     end
   end
   tiles:setAnimFrame(0)
-  record.cover = love.graphics.newImage(surface)
+  record.cover = love.graphics.newImage(finish())
   record.coverQuads = quads
   record.coverFrames = frames
 end
@@ -1009,12 +1060,7 @@ function TileRenderer.gen3SheetsFor(tilesetDef, data, layout)
 
   local built = {}
   for layer = 1, 2 do
-    local surface = love.image.newImageData(w, h)
-    local plot = function(x, y, r, g, b)
-      if x >= 0 and y >= 0 and x < w and y < h then
-        surface:setPixel(x, y, r / 255, g / 255, b / 255, 1)
-      end
-    end
+    local plot, finish = pixelCanvas(w, h)
     -- the static sheet holds FRAME ZERO, not the tileset's shipped bytes: the
     -- cartridge copies frame zero in before the first field frame is drawn,
     -- so the shipped tile is never the one anybody sees
@@ -1026,7 +1072,7 @@ function TileRenderer.gen3SheetsFor(tilesetDef, data, layout)
         tiles:bakeMetatileInto(id, layer, slotOf[id][f], plot)
       end
     end
-    built[layer] = love.graphics.newImage(surface)
+    built[layer] = love.graphics.newImage(finish())
   end
   tiles:setAnimFrame(0)
 
@@ -1532,6 +1578,18 @@ end
 
 local WINDOW_MARGIN = 8 -- tiles of slack kept around the view between refills
 
+-- The window bounds, written in place.  A fresh table per fill is one
+-- allocation every time the camera leaves the margin, which on a Gen 3 map
+-- used to be several times a second.
+function TileRenderer:setWin(tx0, ty0, tx1, ty1)
+  local win = self.win
+  if win then
+    win.tx0, win.ty0, win.tx1, win.ty1 = tx0, ty0, tx1, ty1
+  else
+    self.win = { tx0 = tx0, ty0 = ty0, tx1 = tx1, ty1 = ty1 }
+  end
+end
+
 function TileRenderer:ensureWindow(camX, camY, vw, vh)
   local W, H = self.bodyTilesW, self.bodyTilesH
   vw = vw or W * 8 -- a nil view (headless draw) means the whole body
@@ -1547,11 +1605,20 @@ function TileRenderer:ensureWindow(camX, camY, vw, vh)
   -- still geometrically valid is no longer visually valid -- and this is the
   -- only thing that makes Hoenn's water move.  Cells that do not animate are
   -- re-added with the quad they already had.
+  --
+  -- ...UNLESS NOTHING IN THIS WINDOW MOVES.  The fill below already knows
+  -- which cells took an animated slot, and on most of Hoenn -- indoors, and
+  -- every route away from water -- the answer for the whole window is NONE.
+  -- Rebuilding several hundred cells into two batches four times a second to
+  -- redraw an identical picture is the periodic hitch, so a window that drew
+  -- no animated cell keeps its fill until the camera leaves it.
   local frame = self:gen3AnimFrame()
   if frame ~= self.gen3Frame then
-    if self.gen3Frame ~= nil then gen3Refills = gen3Refills + 1 end
     self.gen3Frame = frame
-    win = nil
+    if self.winAnimated ~= false then
+      if self.gen3Frame ~= nil then gen3Refills = gen3Refills + 1 end
+      win = nil
+    end
   end
   -- ...and SAY so, whatever the answer is.  This reported only when `frame`
   -- was non-nil, which made the one outcome that matters -- no animation
@@ -1597,6 +1664,8 @@ function TileRenderer:ensureWindow(camX, camY, vw, vh)
     local n = self.blockTiles
     local cx0, cy0 = math.floor(tx0 / n), math.floor(ty0 / n)
     local cx1, cy1 = math.ceil(tx1 / n), math.ceil(ty1 / n)
+    local slots = self.gen3.animSlots
+    local moving = false
     for cy = cy0, cy1 - 1 do
       for cx = cx0, cx1 - 1 do
         local id = map:blockAt(cx, cy)
@@ -1605,10 +1674,13 @@ function TileRenderer:ensureWindow(camX, camY, vw, vh)
           local wx, wy = cx * 16, cy * 16
           self.winBatch:add(quad, wx, wy)
           self.winBatchTop:add(quad, wx, wy)
+          if slots and slots[id] then moving = true end
         end
       end
     end
-    self.win = { tx0 = tx0, ty0 = ty0, tx1 = tx1, ty1 = ty1 }
+    -- whether the NEXT animation tick has anything to redraw
+    self.winAnimated = moving
+    self:setWin(tx0, ty0, tx1, ty1)
     return
   end
 
@@ -1616,7 +1688,7 @@ function TileRenderer:ensureWindow(camX, camY, vw, vh)
   -- no sheet to fall back to: draw nothing rather than raise under the
   -- player, and leave the reason in the log (gen3SheetsFor already logged it).
   if not self.image then
-    self.win = { tx0 = tx0, ty0 = ty0, tx1 = tx1, ty1 = ty1 }
+    self:setWin(tx0, ty0, tx1, ty1)
     return
   end
   if not self.winBatch then
@@ -1658,7 +1730,7 @@ function TileRenderer:ensureWindow(camX, camY, vw, vh)
       end
     end
   end
-  self.win = { tx0 = tx0, ty0 = ty0, tx1 = tx1, ty1 = ty1 }
+  self:setWin(tx0, ty0, tx1, ty1)
 end
 
 -- draw the static tile window, then its animated overdraw, at the camera offset

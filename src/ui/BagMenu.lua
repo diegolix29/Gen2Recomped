@@ -830,6 +830,40 @@ end
 BagMenu.POCKETS = POCKETS
 BagMenu.pocketOf = pocketOf
 
+-- WHETHER AN ITEM MAY LIVE ON THE SELECT BUTTON, which the two cartridges
+-- decide differently -- and the difference is why Hoenn's registration did
+-- nothing.
+--
+-- GSC asks the ITEM: the property byte's CANT_SELECT bit names the six key
+-- items you may put there (see the SEL row above), and the Gen 2 extractor
+-- carries it as `registerable`.
+--
+-- EMERALD ASKS THE POCKET.  Its bag offers USE / REGISTER / CANCEL for the
+-- whole KEY ITEMS pocket and per-item nothing, which is why Gen3BagMenu
+-- already offers REGISTER off the pocket's own action list
+-- (RomExtractorGen3:itemMenuActions) rather than off a flag.  No Hoenn item
+-- carries `registerable` at all -- so asking for one here answered no for
+-- every one of them, and the answer was not merely "nothing happened": the
+-- line below CLEARS the registration on a no, so a Gen 3 save that reached
+-- this would have quietly forgotten the item it had just registered.
+function BagMenu.canRegister(game, id)
+  local data = game and game.data
+  local def = data and data.items and data.items[id]
+  if not def then return false end
+  local GameVersion = require("src.core.GameVersion")
+  if GameVersion.isGen3() then
+    -- ASKED OF HOENN'S OWN BAG, not answered here: its pocket names are the
+    -- cartridge's and it folds them onto the engine's before it looks the
+    -- action list up, and a second fold written out here is a second fold to
+    -- keep in step.
+    local ok, yes = pcall(function()
+      return require("src.ui.Gen3BagMenu").canRegister(game, id)
+    end)
+    return (ok and yes) and true or false
+  end
+  return def.registerable and true or false
+end
+
 -- The SELECT button's registered item (home/menu.asm CheckRegisteredItem):
 -- the pack never opens, so the use flow runs against a stub list.  A
 -- registration the player no longer holds is dropped and nothing happens,
@@ -837,8 +871,16 @@ BagMenu.pocketOf = pocketOf
 function BagMenu.useRegistered(game)
   local id = game.save.registeredItem
   if not id then return false end
-  local def = game.data.items[id]
-  if not def or not def.registerable or not game.save.inventory[id] then
+  if not BagMenu.canRegister(game, id) or not game.save.inventory[id] then
+    -- SAID OUT LOUD, because the two ways this refuses look identical from
+    -- the outside and both look like the button doing nothing: an item the
+    -- player no longer carries, and an item this cartridge will not put on
+    -- SELECT at all.  Three reports in a row on this button were each one
+    -- log line away from being one.
+    require("src.core.Logger").warn(
+      "registered item %s dropped: carried=%s, may sit on SELECT=%s",
+      tostring(id), tostring(game.save.inventory[id] ~= nil),
+      tostring(BagMenu.canRegister(game, id)))
     game.save.registeredItem = nil
     return false
   end

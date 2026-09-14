@@ -38,17 +38,77 @@ local Theme = require("src.ui.Theme")
 
 local Gen3ShopMenu = {}
 Gen3ShopMenu.__index = Gen3ShopMenu
-Gen3ShopMenu.isOpaque = true
+-- THE COUNTER IS AN OVERLAY, NOT A SCREEN.
+--
+-- Reported from play, with a shot of both: "the pink is supposed to be blank
+-- and allowing the map to show through".  The violet ground IS the field's
+-- colour 0 -- the background's transparency -- and the extractor was baking
+-- it opaque while this state claimed the whole surface, so the mart painted a
+-- solid purple sheet over Hoenn instead of standing in front of it.
+Gen3ShopMenu.isOpaque = false
 
 local GBA_W, GBA_H = 240, 160
 
 -- RECONSTRUCTED, not derived: the three panels, matched to the bag's.
-local MONEY_BOX = { tx = 0, ty = 0, tw = 11, th = 4 }
-local INBAG_BOX = { tx = 0, ty = 4, tw = 11, th = 4 }
+-- WHERE THE CARTRIDGE PUTS THE PANELS, measured off its OWN field rather
+-- than off a screenshot.
+--
+-- The counter's background is one 240x160 picture (see the extractor's
+-- shopMenuField) and it already has holes in it: a cream list panel on the
+-- right, a white box across the bottom left, and a 24x24 socket for the
+-- selected item's icon.  Walking that picture a tile at a time gives their
+-- rectangles exactly -- list (14,1) 15x18, description (0,13) 14x6, icon
+-- (1,9) 3x3 -- and they are NOT where this screen had been drawing its own
+-- boxes: the list was three tiles too far left and five rows too short, and
+-- the description ran the full width of the screen, under the list panel.
+--
+-- The money and the "IN BAG" count sit over plain ground in the picture,
+-- because on the cartridge those two are windows opened at runtime; those
+-- keep the port's drawn frame, which is what a window is.
+local FIELD_LIST = { tx = 14, ty = 1,  tw = 15, th = 18 }
+local FIELD_DESC = { tx = 0,  ty = 13, tw = 14, th = 6 }
+local FIELD_ICON = { x = 12, y = 74, size = 24 }
+
+-- ...AND THE RUNTIME WINDOWS ARE sShopBuyMenuWindowTemplates, verbatim.
+--
+-- Those are INTERIORS -- the cartridge draws its frame in the tiles around
+-- them -- and Font.drawBox takes the outer rectangle, so `framed` is the one
+-- conversion between the two.  The list and the description are holes in the
+-- field picture and keep the rectangles measured off it, which agree.
+local WIN_MONEY   = { tx = 1,  ty = 1,  tw = 10, th = 2 }
+local WIN_IN_BAG  = { tx = 1,  ty = 11, tw = 12, th = 2 }
+local WIN_PRICE   = { tx = 18, ty = 11, tw = 10, th = 2 }
+local WIN_MESSAGE = { tx = 2,  ty = 15, tw = 27, th = 4 }
+local function framed(w)
+  return { tx = w.tx - 1, ty = w.ty - 1, tw = w.tw + 2, th = w.th + 2 }
+end
+
+-- sShopBuyMenuListTemplate: the cursor at the window's own left edge, the
+-- name eight pixels in, the price right-aligned 120 pixels across, and the
+-- first row one pixel down.
+local LIST_CURSOR_X = 0
+local LIST_ITEM_X = 8
+local LIST_PRICE_RIGHT = 120
+local LIST_UP_TEXT_Y = 1
+
+local MONEY_BOX = framed(WIN_MONEY)
 local LIST_BOX  = { tx = 11, ty = 0, tw = 19, th = 13 }
 local DESC_BOX  = { tx = 0, ty = 13, tw = 30, th = 7 }
 local ROW_PITCH = 16
 local VISIBLE_ROWS = 6
+
+-- HOW MANY ROWS FIT, which the cartridge's own panel decides.
+--
+-- The drawn box held six; the field's list panel is eighteen tiles tall and
+-- holds eight at the cartridge's sixteen-pixel pitch.  Scrolling has to agree
+-- with drawing or the cursor walks off the bottom of a panel that still has
+-- room, so both ask this.
+function Gen3ShopMenu.rows(game)
+  local path = ((game and game.data and game.data.constants or {})
+                .gen3ShopMenu or {}).image
+  if type(path) ~= "string" then return VISIBLE_ROWS end
+  return math.floor((FIELD_LIST.th - 1) * 8 / ROW_PITCH)
+end
 local CURSOR_INSET = 4
 
 function Gen3ShopMenu:uiSize() return GBA_W, GBA_H end
@@ -158,7 +218,8 @@ function Gen3ShopMenu:rebuild()
                       label = line(game, "quitShopping", Strings("CANCEL")) }
   self.rows = rows
   self.index = math.min(self.index or 1, #rows)
-  self.top = math.max(1, math.min(self.top or 1, #rows - VISIBLE_ROWS + 1))
+  local fit = Gen3ShopMenu.rows(self.game)
+  self.top = math.max(1, math.min(self.top or 1, #rows - fit + 1))
 end
 
 function Gen3ShopMenu.new(game, opts)
@@ -173,13 +234,115 @@ function Gen3ShopMenu.new(game, opts)
   self.shopMode = tonumber(opts.shopMode) or 1
   self.stock = opts.stock or {}
   self.onQuit = opts.onQuit
+  -- the counter box this list was opened from, hidden while it is up
+  self.under = opts.under
   self.index, self.top = 1, 1
   self.say = nil
   self:rebuild()
   return self
 end
 
+-- THE COUNTER: BUY, SELL, QUIT -- and the loop back to it.
+--
+-- Reported from play, with screenshots: "the pokemarts sell menu isnt showing
+-- the gen3 bag and the buy menu isnt looking like the gen3 buy menu".  Both
+-- had the same cause, and it was not in this file: `pokemart` pushed the
+-- screen id "ShopMenu", and Screens.GEN3_ALIASES has no entry for that name --
+-- so every counter in Hoenn fell straight through to src/ui/ShopMenu.lua,
+-- pokered's Game Boy list, which is what those screenshots are.  This screen
+-- had been built for exactly that complaint and only the decoration counters
+-- were ever reaching it.
+--
+-- The three-row menu lives here rather than at the call site because it is
+-- part of the counter: `pokemart` (mode 0) builds it at 0x00DFA8E and the two
+-- decoration modes branch straight past it at 0x00DFA8C, which is why
+-- Gen3Commands.g3_decoration_mart opens the list directly and this does not.
+--
+-- The words are the cartridge's -- gen3MartText carries BUY, SELL and QUIT --
+-- and so is the LOOP: closing either list comes back here rather than
+-- leaving the counter, which is the "Is there anything else I can help you
+-- with?" the clerk says, and only QUIT (or B) hands the script back.
+-- WHERE THE THREE-ROW BOX GOES, read rather than guessed.
+--
+-- sShopMenuWindowTemplates says (2,1), nine tiles by six, and those are the
+-- window's INTERIOR -- the port's box includes its frame, so it is two tiles
+-- wider and taller and starts one tile up and left.  extractShopMenu reads
+-- it; a dataset without it keeps the Game Boy's corner.
+--
+-- The uiSize override matters as much as the coordinates: a menu with no
+-- surface of its own is CENTRED inside the 240x160 the overworld holds, which
+-- takes a box the cartridge puts two tiles from the left edge and drops it in
+-- the middle of the screen.
+function Gen3ShopMenu.counterBox(game)
+  local c = (game.data.constants or {}).gen3ShopMenu
+  local left = c and tonumber(c.left)
+  local top = c and tonumber(c.top)
+  local width = c and tonumber(c.width)
+  local height = c and tonumber(c.height)
+  if not (left and top and width and height) then
+    return { tx = 0, ty = 0, tw = 8, th = 8 }
+  end
+  return { tx = math.max(0, left - 1), ty = math.max(0, top - 1),
+           tw = width + 2, th = height + 2 }
+end
+
+-- THE COUNTER: BUY, SELL, QUIT.
+--
+-- Reported from play, with screenshots: "the pokemarts sell menu isnt showing
+-- the gen3 bag and the buy menu isnt looking like the gen3 buy menu".  The
+-- `pokemart` command pushed the screen id "ShopMenu", which has no entry in
+-- Screens.GEN3_ALIASES, so it resolved to src/ui/ShopMenu.lua -- pokered's.
+-- That file did hand Hoenn over to this screen, but only after its own
+-- detour; naming this one directly is what makes the route legible.
+--
+-- The three rows live here rather than at the call site because they are part
+-- of the counter: `pokemart` (mode 0) builds them at 0x00DFA8E and the two
+-- decoration modes branch straight past it at 0x00DFA8C, which is why
+-- Gen3Commands.g3_decoration_mart opens the list directly and this does not.
+--
+-- `keepOpen` is the cartridge's shape: the box stays UNDER the list it opens,
+-- so closing the list lands back on it -- "Is there anything else I can help
+-- you with?" -- and only QUIT (or B) hands the script back.
+function Gen3ShopMenu.counter(game, opts)
+  opts = opts or {}
+  local Menu = require("src.ui.Menu")
+  local stock = opts.stock or {}
+  local onQuit = opts.onQuit
+  -- ...AND THE THREE-ROW BOX GOES AWAY WHILE THE LIST IS UP.  The counter is
+  -- an overlay now, so anything left under it shows through its own
+  -- transparent ground -- and on the cartridge the buy screen is a screen,
+  -- with no BUY/SELL/QUIT box behind it.  `hidden` keeps the state on the
+  -- stack, which is what makes closing the list land back on it.
+  local menu
+  menu = Menu.new(game, {
+    { label = line(game, "buy", Strings("BUY")), keepOpen = true,
+      onSelect = function()
+        menu.hidden = true
+        game.stack:push(Gen3ShopMenu.new(game, { mode = "buy", stock = stock,
+                                                 under = menu }))
+      end },
+    { label = line(game, "sell", Strings("SELL")), keepOpen = true,
+      onSelect = function() Gen3ShopMenu.openSellBag(game) end },
+    { label = line(game, "quit", Strings("QUIT")), onSelect = onQuit },
+  }, Gen3ShopMenu.counterBox(game))
+  menu.uiSize = function() return require("src.ui.Theme").uiSize() end
+  menu.onCancel = onQuit
+  game.stack:push(menu)
+  return menu
+end
+
 function Gen3ShopMenu:selected() return self.rows[self.index] end
+
+-- "x{VAR1}", which is the cartridge's own multiplier string -- the same one
+-- the bag's quantity window uses, swept out of the mart text block beside the
+-- money glyph.  Two decimal places, because the window is sized for them.
+function Gen3ShopMenu:quantityGlyph(n)
+  local text = mart(self.game).quantity
+  if type(text) == "string" then
+    return fill(text, { VAR1 = ("%02d"):format(n) })
+  end
+  return ("x%02d"):format(n)
+end
 
 -- "MONEY", as the cartridge spells it.  The trainer card's label block
 -- already carries it, so this reads that rather than writing the word down a
@@ -198,6 +361,7 @@ function Gen3ShopMenu:moneyLabel()
 end
 
 function Gen3ShopMenu:close()
+  if self.under then self.under.hidden = nil end
   if self.game.stack then self.game.stack:pop() end
   if self.onQuit then self.onQuit() end
 end
@@ -207,8 +371,9 @@ function Gen3ShopMenu:moveCursor(delta)
   if n == 0 then return end
   self.index = (self.index - 1 + delta) % n + 1
   if self.index < self.top then self.top = self.index end
-  if self.index > self.top + VISIBLE_ROWS - 1 then
-    self.top = self.index - VISIBLE_ROWS + 1
+  local fit = Gen3ShopMenu.rows(self.game)
+  if self.index > self.top + fit - 1 then
+    self.top = self.index - fit + 1
   end
   self.say = nil
 end
@@ -282,6 +447,50 @@ function Gen3ShopMenu:buyDecoration(row)
   }))
 end
 
+-- THE "HOW MANY" DIALOGUE IS PART OF THIS SCREEN, not a box pushed over it.
+--
+-- Reported from play, with a shot of the cartridge: "it should pop up asking
+-- how many youd like to buy like in the second image".  Three windows open
+-- together on the cartridge and close together -- Task_BuyHowManyDialogueInit
+-- draws WIN_QUANTITY_IN_BAG and WIN_QUANTITY_PRICE, and the clerk's question
+-- goes in WIN_MESSAGE -- and the port was pushing the Game Boy's quantity box
+-- over the counter instead, which is why IN BAG stood there the whole time
+-- and the question only arrived after the number had been picked.
+--
+-- So the state lives here: `self.asking` is the dialogue, and while it is up
+-- this screen owns the pad.
+function Gen3ShopMenu:askQuantity(row, opts)
+  self.asking = {
+    row = row,
+    qty = 1,
+    max = math.max(1, math.floor(opts.max or 99)),
+    unit = math.max(0, opts.unit or 0),
+    message = opts.message,
+    onDone = opts.onDone,
+  }
+  self.say = nil
+end
+
+function Gen3ShopMenu:askQuantityInput(step, confirm, cancel)
+  local ask = self.asking
+  if not ask then return false end
+  if cancel then
+    self.asking = nil
+    return true
+  end
+  if confirm then
+    self.asking = nil
+    if ask.onDone then ask.onDone(ask.qty) end
+    return true
+  end
+  if step and step ~= 0 then
+    local n = ask.qty + step
+    if n < 1 then n = ask.max elseif n > ask.max then n = 1 end
+    ask.qty = n
+  end
+  return true
+end
+
 function Gen3ShopMenu:buy(row)
   if row.decoration then return self:buyDecoration(row) end
   local game = self.game
@@ -292,11 +501,14 @@ function Gen3ShopMenu:buy(row)
     return
   end
   local most = (unit > 0) and math.min(99, math.floor(money / unit)) or 99
-  local QuantityBox = require("src.ui.QuantityBox")
   local TextBox = require("src.render.TextBox")
-  game.stack:push(QuantityBox.new(game, {
+  self:askQuantity(row, {
     max = math.max(1, most),
-    unitPrice = unit,
+    unit = unit,
+    message = line(game, "buyHowMany",
+                   Strings("%s? Certainly.\nHow many would you like?",
+                           row.label),
+                   { VAR1 = row.label }),
     onDone = function(qty)
       if not qty then return end
       local cost = unit * qty
@@ -326,23 +538,48 @@ function Gen3ShopMenu:buy(row)
         end,
       }))
     end,
-  }))
+  })
 end
 
-function Gen3ShopMenu:sell(row)
-  local game = self.game
-  if row.blocked then
-    self.say = line(game, "cantBuy", Strings("I can't put a\nprice on that."),
-                    { VAR1 = row.label, VAR2 = row.label })
+-- SELLING ONE ITEM, wherever the pick came from.
+--
+-- Reported from play: "the sell menu should have badges like the bag".  It
+-- should -- and the reason it did not have them is that selling was a list of
+-- its own here rather than THE BAG.  On the cartridge SELL is
+-- CB2_GoToSellMenu, which opens the same bag screen the START menu does with
+-- its shop flag set: the five pockets, L and R between them, the bag sprite
+-- and the pocket dots down its side.  So the flow moved into the bag and this
+-- became the part that is the same either way -- ask how many, name a price,
+-- take the yes.
+--
+-- `host` is whoever is showing the words: `say` writes a line the screen keeps
+-- until the cursor moves, `refresh` rebuilds the list under it.
+function Gen3ShopMenu.sellItem(game, id, host)
+  local def = game.data.items and game.data.items[id]
+  local label = (def and def.name) or id
+  local function say(text) if host and host.say then host.say(text) end end
+  if unsellable(game, id, def) then
+    say(line(game, "cantBuy", Strings("I can't put a\nprice on that."),
+             { VAR1 = label, VAR2 = label }))
     return
   end
-  local unit = math.max(0, row.unit or 0)
-  local held = (game.save.inventory or {})[row.id] or 1
-  local QuantityBox = require("src.ui.QuantityBox")
+  local unit = math.max(0, sellPriceOf(def))
+  local held = (game.save.inventory or {})[id] or 1
   local TextBox = require("src.render.TextBox")
-  game.stack:push(QuantityBox.new(game, {
+  local ask = (host and host.ask) or function(opts)
+    -- no host dialogue of its own: the Game Boy box, which is what the bag
+    -- and any other caller still get
+    local QuantityBox = require("src.ui.QuantityBox")
+    game.stack:push(QuantityBox.new(game, {
+      max = opts.max, unitPrice = opts.unit, onDone = opts.onDone,
+    }))
+  end
+  ask({
     max = math.max(1, held),
-    unitPrice = unit,
+    unit = unit,
+    message = line(game, "sellHowMany",
+                   Strings("How many would you like to sell?"),
+                   { VAR1 = label }),
     onDone = function(qty)
       if not qty then return end
       local paid = unit * qty
@@ -354,19 +591,46 @@ function Gen3ShopMenu:sell(row)
         choice = function(yes)
           if not yes then return end
           game.save.money = (tonumber(game.save.money) or 0) + paid
-          Bag.remove(game.save, row.id, qty)
-          self:rebuild()
-          self.say = line(game, "sold", Strings("Thank you!"),
-                          { VAR1 = tostring(paid), VAR2 = row.label })
+          Bag.remove(game.save, id, qty)
+          if host and host.refresh then host.refresh() end
+          say(line(game, "sold", Strings("Thank you!"),
+                   { VAR1 = tostring(paid), VAR2 = label }))
         end,
       }))
     end,
-  }))
+  })
+end
+
+function Gen3ShopMenu:sell(row)
+  return Gen3ShopMenu.sellItem(self.game, row.id, {
+    say = function(text) self.say = text end,
+    refresh = function() self:rebuild() end,
+    ask = function(opts) self:askQuantity(row, opts) end,
+  })
+end
+
+-- The bag, opened to sell out of: every pocket, and the pick sells rather
+-- than opening the USE/TOSS question.
+function Gen3ShopMenu.openSellBag(game)
+  local ok, Gen3BagMenu = pcall(require, "src.ui.Gen3BagMenu")
+  if not (ok and Gen3BagMenu) then
+    return game.stack:push(Gen3ShopMenu.new(game, { mode = "sell" }))
+  end
+  return game.stack:push(Gen3BagMenu.new(game, { sell = true }))
 end
 
 function Gen3ShopMenu:update()
   local input = self.game.input
   if not input then return end
+  -- while the "how many" windows are open the pad belongs to them, and UP
+  -- counts up the way the cartridge's own selector does
+  if self.asking then
+    if input:wasPressed("up") then return self:askQuantityInput(1) end
+    if input:wasPressed("down") then return self:askQuantityInput(-1) end
+    if input:wasPressed("a") then return self:askQuantityInput(0, true) end
+    if input:wasPressed("b") then return self:askQuantityInput(0, false, true) end
+    return
+  end
   if input:wasPressed("down") then self:moveCursor(1)
   elseif input:wasPressed("up") then self:moveCursor(-1)
   elseif input:wasPressed("a") then self:choose()
@@ -375,6 +639,13 @@ function Gen3ShopMenu:update()
 end
 
 function Gen3ShopMenu:keypressed(key)
+  if self.asking then
+    if key == "up" then return self:askQuantityInput(1) end
+    if key == "down" then return self:askQuantityInput(-1) end
+    if key == "a" then return self:askQuantityInput(0, true) end
+    if key == "b" then return self:askQuantityInput(0, false, true) end
+    return
+  end
   if key == "down" then return self:moveCursor(1) end
   if key == "up" then return self:moveCursor(-1) end
   if key == "a" then return self:choose() end
@@ -384,63 +655,169 @@ end
 -- ---------------------------------------------------------------------------
 -- DRAWING IT
 -- ---------------------------------------------------------------------------
-local function drawRows(self)
-  local x = (LIST_BOX.tx + 1) * 8 + CURSOR_INSET + 8
-  local right = (LIST_BOX.tx + LIST_BOX.tw - 1) * 8
-  for i = 0, VISIBLE_ROWS - 1 do
+local function drawRows(self, box, rows, field)
+  box = box or LIST_BOX
+  -- ON THE FIELD the list window is the cartridge's, so the offsets are its
+  -- own ListMenuTemplate's -- cursor at the window's left edge, the name
+  -- eight pixels in, the price right-aligned 120 across.  On the port's drawn
+  -- box they stay where they were, because that box is a tile wider a side.
+  local left = field and box.tx * 8 or ((box.tx + 1) * 8)
+  local x = left + (field and LIST_ITEM_X or CURSOR_INSET + 8)
+  local cursorX = left + (field and LIST_CURSOR_X or CURSOR_INSET)
+  local right = left + (field and LIST_PRICE_RIGHT or (box.tw - 2) * 8)
+  local top = (box.ty + 1) * 8 + (field and LIST_UP_TEXT_Y or 0)
+  for i = 0, (rows or VISIBLE_ROWS) - 1 do
     local row = self.rows[self.top + i]
     if not row then break end
-    local y = (LIST_BOX.ty + 1) * 8 + i * ROW_PITCH
+    local y = top + i * ROW_PITCH
     Font.draw(row.label, x, y)
     if row.right then
       Font.draw(row.right, right - Font.width(row.right), y)
     end
     if self.top + i == self.index then
-      Font.drawCode(Theme.cursor, (LIST_BOX.tx + 1) * 8 + CURSOR_INSET, y)
+      Font.drawCode(Theme.cursor, cursorX, y)
     end
   end
+end
+
+-- The counter's own background, when this cache carries it.
+function Gen3ShopMenu:field()
+  local path = ((self.game.data.constants or {}).gen3ShopMenu or {}).image
+  if type(path) ~= "string" then return nil end
+  local ok, Assets = pcall(require, "src.render.Assets")
+  if not ok then return nil end
+  local okImg, img = pcall(Assets.image, path)
+  return okImg and img or nil
 end
 
 function Gen3ShopMenu:draw()
   love.graphics.setColor(1, 1, 1, 1)
 
+  -- THE CARTRIDGE'S FIELD, when it is in the cache.
+  --
+  -- Asked for directly: "ensure the rom art is extracted and its loading the
+  -- emerald menus properly".  With the picture there, the list panel, the
+  -- description box and the item's socket are already drawn in it, so the
+  -- port's own frames would double every border -- the same rule the bag
+  -- follows.  Only the two runtime windows are drawn on top.
+  local field = self:field()
+  local listBox = field and FIELD_LIST or LIST_BOX
+  local descBox = field and FIELD_DESC or DESC_BOX
+  local listRows = Gen3ShopMenu.rows(self.game)
+  if field then
+    love.graphics.draw(field, 0, 0)
+  end
+
   -- THE MONEY.  The word over it is the cartridge's own -- the trainer card
   -- already had to find it, and there is no second "MONEY" in Hoenn.
+  -- ONE LINE, not two: sShopBuyMenuWindowTemplates gives WIN_MONEY a two-tile
+  -- interior, which is a single row of text with the word at its left edge and
+  -- the number against its right
   Font.drawBox(MONEY_BOX.tx, MONEY_BOX.ty, MONEY_BOX.tw, MONEY_BOX.th)
+  local moneyY = WIN_MONEY.ty * 8
   local label = self:moneyLabel()
-  if label then Font.draw(label, (MONEY_BOX.tx + 1) * 8, (MONEY_BOX.ty + 1) * 8) end
+  if label then Font.draw(label, WIN_MONEY.tx * 8, moneyY) end
   local amount = price(self.game, tonumber(self.game.save.money) or 0)
-  Font.draw(amount, (MONEY_BOX.tx + MONEY_BOX.tw - 1) * 8 - Font.width(amount),
-            (MONEY_BOX.ty + 2) * 8)
+  Font.draw(amount, (WIN_MONEY.tx + WIN_MONEY.tw) * 8 - Font.width(amount),
+            moneyY)
 
-  Font.drawBox(LIST_BOX.tx, LIST_BOX.ty, LIST_BOX.tw, LIST_BOX.th)
-  drawRows(self)
+  if not field then
+    Font.drawBox(listBox.tx, listBox.ty, listBox.tw, listBox.th)
+  end
+  drawRows(self, listBox, listRows, field and true or false)
 
-  Font.drawBox(DESC_BOX.tx, DESC_BOX.ty, DESC_BOX.tw, DESC_BOX.th)
+  if not field then
+    Font.drawBox(descBox.tx, descBox.ty, descBox.tw, descBox.th)
+  end
   local row = self:selected()
   -- WHAT THE PANEL SAYS.  The clerk's last line while there is one, and the
   -- item's own description otherwise, which is what the cartridge shows while
-  -- the cursor is just moving.
-  local text = self.say or (row and not row.close and row.description) or ""
-  local y = (DESC_BOX.ty + 1) * 8
-  for chunk in (tostring(text) .. "\n"):gmatch("([^\n]*)\n") do
-    Font.draw(chunk, (DESC_BOX.tx + 1) * 8, y)
-    y = y + 14
+  -- the cursor is just moving.  While the quantity windows are open the
+  -- question takes the bottom of the screen instead, in WIN_MESSAGE.
+  if not self.asking then
+    local text = self.say or (row and not row.close and row.description) or ""
+    local y = (descBox.ty + 1) * 8
+    for chunk in (tostring(text) .. "\n"):gmatch("([^\n]*)\n") do
+      Font.draw(chunk, (descBox.tx + 1) * 8, y)
+      y = y + 14
+    end
   end
 
-  -- HOW MANY YOU ALREADY HAVE, which is the one number the cartridge puts on
-  -- this screen that the bag does not.
-  if row and not row.close then
-    Font.drawBox(INBAG_BOX.tx, INBAG_BOX.ty, INBAG_BOX.tw, INBAG_BOX.th)
-    local have
-    if row.decoration then
-      have = require("src.world.Gen3Decorations").count(self.game.save, row.id)
-    else
-      have = (self.game.save.inventory or {})[row.id] or 0
+  -- ...AND THE ITEM'S OWN PICTURE, in the socket the field already draws.
+  -- The atlas is the bag's -- one icon per item, keyed on the cartridge's own
+  -- index -- so this is the same lookup that screen makes.
+  -- THE PICTURE WAS NEVER DRAWN, and the reason is one `and`.
+  --
+  -- Reported from play: "in the pokemart buy menu missing the images of the
+  -- items".  `local okImg, icon = okA and pcall(Assets.image, ...)` reads as
+  -- two results and is not: `and` is an expression, so it is adjusted to ONE
+  -- value -- okImg took pcall's true and `icon` was always nil, so this block
+  -- loaded the atlas every frame and drew nothing out of it.
+  if field and row and not row.close and row.id and not row.decoration then
+    local rec = (self.game.data.constants or {}).gen3ItemIcons
+    local def = self.game.data.items and self.game.data.items[row.id]
+    local index = rec and type(rec.image) == "string" and def
+                  and tonumber(def.index)
+    local okA, Assets = pcall(require, "src.render.Assets")
+    if index and okA then
+      local okImg, icon = pcall(Assets.image, rec.image)
+      if okImg and icon then
+        local size = math.max(1, math.floor(tonumber(rec.size) or 24))
+        local cols = math.max(1, math.floor(tonumber(rec.cols) or 1))
+        local count = math.floor(tonumber(rec.count) or 0)
+        if index < 0 or index >= count then
+          index = math.floor(tonumber(rec.blank) or 0)
+        end
+        local iw, ih = icon:getDimensions()
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.draw(icon,
+          love.graphics.newQuad((index % cols) * size,
+                                math.floor(index / cols) * size,
+                                size, size, iw, ih),
+          FIELD_ICON.x, FIELD_ICON.y)
+      end
     end
-    local text2 = line(self.game, "inBag", Strings("IN BAG: %d", have),
+  end
+
+  -- THE THREE WINDOWS OF THE "HOW MANY" DIALOGUE, which open together and
+  -- close together the way Task_BuyHowManyDialogueInit opens them: how many
+  -- you already hold, over the item's own socket; the running total, across
+  -- the list; and the clerk's question along the bottom.
+  --
+  -- IN BAG used to stand there the whole time, in a box of its own under the
+  -- money -- reported as "the in bag is supposed to only appear when an item
+  -- is clicked and cover the image of the item".  It is WIN_QUANTITY_IN_BAG,
+  -- and where the cartridge puts it is exactly over the icon.
+  local ask = self.asking
+  if ask then
+    local bagBox = framed(WIN_IN_BAG)
+    Font.drawBox(bagBox.tx, bagBox.ty, bagBox.tw, bagBox.th)
+    local have
+    if ask.row.decoration then
+      have = require("src.world.Gen3Decorations")
+             .count(self.game.save, ask.row.id)
+    else
+      have = (self.game.save.inventory or {})[ask.row.id] or 0
+    end
+    local inBag = line(self.game, "inBag", Strings("IN BAG: %d", have),
                        { VAR1 = tostring(have) })
-    Font.draw(text2, (INBAG_BOX.tx + 1) * 8, (INBAG_BOX.ty + 1) * 8)
+    Font.draw(inBag, WIN_IN_BAG.tx * 8, WIN_IN_BAG.ty * 8)
+
+    local priceBox = framed(WIN_PRICE)
+    Font.drawBox(priceBox.tx, priceBox.ty, priceBox.tw, priceBox.th)
+    local count = self:quantityGlyph(ask.qty)
+    local total = price(self.game, ask.unit * ask.qty)
+    Font.draw(count, WIN_PRICE.tx * 8, WIN_PRICE.ty * 8)
+    Font.draw(total, (WIN_PRICE.tx + WIN_PRICE.tw) * 8 - Font.width(total),
+              WIN_PRICE.ty * 8)
+
+    local msgBox = framed(WIN_MESSAGE)
+    Font.drawBox(msgBox.tx, msgBox.ty, msgBox.tw, msgBox.th)
+    local y2 = WIN_MESSAGE.ty * 8
+    for chunk in (tostring(ask.message or "") .. "\n"):gmatch("([^\n]*)\n") do
+      Font.draw(chunk, WIN_MESSAGE.tx * 8, y2)
+      y2 = y2 + 14
+    end
   end
   love.graphics.setColor(1, 1, 1, 1)
 end

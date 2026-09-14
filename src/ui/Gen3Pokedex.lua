@@ -26,6 +26,7 @@
 -- the SEEN/OWN counts under it.
 
 local Font = require("src.render.Font")
+local PaletteFX = require("src.render.PaletteFX")
 local Sound = require("src.core.Sound")
 local Strings = require("src.core.Strings")
 local Theme = require("src.ui.Theme")
@@ -94,7 +95,7 @@ function Gen3Pokedex:uiSize() return GBA_W, GBA_H end
 function Gen3Pokedex:wantsFillScale() return true end
 
 function Gen3Pokedex:sgbPalettes()
-  local P = require("src.render.PaletteFX")
+  local P = PaletteFX
   return { P.trueColorZone(0, 0, math.ceil(GBA_W / 8) - 1,
                            math.ceil(GBA_H / 8) - 1) }
 end
@@ -475,7 +476,7 @@ function Gen3Pokedex:drawPiece(key, at, angle)
   love.graphics.setColor(1, 1, 1, 1)
   love.graphics.draw(img, at.x, at.y, angle or 0,
                      1, at.flip and -1 or 1, w / 2, h / 2)
-  require("src.render.PaletteFX").markTrueColor(
+  PaletteFX.markTrueColor(
     math.floor(at.x - w / 2), math.floor(at.y - h / 2), w, h)
 end
 
@@ -525,7 +526,7 @@ function Gen3Pokedex:draw()
   love.graphics.setColor(1, 1, 1, 1)
   if bg then
     love.graphics.draw(bg, 0, 0)
-    require("src.render.PaletteFX").markTrueColor(0, 0, GBA_W, GBA_H)
+    PaletteFX.markTrueColor(0, 0, GBA_W, GBA_H)
   else
     love.graphics.setColor(0.30, 0.44, 0.64, 1)
     love.graphics.rectangle("fill", 0, 0, GBA_W, GBA_H)
@@ -574,7 +575,7 @@ function Gen3Pokedex:draw()
     love.graphics.setColor(1, 1, 1, 1)
     love.graphics.draw(self.pic, x, y)
     if self.picTrueColor then
-      require("src.render.PaletteFX").markTrueColor(x, y, w, h)
+      PaletteFX.markTrueColor(x, y, w, h)
     end
   end
 
@@ -622,7 +623,10 @@ function Gen3Pokedex:draw()
   local nameX = bg and ART.nameX or (ROW_X + 32)
   local ballX = bg and ART.ballX or (ROW_X - 8)
   local dex = self.game.save and self.game.save.pokedex
+  -- the number format is loop-invariant: built inside the row loop it was two
+  -- strings per row per frame, and a spec LuaJIT could not fold
   local digits = math.max(3, #tostring(self.count))
+  local numberFmt = "%0" .. digits .. "d"
   for slot = 1, rows do
     local n = self.scroll + slot
     -- a row whose number is off either end of the dex is BLANK, not the end
@@ -631,8 +635,8 @@ function Gen3Pokedex:draw()
       local y = top + (slot - 1) * pitch
       local id = self.list[n]
       local wasSeen = id and dex and dex.seen[id]
-      Font.draw(("%0" .. digits .. "d")
-                  :format((self.numbers and self.numbers[n]) or n), numX, y)
+      Font.draw(numberFmt:format((self.numbers and self.numbers[n]) or n),
+                numX, y)
       if wasSeen then
         local def = self.game.data.pokemon[id]
         Font.draw((def and def.name) or id, nameX, y)
@@ -651,7 +655,7 @@ function Gen3Pokedex:draw()
           love.graphics.setColor(1, 1, 1, 1)
           if ball then
             love.graphics.draw(ball, ballX - 4, y)
-            require("src.render.PaletteFX").markTrueColor(
+            PaletteFX.markTrueColor(
               ballX - 4, y, ball:getWidth(), ball:getHeight())
           else
             love.graphics.setColor(0.86, 0.24, 0.24, 1)

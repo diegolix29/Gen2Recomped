@@ -626,14 +626,60 @@ function ModImports.choose(manifest, entry)
   return false, ModImports.hint(entry)
 end
 
+-- HOW MUCH OF AN IMPORT ONE `read` MAY HAND BACK.
+--
+-- The files behind this API are cartridges: STADIUM2_IMPORTER's is a 64 MB
+-- N64 ROM.  A mod walking one in chunks is the normal case, and a slice API
+-- that loads the whole file per call allocates 64 MB per chunk -- which is
+-- the difference between working and an out-of-memory kill on Android and
+-- the Deck.  Below is what one sliced read may return; a mod that wants more
+-- than this asks again with a further offset.
+--
+-- A WHOLE-FILE read (no offset, no length) is NOT capped: it is the call a
+-- mod makes once, deliberately, for a file it already declared the size of.
+ModImports.MAX_READ_BYTES = 8 * 1024 * 1024
+
+-- One slice of a file without reading the rest of it.
+--
+-- love.filesystem.newFile/seek/read is the only path that actually avoids the
+-- allocation; an injected fs in a test has read() and nothing else, so this
+-- returns nil there and the caller falls back to reading whole and cutting.
+-- Never the other way around: the fallback is the slow path, not the default.
+local function slice(path, offset, length)
+  local f = fs()
+  if not (f and f.newFile) then return nil end
+  local handle = f.newFile(path, "r")
+  if not handle then return nil end
+  if offset > 0 and handle.seek then
+    if handle:seek(offset) == false then
+      if handle.close then handle:close() end
+      return nil
+    end
+  end
+  local data = handle:read(length)
+  if handle.close then handle:close() end
+  return data
+end
+
 -- The mod-facing view, hung off the mod api as `mod.imports`.  A mod that
 -- wants to be polite can ask whether its base file arrived before it starts,
 -- rather than failing halfway through an extract.
+--
+-- ------- this table is a published API, so it only ever GROWS
+--
+-- `list`, `have`, `path` and `read` are what mods written against this engine
+-- already call, and every field `list` returns is one a mod filters on --
+-- `format` to offer the right extensions, `size` to size a progress bar,
+-- `root` to tell a mod-folder file from a save-dir one.  A revision that
+-- narrows any of them breaks a mod silently, at the one moment the mod is
+-- trying to find out whether it can run at all.  `info` and the offset/length
+-- arguments to `read` are additions on top; nothing above them moved.
 function ModImports.api(manifest, read)
   local list = ModImports.of(manifest) or {}
   local byId = {}
   for _, entry in ipairs(list) do byId[entry.id] = entry end
-  return {
+  local api
+  api = {
     list = function()
       local copy = {}
       for index, entry in ipairs(list) do
@@ -643,25 +689,69 @@ function ModImports.api(manifest, read)
       end
       return copy
     end,
+    -- ...and WHY NOT, when not.  ModImports.have checks the declared size as
+    -- well as existence -- a half-copied cartridge is the failure this API is
+    -- for -- and the reason it gives is the one the launcher shows.
     have = function(_, id)
       local entry = byId[id]
-      return entry ~= nil and (ModImports.have(manifest, entry) == true)
+      if not entry then return false, "no import declared with that id" end
+      local ok, why = ModImports.have(manifest, entry)
+      return ok == true, why
     end,
     path = function(_, id)
       local entry = byId[id]
       return entry and entry.file or nil
     end,
-    read = function(_, id)
+    -- Everything the mod declared about one import plus what is on disk now.
+    -- `ready` is the same answer `have` gives, so a mod needs one call rather
+    -- than two to decide whether to start.
+    info = function(_, id)
       local entry = byId[id]
       if not entry then return nil end
-      if entry.root == "save" then
-        local f = fs()
-        return f and f.read(entry.file) or nil
+      local ok, why = ModImports.have(manifest, entry)
+      local row = { id = entry.id, name = entry.name, file = entry.file,
+                    root = entry.root, format = entry.format,
+                    size = entry.size, ready = ok == true, reason = why }
+      local f, at = fs(), ModImports.pathFor(manifest, entry)
+      local on = f and at and f.getInfo(at, "file") or nil
+      if on then
+        row.bytes = on.size
+        row.modtime = on.modtime
       end
-      if not read then return nil end
-      return read(entry.file)
+      return row
+    end,
+    -- `read(id)` is the whole file; `read(id, offset, length)` is a slice,
+    -- capped at MAX_READ_BYTES so chunking a cartridge stays chunked.
+    read = function(_, id, offset, length)
+      local entry = byId[id]
+      if not entry then return nil end
+      local whole = function()
+        if entry.root == "save" then
+          local f = fs()
+          return f and f.read(entry.file) or nil
+        end
+        if not read then return nil end
+        return read(entry.file)
+      end
+      if offset == nil and length == nil then return whole() end
+      local at = math.floor(tonumber(offset) or 0)
+      if at < 0 then return nil, "offset must not be negative" end
+      local want = math.floor(tonumber(length) or ModImports.MAX_READ_BYTES)
+      if want < 0 then return nil, "length must not be negative" end
+      if want > ModImports.MAX_READ_BYTES then
+        return nil, ("a sliced read is capped at %d bytes; ask again with a "
+                     .. "further offset"):format(ModImports.MAX_READ_BYTES)
+      end
+      if want == 0 then return "" end
+      local path = ModImports.pathFor(manifest, entry)
+      local cut = path and slice(path, at, want)
+      if cut ~= nil then return cut end
+      local body = whole()
+      if not body then return nil end
+      return body:sub(at + 1, at + want)
     end,
   }
+  return api
 end
 
 return ModImports

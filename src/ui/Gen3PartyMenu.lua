@@ -48,11 +48,21 @@
 -- bounce below is this port's, since the cartridge's is a sprite-callback
 -- rather than data.
 
+local Assets = require("src.render.Assets")
 local Font = require("src.render.Font")
 local Logger = require("src.core.Logger")
 local Screens = require("src.ui.Screens")
 local Strings = require("src.core.Strings")
 local Theme = require("src.ui.Theme")
+
+-- Sprites reaches back into the party screen, so it is resolved once on
+-- first use rather than required on every icon of every frame.
+local SpritesMod
+local function sprites()
+  SpritesMod = SpritesMod or require("src.pokemon.Sprites")
+  return SpritesMod
+end
+local NO_OPTS = {}
 
 local Gen3PartyMenu = {}
 Gen3PartyMenu.__index = Gen3PartyMenu
@@ -932,9 +942,12 @@ function Gen3PartyMenu:record()
   return r
 end
 
+-- Called seven times from draw plus once per held item, every frame: the
+-- `require` inside it was eight package.loaded lookups a frame for a module
+-- that is loaded before this screen can exist.
 local function loadImage(path)
   if type(path) ~= "string" then return nil end
-  local ok, img = pcall(require("src.render.Assets").image, path)
+  local ok, img = pcall(Assets.image, path)
   return ok and img or nil
 end
 
@@ -972,6 +985,19 @@ end
 -- because a party screen redraws six of them sixty times a second.
 local iconCache = {}
 local iconQuads = {}
+-- the two ball frames, keyed on the image so a reloaded asset rebuilds them
+local ballFrom, ballOpen, ballShut
+local function ballQuad(ball, open)
+  if ballFrom ~= ball then
+    local bw, bh = ball:getDimensions()
+    local fw = math.floor(bw / 2)
+    ballShut = love.graphics.newQuad(0, 0, fw, bh, bw, bh)
+    ballOpen = love.graphics.newQuad(fw, 0, fw, bh, bw, bh)
+    ballFrom = ball
+  end
+  -- the ball OPENS on the cursor slot: frame 1 rather than 0
+  return open and ballOpen or ballShut
+end
 
 function Gen3PartyMenu:iconFor(mon)
   local data = self.game and self.game.data
@@ -988,9 +1014,7 @@ function Gen3PartyMenu:iconFor(mon)
     path = entry
   end
   -- the mod seam every other icon load goes through
-  local okHook, hooked = pcall(function()
-    return require("src.pokemon.Sprites").iconPath(data, mon, path, {})
-  end)
+  local okHook, hooked = pcall(sprites().iconPath, data, mon, path, NO_OPTS)
   if okHook and type(hooked) == "string" then path = hooked end
   if not path then return nil end
   frameH = frameH or tonumber(icons and icons.frameHeight) or 32
@@ -1306,11 +1330,10 @@ function Gen3PartyMenu:draw()
     panel.selected = (n == self.index)
     if ball then
       panel.ballImage = ball
-      local bw, bh = ball:getDimensions()
-      local fw = math.floor(bw / 2)
-      -- the ball OPENS on the cursor slot: frame 1 rather than 0
-      panel.ballQuad = love.graphics.newQuad(panel.selected and fw or 0, 0,
-                                             fw, bh, bw, bh)
+      -- THE BALL HAS TWO FRAMES, so there are two quads -- not six a frame,
+      -- which is three hundred and sixty allocations a second for a picture
+      -- with two states.  Same reasoning as the icon quads above.
+      panel.ballQuad = ballQuad(ball, panel.selected)
     end
     if mon then
       local isEgg = mon.isEgg == true

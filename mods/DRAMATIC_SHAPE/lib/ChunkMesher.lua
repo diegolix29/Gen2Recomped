@@ -1340,6 +1340,61 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
             roomTop = S.gen3RoomWallTop[(ty % 2) * 2 + (tx % 2) + 1]
           end
           local m = math.min(2, run.extent)
+          -- RUSTBORO CITY: THE DOORLESS SHOPFRONT AT (31..34, 39..46), AND
+          -- THE AWNING BESIDE IT AT (26..29, 42..47).
+          --
+          -- `2` IS TWO TILE ROWS, AND ON GEN 3 TWO TILE ROWS IS ONE CELL.
+          -- The rule above means two rows OF THE DRAWING -- "the eave and
+          -- the roof" -- which on a 32px Gen 1 / Gen 2 block is half a block
+          -- and on a 16px Gen 3 metatile is the whole of it.  So every
+          -- flat-topped building in Hoenn laid ONE cell row of art back over
+          -- its entire footprint:
+          --
+          --   the shopfront spread its crenellated parapet -- a rank of
+          --   alternating teeth, map row 39 -- over all SIXTEEN tile rows of
+          --   its depth, and the teeth came out as bars running the whole
+          --   length of the roof (the "windows as long vertical bars" in the
+          --   report);
+          --   the awning next door spread its signboard's top border, map
+          --   row 42, over five cell rows, and came out banded.
+          --
+          -- The five-instance "a Gen 3 cell is TWO tile rows and a pass did
+          -- one", again.
+          --
+          -- The band a roof actually wears is ALREADY MEASURED -- and already
+          -- trimmed off the facade's own rows, see "THE ROOF'S DRAWING STOPS
+          -- WHERE THE WALL'S BEGINS" in Structures -- and the GABLE branch a
+          -- hundred lines above reads it as `roofArtRows` / `roofArtTop`.  A
+          -- flat top is the same surface and reads the same measurement.
+          --
+          -- ONLY WHERE THERE IS ONE, and that is what keeps this off the
+          -- terrain.  Measured over all 518 maps by walking `S.runs`:
+          --
+          --   189,100 tile columns take this branch, on 454 maps
+          --     5,016 of them, on 33 maps -- the towns and cities -- carry a
+          --           measured roof band
+          --   184,084 do NOT: rock masses, plateaus and headlands, which have
+          --           no roof, no drawn band and nothing to read
+          --
+          -- Terrain keeps `min(2, extent)` untouched, so not one cliff moves.
+          -- Of the 5,016 building columns, 4,695 gain art rows, 12 are
+          -- unchanged and NONE lose any -- the change can only ever hand the
+          -- roof more of its own drawing.
+          -- derived: every count above from a sweep of `S.runs` over all 518
+          -- maps; nothing here is a tuned constant.
+          local artTop = run.north
+          if S.isGen3 and (run.roofArtRows or 0) > 0 and run.roofArtTop
+             and run.roofArtTop <= run.front then
+            -- THE BAND MAY START NORTH OF THE RUN.  Emerald draws a tall
+            -- building's top on the above-player layer so you can walk behind
+            -- it, those rows carry no run, and `roofArtTop` is where the
+            -- drawing really starts -- 309 of the 5,016 columns.  The gable
+            -- branch already trusts it for exactly this reason.
+            -- derived: 309 measured; `roofArtTop` is never SOUTH of
+            -- `run.north` on any of the 518 maps (measured: 0 cases).
+            artTop = run.roofArtTop
+            m = math.min(run.roofArtRows, run.front - artTop + 1)
+          end
           if roomTop then
             topQuad(x0, z0, h, roomTop, VOLUME_TOP_SHADE)
           elseif S.isGen3 and run.extent > m then
@@ -1357,14 +1412,14 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
             local ai = math.floor(((p0 + p1) / 2) / 8)
             if ai < 0 then ai = 0 end
             if ai > m - 1 then ai = m - 1 end
-            local topTile = S.tileAt[keyOf(tx, run.north + ai)]
-                            or Gen3.tileAt(map, tx, run.north + ai)
+            local topTile = S.tileAt[keyOf(tx, artTop + ai)]
+                            or Gen3.tileAt(map, tx, artTop + ai)
             local tv0 = math.max(0, math.min(7.5, p0 - ai * 8))
             local tv1 = math.max(tv0 + 0.5, math.min(8, p1 - ai * 8))
             topQuad(x0, z0, h, topTile, VOLUME_TOP_SHADE, nil, tv0, tv1)
           else
-          local topTile = S.tileAt[keyOf(tx, run.north + ((ty - run.north) % m))]
-                          or Gen3.tileAt(map, tx, run.north + ((ty - run.north) % m))
+          local topTile = S.tileAt[keyOf(tx, artTop + ((ty - run.north) % m))]
+                          or Gen3.tileAt(map, tx, artTop + ((ty - run.north) % m))
           topQuad(x0, z0, h, topTile, VOLUME_TOP_SHADE)
           end
         else
