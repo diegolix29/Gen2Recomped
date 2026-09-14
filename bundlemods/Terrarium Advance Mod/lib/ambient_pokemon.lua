@@ -354,6 +354,7 @@ function AmbientPokemon:_bindSprite(npc, species, game)
     frames = def.frames or 6,
     walker = def.walker ~= false,
     trueColor = def.trueColor ~= false,
+    dsSpecies = def.dsSpecies,
   }, npc.id)
   if ok and sprite then
     npc.sprite = sprite

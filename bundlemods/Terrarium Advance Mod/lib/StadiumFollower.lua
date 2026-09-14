@@ -80,7 +80,7 @@ local currentAnim = 1  -- 1 = idle
 -- Scale for the follower model (smaller than player)
 local FOLLOWER_SCALE = 0.9  -- 0.3 * 3 = 0.9 (3x larger)
 
--- Load a sprite as fallback for follower
+-- Load a sprite as fallback for follower using the sprite service
 local function loadSpriteFallback(dex)
   if not dex then return false, "no dex number" end
   
@@ -94,6 +94,65 @@ local function loadSpriteFallback(dex)
     print("StadiumFollower.loadSpriteFallback: Loaded sprite from cache")
     return true
   end
+  
+  -- Try to use the sprite service for proper fallback chain
+  local okSpriteService, SpriteService = pcall(function() return V.require("follower.sprite_service") end)
+  if okSpriteService and SpriteService then
+    -- Try to get mod instance for sprite service
+    local okMod, mod = pcall(function() return V.mod end)
+    if okMod and mod then
+      -- Create a sprite service instance
+      local okNew, svc = pcall(function() return SpriteService.new(mod, {}) end)
+      if okNew and svc then
+        -- Try to get species name from dex number
+        local species = nil
+        local okGame, game = pcall(function() return V.require("src.core.Game") end)
+        if okGame and game then
+          local currentGame = game.get and game:get()
+          if currentGame and currentGame.data and currentGame.data.pokemon then
+            for speciesId, def in pairs(currentGame.data.pokemon) do
+              if def and def.dex == dex then
+                species = speciesId
+                break
+              end
+            end
+          end
+        end
+        
+        -- Use the sprite service to resolve the follower sprite
+        local okResolve, def = pcall(function() 
+          return svc:resolveFollowerSprite({
+            species = species or tostring(dex),
+            shiny = false,
+            surface = "land",
+            role = "primary",
+            game = okGame and game and game.get and game:get(),
+          })
+        end)
+        
+        if okResolve and def and def.image then
+          -- Try to load the image
+          local okImage, Assets = pcall(function() return V.require("src.render.Assets") end)
+          if okImage and Assets then
+            local image = Assets.image(def.image)
+            if image then
+              -- Cache the sprite
+              spriteCache[dex] = image
+              currentSprite = image
+              currentSpecies = dex
+              usingSpriteFallback = true
+              
+              print("StadiumFollower.loadSpriteFallback: Successfully loaded sprite via sprite service from", def.image)
+              return true
+            end
+          end
+        end
+      end
+    end
+  end
+  
+  -- Fallback to original method if sprite service fails
+  print("StadiumFollower.loadSpriteFallback: Sprite service unavailable, trying direct load")
   
   -- Try to get Pokemon data to find the sprite path
   local ok, game = pcall(function() return V.require("src.core.Game") end)

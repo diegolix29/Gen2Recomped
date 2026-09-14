@@ -35,6 +35,40 @@ local SPECIES_TO_DEX = {
   EEVEE=133, VAPOREON=134, JOLTEON=135, FLAREON=136, PORYGON=137, OMANYTE=138,
   OMASTAR=139, KABUTO=140, KABUTOPS=141, AERODACTYL=142, SNORLAX=143, ARTICUNO=144,
   ZAPDOS=145, MOLTRES=146, DRATINI=147, DRAGONAIR=148, DRAGONITE=149, MEWTWO=150, MEW=151,
+  -- Gen 3 species (152-386)
+  CHIKORITA=152, BAYLEEF=153, MEGANIUM=154, CYNDAQUIL=155, QUILAVA=156, TYPHLOSION=157,
+  TOTODILE=158, CROCONAW=159, FERALIGATR=160, SENTRET=161, FURRET=162, HOOTHOOT=163,
+  NOCTOWL=164, LEDYBA=165, LEDIAN=166, SPINARAK=167, ARIADOS=168, CROBAT=169,
+  CHINCHOU=170, LANTURN=171, PICHU=172, CLEFFA=173, IGGLYBUFF=174, TOGEPI=175,
+  TOGETIC=176, SNEASEL=177, TEDDIURSA=178, URSARING=179, SLUGMA=180, MAGCARGO=181,
+  SWINUB=182, PILOSWINE=183, CORSOLA=184, REMORAID=185, OCTILLERY=186, DELIBIRD=187,
+  MANTINE=188, SKARMORY=189, HOUNDOUR=190, HOUNDOOM=191, KINGDRA=192, PHANPY=193,
+  DONPHAN=194, PORYGON2=195, STANTLER=196, SMEARGLE=197, TYROGUE=198, HITMONTOP=199,
+  SMOOCHUM=200, ELEKID=201, MAGBY=202, MILTANK=203, BLISSEY=204, RAIKOU=205,
+  ENTEI=206, SUICUNE=207, LARVITAR=208, PUPITAR=209, TYRANITAR=210, LUGIA=211,
+  HO_OH=212, CELEBI=213, TREECKO=252, GROVYLE=253, SCEPTILE=254, TORCHIC=255,
+  COMBUSKEN=256, BLAZIKEN=257, MUDKIP=258, MARSHTOMP=259, SWAMPERT=260, POOCHYENA=261,
+  MIGHTYENA=262, ZIGZAGOON=263, LINOONE=264, WURMPLE=265, SILCOON=266, BEAUTIFLY=267,
+  CASCOON=268, DUSTOX=269, LOTAD=270, LOMBRE=271, LUDICOLO=272, SEEDOT=273,
+  NUZLEAF=274, SHIFTRY=275, TAILLOW=276, SWELLOW=277, WINGULL=278, PELIPPER=279,
+  RALTS=280, KIRLIA=281, GARDEVOIR=282, SURSKIT=283, MASQUERAIN=284, SHROOMISH=285,
+  BRELOOM=286, SLAKOTH=287, VIGOROTH=288, SLAKING=289, NINCADA=290, NINJASK=291,
+  SHEDINJA=292, WHISMUR=293, LOUDRED=294, EXPLOUD=295, MAKUHITA=296, HARIYAMA=297,
+  AZURILL=298, NOSEPASS=299, SKITTY=300, DELCATTY=301, SABLEYE=302, MAWILE=303,
+  ARON=304, LAIRON=305, AGGRON=306, MEDITITE=307, MEDICHAM=308, ELECTRIKE=309,
+  MANECTRIC=310, PLUSLE=311, MINUN=312, VOLBEAT=313, ILLUMISE=314, ROSELIA=315,
+  GULPIN=316, SWALOT=317, CARVANHA=318, SHARPEDO=319, WAILMER=320, WAILORD=321,
+  NUMEL=322, CAMERUPT=323, TORKOAL=324, SPOINK=325, GRUMPIG=326, SPINDA=327,
+  TRAPINCH=328, VIBRAVA=329, FLYGON=330, CACNEA=331, CACTURNE=332, SWABLU=333,
+  ALTARIA=334, ZANGOOSE=335, SEVIPER=336, LUNATONE=337, SOLROCK=338, BARBOACH=339,
+  WHISCASH=340, CORPHISH=341, CRAWDAUNT=342, BALTOY=343, CLAYDOL=344, LILEEP=345,
+  CRADILY=346, ANORITH=347, ARMALDO=348, FEEBAS=349, MILOTIC=350, CASTFORM=351,
+  KECLEON=352, SHUPPET=353, BANETTE=354, DUSKULL=355, DUSCLOPS=356, TROPIUS=357,
+  CHIMECHO=358, ABSOL=359, WYNAUT=360, SNORUNT=361, GLALIE=362, SPHEAL=363,
+  SEALEO=364, WALREIN=365, CLAMPERL=366, RELICANTH=367, LUVDISC=368, BAGON=369,
+  SHELGON=370, SALAMENCE=371, BELDUM=372, METANG=373, METAGROSS=374, REGIROCK=375,
+  REGICE=376, REGISTEEL=377, LATIAS=378, LATIOS=379, KYOGRE=380, GROUDON=381,
+  RAYQUAZA=382, JIRACHI=383, DEOXYS=384,
 }
 
 local function tryRequire(path)
@@ -65,8 +99,6 @@ end
 function SpriteService:_tryBattleSpriteFallback(species, variant, game)
   if not species then return nil end
   
-  print("SpriteService._tryBattleSpriteFallback: Attempting battle sprite fallback for", species)
-  
   -- Try to get game data
   local data = game and game.data
   if not data then
@@ -79,46 +111,41 @@ function SpriteService:_tryBattleSpriteFallback(species, variant, game)
   end
   
   if not data then
-    print("SpriteService._tryBattleSpriteFallback: No game data available")
     return nil
   end
   
   -- Try to get the Pokemon definition to find the sprite path
   local pokemonDef = data.pokemon and data.pokemon[species]
   if not pokemonDef then
-    print("SpriteService._tryBattleSpriteFallback: Could not find Pokemon definition for", species)
     return nil
   end
   
   -- Try to get the front sprite path from the Pokemon definition
   local spritePath = pokemonDef.spriteFront
   if not spritePath or spritePath == "" then
-    print("SpriteService._tryBattleSpriteFallback: No spriteFront defined for", species)
     return nil
   end
   
   -- Try to load the image
   local okImage, Assets = pcall(V.require, "src.render.Assets")
   if not okImage or not Assets then
-    print("SpriteService._tryBattleSpriteFallback: Could not access Assets module")
     return nil
   end
   
   local image = Assets.image(spritePath)
   if not image then
-    print("SpriteService._tryBattleSpriteFallback: Could not load sprite image from", spritePath)
     return nil
   end
   
-  print("SpriteService._tryBattleSpriteFallback: Successfully loaded battle sprite fallback for", species, "from", spritePath)
-  
   -- Return as a follower sprite definition
+  -- Include dsSpecies for PaletteFX RGB coloring
   return {
     id = "SPRITE_WILDS_FOLLOWER_BATTLE_FALLBACK_" .. tostring(species),
     image = image,
     frames = 1,  -- Battle sprites are typically single-frame
     walker = false,  -- Battle sprites don't have walking animation
-    trueColor = true,  -- Battle sprites are typically true color
+    trueColor = false,  -- Allow RGB coloring to be applied
+    dsSpecies = species,  -- Include species for PaletteFX RGB coloring
     providerId = "battle_fallback",
     role = "primary",
     surface = "land",
@@ -202,7 +229,64 @@ function SpriteService:resolveFollowerSprite(opts)
     end
   end
 
-  -- Land / fallback: Wilds sprite providers (pokemmo → followers → pokedex chain).
+  -- For Gen 3 games, try sprite providers first (they work correctly for wildlife)
+  local isGen3 = game and game.data and game.data.gen3Maps ~= nil
+  if isGen3 then
+    local providers = self.render and self.render.spriteProviders
+    if providers and type(providers.resolve) == "function" then
+      local result = providers:resolve(style, species, variant, game)
+      if result and result.def and result.def.image then
+        local def = result.def
+        return {
+          id = (role == "player_controlled") and "SPRITE_PLAYER_POKEMON"
+            or (role == "party_trailer" or role == "primary") and "SPRITE_WILDS_FOLLOWER_MON"
+            or def.id or Constants.SPRITE_ID,
+          image = def.image,
+          frames = def.frames or 6,
+          walker = def.walker ~= false,
+          trueColor = def.trueColor ~= false,  -- Keep provider's trueColor setting
+          dsSpecies = species,  -- Include species for PaletteFX RGB coloring
+          providerId = result.providerId,
+          role = role,
+          surface = "land",
+        }
+      end
+    end
+  end
+
+  -- PRIORITY: Try RoamerArt first for Gen 1/2 (same system roamers use)
+  local okRoamer, RoamerArt = pcall(V.require, "RoamerArt")
+  if okRoamer and RoamerArt and RoamerArt.available then
+    local def = RoamerArt.def(species, true)  -- Allow baking if needed
+    if def and def.image then
+      -- Force trueColor to false to enable PaletteFX RGB coloring
+      -- Copy all fields from RoamerArt def to preserve other properties
+      local result = {
+        id = def.id or "SPRITE_WILDS_FOLLOWER_MON",
+        image = def.image,
+        frames = def.frames or 6,
+        walker = def.walker ~= false,
+        trueColor = false,  -- Force false to enable PaletteFX RGB coloring
+        dsSpecies = def.dsSpecies or species,  -- Preserve species for PaletteFX RGB coloring
+        providerId = "roamer_art",
+        role = role,
+        surface = "land",
+      }
+      -- Copy any additional fields from RoamerArt def (except trueColor)
+      for k, v in pairs(def) do
+        if k ~= "trueColor" and result[k] == nil then result[k] = v end
+      end
+      return result
+    end
+  end
+
+  -- PRIORITY: Try game battle front sprites first (works across all generations)
+  local battleSpriteFallback = self:_tryBattleSpriteFallback(species, variant, game)
+  if battleSpriteFallback then
+    return battleSpriteFallback
+  end
+
+  -- Land / fallback: Wilds sprite providers (pokedex → pokemmo → followers chain).
   local providers = self.render and self.render.spriteProviders
   if providers and type(providers.resolve) == "function" then
     local result = providers:resolve(style, species, variant, game)
@@ -211,7 +295,7 @@ function SpriteService:resolveFollowerSprite(opts)
       -- follower sheets are always RGBA true-color; external packs may still
       -- state their own contract explicitly.
       local def = result.def
-      local trueColor = def.trueColor ~= false
+      -- Force trueColor to false to enable PaletteFX RGB coloring
       return {
         id = (role == "player_controlled") and "SPRITE_PLAYER_POKEMON"
           or (role == "party_trailer" or role == "primary") and "SPRITE_WILDS_FOLLOWER_MON"
@@ -219,7 +303,8 @@ function SpriteService:resolveFollowerSprite(opts)
         image = def.image,
         frames = def.frames or 6,
         walker = def.walker ~= false,
-        trueColor = trueColor,
+        trueColor = false,  -- Force false to enable PaletteFX RGB coloring
+        dsSpecies = species,  -- Include species for PaletteFX RGB coloring
         providerId = result.providerId,
         role = role,
         surface = "land",
@@ -234,25 +319,20 @@ function SpriteService:resolveFollowerSprite(opts)
     local dex = self:dexOf(species) or 4
     local def = sheets:spriteDef(dex, variant, "SPRITE_WILDS_FOLLOWER_MON")
     if def and def.image then
+      -- Force trueColor to false to enable PaletteFX RGB coloring
       return {
         id = def.id,
         image = def.image,
         frames = def.frames or 6,
         walker = def.walker ~= false,
-        trueColor = def.trueColor ~= false,
+        trueColor = false,  -- Force false to enable PaletteFX RGB coloring
+        dsSpecies = species,  -- Include species for PaletteFX RGB coloring
         providerId = "pokemmo",
         role = role,
         surface = "land",
       }
     end
   end
-
-  -- Fallback to species battle front sprite when no dedicated follower sprite exists
-  local battleSpriteFallback = self:_tryBattleSpriteFallback(species, variant, game)
-  if battleSpriteFallback then
-    return battleSpriteFallback
-  end
-
   return {
     id = Constants.SPRITE_ID,
     image = self:_fallbackImage(),
