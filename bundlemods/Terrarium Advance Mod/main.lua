@@ -240,6 +240,16 @@ local stadiumFxFallbackNotice = ModSetting.new("stadiumFxFallbackNotice", "FALLB
 local stadiumFx2DLayer = ModSetting.new("stadiumFx2DLayer", "2D EFFECT LAYER",
   { "authentic", "all", "off" }, { "AUTHENTIC", "ALL", "OFF" })
 
+-- Colosseum extraction mode settings
+local colosseumExtractionMode = ModSetting.new("colosseumExtractionMode", "COLOSSEUM EXTRACTION",
+  { "full", "pokemon-only", "ui-only" }, { "FULL", "POKEMON ONLY", "UI ONLY" })
+local playerPokemonModel = ModSetting.new("playerPokemonModel", "PLAYER POKEMON MODEL",
+  { "colosseum", "stadium", "sprite" }, { "COLOSSEUM", "STADIUM", "SPRITE" })
+local followerPokemonModel = ModSetting.new("followerPokemonModel", "FOLLOWER POKEMON MODEL",
+  { "colosseum", "stadium", "sprite" }, { "COLOSSEUM", "STADIUM", "SPRITE" })
+local wildPokemonModel = ModSetting.new("wildPokemonModel", "WILD POKEMON MODEL",
+  { "colosseum", "stadium", "sprite" }, { "COLOSSEUM", "STADIUM", "SPRITE" })
+
 -- ds_fp_ceiling additional settings
 local fpShadows = ModSetting.new("fpshadows", "CONTACT SHADOW",
   { true, false }, { "ON", "OFF" })
@@ -324,6 +334,11 @@ local PlayerModelInstall = V.require("PlayerModelInstall")
 local PlayerModelPick = V.require("PlayerModelPick")
 -- restored: Stadium models for wild Pokemon in the overworld
 local StadiumWilds = V.require("StadiumWilds")
+-- Colosseum Pokemon models for overworld use (player, followers, wild, roamers)
+local ColosseumPokemonOverworld = V.require("ColosseumPokemonOverworld")
+
+-- Make ColosseumPokemonOverworld available to other modules
+V.ColosseumPokemonOverworld = ColosseumPokemonOverworld
 -- restored: the mod's own settings menus -- the categories, the screens
 -- they open, and the red ink that marks this mod's one row on the
 -- engine's OPTIONS list. See "the mode's rows" section below for how it
@@ -1219,6 +1234,21 @@ local SETTINGS = {
   { stadiumFxEnabled,
     "Enables Pokemon Stadium-style battle effects, including attack animations, "
     .. "camera movements, and presentation enhancements.",
+    cat = "battles" },
+  -- ------- Colosseum extraction mode settings
+  --
+  -- These control what gets extracted from the Colosseum disc
+  { colosseumExtractionMode,
+    "Controls Colosseum extraction mode: FULL (everything), POKEMON ONLY (3D Pokemon models for battles/roamers/followers/wild), or UI ONLY (UI elements only). Pokemon-only mode uses Colosseum Pokemon cache for all 3D Pokemon including Stadium A/B battles, Colosseum battles, roamers, followers, wild life, and player Pokemon.",
+    cat = "battles" },
+  { playerPokemonModel,
+    "Controls which 3D model source to use for player's Pokemon: COLOSSEUM (from Colosseum extraction), STADIUM (from Stadium 1/2), or SPRITE (2D sprites).",
+    cat = "battles" },
+  { followerPokemonModel,
+    "Controls which 3D model source to use for follower Pokemon: COLOSSEUM (from Colosseum extraction), STADIUM (from Stadium 1/2), or SPRITE (2D sprites).",
+    cat = "battles" },
+  { wildPokemonModel,
+    "Controls which 3D model source to use for wild Pokemon and roamers: COLOSSEUM (from Colosseum extraction), STADIUM (from Stadium 1/2), or SPRITE (2D sprites).",
     cat = "battles" },
   { stadiumTrainerPortraits,
     "Shows Stadium-style trainer portraits during battles. Requires Stadium 1 ROM for Gen 1 trainers.",
@@ -3424,16 +3454,45 @@ local function initializeColosseumIntegration()
     
     colosseumBuildStatus = { state = "RUNNING", visualReady = false, audioReady = false, message = "Starting GC6E01 source build." }
     
-    local okPipeline, result = pcall(BuildPipeline.run, mod, function(label, current, total)
-      colosseumBuildStatus.state = "RUNNING"
-      colosseumBuildStatus.message = tostring(label)
-      colosseumBuildStatus.current = current
-      colosseumBuildStatus.total = total
-      colosseumBuildProgressUI.update(label, current, total)
-      if mod.log and mod.log.info then 
-        pcall(mod.log.info, mod.log, "Colosseum build: %s (%s/%s)", tostring(label), tostring(current or "?"), tostring(total or "?")) 
-      end
-    end)
+    -- Check extraction mode and call appropriate function
+    local extractionMode = colosseumExtractionMode:get()
+    local okPipeline, result
+    
+    if extractionMode == "pokemon-only" then
+      okPipeline, result = pcall(BuildPipeline.pokemonOnly, mod, function(label, current, total)
+        colosseumBuildStatus.state = "RUNNING"
+        colosseumBuildStatus.message = tostring(label)
+        colosseumBuildStatus.current = current
+        colosseumBuildStatus.total = total
+        colosseumBuildProgressUI.update(label, current, total)
+        if mod.log and mod.log.info then 
+          pcall(mod.log.info, mod.log, "Colosseum Pokemon-only build: %s (%s/%s)", tostring(label), tostring(current or "?"), tostring(total or "?")) 
+        end
+      end)
+    elseif extractionMode == "ui-only" then
+      okPipeline, result = pcall(BuildPipeline.uiOnly, mod, function(label, current, total)
+        colosseumBuildStatus.state = "RUNNING"
+        colosseumBuildStatus.message = tostring(label)
+        colosseumBuildStatus.current = current
+        colosseumBuildStatus.total = total
+        colosseumBuildProgressUI.update(label, current, total)
+        if mod.log and mod.log.info then 
+          pcall(mod.log.info, mod.log, "Colosseum UI-only build: %s (%s/%s)", tostring(label), tostring(current or "?"), tostring(total or "?")) 
+        end
+      end)
+    else
+      -- Full extraction (default)
+      okPipeline, result = pcall(BuildPipeline.run, mod, function(label, current, total)
+        colosseumBuildStatus.state = "RUNNING"
+        colosseumBuildStatus.message = tostring(label)
+        colosseumBuildStatus.current = current
+        colosseumBuildStatus.total = total
+        colosseumBuildProgressUI.update(label, current, total)
+        if mod.log and mod.log.info then 
+          pcall(mod.log.info, mod.log, "Colosseum build: %s (%s/%s)", tostring(label), tostring(current or "?"), tostring(total or "?")) 
+        end
+      end)
+    end
     
     if not okPipeline then error(result, 0) end
     colosseumBuildStatus = result or colosseumBuildStatus
@@ -3462,15 +3521,40 @@ local function initializeColosseumIntegration()
     end
   end
 
-  -- Run the build pipeline
-  local okBuild, buildErr = pcall(runColosseumBuild)
-  if not okBuild then
-    colosseumBuildStatus = { state = "FAILED", visualReady = false, audioReady = false, message = tostring(buildErr) }
-    if colosseumBuildProgressUI then
-      colosseumBuildProgressUI.finish("FAILED", tostring(buildErr))
+  -- Check if this is a fresh build (no existing cache)
+  local hasExistingCache = false
+  local extractionMode = colosseumExtractionMode:get()
+  
+  if mod.cache then
+    -- Check for the specific cache marker based on current extraction mode
+    local cacheFile = nil
+    if extractionMode == "pokemon-only" then
+      cacheFile = ".cbe-pokemon-only-v1.complete"
+    elseif extractionMode == "ui-only" then
+      cacheFile = ".cbe-ui-only-v1.complete"
+    else
+      -- Full mode - check for main markers
+      cacheFile = ".cbe-visual-complete-v1.migrated"
     end
-    if mod.cache then pcall(mod.cache.write, mod.cache, "build/error.txt", tostring(buildErr) .. "\n") end
+    
+    if cacheFile then
+      local exists = pcall(function() return mod.cache:exists(cacheFile) end)
+      if exists then hasExistingCache = true end
+    end
   end
+  
+  -- Only set default for fresh builds
+  if not hasExistingCache and sourceImported then
+    -- For now, default to Pokemon-only for fresh builds since the prompt is having issues
+    -- User can change this in settings before building if needed
+    if not extractionMode or extractionMode == "full" then
+      colosseumExtractionMode:set("pokemon-only")
+      extractionMode = "pokemon-only"
+    end
+  end
+
+  -- Run the build pipeline (it will check for existing cache internally)
+  local okBuild, buildErr = pcall(runColosseumBuild)
 
   -- Wait for build completion with failure gate
   local sourceImported = (mod.imports and mod.imports:info("pokemon_colosseum_usa")) ~= nil

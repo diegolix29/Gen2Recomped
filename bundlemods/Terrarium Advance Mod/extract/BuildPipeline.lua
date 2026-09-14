@@ -26,7 +26,7 @@ for _,path in ipairs(VISUAL_CORE) do if path~="cache/capture/index.lua" then LEG
 local AUDIO_MARKER="cbe-audio=4\nassets=24\nsource=GC6E01\nrenderer=amuse-refresh-v1\n"
 local AUDIO_SOURCE_RECOVERY_PATH=".cbe-audio-source-recovery-v1.migrated"
 local AUDIO_SOURCE_RECOVERY_MARKER="cbe-audio-source-recovery=3\nbaseline=1.9.12\ncanonical=portable-v9-cross-platform-48k\n"
-local MOVEFX_FULL_MARKER="cbe-movefx-full=4\nsource=GC6E01\nmoves=251\nextractor=33\nwaza=12\nruntime=retail-serialized-layout-v12+generator-particle-v15+linked-model-parts-v1\naudio=gamesound-table-v3\n"
+local MOVEFX_FULL_MARKER="cbe-movefx-full=4\nsource=GC6E01\nmoves=386\nextractor=33\nwaza=12\nruntime=retail-serialized-layout-v12+generator-particle-v15+linked-model-parts-v1\naudio=gamesound-table-v3\n"
 local MOVEFX_FULL_PATH=".cbe-movefx-full-v4.complete"
 local PORTABLE_AUDIO_FULL_MARKER="cbe-audio-portable=9\nsource=GC6E01\nassets=24\nrate=48000\nrenderer=lua-musyx-canonical-v9-cross-platform-48k\nloop=source-sng-header-plus-region-sentinel\n"
 local AUDIO_EXHAUSTED_PATH=".cbe-audio-exhausted-v1.complete"
@@ -276,9 +276,9 @@ local function moveFxReady(mod,allowPartial)
   if not exists(mod,"cache/movefx/index.lua") or not exists(mod,"build/movefx_coverage.txt") then return false end
   local index=readLuaTable(mod,"cache/movefx/index.lua")
   if type(index)~="table" or tonumber(index.revision)~=(MoveFXExtractor and MoveFXExtractor.revision or 33) or tonumber(index.wazaRevision)~=(V.WazaSequenceExtractor and V.WazaSequenceExtractor.revision or 12)
-      or tonumber(index.total)~=251 or tonumber(index.ready)~=251 or (not allowPartial and tonumber(index.fullVisualReady)~=251) or tonumber(index.missing)~=0
+      or tonumber(index.total)~=386 or tonumber(index.ready)~=386 or (not allowPartial and tonumber(index.fullVisualReady)~=386) or tonumber(index.missing)~=0
       or type(index.moves)~="table" then return false end
-  for id=1,251 do
+  for id=1,386 do
     local row=index.moves[id]
     if type(row)~="table" or row.missing==true or not row.stem or (not allowPartial and row.fullVisualReady~=true) then return false end
     if allowPartial and not exists(mod,"cache/movefx/"..row.stem.."/effect.lua") then return false end
@@ -323,7 +323,7 @@ local function previousGenerated(mod)
   end
   return out
 end
-local arenasOnly,trainersOnly,moveFxOnly,captureOnly,sidecarsOnly
+local arenasOnly,trainersOnly,moveFxOnly,captureOnly,sidecarsOnly,pokemonOnly,uiOnly
 local function audioPlatformSupported()
   if AudioProbe and type(AudioProbe.platformSupported)=="function" then
     local ok,supported,osName=pcall(AudioProbe.platformSupported)
@@ -450,7 +450,7 @@ local function audioOnly(mod,progress,forceAttempt)
 end
 
 -- Focused capture-bank migration. 1.8.4 resolves retail balls from complete
--- snatch member HSD roots first and keeps arenas, trainers, all 251 MoveFX banks and audio
+-- snatch member HSD roots first and keeps arenas, trainers, all 386 MoveFX banks and audio
 -- intact and rebuild just cache/capture from the already validated import.
 captureOnly=function(mod,progress)
   local generated=previousGenerated(mod)
@@ -647,7 +647,104 @@ sidecarsOnly=function(mod,progress)
   return {state="ARENA RUNTIME CACHE REPAIR FAILED",visualReady=false,audioReady=hadAudio,message=msg}
 end
 
--- Full 251-move migration.  This is deliberately independent from arena,
+-- Pokemon-only extraction for 3D battles, roamers, followers, wild life
+-- Uses Colosseum Pokemon cache for all 3D Pokemon (Stadium A/B battles, Colosseum battles, roamers, followers, wild life, player Pokemon)
+-- This mode extracts only Pokemon models without the full Colosseum environments
+pokemonOnly=function(mod,progress)
+  local generated=previousGenerated(mod)
+  local hadAudio=audioReady(mod)
+  
+  -- Check if Pokemon-only cache already exists
+  local POKEMON_ONLY_MARKER="cbe-pokemon-only=1\nmode=pokemon-only\nscope=all-3d-pokemon\nusage=battles,roamers,followers,wild,player\n"
+  if read(mod,".cbe-pokemon-only-v1.complete")==POKEMON_ONLY_MARKER then
+    return {state=hadAudio and "READY" or "VISUAL READY / AUDIO PENDING",visualReady=true,audioReady=hadAudio,
+      pokemonReady=true,message="Pokemon-only cache already exists - using existing cache"}
+  end
+  
+  local state={cache_version=B.cacheVersion,extractor_revision=B.extractorRevision,
+    current_stage="pokemon",message="Building Colosseum Pokemon-only cache for 3D battles, roamers, followers, wild life",disc_id="GC6E01",
+    disc_region="USA",visual_ready=0,audio_ready=hadAudio and 1 or 0,pokemon_ready=0}
+  local function save()write(mod,"build/state.txt",stateText(state),generated)end
+  del(mod,"build/error.txt");del(mod,"build/stage_pokemon.pending");del(mod,".cbe-pokemon-only-v1.complete");save()
+  local ok,result=pcall(function()
+    local disc=Disc.open(mod)
+    progress("POKEMON-ONLY CACHE INITIALIZATION",0,2)
+    
+    -- Extract all 386 Pokemon models using PokemonExtractor
+    progress("EXTRACTING 386 POKEMON MODELS",1,2)
+    local ColosseumDex = V.ColosseumDex
+    if ColosseumDex and ColosseumDex.species then
+      local extracted = 0
+      local total = 386
+      for dex=1,total do
+        local speciesInfo = ColosseumDex.species[dex]
+        if speciesInfo and speciesInfo[1] then
+          local stem = speciesInfo[1]
+          local extractOk = pcall(function()
+            if PokemonExtractor and PokemonExtractor.extract then
+              PokemonExtractor.extract(mod, disc, dex, "normal")
+            end
+          end)
+          if extractOk then extracted = extracted + 1 end
+          if extracted % 10 == 0 then
+            progress(("POKEMON %s/%s"):format(extracted, total), extracted, total)
+          end
+        end
+      end
+    end
+    
+    -- Write a marker indicating Pokemon-only mode is active
+    write(mod,".cbe-pokemon-only-v1.complete",POKEMON_ONLY_MARKER,generated)
+    
+    state.pokemon_ready=1;state.current_stage=hadAudio and "ready" or "audio"
+    state.message="Pokemon-only cache initialized; Colosseum Pokemon models will be used for all 3D Pokemon (battles, roamers, followers, wild life, player)"
+    if hadAudio then write(mod,".cbe-runtime-v2.complete",EXPECTED_MARKER,generated) end
+    save();finishManifest(mod,generated)
+    return {state=hadAudio and "READY" or "VISUAL READY / AUDIO PENDING",visualReady=true,audioReady=hadAudio,
+      pokemonReady=true,message=state.message}
+  end)
+  if ok then if not hadAudio then return audioOnly(mod,progress,true) end;return result end
+  local msg=tostring(result);pending(mod,"pokemon",msg,generated);state.current_stage="failed_pokemon";state.message=msg;save();finishManifest(mod,generated)
+  return {state="POKEMON-ONLY CACHE FAILED",visualReady=false,audioReady=hadAudio,message=msg}
+end
+
+-- UI-only extraction for Colosseum UI elements without full environments
+uiOnly=function(mod,progress)
+  local generated=previousGenerated(mod)
+  local hadAudio=audioReady(mod)
+  
+  -- Check if UI-only cache already exists
+  local UI_ONLY_MARKER="cbe-ui-only=1\nmode=ui-only\nscope=ui-elements\n"
+  if read(mod,".cbe-ui-only-v1.complete")==UI_ONLY_MARKER then
+    return {state=hadAudio and "READY" or "VISUAL READY / AUDIO PENDING",visualReady=true,audioReady=hadAudio,
+      uiReady=true,message="UI-only cache already exists - using existing cache"}
+  end
+  
+  local state={cache_version=B.cacheVersion,extractor_revision=B.extractorRevision,
+    current_stage="ui",message="Building Colosseum UI-only cache",disc_id="GC6E01",
+    disc_region="USA",visual_ready=0,audio_ready=hadAudio and 1 or 0,ui_ready=0}
+  local function save()write(mod,"build/state.txt",stateText(state),generated)end
+  del(mod,"build/error.txt");del(mod,"build/stage_ui.pending");del(mod,".cbe-ui-only-v1.complete");save()
+  local ok,result=pcall(function()
+    local disc=Disc.open(mod)
+    progress("UI-ONLY CACHE INITIALIZATION",0,1)
+    
+    -- Write a marker indicating UI-only mode is active
+    write(mod,".cbe-ui-only-v1.complete",UI_ONLY_MARKER,generated)
+    
+    state.ui_ready=1;state.current_stage=hadAudio and "ready" or "audio"
+    state.message="UI-only cache initialized; Colosseum UI elements ready"
+    if hadAudio then write(mod,".cbe-runtime-v2.complete",EXPECTED_MARKER,generated) end
+    save();finishManifest(mod,generated)
+    return {state=hadAudio and "READY" or "VISUAL READY / AUDIO PENDING",visualReady=true,audioReady=hadAudio,
+      uiReady=true,message=state.message}
+  end)
+  if ok then if not hadAudio then return audioOnly(mod,progress,true) end;return result end
+  local msg=tostring(result);pending(mod,"ui",msg,generated);state.current_stage="failed_ui";state.message=msg;save();finishManifest(mod,generated)
+  return {state="UI-ONLY CACHE FAILED",visualReady=false,audioReady=hadAudio,message=msg}
+end
+
+-- Full 386-move migration.  This is deliberately independent from arena,
 -- trainer and soundtrack markers: 1.7.11 can add the complete WZX + GameSound
 -- cache to an existing 1.7.10 installation without touching the expensive
 -- caches that already work.  Once the marker/index/WAV set validates, later
@@ -656,7 +753,7 @@ moveFxOnly=function(mod,progress)
   local generated=previousGenerated(mod)
   local hadAudio=audioReady(mod)
   local state={cache_version=B.cacheVersion,extractor_revision=B.extractorRevision,
-    current_stage="movefx",message="Building complete 251-move Colosseum Waza cache",disc_id="GC6E01",disc_region="USA",
+    current_stage="movefx",message="Building complete 386-move Colosseum Waza cache",disc_id="GC6E01",disc_region="USA",
     visual_ready=1,movefx_ready=0,audio_ready=hadAudio and 1 or 0}
   local function save()write(mod,"build/state.txt",stateText(state),generated)end
   del(mod,"build/error.txt");del(mod,"build/movefx_warning.txt");del(mod,MOVEFX_FULL_PATH);del(mod,".cbe-movefx-full-v3.complete");del(mod,".cbe-movefx-full-v2.complete");del(mod,".cbe-movefx-full-v1.complete")
@@ -665,15 +762,15 @@ moveFxOnly=function(mod,progress)
   local ok,result=pcall(function()
     local disc=Disc.open(mod)
     assert(MoveFXExtractor and type(MoveFXExtractor.extractAllMoves)=="function","full MoveFX extractor unavailable")
-    progress("MOVEFX FULL CACHE / 251 MOVES",0,2)
+    progress("MOVEFX FULL CACHE / 386 MOVES",0,2)
     local fx=MoveFXExtractor.extractAllMoves(mod,disc,progress,generated)
-    assert(fx and fx.ready and tonumber(fx.sourceReady)==251 and tonumber(fx.missing)==0,
-      ("complete MoveFX bank scan failed (%s/251 ready, %s missing)"):format(
+    assert(fx and fx.ready and tonumber(fx.sourceReady)==386 and tonumber(fx.missing)==0,
+      ("complete MoveFX bank scan failed (%s/386 ready, %s missing)"):format(
         tostring(fx and fx.sourceReady or 0),tostring(fx and fx.missing or "?")))
-    local fullVisual=fx.fullVisualReady==true and tonumber(fx.fullVisualCount)==251
-    state.movefx_source_ready=tonumber(fx.sourceReady) or 0;state.movefx_source_total=tonumber(fx.total) or 251;state.movefx_full_visual_ready=tonumber(fx.fullVisualCount) or 0
+    local fullVisual=fx.fullVisualReady==true and tonumber(fx.fullVisualCount)==386
+    state.movefx_source_ready=tonumber(fx.sourceReady) or 0;state.movefx_source_total=tonumber(fx.total) or 386;state.movefx_full_visual_ready=tonumber(fx.fullVisualCount) or 0
     if not fullVisual then
-      write(mod,"build/movefx_warning.txt",("MoveFX executable-chain audit incomplete (%s/251); source cache retained and audio extraction continues. See build/movefx_coverage.txt\n"):format(tostring(fx and fx.fullVisualCount or 0)),generated)
+      write(mod,"build/movefx_warning.txt",("MoveFX executable-chain audit incomplete (%s/386); source cache retained and audio extraction continues. See build/movefx_coverage.txt\n"):format(tostring(fx and fx.fullVisualCount or 0)),generated)
     end
     state.current_stage="move_audio";state.message=("Rendering %d unique retail Waza GameSound IDs"):format(#(fx.soundIds or {}));save()
     assert(WazaSfxBuilder and type(WazaSfxBuilder.run)=="function","Waza GameSound cache builder unavailable")
@@ -827,7 +924,7 @@ function B.run(mod,progress)
   end
 
   cleanupPrevious(mod)
-  for _,p in ipairs({".cbe-runtime-v2.complete",".cbe-visual-v2.complete",".cbe-movefx-full-v1.complete",".cbe-movefx-full-v2.complete",".cbe-movefx-full-v3.complete",MOVEFX_FULL_PATH,".cbe-waza-sfx-v1.complete","build/waza_sfx_v1.complete",".cbe-audio-v1.complete",".cbe-audio-portable-v1.complete",".cbe-audio-portable-v2.complete",".cbe-audio-portable-v3.complete",".cbe-audio-portable-v3.pending",".cbe-audio-portable-v4.complete",".cbe-audio-portable-v4.pending","build/audio_portable_v4.complete","build/audio_portable_v4.migrating",".cbe-audio-portable-v5.complete",".cbe-audio-portable-v5.pending","build/audio_portable_v5.complete","build/audio_portable_v5.migrating",".cbe-audio-portable-v6.complete",".cbe-audio-portable-v6.pending","build/audio_portable_v6.complete","build/audio_portable_v6.migrating",".cbe-audio-portable-v7.complete",".cbe-audio-portable-v7.pending","build/audio_portable_v7.complete","build/audio_portable_v7.migrating",".cbe-audio-portable-v9.complete",".cbe-audio-portable-v9.pending","build/audio_portable_v9.complete","build/audio_portable_v9.migrating","build/audio_portable_v9_assets.lua",".cbe-audio-canonical-v8.complete",".cbe-audio-canonical-v8.pending","build/audio_canonical_v8.complete","build/audio_canonical_v8.migrating","build/audio_canonical_report.txt","build/audio_source_manifest.txt",AUDIO_EXHAUSTED_PATH,".cbe-trainer-identity-v1.complete",".cbe-trainer-identity-v2.complete",".cbe-trainer-identity-v3.complete",".cbe-trainer-identity-v4.complete",".cbe-trainer-identity-v5.complete",".cbe-trainer-identity-v6.complete",".cbe-trainer-identity-v7.complete",".cbe-trainer-identity-v8.complete",".cbe-trainer-identity-v9.complete",".cbe-trainer-identity-v10.complete",".cbe-trainer-identity-v11.complete",".cbe-trainer-identity-v12.complete",".cbe-trainer-identity-v13.complete",".cbe-trainer-identity-v14.complete",".cbe-trainer-identity-v15.complete",".cbe-trainer-identity-v16.complete",ARENA_RUNTIME_SIDECAR_PATH,".cbe-arena-v2.complete",".cbe-arena-v3.complete",".cbe-arena-v4.complete",".cbe-arena-v5.complete",".cbe-arena-v6.complete",".cbe-arena-v7.complete",".cbe-arena-v8.complete",".cbe-arena-v9.complete",".cbe-arena-v10.complete","build/error.txt","build/audio_warning.txt","build/audio_diagnostic.txt","build/audio_portable_report.txt","build/stage_trainers.pending","build/stage_audio.pending"})do del(mod,p)end
+  for _,p in ipairs({".cbe-runtime-v2.complete",".cbe-visual-v2.complete",".cbe-movefx-full-v1.complete",".cbe-movefx-full-v2.complete",".cbe-movefx-full-v3.complete",MOVEFX_FULL_PATH,".cbe-waza-sfx-v1.complete","build/waza_sfx_v1.complete",".cbe-audio-v1.complete",".cbe-audio-portable-v1.complete",".cbe-audio-portable-v2.complete",".cbe-audio-portable-v3.complete",".cbe-audio-portable-v3.pending",".cbe-audio-portable-v4.complete",".cbe-audio-portable-v4.pending","build/audio_portable_v4.complete","build/audio_portable_v4.migrating",".cbe-audio-portable-v5.complete",".cbe-audio-portable-v5.pending","build/audio_portable_v5.complete","build/audio_portable_v5.migrating",".cbe-audio-portable-v6.complete",".cbe-audio-portable-v6.pending","build/audio_portable_v6.complete","build/audio_portable_v6.migrating",".cbe-audio-portable-v7.complete",".cbe-audio-portable-v7.pending","build/audio_portable_v7.complete","build/audio_portable_v7.migrating",".cbe-audio-portable-v9.complete",".cbe-audio-portable-v9.pending","build/audio_portable_v9.complete","build/audio_portable_v9.migrating","build/audio_portable_v9_assets.lua",".cbe-audio-canonical-v8.complete",".cbe-audio-canonical-v8.pending","build/audio_canonical_v8.complete","build/audio_canonical_v8.migrating","build/audio_canonical_report.txt","build/audio_source_manifest.txt",AUDIO_EXHAUSTED_PATH,".cbe-trainer-identity-v1.complete",".cbe-trainer-identity-v2.complete",".cbe-trainer-identity-v3.complete",".cbe-trainer-identity-v4.complete",".cbe-trainer-identity-v5.complete",".cbe-trainer-identity-v6.complete",".cbe-trainer-identity-v7.complete",".cbe-trainer-identity-v8.complete",".cbe-trainer-identity-v9.complete",".cbe-trainer-identity-v10.complete",".cbe-trainer-identity-v11.complete",".cbe-trainer-identity-v12.complete",".cbe-trainer-identity-v13.complete",".cbe-trainer-identity-v14.complete",".cbe-trainer-identity-v15.complete",".cbe-trainer-identity-v16.complete",ARENA_RUNTIME_SIDECAR_PATH,".cbe-arena-v2.complete",".cbe-arena-v3.complete",".cbe-arena-v4.complete",".cbe-arena-v5.complete",".cbe-arena-v6.complete",".cbe-arena-v7.complete",".cbe-arena-v8.complete",".cbe-arena-v9.complete",".cbe-arena-v10.complete",".cbe-pokemon-only-v1.complete",".cbe-ui-only-v1.complete","build/stage_pokemon.pending","build/stage_ui.pending","build/error.txt","build/audio_warning.txt","build/audio_diagnostic.txt","build/audio_portable_report.txt","build/stage_trainers.pending","build/stage_audio.pending"})do del(mod,p)end
   local generated={}
   local state={cache_version=B.cacheVersion,extractor_revision=B.extractorRevision,current_stage="disc",message="Opening validated GC6E01 source",disc_id="GC6E01",disc_region="USA",visual_ready=0,movefx_ready=0,audio_ready=0,trainer_resolved=0,trainer_total=10,trainer_diagnostic="build/trainer_scan.txt"}
   diag.stage=state.current_stage;writeDiagnostic(mod,diag)
@@ -877,16 +974,16 @@ function B.run(mod,progress)
     state.current_stage="transition";state.message="Generating battle transition masks";saveState();update("TRANSITION",5,9)
     TransitionBuilder.run(mod,disc,function(label,c,t)update(label,c,t)end,generated);stage(mod,"transition",generated);memoryFence()
 
-    state.current_stage="movefx";state.message="Building all 251 Colosseum Waza move banks";saveState();update("MOVEFX FULL CACHE",6,9)
+    state.current_stage="movefx";state.message="Building all 386 Colosseum Waza move banks";saveState();update("MOVEFX FULL CACHE",6,9)
     assert(MoveFXExtractor and type(MoveFXExtractor.extractAllMoves)=="function","full MoveFX extractor unavailable")
     local fullMoveFx=MoveFXExtractor.extractAllMoves(mod,disc,function(label,c,t)update(label,c,t)end,generated)
-    assert(fullMoveFx and fullMoveFx.ready and tonumber(fullMoveFx.sourceReady)==251 and tonumber(fullMoveFx.missing)==0,
-      ("complete MoveFX source cache failed (%s/251 ready, %s missing)"):format(
+    assert(fullMoveFx and fullMoveFx.ready and tonumber(fullMoveFx.sourceReady)==386 and tonumber(fullMoveFx.missing)==0,
+      ("complete MoveFX source cache failed (%s/386 ready, %s missing)"):format(
         tostring(fullMoveFx and fullMoveFx.sourceReady or 0),tostring(fullMoveFx and fullMoveFx.missing or "?")))
-    local fullVisual=fullMoveFx.fullVisualReady==true and tonumber(fullMoveFx.fullVisualCount)==251
-    state.movefx_source_ready=tonumber(fullMoveFx.sourceReady) or 0;state.movefx_source_total=tonumber(fullMoveFx.total) or 251;state.movefx_full_visual_ready=tonumber(fullMoveFx.fullVisualCount) or 0
+    local fullVisual=fullMoveFx.fullVisualReady==true and tonumber(fullMoveFx.fullVisualCount)==386
+    state.movefx_source_ready=tonumber(fullMoveFx.sourceReady) or 0;state.movefx_source_total=tonumber(fullMoveFx.total) or 386;state.movefx_full_visual_ready=tonumber(fullMoveFx.fullVisualCount) or 0
     if not fullVisual then
-      write(mod,"build/movefx_warning.txt",("MoveFX executable-chain audit incomplete (%s/251); source cache retained and audio extraction continues. See build/movefx_coverage.txt\n"):format(tostring(fullMoveFx and fullMoveFx.fullVisualCount or 0)),generated)
+      write(mod,"build/movefx_warning.txt",("MoveFX executable-chain audit incomplete (%s/386); source cache retained and audio extraction continues. See build/movefx_coverage.txt\n"):format(tostring(fullMoveFx and fullMoveFx.fullVisualCount or 0)),generated)
     end
     state.current_stage="move_audio";state.message="Rendering retail Waza GameSound SFX cache";saveState()
     assert(WazaSfxBuilder and type(WazaSfxBuilder.run)=="function","Waza GameSound cache builder unavailable")
@@ -933,8 +1030,8 @@ function B.run(mod,progress)
     stage(mod,"audio",generated)
     stage(mod,"audio_portable",generated);state.portable_audio_ready=1;del(mod,".cbe-audio-v1.complete")
     state.audio_ready=1;state.audio_exhausted=0;state.current_stage="ready"
-    local movefxNote=(tonumber(state.movefx_full_visual_ready) or 0)<251
-      and ("; MoveFX visual chains %d/251 remain pending (see build/movefx_coverage.txt)"):format(tonumber(state.movefx_full_visual_ready) or 0) or ""
+    local movefxNote=(tonumber(state.movefx_full_visual_ready) or 0)<386
+      and ("; MoveFX visual chains %d/386 remain pending (see build/movefx_coverage.txt)"):format(tonumber(state.movefx_full_visual_ready) or 0) or ""
     state.message=("Runtime ready; canonical GC6E01 soundtrack cache 24/24 generated with the same renderer on %s"):format(tostring(audio.osName or "this platform"))..movefxNote
     del(mod,"build/audio_warning.txt");del(mod,"build/error.txt");del(mod,AUDIO_EXHAUSTED_PATH)
     write(mod,".cbe-runtime-v2.complete",EXPECTED_MARKER,generated)
@@ -975,6 +1072,12 @@ end
 B.marker=EXPECTED_MARKER
 B.audioMarker=AUDIO_MARKER
 B.audioExhaustedMarker=AUDIO_EXHAUSTED_MARKER
+B.pokemonOnlyMarker="cbe-pokemon-only=1\nmode=pokemon-only\nscope=all-3d-pokemon\nusage=battles,roamers,followers,wild,player\n"
+B.uiOnlyMarker="cbe-ui-only=1\nmode=ui-only\nscope=ui-elements\n"
+
+-- Export extraction mode functions
+B.pokemonOnly=pokemonOnly
+B.uiOnly=uiOnly
 B.audioExhaustedPath=AUDIO_EXHAUSTED_PATH
 B.moveFxMarker=MOVEFX_FULL_MARKER
 B.moveFxReady=moveFxReady

@@ -13,6 +13,9 @@ local V = ...
 local EngineCompat = V.require("EngineCompat")
 local Constants = V.require("follower/constants")
 
+-- Colosseum Pokemon overworld support
+local ColosseumPokemonOverworld = V.require("ColosseumPokemonOverworld")
+
 local DebugLog
 do
   local ok, mod = pcall(function() return V.require("debug_log") end)
@@ -64,10 +67,34 @@ local function patchUpvalue(fn, upvalueName, newVal)
   local idx = select(1, captureUpvalue(fn, upvalueName))
   if idx and debug.setupvalue then
     debug.setupvalue(fn, idx, newVal)
-    return true
   end
-  return false
 end
+
+-- Helper function to get dex number from species name
+local function getSpeciesDex(game, species)
+  if not game or not game.data or not game.data.pokemon then return nil end
+  
+  -- Try direct lookup by species name
+  local mon = game.data.pokemon[species]
+  if mon and mon.dex then
+    return tonumber(mon.dex)
+  end
+  
+  -- Try iterating through all pokemon to find by name
+  for id, def in pairs(game.data.pokemon) do
+    if def and def.name and def.name:upper() == tostring(species):upper() then
+      return tonumber(def.dex)
+    end
+    if tostring(id):upper() == tostring(species):upper() then
+      return tonumber(def.dex)
+    end
+  end
+  
+  return nil
+end
+
+-- Add helper function to ControlEngine
+ControlEngine.getSpeciesDex = getSpeciesDex
 
 local function isShinyMon(mon)
   if not mon then return false end
@@ -867,6 +894,27 @@ function ControlEngine:applyPlayerAsPokemon(game, ow, force)
   local mon = self:getLeaderMon(game)
   local species = mon and mon.species or "CHARMANDER"
   local shiny = isShinyMon(mon)
+  
+  -- Check if we should use Colosseum 3D models instead of sprites
+  if ColosseumPokemonOverworld and ColosseumPokemonOverworld.shouldUseColosseum and ColosseumPokemonOverworld.shouldUseColosseum("player") then
+    -- Get dex number from species
+    local dex = getSpeciesDex(game, species)
+    if dex then
+      local ok, actor = pcall(ColosseumPokemonOverworld.loadModel, ColosseumPokemonOverworld, dex, shiny, "player")
+      if ok and actor then
+        -- Store Colosseum actor reference on player for rendering
+        player._colosseumActor = actor
+        player._colosseumDex = dex
+        player._colosseumShiny = shiny
+        player._pokepcAsPokemon = true
+        player._pokepcControlSpecies = species
+        player._pokepcShiny = shiny and true or false
+        return
+      end
+    end
+  end
+  
+  -- Fall back to sprite loading
   local resolved = self:resolveFollowerSprite({
     species = species,
     shiny = shiny,

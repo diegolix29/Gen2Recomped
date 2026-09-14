@@ -6,6 +6,9 @@
 -- the mod namespace (see main.lua): V.require loads a sibling module
 local V = ...
 
+-- Colosseum Pokemon overworld support
+local ColosseumPokemonOverworld = V.require("ColosseumPokemonOverworld")
+
 local Mat4 = V.require("Mat4")
 local Voxel3D = V.require("Voxel3D")
 local StadiumPack = V.require("StadiumPack")
@@ -25,6 +28,7 @@ local currentStadiumModel = nil
 local currentDex = nil
 local currentFilename = nil
 local currentSprite = nil
+local currentActor = nil -- For Colosseum Pokemon actors
 local usingSpriteFallback = false
 
 -- Follower positioning
@@ -120,30 +124,80 @@ local function loadSpriteFallback(dex)
   return true
 end
 
+-- Get the follower model preference setting
+local function getFollowerModelPreference()
+  local ModSetting = V.require("ModSetting")
+  if not ModSetting then return "colosseum" end -- default to colosseum
+  
+  local ok, value = pcall(function()
+    local setting = ModSetting.new("followerPokemonModel", "FOLLOWER POKEMON MODEL",
+      { "colosseum", "stadium", "sprite" }, { "COLOSSEUM", "STADIUM", "SPRITE" })
+    return setting:get()
+  end)
+  
+  return ok and value or "colosseum"
+end
+
 -- Load a Stadium model by dex number as a follower
 function FollowerPokemon.load(dex)
   if not dex then return false, "no dex number" end
   
   print("FollowerPokemon.load: Attempting to load dex", dex)
   
-  -- Check 3D model cache first
-  if rigCache[dex] then
-    currentRig = rigCache[dex]
-    currentStadiumModel = currentRig and currentRig.model
-    currentDex = dex
-    currentFilename = "follower_" .. dex
-    usingSpriteFallback = false
-    print("FollowerPokemon.load: Loaded 3D model from cache")
-    return true
+  -- Check model preference setting
+  local modelPreference = getFollowerModelPreference()
+  print("FollowerPokemon.load: Model preference is", modelPreference)
+  
+  -- If sprite is preferred, try sprite first
+  if modelPreference == "sprite" then
+    if spriteCache[dex] then
+      currentSprite = spriteCache[dex]
+      currentDex = dex
+      currentFilename = "follower_sprite_" .. dex
+      usingSpriteFallback = true
+      print("FollowerPokemon.load: Loaded sprite from cache (preference)")
+      return true
+    end
+    local ok, err = loadSpriteFallback(dex)
+    if ok then return true end
+    print("FollowerPokemon.load: Sprite fallback failed, trying 3D models:", err)
   end
   
-  -- Check sprite cache first
+  -- Check if we should use Colosseum models
+  if ColosseumPokemonOverworld and ColosseumPokemonOverworld.shouldUseColosseum("follower") then
+    print("FollowerPokemon.load: Loading Colosseum model for follower")
+    local ok, actor = pcall(ColosseumPokemonOverworld.loadModel, ColosseumPokemonOverworld, dex, false, "follower")
+    if ok and actor then
+      currentActor = actor
+      currentDex = dex
+      currentFilename = "follower_colosseum_" .. dex
+      usingSpriteFallback = false
+      print("FollowerPokemon.load: Loaded Colosseum 3D model")
+      return true
+    end
+    print("FollowerPokemon.load: Colosseum model failed, trying Stadium:", actor)
+  end
+  
+  -- Check 3D model cache first (for colosseum or stadium preference)
+  if modelPreference ~= "sprite" then
+    if rigCache[dex] then
+      currentRig = rigCache[dex]
+      currentStadiumModel = currentRig and currentRig.model
+      currentDex = dex
+      currentFilename = "follower_" .. dex
+      usingSpriteFallback = false
+      print("FollowerPokemon.load: Loaded 3D model from cache")
+      return true
+    end
+  end
+  
+  -- Check sprite cache first (as fallback)
   if spriteCache[dex] then
     currentSprite = spriteCache[dex]
     currentDex = dex
     currentFilename = "follower_sprite_" .. dex
     usingSpriteFallback = true
-    print("FollowerPokemon.load: Loaded sprite from cache")
+    print("FollowerPokemon.load: Loaded sprite from cache (fallback)")
     return true
   end
   

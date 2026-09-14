@@ -32,6 +32,9 @@
 -- the mod namespace (see main.lua): V.require loads a sibling module
 local V = ...
 
+-- Colosseum Pokemon overworld support
+local ColosseumPokemonOverworld = V.require("ColosseumPokemonOverworld")
+
 local Assets = require("src.render.Assets")
 
 local RoamerArt = {}
@@ -327,6 +330,19 @@ local function build(species, mayBake)
   local mon = Game.data and Game.data.pokemon and Game.data.pokemon[species]
   if not (mon and mon.spriteFront) then return nil end
 
+  -- Check if Colosseum 3D models should be used for roamers
+  if ColosseumPokemonOverworld and ColosseumPokemonOverworld.shouldUseColosseum("roamer") then
+    local dex = mon and mon.dex
+    if dex then
+      local ok, actor = pcall(ColosseumPokemonOverworld.loadModel, ColosseumPokemonOverworld, dex, false, "roamer")
+      if ok and actor then
+        -- Return a special marker for 3D model instead of sprite
+        return { id = "TR_ROAM_3D_" .. species, is3DModel = true, 
+                 colosseumActor = actor, dex = dex, species = species }
+      end
+    end
+  end
+
   -- Shipped Gen-2 style walk sheet wins: true colour, already 16x96, no bake.
   local shipped = V.path .. "/" .. SHIPPED .. species .. ".png"
   if Assets.exists(shipped) then
@@ -344,7 +360,7 @@ local function build(species, mayBake)
   end
   return { id = "TR_ROAM_" .. species, image = path,
            frames = RoamerArt.FRAMES, walker = true,
-           dsSpecies = species }
+           trueColor = false, dsSpecies = species }
 end
 
 -- `mayBake` is the caller's permission to spend a bake HERE, on this frame.

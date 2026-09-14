@@ -7,6 +7,9 @@
 -- the mod namespace (see main.lua): V.require loads a sibling module
 local V = ...
 
+-- Colosseum Pokemon overworld support
+local ColosseumPokemonOverworld = V.ColosseumPokemonOverworld
+
 local Mat4 = V.require("Mat4")
 local StadiumPack = V.require("StadiumPack")
 local Stadium2Pack = V.require("Stadium2Pack")
@@ -41,8 +44,35 @@ StadiumWilds.setting = ModSetting.new(StadiumWilds.KEY, StadiumWilds.LABEL,
 
 -- ------- Entity Management
 
+-- Check if Pokemon-only mode is active
+local function isPokemonOnlyMode()
+  if not ModSetting then return false end
+  local ok, mode = pcall(function()
+    local setting = ModSetting.new("colosseumExtractionMode", "COLOSSEUM EXTRACTION",
+      { "full", "pokemon-only", "ui-only" }, { "FULL", "POKEMON ONLY", "UI ONLY" })
+    return setting:get()
+  end)
+  return ok and mode == "pokemon-only"
+end
+
+-- Check if Colosseum models should be used for wild Pokemon
+local function shouldUseColosseumForWild()
+  if not ModSetting then return false end
+  local ok, preference = pcall(function()
+    local setting = ModSetting.new("wildPokemonModel", "WILD POKEMON MODEL",
+      { "colosseum", "stadium", "sprite" }, { "COLOSSEUM", "STADIUM", "SPRITE" })
+    return setting:get()
+  end)
+  return ok and preference == "colosseum"
+end
+
 -- Check if stadium wilds feature is enabled
 function StadiumWilds.enabled()
+  -- Check if Colosseum models should be used
+  if isPokemonOnlyMode() or shouldUseColosseumForWild() then
+    return true
+  end
+  
   if not StadiumWilds.setting:get() then
     return false
   end
@@ -147,7 +177,7 @@ function StadiumWilds.getEntitySpeciesDex(entity)
     if nestedSpecies then
       -- If it's already a number, return it
       local num = tonumber(nestedSpecies)
-      if num and num >= 1 and num <= 251 then
+      if num and num >= 1 and num <= 386 then
         return num
       end
       
@@ -156,7 +186,7 @@ function StadiumWilds.getEntitySpeciesDex(entity)
         local dexStr = nestedSpecies:match("SPECIES_(%d+)")
         if dexStr then
           local dexNum = tonumber(dexStr)
-          if dexNum and dexNum >= 1 and dexNum <= 251 then
+          if dexNum and dexNum >= 1 and dexNum <= 386 then
             return dexNum
           end
         end
@@ -230,6 +260,18 @@ function StadiumWilds.loadEntityModel(entity)
   -- Check if already loaded
   if entityMons[entity] then
     return true
+  end
+  
+  -- Check if we should use Colosseum models (either Pokemon-only mode or specific setting)
+  if isPokemonOnlyMode() or shouldUseColosseumForWild() then
+    if ColosseumPokemonOverworld and ColosseumPokemonOverworld.loadModel then
+      local ok, actor = pcall(ColosseumPokemonOverworld.loadModel, ColosseumPokemonOverworld, dex, false, "wild")
+      if ok and actor then
+        entityMons[entity] = { actor = actor, source = "colosseum" }
+        return true
+      end
+    end
+    -- Fall through to Stadium if Colosseum fails
   end
 
   -- Create StadiumMon instance
