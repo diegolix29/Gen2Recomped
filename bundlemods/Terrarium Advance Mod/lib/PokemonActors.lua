@@ -241,68 +241,11 @@ local function expectedSpeciesStamp()
   if not (extractor and type(extractor.stamp)=="function") then return nil end
   return extractor.stamp({skinFix=A.skinFix,renderPassFilter=true,decodeMode=A.decodeMode})
 end
-local function isPokemonOnlyMode()
-  -- Check if Pokemon-only extraction mode is active
-  local ModSetting=V.ModSetting
-  if not ModSetting then return false end
-  local ok, mode = pcall(function()
-    local setting = ModSetting.new("colosseumExtractionMode", "COLOSSEUM EXTRACTION",
-      { "full", "pokemon-only", "ui-only" }, { "FULL", "POKEMON ONLY", "UI ONLY" })
-    return setting:get()
-  end)
-  return ok and mode == "pokemon-only"
-end
-
-local function shouldUseColosseumCache(role)
-  -- Determine if Colosseum cache should be used based on role and extraction mode
-  if isPokemonOnlyMode() then
-    -- In Pokemon-only mode, use Colosseum cache for all 3D Pokemon
-    return true
-  end
-  
-  -- Otherwise, check role-specific settings
-  local ModSetting=V.ModSetting
-  if not ModSetting then return false end
-  
-  local settingName = nil
-  if role == "player" then
-    settingName = "playerPokemonModel"
-  elseif role == "follower" then
-    settingName = "followerPokemonModel"
-  end
-  
-  if not settingName then return false end
-  
-  local ok, modelChoice = pcall(function()
-    local setting = ModSetting.new(settingName, string.upper(settingName:gsub("(%l)(%u*%l)", "%1 %2")),
-      { "colosseum", "stadium", "sprite" }, { "COLOSSEUM", "STADIUM", "SPRITE" })
-    return setting:get()
-  end)
-  
-  return ok and modelChoice == "colosseum"
-end
-
 local function speciesCacheReady(dex)
   dex=modelKey(dex)
   if not (dex and extractor) then return false,nil end
   local expected=expectedSpeciesStamp()
   if type(expected)=="string" and speciesCacheValidity[dex]==expected then return true,expected end
-
-  -- In Pokemon-only mode, always use Colosseum cache if available
-  if isPokemonOnlyMode() then
-    if GeneratedAssets and type(GeneratedAssets.info)=="function"
-        and type(GeneratedAssets.read)=="function"
-        and type(extractor.cachePath)=="function" and type(extractor.revPath)=="function" then
-      local info=GeneratedAssets.info(extractor.cachePath(dex))
-      if type(info)=="table" and (info.type==nil or info.type=="file") then
-        local raw=GeneratedAssets.read(extractor.revPath(dex))
-        if type(expected)=="string" and raw==expected then
-          speciesCacheValidity[dex]=expected
-          return true,expected
-        end
-      end
-    end
-  end
 
   -- Route cache validity through GeneratedAssets so Hard Cache Save's persisted
   -- positive metadata registry is actually used by information menus after a
@@ -2119,33 +2062,6 @@ function A.acquire(source,dex,variant,opts)
   local cacheKey=modelKey(dex,variant)
   dex=dexNumber(dex)
   if not (dex and Dex.supported(dex)) then return nil,"unsupported dex" end
-  
-  -- Check if we should use Colosseum cache based on role and settings
-  local side = opts and opts.side
-  local shouldUseColosseum = false
-  
-  if isPokemonOnlyMode() then
-    -- In Pokemon-only mode, always use Colosseum cache
-    shouldUseColosseum = true
-  elseif side == "player" then
-    shouldUseColosseum = shouldUseColosseumCache("player")
-  elseif side == "enemy" then
-    -- For enemy, check if we're in Colosseum battles or use default behavior
-    local isColosseumBattle = opts and opts.context and opts.context.arena and 
-      tostring(opts.context.arena.id or ""):find("^COLOSSEUM_BATTLE_ENVIRONMENTS:") ~= nil
-    shouldUseColosseum = isColosseumBattle or shouldUseColosseumCache("enemy")
-  end
-  
-  -- If not using Colosseum cache and the preference is explicitly not colosseum, fail early
-  if not shouldUseColosseum and (side == "player" or side == "enemy") then
-    local role = side == "player" and "player" or "enemy"
-    local useColosseum = shouldUseColosseumCache(role)
-    if not useColosseum then
-      -- Preference is for sprite or stadium, skip Colosseum cache
-      -- This will cause fallback to 2D sprites or Stadium models
-      return nil,"model preference excludes Colosseum cache (using "..role.." preference)"
-    end
-  end
 
   -- A resident GPU scene has already passed the extractor stamp check for this
   -- session. Re-reading rev.txt/cache metadata on every Summary reopen or actor

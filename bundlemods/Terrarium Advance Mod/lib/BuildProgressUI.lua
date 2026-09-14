@@ -115,25 +115,10 @@ local function failureButtons()
     exit={x=bx,y=y+424,w=bw,h=bh},
   }
 end
-
-local function modeSelectionButtons(modes)
-  if not (love and love.graphics and type(love.graphics.getDimensions)=="function") then return nil end
-  local w,h=love.graphics.getDimensions();local panelW=math.min(w-48,760);local panelH=math.min(h-48,500)
-  local x=(w-panelW)/2;local y=(h-panelH)/2;local bx=x+28;local bw=panelW-56;local bh=40
-  local buttons={}
-  for i,mode in ipairs(modes) do
-    buttons[mode.id]={x=bx,y=y+200+(i-1)*50,w=bw,h=bh}
-  end
-  return buttons
-end
-local function actionAt(x,y,modeButtons)
+local function actionAt(x,y)
   x,y=tonumber(x),tonumber(y);if not x or not y then return nil end
-  if modeButtons then
-    for modeId,r in pairs(modeButtons) do if x>=r.x and x<=r.x+r.w and y>=r.y and y<=r.y+r.h then return modeId end end
-  else
-    local rows=failureButtons();if not rows then return nil end
-    for action,r in pairs(rows) do if x>=r.x and x<=r.x+r.w and y>=r.y and y<=r.y+r.h then return action end end
-  end
+  local rows=failureButtons();if not rows then return nil end
+  for action,r in pairs(rows) do if x>=r.x and x<=r.x+r.w and y>=r.y and y<=r.y+r.h then return action end end
   return nil
 end
 
@@ -168,31 +153,6 @@ local function failureFrame(state,message,trainerFirst,trainerSource)
   return true
 end
 
-local function modeSelectionFrame(modes,selectedMode)
-  if not graphicsReady() then return false end
-  local ok=pcall(function()
-    local g,panelW,_,x,y=beginFrame(500)
-    g.setColor(0.90,0.86,0.65,1);g.print("COLOSSEUM EXTRACTION MODE",x+28,y+24)
-    g.setColor(0.86,0.70,0.64,1);g.print("SELECT WHAT TO EXTRACT FROM COLOSSEUM",x+28,y+58)
-    g.setColor(0.72,0.75,0.70,1);printWrapped(g,"Choose which components to extract from the Pokemon Colosseum disc. Full extraction includes all environments, trainers, and battle elements. Pokemon-only extracts only the 3D Pokemon models for battles.",x+28,y+90,panelW-56)
-    
-    local buttons=modeSelectionButtons(modes)
-    for i,mode in ipairs(modes) do
-      local r=buttons[mode.id]
-      local isSelected=mode.id==selectedMode
-      g.setColor(isSelected and 0.54 or 0.13,isSelected and 0.50 or 0.15,isSelected and 0.26 or 0.13,1)
-      g.rectangle("fill",r.x,r.y,r.w,r.h,5,5)
-      g.setColor(0.84,0.84,0.75,1);g.print(mode.label,r.x+12,r.y+9)
-      g.setColor(0.68,0.71,0.66,1);printWrapped(g,mode.description,r.x+12,r.y+24,r.w-24)
-    end
-    
-    g.setColor(0.58,0.62,0.57,1);g.print("Press [1-3] to select, [ENTER] to confirm, [ESC] to use current setting",x+28,y+450)
-    endFrame(g)
-  end)
-  if not ok then U.disabled=true return false end
-  return true
-end
-
 local function isDown(key)
   if not (love and love.keyboard and type(love.keyboard.isDown)=="function") then return false end
   local ok,v=pcall(love.keyboard.isDown,key);return ok and v==true
@@ -206,49 +166,6 @@ function U.finish(state,message)
   if not U.active then return end
   local label=tostring(state or "CACHE BUILD COMPLETE")
   draw(label,7,7,true,message or state)
-end
-
--- Prompt user to select extraction mode
-function U.promptMode(modes,currentMode)
-  if not modeSelectionFrame(modes,currentMode) then return currentMode end
-  local selectedMode=currentMode
-  local buttons=modeSelectionButtons(modes)
-  local armedAt=((love.timer and love.timer.getTime and love.timer.getTime()) or os.clock())+0.20
-  while true do
-    local now=(love.timer and love.timer.getTime and love.timer.getTime()) or os.clock()
-    -- Redraw the UI frame to keep it visible
-    modeSelectionFrame(modes,selectedMode)
-    if love.event and love.event.pump then pcall(love.event.pump) end
-    if love.event and type(love.event.poll)=="function" then
-      local ok,iter=pcall(love.event.poll)
-      if ok and iter then
-        for name,a,b,c in iter do
-          if name=="quit" then return currentMode end
-          if now==nil then now=(love.timer and love.timer.getTime and love.timer.getTime()) or os.clock() end
-          if name=="mousepressed" and tonumber(c or 1)==1 then
-            local action=actionAt(a,b,buttons);if action and now>=armedAt then selectedMode=action;return selectedMode end
-          elseif name=="touchpressed" then
-            local action=actionAt(b,c,buttons);if action and now>=armedAt then selectedMode=action;return selectedMode end
-          elseif name=="keypressed" then
-            if a=="1" and modes[1] then selectedMode=modes[1].id;return selectedMode end
-            if a=="2" and modes[2] then selectedMode=modes[2].id;return selectedMode end
-            if a=="3" and modes[3] then selectedMode=modes[3].id;return selectedMode end
-            if a=="return" or a=="kpenter" then return selectedMode end
-            if a=="escape" then return currentMode end
-          end
-        end
-      end
-    end
-    local r=isDown("1") and modes[1] and modes[1].id
-    local g=isDown("2") and modes[2] and modes[2].id
-    local b=isDown("3") and modes[3] and modes[3].id
-    if r then selectedMode=r;return selectedMode end
-    if g then selectedMode=g;return selectedMode end
-    if b then selectedMode=b;return selectedMode end
-    if isDown("return") or isDown("kpenter") then return selectedMode end
-    if isDown("escape") then return currentMode end
-    pcall(love.timer.sleep,0.02)
-  end
 end
 
 -- Startup is synchronous, so a failed first-run build needs its own tiny event
