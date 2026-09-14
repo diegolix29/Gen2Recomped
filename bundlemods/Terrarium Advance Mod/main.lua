@@ -1551,28 +1551,39 @@ SettingsMenu.rows = function(catId, game)
   
   -- Add jump key row to the "world" category
   if catId == "world" then
-    local jumpRow = {
-      id = "DRAMATIC_SHAPE:jumpKey",
-      label = "JUMP KEY",
-      value = function()
-        -- Use _G.keyBindingState to ensure we access the global
-        local state = _G.keyBindingState or { active = false }
-        if state.active then
-          return "PRESS BUTTON..."
-        end
-        local binding = getJumpKey()
-        local bindingType, key = parseJumpKey(binding)
-        return (bindingType:upper() .. ":" .. key:upper())
-      end,
-      activate = function(game)
-        if _G.keyBindingState then
-          _G.keyBindingState.active = true
-          _G.keyBindingState.justActivated = true
-          _G.keyBindingState.bindingType = nil
-        end
-      end,
-    }
-    table.insert(out, jumpRow)
+    -- Check if jump key row already exists to prevent duplicates
+    local jumpKeyExists = false
+    for _, row in ipairs(out) do
+      if row.id == "DRAMATIC_SHAPE:jumpKey" then
+        jumpKeyExists = true
+        break
+      end
+    end
+    
+    if not jumpKeyExists then
+      local jumpRow = {
+        id = "DRAMATIC_SHAPE:jumpKey",
+        label = "JUMP KEY",
+        value = function()
+          -- Use _G.keyBindingState to ensure we access the global
+          local state = _G.keyBindingState or { active = false }
+          if state.active then
+            return "PRESS BUTTON..."
+          end
+          local binding = getJumpKey()
+          local bindingType, key = parseJumpKey(binding)
+          return (bindingType:upper() .. ":" .. key:upper())
+        end,
+        activate = function(game)
+          if _G.keyBindingState then
+            _G.keyBindingState.active = true
+            _G.keyBindingState.justActivated = true
+            _G.keyBindingState.bindingType = nil
+          end
+        end,
+      }
+      table.insert(out, jumpRow)
+    end
   end
   return out
 end
@@ -2270,11 +2281,18 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
     local row = captureRow(out, id)
     -- a pipeline the registry refused is simply not there, and the menu says
     -- so by not offering it rather than by offering a hole
-    if row then captured[#captured + 1] = row end
+    if row then 
+      captured[#captured + 1] = row 
+      if mod.log then mod.log:info("Captured pipeline row: " .. tostring(id) .. " with label: " .. tostring(row.label)) end
+    else
+      if mod.log then mod.log:warn("Failed to capture pipeline row: " .. tostring(id)) end
+    end
     if id == "pipeline:" .. PIPE_VOXEL then voxelRow = row end
     dropRow(out, id)
   end
   SettingsMenu.setPipelineRows(captured)
+  
+  if mod.log then mod.log:info("Pipeline rows set: " .. #captured .. " rows, voxelRow label: " .. tostring(voxelRow and voxelRow.label or "nil")) end
 
   -- ------- one row, and it leads the list (restored from DRAMATIC_SHAPE)
   --
@@ -2288,17 +2306,29 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
   -- second line is VOXEL's own value function, which makes the row say what
   -- the mode is currently doing without opening it -- and reuses the engine's
   -- label ladder rather than restating it.
-  table.insert(out, 1, {
-    id = SettingsMenu.id(SettingsMenu.ROOT),
-    label = SettingsMenu.ROOT_LABEL,
-    value = voxelRow and voxelRow.value or nil,
-    -- `activate` and not `step`: the engine fires activate on A alone, and a
-    -- row that OPENS something should not also answer Left and Right
-    -- (src/ui/OptionsMenu.update).
-    activate = function(g)
-      g.stack:push(SettingsMenu.new(g, SettingsMenu.ROOT))
-    end,
-  })
+  --
+  -- Check for duplicates before inserting to prevent multiple copies
+  local alreadyExists = false
+  for _, row in ipairs(out) do
+    if row.id == SettingsMenu.id(SettingsMenu.ROOT) then
+      alreadyExists = true
+      break
+    end
+  end
+  
+  if not alreadyExists then
+    table.insert(out, 1, {
+      id = SettingsMenu.id(SettingsMenu.ROOT),
+      label = SettingsMenu.ROOT_LABEL,
+      value = voxelRow and voxelRow.value or nil,
+      -- `activate` and not `step`: the engine fires activate on A alone, and a
+      -- row that OPENS something should not also answer Left and Right
+      -- (src/ui/OptionsMenu.update).
+      activate = function(g)
+        g.stack:push(SettingsMenu.new(g, SettingsMenu.ROOT))
+      end,
+    })
+  end
 
   -- The three rows below live on the ENGINE's own list rather than tucked
   -- one level down inside the mod's settings screen: each is a piece of
@@ -2308,15 +2338,27 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
   -- these three modules is optional, so each is reached through pcall: a
   -- fault in "is there a Stadium ROM" must not cost the rest of this hook.
   -- (restored from DRAMATIC_SHAPE)
+  -- Helper function to check if a row with the same id already exists
+  local function rowExists(id)
+    for _, row in ipairs(out) do
+      if row.id == id then return true end
+    end
+    return false
+  end
+  
   local okPick, importRow = pcall(function()
     return V.require("StadiumRomPick").row()
   end)
-  if okPick and importRow then table.insert(out, importRow) end
+  if okPick and importRow and not rowExists(importRow.id) then 
+    table.insert(out, importRow) 
+  end
 
   local okPick2, importRow2 = pcall(function()
     return V.require("Stadium2RomPick").row()
   end)
-  if okPick2 and importRow2 then table.insert(out, importRow2) end
+  if okPick2 and importRow2 and not rowExists(importRow2.id) then 
+    table.insert(out, importRow2) 
+  end
 
   local okMewtwo, mewtwoRow = pcall(function()
     local StadiumInstall = V.require("StadiumInstall")
@@ -2326,7 +2368,9 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
     end
     return nil
   end)
-  if okMewtwo and mewtwoRow then table.insert(out, mewtwoRow) end
+  if okMewtwo and mewtwoRow and not rowExists(mewtwoRow.id) then 
+    table.insert(out, mewtwoRow) 
+  end
 
   local okFollower, followerRow = pcall(function()
     local StadiumInstall = V.require("StadiumInstall")
@@ -2336,7 +2380,9 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
     end
     return nil
   end)
-  if okFollower and followerRow then table.insert(out, followerRow) end
+  if okFollower and followerRow and not rowExists(followerRow.id) then 
+    table.insert(out, followerRow) 
+  end
 
   local okWilds, wildsRow = pcall(function()
     local StadiumInstall = V.require("StadiumInstall")
@@ -2346,7 +2392,9 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
     end
     return nil
   end)
-  if okWilds and wildsRow then table.insert(out, wildsRow) end
+  if okWilds and wildsRow and not rowExists(wildsRow.id) then 
+    table.insert(out, wildsRow) 
+  end
 
   return out
 end)
