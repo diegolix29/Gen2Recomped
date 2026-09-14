@@ -329,6 +329,10 @@ local StadiumWilds = V.require("StadiumWilds")
 -- engine's OPTIONS list. See "the mode's rows" section below for how it
 -- is wired back in.
 local SettingsMenu = V.require("SettingsMenu")
+
+-- Cache for pipeline rows to avoid duplicate capture issues
+local cachedPipelineRows = nil
+
 -- restored: HORDE MODE, the konami code's minigame. Horde owns the state
 -- machine and every hook; the other three are the gun, the crowd/readout
 -- and the chip-synthesized sounds it fires. See lib/Horde.lua.
@@ -1268,7 +1272,7 @@ local SETTINGS = {
     .. "switches the blind roll off, so what you fight is what you walked "
     .. "into; MIX leaves it on as well; OFF is the dice alone.",
     full = true, cat = "wildlife" },
-  -- ------- Follower system settings (ported from VOXEL_ULTIMATE)
+  -- ------- Follower system settings (displayed with wildlife for visibility)
   --
   -- These control how the party follower behaves: who controls it,
   -- whether the trainer trails behind when controlling pokemon, and
@@ -1277,17 +1281,17 @@ local SETTINGS = {
     "Who controls the follower: TRAINER (you walk, the Pokemon follows) "
     .. "or POKÉMON (you control the Pokemon directly). POKÉMON mode can "
     .. "also show the trainer trailing behind with TRAINER TRAIL.",
-    cat = "followers" },
+    cat = "wildlife" },
   { trainerTrailSetting,
     "When controlling the Pokémon directly, the trainer trails behind. "
     .. "OFF keeps the trainer at the camera; ON adds the trainer sprite "
     .. "following the controlled Pokémon.",
-    cat = "followers" },
+    cat = "wildlife" },
   { followerCountSetting,
     "How many extra party members follow in a pack (0–6). 0 is just the "
     .. "primary follower; higher values add more party members in a line. "
     .. "Only applies in POKÉMON control mode without TRAINER TRAIL.",
-    cat = "followers" },
+    cat = "wildlife" },
   -- Only offered while something is out there to count. With WILD OFF the
   -- number of them is zero whatever this says, and a row that no longer
   -- decides anything is worse than no row.
@@ -2277,22 +2281,42 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
   -- DRAMATIC_SHAPE): captured as the engine built them, then dropped from
   -- here so they are not in two places.
   local captured, voxelRow = {}, nil
-  for _, id in ipairs({ "pipeline:" .. PIPE_VOXEL, "pipeline:" .. PIPE_TILT }) do
-    local row = captureRow(out, id)
-    -- a pipeline the registry refused is simply not there, and the menu says
-    -- so by not offering it rather than by offering a hole
-    if row then 
-      captured[#captured + 1] = row 
-      if mod.log then mod.log:info("Captured pipeline row: " .. tostring(id) .. " with label: " .. tostring(row.label)) end
-    else
-      if mod.log then mod.log:warn("Failed to capture pipeline row: " .. tostring(id)) end
-    end
-    if id == "pipeline:" .. PIPE_VOXEL then voxelRow = row end
-    dropRow(out, id)
-  end
-  SettingsMenu.setPipelineRows(captured)
   
-  if mod.log then mod.log:info("Pipeline rows set: " .. #captured .. " rows, voxelRow label: " .. tostring(voxelRow and voxelRow.label or "nil")) end
+  -- Check if pipeline rows have already been captured (idempotent check)
+  local alreadyProcessed = false
+  for _, row in ipairs(out) do
+    if row.id == SettingsMenu.id(SettingsMenu.ROOT) then
+      alreadyProcessed = true
+      break
+    end
+  end
+  
+  if not alreadyProcessed then
+    for _, id in ipairs({ "pipeline:" .. PIPE_VOXEL, "pipeline:" .. PIPE_TILT }) do
+      local row = captureRow(out, id)
+      -- a pipeline the registry refused is simply not there, and the menu says
+      -- so by not offering it rather than by offering a hole
+      if row then 
+        captured[#captured + 1] = row 
+        print("Captured pipeline row: " .. tostring(id) .. " with label: " .. tostring(row.label))
+      else
+        print("Failed to capture pipeline row: " .. tostring(id))
+      end
+      if id == "pipeline:" .. PIPE_VOXEL then voxelRow = row end
+      dropRow(out, id)
+    end
+    SettingsMenu.setPipelineRows(captured)
+    cachedPipelineRows = captured  -- Cache for idempotency
+    print("Pipeline rows set: " .. #captured .. " rows, voxelRow label: " .. tostring(voxelRow and voxelRow.label or "nil"))
+  else
+    print("Pipeline rows already processed, skipping capture - using cached pipeline rows")
+    -- Use cached pipeline rows from module-level cache
+    captured = cachedPipelineRows or {}
+    for _, row in ipairs(captured) do
+      if row.id == "pipeline:" .. PIPE_VOXEL then voxelRow = row break end
+    end
+    print("Using cached pipeline rows: " .. #captured .. " rows, voxelRow label: " .. tostring(voxelRow and voxelRow.label or "nil"))
+  end
 
   -- ------- one row, and it leads the list (restored from DRAMATIC_SHAPE)
   --

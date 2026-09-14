@@ -171,6 +171,13 @@ function SettingsMenu.setPipelineRows(rows)
   pipelineRows = rows or {}
 end
 
+function SettingsMenu.getPipelineRows()
+  return pipelineRows
+end
+
+-- Export getPipelineRows to V namespace for main.lua access
+V.getPipelineRows = SettingsMenu.getPipelineRows
+
 -- ------- a step here has the same consequences as a step anywhere
 --
 -- Two of these settings PIN something else when they change: 3D-BTL holds
@@ -212,18 +219,17 @@ function SettingsMenu.rows(catId, game)
   local full = isFull()
   local out = {}
   if catId == SettingsMenu.ROOT then
-    -- Debug: log pipeline rows
-    if V.mod and V.mod.log then
-      V.mod.log:info("ROOT menu: " .. #pipelineRows .. " pipeline rows available")
+    -- Debug: print pipeline rows
+    print("ROOT menu: " .. #pipelineRows .. " pipeline rows available")
+    for _, row in ipairs(pipelineRows) do
+      print("  Available pipeline row: " .. tostring(row.id) .. " (" .. tostring(row.label) .. ")")
     end
     for _, row in ipairs(pipelineRows) do
       -- FULL owns the blur exactly as it owns the wireframe and the horizon
       -- bend, so T-SHIFT comes off with them
       if not (full and row.id == "pipeline:tiltshift") then
         out[#out + 1] = row
-        if V.mod and V.mod.log then
-          V.mod.log:info("Added pipeline row to ROOT: " .. tostring(row.id))
-        end
+        print("Added pipeline row to ROOT: " .. tostring(row.id) .. " (" .. tostring(row.label) .. ")")
       end
     end
     -- ------- settings that belong to no category
@@ -410,14 +416,12 @@ function SettingsMenu.new(game, catId)
   self.scroll = 0
   self.index = 1
   
-  -- Debug: log the rows that were created
-  if V.mod and V.mod.log then
-    V.mod.log:info("SettingsMenu.new created for " .. tostring(catId) .. " with " .. #self.rows .. " rows")
-    for i, row in ipairs(self.rows) do
-      V.mod.log:info("  Row " .. i .. ": " .. tostring(row.id) .. " (" .. tostring(row.label) .. ")")
-    end
-    V.mod.log:info("Forced scroll to 0, index to 1 to ensure first row is visible")
+  -- Debug: print the rows that were created
+  print("SettingsMenu.new created for " .. tostring(catId) .. " with " .. #self.rows .. " rows")
+  for i, row in ipairs(self.rows) do
+    print("  Row " .. i .. ": " .. tostring(row.id) .. " (" .. tostring(row.label) .. ")")
   end
+  print("Forced scroll to 0, index to 1 to ensure first row is visible")
   
   return self
 end
@@ -460,10 +464,8 @@ function SettingsMenu:refresh()
   self.rows, self.sig = rows, sig
   self.index, self.scroll = 1, 0
   
-  -- Debug: log refresh
-  if V.mod and V.mod.log then
-    V.mod.log:info("SettingsMenu refresh: " .. #rows .. " rows, index=" .. self.index .. ", scroll=" .. self.scroll)
-  end
+  -- Debug: print refresh
+  print("SettingsMenu refresh: " .. #rows .. " rows, index=" .. self.index .. ", scroll=" .. self.scroll)
   
   if wasBack then
     self.index = #rows + 1

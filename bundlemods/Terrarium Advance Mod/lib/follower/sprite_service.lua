@@ -61,6 +61,70 @@ local function is32BitStyle(style)
   return style == "redpp" or style == "pokemmo" or style == "hgss" or style == "fullcolor"
 end
 
+--- Try to load the battle front sprite as fallback for follower
+function SpriteService:_tryBattleSpriteFallback(species, variant, game)
+  if not species then return nil end
+  
+  print("SpriteService._tryBattleSpriteFallback: Attempting battle sprite fallback for", species)
+  
+  -- Try to get game data
+  local data = game and game.data
+  if not data then
+    -- Try to get game instance
+    local okGame, Game = pcall(V.require, "src.core.Game")
+    if okGame and Game and Game.get then
+      local currentGame = Game:get()
+      data = currentGame and currentGame.data
+    end
+  end
+  
+  if not data then
+    print("SpriteService._tryBattleSpriteFallback: No game data available")
+    return nil
+  end
+  
+  -- Try to get the Pokemon definition to find the sprite path
+  local pokemonDef = data.pokemon and data.pokemon[species]
+  if not pokemonDef then
+    print("SpriteService._tryBattleSpriteFallback: Could not find Pokemon definition for", species)
+    return nil
+  end
+  
+  -- Try to get the front sprite path from the Pokemon definition
+  local spritePath = pokemonDef.spriteFront
+  if not spritePath or spritePath == "" then
+    print("SpriteService._tryBattleSpriteFallback: No spriteFront defined for", species)
+    return nil
+  end
+  
+  -- Try to load the image
+  local okImage, Assets = pcall(V.require, "src.render.Assets")
+  if not okImage or not Assets then
+    print("SpriteService._tryBattleSpriteFallback: Could not access Assets module")
+    return nil
+  end
+  
+  local image = Assets.image(spritePath)
+  if not image then
+    print("SpriteService._tryBattleSpriteFallback: Could not load sprite image from", spritePath)
+    return nil
+  end
+  
+  print("SpriteService._tryBattleSpriteFallback: Successfully loaded battle sprite fallback for", species, "from", spritePath)
+  
+  -- Return as a follower sprite definition
+  return {
+    id = "SPRITE_WILDS_FOLLOWER_BATTLE_FALLBACK_" .. tostring(species),
+    image = image,
+    frames = 1,  -- Battle sprites are typically single-frame
+    walker = false,  -- Battle sprites don't have walking animation
+    trueColor = true,  -- Battle sprites are typically true color
+    providerId = "battle_fallback",
+    role = "primary",
+    surface = "land",
+  }
+end
+
 function SpriteService.new(mod, opts)
   opts = opts or {}
   local self = setmetatable({}, SpriteService)
@@ -181,6 +245,12 @@ function SpriteService:resolveFollowerSprite(opts)
         surface = "land",
       }
     end
+  end
+
+  -- Fallback to species battle front sprite when no dedicated follower sprite exists
+  local battleSpriteFallback = self:_tryBattleSpriteFallback(species, variant, game)
+  if battleSpriteFallback then
+    return battleSpriteFallback
   end
 
   return {

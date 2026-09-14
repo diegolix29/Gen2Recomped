@@ -4488,7 +4488,31 @@ local function installVerifiedOptions(mod)
       default=true,
     }
   end
-  mod.options:define(optionDefs)
+  
+  -- Check if options are already defined (by main.lua) and merge instead of replace
+  local existingOptions = mod.options and mod.options._defs
+  if existingOptions and type(existingOptions) == "table" and #existingOptions > 0 then
+    -- Merge UI options with existing options
+    for _, uiOption in ipairs(optionDefs) do
+      -- Check if this key already exists
+      local keyExists = false
+      for _, existing in ipairs(existingOptions) do
+        if existing.key == uiOption.key then
+          keyExists = true
+          break
+        end
+      end
+      -- Only add if key doesn't exist
+      if not keyExists then
+        table.insert(existingOptions, uiOption)
+      end
+    end
+    -- Redefine with merged options
+    mod.options:define(existingOptions)
+  else
+    -- No existing options, define normally
+    mod.options:define(optionDefs)
+  end
 
   if mod.log then
     mod.log:info("Colosseum Inspired UI Overhaul: options registered")

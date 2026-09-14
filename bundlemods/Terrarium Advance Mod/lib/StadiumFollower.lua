@@ -19,6 +19,9 @@ local StadiumFollower = {}
 -- Cache for loaded follower rigs
 local rigCache = {}
 
+-- Cache for loaded follower sprites
+local spriteCache = {}
+
 -- Current follower species (nil = disabled, 1-151 = dex number)
 local currentSpecies = nil
 
@@ -65,6 +68,8 @@ end
 -- Current rig and model
 local currentRig = nil
 local currentModel = nil
+local currentSprite = nil
+local usingSpriteFallback = false
 
 -- Animation state
 local animTime = 0
@@ -75,19 +80,108 @@ local currentAnim = 1  -- 1 = idle
 -- Scale for the follower model (smaller than player)
 local FOLLOWER_SCALE = 0.9  -- 0.3 * 3 = 0.9 (3x larger)
 
+-- Load a sprite as fallback for follower
+local function loadSpriteFallback(dex)
+  if not dex then return false, "no dex number" end
+  
+  print("StadiumFollower.loadSpriteFallback: Attempting to load sprite for dex", dex)
+  
+  -- Check sprite cache first
+  if spriteCache[dex] then
+    currentSprite = spriteCache[dex]
+    currentSpecies = dex
+    usingSpriteFallback = true
+    print("StadiumFollower.loadSpriteFallback: Loaded sprite from cache")
+    return true
+  end
+  
+  -- Try to get Pokemon data to find the sprite path
+  local ok, game = pcall(function() return V.require("src.core.Game") end)
+  if not ok or not game then
+    print("StadiumFollower.loadSpriteFallback: Could not access Game module")
+    return false, "could not access game data"
+  end
+  
+  local currentGame = game.get and game:get()
+  if not currentGame then
+    print("StadiumFollower.loadSpriteFallback: Could not get current game instance")
+    return false, "could not get game instance"
+  end
+  
+  local data = currentGame.data
+  if not data then
+    print("StadiumFollower.loadSpriteFallback: No game data available")
+    return false, "no game data"
+  end
+  
+  -- Try to get species name from dex number
+  local species = nil
+  if data.pokemon then
+    for speciesId, def in pairs(data.pokemon) do
+      if def and def.dex == dex then
+        species = speciesId
+        break
+      end
+    end
+  end
+  
+  if not species then
+    print("StadiumFollower.loadSpriteFallback: Could not find species for dex", dex)
+    return false, "could not find species"
+  end
+  
+  -- Try to get the Pokemon definition to find the sprite path directly
+  local pokemonDef = data.pokemon and data.pokemon[species]
+  if not pokemonDef then
+    print("StadiumFollower.loadSpriteFallback: Could not find Pokemon definition for", species)
+    return false, "could not find pokemon definition"
+  end
+  
+  -- Try to get the front sprite path from the Pokemon definition
+  local spritePath = pokemonDef.spriteFront
+  if not spritePath or spritePath == "" then
+    print("StadiumFollower.loadSpriteFallback: No spriteFront defined for", species)
+    return false, "no sprite front defined"
+  end
+  
+  -- Try to load the image
+  local okImage, Assets = pcall(function() return V.require("src.render.Assets") end)
+  if not okImage or not Assets then
+    print("StadiumFollower.loadSpriteFallback: Could not access Assets module")
+    return false, "could not access assets"
+  end
+  
+  local image = Assets.image(spritePath)
+  if not image then
+    print("StadiumFollower.loadSpriteFallback: Could not load sprite image from", spritePath)
+    return false, "could not load sprite image"
+  end
+  
+  -- Cache the sprite
+  spriteCache[dex] = image
+  currentSprite = image
+  currentSpecies = dex
+  usingSpriteFallback = true
+  
+  print("StadiumFollower.loadSpriteFallback: Successfully loaded sprite fallback from", spritePath)
+  return true
+end
+
 -- ------- Species Management
 
 -- Set the follower species by dex number (1-151)
 function StadiumFollower.setSpecies(dex)
   if dex == currentSpecies then return true end
   
-  -- Clear current rig
+  -- Clear current rig and sprite
   if currentRig then
     currentRig:release()
     currentRig = nil
   end
   currentModel = nil
+  currentSprite = nil
   currentSpecies = nil
+  usingSpriteFallback = false
   
   if not dex or dex < 1 or dex > 151 then
     -- Save the disabled state
@@ -95,51 +189,65 @@ function StadiumFollower.setSpecies(dex)
     return true  -- Disabled
   end
   
-  -- Check cache first
+  -- Check 3D model cache first
   if rigCache[dex] then
     currentRig = rigCache[dex]
     currentModel = currentRig.model
     currentSpecies = dex
+    usingSpriteFallback = false
     -- Save the enabled state
     writeMarker(dex)
     return true
   end
   
-  -- Full DSM3 packs from either ROM install are read by StadiumPack.
+  -- Check sprite cache first
+  if spriteCache[dex] then
+    currentSprite = spriteCache[dex]
+    currentSpecies = dex
+    usingSpriteFallback = true
+    -- Save the enabled state
+    writeMarker(dex)
+    return true
+  end
+  
+  -- Try to load the 3D Stadium model first
   local model = StadiumPack.load(dex, false)
   
-  if not model then
-    print("StadiumFollower: Failed to load model for dex", dex)
-    return false
+  if model and not model.staticPose then
+    -- Create the rig
+    local rig = StadiumRig.new(model)
+    if rig then
+      -- Cache and set current
+      rigCache[dex] = rig
+      currentRig = rig
+      currentModel = model
+      currentSpecies = dex
+      usingSpriteFallback = false
+      
+      -- Save the enabled state
+      writeMarker(dex)
+      
+      -- Start idle animation
+      rig:pose(1, 0, true)
+      rig:skin(0)
+      
+      print("StadiumFollower: Loaded 3D follower dex", dex)
+      return true
+    end
   end
   
-  if model.staticPose then
-    print("StadiumFollower: Model has static pose, declining dex", dex)
-    return false
+  -- If 3D model failed, try sprite fallback
+  print("StadiumFollower: 3D model unavailable for dex", dex, ", trying sprite fallback")
+  local spriteOk, spriteErr = loadSpriteFallback(dex)
+  if spriteOk then
+    -- Save the enabled state
+    writeMarker(dex)
+    print("StadiumFollower: Loaded sprite fallback for dex", dex)
+    return true
+  else
+    print("StadiumFollower: Sprite fallback also failed:", spriteErr)
+    return false, "could not load 3D model or sprite: " .. tostring(spriteErr)
   end
-  
-  -- Create the rig
-  local rig = StadiumRig.new(model)
-  if not rig then
-    print("StadiumFollower: Failed to create rig for dex", dex)
-    return false
-  end
-  
-  -- Cache and set current
-  rigCache[dex] = rig
-  currentRig = rig
-  currentModel = model
-  currentSpecies = dex
-  
-  -- Save the enabled state
-  writeMarker(dex)
-  
-  -- Start idle animation
-  rig:pose(1, 0, true)
-  rig:skin(0)
-  
-  print("StadiumFollower: Loaded follower dex", dex)
-  return true
 end
 
 -- Get the current follower species
@@ -157,19 +265,12 @@ function StadiumFollower.loadSaved()
   local saved = readMarker()
   if saved and saved > 0 then
     print("StadiumFollower: Loading saved follower dex", saved)
-    -- Check if Stadium models are available first
-    local okInstall, StadiumInstall = pcall(V.require, "StadiumInstall")
-    if okInstall and StadiumInstall and StadiumInstall.available() then
-      local ok = StadiumFollower.setSpecies(saved)
-      if ok then
-        print("StadiumFollower: Successfully loaded saved follower")
-      else
-        print("StadiumFollower: Failed to load saved follower")
-      end
+    -- setSpecies now handles both 3D model and sprite fallback internally
+    local ok = StadiumFollower.setSpecies(saved)
+    if ok then
+      print("StadiumFollower: Successfully loaded saved follower")
     else
-      print("StadiumFollower: Stadium models not available, deferring load")
-      -- Store for later loading when models become available
-      StadiumFollower.deferredLoad = saved
+      print("StadiumFollower: Failed to load saved follower")
     end
   else
     print("StadiumFollower: No saved follower or disabled")
@@ -216,8 +317,14 @@ end
 -- x, y: world coordinates (pixel position)
 -- facing: direction the follower is facing ("up", "down", "left", "right")
 function StadiumFollower.draw(x, y, facing)
-  print("[StadiumFollower.draw] Called with x:", x, "y:", y, "facing:", facing, "currentRig:", currentRig ~= nil, "currentModel:", currentModel ~= nil)
+  print("[StadiumFollower.draw] Called with x:", x, "y:", y, "facing:", facing, "currentRig:", currentRig ~= nil, "currentModel:", currentModel ~= nil, "currentSprite:", currentSprite ~= nil, "usingSpriteFallback:", usingSpriteFallback)
   
+  -- Handle sprite fallback
+  if usingSpriteFallback and currentSprite then
+    return StadiumFollower.drawSprite(x, y, facing)
+  end
+  
+  -- Handle 3D model
   if not currentRig or not currentModel then return false end
 
   -- Calculate the model matrix
@@ -287,6 +394,34 @@ function StadiumFollower.draw(x, y, facing)
   return true
 end
 
+-- Draw the sprite fallback at the given position
+function StadiumFollower.drawSprite(x, y, facing)
+  if not currentSprite then
+    return false
+  end
+  
+  print("[StadiumFollower.drawSprite] Drawing sprite at x:", x, "y:", y, "facing:", facing)
+  
+  -- Try to use love.graphics for sprite rendering
+  local lg = love and love.graphics
+  if not lg then
+    print("[StadiumFollower.drawSprite] love.graphics not available")
+    return false
+  end
+  
+  lg.push()
+  lg.translate(x, y)
+  lg.scale(FOLLOWER_SCALE, FOLLOWER_SCALE)
+  
+  -- Draw sprite centered
+  local sw, sh = currentSprite:getDimensions()
+  lg.draw(currentSprite, -sw/2, -sh/2)
+  
+  lg.pop()
+  
+  return true
+end
+
 -- ------- Cleanup
 
 -- Clear all cached rigs
@@ -297,17 +432,28 @@ function StadiumFollower.clearCache()
     end
   end
   rigCache = {}
+  
+  -- Clear sprite cache
+  spriteCache = {}
+  
   currentRig = nil
   currentModel = nil
+  currentSprite = nil
   currentSpecies = nil
+  usingSpriteFallback = false
   animTime = 0
 end
 
 -- Check if a follower is currently loaded
 function StadiumFollower.loaded()
-  local result = currentRig ~= nil and currentModel ~= nil
-  print("[StadiumFollower.loaded] Returning:", result, "currentRig:", currentRig ~= nil, "currentModel:", currentModel ~= nil, "currentSpecies:", currentSpecies)
+  local result = (currentRig ~= nil and currentModel ~= nil) or (currentSprite ~= nil)
+  print("[StadiumFollower.loaded] Returning:", result, "currentRig:", currentRig ~= nil, "currentModel:", currentModel ~= nil, "currentSprite:", currentSprite ~= nil, "currentSpecies:", currentSpecies, "usingSpriteFallback:", usingSpriteFallback)
   return result
+end
+
+-- Check if the follower is using sprite fallback
+function StadiumFollower.isUsingSpriteFallback()
+  return usingSpriteFallback
 end
 
 return StadiumFollower
