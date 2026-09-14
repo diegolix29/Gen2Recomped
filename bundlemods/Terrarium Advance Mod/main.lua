@@ -3683,6 +3683,21 @@ local function initializeColosseumIntegration()
     if PokemonActors and type(PokemonActors.install) == "function" then
       pcall(PokemonActors.install, PokemonExtractorRef, openColosseumDisc, CurrentSpriteModels, PKXMetadataRef)
     end
+
+    -- Bridge the installed Colosseum actor service onto the MAIN mod
+    -- namespace. PokemonActors.lua (and everything else loaded above through
+    -- loadColosseumModule) received the separate `namespace` table as its
+    -- `local V = ...`, not this file's top-level V that StadiumWilds/
+    -- StadiumFollower/VoxelScene are loaded through. Calling V.require
+    -- ("PokemonActors") from that side would load a SECOND, independent copy
+    -- of the module -- fresh `scenes`/`extractor`/`discOpener` upvalues, never
+    -- installed above -- rather than reach this already-initialized one. A
+    -- plain field on the shared main V (read defensively, since Colosseum
+    -- support may be unavailable/uninstalled) is the same pattern mod.exports
+    -- already uses to cross this same namespace boundary elsewhere.
+    if PokemonActors and PokemonActors.service then
+      V.PokemonActors = PokemonActors
+    end
     if MoveFXExtractorRef and type(MoveFXExtractorRef.install) == "function" then
       pcall(MoveFXExtractorRef.install, mod, openColosseumDisc)
     end
@@ -3690,18 +3705,6 @@ local function initializeColosseumIntegration()
     if CurrentSpriteModels and type(CurrentSpriteModels.registerCapability) == "function" and PokemonActors and PokemonActors.service then
       pcall(CurrentSpriteModels.registerCapability,
         "COLOSSEUM_BATTLE_ENVIRONMENTS/pokemon", "battleActors", PokemonActors.service)
-    end
-
-    -- Publish the same PokemonActors capability for OVERWORLD consumers
-    -- (StadiumWilds/StadiumFollower/PlayerModel/RoamerStadium3D, all loaded
-    -- through V.require rather than this file's colosseumPackage loader).
-    -- Colosseum ships battle models for the complete 386-species Gen I-III
-    -- roster, unlike StadiumPack (1-151) / Stadium2Pack (1-251), so this is
-    -- how a Gen III game -- or a player who only imported the Colosseum disc
-    -- and no Stadium ROM -- gets any 3D overworld Pokemon at all. See
-    -- lib/ColosseumMon.lua for the consuming adapter.
-    if PokemonActors and PokemonActors.service then
-      mod.exports.pokemonActorsOverworld = PokemonActors.service
     end
     
     if CurrentSpriteModels and PokemonActors and not CurrentSpriteModels.__cbePokemonDebugWrapped then
