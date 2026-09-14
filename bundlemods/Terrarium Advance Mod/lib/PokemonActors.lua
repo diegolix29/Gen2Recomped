@@ -3663,6 +3663,32 @@ function A.prepareSessionModel(dex,variant,progress)
   return true,"prepared"
 end
 
+-- Load a Colosseum model for overworld rendering (followers, roamers, wildlife).
+-- Returns a lightweight handle whose `actor` is a full PokemonActors Actor,
+-- ready for Voxel3D matrix placement via OverworldColosseum.prepare().
+function A.loadOverworldModel(dex, variant)
+  variant=variant or "normal"
+  local n=dexNumber(dex)
+  if not n or not Dex.supported(n) then return nil end
+
+  local ok, actor, err = pcall(A.acquire, "overworld", n, variant, {
+    context={arena={figureScale=1.0}},
+  })
+  if not ok or not actor then return nil end
+
+  actor.spawnScale=1
+  pcall(actor.spawn, actor, 1)
+  pcall(actor.selectNativeSlot, actor, "idle")
+  pcall(actor.transition, actor, "idle")
+  actor.worldScale=(actor.worldScale or 1)*0.8
+
+  return {
+    dex=n,
+    variant=variant,
+    actor=actor,
+  }
+end
+
 -- The published capability. Registering it through CBE's own documented
 -- battleCompatibility host keeps discovery order-independent.
 A.service={

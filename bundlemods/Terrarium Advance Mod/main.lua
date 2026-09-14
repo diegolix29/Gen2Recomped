@@ -348,6 +348,9 @@ local Pokeball = V.require("Pokeball")
 local Follower = V.require("follower/init")
 -- Follower water compatibility module
 local FollowersWaterCompat = V.require("followers_water_compat")
+-- Colosseum overworld model support
+local OverworldColosseum = V.require("OverworldColosseum")
+V.OverworldColosseum = OverworldColosseum
 
 -- Follower settings rows
 local FollowerSettings = V.require("follower/settings")
@@ -3098,10 +3101,19 @@ local function installOverworldStadium()
     path = mod.path,
   }
   setmetatable(OverworldV, { __index = V })
+
+  -- Reuse the boot-time module so entity tags and the voxel renderer share one
+  -- tagged-table identity.  Loading a second copy here broke Colosseum rendering.
+  local OverworldColosseum = V.OverworldColosseum
+  if not OverworldColosseum then
+    mod.log:warn("OverworldColosseum not loaded at boot")
+  end
+
   function OverworldV.require(name)
     if name == "OverworldStadiumConfig" then return Config end
     if name == "PokemonHeights" then return PokemonHeights end
     if name == "PokemonLocomotion" then return PokemonLocomotion end
+    if name == "OverworldColosseum" then return V.OverworldColosseum end
     return V.require(name)
   end
 
@@ -3123,6 +3135,19 @@ local function installOverworldStadium()
     end
   else
     mod.log:warn("VoxelScenePatch not loaded: %s", tostring(patchErr))
+  end
+
+  -- Colosseum overworld models render through VoxelScenePatch (pose pipeline).
+  if OverworldColosseum then
+    OverworldColosseum.install()
+    mod.log:info("Pokemon Colosseum overworld renderer registered (voxel pose pipeline)")
+  end
+
+  local ColosseumWilds, colosseumWildsErr = loadLocal("lib/ColosseumWilds.lua", V)
+  if ColosseumWilds then
+    V.ColosseumWilds = ColosseumWilds
+  else
+    mod.log:warn("ColosseumWilds not loaded: %s", tostring(colosseumWildsErr))
   end
 
   -- Install battle animations

@@ -358,8 +358,14 @@ function AmbientPokemon:_bindSprite(npc, species, game)
   }, npc.id)
   if ok and sprite then
     npc.sprite = sprite
+    sprite._colosseumEntity = npc
     npc._ambientSpriteKey = tostring(species) .. "|" .. tostring(Config.spriteStyle(self.mod))
       .. "|" .. (def.trueColor ~= false and "1" or "0")
+    -- Tag for Colosseum 3D models if available
+    local ok, ow = pcall(V.require, "OverworldColosseum")
+    if ok and ow and ow.tag then
+      pcall(ow.tag, npc, species)
+    end
     return true
   end
   return false
