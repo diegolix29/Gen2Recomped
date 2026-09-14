@@ -13,6 +13,8 @@ local Stadium2Pack = V.require("Stadium2Pack")
 local StadiumRig = V.require("StadiumRig")
 local StadiumMon = V.require("StadiumMon")
 local Voxel3D = V.require("Voxel3D")
+local ColosseumMon = V.require("ColosseumMon")
+local ColosseumDex = V.require("ColosseumDex")
 
 local StadiumFollower = {}
 
@@ -53,7 +55,9 @@ local function readMarker()
   local format, dexStr = text:match("^(%S+)%s+(.+)$")
   if not format or format ~= StadiumFollower.FORMAT then return nil end
   local dex = tonumber(dexStr)
-  return dex and (dex > 0 and dex <= 151) and dex or nil
+  -- Was capped at 151 (StadiumPack's own range) before the Colosseum fallback
+  -- existed. Now covers the complete Gen I-III roster (see setSpecies below).
+  return dex and (dex > 0 and dex <= ColosseumDex.speciesCount) and dex or nil
 end
 
 -- Write the marker file with the current follower species
@@ -70,6 +74,10 @@ local currentRig = nil
 local currentModel = nil
 local currentSprite = nil
 local usingSpriteFallback = false
+-- Colosseum-backed follower state (used when dex is out of StadiumPack's
+-- 1-151 range, or no Stadium ROM is installed at all).
+local usingColosseum = false
+local colosseumVariant = "normal"
 
 -- Animation state
 local animTime = 0
@@ -80,7 +88,7 @@ local currentAnim = 1  -- 1 = idle
 -- Scale for the follower model (smaller than player)
 local FOLLOWER_SCALE = 0.9  -- 0.3 * 3 = 0.9 (3x larger)
 
--- Load a sprite as fallback for follower using the sprite service
+-- Load a sprite as fallback for follower
 local function loadSpriteFallback(dex)
   if not dex then return false, "no dex number" end
   
@@ -94,65 +102,6 @@ local function loadSpriteFallback(dex)
     print("StadiumFollower.loadSpriteFallback: Loaded sprite from cache")
     return true
   end
-  
-  -- Try to use the sprite service for proper fallback chain
-  local okSpriteService, SpriteService = pcall(function() return V.require("follower.sprite_service") end)
-  if okSpriteService and SpriteService then
-    -- Try to get mod instance for sprite service
-    local okMod, mod = pcall(function() return V.mod end)
-    if okMod and mod then
-      -- Create a sprite service instance
-      local okNew, svc = pcall(function() return SpriteService.new(mod, {}) end)
-      if okNew and svc then
-        -- Try to get species name from dex number
-        local species = nil
-        local okGame, game = pcall(function() return V.require("src.core.Game") end)
-        if okGame and game then
-          local currentGame = game.get and game:get()
-          if currentGame and currentGame.data and currentGame.data.pokemon then
-            for speciesId, def in pairs(currentGame.data.pokemon) do
-              if def and def.dex == dex then
-                species = speciesId
-                break
-              end
-            end
-          end
-        end
-        
-        -- Use the sprite service to resolve the follower sprite
-        local okResolve, def = pcall(function() 
-          return svc:resolveFollowerSprite({
-            species = species or tostring(dex),
-            shiny = false,
-            surface = "land",
-            role = "primary",
-            game = okGame and game and game.get and game:get(),
-          })
-        end)
-        
-        if okResolve and def and def.image then
-          -- Try to load the image
-          local okImage, Assets = pcall(function() return V.require("src.render.Assets") end)
-          if okImage and Assets then
-            local image = Assets.image(def.image)
-            if image then
-              -- Cache the sprite
-              spriteCache[dex] = image
-              currentSprite = image
-              currentSpecies = dex
-              usingSpriteFallback = true
-              
-              print("StadiumFollower.loadSpriteFallback: Successfully loaded sprite via sprite service from", def.image)
-              return true
-            end
-          end
-        end
-      end
-    end
-  end
-  
-  -- Fallback to original method if sprite service fails
-  print("StadiumFollower.loadSpriteFallback: Sprite service unavailable, trying direct load")
   
   -- Try to get Pokemon data to find the sprite path
   local ok, game = pcall(function() return V.require("src.core.Game") end)
@@ -241,15 +190,16 @@ function StadiumFollower.setSpecies(dex)
   currentSprite = nil
   currentSpecies = nil
   usingSpriteFallback = false
+  usingColosseum = false
   
-  if not dex or dex < 1 or dex > 151 then
+  if not dex or dex < 1 or dex > ColosseumDex.speciesCount then
     -- Save the disabled state
     writeMarker(nil)
     return true  -- Disabled
   end
   
   -- Check 3D model cache first
-  if rigCache[dex] then
+  if dex <= 151 and rigCache[dex] then
     currentRig = rigCache[dex]
     currentModel = currentRig.model
     currentSpecies = dex
@@ -269,8 +219,9 @@ function StadiumFollower.setSpecies(dex)
     return true
   end
   
-  -- Try to load the 3D Stadium model first
-  local model = StadiumPack.load(dex, false)
+  -- Try to load the 3D Stadium model first (StadiumPack only covers 1-151;
+  -- anything past that goes straight to the Colosseum fallback below).
+  local model = dex <= 151 and StadiumPack.load(dex, false) or nil
   
   if model and not model.staticPose then
     -- Create the rig
@@ -295,7 +246,20 @@ function StadiumFollower.setSpecies(dex)
     end
   end
   
-  -- If 3D model failed, try sprite fallback
+  -- Colosseum fallback: covers the complete 386-species Gen I-III roster,
+  -- so this is what makes a Gen III follower (dex 252-386) possible at all,
+  -- and it also catches a plain "no Stadium ROM imported" install.
+  if ColosseumMon.available(dex, "normal") then
+    currentSpecies = dex
+    usingSpriteFallback = false
+    usingColosseum = true
+    colosseumVariant = "normal"
+    writeMarker(dex)
+    print("StadiumFollower: Loaded Colosseum follower dex", dex)
+    return true
+  end
+  
+  -- If every 3D source failed, try sprite fallback
   print("StadiumFollower: 3D model unavailable for dex", dex, ", trying sprite fallback")
   local spriteOk, spriteErr = loadSpriteFallback(dex)
   if spriteOk then
@@ -364,6 +328,10 @@ end
 
 -- Update animation state
 function StadiumFollower.update(dt)
+  if usingColosseum then
+    ColosseumMon.update(currentSpecies, colosseumVariant, dt)
+    return
+  end
   if not currentRig then return end
   
   animTime = animTime + dt
@@ -383,6 +351,18 @@ function StadiumFollower.draw(x, y, facing)
     return StadiumFollower.drawSprite(x, y, facing)
   end
   
+  -- Handle Colosseum 3D model (dex outside StadiumPack's 1-151 range, or no
+  -- Stadium ROM installed at all)
+  if usingColosseum then
+    local fx, fz = ColosseumMon.towardFor(facing)
+    -- Camera-relative free-roam rotation isn't wired through ColosseumMon's
+    -- simpler toward-vector API yet; it draws facing the raw movement
+    -- direction in that mode, same as StadiumWilds' wild Pokemon already do.
+    local matrix = ColosseumMon.matrix(currentSpecies, colosseumVariant, x, 0, y, fx, fz)
+    if not matrix then return false end
+    return ColosseumMon.draw(currentSpecies, colosseumVariant, matrix)
+  end
+
   -- Handle 3D model
   if not currentRig or not currentModel then return false end
 
@@ -500,12 +480,14 @@ function StadiumFollower.clearCache()
   currentSprite = nil
   currentSpecies = nil
   usingSpriteFallback = false
+  usingColosseum = false
   animTime = 0
+  pcall(ColosseumMon.clearCache)
 end
 
 -- Check if a follower is currently loaded
 function StadiumFollower.loaded()
-  local result = (currentRig ~= nil and currentModel ~= nil) or (currentSprite ~= nil)
+  local result = (currentRig ~= nil and currentModel ~= nil) or (currentSprite ~= nil) or usingColosseum
   print("[StadiumFollower.loaded] Returning:", result, "currentRig:", currentRig ~= nil, "currentModel:", currentModel ~= nil, "currentSprite:", currentSprite ~= nil, "currentSpecies:", currentSpecies, "usingSpriteFallback:", usingSpriteFallback)
   return result
 end
