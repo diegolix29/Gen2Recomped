@@ -97,6 +97,8 @@ function Roamer.new(spriteDef, species, level, kind, cellX, cellY)
   self.stepFlip = false
   self.frozen = false
   self.wanders = true
+  -- Store species for Colosseum resolution
+  self.species = species
   -- Tag for Colosseum 3D models if available
   local ok, ow = pcall(V.require, "OverworldColosseum")
   if ok and ow and ow.tag then

@@ -219,8 +219,18 @@ function StadiumFollower.setSpecies(dex)
     return true
   end
   
-  -- Try to load the 3D Stadium model first (StadiumPack only covers 1-151;
-  -- anything past that goes straight to the Colosseum fallback below).
+  -- Try Colosseum models first (covers complete 1-386 roster)
+  if ColosseumMon.available(dex, "normal") then
+    currentSpecies = dex
+    usingSpriteFallback = false
+    usingColosseum = true
+    colosseumVariant = "normal"
+    writeMarker(dex)
+    print("StadiumFollower: Loaded Colosseum follower dex", dex)
+    return true
+  end
+  
+  -- Fall back to Stadium models if Colosseum isn't available
   local model = dex <= 151 and StadiumPack.load(dex, false) or nil
   
   if model and not model.staticPose then
@@ -241,12 +251,12 @@ function StadiumFollower.setSpecies(dex)
       rig:pose(1, 0, true)
       rig:skin(0)
       
-      print("StadiumFollower: Loaded 3D follower dex", dex)
+      print("StadiumFollower: Loaded Stadium follower dex", dex)
       return true
     end
   end
   
-  -- Colosseum fallback: covers the complete 386-species Gen I-III roster,
+  -- If every 3D source failed, try sprite fallback
   -- so this is what makes a Gen III follower (dex 252-386) possible at all,
   -- and it also catches a plain "no Stadium ROM imported" install.
   if ColosseumMon.available(dex, "normal") then

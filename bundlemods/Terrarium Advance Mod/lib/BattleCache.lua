@@ -17,12 +17,25 @@ local pendingTitle=nil
 local renderErrors=setmetatable({}, {__mode="k"})
 local runtime=setmetatable({}, {__mode="k"})
 local attempted=setmetatable({}, {__mode='k'})
+local overworldCacheEnabled=false
 local function clock()return love and love.timer and love.timer.getTime and love.timer.getTime() or os.clock()end
 local function req(n)return (V.engineRequire or require)(n)end
 function C.enabled(game,save)
   save=save or (game and game.save)
   local p=save and save.colosseumBattle
   return not (p and p.pokemonModelsEnabled==false)
+end
+
+function C.enableOverworldCache()
+  overworldCacheEnabled=true
+end
+
+function C.disableOverworldCache()
+  overworldCacheEnabled=false
+end
+
+function C.overworldCacheEnabled()
+  return overworldCacheEnabled
 end
 function C.plan()
   local rows={}
@@ -210,9 +223,9 @@ function State:update()
     end
     local firstStartupKey=self.reuseEligible and 'reuse' or 'startup'
     local keys
-    if self.startupRequest then keys={firstStartupKey,'quick','full','b'}
-    elseif self.reuseEligible then keys={'reuse','quick','full','b'}
-    else keys={'quick','full','b'} end
+    if self.startupRequest then keys={firstStartupKey,'quick','full','overworld','b'}
+    elseif self.reuseEligible then keys={'reuse','quick','full','overworld','b'}
+    else keys={'quick','full','overworld','b'} end
     if pressed('up') then self.choice=(self.choice-2)%#keys+1 end
     if pressed('down') then self.choice=self.choice%#keys+1 end
     for i,key in ipairs(keys) do
@@ -235,7 +248,12 @@ function State:update()
       elseif choice=='startup' and request then
         C.openStartup(game,request.save,request.onDone,request.newGame)
       elseif choice=='quick' then C.openQuick(game,save)
-      elseif choice=='full' then C.openFull(game,save) end
+      elseif choice=='full' then C.openFull(game,save)
+      elseif choice=='overworld' then 
+        -- Enable overworld cache and do full cache preparation
+        C.enableOverworldCache()
+        C.openFull(game,save)
+      end
     end
     return
   end
@@ -301,6 +319,14 @@ function State:update()
           end)
           if not result then return false,why end
           quickValidated[rowKey({dex=row.dex,variant=variant})]=A.sessionCacheIdentity()
+          
+          -- Also prepare overworld model if overworld cache is enabled
+          if overworldCacheEnabled and A.loadOverworldModel then
+            local okOverworld, overworldActor = pcall(A.loadOverworldModel, row.dex, variant)
+            if okOverworld and overworldActor then
+              -- Successfully loaded overworld model
+            end
+          end
         end
         return result,why
       end,'Preparing Dex '..tostring(row.dex))
@@ -558,6 +584,8 @@ end
 function C.install()
   if C.installed then return end
   C.installed=true
+  -- Enable overworld cache by default for Colosseum overworld models
+  C.enableOverworldCache()
   V.mod.hooks:wrap('render.hud',C.drawHud,20000)
   V.mod.hooks:wrap('ui.title_menu.items',function(next,game,items)
     items=next(game,items) or items

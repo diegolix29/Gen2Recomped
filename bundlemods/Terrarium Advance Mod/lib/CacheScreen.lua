@@ -114,6 +114,7 @@ function Screen.draw(s,w,h,inventory,now)
       labels={
         {'quick','QUICK START / 30 NEW','Team, caught, seen, nearby and level-relevant.'},
         {'full','FULL CATALOG','All 386 species, normal + shiny. Optional.'},
+        {'overworld','OVERWORLD CACHE','Prepare models for roamers, followers, and wild Pokemon.'},
         {'b','MAIN MENU','Leave now. Your existing cache stays saved.'}}
       if s.startupRequest then
         if s.reuseEligible then

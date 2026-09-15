@@ -3735,6 +3735,7 @@ local function initializeColosseumIntegration()
     -- lib/ColosseumMon.lua for the consuming adapter.
     if PokemonActors and PokemonActors.service then
       mod.exports.pokemonActorsOverworld = PokemonActors.service
+      V.PokemonActors = PokemonActors
     end
     
     if CurrentSpriteModels and PokemonActors and not CurrentSpriteModels.__cbePokemonDebugWrapped then
