@@ -176,10 +176,12 @@ end
 
 local function monMatrix(tex, x, groundY, z, mirror)
   local k = BattleBillboard.FULL_W / BattleBillboard.FULL_PIC
-  local w = BattleScene.GB_W * k
-  local h = BattleScene.GB_H * k
-  local ox = -((tex.ax / BattleScene.GB_W) - 0.5) * w
-  local oy = -((BattleScene.GB_H - tex.ay) / BattleScene.GB_H) * h
+  local CW = tex.cw or BattleScene.GB_W
+  local CH = tex.ch or BattleScene.GB_H
+  local w = CW * k
+  local h = CH * k
+  local ox = -((tex.ax / CW) - 0.5) * w
+  local oy = -((CH - tex.ay) / CH) * h
   local yaw = BattleBillboard.yawToward(x, z, Voxel3D.eye)
   local card = Mat4.mul(Mat4.translate(ox, oy, 0), Mat4.scale(w, h, 1))
   if mirror then card = Mat4.mul(Mat4.scale(-1, 1, 1), card) end
