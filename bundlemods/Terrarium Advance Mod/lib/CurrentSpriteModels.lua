@@ -538,12 +538,7 @@ local function stadiumActor(context,side)
     if P.modeId=="cbe:colosseum-pokemon" and V.BattleCache then V.BattleCache.noteRenderError(context.game,P.stadiumError) end
     return nil
   end
-  -- Special case: Flygon (dex 330) uses sprite fallback instead of 3D model
-  if dex==330 then
-    P.stadiumError="Flygon (dex 330) uses sprite fallback"
-    releaseStadiumActor(side,"sprite-fallback")
-    return nil
-  end
+
   -- Check if this is beyond Colosseum's supported range (dex > 386)
   if dex and dex > 386 then
     P.stadiumError="Colosseum ROMs only support Gen1-3 Pokemon (National Dex 1-386), dex "..tostring(dex).." is beyond supported range"

@@ -249,13 +249,33 @@ local function prepareOneFromCache(p, dex, dt)
     -- Try cache first
     local cached = modelCache[dex]
     if not cached then
-      -- Use the PokemonActors service (same as StadiumWilds.lua)
+      -- Use PokemonActors.acquire with Pokedex-style context (informationSurface)
+      -- This leverages the already-cached models and idle animations from ColosseumBattleEnvironments
       if PokemonActors.acquire then
-        local okActor, actor = pcall(PokemonActors.acquire, "overworld", dex, "normal", {})
+        local ctx = {
+          apiVersion = 1,
+          game = V.mod and V.mod.game,
+          battle = nil,
+          sides = { player = { battler = { species = dex } }, enemy = { battler = nil } },
+          phase = "information",
+          progress = 1,
+          groundY = 0,
+          services = {
+            cbeStandalone = true,
+            informationSurface = true,
+            informationAnimation = true
+          }
+        }
+        local okActor, actor = pcall(PokemonActors.acquire, PokemonActors, "cbe-idle-warm", dex, "normal", { context = ctx })
+        
         if okActor and actor then
-          actor.worldScale = (actor.worldScale or 1) * 0.8
+          -- Setup actor for overworld use
+          actor.spawnScale = 1
           pcall(actor.spawn, actor, 1)
-          pcall(actor.idle, actor)
+          pcall(actor.selectNativeSlot, actor, "idle")
+          pcall(actor.transition, actor, "idle")
+          actor.worldScale = (actor.worldScale or 1) * 0.8
+
           cached = { actor = actor, dex = dex }
           modelCache[dex] = cached
           slot = cached
@@ -270,7 +290,7 @@ local function prepareOneFromCache(p, dex, dt)
         reported["actor-load-fail"] = true
         local log = V.mod and V.mod.log
         if log and log.warn then
-          pcall(log.warn, log, "Colosseum: failed to load PokemonActors model for dex %d", dex)
+          pcall(log.warn, log, "Colosseum: failed to acquire PokemonActors actor for dex %d", dex)
         end
       end
       return false
@@ -493,6 +513,11 @@ end
 function OverworldColosseum.resolveDex(entity)
   if type(entity) ~= "table" then return nil end
 
+  local function remember(d)
+    if d and type(entity) == "table" then entityDexCache[entity] = d end
+    return d
+  end
+
   -- An explicit tag() call is authoritative developer intent (Roamer.lua,
   -- follower/control_engine.lua, ambient_pokemon.lua all call ow.tag(...)
   -- directly). It must win over every heuristic below -- in particular,
@@ -503,8 +528,7 @@ function OverworldColosseum.resolveDex(entity)
   if entity.id and taggedById[entity.id] then
     local idDex = taggedById[entity.id]
     if idDex ~= false and type(idDex) == "number" then
-      entityDexCache[entity] = idDex
-      return idDex
+      return remember(idDex)
     end
   end
 
@@ -512,48 +536,72 @@ function OverworldColosseum.resolveDex(entity)
   if direct ~= nil then
     if direct == false then return nil end
     if type(direct) == "number" then
-      entityDexCache[entity] = direct
-      return direct
+      return remember(direct)
     end
   end
 
-  -- Everything below is the untagged auto-detect fallback, which stays
-  -- deliberately conservative so it doesn't fight ColosseumWilds/StadiumWilds
-  -- for ambient/wandering Pokemon they already own.
+  -- Check cache
+  local cached = entityDexCache[entity]
+  if cached then return cached end
 
-  -- Skip wild entities - they're handled by StadiumWilds.lua
-  if entity.wildsAmbientPokemon or entity.ambientSpecies then
-    return nil
+  -- Use same resolution approach as OverworldStadium
+  -- Check entity fields for dex/species
+  local keys = {
+    "stadiumDex", "pokemonDex", "pokedex", "dexNo", "dexNumber",
+    "stadiumSpecies", "pokemonSpecies", "species", "dex"
+  }
+  for _, key in ipairs(keys) do
+    local d = speciesDex(entity[key])
+    if d then return remember(d) end
   end
 
-  -- Skip wandering NPCs - they're handled by other systems
-  if entity.wanders then
-    return nil
-  end
-
-  -- Only auto-detect entities from the current map. Check if entity ID
-  -- starts with the current map name.
-  local mod = V.mod
-  local map = mod and mod.world and mod.world.map
-  if map and map.id and entity.id then
-    local mapPrefix = map.id .. "_"
-    if not entity.id:find(mapPrefix, 1, true) then
-      -- Entity is from a different map, skip it
-      return nil
+  -- Check nested entity structures
+  for _, key in ipairs({ "def", "obj", "object", "objDef", "data", "event" }) do
+    local sub = entity[key]
+    if type(sub) == "table" then
+      for _, innerKey in ipairs(keys) do
+        local d = speciesDex(sub[innerKey])
+        if d then return remember(d) end
+      end
     end
   end
 
-  -- NEW FALLBACK: Try to get dex from sprite for entities on current map
-  -- This handles entities that have Pokemon sprites but weren't explicitly tagged
-  if entity.sprite and entity.sprite.dsSpecies then
-    local spriteDex = tonumber(entity.sprite.dsSpecies)
-    if spriteDex and spriteDex >= 1 and spriteDex <= 386 then
-      entityDexCache[entity] = spriteDex
-      return spriteDex
+  -- Try to resolve from entity sprite
+  if entity.sprite then
+    -- Check sprite dsSpecies (dex number used by sprite system)
+    if entity.sprite.dsSpecies then
+      local spriteDex = dexNumber(entity.sprite.dsSpecies)
+      if spriteDex then return remember(spriteDex) end
+    end
+
+    -- Check sprite species
+    if entity.sprite.species then
+      local spriteSpecies = entity.sprite.species
+      -- Handle engine species constants
+      if type(spriteSpecies) == "string" then
+        local match = spriteSpecies:match("^SPECIES_(%d+)$")
+        if match then
+          local dex = tonumber(match)
+          if dex and dex >= 1 and dex <= 386 then
+            return remember(dex)
+          end
+        end
+      end
+      -- Try species name resolution
+      local result = speciesDex(spriteSpecies)
+      if result then return remember(result) end
     end
   end
 
-  -- If not explicitly tagged and no sprite dex, return nil
+  -- Fallback to entity fields for roaming/follower Pokemon
+  local species = entity._wildsFollowerSpecies
+               or entity.ambientSpecies
+               or (entity.pokepcMon and entity.pokepcMon.species)
+  if species then
+    local result = speciesDex(species)
+    if result then return remember(result) end
+  end
+
   return nil
 end
 
