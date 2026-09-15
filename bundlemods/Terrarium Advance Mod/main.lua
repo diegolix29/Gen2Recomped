@@ -3119,6 +3119,15 @@ local function installOverworldStadium()
   end
   V.OverworldStadium = OverworldStadium
 
+  -- Load OverworldColosseum for Colosseum 3D Pokemon models in overworld
+  -- Note: Actual installation happens in initializeColosseumIntegration after ColosseumDex is loaded
+  local OverworldColosseum, colosseumErr = loadLocal("lib/OverworldColosseum.lua", V)
+  if OverworldColosseum then
+    V.OverworldColosseum = OverworldColosseum
+  else
+    mod.log:warn("OverworldColosseum not loaded: %s", tostring(colosseumErr))
+  end
+
   -- Install VoxelScenePatch for overworld rendering
   local VoxelScenePatch, patchErr = loadLocal("lib/VoxelScenePatch.lua", OverworldV)
   if VoxelScenePatch then
@@ -3692,6 +3701,23 @@ local function initializeColosseumIntegration()
     end
     if MoveFXExtractorRef and type(MoveFXExtractorRef.install) == "function" then
       pcall(MoveFXExtractorRef.install, mod, openColosseumDisc)
+    end
+
+    -- Install OverworldColosseum for Colosseum 3D Pokemon models in overworld
+    if V.OverworldColosseum and type(V.OverworldColosseum.install) == "function" then
+      -- Ensure ColosseumDex is available in V namespace
+      if not V.ColosseumDex then
+        local cd = getColosseumModule("ColosseumDex")
+        if cd then
+          V.ColosseumDex = cd
+        end
+      end
+      local okInstall, installErr = pcall(V.OverworldColosseum.install)
+      if okInstall then
+        if mod.log then mod.log:info("Pokemon Colosseum overworld models installed") end
+      else
+        if mod.log then mod.log:warn("Pokemon Colosseum overworld models installation failed: %s", tostring(installErr)) end
+      end
     end
     
     if CurrentSpriteModels and type(CurrentSpriteModels.registerCapability) == "function" and PokemonActors and PokemonActors.service then
