@@ -322,6 +322,8 @@ local VR = V.require("VR")
 local PlayerModel = V.require("PlayerModel")
 local PlayerModelInstall = V.require("PlayerModelInstall")
 local PlayerModelPick = V.require("PlayerModelPick")
+-- restored: GLB model rendering for follower NPCs
+local ModelRender = V.require("model_render")
 -- restored: Stadium models for wild Pokemon in the overworld
 local StadiumWilds = V.require("StadiumWilds")
 -- restored: the mod's own settings menus -- the categories, the screens
@@ -2990,6 +2992,9 @@ local followerInstance = Follower.new(mod, {
   render = V,
 })
 
+-- Store follower instance for console access
+V._followerInstance = followerInstance
+
 -- Register follower sprites during load phase
 mod.events:on("content.loaded", function()
   pcall(function() followerInstance:registerContent() end)
@@ -3006,6 +3011,8 @@ end)
 -- Event handlers for follower lifecycle
 mod.events:on("save.loaded", function()
   pcall(function() followerInstance:onSaveLoaded() end)
+  -- Apply auto-loaded GLB model for follower after save is loaded
+  pcall(function() ModelRender.applyAutoLoad() end)
 end)
 
 mod.events:on("map.entered", function(ev)
