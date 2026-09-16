@@ -26584,11 +26584,13 @@ function GoldCompat.installTitleExperience(mod)
   end
   if assetPath and mod.content and mod.content.music
       and type(mod.content.music.register)=="function" then
-    local ok,err=pcall(mod.content.music.register,mod.content.music,
-      GoldCompat.titleMusicId,{file=assetPath})
-    State.titleMusicRegistered=ok and true or false
-    if not ok and mod.log then
-      mod.log:warn("Colosseum UI title music registration failed: "..tostring(err))
+    if not State.titleMusicRegistered then
+      local ok,err=pcall(mod.content.music.register,mod.content.music,
+        GoldCompat.titleMusicId,{file=assetPath})
+      State.titleMusicRegistered=ok and true or false
+      if not ok and mod.log then
+        mod.log:warn("Colosseum UI title music registration failed: "..tostring(err))
+      end
     end
   end
 

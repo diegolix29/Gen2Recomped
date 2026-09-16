@@ -26,6 +26,10 @@ local screenEventInstalled = false
 local lastSoundAt = -1000
 local gen2LiveAttachLogged = false
 
+function T.installed()
+  return installed
+end
+
 local function clamp(v,a,b)
   if v<a then return a elseif v>b then return b else return v end
 end
