@@ -2565,7 +2565,7 @@ function A.status()
   for _ in pairs(scenes) do loaded=loaded+1 end
   for _ in pairs(sceneErrors) do failed=failed+1 end
   return {
-    version=1,provider="COLOSSEUM_BATTLE_ENVIRONMENTS:colosseum-pokemon",
+    version=1,provider="DRAMATIC_SHAPE:colosseum-pokemon",
     source="GC6E01 pkx battle models + native PKX presentation metadata",
     speciesSupported=Dex.speciesCount,
     scenesLoaded=loaded,scenesFailed=failed,

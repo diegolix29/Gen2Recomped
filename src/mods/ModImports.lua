@@ -32,6 +32,37 @@ end
 
 -- A declared import, normalised.  `file` is where the mod expects to read it
 -- from, relative to the mod folder; everything else is validation.
+-- THE SAME GAME IN MORE THAN ONE DUMP.
+--
+-- A cartridge has one md5 and a manifest names it.  A disc does not: the USA
+-- release of a GameCube title exists as several good dumps, and a mod that
+-- wants any of them was writing both hashes into the one `md5` string --
+-- "aaa..., bbb..." -- which then matched NOTHING.  `check` compared the whole
+-- string against a digest, so the import could never be accepted, and
+-- `sharedKey` used it as a FILENAME, comma and space included.
+--
+-- So the field takes either shape: one hash, several in a string, or a list.
+-- Every 32-hex run is taken and the rest is ignored, which also absorbs the
+-- stray whitespace that comes with writing two of them by hand.  `md5` stays
+-- a single string -- it is what names the shared bank and nothing else should
+-- have to learn a new shape -- and `md5s` carries the full set for the one
+-- place that compares.
+local HASH = ("%x"):rep(32)
+
+local function md5Set(raw)
+  local out = {}
+  local function add(value)
+    if type(value) ~= "string" then return end
+    for hash in value:lower():gmatch(HASH) do out[#out + 1] = hash end
+  end
+  if type(raw) == "table" then
+    for _, value in ipairs(raw) do add(value) end
+  else
+    add(raw)
+  end
+  return out[1], out[1] and out or nil
+end
+
 local function normalise(raw, index)
   if type(raw) ~= "table" then return nil end
   local file = raw.file
@@ -48,6 +79,7 @@ local function normalise(raw, index)
   -- cartridge into the mod folder satisfied the manifest and left the mod
   -- still reporting no ROM.  The `..`/absolute guard above applies to both.
   local root = (raw.root == "save" or raw.root == "root") and "save" or "mod"
+  local first, all = md5Set(raw.md5)
   return {
     id = tostring(raw.id or ("import" .. index)),
     name = tostring(raw.name or raw.id or file),
@@ -56,7 +88,8 @@ local function normalise(raw, index)
     root = root,
     format = type(raw.format) == "string" and raw.format:lower() or nil,
     size = tonumber(raw.size),
-    md5 = type(raw.md5) == "string" and raw.md5:lower() or nil,
+    md5 = first,
+    md5s = all,
   }
 end
 
@@ -348,13 +381,22 @@ function ModImports.check(entry, bytes)
       :format(#bytes, entry.name, entry.size)
   end
   if entry.md5 then
+    local want = entry.md5s or { entry.md5 }
+    local function accepted(hash)
+      if not hash then return false end
+      hash = hash:lower()
+      for _, one in ipairs(want) do
+        if hash == one then return true end
+      end
+      return false
+    end
     local hash = md5Of(bytes)
     -- an n64 entry accepts any of the three byte orders: hash the big-endian
     -- form, which is what the declared md5 is taken over
-    if hash and hash:lower() ~= entry.md5 and entry.format == "n64" then
+    if not accepted(hash) and entry.format == "n64" then
       hash = md5Of(toBigEndian(bytes))
     end
-    if hash and hash:lower() ~= entry.md5 then
+    if hash and not accepted(hash) then
       return false, ("that is not the right file (MD5 %s)"):format(hash:sub(1, 8))
     end
   end
@@ -718,6 +760,19 @@ function ModImports.api(manifest, read)
         row.bytes = on.size
         row.modtime = on.modtime
       end
+      -- A MANIFEST NEED NOT DECLARE A SIZE, and `size` is the field a mod
+      -- bounds a chunked read with.  An entry for a disc image that does not
+      -- declare one -- because the same title ships in more than one length,
+      -- or because nobody wanted a 1.4 GB number in a JSON file -- left `size`
+      -- nil, and a mod that reads it to work out how many chunks to ask for
+      -- stops there with "import size is unavailable" even though the file is
+      -- sitting right beside it and `bytes` already knew how long it was.
+      --
+      -- The declared size still WINS when there is one: it is the number
+      -- `have` refuses a half-copied file against, and a fallback that
+      -- overrode it would quietly turn that check into a tautology.  This only
+      -- fills a hole.
+      if row.size == nil then row.size = row.bytes end
       return row
     end,
     -- `read(id)` is the whole file; `read(id, offset, length)` is a slice,

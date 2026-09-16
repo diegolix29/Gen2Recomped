@@ -25,7 +25,7 @@ local P={
   externalBegun=false,externalError=nil,presentationFallback=nil,
   moveFxActive={},moveFxImages={},moveFxShader=nil,moveFxError=nil,
 }
-local OWNER=(V.mod and V.mod.id) or "COLOSSEUM_BATTLE_ENVIRONMENTS"
+local OWNER=(V.mod and V.mod.id) or "DRAMATIC_SHAPE"
 local ModLookup=V.ModLookup
 local registeredCapabilities={battleActors={},battleSprites={},battlePresentation={}}
 local seenEventPayload=setmetatable({},{__mode="k"})
@@ -348,7 +348,7 @@ end
 local function ourArena(context)
   local arena=context and context.arena
   local id=arena and tostring(arena.id or "") or ""
-  return id:find("^COLOSSEUM_BATTLE_ENVIRONMENTS:")~=nil
+  return id:find("^DRAMATIC_SHAPE:")~=nil
 end
 
 -- WazaSequence is started from BattleDirector on the semantic move boundary,
