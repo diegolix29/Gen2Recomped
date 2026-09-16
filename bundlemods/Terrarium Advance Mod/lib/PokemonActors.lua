@@ -3703,6 +3703,13 @@ A.service={
     return true
   end,
   available=function(source,dex) return A.available(source,dex) end,
+  -- Whether this exact identity's generated cache is on disk RIGHT NOW.
+  -- available() deliberately answers the looser "could this be built", which
+  -- stays true for every species while the source disc is reachable. An
+  -- overworld renderer also needs the stricter answer, because it decides
+  -- whether acquire() is a cheap disk read it can do inline or a synchronous
+  -- source extraction it should spread across frames.
+  cacheReady=function(_,dex,variant) return speciesCacheReady(modelKey(dex,variant))==true end,
   peek=function(source,dex,variant) return A.peek(source,dex,variant) end,
   acquireCached=function(source,dex,variant,opts) return A.acquireCached(source,dex,variant,opts) end,
   acquire=function(source,dex,variant,opts) return A.acquire(source,dex,variant,opts) end,

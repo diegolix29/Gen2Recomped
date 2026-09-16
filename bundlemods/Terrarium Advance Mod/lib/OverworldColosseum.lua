@@ -1,12 +1,19 @@
 -- Pokemon Colosseum models for overworld Pokemon entities.
 --
--- This module reuses the existing Colosseum model system (PokemonActors)
--- for overworld rendering, similar to how OverworldStadium works for Stadium models.
+-- This module renders overworld Pokemon (wild spawns, roamers, followers)
+-- as live Colosseum 3D models with idle animation, using the SAME bridge
+-- (lib/ColosseumMon.lua) that OverworldStadium / StadiumFollower /
+-- RoamerStadium3D already use successfully -- rather than driving
+-- PokemonActors directly. ColosseumMon owns actor acquisition, per-frame
+-- idle-state advancement, and matrix/draw, so every consumer of it (this
+-- module included) gets the same tested idle-animation behaviour.
 --
 -- Integration contract:
 --   * VoxelScene captures the real entity beside each rendered pose.
---   * prepare(posed) resolves an exact species, loads a Colosseum model, and stores it.
---   * draw(pose) renders the Colosseum model instead of the 2D sprite.
+--   * prepare(posed) resolves an exact species and confirms a Colosseum
+--     model is available for it, and records that on the pose.
+--   * draw(pose) asks ColosseumMon to update/matrix/draw that model instead
+--     of the 2D sprite.
 --
 -- Companion mods can tag a spawned NPC:
 --
@@ -19,13 +26,7 @@
 local V = ...
 
 local ColosseumDex = nil  -- Load lazily
-local PokemonActors = nil  -- Load lazily
-local GeneratedAssets = nil  -- Load lazily
-local Mat4 = V.require("Mat4")
-local Voxel3D = V.require("Voxel3D")
-
--- Cache root for Colosseum models
-local CACHE_ROOT = "cache/pokemon"
+local ColosseumMon = V.require("ColosseumMon")
 
 local OverworldColosseum = {}
 
@@ -35,23 +36,18 @@ if not V._colosseumTagState then
     tagged = setmetatable({}, { __mode = "k" }),
     taggedById = {},
     entityDexCache = setmetatable({}, { __mode = "k" }),
-    slots = setmetatable({}, { __mode = "k" }),
     nameCache = {},
     frameNo = 0,
     reported = {},
-    modelCache = {}
   }
 end
 
 local tagged = V._colosseumTagState.tagged
 local taggedById = V._colosseumTagState.taggedById
 local entityDexCache = V._colosseumTagState.entityDexCache
-local slots = V._colosseumTagState.slots
 local nameCache = V._colosseumTagState.nameCache
 local frameNo = V._colosseumTagState.frameNo
 local reported = V._colosseumTagState.reported
-local STALE_FRAMES = 120
-local modelCache = V._colosseumTagState.modelCache
 
 -- Reverse mapping from ColosseumDex species names to dex numbers
 local colosseumNameToDex = nil
@@ -134,12 +130,6 @@ local function dtForFrame()
   return dt
 end
 
-local function releaseSlot(slot)
-  if slot and slot.model and slot.model.actor then
-    pcall(slot.model.actor.release, slot.model.actor)
-  end
-end
-
 local function gameObject()
   local ok, Game = pcall(require, "src.core.Game")
   if not ok or type(Game) ~= "table" then return nil end
@@ -204,14 +194,12 @@ local function facingVector(facing)
   return 0, 1  -- Default to down
 end
 
+-- Colosseum overworld models are enabled iff ColosseumMon itself is enabled
+-- (its own ModSetting-style option gate, default on) -- this is the exact
+-- same check OverworldStadium's Colosseum fallback relies on.
 local function colosseumEnabled()
-  -- Check if Colosseum overworld models are enabled
-  -- PokemonActors being available indicates Colosseum is loaded
-  if not PokemonActors then
-    local mod = V.mod
-    PokemonActors = mod and mod.exports and mod.exports.pokemonActorsOverworld
-  end
-  return PokemonActors ~= nil
+  local ok, value = pcall(ColosseumMon.enabled)
+  return ok and value == true
 end
 
 function OverworldColosseum.safeClaimWilds(state)
@@ -223,77 +211,34 @@ function OverworldColosseum.safeClaimWilds(state)
   end
 end
 
--- Load Colosseum model using PokemonActors (Colosseum system)
-local function prepareOneFromCache(p, dex, dt)
+-- Confirm a Colosseum model is available for this pose's species via
+-- ColosseumMon (the same bridge OverworldStadium/StadiumFollower/
+-- RoamerStadium3D already use). ColosseumMon owns acquisition and caching
+-- internally -- there is nothing else to load or cache here.
+local function prepareOneFromCache(p, dex)
   if not (p and p.entity and dex) then return false end
-  if p.stadiumMon then return false end
+  if p.stadiumMon then return false end  -- OverworldStadium already claimed this pose
+  -- OverworldStadium's own Colosseum fallback (prepareOneColosseum) sets these
+  -- and draws the pose itself. Claiming it here too would drive the SAME shared
+  -- actor twice per frame from two different modules.
+  if p.colosseumDex or p.colosseumMatrix then return false end
 
-  -- Lazy-load PokemonActors (Colosseum system) - use the same bridge as ColosceumMon.lua
-  if not PokemonActors then
-    local mod = V.mod
-    PokemonActors = mod and mod.exports and mod.exports.pokemonActorsOverworld
-    if not PokemonActors then
-      if not reported["no-pokemon-actors"] then
-        reported["no-pokemon-actors"] = true
-        local log = V.mod and V.mod.log
-        if log and log.warn then
-          pcall(log.warn, log, "Colosseum: PokemonActors not available via mod.exports.pokemonActorsOverworld")
-        end
+  local ok, available = pcall(ColosseumMon.available, dex, "normal")
+  if not ok or not available then
+    if not reported["no-model-" .. tostring(dex)] then
+      reported["no-model-" .. tostring(dex)] = true
+      local log = V.mod and V.mod.log
+      if log and log.info then
+        pcall(log.info, log, "Colosseum: no model available yet for dex %d", dex)
       end
-      return false
     end
+    return false
   end
 
-  local slot = slots[p.entity]
-  if not slot then
-    -- Try cache first
-    local cached = modelCache[dex]
-    if not cached then
-      -- Load the PokemonActors module directly to access loadOverworldModel
-      local okPA, PokemonActors = pcall(V.require, "lib/PokemonActors.lua")
-      if okPA and PokemonActors and type(PokemonActors.loadOverworldModel) == "function" then
-        -- Use the dedicated overworld loader (same as PokemonActors uses for followers/roamers)
-        local okActor, actor = pcall(PokemonActors.loadOverworldModel, PokemonActors, dex, "normal")
-        
-        if okActor and actor then
-          -- Setup actor for overworld use
-          pcall(actor.spawn, actor, 1)
-          pcall(actor.idle, actor)
-          actor.worldScale = (actor.worldScale or 1) * 0.8
-
-          cached = { actor = actor, dex = dex }
-          modelCache[dex] = cached
-          slot = cached
-          slots[p.entity] = slot
-          p._colosseumActor = actor  -- Set actor on pose object for drawing
-          p._colosseumDex = dex
-          return true
-        end
-      end
-      
-      if not reported["actor-load-fail"] then
-        reported["actor-load-fail"] = true
-        local log = V.mod and V.mod.log
-        if log and log.warn then
-          pcall(log.warn, log, "Colosseum: failed to acquire PokemonActors actor for dex %d", dex)
-        end
-      end
-      return false
-    else
-      slot = cached
-      slots[p.entity] = slot
-      p._colosseumActor = slot.actor  -- Set actor on pose object for drawing
-      p._colosseumDex = slot.dex
-    end
-  end
-
-  if slot and slot.actor then
-    p._colosseumActor = slot.actor
-    p._colosseumDex = dex
-    return true
-  end
-
-  return false
+  p._colosseumDex = dex
+  p._colosseumVariant = "normal"
+  p._colosseumActor = true  -- flag consumed by the shadow-cast seam
+  return true
 end
 
 function OverworldColosseum.tag(entity, speciesOrDex)
@@ -602,7 +547,6 @@ function OverworldColosseum.prepare(posed)
 
   if not enabled then return true end
   frameNo = frameNo + 1
-  local dt = dtForFrame()
 
   local preparedCount = 0
   local entityCount = 0
@@ -619,10 +563,9 @@ function OverworldColosseum.prepare(posed)
   if debugSample then posedEntityIds = {} end
 
   for _, p in ipairs(posed or {}) do
-    p._colosseumModel = nil
     p._colosseumActor = nil
-    p._colosseumMatrix = nil
     p._colosseumDex = nil
+    p._colosseumVariant = nil
 
     if p.entity then
       entityCount = entityCount + 1
@@ -630,7 +573,7 @@ function OverworldColosseum.prepare(posed)
         seenIds[p.entity.id] = true
         posedEntityIds[#posedEntityIds + 1] = p.entity.id
       end
-      if p.stadiumMon then
+      if p.stadiumMon or p.colosseumDex or p.colosseumMatrix then
         stadiumCount = stadiumCount + 1
       else
         local okDex, dex = pcall(OverworldColosseum.resolveDex, p.entity)
@@ -646,9 +589,9 @@ function OverworldColosseum.prepare(posed)
             end
           end
 
-          -- Try loading cached Colosseum mesh directly
+          -- Confirm a Colosseum model is available for this species
           supportedCount = supportedCount + 1
-          local ok, did = pcall(prepareOneFromCache, p, dex, dt)
+          local ok, did = pcall(prepareOneFromCache, p, dex)
           if ok and did then
             preparedCount = preparedCount + 1
           end
@@ -686,14 +629,17 @@ function OverworldColosseum.prepare(posed)
     end
   end
 
-  -- Log detailed stats
+  -- Stats are a one-shot diagnostic, not a per-frame report. This used to run
+  -- an unguarded log.info on EVERY rendered frame: a string format plus a log
+  -- write sixty times a second, forever, which is a real cost in the middle of
+  -- the scene pass and drowns the log file.
   if not reported["prepare-stats"] then
     reported["prepare-stats"] = true
-  end
-  local log = V.mod and V.mod.log
-  if log and log.info then
-    pcall(log.info, log, "Colosseum: detailed stats - total=%d, stadium=%d, resolved=%d, supported=%d, prepared=%d",
-      entityCount, stadiumCount, resolvedCount, supportedCount, preparedCount)
+    local log = V.mod and V.mod.log
+    if log and log.info then
+      pcall(log.info, log, "Colosseum: detailed stats - total=%d, stadium=%d, resolved=%d, supported=%d, prepared=%d",
+        entityCount, stadiumCount, resolvedCount, supportedCount, preparedCount)
+    end
   end
 
   return true
@@ -709,6 +655,13 @@ function OverworldColosseum.safePrepare(posed)
 end
 
 function OverworldColosseum.safeDraw(p)
+  if not reported["safeDraw-called"] then
+    reported["safeDraw-called"] = true
+    local log = V.mod and V.mod.log
+    if log and log.info then
+      pcall(log.info, log, "Colosseum: safeDraw called")
+    end
+  end
   local ok, result = pcall(OverworldColosseum.draw, p)
   if not ok then
     logOnce("draw-frame", "Colosseum overworld draw error: %s", tostring(result))
@@ -717,34 +670,53 @@ function OverworldColosseum.safeDraw(p)
   return result ~= false
 end
 
+-- Shadow casting is best-effort and currently has no real geometry pass of
+-- its own (matches the previous behaviour) -- it just confirms the actor is
+-- genuinely posable so VoxelScenePatch's shadow seam doesn't treat a pose
+-- that failed to resolve a matrix as "handled".
 function OverworldColosseum.safeCast(p, ShadowMap)
-  -- Shadow casting for Colosseum models
-  if not (p and p._colosseumActor) then return false end
-  local actor = p._colosseumActor
-  local vp = Voxel3D and Voxel3D.vp
-  if not vp or not ShadowMap then return false end
-
+  if not (p and p._colosseumDex and ShadowMap) then return false end
   local x = (p.px or 0) + 8
   local z = (p.py or 0) + 8
   local y = (p.gh or 0) + (p.lift or 0)
-  local renderFacing = p.facing or "down"
-  local fx, fz = facingVector(renderFacing)
-
-  local ok, result = pcall(PokemonActors.withRenderer, vp, function()
-    local okMatrix, matrix = pcall(actor.matrix, actor, x, y, z, fx, fz)
-    if not okMatrix or not matrix then return false end
-    -- Shadow casting would go here if supported
-    return true
-  end, { eye = Voxel3D.eye })
-  return ok and result ~= false
+  local fx, fz = facingVector(p.facing or "down")
+  local ok, matrix = pcall(ColosseumMon.matrix, p._colosseumDex, p._colosseumVariant or "normal", x, y, z, fx, fz)
+  return ok and matrix ~= nil
 end
 
+-- Draws the Colosseum model for this pose via ColosseumMon -- the same
+-- update -> matrix -> draw sequence RoamerStadium3D and StadiumFollower use.
+-- ColosseumMon.update() re-asserts the idle state every frame, which is what
+-- keeps the idle animation looping instead of freezing on the bind pose.
 function OverworldColosseum.draw(p)
-  -- Use actor-based rendering with PokemonActors
-  local actor = p and p._colosseumActor
-  if not actor then return false end
+  local dex = p and p._colosseumDex
+  if not dex then 
+    -- Check if this entity is tagged for Colosseum rendering
+    local entityId = p and p.entity and p.entity.id
+    if not entityId or not taggedById[entityId] then
+      -- Not tagged for Colosseum, fall back to sprite
+      return false
+    end
+    -- Look up dex from taggedById
+    dex = taggedById[entityId]
+    if dex then
+      p._colosseumDex = dex
+      p._colosseumVariant = "normal"
+    else
+      return false
+    end
+  end
+  local variant = p._colosseumVariant or "normal"
+  
+  -- Log that draw is being called (once per frame)
+  if not reported["draw-called"] then
+    reported["draw-called"] = true
+    local log = V.mod and V.mod.log
+    if log and log.info then
+      pcall(log.info, log, "Colosseum: draw called for dex %d", dex)
+    end
+  end
 
-  -- Calculate position and orientation
   local x = (p.px or 0) + 8
   local z = (p.py or 0) + 8
   local y = (p.gh or 0) + (p.lift or 0)
@@ -752,7 +724,7 @@ function OverworldColosseum.draw(p)
   local renderFacing = p.facing or "down"
   local fx, fz = facingVector(renderFacing)
 
-  -- Handle first-person camera rotation
+  -- Handle first-person camera rotation (mirrors OverworldStadium's handling)
   local okFirstPerson, FirstPerson = pcall(V.require, "FirstPerson")
   if okFirstPerson and FirstPerson then
     local b = FirstPerson.cardBlend()
@@ -770,104 +742,68 @@ function OverworldColosseum.draw(p)
     end
   end
 
-  -- Update actor and draw
   local dt = dtForFrame()
-  pcall(actor.update, actor, dt)
-  pcall(actor.spawn, actor, 1)
-
-  -- Create transformation matrix using actor's matrix method (like battle system)
-  local vp = Voxel3D and Voxel3D.vp
-  if not vp then return false end
-
-  local ok, result = pcall(PokemonActors.withRenderer, vp, function()
-    -- Get matrix from actor (same approach as battle system)
-    local okMatrix, matrix = pcall(actor.matrix, actor, x, y, z, fx, fz)
-    if not okMatrix or not matrix then
-      error("colosseum overworld draw declined")
+  local okUpdate = pcall(ColosseumMon.update, dex, variant, dt)
+  if not okUpdate then 
+    local log = V.mod and V.mod.log
+    if log and log.warn then
+      pcall(log.warn, log, "Colosseum: draw update failed for dex %d", dex)
     end
-    local drew = actor:draw(matrix)
-    if drew == false then error("colosseum overworld draw declined") end
-    return true
-  end, { eye = Voxel3D.eye })
-  return ok and result ~= false
-end
-
--- VoxelScenePatch installs the pose-level hooks (safePrepare/safeDraw/safeCast).
-function OverworldColosseum.install()
-  -- Ensure ColosseumDex is loaded for PokemonActors
-  if not V.ColosseumDex then
-    local ok, CD = pcall(V.require, "ColosseumDex")
-    if ok and CD then
-      V.ColosseumDex = CD
-    end
+    return false 
   end
 
-  -- Ensure GeneratedAssets is available
-  if not GeneratedAssets then
-    GeneratedAssets = V.GeneratedAssets
+  local okMatrix, matrix = pcall(ColosseumMon.matrix, dex, variant, x, y, z, fx, fz)
+  if not okMatrix or not matrix then 
+    local log = V.mod and V.mod.log
+    if log and log.warn then
+      pcall(log.warn, log, "Colosseum: draw matrix failed for dex %d", dex)
+    end
+    return false 
   end
 
-  -- Preload common species for better performance
-  local commonSpecies = { 25, 63, 142, 16, 19, 32, 131, 147, 150, 151 }  -- Pikachu, Abra, Aerodactyl, Pedgey, Rattata, NidoranM, Lapras, Dratini, Mewtwo, Mew
-  OverworldColosseum.preloadSpecies(commonSpecies)
-  return true
+  local okDraw, drew = pcall(ColosseumMon.draw, dex, variant, matrix)
+  if not okDraw or drew ~= true then
+    local log = V.mod and V.mod.log
+    if log and log.warn then
+      pcall(log.warn, log, "Colosseum: draw failed for dex %d (ok=%s, drew=%s)", dex, tostring(okDraw), tostring(drew))
+    end
+  else
+    if not reported["draw-success"] then
+      reported["draw-success"] = true
+      local log = V.mod and V.mod.log
+      if log and log.info then
+        pcall(log.info, log, "Colosseum: draw succeeded for dex %d", dex)
+      end
+    end
+  end
+  return okDraw and drew == true
 end
 
--- Preload models for overworld use (called during initialization)
+-- Preload models for overworld use (called during initialization). This just
+-- warms ColosseumMon's own per-species actor cache -- there is no separate
+-- cache to maintain here any more.
 function OverworldColosseum.preloadSpecies(dexList)
-  -- Ensure ColosseumDex is loaded for PokemonActors
   if not V.ColosseumDex then
     local ok, CD = pcall(V.require, "ColosseumDex")
-    if ok and CD then
-      V.ColosseumDex = CD
-    end
+    if ok and CD then V.ColosseumDex = CD end
   end
-
-  -- Ensure PokemonActors is loaded
-  if not PokemonActors then
-    local mod = V.mod
-    PokemonActors = mod and mod.exports and mod.exports.pokemonActorsOverworld
-    if not PokemonActors then return 0 end
-  end
-
-  if not (PokemonActors and PokemonActors.acquire) then return 0 end
 
   local count = 0
   for _, dex in ipairs(dexList or {}) do
-    if not modelCache[dex] then
-      local ctx = { arena = { figureScale = 1.0 } }
-      local okModel, actor = pcall(PokemonActors.acquire, "cbe-prewarm", dex, "normal", { context = ctx })
-      if okModel and actor then
-        actor.spawnScale = 1
-        pcall(actor.spawn, actor, 1)
-        pcall(actor.selectNativeSlot, actor, "idle")
-        pcall(actor.transition, actor, "idle")
-        actor.worldScale = (actor.worldScale or 1) * 0.8
-
-        modelCache[dex] = { dex = dex, variant = "normal", actor = actor }
-        count = count + 1
-      end
-    end
+    local ok, available = pcall(ColosseumMon.available, dex, "normal")
+    if ok and available then count = count + 1 end
   end
   return count
 end
 
 -- VoxelScenePatch installs the pose-level hooks (safePrepare/safeDraw/safeCast).
 function OverworldColosseum.install()
-  -- Ensure ColosseumDex is loaded for PokemonActors
   if not V.ColosseumDex then
     local ok, CD = pcall(V.require, "ColosseumDex")
-    if ok and CD then
-      V.ColosseumDex = CD
-    end
+    if ok and CD then V.ColosseumDex = CD end
   end
 
-  -- Ensure GeneratedAssets is available
-  if not GeneratedAssets then
-    GeneratedAssets = V.GeneratedAssets
-  end
-
-  -- Preload common species for better performance
+  -- Preload common species for better first-encounter performance.
   local commonSpecies = { 25, 63, 142, 16, 19, 32, 131, 147, 150, 151 }  -- Pikachu, Abra, Aerodactyl, Pidgey, Rattata, NidoranM, Lapras, Dratini, Mewtwo, Mew
   OverworldColosseum.preloadSpecies(commonSpecies)
   return true

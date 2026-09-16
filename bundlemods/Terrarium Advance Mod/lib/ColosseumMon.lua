@@ -63,6 +63,73 @@ local function cacheKey(dex, variant)
   return (variant == "shiny") and (tostring(dex) .. ":shiny") or dex
 end
 
+-- Trainer-figure scale the actor's world height is derived from. nil keeps
+-- PokemonActors' own battle default, which puts a mid-size Pokemon at roughly
+-- the 14 world pixels StadiumMon.REF_HEIGHT uses for the same job. Set a
+-- number here to make the whole overworld cast larger or smaller; smaller
+-- figureScale means a LARGER Pokemon (it is the divisor of the reference
+-- trainer height).
+M.figureScale = nil
+
+-- Finish a freshly acquired actor the same way the information viewers do.
+--
+-- This matters more than it looks. PokemonActors hands back a BATTLE actor:
+-- Actor.new starts it at state="spawn" with spawnScale=0, because in a real
+-- send-out the battle presentation grows it in. Actor:matrix multiplies
+-- worldScale by that spawn value, so an actor that nobody spawns is placed in
+-- the world at scale ZERO. It draws without error, reports success, suppresses
+-- the 2D sprite the pose would otherwise have drawn -- and is invisible. That
+-- is exactly the "overworld Pokemon are still sprites / vanish" symptom.
+--
+-- UIMain's Pokedex/Summary/PC viewer avoids it with two lines immediately
+-- after acquire ("Portable battle actors may start at spawnScale=0.
+-- Information surfaces have no send-out lifecycle, so park them at full-size
+-- idle."). The overworld has no send-out lifecycle either, so it needs the
+-- same treatment.
+local function finishOverworldActor(actor)
+  if not actor then return nil end
+
+  -- 1. Full size, out of the send-out grow-in state. spawn(1) also performs
+  --    the spawn -> idle transition for us.
+  pcall(actor.spawn, actor, 1)
+  if (tonumber(actor.spawnScale) or 0) < 1 then actor.spawnScale = 1 end
+
+  -- 2. Park on the authored looping idle bank. Redundant after a well-behaved
+  --    spawn(1), but the portable-actor contract does not promise that, and
+  --    this is the only thing standing between a live idle and a bind pose.
+  pcall(actor.selectNativeSlot, actor, "idle")
+  if type(actor.idle) == "function" then pcall(actor.idle, actor)
+  elseif type(actor.play) == "function" then pcall(actor.play, actor, "idle") end
+
+  -- 3. Let a provider that defers GPU work do it once, here, rather than on
+  --    the first draw call inside the scene pass.
+  if type(actor.build) == "function" then pcall(actor.build, actor) end
+
+  return actor
+end
+
+-- One COLD acquisition per frame. acquire() falls through to a synchronous
+-- source extraction for a species that has never been built, and walking into
+-- a new area can easily expose four or five unbuilt species on the same frame.
+-- Spreading them out costs one sprite frame each instead of stacking several
+-- disc reads into one visible stall. Species that are already resident or
+-- already on disk are unaffected and acquire immediately.
+local coldAcquireToken = nil
+
+-- true / false / nil when the provider is too old to answer.
+local function diskCacheReady(svc, dex, variant)
+  if type(svc.cacheReady) ~= "function" then return nil end
+  local ok, value = pcall(svc.cacheReady, "overworld", dex, variant)
+  if not ok then return nil end
+  return value == true
+end
+
+local function residentAlready(svc, dex, variant)
+  if type(svc.peek) ~= "function" then return false end
+  local ok, value = pcall(svc.peek, "overworld", dex, variant)
+  return ok and type(value) == "table" and value.resident == true
+end
+
 -- Returns a live Actor for dex/variant, or nil. Never forces synchronous
 -- source extraction beyond what PokemonActors.acquire already does on its
 -- own (disk-cache read if extracted, background-friendly retry/backoff if
@@ -75,11 +142,23 @@ local function actorFor(dex, variant)
   local key = cacheKey(dex, variant)
   local cached = actors[key]
   if cached then return cached end
-  local ok, actor = pcall(svc.acquire, "overworld", dex, variant,
-    { context = { services = { informationSurface = false } } })
+
+  if not residentAlready(svc, dex, variant)
+      and diskCacheReady(svc, dex, variant) == false then
+    local token = Voxel3D.vp or true
+    if coldAcquireToken == token then return nil end
+    coldAcquireToken = token
+  end
+
+  local ok, actor = pcall(svc.acquire, "overworld", dex, variant, {
+    context = {
+      services = { informationSurface = false },
+      arena = { figureScale = M.figureScale },
+    },
+  })
   if not ok or not actor then return nil end
-  actors[key] = actor
-  return actor
+  actors[key] = finishOverworldActor(actor)
+  return actors[key]
 end
 
 -- Whether a Colosseum model is available (already resident, or reachable
@@ -96,9 +175,24 @@ function M.available(dex, variant)
   return ok and value == true
 end
 
+-- Advance this species' shared actor exactly once per rendered frame.
+--
+-- One Actor is shared by every entity of the same species, and more than one
+-- consumer can ask for it on the same frame: OverworldColosseum calls update()
+-- once per posed entity, OverworldStadium's Colosseum fallback calls it again
+-- from its own prepare(), and StadiumFollower / RoamerStadium3D may be showing
+-- the same species at the same time. Every one of those calls used to add a
+-- full dt, so two Zigzagoon on screen idled at double speed and the authored
+-- loop visibly raced. Voxel3D.vp is rebuilt once per scene, so its table
+-- identity is a free, allocation-free per-frame stamp.
 function M.update(dex, variant, dt)
   local actor = actorFor(dex, variant)
   if not actor then return false end
+  local token = Voxel3D.vp
+  if token ~= nil then
+    if rawget(actor, "__owFrameToken") == token then return true end
+    actor.__owFrameToken = token
+  end
   pcall(actor.idle, actor)
   local ok = pcall(actor.update, actor, dt or 0)
   return ok
@@ -127,6 +221,13 @@ function M.draw(dex, variant, matrix)
   local vp = Voxel3D.vp
   if not vp then return false end
   local ok, accepted = pcall(svc.withRenderer, vp, function()
+    -- Same build -> draw order the information viewer uses inside its own
+    -- withRenderer block. build() is a no-op for the current provider but is
+    -- part of the portable-actor contract, and a provider that streams its
+    -- geometry needs the call.
+    if type(actor.build) == "function" and actor:build() == false then
+      error("colosseum overworld build declined")
+    end
     local drew = actor:draw(matrix)
     if drew == false then error("colosseum overworld draw declined") end
     return true

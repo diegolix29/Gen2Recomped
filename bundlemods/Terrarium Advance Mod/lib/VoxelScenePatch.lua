@@ -189,8 +189,8 @@ local function patchCastLoop(source)
         PlayerModel.draw(p.px, p.py, p.gh + (p.lift or 0), viewFacing(p), p.flip)
       -- safeDraw never throws.  Returning false means this one entity uses
       -- Dramatic Shape's original 2D card for this frame.
-      elseif not OverworldStadium.safeDraw(p)
-          and not OverworldColosseum.safeDraw(p) and p.sprite then
+      elseif not OverworldColosseum.safeDraw(p)
+          and not OverworldStadium.safeDraw(p) and p.sprite then
         drawEntity(p.sprite, p.px, p.py, viewFacing(p), p.phase, p.flip, p.gh,
                    p.colors, p.lift, yaw)
       end
