@@ -19,22 +19,6 @@ end
 local ARENA_ANDROID=platformOS()=="Android"
 
 local function cbePokemonModelsEnabled(ctx)
-  -- First check if Colosseum mode is selected - this overrides the global setting
-  local OverworldBattle = V.OverworldBattle
-  if OverworldBattle and type(OverworldBattle.colosseum)=="function" then
-    local okColosseum, isColosseum = pcall(OverworldBattle.colosseum, ctx)
-    if okColosseum and isColosseum then return true end
-  end
-  
-  -- Also check directly from the setting value
-  if OverworldBattle and type(OverworldBattle.setting)=="table" and type(OverworldBattle.setting.get)=="function" then
-    local okValue, value = pcall(OverworldBattle.setting.get, OverworldBattle.setting)
-    if okValue and (value == OverworldBattle.COLOSSEUM_A or value == OverworldBattle.COLOSSEUM_B) then
-      return true
-    end
-  end
-
-  -- Fall back to the global BattleSettings check
   local settings=V.BattleSettings
   if not (settings and type(settings.pokemonModelsEnabled)=="function") then return true end
   local game=(ctx and ctx.game) or (ctx and ctx.battle and ctx.battle.game) or mod.game

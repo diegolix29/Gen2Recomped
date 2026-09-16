@@ -2407,7 +2407,7 @@ local function debugLines()
       err=st.stadiumError
     end
   end
-  local selected=(mode=="stadium" or mode=="COLOSSEUM_A" or mode=="COLOSSEUM_B")
+  local selected=(mode=="stadium")
   out[#out+1]=("presentation mode: %s   id: %s"):format(mode,modeId)
   out[#out+1]=("actor owner: %s"):format(owner)
   out[#out+1]=selected and "SELECTED -- this provider is rendering"
@@ -3694,29 +3694,13 @@ A.service={
   priority=100000,
   worldUnits=false,
   selected=function(context)
-    -- First check if Colosseum mode is selected - this overrides everything
-    local OverworldBattle = V.OverworldBattle
-    if OverworldBattle and type(OverworldBattle.setting)=="table" and type(OverworldBattle.setting.get)=="function" then
-      local okValue, value = pcall(OverworldBattle.setting.get, OverworldBattle.setting)
-      if okValue and (value == OverworldBattle.COLOSSEUM_A or value == OverworldBattle.COLOSSEUM_B) then
-        print("[PokemonActors] Colosseum mode detected, forcing selection")
-        return true
-      end
-    end
-    
     local settings=V.BattleSettings
     if settings and type(settings.pokemonModelsEnabled)=="function" then
       local game=(context and context.game) or (context and context.battle and context.battle.game) or (mod and mod.game)
       local ok,value=pcall(settings.pokemonModelsEnabled,game)
-      if ok and value~=false then return true end
-      -- Check if Colosseum mode is selected in OverworldBattle
-      if OverworldBattle and type(OverworldBattle.colosseum)=="function" then
-        local okColosseum, isColosseum = pcall(OverworldBattle.colosseum, context)
-        if okColosseum and isColosseum then return true end
-      end
-      return false -- If models disabled and not colosseum mode, return false
+      if ok then return value~=false end
     end
-    return true -- If no settings function, default to true
+    return true
   end,
   available=function(source,dex) return A.available(source,dex) end,
   -- Whether this exact identity's generated cache is on disk RIGHT NOW.

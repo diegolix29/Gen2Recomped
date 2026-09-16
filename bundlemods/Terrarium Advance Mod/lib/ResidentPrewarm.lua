@@ -350,20 +350,9 @@ function S.queueHardCache(game,scope)
   -- Repeated clicks do not throw away a running cache job.
   if hard.running and gameRef==game then return hard.total,"already-running" end
 
-  -- First check if Colosseum mode is selected - this overrides the global setting
-  local modelsEnabled=false
-  local OverworldBattle = V.OverworldBattle
-  if OverworldBattle and type(OverworldBattle.colosseum)=="function" then
-    local okColosseum, isColosseum = pcall(OverworldBattle.colosseum)
-    if okColosseum and isColosseum then modelsEnabled = true end
-  end
-  
-  -- Fall back to the global setting if not in colosseum mode
-  if not modelsEnabled then
-    modelsEnabled=true
-    if BattleSettings and type(BattleSettings.pokemonModelsEnabled)=="function" then
-      local ok,on=pcall(BattleSettings.pokemonModelsEnabled,game);if ok and on==false then modelsEnabled=false end
-    end
+  local modelsEnabled=true
+  if BattleSettings and type(BattleSettings.pokemonModelsEnabled)=="function" then
+    local ok,on=pcall(BattleSettings.pokemonModelsEnabled,game);if ok and on==false then modelsEnabled=false end
   end
   local pokemonSignature
   if not modelsEnabled then pokemonSignature="models-disabled"

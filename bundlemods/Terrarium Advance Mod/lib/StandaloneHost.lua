@@ -509,7 +509,7 @@ function H.coversSide(battle,side)
   -- Native drawPic can precede the first world pass. Only the strict CBE model
   -- provider may cover that boundary; generic sprite/external providers still
   -- need an observed successful presentation before they suppress native art.
-  local ownsBeforeDraw=s.started and (CurrentSprites.mode=="stadium" or CurrentSprites.mode=="COLOSSEUM_A" or CurrentSprites.mode=="COLOSSEUM_B")
+  local ownsBeforeDraw=s.started and CurrentSprites.mode=="stadium"
     and CurrentSprites.modeId=="cbe:colosseum-pokemon"
   if not (s.presented or ownsBeforeDraw) then return false end
   local ok,v=pcall(CurrentSprites.covers,CurrentSprites,s.context,side)

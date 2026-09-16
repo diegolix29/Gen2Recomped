@@ -226,22 +226,6 @@ local function portableActorService(context)
 end
 
 local function cbePokemonModelsEnabled(context)
-  -- Also check directly from the setting value first - this is the most reliable method
-  local OverworldBattle = V.OverworldBattle
-  if OverworldBattle and type(OverworldBattle.setting)=="table" and type(OverworldBattle.setting.get)=="function" then
-    local okValue, value = pcall(OverworldBattle.setting.get, OverworldBattle.setting)
-    if okValue and (value == OverworldBattle.COLOSSEUM_A or value == OverworldBattle.COLOSSEUM_B) then
-      return true
-    end
-  end
-  
-  -- First check if Colosseum mode is selected - this overrides the global setting
-  if OverworldBattle and type(OverworldBattle.colosseum)=="function" then
-    local okColosseum, isColosseum = pcall(OverworldBattle.colosseum, context)
-    if okColosseum and isColosseum then return true end
-  end
-
-  -- Fall back to the global BattleSettings check
   local settings=V.BattleSettings
   if not (settings and type(settings.pokemonModelsEnabled)=="function") then return true end
   local game=(context and context.game) or (context and context.battle and context.battle.game) or (V.mod and V.mod.game)
@@ -260,44 +244,13 @@ end
 local function desiredPresentation(context)
   P.presentationFallback=nil
 
-  -- Check if Colosseum mode is selected first - this should override everything
-  local OverworldBattle = V.OverworldBattle
-  local mode = nil
-  if OverworldBattle and type(OverworldBattle.setting)=="table" and type(OverworldBattle.setting.get)=="function" then
-    local ok,value = pcall(OverworldBattle.setting.get, OverworldBattle.setting)
-    if ok then
-      if value == OverworldBattle.COLOSSEUM_A then mode = "COLOSSEUM_A"
-      elseif value == OverworldBattle.COLOSSEUM_B then mode = "COLOSSEUM_B"
-      end
-    end
-  end
-  
-  -- If in Colosseum mode, force CBE Pokemon actors regardless of global settings
-  if mode then
-    local actors=V.PokemonActors
-    local api=actors and actors.service
-    if validActorApi(api) and selected(api,context) then
-      return mode,"cbe:colosseum-pokemon",api,{id=OWNER.."/pokemon",exports={}}
-    end
-  end
-
   -- Explicit CBE Pokemon toggle is an ownership override, not a preference.
   -- When ON, GC6E01 Pokemon actors win before every portable presentation,
   -- Stadium registry choice or sprite provider. Missing species still fail open
   -- per-side at acquire(), but another provider cannot steal ownership mid-hit.
   local cbeApi=cbePokemonActorService(context)
   if cbeApi then
-    -- Determine the actual mode based on OverworldBattle setting
-    local mode = "stadium"
-    if OverworldBattle and type(OverworldBattle.setting)=="table" and type(OverworldBattle.setting.get)=="function" then
-      local ok,value = pcall(OverworldBattle.setting.get, OverworldBattle.setting)
-      if ok then
-        if value == OverworldBattle.COLOSSEUM_A then mode = "COLOSSEUM_A"
-        elseif value == OverworldBattle.COLOSSEUM_B then mode = "COLOSSEUM_B"
-        end
-      end
-    end
-    return mode,"cbe:colosseum-pokemon",cbeApi,{id=OWNER.."/pokemon",exports={}}
+    return "stadium","cbe:colosseum-pokemon",cbeApi,{id=OWNER.."/pokemon",exports={}}
   end
 
   -- Portable POKEMON ACTORS remain compatible, but portable full-frame
@@ -391,13 +344,12 @@ local function selectPresentation(context,force)
   local mode,id,provider,handle=desiredPresentation(context)
   if not force and mode==P.mode and id==P.modeId
       and (mode~="external" or provider==P.externalProvider)
-      and ((mode~="stadium" and mode~="COLOSSEUM_A" and mode~="COLOSSEUM_B") or provider==P.actorApi) then return mode end
+      and (mode~="stadium" or provider==P.actorApi) then return mode end
   finishExternal(context,"selection-changed")
   releaseStadiumActors("presentation-changed")
   P.mode=mode;P.modeId=id;P.externalError=nil
-  local stadiumMode=(mode=="stadium" or mode=="COLOSSEUM_A" or mode=="COLOSSEUM_B")
-  P.actorApi=stadiumMode and provider or nil
-  P.actorOwner=stadiumMode and handle and handle.id or nil
+  P.actorApi=(mode=="stadium") and provider or nil
+  P.actorOwner=(mode=="stadium" and handle and handle.id) or nil
   if mode=="external" then
     P.externalProvider=provider
     local ok,accepted=invokeExternal(context,"begin",context and context.arena)
@@ -473,7 +425,7 @@ function P.informationActorProvider(request)
     services={cbeStandalone=true,informationSurface=true,informationAnimation=true},
   }
   local mode,id,provider,handle=desiredPresentation(context)
-  if (mode~="stadium" and mode~="COLOSSEUM_A" and mode~="COLOSSEUM_B") or not validActorApi(provider) then
+  if mode~="stadium" or not validActorApi(provider) then
     return nil,tostring(mode or "sprites"),context
   end
   return provider,tostring(id or "portable-actors"),context,
@@ -617,7 +569,7 @@ local function actorAcquirePending(err)
 end
 
 local function stadiumActor(context,side)
-  if P.mode~="stadium" and P.mode~="COLOSSEUM_A" and P.mode~="COLOSSEUM_B" then return nil end
+  if P.mode~="stadium" then return nil end
   local api=P.actorApi or stadiumService()
   if not api then return nil end
   local battler=liveBattler(context,side)
@@ -1391,7 +1343,7 @@ local function startWazaSequence(context,side,spec,target,role,moveId,move)
   local timingSide=(role=="damage" and target) or side
   local timingActor=timingSide and P.stadiumActors[timingSide] and P.stadiumActors[timingSide].actor or nil
   if not timingActor and timingSide then timingActor=stadiumActor(context,timingSide) end
-  if role=="attack" and (P.mode=="stadium" or P.mode=="COLOSSEUM_A" or P.mode=="COLOSSEUM_B") then
+  if role=="attack" and P.mode=="stadium" then
     if not timingActor or timingActor.action~="attack" or not timingActor.nativeAction then
       P.moveFxError="source PKX attack bank not initialized; Waza attack timeline withheld"
       return false
@@ -2340,7 +2292,7 @@ local function playerFlip()
 end
 
 local function drawStadiumActors(context)
-  if P.mode~="stadium" and P.mode~="COLOSSEUM_A" and P.mode~="COLOSSEUM_B" then return false end
+  if P.mode~="stadium" then return false end
   local api=P.actorApi or stadiumService()
   local services=context and context.services
   local vp=services and ((api and api.worldUnits==true and services.stageVP) or services.vp)
@@ -2499,7 +2451,7 @@ function P:update(context,dt)
       finishExternal(context,"update-failed")
       P.mode="sprites";P.modeId="builtin:resolved-sprites"
     end
-  elseif P.mode=="stadium" or P.mode=="COLOSSEUM_A" or P.mode=="COLOSSEUM_B" then
+  elseif P.mode=="stadium" then
     local actorDt=actorDelta(context,dt)
     local RP=V and V.ReleasePresentation
 
@@ -2600,8 +2552,7 @@ function P:covers(context,side)
   -- during these beats produces the giant ROM sprite over the 3D battlefield.
   -- The exact-source acquisition/worker above remains responsible for residency;
   -- this never authorizes a substitute model or changes native battle mechanics.
-  if (self.mode=="stadium" or self.mode=="COLOSSEUM_A" or self.mode=="COLOSSEUM_B")
-      and self.modeId=="cbe:colosseum-pokemon"
+  if self.mode=="stadium" and self.modeId=="cbe:colosseum-pokemon"
       and cbePokemonModelsEnabled(context) then
     local b=liveBattler(context,side)
     if b then return true end
@@ -2612,7 +2563,7 @@ function P:covers(context,side)
   -- order let the stock picture blink/leak through and made the model appear
   -- to disappear. Retiring actors likewise remain authoritative through their
   -- authored recall/faint tail.
-  if self.mode=="stadium" or self.mode=="COLOSSEUM_A" or self.mode=="COLOSSEUM_B" then
+  if self.mode=="stadium" then
     if hasRetiringActor(side) then return true end
     local actor=P.stadiumActors[side] and P.stadiumActors[side].actor
     local b=liveBattler(context,side)
@@ -2672,7 +2623,7 @@ function P:drawWorld(context)
       -- because the actor is intentionally hidden for recall/faint/capture or
       -- because a delegated Gen 1 host queried the frame in a different order.
       -- This was the capture leak that showed the enemy sprite inside the ball.
-      local cbeAbsolute=(self.mode=="stadium" or self.mode=="COLOSSEUM_A" or self.mode=="COLOSSEUM_B")
+      local cbeAbsolute=self.mode=="stadium"
         and self.modeId=="cbe:colosseum-pokemon"
         and cbePokemonModelsEnabled(context)
       local captureHidden=false
@@ -2790,7 +2741,7 @@ function P:event(context,name,payload)
   if semantic=="battle.move_used" or name=="battle.presentation_move" then
     side=(S and S.payload and S.payload(context,payload,{"user","side"})) or (payload and payload.side)
     local actor=nil
-    if side and (P.mode=="stadium" or P.mode=="COLOSSEUM_A" or P.mode=="COLOSSEUM_B") then
+    if side and P.mode=="stadium" then
       local resident=P.stadiumActors[side]
       actor=resident and resident.actor or stadiumActor(context,side)
     end
@@ -2836,8 +2787,7 @@ function P:event(context,name,payload)
     local function bindStartedAttack(activeActor,nativeSampled)
       -- The native Pokemon action is the root of a Colosseum attack presentation.
       -- Effects/audio/camera are forbidden from advancing against an idle body.
-      if (P.mode=="stadium" or P.mode=="COLOSSEUM_A" or P.mode=="COLOSSEUM_B")
-        and (not activeActor or nativeSampled~=true or not activeActor.nativeAction) then
+      if P.mode=="stadium" and (not activeActor or nativeSampled~=true or not activeActor.nativeAction) then
         P.moveFxError="source Pokemon attack animation did not initialize; Waza attack timeline withheld"
         return false
       end
@@ -2882,7 +2832,7 @@ function P:event(context,name,payload)
       return true
     end
 
-    if P.mode=="stadium" or P.mode=="COLOSSEUM_A" or P.mode=="COLOSSEUM_B" then
+    if P.mode=="stadium" then
       if actor and type(actor.attack)=="function" and resolvedId~=nil then
         local sourceSlot,sourceSequenceKind=sourceNativeSlot(spec,"attack")
         local okAttack,accepted,attackState=pcall(actor.attack,actor,resolvedId,move,{

@@ -97,14 +97,6 @@ local function persistReusePreference(refreshRegistry,deferRegistry)
   return ready or written
 end
 function C.enabled(game,save)
-  -- First check if Colosseum mode is selected - this overrides the global setting
-  local OverworldBattle = V.OverworldBattle
-  if OverworldBattle and type(OverworldBattle.colosseum)=="function" then
-    local okColosseum, isColosseum = pcall(OverworldBattle.colosseum, {game=game})
-    if okColosseum and isColosseum then return true end
-  end
-
-  -- Fall back to the global preference check
   save=save or (game and game.save)
   local p=save and save.colosseumBattle
   return not (p and p.pokemonModelsEnabled==false)

@@ -14234,24 +14234,8 @@ function GoldCompat.colosseumModelsSelected(game)
   local provider=GoldCompat.findLoadedMod("DRAMATIC_SHAPE")
   if not provider then return false end
   game=game or GoldCompat.game or (modRef and modRef.game)
-  
-  -- First check if Colosseum mode is selected - this overrides the global setting
-  local OverworldBattle = V.OverworldBattle
-  if OverworldBattle and type(OverworldBattle.colosseum)=="function" then
-    local okColosseum, isColosseum = pcall(OverworldBattle.colosseum)
-    if okColosseum and isColosseum then
-      -- Continue to check bridge
-    else
-      -- Not in colosseum mode, check global setting
-      local options=game and game.save and game.save.colosseumBattle
-      if options and options.pokemonModelsEnabled==false then return false end
-    end
-  else
-    -- No OverworldBattle available, check global setting
-    local options=game and game.save and game.save.colosseumBattle
-    if options and options.pokemonModelsEnabled==false then return false end
-  end
-  
+  local options=game and game.save and game.save.colosseumBattle
+  if options and options.pokemonModelsEnabled==false then return false end
   local bridge=provider.exports and provider.exports.informationModels
   if bridge and bridge.selected then
     local ok,value=pcall(bridge.selected,bridge,{game=game})
