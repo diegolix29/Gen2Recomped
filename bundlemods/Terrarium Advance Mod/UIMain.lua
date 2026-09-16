@@ -14215,8 +14215,8 @@ end
 function GoldCompat.findLoadedMod(id)
   -- The combined build owns CBE directly. The UI-only build must resolve
   -- the optional, separately installed provider rather than itself.
-  if modRef and modRef.id=="COLOSSEUM_OVERHAUL"
-      and (id=="DRAMATIC_SHAPE" or id=="dramatic_shape") then
+  if modRef and (modRef.id=="COLOSSEUM_OVERHAUL" or modRef.id=="DRAMATIC_SHAPE")
+      and (id=="DRAMATIC_SHAPE" or id=="dramatic_shape" or id=="COLOSSEUM_BATTLE_ENVIRONMENTS") then
     return modRef
   end
   if not (modRef and type(modRef.find)=="function") then return nil end
