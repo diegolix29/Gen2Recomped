@@ -59,32 +59,55 @@ local function logOnce(key, fmt, ...)
   if log and log.warn then pcall(log.warn, log, fmt, ...) end
 end
 
--- Build reverse mapping from ColosseumDex species names to dex numbers
+-- Build reverse mapping from species names to dex numbers.
+--
+-- ColosseumDex.species[dex][1] is the romanized JAPANESE disc stem (e.g.
+-- "poppo", "koratta", "casey", "ptera" for PIDGEY/RATTATA/ABRA/AERODACTYL),
+-- NOT the English species name -- see the header comment in ColosseumDex.lua.
+-- Using it alone as the name->dex table only "works" by coincidence for the
+-- handful of species whose stem happens to equal their English constant
+-- (pikachu, nidoran_f, nidoran_m...). Every other species tag()s with an
+-- English name like "PIDGEY" and silently fails to resolve, which is why
+-- those overworld/Colosseum-battle actors fall back to 2D sprites.
+--
+-- ColosseumDexNames.lua is the dex-indexed table of correct English display
+-- names and is the source that should drive name -> dex lookups here.
 local function buildColosseumNameMapping()
   if colosseumNameToDex then return colosseumNameToDex end
 
+  local mapping = {}
+
+  -- Primary source: English species names (PIDGEY, RATTATA, ABRA, ...).
+  local okNames, ColosseumDexNames = pcall(V.require, "ColosseumDexNames")
+  if okNames and type(ColosseumDexNames) == "table" then
+    for dex, name in pairs(ColosseumDexNames) do
+      if type(dex) == "number" and type(name) == "string" then
+        mapping[name] = dex
+        mapping[name:lower()] = dex
+      end
+    end
+  end
+
+  -- Secondary source: the disc's romanized Japanese stems, kept as aliases
+  -- in case any caller ever tags using those internal names directly.
   if not ColosseumDex then
     local ok, cd = pcall(V.require, "ColosseumDex")
     if ok and cd then
       ColosseumDex = cd
-    else
-      return {}
     end
   end
 
-  if not ColosseumDex or not ColosseumDex.species then
-    return {}
-  end
-
-  local mapping = {}
-  for dex, data in pairs(ColosseumDex.species) do
-    if type(data) == "table" and data[1] then
-      local speciesName = data[1]
-      mapping[speciesName] = dex
-      -- Also add lowercase variant for case-insensitive matching
-      mapping[speciesName:lower()] = dex
+  if ColosseumDex and ColosseumDex.species then
+    for dex, data in pairs(ColosseumDex.species) do
+      if type(data) == "table" and data[1] then
+        local stem = data[1]
+        if mapping[stem] == nil then mapping[stem] = dex end
+        if mapping[stem:lower()] == nil then mapping[stem:lower()] = dex end
+      end
     end
   end
+
+  if next(mapping) == nil then return {} end
 
   colosseumNameToDex = mapping
   return mapping

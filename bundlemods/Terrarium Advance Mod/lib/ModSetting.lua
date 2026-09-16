@@ -161,6 +161,13 @@ function ModSetting:cycle(game, dir)
   return self:setIndex(i, game)
 end
 
+-- The label of the rung currently in force. Used by SettingsMenu to show
+-- the current value as a summary on category rows.
+function ModSetting:valueLabel()
+  local i = self:read()
+  return self.labels[self:allows(i) and i or 1]
+end
+
 -- Adopt a value set from somewhere else (the mod manager's settings page,
 -- which writes and persists on its own). Nothing to store: just move the
 -- cached index so the next read agrees with it.

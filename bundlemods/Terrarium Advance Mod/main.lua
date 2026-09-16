@@ -3126,6 +3126,18 @@ local function installOverworldStadium()
   end
   V.OverworldStadium = OverworldStadium
 
+  -- Expose OverworldBattle on the shared V table too. It was only ever kept
+  -- as a local in this file (loaded via V.require above), so every other
+  -- module reading it as V.OverworldBattle directly (CurrentSpriteModels,
+  -- PokemonActors.service.selected, Arena, BattleCache, BattleSettings,
+  -- BattleSettingsGen3, ResidentPrewarm, StadiumBridge) was silently getting
+  -- nil and falling back to weaker logic -- which is what made 3D-BTL's
+  -- COLOSSEUM A/B rungs draw sprites instead of the Colosseum actor even
+  -- though Stadium.lua (which reads it via V.require, not V.OverworldBattle)
+  -- staged the fight correctly. See lib/Stadium.lua's Stadium.mode() for the
+  -- pattern this should have matched all along.
+  V.OverworldBattle = OverworldBattle
+
   -- Load OverworldColosseum for Colosseum 3D Pokemon models in overworld
   -- Note: Actual installation happens in initializeColosseumIntegration after ColosseumDex is loaded
   local OverworldColosseum, colosseumErr = loadLocal("lib/OverworldColosseum.lua", V)

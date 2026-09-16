@@ -329,7 +329,26 @@ end
 
 function S.prefs(game) return prefs(game) end
 function S.cameraEnabled(game) return prefs(game or (modRef and modRef.game)).cameraEnabled~=false end
-function S.pokemonModelsEnabled(game) return prefs(game or (modRef and modRef.game)).pokemonModelsEnabled~=false end
+function S.pokemonModelsEnabled(game)
+  -- First check if Colosseum mode is selected - this overrides the global setting
+  local OverworldBattle = V.OverworldBattle
+  if OverworldBattle and type(OverworldBattle.colosseum)=="function" then
+    local okColosseum, isColosseum = pcall(OverworldBattle.colosseum, {game=game})
+    if okColosseum and isColosseum then return true end
+  end
+  
+  -- Also check directly from the setting value
+  if OverworldBattle and type(OverworldBattle.setting)=="table" and type(OverworldBattle.setting.get)=="function" then
+    local okValue, value = pcall(OverworldBattle.setting.get, OverworldBattle.setting)
+    if okValue and (value == OverworldBattle.COLOSSEUM_A or value == OverworldBattle.COLOSSEUM_B) then
+      return true
+    end
+  end
+
+  -- Fall back to the global preference check
+  local p=prefs(game or (modRef and modRef.game))
+  return p.pokemonModelsEnabled~=false
+end
 function S.abilitiesEnabled(game) return prefs(game or (modRef and modRef.game)).abilitiesEnabled==true end
 function S.setCameraEnabled(game,value)
   local p=prefs(game or (modRef and modRef.game)); p.cameraEnabled=value~=false; return p.cameraEnabled
