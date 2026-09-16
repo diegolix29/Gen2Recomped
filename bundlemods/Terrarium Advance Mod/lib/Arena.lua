@@ -2438,7 +2438,7 @@ local function activateDefinition(ctx,def,selected)
   if PlayerTrainer and type(PlayerTrainer.setArenaProfile)=="function" then PlayerTrainer:setArenaProfile(def) end
   if Trainer and type(Trainer.setArenaProfile)=="function" then Trainer:setArenaProfile(def) end
   local arena={
-    id="DRAMATIC_SHAPE:"..tostring(activeArenaId),
+    id="COLOSSEUM_BATTLE_ENVIRONMENTS:"..tostring(activeArenaId),
     selectedArena=selected or activeArenaId,
     cachePath=def.cache,
     profile=def.profile,

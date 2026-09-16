@@ -202,14 +202,12 @@ end
 -- sound comes out as a rattle for as long as they keep walking. It is
 -- feedback for a refusal that is not happening. The grid walk keeps its
 -- own bump (the engine's, in OverworldController) untouched.
- local function pushSpecials(state, dir, why)
-   local p = state.player
-   p.facing = dir      -- the handlers read the push off the facing
-
- if state:checkGen2CarpetExit(dir) then return true end
- if state:checkGen3ArrowWarp(dir) then return true end
-
-   if why == "bounds" and state:checkEdgeExit(dir) then return true end
+local function pushSpecials(state, dir, why)
+  local p = state.player
+  p.facing = dir      -- the handlers read the push off the facing
+  if why == "bounds" and state:checkEdgeExit(dir) then return true end
+  if state:checkLedgeHop(dir) then return true end
+  if state:checkBoulderPush(dir) then return true end
   
   local Game = require("src.core.Game")
   local Warp = require("src.world.Warp")

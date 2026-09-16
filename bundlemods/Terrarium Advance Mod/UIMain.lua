@@ -2134,7 +2134,7 @@ function ColosseumUI.install(mod)
   modRef=mod
   local doublesSource=assert(mod:read("lib/DoublesUI.lua"),"Missing doubles UI module")
   ColosseumUI.doubles=assert(load(doublesSource,"@ColosseumUI/lib/DoublesUI.lua"))({
-    mod=mod,findCBE=function() return GoldCompat.findLoadedMod("DRAMATIC_SHAPE") end,
+    mod=mod,findCBE=function() return GoldCompat.findLoadedMod("COLOSSEUM_BATTLE_ENVIRONMENTS") end,
     font=font,panel=consolePanel,selector=selector,plate=statusPlateShape,
     setUIColor=GoldCompat.setUIColor,
     displayCompat=assert(load(assert(mod:read("lib/DoublesDisplayCompat.lua"),
@@ -2171,7 +2171,7 @@ function ColosseumUI.install(mod)
 end
 
 function ColosseumUI.draw(game,presentationBattle,sourceBattle)
-  local provider=GoldCompat.findLoadedMod("DRAMATIC_SHAPE")
+  local provider=GoldCompat.findLoadedMod("COLOSSEUM_BATTLE_ENVIRONMENTS")
   local boss=provider and provider.exports and provider.exports.bossIntro
   if boss and boss.version==1 and boss.active(sourceBattle or presentationBattle) then return true end
   if ColosseumUI.doubles and ColosseumUI.doubles.draw(game,sourceBattle or presentationBattle) then return true end
@@ -11687,14 +11687,14 @@ function DexUI.memoTypeLabel(def)
 end
 
 function GoldCompat.cbeAbilitiesBridge()
-  -- Kept as a GoldCompat.findLoadedMod("DRAMATIC_SHAPE") call
+  -- Kept as a GoldCompat.findLoadedMod("COLOSSEUM_BATTLE_ENVIRONMENTS") call
   -- (not a direct modRef reference) deliberately: tests/AbilityBridgeTests.lua
   -- extracts this exact function's source text and re-evaluates it standalone
   -- with only a mocked GoldCompat table in scope, so it cannot see modRef (a
   -- file-local upvalue). findLoadedMod itself short-circuits this id to the
   -- live mod post-merge -- see its definition below.
-  local cbe=GoldCompat.findLoadedMod("DRAMATIC_SHAPE")
-  if not cbe then cbe=GoldCompat.findLoadedMod("dramatic_shape") end
+  local cbe=GoldCompat.findLoadedMod("COLOSSEUM_BATTLE_ENVIRONMENTS")
+  if not cbe then cbe=GoldCompat.findLoadedMod("colosseum_battle_environments") end
   local bridge=cbe and cbe.exports and cbe.exports.abilities
   if type(bridge)=="table" and bridge.version==1 then return bridge end
   return nil
@@ -14216,7 +14216,7 @@ function GoldCompat.findLoadedMod(id)
   -- The combined build owns CBE directly. The UI-only build must resolve
   -- the optional, separately installed provider rather than itself.
   if modRef and modRef.id=="COLOSSEUM_OVERHAUL"
-      and (id=="DRAMATIC_SHAPE" or id=="dramatic_shape") then
+      and (id=="COLOSSEUM_BATTLE_ENVIRONMENTS" or id=="colosseum_battle_environments") then
     return modRef
   end
   if not (modRef and type(modRef.find)=="function") then return nil end
@@ -14231,7 +14231,7 @@ function GoldCompat.findLoadedMod(id)
 end
 
 function GoldCompat.colosseumModelsSelected(game)
-  local provider=GoldCompat.findLoadedMod("DRAMATIC_SHAPE")
+  local provider=GoldCompat.findLoadedMod("COLOSSEUM_BATTLE_ENVIRONMENTS")
   if not provider then return false end
   game=game or GoldCompat.game or (modRef and modRef.game)
   local options=game and game.save and game.save.colosseumBattle
@@ -14327,7 +14327,7 @@ function GoldCompat.cbeInformationModelService(game,mon,kind)
     return stable.api,stable.providerId,context,stable.owner
   end
 
-  local provider=GoldCompat.findLoadedMod("DRAMATIC_SHAPE")
+  local provider=GoldCompat.findLoadedMod("COLOSSEUM_BATTLE_ENVIRONMENTS")
   local bridge=provider and provider.exports and provider.exports.informationModels
   local bridgeVersion=type(bridge)=="table" and tonumber(bridge.version or 0) or 0
 
@@ -14436,7 +14436,7 @@ function GoldCompat.cbeInformationModelService(game,mon,kind)
 end
 
 function GoldCompat.cbeInformationBridge()
-  local provider=GoldCompat.findLoadedMod("DRAMATIC_SHAPE")
+  local provider=GoldCompat.findLoadedMod("COLOSSEUM_BATTLE_ENVIRONMENTS")
   local bridge=provider and provider.exports and provider.exports.informationModels
   if type(bridge)=="table" then return bridge end
   return nil
@@ -23915,7 +23915,7 @@ function GoldCompat.cbeBattleOwnership(state)
   end
 
   local ownership={battle=state.battle,world=false,trainer=false}
-  local provider=GoldCompat.findLoadedMod("DRAMATIC_SHAPE")
+  local provider=GoldCompat.findLoadedMod("COLOSSEUM_BATTLE_ENVIRONMENTS")
   if provider then
     local exports=provider.exports
     if type(exports)=="table" then

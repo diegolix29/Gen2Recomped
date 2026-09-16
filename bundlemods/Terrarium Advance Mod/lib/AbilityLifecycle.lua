@@ -45,8 +45,8 @@ function L.ensure(b,g,atAction)
   if not atAction and candidate(b,g) then return end
   local p,e=b.player,b.enemy
   if not (p and e) then return end
-  local ps=g==1 and (p.curStats and p.curStats.speed or 0) or (type(b.effectiveSpeed)=="function" and b:effectiveSpeed(p) or (p.curStats and p.curStats.speed or 0))
-  local es=g==1 and (e.curStats and e.curStats.speed or 0) or (type(b.effectiveSpeed)=="function" and b:effectiveSpeed(e) or (e.curStats and e.curStats.speed or 0))
+  local ps=g==1 and (p.curStats and p.curStats.speed or 0) or b:effectiveSpeed(p)
+  local es=g==1 and (e.curStats and e.curStats.speed or 0) or b:effectiveSpeed(e)
   if es>ps then L.enter(b,g,e);L.enter(b,g,p) else L.enter(b,g,p);L.enter(b,g,e) end
 end
 function L.onStarted(event)
