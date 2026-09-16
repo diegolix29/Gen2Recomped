@@ -1,0 +1,39 @@
+{
+  "id": "colosseum_ui_overhaul",
+  "name": "Colosseum Inspired UI Overhaul",
+  "version": "3.1.0",
+  "author": "Community",
+  "api": 2,
+  "entry": "main.lua",
+  "profile": "content",
+  "category": "GRAPHICS",
+  "game_version": "0.0.0-dev || >=0.2.11 <2.0.0",
+  "games": [
+    "gen1",
+    "gen2"
+  ],
+  "priority": 110,
+  "dependencies": [],
+  "optional_dependencies": [
+    "COLOSSEUM_BATTLE_ENVIRONMENTS",
+    "STADIUM_BATTLE_FX",
+    "STADIUM2_OVERWORLD_MODELS",
+    "BATTLE_ART_VOXEL_GEN2",
+    "BATTLE_ART_VOXEL_FORK",
+    "DRAMATIC_SHAPE",
+    "DRAMALESS_SHAPE",
+    "BATTLE_CINEMATICS",
+    "potato_voxel"
+  ],
+  "conflicts": [
+    "gen3_battle_ui",
+    "COLOSSEUM_OVERHAUL"
+  ],
+  "incompatible": [],
+  "permissions": [
+    "engine_internals"
+  ],
+  "affects_link": false,
+  "description": "Standalone Colosseum-inspired presentation/UI update for Gen I/II, synchronized to Colosseum Overhaul 2.0.1. Includes the newest battle HUD, menus, mobile scaling, Colosseum portraits, expanded ColosseumDex display bridge, information-model showroom integration, UI color controls, doubles targeting/HUD compatibility and release polish. CBE is optional; when installed, this UI consumes its doubles, abilities, ColosseumDex and information-model services.",
+  "experimental": false
+}

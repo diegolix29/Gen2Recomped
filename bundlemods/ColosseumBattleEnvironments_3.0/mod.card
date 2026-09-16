@@ -1,0 +1,7 @@
+COLOSSEUM BATTLE ENVIRONMENTS 2.0.1 — STANDALONE
+
+Battle/runtime half of Colosseum Overhaul 2.0.1.
+Includes the 386 cache-reuse hotfix: existing valid model catalogs are reused; battle-only action banks remain selective/on-demand.
+Double Battles and Abilities are production features and default ON for fresh settings.
+Compatible with the separate Colosseum Inspired UI Overhaul 3.1.0.
+Requires the user-owned Pokemon Colosseum USA GC6E01 source import.
