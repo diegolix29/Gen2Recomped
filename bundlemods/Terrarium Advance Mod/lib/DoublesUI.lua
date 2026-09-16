@@ -10,8 +10,8 @@ local function service()
   elseif provider and not (provider.exports and provider.exports.doubles) and type(provider.find)=="function" then
     -- Compatibility for older embedders; the UI's injected resolver is cached
     -- and invalidated by presentation-provider/options events.
-    local ok,found=pcall(provider.find,"COLOSSEUM_BATTLE_ENVIRONMENTS")
-    if not ok or not found then ok,found=pcall(provider.find,provider,"COLOSSEUM_BATTLE_ENVIRONMENTS") end
+    local ok,found=pcall(provider.find,"DRAMATIC_SHAPE")
+    if not ok or not found then ok,found=pcall(provider.find,provider,"DRAMATIC_SHAPE") end
     provider=ok and found or nil
   end
   local api=provider and provider.exports and provider.exports.doubles

@@ -17,7 +17,7 @@ local ModLookup=V.ModLookup
 local function cbeOwnsPokemonModels(ctx)
   local arena=ctx and ctx.arena
   local id=arena and tostring(arena.id or "") or ""
-  if not id:find("^COLOSSEUM_BATTLE_ENVIRONMENTS:") then return false end
+  if not id:find("^DRAMATIC_SHAPE:") then return false end
   local game=(ctx and ctx.game) or (ctx and ctx.battle and ctx.battle.game) or mod.game
   local arenasEnabled=not (ArenaCatalog and ArenaCatalog.enabled) or ArenaCatalog.enabled(game)
   local modelsEnabled=not (BattleSettings and BattleSettings.pokemonModelsEnabled)
@@ -112,7 +112,7 @@ function S.install()
   if not (stadium and api) then return false end
 
   V.FALLBACK=api.FALLBACK
-  local owner=mod.id or "COLOSSEUM_BATTLE_ENVIRONMENTS"
+  local owner=mod.id or "DRAMATIC_SHAPE"
   S.arenaProviderId=api:registerComponent(owner,"arena","water-colosseum",{
     label="COLOSSEUM ENVIRONMENTS",
     description="Selectable Colosseum environments with battle-synchronized trainers and cinematography.",

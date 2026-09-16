@@ -249,9 +249,16 @@ local function prepareOneFromCache(p, dex, dt)
     -- Try cache first
     local cached = modelCache[dex]
     if not cached then
-      -- Use PokemonActors.acquire with Pokedex-style context (informationSurface)
-      -- This leverages the already-cached models and idle animations from ColosseumBattleEnvironments
-      if PokemonActors.acquire then
+      -- Try to get the CBE service first (same pattern as colosseum_ui_overhaul)
+      local cbeProvider = nil
+      if type(V.mod.find) == "function" then
+        local ok, found = pcall(V.mod.find, V.mod, "DRAMATIC_SHAPE")
+        cbeProvider = ok and found or nil
+      end
+      
+      local api = cbeProvider and cbeProvider.exports and cbeProvider.exports.pokemonModels
+      if api and type(api.service) == "table" then
+        -- Use the same showroom/information service as the Pokedex UI
         local ctx = {
           apiVersion = 1,
           game = V.mod and V.mod.game,
@@ -263,10 +270,11 @@ local function prepareOneFromCache(p, dex, dt)
           services = {
             cbeStandalone = true,
             informationSurface = true,
-            informationAnimation = true
+            informationAnimation = true,
+            showroom = true
           }
         }
-        local okActor, actor = pcall(PokemonActors.acquire, PokemonActors, "cbe-idle-warm", dex, "normal", { context = ctx })
+        local okActor, actor = pcall(api.acquire, api, "cbe-idle-warm", dex, "normal", { context = ctx })
         
         if okActor and actor then
           -- Setup actor for overworld use
