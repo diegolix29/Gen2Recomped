@@ -1,7 +1,5 @@
 local V=...
 local HSD,FSYS=V.HSD,V.FSYS
-local Persist=V.PayloadPreserver
-local ThrowSource=V.TrainerThrowSource
 local T={}
 local TARGETS={
   -- Exact source members, checked against local pose galleries. Suffixes are
@@ -12,7 +10,7 @@ local TARGETS={
   {id="wes",modelId=0x01,height=17.406225,verts=3069,scaleMul=1.50,playerScaleMul=.93,pivotY=8.0,exactArchive="people_archive.fsys",exactName="ken_a1.dat",directSource=true,
     -- A1 assignments are based on inspected source pose sequences. Keep the
     -- selected clips explicit rather than letting motion magnitude choose a gait.
-    excludedBattleClips={},nativeRoles={gesture=2,reaction=7,opening=1,throw=2,sendout=2,command=5,brace=7,concern=3,frustration=4,defeat=6,victory=9}},
+    excludedBattleClips={},nativeRoles={gesture=2,reaction=7,opening=1,throw=2,sendout=2,command=5,brace=7,concern=3,frustration=4,defeat=6,recall=8,victory=9}},
   -- Identity audit against the known-good source caches and GC6E01 battle assets:
   -- akami_* are the Kanto Red/Leaf battle actors; agb_* are Brendan/May.
   -- Keep these as separate exact members. Never alias Red/Leaf to the Hoenn pair.
@@ -20,26 +18,17 @@ local TARGETS={
   {id="may",modelId=0x0A,height=16.25281,verts=2493,scaleMul=1.60,playerScaleMul=.99,pivotY=7.5,exactArchive="pkx_agb_f_a1.fsys",exactName="agb_f_a1.pkx",directSource=true},
   {id="cooltrainer_m",modelId=0x35,height=17.69574,verts=3105,scaleMul=1.47,pivotY=8.1,exactArchive="people_archive.fsys",exactName="traner_m_a1.dat",directSource=true},
   {id="cooltrainer_f",modelId=0x36,height=16.49731,verts=2283,scaleMul=1.58,pivotY=7.6,exactArchive="people_archive.fsys",exactName="traner_f_a1.dat",directSource=true},
-  {id="dakim",modelId=0x0D,height=34.61308,verts=2544,scaleMul=1.0,playerScaleMul=.62,pivotY=12.8,exactArchive="people_archive.fsys",exactName="battleyama_a1.dat",directSource=true,nativeIdleProbe=true,nativeRoles={gesture=2,reaction=7,opening=1,throw=2,sendout=2,command=5,brace=7,concern=3,frustration=4,defeat=6,victory=9}},
+  {id="dakim",modelId=0x0D,height=34.61308,verts=2544,scaleMul=1.0,playerScaleMul=.62,pivotY=12.8,exactArchive="people_archive.fsys",exactName="battleyama_a1.dat",directSource=true,nativeIdleProbe=true,nativeRoles={gesture=2,reaction=7,opening=1,throw=2,sendout=2,command=5,brace=7,concern=3,frustration=4,defeat=6,recall=8,victory=9}},
   {id="nascour",modelId=0x11,height=22.98924,verts=2415,scaleMul=1.48,playerScaleMul=.92,pivotY=12.2,exactArchive="people_archive.fsys",exactName="boss999_a1.dat",directSource=true},
   {id="miror_b",modelId=0x0F,height=26.78492,verts=2361,scaleMul=1.28,playerScaleMul=.80,pivotY=11.3,exactArchive="people_archive.fsys",exactName="boss555_a1.dat",directSource=true},
 }
--- Do NOT install one universal semantic clip table across all A1 actors. The
--- complete retail event->motion table is not recovered for every trainer, and
--- equal numeric animation indexes are character-local HSD banks rather than a
--- global meaning such as "clip 9 = victory". Wes/Dakim retain the explicit
--- source-inspected maps above. Every other trainer derives one coherent gesture
--- family and one coherent reaction family from its OWN A1 bank below. The only
--- universal battle action currently proven for all ten actors is the ModelSequence
--- throw/sendout row (animation 2), supplied independently by TrainerThrowSource.
--- Ordinary Pokemon return remains intentionally absent: GC6E01's two retail
--- return paths run fightOutPokemonModosuEffect without a fightTrainer animation.
+-- Shared ten-slot A1 battle bank, selected after source pose inspection.
+-- Keep these separate: a hit must not reuse the throw or a field gait.
+local BATTLE_ROLES={gesture=2,reaction=7,opening=1,throw=2,sendout=2,command=5,
+  brace=7,concern=3,frustration=4,defeat=6,recall=8,victory=9}
+for _,target in ipairs(TARGETS) do target.nativeRoles=target.nativeRoles or BATTLE_ROLES end
 local function q(s)return string.format("%q",s) end
 local function num(x)if x~=x or x==math.huge or x==-math.huge then return "0" end;return ("%.7g"):format(x) end
--- IEEE-754 float32 values require at most 9 significant decimal digits for an
--- exact text round-trip. Preserve that precision for source attachment matrices;
--- the older 7-digit mesh serializer remains untouched for cache compatibility.
-local function numF32(x)if x~=x or x==math.huge or x==-math.huge then return "0" end;return ("%.9g"):format(x) end
 local function signature(tex)
   if not tex then return "none" end
   return table.concat({tex.w,tex.h,tex.format,tex.rgba:sub(1,48)},":")
@@ -55,23 +44,6 @@ local function normalizeJointPositions(points,s,cx,baseY,cz)
   end
   return points
 end
--- HSD already evaluates the exact per-frame JObj world matrices. Trainer
--- geometry is normalized with one uniform source->cache scale, so an attachment
--- matrix needs only the same translation conversion here. Keep its 3x3 block in
--- source form: GSmodelAttachToGSpart's selector decides later whether rotation
--- and/or scale are inherited, and baking the trainer normalization into those
--- axes would incorrectly turn selector-4 (position+rotation) into scaled axes.
-local function normalizeJointMatrices(matrices,s,cx,baseY,cz)
-  if type(matrices)~="table" then return matrices end
-  for _,m in ipairs(matrices) do
-    if type(m)=="table" then
-      m[4]=((tonumber(m[4]) or 0)-cx)*s
-      m[8]=((tonumber(m[8]) or 0)-baseY)*s
-      m[12]=((tonumber(m[12]) or 0)-cz)*s
-    end
-  end
-  return matrices
-end
 local function normalize(model,targetHeight)
   local mn,mx=model.bounds.min,model.bounds.max;local h=math.max(1e-6,mx[2]-mn[2]);local s=targetHeight/h
   local cx=(mn[1]+mx[1])/2;local cz=(mn[3]+mx[3])/2
@@ -81,7 +53,6 @@ local function normalize(model,targetHeight)
     for k=1,3 do if v[k]<nmin[k] then nmin[k]=v[k] end;if v[k]>nmax[k] then nmax[k]=v[k] end end
   end end
   normalizeJointPositions(model.jointPositions,s,cx,mn[2],cz)
-  normalizeJointMatrices(model.jointMatrices,s,cx,mn[2],cz)
   model.bounds={min=nmin,max=nmax,center={(nmin[1]+nmax[1])/2,(nmin[2]+nmax[2])/2,(nmin[3]+nmax[3])/2}}
   return model
 end
@@ -99,34 +70,14 @@ local function normalizeLike(model,targetHeight,referenceBounds)
     for k=1,3 do if v[k]<nmin[k] then nmin[k]=v[k] end;if v[k]>nmax[k] then nmax[k]=v[k] end end
   end end
   normalizeJointPositions(model.jointPositions,s,cx,mn[2],cz)
-  normalizeJointMatrices(model.jointMatrices,s,cx,mn[2],cz)
   model.bounds={min=nmin,max=nmax,center={(nmin[1]+nmax[1])/2,(nmin[2]+nmax[2])/2,(nmin[3]+nmax[3])/2}}
   return model
 end
 local POSE_OFFSET={
-  breath=13,look=16,
-  gesture1=19,gesture2=22,gesture3=25,gesture4=28,gesture5=31,
-  reaction1=34,reaction2=37,reaction3=40,reaction4=43,reaction5=46,
+  breath=9,look=12,
+  gesture1=15,gesture2=18,gesture3=21,gesture4=24,gesture5=27,
+  reaction1=30,reaction2=33,reaction3=36,reaction4=39,reaction5=42,
 }
--- Trainer v27 has one fixed base vertex contract even though HSD COLOR0A0 is
--- optional per material. Promote colorless source rows to identity white while
--- preserving their authored normal. This is done before pose slots are attached,
--- so sparse high pose indices can never be mistaken for a source color channel.
-local function canonicalSourceRows(model)
-  for _,g in ipairs(model and model.groups or {}) do
-    local rows={}
-    for i,v in ipairs(g.vertices or {}) do
-      if #v>=12 then
-        rows[i]=v
-      else
-        rows[i]={v[1],v[2],v[3],v[4] or 0,v[5] or 0,1,1,1,1,
-          v[6] or 0,v[7] or 1,v[8] or 0}
-      end
-    end
-    g.vertices=rows
-  end
-  return model
-end
 local function sameTopology(base,sample)
   if not (base and sample and #(base.groups or {})==#(sample.groups or {})) then return false end
   for gi,g in ipairs(base.groups or {}) do
@@ -190,9 +141,7 @@ local function finiteMetric(m)
 end
 local function sourcePoseSample(base,clip,frame,targetHeight,referenceBounds)
   if not (HSD and type(HSD.extractNativePose)=="function") then return nil end
-  local sample=HSD.extractNativePose(base,clip,frame,{textures=false,nativeScaleCompensation=true,nativeTrainerIK=true,
-    preserveVertexColors=true,honorRenderPass=true,skipShadowMaterials=true,
-    maxVertices=30000,maxDisplayOps=120000,maxJobjs=1536,maxDobjs=6144,maxPobjs=12288})
+  local sample=HSD.extractNativePose(base,clip,frame,{textures=false,nativeScaleCompensation=true,nativeTrainerIK=true,maxVertices=30000,maxDisplayOps=120000,maxJobjs=1536,maxDobjs=6144,maxPobjs=12288})
   if not sample then return nil end
   normalizeLike(sample,targetHeight,referenceBounds)
   -- Preserve authored translation and lift using the same reference as the base.
@@ -303,15 +252,9 @@ local function attachSourcePoseBank(model,target,referenceBounds,progressLabel)
         -- on the source actor's lead side and penalize equally large opposite
         -- arm travel; this rejects the broad two-arm "swimming" silhouettes
         -- that the old strongest-upper-body classifier could accidentally pick.
-        local leadSide=tonumber(target and target.releaseSide)
-        local left,right=(m.left or 0),(m.right or 0)
-        -- Most actors do not yet have a recovered handedness bit. Do not silently
-        -- assume every trainer throws/commands with the same arm: when unknown,
-        -- prefer whichever side actually carries the authored one-hand action.
-        local lead,off
-        if leadSide then
-          lead=(leadSide<0) and left or right;off=(leadSide<0) and right or left
-        else lead=math.max(left,right);off=math.min(left,right) end
+        local leadSide=tonumber(target and target.releaseSide) or -1
+        local lead=(leadSide<0) and (m.left or 0) or (m.right or 0)
+        local off=(leadSide<0) and (m.right or 0) or (m.left or 0)
         sc=lead*1.95+(m.asym or 0)*1.10+(m.upper or 0)*.62-off*.42-(m.lower or 0)*.22+(m.overall or 0)*.12
       else
         -- A battle reaction is torso/upper-body led. The previous score rewarded
@@ -482,7 +425,7 @@ local function cacheLua(target,model,texturePaths,sourceName,runtimeBins,sourceS
   local excluded={};for _,v in ipairs(model.nativeExcludedBattleClips or {}) do excluded[#excluded+1]=tostring(math.floor(tonumber(v) or 0)) end
   local inferred={};for _,v in ipairs(model.nativeInferredLocomotionClips or {}) do inferred[#inferred+1]=tostring(math.floor(tonumber(v) or 0)) end
   local locomotionFallback={};for _,v in ipairs(model.nativeLocomotionFallbackClips or {}) do locomotionFallback[#locomotionFallback+1]=tostring(math.floor(tonumber(v) or 0)) end
-  local out={"-- Generated locally from the user's Pokemon Colosseum GC6E01 disc.\nreturn {formatVersion=27,morphFormat=\"source-hsd-dense48-color-alpha-v1-retail-motion-role-filter\",source=",q("Pokemon Colosseum / "..target.id.." / "..sourceName),
+  local out={"-- Generated locally from the user's Pokemon Colosseum GC6E01 disc.\nreturn {formatVersion=26,morphFormat=\"source-hsd-dense-clipfamilies-v8-retail-motion-role-filter\",source=",q("Pokemon Colosseum / "..target.id.." / "..sourceName),
     ",sourceRoot=",q(model.sourceRootMode or "unknown"),",nativeClipCount=",num(model.nativeClipCount or 0),",excludedBattleClips={",table.concat(excluded,","),"},inferredLocomotionClips={",table.concat(inferred,","),"},poseMap={",table.concat(poseMap,","),"},releaseJoint=",num(model.releaseJoint or 0),",releaseSide=",num(model.releaseSide or -1),",releaseJointScore=",num(model.releaseJointScore or 0),",jointPositions=",pointsLua(model.jointPositions),",jointParents=",intsLua(model.jointParents),",poseJointPositions={",table.concat(poseJoints,","),"},bounds={min={",num(b.min[1]),",",num(b.min[2]),",",num(b.min[3]),"},max={",num(b.max[1]),",",num(b.max[2]),",",num(b.max[3]),"},center={",num(b.center[1]),",",num(b.center[2]),",",num(b.center[3]),"}}"}
   if runtimeBins then out[#out+1] = ",runtimeMeshVersion=1,sourceSize="..num(sourceSize or 0) end
   out[#out+1] = ",groups={\n"
@@ -498,39 +441,20 @@ local function cacheLua(target,model,texturePaths,sourceName,runtimeBins,sourceS
       ..",shadow="..tostring(g.shadow==true)..",effect="..tostring(g.effect==true)
       ..",useConstant="..tostring(g.useConstant==true)..",useVertexColor="..tostring(g.useVertexColor==true)
       ..",useDiffuseLighting="..tostring(g.useDiffuseLighting~=false)..",textureSlot="..num(tonumber(g.textureSlot) or -1)
-    if type(g.pe)=="table" then
-      local p=g.pe
-      out[#out+1]=",pe={flags="..num(p.flags or 0)..",ref0="..num(p.ref0 or 0)..",ref1="..num(p.ref1 or 0)
-        ..",dstAlpha="..num(p.dstAlpha or 0)..",type="..num(p.type or 0)..",srcFactor="..num(p.srcFactor or 0)
-        ..",dstFactor="..num(p.dstFactor or 0)..",logicOp="..num(p.logicOp or 0)..",zComp="..num(p.zComp or 0)
-        ..",alphaComp0="..num(p.alphaComp0 or 0)..",alphaOp="..num(p.alphaOp or 0)..",alphaComp1="..num(p.alphaComp1 or 0).."}"
-    end
     local tp=texturePaths[gi]
     if tp then
       local tex=g.texture or {}
       out[#out+1]=",texture={path="..q(tp.path)..",w="..tp.w..",h="..tp.h
-        ..",wrapS="..num(tonumber(tex.wrapS) or 0)..",wrapT="..num(tonumber(tex.wrapT) or 0)
-        ..",magFilt="..num(tonumber(tex.magFilt) or 1)..",minFilt="..num(tonumber(tex.minFilt) or 5)
-        ..",effectiveMinFilt="..num(tonumber(tex.effectiveMinFilt) or 1)..",mipmap="..tostring(tex.mipmap==true)
-        ..",maxAnisotropy="..num(tonumber(tex.maxAnisotropy) or 0).."}"
+        ..",wrapS="..num(tonumber(tex.wrapS) or 0)..",wrapT="..num(tonumber(tex.wrapT) or 0).."}"
     end
     if runtimeBins and runtimeBins[gi] then
       out[#out+1]=",runtimeBin="..q(runtimeBins[gi]).."},\n"
     else
       out[#out+1]=",vertices={\n"
       for _,v in ipairs(g.vertices) do
-        local x,y,z,u,w=v[1],v[2],v[3],v[4] or 0,v[5] or 0
-        -- HSD's preserveVertexColors path emits XYZ/UV/RGBA/normal. Groups with
-        -- no source COLOR0A0 remain on the classic XYZ/UV/normal row; promote
-        -- those to identity white so every v27 trainer group has one 48-float
-        -- binary layout without manufacturing a visual tint.
-        local hasColor=#v>=12
-        local cr,cg,cb,ca=hasColor and (v[6] or 1) or 1,hasColor and (v[7] or 1) or 1,
-          hasColor and (v[8] or 1) or 1,hasColor and (v[9] or 1) or 1
-        local ni=hasColor and 10 or 6
-        local nx,ny,nz=v[ni] or 0,v[ni+1] or 1,v[ni+2] or 0
-        local row={x,y,z,u,w,cr,cg,cb,ca,nx,ny,nz}
-        for _,off in ipairs({13,16,19,22,25,28,31,34,37,40,43,46}) do
+        local x,y,z,u,w,nx,ny,nz=v[1],v[2],v[3],v[4] or 0,v[5] or 0,v[6] or 0,v[7] or 1,v[8] or 0
+        local row={x,y,z,u,w,nx,ny,nz}
+        for _,off in ipairs({9,12,15,18,21,24,27,30,33,36,39,42}) do
           row[#row+1]=v[off] or x;row[#row+1]=v[off+1] or y;row[#row+1]=v[off+2] or z
         end
         local parts={};for i=1,#row do parts[i]=num(row[i]) end;out[#out+1]="{"..table.concat(parts,",").."},\n"
@@ -543,43 +467,10 @@ end
 
 local unpackArgs=table.unpack or unpack
 local RUNTIME_PACK_BATCH=64
-local NATIVE_TRACK_STRIDE=6
-local NATIVE_TRACK_PACK_BATCH=64
-local NATIVE_TRACK_ROW_FMT=string.rep("f",NATIVE_TRACK_STRIDE)
-local NATIVE_TRACK_BATCH_FMT=string.rep(NATIVE_TRACK_ROW_FMT,NATIVE_TRACK_PACK_BATCH)
-local function nativeTrackVerticesBytes(vertices)
-  local lovePack=love and love.data and type(love.data.pack)=="function" and love.data.pack or nil
-  local luaPack=type(string.pack)=="function" and string.pack or nil
-  if not lovePack and not luaPack then return nil end
-  vertices=vertices or {};if #vertices==0 then return nil end
-  local buf,chunks={},{};local i=1
-  while i<=#vertices do
-    local take=math.min(NATIVE_TRACK_PACK_BATCH,#vertices-i+1);local k=0
-    for r=i,i+take-1 do
-      local v=vertices[r];if type(v)~="table" then return nil end
-      k=k+1;buf[k]=tonumber(v[1]) or 0
-      k=k+1;buf[k]=tonumber(v[2]) or 0
-      k=k+1;buf[k]=tonumber(v[3]) or 0
-      local ni=#v>=12 and 10 or 6
-      k=k+1;buf[k]=tonumber(v[ni]) or 0
-      k=k+1;buf[k]=tonumber(v[ni+1]) or 1
-      k=k+1;buf[k]=tonumber(v[ni+2]) or 0
-    end
-    local fmt=take==NATIVE_TRACK_PACK_BATCH and NATIVE_TRACK_BATCH_FMT or string.rep(NATIVE_TRACK_ROW_FMT,take)
-    local ok,bytes
-    if lovePack then ok,bytes=pcall(lovePack,"string",fmt,unpackArgs(buf,1,k)) end
-    if (not ok or type(bytes)~="string") and luaPack then ok,bytes=pcall(luaPack,"<"..fmt,unpackArgs(buf,1,k)) end
-    if not ok or type(bytes)~="string" then return nil end
-    chunks[#chunks+1]=bytes;i=i+take
-  end
-  return table.concat(chunks)
-end
 local function runtimeVerticesBytes(vertices)
-  local lovePack=love and love.data and type(love.data.pack)=="function" and love.data.pack or nil
-  local luaPack=type(string.pack)=="function" and string.pack or nil
-  if not lovePack and not luaPack then return nil end
+  if not (love and love.data and type(love.data.pack)=="function") then return nil end
   vertices=vertices or {};if #vertices==0 then return nil end
-  local stride=48;local rowFmt=string.rep("f",stride);local batchFmt=string.rep(rowFmt,RUNTIME_PACK_BATCH)
+  local stride=44;local rowFmt=string.rep("f",stride);local batchFmt=string.rep(rowFmt,RUNTIME_PACK_BATCH)
   local buf,chunks={},{};local i=1
   while i<=#vertices do
     local take=math.min(RUNTIME_PACK_BATCH,#vertices-i+1);local k=0
@@ -587,62 +478,28 @@ local function runtimeVerticesBytes(vertices)
       local row=vertices[r];if type(row)~="table" then return nil end
       local x,y,z=tonumber(row[1]) or 0,tonumber(row[2]) or 0,tonumber(row[3]) or 0
       for j=1,stride do
-        local v=tonumber(row[j])
-        if v==nil then
-          if j>=6 and j<=9 then v=1
-          elseif j==10 or j==12 then v=0
-          elseif j==11 then v=1
-          elseif j>=13 then local axis=(j-13)%3;v=(axis==0 and x) or (axis==1 and y) or z end
-        end
+        local v=tonumber(row[j]);if v==nil and j>=9 then local axis=(j-9)%3;v=(axis==0 and x) or (axis==1 and y) or z end
         v=tonumber(v) or 0;if v~=v or v==math.huge or v==-math.huge then v=0 end
         k=k+1;buf[k]=v
       end
     end
-    local fmt=take==RUNTIME_PACK_BATCH and batchFmt or string.rep(rowFmt,take)
-    local ok,bytes
-    if lovePack then ok,bytes=pcall(lovePack,"string",fmt,unpackArgs(buf,1,k)) end
-    if (not ok or type(bytes)~="string") and luaPack then ok,bytes=pcall(luaPack,"<"..fmt,unpackArgs(buf,1,k)) end
+    local ok,bytes=pcall(love.data.pack,"string",take==RUNTIME_PACK_BATCH and batchFmt or string.rep(rowFmt,take),unpackArgs(buf,1,k))
     if not ok or type(bytes)~="string" then return nil end
     chunks[#chunks+1]=bytes;i=i+take
   end
   return table.concat(chunks)
 end
-local function write(mod,path,data,paths,preserve)
-  if preserve and Persist then return Persist.write(mod,"trainer",path,data,paths,true) end
+local function write(mod,path,data,paths)
   local ok,err=mod.cache:write(path,data);assert(ok,err or ("cache write failed: "..path));if paths then paths[#paths+1]=path end
 end
 -- Full chronological geometry/normal tracks. Keep the base normalization;
 -- never subtract the mean foot displacement from an authored frame.
-local function writeNativeTracks(mod,target,model,referenceBounds,generated,preserve)
-  assert((love and love.data and type(love.data.pack)=="function") or type(string.pack)=="function",
-    "native trainer tracks require binary packing")
+local function writeNativeTracks(mod,target,model,referenceBounds,generated)
+  assert(love and love.data and love.data.pack,"native trainer tracks require binary packing")
   local roles={idle=1,gesture=model.nativeGestureClip,reaction=model.nativeReactionClip}
   for role,clip in pairs(target.nativeRoles or {}) do roles[role]=clip end
-  local roleSource={idle="source-idle",gesture="classified-source-family",reaction="classified-source-family"}
-  for role in pairs(target.nativeRoles or {}) do roleSource[role]="source-inspected-map" end
-  local throwSource=ThrowSource and ThrowSource.trainers and ThrowSource.trainers[target.id]
-  local throwPartIndex=throwSource and tonumber(throwSource.partIndex)
-  local throwClip=throwSource and tonumber(throwSource.animationIndex)
-  local throwSelector=ThrowSource and ThrowSource.waza and ThrowSource.waza.model
-    and tonumber(ThrowSource.waza.model.attachmentSelector or ThrowSource.waza.model.positionType)
-  -- Unknown per-event identities stay source-authored without claiming a false
-  -- retail clip number: expressive/positive actions share this actor's selected
-  -- gesture family, while adverse/emotional reactions share its selected reaction
-  -- family. Exact throw/sendout ownership always overrides those classifications.
-  local gestureClip=roles.gesture or model.nativeGestureClip
-  local reactionClip=roles.reaction or model.nativeReactionClip
-  for _,role in ipairs({"opening","command","approval","victory"}) do
-    if roles[role]==nil then roles[role]=gestureClip;roleSource[role]="classified-gesture-family" end
-  end
-  for _,role in ipairs({"brace","concern","frustration","defeat"}) do
-    if roles[role]==nil then roles[role]=reactionClip;roleSource[role]="classified-reaction-family" end
-  end
-  if throwClip then
-    roles.throw=throwClip;roles.sendout=throwClip
-    roleSource.throw="retail-modelsequence-exact";roleSource.sendout="retail-modelsequence-exact"
-  end
-  local meta={"local roles={}\nlocal roleSource={}\n"};local encoded={};local materialStats={animated=0,blocked=0,missing=0}
-  for _,role in ipairs({"idle","gesture","reaction","opening","throw","sendout","command","approval","brace","concern","frustration","defeat","recall","victory"}) do
+  local meta={"local roles={}\n"};local encoded={}
+  for _,role in ipairs({"idle","gesture","reaction","opening","throw","sendout","command","brace","concern","frustration","defeat","recall","victory"}) do
     local clip=roles[role]
     local info=clip and HSD.nativeAnimationInfo(model,clip)
     local finish=info and tonumber(info.endFrame)
@@ -652,94 +509,34 @@ local function writeNativeTracks(mod,target,model,referenceBounds,generated,pres
       encoded[clip]=role
       local count=math.ceil(finish)+1
       local chunks={};for gi=1,#model.groups do chunks[gi]={} end
-      -- Retail People playback selects GSmodel's material/"texAnim" bank with
-      -- the same animation index and frame as the skeletal bank. HSD decodes
-      -- only the channels the trainer renderer can reproduce exactly; a clip
-      -- with an unsupported HSD_TexAnim/TEV/material channel stays static.
-      local mat0,matWhy
-      if HSD.nativeMaterialPose then mat0,matWhy=HSD.nativeMaterialPose(model,clip,0)
-      else matWhy="native material decoder unavailable" end
-      local matEnabled=mat0 and mat0.animated==true
-      local materials={};if matEnabled then for gi=1,#model.groups do materials[gi]={} end end
-      if matEnabled then materialStats.animated=materialStats.animated+1
-      elseif matWhy and not tostring(matWhy):find("unavailable",1,true) then materialStats.blocked=materialStats.blocked+1
-      else materialStats.missing=materialStats.missing+1 end
       local joints={}
-      -- Ball-throw WZX kind 1 attaches to one actor-specific ModelSequence part.
-      -- Persist only that single 3x4 world matrix track, not every trainer joint:
-      -- this closes the missing rotation-data seam with negligible cache/I/O cost.
-      -- The runtime remains fail-closed until its selector/interpolation path can
-      -- reproduce GSmodelAttachToGSpart without inventing a transform.
-      local captureThrowPart=throwPartIndex and throwPartIndex>=0 and throwClip==tonumber(clip)
-      local throwMatrices=captureThrowPart and {} or nil
       for fi=0,count-1 do
         local frame=math.min(fi,finish)
-        local pose=assert(HSD.extractNativePose(model,clip,frame,{textures=false,nativeScaleCompensation=true,nativeTrainerIK=true,
-          preserveVertexColors=true,preserveJointMatrices=captureThrowPart==true,honorRenderPass=true,skipShadowMaterials=true,
-          maxVertices=30000,maxDisplayOps=120000,maxJobjs=1536,maxDobjs=6144,maxPobjs=12288}))
+        local pose=assert(HSD.extractNativePose(model,clip,frame,{textures=false,nativeScaleCompensation=true,nativeTrainerIK=true,maxVertices=30000,maxDisplayOps=120000,maxJobjs=1536,maxDobjs=6144,maxPobjs=12288}))
         normalizeLike(pose,target.height,referenceBounds)
         assert(sameTopology(model,pose),"native trainer track topology changed")
         for gi,g in ipairs(pose.groups) do
-          local bytes=nativeTrackVerticesBytes(g.vertices)
-          assert(type(bytes)=="string","native trainer track float32 packing failed")
-          chunks[gi][#chunks[gi]+1]=bytes
-        end
-        if matEnabled then
-          local matPose=fi==0 and mat0 or assert(HSD.nativeMaterialPose(model,clip,frame))
-          assert(type(matPose.groups)=="table" and #matPose.groups==#model.groups,"native trainer material topology changed")
-          for gi,m in ipairs(matPose.groups) do
-            local d=m.diffuse or {1,1,1}
-            materials[gi][#materials[gi]+1]={d[1] or 1,d[2] or 1,d[3] or 1,m.alpha or 1,m.ref0 or 0,m.ref1 or 0}
+          local bytes={}
+          for _,v in ipairs(g.vertices) do
+            bytes[#bytes+1]=love.data.pack("string","ffffff",v[1],v[2],v[3],v[6] or 0,v[7] or 1,v[8] or 0)
           end
+          chunks[gi][#chunks[gi]+1]=table.concat(bytes)
         end
         local points={}
         for _,v in ipairs(pose.jointPositions or {}) do points[#points+1]="{"..num(v[1])..","..num(v[2])..","..num(v[3]).."}" end
         joints[#joints+1]="{"..table.concat(points,",").."}"
-        if throwMatrices then
-          -- GSmodel part indices are zero-based; HSD's exported Lua array is
-          -- one-based in traversal order.
-          local m=pose.jointMatrices and pose.jointMatrices[throwPartIndex+1]
-          assert(type(m)=="table" and #m>=12,"trainer throw attachment matrix unavailable")
-          local values={};for k=1,12 do values[k]=numF32(m[k]) end
-          throwMatrices[#throwMatrices+1]="{"..table.concat(values,",").."}"
-        end
       end
       meta[#meta+1]="roles."..role.."={clip="..clip..",endFrame="..num(finish)..",count="..count..",joints={"..table.concat(joints,",").."},groups={"
       for gi,g in ipairs(model.groups) do
         local path=("cache/trainers/%s/native_v1/%s_%02d.f32"):format(target.id,role,gi)
-        write(mod,path,table.concat(chunks[gi]),generated,preserve)
+        write(mod,path,table.concat(chunks[gi]),generated)
         meta[#meta+1]="{path="..q(path)..",vertices="..#g.vertices.."},"
       end
-      meta[#meta+1]="}"
-      if matEnabled then
-        meta[#meta+1]=",materials={"
-        for gi=1,#model.groups do
-          meta[#meta+1]="{"
-          for _,v in ipairs(materials[gi]) do
-            meta[#meta+1]="{"..num(v[1])..","..num(v[2])..","..num(v[3])..","..num(v[4])..","..num(v[5])..","..num(v[6]).."},"
-          end
-          meta[#meta+1]="},"
-        end
-        meta[#meta+1]="}"
-      elseif matWhy then
-        meta[#meta+1]=",materialBlocker="..q(matWhy)
-      end
-      if throwMatrices then
-        meta[#meta+1]=",throwPart={partIndex="..throwPartIndex..",selector="..num(throwSelector or 4)..",matrices={"..table.concat(throwMatrices,",").."}}"
-      end
-      meta[#meta+1]="}\n"
+      meta[#meta+1]="}}\n"
     end
-    if roles[role]~=nil and roleSource[role] then meta[#meta+1]="roleSource."..role.."="..q(roleSource[role]).."\n" end
   end
-  -- GC6E01 People playback advances these HSD model + TexAnim banks at
-  -- GSmodelSetAnimRate(..., 0.5f) (people.c fn_8018B368 and restart path;
-  -- lbl_8047D7A4 == 0.5f). On the 60 Hz battle presentation clock that is
-  -- exactly 30 authored HSD frames/second. Keep the source clock in metadata;
-  -- TrainerMorph also recognizes legacy native-v1 indexes that stored 60 here
-  -- so existing payloads do not need to be rebuilt or invalidated.
-  meta[#meta+1]="return {version=1,fps=30,sourceAnimRate=.5,roles=roles,roleSource=roleSource}"
-  write(mod,("cache/trainers/%s/native_v1/index.lua"):format(target.id),table.concat(meta),generated,preserve)
-  return materialStats
+  meta[#meta+1]="return {version=1,fps=60,roles=roles}"
+  write(mod,("cache/trainers/%s/native_v1/index.lua"):format(target.id),table.concat(meta),generated)
 end
 
 local function openArchive(disc,name)
@@ -857,9 +654,7 @@ function T.run(mod,disc,progress,generated,options)
         progress(("TRAINER FINAL DECOMPRESS  %s  %d%%"):format(label,pct),0,1)
       end,
     });assert(ok and type(blob)=="string",blob or ("trainer source read failed: "..src.key))
-    local opts={textures=true,nativeScaleCompensation=true,nativeTrainerIK=true,sourceMaterialAnimation=true,
-      preserveVertexColors=true,sourceTextureState=true,honorRenderPass=true,skipShadowMaterials=true,
-      maxRoots=32,maxVertices=30000,maxDisplayOps=120000,maxJobjs=1536,maxDobjs=6144,maxPobjs=12288,
+    local opts={textures=true,nativeScaleCompensation=true,nativeTrainerIK=true,maxRoots=32,maxVertices=30000,maxDisplayOps=120000,maxJobjs=1536,maxDobjs=6144,maxPobjs=12288,
       nativePose={clip=1,frame=0},semanticRootsOnly=true}
     local model,err=HSD.extractModel(blob,opts)
     local rootMode="scene-modelset"
@@ -874,7 +669,6 @@ function T.run(mod,disc,progress,generated,options)
     local ref={min={model.bounds.min[1],model.bounds.min[2],model.bounds.min[3]},max={model.bounds.max[1],model.bounds.max[2],model.bounds.max[3]}}
     model.sourceReferenceBounds=ref
     normalize(model,target.height)
-    canonicalSourceRows(model)
     attachSourcePoseBank(model,target,ref,label)
     selectReleaseJoint(model,target)
     return model
@@ -936,53 +730,45 @@ function T.run(mod,disc,progress,generated,options)
     else
       used[best.source.key]=true
       local model=decodeWinner(best.source,target);local texturePaths={};local textureMap={}
-      local cachePath=("cache/trainers/%s/model_cache.lua"):format(target.id)
-      -- Trainer marker repairs are allowed to refresh source fidelity, but they
-      -- are not cache-clear actions. The repair entry point explicitly opts in
-      -- so even bytes left by an interrupted earlier transaction are retained;
-      -- the full/fresh installer keeps the no-probe fast path.
-      local preserveTarget=Persist and (options.preserveExisting==true or Persist.has(mod,cachePath)) or false
-      local materialTracks=writeNativeTracks(mod,target,model,model.sourceReferenceBounds,generated,preserveTarget)
+      writeNativeTracks(mod,target,model,model.sourceReferenceBounds,generated)
       for gi,g in ipairs(model.groups) do if g.texture then
         local sig=signature(g.texture);local tp=textureMap[sig]
         if not tp then
           local path=("cache/trainers/%s/textures/source_%02d.rgba"):format(target.id,gi)
-          write(mod,path,g.texture.rgba,generated,preserveTarget);tp={path=path,w=g.texture.w,h=g.texture.h};textureMap[sig]=tp
+          write(mod,path,g.texture.rgba,generated);tp={path=path,w=g.texture.w,h=g.texture.h};textureMap[sig]=tp
         end
         texturePaths[gi]=tp
       end end
+      local cachePath=("cache/trainers/%s/model_cache.lua"):format(target.id)
       local sourceName=best.source.archive.." :: "..best.source.entry.name
-      write(mod,cachePath,cacheLua(target,model,texturePaths,sourceName),generated,preserveTarget)
+      write(mod,cachePath,cacheLua(target,model,texturePaths,sourceName),generated)
 
       -- Emit the runtime float32 sidecar NOW, while decoded HSD rows are already
       -- resident. Previously the first battle/UI appearance had to parse the huge
       -- canonical Lua geometry, upload it, then write this same fast cache. That
       -- defeated the cache exactly when low-end devices needed it most.
-      local runtimeBins,runtimeOK={},((love and love.data and type(love.data.pack)=="function") or type(string.pack)=="function")
+      local runtimeBins,runtimeOK={},love and love.data and type(love.data.pack)=="function"
       if runtimeOK then
         for gi,g in ipairs(model.groups or {}) do
           local bytes=runtimeVerticesBytes(g.vertices)
           if not bytes then runtimeOK=false;break end
           local path=("cache/runtime_mesh_v1/trainers/%s/base_%02d.f32"):format(target.id,gi)
-          write(mod,path,bytes,generated,preserveTarget);runtimeBins[gi]=path
+          write(mod,path,bytes,generated);runtimeBins[gi]=path
         end
       end
       local sourceInfo=mod.cache and type(mod.cache.info)=="function" and mod.cache:info(cachePath) or nil
       local sourceSize=type(sourceInfo)=="table" and tonumber(sourceInfo.size) or nil
       if runtimeOK and #runtimeBins==#(model.groups or {}) and #runtimeBins>0 then
         local metaPath=("cache/runtime_mesh_v1/trainers/%s/base.lua"):format(target.id)
-        write(mod,metaPath,cacheLua(target,model,texturePaths,sourceName,runtimeBins,sourceSize),generated,preserveTarget)
+        write(mod,metaPath,cacheLua(target,model,texturePaths,sourceName,runtimeBins,sourceSize),generated)
       end
       local poseCount=0;for _ in pairs(model.nativePoseMap or {}) do poseCount=poseCount+1 end
-      local nativePose=("clip1/frame0 + %d dense source pose targets / %d clips / gesture=%s reaction=%s root=%s")
-        :format(poseCount,tonumber(model.nativeClipCount) or 0,tostring(model.nativeGestureClip or "none"),
-          tostring(model.nativeReactionClip or "none"),tostring(model.sourceRootMode or "?"))
+      local nativePose=("clip1/frame0 + %d dense source pose targets / %d clips / root=%s"):format(poseCount,tonumber(model.nativeClipCount) or 0,tostring(model.sourceRootMode or "?"))
       resolved[target.id]={archive=best.source.archive,entry=best.source.entry.index,name=best.source.entry.name,score=bestScore,vertices=model.vertexCount,groups=#model.groups,cache=cachePath,archiveBase=model.archive and model.archive.base or 0,nativePose=nativePose}
       local excluded=#(model.nativeExcludedBattleClips or {})>0 and (" excludedBattleClips="..join(model.nativeExcludedBattleClips,"/")) or ""
       local inferred=#(model.nativeInferredLocomotionClips or {})>0 and (" inferredLocomotionClips="..join(model.nativeInferredLocomotionClips,"/")) or ""
       local locomotionFallback=#(model.nativeLocomotionFallbackClips or {})>0 and (" locomotionFallbackClips="..join(model.nativeLocomotionFallbackClips,"/")) or ""
-      local matDiag=(" matanim=%d source/%d blocked/%d unavailable-static"):format(materialTracks.animated or 0,materialTracks.blocked or 0,materialTracks.missing or 0)
-      diag[#diag+1]=( "%s %s <- %s:%s idx=%d score=%.4f vertices=%d groups=%d hsdBase=0x%X nativePose=%s%s%s%s%s" ):format(target.exactName and "EXACT" or "RESOLVED",target.id,safeName(best.source.archive),safeName(best.source.entry.name),tonumber(best.source.entry.index) or -1,bestScore,model.vertexCount,#model.groups,resolved[target.id].archiveBase,nativePose,excluded,inferred,locomotionFallback,matDiag)
+      diag[#diag+1]=( "%s %s <- %s:%s idx=%d score=%.4f vertices=%d groups=%d hsdBase=0x%X nativePose=%s%s%s%s" ):format(target.exactName and "EXACT" or "RESOLVED",target.id,safeName(best.source.archive),safeName(best.source.entry.name),tonumber(best.source.entry.index) or -1,bestScore,model.vertexCount,#model.groups,resolved[target.id].archiveBase,nativePose,excluded,inferred,locomotionFallback)
     end
   end
 
@@ -1026,11 +812,4 @@ function T.run(mod,disc,progress,generated,options)
   progress("TRAINERS READY",#runTargets,#runTargets)
   return {ready=true,resolved=resolved,unresolved={},resolvedCount=#runTargets,total=#runTargets,diagnostic="build/trainer_scan.txt",firstSourceError=firstSourceError}
 end
-T._test=T._test or {}
-T._test.nativeTrackVerticesBytes=nativeTrackVerticesBytes
-T._test.runtimeVerticesBytes=runtimeVerticesBytes
-T._test.canonicalSourceRows=canonicalSourceRows
-T._test.write=write
-T._test.cacheLua=cacheLua
-T._test.writeNativeTracks=writeNativeTracks
 return T

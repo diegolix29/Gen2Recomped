@@ -3,7 +3,6 @@
 -- pairs AND their metadata; recovery runs before the ordinary startup gate.
 local V=...
 local F,P,FSYS,A,S,B=assert(V.AudioFidelity),assert(V.PortableMusyX),assert(V.FSYS),assert(V.AudioProbe),assert(V.BattleAudioSpec),assert(V.BattleAudioBuilder)
-local Persist=V.PayloadPreserver
 local U={version=1}
 local TX=F.root.."transaction/"
 local JOURNAL,COMMIT=TX.."journal.txt",TX.."committed.txt"
@@ -81,14 +80,6 @@ function U.commit(mod,writes)
     assert(validPath(w.path) and not paths[w.path] and type(w.bytes)=="string","invalid audio transaction write")
     paths[w.path]=true
     local old=durableRead(mod,w.path)
-    -- The transaction backup is crash recovery, not permanent retention: cleanup
-    -- intentionally removes it after commit.  Before an ordinary fidelity upgrade
-    -- replaces an already-saved audio payload, keep the exact prior bytes in the
-    -- release-stable content-addressed store. This is outside generated manifests.
-    if old and old~=w.bytes and w.path:find("assets/audio/",1,true)==1 and Persist then
-      local _,preserveWhy=Persist.preserve(mod,"audio_fidelity",w.path,w.bytes,old)
-      assert(preserveWhy==nil,"audio payload preservation failed: "..tostring(preserveWhy))
-    end
     if old then F.write(mod,TX.."old_"..i,old) else F.remove(mod,TX.."old_"..i) end
     F.write(mod,TX.."new_"..i,w.bytes)
     lines[#lines+1]=table.concat({"file",w.path,old and "1" or "0",tostring(old and #old or 0),F.checksum(old or ""),tostring(#w.bytes),F.checksum(w.bytes)},"\t").."\n"
@@ -116,10 +107,6 @@ end
 function U.plan()
   local out={}
   for _,t in ipairs(A.themes) do out[#out+1]={id=t.source,sequence=t.source,setup=t.setup,rate=48000,loop=true,paths={t.intro,t.loop},soundtrack=true} end
-  for _,t in ipairs(A.environmentThemes or {}) do
-    out[#out+1]={id=t.source,sequence=t.source,setup=t.setup,rate=48000,loop=true,
-      paths={t.intro,t.loop},soundtrack=true}
-  end
   out[#out+1]={id="me_snatch_song",sequence="me_snatch_song",setup=9,rate=48000,paths={"assets/audio/capture/me_snatch.wav"},soundtrack=true}
   out[#out+1]={id="fanfare00_song",sequence="fanfare00_song",setup=12,rate=48000,paths={"assets/audio/intro/fanfare00.wav"},boss=true}
   for _,c in ipairs(S.cues) do out[#out+1]={id=c.id,sequence=c.sequence,setup=c.setup,rate=c.rate,paths={c.path},cue=c} end

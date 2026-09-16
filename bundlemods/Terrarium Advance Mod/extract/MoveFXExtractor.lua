@@ -1,9 +1,8 @@
 local V=...
 local FSYS,GX,HSD=V.FSYS,V.GXTexture,V.HSD
 local Waza=V.WazaSequenceExtractor
-local Persist=V.PayloadPreserver
-local M={revision=35,runtimeRevision=34,releaseRevision=34,mod=nil,openDisc=nil,memory={},negative={},pending={},pendingKeys={},prefetchStats={queued=0,completed=0,failed=0},
-  sourceMoveRows=nil,retailModelOverrides=nil,retailModelOverridesMeta=nil,indexMemory=nil,preserveExistingWrites=false}
+local M={revision=33,mod=nil,openDisc=nil,memory={},negative={},pending={},pendingKeys={},prefetchStats={queued=0,completed=0,failed=0},
+  sourceMoveRows=nil,indexMemory=nil}
 
 local MOVE={
   [33]={stem="taiatari",phases={"attack","damage"},style="impact",tint={1.00,0.96,0.82}}, -- Tackle
@@ -296,49 +295,7 @@ local SOURCE_STEM_ALIASES={
   [249]={"iwakudaki"},
   [250]={"uzushio","uzusio"},
   [251]={"fukurodataki","hukuro"},
-
-  -- Gen III (Hoenn): the 13 move ids Mt. Battle's real, verified Gen III
-  -- movesets actually reference (lib/MtBattle/docs/gen3/
-  -- Gen3RegisteredMoves.lua) that are NOT pre-existing Gen 1/2 moves --
-  -- every one of these stems was confirmed against the real GC6E01 file
-  -- table exactly like every entry above (a real wzx_<stem>_attack/
-  -- damage.fsys pair exists on disc for each), not guessed. Move
-  -- identities themselves were cross-checked against Colosseum's own
-  -- extracted power/PP/accuracy data before any stem lookup (e.g. move
-  -- 257's power=100/pp=10/acc=90 matches real Heat Wave exactly).
-  [257]={"neppuu"},        -- Heat Wave
-  [292]={"tsuppari"},      -- Arm Thrust
-  [295]={"lusterpurge"},   -- Luster Purge
-  [304]={"hypervoice"},    -- Hyper Voice
-  [320]={"kusabue"},       -- Grass Whistle
-  [324]={"signalbeam"},    -- Signal Beam
-  [325]={"shadowpunch"},   -- Shadow Punch
-  [332]={"tsubame"},       -- Aerial Ace
-  [337]={"dragonclaw"},    -- Dragon Claw
-  [345]={"magicalleaf"},   -- Magical Leaf
-  [348]={"lfblade"},       -- Leaf Blade
-  [350]={"rockblast"},     -- Rock Blast
-  [352]={"mizunohadou"},   -- Water Pulse
-  -- Second batch (this pass): the 6 of 120 newly-registered real Gen III
-  -- moves (docs/gen3/Gen3RegisteredMoves.lua's extended effect-Rosetta-
-  -- Stone pass) that turned out to still need their own MoveFX entry --
-  -- the other 114 were already covered, most being pre-Gen III moves this
-  -- table already had real stems for. Each stem below was found directly
-  -- in the real GC6E01 file table (filelist.txt), not guessed from
-  -- romaji alone.
-  [302]={"needlearm"},     -- Needle Arm
-  [310]={"odorokasu"},     -- Astonish
-  [326]={"jintsuriki"},    -- Extrasensory
-  [328]={"sunajigoku"},    -- Sand Tomb
-  [329]={"zettaireido"},   -- Sheer Cold
-  [336]={"tooboe"},        -- Howl
 }
--- Computed, not hand-maintained -- M.status() used to hardcode this count
--- (251, correct only for the table's pre-Gen III size) and would have
--- silently gone stale the moment this table grew, exactly as it did when
--- the 13 Gen III entries above were added.
-local SOURCE_STEM_ALIASES_COUNT=0
-for _ in pairs(SOURCE_STEM_ALIASES) do SOURCE_STEM_ALIASES_COUNT=SOURCE_STEM_ALIASES_COUNT+1 end
 
 local function addUnique(out,seen,value)
   value=tostring(value or ""):lower():gsub("[^%w]","")
@@ -410,7 +367,7 @@ local function profile(moveId,move)
   -- Native Gen I/II battle events carry string constants; their definitions
   -- retain the canonical numeric move index used by the generated source cache.
   -- Resolve it before selecting stems, including after a cold application start.
-  local id=tonumber(moveId) or (type(move)=="table" and (tonumber(move.index) or tonumber(move.colosseumMoveId)))
+  local id=tonumber(moveId) or (type(move)=="table" and tonumber(move.index))
   local p=id and MOVE[id] or nil
   if not p and id and SOURCE_STEM_ALIASES[id] then
     p=inferredProfile(SOURCE_STEM_ALIASES[id][1],move);p.stems=SOURCE_STEM_ALIASES[id];p.candidate=true
@@ -457,191 +414,6 @@ local function be32(s,p)
   local a,b,c,d=s:byte(p+1,p+4); if not d then return nil end
   return ((a*256+b)*256+c)*256+d
 end
--- Forward declarations used by selector-cache helpers before the ordinary cache
--- writer/reader implementations appear later in this file. Closures see the
--- initialized functions by the time extraction/runtime calls them.
-local write,serialize,cacheReadLua
-
--- Read an exact virtual-address range out of retail main.dol.  GameCube DOLs
--- contain seven text + eleven data sections; addresses in the decomp/source are
--- runtime VAs, while the disc stores section-relative file offsets.  Keeping
--- this tiny resolver here lets the MoveFX build consume the same tables the
--- retail battle runtime does instead of duplicating their contents by hand.
-local function dolReadVirtual(disc,address,size)
-  if not (disc and type(disc.read)=="function") then return nil,"disc raw reader unavailable" end
-  address=tonumber(address);size=tonumber(size)
-  if not (address and size and size>=0) then return nil,"invalid DOL virtual range" end
-  local header=disc.header
-  if type(header)~="string" or #header<0x424 then
-    local ok,value=pcall(disc.read,disc,0,0x440);if not ok then return nil,tostring(value) end
-    header=value
-  end
-  local dolOffset=type(header)=="string" and be32(header,0x420) or nil
-  if not dolOffset or dolOffset<=0 then return nil,"main.dol offset unavailable" end
-  local okDol,dolHeader=pcall(disc.read,disc,dolOffset,0x100)
-  if not okDol or type(dolHeader)~="string" or #dolHeader<0xD8 then return nil,"main.dol header unavailable" end
-  local function seekSections(fileBase,addressBase,sizeBase,count)
-    for i=0,count-1 do
-      local fileOff=be32(dolHeader,fileBase+i*4)
-      local virtual=be32(dolHeader,addressBase+i*4)
-      local bytes=be32(dolHeader,sizeBase+i*4)
-      if fileOff and virtual and bytes and bytes>0 and address>=virtual and address+size<=virtual+bytes then
-        local ok,data=pcall(disc.read,disc,dolOffset+fileOff+(address-virtual),size)
-        if ok and type(data)=="string" and #data==size then return data end
-        return nil,tostring(data or "short DOL read")
-      end
-    end
-  end
-  local data,why=seekSections(0x00,0x48,0x90,7);if data then return data end
-  data,why=seekSections(0x1C,0x64,0xAC,11);if data then return data end
-  return nil,why or ("DOL VA not mapped: 0x%08X"):format(address)
-end
-
--- sequence.c fn_801DDEE4 resolves ordinary attack Waza (type 1) through the
--- retail model-specific table at lbl_80373750 before it falls back to the
--- generic move resource.  Case 1 scans rows [1,0x11C); every row is 0x10 bytes:
---   +00 variant, +02 Pokemon/model id, +04 Waza animation group,
---   +08 FSYS resource group, +0C resource id.
--- Preserve the source row verbatim.  Phase names are resolved later by matching
--- the FSYS id to the exact wzx_<stem>_<phase>.fsys header already being decoded.
-local function extractRetailModelOverrides(disc)
-  local blob,why=dolReadVirtual(disc,0x80373750,0x16F0)
-  if not blob then return nil,why end
-  local byGroup,rows={},{}
-  for index=1,0x11B do
-    local at=index*0x10
-    local variant=blob:byte(at+1) or 0
-    local modelId=be16(blob,at+2)
-    local animationGroup=be16(blob,at+4)
-    local resourceGroup=be32(blob,at+8)
-    local resourceId=be32(blob,at+0x0C)
-    if modelId and animationGroup and resourceGroup and animationGroup>0 and resourceGroup>0 then
-      local row={index=index,variant=variant,modelId=modelId,animationGroup=animationGroup,
-        resourceGroup=resourceGroup,resourceId=resourceId}
-      rows[#rows+1]=row
-      byGroup[animationGroup]=byGroup[animationGroup] or {};byGroup[animationGroup][#byGroup[animationGroup]+1]=row
-    end
-  end
-  return byGroup,{source="GC6E01 main.dol lbl_80373750 / fn_801DDEE4 type-1 model override",address=0x80373750,
-    first=1,lastExclusive=0x11C,stride=0x10,rows=#rows}
-end
-
-local function fsysResourceGroup(disc,file)
-  if not (disc and file and type(disc.readFile)=="function") then return nil end
-  local ok,header=pcall(disc.readFile,disc,file,0,12)
-  if not ok or type(header)~="string" or header:sub(1,4)~="FSYS" then return nil end
-  return be32(header,8)
-end
-
-local function retailModelPhaseMap(sourceRows,overrides,moveId,banks)
-  local sourceRow=sourceRows and sourceRows[tonumber(moveId)] or nil
-  local animationGroup=sourceRow and tonumber(sourceRow.primaryAnimationId) or nil
-  if not animationGroup then return {},{},nil end
-  local phasesByResource={}
-  for _,bank in ipairs(banks or {}) do
-    if tonumber(bank.resourceGroup) then phasesByResource[tonumber(bank.resourceGroup)]=bank.phase end
-  end
-  local mapped,blocked,details={}, {}, {}
-  for _,row in ipairs((overrides and overrides[animationGroup]) or {}) do
-    -- Current battle call sites use variant zero for the ordinary attacking
-    -- owner's Waza. Non-zero retail variants remain preserved in the raw table
-    -- but are not guessed into battle semantics here.
-    if tonumber(row.variant)==0 then
-      local modelId=tonumber(row.modelId);local phase=phasesByResource[tonumber(row.resourceGroup)]
-      if modelId and modelId>=1 then
-        local rec={modelId=modelId,phase=phase,resourceGroup=row.resourceGroup,resourceId=row.resourceId,index=row.index}
-        details[#details+1]=rec
-        if modelId>251 then
-          -- Gen I/II retail model ids are proven to coincide with the production
-          -- National-Dex actor ids. Later GC6E01 rows include ids such as 369 and
-          -- 397 whose exact namespace/identity has not been graduated into the
-          -- production host. Never reinterpret those integers as National Dex.
-          blocked[modelId]="retail model-specific attack id is outside the proven Gen I/II identity domain"
-        elseif phase then
-          if mapped[modelId] and mapped[modelId]~=phase then
-            mapped[modelId]=nil;blocked[modelId]="retail model override resolves to multiple attack chapters"
-          elseif not blocked[modelId] then mapped[modelId]=phase end
-        else
-          blocked[modelId]=("retail model override FSYS 0x%X was not decoded for this Waza stem"):format(tonumber(row.resourceGroup) or 0)
-        end
-      end
-    end
-  end
-  return mapped,blocked,{animationGroup=animationGroup,rows=details,source="GC6E01 main.dol model-specific attack resolver"}
-end
-
-local SOURCE_SELECTOR_CACHE="cache/movefx/source_selectors_v1.lua"
-local function saveRetailSelectorCache(preserveExisting)
-  if not (M.sourceMoveRows and M.retailModelOverrides and write and serialize) then return false end
-  return write(SOURCE_SELECTOR_CACHE,"return "..serialize({revision=1,discId="GC6E01",
-    moveRows=M.sourceMoveRows,modelOverrides=M.retailModelOverrides,modelOverridesMeta=M.retailModelOverridesMeta}).."\n",preserveExisting)
-end
-local function ensureRetailSelectorSources(disc)
-  if M.sourceMoveRows and M.retailModelOverrides then return true end
-  if cacheReadLua then
-    local cached=cacheReadLua(SOURCE_SELECTOR_CACHE)
-    if type(cached)=="table" and cached.revision==1 and cached.discId=="GC6E01"
-        and type(cached.moveRows)=="table" and type(cached.modelOverrides)=="table" then
-      M.sourceMoveRows=cached.moveRows;M.retailModelOverrides=cached.modelOverrides;M.retailModelOverridesMeta=cached.modelOverridesMeta
-      return true
-    end
-  end
-  if not disc then return false,"retail selector cache unavailable" end
-  local rows,rowsMeta=extractSourceMoveRows(disc)
-  if not rows then return false,"Colosseum move animation table unavailable: "..tostring(rowsMeta) end
-  local overrides,overrideMeta=extractRetailModelOverrides(disc)
-  if not overrides then return false,"Colosseum model-specific attack table unavailable: "..tostring(overrideMeta) end
-  M.sourceMoveRows=rows;M.retailModelOverrides=overrides;M.retailModelOverridesMeta=overrideMeta
-  saveRetailSelectorCache(true)
-  return true
-end
-
--- Effect caches are keyed by WZX stem, not semantic move id. Several moves can
--- legally share one stem, so model-specific selection must be accumulated per
--- move inside that shared cache; otherwise whichever move built the stem first
--- would donate its species variants to every later move.
-local function ensureSpecRetailModelMove(spec,moveId)
-  moveId=tonumber(moveId)
-  if not (type(spec)=="table" and moveId and M.sourceMoveRows and M.retailModelOverrides) then return false end
-  spec.retailModelSelectionDone=type(spec.retailModelSelectionDone)=="table" and spec.retailModelSelectionDone or {}
-  if spec.retailModelSelectionDone[moveId] then return false end
-  local banks={}
-  for _,phase in ipairs(spec.wazaPhases or {}) do
-    local resourceGroup=tonumber(phase.resourceGroup)
-    if resourceGroup then banks[#banks+1]={phase=phase.name or phase.phase,resourceGroup=resourceGroup} end
-  end
-  local mapped,blocked,source=retailModelPhaseMap(M.sourceMoveRows,M.retailModelOverrides,moveId,banks)
-  spec.retailModelPhasesByMove=type(spec.retailModelPhasesByMove)=="table" and spec.retailModelPhasesByMove or {}
-  spec.retailModelOverrideBlockersByMove=type(spec.retailModelOverrideBlockersByMove)=="table" and spec.retailModelOverrideBlockersByMove or {}
-  spec.retailModelOverrideSourceByMove=type(spec.retailModelOverrideSourceByMove)=="table" and spec.retailModelOverrideSourceByMove or {}
-  spec.retailModelPhasesByMove[moveId]=mapped
-  spec.retailModelOverrideBlockersByMove[moveId]=blocked
-  spec.retailModelOverrideSourceByMove[moveId]=source
-  spec.retailModelSelectionDone[moveId]=true
-  -- Compatibility/readability aliases for a cache whose original semantic move
-  -- is this move. Runtime policy uses the per-move tables above.
-  if tonumber(spec.moveId)==moveId then
-    spec.retailModelPhases=mapped;spec.retailModelOverrideBlockers=blocked;spec.retailModelOverrideSource=source
-  end
-  if type(spec.coverage)=="table" and type(spec.coverage.unsupported)=="table" then
-    for modelId,why in pairs(blocked or {}) do
-      spec.coverage.unsupported[#spec.coverage.unsupported+1]={phase="attack-override",index=modelId,moveId=moveId,
-        kind="retail-model-selector",reason=why}
-    end
-  end
-  local mappedCount,blockedCount=0,0
-  for _,rows in pairs(spec.retailModelPhasesByMove) do for _ in pairs(rows or {}) do mappedCount=mappedCount+1 end end
-  for _,rows in pairs(spec.retailModelOverrideBlockersByMove) do for _ in pairs(rows or {}) do blockedCount=blockedCount+1 end end
-  spec.retailModelOverrideCount=mappedCount;spec.retailModelOverrideBlockedCount=blockedCount
-  spec.retailModelOverridesReady=blockedCount==0
-  return true
-end
-local function specRetailSelectionReady(spec,moveId)
-  moveId=tonumber(moveId)
-  if not moveId then return true end
-  local done=type(spec)=="table" and spec.retailModelSelectionDone or nil
-  return type(done)=="table" and done[moveId]==true
-end
 
 local function beFloat(s,p)
   local bits=be32(s,p);if not bits then return nil end
@@ -653,73 +425,47 @@ local function beFloat(s,p)
   if exp==0 then return sign*(mant/8388608)*(2^-126) end
   return sign*(1+mant/8388608)*(2^(exp-127))
 end
--- Runtime prebuild is defined before the cache writer. The declarations above
--- keep these references local so every pcall-wrapped prebuild uses the real
--- installation cache rather than accidentally resolving a global.
-
 -- Pre-materialize Waza model float32 sidecars during the one-time source cache
--- build whenever LÖVE's portable pack API is available. Keep this namespace and
--- metadata EXACTLY aligned with WazaHandlers: older extraction wrote `_runtime_v1`
--- while runtime only consumed `_runtime_v2_r<extractorRevision>`, so Android
--- ignored every prebuilt mesh and reparsed/repacked the canonical Lua cache.
-local RUNTIME_MESH_VERSION=2
-local function runtimeRoot(path) return tostring(path or "cache/movefx/model.lua"):gsub("%.lua$","").."_runtime_v2_r"..tostring(M.runtimeRevision or M.revision) end
+-- build whenever LÖVE's portable pack API is available. Runtime still validates
+-- sourceSize and falls back to the canonical packed Lua payload, so these files
+-- are an optimization rather than a new correctness dependency.
+local function runtimeRoot(path) return tostring(path or "cache/movefx/model.lua"):gsub("%.lua$","").."_runtime_v1" end
 local function runtimeBinPath(path,i) return runtimeRoot(path)..("/base_%02d.f32"):format(tonumber(i) or 0) end
 local function runtimeMetaPath(path) return runtimeRoot(path).."/base.lua" end
 local function cacheSize(path)
   local mod=M.mod;if not (mod and mod.cache and type(mod.cache.info)=="function") then return nil end
   local ok,info=pcall(mod.cache.info,mod.cache,path);return ok and type(info)=="table" and tonumber(info.size) or nil
 end
-local PACK_ROWS_BATCH=64
 local function packPackedRows(group,stride)
-  local lovePack=love and love.data and type(love.data.pack)=="function" and love.data.pack or nil
-  local luaPack=type(string.pack)=="function" and string.pack or nil
-  if not lovePack and not luaPack then return nil,"float32 pack unavailable" end
+  if not (love and love.data and type(love.data.pack)=="function") then return nil,"love.data.pack unavailable" end
   local packed=type(group)=="table" and group.verticesPacked or nil
   if type(packed)~="string" then return nil,"packed vertices unavailable" end
-  local unpackArgs=table.unpack or unpack
-  local rowFmt=string.rep("f",stride);local fullFmt=string.rep(rowFmt,PACK_ROWS_BATCH)
-  local chunks={};local n=0;local values={};local rows=0;local valueCount=0;local totalRows=0
-  local function flush()
-    if rows==0 then return true end
-    local fmt=rows==PACK_ROWS_BATCH and fullFmt or string.rep(rowFmt,rows)
-    local ok,bytes
-    if lovePack then ok,bytes=pcall(lovePack,"string",fmt,unpackArgs(values,1,valueCount)) end
-    if (not ok or type(bytes)~="string") and luaPack then
-      -- Lua 5.3's string.pack is a useful headless/host fallback. Runtime F32
-      -- sidecars are explicitly little-endian, matching the LÖVE/LuaJIT path.
-      ok,bytes=pcall(luaPack,"<"..fmt,unpackArgs(values,1,valueCount))
-    end
-    if not ok or type(bytes)~="string" then return false,tostring(bytes or "float32 pack failed") end
-    n=n+1;chunks[n]=bytes;rows=0;valueCount=0
-    return true
-  end
+  local fmt=string.rep("f",stride);local chunks={};local n=0
   for line in packed:gmatch("[^\r\n]+") do
-    local count=0
-    for token in line:gmatch("[^,]+") do count=count+1;valueCount=valueCount+1;values[valueCount]=tonumber(token) or 0 end
-    if count~=stride then return nil,("packed stride mismatch %d/%d"):format(count,stride) end
-    rows=rows+1;totalRows=totalRows+1
-    if rows==PACK_ROWS_BATCH then local ok,why=flush();if not ok then return nil,why end end
+    local vals={};for token in line:gmatch("[^,]+") do vals[#vals+1]=tonumber(token) or 0 end
+    if #vals~=stride then return nil,("packed stride mismatch %d/%d"):format(#vals,stride) end
+    local ok,bytes=pcall(love.data.pack,"string",fmt,(table.unpack or unpack)(vals,1,stride))
+    if not ok or type(bytes)~="string" then return nil,tostring(bytes or "float32 pack failed") end
+    n=n+1;chunks[n]=bytes
   end
-  local ok,why=flush();if not ok then return nil,why end
   if n==0 then return nil,"no packed vertex rows" end
-  return table.concat(chunks),totalRows
+  return table.concat(chunks)
 end
-local function prebuildRuntimeMesh(path,cache,stride,knownSourceSize)
-  local size=tonumber(knownSourceSize) or cacheSize(path)
-  if not ((love and love.data and type(love.data.pack)=="function") or type(string.pack)=="function") then return false end
+local function prebuildRuntimeMesh(path,cache,stride)
+  local size=cacheSize(path)
+  if not (love and love.data and type(love.data.pack)=="function") then return false end
   -- Some portable cache backends expose existence/read/write but omit byte size.
   -- Runtime meshes are still valid there; sourceSize is an optional corruption
   -- guard, not permission to create the fast path.
-  local compact={runtimeMeshVersion=RUNTIME_MESH_VERSION,sourcePath=path,extractorRevision=M.runtimeRevision or M.revision}
+  local compact={runtimeMeshVersion=1}
   if size and size>0 then compact.sourceSize=size end
   for k,v in pairs(cache or {}) do if k~="groups" then compact[k]=v end end
   compact.groups={}
   for i,g in ipairs(cache.groups or {}) do
-    local bytes,count=packPackedRows(g,stride);if type(bytes)~="string" or not count then return false end
+    local bytes=select(1,packPackedRows(g,stride));if type(bytes)~="string" then return false end
     local bin=runtimeBinPath(path,i);local ok=write(bin,bytes);if not ok then return false end
     local row={};for k,v in pairs(g) do if k~="vertices" and k~="verticesPacked" then row[k]=v end end
-    row.runtimeBin=bin;row.vertexCount=count;compact.groups[i]=row
+    row.runtimeBin=bin;compact.groups[i]=row
   end
   return write(runtimeMetaPath(path),"return "..serialize(compact).."\n")
 end
@@ -732,7 +478,7 @@ end
 local function saneRange(off,size,n)
   return type(off)=="number" and type(size)=="number" and off>=0 and size>=0 and off+size<=n
 end
-cacheReadLua=function(path)
+local function cacheReadLua(path)
   local mod=M.mod;if not (mod and mod.cache and type(mod.cache.read)=="function") then return nil end
   local ok,src=pcall(mod.cache.read,mod.cache,path); if not ok or type(src)~="string" then return nil end
   local f=load(src,"@generated/"..path);if not f then return nil end
@@ -746,22 +492,8 @@ local function includeIndexedStem(candidates,id)
   if stem=="" then return candidates end
   local out={stem};for _,v in ipairs(candidates or {}) do if v~=stem then out[#out+1]=v end end;return out
 end
-write=function(path,data,preserveExisting)
+local function write(path,data)
   local mod=M.mod; if not (mod and mod.cache and type(mod.cache.write)=="function") then return false,"cache unavailable" end
-  local preserve=(preserveExisting==true or M.preserveExistingWrites==true)
-    and (tostring(path):find("cache/movefx/",1,true)==1 or tostring(path):find("cache/capture/",1,true)==1)
-  if preserve and Persist then
-    local manifestTarget=nil
-    if type(M.buildGenerated)=="table" then
-      local seen=M.buildGeneratedSeen or {};M.buildGeneratedSeen=seen
-      if not seen[path] then manifestTarget=M.buildGenerated end
-    end
-    local ok,a,b=pcall(Persist.write,mod,"movefx",path,data,manifestTarget,true)
-    if not ok then return false,("cache preserve/write failed [%s]: %s"):format(tostring(path),tostring(a)) end
-    if a==false or a==nil then return false,("cache preserve/write failed [%s]: %s"):format(tostring(path),tostring(b or "cache write failed")) end
-    if manifestTarget then M.buildGeneratedSeen[path]=true end
-    return true
-  end
   local ok,a,b=pcall(mod.cache.write,mod.cache,path,data)
   if not ok then return false,("cache write failed [%s]: %s"):format(tostring(path),tostring(a)) end
   if a==false or a==nil then return false,("cache write failed [%s]: %s"):format(tostring(path),tostring(b or "cache write failed")) end
@@ -771,7 +503,7 @@ write=function(path,data,preserveExisting)
   end
   return true
 end
-serialize=function(v)
+local function serialize(v)
   local t=type(v)
   if t=="nil" then return "nil" elseif t=="number" then return ("%.9g"):format(v)
   elseif t=="boolean" then return v and "true" or "false" elseif t=="string" then return string.format("%q",v)
@@ -785,52 +517,6 @@ serialize=function(v)
     out[#out+1]="}";return table.concat(out)
   end
   return "nil"
-end
-
--- Embedded HSD camera decoding can advance independently of the much larger
--- MoveFX texture/particle cache. Preserve the user's expensive hard cache: when
--- only camera decoding changes, refresh sourceCamera from the byte-for-byte WZX
--- phase copy already retained in cache instead of bumping M.revision and forcing
--- all move effects back through disc extraction.
-local function refreshEmbeddedCameraCache(meta,stem)
-  local target=tonumber(HSD and HSD.cameraRevision) or 0
-  if target<=0 or type(meta)~="table" or type(meta.wazaPhases)~="table"
-      or not (HSD and type(HSD.extractCameraAnimation)=="function") then return meta,false end
-  local changed=false
-  local cache=M.mod and M.mod.cache
-  for _,phase in ipairs(meta.wazaPhases) do
-    local size=math.max(0,math.floor(tonumber(phase and (phase.hsdSize or (phase.root and phase.root.embeddedSize))) or 0))
-    local camera=phase and phase.sourceCamera
-    if size>0 and not (type(camera)=="table" and tonumber(camera.revision)==target) then
-      local rawPath=phase.rawPath
-      local raw=nil
-      if type(rawPath)=="string" and cache and type(cache.read)=="function" then
-        local ok,v=pcall(cache.read,cache,rawPath);if ok and type(v)=="string" then raw=v end
-      end
-      if type(raw)=="string" and 0xA0+size<=#raw then
-        local ok,newCamera,why=pcall(HSD.extractCameraAnimation,raw:sub(0xA0+1,0xA0+size),
-          {phase=phase.name,wazaOffsetWorldUp=true})
-        if ok and type(newCamera)=="table" then
-          phase.sourceCamera=newCamera;phase.sourceCameraError=nil
-        else
-          phase.sourceCamera=nil
-          phase.sourceCameraError="embedded camera cache refresh failed: "..tostring(ok and why or newCamera)
-        end
-      else
-        -- Older caches that predate raw WZX retention cannot be upgraded without
-        -- source bytes. Keep the rest of the effect cache valid, but never execute
-        -- an older camera decode as if it had current source semantics.
-        if type(camera)=="table" then
-          camera.complete=false;camera.cacheStale=true
-          camera.cacheRefreshError="embedded camera cache revision requires retained raw WZX"
-        end
-        phase.sourceCameraError="embedded camera cache revision requires retained raw WZX"
-      end
-      changed=true
-    end
-  end
-  if changed and stem then write(M.cachePath(stem),"return "..serialize(meta).."\n",true) end
-  return meta,changed
 end
 
 -- Decode the serialized GStextureHandle object embedded directly inside
@@ -1001,7 +687,7 @@ local function parseGPT1(blob,gptOff,bank,out,maxTextures,sequence)
   out.lookupTables=out.lookupTables or {}
   out.lookupTables[bank]=out.lookupTables[bank] or {}
   -- The +10 bank-data table is used by table-addressing particle/generator
-  -- opcodes (AA/F0/F1/F2). Preserve a bounded source mapping; values outside the
+  -- opcodes (AA/F1/F2). Preserve a bounded source mapping; values outside the
   -- retail script-id range are left absent rather than coerced into a REF id.
   local resourceEnd=n
   if type(sequence)=="table" then
@@ -1035,12 +721,7 @@ local function parseGPT1(blob,gptOff,bank,out,maxTextures,sequence)
       maxLife=maxLife,repeatCount=repeatCount,particleLife=repeatCount,
       flags=be32(blob,ga+8) or 0,
       gravity=params[1],friction=params[2],velocityX=params[3],velocityY=params[4],velocityZ=params[5],
-      radius=params[6],angle=params[7],
-      -- SysDolphin HSD_PSCmdList +0x28 is `random`: the per-frame generator
-      -- count increment (negative values become a fixed positive increment).
-      -- Keep emissionRate as a compatibility alias for already-written CBE
-      -- caches, but expose the source field by its retail name going forward.
-      random=params[8],emissionRate=params[8],particleSize=params[9],
+      radius=params[6],angle=params[7],emissionRate=params[8],particleSize=params[9],
       shapeX=params[10],shapeY=params[11],shapeZ=params[12],
       params=params,commandHex=hex(commands),selector=rootSelector,rootRef=rootSelector,gptOffset=gptOff,
       root=(rootSelector~=nil and tonumber(scriptId)==tonumber(rootSelector)) or false,
@@ -1221,16 +902,7 @@ local function compileWazaModel(blob,entry,stem,phase,opts)
   -- actor/arena minimum, but accept complete small Waza meshes from declared
   -- scene roots only; do not promote an arbitrary helper pointer to a model.
   local keepParts=opts and opts.partIndices and #opts.partIndices>0
-  -- _wazaSequenceModelEntryStart treats every Type-2 payload as a GSmodel and
-  -- does not require that model to own drawable polygons. Several retail banks
-  -- (Tail Whip/Surf/Growth/Minimize/Encore) contain semantic HSD model roots
-  -- made entirely of JOBJs/nulls. Let HSD accept ONLY its strict zero-POBJ
-  -- transform-carrier class for Type-2; retain joint matrices only when another
-  -- source row actually requests a linked part so cache cost does not explode.
-  -- Keep extraction-only DObj identity/source TObj state so a Type-2 model's
-  -- exact HSD_TexAnim can be sampled. This does NOT bake the static texture
-  -- matrix into vertices; animated Waza stages are applied by the runtime shader.
-  local decodeOpts={textures=true,sourceTextureAnimation=true,allowTransformOnly=true,preserveJointMatrices=keepParts,semanticRootsOnly=true,minVertices=3,maxRoots=48,maxVertices=90000,maxDisplayOps=300000,maxJobjs=4096,maxDobjs=12000,maxPobjs=20000}
+  local decodeOpts={textures=true,allowTransformOnly=keepParts,preserveJointMatrices=keepParts,semanticRootsOnly=true,minVertices=3,maxRoots=48,maxVertices=90000,maxDisplayOps=300000,maxJobjs=4096,maxDobjs=12000,maxPobjs=20000}
   local model,err=HSD.extractModel(source,decodeOpts)
   if not model then return nil,err or "Waza HSD model decode failed" end
   local bindModel=model
@@ -1264,30 +936,6 @@ local function compileWazaModel(blob,entry,stem,phase,opts)
   local endFrame=animInfo and math.max(0,math.floor(tonumber(animInfo.endFrame) or 0)) or 0
   if opts and opts.staticOnly then endFrame=0 end
   if endFrame>600 then return nil,("Waza model source animation exceeds safety bound: %d frames"):format(endFrame) end
-  local textureAnimation,textureAnimationBlocker=nil,nil
-  if endFrame>0 and type(HSD.nativeTexturePose)=="function" then
-    local probe,why=HSD.nativeTexturePose(bindModel,0,0)
-    if probe and probe.animated==true then
-      local groups={};local complete=true
-      for fr=0,endFrame do
-        local pose,pwhy=HSD.nativeTexturePose(bindModel,0,fr)
-        if not pose then complete=false;textureAnimationBlocker=("frame %d: %s"):format(fr,tostring(pwhy));break end
-        for gi,state in ipairs(pose.groups or {}) do
-          if state and type(state.affine)=="table" then
-            groups[gi]=groups[gi] or {}
-            groups[gi][fr+1]=state.affine
-          end
-        end
-      end
-      if complete then
-        textureAnimation={revision=1,source="GC6E01 HSD_TexAnim + MakeTextureMtx",clip=0,endFrame=endFrame,frameCount=endFrame+1,groups=groups}
-      end
-    elseif not probe and why then
-      -- Preserve the exact static source model when this TexAnim uses a stage
-      -- the portable shader cannot reproduce; never silently approximate it.
-      textureAnimationBlocker=tostring(why)
-    end
-  end
   local animated=false;local poses={[0]=model};local maxMotion=0;local partsMotion=0
   if endFrame>0 and type(HSD.extractNativePose)=="function" then
     -- Probe across the full clip first so static Type-2 objects do not pay the
@@ -1329,12 +977,9 @@ local function compileWazaModel(blob,entry,stem,phase,opts)
       local stop=math.min(endFrame,start+WAZA_MODEL_PAGE_SLOTS)
       local page=wazaModelPage(poses[start] or model,poses,start,stop,textureSpecs)
       local path=("cache/movefx/%s/models/%s_%03d_anim_%03d.lua"):format(stem,phase,ident,#pages+1)
-      local body="return "..serialize(page).."\n"
-      local okWrite,why=write(path,body)
+      local okWrite,why=write(path,"return "..serialize(page).."\n")
       if not okWrite then return nil,why end
-      -- The cache write above remains canonical; use its exact body length so
-      -- runtime-sidecar creation never needs a second host cache.info crossing.
-      pcall(prebuildRuntimeMesh,path,page,44,#body)
+      pcall(prebuildRuntimeMesh,path,page,44)
       pages[#pages+1]={cache=path,startFrame=start,endFrame=stop,morphFrames=stop-start}
       start=stop
     end
@@ -1383,20 +1028,16 @@ local function compileWazaModel(blob,entry,stem,phase,opts)
   for gi,g in ipairs(model.groups or {}) do
     groups[#groups+1]=wazaModelGroupShell(g,textureSpecs[gi]);groups[#groups].vertices=g.vertices
   end
-  if #groups==0 and not model.transformOnly then return nil,"Waza effect model has no drawable groups" end
+  if #groups==0 and not (model.transformOnly and parts) then return nil,"Waza effect model has no drawable groups" end
   local cachePath=("cache/movefx/%s/models/%s_%03d.lua"):format(stem,phase,ident)
   local cache={revision=4,source="GC6E01 WazaSequence type-2 HSD",phase=phase,identifier=entry.identifier,
     transformOnly=model.transformOnly==true,parts=parts,frameZeroApplied=frameZeroApplied,normalizationBounds=normalizationBounds,bounds=model.bounds,vertexCount=model.vertexCount,groups=packWazaGroups(groups,8),
-    textureAnimation=textureAnimation,textureAnimationBlocker=textureAnimationBlocker,
-    animation={clip=0,endFrame=endFrame,frameCount=endFrame+1,animated=animated,textureAnimated=textureAnimation~=nil,partsAnimated=partsMotion>1e-5,maxMotion=maxMotion,pages=pages}}
-  local cacheBody="return "..serialize(cache).."\n"
-  local okWrite,why=write(cachePath,cacheBody)
+    animation={clip=0,endFrame=endFrame,frameCount=endFrame+1,animated=animated,partsAnimated=partsMotion>1e-5,maxMotion=maxMotion,pages=pages}}
+  local okWrite,why=write(cachePath,"return "..serialize(cache).."\n")
   if not okWrite then return nil,why end
-  if not model.transformOnly then pcall(prebuildRuntimeMesh,cachePath,cache,8,#cacheBody) end
+  if not model.transformOnly then pcall(prebuildRuntimeMesh,cachePath,cache,8) end
   return {cache=cachePath,groups=#groups,vertices=tonumber(model.vertexCount) or 0,textures=textureCount,bounds=model.bounds,
-    transformOnly=model.transformOnly==true,parts=parts,frameZeroApplied=frameZeroApplied,normalizationBounds=normalizationBounds,
-    textureAnimation=textureAnimation,textureAnimationBlocker=textureAnimationBlocker,
-    animation={clip=0,endFrame=endFrame,frameCount=endFrame+1,animated=animated,textureAnimated=textureAnimation~=nil,partsAnimated=partsMotion>1e-5,maxMotion=maxMotion,pages=pages}}
+    transformOnly=model.transformOnly==true,parts=parts,frameZeroApplied=frameZeroApplied,normalizationBounds=normalizationBounds,animation={clip=0,endFrame=endFrame,frameCount=endFrame+1,animated=animated,partsAnimated=partsMotion>1e-5,maxMotion=maxMotion,pages=pages}}
 end
 
 -- Serialize a model that was decoded from the complete retail snatch member.
@@ -1425,9 +1066,8 @@ local function compileDecodedCaptureModel(model,stem,phase,tag)
   local cache={revision=4,source="GC6E01 snatch member HSD static root",phase=phase,identifier=safe,
     bounds=model.bounds,vertexCount=model.vertexCount,groups=packWazaGroups(groups,8),
     animation={clip=0,endFrame=0,frameCount=1,animated=false,maxMotion=0,pages={}}}
-  local cacheBody="return "..serialize(cache).."\n"
-  local okWrite,why=write(cachePath,cacheBody);if not okWrite then return nil,why end
-  pcall(prebuildRuntimeMesh,cachePath,cache,8,#cacheBody)
+  local okWrite,why=write(cachePath,"return "..serialize(cache).."\n");if not okWrite then return nil,why end
+  pcall(prebuildRuntimeMesh,cachePath,cache,8)
   return {cache=cachePath,groups=#groups,vertices=tonumber(model.vertexCount) or 0,textures=textureCount,bounds=model.bounds,
     animation={clip=0,endFrame=0,frameCount=1,animated=false,maxMotion=0,pages={}},staticSource=true,memberRoot=true}
 end
@@ -1435,15 +1075,13 @@ end
 local function extractWZX(disc,stem,phase)
   local file=disc and disc:file("wzx_"..stem.."_"..phase..".fsys")
   if not file then return nil,"source FSYS missing" end
-  local resourceGroup=fsysResourceGroup(disc,file)
   local okArc,arc=pcall(FSYS.open,disc,file); if not okArc or not arc then return nil,tostring(arc) end
   local list=arc:list() or {};local entry
   for _,e in ipairs(list) do if tostring(e.name or ""):lower():find("%.wzx$",1,false) then entry=e;break end end
   entry=entry or list[1];if not entry then return nil,"empty FSYS" end
   local blob,err=arc:extract(entry,{maxOutput=64*1024*1024})
   if not blob then return nil,err end
-  local out={textures={},raw={},sounds={},programs={},lookupTables={},maxLifetime=0,generators=0,phase=phase,member=entry.name,blob=blob,
-    resourceGroup=resourceGroup}
+  local out={textures={},raw={},sounds={},programs={},lookupTables={},maxLifetime=0,generators=0,phase=phase,member=entry.name,blob=blob}
   if Waza and type(Waza.parse)=="function" then
     local okTimeline,timeline,why=pcall(Waza.parse,blob,{phase=phase,member=entry.name})
     if okTimeline and type(timeline)=="table" then out.waza=timeline
@@ -1482,100 +1120,6 @@ local function extractSourceMoveRows(disc)
     rows[id]={moveId=id,primaryAnimationId=primary,secondaryAnimationId=secondary,sourceOffset=at}
   end
   return rows,{archive="common.fsys",member=member.name,base=base,stride=stride,count=251}
-end
-
--- Revision 35 adds retail model-specific Waza chapter ownership.  The expensive
--- GPT1/HSD/WZX payload emitted by revision 34 is still byte-compatible: the only
--- missing input is each retained phase archive's FSYS resource-group id plus the
--- compact common_rel/main.dol selector tables.  Upgrade that metadata in place
--- instead of throwing away hundreds of already decoded particle/model assets.
-local function migrateCachedSpec34(spec,stem,disc)
-  if type(spec)~="table" or tonumber(spec.revision)~=34 then return nil,"not a revision-34 effect cache" end
-  if tonumber(spec.wazaRevision)~=(Waza and Waza.revision or 12) then return nil,"Waza cache revision changed" end
-  stem=tostring(stem or spec.stem or "")
-  if stem=="" or tostring(spec.stem or "")~=stem then return nil,"effect stem mismatch" end
-  local phaseGroups={}
-  for _,phase in ipairs(spec.wazaPhases or {}) do
-    local name=tostring(phase.name or phase.phase or "")
-    local group=tonumber(phase.resourceGroup)
-    if not group then
-      local file=disc and type(disc.file)=="function" and disc:file("wzx_"..stem.."_"..name..".fsys") or nil
-      group=fsysResourceGroup(disc,file)
-      if not group then return nil,("retail FSYS id unavailable for %s/%s"):format(stem,name) end
-      phase.resourceGroup=group
-    end
-    phaseGroups[name]=group
-  end
-  -- Phase summaries are diagnostics/index support, not a second ownership
-  -- source, but keep them coherent with the Waza timelines when present.
-  for _,phase in ipairs(spec.phases or {}) do
-    local name=tostring(phase.name or phase.phase or "")
-    if phase.resourceGroup==nil and phaseGroups[name] then phase.resourceGroup=phaseGroups[name] end
-  end
-  spec.revision=M.revision
-  spec.retailModelPhasesByMove=type(spec.retailModelPhasesByMove)=="table" and spec.retailModelPhasesByMove or {}
-  spec.retailModelOverrideBlockersByMove=type(spec.retailModelOverrideBlockersByMove)=="table" and spec.retailModelOverrideBlockersByMove or {}
-  spec.retailModelOverrideSourceByMove=type(spec.retailModelOverrideSourceByMove)=="table" and spec.retailModelOverrideSourceByMove or {}
-  spec.retailModelSelectionDone=type(spec.retailModelSelectionDone)=="table" and spec.retailModelSelectionDone or {}
-  spec.source="GC6E01 WazaSequence timeline + typed native handlers + main.dol model-specific attack selection"
-  return spec
-end
-
-function M.migrateRevision34(mod,disc,progress,generated)
-  if not (mod and mod.cache and disc) then return nil,"MoveFX metadata migration source unavailable" end
-  local oldMod,oldOpen,oldGenerated,oldSeen=M.mod,M.openDisc,M.buildGenerated,M.buildGeneratedSeen
-  local oldRows,oldOverrides,oldOverrideMeta,oldIndex=M.sourceMoveRows,M.retailModelOverrides,M.retailModelOverridesMeta,M.indexMemory
-  M.mod=mod
-  local index=cacheReadLua("cache/movefx/index.lua")
-  if type(index)~="table" or tonumber(index.revision)~=34
-      or tonumber(index.wazaRevision)~=(Waza and Waza.revision or 12)
-      or tonumber(index.total)~=251 or tonumber(index.ready)~=251 or tonumber(index.missing)~=0
-      or type(index.moves)~="table" then M.mod=oldMod;return nil,"revision-34 full MoveFX index unavailable" end
-
-  local sourceRows,sourceMeta=extractSourceMoveRows(disc)
-  if not sourceRows then M.mod=oldMod;return nil,"move selector migration: "..tostring(sourceMeta) end
-  local overrides,overrideMeta=extractRetailModelOverrides(disc)
-  if not overrides then M.mod=oldMod;return nil,"model selector migration: "..tostring(overrideMeta) end
-
-  M.openDisc=function()return disc end;M.buildGenerated=generated
-  local seen={};for _,path in ipairs(type(generated)=="table" and generated or {}) do seen[path]=true end;M.buildGeneratedSeen=seen
-  M.sourceMoveRows=sourceRows;M.retailModelOverrides=overrides;M.retailModelOverridesMeta=overrideMeta;M.indexMemory=index
-  saveRetailSelectorCache()
-  local specs,dirty={},{}
-  local ok,result=pcall(function()
-    for id=1,251 do
-      local row=index.moves[id]
-      assert(type(row)=="table" and row.missing~=true and row.stem,"revision-34 MoveFX index row missing: "..id)
-      local stem=tostring(row.stem)
-      local spec=specs[stem]
-      if not spec then
-        spec=assert(cacheReadLua(M.cachePath(stem)),"revision-34 effect cache missing: "..stem)
-        local migrated,why=migrateCachedSpec34(spec,stem,disc);assert(migrated,why)
-        spec=migrated;specs[stem]=spec;dirty[stem]=true
-      end
-      spec.sourceAnimation=spec.sourceAnimation or sourceRows[tonumber(spec.moveId)]
-      ensureSpecRetailModelMove(spec,id)
-      row.sourceAnimation=sourceRows[id]
-      row.retailModelOverrides=spec.retailModelOverrideSourceByMove and spec.retailModelOverrideSourceByMove[id] or nil
-      if progress and (id==1 or id%16==0 or id==251) then
-        pcall(progress,("MOVEFX METADATA MIGRATION %03d/251"):format(id),id,251)
-      end
-    end
-    local migratedStems=0
-    for stem in pairs(dirty) do
-      assert(write(M.cachePath(stem),"return "..serialize(specs[stem]).."\n",true));migratedStems=migratedStems+1
-    end
-    index.revision=M.revision;index.moveTable=sourceMeta;index.modelOverrideTable=overrideMeta
-    index.source="GC6E01 common_rel move animation selection + retail WZX + main.dol model-specific attack selection"
-    assert(write("cache/movefx/index.lua","return "..serialize(index).."\n",true))
-    return {ready=true,total=251,sourceReady=251,missing=0,fullVisualCount=tonumber(index.fullVisualReady) or 0,
-      fullVisualReady=tonumber(index.fullVisualReady)==251,soundIds=index.soundIds or {},migratedStems=migratedStems,index=index}
-  end)
-  M.mod=oldMod;M.openDisc=oldOpen;M.buildGenerated=oldGenerated;M.buildGeneratedSeen=oldSeen
-  M.sourceMoveRows=oldRows;M.retailModelOverrides=oldOverrides;M.retailModelOverridesMeta=oldOverrideMeta;M.indexMemory=oldIndex
-  M.memory={};M.negative={}
-  if not ok then return nil,tostring(result) end
-  return result
 end
 
 
@@ -1880,11 +1424,11 @@ local function shallowCopy(t)
   local o={};for k,v in pairs(t or {}) do o[k]=v end;return o
 end
 
-function M.extractCaptureAssets(mod,disc,progress,generated,options)
+function M.extractCaptureAssets(mod,disc,progress,generated)
   if not (mod and disc and Waza and type(Waza.parse)=="function") then return nil,"capture source extractor unavailable" end
   local previousMod,previousGenerated=M.mod,M.buildGenerated
-  local previousSeen,previousPreserve=M.buildGeneratedSeen,M.preserveExistingWrites
-  M.mod=mod;M.buildGenerated=generated;M.buildGeneratedSeen={};M.preserveExistingWrites=options and options.preserveExisting==true or false
+  local previousSeen=M.buildGeneratedSeen
+  M.mod=mod;M.buildGenerated=generated;M.buildGeneratedSeen={}
   local index={revision=6,source="GC6E01 native snatch FSYS member HSD roots + Waza type-2 fallback / static runtime",balls={},aliases={},sourceReady=0,fallbackBalls=0,sourceComplete=false}
   local ids={"poke","great","ultra","master","safari","net","nest","repeatball","timer","dive","premier","luxury"}
   local failures={};local timelineDiagnostics={};local candidateDiagnostics={}
@@ -2089,7 +1633,7 @@ function M.extractCaptureAssets(mod,disc,progress,generated,options)
       write("build/capture_source.txt",detail..candidateText.."fatal="..tostring(runErr).."\n")
     end)
   end
-  M.mod=previousMod;M.buildGenerated=previousGenerated;M.buildGeneratedSeen=previousSeen;M.preserveExistingWrites=previousPreserve
+  M.mod=previousMod;M.buildGenerated=previousGenerated;M.buildGeneratedSeen=previousSeen
   if not okRun then return nil,tostring(runErr) end
   return {ready=index.ready==true,sourceComplete=index.sourceComplete==true,count=#ids,sourceReady=index.sourceReady,
     fallbackBalls=index.fallbackBalls,failures=failures,index="cache/capture/index.lua",
@@ -2102,30 +1646,22 @@ end
 -- different move.  The alias table intentionally covers all 251 Gen I/II move
 -- ids, so this scan also becomes a concrete coverage report rather than a
 -- hand-maintained "supported moves" list.
-function M.extractAllMoves(mod,disc,progress,generated,options)
+function M.extractAllMoves(mod,disc,progress,generated)
   assert(mod and mod.cache,"MoveFX full build: cache unavailable")
   assert(disc,"MoveFX full build: disc unavailable")
   local previousMod,previousOpen,previousGenerated=M.mod,M.openDisc,M.buildGenerated
-  local previousSeen,previousSourceRows,previousOverrides,previousOverridesMeta,previousIndex,previousPreserve=
-    M.buildGeneratedSeen,M.sourceMoveRows,M.retailModelOverrides,M.retailModelOverridesMeta,M.indexMemory,M.preserveExistingWrites
-  M.mod=mod;M.openDisc=function() return disc end;M.buildGenerated=generated;M.buildGeneratedSeen={};M.preserveExistingWrites=options and options.preserveExisting==true or false
+  local previousSeen,previousSourceRows,previousIndex=M.buildGeneratedSeen,M.sourceMoveRows,M.indexMemory
+  M.mod=mod;M.openDisc=function() return disc end;M.buildGenerated=generated;M.buildGeneratedSeen={}
   local sourceRows,sourceRowsMeta=extractSourceMoveRows(disc)
   if not sourceRows then
     M.mod=previousMod;M.openDisc=previousOpen;M.buildGenerated=previousGenerated;M.buildGeneratedSeen=previousSeen
-    M.sourceMoveRows=previousSourceRows;M.retailModelOverrides=previousOverrides;M.retailModelOverridesMeta=previousOverridesMeta;M.indexMemory=previousIndex;M.preserveExistingWrites=previousPreserve
+    M.sourceMoveRows=previousSourceRows;M.indexMemory=previousIndex
     return nil,"Colosseum move animation table unavailable: "..tostring(sourceRowsMeta)
   end
-  local retailOverrides,retailOverridesMeta=extractRetailModelOverrides(disc)
-  if not retailOverrides then
-    M.mod=previousMod;M.openDisc=previousOpen;M.buildGenerated=previousGenerated;M.buildGeneratedSeen=previousSeen
-    M.sourceMoveRows=previousSourceRows;M.retailModelOverrides=previousOverrides;M.retailModelOverridesMeta=previousOverridesMeta;M.indexMemory=previousIndex;M.preserveExistingWrites=previousPreserve
-    return nil,"Colosseum model-specific attack table unavailable: "..tostring(retailOverridesMeta)
-  end
-  M.sourceMoveRows=sourceRows;M.retailModelOverrides=retailOverrides;M.retailModelOverridesMeta=retailOverridesMeta;M.indexMemory=nil
-  saveRetailSelectorCache()
+  M.sourceMoveRows=sourceRows;M.indexMemory=nil
   M.memory={};M.negative={};M.pending={};M.pendingKeys={};M.prefetchStats={queued=0,completed=0,failed=0}
   local index={revision=M.revision,wazaRevision=Waza and Waza.revision or nil,source="GC6E01 common_rel move animation selection + retail WZX",
-    moveTable=sourceRowsMeta,modelOverrideTable=retailOverridesMeta,moves={},soundIds={}}
+    moveTable=sourceRowsMeta,moves={},soundIds={}}
   local soundSeen={};local ready,missing,fullReady=0,0,0;local report={}
   local okRun,runErr=pcall(function()
     for id=1,251 do
@@ -2136,16 +1672,11 @@ function M.extractAllMoves(mod,disc,progress,generated,options)
         -- Selection is move-row metadata, not effect-bank metadata: several
         -- moves legitimately share one cached WZX stem while retaining distinct
         -- primary/secondary selectors in common_rel.
-        local rowUnsupported={}
-        for _,u in ipairs((spec.coverage and spec.coverage.unsupported) or {}) do
-          if u.moveId==nil or tonumber(u.moveId)==id then rowUnsupported[#rowUnsupported+1]=u end
-        end
         local row={id=id,stem=spec.stem,style=spec.style,wazaReady=spec.wazaReady==true,
           sourceAnimation=sourceRows[id],
-          retailModelOverrides=spec.retailModelOverrideSourceByMove and spec.retailModelOverrideSourceByMove[id] or nil,
           attackReady=spec.attackReady==true,damageReady=spec.damageReady==true,fullVisualReady=spec.fullVisualReady==true,
           phases=(spec.coverage and spec.coverage.phases) or #(spec.wazaPhases or {}),entries=(spec.coverage and spec.coverage.entries) or 0,
-          unsupported=rowUnsupported,soundIds={}}
+          unsupported=(spec.coverage and spec.coverage.unsupported) or {},soundIds={}}
         if row.fullVisualReady then fullReady=fullReady+1 end
         local localSeen={}
         for _,se in ipairs(spec.sounds or {}) do
@@ -2175,7 +1706,7 @@ function M.extractAllMoves(mod,disc,progress,generated,options)
     if type(progress)=="function" then pcall(progress,("MOVEFX SOURCE %d/251 / FULL VISUAL %d/251 / %d source SFX ids"):format(ready,fullReady,#index.soundIds),251,251) end
   end)
   M.mod=previousMod;M.openDisc=previousOpen;M.buildGenerated=previousGenerated;M.buildGeneratedSeen=previousSeen
-  M.sourceMoveRows=previousSourceRows;M.retailModelOverrides=previousOverrides;M.retailModelOverridesMeta=previousOverridesMeta;M.indexMemory=previousIndex;M.preserveExistingWrites=previousPreserve
+  M.sourceMoveRows=previousSourceRows;M.indexMemory=previousIndex
   if not okRun then return nil,tostring(runErr) end
   return {ready=(ready==251 and missing==0),fullVisualReady=(fullReady==251),fullVisualCount=fullReady,total=251,sourceReady=ready,missing=missing,soundIds=index.soundIds,index=index}
 end
@@ -2185,88 +1716,36 @@ function M.install(mod,openDisc)
 end
 function M.cachePath(stem) return "cache/movefx/"..stem.."/effect.lua" end
 
-function M.acquire(moveId,move,requestedPhases,options)
-  options=type(options)=="table" and options or nil
-  local isolated=options and options.isolated==true
-  local function metadataPath(candidate)
-    return (options and options.metadataPath) or M.cachePath(candidate)
-  end
+function M.acquire(moveId,move,requestedPhases)
   local p,id=profile(moveId,move);if not p then return nil,"unmapped move" end
   local candidates=includeIndexedStem(sourceStemCandidates(p,id,move),id)
   if #candidates==0 then return nil,"no source stem candidates" end
-  local selectorDisc
-  local function prepareCachedSelector(cached,candidate)
-    if specRetailSelectionReady(cached,id) then return true end
-    local ready,why=ensureRetailSelectorSources(nil)
-    if not ready then
-      if type(M.openDisc)~="function" then return false,why end
-      if not selectorDisc then
-        local ok,value=pcall(M.openDisc);if not ok or not value then return false,"source disc unavailable: "..tostring(value) end
-        selectorDisc=value
-      end
-      ready,why=ensureRetailSelectorSources(selectorDisc)
-    end
-    if not ready then return false,why end
-    if ensureSpecRetailModelMove(cached,id) then
-      local okWrite,writeWhy=write(metadataPath(candidate),"return "..serialize(cached).."\n",true)
-      if not okWrite then return false,writeWhy end
-    end
-    if not specRetailSelectionReady(cached,id) then return false,"retail model-specific attack selection was not resolved" end
-    return true
-  end
   -- Cache hits are tried across every equivalent stem before touching the disc.
   for _,candidate in ipairs(candidates) do
-    if not isolated and M.memory[candidate]~=nil then
-      if M.memory[candidate] then
-        local cached=M.memory[candidate]
-        local ready=prepareCachedSelector(cached,candidate)
-        if ready then refreshEmbeddedCameraCache(cached,candidate);return cached end
-      end
+    if M.memory[candidate]~=nil then
+      if M.memory[candidate] then return M.memory[candidate] end
     else
-      local cached=cacheReadLua(metadataPath(candidate))
+      local cached=cacheReadLua(M.cachePath(candidate))
       if type(cached)=="table" and cached.revision==M.revision and cached.wazaRevision==(Waza and Waza.revision or nil) and cached.stem==candidate then
-        local ready=prepareCachedSelector(cached,candidate)
-        if ready then refreshEmbeddedCameraCache(cached,candidate);if not isolated then M.memory[candidate]=cached end;return cached end
+        M.memory[candidate]=cached;return cached
       end
     end
   end
   local negKey=tostring(id or norm(type(move)=="table" and (move.name or move.id or move.move) or moveId))
-  if not isolated and M.negative[negKey] then return nil,M.negative[negKey] end
+  if M.negative[negKey] then return nil,M.negative[negKey] end
   if type(M.openDisc)~="function" then return nil,"source disc opener unavailable" end
-  local disc=selectorDisc
-  if not disc then
-    local okDisc,value=pcall(M.openDisc);if not okDisc or not value then return nil,"source disc unavailable: "..tostring(value) end
-    disc=value
-  end
-
-  -- Full builds already preload these two retail selectors. Runtime repair/
-  -- prefetch may enter acquire() directly, so recover them lazily from the same
-  -- source disc before choosing attack chapters. This work never occurs on a
-  -- visible move boundary: callers only invoke acquire through build/prefetch.
-  if id then
-    local selectorsReady,selectorWhy=ensureRetailSelectorSources(disc)
-    if not selectorsReady then return nil,selectorWhy end
-  end
-  -- The common_rel primary animation id may point at a shared Waza stem that a
-  -- semantic move-name probe would not discover. Merge those exact candidates
-  -- after source-row recovery rather than replacing the already-tested aliases.
-  do
-    local seen={};for _,v in ipairs(candidates) do seen[v]=true end
-    for _,v in ipairs(includeIndexedStem(sourceStemCandidates(p,id,move),id)) do
-      if not seen[v] then candidates[#candidates+1]=v;seen[v]=true end
-    end
-  end
+  local okDisc,disc=pcall(M.openDisc);if not okDisc or not disc then return nil,"source disc unavailable: "..tostring(disc) end
   local key,phases,variants
   local attempted={}
   for _,candidate in ipairs(candidates) do
     local found,var=phasesFor(disc,candidate,p.phases,(id and MOVE[id]~=nil and p.candidate~=true) and true or false)
     attempted[#attempted+1]=candidate
     if #found>0 then key=candidate;phases=found;variants=var;break end
-    if not isolated then M.memory[candidate]=false end
+    M.memory[candidate]=false
   end
   if not key then
     local why="no source WZX archive for candidates: "..table.concat(attempted,",")
-    if not isolated then M.negative[negKey]=why end
+    M.negative[negKey]=why
     return nil,why
   end
 
@@ -2279,22 +1758,17 @@ function M.acquire(moveId,move,requestedPhases,options)
   for _,phase in ipairs(phases) do
     local fx,err=extractWZX(disc,key,phase)
     if fx and (#fx.textures>0 or #fx.sounds>0 or #fx.programs>0
-        or (type(fx.waza)=="table" and (#(fx.waza.entries or {})>0 or (tonumber(fx.waza.hsdSize) or 0)>0))) then
+        or (type(fx.waza)=="table" and #(fx.waza.entries or {})>0)) then
       banks[#banks+1]=fx
     else errors=err or errors end
   end
-  local sourceAnimation=M.sourceMoveRows and M.sourceMoveRows[tonumber(id)] or nil
   local meta={revision=M.revision,wazaRevision=Waza and Waza.revision or nil,stem=key,moveId=id,style=p.style,tint=p.tint,stemCandidates=candidates,
     phase=banks[1] and banks[1].phase or nil,generators=0,maxLifetime=0,
     textures={},phases={},variants=variants or {},sounds={},generatorPrograms={},lookupTables={},wazaPhases={},wazaModels=0,wazaModelErrors={},wazaEffects=0,wazaEffectModels=0,wazaEffectArtifacts=0,wazaEffectErrors={},
-    sourceAnimation=sourceAnimation,retailModelPhasesByMove={},retailModelOverrideBlockersByMove={},retailModelOverrideSourceByMove={},retailModelSelectionDone={},
-    source="GC6E01 WazaSequence timeline + typed native handlers + main.dol model-specific attack selection",
-    sourceSelector=options and options.sourceSelector or nil,sourceItemBallField=options and options.sourceItemBallField or nil,
-    sourceResourceGroup=options and options.sourceResourceGroup or nil}
+    source="GC6E01 WazaSequence timeline + typed native handlers"}
   local nextGlobalBank=0
   for _,bankFx in ipairs(banks) do
-    local phaseMeta={name=bankFx.phase,first=#meta.textures+1,count=0,generators=bankFx.generators or 0,roots=0,maxLifetime=bankFx.maxLifetime or 0,
-      resourceGroup=bankFx.resourceGroup}
+    local phaseMeta={name=bankFx.phase,first=#meta.textures+1,count=0,generators=bankFx.generators or 0,roots=0,maxLifetime=bankFx.maxLifetime or 0}
     meta.generators=meta.generators+(bankFx.generators or 0)
     meta.maxLifetime=math.max(meta.maxLifetime,bankFx.maxLifetime or 0)
 
@@ -2325,27 +1799,6 @@ function M.acquire(moveId,move,requestedPhases,options)
       -- scheduling its impact chapter.
       timeline.name=bankFx.phase
       timeline.rawPath=rawWazaPath
-      timeline.resourceGroup=bankFx.resourceGroup
-      -- The WZX root can embed the exact HSD camera archive consumed by retail
-      -- cameraPlayOffsetAnime. Decode it now, while the source bytes and HSD
-      -- parser are available, into compact per-retail-frame local camera poses.
-      -- Runtime then applies the live owner/arena transform without needing disc
-      -- access or retaining opaque HSD pointers.
-      local cameraSize=math.max(0,math.floor(tonumber(bankFx.waza.hsdSize or (bankFx.waza.root and bankFx.waza.root.embeddedSize)) or 0))
-      if cameraSize>0 and HSD and type(HSD.extractCameraAnimation)=="function" and type(bankFx.blob)=="string" then
-        local cameraAt=0xA0
-        if cameraAt+cameraSize<=#bankFx.blob then
-          local okCamera,camera,why=pcall(HSD.extractCameraAnimation,bankFx.blob:sub(cameraAt+1,cameraAt+cameraSize),
-            {phase=bankFx.phase,wazaOffsetWorldUp=true})
-          if okCamera and type(camera)=="table" then
-            timeline.sourceCamera=camera
-          else
-            timeline.sourceCameraError=tostring(okCamera and why or camera)
-          end
-        else
-          timeline.sourceCameraError="embedded HSD camera range exceeds WZX member"
-        end
-      end
       timeline.entries={}
       for _,entry in ipairs(bankFx.waza.entries or {}) do
         local copy={phase=bankFx.phase};for k,v in pairs(entry) do copy[k]=v end
@@ -2544,7 +1997,6 @@ function M.acquire(moveId,move,requestedPhases,options)
   latest=math.max(latest,wazaLatest)
   meta.duration=math.max(.32,math.min(8.0,latest/60))
   meta.wazaReady=#(meta.wazaPhases or {})>0
-  if id then ensureSpecRetailModelMove(meta,id) end
   local rootCount=0;for _,g in ipairs(meta.generatorPrograms) do if g.root==true then rootCount=rootCount+1 end end
   meta.rootGenerators=rootCount
   meta.attackReady=cachedRoleReady(meta,"attack")
@@ -2564,41 +2016,28 @@ function M.acquire(moveId,move,requestedPhases,options)
       local ok,why=cachedEntryReady(meta,e);if not ok then meta.coverage.unsupported[#meta.coverage.unsupported+1]={phase=ph.name,index=e.index,kind=e.kind,reason=why} end
     end
   end
-  for moveKey,rows in pairs(meta.retailModelOverrideBlockersByMove or {}) do
-    for modelId,why in pairs(rows or {}) do
-      meta.coverage.unsupported[#meta.coverage.unsupported+1]={phase="attack-override",index=modelId,moveId=moveKey,
-        kind="retail-model-selector",reason=why}
-    end
-  end
   if #meta.textures==0 then meta.duration=.6;meta.note=errors or "WZX has no decoded GPT1 texture bank" end
   -- Persist the phase metadata itself.  Earlier revisions wrote through an
   -- undefined `path`, so expensive WZX extraction could succeed for the live
   -- session yet silently miss its metadata cache on the next launch.
-  local path=metadataPath(key)
+  local path=M.cachePath(key)
   write(path,"return "..serialize(meta).."\n")
-  if not isolated then M.memory[key]=meta end
+  M.memory[key]=meta
   return meta
 end
 
 function M.peek(moveId,move)
   local p,id=profile(moveId,move);if not p then return nil,"unmapped move" end
-  local selectorMissing=false
   for _,key in ipairs(includeIndexedStem(sourceStemCandidates(p,id,move),id)) do
-    if M.memory[key]~=nil then
-      if M.memory[key] then
-        if specRetailSelectionReady(M.memory[key],id) then refreshEmbeddedCameraCache(M.memory[key],key);return M.memory[key] end
-        selectorMissing=true
-      end
+    if M.memory[key]~=nil then if M.memory[key] then return M.memory[key] end
     else
       local cached=cacheReadLua(M.cachePath(key))
       if type(cached)=="table" and cached.revision==M.revision and cached.wazaRevision==(Waza and Waza.revision or nil) and cached.stem==key then
-        M.memory[key]=cached
-        if specRetailSelectionReady(cached,id) then refreshEmbeddedCameraCache(cached,key);return cached end
-        selectorMissing=true
+        M.memory[key]=cached;return cached
       end
     end
   end
-  return nil,selectorMissing and "retail attack selector not prefetched" or "not prefetched"
+  return nil,"not prefetched"
 end
 
 local function slotMoveId(slot)
@@ -2686,39 +2125,6 @@ function M.queueParty(game,maxMons)
   return total
 end
 
--- Stable dependency identity for Hard Cache reuse. This deliberately mirrors
--- queueParty's first-N-party walk and prefetchKey mapping without reading or
--- extracting a single WZX. A save whose move slots map to the same retail stems
--- therefore keeps its already-built MoveFX/Waza sidecars across app sessions;
--- a changed moveset invalidates only the hard-cache completion proof, not data.
-function M.partySignature(game,maxMons)
-  if type(game)~="table" or type(game.save)~="table" then
-    return ("movefx-party-v1|revision=%s|waza=%s|moves="):format(tostring(M.revision),tostring(Waza and Waza.revision or "nil"))
-  end
-  local party=game.save.party or game.save.pokemon or game.save.team
-  local limit=math.max(1,math.floor(tonumber(maxMons) or 1))
-  local keys,seen={},{};local used=0;local battle={game=game}
-  if type(party)=="table" then
-    for _,mon in ipairs(party) do
-      if used>=limit then break end
-      if type(mon)=="table" then
-        used=used+1
-        local slots=mon.moves
-        if type(slots)=="table" then
-          for _,slot in pairs(slots) do
-            local id,def=slotMoveId(slot);def=resolveMoveDef(battle,id,def)
-            local key=prefetchKey(id,def)
-            if key and not seen[key] then seen[key]=true;keys[#keys+1]=key end
-          end
-        end
-      end
-    end
-  end
-  table.sort(keys)
-  return ("movefx-party-v1|revision=%s|waza=%s|mons=%d|moves=%s")
-    :format(tostring(M.revision),tostring(Waza and Waza.revision or "nil"),used,table.concat(keys,","))
-end
-
 -- Return the currently cached source specs for the player's party without
 -- starting extraction. Hard Cache Save calls this only after queueParty has
 -- drained, so the list is a cheap in-memory/disk lookup used to discover the
@@ -2763,20 +2169,9 @@ end
 M.prefetchBattler=M.queueBattler
 M.prefetchBattle=M.queueBattle
 
--- Prefetch can promote several banks in one cooperative slice. Platform
--- identity cannot change while the process is alive, so do not cross LÖVE's
--- system bridge once per promoted bank on Android. Keep this lazy rather than
--- resolving at module load so stripped test/worker hosts that install `love`
--- shortly afterwards retain the historical behavior.
-local androidRuntimeCached=nil
 local function androidRuntime()
-  if androidRuntimeCached~=nil then return androidRuntimeCached end
   if love and love.system and type(love.system.getOS)=="function" then
-    local ok,v=pcall(love.system.getOS)
-    if ok then
-      androidRuntimeCached=tostring(v or "")=="Android"
-      return androidRuntimeCached
-    end
+    local ok,v=pcall(love.system.getOS);return ok and tostring(v or "")=="Android"
   end
   return false
 end
@@ -2804,101 +2199,29 @@ function M.pumpPrefetch(maxItems)
 end
 
 function M.clear()
-  M.memory={};M.faintReturnMemory={};M.negative={};M.pending={};M.pendingKeys={};M.prefetchStats={queued=0,completed=0,failed=0};return true
+  M.memory={};M.negative={};M.pending={};M.pendingKeys={};M.prefetchStats={queued=0,completed=0,failed=0};return true
 end
-function M.status() return {revision=M.revision,wazaRevision=Waza and Waza.revision or nil,cached=M.memory,negative=M.negative,sourceAliases=SOURCE_STEM_ALIASES_COUNT,prefetch=true,peek=true,pending=#M.pending,prefetchStats=M.prefetchStats,
-  retailModelOverrideSource=M.retailModelOverridesMeta,
+function M.status() return {revision=M.revision,wazaRevision=Waza and Waza.revision or nil,cached=M.memory,negative=M.negative,sourceAliases=251,prefetch=true,peek=true,pending=#M.pending,prefetchStats=M.prefetchStats,
   prefetchPolicy="party WZX cache promotion is paced by the stable-overworld resident scheduler; current battle banks complete before CBE world presentation; no source extraction on visible move/damage frames"} end
 M._test={extractSourceMoveRows=extractSourceMoveRows,sourceStemCandidates=sourceStemCandidates,
-  dolReadVirtual=dolReadVirtual,extractRetailModelOverrides=extractRetailModelOverrides,retailModelPhaseMap=retailModelPhaseMap,
-  ensureSpecRetailModelMove=ensureSpecRetailModelMove,fsysResourceGroup=fsysResourceGroup,migrateCachedSpec34=migrateCachedSpec34,
-  directEmbeddedType3=directEmbeddedType3,runtimeRoot=runtimeRoot,runtimeMetaPath=runtimeMetaPath,
-  packPackedRows=packPackedRows,prebuildRuntimeMesh=prebuildRuntimeMesh,androidRuntime=androidRuntime}
+  directEmbeddedType3=directEmbeddedType3}
 M.releaseStems={"monsterball","superball","hyperball","masterball","safariball","netball","diveball","nestball","repeatball","timerball","gorgeousball","puremiyaball"}
-M.faintReturnMemory={}
-function M.faintReturnPath(stem)
-  stem=norm(stem)
-  return "cache/movefx/"..stem.."/downin_effect.lua"
-end
-local function validFaintReturnSpec(spec,stem)
-  if type(spec)~="table" or spec.revision~=M.revision or spec.wazaRevision~=(Waza and Waza.revision or nil)
-      or norm(spec.stem)~=norm(stem) or tonumber(spec.sourceSelector)~=0x10
-      or spec.sourceItemBallField~="downinWzxDataId" or tonumber(spec.sourceResourceGroup)~=4 then return false end
-  for _,phase in ipairs(spec.wazaPhases or {}) do
-    if phase.name=="downin" and phase.complete==true and tonumber(phase.sequenceKind)==10 and #(phase.entries or {})>0 then return true end
-  end
-  return false
-end
-function M.peekFaintReturn(stem)
-  stem=norm(stem);if stem=="" then return nil,"missing ball stem" end
-  local cached=M.faintReturnMemory[stem]
-  if cached~=nil then return cached or nil,cached and nil or "faint-return cache unavailable" end
-  cached=cacheReadLua(M.faintReturnPath(stem))
-  if validFaintReturnSpec(cached,stem) then M.faintReturnMemory[stem]=cached;return cached end
-  M.faintReturnMemory[stem]=false
-  return nil,"source downin WZX cache not prepared"
-end
-function M.acquireFaintReturn(stem)
-  stem=norm(stem);if stem=="" then return nil,"missing ball stem" end
-  local spec,why=M.acquire(nil,{name=stem},{"downin"},{isolated=true,metadataPath=M.faintReturnPath(stem),
-    sourceSelector=0x10,sourceItemBallField="downinWzxDataId",sourceResourceGroup=4})
-  if not validFaintReturnSpec(spec,stem) then return nil,why or "incomplete source downin WZX" end
-  M.faintReturnMemory[stem]=spec
-  return spec
-end
-function M.faintReturnBanksReady(mod)
-  if not (mod and mod.cache and type(mod.cache.info)=="function") then return false end
-  for _,stem in ipairs(M.releaseStems) do
-    local ok,info=pcall(mod.cache.info,mod.cache,M.faintReturnPath(stem))
-    if not ok or type(info)~="table" then return false end
-  end
-  return true
-end
-M.releaseMarkerPath="cache/movefx/release_banks_v1.complete"
-local function releaseMarker()
-  return ("cbe-release-banks=1\nsource=GC6E01\nextractor=%d\nwaza=%s\nstems=%s\n")
-    :format(M.releaseRevision or M.revision,tostring(Waza and Waza.revision or "none"),table.concat(M.releaseStems,","))
-end
-M.releaseMarkerValue=releaseMarker()
-function M.releaseBanksReady(mod)
-  if not (mod and mod.cache and type(mod.cache.read)=="function" and type(mod.cache.info)=="function") then return false end
-  local ok,raw=pcall(mod.cache.read,mod.cache,M.releaseMarkerPath)
-  if not ok or raw~=releaseMarker() then return false end
-  -- Marker is transactional/versioned; existence probes catch interrupted or
-  -- externally removed effect banks without reparsing 12 Lua effect payloads.
-  for _,stem in ipairs(M.releaseStems) do
-    local good,info=pcall(mod.cache.info,mod.cache,M.cachePath(stem))
-    if not good or type(info)~="table" then return false end
-  end
-  return true
-end
 function M.ensureReleaseBanks(mod,openDisc,progress,generated)
-  local releaseReady=M.releaseBanksReady(mod)
-  local faintReady=M.faintReturnBanksReady(mod)
-  if releaseReady and faintReady then return true,"cached" end
-  local oldMod,oldOpen,oldGenerated,oldSeen,oldPreserve=M.mod,M.openDisc,M.buildGenerated,M.buildGeneratedSeen,M.preserveExistingWrites
-  M.mod=mod;M.openDisc=openDisc;M.buildGenerated=generated;M.buildGeneratedSeen={};M.preserveExistingWrites=true
+  local oldMod,oldOpen,oldGenerated,oldSeen=M.mod,M.openDisc,M.buildGenerated,M.buildGeneratedSeen
+  M.mod=mod;M.openDisc=openDisc;M.buildGenerated=generated;M.buildGeneratedSeen={}
   local ok,result=pcall(function()
     for i,stem in ipairs(M.releaseStems)do
-      if not releaseReady then
-        local spec=M.peek(nil,{name=stem})
-        if not spec then
-          if progress then progress("BUILDING SOURCE BALL RELEASES",i,#M.releaseStems) end
-          local why;spec,why=M.acquire(nil,{name=stem},{"open"});assert(spec,why)
-        end
-        local found=false;for _,phase in ipairs(spec.wazaPhases or {})do if phase.name=="open" then found=true end end
-        assert(found,"Missing ball_open chapter: "..stem)
+      local spec=M.peek(nil,{name=stem})
+      if not spec then
+        if progress then progress("BUILDING SOURCE BALL RELEASES",i,#M.releaseStems) end
+        local why;spec,why=M.acquire(nil,{name=stem},{"open"});assert(spec,why)
       end
-      local down=M.peekFaintReturn(stem)
-      if not down then
-        if progress then progress("BUILDING SOURCE FAINT RETURNS",i,#M.releaseStems) end
-        local why;down,why=M.acquireFaintReturn(stem);assert(down,why)
-      end
+      local found=false;for _,phase in ipairs(spec.wazaPhases or {})do if phase.name=="open" then found=true end end
+      assert(found,"Missing ball_open chapter: "..stem)
     end
-    if not releaseReady then local wrote,why=write(M.releaseMarkerPath,releaseMarker());assert(wrote,why) end
     return true
   end)
-  M.mod=oldMod;M.openDisc=oldOpen;M.buildGenerated=oldGenerated;M.buildGeneratedSeen=oldSeen;M.preserveExistingWrites=oldPreserve
+  M.mod=oldMod;M.openDisc=oldOpen;M.buildGenerated=oldGenerated;M.buildGeneratedSeen=oldSeen
   if not ok then error(result) end;return result
 end
 return M

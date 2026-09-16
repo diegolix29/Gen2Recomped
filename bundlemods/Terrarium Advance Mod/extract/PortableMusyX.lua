@@ -10,20 +10,6 @@ local P={}
 
 local okFfi,ffi=pcall(require,"ffi")
 if not okFfi then ffi=nil end
--- Some Lua 5.3/LuaTeX environments expose an ffi compatibility module whose
--- abi/new symbols exist but whose ffi.string cannot consume the returned cdata.
--- Probe the exact PCM operation once at module load and fall back to portable
--- packing instead of discovering the incompatibility after an expensive render.
-local function pcmFfiUsable(f)
-  if not (f and type(f.abi)=="function" and type(f.new)=="function" and type(f.string)=="function") then return false end
-  local okLe,isLe=pcall(f.abi,"le")
-  if not okLe or not isLe then return false end
-  local okBuf,buf=pcall(f.new,"int16_t[?]",2)
-  if not okBuf or not buf then return false end
-  local okString,bytes=pcall(f.string,buf,4)
-  return okString and type(bytes)=="string" and #bytes==4
-end
-local PCM_FFI_LE=pcmFfiUsable(ffi)
 
 local floor,ceil,min,max,abs=math.floor,math.ceil,math.min,math.max,math.abs
 local pow=math.pow or function(a,b)return a^b end
@@ -1012,8 +998,8 @@ local function renderPcm(project,pool,sdir,samp,song,setupId,outputRate,minFrame
   local peak=0;local clipped=0;local rv=newReverb(outputRate)
   while frame<totalFrames do
     local n=min(block,totalFrames-frame)
-    local mix=PCM_FFI_LE and ffi.new("double[?]",n*2) or {};local rev=PCM_FFI_LE and ffi.new("double[?]",n*2) or {}
-    if not PCM_FFI_LE then for i=1,n*2 do mix[i]=0;rev[i]=0 end end
+    local mix=ffi and ffi.new("double[?]",n*2) or {};local rev=ffi and ffi.new("double[?]",n*2) or {}
+    if not ffi then for i=1,n*2 do mix[i]=0;rev[i]=0 end end
     while nextVoice<=#voices and voices[nextVoice].startFrame<frame+n do
       local v=voices[nextVoice]
       if v.startFrame>=frame then
@@ -1050,8 +1036,7 @@ local function renderPcm(project,pool,sdir,samp,song,setupId,outputRate,minFrame
         if not alive then break end
         local globalFrame=frame+i;local t=(globalFrame-v.startFrame)/outputRate;local absSec=globalFrame/outputRate
         if v.killFrame and globalFrame>=v.killFrame then alive=false;break end
-        local nextAutomation=v.automation and v.automation[v.autoIndex or 1]
-        if nextAutomation and (nextAutomation.sec or 0)<=absSec+1e-9 then applyAutomation(v,absSec) end
+        applyAutomation(v,absSec)
         local request=v.nominalKeyoff
         if v.retriggerKeyoff~=nil then request=min(request or v.retriggerKeyoff,v.retriggerKeyoff) end
         if v.keyoff==nil and request~=nil and t>=request then
@@ -1062,8 +1047,8 @@ local function renderPcm(project,pool,sdir,samp,song,setupId,outputRate,minFrame
           local step=v.userSlewStep
           if v.targetUserVol<v.userVol then v.userVol=max(v.targetUserVol,v.userVol-step) else v.userVol=min(v.targetUserVol,v.userVol+step) end
         end
-        local env=(v.adsr or v.adsrCtrl) and adsrAtVoice(v,t) or 1
-        local envelopeVol=(v.initialEnvelope or (v.keyoff and v.postKeyoffEnvelope)) and envelopeAtVoice(v,t) or 1
+        local env=adsrAtVoice(v,t)
+        local envelopeVol=envelopeAtVoice(v,t)
         if env<=0 and v.keyoff then alive=false;break end
         local idx=v.pos
         if idx>=sample.count then
@@ -1079,7 +1064,7 @@ local function renderPcm(project,pool,sdir,samp,song,setupId,outputRate,minFrame
         local dry=sv*gain;local reverbGain=v.reverbGain or 0
         local l=dry*v.left;local r=dry*v.right;local rl=dry*reverbGain*v.left;local rr=dry*reverbGain*v.right
         local mi=i*2
-        if PCM_FFI_LE then
+        if ffi then
           mix[mi]=mix[mi]+l;mix[mi+1]=mix[mi+1]+r;rev[mi]=rev[mi]+rl;rev[mi+1]=rev[mi+1]+rr
         else
           mix[mi+1]=mix[mi+1]+l;mix[mi+2]=mix[mi+2]+r;rev[mi+1]=rev[mi+1]+rl;rev[mi+2]=rev[mi+2]+rr
@@ -1100,39 +1085,20 @@ local function renderPcm(project,pool,sdir,samp,song,setupId,outputRate,minFrame
       if alive then survivors[#survivors+1]=v end
     end
     active=survivors
-    local blockBytes
-    if PCM_FFI_LE then
-      local out=ffi.new("int16_t[?]",n*2)
-      for i=0,n-1 do
-        local mi=i*2
-        local dl=tonumber(mix[mi]);local dr=tonumber(mix[mi+1])
-        local rvl=tonumber(rev[mi]);local rvr=tonumber(rev[mi+1])
-        local ol=(dl+reverbSample(rv,rv.left,rvl))*outputGain;local orr=(dr+reverbSample(rv,rv.right,rvr))*outputGain
-        local x=ol;if abs(x)>peak then peak=abs(x) end;if abs(x)>1 then clipped=clipped+1 end
-        if x>1 then x=1 elseif x< -1 then x=-1 end
-        out[mi]=x>=0 and floor(x*32767+0.5) or ceil(x*32768-0.5)
-        x=orr;if abs(x)>peak then peak=abs(x) end;if abs(x)>1 then clipped=clipped+1 end
-        if x>1 then x=1 elseif x< -1 then x=-1 end
-        out[mi+1]=x>=0 and floor(x*32767+0.5) or ceil(x*32768-0.5)
-      end
-      blockBytes=ffi.string(out,n*4)
-    else
-      local bytes={}
-      for i=0,n-1 do
-        local mi=i*2
-        local dl=mix[mi+1] or 0;local dr=mix[mi+2] or 0
-        local rvl=rev[mi+1] or 0;local rvr=rev[mi+2] or 0
-        local ol=(dl+reverbSample(rv,rv.left,rvl))*outputGain;local orr=(dr+reverbSample(rv,rv.right,rvr))*outputGain
-        local x=ol;if abs(x)>peak then peak=abs(x) end;if abs(x)>1 then clipped=clipped+1 end
-        if x>1 then x=1 elseif x< -1 then x=-1 end
-        local q=x>=0 and floor(x*32767+0.5) or ceil(x*32768-0.5);q=q%65536;bytes[#bytes+1]=string.char(q%256,floor(q/256))
-        x=orr;if abs(x)>peak then peak=abs(x) end;if abs(x)>1 then clipped=clipped+1 end
-        if x>1 then x=1 elseif x< -1 then x=-1 end
-        q=x>=0 and floor(x*32767+0.5) or ceil(x*32768-0.5);q=q%65536;bytes[#bytes+1]=string.char(q%256,floor(q/256))
-      end
-      blockBytes=table.concat(bytes)
+    local bytes={}
+    for i=0,n-1 do
+      local mi=i*2
+      local dl=ffi and tonumber(mix[mi]) or mix[mi+1] or 0;local dr=ffi and tonumber(mix[mi+1]) or mix[mi+2] or 0
+      local rvl=ffi and tonumber(rev[mi]) or rev[mi+1] or 0;local rvr=ffi and tonumber(rev[mi+1]) or rev[mi+2] or 0
+      local ol=(dl+reverbSample(rv,rv.left,rvl))*outputGain;local orr=(dr+reverbSample(rv,rv.right,rvr))*outputGain
+      local x=ol;if abs(x)>peak then peak=abs(x) end;if abs(x)>1 then clipped=clipped+1 end
+      if x>1 then x=1 elseif x< -1 then x=-1 end
+      local q=x>=0 and floor(x*32767+0.5) or ceil(x*32768-0.5);q=q%65536;bytes[#bytes+1]=string.char(q%256,floor(q/256))
+      x=orr;if abs(x)>peak then peak=abs(x) end;if abs(x)>1 then clipped=clipped+1 end
+      if x>1 then x=1 elseif x< -1 then x=-1 end
+      q=x>=0 and floor(x*32767+0.5) or ceil(x*32768-0.5);q=q%65536;bytes[#bytes+1]=string.char(q%256,floor(q/256))
     end
-    parts[#parts+1]=blockBytes;frame=frame+n
+    parts[#parts+1]=table.concat(bytes);frame=frame+n
     if progress and frame%(outputRate*4)<block then progress(frame,totalFrames) end
     if nextVoice>#voices and #active==0 and frame>=(minFrames or 0) and frame>floor((lastSec+releaseFloor)*outputRate) then totalFrames=frame end
   end

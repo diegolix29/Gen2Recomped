@@ -1,8 +1,6 @@
 local V=...
 local HSD,FSYS,Dex,PKXMetadata=V.HSD,V.FSYS,V.ColosseumDex,V.PKXMetadata
-local Persist,GeneratedAssets=V.PayloadPreserver,V.GeneratedAssets
-local P={revision=38}
-function P.installGeneratedAssets(assets) GeneratedAssets=assets;return true end
+local P={revision=37}
 
 -- Colosseum Pokemon battle-model extractor.
 --
@@ -87,51 +85,6 @@ local function applyTransform(model,t)
   end
   model.bounds={min=nmin,max=nmax,center={(nmin[1]+nmax[1])/2,(nmin[2]+nmax[2])/2,(nmin[3]+nmax[3])/2}}
   return model
-end
-
--- WazaEffect's Pokemon owner is allocated/zeroed before sequenceLoad, so its
--- initial fn_801DF160 bound bake is provably the base metadata row (slot 0),
--- first motionType==0 animation. Preserve that raw retail AABB alongside the
--- exact affine used by CBE's normalized body. Later root-null state can select
--- the alternate row for animation, but it does not rebake GSmodel.bound.
-local function retailWazaOwnerBound(base,metadata,transform)
-  if not (HSD and type(HSD.extractRetailModelBoundFromModel)=="function") then
-    return nil,"retail-bound extractor unavailable"
-  end
-  if type(base)~="table" or base.semanticRootsOnly~=true then
-    return nil,"retail-bound body lacks semantic-root provenance"
-  end
-  -- GSresGetResource owns one model root. If the PKX advertises more than one
-  -- semantic scene model root, the visible-body winner is not enough evidence
-  -- to certify which root retail attached to the Waza owner.
-  if tonumber(base.semanticRootCount)~=1 then
-    return nil,"retail-bound Pokemon resource root is ambiguous"
-  end
-  local idle=metadata and metadata.slots and metadata.slots.idle
-  local animationIndex=idle and idle.active==true and tonumber(idle.animationIndex) or nil
-  if animationIndex==nil or animationIndex<0 or animationIndex~=math.floor(animationIndex) then
-    return nil,"retail-bound base-row zero-motion animation unavailable"
-  end
-  local bound,why=HSD.extractRetailModelBoundFromModel(base,animationIndex)
-  if not (bound and bound.exact==true and bound.frame==0) then return nil,why or "retail-bound frame-0 bake unavailable" end
-  local t=transform
-  if not (type(t)=="table" and tonumber(t.s) and tonumber(t.cx) and tonumber(t.cy) and tonumber(t.cz) and t.s>0) then
-    return nil,"retail-bound source normalization unavailable"
-  end
-  local function map(v)
-    return {(v[1]-t.cx)*t.s,(v[2]-t.cy)*t.s,(v[3]-t.cz)*t.s}
-  end
-  local nmin,nmax=map(bound.min),map(bound.max)
-  local ncenter={(nmin[1]+nmax[1])*.5,(nmin[2]+nmax[2])*.5,(nmin[3]+nmax[3])*.5}
-  return {
-    exact=true,format="gc6e01-waza-owner-bound-v1",frame=0,animationIndex=animationIndex,
-    selector="base-row0-first-zero-motion",selectorExact=true,
-    source={min={bound.min[1],bound.min[2],bound.min[3]},max={bound.max[1],bound.max[2],bound.max[3]},
-      center={bound.center[1],bound.center[2],bound.center[3]},extent={bound.extent[1],bound.extent[2],bound.extent[3]}},
-    normalized={min=nmin,max=nmax,center=ncenter,
-      extent={nmax[1]-nmin[1],nmax[2]-nmin[2],nmax[3]-nmin[3]}},
-    sourceToCache={s=t.s,cx=t.cx,cy=t.cy,cz=t.cz,exact=true},
-  }
 end
 
 -- Two samples are usable as morph targets for one another only if their group
@@ -739,7 +692,7 @@ local function buildActionPages(blob,template,clip,transform,duration,endFrame,t
   return pages,nil,spacing,intervals,validTotal
 end
 
-local function extractActionBanks(blob,template,transform,metadata,clipCount,trail,decodeMode,wantedActions)
+local function extractActionBanks(blob,template,transform,metadata,clipCount,trail,decodeMode)
   local actions={}
   if not (metadata and type(metadata.slots)=="table") then
     trail[#trail+1]="PKX action banks: metadata unavailable; retaining legacy single-clip fallback"
@@ -836,12 +789,7 @@ local function extractActionBanks(blob,template,transform,metadata,clipCount,tra
     return false
   end
 
-  for _,spec in ipairs(semanticOrder) do
-    local wanted=wantedActions and wantedActions[spec[1]] or nil
-    if wantedActions==nil then buildSemantic(spec[1],spec[2])
-    elseif wanted==true then buildSemantic(spec[1],spec[2])
-    elseif type(wanted)=="table" then buildSemantic(spec[1],wanted) end
-  end
+  for _,spec in ipairs(semanticOrder) do buildSemantic(spec[1],spec[2]) end
   return actions
 end
 
@@ -903,11 +851,11 @@ local function packedVerticesLua(vertices)
     rows=rows+1
     if rows==64 then
       chunks[#chunks+1]=table.concat(parts,"",1,n);n=0;rows=0
-      if checkpoint then checkpoint("Writing source vertex cache") end
+      checkpoint("Writing source vertex cache")
     end
   end
   if n>0 then chunks[#chunks+1]=table.concat(parts,"",1,n) end
-  if checkpoint then checkpoint() end
+  checkpoint()
   return q(table.concat(chunks))
 end
 
@@ -916,35 +864,29 @@ local unpackArgs=table.unpack or unpack
 -- one intermediate string per 64 vertices instead of per vertex. Identical
 -- output bytes.
 local RUNTIME_PACK_BATCH=64
-local RUNTIME_PACK_SCALAR_LIMIT=192
 local function runtimeVerticesBytes(vertices)
-  local lovePack=love and love.data and type(love.data.pack)=="function" and love.data.pack or nil
-  local luaPack=type(string.pack)=="function" and string.pack or nil
-  if not lovePack and not luaPack then return nil end
+  if not (love and love.data and type(love.data.pack)=="function") then return nil end
   vertices=vertices or {}
   local count=#vertices
   if count==0 then return nil end
   local rowFmt=string.rep("f",STRIDE)
-  local rowsPerBatch=math.max(1,math.min(RUNTIME_PACK_BATCH,math.floor(RUNTIME_PACK_SCALAR_LIMIT/STRIDE)))
-  local batchFmt=string.rep(rowFmt,rowsPerBatch)
+  local batchFmt=string.rep(rowFmt,RUNTIME_PACK_BATCH)
   local buf={}
   local chunks,chunkCount={},0
   local i=1
   while i<=count do
-    local take=count-i+1;if take>rowsPerBatch then take=rowsPerBatch end
+    local take=count-i+1;if take>RUNTIME_PACK_BATCH then take=RUNTIME_PACK_BATCH end
     local k=0
     for r=i,i+take-1 do
       local row=normalizedVertexRow(vertices[r])
       for j=1,STRIDE do k=k+1;buf[k]=row[j] end
     end
-    local fmt=take==rowsPerBatch and batchFmt or string.rep(rowFmt,take)
-    local ok,bytes
-    if lovePack then ok,bytes=pcall(lovePack,"string",fmt,unpackArgs(buf,1,k)) end
-    if (not ok or type(bytes)~="string") and luaPack then ok,bytes=pcall(luaPack,"<"..fmt,unpackArgs(buf,1,k)) end
+    local ok,bytes=pcall(love.data.pack,"string",
+      take==RUNTIME_PACK_BATCH and batchFmt or string.rep(rowFmt,take),unpackArgs(buf,1,k))
     if not ok or type(bytes)~="string" then return nil end
     chunkCount=chunkCount+1;chunks[chunkCount]=bytes
     i=i+take
-    if checkpoint then checkpoint("Packing model cache") end
+    checkpoint("Packing model cache")
   end
   return table.concat(chunks,"",1,chunkCount)
 end
@@ -961,24 +903,6 @@ local ACTION_ORDER={
   "idle","specialA","physicalA","physicalB","physicalC","physicalD","specialB","physicalE",
   "damage","damageHeavy","faint","extra1","specialC","extra2","extra3","extra4","takeFlight",
 }
-local SELECTIVE_ACTION_REF_VERSION=1
-local function selectiveActionRefPathFromRoot(cacheRoot,key)
-  return cacheRoot.."/actions/selective_"..tostring(key or "action"):gsub("[^%w_%-]","_").."_v1.lua"
-end
-local function mat4Lua(m)
-  if type(m)~="table" or #m<16 then return "nil" end
-  local out={"{"};for i=1,16 do out[#out+1]=num(m[i]);out[#out+1]="," end;out[#out+1]="}"
-  return table.concat(out)
-end
-local function selectiveActionRefLua(ref,stamp)
-  local out={"-- Generated additive source-action reference; base cache remains unchanged.\nreturn {version=",
-    tostring(SELECTIVE_ACTION_REF_VERSION),",stamp=",q(stamp or ""),",clip=",tostring(tonumber(ref and ref.clip) or -1),
-    ",duration=",num(ref and ref.duration or 0)}
-  if ref and ref.alias then out[#out+1]=",alias="..q(ref.alias)
-  elseif ref and ref.path then out[#out+1]=",path="..q(ref.path) end
-  out[#out+1]="}\n"
-  return table.concat(out)
-end
 
 local function actionPayloadLua(a)
   local out={"-- Generated native Pokemon action bank.\nreturn {clip="..tostring(a.clip or -1)
@@ -1016,10 +940,7 @@ local function metadataCacheLua(metadata)
     for _,key in ipairs(keys) do out[#out+1]="["..q(key).."]="..tostring(tonumber(map and map[key]) or -1).."," end
     out[#out+1]="},"
   end
-  local out={"-- Compact PKX runtime metadata generated from the user's GC6E01 disc.\nreturn {revision=6,"
-    .."sequenceKind="..tostring(tonumber(metadata.sequenceKind or metadata.scaleSelector) or 0)..","
-    .."scaleSelector="..tostring(tonumber(metadata.scaleSelector or metadata.sequenceKind) or 0)..","
-    .."loadMode="..tostring(tonumber(metadata.loadMode) or 0)..","}
+  local out={"-- Compact PKX runtime metadata generated from the user's GC6E01 disc.\nreturn {revision=4,"}
   if V.ShinySupport then out[#out+1]=V.ShinySupport.filterField(metadata.shinyFilter) end
   appendBodyMap(out,metadata.bodyMap)
   out[#out+1]="slots={"
@@ -1032,15 +953,7 @@ local function metadataCacheLua(metadata)
         ..",animType="..tostring(tonumber(slot.animType) or 0)
         ..",subAnimCount="..tostring(tonumber(slot.subAnimCount) or #(slot.subAnimations or {}))
         ..",active="..tostring(slot.active==true)
-        ..",duration="..num(slot.duration or 0)
-        ..",cameraTimingCount="..tostring(tonumber(slot.cameraTimingCount) or 0)
-        ..",cameraTimingRate="..tostring(tonumber(slot.cameraTimingRate) or 60)
-        ..",cameraTimingExact="..tostring(slot.cameraTimingExact==true)
-        ..",cameraTimingRaw={"
-      for i=1,3 do out[#out+1]=tostring(tonumber(slot.cameraTimingRaw and slot.cameraTimingRaw[i]) or 0).."," end
-      out[#out+1]="},cameraTimingFrames={"
-      for i=1,3 do out[#out+1]=tostring(tonumber(slot.cameraTimingFrames and slot.cameraTimingFrames[i]) or 0).."," end
-      out[#out+1]="},timing={"
+        ..",duration="..num(slot.duration or 0)..",timing={"
       for i=1,4 do out[#out+1]=num(slot.timing and slot.timing[i] or 0).."," end
       out[#out+1]="},"
       appendBodyMap(out,slot.bodyMap)
@@ -1057,25 +970,11 @@ local function metadataCacheLua(metadata)
   return table.concat(out)
 end
 
-local function cacheLua(stem,dex,model,texturePaths,clip,clipCount,frameSpacing,attached,sourceName,decodeMode,actionRefs,runtimeBins,runtimeStamp,actionProfile)
+local function cacheLua(stem,dex,model,texturePaths,clip,clipCount,frameSpacing,attached,sourceName,decodeMode,actionRefs,runtimeBins,runtimeStamp)
   local b=model.bounds
-  local rb=model.__cbeRetailWazaOwnerBound
-  local function vec3(v)return "{"..num(v and v[1])..","..num(v and v[2])..","..num(v and v[3]).."}" end
-  local function retailBoundLua(value)
-    if type(value)~="table" or value.exact~=true then return "nil" end
-    local src,norm=value.source,value.normalized
-    if not (type(src)=="table" and type(norm)=="table" and type(value.sourceToCache)=="table") then return "nil" end
-    local t=value.sourceToCache
-    return "{exact=true,format="..q(value.format or "gc6e01-waza-owner-bound-v1")
-      ..",frame=0,animationIndex="..tostring(tonumber(value.animationIndex) or -1)
-      ..",selector="..q(value.selector or "")..",selectorExact="..tostring(value.selectorExact==true)
-      ..",source={min="..vec3(src.min)..",max="..vec3(src.max)..",center="..vec3(src.center)..",extent="..vec3(src.extent).."}"
-      ..",normalized={min="..vec3(norm.min)..",max="..vec3(norm.max)..",center="..vec3(norm.center)..",extent="..vec3(norm.extent).."}"
-      ..",sourceToCache={s="..num(t.s)..",cx="..num(t.cx)..",cy="..num(t.cy)..",cz="..num(t.cz)..",exact=true}}"
-  end
   local out={
     "-- Generated locally from the user's own Pokemon Colosseum GC6E01 disc.\n",
-    "return {formatVersion=4,materialTexgenVersion=1,poseFormat=\"source-hsd-authored-pages-v4-split-actions\",\n",
+    "return {formatVersion=4,poseFormat=\"source-hsd-authored-pages-v4-split-actions\",\n",
     "dex=",tostring(dex),",stem=",q(stem),",source=",q(sourceName),",\n",
     "clip=",tostring(clip),",clipCount=",tostring(clipCount),
     ",idleDuration=",num(model.__cbeIdleDuration or 0),
@@ -1083,8 +982,6 @@ local function cacheLua(stem,dex,model,texturePaths,clip,clipCount,frameSpacing,
     ",morphSlots=",tostring(MORPH_SLOTS),",\n",
     "vertexCount=",tostring(model.vertexCount or 0),
     ",groupCount=",tostring(#(model.groups or {})),
-    ",actionProfile=",q(actionProfile or "full"),
-    ",actionInventoryComplete=",tostring(actionProfile~="storage"),
     ",requestedDecodeMode=",q(tostring(decodeMode or "auto")),
     ",decodePath=",q(tostring(model.__cbeDecodePath or "?")),
     ",heightRatio=",num(model.__cbeHeightRatio or 0),
@@ -1113,7 +1010,6 @@ local function cacheLua(stem,dex,model,texturePaths,clip,clipCount,frameSpacing,
     ",inverseBindMissing=",tostring(model.__cbeInverseBindMissing or 0),
     ",placeholderGroupsRemoved=",tostring(model.__cbePlaceholderGroupsRemoved or 0),
     ",placeholderVertsRemoved=",tostring(model.__cbePlaceholderVertsRemoved or 0),",\n",
-    "retailWazaOwnerBound=",retailBoundLua(rb),",\n",
     "bounds={min={",num(b.min[1]),",",num(b.min[2]),",",num(b.min[3]),
     "},max={",num(b.max[1]),",",num(b.max[2]),",",num(b.max[3]),
     "},center={",num(b.center[1]),",",num(b.center[2]),",",num(b.center[3]),"}},\n",
@@ -1139,13 +1035,6 @@ local function cacheLua(stem,dex,model,texturePaths,clip,clipCount,frameSpacing,
     out[#out+1]=",renderFlags="..tostring(g.renderFlags or 0)
     out[#out+1]=",shadow="..tostring(g.shadow==true)..",effect="..tostring(g.effect==true)
     out[#out+1]=",textureSlot="..tostring(g.textureSlot or -1)
-    local sourceTexture=g.texture
-    local coordMode=sourceTexture and tonumber(sourceTexture.coordinateMode) or 0
-    out[#out+1]=",textureCoordMode="..tostring(coordMode or 0)
-    out[#out+1]=",textureTexgen="..tostring(sourceTexture and tonumber(sourceTexture.texgen) or 0)
-    if coordMode==1 and HSD and type(HSD.reflectionTextureMatrix)=="function" then
-      out[#out+1]=",reflectionTexMtx="..mat4Lua(HSD.reflectionTextureMatrix(sourceTexture))
-    end
     if runtimeBins and runtimeBins[gi] then
       out[#out+1]=",vertexStride="..tostring(STRIDE)..",runtimeBin="..q(runtimeBins[gi]).."},\n"
     else
@@ -1167,260 +1056,13 @@ local function cacheLua(stem,dex,model,texturePaths,clip,clipCount,frameSpacing,
 end
 
 local function write(mod,path,data,generated)
-  if Persist and extractionContext().preserveExisting==true then
-    return Persist.write(mod,"pokemon",path,data,generated,true)
-  end
   local ok,err=mod.cache:write(path,data)
   assert(ok,err or ("cache write failed: "..path))
   if generated then generated[#generated+1]=path end
 end
 
-
--- Compact battle-action storage. 2.0 originally persisted each action twice:
--- a newline-delimited textual float payload and a second set of runtime .f32
--- pages. Across 386 species that expanded a ~58 MiB source archive set into
--- tens of GiB. The compact store writes one canonical float32 payload per
--- source render-group/page and zlib-compresses it when LÖVE exposes the normal
--- data codec. Runtime uploads decompress directly from this canonical payload;
--- no second action geometry cache is required.
-local ACTION_PACK_VERSION=1
-local ACTION_PACK_GUARD_VERSION=3
-local function floorSlotsForGroups(groups)
-  local out={}
-  for slot=0,MORPH_SLOTS do out[slot+1]=math.huge end
-  for _,g in ipairs(groups or {}) do
-    for _,v in ipairs(g.vertices or {}) do
-      local row=normalizedVertexRow(v)
-      for slot=0,MORPH_SLOTS do
-        local at=(slot==0) and 1 or (9+(slot-1)*3)
-        local y=tonumber(row[at+1])
-        if y and y<out[slot+1] then out[slot+1]=y end
-      end
-    end
-  end
-  for i=1,#out do if out[i]==math.huge then out[i]=0 end end
-  return out
-end
-local function numberListLua(values)
-  local out={"{"}
-  for i=1,#(values or {}) do out[#out+1]=num(values[i]);out[#out+1]="," end
-  out[#out+1]="}";return table.concat(out)
-end
-local function actionPackTag(key)
-  return tostring(key or "action"):gsub("[^%w_%-]","_")
-end
-local function compressActionBytes(bytes)
-  if love and love.data and type(love.data.compress)=="function" then
-    local ok,value=pcall(love.data.compress,"string","zlib",bytes,6)
-    if ok and type(value)=="string" and #value<#bytes then return value,"zlib" end
-  end
-  return bytes,"raw"
-end
-local function packedGroupLua(g)
-  return "{binaryPath="..q(g.binaryPath)..",compression="..q(g.compression)
-    ..",bundleRawBytes="..tostring(g.bundleRawBytes or 0)..",bundleStoredBytes="..tostring(g.bundleStoredBytes or 0)
-    ..",offset="..tostring(g.offset or 0)..",rawBytes="..tostring(g.rawBytes or 0)
-    ..",vertexCount="..tostring(g.vertexCount or 0)..",vertexStride="..tostring(g.vertexStride or STRIDE).."}"
-end
-local function packedGroupsLua(groups,floorSlots)
-  local out={"{_packedActionVersion="..ACTION_PACK_VERSION..",_poseGuardVersion="..ACTION_PACK_GUARD_VERSION
-    ..",_floorMinYSlots="..numberListLua(floorSlots)..","}
-  for _,g in ipairs(groups or {}) do out[#out+1]=packedGroupLua(g).."," end
-  out[#out+1]="}";return table.concat(out)
-end
-local function actionPackedPayloadLua(mod,cacheRoot,key,a,generated,written)
-  -- One compressed bundle per semantic action. Dense actions can have many
-  -- pages/groups; bundling them cuts the legacy ~200k action-file explosion to
-  -- roughly one payload + one tiny descriptor per action while still allowing
-  -- group-local GPU uploads by offset after a single decompression.
-  local chunks,offset={},0
-  local function packGroups(sourceGroups)
-    local packed={}
-    for _,g in ipairs(sourceGroups or {}) do
-      local raw=runtimeVerticesBytes(g.vertices)
-      if type(raw)~="string" then return nil,"float32 action pack unavailable" end
-      packed[#packed+1]={offset=offset,rawBytes=#raw,vertexCount=#(g.vertices or {}),vertexStride=STRIDE}
-      chunks[#chunks+1]=raw;offset=offset+#raw
-    end
-    return packed
-  end
-  local pagePacked=nil
-  local singlePacked=nil
-  if a.pages then
-    pagePacked={}
-    for pi,page in ipairs(a.pages or {}) do
-      local packed,why=packGroups(page.model and page.model.groups)
-      if not packed then return nil,why end
-      pagePacked[pi]=packed
-    end
-  else
-    singlePacked=select(1,packGroups(a.model and a.model.groups))
-    if not singlePacked then return nil,"float32 action pack unavailable" end
-  end
-  if offset<=0 then return nil,"compact action has no geometry" end
-  local raw=table.concat(chunks)
-  local body,compression=compressActionBytes(raw)
-  local ext=compression=="zlib" and ".f32z" or ".f32"
-  local path=cacheRoot.."/actions/packed_v1/"..actionPackTag(key)..ext
-  write(mod,path,body,generated);written[#written+1]=path
-  local function attach(groups)
-    for _,g in ipairs(groups or {}) do
-      g.binaryPath=path;g.compression=compression;g.bundleRawBytes=#raw;g.bundleStoredBytes=#body
-    end
-    return groups
-  end
-  local out={"-- Compact canonical native Pokemon action bank.\nreturn {packedActionVersion="..ACTION_PACK_VERSION
-    ..",poseGuardVersion="..ACTION_PACK_GUARD_VERSION..",clip="..tostring(a.clip or -1)
-    ..",duration="..num(a.duration or 0)}
-  if a.pages then
-    out[#out+1]=",dense=true,frameSpacing="..tostring(a.frameSpacing or 1)
-      ..",totalIntervals="..tostring(a.totalIntervals or 0)..",pages={\n"
-    for pi,page in ipairs(a.pages or {}) do
-      local packed=attach(pagePacked[pi])
-      out[#out+1]="{startPhase="..num(page.startPhase or 0)..",endPhase="..num(page.endPhase or 1)
-        ..",morphFrames="..tostring(page.morphFrames or 0)
-        ..",validSlots="..validSlotsLua(page.validSlots)
-        ..",jointPositions="..jointLua(page.model and page.model.jointPositions)
-        ..",jointFrames="..jointFramesLua(page.model and page.model.jointFrames)
-        ..",groups="..packedGroupsLua(packed,floorSlotsForGroups(page.model and page.model.groups)).."},\n"
-    end
-    out[#out+1]="}"
-  else
-    local packed=attach(singlePacked)
-    out[#out+1]=",frameSpacing="..tostring(a.frameSpacing or 1)
-      ..",morphFrames="..tostring(a.morphFrames or 0)
-      ..",validSlots="..validSlotsLua(a.validSlots)
-      ..",jointPositions="..jointLua(a.model and a.model.jointPositions)
-      ..",jointFrames="..jointFramesLua(a.model and a.model.jointFrames)
-      ..",groups="..packedGroupsLua(packed,floorSlotsForGroups(a.model and a.model.groups))
-  end
-  out[#out+1]="}\n"
-  return table.concat(out)
-end
-
--- Legacy runtime-action sidecar writer retained only for compatibility and
--- regression fixtures. Production compact action packs are already binary and
--- directly uploadable, so new extraction paths do not call this helper. Keeping
--- it here lets an older cache be read/repaired without making the compact format
--- depend on historical file layout.
-local REACTION_RUNTIME_DEFER={damage=true,damageHeavy=true,faint=true}
-local function eagerRuntimeActionAllowed(actionProfile,key,a)
-  if REACTION_RUNTIME_DEFER[key] then return false end
-  if key=="idle" then return true end
-  -- Alias manifests are tiny, but emitting them eagerly can make a cache look
-  -- runtime-ready while its target sidecar was deliberately left lazy. Let the
-  -- same selective baker publish alias+owner atomically on first real demand.
-  return false
-end
-local function runtimeActionTag(name) return tostring(name or "action"):gsub("[^%w_%-]","_") end
-local function runtimeActionRoot(cacheRoot) return cacheRoot.."/runtime_mesh_v1" end
-local function runtimeActionManifestPath(cacheRoot,name)
-  return runtimeActionRoot(cacheRoot).."/action_"..runtimeActionTag(name)..".lua"
-end
-local function runtimeActionBinPath(cacheRoot,name,i)
-  return runtimeActionRoot(cacheRoot).."/action_"..runtimeActionTag(name)..("_%02d.f32"):format(tonumber(i) or 0)
-end
-local function runtimeActionFloorPath(cacheRoot,name)
-  return runtimeActionRoot(cacheRoot).."/action_"..runtimeActionTag(name).."_floor.lua"
-end
-local function scalarArrayLua(values,count)
-  local out={"{"}
-  for i=1,count or #(values or {}) do out[#out+1]=num(values and values[i] or 0).."," end
-  out[#out+1]="}"
-  return table.concat(out)
-end
-local function actionFloorSlots(model)
-  local mins={}
-  for slot=0,MORPH_SLOTS do mins[slot+1]=math.huge end
-  for _,g in ipairs((model and model.groups) or {}) do
-    for _,v in ipairs(g.vertices or {}) do
-      local row=normalizedVertexRow(v)
-      for slot=0,MORPH_SLOTS do
-        local at=(slot==0) and 1 or (9+(slot-1)*3)
-        local y=tonumber(row[at+1])
-        if y and y<mins[slot+1] then mins[slot+1]=y end
-      end
-    end
-  end
-  for i=1,MORPH_SLOTS+1 do if mins[i]==math.huge then mins[i]=0 end end
-  return mins
-end
-local function runtimeActionManifestLua(a,stamp)
-  local out={"return {runtimeMeshVersion=1,stamp="..q(stamp)
-    ..",clip="..tostring(tonumber(a and a.clip) or -1)
-    ..",duration="..num(tonumber(a and a.duration) or 0)}
-  if a and a.alias then
-    out[#out+1] = ",alias="..q(a.alias)
-  elseif a and type(a.pages)=="table" and #a.pages>0 then
-    out[#out+1] = ",frameSpacing="..num(a.frameSpacing or 1)
-      ..",totalIntervals="..tostring(tonumber(a.totalIntervals) or 0)..",pages={"
-    for _,page in ipairs(a.pages) do
-      local model=page and page.model
-      out[#out+1]="{startPhase="..num(page and page.startPhase or 0)
-        ..",endPhase="..num(page and page.endPhase or 1)
-        ..",morphFrames="..tostring(tonumber(page and page.morphFrames) or 0)
-        ..",jointPositions="..jointLua(model and model.jointPositions)
-        ..",jointFrames="..jointFramesLua(model and model.jointFrames)
-        ..",validSlots="..validSlotsLua(page and page.validSlots)
-        ..",groupCount="..tostring(type(model and model.groups)=="table" and #model.groups or 0).."},"
-    end
-    out[#out+1]="}"
-  else
-    local model=a and a.model
-    out[#out+1] = ",frameSpacing="..num(a and a.frameSpacing or 1)
-      ..",morphFrames="..tostring(tonumber(a and a.morphFrames) or 0)
-      ..",jointPositions="..jointLua(model and model.jointPositions)
-      ..",jointFrames="..jointFramesLua(model and model.jointFrames)
-      ..",validSlots="..validSlotsLua(a and a.validSlots)
-      ..",groupCount="..tostring(type(model and model.groups)=="table" and #model.groups or 0)
-  end
-  out[#out+1]="}\n"
-  return table.concat(out)
-end
-local function emitRuntimeActionSidecar(mod,cacheRoot,key,a,stamp,generated,runtimePaths,trail)
-  if not (type(a)=="table" and type(stamp)=="string" and stamp~=""
-      and ((love and love.data and type(love.data.pack)=="function") or type(string.pack)=="function")) then return false,"runtime pack unavailable" end
-  runtimePaths=runtimePaths or {}
-  if REACTION_RUNTIME_DEFER[key] and not a.alias then return false,"reaction stabilization deferred" end
-  local function emit(path,data)
-    local ok,err=pcall(write,mod,path,data,generated)
-    if not ok then return false,tostring(err) end
-    runtimePaths[#runtimePaths+1]=path
-    return true
-  end
-  local function emitModel(tag,model)
-    if not (type(model)=="table" and type(model.groups)=="table" and #model.groups>0) then return false,"action model unavailable" end
-    for gi,g in ipairs(model.groups) do
-      local bytes=runtimeVerticesBytes(g.vertices)
-      if not bytes then return false,"action runtime pack failed" end
-      local ok,why=emit(runtimeActionBinPath(cacheRoot,tag,gi),bytes);if not ok then return false,why end
-    end
-    local floor=actionFloorSlots(model)
-    local floorLua="return {runtimeMeshVersion=1,stamp="..q(stamp)
-      ..",groupCount="..tostring(#model.groups)..",floorMinYSlots="..scalarArrayLua(floor,MORPH_SLOTS+1).."}\n"
-    return emit(runtimeActionFloorPath(cacheRoot,tag),floorLua)
-  end
-  if not a.alias then
-    if type(a.pages)=="table" and #a.pages>0 then
-      for pi,page in ipairs(a.pages) do
-        local ok,why=emitModel(key.."/page"..pi,page and page.model);if not ok then return false,why end
-      end
-    else
-      local ok,why=emitModel(key,a.model);if not ok then return false,why end
-    end
-  end
-  -- Legacy sidecar manifest lands last. Any crash/short write before this point
-  -- leaves partial acceleration bins unreachable; compact production actions do
-  -- not use this writer.
-  local ok,why=emit(runtimeActionManifestPath(cacheRoot,key),runtimeActionManifestLua(a,stamp))
-  if ok and trail then trail[#trail+1]="runtime action sidecar: "..tostring(key).." READY (direct float32)" end
-  return ok,why
-end
-
 function P.cachePath(dex,variant) return Dex.cacheRoot(dex,variant).."/model_cache.lua" end
-function P.compactActionMarkerPath(dex,variant) return Dex.cacheRoot(Dex.modelKey(dex,variant)).."/actions/compact_v1.complete" end
 function P.revPath(dex,variant) return Dex.cacheRoot(dex,variant).."/rev.txt" end
-function P.materialTexgenPath(dex,variant) return Dex.cacheRoot(dex,variant).."/material_texgen_v1.complete" end
 
 -- Stamp identifying the extraction that produced a species cache. Species are
 -- extracted lazily and then reused forever, so WITHOUT this stamp an improved
@@ -1445,31 +1087,6 @@ function P.stamp(opts)
     :format(P.revision,STRIDE,MORPH_SLOTS,tostring(o.skinFix),tostring(o.renderPassFilter),o.decodeMode)
 end
 
--- Revision 38 added cache *capabilities* (storage-only extraction, direct
--- runtime sidecars, and the optional exact retail Waza-owner bound) without
--- changing the full-cache vertex layout, authored pose sampling, texture
--- payload contract, or split action-bank format emitted by revision 37.  Treat
--- a complete rev37 cache with identical geometry-affecting options as a valid
--- source cache. Runtime binary/action sidecars can be regenerated from its
--- canonical text cache, while the new camera-bound field simply remains
--- unavailable/fail-closed until that species is naturally source-refreshed.
---
--- Keep this list deliberately narrow. A future geometry/pose/layout revision
--- must NOT be added here merely to avoid a rebuild.
-local CACHE_COMPAT_REVISIONS={[37]=true,[38]=true}
-local function stampForRevision(revision,opts)
-  local o=stampOptions(opts)
-  return ("pkx-extractor=%d\nstride=%d\nmorphSlots=%d\nskinFix=%s\nrenderPassFilter=%s\ndecodeMode=%s\n")
-    :format(revision,STRIDE,MORPH_SLOTS,tostring(o.skinFix),tostring(o.renderPassFilter),o.decodeMode)
-end
-function P.isCompatibleStamp(raw,opts)
-  if type(raw)~="string" then return false end
-  for revision in pairs(CACHE_COMPAT_REVISIONS) do
-    if raw==stampForRevision(revision,opts) then return true,revision end
-  end
-  return false
-end
-
 function P.isCached(mod,dex,opts)
   if not (mod.cache and mod.cache.info) then return false end
   local info=mod.cache:info(P.cachePath(dex,opts and opts.variant))
@@ -1480,187 +1097,57 @@ function P.isCached(mod,dex,opts)
   -- the actual species cache says filter=OFF -- exactly what the 1.5.21 F5
   -- screenshots exposed.
   local ok,raw=pcall(mod.cache.read,mod.cache,P.revPath(dex,opts and opts.variant))
-  return ok and P.isCompatibleStamp(raw,opts)==true
+  return ok and raw==P.stamp(opts)
 end
 
-P.MANIFEST="cache/pokemon/manifest.lua" -- legacy monolithic manifest; still read for migration/reset
-P.MANIFEST_SHARD_SIZE=32
-local MANIFEST_SHARD_COUNT=math.ceil((tonumber(Dex and Dex.speciesCount) or 386)/P.MANIFEST_SHARD_SIZE)
-local manifestMemo=setmetatable({}, {__mode="k"})
-local manifestStats={reads=0,parses=0,memoHits=0,writes=0,serializedEntries=0}
+P.MANIFEST="cache/pokemon/manifest.lua"
 
 -- Species are extracted lazily, long after BuildPipeline has finished writing
--- build/generated_paths.lua. The old manifest rewrote and reparsed the complete
--- growing species list after EVERY extraction. A 386-species install therefore
--- moved O(N^2) Lua text through mod.cache -- particularly expensive across the
--- Android launcher/cache bridge. New writes are sharded into deterministic
--- 32-species buckets. Each species still commits its cleanup record immediately,
--- but an update touches at most one small bounded manifest. The legacy manifest
--- remains readable forever so existing installs migrate without invalidation.
-local function manifestShardIndex(dex)
-  dex=tonumber(dex)
-  if not dex or dex<1 then return nil end
-  return math.floor((dex-1)/P.MANIFEST_SHARD_SIZE)+1
-end
-function P.manifestShardPath(dexOrIndex,isIndex)
-  local index=isIndex and tonumber(dexOrIndex) or manifestShardIndex(dexOrIndex)
-  if not index or index<1 then return nil end
-  return ("cache/pokemon/manifest_v2/%02d.lua"):format(math.floor(index))
-end
-local function memoBucket(mod)
-  local token=mod and mod.cache
-  if token==nil then return nil end
-  local bucket=manifestMemo[token]
-  if not bucket then bucket={};manifestMemo[token]=bucket end
-  return bucket
-end
-local function readManifestPath(mod,path,memoKey,force)
-  local bucket=memoBucket(mod)
-  if not force and bucket and bucket[memoKey]~=nil then
-    manifestStats.memoHits=manifestStats.memoHits+1
-    return bucket[memoKey]
-  end
-  manifestStats.reads=manifestStats.reads+1
-  local ok,raw=pcall(mod.cache.read,mod.cache,path)
-  if not ok or type(raw)~="string" then
-    local empty={};if bucket then bucket[memoKey]=empty end;return empty
-  end
-  local chunk=load(raw,"@generated/"..path)
-  if not chunk then
-    local empty={};if bucket then bucket[memoKey]=empty end;return empty
-  end
-  manifestStats.parses=manifestStats.parses+1
+-- build/generated_paths.lua. Without a manifest of their own they would survive
+-- a "clear generated runtime", leaving stale models behind after a rebuild.
+-- CacheManager reads this file and deletes everything it names.
+local function readManifest(mod)
+  local ok,raw=pcall(mod.cache.read,mod.cache,P.MANIFEST)
+  if not ok or type(raw)~="string" then return {} end
+  local chunk=load(raw,"@generated/"..P.MANIFEST)
+  -- NOT `local ok,value=chunk and pcall(chunk)`. In Lua an `and` expression
+  -- yields exactly ONE value, so that form silently discards pcall's second
+  -- return and `value` is always nil.
+  if not chunk then return {} end
   local okRun,value=pcall(chunk)
-  if not okRun or type(value)~="table" then value={} end
-  if bucket then bucket[memoKey]=value end
+  if not okRun or type(value)~="table" then return {} end
   return value
-end
-local function readLegacyManifest(mod,force)
-  return readManifestPath(mod,P.MANIFEST,"legacy",force)
-end
-local function readManifestShard(mod,index,force)
-  return readManifestPath(mod,P.manifestShardPath(index,true),"shard:"..tostring(index),force)
-end
-local function appendManifestPaths(out,seen,list)
-  for _,entry in ipairs(list or {}) do
-    if type(entry)=="table" then
-      for _,path in ipairs(entry.paths or {}) do
-        if type(path)=="string" and path~="" and not seen[path] then seen[path]=true;out[#out+1]=path end
-      end
-    end
-  end
 end
 
 function P.manifestPaths(mod)
-  -- Reset/rebuild is an authoritative disk boundary, so bypass process memos.
-  -- Only 13 bounded v2 shards + the one legacy file are read for all 386 species.
-  local out,seen={},{}
-  appendManifestPaths(out,seen,readLegacyManifest(mod,true))
-  for index=1,MANIFEST_SHARD_COUNT do
-    appendManifestPaths(out,seen,readManifestShard(mod,index,true))
-    local shard=P.manifestShardPath(index,true)
-    if shard and not seen[shard] then seen[shard]=true;out[#out+1]=shard end
+  local out={}
+  for _,entry in ipairs(readManifest(mod)) do
+    if type(entry)=="table" then
+      for _,path in ipairs(entry.paths or {}) do out[#out+1]=path end
+    end
   end
-  if not seen[P.MANIFEST] then out[#out+1]=P.MANIFEST end
+  out[#out+1]=P.MANIFEST
   return out
 end
 
-function P.invalidateManifestMemo(mod)
-  if mod and mod.cache then manifestMemo[mod.cache]=nil
-  else manifestMemo=setmetatable({}, {__mode="k"}) end
-  return true
-end
-
-local function recordManifest(mod,dex,stem,paths,variant,mergeExisting)
+local function recordManifest(mod,dex,stem,paths,variant)
   local cacheKey=Dex.modelKey(dex,variant)
-  local index=manifestShardIndex(dex)
-  if not index or index>MANIFEST_SHARD_COUNT then return false,"invalid manifest dex" end
-  local list=readManifestShard(mod,index,false)
+  local list=readManifest(mod)
   local replaced=false
-  local stalePaths=nil
   for i,entry in ipairs(list) do
     if type(entry)=="table" and Dex.modelKey(entry.dex,entry.variant)==cacheKey then
-      if mergeExisting then
-        local merged,seen={},{}
-        for _,path in ipairs(entry.paths or {}) do if type(path)=="string" and path~="" and not seen[path] then seen[path]=true;merged[#merged+1]=path end end
-        for _,path in ipairs(paths or {}) do if type(path)=="string" and path~="" and not seen[path] then seen[path]=true;merged[#merged+1]=path end end
-        list[i]={dex=dex,variant=variant,stem=stem or entry.stem,paths=merged}
-      else
-        stalePaths={};for _,path in ipairs(entry.paths or {}) do stalePaths[#stalePaths+1]=path end
-        list[i]={dex=dex,variant=variant,stem=stem,paths=paths}
-      end
-      replaced=true;break
+      list[i]={dex=dex,variant=variant,stem=stem,paths=paths};replaced=true;break
     end
   end
   if not replaced then list[#list+1]={dex=dex,variant=variant,stem=stem,paths=paths} end
-  local out={"-- Generated. Sharded lazy Colosseum Pokemon cache manifest.\nreturn {\n"}
+  local out={"-- Generated. Lazily extracted Colosseum Pokemon caches.\nreturn {\n"}
   for _,entry in ipairs(list) do
     out[#out+1]=("{dex=%d,variant=%s,stem=%s,paths={"):format(tonumber(entry.dex) or 0,q(entry.variant or "normal"),q(entry.stem))
     for _,path in ipairs(entry.paths or {}) do out[#out+1]=q(path).."," end
     out[#out+1]="}},\n"
   end
   out[#out+1]="}\n"
-  local body=table.concat(out)
-  manifestStats.writes=manifestStats.writes+1
-  manifestStats.serializedEntries=manifestStats.serializedEntries+#list
-  local ok,written=pcall(mod.cache.write,mod.cache,P.manifestShardPath(index,true),body)
-  if not ok or written==false then
-    local bucket=memoBucket(mod);if bucket then bucket["shard:"..tostring(index)]=nil end
-    return false,tostring(written)
-  end
-  -- Only after the replacement manifest is durable, remove files owned by the
-  -- prior species generation that are not referenced by the new compact row.
-  -- This is what actually reclaims v2's duplicated action-F32/text payloads
-  -- during an in-place 2.0 cache upgrade without touching any other species.
-  if stalePaths and GeneratedAssets and type(GeneratedAssets.delete)=="function" then
-    local keep={};for _,path in ipairs(paths or {}) do keep[path]=true end
-    for _,path in ipairs(stalePaths) do
-      if type(path)=="string" and path~="" and not keep[path] then pcall(GeneratedAssets.delete,path) end
-    end
-  end
-  return true
-end
-
--- Commit only the explicitly requested canonical action banks. This is the
--- storage-profile battle upgrade seam: it never rewrites model_cache.lua,
--- runtime base metadata, textures, rev.txt, or the storage profile marker. A
--- tiny stamped descriptor is written after each canonical payload and lets the
--- runtime prove that the additive bank belongs to a cache-compatible extractor
--- revision. Full/legacy caches keep their original ownership unchanged.
-local function commitSelectiveActions(mod,dex,variant,stem,cacheRoot,actions,wantedActions,stamp,generated,trail)
-  local requested={}
-  for _,key in ipairs(ACTION_ORDER) do
-    local wanted=wantedActions and wantedActions[key]
-    if wanted==true or type(wanted)=="table" then requested[#requested+1]=key end
-  end
-  if #requested==0 then return {ready=true,actions={},paths={}} end
-  for _,key in ipairs(requested) do
-    if type(actions and actions[key])~="table" then return nil,"source action unavailable: "..tostring(key) end
-  end
-
-  local written,refs,runtimePaths={},{},{}
-  for _,key in ipairs(requested) do
-    local a=actions[key]
-    local ref={clip=a.clip,duration=a.duration}
-    if a.alias then
-      ref.alias=a.alias
-    else
-      local path=(cacheRoot.."/actions/%s.lua"):format(key)
-      local payload,packWhy=actionPackedPayloadLua(mod,cacheRoot,key,a,generated,written)
-      if not payload then return nil,"compact action pack failed: "..tostring(packWhy) end
-      write(mod,path,payload,generated)
-      ref.path=path;written[#written+1]=path
-    end
-    -- Compact canonical action packs are already direct-upload binary payloads.
-    -- Do not emit a second runtime geometry copy for selective battle upgrades.
-    local descriptor=selectiveActionRefPathFromRoot(cacheRoot,key)
-    write(mod,descriptor,selectiveActionRefLua(ref,stamp),generated)
-    written[#written+1]=descriptor;refs[key]=ref
-  end
-  for _,path in ipairs(runtimePaths) do written[#written+1]=path end
-  local ok,why=recordManifest(mod,dex,stem,written,variant,true)
-  if not ok then return nil,"selective action manifest update failed: "..tostring(why) end
-  return {ready=true,actions=refs,paths=written,count=#requested}
+  pcall(mod.cache.write,mod.cache,P.MANIFEST,table.concat(out))
 end
 
 -- Extract exactly one species. This is the lazy unit: the runtime calls it the
@@ -1681,13 +1168,6 @@ local function extractSpeciesImpl(mod,disc,dex,opts)
   local generated=opts.generated
   local currentSkinFix=opts.skinFix~=false
   local currentRenderPassFilter=opts.renderPassFilter~=false
-  -- Full battle caches preserve the entire source PKX motion inventory. An
-  -- explicit storage cache is deliberately lighter: PC/Summary presentation
-  -- needs the base body plus authored idle only. The emitted cache records this
-  -- profile so battle preparation can upgrade it before the species is fielded.
-  local selectiveActions=opts.selectiveActions==true and type(opts.wantedActions)=="table"
-  local actionProfile=selectiveActions and "selective" or (opts.actionProfile=="storage" and "storage" or "full")
-  local wantedActions=selectiveActions and opts.wantedActions or (actionProfile=="storage" and {idle=true} or nil)
 
   -- Flight recorder: written BEFORE any decode work, unconditionally, so that
   -- if this call never returns at all (a native/engine-level fault that a
@@ -1797,13 +1277,6 @@ local function extractSpeciesImpl(mod,disc,dex,opts)
   end
 
   local transform=measure(base,targetHeight)
-  local retailOwnerBound,retailOwnerBoundWhy=retailWazaOwnerBound(base,metadata,transform)
-  if retailOwnerBound then
-    trail[#trail+1]=("retail Waza owner bound: exact frame-0 animation %d (%s)")
-      :format(retailOwnerBound.animationIndex,retailOwnerBound.selector)
-  else
-    trail[#trail+1]="retail Waza owner bound blocked: "..safe(retailOwnerBoundWhy)
-  end
   applyTransform(base,transform)
 
   -- Coherence is measured only AFTER normalization, and the bind copy is put
@@ -1832,15 +1305,13 @@ local function extractSpeciesImpl(mod,disc,dex,opts)
     clip=0
     attachedOverride=0
   end
-  base.__cbeRetailWazaOwnerBound=retailOwnerBound
   base.__cbeDrift=finalDrift or 0
   trail[#trail+1]=("decoded via %s: vertices=%d groups=%d")
     :format(tostring(decodePath),base.vertexCount or 0,#(base.groups or {}))
 
   -- Reuse the selected source idle for the resident menu/battle body too.
   -- This avoids a guessed attack/withdrawal pose before the lazy idle bank loads.
-  local actions=extractActionBanks(blob,base,transform,metadata,clipCount or 0,trail,decodeMode,wantedActions)
-  trail[#trail+1]="action extraction profile: "..actionProfile
+  local actions=extractActionBanks(blob,base,transform,metadata,clipCount or 0,trail,decodeMode)
 
   local spacing=trustedIdle and actionSpacing(idleSlot.duration,sourceInfo.endFrame)
     or math.max(1,math.floor(tonumber(opts.frameSpacing) or 4))
@@ -1945,21 +1416,6 @@ local function extractSpeciesImpl(mod,disc,dex,opts)
     end
   end
 
-  if selectiveActions then
-    local stamp=P.stamp({skinFix=currentSkinFix,renderPassFilter=currentRenderPassFilter,decodeMode=decodeMode})
-    local committed,commitWhy=commitSelectiveActions(mod,dex,variant,stem,cacheRoot,actions,wantedActions,stamp,generated,trail)
-    if not committed then return nil,commitWhy end
-    pcall(function()
-      mod.cache:write("cache/pokemon/_last_attempt.txt",
-        ("dex=%s skinFix=%s renderPassFilter=%s decodeMode=%s time=%s SELECTIVE COMPLETED actions=%d\n")
-          :format(tostring(dex),tostring(currentSkinFix),tostring(currentRenderPassFilter),
-            tostring(opts.decodeMode or "auto"),tostring(os.time and os.time() or "?"),tonumber(committed.count) or 0))
-    end)
-    progress(("POKEMON %s ACTIONS READY"):format(stem:upper()),1,1)
-    return {dex=dex,stem=stem,archive=archiveName,selective=true,nativeActions=committed.count,
-      actions=committed.actions,paths=committed.paths,actionProfile="selective",trail=trail}
-  end
-
   local texturePaths,textureMap={},{}
   for gi,g in ipairs(base.groups) do
     if g.texture then
@@ -1996,9 +1452,7 @@ local function extractSpeciesImpl(mod,disc,dex,opts)
   -- own generated file and the main cache carries only tiny references. Old v3
   -- inline caches remain runtime-compatible, so this performance format does
   -- not force existing users through another extraction rebuild.
-  local stamp=P.stamp({skinFix=currentSkinFix,renderPassFilter=currentRenderPassFilter,decodeMode=decodeMode})
   local actionRefs,actionPaths={},{}
-  local runtimePaths={}
   for _,key in ipairs(ACTION_ORDER) do
     local a=actions and actions[key]
     if a then
@@ -2006,35 +1460,26 @@ local function extractSpeciesImpl(mod,disc,dex,opts)
         actionRefs[key]={alias=a.alias,clip=a.clip,duration=a.duration}
       else
         local path=(cacheRoot.."/actions/%s.lua"):format(key)
-        local payload,packWhy=actionPackedPayloadLua(mod,cacheRoot,key,a,generated,actionPaths)
-        if not payload then return nil,"compact action pack failed: "..tostring(packWhy) end
-        write(mod,path,payload,generated)
+        write(mod,path,actionPayloadLua(a),generated)
         actionRefs[key]={path=path,clip=a.clip,duration=a.duration}
         actionPaths[#actionPaths+1]=path
       end
-      -- The canonical compact action pack is itself runtime-uploadable. Keeping
-      -- a second action-F32 sidecar would recreate the multi-gigabyte duplication
-      -- this format exists to remove.
     end
-  end
-
-  if actionProfile=="full" then
-    local compactMarker=cacheRoot.."/actions/compact_v1.complete"
-    write(mod,compactMarker,"pokemon-action-pack=1\npose-guard=3\n",generated)
-    actionPaths[#actionPaths+1]=compactMarker
   end
 
   local metadataPath=cacheRoot.."/metadata_v1.lua"
   local metadataLua=metadataCacheLua(metadata)
   if metadataLua then write(mod,metadataPath,metadataLua,generated) end
-  write(mod,cachePath,cacheLua(stem,dex,base,texturePaths,clip,clipCount or 0,spacing,attached,sourceName,decodeMode,actionRefs,nil,nil,actionProfile),generated)
+  write(mod,cachePath,cacheLua(stem,dex,base,texturePaths,clip,clipCount or 0,spacing,attached,sourceName,decodeMode,actionRefs),generated)
 
-  -- The base body keeps one small direct-upload float32 sidecar because it is
-  -- needed on every presentation surface. Battle ACTION geometry is deliberately
-  -- absent from runtimePaths: compact actions are the canonical binary payload
-  -- and decompress directly into the uploader, avoiding a second disk copy.
+  -- Runtime-ready float32 sidecars are emitted while the freshly decoded HSD
+  -- vertex tables are already in memory. On Android this avoids serializing the
+  -- exact same geometry to CSV and immediately reparsing thousands of tonumber
+  -- calls before the first visible send-out. The textual cache remains the
+  -- canonical/fail-open source on hosts without love.data.pack.
+  local runtimePaths={}
   local runtimeBins={}
-  local runtimeOK=(love and love.data and type(love.data.pack)=="function") or type(string.pack)=="function"
+  local runtimeOK=love and love.data and type(love.data.pack)=="function"
   if runtimeOK then
     for gi,g in ipairs(base.groups or {}) do
       local bytes=runtimeVerticesBytes(g.vertices)
@@ -2045,9 +1490,10 @@ local function extractSpeciesImpl(mod,disc,dex,opts)
       runtimeBins[gi]=path;runtimePaths[#runtimePaths+1]=path
     end
   end
+  local stamp=P.stamp({skinFix=currentSkinFix,renderPassFilter=currentRenderPassFilter,decodeMode=decodeMode})
   if runtimeOK and #runtimeBins==#(base.groups or {}) and #runtimeBins>0 then
     local runtimeMeta=cacheRoot.."/runtime_mesh_v1/base.lua"
-    write(mod,runtimeMeta,cacheLua(stem,dex,base,texturePaths,clip,clipCount or 0,spacing,attached,sourceName,decodeMode,actionRefs,runtimeBins,stamp,actionProfile),generated)
+    write(mod,runtimeMeta,cacheLua(stem,dex,base,texturePaths,clip,clipCount or 0,spacing,attached,sourceName,decodeMode,actionRefs,runtimeBins,stamp),generated)
     runtimePaths[#runtimePaths+1]=runtimeMeta
     trail[#trail+1]="runtime mesh sidecar: READY (direct float32 upload)"
   else
@@ -2055,21 +1501,13 @@ local function extractSpeciesImpl(mod,disc,dex,opts)
   end
   write(mod,diagPath,table.concat(trail,"\n").."\n",generated)
 
-  -- Tiny capability certificate for generated/reflection texture coordinates.
-  -- Keeping this separate from rev.txt lets old geometry/action caches remain
-  -- globally reusable: only legacy species whose source display lists relied on
-  -- generated texcoords need one source refresh, instead of invalidating 386
-  -- models through a global extractor-revision bump.
-  local materialTexgenPath=P.materialTexgenPath(cacheKey)
-  write(mod,materialTexgenPath,"material-texgen=1\n",generated)
-
   -- Written LAST, after every other artifact for this species has landed. A
   -- crash mid-extract therefore leaves an unstamped cache, which isCached
   -- rejects -- so a half-written species rebuilds instead of rendering broken.
   local revPath=P.revPath(cacheKey)
   write(mod,revPath,stamp,generated)
 
-  local written={cachePath,diagPath,revPath,materialTexgenPath}
+  local written={cachePath,diagPath,revPath}
   for _,path in ipairs(runtimePaths) do written[#written+1]=path end
   if metadataLua then written[#written+1]=metadataPath end
   for _,path in ipairs(actionPaths) do written[#written+1]=path end
@@ -2097,14 +1535,14 @@ local function extractSpeciesImpl(mod,disc,dex,opts)
     vertices=base.vertexCount,groups=#base.groups,
     clip=clip,clipCount=clipCount or 0,morphFrames=attached,
     nativeActions=(function() local n=0;for _ in pairs(actions or {}) do n=n+1 end;return n end)(),
-    actionProfile=actionProfile,bounds=base.bounds,trail=trail,
+    bounds=base.bounds,trail=trail,
   }
 end
 
--- Optional batch prefetch. Never called during first-run setup by default:
--- source decoding is intentionally user-directed through the cache controls.
--- The compact action format reduces persistent disk expansion; it does not make
--- HSD/PKX decoding free, so startup still avoids an unsolicited full-roster bake.
+-- Optional batch prefetch. Never called during first-run setup by default: the
+-- full roster is ~40 MB compressed and pure-Lua LZSS plus HSD decoding would
+-- turn a first launch into a tens-of-minutes stall. Exposed so a settings
+-- screen can offer a deliberate background warm-up.
 function P.prefetch(mod,disc,list,progress,generated)
   progress=progress or function() end
   local done,failed={},{}
@@ -2122,58 +1560,21 @@ end
 
 -- Narrow pure helpers for regression tests; production callers use the
 -- extractor entry points above.
-P._test={normalizedVertexRow=normalizedVertexRow,denseActionIntervals=denseReactionIntervals,metadataCacheLua=metadataCacheLua,
-  retailWazaOwnerBound=retailWazaOwnerBound}
+P._test={normalizedVertexRow=normalizedVertexRow,denseActionIntervals=denseReactionIntervals}
 
 function P.extractSpecies(mod,disc,dex,opts)
   opts=opts or {}
   local key=contextKey();local previous=extractionContexts[key]
-  -- One concrete existence probe, only when an extraction is already required.
-  -- A stale/repair extraction may replace many files under the species shard;
-  -- preserving those writes keeps every prior acquired byte recoverable without
-  -- scanning the Pokemon cache tree.
-  local preserveExisting=opts.preserveExisting~=false and Persist and Persist.has(mod,P.cachePath(dex,opts.variant)) or false
   extractionContexts[key]={skinFix=opts.skinFix~=false,renderPassFilter=opts.renderPassFilter~=false,
-    checkpoint=opts.checkpoint or opts.progress,decodeSession={},preserveExisting=preserveExisting}
+    checkpoint=opts.checkpoint or opts.progress,decodeSession={}}
   local ok,result,why=pcall(extractSpeciesImpl,mod,disc,dex,opts)
   extractionContexts[key]=previous
   if not ok then error(result,0) end
   return result,why
 end
-function P.selectiveActionRefPath(dex,key,variant)
-  return selectiveActionRefPathFromRoot(Dex.cacheRoot(Dex.modelKey(dex,variant)),key)
-end
-function P.extractActions(mod,disc,dex,wantedActions,opts)
-  opts=opts or {}
-  local requested={}
-  for key,value in pairs(type(wantedActions)=="table" and wantedActions or {}) do
-    if value==true then requested[key]=true
-    elseif type(value)=="table" then
-      local candidates={};for _,name in ipairs(value) do if type(name)=="string" and name~="" then candidates[#candidates+1]=name end end
-      if #candidates>0 then requested[key]=candidates end
-    end
-  end
-  if next(requested)==nil then return {ready=true,actions={},paths={},selective=true,nativeActions=0} end
-  local selective={}
-  for k,v in pairs(opts) do selective[k]=v end
-  selective.selectiveActions=true;selective.wantedActions=requested
-  return P.extractSpecies(mod,disc,dex,selective)
-end
 P._test=P._test or {}
 P._test.recordManifest=recordManifest
-P._test.manifestStats=function() local o={};for k,v in pairs(manifestStats)do o[k]=v end;return o end
-P._test.resetManifestStats=function() manifestStats={reads=0,parses=0,memoHits=0,writes=0,serializedEntries=0};P.invalidateManifestMemo();return true end
-P._test.actionPoseUsable=actionPoseUsable
 P._test.decodeBest=decodeBest
 P._test.packedVerticesLua=packedVerticesLua
 P._test.normalizedVertexRow=normalizedVertexRow
-P._test.emitRuntimeActionSidecar=emitRuntimeActionSidecar
-P._test.eagerRuntimeActionAllowed=eagerRuntimeActionAllowed
-P._test.cacheLua=cacheLua
-P._test.write=write
-P._test.selectiveActionRefLua=selectiveActionRefLua
-P._test.commitSelectiveActions=commitSelectiveActions
-P._test.actionPackVersion=ACTION_PACK_VERSION
-P._test.actionPackGuardVersion=ACTION_PACK_GUARD_VERSION
-P._test.actionPackedPayloadLua=actionPackedPayloadLua
 return P

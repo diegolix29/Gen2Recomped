@@ -3,15 +3,6 @@ local installed=false
 local modRef,Trainer,Music,ArenaCatalog,BattleMenuUI,CacheManager,TrainerRoster,Compat,AudioFidelity
 local GEN1_START=table.concat({"Start","Menu"})
 
-function S.wildSpawnStatus()
-  local getter=modRef and modRef.exports and modRef.exports.colosseumDexSpawns
-  if type(getter)=="function" then
-    local ok,status=pcall(getter)
-    if ok and type(status)=="table" then return status end
-  end
-  return {active=false,blocker="ColosseumDex gameplay has not initialized"}
-end
-
 local function prefs(game)
   if not (game and game.save) then
     return {
@@ -19,7 +10,6 @@ local function prefs(game)
       playerModel="red",enemyTrainerModel="auto",rivalModel="leaf",
       doubleBattlesEnabled=true,abilitiesEnabled=true,freeLookEnabled=true,
       autoProgressEnabled=true,bossIntroEnabled=false,battleSoundsEnabled=true,
-      wildSpawnMode="mixed",
     }
   end
   local p=game.save.colosseumBattle
@@ -45,7 +35,6 @@ local function prefs(game)
   p.abilitiesEnabled=p.abilitiesEnabled==true
   if p.freeLookEnabled==nil then p.freeLookEnabled=true end
   if p.autoProgressEnabled==nil then p.autoProgressEnabled=true end
-  if p.wildSpawnMode~="mixed" and p.wildSpawnMode~="new_only" then p.wildSpawnMode="mixed" end
   local legacy=p.sprites
   if p.playerModel==nil then
     p.playerModel=(p.playerTrainerModel==false or legacy=="off") and "off" or "red"
@@ -70,7 +59,7 @@ local function prefs(game)
   local validMusic={random=true,normal=true,first=true,cipher_peon=true,miror_b=true,cipher_admin=true,mirakle_b=true,semifinal=true,final=true,link1=true,link2=true,link3=true,original=true}
   if p.music=="colosseum" or p.music=="wild" or p.music=="trainer" or p.music=="gym" then p.music="normal" end
   if not validMusic[p.music] then p.music="normal" end
-  local validArena={auto=true,random=true,open_water=true,water=true,orre_colosseum=true,relic_chamber=true,relic_cave=true,outskirts=true,pyrite_colosseum=true,deep_colosseum=true,realgam_colosseum=true,outdoor_wild=true,mt_battle_summit=true,cipher_lab_underground=true}
+  local validArena={auto=true,random=true,water=true,orre_colosseum=true,relic_chamber=true,relic_cave=true,outskirts=true,pyrite_colosseum=true,deep_colosseum=true,realgam_colosseum=true,outdoor_wild=true,mt_battle_summit=true,cipher_lab_underground=true}
   if not validArena[p.arena] then p.arena="auto" end
   return p
 end
@@ -78,8 +67,17 @@ local function startMenuId()
   if Compat and type(Compat.current)=="function" then
     local ok,generation=pcall(Compat.current)
     if ok and tonumber(generation)==2 then return "Gen2StartMenu" end
+    if ok and tonumber(generation)==3 then return "StartMenu" end
   end
   return GEN1_START
+end
+
+local function isGen3()
+  if Compat and type(Compat.current)=="function" then
+    local ok,generation=pcall(Compat.current)
+    if ok and tonumber(generation)==3 then return true end
+  end
+  return false
 end
 local function onStack(stack,state)
   local states=stack and stack.states
@@ -123,8 +121,6 @@ local function openBattleMenu(game,returnId,returnParent)
   local autoProgressToggle={keepOpen=true}
   local freeLookToggle={keepOpen=true}
   local soundsToggle={keepOpen=true}
-  local wildSpawnRow={keepOpen=true}
-  local wildSpawnStatusRow={keepOpen=true}
   local audioQualityRow={keepOpen=true}
   local musicRow={keepOpen=true}
   local arenaRow={keepOpen=true}
@@ -145,9 +141,6 @@ local function openBattleMenu(game,returnId,returnParent)
     bossIntroToggle.label="BOSS INTRO  "..(p.bossIntroEnabled and "ON" or "OFF")
     doublesToggle.label="DOUBLE BATTLES  "..(p.doubleBattlesEnabled and "ON" or "OFF")
     abilitiesToggle.label="ABILITIES  "..(p.abilitiesEnabled and "ON" or "OFF")
-    wildSpawnRow.label="WILD SPAWNS  "..(p.wildSpawnMode=="new_only" and "COLOSSEUMDEX ONLY" or "50/50 MIXED")
-    local ws=S.wildSpawnStatus()
-    wildSpawnStatusRow.label="SPAWN STATUS  "..(ws.active and "ACTIVE" or "UNAVAILABLE")
     local musicLabel=(Music and Music.themeLabel and Music.themeLabel(game,p.music)) or tostring(p.music):upper()
     musicRow.label="MUSIC    "..musicLabel
     local arenaLabel="AUTO"
@@ -171,12 +164,9 @@ local function openBattleMenu(game,returnId,returnParent)
       local total=math.max(tonumber(hs.total) or 0,(tonumber(hs.done) or 0)+(tonumber(hs.pending) or 0))
       hardCacheRow.label=("HARD CACHE SAVE   BUILDING %d/%d"):format(tonumber(hs.done) or 0,total)
     elseif hs.stage=="failed" then hardCacheRow.label="HARD CACHE SAVE   INCOMPLETE / RETRY"
-    elseif hs.catalogReady then hardCacheRow.label="HARD CACHE SAVE   386 READY / REFRESH"
-    elseif hs.johtoReady then hardCacheRow.label="HARD CACHE SAVE   251 READY / MORE"
-    elseif hs.kantoReady then hardCacheRow.label="HARD CACHE SAVE   151 READY / MORE"
-    elseif hs.ready then hardCacheRow.label="HARD CACHE SAVE   TEAM+PC READY / MORE"
+    elseif hs.ready then hardCacheRow.label="HARD CACHE SAVE   READY / REFRESH"
     elseif hs.teamReady then hardCacheRow.label="HARD CACHE SAVE   TEAM READY / MORE"
-    elseif hs.needsRefresh then hardCacheRow.label="HARD CACHE SAVE   UPDATE CACHE"
+    elseif hs.needsShinyRefresh then hardCacheRow.label="HARD CACHE SAVE   UPDATE SHINIES"
     else hardCacheRow.label="HARD CACHE SAVE   BUILD" end
     local cs=CacheManager and CacheManager.inspect and CacheManager.inspect() or {sourceReady=false,sourceStatus="UNKNOWN"}
     cacheRow.label="ROM SOURCE   "..(cs.sourceReady and "READY" or tostring(cs.sourceStatus or "NOT IMPORTED"))
@@ -207,40 +197,6 @@ local function openBattleMenu(game,returnId,returnParent)
   soundsToggle.onSelect=function() p.battleSoundsEnabled=not p.battleSoundsEnabled;refresh() end
   bossIntroToggle.onSelect=function()
     p.bossIntroEnabled=not p.bossIntroEnabled;refresh()
-  end
-  wildSpawnStatusRow.onSelect=function()
-    local ws=S.wildSpawnStatus()
-    local rows={{label=ws.active and "SPAWNS ACTIVE" or "SPAWNS UNAVAILABLE",keepOpen=true}}
-    local detail=ws.active and "Captured additions use checked save/load storage." or tostring(ws.blocker or "Unknown startup blocker")
-    local line=""
-    for word in detail:gmatch("%S+") do
-      if #line+#word+1>30 then rows[#rows+1]={label=line,keepOpen=true};line="" end
-      line=(line=="") and word or line.." "..word
-    end
-    if line~="" then rows[#rows+1]={label=line,keepOpen=true} end
-    rows[#rows+1]={label=("ADDED ENCOUNTERS: %d"):format(tonumber(ws.added) or 0),keepOpen=true}
-    rows[#rows+1]={label=("COVERAGE PICKS: %d"):format(tonumber(ws.coverage) or 0),keepOpen=true}
-    -- Keep status strings within the existing 30-character detail column.
-    local function detailRows(label,value)
-      if value==nil then return end
-      local text=label..tostring(value):gsub("_"," ")
-      while #text>30 do
-        local cut=text:sub(1,30):match("^.*() ") or 30
-        rows[#rows+1]={label=text:sub(1,cut),keepOpen=true};text=text:sub(cut+1)
-      end
-      if text~="" then rows[#rows+1]={label=text,keepOpen=true} end
-    end
-    detailRows("LAST MAP: ",ws.lastMap)
-    detailRows("LAST RESULT: ",ws.lastReason)
-    detailRows("LAST SPECIES: ",ws.lastSpecies)
-    rows[#rows+1]={label="BACK",onSelect=refresh}
-    local picker=Menu.new(game,rows,{tx=1,ty=1,tw=32,maxVisible=8})
-    if BattleMenuUI and BattleMenuUI.mark then BattleMenuUI.mark(picker,"COLOSSEUMDEX SPAWNS",rows,8,"EFFECTIVE RUNTIME STATUS") end
-    game.stack:push(picker)
-  end
-  wildSpawnRow.onSelect=function()
-    p.wildSpawnMode=(p.wildSpawnMode=="new_only") and "mixed" or "new_only"
-    refresh()
   end
   musicRow.onSelect=function()
     local options=(Music and Music.themeOptions and Music.themeOptions(game)) or {{id="normal",label="NORMAL BATTLE"},{id="original",label="ORIGINAL / OFF"}}
@@ -327,24 +283,11 @@ local function openBattleMenu(game,returnId,returnParent)
     local rows={}
     local hs=CacheManager and CacheManager.hardCacheStatus and CacheManager.hardCacheStatus() or {}
     local progressRow={label="",keepOpen=true}
-    local detailRow={label="",keepOpen=true}
-    local policyRow={label="",keepOpen=true}
     local control={label="",keepOpen=true}
     local function labels()
       hs=CacheManager and CacheManager.hardCacheStatus and CacheManager.hardCacheStatus() or {}
-      local state=hs.paused and "PAUSED" or (hs.running and "PREPARING" or (hs.stage=="failed" and "FAILED" or (hs.ready and "READY" or (hs.catalogReady and "FULL READY" or (hs.teamReady and "TEAM READY" or (hs.completed and "READY" or "IDLE"))))))
-      local failed=tonumber(hs.failed) or 0
-      if hs.stage=="failed" then
-        progressRow.label=("FAILED %d/%d  (%d ERR)"):format(tonumber(hs.attempted) or tonumber(hs.done) or 0,tonumber(hs.total) or 0,failed)
-        local last=tostring(hs.lastFailed or hs.last or "UNKNOWN")
-        detailRow.label="LAST FAIL: "..last
-        local reason=tostring(hs.lastError or "DETAILS SAVED")
-        policyRow.label="ERR: "..reason:sub(1,30)
-      else
-        progressRow.label=("%s  %d/%d"):format(state,tonumber(hs.done) or 0,tonumber(hs.total) or 0)
-        detailRow.label="TIERS: TEAM / 151 / 251 / 386"
-        policyRow.label="ALL COMPLETED MODELS STAY SAVED"
-      end
+      local state=hs.paused and "PAUSED" or (hs.running and "PREPARING" or (hs.stage=="failed" and "FAILED" or (hs.ready and "READY" or (hs.teamReady and "TEAM READY" or (hs.completed and "READY" or "IDLE")))))
+      progressRow.label=("%s  %d/%d"):format(state,tonumber(hs.done) or 0,tonumber(hs.total) or 0)
       control.label=hs.paused and "RESUME PREPARATION" or "PAUSE PREPARATION"
       refresh()
     end
@@ -354,21 +297,18 @@ local function openBattleMenu(game,returnId,returnParent)
     end
     rows[#rows+1]={label="PREPARE CURRENT TEAM",keepOpen=true,onSelect=function() queue("team") end}
     rows[#rows+1]={label="PREPARE TEAM + PC",keepOpen=true,onSelect=function() queue("full") end}
-    rows[#rows+1]={label="PREPARE KANTO 151",keepOpen=true,onSelect=function() queue("catalog151") end}
-    rows[#rows+1]={label="PREPARE KANTO + JOHTO 251",keepOpen=true,onSelect=function() queue("catalog251") end}
-    rows[#rows+1]={label="PREPARE FULL CACHE 386",keepOpen=true,onSelect=function() queue("catalog") end}
     control.onSelect=function()
       local status=CacheManager and CacheManager.hardCacheStatus and CacheManager.hardCacheStatus() or {}
       if CacheManager and CacheManager.pauseHardCache then CacheManager.pauseHardCache(not status.paused) end
       labels()
     end
     rows[#rows+1]=control;rows[#rows+1]=progressRow
-    rows[#rows+1]={label="151/251/386: MODELS + AUTHORED IDLE",keepOpen=true}
-    rows[#rows+1]=detailRow
-    rows[#rows+1]=policyRow
+    rows[#rows+1]={label="TEAM: BATTLE MODELS + MOVES",keepOpen=true}
+    rows[#rows+1]={label="PC: ALSO PREPARE STORED MODELS",keepOpen=true}
+    rows[#rows+1]={label="EXISTING CACHES ARE REUSED",keepOpen=true}
     labels()
-    local picker=Menu.new(game,rows,{tx=1,ty=1,tw=28,maxVisible=10})
-    if BattleMenuUI and BattleMenuUI.mark then BattleMenuUI.mark(picker,"CACHE PREPARATION",rows,10,"EXISTING VALID CACHES ARE REUSED") end
+    local picker=Menu.new(game,rows,{tx=1,ty=1,tw=19,maxVisible=7})
+    if BattleMenuUI and BattleMenuUI.mark then BattleMenuUI.mark(picker,"CACHE PREPARATION",rows,7,"CURRENT TEAM IS THE QUICK START") end
     local nativeUpdate=picker.update
     picker.update=function(self,dt,...)
       if nativeUpdate then nativeUpdate(self,dt,...) end
@@ -408,16 +348,16 @@ local function openBattleMenu(game,returnId,returnParent)
       if CacheManager and CacheManager.resetRuntime then CacheManager.resetRuntime() end
       refresh()
     end}
-    rows[#rows+1]={label="WIPE REMOVES ALL CBE CACHE ITERATIONS",keepOpen=true}
-    rows[#rows+1]={label="IMPORTED COLOSSEUM ISO IS KEPT",keepOpen=true}
-    local armed=false
-    local resetRow={label="WIPE ALL CBE CACHES",keepOpen=true}
-    resetRow.onSelect=function()
-      if not armed then armed=true;resetRow.label="CONFIRM WIPE ALL CBE CACHES";return end
-      if CacheManager and CacheManager.wipeAllCaches then CacheManager.wipeAllCaches() end
-      resetRow.label="WIPE ALL CBE CACHES";armed=false;refresh()
+    if cs.generated then
+      local armed=false
+      local resetRow={label="RESET GENERATED RUNTIME",keepOpen=true}
+      resetRow.onSelect=function()
+        if not armed then armed=true;resetRow.label="CONFIRM RESET GENERATED";return end
+        if CacheManager and CacheManager.resetGenerated then CacheManager.resetGenerated() end
+        resetRow.label="RESET GENERATED RUNTIME";armed=false;refresh()
+      end
+      rows[#rows+1]=resetRow
     end
-    rows[#rows+1]=resetRow
     rows[#rows+1]={label="ROM FILE   LAUNCHER > MODS > IMPORT",keepOpen=true}
     rows[#rows+1]={label="BACK",onSelect=function() end}
     local picker=Menu.new(game,rows,{tx=1,ty=1,tw=29,maxVisible=10})
@@ -458,7 +398,7 @@ local function openBattleMenu(game,returnId,returnParent)
   refresh()
   -- Trainer presentation is intentionally three independent ownership rows:
   -- player Red, ordinary/special enemy trainers, and the Kanto rival substitute.
-  local mainRows={environmentToggle,cameraToggle,pokemonModelsToggle,doublesToggle,abilitiesToggle,wildSpawnRow,wildSpawnStatusRow,autoProgressToggle,freeLookToggle,bossIntroToggle,musicRow,soundsToggle,audioQualityRow,arenaRow,playerTrainerRow,enemyTrainerRow,rivalRow,hardCacheRow,cacheRow,back}
+  local mainRows={environmentToggle,cameraToggle,pokemonModelsToggle,doublesToggle,abilitiesToggle,autoProgressToggle,freeLookToggle,bossIntroToggle,musicRow,soundsToggle,audioQualityRow,arenaRow,playerTrainerRow,enemyTrainerRow,rivalRow,hardCacheRow,cacheRow,back}
   menu=Menu.new(game,mainRows,{tx=1,ty=2,tw=24,maxVisible=10,onCancel=function() reopen(game,returnId,returnParent) end})
   menu.screenId="CbeBattleSettings"
   if BattleMenuUI and BattleMenuUI.mark then
@@ -475,6 +415,14 @@ function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trai
   mod.hooks:wrap("ui.start_menu.items",function(next,game,items)
     local out=next(game,items)
     if type(out)~="table" then out=items end
+    
+    -- Check generation compatibility - don't skip for Gen3, but handle it specially
+    local gen3Mode=false
+    if Compat and type(Compat.current)=="function" then
+      local ok,generation=pcall(Compat.current)
+      if ok and tonumber(generation)==3 then gen3Mode=true end
+    end
+    
     for _,entry in ipairs(out) do
       if entry.__colosseumBattleEntry or tostring(entry.label or ""):upper()=="BATTLE" then return out end
     end
@@ -487,10 +435,17 @@ function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trai
       -- injected-row arm intentionally does not. Keep a live Gold parent on
       -- the stack; a synthetic replacement lacks onChoose/onClose and is dead.
       local parent=game and game.stack and type(game.stack.top)=="function" and game.stack:top() or nil
-      local returnId=(parent and (parent.screenId==GEN1_START or parent.screenId=="Gen2StartMenu"))
+      local returnId=(parent and (parent.screenId==GEN1_START or parent.screenId=="Gen2StartMenu" or parent.screenId=="StartMenu"))
         and parent.screenId or startMenuId()
       local returnParent=(parent and parent.screenId==returnId) and parent or nil
-      openBattleMenu(game,returnId,returnParent)
+      
+      -- For Gen3, use a simpler approach that doesn't rely on complex parent management
+      if gen3Mode then
+        -- Just open the battle menu directly for Gen3
+        openBattleMenu(game,returnId,nil)
+      else
+        openBattleMenu(game,returnId,returnParent)
+      end
     end})
     return out
   end,650)
@@ -501,7 +456,6 @@ function S.prefs(game) return prefs(game) end
 function S.cameraEnabled(game) return prefs(game or (modRef and modRef.game)).cameraEnabled~=false end
 function S.pokemonModelsEnabled(game) return prefs(game or (modRef and modRef.game)).pokemonModelsEnabled~=false end
 function S.abilitiesEnabled(game) return prefs(game or (modRef and modRef.game)).abilitiesEnabled==true end
-function S.wildSpawnMode(game) return prefs(game or (modRef and modRef.game)).wildSpawnMode end
 function S.setCameraEnabled(game,value)
   local p=prefs(game or (modRef and modRef.game)); p.cameraEnabled=value~=false; return p.cameraEnabled
 end
@@ -510,7 +464,7 @@ function S.status(game)
   return {
     installed=installed,arenasEnabled=p.arenasEnabled,cameraEnabled=p.cameraEnabled,pokemonModelsEnabled=p.pokemonModelsEnabled,
     battleSoundsEnabled=p.battleSoundsEnabled,freeLookEnabled=p.freeLookEnabled,autoProgressEnabled=p.autoProgressEnabled,bossIntroEnabled=p.bossIntroEnabled,doubleBattlesEnabled=p.doubleBattlesEnabled,
-    abilitiesEnabled=p.abilitiesEnabled,wildSpawnMode=p.wildSpawnMode,wildSpawnRuntime=S.wildSpawnStatus(),
+    abilitiesEnabled=p.abilitiesEnabled,
     music=p.music,musicLabel=Music and Music.themeLabel and Music.themeLabel(game,p.music),
     arena=p.arena,playerModel=p.playerModel,enemyTrainerModel=p.enemyTrainerModel,rivalModel=p.rivalModel,
     playerTrainerModel=p.playerTrainerModel,enemyTrainerModels=p.enemyTrainerModels,

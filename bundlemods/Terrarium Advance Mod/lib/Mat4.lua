@@ -44,10 +44,65 @@ function M.rotateX(a)
   return {1,0,0,0, 0,c,-s,0, 0,s,c,0, 0,0,0,1}
 end
 
+-- Right-handed perspective onto GL clip space (z in [-1, 1]).
+function M.perspective(fovY, aspect, near, far)
+  local f = 1 / math.tan(fovY / 2)
+  local d = near - far
+  return { f / aspect, 0, 0, 0,
+           0, f, 0, 0,
+           0, 0, (far + near) / d, (2 * far * near) / d,
+           0, 0, -1, 0 }
+end
+
 function M.rotateZ(a)
   local c,s=cos(a),sin(a)
   return {c,-s,0,0, s,c,0,0, 0,0,1,0, 0,0,0,1}
 end
+
+function M.ortho(l, r, b, t, n, f)
+  return { 2 / (r - l), 0, 0, -(r + l) / (r - l),
+           0, 2 / (t - b), 0, -(t + b) / (t - b),
+           0, 0, -2 / (f - n), -(f + n) / (f - n),
+           0, 0, 0, 1 }
+end
+function M.invert(m)
+  local a = {}
+  for r = 0, 3 do
+    local row = {}
+    for c = 1, 4 do row[c] = m[r * 4 + c] end
+    for c = 1, 4 do row[4 + c] = (c == r + 1) and 1 or 0 end
+    a[r + 1] = row
+  end
+
+  for i = 1, 4 do
+    local p, best = i, math.abs(a[i][i])
+    for r = i + 1, 4 do
+      local v = math.abs(a[r][i])
+      if v > best then p, best = r, v end
+    end
+    -- singular: the caller drops whatever it wanted the inverse for rather
+    -- than dividing by a rounding error
+    if best < 1e-12 then return nil end
+    a[i], a[p] = a[p], a[i]
+    local piv = a[i][i]
+    for c = 1, 8 do a[i][c] = a[i][c] / piv end
+    for r = 1, 4 do
+      if r ~= i then
+        local f = a[r][i]
+        if f ~= 0 then
+          for c = 1, 8 do a[r][c] = a[r][c] - f * a[i][c] end
+        end
+      end
+    end
+  end
+
+  local o = {}
+  for r = 1, 4 do
+    for c = 1, 4 do o[(r - 1) * 4 + c] = a[r][4 + c] end
+  end
+  return o
+end
+
 
 function M.perspective(fovY,aspect,near,far)
   local f=1/tan(fovY/2)
@@ -73,51 +128,6 @@ function M.lookAt(eye,target,up)
           ux,uy,uz,-(ux*ex+uy*ey+uz*ez),
           -fx,-fy,-fz,(fx*ex+fy*ey+fz*ez),
           0,0,0,1}
-end
-
-function M.ortho(left,right,bottom,top,near,far)
-  local tx = -(right + left) / (right - left)
-  local ty = -(top + bottom) / (top - bottom)
-  local tz = -(far + near) / (far - near)
-  return {
-    2/(right-left), 0, 0, 0,
-    0, 2/(top-bottom), 0, 0,
-    0, 0, -2/(far-near), 0,
-    tx, ty, tz, 1
-  }
-end
-
-function M.invert(m)
-  local a11,a12,a13,a14,a21,a22,a23,a24,a31,a32,a33,a34,a41,a42,a43,a44 =
-    m[1],m[2],m[3],m[4],m[5],m[6],m[7],m[8],m[9],m[10],m[11],m[12],m[13],m[14],m[15],m[16]
-  
-  local b00 = a22*a33*a44 - a22*a34*a43 - a32*a23*a44 + a32*a24*a43 + a42*a23*a34 - a42*a24*a33
-  local b01 = a12*a33*a44 - a12*a34*a43 - a32*a13*a44 + a32*a14*a43 + a42*a13*a34 - a42*a14*a33
-  local b02 = a12*a23*a44 - a12*a24*a43 - a22*a13*a44 + a22*a14*a43 + a42*a13*a24 - a42*a14*a23
-  local b03 = a12*a23*a34 - a12*a24*a33 - a22*a13*a34 + a22*a14*a33 + a32*a13*a24 - a32*a14*a23
-  local b10 = a21*a33*a44 - a21*a34*a43 - a31*a23*a44 + a31*a24*a43 + a41*a23*a34 - a41*a24*a33
-  local b11 = a11*a33*a44 - a11*a34*a43 - a31*a13*a44 + a31*a14*a43 + a41*a13*a34 - a41*a14*a33
-  local b12 = a11*a23*a44 - a11*a24*a43 - a21*a13*a44 + a21*a14*a43 + a41*a13*a24 - a41*a14*a23
-  local b13 = a11*a23*a34 - a11*a24*a33 - a21*a13*a34 + a21*a14*a33 + a31*a13*a24 - a31*a14*a23
-  local b20 = a21*a32*a44 - a21*a34*a42 - a31*a22*a44 + a31*a24*a42 + a41*a22*a34 - a41*a24*a32
-  local b21 = a11*a32*a44 - a11*a34*a42 - a31*a12*a44 + a31*a14*a42 + a41*a12*a34 - a41*a14*a32
-  local b22 = a11*a22*a44 - a11*a24*a42 - a21*a12*a44 + a21*a14*a42 + a41*a12*a24 - a41*a14*a22
-  local b23 = a11*a22*a34 - a11*a24*a32 - a21*a12*a34 + a21*a14*a32 + a31*a12*a24 - a31*a14*a22
-  local b30 = a21*a32*a43 - a21*a33*a42 - a31*a22*a43 + a31*a23*a42 + a41*a22*a33 - a41*a23*a32
-  local b31 = a11*a32*a43 - a11*a33*a42 - a31*a12*a43 + a31*a13*a42 + a41*a12*a33 - a41*a13*a32
-  local b32 = a11*a22*a43 - a11*a23*a42 - a21*a12*a43 + a21*a13*a42 + a41*a12*a23 - a41*a13*a22
-  local b33 = a11*a22*a33 - a11*a23*a32 - a21*a12*a33 + a21*a13*a32 + a31*a12*a23 - a31*a13*a22
-  
-  local det = a11*b00 - a12*b10 + a13*b20 - a14*b30
-  if det == 0 then return nil end
-  local invDet = 1/det
-  
-  return {
-    b00*invDet, -b01*invDet,  b02*invDet, -b03*invDet,
-   -b10*invDet,  b11*invDet, -b12*invDet,  b13*invDet,
-    b20*invDet, -b21*invDet,  b22*invDet, -b23*invDet,
-   -b30*invDet,  b31*invDet,  b32*invDet,  b33*invDet
-  }
 end
 
 return M

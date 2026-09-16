@@ -5,15 +5,7 @@ local function platformOS()
   end
   return "Unknown"
 end
-local PLATFORM_OS=platformOS()
-local ANDROID_RUNTIME=PLATFORM_OS=="Android"
-local MOBILE_RUNTIME=ANDROID_RUNTIME or PLATFORM_OS=="iOS"
--- Mobile doubles can need six player-party identities plus two live opponents.
--- Keep one additional recent scene as a churn buffer, but do not retain the old
--- 12-scene GPU working set on devices where RAM/VRAM is shared. Persistent f32
--- sidecars make a later reload cheap without changing any visual asset quality.
-local ANDROID_POKEMON_SOFT_LIMIT=9
-local ANDROID_POKEMON_RECENT=3
+local ANDROID_RUNTIME=platformOS()=="Android"
 local mod,Mat4=V.mod,V.Mat4
 local GeneratedAssets=V.GeneratedAssets
 local RuntimeMeshCache=V.RuntimeMeshCache
@@ -23,7 +15,6 @@ local function workCheckpoint(label)
 end
 local Dex=V.ColosseumDex
 local Shiny=V.ShinySupport
-local IDENTITY_MAT=Mat4 and Mat4.identity and Mat4.identity() or {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}
 local function modelKey(dex,variant)
   return Dex.modelKey and Dex.modelKey(dex,variant) or tonumber(dex)
 end
@@ -52,7 +43,7 @@ local A={version=1}
 -- Base position/UV/normal plus twelve authored-frame positions.  The twelve
 -- vec3 frame streams are losslessly packed into nine vec4 attributes so the
 -- shader stays comfortably below the generic vertex-attribute limit on the
--- Gen1Recomp/LÃƒâ€“VE backends. 1.5.32 used one attribute per frame and could fail
+-- Gen1Recomp/LÖVE backends. 1.5.32 used one attribute per frame and could fail
 -- shader linking at Frame12, which made the actor provider fail open to 2D.
 -- STRIDE remains compact at 44 floats: 8 base + 9*4 packed-frame floats.
 local FORMAT={
@@ -73,9 +64,6 @@ local FORMAT={
 local VERTEX=[[
 uniform mat4 vp;
 uniform mat4 model;
-uniform mat4 reflectionView;
-uniform mat4 reflectionTexMtx;
-uniform float textureCoordMode;
 // w[0] weights the base (frame 0) stream; w[1..12] weight authored frames.
 // Exactly two are non-zero at any time, so this is a linear interpolation
 // between two real Colosseum frames -- never a synthesized pose.
@@ -105,7 +93,6 @@ attribute vec4 FramePack8;
 attribute vec4 FramePack9;
 varying vec3 worldPos;
 varying vec3 worldNormal;
-varying vec2 sourceTexCoord;
 
 vec4 position(mat4 transform_projection, vec4 vertex_position) {
   // Losslessly unpack 12 authored vec3 poses from 9 vec4 attributes.
@@ -128,19 +115,6 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
   vec4 world = model * vec4(p,1.0);
   worldPos = world.xyz;
   worldNormal = normalize((model * vec4(normalize(VertexNormal),0.0)).xyz);
-  // LOVE exposes the built-in VertexTexCoord attribute as a vec4 even when the
-  // mesh only supplies UV.xy. Assign only the authored UV components to our
-  // vec2 varying; assigning the whole attribute is a GLSL type error on strict
-  // desktop drivers and prevented the Pokemon actor shader from compiling.
-  sourceTexCoord = VertexTexCoord.xy;
-  if (textureCoordMode > 0.5 && textureCoordMode < 1.5) {
-    // HSD_TObj TEX_COORD_REFLECTION: GX_TG_NRM feeds the view-space normal
-    // through the exact source 3x4 texture matrix.  The third component is Q.
-    vec3 vn = normalize((reflectionView * vec4(worldNormal,0.0)).xyz);
-    vec4 tc = reflectionTexMtx * vec4(vn,1.0);
-    float q = abs(tc.z) > 0.000001 ? tc.z : 1.0;
-    sourceTexCoord = tc.xy / q;
-  }
   return vp * world;
 }
 ]]
@@ -161,13 +135,12 @@ uniform vec4 shinyRouteB;
 uniform vec3 shinyGain;
 varying vec3 worldPos;
 varying vec3 worldNormal;
-varying vec2 sourceTexCoord;
 
 // Native PKX channel routing + brightness, not a universal hue rotation.
 // Rare-model species use their separate source texture and bypass this filter.
 // RGB only: alpha remains the source texture/material transparency.
 vec4 effect(vec4 color, Image texture, vec2 uv, vec2 screen) {
-  vec4 texel = Texel(texture,sourceTexCoord);
+  vec4 texel = Texel(texture,uv);
   float texAlpha = mix(1.0, texel.a, useTexture);
   float a = texAlpha * materialColor.a * tintColor.a * opacity * color.a;
   if (a < 0.08) discard;
@@ -198,7 +171,6 @@ local scenes={}          -- [dex] = {groups,bounds,clip,morphFrames,...}
 local sceneErrors={}     -- transient diagnostic, never a permanent negative cache
 local sessionPinned={}
 local sessionPrepared={}
-local requiredSessionPrepared={}
 local sessionEpoch=0
 local extractor,discOpener
 local sourceBusy=false
@@ -213,18 +185,6 @@ local function extractSource(...)
   if not ok then return nil,tostring(value) end
   return value,why
 end
-local function extractSourceActions(...)
-  if sourceBusy then return nil,"source extraction in progress" end
-  if not (extractor and type(extractor.extractActions)=="function") then
-    return nil,"selective source-action extractor unavailable"
-  end
-  sourceBusy=true
-  local committed=WorkBudget and WorkBudget.onCancel(function() sourceBusy=false end) or function() end
-  local ok,value,why=pcall(extractor.extractActions,...)
-  sourceBusy=false;committed()
-  if not ok then return nil,tostring(value) end
-  return value,why
-end
 local metadataReader
 local pendingExtract={}
 local function retryClock()
@@ -234,16 +194,6 @@ local function extractionFailed(key,reason)
   pendingExtract[key]={retryAt=retryClock()+2,reason=tostring(reason or "source extraction failed")}
 end
 local sourceMetadata={}
-local selectiveActionSpecs={}
--- Gen II stores move ids in a retail-order array. Required-model readiness is
--- queried repeatedly while a battle is preparing; rescanning that array for
--- every move on every poll is needless O(moves*order) work. Memoize one reverse
--- index per immutable host order table; weak keys discard it when the game data
--- registry is replaced. Keep it on A rather than adding another top-level local:
--- this file intentionally runs close to Lua 5.1's 200-local chunk limit.
-A._sourceMoveOrderIndex=setmetatable({}, {__mode="k"})
-local requiredActionNames
-local ensureRequiredActionInventory
 local sceneUseSerial=0
 local idleWarmQueue={}
 local idleWarmSeen={}
@@ -258,7 +208,7 @@ local battleWarmTask=nil
 local battleWarmCurrent=nil
 local hardCacheQueue={}
 local hardCacheGame=nil
-local hardCacheState={running=false,total=0,done=0,failed=0,bases=0,actions=0,last=nil,head=1,tail=0}
+local hardCacheState={running=false,total=0,done=0,failed=0,bases=0,actions=0,last=nil}
 local perf={sceneLoads=0,sceneHits=0,actionBuilds=0,actionPrewarms=0,actorAcquires=0,residentAcquireHits=0,reactionClamps=0,reactionFallbacks=0,actionDrawFallbacks=0,floorClamps=0,idleWarmLoads=0,idleWarmMs=0,residentTrimKept=0,residentTrimReleased=0,runtimeBaseHits=0,runtimeBaseWrites=0,runtimeActionHits=0,runtimeActionWrites=0}
 
 local function log(level,fmt,...)
@@ -281,120 +231,19 @@ local function runtimeActionTag(name) return tostring(name or "action"):gsub("[^
 local function runtimeActionManifestPath(dex,name) return runtimeRoot(dex).."/action_"..runtimeActionTag(name)..".lua" end
 local function runtimeActionBinPath(dex,name,i) return runtimeRoot(dex).."/action_"..runtimeActionTag(name)..("_%02d.f32"):format(tonumber(i) or 0) end
 local function runtimeActionFloorPath(dex,name) return runtimeRoot(dex).."/action_"..runtimeActionTag(name).."_floor.lua" end
--- Quick/legacy cache inventory is an acceleration question, not an integrity
--- boundary. Older builds answered it by running persistentModelState() for all
--- 386 normal species, which deliberately invalidates/reloads every runtime-base,
--- metadata and action descriptor before it answers. That deep validator remains
--- authoritative before a model is actually loaded/reused; this tiny positive
--- certificate merely remembers which NORMAL full-action units have already
--- passed it for the exact current source stamp. One cold read replaces hundreds
--- of descriptor reads on later Quick Cache selections, especially on Android.
-local FULL_INVENTORY_PATH="build/pokemon_full_inventory_v1.lua"
-local FULL_INVENTORY_VERSION=1
-local fullInventoryMemo=nil
-local fullInventoryLoaded=false
-local fullInventoryDirty=false
-local inventoryStats={reads=0,hits=0,deep=0,writes=0}
 local function sourceRevision(dex)
   if not (extractor and type(extractor.revPath)=="function") then return nil end
   local body=GeneratedAssets.read(extractor.revPath(dex))
   return type(body)=="string" and body or nil
 end
 local speciesCacheValidity={}
--- Legacy rev37/38 caches predate source texture-coordinate metadata.  Only
--- species whose old canonical body contains a textured all-zero-UV stage need
--- a source refresh; ordinary cached species remain reusable.  This list is a
--- compatibility repair boundary, NOT a material guess: re-extraction reads the
--- real HSD coordinateMode/SRT and can still fail closed for unsupported modes.
-local LEGACY_TEXGEN_REPAIR_DEX={
-  [13]=true,[64]=true,[65]=true,[81]=true,[82]=true,[120]=true,[121]=true,[132]=true,[140]=true,[148]=true,
-  [179]=true,[180]=true,[181]=true,[184]=true,[185]=true,[193]=true,[197]=true,[198]=true,[200]=true,[201]=true,
-  [208]=true,[212]=true,[214]=true,[215]=true,[227]=true,[228]=true,[229]=true,[233]=true,[238]=true,[244]=true,
-  [245]=true,[302]=true,[304]=true,[329]=true,[330]=true,[347]=true,[359]=true,[362]=true,[378]=true,[379]=true,
-}
-local function materialTexgenReady(dex)
-  local n=dexNumber(dex)
-  if not (n and LEGACY_TEXGEN_REPAIR_DEX[n]) then return true end
-  if not (extractor and type(extractor.materialTexgenPath)=="function" and GeneratedAssets and type(GeneratedAssets.info)=="function") then
-    return false
-  end
-  local info=GeneratedAssets.info(extractor.materialTexgenPath(dex))
-  return type(info)=="table" and (info.type==nil or info.type=="file")
-end
 local function expectedSpeciesStamp()
   if not (extractor and type(extractor.stamp)=="function") then return nil end
   return extractor.stamp({skinFix=A.skinFix,renderPassFilter=true,decodeMode=A.decodeMode})
 end
-local function loadFullInventory()
-  if fullInventoryLoaded then return fullInventoryMemo end
-  fullInventoryLoaded=true
-  local value
-  if RuntimeMeshCache and type(RuntimeMeshCache.readLua)=="function" then
-    inventoryStats.reads=inventoryStats.reads+1
-    value=select(1,RuntimeMeshCache.readLua(FULL_INVENTORY_PATH))
-  end
-  if type(value)~="table" or tonumber(value.version)~=FULL_INVENTORY_VERSION
-      or type(value.complete)~="table" then
-    value={version=FULL_INVENTORY_VERSION,stamp=nil,complete={}}
-  end
-  fullInventoryMemo=value
-  return value
-end
-local function noteFullInventory(dex,stamp)
-  local n=dexNumber(dex)
-  if not (n and n>=1 and n<=386 and type(stamp)=="string" and stamp~="") then return false,"invalid inventory identity" end
-  local value=loadFullInventory()
-  if value.stamp~=stamp then
-    -- A compatibility-only extractor revision must not erase a proven 386-model
-    -- inventory.  Rev37/38 deliberately share the same geometry/pose contract;
-    -- promote the tiny certificate in place and keep every per-species proof.
-    -- Truly incompatible stamps still reset only this accelerator, never payload.
-    if type(value.stamp)=="string" and A._speciesStampCompatible and A._speciesStampCompatible(value.stamp) then
-      value.stamp=stamp
-      fullInventoryDirty=true
-    else
-      value={version=FULL_INVENTORY_VERSION,stamp=stamp,complete={}}
-      fullInventoryMemo=value
-    end
-  end
-  if value.complete[n]==true then return true,"unchanged" end
-  value.complete[n]=true
-  fullInventoryDirty=true
-  return true,"dirty"
-end
-local function flushFullInventory()
-  if not fullInventoryDirty then return true,"unchanged" end
-  local value=fullInventoryMemo
-  if not (type(value)=="table" and tonumber(value.version)==FULL_INVENTORY_VERSION
-      and type(value.stamp)=="string" and type(value.complete)=="table") then
-    return false,"inventory proof unavailable"
-  end
-  if not (RuntimeMeshCache and type(RuntimeMeshCache.writeLua)=="function") then return false,"inventory writer unavailable" end
-  local ok,why=RuntimeMeshCache.writeLua(FULL_INVENTORY_PATH,value)
-  if ok then fullInventoryDirty=false;inventoryStats.writes=inventoryStats.writes+1 end
-  return ok,why
-end
-A._speciesStampCompatible=function(raw)
-  if type(raw)~="string" then return false end
-  local opts={skinFix=A.skinFix,renderPassFilter=true,decodeMode=A.decodeMode}
-  if extractor and type(extractor.isCompatibleStamp)=="function" then
-    local ok,value=pcall(extractor.isCompatibleStamp,raw,opts)
-    return ok and value==true
-  end
-  return raw==expectedSpeciesStamp()
-end
-local function speciesCacheReady(dex,allowLegacyMaterialBody)
+local function speciesCacheReady(dex)
   dex=modelKey(dex)
   if not (dex and extractor) then return false,nil end
-  -- Selective texgen repair must never turn a previously-generated Pokemon into
-  -- an invisible/stuck battle slot.  A handful of rev37/38 species (including
-  -- Sneasel/Steelix) need one source refresh for exact generated-coordinate
-  -- material metadata, but their cached body geometry/idle remain usable.  The
-  -- ordinary/full-cache validators stay strict; only an explicit battle-body
-  -- caller may reuse that compatible legacy body while the repair is scheduled.
-  if not materialTexgenReady(dex) and allowLegacyMaterialBody~=true then
-    return false,expectedSpeciesStamp()
-  end
   local expected=expectedSpeciesStamp()
   if type(expected)=="string" and speciesCacheValidity[dex]==expected then return true,expected end
 
@@ -409,7 +258,7 @@ local function speciesCacheReady(dex,allowLegacyMaterialBody)
     local info=GeneratedAssets.info(extractor.cachePath(dex))
     if type(info)=="table" and (info.type==nil or info.type=="file") then
       local raw=GeneratedAssets.read(extractor.revPath(dex))
-      if type(expected)=="string" and A._speciesStampCompatible(raw) then
+      if type(expected)=="string" and raw==expected then
         speciesCacheValidity[dex]=expected
         return true,expected
       end
@@ -427,165 +276,13 @@ local function speciesCacheReady(dex,allowLegacyMaterialBody)
   return false,expected
 end
 
-local function cachedActionProfile(dex)
-  dex=modelKey(dex)
-  if not dex then return "full",true end
-  local cache
-  if RuntimeMeshCache and type(RuntimeMeshCache.readLua)=="function" then
-    cache=select(1,RuntimeMeshCache.readLua(runtimeBasePath(dex)))
-  end
-  if type(cache)~="table" and extractor and type(extractor.cachePath)=="function" then
-    cache=select(1,readLua(extractor.cachePath(dex)))
-  end
-  -- Legacy caches predate the profile field and were always full-action builds.
-  if type(cache)~="table" then return "full",true end
-  local profile=tostring(cache.actionProfile or "full")
-  local complete=cache.actionInventoryComplete~=false and profile~="storage"
-  return profile,complete
-end
-
-local function discardResidentForActionUpgrade(key)
-  local scene=scenes[key]
-  if not scene then return false end
-  local live=false
-  for _,actor in pairs(A._liveActors or {}) do if actor and actor.scene==scene then live=true;break end end
-  scenes[key]=nil;sceneErrors[key]=nil;sessionPinned[key]=nil;sessionPrepared[key]=nil;requiredSessionPrepared[key]=nil
-  if live then return false end -- detached; old information actor is not invalidated mid-frame
-  local seen={}
-  local function release(obj)
-    if not obj or seen[obj] then return end;seen[obj]=true
-    pcall(function() if type(obj.release)=="function" then obj:release() end end)
-  end
-  local function groups(rows)
-    for _,g in ipairs(type(rows)=="table" and rows or {}) do if type(g)=="table" then release(g.mesh);release(g.image) end end
-  end
-  groups(scene.groups)
-  for _,image in pairs(scene.textures or {}) do release(image) end
-  for _,entry in pairs(scene.actions or {}) do
-    if type(entry)=="table" then groups(entry.groups);for _,page in ipairs(entry.pages or {}) do groups(page and page.groups) end end
-  end
-  return true
-end
-
--- Explicit user-requested recovery for one failed Pokemon cache.  This is much
--- narrower than the global CBE cache reset: it deletes only the generated files
--- owned by the selected species/appearance manifest row, plus the handful of
--- core paths that predate manifest coverage.  The imported GC6E01 source,
--- arenas, trainers, audio and MoveFX are never touched.
-function A.deleteModelCache(dex,variant)
-  local n=dexNumber(dex)
-  local key=n and modelKey(n,variant or "normal") or nil
-  if not (n and key and extractor and GeneratedAssets and type(GeneratedAssets.delete)=="function") then
-    return false,"model cache delete unavailable"
-  end
-
-  discardResidentForActionUpgrade(key)
-  local paths,seen={},{}
-  local function add(path)
-    if type(path)=="string" and path~="" and not seen[path] then seen[path]=true;paths[#paths+1]=path end
-  end
-
-  -- Sharded manifest is the authoritative ownership list for canonical body,
-  -- textures, actions and packed runtime sidecars.  Leave the shard itself in
-  -- place; the subsequent source extraction replaces this one row atomically.
-  if type(extractor.manifestShardPath)=="function" and type(GeneratedAssets.read)=="function" then
-    local shard=extractor.manifestShardPath(n)
-    local raw=shard and GeneratedAssets.read(shard) or nil
-    if type(raw)=="string" then
-      local chunk=load(raw,"@generated/"..tostring(shard))
-      local ok,list=false,nil
-      if chunk then ok,list=pcall(chunk) end
-      if ok and type(list)=="table" then
-        for _,entry in ipairs(list) do
-          if type(entry)=="table" and modelKey(entry.dex,entry.variant or "normal")==key then
-            for _,path in ipairs(entry.paths or {}) do add(path) end
-          end
-        end
-      end
-    end
-  end
-
-  -- Compatibility coverage for old/unmanifested model caches.
-  if type(extractor.cachePath)=="function" then add(extractor.cachePath(key)) end
-  if type(extractor.revPath)=="function" then add(extractor.revPath(key)) end
-  if type(extractor.materialTexgenPath)=="function" then add(extractor.materialTexgenPath(key)) end
-  add(cacheRoot(key).."/metadata_v1.lua");add(runtimeBasePath(key))
-
-  local deleted=0
-  for _,path in ipairs(paths) do
-    local ok,why=GeneratedAssets.delete(path)
-    if ok==false then return false,("model cache delete failed [%s]: %s"):format(path,tostring(why)) end
-    deleted=deleted+1
-  end
-  if type(extractor.invalidateManifestMemo)=="function" then pcall(extractor.invalidateManifestMemo,mod) end
-  speciesCacheValidity[key]=nil;sourceMetadata[key]=nil;pendingExtract[key]=nil
-  sessionPinned[key]=nil;sessionPrepared[key]=nil;requiredSessionPrepared[key]=nil
-  local inventory=fullInventoryMemo
-  if type(inventory)=="table" and type(inventory.complete)=="table" then
-    inventory.complete[n]=nil;fullInventoryDirty=true
-  end
-  return true,("Deleted %d generated files for Pokemon #%d / %s; source will rebuild on retry."):format(deleted,n,tostring(variant or "normal")),deleted
-end
-
-local function ensureFullActionInventory(dex,variant,progress)
-  local n=dexNumber(dex);if not n then return false,"invalid species" end
-  local key=modelKey(n,variant or "normal")
-  local ready=speciesCacheReady(key)
-  local legacyActionRefs=ready and cachedBaseActionRefs(key) or nil
-  if not ready then return true,"uncached" end -- normal source path will create a full cache
-  local profile,complete=cachedActionProfile(key)
-  if complete then
-    if A._compactAction and A._compactAction.inventoryReady and A._compactAction.inventoryReady(key) then
-      return true,"compact-"..tostring(profile)
-    end
-    -- Legacy v2 full-action caches are source-complete but disk-exploded. Rebuild
-    -- this one species transactionally from the already imported GC6E01 source
-    -- into the compact action format. This is an upgrade, not a global cache wipe.
-  elseif profile~="storage" then return false,"incomplete action inventory" end
-  if not (extractor and type(extractor.extractSpecies)=="function" and discOpener) then return false,"battle action upgrade source unavailable" end
-  local opened,disc=pcall(discOpener)
-  if not opened or not disc then return false,"battle action upgrade disc unavailable" end
-  local result,why=extractSource(mod,disc,n,{variant=variant or "normal",targetHeight=16.0,
-    decodeMode=A.decodeMode,skinFix=A.skinFix,renderPassFilter=true,actionProfile="full",preserveExisting=false,
-    progress=progress,checkpoint=progress})
-  if not result then return false,why or "battle action upgrade failed" end
-  speciesCacheValidity[key]=nil
-  if RuntimeMeshCache and type(RuntimeMeshCache.invalidateLua)=="function" then RuntimeMeshCache.invalidateLua(runtimeBasePath(key)) end
-  discardResidentForActionUpgrade(key)
-  local compactScene=loadScene(key,true,progress or workCheckpoint)
-  if compactScene and A._compactAction and A._compactAction.cleanupLegacyRuntime then
-    A._compactAction.cleanupLegacyRuntime(key,compactScene,legacyActionRefs)
-  end
-  local ok=speciesCacheReady(key)
-  local _,nowComplete=cachedActionProfile(key)
-  if not ok or not nowComplete then return false,"battle action upgrade did not produce a complete cache" end
-  if not (A._compactAction and A._compactAction.inventoryReady and A._compactAction.inventoryReady(key)) then
-    return false,"battle action upgrade did not commit compact action inventory"
-  end
-  return true,"upgraded"
-end
-
 local function validRuntimeMeta(meta,stamp)
-  if not (type(meta)=="table" and tonumber(meta.runtimeMeshVersion)==1 and type(stamp)=="string"
-      and type(meta.stamp)=="string") then return false end
-  if meta.stamp==stamp then return true end
-  -- Runtime sidecars from an explicitly compatible extractor revision contain
-  -- the same vertex layout/pose data and are reusable acceleration payloads.
-  -- Do not turn a capability-only revision bump into a 386-model repack.
-  return A._speciesStampCompatible and A._speciesStampCompatible(meta.stamp) or false
+  return type(meta)=="table" and tonumber(meta.runtimeMeshVersion)==1 and type(stamp)=="string" and meta.stamp==stamp
 end
 local function runtimeBinLooksValid(path,stride,verify)
   if not (path and GeneratedAssets and type(GeneratedAssets.info)=="function") then return false end
   local info
-  if verify and GeneratedAssets.registered then
-    -- Hard Cache Save can touch hundreds of binary group sidecars on every
-    -- platform. A persisted positive row has already been validated by a real
-    -- CBE read/write; reuse it and host-probe only unknown paths. The eventual
-    -- RuntimeMeshCache.read remains authoritative and self-invalidates a stale
-    -- registry row, so this removes metadata I/O without weakening payload use.
-    info=GeneratedAssets.registered(path)
-    if not info and GeneratedAssets.revalidateInfo then info=GeneratedAssets.revalidateInfo(path) end
-  elseif verify and GeneratedAssets.revalidateInfo then info=GeneratedAssets.revalidateInfo(path)
+  if verify and GeneratedAssets.revalidateInfo then info=GeneratedAssets.revalidateInfo(path)
   else info=GeneratedAssets.info(path) end
   if not info then return false end
   local size=tonumber(info.size)
@@ -593,263 +290,6 @@ local function runtimeBinLooksValid(path,stride,verify)
   local bytesPerVertex=(tonumber(stride) or 44)*4
   return size>=bytesPerVertex and size%bytesPerVertex==0
 end
-local function generatedInfoValidated(path,verify)
-  if not (path and GeneratedAssets) then return nil end
-  if verify and GeneratedAssets.registered then
-    local info=GeneratedAssets.registered(path)
-    if info then return info end
-  end
-  if verify and GeneratedAssets.revalidateInfo then return GeneratedAssets.revalidateInfo(path) end
-  if GeneratedAssets.info then return GeneratedAssets.info(path) end
-  return nil
-end
-
-
-A._compactAction={version=1,inventoryMemo={}}
-function A._compactAction.inventoryReady(key)
-  if A._compactAction.inventoryMemo[key] then return true end
-  if not (GeneratedAssets and type(GeneratedAssets.read)=="function") then return false end
-  local raw=GeneratedAssets.read(cacheRoot(key).."/actions/compact_v1.complete")
-  local ready=raw=="pokemon-action-pack=1\npose-guard="..tostring(A._actionPoseGuardVersion).."\n"
-  if ready then A._compactAction.inventoryMemo[key]=true end
-  return ready
-end
-
-function A._compactAction.cleanupLegacyRuntime(key,scene,legacyActionRefs)
-  if not (GeneratedAssets and type(GeneratedAssets.delete)=="function") then return 0 end
-  local deleted,seen=0,{}
-  local function drop(path)
-    if type(path)~="string" or path=="" or seen[path] then return end
-    seen[path]=true
-    local ok=GeneratedAssets.delete(path)
-    if ok~=false then deleted=deleted+1 end
-    if RuntimeMeshCache and type(RuntimeMeshCache.invalidateLua)=="function" and path:sub(-4)==".lua" then
-      RuntimeMeshCache.invalidateLua(path)
-    end
-  end
-  -- Use each tiny runtime manifest to derive the owned sidecar paths. This keeps
-  -- compaction O(actions) per species instead of rescanning the complete hard-
-  -- cache registry for every one of the 386 Pokemon.
-  -- Older builds can have action sidecars that predate the registry; manifests
-  -- are therefore a better ownership source for this migration anyway.
-  -- derive and delete those paths too without scanning the host cache tree.
-  local names={}
-  for name in pairs(scene and scene.actionSpecs or {}) do names[name]=true end
-  for name in pairs(type(legacyActionRefs)=="table" and legacyActionRefs or {}) do names[name]=true end
-  for name in pairs(names) do
-    local manifestPath=runtimeActionManifestPath(key,name)
-    local meta=RuntimeMeshCache and RuntimeMeshCache.readLua and select(1,RuntimeMeshCache.readLua(manifestPath)) or nil
-    if type(meta)=="table" then
-      if type(meta.pages)=="table" then
-        for pi,page in ipairs(meta.pages) do
-          local count=math.max(0,math.floor(tonumber(page and page.groupCount) or 0))
-          for i=1,count do drop(runtimeActionBinPath(key,name.."/page"..pi,i)) end
-          drop(runtimeActionFloorPath(key,name.."/page"..pi))
-        end
-      else
-        local count=math.max(0,math.floor(tonumber(meta.groupCount) or 0))
-        for i=1,count do drop(runtimeActionBinPath(key,name,i)) end
-        drop(runtimeActionFloorPath(key,name))
-      end
-    end
-    drop(manifestPath)
-  end
-  return deleted
-end
-function A._compactAction.groupInfoReady(spec,verify)
-  if type(spec)~="table" or type(spec.binaryPath)~="string" then return false,"packed action path missing" end
-  if tonumber(spec.vertexStride)~=44 or (tonumber(spec.vertexCount) or 0)<=0 then return false,"packed action geometry metadata invalid" end
-  local rawTotal,storedTotal=tonumber(spec.bundleRawBytes),tonumber(spec.bundleStoredBytes)
-  local offset,rawBytes=tonumber(spec.offset) or 0,tonumber(spec.rawBytes) or 0
-  if not rawTotal or rawTotal<=0 or not storedTotal or storedTotal<=0 or rawBytes<=0 or offset<0 or offset+rawBytes>rawTotal then
-    return false,"packed action bundle metadata invalid"
-  end
-  local info=generatedInfoValidated(spec.binaryPath,verify)
-  if not info then return false,"packed action file missing: "..tostring(spec.binaryPath) end
-  local actual=tonumber(info.size)
-  if actual and actual~=storedTotal then
-    return false,("packed action size mismatch: %s (%d/%d)"):format(tostring(spec.binaryPath),actual,storedTotal)
-  end
-  return true
-end
-function A._compactAction.groupsReady(rawGroups,expectedCount,verify)
-  if type(rawGroups)~="table" or tonumber(rawGroups._packedActionVersion)~=A._compactAction.version then return false,"not a compact action pack" end
-  if tonumber(rawGroups._poseGuardVersion)~=tonumber(A._actionPoseGuardVersion) then return false,"compact action pose guard is stale" end
-  if expectedCount and #rawGroups~=expectedCount then return false,"packed action/base material group count mismatch" end
-  if type(rawGroups._floorMinYSlots)~="table" or #rawGroups._floorMinYSlots~=13 then return false,"packed action floor metadata missing" end
-  for _,spec in ipairs(rawGroups) do local ok,why=A._compactAction.groupInfoReady(spec,verify);if not ok then return false,why end end
-  return true
-end
-function A._compactAction.bundleBytes(spec,memo)
-  memo=memo or {}
-  local path=spec and spec.binaryPath
-  if type(path)~="string" then return nil,"packed action path missing" end
-  local cached=memo[path]
-  if type(cached)=="string" then return cached end
-  local body,err=GeneratedAssets and GeneratedAssets.read and GeneratedAssets.read(path) or nil
-  if type(body)~="string" then return nil,err or ("packed action read failed: "..tostring(path)) end
-  local expectedStored=tonumber(spec.bundleStoredBytes)
-  if expectedStored and expectedStored>0 and #body~=expectedStored then return nil,"packed action stored-size mismatch" end
-  local compression=tostring(spec.compression or "raw")
-  local raw=body
-  if compression=="zlib" then
-    if not (love and love.data and type(love.data.decompress)=="function") then return nil,"zlib action decoder unavailable" end
-    local ok,value=pcall(love.data.decompress,"string","zlib",body)
-    if not ok or type(value)~="string" then return nil,tostring(value or "zlib action decode failed") end
-    raw=value
-  elseif compression~="raw" then return nil,"unsupported action compression: "..compression end
-  local expectedRaw=tonumber(spec.bundleRawBytes)
-  if expectedRaw and expectedRaw>0 and #raw~=expectedRaw then return nil,"packed action bundle raw-size mismatch" end
-  memo[path]=raw
-  return raw
-end
-function A._compactAction.groupBytes(spec,memo)
-  local bundle,why=A._compactAction.bundleBytes(spec,memo);if not bundle then return nil,why end
-  local offset,rawBytes=tonumber(spec.offset) or 0,tonumber(spec.rawBytes) or 0
-  if rawBytes<=0 or offset<0 or offset+rawBytes>#bundle then return nil,"packed action group range invalid" end
-  local raw=bundle:sub(offset+1,offset+rawBytes)
-  local stride=tonumber(spec.vertexStride) or 44
-  local expectedCount=(tonumber(spec.vertexCount) or 0)*stride*4
-  if expectedCount<=0 or #raw~=expectedCount then return nil,"packed action vertex-count mismatch" end
-  return raw
-end
-function A._compactAction.payloadReady(scene,payload,verify)
-  if type(payload)~="table" or tonumber(payload.packedActionVersion)~=A._compactAction.version then return false,"not a compact action payload" end
-  if tonumber(payload.poseGuardVersion)~=tonumber(A._actionPoseGuardVersion) then return false,"compact action guard revision mismatch" end
-  local expected=scene and scene.groups and #scene.groups or nil
-  if type(payload.pages)=="table" and #payload.pages>0 then
-    for _,page in ipairs(payload.pages) do
-      local ok,why=A._compactAction.groupsReady(page and page.groups,expected,verify);if not ok then return false,why end
-    end
-    return true
-  end
-  return A._compactAction.groupsReady(payload.groups,expected,verify)
-end
-function A._compactAction.specReady(scene,key,verify,seen)
-  if not (scene and key) then return false,"action scene unavailable" end
-  seen=seen or {};if seen[key] then return false,"cyclic action alias" end;seen[key]=true
-  local spec=scene.actionSpecs and scene.actionSpecs[key]
-  if type(spec)~="table" then return false,"action source unavailable" end
-  if spec.alias then return A._compactAction.specReady(scene,tostring(spec.alias),verify,seen) end
-  if not spec.path then return false,"action source path missing" end
-  local payload,why=readLua(spec.path)
-  if type(payload)~="table" then return false,why or "action payload unreadable" end
-  if payload.alias then return A._compactAction.specReady(scene,tostring(payload.alias),verify,seen) end
-  return A._compactAction.payloadReady(scene,payload,verify)
-end
-
-local function selectiveActionRefPath(dex,key,variant)
-  if extractor and type(extractor.selectiveActionRefPath)=="function" then
-    local ok,path=pcall(extractor.selectiveActionRefPath,dex,key,variant)
-    if ok and type(path)=="string" then return path end
-  end
-  local cacheKey=modelKey(dex,variant)
-  if not cacheKey then return nil end
-  return cacheRoot(cacheKey).."/actions/selective_"..tostring(key or "action"):gsub("[^%w_%-]","_").."_v1.lua"
-end
-
-local function selectiveRefCompatible(ref)
-  if type(ref)~="table" or tonumber(ref.version)~=1 or type(ref.stamp)~="string" then return false end
-  local options={skinFix=A.skinFix,renderPassFilter=true,decodeMode=A.decodeMode}
-  if extractor and type(extractor.isCompatibleStamp)=="function" then
-    local ok,value=pcall(extractor.isCompatibleStamp,ref.stamp,options)
-    if not (ok and value==true) then return false end
-  elseif ref.stamp~=expectedSpeciesStamp() then return false end
-  if ref.path and not generatedInfoValidated(ref.path,false) then return false end
-  return ref.alias~=nil or ref.path~=nil
-end
-
-local function readSelectiveActionRef(dex,variant,key)
-  local path=selectiveActionRefPath(dex,key,variant)
-  if not path then return nil end
-  local ref=select(1,readLua(path))
-  return selectiveRefCompatible(ref) and ref or nil
-end
-
-local function cachedBaseActionRefs(key)
-  local base
-  if RuntimeMeshCache and type(RuntimeMeshCache.readLua)=="function" then
-    base=select(1,RuntimeMeshCache.readLua(runtimeBasePath(key)))
-  end
-  if type(base)~="table" and extractor and type(extractor.cachePath)=="function" then
-    base=select(1,readLua(extractor.cachePath(key)))
-  end
-  return type(base)=="table" and type(base.actions)=="table" and base.actions or {}
-end
-
-local function mergeSelectiveActionSpecs(scene,names)
-  if type(scene)~="table" then return 0 end
-  local memo=selectiveActionSpecs[scene.dex]
-  if type(memo)~="table" then return 0 end
-  scene.actionSpecs=scene.actionSpecs or {}
-  scene.actionFailures=scene.actionFailures or {}
-  local count=0
-  if type(names)=="table" then
-    for _,name in ipairs(names) do
-      local ref=memo[name]
-      if type(ref)=="table" and not scene.actionSpecs[name] then scene.actionSpecs[name]=ref;scene.actionFailures[name]=nil;count=count+1 end
-    end
-  else
-    for name,ref in pairs(memo) do
-      if type(ref)=="table" and not scene.actionSpecs[name] then scene.actionSpecs[name]=ref;scene.actionFailures[name]=nil;count=count+1 end
-    end
-  end
-  return count
-end
-
-local function ensureActionSubset(dex,variant,names,progress,candidateMap)
-  local n=dexNumber(dex)
-  if not (n and Dex.supported(n)) then return false,"unsupported species" end
-  variant=variant or "normal"
-  local key=modelKey(n,variant)
-  local ready=speciesCacheReady(key)
-  if not ready then return false,"source base cache unavailable" end
-  local profile,complete=cachedActionProfile(key)
-  if complete then return true,"full-action cache" end
-  if profile~="storage" then return false,"incomplete non-storage action profile" end
-
-  local wanted,ordered={},{}
-  for _,name in ipairs(type(names)=="table" and names or {}) do
-    name=tostring(name or "")
-    if name~="" and not wanted[name] then wanted[name]=true;ordered[#ordered+1]=name end
-  end
-  if #ordered==0 then return true,"no required actions" end
-
-  local baseActions=cachedBaseActionRefs(key)
-  local memo=selectiveActionSpecs[key]
-  if type(memo)~="table" then memo={};selectiveActionSpecs[key]=memo end
-  local missing={}
-  for _,name in ipairs(ordered) do
-    if not baseActions[name] then
-      local ref=memo[name]
-      if not selectiveRefCompatible(ref) then ref=readSelectiveActionRef(n,variant,name) end
-      if ref then memo[name]=ref else missing[name]=true end
-    end
-  end
-
-  if next(missing)~=nil then
-    for name in pairs(missing) do
-      local candidates=candidateMap and candidateMap[name]
-      if type(candidates)=="table" and #candidates>0 then missing[name]=candidates end
-    end
-    if not discOpener then return false,"selective battle action source unavailable" end
-    local opened,disc=pcall(discOpener)
-    if not opened or not disc then return false,"selective battle action disc unavailable" end
-    local result,why=extractSourceActions(mod,disc,n,missing,{variant=variant,targetHeight=16.0,
-      decodeMode=A.decodeMode,skinFix=A.skinFix,renderPassFilter=true,progress=progress,checkpoint=progress})
-    if not result then return false,why or "selective battle action extraction failed" end
-    for name in pairs(missing) do
-      local ref=readSelectiveActionRef(n,variant,name)
-      if not ref then return false,"required source action was not committed: "..tostring(name) end
-      memo[name]=ref
-    end
-  end
-
-  local resident=scenes[key]
-  if resident then mergeSelectiveActionSpecs(resident,ordered) end
-  return true,"required-action subset ready"
-end
-
 local function runtimeActionSidecarReady(scene,name,seen)
   if not (scene and RuntimeMeshCache and type(RuntimeMeshCache.readLua)=="function") then return false end
   seen=seen or {}
@@ -864,11 +304,6 @@ local function runtimeActionSidecarReady(scene,name,seen)
     local floor=select(1,RuntimeMeshCache.readLua(runtimeActionFloorPath(scene.dex,tag)))
     if not validRuntimeMeta(floor,scene._runtimeStamp) or type(floor.floorMinYSlots)~="table"
         or #floor.floorMinYSlots~=13 then return false end
-    -- Deliberately do NOT require poseGuardVersion in this disk-completeness
-    -- predicate. Quick/Full cache accounting is allowed to keep an older action
-    -- F32 as a reusable payload so a visual-only update never turns into a global
-    -- 386-model recache. The live action uploader has the stricter guard and will
-    -- repair only a battle-required action from its retained canonical payload.
     for i=1,count do if not runtimeBinLooksValid(runtimeActionBinPath(scene.dex,tag,i),44,scene._diskOnly) then return false end end
     return true
   end
@@ -877,49 +312,6 @@ local function runtimeActionSidecarReady(scene,name,seen)
     return true
   end
   return binsReady(name,meta.groupCount)
-end
-
--- Runtime F32 action pages are only an acceleration format. 2.0's compact
--- action bundles intentionally reclaim those duplicate pages after the compact
--- payload is committed, so disk/cache readiness must accept EITHER format.
--- Requiring the legacy runtime sidecar here caused fully cached compact species
--- (Sableye was the first Gen III hit in Mt. Battle) to pause on "idle sidecar".
-function A._reusableActionPayloadReady(scene,name,verify)
-  if runtimeActionSidecarReady(scene,name) then return true,"runtime-sidecar" end
-  if A._compactAction and type(A._compactAction.specReady)=="function" then
-    local ok,why=A._compactAction.specReady(scene,name,verify~=false,{})
-    if ok then return true,"compact-action" end
-    return false,why
-  end
-  return false,"action acceleration missing"
-end
-
--- Battle-ready certification is stricter than generic disk reuse. Older action
--- F32 payloads stay reusable as migration inputs, but a cache pass that claims
--- battle readiness must prove the sidecar was rebuilt under the CURRENT pose
--- guard. This is intentionally checked per action, not as a 386-model global
--- invalidation.
-function A._runtimeActionCurrentGuardReady(scene,name,seen)
-  if not runtimeActionSidecarReady(scene,name) then return false end
-  local baseName=tostring(name or ""):match("^([^/]+)") or tostring(name or "")
-  if baseName=="idle" then return true end
-  seen=seen or {}
-  if seen[name] then return false end
-  seen[name]=true
-  local meta=select(1,RuntimeMeshCache.readLua(runtimeActionManifestPath(scene.dex,name)))
-  if not validRuntimeMeta(meta,scene._runtimeStamp) then return false end
-  if meta.alias then return A._runtimeActionCurrentGuardReady(scene,tostring(meta.alias),seen) end
-  local function guarded(tag)
-    local floor=select(1,RuntimeMeshCache.readLua(runtimeActionFloorPath(scene.dex,tag)))
-    return validRuntimeMeta(floor,scene._runtimeStamp)
-      and type(floor.floorMinYSlots)=="table" and #floor.floorMinYSlots==13
-      and tonumber(floor.poseGuardVersion)==tonumber(A._actionPoseGuardVersion)
-  end
-  if type(meta.pages)=="table" and #meta.pages>0 then
-    for pi in ipairs(meta.pages) do if not guarded(name.."/page"..pi) then return false end end
-    return true
-  end
-  return guarded(name)
 end
 
 local function runtimeBaseUsable(meta,stamp,dex,verify)
@@ -935,7 +327,7 @@ local function copyWithoutVertices(g)
   for k,v in pairs(g or {}) do if k~="vertices" and k~="verticesPacked" then out[k]=v end end
   return out
 end
-local function writeRuntimeBase(dex,cache,floorMin,stamp,preserveExisting)
+local function writeRuntimeBase(dex,cache,floorMin,stamp)
   if not (RuntimeMeshCache and RuntimeMeshCache.writeLua and type(stamp)=="string") then return false end
   local out={runtimeMeshVersion=1,stamp=stamp,floorMinY=floorMin}
   for k,v in pairs(cache or {}) do if k~="groups" then out[k]=v end end
@@ -943,7 +335,7 @@ local function writeRuntimeBase(dex,cache,floorMin,stamp,preserveExisting)
   for i,g in ipairs(cache.groups or {}) do
     local c=copyWithoutVertices(g);c.runtimeBin=runtimeBaseBinPath(dex,i);out.groups[i]=c
   end
-  local ok=RuntimeMeshCache.writeLua(runtimeBasePath(dex),out,preserveExisting)
+  local ok=RuntimeMeshCache.writeLua(runtimeBasePath(dex),out)
   if ok then perf.runtimeBaseWrites=(perf.runtimeBaseWrites or 0)+1 end
   return ok
 end
@@ -958,10 +350,7 @@ local function compactMetadataLua(metadata)
     for _,key in ipairs(bodyKeys) do out[#out+1]="["..q(key).."]="..tostring(tonumber(map and map[key]) or -1).."," end
     out[#out+1]="},"
   end
-  local out={"return {revision=6,"
-    .."sequenceKind="..tostring(tonumber(metadata.sequenceKind or metadata.scaleSelector) or 0)..","
-    .."scaleSelector="..tostring(tonumber(metadata.scaleSelector or metadata.sequenceKind) or 0)..","
-    .."loadMode="..tostring(tonumber(metadata.loadMode) or 0)..","}
+  local out={"return {revision=4,"}
   if Shiny then out[#out+1]=Shiny.filterField(metadata.shinyFilter) end
   appendBodyMap(out,metadata.bodyMap)
   out[#out+1]="slots={"
@@ -972,15 +361,7 @@ local function compactMetadataLua(metadata)
         ..",animType="..tostring(tonumber(slot.animType) or 0)
         ..",subAnimCount="..tostring(tonumber(slot.subAnimCount) or #(slot.subAnimations or {}))
         ..",active="..tostring(slot.active==true)
-        ..",duration="..num(slot.duration)
-        ..",cameraTimingCount="..tostring(tonumber(slot.cameraTimingCount) or 0)
-        ..",cameraTimingRate="..tostring(tonumber(slot.cameraTimingRate) or 60)
-        ..",cameraTimingExact="..tostring(slot.cameraTimingExact==true)
-        ..",cameraTimingRaw={"
-      for i=1,3 do out[#out+1]=tostring(tonumber(slot.cameraTimingRaw and slot.cameraTimingRaw[i]) or 0).."," end
-      out[#out+1]="},cameraTimingFrames={"
-      for i=1,3 do out[#out+1]=tostring(tonumber(slot.cameraTimingFrames and slot.cameraTimingFrames[i]) or 0).."," end
-      out[#out+1]="},timing={"
+        ..",duration="..num(slot.duration)..",timing={"
       for i=1,4 do out[#out+1]=num(slot.timing and slot.timing[i]).."," end
       out[#out+1]="},"
       appendBodyMap(out,slot.bodyMap)
@@ -998,16 +379,8 @@ local function compactMetadataLua(metadata)
 end
 local function metadataCachePath(dex) return cacheRoot(dex).."/metadata_v1.lua" end
 local function writeMetadataCache(dex,metadata)
-  local src=compactMetadataLua(metadata);if not src then return false end
-  -- Keep CBE-owned metadata inside GeneratedAssets' positive registry. Writing
-  -- this file directly through mod.cache made Android forget that it existed,
-  -- so later hard-cache/party checks crossed the launcher filesystem bridge to
-  -- rediscover a file CBE itself had just produced.
-  if GeneratedAssets and type(GeneratedAssets.write)=="function" then
-    local a=GeneratedAssets.write(metadataCachePath(dex),src)
-    return a~=false and a~=nil
-  end
   if not (mod and mod.cache and type(mod.cache.write)=="function") then return false end
+  local src=compactMetadataLua(metadata);if not src then return false end
   local ok,a=pcall(mod.cache.write,mod.cache,metadataCachePath(dex),src)
   return ok and a~=false and a~=nil
 end
@@ -1080,98 +453,6 @@ local function decodedVertices(group,checkpoint)
   return vertices
 end
 
-A._actionPoseGuardVersion=3
-
--- Inspect a non-reaction PKX action against the already-proven base-body bounds.
--- This is deliberately a pure classifier: it does not edit rows or touch caches,
--- which makes the safety contract regression-testable without a GPU/disc fixture.
--- Return: baseUnsafe, badTargetSlots, reason.
-function A._inspectActionPoseRows(rawGroups,bounds,name,checkpoint)
-  local baseName=tostring(name or ""):match("^([^/]+)") or tostring(name or "")
-  if baseName=="idle" then return false,{},nil end
-  local b=bounds or {};local mn,mx=b.min or {0,0,0},b.max or {0,16,0}
-  local ref={((mn[1] or 0)+(mx[1] or 0))*.5,((mn[2] or 0)+(mx[2] or 0))*.5,((mn[3] or 0)+(mx[3] or 0))*.5}
-  local height=math.max(.001,math.abs((mx[2] or 16)-(mn[2] or 0)))
-  local spans={
-    math.max(.001,math.abs((mx[1] or 0)-(mn[1] or 0))),
-    math.max(.001,math.abs((mx[2] or 0)-(mn[2] or 0))),
-    math.max(.001,math.abs((mx[3] or 0)-(mn[3] or 0))),
-  }
-  local baseDiag=math.max(.001,math.sqrt(spans[1]^2+spans[2]^2+spans[3]^2))
-  local slots={}
-  for slot=0,12 do
-    slots[slot]={min={math.huge,math.huge,math.huge},max={-math.huge,-math.huge,-math.huge},count=0,finite=true}
-  end
-  for gi,ag in ipairs(rawGroups or {}) do
-    local rows,decodeWhy=decodedVertices(ag,checkpoint)
-    if not rows then return true,{},("material %d: %s"):format(gi,tostring(decodeWhy)) end
-    if rows then for vi,v in ipairs(rows) do
-      if checkpoint and vi%128==0 then checkpoint() end
-      for slot=0,12 do
-        local at=(slot==0) and 1 or (9+(slot-1)*3)
-        local x,y,z=tonumber(v[at]),tonumber(v[at+1]),tonumber(v[at+2])
-        local s=slots[slot]
-        if not (x and y and z) or x~=x or y~=y or z~=z
-            or math.abs(x)==math.huge or math.abs(y)==math.huge or math.abs(z)==math.huge then
-          s.finite=false
-        else
-          if x<s.min[1] then s.min[1]=x end;if y<s.min[2] then s.min[2]=y end;if z<s.min[3] then s.min[3]=z end
-          if x>s.max[1] then s.max[1]=x end;if y>s.max[2] then s.max[2]=y end;if z>s.max[3] then s.max[3]=z end
-          s.count=s.count+1
-        end
-      end
-    end end
-  end
-  local takeFlight=baseName=="takeFlight"
-  local reaction=baseName=="damage" or baseName=="damageHeavy" or baseName=="faint"
-  -- Keep the runtime cache-corruption guard inside the authoritative source
-  -- extractor's accepted envelope. PokemonExtractor.actionPoseUsable rejects a
-  -- true span explosion only beyond 7x the authored template; the old 2.30x
-  -- runtime threshold rejected legitimate source motions such as Golbat's
-  -- physicalA (2.347x), then re-extracted and rejected the same valid row again.
-  local spanLimit=7.0
-  -- PokemonExtractor.actionPoseUsable validates ROOT TRAVEL in model heights
-  -- using AABB centres, not a triangle-density-weighted vertex mean. The old
-  -- runtime used 1.25 body diagonals and another centre statistic, so page 10
-  -- could be accepted on source extraction then rejected identically on every
-  -- rebuild. Use the same existing 3.5-height source envelope/centre metric.
-  -- Span/axis checks below remain independent; travel cannot excuse stretching.
-  local centreLimit=(reaction and 6.0 or 3.5)*height
-  local function unsafe(slot)
-    local s=slots[slot]
-    if not s or not s.finite or s.count<3 then return true,"non-finite/empty sample" end
-    local dx=s.max[1]-s.min[1];local dy=s.max[2]-s.min[2];local dz=s.max[3]-s.min[3]
-    local diag=math.sqrt(dx*dx+dy*dy+dz*dz)
-    if diag<math.max(.01,baseDiag*.08) then return true,("collapsed span %.3fx body"):format(diag/baseDiag) end
-    if diag>baseDiag*spanLimit then return true,("span %.3fx body"):format(diag/baseDiag) end
-    for axis,value in ipairs({dx,dy,dz}) do
-      -- Axis-aligned IDLE bounds are not an action envelope. A long body can
-      -- turn its long Z axis into X/Y without growing at all (Gyarados, Onix,
-      -- Steelix, etc.). Retain the diagonal explosion check above and permit
-      -- this rotation; do not mistake the former short axis for a size limit.
-      local axisLimit=math.max(spans[axis]*3.10,height*2.25,baseDiag*7.0)
-      if value>axisLimit then return true,("axis %d span %.3f > %.3f"):format(axis,value,axisLimit) end
-    end
-    local cx=(s.min[1]+s.max[1])*.5-ref[1]
-    local cy=(s.min[2]+s.max[2])*.5-ref[2]
-    local cz=(s.min[3]+s.max[3])*.5-ref[3]
-    local distance=math.sqrt(cx*cx+cy*cy+cz*cz)
-    if distance>centreLimit+1e-5*height then
-      return true,("AABB centre %.3fx body height exceeds source limit 3.500 (%.3fx body diagonal)")
-        :format(distance/height,distance/baseDiag)
-    end
-    return false
-  end
-  local badBase,reason=unsafe(0)
-  if badBase then return true,{},reason end
-  local badSlots={}
-  for slot=1,12 do
-    local broken=unsafe(slot)
-    if broken then badSlots[#badSlots+1]=slot end
-  end
-  return false,badSlots,nil
-end
-
 -- Build the GPU scene for one species from its generated cache. Returns nil and
 -- an error string on any failure; the caller then declines that side, which
 -- CurrentSpriteModels turns into a 2D sprite fallback for that Pokemon only.
@@ -1188,17 +469,10 @@ local function loadScene(dex,diskOnly,checkpoint)
     return nil,"LOVE mesh API unavailable"
   end
   local path=extractor and extractor.cachePath(dex) or cacheRoot(dex).."/model_cache.lua"
-  -- speciesCacheReady() already authoritatively validates the source revision
-  -- before Hard Cache enters this disk-only loader. Reuse that exact session
-  -- proof instead of rereading rev.txt once per base/action row.
-  local expected=expectedSpeciesStamp()
-  local stamp=(type(expected)=="string" and speciesCacheValidity[dex]==expected) and expected or sourceRevision(dex)
+  local stamp=sourceRevision(dex)
   local cache,err,fromRuntime
-  local preserveRuntimeBase=false
   if RuntimeMeshCache and type(RuntimeMeshCache.readLua)=="function" then
-    local rtPath=runtimeBasePath(dex)
-    local rt=select(1,RuntimeMeshCache.readLua(rtPath))
-    preserveRuntimeBase=rt~=nil or (type(RuntimeMeshCache.exists)=="function" and RuntimeMeshCache.exists(rtPath)) or false
+    local rt=select(1,RuntimeMeshCache.readLua(runtimeBasePath(dex)))
     if runtimeBaseUsable(rt,stamp,dex,diskOnly) then cache=rt;fromRuntime=true;perf.runtimeBaseHits=(perf.runtimeBaseHits or 0)+1 end
   end
   if not cache then cache,err=readLua(path) end
@@ -1212,9 +486,6 @@ local function loadScene(dex,diskOnly,checkpoint)
   end
 
   local textures,groups={},{}
-  -- A scoped repair reads canonical source rows instead of a previously failed
-  -- runtime action. Shared with the scene; base meshes/textures stay resident.
-  local bypassActionRuntime={}
   local commitResources=function() end
   if not diskOnly and WorkBudget then
     commitResources=WorkBudget.onCancel(function()
@@ -1263,7 +534,7 @@ local function loadScene(dex,diskOnly,checkpoint)
         mesh=built
       end
       if runtimeBaseComplete then
-        local wok=RuntimeMeshCache.writeRows(binPath,vertices,44,checkpoint,preserveRuntimeBase)
+        local wok=RuntimeMeshCache.writeRows(binPath,vertices,44,checkpoint)
         if not wok then runtimeBaseComplete=false end
       end
     end
@@ -1277,9 +548,6 @@ local function loadScene(dex,diskOnly,checkpoint)
       renderFlags=tonumber(g.renderFlags) or 0,
       shadow=g.shadow==true,effect=g.effect==true,
       textureSlot=tonumber(g.textureSlot) or -1,
-      textureCoordMode=tonumber(g.textureCoordMode) or 0,
-      textureTexgen=tonumber(g.textureTexgen) or 0,
-      reflectionTexMtx=type(g.reflectionTexMtx)=="table" and g.reflectionTexMtx or IDENTITY_MAT,
     }
   end
   if #groups==0 then return nil,"cache contained no drawable groups" end
@@ -1301,21 +569,12 @@ local function loadScene(dex,diskOnly,checkpoint)
     if name=="faint" or name:match("^faint/page%d+$") then return "faint" end
     return nil
   end
-  -- Narrow action-sidecar identity. Keep this inside loadScene so it does not
-  -- consume LuaJIT's already-tight top-level local-variable budget.
-  local ACTION_POSE_GUARD_VERSION=A._actionPoseGuardVersion
-  local function actionBaseName(name)
-    return tostring(name or ""):match("^([^/]+)") or tostring(name or "")
-  end
-  local function stabilizeActionRows(rawGroups,name)
+  local function stabilizeReactionRows(rawGroups,name)
     local reaction=reactionClass(name)
+    if not reaction then return 0 end
     local b=cache.bounds or {};local mn,mx=b.min or {0,0,0},b.max or {0,16,0}
     local ref={((mn[1] or 0)+(mx[1] or 0))*.5,((mn[2] or 0)+(mx[2] or 0))*.5,((mn[3] or 0)+(mx[3] or 0))*.5}
     local height=math.max(.001,math.abs((mx[2] or 16)-(mn[2] or 0)))
-
-    -- Damage/Faint deliberately retain the established root-motion clamp.  It
-    -- preserves the authored body pose and only limits whole-body translation.
-    if reaction then
     local centers,counts={},{}
     for slot=0,12 do centers[slot]={0,0,0};counts[slot]=0 end
     for _,ag in ipairs(rawGroups or {}) do
@@ -1356,57 +615,17 @@ local function loadScene(dex,diskOnly,checkpoint)
       end end
     end
     perf.reactionClamps=(perf.reactionClamps or 0)+changed
-      return changed,false
-    end
-
-    local baseName=actionBaseName(name)
-    if baseName=="idle" then return 0,false end
-
-    -- Attack banks can fail while remaining perfectly drawable: a corrupt HSD
-    -- matrix may keep the same vertex count yet stretch a sampled pose several
-    -- body lengths.  GPU draw then succeeds, so the old draw-error fallback never
-    -- fires; on screen this is the giant/pixelated Pokemon that suddenly fills
-    -- the arena the moment a move starts.  Validate the actual cached positions
-    -- here, at the one lazy action-build boundary, and fail closed to the resident
-    -- base body instead of ever presenting malformed geometry.
-    local baseUnsafe,badSlots,reason=A._inspectActionPoseRows(rawGroups,cache.bounds,name,checkpoint)
-    if baseUnsafe then
-      perf.actionPoseRejects=(perf.actionPoseRejects or 0)+1
-      return 0,true,reason
-    end
-    local changed=0
-    for _,slot in ipairs(badSlots or {}) do
-      changed=changed+1
-      for _,ag in ipairs(rawGroups or {}) do
-        local rows=decodedVertices(ag,checkpoint)
-        if rows then for _,v in ipairs(rows) do
-          local at=9+(slot-1)*3
-          v[at]=v[1];v[at+1]=v[2];v[at+2]=v[3]
-        end end
-      end
-    end
-    if changed>0 then perf.actionPoseFallbacks=(perf.actionPoseFallbacks or 0)+changed end
-    return changed,false
+    return changed
   end
   local function buildRuntimeActionGroups(name,count,floorSlots)
-    if bypassActionRuntime[actionBaseName(name)] then return nil end
     if not (RuntimeMeshCache and type(RuntimeMeshCache.meshFromPath)=="function") then return nil end
-    -- Runtime F32 files are only trusted after THIS guard revision has inspected
-    -- the positions that produced them.  The species stamp cannot express this
-    -- narrower action-only invariant: retaining the same species stamp is what
-    -- lets users keep their already-valid body cache. Reject an older legacy
-    -- sidecar here for both disk validation and live GPU upload; old non-compact
-    -- payloads can still be repaired through their canonical action descriptor.
-    local fm=select(1,RuntimeMeshCache.readLua(runtimeActionFloorPath(dex,name)))
-    local guarded=actionBaseName(name)=="idle"
-      or tonumber(fm and fm.poseGuardVersion)==ACTION_POSE_GUARD_VERSION
-    if not validRuntimeMeta(fm,stamp) or type(fm.floorMinYSlots)~="table" or not guarded then return nil end
-    if type(floorSlots)~="table" then floorSlots=fm.floorMinYSlots end
     -- A disk-ready bank only needs validated compact metadata here. Its mesh
     -- gets uploaded later when a real battle/viewer requests it.
     if diskOnly then
       count=math.floor(tonumber(count) or 0)
       if count<=0 or count~=#groups then return nil end
+      local fm=select(1,RuntimeMeshCache.readLua(runtimeActionFloorPath(dex,name)))
+      if not validRuntimeMeta(fm,stamp) or type(fm.floorMinYSlots)~="table" then return nil end
       local out={_floorMinYSlots=fm.floorMinYSlots}
       for i=1,count do
       checkpoint("Uploading animation material "..i)
@@ -1417,76 +636,44 @@ local function loadScene(dex,diskOnly,checkpoint)
     end
     count=math.floor(tonumber(count) or 0);if count<=0 or count~=#groups then return nil end
     local agroups={}
-    local settle=A._watchActionBuild({groups=agroups})
     for i=1,count do
       checkpoint("Uploading animation material "..i)
-      local baseg=groups[i];if not baseg then settle(false);return nil end
+      local baseg=groups[i];if not baseg then return nil end
       local mesh=select(1,RuntimeMeshCache.meshFromPath(FORMAT,runtimeActionBinPath(dex,name,i),44,"static"))
       if not mesh then
-        settle(false)
+        for _,g in ipairs(agroups) do pcall(function() if g.mesh and g.mesh.release then g.mesh:release() end end) end
         return nil
       end
       if baseg.image then mesh:setTexture(baseg.image) end
       agroups[i]={mesh=mesh,image=baseg.image,textured=baseg.textured,diffuse=baseg.diffuse,alpha=baseg.alpha,
-        xlu=baseg.xlu,noz=baseg.noz,renderFlags=baseg.renderFlags,shadow=baseg.shadow,effect=baseg.effect,textureSlot=baseg.textureSlot,
-        textureCoordMode=baseg.textureCoordMode,textureTexgen=baseg.textureTexgen,reflectionTexMtx=baseg.reflectionTexMtx}
+        xlu=baseg.xlu,noz=baseg.noz,renderFlags=baseg.renderFlags,shadow=baseg.shadow,effect=baseg.effect,textureSlot=baseg.textureSlot}
+    end
+    if type(floorSlots)~="table" then
+      local fm=select(1,RuntimeMeshCache.readLua(runtimeActionFloorPath(dex,name)))
+      if validRuntimeMeta(fm,stamp) then floorSlots=fm.floorMinYSlots end
     end
     agroups._floorMinYSlots=type(floorSlots)=="table" and floorSlots or nil
-    settle(true)
     return agroups
   end
 
-  local function buildActionGroups(rawGroups,name,compactMemo)
-    -- One memo per action build guarantees a shared compact bundle is read and
-    -- decompressed once even for ordinary (non-paged) multi-material actions.
-    compactMemo=compactMemo or {}
-    -- Compact action packs are the canonical runtime payload in 2.0 final.
-    -- They decompress directly into the GPU upload format and never write a
-    -- second action geometry cache. The extraction-time source validator and
-    -- guard revision carried by the descriptor are authoritative.
-    if type(rawGroups)=="table" and tonumber(rawGroups._packedActionVersion)==A._compactAction.version then
-      local ready,readyWhy=A._compactAction.groupsReady(rawGroups,#groups,true)
-      if not ready then return nil,readyWhy end
-      local agroups={};local settle=A._watchActionBuild({groups=agroups})
-      for i,spec in ipairs(rawGroups) do
-        checkpoint("Loading compact animation material "..i)
-        local baseg=groups[i];if not baseg then settle(false);return nil,"packed action/base material group count mismatch" end
-        local mesh
-        if not diskOnly then
-          local bytes,why=A._compactAction.groupBytes(spec,compactMemo);if not bytes then settle(false);return nil,why end
-          local built,bwhy=RuntimeMeshCache and RuntimeMeshCache.meshFromBytes and RuntimeMeshCache.meshFromBytes(FORMAT,bytes,44,"static") or nil,"runtime mesh upload unavailable"
-          if not built then settle(false);return nil,bwhy end
-          mesh=built;if baseg.image then mesh:setTexture(baseg.image) end
-        end
-        agroups[i]={mesh=mesh,image=baseg.image,textured=baseg.textured,diffuse=baseg.diffuse,alpha=baseg.alpha,
-          xlu=baseg.xlu,noz=baseg.noz,renderFlags=baseg.renderFlags,shadow=baseg.shadow,effect=baseg.effect,textureSlot=baseg.textureSlot,
-          textureCoordMode=baseg.textureCoordMode,textureTexgen=baseg.textureTexgen,reflectionTexMtx=baseg.reflectionTexMtx}
-      end
-      agroups._floorMinYSlots=rawGroups._floorMinYSlots
-      settle(true);return agroups
-    end
+  local function buildActionGroups(rawGroups,name)
     local floorMeta=RuntimeMeshCache and RuntimeMeshCache.readLua and select(1,RuntimeMeshCache.readLua(runtimeActionFloorPath(dex,name))) or nil
     if validRuntimeMeta(floorMeta,stamp) then
       local direct=buildRuntimeActionGroups(name,tonumber(floorMeta.groupCount) or #groups,floorMeta.floorMinYSlots)
       if direct then return direct end
     end
-    if type(rawGroups)~="table" or #rawGroups==0 then return nil,"action group payload missing: "..tostring(name) end
-    local _,rejected,guardWhy=stabilizeActionRows(rawGroups,name)
-    if rejected then
-      log("warn","dex %s native %s rejected by runtime pose guard: %s",tostring(dex),tostring(name),tostring(guardWhy or "unsafe action pose"))
-      return nil,"pose guard: "..tostring(guardWhy or "unsafe action pose")
-    end
-    local agroups={};local valid=true;local failure
-    local settle=A._watchActionBuild({groups=agroups})
+    if type(rawGroups)~="table" then return nil end
+    stabilizeReactionRows(rawGroups,name)
+    local agroups={};local valid=true
     local minYSlots={}
     for slot=0,12 do minYSlots[slot+1]=math.huge end
     for i,ag in ipairs(rawGroups or {}) do
       checkpoint("Preparing animation material "..i)
       local baseg=groups[i]
-      if not baseg then valid=false;failure="action/base material group count mismatch";break end
+      if not baseg then valid=false;break end
       local vertices,verr=decodedVertices(ag,checkpoint)
       if not vertices then
-        valid=false;failure="material "..i.." vertex cache: "..tostring(verr)
+        valid=false
         log("warn","dex %s native %s mesh %d vertex cache failed: %s",dex,tostring(name),i,tostring(verr))
         break
       end
@@ -1504,8 +691,8 @@ local function loadScene(dex,diskOnly,checkpoint)
       local mesh
       if not diskOnly then
         local ok,built=pcall(love.graphics.newMesh,FORMAT,vertices,"triangles","static")
-        if not ok or not built then
-          valid=false;failure="material "..i.." GPU upload: "..tostring(built)
+        if not ok then
+          valid=false
           log("warn","dex %s native %s mesh %d failed: %s",dex,tostring(name),i,tostring(built))
           break
         end
@@ -1516,33 +703,25 @@ local function loadScene(dex,diskOnly,checkpoint)
         mesh=mesh,image=baseg.image,textured=baseg.textured,
         diffuse=baseg.diffuse,alpha=baseg.alpha,xlu=baseg.xlu,noz=baseg.noz,
         renderFlags=baseg.renderFlags,shadow=baseg.shadow,effect=baseg.effect,
-        textureSlot=baseg.textureSlot,textureCoordMode=baseg.textureCoordMode,
-        textureTexgen=baseg.textureTexgen,reflectionTexMtx=baseg.reflectionTexMtx,
+        textureSlot=baseg.textureSlot,
       }
     end
-    if not valid or #agroups~=#groups then
-      -- A retry must not retain half an animation's GPU meshes. Images are
-      -- borrowed from the still-valid base and must never be released here.
-      settle(false)
-      return nil,failure or ("action/base material count "..#agroups.."/"..#groups)
-    end
+    if not valid or #agroups~=#groups then return nil end
     for i=1,13 do if minYSlots[i]==math.huge then minYSlots[i]=sceneFloorMinY end end
     agroups._floorMinYSlots=minYSlots
     if RuntimeMeshCache and RuntimeMeshCache.packSupported and RuntimeMeshCache.packSupported() and type(stamp)=="string" then
-        local all=true
-        local preserveActionRuntime=type(RuntimeMeshCache.exists)=="function" and RuntimeMeshCache.exists(runtimeActionManifestPath(dex,name)) or false
+      local all=true
       for i,ag in ipairs(rawGroups or {}) do
       checkpoint("Preparing animation material "..i)
         local rows=ag.vertices or decodedVertices(ag,checkpoint)
-        local ok=rows and RuntimeMeshCache.writeRows(runtimeActionBinPath(dex,name,i),rows,44,checkpoint,preserveActionRuntime)
+        local ok=rows and RuntimeMeshCache.writeRows(runtimeActionBinPath(dex,name,i),rows,44,checkpoint)
         if not ok then all=false;break end
       end
       if all then
-        all=RuntimeMeshCache.writeLua(runtimeActionFloorPath(dex,name),{runtimeMeshVersion=1,stamp=stamp,poseGuardVersion=ACTION_POSE_GUARD_VERSION,groupCount=#groups,floorMinYSlots=minYSlots},preserveActionRuntime)
+        all=RuntimeMeshCache.writeLua(runtimeActionFloorPath(dex,name),{runtimeMeshVersion=1,stamp=stamp,groupCount=#groups,floorMinYSlots=minYSlots})
       end
-      if diskOnly and not all then settle(false);return nil,"action runtime cache write failed: "..tostring(name) end
+      if diskOnly and not all then return nil end
     end
-    settle(true)
     return agroups
   end
 
@@ -1561,12 +740,9 @@ local function loadScene(dex,diskOnly,checkpoint)
 
   local scene={
     dex=dex,formatVersion=tonumber(cache.formatVersion) or 1,
-    actionProfile=tostring(cache.actionProfile or "full"),
-    actionInventoryComplete=cache.actionInventoryComplete~=false and tostring(cache.actionProfile or "full")~="storage",
     groups=groups,actions=actions,actionSpecs=actionSpecs,actionFailures=actionFailures,
-    _buildActionGroups=buildActionGroups,_bypassActionRuntime=bypassActionRuntime,
-    _compactActionInventory=A._compactAction and A._compactAction.inventoryReady and A._compactAction.inventoryReady(dex) or false,
-    bounds=cache.bounds,retailWazaOwnerBound=cache.retailWazaOwnerBound,textures=textures,
+    _buildActionGroups=buildActionGroups,
+    bounds=cache.bounds,textures=textures,
     floorMinY=(sceneFloorMinY~=math.huge and sceneFloorMinY) or (cache.bounds and cache.bounds.min and tonumber(cache.bounds.min[2])) or 0,
     jointPositions=cache.jointPositions or {},jointFrames=cache.jointFrames or {},
     clip=tonumber(cache.clip) or 0,
@@ -1605,14 +781,10 @@ local function loadScene(dex,diskOnly,checkpoint)
     placeholderGroupsRemoved=tonumber(cache.placeholderGroupsRemoved) or 0,
     placeholderVertsRemoved=tonumber(cache.placeholderVertsRemoved) or 0,
   }
-  -- Storage bases remain explicitly incomplete. Required battle rows live in a
-  -- separately stamped additive cache and are merged only when this process has
-  -- proven those exact descriptors; unrelated source actions stay absent.
-  if scene.actionInventoryComplete==false then mergeSelectiveActionSpecs(scene) end
   scene._buildRuntimeActionGroups=buildRuntimeActionGroups
   scene._runtimeStamp=stamp
   if not fromRuntime and runtimeBaseComplete and type(stamp)=="string" then
-    runtimeBaseComplete=writeRuntimeBase(dex,cache,(sceneFloorMinY~=math.huge and sceneFloorMinY) or (cache.bounds and cache.bounds.min and tonumber(cache.bounds.min[2])) or 0,stamp,preserveRuntimeBase)
+    runtimeBaseComplete=writeRuntimeBase(dex,cache,(sceneFloorMinY~=math.huge and sceneFloorMinY) or (cache.bounds and cache.bounds.min and tonumber(cache.bounds.min[2])) or 0,stamp)
   end
   if diskOnly then
     if not runtimeBaseComplete then return nil,"base sidecar write failed" end
@@ -1633,22 +805,6 @@ local function loadScene(dex,diskOnly,checkpoint)
   return scene
 end
 
--- A cancelled cooperative upload owns only its unfinished action meshes,
--- never the resident body's shared textures. Settle once on either outcome.
-function A._watchActionBuild(entry)
-  local done=false
-  local function discard()
-    if done then return end;done=true
-    A._releaseActionMeshes(entry)
-  end
-  local detach=WorkBudget and type(WorkBudget.onCancel)=="function"
-    and WorkBudget.onCancel(discard) or function() end
-  return function(success)
-    if success then done=true else discard() end
-    detach()
-  end
-end
-
 -- Materialize one cached native action into GPU meshes. This is intentionally
 -- outside loadScene(): information surfaces and battle entry need only the base
 -- body immediately, while exact attack/damage/faint banks can be built when
@@ -1659,15 +815,13 @@ local function runtimeActionEntry(scene,name,meta)
   if meta.alias then return {alias=tostring(meta.alias),clip=tonumber(meta.clip),duration=tonumber(meta.duration) or 0} end
   if type(meta.pages)=="table" and #meta.pages>0 then
     local pages={}
-    local settle=A._watchActionBuild({pages=pages})
     for pi,page in ipairs(meta.pages) do
       local pgroups=scene._buildRuntimeActionGroups(name.."/page"..pi,tonumber(page.groupCount),page.floorMinYSlots)
-      if not pgroups then settle(false);return nil end
+      if not pgroups then return nil end
       pages[#pages+1]={groups=pgroups,startPhase=tonumber(page.startPhase) or 0,endPhase=tonumber(page.endPhase) or 1,
         morphFrames=tonumber(page.morphFrames) or 0,jointPositions=page.jointPositions or {},jointFrames=page.jointFrames or {},
         floorMinYSlots=pgroups._floorMinYSlots,validSlots=page.validSlots,dense=true}
     end
-    settle(true)
     return {pages=pages,dense=true,clip=tonumber(meta.clip) or -1,duration=tonumber(meta.duration) or 0,
       frameSpacing=tonumber(meta.frameSpacing) or 1,totalIntervals=tonumber(meta.totalIntervals) or 0}
   end
@@ -1691,24 +845,17 @@ local function runtimeActionMeta(scene,name,a)
 end
 
 local function materializeSceneAction(scene,name)
-  if not (scene and name) then return nil,"action scene unavailable" end
-  scene.actions=scene.actions or {}
-  if scene.actions[name] then return scene.actions[name] end
+  if not (scene and name) then return nil end
+  if scene.actions and scene.actions[name] then return scene.actions[name] end
   scene.actionFailures=scene.actionFailures or {}
-  if scene.actionFailures[name] then
-    return nil,tostring(scene.actionFailures[name])
-  end
-  local function fail(reason)
-    reason=tostring(reason or "action materialization failed")
-    scene.actionFailures[name]=reason
-    log("warn","dex %s native action %s: %s",tostring(scene.dex),tostring(name),reason)
-    return nil,reason
-  end
+  if scene.actionFailures[name] then return nil end
   local a=scene.actionSpecs and scene.actionSpecs[name]
+  if type(a)~="table" then
+    scene.actionFailures[name]=true
+    return nil
+  end
 
-  if not scene._compactActionInventory
-      and not (scene._bypassActionRuntime and scene._bypassActionRuntime[name])
-      and RuntimeMeshCache and type(RuntimeMeshCache.readLua)=="function" then
+  if RuntimeMeshCache and type(RuntimeMeshCache.readLua)=="function" then
     local meta=select(1,RuntimeMeshCache.readLua(runtimeActionManifestPath(scene.dex,name)))
     local runtimeEntry=runtimeActionEntry(scene,name,meta)
     if runtimeEntry then
@@ -1719,21 +866,16 @@ local function materializeSceneAction(scene,name)
     end
   end
 
-  -- A committed action-only descriptor can supersede a stale full-cache alias.
-  -- This does not rewrite the body inventory or read the imported source.
-  local n=Dex and dexNumber(scene.dex)
-  local variant=Dex and type(Dex.variant)=="function" and Dex.variant(scene.dex) or "normal"
-  local repaired=n and readSelectiveActionRef(n,variant,name)
-  if repaired then a=repaired end
-  if type(a)~="table" then return fail("action source reference missing: "..tostring(name)) end
-
-  -- Keep path/read/parse/geometry/upload failures distinct all the way to the
-  -- preparation controller. Previously every one became the same physicalA
-  -- message, hiding whether a retry could do useful work.
+  -- v4 caches keep large native banks in separate files so model_cache.lua can
+  -- load quickly on battle/menu entry. Load only the requested bank here. v3
+  -- inline specs fall through unchanged for backward compatibility.
   if a.path then
     local payload,perr=readLua(a.path)
     if type(payload)~="table" then
-      return fail("action cache "..tostring(a.path)..": "..tostring(perr or "not a table"))
+      scene.actionFailures[name]=true
+      log("warn","dex %s native action %s cache %s failed: %s",
+        tostring(scene.dex or "?"),tostring(name),tostring(a.path),tostring(perr))
+      return nil
     end
     payload.clip=payload.clip or a.clip
     payload.duration=payload.duration or a.duration
@@ -1741,29 +883,22 @@ local function materializeSceneAction(scene,name)
   end
 
   perf.actionBuilds=perf.actionBuilds+1
-  local entry,buildWhy
+  local entry
   if a.alias then
     entry={alias=tostring(a.alias),clip=tonumber(a.clip),duration=tonumber(a.duration) or 0}
   elseif type(a.pages)=="table" and #a.pages>0 then
     local pages={};local valid=true
-    local compactMemo={}
-    local settle=A._watchActionBuild({pages=pages})
     for pi,page in ipairs(a.pages) do
-      local pgroups,why
-      if type(page)=="table" and scene._buildActionGroups then
-        pgroups,why=scene._buildActionGroups(page.groups,name.."/page"..pi,compactMemo)
-      end
-      if not pgroups then
-        valid=false;buildWhy="page "..pi..": "..tostring(why or "action page missing")
-        settle(false);break
-      end
+      local pgroups=scene._buildActionGroups and scene._buildActionGroups(page.groups,name.."/page"..pi)
+      if not pgroups then valid=false;break end
       pages[#pages+1]={
         groups=pgroups,
         startPhase=math.max(0,math.min(1,tonumber(page.startPhase) or 0)),
         endPhase=math.max(0,math.min(1,tonumber(page.endPhase) or 1)),
         morphFrames=math.max(0,math.min(12,tonumber(page.morphFrames) or 0)),
         jointPositions=page.jointPositions or {},jointFrames=page.jointFrames or {},
-        floorMinYSlots=pgroups._floorMinYSlots,validSlots=page.validSlots,dense=true,
+        floorMinYSlots=pgroups._floorMinYSlots,
+        validSlots=page.validSlots,dense=true,
       }
     end
     if valid and #pages>0 then
@@ -1771,10 +906,8 @@ local function materializeSceneAction(scene,name)
         duration=tonumber(a.duration) or 0,frameSpacing=tonumber(a.frameSpacing) or 1,
         totalIntervals=tonumber(a.totalIntervals) or 0}
     end
-    settle(valid and entry~=nil)
   else
-    local agroups
-    if scene._buildActionGroups then agroups,buildWhy=scene._buildActionGroups(a.groups,name) end
+    local agroups=scene._buildActionGroups and scene._buildActionGroups(a.groups,name)
     if agroups then
       entry={groups=agroups,clip=tonumber(a.clip) or -1,duration=tonumber(a.duration) or 0,
         frameSpacing=tonumber(a.frameSpacing) or 1,morphFrames=math.max(0,math.min(12,tonumber(a.morphFrames) or 0)),
@@ -1782,15 +915,21 @@ local function materializeSceneAction(scene,name)
         floorMinYSlots=agroups._floorMinYSlots,validSlots=a.validSlots}
     end
   end
-  if not entry then return fail(buildWhy) end
+
+  if not entry then
+    scene.actionFailures[name]=true
+    log("warn","dex %s native action %s could not be materialized; procedural/base fallback remains available",
+      tostring(scene.dex or "?"),tostring(name))
+    return nil
+  end
 
   scene.actions[name]=entry
-  if tonumber(a.packedActionVersion)~=A._compactAction.version
-      and RuntimeMeshCache and type(RuntimeMeshCache.writeLua)=="function" then
+  if RuntimeMeshCache and type(RuntimeMeshCache.writeLua)=="function" then
     local meta=runtimeActionMeta(scene,name,a)
-    local preserveManifest=type(RuntimeMeshCache.exists)=="function" and RuntimeMeshCache.exists(runtimeActionManifestPath(scene.dex,name)) or false
-    if meta and RuntimeMeshCache.writeLua(runtimeActionManifestPath(scene.dex,name),meta,preserveManifest) then perf.runtimeActionWrites=(perf.runtimeActionWrites or 0)+1 end
+    if meta and RuntimeMeshCache.writeLua(runtimeActionManifestPath(scene.dex,name),meta) then perf.runtimeActionWrites=(perf.runtimeActionWrites or 0)+1 end
   end
+  -- Release the packed source payload once its GPU representation exists. Alias
+  -- metadata is tiny but clearing it too keeps one ownership rule for all slots.
   if scene.actionSpecs then scene.actionSpecs[name]=nil end
   return entry
 end
@@ -1805,13 +944,6 @@ local function prewarmScene(scene)
     scene._prewarmIndex=i+1
     local key=PREWARM_ORDER[i]
     if scene.actionSpecs[key] and not (scene.actionFailures and scene.actionFailures[key]) then
-      if WorkBudget and type(A.queueSceneAction)=="function" then
-        -- Actor:update can run several times per frame at fast game speeds.
-        -- Only enqueue here; the single post-frame worker owns CPU/GPU work.
-        A.queueSceneAction(scene,key)
-        if now>0 then scene._nextPrewarmAt=now+0.10 end
-        return true
-      end
       local entry=materializeSceneAction(scene,key)
       local guard=0
       while entry and entry.alias and guard<8 do
@@ -1913,10 +1045,10 @@ local NATIVE_FALLBACKS={
   faint={"faint"},takeFlight={"takeFlight"},extra1={"extra1"},extra2={"extra2"},extra3={"extra3"},extra4={"extra4"},
 }
 
-local function resolveSceneAction(scene,name,allowBuild,strict)
+local function resolveSceneAction(scene,name,allowBuild)
   if not (scene and scene.actions) then return nil,nil,nil end
   if allowBuild==nil then allowBuild=true end
-  local wanted=strict and {name} or (NATIVE_FALLBACKS[name] or {name})
+  local wanted=NATIVE_FALLBACKS[name] or {name}
   for _,key in ipairs(wanted) do
     local entry=scene.actions[key]
     if not entry and allowBuild then entry=materializeSceneAction(scene,key) end
@@ -1938,9 +1070,8 @@ local function resolveSceneAction(scene,name,allowBuild,strict)
   return nil,nil,nil
 end
 
-function Actor:selectNativeSlot(name,strict)
+function Actor:selectNativeSlot(name)
   self.requestedNativeSlot=name
-  self.nativeSlotStrict=strict==true
   local slot=self.sourceMetadata and self.sourceMetadata.slots and self.sourceMetadata.slots[name]
   self.nativeSlot=slot
   self.nativeClip=slot and slot.animationIndex or nil
@@ -1949,9 +1080,9 @@ function Actor:selectNativeSlot(name,strict)
   -- with the species. Do not force a second full idle GPU bank onto the battle
   -- entry or Stats-menu frame. If the idle action has been warmed, use it;
   -- otherwise animate the base bank at the authoritative source duration.
-  local allowBuild=(name~="idle") or (not self.informationSurface and not WorkBudget)
+  local allowBuild=(name~="idle") or not self.informationSurface
     or (name=="idle" and self._allowInformationIdleBuild==true)
-  local action,resolvedName,duration=resolveSceneAction(self.scene,name,allowBuild,strict==true)
+  local action,resolvedName,duration=resolveSceneAction(self.scene,name,allowBuild)
   self.nativeAction=action
   self.nativeActionName=resolvedName
   local slotDuration=slot and tonumber(slot.duration) or 0
@@ -1980,121 +1111,13 @@ function Actor:wazaTimingPoints()
   return out
 end
 
--- Exact camera-specific prefix of the same PKX runtime row.  Do not fold this
--- into wazaTimingPoints(): the existing scheduler field intentionally begins at
--- source +0x10, while retail DoFOV reads countA and +0x0C/+0x10/+0x14.
-function Actor:wazaCameraTiming()
-  local slot=self.nativeSlot
-  if not (type(slot)=="table" and slot.cameraTimingExact==true) then return nil end
-  local count=math.max(0,math.floor(tonumber(slot.cameraTimingCount) or 0))
-  local frames={}
-  for i=1,math.min(3,count) do
-    local v=tonumber(slot.cameraTimingFrames and slot.cameraTimingFrames[i])
-    if v==nil then return nil end
-    frames[i]=v
-  end
-  -- DoPosition derives its move duration from the SAME runtime 0xD4 row. After
-  -- sequenceLoad, words are laid out as countA, countB+1, field08, then the
-  -- scaled camera-timing stream at +0x0C. Its duration pointer is
-  --   row + countA*4; read +4, falling back to +8 only when zero.
-  -- Preserve that exact deterministic duration whenever the referenced words
-  -- are inside the prefix we already source-prove. (Mode 0 may still randomize
-  -- the duration later in DoDollyPosition; Camera reports that separately.)
-  local durationFrames,durationExact
-  if count==0 then
-    durationFrames=(math.max(0,math.floor(tonumber(slot.subAnimCount) or 0))+1)
-    if durationFrames==0 then durationFrames=tonumber(slot.damageFlags) or 0 end
-    durationExact=true
-  elseif count==1 then
-    durationFrames=tonumber(slot.damageFlags) or 0
-    if durationFrames==0 then durationFrames=frames[1] or 0 end
-    durationExact=true
-  elseif count<=3 then
-    durationFrames=frames[count-1] or 0
-    if durationFrames==0 then durationFrames=frames[count] or 0 end
-    durationExact=true
-  end
-  -- Waza DoFOV chooses its short/long pattern table from ModelSequence+0x32,
-  -- which is the currently selected native PKX row index. `slot.index` is that
-  -- exact 0..16 row identity; expose it alongside the already-proven timing
-  -- prefix so passive battleCameraStartWaza(owner,NULL) can use the same retail
-  -- FOV grammar without guessing from move category or host generation.
-  return {count=count,frames=frames,rate=tonumber(slot.cameraTimingRate) or 60,
-    sequenceKind=tonumber(slot.index),motionDurationFrames=durationFrames,
-    motionDurationExact=durationExact==true,exact=true}
-end
-
--- Exact GC6E01 GSmodel bound baked when the Pokemon Waza owner is first loaded.
--- PokemonExtractor preserves both raw retail units (for CalculateParams/DoFOV)
--- and the exact source->normalized-cache affine (for the 0x4000 midpoint). Keep
--- current attack-slot animation out of this accessor: retail does not recalc the
--- owner bound when a later Waza changes the active body animation.
-function Actor:retailWazaOwnerBound()
-  local b=self.scene and self.scene.retailWazaOwnerBound
-  if not (type(b)=="table" and b.exact==true and b.selectorExact==true
-      and type(b.source)=="table" and type(b.normalized)=="table") then return nil end
-  local n=b.normalized
-  local c=n.center
-  local e=n.extent
-  local src=b.source
-  if not (type(c)=="table" and tonumber(c[1]) and tonumber(c[2]) and tonumber(c[3])
-      and type(e)=="table" and tonumber(e[1]) and tonumber(e[2]) and tonumber(e[3])
-      and type(src.min)=="table" and type(src.max)=="table") then return nil end
-  local out={exact=true,frame=0,animationIndex=tonumber(b.animationIndex),selector=b.selector,
-    selectorExact=true,source=src,normalized=n,sourceToCache=b.sourceToCache}
-  local m=self.worldMatrix
-  local scale=tonumber(self.worldScale)
-  if type(m)=="table" and tonumber(m[4]) and tonumber(m[8]) and tonumber(m[12]) and scale then
-    -- battleCameraStartWaza adds GSbound midpoint directly to GSmodel.position;
-    -- it does NOT rotate that midpoint by the current GSmodel rotation. Mirror
-    -- that order in CBE presentation space: normalize, apply the actor's uniform
-    -- body scale, then add the current model-root translation.
-    out.centerWorld={m[4]+c[1]*scale,m[8]+c[2]*scale,m[12]+c[3]*scale}
-    out.presentationExtent={e[1]*scale,e[2]*scale,e[3]*scale}
-  end
-  return out
-end
-
 local ATTACK_DURATION=0.85
 local HIT_DURATION=0.46
 local FAINT_DURATION=0.95
 local RECALL_DURATION=0.48
 local FAINT_REMOVAL_TAIL=0.28
 
--- Timing queries are read-only. In particular the faint-return director asks
--- for the upcoming Faint duration while Damage is still active. Resolving with
--- allowBuild=true here used to parse caches and upload the entire Faint bank on
--- the visible update thread, outside the cooperative worker. Source descriptors
--- already carry duration; follow aliases without reading or materializing them.
-function A._sceneActionDuration(scene,name)
-  local seen={};local duration
-  for _=1,8 do
-    if not name or seen[name] then break end
-    seen[name]=true
-    local entry=scene and ((scene.actions and scene.actions[name])
-      or (scene.actionSpecs and scene.actionSpecs[name]))
-    if type(entry)~="table" then break end
-    local d=tonumber(entry.duration)
-    if not duration and d and d>0.02 and d<math.huge then duration=d end
-    if not entry.alias then break end
-    name=tostring(entry.alias)
-  end
-  return duration
-end
-
 function Actor:stateDuration(kind)
-  if kind=="recall" then return RECALL_DURATION end
-  -- Queries made while Damage is still playing must use the upcoming faint
-  -- bank, not the currently selected Damage/attack duration.
-  if kind=="faint" and self.state~="faint" then
-    local duration=A._sceneActionDuration(self.scene,"faint")
-    local slot=self.sourceMetadata and self.sourceMetadata.slots and self.sourceMetadata.slots.faint
-    local sourceDuration=slot and tonumber(slot.duration)
-    if not duration and sourceDuration and sourceDuration>0.02 and sourceDuration<math.huge then
-      duration=sourceDuration
-    end
-    return duration or FAINT_DURATION
-  end
   if self.nativeAction and self.nativeDuration and self.nativeDuration>0 then return self.nativeDuration end
   if kind=="attack" then return ATTACK_DURATION end
   if kind=="hit" then return HIT_DURATION end
@@ -2108,12 +1131,6 @@ function Actor:terminalDuration(kind)
   return base
 end
 
-function Actor:faintBodyComplete()
-  if self.pendingFaint or self.state~="faint" then return false end
-  local clock=self.nativeSlotSampled and self.clipClock or self.faintAge
-  return (tonumber(clock) or 0)+1e-7>=self:stateDuration("faint")
-end
-
 function Actor:update(dt)
   local step=math.max(0,tonumber(dt) or 0)
   self.clock=self.clock+step
@@ -2125,24 +1142,6 @@ function Actor:update(dt)
   -- and let the removal tail get ahead of the native animation.
   if self.faintAge then self.faintAge=self.faintAge+step end
   if self.recallAge then self.recallAge=self.recallAge+step end
-
-  -- A live body can precede its exact-action preparation. Pick up the worker's
-  -- tiny authoritative timing record without reading the disc or rebuilding a
-  -- bank. Promote a warmed idle only while idle and retain its elapsed phase.
-  if not self.informationSurface then
-    local ready=sourceMetadata[tostring(self.cacheKey or (self.scene and self.scene.dex))]
-    if type(ready)=="table" and ready~=self.sourceMetadata then
-      self.sourceMetadata=ready
-      local slot=ready.slots and ready.slots[self.requestedNativeSlot or "idle"]
-      self.nativeSlot=slot;self.nativeClip=slot and slot.animationIndex or nil
-    end
-    if self.state=="idle" and not self.nativeAction and self.scene
-        and self.scene.actions and self.scene.actions.idle then
-      local elapsed=self.clipClock
-      self:selectNativeSlot("idle")
-      self.clipClock=elapsed
-    end
-  end
 
   -- Information viewers prioritize first-pixel latency: draw the compact base
   -- scene immediately, then upgrade the already-visible actor to its source idle
@@ -2481,13 +1480,6 @@ function Actor:matrix(x,groundY,z,towardX,towardZ)
   -- Use the portable quadrant-aware helper above; LuaJIT's math.atan ignores a
   -- second argument and was the source of the player-side orientation bug.
   local yaw=A.facingYaw(towardX or 0,towardZ or 1)
-  -- Keep the battle-grid/base model rotation separate from the final render
-  -- matrix.  Retail battleCameraStartWaza reads GSmodel.rotation, which is the
-  -- placement yaw written by battleGridUpdate; it does NOT read reaction/faint
-  -- roll that happens inside the animated body.  CBE can add a small fallback
-  -- whole-actor roll below, so recovering the Waza owner rotation from
-  -- worldMatrix would silently mix two different transform domains.
-  self.worldYaw=yaw
   local lift,pitch,roll=0,0,0
 
   -- Spawn scale comes from BattleState.growInScale. A newly acquired actor
@@ -2701,7 +1693,7 @@ function Actor:draw(matrix)
     local u=self.recallScale~=nil and (1-clamp(self.recallScale,0,1))
       or clamp(self.recallAge/RECALL_DURATION,0,1)
     opacity=opacity*(1-u)
-  elseif self.faintAge and not self.cbeSourceFaintReturn then
+  elseif self.faintAge then
     local clip=self:stateDuration("faint")
     if self.nativeSlotSampled then
       -- Preserve the complete authored faint clip. 1.5.29 began fading the
@@ -2739,8 +1731,6 @@ function Actor:draw(matrix)
       MATERIAL_RGBA[3]=(d and d[3]) or 1;MATERIAL_RGBA[4]=grp.alpha or 1
       shader:send("materialColor",MATERIAL_RGBA)
       shader:send("useTexture",grp.textured and 1 or 0)
-      shader:send("textureCoordMode",tonumber(grp.textureCoordMode) or 0)
-      shader:send("reflectionTexMtx","row",grp.reflectionTexMtx or IDENTITY_MAT)
       if love.graphics.setDepthMode then
         love.graphics.setDepthMode("lequal",not (grp.noz or grp.xlu))
       end
@@ -2760,8 +1750,6 @@ function Actor:draw(matrix)
         MATERIAL_RGBA[3]=(d and d[3]) or 1;MATERIAL_RGBA[4]=grp.alpha or 1
         shader:send("materialColor",MATERIAL_RGBA)
         shader:send("useTexture",grp.textured and 1 or 0)
-        shader:send("textureCoordMode",tonumber(grp.textureCoordMode) or 0)
-        shader:send("reflectionTexMtx","row",grp.reflectionTexMtx or IDENTITY_MAT)
         if love.graphics.setDepthMode then love.graphics.setDepthMode("lequal",not (grp.noz or grp.xlu)) end
         if grp.mesh then pcall(love.graphics.draw,grp.mesh) end
       end
@@ -2787,12 +1775,7 @@ function Actor:attack(moveId,moveDef,opts)
   self.action="attack";self.actionAge=0;self:transition("attack")
   self.lastMove=moveId;self.lastMoveDef=moveDef
   local requested=opts.nativeSlot or moveSlot(moveDef)
-  -- A decoded Waza root's sequenceKind is retail's explicit PKX row selector.
-  -- It is not permission to substitute another member of the same broad
-  -- physical/special family. If that exact row is absent/unreadable, withhold
-  -- the source presentation rather than animating a plausible-looking wrong row.
-  local strictNative=opts.sourceSequenceKind~=nil
-  local sampled=self:selectNativeSlot(requested,strictNative)
+  local sampled=self:selectNativeSlot(requested)
   -- The selected PKX bank is part of the retail presentation chain. Older CBE
   -- builds deliberately discarded it whenever a Waza timeline was present,
   -- leaving the Pokemon in its idle bank while particles and camera advanced.
@@ -2870,7 +1853,7 @@ function Actor:beginHit(payload,opts)
   self:transition("hit")
   local requested=opts.nativeSlot or "damage"
   self.sourceDamageSequenceKind=opts.sourceSequenceKind
-  local sampled=self:selectNativeSlot(requested,opts.sourceSequenceKind~=nil)
+  local sampled=self:selectNativeSlot(requested)
   if not sampled then
     -- No validated source damage bank: keep the resident body and use the
     -- compact procedural recoil fallback. This is a per-species fail-open,
@@ -2917,7 +1900,6 @@ function Actor:recall(reason)
   self.recallAge=0
   self.recallScale=nil
   self.recallReason=reason or "switch"
-  self:selectNativeSlot("idle")
   self:transition("recall")
   return true
 end
@@ -2975,9 +1957,9 @@ local HUMAN_REFERENCE_METERS=1.70
 -- Physical scale remains the baseline, but battle readability gets a floor. A
 -- literal 0.20-0.30 m model can be physically accurate and still be nearly
 -- impossible to read at a handheld/1080p battle camera. The floor is a
--- presentation exception only; battle data and PokÃƒÂ©dex height stay untouched.
+-- presentation exception only; battle data and Pokédex height stay untouched.
 local MIN_READABLE_RELATIVE=.29
--- Raw PokÃƒÂ©dex height is NOT a literal standing-height multiplier. It mixes
+-- Raw Pokédex height is NOT a literal standing-height multiplier. It mixes
 -- height, body length and extreme fantasy proportions (Ekans is the clearest
 -- example: 6'7" describes its long body, not a six-foot-tall battle stance).
 -- Every species therefore passes through the same soft allometric curve before
@@ -2985,14 +1967,6 @@ local MIN_READABLE_RELATIVE=.29
 -- compressed progressively instead of linearly taking over the stadium.
 local SCALE_CURVE_EXP=.72
 local MAX_READABLE_RELATIVE=1.58
--- Species whose canonical measurement is several times human scale should still
--- read as giants after allometric compression. The older hard 1.58 ceiling made
--- tall/coiled Hoenn giants (notably Rayquaza) visually ordinary. This is a
--- physical-size class, not a species override.
--- Width/depth matters as much as height in a battle camera. A normalized body can
--- be only 16 units tall yet four or five body-heights wide (Kyogre is the clearest
--- current source example). The numeric thresholds live inside the policy function
--- below to avoid spending more of LuaJIT's already-tight top-level local budget.
 local TINY_SPECIES_FLOOR={
   [10]=.32, -- Caterpie
   [13]=.34, -- Weedle: long/thin silhouette needs a slightly stronger floor
@@ -3014,7 +1988,7 @@ local LARGE_SPECIES_CEILING={
   [250]=1.50, -- Ho-Oh
 }
 
--- Species whose canonical PokÃƒÂ©dex "height" is visually much closer to body
+-- Species whose canonical Pokédex "height" is visually much closer to body
 -- LENGTH than standing height. The global curve still applies first; these
 -- factors convert the published measurement into the compact/coiled battle
 -- silhouette actually authored in Colosseum. This is not an Ekans-only hack:
@@ -3039,99 +2013,15 @@ local function normalizedPresentationRelative(meters,dex)
 end
 local scaleTrim=1.0
 
--- The extractor normalizes every source PKX body for stable cache precision,
--- but records whether sparse HSD outlier vertices inflated that body box. The
--- battle renderer used to ignore that diagnostic, so a single bad envelope
--- vertex could make the complete visible Pokemon look comically tiny. Recover a
--- bounded amount of the trimmed core height without changing source vertices or
--- requiring a recache.
---
--- Source bounds also give a conservative clue for Pokemon whose Pokedex height
--- is really a long body measurement. Only extremely elongated silhouettes are
--- adjusted, and species already covered by the reviewed length-family mapping
--- above are not reduced twice. This gives Gen-III long-bodied models a systemic
--- correction without growing another per-species exception table.
-local function geometryPresentation(scene,bodyFactor)
-  local b=scene and scene.bounds
-  local mn,mx=b and b.min,b and b.max
-  if not (mn and mx) then return 1,1,1 end
-  local h=math.max(.001,(tonumber(mx[2]) or 0)-(tonumber(mn[2]) or 0))
-  local dx=math.max(0,(tonumber(mx[1]) or 0)-(tonumber(mn[1]) or 0))
-  local dz=math.max(0,(tonumber(mx[3]) or 0)-(tonumber(mn[3]) or 0))
-  local hr=tonumber(scene.heightRatio) or 1
-  -- PokemonExtractor labels >1.6 raw/trimmed height as scattered geometry.
-  -- Stay neutral below that threshold so legitimate ears/wings/tails remain
-  -- part of the authored silhouette.
-  local coreCorrection=(hr>1.6) and math.min(math.max(hr,1),1.75) or 1
-  local coreH=h/coreCorrection
-  local aspect=math.max(dx,dz)/math.max(.001,coreH)
-  local stance=1
-  if (tonumber(bodyFactor) or 1)>=.995 and aspect>2.35 then
-    stance=math.max(.70,math.min(1,math.sqrt(2.35/aspect)))
-  end
-  return coreCorrection,stance,aspect
-end
-
-function A.presentationScalePolicy(meters,dex,scene)
-  local normalized,raw,curve,body=normalizedPresentationRelative(meters,dex)
-  local floor=TINY_SPECIES_FLOOR[dex] or MIN_READABLE_RELATIVE
-  local explicitCeiling=LARGE_SPECIES_CEILING[dex]
-  local ceiling=explicitCeiling or ((raw>=3.00) and 1.95 or MAX_READABLE_RELATIVE)
-  local relative=math.min(math.max(normalized,floor),ceiling)
-  local coreCorrection,stance,aspect=geometryPresentation(scene,body)
-  relative=math.max(floor,relative*stance)
-  local footprint=math.max(0,tonumber(aspect) or 0)*relative
-  local footprintCompression=1
-  if footprint>3.45 and aspect>0 then
-    local bounded=3.45/aspect
-    bounded=math.max(floor,math.min(relative,bounded))
-    footprintCompression=relative/math.max(.0001,bounded)
-    relative=bounded
-    footprint=aspect*relative
-  end
-  return {
-    relative=relative,raw=raw,curve=curve,body=body,floor=floor,ceiling=ceiling,
-    coreCorrection=coreCorrection,stance=stance,aspect=aspect,
-    footprint=footprint,footprintCompression=footprintCompression,
-  }
-end
-
 local function actorWorldScale(actor)
   local h=tonumber(actor and actor.height) or 0
   local reference=tonumber(actor and actor.referenceActorHeight) or WORLD_HEIGHT
   local relative=tonumber(actor and actor.physicalScale) or .72
   local target=reference*relative*scaleTrim
-  local coreCorrection=math.max(1,tonumber(actor and actor.geometryCoreCorrection) or 1)
-  local effectiveH=h/coreCorrection
-  return (effectiveH>0.01) and (target/effectiveH) or (relative*scaleTrim)
+  return (h>0.01) and (target/h) or (relative*scaleTrim)
 end
 
-local function encodedFeetInchesMeters(raw)
-  raw=tonumber(raw)
-  if not raw or raw<=0 then return nil end
-  local ft=math.floor(raw/100);local inch=raw%100
-  -- Native Gen-II records store printed inches and never exceed 11. Reject a
-  -- corrupt/foreign field instead of turning it into an enormous actor.
-  if inch<0 or inch>11 then return nil end
-  return (ft*12+inch)*0.0254
-end
-
--- National-Dex height fallback for the Hoenn species Colosseum can render but
--- Gen1Recomp does not natively describe. Values are canonical Pokedex heights in
--- decimetres, ordered 252..386. Native host dex metadata always wins above this
--- table; this only prevents the entire Gen-III roster from collapsing onto the
--- old generic .72 actor scale when a rental/import species has no host dexEntry.
--- Long-body Pokedex measurements are subsequently tempered by the extracted PKX
--- silhouette in geometryPresentation(), so Wailord/Milotic/Rayquaza do not turn
--- a length measurement into an absurd standing height.
-local GEN3_HEIGHT_DM={
-  5,9,17,4,9,19,4,7,15,5,10,4,5,3,6,10,7,12,5,12,15,5,10,13,3,7,6,12,4,8,16,5,8,4,
-  12,8,14,20,5,8,8,6,10,15,10,23,2,10,6,11,5,6,4,9,21,6,13,6,15,4,4,7,6,3,4,17,8,18,
-  20,145,7,19,5,7,9,11,7,11,20,4,13,4,11,13,27,10,12,4,9,6,11,5,15,10,15,7,15,6,62,3,
-  10,6,11,8,16,20,6,12,6,7,15,8,11,14,4,17,18,10,6,6,11,15,6,12,16,17,18,19,14,20,45,35,70,3,17,
-}
-
-local function dexHeightMeters(opts,dex)
+local function dexHeightMeters(opts)
   local ctx=opts and opts.context
   local game=(ctx and ctx.game) or (ctx and ctx.battle and ctx.battle.game)
   local battler=opts and opts.battler
@@ -3144,22 +2034,14 @@ local function dexHeightMeters(opts,dex)
     if tonumber(e.heightM) and tonumber(e.heightM)>0 then return tonumber(e.heightM) end
     local ft,inch=tonumber(e.heightFt),tonumber(e.heightIn)
     if ft then return (ft*12+(inch or 0))*0.0254 end
-    -- Gold compatibility facades expose the native four printed digits here
-    -- (0204 == 2'04"). The scaler previously ignored this exact source value and
-    -- silently assigned the generic .72 size to otherwise unrelated species.
-    local gen2=encodedFeetInchesMeters(e.gen2Height)
-    if gen2 then return gen2 end
   end
   -- Gold/Silver extraction stores the source Pokedex height as the digits the
   -- cart prints (e.g. 204 == 2'04"). Convert that authoritative field here.
   local g2=data and data.gen2Pokedex and data.gen2Pokedex.entries
   local raw=g2 and species and g2[species] and tonumber(g2[species].height)
-  local gen2=encodedFeetInchesMeters(raw)
-  if gen2 then return gen2 end
-  dex=tonumber(dex)
-  if dex and dex>=252 and dex<=386 then
-    local dm=GEN3_HEIGHT_DM[dex-251]
-    if dm and dm>0 then return dm*.1 end
+  if raw and raw>0 then
+    local ft=math.floor(raw/100);local inch=raw%100
+    return (ft*12+inch)*0.0254
   end
   return nil
 end         -- runtime multiplier, adjusted with F7/F8
@@ -3180,9 +2062,6 @@ function A.acquire(source,dex,variant,opts)
   local cacheKey=modelKey(dex,variant)
   dex=dexNumber(dex)
   if not (dex and Dex.supported(dex)) then return nil,"unsupported dex" end
-  local services=opts and opts.context and opts.context.services
-  local informationRequest=services and services.informationSurface==true
-  local allowLegacyMaterialBody=opts and opts.allowLegacyMaterialBody==true
 
   -- A resident GPU scene has already passed the extractor stamp check for this
   -- session. Re-reading rev.txt/cache metadata on every Summary reopen or actor
@@ -3192,55 +2071,20 @@ function A.acquire(source,dex,variant,opts)
   local resident=scenes[cacheKey]
   if resident then perf.residentAcquireHits=perf.residentAcquireHits+1 end
 
-  -- Storage-profile caches intentionally contain base + idle only.  On mobile we
-  -- may still use an ALREADY-RESIDENT storage body as the visible battle actor
-  -- while the cooperative worker prepares that battler's exact action subset.
-  -- This is not a generic/model substitution: it is the exact GC6E01 species
-  -- body and idle bank that Full Cache already put on disk.  Attacks/reactions
-  -- remain source-gated until their required action signature is ready.
-  local allowStorageBattleBody=opts and opts.allowStorageBattleBody==true
-  if not informationRequest and speciesCacheReady(cacheKey,allowLegacyMaterialBody) then
-    local _,complete=cachedActionProfile(cacheKey)
-    if not complete and not allowStorageBattleBody then
-      if opts and opts.noSource==true then return nil,"storage-only model needs battle action upgrade" end
-      local game=opts and opts.context and opts.context.game
-      local selectiveReady=opts and opts.selectiveActionsReady==true
-      if not selectiveReady and opts and opts.battler then
-        selectiveReady=A._requiredSignatureReady(cacheKey,A._requiredModelSignature(game,opts.battler))
-      end
-      if MOBILE_RUNTIME and services and services.cbeStandalone==true and services.prewarm~=true and not selectiveReady then
-        return nil,"mobile battle model pending storage-action upgrade"
-      end
-      if not selectiveReady and not (opts and opts.battler) then
-        return nil,"storage-only model requires a concrete battler action plan"
-      end
-      local upgraded,why=true,nil
-      if not selectiveReady then
-        upgraded,why=ensureRequiredActionInventory(dex,variant,game,opts and opts.battler,opts and opts.progress)
-      end
-      if not upgraded then return nil,why end
-      resident=scenes[cacheKey]
-    end
-  end
-
   -- isCached now also rejects a cache written by a DIFFERENT extractor
   -- revision, so an improved extractor rebuilds species that an older one had
   -- already cached. Drop any GPU scene we built from the stale cache too,
   -- otherwise the old meshes stay resident for the rest of the session.
-  if not resident and not speciesCacheReady(cacheKey,allowLegacyMaterialBody) then
-    -- Cache-only means no source work on ANY host (including delegated arena
-    -- contexts without cbeStandalone). The mobile worker owns that boundary.
-    if opts and opts.noSource==true then
-      return nil,"model not cached; pending cooperative preparation"
-    end
-    -- Mobile live battle draw is a render path, not a source-build boundary.
+  if not resident and not speciesCacheReady(cacheKey) then
+    -- Android's live battle draw is a render path, not a source-build boundary.
     -- If this identity is genuinely cold, leave it for pumpBattlePrewarm() rather
     -- than opening/extracting the Colosseum source synchronously behind a black
     -- transition or during a switch animation. Information/cache screens and
     -- explicit preparation jobs keep their existing source-backed behavior.
-    if MOBILE_RUNTIME and services and services.cbeStandalone==true
+    local services=opts and opts.context and opts.context.services
+    if ANDROID_RUNTIME and services and services.cbeStandalone==true
         and services.prewarm~=true and services.informationSurface~=true then
-      return nil,"mobile battle model pending cooperative preparation"
+      return nil,"android battle model pending cooperative preparation"
     end
     if scenes[cacheKey] then scenes[cacheKey]=nil;sceneErrors[cacheKey]=nil end
     local failure=pendingExtract[cacheKey]
@@ -3277,7 +2121,6 @@ function A.acquire(source,dex,variant,opts)
 
   local actor=Actor.new(dex,variant,scene,opts)
   actor.cacheKey=cacheKey
-  actor.legacyMaterialBody=allowLegacyMaterialBody and not materialTexgenReady(cacheKey) or false
   local metadataKey=tostring(cacheKey)
   local informationSurface=actor.informationSurface==true
   local metadata=sourceMetadata[metadataKey]
@@ -3297,17 +2140,9 @@ function A.acquire(source,dex,variant,opts)
   -- leave the global key unresolved so a later real battle actor can perform the
   -- authoritative source metadata read when it actually needs move timing.
   local needsFilter=variant=="shiny" and not Dex.rare[dex]
-  local needsScaleSelector=not informationSurface and type(metadata)=="table"
-    and metadata.scaleSelector==nil and metadata.sequenceKind==nil
-  -- Revision 6 adds the exact GC6E01 FOV timing row only.  Older generated
-  -- model/mesh caches remain valid; a battle actor refreshes just this tiny PKX
-  -- metadata sidecar once instead of forcing species geometry re-extraction.
-  local needsCameraTiming=not informationSurface and type(metadata)=="table"
-    and ((tonumber(metadata.revision) or 0)<6)
+  local filterInvalid=needsFilter and (metadata and metadata.shinyFilter) and not validFilter(metadata.shinyFilter)
   if not (opts and opts.noSource==true)
-      and ((metadata==nil and not informationSurface) or needsScaleSelector
-        or needsCameraTiming
-        or (needsFilter and not validFilter(metadata and metadata.shinyFilter)))
+      and ((metadata==nil and not informationSurface) or filterInvalid)
       and metadataReader and discOpener then
     local okDisc,disc=pcall(discOpener)
     if okDisc and disc then
@@ -3318,19 +2153,21 @@ function A.acquire(source,dex,variant,opts)
   end
   if metadata~=nil then
     sourceMetadata[metadataKey]=metadata or false
-  elseif not informationSurface and not (opts and opts.noSource==true) then
-    -- A resident-only presentation attempt did not inspect the source. Do not
-    -- poison the later worker's metadata lookup with a negative cache entry.
+  elseif not informationSurface then
     sourceMetadata[metadataKey]=false
   end
   if metadata==false then metadata=nil end
   if needsFilter then
-    if not validFilter(metadata and metadata.shinyFilter) then
+    if (metadata and metadata.shinyFilter) and not validFilter(metadata.shinyFilter) then
       actor:release()
       return nil,"source shiny parameters unavailable (normal model not substituted)"
     end
     actor.shinyFilter=metadata.shinyFilter
-    actor.shinyRows,actor.shinyGain=Shiny.uniforms(actor.shinyFilter)
+    if actor.shinyFilter then
+      actor.shinyRows,actor.shinyGain=Shiny.uniforms(actor.shinyFilter)
+    else
+      actor.shinyRows,actor.shinyGain=Shiny.identityRows,Shiny.identityGain
+    end
   end
   actor.sourceMetadata=metadata
   actor:selectNativeSlot("idle")
@@ -3343,12 +2180,12 @@ function A.acquire(source,dex,variant,opts)
   -- the Pokedex height relative to a ~1.70 m trainer. Extreme giant species are
   -- softly capped only to keep the arena/camera numerically usable.
   local h=actor.height
-  local meters=dexHeightMeters(opts,dex)
-  local scalePolicy=A.presentationScalePolicy(meters,dex,scene)
-  local rawRelative,curveRelative,bodyFactor=scalePolicy.raw,scalePolicy.curve,scalePolicy.body
-  local floor,ceiling=scalePolicy.floor,scalePolicy.ceiling
-  local relative=scalePolicy.relative
-  local coreCorrection,stanceFactor,modelAspect=scalePolicy.coreCorrection,scalePolicy.stance,scalePolicy.aspect
+  local meters=dexHeightMeters(opts)
+  local normalizedRelative,rawRelative,curveRelative,bodyFactor=
+    normalizedPresentationRelative(meters,dex)
+  local floor=TINY_SPECIES_FLOOR[dex] or MIN_READABLE_RELATIVE
+  local ceiling=LARGE_SPECIES_CEILING[dex] or MAX_READABLE_RELATIVE
+  local relative=math.min(math.max(normalizedRelative,floor),ceiling)
   local ctx=opts and opts.context
   local figureScale=tonumber(ctx and ctx.arena and ctx.arena.figureScale) or DEFAULT_FIGURE_SCALE
   figureScale=math.max(.08,figureScale)
@@ -3356,14 +2193,9 @@ function A.acquire(source,dex,variant,opts)
   actor.sourcePhysicalScale=rawRelative
   actor.allometricScale=curveRelative
   actor.bodyLengthFactor=bodyFactor
-  actor.geometryCoreCorrection=coreCorrection
-  actor.geometryStanceFactor=stanceFactor
-  actor.geometryAspect=modelAspect
   actor.physicalScale=relative
   actor.presentationScaleFloor=floor
   actor.presentationScaleCeiling=ceiling
-  actor.presentationFootprint=scalePolicy.footprint
-  actor.footprintCompression=scalePolicy.footprintCompression
   actor.readabilityBoost=(rawRelative>0) and (relative/rawRelative) or 1
   actor.largeBodyCompression=(relative>0 and rawRelative>relative) and (rawRelative/relative) or 1
   actor.referenceActorHeight=HUMAN_WORLD_HEIGHT/figureScale
@@ -3387,12 +2219,7 @@ function A.withRenderer(vp,callback,opts)
     g.setBlendMode("alpha","alphamultiply")
     if g.setMeshCullMode then g.setMeshCullMode("none") end
     sh:send("vp","row",vp)
-    local eye=(opts and opts.eye) or {54,24,13}
-    local focus=(opts and opts.focus) or {0,5,0}
-    sh:send("cameraEye",eye)
-    sh:send("reflectionView","row",(Mat4 and Mat4.lookAt and Mat4.lookAt(eye,focus,(opts and opts.up) or {0,1,0})) or IDENTITY_MAT)
-    sh:send("textureCoordMode",0)
-    sh:send("reflectionTexMtx","row",IDENTITY_MAT)
+    sh:send("cameraEye",(opts and opts.eye) or {54,24,13})
     return callback()
   end)
   pcall(g.setShader)
@@ -3504,18 +2331,16 @@ local function pollDebugKey()
     local i=1
     for n,name in ipairs(DECODE_MODES) do if name==A.decodeMode then i=n end end
     A.decodeMode=DECODE_MODES[(i % #DECODE_MODES)+1]
-    -- Diagnostic toggles are not cache-clear consent.  Older builds called the
-    -- destructive rebuildSpecies() here and silently erased every saved PKX
-    -- payload. Keep the acquired bytes and require the explicit rebuild export
-    -- if a developer intentionally wants a destructive re-extraction.
-    A._lastCacheRetentionNotice="F10 decode mode changed; saved Pokemon cache retained (explicit rebuild required to apply)"
+    A.rebuildSpecies()      -- drop caches so any future send-out re-extracts
+    refreshLiveActors()     -- and re-decode what's on screen right now
   end
   modeKeyHeld=okM and md or false
 
   local okS,sk=pcall(love.keyboard.isDown,"f6")
   if okS and sk and not skinKeyHeld then
     A.skinFix=not A.skinFix
-    A._lastCacheRetentionNotice="F6 skin mode changed; saved Pokemon cache retained (explicit rebuild required to apply)"
+    A.rebuildSpecies()      -- drop caches so any future send-out re-extracts
+    refreshLiveActors()     -- and re-decode what's on screen right now
   end
   skinKeyHeld=okS and sk or false
 
@@ -3595,13 +2420,12 @@ local function debugLines()
     :format(perf.sceneLoads,perf.sceneHits,perf.actionBuilds,perf.actionPrewarms,perf.actorAcquires,perf.residentAcquireHits)
   out[#out+1]=("SCALE  height %.1f  trim %.2f  =%.1f units   [F7 smaller / F8 bigger]")
     :format(WORLD_HEIGHT,scaleTrim,WORLD_HEIGHT*scaleTrim)
-  out[#out+1]=("DECODE MODE  %s   [F10 cycles diagnostics; cache retained]")
+  out[#out+1]=("DECODE MODE  %s   [F10 cycles: auto / single / scene -- re-extracts]")
     :format(A.decodeMode:upper())
-  out[#out+1]=("HSD ENVELOPE FIX  %s   [F6 toggles diagnostics; cache retained]")
+  out[#out+1]=("HSD ENVELOPE FIX  %s   [F6 toggles source IBM + owner-coordinate skinning -- re-extracts]")
     :format(A.skinFix and "ON" or "OFF (legacy CBE placement)")
   out[#out+1]="SOURCE VISIBILITY  ON   [F4 SAFETY-LOCKED: zero-pass source geometry is quarantined]"
   if A._lastF4Notice then out[#out+1]="F4: "..A._lastF4Notice end
-  if A._lastCacheRetentionNotice then out[#out+1]=A._lastCacheRetentionNotice end
   if A._lastRefresh then
     out[#out+1]=("last F6/F10 refresh: %d/%d actor(s) currently on the field re-decoded")
       :format(A._lastRefresh.refreshed,A._lastRefresh.dexes)
@@ -3758,20 +2582,12 @@ function A.status()
       residentTrimKept=perf.residentTrimKept or 0,residentTrimReleased=perf.residentTrimReleased or 0,
       reactionClamps=perf.reactionClamps or 0,reactionFallbacks=perf.reactionFallbacks or 0,
       actionDrawFallbacks=perf.actionDrawFallbacks or 0,deferredActionWarms=perf.deferredActionWarms or 0,
-      deferredActionPending=#actionWarmQueue+(A._actionWarmTask and 1 or 0),
-      battleQueue=type(A.battlePrewarmStatus)=="function" and A.battlePrewarmStatus() or nil,
-      workBudget=WorkBudget and type(WorkBudget.status)=="function" and WorkBudget.status() or nil,
-      battleBodiesPrepared=perf.battleBodiesPrepared or 0,battlePlansPrepared=perf.battlePlansPrepared or 0,
-      battlePreemptions=perf.battlePreemptions or 0,runtimeBaseHits=perf.runtimeBaseHits or 0,runtimeBaseWrites=perf.runtimeBaseWrites or 0,
+      deferredActionPending=#actionWarmQueue,runtimeBaseHits=perf.runtimeBaseHits or 0,runtimeBaseWrites=perf.runtimeBaseWrites or 0,
       runtimeActionHits=perf.runtimeActionHits or 0,runtimeActionWrites=perf.runtimeActionWrites or 0,hardCache=A.hardCacheStatus()},
   }
 end
 
 local function battlerCacheKey(game,battler)
-  if V.ModelIdentity and type(V.ModelIdentity.resolve)=="function" then
-    local dex,variant=V.ModelIdentity.resolve(game,battler)
-    if dex then return modelKey(dex,variant or monVariant(battler)) end
-  end
   local mon=type(battler)=="table" and (battler.mon or battler.pokemon or battler.partyMon or battler) or nil
   local species=mon and mon.species
   local def=species~=nil and game and game.data and game.data.pokemon and game.data.pokemon[species]
@@ -3818,9 +2634,11 @@ function A.trimRuntimeMemory(opts)
     local added=0
     if type(party)=="table" then
       for _,mon in ipairs(party) do
-        local key=battlerCacheKey(game,mon)
-        if key and scenes[key] and not keep[key] then
-          keep[key]=true;added=added+1
+        local species=type(mon)=="table" and ((mon.mon and mon.mon.species) or mon.species) or nil
+        local def=species~=nil and game.data and game.data.pokemon and game.data.pokemon[species] or nil
+        local dex=battlerCacheKey(game,mon)
+        if dex and scenes[dex] and not keep[dex] then
+          keep[dex]=true;added=added+1
           if added>=keepParty then break end
         end
       end
@@ -3887,9 +2705,7 @@ function A.trimRuntimeMemory(opts)
           end
           scene.actionSpecs={}
           for name,spec in pairs(base.actions) do scene.actionSpecs[name]=spec end
-          if scene.actionInventoryComplete==false then mergeSelectiveActionSpecs(scene) end
           scene.actions={};scene.actionFailures={}
-          requiredSessionPrepared[dex]=nil -- released GPU banks are not ready
         end
       end
       kept=kept+1
@@ -3905,7 +2721,6 @@ function A.trimRuntimeMemory(opts)
         end
       end
       scenes[dex]=nil;sceneErrors[dex]=nil;pendingExtract[dex]=nil
-      requiredSessionPrepared[dex]=nil
       released=released+1
     end
   end
@@ -3922,14 +2737,12 @@ function A.trimRuntimeMemory(opts)
 end
 
 function A.resetRuntime()
-  sessionPinned={};sessionPrepared={};requiredSessionPrepared={};sessionEpoch=sessionEpoch+1
+  sessionPinned={};sessionPrepared={};sessionEpoch=sessionEpoch+1
   if A.cancelInformation then A.cancelInformation() end
-  if A.cancelBattlePrewarm then A.cancelBattlePrewarm("runtime-reset") end
   A.cancelPartyPrewarm()
   A.cancelHardCache()
   A.trimRuntimeMemory({keepParty=0,keepRecent=0})
-  shader=nil;sceneUseSerial=0;sourceMetadata={};selectiveActionSpecs={};speciesCacheValidity={};pendingExtract={}
-  if A._compactAction then A._compactAction.inventoryMemo={} end
+  shader=nil;sceneUseSerial=0;sourceMetadata={};speciesCacheValidity={};pendingExtract={}
   actionWarmQueue={};actionWarmSeen={};actionWarmNextAt=0
   perf={sceneLoads=0,sceneHits=0,actionBuilds=0,actionPrewarms=0,actorAcquires=0,residentAcquireHits=0,
     battlePrewarms=0,battlePrewarmMs=0,switchPrewarms=0,floorClamps=0,idleWarmLoads=0,idleWarmMs=0,
@@ -3938,39 +2751,29 @@ function A.resetRuntime()
   return true
 end
 
-function A.invalidateGeneratedManifestMemo()
-  if extractor and type(extractor.invalidateManifestMemo)=="function" then
-    pcall(extractor.invalidateManifestMemo,mod)
-  end
-  -- Explicit generated-cache DELETE may occur without restarting the process.
-  -- Forget the acceleration proof in memory too; this does not delete anything.
-  fullInventoryMemo=nil;fullInventoryLoaded=false
-  fullInventoryDirty=false
-  if A._compactAction then A._compactAction.inventoryMemo={} end
-  if RuntimeMeshCache and type(RuntimeMeshCache.invalidateLua)=="function" then
-    pcall(RuntimeMeshCache.invalidateLua,FULL_INVENTORY_PATH)
-  end
-  return true
-end
 function A.gcStep(k)
   if type(collectgarbage)~="function" then return false end
   local ok=pcall(collectgarbage,"step",math.max(16,math.floor(tonumber(k) or 64)))
   return ok
 end
 
--- Legacy developer-facing "rebuild" hook. The absolute cache invariant forbids
--- deleting acquired/generated payload outside the explicit DELETE CACHE flow, so
--- this now performs a non-destructive runtime refresh only. It forgets validation
--- memos/GPU residency; stale source stamps are repaired on demand through the
--- preservation-aware extractor path, while valid saved bytes remain reusable.
+-- Forget every cached species so the next send-out re-extracts from the disc.
+-- Deletes the generated files as well as the in-memory scenes, so this is a
+-- real rebuild rather than just dropping GPU state.
 function A.rebuildSpecies()
   speciesCacheValidity={}
-  A.invalidateGeneratedManifestMemo()
-  if RuntimeMeshCache and type(RuntimeMeshCache.invalidateLua)=="function" then
-    pcall(RuntimeMeshCache.invalidateLua)
+  local removed=0
+  if extractor and type(extractor.manifestPaths)=="function" and mod.cache then
+    local ok,paths=pcall(extractor.manifestPaths,mod)
+    if ok and type(paths)=="table" then
+      for _,path in ipairs(paths) do
+        if pcall(mod.cache.delete,mod.cache,path) then removed=removed+1 end
+      end
+    end
+    for dex=1,251 do pcall(mod.cache.delete,mod.cache,metadataCachePath(dex)) end
   end
   A.resetRuntime()
-  return true,0
+  return true,removed
 end
 
 local function battlerDex(game,battler)
@@ -3994,23 +2797,6 @@ local function resolveSlotMove(game,slot)
   return type(moves)=="table" and id~=nil and (moves[id] or moves[tostring(id)]) or nil
 end
 
-local function sourceMoveNumber(game,id,move)
-  local n=tonumber(id)
-  if not n and type(move)=="table" then n=tonumber(move.index or move.number or move.moveId) end
-  if n then return n end
-  local order=game and game.data and game.data.gen2Constants and game.data.gen2Constants.moveOrder
-  if type(order)=="table" and id~=nil then
-    local reverse=A._sourceMoveOrderIndex[order]
-    if not reverse then
-      reverse={}
-      for i,key in ipairs(order) do if reverse[key]==nil then reverse[key]=i end end
-      A._sourceMoveOrderIndex[order]=reverse
-    end
-    return reverse[id]
-  end
-  return nil
-end
-
 local function requiredActionKeys(game,battler)
   local wanted={damage=true,faint=true}
   local mon=type(battler)=="table" and (battler.mon or battler) or nil
@@ -4025,175 +2811,48 @@ local function requiredActionKeys(game,battler)
   return out
 end
 
--- A normal Continue/reload does not need every PKX action bank the species owns.
--- Retail Waza data can select a less-common body row (physicalB, damageHeavy,
--- extra*, etc.), so include those rows when the already-cached move source tells
--- us about them. This remains read-only: a missing MoveFX bank is not extracted
--- merely to decide which Pokemon actions should be warm.
-requiredActionNames=function(game,battler)
-  local wanted={idle=true};local strict={}
-  if battler then
-    for _,key in ipairs(requiredActionKeys(game,battler)) do wanted[key]=true end
-  else
-    -- New Game has no concrete party rows yet. Keep the common retail battle
-    -- quartet ready without turning starter setup into an all-actions bake.
-    wanted.damage=true;wanted.faint=true;wanted.physicalA=true;wanted.specialA=true
-  end
-  local mon=type(battler)=="table" and (battler.mon or battler) or nil
-  local slots=mon and mon.moves or (type(battler)=="table" and battler.moves)
-  local extractorRef=V.MoveFXExtractor
-  local models=V.CurrentSpriteModels
-  local phasePolicy=V.WazaPhasePolicy
-  local dex=battlerDex(game,battler)
-  if type(slots)=="table" and extractorRef and type(extractorRef.peek)=="function"
-      and models and type(models.sourceNativeSlot)=="function" then
-    for _,slot in pairs(slots) do
-      local move=resolveSlotMove(game,slot)
-      local id=type(slot)=="table" and (slot.id or slot.moveId or (type(slot.move)~="table" and slot.move)) or slot
-      if id==nil and type(move)=="table" then id=move.id or move.index or move.number end
-      if id~=nil then
-        local okSpec,spec=pcall(extractorRef.peek,id,move)
-        if okSpec and type(spec)=="table" then
-          local selectionId=sourceMoveNumber(game,id,move)
-          if phasePolicy and type(phasePolicy.select)=="function" then
-            local okSelected,selected=pcall(phasePolicy.select,spec,{moveId=selectionId,dex=dex,stage="attack"})
-            if okSelected and type(selected)=="table" then spec=selected end
-          end
-          for _,role in ipairs({"attack","damage"}) do
-            local okSlot,name=pcall(models.sourceNativeSlot,models,spec,role)
-            if okSlot and type(name)=="string" and name~="" then
-              wanted[name]=true
-              -- A Waza sequenceKind is an explicit source row selector. Keep its
-              -- preparation strict so a missing extra*/specialC/etc sidecar can
-              -- never be masked by a generic family fallback.
-              strict[name]=true
-            end
-          end
-        end
-      end
-    end
-  end
-  local out={};for name in pairs(wanted) do out[#out+1]=name end;table.sort(out)
-  return out,strict
-end
-
-ensureRequiredActionInventory=function(dex,variant,game,battler,progress)
-  local names,strict=requiredActionNames(game,battler)
-  local candidates={}
-  for _,name in ipairs(names) do
-    if strict and strict[name] then candidates[name]={name}
-    else candidates[name]=NATIVE_FALLBACKS[name] or {name} end
-  end
-  return ensureActionSubset(dex,variant,names,progress,candidates)
-end
-
-function A._requiredModelSignature(game,battler)
-  local identity=type(A.sessionCacheIdentity)=="function" and A.sessionCacheIdentity()
-    or ("required-session|"..tostring(sessionEpoch))
-  local names,strict=requiredActionNames(game,battler)
-  local keys={}
-  for _,name in ipairs(names) do keys[#keys+1]=name..(strict[name] and "!exact" or "") end
-  return tostring(identity).."|"..table.concat(keys,",")
-end
-
-function A._requiredSignatureReady(key,signature)
-  local rec=requiredSessionPrepared[key]
-  if rec==signature then return true end -- compatibility with any in-flight v1 state
-  return type(rec)=="table" and rec[signature]==true
-end
-
-function A._noteRequiredSignature(key,signature)
-  local rec=requiredSessionPrepared[key]
-  if type(rec)~="table" then
-    local prior=type(rec)=="string" and rec or nil
-    rec={};requiredSessionPrepared[key]=rec
-    if prior then rec[prior]=true end
-  end
-  rec[signature]=true
-end
-
 local function warmActionKey(scene,key)
-  if not (scene and key) then return false,"action scene unavailable",key end
-  local seen={};local name=key
-  while name do
-    if seen[name] then return false,"cyclic action alias: "..tostring(name),name end
-    seen[name]=true
-    local entry,why=materializeSceneAction(scene,name)
-    if not entry then return false,why,name end
-    if not entry.alias then
-      -- An alias stub alone is never readiness. Every page of the actual owner
-      -- must exist before startup/battle preparation can certify this selector.
-      local ready=type(entry.groups)=="table" and #entry.groups>0
-      if type(entry.pages)=="table" and #entry.pages>0 then
-        ready=true
-        for _,page in ipairs(entry.pages) do
-          if not (type(page.groups)=="table" and #page.groups>0) then ready=false;break end
-        end
-      end
-      if not ready then return false,"native action has no drawable groups: "..tostring(name),name end
-      perf.actionPrewarms=perf.actionPrewarms+1
-      return true,nil,name
-    end
-    name=tostring(entry.alias)
+  if not (scene and key and scene.actionSpecs and scene.actionSpecs[key]) then return false end
+  if scene.actions and scene.actions[key] then return true end
+  local entry=materializeSceneAction(scene,key)
+  local guard=0
+  while entry and entry.alias and guard<8 do
+    entry=materializeSceneAction(scene,tostring(entry.alias));guard=guard+1
   end
-  return false,"action alias target unavailable",key
+  if entry then perf.actionPrewarms=perf.actionPrewarms+1;return true end
+  return false
 end
 
 local function warmRequiredActions(scene,game,battler)
   local warmed=0
-  for _,key in ipairs(requiredActionNames(game,battler)) do
+  for _,key in ipairs(requiredActionKeys(game,battler)) do
     if warmActionKey(scene,key) then warmed=warmed+1 end
   end
   return warmed
 end
 
-function A.queueSceneAction(scene,key)
-  if not (scene and key and scene.actionSpecs and scene.actionSpecs[key])
-      or (scene.actions and scene.actions[key]) then return false end
-  local id=tostring(scene.dex or "?")..":"..key
-  if actionWarmSeen[id] then return false end
-  actionWarmSeen[id]=true
-  actionWarmQueue[#actionWarmQueue+1]={scene=scene,key=key,id=id}
-  return true
-end
 local function queueRequiredActions(scene,game,battler)
   if not scene then return 0 end
   local added=0
-  for _,key in ipairs(requiredActionNames(game,battler)) do
-    if A.queueSceneAction(scene,key) then added=added+1 end
+  for _,key in ipairs(requiredActionKeys(game,battler)) do
+    if scene.actionSpecs and scene.actionSpecs[key] and not (scene.actions and scene.actions[key]) then
+      local id=tostring(scene.dex or "?")..":"..key
+      if not actionWarmSeen[id] then
+        actionWarmSeen[id]=true
+        actionWarmQueue[#actionWarmQueue+1]={scene=scene,key=key,id=id}
+        added=added+1
+      end
+    end
   end
   return added
 end
 
-function A.pumpActionPrewarm(maxJobs,milliseconds)
+function A.pumpActionPrewarm(maxJobs)
   maxJobs=math.max(1,math.floor(tonumber(maxJobs) or 1))
-  if #actionWarmQueue==0 and not A._actionWarmTask then return 0,0 end
+  if #actionWarmQueue==0 then return 0,0 end
   local clock=(love and love.timer and love.timer.getTime) or os.clock
   local now=clock and clock() or 0
-  -- An already-started task resumes on consecutive rendered frames. Applying
-  -- the job-start cooldown to each 3ms slice turns milliseconds of CPU work
-  -- into seconds of wall time on mobile.
-  if not A._actionWarmTask and now>0 and now<actionWarmNextAt then return 0,#actionWarmQueue end
-  if WorkBudget then
-    if not A._actionWarmTask then
-      local row=table.remove(actionWarmQueue,1)
-      if not row then return 0,0 end
-      A._actionWarmCurrent=row
-      A._actionWarmTask=WorkBudget.new(function()
-        if not (row.scene and scenes[row.scene.dex]==row.scene) then return false,"scene released" end
-        return warmActionKey(row.scene,row.key)
-      end,"Battle action "..row.id)
-    end
-    local ok,state,result=WorkBudget.resume(A._actionWarmTask,tonumber(milliseconds) or 3)
-    if ok and state~="done" then return 0,#actionWarmQueue+1 end
-    if A._actionWarmCurrent then actionWarmSeen[A._actionWarmCurrent.id]=nil end
-    A._actionWarmCurrent=nil;A._actionWarmTask=nil
-    local done=(ok and result==true) and 1 or 0
-    actionWarmNextAt=clock()+(MOBILE_RUNTIME and 0.16 or 0.07)
-    perf.deferredActionWarms=(perf.deferredActionWarms or 0)+done
-    return done,#actionWarmQueue
-  end
-  -- Compatibility for hosts which deliberately omit the cooperative module.
+  if now>0 and now<actionWarmNextAt then return 0,#actionWarmQueue end
   local done=0
   while done<maxJobs and #actionWarmQueue>0 do
     local row=table.remove(actionWarmQueue,1)
@@ -4202,215 +2861,66 @@ function A.pumpActionPrewarm(maxJobs,milliseconds)
       if row.scene and scenes[row.scene.dex]==row.scene and warmActionKey(row.scene,row.key) then done=done+1 end
     end
   end
-  actionWarmNextAt=clock()+(MOBILE_RUNTIME and 0.16 or 0.07)
+  local after=clock and clock() or now
+  actionWarmNextAt=(after>0 and after or now)+(ANDROID_RUNTIME and 0.16 or 0.07)
   perf.deferredActionWarms=(perf.deferredActionWarms or 0)+done
   return done,#actionWarmQueue
 end
 
--- Forward-declare BOTH worker functions: the cooperative closure below is
--- defined before their bodies. Otherwise a genuinely cold model calls a nil
--- global prewarmBaseBattler (resident-body tests never entered that branch).
-local prewarmBattler,prewarmBaseBattler
+local prewarmBattler
 
-local function queueBattleWarmRow(battle,side,battler,priority)
+local function queueBattleWarmRow(battle,side,battler)
   local game=battle and battle.game
   local dex=battlerCacheKey(game,battler)
   if not (game and battler and dex and Dex.supported(dex)) then return false end
   local variant=monVariant(battler)
   local key=tostring(modelKey(dex,variant))
-  -- A resident storage-profile body is not battle-ready by itself. Summary/PC
-  -- can leave the exact model resident while this battler's damage/faint/move
-  -- subset is still absent. Only the exact required-model predicate may suppress
-  -- the cooperative battle job.
-  if type(A.requiredModelReady)=="function" and A.requiredModelReady(dex,variant,game,battler) then return false end
-  -- One model/action plan may be requested first by BattleRuntime's native lead
-  -- prewarm and again milliseconds later by DoublesPresenter under its lane id.
-  -- Deduplicate by exact model + required-action signature, not by caller-side
-  -- label. Same-species battlers with DIFFERENT movesets still get independent
-  -- plans; identical plans share one cooperative build/upload job.
-  local failure=pendingExtract[modelKey(dex,variant)]
-  if failure and retryClock()<failure.retryAt then return false end
-  local id=key..":"..A._requiredModelSignature(game,battler)
-  -- The incoming slot can be the SAME plan the bench worker is already loading.
-  -- Promote that live coroutine in place before considering preemption. Cancelling
-  -- it discards its staged meshes/source progress and restarts the exact work the
-  -- visible send-out is waiting for. Other critical plans may still preempt it.
-  if priority and battleWarmCurrent and battleWarmCurrent.id==id then
-    battleWarmCurrent.priority=true
-    return false
-  end
-  if priority and battleWarmTask and battleWarmCurrent and not battleWarmCurrent.priority
-      and WorkBudget then
-    local displaced=battleWarmCurrent
-    WorkBudget.cancel(battleWarmTask)
-    battleWarmTask=nil;battleWarmCurrent=nil
-    table.insert(battleWarmQueue,displaced)
-    perf.battlePreemptions=(perf.battlePreemptions or 0)+1
-  end
-  if battleWarmSeen[id] then
-    -- A switch that is becoming visible outranks speculative bench preparation.
-    -- Promote its already-queued row instead of waiting behind the rest of a
-    -- six-Pokemon roster. A matching running job was promoted in place above.
-    if priority then
-      for i,row in ipairs(battleWarmQueue) do
-        if row and row.id==id then
-          row.priority=true;table.remove(battleWarmQueue,i);table.insert(battleWarmQueue,1,row);break
-        end
-      end
-    end
-    return false
-  end
+  if A.peek("cbe-battle-deferred",dex,variant).resident then return false end
+  local id=tostring(side or "?")..":"..key
+  if battleWarmSeen[id] then return false end
   battleWarmSeen[id]=true
-  local row={battle=battle,game=game,side=side,battler=battler,dex=dex,variant=variant,id=id,priority=priority==true}
-  if priority then table.insert(battleWarmQueue,1,row) else battleWarmQueue[#battleWarmQueue+1]=row end
+  battleWarmQueue[#battleWarmQueue+1]={battle=battle,game=game,side=side,battler=battler,dex=dex,variant=variant,id=id}
   return true
 end
 
 function A.cancelBattlePrewarm(reason)
   if battleWarmTask and WorkBudget then pcall(WorkBudget.cancel,battleWarmTask) end
   battleWarmTask=nil;battleWarmCurrent=nil;battleWarmQueue={};battleWarmSeen={}
-  if A._actionWarmTask and WorkBudget then pcall(WorkBudget.cancel,A._actionWarmTask) end
-  A._actionWarmTask=nil;A._actionWarmCurrent=nil
-  actionWarmQueue={};actionWarmSeen={};actionWarmNextAt=0
   return true
 end
 
-function A.queueBattlePrewarm(battle,side,battler,priority)
-  if side then return queueBattleWarmRow(battle,side,battler,priority==true) and 1 or 0 end
+function A.queueBattlePrewarm(battle,side,battler)
+  if side then return queueBattleWarmRow(battle,side,battler) and 1 or 0 end
   local n=0
   for _,name in ipairs({"player","enemy"}) do
     local b=battle and battle[name]
-    if b and queueBattleWarmRow(battle,name,b,priority==true) then n=n+1 end
+    if b and queueBattleWarmRow(battle,name,b) then n=n+1 end
   end
   return n
-end
-
-function A._knownBattleParty(battle,side)
-  if type(battle)~="table" then return nil end
-  if side=="player" then
-    return battle.playerParty or battle.party
-      or (type(battle.player)=="table" and battle.player.party)
-  end
-  return battle.enemyParty
-    or (type(battle.trainer)=="table" and battle.trainer.party)
-    or (type(battle.enemy)=="table" and battle.enemy.party)
-end
-
--- Android must start preparing every KNOWN participant as soon as the battle
--- owns a stable arena. The previous active-pair-only policy left bench species
--- genuinely cold until battle.battler_switched; Mt. Battle exposes six-member
--- opponent rosters, so a late native species (for example Jynx in Gen I) could
--- hit source extraction on the visible send-out and appear to freeze/crash.
--- This is bounded to the two actual parties (normally <=12 rows), deduplicated by
--- model + exact required-action signature, and never expands to a 386-model bake.
-function A.queueBattleRosterPrewarm(battle)
-  local n=0
-  -- Opponent bench first: the player's party already receives startup/overworld
-  -- warming, while an encounter roster is often unknown until battle creation.
-  for _,side in ipairs({"enemy","player"}) do
-    local party=A._knownBattleParty(battle,side)
-    if type(party)=="table" then
-      for i=1,math.min(6,#party) do
-        local battler=party[i]
-        if battler and queueBattleWarmRow(battle,side,battler,false) then n=n+1 end
-      end
-    end
-  end
-  return n
-end
-
--- Memory-only failure report for the native readiness boundary. This never
--- probes disk and never consumes/retries the pending source operation.
-function A.battlePreparationFailure(dex,variant)
-  local row=pendingExtract[modelKey(dex,variant)]
-  if not row then return nil end
-  return {reason=row.reason,retryAt=row.retryAt}
-end
-
-function A.battlePrewarmStatus()
-  local current=battleWarmCurrent
-  local nextRow=battleWarmQueue[1]
-  local criticalBodies=0
-  if current and current.priority and current.phase=="body" then criticalBodies=1 end
-  for _,row in ipairs(battleWarmQueue) do
-    if row.priority and not A.peek("battle-status",row.dex,row.variant).resident then
-      criticalBodies=criticalBodies+1
-    end
-  end
-  return {
-    pending=#battleWarmQueue+(battleWarmTask and 1 or 0),
-    criticalBodies=criticalBodies,
-    queued=#battleWarmQueue,
-    currentDex=current and current.dex or nil,
-    currentSide=current and current.side or nil,
-    currentPhase=current and current.phase or nil,
-    nextDex=nextRow and nextRow.dex or nil,
-    nextSide=nextRow and nextRow.side or nil,
-  }
-end
-
--- Select all currently visible BODY jobs before their action banks. A complete
--- action plan for the first opponent must not block the other three send-outs.
--- Visible participants still outrank speculative six-member benches.
-function A._nextBattleWarmRow()
-  local index,score
-  for i,row in ipairs(battleWarmQueue) do
-    local body=A.peek("battle-prewarm",row.dex,row.variant).resident
-    local rank=(row.priority and 0 or 2)+(body and 1 or 0)
-    if not score or rank<score then index,score=i,rank end
-  end
-  return index and table.remove(battleWarmQueue,index) or nil
 end
 
 function A.pumpBattlePrewarm(milliseconds)
-  -- Desktop, Android and iOS use the same resumable path. All synchronous
-  -- draw/entry promotions are bypassed when the published service advertises it.
+  if not ANDROID_RUNTIME then return false,#battleWarmQueue end
   if not WorkBudget then return false,#battleWarmQueue end
   if not battleWarmTask then
-    if #battleWarmQueue>0 and A._actionWarmTask then
-      WorkBudget.cancel(A._actionWarmTask)
-      if A._actionWarmCurrent then
-        -- The exact plan will prepare required banks; retry a non-required bank
-        -- later, with no source/asset mutations beyond its cancelled staging.
-        table.insert(actionWarmQueue,1,A._actionWarmCurrent)
-      end
-      A._actionWarmTask=nil;A._actionWarmCurrent=nil
-    end
-    local row=A._nextBattleWarmRow()
+    local row=table.remove(battleWarmQueue,1)
     if not row then return false,0 end
     battleWarmCurrent=row
-    row.phase=A.peek("battle-prewarm",row.dex,row.variant).resident and "actions" or "body"
     battleWarmTask=WorkBudget.new(function()
-      if row.phase=="body" then
-        -- This phase publishes only this appearance's authentic body/idle.
-        -- Returning here creates a scheduling boundary before ANY action plan.
-        return prewarmBaseBattler(row.game,row.battler,row.side,true,WorkBudget.checkpoint)
-      end
-      if type(A.prepareRequiredModel)=="function" then
-        return A.prepareRequiredModel(row.dex,row.variant,row.game,row.battler,
-          WorkBudget.checkpoint,{pin=false})
-      end
-      return prewarmBattler(row.game,row.battler,row.side,true,false,true,WorkBudget.checkpoint)
-    end,"Battle "..row.phase.." "..tostring(row.dex).." / "..tostring(row.variant))
+      local ok,err=prewarmBattler(row.game,row.battler,row.side,true,false,true,WorkBudget.checkpoint)
+      if not ok then return false,err end
+      return true,"prepared"
+    end,"Battle model "..tostring(row.dex).." / "..tostring(row.variant))
   end
   local ok,state,result,why=WorkBudget.resume(battleWarmTask,tonumber(milliseconds) or 3)
   if not ok or state=="done" then
     local row=battleWarmCurrent
+    if row then battleWarmSeen[row.id]=nil end
     battleWarmTask=nil;battleWarmCurrent=nil
-    local success=ok and result~=false and result~=nil
-    if success and row then pendingExtract[modelKey(row.dex,row.variant)]=nil end
-    if success and row and row.phase=="body" then
-      -- Keep the exact-signature dedup reservation through the second phase.
-      -- A later send event can promote this same row without duplicating work.
-      row.phase="actions";table.insert(battleWarmQueue,row)
-      perf.battleBodiesPrepared=(perf.battleBodiesPrepared or 0)+1
-    else
-      if row then battleWarmSeen[row.id]=nil end
-      if not success then
-        local err=tostring((not ok and state) or why or "battle model preparation failed")
-        if row then pendingExtract[modelKey(row.dex,row.variant)]={retryAt=retryClock()+2,reason=err} end
-        log("warn","deferred battle model preparation failed: %s",err)
-      else perf.battlePlansPrepared=(perf.battlePlansPrepared or 0)+1 end
+    if not ok or result==false then
+      local err=tostring((not ok and state) or why or "battle model preparation failed")
+      if row then pendingExtract[modelKey(row.dex,row.variant)]={retryAt=retryClock()+2,reason=err} end
+      log("warn","deferred Android battle model preparation failed: %s",err)
     end
     return true,#battleWarmQueue
   end
@@ -4435,7 +2945,7 @@ prewarmBattler=function(game,battler,side,allowExtract,warmActions,queueActions,
   actor:release()
   return true,nil,actions
 end
-prewarmBaseBattler=function(game,battler,side,allowExtract,progress)
+local function prewarmBaseBattler(game,battler,side,allowExtract,progress)
   local dex=battlerCacheKey(game,battler)
   if not (dex and Dex.supported(dex)) then return false,"unsupported battler",nil end
   if A.peek("cbe-warm",dex,monVariant(battler)).resident then return true,nil,dex end
@@ -4494,8 +3004,8 @@ function A.prewarmInformation(game,battler,allowExtract,progress)
   if status.resident then return true,"resident",status.dex end
   local ok,err=prewarmBaseBattler(game,battler,"player",allowExtract,progress)
   if ok then
-    A.trimRuntimeMemory({game=game,keepParty=6,keepRecent=MOBILE_RUNTIME and 3 or 6,
-      softLimit=MOBILE_RUNTIME and 9 or 16})
+    A.trimRuntimeMemory({game=game,keepParty=6,keepRecent=ANDROID_RUNTIME and 3 or 6,
+      softLimit=ANDROID_RUNTIME and 9 or 16})
   end
   return ok,err,status.dex
 end
@@ -4552,7 +3062,7 @@ function A.pumpPartyPrewarm(game)
   -- Leave breathing room between species uploads. The work happens while the
   -- overworld is already interactive instead of stacking six models onto one
   -- battle/menu transition frame.
-  idleWarmNextAt=(t1>0 and t1 or now)+(MOBILE_RUNTIME and 0.55 or 0.20)
+  idleWarmNextAt=(t1>0 and t1 or now)+(ANDROID_RUNTIME and 0.55 or 0.20)
   if not ok and err then log("warn","Cached-party warm dex %s skipped: %s",tostring(row.dex),tostring(err)) end
   return ok,#idleWarmQueue
 end
@@ -4572,19 +3082,15 @@ local function releaseActionEntry(entry)
   for _,page in ipairs(entry.pages or {}) do if type(page)=="table" then releaseMeshes(page.groups) end end
 end
 
-A._releaseActionMeshes=releaseActionEntry
-
--- Validate/cache an action without keeping its large GPU bank resident. Compact
--- action inventories are already direct-upload binary and return immediately;
--- this legacy sidecar path remains only for older/storage-profile caches.
+-- Build the persistent float32 action sidecar but do not keep its large action
+-- GPU bank resident merely because the user asked for a disk cache bake. The
+-- next battle loads the exact same source animation through the binary fast path.
 local function bakeActionSidecar(scene,key,seen)
   if not (scene and key) then return false,"scene unavailable" end
   seen=seen or {}
   if seen[key] then return false,"cyclic action alias" end
   seen[key]=true
-  local compactOK=select(1,A._compactAction.specReady(scene,key,true,{}))
-  if compactOK then return true,"compact-ready" end
-  if A._runtimeActionCurrentGuardReady(scene,key) then return true,"ready" end
+  if runtimeActionSidecarReady(scene,key) then return true,"ready" end
   local spec=scene.actionSpecs and scene.actionSpecs[key]
   if type(spec)~="table" then return false,"action source unavailable" end
   local entry=materializeSceneAction(scene,key)
@@ -4596,7 +3102,7 @@ local function bakeActionSidecar(scene,key,seen)
   scene.actionSpecs=scene.actionSpecs or {};scene.actionSpecs[key]=spec
   if RuntimeMeshCache and RuntimeMeshCache.invalidateLua then RuntimeMeshCache.invalidateLua(runtimeActionManifestPath(scene.dex,key)) end
   if not aliasOk then return false,aliasWhy end
-  return A._runtimeActionCurrentGuardReady(scene,key),"baked"
+  return runtimeActionSidecarReady(scene,key),"baked"
 end
 
 function A.bakeInformationIdle(game,battler)
@@ -4667,11 +3173,9 @@ end
 local function hardCheckpoint()
   if hardClock()>=hardDeadline then coroutine.yield("cpu-slice") end
 end
-local function hardScene(dex,profile)
-  profile=profile=="storage" and "storage" or "full"
+local function hardScene(dex)
   if hardDiskScene and hardDiskScene.dex==dex
-      and hardDiskScene._runtimeStamp==expectedSpeciesStamp()
-      and (profile=="storage" or hardDiskScene.actionInventoryComplete~=false) then return hardDiskScene end
+      and hardDiskScene._runtimeStamp==expectedSpeciesStamp() then return hardDiskScene end
   hardDiskScene=nil
   if not speciesCacheReady(dex) then
     if not (extractor and extractor.extractSpecies and discOpener) then return nil,"source extractor unavailable" end
@@ -4681,22 +3185,14 @@ local function hardScene(dex,profile)
     -- cancelled bake is retryable; successful sidecars need not be rebuilt.
     local ok,out,why=pcall(extractSource,mod,disc,dex,
       {targetHeight=16.0,decodeMode=A.decodeMode,skinFix=A.skinFix,renderPassFilter=true,
-        actionProfile=profile,
         checkpoint=hardCheckpoint,progress=function(label) hardCacheState.phase=label;hardCheckpoint() end})
     if not ok or not out then return nil,tostring(why or out or "source extraction failed") end
     speciesCacheValidity[dex]=nil
     if RuntimeMeshCache and RuntimeMeshCache.invalidateLua then RuntimeMeshCache.invalidateLua(runtimeBasePath(dex)) end
     if not speciesCacheReady(dex) then return nil,"source revision validation failed" end
     hardCheckpoint()
-  elseif profile=="full" then
-    local variant=type(dex)=="string" and "shiny" or "normal"
-    local upgraded,why=ensureFullActionInventory(dex,variant,hardCheckpoint)
-    if not upgraded then return nil,why end
   end
   local scene,why=loadScene(dex,true,hardCheckpoint)
-  if scene and profile=="full" and scene.actionInventoryComplete==false then
-    return nil,"storage-only action inventory survived full hard-cache preparation"
-  end
   hardDiskScene=scene
   return scene,why
 end
@@ -4704,19 +3200,9 @@ local function hardPartyMetadata(dex,needsFilter)
   -- Party battle actors still need their authored slot/attachment timings.
   -- Preserve that cache preparation without constructing an Actor. Storage
   -- viewers never consume it, so do not inflate every boxed species' PKX.
-  -- Shiny action rows revisit this guard after the base row. Reuse the exact
-  -- validated compact metadata from that first check instead of rereading the
-  -- same Lua payload once per native action on high-latency cache backends.
-  local memoKey=tostring(dex)
-  local cached=sourceMetadata[memoKey]
-  if not (type(cached)=="table" and (tonumber(cached.revision) or 0)>=6
-      and cached.scaleSelector~=nil and (not needsFilter or validFilter(cached.shinyFilter))) then
-    cached=select(1,readLua(metadataCachePath(dex)))
-  end
-  if type(cached)=="table" and (tonumber(cached.revision) or 0)>=6
-    and cached.scaleSelector~=nil and (not needsFilter or validFilter(cached.shinyFilter)) then
-    sourceMetadata[memoKey]=cached;return true
-  end
+  local cached=select(1,readLua(metadataCachePath(dex)))
+  if type(cached)=="table" and (tonumber(cached.revision) or 0)>=1
+    and (not needsFilter or (cached.shinyFilter and validFilter(cached.shinyFilter)) or not cached.shinyFilter) then return true end
   if not (metadataReader and type(metadataReader.inspectSpecies)=="function") then
     return not needsFilter,needsFilter and "source shiny metadata reader unavailable" or nil
   end
@@ -4725,30 +3211,13 @@ local function hardPartyMetadata(dex,needsFilter)
   if not opened or not disc then return false,"party metadata disc unavailable" end
   local ok,value,why=pcall(metadataReader.inspectSpecies,disc,dexNumber(dex),type(dex)=="string" and "shiny" or "normal",nil,{progress=hardCheckpoint})
   if not ok or not value then return false,tostring(why or value or "party metadata unavailable") end
-  if needsFilter and not validFilter(value.shinyFilter) then return false,"source shiny parameters missing" end
+  if needsFilter and (value.shinyFilter and not validFilter(value.shinyFilter)) then return false,"source shiny parameters missing" end
   if not writeMetadataCache(dex,value) then return false,"party metadata write failed" end
   sourceMetadata[tostring(dex)]=value
   return true
 end
 local function runHardRow(row)
-  -- Hard Cache Save follows the same bounded ownership as battle entry: keep the
-  -- canonical species body on its storage profile, then add only the exact
-  -- action rows represented by this queue. Existing legacy/full caches are
-  -- accepted unchanged by hardScene("storage").
-  --
-  -- Catalog tiers are model-library caches: exact source body + authored idle.
-  -- Battle action families stay selective/on-demand for the Pokemon that actually
-  -- enter battle. This keeps the 386 cache bounded and, critically, preserves a
-  -- user's already-complete catalog across releases instead of expanding it into
-  -- every possible action bank.
-  if row.kind=="catalog" then
-    local prepared,why=A.prepareStorageModel(row.dex,"normal",hardCheckpoint)
-    if not prepared then return false,why end
-    hardCacheState.bases=hardCacheState.bases+1
-    hardCacheState.storage=(hardCacheState.storage or 0)+1
-    return true,why or "catalog-ready"
-  end
-  local scene,why=hardScene(row.dex,"storage")
+  local scene,why=hardScene(row.dex)
   if not scene then return false,why end
   if row.kind=="base" or row.shiny then
     local prepared,why=hardPartyMetadata(row.dex,row.shiny and not Dex.rare[dexNumber(row.dex)])
@@ -4757,15 +3226,6 @@ local function runHardRow(row)
   end
   local key=row.kind=="storage" and "idle" or row.key
   local spec=scene.actionSpecs and scene.actionSpecs[key]
-  if row.kind=="action" and not spec then
-    local variant=type(row.dex)=="string" and "shiny" or "normal"
-    local candidateMap={}
-    candidateMap[key]=row.strict and {key} or (NATIVE_FALLBACKS[key] or {key})
-    local prepared,selectWhy=ensureActionSubset(dexNumber(row.dex),variant,{key},hardCheckpoint,candidateMap)
-    if not prepared then return false,selectWhy end
-    mergeSelectiveActionSpecs(scene,{key})
-    spec=scene.actionSpecs and scene.actionSpecs[key]
-  end
   local ok=true
   if spec then ok,why=bakeActionSidecar(scene,key)
   elseif not (row.optional or row.kind=="storage") then ok,why=false,"action source unavailable" end
@@ -4780,22 +3240,12 @@ local function runHardRow(row)
   return ok,why
 end
 
--- Build the exact disk-work rows separately from execution so the same plan can
--- be fingerprinted for cross-session reuse without opening the source disc or
--- touching a cache payload. Sorting is used only by the signature below; the
--- execution order remains party-first, then required actions, then box storage.
-local function buildHardCacheRows(game,scope)
-  local catalogLimits={catalog151=151,catalog251=251,catalog=386}
-  scope=(scope=="team" or scope=="full" or catalogLimits[scope]) and scope or "full"
-  local rows={}
-  local catalogLimit=catalogLimits[scope]
-  if catalogLimit then
-    for dex=1,catalogLimit do
-      if Dex.supported(dex) then rows[#rows+1]={kind="catalog",dex=dex,variant="normal"} end
-    end
-    return rows
-  end
-  if type(game)~="table" or type(game.save)~="table" then return rows end
+function A.queueHardCache(game,scope)
+  scope=scope=="team" and "team" or "full"
+  hardCacheTask=nil;hardDiskScene=nil
+  hardCacheQueue={};hardCacheGame=game
+  hardCacheState={running=false,total=0,done=0,failed=0,bases=0,actions=0,storage=0,last=nil,scope=scope}
+  if type(game)~="table" or type(game.save)~="table" then return 0 end
   local save=game.save
   local party=save.party or save.pokemon or save.team
   local byDex,partyOrder,storageOrder={}, {}, {}
@@ -4810,18 +3260,14 @@ local function buildHardCacheRows(game,scope)
         if dex and Dex.supported(dex) then
           local row=byDex[dex]
           if not row then
-            row={dex=dex,battler=mon,actions={},strictActions={},party=true}
+            row={dex=dex,battler=mon,actions={},party=true}
             byDex[dex]=row;partyOrder[#partyOrder+1]=row
           else
             row.party=true
             if not row.battler then row.battler=mon end
           end
           row.shiny=row.shiny or monVariant(mon)=="shiny"
-          local names,strict=requiredActionNames(game,mon)
-          for _,key in ipairs(names) do
-            row.actions[key]=true
-            if strict and strict[key] then row.strictActions[key]=true end
-          end
+          for _,key in ipairs(requiredActionKeys(game,mon)) do row.actions[key]=true end
         end
       end
     end
@@ -4856,60 +3302,24 @@ local function buildHardCacheRows(game,scope)
   end
 
   for _,row in ipairs(partyOrder) do
-    rows[#rows+1]={kind="base",dex=row.dex,battler=row.battler,shiny=row.shiny}
+    hardCacheQueue[#hardCacheQueue+1]={kind="base",dex=row.dex,battler=row.battler,shiny=row.shiny}
   end
   for _,row in ipairs(partyOrder) do
     -- Information surfaces upgrade the compact base body to the authored idle
     -- bank after first pixel. Bake that exact bank during Hard Cache Save too;
     -- otherwise a supposedly hard-cached party can still hitch seconds later
     -- when Summary/PC/Pokedex first asks for idle animation.
-    rows[#rows+1]={kind="action",dex=row.dex,key="idle",battler=row.battler,optional=true}
-    local actionKeys={};for key in pairs(row.actions) do if key~="idle" then actionKeys[#actionKeys+1]=key end end
-    table.sort(actionKeys)
-    for _,key in ipairs(actionKeys) do
-      rows[#rows+1]={kind="action",dex=row.dex,key=key,battler=row.battler,shiny=row.shiny,
-        strict=row.strictActions and row.strictActions[key]==true}
+    hardCacheQueue[#hardCacheQueue+1]={kind="action",dex=row.dex,key="idle",battler=row.battler,optional=true}
+    for _,key in ipairs({"damage","faint","physicalA","specialA"}) do
+      if row.actions[key] then hardCacheQueue[#hardCacheQueue+1]={kind="action",dex=row.dex,key=key,battler=row.battler,shiny=row.shiny} end
     end
   end
   for _,row in ipairs(storageOrder) do
-    rows[#rows+1]={kind="storage",dex=row.dex,battler=row.battler,shiny=row.shiny}
+    hardCacheQueue[#hardCacheQueue+1]={kind="storage",dex=row.dex,battler=row.battler,shiny=row.shiny}
   end
-  return rows
-end
 
-function A.hardCacheSignature(game,scope)
-  local catalogLimits={catalog151=151,catalog251=251,catalog=386}
-  scope=(scope=="team" or scope=="full" or catalogLimits[scope]) and scope or "full"
-  local catalogLimit=catalogLimits[scope]
-  if catalogLimit then
-    -- Keep the persisted plan proof compact and save-independent. Changing the
-    -- user's party must not turn an already-complete catalog tier into a full
-    -- row-by-row revalidation pass on the next launch.
-    local contract="normal:storage"
-    return "pokemon-hard-cache-plan-v1|stamp="..tostring(expectedSpeciesStamp())
-      .."|scope="..scope.."|rows=001-"..tostring(catalogLimit)..":"..contract
-  end
-  local rows=buildHardCacheRows(game,scope);local keys={}
-  for _,row in ipairs(rows) do
-    keys[#keys+1]=table.concat({
-      tostring(row.kind or ""),tostring(row.dex or ""),tostring(row.key or ""),
-      row.shiny and "shiny" or "normal",row.optional and "optional" or "required",
-    },":")
-  end
-  table.sort(keys)
-  return "pokemon-hard-cache-plan-v1|stamp="..tostring(expectedSpeciesStamp())
-    .."|scope="..scope.."|rows="..table.concat(keys,",")
-end
-
-function A.queueHardCache(game,scope)
-  local catalogLimits={catalog151=151,catalog251=251,catalog=386}
-  scope=(scope=="team" or scope=="full" or catalogLimits[scope]) and scope or "full"
-  hardCacheTask=nil;hardDiskScene=nil
-  hardCacheQueue=buildHardCacheRows(game,scope);hardCacheGame=game
-  hardCacheState={running=false,total=0,done=0,failed=0,bases=0,actions=0,storage=0,fullBattle=0,last=nil,scope=scope,head=1,tail=#hardCacheQueue}
-
-  hardCacheState.total=hardCacheState.tail;hardCacheState.running=hardCacheState.tail>0
-  return hardCacheState.tail
+  hardCacheState.total=#hardCacheQueue;hardCacheState.running=#hardCacheQueue>0
+  return #hardCacheQueue
 end
 
 function A.pumpHardCache(game,maxJobs)
@@ -4917,70 +3327,37 @@ function A.pumpHardCache(game,maxJobs)
   -- Cooperative slices keep parsing/floor analysis/binary packing responsive.
   -- A source extractor call or an individual host read/write is indivisible;
   -- this is a CPU target, not a promise of a hard real-time frame bound.
-  hardDeadline=hardClock()+(MOBILE_RUNTIME and 0.003 or 0.006)
+  hardDeadline=hardClock()+(ANDROID_RUNTIME and 0.003 or 0.006)
   local processed=0
-  -- Full cache plans can contain hundreds of party/action/storage rows. Advance a
-  -- monotonic head instead of table.remove(...,1), which shifts the entire
-  -- remaining array on every completed row and turns queue bookkeeping into
-  -- O(n^2) work on the devices where extraction/storage is already slowest.
-  while processed<maxJobs and hardCacheState.head<=hardCacheState.tail do
-    local row=hardCacheQueue[hardCacheState.head]
+  while processed<maxJobs and #hardCacheQueue>0 do
+    local row=hardCacheQueue[1]
     if not hardCacheTask then hardCacheTask=coroutine.create(function() return runHardRow(row) end) end
     local resumed,ok,why=coroutine.resume(hardCacheTask)
     if resumed and coroutine.status(hardCacheTask)~="dead" then break end
     hardCacheTask=nil
-    hardCacheQueue[hardCacheState.head]=nil;hardCacheState.head=hardCacheState.head+1
+    table.remove(hardCacheQueue,1)
     processed=processed+1
     hardCacheState.last=row.kind..":"..tostring(row.dex)..(row.key and (":"..row.key) or "")
     if resumed and ok then hardCacheState.done=hardCacheState.done+1
     else
+      hardCacheState.failed=hardCacheState.failed+1
       hardDiskScene=nil
-      local reason=tostring(resumed and why or ok)
-      row._hardCacheRetries=(tonumber(row._hardCacheRetries) or 0)+1
-      if row._hardCacheRetries<=1 then
-        -- Retry only the failed row once. Mobile storage/source bridges can
-        -- transiently fail a single host call; successful payload already on
-        -- disk is preserved and the retry validators reuse it. This does not
-        -- inflate the logical job count and keeps queue bookkeeping O(1).
-        hardCacheState.retried=(hardCacheState.retried or 0)+1
-        hardCacheState.lastRetry=hardCacheState.last
-        hardCacheState.lastRetryError=reason
-        hardCacheState.tail=hardCacheState.tail+1
-        hardCacheQueue[hardCacheState.tail]=row
-        log("warn","Hard Cache Save %s failed once; retrying: %s",hardCacheState.last,reason)
-      else
-        hardCacheState.failed=hardCacheState.failed+1
-        hardCacheState.lastFailed=hardCacheState.last
-        hardCacheState.lastError=reason
-        log("warn","Hard Cache Save %s failed after retry: %s",hardCacheState.last,hardCacheState.lastError)
-      end
+      log("warn","Hard Cache Save %s failed: %s",hardCacheState.last,tostring(resumed and why or ok))
     end
     if hardClock()>=hardDeadline then break end
   end
-  local pending=math.max(0,hardCacheState.tail-hardCacheState.head+1)
-  hardCacheState.running=pending>0
-  if not hardCacheState.running then
-    if hardCacheState.scope=="catalog" and not hardCacheState.inventoryFlushed then
-      -- Acceleration-only metadata: one bounded write after the 386-row pass,
-      -- never one write per species. A failure here cannot invalidate the model
-      -- payloads themselves; the next catalog pass will simply deep-validate.
-      hardCacheState.inventoryFlushed=true
-      if type(A.flushInventoryCertificate)=="function" then pcall(A.flushInventoryCertificate) end
-    end
-    hardDiskScene=nil;hardCacheQueue={};hardCacheState.head=1;hardCacheState.tail=0
-  end
-  return {processed=processed,pending=pending,running=hardCacheState.running,done=hardCacheState.done,failed=hardCacheState.failed}
+  hardCacheState.running=#hardCacheQueue>0
+  if not hardCacheState.running then hardDiskScene=nil end
+  return {processed=processed,pending=#hardCacheQueue,running=hardCacheState.running,done=hardCacheState.done,failed=hardCacheState.failed}
 end
 
 function A.cancelHardCache()
   if hardCacheTask then sourceBusy=false end
-  hardCacheTask=nil;hardDiskScene=nil;hardCacheQueue={};hardCacheGame=nil;hardCacheState.head=1;hardCacheState.tail=0;hardCacheState.running=false
+  hardCacheTask=nil;hardDiskScene=nil;hardCacheQueue={};hardCacheGame=nil;hardCacheState.running=false
 end
 
 function A.hardCacheStatus()
-  return {running=hardCacheState.running,pending=math.max(0,(hardCacheState.tail or 0)-(hardCacheState.head or 1)+1),total=hardCacheState.total,done=hardCacheState.done,failed=hardCacheState.failed,bases=hardCacheState.bases,actions=hardCacheState.actions,storage=hardCacheState.storage or 0,fullBattle=hardCacheState.fullBattle or 0,last=hardCacheState.last,
-    lastFailed=hardCacheState.lastFailed,lastError=hardCacheState.lastError,retried=hardCacheState.retried or 0,
-    lastRetry=hardCacheState.lastRetry,lastRetryError=hardCacheState.lastRetryError,phase=hardCacheState.phase,scope=hardCacheState.scope}
+  return {running=hardCacheState.running,pending=#hardCacheQueue,total=hardCacheState.total,done=hardCacheState.done,failed=hardCacheState.failed,bases=hardCacheState.bases,actions=hardCacheState.actions,storage=hardCacheState.storage or 0,last=hardCacheState.last,phase=hardCacheState.phase,scope=hardCacheState.scope}
 end
 
 function A.cancelPartyPrewarm()
@@ -4994,9 +3371,11 @@ function A.prewarmParty(game)
   return A.queuePartyPrewarm(game)
 end
 
--- Plan active bodies and the known roster. The normal runtime uses deferCold:
--- entry is memory-only and the post-frame scheduler performs actual preparation.
--- Explicit eager callers/legacy integrations keep the established API below.
+-- Hard battle-entry readiness gate. The active pair is prepared before CBE
+-- opens its arena world, including the opponent that cannot be known at
+-- game.ready. If an opponent was not imported yet we permit source extraction
+-- here: a single transition hold is preferable to an empty slot followed by a
+-- multi-second pop-in on the visible send-out frame.
 function A.prewarmBattle(battle,opts)
   opts=type(opts)=="table" and opts or {}
   local allowExtract=opts.allowExtract~=false
@@ -5006,45 +3385,36 @@ function A.prewarmBattle(battle,opts)
   local clock=(love and love.timer and love.timer.getTime) or os.clock
   local t0=clock and clock() or 0
   local out={ready=0,failed=0,actions=0,rosterReady=0,rosterActions=0,errors={}}
+  local seen={}
 
-  -- Active battlers outrank speculative bench jobs, without doing uploads here.
+  -- The two visible battlers are mandatory. An uncached active opponent may be
+  -- extracted here so any unavoidable work is paid behind the transition,
+  -- never on its first rendered send-out frame.
   for _,side in ipairs({"player","enemy"}) do
     local battler=battle and battle[side]
     if battler then
-      local dex=battlerCacheKey(game,battler)
-      local ok,err,actions
-      if deferCold and WorkBudget then
-        ok=dex and A.peek("battle-entry",dex,monVariant(battler)).resident or false
-        err=not ok and "pending cooperative preparation" or nil
-        actions=0
-        if queueBattleWarmRow(battle,side,battler,true) then
-          out.deferred=(out.deferred or 0)+1
-        end
-      else
-        -- Explicit compatibility/preparation callers retain the old eager API;
-        -- ordinary battle runtime always opts into the nonblocking path above.
-        ok,err,actions=prewarmBattler(game,battler,side,allowExtract,false)
-      end
+      local dex=battlerCacheKey(game,battler);if dex then seen[dex]=true end
+      -- Every platform pays only the base body/texture upload at battle.started
+      -- and spreads native damage/faint/move-bank uploads across stable battle
+      -- frames. This keeps exact source actions while avoiding a single
+      -- multi-bank main-thread spike on the transition boundary.
+      local ok,err,actions=prewarmBattler(game,battler,side,allowExtract,false)
       if ok then
         out.ready=out.ready+1
         out.deferredActions=(out.deferredActions or 0)+(tonumber(actions) or 0)
       else
         out.failed=out.failed+1;out.errors[side]=tostring(err)
-        if deferCold and not WorkBudget and queueBattleWarmRow(battle,side,battler,true) then
+        if deferCold and queueBattleWarmRow(battle,side,battler) then
           out.deferred=(out.deferred or 0)+1
         end
       end
     end
   end
 
-  -- Do not bulk-upload a six-model bench on the battle.started call itself. On
-  -- all deferred targets immediately schedule the complete known roster through
-  -- the cooperative worker. That gives Mt. Battle's future switch-ins the whole
-  -- preceding fight to finish source extraction/binary preparation instead of
-  -- discovering a cold species on its visible PokÃ© Ball release.
-  if (MOBILE_RUNTIME or (deferCold and WorkBudget)) and type(A.queueBattleRosterPrewarm)=="function" then
-    out.rosterQueued=A.queueBattleRosterPrewarm(battle)
-  else out.rosterQueued=0 end
+  -- Bench species no longer bulk-upload at battle.started on any platform.
+  -- Their packed base body is resolved at the authoritative switch seam; action
+  -- banks are then staged by the same bounded queue as the active pair. This
+  -- prevents a six-model roster from turning one scene transition into a wall.
   out.benchDeferred=true
 
   local t1=clock and clock() or t0
@@ -5059,19 +3429,11 @@ function A.prewarmSwitch(battle,side,battler,opts)
   local game=battle and battle.game
   battler=battler or (battle and side and battle[side])
   if not (game and battler) then return false,"missing replacement" end
-  if opts.deferCold==true and WorkBudget then
-    queueBattleWarmRow(battle,side,battler,true)
-    local dex=battlerCacheKey(game,battler)
-    local ready=dex and A.peek("battle-switch",dex,monVariant(battler)).resident or false
-    return ready,not ready and "pending cooperative preparation" or nil,0
-  end
   local ok,err,actions=prewarmBattler(game,battler,side,opts.allowExtract~=false,false)
   if ok then
     perf.switchPrewarms=(perf.switchPrewarms or 0)+1
   elseif opts.deferCold==true then
-    -- A replacement is now presentation-critical. If its speculative roster job
-    -- is still pending, move it to the head of the cooperative queue.
-    queueBattleWarmRow(battle,side,battler,true)
+    queueBattleWarmRow(battle,side,battler)
   end
   return ok,err,actions
 end
@@ -5115,7 +3477,8 @@ function A.peek(source,dex,variant)
   local resident=key and Dex.supported(n) and scenes[key]~=nil or false
   if resident and variant=="shiny" and not Dex.rare[n] then
     local metadata=sourceMetadata[tostring(key)]
-    resident=validFilter(metadata and metadata.shinyFilter)
+    -- Accept nil shiny filter as valid (means we use normal rendering for shiny)
+    resident=(metadata and metadata.shinyFilter) and validFilter(metadata.shinyFilter) or true
   end
   return {resident=resident,cached=resident,variant=variant,key=key}
 end
@@ -5127,8 +3490,8 @@ end
 
 
 -- MAIN-MENU SESSION CACHE -------------------------------------------------
--- Required session/disk caching covers the 251 normal species identities only.
--- Exact shiny source variants/colour recipes remain available on-demand.
+-- 502 colour identities share 270 source assets. Shared-body shinies still
+-- require their exact PKX colour recipe before either appearance is ready.
 function A.sessionCacheIdentity()
   return "session-models-v1|"..tostring(expectedSpeciesStamp()).."|"..tostring(sessionEpoch)
 end
@@ -5150,41 +3513,26 @@ end
 function A.persistentModelState(dex,variant,progress)
   local n=dexNumber(dex)
   if not (n and Dex.supported(n) and RuntimeMeshCache) then return false,"unsupported cache" end
-  variant=variant or "normal"
   local key=modelKey(n,variant)
   local checkpoint=progress or function()end
   local function missing(why)
     sessionPrepared[key]=nil;speciesCacheValidity[key]=nil
     return false,why
   end
-  if not materialTexgenReady(key) then return missing("material texgen compatibility") end
   local stamp=expectedSpeciesStamp()
-  if type(stamp)~="string" then return missing("source revision") end
+  if type(stamp)~="string" or sourceRevision(key)~=stamp then return missing("source revision") end
   -- Bypass positive filesystem/Lua memos at an explicit batch selection. A
   -- deleted binary or partial unit must become eligible again after a restart.
   if RuntimeMeshCache.invalidateLua then RuntimeMeshCache.invalidateLua(runtimeBasePath(key)) end
   local base=select(1,RuntimeMeshCache.readLua(runtimeBasePath(key)))
-  -- The runtime-base sidecar is committed only after decoding the canonical
-  -- species cache and embeds that cache's complete extractor stamp. Checking it
-  -- against today's expected stamp proves the same revision/options without a
-  -- separate host read of rev.txt for every species in a Quick/Full inventory
-  -- scan. A missing/stale sidecar falls through to preparation, whose
-  -- speciesCacheReady() still validates rev.txt before any source reuse/repair.
   if not runtimeBaseUsable(base,stamp,key,true) then return missing("base sidecars") end
-  -- Box-only Hard Cache units intentionally stop at base + idle. They are valid
-  -- information-viewer caches but must never certify Quick/Full battle reuse.
-  -- A party/session preparation upgrades them from the source before field use.
-  if base.actionInventoryComplete==false or tostring(base.actionProfile or "full")=="storage" then
-    return missing("storage-only action profile")
-  end
   local metadata=select(1,readLua(metadataCachePath(key)))
-  local shinyFilterRequired=variant=="shiny" and not Dex.rare[n]
   if not (type(metadata)=="table" and (tonumber(metadata.revision) or 0)>=4
-      and type(metadata.slots)=="table" and (not shinyFilterRequired or validFilter(metadata.shinyFilter))) then
-    return missing(shinyFilterRequired and "native/shiny metadata" or "native metadata")
+      and type(metadata.slots)=="table" and (Dex.rare[n] or (metadata.shinyFilter and validFilter(metadata.shinyFilter)) or not metadata.shinyFilter)) then
+    return missing("native/shiny metadata")
   end
   if type(base.actions)~="table" then return missing("action inventory") end
-  local scene={dex=key,_runtimeStamp=stamp,_diskOnly=true,groups=base.groups,actionSpecs=base.actions}
+  local scene={dex=key,_runtimeStamp=stamp,_diskOnly=true,groups=base.groups}
   local names={};for name in pairs(base.actions)do names[#names+1]=name end;table.sort(names)
   -- Refresh action manifests including aliases/pages before existing validators
   -- follow them. These files contain tiny descriptors, never vertex payloads.
@@ -5206,259 +3554,20 @@ function A.persistentModelState(dex,variant,progress)
   for _,name in ipairs(names)do
     checkpoint("Checking cached action "..n.." / "..tostring(name))
     refresh(name)
-    if not A._reusableActionPayloadReady(scene,name,true) then return missing("action "..tostring(name)) end
+    if not runtimeActionSidecarReady(scene,name) then return missing("action "..tostring(name)) end
   end
   for _,g in ipairs(base.groups)do
     if g.texture then
       local t=g.texture
       local expected=(tonumber(t.w) or 0)*(tonumber(t.h) or 0)*4
-      local info=t.path and generatedInfoValidated(t.path,true)
+      local info=t.path and (GeneratedAssets.revalidateInfo or GeneratedAssets.info)(t.path)
       if expected<=0 or not info or tonumber(info.size)~=expected then return missing("texture payload") end
     end
   end
   -- A later required-party warm pass can load just its existing binary scene.
   -- This flag certifies disk preparation, not GPU residency or a shiny actor.
   sourceMetadata[tostring(key)]=metadata;sessionPrepared[key]=stamp
-  -- Quick Cache only inventories normal full-action units. Dedicated rare shiny
-  -- geometry and ordinary shiny colour recipes remain exact and on-demand.
-  if variant=="normal" then pcall(noteFullInventory,n,stamp) end
   return true,"disk-complete"
-end
-
--- Lightweight catalog/storage completeness. Bulk Quick/Full/Mt. Battle cache
--- preparation needs a source-faithful body and authored information idle, not
--- every battle action the species could ever use. Keep this proof separate from
--- persistentModelState(), which remains the strict full-action validator for
--- callers that explicitly need the historical battle-complete contract.
-function A.storageModelState(dex,variant,progress)
-  local n=dexNumber(dex)
-  if not (n and Dex.supported(n) and RuntimeMeshCache) then return false,"unsupported cache" end
-  variant=variant or "normal"
-  local key=modelKey(n,variant)
-  if not materialTexgenReady(key) then return false,"material texgen compatibility" end
-  local checkpoint=progress or function()end
-  local stamp=expectedSpeciesStamp()
-  if type(stamp)~="string" then return false,"source revision" end
-  if RuntimeMeshCache.invalidateLua then RuntimeMeshCache.invalidateLua(runtimeBasePath(key)) end
-  local base=select(1,RuntimeMeshCache.readLua(runtimeBasePath(key)))
-  if not runtimeBaseUsable(base,stamp,key,true) then return false,"base sidecars" end
-  local metadata=select(1,readLua(metadataCachePath(key)))
-  local shinyFilterRequired=variant=="shiny" and not Dex.rare[n]
-  if not (type(metadata)=="table" and (tonumber(metadata.revision) or 0)>=4
-      and type(metadata.slots)=="table" and (not shinyFilterRequired or validFilter(metadata.shinyFilter))) then
-    return false,shinyFilterRequired and "native/shiny metadata" or "native metadata"
-  end
-  if type(base.actions)~="table" then return false,"action inventory" end
-  local scene={dex=key,_runtimeStamp=stamp,_diskOnly=true,groups=base.groups,actionSpecs=base.actions}
-  if base.actions.idle then
-    checkpoint("Checking cached idle "..n)
-    if RuntimeMeshCache.invalidateLua then
-      RuntimeMeshCache.invalidateLua(runtimeActionManifestPath(key,"idle"))
-      RuntimeMeshCache.invalidateLua(runtimeActionFloorPath(key,"idle"))
-    end
-    if not A._reusableActionPayloadReady(scene,"idle",true) then return false,"idle sidecar" end
-  end
-  for _,g in ipairs(base.groups or {})do
-    if g.texture then
-      local t=g.texture
-      local expected=(tonumber(t.w) or 0)*(tonumber(t.h) or 0)*4
-      local info=t.path and generatedInfoValidated(t.path,true)
-      if expected<=0 or not info or tonumber(info.size)~=expected then return false,"texture payload" end
-    end
-  end
-  sourceMetadata[tostring(key)]=metadata
-  if variant=="normal" then pcall(noteFullInventory,n,stamp) end
-  return true,"storage-complete"
-end
-
--- Read-only planning fast path. A matching positive certificate is sufficient
--- only to classify a normal species as "already cached" for batch selection.
--- It is NEVER consumed by actor acquisition/readiness: prepareSessionModel,
--- prepareRequiredModel and loadScene retain their existing authoritative
--- validation/repair semantics. Unknown/stale certificates fall through to the
--- deep validator once and are promoted only after that validator succeeds.
-function A.inventoryModelState(dex,variant,progress)
-  local n=dexNumber(dex)
-  variant=variant or "normal"
-  if not (n and Dex.supported(n)) then return false,"unsupported cache" end
-  -- Never let a normal-body proof certify a shiny appearance. Shared-body shiny
-  -- actors still require their exact GC6E01 colour recipe, while rare shinies
-  -- require their separate source archive; both stay on-demand.
-  if variant~="normal" then
-    inventoryStats.deep=inventoryStats.deep+1
-    return A.persistentModelState(n,variant,progress)
-  end
-  local stamp=expectedSpeciesStamp()
-  local value=loadFullInventory()
-  -- A positive inventory certificate predates the per-species texgen migration.
-  -- Do not let that tiny accelerator hide a missing capability marker forever;
-  -- affected old caches must fall through to deep validation/repair on the next
-  -- Quick/Full Cache pass.
-  local materialReady=materialTexgenReady(modelKey(n,variant))
-  local certificateCompatible=type(stamp)=="string" and type(value.stamp)=="string"
-    and (value.stamp==stamp or (A._speciesStampCompatible and A._speciesStampCompatible(value.stamp)))
-  if certificateCompatible and value.complete[n]==true and materialReady then
-    if value.stamp~=stamp then value.stamp=stamp;fullInventoryDirty=true end
-    inventoryStats.hits=inventoryStats.hits+1
-    return true,"inventory-certified"
-  end
-  inventoryStats.deep=inventoryStats.deep+1
-  local probe=type(A.storageModelState)=="function" and A.storageModelState or A.persistentModelState
-  local ready,why=probe(n,variant,progress)
-  if ready and type(stamp)=="string" then pcall(noteFullInventory,n,stamp) end
-  return ready,why
-end
-
--- Persist accumulated normal-model inventory proof once per successful cache
--- operation rather than once per species. A Full Catalog can validate/prepare
--- 386 models while paying one small metadata write instead of 386 bridge writes.
-function A.flushInventoryCertificate()
-  return flushFullInventory()
-end
-
--- Disk-only bulk catalog preparation. New/missing species are extracted with
--- the existing storage profile (base + authored idle only). Battle entry later
--- uses prepareRequiredModel() to warm the active battlers' exact action rows, so
--- catalog preparation never expands 135-386 species into thousands of unused
--- canonical action banks. Existing legacy/full caches are accepted and never
--- destructively downgraded here.
-function A.prepareStorageModel(dex,variant,progress)
-  local n=dexNumber(dex)
-  if not (n and Dex.supported(n)) then return false,"unsupported species" end
-  variant=variant or "normal"
-  local key=modelKey(n,variant)
-  local checkpoint=progress or workCheckpoint
-  local ready,why=A.storageModelState(n,variant,checkpoint)
-  if ready then return true,why end
-
-  if not speciesCacheReady(key) then
-    if not discOpener then return false,"source disc unavailable" end
-    local opened,disc=pcall(discOpener)
-    if not opened or not disc then return false,"source disc could not be opened" end
-    local result,extractWhy=extractSource(mod,disc,n,{variant=variant,targetHeight=16,
-      decodeMode=A.decodeMode,skinFix=A.skinFix,renderPassFilter=true,actionProfile="storage",
-      progress=checkpoint,checkpoint=checkpoint})
-    if not result then return false,extractWhy or "storage extraction failed" end
-    speciesCacheValidity[key]=nil
-    if RuntimeMeshCache and RuntimeMeshCache.invalidateLua then RuntimeMeshCache.invalidateLua(runtimeBasePath(key)) end
-    if not speciesCacheReady(key) then return false,"generated storage source revision did not validate" end
-  end
-
-  checkpoint("Preparing catalog model "..n.." / "..variant)
-  local disk,loadWhy=loadScene(key,true,checkpoint)
-  if not disk then return false,loadWhy end
-  if disk.actionSpecs and disk.actionSpecs.idle and not A._reusableActionPayloadReady(disk,"idle",true) then
-    local idleOK,idleWhy=bakeActionSidecar(disk,"idle")
-    if not idleOK then return false,"authored idle: "..tostring(idleWhy) end
-  end
-  local metadata=select(1,readLua(metadataCachePath(key)))
-  local filterRequired=variant=="shiny" and not Dex.rare[n]
-  if not (type(metadata)=="table" and (tonumber(metadata.revision) or 0)>=4
-      and type(metadata.slots)=="table" and (not filterRequired or validFilter(metadata.shinyFilter))) then
-    if not (metadataReader and discOpener) then return false,"native model metadata unavailable" end
-    local opened,disc=pcall(discOpener)
-    if not opened or not disc then return false,"metadata source unavailable" end
-    local ok,value,err=pcall(metadataReader.inspectSpecies,disc,n,
-      type(key)=="string" and "shiny" or "normal",nil,{progress=checkpoint})
-    if not ok or not value then return false,tostring(err or value or "metadata failed") end
-    if filterRequired and not validFilter(value.shinyFilter) then return false,"source shiny colour parameters missing" end
-    if not writeMetadataCache(key,value) then return false,"could not persist source metadata" end
-    sourceMetadata[tostring(key)]=value
-  end
-  local final,finalWhy=A.storageModelState(n,variant,checkpoint)
-  if not final then return false,finalWhy end
-  return true,"storage-saved"
-end
-
--- The 386 "FULL" option is a battle cache, not merely a model gallery. Persist
--- the complete canonical PKX action inventory for every normal species so a
--- later battle never has to reopen GC6E01 just because a move selects an action
--- family that was omitted by the storage profile. Every action is stored once
--- as a compact compressed binary pack; battle entry decompresses only the rows
--- it actually needs and keeps the GPU working set bounded.
-function A.prepareFullCatalogModel(dex,variant,progress)
-  local n=dexNumber(dex)
-  if not (n and Dex.supported(n)) then return false,"unsupported species" end
-  variant=variant or "normal"
-  local key=modelKey(n,variant)
-  local checkpoint=progress or workCheckpoint
-
-  if not speciesCacheReady(key) then
-    if not discOpener then return false,"source disc unavailable" end
-    local opened,disc=pcall(discOpener)
-    if not opened or not disc then return false,"source disc could not be opened" end
-    checkpoint("Extracting full battle cache "..n.." / "..variant)
-    local result,extractWhy=extractSource(mod,disc,n,{variant=variant,targetHeight=16,
-      decodeMode=A.decodeMode,skinFix=A.skinFix,renderPassFilter=true,actionProfile="full",preserveExisting=false,
-      progress=checkpoint,checkpoint=checkpoint})
-    if not result then return false,extractWhy or "full battle extraction failed" end
-    speciesCacheValidity[key]=nil
-    if RuntimeMeshCache and RuntimeMeshCache.invalidateLua then RuntimeMeshCache.invalidateLua(runtimeBasePath(key)) end
-    if not speciesCacheReady(key) then return false,"generated full source revision did not validate" end
-  else
-    local _,complete=cachedActionProfile(key)
-    if not complete then
-      checkpoint("Adding source action inventory "..n.." / "..variant)
-      local upgraded,why=ensureFullActionInventory(n,variant,checkpoint)
-      if not upgraded then return false,why end
-    end
-  end
-
-  local profile,complete=cachedActionProfile(key)
-  if not complete then return false,"full source action inventory is incomplete: "..tostring(profile) end
-  if not (A._compactAction and A._compactAction.inventoryReady and A._compactAction.inventoryReady(key)) then
-    return false,"compact action inventory certificate missing"
-  end
-  checkpoint("Validating full battle model "..n.." / "..variant)
-  local disk,loadWhy=loadScene(key,true,checkpoint)
-  if not disk then return false,loadWhy end
-  if disk.actionInventoryComplete==false then return false,"storage-only action inventory survived full battle cache" end
-
-  -- Battle ownership/attachment selection consumes the compact source metadata.
-  -- Certify it during FULL CACHE so a battle never opens the source merely to
-  -- recover slot/scale information.
-  local metadata=select(1,readLua(metadataCachePath(key)))
-  local filterRequired=variant=="shiny" and not Dex.rare[n]
-  if not (type(metadata)=="table" and (tonumber(metadata.revision) or 0)>=6
-      and metadata.scaleSelector~=nil and type(metadata.slots)=="table"
-      and (not filterRequired or validFilter(metadata.shinyFilter))) then
-    if not (metadataReader and discOpener) then return false,"native model metadata unavailable" end
-    local opened,disc=pcall(discOpener)
-    if not opened or not disc then return false,"metadata source unavailable" end
-    local ok,value,err=pcall(metadataReader.inspectSpecies,disc,n,
-      type(key)=="string" and "shiny" or "normal",nil,{progress=checkpoint})
-    if not ok or not value then return false,tostring(err or value or "metadata failed") end
-    if filterRequired and not validFilter(value.shinyFilter) then return false,"source shiny colour parameters missing" end
-    if not writeMetadataCache(key,value) then return false,"could not persist source metadata" end
-    metadata=value
-  end
-  sourceMetadata[tostring(key)]=metadata
-
-  -- Validate the common action semantics under the current pose guard. Compact
-  -- bundles stay compressed on disk; no duplicate runtime geometry is written.
-  -- Family fallbacks are source-authored, so certify the first concrete slot.
-  local baked=0
-  local visited={}
-  for _,semantic in ipairs({"idle","damage","faint","physicalA","specialA"}) do
-    local candidates=NATIVE_FALLBACKS[semantic] or {semantic}
-    for _,name in ipairs(candidates) do
-      if not visited[name] and disk.actionSpecs and disk.actionSpecs[name] then
-        visited[name]=true
-        checkpoint("Validating battle action "..n.." / "..variant.." / "..name)
-        local ok,why=bakeActionSidecar(disk,name)
-        if not ok then return false,"native action "..name..": "..tostring(why) end
-        local compactReady=select(1,A._compactAction.specReady(disk,name,true,{}))
-        if not compactReady and not A._runtimeActionCurrentGuardReady(disk,name) then
-          return false,"native action "..name.." did not certify compact/current pose guard"
-        end
-        baked=baked+1
-        break
-      end
-    end
-  end
-
-  if variant=="normal" then pcall(noteFullInventory,n,expectedSpeciesStamp()) end
-  return true,"full-battle-cache-ready",baked
 end
 
 function A.prepareSessionModel(dex,variant,progress)
@@ -5468,15 +3577,8 @@ function A.prepareSessionModel(dex,variant,progress)
   local key=modelKey(n,variant)
   local stamp=expectedSpeciesStamp()
   local checkpoint=progress or workCheckpoint
-  local mobile=MOBILE_RUNTIME
-  if speciesCacheReady(key) then
-    local _,complete=cachedActionProfile(key)
-    if not complete then
-      checkpoint("Upgrading storage model "..n.." / "..variant.." for battle")
-      local upgraded,why=ensureFullActionInventory(n,variant,checkpoint)
-      if not upgraded then return false,why end
-    end
-  end
+  local mobile=platformOS()=="Android" or platformOS()=="iOS"
+
   -- Session flags are acceleration only. On a fresh startup recognize complete
   -- disk artifacts before entering any extractor/text-geometry/action bake path.
   -- Persistent validation never requires GPU residency or a save-specific list.
@@ -5498,17 +3600,29 @@ function A.prepareSessionModel(dex,variant,progress)
     checkpoint("Preparing model "..n.." / "..variant)
     local disk,why=loadScene(key,true,checkpoint)
     if not disk then return false,why end
+    -- Every normal non-rare asset also supplies the shiny colour recipe.
     local metadata=select(1,readLua(metadataCachePath(key)))
-    local filterRequired=variant=="shiny" and not Dex.rare[n]
-    if not (type(metadata)=="table" and (tonumber(metadata.revision) or 0)>=4
-        and type(metadata.slots)=="table" and (not filterRequired or validFilter(metadata.shinyFilter))) then
+    local filterRequired=not Dex.rare[n]
+    local metadataValid=type(metadata)=="table" and (tonumber(metadata.revision) or 0)>=4
+        and type(metadata.slots)=="table"
+    local filterInvalid=filterRequired and (metadata.shinyFilter and not validFilter(metadata.shinyFilter))
+    if metadataValid and filterInvalid then
+      -- Shiny filter is missing from cached metadata - accept it and use normal rendering
+      metadata.shinyFilter = nil
+      writeMetadataCache(key, metadata)
+    end
+    if not metadataValid or filterInvalid then
       if not (metadataReader and discOpener) then return false,"native model metadata unavailable" end
       local opened,disc=pcall(discOpener)
       if not opened or not disc then return false,"metadata source unavailable" end
       local ok,value,err=pcall(metadataReader.inspectSpecies,disc,n,
         type(key)=="string" and "shiny" or "normal",nil,{progress=checkpoint})
       if not ok or not value then return false,tostring(err or value or "metadata failed") end
-      if filterRequired and not validFilter(value.shinyFilter) then return false,"source shiny colour parameters missing" end
+      -- Shiny filter is optional for species without rare archives (most Gen3 Pokemon)
+      -- If missing, we'll use the normal model without color channel routing
+      if filterRequired and (value.shinyFilter and not validFilter(value.shinyFilter)) then
+        value.shinyFilter = nil  -- Use normal rendering for shiny
+      end
       if not writeMetadataCache(key,value) then return false,"could not persist source metadata" end
       metadata=value
     end
@@ -5526,7 +3640,7 @@ function A.prepareSessionModel(dex,variant,progress)
         local t=g.texture
         -- Validate the same payload length without rereading/allocating every
         -- raw RGBA texture immediately before the GPU loader reads it again.
-        local info=generatedInfoValidated(t.path,true)
+        local info=(GeneratedAssets.revalidateInfo or GeneratedAssets.info)(t.path)
         local expected=(tonumber(t.w) or 0)*(tonumber(t.h) or 0)*4
         if expected<=0 or not info or tonumber(info.size)~=expected then
           return false,"missing or damaged model texture: "..tostring(t.path)
@@ -5534,260 +3648,47 @@ function A.prepareSessionModel(dex,variant,progress)
       end
     end
     sessionPrepared[key]=stamp
-    if variant=="normal" then pcall(noteFullInventory,n,stamp) end
   end
   checkpoint("Loading shared model "..n.." / "..variant)
   local scene,err=loadScene(key,false,checkpoint)
   if not scene then return false,err end
   sceneUseSerial=sceneUseSerial+1;scene.__cbeLastUse=sceneUseSerial
   if not mobile then sessionPinned[key]=true
-  else A.trimRuntimeMemory({keepRecent=ANDROID_POKEMON_RECENT,softLimit=ANDROID_POKEMON_SOFT_LIMIT}) end
+  else A.trimRuntimeMemory({keepRecent=8,softLimit=12}) end
   if not A.peek("session",n,variant).resident then return false,"exact colour variant not ready" end
   return true,"prepared"
 end
 
--- Fast reload path for the player's actually-required battlers. Full
--- persistentModelState remains the authority for Quick/Full catalog accounting;
--- this path deliberately validates/repairs only the base body, exact colour,
--- metadata and action rows the current battler can use. Corrupt runtime binaries
--- still fail through loadScene/materializeSceneAction and are rebuilt from the
--- generated source payload, so this is less work rather than weaker validation.
-function A.requiredModelReady(dex,variant,game,battler)
-  local n=dexNumber(dex);variant=variant or (battler and monVariant(battler)) or "normal"
-  if not (n and Dex.supported(n)) then return false end
-  local key=modelKey(n,variant)
-  -- A resident/full-session body does not prove the exact move/damage/faint rows
-  -- this battler is about to use have crossed the current live action guard. Keep
-  -- the narrow per-battler signature authoritative so legacy action F32 sidecars
-  -- are repaired during cooperative battle prewarm instead of on first move.
-  return A._requiredSignatureReady(key,A._requiredModelSignature(game,battler))
-    and A.peek("required",n,variant).resident
-end
-
--- Deliberate RETRY clears only this appearance's transient preparation state.
--- Do not evict its resident body, texture data or any unrelated model cache.
-function A.retryModelPreparation(dex,variant)
-  local n=dexNumber(dex)
-  local key=n and modelKey(n,variant or "normal")
-  if not key then return false,"invalid model identity" end
-  pendingExtract[key]=nil;sceneErrors[key]=nil;requiredSessionPrepared[key]=nil
-  local scene=scenes[key]
-  if scene then
-    scene.actionFailures={};scene._requiredActionRepairs={}
-    for name in pairs(scene._bypassActionRuntime or {}) do scene._bypassActionRuntime[name]=nil end
-  end
-  return true,"transient model preparation failures cleared"
-end
-
--- Repair the failed native ACTION, not the entire Pokemon or global catalog.
--- The source extractor already supports exact selective action extraction for
--- storage models; full-cache models need the same recovery boundary when an
--- existing action payload is missing, stale, unreadable or fails the pose guard.
-function A._repairRequiredAction(scene,n,variant,name,checkpoint)
-  if not scene then return false,"action scene unavailable" end
-  if scene.actions and scene.actions[name] then
-    local ready=warmActionKey(scene,name)
-    if ready then return true,"already materialized" end
-  end
-  scene._requiredActionRepairs=scene._requiredActionRepairs or {}
-  local prior=scene._requiredActionRepairs[name]
-  if prior and prior.failed then return false,prior.reason end
-  local function clearBypass()
-    if scene._bypassActionRuntime then scene._bypassActionRuntime[name]=nil end
-  end
-  local detach=WorkBudget and type(WorkBudget.onCancel)=="function"
-    and WorkBudget.onCancel(clearBypass) or function() end
-  local oldReason=scene.actionFailures and scene.actionFailures[name]
-  local function remember(ok,why,source)
-    clearBypass();detach()
-    why=tostring(why or (ok and "ready" or "action repair failed"))
-    scene._requiredActionRepairs[name]={failed=not ok,reason=why}
-    requiredSessionPrepared[scene.dex]=nil
-    perf.requiredActionRepairs=(perf.requiredActionRepairs or 0)+(ok and 1 or 0)
-    perf.requiredActionRepairFailures=(perf.requiredActionRepairFailures or 0)+(ok and 0 or 1)
-    local note=("dex=%s variant=%s action=%s source_rebuild=%s result=%s\nprevious=%s\n%s\n")
-      :format(tostring(n),tostring(variant),tostring(name),tostring(source==true),
-        ok and "repaired" or "failed",tostring(oldReason or "unresolved action/alias"),why)
-    if mod and mod.cache and type(mod.cache.write)=="function" then
-      pcall(mod.cache.write,mod.cache,"build/model-action-recovery.txt",note)
-    end
-    log(ok and "info" or "warn","%s",note)
-    return ok,why
-  end
-  local function reload(ref)
-    if type(ref)~="table" then return false,"action source reference missing: "..tostring(name) end
-    scene.actions=scene.actions or {};scene.actionSpecs=scene.actionSpecs or {};scene.actionFailures=scene.actionFailures or {}
-    -- Only a failed/alias entry reaches this boundary. Valid unrelated action
-    -- meshes and the base's borrowed Image objects remain untouched.
-    if scene.actions[name] then A._releaseActionMeshes(scene.actions[name]) end
-    scene.actions[name]=nil;scene.actionSpecs[name]=ref;scene.actionFailures[name]=nil
-    scene._bypassActionRuntime=scene._bypassActionRuntime or {}
-    scene._bypassActionRuntime[name]=true
-    if RuntimeMeshCache and type(RuntimeMeshCache.invalidateLua)=="function" then
-      RuntimeMeshCache.invalidateLua(runtimeActionManifestPath(scene.dex,name))
-      RuntimeMeshCache.invalidateLua(runtimeActionFloorPath(scene.dex,name))
-      if ref.path then RuntimeMeshCache.invalidateLua(ref.path) end
-    end
-    checkpoint("Revalidating native action "..n.." / "..variant.." / "..name)
-    return warmActionKey(scene,name)
-  end
-
-  -- First clear the poisoned in-memory result and read its own canonical bank.
-  -- This repairs transient reads/uploads and old runtime files without the disc.
-  local refs=cachedBaseActionRefs(scene.dex)
-  local ref=scene.actionSpecs and scene.actionSpecs[name]
-    or (scene.actions and scene.actions[name] and scene.actions[name].alias and scene.actions[name])
-    or refs[name]
-  local ok,why=reload(ref)
-  if ok then return remember(true,"canonical action revalidated",false) end
-  -- A previous selective repair can have replaced a stale full-cache alias.
-  -- Reuse that committed descriptor before doing source extraction again.
-  local saved=readSelectiveActionRef(n,variant,name)
-  if saved then
-    ok,why=reload(saved)
-    if ok then return remember(true,"saved selective action reused",false) end
-  end
-  if not (extractor and type(extractor.extractActions)=="function" and discOpener) then
-    return remember(false,tostring(why).."; selective source repair unavailable",false)
-  end
-  local opened,disc=pcall(discOpener)
-  if not opened or not disc then
-    return remember(false,tostring(why).."; imported source could not be opened",false)
-  end
-  checkpoint("Repairing native action from source "..n.." / "..variant.." / "..name)
-  local result,sourceWhy=extractSourceActions(mod,disc,n,{[name]={name}},
-    {variant=variant,targetHeight=16.0,decodeMode=A.decodeMode,skinFix=A.skinFix,
-      renderPassFilter=true,progress=checkpoint,checkpoint=checkpoint})
-  if not result then
-    return remember(false,tostring(why).."; source repair: "..tostring(sourceWhy),true)
-  end
-  -- extractActions commits payload then descriptor. Invalidate only known
-  -- affected metadata, including stale negative host-info rows after recovery.
-  local refPath=selectiveActionRefPath(n,name,variant)
-  if GeneratedAssets and type(GeneratedAssets.revalidateInfo)=="function" then
-    if refPath then GeneratedAssets.revalidateInfo(refPath) end
-    local written=result.actions and result.actions[name]
-    if written and written.path then GeneratedAssets.revalidateInfo(written.path) end
-  end
-  if RuntimeMeshCache and type(RuntimeMeshCache.invalidateLua)=="function" and refPath then
-    RuntimeMeshCache.invalidateLua(refPath)
-  end
-  ref=readSelectiveActionRef(n,variant,name)
-  if not ref then return remember(false,"source repair did not commit a valid action descriptor: "..name,true) end
-  selectiveActionSpecs[scene.dex]=selectiveActionSpecs[scene.dex] or {}
-  selectiveActionSpecs[scene.dex][name]=ref
-  ok,why=reload(ref)
-  if not ok then return remember(false,"rebuilt source action: "..tostring(why),true) end
-  return remember(true,"exact source action rebuilt and validated",true)
-end
-
-function A._prepareRequiredAction(scene,n,variant,requested,candidates,exact,checkpoint)
-  local exists=false;local reasons={}
-  for _,name in ipairs(candidates or {requested}) do
-    local present=scene and ((scene.actions and scene.actions[name]) or (scene.actionSpecs and scene.actionSpecs[name]))
-    if present or exact then
-      exists=true
-      checkpoint("Preparing required action "..n.." / "..variant.." / "..name)
-      local ready,why,failedName=warmActionKey(scene,name)
-      if ready then return true end
-      -- Follow the alias to its actual failed owner. Rebuilding only an alias
-      -- manifest would leave the unreadable underlying action unchanged.
-      local repaired,repairWhy=A._repairRequiredAction(scene,n,variant,failedName or name,checkpoint)
-      if repaired then
-        ready,why=warmActionKey(scene,name)
-        if ready then return true end
-      end
-      reasons[#reasons+1]=tostring(name).." -> "..tostring(repairWhy or why)
-    end
-  end
-  -- Retail species do not all own every generic family. Preserve legitimate
-  -- absence, but never label a failed existing bank or exact Waza row ready.
-  if not exists and not exact then return true end
-  return false,table.concat(reasons,"; ")
-end
-
-function A.prepareRequiredModel(dex,variant,game,battler,progress,opts)
-  local n=dexNumber(dex)
-  if not (n and Dex.supported(n)) then return false,"unsupported species" end
-  variant=variant or (battler and monVariant(battler)) or "normal"
-  local key=modelKey(n,variant)
-  local signature=A._requiredModelSignature(game,battler)
-  if A._requiredSignatureReady(key,signature) and A.peek("required",n,variant).resident then return true,"resident" end
-  local checkpoint=progress or workCheckpoint
-  if speciesCacheReady(key) then
-    local _,complete=cachedActionProfile(key)
-    if not complete then
-      checkpoint("Upgrading required storage model "..n.." / "..variant)
-      local upgraded,why=ensureRequiredActionInventory(n,variant,game,battler,checkpoint)
-      if not upgraded then return false,why end
-    end
-  end
-  checkpoint("Loading required model "..n.." / "..variant)
-  local ctx={game=game,battle={game=game},arena={figureScale=DEFAULT_FIGURE_SCALE},services={prewarm=true}}
-  local actor,err=A.acquire("session-required",n,variant,{context=ctx,battler=battler,side="player",progress=checkpoint,selectiveActionsReady=true})
-  if not actor then return false,err end
-  local released=false
-  local function releaseActor()
-    if released then return end;released=true
-    actor:release()
-  end
-  local detach=WorkBudget and type(WorkBudget.onCancel)=="function"
-    and WorkBudget.onCancel(releaseActor) or function() end
-  local scene=actor.scene
-  local requiredNames,strictRequired=requiredActionNames(game,battler)
-  for _,requested in ipairs(requiredNames) do
-    local exact=strictRequired and strictRequired[requested]
-    local candidates=exact and {requested} or (NATIVE_FALLBACKS[requested] or {requested})
-    local ready,why=A._prepareRequiredAction(scene,n,variant,requested,candidates,exact,checkpoint)
-    if not ready then
-      releaseActor();detach()
-      return false,"required native action "..tostring(requested)..": "..tostring(why)
-    end
-  end
-  releaseActor();detach()
-  A._noteRequiredSignature(key,signature)
-  local mobile=MOBILE_RUNTIME
-  if not mobile and not (opts and opts.pin==false) then sessionPinned[key]=true
-  else A.trimRuntimeMemory({game=game,keepParty=6,
-    keepRecent=mobile and ANDROID_POKEMON_RECENT or 6,
-    softLimit=mobile and ANDROID_POKEMON_SOFT_LIMIT or 16,preserveActions=true}) end
-  if not A.peek("required",n,variant).resident then
-    requiredSessionPrepared[key]=nil
-    return false,"exact colour variant not ready"
-  end
-  return true,"required-ready"
-end
-
--- Disk-oriented model preparation used by the Mt. Battle cross-generation
--- install. A complete existing cache is accepted without loading a GPU scene.
--- A missing unit is prepared through the exact same source/metadata/action
--- pipeline as prepareSessionModel, then the newly-created scene is unpinned
--- and trimmed so a 150-260 model install cannot balloon session VRAM/RAM.
-function A.preparePersistentModel(dex,variant,progress)
-  local n=dexNumber(dex)
-  if not (n and Dex.supported(n)) then return false,"unsupported species" end
+-- Load a Colosseum model for overworld rendering (followers, roamers, wildlife).
+-- Returns a lightweight handle whose `actor` is a full PokemonActors Actor,
+-- ready for Voxel3D matrix placement via OverworldColosseum.prepare().
+function A.loadOverworldModel(dex, variant)
   variant=variant or "normal"
-  local ready,why=A.persistentModelState(n,variant,progress)
-  if ready then return true,why or "disk-complete" end
+  local n=dexNumber(dex)
+  if not n or not Dex.supported(n) then return nil end
 
-  local ok,preparedWhy=A.prepareSessionModel(n,variant,progress)
-  if not ok then return false,preparedWhy end
+  local ok, actor, err = pcall(A.acquire, "overworld", n, variant, {
+    context={arena={figureScale=1.0}},
+  })
+  if not ok or not actor then return nil end
 
-  local key=modelKey(n,variant)
-  if key~=nil then sessionPinned[key]=nil end
-  -- Preserve live actors and any models that were already pinned by ordinary
-  -- gameplay, but release the just-prepared cache-install scene. Mobile already
-  -- has its own tighter trim in prepareSessionModel; this second bounded trim
-  -- keeps the dedicated install stable on both desktop and handheld devices.
-  A.trimRuntimeMemory({keepRecent=2,softLimit=8})
-  return true,"saved"
+  actor.spawnScale=1
+  pcall(actor.spawn, actor, 1)
+  pcall(actor.selectNativeSlot, actor, "idle")
+  pcall(actor.transition, actor, "idle")
+  actor.worldScale=(actor.worldScale or 1)*0.8
+
+  return {
+    dex=n,
+    variant=variant,
+    actor=actor,
+  }
 end
 
 -- The published capability. Registering it through CBE's own documented
 -- battleCompatibility host keeps discovery order-independent.
 A.service={
   version=1,
-  cooperativePreparation=WorkBudget~=nil, -- resident-only live acquisition; worker owns uploads
   shinySupportVersion=1, -- source-native variants; older universal-tint providers lack this flag
   portable=true,
   priority=100000,
@@ -5812,17 +3713,6 @@ A.service={
 -- Test-only hook. F6/F10 both go through love.keyboard, which a headless test
 -- harness doesn't have, so this lets the actual re-decode-in-place logic be
 -- exercised directly instead of only through a GUI key press.
-A._test={materializeSceneAction=materializeSceneAction,warmActionKey=warmActionKey,refreshLiveActors=refreshLiveActors,moveSlot=moveSlot,Actor=Actor,loadScene=loadScene,bakeActionSidecar=bakeActionSidecar,runtimeActionSidecarReady=runtimeActionSidecarReady,runtimeActionCurrentGuardReady=A._runtimeActionCurrentGuardReady,
-  inspectActionPoseRows=A._inspectActionPoseRows,actionPoseGuardVersion=A._actionPoseGuardVersion,
-  encodedFeetInchesMeters=encodedFeetInchesMeters,dexHeightMeters=dexHeightMeters,
-  normalizedPresentationRelative=normalizedPresentationRelative,geometryPresentation=geometryPresentation,presentationScalePolicy=A.presentationScalePolicy,actorWorldScale=actorWorldScale,
-  compactMetadataLua=compactMetadataLua,writeMetadataCache=writeMetadataCache,cachedActionProfile=cachedActionProfile,ensureFullActionInventory=ensureFullActionInventory,
-  ensureActionSubset=ensureActionSubset,ensureRequiredActionInventory=ensureRequiredActionInventory,mergeSelectiveActionSpecs=mergeSelectiveActionSpecs,
-  compactAction=A._compactAction,
-  requiredActionKeys=requiredActionKeys,requiredActionNames=requiredActionNames,sourceMoveNumber=sourceMoveNumber,resolveSceneAction=resolveSceneAction,
-  fullInventoryPath=FULL_INVENTORY_PATH,noteFullInventory=noteFullInventory,buildHardCacheRows=buildHardCacheRows,
-  flushFullInventory=flushFullInventory,materialTexgenReady=materialTexgenReady,speciesCacheReady=speciesCacheReady,legacyTexgenRepairDex=LEGACY_TEXGEN_REPAIR_DEX,
-  ensureShader=ensureShader,vertexShader=VERTEX,pixelShader=PIXEL,
-  inventoryStats=function() local out={};for k,v in pairs(inventoryStats)do out[k]=v end;return out end}
+A._test={refreshLiveActors=refreshLiveActors,moveSlot=moveSlot,Actor=Actor,loadScene=loadScene,bakeActionSidecar=bakeActionSidecar,runtimeActionSidecarReady=runtimeActionSidecarReady}
 
 return A
