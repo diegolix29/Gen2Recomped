@@ -249,33 +249,16 @@ local function prepareOneFromCache(p, dex, dt)
     -- Try cache first
     local cached = modelCache[dex]
     if not cached then
-      -- Use local PokemonActors directly since we're in the same mod
-      local api = V.PokemonActors
-      if api and type(api.acquire) == "function" then
-        -- Use the same showroom/information service as the Pokedex UI
-        local ctx = {
-          apiVersion = 1,
-          game = V.mod and V.mod.game,
-          battle = nil,
-          sides = { player = { battler = { species = dex } }, enemy = { battler = nil } },
-          phase = "information",
-          progress = 1,
-          groundY = 0,
-          services = {
-            cbeStandalone = true,
-            informationSurface = true,
-            informationAnimation = true,
-            showroom = true
-          }
-        }
-        local okActor, actor = pcall(api.acquire, api, "cbe-idle-warm", dex, "normal", { context = ctx })
+      -- Load the PokemonActors module directly to access loadOverworldModel
+      local okPA, PokemonActors = pcall(V.require, "lib/PokemonActors.lua")
+      if okPA and PokemonActors and type(PokemonActors.loadOverworldModel) == "function" then
+        -- Use the dedicated overworld loader (same as PokemonActors uses for followers/roamers)
+        local okActor, actor = pcall(PokemonActors.loadOverworldModel, PokemonActors, dex, "normal")
         
         if okActor and actor then
           -- Setup actor for overworld use
-          actor.spawnScale = 1
           pcall(actor.spawn, actor, 1)
-          pcall(actor.selectNativeSlot, actor, "idle")
-          pcall(actor.transition, actor, "idle")
+          pcall(actor.idle, actor)
           actor.worldScale = (actor.worldScale or 1) * 0.8
 
           cached = { actor = actor, dex = dex }
