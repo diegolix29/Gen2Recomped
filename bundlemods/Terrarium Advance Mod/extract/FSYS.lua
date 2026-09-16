@@ -109,7 +109,8 @@ end
 --   header +0x0C : entry count
 --   header +0x40 : pointer to the metadata-pointer list
 -- Metadata entries:
---   +0x02 u8 file type, +0x04 u32 data address, +0x0C u32 flags,
+--   +0x00 u32 name hash / runtime resource key, +0x02 u8 file type,
+--   +0x04 u32 data address, +0x0C u32 flags,
 --   +0x14 u32 stored file size, +0x1C full filename ptr, +0x24 short name ptr.
 local function parseCanonical(disc,file)
   if file.size<0x44 then return nil,"FSYS header too small" end
@@ -125,6 +126,12 @@ local function parseCanonical(disc,file)
     local entryOff=u32(ptrs,i*4+1)
     if entryOff and entryOff>0 and entryOff+0x28<=file.size then
       local ebuf=disc:readFile(file,entryOff,0x28)
+      -- GC6E01 FSYSFileEntry_GetSubEntry exposes this leading word as nameHash.
+      -- The async loader passes it unchanged as the resource callback loadMode;
+      -- floorReadCameraPostFunc then registers a .cam under that same GS key.
+      -- Keep it as metadata only: member bytes, naming and cache identities are
+      -- unchanged, while camera code can select retail key 0x007B1800 exactly.
+      local resourceId=u32(ebuf,1) or 0
       local fileType=ebuf:byte(0x02+1) or 0
       local dataOff=u32(ebuf,0x04+1)
       local flags=u32(ebuf,0x0C+1) or 0
@@ -139,6 +146,7 @@ local function parseCanonical(disc,file)
         elseif ext and not name:lower():match("%."..ext.."$") and not name:match("%.[%w%d]+$") then name=name.."."..ext end
         entries[#entries+1]={
           index=i,name=name,dataOffset=dataOff,storedSize=stored,entryOffset=entryOff,
+          nameHash=resourceId,resourceId=resourceId,
           fileType=fileType,flags=flags,compressed=(math.floor(flags/0x80000000)%2)==1,
           ext=ext,modelKind=meta and meta.model==true or false,
         }

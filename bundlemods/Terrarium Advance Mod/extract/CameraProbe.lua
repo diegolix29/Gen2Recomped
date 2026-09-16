@@ -1,25 +1,20 @@
 local V=...
 local FSYS,HSD=V.FSYS,V.HSD
-local C={revision=1}
+local C={revision=2}
+local RETAIL_FLOOR_CAMERA_RESOURCE_ID=0x007B1800
 
 -- Structural walker for Colosseum .cam members (FSYS fileType 0x18).
 --
 -- The format probe established that a .cam IS a standard HSD archive: the
 -- header at offset 0 parses cleanly under HSD.lua's own archiveAt rules and
 -- carries exactly one public symbol, "scene_data". Everything needed to read it
--- therefore already exists in this codebase -- archive:ptr, archive:publicSymbol
--- and the FOBJ keyframe decoder used for trainer poses.
---
--- What is NOT yet known is the layout of the camera descriptor that scene_data
--- points at. Rather than guess offsets and ship a reader that silently produces
--- garbage, this resolves the pointer graph and dumps every reachable node with
--- each word interpreted three ways at once -- as u32, as f32, and as a
--- data-section pointer. Camera structures are unusually easy to recognise that
--- way: a near/far pair, an eye/interest position triple and a field-of-view all
--- have distinctive float signatures.
---
--- The report this writes is what a real HSD_CObjDesc reader gets written
--- against, in one pass rather than several.
+-- therefore already exists in this codebase. HSD.extractCameraAnimation now
+-- decodes the CObj/WObj animation end-to-end, including source spline tracks.
+-- Keep the structural dump as independent audit evidence, but report the decoded
+-- camera first and always inspect retail floor key 0x007B1800 when it is present.
+-- GC6E01 proves the key path: FSYS entry nameHash -> camera loader loadMode ->
+-- floorReadCameraPostFunc GS resource key. No filename/CObj-order inference is
+-- involved in identifying the floor camera.
 
 local function u32(s,p) local a,b,c,d=s:byte(p,p+3);if not d then return nil end;return ((a*256+b)*256+c)*256+d end
 local function f32(s,p)
@@ -111,14 +106,40 @@ local function scanTriples(a,out)
 end
 
 local function probeMember(arc,entry,out)
-  out[#out+1]=("=========== CAM %s (type=0x%02X, %d stored) ===========")
-    :format(tostring(entry.name),entry.fileType or 0,entry.storedSize or 0)
+  local retailFloor=tonumber(entry.resourceId)==RETAIL_FLOOR_CAMERA_RESOURCE_ID
+  out[#out+1]=("=========== CAM %s (type=0x%02X, key=0x%08X, %d stored) ===========")
+    :format(tostring(entry.name),entry.fileType or 0,tonumber(entry.resourceId) or 0,entry.storedSize or 0)
+  if retailFloor then
+    out[#out+1]="  retail floor camera key match: exact (FSYS nameHash/loadMode 0x007B1800)"
+    out[#out+1]="  retail offset-camera orientation: world-up overwrite exact (_cameraOffsetAnimeUpdate)"
+    out[#out+1]="  retail offset transform: position=(0,0,0) rotation=(0,0,0); uniform scale=max PKX selector {1=1.1,2=1.2,3=1.4,default=1.0}"
+  end
   local ok,blob=pcall(arc.extract,arc,entry,{maxOutput=8*1024*1024})
   if not ok or type(blob)~="string" then
     out[#out+1]="  extract failed: "..tostring(blob)
     return
   end
   out[#out+1]=("bytes=%d"):format(#blob)
+
+  if HSD and type(HSD.extractCameraAnimation)=="function" then
+    -- fn_801C2F00 reaches 0x007B1800 through cameraPlayOffsetAnime.  Its update
+    -- routine discards the embedded CObj roll/up before the common offset
+    -- scale/rotation/translation transform.  Decode the source under that exact
+    -- policy rather than reporting a false "unsupported orientation" blocker.
+    local decodeOpts=retailFloor and {offsetCameraWorldUp=true} or nil
+    local okCamera,camera,why=pcall(HSD.extractCameraAnimation,blob,decodeOpts)
+    if okCamera and type(camera)=="table" then
+      out[#out+1]=("decoded camera: complete=%s retailFrameExact=%s frames=%d sourceEndFrame=%.6g aspect=%.6g")
+        :format(tostring(camera.complete==true),tostring(camera.retailFrameExact==true),
+          tonumber(camera.frameCount) or #(camera.samples or {}),tonumber(camera.sourceEndFrame) or 0,tonumber(camera.aspect) or 0)
+      if camera.unsupportedOrientation then out[#out+1]="  unsupported orientation: "..tostring(camera.unsupportedOrientation) end
+      if type(camera.unsupportedTracks)=="table" and #camera.unsupportedTracks>0 then
+        out[#out+1]="  unsupported tracks: "..table.concat(camera.unsupportedTracks,",")
+      end
+    else
+      out[#out+1]="decoded camera unavailable: "..tostring(okCamera and why or camera)
+    end
+  end
 
   local okA,a=pcall(HSD.findArchive,blob)
   if not okA or not a then
@@ -158,6 +179,7 @@ local DEFAULT_ARCHIVES={
   "D2_crater_colo.fsys",
   "M2_earth_colo.fsys",     -- Pyrite Colosseum
   "M4_bottom_colo.fsys",    -- Deep Colosseum
+  "M3_shrine_1F_bf.fsys",   -- Relic Chamber battle field
   "M3_cave_1F_1_bf.fsys",   -- Relic Cave battle field
   "S1_out_bf.fsys",         -- opening Outskirts battle field
 }
@@ -168,11 +190,11 @@ function C.run(mod,disc,progress,generated,opts)
   local out={
     "CBE camera format probe / revision "..tostring(C.revision),
     "",
-    "A .cam member is a standard HSD archive carrying one public symbol,",
-    "scene_data. HSD.lua can already open it; what is missing is the camera",
-    "descriptor layout. Each word below is shown as u32, as f32, and as a",
-    "data-section pointer, because that is enough to recognise a near/far pair,",
-    "an eye/interest triple and a field of view without knowing the struct.",
+    "A .cam member is a standard HSD archive carrying scene_data. HSD.lua now",
+    "decodes its CObj/WObj animation directly. FSYS resourceId is the retail",
+    "entry nameHash/loadMode; 0x007B1800 therefore selects the exact looping",
+    "floor camera resource used by fn_801C2F00. Structural dumps remain below",
+    "as independent descriptor/pointer audit evidence.",
     "",
   }
   local wanted=opts.archives or DEFAULT_ARCHIVES
@@ -193,8 +215,17 @@ function C.run(mod,disc,progress,generated,opts)
           if e.fileType==0x18 then cams[#cams+1]=e end
         end
         out[#out+1]=("  %d camera members present"):format(#cams)
-        for _,e in ipairs(cams) do out[#out+1]=("    %s (%d bytes)"):format(tostring(e.name),e.storedSize or 0) end
-        for n=1,math.min(perArchive,#cams) do probeMember(arc,cams[n],out) end
+        local floorCamera
+        for _,e in ipairs(cams) do
+          out[#out+1]=("    %s key=0x%08X (%d bytes)"):format(tostring(e.name),tonumber(e.resourceId) or 0,e.storedSize or 0)
+          if tonumber(e.resourceId)==RETAIL_FLOOR_CAMERA_RESOURCE_ID then floorCamera=e end
+        end
+        local selected,seen={},{ }
+        for n=1,math.min(perArchive,#cams) do selected[#selected+1]=cams[n];seen[cams[n]]=true end
+        -- A tiny per-archive probe budget must never skip the exact retail floor
+        -- member merely because an intro/ending camera appears earlier in FSYS.
+        if floorCamera and not seen[floorCamera] then selected[#selected+1]=floorCamera end
+        for _,e in ipairs(selected) do probeMember(arc,e,out) end
       end
     end
     out[#out+1]=""

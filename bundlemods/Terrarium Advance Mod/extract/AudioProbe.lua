@@ -23,6 +23,22 @@ local THEMES={
   {source="tool_battle3_song",setup=22,loopFrame=444292,intro="assets/audio/themes/link_3_intro.wav",loop="assets/audio/themes/link_3_loop.wav"},
 }
 
+-- Field/menu music is intentionally a separate cache from the canonical
+-- 24-asset battle soundtrack above.  Adding these rows to THEMES would force
+-- every existing v9 soundtrack cache to be discarded and rebuilt just to add
+-- two small source songs.  Keep them incremental instead: `pokecen_song` is
+-- the user's optional Pokemon Center replacement, while `worldmap_song` is the
+-- retail Colosseum main-menu sequence requested for the Battle 100 setup hub.
+-- The setup ids are the songs' real bgm_archive.fsys indices.
+local ENVIRONMENT_THEMES={
+  {id="pokemon_center",source="pokecen_song",setup=60,
+    intro="assets/audio/environment/pokemon_center_intro.wav",
+    loop="assets/audio/environment/pokemon_center_loop.wav"},
+  {id="mt_battle_lobby",source="worldmap_song",setup=5,
+    intro="assets/audio/environment/mt_battle_main_menu_intro.wav",
+    loop="assets/audio/environment/mt_battle_main_menu_loop.wav"},
+}
+
 
 local ONE_SHOTS={
   -- bgm_archive.fsys index/setup 9 is the retail Colosseum Snag-success jingle.
@@ -54,12 +70,58 @@ local function directFile(disc,name)
   return data
 end
 
+local PRESERVED_AUDIO_ROOT="cache/preserved/audio/v1/"
+local function preservedAudioFingerprint(bytes)
+  -- Two inexpensive deterministic rolling checksums + length keep preservation
+  -- names content-addressed without depending on host crypto/bit libraries.
+  -- This path is touched only when an automatic fidelity upgrade is about to
+  -- replace an already-saved derivative, never during the normal cached path.
+  local a,b,c=1,0,0
+  for start=1,#bytes,4096 do
+    for i=start,math.min(#bytes,start+4095) do
+      local v=bytes:byte(i)
+      a=(a+v)%65521;b=(b+a)%65521;c=(c*257+v+1)%2147483647
+    end
+  end
+  return string.format("%04x%04x-%08x-%d",b,a,c,#bytes)
+end
+local function preservedAudioPath(path,bytes)
+  local safe=tostring(path or "asset"):gsub("[^%w%._%-]","_")
+  return PRESERVED_AUDIO_ROOT..safe.."."..preservedAudioFingerprint(bytes)..".bin"
+end
+local function preserveExistingAsset(mod,path,incoming)
+  if not (mod and mod.cache and type(mod.cache.read)=="function" and type(mod.cache.write)=="function") then return nil,false end
+  local ok,old=pcall(mod.cache.read,mod.cache,path)
+  if not ok or type(old)~="string" or old==incoming then return nil,false end
+  local archive=preservedAudioPath(path,old)
+  local rok,retained=pcall(mod.cache.read,mod.cache,archive)
+  if rok and retained==old then return archive,false end
+  -- The dual checksum makes a collision vanishingly unlikely, but never destroy
+  -- a previously preserved byte stream even if one occurs. Allocate a stable
+  -- numbered sibling instead of overwriting it.
+  if rok and type(retained)=="string" and retained~=old then
+    local base=archive;local n=2
+    repeat
+      archive=base.."."..n;n=n+1
+      local cok,current=pcall(mod.cache.read,mod.cache,archive)
+      if not cok or current==nil or current==old then retained=current;break end
+    until n>10000
+    assert(n<=10001,"audio preservation namespace exhausted")
+    if retained==old then return archive,false end
+  end
+  local wok,aerr=pcall(mod.cache.write,mod.cache,archive,old)
+  assert(wok and aerr~=false and aerr~=nil,("audio preservation write failed: %s"):format(archive))
+  local vok,verify=pcall(mod.cache.read,mod.cache,archive)
+  assert(vok and verify==old,("audio preservation readback failed: %s"):format(archive))
+  return archive,true
+end
 local function writeAsset(mod,path,bytes,generated)
   assert(type(bytes)=="string" and #bytes>=44,("audio output %s: renderer returned no WAV data"):format(path))
   assert(bytes:sub(1,4)=="RIFF" and bytes:sub(9,12)=="WAVE",("audio output %s: renderer returned an invalid WAV"):format(path))
+  preserveExistingAsset(mod,path,bytes)
   local ok,err=mod.cache:write(path,bytes)
   assert(ok,("audio output %s: cache write failed: %s"):format(path,tostring(err or "unknown error")))
-  generated[#generated+1]=path
+  if generated then generated[#generated+1]=path end
 end
 
 
@@ -74,8 +136,19 @@ function A.bossIntroReady(mod)
   local prefix=BOSS_ID.."\nbytes="
   if not ok or type(marker)~="string" or marker:sub(1,#prefix)~=prefix then return false end
   local size=tonumber(marker:sub(#prefix+1))
-  local worked,bytes=pcall(mod.cache.read,mod.cache,BOSS_CUE)
-  return worked and type(bytes)=="string" and #bytes==size and #bytes>44 and PortableMusyX.validWav(bytes)==true
+  if not size or size<=44 or not (mod.cache and type(mod.cache.info)=="function") then return false end
+  -- The completion marker is written only after runBossIntro has read back the
+  -- exact rendered WAV bytes. On later boots use file metadata to prove that the
+  -- committed object is still present at the same byte count instead of streaming
+  -- the whole fanfare through the Android cache bridge. BossIntro.openCue() reads
+  -- and validates RIFF/WAVE bytes at actual use, so equal-size external damage
+  -- still fails open at the presentation boundary without forcing source render
+  -- during startup. Portable backends that expose file presence without a size
+  -- retain the same committed-marker contract used by the v9 soundtrack ledger.
+  local worked,info=pcall(mod.cache.info,mod.cache,BOSS_CUE)
+  if not worked or type(info)~="table" or (info.type and info.type~="file") then return false end
+  local actual=tonumber(info.size)
+  return actual==nil or actual==size
 end
 function A.runBossIntro(mod,disc,progress,generated)
   if A.bossIntroReady(mod) then return true end
@@ -106,6 +179,8 @@ local PORTABLE_FULL_FALLBACK_PATH="build/audio_portable_v9.complete"
 local PORTABLE_PENDING_PATH=".cbe-audio-portable-v9.pending"
 local PORTABLE_MIGRATION_PATH="build/audio_portable_v9.migrating"
 local PORTABLE_LEDGER_PATH="build/audio_portable_v9_assets.lua"
+local ENVIRONMENT_MARKER_PATH="build/audio_environment_v1.complete"
+local ENVIRONMENT_MARKER="cbe-audio-environment=1\nsource=GC6E01\nassets=4\nrate=48000\nrenderer=lua-musyx-canonical-v9-cross-platform-48k\n"
 local LEGACY_V2_PATH=".cbe-audio-portable-v2.complete"
 local LEGACY_V3_PATH=".cbe-audio-portable-v3.complete"
 local LEGACY_V4_PATH=".cbe-audio-portable-v4.complete"
@@ -260,6 +335,87 @@ local function portableAssetsReady(mod,strict)
   for _,path in ipairs(PORTABLE_ASSETS) do if not portableAssetReady(mod,path,ledger,strict) then return false end end
   return true
 end
+local ENVIRONMENT_ASSETS={}
+for _,theme in ipairs(ENVIRONMENT_THEMES) do
+  ENVIRONMENT_ASSETS[#ENVIRONMENT_ASSETS+1]=theme.intro
+  ENVIRONMENT_ASSETS[#ENVIRONMENT_ASSETS+1]=theme.loop
+end
+local function environmentAssetsReady(mod,strict)
+  local ledger=readPortableLedger(mod)
+  for _,path in ipairs(ENVIRONMENT_ASSETS) do
+    if not portableAssetReady(mod,path,ledger,strict) then return false end
+  end
+  return true
+end
+function A.environmentReady(mod)
+  return cacheRead(mod,ENVIRONMENT_MARKER_PATH)==ENVIRONMENT_MARKER
+    and environmentAssetsReady(mod,false)
+end
+
+-- Incremental source render for the two non-battle themes the overhaul owns.
+-- This deliberately reuses the v9 byte-size ledger so interrupted writes are
+-- rejected with the same portable-filesystem rules as the main soundtrack,
+-- while preserving every already-rendered battle WAV.
+function A.runEnvironment(mod,disc,progress,generated)
+  progress=progress or function()end
+  assert(PortableMusyX and type(PortableMusyX.prepare)=="function"
+    and type(PortableMusyX.renderSong)=="function",
+    "portable MusyX environment renderer unavailable")
+  if A.environmentReady(mod) then
+    progress("AUDIO ENVIRONMENT 4/4 / cached Pokemon Center + Mt. Battle main menu",4,4)
+    return {ready=true,complete=4,total=4,cached=true,rate=PORTABLE_RATE}
+  end
+
+  local common=FSYS.open(disc,assert(disc:file("common.fsys"),"audio source common.fsys: archive missing"))
+  local bgm=FSYS.open(disc,assert(disc:file("bgm_archive.fsys"),"audio source bgm_archive.fsys: archive missing"))
+  local commonMembers,bgmMembers=memberMap(common),memberMap(bgm)
+  local ctx=PortableMusyX.prepare({music={
+    proj=requiredMember(common,commonMembers,"snd_music_proj","common.fsys"),
+    pool=requiredMember(common,commonMembers,"snd_music_pool","common.fsys"),
+    sdir=requiredMember(common,commonMembers,"snd_music_sdir","common.fsys"),
+    samp=directFile(disc,"snd_music.samp"),
+  }})
+  local ledger=readPortableLedger(mod)
+  local complete=0
+  for _,theme in ipairs(ENVIRONMENT_THEMES) do
+    local introReady=portableAssetReady(mod,theme.intro,ledger,false)
+    local loopReady=portableAssetReady(mod,theme.loop,ledger,false)
+    if introReady and loopReady then
+      complete=complete+2
+    else
+      progress(("AUDIO ENVIRONMENT %d/4 / %s"):format(complete,theme.source),complete,4)
+      local intro,loop,stats=PortableMusyX.renderSong(ctx,
+        requiredMember(bgm,bgmMembers,theme.source,"bgm_archive.fsys"),
+        theme.setup,true,PORTABLE_RATE,function(frame,total)
+          local fraction=(tonumber(total) or 0)>0 and (tonumber(frame) or 0)/tonumber(total) or 0
+          progress(("AUDIO ENVIRONMENT %d/4 / %s / %d%%"):format(
+            complete,theme.source,math.floor(math.max(0,math.min(1,fraction))*100)),
+            complete+math.max(0,math.min(.95,fraction))*2,4)
+        end,{quality=renderQuality(mod)})
+      assert(type(stats)=="table" and (tonumber(stats.peak) or 0)>0.00001,
+        theme.source..": portable synthesis produced silence")
+      for _,row in ipairs({{path=theme.intro,bytes=intro},{path=theme.loop,bytes=loop}}) do
+        writeAsset(mod,row.path,row.bytes,generated)
+        local committed=cacheInfo(mod,row.path,true)
+        assert(committed and tonumber(committed.size)==#row.bytes,
+          "audio output "..row.path..": committed size does not match rendered WAV")
+        ledger=recordPortableAsset(mod,ledger,row.path,#row.bytes)
+        assert(portableAssetReady(mod,row.path,ledger,true),
+          "audio output "..row.path..": committed size does not match v9 asset ledger")
+        if Fidelity then Fidelity.record(mod,row.path,row.bytes,renderQuality(mod),generated) end
+        complete=complete+1
+        progress(("AUDIO ENVIRONMENT %d/4 / %s"):format(complete,theme.source),complete,4)
+      end
+      intro=nil;loop=nil
+      if collectgarbage then pcall(collectgarbage,"step",300) end
+    end
+  end
+  assert(complete==4 and environmentAssetsReady(mod,true),
+    "Pokemon Center / Mt. Battle main-menu audio cache did not verify 4/4")
+  cacheWrite(mod,ENVIRONMENT_MARKER_PATH,ENVIRONMENT_MARKER,generated)
+  return {ready=true,complete=4,total=4,rate=PORTABLE_RATE,
+    renderer="portable Lua MusyX canonical v9 / incremental environment source"}
+end
 local function generatedManifestMentions(mod,path)
   local raw=cacheRead(mod,"build/generated_paths.lua")
   return type(raw)=="string" and raw:find(path,1,true)~=nil
@@ -360,8 +516,11 @@ function A.runPortableFull(mod,disc,progress,generated)
   -- semantics from v7, but makes this Portable MusyX path the ONLY authoritative
   -- soundtrack renderer on every OS. Migration is transactional: once a v9 journal
   -- exists, a restart resumes missing WAVs and never deletes valid partial work.
-  -- Every pre-v9 theme WAV is regenerated so a Windows Amuse/portable mixed cache
-  -- can never be promoted into the cross-platform parity contract.
+  -- Every pre-v9 theme WAV whose provenance cannot be certified is regenerated so
+  -- a Windows Amuse/portable mixed cache can never be promoted into the cross-
+  -- platform parity contract. Crucially, writeAsset content-addresses and preserves
+  -- every previous byte stream before replacing the runtime pathname: fidelity
+  -- upgrades are non-destructive and can never force reacquisition of saved output.
   local pendingV9=cacheRead(mod,PORTABLE_PENDING_PATH)==PORTABLE_FULL_MARKER
   local migratingV9=cacheRead(mod,PORTABLE_MIGRATION_PATH)==PORTABLE_FULL_MARKER
   if not pendingV9 and not migratingV9 then
@@ -377,18 +536,10 @@ function A.runPortableFull(mod,disc,progress,generated)
       or cacheRead(mod,LEGACY_V7_PENDING_PATH)~=nil or cacheRead(mod,LEGACY_V7_MIGRATION_PATH)~=nil
       or generatedManifestMentions(mod,LEGACY_V7_PATH) or generatedManifestMentions(mod,LEGACY_V7_FALLBACK_PATH)
     if legacyV2 or legacyV3 or legacyV4 or legacyV5 or legacyV6 or legacyV7 then
-      -- Audio-only invalidation: v9 establishes one deterministic renderer and
-      -- cache provenance on every OS. Never adopt a mixed Amuse/v7 WAV set.
-      -- Arena/Pokemon/trainer/MoveFX caches remain untouched.
-      for _,theme in ipairs(THEMES) do cacheDelete(mod,theme.intro);cacheDelete(mod,theme.loop) end
-      for _,shot in ipairs(ONE_SHOTS) do cacheDelete(mod,shot.output) end
-      cacheDelete(mod,PORTABLE_LEDGER_PATH)
-      cacheDelete(mod,LEGACY_V2_PATH);cacheDelete(mod,LEGACY_V3_PATH)
-      cacheDelete(mod,LEGACY_V5_PATH);cacheDelete(mod,LEGACY_V5_FALLBACK_PATH)
-      cacheDelete(mod,LEGACY_V6_PATH);cacheDelete(mod,LEGACY_V6_FALLBACK_PATH)
-      cacheDelete(mod,LEGACY_V7_PATH);cacheDelete(mod,LEGACY_V7_FALLBACK_PATH)
-      cacheDelete(mod,LEGACY_V7_PENDING_PATH);cacheDelete(mod,LEGACY_V7_MIGRATION_PATH)
-      progress("AUDIO PORTABLE / one-time v9 single-renderer cross-platform migration",0,24)
+      -- Do not delete the old render, its ledger, or its provenance markers.
+      -- If it cannot satisfy the v9 ledger, it is a distinct legacy derivative;
+      -- writeAsset archives its exact bytes before the v9 path is committed.
+      progress("AUDIO PORTABLE / non-destructive v9 source-fidelity migration",0,24)
     end
     cacheWrite(mod,PORTABLE_PENDING_PATH,PORTABLE_FULL_MARKER,generated)
     cacheWrite(mod,PORTABLE_MIGRATION_PATH,PORTABLE_FULL_MARKER,generated)
@@ -478,11 +629,9 @@ function A.runPortableFull(mod,disc,progress,generated)
   if generated then generated[#generated+1]=PORTABLE_LEDGER_PATH end
   writePortableFullMarkers(mod,generated)
   cacheDelete(mod,PORTABLE_PENDING_PATH);cacheDelete(mod,PORTABLE_MIGRATION_PATH)
-  cacheDelete(mod,LEGACY_V2_PATH);cacheDelete(mod,LEGACY_V3_PATH);cacheDelete(mod,LEGACY_V4_PATH);cacheDelete(mod,LEGACY_V4_FALLBACK_PATH)
-  cacheDelete(mod,LEGACY_V5_PATH);cacheDelete(mod,LEGACY_V5_FALLBACK_PATH)
-  cacheDelete(mod,LEGACY_V6_PATH);cacheDelete(mod,LEGACY_V6_FALLBACK_PATH)
-  cacheDelete(mod,LEGACY_V7_PATH);cacheDelete(mod,LEGACY_V7_FALLBACK_PATH)
-  cacheDelete(mod,LEGACY_V7_PENDING_PATH);cacheDelete(mod,LEGACY_V7_MIGRATION_PATH)
+  -- Keep all historical completion/provenance markers. They are inert once the
+  -- exact v9 marker + ledger validates, and retaining them guarantees upgrades
+  -- never erase evidence needed to reuse or diagnose an older saved derivative.
   assert(A.portableFullReady(mod),"portable audio completion marker written but generated soundtrack cache failed validation")
   progress("AUDIO PORTABLE 24/24 / 48 kHz canonical cross-platform cache verified",24,24)
   return {ready=true,complete=24,total=24,renderer=result.renderer or "portable Lua MusyX canonical v9 / cross-platform / 48 kHz",rate=PORTABLE_RATE}
@@ -612,10 +761,18 @@ function A.fidelityLedger(mod,sizes)
   return encodePortableLedger(ledger)
 end
 A.bossMarkerPath=BOSS_MARKER
+A.bossCuePath=BOSS_CUE
 function A.bossMarker(wav)return BOSS_ID.."\nbytes="..#wav end
 A.themes=THEMES
+A.environmentThemes=ENVIRONMENT_THEMES
+A.environmentAssets=ENVIRONMENT_ASSETS
+A.environmentMarkerPath=ENVIRONMENT_MARKER_PATH
+A.environmentMarker=ENVIRONMENT_MARKER
 A.portableMarker=PORTABLE_MARKER
 A.portableFullMarker=PORTABLE_FULL_MARKER
 A.portableAssets=PORTABLE_ASSETS
 A.portableLedgerPath=PORTABLE_LEDGER_PATH
+A.preservedAudioRoot=PRESERVED_AUDIO_ROOT
+A._test={preserveExistingAsset=preserveExistingAsset,writeAsset=writeAsset,
+  preservedAudioFingerprint=preservedAudioFingerprint,preservedAudioPath=preservedAudioPath}
 return A

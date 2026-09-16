@@ -22,6 +22,36 @@ local function cacheWrite(mod,path,data,generated)
   if generated then generated[#generated+1]=path end
   return true
 end
+local PRESERVED_ROOT="cache/preserved/waza_sfx/v1/"
+local function fingerprint(bytes)
+  local a,b,c=1,0,0
+  for start=1,#bytes,4096 do
+    for i=start,math.min(#bytes,start+4095) do
+      local v=bytes:byte(i);a=(a+v)%65521;b=(b+a)%65521;c=(c*257+v+1)%2147483647
+    end
+  end
+  return string.format("%04x%04x-%08x-%d",b,a,c,#bytes)
+end
+local function preservedPath(path,bytes)
+  return PRESERVED_ROOT..tostring(path):gsub("[^%w%._%-]","_").."."..fingerprint(bytes)..".bin"
+end
+local function preserveExisting(mod,path,incoming)
+  local old=cacheRead(mod,path)
+  if type(old)~="string" or old==incoming then return nil,false end
+  local archive=preservedPath(path,old)
+  local retained=cacheRead(mod,archive)
+  if retained==old then return archive,false end
+  if type(retained)=="string" and retained~=old then
+    local base=archive;local n=2
+    repeat archive=base.."."..n;n=n+1;retained=cacheRead(mod,archive)
+    until retained==nil or retained==old or n>10000
+    assert(n<=10001,"Waza SFX preservation namespace exhausted")
+    if retained==old then return archive,false end
+  end
+  cacheWrite(mod,archive,old,nil)
+  assert(cacheRead(mod,archive)==old,"Waza SFX preservation readback failed: "..archive)
+  return archive,true
+end
 local function cacheDelete(mod,path)
   if mod and mod.cache and type(mod.cache.delete)=="function" then pcall(mod.cache.delete,mod.cache,path) end
 end
@@ -83,18 +113,42 @@ local function parseGameSounds(bytes)
   return entries
 end
 
-function S.ready(mod)
+local function readyIndex(mod)
   local marker=cacheRead(mod,MARKER_PATH) or cacheRead(mod,FALLBACK_MARKER_PATH)
-  if marker~=MARKER then return false end
-  local raw=cacheRead(mod,INDEX_PATH);if type(raw)~="string" then return false end
-  local chunk=load(raw,"@generated/"..INDEX_PATH);if not chunk then return false end
-  local ok,idx=pcall(chunk);if not ok or type(idx)~="table" or tonumber(idx.version)~=S.version then return false end
+  if marker~=MARKER then return nil end
+  local raw=cacheRead(mod,INDEX_PATH);if type(raw)~="string" then return nil end
+  local chunk=load(raw,"@generated/"..INDEX_PATH);if not chunk then return nil end
+  local ok,idx=pcall(chunk);if not ok or type(idx)~="table" or tonumber(idx.version)~=S.version
+      or idx.renderer~="lua-musyx-sfx-v3-gamesound-table" then return nil end
   local requested=tonumber(idx.requested) or #(idx.requestedIds or {})
   local ready=tonumber(idx.ready) or #(idx.readyIds or {})
   local missing=tonumber(idx.missing) or #(idx.missingIds or {})
-  if missing~=0 or ready~=requested or #(idx.readyIds or {})~=requested then return false end
+  if missing~=0 or ready~=requested or #(idx.readyIds or {})~=requested then return nil end
+  return idx
+end
+-- Startup cache selection can trust the transaction marker + compact index: the
+-- marker is written only after every requested WAV commits under this exact
+-- renderer/version. Runtime WazaAudioRuntime metadata-probes the concrete WAV,
+-- then validates it through fileData/newSource before suppressing native audio,
+-- so a later external deletion/corruption still fails open audibly without a
+-- redundant whole-WAV readiness read.
+function S.fastReady(mod)
+  local idx=readyIndex(mod);return idx~=nil,idx
+end
+function S.ready(mod)
+  local idx=readyIndex(mod);if not idx then return false end
   for _,id in ipairs(idx.readyIds or {}) do if not cachedWavValid(mod,outputPath(id)) then return false end end
   return true,idx
+end
+function S.releaseAudioFastReady(mod)
+  local idx=readyIndex(mod);if not idx then return false end
+  local present={};for _,id in ipairs(idx.readyIds or {}) do present[tonumber(id)]=true end
+  for _,id in ipairs({139,1163}) do
+    if not present[id] then return false end
+    local info=cacheInfo(mod,outputPath(id))
+    if not info or (tonumber(info.size) or 0)<44 then return false end
+  end
+  return true
 end
 
 function S.run(mod,disc,soundIds,progress,generated)
@@ -144,7 +198,8 @@ function S.run(mod,disc,soundIds,progress,generated)
     if reusable[id] and sourceId and cachedWavValid(mod,path) then
       index.readyIds[#index.readyIds+1]=id;index.stats[id]={cached=true}
     elseif not sourceId or not Portable.hasSfx(ctx,sourceId) then
-      cacheDelete(mod,path)
+      -- Fail closed in the authoritative index, but retain any older bytes. An
+      -- unresolved source mapping must never erase a user's persisted asset.
       index.missingIds[#index.missingIds+1]=id;index.stats[id]={missing=true,reason="GameSound definition does not resolve to snd_se_battle SFXGroup"}
     else
       local ok,wav,stats=pcall(Portable.renderSfx,ctx,sourceId,S.rate,function(frame,frames)
@@ -154,12 +209,14 @@ function S.run(mod,disc,soundIds,progress,generated)
         local tmp=("cache/waza/sfx/.tmp_%04d.wav"):format(id)
         cacheWrite(mod,tmp,wav,nil)
         local verify=cacheRead(mod,tmp);assert(wavValid(verify),"transaction verify failed for GameSound "..id)
+        preserveExisting(mod,path,verify)
         cacheWrite(mod,path,verify,generated);cacheDelete(mod,tmp)
         index.readyIds[#index.readyIds+1]=id
         index.stats[id]={frames=stats.frames,peak=stats.peak,voices=stats.voices,clipped=stats.clipped,
           sourceId=stats.entry and stats.entry.sourceId or nil}
       else
-        cacheDelete(mod,path)
+        -- Keep the previous derivative physically intact. Because this ID is
+        -- omitted from readyIds, runtime cannot mistake it for verified source.
         index.missingIds[#index.missingIds+1]=id
         index.stats[id]={missing=true,reason=tostring(ok and "renderer produced silence/invalid WAV" or wav)}
         cacheDelete(mod,("cache/waza/sfx/.tmp_%04d.wav"):format(id))
@@ -184,6 +241,7 @@ function S.withReleaseSounds(ids)
   local out={139,1163};for _,id in ipairs(ids or {})do out[#out+1]=id end;return out
 end
 function S.ensureReleaseAudio(mod,openDisc,progress,generated)
+  if S.releaseAudioFastReady(mod) then return true,"cached" end
   local raw=cacheRead(mod,INDEX_PATH)
   local chunk=type(raw)=='string' and (loadstring or load)(raw)
   local ok,index=false,nil;if chunk then ok,index=pcall(chunk) end
@@ -201,5 +259,7 @@ end
 S.marker=MARKER
 S.markerPath=MARKER_PATH
 S.indexPath=INDEX_PATH
-S._test={parseGameSounds=parseGameSounds}
+S.preservedRoot=PRESERVED_ROOT
+S._test={parseGameSounds=parseGameSounds,preserveExisting=preserveExisting,
+  preservedPath=preservedPath,fingerprint=fingerprint}
 return S

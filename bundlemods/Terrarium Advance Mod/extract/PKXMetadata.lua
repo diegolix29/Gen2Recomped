@@ -1,6 +1,6 @@
 local V=...
 local FSYS,Dex=V.FSYS,V.ColosseumDex
-local P={version=4}
+local P={version=6}
 
 -- Additive reader for the Colosseum PKX wrapper. This deliberately does not
 -- participate in HSD model/root/material extraction. It reads only the battle
@@ -39,11 +39,29 @@ local function align32(n)
 end
 
 local function parseSlot(blob,offset,index)
+  -- sequenceLoad copies the source 0xD0 row into a 0xD4 runtime row.  For
+  -- GC6E01, fn_800D37CC() is GSgfxVideoVsyncRate=60 and lbl_8047E3B8 is
+  -- exactly 60.0f, so its `(raw * vsync) / 60` conversion leaves these signed
+  -- camera timing integers unchanged.  _wazaSequenceCameraDoFOV reads countA
+  -- at +0x00 and the first three values beginning at +0x0C.  Keep the older
+  -- `timing` field untouched (it starts at +0x10 and has existing scheduler
+  -- consumers); expose the camera row additively instead.
+  local cameraTimingCount=u32(blob,offset) or 0
+  local cameraTimingRaw,cameraTimingFrames={},{}
+  for i=0,math.min(2,math.max(-1,cameraTimingCount-1)) do
+    local raw=s32(blob,offset+0x0C+i*4) or 0
+    cameraTimingRaw[i+1]=raw
+    cameraTimingFrames[i+1]=raw
+  end
   local slot={
     index=index,key=SLOT_KEYS[index] or ("slot"..index),
     animType=u32(blob,offset) or 0,
     subAnimCount=u32(blob,offset+0x04) or 0,
     damageFlags=u32(blob,offset+0x08) or 0,
+    cameraTimingCount=cameraTimingCount,
+    cameraTimingRaw=cameraTimingRaw,
+    cameraTimingFrames=cameraTimingFrames,
+    cameraTimingRate=60,cameraTimingExact=true,
     timing={},bodyMap={},subAnimations={},
     terminator=u32(blob,offset+0xCC) or 0,
   }
@@ -85,11 +103,20 @@ function P.parse(blob)
   local metadataOffset=gpt1Offset+align32(gpt1Length or 0)
   if metadataOffset+count*0xD0>#blob then return nil,"PKX animation metadata is truncated" end
 
+  -- Retail `sequenceLoad` treats this wrapper itself as its resource header:
+  -- +0x0C (`sequenceKind`) is copied verbatim into WazaEffect +0x10.  The
+  -- battle-grid/camera code reads that field through fn_801DAC24 and the owner
+  -- scale helper fn_801DABAC.  Older CBE builds called the same raw word
+  -- `particleOrientation`; retain that alias for cache compatibility, but expose
+  -- the source-proven name/meaning as first-class metadata.
+  local sequenceKind=s32(blob,0x0C) or 0
   local out={
-    format="colosseum-pkx-metadata-v1",datSize=datSize,datOffset=datOffset,
+    revision=P.version,format="colosseum-pkx-metadata-v1",datSize=datSize,datOffset=datOffset,
     gpt1Length=gpt1Length or 0,gpt1Offset=gpt1Offset,
     animationSlotCount=count,metadataOffset=metadataOffset,
-    particleOrientation=s32(blob,0x0C) or 0,
+    sequenceKind=sequenceKind,scaleSelector=sequenceKind,
+    loadMode=u32(blob,0x10) or 0,
+    particleOrientation=sequenceKind,
     slots={},slotsByIndex={},bodyMap={},bodyKeys=BODY_KEYS,
     shinyFilter=V.ShinySupport and V.ShinySupport.parseFilter(blob,metadataOffset+count*0xD0) or nil,
   }

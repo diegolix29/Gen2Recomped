@@ -15,9 +15,6 @@ local E6={} for i=0,63 do E6[i]=floor(i*255/63+.5) end
 local GREY={} for i=0,255 do GREY[i]=char(i,i,i,255) end
 
 local function be16(s,p)local a,b=s:byte(p,p+1);if not b then return 0 end;return a*256+b end
-local function expand4(v)return v*17 end
-local function expand5(v)return floor(v*255/31+.5) end
-local function expand6(v)return floor(v*255/63+.5) end
 local function rgb565(v)return E5[floor(v/2048)%32],E6[floor(v/32)%64],E5[v%32],255 end
 local function rgb5a3c(v)
   if v>=32768 then return E5[floor((v-32768)/1024)%32],E5[floor(v/32)%32],E5[v%32],255 end
