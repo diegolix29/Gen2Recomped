@@ -249,15 +249,9 @@ local function prepareOneFromCache(p, dex, dt)
     -- Try cache first
     local cached = modelCache[dex]
     if not cached then
-      -- Try to get the CBE service first (same pattern as colosseum_ui_overhaul)
-      local cbeProvider = nil
-      if type(V.mod.find) == "function" then
-        local ok, found = pcall(V.mod.find, V.mod, "DRAMATIC_SHAPE")
-        cbeProvider = ok and found or nil
-      end
-      
-      local api = cbeProvider and cbeProvider.exports and cbeProvider.exports.pokemonModels
-      if api and type(api.service) == "table" then
+      -- Use local PokemonActors directly since we're in the same mod
+      local api = V.PokemonActors
+      if api and type(api.acquire) == "function" then
         -- Use the same showroom/information service as the Pokedex UI
         local ctx = {
           apiVersion = 1,

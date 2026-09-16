@@ -3521,8 +3521,11 @@ local function initializeColosseumIntegration()
   colosseumRuntimeAllowed = colosseumBuildStatus.visualReady == true and colosseumBuildStatus.audioReady == true
 
   -- Colosseum runtime installation
+  local colosseumRuntimeInstalled = false
   local function installColosseumRuntime(force)
     if not colosseumRuntimeAllowed then return end
+    if colosseumRuntimeInstalled and not force then return end
+    colosseumRuntimeInstalled = true
     
     -- Load Colosseum runtime modules with error handling
     local colosseumModule = function(name, arg)
