@@ -60,12 +60,13 @@ if DEBUG == nil or DEBUG == false then DEBUG = nil end
 OverworldBattle.KEY = "battles"
 OverworldBattle.LABEL = "3D-BTL"
 
--- Five rungs. Two independent choices, laid out as one ladder because they
+-- Seven rungs. Two independent choices, laid out as one ladder because they
 -- are one question to the player -- WHAT is standing there, and WHERE:
 --
 --              on the MAP              on two DISCS
 --   pics       2D-3D A                 2D-3D B
 --   models     STADIUM A               STADIUM B
+--   colosseum  COLOSSEUM A             COLOSSEUM B
 --
 --   2D-3D A    the mode this file was written for: the fight is staged on
 --              the map and the two Pokemon are the GB's OWN PICS, stood up
@@ -81,12 +82,16 @@ OverworldBattle.LABEL = "3D-BTL"
 --              lib/Stadium.lua). The world is still the world: the fight
 --              happens on real ground, in the map's own weather and light.
 --   STADIUM B  the models on the discs: both halves swapped at once.
+--   COLOSSEUM A the staged fight with the Colosseum GC6E01 battle models in
+--              place of the GB's pics -- the world is still the world: the
+--              fight happens on real ground, in the map's own weather and light.
+--   COLOSSEUM B the Colosseum models on the discs: both halves swapped at once.
 --   OFF        the engine's own white battle screen.
 --
 -- A and B is the STAGE and it is the same stage either way -- the discs do
 -- not know what is standing on them and BattleScene draws them off
 -- `arena.discs` alone, which is why the second column cost a value in this
--- table and nothing else. The four combinations are all reachable rather
+-- table and nothing else. The six combinations are all reachable rather
 -- than only the diagonal, because a player who cannot use the STADIUM rungs
 -- -- no ROM, or a ROM they would rather not go and find -- should still be
 -- able to have the disc framing, and because the discs are the answer to
@@ -109,12 +114,17 @@ OverworldBattle.LABEL = "3D-BTL"
 -- ModSetting.setGate for why they are skipped rather than shown and refused.
 -- 2D-3D B is NOT gated: its stage is generated in Lua and its Pokemon are
 -- the game's own art, so it needs nothing the base game did not ship.
+-- COLOSSEUM A and B are NOT gated: they use the same GC6E01 models that
+-- the Colosseum Battle Environments already require, so they work whenever
+-- CBE is available.
 OverworldBattle.FLAT_B = "flatB"
+OverworldBattle.COLOSSEUM_A = "colosseumA"
+OverworldBattle.COLOSSEUM_B = "colosseumB"
 
 OverworldBattle.setting =
   ModSetting.new(OverworldBattle.KEY, OverworldBattle.LABEL,
-                 { true, "flatB", "stadium", "stadiumB", false },
-                 { "2D-3D A", "2D-3D B", "STADIUM A", "STADIUM B", "OFF" })
+                 { true, "flatB", "stadium", "stadiumB", "colosseumA", "colosseumB", false },
+                 { "2D-3D A", "2D-3D B", "STADIUM A", "STADIUM B", "COLOSSEUM A", "COLOSSEUM B", "OFF" })
   :setGate(function(value)
     if value ~= "stadium" and value ~= "stadiumB" then return true end
     local ok1, install1 = pcall(V.require, "StadiumInstall")
@@ -133,7 +143,7 @@ OverworldBattle.setting =
 -- Stadium models on them at all.
 function OverworldBattle.discs()
   local value = OverworldBattle.setting:get()
-  return (value == OverworldBattle.FLAT_B or value == "stadiumB")
+  return (value == OverworldBattle.FLAT_B or value == "stadiumB" or value == OverworldBattle.COLOSSEUM_B)
 end
 
 -- Whether the VR row is ON -- read lazily, because VR requires modules
@@ -158,6 +168,12 @@ end
 function OverworldBattle.stadium()
   local ok, stadium = pcall(V.require, "Stadium")
   return (ok and stadium and stadium.enabled()) and true or false
+end
+
+-- Whether the COLOSSEUM rung is the one selected
+function OverworldBattle.colosseum(context)
+  local value = OverworldBattle.setting:get()
+  return (value == OverworldBattle.COLOSSEUM_A or value == OverworldBattle.COLOSSEUM_B) and true or false
 end
 
 -- ------- BACK SPRITES: the player's own mon stays on the menu
@@ -585,9 +601,16 @@ function OverworldBattle.begin(state, battle)
               armed = false, token = 0 }
   cullCast(state)
   BattleCam.reset()
-  -- and, on the STADIUM rung, the pair of models that will stand on this
-  -- arena's two cells. Declines quietly on any other rung.
-  pcall(function() V.require("Stadium").begin(arena) end)
+  
+  -- Check if this is a Colosseum mode - if so, don't call Stadium.begin
+  local value = OverworldBattle.setting:get()
+  local isColosseum = (value == OverworldBattle.COLOSSEUM_A or value == OverworldBattle.COLOSSEUM_B)
+  
+  if not isColosseum then
+    -- Only call Stadium.begin for Stadium modes
+    pcall(function() V.require("Stadium").begin(arena) end)
+  end
+  
   return true
 end
 

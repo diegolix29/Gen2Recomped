@@ -219,17 +219,11 @@ function SettingsMenu.rows(catId, game)
   local full = isFull()
   local out = {}
   if catId == SettingsMenu.ROOT then
-    -- Debug: print pipeline rows
-    print("ROOT menu: " .. #pipelineRows .. " pipeline rows available")
-    for _, row in ipairs(pipelineRows) do
-      print("  Available pipeline row: " .. tostring(row.id) .. " (" .. tostring(row.label) .. ")")
-    end
     for _, row in ipairs(pipelineRows) do
       -- FULL owns the blur exactly as it owns the wireframe and the horizon
       -- bend, so T-SHIFT comes off with them
       if not (full and row.id == "pipeline:tiltshift") then
         out[#out + 1] = row
-        print("Added pipeline row to ROOT: " .. tostring(row.id) .. " (" .. tostring(row.label) .. ")")
       end
     end
     -- ------- settings that belong to no category
