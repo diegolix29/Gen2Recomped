@@ -193,13 +193,17 @@ jobs:
           distribution: 'temurin'
           java-package: jdk
 
-      - name: Install Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install NDK 25.2.9519653 + platform 34
+      - name: Accept Android SDK licenses
         run: |
-          yes | sdkmanager --licenses >/dev/null
-          sdkmanager --install "platforms;android-34" "ndk;25.2.9519653"
+          yes | sdkmanager --licenses || true
+
+      - name: Install Android platform 34
+        run: |
+          sdkmanager --install "platforms;android-34"
+
+      - name: Install NDK 25.2.9519653
+        run: |
+          sdkmanager --install "ndk;25.2.9519653"
 
       - name: Build Android APK
         run: |
