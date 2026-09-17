@@ -53,6 +53,9 @@ local StadiumPack = V.require("StadiumPack")
 local Stadium2Pack = V.require("Stadium2Pack")
 local Stadium2Pack = V.require("Stadium2Pack")
 local StadiumMon = V.require("StadiumMon")
+-- The COLOSSEUM A/B counterpart to StadiumMon -- see its own header for why
+-- Stadium.begin needed a second mon class rather than a flag on StadiumMon.
+local ColosseumBattleMon = V.require("ColosseumBattleMon")
 local ShinyBattle = V.require("ShinyBattle")
 local ShinyFx = V.require("ShinyFx")
 
@@ -151,11 +154,19 @@ function Stadium.begin(arena)
   -- console is not filled sixty times a second, but latched for the whole
   -- process it would swallow every failure after the first one ever
   Stadium.reported = false
+  -- COLOSSEUM A/B stand a PokemonActors-backed actor on the tile instead of
+  -- a StadiumPack model; everything from here down (update/draw/cast/
+  -- covers/captureBody/...) reads session.player/enemy through the same
+  -- method names either class answers, so nothing past this branch needs
+  -- its own mode check (see ColosseumBattleMon's header).
+  local mode = Stadium.mode()
+  local Mon = (mode == "COLOSSEUM_A" or mode == "COLOSSEUM_B")
+              and ColosseumBattleMon or StadiumMon
   session = {
     arena = arena,
     groundY = 0,
-    player = StadiumMon.new("player"),
-    enemy = StadiumMon.new("enemy"),
+    player = Mon.new("player"),
+    enemy = Mon.new("enemy"),
     -- what each side has been TRANSFORMED into, if anything (see install)
     transform = {},
     -- sides that are going to collapse, but whose HP bar has not finished
@@ -491,7 +502,13 @@ function Stadium.update(dt, battle, groundY)
     local shiny = battler ~= nil and not session.transform[side]
                   and ShinyBattle.battlerIsShiny(battler)
 
-    mon:setSpecies(dex, shiny)
+    -- `battler`/`game()` are extra, optional args StadiumMon:setSpecies
+    -- simply ignores (Lua drops surplus arguments silently); a
+    -- ColosseumBattleMon uses them to look up the species' real Pokedex
+    -- height, so it sizes the model the same way the overworld's Colosseum
+    -- spawns do instead of falling back to a generic default (see its own
+    -- setSpecies comment).
+    mon:setSpecies(dex, shiny, battler, game())
     -- and tell the pack cache this one is standing there, every frame. Its
     -- eviction order is keyed on LOADS, and a side only loads when its
     -- species changes -- so without this a Pokemon that has been out for a
@@ -499,7 +516,14 @@ function Stadium.update(dt, battle, groundY)
     -- textures released out from under it the moment a fifth species enters
     -- the battle (see StadiumPack.keep). The shiny flag rides along: the
     -- shiny and normal models are separate cache entries.
-    if mon.species then StadiumPack.keep(mon.species, mon.shiny) end
+    --
+    -- Colosseum-mode mons are backed by PokemonActors, not StadiumPack, and
+    -- manage their own actor's lifetime in setSpecies/release -- telling
+    -- StadiumPack to keep a species it never loaded would be a harmless but
+    -- pointless no-op, skipped here rather than relied on to stay that way.
+    if mon.species and mon.kind ~= "colosseum" then
+      StadiumPack.keep(mon.species, mon.shiny)
+    end
 
     -- how big this Pokemon actually is, so a shiny's sparkle can be sized to
     -- it rather than to a constant that is wrong for most of the dex (see
@@ -787,7 +811,11 @@ function Stadium.install()
       if mon and mon.rig then
         local okDef, def = pcall(self.moveDef, self, moveInst)
         local index = okDef and def and def.index or nil
-        if not (index and mon:attack(index)) then
+        -- `def` is StadiumMon:attack(moveIndex)'s surplus argument (Lua
+        -- drops it silently); a ColosseumBattleMon uses it to look up the
+        -- retail-accurate per-move animation instead of a generic swing
+        -- (see ColosseumBattleMon's retailNativeSlot).
+        if not (index and mon:attack(index, def)) then
           -- a move the table has nothing for still swings: the generic
           -- attack is what the species' own reaction slot resolves to
           mon:request("attack")

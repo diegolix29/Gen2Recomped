@@ -45,6 +45,7 @@ local ModSetting = V.require("ModSetting")
 local RoamerArt = V.require("RoamerArt")
 local Roamer = V.require("Roamer")
 local Ecology = V.require("Ecology")
+local Gen3 = V.require("Gen3")
 
 local Collision = require("src.world.Collision")
 local FieldDefaults = require("src.world.FieldDefaults")
@@ -210,6 +211,10 @@ local function terrainsFor(ow)
       -- encounter, so the whole floor is where they stand
       out[#out + 1] = { kind = "indoor", table_ = encDef.grass }
     elseif map.tileset and map.tileset.grassTile then
+      out[#out + 1] = { kind = "grass", table_ = encDef.grass }
+    elseif Gen3.mapIsGen3(map) then
+      -- For Gen 3, if there's a grass encounter table, assume the map has grass
+      -- (Gen 3 uses behaviour bytes instead of tile IDs for grass detection)
       out[#out + 1] = { kind = "grass", table_ = encDef.grass }
     end
   end
@@ -480,7 +485,7 @@ function WildRoamers.engage(ow, roamer)
   if not (ow and roamer) or roamer.dead then return false end
   if Game.stack and Game.stack:top() ~= ow then return false end
   if ow.transitioning or ow.engaging then return false end
-  if ow.runner and ow.runner:isRunning() then return false end
+  if ow.runner and ow.runner.isRunning and ow.runner:isRunning() then return false end
   -- Safety check: ensure roamer has valid species and level before starting battle
   if not roamer.species or not roamer.level then return false end
 

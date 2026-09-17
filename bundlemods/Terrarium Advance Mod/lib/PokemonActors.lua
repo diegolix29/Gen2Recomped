@@ -2021,13 +2021,38 @@ local function actorWorldScale(actor)
   return (h>0.01) and (target/h) or (relative*scaleTrim)
 end
 
-local function dexHeightMeters(opts)
+-- Real battles always have a battler/gameObj in scope (see
+-- ColosseumBattleMon:setSpecies), so game is resolved straight off the
+-- passed-in context there. Every overworld caller -- RoamerStadium3D,
+-- StadiumFollower and StadiumWilds's Colosseum branch (via
+-- ColosseumMon.actorFor), and ColosseumWilds (via loadOverworldModel) --
+-- only ever has a bare dex number and no battle context at all, so `game`
+-- here used to come back nil for every one of them. Fall back to the same
+-- live game singleton the rest of the overworld code already reads through
+-- (see RoamerStadium3D.lua/Ecology.lua's identical local game() helper).
+local function liveGameData()
+  local ok,liveGame=pcall(require,"src.core.Game")
+  return ok and liveGame and liveGame.data or nil
+end
+
+local function dexHeightMeters(opts,dex)
   local ctx=opts and opts.context
   local game=(ctx and ctx.game) or (ctx and ctx.battle and ctx.battle.game)
   local battler=opts and opts.battler
   local mon=battler and (battler.mon or battler)
   local species=mon and mon.species
-  local data=game and game.data
+  local data=(game and game.data) or liveGameData()
+  -- No battler species to key off of: resolve the species by dex number
+  -- instead of falling straight through to the generic .72 relative-height
+  -- fallback below. That fallback is what made every roamer/follower/wild
+  -- Colosseum model come out at nearly the same size regardless of species
+  -- -- only the handful of dex numbers in LENGTH_MEASURED_FACTOR/
+  -- TINY_SPECIES_FLOOR/LARGE_SPECIES_CEILING ever differed from it.
+  if not species and data and data.pokemon and dex then
+    for speciesId,candidate in pairs(data.pokemon) do
+      if candidate and candidate.dex==dex then species=speciesId;break end
+    end
+  end
   local def=data and data.pokemon and species and data.pokemon[species]
   local e=def and def.dexEntry
   if e then
@@ -2180,7 +2205,7 @@ function A.acquire(source,dex,variant,opts)
   -- the Pokedex height relative to a ~1.70 m trainer. Extreme giant species are
   -- softly capped only to keep the arena/camera numerically usable.
   local h=actor.height
-  local meters=dexHeightMeters(opts)
+  local meters=dexHeightMeters(opts,dex)
   local normalizedRelative,rawRelative,curveRelative,bodyFactor=
     normalizedPresentationRelative(meters,dex)
   local floor=TINY_SPECIES_FLOOR[dex] or MIN_READABLE_RELATIVE
@@ -3667,16 +3692,20 @@ function A.loadOverworldModel(dex, variant)
   local n=dexNumber(dex)
   if not n or not Dex.supported(n) then return nil end
 
-  local ok, actor, err = pcall(A.acquire, "overworld", n, variant, {
-    context={arena={figureScale=1.0}},
-  })
+  -- No figureScale override here: omitting it lets A.acquire fall back to
+  -- DEFAULT_FIGURE_SCALE, the exact same calibration ColosseumMon.lua (the
+  -- overworld follower/roamer adapter) and ColosseumBattleMon.lua (real
+  -- Colosseum A/B battles) already rely on to size a Pokemon relative to a
+  -- trainer. The old figureScale=1.0 override plus a flat *0.8 below made
+  -- overworld Colosseum models -- followers, roamers, wildlife -- render
+  -- noticeably smaller than the same species does in a Colosseum battle.
+  local ok, actor, err = pcall(A.acquire, "overworld", n, variant, {})
   if not ok or not actor then return nil end
 
   actor.spawnScale=1
   pcall(actor.spawn, actor, 1)
   pcall(actor.selectNativeSlot, actor, "idle")
   pcall(actor.transition, actor, "idle")
-  actor.worldScale=(actor.worldScale or 1)*0.8
 
   return {
     dex=n,

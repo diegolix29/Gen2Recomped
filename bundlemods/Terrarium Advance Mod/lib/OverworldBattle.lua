@@ -601,16 +601,9 @@ function OverworldBattle.begin(state, battle)
               armed = false, token = 0 }
   cullCast(state)
   BattleCam.reset()
-  
-  -- Check if this is a Colosseum mode - if so, don't call Stadium.begin
-  local value = OverworldBattle.setting:get()
-  local isColosseum = (value == OverworldBattle.COLOSSEUM_A or value == OverworldBattle.COLOSSEUM_B)
-  
-  if not isColosseum then
-    -- Only call Stadium.begin for Stadium modes
-    pcall(function() V.require("Stadium").begin(arena) end)
-  end
-  
+  local mode = OverworldBattle.setting:get()
+  V.mod.log:info("[OverworldBattle] Calling Stadium.begin, mode=%s", tostring(mode))
+  pcall(function() V.require("Stadium").begin(arena) end)
   return true
 end
 
@@ -642,6 +635,14 @@ function OverworldBattle.finish()
   session = nil
   Voxel3D.camera = nil
   pcall(function() V.require("Stadium").finish() end)
+  
+  -- Release Colosseum battle actors
+  if OverworldBattle.colosseumActors then
+    for side, mon in pairs(OverworldBattle.colosseumActors) do
+      pcall(mon.release, mon)
+    end
+    OverworldBattle.colosseumActors = nil
+  end
 end
 
 -- ------- per-frame
@@ -1419,7 +1420,66 @@ function OverworldBattle.install()
   -- at the scale the GB always put them -- feet on the box, 2x, back view.
   innerPics = BattleState.drawPicsLayer
   function BattleState:drawPicsLayer(slide, sx, sy, onlySide, skipMenuClip)
+    V.mod.log:info("[drawPicsLayer] Called with shot=%s onlySide=%s", tostring(self.dramaticShapeShot ~= nil), tostring(onlySide))
+    
+    -- Check if COLOSSEUM A/B mode is selected - render Colosseum models FIRST
+    -- This must happen BEFORE the shot check so it works for regular native battles
+    local mode = nil
+    if OverworldBattle and type(OverworldBattle.setting)=="table" and type(OverworldBattle.setting.get)=="function" then
+      local ok,value = pcall(OverworldBattle.setting.get, OverworldBattle.setting)
+      V.mod.log:info("[drawPicsLayer] Setting read: ok=%s value=%s", tostring(ok), tostring(value))
+      if ok then
+        if value == OverworldBattle.COLOSSEUM_A then mode = "COLOSSEUM_A"
+        elseif value == OverworldBattle.COLOSSEUM_B then mode = "COLOSSEUM_B"
+        end
+      end
+    end
+    
+    V.mod.log:info("[drawPicsLayer] Mode detected: %s", tostring(mode))
+    
+    if mode then
+      -- Use PokemonActors.service directly like the Pokemon info screen does
+      local PokemonActors = V.PokemonActors
+      local api = PokemonActors and PokemonActors.service
+      V.mod.log:info("[drawPicsLayer] PokemonActors available: %s, api=%s", tostring(PokemonActors ~= nil), tostring(api ~= nil))
+      
+      if api then
+        local sidesToRender = onlySide and {onlySide} or {"player", "enemy"}
+        for _, side in ipairs(sidesToRender) do
+          local battler = side == "player" and self.player or self.enemy
+          if battler and battler.mon then
+            local dex = battler.mon.dex
+            local shiny = battler.mon.shiny
+            local variant = shiny and "shiny" or "normal"
+            
+            -- If dex is not a number, try to look up species name to dex
+            if not dex or type(dex) ~= "number" then
+              local species = battler.mon.species
+              if species and type(species) == "string" then
+                V.mod.log:info("[drawPicsLayer] Species name: %s", tostring(species))
+                -- Try to look up dex from ColosseumDexNames
+                local okNames, ColosseumDexNames = pcall(V.require, "ColosseumDexNames")
+                if okNames and ColosseumDexNames then
+                  for i, name in ipairs(ColosseumDexNames) do
+                    if name == species then
+                      dex = i
+                      V.mod.log:info("[drawPicsLayer] Found dex %d for species %s", i, species)
+                      break
+                    end
+                  end
+                else
+                  V.mod.log:info("[drawPicsLayer] Failed to load ColosseumDexNames: %s", tostring(ColosseumDexNames))
+                end
+              end
+            end
+          end
+        end
+      end
+      return -- Skip native sprite rendering for Stadium/Colosseum modes
+    end
+    
     local shot = self.dramaticShapeShot
+    
     if not shot then
       return innerPics(self, slide, sx, sy, onlySide, skipMenuClip)
     end

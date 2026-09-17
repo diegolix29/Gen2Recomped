@@ -850,6 +850,23 @@ local SHADER = [[
   uniform highp vec4 lamp5;
   uniform highp vec4 lamp6;
   uniform highp vec4 lamp7;
+  // THE FLOOR EACH POST STANDS ON, in world y.
+  //
+  // `lampHeight` below is the flame's height above its own post and is one
+  // number for every lamp, which was right while every post stood at the
+  // datum.  Once the terrain carries terraces a lamp on a raised street is
+  // drawn at the street's height and its POOL was still being computed at
+  // y = lampHeight -- so the post rose and the light it casts stayed on the
+  // floor below it.  Reported exactly that way: "the lamps are raised but
+  // their lights they emit arent".
+  uniform highp float lampY0;
+  uniform highp float lampY1;
+  uniform highp float lampY2;
+  uniform highp float lampY3;
+  uniform highp float lampY4;
+  uniform highp float lampY5;
+  uniform highp float lampY6;
+  uniform highp float lampY7;
   uniform highp float lampGlow;
 
 #ifdef ANIME_CEL
@@ -880,7 +897,7 @@ local SHADER = [[
   // flame this fragment is in .y, which the caller uses to run the pool from
   // amber at the rim to near-white at the core -- a real flame is not one
   // colour, and a pool that IS one colour reads as a painted circle.
-  vec2 localLamp(vec4 lamp) {
+  vec2 localLamp(vec4 lamp, highp float base) {
     if (lamp.w <= 0.0 || lamp.z <= 0.0) return vec2(0.0);
     // How far the pool REACHES is a ground measurement, and how bright it is
     // at a point is a 3D one. Keeping them apart matters: run the cutoff off
@@ -895,7 +912,7 @@ local SHADER = [[
     float r2 = lamp.z * lamp.z;
     if (rad2 >= r2) return vec2(0.0);         // early out: most fragments
 
-    vec3 d = vec3(lamp.x, lampHeight, lamp.y) - vWorld;
+    vec3 d = vec3(lamp.x, base + lampHeight, lamp.y) - vWorld;
     float dist2 = dot(d, d);
 
     // The window falls to zero WITH a zero derivative at the rim. An
@@ -960,10 +977,10 @@ local SHADER = [[
     // second, softer shadow layered under the sharp one the map draws.
     float lit = sunlight(vSun) * cloudShadowLit(vWorld.xz);
     vec3 light = skyTint + sunTint * lit;
-    vec2 lamps = localLamp(lamp0) + localLamp(lamp1)
-               + localLamp(lamp2) + localLamp(lamp3)
-               + localLamp(lamp4) + localLamp(lamp5)
-               + localLamp(lamp6) + localLamp(lamp7);
+    vec2 lamps = localLamp(lamp0, lampY0) + localLamp(lamp1, lampY1)
+               + localLamp(lamp2, lampY2) + localLamp(lamp3, lampY3)
+               + localLamp(lamp4, lampY4) + localLamp(lamp5, lampY5)
+               + localLamp(lamp6, lampY6) + localLamp(lamp7, lampY7);
     // The lamp adds light BEFORE the material is shaded, so paving, walls and
     // foliage keep their own colour under the warm spill instead of becoming
     // a flat yellow overlay.
@@ -2262,6 +2279,9 @@ function Voxel3D.beginScene(w, h, cx, cy, vw, vh, sky, slot, yaw)
       lamp and lamp.radius or 0,
       lamp and lamp.power or 0,
     })
+    -- the post's own floor (StreetLamps.lights), so the pool sits under the
+    -- lantern rather than under the world datum
+    pcall(sh.send, sh, "lampY" .. (i - 1), lamp and lamp.y or 0)
   end
   pcall(sh.send, sh, "lampGlow", #lamps > 0 and Voxel3D.LAMP_GLOW or 0)
   pcall(sh.send, sh, "lampHeight", Voxel3D.lampHeight or Voxel3D.LAMP_HEIGHT)
