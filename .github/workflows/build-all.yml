@@ -195,9 +195,11 @@ jobs:
 
       - name: Install Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          api-level: 34
-          ndk: 25.2.9519653
+
+      - name: Install NDK 25.2.9519653 + platform 34
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager --install "platforms;android-34" "ndk;25.2.9519653"
 
       - name: Build Android APK
         run: |
