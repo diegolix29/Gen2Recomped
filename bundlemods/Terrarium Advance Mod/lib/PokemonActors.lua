@@ -2035,6 +2035,39 @@ local function liveGameData()
   return ok and liveGame and liveGame.data or nil
 end
 
+-- lib/PokemonHeights.lua is a plain canonical dex->meters table (National
+-- Dex #1..386, no extraction dependency). It's the right fallback for any
+-- species that has no dexEntry/gen2Pokedex data at all -- which, until now,
+-- was every Gen 3 species (#252-386): those get registered into data.pokemon
+-- by ColosseumDexSpecies.S.register purely for battle stats (baseStats,
+-- moves, types), with no dexEntry and no gen2Pokedex counterpart, so they
+-- always fell through to the generic .72 relative-height fallback below
+-- regardless of species -- Wailord and Ralts alike.
+--
+-- This file (PokemonActors.lua) is loaded through main.lua's separate
+-- colosseumPackage/loadColosseumModule bootstrap, not the mod's usual
+-- V.require sibling-loader -- V.require does not exist on the namespace
+-- table this file receives as V, so calling it silently no-ops under pcall.
+-- Load PokemonHeights.lua the same low-level way colosseumPackage itself
+-- does (mod:read + load), rather than through V.require.
+local pokemonHeightsModule
+local function loadPokemonHeights()
+  local modObj=V and V.mod
+  if not (modObj and type(modObj.read)=="function") then return nil end
+  local okRead,src=pcall(modObj.read,modObj,"lib/PokemonHeights.lua")
+  if not (okRead and src) then return nil end
+  local chunk,err=load(src,"@lib/PokemonHeights.lua")
+  if not chunk then return nil end
+  local okRun,result=pcall(chunk)
+  return okRun and result or nil
+end
+local function pokemonHeightsMeters(dex)
+  if pokemonHeightsModule==nil then
+    pokemonHeightsModule=loadPokemonHeights() or false
+  end
+  return pokemonHeightsModule and pokemonHeightsModule.meters and pokemonHeightsModule.meters(dex) or nil
+end
+
 local function dexHeightMeters(opts,dex)
   local ctx=opts and opts.context
   local game=(ctx and ctx.game) or (ctx and ctx.battle and ctx.battle.game)
@@ -2068,6 +2101,8 @@ local function dexHeightMeters(opts,dex)
     local ft=math.floor(raw/100);local inch=raw%100
     return (ft*12+inch)*0.0254
   end
+  local canonical=dex and pokemonHeightsMeters(dex)
+  if canonical and canonical>0 then return canonical end
   return nil
 end         -- runtime multiplier, adjusted with F7/F8
 

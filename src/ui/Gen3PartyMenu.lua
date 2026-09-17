@@ -417,7 +417,7 @@ end
 -- them appear is this file's decision.
 function Gen3PartyMenu:actionsFor()
   if not (self.battle and self.onSwitch) then return nil end
-  return {
+  local rows = {
     -- SHIFT when a mon is still out, SEND OUT when the slot is empty
     { label = self:word(self.forceSwitch and 2 or 1,
                         self.forceSwitch and "SEND OUT" or "SHIFT"),
@@ -425,6 +425,18 @@ function Gen3PartyMenu:actionsFor()
     { label = self:word(4, "SUMMARY"), action = "summary" },
     { label = Strings("CANCEL"), action = "cancel" },
   }
+  
+  -- Call the ui.party.submenu hook to allow mods to inject options (e.g., FreeFly)
+  local Runtime = require("src.mods.Runtime")
+  local ctx = { battle = self.battle, overworld = self.game.overworld }
+  local hooked = Runtime.call("ui.party.submenu", function(game, items, mon_param, ctx_param)
+    return items -- vanilla behavior: return the items unchanged
+  end, self.game, rows, nil, ctx)
+  if type(hooked) == "table" then
+    return hooked
+  end
+  
+  return rows
 end
 
 -- ---------------------------------------------------------------------------
@@ -521,16 +533,40 @@ function Gen3PartyMenu:fieldActionsFor(mon)
   end
   rows[#rows + 1] = { label = self:actionWord("cancel", nil, "CANCEL"),
                       action = "cancel" }
+  
+  -- Call the ui.party.submenu hook to allow mods to inject options (e.g., FreeFly)
+  local Runtime = require("src.mods.Runtime")
+  local ctx = { battle = self.battle, overworld = self.game.overworld }
+  local hooked = Runtime.call("ui.party.submenu", function(game, items, mon_param, ctx_param)
+    return items -- vanilla behavior: return the items unchanged
+  end, self.game, rows, mon, ctx)
+  if type(hooked) == "table" then
+    return hooked
+  end
+  
   return rows
 end
 
 -- ITEM's own three, which the cartridge puts up in place of the first list.
 function Gen3PartyMenu:itemActions()
-  return {
+  local rows = {
     { label = self:actionWord("give", nil, "GIVE"), action = "give" },
     { label = self:actionWord("takeItem", 8, "TAKE"), action = "take" },
     { label = self:actionWord("cancel", nil, "CANCEL"), action = "cancel" },
   }
+  
+  -- Call the ui.party.submenu hook to allow mods to inject options (e.g., FreeFly)
+  local Runtime = require("src.mods.Runtime")
+  local ctx = { battle = self.battle, overworld = self.game.overworld }
+  local mon = self:party()[self.index]
+  local hooked = Runtime.call("ui.party.submenu", function(game, items, mon_param, ctx_param)
+    return items -- vanilla behavior: return the items unchanged
+  end, self.game, rows, mon, ctx)
+  if type(hooked) == "table" then
+    return hooked
+  end
+  
+  return rows
 end
 
 local function monName(game, mon)
@@ -693,6 +729,18 @@ function Gen3PartyMenu:orderActionsFor(slot)
   end
   rows[#rows + 1] = { label = self:word(4, "SUMMARY"), action = "summary" }
   rows[#rows + 1] = { label = Strings("CANCEL"), action = "cancel" }
+  
+  -- Call the ui.party.submenu hook to allow mods to inject options (e.g., FreeFly)
+  local Runtime = require("src.mods.Runtime")
+  local ctx = { battle = self.battle, overworld = self.game.overworld }
+  local mon = self:party()[slot]
+  local hooked = Runtime.call("ui.party.submenu", function(game, items, mon_param, ctx_param)
+    return items -- vanilla behavior: return the items unchanged
+  end, self.game, rows, mon, ctx)
+  if type(hooked) == "table" then
+    return hooked
+  end
+  
   return rows
 end
 
@@ -756,6 +804,11 @@ end
 
 function Gen3PartyMenu:runAction(action, mon, row)
   self.submenu = nil
+  -- Handle hook-injected entries that carry a callback instead of an action id
+  if not action and row and row.onSelect then
+    row.onSelect(mon, self.game)
+    return
+  end
   if action == "cancel" then return end
   if action == "enter" then
     local refused = self:orderRefusal(self.index)

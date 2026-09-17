@@ -697,9 +697,27 @@ function groundAt(map, cellX, cellY, elev, px, py)
   -- with it) and remembers which shapes table it was filled from.  A rebuilt
   -- tileset changes that table, and the map's heights are dropped with it
   -- rather than quietly surviving the analysis they were read from.
+  -- ...AND ON WHETHER THE MAP HAS BEEN BUILT YET, which is a third thing the
+  -- answers depend on and the first two do not carry.
+  --
+  -- Before Structures has been over a map every reader in the ladder answers
+  -- nil, so a character is placed on the datum.  That is the right thing to
+  -- draw with -- somebody has to stand somewhere while a town meshes, which
+  -- takes seconds -- and the wrong thing to keep.
+  --
+  -- The first cut refused to cache at ALL while a map was unbuilt, which is
+  -- correct and costs the most at exactly the worst moment: every actor on a
+  -- map still being meshed walked the whole ladder every frame, and
+  -- `voxel: poses` went from nine milliseconds to twelve.
+  --
+  -- So cache as usual, and throw the whole map's answers away the first
+  -- frame it reports built.  One boolean compare per lookup, one flush at
+  -- the transition, and nothing carries a pre-build guess past it.
+  local S0 = structures()
+  local isBuilt = (S0 and S0.built and S0.built(map)) or false
   local entry = groundMemo[map]
-  if not entry or entry.shapes ~= shapes then
-    entry = { shapes = shapes, cells = {} }
+  if not entry or entry.shapes ~= shapes or entry.built ~= isBuilt then
+    entry = { shapes = shapes, cells = {}, built = isBuilt }
     groundMemo[map] = entry
   end
   local memo = entry.cells
@@ -733,8 +751,28 @@ end
 -- The sheet frame and mirror flag the 2D path would draw for this pose
 -- (same tables as SpriteRenderer). Shared by the billboard pass and the
 -- shadow pass so a walking character's shadow swings its legs too.
+-- resolved ONCE, not per card: `require` is a package.loaded lookup plus a
+-- call, and this runs for every actor in both the eye pass and the sun
+-- pass.  Memoised rather than bound at load because the engine module is
+-- not guaranteed to be there when a mod chunk first runs.
+-- THE THREE QUARTER-TURN FACING MAPS, BUILT ONCE.
+--
+-- These were table literals inside the branch, so a card standing while the
+-- camera happened to sit near a cardinal allocated a fresh four-entry table
+-- -- per actor, per pass.  Harmless while the yaw never arrived; the moment
+-- the slipped argument list was fixed and `yaw` started reaching this
+-- function, the branch went live for every card in the world.
+local YAW_LEFT  = { up = "left",  right = "up",    down = "right", left = "down"  }
+local YAW_RIGHT = { up = "right", right = "down",  down = "left",  left = "up"    }
+local YAW_BACK  = { up = "down",  right = "left",  down = "up",    left = "right" }
+
+local SpriteRenderer = nil
 local function frameFor(def, facing, phase, flip, yaw)
-  local SR = require("src.render.SpriteRenderer")
+  local SR = SpriteRenderer
+  if not SR then
+    SR = require("src.render.SpriteRenderer")
+    SpriteRenderer = SR
+  end
   local frame, mirror = 0, false
 
   -- Adjust facing based on camera yaw (ported from ADVANCED_SHAPE): as the
@@ -748,12 +786,10 @@ local function frameFor(def, facing, phase, flip, yaw)
 
     -- Map camera rotation to facing adjustments with tolerance
     local map = nil
-    if math.abs(yawDeg - (-90)) < 5 then
-      map = { up = "left", right = "up", down = "right", left = "down" }  -- Camera left
-    elseif math.abs(yawDeg - 90) < 5 then
-      map = { up = "right", right = "down", down = "left", left = "up" }  -- Camera right
+    if math.abs(yawDeg - (-90)) < 5 then map = YAW_LEFT
+    elseif math.abs(yawDeg - 90) < 5 then map = YAW_RIGHT
     elseif math.abs(yawDeg - 180) < 5 or math.abs(yawDeg - (-180)) < 5 then
-      map = { up = "down", right = "left", down = "up", left = "right" }  -- Camera back
+      map = YAW_BACK
     end
 
     if map then
@@ -853,7 +889,10 @@ end
 VoxelScene.spriteLean = nil
 
 local function leanAngle()
-  return VoxelScene.spriteLean or V.require("VoxelState").angle
+  -- `Voxel` is this module's own VoxelState, bound at load.  Going back
+  -- through V.require here cost a call per CARD per pass -- a couple of
+  -- hundred a frame in a town -- to reach the table already in scope.
+  return VoxelScene.spriteLean or Voxel.angle
 end
 
 -- Composition order matters here and is easy to get backwards: Mat4.mul(m,
@@ -861,23 +900,52 @@ end
 -- applied to a vertex. Correct billboard behavior is to tip the card back
 -- by pitch in its OWN local frame first, then swing the already-tipped
 -- card around the world +Y axis to face the camera's yaw.
+-- THE CHAIN IS FIXED, SO IT IS WRITTEN OUT.
+--
+-- The composition never varies: translate to the card's centre, turn it about
+-- +Y, tip it back about its own X, mirror it if the sheet wants the flipped
+-- frame, then shift the origin back to the card's left edge.  Built with
+-- Mat4.mul that is up to nine fresh sixteen-slot tables and four full matrix
+-- products -- 256 multiplies -- for a transform with about ten distinct
+-- numbers in it.  Per card.  Per pass.  Twice over, because the sun draws the
+-- cast as well, and a town poses well over a hundred actors.
+--
+-- Multiplied out by hand (T1 * Ry * Rx * S * T2, row-major, translation in
+-- the fourth column, and every factor affine so the bottom row stays
+-- [0,0,0,1]):
+--
+--   Ry*Rx  = { c, s*sp, s*cp ; 0, cp, -sp ; -s, c*sp, c*cp }
+--   *S     scales the FIRST COLUMN by sx (mirror is scale(-1,1,1))
+--   T1     adds the centre to the fourth column
+--   *T2    adds column1 * -halfW to the fourth column
+--
+-- One table, about ten multiplies, and identical to the ninth decimal --
+-- tests/matrix_test.lua builds the old chain with the real Mat4 and compares
+-- all sixteen slots across yaw, mirror, blend and lean.
+local HALF_PI = math.pi / 2
+local cos, sin = math.cos, math.sin
 local function billboardMatrix(px, py, y, mirror, yaw, spriteWidth, spriteHeight)
-  local w = spriteWidth or 16
-  local h = spriteHeight or 16
-  local halfW = w / 2
-  local halfH = h / 2
+  local halfW = (spriteWidth or 16) / 2
+  local cx = px + halfW
+  local cz = py + (spriteHeight or 16) / 2
   local b = FirstPerson.cardBlend()
-  local m = Mat4.translate(px + halfW, y, py + halfH)
-  
-  if b > 0 then
-    m = Mat4.mul(m, Mat4.rotateY(FirstPerson.cardYaw(px + halfW, py + halfH) * b))
-  elseif yaw and yaw ~= 0 then
-    m = Mat4.mul(m, Mat4.rotateY(yaw))
-  end
-  m = Mat4.mul(m, Mat4.rotateX((leanAngle() - math.pi / 2) * (1 - b)))
-  
-  if mirror then m = Mat4.mul(m, Mat4.scale(-1, 1, 1)) end
-  return Mat4.mul(m, Mat4.translate(-halfW, 0, 0))
+
+  local a = 0
+  if b > 0 then a = FirstPerson.cardYaw(cx, cz) * b
+  elseif yaw and yaw ~= 0 then a = yaw end
+
+  local ca, sa = cos(a), sin(a)
+  local pitch = (leanAngle() - HALF_PI) * (1 - b)
+  local cp, sp = cos(pitch), sin(pitch)
+  local sx = mirror and -1 or 1
+  local m1 = ca * sx          -- column 1, which is also what T2 shifts by
+  local m9 = -sa * sx
+  return {
+    m1,  sa * sp,  sa * cp,  cx - m1 * halfW,
+    0,   cp,       -sp,      y,
+    m9,  ca * sp,  ca * cp,  cz - m9 * halfW,
+    0,   0,        0,        1,
+  }
 end
 
 local function billboardPull()
@@ -989,6 +1057,48 @@ VoxelScene.drawEntity = drawEntity
 
 
 
+
+-- A CARD OUTSIDE THE BOX BEING DRAWN IS NOT IN THE PICTURE -- so it must not
+-- be drawn, and for the sun it must not be in the signature that decides
+-- whether the shadow map has to be redrawn either.
+--
+-- One predicate, two boxes: the sun pass hands it the light box
+-- (VoxelScene.bounds forSun) and the eye pass hands it the view box, which
+-- is the same box the terrain is drawn to.  Declared up HERE rather than
+-- beside the sun pass because drawCast is the first user and a local is not
+-- visible above its own declaration -- left below, it would silently be a
+-- nil global and take the render pass down on its first card.
+--
+-- MOTIVATED BY MAUVILLE, where the sun pass measured 83 ms EVERY FRAME.
+--
+-- Two costs, one cause.  The town is a seam: with DRAW DIST on FAR its four
+-- neighbours are resident, one of them Route 119 at 40x140 cells, and the
+-- posed list comes out around 150 entries -- most of them people wandering
+-- about a route the light box does not reach anywhere near.  Every one of
+-- them was drawn as a caster card (frame pick, quad, dimensions, matrix,
+-- draw), and every one of them put its exact pixel position and animation
+-- phase into `shadowSignature`.  So a stranger taking a step three screens
+-- away made the signature differ, and the whole sun pass -- a route-sized
+-- terrain mesh plus 78 building runs -- was redrawn for a shadow that falls
+-- nowhere near the canvas.  Standing perfectly still in a town could not
+-- reuse the map even once, which is the one case the signature exists for.
+--
+-- The SAME predicate governs both, deliberately: cull the draw without
+-- culling the signature and the map would go stale for a caster that is no
+-- longer in it; cull the signature without culling the draw and a card would
+-- be drawn from a stamp that never recorded it.  They have to be one test.
+--
+-- The pad is a card's own half-width and then some; the box already carries
+-- the sun's shear margin (VoxelScene.bounds forSun) on the side the shadows
+-- actually stretch toward.
+local CAST_PAD = 32
+local function castsInto(box, p)
+  if not box then return true end
+  local x, y = p.px or 0, p.py or 0
+  return x >= box[1] - CAST_PAD and x <= box[3] + CAST_PAD
+     and y >= box[2] - CAST_PAD and y <= box[4] + CAST_PAD
+end
+
 -- ------- the cast
 --
 -- Everybody standing on the map: the walkers, and the authored FIGURES the
@@ -1011,6 +1121,30 @@ VoxelScene.drawEntity = drawEntity
 -- point is that you walk around things and look at them.  A slipped argument
 -- list is not a crash, it is a wrong picture, which is why it survived.
 -- tests/arity_check.lua reads the source for exactly this shape.
+-- A CARD OUTSIDE THIS FRAME'S CUT IS NOT ON SCREEN.
+--
+-- ViewBox.shows is the frame's own visibility test -- the box ViewBox.frame
+-- fits to the camera footprint, plus ViewBox.PAD, and it answers true when
+-- there is no box, so it is safe to guard every draw with unconditionally.
+-- It is what the terrain and shadow passes already ask about a whole
+-- neighbour map; asked about one card it is the same question at the
+-- resolution that matters here.
+--
+-- Deliberately NOT VoxelScene.bounds: that box is what to BUILD, capped at
+-- five view heights of ground, and in a town it swallows the whole map and a
+-- good part of its neighbours.  It is the right box for the sun, which
+-- reaches that far; it is far too loose to decide what the eye can see.
+--
+-- ViewBox.frame runs earlier in this same frame (it needs the camera
+-- FirstPerson may have moved), so by the time the cast is drawn the cut is
+-- this frame's, not the last one's.
+local CARD_W, CARD_H = 32, 48
+local function cardShows(p)
+  local x, y = p.px or 0, p.py or 0
+  local ok, seen = pcall(ViewBox.shows, x, y, x + CARD_W, y + CARD_H)
+  return (not ok) or seen
+end
+
 local function drawCast(state, posed, me, atlasFor, yaw)
   Voxel3D.glass(false)
   Voxel3D.seams(false)
@@ -1026,8 +1160,24 @@ local function drawCast(state, posed, me, atlasFor, yaw)
   -- south. Both run through here, so the water's reflection copy -- drawn
   -- by this same function -- agrees with the frame to the pixel.
   local hideMe = FirstPerson.hidePlayer()
+  -- THE CROWD IS MOSTLY OFF-SCREEN.
+  --
+  -- The pose pass drops a ghost whose whole MAP the window box does not
+  -- reach, but within a map that IS reached every one of its people was
+  -- still built and submitted -- and a town seam keeps four neighbours
+  -- resident, one of them a route forty by a hundred and forty cells.  So a
+  -- hundred-odd cards were drawn every frame for a view that holds a few
+  -- dozen, each one a mesh lookup, a transform and a DRAW CALL.  Draw calls
+  -- are what this pass actually costs; the arithmetic around them is noise
+  -- by comparison.
+  --
+  -- The player is never culled: they are what the box is centred on, so the
+  -- test would pass anyway, and saying so means no camera rig can ever put
+  -- the one card that must be there outside its own box.
+  local shown, culled = 0, 0
   for _, p in ipairs(posed) do
-    if not (p.isPlayer and hideMe) then
+    if not (p.isPlayer and hideMe) and (p.isPlayer or cardShows(p)) then
+      shown = shown + 1
       -- Check if this is the player and a custom model is loaded
       if p.isPlayer and PlayerModel.loaded() then
         -- Draw custom 3D model instead of sprite
@@ -1063,6 +1213,16 @@ local function drawCast(state, posed, me, atlasFor, yaw)
         drawEntity(p.sprite, p.px, p.py, viewFacing(p), p.phase, p.flip, p.gh,
                    p.colors, p.lift, p.waterline, p.isPlayer, yaw)
       end
+    elseif not (p.isPlayer and hideMe) then
+      culled = culled + 1
+    end
+  end
+  -- what went in and what did not, in the F11 report's calls column
+  do
+    local P = profile()
+    if P and P.count then
+      P.count("        voxel: cards drawn", shown)
+      P.count("        voxel: cards culled", culled)
     end
   end
   
@@ -1438,39 +1598,6 @@ local function shifted(b, ox, oy)
   return { b[1] - ox, b[2] - oy, b[3] - ox, b[4] - oy }
 end
 
--- A CASTER OUTSIDE THE LIGHT BOX IS NOT IN THE SHADOW MAP -- so it must not be
--- in the signature that decides whether the map has to be redrawn either.
---
--- MOTIVATED BY MAUVILLE, where the sun pass measured 83 ms EVERY FRAME.
---
--- Two costs, one cause.  The town is a seam: with DRAW DIST on FAR its four
--- neighbours are resident, one of them Route 119 at 40x140 cells, and the
--- posed list comes out around 150 entries -- most of them people wandering
--- about a route the light box does not reach anywhere near.  Every one of
--- them was drawn as a caster card (frame pick, quad, dimensions, matrix,
--- draw), and every one of them put its exact pixel position and animation
--- phase into `shadowSignature`.  So a stranger taking a step three screens
--- away made the signature differ, and the whole sun pass -- a route-sized
--- terrain mesh plus 78 building runs -- was redrawn for a shadow that falls
--- nowhere near the canvas.  Standing perfectly still in a town could not
--- reuse the map even once, which is the one case the signature exists for.
---
--- The SAME predicate governs both, deliberately: cull the draw without
--- culling the signature and the map would go stale for a caster that is no
--- longer in it; cull the signature without culling the draw and a card would
--- be drawn from a stamp that never recorded it.  They have to be one test.
---
--- The pad is a card's own half-width and then some; the box already carries
--- the sun's shear margin (VoxelScene.bounds forSun) on the side the shadows
--- actually stretch toward.
-local CAST_PAD = 32
-local function castsInto(box, p)
-  if not box then return true end
-  local x, y = p.px or 0, p.py or 0
-  return x >= box[1] - CAST_PAD and x <= box[3] + CAST_PAD
-     and y >= box[2] - CAST_PAD and y <= box[4] + CAST_PAD
-end
-
 -- ------- the glint's drive
 --
 -- A reflection is something the VIEWPOINT does, so the window glint is fed
@@ -1507,8 +1634,30 @@ local glint = {}
 -- means the shadow map it produced last frame is still exactly right, and
 -- redrawing the whole world from the sun would buy nothing -- which is
 -- most of a dialog, a menu, or any moment standing still.
-local sigBuf = {}
-local function shadowSignature(terrain, nbMesh, posed, cx, cy, vw, vh, box)
+-- COMPARED, NOT CONCATENATED.
+--
+-- This used to build a comma-joined STRING of everything the sun pass
+-- depends on and compare it against last frame's.  With a town's cast that
+-- is well over a thousand fields -- and `tostring(terrain)` and a
+-- `tostring` per neighbour mesh on top, each of which allocates a fresh
+-- "table: 0x..." -- concatenated into a multi-kilobyte string, every frame,
+-- purely to answer a yes/no question.  The string was never read.
+--
+-- So the fields go into a REUSED buffer and are compared element by element
+-- against the last committed one.  Same answer, exactly: no hash, no
+-- collision, nothing to go subtly stale.  A table goes in as ITSELF, because
+-- `==` on tables is identity, which is the question `tostring` was
+-- approximating anyway.  After the first frame it allocates nothing.
+--
+-- The buffers are SWAPPED rather than copied, and only once the pass has
+-- actually finished -- a frame that bails between here and finish (no
+-- canvas, not ready) must leave the previous signature standing so the next
+-- frame still knows it has work to do.
+local sigBuf, sigPrev = {}, {}
+local sigN, sigPrevN = 0, -1
+
+local function shadowSignature(terrain, nbMesh, posed, cx, cy, vw, vh, box,
+                               battleToken)
   local n = 0
   local function put(v)
     n = n + 1
@@ -1523,7 +1672,7 @@ local function shadowSignature(terrain, nbMesh, posed, cx, cy, vw, vh, box)
   -- zoom step, a window resize or a rung change invalidates the map even
   -- standing perfectly still
   put(vw); put(vh)
-  put(math.floor((V.require("VoxelState").angle or 0) * 512))
+  put(math.floor((Voxel.angle or 0) * 512))
   -- the sun itself: the cycle swings the shear as the clock runs, and a map
   -- lit from somewhere new must be redrawn from there too. Quantised by the
   -- rig's own step (DayNight.rigTime), so a running cycle redraws the map a
@@ -1539,8 +1688,11 @@ local function shadowSignature(terrain, nbMesh, posed, cx, cy, vw, vh, box)
   -- map back inside the cut, and a sun map recorded without it would leave
   -- that map standing in its own unlit shadow
   put(ViewBox.signature())
-  put(tostring(terrain))
-  for i = 1, #nbMesh do put(tostring(nbMesh[i])) end
+  -- a staged fight's pics move every frame the animation does, and the sun
+  -- has to follow them (VR frames only)
+  put(battleToken or false)
+  put(terrain)
+  for i = 1, #nbMesh do put(nbMesh[i]) end
   for _, p in ipairs(posed) do
     if castsInto(box, p) then
       put(p.sprite.def.image)
@@ -1549,8 +1701,19 @@ local function shadowSignature(terrain, nbMesh, posed, cx, cy, vw, vh, box)
       put(p.waterline or 0)
     end
   end
-  for i = n + 1, #sigBuf do sigBuf[i] = nil end
-  return table.concat(sigBuf, ",")
+  sigN = n
+  if n ~= sigPrevN then return true end
+  for i = 1, n do
+    if sigBuf[i] ~= sigPrev[i] then return true end
+  end
+  return false
+end
+
+-- Committed only after the pass has drawn: swap the buffers, so the one just
+-- built becomes the reference and last frame's becomes scratch.
+local function shadowSignatureCommit()
+  sigBuf, sigPrev = sigPrev, sigBuf
+  sigPrevN = sigN
 end
 
 -- The sun pass: render the scene once from the light, so the main pass can
@@ -1571,11 +1734,11 @@ local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
   -- (see castsInto).  Pure arithmetic -- no geometry is touched here -- so
   -- hoisting it above the staleness test costs nothing on a reused frame.
   local box = VoxelScene.bounds(cx, cy, vw, vh, true)
-  local sig = shadowSignature(terrain, nbMesh, posed, cx, cy, vw, vh, box)
-  -- a staged fight's pics move every frame the animation does, and the sun
-  -- has to follow them (VR frames only; see render)
-  if battleToken then sig = sig .. "|btl" .. tostring(battleToken) end
-  if not ShadowMap.stale(sig) then return end
+  local changed = shadowSignature(terrain, nbMesh, posed, cx, cy, vw, vh,
+                                  box, battleToken)
+  -- (the staged fight's token is part of the signature above now, rather
+  -- than glued onto a string afterwards)
+  if not ShadowMap.stale(changed) then return end
   if not ShadowMap.begin(cx, cy, vw, vh) then return end
 
   -- On the LOW rung the neighbours are drawn in the SCENE as usual and
@@ -1691,7 +1854,9 @@ local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
   -- on the wrong block.
   pcall(StreetLamps.castShadows, state.map)
 
-  ShadowMap.finish(sig)
+  ShadowMap.finish()
+  -- ...and only NOW is this frame's signature the one to compare against
+  shadowSignatureCommit()
 end
 
 -- Render the world. Without `eyes`, one frame into one canvas -- the flat

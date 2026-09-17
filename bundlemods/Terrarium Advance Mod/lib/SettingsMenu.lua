@@ -109,6 +109,9 @@ SettingsMenu.CATEGORIES = {
     summary = function() return V.require("VR").setting:valueLabel() end,
     help = "PCVR through OpenXR, and the one comfort setting that belongs to "
       .. "the headset alone." },
+  { id = "freefly", label = "FREE FLY..",
+    help = "Party Pokemon that know FLY can carry you freely over overworld terrain. "
+      .. "Configure altitude, speed, encounters, and gate behavior." },
 }
 
 -- ------- help for the rows that are not settings
@@ -327,7 +330,9 @@ function SettingsMenu.rows(catId, game)
   end
   for _, entry in ipairs(settings) do
     if entry.cat == catId and offered(entry, full) then
-      out[#out + 1] = entry[1]:row()
+      if entry[1] and entry[1].row then
+        out[#out + 1] = entry[1]:row()
+      end
     end
   end
   return out

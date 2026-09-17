@@ -842,6 +842,19 @@ end
 --- The height of a cell's FLAT FLOOR shape, or nil if it has none.
 --- Used by groundAt to ask "do all four of my walkable neighbours agree what
 --- floor they are on?" without the three-cell reach of standHeight.
+--- Has this map been through the build yet?
+---
+--- Everything else in this file answers nil for a map it has no state for --
+--- which is indistinguishable, to a caller, from "no opinion about that
+--- cell".  For entity placement the difference is the whole answer: before
+--- the build a character has to be put SOMEWHERE, and whatever is chosen
+--- must not then be cached as though it were settled, or a town that takes
+--- twenty seconds to mesh leaves everyone standing at the datum long after
+--- the ground under them has risen.
+function Structures.built(map)
+  return map ~= nil and cache[map.id] ~= nil
+end
+
 function Structures.flatGroundAt(map, tx, ty)
   local S = cache[map.id]
   if not S then return nil end
