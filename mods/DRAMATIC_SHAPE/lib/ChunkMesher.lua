@@ -579,6 +579,44 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
   -- under the datum is enclosed by the two maps' own ground and is never
   -- visible from a camera above the world.
   local SEAM_DATUM = -16
+  -- ...AND A SCULPTED TILE OCCLUDES ITS LOWEST SUB-COLUMN, FOR THE SAME
+  -- REASON A HULL OCCLUDES ITS FOOT.
+  --
+  -- MOTIVATED BY ROUTE 119'S PLANK WALKWAYS, (5..20, 5..18), AND THE SAFARI
+  -- ZONE'S SOUTH GATE WALKWAY, (22..24, 3..7) -- the decks
+  -- `Structures.carveGen3DeckPlanks` cuts the plank out of, so the river runs
+  -- on under them.
+  --
+  -- A sub-tile sculpt gives one tile SEVERAL surfaces, and every question
+  -- asked of it from outside was still answered with the CELL's single
+  -- height.  That is the same mistake the hull rule above exists to correct:
+  -- a cell is only as occluding as the part of it that actually fills the
+  -- cell.  Where the carve drops three quarters of a deck cell to the water at
+  -- 12 and leaves a plank standing at 16, the ground next door asks how tall
+  -- that tile is, is told 16, and cuts no face -- while the tile's own water
+  -- sub-column asks the same of its neighbour and is told 16 as well, so
+  -- neither side walls the step and the seam between them is open sky.
+  --
+  -- MEASURED before this line, by walking every sub-column's tile-edge
+  -- against the surface the neighbour really presents there: ROUTE 119 leaves
+  -- 158 open slots, worst 10px, 122 of them against ordinary ground; the
+  -- SAFARI ZONE leaves 30, worst 16px.  Inside a tile there is no such hole
+  -- -- the sub branch already walls all 404 of Route 119's raised
+  -- sub-columns and all 36 of the Safari Zone's against the water beside
+  -- them -- so the whole of it is at the tile seams, which is exactly what
+  -- this reading is for.
+  --
+  -- IT CANNOT DOUBLE-DRAW.  A face is cut by whichever column is HIGHER,
+  -- against the other's occluding height; with both sides answering their own
+  -- minimum, exactly one of any pair satisfies `nh < hh`.
+  --
+  -- AND IT IS INERT ON EVERY SCULPT THAT IS NOT THIS ONE.  DERIVED over the
+  -- region: the only other pass that writes `sub` is the kerb sculptor, and
+  -- all 110 of its tiles -- Route 110's cycling-road kerbs, the whole of it
+  -- in Hoenn -- have a minimum EQUAL to their cell height, because a kerb
+  -- only ever rises inside its cell.  For those this returns the number it
+  -- returned before, and Route 110 measures 0 open slots either way.
+  local subLow = {}
   local function occludeH(tx, ty)
     if not S.isGen3 then return heightAt(tx, ty) end
     local k = keyOf(tx, ty)
@@ -589,6 +627,29 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
       local b = s.base or 0
       local h = shapeHeight(tx, ty, s)
       return (b < h) and b or h
+    end
+    if s and s.sub and s.sub.res and s.sub.h then
+      local hit = subLow[k]
+      if hit == nil then
+        local h = heightAt(tx, ty)
+        -- the sculpt's heights are absolute and ride with the cell, exactly as
+        -- the sub-tile branch reads them (see `shift` there)
+        local shift = 0
+        local z0 = s.sub.z0
+        if type(z0) == "number" then shift = h - z0 end
+        local res = math.max(1, math.min(8, math.floor(s.sub.res)))
+        local lo = h
+        for i = 1, res * res do
+          local v = tonumber(s.sub.h[i])
+          if v ~= nil then
+            v = v + shift
+            if v < lo then lo = v end
+          end
+        end
+        hit = lo
+        subLow[k] = hit
+      end
+      return hit
     end
     return heightAt(tx, ty)
   end
@@ -973,7 +1034,52 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
               local ni, nj = i + side[1], j + side[2]
               local nh = subH(ni, nj)
               if nh == nil then
-                nh = occludeH(tx + side[1], ty + side[2])
+                -- ...AND A SCULPTED NEIGHBOUR IS ASKED WHAT IT DRAWS AT THIS
+                -- EDGE, NOT WHAT IT OCCLUDES OVERALL.
+                --
+                -- MOTIVATED BY ROUTE 119, THE WALKWAY CORNER AT (9, 10..11)
+                -- -- where a plank levelled at 16 runs into the plank of the
+                -- crossing beside it at 22.
+                --
+                -- `occludeH` answers a sculpted tile's LOWEST sub-column,
+                -- which is what stops the ground next door leaving a slot
+                -- open over the water this cell exposes.  It is the wrong
+                -- number for deciding whether THIS column is the higher of
+                -- the pair: both planks read the other's water at 12, both
+                -- concluded they were the taller, and both cut the step --
+                -- MEASURED, 4 edges on Route 119 drawn from both sides, back
+                -- to back in one plane.  Not visible through a backface cull,
+                -- and redundant geometry either way.
+                --
+                -- A face belongs to whichever column is actually higher, so
+                -- ask the neighbour for the surface it presents ALONG THIS
+                -- EDGE -- its own sub-column opposite ours, at whatever
+                -- resolution it was cut at -- and fall back to `occludeH`
+                -- where it has no sculpt.  Exactly one of any pair then
+                -- satisfies `nh < hh`.
+                local ntx, nty = tx + side[1], ty + side[2]
+                local ns = S.shapeAt[keyOf(ntx, nty)]
+                local nsub = ns and ns.sub
+                if nsub and nsub.res and nsub.h
+                   and not (S.skip[keyOf(ntx, nty)] or S.runs[keyOf(ntx, nty)])
+                then
+                  local nres = math.max(1, math.min(8, math.floor(nsub.res)))
+                  local nbase = shapeHeight(ntx, nty, ns)
+                  local nshift = 0
+                  if type(nsub.z0) == "number" then nshift = nbase - nsub.z0 end
+                  local nstep = 8 / nres
+                  -- the pixel of the neighbour's tile that touches this
+                  -- sub-column across the shared edge
+                  local px = (side[1] ~= 0) and ((side[1] > 0) and 0 or 7)
+                             or math.floor(i * step)
+                  local py = (side[2] ~= 0) and ((side[2] > 0) and 0 or 7)
+                             or math.floor(j * step)
+                  local nv = tonumber(nsub.h[math.floor(py / nstep) * nres
+                                            + math.floor(px / nstep) + 1])
+                  nh = (nv ~= nil) and (nv + nshift) or nbase
+                else
+                  nh = occludeH(ntx, nty)
+                end
               end
               if nh < hh then
                 local d = side[3]

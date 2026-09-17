@@ -110,6 +110,27 @@ end
 -- list here is answerable at install time, on the install screen, before the
 -- zip is even unpacked. Advisory, never authoritative: what a mod actually
 -- patches is what it patches, and the registry remains the truth once loaded.
+-- `generations`: [1, 2] -- the generations a mod is written for.
+--
+-- Validated to the three that exist and sorted, so the set is comparable and
+-- an out-of-range entry is dropped rather than widening the mod's claim.  An
+-- empty or malformed list reads as "unstated" (nil), NOT as "none": a mod that
+-- says nothing intelligible must keep working exactly as it did.
+local function parseGenerations(raw)
+  local list = raw and raw.generations
+  if type(list) ~= "table" then return nil end
+  local seen, out = {}, {}
+  for _, entry in ipairs(list) do
+    local n = tonumber(entry)
+    if n and n % 1 == 0 and n >= 1 and n <= 3 and not seen[n] then
+      seen[n] = true
+      out[#out + 1] = n
+    end
+  end
+  table.sort(out)
+  return out[1] and out or nil
+end
+
 local function parseMaps(raw)
   local list = raw and raw.maps
   if type(list) ~= "table" then return nil end
@@ -297,9 +318,32 @@ function Manifest.validate(raw, path)
     -- satisfied by having imported that game, and this is how the launcher
     -- knows to ask before the mod is ever run.
     requiredGames = parseRequiredGames(raw),
+    -- WHICH GENERATIONS THIS MOD IS FOR.
+    --
+    -- A mod written against Gen 1 and Gen 2 loaded under Emerald does not
+    -- announce itself -- it half-applies.  One shipped mod asks the host its
+    -- generation, gets 3, refuses to route anything, and logs that refusal
+    -- once per frame; its Gen 2 battle transition is unavailable so its screen
+    -- bridge stays installed with nothing to draw (a white screen after any
+    -- menu), and its Gen 1 type names resolve against nothing.  Every symptom
+    -- is downstream of running it somewhere it was never for.
+    --
+    -- The launcher has had per-generation switches since the chips went in;
+    -- what it could not know was which generations a mod SUPPORTS, so it could
+    -- not default them or refuse.  Declared here, it can do both.  Absent
+    -- means all three, which is every mod that predates the field.
+    generations = parseGenerations(raw),
     -- Which maps this mod says it touches; see parseMaps. Absent on every mod
     -- that predates the field, which is why nothing may depend on it.
     maps = parseMaps(raw),
+    -- Ids this mod used to publish under.  Four things key on a mod's id and
+    -- none of them is inside the mod (enable state, options, per-save state,
+    -- storage), so a rename orphans all four unless it is declared here; see
+    -- src/mods/ModRename.lua for what that adoption is and is not allowed to
+    -- do.  Validated rather than trusted: these become table keys and path
+    -- components.
+    previousIds = require("src.mods.ModRename")
+      .previousIds({ id = raw.id, previous_ids = raw.previous_ids }),
     assets_transforms = optionalFile(raw.assets_transforms, "assets_transforms"),
     path = path,
     raw = raw,

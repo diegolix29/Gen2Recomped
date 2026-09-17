@@ -42,8 +42,99 @@ end
 -- via the ai_classes registry).  Runs before move choice each enemy
 -- turn; returns an action { special = "aiItem"/"aiSwitch", ... } or nil.
 -- battle.aiUses is initialized per enemy Pokémon (wAICount).
+-- ---------------------------------------------------------------------------
+-- GEN 3: ShouldUseItem (battle_ai_switch_items.c)
+--
+-- A Gen 1 trainer's item use hangs off its CLASS -- ai_classes above, keyed
+-- by OPP_BROCK and the rest.  A Gen 3 trainer carries its own bag: four item
+-- slots in its gTrainers record, packed from the first with no holes.  There
+-- is no class table and no wAICount; every slot may be spent once.
+--
+-- The slot rule is the interesting half.  `if (i != 0 && validMons >
+-- (itemsNo - i) + 1) continue;` -- itemsNo is the count the battle STARTED
+-- with, so with a full bench only the first item is reachable and the rest
+-- unlock as the bench empties.  A gym leader with three FULL RESTOREs and
+-- six Pokemon left may spend one; at three left, two; at two left, all
+-- three.  That is why the rematch leaders feel like they heal "once per
+-- stretch" rather than every time they drop below a quarter.
+--
+-- Hoenn's trainers only ever carry FULL RESTORE, HYPER POTION, SUPER POTION
+-- and POTION (178/40/13/2 of the 254 slots filled), so the cartridge's
+-- GetAI_ItemType lands on AI_ITEM_FULL_RESTORE and AI_ITEM_HEAL_HP and
+-- nothing else; the X-stat, GUARD SPEC and status-cure arms have no trainer
+-- in the game to reach them.  This reads the item's own heal amount rather
+-- than assuming one, so a mod that hands a trainer a MAX POTION is covered.
+-- The amount the cartridge itself compares against: gItemEffectTable's own
+-- argument byte, which extractItemEffects already reads.  $FF (a full heal)
+-- and $FE (half) are sentinels there rather than amounts, and `ShouldUseItem`
+-- compares the RAW byte -- so MAX POTION's test is "more than 255 damage
+-- taken", which is why in practice it only ever fires on the quarter rule.
+local function gen3HealAmount(battle, item)
+  local ok, ItemEffects = pcall(require, "src.inventory.ItemEffects")
+  if ok and ItemEffects and ItemEffects.gen3RecordFor then
+    local r = ItemEffects.gen3RecordFor(item, battle and battle.data)
+    if r and r.heal then
+      local a = r.amount
+      if type(a) == "number" then return a end
+      if a == "all" then return 255 end
+      if a == "half" then return 254 end
+      return 0
+    end
+    if r then return nil end -- a Gen 3 item that is not a heal at all
+  end
+  return HEAL_AMOUNT[item]
+end
+
+function TrainerAI.gen3ItemAction(battle)
+  local trainer = battle.trainer
+  local items = trainer and trainer.items
+  if type(items) ~= "table" or #items == 0 then return nil end
+  local enemy = battle.enemy
+  -- the same empty-slot guard the class path needs: a foe lifted off the
+  -- field in a double battle has nobody to heal
+  if not (enemy and enemy.mon and enemy.mon.stats) then return nil end
+
+  -- validMons counts every party member still standing, the ACTIVE one
+  -- included (the cartridge walks all six slots and tests hp ~= 0)
+  local valid = 0
+  for _, mon in ipairs(battle.enemyParty or {}) do
+    if (mon.hp or 0) > 0 then valid = valid + 1 end
+  end
+
+  local used = battle.gen3ItemsUsed or {}
+  battle.gen3ItemsUsed = used
+  local itemsNo = #items
+  local hp, maxHp = enemy.mon.hp or 0, enemy.mon.stats.hp or 1
+  local quarter = math.floor(maxHp / 4)
+
+  for slot = 1, itemsNo do
+    local i = slot - 1 -- the cartridge's own index, which the rule is in
+    if not used[slot] and not (i ~= 0 and valid > (itemsNo - i) + 1) then
+      local item = items[slot]
+      local heal = gen3HealAmount(battle, item)
+      if item == "FULL_RESTORE" then
+        -- AI_ITEM_FULL_RESTORE: breaks out at hp >= maxHP/4 and at hp == 0
+        if hp > 0 and hp < quarter then
+          return { special = "aiItem", item = item, slot = slot }
+        end
+      elseif heal then
+        -- AI_ITEM_HEAL_HP: below a quarter, or once the damage taken
+        -- exceeds what the item would put back (so none of it is wasted)
+        if hp > 0 and (hp < quarter or (maxHp - hp) > heal) then
+          return { special = "aiItem", item = item, slot = slot }
+        end
+      end
+    end
+  end
+  return nil
+end
+
 function TrainerAI.classAction(battle)
   if battle.kind ~= "trainer" or not battle.trainer then return nil end
+  -- a trainer carrying its own bag (Gen 3) is answered from the bag; there
+  -- is no ai_classes record for it and no per-Pokemon use counter
+  local carried = TrainerAI.gen3ItemAction(battle)
+  if carried then return carried end
   local class = TrainerAI.classFor(battle)
   if not class then return nil end
   if (battle.aiUses or 0) <= 0 then return nil end
@@ -105,6 +196,21 @@ function TrainerAI.useItem(battle, item)
   local trainerName = battle.trainer.name
   local itemName = battle.data.items[item] and battle.data.items[item].name or item
   local msgs = { Strings("%s\nused %s!", trainerName, itemName) }
+  -- HOENN'S ANSWER FIRST.  An Emerald item is run by gItemEffectTable's own
+  -- blob, which extractItemEffects already reads and ItemEffects already
+  -- knows how to apply -- including the FULL RESTORE that clears status and
+  -- the active TOXIC counter with it.  The Gen 1 arms below are keyed by
+  -- names Emerald's items do not carry, so without this a trainer's FULL
+  -- RESTORE would have healed by the Gen 1 table's rules or not at all.
+  local okEffects, ItemEffects = pcall(require, "src.inventory.ItemEffects")
+  if okEffects and ItemEffects and ItemEffects.gen3RecordFor
+     and ItemEffects.gen3RecordFor(item, battle.data) then
+    local _, said = ItemEffects.use(battle.data, nil, item, enemy.mon, battle)
+    if type(said) == "table" then
+      for _, m in ipairs(said) do msgs[#msgs + 1] = m end
+    end
+    return msgs
+  end
   if item == "FULL_HEAL" then
     enemy.mon.status = nil
     enemy.toxicCounter = nil
@@ -244,6 +350,39 @@ function TrainerAI.chooseMove(battler, rng, battle)
   -- turns locked into a multi-turn move, which skip selection entirely.
   local encourageTurn = (battler.aiLayer2 or 0) == 1
   battler.aiLayer2 = (battler.aiLayer2 or 0) + 1
+
+  -- HOENN HAS ITS OWN PROGRAM FOR THIS, and it is the cartridge's, not a
+  -- layer stack: gTrainers[].aiFlags names bytecode scripts, the importer
+  -- decodes them and src/battle/Gen3AI.lua runs them.  It answers nil for a
+  -- trainer the cartridge gave no flags, for a build with no decoded program,
+  -- and for a script this engine cannot run end to end yet -- and nil means
+  -- "no opinion", so everything below is exactly what it was.
+  if battle then
+    local okAI, Gen3AI = pcall(require, "src.battle.Gen3AI")
+    if okAI and type(Gen3AI) == "table" then
+      local foes = battle.foesOf and battle:foesOf(battler) or nil
+      if foes and #foes > 1 then
+        -- TWO OF THEM TO AIM AT, so the answer is a move AND a target: the
+        -- cartridge scores every pair and takes the best one.  The target is
+        -- left where the player's own answer is left, so the move resolves
+        -- through exactly the same path a chosen target already does.
+        local okPick, move, target =
+          pcall(Gen3AI.chooseAction, battle, battler, usable, foes)
+        if okPick and move then
+          if target and battler.position then
+            battle.chosenTargets = battle.chosenTargets or {}
+            battle.chosenTargets[battler.position] = target
+          end
+          return move
+        end
+      else
+        local target = (foes and foes[1]) or battle.player
+        local okPick, picked = pcall(Gen3AI.chooseMove, battle, battler, target,
+                                     usable)
+        if okPick and picked then return picked end
+      end
+    end
+  end
 
   local mods = battle and battle.enemyAIMods or nil
   if not mods or #mods == 0 or not battle then

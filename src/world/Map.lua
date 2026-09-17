@@ -953,6 +953,26 @@ function Map:isDoorTileCell(cx, cy)
 end
 
 -- true if the cell's collision tile is a door or warp-activating tile
+-- DOES STANDING HERE TAKE YOU THROUGH?
+--
+-- IsWarpMetatileBehavior (field_control_avatar.c), which the cartridge asks
+-- before it will take a warp the player merely walked onto.  A Gen 3 warp
+-- EVENT is not by itself a door: about a tenth of them sit on ordinary floor
+-- because a script puts the player there, and the TRICK HOUSE's front door is
+-- one -- see RomExtractorGen3:warpBehaviours for how the two populations are
+-- told apart.
+--
+-- Gen 1 and Gen 2 have no such byte and answer true, so the tile lists stay
+-- the whole of the rule there; so does a Gen 3 dataset imported before the
+-- set was derived, and so does a map that brought no collision array.
+function Map:isStepWarpCell(cx, cy)
+  local set = self.tileset and self.tileset.stepWarpBehaviours
+  if not set then return true end
+  local b = self:cellBehaviour(cx, cy)
+  if b == nil then return true end
+  return set[b] == true
+end
+
 function Map:isWarpTileCell(cx, cy)
   -- GEN 3 DOES NOT GATE A WARP ON THE TILE UNDER IT.
   --
@@ -1167,6 +1187,32 @@ function Map:currentAt(cx, cy)
   if not currents then return nil end
   local b = self:cellBehaviour(cx, cy)
   return b and currents[b] or nil
+end
+
+-- THE TILES THAT WALK YOU FOR YOU, as one row: { way = "down", slide = true }.
+--
+-- sForcedMovementTestFuncs / sForcedMovementFuncs, paired by index and read
+-- in RomExtractorGen3:forcedMovementBehaviours.  The record covers the water
+-- currents and the waterfall as well as the eight walk/slide floors, because
+-- the cartridge really does answer all thirteen out of the same two tables --
+-- the caller decides which of them are its business.
+function Map:forcedMovementAt(cx, cy)
+  if not self.tileset.behaviourBytes then return nil end
+  local rows = self.tileset.forcedMovement
+  if not rows then return nil end
+  local b = self:cellBehaviour(cx, cy)
+  return b and rows[b] or nil
+end
+
+-- Lavaridge's two holes, as one row: { kind = "sink"|"launch", ... }.  Both
+-- are ordinary fall-through holes to the warp code; this says which of the
+-- gym's two animations the cell asks for.
+function Map:lavaridgeWarpAt(cx, cy)
+  if not self.tileset.behaviourBytes then return nil end
+  local rows = self.tileset.lavaridgeWarps
+  if not rows then return nil end
+  local b = self:cellBehaviour(cx, cy)
+  return b and rows[b] or nil
 end
 
 -- "up"/"down" when the cell is an escalator, nil otherwise.

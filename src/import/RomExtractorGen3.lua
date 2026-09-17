@@ -7924,6 +7924,50 @@ function RomExtractorGen3:extractOverworldSprites()
     end
   end
 
+  -- ...and the two pictures that mark a tile somebody is hiding on, which is
+  -- the same kind of thing found the same way -- see sparkleArt.
+  local sparkle = self:sparkleArt()
+  if sparkle then
+    local S = RomExtractorGen3.SPARKLE
+    local count = #sparkle.frames
+    out[sparkle.key] = {
+      id = sparkle.key,
+      image = sparkle.image,
+      frames = count,
+      walker = false,
+      trueColor = true,
+      frameWidth = S.SIZE,
+      frameHeight = S.SIZE,
+      source = sparkle.source,
+    }
+    local okSparkle, sparkleErr = pcall(function()
+      local image = self:objectGfxSheet(S.SIZE, S.SIZE * count)
+      if not image then return end
+      for f = 1, count do
+        local px = RomGba.tiles4bpp(self.rom:bytes(sparkle.frames[f],
+                                                   S.FRAME_BYTES), 2, 2)
+        for y = 1, S.SIZE do
+          for x = 1, S.SIZE do
+            local index = px[y] and px[y][x] or 0
+            local c = sparkle.palette[index + 1]
+            if index ~= 0 and c then
+              image:setPixel(x - 1, (f - 1) * S.SIZE + y - 1,
+                             c[1] / 255, c[2] / 255, c[3] / 255, 1)
+            else
+              image:setPixel(x - 1, (f - 1) * S.SIZE + y - 1, 0, 0, 0, 0)
+            end
+          end
+        end
+      end
+      self:saveImage(image, S.FILE)
+      drawn = drawn + 1
+    end)
+    if not okSparkle then
+      Logger.warn("gen3 sparkle: the sheet could not be composed (%s) -- the "
+                  .. "record is still written", tostring(sparkleErr))
+    end
+  end
+
   -- ---- and the thing the player sits on --------------------------------
   do
     local blob = self:surfBlob()
@@ -8502,10 +8546,84 @@ end
 --
 -- struct Trainer is 40 bytes.  The party is behind `partyFlags`: bit 0 means
 -- each member carries a held item, bit 1 means it carries its own moves, and
--- the four combinations give four different member strides (8, 16, 16, 16).
--- Reading the wrong one gives a party of plausible-looking nonsense rather
--- than an error, so the flag is honoured rather than assumed.
+-- the combination decides how wide a member is.  Reading the wrong width
+-- gives a party of plausible-looking nonsense rather than an error, so the
+-- widths are MEASURED rather than reasoned about -- see partyStrides below.
+--
+-- THE HELD ITEM DOES NOT MAKE A MEMBER WIDER, and assuming it did is what
+-- this stage used to do.
+--
+-- Reported from play, of Route 110: "after defeating their first two pokemon
+-- they're throwing out a lvl 26 plusle which is way above the level I'm
+-- currently at".  POKeFAN ISABEL is gTrainers[302], partyFlags 2 -- a held
+-- item and the species' own moves -- and her two members were read sixteen
+-- bytes apart when they are eight, so her MINUN was fetched from the middle
+-- of gTrainers[303]: her own REMATCH entry, whose PLUSLE is level 26.
+--
+-- Every one of the thirty-one flag-2 trainers in Hoenn with more than one
+-- Pokemon had the same hole, and each of them was reading somebody else's
+-- team through it.
 -- ---------------------------------------------------------------------------
+
+-- HOW WIDE A PARTY MEMBER IS, counted off the cartridge's own layout.
+--
+-- The party blocks are laid out back to back in one run, so the distance from
+-- one trainer's party to the NEXT one that starts after it, divided by the
+-- first one's size, is that flag combination's member width -- and every
+-- trainer in the table votes.  A width is only used when its flag's vote is
+-- unanimous; anything less falls back to the shape rule at the call site,
+-- because a disagreement means the run is not a run on this dump and a
+-- majority would be a guess with a number on it.
+--
+-- On Emerald the four answers are 8, 16, 8 and 16 over 671, 87, 31 and 64
+-- votes -- so the held item rides in the halfword the no-item form leaves as
+-- padding, and only the four custom MOVES make a member wider.
+function RomExtractorGen3:partyStrides(base, count)
+  local rom = self.rom
+  local rows = {}
+  for i = 0, count - 1 do
+    local o = base + i * 40
+    local ptr = rom:pointer(o + 36)
+    local size = rom:u8(o + 32)
+    if ptr and size > 0 and size <= 6 then
+      rows[#rows + 1] = { at = ptr, flags = rom:u8(o), size = size }
+    end
+  end
+  table.sort(rows, function(a, b) return a.at < b.at end)
+
+  local votes = {}
+  for k = 1, #rows - 1 do
+    local row, nextAt = rows[k], rows[k + 1].at
+    local gap = nextAt - row.at
+    if gap > 0 and gap % row.size == 0 then
+      local width = gap / row.size
+      votes[row.flags] = votes[row.flags] or {}
+      votes[row.flags][width] = (votes[row.flags][width] or 0) + 1
+    end
+  end
+
+  local out, parts = {}, {}
+  for flags = 0, 3 do
+    local tally = votes[flags]
+    local only, n, total = nil, 0, 0
+    for width, seen in pairs(tally or {}) do
+      n = n + 1; only = width; total = total + seen
+    end
+    if n == 1 and total >= 2 then
+      out[flags] = only
+      parts[#parts + 1] = ("%d:%d(%d)"):format(flags, only, total)
+    else
+      parts[#parts + 1] = ("%d:?"):format(flags)
+      if tally then
+        Logger.warn("gen3 trainers: flag %d's party blocks do not agree on a "
+                    .. "member width -- falling back to the shape rule", flags)
+      end
+    end
+  end
+  Logger.info("Gen3 trainer parties: member widths %s",
+              table.concat(parts, " "))
+  return out
+end
 
 function RomExtractorGen3:extractTrainers()
   self:beginStage("Gen3 trainers")
@@ -8520,6 +8638,7 @@ function RomExtractorGen3:extractTrainers()
   -- species, item, move and ability bridges.
   local trainerOrder = {}
   local count = 855
+  local strides = self:partyStrides(base, count)
   for i = 0, count - 1 do
     local o = base + i * 40
     local flags = self.rom:u8(o)
@@ -8528,9 +8647,22 @@ function RomExtractorGen3:extractTrainers()
     trainerOrder[i] = id
     local partySize = self.rom:u8(o + 32)
     local partyPtr = self.rom:pointer(o + 36)
-    local hasItems = (flags % 2) == 1
-    local hasMoves = (math.floor(flags / 2) % 2) == 1
-    local stride = (hasMoves and 16) or (hasItems and 16) or 8
+    -- ...AND WHICH BIT IS WHICH, which the widths above settle.
+    --
+    -- Bit 0 was being read as the held item and bit 1 as the moves, and it is
+    -- the other way round.  The measured widths are the proof and they do not
+    -- need a header to agree with: flag 1 is SIXTEEN bytes and flag 2 is
+    -- EIGHT, and only four custom moves can make a member eight bytes wider
+    -- -- a held item is one halfword and fits in the padding the plain form
+    -- already has.  So bit 0 is the MOVES.
+    --
+    -- Swapped, every one of the 87 + 64 custom-move trainers in Hoenn fought
+    -- with its species' default moves and a "held item" that was really its
+    -- first move read as an item number, and every one of the 31 + 64
+    -- held-item trainers held nothing.
+    local hasMoves = (flags % 2) == 1
+    local hasItems = (math.floor(flags / 2) % 2) == 1
+    local stride = strides[flags] or (hasMoves and 16) or 8
     local party = {}
     if partyPtr and partySize > 0 and partySize <= 6 then
       for k = 0, partySize - 1 do
@@ -8584,6 +8716,37 @@ function RomExtractorGen3:extractTrainers()
       -- extractTrainerSprites fills `pic` in with the file it writes.
       picIndex = self.rom:u8(o + 3),
       doubleBattle = self.rom:u8(o + 24) ~= 0 or nil,
+      -- THE FOUR BATTLE ITEMS AND THE AI FLAGS -- struct Trainer.items[4] at
+      -- +0x10 and .aiFlags at +0x1C, the last two fields of the record that
+      -- were being read past.
+      --
+      -- 141 of Hoenn's 855 trainers carry one, and the ones that do are the
+      -- ones it shows on: every gym leader's rematch team carries THREE FULL
+      -- RESTOREs, Steven and Wallace carry FOUR, Tate & Liza four HYPER
+      -- POTIONs.  Unread, not one of them ever healed.
+      --
+      -- The slots are packed from 0 with no holes in all 855 records, so the
+      -- count is just the run of non-zero halfwords; `ShouldUseItem` reads
+      -- that count (battleHistory->itemsNo) to decide how many of them the
+      -- trainer is allowed to spend while its bench is still deep.
+      items = (function()
+        local list = {}
+        for k = 0, 3 do
+          local n = self.rom:u16(o + 16 + k * 2)
+          if n == 0 then break end
+          local order = (self._constants or {}).itemOrder
+          list[#list + 1] = order and order[n] or n
+        end
+        return #list > 0 and list or nil
+      end)(),
+      -- AI_FLAG_* bitfield: bit 0 CHECK_BAD_MOVE, 1 TRY_TO_FAINT, 2
+      -- CHECK_VIABILITY, 3 SETUP_FIRST_TURN, 4 RISKY.  Hoenn uses seven
+      -- distinct sets -- $1 x640, $7 x173, $0 x16, $B x13, $3 x7, $17 x5,
+      -- $F x1 -- and nothing above bit 4.
+      aiFlags = (function()
+        local f = self.rom:u32(o + 28)
+        return f ~= 0 and f or nil
+      end)(),
       -- BattleState.newTrainer reads `parties[n]`, a LIST of parties, because
       -- Gen 1 and Gen 2 both give a trainer class several numbered teams.  A
       -- Gen 3 trainer is one record with one team, so it becomes a list of
@@ -14823,6 +14986,7 @@ end
 RomExtractorGen3.START_MENU = {
   BUILD_FN = 0x9F4E8,
   CMP_R0 = 0x2800, MOV_R0 = 0x2000,
+  BX_R = 0x4700,              -- `bx rN`, which is where a predicate ends
   ROWS = {
     { key = "pokedexFlag", name = "POKeDEX",
       atFlag = -0x1A, atCmp = -0x10, atRow = -0x0C, row = 0 },
@@ -21113,6 +21277,74 @@ function RomExtractorGen3:warpBehaviours(tilesetPairs)
   end
   table.sort(holes)
 
+
+  -- ---- AND WHICH BEHAVIOURS ARE A DOOR AT ALL -----------------------------
+  --
+  -- Reported from play, about the TRICK HOUSE: "hitting a on it is supposed
+  -- to unlock the door, the door is just unlocked at the moment."  It was.
+  -- The entrance's way in is a WARP EVENT sitting on ORDINARY FLOOR, and this
+  -- port fires a Gen 3 warp the moment the player stands on its cell -- so
+  -- the scroll, the Trick Master and the whole of finding him were optional.
+  --
+  -- The cartridge asks a question first.  TryStartWarpEventScript runs
+  -- IsWarpMetatileBehavior before it will take a warp you walked onto, and a
+  -- warp event on ordinary ground fails it: such an event is a SCRIPT'S
+  -- DESTINATION and nothing else.  The Trick House's scroll says "It's a
+  -- scroll." until its own script has been satisfied, and only then does the
+  -- script warp you through.
+  --
+  -- FOUND BY DENSITY, not by name, and the two populations do not overlap.
+  -- On a behaviour that opens, nearly every cell in Hoenn carrying it also
+  -- carries a warp event -- a ladder is 102 cells and 100 warps, an escalator
+  -- 17 and 17.  On ordinary ground almost none does: 187,268 cells and 94
+  -- warps, five ten-thousandths.  Nothing at all sits between a third and a
+  -- half of the way up.
+  --
+  -- STATED AS AN EXCLUSION on purpose.  A behaviour with too few cells to be
+  -- sure about keeps firing its warps exactly as it did before, so this can
+  -- only ever take away the ones it has the evidence for -- and if the sweep
+  -- measured nothing at all, nothing is written and every warp in the region
+  -- behaves as it did.
+  local STEP_WARP_BULK = 100     -- cells before the ratio is worth believing
+  local STEP_WARP_RATIO = 0.25   -- ...below which the cells are just floor
+  local stepWarps, ground, nStep = {}, {}, 0
+  for b, r in pairs(stat) do
+    if r.cells >= STEP_WARP_BULK and r.warps < r.cells * STEP_WARP_RATIO then
+      ground[#ground + 1] = b
+    else
+      stepWarps[b] = true
+      nStep = nStep + 1
+    end
+  end
+  table.sort(ground)
+  -- MB_NORMAL never gets a row of its own -- the sweep skips behaviour zero --
+  -- and it is the ordinary floor those 94 script destinations sit on, so its
+  -- absence from the table above is the right answer rather than a gap.
+  stepWarps[0] = nil
+  if nStep > 0 then
+    local n2 = 0
+    for _, pair_ in pairs(tilesetPairs) do
+      if type(pair_) == "table" and pair_.collision then
+        pair_.stepWarpBehaviours = stepWarps
+        n2 = n2 + 1
+      end
+    end
+    local constants2 = self._constants or {}
+    constants2.gen3StepWarps = { ground = ground }
+    self._constants = constants2
+    local names = {}
+    for _, b in ipairs(ground) do
+      names[#names + 1] = ("$%02X(%d cells, %d warps)")
+                          :format(b, stat[b].cells, stat[b].warps)
+    end
+    Logger.info("Gen3 step warps: %d behaviours open on arrival; %s do not "
+                .. "and their warp events are script destinations -- on %d "
+                .. "tileset pairs", nStep,
+                #names > 0 and table.concat(names, " ") or "none", n2)
+  else
+    Logger.warn("gen3 step warps: nothing measurable -- every warp event "
+                  .. "keeps opening on arrival, as before")
+  end
   if #pads == 0 and #holes == 0 then
     Logger.warn("gen3 warp pads: no behaviour warps within its own map and "
                   .. "none is a single-location warp floor -- the teleporter "
@@ -23207,6 +23439,288 @@ function RomExtractorGen3:weatherNames()
   return GEN3_WEATHER_NAMES
 end
 
+-- ---------------------------------------------------------------------------
+-- THE TILES THAT WALK YOU, which is a pair of tables and nothing else.
+--
+-- Reported from play, about Sootopolis: the gym's three barriers are cells
+-- you were walking straight through.  They are not walls -- their collision
+-- bits are zero -- they are MB_SLIDE_SOUTH, and the cartridge answers a step
+-- onto one by shoving you back off it.  Nothing in this port did.
+--
+-- GetForcedMovementByMetatileBehavior (08AB38) walks sForcedMovementTestFuncs
+-- from 0x084973FC, one predicate a row, and returns `index + 1` for the first
+-- that answers yes; DoPlayerAvatarTransition's caller (08AB14) then calls
+-- sForcedMovementFuncs[that] from 0x08497444.  So a row is a PAIR -- a
+-- predicate and an action -- and both halves say what they are in one
+-- instruction each:
+--
+--     the predicate opens `lsl/lsr r0,#24` and then `cmp r0,#behaviour`
+--     the action opens `mov r0,#direction` and then calls its driver
+--
+-- and there are exactly two drivers.  DoForcedMovement (08ABE0) is the walk.
+-- 08AD60 is the SLIDE, and it is the walk with two bits set first: bit 1 of
+-- the object's flag byte is facingDirectionLocked -- the same lock the Acro
+-- Bike's side jump uses -- and bit 2 is disableAnim.  So a slide is a walk
+-- you take without turning and without moving your legs, which is exactly
+-- what an ice-like floor should look like.
+--
+-- Nothing here is named.  A row whose predicate does not have exactly one
+-- `cmp` of its own, or whose action does not open with a direction and one of
+-- those two drivers, is DROPPED rather than guessed -- which is what keeps
+-- the three odd rows at the end of the table (a waterfall, two secret-base
+-- entrances and the muddy slope, all of which have their own handling) out of
+-- a record that is meant to be one rule.
+-- ---------------------------------------------------------------------------
+RomExtractorGen3.FORCED_MOVEMENT = {
+  DISPATCH = 0x08AB38,        -- GetForcedMovementByMetatileBehavior
+  AT_COUNT = 0x4E,            -- its own `cmp r4,#imm`, the last index
+  CMP_R4 = 0x2C00,
+  TESTS = 0x4973FC,           -- sForcedMovementTestFuncs
+  FUNCS = 0x497444,           -- sForcedMovementFuncs, one longer at the front
+  WALK_DRIVER = 0x08ABE0,
+  SLIDE_DRIVER = 0x08AD60,
+  CMP_R0 = 0x2800, MOV_R0 = 0x2000,
+  BX_R = 0x4700,              -- `bx rN`, which is where a predicate ends
+  SCAN = 24,                  -- halfwords to look through for the opener
+  -- 1 = south, 2 = north, 3 = west, 4 = east, which is this cartridge's
+  -- direction numbering everywhere (GetPlayerMovementDirection, 0119DF8)
+  WAYS = { [1] = "down", [2] = "up", [3] = "left", [4] = "right" },
+}
+
+-- ---------------------------------------------------------------------------
+-- LAVARIDGE'S TWO HOLES, which are not the same hole.
+--
+-- Both floors of Flannery's gym are made of openings you fall through, and
+-- this port teleported you through either of them in silence.  The cartridge
+-- has a different animation for each, and the two are opposites: on 1F you
+-- SINK -- four beats of walking on the spot, each with its own sound, and
+-- then you drop -- and on B1F the steam ERUPTS and throws you up to the floor
+-- above, which opens with the room shaking.
+--
+-- Which hole is which is not guessed.  ForcedMovement's neighbour at 09CCF8
+-- is a chain of eight identical eight-instruction entries --
+--
+--     add r0,r4,#0 / bl <predicate> / lsl / lsr / cmp r0,#1 / bne / bl
+--     <starter> / mov r0,#1 / b
+--
+-- -- and the two Lavaridge starters are named in it by address.  So the
+-- behaviour comes out of the predicate the chain pairs with the starter, and
+-- a chain that has stopped looking like a chain records nothing rather than
+-- pairing the wrong two.
+--
+-- What is read out of each task is only what this port can actually show: the
+-- sound, and how long the beat or the shake lasts.  The sinking sprite and
+-- the geyser are field effects with art of their own and are not reproduced.
+-- ---------------------------------------------------------------------------
+RomExtractorGen3.LAVARIDGE_WARP = {
+  DISPATCH = 0x09CCF8, STRIDE = 0x16, ENTRIES = 8,
+  AT_PRED = 0x02, AT_CMP1 = 0x0A, AT_START = 0x0E,
+  CMP_R0_1 = 0x2801, ADD_R0_R4 = 0x1C20,
+  -- DoLavaridgeGymB1FWarp: the geyser
+  LAUNCH = { START = 0x0AF828, SHAKE_AT = 0x0B76A2,
+             RUMBLE_AT = 0x0B76EA, LAND_AT = 0x0B7998 },
+  -- DoLavaridgeGym1FWarp: the sink
+  SINK = { START = 0x0AF838, BEATS_AT = 0x0B7B32, SE_AT = 0x0B7B86 },
+  MOV_R0 = 0x2000, CMP_R0 = 0x2800, BX_R = 0x4700, SCAN = 24,
+}
+
+function RomExtractorGen3:lavaridgeWarps(tilesetPairs)
+  local L = RomExtractorGen3.LAVARIDGE_WARP
+  local rom = self.rom
+  if not rom then return end
+
+  local function imm(at, opcode)
+    local w = rom:u16(at)
+    if not w or w - w % 256 ~= opcode then return nil end
+    return w % 256
+  end
+  -- the behaviour a predicate tests, bounded by its own return
+  local function behaviourOf(at)
+    local found
+    for k = at, at + L.SCAN * 2, 2 do
+      local w = rom:u16(k)
+      if not w then return nil end
+      if w >= L.BX_R and w < L.BX_R + 0x80 and w % 8 == 0 then return found end
+      if w - w % 256 == L.CMP_R0 then
+        if found then return nil end
+        found = w % 256
+      end
+    end
+    return nil
+  end
+
+  -- walk the chain and keep the two entries whose starter this knows
+  local byStart = {}
+  for i = 0, L.ENTRIES - 1 do
+    local at = L.DISPATCH + i * L.STRIDE
+    if rom:u16(at) == L.ADD_R0_R4 and rom:u16(at + L.AT_CMP1) == L.CMP_R0_1 then
+      local pred = self:blTargets(at + L.AT_PRED, 2)[1]
+      local start = self:blTargets(at + L.AT_START, 2)[1]
+      local behaviour = pred and behaviourOf(pred)
+      if behaviour and start then byStart[start] = behaviour end
+    end
+  end
+
+  local sink, launch = byStart[L.SINK.START], byStart[L.LAUNCH.START]
+  if not (sink and launch) then
+    Logger.warn("gen3 Lavaridge: the warp chain at %07X does not name both "
+                .. "of the gym's starters -- nothing recorded", L.DISPATCH)
+    return
+  end
+
+  local beats = imm(L.SINK.BEATS_AT, L.CMP_R0)
+  local sinkSe = imm(L.SINK.SE_AT, L.MOV_R0)
+  local shake = imm(L.LAUNCH.SHAKE_AT, L.CMP_R0)
+  local rumble = imm(L.LAUNCH.RUMBLE_AT, L.MOV_R0)
+  local land = imm(L.LAUNCH.LAND_AT, L.MOV_R0)
+  if not (beats and sinkSe and shake and rumble and land) then
+    Logger.warn("gen3 Lavaridge: one of the two tasks does not open its beat "
+                .. "or its sound where this expects -- nothing recorded")
+    return
+  end
+
+  -- both counters are `cmp <count>, #n` against a value that has ALREADY been
+  -- raised, so the number of beats is n + 1
+  local rows = {
+    [sink] = { kind = "sink", beats = beats + 1, sound = sinkSe },
+    [launch] = { kind = "launch", shake = shake + 1,
+                 rumble = rumble, land = land },
+  }
+
+  local n = 0
+  for _, pair_ in pairs(tilesetPairs or {}) do
+    if type(pair_) == "table" and pair_.collision then
+      pair_.lavaridgeWarps = rows
+      n = n + 1
+    end
+  end
+  local constants = self._constants or {}
+  constants.gen3LavaridgeWarp = rows
+  self._constants = constants
+
+  Logger.info("Gen3 Lavaridge: $%02X sinks over %d beats on SE %d; $%02X "
+              .. "erupts after %d frames of shake, SE %d then %d -- %d "
+              .. "tileset pairs",
+              sink, beats + 1, sinkSe, launch, shake + 1, rumble, land, n)
+  return rows
+end
+
+function RomExtractorGen3:forcedMovementBehaviours(tilesetPairs)
+  local F = RomExtractorGen3.FORCED_MOVEMENT
+  local rom = self.rom
+  if not rom then return end
+
+  -- the count comes out of the loop itself rather than being typed
+  local cmp = rom:u16(F.DISPATCH + F.AT_COUNT)
+  if not cmp or cmp - cmp % 256 ~= F.CMP_R4 then
+    Logger.warn("gen3 forced movement: the dispatch does not end in a `cmp "
+                .. "r4,#n` where this expects -- nothing recorded")
+    return
+  end
+  local count = cmp % 256 + 1
+
+  -- ONE `cmp r0,#imm` INSIDE THE PREDICATE'S OWN BODY, and the body ends at
+  -- its `bx` -- these are eleven-instruction functions and the one after it
+  -- starts immediately, so a fixed byte window reads the NEXT predicate's
+  -- behaviour as a second answer and throws the row away.  The return is the
+  -- bound that cannot be off by a function.
+  local addr = {}
+  for i = 0, count - 1 do
+    addr[i] = (rom:u32(F.TESTS + i * 4) or 0) % 0x08000000 - 1
+  end
+  local function behaviourOf(i)
+    local at = addr[i]
+    if not at or at < 0 then return nil end
+    local found
+    for k = at, at + F.SCAN * 2, 2 do
+      local w = rom:u16(k)
+      if not w then return nil end
+      if w >= F.BX_R and w < F.BX_R + 0x80 and w % 8 == 0 then
+        return found
+      end
+      if w - w % 256 == F.CMP_R0 then
+        if found then return nil end        -- more than one: not a plain row
+        found = w % 256
+      end
+    end
+    return nil                              -- no return in sight: not a row
+  end
+
+  local rows, keys = {}, {}
+  for i = 0, count - 1 do
+    local behaviour = behaviourOf(i)
+    local at = (rom:u32(F.FUNCS + (i + 1) * 4) or 0) % 0x08000000 - 1
+    if behaviour and at >= 0 then
+      local mov
+      for k = 0, 6, 2 do
+        local w = rom:u16(at + k)
+        if w and w - w % 256 == F.MOV_R0 and not mov then mov = w % 256 end
+      end
+      local driver = self:blTargets(at, 8)[1]
+      local way = mov and F.WAYS[mov]
+      local slide = (driver == F.SLIDE_DRIVER) or nil
+      local walks = (driver == F.WALK_DRIVER)
+      if way and (walks or slide) then
+        rows[behaviour] = { way = way, slide = slide }
+        keys[#keys + 1] = behaviour
+      end
+    end
+  end
+
+  table.sort(keys)
+  if #keys == 0 then
+    Logger.warn("gen3 forced movement: no row read as a direction and a "
+                .. "driver -- nothing recorded")
+    return
+  end
+
+  -- ...and only the ones this REGION actually lays down, counted the way
+  -- every other behaviour derivation here counts
+  local maps = self._maps
+  local stat = {}
+  if type(maps) == "table" and type(tilesetPairs) == "table" then
+    for id, def in pairs(maps) do
+      local ts = type(def) == "table" and def.tileset and tilesetPairs[def.tileset]
+      if ts and ts.collision and def.blocks and def.width and def.height then
+        for i = 0, def.width * def.height - 1 do
+          local lo, hi = def.blocks:byte(i * 2 + 1), def.blocks:byte(i * 2 + 2)
+          local b = lo and ts.collision[(hi * 256 + lo) % 1024 + 1]
+          if b and rows[b] then
+            local r = stat[b]
+            if not r then r = { cells = 0, maps = {}, nmaps = 0 }; stat[b] = r end
+            r.cells = r.cells + 1
+            if not r.maps[id] then r.maps[id] = true; r.nmaps = r.nmaps + 1 end
+          end
+        end
+      end
+    end
+  end
+
+  local n = 0
+  for _, pair_ in pairs(tilesetPairs or {}) do
+    if type(pair_) == "table" and pair_.collision then
+      pair_.forcedMovement = rows
+      n = n + 1
+    end
+  end
+
+  local constants = self._constants or {}
+  constants.gen3ForcedMovement = rows
+  self._constants = constants
+
+  local parts = {}
+  for _, b in ipairs(keys) do
+    local r, st = rows[b], stat[b]
+    parts[#parts + 1] = ("$%02X(%s%s %d cells/%d maps)")
+      :format(b, r.way, r.slide and " sliding" or "",
+              st and st.cells or 0, st and st.nmaps or 0)
+  end
+  Logger.info("Gen3 forced movement: %d rows off %07X/%07X -- %s -- %d "
+              .. "tileset pairs", #keys, F.TESTS, F.FUNCS,
+              table.concat(parts, " "), n)
+  return rows, keys
+end
+
 function RomExtractorGen3:currentBehaviours(tilesetPairs)
   local maps = self._maps
   if not (type(maps) == "table" and type(tilesetPairs) == "table") then return end
@@ -24315,6 +24829,8 @@ function RomExtractorGen3:extractTilesets()
   local muddySlope, acroObstacles = self:bikeBehaviours(pairs_)
   local _, escalators = self:escalatorBehaviours(pairs_)
   local _, currentKeys = self:currentBehaviours(pairs_)
+  self:forcedMovementBehaviours(pairs_)
+  self:lavaridgeWarps(pairs_)
   local noRun = self:noRunBehaviours(pairs_)
   local acroKeys = {}
   for b in pairs(acroObstacles or {}) do acroKeys[#acroKeys + 1] = b end
@@ -29774,6 +30290,27 @@ function RomExtractorGen3:extractReflections()
     Logger.info("Gen3 ripples: behaviours %s over %d animation steps -- %s",
                 table.concat(ripple.behaviours, ","), #holds, ripple.source)
   end
+  -- ...and the same question asked of a TILE rather than of a footstep: what
+  -- marks the one somebody is hiding on.  It rides here because it is found
+  -- the same way and because this stage already writes `constants`.
+  local sparkle = self:sparkleArt()
+  if sparkle then
+    local steps = {}
+    for _, step in ipairs(sparkle.order) do
+      steps[#steps + 1] = { frame = step[1], hold = step[2] }
+    end
+    constants.gen3Sparkle = {
+      effect = sparkle.effect,
+      key = sparkle.key,
+      frames = #sparkle.frames,
+      order = steps,
+      linger = sparkle.linger,
+      source = sparkle.source,
+    }
+    Logger.info("Gen3 sparkle: field effect %d over %d animation steps and "
+                .. "%d ticks more -- %s", sparkle.effect, #steps,
+                sparkle.linger, sparkle.source)
+  end
   self._constants = constants
   self:write("constants", constants)
   Logger.info("Gen3 reflections: %s -- %s", table.concat(chosen.names, " "),
@@ -29831,6 +30368,63 @@ RomExtractorGen3.RIPPLE = {
   KEY = "SPRITE_G3_RIPPLE",
   IMAGE = "assets/generated/overworld/g3_ripple.png",
   FILE = "overworld/g3_ripple.png",
+}
+
+-- ---------------------------------------------------------------------------
+-- THE SPARKLE THAT SHOWS WHERE SOMEBODY IS HIDING
+--
+-- Reported from play: "the ui sparkle that appears in the rom when you go
+-- into the room and it says you being watched or something like that doesnt
+-- appear, and hitting a on it is supposed to unlock the door".  Both halves
+-- of the TRICK HOUSE entrance: the Trick Master hides on one of three tiles,
+-- a sparkle marks the one he chose, and talking to him there is what opens
+-- the house.
+--
+-- FOUND BY SHAPE, and the shape is the one thing that makes this effect
+-- unlike the other sixty-six: it is the only one placed at a MAP COORDINATE
+-- rather than on an object.  Its native opens by taking
+-- gFieldEffectArguments[0] and [1] -- the x and y a script has just set with
+-- `setfieldeffectargument` -- and shifting BOTH by the map's seven-tile
+-- border before turning them into pixels.  Nothing else in the table does
+-- that, so the effect id is read OUT of the cartridge rather than named here.
+--
+-- Then the closure check the ripple uses, twice over.  Opcode 7 is "load a
+-- palette and call a native"; the native fetches a sprite template out of
+-- gFieldEffectObjectTemplatePointers, and the template is accepted only if
+-- it wears the very palette the script just loaded.  And the template's own
+-- sprite callback names the effect id AGAIN on its way to FieldEffectStop,
+-- which is the second lock -- a template reached by a mis-step would stop
+-- somebody else's effect.
+--
+-- The number that callback counts to comes back with the art, because it is
+-- HOW LONG THE SCRIPT IS HELD: the sparkle plays its animation, goes
+-- invisible, and only then starts counting, so `waitfieldeffect` sits on this
+-- one for the animation plus that many ticks.
+RomExtractorGen3.SPARKLE = {
+  SCRIPTS_MAX = 96,
+  LOADPAL_CALLNATIVE = 7,
+  -- ldr r0,[r4,#0] / add r0,#7 / str r0,[r4,#0] / ldr r0,[r4,#4] / add r0,#7
+  -- / str r0,[r4,#4]
+  OFF_LDR0 = 0x6820, OFF_ADD = 0x3007, OFF_STR0 = 0x6020,
+  OFF_LDR1 = 0x6860, OFF_STR1 = 0x6060,
+  OFF_SCAN = 16,
+  -- ldr r0,=<template table> / add r0,#<slot*4> / ldr r0,[r0,#0]
+  LDR_PC = 0x4800, LDR_PC_END = 0x48FF,
+  ADD_R0 = 0x3000, ADD_R0_END = 0x30FF,
+  LDR_R0 = 0x6800,
+  NATIVE_SCAN = 24,
+  AT_PALTAG = 0x02, AT_ANIMS = 0x08, AT_IMAGES = 0x0C, AT_CALLBACK = 0x14,
+  -- mov r1,#<effect> before the branch to FieldEffectStop
+  MOV_R1 = 0x2100,
+  -- lsl r0,r0,#16 / asr r0,r0,#16 / cmp r0,#<ticks> / ble
+  WIDEN_LSL = 0x0400, WIDEN_ASR = 0x1400,
+  CMP_R0 = 0x2800, CMP_R0_END = 0x28FF, BLE = 0xDD00, BLE_END = 0xDDFF,
+  CB_SCAN = 40,
+  FRAMES_MAX = 8, FRAME_BYTES = 0x80, SIZE = 16, COLORS = 16,
+  ANIM_END = 0xFFFF, ANIM_MAX = 16, HOLD = 5, LINGER = 35,
+  KEY = "SPRITE_G3_SPARKLE",
+  IMAGE = "assets/generated/overworld/g3_sparkle.png",
+  FILE = "overworld/g3_sparkle.png",
 }
 
 -- ---------------------------------------------------------------------------
@@ -30508,6 +31102,166 @@ function RomExtractorGen3:rippleArt()
     return nil
   end
   self._rippleArt = art
+  return art
+end
+
+-- WHERE THE TRICK MASTER IS HIDING -- see RomExtractorGen3.SPARKLE for what
+-- makes this effect findable at all.
+function RomExtractorGen3:sparkleArtUncached()
+  local rom = self.rom
+  local S = RomExtractorGen3.SPARKLE
+  local scripts = RomExtractorGen3.EMOTE.SCRIPTS
+
+  local effectId, native, palRecord
+  for id = 0, S.SCRIPTS_MAX do
+    local script = rom:pointer(scripts + id * 4)
+    -- the table ends where it stops naming scripts; nothing here says how
+    -- long it is
+    if not script then break end
+    if rom:u8(script) == S.LOADPAL_CALLNATIVE then
+      local nat = rom:pointer(script + 5)
+      if nat then
+        nat = nat - (nat % 2)
+        for k = 0, S.OFF_SCAN - 1 do
+          local at = nat + k * 2
+          if rom:u16(at) == S.OFF_LDR0 and rom:u16(at + 2) == S.OFF_ADD
+             and rom:u16(at + 4) == S.OFF_STR0
+             and rom:u16(at + 6) == S.OFF_LDR1
+             and rom:u16(at + 8) == S.OFF_ADD
+             and rom:u16(at + 10) == S.OFF_STR1 then
+            if effectId then
+              return nil, ("two field effects place themselves at a map "
+                           .. "coordinate (%d and %d)"):format(effectId, id)
+            end
+            effectId, native = id, nat
+            palRecord = rom:pointer(script + 1)
+            break
+          end
+        end
+      end
+    end
+  end
+  if not effectId then
+    return nil, "no field effect places itself at a map coordinate"
+  end
+  if not palRecord then
+    return nil, ("effect %d loads no palette"):format(effectId)
+  end
+  local palData = rom:pointer(palRecord)
+  local palTag = rom:u16(palRecord + 4)
+  if not palData then return nil, "the palette record has no colours" end
+
+  local template
+  for k = 0, S.NATIVE_SCAN - 1 do
+    local at = native + k * 2
+    local w = rom:u16(at)
+    if w >= S.LDR_PC and w <= S.LDR_PC_END then
+      local pc = at + 4
+      local base = rom:pointer(pc - (pc % 4) + (w % 256) * 4)
+      local nxt, third = rom:u16(at + 2), rom:u16(at + 4)
+      local slot
+      if base and nxt >= S.ADD_R0 and nxt <= S.ADD_R0_END
+         and third == S.LDR_R0 then
+        slot = base + (nxt % 256)
+      elseif base and nxt == S.LDR_R0 then
+        slot = base
+      end
+      local cand = slot and rom:pointer(slot)
+      if cand and rom:u16(cand + S.AT_PALTAG) == palTag then
+        template = cand
+        break
+      end
+    end
+  end
+  if not template then
+    return nil, ("the native at %07X names no sprite template wearing the "
+                 .. "palette the script just loaded ($%04X)")
+                :format(native, palTag)
+  end
+
+  local callback = rom:pointer(template + S.AT_CALLBACK)
+  if not callback then return nil, "the template has no callback" end
+  callback = callback - (callback % 2)
+  local named, linger = false, nil
+  for k = 0, S.CB_SCAN - 1 do
+    local at = callback + k * 2
+    if rom:u16(at) == S.MOV_R1 + effectId then named = true end
+    if rom:u16(at) == S.WIDEN_LSL and rom:u16(at + 2) == S.WIDEN_ASR then
+      local cmp, br = rom:u16(at + 4), rom:u16(at + 6)
+      if cmp >= S.CMP_R0 and cmp <= S.CMP_R0_END
+         and br >= S.BLE and br <= S.BLE_END then
+        -- `ble` holds ON equality, so the tick after the compare is the last
+        linger = cmp % 256 + 1
+      end
+    end
+  end
+  if not named then
+    return nil, ("the callback at %07X stops an effect other than %d")
+                :format(callback, effectId)
+  end
+
+  local images = rom:pointer(template + S.AT_IMAGES)
+  if not images then return nil, "the template has no image list" end
+  local frames = {}
+  for f = 0, S.FRAMES_MAX - 1 do
+    local data = rom:pointer(images + f * 8)
+    local size = rom:u16(images + f * 8 + 4)
+    -- the list runs off into other data rather than terminating, so the
+    -- pictures are the ones that measure a 16x16 4bpp frame
+    if not data or size ~= S.FRAME_BYTES then break end
+    frames[f + 1] = data
+  end
+  if #frames == 0 then
+    return nil, ("no %d-byte %dx%d pictures at %07X")
+                :format(S.FRAME_BYTES, S.SIZE, S.SIZE, images)
+  end
+
+  local anims = rom:pointer(template + S.AT_ANIMS)
+  local first = anims and rom:pointer(anims)
+  local order = {}
+  if first then
+    for c = 0, S.ANIM_MAX - 1 do
+      local which = rom:u16(first + c * 4)
+      if which == S.ANIM_END or which >= #frames then break end
+      order[#order + 1] = { which, rom:u16(first + c * 4 + 2) }
+    end
+  end
+  if #order == 0 then
+    for f = 0, #frames - 1 do order[#order + 1] = { f, S.HOLD } end
+  end
+
+  return {
+    effect = effectId,
+    frames = frames,
+    palette = RomGba.palette(rom:bytes(palData, S.COLORS * 2)),
+    order = order,
+    linger = linger or S.LINGER,
+    key = S.KEY,
+    image = S.IMAGE,
+    source = ("ROM:field effect %d -- the only one whose native (%07X) places "
+              .. "itself at a map coordinate; its template %07X wears the "
+              .. "palette the script loads ($%04X) and its callback %07X "
+              .. "stops effect %d %d ticks after the animation")
+             :format(effectId, native, template, palTag, callback, effectId,
+                     linger or S.LINGER),
+  }
+end
+
+function RomExtractorGen3:sparkleArt()
+  if self._sparkleArt ~= nil then return self._sparkleArt or nil end
+  local ok, art, why = pcall(self.sparkleArtUncached, self)
+  if not ok then
+    Logger.warn("gen3 sparkle: %s", tostring(art))
+    self._sparkleArt = false
+    return nil
+  end
+  if not art then
+    Logger.warn("gen3 sparkle: %s -- nothing will mark the tile somebody is "
+                .. "hiding on", tostring(why or "not found"))
+    self._sparkleArt = false
+    return nil
+  end
+  self._sparkleArt = art
   return art
 end
 
@@ -34017,6 +34771,258 @@ function RomExtractorGen3:extractItemEffects()
               refused)
 end
 
+-- ---------------------------------------------------------------------------
+-- STAGE: the trainer AI's own program
+--
+-- gTrainers[].aiFlags picks scripts, and the scripts are BYTECODE -- a little
+-- language of about a hundred opcodes with its own interpreter
+-- (sBattleAICmdTable), a score per move, and a stack.  Nothing in this engine
+-- ran it, so every one of Hoenn's 855 trainers chose uniformly at random:
+-- 640 of them carry AI_FLAG_CHECK_BAD_MOVE alone, 173 carry
+-- BAD_MOVE|TRY_TO_FAINT|CHECK_VIABILITY, and Winona's four rematch rows add
+-- RISKY on top.
+--
+-- WHERE THE TABLE IS, and how it was found rather than guessed.  A scan for a
+-- 32-word run of ROM pointers whose targets all decode cleanly as this
+-- bytecode answers 0x2DBEF8 and nothing else: ten real scripts and then
+-- AI_Ret twenty-two times, every entry beginning with the `if_target_is_ally`
+-- prologue the cartridge's own scripts open with.
+--
+-- WHY THE DECODE CAN BE TRUSTED.  The operand widths come from pret's
+-- battle_ai_script.inc, and a wrong width desynchronises immediately, so the
+-- decode is checked rather than asserted: walking every entry and every jump
+-- target reaches 1745 instructions, EVERY jump lands exactly on an
+-- instruction boundary, and nothing overlaps anything.  Of the 9175 bytes
+-- between the first script and the last, those instructions and the 25
+-- `.byte`/`.hword` tables they point at account for all but twenty-six --
+-- and those twenty-six are two short runs (0x2DD10B and 0x2DDC44) that
+-- themselves decode as four well-formed instructions tiling their runs
+-- exactly, unreachable from any entry.  Dead code in the cartridge, not a
+-- misread: a wrong width leaves ragged remainders, not whole instructions.
+--
+-- The table's SHAPE is the other half of the identification, and it is the
+-- shape the disassembly leads you to expect: ten real scripts in slots 0-9,
+-- AI_Ret nineteen times over slots 10-28, and three more in 29, 30 and 31 --
+-- the roaming, Safari and first-battle scripts, whose flags are the top
+-- three bits of the field.
+--
+-- WHAT THE OPERANDS MEAN, for whoever writes the interpreter: read out of
+-- sBattleAICmdTable (0x5B083C, 99 handlers -- its own fingerprint is the
+-- eight nop slots sitting four bytes apart).  A battler operand is 0 for the
+-- TARGET and 1 for the USER, which `get_ability` settles with a bare
+-- `cmp #1` and `get_type` again through its five-way jump table: 0 and 2 are
+-- the target's two types, 1 and 3 the user's, and 4 is the considered move's.
+-- Results land in the thinking struct at +8, and the move being considered
+-- is the halfword at +2.
+--
+-- The operands stay as the cartridge's own NUMBERS -- move 0x5A, ability
+-- 0x1A, type 0x0D -- because that is what the interpreter compares against.
+-- Turning them into this engine's names here would mean guessing which
+-- namespace each one belongs to from the opcode, and the VM knows that
+-- already.
+-- ---------------------------------------------------------------------------
+
+-- name and operand widths, in opcode order from 0x00.  A missing entry is an
+-- opcode the cartridge never reaches; the decode refuses one rather than
+-- inventing a width.
+RomExtractorGen3.BATTLE_AI = {
+  TABLE = 0x2DBEF8,
+  SLOTS = 32,
+  BYTES_END = 0xFF,
+  HWORDS_END = 0xFFFF,
+  -- sDiscouragedPowerfulMoveEffects, which `get_how_powerful_move_is` reads
+  -- from inside its own HANDLER rather than from an operand -- so it is not
+  -- one of the tables the bytecode points at and has to be named here.  It
+  -- sits immediately after the command table (0x5B083C + 99 * 4 = 0x5B09C8),
+  -- which is the other half of the proof that the command table has exactly
+  -- ninety-nine entries.
+  DISCOURAGED = 0x5B09C8,
+  SPEC = [[
+if_random_less_than 1,4|if_random_greater_than 1,4|if_random_equal 1,4|
+if_random_not_equal 1,4|score 1|if_hp_less_than 1,1,4|if_hp_more_than 1,1,4|
+if_hp_equal 1,1,4|if_hp_not_equal 1,1,4|if_status 1,4,4|if_not_status 1,4,4|
+if_status2 1,4,4|if_not_status2 1,4,4|if_status3 1,4,4|if_not_status3 1,4,4|
+if_side_affecting 1,4,4|if_not_side_affecting 1,4,4|if_less_than 1,4|
+if_more_than 1,4|if_equal 1,4|if_not_equal 1,4|if_less_than_ptr 4,4|
+if_more_than_ptr 4,4|if_equal_ptr 4,4|if_not_equal_ptr 4,4|if_move 2,4|
+if_not_move 2,4|if_in_bytes 4,4|if_not_in_bytes 4,4|if_in_hwords 4,4|
+if_not_in_hwords 4,4|if_user_has_attacking_move 4|
+if_user_has_no_attacking_moves 4|get_turn_count |get_type 1|
+get_considered_move_power |get_how_powerful_move_is |get_last_used_bank_move 1|
+if_equal_ 1,4|if_not_equal_ 1,4|if_user_goes 1,4|if_user_doesnt_go 1,4|
+nop_2a |nop_2b |count_usable_party_mons 1|get_considered_move |
+get_considered_move_effect |get_ability 1|get_highest_type_effectiveness |
+if_type_effectiveness 1,4|nop_32 |nop_33 |if_status_in_party 1,4,4|
+if_status_not_in_party 1,4,4|get_weather |if_effect 1,4|if_not_effect 1,4|
+if_stat_level_less_than 1,1,1,4|if_stat_level_more_than 1,1,1,4|
+if_stat_level_equal 1,1,1,4|if_stat_level_not_equal 1,1,1,4|if_can_faint 4|
+if_cant_faint 4|if_has_move 1,2,4|if_doesnt_have_move 1,2,4|
+if_has_move_with_effect 1,1,4|if_doesnt_have_move_with_effect 1,1,4|
+if_any_move_disabled_or_encored 1,1,4|if_curr_move_disabled_or_encored 1,4|
+flee |if_random_safari_flee 4|watch |get_hold_effect 1|get_gender 1|
+is_first_turn_for 1|get_stockpile_count 1|is_double_battle |
+get_used_held_item 1|get_move_type_from_result |get_move_power_from_result |
+get_move_effect_from_result |get_protect_count 1|nop_52 |nop_53 |nop_54 |
+nop_55 |nop_56 |nop_57 |call 4|goto 4|end |if_level_cond 1,4|
+if_target_taunted 4|if_target_not_taunted 4|if_target_is_ally 4|
+is_of_type 1,1|check_ability 1,1|if_flash_fired 1,4|if_holds_item 1,2,4]],
+}
+
+-- the SPEC above, parsed once into { [op] = { name, widths } }
+function RomExtractorGen3.battleAiOps()
+  local B = RomExtractorGen3.BATTLE_AI
+  if B._ops then return B._ops end
+  local ops, op = {}, 0
+  for row in B.SPEC:gsub("[\r\n]", ""):gmatch("[^|]+") do
+    local name, widths = row:match("^%s*(%S+)%s*(.-)%s*$")
+    if name and name ~= "" then
+      local list = {}
+      for n in tostring(widths):gmatch("%d") do list[#list + 1] = tonumber(n) end
+      ops[op] = { name = name, widths = list }
+      op = op + 1
+    end
+  end
+  B._ops = ops
+  return ops
+end
+
+-- Does this opcode end a straight run?  `goto` leaves, `end` stops, and the
+-- two Safari ones hand control back to the battle -- everything else falls
+-- through to the instruction after it.
+RomExtractorGen3.BATTLE_AI_STOPS = {
+  ["goto"] = true, ["end"] = true, flee = true, watch = true,
+}
+
+-- Does this opcode branch, and is the branch its LAST operand?  Every `if_`
+-- puts the destination last; `call` and `goto` have nothing else.
+function RomExtractorGen3.battleAiJump(name, widths, args)
+  if not (widths[1] and widths[#widths] == 4) then return nil end
+  if name:sub(1, 3) ~= "if_" and name ~= "call" and name ~= "goto" then
+    return nil
+  end
+  return args[#args]
+end
+
+function RomExtractorGen3:extractBattleAI()
+  self:beginStage("Gen3 battle AI")
+  local B = RomExtractorGen3.BATTLE_AI
+  local rom, ops = self.rom, RomExtractorGen3.battleAiOps()
+  if not rom then return end
+
+  local entries, queue = {}, {}
+  for i = 0, B.SLOTS - 1 do
+    local at = rom:pointer(B.TABLE + i * 4)
+    if not at then
+      Logger.warn("gen3 battle AI: slot %d of the script table is not a "
+                  .. "pointer, so the table is not at %08X -- nothing is "
+                  .. "recorded", i, B.TABLE + 0x08000000)
+      return
+    end
+    entries[i] = at
+    queue[#queue + 1] = at
+  end
+
+  local code, lists, seen, refused = {}, {}, {}, nil
+  while #queue > 0 do
+    local pc = table.remove(queue, 1)
+    while pc and not seen[pc] do
+      seen[pc] = true
+      local row = ops[rom:u8(pc)]
+      if not row then
+        refused = refused or ("%04X at %08X"):format(rom:u8(pc),
+                                                     pc + 0x08000000)
+        break
+      end
+      local args, at = {}, pc + 1
+      for _, w in ipairs(row.widths) do
+        args[#args + 1] = (w == 1 and rom:u8(at))
+          or (w == 2 and rom:u16(at)) or rom:u32(at)
+        at = at + w
+      end
+      -- the two membership tests point at a terminated table rather than at
+      -- code; read it here so the VM never touches the cartridge
+      local listAt = nil
+      if row.name:find("in_bytes", 1, true) then listAt = args[1] end
+      if row.name:find("in_hwords", 1, true) then listAt = args[1] end
+      if listAt then
+        local flat = listAt % 0x08000000
+        if not lists[flat] then
+          local out, cursor = {}, flat
+          local wide = row.name:find("hwords", 1, true) ~= nil
+          local stop = wide and B.HWORDS_END or B.BYTES_END
+          for _ = 1, 64 do
+            local v = wide and rom:u16(cursor) or rom:u8(cursor)
+            if v == stop then break end
+            out[#out + 1] = v
+            cursor = cursor + (wide and 2 or 1)
+          end
+          lists[flat] = out
+        end
+        args[1] = flat
+      end
+      local jump = RomExtractorGen3.battleAiJump(row.name, row.widths, args)
+      if jump then
+        local to = jump % 0x08000000
+        args[#args] = to
+        if not seen[to] then queue[#queue + 1] = to end
+      end
+      code[pc] = { op = rom:u8(pc), name = row.name, args = args, next = at }
+      pc = (not RomExtractorGen3.BATTLE_AI_STOPS[row.name]) and at or nil
+    end
+  end
+
+  if refused then
+    Logger.warn("gen3 battle AI: opcode %s has no width in the table, so the "
+                .. "decode stopped there -- nothing is recorded", refused)
+    return
+  end
+
+  -- EVERY BRANCH LANDS ON AN INSTRUCTION, which is the check that catches a
+  -- wrong operand width: one bad row and the next fetch is mid-operand, and
+  -- the destinations stop agreeing with the boundaries within a few lines.
+  local loose, count = 0, 0
+  for _, row in pairs(code) do
+    count = count + 1
+    local to = RomExtractorGen3.battleAiJump(row.name,
+      ops[row.op].widths, row.args)
+    if to and not code[to] then loose = loose + 1 end
+  end
+  if loose > 0 then
+    Logger.warn("gen3 battle AI: %d branch(es) land between instructions, so "
+                .. "the widths are wrong somewhere -- nothing is recorded",
+                loose)
+    return
+  end
+
+  -- the effects a move is not credited for being powerful with: EXPLOSION and
+  -- its kin, the recoil and the two-turn moves
+  local discouraged, at = {}, B.DISCOURAGED
+  for _ = 1, 64 do
+    local v = rom:u16(at)
+    if v == B.HWORDS_END then break end
+    discouraged[#discouraged + 1] = v
+    at = at + 2
+  end
+
+  local constants = self._constants or {}
+  constants.gen3BattleAI = {
+    entries = entries, code = code, lists = lists,
+    discouraged = discouraged,
+    source = ("ROM:gBattleAI_ScriptsTable %08X (%d slots, %d instructions)")
+      :format(B.TABLE + 0x08000000, B.SLOTS, count),
+  }
+  self._constants = constants
+  self:write("constants", constants)
+  local distinct = {}
+  for _, row in pairs(code) do distinct[row.name] = true end
+  local kinds = 0
+  for _ in pairs(distinct) do kinds = kinds + 1 end
+  Logger.info("Gen3 battle AI: %d instructions over %d scripts, %d distinct "
+              .. "opcodes, %d membership tables", count, B.SLOTS, kinds,
+              (function() local n = 0 for _ in pairs(lists) do n = n + 1 end
+               return n end)())
+end
+
 RomExtractorGen3.DATA_STAGES = {
   "extractConstants", "extractCryVolume", "extractEvolutionText",
   "extractShopMenu",
@@ -34024,7 +35030,8 @@ RomExtractorGen3.DATA_STAGES = {
   "extractSizeRecords", "extractPokemonJump", "extractNatureGirl",
   "extractPokemon", "extractItems", "extractBalls",
   "extractItemEffects",
-  "extractTypeChart", "extractTrainers", "extractMachines",
+  "extractTypeChart", "extractTrainers", "extractBattleAI",
+  "extractMachines",
   "extractBerries", "extractTrades", "extractMultichoice",
   "extractFrontierParties", "extractStoragePanels",
   "extractEncounters", "extractEggMoves", "extractDexEntries",

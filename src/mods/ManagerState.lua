@@ -550,12 +550,131 @@ end
 
 -- Android and iOS answer a file pick on a later frame, so the row that opened
 -- the picker cannot wait for it.  Consume the drop wherever the player is.
+-- The manifest's declared `on_ready` export, called once the base file is in
+-- place.  The second half of the same answer `imports.ready` gives: a mod that
+-- subscribes gets the event, and a mod that would rather say it in its
+-- manifest names an export here.  Returns the line to show, or nil when there
+-- is nothing declared -- which is when the row falls back to saying the file
+-- is simply already imported.
+--
+-- The loader is reached through the game rather than required, because the
+-- exports table only exists once the mod has actually run.
+function ManagerState:_runImportReady(m, entry)
+  if not (entry and entry.onReady) then return nil end
+  local loader = self.game and self.game.mods
+  local exports = loader and loader.exports and loader.exports[m.id]
+  local fn = type(exports) == "table" and exports[entry.onReady] or nil
+  if type(fn) ~= "function" then
+    -- Named and not there: say so.  A silent no-op here is a manifest typo
+    -- nobody can see, on the one press that was supposed to start the work.
+    return Strings("%s IS NOT AVAILABLE", tostring(entry.onReady):upper())
+  end
+
+  -- ONCE PER FAILURE, AND NEVER RE-ENTERED.
+  --
+  -- What this calls is the mod's own heavy work: for a disc it loads a dozen
+  -- extractor modules, swaps render pipelines and resets its caches, all
+  -- synchronously, inside a menu press.  A run that fails PART WAY can leave
+  -- the mod holding half of that -- and a row a player presses again because
+  -- nothing visibly happened will do it again, and again, each time on top of
+  -- the last.  The engine cannot make a mod's init re-entrant, but it can
+  -- refuse to be the thing that calls it repeatedly.
+  --
+  -- A success clears the mark, because succeeding twice is what a rebuild IS.
+  -- A failure holds it until the drawer is reopened, which is the player
+  -- deliberately coming back rather than pressing the same row twice.
+  self._readyRuns = self._readyRuns or {}
+  local mark = tostring(m.id) .. "/" .. tostring(entry.id)
+  if self._readyRuns[mark] == "running" then
+    return Strings("ALREADY WORKING")
+  end
+  if self._readyRuns[mark] then
+    return Strings("%s -- REOPEN THIS PAGE TO TRY AGAIN"):format(
+      tostring(self._readyRuns[mark]))
+  end
+  self._readyRuns[mark] = "running"
+
+  local ok, result, detail = pcall(fn)
+  if not ok then
+    self._readyRuns[mark] = Strings("FAILED")
+    return Strings("FAILED: %s", tostring(result))
+  end
+  -- A mod's export answers (ok, message) or (ok, <its own status table>).  A
+  -- string is what to show; a TABLE is a status record, and the reason the
+  -- work stopped is inside it.
+  --
+  -- Without this next bit a failed build reported "REBUILD DID NOT FINISH" --
+  -- true, and the least useful true thing available, while the record it had
+  -- just been handed said exactly which step gave up and why.  Never invent a
+  -- shape: read the fields a status record conventionally carries, and fall
+  -- back to the blunt line when it carries none of them.
+  local function explain(value)
+    if type(value) == "string" and value ~= "" then return value end
+    if type(value) ~= "table" then return nil end
+    for _, key in ipairs({ "message", "reason", "error", "detail", "state" }) do
+      local v = value[key]
+      if type(v) == "string" and v ~= "" then return v end
+    end
+    return nil
+  end
+  -- A mod reporting failure while the row beside it says READY is two
+  -- components disagreeing about one file.  Record the engine's own view of it
+  -- the moment that happens -- and DRAIN the log, because this is one line and
+  -- the logger waits for sixty-four before it writes anything at all, which is
+  -- how every previous instance of this went unanswered.
+  if result == false then
+    pcall(function()
+      local Logger = require("src.core.Logger")
+      local loaderNow = self.game and self.game.mods
+      local live = loaderNow and loaderNow.apis and loaderNow.apis[m.id]
+      -- ...and WHICH COPY the loader actually ran.  love.filesystem shows every
+      -- home at once, so two folders of the same name in different homes are
+      -- one entry in the listing and whichever the search path reaches first is
+      -- the one that loaded -- which need not be the one the panel is holding.
+      local rec = loaderNow and loaderNow.mods and loaderNow.mods[m.id]
+      Logger.warn("import ready: %s said no -- %s loadedFrom=%s panelPath=%s",
+        tostring(entry.onReady),
+        ModImports.diagnose(m, entry, live and live.imports or nil),
+        tostring(rec and rec.path), tostring(m.path))
+      Logger.flush()
+    end)
+  end
+  if result == false then
+    self._readyRuns[mark] = Strings("DID NOT FINISH")
+  else
+    self._readyRuns[mark] = nil     -- succeeding twice is what a rebuild IS
+  end
+  local said = explain(detail) or explain(result)
+  if said then
+    -- The menu draws in a Game Boy face at a fixed width, so a paragraph is a
+    -- wall.  Say the first sentence and leave the rest to the mod's own UI.
+    said = tostring(said):gsub("%s+", " ")
+    local first = said:match("^(.-[%.!])%s") or said
+    if #first > 96 then first = first:sub(1, 93) .. "..." end
+    if result == false then return Strings("%s", first:upper()) end
+    return Strings("%s", first)
+  end
+  if result == false then return Strings("%s DID NOT FINISH",
+                                         tostring(entry.onReady):upper()) end
+  return Strings("DONE")
+end
+
+-- Clear the marks, so reopening the page is a fresh attempt.  Called where the
+-- drawer opens: coming back to it is a deliberate act, pressing the same row
+-- twice in a row is not.
+function ManagerState:_clearImportReadyMarks()
+  self._readyRuns = nil
+end
+
 function ManagerState:_pollImport()
   local pending = self._importPending
   if not pending then return end
   local ok, why = ModImports.poll(pending.manifest, pending.entry)
   if ok then
     self._importPending = nil
+    -- the mobile picker's answer lands here rather than in activate, so the
+    -- announcement has to happen here too or a phone never gets one
+    ModImports.announce(pending.manifest, pending.entry, false)
     self:notify(Strings("IMPORTED %s", tostring(pending.entry.name)))
     self.optionRows = nil
     if self.currentMod then self:openOptions(self.currentMod) end
@@ -1048,15 +1167,33 @@ function ManagerState:buildOptionRows(m, schema)
         return Strings("CHOOSE")
       end,
       activate = function()
+        -- ALREADY THERE IS NOT NOTHING TO DO.
+        --
+        -- A base file is the START of whatever the mod does with it -- for a
+        -- disc, an extraction that takes minutes.  This used to stop dead on
+        -- "ALREADY IMPORTED", which swallowed the one press that was meant to
+        -- begin that work and left the player pressing it again.  The engine
+        -- cannot run the mod's extraction, but it can say the file is here and
+        -- let the mod decide; ModImports.announce reports whether anything was
+        -- actually listening, so the notice below never claims something
+        -- started when nothing did.
         if ModImports.have(m, entry) == true then
-          self:notify(Strings("ALREADY IMPORTED"))
+          if ModImports.announce(m, entry, true) then
+            self:notify(Strings("READY - WORKING"))
+          else
+            self:notify(self:_runImportReady(m, entry)
+                        or Strings("ALREADY IMPORTED"))
+          end
           return true
         end
-        local ok, message = ModImports.choose(m, entry)
+        local ok, message, how = ModImports.choose(m, entry)
         if ok == nil then
           -- a mobile picker is open; ManagerState:update consumes the answer
           self._importPending = { manifest = m, entry = entry }
         end
+        -- ...and a file that has just landed is announced too, which is the
+        -- more natural moment for a mod to start building from it.
+        if ok == true then ModImports.announce(m, entry, how == "present") end
         self:notify(tostring(message or ""))
         return ok ~= false
       end,
@@ -1078,6 +1215,10 @@ function ManagerState:buildOptionRows(m, schema)
 end
 
 function ManagerState:openOptions(m)
+  -- Opening the page is a deliberate return, so a base-file action that failed
+  -- last time may be attempted again; pressing the same row twice in a row is
+  -- not, and is what the marks refuse (see _runImportReady).
+  self:_clearImportReadyMarks()
   local schema = self:schemaFor(m)
   if not schema then
     if not ModImports.of(m) then

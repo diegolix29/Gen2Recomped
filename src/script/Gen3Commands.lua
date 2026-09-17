@@ -1077,6 +1077,72 @@ function Commands.g3_show_object(ctx, target, group, number)
   gen3Toggle(ctx, target, true, group, number)
 end
 
+-- `hideobjectat` / `showobjectat` DO NOT SPAWN OR DESPAWN ANYTHING, and that
+-- is not a quibble -- it is the whole of the TRICK HOUSE's front door.
+--
+-- Reported from play: "hitting a on it is supposed to unlock the door, the
+-- door is just unlocked at the moment."  The door is a sign that answers "it
+-- won't open" until the Trick Master has been FOUND, and finding him is
+-- pressing A on the tile the sparkle marks -- where he is standing, invisible.
+--
+-- All four of the visibility commands lowered onto the same spawn/despawn,
+-- and the cartridge draws a line between the two pairs that erased.
+-- ScrCmd_hideobjectat and ScrCmd_showobjectat are ONE function with a 0/1
+-- argument (ROM:009A908 and ROM:009A8D8 both call ROM:008E6F8), and all it
+-- does is write bit 5 of the loaded object struct's second byte -- the
+-- INVISIBLE bit.  The object stays active, stays where it is, and stays
+-- talkable; it is simply not drawn.  ScrCmd_removeobject (ROM:009A740 ->
+-- ROM:008D8C4) is the one that takes it off the map.
+--
+-- So the entrance's own setup --
+--
+--     addobject <the Trick Master>
+--     hideobjectat <the Trick Master>, <this map>
+--     setobjectxy <the Trick Master>, 6, 3     @ or 11,5 or 9,1
+--
+-- -- reads "put him on the map, make him invisible, stand him on the tile",
+-- and what the port did was put him on the map and then take him off it
+-- again.  There was nothing at the sparkle to press A on, so the state
+-- variable the door reads never advanced and the door had nothing to gate on.
+--
+-- LIVE ONLY, exactly like the bit it stands for: an object on a map that is
+-- not loaded has no struct to write, and the next map load rebuilds every
+-- struct from the map's own object_events.  Every site in Hoenn is reached
+-- from an ON_WARP_INTO_MAP or ON_TRANSITION script that re-runs on arrival,
+-- so there is nothing here to persist.
+-- On the module rather than a file local: this file is one chunk and Lua caps
+-- a chunk at 200 locals, which it already sits against.
+function Gen3Commands.objectInvisible(ctx, target, invisible, group, number)
+  local index = objectId(ctx, target)
+  if not index then
+    -- $FF is the player, and most of these sites are: the cartridge takes
+    -- the player off screen with `hideobjectat OBJ_EVENT_ID_PLAYER` whenever
+    -- they step into a doorway.  That already meant "stop drawing them".
+    if tonumber(target) == PLAYER_OBJECT then
+      local player = ctx.overworld and ctx.overworld.player
+      if player then player.hidden = invisible or nil end
+    end
+    return
+  end
+  local ow = ctx.overworld
+  if not ow then return end
+  local here = (ow.map and ow.map.id) or ctx.mapId
+  if group ~= nil and number ~= nil and mapKey(group, number) ~= here then
+    return
+  end
+  local npc = ow.npcByIndex and ow:npcByIndex(index)
+  if not npc then return end
+  npc.hidden = invisible or nil
+end
+
+function Commands.g3_object_invisible(ctx, target, group, number)
+  Gen3Commands.objectInvisible(ctx, target, true, group, number)
+end
+
+function Commands.g3_object_visible(ctx, target, group, number)
+  Gen3Commands.objectInvisible(ctx, target, false, group, number)
+end
+
 function Commands.g3_hide_object(ctx, target, group, number)
   gen3Toggle(ctx, target, false, group, number)
 end
@@ -2218,6 +2284,16 @@ function Commands.g3_set_flash_level(ctx, level)
   require("src.world.Gen3Flash").setLevel(game, valueOf(ctx, level))
 end
 
+-- animateflash: the same level, reached one pixel at a time.  AnimateFlash
+-- (0B009C) hands the two radii to a task whose step is 1 and then blocks the
+-- script on it; the block is left out here, because the window is drawn from
+-- the save and nothing a script does next depends on it having arrived.
+function Commands.g3_animate_flash(ctx, level)
+  local game = ctx.game
+  if not game then return end
+  require("src.world.Gen3Flash").animateTo(game, valueOf(ctx, level))
+end
+
 function Commands.g3_set_layout(ctx, layoutId)
   local ow = ctx.overworld
   if ow and ow.map then ow.map.gen3LayoutOverride = tonumber(layoutId) end
@@ -2408,6 +2484,27 @@ function Commands.g3_field_effect(ctx, id)
     end
     if shown then runner:yield() end
   end
+  -- THE SPARKLE OVER A HIDING PLACE.
+  --
+  -- The one field effect in the table that is placed at a MAP COORDINATE
+  -- rather than on somebody: the script puts the tile in argument slots 0 and
+  -- 1 and this raises it there.  Which effect that is comes out of the
+  -- cartridge at import -- see RomExtractorGen3.SPARKLE -- so the number 54
+  -- appears nowhere in the engine.
+  --
+  -- It does NOT hold the script.  The cartridge's `dofieldeffect` returns the
+  -- moment the sprite exists and the row after it is `waitfieldeffect`, which
+  -- is where the wait belongs; the field-move sweep above is held here only
+  -- because its presentation owns the screen.
+  local sparkle = data and data.constants and data.constants.gen3Sparkle
+  if sparkle and id and id == sparkle.effect then
+    local args = ctx.g3FieldEffectArgs or {}
+    local cx, cy = tonumber(args[0]), tonumber(args[1])
+    if ow and ow.startSparkle and cx and cy then
+      pcall(ow.startSparkle, ow, cx, cy)
+    end
+    return
+  end
   if not (roles and id and id == roles.pokecenterHeal) then return end
   if not (ow and ow.startHealAnim and runner) then return end
   local resumed = false
@@ -2418,9 +2515,48 @@ function Commands.g3_field_effect(ctx, id)
   end)
   runner:yield()
 end
+-- `waitfieldeffect <id>` -- HOLD THE SCRIPT UNTIL THE EFFECT IS DONE.
+--
+-- Answers instantly unless the effect named is one the port has actually
+-- raised and is still running, which keeps this the no-op it used to be for
+-- the sixty-six effects nothing spawns: an unconditional wait here would hang
+-- every script that asks after an effect the engine never started.
+--
+-- The sparkle's remaining life is a KNOWN NUMBER of ticks rather than
+-- something to poll for, because the cartridge's own callback counts it out
+-- (animation, then `linger` more frames while invisible), so this lands on
+-- the frame wait `delay` already uses rather than inventing a second kind of
+-- suspension.
+function Commands.g3_field_effect_wait(ctx, id)
+  id = tonumber(id)
+  local ow, runner = ctx.overworld, ctx.runner
+  if not (id and ow and runner) then return end
+  local data = ctx.game and ctx.game.data
+  local sparkle = data and data.constants and data.constants.gen3Sparkle
+  if not (sparkle and id == sparkle.effect) then return end
+  if not (ow.sparkleBusy and ow.sparkleRemaining and ow:sparkleBusy()) then
+    return
+  end
+  local frames = ow:sparkleRemaining()
+  if not (frames and frames > 0) then return end
+  runner.waitingFrames = frames
+  runner:yield()
+end
+
+-- `setfieldeffectargument <slot>, <value>` -- AND THE VALUE CAN BE A VAR.
+--
+-- ScrCmd_setfieldeffectargument runs its halfword through VarGet, so a
+-- literal stays a literal and anything in the var ranges is READ.  This
+-- stored the halfword raw, so an effect positioned out of vars was handed the
+-- var NUMBERS: the TRICK HOUSE entrance sets VAR_0x8004 and VAR_0x8005 to the
+-- tile the TRICK MASTER is hiding on and then asks for its sparkle there, and
+-- what arrived was 32772 and 32773.
+--
+-- Every other caller in Hoenn passes literal coordinates, which is why this
+-- only ever showed up on the one script that does not.
 function Commands.g3_field_effect_arg(ctx, slot, value)
   ctx.g3FieldEffectArgs = ctx.g3FieldEffectArgs or {}
-  ctx.g3FieldEffectArgs[tonumber(slot) or 0] = tonumber(value)
+  ctx.g3FieldEffectArgs[tonumber(slot) or 0] = valueOf(ctx, value)
 end
 
 function Commands.g3_game_stat(ctx, stat)
@@ -4051,6 +4187,109 @@ Gen3Commands.SPECIALS[147] = function(ctx)
     map:setBlock(at[1], at[2], M.PRESSED_SWITCH, false)
   end
   return mauvilleSweep(ctx, MAUVILLE_OFF, false)
+end
+
+-- ---------------------------------------------------------------------------
+-- PETALBURG GYM: 148 AND 149, AND THE DOORS THAT NEVER OPENED.
+--
+-- Norman's gym is eight rooms behind eight sliding doors, and the two specials
+-- that open them were never written, so every door in the gym stayed shut in
+-- the picture for the whole game.  The gym is still crossable without them --
+-- what actually lets you THROUGH is the eight `setmetatile` sub-scripts the
+-- same room blocks call, which write 528/529 passable over the doorway the
+-- door leads to, and those are ordinary opcodes this VM has always lowered --
+-- so this is the half you can see rather than the half you can walk.
+--
+-- PetalburgGymSetDoorMetatiles (0138978) is the whole of both specials: a
+-- jump table on room - 1 (0x01389A0, eight arms), each arm naming that room's
+-- door cells, and then one tail (0138A40) that writes TWO cells a door --
+--
+--     (x, y)     <- the frame's metatile
+--     (x, y + 1) <- that metatile PLUS EIGHT
+--
+-- because a Hoenn tileset is eight metatiles to a row, so +8 is the tile
+-- directly beneath.  Both cells are written with 0xC00 OR'd in, which is the
+-- collision mask: A DOOR CELL IS IMPASSABLE IN EVERY FRAME, the open one
+-- included.  That is not a bug to fix -- the shipped map already has those
+-- cells blocked, and the doorway you walk through is a different cell.
+--
+-- 148 SlideOpenRoomDoors plays SE 44 and hands the job to a task (0138910)
+-- that walks five frames with the delay list at 0x085B2B78 -- {0,1,1,1,1} --
+-- redrawing the whole map view after each, and calls
+-- EnableBothScriptContexts when it retires, which is what the script's
+-- `waitstate` is waiting for.  149 UnlockRoomDoors does the same write ONCE
+-- with the last frame and does not wait: it is the instant form the gym's
+-- ON_LOAD uses to put back the doors you already opened.
+--
+-- The room number is VAR_0x8004 and the mode is VAR_0x8005 (0 slides, 1
+-- snaps), both set by the room block that calls these.
+-- ---------------------------------------------------------------------------
+
+Gen3Commands.PETALBURG_DOORS = {
+  -- raw map coordinates, off the eight jump-table arms at 0x01389A0; every
+  -- one of the twelve was checked back against the shipped layout, which has
+  -- metatile 0x218 at (x,y) and 0x220 at (x,y+1) on all of them
+  ROOMS = {
+    [1] = { { 1, 104 }, { 7, 104 } },
+    [2] = { { 1, 78 },  { 7, 78 } },
+    [3] = { { 1, 91 },  { 7, 91 } },
+    [4] = { { 7, 39 } },
+    [5] = { { 1, 52 },  { 7, 52 } },
+    [6] = { { 1, 65 } },
+    [7] = { { 7, 13 } },
+    [8] = { { 1, 26 } },
+  },
+  -- 0x085B2B7E, five halfwords: the slide, closed to open
+  FRAMES = { 0x218, 0x219, 0x21A, 0x21B, 0x21C },
+  -- 0x085B2B78, one delay a frame
+  DELAYS = { 0, 1, 1, 1, 1 },
+  BELOW = 8,             -- the tail's own `metatile + 8`
+  SOUND = 44,            -- `mov r0,#44 / bl PlaySE` at 01388F0
+}
+
+-- One frame of the slide, written into the map.  Shared by both specials,
+-- exactly as the cartridge shares 0138978.
+function Gen3Commands.petalburgDoorFrame(map, room, frame)
+  local P = Gen3Commands.PETALBURG_DOORS
+  local cells = P.ROOMS[math.floor(tonumber(room) or 0)]
+  local tile = P.FRAMES[math.floor(tonumber(frame) or 0) + 1]
+  if not (map and map.setBlock and cells and tile) then return false end
+  for _, at in ipairs(cells) do
+    -- impassable on both halves and in every frame -- the tail ORs 0xC00
+    map:setBlock(at[1], at[2], tile, true)
+    map:setBlock(at[1], at[2] + 1, tile + P.BELOW, true)
+  end
+  return true
+end
+
+-- 148: slide them open, over nine frames, with the script held at waitstate
+Gen3Commands.SPECIALS[148] = function(ctx)
+  local ow = ctx.overworld
+  local map = ow and ow.map
+  local room = math.floor(tonumber(getVar(ctx.save, 0x8004)) or 0)
+  if not (map and Gen3Commands.PETALBURG_DOORS.ROOMS[room]) then return end
+  pcall(function()
+    require("src.core.Sound").playId(ctx.game and ctx.game.data,
+                                     Gen3Commands.PETALBURG_DOORS.SOUND)
+  end)
+  if not (ow.startGymDoorSlide and ow:startGymDoorSlide(room, ctx)) then
+    -- no clock to run it on: snap to the open frame rather than leave the
+    -- door half shut for the rest of the game
+    Gen3Commands.petalburgDoorFrame(map, room, #Gen3Commands.PETALBURG_DOORS.FRAMES - 1)
+    map.blocksDirty = true
+  end
+end
+
+-- 149: the same doors, already open, with nothing to wait for
+Gen3Commands.SPECIALS[149] = function(ctx)
+  local ow = ctx.overworld
+  local map = ow and ow.map
+  local room = tonumber(getVar(ctx.save, 0x8004))
+  local P = Gen3Commands.PETALBURG_DOORS
+  if not map then return end
+  if Gen3Commands.petalburgDoorFrame(map, room, #P.FRAMES - 1) then
+    map.blocksDirty = true
+  end
 end
 
 -- 183: DID YOU WIN?

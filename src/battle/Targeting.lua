@@ -122,6 +122,31 @@ function Targeting.resolve(battle, user, move, chosen)
   -- SELECTED, USER_OR_SELECTED, and DEPENDS -- whose effect record does the
   -- real work and only needs somebody plausible to start from.
   if chosen and chosen.mon and (chosen.mon.hp or 0) > 0 then return { chosen } end
+
+  -- NOBODY CHOSE, WHICH ON THE FOE'S SIDE IS EVERY SINGLE TURN.
+  --
+  -- The player is asked and the answer arrives in `chosen`; a trainer is not,
+  -- so its move fell through to `redirect`, and redirect answers the FIRST
+  -- battler in position order.  Position order on your side is left flank
+  -- then right, so every foe in Hoenn aimed every single-target move it had
+  -- at whichever Pokemon you led with, all battle, every battle.  That is the
+  -- "they only ever attack my first one" report, and it is a tie-break
+  -- standing in for a choice.
+  --
+  -- The cartridge makes it a choice: ChooseMoveOrAction_Doubles walks every
+  -- battler the user could aim at, scores all four moves against each one,
+  -- and keeps every (move, target) pair tied at the top -- then rolls among
+  -- them.  A foe that genuinely has no preference therefore picks a SIDE of
+  -- you at random, and the preference comes from the score.
+  --
+  -- The scorer is not ported yet (gBattleAI_ScriptsTable is read but not
+  -- run), so what is faithful today is the tie-break with every score equal:
+  -- a coin flip between whoever is standing.  That is a floor rather than the
+  -- finished behaviour, and it is the half that stops the right-hand slot
+  -- being untouchable.
+  if not user.isPlayer and #foes > 1 and battle.rng then
+    return { foes[battle.rng(1, #foes)] }
+  end
   return Targeting.redirect(battle, user, move, chosen)
 end
 

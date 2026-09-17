@@ -443,11 +443,13 @@ L.addobject = function(ir, s) emit(s, { "g3_show_object", ir[2] }) end
 L.addobjectat = function(ir, s)
   emit(s, { "g3_show_object", ir[2], ir[3], ir[4] })
 end
+-- ...and these two are NOT that pair: they write the loaded object's
+-- invisible bit and nothing else -- see Commands.g3_object_invisible.
 L.hideobjectat = function(ir, s)
-  emit(s, { "g3_hide_object", ir[2], ir[3], ir[4] })
+  emit(s, { "g3_object_invisible", ir[2], ir[3], ir[4] })
 end
 L.showobjectat = function(ir, s)
-  emit(s, { "g3_show_object", ir[2], ir[3], ir[4] })
+  emit(s, { "g3_object_visible", ir[2], ir[3], ir[4] })
 end
 L.turnobject = function(ir, s) emit(s, { "g3_turn", ir[2], ir[3] }) end
 L.setobjectxy = function(ir, s) emit(s, { "g3_place", ir[2], ir[3], ir[4] }) end
@@ -661,10 +663,31 @@ L.doweather = function(_, s) emit(s, { "g3_do_weather" }) end
 -- radius table, and dropping it left every cave at whatever the map load had
 -- chosen.
 L.setflashlevel = function(ir, s) emit(s, { "g3_set_flash_level", ir[2] }) end
-L.animateflash = L.nop
+-- ...and `animateflash <n>` is the one that OPENS it, which is not a nop.
+--
+-- ScrCmd_animateflash is opcode 0x9A -- 0099C70, and gScriptCmdTable is what
+-- says so; 0099CC8 next door is `fadescreen` and is a different thing
+-- entirely.  It calls AnimateFlash (0B009C), which reads the CURRENT level's
+-- radius and the new one's out of the same table the record is made of and
+-- eases between them ONE PIXEL A FRAME, then blocks the script until the
+-- window has arrived.
+--
+-- Dropping it meant the DEWFORD GYM never got any brighter.  That gym is dark
+-- by script rather than by its header (its cave byte is 0): its ON_TRANSITION
+-- counts the trainers you have beaten and sets the level to 7 minus that, and
+-- after each win the map's own script plays a sound and calls THIS with the
+-- new one.  With it dropped the room only changed when you left and came back.
+L.animateflash = function(ir, s) emit(s, { "g3_animate_flash", ir[2] }) end
 L.dofieldeffect = function(ir, s) emit(s, { "g3_field_effect", ir[2] }) end
 L.setfieldeffectargument = function(ir, s) emit(s, { "g3_field_effect_arg", ir[2], ir[3] }) end
-L.waitfieldeffect = L.nop
+-- `waitfieldeffect` HOLDS THE SCRIPT, for the effects the port actually
+-- raises.  It lowered to nothing, which is right for an effect that never
+-- appears and wrong for one that does: the TRICK HOUSE entrance starts its
+-- sparkle, waits for it, and then delays ten frames -- run those together and
+-- the mark on the Trick Master's tile is a flicker.  See
+-- Commands.g3_field_effect_wait, which answers instantly for every effect
+-- that is not running.
+L.waitfieldeffect = function(ir, s) emit(s, { "g3_field_effect_wait", ir[2] }) end
 L.setstepcallback = L.nop
 L.incrementgamestat = function(ir, s) emit(s, { "g3_game_stat", ir[2] }) end
 L.getplayerxy = function(ir, s) emit(s, { "g3_player_xy", ir[2], ir[3] }) end

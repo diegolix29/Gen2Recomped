@@ -26,7 +26,21 @@ local Logger = require("src.core.Logger")
 
 local ModImports = {}
 
+-- The launcher's own trees -- the shared base-file bank under imports/base/
+-- and the copy written into a mod's own folder -- follow the player's chosen
+-- game-data folder, which love.filesystem cannot reach: it always resolves a
+-- write to the OS save directory.  CacheFs.dataFs reads and enumerates through
+-- love.filesystem (every home at once, including the chosen root, which is
+-- mounted) and routes writes and removes at whichever root is live.
+--
+-- Falls back to love.filesystem when CacheFs is unavailable, which is how the
+-- headless tests run: they inject their own fs and never load it.
 local function fs()
+  local ok, CacheFs = pcall(require, "src.import.CacheFs")
+  if ok and CacheFs and CacheFs.dataFs then
+    local okFs, handle = pcall(CacheFs.dataFs)
+    if okFs and handle then return handle end
+  end
   return love and love.filesystem
 end
 
@@ -63,6 +77,24 @@ local function md5Set(raw)
   return out[1], out[1] and out or nil
 end
 
+-- "474336453031" or { "...", "..." } -> a list of lowercase hex strings, or
+-- nil.  Odd-length or non-hex entries are dropped rather than guessed at: a
+-- half-read signature that matches half a file is worse than no check.
+local function magicSet(raw)
+  if raw == nil then return nil end
+  local list = (type(raw) == "table") and raw or { raw }
+  local out = {}
+  for _, value in ipairs(list) do
+    if type(value) == "string" then
+      local hex = value:gsub("%s", ""):lower()
+      if #hex > 0 and #hex % 2 == 0 and hex:match("^%x+$") then
+        out[#out + 1] = hex
+      end
+    end
+  end
+  return out[1] and out or nil
+end
+
 local function normalise(raw, index)
   if type(raw) ~= "table" then return nil end
   local file = raw.file
@@ -87,6 +119,32 @@ local function normalise(raw, index)
     file = file,
     root = root,
     format = type(raw.format) == "string" and raw.format:lower() or nil,
+    -- WHAT TO RUN ONCE THE FILE IS THERE.
+    --
+    -- A base file is the start of the mod's work, not the end of the engine's,
+    -- and for a disc that work is a long extraction.  A mod can subscribe to
+    -- `imports.ready` for this, which is the general answer -- but subscribing
+    -- is Lua, and this whole contract is otherwise declarative: the manifest
+    -- already says what file it needs and where to put it, so it may as well
+    -- say what to call when it lands.  The value names an export the mod
+    -- publishes (mod.exports.<name>); anything else is ignored.
+    onReady = type(raw.on_ready) == "string" and raw.on_ready ~= ""
+      and raw.on_ready or nil,
+    -- BYTES THAT PROVE IT IS THE RIGHT FILE, when a hash cannot.
+    --
+    -- `md5` is the proper answer and is only checked when the file fits this
+    -- device's hash budget -- never, for a 1.4 GB disc.  So a disc could match
+    -- on size, import cleanly, and be the wrong REGION: a PAL Colosseum
+    -- (GC6P01) is byte-for-byte the same length as the USA one (GC6E01) the
+    -- mod needs, and the mod only found out after the copy, from inside its
+    -- own structural check, as "not structurally valid".
+    --
+    -- A few bytes at a known offset settle that in constant time at any size.
+    -- A list means alternatives (several good dumps, several regions a mod
+    -- actually supports); hex, because a game id is bytes and quoting them as
+    -- text invites an encoding to get in the way.
+    magic = magicSet(raw.magic),
+    magicOffset = math.max(0, math.floor(tonumber(raw.magic_offset) or 0)),
     size = tonumber(raw.size),
     md5 = first,
     md5s = all,
@@ -119,6 +177,18 @@ ModImports.FORMATS = {
   gb = { "gb", "gbc" },
   gba = { "gba" },
   nds = { "nds" },
+  -- A DISC, which is the same argument as a cartridge's byte orders and then
+  -- some.  Asked for by a mod that wants a Pokemon Colosseum disc: a GameCube
+  -- dump is `.gcm` from some rippers, `.iso` from most, and `.ciso`/`.rvz`
+  -- once somebody has compressed it -- all the same disc, and a mod that
+  -- declared one spelling refused the other three.
+  --
+  -- A `format` is only needed when a mod will take MORE than one suffix: with
+  -- none, extensions() falls back to the suffix of the declared `file`, which
+  -- is why a manifest naming `baseroms/colosseum.iso` already works for a
+  -- player whose dump happens to be spelled that way.
+  gamecube = { "gcm", "iso", "ciso", "rvz" },
+  wii = { "iso", "wbfs", "rvz", "nkit" },
   zip = { "zip" },
 }
 
@@ -208,11 +278,54 @@ function ModImports.shared(entry)
   return f.read(target)
 end
 
-local function keepShared(entry, bytes)
+-- ...and the same lookup answering a PATH, which is what the streaming
+-- installer wants.  A pointer bank can aim at a 1.4 GB disc, so the one caller
+-- that used to read it whole is exactly the one that must not.
+function ModImports.sharedSource(entry)
+  local f = fs()
+  if not f then return nil end
+  local path = ModImports.sharedPath(entry)
+  if path and f.getInfo(path, "file") then return path end
+  local ptr = ModImports.sharedPointerPath(entry)
+  if not (ptr and f.getInfo(ptr, "file")) then return nil end
+  local target = tostring(f.read(ptr) or ""):gsub("%s+$", "")
+  if target == "" then return nil end
+  local info = f.getInfo(target, "file")
+  if not info then return nil end
+  if entry.size and info.size and info.size ~= entry.size then return nil end
+  return target
+end
+
+-- HOW BIG A BASE FILE THE BANK WILL HOLD A COPY OF.
+--
+-- The bank exists so a second mod wanting the same file does not send the
+-- player looking for it again, and for a 64 MB cartridge a copy is a fair
+-- price.  A DISC IS NOT: a GameCube dump is about 1.4 GB, so banking one
+-- turns a single import into nearly three gigabytes on disk -- and the player
+-- is never told, because the bank is silent by design.
+--
+-- Above this, the bank keeps a POINTER at the copy that was just written
+-- instead (the same one-line record a `root = "save"` entry already gets).  It
+-- is a weaker promise -- uninstalling the mod that owns the folder takes the
+-- target with it, and the next mod asks again -- but "ask again" is a far
+-- better failure than quietly filling a disk.
+ModImports.MAX_BANK_BYTES = 256 * 1024 * 1024
+
+-- Forward-declared: keepShared is the first caller and bankPointer is defined
+-- below it, so without this the call would resolve to a nil global.
+local bankPointer
+
+local function keepShared(entry, bytes, wrotePath)
   local f = fs()
   local path = ModImports.sharedPath(entry)
   if not (f and path) then return end
   if f.getInfo(path, "file") then return end   -- already banked
+  if #bytes > ModImports.MAX_BANK_BYTES then
+    -- nothing to point at means nothing to bank; the ordinary import flow
+    -- simply asks the next mod for the file
+    if wrotePath then bankPointer(entry, wrotePath) end
+    return
+  end
   if f.createDirectory then
     f.createDirectory("imports")
     f.createDirectory(SHARED_DIR)
@@ -222,7 +335,7 @@ end
 
 -- Point the bank at a copy that already exists at a stable path, and drop the
 -- byte bank if one was taken earlier (that is the 64 MB this reclaims).
-local function bankPointer(entry, path)
+function bankPointer(entry, path)
   local f = fs()
   local ptr = ModImports.sharedPointerPath(entry)
   if not (f and ptr and path) then return end
@@ -246,11 +359,45 @@ end
 -- Satisfy every entry a mod declares from the shared store, silently.  Called
 -- when the launcher builds its list, so a second mod that wants a cartridge
 -- the player already gave the first one is simply ready.
+-- AUTOMATIC ADOPTION HAS A SIZE CEILING, and it is the same ceiling that
+-- decides whether the bank keeps bytes or a pointer.
+--
+-- The bank exists so a player who hands over a 64 MB Stadium cartridge for one
+-- mod is not asked for it again by the next: silently satisfying the second
+-- mod is the whole feature.  That reasoning holds while "satisfying" costs a
+-- few tens of megabytes.  It stops holding at a GameCube disc, where it means
+-- the launcher writes 1.4 GB per declaring mod, on every launch that finds one
+-- unsatisfied, without anybody asking -- reported from a log showing two
+-- back-to-back 1.4 GB streams into two mod folders before the window was even
+-- up.
+--
+-- So above MAX_BANK_BYTES the bank still remembers WHERE the file is (that is
+-- what the pointer is for, and it is what stops the player having to find it
+-- again), but putting a second copy inside a second mod is a decision with a
+-- price, and the player makes it by pressing Import base file on that mod's
+-- card.  One press, one stream, and nothing happens behind their back.
+function ModImports.autoAdoptLimit()
+  return ModImports.MAX_BANK_BYTES
+end
+
 function ModImports.adoptShared(manifest)
   local adopted = 0
   for _, row in ipairs(ModImports.missing(manifest) or {}) do
-    local bytes = ModImports.shared(row.entry)
-    if bytes and ModImports.install(manifest, row.entry, bytes, true) then
+    local banked = ModImports.sharedSource(row.entry)
+    local size = nil
+    if banked then
+      local f = fs()
+      local info = f and f.getInfo(banked, "file")
+      size = info and info.size or row.entry.size
+    end
+    -- An unknown size is treated as small: every base file that predates this
+    -- was, and refusing to adopt something we cannot measure would turn a
+    -- working setup into one that asks again for no reason.
+    local tooBig = size ~= nil and size > ModImports.autoAdoptLimit()
+    if banked and not tooBig
+       and ModImports.installFrom(manifest, row.entry,
+                                  { savePath = banked },
+                                  { fromShared = true }) then
       adopted = adopted + 1
     end
   end
@@ -417,12 +564,241 @@ function ModImports.install(manifest, entry, bytes, fromShared)
   if not wrote then
     return false, ("could not write %s (%s)"):format(entry.file, tostring(err))
   end
-  if not fromShared then keepShared(entry, bytes) end
+  if not fromShared then keepShared(entry, bytes, path) end
   -- the file now sits at a stable root path, so the bank need not hold bytes
   if entry.root == "save" then bankPointer(entry, path) end
   Logger.info("mod import: %s -> %s (%d bytes)%s", entry.id, path, #bytes,
     fromShared and " [adopted from the shared store, not imported]" or "")
   return true
+end
+
+-- ---------------------------------------------------------------------------
+-- COPYING A BASE FILE WITHOUT HOLDING IT
+--
+-- Reported from play: importing a ROM from the launcher was crashing it.  Every
+-- path here read the whole file into one Lua string -- the picker's, the
+-- inbox's, the mod folder's -- and then `install` held that string while
+-- love.data.hash walked it, while love.filesystem.write copied it out, and
+-- while keepShared wrote a second copy.  For a 64 MB Stadium 2 cartridge that
+-- is a couple of hundred megabytes live at once, which a desktop shrugs off
+-- and an Android heap does not; for the 1.4 GB GameCube disc a mod now wants
+-- it cannot work anywhere.
+--
+-- So the bytes are STREAMED: a megabyte at a time, source to destination, with
+-- one chunk live.  Peak memory stops depending on the size of the file, which
+-- is the whole of the fix -- a phone copies a disc as comfortably as a
+-- cartridge, and a 32-bit build never has to find a contiguous 1.4 GB.
+--
+-- WHAT THIS COSTS IS THE HASH, and it is worth being plain about.  LOVE's
+-- love.data.hash takes a whole string and there is no incremental form, so a
+-- file too big to hold is a file too big to MD5 -- and hashing it by
+-- reading it back in one piece would put back exactly the allocation this
+-- removes.  So:
+--
+--   * SIZE is always checked, before a byte is copied.  It is cheap, it comes
+--     off getInfo, and for a cartridge or a disc it is most of the answer.
+--   * MD5 is checked when the file is small enough that holding it is safe on
+--     THIS machine -- see hashLimit, which is far lower on a phone than on a
+--     64-bit desktop.
+--   * When it is skipped, the caller is TOLD, and says so.  A verification
+--     that silently stops happening is worse than one that admits it.
+-- ---------------------------------------------------------------------------
+
+ModImports.COPY_CHUNK = 1024 * 1024
+
+-- How many bytes this machine can be asked to hold in one string just to hash
+-- them.  Deliberately conservative: the number is a budget for one transient
+-- allocation on top of everything the launcher or the running game is already
+-- holding, not a measure of free memory.
+function ModImports.hashLimit()
+  local os_ = love and love.system and love.system.getOS and love.system.getOS()
+  if os_ == "Android" or os_ == "iOS" then return 24 * 1024 * 1024 end
+  -- A 32-bit process has about 2 GB of address space for everything, and it
+  -- fragments; a 64 MB cartridge is already an uncomfortable single block.
+  local arch = jit and jit.arch
+  if arch and arch ~= "x64" and arch ~= "arm64" and arch ~= "mips64" then
+    return 48 * 1024 * 1024
+  end
+  return 256 * 1024 * 1024
+end
+
+-- A reader over either kind of path, with the size known up front and nothing
+-- read until it is asked for.  `savePath` is a PhysFS name (the inbox, a mod
+-- folder); `path` is an absolute one off a native picker.
+function ModImports.openSource(source)
+  local f = fs()
+  if type(source) == "table" and source.savePath then
+    if not (f and f.newFile) then return nil, "no filesystem" end
+    local info = f.getInfo(source.savePath, "file")
+    if not info then return nil, "that file is not there any more" end
+    local handle = f.newFile(source.savePath)
+    local ok = handle and handle:open("r")
+    if not ok then return nil, "that file could not be opened" end
+    return {
+      size = info.size,
+      read = function(n)
+        local chunk = handle:read(n)
+        return (chunk and #chunk > 0) and chunk or nil
+      end,
+      close = function() pcall(handle.close, handle) end,
+    }
+  end
+  local path = type(source) == "table" and source.path or source
+  if type(path) ~= "string" then return nil, "no file given" end
+  local handle = io.open(path, "rb")
+  if not handle then
+    -- a save-dir-relative name handed in as a plain string
+    if f and f.getInfo(path, "file") then
+      return ModImports.openSource({ savePath = path })
+    end
+    return nil, "that file could not be opened"
+  end
+  local size = handle:seek("end")
+  handle:seek("set")
+  return {
+    size = size,
+    read = function(n)
+      local chunk = handle:read(n)
+      return (chunk and #chunk > 0) and chunk or nil
+    end,
+    close = function() pcall(handle.close, handle) end,
+  }
+end
+
+-- Copy `reader` to a PhysFS path a chunk at a time.  Returns the bytes
+-- written, or nil plus a reason -- and cleans up a half-written file, because
+-- a truncated cartridge that LOOKS installed is the worst of the outcomes
+-- (the mod finds a file, reads garbage, and blames the dump).
+-- `head`, when given, is bytes already taken off the front of `reader` -- the
+-- signature check consumes a prefix, and a stream cannot be rewound, so those
+-- bytes have to be written back before the rest or the copy is short by
+-- exactly that much.
+local function streamTo(reader, path, head)
+  local f = fs()
+  if not (f and f.newFile) then return nil, "no writable filesystem" end
+  local dir = path:match("^(.*)/[^/]*$")
+  if dir and f.createDirectory then f.createDirectory(dir) end
+  local out = f.newFile(path)
+  local opened, openErr = out:open("w")
+  if not opened then
+    return nil, ("could not write %s (%s)"):format(path, tostring(openErr))
+  end
+  local written = 0
+  if head and #head > 0 then
+    local ok, err = out:write(head)
+    if not ok then
+      pcall(out.close, out)
+      pcall(f.remove, path)
+      return nil, ("could not write %s (%s)"):format(path, tostring(err))
+    end
+    written = #head
+  end
+  while true do
+    local chunk = reader.read(ModImports.COPY_CHUNK)
+    if not chunk then break end
+    local ok, err = out:write(chunk)
+    if not ok then
+      pcall(out.close, out)
+      pcall(f.remove, path)
+      return nil, ("could not write %s (%s)"):format(path, tostring(err))
+    end
+    written = written + #chunk
+  end
+  pcall(out.close, out)
+  return written
+end
+
+-- Install from a FILE rather than from bytes.
+--
+-- Returns ok, why, notes -- where `notes` is a sentence about what could not
+-- be verified, or nil when everything was.
+-- matchMagic(entry, prefix) -> true, or false plus what was there instead.
+-- `prefix` is the first bytes of the candidate, at least magicOffset + the
+-- signature length.  Separate from the reading so it can be tested without a
+-- filesystem, and so `have` can use it later without re-deriving the rule.
+function ModImports.matchMagic(entry, prefix)
+  if not (entry and entry.magic) then return true end
+  local want = entry.magic
+  local at = (entry.magicOffset or 0) + 1
+  local need = 0
+  for _, hex in ipairs(want) do need = math.max(need, #hex / 2) end
+  local got = tostring(prefix or ""):sub(at, at + need - 1)
+  local hexGot = got:gsub(".", function(c) return ("%02x"):format(c:byte()) end)
+  for _, hex in ipairs(want) do
+    if hexGot:sub(1, #hex) == hex then return true end
+  end
+  -- Printable where it is printable: a disc's game id is ASCII, and "GC6P01"
+  -- next to "GC6E01" is a diagnosis anybody can read, where two hex strings
+  -- are a puzzle.
+  local shown = got:gsub("%c", "."):gsub("[\128-\255]", ".")
+  return false, shown, hexGot
+end
+
+function ModImports.installFrom(manifest, entry, source, opts)
+  opts = opts or {}
+  local path = ModImports.pathFor(manifest, entry)
+  if not path then return false, "no writable mod folder" end
+  local reader, why = ModImports.openSource(source)
+  if not reader then return false, why end
+
+  -- SIZE FIRST, so the wrong file costs nothing.  This is the check that used
+  -- to happen after the whole thing was in memory.
+  if entry.size and reader.size and reader.size ~= entry.size then
+    reader.close()
+    return false, ("that file is %d bytes; %s needs %d")
+      :format(reader.size, entry.name, entry.size)
+  end
+
+  -- ...THEN THE SIGNATURE, still before a byte is copied.  The prefix read
+  -- here is CARRIED FORWARD rather than re-read, because the reader is a
+  -- stream: consuming it twice would skip that much of the file.
+  local prefix = nil
+  if entry.magic then
+    local need = (entry.magicOffset or 0)
+    for _, hex in ipairs(entry.magic) do need = math.max(need, (entry.magicOffset or 0) + #hex / 2) end
+    prefix = reader.read(need)
+    local ok, shown, hexGot = ModImports.matchMagic(entry, prefix)
+    if not ok then
+      reader.close()
+      return false, ("that is not the right %s -- it starts with %s (%s)")
+        :format(tostring(entry.name), tostring(shown), tostring(hexGot))
+    end
+  end
+
+  -- ...then the hash, when the file is small enough to hold.  Read once here
+  -- and hand the same string to install(), so a cartridge takes exactly the
+  -- path it always took and nothing about the verified case changes.
+  local limit = ModImports.hashLimit()
+  if entry.md5 and reader.size and reader.size <= limit then
+    local rest = reader.read(reader.size)
+    reader.close()
+    local whole = (prefix or "") .. (rest or "")
+    if rest == nil and not prefix then return false, "that file could not be read" end
+    local ok, installWhy = ModImports.install(manifest, entry, whole, opts.fromShared)
+    return ok, installWhy, nil
+  end
+
+  local skipped = nil
+  if entry.md5 then
+    skipped = ("%s is %d MB, too large to checksum on this device -- its size "
+               .. "matches, but the MD5 was not checked")
+              :format(entry.name, math.floor((reader.size or 0) / 1048576))
+  end
+  local written, streamWhy = streamTo(reader, path, prefix)
+  reader.close()
+  if not written then return false, streamWhy end
+  if entry.size and written ~= entry.size then
+    pcall(fs().remove, path)
+    return false, ("only %d of %d bytes could be copied"):format(written, entry.size)
+  end
+  -- The bank never holds a file this big (see keepShared); a pointer at the
+  -- copy just written is what the next mod gets.  Not when the bytes CAME from
+  -- the bank, though -- that would aim an existing record at a copy inside a
+  -- mod folder that an uninstall can take away.
+  if not opts.fromShared then bankPointer(entry, path) end
+  Logger.info("mod import: %s -> %s (%d bytes, streamed)%s", entry.id, path,
+              written, skipped and " [hash skipped]" or "")
+  return true, nil, skipped
 end
 
 -- ---------------------------------------------------------------------------
@@ -453,10 +829,13 @@ function ModImports.fromInbox(entry)
       local info = ModImports.accepts(entry, name) and f.getInfo(path, "file")
       -- size off getInfo first: a save dir with several cartridges in it must
       -- not read every one of them into memory to reject them by hash
+      -- ...and the PATH is the answer, not the bytes: installFrom streams it
+      -- from here and never has the whole cartridge in hand.  The hash is
+      -- checked there, where the decision about whether it can be afforded
+      -- lives.
       if info and (not entry.size or info.size == nil
                    or info.size == entry.size) then
-        local bytes = f.read(path)
-        if bytes and ModImports.check(entry, bytes) then return bytes, path end
+        return path
       end
     end
   end
@@ -487,8 +866,7 @@ function ModImports.fromModFolder(manifest, entry)
         local info = f.getInfo(path, "file")
         if info and (not entry.size or info.size == nil
                      or info.size == entry.size) then
-          local bytes = f.read(path)
-          if bytes and ModImports.check(entry, bytes) then return bytes, path end
+          return path
         end
       end
     end
@@ -500,22 +878,44 @@ end
 -- prompt: this is the "you already gave us this cartridge" path and it must be
 -- tried before anything asks.
 function ModImports.acquire(manifest, entry)
-  local bytes = ModImports.shared(entry)
-  if bytes then
-    local ok, why = ModImports.install(manifest, entry, bytes, true)
-    if ok then return true, "shared" end
+  -- IS IT ALREADY THERE?  Asked FIRST, and it was not asked at all.
+  --
+  -- Without this the next branch finds the file in the shared bank and
+  -- installs it again -- over a copy byte-for-byte identical to itself.  For
+  -- the 64 MB cartridge this API was written for that was a wasteful no-op
+  -- nobody noticed.  For a 1.4 GB disc it is 1.4 GB rewritten every time the
+  -- player presses the mod's own import button, and then a return of "used the
+  -- one you already imported", which reads like a refusal and is why a mod
+  -- stopped there instead of going on to extract.
+  --
+  -- `present` is its own answer rather than folded into "shared", so a mod can
+  -- tell "I have just fetched this for you" from "it was already in place"
+  -- without parsing the sentence.
+  if ModImports.have(manifest, entry) == true then
+    return true, "present"
+  end
+  local banked = ModImports.sharedSource(entry)
+  if banked then
+    local ok, why, notes = ModImports.installFrom(manifest, entry,
+                                                  { savePath = banked },
+                                                  { fromShared = true })
+    if ok then return true, "shared", notes end
     return false, why
   end
-  bytes = ModImports.fromModFolder(manifest, entry)
-  if bytes then
-    local ok, why = ModImports.install(manifest, entry, bytes)
-    if ok then return true, "mod folder" end
+  -- Both of these answer a PATH now, and installFrom streams it: the file may
+  -- be a 1.4 GB disc and the point is never to hold one.
+  local path = ModImports.fromModFolder(manifest, entry)
+  if path then
+    local ok, why, notes = ModImports.installFrom(manifest, entry,
+                                                  { savePath = path })
+    if ok then return true, "mod folder", notes end
     return false, why
   end
-  bytes = ModImports.fromInbox(entry)
-  if bytes then
-    local ok, why = ModImports.install(manifest, entry, bytes)
-    if ok then return true, "inbox" end
+  path = ModImports.fromInbox(entry)
+  if path then
+    local ok, why, notes = ModImports.installFrom(manifest, entry,
+                                                  { savePath = path })
+    if ok then return true, "inbox", notes end
     return false, why
   end
   return false, nil
@@ -585,17 +985,6 @@ function ModImports.pickPath(entry)
   return nil
 end
 
-local function readAbsolute(path)
-  local file = io.open(path, "rb")
-  if file then
-    local bytes = file:read("*a")
-    file:close()
-    if bytes then return bytes end
-  end
-  local f = fs()
-  return f and f.read(path) or nil
-end
-
 -- Android / iOS: love.system.pickFile drops the pick into the save directory
 -- under a fixed basename and returns immediately, so the answer arrives on a
 -- later frame.  ModImports.poll consumes it.
@@ -616,15 +1005,171 @@ function ModImports.poll(manifest, entry)
   if not (f and entry) then return false end
   for _, name in ipairs(ModImports.PICK_NAMES) do
     if f.getInfo(name, "file") then
-      local bytes = f.read(name)
+      -- STREAMED, and removed only once it has landed.  This is the Android
+      -- path, which is exactly where reading a 64 MB cartridge into one string
+      -- was killing the process -- and the pick is a real file in the save
+      -- directory, so there is nothing to hold.
+      local ok, why, notes = ModImports.installFrom(manifest, entry,
+                                                    { savePath = name })
       f.remove(name)
-      if bytes then
-        local ok, why = ModImports.install(manifest, entry, bytes)
-        return ok, why or "that is not the right file"
-      end
+      return ok, notes or why or "that is not the right file"
     end
   end
   return false
+end
+
+-- TELL THE MOD ITS BASE FILE IS THERE.
+--
+-- A base file is not the end of anything -- it is the START of whatever the
+-- mod does with it, which for a disc is usually an extraction that takes
+-- minutes.  The engine has no idea what that is, so the only correct thing it
+-- can do is say "it is here" and get out of the way.
+--
+-- Without this the manager's row was a dead end: a player with the file
+-- already in place pressed it, got "ALREADY IMPORTED", and nothing ran -- the
+-- engine had swallowed the one press that was meant to start the work.
+--
+-- `already` distinguishes "this just arrived" from "you pressed the row and it
+-- was already here", because a mod may want to build on the first and rebuild
+-- on the second.  Returns whether anything was actually listening, so the
+-- caller can tell a press that started something from one that did not.
+ModImports.READY_EVENT = "imports.ready"
+
+function ModImports.announce(manifest, entry, already)
+  if not (manifest and entry) then return false end
+  local ok, Runtime = pcall(require, "src.mods.Runtime")
+  if not (ok and type(Runtime) == "table" and Runtime.emit) then return false end
+  -- `wants` is the cheap guard the rest of the engine uses, and here it is
+  -- also the ANSWER: no listener means no mod asked to be told, which is what
+  -- the manager reports instead of pretending something began.
+  if Runtime.wants and not Runtime.wants(ModImports.READY_EVENT) then
+    return false
+  end
+  Runtime.emit(ModImports.READY_EVENT, {
+    mod = manifest.id,
+    import = entry.id,
+    file = entry.file,
+    already = already and true or false,
+  })
+  return true
+end
+
+-- WHAT THE ENGINE ACTUALLY SEES for one entry, in one line, for a log.
+--
+-- A mod that reports "not imported" while the panel beside it says READY is
+-- two components disagreeing about the same file, and every way of guessing
+-- which one is wrong costs a round trip with somebody who just wants to play.
+-- This says, from the engine's side: which ids are declared, which one was
+-- asked for, where that file is expected, and whether it is there.
+-- `live` is the mod's OWN imports object when the caller can reach it (the
+-- loader keeps one per mod).  That is the last thing this cannot otherwise
+-- see: every check here can read correct against a freshly built api while the
+-- object the mod is actually holding answers differently, and those are two
+-- completely different bugs.
+function ModImports.diagnose(manifest, entry, live)
+  local ids = {}
+  for _, row in ipairs(ModImports.of(manifest) or {}) do
+    ids[#ids + 1] = tostring(row.id)
+  end
+  local path = entry and ModImports.pathFor(manifest, entry) or nil
+  local f = fs()
+  local info = (f and path) and f.getInfo(path, "file") or nil
+  local ok, why = false, nil
+  if entry then ok, why = ModImports.have(manifest, entry) end
+  -- ...AND WHAT THE MOD-FACING API ITSELF ANSWERS, asked through the same
+  -- public call a mod makes.  Everything above is the engine checking its own
+  -- bookkeeping, and all of it can be right while `mod.imports:info(id)` still
+  -- hands a mod nil -- which is the disagreement worth splitting, because one
+  -- answer means the engine is wrong and the other means the mod is holding a
+  -- different object than it thinks.
+  local apiSays = "?"
+  pcall(function()
+    local probe = ModImports.api(manifest, nil)
+    local row = probe and probe.info and probe.info(nil, entry and entry.id)
+    apiSays = row and ("row(ready=" .. tostring(row.ready) .. ")") or "nil"
+  end)
+  -- ...and the same question put to the object the MOD is holding.
+  local liveSays = "unavailable"
+  if live then
+    liveSays = "?"
+    pcall(function()
+      if type(live.info) ~= "function" then
+        liveSays = "no info fn (" .. type(live.info) .. ")"
+        return
+      end
+      -- THE SECOND RETURN IS THE ANSWER.  `info` answers (row) or (nil, why),
+      -- and a wrapper around it -- a mod normalising CISO/trimmed disc images,
+      -- say -- puts its whole diagnosis in that second value.  Throwing it
+      -- away left "nil" on its own, which says something failed and nothing
+      -- about what, and cost several rounds of guessing.
+      local row, why = live:info(entry and entry.id)
+      liveSays = row and ("row(ready=" .. tostring(row.ready) .. ")")
+                 or ("nil(" .. tostring(why) .. ")")
+      -- ALWAYS list what the live object declares, and emphatically not only
+      -- when the lookup succeeded: a nil lookup is the case this line exists
+      -- for, and the list beside it is what says WHY -- an id spelled
+      -- differently, a shorter list, or an empty one because the object was
+      -- built from a manifest that declared nothing.  Printing it only on
+      -- success withheld the evidence in precisely the failure it was added
+      -- to explain.
+      if type(live.list) == "function" then
+        local declared = {}
+        for _, r in ipairs(live:list() or {}) do
+          declared[#declared + 1] = tostring(r.id)
+        end
+        liveSays = liveSays .. " of [" .. table.concat(declared, ",") .. "]"
+      end
+      -- WHEN THE LOOKUP FAILED, SAY WHAT THE OBJECT ACTUALLY IS.
+      --
+      -- Naming the one method that was missing produced a riddle -- an object
+      -- with `info` and no `list` matches neither the imports api nor the
+      -- cache, and every guess at which third thing it might be cost another
+      -- round trip.  The object's own shape answers that in one line and needs
+      -- no theory at all.
+      if not row then
+        local shape = {}
+        for k, v in pairs(live) do shape[#shape + 1] = tostring(k) .. "=" .. type(v) end
+        table.sort(shape)
+        if #shape > 12 then
+          shape[13] = "..."
+          for i = #shape, 14, -1 do shape[i] = nil end
+        end
+        liveSays = liveSays .. " shape{" .. table.concat(shape, " ") .. "}"
+        local mt = getmetatable(live)
+        if mt then liveSays = liveSays .. "+mt" end
+      end
+    end)
+  end
+  -- AND THE RANGE READ ITSELF, which is what a wrapper is built on: a mod
+  -- normalising a disc image reads its header and tables through
+  -- mod.imports:read(id, offset, length) before it will call the file valid.
+  -- Sixteen bytes from the front, as hex -- a GameCube disc opens with its
+  -- game id, so this is both "does the read path work" and "is this the disc
+  -- it claims to be", and those are the two remaining suspects.
+  local head = "?"
+  pcall(function()
+    local probe = ModImports.api(manifest, nil)
+    local bytes, err = probe.read(nil, entry and entry.id, 0, 16)
+    if type(bytes) ~= "string" then
+      head = "nil(" .. tostring(err) .. ")"
+      return
+    end
+    local hex = {}
+    for i = 1, #bytes do hex[i] = ("%02X"):format(bytes:byte(i)) end
+    head = ("%d:%s |%s|"):format(#bytes, table.concat(hex),
+                                 (bytes:gsub("%c", ".")))
+  end)
+  return ("mod=%s declared=[%s] asked=%s path=%s onDisk=%s have=%s api:info=%s api:read=%s mod:info=%s%s")
+    :format(tostring(manifest and manifest.id),
+            table.concat(ids, ","),
+            tostring(entry and entry.id),
+            tostring(path),
+            info and tostring(info.size) or "no",
+            tostring(ok),
+            apiSays,
+            head,
+            liveSays,
+            why and (" (" .. tostring(why) .. ")") or "")
 end
 
 -- The line to show when nothing else worked: where to put the file by hand.
@@ -637,28 +1182,40 @@ function ModImports.hint(entry)
 end
 
 -- One call that does the whole thing.  Returns:
---   true,  message   installed
---   nil,   message   a picker was opened; poll() will finish it
---   false, message   nothing doing, and the message says where to put the file
+--   true,  message, how   installed (or already in place)
+--   nil,   message        a picker was opened; poll() will finish it
+--   false, message        nothing doing; the message says where to put the file
+--
+-- `how` is the third return so a mod can branch on the OUTCOME rather than on
+-- the wording -- "present", "shared", "mod folder", "inbox" or "picked".  A mod
+-- that only reads the first two values is unaffected, which is every mod
+-- written before this.
 function ModImports.choose(manifest, entry)
   if not (manifest and entry) then return false, "nothing to import" end
   local ok, how = ModImports.acquire(manifest, entry)
   if ok then
-    if how == "shared" then
-      return true, "Used the " .. tostring(entry.name) .. " you already imported"
+    if how == "present" then
+      -- Phrased as a STATE, not as something that was just declined.  "Used
+      -- the one you already imported" was true and read as a refusal.
+      return true, tostring(entry.name) .. " is ready", how
+    elseif how == "shared" then
+      return true, "Used the " .. tostring(entry.name) .. " you already imported",
+             how
     elseif how == "mod folder" then
-      return true, "Found your " .. tostring(entry.name) .. " in the mod folder"
+      return true, "Found your " .. tostring(entry.name) .. " in the mod folder",
+             how
     end
-    return true, "Imported " .. tostring(entry.name)
+    return true, "Imported " .. tostring(entry.name), how
   end
   if how then return false, how end   -- found something, but it was wrong
 
   local path = ModImports.pickPath(entry)
   if path then
-    local bytes = readAbsolute(path)
-    if not bytes then return false, "could not read that file" end
-    local okInstall, why = ModImports.install(manifest, entry, bytes)
-    if okInstall then return true, "Imported " .. tostring(entry.name) end
+    local okInstall, why, notes =
+      ModImports.installFrom(manifest, entry, { path = path })
+    if okInstall then
+      return true, notes or ("Imported " .. tostring(entry.name)), "picked"
+    end
     return false, why
   end
 

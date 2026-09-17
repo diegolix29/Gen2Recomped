@@ -1,4 +1,5 @@
 local Logger = require("src.core.Logger")
+local FrameProfile = require("src.core.FrameProfile")
 
 local Events = {}
 Events.__index = Events
@@ -52,7 +53,13 @@ function Events:emit(name, payload)
   local snapshot = {}
   for i = 1, #list do snapshot[i] = list[i] end
   for _, entry in ipairs(snapshot) do
+    -- ATTRIBUTED TO THE MOD, not to "events": an engine event fired once a
+    -- frame with three listeners on it is three different owners' code, and
+    -- lumping them together names the seam instead of the culprit.
+    local close = FrameProfile.section(
+      "  mod " .. tostring(entry.owner or "?") .. ": " .. tostring(name))
     local ok, err = pcall(entry.callback, payload)
+    close()
     if not ok then
       Logger.error("[%s] event %s: %s",
         tostring(entry.owner or "?"), name, tostring(err))

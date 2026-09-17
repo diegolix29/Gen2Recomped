@@ -555,10 +555,13 @@ function Player:update()
     end
     return false
   end
-  local d = Collision.DELTA[self.facing]
+  -- the STEP's direction, not the nose's: they part company whenever the
+  -- facing is locked (the side jump, the muddy slope) -- see
+  -- Collision.stepDelta
+  local dx, dy = Collision.stepDelta(self)
   local px = math.floor(self.progress * 16 / stepLen)
-  self.px = self.cellX * 16 + d[1] * px
-  self.py = self.cellY * 16 + d[2] * px
+  self.px = self.cellX * 16 + dx * px
+  self.py = self.cellY * 16 + dy * px
   if self.progress >= stepLen then
     -- a step with no target cell (a malformed queue entry) keeps the cell
     -- it started from rather than nilling it out from under every later

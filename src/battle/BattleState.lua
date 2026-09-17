@@ -1438,6 +1438,18 @@ function BattleState:addOpponentTrainer(oppClass)
     return true
   end
   self.trainerB = def
+  -- ...AND THE SECOND TRAINER IS ALSO A PERSON STANDING THERE.
+  --
+  -- Two trainers walked up, and one of them was drawn.  `trainerPic` is built
+  -- once in the constructor from `self.trainer`, so the second opponent had a
+  -- team, a payout and a defeat line but no sprite: the intro showed a single
+  -- trainer and then two Pokemon came out of nowhere.  Same path as the
+  -- first -- the class's pic, the class's palette -- because this trainer is
+  -- no different from that one; there are simply two of them.
+  self.trainerPicB = getImage(
+    BattleState.trainerPicPath(self.game.data, def, oppClass, 1),
+    BattleState.trainerPalette(self.game.data, def),
+    def.trueColor)
   self.enemyPartyB = buildTrainerParty(self.game, oppClass, 1, partyDef)
   self.enemyIndexB = 1
   if self.enemyPartyB[1] then
@@ -1448,6 +1460,27 @@ function BattleState:addOpponentTrainer(oppClass)
     markSeen(self.game, self.enemyPartyB[1].species)
   end
   return true
+end
+
+-- WHAT THE BALL ROW IS COUNTING, which against two trainers is both teams.
+--
+-- The cartridge keeps ONE gEnemyParty and fills it from both of them in a
+-- TWO_OPPONENTS battle -- CreateNPCTrainerParty runs a second time writing
+-- after the first team -- so DrawPartyStatusSummary counts the lot without
+-- ever knowing there were two trainers.  This engine keeps the teams apart
+-- (`enemyParty` and `enemyPartyB`), because each trainer owes its own payout
+-- and its own defeat line, and the intro row was reading the first of them:
+-- you walked into a six-Pokemon fight and the balls said three.
+--
+-- Only the display is joined.  Everything that pays out, sends out or counts
+-- a knockout still asks the team it belongs to.
+function BattleState:foeSummaryParty()
+  local first, second = self.enemyParty, self.enemyPartyB
+  if not (second and second[1]) then return first end
+  local out = {}
+  for _, mon in ipairs(first or {}) do out[#out + 1] = mon end
+  for _, mon in ipairs(second) do out[#out + 1] = mon end
+  return out
 end
 
 -- The Battle Tower's opponents are generated, not table-driven: its 70
@@ -4211,9 +4244,27 @@ end
 -- current enemy mon (wPartyGainExpFlags).
 function BattleState:markParticipant()
   self.participants = self.participants or {}
-  if self.player and self.player.mon then
-    self.participants[self.player.mon] = true
-    HeldItems.observeParticipant(self, self.player)
+  -- BOTH OF YOURS ARE IN THE FIGHT, and only the left one was being written
+  -- down.  wPartyGainExpFlags is a bit per party slot that has faced the
+  -- current foe, and in a double battle two slots have: the partner takes
+  -- hits, lands moves and is standing there when the foe goes down.  Marking
+  -- `self.player` alone -- which is the LEFT flank's alias, not "the player's
+  -- side" -- left the right-hand Pokemon out of the participant count, so it
+  -- earned nothing all battle while its partner levelled.
+  local function mark(battler)
+    if battler and battler.mon then
+      self.participants[battler.mon] = true
+      HeldItems.observeParticipant(self, battler)
+    end
+  end
+  local slots = self.sides and self.sides[1] and self.sides[1].battlers
+  if slots then
+    -- indices rather than ipairs: the left flank is nil while it is off the
+    -- field and the right one is still owed its share
+    mark(slots[1])
+    mark(slots[2])
+  else
+    mark(self.player)
   end
 end
 
@@ -6163,11 +6214,23 @@ function BattleState:executeAction(user, target, action)
     -- trainer class AI actions (engine/battle/trainer_ai.asm)
     if action.special == "aiItem" then
       self.aiUses = (self.aiUses or 1) - 1
+      -- a Gen 3 trainer spends a SLOT, not a per-Pokemon allowance: the
+      -- cartridge nulls the entry in trainerItems as it emits the action, so
+      -- three FULL RESTOREs are three heals in the whole battle
+      if action.slot then
+        self.gen3ItemsUsed = self.gen3ItemsUsed or {}
+        self.gen3ItemsUsed[action.slot] = true
+      end
       for _, m in ipairs(TrainerAI.useItem(self, action.item)) do
         self:sayNext(prefixEnemy(m, self.enemy))
       end
       self:drainNext()
-      require("src.core.Sound").play(self.data, "Heal_Ailment")
+      -- the Gen 3 arm of useItem runs the item through ItemEffects, which
+      -- plays the cartridge's own fanfare for it; playing this one too would
+      -- put two heal sounds on the same frame
+      if not action.slot then
+        require("src.core.Sound").play(self.data, "Heal_Ailment")
+      end
       return
     end
     if action.special == "aiSwitch" then
@@ -9606,6 +9669,26 @@ function BattleState:drawPicsLayer(slide, sx, sy, onlySide, skipMenuClip)
       local tx, ty = Gen3Battle.picPlacement(self, { isPlayer = false }, img,
                                              imagePathOf(img), 1)
       ex, ey = tx - slide + sx, ty + sy
+    end
+    -- THE OTHER ONE, WHEN TWO OF THEM WALKED UP.
+    --
+    -- Drawn BEFORE the first, so where the two pics overlap the left-hand
+    -- trainer -- the one whose name opens the battle and whose Pokemon leads
+    -- -- is the one in front.  It takes the right-hand opponent's place out
+    -- of sBattlerCoords rather than an offset invented here, which is the
+    -- same table the two foe Pokemon are about to stand on: the trainer is
+    -- where their Pokemon will be, which is the rule the first pic already
+    -- follows.
+    if self.trainerPicB and self:gen3Layout()
+       and self.isDouble and self:isDouble() then
+      local imgB = self:picImage(self.trainerPicB)
+      if imgB then
+        local bx, by = Gen3Battle.picPlacement(self,
+          { isPlayer = false, position = BattleState.POS.OPPONENT_RIGHT },
+          imgB, imagePathOf(imgB), 1)
+        love.graphics.draw(imgB, bx - slide + sx + self:picOffset("foe"),
+                           by + sy)
+      end
     end
     -- SlideTrainerPicOffScreen / _ScrollTrainerPicAfterBattle offset (#317)
     love.graphics.draw(img, ex + self:picOffset("foe"), ey)

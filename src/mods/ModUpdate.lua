@@ -307,7 +307,13 @@ function ModUpdate.fetchReleases(repo, modId, opts)
   return list, nil, { fromCache = false }
 end
 
-function ModUpdate.downloadZip(url, destName)
+-- `expectBytes` is the size the release listing declared, when the caller has
+-- one.  It is what tells a CUT-SHORT transfer from a finished one: curl's
+-- --max-time is a hard stop, and when it fires the partial file is still
+-- sitting there, non-empty, looking exactly like a success to the check
+-- below.  The install then fails somewhere inside the zip reader instead,
+-- naming a corrupt archive rather than a truncated download.
+function ModUpdate.downloadZip(url, destName, expectBytes)
   if type(url) ~= "string" or url == "" then
     return nil, "missing download url"
   end
@@ -327,13 +333,29 @@ function ModUpdate.downloadZip(url, destName)
     return nil, "no save directory"
   end
   local abs = saveDir .. "/" .. name
-  -- Either transport can fail quietly; the getInfo size check below is what
-  -- actually decides whether we got a file (#597).
-  HostShell.httpDownload(url, abs, "gen1recomp-mod-updater")
+  -- The getInfo size check is still what decides whether we got a file (#597)
+  -- -- either transport can fail quietly -- but the transport now hands back
+  -- the reason it failed, and that reason is the whole message.  "download
+  -- failed" on its own was true of a 404, a certificate, a proxy and a full
+  -- disk alike, and the launcher had nothing else to show.
+  local _, why = HostShell.httpDownload(url, abs, "gen1recomp-mod-updater")
   local infoOk, info = pcall(love.filesystem.getInfo, name)
-  if not infoOk or not info or (info.size or 0) == 0 then
+  local got = (infoOk and info and tonumber(info.size)) or 0
+  if got == 0 then
     pcall(love.filesystem.remove, name)
-    return nil, "download failed"
+    if why then return nil, "download failed: " .. tostring(why) end
+    -- The transport is content and the file still is not there, which is not
+    -- a network answer at all: something between curl and the disk took it.
+    -- Say that rather than blaming the download a third time.
+    return nil, ("download failed: the transfer reported no error but nothing "
+                 .. "landed at %s -- check whether antivirus or a disk quota "
+                 .. "removed it"):format(name)
+  end
+  local want = tonumber(expectBytes)
+  if want and want > 0 and got ~= want then
+    pcall(love.filesystem.remove, name)
+    return nil, ("download was cut short: %d of %d bytes%s"):format(
+      got, want, why and (" (" .. tostring(why) .. ")") or "")
   end
   return name
 end

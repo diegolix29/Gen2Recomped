@@ -94,12 +94,68 @@ function Gen3Flash.setLevel(game, level)
   level = math.floor(tonumber(level) or 0)
   if level < 0 or level > max then level = 0 end
   save.gen3FlashLevel = level
+  -- a snap ends whatever was easing; animateTo re-seeds it straight after
+  save.gen3FlashRadius = nil
   return level
 end
 
 function Gen3Flash.level(game)
   return math.floor(tonumber(game and game.save and game.save.gen3FlashLevel)
                     or 0)
+end
+
+-- ---------------------------------------------------------------------------
+-- ...AND THE ONE THAT OPENS RATHER THAN SNAPS.
+--
+-- `setflashlevel` (script 0x99, 0099C8C) hands its number straight to
+-- Overworld_SetFlashLevel and the window is that wide on the next frame.
+-- `animateflash` (0x9A, 0099C70) does not: it calls AnimateFlash (0B009C),
+-- which looks the CURRENT level's radius and the new one's out of the same
+-- table (0x0854FE64, which is this record's `radii`) and hands both to a task
+-- whose per-frame step is ONE PIXEL -- `strh r7,[r1,#10]` at 0B001C, with r7
+-- the 1 AnimateFlash passes -- negated when the window is closing.  So the
+-- animation's length is not a constant: it is the DISTANCE, and adjacent
+-- levels are eight pixels apart, so one step of the Dewford gym's ladder
+-- takes eight frames and the first flash in a cave takes twenty-four.
+--
+-- The level is set at once, exactly as the cartridge does; what eases is the
+-- radius the draw asks for.
+-- ---------------------------------------------------------------------------
+local ANIM_STEP = 1
+
+function Gen3Flash.animateTo(game, level)
+  local save = game and game.save
+  if not save then return 0 end
+  local from = Gen3Flash.radiusOf(game.data, Gen3Flash.level(game))
+  local set = Gen3Flash.setLevel(game, level)
+  local to = Gen3Flash.radiusOf(game.data, set)
+  if from and to and from ~= to then
+    save.gen3FlashRadius = from
+  else
+    save.gen3FlashRadius = nil
+  end
+  return set
+end
+
+-- One frame of it.  Returns true while the window is still moving, which is
+-- what the script's own wait is for (0098E54 blocks until the task retires).
+function Gen3Flash.tick(game)
+  local save = game and game.save
+  local at = save and tonumber(save.gen3FlashRadius)
+  if not at then return false end
+  local want = Gen3Flash.radiusOf(game.data, Gen3Flash.level(game))
+  if not want or at == want then
+    save.gen3FlashRadius = nil
+    return false
+  end
+  local step = (want > at) and ANIM_STEP or -ANIM_STEP
+  at = at + step
+  if (step > 0 and at >= want) or (step < 0 and at <= want) then
+    save.gen3FlashRadius = nil
+    return false
+  end
+  save.gen3FlashRadius = at
+  return true
 end
 
 -- SetDefaultFlashLevel, which runs on every map load: not a cave, no darkness;
@@ -122,7 +178,9 @@ function Gen3Flash.circle(game, viewW, viewH)
   if not r then return nil end
   local level = Gen3Flash.level(game)
   if level <= 0 then return nil end
-  local radius = Gen3Flash.radiusOf(game.data, level)
+  -- mid-animation the window is wherever the one-pixel step has got to
+  local radius = tonumber(game.save and game.save.gen3FlashRadius)
+                 or Gen3Flash.radiusOf(game.data, level)
   if not radius or radius <= 0 then
     -- the darkest level the table has closes the window completely; the
     -- cartridge does not use it, but a script may set it

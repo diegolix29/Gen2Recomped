@@ -13,6 +13,10 @@
   },
   "charmap": {
     "0": " ",
+    "121": "\u2191",
+    "122": "\u2193",
+    "123": "\u2190",
+    "124": "\u2192",
     "161": "0",
     "162": "1",
     "163": "2",
@@ -339,23 +343,88 @@
     }
   },
   "introShots": {
+    "ride": {
+      "graphics": 6232100,
+      "height": 32,
+      "width": 32,
+      "palette": 6232036,
+      "size": 8192,
+      "layers": [
+        {
+          "backdrop": true,
+          "bgControl": 1539,
+          "cells": 1024,
+          "dest": 12288,
+          "tilemap": 6233772
+        },
+        {
+          "bgControl": 1794,
+          "cellOffset": 1024,
+          "cells": 1024,
+          "dest": 14336,
+          "tilemap": 6233772
+        },
+        {
+          "bgControl": 3845,
+          "cells": 1024,
+          "dest": 30720,
+          "graphics": 6227776,
+          "palette": 6227680,
+          "tilemap": 6228928
+        }
+      ],
+      "sprites": [
+        {
+          "frameHeight": 32,
+          "frameWidth": 64,
+          "frames": 1,
+          "graphics": 6234576,
+          "palette": 6234544,
+          "paletteCompressed": false,
+          "parts": [
+            {
+              "height": 32,
+              "tile": 0,
+              "width": 32
+            },
+            {
+              "height": 32,
+              "tile": 16,
+              "width": 16
+            },
+            {
+              "height": 32,
+              "tile": 24,
+              "width": 16
+            }
+          ],
+          "role": "scenery",
+          "size": 1024,
+          "tag": 2000,
+          "tiles": 32
+        }
+      ]
+    },
     "leaves": {
       "graphics": 6165428,
       "height": 32,
       "layers": [
         {
+          "bgControl": 36864,
           "cells": 1024,
           "dest": 32768,
           "inked": 523,
           "tilemap": 6162372
         },
         {
+          "bgControl": 37377,
           "cells": 1024,
           "dest": 36864,
           "inked": 935,
           "tilemap": 6163320
         },
         {
+          "bgControl": 37890,
           "cells": 1024,
           "dest": 40960,
           "inked": 900,
@@ -363,6 +432,7 @@
         },
         {
           "backdrop": true,
+          "bgControl": 38403,
           "cells": 1024,
           "dest": 45056,
           "inked": 960,
@@ -2714,6 +2784,7 @@
     "sHealLocations": 5895484,
     "sIntroCastSpriteSheets": 6243096,
     "sIntroShot_leaves": 6165428,
+    "sIntroSparkleSpots": 6179536,
     "sItemMenuActions": 6196418,
     "sItemStorageActions": 6160092,
     "sItemStorageDescriptions": 6160036,

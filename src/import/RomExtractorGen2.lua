@@ -13925,6 +13925,8 @@ GEN2_ANIM.OPS = {
 GEN2_ANIM.JUMPS = {
   jump = 1, call = 1, jumpuntil = 1, loop = 2,
   ifparamand = 2, ifparamequal = 2, ifvarequal = 2,
+  -- Prism's own (see BY_HANDLER): the whole operand is the address
+  ifpmode = 1,
 }
 GEN2_ANIM.OBJECT_BYTES = 6
 GEN2_ANIM.OBJECT_COUNT = 188   -- BattleAnimObjects $4AA5..$4F0D
@@ -13975,9 +13977,152 @@ GEN2_ANIM.FN_NAMES = {
   "RockSmash", "Cotton",
 }
 
+-- WHAT A COMMAND IS CALLED, AND HOW WIDE IT IS, on the cartridge in hand.
+--
+-- GEN2_ANIM.OPS above is Gold and Crystal's table, and a romhack is free to
+-- rewrite it.  PRISM DOES: it drops the four unused $EA-$ED slots and puts
+-- real commands there, moves `InsObj` onto $E7, and gives $F5/$F7 work of
+-- their own.  An opcode this decoder does not know is recorded as a one-byte
+-- `nop` -- so its OPERANDS become the next instructions, and the stream is
+-- misaligned from there to the end of the branch.
+--
+-- Reported from play, and it is the same bug twice: "my pokemon has a delay
+-- before spawning, only on Prism".  BattleAnim_SendOutMon.Normal opens
+--
+--     EA C7 43        anim_jumpifpmode .PMode
+--
+-- and $EA was unknown, so `C7` and `43` were read as two frame delays --
+-- 199 + 67 = 266 frames of nothing, four and a half seconds, before the mon
+-- appeared.  ($43C7 is .PMode in Prism's own symbol file, which is what
+-- names the operand for what it is.)  BattleAnim_ThrowPokeBall is hit the
+-- same way through $E7/$EB/$EC/$F5.
+--
+-- THE CARTRIDGE ANSWERS THIS ITSELF.  BattleAnimCommands is the engine's own
+-- jumptable from $D0 upward, and every one of these games ships a symbol for
+-- each handler it points at -- so the command at a given opcode can be READ
+-- rather than assumed, and matched to a width by the handler's NAME.  Gold
+-- and Crystal resolve to exactly the table above (their names are the ones
+-- BY_HANDLER's left column mostly is), so nothing about them changes; Prism
+-- resolves to Prism's.
+--
+-- The widths for Prism's own commands come from its handlers: each
+-- `call GetBattleAnimByte` is one operand byte, and BattleAnimCmd_InsObj
+-- reads one and then either falls into BattleAnimCmd_Obj (four more) or
+-- skips four, which is why it is five.
+GEN2_ANIM.BY_HANDLER = {
+  Obj = { "obj", 4 },
+  IncObj = { "incobj", 1 },
+  SetObj = { "setobj", 2 },
+  IncBGEffect = { "incbgeffect", 1 },
+  BattlerGFX_1Row = { "battlergfx_1row" },
+  BattlerGFX_2Row = { "battlergfx_2row" },
+  -- Prism's names for the same two slots
+  EnemyFeetObj = { "battlergfx_1row" },
+  PlayerHeadObj = { "battlergfx_2row" },
+  CheckPokeball = { "checkpokeball" },
+  Transform = { "transform" },
+  RaiseSub = { "raisesub" },
+  DropSub = { "dropsub" },
+  ResetObp0 = { "resetobp0" },
+  Sound = { "sound", 2 },
+  Cry = { "cry", 1 },
+  MinimizeOpp = { "minimizeopp" },
+  OAMOn = { "oamon" },
+  OAMOff = { "oamoff" },
+  ClearObjs = { "clearobjs" },
+  BeatUp = { "beatup" },
+  UpdateActorPic = { "updateactorpic" },
+  Minimize = { "minimize" },
+  -- ...and the ones only a hack has.  `ifpmode` jumps when Prism's
+  -- Pokemon-only mode is on -- a setting this port does not have, so the
+  -- branch is never taken and the row exists to be STEPPED OVER correctly.
+  InsObj = { "insobj", 5 },
+  JumpIfPMode = { "ifpmode", 2 },
+  CheckCriticalCapture = { "checkcritcapture" },
+  ShakeDelay = { "shakedelay" },
+  DarkenBall = { "darkenball" },
+  ClearFirstBGEffect = { "clearfirstbgeffect" },
+  IfParamAnd = { "ifparamand", 3 },
+  JumpAnd = { "ifparamand", 3 },
+  JumpUntil = { "jumpuntil", 2 },
+  BGEffect = { "bgeffect", 4 },
+  BGP = { "bgp", 1 },
+  OBP0 = { "obp0", 1 },
+  OBP1 = { "obp1", 1 },
+  -- Crystal calls the $F4 slot KeepSprites and Prism calls it ClearSprites;
+  -- both set the same bit of the same flag byte, so both mean the port's
+  -- `keepsprites`.
+  KeepSprites = { "keepsprites" },
+  ClearSprites = { "keepsprites" },
+  IfParamEqual = { "ifparamequal", 3 },
+  JumpIf = { "ifparamequal", 3 },
+  SetVar = { "setvar", 1 },
+  IncVar = { "incvar" },
+  IfVarEqual = { "ifvarequal", 3 },
+  JumpVar = { "ifvarequal", 3 },
+  Jump = { "jump", 2 },
+  Loop = { "loop", 3 },
+  Call = { "call", 2 },
+  Ret = { "ret" },
+}
+
+-- The opcode -> spec table for THIS cartridge: the baked one above, with every
+-- slot the jumptable can name overwritten by what it actually points at.
+--
+-- Read once and memoised; a cartridge with no BattleAnimCommands symbol, or
+-- whose handlers are unnamed, keeps the baked table exactly as before.  A slot
+-- whose handler has no entry in BY_HANDLER is LEFT ALONE rather than dropped:
+-- the baked width is still the better guess than none, and the log line says
+-- which ones went unrecognised so a new hack's commands can be added here.
+function RomExtractorGen2:gen2AnimOps()
+  if self._animOps then return self._animOps end
+  local ops = {}
+  for op, spec in pairs(GEN2_ANIM.OPS) do ops[op] = spec end
+  self._animOps = ops
+  local sym = self:symbol("BattleAnimCommands")
+  if not (sym and self.rom) then return ops end
+  local byAddress = {}
+  for name, entry in pairs(self.manifest.symbols or {}) do
+    local tail = name:match("^BattleAnimCmd_([%w_]+)$")
+    if tail and entry[1] == sym.bank then byAddress[entry[2]] = tail end
+  end
+  if not next(byAddress) then return ops end
+  local changed, unknown = 0, {}
+  for op = GEN2_ANIM.CMD_BASE, 0xFF do
+    -- $D1..$D5 are five opcodes on ONE handler, and how many bytes each reads
+    -- is the opcode, not the routine -- so they stay opcode-driven.
+    if not (op >= 0xD1 and op <= 0xD5) then
+      local ok, target = pcall(self.rom.word, self.rom, sym.bank,
+        sym.address + (op - GEN2_ANIM.CMD_BASE) * 2)
+      local name = ok and byAddress[target] or nil
+      if name then
+        local spec = GEN2_ANIM.BY_HANDLER[name]
+        if spec then
+          local was = ops[op]
+          if not was or was[1] ~= spec[1] or (was[2] or 0) ~= (spec[2] or 0) then
+            changed = changed + 1
+          end
+          ops[op] = spec
+        elseif not ops[op] then
+          unknown[#unknown + 1] = ("$%02X=%s"):format(op, name)
+        end
+      end
+    end
+  end
+  if changed > 0 or #unknown > 0 then
+    Logger.info("Gen2 battle anims: %d command slots read off this "
+                .. "cartridge's own BattleAnimCommands%s", changed,
+                #unknown > 0
+                  and (" -- unrecognised: " .. table.concat(unknown, " "))
+                  or "")
+  end
+  return ops
+end
+
 -- Decode one script into a flat instruction list plus an address -> index map
 -- so the player can follow jump/call/loop targets without re-walking bytes.
 function RomExtractorGen2:gen2AnimScript(bank, entry)
+  local ops = self:gen2AnimOps()
   local byAddress, pending = {}, { entry }
   local visited = {}
   while #pending > 0 do
@@ -13999,7 +14144,7 @@ function RomExtractorGen2:gen2AnimScript(bank, entry)
         size = 1 + count
         record = { op = "gfx", ids = ids }
       else
-        local spec = GEN2_ANIM.OPS[op]
+        local spec = ops[op]
         if not spec then
           record = { op = "nop" }
         else

@@ -22,6 +22,7 @@
 
 local Data = require("src.core.Data")
 local Logger = require("src.core.Logger")
+local FrameProfile = require("src.core.FrameProfile")
 local Runtime = require("src.mods.Runtime")
 local Zoom = require("src.render.Zoom")
 
@@ -418,10 +419,17 @@ end
 -- DRAW. Paying it for every pipeline's update every frame is pure overhead on
 -- the hot path, and it scales with the number of installed mods -- part of
 -- why battles crawl with several of them enabled.
+-- ATTRIBUTED PER PIPELINE, for the same reason the hook chain is attributed
+-- per mod: none of this is engine code.  `pipelines: update` reported 2.5 to
+-- 3.4 ms a frame under one mod, which reads as an engine cost and is a mod's
+-- own per-frame callback -- and with more than one pipeline registered there
+-- is no way to tell from the one number which of them is spending it.
 function Pipelines.update(dt)
   for _, entry in ipairs(Pipelines.list()) do
     if entry.def.update then
+      local close = FrameProfile.section("    pipeline: " .. tostring(entry.id))
       guard(entry.id, entry.def.update, dt, Pipelines.level(entry.id))
+      close()
     end
   end
 end
@@ -513,7 +521,14 @@ end
 function Pipelines.drawWorld(id, ctx)
   local def = Pipelines.get(id)
   if not (def and def.drawWorld) then return nil end
-  return guardRender(id, def.drawWorld, ctx)
+  -- NAMED WITH THE PIPELINE'S OWN ID, because "the world pass" is the one
+  -- section of a frame that is not the engine's code at all: when a mod owns
+  -- it, this line is the difference between "the mod's renderer is the frame"
+  -- and "the mod is fine and something else is wrong".
+  local close = FrameProfile.section("  world pass: " .. tostring(id))
+  local canvas = guardRender(id, def.drawWorld, ctx)
+  close()
+  return canvas
 end
 
 -- Fold every eligible world post-process over a pipeline's world image,

@@ -714,7 +714,80 @@ gTileset_Sootopolis = {
     -- walkway INSIDE the canopy it is supposed to cross, so the step is two.
     -- Route 119 and Route 120 share this tileset and are ordinary ground, so
     -- the override is on the CITY (see `maps` below), not here.
-    gTileset_Fortree = {},
+    gTileset_Fortree = {
+      -- ------------------------------------------------------------------
+      -- A TREE HUT IS A BUILDING, AND IT IS FIVE CELLS WIDE.
+      --
+      -- MOTIVATED BY FORTREE CITY (MAP_G00_N04) AND ITS SIX TREE HUTS:
+      -- House1 (8..12, 1..3), House2 (15..19, 1..3), House3 (23..27, 1..3),
+      -- House4 (29..34, 0..2), House5 (10..14, 11..13) and the Decoration
+      -- Shop (34..39, 11..13).  Reported as huts three cells wide, one
+      -- course tall, with their roofs meshed as separate treetops.
+      --
+      -- Emerald draws each hut as THREE cell rows of one bespoke 5x3 block:
+      --
+      --     198  548 549 550  198     the green frond roof, three cells
+      --     555  556 557 558  559     upper course: bamboo bay | wall | bay
+      --     563  564 565 566  567     lower course: bay | wall DOOR wall | bay
+      --
+      -- over a 5-cell plank veranda (571/572/573/574/575) and its posts.
+      -- Every one of the ten ids above is laid SIX times -- once per hut --
+      -- and NOWHERE ELSE IN HOENN (measured over all 518 maps: 548/549/550,
+      -- 555/559 six each, 563/567 nine each -- House4 and House5 draw a
+      -- second veranda row out of 563/567 -- and every occurrence is on
+      -- MAP_G00_N04.  The other three maps that pair with this tileset,
+      -- Route119, Route120 and FarawayIsland_Interior, place none of them).
+      --
+      -- WHY THE GENERIC READERS CANNOT SEE IT, and why this table has to.
+      -- data/gen3_metatiles.lua reads the four END BAYS and the roof as
+      --
+      --     [548] [549] [550]          surface green cap 16 face 0 motif F
+      --     [555] [559] [563] [567]    surface green cap 16 face 0 motif T
+      --
+      -- character for character the reading of gTileset_General's own tree,
+      -- 198/199 -- leafy texture, drawn green, solid, no drawn face.  That
+      -- test is RIGHT everywhere else in Hoenn and is not touched: the
+      -- bamboo slats of a hut's end wall really are painted the same yellow-
+      -- green as the canopy behind them, and no reading of the sixteen pixel
+      -- rows separates them.  Only the cartridge's own layout does -- these
+      -- ten ids, in this tileset, always drawn as one block around a warp --
+      -- and this file is where the cartridge's own layout is written down.
+      --
+      -- Gen3.lua's `foliageCell` says the opposite in its own comment ("Its
+      -- corner pieces 555/559/563/567 and the forest around them are
+      -- `surface / GREEN / cap 16 / face 0`, the same reading as the General
+      -- tileset's own tree") and REFUSES these four columns for that reason.
+      -- That comment is right about the ART and it stays; what it could not
+      -- know is which metatiles are the hut's own.  The rule it states --
+      -- "a flank column every row of which is drawn as foliage is not the
+      -- building" -- keeps every cell of its blast radius (Route 104's
+      -- Petalburg Woods entrance, Route 118's tunnel mouth, Lavaridge's
+      -- east column): this list is SEVEN IDS IN ONE TILESET and overrides
+      -- it only on them.
+      --
+      -- NOT A `metatiles` CLASS PIN, deliberately.  A pin names a class and
+      -- marks the cell AUTHORED, and an authored cell leaves the structural
+      -- flood (see the METATILE PINS header below) -- so pinning the bays
+      -- `wall` would give each of them its own 16px box and the five-cell
+      -- facade this exists to build would come apart again.  What is needed
+      -- is narrower: not "this cell is a wall" but "this cell is not
+      -- FOLIAGE, it is part of the building beside it", which leaves the
+      -- flood, the run and the height model to decide the rest.
+      --
+      -- "roof" vs "wall" is the row the id draws, and `foundGen3Buildings`
+      -- uses the count of roof rows to split a facade from the pitch on top
+      -- of it.  PRESENTATIONAL ONLY: nothing here is read by collision,
+      -- warps, elevation flags, scripts or encounters.
+      --
+      -- Keyed on the SECONDARY tileset, which is the only slot Emerald ever
+      -- gives gTileset_Fortree (all four of its maps pair it under
+      -- gTileset_General), so ids 548..567 are in the 512..1023 secondary
+      -- bank on every one of them.
+      building_art = {
+        [548] = "roof", [549] = "roof", [550] = "roof",
+        [555] = "wall", [559] = "wall", [563] = "wall", [567] = "wall",
+      },
+    },
 
     -- UNDERWATER: the seabed.  Every cell of it is under the sea, so the
     -- water class must not fire -- MB_NORMAL down here is the floor you swim
@@ -761,7 +834,59 @@ gTileset_Sootopolis = {
   -- Classes: chair / tabletop (drawn from above, art on the top face);
   -- worktop / sink / appliance / cabinet / tv (drawn face-on, art folds up
   -- the south face); bed (from above, low).
+  --
+  -- 3. A PIN NAMES A CLASS, AND A CLASS IS ONE HEIGHT FOR ONE WHOLE CELL.
+  --    That is the limit of this table, and it is worth stating here because
+  --    the next thing someone will want to pin is an object whose edge is a
+  --    CURVE cutting across cells.  RUSTBORO CITY'S WATER FOUNTAIN --
+  --    RustboroCity (27..29, 38..40) -- is exactly that: a grey stone
+  --    OCTAGONAL basin inscribed in a 3x3 block, so its corner cells are part
+  --    fountain and part street and no single height describes either of
+  --    them.  No row below can say it, and a row that tried would raise the
+  --    street with it.  It is authored as a SHAPE instead -- a plan polygon
+  --    and three drawn profiles -- in data/gen3_palings.lua under `basins`,
+  --    which is the file this mod keeps for authored shapes matched per
+  --    tileset, and it is built by Structures.buildGen3Basins.
+  --    (g3-basin-311.)
   metatiles = {
+
+    -- THE WATER UNDER ROUTE 119'S PLANK WALKWAYS IS STILL WATER.
+    --
+    -- MOTIVATED BY ROUTE 119'S UPPER RIVER, (10..17, 8) AND (11..15, 11) --
+    -- the two rows of pier cells that cross the basin above the waterfall,
+    -- part of the same report as the 518/519 pin on gTileset_Fortree below:
+    -- "all water at the top of the waterfall should be the same level as the
+    -- top of the waterfall".
+    --
+    -- 245 IS OPEN WATER WITH TWO POSTS STANDING IN IT.  The cell draws the
+    -- pale underside of a plank deck across its top rows and two dark piles
+    -- dropping from it into darker water; every other pixel is the river's
+    -- own animated ripple, and all four of its bottom quadrants sit in one of
+    -- the pair's animation runs.  Its NEIGHBOURS along the same walkway --
+    -- 237, 241, 242, 251, 252, 253 -- are the same drawing with a rail
+    -- behaviour on them (MB_*_RAIL, 0xD3..0xD6) and already resolve `bridge`.
+    -- 245 is the one Emerald leaves at MB_NORMAL and BLOCKS, because it is
+    -- the gap under the deck rather than the deck, so it fell through to the
+    -- structural rule: blocked + MB_NORMAL is a wall, and a wall outdoors is
+    -- landscape rock.
+    --
+    -- MEASURED, before this pin and with 518/519 already water: the 17 cells
+    -- of 245 in the basin stood at 0 and 16 while the water either side of
+    -- them lay at 12 and 32 -- two rows of rock stubs damming one lake into
+    -- three, which is the thing the report is about.  `standGen3Water` floods
+    -- by CLASS, so a row of cliff across a body of water is a wall in it.
+    --
+    -- NOT 250, WHICH IS THE SAME DECK LANDING ON ROCK: half that cell is the
+    -- bank's brown stone and `cliff` is what it is.  4 cells, left alone.
+    --
+    -- DERIVED over all 518 maps: metatile 245 of this primary is laid on 22
+    -- cells in the whole of Hoenn and every one is on Route 119 -- the pier
+    -- art is in the shared primary but only this route draws it.  (236, 250
+    -- and 252 measure 1, 4 and 4 cells, also Route 119 only.)  Nothing
+    -- outside Route 119 can move.
+    gTileset_General = {
+      [245] = "water",
+    },
 
     -- LITTLEROOT TOWN's secondary tileset, which is where Professor Birch's
     -- lab lives (LAYOUT_LITTLEROOT_TOWN is gTileset_General over this one).
@@ -1719,6 +1844,58 @@ gTileset_Sootopolis = {
       -- as wall they measured a four-tile run and stood 48px: eight stone
       -- slabs where the map draws eight little posts.
       [640] = "post",
+    },
+
+    -- ROUTE 119'S UPPER RIVER IS WATER, AND IT WAS MESHING AS A CLIFF.
+    --
+    -- MOTIVATED BY ROUTE 119, THE BASIN ABOVE THE WATERFALL AT (17..19, 25)
+    -- -- the wide reach the plank walkways cross on their piers -- reported
+    -- as "all water at the top of the waterfall should be the same level as
+    -- the top of the waterfall".
+    --
+    -- 518 AND 519 ARE DRAWN AS OPEN WATER.  Both are this secondary's river
+    -- surface: 518 is bare ripple, 519 the same ripple with a reed clump
+    -- standing in it.  Both animate on LAYER 1 -- all four bottom quadrants
+    -- of each cell sit inside one of the pair's six animation runs, which is
+    -- Emerald drawing a moving SURFACE rather than something standing on one
+    -- (`Gen3.flowerMetatiles`, reading 1, in reverse).  `Gen3.metaRole` calls
+    -- both `surface`; the shore rock beside them in the same tileset --
+    -- 378, 380, 386, 388 -- it calls `face`.
+    --
+    -- WHAT THE CARTRIDGE SAYS, AND WHY IT WAS NOT ENOUGH.  Emerald puts
+    -- these cells at ELEVATION 1, the surf datum, and BLOCKS them: this is
+    -- the reach you cannot surf into, because the walkways are the way
+    -- across it.  `Gen3.classAt`'s elevation-1 rule is gated on `not
+    -- blocked`, and it has to be: DERIVED over all 518 maps, 2,810 blocked
+    -- surf cells resolve `cliff` today and almost all of them are real rock
+    -- -- the sea stacks of Routes 124, 127, 126, 125, 129 and 128 (562, 420,
+    -- 257, 190, 144 and 129 cells), every one of which `metaRole` calls
+    -- `face`.  So a blocked water cell falls past that rule to the behaviour
+    -- byte, which is MB_NORMAL here; MB_NORMAL plus blocked is a wall, and a
+    -- wall outdoors is landscape rock.
+    --
+    -- WHAT THAT LOOKED LIKE.  MEASURED on Route 119 before this pin: the 124
+    -- basin cells of 518 carry FIVE different heights -- 16, 32, 48, 64 and
+    -- 80 -- because the rock passes chain courses up them, while the 19
+    -- surfable cells of the same river just below (metatile 368,
+    -- MB_OCEAN_WATER) lie flat at 44 and the fall's own lip stands at 48.
+    -- One body of standing water drawn as a five-course stair of blue slabs,
+    -- with the plank walkways sunk between them.
+    --
+    -- PINNED RATHER THAN RULED, because no reading separates these two from
+    -- the sea stacks without taking those as well: elevation 1 + blocked +
+    -- `surface` is 423 cells region-wide, and 292 of them are Mossdeep's and
+    -- the sea routes' half-sunk rocks (336/337/344/345) -- rock in water, and
+    -- right as they stand.  DERIVED: metatiles 518 and 519 of this pair are
+    -- laid on 176 cells in the whole of Hoenn and every one is on Route 119.
+    -- Nothing else in the region can move.
+    --
+    -- `water` is flat and recessed, and `Structures.standGen3Water` floods a
+    -- water body and sets the whole of it to ONE surface at the lowest shore
+    -- you can stand on.  That single level is what the report asks for.
+    gTileset_Fortree = {
+      [518] = "water",
+      [519] = "water",
     },
 
   },

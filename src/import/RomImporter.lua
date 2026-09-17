@@ -9,6 +9,10 @@ local GamepadMap = require("src.core.GamepadMap")
 -- process dies inside it there is nothing on screen and nothing in any log to
 -- say how far it got.
 local BootTrace = require("src.core.BootTrace")
+-- Pure and dependency-free (it decodes one options field), so it can be
+-- required up here beside the rest of the launcher's own modules -- unlike
+-- src/mods/LauncherMods.lua, which reaches for love.filesystem and stays lazy.
+local ModGens = require("src.mods.ModGens")
 
 local RomImporter = {}
 RomImporter.__index = RomImporter
@@ -992,7 +996,7 @@ end
 -- (Groudon's 31, Kyogre's 47) that each handler animates through a table at
 -- $0D85CD0 -- black, blue, purple, magenta, RED -- so the markings are composed
 -- as their own mask and wear that colour at run time.
-local CACHE_FORMAT = "rom-cache-v303:"
+local CACHE_FORMAT = "rom-cache-v309:"
 -- The completion marker is written under each version's cache prefix
 -- (rom-cache.complete for Red, blue/rom-cache.complete for Blue).
 local MARKER_PATH = "rom-cache.complete"
@@ -1099,6 +1103,14 @@ local REQUIRED_FILES_GEN2 = {
   "assets/generated/tilesets/playershouse.png",
   "assets/generated/fonts/font.png",
   "assets/generated/battle/chrisb.png",
+  -- THE PARTY BALL ROW, which is easy to lose and gives no sign that it has
+  -- been lost.  Reported from play, on Prism: "when battling vs a trainer it
+  -- doesnt show how many pokemons hes holding".  BattleState:drawBallRow
+  -- loads this sheet once, latches false when it is not there, and from then
+  -- on draws NOTHING -- no error, no gap, just a HUD with no balls in it.
+  -- Every Gen 2 cartridge can produce it (gen2RawSheet off LoadBallIconGFX),
+  -- so listing it here makes a cache that lacks it say so.
+  "assets/generated/battle/balls.png",
   "assets/generated/ui/town_map_johto.png",
   -- NOT the title screen: the extractor writes title/gen2_title.png for
   -- Gold/Silver and title/crystal_title.png for Crystal, so a shared entry can
@@ -1264,6 +1276,11 @@ local PAL = {
   -- radial background gradient (bright navy at top-centre -> near black)
   bgTop       = { 22, 34, 74 },   -- #16224a
   bgBot       = { 7, 11, 29 },    -- #070b1d
+  -- The bright point of that gradient.  Identical to bgTop until a theme is
+  -- applied, at which point LauncherTheme rewrites it as the preset's top
+  -- colour with the accent mixed in -- which is what makes the accent visible
+  -- across the whole screen rather than only on the links.
+  bgGlow      = { 22, 34, 74 },   -- #16224a
   -- neon accents, one per cartridge
   red         = { 255, 60, 72 },  -- rgb(255,60,72)
   blue        = { 70, 150, 255 }, -- rgb(70,150,255)
@@ -1279,6 +1296,13 @@ local PAL = {
   link        = { 127, 208, 255 }, -- #7fd0ff, the bois.icu link
   linkHover   = { 191, 234, 255 }, -- #bfeaff, brighter on hover
   white       = { 255, 255, 255 },
+  -- THE READING COLOUR, and deliberately not `white`.  Most of the launcher's
+  -- text prints with this; `white` stays what it also is -- the glass sheen on
+  -- a button, the 18% border highlight, the toggle knob, and the ink on a
+  -- filled red or green plate where contrast against the FILL is what matters
+  -- and the theme has no business changing it.  Identical to white until a
+  -- text family is applied (src/import/LauncherTheme.lua).
+  ink         = { 255, 255, 255 },
   -- "Play" button (green gradient) + its ink
   playTop     = { 62, 224, 138 }, -- #3ee08a
   playBot     = { 22, 163, 90 },  -- #16a35a
@@ -1327,6 +1351,25 @@ local PAL = {
   chipInkGold = { 58, 44, 0 },     -- #3a2c00
   chipInkSilver = { 16, 23, 35 },  -- #101723
 }
+
+-- THE PALETTE IS REPAINTABLE.  Everything above is what the launcher ships
+-- with; src/import/LauncherTheme.lua keeps a pristine copy of the keys a theme
+-- may touch and lays the player's preset and accent over them.  Called once in
+-- new() before anything draws, and again whenever either settings row steps.
+-- The cartridge chip gradients are deliberately NOT themed: they are how a
+-- player tells Crystal from Prism from Emerald in the row at a glance.
+function RomImporter.applyTheme(options)
+  local LauncherTheme = require("src.import.LauncherTheme")
+  local theme, accent, text = LauncherTheme.fromOptions(options)
+  LauncherTheme.apply(PAL, theme, accent, text)
+  return theme, accent, text
+end
+
+-- The live palette, for tests and for anything that needs to read a colour the
+-- launcher is actually drawing with rather than the one it shipped with.
+function RomImporter.palette()
+  return PAL
+end
 
 -- CacheFs.exists checks the game folder directly for a portable install,
 -- otherwise the save directory through love.filesystem.  It honors
@@ -1912,6 +1955,113 @@ local function chooseRom(promptName)
   return nil
 end
 
+-- WHAT A MULTI-SELECT DIALOG ACTUALLY SAID, and nothing else.
+--
+-- Every one of these pickers is a shell command whose stdout is trusted as a
+-- list of paths, and that trust is what turned one broken PowerShell script
+-- into twenty-six "failed" imports named after the lines of a parser error.
+-- So a line only counts as a pick if it OPENS: a real chooser answers with
+-- files that exist, and anything else -- a diagnostic, a usage message, a
+-- shell complaint about a missing zenity -- does not.
+--
+-- Answering nil when nothing survives is deliberate: to every caller that is
+-- "the dialog was cancelled", which is already handled and already harmless,
+-- rather than an error the player has to read.
+-- DID A DIALOG EVEN RUN?
+--
+-- The difference between "the player said no" and "there is nothing here to
+-- ask with", which the pickers cannot tell apart on their own -- both answer
+-- nil.  It decides whether an empty answer falls back to the save-dir inbox
+-- (a console, where the inbox is the only way in) or is simply taken as no (a
+-- desktop, where quietly importing a folder somebody did not choose would be
+-- the surprise).
+local function hasNativePicker()
+  local platform = love.system.getOS()
+  return platform == "OS X" or platform == "Windows" or platform == "Linux"
+end
+
+local function pickedFileList(out)
+  if not out or out == "" then return nil end
+  local paths = {}
+  for line in tostring(out):gmatch("[^\r\n]+") do
+    local trimmed = line:match("^%s*(.-)%s*$")
+    if trimmed ~= "" then
+      local probe = io.open(trimmed, "rb")
+      if probe then
+        probe:close()
+        paths[#paths + 1] = trimmed
+      end
+    end
+  end
+  if #paths == 0 then return nil end
+  return paths
+end
+
+-- ...AND THE SAME THING FOR CARTRIDGES.
+--
+-- Asked for directly: "add in a button to mass import roms for those
+-- available in our game next to the gen select button".  Nine games are
+-- registered now and each one was its own trip through a file dialog, on a
+-- tab you had to find first -- and the tab is not even the thing that decides
+-- which game a ROM becomes, because startData routes by SHA-1.
+--
+-- Same per-OS multi-select as chooseZips, with the ROM filter chooseRom uses.
+local function chooseRoms()
+  local prompt = Strings("Choose your Pokemon ROMs")
+  local platform = love.system.getOS()
+  local out
+  if platform == "OS X" then
+    out = commandOutput(
+      ([[osascript -e 'set AppleScript'"'"'s text item delimiters to linefeed' ]]
+       .. [[-e 'set f to choose file with prompt "%s" of type {"gb", "gbc", "gba"} with multiple selections allowed' ]]
+       .. [[-e 'set p to {}' -e 'repeat with x in f' ]]
+       .. [[-e 'set end of p to POSIX path of x' -e 'end repeat' ]]
+       .. [[-e 'p as text' 2>/dev/null]]):format(prompt))
+  elseif platform == "Windows" then
+    local script = table.concat({
+      "Add-Type -AssemblyName System.Windows.Forms;",
+      "$d=New-Object System.Windows.Forms.OpenFileDialog;",
+      "$d.Title='" .. prompt .. "';",
+      "$d.Multiselect=$true;",
+      "$d.Filter='Pokemon ROM (*.gb;*.gbc;*.gba)|*.gb;*.gbc;*.gba|All files (*.*)|*.*';",
+      -- NOT copied to a temp name, unlike the mod picker: a batch of these is
+      -- up to sixteen megabytes apiece and copying them all before reading any
+      -- of them is a doubling of disk for nothing.  A non-ASCII path is the
+      -- cost (io.open on Windows needs ANSI bytes) and it is reported per file
+      -- as "could not be read" rather than taking the run down.
+      "if($d.ShowDialog() -eq 'OK'){",
+      "[Console]::OutputEncoding=[Text.Encoding]::UTF8;",
+      -- [char]10, NOT "`n".  The whole script is handed to powershell inside
+      -- `-Command "..."`, so every double quote in it is eaten before
+      -- PowerShell ever sees the text -- `$o -join "`n"` arrives as
+      -- `$o -join `n` and dies at the parse ("You must provide a value
+      -- expression following the '-join' operator"), which is a dialog that
+      -- never opens and an error where the file list should be.  Nothing else
+      -- in this file quotes with " for the same reason; these two were the
+      -- exception and the exception was the bug.
+      "[Console]::Write($d.FileNames -join [char]10)}",
+    })
+    out = commandOutput(
+      'powershell -NoProfile -STA -Command "' .. script .. '"')
+  elseif platform == "Linux" then
+    out = commandOutput(
+      -- `--separator="\n"` hands zenity a literal backslash-n (the shell does
+      -- not expand escapes inside double quotes), so the list came back as one
+      -- long line.  Ask for zenity's own default separator and turn it into
+      -- newlines with tr, which needs nothing of the shell.
+      ([[zenity --file-selection --multiple --separator="|" --title="%s" --file-filter="Pokemon ROM | *.gb *.gbc *.gba" 2>/dev/null | tr '|' '\n']])
+        :format(prompt))
+    if not out then
+      local kd = commandOutput(
+        [[kdialog --getopenfilename "$HOME" "*.gb *.gbc *.gba|Pokemon ROM" --multiple 2>/dev/null]])
+      -- kdialog joins with spaces and quotes nothing, so a path with a space
+      -- in it cannot be recovered; one file back is still one file
+      if kd then out = kd:gsub("%s+", "\n") end
+    end
+  end
+  return pickedFileList(out)
+end
+
 -- Open a native picker for a mod .zip (mirrors chooseRom's per-OS dialogs).
 -- Returns the chosen absolute path or nil.  Android uses love.system.pickFile
 -- ("mod") instead -- see RomImporter:chooseMod.
@@ -1952,6 +2102,104 @@ local function chooseZip()
   return nil
 end
 
+-- MANY AT ONCE, from the same native dialogs the single import uses.
+--
+-- Asked for directly: "add a way to mass import mods".  Each platform's
+-- picker already supports a multiple selection; the launcher just never asked
+-- for one.  Answers a LIST of absolute paths, or nil where there is no picker
+-- (console, a handheld with neither zenity nor kdialog), which is the same
+-- "nil means fall back to the inbox" contract chooseZip has.
+--
+-- The separator is what makes this awkward rather than hard: a path may
+-- contain spaces on every one of these systems, so none of them can be split
+-- on whitespace.  macOS and Windows are told to join with a newline, and
+-- zenity is asked for one explicitly; kdialog answers space-separated and is
+-- therefore only trusted when nothing it returned contains a space, which is
+-- the honest limit rather than a silently wrong split.
+local function chooseZips()
+  local prompt = Strings("Choose mod .zip files")
+  local platform = love.system.getOS()
+  local out
+  if platform == "OS X" then
+    out = commandOutput(
+      ([[osascript -e 'set AppleScript'"'"'s text item delimiters to linefeed' ]]
+       .. [[-e 'set f to choose file with prompt "%s" of type {"zip"} with multiple selections allowed' ]]
+       .. [[-e 'set p to {}' -e 'repeat with x in f' ]]
+       .. [[-e 'set end of p to POSIX path of x' -e 'end repeat' ]]
+       .. [[-e 'p as text' 2>/dev/null]]):format(prompt))
+  elseif platform == "Windows" then
+    local script = table.concat({
+      "Add-Type -AssemblyName System.Windows.Forms;",
+      "$d=New-Object System.Windows.Forms.OpenFileDialog;",
+      "$d.Title='" .. prompt .. "';",
+      "$d.Multiselect=$true;",
+      "$d.Filter='Mod archive (*.zip)|*.zip|All files (*.*)|*.*';",
+      -- the same plain-ASCII temp copy the single picker makes, once per
+      -- pick: the console codepage would mangle a non-ASCII path and io.open
+      -- could never reopen it (#325)
+      "if($d.ShowDialog() -eq 'OK'){",
+      "$i=0;$o=@();",
+      "foreach($f in $d.FileNames){",
+      "$t=Join-Path $env:TEMP ('pokeport_mod_pick_'+$i+'.zip');",
+      "Copy-Item -LiteralPath $f -Destination $t -Force;",
+      "$o+=$t;$i++};",
+      "[Console]::OutputEncoding=[Text.Encoding]::UTF8;",
+      -- see chooseRoms: a double quote cannot survive the -Command wrapper
+      "[Console]::Write($o -join [char]10)}",
+    })
+    out = commandOutput(
+      'powershell -NoProfile -STA -Command "' .. script .. '"')
+  elseif platform == "Linux" then
+    out = commandOutput(
+      -- see chooseRoms on the separator
+      ([[zenity --file-selection --multiple --separator="|" --title="%s" --file-filter="Mod archive | *.zip" 2>/dev/null | tr '|' '\n']])
+        :format(prompt))
+    if not out then
+      local kd = commandOutput(
+        [[kdialog --getopenfilename "$HOME" "*.zip|Mod archive" --multiple 2>/dev/null]])
+      -- kdialog joins with spaces and quotes nothing, so a path containing a
+      -- space cannot be recovered.  One file back is still one file.
+      if kd then out = kd:gsub("%s+", "\n") end
+    end
+  end
+  return pickedFileList(out)
+end
+
+-- ...and a FOLDER, for the other half of the same request: point at where the
+-- releases live and take everything in it.  LauncherMods.zipsInFolder decides
+-- what counts as "in it" (the folder and one level under).
+-- `prompt` is optional: the game-data folder row opens the same dialog with a
+-- different question, and a picker whose title says "mod .zip files" while it
+-- is choosing where to install games is a picker a player closes again.
+local function chooseFolder(prompt)
+  prompt = prompt or Strings("Choose a folder of mod .zip files")
+  local platform = love.system.getOS()
+  if platform == "OS X" then
+    return commandOutput(
+      ([[osascript -e 'POSIX path of (choose folder with prompt "%s")' 2>/dev/null]])
+        :format(prompt))
+  elseif platform == "Windows" then
+    local script = table.concat({
+      "Add-Type -AssemblyName System.Windows.Forms;",
+      "$d=New-Object System.Windows.Forms.FolderBrowserDialog;",
+      "$d.Description='" .. prompt .. "';",
+      "if($d.ShowDialog() -eq 'OK'){",
+      "[Console]::OutputEncoding=[Text.Encoding]::UTF8;",
+      "[Console]::Write($d.SelectedPath)}",
+    })
+    return commandOutput(
+      'powershell -NoProfile -STA -Command "' .. script .. '"')
+  elseif platform == "Linux" then
+    local path = commandOutput(
+      ([[zenity --file-selection --directory --title="%s" 2>/dev/null]])
+        :format(prompt))
+    if path then return path end
+    return commandOutput(
+      [[kdialog --getexistingdirectory "$HOME" 2>/dev/null]])
+  end
+  return nil
+end
+
 -- Open a native picker for a mod's declared base file (`required_imports`).
 -- The extension list comes from the manifest rather than being fixed, because
 -- what a mod needs is its own business: STADIUM2_IMPORTER wants a Nintendo 64
@@ -1977,15 +2225,39 @@ local function chooseFileByExt(exts, promptName)
       "$d.Title='" .. prompt .. "';",
       "$d.Filter='Base file (" .. table.concat(semis, ";") .. ")|"
         .. table.concat(semis, ";") .. "|All files (*.*)|*.*';",
-      -- the same ASCII-temp-name dance chooseZip does, and for the same
-      -- reason: io.open on Windows needs ANSI bytes (#325).  A cartridge is
-      -- tens of megabytes, so this copy is the one slow step -- worth it
-      -- against a path the reader cannot open at all.
+      -- THE TEMP COPY IS THE FALLBACK NOW, NOT THE DEFAULT.
+      --
+      -- io.open on Windows needs ANSI bytes, so a path with characters outside
+      -- them cannot be opened at all (#325) and the pick has to be copied to
+      -- an ASCII temp name first.  That was done for EVERY pick, on the
+      -- reasoning that "a cartridge is tens of megabytes, so this copy is the
+      -- one slow step" -- which stopped being true the moment a mod could
+      -- declare a GameCube disc.  A 1.4 GB pick was copied into %TEMP% on the
+      -- system drive before anything looked at it: minutes of apparent freeze,
+      -- 1.4 GB of C: needed to import a file already sitting on G:, and -- the
+      -- reported failure -- Copy-Item leaves $ErrorActionPreference at
+      -- Continue, so a copy that ran out of space still fell through to
+      -- writing the temp path, and the launcher opened a file that was never
+      -- created.  "that file could not be opened", for a file that was right
+      -- there.
+      --
+      -- So: an ASCII path is handed back AS IS, which is every ordinary path
+      -- and costs nothing.  Only a path io.open genuinely cannot take is
+      -- copied, and that copy now has to prove it landed before its
+      -- destination is reported -- otherwise nothing is written and the
+      -- caller falls through to the "copy it into imports/" instructions,
+      -- which at least tell the player what to do next.
       "if($d.ShowDialog() -eq 'OK'){",
-      "$t=Join-Path $env:TEMP 'pokeport_base_pick.bin';",
-      "Copy-Item -LiteralPath $d.FileName -Destination $t -Force;",
+      "$p=$d.FileName;",
+      "$ascii=$true;",
+      "foreach($c in $p.ToCharArray()){",
+      "if([int]$c -lt 32 -or [int]$c -gt 126){$ascii=$false}};",
       "[Console]::OutputEncoding=[Text.Encoding]::UTF8;",
-      "[Console]::Write($t)}",
+      "if($ascii){[Console]::Write($p)}else{",
+      "$t=Join-Path $env:TEMP 'pokeport_base_pick.bin';",
+      "Copy-Item -LiteralPath $p -Destination $t -Force "
+        .. "-ErrorAction SilentlyContinue;",
+      "if(Test-Path -LiteralPath $t){[Console]::Write($t)}}}",
     })
     return commandOutput(
       'powershell -NoProfile -STA -Command "' .. script .. '"')
@@ -2119,6 +2391,13 @@ function RomImporter.new(onComplete, opts)
     -- Android path stays exactly as it was: act on press, never arm.
     touchPollable = android and love.touch ~= nil
       and love.touch.getTouches ~= nil and love.touch.getPosition ~= nil,
+    -- The settings drawer: whether it is up, which of its two pages is
+    -- showing (nil = the main one, "launcher" = LAUNCHER SETTINGS), and which
+    -- generation the GAME DEFAULTS rows are being set for (nil = all).
+    settingsOpen = false,
+    settingsPage = nil,
+    settingsGen = nil,
+    settingsScroll = 0,
     tab = "red",          -- active launcher tab: "red"/"blue"/"yellow"/"mods"
     logo = love.graphics.newImage("assets/logo/logo.png"),
     bcg = love.graphics.newImage("assets/logo/UD.png"),
@@ -2187,6 +2466,27 @@ function RomImporter.new(onComplete, opts)
   -- and the most likely place for a driver or memory failure that no Lua
   -- handler can catch.
   BootTrace.mark("launcher: state + images")
+
+  -- WHICH FOLDER THE CACHE IS USING, named once per launch, before the
+  -- readiness scan below is the first thing to ask for it.
+  --
+  -- A player who points the game-data folder somewhere and finds files still
+  -- landing in AppData has no way to tell whether the setting did not save,
+  -- was refused, or was accepted and then could not be mounted -- and the one
+  -- log line that would have said so never reached disk, because the logger
+  -- buffers 64 lines and a launch produces a handful.  This goes in the boot
+  -- trace, which is open-write-close per line, so the answer is on disk before
+  -- the question gets asked.
+  do
+    local ok, report = pcall(function()
+      return require("src.import.CacheFs").rootReport()
+    end)
+    if ok and type(report) == "table" then
+      BootTrace.mark(("launcher: game data %s %s%s"):format(
+        tostring(report.kind), tostring(report.path or "?"),
+        report.why and (" -- " .. tostring(report.why)) or ""))
+    end
+  end
 
   for _, version in ipairs(GameVersion.ORDER) do
     local info = GameVersion.info(version)
@@ -2272,6 +2572,30 @@ function RomImporter.new(onComplete, opts)
     end
   end
 
+  -- The generation the player last filtered the chip row to (see
+  -- _selectGeneration).  `false` is ALL and is what a fresh options file says,
+  -- so nothing changes for anybody who never opens the dropdown.
+  do
+    local okOpt, options = pcall(require("src.core.SaveData").loadOptions)
+    -- The palette, before anything draws with it.  Applied here rather than at
+    -- module load so that the launcher picks up a theme chosen on the previous
+    -- run, and re-applied by _applyLauncherTheme the moment either row steps.
+    if okOpt then pcall(RomImporter.applyTheme, options) end
+    local g = okOpt and type(options) == "table" and options.launcherGeneration
+    self.genFilter = (g == 1 or g == 2 or g == 3) and g or nil
+    -- ...and a filter that hides the tab the launcher opened on would show an
+    -- empty row with a panel behind it.
+    if self.genFilter and GameVersion.VERSIONS[self.tab]
+        and GameVersion.generation(self.tab) ~= self.genFilter then
+      for _, v in ipairs(GameVersion.ORDER) do
+        if GameVersion.generation(v) == self.genFilter then
+          self.tab = v
+          break
+        end
+      end
+    end
+  end
+
   -- On Linux handhelds a gamepad is usually already connected at boot; arm
   -- the virtual cursor immediately so the player does not have to press a
   -- button before seeing something move.
@@ -2321,6 +2645,10 @@ function RomImporter:focus(f)
     and love.filesystem.read("pick_error.flag")
   if pickError then
     love.filesystem.remove("pick_error.flag")
+    if self._pickMany then
+      self:_pickManyTally(false)
+      self:_pickManyFinish()
+    end
     -- WHAT THE FLAG CARRIES NOW. Line 1 is the destination basename (which is
     -- what the branches below match on, so it has to stay first); the rest is
     -- the native side's account of why nothing could be read -- which app
@@ -2368,8 +2696,13 @@ function RomImporter:focus(f)
   local modName = findPendingMod(false, self.pickSkip)
   if modName then
     self:_installMod(modName)
-    consumePick(self, modName, "picked_mod.zip",
-      self.modNotice and self.modNotice.ok)
+    local installed = self.modNotice and self.modNotice.ok
+    consumePick(self, modName, "picked_mod.zip", installed)
+    -- ...and if this is a run, count it and open the picker again.
+    if self:_pickManyActive("mod") then
+      self:_pickManyTally(installed)
+      self:_pickManyAgain()
+    end
     return
   end
   local savName = findPendingSav(false, self.pickSkip)
@@ -2386,12 +2719,19 @@ function RomImporter:focus(f)
       local name, data = findPendingRom(self.ready)
       if name then
         self:startData(data, name)
-      else
-        consumePickedRomError(self)
+      elseif consumePickedRomError(self) then
+        if self:_pickManyActive("rom") then self:_pickManyTally(false) end
+      elseif self:_pickManyActive("rom") then
+        -- came back from the picker with nothing: that is Back, and the end
+        -- of the run (see _pickManyBegin)
+        self:_pickManyFinish()
       end
       return
     end
   end
+  -- ...and the same signal for a mod run: every branch above has declined, so
+  -- the player returned from the picker without choosing anything.
+  if self._pickMany then self:_pickManyFinish() end
 end
 
 function RomImporter:setError(message, version)
@@ -2405,6 +2745,11 @@ function RomImporter:setError(message, version)
   self.progress = 0
   self.worker = nil
   self.romData = nil
+  -- The other way a run ends -- for a desktop queue and for a mobile
+  -- keep-picking run alike.  Deferred rather than called straight from here:
+  -- setError is reached from inside the worker coroutine, and starting the next
+  -- import on that stack would resume a coroutine from within itself.
+  if self._romQueue or self._pickMany then self._romQueueResume = true end
 end
 
 -- draw() may leave the system hand cursor set while hovering a Play /
@@ -2462,6 +2807,24 @@ function RomImporter:startData(data, displayName)
   self.detail = displayName or info.displayName
   self.progress = 0
   self.romData = data
+  -- BREADCRUMBS THROUGH THE IMPORT, for the same reason boot has them.
+  --
+  -- An import is the longest, most memory-hungry thing this program does -- a
+  -- Gen 3 cartridge unpacks to hundreds of megabytes -- and when it dies it
+  -- usually dies BELOW LUA: an allocation failure or an OOM kill reaches no
+  -- error handler, writes no crash.txt, and leaves log.txt empty because the
+  -- logger had not filled its buffer yet.  From the outside that is
+  -- indistinguishable from the app simply vanishing, which is exactly how it
+  -- gets reported.
+  --
+  -- BootTrace.mark is an open-write-close per call, so the file on disk is
+  -- current even when the next instruction is the one that kills us: whatever
+  -- the last line says is the stage the import did not survive.  Marked on
+  -- STAGE CHANGES only -- onProgress fires per map and per tileset, and one
+  -- file write each would be its own performance bug -- which is a couple of
+  -- dozen lines per import.
+  BootTrace.mark(("import %s: begin (%.1f MB rom)")
+    :format(tostring(version), #data / 1048576))
   self.worker = coroutine.create(function()
     self.status = "Preparing private game data"
     coroutine.yield()
@@ -2485,6 +2848,7 @@ function RomImporter:startData(data, displayName)
     CacheFs.removeTree("data/generated")
     CacheFs.removeTree("assets/generated")
     CacheFs.remove(MARKER_PATH)
+    BootTrace.mark("import " .. tostring(version) .. ": old cache cleared")
 
     -- WHICH EXTRACTOR, and spelled out rather than inferred.
     --
@@ -2508,11 +2872,23 @@ function RomImporter:startData(data, displayName)
             :format(tostring(version), tostring(info.generation)))
     end
     local RomExtractor = require(choice.module)
+    BootTrace.mark(("import %s: %s"):format(tostring(version), choice.module))
+    local markedStage = nil
     local function onProgress(progress, total, stage, current, stageTotal)
       self.status = stage
       self.progress = progress / total
       self.stageCurrent = current
       self.stageTotal = stageTotal
+      -- One line per STAGE, carrying how much Lua memory is live when it
+      -- starts.  The number is the point: an import that dies below Lua dies
+      -- of memory far more often than of anything else, and a trace whose last
+      -- two lines are a stage and a figure climbing towards a limit says so
+      -- without anybody having to reproduce it under a profiler.
+      if stage ~= markedStage then
+        markedStage = stage
+        BootTrace.mark(("import %s: %s (%.0f MB lua)"):format(
+          tostring(version), tostring(stage), collectgarbage("count") / 1024))
+      end
       coroutine.yield()
     end
     local extractor = choice.takesVersion
@@ -2521,6 +2897,8 @@ function RomImporter:startData(data, displayName)
     extractor:run()
     self.romData = nil
     collectgarbage("collect")
+    BootTrace.mark(("import %s: extracted (%.0f MB lua)")
+      :format(tostring(version), collectgarbage("count") / 1024))
     -- Written last: the marker is what isReady() checks, so it must only
     -- appear once the extraction has finished.
     --
@@ -2579,6 +2957,284 @@ function RomImporter:startPath(path)
   self:startData(data, path:match("[^/\\]+$") or path)
 end
 
+-- ---------------------------------------------------------------------------
+-- MASS ROM IMPORT
+--
+-- "add in a button to mass import roms for those available in our game next to
+-- the gen select button".
+--
+-- THE SORTING IS THE FEATURE, and it is the part the player cannot do
+-- themselves.  A folder of dumps is a pile of files with whatever names
+-- somebody gave them; what decides which game each one becomes is its SHA-1,
+-- which is what startData has always routed on.  So this reads each file ONCE
+-- up front, hashes it, and answers three questions before importing anything:
+-- is it one of ours, do we already have it, and have we already seen this same
+-- cartridge earlier in the same pick.
+--
+-- READ, HASHED, THROWN AWAY.  The queue holds paths, not bytes.  Emerald alone
+-- is sixteen megabytes and a pick of nine would be well over sixty held at
+-- once for no reason: each one is read again when its turn comes, which costs
+-- a second read and keeps the high-water mark at one cartridge.
+--
+-- ONE AT A TIME, because an extraction is a coroutine pumped by update() and
+-- there is exactly one of it.  _advanceRomQueue is the pump: it is called
+-- wherever a run ENDS -- the worker going dead, and setError -- records what
+-- happened, and starts the next.
+-- ---------------------------------------------------------------------------
+
+-- What a pick turns into: the entries worth importing, and one line about
+-- everything that was left out.  `paths` may be absolute (a picker) or
+-- save-dir relative (the console inbox); `read` remembers which.
+function RomImporter:_scanRomSources(paths)
+  local queue, rejects = {}, { unknown = {}, present = {}, duplicate = {},
+                               unreadable = {} }
+  local seen = {}
+  for _, path in ipairs(paths or {}) do
+    local name = path:match("[^/\\]+$") or path
+    local data = readExternalPath(path)
+    local fromSaveDir = false
+    if not data and love.filesystem then
+      data = love.filesystem.read(path)
+      fromSaveDir = data ~= nil
+    end
+    if type(data) ~= "string" then
+      rejects.unreadable[#rejects.unreadable + 1] = name
+    elseif not isSupportedRomSize(#data) then
+      rejects.unknown[#rejects.unknown + 1] = name
+    else
+      local version = GameVersion.forSha1(sha1(data))
+      if not version then
+        rejects.unknown[#rejects.unknown + 1] = name
+      elseif self.ready[version] and not self.returning[version] then
+        -- ALREADY IMPORTED IS NOT A FAILURE.  Pointing at the folder you keep
+        -- your dumps in when you already have half of them is the normal case,
+        -- and re-extracting a cartridge costs minutes -- the game's own
+        -- "Re-import ROM" button is where that decision belongs.
+        rejects.present[#rejects.present + 1] = GameVersion.info(version).displayName
+      elseif seen[version] then
+        rejects.duplicate[#rejects.duplicate + 1] = name
+      else
+        seen[version] = true
+        queue[#queue + 1] = { path = path, name = name, version = version,
+                              saveDir = fromSaveDir }
+      end
+    end
+    data = nil
+    collectgarbage("step")
+  end
+  -- import in the row's own order, so the launcher walks left to right through
+  -- the chips rather than in whatever order the dialog handed them over
+  local rank = {}
+  for i, v in ipairs(GameVersion.ORDER) do rank[v] = i end
+  table.sort(queue, function(a, b)
+    return (rank[a.version] or 99) < (rank[b.version] or 99)
+  end)
+  return queue, rejects
+end
+
+local function countLine(label, list)
+  if #list == 0 then return nil end
+  return ("%d %s (%s)"):format(#list, label, table.concat(list, ", "))
+end
+
+function RomImporter:_romBatchSummary(q)
+  local parts = {}
+  if #q.done > 0 then
+    local names = {}
+    for _, e in ipairs(q.done) do
+      names[#names + 1] = GameVersion.info(e.version).displayName
+    end
+    parts[#parts + 1] = ("Imported %d: %s"):format(#q.done,
+      table.concat(names, ", "))
+  end
+  local r = q.rejects or {}
+  local more = {
+    countLine("already imported", r.present or {}),
+    countLine("not recognised", r.unknown or {}),
+    countLine("duplicate", r.duplicate or {}),
+    countLine("unreadable", r.unreadable or {}),
+  }
+  for _, line in ipairs(more) do
+    if line then parts[#parts + 1] = line end
+  end
+  if #q.failed > 0 then
+    local names = {}
+    for _, e in ipairs(q.failed) do names[#names + 1] = e.name end
+    parts[#parts + 1] = ("%d failed: %s"):format(#q.failed,
+      table.concat(names, ", "))
+    -- the first reason in full: a list of names with no cause is a support
+    -- thread, and one cause usually explains all of them
+    parts[#parts + 1] = tostring(q.failed[1].err)
+  end
+  if #parts == 0 then return false, Strings("Nothing to import.") end
+  return #q.done > 0 and #q.failed == 0, table.concat(parts, "  -  ")
+end
+
+-- Begin (or continue) a queued run.  Called once when the queue is built and
+-- again every time an extraction ends.
+function RomImporter:_advanceRomQueue()
+  -- Taken here rather than where it is set, so the deferred wake and the
+  -- direct call after a refusal cannot both fire for the same ending.
+  self._romQueueResume = nil
+  local q = self._romQueue
+  if not q then return end
+  if self.workState == "working" then return end
+
+  -- WHAT HAPPENED TO THE ONE THAT JUST RAN, judged by the only thing that
+  -- settles it: whether that version is ready now.  `workState` is not enough
+  -- on its own -- setError can fire for a reason that is nothing to do with
+  -- this cartridge -- and `ready` is what the rest of the launcher believes.
+  local active = q.active
+  if active then
+    q.active = nil
+    if self.ready[active.version] then
+      q.done[#q.done + 1] = active
+    else
+      q.failed[#q.failed + 1] = { name = active.name,
+        err = self.detail or Strings("that ROM could not be imported") }
+    end
+  end
+
+  local nextUp = table.remove(q.pending, 1)
+  if not nextUp then
+    self._romQueue = nil
+    local ok, text = self:_romBatchSummary(q)
+    self.romBatch = { ok = ok, text = text, at = love.timer.getTime() }
+    return
+  end
+
+  q.index = (q.index or 0) + 1
+  local data = nextUp.saveDir and love.filesystem.read(nextUp.path)
+    or readExternalPath(nextUp.path)
+  if type(data) ~= "string" then
+    q.failed[#q.failed + 1] = { name = nextUp.name,
+      err = Strings("could not be read a second time") }
+    -- straight on to the next rather than stopping: a batch that gives up on
+    -- one unreadable file is a batch that has to be started again
+    return self:_advanceRomQueue()
+  end
+  q.active = nextUp
+  -- `workState` is "error" or "complete" from the previous run; startData only
+  -- refuses while one is actually working, so nothing has to be cleared.
+  self:startData(data, nextUp.name)
+  -- ...unless startData refused it outright (a file that changed underneath
+  -- the scan), in which case there is no worker to end and nothing would ever
+  -- call this again.
+  if self.workState ~= "working" then
+    return self:_advanceRomQueue()
+  end
+end
+
+-- WHAT HAPPENS AFTER ONE CARTRIDGE FINISHES, on a phone.
+--
+-- A desktop batch is a queue of paths the dialog already handed over, so
+-- _advanceRomQueue owns it.  A mobile one cannot be: the bridge gives one file
+-- per trip, so the next trip can only be asked for once this extraction has
+-- ended -- and an extraction is the one thing here that takes minutes.
+--
+-- Both endings reach this: the worker going dead, and setError's deferred
+-- wake.  `workState` says which, and a cartridge that failed is counted as
+-- failed rather than stopping the run -- the player picked six and one of them
+-- being a bad dump is not a reason to make them start again.
+function RomImporter:_romPickContinue()
+  if self._romQueue then return end        -- a desktop queue still has work
+  if self.workState == "working" then return end
+  if self._romPickAfterQueue then
+    self._romPickAfterQueue = nil
+    self:_pickManyBegin("rom")
+    return
+  end
+  if not self:_pickManyActive("rom") then return end
+  self:_pickManyTally(self.workState == "complete")
+  self:_pickManyAgain()
+end
+
+-- The button.  One press: pick, sort, queue.
+function RomImporter:chooseRomBatch()
+  if self.workState == "working" then return end
+  self.romBatch = nil
+  local paths
+  if self.android or self.ios then
+    -- THE INBOX FIRST, THEN THE PICKER -- and the picker is the part this used
+    -- to skip entirely.  Reported from play: "Import ROMs on Android says no
+    -- ROMs waiting and doesn't popup with a file picker."  It refused instead
+    -- of asking, which on a phone is the only way in: a USB copy is a desktop
+    -- move and the save directory lives under Android/data, where the stock
+    -- Files app cannot browse at all.
+    paths = pendingRomPaths()
+    if #paths == 0 then
+      self:_pickManyBegin("rom")
+      return
+    end
+    -- ...and once the waiting ones are in, keep asking for more.
+    self._romPickAfterQueue = true
+  else
+    paths = chooseRoms()
+    if not paths then
+      self:ensureImportsDir()
+      local waiting = pendingRomPaths()
+      -- A CANCELLED DIALOG IS A NO.  On a machine with a picker, falling
+      -- through to the inbox would start importing cartridges the player had
+      -- just backed out of choosing -- and an extraction is minutes, not
+      -- something to start by accident.  Where there is no dialog at all
+      -- (a console, a handheld with neither zenity nor kdialog) the inbox is
+      -- the only way in and this button is how it is reached.
+      if hasNativePicker() then
+        self.romBatch = { ok = false, at = love.timer.getTime(), text =
+          #waiting > 0
+            and Strings("No ROMs chosen. %d are waiting in %s/imports/ if you meant those.",
+                  #waiting, love.filesystem.getSaveDirectory())
+            or Strings("No ROMs chosen.") }
+        return
+      end
+      paths = waiting
+      if #paths == 0 then
+        self.romBatch = { ok = false, at = love.timer.getTime(), text =
+          Strings("No file picker here. Copy your ROMs into %s/imports/ and press this again.",
+            love.filesystem.getSaveDirectory()) }
+        return
+      end
+    end
+  end
+
+  local queue, rejects = self:_scanRomSources(paths)
+  self._romQueue = { pending = queue, done = {}, failed = {},
+                     rejects = rejects, total = #queue, index = 0 }
+  if #queue == 0 then
+    local q = self._romQueue
+    self._romQueue = nil
+    local ok, text = self:_romBatchSummary(q)
+    self.romBatch = { ok = ok, text = text, at = love.timer.getTime() }
+    return
+  end
+  self:_advanceRomQueue()
+end
+
+-- The line under the tab bar while a batch is running or has just finished.
+-- Returns text, ok -- or nil when there is nothing to say, which is what
+-- reserves no band in the layout.
+function RomImporter:_romBatchLine()
+  local q = self._romQueue
+  if q then
+    local active = q.active
+    local name = active and GameVersion.info(active.version).displayName
+      or Strings("cartridge")
+    return Strings("Importing %d of %d  -  %s", q.index or 1, q.total or 1,
+                   name), true
+  end
+  local b = self.romBatch
+  if not b then return nil end
+  -- It clears itself: a summary that stays for ever becomes furniture, and
+  -- this one is about something that just happened.  Generous, because an
+  -- import the player walked away from is exactly when they want to come back
+  -- and read it.
+  if love.timer.getTime() - (b.at or 0) > 90 then
+    self.romBatch = nil
+    return nil
+  end
+  return b.text, b.ok
+end
+
 function RomImporter:filedropped(file)
   if self.workState == "working" then return end
   -- A dropped .zip is a mod archive: hand it straight to the mods installer
@@ -2587,7 +3243,9 @@ function RomImporter:filedropped(file)
   -- readDroppedFile does here.
   local name = file:getFilename() or ""
   if name:lower():match("%.zip$") then
-    self:_installMod(file)
+    -- QUEUED, not installed here: a multi-file drop arrives as one call per
+    -- file and wants to be one import with one notice (_flushDroppedMods).
+    self:_queueDroppedMod(file)
     return
   end
   -- A dropped .sav is a battery save: import it to a new slot for the active
@@ -2632,6 +3290,292 @@ function RomImporter:_installMod(source, opts)
     self.modNotice = { ok = true, text = "Installed " .. tostring(res) }
   else
     self.modNotice = { ok = false, text = tostring(res) }
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- MASS IMPORT ON A PHONE, where there is no multi-select to ask for.
+--
+-- Reported from play: "Import ROMs on Android says no ROMs waiting and doesn't
+-- popup with a file picker, and on Android the import many button pulls up the
+-- file picker but won't let me select many files."  Both are the same wall:
+-- the desktop pickers are shell dialogs this file drives and can ask for a
+-- multiple selection, and the mobile one is a NATIVE BRIDGE
+-- (love.system.pickFile) that starts a system document activity and copies
+-- exactly ONE file back under a fixed basename.  There is no argument for
+-- "several", and adding one means changing the native side, not this file.
+--
+-- So a run is a LOOP rather than a list: pick, install, and open the picker
+-- again -- and the player ends it by pressing Back instead of picking.  That
+-- costs one tap per file instead of one round trip through the launcher per
+-- file, which is the part that made adding six mods unreasonable.
+--
+-- HOW A RUN ENDS, and it has to be something the OS actually tells us.  The
+-- picker is a separate activity, so returning from it raises love.focus(true)
+-- -- and RomImporter:focus already runs every branch that could consume a
+-- pick.  Falling through all of them means the player came back with nothing,
+-- which is a cancel.  That is the only end signal here; a timer would have to
+-- guess how long somebody takes to find a file.
+--
+-- IOS DOES NOT LOOP.  Its bridge answers through love.system.getPickedFile in
+-- update() rather than a focus event, so there is no "came back empty" moment
+-- to read -- an armed run would simply sit armed for ever.  One pick there,
+-- the same as before, and the notice says so.
+-- ---------------------------------------------------------------------------
+
+function RomImporter:_pickManyActive(kind)
+  local run = self._pickMany
+  return run ~= nil and (kind == nil or run.kind == kind) and run or nil
+end
+
+-- Open the picker for the kind this run is collecting.  Answers false when the
+-- bridge refuses (no picker on this build), which ends the run.
+function RomImporter:_pickManyArm()
+  local run = self._pickMany
+  if not run then return false end
+  if run.kind == "rom" then
+    if self.ios then
+      self.iosPendingKind = "rom"
+      if not pickFile("rom") then return false end
+    elseif not pickFile() then
+      return false
+    end
+  else
+    if self.ios then
+      self.iosPendingKind = "mod"
+      if not pickFile("mod") then return false end
+    elseif not pickFile("mod") then
+      return false
+    end
+  end
+  self.pickPending = true
+  self.pickTimer = 0
+  -- the cancel watchdog in _pollPickedFiles counts focused polls; a fresh arm
+  -- starts it over or the previous trip's count would end this one early
+  self._pickIdle = nil
+  return true
+end
+
+function RomImporter:_pickManyBegin(kind)
+  self._pickMany = { kind = kind, taken = 0, failed = 0 }
+  if not self:_pickManyArm() then
+    self._pickMany = nil
+    return false
+  end
+  -- Say what Back does BEFORE they are looking at a system file browser: the
+  -- loop is only obvious once it has looped, and by then they have already
+  -- wondered why the picker came back.
+  local hint = self.ios
+    and Strings("Choose a file to import.")
+    or Strings("Choose one, then keep choosing -- press Back when you are done.")
+  if kind == "rom" then
+    self.romBatch = { ok = true, at = love.timer.getTime(), text = hint }
+  else
+    self.modNotice = { ok = true, text = hint }
+  end
+  return true
+end
+
+function RomImporter:_pickManyTally(ok)
+  local run = self._pickMany
+  if not run then return end
+  if ok then run.taken = run.taken + 1 else run.failed = run.failed + 1 end
+end
+
+-- One more, unless this is iOS (see the note above) or the bridge has stopped
+-- answering.
+function RomImporter:_pickManyAgain()
+  local run = self._pickMany
+  if not run then return end
+  if self.ios or not self:_pickManyArm() then
+    self:_pickManyFinish()
+  end
+end
+
+function RomImporter:_pickManyFinish()
+  local run = self._pickMany
+  if not run then return end
+  self._pickMany = nil
+  self.pickPending = nil
+  local text
+  if run.taken == 0 and run.failed == 0 then
+    text = run.kind == "rom" and Strings("No ROMs imported.")
+      or Strings("No mods installed.")
+  elseif run.failed > 0 then
+    text = run.kind == "rom"
+      and Strings("Imported %d, %d failed.", run.taken, run.failed)
+      or Strings("Installed %d, %d failed.", run.taken, run.failed)
+  else
+    text = run.kind == "rom" and Strings("Imported %d.", run.taken)
+      or Strings("Installed %d.", run.taken)
+  end
+  local ok = run.taken > 0 and run.failed == 0
+  if run.kind == "rom" then
+    self.romBatch = { ok = ok, at = love.timer.getTime(), text = text }
+  else
+    self.modNotice = { ok = ok, text = text }
+  end
+end
+
+-- MASS IMPORT: a list of sources through one install pass and one notice.
+--
+-- `sources` is whatever LauncherMods.installZip takes -- absolute paths from
+-- the multi-select picker or the folder scan, love DroppedFiles from a
+-- multi-file drop -- so nothing here has a second idea of what a mod archive
+-- is.  LauncherMods.installMany does the work and summarize writes the line.
+function RomImporter:_installMods(sources, opts)
+  if self.workState == "working" then return end
+  self.tab = "mods"
+  if not (sources and #sources > 0) then
+    self.modNotice = { ok = false, text = Strings("Nothing to import.") }
+    return
+  end
+  local LauncherMods = require("src.mods.LauncherMods")
+  local ok, res = pcall(LauncherMods.installMany, sources, opts)
+  if not ok then
+    self.modNotice = { ok = false, text = "Import failed: " .. tostring(res) }
+    return
+  end
+  pcall(self._refreshMods, self)
+  local good, text = LauncherMods.summarize(res)
+  self.modNotice = { ok = good, text = text }
+end
+
+-- "Import many" -- the multi-select picker, with the console/handheld inbox as
+-- the fallback the single import already has.  On a machine with no picker,
+-- pressing this takes EVERY .zip sitting in imports/mods/, which is the one
+-- thing a player on that machine most wants and could not do.
+function RomImporter:chooseMods()
+  if self.workState == "working" then return end
+  -- MOBILE KEEPS PICKING.  The bridge takes a kind, not a count, so a run
+  -- there is a loop the player ends with Back -- see _pickManyBegin.  What is
+  -- already waiting in the inbox comes first, because a USB or MTP copy is a
+  -- whole batch that costs no taps at all.
+  if self.android or self.ios then
+    local waiting = self:_inboxMods()
+    if #waiting > 0 then
+      -- Reinstall rather than refuse: an inbox zip is not consumed (it stays
+      -- for MTP recovery), so a second press finds the same files and a plain
+      -- install would call every one of them "already installed".
+      self:_installMods(waiting, { replace = true })
+    end
+    if not self:_pickManyBegin("mod") then
+      if #waiting == 0 then
+        self.modNotice = { ok = false, text =
+          Strings("Could not open the file picker. Copy your mod .zip files "
+                  .. "into imports/mods/ instead.") }
+      end
+    end
+    return
+  end
+  local picks = chooseZips()
+  if picks then
+    -- A single pick through the multi picker is still a single install; going
+    -- through installMany keeps one code path and one notice shape.
+    self:_installMods(picks)
+    return
+  end
+  -- NOTHING PICKED MEANS NOTHING, on a machine that has a dialog to pick with.
+  -- Falling through to the inbox there would install a folder of mods somebody
+  -- had just cancelled out of choosing.
+  self:ensureModsInboxDir()
+  local inbox = self:_inboxMods()
+  if hasNativePicker() then
+    self.modNotice = { ok = false, text = #inbox > 0
+      and Strings("No mod .zip files chosen. %d are waiting in %s/imports/mods/ if you meant those.",
+            #inbox, love.filesystem.getSaveDirectory())
+      or Strings("No mod .zip files chosen.") }
+    return
+  end
+  if #inbox > 0 then
+    -- Reinstall rather than refuse: an inbox zip is not consumed (it stays in
+    -- imports/mods/ for MTP recovery), so a second press finds the same files
+    -- and a plain install would call every one of them "already installed".
+    self:_installMods(inbox, { replace = true })
+    return
+  end
+  self.modNotice = { ok = false, text =
+    Strings("No file picker here. Copy your mod .zip files into:\n%s/imports/mods/\nthen press Import many again.",
+      love.filesystem.getSaveDirectory()) }
+end
+
+-- Every .zip waiting in the save-dir inbox, in the save-dir-relative spelling
+-- findPendingMod already hands the single import (readArchive falls back to
+-- love.filesystem for exactly these).  Both inboxes, because the root scan is
+-- what every platform relied on before imports/mods/ existed.
+function RomImporter:_inboxMods()
+  if not (love.filesystem and love.filesystem.getDirectoryItems) then
+    return {}
+  end
+  pcall(self.ensureModsInboxDir, self)
+  local out, seen = {}, {}
+  for _, dir in ipairs({ MODS_INBOX_DIR, "" }) do
+    local ok, paths = pcall(listZipPaths, dir)
+    for _, path in ipairs((ok and paths) or {}) do
+      -- a Mac MTP copy leaves "._name.zip" resource forks beside the real
+      -- file; installZip's magic-byte check would reject them one by one and
+      -- fill the summary with failures that are not the player's problem
+      local base = path:match("[^/]+$") or path
+      if base:sub(1, 2) ~= "._" and not seen[path] then
+        seen[path] = true
+        out[#out + 1] = path
+      end
+    end
+  end
+  table.sort(out)
+  return out
+end
+
+-- "Import folder" -- point at where the releases live and take the lot.
+function RomImporter:chooseModFolder()
+  if self.workState == "working" then return end
+  if self.android or self.ios then
+    -- no folder picker on either bridge; the inbox IS the folder there
+    local inbox = self:_inboxMods()
+    if #inbox > 0 then
+      self:_installMods(inbox, { replace = true })
+    else
+      self.modNotice = { ok = false, text =
+        Strings("Copy your mod .zip files into imports/mods/ first.") }
+    end
+    return
+  end
+  local folder = chooseFolder()
+  if not folder or folder == "" then
+    self.modNotice = { ok = false, text = Strings("No folder chosen.") }
+    return
+  end
+  local LauncherMods = require("src.mods.LauncherMods")
+  local zips, err = LauncherMods.zipsInFolder(folder)
+  if not zips then
+    self.tab = "mods"
+    self.modNotice = { ok = false, text = tostring(err) }
+    return
+  end
+  self:_installMods(zips)
+end
+
+-- A MULTI-FILE DROP IS ONE IMPORT, not N.
+--
+-- LOVE delivers one love.filedropped per file, so dropping a folder's worth of
+-- mods used to run a full install per file and leave the panel showing
+-- whichever one happened to land last -- including, quite often, a failure
+-- from the middle of a run that otherwise worked.  Dropped archives are
+-- queued here and flushed on the next update, which is the first moment the
+-- whole drop is known to have arrived.
+function RomImporter:_queueDroppedMod(file)
+  self._modDropQueue = self._modDropQueue or {}
+  self._modDropQueue[#self._modDropQueue + 1] = file
+end
+
+function RomImporter:_flushDroppedMods()
+  local queue = self._modDropQueue
+  if not (queue and #queue > 0) then return end
+  self._modDropQueue = nil
+  if #queue == 1 then
+    self:_installMod(queue[1])
+  else
+    self:_installMods(queue)
   end
 end
 
@@ -2738,30 +3682,39 @@ function RomImporter:_modImportEntry(modId)
   return nil
 end
 
+-- STREAMED, NOT SLURPED.  Reported from play: importing a ROM from the
+-- launcher crashed it.  This read the whole file into one Lua string and
+-- handed that to ModImports.install, which then held it while the hash walked
+-- it, while it was written out, and while the shared bank wrote a second copy
+-- -- a couple of hundred megabytes live for a 64 MB cartridge, which a desktop
+-- absorbs and an Android heap does not.  ModImports.installFrom copies a
+-- megabyte at a time and never has the file in hand; `source` is a path
+-- either way (absolute off a picker, save-dir relative off the inbox) and it
+-- works out which.
+--
+-- `bytes` is still accepted, because a caller that genuinely has the bytes
+-- (the shared store) should not be made to write them to disk first.
 function RomImporter:_installModImport(modId, source, bytes)
   local ModImports = require("src.mods.ModImports")
   local entry, row = self:_modImportEntry(modId)
   if not (entry and row) then return end
-  if not bytes and source then
-    -- a picker hands back an absolute path; the inbox hands back a save-dir
-    -- relative one
-    local file = io.open(source, "rb")
-    if file then
-      bytes = file:read("*a")
-      file:close()
-    else
-      bytes = love.filesystem.read(source)
-    end
-  end
-  if not bytes then
+  local manifest = { path = row.manifestPath or ("mods/" .. modId) }
+  local ok, why, notes
+  if bytes then
+    ok, why = ModImports.install(manifest, entry, bytes)
+  elseif source then
+    ok, why, notes = ModImports.installFrom(manifest, entry, source)
+  else
     self.modNotice = { ok = false, text = "Could not read that file." }
     return
   end
-  local manifest = { path = row.manifestPath or ("mods/" .. modId) }
-  local ok, why = ModImports.install(manifest, entry, bytes)
   if ok then
-    self.modNotice = { ok = true,
-      text = "Imported " .. tostring(entry.name) .. " for " .. tostring(row.name) }
+    local text = "Imported " .. tostring(entry.name)
+                 .. " for " .. tostring(row.name)
+    -- ...and if the file was too big to checksum on this device, SAY so
+    -- rather than implying it was verified.
+    if notes then text = text .. "\n" .. tostring(notes) end
+    self.modNotice = { ok = true, text = text }
     self:_refreshMods()
   else
     self.modNotice = { ok = false, text = tostring(why) }
@@ -3141,6 +4094,10 @@ function RomImporter:_pollPickedFiles(dt)
   if pickError then
     love.filesystem.remove("pick_error.txt")
     self.pickPending = nil
+    if self._pickMany then
+      self:_pickManyTally(false)
+      self:_pickManyFinish()
+    end
     self.modNotice = { ok = false, text = pickError }
     self.notice = { version = self.chooseVersion or "red",
                     status = "File import failed:", detail = pickError }
@@ -3157,14 +4114,46 @@ function RomImporter:_pollPickedFiles(dt)
     end
   end
   if found then
+    self._pickIdle = nil
     self.pickPending = nil
     self:focus(true)
+    return
+  end
+  -- A RUN NOBODY CANCELLED OUT LOUD.
+  --
+  -- love.focus(true) is the clean end of a keep-picking run (see
+  -- _pickManyBegin), and Android is free to destroy the activity while the
+  -- picker is up -- the app RESTARTS instead of resuming and that event never
+  -- arrives.  A run left armed there would poll for a file for ever.
+  --
+  -- So: while THIS window has focus the picker is not in front of it, and a
+  -- run that has sat through several focused polls with nothing to show for
+  -- itself has been backed out of.  Three seconds, because the picker takes a
+  -- moment to come up and the copy takes a moment to land.
+  if self._pickMany and love.window and love.window.hasFocus
+      and love.window.hasFocus() then
+    self._pickIdle = (self._pickIdle or 0) + 1
+    if self._pickIdle >= 6 then
+      self._pickIdle = nil
+      self:_pickManyFinish()
+    end
+  else
+    self._pickIdle = nil
   end
 end
 
 function RomImporter:update(dt)
   self.pulse = self.pulse + dt
   self:_updatePadCursor(dt)
+  -- A drop that landed last frame is a COMPLETE drop now: LOVE hands over one
+  -- file per call and gives no "that was the last one", so the first update
+  -- after the calls is where the whole set becomes knowable.
+  self:_flushDroppedMods()
+  if self._romQueueResume then
+    self._romQueueResume = nil
+    self:_advanceRomQueue()
+    self:_romPickContinue()
+  end
   if self.ios and love.system.getPickedFile and self.workState ~= "working" then
     local path = love.system.getPickedFile()
     if path then
@@ -3174,6 +4163,12 @@ function RomImporter:update(dt)
       self.iosPendingVersion = nil
       if kind == "mod" then
         self:_installMod(path)
+        -- iOS does not loop (see _pickManyBegin), so this both counts the pick
+        -- and closes the run.
+        if self:_pickManyActive("mod") then
+          self:_pickManyTally(self.modNotice and self.modNotice.ok)
+          self:_pickManyAgain()
+        end
       elseif kind == "sav" then
         self:_importSave(version or self:_savedropTarget(), path)
       else
@@ -3186,6 +4181,12 @@ function RomImporter:update(dt)
         local version = self.iosPendingVersion or self:_savedropTarget()
         self.iosPendingKind = nil
         self.iosPendingVersion = nil
+        -- a rejected pick ends a run rather than leaving it armed for a
+        -- second file that is never asked for
+        if self._pickMany then
+          self:_pickManyTally(false)
+          self:_pickManyFinish()
+        end
         if kind == "mod" then
           self.modNotice = { ok = false, text = errorText }
         elseif kind == "sav" then
@@ -3197,6 +4198,7 @@ function RomImporter:update(dt)
     end
   end
   self:_pollPickedFiles(dt)
+  self:_stepDataMove()
   if self.workState ~= "working" or not self.worker then return end
   local started = love.timer.getTime()
   repeat
@@ -3219,6 +4221,11 @@ function RomImporter:update(dt)
     if self.worker ~= worker then return end
     if coroutine.status(worker) == "dead" then
       self.worker = nil
+      -- A QUEUED RUN CONTINUES HERE.  This is the one place an extraction is
+      -- known to have finished successfully; setError is the other ending, and
+      -- pumps the queue itself.
+      self:_advanceRomQueue()
+      self:_romPickContinue()
       return
     end
   until love.timer.getTime() - started >= 0.008
@@ -3240,8 +4247,15 @@ function RomImporter:_activatePadCursor()
   self._padCursorActive = true
 end
 
+-- THE ROW AS IT IS ON SCREEN, not a list written when there were three games.
+--
+-- This named red / blue / yellow / mods / find and nothing else, so a gamepad
+-- could not reach GOLD, SILVER, CRYSTAL, EMERALD, PRISM or POLISHED CRYSTAL at
+-- all -- and pressing the bumper from any of them jumped to RED.  Reading
+-- _visibleTabIds fixes that and makes the shoulder buttons walk exactly the
+-- chips the generation filter is showing.
 function RomImporter:_cycleTab(delta)
-  local order = { "red", "blue", "yellow", "mods", "find" }
+  local order = self:_visibleTabIds()
   local idx = 1
   for i, id in ipairs(order) do
     if id == self.tab then idx = i; break end
@@ -3667,6 +4681,17 @@ function RomImporter:_resetFrameRects()
   -- stay clickable over whatever the next tab (or the next window size) draws.
   self.modEnableAllRect = nil
   self.modDisableAllRect = nil
+  self.modImportManyRect = nil
+  self.modImportFolderRect = nil
+  self.modGenRects = nil
+  -- The generation dropdown is drawn on every tab, but only when the row is
+  -- wide enough for it (see draw()), so a stale rect would keep taking clicks
+  -- on a narrow window.  The MENU's rows are rebuilt only while it is open.
+  self.genDropdownRect = nil
+  self.genMenuRects = nil
+  -- Drawn beside the dropdown and dropped on a narrow row for the same reason,
+  -- so it gets the same treatment: a stale rect would keep taking clicks.
+  self.romBatchRect = nil
   -- Same rule as the toggles above, and it started to bite once FIND MODS gave
   -- the mods tab a neighbour: these two were rebuilt by the mods panel but
   -- never cleared, so switching tabs left the last mod row's Update / Versions
@@ -3743,24 +4768,6 @@ function RomImporter:draw()
     self.playFont     = f(20 * s)   -- Play button
     self.slotNameFont = f(15 * s)   -- save-slot player name / "NEW GAME"
 
-    -- Background: a radial gradient (bright navy at top-centre -> near black).
-    -- A triangle fan from the top-centre gives the radial falloff; the screen
-    -- is cleared to the outer colour first so the corners it does not reach
-    -- match seamlessly.  Sized to the full window so unsafe edges stay filled.
-    do
-      local cx, cy = fullW / 2, 0
-      local rx, ry = fullW * 1.3, fullH * 1.08
-      local n = 72
-      local verts = { { cx, cy, 0, 0,
-        PAL.bgTop[1] / 255, PAL.bgTop[2] / 255, PAL.bgTop[3] / 255, 1 } }
-      for i = 0, n do
-        local a = (i / n) * math.pi * 2
-        verts[#verts + 1] = { cx + math.cos(a) * rx, cy + math.sin(a) * ry, 0, 0,
-          PAL.bgBot[1] / 255, PAL.bgBot[2] / 255, PAL.bgBot[3] / 255, 1 }
-      end
-      self.bgMesh = love.graphics.newMesh(verts, "fan", "static")
-    end
-
     -- CRT vignette: a gentle edge darkening, centred slightly above the middle.
     do
       local cx, cy = fullW / 2, fullH * 0.45
@@ -3811,6 +4818,34 @@ function RomImporter:draw()
       return vec4(p.rgb + band * 0.55, p.a) * color;
     }
   ]])
+
+  -- BACKGROUND: a radial gradient (bright point at top-centre -> near black).
+  -- A triangle fan from the top-centre gives the radial falloff; the screen is
+  -- cleared to the outer colour first so the corners it does not reach match
+  -- seamlessly.  Sized to the full window so unsafe edges stay filled.
+  --
+  -- ITS OWN KEY, not the font one.  A mesh's vertex colours are BAKED at build
+  -- time, so while this was rebuilt only on a resize, changing the theme
+  -- repainted every card, every label and the flat clear underneath -- and
+  -- left the gradient on top of them exactly as it was.  Reported as the theme
+  -- not changing the background, which is precisely what it was.
+  local glow = PAL.bgGlow or PAL.bgTop
+  local bgKey = ("%dx%d|%d,%d,%d|%d,%d,%d"):format(fullW, fullH,
+    glow[1], glow[2], glow[3], PAL.bgBot[1], PAL.bgBot[2], PAL.bgBot[3])
+  if self.bgKey ~= bgKey or not self.bgMesh then
+    self.bgKey = bgKey
+    local cx, cy = fullW / 2, 0
+    local rx, ry = fullW * 1.3, fullH * 1.08
+    local n = 72
+    local verts = { { cx, cy, 0, 0,
+      glow[1] / 255, glow[2] / 255, glow[3] / 255, 1 } }
+    for i = 0, n do
+      local a = (i / n) * math.pi * 2
+      verts[#verts + 1] = { cx + math.cos(a) * rx, cy + math.sin(a) * ry, 0, 0,
+        PAL.bgBot[1] / 255, PAL.bgBot[2] / 255, PAL.bgBot[3] / 255, 1 }
+    end
+    self.bgMesh = love.graphics.newMesh(verts, "fan", "static")
+  end
 
   -- background (full window — unsafe edges stay painted)
   col(PAL.bgBot)
@@ -3893,12 +4928,43 @@ function RomImporter:draw()
   local bannerActive = upStatus ~= nil
   local bannerH = 46 * s
 
+  -- THE MASS-IMPORT LINE, between the chips and the panel.
+  --
+  -- It needs its own band rather than a corner of somebody else's: a queued
+  -- run walks from game to game, so there is no one tab its progress belongs
+  -- on, and its summary is about files that may have become no game at all.
+  -- Measured here so `contentTop` below moves with it and the panel is never
+  -- drawn under it.
+  local batchText, batchOk = self:_romBatchLine()
+  local batchH, batchLines = 0, 1
+  if batchText then
+    -- Measured for the same reason the mods notice is (see _drawModsPanel): a
+    -- summary that names four cartridges and two rejects is not one line, and
+    -- a band sized for one would run down through the panel below it.
+    local _, wrapped = self.hintFont:getWrap(batchText, appW - 2 * padH - 24 * s)
+    batchLines = math.max(1, math.min(#wrapped, 4))
+    batchH = batchLines * self.hintFont:getHeight() + 16 * s
+  end
+  local batchBand = batchText and (batchH + 10 * s) or 0
+
   -- Content region: from below the tab bar down to the footer, minus the
   -- updater band when one is showing.
-  local contentTop = tabBarY + tabBarH + 16 * s
+  local contentTop = tabBarY + tabBarH + 16 * s + batchBand
   local bannerBand = bannerActive and (bannerH + 20 * s) or 6 * s
   local cX = appX + padH
   local cW = appW - 2 * padH
+  -- THE HEADER ROW'S REMAINING WIDTH, and NOT the content width.
+  --
+  -- The gear, the generation dropdown and IMPORT ROMS each take their slice
+  -- off the right-hand end of the row they share, so what is left over is what
+  -- the chip row may use.  That is a fact about ONE ROW.  It used to be
+  -- subtracted from `cW` itself, which is also the width every panel below is
+  -- drawn at -- so on a phone in portrait, where those three controls eat most
+  -- of a narrow row, the whole launcher underneath was squeezed into a strip
+  -- about a third of the screen wide with its labels wrapping one word to a
+  -- line (reported with a screenshot).  Nothing below the bar has any business
+  -- narrowing because of what is on it.
+  local barW = cW
   local contentBottom = oy + height - footerH - bannerBand
   local cH = math.max(0, contentBottom - contentTop)
 
@@ -3927,7 +4993,7 @@ function RomImporter:draw()
   -- bar so the bar's own scissor cannot clip it.
   do
     local gear = 30 * s
-    local gx = cX + cW - gear
+    local gx = cX + barW - gear
     local gy = tabBarY + (tabBarH - gear) / 2
     local on = self.settingsOpen and true or false
     col(on and PAL.link or PAL.warning, on and 1 or 0.75)
@@ -3954,12 +5020,78 @@ function RomImporter:draw()
                           width = gear + 12 * s, height = gear + 12 * s,
                           pinned = true }
     -- and the bar stops short of it, so a long chip row cannot run underneath
-    cW = cW - gear - 10 * s
+    barW = barW - gear - 10 * s
+  end
+
+  -- THE GENERATION DROPDOWN, beside the gear and on the same rule: pinned out
+  -- of the chip row's own horizontal scroll, so it cannot be pushed off the
+  -- edge by a row it exists to shorten.
+  do
+    love.graphics.setFont(self.hintFont)
+    local function widthOf(short)
+      local widest = self.hintFont:getWidth(
+        RomImporter.generationLabel(false, short))
+      for _, g in ipairs(RomImporter.GENERATIONS) do
+        widest = math.max(widest, self.hintFont:getWidth(
+          RomImporter.generationLabel(g, short)))
+      end
+      return widest + 36 * s
+    end
+    local dh = math.max(26 * s, self.hintFont:getHeight() + 12 * s)
+    local dw, short = widthOf(false), false
+    -- A phone-width row cannot carry "GEN 2" as well as nine chips and a gear,
+    -- so the chip shortens to "G2" before it is given up on.
+    if barW <= dw + 140 * s then dw, short = widthOf(true), true end
+    if barW > dw + 110 * s then
+      self._genFilterSuppressed = nil
+      self:_drawGenDropdown(cX + barW - dw, tabBarY + (tabBarH - dh) / 2, dw, dh,
+                            short)
+      barW = barW - dw - 10 * s
+      -- MASS ROM IMPORT, immediately left of it ("next to the gen select
+      -- button").  Dropped before the dropdown is on a narrow row, because the
+      -- dropdown is the control that makes a nine-chip row usable at all and
+      -- every game's own panel still has its own Import ROM button.
+      local label = Strings("IMPORT ROMS")
+      local rw = self.hintFont:getWidth(label) + 26 * s
+      if barW > rw + 110 * s then
+        self.romBatchRect = self:_chipButton(cX + barW - rw,
+          tabBarY + (tabBarH - dh) / 2, label,
+          { w = rw, h = dh, kind = "accent" })
+        self.romBatchRect.pinned = true
+        barW = barW - rw - 10 * s
+      end
+    else
+      -- NO DROPDOWN MEANS NO FILTER, or the player is left looking at one
+      -- generation's chips with nothing on screen that could put the rest
+      -- back.  The choice is kept -- it is still in options and comes back the
+      -- moment the window is wide enough -- it simply does not apply here.
+      self._genFilterSuppressed = true
+      self.genDropdownRect = nil
+      self._genMenuOpen = false
+    end
   end
 
   -- tab bar (rebuilds self.tabRects).  Pinned: it is the launcher's navigation,
   -- and it sits above the scrolling viewport.
-  self:_drawTabBar(cX, tabBarY, cW, tabBarH, chip)
+  self:_drawTabBar(cX, tabBarY, barW, tabBarH, chip)
+
+  if batchText then
+    local by = tabBarY + tabBarH + 10 * s
+    local bw = appW - 2 * padH
+    local tint = batchOk and PAL.playTop or PAL.chooseTop
+    col(tint, 0.12)
+    love.graphics.rectangle("fill", cX, by, bw, batchH, 8 * s, 8 * s)
+    love.graphics.setLineWidth(math.max(1, s))
+    col(tint, 0.5)
+    love.graphics.rectangle("line", cX, by, bw, batchH, 8 * s, 8 * s)
+    love.graphics.setFont(self.hintFont)
+    col(batchOk and PAL.playTop or PAL.warning)
+    -- the whole block centred, not one line's worth: batchH was measured off
+    -- the wrap above and a summary is routinely two or three lines
+    love.graphics.printf(batchText, cX + 12 * s,
+      by + (batchH - batchLines * self.hintFont:getHeight()) / 2,
+      bw - 24 * s, "left")
+  end
 
   local panelY = contentTop - (paged and self.pageScroll or 0)
   if paged then
@@ -4234,7 +5366,7 @@ function RomImporter:draw()
     love.graphics.rectangle("line", dx, dy, dw, dh, rr, rr)
 
     love.graphics.setFont(self.slotNameFont)
-    col(PAL.white)
+    col(PAL.ink)
     love.graphics.print(Strings("Name save slot"), dx + 16 * s, dy + 14 * s)
 
     -- the field: bordered strip, current text, blinking caret on the pulse
@@ -4280,7 +5412,7 @@ function RomImporter:draw()
     love.graphics.rectangle("line", dx, dy, dw, dh, rr, rr)
 
     love.graphics.setFont(self.slotNameFont)
-    col(PAL.white)
+    col(PAL.ink)
     love.graphics.print(Strings("Add a mod index"), dx + 16 * s, dy + 14 * s)
     love.graphics.setFont(self.hintFont)
     col(PAL.detail)
@@ -4327,6 +5459,11 @@ function RomImporter:draw()
       dx + 16 * s, dy + dh - 32 * s, dw - 32 * s, "left")
   end
 
+  -- The generation menu hangs off the tab bar and over the panel, so it is
+  -- painted after the panel and before the modal dim below: a modal is a
+  -- different conversation and closes it (see _drawGenMenu).
+  self:_drawGenMenu()
+
   -- Mod confirm / versions / release-notes / index-details overlays
   if self._modConfirm or self._modVersions or self._modReleaseNotes
       or self._findDetails then
@@ -4346,7 +5483,7 @@ function RomImporter:draw()
     col((c.kind == "update") and PAL.green or PAL.gold, 0.65)
     love.graphics.rectangle("line", dx, dy, dw, dh, rr, rr)
     love.graphics.setFont(self.slotNameFont)
-    col(PAL.white)
+    col(PAL.ink)
     love.graphics.printf(c.title or "Confirm", dx + 16 * s, dy + 14 * s,
       dw - 32 * s, "left")
     love.graphics.setFont(self.hintFont)
@@ -4369,7 +5506,7 @@ function RomImporter:draw()
     col(PAL.disabled, nhot and 0.55 or 0.35)
     love.graphics.rectangle("fill", self._modConfirmNo.x, by, btnW, btnH, 8 * s, 8 * s)
     love.graphics.setFont(self.saveBtnFont)
-    col(PAL.white)
+    col(PAL.ink)
     printfB(c.yesLabel or "OK", self._modConfirmYes.x,
       by + (btnH - self.saveBtnFont:getHeight()) / 2, btnW, "center")
     col(PAL.detail)
@@ -4388,7 +5525,7 @@ function RomImporter:draw()
     col(PAL.green, 0.5)
     love.graphics.rectangle("line", dx, dy, dw, dh, rr, rr)
     love.graphics.setFont(self.slotNameFont)
-    col(PAL.white)
+    col(PAL.ink)
     love.graphics.printf("v" .. tostring(n.version) .. " notes",
       dx + 16 * s, dy + 12 * s, dw - 32 * s, "left")
     local body = ModUpdate.cleanBody(n.body or "", 0)
@@ -4433,7 +5570,7 @@ function RomImporter:draw()
     col(PAL.modDot, 0.5)
     love.graphics.rectangle("line", dx, dy, dw, dh, rr, rr)
     love.graphics.setFont(self.slotNameFont)
-    col(PAL.white)
+    col(PAL.ink)
     love.graphics.printf(ellipsize(self.slotNameFont, d.title, dw - 32 * s),
       dx + 16 * s, dy + 12 * s, dw - 32 * s, "left")
     local body = ModUpdate.cleanBody(d.body or "", 0)
@@ -4491,7 +5628,7 @@ function RomImporter:draw()
     love.graphics.rectangle("line", dx, dy, dw, dh, rr, rr)
 
     love.graphics.setFont(self.slotNameFont)
-    col(PAL.white)
+    col(PAL.ink)
     love.graphics.printf("Other versions: " .. tostring(v.name),
       dx + pad, dy + 10 * s, dw - pad * 2, "left")
     love.graphics.setFont(self.hintFont)
@@ -4532,7 +5669,7 @@ function RomImporter:draw()
       local label = "v" .. rel.version
       if rel.version == v.current then label = label .. " (installed)" end
       if rel.prerelease then label = label .. " pre" end
-      col(rel.version == v.current and PAL.warning or PAL.white)
+      col(rel.version == v.current and PAL.warning or PAL.ink)
       love.graphics.print(label, rect.x + 12 * s, rect.y + 6 * s)
 
       -- one-line ellipsized preview only (never wrap changelog into the row)
@@ -4703,6 +5840,8 @@ function RomImporter:mousepressed(x, y, button)
         self:_confirmModUpdate(c.id, c.release)
       elseif c.kind == "enableAll" then
         self:_setAllMods(true, true)
+      elseif c.kind == "experimentalGen" or c.kind == "forceGen" then
+        self:_toggleModGeneration(c.id, c.gen, true)
       else
         self:_toggleMod(c.id, true)
       end
@@ -4766,6 +5905,30 @@ function RomImporter:mousepressed(x, y, button)
     return
   end
   if button ~= 1 then return end
+  -- THE GENERATION MENU EATS THE PRESS WHILE IT IS OPEN, which is the whole
+  -- difference between a dropdown and four buttons that happen to overlap the
+  -- panel: a click on a row picks that generation, a click anywhere else
+  -- closes the menu and goes no further.  Ahead of every other hit test,
+  -- because the menu is drawn over them.
+  if self._genMenuOpen then
+    for _, r in ipairs(self.genMenuRects or {}) do
+      if inside(r, x, y) then
+        self:_selectGeneration(r.gen)
+        return
+      end
+    end
+    self._genMenuOpen = false
+    if inside(self.genDropdownRect, x, y) then return end
+    return
+  end
+  if inside(self.genDropdownRect, x, y) then
+    self._genMenuOpen = true
+    return
+  end
+  if inside(self.romBatchRect, x, y) then
+    self:chooseRomBatch()
+    return
+  end
   -- Any press that is not the second click on an armed Delete disarms it, so
   -- take the arm off self up front and let the Delete loops below re-arm.
   local armed = self._confirmDelete
@@ -4815,8 +5978,15 @@ function RomImporter:mousepressed(x, y, button)
     -- most of it is toggles you set once -- and half the rows are ABOUT what
     -- is on the tab behind them (a mod's options, with the mod list behind).
     self.settingsOpen = not self.settingsOpen
+    self._settingsPress = nil   -- a press armed on a row the drawer just hid
     if self.settingsOpen then
       self.settingsScroll = 0
+      -- Always opens on the first page.  The launcher page is a place you go
+      -- to do one thing and come back from; reopening the gear onto it, days
+      -- later, would hide every row the gear is actually for.
+      self.settingsPage = nil
+      self.settingsGen = nil
+      self.settingsNotice = nil
       -- rebuilt on each opening, not per frame: reading every installed mod's
       -- schema file is disk work, and at sixty frames a second on a folder of
       -- mods it is disk work for as long as the drawer is open.
@@ -4835,24 +6005,45 @@ function RomImporter:mousepressed(x, y, button)
     and inside(self.settingsDrawerRect, x, y)
 
   -- Settings rows: both arrows and the value between them step the option.
+  --
+  -- A press only ARMS the row where a drag can be resolved (_updateSlotDrag),
+  -- for the same reason the mods list does: the drawer scrolls, a finger that
+  -- starts on a row and moves means to scroll it, and stepping VIDEO MODE
+  -- because a player swiped through it is a setting changed by accident on a
+  -- screen with no undo.  Where a pointer cannot be polled -- Android without
+  -- love.touch -- it steps on press exactly as it always did.
   if button == 1 and self.settingsRowRects then
     for _, r in ipairs(self.settingsRowRects) do
       local entry = r.entry
+      local hit = nil
       if entry and entry.kind == "action" then
-        if inside(r.value, x, y) then
-          if entry.action == "touchLayout" and self.onEditTouchControls then
-            self.onEditTouchControls()
-          end
-          return
-        end
+        if inside(r.value, x, y) then hit = 0 end
       else
-        if inside(r.left, x, y) then self:_stepSetting(entry, -1) return end
-        if inside(r.right, x, y) or inside(r.value, x, y) then
-          self:_stepSetting(entry, 1)
-          return
+        if inside(r.left, x, y) then hit = -1
+        elseif inside(r.right, x, y) or inside(r.value, x, y) then hit = 1 end
+      end
+      if hit then
+        if armDrag then
+          self._settingsPress = { entry = entry, dir = hit, y0 = y,
+            scroll0 = self.settingsScroll or 0, moved = false }
+        elseif hit == 0 then
+          self:_settingsAction(entry)
+        else
+          self:_stepSetting(entry, hit)
         end
+        return
       end
     end
+  end
+  -- ...and the drawer's own blank space pans it.  Armed before `shielded`
+  -- swallows the press, so a swipe that starts between two rows scrolls the
+  -- list rather than doing nothing at all -- which, on a phone, is most of
+  -- the drawer's area and was the whole of the reported bug.
+  if button == 1 and self.settingsOpen and armDrag
+     and inside(self.settingsDrawerRect, x, y) then
+    self._settingsPress = { y0 = y, scroll0 = self.settingsScroll or 0,
+                            moved = false }
+    return
   end
   -- and everything else in the drawer's rectangle stops here: see `shielded`.
   if shielded then return end
@@ -4963,6 +6154,14 @@ function RomImporter:mousepressed(x, y, button)
   if inside(self.modDisableAllRect, x, y) then
     self:_setAllMods(false); return
   end
+  -- The two mass importers share that header and dispatch on press for the
+  -- same reason: nothing here is a toggle a drag-scroll could be mistaken for.
+  if inside(self.modImportManyRect, x, y) then
+    self:chooseMods(); return
+  end
+  if inside(self.modImportFolderRect, x, y) then
+    self:chooseModFolder(); return
+  end
   for _, r in ipairs(self.modDeleteRects or {}) do
     if inside(r, x, y) then
       if armedDelete(armed, "mod", r.id, nil) then
@@ -5001,6 +6200,21 @@ function RomImporter:mousepressed(x, y, button)
   for _, r in ipairs(self.modVersionsRects or {}) do
     if inside(r, x, y) then
       self:_modGithubAction(r.id, "versions")
+      return
+    end
+  end
+  -- The generation chips sit in the scrolling list beside the switch, and take
+  -- the press the same way the switch does -- ahead of it, because they are
+  -- inside its cluster and a chip press must not read as a master toggle.
+  for _, r in ipairs(self.modGenRects or {}) do
+    if inside(r, x, y) then
+      if not armDrag then
+        self:_toggleModGeneration(r.id, r.gen)
+      else
+        self._modPress = { id = r.id, gen = r.gen, y0 = y,
+          scroll0 = self.modScroll or 0,
+          pageScroll0 = self.pageScroll or 0, moved = false }
+      end
       return
     end
   end
@@ -5070,6 +6284,12 @@ function RomImporter:mousepressed(x, y, button)
 end
 
 function RomImporter:keypressed(key)
+  -- Esc closes the generation menu before it reaches anything else, the way
+  -- every other dropdown anybody has used does.
+  if self._genMenuOpen and key == "escape" then
+    self._genMenuOpen = false
+    return
+  end
   if self._rename then
     if key == "backspace" then
       self._rename.text = utf8Back(self._rename.text)
@@ -5195,7 +6415,7 @@ function RomImporter:_glassyButton(x, y, w, h, label, font, enabled)
   love.graphics.setLineWidth(1)
   col(PAL.white, 0.18)
   love.graphics.rectangle("line", x, y, w, h, r, r)
-  col(PAL.white)
+  col(PAL.ink)
   printfB(label, x, y + (h - font:getHeight()) / 2, w, "center")
   return rect
 end
@@ -5240,7 +6460,7 @@ function RomImporter:_chipButton(x, y, label, opts)
     love.graphics.setLineWidth(math.max(1, s))
     col(PAL.white, hot and 0.35 or 0.18)
     love.graphics.rectangle("line", x, y, w, h, r, r)
-    col(PAL.white)
+    col(PAL.ink)
   end
   printfB(label, x, y + (h - font:getHeight()) / 2, w, "center")
   return rect
@@ -5290,6 +6510,196 @@ end
 
 -- The game/divider/MODS chip row. Only the active tab shows its label +
 -- underline; the rest are dimmed.  Rebuilds self.tabRects (chip squares).
+
+-- ---------------------------------------------------------------------------
+-- THE GENERATION FILTER
+--
+-- Asked for directly: "add in a dropdown at the top right of the launcher in
+-- the same row as the game squares for selecting between gen1, gen2, gen3
+-- games where when selected itll only show the games in the row for the
+-- selected generation".
+--
+-- The chip row runs nine cartridges now and scrolls to fit them; a player who
+-- only ever boots Emerald was paging past six Game Boy chips to reach it.  The
+-- filter is a VIEW and nothing else -- it hides chips, it does not unregister
+-- a game, and ALL puts every one of them back.
+--
+-- Persisted (options.launcherGeneration) because a filter that resets every
+-- launch is a filter nobody uses twice.
+-- ---------------------------------------------------------------------------
+
+RomImporter.GENERATIONS = { 1, 2, 3 }
+
+function RomImporter.generationLabel(g, short)
+  if not g then return Strings("ALL") end
+  if short then return Strings("G%d", g) end
+  return Strings("GEN %d", g)
+end
+
+-- The tab ids on screen right now, in row order, honouring the filter.  One
+-- list, so the chips, the gamepad's tab cycling and the "which tab do I land
+-- on" rule after a filter change cannot disagree.
+-- THE FILTER AS IT ACTUALLY APPLIES, which is not always what is stored.
+--
+-- Two things switch it off without touching the player's choice:
+--
+--   * a window too narrow to carry the dropdown (`_genFilterSuppressed`, set
+--     by draw) -- a filtered row with no control to unfilter it is a trap;
+--   * A MASS ROM IMPORT IN PROGRESS.  A queued run walks from game to game and
+--     brings the launcher to each one's tab as it starts, so a filter set to
+--     GEN 2 would put the panel for EMERALD on screen with no chip above it.
+--     The filter comes back the moment the run ends.
+function RomImporter:_activeGenFilter()
+  if self._genFilterSuppressed or self._romQueue then return nil end
+  return self.genFilter
+end
+
+function RomImporter:_visibleTabIds()
+  local out = {}
+  local filter = self:_activeGenFilter()
+  for _, v in ipairs(GameVersion.ORDER) do
+    if not filter or GameVersion.generation(v) == filter then
+      out[#out + 1] = v
+    end
+  end
+  -- MODS and FIND MODS are not games and are never filtered away: they are the
+  -- only route to the mod panels, and a filter that could hide them would be a
+  -- filter that locks a player out of their own mod list.
+  out[#out + 1] = "mods"
+  out[#out + 1] = "find"
+  return out
+end
+
+function RomImporter:_selectGeneration(g)
+  self.genFilter = g or nil
+  self._genMenuOpen = false
+  local SaveData = require("src.core.SaveData")
+  local ok, options = pcall(SaveData.loadOptions)
+  if ok and type(options) == "table" then
+    -- `false` rather than nil for ALL: mergeOptions keeps unknown keys but a
+    -- nil is simply absent, and absent has to keep meaning "never chosen" for
+    -- a build that adds a default later.
+    options.launcherGeneration = g or false
+    pcall(SaveData.saveOptions, options)
+  end
+  -- The tab you were on may have just been filtered away, and a launcher
+  -- showing a panel with no chip to match it is the shape of a bug report.
+  if GameVersion.VERSIONS[self.tab]
+      and self.genFilter
+      and GameVersion.generation(self.tab) ~= self.genFilter then
+    local first
+    for _, id in ipairs(self:_visibleTabIds()) do
+      if GameVersion.VERSIONS[id] then first = id break end
+    end
+    self:_selectTab(first or "mods")
+  end
+  -- the row is a different row now; start it at the left rather than wherever
+  -- the old one had been scrolled to
+  self.tabScroll = 0
+  self._tabFollow = true
+end
+
+-- The dropdown itself: a chip that says which generation is showing, with a
+-- caret.  The MENU is drawn by draw()'s overlay pass -- it has to sit over the
+-- panel below it, and this is drawn inside the tab-bar row.
+function RomImporter:_drawGenDropdown(x, y, w, h, short)
+  local s = self._s
+  local label = RomImporter.generationLabel(self.genFilter, short)
+  local rect = { x = x, y = y, width = w, height = h, pinned = true }
+  local hot = self:_hover(rect)
+  local open = self._genMenuOpen and true or false
+  fillGradRounded(x, y, w, h, 8 * s, PAL.slotBg, PAL.slotBg,
+                  (hot or open) and 0.95 or 0.75,
+                  (hot or open) and 0.95 or 0.75)
+  love.graphics.setLineWidth(math.max(1, 1.2 * s))
+  col(open and PAL.link or PAL.cardBorder, open and 0.9 or 0.55)
+  love.graphics.rectangle("line", x, y, w, h, 8 * s, 8 * s)
+  love.graphics.setFont(self.hintFont)
+  col(open and PAL.link or PAL.ink)
+  love.graphics.print(label, x + 10 * s,
+    y + (h - self.hintFont:getHeight()) / 2)
+  -- caret, pointing the way the menu will go
+  local cxx = x + w - 14 * s
+  local cyy = y + h / 2 + (open and 2 * s or -1 * s)
+  local d = 4 * s
+  col(open and PAL.link or PAL.warning)
+  if open then
+    love.graphics.polygon("fill", cxx - d, cyy, cxx + d, cyy, cxx, cyy - d * 1.2)
+  else
+    love.graphics.polygon("fill", cxx - d, cyy, cxx + d, cyy, cxx, cyy + d * 1.2)
+  end
+  self.genDropdownRect = rect
+  return rect
+end
+
+-- The open menu, drawn last so nothing can be painted over it and clicked
+-- through.  Rows are ALL / GEN 1 / GEN 2 / GEN 3 with the count of games each
+-- one holds, which is what makes an empty generation obvious rather than
+-- looking like a broken filter.
+function RomImporter:_drawGenMenu()
+  self.genMenuRects = nil
+  -- A modal owns the screen; a dropdown left hanging behind one would be
+  -- drawn under the dim and still take clicks.
+  if self._modConfirm or self._modVersions or self._modReleaseNotes
+      or self._findDetails or self._rename or self._indexPrompt then
+    self._genMenuOpen = false
+  end
+  if not (self._genMenuOpen and self.genDropdownRect) then return end
+  local s = self._s
+  local r = self.genDropdownRect
+  local rows = { false }
+  for _, g in ipairs(RomImporter.GENERATIONS) do rows[#rows + 1] = g end
+  love.graphics.setFont(self.hintFont)
+  local rowH = self.hintFont:getHeight() + 14 * s
+  local w = math.max(r.width, 120 * s)
+  local h = #rows * rowH + 8 * s
+  local x = r.x + r.width - w
+  local y = r.y + r.height + 6 * s
+  fillGradRounded(x, y, w, h, 10 * s, PAL.slotBg, PAL.slotBg, 0.98, 0.98)
+  love.graphics.setLineWidth(math.max(1, 1.2 * s))
+  col(PAL.cardBorder, 0.7)
+  love.graphics.rectangle("line", x, y, w, h, 10 * s, 10 * s)
+  local rects = {}
+  local ry = y + 4 * s
+  for _, g in ipairs(rows) do
+    local value = g or nil
+    local rr = { x = x + 4 * s, y = ry, width = w - 8 * s, height = rowH,
+                 gen = value, pinned = true }
+    local hot = self:_hover(rr)
+    local active = (self.genFilter or false) == (value or false)
+    if hot or active then
+      col(active and PAL.link or PAL.cardBorder, active and 0.18 or 0.25)
+      love.graphics.rectangle("fill", rr.x, rr.y, rr.width, rr.height,
+        6 * s, 6 * s)
+    end
+    local ready, total = 0, 0
+    if value then
+      for _, v in ipairs(GameVersion.ORDER) do
+        if GameVersion.generation(v) == value then
+          total = total + 1
+          if self.ready[v] then ready = ready + 1 end
+        end
+      end
+    else
+      total = #GameVersion.ORDER
+      for _, v in ipairs(GameVersion.ORDER) do
+        if self.ready[v] then ready = ready + 1 end
+      end
+    end
+    col(active and PAL.link or PAL.ink)
+    love.graphics.print(RomImporter.generationLabel(value), rr.x + 8 * s,
+      ry + (rowH - self.hintFont:getHeight()) / 2)
+    col(PAL.warning, 0.8)
+    local count = ("%d/%d"):format(ready, total)
+    love.graphics.print(count, rr.x + rr.width - 8 * s
+      - self.hintFont:getWidth(count),
+      ry + (rowH - self.hintFont:getHeight()) / 2)
+    rects[#rects + 1] = rr
+    ry = ry + rowH
+  end
+  self.genMenuRects = rects
+end
+
 function RomImporter:_drawTabBar(x, y, w, h, chip)
   local s, pulse = self._s, self.pulse
   local tabs = {
@@ -5343,6 +6753,21 @@ function RomImporter:_drawTabBar(x, y, w, h, chip)
     { id = "find",   find = true,  top = PAL.chipModTop,  bot = PAL.chipModBot,
       under = PAL.modDot, label = Strings("FIND MODS") },
   }
+  -- THE GENERATION FILTER, applied to the row and nowhere else.  MODS and
+  -- FIND MODS stay whatever is selected -- see _visibleTabIds for why -- and
+  -- ALL is simply no filter at all, so the row is byte-for-byte what it was
+  -- before this existed.
+  local rowFilter = self:_activeGenFilter()
+  if rowFilter then
+    local kept = {}
+    for _, t in ipairs(tabs) do
+      if t.mods or t.find or GameVersion.generation(t.id) == rowFilter then
+        kept[#kept + 1] = t
+      end
+    end
+    tabs = kept
+  end
+
   local gap = 10 * s
   local r = 12 * s
   local chipY = y + (h - chip) / 2 - 2 * s
@@ -5443,7 +6868,7 @@ function RomImporter:_drawTabBar(x, y, w, h, chip)
     local segEnd = cursorX + chip
     if active then
       love.graphics.setFont(self.tabLabelFont)
-      col(PAL.white)
+      col(PAL.ink)
       local labelX = cursorX + chip + gap
       local lw = printSpaced(self.tabLabelFont, t.label, labelX,
         y + (h - self.tabLabelFont:getHeight()) / 2, 2 * s)
@@ -5459,12 +6884,19 @@ function RomImporter:_drawTabBar(x, y, w, h, chip)
   end
   self._tabContentW = cursorX - gap - originX
   love.graphics.setScissor()
-  -- "N of X ready" from GameVersion.ORDER.
-  local ready = 0
-  for _, v in ipairs(GameVersion.ORDER) do if self.ready[v] then ready = ready + 1 end end
+  -- "N of X ready" from GameVersion.ORDER -- or from the generation on show,
+  -- because a count of nine beside a row of one reads as a broken row.
+  local shownGen = rowFilter
+  local ready, total = 0, 0
+  for _, v in ipairs(GameVersion.ORDER) do
+    if not shownGen or GameVersion.generation(v) == shownGen then
+      total = total + 1
+      if self.ready[v] then ready = ready + 1 end
+    end
+  end
   love.graphics.setFont(self.readyFont)
   -- was hardcoded to 3 while ORDER already held five versions
-  local label = Strings("%d of %d ready", ready, #GameVersion.ORDER)
+  local label = Strings("%d of %d ready", ready, total)
   local lw = self.readyFont:getWidth(label)
   if x + w - lw > cursorX + 8 * s then
     col(PAL.labelGray)
@@ -5519,7 +6951,7 @@ function RomImporter:_drawGamePanel(version, x, y, w, h, paged)
 
   -- header: name + status pill
   love.graphics.setFont(self.gameNameFont)
-  col(PAL.white)
+  col(PAL.ink)
   printB(gameName, x, y)
   local nameW = self.gameNameFont:getWidth(gameName)
   local pill
@@ -5730,7 +7162,7 @@ function RomImporter:_drawGamePanel(version, x, y, w, h, paged)
   printSpaced(self.labelFont, "ROM", ix, iy, 2 * s)
   iy = iy + labelH + 10 * s
   love.graphics.setFont(self.stateFont)
-  col(PAL.white)
+  col(PAL.ink)
   printfB(romState, ix, iy, innerW, "left")
   iy = iy + stateH + 5 * s
   love.graphics.setFont(self.hintFont)
@@ -6067,14 +7499,54 @@ RomImporter.SETTINGS_ROWS = {
 -- All three end up in the same options file, which is why one Save covers
 -- them; they are simply not the same shape inside it.
 function RomImporter:_settingsRows()
+  if self.settingsPage == "launcher" then
+    return self:_launcherSettingsRows()
+  end
   local rows = {}
   local function add(r) rows[#rows + 1] = r; return r end
+  local GenOptions = require("src.core.GenOptions")
+  local gen = self:_settingsGeneration()
+
+  -- THE LAUNCHER'S OWN SETTINGS ARE A PAGE, NOT A SECTION.  What follows this
+  -- is every default a GAME starts with; where the launcher installs those
+  -- games and what colour it paints itself are about the launcher, they are
+  -- set once and never again, and interleaving them with the rows a player
+  -- actually comes here to change makes both lists longer to read.
+  add({ kind = "section", label = "LAUNCHER" })
+  add({ kind = "action", label = "LAUNCHER SETTINGS",
+        value = "OPEN", action = "launcherPage",
+        note = "Where games are installed, and how the launcher looks." })
 
   add({ kind = "section", label = "GAME DEFAULTS",
         note = "These are the defaults every game starts with. A "
             .. "playthrough's own OPTIONS menu still overrides them." })
+  -- WHICH GAMES THE ROWS BELOW ARE FOR.  DMG green is right for Red and wrong
+  -- for Emerald; the frame cap and FAITHFUL RES mean different things on a
+  -- Game Boy screen and a GBA one.  ALL sets the shared value every generation
+  -- follows, a generation sets an override only it reads
+  -- (src/core/GenOptions.lua).
+  add({ kind = "option", scope = "settingsGen", label = "APPLIES TO",
+        row = { id = "settingsGen",
+                values = { false, 1, 2, 3 },
+                labels = { [false] = "ALL GAMES", [1] = "GEN 1 ONLY",
+                           [2] = "GEN 2 ONLY", [3] = "GEN 3 ONLY" } } })
   for _, row in ipairs(RomImporter.SETTINGS_ROWS) do
-    add({ kind = "option", scope = "game", row = row, label = row.label })
+    add({ kind = "option", scope = "game", gen = gen, row = row,
+          label = row.label })
+  end
+  -- Only while a generation is selected AND has something to clear: an action
+  -- that is always there and usually does nothing is one a player learns to
+  -- ignore, and this one is the way back from an override they regret.
+  if gen then
+    local opts = self:_settings()
+    local n = GenOptions.count(opts, gen)
+    if n > 0 then
+      add({ kind = "action", label = "USE SHARED VALUES",
+            value = (n == 1) and "1 SET" or (tostring(n) .. " SET"),
+            action = "clearGenOverrides",
+            note = ("GEN %d is overriding %d of the rows above. This puts it "
+                    .. "back on the shared values."):format(gen, n) })
+    end
   end
 
   -- TOUCH CONTROLS. The toggle and the layout editor belong together: turning
@@ -6115,6 +7587,169 @@ function RomImporter:_settingsRows()
   return rows
 end
 
+
+-- THE LAUNCHER SETTINGS PAGE, the drawer's second page.
+--
+-- Two things live here, and both are about the installation rather than any
+-- one playthrough: where imported games are written, and what the launcher
+-- looks like while you pick one.
+function RomImporter:_launcherSettingsRows()
+  local rows = {}
+  local function add(r) rows[#rows + 1] = r; return r end
+  local SaveData = require("src.core.SaveData")
+  local LauncherTheme = require("src.import.LauncherTheme")
+
+  add({ kind = "action", label = "BACK", value = "SETTINGS",
+        action = "settingsBack" })
+
+  -- ------- where games are installed
+  add({ kind = "section", label = "GAME DATA FOLDER",
+        note = self:_dataDirNote() })
+  if SaveData.dataDirSupported() then
+    if SaveData.isPortable() then
+      -- Portable mode already answered this question, with a file sitting next
+      -- to the executable.  Showing a stepper that cannot win against it would
+      -- be a control that does nothing.
+      add({ kind = "action", label = "PORTABLE MODE", value = "IN USE",
+            action = "openDataDir",
+            note = "portable.txt sits beside the game, so everything is kept "
+                .. "in the game folder. Remove it to choose a folder here." })
+    else
+      add({ kind = "action", label = "CHOOSE FOLDER", value = "BROWSE",
+            action = "chooseDataDir" })
+      if SaveData.dataDirSetting() then
+        add({ kind = "action", label = "USE THE DEFAULT FOLDER",
+              value = "RESET", action = "clearDataDir" })
+      end
+      add({ kind = "action", label = "OPEN FOLDER", value = "SHOW",
+            action = "openDataDir" })
+      -- ...and the way to stop having TWO homes.  Changing the folder points
+      -- future writes at it and leaves what is already installed where it was;
+      -- love.filesystem shows both at once, so the launcher goes on listing
+      -- mods that are not in the new place and a re-install becomes a second
+      -- copy of the same mod.  An explicit action rather than something the
+      -- switch does for you: this can be gigabytes.
+      if require("src.import.CacheFs").rootReport().kind ~= "save" then
+        add({ kind = "action", label = "MOVE EXISTING DATA HERE",
+              value = self.moveWorker and "WORKING" or "MOVE",
+              action = "moveData",
+              note = self.moveNotice
+                or "Moves installed mods, mod storage and imported base files "
+                .. "out of the app's folder into this one. Saves and settings "
+                .. "stay where they are." })
+      end
+    end
+  else
+    add({ kind = "action", label = "NOT AVAILABLE HERE", value = "-",
+          action = "none",
+          note = "This platform has no folder to point at; games stay in the "
+              .. "app's own storage." })
+  end
+
+  -- ------- how the launcher looks
+  add({ kind = "section", label = "APPEARANCE",
+        note = "Chip colours stay as they are: they are how you tell the "
+            .. "cartridges apart at a glance." })
+  add({ kind = "option", scope = "launcher", label = "THEME",
+        row = { id = "launcherTheme", values = LauncherTheme.presetValues(),
+                labels = self:_themeLabels(LauncherTheme.PRESETS,
+                                           LauncherTheme.presetValues()) } })
+  add({ kind = "option", scope = "launcher", label = "ACCENT",
+        row = { id = "launcherAccent", values = LauncherTheme.accentValues(),
+                labels = self:_themeLabels(LauncherTheme.ACCENTS,
+                                           LauncherTheme.accentValues()) } })
+  -- TEXT is its own axis rather than something a ground decides, because it is
+  -- the row a player comes here for when the reason is their eyes rather than
+  -- their taste -- CONTRAST brightens the small print without taking the
+  -- ground they chose away from them.
+  add({ kind = "option", scope = "launcher", label = "TEXT",
+        row = { id = "launcherText", values = LauncherTheme.textValues(),
+                labels = self:_themeLabels(LauncherTheme.TEXTS,
+                                           LauncherTheme.textValues()) } })
+  -- The chosen entries explain themselves under the rows, one line each.  Only
+  -- the ones that are set: DEFAULT has nothing to say, and three lines of
+  -- "the launcher's own" would be three lines of nothing.
+  local opts = self:_settings()
+  -- Appended one at a time rather than gathered into a list first: a nil from
+  -- the first lookup would end an ipairs walk before it reached the second, so
+  -- choosing a text family while the ground was DEFAULT would silently lose
+  -- its line.
+  local themeNote = LauncherTheme.presetNote(opts.launcherTheme or nil)
+  if themeNote then add({ kind = "section", label = "", note = themeNote }) end
+  local textNote = LauncherTheme.textNote(opts.launcherText or nil)
+  if textNote then add({ kind = "section", label = "", note = textNote }) end
+  add({ kind = "action", label = "RESET APPEARANCE", value = "DEFAULT",
+        action = "resetTheme" })
+
+  return rows
+end
+
+-- A `labels` map for a theme stepper: every id's own label, plus DEFAULT for
+-- the `false` entry the value lists start with.  Built rather than written out
+-- because the two tables it serves have different shapes and the same rule.
+function RomImporter:_themeLabels(source, values)
+  local labels = { [false] = "DEFAULT" }
+  for _, id in ipairs(values) do
+    if id then
+      local entry = source[id]
+      labels[id] = entry and entry.label or tostring(id):upper()
+    end
+  end
+  return labels
+end
+
+-- The line under the GAME DATA FOLDER heading: where games are going right
+-- now, and -- when the stored folder is not the one in use -- why not.
+--
+-- Says the FULL PATH rather than "custom folder": the whole point of the
+-- setting is that the player chose a place, and a panel that will not name it
+-- is one they have to go hunting through an options file to verify.
+function RomImporter:_dataDirNote()
+  local SaveData = require("src.core.SaveData")
+  local CacheFs = require("src.import.CacheFs")
+  local lines = {}
+  local stored = SaveData.dataDirSetting and SaveData.dataDirSetting() or nil
+  -- ASKS THE THING THAT DOES THE WRITING.  This used to ask SaveData, which
+  -- only knows whether the folder is readable and writable -- not whether the
+  -- cache can actually live there, which additionally needs it on the PhysFS
+  -- read path.  When those disagreed this panel said "games are installed in
+  -- D:\..." while every byte went to the save directory, and there was
+  -- nothing on screen or on disk to say otherwise.
+  local report = CacheFs.rootReport()
+  if report.kind == "portable" then
+    lines[#lines + 1] = "Portable: " .. tostring(report.path or "the game folder")
+  elseif report.kind == "custom" then
+    lines[#lines + 1] = "Games are installed in " .. tostring(report.path)
+  elseif stored then
+    lines[#lines + 1] = "Set to " .. stored
+    lines[#lines + 1] = "NOT IN USE ("
+      .. tostring(report.why or "unavailable")
+      .. "). Games are going to the default folder instead."
+  else
+    lines[#lines + 1] = "Games are installed in the app's own folder "
+      .. "(" .. tostring(report.path or "AppData on Windows") .. ")."
+  end
+  -- WHAT MOVES AND WHAT DOES NOT, said here rather than discovered.
+  --
+  -- Everything that grows without bound follows the folder: the ROM cache, the
+  -- mods themselves, their storage, and the shared base-file bank where a
+  -- 1.4 GB disc lands.  Saves and settings deliberately do not.  They are
+  -- kilobytes, so they buy nothing by moving, and they are the state you most
+  -- want to still have when the drive this points at is not plugged in --
+  -- which is the failure this setting makes possible and cannot prevent.
+  lines[#lines + 1] = "Moves: imported games, installed mods, mod storage and "
+    .. "imported base files. Stays: your saves and settings, so they survive "
+    .. "this folder going missing."
+  -- THE ONE THING THAT SURPRISES PEOPLE.  Changing this does not move what is
+  -- already imported: the launcher would have to copy gigabytes through the UI
+  -- thread to do it, and a launcher that appears to hang for four minutes
+  -- after a settings change is worse than one that tells you to re-import.
+  lines[#lines + 1] = "Changing this does not move games you have already "
+    .. "imported; they stay where they are and can be re-imported or copied "
+    .. "across by hand."
+  return table.concat(lines, "\n")
+end
+
 -- The options table, read once per settings frame and cached until something
 -- writes: loadOptions parses a file, and the panel would otherwise re-read it
 -- sixty times a second while the player looks at it.
@@ -6128,9 +7763,32 @@ function RomImporter:_settings()
   return self._settingsCache
 end
 
+-- The generation the GAME DEFAULTS rows are currently being set for, or nil
+-- for the shared values.  Deliberately NOT persisted: it is a lens on the
+-- rows below it, not a setting, and a launcher that opens next week still
+-- pointed at GEN 1 is one where a player changes COLORS and cannot work out
+-- why Emerald ignored them.
+function RomImporter:_settingsGeneration()
+  local g = self.settingsGen
+  if g == 1 or g == 2 or g == 3 then return g end
+  return nil
+end
+
 -- The current value of one entry, whichever scope it lives in.
 function RomImporter:_settingValue(entry)
   local opts = self:_settings()
+  if entry.scope == "settingsGen" then
+    -- `false` rather than nil: the stepper matches against its own value list,
+    -- and ALL is spelled `false` there for the same reason the generation
+    -- filter spells it that way.
+    return self:_settingsGeneration() or false
+  elseif entry.scope == "launcher" then
+    local v = opts[entry.row.id]
+    if v == nil or v == false then return false end
+    return v
+  elseif entry.scope == "game" and entry.gen then
+    return require("src.core.GenOptions").get(opts, entry.row.id, entry.gen)
+  end
   if entry.scope == "touch" then
     local tc = opts.touchControls
     -- Absent means ON: SaveData's defaults ship `touchControls = {enabled=true}`
@@ -6147,6 +7805,26 @@ end
 
 function RomImporter:_setSettingValue(entry, value)
   local opts = self:_settings()
+  if entry.scope == "settingsGen" then
+    self.settingsGen = (value == 1 or value == 2 or value == 3) and value or nil
+    -- The rows below it change meaning, and one of them (USE SHARED VALUES)
+    -- appears and disappears with it, so the cached list has to go.
+    self._settingsRowCache = nil
+    return
+  elseif entry.scope == "launcher" then
+    opts[entry.row.id] = value or false
+    -- Repaint immediately.  A theme row that only takes effect on the next
+    -- launch is one a player steps through four times looking for a preview.
+    pcall(RomImporter.applyTheme, opts)
+    return
+  elseif entry.scope == "game" and entry.gen then
+    require("src.core.GenOptions").set(opts, entry.row.id, value, entry.gen)
+    -- The first override a generation gains is also when USE SHARED VALUES
+    -- has to appear, and the last one it loses is when it has to go; both are
+    -- decided by _settingsRows, so the cached list is now wrong.
+    self._settingsRowCache = nil
+    return
+  end
   if entry.scope == "touch" then
     local tc = type(opts.touchControls) == "table" and opts.touchControls or {}
     tc.enabled = value and true or false
@@ -6257,6 +7935,11 @@ function RomImporter:_stepSetting(entry, dir)
     self:_setSettingValue(entry, values[at])
     if row.apply then row.apply(values[at]) end
   end
+  -- The scope selector is a lens, not a setting: it lives on `self` and there
+  -- is nothing to write.  Returning before the save also keeps it out of the
+  -- options file, where a future build would have to decide what a stale one
+  -- means.
+  if entry.scope == "settingsGen" then return end
   local opts = self:_settings()
   local ok = pcall(function()
     require("src.core.SaveData").saveOptions(opts)
@@ -6267,6 +7950,212 @@ function RomImporter:_stepSetting(entry, dir)
         "launcher settings: the options file could not be written")
     end)
   end
+end
+
+-- What an `action` row does when it is pressed.  One place rather than a chain
+-- of ifs in mousepressed, because the drawer now has two pages of them and the
+-- touch path below resolves the same rows on release.
+function RomImporter:_settingsAction(entry)
+  local action = entry and entry.action
+  if not action or action == "none" then return end
+  if action == "touchLayout" then
+    if self.onEditTouchControls then self.onEditTouchControls() end
+  elseif action == "launcherPage" then
+    self.settingsPage = "launcher"
+    self.settingsScroll = 0
+    self.settingsNotice = nil
+    self._settingsRowCache = nil
+  elseif action == "settingsBack" then
+    self.settingsPage = nil
+    self.settingsScroll = 0
+    self.settingsNotice = nil
+    self._settingsRowCache = nil
+  elseif action == "clearGenOverrides" then
+    local gen = self:_settingsGeneration()
+    if gen then
+      local opts = self:_settings()
+      require("src.core.GenOptions").clear(opts, gen)
+      self:_saveSettings()
+      self._settingsRowCache = nil
+      self.settingsNotice = Strings("GEN %d now uses the shared settings", gen)
+    end
+  elseif action == "moveData" then
+    self:startDataMove()
+  elseif action == "resetTheme" then
+    local opts = self:_settings()
+    opts.launcherTheme, opts.launcherAccent, opts.launcherText = false, false, false
+    pcall(RomImporter.applyTheme, opts)
+    self:_saveSettings()
+    self._settingsRowCache = nil
+    self.settingsNotice = Strings("Appearance back to the default")
+  elseif action == "chooseDataDir" then
+    self:chooseDataDir()
+  elseif action == "clearDataDir" then
+    self:setDataDir(nil)
+  elseif action == "openDataDir" then
+    self:openDataDir()
+  end
+end
+
+-- The options file write every settings path ends with, in one place so a
+-- failure is reported the same way wherever it came from.
+function RomImporter:_saveSettings()
+  local opts = self:_settings()
+  local ok = pcall(function()
+    require("src.core.SaveData").saveOptions(opts)
+  end)
+  if not ok then
+    pcall(function()
+      require("src.core.Logger").warn(
+        "launcher settings: the options file could not be written")
+    end)
+  end
+  return ok
+end
+
+-- ---------------------------------------------------------------------------
+-- THE GAME DATA FOLDER
+--
+-- Opening a native folder picker takes as long as the player takes, and on
+-- Windows it is a PowerShell process -- so, like every other picker in here,
+-- the call is made from the click and the result handled inline rather than
+-- polled.  Nothing is moved and nothing is deleted: the setting points the
+-- NEXT import somewhere else, which is the whole of what it claims to do.
+-- ---------------------------------------------------------------------------
+
+-- Re-run the readiness report for every cartridge.  The same loop new() runs
+-- at boot, minus the logging: this is a deliberate action a player just took,
+-- not a diagnosis of a launch.
+function RomImporter:_recheckReady()
+  for _, version in ipairs(GameVersion.ORDER) do
+    local ok, report = pcall(RomImporter.readyReport, version)
+    if ok and type(report) == "table" then
+      self.ready[version] = report.ok and not self.forceImport
+    end
+  end
+end
+
+function RomImporter:chooseDataDir()
+  local SaveData = require("src.core.SaveData")
+  if not SaveData.dataDirSupported() then
+    self.settingsNotice = Strings("This platform keeps games in one place")
+    return
+  end
+  if not hasNativePicker() then
+    self.settingsNotice = Strings("No folder picker on this device")
+    return
+  end
+  local folder = chooseFolder(Strings("Choose where to install games"))
+  if not folder or folder == "" then return end
+  self:setDataDir(folder)
+end
+
+function RomImporter:setDataDir(path)
+  local SaveData = require("src.core.SaveData")
+  local ok, why = SaveData.setDataDir(path)
+  if not ok then
+    self.settingsNotice = Strings("Could not use that folder: %s",
+      tostring(why or "unknown reason"))
+    return false
+  end
+  -- The options table this panel is holding still has the old value in it, and
+  -- setDataDir wrote through its own copy; drop both caches so the next frame
+  -- reads what is actually on disk.
+  self._settingsCache = nil
+  self._settingsRowCache = nil
+  -- Which games count as imported depends on which folder is being looked at,
+  -- so the readiness of every tab has just changed.  Re-checked here rather
+  -- than left for the next launch: a player who points at a folder with a
+  -- previous install in it should see those games come back immediately, and
+  -- one who points at an empty folder should see the truth rather than a row
+  -- of PLAY buttons for data that is no longer on the read path.
+  self:_recheckReady()
+  -- Reported from CacheFs, for the same reason the note above is: SaveData
+  -- accepting a folder is not the same as the cache being able to live in it,
+  -- and a confirmation that names a folder nothing will be written to is
+  -- worse than no confirmation at all.
+  local report = require("src.import.CacheFs").rootReport()
+  if report.kind == "custom" then
+    self.settingsNotice = Strings("Games will be installed in %s",
+      tostring(report.path))
+  elseif path ~= nil and path ~= "" then
+    self.settingsNotice = Strings("That folder was saved but cannot be used: %s",
+      tostring(report.why or "unknown reason"))
+  else
+    self.settingsNotice = Strings("Games will be installed in the default folder")
+  end
+  return true
+end
+
+-- ---------------------------------------------------------------------------
+-- MOVING WHAT IS ALREADY INSTALLED into the chosen folder.
+--
+-- Its own coroutine rather than the import worker's: that one is driven by
+-- workState and ends by pumping the ROM queue, and a migration finishing must
+-- not start an import.  Stepped from the same update, inside the same frame
+-- budget, so the launcher keeps drawing while gigabytes move.
+-- ---------------------------------------------------------------------------
+
+function RomImporter:startDataMove()
+  if self.moveWorker then return end
+  local DataMove = require("src.import.DataMove")
+  local report = function(done, total, label)
+    self.moveNotice = ("Moving %s ... %d%%"):format(
+      tostring(label or ""),
+      total > 0 and math.floor(done / total * 100) or 0)
+  end
+  self.moveNotice = "Moving..."
+  self._settingsRowCache = nil
+  self.moveWorker = coroutine.create(function()
+    local result, why = DataMove.run(report)
+    if not result then
+      self.moveNotice = "Could not move: " .. tostring(why)
+    else
+      self.moveNotice = DataMove.summarize(result)
+    end
+  end)
+end
+
+-- One slice per frame.  Rebuilds the settings rows when it finishes so the
+-- MOVE row stops saying WORKING and the folder note re-reads the disk.
+function RomImporter:_stepDataMove()
+  local worker = self.moveWorker
+  if type(worker) ~= "thread" then return end
+  local started = love.timer.getTime()
+  repeat
+    local ok, err = coroutine.resume(worker)
+    if not ok then
+      self.moveNotice = "Could not move: " .. tostring(err)
+      self.moveWorker = nil
+      self._settingsRowCache = nil
+      return
+    end
+    if coroutine.status(worker) == "dead" then
+      self.moveWorker = nil
+      self._settingsCache = nil
+      self._settingsRowCache = nil
+      self:_recheckReady()
+      self:_refreshMods()
+      return
+    end
+  until love.timer.getTime() - started >= 0.008
+end
+
+function RomImporter:openDataDir()
+  local SaveData = require("src.core.SaveData")
+  local dir = SaveData.dataDir()
+  if not dir and SaveData.isPortable() then dir = SaveData.portableBaseDir() end
+  if not dir then
+    -- The default folder is LOVE's save directory, which love.system can name
+    -- and the player otherwise cannot.
+    local ok, path = pcall(love.filesystem.getSaveDirectory)
+    if ok then dir = path end
+  end
+  if not dir or dir == "" then
+    self.settingsNotice = Strings("There is no folder to open")
+    return
+  end
+  pcall(love.system.openURL, fileUrl(dir))
 end
 
 function RomImporter:_selectTab(id)
@@ -6281,6 +8170,7 @@ function RomImporter:_selectTab(id)
   self.tab = id
   self._slotPress = nil   -- drop any half-started slot drag on tab change
   self._modPress = nil    -- and any half-started mod toggle press
+  self._settingsPress = nil -- and any half-started settings row press
   self._pagePress = nil   -- and any half-started page pan
   self._tabPress = nil    -- and any half-started tab-bar pan
   self._findSearchFocus = false  -- and the search caret, now off screen
@@ -6349,6 +8239,33 @@ function RomImporter:_updateSlotDrag()
       self._slotPress = nil
     end
   end
+  -- THE SETTINGS DRAWER.  Same rule, its own scroll offset: the drawer is a
+  -- panel over the page, so a drag inside it must move the drawer and never the
+  -- page behind it -- which is why this clamps against _settingsMax and never
+  -- touches pageScroll the way the lists above do.
+  local sp = self._settingsPress
+  if sp then
+    if down then
+      -- `(py or sp.y0)` for the same reason the tab bar's drag reads
+      -- `(px or tp.x0)`: the pointer position can be absent for a frame, and a
+      -- nil arithmetic here is a crash while a finger is on the screen.
+      local d = (py or sp.y0) - sp.y0
+      if math.abs(d) > 4 * (self._s or 1) then sp.moved = true end
+      if sp.moved then
+        self.settingsScroll = clamp(sp.scroll0 - d, 0, self._settingsMax or 0)
+      end
+    else
+      if not sp.moved and sp.entry then
+        if sp.dir == 0 then
+          self:_settingsAction(sp.entry)
+        elseif sp.dir then
+          self:_stepSetting(sp.entry, sp.dir)
+        end
+      end
+      self._settingsPress = nil
+    end
+  end
+
   -- The same click-vs-drag resolution for the mods list: a moved pointer scrolls
   -- the list, a still one toggles the armed mod on release.
   local mp = self._modPress
@@ -6364,7 +8281,13 @@ function RomImporter:_updateSlotDrag()
         end
       end
     else
-      if not mp.moved then self:_toggleMod(mp.id) end
+      if not mp.moved then
+        if mp.gen then
+          self:_toggleModGeneration(mp.id, mp.gen)
+        else
+          self:_toggleMod(mp.id)
+        end
+      end
       self._modPress = nil
     end
   end
@@ -6570,7 +8493,7 @@ function RomImporter:_drawSaveSlotPanel(version, x, y, w, h, paged)
         end
 
         love.graphics.setFont(self.slotNameFont)
-        col(PAL.white)
+        col(PAL.ink)
         -- a custom label (#205) wins over the player name; both ellipsize
         local name = slot.label or slot.name or Strings("NEW GAME")
         printB(ellipsize(self.slotNameFont, name, rw - 24 * s - math.max(pillW, rightReserve)),
@@ -6761,6 +8684,77 @@ function RomImporter:_toggleMod(id, confirmed)
   end
   self._modConfirm = nil
   LauncherMods.setEnabled(id, want)
+  self:_refreshMods()
+end
+
+-- One of the three generation chips under a mod's switch.
+--
+-- No confirm of its own, even for an experimental mod: the master switch above
+-- it is the opt-in, and a chip can only narrow or widen a mod that is already
+-- on.  Turning a chip on for a mod that is OFF turns the mod on too (see
+-- ModGens.withGen) -- which IS the experimental opt-in, so that one route
+-- keeps the warning.
+function RomImporter:_toggleModGeneration(id, gen, confirmed)
+  local LauncherMods = require("src.mods.LauncherMods")
+  if not (gen and ModGens.LABELS[gen]) then return end
+  local row
+  for _, m in ipairs(self.mods or {}) do
+    if m.id == id then row = m break end
+  end
+  if not row then return end
+  -- absent means ticked, the same way ModGens reads it
+  local want = (row.gens or {})[gen] == false
+  -- LIGHTING A CHIP THE MOD SAYS IT CANNOT FILL.
+  --
+  -- The loader refuses to load a mod outside its declared `generations`, and
+  -- that refusal is a default rather than a wall (ModGens.permits).  The door
+  -- is here, and it asks first: a plain chip press is "I want this mod here",
+  -- and overruling the author's own claim is a different sentence, which the
+  -- player has to say out loud.  Unticking the chip again clears the override
+  -- (ModGens.withGen), so there is nothing to undo separately.
+  local declared = ModGens.supported(row.supportedGens
+    and { generations = row.supportedGens } or nil)
+  if want and declared and not declared[gen] then
+    if not (row.forcedGens or {})[gen] and not confirmed then
+      local claim = {}
+      for i = 1, ModGens.COUNT do
+        if declared[i] then claim[#claim + 1] = ModGens.LABELS[i] end
+      end
+      self._modConfirm = {
+        kind = "forceGen", id = id, gen = gen,
+        title = "Not made for this generation",
+        yesLabel = "Run it anyway",
+        lines = {
+          (row.name or id) .. " says it is for "
+            .. (claim[1] and table.concat(claim, " and ") or "no generation")
+            .. ".",
+          "Running it under " .. tostring(ModGens.LABELS[gen] or "?")
+            .. " may break the mod, this game, or both.",
+          "Turn it on there anyway?",
+        },
+      }
+      return
+    end
+    self._modConfirm = nil
+    LauncherMods.setForcedGeneration(id, gen, true)
+    self:_refreshMods()
+    return
+  end
+  if want and not row.enabled and row.experimental and not confirmed then
+    self._modConfirm = {
+      kind = "experimentalGen", id = id, gen = gen,
+      title = "Experimental mod",
+      yesLabel = "Enable",
+      lines = {
+        "This mod is marked experimental.",
+        "It may be unfinished or unstable.",
+        "Turn it on for " .. tostring(ModGens.LABELS[gen] or "?") .. "?",
+      },
+    }
+    return
+  end
+  self._modConfirm = nil
+  LauncherMods.setGeneration(id, gen, want)
   self:_refreshMods()
 end
 
@@ -6985,7 +8979,7 @@ function RomImporter:_drawModsPanel(x, y, w, h, paged)
 
   -- header: "Mods" + "N of M enabled" (left) and "Import mod .zip" (right)
   love.graphics.setFont(self.gameNameFont)
-  col(PAL.white)
+  col(PAL.ink)
   printB("Mods", x, y)
   local nameW = self.gameNameFont:getWidth("Mods")
   local headerH = self.gameNameFont:getHeight()
@@ -7007,45 +9001,133 @@ function RomImporter:_drawModsPanel(x, y, w, h, paged)
   self.modImportRect =
     self:_glassyButton(btnX, btnY, btnW, btnH, btnLabel, self.saveBtnFont, true)
 
-  -- Enable all / Disable all (#647): bulk switches beside Import mod .zip, so
-  -- coming back from a cable-club session (which asks for a vanilla fingerprint,
-  -- src/link/Fingerprint.lua) costs one click instead of one switch per mod.
-  -- The header is a single row shared with the count, so the chips are dropped
-  -- rather than overlapped when the column is too narrow to hold them (a
-  -- phone-width layout); the per-mod switches below are always the full path.
+  -- The chip run beside "Import mod .zip": the two mass importers and the two
+  -- bulk switches.
+  --
+  -- MASS IMPORT (asked for directly: "add a way to mass import mods").
+  -- "Import many" opens a multi-select picker; "Import folder" takes every
+  -- .zip in a folder and one level under it.  Both end in one install pass and
+  -- one summary line rather than a notice per archive -- see _installMods.
+  --
+  -- Enable all / Disable all (#647) keep their place at the right, so coming
+  -- back from a cable-club session (which asks for a vanilla fingerprint,
+  -- src/link/Fingerprint.lua) still costs one click.
+  --
+  -- The header is a single row shared with the count, so chips are DROPPED
+  -- rather than overlapped when the column is too narrow (a phone-width
+  -- layout).  They go in a deliberate order: the bulk switches first, because
+  -- every mod card carries its own switch, and the mass importers last,
+  -- because nothing else on the panel does what they do.  "Import mod .zip"
+  -- itself is never dropped.
   self.modEnableAllRect, self.modDisableAllRect = nil, nil
-  if #mods > 0 then
-    local enaLabel, disLabel = Strings("Enable all"), Strings("Disable all")
+  self.modImportManyRect, self.modImportFolderRect = nil, nil
+  do
     love.graphics.setFont(self.hintFont)
     local bulkH = self.hintFont:getHeight() + 10 * s
     local bulkY = y + (headerH - bulkH) / 2
-    local enaW = self.hintFont:getWidth(enaLabel) + 24 * s
-    local disW = self.hintFont:getWidth(disLabel) + 24 * s
     local bulkGap = 8 * s
+    -- left to right, as they read
+    local run = {
+      -- `drop` is the order they go in as the room runs out, highest first
+      { label = Strings("Import many"), field = "modImportManyRect",
+        kind = "accent", drop = 2 },
+      { label = Strings("Import folder"), field = "modImportFolderRect",
+        drop = 3 },
+    }
+    if #mods > 0 then
+      run[#run + 1] = { label = Strings("Enable all"),
+                        field = "modEnableAllRect", drop = 5 }
+      -- Disable all outlives Enable all by one step: it is the recovery
+      -- action, and a launcher too narrow to show both should show that one.
+      run[#run + 1] = { label = Strings("Disable all"),
+                        field = "modDisableAllRect", drop = 4 }
+    end
+    for _, c in ipairs(run) do
+      c.w = self.hintFont:getWidth(c.label) + 24 * s
+    end
     local room = btnX - (countX + self.hintFont:getWidth(countText) + bulkGap)
-    if room >= enaW + disW + 2 * bulkGap then
-      local disX = btnX - bulkGap - disW
-      local enaX = disX - bulkGap - enaW
-      self.modEnableAllRect =
-        self:_chipButton(enaX, bulkY, enaLabel, { w = enaW, h = bulkH })
-      self.modDisableAllRect =
-        self:_chipButton(disX, bulkY, disLabel, { w = disW, h = bulkH })
+    local function span(list)
+      local total = 0
+      for _, c in ipairs(list) do total = total + c.w + bulkGap end
+      return total + bulkGap
+    end
+    local shown = run
+    while #shown > 0 and span(shown) > room do
+      -- drop the lowest-priority chip still standing
+      local worst, at = -1, nil
+      for i, c in ipairs(shown) do
+        if c.drop > worst then worst, at = c.drop, i end
+      end
+      local kept = {}
+      for i, c in ipairs(shown) do if i ~= at then kept[#kept + 1] = c end end
+      shown = kept
+    end
+    local cx2 = btnX - bulkGap
+    for i = #shown, 1, -1 do
+      local c = shown[i]
+      cx2 = cx2 - c.w
+      self[c.field] = self:_chipButton(cx2, bulkY, c.label,
+        { w = c.w, h = bulkH, kind = c.kind })
+      cx2 = cx2 - bulkGap
     end
   end
 
   local top = y + headerH + 14 * s
 
-  -- notice line: the last install/delete result, else the platform hint
+  -- Notice line: the last install/delete result, else the platform hint.
+  --
+  -- MEASURED, NOT ASSUMED.  This advanced `top` by exactly one line whatever
+  -- it had just drawn, so any notice that wrapped ran straight down through
+  -- the cards underneath it -- which is what a failed mass import looks like,
+  -- because its summary names every archive it could not take.  Reported with
+  -- a screenshot of a panel with the first mod card behind six lines of red.
+  --
+  -- Capped as well as measured: an error from a shell command can be a
+  -- hundred lines, and a notice that pushes the whole list off the bottom is
+  -- no more readable than one drawn over it.
   love.graphics.setFont(self.hintFont)
+  local noticeText, noticeColor
   if self.modNotice then
-    col(self.modNotice.ok and PAL.green or PAL.red)
-    love.graphics.printf(self.modNotice.text, x, top, w, "left")
+    noticeText = tostring(self.modNotice.text)
+    noticeColor = self.modNotice.ok and PAL.green or PAL.red
   else
-    col(PAL.warning)
-    love.graphics.printf(self.android and "Or copy a mod .zip via USB."
-      or Strings("Or drop a mod .zip onto the window."), x, top, w, "left")
+    -- MODS LEFT IN THE OLD HOME, said here rather than left as a mystery.
+    -- Once a game-data folder is in use the panel lists only what is in it, so
+    -- a player who changed the folder after installing things sees a shorter
+    -- list than they had.  Those mods are not gone and not deleted; this is
+    -- the line that says where they are and what brings them over.
+    local stranded = {}
+    pcall(function()
+      stranded = require("src.mods.LauncherMods").strandedMods() or {}
+    end)
+    if #stranded > 0 then
+      noticeText = Strings(
+        "%d mod(s) are still in the app's own folder and are not being used: "
+        .. "%s. Settings -> LAUNCHER SETTINGS -> MOVE EXISTING DATA HERE "
+        .. "brings them over.",
+        #stranded, table.concat(stranded, ", "))
+      noticeColor = PAL.warning
+    else
+      noticeText = self.android and "Or copy a mod .zip via USB."
+        or Strings("Or drop a mod .zip onto the window.")
+      noticeColor = PAL.warning
+    end
   end
-  top = top + self.hintFont:getHeight() + 12 * s
+  local NOTICE_MAX_LINES = 6
+  local _, noticeLines = self.hintFont:getWrap(noticeText, w)
+  local shown = #noticeLines
+  if shown > NOTICE_MAX_LINES then
+    -- rebuild from the lines that fit rather than trusting the wrap to land
+    -- the same way twice on a shorter string
+    local kept = {}
+    for i = 1, NOTICE_MAX_LINES - 1 do kept[#kept + 1] = noticeLines[i] end
+    kept[#kept + 1] = ("... (%d more lines)"):format(shown - (NOTICE_MAX_LINES - 1))
+    noticeText = table.concat(kept, "\n")
+    shown = NOTICE_MAX_LINES
+  end
+  col(noticeColor)
+  love.graphics.printf(noticeText, x, top, w, "left")
+  top = top + math.max(1, shown) * self.hintFont:getHeight() + 12 * s
 
   local listH = math.max(0, (y + h) - top)
 
@@ -7068,6 +9150,7 @@ function RomImporter:_drawModsPanel(x, y, w, h, paged)
     self.modVersionsRects = {}
     self.modImportFileRects = {}
     self.modImportGameRects = {}
+    self.modGenRects = {}
     self._modMax = 0
     return (top - y) + boxH
   end
@@ -7174,7 +9257,25 @@ function RomImporter:_drawModsPanel(x, y, w, h, paged)
     if hasGh then btnRowW = updW + btnGap + verW + btnGap + delW end
     if impLabel then btnRowW = impW + btnGap + btnRowW end
     if gameLabel then btnRowW = gameW + btnGap + btnRowW end
-    local clusterW = math.max(chipW, tw)
+    -- PER-GENERATION CHIPS, under the switch.
+    --
+    -- Asked for directly: "a per generation mod selection menu so you can have
+    -- mods on for gen1, gen2, or gen3 games selectively".  The switch above
+    -- them is still the master -- off is off everywhere -- and these say which
+    -- games it reaches while it is on (src/mods/ModGens.lua).
+    --
+    -- Three tiny pills rather than a second menu: a mod's generations are a
+    -- property of the mod, and burying them behind a click would leave the
+    -- panel unable to answer "why did this not load" at a glance.
+    love.graphics.setFont(self.warningFont)
+    local genW = 0
+    for _, short in ipairs(ModGens.SHORT) do
+      genW = math.max(genW, self.warningFont:getWidth(short) + 12 * s)
+    end
+    local genGap = 4 * s
+    local genH = self.warningFont:getHeight() + 6 * s
+    local genRowW = genW * ModGens.COUNT + genGap * (ModGens.COUNT - 1)
+    local clusterW = math.max(chipW, tw, genRowW)
     local leftW = math.max(40 * s, innerW - clusterW - 14 * s)
     local descH = 0
     if m.description ~= "" then
@@ -7182,7 +9283,7 @@ function RomImporter:_drawModsPanel(x, y, w, h, paged)
       local _, dl = self.hintFont:getWrap(m.description, leftW)
       descH = math.max(1, #dl) * self.hintFont:getHeight()
     end
-    local clusterH = chipH + 6 * s + th
+    local clusterH = chipH + 6 * s + th + 6 * s + genH
     local metaH = self.hintFont:getHeight() + 2 * s
     if checkLine then
       metaH = metaH + self.hintFont:getHeight() + 2 * s
@@ -7206,6 +9307,7 @@ function RomImporter:_drawModsPanel(x, y, w, h, paged)
     local bodyH = math.max(nameH + 4 * s + metaH, clusterH)
     local cardH = padV * 2 + bodyH + 10 * s + btnH
     layout[i] = { h = cardH, leftW = leftW, clusterW = clusterW,
+      genW = genW, genH = genH, genGap = genGap, genRowW = genRowW,
       chipText = chipText, chipW = chipW, delW = delW,
       updW = updW, verW = verW, hasGh = hasGh, clusterH = clusterH,
       btnRowW = btnRowW, bodyH = bodyH, updLabel = updLabel,
@@ -7232,6 +9334,7 @@ function RomImporter:_drawModsPanel(x, y, w, h, paged)
   self.modVersionsRects = {}
   self.modImportFileRects = {}
   self.modImportGameRects = {}
+  self.modGenRects = {}
 
   if not paged then
     love.graphics.setScissor(math.floor(x), math.floor(top),
@@ -7252,7 +9355,7 @@ function RomImporter:_drawModsPanel(x, y, w, h, paged)
       local badgeW = badgeTW + 12 * s
       local badgeH = self.warningFont:getHeight() + 6 * s
       love.graphics.setFont(self.stateFont)
-      col(PAL.white)
+      col(PAL.ink)
       local drawnName = ellipsize(self.stateFont, m.name, L.leftW - badgeW - 8 * s)
       printB(drawnName, nx, ny)
       local bxx = nx + self.stateFont:getWidth(drawnName) + 8 * s
@@ -7338,6 +9441,66 @@ function RomImporter:_drawModsPanel(x, y, w, h, paged)
       local kcx = m.enabled and (tx + tw - 3 * s - kd / 2) or (tx + 3 * s + kd / 2)
       col(PAL.white)
       love.graphics.circle("fill", kcx, ty + th / 2, kd / 2)
+
+      -- ...and the three generation chips under it.  A chip is LIT only when
+      -- the mod is on AND that generation is ticked, because a lit chip over a
+      -- dead switch would be claiming the mod loads somewhere it does not;
+      -- ticked-but-master-off draws as an outline, so the selection is still
+      -- readable while the mod is parked.
+      local gx2 = clusterX + (L.clusterW - L.genRowW) / 2
+      local gy2 = ty + th + 6 * s
+      local gens = m.gens or { true, true, true }
+      -- A CHIP THE MOD SAYS IT CANNOT FILL.  `supportedGens` is the manifest's
+      -- own claim; a chip outside it is not something the player can usefully
+      -- tick, because the loader will not load the mod there -- so it draws
+      -- dead rather than lit, and a lie is not what a green chip should be.
+      -- Overrule the claim (ModGens.forced, behind the confirm in
+      -- _toggleModGeneration) and it lights GOLD instead of green: on, and on
+      -- somewhere the author did not promise.
+      local declared = m.supportedGens
+      local forcedGens = m.forcedGens or {}
+      for gi = 1, ModGens.COUNT do
+        local ticked = gens[gi] ~= false
+        local live = ticked and m.enabled
+        local claimed = true
+        if declared then
+          claimed = false
+          for _, n in ipairs(declared) do
+            if tonumber(n) == gi then claimed = true break end
+          end
+        end
+        local blocked = (not claimed) and not forcedGens[gi]
+        if blocked then live = false end
+        local hue = claimed and PAL.green or PAL.gold
+        local edge = blocked and PAL.disabled or hue
+        local shown = ticked and not blocked
+        local grect = { x = gx2, y = gy2, width = L.genW, height = L.genH,
+                        id = m.id, gen = gi }
+        self:_hover(grect)
+        local rr2 = L.genH / 2
+        if live then
+          col(hue, 0.85)
+          love.graphics.rectangle("fill", gx2, gy2, L.genW, L.genH, rr2, rr2)
+        else
+          col(PAL.cardBorder, shown and 0.30 or 0.12)
+          love.graphics.rectangle("fill", gx2, gy2, L.genW, L.genH, rr2, rr2)
+          love.graphics.setLineWidth(1)
+          col(shown and edge or PAL.disabled, shown and 0.7 or 0.4)
+          love.graphics.rectangle("line", gx2, gy2, L.genW, L.genH, rr2, rr2)
+        end
+        love.graphics.setFont(self.warningFont)
+        col(live and PAL.slotBg or (shown and edge or PAL.disabled))
+        printfB(ModGens.SHORT[gi], gx2,
+          gy2 + (L.genH - self.warningFont:getHeight()) / 2, L.genW, "center")
+        local gvy = math.max(grect.y, top)
+        local gvy2 = math.min(grect.y + grect.height, top + listH)
+        if gvy2 > gvy then
+          self.modGenRects[#self.modGenRects + 1] =
+            { x = grect.x, y = gvy, width = grect.width,
+              height = gvy2 - gvy, id = m.id, gen = gi }
+        end
+        gx2 = gx2 + L.genW + L.genGap
+      end
 
       -- Action chip-buttons in one right-aligned row under the body
       local btnY = cy + cardH - padV - btnH
@@ -7684,6 +9847,7 @@ end
 -- forward, which is the same thing the in-game menu's A button does.
 function RomImporter:_drawSettingsPanel(x, y, w, h, paged)
   local s = self._s
+  local GenOptions = require("src.core.GenOptions")
   self.settingsRowRects = {}
 
   -- Built once per entry into the tab, not once per frame: reading every
@@ -7695,9 +9859,25 @@ function RomImporter:_drawSettingsPanel(x, y, w, h, paged)
   local entries = self._settingsRowCache
 
   love.graphics.setFont(self.gameNameFont)
-  col(PAL.white)
-  printB(Strings("Settings"), x, y)
+  col(PAL.ink)
+  printB(self.settingsPage == "launcher" and Strings("Launcher settings")
+                                          or Strings("Settings"), x, y)
   local top = y + self.gameNameFont:getHeight() + 10 * s
+
+  -- WHAT JUST HAPPENED, under the title.  This line has been set by the
+  -- settings code for as long as it has existed and was never drawn, so a
+  -- player who pressed a row that could only answer in words -- a mod's text
+  -- option, and now every game-data folder outcome -- got no answer at all.
+  -- Measured rather than assumed one line: a folder path is longer than the
+  -- drawer is wide.
+  if self.settingsNotice then
+    love.graphics.setFont(self.hintFont)
+    col(PAL.link)
+    local text = Strings(tostring(self.settingsNotice))
+    local _, lines = self.hintFont:getWrap(text, w)
+    printfB(text, x, top, w, "left")
+    top = top + math.max(1, #lines) * self.hintFont:getHeight() + 8 * s
+  end
 
   local rowH = 34 * s
   local cy = top
@@ -7706,18 +9886,27 @@ function RomImporter:_drawSettingsPanel(x, y, w, h, paged)
       -- A little air above a heading, none above the first one.
       if cy > top then cy = cy + 10 * s end
       love.graphics.setFont(self.hintFont)
-      col(PAL.heading)
-      printB(Strings(entry.label), x, cy)
-      cy = cy + self.hintFont:getHeight() + 4 * s
+      -- A section with no label is a note on its own -- the theme's one-line
+      -- description under the APPEARANCE rows.  It gets the text and neither
+      -- the heading nor the rule, because both would announce a section that
+      -- has no rows in it.
+      local titled = entry.label ~= nil and entry.label ~= ""
+      if titled then
+        col(PAL.heading)
+        printB(Strings(entry.label), x, cy)
+        cy = cy + self.hintFont:getHeight() + 4 * s
+      end
       if entry.note then
         col(PAL.warning)
         local _, lines = self.hintFont:getWrap(Strings(entry.note), w)
         printfB(Strings(entry.note), x, cy, w, "left")
         cy = cy + math.max(1, #lines) * self.hintFont:getHeight() + 4 * s
       end
-      col(PAL.cardBorder, 0.35)
-      love.graphics.rectangle("fill", x, cy, w, 1)
-      cy = cy + 8 * s
+      if titled then
+        col(PAL.cardBorder, 0.35)
+        love.graphics.rectangle("fill", x, cy, w, 1)
+        cy = cy + 8 * s
+      end
 
     elseif entry.kind == "action" then
       col(PAL.cardBlue, 0.55)
@@ -7736,6 +9925,17 @@ function RomImporter:_drawSettingsPanel(x, y, w, h, paged)
         value = { x = x, y = cy, width = w, height = rowH - 4 * s },
       }
       cy = cy + rowH
+      -- An action can carry its own explanation -- where games are being
+      -- installed, what USE SHARED VALUES is about to undo.  Under the plate
+      -- rather than in the section heading, because the sentence is about
+      -- THAT button and a heading two rows up is not read as being about it.
+      if entry.note then
+        love.graphics.setFont(self.hintFont)
+        col(PAL.warning)
+        local _, lines = self.hintFont:getWrap(Strings(entry.note), w)
+        printfB(Strings(entry.note), x, cy, w, "left")
+        cy = cy + math.max(1, #lines) * self.hintFont:getHeight() + 6 * s
+      end
 
     else
       col(PAL.cardBlue, 0.55)
@@ -7746,6 +9946,13 @@ function RomImporter:_drawSettingsPanel(x, y, w, h, paged)
       printB(Strings(entry.label), x + 12 * s, cy + 9 * s)
 
       local value = self:_entryLabel(entry)
+      -- A DOT MEANS "THIS GENERATION ONLY".  Without it the rows look
+      -- identical whether the value on screen is the shared one or an override
+      -- only Gen 1 reads, and the first way a player finds out which is by
+      -- wondering why Emerald ignored a setting they watched themselves change.
+      local overridden = entry.scope == "game" and entry.gen
+        and GenOptions.hasOverride(self:_settings(), entry.row.id, entry.gen)
+      if overridden then value = value .. " *" end
       local vW = self.hintFont:getWidth(value)
       local arrowW = 22 * s
       local rightPad = 12 * s
@@ -7755,7 +9962,7 @@ function RomImporter:_drawSettingsPanel(x, y, w, h, paged)
       col(PAL.link)
       printB("<", leftX + 6 * s, cy + 9 * s)
       printB(">", vX + vW + 14 * s, cy + 9 * s)
-      col(PAL.white)
+      col(PAL.ink)
       printB(value, vX, cy + 9 * s)
 
       -- `width`/`height`, never `w`/`h`: `inside` reads only those two names,
@@ -7794,7 +10001,7 @@ function RomImporter:_drawFindPanel(x, y, w, h, paged)
 
   -- header
   love.graphics.setFont(self.gameNameFont)
-  col(PAL.white)
+  col(PAL.ink)
   printB("Find Mods", x, y)
   local nameW = self.gameNameFont:getWidth("Find Mods")
   local headerH = self.gameNameFont:getHeight()
@@ -8035,7 +10242,7 @@ function RomImporter:_drawFindPanel(x, y, w, h, paged)
 
       local tx = nx + L.leftX
       love.graphics.setFont(self.stateFont)
-      col(PAL.white)
+      col(PAL.ink)
       printB(ellipsize(self.stateFont, entry.title or entry.id, L.textW), tx, ny)
 
       love.graphics.setFont(self.hintFont)

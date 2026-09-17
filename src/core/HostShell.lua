@@ -167,6 +167,28 @@ end
 -- Download url to an absolute host path.  Returns true, or nil plus an error.
 -- The curl branch deliberately ignores curl's exit code, as the download paths
 -- always did: callers judge the result by the file they got.
+-- WHAT CURL SAID, WHEN IT SAID ANYTHING.
+--
+-- `-f -s -S` is "fail on an HTTP error, no progress meter, but DO print the
+-- reason" -- so on a clean transfer curl prints nothing at all, and anything
+-- that comes back is the reason it did not finish.  That reason was being
+-- read off the pipe and dropped on the floor, and since hideHostConsole took
+-- the console away there was nowhere else for it to go: a 404, an expired
+-- certificate, a proxy and a full disk all reached the launcher as the same
+-- four words.  Trimmed to one line and capped, because it lands in a UI row.
+function HostShell.curlComplaint(out)
+  if type(out) ~= "string" then return nil end
+  local said = out:gsub("^%s+", ""):gsub("%s+$", "")
+  if said == "" then return nil end
+  said = said:gsub("%s*[\r\n]+%s*", " ")
+  if #said > 200 then said = said:sub(1, 197) .. "..." end
+  return said
+end
+
+-- Returns true, or nil + the reason.  The reason is curl's own sentence when
+-- there is one, and its exit status otherwise -- on a runtime that reports
+-- one.  LuaJIT answers close() the 5.1 way and simply has no status to give,
+-- which is why the text is the primary source and the code only a fallback.
 function HostShell.httpDownload(url, absPath, userAgent, accept)
   if type(url) ~= "string" or url == "" then return nil, "missing url" end
   if type(absPath) ~= "string" or absPath == "" then return nil, "missing path" end
@@ -178,10 +200,23 @@ function HostShell.httpDownload(url, absPath, userAgent, accept)
       cmd = cmd .. "-H " .. HostShell.quote("Accept: " .. accept) .. " "
     end
     cmd = cmd .. "-o " .. HostShell.quote(absPath) .. " " .. HostShell.quote(url)
+    -- stderr is where the sentence is, and cmd.exe and sh spell the redirect
+    -- the same way.  Safe on the success path precisely because a quiet curl
+    -- writes nothing to either stream.
+    cmd = cmd .. " 2>&1"
     local pipe = HostShell.popen(cmd)
     if not pipe then return nil, "could not start download" end
-    pcall(function() pipe:read("*a") end)
-    pcall(function() pipe:close() end)
+    local readOk, out = pcall(function() return pipe:read("*a") end)
+    local status = nil
+    pcall(function()
+      local _, _, code = pipe:close()
+      status = code
+    end)
+    local said = HostShell.curlComplaint(readOk and out or nil)
+    if said then return nil, said end
+    if type(status) == "number" and status ~= 0 then
+      return nil, ("curl exited %d"):format(status)
+    end
     return true
   end
   if not haveBridge() then
@@ -189,7 +224,7 @@ function HostShell.httpDownload(url, absPath, userAgent, accept)
   end
   local ok, done = pcall(love.system.httpDownload, url, absPath, userAgent, accept)
   if ok and done then return true end
-  return nil, "download failed"
+  return nil, "the host download bridge refused the transfer"
 end
 
 -- GET returning the body.  curl streams it through a pipe; the Android bridge

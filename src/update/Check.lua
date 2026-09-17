@@ -181,9 +181,15 @@ local function serviceBridgeRequests()
         if not saveDir or saveDir == "" then error("no save directory", 0) end
         -- Absolute path and a real User-Agent: the two things the worker's own
         -- call was missing.  HostShell decides curl vs bridge internally.
-        local got = HostShell.httpDownload(req.url, saveDir .. "/" .. req.dest,
-          "Gen2Recomped-updater", req.accept)
-        if not got then error("download failed", 0) end
+        local got, why = HostShell.httpDownload(req.url,
+          saveDir .. "/" .. req.dest, "Gen2Recomped-updater", req.accept)
+        -- The transport used to answer true on the curl path whatever curl
+        -- did, so a failed fetch went on to be discovered as a missing file
+        -- somewhere later.  It reports now, and the reason travels as far as
+        -- this thread can carry it (the result channel is a bare ok/fail).
+        if not got then
+          error("download failed: " .. tostring(why or "no reason given"), 0)
+        end
       end)
     end
     resCh:push({ seq = (type(req) == "table") and req.seq or nil, ok = ok })

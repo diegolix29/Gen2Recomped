@@ -1147,6 +1147,16 @@ local function drawSummaryRow(summary, side, party, age, extra)
   end
 end
 
+-- Both teams when two trainers walked up; see BattleState:foeSummaryParty.
+-- Hoenn only: Gen 1 and Gen 2 have no double battles, so their row below is
+-- the one trainer it has always been.
+local function foeRowParty(battle)
+  if type(battle.foeSummaryParty) == "function" then
+    return battle:foeSummaryParty()
+  end
+  return battle.enemyParty
+end
+
 local function drawIntroBalls(battle)
   if not battle.introBalls then return end
   if not require("src.core.GameVersion").isGen3() then
@@ -1171,7 +1181,7 @@ local function drawIntroBalls(battle)
   local age = battle.frame and (battle.frame - battle.introBallsFrom) or nil
   if battle.enemyParty and summary.opponent
       and (battle.kind == "trainer" or battle.kind == "link") then
-    drawSummaryRow(summary, summary.opponent, battle.enemyParty, age,
+    drawSummaryRow(summary, summary.opponent, foeRowParty(battle), age,
                    Gen3Battle.extra(battle))
   end
   if summary.player then
@@ -1321,7 +1331,20 @@ local function drawHUDs(battle, slide)
       local ready = row.player and playerReady
                     or (not row.player and enemyReady
                         and not (b and battle:growInScale(b)))
-      if ready and b and b.mon and (b.mon.hp or 0) > 0 and not b.fainted then
+      -- ...AND IT STAYS UP WHILE THE BAR EMPTIES.
+      --
+      -- Reported from play: in a double battle a Pokemon's panel vanishes the
+      -- instant the move lands rather than showing the health run out.  This
+      -- asked `hp > 0`, and hp is set to zero by the move itself -- so the
+      -- panel was gone a frame before stepHPDrain had drained a single point
+      -- of the bar that is supposed to show it happening.
+      --
+      -- `fainted` is the gate the single-battle draws above already use, and
+      -- it is the right one: it is set inside the queued step that plays the
+      -- cry and starts the slide, which runs AFTER the drain, so the bar has
+      -- emptied by the time it turns true.  Both layouts now answer the same
+      -- question, and an empty slot is still nil rather than a zeroed one.
+      if ready and b and b.mon and not b.fainted then
         local panel = hudImage(row.img)
         local h = 32
         if panel and panel.getHeight then

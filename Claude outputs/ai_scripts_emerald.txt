@@ -1,0 +1,2322 @@
+gBattleAI_ScriptsTable = 0x2DBEF8  (32 entries; 10 scripts then AI_Ret)
+  [ 0] 2DBF78 AI_CheckBadMove
+  [ 1] 2DDE3F AI_TryToFaint
+  [ 2] 2DC7B0 AI_CheckViability
+  [ 3] 2DDE71 AI_SetupFirstTurn
+  [ 4] 2DDEDD AI_Risky
+  [ 5] 2DDEC8 AI_PreferStrongestMove
+  [ 6] 2DDF09 AI_PreferBatonPass
+  [ 7] 2DDFB4 AI_DoubleBattle
+  [ 8] 2DE193 AI_HPAware
+  [ 9] 2DE2ED AI_TrySunnyDayStart
+  [10] 2DE34E L_2DE34E
+  [11] 2DE34E L_2DE34E
+  [12] 2DE34E L_2DE34E
+  [13] 2DE34E L_2DE34E
+  [14] 2DE34E L_2DE34E
+  [15] 2DE34E L_2DE34E
+  [16] 2DE34E L_2DE34E
+  [17] 2DE34E L_2DE34E
+  [18] 2DE34E L_2DE34E
+  [19] 2DE34E L_2DE34E
+  [20] 2DE34E L_2DE34E
+  [21] 2DE34E L_2DE34E
+  [22] 2DE34E L_2DE34E
+  [23] 2DE34E L_2DE34E
+  [24] 2DE34E L_2DE34E
+  [25] 2DE34E L_2DE34E
+  [26] 2DE34E L_2DE34E
+  [27] 2DE34E L_2DE34E
+  [28] 2DE34E L_2DE34E
+  [29] 2DE309 
+  [30] 2DE337 
+  [31] 2DE33E 
+
+AI_CheckBadMove:
+  2DBF78  if_target_is_ally                  L_2DE34E
+  2DBF7D  if_move                            0x5A, L_2DBF92
+  2DBF84  if_move                            0x20, L_2DBF92
+  2DBF8B  get_how_powerful_move_is           
+  2DBF8C  if_equal                           0x0, L_2DBFFE
+L_2DBF92:
+  2DBF92  if_type_effectiveness              0x0, L_2DC798
+  2DBF98  get_ability                        0x0
+  2DBF9A  if_equal                           0xA, L_2DBFBD
+  2DBFA0  if_equal                           0xB, L_2DBFCA
+  2DBFA6  if_equal                           0x12, L_2DBFD7
+  2DBFAC  if_equal                           0x19, L_2DBFE4
+  2DBFB2  if_equal                           0x1A, L_2DBFEF
+  2DBFB8  goto                               L_2DBFF7
+L_2DBFBD:
+  2DBFBD  get_type                           0x4
+  2DBFBF  if_equal_                          0xD, L_2DC79B
+  2DBFC5  goto                               L_2DBFF7
+L_2DBFCA:
+  2DBFCA  get_type                           0x4
+  2DBFCC  if_equal_                          0xB, L_2DC79B
+  2DBFD2  goto                               L_2DBFF7
+L_2DBFD7:
+  2DBFD7  get_type                           0x4
+  2DBFD9  if_equal_                          0xA, L_2DC79B
+  2DBFDF  goto                               L_2DBFF7
+L_2DBFE4:
+  2DBFE4  if_type_effectiveness              0x50, L_2DBFF7
+  2DBFEA  goto                               L_2DC798
+L_2DBFEF:
+  2DBFEF  get_type                           0x4
+  2DBFF1  if_equal_                          0x4, L_2DC798
+L_2DBFF7:
+  2DBFF7  get_how_powerful_move_is           
+  2DBFF8  if_equal                           0x0, L_2DBFFE
+L_2DBFFE:
+  2DBFFE  get_ability                        0x0
+  2DC000  if_not_equal                       0x2B, L_2DC045
+  2DC006  if_move                            0x2D, L_2DC798
+  2DC00D  if_move                            0x2E, L_2DC798
+  2DC014  if_move                            0x2F, L_2DC798
+  2DC01B  if_move                            0x30, L_2DC798
+  2DC022  if_move                            0x67, L_2DC798
+  2DC029  if_move                            0xAD, L_2DC798
+  2DC030  if_move                            0xFD, L_2DC798
+  2DC037  if_move                            0x13F, L_2DC798
+  2DC03E  if_move                            0x140, L_2DC798
+L_2DC045:
+  2DC045  if_effect                          0x1, L_2DC2D4
+  2DC04B  if_effect                          0x7, L_2DC2F7
+  2DC051  if_effect                          0x8, L_2DC330
+  2DC057  if_effect                          0xA, L_2DC348
+  2DC05D  if_effect                          0xB, L_2DC351
+  2DC063  if_effect                          0xC, L_2DC35A
+  2DC069  if_effect                          0xD, L_2DC363
+  2DC06F  if_effect                          0xE, L_2DC36C
+  2DC075  if_effect                          0xF, L_2DC375
+  2DC07B  if_effect                          0x10, L_2DC37E
+  2DC081  if_effect                          0x12, L_2DC387
+  2DC087  if_effect                          0x13, L_2DC39C
+  2DC08D  if_effect                          0x14, L_2DC3A9
+  2DC093  if_effect                          0x15, L_2DC3BF
+  2DC099  if_effect                          0x16, L_2DC3CC
+  2DC09F  if_effect                          0x17, L_2DC3D9
+  2DC0A5  if_effect                          0x18, L_2DC3EE
+  2DC0AB  if_effect                          0x19, L_2DC405
+  2DC0B1  if_effect                          0x1A, L_2DC4ED
+  2DC0B7  if_effect                          0x1C, L_2DC47B
+  2DC0BD  if_effect                          0x21, L_2DC48C
+  2DC0C3  if_effect                          0x23, L_2DC4C5
+  2DC0C9  if_effect                          0x26, L_2DC4D0
+  2DC0CF  if_effect                          0x27, L_2DC4ED
+  2DC0D5  if_effect                          0x28, L_2DC4ED
+  2DC0DB  if_effect                          0x2E, L_2DC507
+  2DC0E1  if_effect                          0x2F, L_2DC512
+  2DC0E7  if_effect                          0x31, L_2DC51D
+  2DC0ED  if_effect                          0x32, L_2DC348
+  2DC0F3  if_effect                          0x33, L_2DC351
+  2DC0F9  if_effect                          0x34, L_2DC35A
+  2DC0FF  if_effect                          0x35, L_2DC363
+  2DC105  if_effect                          0x36, L_2DC36C
+  2DC10B  if_effect                          0x37, L_2DC375
+  2DC111  if_effect                          0x38, L_2DC37E
+  2DC117  if_effect                          0x3A, L_2DC387
+  2DC11D  if_effect                          0x3B, L_2DC39C
+  2DC123  if_effect                          0x3C, L_2DC3A9
+  2DC129  if_effect                          0x3D, L_2DC3BF
+  2DC12F  if_effect                          0x3E, L_2DC3CC
+  2DC135  if_effect                          0x3F, L_2DC3D9
+  2DC13B  if_effect                          0x40, L_2DC3EE
+  2DC141  if_effect                          0x41, L_2DC53A
+  2DC147  if_effect                          0x42, L_2DC48C
+  2DC14D  if_effect                          0x43, L_2DC545
+  2DC153  if_effect                          0x4F, L_2DC568
+  2DC159  if_effect                          0x50, L_2DC4ED
+  2DC15F  if_effect                          0x54, L_2DC57A
+  2DC165  if_effect                          0x56, L_2DC595
+  2DC16B  if_effect                          0x57, L_2DC4ED
+  2DC171  if_effect                          0x58, L_2DC4ED
+  2DC177  if_effect                          0x59, L_2DC4ED
+  2DC17D  if_effect                          0x5A, L_2DC59D
+  2DC183  if_effect                          0x5C, L_2DC5A5
+  2DC189  if_effect                          0x61, L_2DC5A5
+  2DC18F  if_effect                          0x63, L_2DC4ED
+  2DC195  if_effect                          0x6A, L_2DC5B0
+  2DC19B  if_effect                          0x6B, L_2DC31B
+  2DC1A1  if_effect                          0x6C, L_2DC37E
+  2DC1A7  if_effect                          0x6D, L_2DC5BB
+  2DC1AD  if_effect                          0x70, L_2DC5CC
+  2DC1B3  if_effect                          0x71, L_2DC5D7
+  2DC1B9  if_effect                          0x72, L_2DC5E2
+  2DC1BF  if_effect                          0x73, L_2DC5ED
+  2DC1C5  if_effect                          0x76, L_2DC51D
+  2DC1CB  if_effect                          0x78, L_2DC5F5
+  2DC1D1  if_effect                          0x79, L_2DC4ED
+  2DC1D7  if_effect                          0x7A, L_2DC4ED
+  2DC1DD  if_effect                          0x7B, L_2DC4ED
+  2DC1E3  if_effect                          0x7C, L_2DC635
+  2DC1E9  if_effect                          0x7E, L_2DC4E5
+  2DC1EF  if_effect                          0x7F, L_2DC650
+  2DC1F5  if_effect                          0x82, L_2DC4ED
+  2DC1FB  if_effect                          0x88, L_2DC659
+  2DC201  if_effect                          0x89, L_2DC661
+  2DC207  if_effect                          0x8E, L_2DC341
+  2DC20D  if_effect                          0x8F, L_2DC405
+  2DC213  if_effect                          0x90, L_2DC4ED
+  2DC219  if_effect                          0x91, L_2DC4ED
+  2DC21F  if_effect                          0x94, L_2DC669
+  2DC225  if_effect                          0x99, L_2DC798
+  2DC22B  if_effect                          0x9C, L_2DC351
+  2DC231  if_effect                          0x9E, L_2DC680
+  2DC237  if_effect                          0xA0, L_2DC689
+  2DC23D  if_effect                          0xA1, L_2DC692
+  2DC243  if_effect                          0xA2, L_2DC692
+  2DC249  if_effect                          0xA4, L_2DC6A1
+  2DC24F  if_effect                          0xA5, L_2DC6A9
+  2DC255  if_effect                          0xA6, L_2DC51D
+  2DC25B  if_effect                          0xA7, L_2DC6B4
+  2DC261  if_effect                          0xA8, L_2DC640
+  2DC267  if_effect                          0xAA, L_2DC4ED
+  2DC26D  if_effect                          0xB0, L_2DC6E3
+  2DC273  if_effect                          0xB1, L_2DC6EB
+  2DC279  if_effect                          0xB5, L_2DC6F4
+  2DC27F  if_effect                          0xB6, L_2DC4ED
+  2DC285  if_effect                          0xB8, L_2DC6FF
+  2DC28B  if_effect                          0xBC, L_2DC6EB
+  2DC291  if_effect                          0xBD, L_2DC4ED
+  2DC297  if_effect                          0xC0, L_2DC708
+  2DC29D  if_effect                          0xC1, L_2DC713
+  2DC2A3  if_effect                          0xC4, L_2DC4ED
+  2DC2A9  if_effect                          0xC9, L_2DC71E
+  2DC2AF  if_effect                          0xCD, L_2DC729
+  2DC2B5  if_effect                          0xCE, L_2DC73A
+  2DC2BB  if_effect                          0xD0, L_2DC74B
+  2DC2C1  if_effect                          0xD2, L_2DC75C
+  2DC2C7  if_effect                          0xD3, L_2DC767
+  2DC2CD  if_effect                          0xD4, L_2DC778
+  2DC2D3  end                                
+L_2DC2D4:
+  2DC2D4  get_ability                        0x0
+  2DC2D6  if_equal                           0xF, L_2DC798
+  2DC2DC  if_equal                           0x48, L_2DC798
+  2DC2E2  if_status                          0x0, 0xFF, L_2DC798
+  2DC2EC  if_side_affecting                  0x0, 0x20, L_2DC798
+  2DC2F6  end                                
+L_2DC2F7:
+  2DC2F7  if_type_effectiveness              0x0, L_2DC798
+  2DC2FD  get_ability                        0x0
+  2DC2FF  if_equal                           0x6, L_2DC798
+  2DC305  count_usable_party_mons            0x1
+  2DC307  if_not_equal                       0x0, L_2DC31A
+  2DC30D  count_usable_party_mons            0x0
+  2DC30F  if_not_equal                       0x0, L_2DC798
+  2DC315  goto                               L_2DC789
+L_2DC31A:
+  2DC31A  end                                
+L_2DC31B:
+  2DC31B  if_status2                         0x0, 0x8000000, L_2DC798
+  2DC325  if_not_status                      0x0, 0x7, L_2DC795
+  2DC32F  end                                
+L_2DC330:
+  2DC330  if_not_status                      0x0, 0x7, L_2DC795
+  2DC33A  if_type_effectiveness              0x0, L_2DC798
+  2DC340  end                                
+L_2DC341:
+  2DC341  if_hp_less_than                    0x1, 0x33, L_2DC798
+L_2DC348:
+  2DC348  if_stat_level_equal                0x1, 0x1, 0xC, L_2DC798
+  2DC350  end                                
+L_2DC351:
+  2DC351  if_stat_level_equal                0x1, 0x2, 0xC, L_2DC798
+  2DC359  end                                
+L_2DC35A:
+  2DC35A  if_stat_level_equal                0x1, 0x3, 0xC, L_2DC798
+  2DC362  end                                
+L_2DC363:
+  2DC363  if_stat_level_equal                0x1, 0x4, 0xC, L_2DC798
+  2DC36B  end                                
+L_2DC36C:
+  2DC36C  if_stat_level_equal                0x1, 0x5, 0xC, L_2DC798
+  2DC374  end                                
+L_2DC375:
+  2DC375  if_stat_level_equal                0x1, 0x6, 0xC, L_2DC798
+  2DC37D  end                                
+L_2DC37E:
+  2DC37E  if_stat_level_equal                0x1, 0x7, 0xC, L_2DC798
+  2DC386  end                                
+L_2DC387:
+  2DC387  if_stat_level_equal                0x0, 0x1, 0x0, L_2DC798
+  2DC38F  get_ability                        0x0
+  2DC391  if_equal                           0x34, L_2DC798
+  2DC397  goto                               L_2DC3F6
+L_2DC39C:
+  2DC39C  if_stat_level_equal                0x0, 0x2, 0x0, L_2DC798
+  2DC3A4  goto                               L_2DC3F6
+L_2DC3A9:
+  2DC3A9  if_stat_level_equal                0x0, 0x3, 0x0, L_2DC798
+  2DC3B1  check_ability                      0x0, 0x3
+  2DC3B4  if_equal                           0x1, L_2DC798
+  2DC3BA  goto                               L_2DC3F6
+L_2DC3BF:
+  2DC3BF  if_stat_level_equal                0x0, 0x4, 0x0, L_2DC798
+  2DC3C7  goto                               L_2DC3F6
+L_2DC3CC:
+  2DC3CC  if_stat_level_equal                0x0, 0x5, 0x0, L_2DC798
+  2DC3D4  goto                               L_2DC3F6
+L_2DC3D9:
+  2DC3D9  if_stat_level_equal                0x0, 0x6, 0x0, L_2DC798
+  2DC3E1  get_ability                        0x0
+  2DC3E3  if_equal                           0x33, L_2DC798
+  2DC3E9  goto                               L_2DC3F6
+L_2DC3EE:
+  2DC3EE  if_stat_level_equal                0x0, 0x7, 0x0, L_2DC798
+L_2DC3F6:
+  2DC3F6  get_ability                        0x0
+  2DC3F8  if_equal                           0x1D, L_2DC798
+  2DC3FE  if_equal                           0x49, L_2DC798
+  2DC404  end                                
+L_2DC405:
+  2DC405  if_stat_level_less_than            0x1, 0x1, 0x6, L_2DC47A
+  2DC40D  if_stat_level_less_than            0x1, 0x2, 0x6, L_2DC47A
+  2DC415  if_stat_level_less_than            0x1, 0x3, 0x6, L_2DC47A
+  2DC41D  if_stat_level_less_than            0x1, 0x4, 0x6, L_2DC47A
+  2DC425  if_stat_level_less_than            0x1, 0x5, 0x6, L_2DC47A
+  2DC42D  if_stat_level_less_than            0x1, 0x6, 0x6, L_2DC47A
+  2DC435  if_stat_level_less_than            0x1, 0x7, 0x6, L_2DC47A
+  2DC43D  if_stat_level_more_than            0x0, 0x1, 0x6, L_2DC47A
+  2DC445  if_stat_level_more_than            0x0, 0x2, 0x6, L_2DC47A
+  2DC44D  if_stat_level_more_than            0x0, 0x3, 0x6, L_2DC47A
+  2DC455  if_stat_level_more_than            0x0, 0x4, 0x6, L_2DC47A
+  2DC45D  if_stat_level_more_than            0x0, 0x5, 0x6, L_2DC47A
+  2DC465  if_stat_level_more_than            0x0, 0x6, 0x6, L_2DC47A
+  2DC46D  if_stat_level_more_than            0x0, 0x7, 0x6, L_2DC47A
+  2DC475  goto                               L_2DC798
+L_2DC47A:
+  2DC47A  end                                
+L_2DC47B:
+  2DC47B  count_usable_party_mons            0x0
+  2DC47D  if_equal                           0x0, L_2DC798
+  2DC483  get_ability                        0x0
+  2DC485  if_equal                           0x15, L_2DC798
+  2DC48B  end                                
+L_2DC48C:
+  2DC48C  get_type                           0x0
+  2DC48E  if_equal                           0x8, L_2DC798
+  2DC494  if_equal                           0x3, L_2DC798
+  2DC49A  get_type                           0x2
+  2DC49C  if_equal                           0x8, L_2DC798
+  2DC4A2  if_equal                           0x3, L_2DC798
+  2DC4A8  get_ability                        0x0
+  2DC4AA  if_equal                           0x11, L_2DC798
+  2DC4B0  if_status                          0x0, 0xFF, L_2DC798
+  2DC4BA  if_side_affecting                  0x0, 0x20, L_2DC798
+  2DC4C4  end                                
+L_2DC4C5:
+  2DC4C5  if_side_affecting                  0x1, 0x2, L_2DC795
+  2DC4CF  end                                
+L_2DC4D0:
+  2DC4D0  if_type_effectiveness              0x0, L_2DC798
+  2DC4D6  get_ability                        0x0
+  2DC4D8  if_equal                           0x5, L_2DC798
+  2DC4DE  if_level_cond                      0x1, L_2DC798
+  2DC4E4  end                                
+L_2DC4E5:
+  2DC4E5  get_ability                        0x0
+  2DC4E7  if_equal                           0x1A, L_2DC798
+L_2DC4ED:
+  2DC4ED  if_type_effectiveness              0x0, L_2DC798
+  2DC4F3  get_ability                        0x0
+  2DC4F5  if_not_equal                       0x19, L_2DC506
+  2DC4FB  if_type_effectiveness              0x50, L_2DC506
+  2DC501  goto                               L_2DC798
+L_2DC506:
+  2DC506  end                                
+L_2DC507:
+  2DC507  if_side_affecting                  0x1, 0x100, L_2DC795
+  2DC511  end                                
+L_2DC512:
+  2DC512  if_status2                         0x1, 0x100000, L_2DC798
+  2DC51C  end                                
+L_2DC51D:
+  2DC51D  if_status2                         0x0, 0x7, L_2DC792
+  2DC527  get_ability                        0x0
+  2DC529  if_equal                           0x14, L_2DC798
+  2DC52F  if_side_affecting                  0x0, 0x20, L_2DC798
+  2DC539  end                                
+L_2DC53A:
+  2DC53A  if_side_affecting                  0x1, 0x1, L_2DC795
+  2DC544  end                                
+L_2DC545:
+  2DC545  if_type_effectiveness              0x0, L_2DC798
+  2DC54B  get_ability                        0x0
+  2DC54D  if_equal                           0x7, L_2DC798
+  2DC553  if_status                          0x0, 0xFF, L_2DC798
+  2DC55D  if_side_affecting                  0x0, 0x20, L_2DC798
+  2DC567  end                                
+L_2DC568:
+  2DC568  if_status2                         0x1, 0x1000000, L_2DC795
+  2DC572  if_hp_less_than                    0x1, 0x1A, L_2DC798
+  2DC579  end                                
+L_2DC57A:
+  2DC57A  if_status3                         0x0, 0x4, L_2DC798
+  2DC584  get_type                           0x0
+  2DC586  if_equal                           0xC, L_2DC798
+  2DC58C  get_type                           0x2
+  2DC58E  if_equal                           0xC, L_2DC798
+  2DC594  end                                
+L_2DC595:
+  2DC595  if_any_move_disabled_or_encored    0x0, 0x0, L_2DC795
+  2DC59C  end                                
+L_2DC59D:
+  2DC59D  if_any_move_disabled_or_encored    0x0, 0x1, L_2DC795
+  2DC5A4  end                                
+L_2DC5A5:
+  2DC5A5  if_not_status                      0x1, 0x7, L_2DC795
+  2DC5AF  end                                
+L_2DC5B0:
+  2DC5B0  if_status2                         0x0, 0x4000000, L_2DC798
+  2DC5BA  end                                
+L_2DC5BB:
+  2DC5BB  if_stat_level_equal                0x1, 0x1, 0xC, L_2DC798
+  2DC5C3  if_stat_level_equal                0x1, 0x2, 0xC, L_2DC795
+  2DC5CB  end                                
+L_2DC5CC:
+  2DC5CC  if_side_affecting                  0x0, 0x10, L_2DC798
+  2DC5D6  end                                
+L_2DC5D7:
+  2DC5D7  if_status2                         0x0, 0x20000000, L_2DC798
+  2DC5E1  end                                
+L_2DC5E2:
+  2DC5E2  if_status3                         0x0, 0x20, L_2DC798
+  2DC5EC  end                                
+L_2DC5ED:
+  2DC5ED  get_weather                        
+  2DC5EE  if_equal                           0x2, L_2DC795
+  2DC5F4  end                                
+L_2DC5F5:
+  2DC5F5  if_status2                         0x0, 0xF0000, L_2DC798
+  2DC5FF  get_ability                        0x0
+  2DC601  if_equal                           0xC, L_2DC798
+  2DC607  get_gender                         0x1
+  2DC609  if_equal                           0x0, L_2DC61A
+  2DC60F  if_equal                           0xFE, L_2DC627
+  2DC615  goto                               L_2DC798
+L_2DC61A:
+  2DC61A  get_gender                         0x0
+  2DC61C  if_equal                           0xFE, L_2DC634
+  2DC622  goto                               L_2DC798
+L_2DC627:
+  2DC627  get_gender                         0x0
+  2DC629  if_equal                           0x0, L_2DC634
+  2DC62F  goto                               L_2DC798
+L_2DC634:
+  2DC634  end                                
+L_2DC635:
+  2DC635  if_side_affecting                  0x1, 0x20, L_2DC795
+  2DC63F  end                                
+L_2DC640:
+  2DC640  if_stat_level_equal                0x0, 0x1, 0x0, L_2DC798
+  2DC648  if_stat_level_equal                0x0, 0x4, 0x0, L_2DC795
+L_2DC650:
+  2DC650  count_usable_party_mons            0x1
+  2DC652  if_equal                           0x0, L_2DC798
+  2DC658  end                                
+L_2DC659:
+  2DC659  get_weather                        
+  2DC65A  if_equal                           0x1, L_2DC795
+  2DC660  end                                
+L_2DC661:
+  2DC661  get_weather                        
+  2DC662  if_equal                           0x0, L_2DC795
+  2DC668  end                                
+L_2DC669:
+  2DC669  if_side_affecting                  0x0, 0x40, L_2DC79B
+  2DC673  if_side_affecting                  0x1, 0x40, L_2DC79B
+  2DC67D  score                              0x5
+  2DC67F  end                                
+L_2DC680:
+  2DC680  is_first_turn_for                  0x1
+  2DC682  if_equal                           0x0, L_2DC798
+  2DC688  end                                
+L_2DC689:
+  2DC689  get_stockpile_count                0x1
+  2DC68B  if_equal                           0x3, L_2DC798
+  2DC691  end                                
+L_2DC692:
+  2DC692  if_type_effectiveness              0x0, L_2DC798
+  2DC698  get_stockpile_count                0x1
+  2DC69A  if_equal                           0x0, L_2DC798
+  2DC6A0  end                                
+L_2DC6A1:
+  2DC6A1  get_weather                        
+  2DC6A2  if_equal                           0x3, L_2DC795
+  2DC6A8  end                                
+L_2DC6A9:
+  2DC6A9  if_status2                         0x0, 0x80000000, L_2DC798
+  2DC6B3  end                                
+L_2DC6B4:
+  2DC6B4  get_ability                        0x0
+  2DC6B6  if_equal                           0x29, L_2DC798
+  2DC6BC  if_status                          0x0, 0xFF, L_2DC798
+  2DC6C6  if_type_effectiveness              0x0, L_2DC798
+  2DC6CC  if_type_effectiveness              0x14, L_2DC798
+  2DC6D2  if_type_effectiveness              0xA, L_2DC798
+  2DC6D8  if_side_affecting                  0x0, 0x20, L_2DC798
+  2DC6E2  end                                
+L_2DC6E3:
+  2DC6E3  is_double_battle                   
+  2DC6E4  if_equal                           0x0, L_2DC798
+  2DC6EA  end                                
+L_2DC6EB:
+  2DC6EB  get_ability                        0x0
+  2DC6ED  if_equal                           0x3C, L_2DC798
+  2DC6F3  end                                
+L_2DC6F4:
+  2DC6F4  if_status3                         0x1, 0x400, L_2DC798
+  2DC6FE  end                                
+L_2DC6FF:
+  2DC6FF  get_used_held_item                 0x1
+  2DC701  if_equal                           0x0, L_2DC798
+  2DC707  end                                
+L_2DC708:
+  2DC708  if_status3                         0x1, 0x2000, L_2DC798
+  2DC712  end                                
+L_2DC713:
+  2DC713  if_not_status                      0x1, 0xD8, L_2DC798
+  2DC71D  end                                
+L_2DC71E:
+  2DC71E  if_status3                         0x1, 0x10000, L_2DC798
+  2DC728  end                                
+L_2DC729:
+  2DC729  if_stat_level_equal                0x0, 0x1, 0x0, L_2DC798
+  2DC731  if_stat_level_equal                0x0, 0x2, 0x0, L_2DC795
+  2DC739  end                                
+L_2DC73A:
+  2DC73A  if_stat_level_equal                0x1, 0x2, 0xC, L_2DC798
+  2DC742  if_stat_level_equal                0x1, 0x5, 0xC, L_2DC795
+  2DC74A  end                                
+L_2DC74B:
+  2DC74B  if_stat_level_equal                0x1, 0x1, 0xC, L_2DC798
+  2DC753  if_stat_level_equal                0x1, 0x2, 0xC, L_2DC795
+  2DC75B  end                                
+L_2DC75C:
+  2DC75C  if_status3                         0x1, 0x20000, L_2DC798
+  2DC766  end                                
+L_2DC767:
+  2DC767  if_stat_level_equal                0x1, 0x4, 0xC, L_2DC798
+  2DC76F  if_stat_level_equal                0x1, 0x5, 0xC, L_2DC795
+  2DC777  end                                
+L_2DC778:
+  2DC778  if_stat_level_equal                0x1, 0x1, 0xC, L_2DC798
+  2DC780  if_stat_level_equal                0x1, 0x3, 0xC, L_2DC795
+  2DC788  end                                
+L_2DC789:
+  2DC789  score                              0xFF
+  2DC78B  end                                
+L_2DC78C:
+  2DC78C  score                              0xFE
+  2DC78E  end                                
+L_2DC78F:
+  2DC78F  score                              0xFD
+  2DC791  end                                
+L_2DC792:
+  2DC792  score                              0xFB
+  2DC794  end                                
+L_2DC795:
+  2DC795  score                              0xF8
+  2DC797  end                                
+L_2DC798:
+  2DC798  score                              0xF6
+  2DC79A  end                                
+L_2DC79B:
+  2DC79B  score                              0xF4
+  2DC79D  end                                
+L_2DC79E:
+  2DC79E  score                              0xE2
+  2DC7A0  end                                
+L_2DC7A1:
+  2DC7A1  score                              0x1
+  2DC7A3  end                                
+L_2DC7A4:
+  2DC7A4  score                              0x2
+  2DC7A6  end                                
+L_2DC7A7:
+  2DC7A7  score                              0x3
+  2DC7A9  end                                
+L_2DC7AA:
+  2DC7AA  score                              0x5
+  2DC7AC  end                                
+L_2DC7AD:
+  2DC7AD  score                              0xA
+  2DC7AF  end                                
+AI_CheckViability:
+  2DC7B0  if_target_is_ally                  L_2DE34E
+  2DC7B5  if_effect                          0x1, L_2DCA92
+  2DC7BB  if_effect                          0x3, L_2DCAAE
+  2DC7C1  if_effect                          0x7, L_2DCAC8
+  2DC7C7  if_effect                          0x8, L_2DCB26
+  2DC7CD  if_effect                          0x9, L_2DCB3A
+  2DC7D3  if_effect                          0xA, L_2DCBBC
+  2DC7D9  if_effect                          0xB, L_2DCBF7
+  2DC7DF  if_effect                          0xC, L_2DCC5D
+  2DC7E5  if_effect                          0xD, L_2DCC73
+  2DC7EB  if_effect                          0xE, L_2DCCAE
+  2DC7F1  if_effect                          0xF, L_2DCD14
+  2DC7F7  if_effect                          0x10, L_2DCD2E
+  2DC7FD  if_effect                          0x11, L_2DCDC8
+  2DC803  if_effect                          0x12, L_2DCDF8
+  2DC809  if_effect                          0x13, L_2DCE4A
+  2DC80F  if_effect                          0x14, L_2DCE81
+  2DC815  if_effect                          0x15, L_2DCE97
+  2DC81B  if_effect                          0x16, L_2DCEEB
+  2DC821  if_effect                          0x17, L_2DCF0C
+  2DC827  if_effect                          0x18, L_2DCFA0
+  2DC82D  if_effect                          0x19, L_2DCFC1
+  2DC833  if_effect                          0x1A, L_2DD084
+  2DC839  if_effect                          0x1C, L_2DD08E
+  2DC83F  if_effect                          0x1E, L_2DD0C6
+  2DC845  if_effect                          0x20, L_2DD0F7
+  2DC84B  if_effect                          0x21, L_2DD150
+  2DC851  if_effect                          0x23, L_2DD18F
+  2DC857  if_effect                          0x25, L_2DD1BE
+  2DC85D  if_effect                          0x26, L_2DD21E
+  2DC863  if_effect                          0x27, L_2DDA0B
+  2DC869  if_effect                          0x28, L_2DD21F
+  2DC86F  if_effect                          0x2A, L_2DD229
+  2DC875  if_effect                          0x2B, L_2DD25F
+  2DC87B  if_effect                          0x31, L_2DD296
+  2DC881  if_effect                          0x32, L_2DCBBC
+  2DC887  if_effect                          0x33, L_2DCBF7
+  2DC88D  if_effect                          0x34, L_2DCC5D
+  2DC893  if_effect                          0x35, L_2DCC73
+  2DC899  if_effect                          0x36, L_2DCCAE
+  2DC89F  if_effect                          0x37, L_2DCD14
+  2DC8A5  if_effect                          0x38, L_2DCD2E
+  2DC8AB  if_effect                          0x3A, L_2DCDF8
+  2DC8B1  if_effect                          0x3B, L_2DCE4A
+  2DC8B7  if_effect                          0x3C, L_2DCE81
+  2DC8BD  if_effect                          0x3D, L_2DCE97
+  2DC8C3  if_effect                          0x3E, L_2DCEEB
+  2DC8C9  if_effect                          0x3F, L_2DCF0C
+  2DC8CF  if_effect                          0x40, L_2DCFA0
+  2DC8D5  if_effect                          0x41, L_2DD2D3
+  2DC8DB  if_effect                          0x42, L_2DD303
+  2DC8E1  if_effect                          0x43, L_2DD314
+  2DC8E7  if_effect                          0x76, L_2DD286
+  2DC8ED  if_effect                          0x46, L_2DCE6B
+  2DC8F3  if_effect                          0x4B, L_2DDA0B
+  2DC8F9  if_effect                          0x4E, L_2DD331
+  2DC8FF  if_effect                          0x4F, L_2DD354
+  2DC905  if_effect                          0x50, L_2DD3EA
+  2DC90B  if_effect                          0x54, L_2DD150
+  2DC911  if_effect                          0x56, L_2DD412
+  2DC917  if_effect                          0x59, L_2DD431
+  2DC91D  if_effect                          0x5A, L_2DD4E3
+  2DC923  if_effect                          0x5B, L_2DD54B
+  2DC929  if_effect                          0x5C, L_2DD577
+  2DC92F  if_effect                          0x5E, L_2DD57A
+  2DC935  if_effect                          0x61, L_2DD583
+  2DC93B  if_effect                          0x62, L_2DD590
+  2DC941  if_effect                          0x63, L_2DD5C6
+  2DC947  if_effect                          0x66, L_2DD60B
+  2DC94D  if_effect                          0x69, L_2DD622
+  2DC953  if_effect                          0x6A, L_2DD229
+  2DC959  if_effect                          0x6C, L_2DCD2E
+  2DC95F  if_effect                          0x6D, L_2DD645
+  2DC965  if_effect                          0x6F, L_2DD694
+  2DC96B  if_effect                          0x71, L_2DD75D
+  2DC971  if_effect                          0x74, L_2DD78B
+  2DC977  if_effect                          0x7F, L_2DD7A9
+  2DC97D  if_effect                          0x80, L_2DD845
+  2DC983  if_effect                          0x84, L_2DD0DD
+  2DC989  if_effect                          0x85, L_2DD0DD
+  2DC98F  if_effect                          0x86, L_2DD0DD
+  2DC995  if_effect                          0x88, L_2DD87B
+  2DC99B  if_effect                          0x89, L_2DD8BA
+  2DC9A1  if_effect                          0x8E, L_2DD8E3
+  2DC9A7  if_effect                          0x8F, L_2DD8F2
+  2DC9AD  if_effect                          0x90, L_2DD95A
+  2DC9B3  if_effect                          0x91, L_2DDA0B
+  2DC9B9  if_effect                          0x97, L_2DDA0B
+  2DC9BF  if_effect                          0x9B, L_2DDA2F
+  2DC9C5  if_effect                          0x9D, L_2DD0F7
+  2DC9CB  if_effect                          0x9E, L_2DDAB9
+  2DC9D1  if_effect                          0xA1, L_2DDABC
+  2DC9D7  if_effect                          0xA2, L_2DD0F7
+  2DC9DD  if_effect                          0xA4, L_2DDACD
+  2DC9E3  if_effect                          0xA6, L_2DD28E
+  2DC9E9  if_effect                          0xA8, L_2DCAC8
+  2DC9EF  if_effect                          0xA9, L_2DDAF6
+  2DC9F5  if_effect                          0xAA, L_2DDB03
+  2DC9FB  if_effect                          0xAB, L_2DDB5C
+  2DCA01  if_effect                          0xB1, L_2DDB6E
+  2DCA07  if_effect                          0xB2, L_2DDBB9
+  2DCA0D  if_effect                          0xB6, L_2DDBF0
+  2DCA13  if_effect                          0xB7, L_2DDC20
+  2DCA19  if_effect                          0xB8, L_2DDC53
+  2DCA1F  if_effect                          0xB9, L_2DDC72
+  2DCA25  if_effect                          0xBA, L_2DDCA0
+  2DCA2B  if_effect                          0xBC, L_2DDCB2
+  2DCA31  if_effect                          0xBD, L_2DDCCA
+  2DCA37  if_effect                          0xBE, L_2DDCF6
+  2DCA3D  if_effect                          0xBF, L_2DDBB9
+  2DCA43  if_effect                          0xC0, L_2DDD1E
+  2DCA49  if_effect                          0xC1, L_2DDD2F
+  2DCA4F  if_effect                          0xC3, L_2DDD3E
+  2DCA55  if_effect                          0xC8, L_2DD25F
+  2DCA5B  if_effect                          0xC9, L_2DDDA8
+  2DCA61  if_effect                          0xCC, L_2DDDCE
+  2DCA67  if_effect                          0xCD, L_2DCE4A
+  2DCA6D  if_effect                          0xCE, L_2DCCAE
+  2DCA73  if_effect                          0xD0, L_2DCBF7
+  2DCA79  if_effect                          0xD1, L_2DD25F
+  2DCA7F  if_effect                          0xD2, L_2DDDF6
+  2DCA85  if_effect                          0xD3, L_2DCCAE
+  2DCA8B  if_effect                          0xD4, L_2DDE1C
+  2DCA91  end                                
+L_2DCA92:
+  2DCA92  if_has_move_with_effect            0x0, 0x8, L_2DCAA5
+  2DCA99  if_has_move_with_effect            0x0, 0x6B, L_2DCAA5
+  2DCAA0  goto                               L_2DCAAD
+L_2DCAA5:
+  2DCAA5  if_random_less_than                0x80, L_2DCAAD
+  2DCAAB  score                              0x1
+L_2DCAAD:
+  2DCAAD  end                                
+L_2DCAAE:
+  2DCAAE  if_type_effectiveness              0x14, L_2DCABF
+  2DCAB4  if_type_effectiveness              0xA, L_2DCABF
+  2DCABA  goto                               L_2DCAC7
+L_2DCABF:
+  2DCABF  if_random_less_than                0x32, L_2DCAC7
+  2DCAC5  score                              0xFD
+L_2DCAC7:
+  2DCAC7  end                                
+L_2DCAC8:
+  2DCAC8  if_stat_level_less_than            0x0, 0x7, 0x7, L_2DCAE2
+  2DCAD0  score                              0xFF
+  2DCAD2  if_stat_level_less_than            0x0, 0x7, 0xA, L_2DCAE2
+  2DCADA  if_random_less_than                0x80, L_2DCAE2
+  2DCAE0  score                              0xFF
+L_2DCAE2:
+  2DCAE2  if_hp_less_than                    0x1, 0x50, L_2DCAFA
+  2DCAE9  if_user_goes                       0x1, L_2DCAFA
+  2DCAEF  if_random_less_than                0x32, L_2DCB25
+  2DCAF5  goto                               L_2DC78F
+L_2DCAFA:
+  2DCAFA  if_hp_more_than                    0x1, 0x32, L_2DCB1D
+  2DCB01  if_random_less_than                0x80, L_2DCB09
+  2DCB07  score                              0x1
+L_2DCB09:
+  2DCB09  if_hp_more_than                    0x1, 0x1E, L_2DCB25
+  2DCB10  if_random_less_than                0x32, L_2DCB25
+  2DCB16  score                              0x1
+  2DCB18  goto                               L_2DCB25
+L_2DCB1D:
+  2DCB1D  if_random_less_than                0x32, L_2DCB25
+  2DCB23  score                              0xFF
+L_2DCB25:
+  2DCB25  end                                
+L_2DCB26:
+  2DCB26  if_type_effectiveness              0xA, L_2DCB37
+  2DCB2C  if_type_effectiveness              0x14, L_2DCB37
+  2DCB32  goto                               L_2DCB39
+L_2DCB37:
+  2DCB37  score                              0xFF
+L_2DCB39:
+  2DCB39  end                                
+L_2DCB3A:
+  2DCB3A  if_user_goes                       0x1, L_2DCB58
+  2DCB40  get_last_used_bank_move            0x0
+  2DCB42  if_not_in_hwords                   0x82DCB6C, L_2DCB58
+  2DCB4B  if_random_less_than                0x80, L_2DCB6B
+  2DCB51  score                              0x2
+  2DCB53  goto                               L_2DCB6B
+L_2DCB58:
+  2DCB58  get_last_used_bank_move            0x0
+  2DCB5A  if_in_hwords                       0x82DCB6C, L_2DCB6B
+  2DCB63  if_random_less_than                0x50, L_2DCB6B
+  2DCB69  score                              0xFF
+L_2DCB6B:
+  2DCB6B  end                                
+  2DCB6C  .data 80 bytes: 4F 00 8E 00 93 00 5F 00 2F 00 40 01 45 01 1C 00 6C 00 5C 00 0C 00 20 00
+L_2DCBBC:
+  2DCBBC  if_stat_level_less_than            0x1, 0x1, 0x9, L_2DCBD1
+  2DCBC4  if_random_less_than                0x64, L_2DCBE0
+  2DCBCA  score                              0xFF
+  2DCBCC  goto                               L_2DCBE0
+L_2DCBD1:
+  2DCBD1  if_hp_not_equal                    0x1, 0x64, L_2DCBE0
+  2DCBD8  if_random_less_than                0x80, L_2DCBE0
+  2DCBDE  score                              0x2
+L_2DCBE0:
+  2DCBE0  if_hp_more_than                    0x1, 0x46, L_2DCBF6
+  2DCBE7  if_hp_less_than                    0x1, 0x28, L_2DCBF4
+  2DCBEE  if_random_less_than                0x28, L_2DCBF6
+L_2DCBF4:
+  2DCBF4  score                              0xFE
+L_2DCBF6:
+  2DCBF6  end                                
+L_2DCBF7:
+  2DCBF7  if_stat_level_less_than            0x1, 0x2, 0x9, L_2DCC0C
+  2DCBFF  if_random_less_than                0x64, L_2DCC1B
+  2DCC05  score                              0xFF
+  2DCC07  goto                               L_2DCC1B
+L_2DCC0C:
+  2DCC0C  if_hp_not_equal                    0x1, 0x64, L_2DCC1B
+  2DCC13  if_random_less_than                0x80, L_2DCC1B
+  2DCC19  score                              0x2
+L_2DCC1B:
+  2DCC1B  if_hp_less_than                    0x1, 0x46, L_2DCC28
+  2DCC22  if_random_less_than                0xC8, L_2DCC52
+L_2DCC28:
+  2DCC28  if_hp_less_than                    0x1, 0x28, L_2DCC50
+  2DCC2F  get_last_used_bank_move            0x0
+  2DCC31  get_move_power_from_result         
+  2DCC32  if_equal                           0x0, L_2DCC4A
+  2DCC38  get_last_used_bank_move            0x0
+  2DCC3A  get_move_type_from_result          
+  2DCC3B  if_not_in_bytes                    0x82DCC53, L_2DCC50
+  2DCC44  if_random_less_than                0x3C, L_2DCC52
+L_2DCC4A:
+  2DCC4A  if_random_less_than                0x3C, L_2DCC52
+L_2DCC50:
+  2DCC50  score                              0xFE
+L_2DCC52:
+  2DCC52  end                                
+  2DCC53  .data 10 bytes: 00 01 03 04 02 05 06 07 08 FF
+L_2DCC5D:
+  2DCC5D  if_user_goes                       0x1, L_2DCC6A
+  2DCC63  score                              0xFD
+  2DCC65  goto                               L_2DCC72
+L_2DCC6A:
+  2DCC6A  if_random_less_than                0x46, L_2DCC72
+  2DCC70  score                              0x3
+L_2DCC72:
+  2DCC72  end                                
+L_2DCC73:
+  2DCC73  if_stat_level_less_than            0x1, 0x4, 0x9, L_2DCC88
+  2DCC7B  if_random_less_than                0x64, L_2DCC97
+  2DCC81  score                              0xFF
+  2DCC83  goto                               L_2DCC97
+L_2DCC88:
+  2DCC88  if_hp_not_equal                    0x1, 0x64, L_2DCC97
+  2DCC8F  if_random_less_than                0x80, L_2DCC97
+  2DCC95  score                              0x2
+L_2DCC97:
+  2DCC97  if_hp_more_than                    0x1, 0x46, L_2DCCAD
+  2DCC9E  if_hp_less_than                    0x1, 0x28, L_2DCCAB
+  2DCCA5  if_random_less_than                0x46, L_2DCCAD
+L_2DCCAB:
+  2DCCAB  score                              0xFE
+L_2DCCAD:
+  2DCCAD  end                                
+L_2DCCAE:
+  2DCCAE  if_stat_level_less_than            0x1, 0x5, 0x9, L_2DCCC3
+  2DCCB6  if_random_less_than                0x64, L_2DCCD2
+  2DCCBC  score                              0xFF
+  2DCCBE  goto                               L_2DCCD2
+L_2DCCC3:
+  2DCCC3  if_hp_not_equal                    0x1, 0x64, L_2DCCD2
+  2DCCCA  if_random_less_than                0x80, L_2DCCD2
+  2DCCD0  score                              0x2
+L_2DCCD2:
+  2DCCD2  if_hp_less_than                    0x1, 0x46, L_2DCCDF
+  2DCCD9  if_random_less_than                0xC8, L_2DCD09
+L_2DCCDF:
+  2DCCDF  if_hp_less_than                    0x1, 0x28, L_2DCD07
+  2DCCE6  get_last_used_bank_move            0x0
+  2DCCE8  get_move_power_from_result         
+  2DCCE9  if_equal                           0x0, L_2DCD01
+  2DCCEF  get_last_used_bank_move            0x0
+  2DCCF1  get_move_type_from_result          
+  2DCCF2  if_in_bytes                        0x82DCD0A, L_2DCD07
+  2DCCFB  if_random_less_than                0x3C, L_2DCD09
+L_2DCD01:
+  2DCD01  if_random_less_than                0x3C, L_2DCD09
+L_2DCD07:
+  2DCD07  score                              0xFE
+L_2DCD09:
+  2DCD09  end                                
+  2DCD0A  .data 10 bytes: 00 01 03 04 02 05 06 07 08 FF
+L_2DCD14:
+  2DCD14  if_stat_level_less_than            0x1, 0x6, 0x9, L_2DCD24
+  2DCD1C  if_random_less_than                0x32, L_2DCD24
+  2DCD22  score                              0xFE
+L_2DCD24:
+  2DCD24  if_hp_more_than                    0x1, 0x46, L_2DCD2D
+  2DCD2B  score                              0xFE
+L_2DCD2D:
+  2DCD2D  end                                
+L_2DCD2E:
+  2DCD2E  if_hp_less_than                    0x1, 0x5A, L_2DCD3D
+  2DCD35  if_random_less_than                0x64, L_2DCD3D
+  2DCD3B  score                              0x3
+L_2DCD3D:
+  2DCD3D  if_stat_level_less_than            0x1, 0x7, 0x9, L_2DCD4D
+  2DCD45  if_random_less_than                0x80, L_2DCD4D
+  2DCD4B  score                              0xFF
+L_2DCD4D:
+  2DCD4D  if_not_status                      0x0, 0x80, L_2DCD6C
+  2DCD57  if_hp_more_than                    0x1, 0x32, L_2DCD64
+  2DCD5E  if_random_less_than                0x50, L_2DCD6C
+L_2DCD64:
+  2DCD64  if_random_less_than                0x32, L_2DCD6C
+  2DCD6A  score                              0x3
+L_2DCD6C:
+  2DCD6C  if_not_status3                     0x0, 0x4, L_2DCD7E
+  2DCD76  if_random_less_than                0x46, L_2DCD7E
+  2DCD7C  score                              0x3
+L_2DCD7E:
+  2DCD7E  if_not_status3                     0x1, 0x400, L_2DCD90
+  2DCD88  if_random_less_than                0x80, L_2DCD90
+  2DCD8E  score                              0x2
+L_2DCD90:
+  2DCD90  if_not_status2                     0x0, 0x10000000, L_2DCDA2
+  2DCD9A  if_random_less_than                0x46, L_2DCDA2
+  2DCDA0  score                              0x3
+L_2DCDA2:
+  2DCDA2  if_hp_more_than                    0x1, 0x46, L_2DCDC7
+  2DCDA9  if_stat_level_equal                0x1, 0x7, 0x6, L_2DCDC7
+  2DCDB1  if_hp_less_than                    0x1, 0x28, L_2DCDC5
+  2DCDB8  if_hp_less_than                    0x0, 0x28, L_2DCDC5
+  2DCDBF  if_random_less_than                0x46, L_2DCDC7
+L_2DCDC5:
+  2DCDC5  score                              0xFE
+L_2DCDC7:
+  2DCDC7  end                                
+L_2DCDC8:
+  2DCDC8  if_stat_level_more_than            0x0, 0x7, 0xA, L_2DCDED
+  2DCDD0  if_stat_level_less_than            0x1, 0x6, 0x2, L_2DCDED
+  2DCDD8  if_stat_level_more_than            0x0, 0x7, 0x8, L_2DCDEF
+  2DCDE0  if_stat_level_less_than            0x1, 0x6, 0x4, L_2DCDEF
+  2DCDE8  goto                               L_2DCDF7
+L_2DCDED:
+  2DCDED  score                              0x1
+L_2DCDEF:
+  2DCDEF  if_random_less_than                0x64, L_2DCDF7
+  2DCDF5  score                              0x1
+L_2DCDF7:
+  2DCDF7  end                                
+L_2DCDF8:
+  2DCDF8  if_stat_level_equal                0x0, 0x1, 0x6, L_2DCE1B
+  2DCE00  score                              0xFF
+  2DCE02  if_hp_more_than                    0x1, 0x5A, L_2DCE0B
+  2DCE09  score                              0xFF
+L_2DCE0B:
+  2DCE0B  if_stat_level_more_than            0x0, 0x1, 0x3, L_2DCE1B
+  2DCE13  if_random_less_than                0x32, L_2DCE1B
+  2DCE19  score                              0xFE
+L_2DCE1B:
+  2DCE1B  if_hp_more_than                    0x0, 0x46, L_2DCE24
+  2DCE22  score                              0xFE
+L_2DCE24:
+  2DCE24  get_type                           0x0
+  2DCE26  if_in_bytes                        0x82DCE43, L_2DCE42
+  2DCE2F  get_type                           0x2
+  2DCE31  if_in_bytes                        0x82DCE43, L_2DCE42
+  2DCE3A  if_random_less_than                0x32, L_2DCE42
+  2DCE40  score                              0xFE
+L_2DCE42:
+  2DCE42  end                                
+  2DCE43  .data 7 bytes: 00 01 04 05 06 08 FF
+L_2DCE4A:
+  2DCE4A  if_hp_less_than                    0x1, 0x46, L_2DCE59
+  2DCE51  if_stat_level_more_than            0x0, 0x2, 0x3, L_2DCE61
+L_2DCE59:
+  2DCE59  if_random_less_than                0x32, L_2DCE61
+  2DCE5F  score                              0xFE
+L_2DCE61:
+  2DCE61  if_hp_more_than                    0x0, 0x46, L_2DCE6A
+  2DCE68  score                              0xFE
+L_2DCE6A:
+  2DCE6A  end                                
+L_2DCE6B:
+  2DCE6B  if_move                            0xC4, L_2DCE81
+  2DCE72  if_move                            0x13D, L_2DCE81
+  2DCE79  if_move                            0x155, L_2DCE81
+  2DCE80  end                                
+L_2DCE81:
+  2DCE81  if_user_goes                       0x1, L_2DCE8E
+  2DCE87  score                              0xFD
+  2DCE89  goto                               L_2DCE96
+L_2DCE8E:
+  2DCE8E  if_random_less_than                0x46, L_2DCE96
+  2DCE94  score                              0x2
+L_2DCE96:
+  2DCE96  end                                
+L_2DCE97:
+  2DCE97  if_stat_level_equal                0x0, 0x1, 0x6, L_2DCEBA
+  2DCE9F  score                              0xFF
+  2DCEA1  if_hp_more_than                    0x1, 0x5A, L_2DCEAA
+  2DCEA8  score                              0xFF
+L_2DCEAA:
+  2DCEAA  if_stat_level_more_than            0x0, 0x4, 0x3, L_2DCEBA
+  2DCEB2  if_random_less_than                0x32, L_2DCEBA
+  2DCEB8  score                              0xFE
+L_2DCEBA:
+  2DCEBA  if_hp_more_than                    0x0, 0x46, L_2DCEC3
+  2DCEC1  score                              0xFE
+L_2DCEC3:
+  2DCEC3  get_type                           0x0
+  2DCEC5  if_in_bytes                        0x82DCEE2, L_2DCEE1
+  2DCECE  get_type                           0x2
+  2DCED0  if_in_bytes                        0x82DCEE2, L_2DCEE1
+  2DCED9  if_random_less_than                0x32, L_2DCEE1
+  2DCEDF  score                              0xFE
+L_2DCEE1:
+  2DCEE1  end                                
+  2DCEE2  .data 9 bytes: 0A 0B 0C 0D 0E 0F 10 11 FF
+L_2DCEEB:
+  2DCEEB  if_hp_less_than                    0x1, 0x46, L_2DCEFA
+  2DCEF2  if_stat_level_more_than            0x0, 0x5, 0x3, L_2DCF02
+L_2DCEFA:
+  2DCEFA  if_random_less_than                0x32, L_2DCF02
+  2DCF00  score                              0xFE
+L_2DCF02:
+  2DCF02  if_hp_more_than                    0x0, 0x46, L_2DCF0B
+  2DCF09  score                              0xFE
+L_2DCF0B:
+  2DCF0B  end                                
+L_2DCF0C:
+  2DCF0C  if_hp_less_than                    0x1, 0x46, L_2DCF1A
+  2DCF13  if_hp_more_than                    0x0, 0x46, L_2DCF22
+L_2DCF1A:
+  2DCF1A  if_random_less_than                0x64, L_2DCF22
+  2DCF20  score                              0xFF
+L_2DCF22:
+  2DCF22  if_stat_level_more_than            0x1, 0x6, 0x4, L_2DCF32
+  2DCF2A  if_random_less_than                0x50, L_2DCF32
+  2DCF30  score                              0xFE
+L_2DCF32:
+  2DCF32  if_not_status                      0x0, 0x80, L_2DCF44
+  2DCF3C  if_random_less_than                0x46, L_2DCF44
+  2DCF42  score                              0x2
+L_2DCF44:
+  2DCF44  if_not_status3                     0x0, 0x4, L_2DCF56
+  2DCF4E  if_random_less_than                0x46, L_2DCF56
+  2DCF54  score                              0x2
+L_2DCF56:
+  2DCF56  if_not_status3                     0x1, 0x400, L_2DCF68
+  2DCF60  if_random_less_than                0x80, L_2DCF68
+  2DCF66  score                              0x1
+L_2DCF68:
+  2DCF68  if_not_status2                     0x0, 0x10000000, L_2DCF7A
+  2DCF72  if_random_less_than                0x46, L_2DCF7A
+  2DCF78  score                              0x2
+L_2DCF7A:
+  2DCF7A  if_hp_more_than                    0x1, 0x46, L_2DCF9F
+  2DCF81  if_stat_level_equal                0x0, 0x6, 0x6, L_2DCF9F
+  2DCF89  if_hp_less_than                    0x1, 0x28, L_2DCF9D
+  2DCF90  if_hp_less_than                    0x0, 0x28, L_2DCF9D
+  2DCF97  if_random_less_than                0x46, L_2DCF9F
+L_2DCF9D:
+  2DCF9D  score                              0xFE
+L_2DCF9F:
+  2DCF9F  end                                
+L_2DCFA0:
+  2DCFA0  if_hp_less_than                    0x1, 0x46, L_2DCFAF
+  2DCFA7  if_stat_level_more_than            0x0, 0x7, 0x3, L_2DCFB7
+L_2DCFAF:
+  2DCFAF  if_random_less_than                0x32, L_2DCFB7
+  2DCFB5  score                              0xFE
+L_2DCFB7:
+  2DCFB7  if_hp_more_than                    0x0, 0x46, L_2DCFC0
+  2DCFBE  score                              0xFE
+L_2DCFC0:
+  2DCFC0  end                                
+L_2DCFC1:
+  2DCFC1  if_stat_level_more_than            0x1, 0x1, 0x8, L_2DD016
+  2DCFC9  if_stat_level_more_than            0x1, 0x2, 0x8, L_2DD016
+  2DCFD1  if_stat_level_more_than            0x1, 0x4, 0x8, L_2DD016
+  2DCFD9  if_stat_level_more_than            0x1, 0x5, 0x8, L_2DD016
+  2DCFE1  if_stat_level_more_than            0x1, 0x7, 0x8, L_2DD016
+  2DCFE9  if_stat_level_less_than            0x0, 0x1, 0x4, L_2DD016
+  2DCFF1  if_stat_level_less_than            0x0, 0x2, 0x4, L_2DD016
+  2DCFF9  if_stat_level_less_than            0x0, 0x4, 0x4, L_2DD016
+  2DD001  if_stat_level_less_than            0x0, 0x5, 0x4, L_2DD016
+  2DD009  if_stat_level_less_than            0x0, 0x6, 0x4, L_2DD016
+  2DD011  goto                               L_2DD01E
+L_2DD016:
+  2DD016  if_random_less_than                0x32, L_2DD01E
+  2DD01C  score                              0xFD
+L_2DD01E:
+  2DD01E  if_stat_level_more_than            0x0, 0x1, 0x8, L_2DD07B
+  2DD026  if_stat_level_more_than            0x0, 0x2, 0x8, L_2DD07B
+  2DD02E  if_stat_level_more_than            0x0, 0x4, 0x8, L_2DD07B
+  2DD036  if_stat_level_more_than            0x0, 0x5, 0x8, L_2DD07B
+  2DD03E  if_stat_level_more_than            0x0, 0x7, 0x8, L_2DD07B
+  2DD046  if_stat_level_less_than            0x1, 0x1, 0x4, L_2DD07B
+  2DD04E  if_stat_level_less_than            0x1, 0x2, 0x4, L_2DD07B
+  2DD056  if_stat_level_less_than            0x1, 0x4, 0x4, L_2DD07B
+  2DD05E  if_stat_level_less_than            0x1, 0x5, 0x4, L_2DD07B
+  2DD066  if_stat_level_less_than            0x1, 0x6, 0x4, L_2DD07B
+  2DD06E  if_random_less_than                0x32, L_2DD083
+  2DD074  score                              0xFF
+  2DD076  goto                               L_2DD083
+L_2DD07B:
+  2DD07B  if_random_less_than                0x32, L_2DD083
+  2DD081  score                              0x3
+L_2DD083:
+  2DD083  end                                
+L_2DD084:
+  2DD084  if_hp_more_than                    0x1, 0x5A, L_2DD08D
+  2DD08B  score                              0xFE
+L_2DD08D:
+  2DD08D  end                                
+L_2DD08E:
+  2DD08E  if_stat_level_more_than            0x0, 0x1, 0x8, L_2DD0BD
+  2DD096  if_stat_level_more_than            0x0, 0x2, 0x8, L_2DD0BD
+  2DD09E  if_stat_level_more_than            0x0, 0x4, 0x8, L_2DD0BD
+  2DD0A6  if_stat_level_more_than            0x0, 0x5, 0x8, L_2DD0BD
+  2DD0AE  if_stat_level_more_than            0x0, 0x7, 0x8, L_2DD0BD
+  2DD0B6  score                              0xFD
+  2DD0B8  goto                               L_2DD0C5
+L_2DD0BD:
+  2DD0BD  if_random_less_than                0x80, L_2DD0C5
+  2DD0C3  score                              0x2
+L_2DD0C5:
+  2DD0C5  end                                
+L_2DD0C6:
+  2DD0C6  if_hp_more_than                    0x1, 0x5A, L_2DD0CF
+  2DD0CD  score                              0xFE
+L_2DD0CF:
+  2DD0CF  get_turn_count                     
+  2DD0D0  if_equal                           0x0, L_2DD0DC
+  2DD0D6  if_random_less_than                0xC8, L_2DC78C
+L_2DD0DC:
+  2DD0DC  end                                
+L_2DD0DD:
+  2DD0DD  get_weather                        
+  2DD0DE  if_equal                           0x3, L_2DD0F5
+  2DD0E4  if_equal                           0x1, L_2DD0F5
+  2DD0EA  if_equal                           0x2, L_2DD0F5
+  2DD0F0  goto                               L_2DD0F7
+L_2DD0F5:
+  2DD0F5  score                              0xFE
+L_2DD0F7:
+  2DD0F7  if_hp_equal                        0x1, 0x64, L_2DD11F
+  2DD0FE  if_user_goes                       0x1, L_2DD126
+  2DD104  score                              0xF8
+  2DD106  goto                               L_2DD14F
+  2DD10B  .data 20 bytes: 05 01 32 3A D1 2D 08 06 01 50 1F D1 2D 08 00 46 3A D1 2D 08
+L_2DD11F:
+  2DD11F  score                              0xFD
+  2DD121  goto                               L_2DD14F
+L_2DD126:
+  2DD126  if_hp_less_than                    0x1, 0x46, L_2DD13A
+  2DD12D  if_random_less_than                0x1E, L_2DD13A
+  2DD133  score                              0xFD
+  2DD135  goto                               L_2DD14F
+L_2DD13A:
+  2DD13A  if_doesnt_have_move_with_effect    0x0, 0xC3, L_2DD147
+  2DD141  if_random_less_than                0x64, L_2DD14F
+L_2DD147:
+  2DD147  if_random_less_than                0x14, L_2DD14F
+  2DD14D  score                              0x2
+L_2DD14F:
+  2DD14F  end                                
+L_2DD150:
+  2DD150  if_user_has_no_attacking_moves     L_2DD173
+  2DD155  if_hp_more_than                    0x1, 0x32, L_2DD164
+  2DD15C  if_random_less_than                0x32, L_2DD164
+  2DD162  score                              0xFD
+L_2DD164:
+  2DD164  if_hp_more_than                    0x0, 0x32, L_2DD173
+  2DD16B  if_random_less_than                0x32, L_2DD173
+  2DD171  score                              0xFD
+L_2DD173:
+  2DD173  if_has_move_with_effect            0x1, 0xE, L_2DD186
+  2DD17A  if_has_move_with_effect            0x1, 0x6F, L_2DD186
+  2DD181  goto                               L_2DD18E
+L_2DD186:
+  2DD186  if_random_less_than                0x3C, L_2DD18E
+  2DD18C  score                              0x2
+L_2DD18E:
+  2DD18E  end                                
+L_2DD18F:
+  2DD18F  if_hp_less_than                    0x1, 0x32, L_2DD1B2
+  2DD196  get_type                           0x0
+  2DD198  if_in_bytes                        0x82DD1B5, L_2DD1B4
+  2DD1A1  get_type                           0x2
+  2DD1A3  if_in_bytes                        0x82DD1B5, L_2DD1B4
+  2DD1AC  if_random_less_than                0x32, L_2DD1B4
+L_2DD1B2:
+  2DD1B2  score                              0xFE
+L_2DD1B4:
+  2DD1B4  end                                
+  2DD1B5  .data 9 bytes: 0A 0B 0C 0D 0E 0F 10 11 FF
+L_2DD1BE:
+  2DD1BE  if_user_goes                       0x1, L_2DD1ED
+  2DD1C4  if_hp_not_equal                    0x1, 0x64, L_2DD1D2
+  2DD1CB  score                              0xF8
+  2DD1CD  goto                               L_2DD21D
+L_2DD1D2:
+  2DD1D2  if_hp_less_than                    0x1, 0x28, L_2DD208
+  2DD1D9  if_hp_more_than                    0x1, 0x32, L_2DD1E6
+  2DD1E0  if_random_less_than                0x46, L_2DD208
+L_2DD1E6:
+  2DD1E6  score                              0xFD
+  2DD1E8  goto                               L_2DD21D
+L_2DD1ED:
+  2DD1ED  if_hp_less_than                    0x1, 0x3C, L_2DD208
+  2DD1F4  if_hp_more_than                    0x1, 0x46, L_2DD201
+  2DD1FB  if_random_less_than                0x32, L_2DD208
+L_2DD201:
+  2DD201  score                              0xFD
+  2DD203  goto                               L_2DD21D
+L_2DD208:
+  2DD208  if_doesnt_have_move_with_effect    0x0, 0xC3, L_2DD215
+  2DD20F  if_random_less_than                0x32, L_2DD21D
+L_2DD215:
+  2DD215  if_random_less_than                0xA, L_2DD21D
+  2DD21B  score                              0x3
+L_2DD21D:
+  2DD21D  end                                
+L_2DD21E:
+  2DD21E  end                                
+L_2DD21F:
+  2DD21F  if_hp_more_than                    0x0, 0x32, L_2DD228
+  2DD226  score                              0xFF
+L_2DD228:
+  2DD228  end                                
+L_2DD229:
+  2DD229  if_status                          0x0, 0x80, L_2DD256
+  2DD233  if_status2                         0x0, 0x10000000, L_2DD256
+  2DD23D  if_status3                         0x0, 0x20, L_2DD256
+  2DD247  if_status2                         0x0, 0xF0000, L_2DD256
+  2DD251  goto                               L_2DD25E
+L_2DD256:
+  2DD256  if_random_less_than                0x80, L_2DD25E
+  2DD25C  score                              0x1
+L_2DD25E:
+  2DD25E  end                                
+L_2DD25F:
+  2DD25F  if_type_effectiveness              0xA, L_2DD285
+  2DD265  if_type_effectiveness              0x14, L_2DD285
+  2DD26B  if_type_effectiveness              0x50, L_2DD27D
+  2DD271  if_type_effectiveness              0xA0, L_2DD27D
+  2DD277  if_random_less_than                0x80, L_2DD285
+L_2DD27D:
+  2DD27D  if_random_less_than                0x80, L_2DD285
+  2DD283  score                              0x1
+L_2DD285:
+  2DD285  end                                
+L_2DD286:
+  2DD286  if_has_move                        0x1, 0xF4, L_2DD2B8
+L_2DD28E:
+  2DD28E  if_random_less_than                0x80, L_2DD296
+  2DD294  score                              0x1
+L_2DD296:
+  2DD296  if_hp_more_than                    0x0, 0x46, L_2DD2B7
+  2DD29D  if_random_less_than                0x80, L_2DD2A5
+  2DD2A3  score                              0xFF
+L_2DD2A5:
+  2DD2A5  if_hp_more_than                    0x0, 0x32, L_2DD2B7
+  2DD2AC  score                              0xFF
+  2DD2AE  if_hp_more_than                    0x0, 0x1E, L_2DD2B7
+  2DD2B5  score                              0xFF
+L_2DD2B7:
+  2DD2B7  end                                
+L_2DD2B8:
+  2DD2B8  if_stat_level_more_than            0x0, 0x1, 0x3, L_2DD2D0
+  2DD2C0  score                              0x3
+  2DD2C2  get_turn_count                     
+  2DD2C3  if_not_equal                       0x0, L_2DD2D2
+  2DD2C9  score                              0x2
+  2DD2CB  goto                               L_2DD2D2
+L_2DD2D0:
+  2DD2D0  score                              0xFB
+L_2DD2D2:
+  2DD2D2  end                                
+L_2DD2D3:
+  2DD2D3  if_hp_less_than                    0x1, 0x32, L_2DD2F6
+  2DD2DA  get_type                           0x0
+  2DD2DC  if_in_bytes                        0x82DD2F9, L_2DD2F8
+  2DD2E5  get_type                           0x2
+  2DD2E7  if_in_bytes                        0x82DD2F9, L_2DD2F8
+  2DD2F0  if_random_less_than                0x32, L_2DD2F8
+L_2DD2F6:
+  2DD2F6  score                              0xFE
+L_2DD2F8:
+  2DD2F8  end                                
+  2DD2F9  .data 10 bytes: 00 01 02 03 04 05 06 07 08 FF
+L_2DD303:
+  2DD303  if_hp_less_than                    0x1, 0x32, L_2DD311
+  2DD30A  if_hp_more_than                    0x0, 0x32, L_2DD313
+L_2DD311:
+  2DD311  score                              0xFF
+L_2DD313:
+  2DD313  end                                
+L_2DD314:
+  2DD314  if_user_goes                       0x1, L_2DD328
+  2DD31A  if_hp_more_than                    0x1, 0x46, L_2DD330
+  2DD321  score                              0xFF
+  2DD323  goto                               L_2DD330
+L_2DD328:
+  2DD328  if_random_less_than                0x14, L_2DD330
+  2DD32E  score                              0x3
+L_2DD330:
+  2DD330  end                                
+L_2DD331:
+  2DD331  if_user_goes                       0x1, L_2DD353
+  2DD337  if_hp_more_than                    0x1, 0x3C, L_2DD353
+  2DD33E  if_hp_less_than                    0x1, 0x28, L_2DD34B
+  2DD345  if_random_less_than                0xB4, L_2DD353
+L_2DD34B:
+  2DD34B  if_random_less_than                0x32, L_2DD353
+  2DD351  score                              0xFF
+L_2DD353:
+  2DD353  end                                
+L_2DD354:
+  2DD354  if_hp_more_than                    0x1, 0x5A, L_2DD381
+  2DD35B  if_hp_more_than                    0x1, 0x46, L_2DD379
+  2DD362  if_hp_more_than                    0x1, 0x32, L_2DD371
+  2DD369  if_random_less_than                0x64, L_2DD371
+  2DD36F  score                              0xFF
+L_2DD371:
+  2DD371  if_random_less_than                0x64, L_2DD379
+  2DD377  score                              0xFF
+L_2DD379:
+  2DD379  if_random_less_than                0x64, L_2DD381
+  2DD37F  score                              0xFF
+L_2DD381:
+  2DD381  if_user_goes                       0x1, L_2DD3E9
+  2DD387  get_last_used_bank_move            0x0
+  2DD389  get_move_effect_from_result        
+  2DD38A  if_equal                           0x1, L_2DD3B9
+  2DD390  if_equal                           0x21, L_2DD3B9
+  2DD396  if_equal                           0x42, L_2DD3B9
+  2DD39C  if_equal                           0x43, L_2DD3B9
+  2DD3A2  if_equal                           0xA7, L_2DD3B9
+  2DD3A8  if_equal                           0x31, L_2DD3C8
+  2DD3AE  if_equal                           0x54, L_2DD3D7
+  2DD3B4  goto                               L_2DD3E9
+L_2DD3B9:
+  2DD3B9  if_not_status                      0x0, 0xFF, L_2DD3E1
+  2DD3C3  goto                               L_2DD3E9
+L_2DD3C8:
+  2DD3C8  if_not_status2                     0x0, 0x7, L_2DD3E1
+  2DD3D2  goto                               L_2DD3E9
+L_2DD3D7:
+  2DD3D7  if_status3                         0x0, 0x4, L_2DD3E9
+L_2DD3E1:
+  2DD3E1  if_random_less_than                0x64, L_2DD3E9
+  2DD3E7  score                              0x1
+L_2DD3E9:
+  2DD3E9  end                                
+L_2DD3EA:
+  2DD3EA  if_type_effectiveness              0xA, L_2DD40F
+  2DD3F0  if_type_effectiveness              0x14, L_2DD40F
+  2DD3F6  if_user_goes                       0x1, L_2DD408
+  2DD3FC  if_hp_more_than                    0x1, 0x28, L_2DD40F
+  2DD403  goto                               L_2DD411
+L_2DD408:
+  2DD408  if_hp_less_than                    0x1, 0x3C, L_2DD411
+L_2DD40F:
+  2DD40F  score                              0xFF
+L_2DD411:
+  2DD411  end                                
+L_2DD412:
+  2DD412  if_user_goes                       0x1, L_2DD430
+  2DD418  get_last_used_bank_move            0x0
+  2DD41A  get_move_power_from_result         
+  2DD41B  if_equal                           0x0, L_2DD428
+  2DD421  score                              0x1
+  2DD423  goto                               L_2DD430
+L_2DD428:
+  2DD428  if_random_less_than                0x64, L_2DD430
+  2DD42E  score                              0xFF
+L_2DD430:
+  2DD430  end                                
+L_2DD431:
+  2DD431  if_status                          0x0, 0x7, L_2DD4D6
+  2DD43B  if_status2                         0x0, 0xF0000, L_2DD4D6
+  2DD445  if_status2                         0x0, 0x7, L_2DD4D6
+  2DD44F  if_hp_more_than                    0x1, 0x1E, L_2DD45E
+  2DD456  if_random_less_than                0xA, L_2DD45E
+  2DD45C  score                              0xFF
+L_2DD45E:
+  2DD45E  if_hp_more_than                    0x1, 0x32, L_2DD46D
+  2DD465  if_random_less_than                0x64, L_2DD46D
+  2DD46B  score                              0xFF
+L_2DD46D:
+  2DD46D  if_has_move                        0x1, 0xF3, L_2DD4CD
+  2DD475  get_last_used_bank_move            0x0
+  2DD477  get_move_power_from_result         
+  2DD478  if_equal                           0x0, L_2DD4A4
+  2DD47E  if_target_not_taunted              L_2DD48B
+  2DD483  if_random_less_than                0x64, L_2DD48B
+  2DD489  score                              0x1
+L_2DD48B:
+  2DD48B  get_last_used_bank_move            0x0
+  2DD48D  get_move_type_from_result          
+  2DD48E  if_not_in_bytes                    0x82DD4D9, L_2DD4D6
+  2DD497  if_random_less_than                0x64, L_2DD4D8
+  2DD49D  score                              0x1
+  2DD49F  goto                               L_2DD4D8
+L_2DD4A4:
+  2DD4A4  if_target_not_taunted              L_2DD4B1
+  2DD4A9  if_random_less_than                0x64, L_2DD4B1
+  2DD4AF  score                              0x1
+L_2DD4B1:
+  2DD4B1  get_type                           0x0
+  2DD4B3  if_in_bytes                        0x82DD4D9, L_2DD4D8
+  2DD4BC  get_type                           0x2
+  2DD4BE  if_in_bytes                        0x82DD4D9, L_2DD4D8
+  2DD4C7  if_random_less_than                0x32, L_2DD4D8
+L_2DD4CD:
+  2DD4CD  if_random_less_than                0x64, L_2DD4D5
+  2DD4D3  score                              0x4
+L_2DD4D5:
+  2DD4D5  end                                
+L_2DD4D6:
+  2DD4D6  score                              0xFF
+L_2DD4D8:
+  2DD4D8  end                                
+  2DD4D9  .data 10 bytes: 00 01 02 03 04 05 06 07 08 FF
+L_2DD4E3:
+  2DD4E3  if_any_move_disabled_or_encored    0x0, 0x0, L_2DD4FC
+  2DD4EA  if_user_goes                       0x1, L_2DD509
+  2DD4F0  get_last_used_bank_move            0x0
+  2DD4F2  get_move_effect_from_result        
+  2DD4F3  if_not_in_bytes                    0x82DD50C, L_2DD509
+L_2DD4FC:
+  2DD4FC  if_random_less_than                0x1E, L_2DD50B
+  2DD502  score                              0x3
+  2DD504  goto                               L_2DD50B
+L_2DD509:
+  2DD509  score                              0xFE
+L_2DD50B:
+  2DD50B  end                                
+  2DD50C  .data 63 bytes: 08 0A 0B 0C 0D 19 1C 1E 21 23 25 28 36 31 42 43 54 55 32 5A 5D 5E 66 6A
+L_2DD54B:
+  2DD54B  if_hp_less_than                    0x0, 0x50, L_2DD574
+  2DD552  if_user_goes                       0x1, L_2DD566
+  2DD558  if_hp_more_than                    0x1, 0x28, L_2DD574
+  2DD55F  score                              0x1
+  2DD561  goto                               L_2DD576
+L_2DD566:
+  2DD566  if_hp_more_than                    0x1, 0x3C, L_2DD574
+  2DD56D  score                              0x1
+  2DD56F  goto                               L_2DD576
+L_2DD574:
+  2DD574  score                              0xFF
+L_2DD576:
+  2DD576  end                                
+L_2DD577:
+  2DD577  score                              0x2
+  2DD579  end                                
+L_2DD57A:
+  2DD57A  if_random_less_than                0x80, L_2DD582
+  2DD580  score                              0x2
+L_2DD582:
+  2DD582  end                                
+L_2DD583:
+  2DD583  if_status                          0x1, 0x7, L_2DC7AD
+  2DD58D  score                              0xFB
+  2DD58F  end                                
+L_2DD590:
+  2DD590  score                              0xFF
+  2DD592  if_user_goes                       0x1, L_2DD5C5
+  2DD598  if_hp_more_than                    0x1, 0x46, L_2DD5C5
+  2DD59F  if_random_less_than                0x80, L_2DD5A7
+  2DD5A5  score                              0x1
+L_2DD5A7:
+  2DD5A7  if_hp_more_than                    0x1, 0x32, L_2DD5C5
+  2DD5AE  if_random_less_than                0x80, L_2DD5B6
+  2DD5B4  score                              0x1
+L_2DD5B6:
+  2DD5B6  if_hp_more_than                    0x1, 0x1E, L_2DD5C5
+  2DD5BD  if_random_less_than                0x64, L_2DD5C5
+  2DD5C3  score                              0x2
+L_2DD5C5:
+  2DD5C5  end                                
+L_2DD5C6:
+  2DD5C6  if_user_goes                       0x1, L_2DD5E6
+  2DD5CC  if_hp_more_than                    0x1, 0x21, L_2DD608
+  2DD5D3  if_hp_more_than                    0x1, 0x14, L_2DD60A
+  2DD5DA  if_hp_less_than                    0x1, 0x8, L_2DD5F9
+  2DD5E1  goto                               L_2DD5FB
+L_2DD5E6:
+  2DD5E6  if_hp_more_than                    0x1, 0x3C, L_2DD608
+  2DD5ED  if_hp_more_than                    0x1, 0x28, L_2DD60A
+  2DD5F4  goto                               L_2DD5FB
+L_2DD5F9:
+  2DD5F9  score                              0x1
+L_2DD5FB:
+  2DD5FB  if_random_less_than                0x64, L_2DD60A
+  2DD601  score                              0x1
+  2DD603  goto                               L_2DD60A
+L_2DD608:
+  2DD608  score                              0xFF
+L_2DD60A:
+  2DD60A  end                                
+L_2DD60B:
+  2DD60B  if_status                          0x0, 0xFF, L_2DD621
+  2DD615  if_status_in_party                 0x0, 0xFF, L_2DD621
+  2DD61F  score                              0xFB
+L_2DD621:
+  2DD621  end                                
+L_2DD622:
+  2DD622  get_hold_effect                    0x0
+  2DD624  if_not_in_bytes                    0x82DD63D, L_2DD63A
+  2DD62D  if_random_less_than                0x32, L_2DD63C
+  2DD633  score                              0x1
+  2DD635  goto                               L_2DD63C
+L_2DD63A:
+  2DD63A  score                              0xFE
+L_2DD63C:
+  2DD63C  end                                
+  2DD63D  .data 8 bytes: 03 09 01 16 2B 2D 41 FF
+L_2DD645:
+  2DD645  get_type                           0x1
+  2DD647  if_equal                           0x7, L_2DD68A
+  2DD64D  get_type                           0x3
+  2DD64F  if_equal                           0x7, L_2DD68A
+  2DD655  if_stat_level_more_than            0x1, 0x2, 0x9, L_2DD693
+  2DD65D  if_random_less_than                0x80, L_2DD665
+  2DD663  score                              0x1
+L_2DD665:
+  2DD665  if_stat_level_more_than            0x1, 0x2, 0x7, L_2DD693
+  2DD66D  if_random_less_than                0x80, L_2DD675
+  2DD673  score                              0x1
+L_2DD675:
+  2DD675  if_stat_level_more_than            0x1, 0x2, 0x6, L_2DD693
+  2DD67D  if_random_less_than                0x80, L_2DD693
+  2DD683  score                              0x1
+  2DD685  goto                               L_2DD693
+L_2DD68A:
+  2DD68A  if_hp_more_than                    0x1, 0x50, L_2DD693
+  2DD691  score                              0xFF
+L_2DD693:
+  2DD693  end                                
+L_2DD694:
+  2DD694  get_protect_count                  0x1
+  2DD696  if_more_than                       0x1, L_2DD75A
+  2DD69C  if_status                          0x1, 0x80, L_2DD751
+  2DD6A6  if_status2                         0x1, 0x10000000, L_2DD751
+  2DD6B0  if_status3                         0x1, 0x20, L_2DD751
+  2DD6BA  if_status2                         0x1, 0xF0000, L_2DD751
+  2DD6C4  if_status3                         0x1, 0x4, L_2DD751
+  2DD6CE  if_status3                         0x1, 0x1800, L_2DD751
+  2DD6D8  if_has_move_with_effect            0x0, 0x20, L_2DD751
+  2DD6DF  if_has_move_with_effect            0x0, 0x9C, L_2DD751
+  2DD6E6  if_status                          0x0, 0x80, L_2DD730
+  2DD6F0  if_status2                         0x0, 0x10000000, L_2DD730
+  2DD6FA  if_status3                         0x0, 0x20, L_2DD730
+  2DD704  if_status2                         0x0, 0xF0000, L_2DD730
+  2DD70E  if_status3                         0x0, 0x4, L_2DD730
+  2DD718  if_status3                         0x0, 0x1800, L_2DD730
+  2DD722  get_last_used_bank_move            0x0
+  2DD724  get_move_effect_from_result        
+  2DD725  if_not_equal                       0x5E, L_2DD730
+  2DD72B  goto                               L_2DD732
+L_2DD730:
+  2DD730  score                              0x2
+L_2DD732:
+  2DD732  if_random_less_than                0x80, L_2DD73A
+  2DD738  score                              0xFF
+L_2DD73A:
+  2DD73A  get_protect_count                  0x1
+  2DD73C  if_equal                           0x0, L_2DD75C
+  2DD742  score                              0xFF
+  2DD744  if_random_less_than                0x80, L_2DD75C
+  2DD74A  score                              0xFF
+  2DD74C  goto                               L_2DD75C
+L_2DD751:
+  2DD751  get_last_used_bank_move            0x0
+  2DD753  get_move_effect_from_result        
+  2DD754  if_not_equal                       0x5E, L_2DD75C
+L_2DD75A:
+  2DD75A  score                              0xFE
+L_2DD75C:
+  2DD75C  end                                
+L_2DD75D:
+  2DD75D  get_type                           0x1
+  2DD75F  if_equal                           0x7, L_2DD77C
+  2DD765  get_type                           0x3
+  2DD767  if_equal                           0x7, L_2DD77C
+  2DD76D  if_stat_level_more_than            0x1, 0x7, 0x8, L_2DD782
+  2DD775  score                              0xFE
+  2DD777  goto                               L_2DD78A
+L_2DD77C:
+  2DD77C  if_random_less_than                0x50, L_2DD78A
+L_2DD782:
+  2DD782  if_random_less_than                0x50, L_2DD78A
+  2DD788  score                              0x2
+L_2DD78A:
+  2DD78A  end                                
+L_2DD78B:
+  2DD78B  if_hp_less_than                    0x1, 0x4, L_2DD799
+  2DD792  if_hp_less_than                    0x1, 0x23, L_2DD7A0
+L_2DD799:
+  2DD799  score                              0xFF
+  2DD79B  goto                               L_2DD7A8
+L_2DD7A0:
+  2DD7A0  if_random_less_than                0x46, L_2DD7A8
+  2DD7A6  score                              0x1
+L_2DD7A8:
+  2DD7A8  end                                
+L_2DD7A9:
+  2DD7A9  if_stat_level_more_than            0x1, 0x1, 0x8, L_2DD7D6
+  2DD7B1  if_stat_level_more_than            0x1, 0x2, 0x8, L_2DD7D6
+  2DD7B9  if_stat_level_more_than            0x1, 0x4, 0x8, L_2DD7D6
+  2DD7C1  if_stat_level_more_than            0x1, 0x5, 0x8, L_2DD7D6
+  2DD7C9  if_stat_level_more_than            0x1, 0x7, 0x8, L_2DD7D6
+  2DD7D1  goto                               L_2DD7FC
+L_2DD7D6:
+  2DD7D6  if_user_goes                       0x1, L_2DD7E8
+  2DD7DC  if_hp_more_than                    0x1, 0x3C, L_2DD844
+  2DD7E3  goto                               L_2DD7EF
+L_2DD7E8:
+  2DD7E8  if_hp_more_than                    0x1, 0x46, L_2DD844
+L_2DD7EF:
+  2DD7EF  if_random_less_than                0x50, L_2DD844
+  2DD7F5  score                              0x2
+  2DD7F7  goto                               L_2DD844
+L_2DD7FC:
+  2DD7FC  if_stat_level_more_than            0x1, 0x1, 0x7, L_2DD829
+  2DD804  if_stat_level_more_than            0x1, 0x2, 0x7, L_2DD829
+  2DD80C  if_stat_level_more_than            0x1, 0x4, 0x7, L_2DD829
+  2DD814  if_stat_level_more_than            0x1, 0x5, 0x7, L_2DD829
+  2DD81C  if_stat_level_more_than            0x1, 0x7, 0x7, L_2DD829
+  2DD824  goto                               L_2DD842
+L_2DD829:
+  2DD829  if_user_goes                       0x1, L_2DD83B
+  2DD82F  if_hp_more_than                    0x1, 0x3C, L_2DD842
+  2DD836  goto                               L_2DD844
+L_2DD83B:
+  2DD83B  if_hp_less_than                    0x1, 0x46, L_2DD844
+L_2DD842:
+  2DD842  score                              0xFE
+L_2DD844:
+  2DD844  end                                
+L_2DD845:
+  2DD845  is_first_turn_for                  0x1
+  2DD847  if_not_equal                       0x0, L_2DD87A
+  2DD84D  get_type                           0x0
+  2DD84F  if_equal                           0x7, L_2DD872
+  2DD855  get_type                           0x0
+  2DD857  if_equal                           0xE, L_2DD872
+  2DD85D  get_type                           0x2
+  2DD85F  if_equal                           0x7, L_2DD872
+  2DD865  get_type                           0x2
+  2DD867  if_equal                           0xE, L_2DD872
+  2DD86D  goto                               L_2DD87A
+L_2DD872:
+  2DD872  if_random_less_than                0x80, L_2DD87A
+  2DD878  score                              0x1
+L_2DD87A:
+  2DD87A  end                                
+L_2DD87B:
+  2DD87B  if_user_goes                       0x0, L_2DD889
+  2DD881  get_ability                        0x1
+  2DD883  if_equal                           0x21, L_2DD8B0
+L_2DD889:
+  2DD889  if_hp_less_than                    0x1, 0x28, L_2DD8B7
+  2DD890  get_weather                        
+  2DD891  if_equal                           0x3, L_2DD8B0
+  2DD897  if_equal                           0x0, L_2DD8B0
+  2DD89D  if_equal                           0x2, L_2DD8B0
+  2DD8A3  get_ability                        0x1
+  2DD8A5  if_equal                           0x2C, L_2DD8B0
+  2DD8AB  goto                               L_2DD8B9
+L_2DD8B0:
+  2DD8B0  score                              0x1
+  2DD8B2  goto                               L_2DD8B9
+L_2DD8B7:
+  2DD8B7  score                              0xFF
+L_2DD8B9:
+  2DD8B9  end                                
+L_2DD8BA:
+  2DD8BA  if_hp_less_than                    0x1, 0x28, L_2DD8E0
+  2DD8C1  get_weather                        
+  2DD8C2  if_equal                           0x3, L_2DD8D9
+  2DD8C8  if_equal                           0x1, L_2DD8D9
+  2DD8CE  if_equal                           0x2, L_2DD8D9
+  2DD8D4  goto                               L_2DD8E2
+L_2DD8D9:
+  2DD8D9  score                              0x1
+  2DD8DB  goto                               L_2DD8E2
+L_2DD8E0:
+  2DD8E0  score                              0xFF
+L_2DD8E2:
+  2DD8E2  end                                
+L_2DD8E3:
+  2DD8E3  if_hp_less_than                    0x1, 0x5A, L_2DD8EF
+  2DD8EA  goto                               L_2DD8F1
+L_2DD8EF:
+  2DD8EF  score                              0xFE
+L_2DD8F1:
+  2DD8F1  end                                
+L_2DD8F2:
+  2DD8F2  if_stat_level_more_than            0x0, 0x1, 0x8, L_2DD91F
+  2DD8FA  if_stat_level_more_than            0x0, 0x2, 0x8, L_2DD91F
+  2DD902  if_stat_level_more_than            0x0, 0x4, 0x8, L_2DD91F
+  2DD90A  if_stat_level_more_than            0x0, 0x5, 0x8, L_2DD91F
+  2DD912  if_stat_level_more_than            0x0, 0x7, 0x8, L_2DD91F
+  2DD91A  goto                               L_2DD957
+L_2DD91F:
+  2DD91F  if_stat_level_less_than            0x1, 0x1, 0x7, L_2DD954
+  2DD927  if_stat_level_less_than            0x1, 0x2, 0x7, L_2DD954
+  2DD92F  if_stat_level_less_than            0x1, 0x4, 0x7, L_2DD954
+  2DD937  if_stat_level_less_than            0x1, 0x5, 0x7, L_2DD954
+  2DD93F  if_stat_level_less_than            0x1, 0x7, 0x7, L_2DD952
+  2DD947  if_random_less_than                0x32, L_2DD959
+  2DD94D  goto                               L_2DD957
+L_2DD952:
+  2DD952  score                              0x1
+L_2DD954:
+  2DD954  score                              0x1
+  2DD956  end                                
+L_2DD957:
+  2DD957  score                              0xFE
+L_2DD959:
+  2DD959  end                                
+L_2DD95A:
+  2DD95A  if_status                          0x0, 0x7, L_2DD9FF
+  2DD964  if_status2                         0x0, 0xF0000, L_2DD9FF
+  2DD96E  if_status2                         0x0, 0x7, L_2DD9FF
+  2DD978  if_hp_more_than                    0x1, 0x1E, L_2DD987
+  2DD97F  if_random_less_than                0xA, L_2DD987
+  2DD985  score                              0xFF
+L_2DD987:
+  2DD987  if_hp_more_than                    0x1, 0x32, L_2DD996
+  2DD98E  if_random_less_than                0x64, L_2DD996
+  2DD994  score                              0xFF
+L_2DD996:
+  2DD996  if_has_move                        0x1, 0x44, L_2DD9F6
+  2DD99E  get_last_used_bank_move            0x0
+  2DD9A0  get_move_power_from_result         
+  2DD9A1  if_equal                           0x0, L_2DD9CD
+  2DD9A7  if_target_not_taunted              L_2DD9B4
+  2DD9AC  if_random_less_than                0x64, L_2DD9B4
+  2DD9B2  score                              0x1
+L_2DD9B4:
+  2DD9B4  get_last_used_bank_move            0x0
+  2DD9B6  get_move_type_from_result          
+  2DD9B7  if_not_in_bytes                    0x82DDA02, L_2DD9FF
+  2DD9C0  if_random_less_than                0x64, L_2DDA01
+  2DD9C6  score                              0x1
+  2DD9C8  goto                               L_2DDA01
+L_2DD9CD:
+  2DD9CD  if_target_not_taunted              L_2DD9DA
+  2DD9D2  if_random_less_than                0x64, L_2DD9DA
+  2DD9D8  score                              0x1
+L_2DD9DA:
+  2DD9DA  get_type                           0x0
+  2DD9DC  if_in_bytes                        0x82DDA02, L_2DDA01
+  2DD9E5  get_type                           0x2
+  2DD9E7  if_in_bytes                        0x82DDA02, L_2DDA01
+  2DD9F0  if_random_less_than                0x32, L_2DDA01
+L_2DD9F6:
+  2DD9F6  if_random_less_than                0x64, L_2DD9FE
+  2DD9FC  score                              0x4
+L_2DD9FE:
+  2DD9FE  end                                
+L_2DD9FF:
+  2DD9FF  score                              0xFF
+L_2DDA01:
+  2DDA01  end                                
+  2DDA02  .data 9 bytes: 0A 0B 0C 0D 0E 0F 10 11 FF
+L_2DDA0B:
+  2DDA0B  if_type_effectiveness              0xA, L_2DDA2C
+  2DDA11  if_type_effectiveness              0x14, L_2DDA2C
+  2DDA17  if_has_move_with_effect            0x0, 0x6F, L_2DDA2C
+  2DDA1E  if_hp_more_than                    0x1, 0x26, L_2DDA2E
+  2DDA25  score                              0xFF
+  2DDA27  goto                               L_2DDA2E
+L_2DDA2C:
+  2DDA2C  score                              0xFE
+L_2DDA2E:
+  2DDA2E  end                                
+L_2DDA2F:
+  2DDA2F  if_doesnt_have_move_with_effect    0x0, 0x6F, L_2DDA3D
+  2DDA36  score                              0xFF
+  2DDA38  goto                               L_2DDAB4
+L_2DDA3D:
+  2DDA3D  if_status                          0x0, 0x80, L_2DDAAC
+  2DDA47  if_status2                         0x0, 0x10000000, L_2DDAAC
+  2DDA51  if_status3                         0x0, 0x4, L_2DDAAC
+  2DDA5B  get_weather                        
+  2DDA5C  if_equal                           0x3, L_2DDA6D
+  2DDA62  if_equal                           0x2, L_2DDA88
+  2DDA68  goto                               L_2DDA98
+L_2DDA6D:
+  2DDA6D  get_type                           0x1
+  2DDA6F  if_in_bytes                        0x82DDAB5, L_2DDAAC
+  2DDA78  get_type                           0x3
+  2DDA7A  if_in_bytes                        0x82DDAB5, L_2DDAAC
+  2DDA83  goto                               L_2DDA98
+L_2DDA88:
+  2DDA88  get_type                           0x1
+  2DDA8A  if_equal                           0xF, L_2DDAAC
+  2DDA90  get_type                           0x3
+  2DDA92  if_equal                           0xF, L_2DDAAC
+L_2DDA98:
+  2DDA98  if_user_goes                       0x1, L_2DDAB4
+  2DDA9E  get_last_used_bank_move            0x0
+  2DDAA0  get_move_effect_from_result        
+  2DDAA1  if_not_equal                       0x5E, L_2DDAAC
+  2DDAA7  goto                               L_2DDAB4
+L_2DDAAC:
+  2DDAAC  if_random_less_than                0x50, L_2DDAB4
+  2DDAB2  score                              0x1
+L_2DDAB4:
+  2DDAB4  end                                
+  2DDAB5  .data 4 bytes: 04 05 08 FF
+L_2DDAB9:
+  2DDAB9  score                              0x2
+  2DDABB  end                                
+L_2DDABC:
+  2DDABC  get_stockpile_count                0x1
+  2DDABE  if_less_than                       0x2, L_2DDACC
+  2DDAC4  if_random_less_than                0x50, L_2DDACC
+  2DDACA  score                              0x2
+L_2DDACC:
+  2DDACC  end                                
+L_2DDACD:
+  2DDACD  if_hp_less_than                    0x1, 0x28, L_2DDAF3
+  2DDAD4  get_weather                        
+  2DDAD5  if_equal                           0x0, L_2DDAEC
+  2DDADB  if_equal                           0x1, L_2DDAEC
+  2DDAE1  if_equal                           0x2, L_2DDAEC
+  2DDAE7  goto                               L_2DDAF5
+L_2DDAEC:
+  2DDAEC  score                              0x1
+  2DDAEE  goto                               L_2DDAF5
+L_2DDAF3:
+  2DDAF3  score                              0xFF
+L_2DDAF5:
+  2DDAF5  end                                
+L_2DDAF6:
+  2DDAF6  if_not_status                      0x0, 0xD8, L_2DDB02
+  2DDB00  score                              0x1
+L_2DDB02:
+  2DDB02  end                                
+L_2DDB03:
+  2DDB03  if_type_effectiveness              0xA, L_2DDB42
+  2DDB09  if_type_effectiveness              0x14, L_2DDB42
+  2DDB0F  if_status                          0x0, 0x7, L_2DDB59
+  2DDB19  if_status2                         0x0, 0xF0000, L_2DDB49
+  2DDB23  if_status2                         0x0, 0x7, L_2DDB49
+  2DDB2D  is_first_turn_for                  0x1
+  2DDB2F  if_not_equal                       0x0, L_2DDB5B
+  2DDB35  if_random_less_than                0x64, L_2DDB5B
+  2DDB3B  score                              0x1
+  2DDB3D  goto                               L_2DDB5B
+L_2DDB42:
+  2DDB42  score                              0xFF
+  2DDB44  goto                               L_2DDB5B
+L_2DDB49:
+  2DDB49  if_random_less_than                0x64, L_2DDB5B
+  2DDB4F  if_status2                         0x1, 0x1000000, L_2DC7AA
+L_2DDB59:
+  2DDB59  score                              0x1
+L_2DDB5B:
+  2DDB5B  end                                
+L_2DDB5C:
+  2DDB5C  if_status                          0x0, 0x40, L_2DDB6B
+  2DDB66  goto                               L_2DDB6D
+L_2DDB6B:
+  2DDB6B  score                              0x1
+L_2DDB6D:
+  2DDB6D  end                                
+L_2DDB6E:
+  2DDB6E  get_hold_effect                    0x1
+  2DDB70  if_in_bytes                        0x82DDBB7, L_2DDB89
+  2DDB79  if_in_bytes                        0x82DDBAF, L_2DDB9B
+L_2DDB82:
+  2DDB82  score                              0xFD
+  2DDB84  goto                               L_2DDBAE
+L_2DDB89:
+  2DDB89  get_hold_effect                    0x0
+  2DDB8B  if_in_bytes                        0x82DDBB7, L_2DDB82
+  2DDB94  score                              0x5
+  2DDB96  goto                               L_2DDBAE
+L_2DDB9B:
+  2DDB9B  get_hold_effect                    0x0
+  2DDB9D  if_in_bytes                        0x82DDBAF, L_2DDB82
+  2DDBA6  if_random_less_than                0x32, L_2DDBAE
+  2DDBAC  score                              0x2
+L_2DDBAE:
+  2DDBAE  end                                
+  2DDBAF  .data 10 bytes: 0A 0B 0C 0D 0E 18 1D FF 1D FF
+L_2DDBB9:
+  2DDBB9  get_ability                        0x1
+  2DDBBB  if_in_bytes                        0x82DDBDF, L_2DDBCF
+  2DDBC4  get_ability                        0x0
+  2DDBC6  if_in_bytes                        0x82DDBDF, L_2DDBD6
+L_2DDBCF:
+  2DDBCF  score                              0xFF
+  2DDBD1  goto                               L_2DDBDE
+L_2DDBD6:
+  2DDBD6  if_random_less_than                0x32, L_2DDBDE
+  2DDBDC  score                              0x2
+L_2DDBDE:
+  2DDBDE  end                                
+  2DDBDF  .data 17 bytes: 03 04 08 09 12 19 1B 21 25 2C 38 3D 3F 4A 22 13 FF
+L_2DDBF0:
+  2DDBF0  if_type_effectiveness              0xA, L_2DDC1D
+  2DDBF6  if_type_effectiveness              0x14, L_2DDC1D
+  2DDBFC  if_stat_level_less_than            0x1, 0x1, 0x6, L_2DDC1D
+  2DDC04  if_user_goes                       0x1, L_2DDC16
+  2DDC0A  if_hp_more_than                    0x1, 0x28, L_2DDC1D
+  2DDC11  goto                               L_2DDC1F
+L_2DDC16:
+  2DDC16  if_hp_less_than                    0x1, 0x3C, L_2DDC1F
+L_2DDC1D:
+  2DDC1D  score                              0xFF
+L_2DDC1F:
+  2DDC1F  end                                
+L_2DDC20:
+  2DDC20  if_hp_more_than                    0x0, 0x1E, L_2DDC2F
+  2DDC27  if_random_less_than                0x64, L_2DDC2F
+  2DDC2D  score                              0xFF
+L_2DDC2F:
+  2DDC2F  is_first_turn_for                  0x1
+  2DDC31  if_equal                           0x0, L_2DDC4A
+  2DDC37  if_random_less_than                0x96, L_2DDC52
+  2DDC3D  score                              0x1
+  2DDC3F  goto                               L_2DDC52
+  2DDC44  .data 6 bytes: 00 32 52 DC 2D 08
+L_2DDC4A:
+  2DDC4A  if_random_less_than                0x1E, L_2DDC52
+  2DDC50  score                              0xFF
+L_2DDC52:
+  2DDC52  end                                
+L_2DDC53:
+  2DDC53  get_used_held_item                 0x1
+  2DDC55  if_not_in_bytes                    0x82DDC6E, L_2DDC6B
+  2DDC5E  if_random_less_than                0x32, L_2DDC6D
+  2DDC64  score                              0x1
+  2DDC66  goto                               L_2DDC6D
+L_2DDC6B:
+  2DDC6B  score                              0xFE
+L_2DDC6D:
+  2DDC6D  end                                
+  2DDC6E  .data 4 bytes: 86 8D AE FF
+L_2DDC72:
+  2DDC72  if_status                          0x0, 0x7, L_2DDC9D
+  2DDC7C  if_status2                         0x0, 0xF0000, L_2DDC9D
+  2DDC86  if_status2                         0x0, 0x7, L_2DDC9D
+  2DDC90  if_random_less_than                0xB4, L_2DDC9D
+  2DDC96  score                              0x2
+  2DDC98  goto                               L_2DDC9F
+L_2DDC9D:
+  2DDC9D  score                              0xFE
+L_2DDC9F:
+  2DDC9F  end                                
+L_2DDCA0:
+  2DDCA0  if_side_affecting                  0x0, 0x1, L_2DDCAF
+  2DDCAA  goto                               L_2DDCB1
+L_2DDCAF:
+  2DDCAF  score                              0x1
+L_2DDCB1:
+  2DDCB1  end                                
+L_2DDCB2:
+  2DDCB2  if_hp_less_than                    0x0, 0x1E, L_2DDCC9
+  2DDCB9  is_first_turn_for                  0x1
+  2DDCBB  if_more_than                       0x0, L_2DDCC9
+  2DDCC1  if_random_less_than                0xB4, L_2DDCC9
+  2DDCC7  score                              0x1
+L_2DDCC9:
+  2DDCC9  end                                
+L_2DDCCA:
+  2DDCCA  if_hp_less_than                    0x0, 0x46, L_2DDCF3
+  2DDCD1  if_user_goes                       0x1, L_2DDCE5
+  2DDCD7  if_hp_more_than                    0x1, 0x28, L_2DDCF3
+  2DDCDE  score                              0x1
+  2DDCE0  goto                               L_2DDCF5
+L_2DDCE5:
+  2DDCE5  if_hp_more_than                    0x1, 0x32, L_2DDCF3
+  2DDCEC  score                              0x1
+  2DDCEE  goto                               L_2DDCF5
+L_2DDCF3:
+  2DDCF3  score                              0xFF
+L_2DDCF5:
+  2DDCF5  end                                
+L_2DDCF6:
+  2DDCF6  if_type_effectiveness              0xA, L_2DDD1B
+  2DDCFC  if_type_effectiveness              0x14, L_2DDD1B
+  2DDD02  if_user_goes                       0x1, L_2DDD14
+  2DDD08  if_hp_more_than                    0x0, 0x32, L_2DDD1D
+  2DDD0F  goto                               L_2DDD1B
+L_2DDD14:
+  2DDD14  if_hp_more_than                    0x0, 0x46, L_2DDD1D
+L_2DDD1B:
+  2DDD1B  score                              0xFF
+L_2DDD1D:
+  2DDD1D  end                                
+L_2DDD1E:
+  2DDD1E  is_first_turn_for                  0x1
+  2DDD20  if_more_than                       0x0, L_2DDD2E
+  2DDD26  if_random_less_than                0x64, L_2DDD2E
+  2DDD2C  score                              0x2
+L_2DDD2E:
+  2DDD2E  end                                
+L_2DDD2F:
+  2DDD2F  if_hp_less_than                    0x0, 0x32, L_2DDD3B
+  2DDD36  goto                               L_2DDD3D
+L_2DDD3B:
+  2DDD3B  score                              0xFF
+L_2DDD3D:
+  2DDD3D  end                                
+L_2DDD3E:
+  2DDD3E  is_first_turn_for                  0x1
+  2DDD40  if_equal                           0x1, L_2DDD85
+  2DDD46  if_random_less_than                0x1E, L_2DDDA7
+  2DDD4C  if_user_goes                       0x1, L_2DDD6B
+  2DDD52  if_hp_not_equal                    0x1, 0x64, L_2DDD9F
+  2DDD59  if_hp_less_than                    0x0, 0x46, L_2DDD9F
+  2DDD60  if_random_less_than                0x3C, L_2DDDA7
+  2DDD66  goto                               L_2DDD9F
+L_2DDD6B:
+  2DDD6B  if_hp_more_than                    0x0, 0x19, L_2DDD9F
+  2DDD72  if_has_move_with_effect            0x0, 0x20, L_2DDD85
+  2DDD79  if_has_move_with_effect            0x0, 0x9C, L_2DDD85
+  2DDD80  goto                               L_2DDD92
+L_2DDD85:
+  2DDD85  if_random_less_than                0x96, L_2DDDA7
+  2DDD8B  score                              0x2
+  2DDD8D  goto                               L_2DDDA7
+L_2DDD92:
+  2DDD92  if_random_less_than                0xE6, L_2DDD9F
+  2DDD98  score                              0x1
+  2DDD9A  goto                               L_2DDDA7
+L_2DDD9F:
+  2DDD9F  if_random_less_than                0x1E, L_2DDDA7
+  2DDDA5  score                              0xFE
+L_2DDDA7:
+  2DDDA7  end                                
+L_2DDDA8:
+  2DDDA8  if_hp_less_than                    0x1, 0x32, L_2DDDCB
+  2DDDAF  get_type                           0x0
+  2DDDB1  if_equal                           0xD, L_2DDDC4
+  2DDDB7  get_type                           0x2
+  2DDDB9  if_equal                           0xD, L_2DDDC4
+  2DDDBF  goto                               L_2DDDCB
+L_2DDDC4:
+  2DDDC4  score                              0x1
+  2DDDC6  goto                               L_2DDDCD
+L_2DDDCB:
+  2DDDCB  score                              0xFF
+L_2DDDCD:
+  2DDDCD  end                                
+L_2DDDCE:
+  2DDDCE  if_type_effectiveness              0xA, L_2DDDF3
+  2DDDD4  if_type_effectiveness              0x14, L_2DDDF3
+  2DDDDA  if_user_goes                       0x1, L_2DDDEC
+  2DDDE0  if_hp_more_than                    0x1, 0x3C, L_2DDDF5
+  2DDDE7  goto                               L_2DDDF3
+L_2DDDEC:
+  2DDDEC  if_hp_more_than                    0x1, 0x50, L_2DDDF5
+L_2DDDF3:
+  2DDDF3  score                              0xFF
+L_2DDDF5:
+  2DDDF5  end                                
+L_2DDDF6:
+  2DDDF6  if_hp_less_than                    0x1, 0x32, L_2DDE19
+  2DDDFD  get_type                           0x0
+  2DDDFF  if_equal                           0xA, L_2DDE12
+  2DDE05  get_type                           0x2
+  2DDE07  if_equal                           0xA, L_2DDE12
+  2DDE0D  goto                               L_2DDE19
+L_2DDE12:
+  2DDE12  score                              0x1
+  2DDE14  goto                               L_2DDE1B
+L_2DDE19:
+  2DDE19  score                              0xFF
+L_2DDE1B:
+  2DDE1B  end                                
+L_2DDE1C:
+  2DDE1C  if_user_goes                       0x1, L_2DDE36
+  2DDE22  if_hp_more_than                    0x1, 0x32, L_2DDE3E
+  2DDE29  if_random_less_than                0x46, L_2DDE3E
+  2DDE2F  score                              0xFF
+  2DDE31  goto                               L_2DDE3E
+L_2DDE36:
+  2DDE36  if_random_less_than                0x80, L_2DDE3E
+  2DDE3C  score                              0x1
+L_2DDE3E:
+  2DDE3E  end                                
+AI_TryToFaint:
+  2DDE3F  if_target_is_ally                  L_2DE34E
+  2DDE44  if_can_faint                       L_2DDE60
+  2DDE49  get_how_powerful_move_is           
+  2DDE4A  if_equal                           0x1, L_2DC789
+  2DDE50  if_type_effectiveness              0xA0, L_2DDE57
+  2DDE56  end                                
+L_2DDE57:
+  2DDE57  if_random_less_than                0x50, L_2DDE70
+  2DDE5D  score                              0x2
+  2DDE5F  end                                
+L_2DDE60:
+  2DDE60  if_effect                          0x7, L_2DDE70
+  2DDE66  if_not_effect                      0x67, L_2DDE6E
+  2DDE6C  score                              0x2
+L_2DDE6E:
+  2DDE6E  score                              0x4
+L_2DDE70:
+  2DDE70  end                                
+AI_SetupFirstTurn:
+  2DDE71  if_target_is_ally                  L_2DE34E
+  2DDE76  get_turn_count                     
+  2DDE77  if_not_equal                       0x0, L_2DDE8F
+  2DDE7D  get_considered_move_effect         
+  2DDE7E  if_not_in_bytes                    0x82DDE90, L_2DDE8F
+  2DDE87  if_random_less_than                0x50, L_2DDE8F
+  2DDE8D  score                              0x2
+L_2DDE8F:
+  2DDE8F  end                                
+  2DDE90  .data 56 bytes: 0A 0B 0C 0D 0E 0F 10 12 13 14 15 16 17 18 1E 23 36 2F 31 32 33 34 35 36
+AI_PreferStrongestMove:
+  2DDEC8  if_target_is_ally                  L_2DE34E
+  2DDECD  get_how_powerful_move_is           
+  2DDECE  if_not_equal                       0x0, L_2DDEDC
+  2DDED4  if_random_less_than                0x64, L_2DDEDC
+  2DDEDA  score                              0x2
+L_2DDEDC:
+  2DDEDC  end                                
+AI_Risky:
+  2DDEDD  if_target_is_ally                  L_2DE34E
+  2DDEE2  get_considered_move_effect         
+  2DDEE3  if_not_in_bytes                    0x82DDEF5, L_2DDEF4
+  2DDEEC  if_random_less_than                0x80, L_2DDEF4
+  2DDEF2  score                              0x2
+L_2DDEF4:
+  2DDEF4  end                                
+  2DDEF5  .data 20 bytes: 01 07 09 26 2B 31 53 58 59 62 76 78 7A 8C 8E 90 AA B9 C7 FF
+AI_PreferBatonPass:
+  2DDF09  if_target_is_ally                  L_2DE34E
+  2DDF0E  count_usable_party_mons            0x1
+  2DDF10  if_equal                           0x0, L_2DDFB3
+  2DDF16  get_how_powerful_move_is           
+  2DDF17  if_not_equal                       0x0, L_2DDFB3
+  2DDF1D  if_has_move_with_effect            0x1, 0x7F, L_2DDF2A
+  2DDF24  if_random_less_than                0x50, L_2DDEF4
+L_2DDF2A:
+  2DDF2A  if_move                            0xE, L_2DDF54
+  2DDF31  if_move                            0x15D, L_2DDF54
+  2DDF38  if_move                            0x15B, L_2DDF54
+  2DDF3F  if_effect                          0x6F, L_2DDF67
+  2DDF45  if_move                            0xE2, L_2DDF7B
+  2DDF4C  if_random_less_than                0x14, L_2DDEF4
+  2DDF52  score                              0x3
+L_2DDF54:
+  2DDF54  get_turn_count                     
+  2DDF55  if_equal                           0x0, L_2DC7AA
+  2DDF5B  if_hp_less_than                    0x1, 0x3C, L_2DC798
+  2DDF62  goto                               L_2DC7A1
+L_2DDF67:
+  2DDF67  get_last_used_bank_move            0x1
+  2DDF69  if_in_hwords                       0x82DDF75, L_2DC78C
+  2DDF72  score                              0x2
+  2DDF74  end                                
+  2DDF75  .data 6 bytes: B6 00 C5 00 FF FF
+L_2DDF7B:
+  2DDF7B  get_turn_count                     
+  2DDF7C  if_equal                           0x0, L_2DC78C
+  2DDF82  if_stat_level_more_than            0x1, 0x1, 0x8, L_2DC7A7
+  2DDF8A  if_stat_level_more_than            0x1, 0x1, 0x7, L_2DC7A4
+  2DDF92  if_stat_level_more_than            0x1, 0x1, 0x6, L_2DC7A1
+  2DDF9A  if_stat_level_more_than            0x1, 0x4, 0x8, L_2DC7A7
+  2DDFA2  if_stat_level_more_than            0x1, 0x4, 0x7, L_2DC7A4
+  2DDFAA  if_stat_level_more_than            0x1, 0x4, 0x6, L_2DC7A1
+  2DDFB2  end                                
+L_2DDFB3:
+  2DDFB3  end                                
+AI_DoubleBattle:
+  2DDFB4  if_target_is_ally                  L_2DE085
+  2DDFB9  if_move                            0x11D, L_2DE04B
+  2DDFC0  get_type                           0x4
+  2DDFC2  if_move                            0x59, L_2DE010
+  2DDFC9  if_move                            0xDE, L_2DE010
+  2DDFD0  if_equal                           0xD, L_2DE062
+  2DDFD6  if_equal                           0xA, L_2DE079
+  2DDFDC  get_ability                        0x1
+  2DDFDE  if_not_equal                       0x3E, L_2DDFF5
+  2DDFE4  if_has_move                        0x3, 0x10E, L_2DDFED
+  2DDFEC  end                                
+L_2DDFED:
+  2DDFED  get_how_powerful_move_is           
+  2DDFEE  if_not_equal                       0x0, L_2DC7A1
+  2DDFF4  end                                
+L_2DDFF5:
+  2DDFF5  if_status                          0x1, 0xFF, L_2DE000
+  2DDFFF  end                                
+L_2DE000:
+  2DE000  get_how_powerful_move_is           
+  2DE001  if_equal                           0x0, L_2DC792
+  2DE007  score                              0x1
+  2DE009  if_equal                           0x2, L_2DC7A4
+  2DE00F  end                                
+L_2DE010:
+  2DE010  check_ability                      0x3, 0x1A
+  2DE013  if_equal                           0x1, L_2DC7A4
+  2DE019  is_of_type                         0x3, 0x2
+  2DE01C  if_equal                           0x1, L_2DC7A4
+  2DE022  is_of_type                         0x3, 0xA
+  2DE025  if_equal                           0x1, L_2DC798
+  2DE02B  is_of_type                         0x3, 0xD
+  2DE02E  if_equal                           0x1, L_2DC798
+  2DE034  is_of_type                         0x3, 0x3
+  2DE037  if_equal                           0x1, L_2DC798
+  2DE03D  is_of_type                         0x3, 0x5
+  2DE040  if_equal                           0x1, L_2DC798
+  2DE046  goto                               L_2DC78F
+L_2DE04B:
+  2DE04B  get_ability                        0x1
+  2DE04D  if_equal                           0x36, L_2DC7AA
+  2DE053  get_ability                        0x0
+  2DE055  if_equal                           0x17, L_2DC7A4
+  2DE05B  if_equal                           0x4A, L_2DC7A4
+  2DE061  end                                
+L_2DE062:
+  2DE062  check_ability                      0x2, 0x1F
+  2DE065  if_equal                           0x0, L_2DE078
+  2DE06B  score                              0xFE
+  2DE06D  is_of_type                         0x2, 0x4
+  2DE070  if_equal                           0x0, L_2DE078
+  2DE076  score                              0xF8
+L_2DE078:
+  2DE078  end                                
+L_2DE079:
+  2DE079  if_flash_fired                     0x1, L_2DE080
+  2DE07F  end                                
+L_2DE080:
+  2DE080  goto                               L_2DC7A1
+L_2DE085:
+  2DE085  get_how_powerful_move_is           
+  2DE086  if_equal                           0x0, L_2DE0B2
+  2DE08C  get_type                           0x4
+  2DE08E  if_equal                           0xA, L_2DE099
+L_2DE094:
+  2DE094  goto                               L_2DC79E
+L_2DE099:
+  2DE099  check_ability                      0x3, 0x12
+  2DE09C  if_equal                           0x1, L_2DE0A7
+  2DE0A2  goto                               L_2DE094
+L_2DE0A7:
+  2DE0A7  if_flash_fired                     0x3, L_2DE094
+  2DE0AD  goto                               L_2DC7A7
+L_2DE0B2:
+  2DE0B2  if_move                            0x11D, L_2DE0DA
+  2DE0B9  if_move                            0x105, L_2DE14F
+  2DE0C0  if_move                            0x5C, L_2DE14F
+  2DE0C7  if_move                            0x10E, L_2DE16D
+  2DE0CE  if_move                            0xCF, L_2DE178
+  2DE0D5  goto                               L_2DE190
+L_2DE0DA:
+  2DE0DA  get_ability                        0x0
+  2DE0DC  if_equal                           0x36, L_2DC7AD
+  2DE0E2  get_ability                        0x1
+  2DE0E4  if_not_equal                       0x1A, L_2DE107
+  2DE0EA  get_ability                        0x0
+  2DE0EC  if_equal                           0x1A, L_2DE190
+  2DE0F2  get_type                           0x0
+  2DE0F4  if_not_equal                       0xD, L_2DE107
+  2DE0FA  score                              0x1
+  2DE0FC  get_type                           0x2
+  2DE0FE  if_not_equal                       0xD, L_2DE107
+  2DE104  score                              0x1
+  2DE106  end                                
+L_2DE107:
+  2DE107  if_not_equal                       0xE, L_2DE190
+  2DE10D  if_has_move                        0x3, 0x7E, L_2DE14A
+  2DE115  if_has_move                        0x3, 0x57, L_2DE14A
+  2DE11D  if_has_move                        0x3, 0xEE, L_2DE14A
+  2DE125  if_has_move                        0x3, 0x38, L_2DE14A
+  2DE12D  if_has_move                        0x3, 0xDF, L_2DE14A
+  2DE135  if_has_move                        0x3, 0x3B, L_2DE14A
+  2DE13D  if_has_move                        0x3, 0xE0, L_2DE14A
+  2DE145  goto                               L_2DE190
+L_2DE14A:
+  2DE14A  goto                               L_2DC7A7
+L_2DE14F:
+  2DE14F  get_ability                        0x0
+  2DE151  if_not_equal                       0x3E, L_2DE190
+  2DE157  if_status                          0x0, 0xFF, L_2DE190
+  2DE161  if_hp_less_than                    0x1, 0x5B, L_2DE190
+  2DE168  goto                               L_2DC7AA
+L_2DE16D:
+  2DE16D  if_random_less_than                0x40, L_2DC789
+  2DE173  goto                               L_2DC7A4
+L_2DE178:
+  2DE178  if_holds_item                      0x0, 0x8C, L_2DE185
+  2DE180  goto                               L_2DE190
+L_2DE185:
+  2DE185  if_stat_level_more_than            0x0, 0x1, 0x7, L_2DE18F
+  2DE18D  score                              0x3
+L_2DE18F:
+  2DE18F  end                                
+L_2DE190:
+  2DE190  score                              0xE2
+  2DE192  end                                
+AI_HPAware:
+  2DE193  if_target_is_ally                  L_2DE085
+  2DE198  if_hp_more_than                    0x1, 0x46, L_2DE1B5
+  2DE19F  if_hp_more_than                    0x1, 0x1E, L_2DE1C4
+  2DE1A6  get_considered_move_effect         
+  2DE1A7  if_in_bytes                        0x82DE258, L_2DE1D3
+  2DE1B0  goto                               L_2DE1DB
+L_2DE1B5:
+  2DE1B5  get_considered_move_effect         
+  2DE1B6  if_in_bytes                        0x82DE21F, L_2DE1D3
+  2DE1BF  goto                               L_2DE1DB
+L_2DE1C4:
+  2DE1C4  get_considered_move_effect         
+  2DE1C5  if_in_bytes                        0x82DE22D, L_2DE1D3
+  2DE1CE  goto                               L_2DE1DB
+L_2DE1D3:
+  2DE1D3  if_random_less_than                0x32, L_2DE1DB
+  2DE1D9  score                              0xFE
+L_2DE1DB:
+  2DE1DB  if_hp_more_than                    0x0, 0x46, L_2DE1F8
+  2DE1E2  if_hp_more_than                    0x0, 0x1E, L_2DE207
+  2DE1E9  get_considered_move_effect         
+  2DE1EA  if_in_bytes                        0x82DE2B1, L_2DE216
+  2DE1F3  goto                               L_2DE21E
+L_2DE1F8:
+  2DE1F8  get_considered_move_effect         
+  2DE1F9  if_in_bytes                        0x82DE288, L_2DE216
+  2DE202  goto                               L_2DE21E
+L_2DE207:
+  2DE207  get_considered_move_effect         
+  2DE208  if_in_bytes                        0x82DE289, L_2DE216
+  2DE211  goto                               L_2DE21E
+L_2DE216:
+  2DE216  if_random_less_than                0x32, L_2DE21E
+  2DE21C  score                              0xFE
+L_2DE21E:
+  2DE21E  end                                
+  2DE21F  .data 206 bytes: 07 20 25 62 63 74 84 85 86 9D A8 C2 CC FF 07 0A 0B 0C 0D 0E 0F 10 12 13
+AI_TrySunnyDayStart:
+  2DE2ED  if_target_is_ally                  L_2DE085
+  2DE2F2  if_not_effect                      0x89, L_2DE308
+  2DE2F8  if_equal                           0x0, L_2DE308
+  2DE2FE  is_first_turn_for                  0x1
+  2DE300  if_equal                           0x0, L_2DE308
+  2DE306  score                              0x5
+L_2DE308:
+  2DE308  end                                
+  2DE309  if_status2                         0x1, 0xE000, L_2DE336
+  2DE313  if_status2                         0x1, 0x4000000, L_2DE336
+  2DE31D  get_ability                        0x0
+  2DE31F  if_equal                           0x17, L_2DE336
+  2DE325  get_ability                        0x1
+  2DE327  if_equal                           0x1A, L_2DE335
+  2DE32D  get_ability                        0x0
+  2DE32F  if_equal                           0x47, L_2DE336
+L_2DE335:
+  2DE335  flee                               
+L_2DE336:
+  2DE336  end                                
+  2DE337  if_random_safari_flee              L_2DE33D
+  2DE33C  watch                              
+L_2DE33D:
+  2DE33D  flee                               
+  2DE33E  if_hp_equal                        0x0, 0x14, L_2DE34D
+  2DE345  if_hp_less_than                    0x0, 0x14, L_2DE34D
+  2DE34C  end                                
+L_2DE34D:
+  2DE34D  flee                               
+L_2DE34E:
+  2DE34E  end                                

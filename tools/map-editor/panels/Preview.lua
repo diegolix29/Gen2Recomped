@@ -109,12 +109,28 @@ local function classInfo(S)
   return names, info
 end
 
+-- THE SELECTED SOURCE'S PROFILE, not one mod's by name.
+--
+-- This hardcoded `mods.DRAMATIC_SHAPE.data.voxel_heights`, which was wrong
+-- twice over.  A MOD FOLDER IS NOT A MOD ID: the folder is whatever the author
+-- called their checkout or whatever the installer picked, and a mod that
+-- installs as `mods/Gen2Recomped-DramaticShapes` -- which is what its manifest
+-- declares -- was invisible here while classInfo() right above found it
+-- perfectly well.  And it ignored `S.voxelSource` entirely, so the VOXELS tab
+-- could be showing one mod's class vocabulary with another's heights.
+--
+-- VoxelClasses.sources() already answers both: it scans `mods/` and carries
+-- each source's own profile path, so nothing here needs to know a name.
 local function profile(S)
   if S.pvProfile ~= nil then return S.pvProfile or nil end
-  local ok, p = pcall(function()
-    return require("mods.DRAMATIC_SHAPE.data.voxel_heights")
-  end)
-  S.pvProfile = (ok and type(p) == "table") and p or false
+  local src = VoxelClasses.sourceFor(S.voxelSource)
+  local path = src and src.profile
+  local p
+  if path then
+    local ok, loaded = pcall(require, path)
+    if ok and type(loaded) == "table" then p = loaded end
+  end
+  S.pvProfile = p or false
   return S.pvProfile or nil
 end
 

@@ -259,7 +259,7 @@ local GEN3_MAX_LAND = 32
 -- Keeping the constant HERE, beside the rules it describes, is the point: the
 -- edit that changes the shapes and the edit that invalidates the cache are in
 -- the same file, a few lines apart.
-Structures.SHAPE_REV = "g3-settee-308"
+Structures.SHAPE_REV = "g3-reach-314"
 -- one cell of world height: the step a building may straddle and still be
 -- treated as having one foundation
 local COURSE = 16
@@ -1270,6 +1270,38 @@ local TERRACE_MAX = 13             -- courses; 208px, the depth of the crater
 -- that states enough drops to get in states enough to place two courses; one
 -- that states twelve times as many may place six.
 local GEN3_RELIEF_GATE = 8
+--- THE HEIGHT A LEVEL'S OWN DRAWING PUTS IT AT, WHERE THAT IS ABOVE ITS RANK.
+---
+--- MOTIVATED BY FORTREE CITY'S HUT DECKS, (9..12,4) AND THE FIVE LIKE THEM.
+---
+--- `buildGen3ElevationGround` already publishes `S.gen3LevelH`: the height of
+--- each ranked elevation level, which is the rank spacing EXCEPT where three
+--- quarters of the level's own cells were drawn higher, and then it is what
+--- they were drawn at.  That exception is the one thing in the height model
+--- the drawn-terrace vote downstream cannot rediscover -- the vote counts
+--- boundaries crossed, and a level reached by a LADDER rather than by a
+--- staircase crosses none.
+---
+--- Returns nil unless this cell sits on such a level, so every caller is a
+--- no-op everywhere else.  DERIVED, measured over all 82 outdoor maps in
+--- Hoenn (the only maps this reaches): exactly one level in the region is
+--- drawn above its rank -- FortreeCity rank 1 (elevation 4), ranked at 16,
+--- drawn at 32 -- which reproduces the same count `buildGen3ElevationGround`
+--- reports over all 518.  Nothing outside Gen 3 can reach it at all:
+--- `S.gen3Rank` and `S.gen3LevelH` are written only by that pass, which
+--- returns on `not S.isGen3`.
+local function gen3ArtLevelZ(S, g3c, cx, cy)
+  local rk, lh = S.gen3Rank, S.gen3LevelH
+  if not (rk and lh and g3c) then return nil end
+  local okE, e = pcall(g3c.elevationAt, cx, cy)
+  if not (okE and e) then return nil end
+  local r = rk[e]
+  if r == nil or r <= 0 then return nil end
+  local h = lh[r]
+  if h == nil or h <= r * COURSE then return nil end
+  return h
+end
+
 function Structures.buildGen3TerraceLevels(S, map, g3c, x0, x1, y0, y1)
   local W = math.floor(tonumber(map.def.width) or 0)
   local H = math.floor(tonumber(map.def.height) or 0)
@@ -3020,6 +3052,16 @@ function Structures.buildGen3TerraceLevels(S, map, g3c, x0, x1, y0, y1)
       if L > TERRACE_MAX then L = TERRACE_MAX end
       hist[L] = (hist[L] or 0) + 1
       local z = L * COURSE
+      -- ...AND NEVER BELOW THE STOREY THE LEVEL'S OWN ART WAS DRAWN AT.
+      --
+      -- This vote counts BOUNDARIES CROSSED, and Fortree's tree tier is not
+      -- reached across a boundary: you climb a ladder to it.  So the flood
+      -- put all 29 of its plank cells on the street's own terrace while
+      -- `levelGen3Decks` kept the 23 rope-walk cells between them at the 32
+      -- the elevation grid states -- a walkway that stepped 0, 32, 0, 32
+      -- along its own length, with every hut founded on the 0.
+      local artZ = gen3ArtLevelZ(S, g3c, p[1], p[2])
+      if artZ and artZ > z then z = artZ end
       S.synthZ[p[2] * 8192 + p[1]] = z
       -- LEVEL ZERO IS ZERO, AND IT HAS TO BE WRITTEN LIKE ANY OTHER.
       --
@@ -3038,11 +3080,20 @@ function Structures.buildGen3TerraceLevels(S, map, g3c, x0, x1, y0, y1)
         for dx = 0, 1 do
           local kk = keyOf(p[1] * 2 + dx, p[2] * 2 + dy)
           local old = S.shapeAt[kk]
+          -- A STAMPED CELL IS DRAWN AT ITS `base`, NOT AT ITS `h`.
+          -- `ChunkMesher.heightAt` answers `Structures.stampGround` for a
+          -- skipped cell and that prefers `base`, so a cell this pass lifts
+          -- to the art level while its recorded base stays on the street is
+          -- a hole in the deck rather than a piece of it.  Gated on `artZ`,
+          -- so it moves nothing anywhere the floor above did not move.
+          local sunkBase = artZ ~= nil and type(old) == "table"
+                           and type(old.base) == "number" and old.base < z
           if old and not old.override and old.flat
-             and (old.h or 0) ~= z then
+             and ((old.h or 0) ~= z or sunkBase) then
             local nu = {}
             for k2, v2 in pairs(old) do nu[k2] = v2 end
             nu.h = z
+            if sunkBase then nu.base = z end
             nu.authored = true
             S.shapeAt[kk] = nu
             S.runs[kk] = nil
@@ -3089,7 +3140,13 @@ function Structures.buildGen3TerraceLevels(S, map, g3c, x0, x1, y0, y1)
         if lo then
           if lo < 0 then lo = 0 end
           if lo > TERRACE_MAX then lo = TERRACE_MAX end
-          S.synthZ[cy * 8192 + cx] = lo * COURSE
+          -- ...and a foot is still never below the level's own storey: six
+          -- of Fortree's plank cells read as banded art and are footed here,
+          -- which put the deck's own planks two courses under the deck.
+          local zf = lo * COURSE
+          local az = gen3ArtLevelZ(S, g3c, cx, cy)
+          if az and az > zf then zf = az end
+          S.synthZ[cy * 8192 + cx] = zf
           footed = footed + 1
         end
       end
@@ -6019,7 +6076,38 @@ function Structures.foundGen3Buildings(S, map, x0, x1, y0, y1)
             -- was capped at 40px.  `gen3RoofPlanAt` asks the same question of
             -- the whole row: a roof seen from above has nothing at the
             -- player's level anywhere across it, and a facade row is mixed.
+            -- ...AND WHERE THE PROFILE NAMES THE PART, NOTHING IS INFERRED.
+            --
+            -- MOTIVATED BY FORTREE CITY'S SIX TREE HUTS -- the bamboo end
+            -- bays 555/559 over 563/567, see `building_art` in
+            -- data/gen3_shapes.lua.
+            --
+            -- Both readings below ask the same question of the ART -- "is
+            -- this cell a TOP with no wall drawn under it" -- and both say
+            -- yes to a hut's end bay, because the generated table reads all
+            -- four bay ids `surface / green / CAP 16 / FACE 0`.  So a bay
+            -- column counted BOTH of its rows as roof, `deepest` came back
+            -- 2 over a footprint 3 rows deep, and `wall = rows - roofRows`
+            -- left the hut ONE course of wall where the drawing has two.
+            -- MEASURED at House1, door (10,3): bldRows 3, bldRoofRows 2,
+            -- wall 1, own 32, capH 40 -- against a facade the run itself
+            -- measured at 64.
+            --
+            -- A bay is not a roof from any angle; it is the vertical bamboo
+            -- end wall the fronds overhang.  The profile says which of the
+            -- hut's ids are roof and which are wall, and where it has said
+            -- so there is nothing left to read off the pixels.
             local top = false
+            local ba = nil
+            do
+              local okM0, mt0 = pcall(g3c.metatileAt, cx, cy)
+              if okM0 and mt0 and g3c.buildingArt then
+                ba = g3c.buildingArt[mt0]
+              end
+            end
+            if ba ~= nil then
+              top = (ba == "roof")
+            else
             if gen3RoofPlanAt(S, map, cx, cy) then top = true end
             if not top then
               local okM, mt = pcall(g3c.metatileAt, cx, cy)
@@ -6028,6 +6116,7 @@ function Structures.foundGen3Buildings(S, map, x0, x1, y0, y1)
                 if okA and (tonumber(cap) or 0) >= 12
                    and (tonumber(face) or 0) <= 2 then top = true end
               end
+            end
             end
             -- a row the walk cannot SEE does not stop it (see
             -- `gen3RoofUnseen`); it is simply not counted.
@@ -6142,6 +6231,9 @@ function Structures.foundGen3Buildings(S, map, x0, x1, y0, y1)
   local trimmedRoofArt = 0
   local zbLo, zbHi, fLo, fHi, ztLo, ztHi = nil, nil, nil, nil, nil, nil
   local tall = 0
+  -- columns of an authored building that carry no roof art and so stop one
+  -- course below the ridge (see A COLUMN THE PROFILE DRAWS NO ROOF ON)
+  local eaved = 0
   for _, e in ipairs(order) do
     Budget.tick()
     local run = e.run
@@ -6318,6 +6410,56 @@ function Structures.foundGen3Buildings(S, map, x0, x1, y0, y1)
       if ownH > zBase then measured = ownH - zBase end
       if measured > capH then measured = capH end
     end
+    -- ...AND A COLUMN THE PROFILE DRAWS NO ROOF ON STOPS AT THE EAVE.
+    --
+    -- MOTIVATED BY FORTREE CITY'S SIX TREE HUTS -- the bamboo end bays
+    -- 555/559 over 563/567, see `building_art` in data/gen3_shapes.lua.
+    --
+    -- Emerald draws the frond roof THREE cells wide over a hut FIVE cells
+    -- wide: the end bays are vertical bamboo with the fronds overhanging
+    -- them, and they stop at the wall's own top.  The levelling above --
+    -- "A BUILDING HAS ONE ROOFLINE" -- gives every column of a building the
+    -- same TOTAL height, which is right, and `run.h` then splits that into
+    -- wall and pitch by the run's own `rise`.  A bay has no roof art to
+    -- state one, so its rise is whatever the run builder happened to infer
+    -- from the region's drawing -- and the region reaches one cell further
+    -- down on the side where the VERANDA's own end post is drawn with the
+    -- bay's metatile (563 at House1 (8,4), House5 (10,14) and House4
+    -- (30,3); 567 at House4 (34,3..4) and DecoShop (39,14)).
+    --
+    -- MEASURED, before this: House2 and House3, whose verandas end in the
+    -- plank 571, came out with both bays at 64 -- level with the wall.  The
+    -- other four huts had one bay at 64 and one at 80, standing a course
+    -- PROUD OF ITS OWN ROOF.  Six identical huts, three different shapes.
+    --
+    -- The drawing settles it without any inference: a column carrying none
+    -- of the building's roof art carries no pitch, so it stops one course
+    -- below the ridge -- at the eave, which is where `foundGen3Buildings`
+    -- already puts the top of every walled column (`own = wall * COURSE +
+    -- COURSE`, one course of pitch on the wall).
+    --
+    -- ONLY WHERE THE PROFILE HAS NAMED THE PARTS.  `g3c.buildingArt` is nil
+    -- for 71 of Hoenn's 72 tilesets, and the one that has it places its ids
+    -- on ONE map, so this cannot reach a building anywhere else; and within
+    -- that map it fires only on a run every named cell of which is `wall`.
+    -- A run with any roof art in it, or none of the profile's art at all,
+    -- is untouched.
+    if S.isGen3 and S.outdoor and e.bld and g3c and g3c.buildingArt
+       and measured > COURSE then
+      local named, roofed = 0, false
+      for _, c in ipairs(e.list) do
+        local okM3, mt3 = pcall(g3c.metatileAt, c[1], c[2])
+        local ba3 = (okM3 and mt3) and g3c.buildingArt[mt3] or nil
+        if ba3 then
+          named = named + 1
+          if ba3 == "roof" then roofed = true end
+        end
+      end
+      if named > 0 and not roofed and (run.rise or 0) <= 0 then
+        run.rise = COURSE
+        eaved = eaved + 1
+      end
+    end
     -- ...AND THE MESHER IS TOLD WHERE THE DRAWING STARTS.
     --
     -- The facade's art rows are read from the run, and a run is built from
@@ -6402,11 +6544,11 @@ function Structures.foundGen3Buildings(S, map, x0, x1, y0, y1)
             .. "zTop>72: %d, no land neighbour: %d of which %d on water, "
             .. "clamped from >32: %d, levelled to their roofline: %d, "
             .. "raised to their doorstep: %d, roof art trimmed to the "
-            .. "wall: %d)",
+            .. "wall: %d, stopped at the eave: %d)",
             tostring(map.id), #order, moved,
             tostring(zbLo), tostring(zbHi), tostring(fLo), tostring(fHi),
             tostring(ztLo), tostring(ztHi), tall, #noLand, onWater, clamped,
-            levelled, raisedToDoor, trimmedRoofArt)
+            levelled, raisedToDoor, trimmedRoofArt, eaved)
     end
   end
 end
@@ -8024,18 +8166,60 @@ function Structures.standGen3Water(S, map)
       end
     end
   end
+  -- A DECK LAID ACROSS A BODY OF WATER DOES NOT DIVIDE IT.
+  --
+  -- MOTIVATED BY ROUTE 119'S UPPER RIVER, THE REACH ABOVE THE WATERFALL AT
+  -- (17..19, 25..28), WHICH SIX PLANK WALKWAYS CROSS ON PIERS: "all water at
+  -- the top of the waterfall should be the same level as the top of the
+  -- waterfall" and "the bike paths should be lifted above the water".
+  --
+  -- This flood is what decides how many SURFACES a sheet of water has: every
+  -- component it finds is levelled on its own lip.  It stepped from water
+  -- cell to water cell only, so a walkway drawn across a river cut the river
+  -- in two and each half went looking for its own shore.
+  --
+  -- MEASURED on Route 119, with the walkway metatiles read as water and deck
+  -- (see data/gen3_shapes.lua): the basin came out as TWO bodies -- 110 cells
+  -- at 14 and 67 at 32 -- with the planks levelled at 16 between them, so
+  -- half the river ran sixteen pixels over the walkways that cross it and the
+  -- other half two pixels under them.  Emerald draws no rapid, no ledge and
+  -- no rock anywhere between the two: it is one blue surface from (16..19, 2)
+  -- down to the fall, with the walkways above it on their piles.
+  --
+  -- A SPAN IS NOT A SHORE, which this function already says twice below --
+  -- "A BRIDGE STANDS FOR THE LAND IT LANDS ON" for the lip, and `capGen3Rock`
+  -- says it again for the rock.  A cell you walk OVER water on does not
+  -- retain the water and is not a wall in it, so the flood steps THROUGH one
+  -- and keeps going.  The deck itself is never collected and never moved --
+  -- `run` takes only cells of the wanted class, and `levelGen3Decks` owns the
+  -- planks -- and the merged body still takes the LOWEST shore it can find,
+  -- so this can only ever lower a surface.  It cannot raise water onto a
+  -- bridge, which is the failure the report is about.
+  --
+  -- The FALLS arm below keeps its own water-only flood deliberately: a fall
+  -- states which pool is its head, and letting that lift travel under the
+  -- walkways would raise the whole reach to the fall's lip -- 44 against
+  -- planks levelled at 16 by the land they land on -- and bury them.
+  local CONDUCT = { bridge = true, log = true }
   local function flood(cx, cy, want)
     local stack, run = { { cx, cy } }, {}
     seen[K(cx, cy)] = true
     while #stack > 0 do
       Budget.tick()
       local c = table.remove(stack)
-      run[#run + 1] = c
+      if classOf(c[1], c[2]) == want then run[#run + 1] = c end
       for _, d in ipairs(D4) do
         local nx, ny = c[1] + d[1], c[2] + d[2]
         if nx >= 0 and ny >= 0 and nx < W and ny < H and not seen[K(nx, ny)] then
           local nc = classOf(nx, ny)
-          if nc == want then seen[K(nx, ny)] = true stack[#stack + 1] = { nx, ny } end
+          -- ...and only for the POOLS.  `want == "waterfall"` below floods
+          -- the sheet of a fall, which is a run of drawn cells and not a
+          -- surface looking for its lip; nothing is gained by letting it
+          -- reach across a deck and it would change which sheet a fall's
+          -- rock is measured from.
+          if nc == want or (want == "water" and CONDUCT[nc]) then
+            seen[K(nx, ny)] = true stack[#stack + 1] = { nx, ny }
+          end
         end
       end
     end
@@ -8049,7 +8233,26 @@ function Structures.standGen3Water(S, map)
       local c0, s0 = classOf(cx, cy)
       if c0 == "water" and not seen[K(cx, cy)] then
         local run = flood(cx, cy, "water")
+        -- A RECESS IS A DEPTH, NEVER A HEIGHT.
+        --
+        -- `s0.h` is read as "how far this water is drawn below the shore that
+        -- holds it", and that is what it is for a cell no other pass has
+        -- touched: Hoenn draws the sea two pixels into its own cell, so the
+        -- surf level reads -4 and an elevation-0 water cell -2.
+        --
+        -- It is NOT that for a cell some earlier pass has already lifted.
+        -- MOTIVATED BY ROUTE 119'S UPPER RIVER: with its water art read as
+        -- water rather than rock (see data/gen3_shapes.lua), the basin's
+        -- cells arrive here carrying the 16 the terrace and rock passes left
+        -- on them, `recess` reads +16, and `lip + recess` put the river a
+        -- course ABOVE its own shore instead of a recess below it -- 167
+        -- cells at 32 over banks at 16.  Every surface in the map moved the
+        -- wrong way by exactly the amount the cell had already been raised.
+        --
+        -- So a positive reading is not a recess at all, and falls back to the
+        -- same -4 this line already uses when there is no shape to ask.
         local recess = (s0 and s0.h) or -4
+        if recess > 0 then recess = -4 end
         -- ...AND ITS SHORE IS GROUND YOU CAN STAND ON.
         --
         -- Taking the lowest of ANY neighbour takes the top of the cliff that
@@ -8192,6 +8395,539 @@ function Structures.standGen3Water(S, map)
   end
 end
 
+-- A PLANK DECK IS A BAR OF TIMBER, NOT A BLOCK OF RIVER STANDING ON END.
+--
+-- MOTIVATED BY ROUTE 119'S SIX PLANK WALKWAYS, (5..20, 5..18) -- the crossings
+-- over the reach above the waterfall.  Reported from the frame: "many of the
+-- bike paths above the water are raising the water texture within its block
+-- too instead of just raising the white bike path portion".
+--
+-- WHAT THE MESHER DRAWS AND WHY.  A `bridge` cell is a column like any other:
+-- `ChunkMesher` plants its top face at the cell's own height and wears the
+-- cell's own metatile on it, and the deck rule it already has only thins the
+-- SIDE ("A BRIDGE HAS AIR UNDER IT" -- one course of fascia and daylight
+-- below).  That is right for a deck that fills its cell.  Emerald does not
+-- draw these ones that way: the plank is a BAR inside a cell that is otherwise
+-- open water, so lifting the cell lifts the river with it and every walkway
+-- reads as a ridge of ripple with a white slat along the top.
+--
+-- MEASURED on Route 119: the walkways stand at 16 and the river they cross at
+-- 12, so all 284 tiles of deck lift a whole 16px cell of water art four pixels
+-- clear of the water four pixels away from it.
+--
+-- WHERE THE PLANK IS, READ OFF THE DRAWING.  A deck plank is painted in pale
+-- grey timber on Hoenn's blue river, so it is the one thing in these cells
+-- that is BRIGHT and has almost no colour in it: a pixel counts as plank at
+-- luminance >= 0.588 with a channel spread <= 0.188, the same kind of reading
+-- `markGen3Stairs` takes off the same atlas.  Counted per row and per column,
+-- Emerald's planks are axis-aligned BARS and nothing else in the cell is pale
+-- at all:
+--
+--     241 253 251 237 240 242   rows 12..15 at 14/16, every other row 0..2
+--     243 244 247               cols  5.. 9 at 14/16, every other col  0
+--
+-- THE TEST IS THE BAR, AND IT IS BIMODAL WITH A GAP.  DERIVED over every
+-- `bridge`/`log` cell in all 518 maps -- 1,013 of them -- scoring each by the
+-- worst count OUTSIDE its best contiguous bar of full lines:
+--
+--     outside 0   54 cells        outside 9    4 cells
+--     outside 1    4              outside 10  12
+--     outside 2    5              outside 11   9
+--     outside 3    1              outside 12 304
+--                                 outside 13  10
+--                                 outside 14  43
+--                                 outside 16 469
+--                                 outside 99  98
+--
+-- Sixty-three cells at two or less, one at three, then nothing until nine.
+-- The two populations do not overlap and the threshold sits in the gap.
+--
+-- AND BOTH MODES ARE WHAT THEY LOOK LIKE.  The 63 that pass are
+-- ROUTE 119's fifty rail cells (237/240/241/242/243/244/247/251/253) and
+-- SAFARI ZONE SOUTH's thirteen (786/787/788/790/797/798) -- the only other map
+-- in Hoenn drawn with these behaviours, as the rail rows in
+-- data/gen3_shapes.lua already say.  The 949 that fail are every deck whose
+-- cell IS the structure, with no field of water inside it to reveal:
+-- Route 110's cycling road (598), Shoal Cave's decks (140), Route 120's
+-- bridges (61), Victory Road's crossings (50), Pacifidlog's rafts (38),
+-- Fortree's rope walkway (27), Route 119's OWN two wooden bridges at
+-- (16..20, 33..34) and (21..23, 84..85) (27 -- metatiles 528/536, which draw
+-- two railings and no bar), Meteor Falls (6), Littleroot (2), the Union Room
+-- (1).  Not one of them moves.  The single cell at three is Route 119's 236,
+-- the corner where the walkway lands on the bank: half that cell is brown
+-- rock and `cliff` is what the rock should stay.
+--
+-- HOW IT IS CUT.  `ChunkMesher`'s SUB-TILE HEIGHTS branch is exactly this
+-- shape -- "the tile is divided into res x res sub-columns... a sparse
+-- override on the few tiles that need sculpting" -- and nothing has ever
+-- written one.  The bar's sub-columns keep the cell's height; the rest drop to
+-- the floor the mesher's own deck rule already measures for the plate it
+-- paints under a span (the lowest neighbour that is not itself deck).  So the
+-- water inside the cell rejoins the water outside it, the plank stands alone,
+-- and the step between them is the plank's own fascia wearing the plank's own
+-- art.
+--
+-- `res` IS THE COARSEST THAT REPRODUCES THE DRAWING EXACTLY, chosen per tile
+-- rather than fixed: a horizontal bar lands on tile rows 4..7 and needs res 2
+-- (four boxes), the tile above it is all water and needs res 1 (one box), and
+-- only the tile a vertical bar's edge runs through needs res 8.  DERIVED, the
+-- whole region: 2,430 sub-boxes against the 252 tile quads they replace.
+--
+-- NOTHING'S HEIGHT CHANGES.  `sub` is read by the mesher and by nothing else;
+-- `shape.h` and `S.runs` are untouched, so `Structures.standHeight` puts the
+-- player on the planks exactly where it did before, the region height hash is
+-- identical, and collision, elevation and walkability never see this pass.
+function Structures.carveGen3DeckPlanks(S, map)
+  if not S.isGen3 then return end
+  local okG, g3c = pcall(Gen3.forMap, map)
+  if not (okG and g3c) then return end
+  local atlas = Gen3.atlasDataForTileset(map.tileset)
+  local info = Gen3.atlasInfoFor(map.tileset)
+  if not atlas then return end
+  local perRowT = info and math.floor((info.width or 128) / 8) or 16
+  local W = math.floor(tonumber(map.def and map.def.width) or 0)
+  local H = math.floor(tonumber(map.def and map.def.height) or 0)
+  if W <= 0 or H <= 0 then return end
+
+  -- PLANK: bright and almost colourless.  Both numbers are STATED -- they are
+  -- a description of pale timber on blue water, not a fit -- and the census in
+  -- the header is what shows they separate the region cleanly.
+  local PLANK_LUMA, PLANK_CHROMA = 0.588, 0.188
+  local BAR_MIN, BAR_OUT, BAR_LEN = 12, 2, 8
+
+  -- the 16x16 plank mask of a metatile, and the bar it makes, memoised
+  local barCache = {}
+  local function barOf(m)
+    local hit = barCache[m]
+    if hit ~= nil then return hit or nil end
+    barCache[m] = false
+    local mask = {}
+    local rowN, colN = {}, {}
+    for i = 0, 15 do rowN[i], colN[i] = 0, 0 end
+    for py = 0, 15 do
+      for px = 0, 15 do
+        local t = m * 4 + math.floor(py / 8) * 2 + math.floor(px / 8)
+        local ax = (t % perRowT) * 8 + px % 8
+        local ay = math.floor(t / perRowT) * 8 + py % 8
+        local okP, r, g, b = pcall(atlas.getPixel, atlas, ax, ay)
+        if not okP or r == nil then return nil end
+        local mx = math.max(r, g, b)
+        local mn = math.min(r, g, b)
+        local on = (mx >= PLANK_LUMA) and ((mx - mn) <= PLANK_CHROMA)
+        mask[py * 16 + px] = on
+        if on then rowN[py] = rowN[py] + 1; colN[px] = colN[px] + 1 end
+      end
+    end
+    -- the best contiguous run of FULL lines, and the worst line outside it
+    local function best(N)
+      local bo, b0, b1 = 99, nil, nil
+      local a = 0
+      while a <= 15 do
+        if N[a] >= BAR_MIN then
+          local b2 = a
+          while b2 < 15 and N[b2 + 1] >= BAR_MIN do b2 = b2 + 1 end
+          if b2 - a + 1 <= BAR_LEN then
+            local out = 0
+            for q = 0, 15 do
+              if (q < a or q > b2) and N[q] > out then out = N[q] end
+            end
+            if out < bo then bo, b0, b1 = out, a, b2 end
+          end
+          a = b2 + 1
+        else
+          a = a + 1
+        end
+      end
+      return bo, b0, b1
+    end
+    local ro, r0, r1 = best(rowN)
+    local co, c0, c1 = best(colN)
+    local axis, out, a0, a1
+    if ro <= co then axis, out, a0, a1 = "row", ro, r0, r1
+    else axis, out, a0, a1 = "col", co, c0, c1 end
+    if a0 == nil or out > BAR_OUT then return nil end
+    local rec = { axis = axis, a0 = a0, a1 = a1 }
+    barCache[m] = rec
+    return rec
+  end
+
+  local function K(cx, cy) return cy * 8192 + cx end
+  local function hCell(cx, cy)
+    local k = keyOf(cx * 2, cy * 2)
+    local r = S.runs[k]
+    if r and type(r.h) == "number" then return r.h end
+    local sh = S.shapeAt[k]
+    return sh and sh.h or nil
+  end
+
+  local cells, tiles, boxes = 0, 0, 0
+  for cy = 0, H - 1 do
+    for cx = 0, W - 1 do
+      Budget.tick()
+      local sh0 = S.shapeAt[keyOf(cx * 2, cy * 2)]
+      if sh0 and sh0.class == "bridge" and not sh0.sub then
+        local okM, m = pcall(g3c.metatileAt, cx, cy)
+        local bar = (okM and m) and barOf(m) or nil
+        if bar then
+          -- THE FLOOR UNDER THE SPAN, AND IT IS THE MESHER'S OWN READING.
+          -- `ChunkMesher` already measures this to paint the plate under a
+          -- deck -- "what it crosses is whatever the ground does either side
+          -- of it: the lowest neighbour that is not itself deck" -- so the
+          -- carve drops to the same number and the two cannot disagree.
+          local h = hCell(cx, cy)
+          local floorH = nil
+          for _, d in ipairs(DIRS4) do
+            local nx, ny = cx + d[1], cy + d[2]
+            if nx >= 0 and ny >= 0 and nx < W and ny < H then
+              local ns = S.shapeAt[keyOf(nx * 2, ny * 2)]
+              if ns and ns.class ~= "bridge" then
+                local nh = hCell(nx, ny)
+                if nh and (floorH == nil or nh < floorH) then floorH = nh end
+              end
+            end
+          end
+          -- nothing to reveal if the span is not standing over anything
+          if h and floorH and h - floorH > 0 then
+            for dy = 0, 1 do
+              for dx = 0, 1 do
+                local tk = keyOf(cx * 2 + dx, cy * 2 + dy)
+                local old = S.shapeAt[tk]
+                if old and not old.override and not old.sub then
+                  -- this tile's own 8x8 slice of the bar
+                  local function onAt(ix, iy)
+                    local px, py = dx * 8 + ix, dy * 8 + iy
+                    local v = (bar.axis == "row") and py or px
+                    return v >= bar.a0 and v <= bar.a1
+                  end
+                  -- the coarsest res whose blocks are each all-bar or all-water
+                  local res = 8
+                  for _, try in ipairs({ 1, 2, 4 }) do
+                    local step, uniform = 8 / try, true
+                    for j = 0, try - 1 do
+                      for i = 0, try - 1 do
+                        local first = onAt(i * step, j * step)
+                        for q = 0, step - 1 do
+                          for p = 0, step - 1 do
+                            if onAt(i * step + p, j * step + q) ~= first then
+                              uniform = false break
+                            end
+                          end
+                          if not uniform then break end
+                        end
+                        if not uniform then break end
+                      end
+                      if not uniform then break end
+                    end
+                    if uniform then res = try break end
+                  end
+                  local step = 8 / res
+                  local hs = {}
+                  for j = 0, res - 1 do
+                    for i = 0, res - 1 do
+                      hs[j * res + i + 1] =
+                        onAt(i * step, j * step) and h or floorH
+                    end
+                  end
+                  local nu = {}
+                  for k2, v2 in pairs(old) do nu[k2] = v2 end
+                  nu.sub = { res = res, h = hs, z0 = h }
+                  S.shapeAt[tk] = nu
+                  tiles = tiles + 1
+                  boxes = boxes + res * res
+                end
+              end
+            end
+            cells = cells + 1
+          end
+        end
+      end
+    end
+  end
+  if cells > 0 then
+    local okL, Logger = pcall(require, "src.core.Logger")
+    if okL and Logger and Logger.info then
+      pcall(Logger.info,
+            "gen3 shapes: %s cut the plank out of %d deck cell(s) (%d tile(s), "
+            .. "%d sub-box(es)) so the water inside them stays with the water "
+            .. "outside", tostring(map.id), cells, tiles, boxes)
+    end
+  end
+end
+
+-- A RIVER ABOVE A WATERFALL STANDS AT THE WATERFALL, AND ITS BANKS STAND OVER IT.
+--
+-- MOTIVATED BY ROUTE 119'S UPPER RIVER, THE REACH ABOVE THE FALL AT
+-- (17..19, 25..28), AND THE STAIRCASE AT ITS HEAD, (13..14, 22).  Reported
+-- three times: "all water at the top of the waterfall should be the same level
+-- as the top of the waterfall"; "the water passed the first bike path is lower
+-- than the water at the top of the waterfall"; and "its supposed to be raising
+-- the land on the north side of the staircase further".
+--
+-- WHY THE POOL PASS CANNOT GET THIS RIGHT ON ITS OWN.  `standGen3Water` gives a
+-- body the height of the LOWEST SHORE it can stand on, which is the only
+-- reading a pond offers.  A reach above a fall has a second and stronger
+-- statement: the cartridge put MB_WATERFALL there, and the rock the sheet runs
+-- down fixes the surface that feeds it.  The falls arm already uses that for
+-- the pool it can touch -- "the water it falls from stands on that rock" -- but
+-- it floods `water` only, so a plank walkway laid across the river cuts the
+-- statement off a few cells behind the lip.
+--
+-- MEASURED on Route 119: the reach is 145 cells and comes out at TWO surfaces,
+-- 123 at 12 and the 22 the falls arm reaches at 44, with six crossings between
+-- them and no rapid, ledge or rock drawn anywhere along it.  The low half is
+-- 32px under the lip it pours over, which is water running uphill.
+--
+-- WHICH OF THE TWO IS WRONG IS A STATED FACT, NOT A MEASURED ONE.  Either the
+-- valley and its river are two courses too low, or the fall's head at 48 is too
+-- high -- and this file cannot tell which, because the `facing` field that
+-- would settle it is BLANK on every `face` metatile on this map (116, 380, 124,
+-- 169, 122, 248, 378, 386, 123 all answer nil to `Gen3.cliffFacing`, which is
+-- what its own note means by "a pure face has no answer of its own").  The
+-- owner, who can see the game, states it is the VALLEY that is low.  That is
+-- recorded here as given rather than derived; everything else below is
+-- measured.
+--
+-- SCOPE, AND IT IS THE BOUND.  A bank is only out of place where the WATER
+-- MOVED: a reach already standing at its lip is already held by the land
+-- around it, and there is nothing to correct.  DERIVED over all 518 maps, every
+-- waterfall in Hoenn and the reach above it:
+--
+--     Route119            fall (17,25)  reach 145  lowest 12  lip 44  LIFT 32
+--     MeteorFalls_1F_1R   fall (20,24)  reach  21  lowest 12  lip 28  LIFT 16
+--     Route119 (21,79) 1   EverGrandeCity 44   MeteorFalls (8,10) 50
+--     VictoryRoad_B2F 141 x2   BattleFrontier_OutsideEast 143
+--     SafariZone_Southeast 50  Route114 34          -- all already at the lip
+--
+-- Two falls in the region need anything at all.  An earlier cut of this pass
+-- raised the bank of EVERY fall's reach and put EverGrandeCity 96px up on 21
+-- tiles -- the unbounded-landing failure the flight cap exists for -- purely
+-- because it corrected banks under water that had never moved.  Gated on the
+-- lift, that cannot happen: no water moves there, so no bank does.
+function Structures.holdGen3FallHead(S, map)
+  if not S.isGen3 then return end
+  local W = math.floor(tonumber(map.def and map.def.width) or 0)
+  local H = math.floor(tonumber(map.def and map.def.height) or 0)
+  if W <= 0 or H <= 0 then return end
+  local function K(cx, cy) return cy * 8192 + cx end
+  local function classOf(cx, cy)
+    if cx < 0 or cy < 0 or cx >= W or cy >= H then return nil end
+    local sh = S.shapeAt[keyOf(cx * 2, cy * 2)]
+    return sh and sh.class, sh
+  end
+  local function hCell(cx, cy)
+    local k = keyOf(cx * 2, cy * 2)
+    local r = S.runs[k]
+    if r and type(r.h) == "number" then return r.h end
+    local sh = S.shapeAt[k]
+    return sh and sh.h or nil
+  end
+  local function walkable(cx, cy)
+    if cx < 0 or cy < 0 or cx >= W or cy >= H then return false end
+    local ok, w = pcall(map.isWalkableCell, map, cx, cy)
+    return (ok and w) or false
+  end
+  local function setCell(cx, cy, z)
+    if S.synthZ then S.synthZ[K(cx, cy)] = z end
+    for dy = 0, 1 do
+      for dx = 0, 1 do
+        local kk = keyOf(cx * 2 + dx, cy * 2 + dy)
+        local old = S.shapeAt[kk]
+        if old and not old.override then
+          local nu = {}
+          for k2, v2 in pairs(old) do nu[k2] = v2 end
+          nu.h = z
+          nu.authored = true
+          S.shapeAt[kk] = nu
+          S.runs[kk] = nil
+        end
+      end
+    end
+  end
+
+  local lifted, banked, decked, graded = 0, 0, 0, 0
+  local raised = {}                       -- cells this pass moved, for the grade
+  local seenFall = {}
+  for cy = 0, H - 1 do
+    for cx = 0, W - 1 do
+      Budget.tick()
+      if classOf(cx, cy) == "waterfall" and not seenFall[K(cx, cy)] then
+        local st, run = { { cx, cy } }, {}
+        seenFall[K(cx, cy)] = true
+        while #st > 0 do
+          local c = table.remove(st)
+          run[#run + 1] = c
+          for _, d in ipairs(DIRS4) do
+            local nx, ny = c[1] + d[1], c[2] + d[2]
+            if nx >= 0 and ny >= 0 and nx < W and ny < H and not seenFall[K(nx, ny)]
+               and classOf(nx, ny) == "waterfall" then
+              seenFall[K(nx, ny)] = true
+              st[#st + 1] = { nx, ny }
+            end
+          end
+        end
+        local minY, top = nil, nil
+        for _, c in ipairs(run) do
+          if minY == nil or c[2] < minY then minY = c[2] end
+          local z = hCell(c[1], c[2])
+          if z and (top == nil or z > top) then top = z end
+        end
+        -- the head is NORTH: Hoenn draws every fall descending toward the
+        -- camera, which is why MB_WATERFALL is climbed northward
+        local head = nil
+        for _, c in ipairs(run) do
+          for _, d in ipairs(DIRS4) do
+            local nx, ny = c[1] + d[1], c[2] + d[2]
+            if ny < minY and nx >= 0 and ny >= 0 and nx < W and ny < H
+               and classOf(nx, ny) == "water" then head = head or { nx, ny } end
+          end
+        end
+        if head and top then
+          local _, hs = classOf(head[1], head[2])
+          local recess = (hs and hs.h and hs.h < 0) and hs.h or -4
+          local want = top + recess
+          -- THE WHOLE REACH, STEPPING THROUGH THE DECKS THAT CROSS IT.  A span
+          -- is not a shore and not a wall in the water -- this file says so
+          -- twice already, in the pool arm's bank reading and in
+          -- `capGen3Rock` -- so the fall's statement travels as far as its own
+          -- water does.
+          local mark, body, spans = { [K(head[1], head[2])] = true }, {}, {}
+          local q = { head }
+          while #q > 0 do
+            Budget.tick()
+            local c = table.remove(q)
+            local cc = classOf(c[1], c[2])
+            if cc == "water" then body[#body + 1] = c
+            elseif cc == "bridge" or cc == "log" then spans[#spans + 1] = c end
+            for _, d in ipairs(DIRS4) do
+              local nx, ny = c[1] + d[1], c[2] + d[2]
+              if nx >= 0 and ny >= 0 and nx < W and ny < H and not mark[K(nx, ny)] then
+                local nc = classOf(nx, ny)
+                if nc == "water" or nc == "bridge" or nc == "log" then
+                  mark[K(nx, ny)] = true
+                  q[#q + 1] = { nx, ny }
+                end
+              end
+            end
+          end
+          local moved = 0
+          for _, c in ipairs(body) do
+            if (hCell(c[1], c[2]) or 0) < want then
+              setCell(c[1], c[2], want)
+              raised[K(c[1], c[2])] = true
+              moved = moved + 1
+            end
+          end
+          lifted = lifted + moved
+          -- ...AND NOTHING ELSE MOVES UNLESS THE WATER DID.
+          if moved > 0 then
+            local shore = want - recess
+            -- the bank that holds it
+            for _, c in ipairs(body) do
+              for _, d in ipairs(DIRS4) do
+                local nx, ny = c[1] + d[1], c[2] + d[2]
+                if nx >= 0 and ny >= 0 and nx < W and ny < H then
+                  local nc = classOf(nx, ny)
+                  -- ...AND THE ROCK THAT RETAINS IT COUNTS AS BANK.
+                  --
+                  -- A reach in a rock channel is held by its CLIFF, not by
+                  -- ground you can stand on: MEASURED on Route 119, the lifted
+                  -- river touches walkable land on 5 cells and drawn rock on
+                  -- 38, and with only the walkable ones brought up the water
+                  -- stood 12px over its own rim along the whole east flank
+                  -- (cols 18..19, rows 8..15) -- 50 cells of it, against 10
+                  -- before the lift.  A rim that the water overtops is not a
+                  -- rim.
+                  local bank = walkable(nx, ny)
+                                 or nc == "cliff" or nc == "wall"
+                  if bank and nc and nc ~= "water" and nc ~= "waterfall"
+                     and nc ~= "void" and nc ~= "bridge" and nc ~= "log" then
+                    local nh = hCell(nx, ny)
+                    if nh and nh < shore then
+                      setCell(nx, ny, shore)
+                      raised[K(nx, ny)] = true
+                      banked = banked + 1
+                    end
+                  end
+                end
+              end
+            end
+            -- ...AND THE PLANKS COME UP WITH IT, BECAUSE A DECK IS NOT A WEIR.
+            --
+            -- `levelGen3Decks` gives a span the height of the LAND at its
+            -- mouths, and it runs long before the water is settled, so a river
+            -- lifted under it leaves the planks beneath the surface: MEASURED
+            -- on Route 119 with the lift and no deck arm, 39 of the map's 77
+            -- deck cells came out under water, worst 28px.  A deck stands at
+            -- the shore the water is drawn a recess below -- the same number
+            -- the bank takes -- so span and bank meet flush and you step off
+            -- one onto the other.
+            for _, c in ipairs(spans) do
+              if (hCell(c[1], c[2]) or 0) < shore then
+                setCell(c[1], c[2], shore)
+                raised[K(c[1], c[2])] = true
+                decked = decked + 1
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  -- ...AND THE GROUND BEHIND THE BANK FOLLOWS IT, ONE COURSE PER EDGE.
+  --
+  -- The map's own invariant, and the one `gradeGen3Terrain` enforces earlier in
+  -- the build -- "graded N terrain cell(s) to one course per edge".  That pass
+  -- has already run by the time the water is settled, so a bank lifted here
+  -- would otherwise stand two courses over the field behind it.  Only walkable
+  -- LAND relaxes, only upward, and only from a cell this pass actually moved.
+  if lifted > 0 then
+    local COURSE_ = COURSE
+    for _ = 1, 32 do
+      local changed = 0
+      for cy = 0, H - 1 do
+        for cx = 0, W - 1 do
+          Budget.tick()
+          local z = hCell(cx, cy)
+          local cc = classOf(cx, cy)
+          if z and walkable(cx, cy) and cc and cc ~= "water" and cc ~= "waterfall"
+             and cc ~= "void" then
+            local hi = nil
+            for _, d in ipairs(DIRS4) do
+              local nx, ny = cx + d[1], cy + d[2]
+              if raised[K(nx, ny)] or (nx >= 0 and ny >= 0 and nx < W and ny < H) then
+                local nc = classOf(nx, ny)
+                if nc and nc ~= "water" and nc ~= "waterfall" and nc ~= "void" then
+                  local nz = hCell(nx, ny)
+                  if nz and (hi == nil or nz > hi) then hi = nz end
+                end
+              end
+            end
+            if hi and (hi - z) > COURSE_ then
+              setCell(cx, cy, hi - COURSE_)
+              raised[K(cx, cy)] = true
+              graded = graded + 1
+              changed = changed + 1
+            end
+          end
+        end
+      end
+      if changed == 0 then break end
+    end
+  end
+
+  if lifted > 0 then
+    local okL, Logger = pcall(require, "src.core.Logger")
+    if okL and Logger and Logger.info then
+      pcall(Logger.info,
+            "gen3 shapes: %s stood %d cell(s) of a fall's own reach at its lip, "
+            .. "brought %d bank and %d deck cell(s) up to hold it and graded %d "
+            .. "cell(s) behind them",
+            tostring(map.id), lifted, banked, decked, graded)
+    end
+  end
+end
+
 -- WHERE TWO MAPS MEET, THEY MEET HALFWAY.
 --
 -- Emerald states its connections outright -- `connections = { east =
@@ -8263,6 +8999,54 @@ function Structures.smoothGen3Seams(S, map)
   if type(conns) ~= "table" then return end
 
   local HALF = COURSE / 2
+  -- HOW BIG A STEP IS STILL A SEAM AND NOT A CLIFF: TWO COURSES.
+  --
+  -- MOTIVATED BY ROUTE 119 MEETING FORTREE CITY, (39, 6..10) AGAINST (0,
+  -- 6..10) -- "where route119 meets fortree city theres a dip into fortree;
+  -- fortree's ground height should be the same as the height of route 119
+  -- where the two meet".
+  --
+  -- MEASURED.  Emerald states the connection outright -- Route 119 east to
+  -- MAP_G00_N04 at offset 0 -- and both maps state ELEVATION 3 on all five
+  -- walkable cells of that seam, so the cartridge says it is one piece of
+  -- ground.  The drawing says the same: continuous grass on both sides, no
+  -- ledge, no rock, no rim anywhere along it.  This mod draws Route 119's
+  -- side at 32 and Fortree's at 0, because the two maps get their heights
+  -- from different places -- Route 119 from its own drawn terraces, Fortree
+  -- from a ranked elevation grid with `course = 32` -- and a 32px wall stands
+  -- across the road between them.
+  --
+  -- ONE COURSE WAS THE CEILING AND IT IS WHY THAT SEAM WAS NEVER TOUCHED.
+  -- DERIVED over every stated connection in the region: of 1,750 walkable
+  -- seam-cell pairs, 1,052 already agree, 488 differ by exactly a course and
+  -- 40 by less -- all of those already met halfway -- and 170 differ by more.
+  -- Raising the ceiling to two courses takes in 144 of those 170 and leaves
+  -- the last 26 (the 36, 48 and 64px pairs) alone, where a real cliff may be
+  -- what the drawing means.  The maps it newly reaches, and every one is a
+  -- stated connection where both sides draw open ground:
+  --
+  --     SafariZone North/Northeast/Northwest/Southwest/South/Southeast  70
+  --     Route108 <-> Route109 (18px)                                    28
+  --     Route120 <-> Route121 (32px and 20px)                           22
+  --     FallarborTown <-> Route113 (32px)                               18
+  --     SlateportCity <-> Route109 (18px)                               14
+  --     FortreeCity <-> Route119 (32px)                                 10
+  --     MossdeepCity <-> Route127 (20px)                                 4
+  --
+  -- The treatment is unchanged -- each side moves its outermost row to the
+  -- midpoint of the two RAW edges, so both arrive at the same number in
+  -- either order -- and only `seamFloor` cells move, so a cliff or a sea at a
+  -- map edge is still stating something about that map and is left alone.  A
+  -- two-course wall becomes two steps of one course with the seam flush,
+  -- which is what the one-course case already does with two of eight pixels.
+  --
+  -- IT DOES NOT MAKE FORTREE'S GROUND EQUAL ROUTE 119'S, AND NOTHING HERE
+  -- CAN.  Fortree's OTHER stated connection is east to Route 120, and that
+  -- seam measures +8 the other way on its four walkable pairs: lifting the
+  -- whole town 32px to meet Route 119 would open a 24px drop on the far side
+  -- of it.  A map with two neighbours cannot take both their datums, so the
+  -- seam is split rather than moved.
+  local SEAM_MAX = 2 * COURSE
   local function seamFloor(cx, cy)
     local okW, wk = pcall(map.isWalkableCell, map, cx, cy)
     if not (okW and wk) then return false end
@@ -8383,8 +9167,8 @@ function Structures.smoothGen3Seams(S, map)
         if mine and theirs and mine ~= theirs then
           local gap = mine - theirs
           if gap < 0 then gap = -gap end
-          if gap <= COURSE then within = within + 1 end
-          if gap <= COURSE and seamFloor(cx, cy) then
+          if gap <= SEAM_MAX then within = within + 1 end
+          if gap <= SEAM_MAX and seamFloor(cx, cy) then
             onFloor = onFloor + 1
             local mid = (mine + theirs) / 2
             mid = math.floor(mid / HALF + 0.5) * HALF
@@ -9351,7 +10135,10 @@ function Structures.flightEnds(map, cx, cy)
         -- different ground on both axes, and the climb is the steep one
         if best == nil or (hi - lo) > best.rise then
           best = { lo = lo, hi = hi, axis = ax[3], heading = heading,
-                   idx = idx, n = n, rise = hi - lo }
+                   idx = idx, n = n, rise = hi - lo,
+                   -- the run's own ends and its two landings' rows, kept for
+                   -- the face-course ceiling below
+                   sy = sy, ey = ey, ay0 = ay0, ay1 = ay1 }
         end
       end
     end
@@ -9385,6 +10172,95 @@ function Structures.flightEnds(map, cx, cy)
   -- player eighty pixels -- but the honest ceiling is what the flight DRAWS:
   -- one course per tread, which is the same number the pass was given.
   local cap = COURSE * math.max(1, best.n or 1)
+  -- ...AND A FLIGHT MAY CLIMB AS MANY COURSES AS THE DRAWING STACKS BESIDE IT.
+  --
+  -- MOTIVATED BY ROUTE 119'S STAIRCASE AT THE HEAD OF THE WATERFALL,
+  -- (13..14, 22) -- metatiles 175 and 207, the flight cut into the rock
+  -- between the river terrace and the ground above it.  Reported twice: "the
+  -- stairs at the top of the waterfall should be lifting the ground more not
+  -- making it go lower", and again after the last patch, "the staircase, its
+  -- still dropping the terrain instead of raising it in the route 119 area".
+  --
+  -- The ceiling above counts TREADS: one course per cell along the climb.
+  -- That flight is two cells WIDE and one cell DEEP, so `n` is 1 and the cap
+  -- is one course -- while `landingZ` measures its two landings at 16 and 48.
+  -- Truncated to 32, the stair stops a whole course under the terrace it
+  -- leads to and the tread itself sits at 16 in a notch whose west side is 32
+  -- and whose south side is 48: a dip where the drawing has a climb.
+  --
+  -- TREAD COUNT CANNOT SEPARATE IT, which is why the last patch refused.  Of
+  -- the 26 flights in the region the tread ceiling truncates, Shoal Cave's
+  -- forty-cell staircases have exactly this shape -- one cell deep, landings
+  -- two courses apart -- so any change to the tread count moves all of them,
+  -- and two of the cases the ceiling exists for (JaggedPass measuring a rise
+  -- of 54, MagmaHideout_3F_3R measuring 96) would be let through with it.
+  --
+  -- THE DRAWING SAYS HOW MANY COURSES, AND IT SAYS IT BESIDE THE FLIGHT.  A
+  -- staircase cut into a rise has the rise's own cliff FRONT FACES standing in
+  -- the columns either side of it, one metatile per course -- Route 119 draws
+  -- 116 at (12,22) and 380 at (12,23), two stacked faces for a two-course
+  -- step, and `Gen3.metaRole` already calls both `face`.  So count them
+  -- between the two landings and let a flight climb that many courses.
+  --
+  -- ...AND THE RUN MUST STOP AT THE LOW LANDING, WHICH IS THE WHOLE OF WHAT
+  -- MAKES THIS SAFE.  On a mountainside every column beside everything is
+  -- rock, so a bare count answers three for JaggedPass and Magma Hideout as
+  -- readily as for a real two-course cut.  What tells a STEP from a SLOPE is
+  -- that the faces run out: at Route 119 the flanking column is grass at the
+  -- low landing and face below it, while at JaggedPass and in the Magma
+  -- Hideout the faces continue straight through the low landing and out of
+  -- the flight altogether.  A flank whose face run does not stop states
+  -- nothing about this step and is not counted.
+  --
+  -- AND IT ONLY EVER RAISES THE CEILING, never lowers it: `max`, not
+  -- replacement.  Route 112's three-row flight at (20..21, 41..43) climbs its
+  -- full 48 on the tread count today -- that is the "the stairs aren't
+  -- meeting at the top of the terrace" fix this file already records -- and
+  -- its flanks count two, which would have taken a course back off it.
+  --
+  -- DERIVED over all 518 maps, every flight with a measured rise (187 of
+  -- them, on 54 maps).  TWELVE flights and 28 stair cells change:
+  --
+  --     Route119                    (13..14, 22)     16 -> 32   2 cells
+  --     Route120                    (22, 76)         16 -> 32   1
+  --     SeafloorCavern_Room6        (10..12, 20)     16 -> 18   3
+  --     ShoalCave_HighTideInnerRoom  8 flights       16 -> 20..32  20
+  --     ShoalCave_LowTideInnerRoom  (26..27, 13)     16 -> 32   2
+  --
+  -- and every guard holds: JaggedPass (13..14, 7) stays at 16 against a
+  -- measured 54, MagmaHideout_3F_3R (16, 3) stays at 16 against a measured
+  -- 96, Route 112 keeps its 48, and Shoal Cave's twenty-one-cell flight at
+  -- (14..34, 10) -- whose flanks are cave rock the whole way -- is untouched.
+  --
+  -- Z AXIS ONLY.  A cliff face is drawn facing SOUTH, so a stack of them is a
+  -- statement about a north-south step; beside an east-west flight the same
+  -- cells are the face of something else.  Every one of the 26 truncated
+  -- flights in the region runs north-south in any case.
+  if best.axis == "z" and okG and g3c and best.ay0 and best.ay1 then
+    local function isFace(x, y)
+      if not inb(x, y) then return false end
+      local okM, m = pcall(g3c.metatileAt, x, y)
+      if not (okM and m) then return false end
+      local okR, role = pcall(Gen3.metaRole, map, m)
+      return (okR and role == "face") or false
+    end
+    local wx0, wx1 = cx, cx
+    while isStair(wx0 - 1, best.sy) do wx0 = wx0 - 1 end
+    while isStair(wx1 + 1, best.sy) do wx1 = wx1 + 1 end
+    local lowY = (best.heading == 1) and best.ay0 or best.ay1
+    local courses = 0
+    for _, col in ipairs({ wx0 - 1, wx1 + 1 }) do
+      if not isFace(col, lowY) then
+        local n2 = 0
+        for y = math.min(best.ay0, best.ay1), math.max(best.ay0, best.ay1) do
+          if isFace(col, y) then n2 = n2 + 1 end
+        end
+        if n2 > courses then courses = n2 end
+      end
+    end
+    local faceCap = COURSE * courses
+    if courses > 1 and faceCap > cap then cap = faceCap end
+  end
   if (best.hi - best.lo) > cap then
     if best.heading >= 0 then best.hi = best.lo + cap
     else best.lo = best.hi - cap end
@@ -10373,6 +11249,14 @@ function Structures.forMap(map)
     -- the boat: read as structure it is the twelve cells of cliff the
     -- pass exists to remove.  (g3-ketch-280.)
     if S.hull and S.hull[k] then return false end
+    -- ...NOR A BASIN.  A cell modelled by `Structures.buildGen3Basins` is
+    -- part of an authored ring standing on the street -- RustboroCity's
+    -- fountain, (27..29, 38..40) -- and its own metatile reads `cliff` on all
+    -- nine cells.  Read as structure it is the lumpy one-course slab the pass
+    -- exists to remove, and `buildVolume` would found the run that
+    -- `ChunkMesher.heightAt` reads before the tile's own shape.
+    -- (g3-basin-311.)
+    if S.basin and S.basin[k] then return false end
     local s = shapeAt[k]
     return s and s.art == "upright" and not s.authored
   end
@@ -10417,6 +11301,16 @@ function Structures.forMap(map)
   -- `buildVolume` and can never be given the run that makes the flat strip.
   -- The posts themselves are STOOD much later -- see the second call.
   Structures.buildGen3Palings(S, map, x0, x1, y0, y1, "claim")
+
+  -- ---- basins: an authored fountain CLAIMS its cells ----
+  -- RustboroCity's water fountain, (27..29, 38..40).  Here for exactly the
+  -- two reasons the paling claim is here, and they are both placement:
+  -- BEFORE `buildCylinders`, so the basin's round centre is never lathed
+  -- into a disc of its own; and before the region flood, so its nine cells
+  -- never reach `buildVolume` and can never be given the run that draws them
+  -- as a slab.  The geometry itself is STOOD much later -- see the second
+  -- call.  (g3-basin-311.)
+  Structures.buildGen3Basins(S, map, x0, x1, y0, y1, "claim")
 
   Structures.buildCylinders(S, map, x0, x1, y0, y1, groundTiles)
 
@@ -10656,6 +11550,15 @@ function Structures.forMap(map)
   -- time instead: MauvilleCity's posts stood at y 0..11 while the town's own
   -- ground is at 16, a fence buried to its neck.
   Structures.buildGen3Palings(S, map, x0, x1, y0, y1, "stand")
+
+  -- ---- basins: the kerb, the water and the jet, on the finished floor ----
+  -- RustboroCity's water fountain again, and LAST for the paling's own
+  -- reason: an octagonal kerb's foot has to meet the floor the mesher paints
+  -- under its own cells, and that floor is `Structures.stampGround`, which is
+  -- not settled until the terraces, the buildings, the ledges, the grade and
+  -- the buried-cell lift have all run.  MEASURED here: the nine cells stamp
+  -- 16, which is the street the fountain stands in.  (g3-basin-311.)
+  Structures.buildGen3Basins(S, map, x0, x1, y0, y1, "stand")
 
   -- ...AND THE HULLS, BOTH PHASES, HERE AND NOT EARLIER.
   --
@@ -11122,6 +12025,9 @@ function Structures.forMap(map)
     pcall(Structures.standGen3Ledges, S, map, 0, tw, 0, th)
     -- ...the water, which the elevation pass never wrote...
     pcall(Structures.standGen3Water, S, map)
+    -- ...and where a WATERFALL states a reach's surface, it stands at the lip
+    -- and its banks, planks and the ground behind them come up to hold it.
+    pcall(Structures.holdGen3FallHead, S, map)
     -- ...the buried landscape the floor pass could not reach...
     pcall(Structures.standGen3Buried, S, map)
     -- ...the runs, which copy whatever the passes above settled on...
@@ -11135,6 +12041,9 @@ function Structures.forMap(map)
     pcall(Structures.standGen3RockApron, S, map)
     -- ...except where the apron is not what you see: a connected side.
     pcall(Structures.openGen3Seams, S, map)
+    -- ...and last of all the planks, which need the water under them settled
+    -- before they can be cut out of it.
+    pcall(Structures.carveGen3DeckPlanks, S, map)
   end
 
   -- A BUILDING'S BOX COVERS ITS WHOLE FOOTPRINT, AND THIS IS THE LAST WORD.
@@ -13756,10 +14665,41 @@ function Structures.gradeGen3Terrain(S, map, x0, x1, y0, y1)
   -- pavement, and the shop north of it went the same way.  Where Emerald
   -- names the door it names the building; ask it first.
   local doorsKnown = gen3HasDoors(map)
+  -- ...NOR IS A BUILDING'S OWN ART, WHERE THE PROFILE HAS NAMED IT.
+  --
+  -- MOTIVATED BY FORTREE CITY'S DECORATION SHOP, (34..39, 11..13), and its
+  -- veranda's east end post, (39,14).
+  --
+  -- Fortree's huts stand on a plank veranda whose END POSTS are drawn with
+  -- the hut's own bay metatiles, 563 and 567 -- so those two cells sit at
+  -- the deck's 32 with the forest floor at 0 two cells south of them.
+  -- Until the huts were built they were leafy `cylinder` hulls and this
+  -- pass skipped them with the rest of the foliage; as the building art
+  -- they are ordinary `wall` shapes, and a wall two courses over its
+  -- lowest neighbour is exactly what this pass pulls down.  It took the
+  -- DECORATION SHOP'S WALKWAY with it: (38,14), a plank of the elevation-4
+  -- deck, graded 32 -> 16 and (39,15) after it -- a notch in the walkway
+  -- the cartridge draws flat.
+  --
+  -- A post under a veranda is a drawn face, not ground that has to slope
+  -- away -- the same sentence as the three exclusions around this one.  The
+  -- profile has already said these cells are a building's; this pass is the
+  -- last reader that was still treating them as landscape.
+  local artCtx, buildingArt = nil, nil
+  do
+    local okG3, g3 = pcall(Gen3.forMap, map)
+    if okG3 and g3 and g3.buildingArt then
+      artCtx, buildingArt = g3, g3.buildingArt
+    end
+  end
   local function terrain(cx, cy)
     if cx < cx0 or cy < cy0 or cx > cx1 or cy > cy1 then return nil end
     local k = keyOf(cx * 2, cy * 2)
     if S.skip[k] then return nil end
+    if buildingArt then
+      local okM4, mt4 = pcall(artCtx.metatileAt, cx, cy)
+      if okM4 and mt4 and buildingArt[mt4] then return nil end
+    end
     local sh = S.shapeAt[k]
     if not sh or sh.override then return nil end
     local c = sh.class
@@ -19147,6 +20087,473 @@ function Structures.buildGen3Palings(S, map, x0, x1, y0, y1, phase)
   end
 end
 
+
+-- ---- basins: a fountain STATED as a ring in plan --------------------------
+--
+-- MOTIVATED BY THE WATER FOUNTAIN IN THE MIDDLE OF RUSTBORO CITY --
+-- RustboroCity (27..29, 38..40), the 3x3 island of paving in the square
+-- outside the Pokemon Center.  (NOTES.md g3-basin-311; the figure, the
+-- measurements and the four stated numbers are in data/gen3_palings.lua
+-- under `basins`, and that file is the place to read before this one.)
+--
+-- THE DEFECT.  MEASURED on the nine cells before this pass: `Gen3.classAt`
+-- answers `cliff` on all nine (solid 0.52 .. 1.00, `ctx.roofAt` false on
+-- every one, no metatile role at all), the region flood hands them to the
+-- terrain passes, and the height field over the object's six tile columns
+-- comes out
+--
+--     ty 76..79   16 16 32 32 16 16
+--     ty 80       SKIP 32 32 32 32 32
+--     ty 81       SKIP SKIP 32 32 32 SKIP
+--
+-- on a street that is itself 16.  A lumpy one-course slab with a bite out of
+-- one corner, and no water in it anywhere.
+--
+-- WHY THIS IS AUTHORED AND NOT CARVED, AND THE PREVIOUS REFUSAL STANDS.  The
+-- object crosses all nine cells and its edge is a CURVE that cuts them
+-- diagonally -- so a per-cell height class, which is the only thing the class
+-- machinery can produce, cannot describe it: it would give one height to a
+-- whole cell, and the corner cells are part fountain and part street.  That
+-- refusal was right and is not reversed here; what is added is the thing it
+-- asked for, an authored SHAPE in the style of data/gen3_palings.lua.
+--
+-- AND THE DRAWING IS A PLAN, WHICH IS WHY A RING CAN BE STATED AT ALL.  The
+-- octagon `|x-23.5| <= 22.5 and |z-23.5| <= 22.5 and the two summed <= 34`
+-- reproduces the drawn silhouette TEXEL FOR TEXEL on rows 2..33 -- thirty-two
+-- of its forty-four drawn rows, both north chamfers and both straight sides --
+-- and differs elsewhere only by FORESHORTENING, one pixel at the north edge
+-- and two at the south, which is the near kerb's own front face compressing
+-- the plan.  So every horizontal surface
+-- below wears the drawing's own texel at its own plan position, 1:1, and only
+-- the VERTICAL faces need a profile stated for them.
+--
+-- FOUR NUMBERS ARE STATED, AND ONLY FOUR: kerb = 12, steps = 1, water = 9
+-- (kerb less a drop of 3), crown = 19 (water plus a jet of 10).  Emerald
+-- states none of them.  They are marked STATED at every use below and their
+-- reasoning is in the data file.  Every other number in this pass is DERIVED
+-- and its measurement is written beside it there.
+--
+-- WHAT THIS PASS TOUCHES.  `S.objectQuads` (the kerb, the water and the jet),
+-- and `S.skip` / `S.ground` / `S.basin` on the figure's own cells -- exactly
+-- the claim `Structures.buildGen3Palings` already makes, and for the same
+-- reason: a claimed cell leaves the region flood, so the run that draws the
+-- slab is never founded.  `S.shapeAt`, `S.synthZ`, `S.runs`, `S.tileAt` and
+-- `S.grassQuads` are never written.  COLLISION, LEDGES, WARPS, SURF, DIVE,
+-- WATERFALL, GAMEPLAY ELEVATION, SCRIPTS AND ENCOUNTERS ARE NEVER READ AND
+-- NEVER WRITTEN: the nine cells are blocked in Emerald and are exactly as
+-- blocked after this pass as before it.  This is presentation only.
+--
+-- WHY IT RUNS WHERE IT DOES.  Claimed beside the paling claim, before
+-- `buildCylinders` and before the region flood, so the nine cells are never
+-- lathed and never given a run.  Stood beside the paling stand, LAST, because
+-- the kerb's foot has to meet the floor the mesher actually paints and that
+-- floor is `Structures.stampGround`, which is not settled until the terraces,
+-- the buildings, the ledges, the grade and the buried-cell lift have run.
+local BASIN_SHADE = { top = 1.0, south = 1.0, north = 0.68, side = 0.78 }
+
+local basinProfile, basinProfileTried = nil, false
+local basinCache = {}
+
+-- The authored basins for one tileset pair, or nil.  A malformed figure is
+-- DROPPED rather than half-applied -- a typo should leave the fountain exactly
+-- as it is today, not build half a kerb.  `steps` is checked because it is a
+-- STATED number this pass only knows how to honour at 1: one kerb course.  A
+-- tiered plinth would need a second moulding stated for it, and guessing what
+-- that moulding is made of is the thing this file does not do.
+local function basinsFor(tilesetId)
+  if tilesetId == nil then return nil end
+  local hit = basinCache[tilesetId]
+  if hit ~= nil then return hit or nil end
+  if not basinProfileTried then
+    basinProfileTried = true
+    local okD, t = pcall(V.data, "gen3_palings")
+    basinProfile = (okD and type(t) == "table") and t or false
+  end
+  local p = basinProfile
+  local entry = p and type(p.basins) == "table" and p.basins[tilesetId] or nil
+  local out = nil
+  if entry and type(entry.figures) == "table" then
+    for _, f in ipairs(entry.figures) do
+      local ok = type(f) == "table" and type(f.block) == "table"
+                 and type(f.block.meta) == "table"
+                 and type(f.outer) == "table" and type(f.inner) == "table"
+                 and type(f.jet) == "table" and type(f.face) == "table"
+                 and type(f.lip) == "table" and type(f.plume) == "table"
+                 and tonumber(f.kerb) and tonumber(f.water)
+                 and tonumber(f.crown)
+      if ok then
+        local bw = math.floor(tonumber(f.block.w) or 0)
+        local bh = math.floor(tonumber(f.block.h) or 0)
+        ok = bw >= 1 and bh >= 1 and #f.block.meta == bw * bh
+             -- the STATED step count: one kerb course, and only one
+             and math.floor(tonumber(f.steps) or 1) == 1
+             -- the three levels have to stack: street < water < kerb <= crown
+             and f.water > 0 and f.water < f.kerb and f.crown > f.water
+             -- the plans have to nest, and the jet has to fit inside the water
+             and tonumber(f.outer.half) and tonumber(f.outer.diag)
+             and tonumber(f.inner.half) and tonumber(f.inner.diag)
+             and tonumber(f.jet.radius)
+             and f.inner.half < f.outer.half
+             and f.inner.diag < f.outer.diag
+             and f.jet.radius < f.inner.half
+             -- ...and the outer plan has to fit inside the block it is drawn
+             -- on, or a UV would walk off the figure onto whatever is beside
+             -- it on the map
+             and f.outer.half <= bw * 8 and f.outer.half <= bh * 8
+        -- every drawn band must lie inside the block, and each must run the
+        -- way its own contract says it runs
+        local function band(t, lo, hi)
+          local c = tonumber(t.col)
+          local a, b = tonumber(t.y0), tonumber(t.y1)
+          return c and a and b and c >= 0 and c < bw * 16
+                 and a >= 0 and b < bh * 16 and b >= a
+                 and (b - a + 1) >= lo and (b - a + 1) <= hi
+        end
+        -- the moulding may be one row short of the STATED kerb (Rustboro's is
+        -- eleven drawn rows against a kerb of twelve -- see the twelfth-pixel
+        -- note in emitBasin), never longer
+        local drop = math.floor(f.kerb) - math.floor(f.water)
+        local rise = math.floor(f.crown) - math.floor(f.water)
+        -- the inside of the kerb is exactly the drop and the jet's body is
+        -- exactly its own rise: both 1:1, neither stretched
+        ok = ok and band(f.face, math.floor(f.kerb) - 1, math.floor(f.kerb))
+                and band(f.lip, drop, drop)
+                and band(f.plume, rise, rise)
+      end
+      if ok then out = out or {} out[#out + 1] = f end
+    end
+  end
+  basinCache[tilesetId] = out or false
+  return out
+end
+
+--- The authored fountains, claimed early and stood late.
+---
+--- @param phase "claim" to take the cells out of the region flood, "stand" to
+---        build the geometry on the floor the mesher has settled on.
+function Structures.buildGen3Basins(S, map, x0, x1, y0, y1, phase)
+  -- GEN 3 ONLY.  `S.isGen3` is `blockTiles == 2 and blockCells == 1`; Gen 1,
+  -- Gen 2 and Prism never reach this line and nothing below is reachable from
+  -- their meshers.
+  if not S.isGen3 then return end
+  local list = basinsFor(map.tileset and map.tileset.id)
+  if not list then return end
+  local okC, g3c = pcall(Gen3.forMap, map)
+  if not (okC and g3c and type(g3c.metatileAt) == "function"
+          and type(g3c.blockedAt) == "function") then
+    return
+  end
+  local perRow, atlasW, atlasH = geomOf(map.tileset)
+  if not (perRow and atlasW and atlasH and atlasW > 0 and atlasH > 0) then
+    return
+  end
+  S.basin = S.basin or {}
+  local quads = S.objectQuads
+
+  -- The texel CENTRE of drawn pixel (bx, by) of the FIGURE's own block, where
+  -- (0, 0) is the block's north-west corner.  A Gen 3 metatile is four 8x8
+  -- tiles laid `m * 4 + quadrant` on the baked sheet -- the same arithmetic
+  -- buildGen3Palings' `uvOf` speaks.  Centres rather than edges so a quad
+  -- cannot bleed into the tile beside it.
+  local function uvOf(fig, bx, by)
+    local bw = math.floor(fig.block.w)
+    local m = fig.block.meta[math.floor(by / 16) * bw + math.floor(bx / 16) + 1]
+    local lx, ly = bx % 16, by % 16
+    local t = m * 4 + math.floor(ly / 8) * 2 + math.floor(lx / 8)
+    return ((t % perRow) * 8 + (lx % 8) + 0.5) / atlasW,
+           (math.floor(t / perRow) * 8 + (ly % 8) + 0.5) / atlasH
+  end
+
+  -- ---- the plan, as three nested octagons -------------------------------
+  --
+  -- DERIVED, every number, and the measurements are in data/gen3_palings.lua.
+  -- The centre is the BLOCK's own centre, so a figure drawn on a 3x3 block
+  -- has it at 23.5 and nothing here is specific to three.
+  local function plans(fig)
+    local cx = math.floor(fig.block.w) * 8 - 0.5
+    local cy = math.floor(fig.block.h) * 8 - 0.5
+    local function oct(half, diag)
+      return function(bx, by)
+        local dx, dz = math.abs(bx - cx), math.abs(by - cy)
+        return dx <= half and dz <= half and (dx + dz) <= diag
+      end
+    end
+    local rad = tonumber(fig.jet.radius)
+    return oct(fig.outer.half, fig.outer.diag),
+           oct(fig.inner.half, fig.inner.diag),
+           function(bx, by)
+             local dx, dz = bx - cx, by - cy
+             return dx * dx + dz * dz <= rad * rad
+           end
+  end
+
+  -- ---- one horizontal surface pixel, wearing its own plan texel ----------
+  --
+  -- The whole point of the figure: the drawing IS the plan, so a 1x1 lid at
+  -- world (X, Z) wears drawn (X, Z).  Nothing stretched, nothing repeated.
+  local function emitLid(fig, wx, wz, bx, bz, y)
+    local u, v = uvOf(fig, bx, bz)
+    quads[#quads + 1] = {
+      { wx, y, wz }, { wx + 1, y, wz }, { wx + 1, y, wz + 1 }, { wx, y, wz + 1 },
+      u = u, v = v, shade = BASIN_SHADE.top }
+  end
+
+  -- ---- one vertical strip, wearing a stated PROFILE ----------------------
+  --
+  -- `band` is { col, y0, y1 }: one drawn column read BOTTOM-UP, drawn row
+  -- `y1` at world `yLo` and drawn row `y0` at the top.  The strip is cut at
+  -- the drawing's 8px tile boundary because two tiles of one metatile are NOT
+  -- adjacent on the baked sheet and one quad spanning them would smear an
+  -- unrelated tile down the face.  `dir` is which way the face looks.
+  local function emitFace(fig, band, wx, wz, yLo, dir)
+    local col = math.floor(band.col)
+    local r0, r1 = math.floor(band.y0), math.floor(band.y1)
+    local n = 0
+    local r = r0
+    while r <= r1 do
+      Budget.tick()
+      local rEnd = math.min(r1, math.floor(r / 8) * 8 + 7)
+      local yTop = yLo + (r1 - r) + 1
+      local yBot = yLo + (r1 - rEnd)
+      local u, vTop = uvOf(fig, col, r)
+      local _, vBot = uvOf(fig, col, rEnd)
+      if dir == 0 then        -- south (+z), the face a low camera sees most of
+        quads[#quads + 1] = {
+          { wx, yBot, wz + 1 }, { wx + 1, yBot, wz + 1 },
+          { wx + 1, yTop, wz + 1 }, { wx, yTop, wz + 1 },
+          uv = { { u, vBot }, { u, vBot }, { u, vTop }, { u, vTop } },
+          shade = BASIN_SHADE.south }
+      elseif dir == 1 then    -- north (-z)
+        quads[#quads + 1] = {
+          { wx + 1, yBot, wz }, { wx, yBot, wz },
+          { wx, yTop, wz }, { wx + 1, yTop, wz },
+          uv = { { u, vBot }, { u, vBot }, { u, vTop }, { u, vTop } },
+          shade = BASIN_SHADE.north }
+      elseif dir == 2 then    -- east (+x)
+        quads[#quads + 1] = {
+          { wx + 1, yBot, wz + 1 }, { wx + 1, yBot, wz },
+          { wx + 1, yTop, wz }, { wx + 1, yTop, wz + 1 },
+          uv = { { u, vBot }, { u, vBot }, { u, vTop }, { u, vTop } },
+          shade = BASIN_SHADE.side }
+      else                    -- west (-x)
+        quads[#quads + 1] = {
+          { wx, yBot, wz }, { wx, yBot, wz + 1 },
+          { wx, yTop, wz + 1 }, { wx, yTop, wz },
+          uv = { { u, vBot }, { u, vBot }, { u, vTop }, { u, vTop } },
+          shade = BASIN_SHADE.side }
+      end
+      n = n + 1
+      r = rEnd + 1
+    end
+    return n
+  end
+
+  -- ---- the figure, stood on `baseY` with its north-west corner at (ox, oz)
+  local function emitBasin(fig, ox, oz, baseY)
+    local bw = math.floor(fig.block.w) * 16
+    local bh = math.floor(fig.block.h) * 16
+    local inOuter, inInner, inJet = plans(fig)
+    -- THE FOUR STATED NUMBERS, and the only four in this pass.
+    local kerb  = math.floor(fig.kerb)    -- STATED 12: between knee and waist
+    local water = math.floor(fig.water)   -- STATED  9: kerb less a drop of 3
+    local crown = math.floor(fig.crown)   -- STATED 19: water plus a jet of 10
+    local built = 0
+
+    for bz = 0, bh - 1 do
+      Budget.tick()
+      for bx = 0, bw - 1 do
+        local wx, wz = ox + bx, oz + bz
+        if inOuter(bx, bz) and not inInner(bx, bz) then
+          -- ---- THE KERB RING ----
+          -- Its lid, at the STATED 12, wearing its own plan texel.
+          emitLid(fig, wx, wz, bx, bz, baseY + kerb)
+          built = built + 1
+          -- Its OUTER faces, wherever the ring's edge is.  The moulding is
+          -- eleven drawn rows against a kerb STATED at twelve, and this pass
+          -- does not stretch eleven rows over twelve pixels: the profile is
+          -- laid 1:1 from the foot up, and THE TWELFTH -- the topmost pixel,
+          -- the rim's own outer edge -- wears the kerb's LID texel at that
+          -- plan position, which is what the top pixel of a rim is drawn as.
+          -- One pixel, named, rather than a smear over the whole face.
+          local faceRows = math.floor(fig.face.y1) - math.floor(fig.face.y0) + 1
+          for d = 0, 3 do
+            local nx = bx + (d == 2 and 1 or (d == 3 and -1 or 0))
+            local nz = bz + (d == 0 and 1 or (d == 1 and -1 or 0))
+            if not inOuter(nx, nz) then
+              built = built + emitFace(fig, fig.face, wx, wz, baseY, d)
+              if faceRows < kerb then
+                built = built + emitFace(fig,
+                  { col = bx, y0 = bz, y1 = bz },
+                  wx, wz, baseY + faceRows, d)
+              end
+            end
+          end
+          -- ...and its INNER faces, the stated drop's worth of kerb standing
+          -- above the water, wearing the only drawn rows that state it.
+          for d = 0, 3 do
+            local nx = bx + (d == 2 and 1 or (d == 3 and -1 or 0))
+            local nz = bz + (d == 0 and 1 or (d == 1 and -1 or 0))
+            if inInner(nx, nz) then
+              built = built + emitFace(fig, fig.lip, wx, wz, baseY + water, d)
+            end
+          end
+        elseif inInner(bx, bz) then
+          if inJet(bx, bz) then
+            -- ---- THE JET ----
+            -- Its crown at the STATED 19, wearing the plume's own plan texels.
+            emitLid(fig, wx, wz, bx, bz, baseY + crown)
+            built = built + 1
+            for d = 0, 3 do
+              local nx = bx + (d == 2 and 1 or (d == 3 and -1 or 0))
+              local nz = bz + (d == 0 and 1 or (d == 1 and -1 or 0))
+              if not inJet(nx, nz) then
+                built = built + emitFace(fig, fig.plume, wx, wz,
+                                         baseY + water, d)
+              end
+            end
+          else
+            -- ---- THE WATER ----
+            -- A surface at the STATED 9, wearing its own plan texel.  It is a
+            -- lid and nothing else: the basin's floor is under it and is never
+            -- seen, so nothing is built below this plane.
+            emitLid(fig, wx, wz, bx, bz, baseY + water)
+            built = built + 1
+          end
+        end
+      end
+    end
+    return built
+  end
+
+  -- ---- does the map lay this figure's block, here, in this shape? --------
+  --
+  -- Anchored at its north-west cell.  Every metatile of the block must be
+  -- present and in position, so a map that happens to place one of the ids
+  -- alone builds nothing.
+  local function blockAt(fig, cx, cy)
+    local bw, bh = math.floor(fig.block.w), math.floor(fig.block.h)
+    for r = 0, bh - 1 do
+      for c = 0, bw - 1 do
+        local okM, m = pcall(g3c.metatileAt, cx + c, cy + r)
+        if not (okM and m == fig.block.meta[r * bw + c + 1]) then
+          return false
+        end
+      end
+    end
+    return true
+  end
+
+  -- THE MAP'S OWN GROUND, for the paint vote below: the commonest tile of any
+  -- flat `ground` cell on this map.  Same fallback buildGen3Palings uses, and
+  -- for the same reason -- a claimed cell with no painted floor under it is a
+  -- hole in the town.
+  local mapGround = nil
+  if phase == "claim" then
+    local gv, gn = {}, 0
+    for k, s in pairs(S.shapeAt) do
+      if s and s.flat and s.class == "ground" then
+        local t = S.tileAt[k]
+        if t then
+          gv[t] = (gv[t] or 0) + 1
+          if gv[t] > gn then mapGround, gn = t, gv[t] end
+        end
+      end
+    end
+  end
+
+  local built, cells = 0, 0
+  for cy = math.floor(y0 / 2), math.floor(y1 / 2) do
+    for cx = math.floor(x0 / 2), math.floor(x1 / 2) do
+      Budget.tick()
+      for _, fig in ipairs(list) do
+        if blockAt(fig, cx, cy) then
+          local bw, bh = math.floor(fig.block.w), math.floor(fig.block.h)
+          if phase == "claim" then
+            -- The ground the claimed cells are PAINTED with: the commonest
+            -- flat tile touching the block, widened to three tiles the way
+            -- buildGen3Palings widens it, because a 3x3 island of fountain
+            -- has no flat cell adjacent to its own middle at all.
+            local votes, best, bestN = {}, nil, 0
+            for r = 1, 3 do
+              for c = 0, bw - 1 do
+                for rr = 0, bh - 1 do
+                  -- A GEN 3 CELL IS TWO TILE ROWS AND TWO TILE COLUMNS, so
+                  -- the tile walk steps 0..1 on BOTH axes, every time.
+                  for dy = 0, 1 do
+                    for dx = 0, 1 do
+                      local btx = (cx + c) * 2 + dx
+                      local bty = (cy + rr) * 2 + dy
+                      for _, dd in ipairs(DIRS4) do
+                        local nk = keyOf(btx + dd[1] * r, bty + dd[2] * r)
+                        local ns = S.shapeAt[nk]
+                        if ns and ns.flat and ns.class ~= "void"
+                           and ns.class ~= "water" then
+                          local t = S.tileAt[nk]
+                          if t then
+                            votes[t] = (votes[t] or 0) + 1
+                            if votes[t] > bestN then best, bestN = t, votes[t] end
+                          end
+                        end
+                      end
+                    end
+                  end
+                end
+              end
+              if best then break end
+            end
+            best = best or mapGround
+            for r = 0, bh - 1 do
+              for c = 0, bw - 1 do
+                -- ...and here too: two tile rows and two tile columns.
+                for dy = 0, 1 do
+                  for dx = 0, 1 do
+                    local tk = keyOf((cx + c) * 2 + dx, (cy + r) * 2 + dy)
+                    S.basin[tk] = true
+                    S.skip[tk] = true
+                    S.ground[tk] = best or S.ground[tk]
+                  end
+                end
+              end
+            end
+            cells = cells + bw * bh
+          elseif S.basin[keyOf(cx * 2, cy * 2)] then
+            -- THE KERB'S FOOT IS ON THE FLOOR THE MESHER PAINTS.  The cells
+            -- are `skip` by now, which is the state `Structures.stampGround`
+            -- needs, so this asks the mesher the same question the mesher
+            -- will ask.  The figure is ONE object standing on ONE plane, so
+            -- it takes the LOWEST of its own cells' floors: an octagon cannot
+            -- step in the middle of itself.
+            local baseY = nil
+            for r = 0, bh - 1 do
+              for c = 0, bw - 1 do
+                for dy = 0, 1 do
+                  for dx = 0, 1 do
+                    local okG, gy = pcall(Structures.stampGround, map,
+                                          (cx + c) * 2 + dx, (cy + r) * 2 + dy)
+                    local py = (okG and tonumber(gy)) or 0
+                    if baseY == nil or py < baseY then baseY = py end
+                  end
+                end
+              end
+            end
+            built = built + emitBasin(fig, cx * 16, cy * 16, baseY or 0)
+            cells = cells + bw * bh
+          end
+          break
+        end
+      end
+    end
+  end
+  if cells > 0 and phase ~= "claim" then
+    local okL, Logger = pcall(require, "src.core.Logger")
+    if okL and Logger and Logger.info then
+      pcall(Logger.info,
+            "gen3 shapes: %s stood %d basin surface(s) on %d cell(s)",
+            tostring(map.id), built, cells)
+    end
+  end
+end
+
 -- ---- overhead: art on a wall's ABOVE-PLAYER layer that belongs to the
 -- ---- object standing in front of it ------------------------------------
 --
@@ -21240,6 +22647,13 @@ function Structures.buildStairs(S, map, x0, x1, y0, y1)
           -- had -- but they are gated out anyway so the change cannot move
           -- them at all.
           if S.isGen3 then
+            -- ...AND NEVER UNDER THE STOREY THE LEVEL'S ART STATES.
+            -- Six of Fortree's plank-deck cells pass the banded-art tread
+            -- test, and this recorded their foot on the street below: six
+            -- lids at 16 and 0 in a deck at 32.  Same gate as the terrace
+            -- pass above, so it is the same 29 cells in Hoenn or none.
+            local okC, g3s = pcall(Gen3.forMap, map)
+            local artB = okC and gen3ArtLevelZ(S, g3s, cx, cy) or nil
             for dy2 = 0, 1 do
               for dx2 = 0, 1 do
                 local bk = keyOf(cx * 2 + dx2, cy * 2 + dy2)
@@ -21248,6 +22662,13 @@ function Structures.buildStairs(S, map, x0, x1, y0, y1)
                   local nb = {}
                   for k2, v2 in pairs(ob) do nb[k2] = v2 end
                   nb.base = ss.base
+                  if artB and (nb.base or 0) < artB then nb.base = artB end
+                  S.shapeAt[bk] = nb
+                elseif ob and artB and type(ob.base) == "number"
+                       and ob.base < artB then
+                  local nb = {}
+                  for k2, v2 in pairs(ob) do nb[k2] = v2 end
+                  nb.base = artB
                   S.shapeAt[bk] = nb
                 end
               end
@@ -21962,6 +23383,152 @@ function Structures.buildVolume(S, map, tiles)
         -- reading (its repeat, or the MAX_ROWS cap) instead.
         if gen3RoofRows > 0 and extent <= GEN3_MAX_ROWS then
           unit = extent
+          repeatRead = false
+        elseif gen3RoofRows > 0 and gen3Bld
+               and gen3BldRows > GEN3_MAX_ROWS and gen3BldRows <= extent then
+          -- ...AND HOENN DOES BUILD DEEPER THAN A HOUSE, AND THE CARTRIDGE
+          -- IS THE ONE THAT SAYS SO.
+          --
+          -- MOTIVATED BY RUSTBORO CITY'S DEVON CORPORATION, (7..16, 7..15),
+          -- door (11,15)+(12,15) into MAP_G11_N00 -- reported as rendering
+          -- "far too short, with its storeys painted flat on the roof
+          -- instead of standing on the face".
+          --
+          -- The cap three lines above is a statement about a RUN, and the
+          -- reason it is there is that a run is a flood of blocked cells
+          -- that does not stop where the building does.  It is not true of
+          -- the cartridge's own footprint.  Devon is NINE cell rows --
+          -- eighteen tile rows -- and `Gen3.buildingsOf` claims every one of
+          -- them off the warp at its door (derived: 82 cells, y 7..15).
+          --
+          -- So Devon failed `extent <= GEN3_MAX_ROWS` and fell all the way
+          -- back to the tile-repeat reading: its wing columns repeat with a
+          -- period of six tile rows, `unit` came back 6, and the building
+          -- stood `unit * 8` = 48px -- 32px of wall under a 16px pitch, on a
+          -- street at 16 (derived, every column of the footprint).  TWO cell
+          -- rows of a nine-row drawing standing up, the other seven laid
+          -- back over the roof plane.  That is the report exactly: the
+          -- ground-floor arches and one window band on the face, the three
+          -- storeys above them painted flat on the roof.
+          --
+          -- NOTHING HERE DECIDES THE HEIGHT.  The two passes that do are
+          -- both CAPS on `h` rather than floors under it, and with `h` stuck
+          -- at 48 neither of them ever fired:
+          --
+          --   this function, sixty lines down -- `wall = (wallExtent -
+          --     wallPlan) * 8` read off `gen3BldRows`/`gen3BldPlan`, which
+          --     for Devon is (18 - 2) * 8 = 128, plus `riseRows * 8` = 16,
+          --     so `proposed` = 144 (derived) -- applied as `if proposed <
+          --     h`;
+          --   `foundGen3Buildings`' outdoor bound -- `wall = rows -
+          --     bldRoofRows` = 9 - 2 = 7 cell rows, `own = wall * COURSE +
+          --     COURSE` = 128 (derived) -- applied as `if measured > capH`.
+          --
+          -- Given the footprint's own depth this column opens at 128 (the
+          -- wings, eight cell rows) or 144 (the four columns whose run
+          -- reaches the entrance row), the run builder's own cap leaves them
+          -- there, and `foundGen3Buildings`' 128 settles every column of the
+          -- building at 128 -- base 16, h 128, rise 16, peak 144 on all
+          -- twenty tile columns (derived).  That is seven cell rows of
+          -- facade standing (y 8..14: the parapet, the storeys and the
+          -- ground floor), one cell of pitch, and the pale band at y 7 --
+          -- the one row `roofAt` states, and the only row `gen3BldPlan`
+          -- counts -- left lying back as the roof plan.
+          --
+          -- This does NOT re-open the refusal recorded on `gen3RoofUnseen`
+          -- ("counting such a row as roof ... moves 28 of 188 buildings,
+          -- every one DOWN a course").  Nothing here counts a row as roof.
+          -- Devon's roof plan reads 2 tile rows before this change and 2
+          -- after; what changes is how deep the DRAWING is allowed to be.
+          --
+          -- THE CENSUS, all 518 maps, the 190 buildings the warp pass and
+          -- the roof pass name on the outdoor maps.  Deepest ROOFED column
+          -- of each footprint, in cell rows (derived,
+          -- `_scratch/census.lua`):
+          --
+          --   1:1  2:6  3:40  4:38  5:7  6:5   -- 97 of them, and they are
+          --                                       the houses, the Marts, the
+          --                                       Centers and the gyms.  All
+          --                                       inside GEN3_MAX_ROWS, so
+          --                                       not one of them reaches
+          --                                       this branch.
+          --   7:6  8:2  9:6                    -- 14, and they are Hoenn's
+          --                                       civic halls, every one:
+          --
+          --     RustboroCity  #6   ( 7..16,   7..15)  Devon Corporation
+          --     RustboroCity  #10  ( 3.. 9,  43..51)
+          --     RustboroCity  #12  (31..34,  40..46)  the doorless block
+          --     LilycoveCity  #1   (23..31,   0.. 6)  Department Store
+          --     MossdeepCity  #9   (60..68,   4..15)  Space Center
+          --     EverGrandeCity #3  (13..18,  19..27)  the League
+          --     Route119      #2   (33..38, 103..109) Weather Institute
+          --     Route116      #4   (74..80,   0.. 6)
+          --     Route111      #4   (29..33, 106..113)
+          --     BattleFrontier_OutsideEast #1 (11..21, 6..14) and
+          --                                #4 (54..62, 5..14)
+          --     BattleFrontier_OutsideWest #1 (40..44, 21..27),
+          --                                #2 (13..25,  9..17) and
+          --                                #3 ( 5..18, 30..38)
+          --
+          -- There is no third mode and no borderline: the gap is between
+          -- six cell rows and seven, and both sides of it are listed above.
+          --
+          -- `gen3BldRows <= extent` keeps the reading inside the drawing the
+          -- run actually measured, so this can never claim a row the run
+          -- did not walk; and `gen3Bld` is the cartridge's footprint, cut at
+          -- the first row that is not this building's (see the reading taken
+          -- forty lines above), so it cannot walk into the landscape the way
+          -- `extent` can.
+          --
+          -- MEASURED REGION-WIDE, all 518 maps, every tile's rendered
+          -- height and every walkable cell's `standHeight` compared before
+          -- and after (derived, `_scratch/audit.lua`).  NINE buildings move,
+          -- on FIVE maps, and 605 cells / 2,416 tile columns change height.
+          -- Nothing else in Hoenn moves one pixel, and the walkable
+          -- stand-height reading is IDENTICAL on all 518 maps -- this rule
+          -- reads a drawing and writes a drawn height, and touches no
+          -- collision, ledge, warp or elevation flag.
+          --
+          --   RustboroCity  #6  Devon        peak  64 -> 144   (+80)
+          --   RustboroCity  #10 (3..9,43..51)     80 -> 160   (+80)
+          --   RustboroCity  #12 the block         64 -> 128   (+64)
+          --   LilycoveCity  #1  Dept Store       128 -> 144   (+16)
+          --   Route116      #4                    96 -> 112   (+16)
+          --   BattleFrontier_OutsideEast #1       64 ->  80   (+16)
+          --                              #4      112 -> 160   (+48)
+          --   BattleFrontier_OutsideWest #1       48 -> 112   (+64)
+          --                              #3       64 ->  80   (+16)
+          --
+          -- Every footprint is unchanged; only the height is.  Five of the
+          -- fourteen deep buildings do not move at all -- Mossdeep's Space
+          -- Center, EverGrandeCity #3, Route119's Weather Institute,
+          -- Route111 #4 and BattleFrontier_OutsideEast's remaining hall --
+          -- because `foundGen3Buildings` already had them at their cap.  The
+          -- Space Center in particular stays at 112, which g3-mass-229
+          -- records as right.
+          --
+          -- NINE CELLS OF LANDSCAPE MOVE WITH THEM, all on
+          -- BattleFrontier_OutsideEast, all outside every footprint: (37,6)
+          -- 80->48, (37,7) 64->48, (37,8) 48->16, (60,47) 48->64 and
+          -- (59,49), (59,50), (62,50), (62,51), (62,52) 48->32 (derived).
+          -- They are scrub and rockwork flood-joined to the halls that grew,
+          -- and they move because the region consensus above reads maxima
+          -- over the whole flood; five of them settle onto GEN3_MAX_LAND,
+          -- which is where landscape belongs.  Nine cells on one of 518 maps.
+          --
+          -- WHAT THIS DOES NOT FIX.  RustboroCity #10 comes out one course
+          -- over its own drawing: its roof is TWO cell rows -- 566/574/567
+          -- at y 44, which `roofAt` states, and 548/549/550 at y 43, the
+          -- walk-behind crown -- and only the stated one is counted as plan,
+          -- so the crown is charged as a course of facade (`bldOverhead`,
+          -- +16).  That is the reading `gen3RoofUnseen` records as REFUSED
+          -- ("moves 28 of 188 buildings, every one DOWN a course") and it is
+          -- left exactly as it was.  Before this change the building stood 64
+          -- against a nine-row drawing; it now stands 144 where its art pays
+          -- for 128.
+          --
+          -- stated: GEN3_MAX_ROWS is 12 tile rows, six cells, 96px.
+          unit = gen3BldRows
           repeatRead = false
         end
       end
@@ -26170,10 +27737,201 @@ function Structures.buildGen3Joinery(S, map)
     return mk
   end
 
-  -- the model surface of one claimed piece: a chair reads its own, everything
-  -- else reads the plain carve (see chairMaskOf above)
+  -- ---- A TABLECLOTH PAINTED IN THE FLOOR'S OWN COLOUR IS STILL A TABLE.
+  --
+  -- IN-GAME LOCATION: THE WIDE 3x2 DINING TABLE IN RUSTBORO CITY,
+  -- RustboroCity_House1 (3..5, 4..5) and RustboroCity_Flat1_2F (2..4, 4..5)
+  -- -- "Beds, wider tables, bed, couch and more need to be fixed too in
+  -- rusburo".  data/gen3_shapes.lua wrote this case down at the foot of its
+  -- gTileset_GenericBuilding block and refused to pin it, because the class
+  -- was never the problem: "IN THESE TWO ROOMS THE CARVE CANNOT SEE THE
+  -- TABLE ... the instrument that would fix it lives in lib/Structures.lua,
+  -- which this file does not get to edit."  This is that instrument.
+  --
+  -- WHAT THE CARVE DOES AND WHY IT LOSES THIS ONE.  Gen3.shapeDataForMap
+  -- separates object from floor BY COLOUR: it composites the metatile's two
+  -- layers and writes every colour THIS ROOM lays its floor in transparent.
+  -- Emerald painted this table's cloth in a colour Rustboro's pale-yellow
+  -- check floor is also laid in, so the cloth carves away with the floor.
+  -- MEASURED here, through this pass's own `maskOf` (grain filter included),
+  -- on both rooms, with the same drawing in MossdeepCity_StevensHouse
+  -- (4..7, 3..4) beside it -- the SAME LAYER-2 ART baked over a different
+  -- floor, which is what puts the two on one line at all:
+  --
+  --            west end        middle          east end
+  --   Rustboro 894  42/256    895  16/256    910  42/256     (row 4)
+  --            902  60/256    903  16/256    911  60/256     (row 5)
+  --   Mossdeep 744 206/256    745 240/256    746 206/256     (row 3)
+  --            752 168/256    753 160/256    754 168/256     (row 4)
+  --
+  -- 895's sixteen surviving pixels are ONE ROW -- the cell's top edge and
+  -- nothing else -- so the middle of the table stood as a 1-pixel line with
+  -- the floor showing through where the table is.
+  --
+  -- THE FALLBACK READS THE DRAWING INSTEAD OF THE CONTRAST.  A Gen 3
+  -- metatile draws its object on LAYER 2 over the floor on layer 1, with real
+  -- transparency around the object's edge, so layer 2's own alpha states the
+  -- silhouette WITHOUT reference to any colour.  `Gen3.layer2MaskOf` reads it
+  -- (its header says why `Gen3.overheadMasks` cannot).  MEASURED: 894 draws
+  -- 224 of 256 on layer 2, 895 draws 256, 902 draws 173 -- and the same three
+  -- numbers for 744, 745 and 752, because IT IS THE SAME DRAWING.  Grouping
+  -- furniture by layer-2 art alone is the instrument data/gen3_shapes.lua
+  -- used to find these ids in the first place ("the same fridge baked over
+  -- eleven different floors" collapsed onto one drawing); this is that
+  -- reading made at runtime, one metatile at a time.
+  --
+  -- THE MASK IS THE UNION, NOT A REPLACEMENT.  The carve legitimately finds
+  -- object pixels Emerald drew on LAYER 1 -- metatile 596 in this same
+  -- tileset carves 244 against a 205-pixel layer 2 -- so taking layer 2 alone
+  -- would throw those away.  The union can only ever ADD.
+  --
+  -- ---- WHAT COUNTS AS TOO THIN, AND WHAT THIS REFUSES ------------------
+  --
+  -- CENSUSED through this exact pipeline over all 518 maps: 2,880 claimed
+  -- furniture cells on 258 indoor maps.  430 of them carve to under a quarter
+  -- of their own layer-2 drawing, and they are NOT one population -- listed
+  -- out by name they are four, and three of the four are refused here:
+  --
+  --   233 cells  BEHAVIOUR 0x01 MB_SECRET_BASE_WALL, every one of them in the
+  --              fifteen BattlePyramidSquare maps (metatiles 608..628): the
+  --              pyramid's corridor WALLING, which carves to the seam lines
+  --              at the cell edge and draws layer 2 across the whole cell.
+  --              data/gen3_shapes.lua already answers this byte -- it maps
+  --              0x01 to `wall` -- so the refusal is the cartridge's own word
+  --              and not a threshold.  REFUSED.  (They are also every 0x01
+  --              cell in the census: the byte splits 233/233.)
+  --   154 cells  `chair` -- the Pokemon Centre stools, 550 and 564.  Already
+  --              answered, correctly and by a different reading, in
+  --              `chairMaskOf` above (g3-settee-308 restores them to 178
+  --              pixels 8-connected).  REFUSED: not this pass's case.
+  --    19 cells  `appliance` -- the fridge, 640/696/896/927.  What survives
+  --              its carve is the whole OUTLINE, four edges and both door
+  --              seams, and gen3_shapes.lua measured it standing as a
+  --              fridge-shaped box already.  REFUSED by the class scope.
+  --    12 cells  `counter`, in four rooms (MauvilleCity_GameCorner,
+  --              SlateportCity_OceanicMuseum_1F and both Pretty Petal
+  --              flower shops), and 12 `tabletop` cells.  Only the
+  --              `tabletop` ones are in scope.
+  --
+  -- SCOPED TO `tabletop`, then, which is both the class in the report and the
+  -- class gen3_shapes.lua asked for by name.  Counters, chairs, beds,
+  -- appliances, cabinets, sinks, worktops and televisions read `maskOf`
+  -- exactly as before, so the 656 counters, 375 chairs, 125 cabinets, 58
+  -- worktops, 23 sinks, 22 appliances, 20 beds and 10 televisions in Hoenn
+  -- are byte for byte unchanged.
+  --
+  -- AND IT CANNOT REACH A RUG, A FLOOR DECAL OR A `cutout`.  Three separate
+  -- things stop it, and none of them is the threshold:
+  --   * this pass only ever sees cells `JOINERY_H` already claims, so a cell
+  --     has to resolve one of nine furniture classes before the question is
+  --     asked at all -- `cutout` is not one of them and never was;
+  --   * a metatile whose behaviour byte the shape profile calls `wall` is
+  --     refused outright (the 233 cells above);
+  --   * the fallback needs layer-2 art to fall back TO.  326 claimed cells in
+  --     the census draw their object entirely on layer 1 -- every Mart and
+  --     Department Store counter -- and `Gen3.layer2MaskOf` answers nil for
+  --     them, so they can never reach it.
+  --
+  -- ONE QUARTER, DERIVED off that census and not tight.  Swept over it, the
+  -- fraction selects the SAME five pieces and the same sixteen cells
+  -- anywhere from 1/5 to 7/20; the next piece only joins at 2/5 (Route 110's
+  -- Trick House puzzle tables, 0.387).  A quarter sits in the middle of that
+  -- plateau.  It is a FRACTION rather than a pixel count -- that much is
+  -- STATED -- because what is thin depends on how much drawing there is:
+  -- 16 of 256 and 16 of 64 are not the same report.
+  --
+  -- ---- AND ONE PIECE OF FURNITURE IS ONE DRAWING ------------------------
+  --
+  -- The same reading the bed growth above is written on.  A table's south row
+  -- is not a second table: MEASURED, Rustboro's 902 and 911 carve to 60 of a
+  -- 173-pixel drawing -- 0.347, above the quarter -- while the 894/895/910
+  -- row over them measures 0.19, 0.06 and 0.19.  Modelled cell by cell the
+  -- north half would
+  -- come back off the drawing and the south half off the carve, which is a
+  -- table with a step down its middle.  So the trip is per CELL and the
+  -- fallback is per PIECE: the claim is flooded 4-connected across cells of
+  -- the same class at the same height on the same floor -- exactly what
+  -- `onAt` below already treats as one solid -- and if any cell of a piece
+  -- trips, every cell of it takes the union.
+  --
+  -- REGION-WIDE, and this is the whole of it: FIVE pieces, SIXTEEN cells,
+  -- FOUR maps.
+  --   RustboroCity_House1   (3..5, 4..5)  6 cells  the report's own table
+  --   RustboroCity_Flat1_2F (2..4, 4..5)  6 cells  the same table
+  --   SSTidalLowerDeck      (8..9, 7)     2 cells  metatiles 752/754, the
+  --     berth whose THREE-CELL TWIN in the same room (755/756/757 at
+  --     (11..13, 7)) carves to 232 and already stands correctly; this pair
+  --     carves to 14.  The fallback puts it on 232, which is what its twin
+  --     builds -- the same "restore the silhouette the drawing has
+  --     everywhere else" the stool rule above makes.
+  --   BattleFrontier_BattlePalaceBattleRoom (2, 2) and (11, 2)  2 cells,
+  --     metatile 591 -- the BLOCKED foot of the arch pillar, whose carve
+  --     keeps 6 pixels and whose grain-filtered mask is EMPTY, so this pass
+  --     builds nothing there today and the cell is flattened to floor you
+  --     cannot walk on.  It gains a 12px solid under a pillar that is drawn
+  --     two cells above it.  Named rather than excluded: it is the same
+  --     defect and the honest answer, but it is the one of the five that is
+  --     not furniture.
+  --
+  -- NOTHING BUT GEOMETRY MOVES.  This is inside `modelMaskOf`, which only
+  -- feeds the quad emitters and `onAt`; `claim`, `order` and the bed growth
+  -- read `maskOf` directly and are untouched, and the cell's own flatten to
+  -- `ground` at `gz` at the foot of this pass runs for every claimed cell
+  -- whatever its mask says.  MEASURED over all 518 maps: the height surface
+  -- and the blocked set are BYTE-IDENTICAL before and after, and 4 maps of
+  -- 518 change a quad.
+  local THIN_CARVE_NUM, THIN_CARVE_DEN = 1, 4
+  local behClassOf = (Gen3.spec() or {}).behaviour or {}
+  local l2Masks = {}
+  local function layer2Of(m)
+    local hit = l2Masks[m]
+    if hit ~= nil then return hit or nil end
+    local okL, mk = pcall(Gen3.layer2MaskOf, map.tileset, m)
+    local v = (okL and type(mk) == "table" and (tonumber(mk.n) or 0) > 0)
+              and mk or false
+    l2Masks[m] = v
+    return v or nil
+  end
+  -- the cartridge's own word for the cell, through the shape profile's
+  -- behaviour table -- not a guess off the art
+  local function statesWall(m)
+    local okA, beh = pcall(g3c.attributes, m)
+    return okA and behClassOf[beh] == "wall"
+  end
+  local function carvedThin(e)
+    if e.class ~= "tabletop" then return false end
+    if statesWall(e.m) then return false end
+    local l2 = layer2Of(e.m)
+    if not l2 then return false end
+    return maskOf(e.m).n * THIN_CARVE_DEN < l2.n * THIN_CARVE_NUM
+  end
+  -- filled once the growth below has finished claiming, so a grown cell is
+  -- part of the piece it was grown into
+  local thinPiece = {}
+  local unionMasks = {}
+  local function unionMaskOf(m)
+    local hit = unionMasks[m]
+    if hit then return hit end
+    local base = maskOf(m)
+    local l2 = layer2Of(m)
+    if not l2 then return base end
+    local mk = { n = 0 }
+    for p = 0, 255 do
+      if base[p] or l2[p] then
+        mk[p] = true
+        mk.n = mk.n + 1
+      end
+    end
+    unionMasks[m] = mk
+    return mk
+  end
+
+  -- the model surface of one claimed piece: a chair reads its own, a piece
+  -- whose carve came back too thin for its own drawing reads the union with
+  -- layer 2 (see the block above), everything else reads the plain carve
   local function modelMaskOf(e)
     if e.class == "chair" then return chairMaskOf(e.m) end
+    if thinPiece[e.cy * 8192 + e.cx] then return unionMaskOf(e.m) end
     return maskOf(e.m)
   end
 
@@ -26284,6 +28042,44 @@ function Structures.buildGen3Joinery(S, map)
                 end
               end
             end
+          end
+        end
+      end
+    end
+  end
+
+  -- ---- WHICH PIECES CARVED TOO THIN, now that every cell is claimed.
+  --
+  -- Run HERE rather than where the helpers above are declared because the bed
+  -- growth immediately above adds cells to `claim` and `order`, and a grown
+  -- cell is more of the piece it was grown into (see that block's header).
+  -- `modelMaskOf` closes over `thinPiece`, so filling it now is what the
+  -- quad emitters below read.
+  do
+    local seen = {}
+    for _, e0 in ipairs(order) do
+      local k0 = e0.cy * 8192 + e0.cx
+      if not seen[k0] then
+        seen[k0] = true
+        local queue, qi, piece, trip = { e0 }, 1, {}, false
+        while qi <= #queue do
+          local c = queue[qi]
+          qi = qi + 1
+          piece[#piece + 1] = c
+          if carvedThin(c) then trip = true end
+          for _, d in ipairs(DIRS4) do
+            local nk = (c.cy + d[2]) * 8192 + (c.cx + d[1])
+            local n = claim[nk]
+            if n and not seen[nk] and n.class == c.class and n.h == c.h
+               and n.gz == c.gz then
+              seen[nk] = true
+              queue[#queue + 1] = n
+            end
+          end
+        end
+        if trip then
+          for _, c in ipairs(piece) do
+            thinPiece[c.cy * 8192 + c.cx] = true
           end
         end
       end

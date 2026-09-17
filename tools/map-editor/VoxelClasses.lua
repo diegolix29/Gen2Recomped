@@ -147,12 +147,34 @@ function VoxelClasses.sources()
         local hasShape = modFileExists(root .. "/lib/TileShape.lua")
         local hasProfile = modFileExists(root .. "/data/voxel_heights.lua")
         if hasShape or hasProfile then
+          -- WHICH ROW IN THE LAUNCHER THIS FOLDER IS.
+          --
+          -- The launcher keys its list by the id a mod's MANIFEST declares and
+          -- this list is keyed by folder name, and the two are routinely
+          -- different -- the voxel mod's folder is DRAMATIC_SHAPE and its
+          -- manifest says `Gen2Recomped-DramaticShapes`.  So the enabled
+          -- lookup missed every time and the editor could never tell an OFF
+          -- mod from one it had not been able to ask about, which is the whole
+          -- reason enabledMods exists.
+          --
+          -- The folder name stays the SOURCE id: that is this editor's own
+          -- key, it is what a saved selection holds, and renaming it would
+          -- move somebody's chosen source out from under them.
+          local declared = name
+          local rawManifest = fs.read and fs.read(root .. "/manifest.json")
+          if rawManifest then
+            local okId, id = pcall(function()
+              return require("src.link.Json").decode(rawManifest).id
+            end)
+            if okId and type(id) == "string" and id ~= "" then declared = id end
+          end
           out[#out + 1] = {
             id = name,
+            modId = declared,
             -- nil, not false, when the launcher could not be asked: "off" and
             -- "unknown" are different answers and only the first should stop a
             -- mod being the default.
-            enabled = enabled and (enabled[name] == true) or nil,
+            enabled = enabled and (enabled[declared] == true) or nil,
             label = name:gsub("_", " "),
             shape = hasShape and (MOD_ROOT .. "." .. name .. ".lib.TileShape") or nil,
             profile = hasProfile

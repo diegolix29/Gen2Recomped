@@ -30,6 +30,13 @@ local FLUSH_AT = 64
 local buffer, buffered = {}, 0
 local started, lines, stopped = false, 0, false
 local counts, suppressed, distinct = {}, 0, 0
+-- Raw lines the limiter has already decided to drop.  Checked in emit before
+-- anything else is done with them, so a mod logging once a frame costs one
+-- table lookup rather than a shape, a history rotation and a counter walk.
+-- Declared here rather than beside emit because record() below closes over it
+-- and a local declared later would not be in scope there -- it would silently
+-- become a global read, which is the bug this comment exists to prevent.
+local deadLine, deadLineN = {}, 0
 
 local function fs()
   return love and love.filesystem
@@ -78,8 +85,29 @@ local MAX_DISTINCT = 2000
 -- and the rate limiter had nothing to hold on to.  Numbers and pointers are
 -- exactly the part that varies while the MESSAGE stays the same, so they are
 -- what the counter ignores.
+-- MEMOISED, because this is not a diagnostic cost -- it is a FRAME cost.
+--
+-- Reported from play as lag under a mod that logs once a frame, with a line
+-- that names 155 entities: ~3KB of text, and the two substitutions below walk
+-- all of it EVERY CALL, for the whole session, long after the rate limiter has
+-- decided to drop the line.  The limiter stopped the write and the print; it
+-- never stopped the work of deciding to.
+--
+-- A per-frame line is the same text frame after frame, so the raw line is a
+-- good key and string.format has already interned it -- the lookup is a hash
+-- compare against work proportional to the line's length.  Bounded and
+-- cleared wholesale rather than evicted: the table exists to make a REPEATED
+-- line cheap, and a line that never repeats has nothing to gain from it.
+local shapeMemo, shapeMemoN = {}, 0
+local MAX_SHAPE_MEMO = 4000
+
 local function shapeOf(line)
+  local hit = shapeMemo[line]
+  if hit then return hit end
   local shape = line:gsub("0x%x+", "P"):gsub("%d+", "#")
+  if shapeMemoN >= MAX_SHAPE_MEMO then shapeMemo, shapeMemoN = {}, 0 end
+  shapeMemo[line] = shape
+  shapeMemoN = shapeMemoN + 1
   return shape
 end
 
@@ -107,7 +135,14 @@ end
 local function record(raw)
   if stopped or lines >= MAX_LINES then return end
   local line = rateLimit(raw)
-  if not line then return end
+  if not line then
+    -- ...and remember that it was dropped, so the next identical one costs a
+    -- lookup instead of the whole decision again
+    if deadLineN >= MAX_SHAPE_MEMO then deadLine, deadLineN = {}, 0 end
+    if deadLine[raw] == nil then deadLineN = deadLineN + 1 end
+    deadLine[raw] = true
+    return
+  end
   lines = lines + 1
   buffer[buffered + 1] = line
   buffered = buffered + 1
@@ -163,6 +198,10 @@ local function emit(level, fmt, ...)
     if not ok then msg = tostring(fmt) end
   end
   local line = string.format("[%s] %s", level, tostring(msg))
+  if deadLine[line] then
+    suppressed = suppressed + 1
+    return
+  end
   -- print() to a Windows console is a synchronous write; the same spam that
   -- filled the file was also stalling the frame here, before any of this
   -- reached disk.  One counter governs both sinks.
@@ -193,5 +232,38 @@ function Logger.error(fmt, ...) emit("error", fmt, ...) end
 -- repeat limiter above already keeps one unimplemented special in a loop from
 -- filling the file.
 function Logger.debug(fmt, ...) emit("debug", fmt, ...) end
+
+-- A LINE THE RATE LIMITER MUST NOT EAT.
+--
+-- The limiter counts by SHAPE -- digits and pointers stripped -- which is what
+-- makes it catch a spam loop whose every line is textually unique.  It also
+-- makes every line of a repeating REPORT one shape: the frame profiler prints
+-- the same twenty names each window with different numbers against them, so
+-- after twenty windows the report stopped saying anything and the reader was
+-- left with a header and no body.  Observed exactly that way, mid-diagnosis.
+--
+-- A report is not spam: it is emitted on a fixed schedule, it is bounded by
+-- that schedule, and its whole value is the numbers the limiter is throwing
+-- away.  So it goes round the shape counter -- and only this call does, which
+-- is why it is a separate entry point rather than a flag on the others.
+function Logger.report(fmt, ...)
+  local ok, msg = true, fmt
+  if select("#", ...) > 0 then
+    ok, msg = pcall(string.format, fmt, ...)
+    if not ok then msg = tostring(fmt) end
+  end
+  local line = string.format("[%s] %s", "warn", tostring(msg))
+  print(line)
+  table.insert(Logger.history, line)
+  if #Logger.history > 200 then table.remove(Logger.history, 1) end
+  if stopped or lines >= MAX_LINES then return end
+  lines = lines + 1
+  buffer[buffered + 1] = line
+  buffered = buffered + 1
+  local f = fs()
+  if not (f and (f.append or f.write)) then return end
+  if not started then start(f) end
+  if buffered >= FLUSH_AT then flush(f) end
+end
 
 return Logger

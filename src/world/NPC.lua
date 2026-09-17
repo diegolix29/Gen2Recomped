@@ -733,13 +733,14 @@ function NPC:update(map, entities)
       end
       return
     end
-    local d = Collision.DELTA[self.facing]
+    -- the STEP's direction rather than the nose's -- see Collision.stepDelta
+    local dx, dy = Collision.stepDelta(self)
     -- 1px per frame at the default length; a shortened step scales instead,
     -- so the cell still lands on a 16px boundary (Player:update does the
     -- same for the bicycle)
     local moved = math.floor(self.progress * 16 * span / stepLen)
-    self.px = self.cellX * 16 + d[1] * moved
-    self.py = self.cellY * 16 + d[2] * moved
+    self.px = self.cellX * 16 + dx * moved
+    self.py = self.cellY * 16 + dy * moved
     if self.progress >= stepLen then
       self.cellX, self.cellY = self.targetX, self.targetY
       self.targetX, self.targetY = nil, nil

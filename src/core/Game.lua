@@ -9,6 +9,7 @@ local Platform = require("src.core.Platform")
 local Renderer = require("src.render.Renderer")
 local SaveData = require("src.core.SaveData")
 local StateStack = require("src.core.StateStack")
+local FrameProfile = require("src.core.FrameProfile")
 local TouchControls = require("src.core.TouchControls")
 local ModLoader = require("src.mods.Loader")
 local ModRuntime = require("src.mods.Runtime")
@@ -286,11 +287,29 @@ function Game:returnToTitle()
 end
 
 function Game:step(dt)
+  -- THE WHOLE LOGIC STEP, because `stack:update` alone accounted for under
+  -- 2 ms of a 43 ms update and everything else in here was invisible.  Run 4
+  -- to 6 times per rendered frame while the accumulator catches up, so a cost
+  -- in here is multiplied before it reaches the frame.
+  local closeStep = FrameProfile.section("  step: whole")
+  self:_step(dt)
+  closeStep()
+end
+
+function Game:_step(dt)
   -- Tool mods (autoplay, accessibility drivers, input visualizers) act on
   -- the same fixed-step boundary as a physical controller.  Run them before
   -- Input:step promotes queued edges so a button chosen here is visible to
   -- this logic tick, not one tick later.  With no wrapper this is a no-op.
-  ModRuntime.call("input.step", function() end, self, dt)
+  do
+    -- A MOD SEAM ON THE LOGIC STEP.  Timed at the call site rather than inside
+    -- the hook chain: a hook calls `next` into the rest of the chain, so a
+    -- timer around one link charges it with everything downstream.  One number
+    -- for the whole seam is honest; per-link numbers there would not be.
+    local close = FrameProfile.section("    step: mod input.step")
+    ModRuntime.call("input.step", function() end, self, dt)
+    close()
+  end
   self.input:step()
   -- A+B+SELECT+START held for 16 steps: SoftReset (home/init.asm) stops the
   -- audio, whites the palettes out and falls through into Init, i.e. the
@@ -314,7 +333,11 @@ function Game:step(dt)
   if self.linkNet and not self.linkNet.closed then
     self.linkNet:update()
   end
+  -- AN EMPTY STACK IS NOT A GAME.
+  if self:ensureStack() then return end
+  local closeStep = FrameProfile.section("  logic: stack:update")
   self.stack:update(dt)
+  closeStep()
   -- play time for the trainer card / save screen.  A save written by an older
   -- build carries the broken-down { hours, minutes, ... } form, which would
   -- throw here on its first frame; playSeconds normalises it, and the field is
@@ -357,30 +380,58 @@ function Game:update(dt)
   -- or the anti-spiral clamp quietly caps every level above ~15X.
   local speed = self:logicSpeed()
   FixedStep.maxAccum = math.max(0.25, speed * FixedStep.STEP * 1.5)
-  FixedStep:update(dt * speed)
+  do
+    local close = FrameProfile.section("  update: fixed steps")
+    FixedStep:update(dt * speed)
+    close()
+  end
   -- Audio runs off real time at a fixed 60Hz regardless of game speed or
   -- display refresh, so fades and chip synthesis keep their intended tempo
   -- whether we are at 1X, 10X, or running with vsync disabled.
   local step = FixedStep.STEP
   self.audioAccum = math.min((self.audioAccum or 0) + dt, 0.25)
-  while self.audioAccum >= step do
-    self.audioAccum = self.audioAccum - step
-    require("src.core.Music").update(Data)
+  do
+    local close = FrameProfile.section("  update: music")
+    while self.audioAccum >= step do
+      self.audioAccum = self.audioAccum - step
+      require("src.core.Music").update(Data)
+    end
+    close()
   end
   -- Overworld tilt toggle tween: presentational, so it runs on the real
   -- frame dt (not the fixed logic step) for a smooth ~0.25s glide.
-  require("src.render.Tilt").update(dt)
+  do
+    local close = FrameProfile.section("  update: tilt")
+    require("src.render.Tilt").update(dt)
+    close()
+  end
   -- mod render pipelines tween on the same real-frame clock, for the same
   -- reason: they are presentational, so fast-forward must not speed them up
-  require("src.render.Pipelines").update(dt)
-  pcall(function() require("src.core.DiscordPresence").update(dt) end)
+  do
+    local close = FrameProfile.section("  pipelines: update")
+    require("src.render.Pipelines").update(dt)
+    close()
+  end
+  do
+    local close = FrameProfile.section("  update: discord")
+    pcall(function() require("src.core.DiscordPresence").update(dt) end)
+    close()
+  end
   -- Steady-state memory backstop: advance the incremental collector one
   -- small step every rendered frame.  The heavy GPU objects are now freed
   -- explicitly (map eviction, battle exit, canvas/renderer swaps), so this
   -- only has to keep ordinary Lua-heap garbage (per-frame tables/closures)
   -- from drifting upward over a long session, and to spread collection out
   -- so the default lazy schedule never batches it into a visible pause.
-  if collectgarbage then collectgarbage("step", 1) end
+  -- ONE INCREMENTAL GC STEP PER FRAME.  Cheap on a small heap and not
+  -- obviously cheap under a mod that allocates a world's worth of geometry,
+  -- which is exactly the case being measured -- so it is named rather than
+  -- assumed.
+  if collectgarbage then
+    local close = FrameProfile.section("  update: gc step")
+    collectgarbage("step", 1)
+    close()
+  end
 end
 
 -- render.zones' identity default: unhooked, the zone list reaches the blit
@@ -643,6 +694,20 @@ Game.homeOffset = homeOffset
 Game.centerClassicZones = centerClassicZones
 
 function Game:draw()
+  local closeDraw = FrameProfile.section("draw: whole frame")
+  self:_draw()
+  closeDraw()
+  FrameProfile.frame()
+end
+
+-- F11 turns the profiler on and off.  Read in keypressed above the delegation,
+-- with the other escape hatches, for the same reason they are: the frames you
+-- most want to measure are the ones where something is holding the keyboard.
+function Game:toggleFrameProfile()
+  return FrameProfile.toggle()
+end
+
+function Game:_draw()
   -- the UI canvas clears transparent when the overworld's world pass
   -- shows through beneath it; opaque full-screen states get the classic
   -- white clear
@@ -834,6 +899,110 @@ function Game:wheelmoved(_, dy)
   elseif dy < 0 then
     self:zoomStep(-1)
   end
+end
+
+-- WHEN THE STACK IS EMPTIED AND NOBODY PUSHES ANYTHING BACK.
+--
+-- Traced from play, straight out of the log:
+--
+--   push src/ui/Menu.lua:111 (depth 2)    <- a mod's battle-settings menu
+--   pop  src/ui/Menu.lua:111 (depth 1)    <- CANCEL closes it, correctly
+--   [DRAMATIC_SHAPE] CANCEL in Gen3 battle settings
+--   pop  mods/.../follower/control_engine.lua:2578 (depth 0)   <- and again
+--
+-- The second pop took the OVERWORLD off.  With nothing on the stack nothing
+-- updates and nothing draws, so the frame keeps whatever the last clear left:
+-- a white screen that never goes away, with no error in the log, because
+-- popping is not an error.  Cancelling a menu that has already cancelled
+-- itself is an easy mistake for a mod to make and an invisible one from the
+-- inside -- reported three times as "a white screen that doesnt go away".
+--
+-- The engine empties the stack deliberately in exactly two places -- New Game
+-- and Load -- and both push the replacement in the same breath, so an empty
+-- stack ACROSS A FRAME BOUNDARY is always a fault.  That is why this is
+-- checked at the top of the logic step and not inside pop(): here it cannot
+-- mistake a drain for a leak, and it needs no cooperation from the caller.
+--
+-- The world is put BACK rather than entered again: it never exited (the
+-- overworld has no exit), and entering it would call setMap and boot the map
+-- over the top of the player.  Returns true when the step should stop.
+function Game:ensureStack()
+  local stack = self.stack
+  if not (stack and stack.states) or stack.states[1] ~= nil then return false end
+  local world = self.overworld
+  if world and world.map then
+    Logger.warn("the state stack was emptied and nothing pushed anything back "
+      .. "-- with no state there is nothing to update and nothing to draw, "
+      .. "which is a screen that never changes. Restoring the overworld; "
+      .. "something popped one state too many, and the push/pop trace above "
+      .. "names it.")
+    stack:restore(world)
+    return false
+  end
+  Logger.warn("the state stack was emptied and there is no world to put back; "
+    .. "returning to the title screen")
+  self:returnToTitle()
+  return true
+end
+
+-- F10, as its own method so the escape-hatch block above can reach it without
+-- going through the delegation it exists to jump over.  Toggle: the manager no
+-- longer swallows the keyboard, so a second press closes it rather than
+-- stacking another.  This is the route to turning a misbehaving mod OFF, which
+-- is why it must not be swallowable.
+function Game:toggleModManager()
+  local top = self.stack and self.stack:top()
+  if top and top.screenId == "ManagerState" then
+    self.stack:pop()
+  else
+    Screens.push(self, "ManagerState")
+  end
+end
+
+-- THE WAY OUT OF A STATE THAT WILL NOT LET GO.
+--
+-- Reported twice from play, both times under a mod that draws the field in 3D:
+-- "no input is working at all ... i cant look around walk or open any menus".
+-- Nothing had crashed.  A state was sitting on top of the stack that should
+-- have been popped and was not, and the first line of keypressed below hands
+-- EVERY key to the top state's onKeyPressed without condition -- so the mod
+-- manager, the save keys, the zoom, the dev console and the only route to
+-- turning the offending mod off all went into the same hole as the D-pad.
+--
+-- F9 says what is on the stack and takes the top of it off.  It is above the
+-- delegation on purpose: an escape hatch a state can swallow is not one.  And
+-- it refuses to pop the overworld, because "input is dead while the overworld
+-- is on top" is a different fault with a different answer, and closing the
+-- world would replace a stuck game with no game.
+function Game:unstick()
+  local stack = self.stack
+  if not (stack and stack.states) then return end
+  Logger.warn("unstick (F9): %s", stack:describeAll())
+  local top = stack:top()
+  if not top then
+    Logger.warn("unstick: the stack is empty; nothing to pop")
+    Logger.flush()
+    return
+  end
+  if top == self.overworld or top.isOverworld then
+    Logger.warn("unstick: the overworld is already on top, so no state is "
+      .. "holding input -- whatever is eating it is inside the world itself")
+    Logger.flush()
+    return
+  end
+  local name = StateStack.describe(top)
+  local before = #stack.states
+  -- A state whose exit throws -- or whose screen.popped listener does -- must
+  -- not be able to stay on top BECAUSE it threw; that is the same trap twice.
+  local ok, err = pcall(stack.pop, stack)
+  if not ok then
+    if #stack.states == before then table.remove(stack.states) end
+    Logger.warn("unstick: %s threw on the way out (%s); removed it anyway",
+                name, tostring(err))
+  end
+  Logger.warn("unstick: popped %s -- stack is now %s", name,
+              stack:describeAll())
+  Logger.flush()
 end
 
 function Game:_cycleSpeed(dir)
@@ -1179,6 +1348,13 @@ function Game:adoptSave(save, seedBuckets)
   save.modData = save.modData or {}
   local loader = self.mods
   if not loader then return end
+  -- A mod whose id changed takes its per-playthrough state with it.  Per save
+  -- rather than once at boot, because each slot carries its own modData and a
+  -- player may open several -- and here, rather than in SaveData, because this
+  -- is the first point that has both the save and the manifests.
+  pcall(function()
+    require("src.mods.ModRename").adoptModData(save.modData, loader.mods)
+  end)
   if seedBuckets then
     for id, bucket in pairs(loader.modSave or {}) do
       if save.modData[id] == nil then save.modData[id] = bucket end
@@ -1212,7 +1388,12 @@ end
 -- across New Game without touching the progress save.
 function Game:writeOptions()
   if not (self.save and self.save.options) then return end
-  SaveData.saveOptions(self.save.options)
+  -- The generation this playthrough belongs to, so a row it overrides is
+  -- written back into that override rather than over everyone else's shared
+  -- value (SaveData.saveOptions / src/core/GenOptions.lua).  Nil for a game
+  -- with no overrides in play, which is the pre-existing behaviour.
+  local gen = SaveData.generationOf and SaveData.generationOf(nil) or nil
+  SaveData.saveOptions(self.save.options, nil, gen)
 end
 
 -- Push the live options table into audio + display subsystems.

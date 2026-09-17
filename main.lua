@@ -233,6 +233,10 @@ end
 -- run.  So record progress instead of failure: the last line in boot_trace.txt
 -- is the stage the process did not survive.
 local BootTrace = require("src.core.BootTrace")
+local FrameProfile = require("src.core.FrameProfile")
+local Frames = require("src.core.Frames")
+-- wall clock of the last log flush (see love.run below)
+local lastLogFlush = 0
 -- Counts love.graphics.push/pop for the life of the process and unwinds
 -- anything a frame forgot, at the top of the next update and draw.  Installed
 -- here, before anything can draw, because the failure it guards against is not
@@ -525,7 +529,11 @@ end
 function love.update(dt)
   -- Unwind anything the previous frame left on the graphics stack before this
   -- one starts building on top of it.
-  GraphicsStack.drain()
+  do
+    local close = FrameProfile.section("  update: graphics stack drain")
+    GraphicsStack.drain()
+    close()
+  end
   -- The report deliberately runs nothing else: the boot path it is reporting on
   -- is the code that just died.
   if bootReport then return end
@@ -993,6 +1001,14 @@ function love.errorhandler(msg)
   -- not merely with the last stage that succeeded.
   pcall(function() BootTrace.mark("ERROR " .. tostring(msg)) end)
 
+  -- ...and DRAIN THE LOG, which this handler has been documented as doing
+  -- since the logger was written and has never actually done.  Logger buffers
+  -- to 64 lines before it touches the disk, so a launch that ends in an error
+  -- before reaching that many -- which is most of them, and every short one --
+  -- left log.txt empty and the reason for the crash only in memory.  Nothing
+  -- else in the tree called this.
+  pcall(function() require("src.core.Logger").flush() end)
+
   -- The stock handler first, so desktop keeps the screen everyone knows.  It is
   -- pcall'd because it is exactly the thing that can fail here, and a raise
   -- inside it would otherwise be the second error that ends the process.
@@ -1110,19 +1126,57 @@ function love.run()
     end
 
     if love.timer then dt = love.timer.step() end
-    if love.update then love.update(dt) end
+
+    -- call update and draw
+    --
+    -- THE THREE TOP-LEVEL SECTIONS OF A FRAME, and the reason they are here
+    -- rather than deeper: a report that named only the engine's own draw left
+    -- half the frame unaccounted for (214 ms/frame, of which draw was 93 and
+    -- the logic step 11), and half a frame is not a hint.  `present` is the
+    -- one that matters most on a heavy scene: the driver blocks there waiting
+    -- for work queued earlier, so a big number here means the GPU is the
+    -- limit and a big `update`/`draw` means the CPU is.
+    if love.update then
+      local closeU = FrameProfile.section("update: whole frame")
+      love.update(dt)
+      closeU()
+    end
 
     if love.graphics and love.graphics.isActive() then
       love.graphics.origin()
       love.graphics.clear(love.graphics.getBackgroundColor())
       if love.draw then love.draw() end
+      local closeP = FrameProfile.section("present (GPU wait / vsync)")
       love.graphics.present()
+      closeP()
     end
     -- Counted after present, so a frame in the trace means a frame that was
     -- actually put on screen.  Thins out fast (see BootTrace.frame): the
     -- interesting range for a launch that dies "about a second in" is frames
     -- 1..60, and past that the trace only needs to prove it kept running.
     BootTrace.frame()
+    -- ...and the counter a mod keys per-frame work off, bumped here because
+    -- here is where a frame demonstrably happened (see src/core/Frames.lua).
+    Frames.tick()
+
+    -- A LOG THAT IS TRUE WHEN SOMEBODY READS IT.
+    --
+    -- Logger buffers 64 lines before it touches the disk, which is right for
+    -- the frame and wrong for the way a log is actually collected: a player
+    -- copies log.txt while the game is still running, and the last thing that
+    -- happened -- the diagnostic they were asked to reproduce -- is still in
+    -- the buffer.  Three rounds of this session were spent reading a log that
+    -- stopped mid-sentence.
+    --
+    -- Once a second, against the wall clock rather than a frame count, so a
+    -- game at 4 fps flushes as often as one at 120.  Empty buffer, no write.
+    if love.timer then
+      local nowSec = love.timer.getTime()
+      if nowSec - lastLogFlush >= 1 then
+        lastLogFlush = nowSec
+        require("src.core.Logger").flush()
+      end
+    end
 
     if love.timer then
       if paced and hasFrameCap and FrameCap.current then

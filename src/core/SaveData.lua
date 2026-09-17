@@ -197,6 +197,172 @@ function SaveData.portableFs()
   return portableFsCache
 end
 
+
+-- ------- the game-data folder
+--
+-- LOVE puts the save directory under %APPDATA% (or ~/.local/share), and an
+-- import writes the big thing on disk into it: a Gen 3 cartridge unpacks to
+-- hundreds of megabytes of data/generated and assets/generated.  On a small
+-- system drive that is exactly where a player does not want it, so the
+-- launcher can point the cache at a folder of their choosing.
+--
+-- SCOPE IS THE CACHE AND NOTHING ELSE.  Saves, options and the mod
+-- enable-state are kilobytes; they are also the first things a player goes
+-- looking for when something has gone wrong, and quietly relocating them is
+-- how a save "disappears".  CacheFs.root() is the single seam the cache goes
+-- through, so that is the single seam this feeds.
+--
+-- WHERE THE CHOICE LIVES: options.dataDir, in the ordinary options file,
+-- which stays in the save directory -- it could hardly live in the folder it
+-- names.  PORTABLE MODE OUTRANKS IT: a portable copy is already off the host
+-- machine by definition, and two relocation mechanisms arguing over one
+-- cache is a bug report nobody can read.
+--
+-- DESKTOP ONLY, for the same reason portable mode is.  On Android/iOS there
+-- is no arbitrary writable folder to point at, and the io.* writes CacheFs
+-- would make into one fail per file rather than up front.
+local PROBE_NAME = ".gen2recomp-write-test"
+
+local dataDirChecked = false
+local dataDirBase = false     -- resolved folder when active, else false
+local dataDirWhy = nil        -- why a stored folder is not in use
+
+function SaveData.dataDirSupported()
+  if not (love and love.filesystem) then return false end
+  if not (love.system and love.system.getOS) then return false end
+  local osName = love.system.getOS()
+  return osName == "Windows" or osName == "Linux" or osName == "OS X"
+end
+
+-- Trailing separators removed and slashes left alone otherwise: this string
+-- is concatenated with SEP by every caller, and "D:/Games/" would build
+-- "D:/Games//data" -- which Windows tolerates and a player comparing the
+-- path against the one the panel prints does not.
+function SaveData.normalizeDataDir(path)
+  if type(path) ~= "string" then return nil end
+  path = path:gsub("^%s+", ""):gsub("%s+$", "")
+  if path == "" then return nil end
+  while #path > 1 and (path:sub(-1) == "/" or path:sub(-1) == "\\") do
+    -- ...but never past a bare root ("/" or "C:\"), which IS the whole path
+    if path:match("^%a:[/\\]$") then break end
+    path = path:sub(1, -2)
+  end
+  return path
+end
+
+-- An absolute path only.  A relative one resolves against the working
+-- directory, which for a packaged build is wherever the player happened to
+-- launch it from -- so the same setting would name a different folder on the
+-- next launch.
+function SaveData.isAbsolutePath(path)
+  if type(path) ~= "string" or path == "" then return false end
+  return path:sub(1, 1) == "/" or path:sub(1, 1) == "\\"
+    or path:match("^%a:[/\\]") ~= nil
+end
+
+-- checkDataDir(path) -> normalised path, or nil, reason
+--
+-- Proves the folder is WRITABLE rather than merely present: a player who
+-- picks Program Files gets told so here, not by a half-finished import.  The
+-- probe file is removed again whatever happens.
+function SaveData.checkDataDir(path)
+  local dir = SaveData.normalizeDataDir(path)
+  if not dir then return nil, "no folder chosen" end
+  if not SaveData.isAbsolutePath(dir) then
+    return nil, "that is not a full path"
+  end
+  local probe = dir .. SEP .. PROBE_NAME
+  local f = io.open(probe, "wb")
+  if not f then
+    -- The folder may simply not exist yet (a player typing a path, or a
+    -- picker that offered to make one), so try to create it once and retry
+    -- before calling it unwritable.
+    local ok = pcall(function()
+      require("src.import.CacheFs").mkdirReal(dir)
+    end)
+    if ok then f = io.open(probe, "wb") end
+  end
+  if not f then
+    return nil, "that folder could not be written to"
+  end
+  local wrote = pcall(function() f:write("gen2recomp") end)
+  f:close()
+  os.remove(probe)
+  if not wrote then return nil, "that folder could not be written to" end
+  return dir
+end
+
+-- The folder the cache should live in, or nil for the save directory.
+-- Resolved once per process; setDataDir below drops the cache.
+function SaveData.dataDir()
+  if dataDirChecked then return dataDirBase or nil end
+  dataDirChecked = true
+  dataDirBase, dataDirWhy = false, nil
+  if not SaveData.dataDirSupported() then return nil end
+  -- portable wins, silently: the player already said where this copy lives
+  if SaveData.isPortable() then return nil end
+  local ok, opts = pcall(SaveData.loadOptions)
+  local raw = ok and type(opts) == "table" and opts.dataDir or nil
+  if type(raw) ~= "string" or raw == "" then return nil end
+  local dir, why = SaveData.checkDataDir(raw)
+  if not dir then
+    -- A folder on a drive that is not plugged in today is the common case,
+    -- and falling back to the save directory keeps the game playable.  The
+    -- setting is NOT cleared: the drive comes back.
+    dataDirWhy = why
+    Logger.warn("game-data folder %s is unusable (%s); using the save directory",
+      tostring(raw), tostring(why))
+    return nil
+  end
+  dataDirBase = dir
+  return dataDirBase
+end
+
+-- What is stored, whether or not it currently works -- the launcher shows
+-- this one, so a folder on an unplugged drive still reads back as the
+-- player's choice instead of silently becoming "default".
+function SaveData.dataDirSetting()
+  local ok, opts = pcall(SaveData.loadOptions)
+  local raw = ok and type(opts) == "table" and opts.dataDir or nil
+  if type(raw) ~= "string" or raw == "" then return nil end
+  return raw
+end
+
+-- nil once the folder is in use, otherwise why it is not.
+function SaveData.dataDirProblem()
+  SaveData.dataDir()
+  return dataDirWhy
+end
+
+-- setDataDir(path) -> ok, err.  nil or "" clears it back to the save
+-- directory.  Writes the options file and drops both this module's cache and
+-- CacheFs's, so the next read/write lands in the new place without a restart.
+function SaveData.setDataDir(path)
+  local dir, why = nil, nil
+  if path ~= nil and path ~= "" then
+    if not SaveData.dataDirSupported() then
+      return false, "this build stores its games in one place"
+    end
+    dir, why = SaveData.checkDataDir(path)
+    if not dir then return false, why end
+  end
+  local ok, opts = pcall(SaveData.loadOptions)
+  if not ok or type(opts) ~= "table" then opts = SaveData.defaultOptions() end
+  opts.dataDir = dir or false
+  if not SaveData.saveOptions(opts) then
+    return false, "the options file could not be written"
+  end
+  SaveData.forgetDataDir()
+  pcall(function() require("src.import.CacheFs").forgetRoot() end)
+  return true
+end
+
+function SaveData.forgetDataDir()
+  dataDirChecked = false
+  dataDirBase = false
+  dataDirWhy = nil
+end
+
 -- Resolve the filesystem a persistent read/write should land on: an
 -- explicitly injected non-love fs (headless tests, the mod loader's stub)
 -- always wins; otherwise portable mode reroutes off the OS save directory.
@@ -282,6 +448,10 @@ function SaveData.defaultOptions()
     -- Native mod enablement is an installation option, not save-slot data.
     -- Missing entries mean enabled so newly installed mods work by default.
     mods = {},
+    -- Which generation the launcher's chip row is filtered to (1/2/3), or
+    -- false for ALL.  A view setting, not game state: it hides chips and
+    -- nothing else, and every game stays registered and playable.
+    launcherGeneration = false,
     -- Named setups the player can switch between (#593; src/mods/ModProfile.lua
     -- owns the shape, src/mods/ManagerState.lua the UI): each row is
     -- { name, enabled = {id=bool}, options = {id={k=v}}, slots = {version=slotId} }.
@@ -312,6 +482,21 @@ function SaveData.defaultOptions()
     -- layout (#633).  Pre-#633 files stored one top-level positions table;
     -- TouchControls.normalizeConfig folds it into both orientations on load.
     touchControls = { enabled = true },
+    -- Where imported game data lives.  false = LOVE's save directory (the
+    -- appdata folder); a string is an absolute folder the player chose in
+    -- LAUNCHER SETTINGS.  See the game-data folder block above.
+    dataDir = false,
+    -- Launcher appearance: a palette preset and an accent colour, both ids
+    -- from src/import/LauncherTheme.lua.  false on either means "the one the
+    -- launcher shipped with".
+    launcherTheme = false,
+    launcherAccent = false,
+    launcherText = false,
+    -- Per-generation overrides for the rows above, as
+    -- { [1] = {colors="dmg"}, [2] = {...}, [3] = {...} }.  An absent
+    -- generation, or an absent key inside one, means the shared value is
+    -- used; see src/core/GenOptions.lua.
+    perGeneration = {},
   }
 end
 
@@ -353,8 +538,21 @@ end
 -- Both take an optional fs (write/getInfo/read) defaulting to
 -- love.filesystem, so the mod loader's injected filesystem can carry the
 -- options round-trip headless (no love global).
-function SaveData.saveOptions(opts, fs)
+-- `gen` (1/2/3, optional) says that `opts` is a table a game has been playing
+-- with, resolved for that generation by optionsFor below.  A key that
+-- generation overrides then goes back into its override instead of leaking
+-- into the shared value everyone else reads; see src/core/GenOptions.lua.
+-- The launcher and every other caller passes nothing and writes shared values,
+-- exactly as before.
+function SaveData.saveOptions(opts, fs, gen)
   fs = persistFs(fs)
+  if gen then
+    local GenOptions = require("src.core.GenOptions")
+    if GenOptions.isGeneration(gen) then
+      local stored = readTable(fs, OPTIONS_FILENAME)
+      opts = GenOptions.fold(stored or {}, opts, gen)
+    end
+  end
   opts = SaveData.mergeOptions(opts)
   -- modOptions is per-mod nested state: fold the on-disk sub-tree
   -- underneath (newest value winning per key) so one caller's partial
@@ -380,6 +578,37 @@ function SaveData.saveOptions(opts, fs)
     Logger.error("options save failed: %s", tostring(err))
   end
   return ok and opts or nil
+end
+
+-- The options a game of `version` should run with: the shared table with that
+-- generation's overrides laid over it.  This is what a save gets attached to
+-- it, so every consumer downstream -- the audio subsystems, the palette, the
+-- frame cap -- reads the right value without knowing per-generation settings
+-- exist.  `version` may be a version id, a generation number, or nil for the
+-- version currently selected.
+function SaveData.optionsFor(version, fs)
+  local opts = SaveData.loadOptions(fs)
+  local GenOptions = require("src.core.GenOptions")
+  local gen = SaveData.generationOf(version)
+  if not GenOptions.isGeneration(gen) then return opts end
+  return GenOptions.resolve(opts, gen)
+end
+
+-- version id -> generation, a bare generation passed straight through, nil ->
+-- whatever cartridge is selected.  Wrapped in pcall because this is reached
+-- from the options round-trip, which runs in headless tests where
+-- GameVersion may not be loaded at all.
+function SaveData.generationOf(version)
+  local GenOptions = require("src.core.GenOptions")
+  if GenOptions.isGeneration(version) then return tonumber(version) end
+  local ok, GameVersion = pcall(require, "src.core.GameVersion")
+  if not ok or type(GameVersion) ~= "table" then return nil end
+  local id = version
+  if type(id) ~= "string" or id == "" then id = GameVersion.current end
+  if type(id) ~= "string" or id == "" then return nil end
+  local okGen, gen = pcall(GameVersion.generation, id)
+  if okGen and GenOptions.isGeneration(gen) then return gen end
+  return nil
 end
 
 function SaveData.loadOptions(fs)
@@ -1081,7 +1310,7 @@ function SaveData.load(version)
     return nil
   end
   SaveData.runMigrations(data)
-  data.options = SaveData.loadOptions()
+  data.options = SaveData.optionsFor(version)
   Logger.info("loaded save")
   return data, recovered
 end
@@ -1581,8 +1810,9 @@ function SaveData.newGame(boot)
     -- per-mod persistence (mod.save) lives under here, keyed by mod id
     modData = {},
     -- Live options from options.lua (or defaults); New Game keeps the
-    -- player's audio/display/battle preferences.
-    options = SaveData.loadOptions(),
+    -- player's audio/display/battle preferences, with this generation's
+    -- overrides laid over them (SaveData.optionsFor).
+    options = SaveData.optionsFor(nil),
   }
   -- MAP SCENES THAT DO NOT START AT ZERO.
   --

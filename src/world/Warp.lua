@@ -56,6 +56,26 @@ local Warp = {}
 function Warp.onArrive(map, cx, cy, dir)
   local w = map:warpAtCell(cx, cy)
   if not (w and map:isWarpTileCell(cx, cy)) then return nil end
+  -- ...AND THE BEHAVIOUR HAS TO BE ONE THAT OPENS, which on this cartridge
+  -- is a separate question from whether a warp event is here.
+  --
+  -- Reported from play, about the TRICK HOUSE: "hitting a on it is supposed
+  -- to unlock the door, the door is just unlocked at the moment."  The
+  -- entrance's way in is a warp event on ORDINARY FLOOR, and this port took
+  -- it the moment the player stood on the tile -- so the scroll, the Trick
+  -- Master and the whole of finding him were optional.
+  --
+  -- IsWarpMetatileBehavior is the test TryStartWarpEventScript makes first,
+  -- and ordinary ground fails it: a warp event sitting there is a SCRIPT'S
+  -- DESTINATION and nothing else.  About a tenth of Hoenn's warp events are
+  -- that shape.  Which behaviours pass is derived at import rather than named
+  -- here (Map:isStepWarpCell, RomExtractorGen3:warpBehaviours), and every
+  -- older dataset answers true, so nothing before Gen 3 changes.
+  --
+  -- The arrow rule below is the OTHER half of the same law -- the arrow
+  -- behaviours are deliberately left out of IsWarpMetatileBehavior -- and it
+  -- is kept separate because it is directional and this one is not.
+  if map.isStepWarpCell and not map:isStepWarpCell(cx, cy) then return nil end
   local Map = require("src.world.Map")
   local GameVersion = require("src.core.GameVersion")
   -- GEN 3'S CARPET IS AN ARROW, and it is the paragraph above one cartridge

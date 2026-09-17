@@ -791,6 +791,31 @@ function Gen3.forMap(map)
     return id
   end
 
+  -- IS THIS METATILE SPOKEN FOR BY THE PROFILE?
+  --
+  -- Two things in data/gen3_shapes.lua can claim a metatile outright, and
+  -- every reader in this file that INFERS what a cell is from its sixteen
+  -- pixel rows has to stand down for both of them:
+  --
+  --   `metatiles`    a class pin -- "that cell is a fridge"
+  --   `building_art` a tileset saying "these ids are a building's own art"
+  --
+  -- The pin half is not new; it was already written out, identically, at
+  -- eight art readers (`leafAt`, `crownAt`, `footAt`, the panel and rock
+  -- tests, `roofAt`, `leafyMeta`).  This gathers it in one place so the
+  -- second claim reaches the same readers instead of being copied a ninth
+  -- and tenth time.
+  --
+  -- Reads `ctx.pins` and `ctx.buildingArt` at CALL time, not now: both are
+  -- resolved from the profile further down, and every caller is a closure
+  -- the build invokes later.
+  function ctx.authoredMeta(m)
+    if m == nil then return false end
+    if ctx.pins and ctx.pins[m] then return true end
+    if ctx.buildingArt and ctx.buildingArt[m] then return true end
+    return false
+  end
+
   function ctx.attributes(metatile)
     local m = tonumber(metatile) or 0
     local c = ctx.attrCache[m]
@@ -1260,7 +1285,7 @@ function Gen3.forMap(map)
       if m == nil then return false end
       -- a PINNED metatile has been spoken for by a profile and is not up for
       -- reinterpretation here
-      if ctx.pins and ctx.pins[m] then return false end
+      if ctx.authoredMeta(m) then return false end
       local st = art.stats[m]
       if not (st and st.leafy and st.solid > 0.5) then return false end
       -- ...AND HOENN DRAWS EVERY LEAF IN GREEN.
@@ -1325,7 +1350,7 @@ function Gen3.forMap(map)
       if cx < x0 or cy < y0 or cx > x1 or cy > y1 then return false end
       local m = ctx.metatileAt(cx, cy)
       if m == nil then return false end
-      if ctx.pins and ctx.pins[m] then return false end
+      if ctx.authoredMeta(m) then return false end
       local st = art.stats[m]
       if not (st and st.leafy) then return false end
       local lf, lf2 = st.leafFrac or 0, st.leafFrac2 or 0
@@ -1372,7 +1397,7 @@ function Gen3.forMap(map)
       end
       local m = ctx.metatileAt(cx, cy)
       if m == nil then return false end
-      if ctx.pins and ctx.pins[m] then return false end
+      if ctx.authoredMeta(m) then return false end
       local st = art.stats[m]
       if not st then return false end
       local lf, lf2 = st.leafFrac or 0, st.leafFrac2 or 0
@@ -1647,7 +1672,7 @@ function Gen3.forMap(map)
       if not ctx.blockedAt(cx, cy) then return false end
       local m = ctx.metatileAt(cx, cy)
       if m == nil then return false end
-      if ctx.pins and ctx.pins[m] then return false end
+      if ctx.authoredMeta(m) then return false end
       local st = art.stats[m]
       if not (st and (st.solid or 0) > 0.5) then return false end
       if st.overhead then return false end
@@ -2004,7 +2029,7 @@ function Gen3.forMap(map)
       if not ctx.blockedAt(cx, cy) then return false end
       local m = ctx.metatileAt(cx, cy)
       if m == nil then return false end
-      if ctx.pins and ctx.pins[m] then return false end
+      if ctx.authoredMeta(m) then return false end
       local st = art.stats[m]
       if not st then return false end
       if st.leafy or st.overhead or st.overhang then return false end
@@ -2080,7 +2105,7 @@ function Gen3.forMap(map)
       if cx < 0 or cy < 0 or cx >= width or cy >= height then return false end
       if not ctx.blockedAt(cx, cy) then return false end
       local m = ctx.metatileAt(cx, cy)
-      if m == nil or (ctx.pins and ctx.pins[m]) then return false end
+      if m == nil or ctx.authoredMeta(m) then return false end
       -- MB_NORMAL, or one of the ground-ish bytes Emerald hands solid art:
       -- what is excluded is a cell the ROM names as something in particular
       -- (a ledge, a waterfall, a door), because that is not a rock.
@@ -2695,7 +2720,29 @@ function Gen3.forMap(map)
     if not ctx.blockedAt(cx, cy) then return false end
     local m = ctx.metatileAt(cx, cy)
     if m == nil then return false end
-    if ctx.pins and ctx.pins[m] then return false end
+    -- ...AND WHERE THE PROFILE NAMES A ROOF, IT IS ONE.
+    --
+    -- MOTIVATED BY FORTREE CITY'S SIX TREE HUTS -- each thatched with the
+    -- three-cell frond roof 548/549/550, see `building_art` in
+    -- data/gen3_shapes.lua.
+    --
+    -- The art test below cannot reach it.  A frond roof is drawn in leaves,
+    -- and `not st.leafy` is the clause that keeps this function off the
+    -- canopy -- so 548/549/550 read `overhead / solid 1.00 / LEAFY` and came
+    -- back false, the hut's door column stated no roofline at all, and the
+    -- flank columns fell through to the raw blocked-run match beneath it.
+    -- That match is an accident of where the forest above each hut happens
+    -- to be blocked: FortreeCity's six identical huts answered 0, 0, 0, 0, 5
+    -- and 11 for their door columns and 0, 0, 0, 0, 9 and 11 for the column
+    -- one east, so House5's east column -- (13, 12..13), the same two
+    -- metatiles as the other five huts' -- missed by four rows and was
+    -- refused.  One hut of six came out a cell narrower than its neighbours.
+    --
+    -- Above the pin guard, not below it: a profile that troubles to name a
+    -- metatile a roof is making a statement about it, and the guard below
+    -- means only "the art has been spoken for, stop inferring".
+    if ctx.buildingArt and ctx.buildingArt[m] == "roof" then return true end
+    if ctx.authoredMeta(m) then return false end
     if ctx.sceneryAt(cx, cy) then return false end
     local art = Gen3.analyse(map.tileset)
     local st = art and art.stats[m]
@@ -3223,6 +3270,28 @@ function Gen3.forMap(map)
     addPins(spec_.map_metatiles[ctx.mapName])
   end
   ctx.pins = pins
+  -- ...AND THE ART A TILESET CLAIMS AS A BUILDING'S OWN.
+  --
+  -- MOTIVATED BY FORTREE CITY'S SIX TREE HUTS -- see `building_art` in
+  -- data/gen3_shapes.lua, which carries the whole of the reasoning and the
+  -- measurement.  Keyed on tileset + metatile id, exactly as the class pins
+  -- above are, and read the same way: most general to most specific.
+  --
+  -- It is deliberately NOT a class.  A pin says what a cell IS and takes it
+  -- out of the structural flood; this says only that the cell is NOT the
+  -- landscape the art readers would take it for, and leaves the flood, the
+  -- run and the height model to decide the rest.
+  do
+    local art = profile.building_art
+    if type(art) == "table" then
+      local t = {}
+      for id, what in pairs(art) do
+        local n = tonumber(id)
+        if n and what then t[n] = what end
+      end
+      ctx.buildingArt = next(t) and t or nil
+    end
+  end
 
   ctx.profile = profile
   -- heights asked BEFORE the profile resolved were answered without it --
@@ -3511,7 +3580,7 @@ function Gen3.forMap(map)
     -- answer for good).
     local function leafyMeta(m)
       if m == nil then return false end
-      if ctx.pins and ctx.pins[m] then return false end
+      if ctx.authoredMeta(m) then return false end
       local an = Gen3.analyse(map.tileset)
       local st = an and an.stats and an.stats[m]
       if not (st and st.leafy and (st.solid or 0) > 0.5) then return false end
@@ -3800,8 +3869,54 @@ function Gen3.forMap(map)
           end
         end
         role = stair and "stair" or "floor"
-      elseif kind == "tree" or (motif and material == "green")
-             or leafyMeta(m) then
+      elseif ctx.buildingArt and ctx.buildingArt[m]
+             and ctx.isBuildingCell(cx, cy) then
+        -- ART THE PROFILE HAS CLAIMED FOR A BUILDING IS THE BUILDING.
+        --
+        -- MOTIVATED BY FORTREE CITY'S SIX TREE HUTS -- the bamboo end bays
+        -- 555/559 over 563/567 and the frond roof 548/549/550, see
+        -- `building_art` in data/gen3_shapes.lua for the measurement.
+        --
+        -- ABOVE the two art branches below, because both of them claim these
+        -- cells and the second one claims them whatever the leaf test says:
+        -- the generated table reads all seven ids `surface / green / cap 16
+        -- / face 0`, four of them with `motif` TRUE, so a bay came back
+        -- `tree` on `motif and material == "green"` and, with that clause
+        -- refused, `prop` on `motif` alone one branch further down.  Neither
+        -- is landscape to anything downstream -- both are outside
+        -- `isBoundaryRole`, and `buildScenery` lathes a `tree` into a crown
+        -- -- so four of every hut's ten wall cells stood as hulls at 0, 16
+        -- or 32 beside a facade three cells wide.
+        --
+        -- It says the same thing as "A WALL IS A WALL BECAUSE THERE IS A
+        -- DOOR IN IT" below and defers to the same authority: the cell is a
+        -- wall because `ctx.buildings` -- the cartridge's own warps --
+        -- claimed it.  All this branch adds is that the art is not allowed
+        -- to overrule that where the profile has already spoken for it.
+        role = "wall"
+      elseif (kind == "tree" or (motif and material == "green")
+              or leafyMeta(m))
+             and not (ctx.buildingArt and ctx.buildingArt[m]) then
+        -- ...AND NOT WHERE THE PROFILE HAS CLAIMED THE ART FOR A BUILDING.
+        --
+        -- MOTIVATED BY FORTREE CITY'S SIX TREE HUTS -- the bamboo end bays
+        -- 555/559/563/567 and the frond roof 548/549/550, see
+        -- `building_art` in data/gen3_shapes.lua for the measurement.
+        --
+        -- `leafyMeta` already stands down for an authored metatile, but the
+        -- two clauses beside it do not, and the bays reach this branch
+        -- through the middle one: the generated table reads them `surface /
+        -- green / cap 16 / face 0 / motif TRUE`, so `motif and material ==
+        -- "green"` fires on its own and the cell came back `tree` however
+        -- the leaf test was answered.  A `tree` is outside `isBoundaryRole`
+        -- and is meshed as a crown, so four of every hut's ten wall cells
+        -- were lathed into cylinders standing at 0, 16 or 32 beside a
+        -- facade three cells wide.
+        --
+        -- Narrower than the rule it overrides, which is not touched: the
+        -- reading is right for every one of the 2,693 cells the branch was
+        -- measured on, and this excepts SEVEN ids in ONE tileset, all seven
+        -- of them laid on one map (see `building_art`).
         -- ...AND THE SHAPE PASS AND THE ROLE PASS MUST READ ONE DRAWING.
         --
         -- `motif` is the generated table's word for "nothing with a face is
@@ -3969,6 +4084,20 @@ function Gen3.forMap(map)
     local function foliageCell(cx, cy)
       local mm = ctx.metatileAt(cx, cy)
       if mm == nil then return false end
+      -- ...UNLESS THE PROFILE HAS CLAIMED THIS ART FOR A BUILDING.
+      --
+      -- The paragraph above is right about the ART and stays: 555/559/563/
+      -- 567 really do read `surface / GREEN / cap 16 / face 0`, the same as
+      -- gTileset_General's tree, and no reading of their pixels says
+      -- otherwise.  What it could not know is that those four ids are the
+      -- HUT'S OWN BAMBOO END WALLS -- laid six times each, only ever around
+      -- a Fortree warp, and nowhere else in Hoenn.  data/gen3_shapes.lua's
+      -- `building_art` says so per tileset and per metatile id, which is the
+      -- one place in this mod where the cartridge's own layout is written
+      -- down, and this stands down for exactly those ids.  Every other cell
+      -- the rule was measured on -- Route 104's Petalburg Woods entrance,
+      -- Route 118's tunnel mouth, Lavaridge (15,5) -- is untouched.
+      if ctx.buildingArt and ctx.buildingArt[mm] then return false end
       local an = Gen3.analyse(map.tileset)
       local st = an and an.stats and an.stats[mm]
       if not (st and st.leafy and (st.solid or 0) > 0.5) then return false end
@@ -4343,7 +4472,55 @@ function Gen3.forMap(map)
             local cells = {}
             local overheadRows = 0
             local taken = {}
+            -- A COLUMN OF THE BUILDING'S OWN ART IS THE BUILDING'S COLUMN.
+            --
+            -- MOTIVATED BY FORTREE CITY'S SIX TREE HUTS -- the bamboo end
+            -- bays 555/559 over 563/567, see `building_art` in
+            -- data/gen3_shapes.lua.
+            --
+            -- Every test in `take` below measures a flank column against the
+            -- DOOR column: its roofline where the cartridge states one, the
+            -- top of its blocked run where it does not.  A hut's end bay can
+            -- pass neither, and not because it is not the building: Emerald
+            -- draws the frond roof THREE cells wide over a hut FIVE cells
+            -- wide, so the bay carries no roof row to match, and the forest
+            -- standing behind it runs the raw blocked walk off to the top of
+            -- the map.  MEASURED, House1 door (10,3): the door column states
+            -- its roof at row 1 and column 8 answers `nil`.
+            --
+            -- Where the profile has NAMED the art there is nothing left to
+            -- infer.  The column is taken for exactly the rows it draws that
+            -- art in, counted UP FROM THE DOOR ROW and stopping at the first
+            -- cell that is not the building's -- so it can never climb into
+            -- the canopy above the hut, which is the failure the two tests
+            -- below exist to prevent.  It claims nothing a map has not
+            -- authored: `ctx.buildingArt` is empty for 71 of Hoenn's 72
+            -- tilesets and its seven ids appear on ONE map.
+            local function artColumn(cx)
+              if not ctx.buildingArt then return nil end
+              local top, yy = nil, wy - 1
+              while yy >= 0 do
+                local mm = ctx.metatileAt(cx, yy)
+                if not (mm and ctx.buildingArt[mm]) then break end
+                if not blockedCell(cx, yy) then break end
+                top = yy
+                yy = yy - 1
+              end
+              return top
+            end
             local function take(cx)
+              local aTop = artColumn(cx)
+              if aTop then
+                for y = aTop, wy - 1 do
+                  local k = y * 8192 + cx
+                  if not built.cell[k] then
+                    built.cell[k] = #built.list + 1
+                    cells[#cells + 1] = { cx, y }
+                  end
+                end
+                taken[#taken + 1] = { cx = cx, top = aTop, raw = aTop }
+                return true
+              end
               local t, b = runAbove(cx, wy)
               if not t then return false end
               local rawTop = t
@@ -4375,10 +4552,34 @@ function Gen3.forMap(map)
               -- 738 seventy-three.  So walk down from the top of the run while
               -- the art is common, and start the building where it stops
               -- being.
+              -- ...AND THE TRIM STOPS WHERE THE PROFILE SAYS THE BUILDING
+              -- STARTS.
+              --
+              -- MOTIVATED BY FORTREE CITY'S SIX TREE HUTS.
+              --
+              -- `RARE_BUILD` is 4 and its own note says why -- "far below
+              -- the tens and hundreds that landscape tiles at" -- but this
+              -- map draws the SAME HUT SIX TIMES, so every one of the hut's
+              -- own metatiles is laid SIX times and the trim ate the whole
+              -- drawing.  MEASURED, House1, door (10,3): the walk found rows
+              -- 0..2, the trim stepped over 199 (laid 156 times) and then
+              -- over 549, the frond roof, laid 6 -- and stopped only because
+              -- it had reached the bottom of the run.  Every one of the six
+              -- huts came out ONE ROW deep, which is what made the facade
+              -- one course of wall where the drawing has two, and left the
+              -- roof outside the building to be meshed as a treetop.
+              --
+              -- `building_art` is the map's own answer to the question the
+              -- count is a proxy for.  Where the profile has named a
+              -- metatile the building's own art the trim stops there: no
+              -- threshold, and nothing to tune.
               if not t0r then
                 local counts = ctx.metatileCounts()
                 while t < b do
                   local mm = ctx.metatileAt(cx, t)
+                  if mm and ctx.buildingArt and ctx.buildingArt[mm] then
+                    break
+                  end
                   if mm and (counts[mm] or 0) > RARE_BUILD then t = t + 1
                   else break end
                 end
@@ -4942,6 +5143,211 @@ function Gen3.forMap(map)
           end
         end
       end
+    -- A BUILDING EMERALD GIVES NO DOOR IS STILL A BUILDING.
+    --
+    -- MOTIVATED BY RUSTBORO CITY'S SOUTH-EAST APARTMENT BLOCK,
+    -- (31..34, 40..46) -- the grey four-storey with the white roof, across
+    -- the street from the house at (24..29, 43..46).  Reported as drawn flat
+    -- instead of as a building.
+    --
+    -- Everything above this line founds a building FROM A WARP.  The loop is
+    -- `for _, wp in ipairs(warps)`, `runAbove` walks up from the door row, and
+    -- `roofTop`, `take`, the bespoke-art widening, the shopfront rule and the
+    -- cave-mouth drop are every one of them measured off it.  Emerald gives
+    -- this block NO DOOR AND NO WARP -- all twelve of Rustboro's warps are
+    -- elsewhere and none is inside its footprint -- so it was never a
+    -- candidate, `ctx.buildings` claimed none of its 28 cells, and it fell
+    -- through to the generated landscape role table, which reads its
+    -- metatiles as `cliff` and `shelf`.  `capGen3Rock` then gave its columns
+    -- "the drop they separate": 16 and 32 side by side over a street at 16.
+    -- A four-by-seven building drawn as at most one course of pavement, which
+    -- is the flat block in the report.  The house across the street, which
+    -- HAS a warp at (26,46), is founded normally and stands at 48 on the same
+    -- street.
+    --
+    -- WHAT THE CARTRIDGE STATES ABOUT IT is the one thing this function
+    -- already trusts a door to lead it to: "A roof is the one thing Emerald
+    -- states plainly (`roofAt`: the top half drawn above the player, filling
+    -- the cell), so where the door column has one, the facade starts at it."
+    -- Row 40 of this mass -- (31,40) to (34,40), metatiles 566/574/574/567 --
+    -- is drawn on the ABOVE-PLAYER layer at solid 1.00, and `ctx.roofAt` is
+    -- true on all four.  The building states its own roof.  Only the door is
+    -- missing.
+    --
+    -- So: a SECOND founding pass, after the warp pass, over the blocked
+    -- masses the warp pass did not claim, admitting one only on evidence the
+    -- warp pass already trusts.  A mass is a building if
+    --
+    --   * EVERY COLUMN'S TOP ROW STATES A ROOF (`ctx.roofAt`) -- the
+    --     cartridge's own sentence, asked of the whole eave rather than of
+    --     one door column;
+    --   * the footprint is a FILLED RECTANGLE -- a house is a box;
+    --   * it is at least two cells in BOTH axes -- a box has two dimensions;
+    --   * the whole ring outside it is WALKABLE -- it stands free in a
+    --     street, so it is not a fragment of a mass and not a face that
+    --     retains ground;
+    --   * and every cell's art FILLS ITS CELL (`solid >= 0.9`) -- this
+    --     file's own reading of "the building's own art, filling its cell".
+    --
+    -- MEASURED over all 518 maps.  The warp pass leaves 1,278 four-connected
+    -- blocked masses unclaimed on the 82 outdoor Gen 3 maps, and the five
+    -- tests cut them
+    --
+    --   1278  unclaimed blocked masses
+    --     20  every column's top row states a roof
+    --     18  + the footprint is a filled rectangle
+    --      7  + at least two cells in both axes
+    --      4  + the ring outside it is walkable all the way round
+    --      1  + every cell's art fills its cell
+    --
+    -- and the ONE is RustboroCity (31..34, 40..46).  Nineteen masses are
+    -- refused and every one of them was looked at:
+    --
+    --   the art does not fill its cell (3)
+    --     BattleFrontier_OutsideEast (15..19, 34..39)
+    --     BattleFrontier_OutsideWest (17..21, 45..47) and (31..40, 45..47)
+    --     -- RAISED FLOWER BEDS, red flowers in a stone kerb whose corners
+    --     are cut away: 0.75, 0.86 and 0.86 solid against the building's
+    --     1.00.  Emerald draws their kerb overhead, so they state a roof.
+    --   one cell wide (11)
+    --     EverGrandeCity (24, 21..23) and (28, 21..23) -- the two stone
+    --     BALUSTRADES flanking the Pokemon League staircase -- and nine
+    --     one-wide masses on ROUTE 110, every one of them a piece of the
+    --     CYCLING ROAD: its concrete piers standing in the sea at (8) and
+    --     (31) rows 31..33 and (13) and (30) rows 78..80, its four railing
+    --     gates at rows 34..35 and 81..82, and the piece of its west
+    --     abutment at (21,86) that the bridge rule above already names.
+    --   not a rectangle (2)
+    --     BattleFrontier_OutsideWest (15..23, 6..8) -- the curved white DOME
+    --     of the Battle Dome, which is a roof and not a box -- and
+    --     Route110 (23..25, 10..14).
+    --   the ring is not walkable (3)
+    --     SlateportCity (27..29, 42..44) -- the east end of the market shop,
+    --     a FRAGMENT welded to cells the warp pass already claimed -- and
+    --     BattleFrontier_OutsideEast (40..43, 51..54) and (47..50, 51..54),
+    --     the two WINGS of the Battle Palace facade, welded to the central
+    --     structure its own warp founds.
+    --
+    -- AND THE FOUNTAIN IS REFUSED AT THE FIRST TEST.  RustboroCity
+    -- (27..29, 38..40) is a filled three-by-three with a walkable ring and
+    -- every one of its nine metatiles -- 824-826, 832-834, 840-842 -- is laid
+    -- EXACTLY ONCE on the map, so it is MORE bespoke than the building is.
+    -- But Emerald draws none of it on the above-player layer and `ctx.roofAt`
+    -- is false on all nine cells.  A fountain has no roof.  That is why this
+    -- pass is founded on the ROOF and not on bespoke art: "a building's art
+    -- is BESPOKE and the landscape it backs onto TILES" selects the fountain
+    -- and REFUSES the building, whose wall band is laid 4 to 20 times because
+    -- every other house in Rustboro is drawn with the same brick.
+    --
+    -- OUTDOORS ONLY, with the other rules in this function that are.  Indoors
+    -- `ctx.buildings` is answering about rooms and the warps between them,
+    -- `ctx.roofAt` refuses on its first line, and a free-standing rectangular
+    -- mass with a walkable ring all round it is a TABLE.
+    local DOORLESS_MIN_SPAN = 2     -- derived: 1-wide cuts 11, all railings
+    local DOORLESS_SOLID = 0.9      -- stated: this file's "fills its cell"
+    if ctx.outdoor then
+      local anD = Gen3.analyse(map.tileset)
+      local seenMass = {}
+      local function unclaimed(cx, cy)
+        if cx < 0 or cy < 0 or cx >= width or cy >= height then return false end
+        if built.cell[cy * 8192 + cx] then return false end
+        local okB, bl = pcall(ctx.blockedAt, cx, cy)
+        return (okB and bl) == true
+      end
+      for cy0 = 0, height - 1 do
+        for cx0 = 0, width - 1 do
+          local k0 = cy0 * 8192 + cx0
+          if not seenMass[k0] and unclaimed(cx0, cy0) then
+            -- the four-connected blocked mass this cell belongs to
+            local stack, cells = { { cx0, cy0 } }, {}
+            seenMass[k0] = true
+            while #stack > 0 do
+              local c = table.remove(stack)
+              cells[#cells + 1] = c
+              for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
+                local nx, ny = c[1] + d[1], c[2] + d[2]
+                local kk = ny * 8192 + nx
+                if not seenMass[kk] and unclaimed(nx, ny) then
+                  seenMass[kk] = true
+                  stack[#stack + 1] = { nx, ny }
+                end
+              end
+            end
+            local x0, x1, y0, y1 = nil, nil, nil, nil
+            for _, c in ipairs(cells) do
+              if x0 == nil or c[1] < x0 then x0 = c[1] end
+              if x1 == nil or c[1] > x1 then x1 = c[1] end
+              if y0 == nil or c[2] < y0 then y0 = c[2] end
+              if y1 == nil or c[2] > y1 then y1 = c[2] end
+            end
+            local w, h = x1 - x0 + 1, y1 - y0 + 1
+            -- a box, with two dimensions, filled
+            local ok = (w >= DOORLESS_MIN_SPAN and h >= DOORLESS_MIN_SPAN
+                        and #cells == w * h)
+            -- ...standing free in a street.  Off the map counts as not
+            -- walkable, so a mass that runs off the border is refused with
+            -- the rest: the border ring is not a street.
+            if ok then
+              local inMass = {}
+              for _, c in ipairs(cells) do inMass[c[2] * 8192 + c[1]] = true end
+              for _, c in ipairs(cells) do
+                for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
+                  local nx, ny = c[1] + d[1], c[2] + d[2]
+                  if not inMass[ny * 8192 + nx] then
+                    if nx < 0 or ny < 0 or nx >= width or ny >= height then
+                      ok = false break
+                    end
+                    local okB, bl = pcall(ctx.blockedAt, nx, ny)
+                    if not okB or bl then ok = false break end
+                  end
+                end
+                if not ok then break end
+              end
+            end
+            -- ...with a roof over every column of it.  The mass is a filled
+            -- rectangle by now, so every column's topmost cell is row y0.
+            if ok then
+              for cx = x0, x1 do
+                local okR, r = pcall(ctx.roofAt, cx, y0)
+                if not (okR and r) then ok = false break end
+              end
+            end
+            -- ...drawn in art that fills its cell, everywhere.
+            if ok then
+              for _, c in ipairs(cells) do
+                local mm = ctx.metatileAt(c[1], c[2])
+                local st = mm and anD and anD.stats and anD.stats[mm]
+                if not (st and (st.solid or 0) >= DOORLESS_SOLID) then
+                  ok = false break
+                end
+              end
+            end
+            if ok then
+              -- WHERE THE DOOR WOULD BE.  Everything downstream that reads
+              -- `bl.door` reads it to find THE STREET THE BUILDING STANDS ON
+              -- -- `foundGen3Buildings`' doorstep scan and both floor passes
+              -- look at {0,1} first and then around it -- and in Emerald you
+              -- step into a house from the SOUTH.  So the stated door cell is
+              -- the middle of the bottom row, whose {0,1} is that street.
+              -- STATED: a fact about how the cartridge draws a house, not a
+              -- measurement.
+              --
+              -- `overheadRows` is 0 and that is not a default: it counts the
+              -- WALKABLE rows the Mirage Tower growth added above the mass,
+              -- and this pass adds none -- the roof row here is BLOCKED and
+              -- is already inside the footprint.
+              local id = #built.list + 1
+              for _, c in ipairs(cells) do
+                built.cell[c[2] * 8192 + c[1]] = id
+              end
+              local dx = x0 + math.floor((x1 - x0) / 2)
+              built.list[id] = { cells = cells, door = { dx, y1 },
+                                 overheadRows = 0, roofed = true }
+            end
+          end
+        end
+      end
+    end
       return built
     end
     function ctx.isBuildingCell(cx, cy)
@@ -5573,6 +5979,74 @@ function Gen3.overheadMasks(tileset)
   end
   overheadCache[key] = out
   return out
+end
+
+-- ---------------------------------------------------------------------------
+-- ...AND THE OBJECT LAYER OF A METATILE THE PLAYER WALKS IN FRONT OF.
+--
+-- `Gen3.overheadMasks` above reads layer 2 for the metatiles that draw ABOVE
+-- the player, which is all a crown hanging on a wall needs.  INDOOR FURNITURE
+-- is the other half of the same question and cannot use it: a table's layer
+-- type is not the above-player one, so `bakeLayer(2, ...)` -- which goes
+-- through `Gen3Tiles:bakeMetatileInto` and only draws when `topIsAbovePlayer`
+-- -- plots NOTHING AT ALL for it.  Measured on the Rustboro dining table:
+-- `overheadMasks` returns no entry for metatiles 894, 895 or 910.
+--
+-- WHY ANYTHING NEEDS THIS.  The shape surface (`shapeDataForMap` below)
+-- separates object from floor BY COLOUR: it composites the two layers and
+-- knocks out every colour the room lays its floor in.  That is right nearly
+-- everywhere and wrong wherever Emerald painted an object in one of the
+-- floor's own colours -- there the object is carved away WITH the floor.
+-- Layer 2 is the same drawing without the colour test: object art is the top
+-- layer with real transparency around it, so its own alpha states the
+-- silhouette whatever colours it happens to be painted in.  MEASURED on
+-- RustboroCity_House1: metatile 895 carves to 16 pixels of 256 and its layer
+-- 2 draws all 256, which is the tablecloth the carve cannot see.
+--
+-- PER METATILE AND LAZY, not a whole-sheet table like the overhead masks: a
+-- pair holds up to 1,024 metatiles and nearly every indoor one draws on layer
+-- 2, so the sheet-wide form would carry a quarter of a million booleans to
+-- answer a question this mod asks about a handful of cells per map.  Four 8x8
+-- tiles per call, memoised per (pair, metatile), and keyed on the tileset
+-- alone for the same reason `overheadCache` is: the art is a property of the
+-- pair, not of any one map.
+--
+--- The LAYER-2 SILHOUETTE of one metatile, cell-local, as
+--- `{ [ly * 16 + lx] = true, ..., n = <count> }`.  Nil when the pair has no
+--- tiles to read (a host with no renderer) or the metatile draws no layer 2.
+local layer2Cache = {}
+
+function Gen3.layer2MaskOf(tileset, metatile)
+  if not Gen3.isGen3(tileset) then return nil end
+  local m = math.floor(tonumber(metatile) or -1)
+  if m < 0 then return nil end
+  local key = tostring(tileset.id)
+  local per = layer2Cache[key]
+  if per == nil then
+    local tiles = tilesForTileset(tileset)
+    per = tiles and { tiles = tiles, masks = {} } or false
+    layer2Cache[key] = per
+  end
+  if not per then return nil end
+  local hit = per.masks[m]
+  if hit ~= nil then return hit or nil end
+  local mk = { n = 0 }
+  local ok = pcall(per.tiles.drawLayer, per.tiles, m, 2, 0, 0,
+    function(x, y)
+      if x >= 0 and y >= 0 and x < CELL and y < CELL then
+        local p = y * CELL + x
+        if not mk[p] then
+          mk[p] = true
+          mk.n = mk.n + 1
+        end
+      end
+    end)
+  if not ok or mk.n == 0 then
+    per.masks[m] = false
+    return nil
+  end
+  per.masks[m] = mk
+  return mk
 end
 
 function Gen3.shapeDataForTileset(tileset)

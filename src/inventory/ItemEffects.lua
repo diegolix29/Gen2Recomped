@@ -325,6 +325,22 @@ local function gen3Use(data, save, itemId, target, battle, moveIndex)
     if r.cureAll or r.cures then
       target.status = nil
       cureActiveToxic(battle, target)
+      -- ...AND THE CONFUSION WITH IT.  A FULL RESTORE's effect[3] is $3F --
+      -- the whole cure mask, whose bit 0 is ITEM3_CONFUSION -- so the item
+      -- that clears the status clears the confusion too.  The cure-only
+      -- branch below has always done this; the healing branch was dropping
+      -- it, so a FULL RESTORE left a confused Pokemon confused.
+      local clears = r.cureAll
+      if not clears then
+        for _, name in ipairs(r.cures or {}) do
+          if name == "CONFUSION" then clears = true end
+        end
+      end
+      if clears and battle then
+        for _, b in ipairs({ battle.player, battle.enemy }) do
+          if b and b.mon == target then b.confusedTurns = nil end
+        end
+      end
     end
     gen3Friendship(target, r.friendship)
     require("src.core.Sound").play(data, "Heal_HP")
