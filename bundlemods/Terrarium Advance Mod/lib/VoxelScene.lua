@@ -925,27 +925,30 @@ end
 local HALF_PI = math.pi / 2
 local cos, sin = math.cos, math.sin
 local function billboardMatrix(px, py, y, mirror, yaw, spriteWidth, spriteHeight)
-  local halfW = (spriteWidth or 16) / 2
-  local cx = px + halfW
-  local cz = py + (spriteHeight or 16) / 2
+  local half = (spriteWidth or 16) / 2
+  local anchor = half -- Use center of sprite as rotation anchor
   local b = FirstPerson.cardBlend()
-
-  local a = 0
-  if b > 0 then a = FirstPerson.cardYaw(cx, cz) * b
-  elseif yaw and yaw ~= 0 then a = yaw end
-
-  local ca, sa = cos(a), sin(a)
-  local pitch = (leanAngle() - HALF_PI) * (1 - b)
-  local cp, sp = cos(pitch), sin(pitch)
-  local sx = mirror and -1 or 1
-  local m1 = ca * sx          -- column 1, which is also what T2 shifts by
-  local m9 = -sa * sx
-  return {
-    m1,  sa * sp,  sa * cp,  cx - m1 * halfW,
-    0,   cp,       -sp,      y,
-    m9,  ca * sp,  ca * cp,  cz - m9 * halfW,
-    0,   0,        0,        1,
-  }
+  
+  -- Translate to anchor point (center of sprite)
+  local m = Mat4.translate(px + anchor, y, py + anchor)
+  
+  -- Rotate around anchor point for proper centering during yaw
+  if b > 0 then
+    m = Mat4.mul(m, Mat4.rotateY(FirstPerson.cardYaw(px + anchor, py + anchor) * b))
+  elseif yaw and yaw ~= 0 then
+    m = Mat4.mul(m, Mat4.rotateY(yaw))
+  end
+  
+  -- Apply lean pitch
+  m = Mat4.mul(m, Mat4.rotateX((leanAngle() - HALF_PI) * (1 - b)))
+  
+  -- Apply mirror if needed
+  if mirror then 
+    m = Mat4.mul(m, Mat4.scale(-1, 1, 1)) 
+  end
+  
+  -- Translate back to local space
+  return Mat4.mul(m, Mat4.translate(-half, 0, 0))
 end
 
 local function billboardPull()
