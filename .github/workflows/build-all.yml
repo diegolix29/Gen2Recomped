@@ -197,6 +197,7 @@ jobs:
         run: |
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
           unzip -q commandlinetools-linux-11076708_latest.zip
+          sudo rm -rf /usr/local/lib/android/sdk/cmdline-tools/latest
           sudo mkdir -p /usr/local/lib/android/sdk/cmdline-tools/latest
           sudo mv cmdline-tools/* /usr/local/lib/android/sdk/cmdline-tools/latest/
           sudo rm -rf cmdline-tools commandlinetools-linux-11076708_latest.zip
