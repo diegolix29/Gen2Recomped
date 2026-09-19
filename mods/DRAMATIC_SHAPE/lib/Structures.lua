@@ -9726,6 +9726,25 @@ function Structures.markGen3Stairs(S, map, x0, x1, y0, y1)
     return false
   end
 
+  -- THE ART TESTS ARE A GUESS, and indoors they guess wrong.
+  --
+  -- Reported from play on FireRed: "the whole inside of pokecentre and
+  -- pokemart is messed up with irregular blocks".  Viridian's Centre marked
+  -- 33 stair cells over four flights -- the floor's striped tiles pass the
+  -- banded test on sight -- and a Centre has no drawn flight at all: an
+  -- interior staircase on either cartridge is a WARP tile.  The guess only
+  -- ever stood in for the role table, so a room whose tileset the table has
+  -- never profiled gets no guess; outdoors, where drawn flights are real,
+  -- it still runs.
+  local artGuessAllowed = true
+  do
+    local okR, t = pcall(V.data, "gen3_metatiles")
+    local roles = okR and type(t) == "table" and t.roles or nil
+    local known = roles and ((g3c.ownerPrimary and roles[g3c.ownerPrimary])
+                             or (g3c.ownerSecondary and roles[g3c.ownerSecondary]))
+    if not known and not g3c.outdoor then artGuessAllowed = false end
+  end
+
   local cand = {}
   local n = 0
   local function markShape(cx, cy)
@@ -9774,9 +9793,9 @@ function Structures.markGen3Stairs(S, map, x0, x1, y0, y1)
         elseif m and roleHere ~= nil and roleHere ~= "stair" then
           -- the table knows this metatile and says it is not a tread; do not
           -- let the art tests overrule it
-        elseif m and treadArt(m) then
+        elseif m and treadArt(m) and artGuessAllowed then
           mark(cx, cy)
-        elseif m and plateArt(m) then
+        elseif m and artGuessAllowed and plateArt(m) then
           -- a plate: only where the topology says crossing, and only when it
           -- is drawn as something other than the path either side
           local nsX = (not walkable(cx - 1, cy)) and (not walkable(cx + 1, cy))

@@ -699,13 +699,21 @@ end
 -- DisplayTextID -> TalkToTrainer, which prints the AfterBattle text on a
 -- win.  engageTrainer only shows the won line, so wrap talk like Lance /
 -- Game Corner Rocket and push header.after immediately after a win.
-local function e4LeaderTalk(afterLabel)
+local function e4LeaderTalk(afterLabel, trainerClass, trainerParty)
   return function(game, ow, npc, done)
     done = done or function() end
     if ow:trainerDefeated(npc) then
       local after = text(game)[afterLabel]
       if after then push(game, after, done) else done() end
       return
+    end
+    -- FireRed's generated object retains its sprite and position but not the
+    -- legacy trainer header this shared Kanto script once indexed.  Give the
+    -- encounter its cartridge trainer before the common battle path asks for
+    -- it; victory flags remain owned by victories.lua.
+    if not npc.def.trainerClass then
+      npc.def.trainerClass = trainerClass
+      npc.def.trainerParty = trainerParty
     end
     ow:engageTrainer(npc, function()
       if not ow:trainerDefeated(npc) then
@@ -721,17 +729,17 @@ end
 M.LORELEIS_ROOM = e4ExitSeal("EVENT_BEAT_LORELEIS_ROOM_TRAINER_0", 0x24, 0x05,
   "_LoreleisRoomLoreleiDontRunAwayText", "EVENT_AUTOWALKED_INTO_LORELEIS_ROOM")
 M.LORELEIS_ROOM.talk = {
-  TEXT_LORELEISROOM_LORELEI = e4LeaderTalk("_LoreleisRoomLoreleiAfterBattleText"),
+  TEXT_LORELEISROOM_LORELEI = e4LeaderTalk("_LoreleisRoomLoreleiAfterBattleText", "LORELEI", 1),
 }
 M.BRUNOS_ROOM = e4ExitSeal("EVENT_BEAT_BRUNOS_ROOM_TRAINER_0", 0x24, 0x05,
   "_BrunosRoomBrunoDontRunAwayText", "EVENT_AUTOWALKED_INTO_BRUNOS_ROOM")
 M.BRUNOS_ROOM.talk = {
-  TEXT_BRUNOSROOM_BRUNO = e4LeaderTalk("_BrunoAfterBattleText"),
+  TEXT_BRUNOSROOM_BRUNO = e4LeaderTalk("_BrunoAfterBattleText", "BRUNO", 1),
 }
 M.AGATHAS_ROOM = e4ExitSeal("EVENT_BEAT_AGATHAS_ROOM_TRAINER_0", 0x3b, 0x0e,
   "_AgathasRoomAgathaDontRunAwayText", "EVENT_AUTOWALKED_INTO_AGATHAS_ROOM")
 M.AGATHAS_ROOM.talk = {
-  TEXT_AGATHASROOM_AGATHA = e4LeaderTalk("_AgathaAfterBattleText"),
+  TEXT_AGATHASROOM_AGATHA = e4LeaderTalk("_AgathaAfterBattleText", "AGATHA", 1),
 }
 
 -- -------------------------------------------------------------------
@@ -816,9 +824,22 @@ M.LANCES_ROOM = {
     if (x == 5 and y == 1) or (x == 6 and y == 2) then
       local lance
       for _, npc in ipairs(ow.npcs) do
-        if npc.def and npc.def.name == "LANCESROOM_LANCE" then lance = npc break end
+        local d = npc.def
+        -- Imported FireRed object tables are not consistent about retaining
+        -- the extracted name. Prefer the canonical name, then accept the
+        -- trainer metadata seeded for this room so the coordinate trigger
+        -- cannot silently become a no-op after a map reload.
+        if d and (d.name == "LANCESROOM_LANCE"
+                  or d.trainerClass == "LANCE"
+                  or d.trainerName == "LANCE") then
+          lance = npc
+          break
+        end
       end
       if not lance or ow:trainerDefeated(lance) then return false end
+      if not lance.def.trainerClass then
+        lance.def.trainerClass, lance.def.trainerParty = "LANCE", 1
+      end
       lance:facePlayer(ow.player)
       -- LancesRoomLanceEndBattleScript DisplayTextID -> TalkToTrainer
       -- after-battle text (rival became champion first). engageTrainer

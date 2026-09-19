@@ -15,19 +15,26 @@ local COLS = 19          -- 160px canvas minus the border
 local HISTORY_MAX = 64
 local SCROLLBACK_MAX = 200
 
--- keypressed names -> characters; the console types from key events because
--- love.textinput never reaches Game.  Shift reads the live keyboard.
-local KEY_CHARS = {
-  space = "  ", ["1"] = "1!", ["2"] = "2@", ["3"] = "3#", ["4"] = "4$",
-  ["5"] = "5%", ["6"] = "6^", ["7"] = "7&", ["8"] = "8*", ["9"] = "9(",
-  ["0"] = "0)", ["-"] = "-_", ["="] = "=+", ["["] = "[{", ["]"] = "]}",
-  ["\\"] = "\\|", [";"] = ";:", ["'"] = "'\"", [","] = ",<", ["."] = ".>",
-  ["/"] = "/?",
+-- Printable input arrives through love.textinput, which is the only path
+-- that preserves Caps Lock, non-US layouts, composed characters and paste.
+-- Some desktop SDL builds omit the text event for shifted punctuation, so
+-- keep a one-event fallback for those keys and suppress its duplicate.
+local SHIFTED_CHARS = {
+  ["1"] = "!", ["2"] = "@", ["3"] = "#", ["4"] = "$", ["5"] = "%",
+  ["6"] = "^", ["7"] = "&", ["8"] = "*", ["9"] = "(", ["0"] = ")",
+  ["-"] = "_", ["="] = "+", ["["] = "{", ["]"] = "}",
+  ["\\"] = "|", [";"] = ":", ["'"] = "\"", [","] = "<",
+  ["."] = ">", ["/"] = "?",
 }
 
 local function shiftDown()
   return love and love.keyboard and love.keyboard.isDown
     and (love.keyboard.isDown("lshift") or love.keyboard.isDown("rshift"))
+end
+
+local function ctrlDown()
+  return love and love.keyboard and love.keyboard.isDown
+    and love.keyboard.isDown("lctrl", "rctrl", "lgui", "rgui")
 end
 
 -- one-line pretty printer with a depth fuse, for expression results
@@ -54,6 +61,7 @@ function Console.new(game)
     history = {},
     historyIndex = 0,
     scroll = 0,
+    pendingText = nil,
   }, Console)
   self.env = setmetatable({
     game = game,
@@ -264,6 +272,9 @@ end
 -- ------- repl
 
 function Console:exec(line)
+  -- Clipboard selections from a code block often carry a leading/trailing
+  -- newline.  Treat that as formatting around the command, not Lua syntax.
+  line = line:gsub("^%s+", ""):gsub("%s+$", "")
   self:print("> " .. line)
   if line:match("^%s*$") then return end
   self.history[#self.history + 1] = line
@@ -333,7 +344,12 @@ end
 -- ------- input & drawing
 
 function Console:onKeyPressed(key)
-  if key == "`" then
+  if key == "v" and ctrlDown() then
+    local ok, text = pcall(love.system.getClipboardText)
+    if ok and type(text) == "string" then
+      self.buffer = self.buffer .. text:gsub("[\r\n]", " ")
+    end
+  elseif key == "`" then
     self:stopTrace()
     self.game.stack:pop()
   elseif key == "return" or key == "kpenter" then
@@ -360,16 +376,21 @@ function Console:onKeyPressed(key)
   elseif key == "pagedown" then
     self.scroll = math.max(0, self.scroll - ROWS)
   else
-    local chars = KEY_CHARS[key]
-    if chars then
-      local index = shiftDown() and 2 or 1
-      self.buffer = self.buffer .. chars:sub(index, index)
-    elseif key:match("^%a$") then
-      self.buffer = self.buffer .. (shiftDown() and key:upper() or key)
-    elseif key:match("^kp%d$") then
-      self.buffer = self.buffer .. key:sub(3)
+    local shifted = SHIFTED_CHARS[key]
+    if shifted and shiftDown() then
+      self.buffer = self.buffer .. shifted
+      self.pendingText = shifted
     end
   end
+end
+
+function Console:onTextInput(text)
+  if self.pendingText then
+    local pending = self.pendingText
+    self.pendingText = nil
+    if text == pending then return end
+  end
+  self.buffer = self.buffer .. text
 end
 
 function Console:update() end

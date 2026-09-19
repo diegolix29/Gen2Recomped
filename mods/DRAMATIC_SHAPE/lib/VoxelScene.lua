@@ -1787,6 +1787,148 @@ local function drawRipples(state)
   Voxel3D.glass(true)
 end
 
+-- ------------------------------------------------- the thing you sit on
+--
+-- THE SURF BLOB IS GROUND GEOMETRY HERE, NOT A SECOND CARD.
+--
+-- In-game location: THE SEA OFF ROUTE 118, and every other stretch of Hoenn
+-- water a SURF takes you onto.
+--
+-- Reported from play: "still missing the surf blob beneath the player when
+-- surfing, add that and make sure its working as well -- this is with voxels
+-- on in any mode, first and third person or not". It was missing outright:
+-- the flat game draws it from `Player:drawSurfBlob` (src/world/Player.lua),
+-- which `Player:draw` calls -- and with voxels on the player is a BILLBOARD
+-- built by drawEntity, so `Player:draw` never runs and nothing in this file
+-- had ever heard of the blob.
+--
+-- WHY A FLAT QUAD AND NOT A BILLBOARD, which is the other obvious answer.
+-- The blob is a thing floating ON the water with the player sitting IN it,
+-- and the deciding case is the one the report names: FIRST PERSON. There the
+-- player's own card is deliberately left out -- "the eye is standing in it"
+-- (drawCast, `hideMe`) -- so a blob billboarded at the same spot would be the
+-- same lens-filling slab for the same reason, and the one thing you actually
+-- want to see, the water immediately under you, is exactly what a card cannot
+-- show. Laid flat it is there in every mode: you look down and the dome is
+-- around you.
+--
+-- So this is drawRipples' shape, for drawRipples' reasons -- the ring under a
+-- character is the closest thing in the mod to "a field effect lying on the
+-- water" and it is already solved. Same decal pass (depth TESTED so a bridge
+-- still hides it, never depth-WRITING so the cards drawn afterwards simply
+-- paint over it and the player sits in his boat rather than under it), same
+-- XZ quad, same half-pixel UV inset.
+--
+-- WHICH FRAME AND WHICH WAY ROUND is not decided here: `Player:surfBlobCard`
+-- is, and this asks it. That function is the flat path's own arithmetic --
+-- :drawSurfBlob is written in terms of it too -- so the two paths cannot show
+-- different pictures. Three frames, and they are FACINGS (south / north /
+-- west, east mirrored), not a film strip: MEASURED off this tree's own
+-- data/generated/constants.lua, `gen3SurfBlob` is 32x32, `frames = 3`
+-- (DERIVED). The blob's only motion over time is the surf BOB, and it gets
+-- that for free below by standing on the player's own height.
+--
+-- The POSE facing, not `viewFacing`: a card is turned to face the eye because
+-- it is a flat drawing pretending to be a solid, and this one really is lying
+-- in the world with a real bearing. A first-person eye walking around the
+-- south side of a surfer must see the blob's south side, not have it swing.
+--
+-- Gen 1 / Gen 2 / Prism draw nothing: `surfBlobCard` returns nil unless
+-- `Game.data.constants.gen3SurfBlob` exists, and that constant is written by
+-- the Gen 3 importer alone (RomExtractorGen3:surfBlob). There is no version
+-- test in this file for the same reason drawRipples has none.
+local blobMeshes = {}
+
+-- ONE BLOB QUAD, lying in the XZ plane -- rippleMesh's geometry, cut from the
+-- blob record's own stated frame box rather than from a SpriteRenderer, because
+-- the blob is not an object-event graphic and has no SpriteRenderer to ask.
+local function surfBlobMesh(tex, frame, fw, fh)
+  if not (tex and tex.getDimensions) then return nil end
+  local iw, ih = tex:getDimensions()
+  if not (iw and ih and iw > 0 and ih > 0) then return nil end
+  if fw < 1 or fh < 1 then return nil end
+  local key = frame .. "@" .. fw .. "x" .. fh .. "@" .. iw .. "x" .. ih
+  local hit = blobMeshes[key]
+  if hit == nil then
+    local fy = frame * fh
+    if fy + fh > ih then fy = 0 end -- the clamp the flat path's quad has
+    local u0, u1 = 0.02 / iw, (math.min(fw, iw) - 0.02) / iw
+    local v0, v1 = (fy + 0.05) / ih, (fy + fh - 0.05) / ih
+    -- built in the cards' own local space -- X right, Y up the sheet, Z zero
+    -- -- and tipped onto the water by the model matrix below, so the sheet's
+    -- TOP points north. Full shade (1): drawn art, like a card or a ring.
+    local verts = {
+      { 0, 0, 0, u0, v1, 1 }, { fw, 0, 0, u1, v1, 1 },
+      { fw, fh, 0, u1, v0, 1 }, { 0, fh, 0, u0, v0, 1 },
+    }
+    local idx = {}
+    Voxel3D.pushQuad(idx, 0)
+    hit = Voxel3D.newMesh(verts, idx) or false
+    blobMeshes[key] = hit
+  end
+  return hit or nil
+end
+
+-- `me` is the player's own entry in the pose list (posesOf), which is where
+-- the HEIGHT comes from: `me.gh + me.lift` is the very number drawEntity
+-- stands the player's card on, so the blob can never float away from the
+-- player it is under, at any water level, on any terrace -- and the surf bob
+-- (Player:pose, `bobTimer % 32`, one world pixel) rides in on `lift` and
+-- bobs the blob with him, which is what SyncSurfblobPositionWithPlayer does
+-- on the cartridge.
+--
+-- Deliberately NOT rippleSurfaceY: that answers the water SHEET's top, up to
+-- two world pixels below the terrace top `groundAt` gives (see its comment),
+-- and a decal drawn BELOW the sheet loses the depth test and disappears. The
+-- player's own height is at or above the sheet, so it is the safe one as well
+-- as the glued-to-him one.
+--
+-- SHADOW_EPS (0.25 world px, STATED) is the mod's own calibrated
+-- "float clear of the surface to dodge z-fighting", borrowed from drawRipples
+-- rather than re-tuned: under the world curve drawWater runs a depth-writing
+-- prepass, so anything exactly coplanar with the sheet fights it.
+local function drawSurfBlob(state, me)
+  if not me then return end
+  local player = state and state.player
+  if not (player and player.surfBlobCard) then return end
+  local okCard, blob, frame, mirror, offX, offY =
+    pcall(player.surfBlobCard, player, me.facing)
+  if not (okCard and type(blob) == "table") then return end
+  local okTex, tex = pcall(require("src.render.Assets").image, blob.image)
+  if not (okTex and tex) then return end
+  local fw = math.floor(tonumber(blob.frameWidth) or 32)
+  local fh = math.floor(tonumber(blob.frameHeight) or 32)
+  local mesh = surfBlobMesh(tex, frame, fw, fh)
+  if not mesh then return end
+  local y = me.gh + (me.lift or 0) + Voxel3D.SHADOW_EPS
+  -- the same world rectangle the flat path blits into: top-left at the
+  -- player's own (px, py) plus surfBlobCard's offsets, fw x fh across. For
+  -- Emerald's 32-square blob those offsets are -8, -8 (DERIVED), i.e. the
+  -- player's 16px cell grown eight pixels on every side -- centred on the
+  -- cell middle drawEntity anchors the player's card to (footAnchor = 8).
+  local x0 = me.px + offX
+  local z0 = me.py + offY
+  -- local (x, y, 0) -> (x, 0, -y) under rotateX(-pi/2), so translating to the
+  -- SOUTH edge lands local y = 0 there and local y = fh on the north edge
+  local model = Mat4.mul(Mat4.translate(x0, y, z0 + fh),
+                         Mat4.rotateX(-math.pi / 2))
+  if mirror then
+    -- east is west flipped (Player.lua BLOB_FRAME): mirror inside the quad's
+    -- own box so it still covers exactly [x0, x0 + fw]
+    model = Mat4.mul(model, Mat4.mul(Mat4.translate(fw, 0, 0),
+                                     Mat4.scale(-1, 1, 1)))
+  end
+  Voxel3D.glass(false)
+  Voxel3D.seams(false)
+  Voxel3D.beginDecal()
+  Voxel3D.draw(mesh, tex, model)
+  Voxel3D.endDecal()
+  Voxel3D.seams(true)
+  Voxel3D.glass(true)
+end
+
+VoxelScene.drawSurfBlob = drawSurfBlob
+
 -- ------- the planar mirror's plane
 --
 -- WHICH HEIGHT THE MIRRORED SCENE IS RENDERED FOR.
@@ -2588,6 +2730,16 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
   -- IN-GAME: THE SHALLOW WATER OFF THE BRIDGE ON ROUTE 104, where the two
   -- NPCs stand in the water they are ringing.
   drawRipples(state)
+
+  -- ...AND THE BLOB THE PLAYER IS SITTING IN, on top of the rings, still
+  -- before anybody's card. Same position and the same reason: the decal
+  -- writes no depth, so the player's own card is rasterised afterwards and
+  -- covers the dome, which is the flat game's order too (Player:draw calls
+  -- drawSurfBlob and THEN blits the sprite). Outside the `hideMe` test the
+  -- cards run under, so it is drawn in FIRST PERSON as well -- the mode the
+  -- report names, and the one where it is the only thing under you there is
+  -- to see.
+  drawSurfBlob(state, me)
 
   -- Sprite sheets from here to the figure pass: their texture coordinates
   -- mean nothing to the tileset-shaped glass mask, so the glass is off or

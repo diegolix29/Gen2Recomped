@@ -66,7 +66,10 @@ end
 -- description of the cartridge and this file owns what the engine does with
 -- it.
 local BINDINGS = {
-  textSpeed = { field = "textSpeed", choices = { "slow", "mid", "fast" } },
+  -- the frame delays TextBox actually reads (5/3/1).  These were the words
+  -- "slow"/"mid"/"fast": a save's numeric 3 matched none of them, so the row
+  -- showed SLOW, and picking a value wrote a string TextBox rejects.
+  textSpeed = { field = "textSpeed", choices = { 5, 3, 1 } },
   battleScene = { field = "battleAnim", choices = { true, false } },
   battleStyle = { field = "battleStyle", choices = { "shift", "set" } },
   sound = { field = "stereo", choices = { false, true } },
@@ -287,7 +290,86 @@ function Gen3Options:update(dt)
   self:clampScroll()
 end
 
+-- FIRERED'S OPTION SCREEN (pokefirered src/option_menu.c): a black field,
+-- the header window (2,3) and the list window (2,7) each in a frame, rows
+-- 13 pixels apart with the value at x 130 in red, the top bar's control
+-- hint, and the chosen row left out of the BLDY lighten everything else gets.
+local FRLG_VISIBLE = 7
+
+function Gen3Options:drawFireRed()
+  local g = love.graphics
+  g.setColor(0, 0, 0, 1)
+  g.rectangle("fill", 0, 0, GBA_W, GBA_H)
+  -- top bar: window 2, palette 15 (sTextWindowPalettes[2]) filled with colour 15
+  g.setColor(0, 123 / 255, 197 / 255, 1)
+  g.rectangle("fill", 0, 0, GBA_W, 16)
+  local function text(s, x, y, ink, shadow)
+    local two = Font.beginTwoTone(ink, shadow)
+    if not two then g.setColor(ink) end
+    Font.draw(s, x, y)
+    if two then Font.endTwoTone() end
+    g.setColor(1, 1, 1, 1)
+  end
+  local white, dark = { 1, 1, 1, 1 }, { 99 / 255, 99 / 255, 99 / 255, 1 }
+  local gray, light = { 99 / 255, 99 / 255, 99 / 255, 1 }, { 214 / 255, 214 / 255, 206 / 255, 1 }
+  local red, pink = { 230 / 255, 8 / 255, 8 / 255, 1 }, { 255 / 255, 189 / 255, 115 / 255, 1 }
+  -- "{DPAD}PICK {LR}SWITCH {B}CANCEL", right-aligned to 228
+  local hints = { { "+", "PICK" }, { "A", "SWITCH" }, { "B", "CANCEL" } }
+  local width = 0
+  for _, h in ipairs(hints) do width = width + 12 + Font.width(h[2]) + 6 end
+  local x = 228 - width + 6
+  for _, h in ipairs(hints) do
+    g.setColor(white)
+    g.rectangle("line", x + 0.5, 2.5, 10, 9, 3, 3)
+    text(h[1], x + 2, 0, white, dark)
+    x = x + 12
+    text(h[2], x, 0, white, dark)
+    x = x + Font.width(h[2]) + 6
+  end
+
+  Font.drawBox(1, 2, 28, 4)
+  text(Strings("OPTION"), 2 * 8 + 8, 3 * 8 + 1, gray, light)
+  Font.drawBox(1, 6, 28, 14)
+
+  local total = #self.rows + 1
+  if self.index <= self.scroll then self.scroll = self.index - 1 end
+  if self.index > self.scroll + FRLG_VISIBLE then self.scroll = self.index - FRLG_VISIBLE end
+  self.scroll = math.max(0, math.min(self.scroll, math.max(0, total - FRLG_VISIBLE)))
+  local ox, oy = 2 * 8, 7 * 8
+  for slot = 1, math.min(FRLG_VISIBLE, total) do
+    local i = self.scroll + slot
+    if i > total then break end
+    local row = self.rows[i]
+    local y = oy + (slot - 1) * 13 + 2
+    local selected = (i == self.index)
+    if selected then
+      -- The cartridge leaves the selected row out of BLDY, which is subtle
+      -- on modern displays. A solid blue strip preserves that behavior while
+      -- making the active row unambiguous and keeping both columns readable.
+      g.setColor(0, 123 / 255, 197 / 255, 1)
+      g.rectangle("fill", ox, y - 2, 208, 14)
+    end
+    local labelInk, labelShadow = selected and white or gray, selected and dark or light
+    local valueInk, valueShadow = selected and white or red, selected and dark or pink
+    text((row and row.label) or self.cancelLabel or "", ox + 8, y, labelInk, labelShadow)
+    if row then text(self:valueText(row), ox + 130, y, valueInk, valueShadow) end
+  end
+  -- everything but the chosen row is lightened by BLDY 2 (of 16)
+  local sel = self.index - self.scroll
+  local top = (sel - 1) * 13 + 58
+  g.setColor(1, 1, 1, 2 / 16)
+  g.rectangle("fill", 0, 16, GBA_W, top - 16)
+  g.rectangle("fill", 0, top + 14, GBA_W, GBA_H - top - 14)
+  g.rectangle("fill", 0, top, 16, 14)
+  g.rectangle("fill", 224, top, GBA_W - 224, 14)
+  if self.scroll + FRLG_VISIBLE < total then
+    Font.drawCode(Theme.moreArrow, 27 * 8, 19 * 8)
+  end
+  g.setColor(1, 1, 1, 1)
+end
+
 function Gen3Options:draw()
+  if require("src.core.GameVersion").get() == "firered" then return self:drawFireRed() end
   love.graphics.setColor(0.30, 0.44, 0.64, 1)
   love.graphics.rectangle("fill", 0, 0, GBA_W, GBA_H)
 

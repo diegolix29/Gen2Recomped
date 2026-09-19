@@ -248,6 +248,13 @@ end
 -- addresses ids 513 and up.  So prefer the context (which asks Gen3Tiles,
 -- and Gen3Tiles knows), and when there is none take the generous bound: an
 -- id space that is too long costs empty table slots and nothing else.
+-- where the secondary's ids begin: 512 on Emerald, 640 on FireRed
+function Gen3.inPrimary()
+  local data = engineData()
+  local layout = data and data.constants and data.constants.gen3Layout
+  return tonumber(layout and layout.metatilesInPrimary) or 512
+end
+
 function Gen3.idSpace(tileset, ctx)
   if ctx and (ctx.metatiles or 0) > 0 then return ctx.metatiles end
   local data = engineData()
@@ -3496,7 +3503,7 @@ function Gen3.forMap(map)
     -- one Hoenn ever places (a mod's own tileset, a slot the ROM leaves empty)
     function ctx.metaRole(m)
       if not roles or not m then return nil end
-      local owner = (m < 512) and ctx.ownerPrimary or ctx.ownerSecondary
+      local owner = (m < Gen3.inPrimary()) and ctx.ownerPrimary or ctx.ownerSecondary
       local t = owner and roles[owner]
       local r = t and t[m]
       if not r then return nil end
@@ -6916,7 +6923,7 @@ function Gen3.statesNoReliefAt(map, cx, cy)
   if not (ctx and ctx.metatileAt and ctx.ownerStatesNoRelief) then return false end
   local okM, m = pcall(ctx.metatileAt, cx, cy)
   if not okM or not m then return false end
-  local owner = (m < 512) and ctx.ownerPrimary or ctx.ownerSecondary
+  local owner = (m < Gen3.inPrimary()) and ctx.ownerPrimary or ctx.ownerSecondary
   return ctx.ownerStatesNoRelief(owner) == true
 end
 

@@ -2345,20 +2345,50 @@ function RomExtractorGen2:extractScaffoldCore()
     if name == "items" and self.rom then
       local sym = self:symbol("ItemNames")
       local romNames = self:varNames("ItemNames", 300)
+      -- THE ITEM NAME TABLE MAY OPEN WITH A ROW THAT IS NOT ITEM ONE.
+      --
+      -- Reported from play on Polished Crystal: "the berry tree master is
+      -- giving me a pokedoll", "oaks assistant ... gives me a cherish ball",
+      -- and berry trees handing over nothing.  One cause for all of them --
+      -- every item was wearing the name of the item BELOW it.
+      --
+      -- The cartridge settles it without any guessing, because the prices are
+      -- read from a different table and those were right.  ItemAttributes row
+      -- 0 is 200, row 1 is 600, row 2 is 800 and row 3 is 0 -- Poke Ball,
+      -- Great Ball, Ultra Ball, Master Ball, and the Master Ball is the one
+      -- that cannot be bought.  So attributes row 0 IS item 1.  ItemNames'
+      -- first stored entry is "Park Ball" and its SECOND is "Poke Ball", so
+      -- the names table has one row in front of item 1 and the ids line up
+      -- one entry later than this was reading them.
+      --
+      -- Same shape as the species table's leading dummy (speciesNameBias
+      -- above), and the same fix: the manifest says how many rows to skip, so
+      -- Gold, Silver, Crystal and Prism -- which name item 1 first -- read
+      -- exactly as they did.
+      local nameBias = self:layout("itemNameBias", 0)
       -- ItemAttributes rows are 7 bytes and open with a little-endian price
       -- (engine/items/item_effects.asm GetItemPrice).  Without it every mart
       -- shelf priced at 0 and BUY handed the stock out for free.
       local attrs = self:symbol("ItemAttributes")
       for id, entry in pairs(data) do
         if type(entry) == "table" and type(entry.index) == "number" then
-          local n = romNames[entry.index]
-          if n then entry.name = n; entry.source = "ROM:ItemNames[" .. entry.index .. "]" end
+          local nameAt = entry.index + nameBias
+          local n = romNames[nameAt]
+          if n then entry.name = n; entry.source = "ROM:ItemNames[" .. nameAt .. "]" end
           -- what the PACK prints in its bottom box while the cursor is on
           -- this row (engine/items/pack.asm); absent on a ROM whose
           -- ItemDescriptions symbol is missing, and the pack falls back
           entry.description = self:gen2ItemDescription(entry.index)
           if attrs then
-            local row = attrs.address + (entry.index - 1) * GEN2_ITEM_ATTR_BYTES
+            -- ...AND THE ROW IS NOT SEVEN BYTES EVERYWHERE EITHER.  Polished
+            -- Crystal packs the same record into SIX and drops the help-id
+            -- byte: its table runs 01:$7350 to 01:$7944, which is 1524 bytes
+            -- and divides by six into exactly 254 rows -- one per item after
+            -- the leading name row above.  At seven the read walked off its
+            -- own rows within a dozen items.
+            local row = attrs.address
+              + (entry.index - 1) * self:layout("itemAttrBytes",
+                                                GEN2_ITEM_ATTR_BYTES)
             local ok, price = pcall(function() return self.rom:word(attrs.bank, row) end)
             if ok and type(price) == "number" then entry.price = price end
             -- constants/item_data_constants.asm: ItemAttributes stores the
@@ -2374,15 +2404,32 @@ function RomExtractorGen2:extractScaffoldCore()
               return self.rom:byte(attrs.bank, row + 3)
             end)
             if okh then entry.heldParam = signedByte(heldParam) end
+            -- WHICH POCKET, and a cartridge may put the byte elsewhere and
+            -- mean something else by it.
+            --
+            -- Read across all 254 of Polished Crystal's rows, the byte at +4
+            -- is 3 for items 1-24, 2 for 25-61, 5 for 62-92 and 1 for the
+            -- rest -- which is 24 balls, then the medicines from the Potion
+            -- at 25, then a run of 31 the base games have no pocket for at
+            -- all (its BERRY pocket: Cheri, Chesto, Pecha and the rest land
+            -- exactly there), then everything else.  Four clean runs in item
+            -- order is what a pocket column looks like; the +5 this used to
+            -- read is 0/5/6/64/80/85/86/96, which is not one.
+            --
+            -- KEY ITEMS are not in this table on that cartridge -- it has a
+            -- KeyItemNames/KeyItemAttributes pair of its own -- so nothing
+            -- here is ever one, and the manifest says so by naming no key
+            -- pocket in its map.
             local okp, pocket = pcall(function()
-              return self.rom:byte(attrs.bank, row + 5)
+              return self.rom:byte(attrs.bank,
+                                   row + self:layout("itemAttrPocketAt", 5))
             end)
             if okp then
-              entry.keyItem = pocket == GEN2_POCKET_KEY_ITEM or nil
-              -- the pack's four pages (constants/item_data_constants.asm):
-              -- ITEM, KEY_ITEM, BALL, TM_HM
-              entry.pocket = ({ [1] = "ITEM", [2] = "KEY_ITEM",
-                                [3] = "BALL", [4] = "TM_HM" })[pocket]
+              local pockets = self.manifest.itemPockets
+                or { [1] = "ITEM", [2] = "KEY_ITEM",
+                     [3] = "BALL", [4] = "TM_HM" }
+              entry.pocket = pockets[pocket] or pockets[tostring(pocket)]
+              entry.keyItem = entry.pocket == "KEY_ITEM" or nil
             end
             -- the property byte holds CANT_SELECT (1<<6) and CANT_TOSS
             -- (1<<7); Pack.ItemBallsKey_LoadSubmenu builds USE/GIVE/TOSS/
@@ -2981,28 +3028,79 @@ end
 
 -- Each tileset carries an animation script -- Tileset<Id>Anim, four bytes a
 -- row: a VRAM destination and the routine that fills it, run down until
--- DoneTileAnimation.  A row calling AnimateWaterTile is the surf shimmer,
--- and its destination is $9140 = tile $14 in every set that has one, which
--- is what TileRenderer's TILEANIM_WATER already shifts.  Reading the script
--- rather than listing the tilesets keeps Silver and any hack honest.
+-- DoneTileAnimation.  A row calling one of the water routines is the surf
+-- shimmer, which is what TileRenderer's TILEANIM_WATER shifts.  Reading the
+-- script rather than listing the tilesets keeps Silver and any hack honest.
 -- AnimateFlowerTile is deliberately not reported: TILEANIM_WATER_FLOWER
 -- would drive it from Gen 1's flower PNGs, which are the wrong drawing.
+--
+-- ONE ROUTINE IS NOT ENOUGH ON A CARTRIDGE WITH FOUR.  Gold, Silver, Crystal
+-- and Prism have exactly one, AnimateWaterTile, and every set that uses it
+-- writes $9140 = tile $14.  Polished Crystal has FOUR, and looking only for
+-- the first name left three groups of tilesets with a dead, frozen sea:
+--
+--   AnimateWaterTile         Johto1-5, Port, Park, Forest    tile $14
+--   AnimateKantoWaterTile    Kanto1, Kanto2, Safari          tile $14
+--   AnimateFarawayWaterTile  Faraway, Shamouti, Valencia     tiles 20, 21
+--   AnimateTinyWaterTile     SnowtopMountain                 tiles 10, 11, 12
+--
+-- ...AND A ROW'S DESTINATION IS NOT ALWAYS A VRAM ADDRESS.  The last two
+-- routines take a POINTER to `dw vramDest, dw frames` in their own bank
+-- (3f:$46D5 and 3f:$4A3D both open `ld l,e / ld h,d / ld a,[hl+]` -- they
+-- read the destination out of the block rather than being handed it), so a
+-- destination below $8000 is dereferenced once.  Assuming otherwise would
+-- have put Snowtop's shimmer on tile $FB8 >> 4, which is no tile at all.
+--
+-- The second return is the tile list, and the caller drops it when it is the
+-- engine's own default -- so Gold, Silver, Crystal and Prism, whose every
+-- water row really is tile $14, write exactly the record they wrote before.
+RomExtractorGen2.GEN2_WATER_ROUTINES = {
+  "AnimateWaterTile", "AnimateKantoWaterTile",
+  "AnimateFarawayWaterTile", "AnimateTinyWaterTile",
+}
+RomExtractorGen2.GEN2_WATER_TILE = 0x14
+
 function RomExtractorGen2:gen2TilesetAnimation(id)
   local sym = self:symbol(id .. "Anim")
   if not (sym and self.rom) then return nil end
-  local water = self:symbol("AnimateWaterTile")
   local done = self:symbol("DoneTileAnimation")
-  if not (water and done) then return nil end
-  local found = false
+  if not done then return nil end
+  local water = {}
+  for _, name in ipairs(RomExtractorGen2.GEN2_WATER_ROUTINES) do
+    local routine = self:symbol(name)
+    if routine and routine.bank == sym.bank then water[routine.address] = true end
+  end
+  if next(water) == nil then return nil end
+  local tiles, seen = {}, {}
   pcall(function()
-    local raw = self.rom:bytes(sym.bank, sym.address, 48 * 4)
+    local raw = self.rom:bytes(sym.bank, sym.address, 64 * 4)
     for pos = 1, #raw - 3, 4 do
       local fn = raw[pos + 2] + raw[pos + 3] * 256
-      if fn == water.address then found = true end
       if fn == done.address then break end
+      if water[fn] then
+        local dest = raw[pos] + raw[pos + 1] * 256
+        if dest >= 0x4000 and dest < 0x8000 then
+          dest = self.rom:word(sym.bank, dest) or 0
+        end
+        local tile
+        if dest >= 0x9000 and dest < 0x9800 then
+          tile = math.floor((dest - 0x9000) / 16)
+        elseif dest >= 0x8800 and dest < 0x9000 then
+          tile = math.floor((dest - 0x8800) / 16) + 128
+        end
+        if tile and not seen[tile] then
+          seen[tile] = true
+          tiles[#tiles + 1] = tile
+        end
+      end
     end
   end)
-  return found and "TILEANIM_WATER" or nil
+  if #tiles == 0 then return nil end
+  table.sort(tiles)
+  if #tiles == 1 and tiles[1] == RomExtractorGen2.GEN2_WATER_TILE then
+    return "TILEANIM_WATER", nil
+  end
+  return "TILEANIM_WATER", tiles
 end
 
 -- CheckGrassCollision tests wPlayerStandingTile against an $ff-terminated
@@ -3035,6 +3133,71 @@ end
 local GEN2_LEDGE_HI_NYBBLE = 0xA0
 local GEN2_LEDGE_TABLE_BYTES = 8
 local GEN2_LEDGE_DIRS = { [0] = "right", [1] = "left", [2] = "up", [3] = "down" }
+
+-- STAIRS: the diagonal step, and the one facing that may take it.
+--
+-- Polished Crystal adds a movement Gold, Silver and Crystal have no
+-- equivalent of, and DoPlayerMovement.TryStairs (20:$4237) is the whole rule:
+--
+--     ld a,[wPlayerTileCollision] ; the class UNDER the player, as ledges do
+--     and $f0 / cp $c0            ; high nybble $C -> a stairs class
+--     ld a,e / and $07            ; low bits index...
+--     hl = FacingStairsTable + a  ; ...a mask of permitted facings
+--     ld a,[wFacingDirection] / and [hl]
+--     jr z, DontStairs
+--     ld a,[wPlayerTileCollision] / cp $c2 / sbc a,a / inc a
+--     ld [wPlayerGoingUpStairs],a ; 0 for $C0/$C1, 1 for $C2/$C3
+--     ld a,$0b / call DoStep      ; the stairs step
+--
+-- The table is four bytes -- `01 02 01 02` -- in the same facing encoding the
+-- ledge table above uses (right $01, left $02, up $04, down $08), so the four
+-- stairs classes are:
+--
+--     $C0  facing right, going down      $C2  facing right, going up
+--     $C1  facing left,  going down      $C3  facing left,  going up
+--
+-- Only those four: `and $07` would index four more bytes for $C4-$C7, but
+-- CollisionPermissionTable gives that run permission $01 -- they are WATER,
+-- reached through TrySurf, and the stairs branch cannot be entered on them.
+--
+-- The classes are already LAND, so a stairs tile has always been walkable
+-- here; what was missing is that a press along the stairs moves you
+-- DIAGONALLY, and only from the one side the mask names.
+--
+-- Returns nil on a cartridge without the symbol, which is all three of the
+-- others -- `FacingStairsTable` is this build's own label.
+--
+-- ON THE CLASS TABLE, not as file-scope locals: this module sits ON Lua's
+-- 200-local ceiling for a chunk, and three more would stop it LOADING.
+RomExtractorGen2.GEN2_STAIRS_FIRST = 0xC0
+RomExtractorGen2.GEN2_STAIRS_COUNT = 4
+RomExtractorGen2.GEN2_STAIRS_UP_FROM = 0xC2
+
+function RomExtractorGen2:gen2StairsSteps()
+  local sym = self:symbol("DoPlayerMovement.FacingStairsTable")
+  if not (sym and self.rom) then return nil end
+  local count = RomExtractorGen2.GEN2_STAIRS_COUNT
+  local ok, raw = pcall(function()
+    return self.rom:bytes(sym.bank, sym.address, count)
+  end)
+  if not ok or type(raw) ~= "table" then return nil end
+  local out = {}
+  for i = 1, count do
+    local class = RomExtractorGen2.GEN2_STAIRS_FIRST + i - 1
+    local mask = raw[i]
+    local dirs = {}
+    for bit = 0, 3 do
+      if math.floor((mask or 0) / 2 ^ bit) % 2 == 1 then
+        dirs[#dirs + 1] = GEN2_LEDGE_DIRS[bit]
+      end
+    end
+    if #dirs > 0 then
+      out[class] = { facing = dirs,
+                     up = class >= RomExtractorGen2.GEN2_STAIRS_UP_FROM or nil }
+    end
+  end
+  return next(out) and out or nil
+end
 
 function RomExtractorGen2:gen2LedgeHops()
   local sym = self:symbol("DoPlayerMovement.ledge_table")
@@ -4653,7 +4816,30 @@ function RomExtractorGen2:extractPalettes()
   end
   table.sort(order)
 
-  local bars = self:symbol("HPBarPals")
+  -- THE HP BAR'S COLOURS COME FROM THE TABLE THE BATTLE SCREEN READS, AND ON
+  -- POLISHED CRYSTAL THAT IS NOT THE ONE CALLED "HPBarPals".
+  --
+  -- Crystal keeps one table: three rows of `RGB tan, RGB bar`, white and
+  -- black implied, and both the battle HUD and the party menu read it.
+  -- Polished Crystal split them.  Its battle screen reads HPBarInteriorPals
+  -- (02:$48EA) -- SetBattlePal_HP does `add a,a / add a,a / add a,$EA` and
+  -- hands the row to LoadPalette_White_Col1_Col2_Black, so it is Crystal's
+  -- format exactly -- while the name HPBarPals now belongs to the PARTY
+  -- MENU's set at 02:$4D00, which is three rows of FOUR full colours because
+  -- that screen has no white paper to imply.
+  --
+  -- Read at Crystal's stride, the party-menu table gives
+  --
+  --   GREENBAR  {white, WHITE, tan,   black}   <- $7FFF read as a colour
+  --   YELLOWBAR {white, green, black, black}
+  --   REDBAR    {white, WHITE, tan,   black}
+  --
+  -- which is a battle screen with no colour in it: the bar drew white on
+  -- white and the HUD frame gold, and the whole thing read as black and
+  -- white (#41).  The interior table is preferred where the cartridge has
+  -- it; Gold, Silver, Crystal and Prism name no such symbol and are read
+  -- exactly as before.
+  local bars = self:symbol("HPBarInteriorPals") or self:symbol("HPBarPals")
   if bars and self.rom then
     for index, name in ipairs(GEN2_BAR_PAL_NAMES) do
       pcall(function()
@@ -4671,7 +4857,14 @@ function RomExtractorGen2:extractPalettes()
   -- ExpBarPalette is four bytes, laid out exactly like one HPBarPals entry:
   -- colors 1 and 2 only (the HUD's tan and the bar's blue), with white and
   -- black implied at the ends.  PokemonPalettes starts four bytes later.
+  -- ...and polished folds the exp bar in with the gender symbol:
+  -- SetBattlePal_ExpGender (02:$47E9) loads GenderAndExpBarPals through the
+  -- same White_Col1_Col2_Black helper, so it is four bytes in Crystal's
+  -- shape and reads with the arithmetic below unchanged.  Without it EXPBAR
+  -- was absent, GEN2_EXP_ZONE dropped out of the zone pass and the exp row
+  -- wore the player's HP colour.
   local expPal = self:symbol("ExpBarPalette")
+    or self:symbol("GenderAndExpBarPals")
   if expPal and self.rom then
     pcall(function()
       palettes.EXPBAR = {
@@ -7252,6 +7445,70 @@ function RomExtractorGen2:gen2ElevatorFloors(bank, address)
   return ok and floors and #floors > 0 and floors or nil
 end
 
+-- THE BATTLE MENU'S SECOND BUTTON IS TWO TILES, AND WHICH TWO IS THE
+-- CARTRIDGE'S BUSINESS.
+--
+-- BattleState drew that pair as a literal $E1 $E2, which is where Gold and
+-- Silver keep <PK> and <MN>.  Polished Crystal moved its whole glyph block:
+-- $E0-$E9 there are the DIGITS, so the party button spelled "12" (#31).
+-- Crystal is a third case again -- its menu data holds the single control
+-- byte $4A and PlaceString expands that to the pair -- and Prism names no
+-- strings symbol at all.
+--
+-- So read the cartridge's own battle-menu strings, take the SECOND one and
+-- keep only its GLYPH bytes.  A control byte leaves nothing behind, which is
+-- the honest answer for Crystal: the caller falls back to $E1 $E2, which is
+-- exactly what Crystal's $4A expands to.  Proven off all three cartridges --
+--
+--   polished  09:$5100  85 A8 2F B3 | D2 D3 | 81 A0 A6 | 91 B4 AD
+--                       "Fight"     | PkMn  | "Bag"    | "Run"
+--   gold      09:$4E9C  85 88 86 87 93 | E1 E2 | ...  ("FIGHT" | <PK><MN>)
+--   crystal   09:$4F3D  85 88 86 87 93 | 4A    | ...  ("FIGHT" | <PKMN>)
+--
+-- Polished Crystal's $D2/$D3 were read out of FontNormal (08:$485A, 1bpp,
+-- loaded to VRAM $8800 so tile id == char code): $D2 is a "Pk" ligature and
+-- $D3 an "Mn", the same two-tile PKMN the other cartridges spell at $E1 $E2.
+RomExtractorGen2.GEN2_BATTLE_MENU_TEXT = {
+  "BattleMenuDataHeader.Strings",   -- Polished Crystal
+  "BattleMenuHeader.Text",          -- Gold, Silver, Crystal
+}
+
+function RomExtractorGen2:gen2BattleMenuMon()
+  local symbols = self.manifest and self.manifest.symbols
+  if type(symbols) ~= "table" or not self.rom then return nil end
+  local row
+  for _, name in ipairs(RomExtractorGen2.GEN2_BATTLE_MENU_TEXT) do
+    local found = symbols[name]
+    if type(found) == "table" and tonumber(found[1]) and tonumber(found[2]) then
+      row = found
+      break
+    end
+  end
+  if not row then return nil end
+  local ok, codes = pcall(function()
+    local bank, at = tonumber(row[1]), tonumber(row[2])
+    -- $50 on Gold and Crystal, $52/$53/$54 on polished -- read off the
+    -- handler NAMES in the manifest, never off a fixed byte.
+    local ends = self:textTables().ends or { [0x50] = true }
+    local out, seen = {}, 0
+    -- "FIGHT" first, then the one we want.  48 bytes is well past both on
+    -- every cartridge in the registry.
+    for _ = 1, 48 do
+      local byte = self.rom:byte(bank, at)
+      at = at + 1
+      if type(byte) ~= "number" then return nil end
+      if ends[byte] then
+        seen = seen + 1
+        if seen >= 2 then break end
+      elseif seen == 1 and byte >= 0x60 then
+        out[#out + 1] = byte
+      end
+    end
+    return #out > 0 and out or nil
+  end)
+  return ok and codes or nil
+end
+
 -- `loadmenu <ptr>`: a MenuHeader -- db flags, menu_coords, dw MenuData, db
 -- default -- whose MenuData is db flags, db count, then that many
 -- "@"-terminated labels (GoldenrodGameCornerTMVendorMenuHeader).
@@ -7483,9 +7740,21 @@ function RomExtractorGen2:gen2DecodeScript(bank, address, label, pool)
       elseif kind == "M" then
         value = self:gen2ReadMovement(bank, self.rom:word(bank, pc), pool)
       elseif kind == "D" then
-        value = self:gen2AsmName(self.rom:byte(bank, pc), self.rom:word(bank, pc + 1))
-          or string.format("%02X:%04X",
-            self.rom:byte(bank, pc), self.rom:word(bank, pc + 1))
+        local dBank = self.rom:byte(bank, pc)
+        local dAddr = self.rom:word(bank, pc + 1)
+        -- `changemapblocks <bank>:<table>` NAMES A WHOLE REPLACEMENT LAYOUT,
+        -- the way Prism's `changemap` does -- and for the same reason it is
+        -- decoded HERE: the VM must never reach back into the ROM, and this
+        -- operand is a compressed block table rather than more bytecode.
+        --
+        -- The far pointer was being named (gen2AsmName) and then dropped,
+        -- because a name is not a map.  Polished Crystal opens its blocked
+        -- ways with this command, so every one of them stayed shut.
+        if name == "changemapblocks" then
+          value = self:gen2MapBlockBlob(dBank, dAddr)
+        end
+        value = value or self:gen2AsmName(dBank, dAddr)
+          or string.format("%02X:%04X", dBank, dAddr)
         -- TWO ROUTINES READ THE SCRIPT STREAM THEMSELVES.
         --
         -- CheckOrphanPointsFromScript and TakeOrphanPointsFromScript both open
@@ -7575,6 +7844,24 @@ function RomExtractorGen2:gen2DecodeScript(bank, address, label, pool)
       -- GiveItemCheckPluralMain itself
       row[argCount + 2] = self:gen2ItemPluralRules() or nil
     elseif name == "givetm" or name == "givetmnomessage" then
+      row[2] = self:gen2MachineItem(row[2]) or row[2]
+    elseif name == "givetmhm" or name == "verbosegivetmhm"
+           or name == "checktmhm" or name == "gettmhmname" then
+      -- POLISHED CRYSTAL'S TM/HM POCKET, and it is Prism's machine space
+      -- under another set of names.
+      --
+      -- This cartridge keeps its machines OUT of the item table -- the
+      -- pocket is its own array, reached through CheckTMHM/GetTMHMMove, and
+      -- the operand is a combined machine number (TMs 1..tmCount, HMs after
+      -- them) exactly as `gen2Machines` already numbers them.  Left as a
+      -- bare number there is nothing in the item table at that id, so every
+      -- one of the five commands had no operand it could act on and the VM
+      -- kept them in the unhandled audit.
+      --
+      -- Resolved to the synthesised TM_nn / HM_nn item the item stage writes
+      -- for a cartridge whose machines are numbered outside the item space
+      -- (see the `hasMachineItems` block), which is the same answer
+      -- PERSONTYPE_TMHMBALL and Prism's `givetm` already get.
       row[2] = self:gen2MachineItem(row[2]) or row[2]
     elseif name == "changemap" then
       -- resolved here for the same reason loadmenu's items are: the VM must
@@ -13550,6 +13837,12 @@ function RomExtractorGen2:extractField()
     local okIntro, intro = pcall(self.extractGen2IntroArt, self)
     if okIntro and intro then src.intro = intro end
     src.ledgeHops = self:gen2LedgeHops() or src.ledgeHops
+    src.gen2Stairs = self:gen2StairsSteps() or src.gen2Stairs
+    src.gen2Roofs = self:gen2Roofs() or src.gen2Roofs
+    src.gen2MapPalettes = self:gen2SpecialMapPalettes()
+      or src.gen2MapPalettes
+    src.gen2BattleMenuMon = self:gen2BattleMenuMon()
+      or src.gen2BattleMenuMon
     src.townMap = self:gen2TownMap() or src.townMap
     src.playerPics = self:gen2PlayerPics() or src.playerPics
     src.gen2CutTrees = self:gen2CutTreeSwaps() or src.gen2CutTrees
@@ -15208,6 +15501,326 @@ function RomExtractorGen2:gen2FontCharmap()
   return entries
 end
 
+-- THE NINE TILES AN OUTDOOR TILESET DOES NOT OWN.
+--
+-- Every Gen 2 cartridge in this registry loads its outdoor tileset with a
+-- HOLE in it and fills that hole from the MAP GROUP.  Polished Crystal's
+-- _LoadTilesetGFX0 (00:$215D) reads wMapTileset, and for ids below six takes
+-- .special_load (00:$21A5), which copies tiles 0-9 and then 19-126 out of the
+-- decompressed GFX0 blob and steps over the nine in between; Gold, Silver and
+-- Crystal reach the same place from LoadTileset.  Those nine come from
+-- LoadMapGroupRoof (polished 7b:$43D8, Crystal 07:$4000):
+--
+--     a = [wMapGroup]
+--     MapGroupRoofs   one byte per group, $FF = this group has no roof
+--     -> the art, 9 tiles, written to VRAM $90A0 (tile 10)
+--
+-- and the art is stored two different ways.  Gold, Silver, Crystal and Prism
+-- keep a FLAT RAW array at `Roofs`, indexed by roof id with a $90-byte stride
+-- (`ld bc, $0090 / call AddNTimes`).  Polished Crystal keeps a POINTER TABLE,
+-- MapGroupRoofGFX, whose five entries are LZ blobs in one bank -- the bank is
+-- an immediate in the caller (`ld bc, $6E09`: bank $6E, nine tiles), not a
+-- symbol, so it comes from the manifest.  All five decompress to exactly 144
+-- bytes.
+--
+-- The COLOURS are per group and per time of day.  LoadMapPals.get_roof_color
+-- (polished 02:$602D) does `a = group; hl += a * 12`, then adds four more
+-- bytes per time-of-day step, and copies FOUR BYTES to wBGPals + $32 -- which
+-- is colours 1 and 2 of palette 6.  Colours 0 and 3 are never written: they
+-- stay whatever the tileset's own row says.  So a roof row is a PAIR, not a
+-- palette, and `roofPalRows` is how many of those pairs a group has: three on
+-- polished (morn/day, nite, dark), two on Crystal (morn/day, nite).
+--
+-- Gated on `layout.roofTilesetMax`, which defaults to ZERO -- no roofs.  The
+-- tables are read off Gold, Silver, Crystal and Prism identically and they
+-- are welcome to be switched on once this is proven on the cartridge that
+-- reported it, but a silent behaviour change on three working versions is
+-- not something an unrelated fix gets to make.
+RomExtractorGen2.GEN2_ROOF_SLOT = 10
+RomExtractorGen2.GEN2_ROOF_TILES = 9
+RomExtractorGen2.GEN2_ROOF_PAL_INDEX = 6
+
+function RomExtractorGen2:gen2Roofs()
+  local maxTileset = self:layout("roofTilesetMax", 0)
+  if maxTileset < 1 or not self.rom then return nil end
+  local groups = self:symbol("MapGroupRoofs")
+  if not groups then return nil end
+  local slot = self:layout("roofSlot", RomExtractorGen2.GEN2_ROOF_SLOT)
+  local tiles = self:layout("roofTiles", RomExtractorGen2.GEN2_ROOF_TILES)
+  local bytes = tiles * 16
+
+  local byGroup, highest = {}, -1
+  pcall(function()
+    for group = 0, self:gen2MapGroupCount() do
+      local id = self.rom:byte(groups.bank, groups.address + group)
+      if type(id) ~= "number" then break end
+      if id ~= 0xFF then
+        byGroup[group] = id
+        if id > highest then highest = id end
+      end
+    end
+  end)
+  if highest < 0 then return nil end
+
+  local pointers = self:symbol("MapGroupRoofGFX")
+  local gfxBank = self:layout("roofGfxBank", -1)
+  local flat = self:symbol("Roofs")
+  local images = {}
+  for id = 0, highest do
+    local raw
+    if pointers and gfxBank >= 0 then
+      local okPtr, address = pcall(function()
+        return self.rom:word(pointers.bank, pointers.address + id * 2)
+      end)
+      -- `bytes` as the EXPECTED length is the whole check: an LZ3 decoder
+      -- handed something that is not a stream answers with rubbish rather
+      -- than failing, so only the exact size proves the read.
+      if okPtr and type(address) == "number" and address >= 0x4000 then
+        raw = self:gen2LzAt(gfxBank, address, bytes)
+      end
+    elseif flat then
+      local okRaw, got = pcall(function()
+        return self.rom:bytes(flat.bank, flat.address + id * bytes, bytes)
+      end)
+      if okRaw then raw = got end
+    end
+    if type(raw) == "table" and #raw == bytes then
+      local path = "assets/generated/roofs/" .. id .. ".png"
+      local okImg = pcall(function()
+        ImageWriter.save(ImageWriter.decode2bpp(raw, tiles * 8, 8), path)
+      end)
+      if okImg then images[id] = path end
+    end
+  end
+  if next(images) == nil then return nil end
+
+  local colors = {}
+  local pals = self:symbol("RoofPals")
+  local rows = self:layout("roofPalRows", 2)
+  if pals then
+    for group in pairs(byGroup) do
+      pcall(function()
+        local base = pals.address + group * rows * 4
+        local pair = {}
+        for row = 0, rows - 1 do
+          pair[row] = {
+            gen2Rgb5(self.rom:word(pals.bank, base + row * 4)),
+            gen2Rgb5(self.rom:word(pals.bank, base + row * 4 + 2)),
+          }
+        end
+        colors[group] = {
+          MORN = pair[0], DAY = pair[0],
+          NITE = pair[1] or pair[0],
+          DARK = pair[2] or pair[1] or pair[0],
+        }
+      end)
+    end
+  end
+
+  -- BY FAMILY NAME, NOT BY ID.  The renderer holds a tileset DEF, whose `id`
+  -- is the family ("TilesetJohto1"); the roof gate in the ROM is a numeric
+  -- tileset id, and the two only meet here.
+  local names = self:gen2TilesetNames()
+  local tilesets = {}
+  for id = 1, maxTileset do
+    if names[id] then tilesets[names[id]] = true end
+  end
+  if next(tilesets) == nil then return nil end
+
+  return {
+    source = "ROM:MapGroupRoofs + "
+      .. ((pointers and gfxBank >= 0) and "MapGroupRoofGFX" or "Roofs"),
+    slot = slot,
+    count = tiles,
+    palIndex = self:layout("roofPalIndex",
+                           RomExtractorGen2.GEN2_ROOF_PAL_INDEX),
+    byGroup = byGroup,
+    images = images,
+    colors = colors,
+    tilesets = tilesets,
+  }
+end
+
+-- A MAP'S COLOURS ARE NOT ALWAYS ITS TILESET'S.
+--
+-- LoadMapPals (02:$5FAB) farcalls LoadSpecialMapPalette FIRST and, if it
+-- answers with carry, jumps straight to .got_pals -- the environment path
+-- (EnvironmentColorsPointers -> TilesetBGPalette, which is what
+-- gen2EnvPalettes reads) never runs at all.  Polished Crystal has
+-- SEVENTY-FOUR such rows, and two of them are the Pokemon Center and the
+-- Mart, which is the whole of "the Centre and Mart tiles don't match the ROM"
+-- (#43): both were being coloured from the generic INDOOR environment row.
+--
+-- LoadSpecialMapPalette (12:$627F) walks SpecialBGPalettes, first match wins.
+-- A row is `db selector` then an operand whose LENGTH IS THE SELECTOR'S --
+-- CheckIfSpecialPaletteApplies (12:$6319) reads it with `ld a,[hl+]` and the
+-- loop's `.next` then skips a fixed three -- then `db mode, dw pointer`:
+--
+--   1 MAP       db group, number   vs wMapGroup / wMapNumber   (6-byte row)
+--   2 LANDMARK  db landmark        vs the map's landmark       (5)
+--   3 TILESET   db tileset         vs wMapTileset              (5)
+--   4 OVERCAST  --                                             (4)
+--   5 FLAG      --  the darkness case                          (4)
+--
+--   mode 1  LoadSevenBGPalettes            $38 raw bytes = 7 BG palettes
+--   mode 2  LoadSevenTimeOfDayBGPalettes   four of those, $40 apart
+--   mode 3  jp hl -- a handler, not a table
+--
+-- OVERCAST and FLAG are left alone: the engine already has its own darkness
+-- row (palColorsByTod.DARK) and does not model overcast weather, and the
+-- renderer skips this whole lookup while darkWorld is set, which keeps the
+-- ROM's own ordering (the darkness row is the FIRST in the table).
+--
+-- The two mode-3 handlers are read out of their own code:
+--
+--   PokeCenterSpecialCase 12:$62B6  loads PokeCenterPalette, then copies one
+--     of palettes 3 / 5 / 1 over palette 6 depending on RegionCheck
+--     (00:$259B: landmark >= $82 Orange, >= $44 Kanto, else Johto) with
+--     landmark $26 taking palette 5.  Orange keeps palette 6 as loaded.
+--   MartSpecialCase       12:$62E2  loads MartPalette, and for a mart whose
+--     block data is the shared generic one overlays MartBluePalette on
+--     palette 2.  Only the base block is read here; the blue overlay needs
+--     each map's block pointer and is not done yet.
+RomExtractorGen2.GEN2_SPECIAL_PAL_OPERAND = { [1] = 2, [2] = 1, [3] = 1,
+                                              [4] = 0, [5] = 0 }
+RomExtractorGen2.GEN2_SPECIAL_PAL_KIND = { [1] = "map", [2] = "landmark",
+                                           [3] = "tileset" }
+RomExtractorGen2.GEN2_SPECIAL_PAL_COUNT = 7      -- `ld b, $07` at 02:$5FD7
+RomExtractorGen2.GEN2_SPECIAL_PAL_STRIDE = 0x40  -- `ld bc, $0040` at 12:$62A7
+RomExtractorGen2.GEN2_SPECIAL_PAL_TOD = { "MORN", "DAY", "NITE", "DARK" }
+-- RegionCheck's two thresholds, and the one landmark that is its own case.
+RomExtractorGen2.GEN2_PC_REGION_KANTO = 0x44
+RomExtractorGen2.GEN2_PC_REGION_ORANGE = 0x82
+RomExtractorGen2.GEN2_PC_ROOF_LANDMARK = 0x26
+
+function RomExtractorGen2:gen2SpecialMapPalettes()
+  if self:layout("specialMapPalettes", 0) == 0 or not self.rom then return nil end
+  local rowsSym = self:symbol("SpecialBGPalettes")
+  if not rowsSym then return nil end
+
+  -- address -> the shortest symbol naming it, so a set is keyed by the name
+  -- the build gave it ("PokeComPalette") rather than by a raw address.
+  local named = {}
+  for name, location in pairs(self.symbols or {}) do
+    if type(name) == "string" and type(location) == "table"
+        and tonumber(location[1]) == rowsSym.bank then
+      local at = tonumber(location[2])
+      if at and (named[at] == nil or #name < #named[at]) then named[at] = name end
+    end
+  end
+
+  local tilesetNames = self:gen2TilesetNames()
+  local sets, rules = {}, {}
+
+  local function readSet(name, address, mode)
+    if sets[name] then return true end
+    local count = RomExtractorGen2.GEN2_SPECIAL_PAL_COUNT
+    if mode == 2 then
+      local out = {}
+      for index, tod in ipairs(RomExtractorGen2.GEN2_SPECIAL_PAL_TOD) do
+        out[tod] = GEN2_PAL.read(self.rom, rowsSym.bank,
+          address + (index - 1) * RomExtractorGen2.GEN2_SPECIAL_PAL_STRIDE,
+          count)
+        if not out[tod] then return false end
+      end
+      sets[name] = out
+      return true
+    end
+    local pals = GEN2_PAL.read(self.rom, rowsSym.bank, address, count)
+    if not pals then return false end
+    -- ONE ROW FOR EVERY HOUR, and said once.  A mode-1 block does not vary
+    -- with the clock, and writing the same seven palettes out four times
+    -- would quadruple this table on disk for nothing.
+    sets[name] = { ALL = pals }
+    return true
+  end
+
+  -- Palette `from` copied over palette `onto`, which is the only thing
+  -- PokeCenterSpecialCase does on top of its base block.
+  local function variant(base, suffix, onto, from)
+    local pals = sets[base] and sets[base].ALL
+    if not pals then return nil end
+    local copy = {}
+    for i = 1, #pals do copy[i] = pals[i] end
+    if not (copy[onto] and copy[from]) then return nil end
+    copy[onto] = copy[from]
+    sets[base .. suffix] = { ALL = copy }
+    return base .. suffix
+  end
+
+  local ok = pcall(function()
+    local at = rowsSym.address
+    for _ = 1, 256 do
+      local selector = self.rom:byte(rowsSym.bank, at)
+      if type(selector) ~= "number" or selector == 0 then break end
+      local operand = RomExtractorGen2.GEN2_SPECIAL_PAL_OPERAND[selector]
+      if operand == nil then break end
+      local first = self.rom:byte(rowsSym.bank, at + 1)
+      local second = self.rom:byte(rowsSym.bank, at + 2)
+      local mode = self.rom:byte(rowsSym.bank, at + 1 + operand)
+      local pointer = self.rom:word(rowsSym.bank, at + 2 + operand)
+      at = at + 4 + operand
+
+      local kind = RomExtractorGen2.GEN2_SPECIAL_PAL_KIND[selector]
+      local name = named[pointer]
+      if kind and name then
+        local rule = { kind = kind }
+        if kind == "map" then
+          rule.group, rule.number = first, second
+        elseif kind == "landmark" then
+          rule.landmark = first
+        else
+          rule.tileset = tilesetNames[first]
+        end
+        if kind ~= "tileset" or rule.tileset then
+          local centre = self:symbol("PokeCenterSpecialCase")
+          local mart = self:symbol("MartSpecialCase")
+          if mode == 3 and centre and pointer == centre.address then
+            local base = self:symbol("PokeCenterPalette")
+            if base and readSet("PokeCenterPalette", base.address, 1) then
+              -- Orange keeps the block as loaded; the other three copy one
+              -- palette over palette 6 (1-based 7).
+              local kanto = variant("PokeCenterPalette", "_KANTO", 7, 4)
+              local mark = variant("PokeCenterPalette", "_LANDMARK", 7, 6)
+              local johto = variant("PokeCenterPalette", "_JOHTO", 7, 2)
+              local function push(extra, set)
+                if not set then return end
+                local row = { kind = kind, tileset = rule.tileset,
+                              set = set }
+                for key, value in pairs(extra) do row[key] = value end
+                rules[#rules + 1] = row
+              end
+              push({ landmarkMin = RomExtractorGen2.GEN2_PC_REGION_ORANGE },
+                   "PokeCenterPalette")
+              push({ landmarkMin = RomExtractorGen2.GEN2_PC_REGION_KANTO },
+                   kanto)
+              push({ landmarkEq = RomExtractorGen2.GEN2_PC_ROOF_LANDMARK },
+                   mark)
+              push({}, johto)
+            end
+          elseif mode == 3 and mart and pointer == mart.address then
+            local base = self:symbol("MartPalette")
+            if base and readSet("MartPalette", base.address, 1) then
+              rule.set = "MartPalette"
+              rules[#rules + 1] = rule
+            end
+          elseif (mode == 1 or mode == 2) and readSet(name, pointer, mode) then
+            rule.set = name
+            rules[#rules + 1] = rule
+          end
+        end
+      end
+    end
+  end)
+  if not ok or #rules == 0 then return nil end
+
+  return {
+    source = "ROM:SpecialBGPalettes",
+    sets = sets,
+    rules = rules,
+  }
+end
+
 function RomExtractorGen2:extractRuntimeScaffolds()
   self:beginStage("Gen2 runtime scaffolds")
   local constants = self:constants()
@@ -15439,6 +16052,7 @@ function RomExtractorGen2:extractRuntimeScaffolds()
       end)
       if ok and type(collRaw) == "table" then collision = collRaw end
 
+      local animation, animWaterTiles = self:gen2TilesetAnimation(id)
       tilesets[id] = {
         id = id,
         source = "ROM:Tilesets[" .. id .. "]",
@@ -15460,7 +16074,9 @@ function RomExtractorGen2:extractRuntimeScaffolds()
         counterTiles = GEN2_COUNTER_CLASSES,
         doorTiles = {},
         warpTiles = {},
-        animation = self:gen2TilesetAnimation(id),
+        animation = animation,
+        -- nil on every cartridge whose shimmer is the engine's own tile $14
+        animWaterTiles = animWaterTiles,
       }
 
     else

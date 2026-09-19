@@ -294,6 +294,13 @@ local function objectInTimeOfDay(obj)
 end
 
 local function objectVisible(save, mapId, obj)
+  -- FIRERED'S CLONE OBJECTS (kind 255, "type": "clone" in pokefirered's map
+  -- json) are a neighbour map's object repeated just past this map's edge so
+  -- the cartridge can show it across the seam.  This engine already draws the
+  -- neighbour's own object as a ghost, so a clone is never an object of its
+  -- own: spawned, it stood frozen and walk-through beside the real one (the
+  -- "duplicated" Pallet fat man, Route 9's cut tree seen from Cerulean).
+  if obj.kind == 255 then return false end
   local toggles = save.objectToggles and save.objectToggles[mapId] or {}
   local toggleKey = objectToggleKey(obj)
   -- constants/event_flags.asm, "Sprite visibility flags": when the event is
@@ -373,6 +380,15 @@ local function objectVisible(save, mapId, obj)
       visible = not told
     elseif here ~= nil then
       visible = here
+    elseif obj.eventFlag and GameVersion.get() == "firered" then
+      -- An object with its OWN hide flag is spawned at map load whenever
+      -- that flag is clear; an addobject somewhere else on the map does not
+      -- change that. FireRed's lab rival is exactly this: present from the
+      -- start, and only removed and re-added by the much later National Dex
+      -- scene -- read as "absent until spawned", Blue was missing from the
+      -- whole starter scene and his own battle. The new-game hide flags
+      -- (gen3NewGameFlags) are what keep the genuinely-absent ones hidden.
+      visible = true
     else
       visible = (back and back[obj.index]) and true or false
     end
@@ -1380,13 +1396,36 @@ function OverworldState:updateMapNameSignGen3()
   self.signLandmark = section
   local names = (Game.data.constants or {}).gen3MapSections
   local name = names and names[section]
+  -- FireRed names its sections in sMapNames (read with the town map)
+  if type(name) ~= "string" or name == "" then
+    local frlg = (Game.data.constants or {}).gen3FRLGRegionMap
+    name = frlg and frlg.names and frlg.names[section]
+  end
   if type(name) ~= "string" or name == "" then
     self.mapNameSign = nil
     return
   end
+  -- FireRed's popup slides 12 frames in, holds 120, slides 12 out
+  -- (Task_MapNamePopup); the other Gen 3 sign keeps the old timing
+  local frlg = GameVersion.get and GameVersion.get() == "firered"
+  local text = Strings((name:gsub("[\n\f\v]", " ")))
+  local width = 14
+  -- MapNamePopupAppendFloorNum: " B1F" / " 5F" widen the window by 5 tiles,
+  -- " ROOFTOP" by 8
+  local floor = frlg and tonumber(def.floorNum) or 0
+  if floor ~= 0 then
+    if floor == 127 then
+      text, width = text .. " " .. Strings("ROOFTOP"), 22
+    else
+      text = text .. " " .. (floor < 0 and ("B%dF"):format(-floor) or ("%dF"):format(floor))
+      width = 19
+    end
+  end
   self.mapNameSign = {
-    name = Strings((name:gsub("[\n\f\v]", " "))),
-    frames = MAP_NAME_SIGN_FRAMES,
+    name = text,
+    frames = frlg and 144 or MAP_NAME_SIGN_FRAMES,
+    frlg = frlg or nil,
+    width = width,
   }
 end
 
@@ -1497,6 +1536,20 @@ function OverworldState:rebuildNeighbors()
   -- THEY STILL HAVE BODIES, though, and that half of the exclusion was a
   -- bug: see updateCast below.
   self.ghosts = {}
+  -- OBJECTS PLACED OUTSIDE THEIR OWN MAP ARE STAND-INS FOR A NEIGHBOUR'S.
+  --
+  -- Reported from play: "in pallet town a fat male npc is duplicated.. he has
+  -- no motion and we can pass through him".  FireRed gives Route 21 North a
+  -- CLONE of Pallet's fat man at y = -3 -- off its top edge -- so that he can
+  -- be seen across the seam while you stand on the route.  Ghosting every
+  -- neighbour object drew that clone over Pallet as well, frozen at his spawn
+  -- beside the real one.  Clones never spawn (objectVisible), and an off-map
+  -- neighbour object is never a ghost: the neighbour's real object already is.
+  local function offMap(def, obj)
+    local cells = blockPx(def) / 16
+    return obj.x and obj.y and (obj.x < 0 or obj.y < 0
+      or obj.x >= (def.width or 0) * cells or obj.y >= (def.height or 0) * cells)
+  end
   for _, nb in ipairs(self.neighbors) do
     local peers = {}
     nb.peers = peers
@@ -1505,7 +1558,7 @@ function OverworldState:rebuildNeighbors()
     -- whole number of blocks, so this is always exact.
     nb.cx, nb.cy = nb.ox / 16, nb.oy / 16
     for _, obj in ipairs(nb.map.def.objects or {}) do
-      if objectVisible(Game.save, nb.map.id, obj) then
+      if objectVisible(Game.save, nb.map.id, obj) and not offMap(nb.map.def, obj) then
         local npc = pooledNPC(self.npcPool, Game.data, nb.map.id, obj)
         table.insert(peers, npc)
         table.insert(self.ghosts,
@@ -1774,6 +1827,13 @@ function OverworldState:sgbPalettes()
     end
     return zones
   end
+  -- A TRUE-COLOUR MAP'S BOXES ARE TRUE COLOUR TOO: the same exemption
+  -- sgbWorldZones makes for the world pass.  Without it the dialogue frame
+  -- and its letters went through the four-shade remap and came out green.
+  if not PaletteFX.monoMode() and self.map and self.map.renderer
+      and self.map.renderer.isTrueColor and self.map.renderer:isTrueColor() then
+    return {}
+  end
   return PaletteFX.wholeNamed(Game.data, mapName)
 end
 
@@ -1964,6 +2024,8 @@ function OverworldState:pushBattleTransition(battle, opts, onDone)
   end, {
     trainer = battle and battle.kind == "trainer",
     stronger = lead ~= nil and enemyLevel >= lead.level + 3,
+    -- FireRed picks on a plain comparison (GetWildBattleTransition)
+    weaker = lead ~= nil and enemyLevel < lead.level,
     dungeon = self:isDungeonTransitionMap(),
     tutorial = opts and opts.tutorial or nil,
     contest = opts and opts.contest or nil,
@@ -2257,6 +2319,15 @@ function OverworldState:drainPendingScripts()
      and not (self.player and self.player.moving) then
     local pending = table.remove(queue, 1)
     self.runner:run(pending.script, pending.extra)
+    -- A SCRIPT THAT FINISHES INSIDE run() NEVER LOOKS "JUST FINISHED" to the
+    -- sweep in update(), which only sees a runner that was busy last frame.
+    -- Trainer Tower's ON_TRANSITION is that shape: it fills a graphics slot
+    -- and sets the hide flags in one pass, and the challenger it was placing
+    -- was never spawned -- the floor stood empty while the battle trigger
+    -- still fired.
+    if not self.runner:isRunning() and (GameVersion.isGen2() or GameVersion.isGen3()) then
+      self:syncObjectVisibility()
+    end
   end
 end
 
@@ -2614,8 +2685,17 @@ function OverworldState:update(dt)
   -- floors rocks longer than a trip of one without rocking any faster.  See
   -- Gen3Commands.SPECIALS[276]; the script is parked on `waitstate` until the
   -- count runs out.
+  -- small per-frame field tasks a special starts and forgets (FireRed's
+  -- teleporter lights and cable); each returns true when it is finished
+  if self.fieldTasks and #self.fieldTasks > 0 then
+    for i = #self.fieldTasks, 1, -1 do
+      local ok, finished = pcall(self.fieldTasks[i])
+      if not ok or finished then table.remove(self.fieldTasks, i) end
+    end
+  end
   local lift = self.gen3Elevator
   if lift then
+    if lift.onFrame then lift.onFrame() end
     lift.frames = (lift.frames or 0) + 1
     if lift.frames >= (lift.period or 3) then
       lift.frames = 0
@@ -3111,7 +3191,7 @@ function OverworldState:update(dt)
   -- the player lands on desk Oak.
   local scripted = self.runner:isRunning() or #self.scriptMoves > 0
                    or self.engaging or self.emote or self.teleportOut
-                   or self.whirlSpin
+                   or self.whirlSpin or self.player.stairExit
   -- Gen2 bootstrap can arrive with placeholder script state while map data
   -- is still converging; never softlock movement in the bedroom.
   local gen2BootBedroom = GameVersion.isGen2(Game.data)
@@ -3135,7 +3215,7 @@ function OverworldState:update(dt)
     -- the player can never start another step after being spotted.
     scripted = self.runner:isRunning() or #self.scriptMoves > 0
                or self.engaging or self.emote or self.teleportOut
-               or self.whirlSpin
+               or self.whirlSpin or self.player.stairExit
   end
   if (not scripted and not self.transitioning) or gen2BootBedroom then
     self:handleInput()
@@ -3945,6 +4025,12 @@ function OverworldState:handleInput()
           return result
         end
       end
+      -- ...and the stairs, which the cartridge also asks about only after
+      -- the plain step has been refused (see checkGen2Stairs).
+      if result == "blocked" and why ~= "entity"
+         and self:checkGen2Stairs(dir) then
+        return
+      end
       if result == "blocked" and why ~= "entity" then
         if (self.bumpCooldown or 0) <= 0 then
           require("src.core.Sound").play(Game.data, "Collision")
@@ -3999,7 +4085,19 @@ function OverworldState:handleInput()
   -- whether A or B also count -- and on Gen 2 they do not.
   local braking = (not GameVersion.isGen2())
     and (input:isDown("a") or input:isDown("b")) or false
+  -- FIRERED'S IS A TILE, not a map: BikeInputHandler_Normal rolls you down
+  -- while you stand on MB_CYCLING_ROAD_PULL_DOWN(_GRASS) and B is not held
+  -- (A is not in its test)
+  local frlgPull = self:frlgPullDownHere()
+  if frlgPull ~= nil then braking = input:isDown("b") end
   if Game.save.onBike and not braking and not self.player.moving then
+    if frlgPull then
+      self.player.facing = "down"
+      self.player:tryMove("down", self.map, self.entities)
+      return
+    elseif frlgPull == false then
+      return
+    end
     -- Gen2 arms the same pull from ENGINE_DOWNHILL, set by Route 17's
     -- MAPCALLBACK_NEWMAP alongside ALWAYS_ON_BIKE.  Gen1 named the maps in
     -- field.forcedMovement.slopeMaps instead, and that table is empty on a
@@ -4028,7 +4126,13 @@ function OverworldState:checkBoulderPush(dir)
   local p = self.player
   local fx, fy = Collision.target(p.cellX, p.cellY, dir)
   local npc = self:npcAtCell(fx, fy)
-  if not npc or not Map.isPushable(npc.def) or npc.moving then
+  -- FireRed's boulder is OBJ_EVENT_GFX_PUSHABLE_BOULDER (97), and the push is
+  -- armed by FLAG_SYS_USE_STRENGTH (SYS_FLAGS + 0x05), which the boulder's own
+  -- EventScript_StrengthBoulder sets -- neither is derived for this cartridge
+  local frlg = self:frlgBehaviours() ~= nil
+  local pushable = npc and (Map.isPushable(npc.def)
+                            or (frlg and npc.def and npc.def.graphicsId == 97))
+  if not npc or not pushable or npc.moving then
     self.boulderTried = nil -- pokered resets when no boulder is in front
     return false
   end
@@ -4053,6 +4157,7 @@ function OverworldState:checkBoulderPush(dir)
   local armed = self.strengthActive
   if not armed and GameVersion.isGen3() then
     local flag = Game.data.constants and Game.data.constants.gen3StrengthFlag
+    if flag == nil and frlg then flag = 0x805 end
     armed = flag ~= nil and Game.save.flags ~= nil
             and Game.save.flags[("FLAG_G3_%04X"):format(flag)] == true
   end
@@ -4280,6 +4385,54 @@ function OverworldState:gen2LedgeAllows(standing, dir)
     if allowed == dir then return true end
   end
   return false
+end
+
+-- THE STAIRS STEP, which is the diagonal one.
+--
+-- Polished Crystal's DoPlayerMovement.TryStairs, read off the cartridge and
+-- written out by the importer as field.gen2Stairs -- see the note beside
+-- RomExtractorGen2:gen2StairsSteps for the derivation.  Keyed by the
+-- collision class the player is STANDING on, exactly as ledges are, because
+-- the cartridge reads wPlayerTileCollision for both.
+--
+-- CALLED AFTER THE PLAIN STEP HAS BEEN REFUSED, because that is the order the
+-- cartridge asks in: .Normal runs TryStep, then TryJump, then TryStairs, and
+-- each `ret c` on success.  So walking along a stairs tile where the ordinary
+-- step is open behaves ordinarily; the diagonal is what a press INTO the
+-- slope gets you instead of a bump.
+--
+-- The port has no diagonal glide, so the move is spent as two ordinary steps
+-- -- along, then up or down -- which lands the player on the same cell the
+-- cartridge does.  The landing is checked first, which the cartridge does not
+-- do: TryStairs steps unconditionally, and a port that followed it there
+-- would walk the player into scenery on any map whose stairs run to an edge.
+--
+-- Every gate here fails closed on a cartridge without stairs: Gold, Silver,
+-- Crystal and Prism have no FacingStairsTable, so field.gen2Stairs is nil and
+-- this returns on the first line.
+function OverworldState:checkGen2Stairs(dir)
+  local stairs = Game.data.field and Game.data.field.gen2Stairs
+  if not stairs then return false end
+  local p = self.player
+  if p.surfing then return false end
+  local row = stairs[self.map:cellTile(p.cellX, p.cellY)]
+  if not row then return false end
+  local allowed = false
+  for _, facing in ipairs(row.facing or {}) do
+    if facing == dir then allowed = true break end
+  end
+  if not allowed then return false end
+  local vertical = row.up and "up" or "down"
+  local sx, sy = Collision.target(p.cellX, p.cellY, dir)
+  local lx, ly = Collision.target(sx, sy, vertical)
+  if not (self.map:inBounds(lx, ly) and self.map:isWalkableCell(lx, ly))
+     or Collision.occupied(self.entities, lx, ly, p) then
+    return false
+  end
+  self:scriptMove(p, dir, 1, function()
+    self:scriptMove(p, vertical, 1, nil, true)
+  end)
+  return true
 end
 
 function OverworldState:startLedgeHop(dir, fx, fy)
@@ -5060,14 +5213,18 @@ end
 
 -- Fly to a visited town (called from the party menu).
 
--- HOENN'S REGION MAP, from wherever asks for it: the Pokemon Centre wall, the
--- PokeNav, FLY, and the cartridge's own FieldShowRegionMap special.  Refuses
--- rather than crashing on a cache imported before the section rectangles were
--- kept, which is every Gen 3 cache built before today.
+-- GEN 3'S REGION MAP, from wherever asks for it: the Pokemon Centre wall, the
+-- PokeNav, FLY, and the cartridge's own FieldShowRegionMap special.  Hoenn
+-- needs its section rectangles/place table; FireRed carries a separate
+-- cartridge grid under gen3FRLGRegionMap.  Refuse only when the active cache
+-- has neither representation.
 function OverworldState:openRegionMap(opts)
   if not GameVersion.isGen3() then return false end
   local constants = Game.data.constants or {}
-  if not (constants.gen3MapSectionRects and constants.gen3RegionMapPlaces) then
+  local hoenn = constants.gen3MapSectionRects and constants.gen3RegionMapPlaces
+  local frlg = constants.gen3FRLGRegionMap
+  local fireRed = type(frlg) == "table" and frlg.sections and frlg.sections.kanto
+  if not (hoenn or fireRed) then
     return false
   end
   local Gen3RegionMap = require("src.ui.Gen3RegionMap")
@@ -5077,15 +5234,16 @@ end
 
 -- IS THERE A BIRD TO CARRY THE PLAYER?
 --
--- Kanto's fly is a bird sprite that sweeps in, and the player is hidden while
--- it does.  Hoenn's cartridge has one too, but nothing in a retail ROM NAMES
--- it, so a Gen 3 dataset carries no `playerSprites.fly` -- and hiding the
--- player for a bird that never arrives is how FLY came to look like nothing
--- happening at all.  Without one the player stays drawn and rises off the map
--- instead, which is the same departure the Teleport spin already uses.
+-- Kanto's fly uses the dedicated gFieldEffectObjectPic_Bird sheet: the
+-- fly-out frames already contain Red/Leaf riding the bird, so the standalone
+-- player is hidden while that effect is active.  Older caches and sibling
+-- datasets may still expose the historical playerSprites.fly form; if neither
+-- exists the player stays drawn and uses the Teleport-like rise fallback.
 function OverworldState:hasFlyBird()
   local id = FieldDefaults.fieldValue(Game.data, "playerSprites", "fly")
-  return (id and Game.data.sprites and Game.data.sprites[id]) and true or false
+  if id and Game.data.sprites and Game.data.sprites[id] then return true end
+  local frlg = Game.data.constants and Game.data.constants.gen3FRLGFlyBird
+  return (frlg and frlg.path) and true or false
 end
 
 -- Close whatever menus are stacked over the map, down to the map itself.
@@ -5292,7 +5450,12 @@ function OverworldState:tryPcTile(fx, fy)
         return true
       end
     end
+    -- FireRed's cartridge names the PC behaviour MB_PC ($83).  Newer caches
+    -- contain the extractor's derived value; the literal fallback keeps a
+    -- cache produced before that stage from falling through to the old PC
+    -- menu while still leaving other Gen 3 datasets data-driven.
     local pc = Game.data.constants and Game.data.constants.gen3PcBehaviour
+    if not pc and GameVersion.get() == "firered" then pc = 0x83 end
     if pc and self.map:cellBehaviour(fx, fy) == pc then
       -- ...AND WHAT IT OPENS IS THE CARTRIDGE'S OWN SCRIPT, not this port's
       -- PC menu.  EventScript_PC is what the field runs for this behaviour:
@@ -5446,6 +5609,13 @@ function OverworldState:interact()
       self:showMapText(sign.text, nil)
     end
     interacted(self, fx, fy, "sign", sign)
+    return
+  end
+
+  -- FireRed's furniture, PC, TV and signs: GetInteractedMetatileScript runs
+  -- right after the bg events, ahead of the water and the field moves
+  if self:tryFRLGMetatileScript(fx, fy) then
+    interacted(self, fx, fy, "metatile")
     return
   end
 
@@ -5616,6 +5786,7 @@ function OverworldState:tryGen3MetatileScript(fx, fy)
 end
 
 function OverworldState:tryBookshelf(fx, fy)
+  if self:tryFRLGMetatileScript(fx, fy) then return true end
   if self:tryGen3Furniture(fx, fy) then return true end
   if self:tryGen3MetatileScript(fx, fy) then return true end
   if self.player.facing ~= "up" then return false end
@@ -6903,6 +7074,8 @@ function OverworldState:clearGen3TempFlags()
       cleared = cleared + 1
     end
   end
+  -- FireRed's ClearTempFieldEventData also puts STRENGTH down on every map load
+  if self:frlgBehaviours() then flags[VM.flagName(0x805)] = nil end
   return cleared
 end
 
@@ -7084,6 +7257,85 @@ end
 -- the map edge stops the surfer there rather than carrying them into it --
 -- which is the cartridge's DoForcedMovement, whose collision check is the
 -- ordinary one.
+-- FIRERED'S OWN TERRAIN (constants.gen3FRLGBehaviours, written by the
+-- tileset import only on a FireRed cartridge -- see
+-- RomExtractorGen3.FRLG_BEHAVIOUR_OVERRIDES for the slots).
+function OverworldState:frlgBehaviours()
+  local c = Game.data.constants
+  return c and c.gen3FRLGBehaviours or nil
+end
+
+function OverworldState:frlgBehaviourAt(cx, cy)
+  local map = self.map
+  if not (map and map.cellBehaviour and map:inBounds(cx, cy)) then return nil end
+  return map:cellBehaviour(cx, cy)
+end
+
+-- nil: not a FireRed map at all; true/false: on a Cycling Road pull-down tile
+function OverworldState:frlgPullDownHere()
+  local B = self:frlgBehaviours()
+  if not B then return nil end
+  local b = self:frlgBehaviourAt(self.player.cellX, self.player.cellY)
+  return b == B.pullDown or b == B.pullDownGrass
+end
+
+-- THE SPIN TILES (Rocket Hideout, Viridian Gym): TryUpdatePlayerSpinDirection.
+-- A spin tile sets the direction, and the player keeps sliding that way over
+-- ordinary floor until a STOP_SPINNING tile or something in the way; a new
+-- spin tile on the way simply changes the direction.
+local FRLG_SPIN_DIRS = { right = "right", left = "left", up = "up", down = "down" }
+function OverworldState:checkFRLGSpin()
+  local B = self:frlgBehaviours()
+  if not (B and B.spin) then return false end
+  local p = self.player
+  local b = self:frlgBehaviourAt(p.cellX, p.cellY)
+  if self.frlgSpinMap ~= self.map.id then self.frlgSpin = nil end
+  if b == B.stopSpinning then
+    self.frlgSpin, p.spinning = nil, false
+    return false
+  end
+  local way = FRLG_SPIN_DIRS[B.spin[b] or ""] or self.frlgSpin
+  if not way or p.surfing then
+    self.frlgSpin, p.spinning = nil, false
+    return false
+  end
+  if not Collision.canMove(self.map, self.entities, p, way) then
+    self.frlgSpin, p.spinning = nil, false
+    return false
+  end
+  if B.spin[b] then
+    pcall(function() require("src.core.Sound").play(Game.data, "Arrow_Tiles") end)
+  end
+  self.frlgSpin, self.frlgSpinMap = way, self.map.id
+  p.spinning = true
+  p.facing = way
+  self:scriptMove(p, way, 1, function() self:onStepComplete() end)
+  return true
+end
+
+-- the metatile scripts only C names (GetInteractedMetatileScript)
+function OverworldState:tryFRLGMetatileScript(fx, fy)
+  local B = self:frlgBehaviours()
+  if not (B and B.scripts) then return false end
+  local b = self:frlgBehaviourAt(fx, fy)
+  local s = b and B.scripts[b]
+  if not s then return false end
+  -- GetInteractedWaterScript: facing fast water with a SURF mon in the party
+  if s.water and not (self.partyKnows and self:partyKnows("SURF")
+                      and not self.player.surfing) then
+    return false
+  end
+  if s.north and self.player.facing ~= "up" then return false end
+  return self:gen3RunFieldScript(s.label, "metatile") and true or false
+end
+
+-- EventScript_CurrentTooFast: facing Seafoam's fast water with a surfer in
+-- the party says so instead of offering to surf
+function OverworldState:frlgFastWaterAt(fx, fy)
+  local B = self:frlgBehaviours()
+  return B and B.fastWater and self:frlgBehaviourAt(fx, fy) == B.fastWater or false
+end
+
 function OverworldState:checkGen3Current()
   if not GameVersion.isGen3() then return false end
   local map, p = self.map, self.player
@@ -7858,6 +8110,10 @@ function OverworldState:tryFieldMoveOW(fx, fy)
     return false
   end
   if move == "SURF" then
+    local B = self:frlgBehaviours()
+    if B and self:frlgFastWaterAt(fx, fy) and B.scripts and B.scripts[B.fastWater] then
+      return self:gen3RunFieldScript(B.scripts[B.fastWater].label, "fastwater") and true or false
+    end
     -- TrySurfOW (Gen2): check badge + position, then ask yes/no.  Any other
     -- reason is a silent `ret c` in the ROM, so let interact() carry on to
     -- its remaining handlers instead of eating the A press.
@@ -8089,6 +8345,7 @@ function OverworldState:useSurfFieldMove()
   -- starts.  Surf is the fifth.
   if GameVersion.isGen3() then
     if not gen3BadgeHeld("SURF") then return "no_badge" end
+    if not p.surfing and self:frlgFastWaterAt(p:facingCell()) then return "current" end
     if p.surfing then
       return self:facingIsLandDismount() and "dismount" or "no_place"
     end
@@ -8154,11 +8411,29 @@ end
 
 -- One of the cartridge's own field-move lines, or nil when the import did
 -- not place it (an older cache) -- every caller has a fallback.
+-- FireRed's own field-move lines (pokefirered data/text/field_moves.inc and
+-- surf.inc), by the address the text pool keys them under
+local FRLG_FIELD_MOVE_TEXT = {
+  SURF = { ask = 0x1A556E, used = 0x1A55A4 },
+  WATERFALL = { ask = 0x1BE33E, used = 0x1BE378 },
+  STRENGTH = { ask = 0x1BE19A, used = 0x1BE1FA },
+  ROCK_SMASH = { ask = 0x1BE09C },
+  CUT = { ask = 0x1BDFE2, used = 0x1BDF94 },
+}
+
 function OverworldState:gen3FieldText(moveId, slot)
   local placed = Game.data.constants and Game.data.constants.gen3FieldMoveText
   local record = placed and placed[moveId]
   local key = record and record[slot]
-  return key and Game.data.text and Game.data.text[key] or nil
+  local line = key and Game.data.text and Game.data.text[key] or nil
+  if not line and self:frlgBehaviours() then
+    local at = (FRLG_FIELD_MOVE_TEXT[moveId] or {})[slot]
+    local text = Game.data.text or {}
+    if at then
+      line = text[("TEXT_%X"):format(at)] or text[("TEXT_%X"):format(at + 1)]
+    end
+  end
+  return line
 end
 
 -- TrySetDiveWarp: which way this cell goes, and where to.  The tile the
@@ -8456,6 +8731,13 @@ end
 
 function OverworldState:talkTo(npc)
   npc.frozen = true
+  -- Face the player at the interaction boundary.  Gen 3's ordinary
+  -- `callstd 2` scripts still emit FACEPLAYER, but a number of FireRed text
+  -- entries are routed through a hand-ported handler or an older cache that
+  -- has no lowered prologue.  The cartridge always turns the speaker before
+  -- the response, and a script may still immediately override this for a
+  -- deliberate cutscene pose.
+  if npc.facePlayer then npc:facePlayer(self.player) end
   local unfreeze = function() npc.frozen = false end
   local d = npc.def
 
@@ -8606,12 +8888,90 @@ end
 
 local function sameItems(_, items) return items end
 
+-- FireRed's own PC front menu.  This is kept as a runtime fallback because
+-- older FireRed caches do not carry the Emerald-style `gen3PCMenu` record;
+-- routing those caches through openPC used to draw the Game Boy menu even
+-- though all of the Gen 3 storage screens were already present.
+function OverworldState:openGen3PC(onDone)
+  local done = onDone or function() end
+  local Menu = require("src.ui.Menu")
+  local Gen3Commands = require("src.script.Gen3Commands")
+  local constants = Game.data.constants or {}
+  local frlg = constants.gen3FRLGSpecialTexts or {}
+  local text = frlg.pcMenu or {}
+  local flags = Game.save.flags or {}
+  local function has(flag)
+    return flags[Gen3Commands.flagKey(flag)] == true
+  end
+  local player = (Game.save.player and Game.save.player.name) or "RED"
+  local rows, actions = {}, {}
+  local function label(i, fallback)
+    local value = text[i]
+    if type(value) ~= "string" or value == "" then value = fallback end
+    return Strings((value:gsub("{PLAYER}", player)))
+  end
+
+  rows[#rows + 1] = label(has(0x834) and 2 or 1, has(0x834)
+                           and "BILL'S PC" or "SOMEONE'S PC")
+  actions[#actions + 1] = "storage"
+  rows[#rows + 1] = label(3, player .. "'s PC")
+  actions[#actions + 1] = "player"
+  if has(0x829) then
+    rows[#rows + 1] = label(4, "PROF. OAK'S PC")
+    actions[#actions + 1] = "oak"
+  end
+  if has(0x82C) then
+    rows[#rows + 1] = label(5, "HALL OF FAME")
+    actions[#actions + 1] = "hall"
+  end
+  rows[#rows + 1] = label(6, "LOG OFF")
+  actions[#actions + 1] = "off"
+
+  require("src.core.Sound").play(Game.data, "Turn_On_PC")
+  local function reopen()
+    self:openGen3PC(done)
+  end
+  local items = {}
+  for i, row in ipairs(rows) do
+    items[i] = { label = row, onSelect = function()
+      local action = actions[i]
+      if action == "storage" then
+        require("src.core.Sound").play(Game.data, "Enter_PC")
+        Screens.push(Game, "StorageMenu", { onDone = reopen })
+      elseif action == "player" then
+        require("src.core.Sound").play(Game.data, "Enter_PC")
+        Screens.push(Game, "PlayerPC", { order = "player", onDone = reopen })
+      elseif action == "oak" then
+        self:openOaksPC(reopen)
+      elseif action == "hall" then
+        Game.stack:push(TextBox.new(Game,
+          Strings("The HALL OF FAME link is not available in this port."),
+          reopen))
+      else
+        require("src.core.Sound").play(Game.data, "Turn_Off_PC")
+        done()
+      end
+    end }
+  end
+  Game.stack:push(Menu.new(Game, items, {
+    tx = 0, ty = 0, tw = 18, th = #items * 2 + 2,
+    onCancel = function()
+      require("src.core.Sound").play(Game.data, "Turn_Off_PC")
+      done()
+    end,
+    noSound = true,
+  }))
+end
+
 -- The Pokémon Center PC: BILL's PC (boxes), the player's item storage,
 -- and PROF.OAK's dex rating (engine/menus/players_pc.asm,
 -- engine/events/pokedex_rating.asm).  The assembled entries run through
 -- the ui.pc.items hook; LOG OFF is appended after it so a mod cannot
 -- orphan the exit.
 function OverworldState:openPC(onDone)
+  if GameVersion.isGen3() then
+    return self:openGen3PC(onDone)
+  end
   require("src.core.Sound").play(Game.data, "Turn_On_PC")
   local Menu = require("src.ui.Menu")
   local done = onDone or function() end
@@ -9573,8 +9933,8 @@ function OverworldState:applyFieldPoison()
         save.money = math.floor(save.money
           / (FieldDefaults.world(Game.data, "blackoutMoneyDivisor") or 2))
         Runtime.emit("world.blacked_out",
-          { save = save, healTarget = self:healPoint() })
-        self:warpToHealPoint()
+          { save = save, healTarget = self:healPoint(true) })
+        self:warpToHealPoint(nil, { whiteout = true })
       end))
     end
   end
@@ -9860,7 +10220,17 @@ function OverworldState:onStepComplete()
   -- Hoenn ever wanted a rematch -- the whole POKéNAV MATCH CALL list would
   -- have shown a region of trainers with nothing to say.
   if GameVersion.isGen3() then
-    require("src.script.MatchCall").step(Game.data, Game.save)
+    if GameVersion.get() == "firered" then
+      require("src.world.VsSeeker").step(Game.save)
+    else
+      require("src.script.MatchCall").step(Game.data, Game.save)
+    end
+    -- FireRed's own per-step counters (massage, resort, Birth Island, hidden
+    -- item regrowth)
+    local G3 = require("src.script.Gen3Commands")
+    if G3.frlgStep and self:frlgBehaviours() then
+      G3.frlgStep({ save = Game.save, game = Game, overworld = self })
+    end
   end
   -- THE MACH BIKE PICKS UP SPEED, and that speed is the only thing that beats
   -- a mud ramp.
@@ -10074,6 +10444,7 @@ function OverworldState:onStepComplete()
 
   -- spinner arrow tiles (Viridian Gym, Rocket Hideout)
   if self:checkSpinner() then return end
+  if self:checkFRLGSpin() then return end
 
   -- badge-check guards (Route 22 gate / Route 23)
   if self:checkBadgeGate() then return end
@@ -10798,8 +11169,8 @@ function OverworldState:afterBattle(result, battle)
     Game.save.money = math.floor(Game.save.money
       / (FieldDefaults.world(Game.data, "blackoutMoneyDivisor") or 2))
     Runtime.emit("world.blacked_out",
-      { save = Game.save, healTarget = self:healPoint() })
-    self:warpToHealPoint(evolutions)
+      { save = Game.save, healTarget = self:healPoint(true) })
+    self:warpToHealPoint(evolutions, { whiteout = true })
   else
     -- EndTrainerBattle sets BIT_CUR_MAP_LOADED_1 (home/trainers.asm), which
     -- re-runs the floor's door callback: beating the last Rocket Hideout guard
@@ -10835,7 +11206,7 @@ end
 
 -- field.boot: where a save with no heal point of its own returns to.  The
 -- lastHeal record wins; otherwise the new game's own spawn cell.
-function OverworldState:healPoint()
+function OverworldState:healPoint(whiteout)
   -- GEN 3 ANSWERS THIS FROM ITS OWN TABLE.  `setrespawn` is the script
   -- command every Pokemon Centre in Hoenn runs on entry, and its argument is
   -- an INDEX INTO sHealLocations -- so the index the command already stored
@@ -10844,8 +11215,17 @@ function OverworldState:healPoint()
   -- `gen3RespawnIndex` was written by the script engine and read by nothing,
   -- and a Hoenn blackout fell through to the boot spawn -- the truck.
   if GameVersion.isGen3() then
-    local list = Game.data.constants and Game.data.constants.gen3HealLocations
-    local row = list and list[tonumber(Game.save.gen3RespawnIndex or 0) or 0]
+    local c = Game.data.constants or {}
+    local list = c.gen3HealLocations
+    local index = tonumber(Game.save.gen3RespawnIndex
+                           or c.gen3DefaultRespawnIndex or 0) or 0
+    local row = list and list[index]
+    -- a WHITEOUT lands in the healer's room where the cartridge names one
+    -- (FireRed's sWhiteoutRespawnHealCenterMapIdxs); FLY and TELEPORT keep
+    -- the outdoor point
+    if row and whiteout and row.respawn then
+      return { map = row.respawn.map, x = row.respawn.x, y = row.respawn.y }
+    end
     if row then return { map = row.map, x = row.x, y = row.y } end
   end
   local boot = (Game.data.field or {}).boot or {}
@@ -11001,7 +11381,7 @@ end
 -- GBFadeOutToBlack + PrepareForSpecialWarp + SpecialEnterMap, and never
 -- sets BIT_FLY_WARP / BIT_DUNGEON_WARP, so EnterMap never runs EnterMapAnim.
 function OverworldState:warpToHealPoint(onDone, opts)
-  local heal = self:healPoint()
+  local heal = self:healPoint(opts and opts.whiteout)
   self.player.surfing = false
   self:syncSurfingPikachu()
   -- HandleFlyWarpOrDungeonWarp + DisplayPlayerBlackedOutText both clear
@@ -11088,9 +11468,41 @@ function OverworldState:startWarpTo(mapId, x, y, facing, onDone, opts)
   local arriveWarp = self.arriveWarp
   self.arriveWarp = nil
   local fromId = self.map.id
+  local fromSection = self.map.def and self.map.def.regionMapSection
   Game.stack:push(Transition.new(Game, function()
     self:setMap(mapId, x, y, facing or "down", opts)
     self:noteGen2Spawn(fromId)
+    -- FIRERED'S SIDE STAIRS (ExitStairsMovement): you land ON the stair tile
+    -- facing away from it -- west off a right-hand stair, east off a left one
+    -- and the sprite starts offset along the diagonal, then walks that OAM
+    -- offset back to the cell over 16 frames while field controls are locked.
+    -- GetStairsMovementDirection uses these exact fixed-point speeds.
+    local stairB = self:frlgBehaviours() and self:frlgBehaviourAt(self.player.cellX, self.player.cellY)
+    if stairB == 0xEC then
+      self.player:startStairExit(16, -10, "left")   -- UP_RIGHT
+    elseif stairB == 0xED then
+      self.player:startStairExit(-17, -10, "right") -- UP_LEFT
+    elseif stairB == 0xEE then
+      self.player:startStairExit(17, 3, "left")     -- DOWN_RIGHT
+    elseif stairB == 0xEF then
+      self.player:startStairExit(-17, 3, "right")   -- DOWN_LEFT
+    end
+    -- FIRERED: a warp into a dungeon with a preview picture shows it first
+    local section = self.map.def and self.map.def.regionMapSection
+    if section and section ~= fromSection and GameVersion.get() == "firered" then
+      local Preview = require("src.world.Gen3MapPreviewFRLG")
+      if Preview.record(Game, section) then
+        local frlg = (Game.data.constants or {}).gen3FRLGRegionMap
+        local name = frlg and frlg.names and frlg.names[section]
+        local state = Preview.new(Game, section, name and Strings(name) or "")
+        if state then
+          Game.stack:push(state)
+          -- the preview already named the place (FieldCB_WarpExitFadeFromBlack
+          -- takes the preview branch instead of ShowMapNamePopup)
+          self.mapNameSign = nil
+        end
+      end
+    end
     -- The warp we land ON stays inert for the completed-step check until we
     -- physically step off it, so a warp whose destination cell is itself a
     -- warp cannot bounce us straight back (elevator cars, stacked stair/door
@@ -12945,6 +13357,72 @@ function OverworldState:drawWorld()
     end
   end
 
+  -- FireRed's S.S. Anne departure uses two ordinary OBJ sprites that are not
+  -- object events: a looping 16x32 wake behind the ship and 16x16 smoke puffs
+  -- from its funnel.  Special 401 owns their exact lifetime/positions; this
+  -- pass only turns that state into the extracted ROM frames.
+  local function ssAnneArt()
+    local def = Game.data.constants and Game.data.constants.gen3SSAnneFx
+    if not def then return nil end
+    if self.ssAnneWakeImg == nil then
+      local ok, img = pcall(Assets.image, def.wake)
+      self.ssAnneWakeImg = ok and img or false
+    end
+    if self.ssAnneSmokeImg == nil then
+      local ok, img = pcall(Assets.image, def.smoke)
+      self.ssAnneSmokeImg = ok and img or false
+    end
+    if self.ssAnneWakeImg and not self.ssAnneWakeQuads then
+      local w, h = self.ssAnneWakeImg:getDimensions()
+      self.ssAnneWakeQuads = {
+        love.graphics.newQuad(0, 0, 16, 32, w, h),
+        love.graphics.newQuad(16, 0, 16, 32, w, h),
+      }
+    end
+    if self.ssAnneSmokeImg and not self.ssAnneSmokeQuads then
+      local w, h = self.ssAnneSmokeImg:getDimensions()
+      self.ssAnneSmokeQuads = {}
+      for i = 0, 3 do
+        self.ssAnneSmokeQuads[i + 1] = love.graphics.newQuad(i * 16, 0, 16, 16, w, h)
+      end
+    end
+    return self.ssAnneWakeImg, self.ssAnneSmokeImg
+  end
+
+  local function fxSSAnneWake()
+    local fx = self.ssAnneDepartureFx
+    if not (fx and fx.boat) then return end
+    local wake = ssAnneArt()
+    if not (wake and self.ssAnneWakeQuads) then return end
+    local age = math.min(fx.wakeAge or 0, 132)
+    local cx = fx.boat.px + (fx.boat.shiftPx or 0) + 8 - cam.x
+               + 80 + math.floor(age / 6)
+    if cx < -18 then return end
+    local frame = math.floor(age / 12) % 2 + 1
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.draw(wake, self.ssAnneWakeQuads[frame],
+                       math.floor(cx - 8), 109 - 16)
+  end
+
+  local function fxSSAnneSmoke()
+    local fx = self.ssAnneDepartureFx
+    if not (fx and fx.smoke and #fx.smoke > 0) then return end
+    local _, smoke = ssAnneArt()
+    if not (smoke and self.ssAnneSmokeQuads) then return end
+    love.graphics.setColor(1, 1, 1, 1)
+    for _, puff in ipairs(fx.smoke) do
+      local age = puff.age or 0
+      local frame
+      if age < 10 then frame = 1
+      elseif age < 30 then frame = 2
+      elseif age < 50 then frame = 3
+      else frame = 4 end
+      local cx = puff.x + math.floor(age / 4)
+      love.graphics.draw(smoke, self.ssAnneSmokeQuads[frame],
+                         math.floor(cx - 8), 78 - 8)
+    end
+  end
+
   -- the watering can's water: droplets arcing down onto the soil, and a
   -- sparkle on the last few frames as it soaks in
   local function fxWater()
@@ -13126,6 +13604,46 @@ function OverworldState:drawWorld()
   -- the FLY bird sweeping off with the player
   local function fxBird()
     if not self.flyAnim then return end
+    -- FireRed has a dedicated five-frame 64x64 field-effect bird.  Frames 1
+    -- and 3 already contain Red/Leaf riding it during fly-out, so use the
+    -- cartridge sheet directly instead of substituting the selected mon's
+    -- battle front sprite.
+    local frlg = Game.data.constants and Game.data.constants.gen3FRLGFlyBird
+    if frlg and frlg.path then
+      if self.flyBirdImg == nil then
+        local ok, img = pcall(love.graphics.newImage, frlg.path)
+        self.flyBirdImg = ok and img or false
+      end
+      if self.flyBirdImg then
+        local gender = ((Game.save or {}).player or {}).gender == "girl"
+                       and "girl" or "boy"
+        local frame = ((frlg.flyOut or {})[gender]) or (gender == "girl" and 3 or 1)
+        local fw = frlg.frameWidth or 64
+        local fh = frlg.frameHeight or 64
+        self.flyBirdQuads = self.flyBirdQuads or {}
+        if not self.flyBirdQuads[frame] then
+          local iw, ih = self.flyBirdImg:getDimensions()
+          self.flyBirdQuads[frame] = love.graphics.newQuad(
+            0, frame * fh, fw, fh, iw, ih)
+        end
+        local t = math.max(0, math.min(48, 48 - self.flyAnim.frames))
+        local reach = 16
+        local dx, dy
+        if t <= reach then
+          local k = 1 - t / reach
+          dx, dy = -96 * k, -72 * k
+        else
+          local k = (t - reach) / (48 - reach)
+          dx, dy = -120 * k * k, -96 * k * k
+        end
+        local px = math.floor(self.player.px - cam.x + 8 - fw / 2 + dx)
+        local py = math.floor(self.player.py - cam.y + 8 - fh / 2 + dy)
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.draw(self.flyBirdImg, self.flyBirdQuads[frame], px, py)
+        require("src.render.PaletteFX").markTrueColor(px, py, fw, fh)
+        return
+      end
+    end
     local birdId = FieldDefaults.fieldValue(Game.data, "playerSprites", "fly")
     if not self.birdSprite and birdId and Game.data.sprites[birdId] then
       local SR = require("src.render.SpriteRenderer")
@@ -13141,7 +13659,9 @@ function OverworldState:drawWorld()
       return
     end
 
-    -- NOBODY NAMES THE CARTRIDGE'S BIRD, SO THE POKEMON FLIES YOU ITSELF.
+    -- Legacy fallback for datasets that predate the ROM-extracted FireRed
+    -- bird above.  Keep it for old caches/other games, but current FireRed
+    -- imports should never reach this branch.
     --
     -- Reported from play, twice: "ensure the animation of the flying type
     -- pokemon swooping up my player plays after the fly hm transition" and
@@ -13357,6 +13877,11 @@ function OverworldState:drawWorld()
       if self.fishing then
         at(fxRod, self.player.px + 8, self.player.py + 16)
       end
+      -- The S.S. Anne effects are authored in screen OAM coordinates for this
+      -- fixed-camera cutscene.  Keep them as an upright overlay for a custom
+      -- world pipeline; the flat/tilt paths place the wake behind the ship.
+      fxSSAnneWake()
+      fxSSAnneSmoke()
       for _, sp in ipairs(self.sparkles or {}) do
         sparkleOne = sp
         at(fxSparkleOne, sp.px + 8, sp.py + 16)
@@ -13612,10 +14137,12 @@ function OverworldState:drawWorld()
       end
     end
 
-    -- THE ROTATING GATES GO UNDER EVERYBODY, and that is a number rather
-    -- than a taste -- see OverworldState:drawGen3Gates.
+    -- The rotating gates sit under the entity pass; the S.S. Anne wake has
+    -- priority below the ship and therefore belongs immediately before it.
     self:drawGen3Gates(cam)
-
+    -- OBJ priority 2 and a later sprite id put the wake behind the ship at the
+    -- same priority on hardware.  Draw it immediately before the entity pass.
+    fxSSAnneWake()
     local onTop = nil
     for _, e in ipairs(self.entities) do
       if self:gen3AboveTopLayer(e) then
@@ -13647,6 +14174,8 @@ function OverworldState:drawWorld()
     fxSparkle()
     fxBird()
     fxRod()
+    -- Smoke keeps the template's priority 0, above the ship and map layers.
+    fxSSAnneSmoke()
   else
     -- === TILT PATH: ground-hugging FX stay on the projected ground, all
     -- standing things billboard upright over it in a separate pass. ======
@@ -13665,6 +14194,8 @@ function OverworldState:drawWorld()
     self:drawGen3Gates(cam)
 
     Game.renderer:beginUprightPass()
+
+    fxSSAnneWake()
 
     -- One y-sorted list of ALL upright billboards -- sprites (player, NPCs,
     -- ghosts) -- keyed on baseline world y (the foot / base row).  Farther
@@ -13692,7 +14223,7 @@ function OverworldState:drawWorld()
                        function() g.npc:draw(cam.x - g.ox, cam.y - g.oy) end)
       else
         local e = it.e
-        local fx = e.px - cam.x + 8
+        local fx = e.px + (e.shiftPx or 0) - cam.x + 8
         local fy = e.py - cam.y + 16
         local colors = zoneColorsAt(zones, fx, fy)
         self:billboard(fx, fy, vw, vh, colors, false,
@@ -13736,6 +14267,7 @@ function OverworldState:drawWorld()
       local fy = self.player.py - cam.y + 16
       self:billboard(fx, fy, vw, vh, zoneColorsAt(zones, fx, fy), false, fxRod)
     end
+    fxSSAnneSmoke()
     for _, sp in ipairs(self.sparkles or {}) do
       sparkleOne = sp
       local fx = sp.px - cam.x + 8
@@ -13855,13 +14387,25 @@ function OverworldState:drawGen3Heal(ha, cam)
   if monitor then
     love.graphics.draw(monitor, ox + record.monitor.x, oy + record.monitor.y)
   end
+  -- Reported from play: the healing machine's layout looks wrong -- what was
+  -- actually wrong is that a lit ball was invisible rather than misplaced.
+  -- The console art the map tileset already draws bakes in its own row of
+  -- (unlit-looking) LED dots, and this glow sprite is the ROM's own tiny
+  -- 4x4 dot meant to sit exactly over one -- at native size, one more red
+  -- pixel-cluster on top of art that is already mostly red LEDs, it could
+  -- not be told apart from the backdrop it was drawn on. 2x scale and a
+  -- bright gold tint (a lit Poke Ball, not a red LED) makes each one land.
   local glow = record.glow.image and picture(record.glow.image)
   if glow then
+    -- NATIVE SIZE AND COLOURS.  An enlarged, gold-tinted ball read better in
+    -- the voxel view but dwarfed the machine in the plain game; the sprite and
+    -- sPokeballCoordOffsets are the cartridge's own and are drawn as such.
     for i = 1, math.min(ha.lit or 0, #(record.glow.offsets or {})) do
       local at = record.glow.offsets[i]
       love.graphics.draw(glow, ox + record.glow.x + at[1],
                          oy + record.glow.y + at[2])
     end
+    love.graphics.setColor(1, 1, 1, 1)
   end
   return (monitor or glow) ~= nil
 end
@@ -13879,12 +14423,50 @@ function OverworldState:drawUI()
   -- poison flash below.  PlaceMapNameFrame draws the frame at hlcoord 0, 0
   -- with two interior rows, and PlaceMapNameCenterAlign centres the name on
   -- the second of them (hlcoord 0, 2 + (SCREEN_WIDTH - len) / 2).
-  if self.mapNameSign then
+  if self.mapNameSign and self.mapNameSign.frlg then
+    -- FIRERED (map_name_popup.c): a 14x2 window at tile (1,29) of BG0 with
+    -- its outer border, scrolled down from above the screen two pixels a
+    -- frame until 24 in; the name centred in 112 pixels, 2 down
+    local Font = require("src.render.Font")
+    local left = self.mapNameSign.frames
+    local shown = 144 - left
+    local pos = math.min(24, shown * 2, left * 2)
+    love.graphics.push()
+    -- the frame's top row starts one tile above the interior, which lands at
+    -- y 0 once fully in
+    love.graphics.translate(0, pos - 32)
+    local inner = self.mapNameSign.width or 14
+    Font.drawBox(0, 0, inner + 2, 4)
+    love.graphics.setColor(98 / 255, 98 / 255, 98 / 255, 1)
+    local name = self.mapNameSign.name
+    local two = Font.beginTwoTone and Font.beginTwoTone({ 98 / 255, 98 / 255, 98 / 255, 1 },
+                                                        { 214 / 255, 214 / 255, 206 / 255, 1 })
+    local maxWidth = (inner == 14 and 112) or (inner == 19 and 152) or 176
+    Font.draw(name, 8 + math.max(0, math.floor((maxWidth - Font.width(name)) / 2)), 8 + 2)
+    if two then Font.endTwoTone() end
+    love.graphics.pop()
+    love.graphics.setColor(1, 1, 1, 1)
+  elseif self.mapNameSign then
     local Font = require("src.render.Font")
     Font.drawBox(0, 0, 20, 4)
     love.graphics.setColor(0, 0, 0, 1)
     local name = self.mapNameSign.name
     Font.draw(name, math.max(0, math.floor((160 - Font.width(name)) / 2)), 16)
+    love.graphics.setColor(1, 1, 1, 1)
+  end
+
+  -- FIRERED'S ELEVATOR PANEL (DrawElevatorCurrentFloorWindow): window (22,1)
+  -- 7x4 in its frame, "Now on:" at (0,2) and the floor right-aligned to 56
+  if self.frlgFloorWindow then
+    local Font = require("src.render.Font")
+    local w = self.frlgFloorWindow
+    Font.drawBox(21, 0, 9, 6)
+    local ink, shadow = { 98 / 255, 98 / 255, 98 / 255, 1 }, { 214 / 255, 214 / 255, 206 / 255, 1 }
+    local two = Font.beginTwoTone and Font.beginTwoTone(ink, shadow)
+    if not two then love.graphics.setColor(ink) end
+    Font.draw(w.nowOn, 22 * 8, 8 + 2)
+    Font.draw(w.floor, 22 * 8 + 56 - Font.width(w.floor), 8 + 16)
+    if two then Font.endTwoTone() end
     love.graphics.setColor(1, 1, 1, 1)
   end
 

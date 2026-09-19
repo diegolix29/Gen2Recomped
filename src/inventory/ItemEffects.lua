@@ -859,6 +859,12 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
     end
     return "itemfinder"
   end
+  if itemId == "VS_SEEKER" then
+    if battle then
+      return "failed", { Strings("OAK: %s!\nThis isn't the\ntime to use that!", save.player.name) }
+    end
+    return "vs_seeker"
+  end
   if itemId == "COIN_CASE" then
     return "failed", { Strings("Coin count:\n%d", save.coins or 0) }
   end

@@ -645,10 +645,37 @@ function PaletteFX.spriteRedraws()
   return spriteRedraws
 end
 
+-- A CARTRIDGE THAT HAS ITS OWN COLOUR KEEPS IT.  Declared here rather than
+-- beside its other callers below because `pack` is the first thing that needs
+-- it, and a Lua local is only in scope after its declaration.
+--
+-- Gen 2 and Gen 3 are colour hardware: their palettes are real, extracted from
+-- the cartridge, so the Gen 1 colourisation modes have nothing to add and
+-- everything to break.
+local function gen2Native()
+  return GameVersion.isGen2() or GameVersion.isGen3()
+end
+
 -- Active named-palette table for COLORS: RED++ uses data/palettes_gbc.lua,
 -- everything else uses the ROM-imported data.palettes.
+--
+-- ...AND RED++ IS POKERED'S PACK, so a Gen 2 cartridge must never be handed
+-- it.  `data.palettes_gbc` is pokered-gbc: 151 species, Kanto's ordering, and
+-- Kanto's colours.  ADVANCED asked for it unconditionally, so on Gold,
+-- Crystal, Prism or Polished Crystal every battle pic stopped wearing the
+-- cartridge's own PokemonPalettes row and wore a Gen 1 one instead -- and
+-- anything past species 151, which on Polished Crystal is 140 of its 291,
+-- fell through the species map to MEWMON and came out Mew-coloured.
+--
+-- That is the whole of "the colours aren't right for the battle sprites", and
+-- it was ONLY in ADVANCED: every other mode already fell through to
+-- data.palettes, which is why the setting appeared to fix itself when changed.
+--
+-- The same test the two readers below already make (`pal`, `monPal`) keeps
+-- `ogred` off these cartridges; this is that rule's missing third case.  Gen 1
+-- is untouched -- gen2Native is false there and ADVANCED still gets its pack.
 function PaletteFX.pack(data)
-  if PaletteFX.usesGbcPack() then
+  if PaletteFX.usesGbcPack() and not gen2Native() then
     local g = PaletteFX.gbcPack()
     if g then return g end
   end
@@ -701,10 +728,6 @@ end
 -- screen grey ramp and put Emerald's title screen -- Rayquaza, the sky, the
 -- clouds -- through it.  It came out black and white, which is exactly what
 -- that setting asks for and nothing about that screen was ever asking.
-local function gen2Native()
-  return GameVersion.isGen2() or GameVersion.isGen3()
-end
-
 function PaletteFX.pal(data, name)
   if PaletteFX.mode == "ogred" and not GameVersion.isYellow()
       and not gen2Native() then

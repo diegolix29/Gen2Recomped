@@ -53,11 +53,19 @@ local STD_MSGBOX_SIGN        = 3
 local STD_MSGBOX_DEFAULT     = 4
 local STD_MSGBOX_YESNO       = 5
 local STD_MSGBOX_AUTOCLOSE   = 6
+-- STD_RECEIVED_ITEM: `msgreceiveditem`'s own box (FireRed's giveitem_msg;
+-- see event.inc).  Emerald has the same slot -- some of its scripts call it
+-- directly by number rather than through a named macro.  Unlike
+-- STD_OBTAIN_ITEM/STD_FIND_ITEM it does not add the item itself (the
+-- script's own `additem` already ran); it only fills the {STR_VAR_n}
+-- placeholders from VAR_0x8000/0x8001, plays the fanfare and shows the
+-- SCRIPT'S OWN text -- "AAAAAAA received TM39\nfrom BROCK.", not the
+-- generic "got item" box.
+local STD_RECEIVED_ITEM      = 9
 
 local PLAIN_MSGBOX = {
   [STD_MSGBOX_NPC] = true, [STD_MSGBOX_SIGN] = true,
   [STD_MSGBOX_DEFAULT] = true, [STD_MSGBOX_AUTOCLOSE] = true,
-  [9] = true,                     -- the fanfare box; the tune is std-internal
 }
 
 -- Emerald numbers flags and vars in one space each; the port's flag registry
@@ -276,8 +284,18 @@ L.waitstate = function(_, s) emit(s, { "g3_wait_state" }) end
 -- following `message 0` or `callstd`.  Carrying it on the lowering state and
 -- consuming it at the std is what turns the two-command idiom into one row.
 
+-- `msgbox gStringVar4` and friends: the pointer is a RAM buffer the special
+-- before it filled, not a line in the text table (FireRed's Trainer Tower
+-- speeches, Emerald's frontier lines).  FireRed and Emerald addresses.
+local STRING_VAR_RAM = {
+  [0x02021CD0] = 1, [0x02021CF0] = 2, [0x02021D04] = 3, [0x02021D18] = 4,
+  [0x02021C40] = 1, [0x02021C54] = 2, [0x02021C68] = 3, [0x02021C7C] = 4,
+}
 L.loadword = function(ir, s)
   if ir[2] == 0 and type(ir[3]) == "string" then s.lastText = ir[3] end
+  if ir[2] == 0 and type(ir[3]) == "number" and STRING_VAR_RAM[ir[3]] then
+    s.lastText = ("{RAM:wStringBuffer%d}"):format(STRING_VAR_RAM[ir[3]])
+  end
 end
 
 L.message = function(ir, s)
@@ -365,6 +383,8 @@ local function std(ir, s, isJump)
     emit(s, { "g3_from_yesno" })
   elseif index == STD_OBTAIN_ITEM or index == STD_FIND_ITEM then
     emit(s, { "g3_std_obtain_item", index })
+  elseif index == STD_RECEIVED_ITEM then
+    emit(s, { "g3_std_received_item", s.lastText })
   else
     emit(s, { "g3_std", index })
   end
@@ -534,10 +554,20 @@ end
 -- decoder used to throw away.
 -- ir[5] is the line a DOUBLE trainer says when the party cannot field two,
 -- and it is the only one of the five that four types carry and six do not.
--- ir[6] and ir[7] are the two every trainer has: the line on sight and the
--- line on losing.
+-- ir[6] and ir[7] are the two shared trainer dialogue operands: the line on
+-- sight and the line on losing. FireRed's type-9 early-rival form instead
+-- stores sRivalBattleFlags in ir[6], so that value must never be lowered as
+-- text.
 L.trainerbattle = function(ir, s)
-  emit(s, { "g3_trainer_battle", ir[2], ir[3], ir[4], ir[5], ir[6], ir[7] })
+  local isFireRedEarlyRival = tonumber(ir[2]) == 9
+    and require("src.core.GameVersion").get() == "firered"
+  if isFireRedEarlyRival then
+    -- ir[6] is the raw RIVAL_BATTLE_* bitfield, passed in the handler's
+    -- sixth operand position so the early-rival path can apply it directly.
+    emit(s, { "g3_trainer_battle", ir[2], ir[3], ir[4], ir[5], ir[6] })
+  else
+    emit(s, { "g3_trainer_battle", ir[2], ir[3], ir[4], ir[5], ir[6], ir[7] })
+  end
 end
 L.dotrainerbattle = function(_, s) emit(s, { "g3_do_trainer_battle" }) end
 L.checktrainerflag = function(ir, s) emit(s, { "g3_check_trainer_flag", ir[2] }) end
@@ -615,11 +645,15 @@ L.playse = function(ir, s)
   if song then emit(s, { "play_sound", song }) end
 end
 L.waitse = L.nop
+-- A FANFARE STARTS AND THE SCRIPT KEEPS GOING: `playfanfare / message /
+-- waitmessage / waitfanfare` prints "received" while the jingle plays.
+-- Lowered to a blocking play_once, the box only appeared after the whole
+-- rendered song -- trailing silence included -- had run out.
 L.playfanfare = function(ir, s)
   local song = songLabel(ir[2])
-  if song then emit(s, { "play_once", song }) end
+  if song then emit(s, { "g3_play_fanfare", song, tonumber(ir[2]) }) end
 end
-L.waitfanfare = L.nop
+L.waitfanfare = function(_, s) emit(s, { "g3_wait_fanfare" }) end
 L.playbgm = function(ir, s)
   local song = songLabel(ir[2])
   if song then emit(s, { "play_music", song }) end

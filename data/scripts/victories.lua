@@ -127,4 +127,10 @@ return {
   ["OPP_BRUNO#1"] = { flag = "EVENT_BEAT_BRUNOS_ROOM_TRAINER_0" },
   ["OPP_AGATHA#1"] = { flag = "EVENT_BEAT_AGATHAS_ROOM_TRAINER_0" },
   ["OPP_LANCE#1"] = { flag = "EVENT_BEAT_LANCE" },
+  -- FireRed's generated trainer table uses the actual trainer names rather
+  -- than the Gen 1 OPP_* constants above.
+  ["LORELEI#1"] = { flag = "EVENT_BEAT_LORELEIS_ROOM_TRAINER_0" },
+  ["BRUNO#1"] = { flag = "EVENT_BEAT_BRUNOS_ROOM_TRAINER_0" },
+  ["AGATHA#1"] = { flag = "EVENT_BEAT_AGATHAS_ROOM_TRAINER_0" },
+  ["LANCE#1"] = { flag = "EVENT_BEAT_LANCE" },
 }

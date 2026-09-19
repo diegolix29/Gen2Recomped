@@ -920,4 +920,63 @@ function Font.drawBox(tx, ty, tw, th)
   borderPaint = nil
 end
 
+-- FIRERED'S MESSAGE BOX (new_menu_helpers.c WindowFunc_DrawDialogueFrame).
+--
+-- Not a nine-slice: its caps are two tiles deep, so it reaches one tile past
+-- each side of the box a user frame would draw.  Rows are the 18-tile
+-- strip's { 0..4 } top, { 5,6,_,8,9 }, { 10..13 } and then the same three
+-- V-flipped back down; the middle is the window's own fill colour.  A
+-- dataset without the strip draws the ordinary frame.
+local dialogueSheet = { path = nil, image = nil, quads = nil }
+
+function Font.hasDialogueFrame()
+  local def = state and state.def
+  return not FALLBACK.enabled and def ~= nil and def.dialogueFrame ~= nil
+end
+
+function Font.drawDialogueBox(tx, ty, tw, th)
+  local rec = Font.hasDialogueFrame() and state.def.dialogueFrame
+  if rec and dialogueSheet.path ~= rec.image then
+    local ok, img = pcall(Assets.image, rec.image)
+    dialogueSheet.path, dialogueSheet.image = rec.image, ok and img or nil
+    dialogueSheet.quads = nil
+    if dialogueSheet.image then
+      local iw, ih = dialogueSheet.image:getDimensions()
+      local quads = {}
+      for i = 0, (rec.tiles or 18) - 1 do
+        quads[i] = love.graphics.newQuad(i * 8, 0, 8, 8, iw, ih)
+      end
+      dialogueSheet.quads = quads
+    end
+  end
+  if not (rec and dialogueSheet.quads and th >= 4) then
+    return Font.drawBox(tx, ty, tw, th)
+  end
+  local img, q = dialogueSheet.image, dialogueSheet.quads
+  local left, cols = tx - 1, tw + 2
+  local fill = rec.fill or { 1, 1, 1 }
+  love.graphics.setColor(fill[1], fill[2], fill[3], 1)
+  love.graphics.rectangle("fill", (left + 2) * 8, (ty + 1) * 8,
+                          (cols - 4) * 8, (th - 2) * 8)
+  love.graphics.setColor(1, 1, 1, 1)
+  local SETS = { { 0, 1, 2, 3, 4 }, { 5, 6, nil, 8, 9 }, { 10, 11, nil, 12, 13 } }
+  local half = th / 2
+  for row = 0, th - 1 do
+    local flip = row >= half
+    local depth = flip and (th - 1 - row) or row
+    local set = SETS[math.min(depth, 2) + 1]
+    local y = (ty + row) * 8
+    for col = 0, cols - 1 do
+      local slot = (col == 0 and 1) or (col == 1 and 2) or (col == cols - 2 and 4)
+                   or (col == cols - 1 and 5) or 3
+      local tile = set[slot]
+      if tile then
+        local x = (left + col) * 8
+        if flip then love.graphics.draw(img, q[tile], x, y + 8, 0, 1, -1)
+        else love.graphics.draw(img, q[tile], x, y) end
+      end
+    end
+  end
+end
+
 return Font

@@ -850,6 +850,14 @@ gTileset_Sootopolis = {
   --    (g3-basin-311.)
   metatiles = {
 
+    -- FIRERED'S MART (LAYOUT_MART over gTileset_Building).  The till runs
+    -- north-south down column 3 -- 661/669/677/685, blocked, with 677 the
+    -- MB_COUNTER cell the clerk speaks across -- and unpinned it flooded into
+    -- one region and stood as a wall-high pale column.  `frlg_` names are
+    -- FireRed's own (data/firered/gen3_maps.lua) and cannot meet Emerald's.
+    frlg_gTileset_Mart = {
+      [661] = "counter", [669] = "counter", [677] = "counter", [685] = "counter",
+    },
     -- THE WATER UNDER ROUTE 119'S PLANK WALKWAYS IS STILL WATER.
     --
     -- MOTIVATED BY ROUTE 119'S UPPER RIVER, (10..17, 8) AND (11..15, 11) --

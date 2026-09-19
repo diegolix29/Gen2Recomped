@@ -93,10 +93,15 @@ TypeChart.TYPES = {
 -- The matchup rows come from the generated chart, so a dataset with a
 -- different table registers a different world without touching this file.
 function TypeChart.registerInto(registry, data, owner)
-  for id, record in pairs(TypeChart.TYPES) do
+  local chart = data and data.type_chart
+  local generated = chart and chart.types
+  -- Gen 3's cartridge-derived table is authoritative. Its seven-byte names
+  -- include PSYCHC, ELECTR and FIGHT; replacing those with the classic keys
+  -- makes every move using them lose its category during the registry merge.
+  local source = generated and next(generated) and generated or TypeChart.TYPES
+  for id, record in pairs(source) do
     registry:register(id, record, owner)
   end
-  local chart = data and data.type_chart
   for _, row in ipairs(chart and chart.matchups or {}) do
     registry:register(row.attacker .. ">" .. row.defender,
       { multiplier = row.multiplier }, owner)

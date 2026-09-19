@@ -854,9 +854,18 @@ function startMovement(ctx, ow, entity, index, movementLabel, rows)
       turnTo(ctx, index, dir)
       advance()
     elseif step.kind == "faceOriginal" then
-      -- the facing the map def gave it, which is where it was standing before
-      -- the scene started moving it about
-      local home = entity.def and entity.def.facing or entity.spawnFacing
+      -- The cartridge reads the initial facing for the object's CURRENT
+      -- movement type. Imported Gen 3 defs carry `movementType`, not `facing`,
+      -- so the old lookup was nil for ROM objects (including FireRed's Mum,
+      -- whose pre-rival talk explicitly restores FACE_LEFT before release).
+      local data = ctx.game and ctx.game.data
+      local constants = data and data.constants
+      local movementTypes = constants and constants.gen3MovementTypes
+      local movementType = entity.gen3MovementType
+        or (entity.def and entity.def.movementType)
+      local movement = movementTypes and movementTypes[movementType]
+      local home = (movement and movement.facing)
+        or (entity.def and entity.def.facing) or entity.spawnFacing
       turnTo(ctx, index, home)
       advance()
     else
@@ -1311,9 +1320,19 @@ local function itemId(ctx, n)
 end
 Gen3Commands.itemId = itemIdFor
 
+-- `additem`/`addpcitem` ARE SILENT ON THE CARTRIDGE.  ScrCmd_additem
+-- (scrcmd.c) is `gSpecialVar_Result = AddBagItem(...)` and nothing else --
+-- no text, no sound.  The message every gift script shows is a SEPARATE
+-- std script the `giveitem`/`finditem` macros route through (g3_std_obtain_
+-- item, below), or -- on FireRed -- `giveitem_msg`'s own custom line
+-- (g3_std_received_item).  A raw `additem` printing "{PLAYER} got X!" meant
+-- every FireRed `giveitem_msg` (additem, then its own received-text std)
+-- showed the generic box AND the cartridge's line, one after the other --
+-- reported from play as Brock's TM39 showing "AAAAAAA got TM39!" instead of
+-- "AAAAAAA received TM39\nfrom BROCK."
 function Commands.g3_give_item(ctx, item, quantity)
   local id = itemId(ctx, item)
-  if id then Commands.give_item(ctx, id, tonumber(quantity) or 1) end
+  if id then Commands.give_item(ctx, id, tonumber(quantity) or 1, false) end
   setVar(ctx.save, VAR_RESULT, 1)
   setResult(ctx, 1)
 end
@@ -1385,6 +1404,12 @@ end
 Gen3Commands.speciesId = speciesId
 
 function Commands.g3_give_pokemon(ctx, species, level, item)
+  -- ScrCmd_givemon reads all three through VarGet, so any of them may name a
+  -- var. FireRed's starter does: `givemon PLAYER_STARTER_SPECIES` is var
+  -- $4002, and taken as a species number it failed and left the player to
+  -- fight the rival with no Pokemon.
+  species, level, item = valueOf(ctx, species), valueOf(ctx, level),
+                         valueOf(ctx, item)
   local id = speciesId(ctx.game and ctx.game.data, species)
   if not id then return end
   -- The fourth argument is skipNickname, not the held item -- passing the
@@ -1412,7 +1437,7 @@ function Commands.g3_give_pokemon(ctx, species, level, item)
 end
 
 function Commands.g3_give_egg(ctx, species)
-  local id = speciesId(ctx.game and ctx.game.data, species)
+  local id = speciesId(ctx.game and ctx.game.data, valueOf(ctx, species))
   if not id then return end
   -- an egg, and it really is one: give_pokemon takes the flag now rather
   -- than ignoring a fifth argument it never had
@@ -1744,16 +1769,56 @@ Gen3Commands.FALL_THROUGH_KINDS = FALL_THROUGH_KINDS
 -- every trainer in Hoenn fought you again, forever, every time you spoke to
 -- them.
 function Commands.g3_trainer_battle(ctx, kind, trainerId, winScript, cantText,
-                                    introText, defeatText)
+                                    introOrRivalFlags, defeatText)
   ctx.g3Trainer = tonumber(trainerId)
   ctx.g3TrainerKind = tonumber(kind)
   local k = tonumber(kind) or 0
+  -- FIRERED'S TRAINER_BATTLE_EARLY_RIVAL (CB2_EndTrainerBattle): no beaten
+  -- check, and the script ALWAYS continues after the battle -- on a win, and
+  -- on a loss when RIVAL_BATTLE_HEAL_AFTER is set (heal, VAR_RESULT = TRUE).
+  -- A loss without it is an ordinary whiteout. Ending the script on a win,
+  -- as the other modes do, skipped Oak's lab's EndRivalBattle -- the heal,
+  -- Blue leaving and the scene var -- so the trigger fought him again.
+  if k == 9 and require("src.core.GameVersion").get() == "firered" then
+    -- FireRed's extractor puts sRivalBattleFlags in instruction ir[6], the
+    -- same operand position used by intro text for other battle kinds.
+    -- This early-rival command carries no shared intro/defeat text operands.
+    local rivalFlags = introOrRivalFlags
+    local healAfter = (tonumber(rivalFlags) or 0) % 2 == 1
+    startTrainer(ctx, ctx.g3Trainer, healAfter and { canLose = true } or nil)
+    local lost = ctx.lastBattleResult ~= "win"
+    if lost and healAfter then
+      local Pokemon = require("src.pokemon.Pokemon")
+      for _, mon in ipairs((ctx.save or {}).party or {}) do Pokemon.heal(mon) end
+    end
+    if lost and ctx.g3Trainer then
+      Gen3Commands.markTrainerBeaten(ctx, ctx.g3Trainer)   -- SetBattledTrainerFlag
+    end
+    setVar(ctx.save, VAR_RESULT, lost and 1 or 0)
+    return
+  end
   if FLAG_CHECKED_KINDS[k] then
     local name = trainerFlag(ctx.g3Trainer, ctx.game and ctx.game.data)
     if name and (ctx.save or {}).flags and ctx.save.flags[name] == true then
       -- beaten already: gotopostbattlescript, i.e. run on into the next row
       return
     end
+  end
+  -- A FireRed rematch script still names the original trainer. The V.S.
+  -- Seeker has selected a party for this map object, so replace that operand
+  -- only for the battle while leaving the script's normal text and flags in
+  -- control. Types 5 and 7 are its single and double rematch records.
+  local vsNpc, vsTrainer
+  if require("src.core.GameVersion").get() == "firered" and (k == 5 or k == 7) then
+    vsNpc = ctx.npc
+    vsTrainer = require("src.world.VsSeeker").rematchFor(ctx.save,
+                                                            ctx.game.overworld, vsNpc)
+    -- TRAINER_BATTLE_REMATCH(_DOUBLE) routes through
+    -- EventScript_TryDoRematchBattle.  When the object is not currently armed
+    -- IsTrainerReadyForRematch is false and the cartridge jumps straight to
+    -- the post-battle script; it does NOT fight the original party again.
+    -- Returning here lets the extracted row fall through to that same text.
+    if not vsTrainer then return end
   end
   -- AND WHETHER THIS ONE IS A DOUBLE.
   --
@@ -1803,36 +1868,28 @@ function Commands.g3_trainer_battle(ctx, kind, trainerId, winScript, cantText,
       return "end"
     end
   end
+  local introText = introOrRivalFlags
   -- WHAT THEY SAY WHEN THEY SEE YOU.
   --
   -- Reported from play: "when talking to a gym leader to battle them it just
-  -- initiates the battle they have no pre battle text".  Every trainer in
+  -- initiates the battle they have no pre battle text". Every trainer in
   -- Hoenn was silent, and the reason was upstream -- the record's first two
   -- pointers were never read (Gen3ScriptOps.TRAINER_BATTLE_INTRO_SLOT).
   --
-  -- HERE is where it goes, and that is the cartridge's own order rather than
-  -- a guess.  EventScript_TryDoNormalTrainerBattle (0827_1362) runs
-  --
-  --     lock / faceplayer / the "!" walk
-  --     specialvar VAR_RESULT, $39      -- already beaten?  leave
-  --     special $3B
-  --     special $013C                   -- THE INTRO SPEECH
-  --     goto 0827_143C                  -- wait for the button, then fight
-  --
-  -- and the double script (0827_138A) is the same with the "can you field
-  -- two?" refusal ahead of it -- so the line comes after both checks above
-  -- and before the battle, which is where this sits.  Mode 3 reaches neither
-  -- special and carries no intro pointer, so it stays silent by construction.
+  -- EventScript_TryDoNormalTrainerBattle runs this after the already-beaten
+  -- and double-party checks and before the battle. Mode 3 carries no intro
+  -- pointer, so its cutscene stays silent here.
   if type(introText) == "string" then
     Commands.show_text(ctx, introText)
   end
-  startTrainer(ctx, ctx.g3Trainer,
+  startTrainer(ctx, vsTrainer or ctx.g3Trainer,
                isDouble and { double = true, trainerB = partner } or nil)
-  -- ...AND WHAT THEY SAY WHEN THEY LOSE, which the cartridge prints from
-  -- inside the battle (the defeat speech is the beaten trainer's last word
-  -- before the screen comes back).  There is no in-battle text hook for it
-  -- here, and the player-visible order is the same either way: the trainer
-  -- speaks, and only then does the win script hand over the badge.
+  if vsTrainer and ctx.lastBattleResult == "win" then
+    require("src.world.VsSeeker").clear(ctx.save, ctx.game.overworld, vsNpc)
+    Gen3Commands.markTrainerBeaten(ctx, vsTrainer)
+  end
+  -- The defeat line plays when the player wins. Keeping this after battle
+  -- result handling also prevents duplicate trainer speech around the battle.
   if ctx.lastBattleResult == "win" and type(defeatText) == "string" then
     Commands.show_text(ctx, defeatText)
   end
@@ -2826,6 +2883,53 @@ function Commands.g3_fade_screen(ctx, mode)
   end
 end
 
+-- sound.c sFanfares: how many frames WaitFanfare holds for each jingle.  The
+-- rendered song can run far past this (its tail is silence), so the frame
+-- count is the cartridge's answer to "is the fanfare over".  Keyed by
+-- FireRed's song numbers; another cartridge waits for the song itself.
+Gen3Commands.FRLG_FANFARE_FRAMES = {
+  [256] = 160, [257] = 80, [258] = 160, [259] = 220, [260] = 340,
+  [261] = 220, [262] = 120, [268] = 250, [269] = 150, [270] = 180,
+  [271] = 160, [317] = 196, [318] = 170, [338] = 450,
+}
+
+function Commands.g3_play_fanfare(ctx, song, number)
+  local Music = require("src.core.Music")
+  if not Music.playOnce(ctx.game.data, song) then
+    ctx.g3Fanfare = nil
+    return
+  end
+  local frames
+  if require("src.core.GameVersion").get() == "firered" then
+    frames = Gen3Commands.FRLG_FANFARE_FRAMES[tonumber(number) or -1]
+  end
+  ctx.g3Fanfare = { started = (ctx.game.save and ctx.game.save.playTime) or 0,
+                    seconds = frames and frames / 60 or nil }
+end
+
+function Commands.g3_wait_fanfare(ctx)
+  local fanfare = ctx.g3Fanfare
+  if not fanfare then return end
+  local Music = require("src.core.Music")
+  local function over()
+    if not Music.oneShotPlaying() then return true end
+    -- game time (save.playTime steps 1/60 per logic frame), not wall time
+    local now = (ctx.game.save and ctx.game.save.playTime) or 0
+    if fanfare.seconds and now - fanfare.started >= fanfare.seconds then
+      -- the jingle's audible part is done; bring the map theme back now
+      -- rather than after the rendered tail
+      pcall(Music.restoreMap, ctx.game.data)
+      return true
+    end
+    return false
+  end
+  ctx.g3Fanfare = nil
+  if over() then return end
+  local runner = ctx.runner
+  runner.waitingCheck = function() return over() end
+  runner:yield()
+end
+
 function Commands.g3_wait_state(ctx)
   Gen3Commands.restoreFade(ctx)
 end
@@ -2940,6 +3044,7 @@ end
 -- the frame is drawn one tile outside that and PicBox is told both rather
 -- than keeping its Game Boy constants.
 function Commands.g3_show_mon_pic(ctx, species, x, y)
+  species = valueOf(ctx, species)   -- ScrCmd_showmonpic: VarGet
   ctx.g3MonPic = tonumber(species)
   local ow, game = ctx.overworld, ctx.game
   if not (ow and game and game.stack) then return end
@@ -3385,6 +3490,8 @@ Gen3Commands.SPECIALS[161] = function(ctx)
     title = Strings("NICKNAME?"),
     maxLen = 10,
     default = mon.nickname,
+    kind = "mon",
+    mon = mon,
     onDone = function(nick)
       if nick and #nick > 0 then mon.nickname = nick end
       if runner then runner:resume() end
@@ -4918,7 +5025,7 @@ end
 -- `visible` is how many rows show at once, for a list longer than the box:
 -- the scrolling multichoice carries the cartridge's own number for each of
 -- its thirteen lists, and everything else keeps the six this always used.
-function Gen3Commands.listPick(ctx, labels, cancelLabel, visible)
+function Gen3Commands.listPick(ctx, labels, cancelLabel, visible, startIndex)
   local game, runner = ctx.game, ctx.runner
   if not (game and game.stack and runner and #labels > 0) then return nil end
   local okMenu, Menu = pcall(require, "src.ui.Menu")
@@ -4943,6 +5050,7 @@ function Gen3Commands.listPick(ctx, labels, cancelLabel, visible)
                                 { tx = 0, ty = 0,
                                   maxVisible = math.min(#items,
                                                         visible or 6),
+                                  index = startIndex,
                                   onCancel = function() answer(nil) end }))
   if not pushed then return nil end
   runner:yield()
@@ -6821,6 +6929,47 @@ function Commands.g3_std_obtain_item(ctx, which)
   setResult(ctx, 1)
 end
 
+-- STD_RECEIVED_ITEM (9): `msgreceiveditem`'s box.  Unlike STD_OBTAIN_ITEM
+-- above, the item is ALREADY in the bag -- `giveitem_msg` expands to a raw
+-- `additem` followed by this std, and additem is what added it (silently;
+-- see g3_give_item).  This std's whole job is to fill {STR_VAR_1}/{STR_VAR_2}
+-- from VAR_0x8000/0x8001, play the jingle, and show the SCRIPT'S OWN text --
+-- not add anything a second time.
+--
+-- Reported from play: Brock's TM39 showed "AAAAAAA got TM39!", the engine's
+-- generic line, instead of the cartridge's "AAAAAAA received TM39\nfrom
+-- BROCK." -- both halves of that were this std being unhandled: additem was
+-- printing the generic box (fixed in g3_give_item) and this one, on
+-- FALLING THROUGH TO g3_std, was silently dropping the cartridge's line
+-- (Logger.debug and nothing shown) rather than displaying it.
+function Commands.g3_std_received_item(ctx, text)
+  local save = ctx.save
+  local data = ctx.game and ctx.game.data
+  local item = getVar(save, 0x8000)
+  local count = getVar(save, 0x8001)
+  if (tonumber(count) or 0) < 1 then count = 1 end
+  local id = itemIdFor(data, item)
+  local def = id and data and data.items and data.items[id]
+  ctx.game.stringBuffers = ctx.game.stringBuffers or {}
+  ctx.game.stringBuffers[1] = def and def.name or tostring(item)
+  ctx.game.stringBuffers[2] = tostring(count)
+  -- the legacy single buffer too, for a text that reaches it via {STR_VAR_1}
+  -- resolving through RAM:wStringBuffer rather than the numbered slot
+  ctx.game.stringBuffer = ctx.game.stringBuffers[1]
+  if text then
+    local Sound = require("src.core.Sound")
+    local jingle = (def and def.keyItem) and "Get_Key_Item" or "Get_Item1"
+    ctx.textOpts = ctx.textOpts or {}
+    ctx.textOpts.auto = {
+      sound = function() return Sound.play(ctx.game.data, jingle) end,
+      wait = true,
+    }
+    Commands.show_text(ctx, text)
+  end
+  setVar(save, VAR_RESULT, 1)
+  setResult(ctx, 1)
+end
+
 -- ---------------------------------------------------------------------------
 -- 175-182: GABBY AND TY, the pair with the camera
 --
@@ -7825,6 +7974,13 @@ local function currentTrainer(ctx)
 end
 
 Gen3Commands.SPECIALS[60] = function(ctx)
+  if require("src.core.GameVersion").get() == "firered" then
+    local data = ctx.game and ctx.game.data
+    local id = currentTrainer(ctx)
+    if not (data and id) then return 0 end
+    return require("src.world.VsSeeker").shouldTry(data, ctx.save,
+      ctx.game.overworld, ctx.npc, id) and 1 or 0
+  end
   local MC = matchCall()
   local data = ctx.game and ctx.game.data
   local id = currentTrainer(ctx)
@@ -7840,6 +7996,10 @@ Gen3Commands.SPECIALS[60] = function(ctx)
 end
 
 Gen3Commands.SPECIALS[61] = function(ctx)
+  if require("src.core.GameVersion").get() == "firered" then
+    return require("src.world.VsSeeker").isReady(ctx.save,
+      ctx.game and ctx.game.overworld, ctx.npc) and 1 or 0
+  end
   local MC = matchCall()
   local data = ctx.game and ctx.game.data
   local id = currentTrainer(ctx)
@@ -8841,6 +9001,8 @@ Gen3Commands.SPECIALS[486] = function(ctx)
     title = Strings("NICKNAME?"),
     maxLen = 10,
     default = mon.nickname,
+    kind = "mon",
+    mon = mon,
     onDone = function(nick)
       if nick and #nick > 0 then mon.nickname = nick end
       if runner then runner:resume() end
@@ -11931,6 +12093,9 @@ function Gen3Commands.goHomeAfterLeague(ctx)
               tostring(home.x), tostring(home.y))
 end
 
+-- FireRed's own specials (0x1000 + their FireRed index) and the aliases onto
+-- the Emerald handlers above that do the same job under another name
+require("src.script.Gen3SpecialsFRLG")(Gen3Commands)
 
 -- ---------------------------------------------------------------------------
 -- THE BATTLE TENT, WHICH IS THE FIRST FACILITY THIS PORT ACTUALLY PLAYS.

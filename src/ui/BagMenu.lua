@@ -137,6 +137,24 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
     return
   end
 
+  if result == "vs_seeker" then
+    list:close()
+    local outcome, count = require("src.world.VsSeeker").use(game.data, game.save,
+                                                               game.overworld)
+    if outcome == "charging" then
+      showMessages(game, { Strings("The V.S. SEEKER's\nBATTERY isn't charged.\nIt needs %d more steps.", count) })
+    elseif outcome == "no_trainers" then
+      showMessages(game, { Strings("There are no TRAINERS\nwithin range.") })
+    elseif outcome == "none" then
+      showMessages(game, { Strings("The TRAINERS are\nnot ready to battle.") })
+    else
+      require("src.core.Sound").play(game.data, "Press_AB")
+      showMessages(game, { Strings("The V.S. SEEKER\nfound %d TRAINER%s ready!", count,
+        count == 1 and "" or "S") })
+    end
+    return
+  end
+
   if result == "consumed_escape" then -- Poké Doll
     consume(game, id)
     list:close()
@@ -476,6 +494,33 @@ local function pickTargetAndUse(game, battle, id, list)
           right = ("%d"):format(mv.pp),
         })
       end
+      -- WHICH MOVE, ON WHICHEVER CARTRIDGE IS LOADED.
+      --
+      -- ListMenu paints the Game Boy's 160x144 white page, so an ETHER used
+      -- in Hoenn or Kanto opened a Gen 1 screen mid-way through a Gen 3 item
+      -- flow -- the same leak the PC's item storage had.  There is no ripped
+      -- move-picker window to reuse here, but `Menu` is bordered with the
+      -- CARTRIDGE'S own nine-slice (Font.drawBox reads the extracted
+      -- sWindowFrames), so on Gen 3 it is that frame and that font rather
+      -- than the Game Boy's page.  PP rides in the label, which is where a
+      -- one-column window has to put it.
+      local okV, V = pcall(require, "src.core.GameVersion")
+      if okV and V.isGen3() then
+        local items = {}
+        for _, row in ipairs(rows) do
+          items[#items + 1] = {
+            label = ("%s  %s"):format(row.label, row.right),
+            onSelect = function()
+              useOn(game, battle, id, mon, list, row.value)
+            end,
+          }
+        end
+        local picker = require("src.ui.Menu").new(game, items,
+                                                  { tx = 0, ty = 0, tw = 16 })
+        function picker:uiSize() return 240, 160 end
+        game.stack:push(picker)
+        return
+      end
       game.stack:push(ListMenu.new(game, "Which move?", rows, {
         onChoose = function(row, l)
           l:close()
@@ -564,7 +609,7 @@ BagMenu.useItem = useItem
 -- already holding something is offered the swap (TryGiveItemToMon).
 -- TryGiveItemToMon: hand `id` to `mon`, offering the swap when it is already
 -- holding something.  Key items and mail stay in the pack.
-local function handOver(game, mon, id, onChanged)
+local function handOver(game, mon, id, onChanged, opts)
   local def = game.data.items[id]
   local name = (def and def.name) or id
   local monName = mon.nickname
@@ -579,12 +624,24 @@ local function handOver(game, mon, id, onChanged)
   end
   local held = mon.item
   local function hand()
-    require("src.inventory.Bag").giveHeld(game.save, mon, id, game.data)
+    local changed
+    if opts and opts.giveHeld then
+      changed = opts.giveHeld(mon, id)
+    else
+      require("src.inventory.Bag").giveHeld(game.save, mon, id, game.data)
+      changed = true
+    end
+    if changed == false then
+      showMessages(game, { Strings("No room left to\nstore items.") })
+      return false
+    end
     if onChanged then onChanged() end
+    return true
   end
   if not held then
-    hand()
-    showMessages(game, { Strings("%s is now holding\n%s.", monName, name) })
+    if hand() then
+      showMessages(game, { Strings("%s is now holding\n%s.", monName, name) })
+    end
     return
   end
   local heldName = (game.data.items[held] or {}).name or held
@@ -595,9 +652,10 @@ local function handOver(game, mon, id, onChanged)
   }, function()
     game.stack:push(ChoiceBox.new(game, function(yes)
       if not yes then return end
-      hand()
-      showMessages(game, { Strings("Took %s and\nmade it hold %s.",
-        heldName, name) })
+      if hand() then
+        showMessages(game, { Strings("Took %s and\nmade it hold %s.",
+          heldName, name) })
+      end
     end))
   end)
 end

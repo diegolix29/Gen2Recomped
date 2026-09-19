@@ -126,6 +126,11 @@ end
 
 function Gen3DexEntry.new(game, arg)
   local species, forceOwned = resolveSpecies(arg)
+  local FRLG = require("src.ui.Gen3PokedexFRLG")
+  if FRLG.record(game) then
+    -- FireRed pushes this page for a newly registered species
+    return FRLG.newEntry(game, species, true)
+  end
   -- the cursor opens on CRY, which is where the cartridge leaves it
   local self = setmetatable({ game = game, species = species,
                               forceOwned = forceOwned, cursor = 2 },

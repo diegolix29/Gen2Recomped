@@ -907,6 +907,7 @@ function love.textinput(text)
   if editorMode and EditorApp.textinput then
     return EditorApp.textinput(text)
   end
+  if Game then Game:textinput(text) end
 end
 
 -- Write every Lua error to a file before showing it.

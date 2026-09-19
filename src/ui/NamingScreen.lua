@@ -36,6 +36,98 @@ local NamingScreen = {}
 NamingScreen.__index = NamingScreen
 NamingScreen.isOpaque = true
 
+-- naming_screen.c's sIconFunctions: the plate to the left of the question
+-- ("YOUR NAME?" / "NICKNAME?" / "RIVAL's NAME?") carries a small icon of
+-- whoever is being named -- the player's own overworld sprite
+-- (NamingScreen_CreatePlayerIcon), the dedicated rival sheet
+-- (NamingScreen_CreateRivalIcon), or, when naming a caught Pokémon, that
+-- species' bouncing party icon (NamingScreen_CreateMonIcon). Reported from play: "in keyboard typing
+-- there's only a green patch.... above that there should be player sprite
+-- and if pokemon name is typing then the pokemon sprite" -- this port drew
+-- the plate's background tiles but never the OAM sprite the cartridge lays
+-- over them, so the patch sat empty.
+local iconImgCache = {}
+local function loadIconImage(path)
+  if not path then return nil end
+  if iconImgCache[path] == nil then
+    local Assets = require("src.render.Assets")
+    local ok, img = pcall(Assets.image, path)
+    iconImgCache[path] = ok and img or false
+  end
+  return iconImgCache[path] or nil
+end
+
+-- The player's own overworld walk sprite, standing south (frame 0 is always
+-- STAND.down -- see SpriteRenderer.STAND): matches
+-- GetPlayerAvatarGraphicsIdByStateIdAndGender(..., PLAYER_AVATAR_STATE_NORMAL)
+-- picking the current gender's sheet, ANIM_STD_GO_SOUTH's first frame.
+local function playerIconFrame(game)
+  local data = game and game.data
+  if not data then return nil end
+  local okReq, FieldDefaults = pcall(require, "src.world.FieldDefaults")
+  local okReq2, Sprites = pcall(require, "src.pokemon.Sprites")
+  if not (okReq and okReq2) then return nil end
+  local sprites = data.sprites or {}
+  local walkId = FieldDefaults.fieldValue(data, "playerSprites", "walk")
+  local ok, form = pcall(Sprites.playerForm, data)
+  if ok and form and form.walk and sprites[form.walk] then walkId = form.walk end
+  local def = walkId and sprites[walkId]
+  local img = def and loadIconImage(def.image)
+  if not img then return nil end
+  local tw = math.floor(tonumber(def.frameWidth) or 16)
+  local th = math.floor(tonumber(def.frameHeight) or 16)
+  if tw < 8 or th < 8 then tw, th = 16, 16 end
+  return img, tw, th
+end
+
+-- A Pokémon's bouncing party-icon sprite, resolved exactly the way
+-- Gen3PartyMenu:iconFor does (the registry first, then the species row's own
+-- field, through the same pokemon.icon mod seam).
+local ICON_PERIOD = 0.32
+local function monIconFrame(game, species, t)
+  local data = game and game.data
+  if not (data and species) then return nil end
+  local icons = data.icons
+  local def = data.pokemon and data.pokemon[species]
+  local entry = (icons and icons.bySpecies and icons.bySpecies[species])
+                or (def and def.icon)
+  local path, frameH
+  if type(entry) == "table" then
+    path, frameH = entry.image, tonumber(entry.frameHeight)
+  elseif type(entry) == "string" then
+    path = entry
+  end
+  local okHook, hooked = pcall(function()
+    return require("src.pokemon.Sprites").iconPath(data, nil, path, {})
+  end)
+  if okHook and type(hooked) == "string" then path = hooked end
+  local img = loadIconImage(path)
+  if not img then return nil end
+  frameH = frameH or tonumber(icons and icons.frameHeight) or 32
+  local iw, ih = img:getDimensions()
+  frameH = math.min(frameH, ih)
+  local frames = math.max(1, math.floor(ih / frameH))
+  local frame = frames > 1
+    and (math.floor((t % (ICON_PERIOD * frames)) / ICON_PERIOD) % frames)
+    or 0
+  return img, iw, frameH, frame
+end
+
+local function rivalIconFrame(game, t)
+  local data = game and game.data
+  local naming = data and data.constants and data.constants.gen3FRLGNaming
+  local rec = naming and naming.rivalIcon
+  if not (rec and rec.image) then return nil end
+  local img = loadIconImage(rec.image)
+  if not img then return nil end
+  local fw = math.floor(tonumber(rec.frameWidth) or 16)
+  local fh = math.floor(tonumber(rec.frameHeight) or 32)
+  local anim = rec.animation or { 0, 3, 0, 4 }
+  local seconds = (tonumber(rec.frameTicks) or 10) / 60
+  local step = math.floor((t % (seconds * #anim)) / seconds) + 1
+  return img, fw, fh, anim[step] or 0
+end
+
 -- SGB: generic whole-screen palette (SET_PAL_GENERIC)
 function NamingScreen:sgbPalettes(game)
   return require("src.render.PaletteFX").wholeNamed(game.data, "MEWMON")
@@ -236,6 +328,11 @@ function NamingScreen.new(game, opts)
   self.maxLen = opts.maxLen or 7
   self.default = opts.default
   self.onDone = opts.onDone
+  -- who the plate's icon is of: "player" (own overworld sprite), "rival"
+  -- (FireRed's private animated Blue sheet), or "mon" (nickname screens, the
+  -- species' party icon) -- see the icon helpers above
+  self.kind = opts.kind
+  self.species = opts.species or (opts.mon and opts.mon.species)
   self.glyphs = {} -- typed glyphs; multi-byte cells (<PK>, ♂, ×) count as 1
   self.row, self.col = 1, 1
   self.lower = false
@@ -356,6 +453,7 @@ function NamingScreen:jumpToEnd()
 end
 
 function NamingScreen:update(dt)
+  self.blink = (self.blink or 0) + 1
   local GRID = self:grid()
   local caseRow, edRow, edCol, backRow = findMeta(GRID, self.switchLabels)
   local input = self.game.input
@@ -633,8 +731,182 @@ function NamingScreen:drawGen3()
   love.graphics.setColor(1, 1, 1, 1)
 end
 
+-- FIRERED'S, out of RomExtractorGen3:extractFireRedNaming: BG3 the striped
+-- field with the name plate, BG1 the page's coloured frame with the keys on
+-- its fill, the three sprite plates in the column at x 204, the bracket
+-- cursor at sPageColumnXPos + 38, the underscores and the input arrow.
+function NamingScreen:frlgImage(key)
+  local r = (self.game.data.constants or {}).gen3FRLGNaming
+  local path = r and r.images and r.images[key]
+  if not path then return nil end
+  self._img = self._img or {}
+  if self._img[path] == nil then
+    local ok, img = pcall(require("src.render.Assets").image, path)
+    self._img[path] = ok and img or false
+  end
+  return self._img[path] or nil
+end
+
+local FRLG_LABEL = { upper = "label_upper", lower = "label_lower", symbols = "label_others" }
+
+function NamingScreen:drawFireRed(rec)
+  local g = love.graphics
+  local m = self:metrics()
+  local function rgb(t, f) t = t or f return { t[1] / 255, t[2] / 255, t[3] / 255, 1 } end
+  local function text(s, x, y, ink, shadow, small)
+    local faced = small and Font.hasFace and Font.hasFace("small") and Font.pushFace("small")
+    local two = Font.beginTwoTone(ink, shadow)
+    if not two then g.setColor(ink) end
+    Font.draw(s, x, y)
+    if two then Font.endTwoTone() end
+    if faced then Font.popFace() end
+    g.setColor(1, 1, 1, 1)
+  end
+  local cc = rec.colors or {}
+  g.setColor(1, 1, 1, 1)
+  local bg = self:frlgImage("bg")
+  if bg then g.draw(bg, 0, 0) end
+
+  -- the banner: window (0,0) 30x2, "{DPAD}MOVE {A}OK {B}BACK" right-aligned
+  g.setColor(0, 123 / 255, 197 / 255, 1)
+  g.rectangle("fill", 0, 0, 240, 16)
+  local white, darkGray = { 1, 1, 1, 1 }, { 98 / 255, 98 / 255, 98 / 255, 1 }
+  local hints = { { "+", Strings("MOVE") }, { "A", Strings("OK") }, { "B", Strings("BACK") } }
+  local faced = Font.hasFace and Font.hasFace("small") and Font.pushFace("small")
+  local width = 0
+  for _, h in ipairs(hints) do width = width + 12 + Font.width(h[2]) + 4 end
+  if faced then Font.popFace() end
+  local hx = 240 - 4 - width + 4
+  for _, h in ipairs(hints) do
+    g.setColor(white)
+    g.rectangle("line", hx + 0.5, 2.5, 10, 9, 3, 3)
+    text(h[1], hx + 2, 0, white, darkGray, true)
+    text(h[2], hx + 12, 0, white, darkGray, true)
+    local f2 = Font.hasFace and Font.hasFace("small") and Font.pushFace("small")
+    hx = hx + 12 + Font.width(h[2]) + 4
+    if f2 then Font.popFace() end
+  end
+
+  -- the question and the typed name, on the plate BG3 already draws
+  local entryInk = cc.entry and rgb(cc.entry[2]) or darkGray
+  local entryShadow = cc.entry and rgb(cc.entry[3]) or { 0.84, 0.84, 0.81, 1 }
+  text(self.title, 72 + 1, 32 + 1, entryInk, entryShadow)
+  local base = math.floor((240 - self.maxLen * 8) / 2) + 6
+  local underscore, arrow = self:frlgImage("underscore"), self:frlgImage("arrow")
+  for i = 1, self.maxLen do
+    local x = base + (i - 1) * 8
+    local glyph = self.glyphs[i]
+    if glyph then text(Strings(glyph), x, 48 + 1, entryInk, entryShadow) end
+    if underscore then g.draw(underscore, x + 3 - 4, 60 - 4) end
+  end
+  local at = math.min(#self.glyphs + 1, self.maxLen)
+  if arrow and math.floor((self.blink or 0) / 30) % 2 == 0 then
+    g.draw(arrow, base + (at - 1) * 8 - 4, 56 - 4)
+  end
+
+  -- the page: BG1's frame, the window's fill, the keys
+  local page = self.pages[self.page] or self.pages[1]
+  local frame = self:frlgImage("kb_" .. page.name)
+  if frame then g.draw(frame, 0, 0) end
+  local fill = cc.fill and cc.fill[page.name]
+  if fill then
+    g.setColor(rgb(fill))
+    g.rectangle("fill", 24, 80, 152, 64)
+    g.setColor(1, 1, 1, 1)
+  end
+  local keyInk = cc.key and rgb(cc.key[1]) or white
+  local keyShadow = cc.key and rgb(cc.key[2]) or darkGray
+  local cols = (self.layout.columns or {})[page.name] or {}
+  for r = 1, m.keyRows do
+    for c, cell in ipairs(m.rows[r]) do
+      -- centred under the cursor, whose centre is sPageColumnXPos + 38
+      local s = Strings(cell)
+      local cx = 38 + (cols[c] or (c - 1) * 12)
+      text(s, cx - math.floor(Font.width(s) / 2), 80 + (r - 1) * 16 + 1, keyInk, keyShadow)
+    end
+  end
+
+  -- the column of plates: the page swap (labelled with where it goes), BACK, OK
+  local nextPage = self.pages[self.page % #self.pages + 1]
+  local plates = {
+    { self:frlgImage("frame"), 184, 72 },
+    { self:frlgImage("back"), 184, 104 },
+    { self:frlgImage("ok"), 184, 128 },
+  }
+  for i, p in ipairs(plates) do
+    if p[1] then
+      g.draw(p[1], p[2], p[3])
+      if m.buttonAt and self.row == m.buttonAt + i - 1 then
+        -- the chosen plate brightens (the cartridge's palette flash)
+        g.setBlendMode("add")
+        g.setColor(1, 1, 1, 0.18 + 0.12 * math.abs(math.sin((self.blink or 0) / 10)))
+        g.draw(p[1], p[2], p[3])
+        g.setBlendMode("alpha")
+        g.setColor(1, 1, 1, 1)
+      end
+    end
+  end
+  -- the plate (a 32x16 OBJ at 204,83) and its label (24x8 at 204,84)
+  local which = (FRLG_LABEL[nextPage.name] or "label_others"):gsub("^label_", "")
+  local plate = self:frlgImage("swap_" .. which)
+  if plate then g.draw(plate, 204 - 16, 83 - 8) end
+  local label = self:frlgImage("label_" .. which)
+  if label then g.draw(label, 204 - 12, 84 - 4) end
+
+  -- the cursor, on a key
+  local cursor = self:frlgImage("cursor")
+  if cursor and self.row <= m.keyRows then
+    g.draw(cursor, 30 + (cols[self.col] or 0), 80 + (self.row - 1) * 16)
+  end
+  g.setColor(1, 1, 1, 1)
+end
+
+-- Drawn last, over the plate's own tiles, at naming_screen.c's exact CreateSprite
+-- centres: player/rival at (56,37), Pokémon at (56,40). CreateSprite positions
+-- are sprite centres, so convert them to LÖVE's top-left draw coordinates here.
+function NamingScreen:drawIcon()
+  if not self.kind then return end
+  local g = love.graphics
+  g.setColor(1, 1, 1, 1)
+  if self.kind == "player" then
+    local img, tw, th = playerIconFrame(self.game)
+    if img then
+      local iw, ih = img:getDimensions()
+      local quad = love.graphics.newQuad(0, 0, tw, th, iw, ih)
+      g.draw(img, quad, 56 - math.floor(tw / 2), 37 - math.floor(th / 2))
+    end
+  elseif self.kind == "mon" then
+    local t = love.timer and love.timer.getTime() or 0
+    local img, iw, frameH, frame = monIconFrame(self.game, self.species, t)
+    if img then
+      local quad = love.graphics.newQuad(0, frame * frameH, iw, frameH,
+                                         iw, img:getHeight())
+      g.draw(img, quad, 56 - math.floor(iw / 2), 40 - math.floor(frameH / 2))
+    end
+  elseif self.kind == "rival" then
+    local t = love.timer and love.timer.getTime() or 0
+    local img, fw, fh, frame = rivalIconFrame(self.game, t)
+    if img then
+      local iw, ih = img:getDimensions()
+      local quad = love.graphics.newQuad(0, frame * fh, fw, fh, iw, ih)
+      g.draw(img, quad, 56 - math.floor(fw / 2), 37 - math.floor(fh / 2))
+    end
+  end
+  g.setColor(1, 1, 1, 1)
+end
+
 function NamingScreen:draw()
-  if self.layout then return self:drawGen3() end
+  local frlg = self.layout and (self.game.data.constants or {}).gen3FRLGNaming
+  if frlg and frlg.images and frlg.images.bg then
+    self:drawFireRed(frlg)
+    self:drawIcon()
+    return
+  end
+  if self.layout then
+    self:drawGen3()
+    self:drawIcon()
+    return
+  end
   return self:drawClassic()
 end
 

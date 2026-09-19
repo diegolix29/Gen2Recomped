@@ -502,6 +502,94 @@ end
 -- in the same band as the wipes beside them -- about a second -- and they are
 -- listed as records so a mod, or a later derivation, can retime them without
 -- touching this file.
+-- ---------------------------------------------------------------------------
+-- FIRERED'S OWN (pokefirered src/battle_transition.c), drawn over the whole
+-- window rather than on a tile grid.  Each receives the wipe record, 0..1
+-- progress and the window size in pixels.
+-- ---------------------------------------------------------------------------
+local function frlgSlice(_, prog, ww, wh, _, Sy)
+  -- B_TRANSITION_SLICE: alternate scanlines slide off opposite edges,
+  -- accelerating, and leave black behind
+  local line = math.max(1, Sy or 1)
+  local off = ww * prog * prog
+  local y, i = 0, 0
+  love.graphics.setColor(0, 0, 0, 1)
+  while y < wh do
+    if i % 2 == 0 then love.graphics.rectangle("fill", 0, y, off, line)
+    else love.graphics.rectangle("fill", ww - off, y, off, line) end
+    y, i = y + line, i + 1
+  end
+end
+
+local function frlgWhiteBars(_, prog, ww, wh)
+  -- B_TRANSITION_WHITE_BARS_FADE: eight white bars sweep across one after
+  -- another, then the white screen fades down to black
+  local bars = 8
+  local bh = wh / bars
+  if prog < 0.55 then
+    local p = prog / 0.55
+    love.graphics.setColor(1, 1, 1, 1)
+    for b = 0, bars - 1 do
+      local start = b / (bars + 2)
+      local q = math.max(0, math.min(1, (p - start) / 0.35))
+      local w = ww * q
+      if b % 2 == 0 then love.graphics.rectangle("fill", ww - w, b * bh, w, bh + 1)
+      else love.graphics.rectangle("fill", 0, b * bh, w, bh + 1) end
+    end
+  else
+    local s = 1 - (prog - 0.55) / 0.45
+    love.graphics.setColor(s, s, s, 1)
+    love.graphics.rectangle("fill", 0, 0, ww, wh)
+  end
+end
+
+local function frlgClockwise(_, prog, ww, wh)
+  -- B_TRANSITION_CLOCKWISE_WIPE: a black sweep round from twelve o'clock
+  local cx, cy = ww / 2, wh / 2
+  local r = math.sqrt(cx * cx + cy * cy) + 2
+  love.graphics.setColor(0, 0, 0, 1)
+  if prog > 0 then
+    love.graphics.arc("fill", "pie", cx, cy, r, -math.pi / 2,
+                      -math.pi / 2 + 2 * math.pi * prog, 64)
+  end
+end
+
+local ballSheetCache = {}
+local function frlgPokeballsTrail(wipe, prog, ww, wh)
+  -- B_TRANSITION_POKEBALLS_TRAIL: Poke Balls roll across the screen in five
+  -- rows, alternately from each side, each dragging black behind it
+  local rows = 5
+  local rh = wh / rows
+  local data = wipe.game and wipe.game.data
+  local rec = data and data.constants and data.constants.gen3BallAnim
+  local path = rec and rec.images and rec.images.balls
+  local sheet = path and ballSheetCache[path]
+  if path and sheet == nil then
+    local ok, img = pcall(require("src.render.Assets").image, path)
+    sheet = ok and img or false
+    ballSheetCache[path] = sheet
+  end
+  for row = 0, rows - 1 do
+    local start = ({ 0, 0.3, 0.12, 0.42, 0.22 })[row + 1]
+    local q = math.max(0, math.min(1, (prog - start) / (1 - 0.45)))
+    local x = (ww + rh) * q
+    local fromLeft = row % 2 == 0
+    local y = row * rh
+    love.graphics.setColor(0, 0, 0, 1)
+    if fromLeft then love.graphics.rectangle("fill", 0, y, math.max(0, x - rh / 2), rh + 1)
+    else love.graphics.rectangle("fill", ww - math.max(0, x - rh / 2), y, math.max(0, x - rh / 2), rh + 1) end
+    if q > 0 and q < 1 and sheet then
+      local size = rec.size or 16
+      local iw, ih = sheet:getDimensions()
+      local bx = fromLeft and (x - rh) or (ww - x)
+      love.graphics.setColor(1, 1, 1, 1)
+      love.graphics.draw(sheet, love.graphics.newQuad(0, 0, size, size, iw, ih),
+                         bx + rh / 2, y + rh / 2, (fromLeft and 1 or -1) * q * 12,
+                         rh / size, rh / size, size / 2, size / 2)
+    end
+  end
+end
+
 -- THE ONES THAT DRAW A PICTURE, which is five of the cartridge's own
 -- backgrounds and three silhouettes.
 --
@@ -579,6 +667,10 @@ local function pictureDraw(opts)
 end
 
 BattleTransition.STYLES = {
+  frlg_slice    = { kind = "wipe", frames = 50, screen = frlgSlice },
+  frlg_whitebars = { kind = "wipe", frames = 70, screen = frlgWhiteBars },
+  frlg_clockwise = { kind = "wipe", frames = 50, screen = frlgClockwise },
+  frlg_balltrail = { kind = "wipe", frames = 60, screen = frlgPokeballsTrail },
   g3_whitefade = { kind = "fade", frames = 48, draw = fadeDraw(1) },
   g3_blackfade = { kind = "fade", frames = 48, draw = fadeDraw(0) },
   g3_grid      = { kind = "wipe", frames = 48 },
@@ -771,6 +863,18 @@ local function gen3Column(ctx)
 end
 
 local function gen3Style(ctx)
+  -- FireRed's two tables (battle_setup.c sBattleTransitionTable_Wild /
+  -- _Trainer): column 0 when the foe is weaker than the lead
+  if require("src.core.GameVersion").get() == "firered" then
+    local weaker = ctx.weaker
+    if weaker == nil then weaker = not ctx.stronger end
+    if ctx.trainer then
+      if ctx.dungeon then return weaker and "g3_angled" or "g3_pokeball" end
+      return weaker and "frlg_balltrail" or "g3_angled"
+    end
+    if ctx.dungeon then return weaker and "frlg_clockwise" or "g3_grid" end
+    return weaker and "frlg_slice" or "frlg_whitebars"
+  end
   local record = gen3Record(ctx)
   if not record then
     -- no dataset: the port's own four, which is what it always had
@@ -868,7 +972,7 @@ function BattleTransition.new(game, onDone, opts)
   -- GetTrainerBattleTransition and the legendary starters read, and a caller
   -- that cannot answer one simply leaves it out (see gen3Style).
   local ctx = { trainer = opts.trainer, stronger = opts.stronger,
-                dungeon = opts.dungeon, game = game,
+                weaker = opts.weaker, dungeon = opts.dungeon, game = game,
                 mapTransitionType = opts.mapTransitionType,
                 enemyLevel = opts.enemyLevel, leadLevel = opts.leadLevel,
                 trainerClass = opts.trainerClass, trainerId = opts.trainerId,
@@ -949,7 +1053,9 @@ function BattleTransition:draw()
   -- out to exactly 20x18 and this is the classic wipe unchanged.
   local renderer = self.game and self.game.renderer
   if renderer then
-    renderer.battleWipe = { style = style, prog = prog }
+    renderer.battleWipe = { style = style, prog = prog, t = self.t,
+                            game = self.game,
+                            screenDraw = self.def and self.def.screen }
     return
   end
 

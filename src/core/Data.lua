@@ -200,6 +200,30 @@ local GEN2_SCAFFOLD_MAP_ALIASES = {
   MAP_G1A_N0B = "ROUTE31_VIOLET_GATE",
 }
 
+-- FireRed's import labels maps by group and number.  The story layer predates
+-- that extractor and names the League rooms after their source scripts, so
+-- retain both identities.  The aliases also make warps land on the map that
+-- owns the League door, rival, and Hall of Fame hooks.
+local FIRERED_STORY_MAP_ALIASES = {
+  MAP_G01_N75 = "LORELEIS_ROOM",
+  MAP_G01_N76 = "BRUNOS_ROOM",
+  MAP_G01_N77 = "AGATHAS_ROOM",
+  MAP_G01_N78 = "LANCES_ROOM",
+  MAP_G01_N79 = "CHAMPIONS_ROOM",
+  MAP_G01_N80 = "HALL_OF_FAME",
+}
+
+local FIRERED_STORY_OBJECT_TEXT = {
+  LORELEIS_ROOM = "TEXT_LORELEISROOM_LORELEI",
+  BRUNOS_ROOM = "TEXT_BRUNOSROOM_BRUNO",
+  AGATHAS_ROOM = "TEXT_AGATHASROOM_AGATHA",
+}
+
+local FIRERED_STORY_OBJECT_NAMES = {
+  LANCES_ROOM = "LANCESROOM_LANCE",
+  CHAMPIONS_ROOM = "CHAMPIONSROOM_RIVAL",
+}
+
 local function copy(value)
   if type(value) ~= "table" then return value end
   local out = {}
@@ -258,6 +282,31 @@ local function seedMapAliases(maps, aliases)
     if not maps[friendlyId] and maps[rawId] then
       local mapped = copy(maps[rawId]); mapped.id = friendlyId; maps[friendlyId] = mapped
     end
+  end
+end
+
+local function seedTrainerPartyAlias(trainers, alias, sourceIds)
+  if not trainers or trainers[alias] then return end
+  local first = trainers[sourceIds[1]]
+  if not first then return end
+  local mapped = copy(first)
+  mapped.id = alias
+  mapped.parties = {}
+  for _, sourceId in ipairs(sourceIds) do
+    local source = trainers[sourceId]
+    if source and source.parties and source.parties[1] then
+      mapped.parties[#mapped.parties + 1] = copy(source.parties[1])
+    end
+  end
+  if #mapped.parties == #sourceIds then trainers[alias] = mapped end
+end
+
+-- A generated FireRed warp carries its group/number key.  Resolve that key to
+-- the story alias too, so arriving through a real warp and explicitly opening
+-- the readable alias select the same map-script contribution.
+local function preferMapAliases(maps, aliases)
+  for rawId, friendlyId in pairs(aliases or {}) do
+    if maps[rawId] and maps[friendlyId] then maps[rawId] = maps[friendlyId] end
   end
 end
 
@@ -756,6 +805,16 @@ function Data:seedDefaults()
       -- does not have.  Gen3Intro keeps the card and puts Emerald's own
       -- attract skies behind it.
       boot.screens.splash = "Gen3Intro"
+      -- FireRed has its own real boot intro -- pret's intro.c, not
+      -- Emerald's bike ride -- and RomExtractorGen3:extractFireRedIntro
+      -- extracts it under its own key so a cache that predates that stage
+      -- still gets SOMETHING rather than a screen with no images to draw.
+      local core = self.constants and self.constants.gen3FRLGIntro
+      local images = core and core.images
+      if V.get() == "firered" and type(images) == "table"
+         and images.gfBg and images.scene1Grass and images.scene3Bg then
+        boot.screens.splash = "Gen3IntroFRLG"
+      end
     end
   end
   -- ------------------------------------------------------------ GEN 3 ----
@@ -801,6 +860,22 @@ function Data:seedDefaults()
     end
     if boot.screens.newGame == BOOT_DEFAULTS.screens.newGame then
       boot.screens.newGame = "BirchSpeech"
+    end
+    -- FIRERED IS OAK'S, not Birch's: its own guide, Pikachu card and
+    -- professor, and a rival the player names rather than the other gender.
+    local frlgOak = (self.constants or {}).gen3FRLGOakSpeech
+    if type(frlgOak) == "table" and type(frlgOak.text) == "table"
+       and frlgOak.text.welcome then
+      if boot.screens.newGame == "BirchSpeech" then
+        boot.screens.newGame = "Gen3OakSpeechFRLG"
+      end
+      local frlgTitle = (self.constants or {}).gen3FRLGTitle
+      if boot.screens.title == "Gen3Title" and type(frlgTitle) == "table"
+         and type(frlgTitle.images) == "table" and frlgTitle.images.mon then
+        boot.screens.title = "Gen3TitleFRLG"
+      end
+      if boot.playerName == "BRENDAN" then boot.playerName = "RED" end
+      if boot.rivalName == "MAY" then boot.rivalName = "GREEN" end
     end
     -- THE START MENU IS NOT THE GEN 2 ONE WITH DIFFERENT WORDS.  Its rows
     -- come off the cartridge (sStartMenuText, whose run IS the order), its
@@ -1095,6 +1170,23 @@ function Data:seedDefaults()
       end
     end
   end
+  if require("src.core.GameVersion").get() == "firered" then
+    seedMapAliases(self.maps, FIRERED_STORY_MAP_ALIASES)
+    preferMapAliases(self.maps, FIRERED_STORY_MAP_ALIASES)
+    for mapId, textConst in pairs(FIRERED_STORY_OBJECT_TEXT) do
+      local map = self.maps[mapId]
+      if map and map.objects and map.objects[1] then map.objects[1].text = textConst end
+    end
+    for mapId, name in pairs(FIRERED_STORY_OBJECT_NAMES) do
+      local map = self.maps[mapId]
+      if map and map.objects and map.objects[1] then map.objects[1].name = name end
+    end
+    -- FireRed imports the three original Champion parties as separate named
+    -- trainer records. The shared story runner selects OPP_RIVAL3 by the
+    -- player's starter, so give it those imported parties in that order.
+    seedTrainerPartyAlias(self.trainers, "OPP_RIVAL3",
+      { "TERRY_438", "TERRY_439", "TERRY_440" })
+  end
 end
 
 -- The Karate Master (FightingDojo.asm) is a text_asm object: his object has
@@ -1274,8 +1366,23 @@ function Data:load()
   self.isGen3Cache = isGen3Cache
   local isRequired = {}
   for _, name in ipairs(required) do isRequired[name] = true end
+  -- FRLG: two generated modules cannot be produced for FireRed at all,
+  -- and neither is fatal.
+  --   scenes -- gen3_discover's scene-loader matching is written against
+  --     Emerald's graphics/palette library functions. Per the project
+  --     author, Emerald's own scenes were HAND-AUTHORED regardless, so
+  --     there is nothing to derive. Gen3Scene already treats a missing
+  --     scene as "a screen with no backdrop, not an error".
+  --   field -- FireRed's heal-location stage produces nothing yet; Data
+  --     builds `field` up itself (`self.field = self.field or {}`).
+  -- Degrade to an empty table rather than refusing to boot, which is
+  -- what happens today and what sends the user back to Import.
+  local OPTIONAL_GEN3 = { scenes = { _roles = {} }, field = {} }
   for _, name in ipairs(required) do
     local ok, mod = loadModule(dir, name)
+    if not ok and isGen3Cache and OPTIONAL_GEN3[name] then
+      mod, ok = OPTIONAL_GEN3[name], true
+    end
     if not ok then
       if dir then
         error(("missing data module '%s/%s.lua' (POKEPORT_DATA_DIR).\n(%s)")

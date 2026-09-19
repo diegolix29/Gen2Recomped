@@ -75,7 +75,19 @@ function Transition.new(game, onMidpoint, onDone)
 end
 
 function Transition:finish()
-  self.game.stack:pop()
+  -- the midpoint may have pushed something over the fade (FireRed's dungeon
+  -- preview); take THIS state out, not whatever is on top
+  local stack = self.game.stack
+  if stack:top() ~= self and stack.states then
+    for i = #stack.states, 1, -1 do
+      if stack.states[i] == self then
+        table.remove(stack.states, i)
+        if self.onDone then self.onDone() end
+        return
+      end
+    end
+  end
+  stack:pop()
   if self.onDone then self.onDone() end
 end
 

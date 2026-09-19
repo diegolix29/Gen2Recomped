@@ -71,6 +71,15 @@ end
 
 local Gen3BagMenu = {}
 Gen3BagMenu.__index = Gen3BagMenu
+-- Every other full-screen menu in this port (ShopMenu, Gen3ShopMenu,
+-- Gen3Options, ...) declares this; the bag never did.  Opening the TM CASE
+-- or the BERRY POUCH pushes a SECOND Gen3BagMenu on top of the first, and
+-- with neither one opaque the stack draws from the bottom up (Game.
+-- drawBaseInStack / StateStack:visibleBase) -- the parent screen's bag
+-- sprite, tilted toward whatever pocket it was on, painted first and then
+-- only PARTLY covered by the child's own background.  Reported from play as
+-- a grey silhouette showing through the TM CASE screen.
+Gen3BagMenu.isOpaque = true
 
 -- THE BAG IS THE WHOLE SCREEN, and saying so is a bug fix.
 --
@@ -181,6 +190,7 @@ function Gen3BagMenu.new(game, opts)
   -- opened mid-battle: the pick USES the item there and then, against the
   -- fight, rather than opening the field item flow (see choose())
   self.battle = opts.battle
+  self.itemPc = opts.itemPc and true or false
   self.pocket = 1
   self.index = 1
   self.top = 1
@@ -193,8 +203,25 @@ function Gen3BagMenu.new(game, opts)
               Strings("KEY ITEMS") }
   end
   self.pockets = {}
-  for i, key in ipairs(POCKET_KEYS) do
-    self.pockets[i] = { key = key, name = names[i] or key }
+  local screenRec = (game.data.constants or {}).gen3BagScreen
+  self.frlg = type(screenRec) == "table" and screenRec.layout == "frlg"
+  if self.frlg then
+    -- FIRERED'S BAG HAS THREE POCKETS (sPocketNames): the TMs and berries
+    -- live in the TM CASE and BERRY POUCH, which open lists of their own
+    local frNames = (names and #names == 3) and names
+      or { "ITEMS", "KEY ITEMS", "POKé BALLS" }
+    for i, key in ipairs({ "ITEM", "KEY_ITEM", "BALL" }) do
+      self.pockets[i] = { key = key, name = frNames[i] }
+    end
+    if opts.pocket == "TM_HM" then
+      self.pockets[#self.pockets + 1] = { key = "TM_HM", name = "TM CASE" }
+    elseif opts.pocket == "BERRY" then
+      self.pockets[#self.pockets + 1] = { key = "BERRY", name = "BERRY POUCH" }
+    end
+  else
+    for i, key in ipairs(POCKET_KEYS) do
+      self.pockets[i] = { key = key, name = names[i] or key }
+    end
   end
   -- HANDING ONE BACK INSTEAD OF USING IT.
   --
@@ -331,6 +358,8 @@ function Gen3BagMenu:rebuild()
         -- here came back nil and Emerald's bag showed no "x3" against
         -- anything at all.
         qty = (game.save.inventory or {})[id],
+        important = def and (tonumber(def.importance) or 0) ~= 0
+          or want == "KEY_ITEM" or nil,
         description = def and (def.description or def.desc),
       }
     end
@@ -599,6 +628,21 @@ function Gen3BagMenu:choose()
   -- logged "no item flow yet" -- which made EVERY out-of-battle item use in
   -- Hoenn do nothing at all, TMs and HMs included, with the machine data and
   -- the teaching code both already present and working.
+  -- TM CASE and BERRY POUCH are their OWN screens on FireRed (tm_case.c,
+  -- berry_pouch.c) -- not the bag reopened at a locked pocket, which is
+  -- what this pushed until Gen3TMCase.lua/Gen3BerryPouch.lua existed.
+  if self.frlg and row.id == "TM_CASE" then
+    self.game.stack:push(require("src.ui.Gen3TMCase").new(self.game, {
+      onCancel = function() self:rebuild() end,
+    }))
+    return
+  end
+  if self.frlg and row.id == "BERRY_POUCH" then
+    self.game.stack:push(require("src.ui.Gen3BerryPouch").new(self.game, {
+      onCancel = function() self:rebuild() end,
+    }))
+    return
+  end
   local entries = self:actionsFor(row.id)
   if not entries then
     -- no cartridge list: use it, which is what the choice would have led to
@@ -805,21 +849,21 @@ local function drawRows(self, inset)
     if not row then break end
     local y = top + i * pitch + inset
     Font.draw(row.label, itemX, y)
-    -- THE BADGE ON THE ITEM THAT IS ON THE SELECT BUTTON.
-    --
-    -- Reported from play: "Registering still isnt working in gen 3 when
-    -- register is selected it does nothing".  It was working -- the pick
-    -- reached the save and SELECT ran it -- and it LOOKED like nothing,
-    -- because the cartridge acknowledges a registration in two places and
-    -- this screen had neither.  This is the first: the little SEL button it
-    -- blits beside the item (01AB66C), at the list window's own x + 96 and a
-    -- pixel above the row.  There is no message anywhere in the flow, so
-    -- without this and the DESELECT swap below, an unchanged screen is the
-    -- whole of the feedback.
+    -- The registered-item badge is the cartridge's feedback for SELECT.
     if row.id and row.id == (self.game.save or {}).registeredItem then
       self:drawRegisteredBadge(win, top + i * pitch)
     end
-    if row.qty and row.qty > 1 then
+    if L.quantityX and row.qty and not row.close and not row.important then
+      -- FireRed: "x" then the count right-aligned in three digit cells, in
+      -- the small face, at a fixed x (BagListMenuItemPrintFunc) -- shown
+      -- even for a single item; key items print none
+      local faced = Font.pushFace("small")
+      local n = tostring(row.qty)
+      local cell = Font.width("0")
+      Font.draw("x", win.x + L.quantityX, y)
+      Font.draw(n, win.x + L.quantityX + Font.width("x") + cell * (3 - #n), y)
+      if faced then Font.popFace() end
+    elseif row.qty and row.qty > 1 then
       local qty = Strings("x%d", row.qty)
       Font.draw(qty, qtyRight - Font.width(qty), y)
     end
@@ -907,8 +951,13 @@ function Gen3BagMenu:background()
   local images = r.images
   if type(images) ~= "table" then return nil end
   local player = (self.game.save or {}).player or {}
-  local path = (player.gender == "girl" and images.female) or images.male
-               or images.female
+  local path
+  if self.itemPc then
+    path = (player.gender == "girl" and images.itemPcFemale)
+           or images.itemPcMale or images.itemPcFemale
+  end
+  path = path or (player.gender == "girl" and images.female) or images.male
+              or images.female
   if type(path) ~= "string" then return nil end
   local ok, img = pcall(Assets.image, path)
   return ok and img or nil
@@ -996,8 +1045,20 @@ function Gen3BagMenu:draw()
     end
   end
 
-  -- the bag itself, tilted toward the pocket in front -- and no bag at all on
-  -- the PC's list, which is not the bag
+  -- the bag itself, tilted toward the pocket in front.
+  --
+  -- TRIED, AND REVERTED: skipping this for the TM CASE / BERRY POUCH sub-
+  -- views (opened with a locked pocket) on the grounds that neither has a
+  -- bag drawn on the real cartridge -- they are their own screens
+  -- (tm_case.c / berry_pouch.c), not the bag's.  It uncovered a worse
+  -- problem instead of fixing one: the extracted FRLG background
+  -- (bag_male.png/bag_female.png) carries a flat grey drop-shadow tile
+  -- where the bag SPRITE normally sits on top of it, and with the sprite
+  -- gone that shadow shows as an unexplained grey blob.  Drawing the bag
+  -- anyway at least reads as "a bag", which is closer to right than a
+  -- silhouette with nothing on it.  The real fix is TM CASE and BERRY
+  -- POUCH getting their own extracted backgrounds instead of borrowing the
+  -- bag's; out of scope for this pass.
   local image, quad = nil, nil
   if not self.pcList then image, quad = self:bagFrame() end
   if image and quad then
@@ -1022,7 +1083,10 @@ function Gen3BagMenu:draw()
   -- showing properly".  They were not showing at all: this used to draw a
   -- one-pixel underline of its own invention below the cell, because nothing
   -- had gone looking for the tile the cartridge swaps in.
-  local dots = not self.pcList and (r.pocketDots or FALLBACK.pocketDots) or nil
+  local dots = not self.pcList
+               and (r.pocketDots
+                    or (r.layout ~= "frlg" and FALLBACK.pocketDots))
+               or nil
   local mark = dots and dots.selected
   if dots and mark and (tonumber(dots.count) or 0) > 0 then
     local step = math.max(1, math.floor(tonumber(dots.step) or 8))
@@ -1080,28 +1144,27 @@ function Gen3BagMenu:draw()
   -- does not have at all
   local desc = self:box("description")
   local D = r.description or FALLBACK.description
-  -- AN EMPTY PC SAYS SO.  "There are no items." is the cartridge's line for a
-  -- storage list with nothing but CANCEL in it, and without it the screen
-  -- opens on a blank panel that reads as a screen that failed to load.
   local text
   if self.message then
     text = self.message
   elseif self.pcList and #self.rows <= 1 then
     text = Gen3BagMenu.pcWord(self.game, "noItems")
   elseif self.pcList and row and row.close then
-    -- the cartridge's own line for the CANCEL that ends this list, which is
-    -- the fourth of ITEM STORAGE's row descriptions; never "Close the BAG.",
-    -- because the bag is not what this closes
+    -- The PC's CANCEL describes ending the PC list, not closing the bag.
     local describe = ((self.game.data.constants or {}).gen3PCMenu or {}).describe
     text = (type(describe) == "table" and describe[#describe]) or ""
   else
     text = row and (row.close and Strings("Close the BAG.")
                     or row.description) or ""
   end
-  local y = desc.y + (tonumber(D.y) or 1) + inset
+  -- FireRed prints three lines at the face's own fourteen-pixel pitch from
+  -- y 3 (PrintItemDescriptionOnMessageWindow); the record says so.
+  local pitch = tonumber(D.lineHeight) or ROW_PITCH
+  local y = desc.y + (tonumber(D.y) or 1)
+        + (D.lineHeight and r.layout == "frlg" and 0 or inset)
   for line in tostring(text or ""):gmatch("[^\n]+") do
     Font.draw(line, desc.x + (tonumber(D.x) or 3), y)
-    y = y + ROW_PITCH
+    y = y + pitch
   end
   love.graphics.pop()
   love.graphics.setColor(1, 1, 1, 1)

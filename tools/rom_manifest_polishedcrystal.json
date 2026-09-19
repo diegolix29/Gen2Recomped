@@ -4930,6 +4930,12 @@
       "ElmText6"
     ]
   ],
+  "itemPockets": {
+    "1": "ITEM",
+    "2": "ITEM",
+    "3": "BALL",
+    "5": "ITEM"
+  },
   "items": [
     "ITEM_001",
     "ITEM_002",
@@ -5214,6 +5220,9 @@
     "evoSpeciesWord": 1,
     "hmCount": 7,
     "huffmanText": 1,
+    "itemAttrBytes": 6,
+    "itemAttrPocketAt": 4,
+    "itemNameBias": 1,
     "lzAlternateExtra": 2,
     "lzIterateExtra": 1,
     "mapAttrConnectionFlags": 9,
@@ -5248,11 +5257,15 @@
     "objectScriptBase": 1,
     "polishedMoveEffects": 1,
     "rawPicsCompressed": 1,
+    "roofGfxBank": 110,
+    "roofPalRows": 3,
+    "roofTilesetMax": 5,
     "speciesNameBias": 1,
     "spriteHeaderBankAt": 2,
     "spriteHeaderBytes": 4,
     "spriteHeaderKindAt": -1,
     "spriteHeaderPaletteAt": 3,
+    "specialMapPalettes": 1,
     "spriteOverrides": 0,
     "spritesCompressed": 1,
     "stdScriptBytes": 2,

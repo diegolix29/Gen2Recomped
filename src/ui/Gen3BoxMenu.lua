@@ -763,7 +763,197 @@ function Gen3BoxMenu:cellAt(row, col)
   return grid.x + (col - 1) * cell, grid.y + (row - 1) * cell
 end
 
+-- ---------------------------------------------------------------------------
+-- FIRERED'S CHROME (RomExtractorGen3:extractFireRedStorage): the scrolling
+-- BG3 pattern, BG1's PKMN DATA panel, the PARTY POKeMON and CLOSE BOX tabs
+-- along the top, the party panel sliding down over the grid, and the hand.
+-- ---------------------------------------------------------------------------
+function Gen3BoxMenu:frlgRecord()
+  local c = self.game and self.game.data and self.game.data.constants
+  local r = c and c.gen3FRLGStorage
+  return (type(r) == "table" and r.images and r.images.menu) and r or nil
+end
+
+function Gen3BoxMenu:frlgImage(key)
+  local r = self:frlgRecord()
+  local path = r and r.images[key]
+  if not path then return nil end
+  self._frlg = self._frlg or {}
+  if self._frlg[path] == nil then
+    local ok, img = pcall(require("src.render.Assets").image, path)
+    self._frlg[path] = ok and img or false
+  end
+  return self._frlg[path] or nil
+end
+
+function Gen3BoxMenu:frlgQuad(img, x, y, w, h)
+  self._quads = self._quads or {}
+  local key = ("%s:%d:%d:%d:%d"):format(tostring(img), x, y, w, h)
+  local q = self._quads[key]
+  if not q then
+    q = love.graphics.newQuad(x, y, w, h, img:getDimensions())
+    self._quads[key] = q
+  end
+  return q
+end
+
+function Gen3BoxMenu:frontPic(mon)
+  self._pics = self._pics or {}
+  local key = tostring(mon.species) .. (mon.shiny and ":s" or "")
+  if self._pics[key] == nil then
+    local ok, path = pcall(require("src.pokemon.Sprites").path, self.game.data,
+                           mon.species, "front", { kind = "dex", shiny = mon.shiny })
+    local img
+    if ok and path then
+      local okImg, image = pcall(require("src.render.Assets").image, path)
+      img = okImg and image or nil
+    end
+    self._pics[key] = img or false
+  end
+  return self._pics[key] or nil
+end
+
+function Gen3BoxMenu:drawFireRed(rec)
+  local g = love.graphics
+  local frames = (self.t or 0) * 60
+  g.setColor(1, 1, 1, 1)
+  -- BG3: half a pixel a frame on both axes
+  local scroll = self:frlgImage("scroll")
+  if scroll then
+    local sw, sh = scroll:getDimensions()
+    local ox = math.floor(frames / 2) % sw
+    local oy = math.floor(frames / 2) % sh
+    for y = -oy, GBA_H, sh do
+      for x = -ox, GBA_W, sw do g.draw(scroll, x, y) end
+    end
+  else
+    g.setColor(0.16, 0.20, 0.28, 1)
+    g.rectangle("fill", 0, 0, GBA_W, GBA_H)
+    g.setColor(1, 1, 1, 1)
+  end
+
+  -- the box
+  local region = self:region()
+  local paper = self:wallpaper()
+  if paper then g.draw(paper, region.x, region.y) end
+  local band = math.floor(tonumber((self:record() or {}).band) or FALLBACK.band)
+  local name = self:boxName()
+  local nameY = region.y + math.floor((band - 14) / 2)
+  local nameX = region.x + math.floor((region.width - Font.width(name)) / 2)
+  local two = Font.beginTwoTone({ 1, 1, 1, 1 }, { 0.38, 0.38, 0.38, 1 })
+  Font.draw(name, nameX, nameY)
+  if two then Font.endTwoTone() end
+
+  local cell = math.floor(tonumber(self:grid().cell) or FALLBACK.grid.cell)
+  local box = self:box()
+  for row = 1, ROWS do
+    for col = 1, COLS do
+      local x, y = self:cellAt(row, col)
+      local held = box[(row - 1) * COLS + col]
+      if held and not (self.held and self.held.from == (row - 1) * COLS + col) then
+        self:drawIcon(held, x + cell / 2, y + cell / 2)
+      end
+    end
+  end
+
+  -- BG1: the PKMN DATA panel
+  local menu = self:frlgImage("menu")
+  if menu then g.draw(menu, 0, 0) end
+  local mon = (self.held and self.held.mon) or self:panelMon()
+  local data = self:frlgImage("pkmn_data")
+  if data then g.draw(data, self:frlgQuad(data, 0, mon and 0 or 16, 64, 16), 8, 0) end
+  if mon then
+    local pic = self:frontPic(mon)
+    if pic then
+      local pw, ph = pic:getDimensions()
+      g.draw(pic, PANEL.pic.x - math.floor(pw / 2), PANEL.pic.y - math.floor(ph / 2))
+    end
+    local ink = rec.colors and rec.colors.text
+    local fg = ink and { ink[1][1] / 255, ink[1][2] / 255, ink[1][3] / 255, 1 } or { 0.38, 0.38, 0.38, 1 }
+    local sh = ink and { ink[2][1] / 255, ink[2][2] / 255, ink[2][3] / 255, 1 } or { 0.84, 0.84, 0.81, 1 }
+    local function text(s, x, y, small)
+      local faced = small and Font.hasFace and Font.hasFace("small") and Font.pushFace("small")
+      local t2 = Font.beginTwoTone(fg, sh)
+      if not t2 then g.setColor(fg) end
+      Font.draw(s, x, y)
+      if t2 then Font.endTwoTone() end
+      if faced then Font.popFace() end
+      g.setColor(1, 1, 1, 1)
+    end
+    -- PrintDisplayMonInfo: window (0,11), lines 14 apart, the item in the small face
+    local species = self.game.data.pokemon[mon.species]
+    text(self:nameOf(mon), 6, 88)
+    text("/" .. ((species and species.name) or tostring(mon.species)), 6, 102)
+    local sym = ""
+    if mon.gender == "male" then sym = "♂" elseif mon.gender == "female" then sym = "♀" end
+    text(sym, 10, 116)
+    text("Lv" .. tostring(mon.level or 0), 10 + 16, 116)
+    local heldItem = mon.heldItem or mon.item
+    local def = heldItem and self.game.data.items and self.game.data.items[heldItem]
+    if def then text(def.name or tostring(heldItem), 6, 132, true) end
+  end
+
+  -- the two tabs, and the party panel sliding down under PARTY POKeMON
+  local party = self.game.save.party or {}
+  local sheet = self:frlgImage("party_" .. math.max(1, math.min(6, #party)))
+  local target = self.partyOpen and 20 or 0
+  self.partySlide = self.partySlide or 0
+  if self.partySlide < target then self.partySlide = self.partySlide + 1
+  elseif self.partySlide > target then self.partySlide = self.partySlide - 1 end
+  local slide = self.partySlide
+  if sheet then
+    -- rows (20 - slide) .. 21 of the panel, top-aligned
+    local rows = math.min(22, slide + 2)
+    g.draw(sheet, self:frlgQuad(sheet, 0, (20 - slide) * 8, 96, rows * 8), 80, 0)
+  end
+  local close = self:frlgImage("close_box")
+  if close then
+    local flash = self.onButtons and self.buttonIndex == 2 and math.floor(frames / 30) % 2 == 1
+    g.draw(close, self:frlgQuad(close, 0, flash and 16 or 0, 72, 16), 168, 0)
+  end
+  if slide > 0 then
+    local dy = (slide - 20) * 8
+    for i, spot in ipairs(PARTY.slots) do
+      local pm = party[i]
+      if pm and not (self.held and self.held.fromParty == i) then
+        self:drawIcon(pm, spot[1], spot[2] + dy)
+      end
+    end
+  end
+
+  -- the hand: frame 0 open, frame 1 closed while carrying
+  local hand = self:frlgImage("hand")
+  if hand then
+    local hx, hy
+    if self.partyOpen and slide == 20 then
+      local last = #PARTY.slots + 1
+      if self.partyIndex == last then
+        hx, hy = PARTY.cancel[1], PARTY.cancel[2] - 12
+      else
+        local spot = PARTY.slots[self.partyIndex or 1]
+        hx, hy = spot[1], spot[2] - 12
+      end
+    elseif self.onButtons then
+      hx, hy = (self.buttonIndex == 1) and 124 or 204, 4
+    elseif self.row == TITLE_ROW then
+      hx, hy = region.x + region.width / 2, region.y - 4
+    else
+      local x, y = self:cellAt(self.row, self.col)
+      hx, hy = x + cell / 2, y + cell / 2 - 12
+    end
+    if hx then
+      local bob = (not self.held) and (math.floor(frames / 30) % 2) or 0
+      if self.held then self:drawIcon(self.held.mon, hx, hy + 4) end
+      g.draw(hand, self:frlgQuad(hand, self.held and 32 or 0, 0, 32, 32),
+             math.floor(hx - 16), math.floor(hy - 16 + bob))
+    end
+  end
+  g.setColor(1, 1, 1, 1)
+end
+
 function Gen3BoxMenu:draw()
+  local frlg = self:frlgRecord()
+  if frlg then return self:drawFireRed(frlg) end
   love.graphics.setColor(0.16, 0.20, 0.28, 1)
   love.graphics.rectangle("fill", 0, 0, GBA_W, GBA_H)
 

@@ -38,14 +38,114 @@ local ImageWriter = require("src.import.ImageWriter")
 local Logger = require("src.core.Logger")
 
 local RomExtractorGen3 = {}
+
+-- pcall-shaped LZ77: RomGba:lz77 RETURNS nil for a missing header rather than
+-- raising, so `pcall(rom.lz77, ...)` reported success with no data and every
+-- guard after it indexed nil.  This one says false when there is nothing.
+function RomExtractorGen3.lz77ok(rom, off)
+  local ok, data, err = pcall(rom.lz77, rom, off)
+  if not ok then return false, data end
+  if type(data) ~= "table" then return false, err or "no data" end
+  return true, data
+end
 RomExtractorGen3.__index = RomExtractorGen3
 
 -- The progress denominator.  Kept honest with the two stage lists below: a
 -- mismatch does not break anything, it just makes the bar lie, which is the
 -- kind of small wrongness that survives for months.
-local STAGE_COUNT = 90
+local STAGE_COUNT = 92
+
+-- ---------------------------------------------------------------------------
+-- The stage tables below are keyed to Emerald's ROM.  A sibling cartridge
+-- (FireRed) ships the same structures at other offsets, so its manifest may
+-- carry `addressMap` -- { ["C00000"] = 0xD00000, ... }, Emerald offset to
+-- this ROM's offset, resolved by symbol name -- and every matching number in
+-- the UPPERCASE tables is swapped before a stage reads it.  The originals are
+-- kept, so a later import of Emerald in the same process sees them again.
+-- ---------------------------------------------------------------------------
+
+function RomExtractorGen3._walkAddressTables(fn)
+  local seen = {}
+  local function walk(t)
+    if seen[t] then return end
+    seen[t] = true
+    for k, v in pairs(t) do
+      if type(v) == "number" and v >= 0x100000 and v < 0x2000000 then
+        fn(t, k, v)
+      elseif type(v) == "table" then
+        walk(v)
+      end
+    end
+  end
+  for name, t in pairs(RomExtractorGen3) do
+    if type(name) == "string" and name:match("^[A-Z][A-Z0-9_]*$")
+       and type(t) == "table" then
+      walk(t)
+    end
+  end
+end
+
+function RomExtractorGen3.applyAddressMap(map)
+  if RomExtractorGen3._pristine then
+    for i = #RomExtractorGen3._pristine, 1, -1 do
+      local rec = RomExtractorGen3._pristine[i]
+      rec[1][rec[2]] = rec[3]
+    end
+  end
+  RomExtractorGen3._pristine = {}
+  if type(map) ~= "table" or next(map) == nil then return 0 end
+  local swapped = 0
+  RomExtractorGen3._walkAddressTables(function(t, k, v)
+    local to = map[("%06X"):format(v)]
+    if to then
+      RomExtractorGen3._pristine[#RomExtractorGen3._pristine + 1] = { t, k, v }
+      t[k] = tonumber(to)
+      swapped = swapped + 1
+    end
+  end)
+  return swapped
+end
+
+-- ...and `stageOverrides` -- { BATTLE_TEXTBOX = { FRAME_COUNT = 10 } } --
+-- replaces whole fields where the sibling's structure genuinely differs
+-- rather than merely moved.  Applied after the address map, restored with it.
+function RomExtractorGen3.applyStageOverrides(overrides)
+  if type(overrides) ~= "table" then return 0 end
+  local n = 0
+  for tableName, fields in pairs(overrides) do
+    local t = RomExtractorGen3[tableName]
+    if type(t) == "table" and type(fields) == "table" then
+      for k, v in pairs(fields) do
+        RomExtractorGen3._pristine[#RomExtractorGen3._pristine + 1] = { t, k, t[k] }
+        t[k] = v
+        n = n + 1
+      end
+    end
+  end
+  return n
+end
 
 function RomExtractorGen3.new(romData, version, manifest, progress)
+  local swapped = RomExtractorGen3.applyAddressMap((manifest or {}).addressMap)
+  -- the opcode table differs past $C6 on FireRed: { [opcode] = {name, spec} }
+  local cmds = (manifest or {}).scriptCommands
+  if type(cmds) == "table" then
+    for key, row in pairs(cmds) do
+      local op = tonumber(key)
+      if op and type(row) == "table" then
+        RomExtractorGen3._pristine[#RomExtractorGen3._pristine + 1] =
+          { Gen3ScriptOps.COMMANDS, op + 1, Gen3ScriptOps.COMMANDS[op + 1] }
+        Gen3ScriptOps.COMMANDS[op + 1] = { row[1], row[2] }
+        swapped = swapped + 1
+      end
+    end
+  end
+  swapped = swapped
+    + RomExtractorGen3.applyStageOverrides((manifest or {}).stageOverrides)
+  if swapped > 0 then
+    Logger.info("gen3: %d Emerald-keyed stage addresses remapped for %s",
+                swapped, tostring(version and version.id or version))
+  end
   return setmetatable({
     rom = RomGba.new(romData),
     version = version,
@@ -1798,7 +1898,7 @@ function RomExtractorGen3:statFlourish()
     local flat = at - 0x08000000
     if flat < 0 or flat + 4 >= rom.size then return nil end
     if rom:u8(flat) ~= 0x10 then return nil end
-    local ok, raw = pcall(rom.lz77, rom, flat)
+    local ok, raw = RomExtractorGen3.lz77ok(rom, flat)
     if not (ok and raw and #raw == want) then return nil end
     return raw
   end
@@ -2134,7 +2234,7 @@ function RomExtractorGen3:surfWave()
     local flat = at - 0x08000000
     if flat < 0 or flat + 4 >= rom.size then return nil end
     if rom:u8(flat) ~= 0x10 then return nil end
-    local ok, raw = pcall(rom.lz77, rom, flat)
+    local ok, raw = RomExtractorGen3.lz77ok(rom, flat)
     if not (ok and raw and #raw == want) then return nil end
     return raw
   end
@@ -3059,10 +3159,18 @@ function RomExtractorGen3:extractConstants()
   if optionAt then
     local words, at = {}, optionAt
     for i = 1, 24 do
-      local text, used = self:readText(at, 32)
-      if not (text and used) then break end
-      if text ~= "" then words[#words + 1] = text end
-      at = at + used
+      local okT, text, used = pcall(self.readText, self, at, 32)
+      if okT and text and used then
+        if text ~= "" then words[#words + 1] = text end
+        at = at + used
+      else
+        -- a string this charmap cannot read (FireRed keeps a Japanese
+        -- "TYPE" in the middle of the block): step past its terminator
+        local p = at
+        while p < self.rom.size and self.rom:u8(p) ~= 0xFF do p = p + 1 end
+        if p >= self.rom.size then break end
+        at = p + 1
+      end
     end
     local function has(w)
       for _, v in ipairs(words) do if v == w then return w end end
@@ -3085,7 +3193,8 @@ function RomExtractorGen3:extractConstants()
           -- very block. Before the charmap had it the row read NORMAL / LR
           -- and lost its third setting entirely.
           { key = "buttonMode", label = has("BUTTON MODE"),
-            values = { has("NORMAL"), has("LR"), has("L=A") } },
+            -- FireRed's first button mode is HELP where Emerald's is NORMAL
+            values = { has("NORMAL") or has("HELP"), has("LR"), has("L=A") } },
           { key = "frame", label = has("FRAME"), value = has("TYPE") },
         },
         cancel = has("CANCEL"),
@@ -5309,7 +5418,11 @@ function RomExtractorGen3:extractItems()
       -- cartridge saying "an HM is not yours to throw away" in the same field.
       importance = self.rom:u8(o + 24),
       keyItem = self.rom:u8(o + 24) ~= 0 or nil,
-      pocket = POCKETS[self.rom:u8(o + 26)],
+      -- the pocket enum is per game: FireRed numbers KEY ITEMS 2 and
+      -- POKE BALLS 3 (the manifest's `pocketEnum`, 1-based names)
+      pocket = (self.manifest.pocketEnum
+                and self.manifest.pocketEnum[self.rom:u8(o + 26)])
+               or POCKETS[self.rom:u8(o + 26)],
       source = ("ROM:gItems[%d]"):format(i),
     }
     if i % 64 == 0 then self:tick("Gen3 items", i, count) end
@@ -5804,6 +5917,9 @@ end
 -- (`jump2_down` is two tiles, which the derivation cannot see) and the two
 -- agree on direction everywhere they overlap, which is what the suite checks.
 function RomExtractorGen3:movementName(id)
+  if (self.manifest or {}).frlgItemMenu ~= nil then
+    return Gen3ScriptOps.movementName(id, true)
+  end
   local named = Gen3ScriptOps.MOVEMENT_ACTIONS[id]
   if named then return named end
   local derived = (self.manifest.movementActions or {})[tostring(id)]
@@ -5828,7 +5944,9 @@ function RomExtractorGen3:frameSheet(at, count)
     local px = RomGba.tiles4bpp(raw, 3, 3)
     for y = 1, CELL do
       for x = 1, CELL do
-        local c = colors[px[y][x] + 1]
+        -- colour 0 is transparent on the GBA; baking it in put a green halo
+        -- (the palette's key colour) round every framed window
+        local c = px[y][x] ~= 0 and colors[px[y][x] + 1]
         if c then
           image:setPixel(x - 1, frame * CELL + y - 1,
                          c[1] / 255, c[2] / 255, c[3] / 255, 1)
@@ -5876,6 +5994,38 @@ function RomExtractorGen3:extractFont()
       Logger.info("Gen3 window frames: %d border sets, %d pixels, one 24x24 "
                   .. "cell each", frameCount, drawn)
     end
+  end
+
+  -- FIRERED'S DIALOGUE BOX IS NOT A USER FRAME.  DrawDialogueFrame lays
+  -- eighteen tiles of gMenuMessageWindow_Gfx two tiles deep at each end (the
+  -- rounded caps) in sTextWindowPalettes[0]; the user frames only border
+  -- menus.  Baked as one 18-tile strip for Font.drawDialogueBox.
+  local dialogueRecord = nil
+  if (self.manifest or {}).frlgItemMenu ~= nil then
+    local ok, err = pcall(function()
+      local GFX, PAL, N = 0x41F1C8, 0x471DEC, 18
+      local colors = RomGba.palette(self.rom:bytes(PAL, 32))
+      local raw = self.rom:bytes(GFX, N * 32)
+      local px = RomGba.tiles4bpp(raw, N, 1)
+      local image = ImageWriter.blank(N * 8, 8)
+      for y = 1, 8 do
+        for x = 1, N * 8 do
+          local v = px[y][x]
+          local c = v ~= 0 and colors[v + 1]
+          if c then
+            image:setPixel(x - 1, y - 1, c[1] / 255, c[2] / 255, c[3] / 255, 1)
+          end
+        end
+      end
+      self:saveImage(image, "fonts/frlg_dialogue.png")
+      local fill = colors[2]
+      dialogueRecord = {
+        image = "assets/generated/fonts/frlg_dialogue.png", tile = 8, tiles = N,
+        fill = { fill[1] / 255, fill[2] / 255, fill[3] / 255 },
+        source = ("ROM:gMenuMessageWindow_Gfx %07X, sTextWindowPalettes %07X"):format(GFX, PAL),
+      }
+    end)
+    if not ok then Logger.warn("gen3 frlg dialogue frame: %s", tostring(err)) end
   end
 
   local count = math.floor(tonumber(font.count) or 512)
@@ -5974,7 +6124,7 @@ function RomExtractorGen3:extractFont()
           -- one 4bpp palette, or the pair the box loads together
           if sa >= 0x100 and sa <= 0x2000 and sa % 32 == 0
              and (sc == 32 or sc == 64) then
-            local ok, tiles = pcall(rom.lz77, rom, pa)
+            local ok, tiles = RomExtractorGen3.lz77ok(rom, pa)
             if ok and type(tiles) == "table" and #tiles >= 96 then
               local blank, ink = true, 0
               for i = 1, 32 do if (tiles[i] or 0) ~= 0 then blank = false break end end
@@ -6129,14 +6279,19 @@ function RomExtractorGen3:extractFont()
       local fh = math.floor(tonumber(face.cellHeight) or cellH)
       local ftop = math.floor(tonumber(face.inkTop) or 0)
       local cells, fadv = {}, {}
+      -- Emerald stores a glyph as two 8px tiles across and two down (64
+      -- bytes); FireRed's small face is ONE tile across (32 bytes,
+      -- DecompressGlyph_Small reads +0x0 and +0x8 words).
+      local across = math.floor(tonumber(face.tilesAcross) or 2)
+      local stride = math.floor(tonumber(face.glyphBytes) or 0x40)
       for code = 0, count - 1 do
-        local base = face.glyphs + code * 0x40
+        local base = face.glyphs + code * stride
         local cell = {}
         for row = 0, fh - 1 do
           local srcRow = ftop + row
-          local half = srcRow < 8 and 0 or 2
+          local half = srcRow < 8 and 0 or across
           local line = {}
-          for tile = 0, 1 do
+          for tile = 0, across - 1 do
             local word = self.rom:u16(base + (half + tile) * 16
                                       + (srcRow % 8) * 2)
             for x = 0, 7 do
@@ -6239,6 +6394,7 @@ function RomExtractorGen3:extractFont()
     frame = frameRecord and "sheet" or "drawn",
     -- the twenty border sets the OPTION screen's FRAME row picks between
     frames = frameRecord,
+    dialogueFrame = dialogueRecord,
     -- the cursor and the more-below marker, which are drawn shapes in cells
     -- the cartridge leaves blank; see the note above extractFont's page pass
     symbols = { cursor = SYMBOLS.cursor,
@@ -7345,6 +7501,11 @@ end
 
 function RomExtractorGen3:surfBlob()
   local runs = self:fieldEffectTemplates()
+  -- FIRERED: gFieldEffectObjectTemplatePointers is known (36 entries), and
+  -- the shape scan does not isolate it there, so read it where it is
+  if (self.manifest or {}).frlgItemMenu ~= nil then
+    runs = { { at = 0x3A0010, count = 36 } }
+  end
   -- SEVERAL RUNS OF TEMPLATES ARE LONG ENOUGH -- the cartridge has other
   -- template tables, one of them 141 entries -- so the run is not chosen by
   -- LENGTH.  It is chosen by holding the thing being looked for: exactly one
@@ -7419,6 +7580,53 @@ function RomExtractorGen3:surfBlob()
            width = hit.shape.width, height = hit.shape.height,
            table = hit.run.at, count = hit.run.count, index = hit.index,
            colors = chosen, paletteTag = chosenTag }
+end
+
+function RomExtractorGen3:overworldFramePixels(raw, width, height, subsprites)
+  -- Ordinary sheets are already row-major. Oversized objects such as the
+  -- S.S. Anne exceed hardware OAM dimensions and store each piece separately.
+  if width <= 64 and height <= 64 then
+    return RomGba.tiles4bpp(raw, width / 8, height / 8)
+  end
+  assert(subsprites, "oversized object has no subsprite table")
+  local rom = self.rom
+  local count, at = rom:u8(subsprites), rom:pointer(subsprites + 4)
+  assert(at and count > 0 and count <= 64, "invalid object subsprite table")
+  local dimensions = {
+    [0] = {{8,8}, {16,16}, {32,32}, {64,64}},
+    [1] = {{16,8}, {32,8}, {32,16}, {64,32}},
+    [2] = {{8,16}, {8,32}, {16,32}, {32,64}},
+  }
+  local pieces, minX, minY, maxX, maxY = {}, math.huge, math.huge, -math.huge, -math.huge
+  for i = 0, count - 1 do
+    local p = at + i * 4
+    local x, y, bits = rom:u8(p), rom:u8(p + 1), rom:u16(p + 2)
+    if x >= 128 then x = x - 256 end
+    if y >= 128 then y = y - 256 end
+    local dims = dimensions[bits % 4]
+    local dim = dims and dims[math.floor(bits / 4) % 4 + 1]
+    assert(dim, "invalid object subsprite shape")
+    local offset = math.floor(bits / 16) % 1024 * 32
+    local size = dim[1] * dim[2] / 2
+    assert(offset + size <= #raw, "object subsprite exceeds frame bytes")
+    local chunk = {}
+    for j = 1, size do chunk[j] = raw[offset + j] end
+    pieces[#pieces + 1] = {x=x, y=y, w=dim[1], h=dim[2],
+      pixels=RomGba.tiles4bpp(chunk, dim[1] / 8, dim[2] / 8)}
+    minX, minY = math.min(minX, x), math.min(minY, y)
+    maxX, maxY = math.max(maxX, x + dim[1]), math.max(maxY, y + dim[2])
+  end
+  assert(maxX - minX == width and maxY - minY == height,
+         "object subsprite bounds disagree with frame dimensions")
+  local pixels = RomGba.tiles4bpp({}, width / 8, height / 8)
+  for _, piece in ipairs(pieces) do
+    for y = 1, piece.h do
+      for x = 1, piece.w do
+        pixels[piece.y - minY + y][piece.x - minX + x] = piece.pixels[y][x]
+      end
+    end
+  end
+  return pixels
 end
 
 function RomExtractorGen3:extractOverworldSprites()
@@ -7514,11 +7722,35 @@ function RomExtractorGen3:extractOverworldSprites()
       local anchor = self:facingAnchor(anims)
       local order
       if anchor then
+        -- A DIRECTIONAL SPRITE DOES NOT HAVE TO WALK.
+        --
+        -- FireRed's MOM uses the standard facing/step animation table, but her
+        -- image array contains only the three standing pictures (south, north,
+        -- west). Requiring the walk animations to have backing images threw
+        -- that valid facing set away and the generic multi-frame fallback then
+        -- labelled those pictures `poseFrames`. SpriteRenderer deliberately
+        -- ignores facing for pose sequences, so her logical facing changed
+        -- while the visible sprite stayed on frame zero.
+        --
+        -- Keep the three standing directions once the animation table proves
+        -- they exist. Add walking rows only as one complete set; the renderer
+        -- already supports a three-frame turnable non-walker.
         order = {}
-        for i, slot in ipairs(GEN3_OW.POSE) do
-          local frame = self:animFirstFrame(anims, anchor + slot)
+        for i = 1, 3 do
+          local frame = self:animFirstFrame(anims, anchor + GEN3_OW.POSE[i])
           if frame == nil or frame >= available then order = nil break end
           order[i] = frame
+        end
+        if order then
+          local walk, ok = {}, true
+          for i = 4, #GEN3_OW.POSE do
+            local frame = self:animFirstFrame(anims, anchor + GEN3_OW.POSE[i])
+            if frame == nil or frame >= available then ok = false break end
+            walk[#walk + 1] = frame
+          end
+          if ok then
+            for _, frame in ipairs(walk) do order[#order + 1] = frame end
+          end
         end
       end
       -- ...AND THE SECOND STEP OF EACH WALK, appended after the six.
@@ -7639,8 +7871,8 @@ function RomExtractorGen3:extractOverworldSprites()
       for i, frame in ipairs(order) do
         local at = self.rom:pointer(images + frame * 8)
         if not at then error("frame " .. frame .. " has no data pointer") end
-        cells[i] = RomGba.tiles4bpp(self.rom:bytes(at, frameBytes),
-                                    width / 8, frameHeight / 8)
+        cells[i] = self:overworldFramePixels(self.rom:bytes(at, frameBytes),
+                         width, frameHeight, self.rom:pointer(info + 20))
       end
       local runCells
       if runOrder then
@@ -7662,7 +7894,9 @@ function RomExtractorGen3:extractOverworldSprites()
         id = key,
         image = ("assets/generated/overworld/g3_%03d.png"):format(id),
         frames = poseFrames and 1 or #order,
-        walker = not poseFrames and #order > 1,
+        -- Three frames are just the standing south/north/west set. A sprite is
+        -- a walker only when all three movement rows were retained too.
+        walker = not poseFrames and #order >= #GEN3_OW.POSE,
         -- how many frames of ANIMATION the sheet carries, when its frames are
         -- a sequence rather than a set of facings -- see the note above
         poseFrames = poseFrames,
@@ -7690,7 +7924,7 @@ function RomExtractorGen3:extractOverworldSprites()
                    :format(id),
         }
       end
-      if #order > 1 and not poseFrames then walkers = walkers + 1
+      if #order >= #GEN3_OW.POSE and not poseFrames then walkers = walkers + 1
       else still = still + 1 end
     end)
     if not ok then failed = failed + 1 end
@@ -8175,7 +8409,7 @@ function RomExtractorGen3:extractOverworldSprites()
                    sheets = drawn, substituted = substituted }
   self:write("sprites", out)
   Logger.info("Gen3 overworld sprites: %d rows, %d that turn and walk, %d "
-              .. "single-frame, %d unreadable, %d sheets composed, %d "
+              .. "non-walkers, %d unreadable, %d sheets composed, %d "
               .. "run-time slots standing in",
               count, walkers, still, failed, drawn, substituted)
 end
@@ -8278,7 +8512,9 @@ function RomExtractorGen3:extractTrainerSprites()
   -- which indexes actually produced a file, so a trainer whose art failed is
   -- left with no path rather than one pointing at nothing
   local pathFor = {}
-  for i = 0, 92 do
+  -- FireRed's table runs to 148 pictures (0x4A0 bytes), Emerald's to 93
+  local frlg = (self.manifest or {}).frlgItemMenu ~= nil
+  for i = 0, (frlg and 147 or 92) do
     local ok = pcall(function()
       local raw, colors = self:decodeSprite(pics, i, pals)
       if not raw then return end
@@ -8347,19 +8583,26 @@ function RomExtractorGen3:extractTrainerSprites()
   -- gTrainers -- the PKMN TRAINER rows called BRENDAN and MAY.  Reading the
   -- index off those rows means the cartridge names its own portraits, and a
   -- ROM that renumbered the pic table still lands right.
-  --
-  -- AND THE ROW IS PICKED BY COUNT, not by whichever one `pairs` happens to
-  -- hand over first.  Two pictures answer to each name: BRENDAN is pic 71 on
-  -- fifteen rows and pic 91 on one, MAY is 72 on fifteen and 92 on one -- the
-  -- fifteen are the rival battles you actually fight, the one is the Ruby and
-  -- Sapphire outfit the cartridge keeps for a linked RS player's card.  An
-  -- unordered walk took whichever came first, so the same ROM gave the boy his
-  -- own face and the girl the RS one on the very same card; picking the index
-  -- the most rows carry (lowest wins a tie) is the cartridge's own answer and
-  -- gives it every time.
+  -- FireRed uses RED/LEAF (pic ids 135/136); Emerald uses the most common
+  -- BRENDAN/MAY trainer rows below to choose a stable player portrait.
+  if frlg and pathFor[135] and pathFor[136] then
+    local field = self._field or {}
+    local forms = field.playerForms or {}
+    for who, idx in pairs({ boy = 135, girl = 136 }) do
+      forms[who] = forms[who] or {}
+      forms[who].card, forms[who].intro, forms[who].picIndex = pathFor[idx], pathFor[idx], idx
+    end
+    field.playerForms = forms
+    self._field = field
+    self:write("field", field)
+  end
   do
+    -- Pick the portrait whose index appears on the most trainer rows, with
+    -- the lower index breaking ties. This is deterministic across ROM reads.
     local want = { BRENDAN = "boy", MAY = "girl" }
     local tally = { boy = {}, girl = {} }
+    -- FireRed keeps the Emerald/Ruby rival rows, but its own player is RED/LEAF.
+    if frlg then want = {} end
     for _, def in pairs(type(trainers) == "table" and trainers or {}) do
       if type(def) == "table" then
         local who = want[def.name]
@@ -8391,7 +8634,7 @@ function RomExtractorGen3:extractTrainerSprites()
       Logger.info("Gen3 player portraits: boy pic %d, girl pic %d, both read "
                     .. "off the rival rows that name them",
                   forms.boy.picIndex, forms.girl.picIndex)
-    else
+    elseif not frlg then
       -- refused rather than guessed: a wrong index here puts somebody else's
       -- face on the player's card for the whole game
       Logger.warn("gen3 player portraits: found %d of the 2 rival rows that "
@@ -8447,6 +8690,10 @@ function RomExtractorGen3:extractTrainerMoney()
   end
   local classCount = 0
   for _ in pairs(classes) do classCount = classCount + 1 end
+  -- FireRed's classes run to $6B (it keeps Ruby's alongside its own), past
+  -- the names this cache read; `used` below still ties every row to a class
+  -- a real trainer has
+  if (self.manifest or {}).frlgItemMenu ~= nil then classCount = 256 end
 
   -- which classes trainers really have, which is what turns a plausible run
   -- into the right one
@@ -10525,10 +10772,15 @@ function RomExtractorGen3:extractDexEntries()
   local coords = self:symbol("gMonFrontPicCoords")
   if not (base and self._pokemon) then return end
   local filled = 0
+  -- FireRed's struct carries a second description pointer before the pose
+  -- fields: 36 bytes a row (gPokedexEntries is 0x366C = 387 x 36), and the
+  -- pose pairs sit four bytes later
+  local frlg = (self.manifest or {}).frlgItemMenu ~= nil
+  local stride, poseAt = frlg and 36 or 32, frlg and 26 or 22
   for _, def in pairs(self._pokemon) do
     local dex = def.dex
     if dex and dex > 0 and dex <= 386 then
-      local o = base + dex * 32
+      local o = base + dex * stride
       local ok = pcall(function()
         def.category = self:readString(o, 12)
         def.height = self.rom:u16(o + 12) / 10      -- metres
@@ -10555,10 +10807,10 @@ function RomExtractorGen3:extractDexEntries()
         -- largest thing in the game, is 256 beside a trainer shrunk to 1352,
         -- and WURMPLE is 711 beside a trainer left at 256.
         def.dexPose = {
-          monScale = self.rom:u16(o + 22),
-          monOffset = signed(o + 24),
-          trainerScale = self.rom:u16(o + 26),
-          trainerOffset = signed(o + 28),
+          monScale = self.rom:u16(o + poseAt),
+          monOffset = signed(o + poseAt + 2),
+          trainerScale = self.rom:u16(o + poseAt + 4),
+          trainerOffset = signed(o + poseAt + 6),
         }
       end)
       if ok then filled = filled + 1 end
@@ -11473,6 +11725,20 @@ function RomExtractorGen3:extractMaps()
       battleScene = rom:u8(h + 27),
       source = ("ROM:gMapGroups[%d][%d]"):format(entry.group, entry.number),
     }
+    -- FIRERED PACKS THEM DIFFERENTLY (pokefirered global.fieldmap.h):
+    -- 0x18 bikingAllowed, 0x19 allowEscaping:1 allowRunning:1 showMapName:6,
+    -- 0x1A floorNum (signed), 0x1B battleType
+    if (self.manifest or {}).frlgItemMenu ~= nil then
+      local b19 = rom:u8(h + 25)
+      def.flags = b19
+      def.allowCycling = rom:u8(h + 24) ~= 0
+      def.allowEscaping = b19 % 2 == 1
+      def.allowRunning = math.floor(b19 / 2) % 2 == 1
+      def.showMapName = math.floor(b19 / 4) ~= 0
+      local floor = rom:u8(h + 26)
+      def.floorNum = floor >= 128 and floor - 256 or floor
+      def.battleScene = rom:u8(h + 27)
+    end
 
     local entry = { objects = {}, signs = {}, coords = {}, callbacks = {},
                     tables = {} }
@@ -11726,29 +11992,31 @@ function RomExtractorGen3:decodeScriptAt(start, queue)
           args[4] = rom:u32(cantAt)
         end
       end
-      -- ...AND WHAT THE TRAINER SAYS BEFORE AND AFTER.
-      --
-      -- The record's first two pointers, which nothing was reading: the line
-      -- on sight or on being spoken to, and the line on losing.  See
-      -- Gen3ScriptOps.TRAINER_BATTLE_INTRO_SLOT for how the two slots were
-      -- told apart (and why mode 3 has only the second).
-      --
-      -- Stored raw for the same reason the refusal line is: extractScriptText
-      -- rewrites every text operand into a pool key in a later stage, and it
-      -- keys on the ROM address these arrive as.  `false` holds the earlier
-      -- slots so the operand indices never shift under a mode that has no
-      -- win script and no refusal line.
-      for slot, at in pairs({
-        [6] = Gen3ScriptOps.TRAINER_BATTLE_INTRO_SLOT[kind],
-        [7] = Gen3ScriptOps.TRAINER_BATTLE_DEFEAT_SLOT[kind],
-      }) do
-        local where = base + (at - 1) * 4
-        if rom:pointer(where) then
-          if args[3] == nil then args[3] = false end
-          if args[4] == nil then args[4] = false end
-          if slot == 7 and args[5] == nil then args[5] = false end
-          args[slot - 1] = rom:u32(where)
+      -- FireRed kind 9 is TRAINER_BATTLE_EARLY_RIVAL: its word at o+4 is
+      -- sRivalBattleFlags, not Emerald type 9 intro/defeat text pointers.
+      local fireRedEarlyRival = kind == 9
+        and (self.manifest or {}).frlgItemMenu ~= nil
+      if not fireRedEarlyRival then
+        -- Preserve the shared raw pointers until extractScriptText rewrites
+        -- them to pool keys. The false placeholders keep operand positions stable.
+        for slot, textSlot in pairs({
+          [6] = Gen3ScriptOps.TRAINER_BATTLE_INTRO_SLOT[kind],
+          [7] = Gen3ScriptOps.TRAINER_BATTLE_DEFEAT_SLOT[kind],
+        }) do
+          if textSlot then
+            local where = base + (textSlot - 1) * 4
+            if rom:pointer(where) then
+              if args[3] == nil then args[3] = false end
+              if args[4] == nil then args[4] = false end
+              if slot == 7 and args[5] == nil then args[5] = false end
+              args[slot - 1] = rom:u32(where)
+            end
+          end
         end
+      else
+        if args[3] == nil then args[3] = false end
+        if args[4] == nil then args[4] = false end
+        args[5] = rom:u16(o + 4)
       end
       at = o + length
     else
@@ -11777,6 +12045,20 @@ function RomExtractorGen3:decodeScriptAt(start, queue)
             args[#args] = ("M%07X"):format(target)
           end
         end
+      end
+    end
+    -- A SIBLING CARTRIDGE NUMBERS ITS SPECIALS DIFFERENTLY.  Every handler
+    -- and every stage here is keyed by Emerald's index, so a FireRed call is
+    -- rewritten to the Emerald index of the same-named function (manifest
+    -- `specialRemap`, 0-based, -1 for a FireRed-only one, which becomes
+    -- 0x1000 + its own index so it can never land on an Emerald handler).
+    local remap = self.manifest.specialRemap
+    if remap and (name == "special" or name == "specialvar") then
+      local slot = name == "special" and 1 or 2
+      local raw = args[slot]
+      local to = raw and remap[raw + 1]
+      if to ~= nil then
+        args[slot] = (to >= 0) and to or (0x1000 + raw)
       end
     end
     lines[#lines + 1] = { address = o, op = op, name = name, args = args }
@@ -12415,6 +12697,22 @@ end
 function RomExtractorGen3:extractPCMenu()
   self:beginStage("Gen3 PC menu")
   local P = RomExtractorGen3.PC_MENU
+  local fireRed = (self.manifest or {}).frlgItemMenu ~= nil
+  local function rowsAt(at, count, stride)
+    local out = {}
+    for i = 0, count - 1 do
+      local ptr = self.rom:pointer(at + i * (stride or 8))
+      local word = ptr and self:readText(ptr, 64) or nil
+      if type(word) ~= "string" or #word < P.MIN or #word > P.MAX
+         or word:find("\n") then
+        Logger.warn("gen3 PC menu: %07X row %d does not read as a label (%s)",
+                    at, i, tostring(word))
+        return nil
+      end
+      out[i + 1] = word
+    end
+    return out
+  end
   local function rows(symbol, stride)
     local at = self:symbol(symbol)
     if not at then return nil end
@@ -12433,9 +12731,16 @@ function RomExtractorGen3:extractPCMenu()
     return out
   end
 
-  local main = rows("sPCMainMenuActions")
-  local storage = rows("sItemStorageActions")
-  local mailbox = rows("sMailboxActions")
+  -- FireRed's player_pc.c uses different symbols AND different row counts:
+  -- TopMenu is 3 rows, ItemPc is WITHDRAW / DEPOSIT / CANCEL (3), and only
+  -- the mailbox has four.  Feeding those through Emerald's four-row symbols
+  -- is what invented a TOSS row in FireRed.
+  local main = fireRed and rowsAt(0x4021E8, 3)
+               or rows("sPCMainMenuActions")
+  local storage = fireRed and rowsAt(0x402208, 3)
+                  or rows("sItemStorageActions")
+  local mailbox = fireRed and rowsAt(0x402228, 4)
+                  or rows("sMailboxActions")
   if not (main and storage and mailbox) then
     Logger.warn("gen3 PC menu: not all three menus read -- the PC keeps "
                 .. "whatever screen it had")
@@ -12443,9 +12748,10 @@ function RomExtractorGen3:extractPCMenu()
   end
   -- the descriptions are a plain array of pointers, one per storage row
   local describe = {}
-  local descAt = self:symbol("sItemStorageDescriptions")
+  local descAt = fireRed and 0x4021DC or self:symbol("sItemStorageDescriptions")
   if descAt then
-    for i = 0, P.ROWS - 1 do
+    local descCount = fireRed and 3 or P.ROWS
+    for i = 0, descCount - 1 do
       local ptr = self.rom:pointer(descAt + i * 4)
       local line = ptr and self:readText(ptr, 80) or nil
       if type(line) == "string" and #line > 0 then describe[i + 1] = line end
@@ -12548,7 +12854,23 @@ function RomExtractorGen3:extractPCMenu()
   end
 
   -- ---- WHICH ROWS EACH PC SHOWS, and the screen that blinks -------------
-  local orders = self:pcMenuOrders()
+  local orders
+  if fireRed then
+    local function readOrder(at)
+      local out, seen = {}, {}
+      for i = 0, 2 do
+        local row = self.rom:u8(at + i)
+        if row == nil or row >= 3 or seen[row] then return nil end
+        seen[row] = true
+        out[i + 1] = row + 1
+      end
+      return out
+    end
+    local bedroom, player = readOrder(0x402200), readOrder(0x402203)
+    if bedroom and player then orders = { bedroom = bedroom, player = player } end
+  else
+    orders = self:pcMenuOrders()
+  end
   local screen = self:pcScreenBlink()
   local multi = self:pcMultichoice()
 
@@ -12562,11 +12884,14 @@ function RomExtractorGen3:extractPCMenu()
     orders = orders,
     screen = screen,
     multichoice = multi,
-    source = ("ROM:sPCMainMenuActions %07X, sItemStorageActions %07X, "
-              .. "sMailboxActions %07X"):format(
-              self:symbol("sPCMainMenuActions"),
-              self:symbol("sItemStorageActions"),
-              self:symbol("sMailboxActions")),
+    source = fireRed
+      and "ROM:player_pc.c sMenuActions_TopMenu 4021E8, sMenuActions_ItemPc "
+          .. "402208, sMenuActions_MailSubmenu 402228"
+      or ("ROM:sPCMainMenuActions %07X, sItemStorageActions %07X, "
+          .. "sMailboxActions %07X"):format(
+          self:symbol("sPCMainMenuActions"),
+          self:symbol("sItemStorageActions"),
+          self:symbol("sMailboxActions")),
   }
   local constants = self._constants or {}
   constants.gen3PCMenu = record
@@ -12855,7 +13180,9 @@ function RomExtractorGen3:wallpaperRows(symbol)
     if not (tilesAt and mapAt and palAt) then
       return nil, ("row %d is not three cartridge pointers"):format(i)
     end
-    if tilesAt - palAt ~= W.PAL_BEFORE then
+    -- (FireRed's Stars row keeps an unused palette between the two, so the
+    -- gap may be larger; the table's own pointer is what gets read)
+    if tilesAt - palAt < W.PAL_BEFORE or tilesAt - palAt > W.PAL_BEFORE * 2 then
       return nil, ("row %d's palette is %d bytes before its tiles, not %d")
                   :format(i, tilesAt - palAt, W.PAL_BEFORE)
     end
@@ -12974,6 +13301,11 @@ function RomExtractorGen3:extractBoxWallpapers()
     Logger.warn("gen3 box wallpapers: Walda's set: %s", tostring(friendWhy))
   end
   local names, nameWhy = self:wallpaperNames()
+  if not names and (self.manifest or {}).frlgItemMenu ~= nil then
+    -- FireRed's sMenuTexts is laid out differently; its sixteen are sWallpapers' order
+    names = { "FOREST", "CITY", "DESERT", "SAVANNA", "CRAG", "VOLCANO", "SNOW", "CAVE",
+              "BEACH", "SEAFLOOR", "RIVER", "SKY", "STARS", "POKéCENTER", "TILES", "SIMPLE" }
+  end
   if not names then
     Logger.warn("gen3 box wallpapers: %s -- the rip is refused rather than "
                 .. "guessing at the labels", tostring(nameWhy))
@@ -13804,7 +14136,14 @@ function RomExtractorGen3:extractDecorations()
   for i = 0, D.SHAPE_COUNT - 1 do
     local arm = rom:u32(D.SHAPE_JUMP + i * 4)
     local w, h
-    if arm and arm >= 0x08000000 then
+    -- FRLG: also bound the TOP of the pointer. FireRed has no secret
+    -- bases and no decorations, decorationTableAt false-positives on it,
+    -- and the Emerald SHAPE_JUMP address then reads as garbage -- an arm
+    -- of 0x78082400 passes `>= 0x08000000` and shapeAt walks off the end
+    -- of the cartridge ("GBA read past the end of the ROM: 70082400")
+    -- instead of the stage declining cleanly the way the warnings below
+    -- are written to.
+    if arm and arm >= 0x08000000 and arm < 0x08000000 + rom.size then
       w, h = RomExtractorGen3.shapeAt(rom, arm - 0x08000000, D)
     end
     if not (w and h and w >= 1 and w <= 4 and h >= 1 and h <= 4) then
@@ -14034,6 +14373,44 @@ function RomExtractorGen3:extractFlash()
   local F = RomExtractorGen3.FLASH
   local rom = self.rom
 
+  -- FIRERED'S FLASH IS SHAPED DIFFERENTLY and is read from its own tables.
+  -- sFlashLevelToRadius is five halfwords that do NOT close to zero
+  -- (200 72 56 40 24), and SetDefaultFlashLevel leaves a cave at level 0 once
+  -- FLAG_SYS_FLASH_ACTIVE is set and at gMaxFlashLevel otherwise -- so "lit"
+  -- is zero, which the Emerald reading below rejects.  The manifest names the
+  -- two tables and the flag (`flash`); the ROM has to agree with itself.
+  local FF = (self.manifest or {}).flash
+  if type(FF) == "table" and FF.radii and FF.max then
+    local maxLevel = rom:u32(FF.max)
+    local radii, falls = {}, true
+    for level = 0, (maxLevel or 0) do
+      radii[level + 1] = rom:u16(FF.radii + level * 2)
+      if level > 0 and radii[level + 1] >= radii[level] then falls = false end
+    end
+    local diagonal = math.ceil(math.sqrt(F.SCREEN_W ^ 2 + F.SCREEN_H ^ 2) / 2)
+    if not (maxLevel and maxLevel > 1 and maxLevel < 32 and falls
+            and radii[1] >= diagonal) then
+      Logger.warn("gen3 flash (manifest): the radii at %07X do not fall from a "
+                    .. "full screen -- nothing written", FF.radii)
+      return
+    end
+    local constants = self._constants or {}
+    constants.gen3Flash = {
+      radii = radii, maxLevel = maxLevel,
+      lit = tonumber(FF.lit) or 0, dark = maxLevel,
+      center = { F.SCREEN_W / 2, F.SCREEN_H / 2 },
+      screen = { F.SCREEN_W, F.SCREEN_H },
+      flag = ("FLAG_G3_%04X"):format(FF.flag or 0), flagNumber = FF.flag,
+      source = ("ROM:sFlashLevelToRadius %07X (%d radii), gMaxFlashLevel %07X")
+               :format(FF.radii, maxLevel + 1, FF.max),
+    }
+    self._constants = constants
+    self:write("constants", constants)
+    Logger.info("Gen3 flash (manifest): %d levels, radius %d..%d",
+                maxLevel + 1, radii[1], radii[maxLevel + 1])
+    return
+  end
+
   local tableAt = self:thumbLiteral(F.WINDOW_FN + F.AT_TABLE)
   local cxWord = rom:u16(F.WINDOW_FN + F.AT_CX)
   local cyWord = rom:u16(F.WINDOW_FN + F.AT_CY)
@@ -14186,7 +14563,11 @@ RomExtractorGen3.HEAL = {
   COLORS = 16,
   CELL = 16,                 -- the cell the anchor is the corner of
   DIM = { [0] = { [0] = { 8, 8 }, [1] = { 16, 16 } },
-          [1] = { [0] = { 16, 8 }, [1] = { 32, 8 } } },
+          [1] = { [0] = { 16, 8 }, [1] = { 32, 8 }, [2] = { 32, 16 } } },
+  -- FireRed's machine: both sprites on the glow's palette, and the monitor a
+  -- plain 32x16 sprite with four frames instead of a subsprite set
+  SHARED_PALETTE = false,
+  MONITOR_PLAIN = false,
 }
 
 function RomExtractorGen3:extractHealMachine()
@@ -14282,6 +14663,9 @@ function RomExtractorGen3:extractHealMachine()
     Logger.warn("gen3 heal machine: the sprite templates do not read")
     return
   end
+  if H.SHARED_PALETTE and glow.tag == glowTag and monitor.tag == glowTag then
+    monitorPal, monitorTag = glowPal, glowTag
+  end
   if glow.tag ~= glowTag or monitor.tag ~= monitorTag then
     Logger.warn("gen3 heal machine: the templates ask for palettes $%04X and "
                 .. "$%04X, the script loads $%04X and $%04X -- these are not "
@@ -14314,14 +14698,21 @@ function RomExtractorGen3:extractHealMachine()
   end
 
   -- ---- the subsprites, which are what say it is 24x16 --------------------
-  local subCount = rom:u32(H.SUBSPRITES)
+  local minX, minY, maxX, maxY, tiles
+  if H.MONITOR_PLAIN and monitor.dim then
+    -- one sprite, centred on its position: its own OAM says the size
+    minX, minY = -monitor.dim[1] / 2, -monitor.dim[2] / 2
+    maxX, maxY = monitor.dim[1] / 2, monitor.dim[2] / 2
+    tiles = (monitor.dim[1] / 8) * (monitor.dim[2] / 8)
+  end
+  local subCount = H.MONITOR_PLAIN and 0 or rom:u32(H.SUBSPRITES)
   local subAt = rom:pointer(H.SUBSPRITES + 4)
-  if not subAt or subCount < 1 or subCount > 8 then
+  if not H.MONITOR_PLAIN and (not subAt or subCount < 1 or subCount > 8) then
     Logger.warn("gen3 heal machine: the subsprite table reads as %s entries",
                 tostring(subCount))
     return
   end
-  local minX, minY, maxX, maxY, tiles = nil, nil, nil, nil, 0
+  if not H.MONITOR_PLAIN then tiles = 0 end
   for i = 0, subCount - 1 do
     local at = subAt + i * H.SUB_STRIDE
     local x, y = rom:u8(at), rom:u8(at + 1)
@@ -15972,6 +16363,12 @@ function RomExtractorGen3:extractMapScripts()
   if not roots then
     Logger.warn("gen3: no script roots -- run extractMaps first")
     return
+  end
+  if self:isFireRedManifest() then
+    -- the metatile scripts only C names (GetInteractedMetatileScript)
+    for _, s in ipairs(RomExtractorGen3.FRLG_METATILE_SCRIPTS) do
+      roots[self:frlgScriptStart(s.at)] = true
+    end
   end
   local queue = {}
   for ptr in pairs(roots) do queue[#queue + 1] = ptr end
@@ -19290,7 +19687,7 @@ function RomExtractorGen3:regionMapArt(entriesAt)
   for o = from, entriesAt - 4, 4 do
     local clen, size = lz77Length(rom, o)
     if clen and size % 64 == 0 and size >= 0x2000 and palettePair(rom, o - 64) then
-      local ok, raw = pcall(rom.lz77, rom, o)
+      local ok, raw = RomExtractorGen3.lz77ok(rom, o)
       if ok and type(raw) == "table" and #raw == size then
         local low, high = 256, -1
         for i = 1, size do
@@ -19306,7 +19703,7 @@ function RomExtractorGen3:regionMapArt(entriesAt)
           local mlen, msize = lz77Length(rom, mapAt)
           local tiles = size / 64
           if mlen and msize >= 1024 then
-            local okm, cells = pcall(rom.lz77, rom, mapAt)
+            local okm, cells = RomExtractorGen3.lz77ok(rom, mapAt)
             local good = okm and type(cells) == "table" and #cells == msize
             if good then
               for i = 1, msize do
@@ -19400,8 +19797,8 @@ function RomExtractorGen3:regionMapArt(entriesAt)
   if largeAt then
     local smallAt, smallSize = blobEndingAt(largeAt, 0x400)
     if smallAt then
-      local okS, small = pcall(rom.lz77, rom, smallAt)
-      local okL, large = pcall(rom.lz77, rom, largeAt)
+      local okS, small = RomExtractorGen3.lz77ok(rom, smallAt)
+      local okL, large = RomExtractorGen3.lz77ok(rom, largeAt)
       if okS and okL then
         art.cursor = {
           palette = RomGba.palette(rom:bytes(smallAt - 32, 32)),
@@ -19522,16 +19919,23 @@ function RomExtractorGen3:extractHealLocations()
   end
 
   local function runAt(at)
-    local n, seen = 0, {}
+    local n, seen, seenSection = 0, {}, {}
     while true do
       local def, _, _, key = record(at + n * HEAL_LOCATION_RECORD)
       if not def then break end
       seen[key] = true
+      if def.regionMapSection then seenSection[def.regionMapSection] = true end
       n = n + 1
       if n > 64 then break end
     end
+    -- a town is covered by its own record or by one in the same region-map
+    -- section: FireRed carries Saffron twice (the second map is the one its
+    -- connections use) and only one of them has a heal location
     for key in pairs(towns) do
-      if not seen[key] then return nil end
+      local section = byGM[key] and byGM[key].regionMapSection
+      if not seen[key] and not (section and seenSection[section]) then
+        return nil
+      end
     end
     return n
   end
@@ -19597,8 +20001,34 @@ function RomExtractorGen3:extractHealLocations()
     return a < b
   end)
 
+  -- WHERE A WHITEOUT ACTUALLY LANDS, on a cartridge that says so separately.
+  --
+  -- FireRed's SetWhiteoutRespawnWarpAndHealerNpc does not send you to the
+  -- heal location itself: sWhiteoutRespawnHealCenterMapIdxs maps each one to
+  -- the room with the healer in it -- a Pokemon Center 1F at (7,4), or the
+  -- player's house at (8,5) for Pallet -- with a few named exceptions.  The
+  -- manifest (`whiteoutRespawn`) names the table and the exceptions; FLY and
+  -- TELEPORT keep the outdoor point.
+  local W = (self.manifest or {}).whiteoutRespawn
+  if type(W) == "table" and W.maps then
+    local placed = 0
+    for i, row in ipairs(list) do
+      local o = W.maps + (i - 1) * 4
+      local group, num = rom:u16(o), rom:u16(o + 2)
+      local id = ("MAP_G%02d_N%02d"):format(group, num)
+      if byGM[group * 256 + num] then
+        local at = (W.exceptions or {})[id] or W.default or { 7, 4 }
+        row.respawn = { map = id, x = at[1], y = at[2] }
+        placed = placed + 1
+      end
+    end
+    Logger.info("Gen3 heal locations: %d of %d whiteouts land in their healer's "
+                  .. "room (%07X)", placed, #list, W.maps)
+  end
+
   local constants = self._constants or {}
   constants.gen3HealLocations = list
+  constants.gen3DefaultRespawnIndex = W and W.startIndex or nil
   constants.gen3HealLocationSource =
     ("ROM:sHealLocations %07X, %d records"):format(at, count)
 
@@ -20686,6 +21116,12 @@ function RomExtractorGen3:waterfallTerrain(tilesetPairs)
     if n >= 100 and (stacked[b] or 0) == n then candidates[#candidates + 1] = b end
   end
   table.sort(candidates)
+  -- FireRed's waterfalls (Four Island's Icefall Cave, the Sevii routes) are
+  -- too few cells for the count above; MB_WATERFALL is $13 there as here
+  if self:isFireRedManifest() and (seen[0x13] or 0) > 0 then
+    candidates = { 0x13 }
+    stacked[0x13] = stacked[0x13] or seen[0x13]
+  end
   if #candidates ~= 1 then
     Logger.warn("gen3 waterfall: %d behaviours join one body of water to "
                   .. "another at every cell -- wanted exactly one, so "
@@ -21004,7 +21440,10 @@ function RomExtractorGen3:counterBehaviour(tilesetPairs)
       end
     end
   end
-  if not best or stat[best].served < 20 or stat[best].served < second * 4 then
+  -- twelve, not twenty: Kanto has fewer staffed counters than Hoenn (FireRed
+  -- finds 19 with no runner-up at all), and the runner-up test is what
+  -- actually separates the counter from everything else
+  if not best or stat[best].served < 12 or stat[best].served < second * 4 then
     Logger.warn("gen3 counters: no behaviour stands out as the one people "
                   .. "stand behind (best %d cells, next %d) -- talking across "
                   .. "a counter is left off",
@@ -22353,6 +22792,15 @@ function RomExtractorGen3:iceBehaviours(tilesetPairs, pads, holes)
   adopt(cracked, addedCracked, "CRACKED_FLOOR")
   table.sort(slide)
   table.sort(cracked)
+  -- FIRERED HAS NO SKY PILLAR OR SOOTOPOLIS GYM for the shape test to find,
+  -- and on its maps the test picks the WATERFALL ($13) as a sheet of ice.
+  -- Its terrain is named in pokefirered metatile_behaviors.h instead:
+  -- MB_ICE (remapped onto $20), and Icefall Cave's MB_THIN_ICE $26 that
+  -- cracks into MB_CRACKED_ICE $27 (field_tasks.c IcefallCaveIcePerStepCallback).
+  if self:isFireRedManifest() then
+    slide, thin, cracked = { 0x20 }, 0x26, {}
+    addedSlide, addedCracked = {}, {}
+  end
 
   -- WHERE YOU LAND WHEN THE FLOOR GIVES WAY.
   --
@@ -24385,10 +24833,40 @@ function RomExtractorGen3:fieldMoveGates(scripts)
     elseif n == best then tied = true end
   end
   if not base or best < 2 or tied then
-    Logger.warn("Gen3 field moves: %d script gate(s) agreed on a badge block "
-                  .. "and it was%s unique -- not placing it",
-                best, tied and " not" or "")
-    return
+    -- FIRERED/LEAFGREEN'S OWN FIELD MOVES BARELY TOUCH SCRIPT BYTECODE.
+    --
+    -- The vote above only sees badges checked by `checkflag`+`checkpartymove`
+    -- in a MAP SCRIPT -- CUT's tree and ROCK SMASH's rock are scripted that
+    -- way, so they vote. FLASH, FLY, SURF, STRENGTH and WATERFALL are asked
+    -- for entirely in native code (SetUpFieldMove_Flash and siblings, called
+    -- straight from the party menu with no script in between), so they leave
+    -- no candidate at all. On this ROM that left only one script-based vote,
+    -- which the check above correctly refuses to trust alone -- and without
+    -- a base, `knowsFieldMove` can never find FLASH/FLY/DIVE in the party
+    -- menu's field-move list no matter what the mon knows, even though the
+    -- object-triggered moves (CUT/SMASH/STRENGTH/SURF/WATERFALL) keep working
+    -- fine through their own scripts.
+    --
+    -- FLAG_BADGE01_GET is $820 on every FireRed/LeafGreen revision (pret's
+    -- include/constants/flags.h) -- it is not a ROM-derived value this port
+    -- discovers, it is a fixed fact about this game's binary layout, the same
+    -- one already hardcoded in tests/drivers/_frlg_hms.lua's badge setup.
+    -- Falling back to it here only for FRLG (never for Emerald/Ruby/Sapphire,
+    -- where this constant does not hold and the heuristic is the only source)
+    -- is corroboration by a second, independent fact instead of a guess.
+    if self:isFireRedManifest() then
+      base = 0x820
+      Logger.info("Gen3 field moves: %d script gate(s) agreed and it was%s "
+                    .. "unique, but this is FireRed/LeafGreen -- falling "
+                    .. "back to FLAG_BADGE01_GET ($820), the pret constant, "
+                    .. "instead of leaving FLASH/FLY/DIVE unreachable",
+                  best, tied and " not" or "")
+    else
+      Logger.warn("Gen3 field moves: %d script gate(s) agreed on a badge "
+                    .. "block and it was%s unique -- not placing it",
+                  best, tied and " not" or "")
+      return
+    end
   end
   local moves, badges = {}, {}
   for i = 1, 8 do badges[i] = base + i - 1 end
@@ -24418,7 +24896,11 @@ function RomExtractorGen3:fieldMoveGates(scripts)
   -- independently placed; it has to start above every flag the region's own
   -- scripts use; and no script anywhere in Hoenn may touch a flag inside it,
   -- because on the cartridge that block belongs to the battle setup alone.
-  local SYSTEM_FLAGS = base - 7            -- badge 1 is SYSTEM_FLAGS + 7
+  -- Emerald places badge 1 seven flags into its system block.  FRLG does
+  -- not: pret's flags.h fixes SYS_FLAGS at $800 and FLAG_BADGE01_GET at $820.
+  -- Keep the generic derivation for RSE, but use the cartridge's declared
+  -- layout for FireRed/LeafGreen just as the badge fallback above does.
+  local SYSTEM_FLAGS = self:isFireRedManifest() and 0x800 or (base - 7)
   local TRAINER_FLAGS_START = 0x500
   local trainerCount = 0
   for i in pairs((self._constants or {}).trainerOrder or {}) do
@@ -24439,7 +24921,16 @@ function RomExtractorGen3:fieldMoveGates(scripts)
     end
   end
   local fits = TRAINER_FLAGS_START + trainerCount <= SYSTEM_FLAGS
-  if not (fits and insideBlock == 0 and highestBelow < TRAINER_FLAGS_START) then
+  if self:isFireRedManifest() then
+    -- FRLG declares TRAINER_FLAGS_START=$500 and TRAINER_FLAGS_END=$7FF.
+    -- The ROM's trainer table has additional non-flagged rows beyond that
+    -- 0x300-entry save block (Trainer Tower/special-use parties), so using the
+    -- full trainer table length as a capacity test falsely rejected the real
+    -- base and made every V.S. Seeker trainer look unfought.
+    Logger.info("Gen3 trainer flags (FRLG): fixed cartridge block $0500..$07FF; "
+                  .. "%d trainer-table rows exist, but only the declared $300 "
+                  .. "flag slots live in the save", trainerCount)
+  elseif not (fits and insideBlock == 0 and highestBelow < TRAINER_FLAGS_START) then
     Logger.warn("gen3 trainer flags: $%04X does not hold up -- %d trainers "
                   .. "%s under the system block at $%04X, %d script "
                   .. "reference(s) inside it, highest script flag below is "
@@ -24566,6 +25057,86 @@ function RomExtractorGen3:tilesetSheet(tiles, palettes, count)
   return image
 end
 
+-- FIRERED'S OWN BEHAVIOURS, kept rather than flattened.
+--
+-- The manifest remap folds FireRed's numbering onto Emerald's, and 41 of
+-- FireRed's behaviours have no Emerald twin -- they came out as NORMAL, so the
+-- Seafoam/Rocket Hideout spin tiles did nothing, Cycling Road never pulled
+-- the bike downhill, Seafoam's fast current could be surfed and every piece
+-- of furniture in Kanto (the TV, the fridge, the Silph blueprints...) was mute.
+-- These land in slots Emerald never uses, so nothing Emerald-shaped in the
+-- engine reads them as something else.  pokefirered metatile_behaviors.h.
+RomExtractorGen3.FRLG_BEHAVIOUR_OVERRIDES = {
+  [0x0A] = 0x0A,                                  -- MB_RUNNING_DISALLOWED
+  [0x11] = 0x5B,                                  -- MB_FAST_WATER
+  [0x54] = 0x54, [0x55] = 0x55, [0x56] = 0x56,    -- MB_SPIN_RIGHT/LEFT/UP
+  [0x57] = 0x57, [0x58] = 0x58,                   -- MB_SPIN_DOWN, MB_STOP_SPINNING
+  [0xD0] = 0x59,                                  -- MB_CYCLING_ROAD_PULL_DOWN
+  [0xD1] = 0x5A,                                  -- ..._PULL_DOWN_GRASS
+  [0x81] = 0xA4, [0x82] = 0xA5, [0x87] = 0xA6, [0x88] = 0xA7,
+  [0x89] = 0xA8, [0x8A] = 0xA9, [0x8B] = 0xAA, [0x8C] = 0xAB,
+  [0x8D] = 0xAC, [0x8E] = 0xAD, [0x90] = 0xAE, [0x91] = 0xAF,
+  [0x92] = 0xC8, [0x93] = 0xC9, [0x94] = 0xCA, [0x95] = 0xCB,
+  [0x96] = 0xCC, [0x97] = 0xCD, [0x98] = 0xCE, [0x99] = 0xCF,
+  [0x9A] = 0xD7, [0x9B] = 0xD8, [0x9E] = 0xDB, [0x9F] = 0xDC,
+  [0xA0] = 0xDD, [0xA1] = 0xDE, [0xA2] = 0xDF, [0xA3] = 0xEB,
+  -- the directional stair warps: you arrive and stay on them, you do not
+  -- step out south the way a door lets you out (see warpTiles)
+  [0x6C] = 0xEC, [0x6D] = 0xED, [0x6E] = 0xEE, [0x6F] = 0xEF,
+}
+
+-- GetInteractedMetatileScript, keyed by the slot above (or the Emerald value
+-- a behaviour already shares).  `north` is the cartridge's IsPlayerFacing...
+-- test; the rest answer from any side.  Addresses are the FireRed symbols;
+-- a symbol that lands on the previous script's end/return byte is nudged.
+RomExtractorGen3.FRLG_METATILE_SCRIPTS = {
+  { beh = 0xA4, at = 0x1A7606, name = "EventScript_Bookshelf" },
+  { beh = 0xA5, at = 0x1A760E, name = "EventScript_PokeMartShelf" },
+  { beh = 0xA6, at = 0x1A76E6, name = "EventScript_PokecenterSign", north = true },
+  { beh = 0xA7, at = 0x1A76DE, name = "EventScript_PokemartSign", north = true },
+  { beh = 0xA8, at = 0x1A7656, name = "EventScript_Cabinet" },
+  { beh = 0xA9, at = 0x1A7660, name = "EventScript_Kitchen" },
+  { beh = 0xAA, at = 0x1A7668, name = "EventScript_Dresser" },
+  { beh = 0xAB, at = 0x1A7672, name = "EventScript_Snacks" },
+  { beh = 0xAD, at = 0x1BB8A6, name = "CableClub_EventScript_ShowBattleRecords", north = true },
+  { beh = 0xAE, at = 0x1A7618, name = "EventScript_Food" },
+  { beh = 0xAF, at = 0x1A76F0, name = "EventScript_Indigo_UltimateGoal" },
+  { beh = 0xC8, at = 0x1A76F8, name = "EventScript_Indigo_HighestAuthority" },
+  { beh = 0xC9, at = 0x1A763C, name = "EventScript_Blueprints" },
+  { beh = 0xCA, at = 0x1A767A, name = "EventScript_Painting" },
+  { beh = 0xCB, at = 0x1A7684, name = "EventScript_PowerPlantMachine" },
+  { beh = 0xCC, at = 0x1A768C, name = "EventScript_Telephone" },
+  { beh = 0xCD, at = 0x1A762A, name = "EventScript_Computer" },
+  { beh = 0xCE, at = 0x1A7696, name = "EventScript_AdvertisingPoster" },
+  { beh = 0xCF, at = 0x1A769E, name = "EventScript_TastyFood" },
+  { beh = 0xD7, at = 0x1A76A8, name = "EventScript_TrashBin" },
+  { beh = 0xD8, at = 0x1A76B0, name = "EventScript_Cup" },
+  { beh = 0xDB, at = 0x1A76CC, name = "EventScript_BlinkingLights" },
+  { beh = 0xDC, at = 0x1A76D4, name = "EventScript_NeatlyLinedUpTools" },
+  { beh = 0xDD, at = 0x1A7632, name = "EventScript_ImpressiveMachine" },
+  { beh = 0xDE, at = 0x1A7620, name = "EventScript_VideoGame" },
+  { beh = 0xDF, at = 0x1A7644, name = "EventScript_Burglary" },
+  { beh = 0xEB, at = 0x1C549C, name = "TrainerTower_EventScript_ShowTime" },
+  { beh = 0x86, at = 0x1A764E, name = "EventScript_PlayerFacingTVScreen", north = true },
+  { beh = 0x85, at = 0x1A6C32, name = "EventScript_WallTownMap" },
+  { beh = 0x83, at = 0x1A6954, name = "EventScript_PC" },
+  { beh = 0x5B, at = 0x1A6B0C, name = "EventScript_CurrentTooFast", water = true },
+}
+
+-- the script actually starts on the next byte when a symbol sits on the
+-- previous script's `end` (02) or `return` (03)
+function RomExtractorGen3:frlgScriptStart(at)
+  local b = self.rom:u8(at)
+  -- (or on the 0xFF/0xFE end of a string laid just before it)
+  if b == 0x02 or b == 0x03 or b == 0xFE or b == 0xFF then return at + 1 end
+  return at
+end
+
+function RomExtractorGen3:isFireRedManifest()
+  local A = (self.manifest or {}).metatileAttributes
+  return A and A.bytes == 4 or false
+end
+
 function RomExtractorGen3:extractTilesets()
   self:beginStage("Gen3 tilesets")
   local addresses = self._tilesetAddresses
@@ -24585,9 +25156,25 @@ function RomExtractorGen3:extractTilesets()
     local tilesAt = rom:pointer(a + 4)
     local palAt = rom:pointer(a + 8)
     local metaAt = rom:pointer(a + 12)
-    local attrAt = rom:pointer(a + 16)
-    local span = (metaAt and attrAt) and (attrAt - metaAt) or -1
-    local metatiles = (span > 0 and span % 16 == 0) and span / 16 or nil
+    -- FRLG: struct Tileset SWAPS two fields against Emerald's.
+    --   Emerald  +0x10 metatileAttributes, +0x14 callback
+    --   FireRed  +0x10 callback,           +0x14 metatileAttributes
+    -- Reading +0x10 on FireRed yields the callback, the span comes out
+    -- nonsense, `metatiles` is nil and EVERY tileset is skipped
+    -- ("Gen3 tilesets: 0 written, 63 skipped"), which then leaves the
+    -- world loader with "wants unknown tileset".
+    -- Try both slots and keep whichever gives a sane span -- the
+    -- attributes array always sits after the metatiles at 16 bytes per
+    -- metatile, and a callback pointer does not satisfy that by accident.
+    local attrAt, span, metatiles
+    for _, off in ipairs({ 16, 20 }) do
+      local cand = rom:pointer(a + off)
+      local sp = (metaAt and cand) and (cand - metaAt) or -1
+      if sp > 0 and sp % 16 == 0 then
+        attrAt, span, metatiles = cand, sp, sp / 16
+        break
+      end
+    end
 
     if not (tilesAt and palAt and metatiles) then
       skipped = skipped + 1
@@ -24608,7 +25195,25 @@ function RomExtractorGen3:extractTilesets()
             local v = rom:u16(metaAt + m * 16 + t * 2)
             comp[#comp + 1] = string.char(v % 256, math.floor(v / 256) % 256)
           end
-          local av = rom:u16(attrAt + m * 2)
+          -- FIRERED'S ATTRIBUTES ARE u32 (behaviour bits 0-8, layer type
+          -- bits 29-30) and its behaviour numbers are its own.  Everything
+          -- downstream reads Emerald's u16 (behaviour low byte, layer type
+          -- bits 12-15) with Emerald's numbering, so the record is packed
+          -- into that shape here, once (manifest `metatileAttributes`).
+          local A = self.manifest.metatileAttributes
+          local av
+          if A and A.bytes == 4 then
+            local raw32 = rom:u32(attrAt + m * 4)
+            local beh = raw32 % ((A.behaviorMask or 0x1FF) + 1)
+            local own = RomExtractorGen3.FRLG_BEHAVIOUR_OVERRIDES[beh]
+            local mapped = A.behaviorRemap and A.behaviorRemap[tostring(beh)]
+            beh = own or tonumber(mapped) or (beh < 256 and beh or 0)
+            local layer = math.floor(raw32 / 2 ^ (A.layerShift or 29))
+                          % ((A.layerMask or 3) + 1)
+            av = beh + layer * 4096
+          else
+            av = rom:u16(attrAt + m * 2)
+          end
           attrs[#attrs + 1] = string.char(av % 256, math.floor(av / 256) % 256)
         end
         -- The 4bpp TILE PIXELS travel with the record, not just as a PNG.
@@ -24635,7 +25240,7 @@ function RomExtractorGen3:extractTilesets()
           tiles = table.concat(pixels),
           metatiles = table.concat(comp),
           attributes = table.concat(attrs),
-          callback = rom:u32(a + 20),
+          callback = rom:u32(a + (attrAt == rom:pointer(a + 16) and 20 or 16)),
           image = "assets/generated/tilesets/" .. key:lower() .. ".png",
           source = ("ROM:Tileset@%07X"):format(a),
         }
@@ -24646,6 +25251,7 @@ function RomExtractorGen3:extractTilesets()
       end)
       if not ok then
         skipped = skipped + 1
+        if skipped <= 2 then print(("TILESET-ERR %07X: %s"):format(a, tostring(err))) end
         Logger.warn("gen3 tileset %07X: %s", a, tostring(err))
       end
     end
@@ -24673,6 +25279,29 @@ function RomExtractorGen3:extractTilesets()
   -- ------------------------------------------------------------------
   local layouts = self._layoutRecords or {}
   local pairs_, pairCount = {}, 0
+  local frlg = self:isFireRedManifest()
+  if frlg then
+    -- what the engine needs to know about the slots FRLG_BEHAVIOUR_OVERRIDES
+    -- filled, and the script each piece of furniture runs
+    local scripts = {}
+    for _, s in ipairs(RomExtractorGen3.FRLG_METATILE_SCRIPTS) do
+      scripts[s.beh] = { label = ("S%07X"):format(self:frlgScriptStart(s.at)),
+                         north = s.north or nil, water = s.water or nil,
+                         name = s.name }
+    end
+    local constants = self._constants or {}
+    constants.gen3FRLGBehaviours = {
+      spin = { [0x54] = "right", [0x55] = "left", [0x56] = "up", [0x57] = "down" },
+      stopSpinning = 0x58,
+      pullDown = 0x59, pullDownGrass = 0x5A,
+      fastWater = 0x5B,
+      runningDisallowed = 0x0A,
+      scripts = scripts,
+      source = "pokefirered metatile_behaviors.h / GetInteractedMetatileScript",
+    }
+    self._constants = constants
+    self:write("constants", constants)
+  end
   for _, lay in pairs(layouts) do
     local key = self:tilesetPairKey(lay.primaryTileset, lay.secondaryTileset)
     if key and not pairs_[key] then
@@ -24780,8 +25409,11 @@ function RomExtractorGen3:extractTilesets()
             [0x38] = "east", [0x39] = "west",
             [0x3A] = "north", [0x3B] = "south",
           },
-          warpTiles = { 0x0E, 0x29, 0x61, 0x62, 0x64, 0x65,
-                        0x67, 0x68, 0x6A, 0x6B, 0x6D, 0x6E },
+          warpTiles = frlg and { 0x0E, 0x29, 0x61, 0x62, 0x64, 0x65,
+                                 0x67, 0x68, 0x6A, 0x6B, 0x6D, 0x6E,
+                                 0xEC, 0xED, 0xEE, 0xEF }
+                      or { 0x0E, 0x29, 0x61, 0x62, 0x64, 0x65,
+                           0x67, 0x68, 0x6A, 0x6B, 0x6D, 0x6E },
           -- ...and the rule the two lists do NOT express: on this cartridge a
           -- warp fires from its EVENT, not from the tile under it.  The
           -- behaviour byte only says what kind of opening it is.  Without
@@ -24818,8 +25450,9 @@ function RomExtractorGen3:extractTilesets()
           -- a hole in the list.  The one exception carries no dry walkable
           -- cell at all: it is an ocean route with a land table it can never
           -- use.
-          grassTiles = { 0x02, 0x03 },
-          encounterTiles = { 0x02, 0x03, 0x06, 0x08, 0x0B, 0x24 },
+          grassTiles = frlg and { 0x02, 0x03, 0x5A } or { 0x02, 0x03 },
+          encounterTiles = frlg and { 0x02, 0x03, 0x06, 0x08, 0x0B, 0x24, 0x5A }
+                           or { 0x02, 0x03, 0x06, 0x08, 0x0B, 0x24 },
           -- 2x2 tiles per metatile, and the metatile IS the collision cell
           blockTiles = 2,
           blockCells = 1,
@@ -25610,6 +26243,84 @@ function RomExtractorGen3:extractSaveLayout()
   local save = self.manifest.save
   local orders = self.manifest.substructOrders
   local fields = self.manifest.saveFields
+  -- FireRed's saveFields manifest predates the shared codec's complete
+  -- structure descriptions. Fill only absent values, using FireRed's own
+  -- structs in pokefirered/include/global.h and
+  -- pokefirered/include/pokemon_storage_system.h. The block offsets and bag
+  -- capacities still come from the FireRed manifest; the checks below verify
+  -- that these structure sizes tile those ROM-derived offsets.
+  if self:isFireRedManifest() and type(fields) == "table" then
+    local function fillMissing(target, additions)
+      for key, value in pairs(additions) do
+        if target[key] == nil then target[key] = value end
+      end
+    end
+
+    if type(fields.saveBlock2) ~= "table" then fields.saveBlock2 = {} end
+    fillMissing(fields.saveBlock2, {
+      playerName = 0x000, playerGender = 0x008, playerTrainerId = 0x00A,
+      playTimeHours = 0x00E, playTimeMinutes = 0x010,
+      playTimeSeconds = 0x011, playTimeVBlanks = 0x012,
+      encryptionKey = 0xF20,
+    })
+    -- FireRed stores the user-facing Pokedex in SaveBlock2 and keeps two
+    -- duplicate seen arrays in SaveBlock1. All three seen arrays must agree
+    -- for the cartridge to accept an entry. Offsets follow
+    -- pokefirered/include/global.h.
+    if type(fields.saveBlock2.pokedex) ~= "table" then
+      fields.saveBlock2.pokedex = {}
+    end
+    fillMissing(fields.saveBlock2.pokedex, {
+      owned = 0x028, seen = 0x05C, flagBytes = 0x34,
+      nationalMagic = 0x01B, nationalMagicValue = 0xB9,
+      nationalFlagId = 0x0840, nationalVarId = 0x404E,
+      nationalVarValue = 0x6258,
+    })
+
+    local b1 = fields.saveBlock1
+    if type(b1) == "table" then
+      fillMissing(b1, { pokedexSeen1 = 0x05F8, pokedexSeen2 = 0x3A18 })
+      -- Six party Pokemon end exactly at money in FireRed's SaveBlock1.
+      -- Measuring that run keeps the per-mon size tied to the offsets already
+      -- extracted from this cartridge (56 .. 656 = six 100-byte records).
+      if type(fields.party) ~= "table" then fields.party = {} end
+      local party = fields.party
+      fillMissing(party, { start = b1.playerParty,
+                           count = b1.playerPartyCount, size = 6 })
+      if party.monSize == nil and party.start and party.size and b1.money then
+        local span = b1.money - party.start
+        if span <= 0 or span % party.size ~= 0 then
+          error("gen3 FireRed save layout: party records do not end at money")
+        end
+        party.monSize = span / party.size
+      end
+
+      -- ItemSlot is two halfwords. The PC slots sit between the registered
+      -- item and the first ROM-derived bag pocket, so their count is the gap.
+      if type(fields.bag) == "table" then
+        local bag = fields.bag
+        fillMissing(bag, { itemSlotSize = 4, pcItems = b1.pcItems })
+        if bag.pcItemCount == nil and bag.pcItems and bag.pockets
+           and bag.pockets[1] then
+          local span = bag.pockets[1] - bag.pcItems
+          if span < 0 or span % bag.itemSlotSize ~= 0 then
+            error("gen3 FireRed save layout: PC item slots do not end at the bag")
+          end
+          bag.pcItemCount = span / bag.itemSlotSize
+        end
+      end
+    end
+
+    -- PokemonStorage is 14 boxes of 30 80-byte records. Its one-byte active
+    -- box is followed by alignment padding, then names (8 bytes plus EOS) and
+    -- wallpapers. These extents close exactly on FireRed's 33,744-byte block.
+    if type(fields.storage) ~= "table" then fields.storage = {} end
+    fillMissing(fields.storage, {
+      currentBox = 0, boxes = 4, boxCount = 14, boxCapacity = 30,
+      boxMonSize = 80, boxNames = 33604, boxNameLength = 9,
+      boxWallpapers = 33730,
+    })
+  end
   if type(save) ~= "table" or type(orders) ~= "table" then
     Logger.warn("gen3: the manifest carries no save layout -- save import "
                 .. "will refuse rather than guess one")
@@ -26329,9 +27040,97 @@ RomExtractorGen3.BACK_INTRO = {
 local GEN3_BACK_PAL_MIN = 12
 local GEN3_BACK_PAL_MARGIN = 3
 
+-- FIRERED'S BACK PICS are a six-row table, not Emerald's eight, and whose is
+-- whose is fixed by pokefirered's TRAINER_BACK_PIC_* enum rather than by
+-- matching trainer rows -- FireRed has no BRENDAN/MAY rows naming the player.
+-- Without this the battle fell back to Gen 1's redb.png path, which a Gen 3
+-- cache never writes.
+RomExtractorGen3.FRLG_BACK = { TABLE = 0x239FA4, PALETTES = 0x239FD4, COUNT = 6,
+                    RED = 0, LEAF = 1, OLD_MAN = 5 }
+
+function RomExtractorGen3:extractPlayerBackPicFireRed()
+  local FRLG_BACK = RomExtractorGen3.FRLG_BACK
+  local rom = self.rom
+  local function row(base, k)
+    local o = base + k * 8
+    return rom:pointer(o), rom:u16(o + 4), rom:u16(o + 6)
+  end
+  local images = {}
+  for k = 0, FRLG_BACK.COUNT - 1 do
+    local ptr, size, tag = row(FRLG_BACK.TABLE, k)
+    -- a CompressedSpritePalette is {ptr, u16 tag}: the tag sits where a
+    -- sheet row keeps its size
+    local palPtr, palTag = row(FRLG_BACK.PALETTES, k)
+    local okP, palRaw = RomExtractorGen3.lz77ok(rom, palPtr or 0)
+    if not (ptr and tag == k and size and size > 0
+            and size % GEN3_BACK_FRAME_BYTES == 0
+            and palPtr and palTag == k and okP) then
+      Logger.warn("gen3 player back pic (FRLG): row %d at %07X does not read "
+                    .. "as gTrainerBackPicTable -- no back pic written",
+                  k, FRLG_BACK.TABLE)
+      return
+    end
+    local raw = rom:bytes(ptr, size)
+    local frames = math.floor(size / GEN3_BACK_FRAME_BYTES)
+    local colors = RomGba.palette(palRaw)
+    local ok = pcall(function()
+      self:saveImage(self:spriteImage(raw, colors, 1, 8, 8),
+                     ("battle/trainers/back_%d.png"):format(k))
+      self:saveImage(self:animStrip(raw, colors, 8, 8, frames),
+                     ("battle/trainers/back_%d_strip.png"):format(k))
+    end)
+    if ok then
+      images[k] = {
+        pic = ("assets/generated/battle/trainers/back_%d.png"):format(k),
+        strip = ("assets/generated/battle/trainers/back_%d_strip.png"):format(k),
+        frames = frames,
+      }
+    end
+  end
+  if not (images[FRLG_BACK.RED] and images[FRLG_BACK.LEAF]) then
+    Logger.warn("gen3 player back pic (FRLG): the sheets could not be composed")
+    return
+  end
+  local field = self._field or {}
+  local forms = field.playerForms or {}
+  for who, k in pairs({ boy = FRLG_BACK.RED, girl = FRLG_BACK.LEAF }) do
+    forms[who] = forms[who] or {}
+    forms[who].back = images[k].pic
+    forms[who].backStrip = images[k].strip
+    forms[who].backIndex = k
+    forms[who].trueColor = true
+  end
+  -- ...and the overworld sheets, which Emerald derives from its own avatar
+  -- table but FireRed lays out as two fixed runs of seven:
+  -- OBJ_EVENT_GFX_RED_NORMAL..RED_VS_SEEKER_BIKE (0..6) and GREEN_* (7..13),
+  -- in the order normal, bike, surf, field move (sPlayerAvatarGfxIds)
+  local function gfx(id) return ("SPRITE_G3_%03d"):format(id) end
+  for who, first in pairs({ boy = 0, girl = 7 }) do
+    forms[who].walk = gfx(first)
+    forms[who].bike = gfx(first + 1)
+    forms[who].surf = gfx(first + 2)
+    forms[who].fieldMove = gfx(first + 3)
+  end
+  field.playerForms = forms
+  if images[FRLG_BACK.OLD_MAN] then
+    local pics = field.playerPics or {}
+    pics.demoBack = images[FRLG_BACK.OLD_MAN].pic
+    pics.demoBackTrueColor = true
+    field.playerPics = pics
+  end
+  self._field = field
+  self:write("field", field)
+  Logger.info("Gen3 player back pic (FRLG): RED %d frames, LEAF %d frames, "
+                .. "OLD MAN for the catching demo",
+              images[FRLG_BACK.RED].frames, images[FRLG_BACK.LEAF].frames)
+end
+
 function RomExtractorGen3:extractPlayerBackPic()
   self:beginStage("Gen3 player back pic")
   local rom = self.rom
+  if (self.manifest or {}).frlgItemMenu ~= nil then
+    return self:extractPlayerBackPicFireRed()
+  end
 
   local function recordAt(at)
     local ptr = rom:pointer(at)
@@ -26391,7 +27190,7 @@ function RomExtractorGen3:extractPlayerBackPic()
   for k = 0, GEN3_BACK_COUNT - 1 do
     local ptr = rom:pointer(palBase + k * 8)
     local tag = rom:u16(palBase + k * 8 + 4)
-    local ok, raw = pcall(rom.lz77, rom, ptr or 0)
+    local ok, raw = RomExtractorGen3.lz77ok(rom, ptr or 0)
     if not (ptr and tag == k and ok and type(raw) == "table"
             and #raw >= GEN3_BACK_PAL_BYTES) then
       Logger.warn("gen3 player back pic: the palette table after %07X does "
@@ -26408,7 +27207,7 @@ function RomExtractorGen3:extractPlayerBackPic()
   local function frontPalette(index)
     if not (frontPal and index) then return nil end
     local ptr = rom:pointer(frontPal + index * 8)
-    local ok, raw = pcall(rom.lz77, rom, ptr or 0)
+    local ok, raw = RomExtractorGen3.lz77ok(rom, ptr or 0)
     if not (ok and type(raw) == "table") then return nil end
     return RomGba.palette(raw)
   end
@@ -28817,7 +29616,7 @@ function RomExtractorGen3:trainerCardBadges(constants)
   local function strip(off)
     local clen, size = lz77Length(rom, off)
     if not (clen and size == STRIP_BYTES) then return nil end
-    local ok, raw = pcall(rom.lz77, rom, off)
+    local ok, raw = RomExtractorGen3.lz77ok(rom, off)
     if not (ok and type(raw) == "table" and #raw == STRIP_BYTES) then
       return nil
     end
@@ -29045,8 +29844,211 @@ function RomExtractorGen3:partyTeachText(constants)
   }
 end
 
+-- ---------------------------------------------------------------------------
+-- FIRERED'S BAG MENU AND CLERK, which are laid out differently enough that
+-- the Emerald search above cannot find them.
+--
+-- sItemMenuContextActions is twelve { text, handler } records in the order of
+-- ITEMMENUACTION_* -- USE TOSS REGISTER GIVE CANCEL BATTLE_USE CHECK OPEN
+-- OPEN_BERRIES WALK DESELECT DUMMY -- and the field lists are
+-- sContextMenuItems_Field, three rows of four bytes for the three pockets
+-- the bag has (item_menu.c).  The menu is one column (ShowBagWindow).  The
+-- clerk's words sit together in strings.c from gText_ShopBuy on.  The
+-- manifest names the three anchors (`frlgItemMenu`); the labels are checked
+-- against the words the enum says they are before anything is written.
+-- ---------------------------------------------------------------------------
+RomExtractorGen3.FRLG_MART_TEXT = {
+  { key = "buyTotal",     find = "and you want" },
+  { key = "boughtBag",    find = "Here you are!" },
+  { key = "anythingElse", find = "anything else I can do" },
+}
+
+function RomExtractorGen3:itemMenuActionsFireRed(constants, M)
+  local rom = self.rom
+  local labels, fns = {}, {}
+  for i = 0, 11 do
+    local at = M.actions + i * 8
+    local ptr = rom:pointer(at)
+    local ok, text = pcall(self.readText, self, ptr or 0, 20)
+    labels[i + 1] = (ok and type(text) == "string") and text or ""
+    fns[i + 1] = rom:u32(at + 4)
+  end
+  local expect = { "USE", "TOSS", "REGISTER", "GIVE", "CANCEL", "USE" }
+  for i, word in ipairs(expect) do
+    if labels[i] ~= word then
+      Logger.warn("gen3 item menu (FRLG): action %d reads %q, not %q -- the bag "
+                    .. "keeps the engine's own options", i - 1, labels[i], word)
+      return
+    end
+  end
+  -- by handler: CHECK, OPEN and WALK run the USE task; DESELECT the REGISTER one
+  local kinds = {}
+  for i = 1, 12 do
+    if fns[i] == fns[1] then kinds[i] = "use"
+    elseif fns[i] == fns[3] then kinds[i] = "register"
+    elseif i == 2 then kinds[i] = "toss"
+    elseif i == 4 then kinds[i] = "give"
+    elseif i == 5 then kinds[i] = "cancel"
+    elseif i == 6 or i == 9 then kinds[i] = "use"
+    elseif fns[i] == 0 then kinds[i] = "blank"
+    else kinds[i] = "other" end
+  end
+  local rows = {}
+  for r = 0, 2 do
+    local list = {}
+    for c = 0, 3 do
+      local b = rom:u8(M.fieldLists + r * 4 + c)
+      if b == 11 then break end            -- ITEMMENUACTION_DUMMY
+      list[#list + 1] = b + 1
+    end
+    rows[r + 1] = list
+  end
+  -- ITEMS pocket is USE GIVE TOSS CANCEL, and every list closes on CANCEL
+  local ok = #rows[1] == 4 and kinds[rows[1][1]] == "use"
+  for _, list in ipairs(rows) do
+    if kinds[list[#list]] ~= "cancel" then ok = false end
+  end
+  if not ok then
+    Logger.warn("gen3 item menu (FRLG): the field lists at %07X do not read as "
+                  .. "three pockets closing on CANCEL", M.fieldLists)
+    return
+  end
+  constants.gen3ItemMenu = {
+    labels = labels, kinds = kinds, columns = 1, cancel = 5, blank = 12,
+    pockets = {
+      ITEM = rows[1], KEY_ITEM = rows[2], BALL = rows[3],
+      -- the TM CASE and BERRY POUCH lists are their own screens' (tm_case.c,
+      -- berry_pouch.c); USE GIVE CANCEL and USE GIVE TOSS CANCEL
+      TM_HM = { 1, 4, 5 }, BERRY = { 1, 4, 2, 5 },
+    },
+    source = ("ROM:sItemMenuContextActions %07X, sContextMenuItems_Field %07X")
+             :format(M.actions, M.fieldLists),
+  }
+
+  -- the clerk
+  local mart, martFound = {}, 0
+  local o, stop = M.martText, math.min(rom.size, M.martText + 0x400)
+  while o < stop do
+    if rom:u8(o) == 0xFF then
+      o = o + 1
+    else
+      local okT, text = pcall(self.readText, self, o, 200)
+      if okT and type(text) == "string" and #text > 0 then
+        for _, lists in ipairs({ RomExtractorGen3.FRLG_MART_TEXT, MART_TEXT }) do
+          for _, want in ipairs(lists) do
+            if not mart[want.key] and text:find(want.find, 1, true) then
+              mart[want.key] = text
+              martFound = martFound + 1
+            end
+          end
+        end
+        local word = MART_WORDS[text] or (text == "SEE YA!" and "quit") or nil
+        if word and not mart[word] then
+          mart[word] = text
+          martFound = martFound + 1
+        end
+        if #text <= 12 and text:sub(-6) == "{VAR1}" and not mart.money
+           and text:sub(1, 1) ~= "{" then
+          mart.money, mart.currency = text, text:sub(1, #text - 6)
+          martFound = martFound + 1
+        end
+      end
+      local p2 = o
+      while p2 < rom.size and rom:u8(p2) ~= 0xFF do p2 = p2 + 1 end
+      o = p2 + 1
+    end
+  end
+  if mart.buy and mart.sell and mart.quit and martFound >= 8 then
+    mart.source = ("ROM:FireRed shop strings near %07X"):format(M.martText)
+    constants.gen3MartText = mart
+  else
+    Logger.warn("gen3 mart text (FRLG): %d lines found -- the shop keeps the "
+                  .. "engine's own words", martFound)
+  end
+  -- ---- THE BUY SCREEN ------------------------------------------------------
+  --
+  -- BuyMenuDecompressBgGraphics: gBuyMenuFrame_Gfx, its 32x32 tilemap and a
+  -- two-bank palette (bank 0 becomes BG palette 11, which is what the frame
+  -- is drawn in).  The left column the tilemap leaves empty -- ten tiles wide,
+  -- rows 1-13 -- is where BuyMenuDrawMapView paints the shop floor around the
+  -- clerk, so it is left transparent here and the screen shows the world
+  -- through it.  The six windows are sShopBuyMenuWindowTemplatesNormal
+  -- (buy_menu_helpers.c): money, IN BAG, message, quantity, list, description.
+  local B = M.buyMenu
+  if type(B) == "table" then
+    local okG, gfx = RomExtractorGen3.lz77ok(rom, B.gfx)
+    local okT, map = RomExtractorGen3.lz77ok(rom, B.tilemap)
+    local okP, pal = RomExtractorGen3.lz77ok(rom, B.palette)
+    local windows, keys = {}, { "money", "inBag", "message", "quantity",
+                                "list", "description" }
+    for i, key in ipairs(keys) do
+      local o = B.windows + (i - 1) * 8
+      windows[key] = { x = rom:u8(o + 1) * 8, y = rom:u8(o + 2) * 8,
+                       width = rom:u8(o + 3) * 8, height = rom:u8(o + 4) * 8 }
+    end
+    local sane = okG and okT and okP and #map == 2048 and #pal >= 32
+                 and windows.list.width == 136 and windows.list.height == 96
+                 and rom:u8(B.windows + 6 * 8) == 0xFF
+    if not sane then
+      Logger.warn("gen3 buy menu (FRLG): the frame or sShopBuyMenuWindowTemplates"
+                    .. "Normal at %07X does not read -- the shop keeps its boxes",
+                  B.windows)
+    else
+      local colors = {}
+      for i = 0, 15 do
+        local r, g, b = RomGba.bgr555(pal[i * 2 + 1] + pal[i * 2 + 2] * 256)
+        colors[i + 1] = { r, g, b }
+      end
+      local tileCount = math.floor(#gfx / 32)
+      local okImg = pcall(function()
+        local img = ImageWriter.blank(240, 160)
+        for ty = 0, 19 do
+          for tx = 0, 29 do
+            local cell = ty * 32 + tx
+            local e = map[cell * 2 + 1] + map[cell * 2 + 2] * 256
+            local tid = e % 1024
+            if tid > 0 and tid < tileCount then
+              RomExtractorGen3.partyTile(img, gfx, colors, tid, 0, tx * 8, ty * 8)
+            end
+          end
+        end
+        self:saveImage(img, "ui/buymenu_frame.png")
+      end)
+      constants.gen3BuyMenu = {
+        image = okImg and "assets/generated/ui/buymenu_frame.png" or nil,
+        windows = windows,
+        -- BuyMenuBuildListMenuTemplate / BuyMenuPrintPriceInList
+        list = { itemX = 9, cursorX = 1, upTextY = 2, rowHeight = 16, rows = 6,
+                 priceX = 0x69, priceDigits = 4 },
+        description = { x = 0, y = 3, lineHeight = 14 },
+        -- CreateItemMenuIcon: a 32x32 sprite centred on (24,140)
+        itemIcon = { x = 8, y = 124, size = 24 },
+        -- sShopMenuWindowTemplate: BUY / SELL / SEE YA!
+        menu = { left = rom:u8(B.menuWindow + 1), top = rom:u8(B.menuWindow + 2),
+                 width = rom:u8(B.menuWindow + 3),
+                 height = rom:u8(B.menuWindow + 4) },
+        source = ("ROM:gBuyMenuFrame %07X/%07X/%07X, windows %07X")
+                 :format(B.gfx, B.tilemap, B.palette, B.windows),
+      }
+      local mw = constants.gen3BuyMenu.menu
+      constants.gen3ShopMenu = constants.gen3ShopMenu
+        or { left = mw.left, top = mw.top, width = mw.width, height = mw.height }
+    end
+  end
+
+  self._constants = constants
+  self:write("constants", constants)
+  Logger.info("Gen3 item menu (FRLG): ITEM[%s] KEY[%s] BALL[%s]; %d mart lines",
+              table.concat(rows[1], ","), table.concat(rows[2], ","),
+              table.concat(rows[3], ","), martFound)
+end
+
 function RomExtractorGen3:itemMenuActions(constants)
   local rom = self.rom
+  local frlgMenu = (self.manifest or {}).frlgItemMenu
+  if type(frlgMenu) == "table" then
+    return self:itemMenuActionsFireRed(constants, frlgMenu)
+  end
   local screens = (self.manifest or {}).screenText or {}
   local anchor = screens.bagActions and tonumber(screens.bagActions.at)
   if not anchor then
@@ -29658,6 +30660,55 @@ function RomExtractorGen3:extractTrainerMemo()
       out[#out + 1] = string.char(b)
     end
     return table.concat(out)
+  end
+
+  -- FIRERED names its placeholders 0 (nature), 1 (level), 2 (place) and
+  -- keeps the templates as named strings (pokemon_summary_screen.c)
+  if (self.manifest or {}).frlgItemMenu ~= nil then
+    local slots = { [0] = "{NATURE}", [1] = "{LEVEL}", [2] = "{LOCATION}" }
+    local function decodeFrlg(off)
+      local out, at = {}, off
+      while at < rom.size do
+        local b = rom:u8(at)
+        if b == 0xFF then return table.concat(out) end
+        if b == 0xFE then out[#out + 1] = "\n"; at = at + 1
+        elseif b == GEN3_MEMO_DYNAMIC then out[#out + 1] = slots[rom:u8(at + 1)] or ""; at = at + 2
+        elseif b == GEN3_MEMO_EXTRA then
+          out[#out + 1] = (rom:u8(at + 1) == GEN3_MEMO_LV) and "Lv" or ""; at = at + 2
+        elseif b == 0xFC then
+          local operands = EXTENDED_OPERANDS[rom:u8(at + 1)]
+          if not operands then return nil end
+          at = at + 2 + operands
+        else
+          local glyph = map[b]
+          if glyph == nil then return nil end
+          out[#out + 1] = glyph; at = at + 1
+        end
+      end
+    end
+    local addr = { met = 0x419822, trade = 0x419782, probablyMet = 0x419860,
+                   fateful = 0x4197B8, hatched = 0x4198B4 }
+    local templates = {}
+    for key, a in pairs(addr) do templates[key] = decodeFrlg(a) end
+    if templates.met and templates.hatched then
+      templates.metSomewhere = templates.met
+      templates.hatchedSomewhere = templates.hatched
+      templates.bare = templates.met:match("^([^\n]*)") or "{NATURE} nature."
+      local eggs = {}
+      for _, a in ipairs({ 0x419A3C, 0x419A6E, 0x419AA2, 0x419ADE, 0x419B18 }) do
+        eggs[#eggs + 1] = decodeFrlg(a)
+      end
+      local constants = self._constants or {}
+      constants.gen3Memo = {
+        templates = templates, eggs = (#eggs == 5) and eggs or nil,
+        slots = { nature = "{NATURE}", level = "{LEVEL}", location = "{LOCATION}" },
+        source = "ROM:FireRed gText_PokeSum_* memo templates",
+      }
+      self._constants = constants
+      self:write("constants", constants)
+      Logger.info("Gen3 trainer memo (FRLG): %q", templates.met)
+      return
+    end
   end
 
   local tail = encode(" nature")
@@ -34825,6 +35876,53 @@ function RomExtractorGen3:extractItemEffects()
               refused)
 end
 
+-- FireRed's V.S. Seeker table has 221 fixed 16-byte records: six trainer
+-- party ids, then an unused map group and map number. It has no symbol in
+-- the retail ROM, so anchor it by its unique opening record (Youngster Ben)
+-- and verify the next row before accepting it. The generated cache retains
+-- only the player's own cartridge data, never this table in source.
+function RomExtractorGen3:extractVsSeeker()
+  self:beginStage("FireRed V.S. Seeker")
+  if not self:isFireRedManifest() then return end
+  local rom = self.rom
+  local function half(v)
+    return string.char(v % 256, math.floor(v / 256) % 256)
+  end
+  local needle = half(89) .. half(101) .. half(0xFFFF) .. half(498)
+               .. half(499) .. half(0)
+  local at = rom.data:find(needle, 1, true)
+  if not at or rom.data:find(needle, at + 1, true) then
+    Logger.warn("gen3 frlg V.S. Seeker: Youngster Ben table anchor is not unique")
+    return
+  end
+  at = at - 1 -- Lua string position to ROM offset
+  -- The next row is Youngster Calvin twice, followed by zeroed remaining
+  -- party slots. This guards against a coincidental run in trainer data.
+  if rom:u16(at + 16) ~= 90 or rom:u16(at + 18) ~= 90 then
+    Logger.warn("gen3 frlg V.S. Seeker: table anchor at %07X failed row check", at)
+    return
+  end
+  local rematches, rows = {}, 221
+  for i = 0, rows - 1 do
+    local row, base = {}, at + i * 16
+    for j = 0, 5 do row[j + 1] = rom:u16(base + j * 2) end
+    local first = row[1]
+    if first == 0 or first == 0xFFFF then
+      Logger.warn("gen3 frlg V.S. Seeker: invalid party at row %d", i)
+      return
+    end
+    rematches[first] = { parties = row }
+  end
+  local constants = self._constants or {}
+  constants.gen3VsSeeker = {
+    rematches = rematches, steps = 100,
+    source = ("ROM:sRematches %07X (221 FireRed records)"):format(at),
+  }
+  self._constants = constants
+  self:write("constants", constants)
+  Logger.info("Gen3 FireRed V.S. Seeker: %d rematch rows", rows)
+end
+
 -- ---------------------------------------------------------------------------
 -- STAGE: the trainer AI's own program
 --
@@ -34959,6 +36057,9 @@ end
 
 function RomExtractorGen3:extractBattleAI()
   self:beginStage("Gen3 battle AI")
+  -- These addresses and opcodes are Emerald-specific; FireRed has no
+  -- matching manifest map yet, so do not decode unrelated bytes.
+  if self:isFireRedManifest() then return end
   local B = RomExtractorGen3.BATTLE_AI
   local rom, ops = self.rom, RomExtractorGen3.battleAiOps()
   if not rom then return end
@@ -35085,7 +36186,7 @@ RomExtractorGen3.DATA_STAGES = {
   "extractPokemon", "extractItems", "extractBalls",
   "extractItemEffects",
   "extractTypeChart", "extractTrainers", "extractBattleAI",
-  "extractMachines",
+  "extractMachines", "extractVsSeeker",
   "extractBerries", "extractTrades", "extractMultichoice",
   "extractFrontierParties", "extractStoragePanels",
   "extractEncounters", "extractEggMoves", "extractDexEntries",
@@ -35244,7 +36345,10 @@ function RomExtractorGen3:iconTableBase(declared, indices, count)
   elseif indices ~= lo + expected * 4 then
     why = ("the palette indices are at %07X, not at the run's end %07X")
            :format(indices, lo + expected * 4)
-  elseif rom:pointer(lo) ~= rom:pointer(lo + 4) then
+  -- (FireRed gives SPECIES_NONE the "?" icon rather than Bulbasaur's, so the
+  -- duplicate opening is Emerald's fact, not a test the base must pass there)
+  elseif rom:pointer(lo) ~= rom:pointer(lo + 4)
+         and (self.manifest or {}).frlgItemMenu == nil then
     why = "the first two entries are not the same pointer"
   else
     local bad = 0
@@ -35794,7 +36898,7 @@ function RomExtractorGen3:extractRayquazaScene()
   local function lz(flat, want)
     if not flat or flat < 0 or flat + 4 >= rom.size then return nil end
     if rom:u8(flat) ~= 0x10 then return nil end
-    local okR, raw = pcall(rom.lz77, rom, flat)
+    local okR, raw = RomExtractorGen3.lz77ok(rom, flat)
     if not okR or not raw then return nil end
     if want and #raw ~= want then return nil end
     return raw
@@ -36100,7 +37204,7 @@ function RomExtractorGen3:extractBattleBackgrounds()
   local function lzOf(off, want)
     if not off or off + 4 >= rom.size then return nil end
     if rom:u8(off) ~= 0x10 then return nil end
-    local ok, raw = pcall(rom.lz77, rom, off)
+    local ok, raw = RomExtractorGen3.lz77ok(rom, off)
     if not (ok and raw and #raw == want) then return nil end
     return raw
   end
@@ -36132,6 +37236,52 @@ function RomExtractorGen3:extractBattleBackgrounds()
     local praw = tmap and lzOf(rom:pointer(o + 16), GEN3_TERRAIN_PAL_BYTES)
     if not praw then return nil end
     return { at = o, tiles = tiles, map = tmap, palette = praw }
+  end
+
+  -- FIRERED'S TABLE IS NOT EMERALD'S SHAPE: twenty rows (the last ten are the
+  -- link room, gyms and the Elite Four sharing the indoor sheets under their
+  -- own palettes), and its tile sheets are cut to what they use rather than a
+  -- full 256 tiles -- so the size test above never matches a row.  Read the
+  -- table where pokefirered puts it (sBattleTerrainTable).
+  if (self.manifest or {}).frlgItemMenu ~= nil then
+    local FRLG_TABLE = 0x24EE34
+    local FRLG_NAMES = {
+      "GRASS", "LONG_GRASS", "SAND", "UNDERWATER", "WATER", "POND", "MOUNTAIN",
+      "CAVE", "BUILDING", "PLAIN", "LINK", "GYM", "LEADER", "INDOOR_2",
+      "INDOOR_1", "LORELEI", "BRUNO", "AGATHA", "LANCE", "CHAMPION",
+    }
+    local images, written = {}, 0
+    for i, name in ipairs(FRLG_NAMES) do
+      local o = FRLG_TABLE + (i - 1) * 20
+      local ok = pcall(function()
+        local okT, tiles = RomExtractorGen3.lz77ok(rom, rom:pointer(o))
+        local okM, tmap = RomExtractorGen3.lz77ok(rom, rom:pointer(o + 4))
+        local okP, praw = RomExtractorGen3.lz77ok(rom, rom:pointer(o + 16))
+        if not (okT and okM and okP) then return end
+        local colors = {}
+        for k = 0, math.floor(#praw / 2) - 1 do
+          local r, g, b = RomGba.bgr555(praw[k * 2 + 1] + praw[k * 2 + 2] * 256)
+          colors[GEN3_TERRAIN_PAL_SLOT * 16 + k + 1] = { r, g, b }
+        end
+        local image = self:battleBackgroundImage(tiles, tmap, colors)
+        if not image then return end
+        self:saveImage(image, ("battle/bg/%s.png"):format(name:lower()))
+        images[name] = ("assets/generated/battle/bg/%s.png"):format(name:lower())
+        written = written + 1
+      end)
+      if not ok then Logger.warn("gen3 battle backgrounds (FRLG): %s did not compose", name) end
+    end
+    if written > 0 then
+      local constants = self._constants or {}
+      constants.gen3BattleTerrain = {
+        order = FRLG_NAMES, images = images, paletteSlot = GEN3_TERRAIN_PAL_SLOT,
+        source = ("ROM:sBattleTerrainTable %07X, %d rows"):format(FRLG_TABLE, #FRLG_NAMES),
+      }
+      self._constants = constants
+      self:write("constants", constants)
+    end
+    Logger.info("Gen3 battle backgrounds (FRLG): %d of %d terrains", written, #FRLG_NAMES)
+    return
   end
 
   local starts = {}
@@ -36403,9 +37553,9 @@ function RomExtractorGen3:extractBattleScenes()
   -- ---- decompress ---------------------------------------------------------
   local rows = {}
   for i = 2, GEN3_SCENE_ARMS do
-    local ok, tile = pcall(rom.lz77, rom, tiles[i])
-    local ok2, tmap = pcall(rom.lz77, rom, maps[i])
-    local ok3, pal = pcall(rom.lz77, rom, pals[i])
+    local ok, tile = RomExtractorGen3.lz77ok(rom, tiles[i])
+    local ok2, tmap = RomExtractorGen3.lz77ok(rom, maps[i])
+    local ok3, pal = RomExtractorGen3.lz77ok(rom, pals[i])
     if not (ok and ok2 and ok3 and tile and tmap and pal) then
       Logger.warn("gen3 battle scenes: scene %s did not decompress",
                   GEN3_SCENE_NAMES[i])
@@ -36873,10 +38023,17 @@ function RomExtractorGen3:extractTilesetAnimations()
       if clash then
         clashes = clashes + 1
       else
+      -- FireRed's cadences, by destination tile (tileset_anims.c: sand edge
+      -- every 8, water and flowers 16, Celadon fountain 12, Silph 10, Mt.
+      -- Ember steam 16, Vermilion Gym door 2, Celadon Gym flowers 16)
+      local frlgStep = (self.manifest or {}).frlgItemMenu ~= nil and ({
+        [464] = 8, [416] = 16, [508] = 16, [744] = 12, [976] = 10,
+        [896] = 16, [880] = 2, [739] = 16,
+      })[hit.tile] or nil
       ts.animations[#ts.animations + 1] = {
         tile = hit.local_,
         count = math.floor(hit.size / 32),
-        step = A.STEP,
+        step = frlgStep or A.STEP,
         frames = hit.frames,
         source = ("ROM:%07X x%d, to tile %d%s")
                  :format(hit.array, #hit.frames, hit.tile,
@@ -36893,6 +38050,13 @@ function RomExtractorGen3:extractTilesetAnimations()
 
   local movingCount = 0
   for _ in pairs(moving) do movingCount = movingCount + 1 end
+  -- a tileset this stage looked at and found still says so, so the renderer
+  -- can tell "holds still" from "imported before this stage existed"
+  for key, ts in pairs(sets) do
+    if key ~= "_romInfo" and type(ts) == "table" and ts.animations == nil then
+      ts.animations = {}
+    end
+  end
   self:write("map_tilesets", sets)
   Logger.info("Gen3 tileset animations: %d found, %d identified by a shipped "
                 .. "frame, %d by a pool neighbour, %d by the tileset's own "
@@ -36938,7 +38102,7 @@ RomExtractorGen3.SAFARI = {
   ENTER = 208,          -- gSpecials index, from Gen3Specials' checked list
   EXIT = 209,
   MAX_BALLS = 255,      -- what the cartridge's own counter is stored in
-  STEPS = 500,          -- pret: SAFARI_STEP_COUNT
+  STEPS = 500,          -- Emerald default; FRLG's EnterSafariMode uses 600
   LINE_MAX = 120,       -- an announcement is one box, not a conversation
   TAIL_MIN = 12,        -- and its last line is a sentence, not a word
 }
@@ -36955,6 +38119,7 @@ function RomExtractorGen3:extractSafari()
   -- which script calls which special, and what it does next
   local enter, exitWarp = nil, nil
   local enterLabel, exitLabel = nil, nil
+  local exitCallers = {}
   for label, rows in pairs(pool.scripts) do
     for i, ir in ipairs(rows) do
       if type(ir) == "table" and ir[1] == "special" then
@@ -36962,13 +38127,18 @@ function RomExtractorGen3:extractSafari()
         if which == S.ENTER then
           enter, enterLabel = rows, label
         elseif which == S.EXIT then
+          exitCallers[#exitCallers + 1] = label
           exitLabel = label
-          -- the warp it leaves by, which is the next warp in the script
+          -- the warp it leaves by, which is the next warp in the script.
+          -- FireRed's out-of-balls-mid-battle path uses `setwarp` here and
+          -- calls WarpIntoMap from C immediately afterwards; the ordinary
+          -- retire/times-up path uses `warp`.  Both name the same gate target.
           for j = i + 1, #rows do
             local row = rows[j]
             if type(row) == "table"
                and (row[1] == "warp" or row[1] == "warpdoor"
-                    or row[1] == "warpsilent" or row[1] == "warphole") then
+                    or row[1] == "warpsilent" or row[1] == "warphole"
+                    or row[1] == "setwarp") then
               exitWarp = { group = tonumber(row[2]), number = tonumber(row[3]),
                            warp = tonumber(row[4]), x = tonumber(row[5]),
                            y = tonumber(row[6]), op = row[1] }
@@ -36983,6 +38153,62 @@ function RomExtractorGen3:extractSafari()
     Logger.warn("gen3 safari: nothing calls special %d, so the zone is left "
                   .. "as ordinary ground", S.ENTER)
     return
+  end
+
+  -- FireRed's three gate-scene scripts call ExitSafariMode after the engine
+  -- has already returned to the entrance building, so those callers contain
+  -- no warp at all.  The cartridge's *global* Safari exit script does contain
+  -- the warp, but it is launched from C and therefore is not necessarily one
+  -- of the map-rooted scripts in this extraction pool.  Derive that same
+  -- destination without naming a map: the entrance map owns an EXIT caller,
+  -- and one of its warps leads to the map the ENTER caller sends us into.
+  if not exitWarp and self:isFireRedManifest() then
+    local insideMap = nil
+    local sawEnter = false
+    for _, row in ipairs(enter) do
+      if type(row) == "table" then
+        if row[1] == "special" and tonumber(row[2]) == S.ENTER then
+          sawEnter = true
+        elseif sawEnter and (row[1] == "warp" or row[1] == "warpdoor"
+               or row[1] == "warpsilent" or row[1] == "warphole") then
+          local g, n = tonumber(row[2]), tonumber(row[3])
+          if g and n then insideMap = mapKey(g, n) end
+          break
+        end
+      end
+    end
+
+    local callers = {}
+    for _, label in ipairs(exitCallers) do callers[label] = true end
+    local function ownsCaller(entry)
+      if type(entry) ~= "table" then return false end
+      for _, label in pairs(entry.objects or {}) do if callers[label] then return true end end
+      for _, label in pairs(entry.signs or {}) do if callers[label] then return true end end
+      for _, row in ipairs(entry.coords or {}) do if callers[row.script] then return true end end
+      for _, row in ipairs(entry.callbacks or {}) do if callers[row.script] then return true end end
+      for _, tab in ipairs(entry.tables or {}) do
+        for _, row in ipairs(tab.rows or {}) do if callers[row.script] then return true end end
+      end
+      return false
+    end
+
+    if insideMap then
+      for mapId, entry in pairs(pool.maps or {}) do
+        if ownsCaller(entry) then
+          local def = self._maps and self._maps[mapId]
+          for _, warp in ipairs(def and def.warps or {}) do
+            if warp.destMap == insideMap then
+              exitWarp = { group = def.group, number = def.number,
+                           warp = -1, x = warp.x, y = warp.y,
+                           op = "derived-return-warp" }
+              exitLabel = exitLabel or next(callers)
+              break
+            end
+          end
+        end
+        if exitWarp then break end
+      end
+    end
   end
 
   -- ---- how many balls the gate hands over --------------------------------
@@ -37092,9 +38318,10 @@ function RomExtractorGen3:extractSafari()
   end
 
   local constants = self._constants or {}
+  local steps = self:isFireRedManifest() and 600 or S.STEPS
   constants.gen3Safari = {
     balls = balls,
-    steps = S.STEPS,
+    steps = steps,
     exitWarp = exitWarp,
     outOfBalls = outOfBalls,
     outOfTime = outOfTime,
@@ -37106,7 +38333,7 @@ function RomExtractorGen3:extractSafari()
   self._constants = constants
   self:write("constants", constants)
   Logger.info("Gen3 safari: %d balls and %d steps a game; %s lets you in and "
-                .. "%s lets you out%s%s", balls, S.STEPS, tostring(enterLabel),
+                .. "%s lets you out%s%s", balls, steps, tostring(enterLabel),
               tostring(exitLabel),
               outOfBalls and " -- and it says its own goodbyes" or "",
               exitWarp and (", to map %d/%d at %d,%d")
@@ -37460,7 +38687,7 @@ function RomExtractorGen3:extractSummaryScreen()
   local accents, cells = {}, {}
   local decoded = {}
   for i, at in ipairs(win.maps) do
-    local ok, tmap = pcall(rom.lz77, rom, at)
+    local ok, tmap = RomExtractorGen3.lz77ok(rom, at)
     if not (ok and tmap) then
       Logger.warn("gen3 summary art: tilemap %d did not decompress", i)
       return
@@ -37955,6 +39182,57 @@ end
 -- bottom, which is why the player's box is the tall one and the foe's is not.
 -- `rows` is derived from the blob rather than assumed, so both shapes come
 -- out right.
+-- THE HEALTHBOX'S TEXT WINDOWS, from the code that fills them.
+--
+-- The panel art is a PLACEHOLDER under every piece of text: UpdateNickIn-
+-- Healthbox, UpdateLvlInHealthbox and UpdateHpTextInHealthbox render into a
+-- window filled with index 2 and copy it over fixed tiles of the sprite
+-- (TextIntoHealthboxObject copies the lower three rows of one tile row and
+-- all of the next).  FireRed's placeholder has "Lv" drawn where the name's
+-- last tile lands, so drawing the art as-is shows it twice.  Coordinates are
+-- in the composed panel (two halves side by side):
+--
+--   player   name  tiles 2-7 +0x800 -> x16..72  y5..15, text at (16,3)
+--            level tile 65-67 (+0x820) -> x72..96, "{LV_2}n" at 72+5*(3-d)
+--            hp    tiles 23,80,81 "ddd/" at (60,21); tiles 82,83 "ddd" at (80,21)
+--            bar   SpriteCB_HealthBar: box centre +16, subsprites -16/+16,
+--                  so "HP" at x32 and the six ramp tiles from x48, y16
+--   opponent name  tiles 1-7 -> x8..64, level tile 32 (+0x400) -> x64..88,
+--            bar   box centre +8: "HP" at x24, the ramp from x40, y16
+--
+-- (The 64x32 template's centre-to-corner vector is kept when the player's
+-- box is reshaped to 64x64, which is why both panels' y origin is centre-16.)
+-- Emerald runs the same code; this is enabled per cartridge by manifest until
+-- it has been checked against Emerald's screen too.
+RomExtractorGen3.HUD_WINDOWS = {
+  ENABLED = false,
+  PAPER = 2,
+  player = {
+    blank = { { 16, 5, 56, 11 }, { 72, 5, 24, 11 }, { 56, 21, 40, 11 } },
+    name = { x = 16, y = 3, w = 56 }, level = { x = 72, y = 3, w = 24 },
+    hpCurrent = { x = 60, y = 21 }, hpMax = { x = 80, y = 21 },
+    label = { x = 32, y = 16 }, bar = { x = 48, y = 16 },
+  },
+  opponent = {
+    blank = { { 8, 5, 56, 11 }, { 64, 5, 24, 11 } },
+    name = { x = 8, y = 3, w = 56 }, level = { x = 64, y = 3, w = 24 },
+    label = { x = 24, y = 16 }, bar = { x = 40, y = 16 },
+  },
+}
+
+-- Paper over the windows the cartridge overwrites at run time.
+function RomExtractorGen3.blankHudWindows(image, rects, colors, paper)
+  local c = colors[paper + 1]
+  if not (c and rects) then return end
+  for _, r in ipairs(rects) do
+    for y = r[2], r[2] + r[4] - 1 do
+      for x = r[1], r[1] + r[3] - 1 do
+        image:setPixel(x, y, c[1] / 255, c[2] / 255, c[3] / 255, 1)
+      end
+    end
+  end
+end
+
 function RomExtractorGen3:healthboxImage(raw, colors)
   local half = math.floor(#raw / 2)
   local rows = math.floor(half / (GEN3_HB_COLS * 32))
@@ -38246,6 +39524,7 @@ end
 -- into "the cartridge's".
 -- ---------------------------------------------------------------------------
 RomExtractorGen3.BAG_SCREEN = {
+  LAYOUT = "rse",
   GFX = 0xD9A620, TILEMAP = 0xD9A88C,
   PAL_MALE = 0xD9A588, PAL_FEMALE = 0xD9A5D4,
   TILES = 53, COLS = 32, ROWS = 20, PALETTES = 2,
@@ -38309,13 +39588,2892 @@ RomExtractorGen3.BAG_SCREEN = {
   POCKET_DOTS = { x = 40, y = 24, step = 8, count = 5, row = 3, col = 5 },
 }
 
+-- ---------------------------------------------------------------------------
+-- FIRERED'S BAG IS ANOTHER SCREEN, not Emerald's at other addresses.
+--
+-- DoLoadBagGraphics (item_menu.c) loads gBagBg_Gfx, gBagBg_Tilemap and
+-- THREE palette banks from gBagBgPalette, and for a girl overwrites bank 0
+-- only with gBagBgPalette_FemaleOverride.  sDefaultBagWindowsStd (bag.c)
+-- holds three windows -- list, description, pocket name -- and there are no
+-- pocket dots: FireRed shows arrows.  The list template is item_X 9,
+-- cursor_X 1, upText_Y 2 with sixteen-pixel rows; the quantity "x ddd" is
+-- printed in the small face at x 110 (BagListMenuItemPrintFunc).
+-- CreateBagSprite puts the 64x64 bag's centre at (40,68), and
+-- CreateItemMenuIcon the 32x32 icon sprite's centre at (24,140), the 24x24
+-- picture in its top-left corner.
+-- ---------------------------------------------------------------------------
+RomExtractorGen3.BAG_SCREEN_FRLG = {
+  GFX = 0xE830CC, TILEMAP = 0xE832C0, ITEM_PC_TILEMAP = 0xE83444,
+  PALETTE = 0xE835B4, PALETTE_BANKS = 3, FEMALE_BANK0 = 0xE83604,
+  TILES = 55, COLS = 32, ROWS = 20,
+  WINDOWS = 0x4530C4, WINDOW_STRIDE = 8, TERMINATOR = 0xFF,
+  WINDOW_KEYS = { "list", "description", "pocketName" },
+  ITEM_X = 9, CURSOR_X = 1, UP_TEXT_Y = 2, ROW_HEIGHT = 16,
+  QUANTITY_X = 110,
+  DESC_X = 0, DESC_Y = 3, DESC_LINE = 14,
+  BAG_CENTRE = { x = 40, y = 68 }, BAG_SIZE = 64,
+  ITEM_ICON = { x = 8, y = 124, size = 24 },
+}
+
+function RomExtractorGen3:extractBagScreenFireRed()
+  local B = RomExtractorGen3.BAG_SCREEN_FRLG
+  local rom = self.rom
+  local okG, tiles = RomExtractorGen3.lz77ok(rom, B.GFX)
+  local okM, map = RomExtractorGen3.lz77ok(rom, B.TILEMAP)
+  local okI, itemPcMap = RomExtractorGen3.lz77ok(rom, B.ITEM_PC_TILEMAP)
+  local okP, palRaw = RomExtractorGen3.lz77ok(rom, B.PALETTE)
+  local okF, femaleRaw = RomExtractorGen3.lz77ok(rom, B.FEMALE_BANK0)
+  if not (okG and okM and okI and okP and okF) then
+    Logger.warn("gen3 bag screen (FRLG): a blob did not decompress -- the bag "
+                  .. "keeps its own drawing")
+    return
+  end
+  if #tiles ~= B.TILES * 32 or #map ~= 32 * 32 * 2
+     or #itemPcMap ~= 32 * 32 * 2
+     or #palRaw ~= B.PALETTE_BANKS * 32 or #femaleRaw ~= 32 then
+    Logger.warn("gen3 bag screen (FRLG): %d tiles, %d map bytes, %d/%d palette "
+                  .. "bytes -- not the bag's run", math.floor(#tiles / 32),
+                #map, #palRaw, #femaleRaw)
+    return
+  end
+
+  local function colours(raw, into)
+    local out = into or {}
+    for i = 0, math.floor(#raw / 2) - 1 do
+      local r, g, b = RomGba.bgr555(raw[i * 2 + 1] + raw[i * 2 + 2] * 256)
+      out[i + 1] = { r, g, b }
+    end
+    return out
+  end
+  local male = colours(palRaw)
+  local female = colours(palRaw)
+  colours(femaleRaw, female)
+
+  local images = {}
+  for _, row in ipairs({ { key = "male", colors = male },
+                         { key = "female", colors = female } }) do
+    for _, layout in ipairs({
+      { suffix = "", map = map },
+      { suffix = "_item_pc", map = itemPcMap },
+    }) do
+      local ok = pcall(function()
+        local img = ImageWriter.blank(240, 160)
+        for ty = 0, B.ROWS - 1 do
+          for tx = 0, 29 do
+            local cell = ty * B.COLS + tx
+            local e = layout.map[cell * 2 + 1] + layout.map[cell * 2 + 2] * 256
+            local tid = e % 1024
+            local bank = math.floor(e / 4096) % 16
+            if tid < B.TILES and bank < B.PALETTE_BANKS then
+              RomExtractorGen3.partyTile(img, tiles, row.colors, tid, bank,
+                                         tx * 8, ty * 8)
+            end
+          end
+        end
+        local leaf = "ui/bag_" .. row.key .. layout.suffix .. ".png"
+        self:saveImage(img, leaf)
+      end)
+      if ok then
+        local key = layout.suffix == "" and row.key
+          or ("itemPc" .. row.key:sub(1, 1):upper() .. row.key:sub(2))
+        images[key] = "assets/generated/ui/bag_" .. row.key
+                      .. layout.suffix .. ".png"
+      end
+    end
+  end
+
+  local win = {}
+  for i = 0, #B.WINDOW_KEYS - 1 do
+    local o = B.WINDOWS + i * B.WINDOW_STRIDE
+    if rom:u8(o) == B.TERMINATOR then break end
+    win[B.WINDOW_KEYS[i + 1]] = {
+      x = rom:u8(o + 1) * 8, y = rom:u8(o + 2) * 8,
+      width = rom:u8(o + 3) * 8, height = rom:u8(o + 4) * 8,
+      bg = rom:u8(o), palette = rom:u8(o + 5),
+    }
+  end
+  -- the terminator has to follow the third row, and the list has to be the
+  -- tall window right of the pocket name
+  if not (win.list and win.description and win.pocketName
+          and rom:u8(B.WINDOWS + 3 * B.WINDOW_STRIDE) == B.TERMINATOR
+          and win.list.x > win.pocketName.x + win.pocketName.width - 8
+          and win.list.height > win.description.height) then
+    Logger.warn("gen3 bag screen (FRLG): %07X does not read as "
+                  .. "sDefaultBagWindowsStd", B.WINDOWS)
+    return
+  end
+
+  local record = {
+    layout = "frlg",
+    images = images,
+    palettes = { male = B.PALETTE, female = B.FEMALE_BANK0 },
+    windows = win,
+    list = { itemX = B.ITEM_X, cursorX = B.CURSOR_X, upTextY = B.UP_TEXT_Y,
+             rowHeight = B.ROW_HEIGHT,
+             rows = math.floor(win.list.height / B.ROW_HEIGHT),
+             quantityX = B.QUANTITY_X },
+    description = { x = B.DESC_X, y = B.DESC_Y, lineHeight = B.DESC_LINE },
+    bag = { x = B.BAG_CENTRE.x - B.BAG_SIZE / 2,
+            y = B.BAG_CENTRE.y - B.BAG_SIZE / 2, size = B.BAG_SIZE },
+    itemIcon = B.ITEM_ICON,
+    source = ("ROM:gBagBg_Gfx %07X, tilemaps %07X/%07X, palette %07X (+female %07X), "
+              .. "sDefaultBagWindowsStd %07X")
+             :format(B.GFX, B.TILEMAP, B.ITEM_PC_TILEMAP, B.PALETTE,
+                     B.FEMALE_BANK0, B.WINDOWS),
+  }
+  local constants = self._constants or {}
+  constants.gen3BagScreen = record
+  self._constants = constants
+  self:write("constants", constants)
+  Logger.info("Gen3 bag screen (FRLG): %d tiles, list (%d,%d) %dx%d = %d rows, "
+                .. "description (%d,%d) %dx%d", B.TILES, win.list.x, win.list.y,
+              win.list.width, win.list.height, record.list.rows,
+              win.description.x, win.description.y, win.description.width,
+              win.description.height)
+end
+
+-- ---------------------------------------------------------------------------
+-- FIRERED'S ITEM PC IS ITS OWN SCREEN.
+--
+-- player_pc.c sends WITHDRAW to ItemPc_Init rather than to the bag.  item_pc.c
+-- then loads these three blobs on BG1 and puts its text windows over them.  The
+-- old port reused Gen3BagMenu for the stored-item list, which got the list
+-- mechanics right but also drew the bag sprite and pocket plate here.
+--
+-- The four windows used by the ordinary withdraw view are, in item_pc.c's
+-- sWindowTemplates order: list (7,1 19x12), description (5,14 25x6), the
+-- two-line WITHDRAW ITEM label (1,1 5x4), and the quantity selector (24,15
+-- 5x4).  The next two rows are transient submenu/message windows; keeping
+-- them in the record makes the extracted layout describe the whole table.
+-- ---------------------------------------------------------------------------
+RomExtractorGen3.ITEM_PC_FRLG = {
+  GFX = 0xE85090, PALETTE = 0xE85408, TILEMAP = 0xE85458,
+  PALETTE_BANKS = 3, COLS = 32, ROWS = 20,
+  WINDOWS = 0x453F98, WINDOW_STRIDE = 8,
+  WINDOW_KEYS = { "list", "description", "label", "quantity", "submenu", "message" },
+  -- sSubwindowTemplates in item_pc.c. These are the transient framed windows
+  -- created over BG0: selected-item text, the withdraw quantity question,
+  -- and the withdraw result/refusal message.
+  SUBWINDOWS = {
+    selected = { x = 48, y = 120, width = 112, height = 32 },
+    quantityPrompt = { x = 48, y = 120, width = 128, height = 32 },
+    result = { x = 48, y = 120, width = 184, height = 32 },
+  },
+  ITEM_X = 9, CURSOR_X = 1, UP_TEXT_Y = 2, ROW_HEIGHT = 16,
+  QUANTITY_X = 110, DESC_X = 0, DESC_Y = 3, DESC_LINE = 14,
+  ITEM_ICON = { x = 8, y = 124, size = 24 },
+}
+
+function RomExtractorGen3:extractFireRedItemPc()
+  self:beginStage("Gen3 FireRed Item PC")
+  if (self.manifest or {}).frlgItemMenu == nil then return end
+  local S = RomExtractorGen3.ITEM_PC_FRLG
+  local rom = self.rom
+  local okG, tiles = RomExtractorGen3.lz77ok(rom, S.GFX)
+  local okM, map = RomExtractorGen3.lz77ok(rom, S.TILEMAP)
+  local okP, palRaw = RomExtractorGen3.lz77ok(rom, S.PALETTE)
+  if not (okG and okM and okP) then
+    Logger.warn("gen3 FireRed Item PC: a background blob did not decompress")
+    return
+  end
+  if #tiles == 0 or #tiles % 32 ~= 0 or #map ~= 32 * 32 * 2
+     or #palRaw ~= S.PALETTE_BANKS * 32 then
+    Logger.warn("gen3 FireRed Item PC: %d tile bytes, %d map bytes, %d palette "
+                  .. "bytes -- not item_pc.c's background", #tiles, #map,
+                #palRaw)
+    return
+  end
+
+  local colors = {}
+  for i = 0, math.floor(#palRaw / 2) - 1 do
+    local r, g, b = RomGba.bgr555(palRaw[i * 2 + 1] + palRaw[i * 2 + 2] * 256)
+    colors[i + 1] = { r, g, b }
+  end
+  local image = ImageWriter.blank(240, 160)
+  local tileCount = math.floor(#tiles / 32)
+  for ty = 0, S.ROWS - 1 do
+    for tx = 0, 29 do
+      local cell = ty * S.COLS + tx
+      local e = map[cell * 2 + 1] + map[cell * 2 + 2] * 256
+      local tid = e % 1024
+      local bank = math.floor(e / 4096) % 16
+      if tid < tileCount and bank < S.PALETTE_BANKS then
+        RomExtractorGen3.partyTile(image, tiles, colors, tid, bank, tx * 8, ty * 8)
+      end
+    end
+  end
+  self:saveImage(image, "ui/item_pc_frlg.png")
+
+  local windows = {}
+  for i = 0, #S.WINDOW_KEYS - 1 do
+    local o = S.WINDOWS + i * S.WINDOW_STRIDE
+    windows[S.WINDOW_KEYS[i + 1]] = {
+      x = rom:u8(o + 1) * 8, y = rom:u8(o + 2) * 8,
+      width = rom:u8(o + 3) * 8, height = rom:u8(o + 4) * 8,
+      bg = rom:u8(o), palette = rom:u8(o + 5),
+    }
+  end
+  local list, desc, label, quantity = windows.list, windows.description,
+                                      windows.label, windows.quantity
+  local submenu, message = windows.submenu, windows.message
+  if not (list and list.x == 56 and list.y == 8 and list.width == 152
+          and list.height == 96
+          and desc and desc.x == 40 and desc.y == 112 and desc.width == 200
+          and desc.height == 48
+          and label and label.x == 8 and label.y == 8 and label.width == 40
+          and label.height == 32
+          and quantity and quantity.x == 192 and quantity.y == 120
+          and quantity.width == 40 and quantity.height == 32
+          and submenu and submenu.x == 176 and submenu.y == 104
+          and submenu.width == 56 and submenu.height == 48
+          and message and message.x == 16 and message.y == 120
+          and message.width == 208 and message.height == 32) then
+    Logger.warn("gen3 FireRed Item PC: %07X does not read as item_pc.c's "
+                  .. "sWindowTemplates", S.WINDOWS)
+    return
+  end
+
+  local constants = self._constants or {}
+  constants.gen3FRLGItemPc = {
+    image = "assets/generated/ui/item_pc_frlg.png",
+    windows = windows,
+    subwindows = S.SUBWINDOWS,
+    list = { itemX = S.ITEM_X, cursorX = S.CURSOR_X, upTextY = S.UP_TEXT_Y,
+             rowHeight = S.ROW_HEIGHT, rows = 6, quantityX = S.QUANTITY_X },
+    description = { x = S.DESC_X, y = S.DESC_Y, lineHeight = S.DESC_LINE },
+    itemIcon = S.ITEM_ICON,
+    source = ("ROM:gItemPcTiles %07X, gItemPcTilemap %07X, gItemPcBgPals %07X, "
+              .. "item_pc.c sWindowTemplates %07X")
+             :format(S.GFX, S.TILEMAP, S.PALETTE, S.WINDOWS),
+  }
+  self._constants = constants
+  self:write("constants", constants)
+  Logger.info("Gen3 FireRed Item PC: %d tiles; list (%d,%d) %dx%d, description "
+                .. "(%d,%d) %dx%d", tileCount, list.x, list.y, list.width,
+              list.height, desc.x, desc.y, desc.width, desc.height)
+end
+
+-- ---------------------------------------------------------------------------
+-- STAGE: THE TM CASE AND THE BERRY POUCH, FIRERED ONLY
+--
+-- Both are their own screens (tm_case.c, berry_pouch.c) -- not the bag at
+-- a locked pocket, which is what this port drew for them until now.  Each
+-- has its own compressed background (gfx + 32x32 tilemap + a male/female
+-- palette split, the same shape the FRLG bag screen already reads) and its
+-- own window table.
+--
+-- WHAT IS NOT EXTRACTED HERE, and why that is a real scope line rather than
+-- an oversight: the TM disc sprite that slides in and out of the case
+-- (CreateDiscSprite, type-tinted from gTMCaseDiscTypes1/2_Pal), the type/
+-- power/accuracy/PP icon sheet BlitMenuInfoIcon draws from, and the SELL
+-- flow either screen offers when opened from a Mart.  Every one of those is
+-- its own small reverse-engineering job on top of the two done here.  The
+-- INFORMATION they carry is not lost -- the move's type, power, accuracy
+-- and PP are already in data/generated/moves.lua and are drawn as text
+-- instead of icons; selling a TM or a berry still works from the ordinary
+-- bag, which is the same trade the earlier bag-screen work made for the
+-- pocket dots' selected-page marker.
+-- ---------------------------------------------------------------------------
+RomExtractorGen3.TM_CASE_SCREEN = {
+  GFX = 0xE845D8, TILEMAP = 0xE84B70,          -- gTMCase_Gfx / gTMCase_Tilemap
+  PALETTE = 0xE84CB0, FEMALE_PALETTE = 0xE84D20, -- gTMCaseMenu_{Male,Female}_Pal
+  TILES = 91, COLS = 32, ROWS = 20, PALETTE_BANKS = 4,  -- the map is 32x32 but only the top 20 rows (160px) are ever drawn
+  -- sWindowTemplates (tm_case.c): list, description, selected-msg, title,
+  -- move-info labels, move-info values, message, sell-quantity, money
+  WINDOWS = 0x463190, WINDOW_STRIDE = 8,
+  WINDOW_KEYS = { "list", "description", "selectedMsg", "title",
+                  "moveInfoLabels", "moveInfo", "message", "sellQuantity",
+                  "money" },
+  -- InitTMCaseListMenuItems: item_X 8, cursor_X 0, upText_Y 2, itemVertical-
+  -- Padding 2 -> a 16px row before the +2 discs make it 18 in the wobble
+  ITEM_X = 8, CURSOR_X = 0, UP_TEXT_Y = 2, ROW_HEIGHT = 16,
+  -- List_ItemPrintFunc: the small-face "xNNN" count sits at column 126
+  QUANTITY_X = 126,
+  -- PrintDescription: 2 pixels in, 3 down
+  DESC_X = 2, DESC_Y = 3, DESC_LINE = 14,
+}
+
+RomExtractorGen3.BERRY_POUCH_SCREEN = {
+  GFX = 0xE859D0, TILEMAP = 0xE85C44,          -- gBerryPouchBgGfx / Bg1Tilemap
+  PALETTE = 0xE85BA4, FEMALE_BANK0 = 0xE85BF4,  -- gBerryPouchBgPals(+override)
+  TILES = 52, COLS = 32, ROWS = 20, PALETTE_BANKS = 3,  -- likewise
+  -- sWindowTemplates_Main (berry_pouch.c): list, description, title
+  WINDOWS = 0x4643B8, WINDOW_STRIDE = 8,
+  WINDOW_KEYS = { "list", "description", "title" },
+  -- BerryPouchItemPrintFunc mirrors the ordinary bag's small-face count
+  ITEM_X = 8, CURSOR_X = 0, UP_TEXT_Y = 2, ROW_HEIGHT = 16,
+  QUANTITY_X = 126,
+  DESC_X = 2, DESC_Y = 3, DESC_LINE = 14,
+}
+
+-- Shared by both: an opaque 240x160 background from a 32x32 tilemap over a
+-- male/female palette split, exactly like extractBagScreenFireRed's own.
+-- `femaleMode`: "bank" replaces palette bank 0 with a second blob (the bag
+-- and the berry pouch); "full" replaces the whole palette (the TM case,
+-- which loads one four-bank set or the other outright).
+function RomExtractorGen3:extractGenderedScreen(S, femaleMode, label)
+  local rom = self.rom
+  local okG, tiles = RomExtractorGen3.lz77ok(rom, S.GFX)
+  local okM, map = RomExtractorGen3.lz77ok(rom, S.TILEMAP)
+  local okP, palRaw = RomExtractorGen3.lz77ok(rom, S.PALETTE)
+  local okF, femaleRaw = true, nil
+  if femaleMode == "bank" then
+    okF, femaleRaw = RomExtractorGen3.lz77ok(rom, S.FEMALE_BANK0)
+  elseif femaleMode == "full" then
+    okF, femaleRaw = RomExtractorGen3.lz77ok(rom, S.FEMALE_PALETTE)
+  end
+  if not (okG and okM and okP and okF) then
+    Logger.warn("gen3 %s: a blob did not decompress -- left unripped", label)
+    return nil
+  end
+  if #tiles ~= S.TILES * 32 or #map ~= 32 * 32 * 2
+     or #palRaw ~= S.PALETTE_BANKS * 32
+     or (femaleMode == "bank" and #femaleRaw ~= 32)
+     or (femaleMode == "full" and #femaleRaw ~= S.PALETTE_BANKS * 32) then
+    Logger.warn("gen3 %s: %d tiles, %d map bytes, %d palette bytes -- not "
+                  .. "this screen's run", label, math.floor(#tiles / 32),
+                #map, #palRaw)
+    return nil
+  end
+
+  local function colours(raw, into)
+    local out = into or {}
+    for i = 0, math.floor(#raw / 2) - 1 do
+      local r, g, b = RomGba.bgr555(raw[i * 2 + 1] + raw[i * 2 + 2] * 256)
+      out[i + 1] = { r, g, b }
+    end
+    return out
+  end
+  local male = colours(palRaw)
+  local female
+  if femaleMode == "bank" then
+    female = colours(palRaw)
+    colours(femaleRaw, female)
+  elseif femaleMode == "full" then
+    female = colours(femaleRaw)
+  else
+    female = male
+  end
+
+  local images = {}
+  for _, row in ipairs({ { key = "male", colors = male },
+                         { key = "female", colors = female } }) do
+    local ok, err = pcall(function()
+      local img = ImageWriter.blank(240, 160)
+      for ty = 0, S.ROWS - 1 do
+        for tx = 0, 29 do
+          local cell = ty * S.COLS + tx
+          local e = map[cell * 2 + 1] + map[cell * 2 + 2] * 256
+          local tid = e % 1024
+          local bank = math.floor(e / 4096) % 16
+          if tid < S.TILES and bank < S.PALETTE_BANKS then
+            RomExtractorGen3.partyTile(img, tiles, row.colors, tid, bank,
+                                       tx * 8, ty * 8)
+          end
+        end
+      end
+      self:saveImage(img, "ui/" .. label .. "_" .. row.key .. ".png")
+    end)
+    if ok then
+      images[row.key] = "assets/generated/ui/" .. label .. "_" .. row.key
+                        .. ".png"
+    else
+      Logger.warn("gen3 %s: %s picture failed: %s", label, row.key,
+                  tostring(err))
+    end
+  end
+  if not (images.male or images.female) then return nil end
+
+  local win = {}
+  for i = 0, #S.WINDOW_KEYS - 1 do
+    local o = S.WINDOWS + i * S.WINDOW_STRIDE
+    win[S.WINDOW_KEYS[i + 1]] = {
+      x = rom:u8(o + 1) * 8, y = rom:u8(o + 2) * 8,
+      width = rom:u8(o + 3) * 8, height = rom:u8(o + 4) * 8,
+    }
+  end
+  return images, win
+end
+
+function RomExtractorGen3:extractTMCaseScreen()
+  self:beginStage("Gen3 TM case screen")
+  if (self.manifest or {}).frlgItemMenu == nil then
+    Logger.warn("gen3 TM case screen: not a FireRed manifest -- skipped")
+    return
+  end
+  local S = RomExtractorGen3.TM_CASE_SCREEN
+  local images, win = self:extractGenderedScreen(S, "full", "tmcase")
+  if not images then
+    Logger.warn("gen3 TM case screen: the background could not be composed")
+    return
+  end
+  if not (win.list and win.description and win.title
+          and win.list.width > win.description.width) then
+    Logger.warn("gen3 TM case screen: %07X does not read as tm_case.c's "
+                  .. "sWindowTemplates", S.WINDOWS)
+    return
+  end
+  local record = {
+    images = images,
+    windows = win,
+    list = { itemX = S.ITEM_X, cursorX = S.CURSOR_X, upTextY = S.UP_TEXT_Y,
+             rowHeight = S.ROW_HEIGHT,
+             rows = math.floor(win.list.height / S.ROW_HEIGHT),
+             quantityX = S.QUANTITY_X },
+    description = { x = S.DESC_X, y = S.DESC_Y, lineHeight = S.DESC_LINE },
+    source = ("ROM:gTMCase_Gfx %07X, tilemap %07X, sWindowTemplates %07X")
+             :format(S.GFX, S.TILEMAP, S.WINDOWS),
+  }
+  local constants = self._constants or {}
+  constants.gen3TMCaseScreen = record
+  self._constants = constants
+  self:write("constants", constants)
+  Logger.info("Gen3 TM case screen: %d tiles, list (%d,%d) %dx%d = %d rows",
+              S.TILES, win.list.x, win.list.y, win.list.width,
+              win.list.height, record.list.rows)
+end
+
+function RomExtractorGen3:extractBerryPouchScreen()
+  self:beginStage("Gen3 berry pouch screen")
+  if (self.manifest or {}).frlgItemMenu == nil then
+    Logger.warn("gen3 berry pouch screen: not a FireRed manifest -- skipped")
+    return
+  end
+  local S = RomExtractorGen3.BERRY_POUCH_SCREEN
+  local images, win = self:extractGenderedScreen(S, "bank", "berrypouch")
+  if not images then
+    Logger.warn("gen3 berry pouch screen: the background could not be composed")
+    return
+  end
+  if not (win.list and win.description and win.title
+          and win.list.height > win.description.height) then
+    Logger.warn("gen3 berry pouch screen: %07X does not read as "
+                  .. "berry_pouch.c's sWindowTemplates_Main", S.WINDOWS)
+    return
+  end
+  local record = {
+    images = images,
+    windows = win,
+    list = { itemX = S.ITEM_X, cursorX = S.CURSOR_X, upTextY = S.UP_TEXT_Y,
+             rowHeight = S.ROW_HEIGHT,
+             rows = math.floor(win.list.height / S.ROW_HEIGHT),
+             quantityX = S.QUANTITY_X },
+    description = { x = S.DESC_X, y = S.DESC_Y, lineHeight = S.DESC_LINE },
+    source = ("ROM:gBerryPouchBgGfx %07X, tilemap %07X, sWindowTemplates_Main "
+              .. "%07X"):format(S.GFX, S.TILEMAP, S.WINDOWS),
+  }
+  local constants = self._constants or {}
+  constants.gen3BerryPouchScreen = record
+  self._constants = constants
+  self:write("constants", constants)
+  Logger.info("Gen3 berry pouch screen: %d tiles, list (%d,%d) %dx%d = %d rows",
+              S.TILES, win.list.x, win.list.y, win.list.width,
+              win.list.height, record.list.rows)
+end
+
+-- ---------------------------------------------------------------------------
+-- STAGE: FireRed's own boot intro.
+--
+-- Reported from play: "are the starting animations... like the intro
+-- animation... working well?" -- they were not, because there was no
+-- FireRed intro: every Gen 3 cache, this one included, booted into
+-- Gen3Intro.lua, which is EMERALD's attract movie (the wet-leaves shot, then
+-- the Torchic/Manectric bike ride) -- real Emerald ROM art on real beats,
+-- just the wrong cartridge's.  FireRed's own intro is pret's intro.c: a
+-- GAME FREAK logo, then three scenes -- a grass close-up, a forest pan into
+-- a Gengar/Nidorino close-up, then a fight between them -- before handing
+-- off to the title screen.
+--
+-- ADDRESSES COME STRAIGHT OFF THE SYMBOL TABLE, unlike Emerald's attract
+-- movie, which had to scan raw THUMB immediates for its beats because
+-- nothing in it carried a name.  Every graphic below is a named
+-- `s*_Gfx`/`_Map`/`_Pal` in intro.c (firered3d's all_symbols.tsv), and every
+-- frame count in Gen3IntroFRLG.lua is a real `this->timer` comparison read
+-- straight out of the matching `IntroCB_*` state machine -- not a guess.
+--
+-- WHAT IS RECONSTRUCTED, the same standard the Emerald port's own file
+-- states: the star/sparkle flourish over the logo, the claw-swipe and
+-- recoil-dust particles, and the small wide-shot Gengar/Nidorino sprites in
+-- scene 2 are not extracted here -- simple shapes stand in for them, same as
+-- Emerald's sparkles stand in for a coordinate table this pass does not
+-- read. Every BACKGROUND is the cartridge's own art: the logo (background,
+-- art and wordmark separately, so the reveal can still stage them in turn),
+-- all three scenes, Gengar's idle bounce and its four-piece "back sprite"
+-- finale, and Nidorino's close-up and fight sheet.
+-- ---------------------------------------------------------------------------
+
+-- PAL is a RAW LoadPalette() block, not LZ77 -- intro.c copies every one of
+-- these straight in (LoadPalette), unlike the GFX/MAP pairs, which all go
+-- through DecompressAndCopyTileDataToVram.  PALSIZE is that block's real
+-- byte length (16 colors = 32 bytes per bank; a couple of these are more
+-- than one bank), read off the symbol table's own size column rather than
+-- assumed.
+-- Addresses are ROM-FILE offsets (the 0x08000000 GBA mapping stripped),
+-- same convention as TM_CASE_SCREEN/BERRY_POUCH_SCREEN above -- rom:u8/u32
+-- (and lz77, which is built on them) index the file directly.
+-- BANK is the real BG_PLTT_ID() slot intro.c loads that palette into
+-- (LoadPalette's second argument) -- every tile a background's own artist
+-- placed in that layer was authored against THAT slot number, baked into
+-- the tilemap's own bank nibble, so a tile whose bank reads 5 needs palette
+-- entry 5*16 and up, not a wraparound into a lone 16-color array starting
+-- at 0. frlgIntroBgLayer subtracts BANK before indexing so a plain
+-- single-bank read (colors[1..16]) lines back up with it.
+RomExtractorGen3.FRLG_INTRO = {
+  GF_BG       = { GFX = 0x402650, MAP = 0x402668, PAL = 0x402630, PALSIZE = 0x20, BANK = 0 },
+  GF_ART      = { GFX = 0x4028F8, PAL = 0x40270C, PALSIZE = 0x20, COLS = 4,  ROWS = 8 },
+  GF_TEXT     = { GFX = 0x40272C, PAL = 0x40270C, PALSIZE = 0x20, COLS = 18, ROWS = 2 },
+  SCENE1_GRASS = { GFX = 0x402D54, MAP = 0x403FE8, PAL = 0x402D34, PALSIZE = 0x20, BANK = 1 },
+  SCENE1_BG    = { GFX = 0x4048EC, MAP = 0x404F7C, PAL = 0x4048CC, PALSIZE = 0x20, BANK = 2 },
+  SCENE2_BG      = { GFX = 0x405414, MAP = 0x405890, PAL = 0x4053B4, PALSIZE = 0x60, BANK = 1 },
+  -- the plants layer's own palette blob is pret's own dead code (its
+  -- comment says so: "Unused") -- the game never loads it, so the tilemap
+  -- was authored against whatever WAS loaded for that slot, the same
+  -- background palette scene 2 already carries
+  SCENE2_PLANTS  = { GFX = 0x405B28, MAP = 0x405CDC, PAL = 0x4053B4, PALSIZE = 0x60, BANK = 1 },
+  SCENE2_GENGAR_CLOSE   = { GFX = 0x405DC4, MAP = 0x40644C, PAL = 0x405DA4, PALSIZE = 0x20, BANK = 5 },
+  SCENE2_NIDORINO_CLOSE = { GFX = 0x406654, MAP = 0x4071D0, PAL = 0x406634, PALSIZE = 0x20, BANK = 6 },
+  SCENE3_BG            = { GFX = 0x407470, MAP = 0x407A50, PAL = 0x407430, PALSIZE = 0x40, BANK = 1 },
+  SCENE3_GENGAR_BOUNCE = { GFX = 0x407B9C, MAP = 0x408D98, PAL = 0x405DA4, PALSIZE = 0x20, BANK = 5 },
+  SCENE3_GENGAR_BACK   = { GFX = 0x409D20, PAL = 0x405DA4, PALSIZE = 0x20, COLS = 8, ROWS = 8 },
+  SCENE3_NIDORINO      = { GFX = 0x40A3E4, PAL = 0x4096AC, PALSIZE = 0x20, COLS = 8, ROWS = 8 },
+  -- the OAM sprites the scenes create (sizes from intro.c's own OamData)
+  STAR          = { GFX = 0x402A64, PAL = 0x402A44, PALSIZE = 0x20, COLS = 2, ROWS = 2 },
+  SPARKLE_SMALL = { GFX = 0x402ADC, PAL = 0x402ABC, PALSIZE = 0x20, COLS = 1, ROWS = 1 },
+  SPARKLE_BIG   = { GFX = 0x402B2C, PAL = 0x402ABC, PALSIZE = 0x20, COLS = 4, ROWS = 4 },
+  PRESENTS      = { GFX = 0x402CD4, PAL = 0x40270C, PALSIZE = 0x20, COLS = 4, ROWS = 1 },
+  SCENE2_GENGAR   = { GFX = 0x40926C, PAL = 0x405DA4, PALSIZE = 0x20, COLS = 8, ROWS = 8 },
+  SCENE2_NIDORINO = { GFX = 0x4096CC, PAL = 0x4096AC, PALSIZE = 0x20, COLS = 8, ROWS = 8 },
+  SCENE3_GRASS  = { GFX = 0x409A3C, PAL = 0x409A1C, PALSIZE = 0x20, COLS = 8, ROWS = 4 },
+  SCENE3_SWIPE  = { GFX = 0x40B874, PAL = 0x40B834, PALSIZE = 0x20, COLS = 4, ROWS = 8 },
+  SCENE3_DUST   = { GFX = 0x40BAE0, PAL = 0x40B854, PALSIZE = 0x20, COLS = 2, ROWS = 2 },
+  -- pieces whose OAM shape differs from their neighbours', so a uniform
+  -- frame slice cannot cut them: {first tile, width, height} in tiles
+  SCENE3_GENGAR_PIECES = { GFX = 0x409D20, PAL = 0x405DA4, PALSIZE = 0x20,
+    PIECES = { tl = { 0, 8, 8 }, tr = { 64, 4, 8 },
+               bl = { 96, 8, 8 }, br = { 160, 4, 8 } } },
+  SCENE3_SWIPE_BOTTOM = { GFX = 0x40B874, PAL = 0x40B834, PALSIZE = 0x20,
+    PIECES = { a = { 64, 4, 2 }, b = { 72, 4, 2 } } },
+}
+
+-- A 32-wide background layer, as tall as its decompressed tilemap says --
+-- every one of these boots at screenSize 0 or 2 (intro.c's own BgTemplate
+-- arrays), which is 32 tiles wide either way, so the height is the only
+-- unknown and the tilemap's own byte length answers it.  Left this tall
+-- rather than cropped to one screen: Scene1's grass and Scene3's Gengar
+-- both hold several animation frames stacked vertically, the cartridge's own
+-- ChangeBgY trick, and the caller picks the sub-window at draw time.
+function RomExtractorGen3:frlgIntroBgLayer(def, label)
+  local rom = self.rom
+  local okG, tiles = RomExtractorGen3.lz77ok(rom, def.GFX)
+  local okM, map = RomExtractorGen3.lz77ok(rom, def.MAP)
+  local palRaw = rom:bytes(def.PAL, def.PALSIZE or 0x20)
+  if not (okG and okM and palRaw) then
+    Logger.warn("gen3 frlg intro: %s did not decompress", label)
+    return nil
+  end
+  local cols = 32
+  local rows = math.floor(#map / 2 / cols)
+  if rows < 1 or #map % (2 * cols) ~= 0 then
+    Logger.warn("gen3 frlg intro: %s's tilemap is %d bytes -- not a %d-wide "
+                  .. "map", label, #map, cols)
+    return nil
+  end
+  local colors = {}
+  for i = 0, math.floor(#palRaw / 2) - 1 do
+    local r, g, b = RomGba.bgr555(palRaw[i * 2 + 1] + palRaw[i * 2 + 2] * 256)
+    colors[i + 1] = { r, g, b }
+  end
+  local bankBase = def.BANK or 0
+  local image = ImageWriter.blank(cols * 8, rows * 8)
+  for ty = 0, rows - 1 do
+    for tx = 0, cols - 1 do
+      local cell = ty * cols + tx
+      local e = map[cell * 2 + 1] + map[cell * 2 + 2] * 256
+      local tid = e % 1024
+      local bank = math.floor(e / 4096) % 16 - bankBase
+      if tid * 32 + 32 <= #tiles and bank >= 0 then
+        RomExtractorGen3.partyTile(image, tiles, colors, tid, bank,
+                                   tx * 8, ty * 8)
+      end
+    end
+  end
+  return image, rows
+end
+
+-- A raw OAM sprite sheet: no tilemap, tiles laid out sequentially, one
+-- `cols`x`rows` frame after another -- the same shape decodeSprite/spriteImage
+-- read for mon and trainer pics, just not fixed to their 64x64/2048-byte
+-- size, so the frame count is however many whole frames the decompressed
+-- sheet holds rather than an assumed one.
+function RomExtractorGen3:frlgIntroSpriteSheet(def, label)
+  local rom = self.rom
+  local okG, tiles = RomExtractorGen3.lz77ok(rom, def.GFX)
+  local palRaw = rom:bytes(def.PAL, def.PALSIZE or 0x20)
+  if not (okG and palRaw) then
+    Logger.warn("gen3 frlg intro: %s did not decompress", label)
+    return nil
+  end
+  local bytesPerFrame = def.COLS * def.ROWS * 32
+  local frames = math.max(1, math.floor(#tiles / bytesPerFrame))
+  local colors = {}
+  for i = 0, math.floor(#palRaw / 2) - 1 do
+    local r, g, b = RomGba.bgr555(palRaw[i * 2 + 1] + palRaw[i * 2 + 2] * 256)
+    colors[i + 1] = { r, g, b }
+  end
+  local w, h = def.COLS * 8, def.ROWS * 8
+  local strip = ImageWriter.blank(w * frames, h)
+  for frame = 0, frames - 1 do
+    local base = frame * def.COLS * def.ROWS
+    for ty = 0, def.ROWS - 1 do
+      for tx = 0, def.COLS - 1 do
+        RomExtractorGen3.partyTile(strip, tiles, colors, base + ty * def.COLS + tx,
+                                   0, frame * w + tx * 8, ty * 8)
+      end
+    end
+  end
+  return strip, frames
+end
+
+-- ---------------------------------------------------------------------------
+-- FIRERED'S TITLE SCREEN (pokefirered src/title_screen.c CB2_InitTitleScreen)
+--
+--   BG0  the POKeMON / FireRed logo, 8bpp, palettes 0-12 loaded as one run
+--   BG1  Charizard (the box-art mon), palette 13
+--   BG2  copyright and PRESS START, palette 15 -- PRESS START blinks by
+--        overwriting colours 1-5 with colour 6
+--   BG3  the dark border field, palette 14 (the same colours)
+-- plus the embers Task_FlameSpawner throws up from the bottom.
+-- ---------------------------------------------------------------------------
+RomExtractorGen3.FRLG_TITLE = {
+  LOGO = { PAL = 0xEAB6C4, PALSIZE = 0x200, TILES = 0xEAB8C4, MAP = 0xEAD390, BPP = 8 },
+  MON = { PAL = 0xEAD5E8, TILES = 0xEAD608, MAP = 0xEADEE4 },
+  COPYRIGHT = { PAL = 0xEAE094, TILES = 0xEAE0B4, MAP = 0xEAE374 },
+  BORDER = { PAL = 0xEAE094, TILES = 0x3BF58C, MAP = 0x3BF5A8 },
+  FLAMES = { GFX = 0x3BF79C, PAL = 0x3BF77C, COLS = 2, ROWS = 2 },
+  FLAME_X = 0x3BFBD4, -- sFlameXPositions, 15 u8
+}
+
+-- A 30x20 screen from a 32-column tilemap, honouring flips.  `blink` swaps
+-- colours 1-5 for colour 6 (Task_TitleScreen_BlinkPressStart).
+function RomExtractorGen3:frlgTitleLayer(def, blink)
+  local rom = self.rom
+  local okT, tiles = RomExtractorGen3.lz77ok(rom, def.TILES)
+  local okM, map = RomExtractorGen3.lz77ok(rom, def.MAP)
+  if not (okT and okM) then return nil end
+  local raw = rom:bytes(def.PAL, def.PALSIZE or 0x20)
+  local colors = {}
+  for i = 0, math.floor(#raw / 2) - 1 do
+    local r, g, b = RomGba.bgr555(raw[i * 2 + 1] + raw[i * 2 + 2] * 256)
+    colors[i] = { r, g, b }
+  end
+  if blink then for i = 1, 5 do colors[i] = colors[6] end end
+  local bpp8 = def.BPP == 8
+  local tileBytes = bpp8 and 64 or 32
+  local image = ImageWriter.blank(240, 160)
+  for cy = 0, 19 do
+    for cx = 0, 29 do
+      local c = cy * 32 + cx
+      local entry = (map[c * 2 + 1] or 0) + (map[c * 2 + 2] or 0) * 256
+      local tid = entry % 1024
+      local hflip = math.floor(entry / 1024) % 2 == 1
+      local vflip = math.floor(entry / 2048) % 2 == 1
+      local base = tid * tileBytes
+      if base + tileBytes <= #tiles then
+        for py = 0, 7 do
+          for px = 0, 7 do
+            local sx = hflip and (7 - px) or px
+            local sy = vflip and (7 - py) or py
+            local idx
+            if bpp8 then
+              idx = tiles[base + sy * 8 + sx + 1]
+            else
+              local byte = tiles[base + sy * 4 + math.floor(sx / 2) + 1]
+              idx = (sx % 2 == 0) and byte % 16 or math.floor(byte / 16)
+            end
+            local col = idx and idx ~= 0 and colors[idx]
+            if col then
+              image:setPixel(cx * 8 + px, cy * 8 + py,
+                             col[1] / 255, col[2] / 255, col[3] / 255, 1)
+            end
+          end
+        end
+      end
+    end
+  end
+  return image, colors[0]
+end
+
+function RomExtractorGen3:extractFireRedTitle()
+  self:beginStage("Gen3 FireRed title")
+  if (self.manifest or {}).frlgItemMenu == nil then return end
+  local T = RomExtractorGen3.FRLG_TITLE
+  local images, backdrop = {}, nil
+  local function layer(key, def, blink)
+    local ok, img, c0 = pcall(self.frlgTitleLayer, self, def, blink)
+    if ok and img then
+      self:saveImage(img, "title_frlg/" .. key .. ".png")
+      images[key] = "assets/generated/title_frlg/" .. key .. ".png"
+      return c0
+    end
+    Logger.warn("gen3 frlg title: %s did not compose (%s)", key, tostring(img))
+  end
+  layer("logo", T.LOGO)
+  layer("mon", T.MON)
+  layer("copyright", T.COPYRIGHT)
+  layer("copyrightBlink", T.COPYRIGHT, true)
+  backdrop = layer("border", T.BORDER)
+  local okF, strip, frames = pcall(self.frlgIntroSpriteSheet, self, T.FLAMES, "flames")
+  if okF and strip then
+    self:saveImage(strip, "title_frlg/flames.png")
+    images.flames = { path = "assets/generated/title_frlg/flames.png", frames = frames,
+                      size = 16 }
+  end
+  local flameX = {}
+  for i = 0, 14 do
+    flameX[#flameX + 1] = self.rom:u8(T.FLAME_X + i) or 0
+  end
+  local constants = self._constants or {}
+  constants.gen3FRLGTitle = {
+    images = images, flameX = flameX,
+    backdrop = backdrop and { backdrop[1], backdrop[2], backdrop[3] } or nil,
+    source = "ROM:gGraphics_TitleScreen_* and title_screen.c sBorderBg/sFlames",
+  }
+  self._constants = constants
+  self:write("constants", constants)
+  local n = 0
+  for _ in pairs(images) do n = n + 1 end
+  Logger.info("Gen3 FireRed title: %d images, flame x run %s", n, table.concat(flameX, ","))
+end
+
+-- ---------------------------------------------------------------------------
+-- FIRERED'S START MENU (pokefirered src/start_menu.c, help_message.c)
+--
+-- The labels in sStartMenuActionTable order laid onto the port's eight-slot
+-- row table (FireRed has no POKeNAV slot), the per-row descriptions the help
+-- bar prints, and the bar's three tile rows out of gHelpMessageWindow_Gfx in
+-- sTextWindowPalettes[2].
+-- ---------------------------------------------------------------------------
+RomExtractorGen3.FRLG_START_MENU = {
+  LABELS = { 0x41627C, 0x415A66, 0x416284, false, 0x41628E, 0x416290, 0x416296, 0x41629C },
+  DESCS = { 0x419F76, 0x419FBA, 0x41A000, false, 0x41A048, 0x41A06E, 0x41A0B6, 0x41A0F8 },
+  HELP_GFX = 0x4566A8, HELP_PAL = 0x471E2C, HELP_TILES = { 0, 5, 14 },
+}
+
+function RomExtractorGen3:extractFireRedStartMenu()
+  self:beginStage("Gen3 FireRed start menu")
+  if (self.manifest or {}).frlgItemMenu == nil then return end
+  local S = RomExtractorGen3.FRLG_START_MENU
+  local function text(at)
+    if not at then return false end
+    for _, d in ipairs({ 0, 1, -1 }) do
+      local ok, t = pcall(self.readText, self, at + d, 200)
+      if ok and t and t ~= "" then return t end
+    end
+    return false
+  end
+  local items, descs = {}, {}
+  for i = 1, 8 do
+    items[i] = text(S.LABELS[i]) or nil
+    descs[i] = text(S.DESCS[i]) or nil
+  end
+  local record = { items = items, descriptions = descs,
+                   pokedexFlag = "FLAG_G3_0829", layout = "frlg" }
+  local ok, err = pcall(function()
+    local colors = RomGba.palette(self.rom:bytes(S.HELP_PAL, 32))
+    local image = ImageWriter.blank(8, 24)
+    for row, tile in ipairs(S.HELP_TILES) do
+      local px = RomGba.tiles4bpp(self.rom:bytes(S.HELP_GFX + tile * 32, 32), 1, 1)
+      for y = 1, 8 do
+        for x = 1, 8 do
+          local v = px[y][x]
+          local c = v ~= 0 and colors[v + 1]
+          if c then
+            image:setPixel(x - 1, (row - 1) * 8 + y - 1, c[1] / 255, c[2] / 255, c[3] / 255, 1)
+          end
+        end
+      end
+    end
+    self:saveImage(image, "ui/frlg_help_bar.png")
+    record.helpBar = "assets/generated/ui/frlg_help_bar.png"
+    local ink = colors[2]
+    record.helpInk = { ink[1] / 255, ink[2] / 255, ink[3] / 255 }
+  end)
+  if not ok then Logger.warn("gen3 frlg start menu: help bar did not compose (%s)", tostring(err)) end
+  local constants = self._constants or {}
+  constants.gen3StartMenu = record
+  self._constants = constants
+  self:write("constants", constants)
+  Logger.info("Gen3 FireRed start menu: %s", table.concat((function()
+    local t = {} for i = 1, 8 do t[#t + 1] = tostring(items[i]) end return t end)(), " / "))
+end
+
+-- ---------------------------------------------------------------------------
+-- FIRERED'S TRAINER CARD (pokefirered src/trainer_card.c, CARD_TYPE_FRLG)
+--
+-- BG2 the card's surround (sKantoTrainerCardBg_Tilemap), BG0 the card face
+-- or back, both out of gKantoTrainerCard_Gfx in three palettes picked by
+-- star count (sKantoTrainerCardPals; a girl's card swaps palette 1 for
+-- sKantoTrainerCardFemaleBg_Pal).  BG3 carries the badges (16x16 each,
+-- sKantoTrainerCardBadges_Gfx) and the stars (card tile 143, star palette).
+-- ---------------------------------------------------------------------------
+RomExtractorGen3.FRLG_TRAINER_CARD = {
+  TILES = 0xE991F8, PAL_TABLE = 0x3CD8CC, FEMALE_PAL = 0x3CD2A0,
+  BG_MAP = 0x3CCEC8, FRONT_MAP = 0x3CC6F0, BACK_MAP = 0x3CC984,
+  BADGES = 0x3CD5E8, BADGE_PAL = 0x3CD2E0, STAR_PAL = 0x3CD300, STAR_TILE = 143,
+  LABELS = { name = 0x419CDA, id = 0x419CE0, money = 0x419CE6, yen = 0x419CEC,
+             pokedex = 0x419CEE, time = 0x419CFC },
+}
+
+function RomExtractorGen3:extractFireRedTrainerCard()
+  self:beginStage("Gen3 FireRed trainer card")
+  if (self.manifest or {}).frlgItemMenu == nil then return end
+  local C = RomExtractorGen3.FRLG_TRAINER_CARD
+  local rom = self.rom
+  local function colours(at, n)
+    local raw = rom:bytes(at, n * 2)
+    local out = {}
+    for i = 0, n - 1 do
+      local r, g, b = RomGba.bgr555(raw[i * 2 + 1] + raw[i * 2 + 2] * 256)
+      out[i] = { r, g, b }
+    end
+    return out
+  end
+  local okT, tiles = RomExtractorGen3.lz77ok(rom, C.TILES)
+  local maps = {}
+  for key, at in pairs({ bg = C.BG_MAP, front = C.FRONT_MAP, back = C.BACK_MAP }) do
+    local ok, m = RomExtractorGen3.lz77ok(rom, at)
+    if ok then maps[key] = m end
+  end
+  if not (okT and maps.bg and maps.front and maps.back) then
+    Logger.warn("gen3 frlg trainer card: art did not decompress")
+    return
+  end
+  local images = {}
+  local function tile4(img, colors, tid, bank, hflip, vflip, px, py, opaque0, srcTiles)
+    local base = tid * 32
+    local src = srcTiles or tiles
+    if base + 32 > #src then return end
+    for y = 0, 7 do
+      for x = 0, 7 do
+        local sx = hflip and (7 - x) or x
+        local sy = vflip and (7 - y) or y
+        local byte = src[base + sy * 4 + math.floor(sx / 2) + 1]
+        local v = (sx % 2 == 0) and byte % 16 or math.floor(byte / 16)
+        local c
+        if v == 0 then c = opaque0 else c = colors[bank * 16 + v] end
+        if c then img:setPixel(px + x, py + y, c[1] / 255, c[2] / 255, c[3] / 255, 1) end
+      end
+    end
+  end
+  local function compose(map, colors, opaque)
+    local img = ImageWriter.blank(240, 160)
+    for cy = 0, 19 do
+      for cx = 0, 29 do
+        local c = cy * 30 + cx
+        local e = (map[c * 2 + 1] or 0) + (map[c * 2 + 2] or 0) * 256
+        tile4(img, colors, e % 1024, math.floor(e / 4096) % 16,
+              math.floor(e / 1024) % 2 == 1, math.floor(e / 2048) % 2 == 1,
+              cx * 8, cy * 8, opaque and colors[0] or nil)
+      end
+    end
+    return img
+  end
+  local female = colours(C.FEMALE_PAL, 16)
+  for stars = 0, 4 do
+    local palAt = rom:pointer(C.PAL_TABLE + stars * 4)
+    if palAt then
+      for _, gender in ipairs({ "boy", "girl" }) do
+        local colors = colours(palAt, 48)
+        if gender == "girl" then for i = 0, 15 do colors[16 + i] = female[i] end end
+        for _, layer in ipairs({ "bg", "front", "back" }) do
+          local key = ("%s_%s_%d"):format(layer, gender, stars)
+          local ok, err = pcall(function()
+            local img = compose(maps[layer], colors, layer == "bg")
+            self:saveImage(img, "trainer_card_frlg/" .. key .. ".png")
+          end)
+          if ok then images[key] = "assets/generated/trainer_card_frlg/" .. key .. ".png"
+          else Logger.warn("gen3 frlg trainer card: %s (%s)", key, tostring(err)) end
+        end
+      end
+    end
+  end
+  -- the badges: tiles 2i, 2i+1, 16+2i, 17+2i of the badge sheet
+  pcall(function()
+    local okB, badgeTiles = RomExtractorGen3.lz77ok(rom, C.BADGES)
+    if not okB then return end
+    local pal = colours(C.BADGE_PAL, 16)
+    local img = ImageWriter.blank(16 * 8, 16)
+    for i = 0, 7 do
+      local x = i * 16
+      tile4(img, pal, 2 * i, 0, false, false, x, 0, nil, badgeTiles)
+      tile4(img, pal, 2 * i + 1, 0, false, false, x + 8, 0, nil, badgeTiles)
+      tile4(img, pal, 16 + 2 * i, 0, false, false, x, 8, nil, badgeTiles)
+      tile4(img, pal, 17 + 2 * i, 0, false, false, x + 8, 8, nil, badgeTiles)
+    end
+    self:saveImage(img, "trainer_card_frlg/badges.png")
+    images.badges = "assets/generated/trainer_card_frlg/badges.png"
+  end)
+  pcall(function()
+    local pal = colours(C.STAR_PAL, 16)
+    local img = ImageWriter.blank(8, 8)
+    tile4(img, pal, C.STAR_TILE, 0, false, false, 0, 0, nil)
+    self:saveImage(img, "trainer_card_frlg/star.png")
+    images.star = "assets/generated/trainer_card_frlg/star.png"
+  end)
+  local labels = {}
+  for key, at in pairs(C.LABELS) do
+    for _, d in ipairs({ 0, 1, -1 }) do
+      local ok, t = pcall(self.readText, self, at + d, 40)
+      if ok and t and t ~= "" then labels[key] = t break end
+    end
+  end
+  local constants = self._constants or {}
+  constants.gen3FRLGTrainerCard = { images = images, labels = labels,
+    source = "ROM:gKantoTrainerCard_Gfx and trainer_card.c tilemaps/palettes" }
+  self._constants = constants
+  self:write("constants", constants)
+  local n = 0
+  for _ in pairs(images) do n = n + 1 end
+  Logger.info("Gen3 FireRed trainer card: %d images; labels %s/%s/%s/%s/%s", n,
+              tostring(labels.name), tostring(labels.id), tostring(labels.money),
+              tostring(labels.pokedex), tostring(labels.time))
+end
+
+-- ---------------------------------------------------------------------------
+-- FIRERED'S POKeDEX (pokefirered src/pokedex_screen.c)
+--
+-- One small tile sheet (sKantoDexTiles / sNatDexTiles) over a 256-colour
+-- palette, laid out by FillBgTilemapBufferRect: tile 1 is the field, tile
+-- $0E the ordered list's field, tile 3 in palette 15 the top and bottom
+-- bars, and tiles 1-11 the entry page's frame (DexScreen_DexPageZoomEffectFrame
+-- at scale 6: tile (0,2), 28x14 inside, divider on row 11).
+-- ---------------------------------------------------------------------------
+RomExtractorGen3.FRLG_POKEDEX = {
+  KANTO_TILES = 0x440274, NAT_TILES = 0x4403AC,
+  KANTO_PAL = 0x4404C8, NAT_PAL = 0x4406E0,
+  CAUGHT = 0x443600, FOOTPRINTS = 0x43FAB0, FOOTPRINT_COUNT = 413,
+  TEXT = { listTitle = 0x415F3C, pickOkExit = 0x415F50, pokemon = 0x415F8E,
+           ht = 0x415F98, wt = 0x415F9A, lbs = 0x415FA0, cry = 0x415FAC,
+           nextDataCancel = 0x415FB2, next = 0x415FC8 },
+}
+
+function RomExtractorGen3:extractFireRedPokedex()
+  self:beginStage("Gen3 FireRed pokedex")
+  if (self.manifest or {}).frlgItemMenu == nil then return end
+  local P = RomExtractorGen3.FRLG_POKEDEX
+  local rom = self.rom
+  local images, colors = {}, {}
+  local function palette(at)
+    local raw = rom:bytes(at, 0x200)
+    local out = {}
+    for i = 0, 255 do
+      local r, g, b = RomGba.bgr555(raw[i * 2 + 1] + raw[i * 2 + 2] * 256)
+      out[i] = { r, g, b }
+    end
+    return out
+  end
+  local function build(prefix, tilesAt, palAt)
+    local ok, tiles = RomExtractorGen3.lz77ok(rom, tilesAt)
+    if not ok then return end
+    local pal = palette(palAt)
+    local function tile(img, tid, bank, hflip, px, py, keep0)
+      local base = tid * 32
+      if base + 32 > #tiles then return end
+      for y = 0, 7 do
+        for x = 0, 7 do
+          local sx = hflip and (7 - x) or x
+          local byte = tiles[base + y * 4 + math.floor(sx / 2) + 1]
+          local v = (sx % 2 == 0) and byte % 16 or math.floor(byte / 16)
+          local c = (v ~= 0 or keep0) and pal[bank * 16 + v]
+          if c then img:setPixel(px + x, py + y, c[1] / 255, c[2] / 255, c[3] / 255, 1) end
+        end
+      end
+    end
+    local function fill(tid, bank, rows, keep0)
+      local img = ImageWriter.blank(240, 160)
+      for _, ty in ipairs(rows) do
+        for tx = 0, 29 do tile(img, tid, bank, false, tx * 8, ty * 8, keep0) end
+      end
+      return img
+    end
+    local all = {}
+    for ty = 0, 19 do all[#all + 1] = ty end
+    local function save(key, img)
+      self:saveImage(img, "pokedex_frlg/" .. prefix .. key .. ".png")
+      images[prefix .. key] = "assets/generated/pokedex_frlg/" .. prefix .. key .. ".png"
+    end
+    save("field", fill(1, 0, all, true))
+    save("listField", fill(0x0E, 0, all, true))
+    save("bars", fill(3, 15, { 0, 1, 18, 19 }, true))
+    -- the entry page frame at scale 6
+    local img = ImageWriter.blank(240, 160)
+    local left, top, width, height = 0, 2, 28, 14
+    local divY = (top + 1) + (math.floor(height / 2) + 1)
+    local function at(tid, hflip, tx, ty) tile(img, tid, 0, hflip, tx * 8, ty * 8, true) end
+    at(4, false, left, top); at(4, true, left + 1 + width, top)
+    at(10, false, left, top + 1 + height); at(10, true, left + 1 + width, top + 1 + height)
+    for tx = left + 1, left + width do
+      at(5, false, tx, top); at(11, false, tx, top + 1 + height)
+      for ty = top + 1, divY - 1 do at(1, false, tx, ty) end
+      at(8, false, tx, divY)
+      for ty = divY + 1, top + height do at(2, false, tx, ty) end
+    end
+    for ty = top + 1, divY - 1 do at(6, false, left, ty); at(6, true, left + 1 + width, ty) end
+    at(7, false, left, divY); at(7, true, left + 1 + width, divY)
+    for ty = divY + 1, top + height do at(9, false, left, ty); at(9, true, left + 1 + width, ty) end
+    save("pageFrame", img)
+    colors[prefix] = {
+      ink = pal[1], shadow = pal[3], barInk = pal[15 * 16 + 1], barShadow = pal[15 * 16 + 2],
+      red = pal[5],
+    }
+  end
+  build("kanto_", P.KANTO_TILES, P.KANTO_PAL)
+  build("national_", P.NAT_TILES, P.NAT_PAL)
+  -- the caught marker (8x8 4bpp, uncompressed) in the Kanto palette's bank 0
+  pcall(function()
+    local pal = palette(P.KANTO_PAL)
+    local raw = rom:bytes(P.CAUGHT, 32)
+    local px = RomGba.tiles4bpp(raw, 1, 1)
+    local img = ImageWriter.blank(8, 8)
+    for y = 1, 8 do for x = 1, 8 do
+      local v = px[y][x]
+      local c = v ~= 0 and pal[v]
+      if c then img:setPixel(x - 1, y - 1, c[1] / 255, c[2] / 255, c[3] / 255, 1) end
+    end end
+    self:saveImage(img, "pokedex_frlg/caught.png")
+    images.caught = "assets/generated/pokedex_frlg/caught.png"
+  end)
+  -- footprints: 1bpp 16x16, two bits a pixel pair, by species index
+  pcall(function()
+    local cols = 32
+    local rows = math.ceil(P.FOOTPRINT_COUNT / cols)
+    local img = ImageWriter.blank(cols * 16, rows * 16)
+    for i = 0, P.FOOTPRINT_COUNT - 1 do
+      local ptr = rom:pointer(P.FOOTPRINTS + i * 4)
+      if ptr then
+        local cx, cy = (i % cols) * 16, math.floor(i / cols) * 16
+        for b = 0, 31 do
+          local byte = rom:u8(ptr + b)
+          for bit = 0, 7 do
+            if math.floor(byte / 2 ^ bit) % 2 == 1 then
+              -- four 8x8 tiles (top-left, top-right, bottom-left,
+              -- bottom-right), one byte a row, bit k is pixel k
+              local tileIdx = math.floor(b / 8)
+              local px = (tileIdx % 2) * 8 + bit
+              local py = math.floor(tileIdx / 2) * 8 + (b % 8)
+              img:setPixel(cx + px, cy + py, 0.29, 0.29, 0.29, 1)
+            end
+          end
+        end
+      end
+    end
+    self:saveImage(img, "pokedex_frlg/footprints.png")
+    images.footprints = { path = "assets/generated/pokedex_frlg/footprints.png", cols = cols }
+  end)
+  local text = {}
+  for key, a in pairs(P.TEXT) do
+    for _, d in ipairs({ 0, 1, -1 }) do
+      local ok, t = pcall(self.readText, self, a + d, 60)
+      if ok and t and t ~= "" then text[key] = t break end
+    end
+  end
+  local constants = self._constants or {}
+  constants.gen3FRLGPokedex = { images = images, colors = colors, text = text,
+    source = "ROM:pokedex_screen.c sKantoDexTiles/sNatDexTiles and palettes" }
+  self._constants = constants
+  self:write("constants", constants)
+  Logger.info("Gen3 FireRed pokedex: list '%s', controls '%s'", tostring(text.listTitle),
+              tostring(text.nextDataCancel))
+end
+
+-- ---------------------------------------------------------------------------
+-- FIRERED'S POKeMON SUMMARY (pokefirered src/pokemon_summary_screen.c)
+--
+-- One tile sheet (gSummaryScreen_Bg_Gfx) in five palettes, a BG3 base
+-- (sBgTilemap_MovesInfoPage, or sBgTilemap_MovesPage while choosing a move)
+-- with the page's own tilemap over it, the page-progress tabs written into
+-- BG3's top rows (PokeSum_DrawPageProgressTiles), and the sprite parts: the
+-- HP and EXP bar tiles in their three palettes, the move cursor, and the
+-- menu-info icon sheet the type badges are blitted from.
+-- ---------------------------------------------------------------------------
+RomExtractorGen3.FRLG_SUMMARY = {
+  TILES = 0xE9A460, PAL = 0xE9B310,
+  PAGES = { info = 0xE9B598, skills = 0xE9B750, moves = 0xE9B950,
+            movesInfo = 0xE9BA9C, egg = 0xE9BBCC },
+  BASE = { movesInfo = 0x463B88, moves = 0x463C80 },
+  PROGRESS_BASE = 345,
+  MENU_INFO = 0xE95DDC, MENU_INFO_TYPES_PAL = 0xE95DBC,
+  HP_BAR = 0xE9B4B8, EXP_BAR = 0xE9B3F0, BAR_PAL = 0xE9B578,
+  HP_YELLOW = 0x463AAC, HP_RED = 0x463ACC,
+  CURSOR_LEFT = 0x463740, CURSOR_RIGHT = 0x46386C, CURSOR_PAL = 0x463720,
+  TEXT_HEADER_PAL = 0x4636C0, TEXT_MOVES_PAL = 0x463700,
+  TEXT = { pageInfo = 0x419C1C, pageSkills = 0x419C2A, pageMoves = 0x419C38,
+           expPoints = 0x419C4C, nextLv = 0x419C58, pp = 0x416238,
+           itemNone = 0x4161EE, lv = 0x416222 },
+  -- { tile, x, y } runs per page; the numbers are PAGE_PROGRESS_BASE offsets
+  PROGRESS = {
+    info = { {17,13,0},{33,13,1},{16,14,0},{32,14,1},{18,15,0},{34,15,1},
+             {20,16,0},{36,16,1},{18,17,0},{34,17,1},{21,18,0},{37,18,1} },
+    skills = { {49,13,0},{65,13,1},{1,14,0},{19,14,1},{17,15,0},{33,15,1},
+               {16,16,0},{32,16,1},{18,17,0},{34,17,1},{21,18,0},{37,18,1} },
+    moves = { {49,13,0},{65,13,1},{1,14,0},{19,14,1},{49,15,0},{65,15,1},
+              {1,16,0},{19,16,1},{17,17,0},{33,17,1},{48,18,0},{64,18,1} },
+    movesInfo = { {49,13,0},{65,13,1},{1,14,0},{19,14,1},{49,15,0},{65,15,1},
+                  {1,16,0},{19,16,1},{50,17,0},{66,17,1},{48,18,0},{64,18,1} },
+  },
+}
+
+function RomExtractorGen3:extractFireRedSummary()
+  self:beginStage("Gen3 FireRed summary")
+  if (self.manifest or {}).frlgItemMenu == nil then return end
+  local S = RomExtractorGen3.FRLG_SUMMARY
+  local rom = self.rom
+  local function colours(at, n)
+    local raw = rom:bytes(at, n * 2)
+    local out = {}
+    for i = 0, n - 1 do
+      local r, g, b = RomGba.bgr555(raw[i * 2 + 1] + raw[i * 2 + 2] * 256)
+      out[i] = { r, g, b }
+    end
+    return out
+  end
+  local okT, tiles = RomExtractorGen3.lz77ok(rom, S.TILES)
+  if not okT then Logger.warn("gen3 frlg summary: tiles did not decompress") return end
+  local pal = colours(S.PAL, 16 * 7)
+  local images = {}
+  local function tile(img, src, colors, tid, bank, hflip, vflip, px, py, keep0)
+    local base = tid * 32
+    if base + 32 > #src then return end
+    for y = 0, 7 do
+      for x = 0, 7 do
+        local sx = hflip and (7 - x) or x
+        local sy = vflip and (7 - y) or y
+        local byte = src[base + sy * 4 + math.floor(sx / 2) + 1]
+        local v = (sx % 2 == 0) and byte % 16 or math.floor(byte / 16)
+        local c = (v ~= 0 or keep0) and colors[bank * 16 + v]
+        if c then img:setPixel(px + x, py + y, c[1] / 255, c[2] / 255, c[3] / 255, 1) end
+      end
+    end
+  end
+  local function save(key, img)
+    self:saveImage(img, "summary_frlg/" .. key .. ".png")
+    images[key] = "assets/generated/summary_frlg/" .. key .. ".png"
+  end
+  local function layer(key, at, keep0)
+    local ok, map = RomExtractorGen3.lz77ok(rom, at)
+    if not ok then Logger.warn("gen3 frlg summary: %s map did not decompress", key) return end
+    -- 30x20 (1200 bytes) or a 32-column buffer (32x20 = 1280, 32x32 = 2048)
+    local cols = (#map % 60 == 0 and #map <= 1200) and 30 or 32
+    Logger.info("gen3 frlg summary: %s map is %d bytes (%d columns)", key, #map, cols)
+    local img = ImageWriter.blank(240, 160)
+    for cy = 0, 19 do
+      for cx = 0, 29 do
+        local c = cy * cols + cx
+        local e = (map[c * 2 + 1] or 0) + (map[c * 2 + 2] or 0) * 256
+        tile(img, tiles, pal, e % 1024, math.floor(e / 4096) % 16,
+             math.floor(e / 1024) % 2 == 1, math.floor(e / 2048) % 2 == 1, cx * 8, cy * 8, keep0)
+      end
+    end
+    save(key, img)
+  end
+  for key, at in pairs(S.PAGES) do pcall(layer, "page_" .. key, at, false) end
+  for key, at in pairs(S.BASE) do pcall(layer, "base_" .. key, at, true) end
+  for key, run in pairs(S.PROGRESS) do
+    pcall(function()
+      local img = ImageWriter.blank(240, 16)
+      for _, t in ipairs(run) do
+        tile(img, tiles, pal, S.PROGRESS_BASE + t[1], 0, false, false, t[2] * 8, t[3] * 8, true)
+      end
+      save("progress_" .. key, img)
+    end)
+  end
+  -- the menu-info icon sheet (128x128 4bpp, raw) in the types palette
+  pcall(function()
+    local p = colours(S.MENU_INFO_TYPES_PAL, 16)
+    -- stored as 256 8x8 tiles in row order, not as a scanline bitmap
+    local raw = rom:bytes(S.MENU_INFO, 0x2000)
+    local px = RomGba.tiles4bpp(raw, 16, 16)
+    local img = ImageWriter.blank(128, 128)
+    for y = 1, 128 do
+      for x = 1, 128 do
+        local v = px[y][x]
+        local c = v ~= 0 and p[v]
+        if c then img:setPixel(x - 1, y - 1, c[1] / 255, c[2] / 255, c[3] / 255, 1) end
+      end
+    end
+    save("menu_info", img)
+  end)
+  -- bars: 12 frames of 8x8; HP in green, yellow and red, EXP in its own
+  for key, spec in pairs({ hp_green = { S.HP_BAR, S.BAR_PAL }, hp_yellow = { S.HP_BAR, S.HP_YELLOW },
+                           hp_red = { S.HP_BAR, S.HP_RED }, exp = { S.EXP_BAR, S.BAR_PAL } }) do
+    pcall(function()
+      local ok, bar = RomExtractorGen3.lz77ok(rom, spec[1])
+      if not ok then return end
+      local p = colours(spec[2], 16)
+      local img = ImageWriter.blank(96, 8)
+      for f = 0, 11 do tile(img, bar, p, f, 0, false, false, f * 8, 0, false) end
+      save("bar_" .. key, img)
+    end)
+  end
+  -- the move cursor: two 64x32 halves
+  pcall(function()
+    local p = colours(S.CURSOR_PAL, 16)
+    local img = ImageWriter.blank(128, 32)
+    for half, at in ipairs({ S.CURSOR_LEFT, S.CURSOR_RIGHT }) do
+      local ok, gfx = RomExtractorGen3.lz77ok(rom, at)
+      if ok then
+        for t = 0, 31 do
+          tile(img, gfx, p, t, 0, false, false, (half - 1) * 64 + (t % 8) * 8, math.floor(t / 8) * 8, false)
+        end
+      end
+    end
+    save("cursor", img)
+  end)
+  local header = colours(S.TEXT_HEADER_PAL, 16)
+  local moves = colours(S.TEXT_MOVES_PAL, 16)
+  local types = colours(S.MENU_INFO_TYPES_PAL, 16)
+  local function c(t) return { t[1], t[2], t[3] } end
+  local text = {}
+  for key, a in pairs(S.TEXT) do
+    for _, d in ipairs({ 0, 1, -1 }) do
+      local ok, t = pcall(self.readText, self, a + d, 40)
+      if ok and t and t ~= "" then text[key] = t break end
+    end
+  end
+  local constants = self._constants or {}
+  constants.gen3FRLGSummary = {
+    images = images, text = text,
+    colors = {
+      pane = { c(types[14]), c(types[10]) }, header = { c(header[1]), c(header[2]) },
+      male = { c(header[9]), c(header[8]) }, female = { c(header[5]), c(header[4]) },
+      moves = { { c(moves[7]), c(moves[8]) }, { c(moves[1]), c(moves[2]) },
+                { c(moves[3]), c(moves[4]) }, { c(moves[5]), c(moves[6]) } },
+    },
+    -- sMenuInfoIcons: { x, y } in the 128x128 sheet (offset in tiles) by type name
+    typeIcons = {
+      NORMAL = 0x20, FIGHTING = 0x64, FLYING = 0x60, POISON = 0x80, GROUND = 0x48,
+      ROCK = 0x44, BUG = 0x6C, GHOST = 0x68, STEEL = 0x88, MYSTERY = 0xA4, FIRE = 0x24,
+      WATER = 0x28, GRASS = 0x2C, ELECTRIC = 0x40, PSYCHIC = 0x84, ICE = 0x4C,
+      DRAGON = 0xA0, DARK = 0x8C,
+      -- the move table's own six-letter spellings
+      FIGHT = 0x64, ELECTR = 0x40, PSYCHC = 0x84, TYPE_09 = 0xA4,
+    },
+    source = "ROM:pokemon_summary_screen.c gSummaryScreen_* and sprite parts",
+  }
+  self._constants = constants
+  self:write("constants", constants)
+  local n = 0
+  for _ in pairs(images) do n = n + 1 end
+  Logger.info("Gen3 FireRed summary: %d images; pages '%s' / '%s' / '%s'", n,
+              tostring(text.pageInfo), tostring(text.pageSkills), tostring(text.pageMoves))
+end
+
+-- ---------------------------------------------------------------------------
+-- FIRERED'S TOWN MAP (pokefirered src/region_map.c)
+--
+-- One 4bpp sheet (sRegionMap_Gfx) in five palette rows (sRegionMap_Pal), four
+-- BG0 tilemaps -- Kanto and the three Sevii pages -- and the section grids
+-- the cursor reads: [layer MAP, layer DUNGEON][15 rows][22 columns] per page,
+-- a cell centred on screen at (8x + 36, 8y + 36).  Names are sMapNames,
+-- indexed by mapsec - KANTO_MAPSEC_START.
+-- ---------------------------------------------------------------------------
+RomExtractorGen3.FRLG_REGION_MAP = {
+  TILES = 0x3EF61C, PAL = 0x3EF2DC, TOPBAR_PAL = 0x3EF23C,
+  EDGE_GFX = 0x3F0330, EDGE_MAP = 0x3F0E0C,
+  MAPS = { kanto = 0x3F089C, sevii123 = 0x3F0AFC, sevii45 = 0x3F0C0C, sevii67 = 0x3F0CF0 },
+  SECTIONS = { kanto = 0x3F2490, sevii123 = 0x3F2724, sevii45 = 0x3F29B8, sevii67 = 0x3F2C4C },
+  CURSOR = 0x3EF4E0, CURSOR_PAL = 0x3EF25C,
+  ICON_RED = 0x3EF524, ICON_RED_PAL = 0x3EF27C,
+  ICON_LEAF = 0x3EF59C, ICON_LEAF_PAL = 0x3EF29C,
+  NAMES = 0x3F1CAC, NAME_COUNT = 109, MAPSEC_START = 0x58,
+  TEXT = { dpadMove = 0x418EB4, aGuide = 0x418E8C, aCancel = 0x418E94,
+           aSwitch = 0x418EA6, aOk = 0x418EB0 },
+}
+
+function RomExtractorGen3:extractFireRedRegionMap()
+  self:beginStage("Gen3 FireRed region map")
+  if (self.manifest or {}).frlgItemMenu == nil then return end
+  local R = RomExtractorGen3.FRLG_REGION_MAP
+  local rom = self.rom
+  local function colours(at, n)
+    local raw = rom:bytes(at, n * 2)
+    local out = {}
+    for i = 0, n - 1 do
+      local r, g, b = RomGba.bgr555(raw[i * 2 + 1] + raw[i * 2 + 2] * 256)
+      out[i] = { r, g, b }
+    end
+    return out
+  end
+  local okT, tiles = RomExtractorGen3.lz77ok(rom, R.TILES)
+  if not okT then Logger.warn("gen3 frlg region map: tiles did not decompress") return end
+  local pal = colours(R.PAL, 80)
+  -- after the open animation palettes 0-4 take sTopBar_Pal[15] as colour 0,
+  -- which is the backdrop the edges and the map show through to
+  local top15 = colours(R.TOPBAR_PAL, 16)[15]
+  for b = 0, 4 do pal[b * 16] = top15 end
+  local images = {}
+  local function save(key, img)
+    self:saveImage(img, "regionmap_frlg/" .. key .. ".png")
+    images[key] = "assets/generated/regionmap_frlg/" .. key .. ".png"
+  end
+  -- BG1: the map edges' tilemap that stays behind the map, with the strip
+  -- Task_MapOpenAnim writes into row 1 (tiles 2, 3, 3D.., 3E, 3F in palette 2)
+  pcall(function()
+    local okG, edgeTiles = RomExtractorGen3.lz77ok(rom, R.EDGE_GFX)
+    local okM, map = RomExtractorGen3.lz77ok(rom, R.EDGE_MAP)
+    if not (okG and okM) then return end
+    local cols = (#map % 60 == 0 and #map <= 1200) and 30 or 32
+    local entry = {}
+    for cy = 0, 19 do
+      for cx = 0, 29 do
+        local c = cy * cols + cx
+        entry[cy * 30 + cx] = (map[c * 2 + 1] or 0) + (map[c * 2 + 2] or 0) * 256
+      end
+    end
+    entry[30] = 0x2002; entry[31] = 0x2003; entry[58] = 0x203E; entry[59] = 0x203F
+    for cx = 2, 27 do entry[30 + cx] = 0x203D end
+    local img = ImageWriter.blank(240, 160)
+    for cy = 0, 19 do
+      for cx = 0, 29 do
+        local e = entry[cy * 30 + cx]
+        local tid, bank = e % 1024, math.floor(e / 4096) % 16
+        local hflip, vflip = math.floor(e / 1024) % 2 == 1, math.floor(e / 2048) % 2 == 1
+        for y = 0, 7 do
+          for x = 0, 7 do
+            local sx = hflip and (7 - x) or x
+            local sy = vflip and (7 - y) or y
+            local byte = edgeTiles[tid * 32 + sy * 4 + math.floor(sx / 2) + 1] or 0
+            local v = (sx % 2 == 0) and byte % 16 or math.floor(byte / 16)
+            local col = v == 0 and top15 or pal[bank * 16 + v]
+            if col then img:setPixel(cx * 8 + x, cy * 8 + y, col[1] / 255, col[2] / 255, col[3] / 255, 1) end
+          end
+        end
+      end
+    end
+    save("edges", img)
+  end)
+  for key, at in pairs(R.MAPS) do
+    pcall(function()
+      local ok, map = RomExtractorGen3.lz77ok(rom, at)
+      if not ok then return end
+      local cols = (#map % 60 == 0 and #map <= 1200) and 30 or 32
+      local img = ImageWriter.blank(240, 160)
+      for cy = 0, 19 do
+        for cx = 0, 29 do
+          local c = cy * cols + cx
+          local e = (map[c * 2 + 1] or 0) + (map[c * 2 + 2] or 0) * 256
+          local tid, bank = e % 1024, math.floor(e / 4096) % 16
+          local hflip, vflip = math.floor(e / 1024) % 2 == 1, math.floor(e / 2048) % 2 == 1
+          local base = tid * 32
+          if base + 32 <= #tiles then
+            for y = 0, 7 do
+              for x = 0, 7 do
+                local sx = hflip and (7 - x) or x
+                local sy = vflip and (7 - y) or y
+                local byte = tiles[base + sy * 4 + math.floor(sx / 2) + 1]
+                local v = (sx % 2 == 0) and byte % 16 or math.floor(byte / 16)
+                local col = v ~= 0 and pal[bank * 16 + v]
+                if col then
+                  img:setPixel(cx * 8 + x, cy * 8 + y, col[1] / 255, col[2] / 255, col[3] / 255, 1)
+                end
+              end
+            end
+          end
+        end
+      end
+      save(key, img)
+    end)
+  end
+  -- sprites: LZ77 4bpp frames of 16x16, stacked into a strip
+  local function sprite(key, at, palAt)
+    pcall(function()
+      local ok, raw = RomExtractorGen3.lz77ok(rom, at)
+      if not ok then return end
+      local p = colours(palAt, 16)
+      local frames = math.max(1, math.floor(#raw / 128))      local img = ImageWriter.blank(16 * frames, 16)
+      for f = 0, frames - 1 do
+        -- OBJ sheets are 8x8 tiles in row order, not scanlines
+        local px = RomGba.tiles4bpp({ unpack(raw, f * 128 + 1, (f + 1) * 128) }, 2, 2)
+        for y = 0, 15 do
+          for x = 0, 15 do
+            local v = px[y + 1][x + 1]
+            local col = v ~= 0 and p[v]
+            if col then img:setPixel(f * 16 + x, y, col[1] / 255, col[2] / 255, col[3] / 255, 1) end
+          end
+        end
+      end
+      save(key, img)
+    end)
+  end
+  sprite("cursor", R.CURSOR, R.CURSOR_PAL)
+  sprite("icon_red", R.ICON_RED, R.ICON_RED_PAL)
+  sprite("icon_leaf", R.ICON_LEAF, R.ICON_LEAF_PAL)
+  local sections = {}
+  for key, at in pairs(R.SECTIONS) do
+    local layers = {}
+    for layer = 0, 1 do
+      local rows = {}
+      for y = 0, 14 do
+        local row = {}
+        for x = 0, 21 do row[x + 1] = rom:u8(at + layer * 330 + y * 22 + x) end
+        rows[y + 1] = row
+      end
+      layers[layer + 1] = rows
+    end
+    sections[key] = layers
+  end
+  local names = {}
+  for i = 0, R.NAME_COUNT - 1 do
+    local ptr = rom:pointer(R.NAMES + i * 4)
+    if ptr then
+      local ok, t = pcall(self.readText, self, ptr, 24)
+      if ok and t then names[R.MAPSEC_START + i] = t end
+    end
+  end
+  local text = {}
+  for key, a in pairs(R.TEXT) do
+    local ok, t = pcall(self.readText, self, a, 12)
+    if ok and t then text[key] = t end
+  end
+  -- MAPSEC_NONE: whatever fills most of Kanto's dungeon layer
+  local counts, none, best = {}, nil, -1
+  for _, row in ipairs((sections.kanto or {})[2] or {}) do
+    for _, v in ipairs(row) do counts[v] = (counts[v] or 0) + 1 end
+  end
+  for v, c in pairs(counts) do if c > best then none, best = v, c end end
+  local top = colours(R.TOPBAR_PAL, 16)
+  local constants = self._constants or {}
+  constants.gen3FRLGRegionMap = {
+    images = images, sections = sections, names = names, text = text,
+    none = none,
+    colors = { white = top[1], shadow = top[2], bar = top[15] },
+    source = "ROM:region_map.c sRegionMap_Gfx, sKanto/Sevii tilemaps, sRegionMapSections, sMapNames",
+  }
+  self._constants = constants
+  self:write("constants", constants)
+  local n = 0
+  for _ in pairs(names) do n = n + 1 end
+  Logger.info("Gen3 FireRed region map: %d names; %s / %s", n,
+              tostring(names[0x58]), tostring(text.dpadMove))
+end
+
+-- ---------------------------------------------------------------------------
+-- FIRERED'S BOX SCREEN CHROME (pokefirered src/pokemon_storage_system_tasks.c)
+--
+-- BG1 is sMenu_Tilemap over gPokeStorageMenu_Gfx in palettes 0 (interface),
+-- 1 (party menu), 2 (no display mon), 3 (scrolling bg) and 15 (item frame);
+-- three pieces are pasted over it -- the PKMN DATA tab (8x4 at 1,0, rows 0-1
+-- with a mon shown and 2-3 without), the CLOSE BOX tab (9x4 at 21,0, rows
+-- 0-1 and the flash 2-3), and the 12x22 party panel at column 10 whose last
+-- two rows are the PARTY POKeMON tab while it is put away.  BG3 is a 256x256
+-- pattern scrolling half a pixel a frame on both axes.
+-- ---------------------------------------------------------------------------
+RomExtractorGen3.FRLG_STORAGE = {
+  MENU_GFX = 0xE9C438, MENU_MAP = 0x3CE5FC,
+  PAL = { [0] = 0xE9C3F8, [1] = 0xE9C3D8, [2] = 0xE9C418, [3] = 0x3CE738, [15] = 0x3CEA10 },
+  SCROLL_GFX = 0x3CE438, SCROLL_MAP = 0x3CE4D0,
+  PKMN_DATA = 0x3CE6F8, CLOSE_BOX = 0x3CE778, PARTY_MAP = 0xE9CAEC,
+  SLOT_FILLED = 0x3CE7C0, SLOT_EMPTY = 0x3CE7D8,
+  HAND = 0x3D2BEC, HAND_SHADOW = 0x3D33EC, HAND_PAL = 0x3D2BCC,
+}
+
+function RomExtractorGen3:extractFireRedStorage()
+  self:beginStage("Gen3 FireRed storage")
+  if (self.manifest or {}).frlgItemMenu == nil then return end
+  local S = RomExtractorGen3.FRLG_STORAGE
+  local rom = self.rom
+  local pal = {}
+  for bank, at in pairs(S.PAL) do
+    local raw = rom:bytes(at, 32)
+    for i = 0, 15 do
+      local r, g, b = RomGba.bgr555(raw[i * 2 + 1] + raw[i * 2 + 2] * 256)
+      pal[bank * 16 + i] = { r, g, b }
+    end
+  end
+  local okM, menuTiles = RomExtractorGen3.lz77ok(rom, S.MENU_GFX)
+  local okS, scrollTiles = RomExtractorGen3.lz77ok(rom, S.SCROLL_GFX)
+  if not (okM and okS) then Logger.warn("gen3 frlg storage: tiles did not decompress") return end
+  local images = {}
+  local function save(key, img)
+    self:saveImage(img, "storage_frlg/" .. key .. ".png")
+    images[key] = "assets/generated/storage_frlg/" .. key .. ".png"
+  end
+  -- entries: a 0-based u16 reader; cols/rows the piece's size
+  -- BG1's template has baseTile 0x100, so its tiles load 256 in and its
+  -- tilemaps count from there
+  local function render(tiles, entry, cols, rows, keep0)
+    local img = ImageWriter.blank(cols * 8, rows * 8)
+    local offset = tiles == menuTiles and 0x100 or 0
+    for cy = 0, rows - 1 do
+      for cx = 0, cols - 1 do
+        local e = entry(cy * cols + cx)
+        local tid, bank = e % 1024 - offset, math.floor(e / 4096) % 16
+        if tid < 0 then tid = 1e9 end
+        local hflip, vflip = math.floor(e / 1024) % 2 == 1, math.floor(e / 2048) % 2 == 1
+        local base = tid * 32
+        if base + 32 <= #tiles then
+          for y = 0, 7 do
+            for x = 0, 7 do
+              local sx = hflip and (7 - x) or x
+              local sy = vflip and (7 - y) or y
+              local byte = tiles[base + sy * 4 + math.floor(sx / 2) + 1]
+              local v = (sx % 2 == 0) and byte % 16 or math.floor(byte / 16)
+              local c = (v ~= 0 or keep0) and pal[bank * 16 + v]
+              if c then img:setPixel(cx * 8 + x, cy * 8 + y, c[1] / 255, c[2] / 255, c[3] / 255, 1) end
+            end
+          end
+        end
+      end
+    end
+    return img
+  end
+  local function lzEntries(at, stride)
+    local ok, map = RomExtractorGen3.lz77ok(rom, at)
+    if not ok then return nil end
+    local cols = stride or ((#map % 60 == 0 and #map <= 1200) and 30 or 32)
+    return function(i)
+      local c = i
+      if stride == nil then c = math.floor(i / 30) * cols + i % 30 end
+      return (map[c * 2 + 1] or 0) + (map[c * 2 + 2] or 0) * 256
+    end, #map
+  end
+  local function rawEntries(at)
+    return function(i) return rom:u16(at + i * 2) end
+  end
+  pcall(function()
+    local menu = lzEntries(S.MENU_MAP)
+    if menu then save("menu", render(menuTiles, menu, 30, 20, false)) end
+  end)
+  pcall(function()
+    local ok, map = RomExtractorGen3.lz77ok(rom, S.SCROLL_MAP)
+    if not ok then return end
+    local side = math.floor(math.sqrt(#map / 2) + 0.5)
+    save("scroll", render(scrollTiles, function(i)
+      return (map[i * 2 + 1] or 0) + (map[i * 2 + 2] or 0) * 256
+    end, side, side, true))
+  end)
+  pcall(function() save("pkmn_data", render(menuTiles, rawEntries(S.PKMN_DATA), 8, 4, false)) end)
+  pcall(function() save("close_box", render(menuTiles, rawEntries(S.CLOSE_BOX), 9, 4, false)) end)
+  pcall(function()
+    local ok, map = RomExtractorGen3.lz77ok(rom, S.PARTY_MAP)
+    if not ok then return end
+    local buf = {}
+    for i = 0, 12 * 22 - 1 do buf[i] = (map[i * 2 + 1] or 0) + (map[i * 2 + 2] or 0) * 256 end
+    local function withSlots(filledUpTo)
+      local copy = {}
+      for i = 0, 12 * 22 - 1 do copy[i] = buf[i] end
+      for pos = 1, 5 do
+        local src = pos < filledUpTo and S.SLOT_FILLED or S.SLOT_EMPTY
+        local index = 12 * (3 * (pos - 1) + 1) + 7
+        for i = 0, 2 do
+          for j = 0, 3 do copy[index + j] = rom:u16(src + (i * 4 + j) * 2) end
+          index = index + 12
+        end
+      end
+      return function(i) return copy[i] end
+    end
+    -- one picture per party size: slots 2..6 filled while the party reaches them
+    for n = 1, 6 do
+      save("party_" .. n, render(menuTiles, withSlots(n), 12, 22, false))
+    end
+  end)
+  -- the hand: four raw 32x32 frames (point, grab, and their item-mode twins)
+  -- and a 16x16 shadow, in sPokeStorageMisc1Pal
+  pcall(function()
+    local p = {}
+    local raw = rom:bytes(S.HAND_PAL, 32)
+    for i = 0, 15 do p[i] = { RomGba.bgr555(raw[i * 2 + 1] + raw[i * 2 + 2] * 256) } end
+    -- OBJ sheets are 8x8 tiles in row order, not scanlines
+    local function sheet(at, w, h, frames)
+      local img = ImageWriter.blank(w * frames, h)
+      local per = w * h / 2
+      local bytes = rom:bytes(at, per * frames)
+      for f = 0, frames - 1 do
+        local px = RomGba.tiles4bpp({ unpack(bytes, f * per + 1, (f + 1) * per) }, w / 8, h / 8)
+        for y = 0, h - 1 do
+          for x = 0, w - 1 do
+            local v = px[y + 1][x + 1]
+            local col = v ~= 0 and p[v]
+            if col then img:setPixel(f * w + x, y, col[1] / 255, col[2] / 255, col[3] / 255, 1) end
+          end
+        end
+      end
+      return img
+    end
+    save("hand", sheet(S.HAND, 32, 32, 4))
+    save("hand_shadow", sheet(S.HAND_SHADOW, 16, 16, 1))
+  end)
+  local function c(i) local t = pal[i] return { t[1], t[2], t[3] } end
+  local constants = self._constants or {}
+  constants.gen3FRLGStorage = {
+    images = images,
+    colors = { text = { c(3 * 16 + 2), c(3 * 16 + 3) }, panel = c(3 * 16 + 1) },
+    source = "ROM:pokemon_storage_system_tasks.c menu, party, close-box and scrolling bg",
+  }
+  self._constants = constants
+  self:write("constants", constants)
+  local n = 0
+  for _ in pairs(images) do n = n + 1 end
+  Logger.info("Gen3 FireRed storage: %d images", n)
+end
+
+-- ---------------------------------------------------------------------------
+-- WHAT THE TM CASE AND BERRY POUCH STAGES LEFT OUT
+--
+-- tm_case.c draws TWO layers from gTMCase_Gfx: BG2 is gTMCaseMenu_Tilemap
+-- (the blue field under every window) and BG1 gTMCase_Tilemap (the case);
+-- extractTMCaseScreen only composed BG1, so the field came out blank.  The
+-- disc is a compressed 2x32x32 OBJ sheet (TM, HM) tinted per move type from
+-- gTMCaseDiscTypes1/2_Pal at sTMSpritePaletteOffsetByType, and HMs carry a
+-- 16x12 bitmap tag in the list.  The berry pouch's pouch is a compressed
+-- 64x64 OBJ at (40, 76).
+-- ---------------------------------------------------------------------------
+RomExtractorGen3.FRLG_POCKET_ART = {
+  TM_GFX = 0xE845D8, TM_MENU_MAP = 0xE84A24, TM_CASE_MAP = 0xE84B70,
+  TM_PAL = { male = 0xE84CB0, female = 0xE84D20 },
+  DISC = 0xE84D90, DISC_PAL1 = 0xE84F20, DISC_PAL2 = 0xE85068, DISC_OFFSETS = 0x463238,
+  HM = 0xE99118, STD_PAL = 0x41F408,
+  POUCH = 0xE8560C, POUCH_PAL = 0xE85C1C,
+  TYPES = { "NORMAL", "FIGHTING", "FLYING", "POISON", "GROUND", "ROCK", "BUG", "GHOST",
+            "STEEL", "MYSTERY", "FIRE", "WATER", "GRASS", "ELECTRIC", "PSYCHIC", "ICE",
+            "DRAGON", "DARK" },
+}
+
+function RomExtractorGen3:extractFireRedPocketArt()
+  self:beginStage("Gen3 FireRed pocket art")
+  if (self.manifest or {}).frlgItemMenu == nil then return end
+  local A = RomExtractorGen3.FRLG_POCKET_ART
+  local rom = self.rom
+  local function colours(list)
+    local out = {}
+    for i = 0, math.floor(#list / 2) - 1 do
+      out[i] = { RomGba.bgr555(list[i * 2 + 1] + list[i * 2 + 2] * 256) }
+    end
+    return out
+  end
+  local images = {}
+  local function save(key, img)
+    self:saveImage(img, "pockets_frlg/" .. key .. ".png")
+    images[key] = "assets/generated/pockets_frlg/" .. key .. ".png"
+  end
+  local function objSheet(tiles, pal, w, h, frames, img, ox, oy)
+    local per = w * h / 2
+    for f = 0, frames - 1 do
+      local px = RomGba.tiles4bpp({ unpack(tiles, f * per + 1, (f + 1) * per) }, w / 8, h / 8)
+      for y = 0, h - 1 do
+        for x = 0, w - 1 do
+          local v = px[y + 1][x + 1]
+          local c = v ~= 0 and pal[v]
+          if c then img:setPixel(ox + f * w + x, oy + y, c[1] / 255, c[2] / 255, c[3] / 255, 1) end
+        end
+      end
+    end
+  end
+  -- the TM case's two layers
+  pcall(function()
+    local ok, tiles = RomExtractorGen3.lz77ok(rom, A.TM_GFX)
+    if not ok then return end
+    for gender, at in pairs(A.TM_PAL) do
+      local okP, raw = RomExtractorGen3.lz77ok(rom, at)
+      if okP then
+        local pal = colours(raw)
+        for key, mapAt in pairs({ menu = A.TM_MENU_MAP, case = A.TM_CASE_MAP }) do
+          local okM, map = RomExtractorGen3.lz77ok(rom, mapAt)
+          if okM then
+            local cols = (#map % 60 == 0 and #map <= 1200) and 30 or 32
+            local img = ImageWriter.blank(240, 160)
+            for cy = 0, 19 do
+              for cx = 0, 29 do
+                local c = cy * cols + cx
+                local e = (map[c * 2 + 1] or 0) + (map[c * 2 + 2] or 0) * 256
+                local tid, bank = e % 1024, math.floor(e / 4096) % 16
+                local hflip, vflip = math.floor(e / 1024) % 2 == 1, math.floor(e / 2048) % 2 == 1
+                local base = tid * 32
+                if base + 32 <= #tiles then
+                  for y = 0, 7 do
+                    for x = 0, 7 do
+                      local sx = hflip and (7 - x) or x
+                      local sy = vflip and (7 - y) or y
+                      local byte = tiles[base + sy * 4 + math.floor(sx / 2) + 1]
+                      local v = (sx % 2 == 0) and byte % 16 or math.floor(byte / 16)
+                      local col = (v ~= 0 or key == "menu") and pal[bank * 16 + v]
+                      if col then
+                        img:setPixel(cx * 8 + x, cy * 8 + y, col[1] / 255, col[2] / 255, col[3] / 255, 1)
+                      end
+                    end
+                  end
+                end
+              end
+            end
+            save("tm_" .. key .. "_" .. gender, img)
+          end
+        end
+      end
+    end
+  end)
+  -- discs: one row per type, TM then HM
+  pcall(function()
+    local ok, tiles = RomExtractorGen3.lz77ok(rom, A.DISC)
+    local ok1, p1 = RomExtractorGen3.lz77ok(rom, A.DISC_PAL1)
+    local ok2, p2 = RomExtractorGen3.lz77ok(rom, A.DISC_PAL2)
+    if not (ok and ok1 and ok2) then return end
+    local all = colours(p1)
+    local extra = colours(p2)
+    -- the second blob decompresses to buffer + 0x100 colours
+    for i = 0, 15 do if extra[i] then all[0x100 + i] = extra[i] end end
+    local img = ImageWriter.blank(64, 32 * #A.TYPES)
+    for t = 0, #A.TYPES - 1 do
+      local offset = rom:u16(A.DISC_OFFSETS + t * 2)
+      local pal = {}
+      for i = 0, 15 do pal[i] = all[offset + i] end
+      objSheet(tiles, pal, 32, 32, 2, img, 0, t * 32)
+    end
+    save("discs", img)
+  end)
+  -- the HM tag: a 16-wide bitmap in the standard menu palette
+  pcall(function()
+    local pal = colours(rom:bytes(A.STD_PAL, 32))
+    pal[6] = { RomGba.bgr555(8 + 8 * 32 + 8 * 1024) }
+    pal[7] = { RomGba.bgr555(30 + 16 * 32 + 6 * 1024) }
+    local raw = rom:bytes(A.HM, 0x80)
+    local img = ImageWriter.blank(16, 12)
+    for y = 0, 11 do
+      for x = 0, 15 do
+        local byte = raw[y * 8 + math.floor(x / 2) + 1] or 0
+        local v = (x % 2 == 0) and byte % 16 or math.floor(byte / 16)
+        local c = v ~= 0 and pal[v]
+        if c then img:setPixel(x, y, c[1] / 255, c[2] / 255, c[3] / 255, 1) end
+      end
+    end
+    save("hm_tag", img)
+  end)
+  -- the berry pouch
+  pcall(function()
+    local ok, tiles = RomExtractorGen3.lz77ok(rom, A.POUCH)
+    local okP, raw = RomExtractorGen3.lz77ok(rom, A.POUCH_PAL)
+    if not (ok and okP) then return end
+    local img = ImageWriter.blank(64, 64)
+    objSheet(tiles, colours(raw), 64, 64, 1, img, 0, 0)
+    save("berry_pouch", img)
+  end)
+  local std = colours(rom:bytes(A.STD_PAL, 32))
+  local function c(t) return { t[1], t[2], t[3] } end
+  local constants = self._constants or {}
+  constants.gen3FRLGPocketArt = {
+    images = images, types = A.TYPES,
+    colors = { white = c(std[1]), dark = c(std[2]), light = c(std[3]) },
+    source = "ROM:tm_case.c gTMCase*, berry_pouch.c gBerryPouchSprite*",
+  }
+  self._constants = constants
+  self:write("constants", constants)
+  local n = 0
+  for _ in pairs(images) do n = n + 1 end
+  Logger.info("Gen3 FireRed pocket art: %d images", n)
+end
+
+-- ---------------------------------------------------------------------------
+-- FIRERED'S NAMING SCREEN ART (pokefirered src/naming_screen.c)
+--
+-- gNamingScreenMenu_Gfx under BG3 (the background) and BG1 (the keyboard
+-- page's frame), palettes 0-5 from gNamingScreenMenu_Pal and 10 from
+-- gNamingScreenKeyboard_Pal.  The sprites are raw 8x8-tile sheets laid out
+-- by their subsprite tables: the BACK and OK plates are 40x24 (five tiles a
+-- row), the page-swap frame 40x32, the page labels 24x8, the cursor 16x16.
+-- ---------------------------------------------------------------------------
+RomExtractorGen3.FRLG_NAMING = {
+  GFX = 0xE980E4, BG_MAP = 0xE982BC,
+  KB_MAPS = { upper = 0xE98398, lower = 0xE98458, symbols = 0xE98518 },
+  MENU_PAL = 0xE98024, KB_PAL = 0xE97FE4,
+  -- naming_screen.c's private rival sheet is a second exact copy of
+  -- gObjectEventPic_Blue (0x38A428) in the retail ROM.  Its dedicated palette
+  -- sits between gNamingScreenKeyboard_Pal and gNamingScreenMenu_Pal in
+  -- graphics.c.  Keep the private copy/palette here because that is exactly
+  -- what NamingScreen_CreateRivalIcon loads.
+  RIVAL_GFX = 0x3E1980, RIVAL_PAL = 0xE98004,
+  SPRITES = {
+    back = { 0xE98858, 40, 24, 4 }, ok = { 0xE98A38, 40, 24, 4 },
+    frame = { 0xE985D8, 40, 32, 4 },
+    -- the plate behind the page label, in the next page's own palette
+    swap_upper = { 0xE98FD8, 32, 16, 1 }, swap_lower = { 0xE98FD8, 32, 16, 2 },
+    swap_others = { 0xE98FD8, 32, 16, 3 },
+    label_upper = { 0xE98C18, 24, 8, 4 }, label_lower = { 0xE98CB8, 24, 8, 4 },
+    label_others = { 0xE98D58, 24, 8, 4 },
+    cursor = { 0xE98DF8, 16, 16, 5 }, cursor_filled = { 0xE98F38, 16, 16, 5 },
+    arrow = { 0xE990D8, 8, 8, 3 }, underscore = { 0xE990F8, 8, 8, 3 },
+  },
+}
+
+function RomExtractorGen3:extractFireRedNaming()
+  self:beginStage("Gen3 FireRed naming screen")
+  if (self.manifest or {}).frlgItemMenu == nil then return end
+  local N = RomExtractorGen3.FRLG_NAMING
+  local rom = self.rom
+  local pal = {}
+  local function rows(at, first, count)
+    local raw = rom:bytes(at, count * 32)
+    for i = 0, count * 16 - 1 do
+      pal[first * 16 + i] = { RomGba.bgr555(raw[i * 2 + 1] + raw[i * 2 + 2] * 256) }
+    end
+  end
+  rows(N.MENU_PAL, 0, 6)
+  rows(N.KB_PAL, 10, 1)
+  local ok, tiles = RomExtractorGen3.lz77ok(rom, N.GFX)
+  if not ok then Logger.warn("gen3 frlg naming: tiles did not decompress") return end
+  local images = {}
+  local function save(key, img)
+    self:saveImage(img, "naming_frlg/" .. key .. ".png")
+    images[key] = "assets/generated/naming_frlg/" .. key .. ".png"
+  end
+  local function layer(key, at, keep0)
+    local okM, map = RomExtractorGen3.lz77ok(rom, at)
+    if not okM then return end
+    local cols = (#map % 60 == 0 and #map <= 1200) and 30 or 32
+    local img = ImageWriter.blank(240, 160)
+    for cy = 0, 19 do
+      for cx = 0, 29 do
+        local c = cy * cols + cx
+        local e = (map[c * 2 + 1] or 0) + (map[c * 2 + 2] or 0) * 256
+        local tid, bank = e % 1024, math.floor(e / 4096) % 16
+        local hflip, vflip = math.floor(e / 1024) % 2 == 1, math.floor(e / 2048) % 2 == 1
+        local base = tid * 32
+        if base + 32 <= #tiles then
+          for y = 0, 7 do
+            for x = 0, 7 do
+              local sx = hflip and (7 - x) or x
+              local sy = vflip and (7 - y) or y
+              local byte = tiles[base + sy * 4 + math.floor(sx / 2) + 1]
+              local v = (sx % 2 == 0) and byte % 16 or math.floor(byte / 16)
+              local col = (v ~= 0 or keep0) and pal[bank * 16 + v]
+              if col then img:setPixel(cx * 8 + x, cy * 8 + y, col[1] / 255, col[2] / 255, col[3] / 255, 1) end
+            end
+          end
+        end
+      end
+    end
+    save(key, img)
+  end
+  pcall(layer, "bg", N.BG_MAP, true)
+  for key, at in pairs(N.KB_MAPS) do pcall(layer, "kb_" .. key, at, false) end
+  for key, spec in pairs(N.SPRITES) do
+    pcall(function()
+      local at, w, h, bank = spec[1], spec[2], spec[3], spec[4]
+      local cols, rws = w / 8, h / 8
+      local raw = rom:bytes(at, cols * rws * 32)
+      local px = RomGba.tiles4bpp(raw, cols, rws)
+      local img = ImageWriter.blank(w, h)
+      for y = 1, h do
+        for x = 1, w do
+          local v = px[y][x]
+          local col = v ~= 0 and pal[bank * 16 + v]
+          if col then img:setPixel(x - 1, y - 1, col[1] / 255, col[2] / 255, col[3] / 255, 1) end
+        end
+      end
+      save(key, img)
+    end)
+  end
+  -- RIVAL's naming icon is not the ordinary object-event sprite at runtime:
+  -- NamingScreen_CreateRivalIcon loads this private 0x900-byte, nine-frame
+  -- sheet with gNamingScreenRival_Pal and animates tile offsets
+  -- 0,24,0,32 for ten frames apiece.  A 16x32 frame is eight tiles, so those
+  -- offsets are frame indices 0,3,0,4.
+  local rivalIcon
+  pcall(function()
+    local w, h, frames = 16, 32, 9
+    local frameBytes = w * h / 2
+    local raw = rom:bytes(N.RIVAL_GFX, frameBytes * frames)
+    local palRaw = rom:bytes(N.RIVAL_PAL, 32)
+    local rpal = {}
+    for i = 0, 15 do
+      rpal[i] = { RomGba.bgr555(palRaw[i * 2 + 1] + palRaw[i * 2 + 2] * 256) }
+    end
+    local img = ImageWriter.blank(w, h * frames)
+    for frame = 0, frames - 1 do
+      local slice = {}
+      local base = frame * frameBytes
+      for i = 1, frameBytes do slice[i] = raw[base + i] end
+      local px = RomGba.tiles4bpp(slice, w / 8, h / 8)
+      for y = 1, h do
+        for x = 1, w do
+          local v = px[y][x]
+          local col = v ~= 0 and rpal[v]
+          if col then
+            img:setPixel(x - 1, frame * h + y - 1,
+                         col[1] / 255, col[2] / 255, col[3] / 255, 1)
+          end
+        end
+      end
+    end
+    save("rival", img)
+    rivalIcon = {
+      image = images.rival, frameWidth = w, frameHeight = h, frames = frames,
+      animation = { 0, 3, 0, 4 }, frameTicks = 10,
+      source = "ROM:naming_screen.c sRival_Gfx 03E1980 + gNamingScreenRival_Pal 0E98004",
+    }
+  end)
+  local function c(i) local t = pal[i] return { t[1], t[2], t[3] } end
+  local constants = self._constants or {}
+  constants.gen3FRLGNaming = {
+    images = images,
+    rivalIcon = rivalIcon,
+    colors = {
+      fill = { upper = c(10 * 16 + 13), lower = c(10 * 16 + 14), symbols = c(10 * 16 + 15) },
+      key = { c(10 * 16 + 1), c(10 * 16 + 2) },
+      entry = { c(10 * 16 + 1), c(10 * 16 + 2), c(10 * 16 + 3) },
+    },
+    source = "ROM:naming_screen.c gNamingScreen* tiles, tilemaps, sprites and palettes",
+  }
+  self._constants = constants
+  self:write("constants", constants)
+  local n = 0
+  for _ in pairs(images) do n = n + 1 end
+  Logger.info("Gen3 FireRed naming screen: %d images", n)
+end
+
+-- ---------------------------------------------------------------------------
+-- FIRERED'S LEDGE-HOP SHADOW (field_effect_helpers.c FldEff_Shadow): the
+-- medium shadow, two raw 8x8 tiles in gFieldEffectObjectPalette0, centred
+-- (height/2 - 4) below the jumper's own centre, which the hop's y2 never moves.
+-- ---------------------------------------------------------------------------
+RomExtractorGen3.FRLG_FIELD_SHADOW = { PIC = 0x398068, PAL = 0x398FA8 }
+
+function RomExtractorGen3:extractFireRedFieldShadow()
+  self:beginStage("Gen3 FireRed field shadow")
+  if (self.manifest or {}).frlgItemMenu == nil then return end
+  local S = RomExtractorGen3.FRLG_FIELD_SHADOW
+  local rom = self.rom
+  local ok, err = pcall(function()
+    local raw = rom:bytes(S.PAL, 32)
+    local pal = {}
+    for i = 0, 15 do pal[i] = { RomGba.bgr555(raw[i * 2 + 1] + raw[i * 2 + 2] * 256) } end
+    local px = RomGba.tiles4bpp(rom:bytes(S.PIC, 64), 2, 1)
+    local img = ImageWriter.blank(16, 8)
+    for y = 1, 8 do
+      for x = 1, 16 do
+        local c = px[y][x] ~= 0 and pal[px[y][x]]
+        if c then img:setPixel(x - 1, y - 1, c[1] / 255, c[2] / 255, c[3] / 255, 1) end
+      end
+    end
+    self:saveImage(img, "field_frlg/shadow_medium.png")
+  end)
+  if not ok then Logger.warn("gen3 frlg field shadow: %s", tostring(err)) return end
+  local constants = self._constants or {}
+  constants.gen3FieldShadow = { path = "assets/generated/field_frlg/shadow_medium.png",
+                                offsetY = -4, source = "ROM:gFieldEffectObjectPic_ShadowMedium" }
+  self._constants = constants
+  self:write("constants", constants)
+end
+
+-- ---------------------------------------------------------------------------
+-- FIRERED'S FLY BIRD (field_effect.c FldEff_FlyOut / FldEff_FlyIn):
+-- gFieldEffectObjectPic_Bird is five raw 64x64 4bpp frames using the general
+-- field-effect palette.  The animation table selects frame 1/2 for Red's
+-- fly-out/fly-in and 3/4 for Leaf's; frame 0 is the bird without the player.
+-- ---------------------------------------------------------------------------
+RomExtractorGen3.FRLG_FLY_BIRD = { PIC = 0x39D3C8, PAL = 0x35B968 }
+
+function RomExtractorGen3:extractFireRedFlyBird()
+  self:beginStage("Gen3 FireRed fly bird")
+  if (self.manifest or {}).frlgItemMenu == nil then return end
+  local S = RomExtractorGen3.FRLG_FLY_BIRD
+  local rom = self.rom
+  local ok, err = pcall(function()
+    local palRaw = rom:bytes(S.PAL, 32)
+    local pal = {}
+    for i = 0, 15 do
+      pal[i] = { RomGba.bgr555(palRaw[i * 2 + 1] + palRaw[i * 2 + 2] * 256) }
+    end
+    local w, h, frames = 64, 64, 5
+    local frameBytes = w * h / 2
+    local img = ImageWriter.blank(w, h * frames)
+    local raw = rom:bytes(S.PIC, frameBytes * frames)
+    for frame = 0, frames - 1 do
+      local slice = {}
+      local base = frame * frameBytes
+      for i = 1, frameBytes do slice[i] = raw[base + i] end
+      local px = RomGba.tiles4bpp(slice, w / 8, h / 8)
+      for y = 1, h do
+        for x = 1, w do
+          local v = px[y][x]
+          local c = v ~= 0 and pal[v]
+          if c then
+            img:setPixel(x - 1, frame * h + y - 1,
+                         c[1] / 255, c[2] / 255, c[3] / 255, 1)
+          end
+        end
+      end
+    end
+    self:saveImage(img, "field_frlg/fly_bird.png")
+  end)
+  if not ok then Logger.warn("gen3 frlg fly bird: %s", tostring(err)) return end
+  local constants = self._constants or {}
+  constants.gen3FRLGFlyBird = {
+    path = "assets/generated/field_frlg/fly_bird.png",
+    frameWidth = 64, frameHeight = 64, frames = 5,
+    flyOut = { boy = 1, girl = 3 },
+    flyIn = { boy = 2, girl = 4 },
+    source = "ROM:gFieldEffectObjectPic_Bird 039D3C8 + gFieldEffectObjectPalette0 035B968",
+  }
+  self._constants = constants
+  self:write("constants", constants)
+  Logger.info("Gen3 FireRed FLY bird: 5 frames, 64x64")
+end
+
+-- ---------------------------------------------------------------------------
+-- FIRERED'S DUNGEON PREVIEWS (map_preview_screen.c sMapPreviewScreenData):
+-- 28 records of { u8 mapsec, u8 type (0 cave, 1 forest), u16 flag, tiles
+-- (LZ), tilemap (LZ), palette (3 raw rows loaded at bank 13) }.
+-- ---------------------------------------------------------------------------
+RomExtractorGen3.FRLG_MAP_PREVIEWS = { TABLE = 0x43E9E8, COUNT = 28, PAL_BANK = 13 }
+
+function RomExtractorGen3:extractFireRedMapPreviews()
+  self:beginStage("Gen3 FireRed map previews")
+  if (self.manifest or {}).frlgItemMenu == nil then return end
+  local P = RomExtractorGen3.FRLG_MAP_PREVIEWS
+  local rom = self.rom
+  local bySection, rendered, drawn = {}, {}, 0
+  for i = 0, P.COUNT - 1 do
+    local at = P.TABLE + i * 16
+    local sec, kind, flag = rom:u8(at), rom:u8(at + 1), rom:u16(at + 2)
+    local tilesAt, mapAt, palAt = rom:pointer(at + 4), rom:pointer(at + 8), rom:pointer(at + 12)
+    if tilesAt and mapAt and palAt then
+      local key = ("%07X"):format(tilesAt)
+      if rendered[key] == nil then
+        rendered[key] = false
+        pcall(function()
+          local okT, tiles = RomExtractorGen3.lz77ok(rom, tilesAt)
+          local okM, map = RomExtractorGen3.lz77ok(rom, mapAt)
+          if not (okT and okM) then return end
+          local raw = rom:bytes(palAt, 96)
+          local pal = {}
+          for c = 0, 47 do pal[c] = { RomGba.bgr555(raw[c * 2 + 1] + raw[c * 2 + 2] * 256) } end
+          local cols = (#map % 60 == 0 and #map <= 1200) and 30 or 32
+          local img = ImageWriter.blank(240, 160)
+          for cy = 0, 19 do
+            for cx = 0, 29 do
+              local c = cy * cols + cx
+              local e = (map[c * 2 + 1] or 0) + (map[c * 2 + 2] or 0) * 256
+              local tid, bank = e % 1024, math.floor(e / 4096) % 16 - P.PAL_BANK
+              local hflip, vflip = math.floor(e / 1024) % 2 == 1, math.floor(e / 2048) % 2 == 1
+              local base = tid * 32
+              if bank >= 0 and bank < 3 and base + 32 <= #tiles then
+                for y = 0, 7 do
+                  for x = 0, 7 do
+                    local sx = hflip and (7 - x) or x
+                    local sy = vflip and (7 - y) or y
+                    local byte = tiles[base + sy * 4 + math.floor(sx / 2) + 1]
+                    local v = (sx % 2 == 0) and byte % 16 or math.floor(byte / 16)
+                    local col = pal[bank * 16 + v]
+                    img:setPixel(cx * 8 + x, cy * 8 + y, col[1] / 255, col[2] / 255, col[3] / 255, 1)
+                  end
+                end
+              end
+            end
+          end
+          local path = ("map_preview_frlg/%s.png"):format(key)
+          self:saveImage(img, path)
+          rendered[key] = "assets/generated/" .. path
+          drawn = drawn + 1
+        end)
+      end
+      if rendered[key] then
+        bySection[sec] = { image = rendered[key], type = kind == 1 and "forest" or "cave",
+                           flag = ("FLAG_G3_%04X"):format(flag) }
+      end
+    end
+  end
+  local constants = self._constants or {}
+  constants.gen3FRLGMapPreviews = { bySection = bySection,
+    source = "ROM:sMapPreviewScreenData 043E9E8" }
+  self._constants = constants
+  self:write("constants", constants)
+  Logger.info("Gen3 FireRed map previews: %d pictures", drawn)
+end
+
+-- ---------------------------------------------------------------------------
+-- THE WORDS FIRERED'S OWN SPECIALS PRINT (src/script/Gen3SpecialsFRLG.lua):
+-- the elevator floor names and "Now on:", the ListMenu labels, the Seagallop
+-- destinations and Prof. Oak's Pokedex ratings.  All of them are referenced
+-- from C, not from scripts, so the script text pass never reads them.
+-- ---------------------------------------------------------------------------
+RomExtractorGen3.FRLG_SPECIAL_TEXTS = {
+  floors = { 0x418068, 0x418064, 0x418060, 0x41805C, 0x41803A, 0x41803C, 0x418040, 0x418042,
+             0x418046, 0x418048, 0x41804C, 0x41804E, 0x418052, 0x418054, 0x418058, 0x41806C },
+  nowOn = 0x418074, exit = 0x4161C8, other = 0x417DEC,
+  -- CreatePCMenuWindow: SOMEONE'S PC, BILL'S PC, {PLAYER}'s PC, PROF. OAK'S
+  -- PC, HALL OF FAME, LOG OFF
+  pcMenu = { 0x417B9E, 0x417BAC, 0x417BB6, 0x417BD2, 0x417BBE, 0x417BCA },
+  badges = { 0x417FD8, 0x417FE6, 0x417FF2, 0x418000, 0x41800C, 0x418016, 0x418022, 0x41802E },
+  seagallop = { 0x417E46, 0x417DF2, 0x417DFE, 0x417E08, 0x417E16, 0x417E22, 0x417E2E, 0x417E38 },
+  rating = { 0x1A6D16, 0x1A6D6C, 0x1A6DDE, 0x1A6E36, 0x1A6EA4, 0x1A6F0A, 0x1A6F70, 0x1A6FAA,
+             0x1A6FF0, 0x1A7030, 0x1A7062, 0x1A70A4, 0x1A70D8, 0x1A7108, 0x1A7136, 0x1A7174 },
+}
+
+-- THE TRAINER TOWER (Seven Island), pokefirered trainer_tower.c.  Four
+-- challenges of eight floors each (gTrainerTowerFloors), each floor up to
+-- three trainers with an easy-chat speech set and six BattleTowerPokemon, plus
+-- the prize list, which of a trainer's six a floor sends out, and the tables
+-- that turn a facility class into a trainer class, a pic and an overworld
+-- sprite.
+RomExtractorGen3.FRLG_TRAINER_TOWER = {
+  HEADER = 0x4827AC, FLOORS = 0x4827B4, FLOOR_SIZE = 992, TRAINER_SIZE = 328,
+  MON_SIZE = 44, PRIZES = 0x47A2B4, NUM_PRIZES = 15,
+  SINGLE_IDX = 0x47A2EE, DOUBLE_IDX = 0x47A2FE, KNOCKOUT_IDX = 0x47A30E,
+  SINGLES_INFO = 0x479ED8, NUM_SINGLES = 83, DOUBLES_INFO = 0x47A024, NUM_DOUBLES = 10,
+  CLASS_TO_TRAINER = 0x25393E, CLASS_TO_PIC = 0x2538A8, NUM_CLASSES = 150,
+  TYPE_TEXTS = 0x3FE9C4, TIME_BOARD = 0x3FE982, MIN_SEC = 0x3FE998,
+}
+
+function RomExtractorGen3:extractFireRedTrainerTower()
+  self:beginStage("Gen3 FireRed trainer tower")
+  if not self:isFireRedManifest() then return end
+  local T = RomExtractorGen3.FRLG_TRAINER_TOWER
+  local rom = self.rom
+  local function text(at, max)
+    if rom:u8(at) == 0xFF then at = at + 1 end
+    return self:readText(at, max)
+  end
+  local ok, err = pcall(function()
+    local rec = { numFloors = rom:u8(T.HEADER), challenges = {}, prizes = {},
+                  singleIdx = {}, doubleIdx = {}, knockoutIdx = {},
+                  classToTrainer = {}, classToPic = {}, singles = {}, doubles = {} }
+    for c = 0, 3 do
+      local floors = {}
+      for f = 0, 7 do
+        local at = rom:pointer(T.FLOORS + (c * 8 + f) * 4)
+        if not at then error(("challenge %d floor %d has no pointer"):format(c, f)) end
+        local floor = { floorIdx = rom:u8(at + 1), challengeType = rom:u8(at + 2),
+                        prize = rom:u8(at + 3), trainers = {} }
+        for t = 0, 2 do
+          local tp = at + 4 + t * T.TRAINER_SIZE
+          local function words(off)
+            local w = {}
+            for i = 0, 5 do w[i + 1] = rom:u16(tp + off + i * 2) end
+            return w
+          end
+          local tr = { name = self:readText(tp, 11) or "", facilityClass = rom:u8(tp + 0x0B),
+                       textColor = rom:u8(tp + 0x0C), speechBefore = words(0x0E),
+                       speechWin = words(0x1A), speechLose = words(0x26),
+                       speechAfter = words(0x32), mons = {} }
+          for m = 0, 5 do
+            local mp = tp + 0x40 + m * T.MON_SIZE
+            local ivw = rom:u32(mp + 0x18)
+            local function bits(shift) return math.floor(ivw / 2 ^ shift) % 32 end
+            tr.mons[m + 1] = {
+              species = rom:u16(mp), heldItem = rom:u16(mp + 2),
+              moves = { rom:u16(mp + 4), rom:u16(mp + 6), rom:u16(mp + 8), rom:u16(mp + 10) },
+              ppBonuses = rom:u8(mp + 0x0D),
+              evs = { hp = rom:u8(mp + 0x0E), attack = rom:u8(mp + 0x0F), defense = rom:u8(mp + 0x10),
+                      speed = rom:u8(mp + 0x11), spatk = rom:u8(mp + 0x12), spdef = rom:u8(mp + 0x13) },
+              otId = rom:u32(mp + 0x14),
+              ivs = { hp = bits(0), attack = bits(5), defense = bits(10), speed = bits(15),
+                      spatk = bits(20), spdef = bits(25) },
+              abilityNum = math.floor(ivw / 2 ^ 31) % 2,
+              personality = rom:u32(mp + 0x1C),
+              nickname = self:readText(mp + 0x20, 11),
+              friendship = rom:u8(mp + 0x2B),
+            }
+          end
+          floor.trainers[t + 1] = tr
+        end
+        floors[f + 1] = floor
+      end
+      rec.challenges[c + 1] = floors
+    end
+    for i = 0, T.NUM_PRIZES - 1 do rec.prizes[i + 1] = rom:u16(T.PRIZES + i * 2) end
+    for f = 0, 7 do
+      rec.singleIdx[f + 1] = { rom:u8(T.SINGLE_IDX + f * 2), rom:u8(T.SINGLE_IDX + f * 2 + 1) }
+      rec.doubleIdx[f + 1] = { rom:u8(T.DOUBLE_IDX + f * 2), rom:u8(T.DOUBLE_IDX + f * 2 + 1) }
+      rec.knockoutIdx[f + 1] = { rom:u8(T.KNOCKOUT_IDX + f * 3), rom:u8(T.KNOCKOUT_IDX + f * 3 + 1),
+                                 rom:u8(T.KNOCKOUT_IDX + f * 3 + 2) }
+    end
+    for i = 0, T.NUM_CLASSES - 1 do
+      rec.classToTrainer[i] = rom:u8(T.CLASS_TO_TRAINER + i)
+      rec.classToPic[i] = rom:u8(T.CLASS_TO_PIC + i)
+    end
+    -- the sprite tables: {objGfx, facilityClass, gender} and the doubles'
+    -- {gfx1, gfx2, class, gender1, gender2} -- padded to 4 and 8 bytes in the
+    -- ROM (read back: 1C 03 01 00 | 38 04 00 00 ...)
+    for i = 0, T.NUM_SINGLES - 1 do
+      local at = T.SINGLES_INFO + i * 4
+      rec.singles[rom:u8(at + 1)] = { gfx = rom:u8(at), female = rom:u8(at + 2) == 1 }
+    end
+    for i = 0, T.NUM_DOUBLES - 1 do
+      local at = T.DOUBLES_INFO + i * 8
+      rec.doubles[rom:u8(at + 2)] = { gfx1 = rom:u8(at), gfx2 = rom:u8(at + 1) }
+    end
+    rec.typeTexts = {}
+    for i = 0, 3 do
+      local p = rom:pointer(T.TYPE_TEXTS + i * 4)
+      rec.typeTexts[i + 1] = p and self:readText(p, 16) or nil
+    end
+    rec.timeBoard = text(T.TIME_BOARD, 16)
+    rec.minSec = text(T.MIN_SEC, 24)
+    rec.source = "ROM:gTrainerTowerFloors / pokefirered trainer_tower.c"
+    local constants = self._constants or {}
+    constants.gen3FRLGTrainerTower = rec
+    self._constants = constants
+    self:write("constants", constants)
+    Logger.info("Gen3 FireRed trainer tower: 4 challenges, %d floors, first trainer %s",
+                rec.numFloors, tostring(rec.challenges[1][1].trainers[1].name))
+  end)
+  if not ok then Logger.warn("gen3 frlg trainer tower: %s", tostring(err)) end
+end
+
+-- ---------------------------------------------------------------------------
+-- FIRERED'S ONE-SCENE ART: the museum fossil pictures (script_menu.c), the
+-- diploma (diploma.c), the Seagallop crossing (seagallop.c), the Hall of Fame
+-- confetti (hall_of_fame.c) and the credits' closing pictures and running
+-- sprites (credits.c).  Every address is the pokefirered symbol; every layout
+-- is the one the named C file draws with.
+-- ---------------------------------------------------------------------------
+RomExtractorGen3.FRLG_ART = {
+  FOSSILS = { kabutops = { TILES = 0x3E0FA0, PAL = 0x3E17A0 },
+              aerodactyl = { TILES = 0x3E0780, PAL = 0x3E0F80 } },
+  DIPLOMA = { GFX = 0x4147C0, MAP = 0x4154E8, PAL = 0x415954, PALSIZE = 0x40,
+              TEXT = { player = 0x41B60E, document = 0x41B618, gameFreak = 0x41B684,
+                       national = 0x41B68E, kanto = 0x41B698 } },
+  SEAGALLOP = { WATER = 0x468C98, WATER_TILES = 41, WATER_PAL = 0x4691B8,
+                MAP_WB = 0x4691D8, MAP_EB = 0x4699D8, FERRY = 0x46A1D8, FERRY_TILES = 40,
+                FERRY_PAL = 0x46A6D8, WAKE = 0x46A6F8, MATRIX = 0x46AF28 },
+  CONFETTI = { SHEET = 0xD2D5FC, PAL = 0xD2D71C },
+  CREDITS = {
+    THE_END = { TILES = 0x410B20, MAP = 0x410B94, PAL = 0x410B00 },
+    COPYRIGHT = { TILES = 0xEAE548, MAP = 0xEAE900, PAL = 0xEAE528 },
+    POKEBALL = { TILES = 0xEAAB98, MAP = 0xEAB30C, PALS = 0xEAAB18 },
+    -- LoadCreditsMonPic uses the ordinary species palette for all three
+    -- windows, then swaps these two larger poses into BG0 after the 64x64
+    -- front pic.  Coordinates are the WindowTemplate tile positions from
+    -- credits.c, converted to pixels.
+    MONS = {
+      { species = 6,
+        { TILES = 0x40CB8C, W = 10, H = 10, X = 80, Y = 40 },
+        { TILES = 0x40D228, W = 12, H = 13, X = 72, Y = 24 } }, -- CHARIZARD
+      { species = 3,
+        { TILES = 0x40E158, W = 10, H = 10, X = 80, Y = 40 },
+        { TILES = 0x40E904, W = 12, H = 10, X = 72, Y = 40 } }, -- VENUSAUR
+      { species = 9,
+        { TILES = 0x40F240, W = 10, H = 10, X = 80, Y = 40 },
+        { TILES = 0x40F944, W = 10, H = 12, X = 80, Y = 32 } }, -- BLASTOISE
+      { species = 25,
+        { TILES = 0x410198, W = 10, H = 10, X = 80, Y = 40 },
+        { TILES = 0x4105B4, W = 12, H = 12, X = 72, Y = 32 } }, -- PIKACHU
+    },
+    PLAYER_MALE = { TILES = 0x410E30, PAL = 0x410E10 },
+    PLAYER_FEMALE = { TILES = 0x411C18, PAL = 0x411BF8 },
+    RIVAL = { TILES = 0x4129C0, PAL = 0x4129A0 },
+    GROUND_GRASS = { TILES = 0x413338, PAL = 0x413318 },
+    GROUND_DIRT = { TILES = 0x413874, PAL = 0x413854 },
+    GROUND_CITY = { TILES = 0x413DB8, PAL = 0x413D98 },
+    SPRITE_PARAMS = 0x41431C,
+  },
+}
+
+function RomExtractorGen3.frlgColors(rom, at, count, lz)
+  local raw
+  if lz then
+    local ok, got = RomExtractorGen3.lz77ok(rom, at)
+    raw = ok and got or nil
+  else
+    raw = rom:bytes(at, count * 2)
+  end
+  if not raw then return nil end
+  local colors = {}
+  for i = 0, math.floor(#raw / 2) - 1 do
+    local r, g, b = RomGba.bgr555(raw[i * 2 + 1] + raw[i * 2 + 2] * 256)
+    colors[i] = { r, g, b }
+  end
+  return colors
+end
+
+-- Tiles laid one after another into frames of fw x fh tiles, `frames` wide.
+function RomExtractorGen3.frlgSheet(tiles, fw, fh, frames, colors, base)
+  local image = ImageWriter.blank(fw * 8 * frames, fh * 8)
+  for f = 0, frames - 1 do
+    for ty = 0, fh - 1 do
+      for tx = 0, fw - 1 do
+        local t = (base or 0) + f * fw * fh + ty * fw + tx
+        for py = 0, 7 do
+          for px = 0, 7 do
+            local byte = tiles[t * 32 + py * 4 + math.floor(px / 2) + 1]
+            local idx = byte and ((px % 2 == 0) and byte % 16 or math.floor(byte / 16))
+            local c = idx and idx ~= 0 and colors[idx]
+            if c then
+              image:setPixel(f * fw * 8 + tx * 8 + px, ty * 8 + py, c[1] / 255, c[2] / 255, c[3] / 255, 1)
+            end
+          end
+        end
+      end
+    end
+  end
+  return image
+end
+
+-- A tilemap of mapCols columns composed over w x h tiles, flips and palette
+-- banks honoured (bank n reads colors[16n + index] of the loaded run).
+function RomExtractorGen3.frlgTilemap(tiles, map, mapCols, w, h, colors, opts)
+  opts = opts or {}
+  local image = ImageWriter.blank(w * 8, h * 8)
+  local bpp8 = opts.bpp8
+  local tb = bpp8 and 64 or 32
+  for cy = 0, h - 1 do
+    for cx = 0, w - 1 do
+      local c = cy * mapCols + cx
+      local e = (map[c * 2 + 1] or 0) + (map[c * 2 + 2] or 0) * 256
+      local tid = e % 1024
+      local hf = math.floor(e / 1024) % 2 == 1
+      local vf = math.floor(e / 2048) % 2 == 1
+      local bank = math.floor(e / 4096) % 16 - (opts.bankBase or 0)
+      local base = tid * tb
+      if base + tb <= #tiles and bank >= 0 then
+        for py = 0, 7 do
+          for px = 0, 7 do
+            local sx, sy = hf and (7 - px) or px, vf and (7 - py) or py
+            local idx
+            if bpp8 then
+              idx = tiles[base + sy * 8 + sx + 1]
+            else
+              local byte = tiles[base + sy * 4 + math.floor(sx / 2) + 1]
+              idx = byte and ((sx % 2 == 0) and byte % 16 or math.floor(byte / 16))
+            end
+            local col = idx and (opts.opaque or idx ~= 0)
+                        and colors[(bpp8 and 0 or bank * 16) + idx]
+            if col then
+              image:setPixel(cx * 8 + px, cy * 8 + py, col[1] / 255, col[2] / 255, col[3] / 255, 1)
+            end
+          end
+        end
+      end
+    end
+  end
+  return image
+end
+
+-- ---------------------------------------------------------------------------
+-- S.S. ANNE DEPARTURE SPRITES (ss_anne.c): both sheets are raw 4bpp and use
+-- object palette 10.  The wake is two 16x32 frames; smoke uses the first
+-- sixteen tiles of its source sheet as four 16x16 frames (the source graphic
+-- carries two trailing unused tiles).  Keep these as extracted ROM assets so
+-- the port does not bundle cartridge artwork.
+-- ---------------------------------------------------------------------------
+RomExtractorGen3.FRLG_SS_ANNE = {
+  WAKE = 0x479838,
+  SMOKE = 0x479A38,
+  PAL = 0x395AE8,
+}
+
+function RomExtractorGen3:extractFireRedSSAnneArt()
+  self:beginStage("Gen3 FireRed S.S. Anne effects")
+  if not self:isFireRedManifest() then return end
+  local A = RomExtractorGen3.FRLG_SS_ANNE
+  local rom = self.rom
+  local ok, err = pcall(function()
+    local colors = RomExtractorGen3.frlgColors(rom, A.PAL, 16)
+    if not colors then error("object palette 10 is unreadable") end
+    local wake = RomExtractorGen3.frlgSheet(rom:bytes(A.WAKE, 16 * 32),
+                                            2, 4, 2, colors)
+    local smoke = RomExtractorGen3.frlgSheet(rom:bytes(A.SMOKE, 16 * 32),
+                                             2, 2, 4, colors)
+    local wakePath = "field_frlg/ss_anne_wake.png"
+    local smokePath = "field_frlg/ss_anne_smoke.png"
+    self:saveImage(wake, wakePath)
+    self:saveImage(smoke, smokePath)
+    local constants = self._constants or {}
+    constants.gen3SSAnneFx = {
+      wake = "assets/generated/" .. wakePath,
+      smoke = "assets/generated/" .. smokePath,
+      source = "ROM:ss_anne.c sWakeTiles/sSmokeTiles using OBJ palette 10",
+    }
+    self._constants = constants
+    self:write("constants", constants)
+  end)
+  if not ok then
+    Logger.warn("gen3 frlg S.S. Anne effects: %s", tostring(err))
+  end
+end
+
+function RomExtractorGen3:extractFireRedExtraArt()
+  self:beginStage("Gen3 FireRed extra art")
+  if not self:isFireRedManifest() then return end
+  local A = RomExtractorGen3.FRLG_ART
+  local rom = self.rom
+  local frlgColors, frlgSheet, frlgTilemap = RomExtractorGen3.frlgColors, RomExtractorGen3.frlgSheet, RomExtractorGen3.frlgTilemap
+  local rec = { source = "pokefirered script_menu.c / diploma.c / seagallop.c / hall_of_fame.c / credits.c" }
+  local function save(image, name)
+    self:saveImage(image, "frlg_art/" .. name .. ".png")
+    return "assets/generated/frlg_art/" .. name .. ".png"
+  end
+  local function text(at, max)
+    if rom:u8(at) == 0xFF then at = at + 1 end
+    return self:readText(at, max or 120)
+  end
+  local function try(label, fn)
+    local ok, err = pcall(fn)
+    if not ok then Logger.warn("gen3 frlg art: %s: %s", label, tostring(err)) end
+  end
+
+  try("fossils", function()
+    rec.fossils = {}
+    for key, d in pairs(A.FOSSILS) do
+      local tiles = rom:bytes(d.TILES, 64 * 32)
+      rec.fossils[key] = save(frlgSheet(tiles, 8, 8, 1, frlgColors(rom, d.PAL, 16)), "fossil_" .. key)
+    end
+  end)
+
+  try("diploma", function()
+    local D = A.DIPLOMA
+    local okG, tiles = RomExtractorGen3.lz77ok(rom, D.GFX)
+    local okM, map = RomExtractorGen3.lz77ok(rom, D.MAP)
+    if not (okG and okM) then error("did not decompress") end
+    Logger.info("gen3 frlg diploma: %d tile bytes, %d map bytes", #tiles, #map)
+    local colors = frlgColors(rom, D.PAL, 32)
+    local full = frlgTilemap(tiles, map, 64, 64, 20, colors, { opaque = true })
+    local function crop(x)
+      local out = ImageWriter.blank(240, 160)
+      out:paste(full, 0, 0, x, 0, 240, 160)
+      return out
+    end
+    rec.diploma = { kanto = save(crop(0), "diploma_kanto"), national = save(crop(256), "diploma_national"),
+                    text = {} }
+    -- these carry {DYNAMIC n} (0xF7 n), which readText refuses; walk them here
+    local map = self:charmap()
+    local function dynText(at)
+      if rom:u8(at) == 0xFF then at = at + 1 end
+      local out, i = {}, 0
+      while i < 200 do
+        local b = rom:u8(at + i)
+        if b == 0xFF then break
+        elseif b == 0xFE then out[#out + 1] = "\n"; i = i + 1
+        elseif b == 0xF7 then out[#out + 1] = ("{DYNAMIC %d}"):format(rom:u8(at + i + 1)); i = i + 2
+        else out[#out + 1] = map[b] or ""; i = i + 1 end
+      end
+      return table.concat(out)
+    end
+    for k, at in pairs(D.TEXT) do rec.diploma.text[k] = dynText(at) end
+  end)
+
+  try("seagallop", function()
+    local S = A.SEAGALLOP
+    local water = rom:bytes(S.WATER, S.WATER_TILES * 32)
+    local wpal = frlgColors(rom, S.WATER_PAL, 16)
+    local colors = {}
+    for i = 0, 15 do colors[4 * 16 + i] = wpal[i] end
+    rec.seagallop = {
+      west = save(frlgTilemap(water, rom:bytes(S.MAP_WB, 0x800), 32, 32, 32, colors, { opaque = true }), "seagallop_west"),
+      east = save(frlgTilemap(water, rom:bytes(S.MAP_EB, 0x800), 32, 32, 32, colors, { opaque = true }), "seagallop_east"),
+    }
+    local fpal = frlgColors(rom, S.FERRY_PAL, 16)
+    local ferryTiles = rom:bytes(S.FERRY, 64 * 32)
+    for i = S.FERRY_TILES * 32 + 1, 64 * 32 do ferryTiles[i] = 0 end
+    rec.seagallop.ferry = save(frlgSheet(ferryTiles, 8, 8, 1, fpal), "seagallop_ferry")
+    rec.seagallop.wake = save(frlgSheet(rom:bytes(S.WAKE, 64 * 32), 4, 4, 3, fpal), "seagallop_wake")
+    rec.seagallop.matrix = {}
+    for i = 0, 10 do rec.seagallop.matrix[i + 1] = rom:u16(S.MATRIX + i * 2) end
+  end)
+
+  try("confetti", function()
+    local ok, sheet = RomExtractorGen3.lz77ok(rom, A.CONFETTI.SHEET)
+    if not ok then error("sheet did not decompress") end
+    rec.confetti = { image = save(frlgSheet(sheet, 1, 1, 17, frlgColors(rom, A.CONFETTI.PAL, 16, true)), "hof_confetti"),
+                     frames = 17 }
+  end)
+
+  try("credits", function()
+    local C = A.CREDITS
+    rec.credits = {}
+    for _, key in ipairs({ "THE_END", "COPYRIGHT" }) do
+      local d = C[key]
+      local okT, tiles = RomExtractorGen3.lz77ok(rom, d.TILES)
+      local okM, map = RomExtractorGen3.lz77ok(rom, d.MAP)
+      if okT and okM then
+        rec.credits[key:lower()] = save(frlgTilemap(tiles, map, 32, 30, 20, frlgColors(rom, d.PAL, 16),
+                                                    { opaque = true }), "credits_" .. key:lower())
+      end
+    end
+    do
+      local d = C.POKEBALL
+      local okT, tiles = RomExtractorGen3.lz77ok(rom, d.TILES)
+      local okM, map = RomExtractorGen3.lz77ok(rom, d.MAP)
+      if okT and okM then
+        rec.credits.pokeball = {}
+        for m = 0, 3 do
+          local pal = frlgColors(rom, d.PALS + m * 32, 16)
+          rec.credits.pokeball[m + 1] = save(frlgTilemap(tiles, map, 32, 30, 20, pal, { opaque = true }),
+                                             "credits_pokeball_" .. m)
+        end
+      end
+    end
+    do
+      local palTable = self:symbol("gMonPaletteTable")
+      rec.credits.monPoses = {}
+      if palTable then
+        for monId, mon in ipairs(C.MONS) do
+          local palPtr = rom:pointer(palTable + mon.species * 8)
+          local colors = palPtr and frlgColors(rom, palPtr, 16, true)
+          local poses = {}
+          if colors then
+            for poseId = 1, 2 do
+              local d = mon[poseId]
+              local ok, tiles = RomExtractorGen3.lz77ok(rom, d.TILES)
+              if ok then
+                poses[poseId] = {
+                  image = save(frlgSheet(tiles, d.W, d.H, 1, colors),
+                               ("credits_mon_%d_%d"):format(monId - 1, poseId)),
+                  x = d.X, y = d.Y,
+                }
+              end
+            end
+          end
+          rec.credits.monPoses[monId] = poses
+        end
+      end
+    end
+    local function character(key, name)
+      local d = C[key]
+      local ok, tiles = RomExtractorGen3.lz77ok(rom, d.TILES)
+      if not ok then return nil end
+      local frames = math.max(1, math.floor(#tiles / (64 * 32)))
+      return { image = save(frlgSheet(tiles, 8, 8, frames, frlgColors(rom, d.PAL, 16)), name), frames = frames }
+    end
+    local function ground(key, name)
+      local d = C[key]
+      local ok, tiles = RomExtractorGen3.lz77ok(rom, d.TILES)
+      if not ok then return nil end
+      local frames = math.max(1, math.floor(#tiles / (32 * 32)))
+      return { image = save(frlgSheet(tiles, 8, 4, frames, frlgColors(rom, d.PAL, 16)), name), frames = frames }
+    end
+    rec.credits.playerMale = character("PLAYER_MALE", "credits_player_male")
+    rec.credits.playerFemale = character("PLAYER_FEMALE", "credits_player_female")
+    rec.credits.rival = character("RIVAL", "credits_rival")
+    rec.credits.groundGrass = ground("GROUND_GRASS", "credits_ground_grass")
+    rec.credits.groundDirt = ground("GROUND_DIRT", "credits_ground_dirt")
+    rec.credits.groundCity = ground("GROUND_CITY", "credits_ground_city")
+    rec.credits.spriteParams = {}
+    for i = 0, 4 do
+      local at = C.SPRITE_PARAMS + i * 6
+      rec.credits.spriteParams[i + 1] = { rom:u16(at), rom:u16(at + 2), rom:u16(at + 4) }
+    end
+  end)
+
+  local constants = self._constants or {}
+  constants.gen3FRLGArt = rec
+  self._constants = constants
+  self:write("constants", constants)
+  Logger.info("Gen3 FireRed extra art: fossils %s, diploma %s, seagallop %s, confetti %s, credits %s",
+              tostring(rec.fossils ~= nil), tostring(rec.diploma ~= nil), tostring(rec.seagallop ~= nil),
+              tostring(rec.confetti ~= nil), tostring(rec.credits ~= nil))
+end
+
+function RomExtractorGen3:extractFireRedSpecialTexts()
+  self:beginStage("Gen3 FireRed special texts")
+  if (self.manifest or {}).frlgItemMenu == nil then return end
+  local T = RomExtractorGen3.FRLG_SPECIAL_TEXTS
+  local function read(at, max)
+    for _, d in ipairs({ 0, 1, -1 }) do
+      local ok, s = pcall(self.readText, self, at + d, max or 32)
+      if ok and type(s) == "string" and s ~= "" then return s end
+    end
+    return nil
+  end
+  local out = {}
+  for key, v in pairs(T) do
+    if type(v) == "table" then
+      out[key] = {}
+      for i, at in ipairs(v) do out[key][i] = read(at, key == "rating" and 200 or 32) end
+    else
+      out[key] = read(v)
+    end
+  end
+  local constants = self._constants or {}
+  constants.gen3FRLGSpecialTexts = out
+  self._constants = constants
+  self:write("constants", constants)
+  Logger.info("Gen3 FireRed special texts: floors '%s'..'%s', rating 1 '%s'",
+              tostring(out.floors[1]), tostring(out.floors[16]),
+              tostring(out.rating[1]):sub(1, 30))
+end
+
+function RomExtractorGen3:extractFireRedIntro()
+  self:beginStage("Gen3 FireRed intro")
+  if (self.manifest or {}).frlgItemMenu == nil then
+    Logger.warn("gen3 frlg intro: not a FireRed manifest -- skipped")
+    return
+  end
+  local I = RomExtractorGen3.FRLG_INTRO
+  local images = {}
+  local function bg(key, def)
+    local img, rows = self:frlgIntroBgLayer(def, key)
+    if not img then return false end
+    self:saveImage(img, "intro_frlg/" .. key .. ".png")
+    images[key] = { path = "assets/generated/intro_frlg/" .. key .. ".png",
+                     rows = rows }
+    return true
+  end
+  local function sheet(key, def)
+    local img, frames = self:frlgIntroSpriteSheet(def, key)
+    if not img then return false end
+    self:saveImage(img, "intro_frlg/" .. key .. ".png")
+    images[key] = { path = "assets/generated/intro_frlg/" .. key .. ".png",
+                     frames = frames, cols = def.COLS, rows = def.ROWS }
+    return true
+  end
+
+  local ok = true
+  ok = bg("gfBg", I.GF_BG) and ok
+  ok = sheet("gfArt", I.GF_ART) and ok
+  ok = sheet("gfText", I.GF_TEXT) and ok
+  ok = bg("scene1Grass", I.SCENE1_GRASS) and ok
+  ok = bg("scene1Bg", I.SCENE1_BG) and ok
+  ok = bg("scene2Bg", I.SCENE2_BG) and ok
+  ok = bg("scene2Plants", I.SCENE2_PLANTS) and ok
+  ok = bg("scene2GengarClose", I.SCENE2_GENGAR_CLOSE) and ok
+  ok = bg("scene2NidorinoClose", I.SCENE2_NIDORINO_CLOSE) and ok
+  ok = bg("scene3Bg", I.SCENE3_BG) and ok
+  ok = bg("scene3GengarBounce", I.SCENE3_GENGAR_BOUNCE) and ok
+  ok = sheet("scene3GengarBack", I.SCENE3_GENGAR_BACK) and ok
+  ok = sheet("scene3Nidorino", I.SCENE3_NIDORINO) and ok
+  ok = sheet("star", I.STAR) and ok
+  ok = sheet("sparkleSmall", I.SPARKLE_SMALL) and ok
+  ok = sheet("sparkleBig", I.SPARKLE_BIG) and ok
+  ok = sheet("presents", I.PRESENTS) and ok
+  ok = sheet("scene2Gengar", I.SCENE2_GENGAR) and ok
+  ok = sheet("scene2Nidorino", I.SCENE2_NIDORINO) and ok
+  ok = sheet("scene3Grass", I.SCENE3_GRASS) and ok
+  ok = sheet("scene3Swipe", I.SCENE3_SWIPE) and ok
+  ok = sheet("scene3Dust", I.SCENE3_DUST) and ok
+  -- pieces: one picture each, cut at their own tile shape
+  local function pieces(key, def)
+    local okG, tiles = RomExtractorGen3.lz77ok(self.rom, def.GFX)
+    if not okG then
+      Logger.warn("gen3 frlg intro: %s did not decompress", key)
+      return false
+    end
+    local palRaw = self.rom:bytes(def.PAL, def.PALSIZE or 0x20)
+    local colors = {}
+    for i = 0, math.floor(#palRaw / 2) - 1 do
+      local r, g, b = RomGba.bgr555(palRaw[i * 2 + 1] + palRaw[i * 2 + 2] * 256)
+      colors[i + 1] = { r, g, b }
+    end
+    for name, p in pairs(def.PIECES) do
+      local first, w, h = p[1], p[2], p[3]
+      local img = ImageWriter.blank(w * 8, h * 8)
+      for ty = 0, h - 1 do
+        for tx = 0, w - 1 do
+          RomExtractorGen3.partyTile(img, tiles, colors, first + ty * w + tx,
+                                     0, tx * 8, ty * 8)
+        end
+      end
+      local id = key .. "_" .. name
+      self:saveImage(img, "intro_frlg/" .. id .. ".png")
+      images[id] = { path = "assets/generated/intro_frlg/" .. id .. ".png",
+                     frames = 1, cols = w, rows = h }
+    end
+    return true
+  end
+  ok = pieces("gengarPiece", I.SCENE3_GENGAR_PIECES) and ok
+  ok = pieces("swipeBottom", I.SCENE3_SWIPE_BOTTOM) and ok
+
+  if not images.gfBg or not images.scene1Grass or not images.scene3Bg then
+    Logger.warn("gen3 frlg intro: the core backgrounds did not come out -- "
+                  .. "FireRed keeps Emerald's attract movie")
+    return
+  end
+  local record = { images = images,
+    source = "ROM:intro.c's own GAME FREAK logo and scene 1/2/3 art" }
+  local constants = self._constants or {}
+  constants.gen3FRLGIntro = record
+  self._constants = constants
+  self:write("constants", constants)
+  local made = 0
+  for _ in pairs(images) do made = made + 1 end
+  Logger.info("Gen3 FireRed intro: %d/%d pieces extracted%s", made, 13,
+              ok and "" or " (some missing -- the screen fills gaps in)")
+end
+
+-- ---------------------------------------------------------------------------
+-- STAGE: FireRed's NEW GAME -- the controls guide, Pikachu's pages and
+-- Professor Oak's speech (oak_speech.c).
+--
+-- Reported from play: "there is no prof oak introducing the game to us and
+-- then no way to choose rival name". FireRed was booting Emerald's Birch
+-- speech, which has neither. Everything this screen shows is read here from
+-- the addresses pret names: the lines, both preset name lists, the four
+-- 8bpp portraits, the platform, Pikachu, and the backgrounds.
+-- ---------------------------------------------------------------------------
+
+RomExtractorGen3.FRLG_OAK_SPEECH = {
+  TEXT = {
+    welcome = 0x1C5C78, thisWorld = 0x1C5D06, inhabited = 0x1C5D12,
+    iStudy = 0x1C5D4A, tellMe = 0x1C5DBC, askGender = 0x1C59D4,
+    yourName = 0x1C5DEA, soYourName = 0x1C5E12, whatWasHisName = 0x1C5E2E,
+    rivalNameAgain = 0x1C5E90, confirmRival = 0x1C5EB4,
+    rememberRival = 0x1C5EC4, letsGo = 0x1C5EF4,
+    guideIntro = 0x1C582C, guideDPad = 0x1C5874, guideA = 0x1C58BA,
+    guideB = 0x1C58F8, guideStart = 0x1C592A, guideSelect = 0x1C594E,
+    guideLR = 0x1C5980,
+    controls = 0x415D2C, aNext = 0x415D48, aNextBBack = 0x415D50,
+    boy = 0x415D92, girl = 0x415D96, newName = 0x1C574E,
+  },
+  PIKACHU_PAGES = 0x462EF0,            -- sPikachuIntro_Strings (3 pointers)
+  MALE_NAMES = { 0x46308C, 19 },       -- pointer tables
+  FEMALE_NAMES = { 0x4630D8, 19 },
+  RIVAL_NAMES = { 0x463124, 4 },
+  BG_PALS = 0x460568,                  -- 4 banks, raw
+  GUIDE_TILES = 0x4605E8, PIKACHU_MAP = 0x460BA8,
+  OAK_TILES = 0x460CA4, OAK_MAP = 0x460CE8,
+  GUIDE_PAGE2 = 0x460D94, GUIDE_PAGE3 = 0x460E34,
+  PICS = {                             -- {pal, tiles, palette bank}
+    red = { 0x4615FC, 0x46163C, 4 }, leaf = { 0x460ED4, 0x460F14, 4 },
+    oak = { 0x461CD4, 0x461D14, 6 }, rival = { 0x4623AC, 0x4623EC, 6 },
+  },
+  PLATFORM = { GFX = 0x462A10, PAL = 0x4629D0, PALSIZE = 0x20, COLS = 4, ROWS = 4 },
+  PIKACHU_BODY = { GFX = 0x462B74, PAL = 0x4629F0, PALSIZE = 0x20, COLS = 4, ROWS = 4 },
+  PIKACHU_EARS = { GFX = 0x462D34, PAL = 0x4629F0, PALSIZE = 0x20, COLS = 4, ROWS = 2 },
+  PIKACHU_EYES = { GFX = 0x462E18, PAL = 0x4629F0, PALSIZE = 0x20, COLS = 2, ROWS = 1 },
+}
+
+function RomExtractorGen3:extractFireRedOakSpeech()
+  self:beginStage("Gen3 FireRed Oak speech")
+  if (self.manifest or {}).frlgItemMenu == nil then return end
+  local S = RomExtractorGen3.FRLG_OAK_SPEECH
+  local rom = self.rom
+  local record = { text = {}, maleNames = {}, femaleNames = {},
+                   rivalNames = {}, pikachuPages = {}, images = {} }
+
+  -- firered3d's string labels are sometimes a byte early (on the previous
+  -- string's terminator), which reads back as ""
+  for key, at in pairs(S.TEXT) do
+    for _, delta in ipairs({ 0, 1, -1 }) do
+      local ok, text = pcall(self.readText, self, at + delta, 600)
+      if ok and text and text ~= "" then
+        record.text[key] = text
+        break
+      end
+    end
+  end
+  for i = 0, 2 do
+    local ptr = rom:pointer(S.PIKACHU_PAGES + i * 4)
+    local ok, text = pcall(self.readText, self, ptr or 0, 600)
+    if ptr and ok and text then record.pikachuPages[i + 1] = text end
+  end
+  local function names(spec, into)
+    for i = 0, spec[2] - 1 do
+      local ptr = rom:pointer(spec[1] + i * 4)
+      local ok, text = pcall(self.readText, self, ptr or 0, 16)
+      if ptr and ok and text then into[#into + 1] = text end
+    end
+  end
+  names(S.MALE_NAMES, record.maleNames)
+  names(S.FEMALE_NAMES, record.femaleNames)
+  names(S.RIVAL_NAMES, record.rivalNames)
+
+  local function colours(raw)
+    local out = {}
+    for i = 0, math.floor(#raw / 2) - 1 do
+      local r, g, b = RomGba.bgr555(raw[i * 2 + 1] + raw[i * 2 + 2] * 256)
+      out[i + 1] = { r, g, b }
+    end
+    return out
+  end
+  local bgColors = colours(rom:bytes(S.BG_PALS, 0x80))
+  local function save(key, img)
+    self:saveImage(img, "oak_speech_frlg/" .. key .. ".png")
+    record.images[key] = "assets/generated/oak_speech_frlg/" .. key .. ".png"
+  end
+
+  -- a 4bpp tilemap, `cols` wide, placed at a tile offset on a 240x160 canvas
+  local function compose(key, tiles, map, cols, rows, ox, oy)
+    local img = ImageWriter.blank(240, 160)
+    for ty = 0, rows - 1 do
+      for tx = 0, cols - 1 do
+        local c = ty * cols + tx
+        local e = (map[c * 2 + 1] or 0) + (map[c * 2 + 2] or 0) * 256
+        local tid, bank = e % 1024, math.floor(e / 4096) % 16
+        local px, py = (tx + ox) * 8, (ty + oy) * 8
+        if px < 240 and py < 160 and tid * 32 + 32 <= #tiles then
+          RomExtractorGen3.partyTile(img, tiles, bgColors, tid, bank, px, py)
+        end
+      end
+    end
+    save(key, img)
+  end
+  local okG, guideTiles = RomExtractorGen3.lz77ok(rom, S.GUIDE_TILES)
+  local okP, pikaMap = RomExtractorGen3.lz77ok(rom, S.PIKACHU_MAP)
+  if okG and okP then
+    compose("pikachuBg", guideTiles, pikaMap, 30, 19, 0, 2)
+    compose("guidePage2", guideTiles, rom:bytes(S.GUIDE_PAGE2, 0xA0), 5, 16, 1, 3)
+    compose("guidePage3", guideTiles, rom:bytes(S.GUIDE_PAGE3, 0xA0), 5, 16, 1, 3)
+  else
+    Logger.warn("gen3 frlg oak speech: the guide tiles did not decompress")
+  end
+  local okT, oakTiles = RomExtractorGen3.lz77ok(rom, S.OAK_TILES)
+  local okM, oakMap = RomExtractorGen3.lz77ok(rom, S.OAK_MAP)
+  if okT and okM then
+    compose("oakBg", oakTiles, oakMap, 32, math.floor(#oakMap / 64), 0, 0)
+  else
+    Logger.warn("gen3 frlg oak speech: the Oak background did not decompress")
+  end
+  -- the backdrop is palette 0 colour 0 of the scene's own palettes
+  record.backdrop = bgColors[1]
+
+  -- 8bpp portraits: a pixel is an absolute palette index into the bank the
+  -- pic's own 32 colours are loaded at (LoadTrainerPic)
+  for key, p in pairs(S.PICS) do
+    local okPic, px = RomExtractorGen3.lz77ok(rom, p[2])
+    if okPic and #px >= 64 * 96 then
+      local pal = colours(rom:bytes(p[1], 0x40))
+      local base = p[3] * 16
+      local img = ImageWriter.blank(64, 96)
+      -- the tiles are 8x12 laid row-major, 64 bytes each
+      for ty = 0, 11 do
+        for tx = 0, 7 do
+          local t = ty * 8 + tx
+          for y = 0, 7 do
+            for x = 0, 7 do
+              local v = px[t * 64 + y * 8 + x + 1] or 0
+              local c = v ~= 0 and pal[v - base + 1]
+              if c then
+                img:setPixel(tx * 8 + x, ty * 8 + y, c[1] / 255, c[2] / 255,
+                             c[3] / 255, 1)
+              end
+            end
+          end
+        end
+      end
+      save(key, img)
+    else
+      Logger.warn("gen3 frlg oak speech: the %s portrait did not decompress", key)
+    end
+  end
+
+  for key, def in pairs({ platform = S.PLATFORM, pikachuBody = S.PIKACHU_BODY,
+                          pikachuEars = S.PIKACHU_EARS, pikachuEyes = S.PIKACHU_EYES }) do
+    local img, frames = self:frlgIntroSpriteSheet(def, key)
+    if img then
+      save(key, img)
+      record.images[key] = { path = record.images[key], frames = frames,
+                             cols = def.COLS, rows = def.ROWS }
+    end
+  end
+
+  local constants = self._constants or {}
+  constants.gen3FRLGOakSpeech = record
+  self._constants = constants
+  self:write("constants", constants)
+  local n = 0
+  for _ in pairs(record.text) do n = n + 1 end
+  Logger.info("Gen3 FireRed Oak speech: %d lines, %d/%d/%d names, %d pikachu pages",
+              n, #record.maleNames, #record.femaleNames, #record.rivalNames,
+              #record.pikachuPages)
+end
+
 function RomExtractorGen3:extractBagScreen()
   self:beginStage("Gen3 bag screen")
   local B = RomExtractorGen3.BAG_SCREEN
   local rom = self.rom
+  if B.LAYOUT == "frlg" then return self:extractBagScreenFireRed() end
 
-  local okG, tiles = pcall(rom.lz77, rom, B.GFX)
-  local okM, map = pcall(rom.lz77, rom, B.TILEMAP)
+  local okG, tiles = RomExtractorGen3.lz77ok(rom, B.GFX)
+  local okM, map = RomExtractorGen3.lz77ok(rom, B.TILEMAP)
   if not (okG and okM) then
     Logger.warn("gen3 bag screen: the sheet or the tilemap did not "
                   .. "decompress -- the bag keeps its own drawing")
@@ -38337,7 +42495,7 @@ function RomExtractorGen3:extractBagScreen()
   local images = {}
   for _, row in ipairs({ { key = "male", at = B.PAL_MALE },
                          { key = "female", at = B.PAL_FEMALE } }) do
-    local okP, palRaw = pcall(rom.lz77, rom, row.at)
+    local okP, palRaw = RomExtractorGen3.lz77ok(rom, row.at)
     if okP and #palRaw == B.PALETTES * 32 then
       local colors = {}
       for i = 0, B.PALETTES * 16 - 1 do
@@ -38548,7 +42706,7 @@ function RomExtractorGen3:extractBagScreen()
     markerColour = {}
     for _, row in ipairs({ { key = "male", at = B.PAL_MALE },
                            { key = "female", at = B.PAL_FEMALE } }) do
-      local okP, palRaw = pcall(rom.lz77, rom, row.at)
+      local okP, palRaw = RomExtractorGen3.lz77ok(rom, row.at)
       if okP and #palRaw >= 32 then
         -- the dots are drawn from palette bank 1
         local i = 16 + marker.index
@@ -38814,9 +42972,9 @@ function RomExtractorGen3:extractPartyMenu()
   local P = RomExtractorGen3.PARTY_MENU
   local rom = self.rom
 
-  local okG, tiles = pcall(rom.lz77, rom, P.BG_GFX)
-  local okM, map = pcall(rom.lz77, rom, P.BG_TILEMAP)
-  local okP, palRaw = pcall(rom.lz77, rom, P.BG_PAL)
+  local okG, tiles = RomExtractorGen3.lz77ok(rom, P.BG_GFX)
+  local okM, map = RomExtractorGen3.lz77ok(rom, P.BG_TILEMAP)
+  local okP, palRaw = RomExtractorGen3.lz77ok(rom, P.BG_PAL)
   if not (okG and okM and okP) then
     Logger.warn("gen3 party menu: the sheet, the tilemap or the palettes did "
                   .. "not decompress -- the screen keeps its own drawing")
@@ -38890,11 +43048,11 @@ function RomExtractorGen3:extractPartyMenu()
   end
 
   -- ---- the ball behind each icon, and the status pills --------------------
-  local okBallPal, ballPalRaw = pcall(rom.lz77, rom, P.BALL_PAL)
+  local okBallPal, ballPalRaw = RomExtractorGen3.lz77ok(rom, P.BALL_PAL)
   if okBallPal and #ballPalRaw == 32 then
     local ballColors = RomGba.palette(ballPalRaw)
     local function frames(at, count, tilesPer, w, h, name)
-      local okF, raw = pcall(rom.lz77, rom, at)
+      local okF, raw = RomExtractorGen3.lz77ok(rom, at)
       if not okF or #raw ~= count * tilesPer * 32 then return end
       pcall(function()
         local img = ImageWriter.blank(w * count, h)
@@ -39203,7 +43361,7 @@ function RomExtractorGen3:partySummary()
   end
   -- the bar is COMPRESSED (LoadCompressedSpriteSheetUsingHeap) and the icons
   -- are not (LoadSpriteSheet), which is the difference between the two calls
-  local okBar, bar = pcall(rom.lz77, rom, barFrom)
+  local okBar, bar = RomExtractorGen3.lz77ok(rom, barFrom)
   if not (okBar and type(bar) == "table" and #bar == barBytes) then
     Logger.warn("gen3 party summary: the bar at %07X does not decompress to "
                 .. "%d bytes -- the row is left out", barFrom, barBytes)
@@ -39542,7 +43700,7 @@ function RomExtractorGen3:extractPokedexScreen()
   end
 
   local function blob(at, want)
-    local ok, raw = pcall(rom.lz77, rom, at - 0x08000000)
+    local ok, raw = RomExtractorGen3.lz77ok(rom, at - 0x08000000)
     if not (ok and type(raw) == "table" and #raw == want) then return nil end
     return raw
   end
@@ -39905,7 +44063,7 @@ function RomExtractorGen3:extractBattleHud()
   -- for.
   local seen, boxes = {}, {}
   for _, r in ipairs(found.rows) do
-    local raw = select(2, pcall(rom.lz77, rom, r.target))
+    local raw = select(2, RomExtractorGen3.lz77ok(rom, r.target))
     if type(raw) == "table" and not seen[r.target]
        and (#raw == 2 * GEN3_HB_HALF_BYTES or #raw == 4 * GEN3_HB_HALF_BYTES)
     then
@@ -40015,10 +44173,15 @@ function RomExtractorGen3:extractBattleHud()
 
   local images = {}
   local ok, saveErr = pcall(function()
-    self:saveImage(self:healthboxImage(player.raw, boxColors),
-                   "battle/hud/player.png")
-    self:saveImage(self:healthboxImage(opponent.raw, boxColors),
-                   "battle/hud/opponent.png")
+    local W = RomExtractorGen3.HUD_WINDOWS
+    local playerImg = self:healthboxImage(player.raw, boxColors)
+    local opponentImg = self:healthboxImage(opponent.raw, boxColors)
+    if W.ENABLED then
+      RomExtractorGen3.blankHudWindows(playerImg, W.player.blank, boxColors, W.PAPER)
+      RomExtractorGen3.blankHudWindows(opponentImg, W.opponent.blank, boxColors, W.PAPER)
+    end
+    self:saveImage(playerImg, "battle/hud/player.png")
+    self:saveImage(opponentImg, "battle/hud/opponent.png")
     if playerDoubles then
       self:saveImage(self:healthboxImage(playerDoubles.raw, boxColors),
                      "battle/hud/player_doubles.png")
@@ -40074,9 +44237,15 @@ function RomExtractorGen3:extractBattleHud()
   -- the wrong offset fails on the first step.
   local ramps = {}
   for _, ramp in ipairs(GEN3_HB_RAMPS) do
-    local good = true
-    for step = 0, GEN3_HB_RAMP_STEPS - 1 do
-      if fillOf(ramp.tile + step, ramp.fill[1]) ~= step then good = false break end
+    -- Either shade of the bar may carry the ramp: Emerald draws both of its
+    -- two fill colours one pixel at a time, FireRed only the second.
+    local good = false
+    for _, index in ipairs(ramp.fill) do
+      local ramps1 = true
+      for step = 0, GEN3_HB_RAMP_STEPS - 1 do
+        if fillOf(ramp.tile + step, index) ~= step then ramps1 = false break end
+      end
+      if ramps1 then good = true break end
     end
     if not good then
       Logger.warn("gen3 battle HUD: the %s bar does not ramp one pixel at a "
@@ -40270,6 +44439,10 @@ function RomExtractorGen3:extractBattleHud()
     -- two are not the same shape and the layout used to assume they were --
     -- see healthboxGeometry.
     geometry = geometry,
+    windows = RomExtractorGen3.HUD_WINDOWS.ENABLED and {
+      player = RomExtractorGen3.HUD_WINDOWS.player,
+      opponent = RomExtractorGen3.HUD_WINDOWS.opponent,
+    } or nil,
     -- ...and the ink the healthbox prints in.  The window it renders text
     -- into names its own three indices -- background 2, letter 1, shadow 3
     -- (AddTextPrinterAndCreateWindowOnHealthbox) -- and the two GENDER
@@ -40354,8 +44527,8 @@ function RomExtractorGen3:extractItemIcons()
     local gfxAt, palAt = rom:pointer(o), rom:pointer(o + 4)
     local row = nil
     if gfxAt and palAt then
-      local okG, tiles = pcall(rom.lz77, rom, gfxAt)
-      local okP, palRaw = pcall(rom.lz77, rom, palAt)
+      local okG, tiles = RomExtractorGen3.lz77ok(rom, gfxAt)
+      local okP, palRaw = RomExtractorGen3.lz77ok(rom, palAt)
       if okG and okP and #tiles == I.GFX_BYTES and #palRaw == I.PAL_BYTES then
         row = { gfx = gfxAt, pal = palAt, tiles = tiles, palRaw = palRaw }
         clean = clean + 1
@@ -43404,7 +47577,7 @@ RomExtractorGen3.POKENAV = {
 -- decompressor, and which is which is not worth a table: ask for 32 bytes and
 -- take whichever answer is 32 bytes long.
 function RomExtractorGen3:palette16(at)
-  local ok, raw = pcall(self.rom.lz77, self.rom, at)
+  local ok, raw = RomExtractorGen3.lz77ok(self.rom, at)
   if not (ok and raw and #raw == 32) then
     raw = {}
     for i = 1, 32 do raw[i] = self.rom:u8(at + i - 1) end
@@ -43439,8 +47612,8 @@ end
 -- it would.
 function RomExtractorGen3:bgLayer(image, layer)
   local rom = self.rom
-  local okT, tiles = pcall(rom.lz77, rom, layer.tiles)
-  local okM, map = pcall(rom.lz77, rom, layer.map)
+  local okT, tiles = RomExtractorGen3.lz77ok(rom, layer.tiles)
+  local okM, map = RomExtractorGen3.lz77ok(rom, layer.map)
   if not (okT and okM) then return false end
   -- ONE PALETTE PER BANK, because a background can use more than one.  Bits
   -- 12-15 of a tilemap entry pick the sixteen colours the cell is drawn in,
@@ -44488,10 +48661,27 @@ function RomExtractorGen3:extractBattleTextbox()
   local T = RomExtractorGen3.BATTLE_TEXTBOX
   local rom = self.rom
 
-  local okT, tiles = pcall(rom.lz77, rom, T.TILES)
-  local okM, map = pcall(rom.lz77, rom, T.TILEMAP)
-  local okP, palRaw = pcall(rom.lz77, rom, T.PALETTE)
-  local okW, menuRaw = pcall(rom.lz77, rom, T.MENU_PALETTE)
+  local okT, tiles = RomExtractorGen3.lz77ok(rom, T.TILES)
+  local okM, map = RomExtractorGen3.lz77ok(rom, T.TILEMAP)
+  local okP, palRaw = RomExtractorGen3.lz77ok(rom, T.PALETTE)
+  local okW, menuRaw
+  if T.MENU_PALETTE_SETS then
+    -- FireRed has no menu palette blob: LoadBattleMenuWindowGfx writes the
+    -- entries of BG palette 5 one at a time.  { index, bgr555 } pairs.
+    local raw = {}
+    for k = 1, T.MENU_PALETTE_BYTES do raw[k] = 0 end
+    for _, set in ipairs(T.MENU_PALETTE_SETS) do
+      raw[set[1] * 2 + 1] = set[2] % 256
+      raw[set[1] * 2 + 2] = math.floor(set[2] / 256)
+    end
+    okW, menuRaw = true, raw
+  else
+    okW, menuRaw = RomExtractorGen3.lz77ok(rom, T.MENU_PALETTE)
+  end
+  okT = okT and type(tiles) == "table"
+  okM = okM and type(map) == "table"
+  okP = okP and type(palRaw) == "table"
+  okW = okW and type(menuRaw) == "table"
   if not (okT and okM and okP and okW) then
     Logger.warn("gen3 battle textbox: one of the four blobs did not "
                   .. "decompress -- the battle keeps its drawn boxes")
@@ -44596,8 +48786,10 @@ function RomExtractorGen3:extractBattleTextbox()
     end
     local sheet = {}
     for k = 1, #tiles do sheet[k] = tiles[k] end
-    for k = 1, T.FRAME_TILES_BYTES do
-      sheet[T.FRAME_TILE_BASE * 32 + k] = ft[k]
+    for _, tileBase in ipairs(T.FRAME_TILE_BASES or { T.FRAME_TILE_BASE }) do
+      for k = 1, T.FRAME_TILES_BYTES do
+        sheet[tileBase * 32 + k] = ft[k]
+      end
     end
     local pal = {}
     for i = 0, 31 do pal[i] = base[i] end
@@ -44809,8 +49001,8 @@ function RomExtractorGen3:extractBallAnims()
     local palAt, palTag = rom:pointer(palO), rom:u16(palO + 4)
     local row
     if gfxAt and palAt then
-      local okG, tiles = pcall(rom.lz77, rom, gfxAt)
-      local okP, raw = pcall(rom.lz77, rom, palAt)
+      local okG, tiles = RomExtractorGen3.lz77ok(rom, gfxAt)
+      local okP, raw = RomExtractorGen3.lz77ok(rom, palAt)
       if okG and okP and #tiles == B.SHEET_BYTES and #raw == B.PALETTE_BYTES
          and size == B.SHEET_BYTES and tag == palTag then
         row = { gfx = gfxAt, pal = palAt, tag = tag, tiles = tiles, raw = raw }
@@ -44819,7 +49011,7 @@ function RomExtractorGen3:extractBallAnims()
     end
     sheets[i] = row
   end
-  local okO, openTiles = pcall(rom.lz77, rom, B.OPEN_FRAME)
+  local okO, openTiles = RomExtractorGen3.lz77ok(rom, B.OPEN_FRAME)
   if clean ~= B.COUNT or not (okO and #openTiles == B.OPEN_BYTES) then
     Logger.warn("gen3 ball animation: %d of %d sheets are %d bytes with a "
                   .. "matching palette tag, and the shared open frame is %s "
@@ -44835,8 +49027,8 @@ function RomExtractorGen3:extractBallAnims()
     local r, g, b = RomGba.bgr555(rom:u16(B.COLOURS + i * 2))
     colours[i + 1] = { r, g, b }
   end
-  local okPart, particles = pcall(rom.lz77, rom, B.PARTICLES)
-  local okPPal, particlePal = pcall(rom.lz77, rom, B.PARTICLE_PALETTE)
+  local okPart, particles = RomExtractorGen3.lz77ok(rom, B.PARTICLES)
+  local okPPal, particlePal = RomExtractorGen3.lz77ok(rom, B.PARTICLE_PALETTE)
   if not (okPart and okPPal and #particles == B.PARTICLE_BYTES
           and #particlePal == B.PALETTE_BYTES) then
     Logger.warn("gen3 ball animation: the particle sheet at %07X is not %d "
@@ -45196,7 +49388,7 @@ RomExtractorGen3.SLOT_SCREEN = {
 function RomExtractorGen3:slotScreen()
   local S = RomExtractorGen3.SLOTS
   local rom = self.rom
-  local ok, tiles = pcall(rom.lz77, rom, S.BG_TILES)
+  local ok, tiles = RomExtractorGen3.lz77ok(rom, S.BG_TILES)
   if not (ok and type(tiles) == "table") then
     return nil, "the machine's tiles do not decompress"
   end
@@ -45485,8 +49677,161 @@ function RomExtractorGen3:slotPaylines()
   }
 end
 
+function RomExtractorGen3:extractFireRedSlotMachine()
+  local S = {
+    REELS = 0x464926, PAYOUTS = 0x464966,
+    REEL_PAL = 0x464974, REEL_TILES = 0x464A14,
+    REEL_PAL_TAGS = 0x465608,
+    DIGIT_PAL = 0x465524, DIGIT_TILES = 0x465544,
+    BG_PAL = 0x465930, BG_TILES = 0x4659D0, BG_MAP = 0x4661D4,
+    COUNT = 3, TAGS = 21, SYMBOLS = 7,
+  }
+  local reels = {}
+  for reel = 0, S.COUNT - 1 do
+    local row, seen = {}, {}
+    for i = 0, S.TAGS - 1 do
+      local tag = self.rom:u8(S.REELS + reel * S.TAGS + i)
+      if tag >= S.SYMBOLS then
+        Logger.warn("FireRed slot machine: reel %d has invalid symbol %d",
+                    reel + 1, tag)
+        return
+      end
+      row[i + 1], seen[tag] = tag, true
+    end
+    -- FireRed deliberately omits cherries from the third reel: its cherry
+    -- prizes depend only on the first two reels.  Every other symbol appears
+    -- on all three, while cherries must appear on the first two.
+    for tag = 0, S.SYMBOLS - 1 do
+      local required = tag ~= 4 or reel < 2
+      if required and not seen[tag] then
+        Logger.warn("FireRed slot machine: reel %d never shows symbol %d",
+                    reel + 1, tag)
+        return
+      end
+    end
+    reels[reel + 1] = row
+  end
+
+  local payouts = {}
+  for i = 0, 6 do payouts[i] = self.rom:u16(S.PAYOUTS + i * 2) end
+  if payouts[0] ~= 0 or payouts[1] ~= 2 or payouts[2] ~= 6
+     or payouts[5] ~= 100 or payouts[6] ~= 300 then
+    Logger.warn("FireRed slot machine: payout table failed its cartridge checks")
+    return
+  end
+
+  local record = {
+    rules = "frlg", reels = reels, payouts = payouts,
+    symbols = 7, tags = 21, noMatch = 0, cherry = 4,
+    twoCherry = 1, threeCherry = 2,
+    symbolMatch = { [0]=6, [1]=5, [2]=4, [3]=4, [4]=2, [5]=3, [6]=3 },
+    rows = { {1,1,1}, {2,2,2}, {3,3,3} },
+    diagonals = { {1,2,3}, {3,2,1} }, lines = {1,3,5}, maxBet = 3,
+    screen = { windows = {{x=64,w=32},{x=104,w=32},{x=144,w=32}},
+               top = 28, height = 72, rowPitch = 24,
+               counters = { creditX=81, payoutX=129, y=22 } },
+    source = "ROM:pokefirered sReelIconAnimByReelAndPos / sPayoutTable",
+  }
+
+  local composed = 0
+  local okArt, artErr = pcall(function()
+    local okTiles, tiles = RomExtractorGen3.lz77ok(self.rom, S.REEL_TILES)
+    assert(okTiles and #tiles >= 7 * 512, "reel icon sheet does not decompress")
+    local palettes = {}
+    for bank = 0, 4 do
+      palettes[bank] = RomGba.palette(self.rom:bytes(S.REEL_PAL + bank * 32, 32))
+    end
+    record.symbolArt = {}
+    for icon = 0, 6 do
+      local tag = self.rom:u16(S.REEL_PAL_TAGS + icon * 2)
+      local colors = palettes[tag] or palettes[0]
+      local raw = {}
+      for i = 1, 512 do raw[i] = tiles[icon * 512 + i] end
+      local px = RomGba.tiles4bpp(raw, 4, 4)
+      local image = ImageWriter.blank(32, 32)
+      for y = 1, 32 do for x = 1, 32 do
+        local index, c = px[y][x], colors[px[y][x] + 1]
+        if index ~= 0 and c then
+          image:setPixel(x-1,y-1,c[1]/255,c[2]/255,c[3]/255,1)
+        end
+      end end
+      local path = ("slots/frlg_symbol_%d.png"):format(icon)
+      self:saveImage(image, path)
+      record.symbolArt[icon] = "assets/generated/" .. path
+      composed = composed + 1
+    end
+
+    local okBg, bgTiles = RomExtractorGen3.lz77ok(self.rom, S.BG_TILES)
+    local okMap, bgMap = RomExtractorGen3.lz77ok(self.rom, S.BG_MAP)
+    assert(okBg and okMap and #bgMap >= 32 * 20 * 2,
+           "slot background does not decompress")
+    local banks = {}
+    for bank = 0, 4 do
+      banks[bank] = RomGba.palette(self.rom:bytes(S.BG_PAL + bank * 32, 32))
+    end
+    local image = ImageWriter.blank(256,160)
+    local cache = {}
+    for cy=0,19 do for cx=0,31 do
+      local at=(cy*32+cx)*2
+      local entry=(bgMap[at+1] or 0)+(bgMap[at+2] or 0)*256
+      local tile=entry%1024
+      local flipX=math.floor(entry/1024)%2==1
+      local flipY=math.floor(entry/2048)%2==1
+      local colors=banks[math.floor(entry/4096)%16] or banks[0]
+      if tile*32+32 <= #bgTiles and colors then
+        local px=cache[tile]
+        if not px then
+          local raw={}
+          for i=1,32 do raw[i]=bgTiles[tile*32+i] end
+          px=RomGba.tiles4bpp(raw,1,1); cache[tile]=px
+        end
+        for y=1,8 do for x=1,8 do
+          local sx=flipX and 9-x or x
+          local sy=flipY and 9-y or y
+          local index,c=px[sy][sx],colors[px[sy][sx]+1]
+          if index ~= 0 and c then
+            image:setPixel(cx*8+x-1,cy*8+y-1,c[1]/255,c[2]/255,c[3]/255,1)
+          end
+        end end
+      end
+    end end
+    self:saveImage(image,"slots/frlg_machine.png")
+    record.background="assets/generated/slots/frlg_machine.png"
+    composed=composed+1
+
+    local okDigits,digitTiles=RomExtractorGen3.lz77ok(self.rom,S.DIGIT_TILES)
+    local digitPal=RomGba.palette(self.rom:bytes(S.DIGIT_PAL,32))
+    assert(okDigits and #digitTiles >= 10*64,"slot digits do not decompress")
+    local strip=ImageWriter.blank(80,16)
+    for digit=0,9 do
+      local raw={}
+      for i=1,64 do raw[i]=digitTiles[digit*64+i] end
+      local px=RomGba.tiles4bpp(raw,1,2)
+      for y=1,16 do for x=1,8 do
+        local index,c=px[y][x],digitPal[px[y][x]+1]
+        if index ~= 0 and c then
+          strip:setPixel(digit*8+x-1,y-1,c[1]/255,c[2]/255,c[3]/255,1)
+        end
+      end end
+    end
+    self:saveImage(strip,"slots/frlg_digits.png")
+    record.digitArt="assets/generated/slots/frlg_digits.png"
+    composed=composed+1
+  end)
+  if not okArt then
+    Logger.warn("FireRed slot machine art could not be composed (%s)",tostring(artErr))
+  end
+
+  local constants=self._constants or {}
+  constants.gen3Slots=record
+  self._constants=constants
+  self:write("constants",constants)
+  Logger.info("FireRed slot machine: 3 reels, 7 symbols, 7 payouts, %d pictures",composed)
+end
+
 function RomExtractorGen3:extractSlotMachine()
   self:beginStage("Gen3 slot machine")
+  if self:isFireRedManifest() then return self:extractFireRedSlotMachine() end
   local S = RomExtractorGen3.SLOTS
   local reels, why = self:slotReels()
   if not reels then
@@ -47712,8 +52057,8 @@ function RomExtractorGen3:hallOfFameArt()
   end
   local tilesAt, mapAt, palAt = loads[1], loads[2], loads[3]
 
-  local okT, tiles = pcall(rom.lz77, rom, tilesAt)
-  local okM, map = pcall(rom.lz77, rom, mapAt)
+  local okT, tiles = RomExtractorGen3.lz77ok(rom, tilesAt)
+  local okM, map = RomExtractorGen3.lz77ok(rom, mapAt)
   if not (okT and type(tiles) == "table" and #tiles == H.TILE_BYTES) then
     return nil, ("the tiles at %07X are %s bytes, not %d")
                 :format(tilesAt, okT and tostring(#tiles) or "unreadable",
@@ -47779,6 +52124,7 @@ end
 function RomExtractorGen3:extractHallOfFame()
   self:beginStage("Gen3 hall of fame")
   local H = RomExtractorGen3.HOF
+  if self:isFireRedManifest() then return self:extractFireRedHallOfFame() end
   local art, why = self:hallOfFameArt()
   if not art then
     Logger.warn("gen3 hall of fame: %s -- the ceremony is left out and the "
@@ -47853,6 +52199,77 @@ function RomExtractorGen3:extractHallOfFame()
   Logger.info("Gen3 hall of fame: %s; %s", record.text.welcome, record.source)
 end
 
+
+-- FIRERED'S CEREMONY IS NOT A MOUND.  pokefirered hall_of_fame.c
+-- HallOfFame_LoadBgGfx: BG3 is filled with tile 2 of sHallOfFame_Gfx, and BG1
+-- lays tile 1 over the top two and bottom six rows, alpha-blended 16/7 over
+-- BG3 -- the two dark bands the team and the text sit between.  The words are
+-- the gText_ strings the same file prints.
+RomExtractorGen3.FRLG_HOF = {
+  PAL = 0x40C39C, GFX = 0x40C3BC,
+  TEXT = { welcome = 0x416008, number = 0x4160B4, champion = 0x4160C8,
+           dexNo = 0x4160EC, level = 0x4160F4, name = 0x4160FC,
+           idNo = 0x416104, saving = 0x419F54, time = 0x415CE8 },
+}
+
+function RomExtractorGen3:extractFireRedHallOfFame()
+  local F = RomExtractorGen3.FRLG_HOF
+  local rom = self.rom
+  local text = {}
+  for key, at in pairs(F.TEXT) do
+    local b = rom:u8(at)
+    if b == 0xFF then at = at + 1 end
+    text[key] = self:readText(at, 80)
+  end
+  -- the FRLG name line is "NAME" + the placeholder; keep the Emerald key shape
+  text.name = text.name or "NAME"
+  local record = { text = text, frlg = true,
+                   source = ("ROM:sHallOfFame_Gfx %07X / sHallOfFame_Pal %07X"):format(F.GFX, F.PAL) }
+  local ok, err = pcall(function()
+    local okT, tiles = RomExtractorGen3.lz77ok(rom, F.GFX)
+    if not (okT and type(tiles) == "table" and #tiles >= 32 * 3) then
+      error("tiles unreadable")
+    end
+    local pal = {}
+    for i = 0, 15 do
+      local r, g, b = RomGba.bgr555(rom:u16(F.PAL + i * 2))
+      pal[i] = { r, g, b }
+    end
+    local function px(tile, x, y)
+      local byte = tiles[tile * 32 + y * 4 + math.floor(x / 2) + 1] or 0
+      return (x % 2 == 0) and (byte % 16) or math.floor(byte / 16)
+    end
+    local image = ImageWriter.blank(256, 160)
+    for y = 0, 159 do
+      local row = math.floor(y / 8)
+      local band = row <= 1 or row >= 14
+      for x = 0, 255 do
+        local c = pal[px(2, x % 8, y % 8)]
+        local r, g, b = c[1], c[2], c[3]
+        if band then
+          local i = px(1, x % 8, y % 8)
+          if i ~= 0 then
+            local t = pal[i]
+            r = math.min(255, t[1] + r * 7 / 16)
+            g = math.min(255, t[2] + g * 7 / 16)
+            b = math.min(255, t[3] + b * 7 / 16)
+          end
+        end
+        image:setPixel(x, y, r / 255, g / 255, b / 255, 1)
+      end
+    end
+    self:saveImage(image, "hof/gen3_platform.png")
+    record.background = "assets/generated/hof/gen3_platform.png"
+  end)
+  if not ok then
+    Logger.warn("gen3 frlg hall of fame art: %s -- the words are still written", tostring(err))
+  end
+  local constants = self._constants or {}
+  constants.gen3HallOfFame = record
+  self._constants = constants
+  self:write("constants", constants)
+  Logger.info("Gen3 hall of fame (FRLG): %s", tostring(text.welcome))
+end
 
 -- ---------------------------------------------------------------------------
 -- STAGE: THE CREDITS.
@@ -48019,8 +52436,65 @@ function RomExtractorGen3:creditsPages()
   return nil, why
 end
 
+-- FIRERED'S ROLL (pokefirered credits.c): sCreditsScript is 4-byte commands
+-- {cmd, param, u16 duration}; every PRINT names a row of sCreditsTexts
+-- {title*, names*, unused}, and those are the pages.  The map fly-overs and
+-- the three starters between them are scenery this roll does not draw.
+RomExtractorGen3.FRLG_CREDITS = {
+  SCRIPT = 0x410CF4, SCRIPT_COUNT = 66, TEXTS = 0x4145BC, TEXT_STRIDE = 12,
+  TITLE = 0x41D198,
+}
+
+function RomExtractorGen3:extractFireRedCredits()
+  local F = RomExtractorGen3.FRLG_CREDITS
+  local rom = self.rom
+  local function text(p)
+    if not p then return "" end
+    if rom:u8(p) == 0xFF then p = p + 1 end
+    return self:readText(p, 400) or ""
+  end
+  local pages, entries = {}, {}
+  local function page(title, names)
+    local rows = {}
+    if title ~= "" then rows[#rows + 1] = { text = title, title = true } end
+    for line in (names .. "\n"):gmatch("([^\n]*)\n") do
+      if line ~= "" then rows[#rows + 1] = { text = line } end
+    end
+    for _, r in ipairs(rows) do entries[#entries + 1] = r end
+    if #rows > 0 then pages[#pages + 1] = rows end
+  end
+  page((text(F.TITLE):gsub("\n", " ")), "")
+  local script, texts = {}, {}
+  for i = 0, F.SCRIPT_COUNT - 1 do
+    local at = F.SCRIPT + i * 4
+    local cmd, param = rom:u8(at), rom:u8(at + 1)
+    script[#script + 1] = { cmd = cmd, param = param, duration = rom:u16(at + 2) }
+    if cmd == 0 then
+      local t = F.TEXTS + param * F.TEXT_STRIDE
+      local title, names = text(rom:pointer(t)), text(rom:pointer(t + 4))
+      texts[param] = { title = title, names = names }
+      page(title, names)
+    elseif cmd == 5 then
+      break
+    end
+  end
+  if #pages < 10 then
+    Logger.warn("gen3 frlg credits: only %d pages read -- the game ends without them", #pages)
+    return
+  end
+  local constants = self._constants or {}
+  constants.gen3Credits = { entries = entries, pages = pages, rows = 6,
+                            frlg = { script = script, texts = texts,
+                                     title = (text(F.TITLE):gsub("\n", " ")) },
+                            source = "ROM:sCreditsScript / sCreditsTexts (FireRed)" }
+  self._constants = constants
+  self:write("constants", constants)
+  Logger.info("Gen3 credits (FRLG): %d pages", #pages)
+end
+
 function RomExtractorGen3:extractCredits()
   self:beginStage("Gen3 credits")
+  if self:isFireRedManifest() then return self:extractFireRedCredits() end
   local got, why = self:creditsPages()
   if not got then
     Logger.warn("gen3 credits: %s -- the game ends without them",
@@ -48567,6 +53041,18 @@ function RomExtractorGen3:easyChatNames(count)
     if t:find("[\n\v\f]") then return nil end
     return t
   end
+  -- FIRERED: sEasyChatGroupNamePointers.  Its names are not the run the scan
+  -- below expects ("POKéMON" ... "POKéMON2" is Emerald's order), so the
+  -- table is read where the symbol puts it.
+  if self:isFireRedManifest() then
+    local names = {}
+    for i = 0, count - 1 do
+      local p = rom:pointer(0x3EDF98 + i * 4)
+      names[i + 1] = p and self:readText(p, E.MAX_TEXT) or nil
+      if not names[i + 1] then names = nil break end
+    end
+    if names then return 0x3EDF98, names end
+  end
   local at = 0
   while at + count * 4 <= rom.size do
     local first = word(rom:pointer(at))
@@ -48649,7 +53135,10 @@ function RomExtractorGen3:extractEasyChat()
       end
     end
   end
-  if blanks > 0 then
+  -- FireRed's groups read back with exactly one blank word record; a single
+  -- blank there is tolerated (it prints as nothing) rather than losing every
+  -- Trainer Tower speech over it
+  if blanks > (self:isFireRedManifest() and 1 or 0) then
     Logger.warn("gen3 easy chat: %d words did not decode -- the groups are "
                   .. "left out rather than half read", blanks)
     return
@@ -48700,6 +53189,27 @@ RomExtractorGen3.ASSET_STAGES = {
   "extractBattleHud",
   "extractPartyMenu",
   "extractBagScreen",
+  "extractFireRedItemPc",
+  "extractTMCaseScreen",
+  "extractBerryPouchScreen",
+  "extractFireRedIntro",
+  "extractFireRedOakSpeech",
+  "extractFireRedTitle",
+  "extractFireRedStartMenu",
+  "extractFireRedTrainerCard",
+  "extractFireRedPokedex",
+  "extractFireRedSummary",
+  "extractFireRedRegionMap",
+  "extractFireRedStorage",
+  "extractFireRedPocketArt",
+  "extractFireRedNaming",
+  "extractFireRedFieldShadow",
+  "extractFireRedFlyBird",
+  "extractFireRedMapPreviews",
+  "extractFireRedSpecialTexts",
+  "extractFireRedTrainerTower",
+  "extractFireRedSSAnneArt",
+  "extractFireRedExtraArt",
   "extractItemIcons",
   "extractPokenav",
   "extractBattleTextbox",

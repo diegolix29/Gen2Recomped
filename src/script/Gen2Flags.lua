@@ -1501,16 +1501,116 @@ Gen2Flags.ENGINE_FLAG_NAMES_PRISM = {
   [97] = "ENGINE_YANMA_SWARM",
 }
 
+-- POLISHED CRYSTAL'S OWN ENGINEFLAGS, READ OFF THE CARTRIDGE.
+--
+-- This hack's table is its own: 160 rows where Gold has 93, and it diverges
+-- from row ELEVEN.  Falling through to Gold's names did not fail loudly, it
+-- MISNAMED rows -- and the badges are the worst of it.  Polished Crystal
+-- keeps its eight Johto badges at rows 33-40 and its eight Kanto badges at
+-- 41-48; Gold's table calls row 33 RISINGBADGE and rows 41 EARTHBADGE, so a
+-- `checkflag` on the first gym's badge asked about the last one, and rows
+-- 24-32 -- this cartridge's overworld state -- came back as badges too.
+--
+-- HOW EACH ROW BELOW WAS ESTABLISHED, because a wrong name here is silently
+-- wrong.  A row is `dw address, db mask`, so it names a WRAM BYTE and a BIT,
+-- and that pair is the thing two cartridges can be compared on -- the row
+-- NUMBER cannot be, and the address cannot be either, because this build
+-- moved its WRAM.  Both tables were dumped (Crystal's at 20:$4462, this one
+-- at 20:$45B6), each address replaced by its position in first-appearance
+-- order, and the two sequences lined up:
+--
+--   * ROWS 0-9 ARE IDENTICAL, pair for pair -- the POKeGEAR cards in the same
+--     odd bit order (1, 0, 2, 3, 7), the two Day-Care bytes, MOM's two.  This
+--     build's own symbols agree: $D9D8 is wPokegearFlags, $DEE2 wDayCareMan,
+--     $DF19 wDayCareLady, $D7EB wMomSavingMoney.
+--   * THE STATUS BYTE IS ONE ROW EARLIER.  Crystal's wStatusFlags occupies
+--     rows 11-16 as bits 0, 1, 3, 4, 6, 7; this build's ($D7E3) occupies rows
+--     10-15 as exactly the same six bits in the same order, because Crystal
+--     has one row ahead of it that this cartridge does not.  So row 10 is
+--     Crystal's 11, and so on.
+--   * THE SECOND STATUS BYTE IS REORDERED, so it is joined by BIT rather than
+--     by position: Crystal's wStatusFlags2 rows run bits 2, 1, 0, 4, 5, 6, 7
+--     and this build's ($D7E4, rows 16-23) run 0-7 in order.  Bit 0 is
+--     ROCKETS_IN_RADIO_TOWER, bit 2 the Bug Contest timer, bit 4 the bike
+--     shop call -- which lands them on rows 16, 18 and 20 here.
+--   * THE BADGES ARE NAMED BY THEIR OWN SYMBOLS.  $D7EE is wBadges and $D7EF
+--     is wKantoBadges in this build's symbol table, each read bit 0 through
+--     bit 7 -- the same two-byte, Johto-then-Kanto shape Crystal has at rows
+--     27-42.  It is also the order this port's own `givebadge` lowering
+--     already uses for this cartridge (GIVEBADGE_NAMES in Gen2ScriptVM), so a
+--     gym that awards a badge and an HM gate that checks for it now agree.
+--   * AND THE BIKE BITS WERE PROVEN, not inferred.  wOWState ($DBDB) is this
+--     build's name for the byte Crystal calls wBikeFlags, and its first three
+--     bits carry the same three flags.  The cartridge says so itself:
+--     `setflag 25 / setflag 26` appears exactly once in the whole ROM, at
+--     2A:$6598, and the nearest symbol before it is
+--     `Route17AlwaysOnBikeCallback`.  That is the Cycling Road callback, and
+--     25/26 is Crystal's pair rather than Gold's 24/25 -- so bit 0 (row 24)
+--     is STRENGTH_ACTIVE, exactly as it is on Crystal.
+--
+-- EVERYTHING ELSE IS LEFT UNNAMED ON PURPOSE.  The daily, weekly, swarm and
+-- rematch bytes were restructured -- four daily bytes here against Crystal's
+-- fewer -- and nothing in either cartridge pins those bits to each other, so
+-- they keep the opaque FLAG_G2_nnnn spelling.  That is self-consistent: a
+-- `setflag n` and the `checkflag n` that reads it back still agree, so the
+-- scripts work; only the handful of ENGINE features that ask for a flag BY
+-- NAME are affected, and naming one wrongly is worse than not naming it.
+Gen2Flags.ENGINE_FLAG_NAMES_POLISHED = {
+  [0]  = "EVENT_GOT_RADIO_CARD",
+  [1]  = "EVENT_GOT_MAP_CARD",
+  [2]  = "EVENT_GOT_PHONE_CARD",
+  [3]  = "EVENT_GOT_EXPN_CARD",
+  [4]  = "EVENT_GOT_POKEGEAR",
+  [5]  = "ENGINE_DAY_CARE_MAN_HAS_EGG",
+  [6]  = "ENGINE_DAY_CARE_MAN_HAS_MON",
+  [7]  = "ENGINE_DAY_CARE_LADY_HAS_MON",
+  [8]  = "ENGINE_MOM_SAVING_MONEY",
+  [9]  = "ENGINE_MOM_ACTIVE",
+  [10] = "EVENT_GOT_POKEDEX",
+  [11] = "EVENT_GOT_UNOWN_DEX",
+  [12] = "ENGINE_CAUGHT_POKERUS",
+  [14] = "ENGINE_CREDITS_SKIP",
+  [16] = "ENGINE_ROCKETS_IN_RADIO_TOWER",
+  [18] = "ENGINE_BUG_CONTEST_TIMER",
+  [20] = "ENGINE_BIKE_SHOP_CALL_ENABLED",
+  [24] = "ENGINE_STRENGTH_ACTIVE",
+  [33] = "ZEPHYRBADGE",
+  [34] = "HIVEBADGE",
+  [35] = "PLAINBADGE",
+  [36] = "FOGBADGE",
+  [37] = "MINERALBADGE",
+  [38] = "STORMBADGE",
+  [39] = "GLACIERBADGE",
+  [40] = "RISINGBADGE",
+  [41] = "BOULDERBADGE",
+  [42] = "CASCADEBADGE",
+  [43] = "THUNDERBADGE",
+  [44] = "RAINBOWBADGE",
+  [45] = "SOULBADGE",
+  [46] = "MARSHBADGE",
+  [47] = "VOLCANOBADGE",
+  [48] = "EARTHBADGE",
+}
+
 function Gen2Flags.engineFlagNames()
   local GameVersion = require("src.core.GameVersion")
-  if GameVersion.get() == "prism" then
+  local id = GameVersion.get()
+  if id == "prism" then
     return Gen2Flags.ENGINE_FLAG_NAMES_PRISM
+  end
+  if id == "polishedcrystal" then
+    return Gen2Flags.ENGINE_FLAG_NAMES_POLISHED
   end
   return Gen2Flags.ENGINE_FLAG_NAMES
 end
 
 function Gen2Flags.scriptFlag(n)
   local names = Gen2Flags.engineFlagNames()
+  if names == Gen2Flags.ENGINE_FLAG_NAMES_POLISHED then
+    -- this cartridge's own numbering, straight through: the Crystal insertion
+    -- below is a Gold-vs-Crystal correction and has nothing to say here
+    return names[n] or string.format("FLAG_G2_%04d", n)
+  end
   if names == Gen2Flags.ENGINE_FLAG_NAMES_PRISM then
     -- Prism's own numbering, straight through: the Crystal insertion below
     -- is a Gold-vs-Crystal correction and has nothing to say here
@@ -1547,10 +1647,16 @@ function Gen2Flags.bikeFlag(which)
   local ok, GameVersion = pcall(require, "src.core.GameVersion")
   -- Prism renumbers the whole EngineFlags table and has no Cycling Road, so
   -- neither index means anything there; hand back a key nothing ever sets.
-  if ok and GameVersion.get and GameVersion.get() == "prism" then
+  local id = ok and GameVersion.get and GameVersion.get()
+  if id == "prism" then
     return "ENGINE_DOWNHILL_UNSUPPORTED"
   end
-  local base = (ok and GameVersion.isCrystal and GameVersion.isCrystal())
+  -- Polished Crystal renumbers the table around these, but NOT these: its own
+  -- Route17AlwaysOnBikeCallback (2A:$6598) is `setflag 25 / setflag 26`, the
+  -- only adjacent pair of those two in the whole ROM, so its bike bits are
+  -- Crystal's 25 and 26 rather than Gold's 24 and 25.
+  local base = ((id == "polishedcrystal")
+    or (ok and GameVersion.isCrystal and GameVersion.isCrystal()))
     and BIKE_FLAG_BASE_CRYSTAL or BIKE_FLAG_BASE_GOLD
   return Gen2Flags.scriptFlag(which == "downhill" and base + 1 or base)
 end

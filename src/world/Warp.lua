@@ -133,6 +133,26 @@ end
 -- tile instead); everywhere else the player must face the map edge
 -- (IsPlayerFacingEdgeOfMap).  carpets = field.warpCarpets.
 function Warp.extraCheck(map, carpets, cx, cy, dir)
+  -- FIRERED'S DIRECTIONAL WARPS, which this is the whole trigger for.
+  --
+  -- TryArrowWarp takes the arrow panels, the interior exit mats and the side
+  -- staircases, and it takes them only when the player is walking in the
+  -- behaviour's own direction -- never on arrival, which is what
+  -- Map:isWarpTileCell now refuses for exactly these cells.  Whether the step
+  -- is blocked by the building's wall or would have left the map makes no
+  -- difference on the cartridge, so neither is asked about here.
+  if map.frlgWarpDirection and map:frlgWarpDirection(cx, cy) == dir
+     and map:warpAtCell(cx, cy) then
+    return true
+  end
+  -- FireRed has no pokered-style "face the map edge" fallback here.  Its
+  -- non-arrival input warp is TryArrowWarp above; ordinary completed-step
+  -- warps are filtered by Map:isWarpTileCell, and a north press into a WARP_DOOR
+  -- reaches that door through the normal movement/door path.  Falling through
+  -- to ExtraWarpCheck made plain-floor script destinations live whenever they
+  -- happened to sit at a map edge.
+  local GameVersion = require("src.core.GameVersion")
+  if GameVersion.get() == "firered" then return false end
   local Collision = require("src.world.Collision")
   local facingEdge =
     (dir == "up" and cy == 0)

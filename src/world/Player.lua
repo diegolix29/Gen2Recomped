@@ -119,6 +119,17 @@ function Player.new(data, cx, cy, facing)
     local ok, img = pcall(love.graphics.newImage, fx.shadow.path)
     self.shadowImg = ok and img or nil
   end
+  -- ...and Gen 3's, one 16x8 sprite rather than a mirrored quarter tile
+  local g3 = data.constants and data.constants.gen3FieldShadow
+  if not self.shadowImg and type(g3) == "table" and g3.path then
+    local ok, img = pcall(require("src.render.Assets").image, g3.path)
+    if ok and img then
+      -- the 16x8 top sits 4px above the cell's own top: the sprite's centre
+      -- is 8px above the cell (32 tall, feet on the cell) and the shadow's
+      -- centre is (32/2 - 4) below that
+      self.shadowImg, self.shadowGen3 = img, -4
+    end
+  end
   -- FishingAnim (engine/overworld/player_animations.asm) patches tiles
   -- $02/$06/$0a -- the bottom tile row of each standing frame -- with the
   -- fishing pose before it parks the rod OAM, so the rod stroke meets a pair
@@ -548,6 +559,25 @@ function Player:update()
       self.spinning = false
     end
   end
+  -- FireRed's directional side-stair warp does not place the player sprite
+  -- directly on its destination cell.  ExitStairsMovement starts the OAM
+  -- sprite a few pixels up/sideways from the cell and walks that fixed-point
+  -- offset back to zero over 16 frames while the player walks in place.  Keep
+  -- the logical cell/px/py fixed so collision, the camera and warp guards all
+  -- see the real destination; only pose() applies this cosmetic OAM offset.
+  if self.stairExit then
+    local s = self.stairExit
+    if s.frames > 0 then
+      s.offsetX = s.offsetX + s.speedX
+      s.offsetY = s.offsetY + s.speedY
+      s.frames = s.frames - 1
+      -- GetWalkInPlaceFastMovementAction advances faster than an ordinary
+      -- walk.  Two ticks per field frame gives the same quick leg cadence
+      -- without changing the normal walking clock.
+      self.animClock = (self.animClock or 0) + 2
+    end
+    if s.frames <= 0 then self.stairExit = nil end
+  end
   -- wall-bonk walk-in-place (issue #230): while pushing into a wall the
   -- collision path keeps the walk clock running without moving the cell,
   -- so the sprite animates against the wall.  Guarded on not-moving so a
@@ -616,7 +646,7 @@ end
 function Player:walkPhase()
   -- moving, the land-frame after a completed step, or an active wall-bonk
   -- (issue #230) animate; a standing sprite otherwise
-  if not self.moving and not self.stepLanded
+  if not self.moving and not self.stepLanded and not self.stairExit
      and not (self.bumpFrames and self.bumpFrames > 0) then
     return 0
   end
@@ -655,7 +685,7 @@ function Player:isUnderwater()
 end
 
 function Player:pose()
-  local py = self.py
+  local px, py = self.px, self.py
   local hopping = false
   -- ledge hops arc (set for 2 cells by the ledge handler); surfing bobs
   if self.hopFrames and self.hopFrames > 0 then
@@ -724,6 +754,13 @@ function Player:pose()
       py = py - math.floor((total - self.spinFrames) * 24 / total)
     end
   end
+  if self.stairExit then
+    -- field_fadetransition.c stores the stair slide in 5-bit fixed point and
+    -- assigns sprite->x2/y2 with an arithmetic >> 5. math.floor matches that
+    -- signed shift for the negative left/up offsets too.
+    px = px + math.floor(self.stairExit.offsetX / 32)
+    py = py + math.floor(self.stairExit.offsetY / 32)
+  end
   -- RodResponse (engine/items/item_effects.asm) zeroes wWalkBikeSurfState
   -- across FishingAnim, so casting from the water shows the on-foot sheet
   -- THE POSE BEATS EVERY SHEET BELOW IT, including the surfboard: a SURF
@@ -743,7 +780,22 @@ function Player:pose()
                  -- no run cycle of its own; Hoenn's two both have one
                  or (self.running and self.runSprite)
                  or self.sprite
-  return sprite, self.px, py, facing, phase, flip, hopping
+  return sprite, px, py, facing, phase, flip, hopping
+end
+
+-- Begin FireRed's ExitStairsMovement arrival slide.  The caller passes the
+-- cartridge's fixed-point speeds from GetStairsMovementDirection; the exit
+-- animation starts at speed * 16, reverses the speed, then takes 16 frames to
+-- converge back to zero.
+function Player:startStairExit(speedX, speedY, facing)
+  self.facing = facing or self.facing
+  self.stairExit = {
+    speedX = -speedX,
+    speedY = -speedY,
+    offsetX = speedX * 16,
+    offsetY = speedY * 16,
+    frames = 16,
+  }
 end
 
 function Player:draw(camX, camY)
@@ -762,7 +814,10 @@ function Player:draw(camX, camY)
   --   parks sprites 38/39 offscreen at y=$a0, because its tile is a
   --   full-height half-ellipse that already fills the row.  Mirroring
   --   that tile downward stacked a second blob under the first (#408).
-  if hopping and self.shadowImg then
+  if hopping and self.shadowImg and self.shadowGen3 then
+    love.graphics.draw(self.shadowImg, math.floor(self.px - camX),
+                       math.floor(self.py - camY) + self.shadowGen3)
+  elseif hopping and self.shadowImg then
     local yellow = GameVersion.isYellow()
     local sx = math.floor(self.px - camX)
     local sy = math.floor(self.py - camY) - 4 + 8 + (yellow and 4 or 0)
@@ -850,16 +905,66 @@ local BLOB_FRAME = { down = 0, up = 1, left = 2, right = 2 }
 -- SyncSurfblobPositionWithPlayer (0815577C): `blob.y = player.y + 8`.
 local BLOB_BELOW_PLAYER = 8
 
-function Player:drawSurfBlob(px, py, camX, camY, facing)
-  if not self.surfing then return end
+-- WHICH BLOB, WHICH WAY ROUND, AND WHERE -- ASKED ONCE, ANSWERED ONCE.
+--
+-- In-game location: THE SEA OFF ROUTE 118, on a surfing player, in the voxel
+-- diorama as well as the flat game.
+--
+-- Reported from play: "still missing the surf blob beneath the player when
+-- surfing ... this is with voxels on in any mode, first and third person or
+-- not". With voxels on the player is a BILLBOARD (DRAMATIC_SHAPE's
+-- VoxelScene.drawEntity) and :draw below never runs, so the one place in the
+-- program that knew the blob existed was never reached and there was nothing
+-- under the surfer at all.
+--
+-- The standing rule is that the second path ASKS rather than restates, so
+-- everything a drawing of the blob needs is published here and :draw is
+-- written in terms of it. A renderer that wants to lay the blob flat on the
+-- water instead of blitting it gets the same record, the same frame and the
+-- same offsets, and the two can never drift.
+--
+-- Returns nil for every cartridge but Gen 3: `gen3SurfBlob` is written by the
+-- Gen 3 importer alone, so Gen 1, Gen 2 and Prism fall out on the type test
+-- exactly as they did when this was all inline.
+--
+-- offX / offY are the blob's top-left in WORLD pixels relative to the
+-- player's own (px, py) -- the sheet's centring on the 16px cell, its own
+-- hang above it, and the cartridge's eight-pixel drop -- and deliberately
+-- WITHOUT the GB engine's universal four-pixel screen lift, which is a fact
+-- about blitting to a screen rather than about where the blob is. :draw adds
+-- it back on the line below, exactly where every other sprite gets it.
+--
+-- MEASURED for Emerald's own record (32x32, 3 frames, DERIVED by running
+-- data/generated/constants.lua): offX = -floor((32-16)/2) = -8 and
+-- offY = -(32-16) + 8 = -8, i.e. the 32-square blob is the player's 16px
+-- cell grown by eight pixels on every side -- centred on the very cell
+-- middle a 3D billboard is anchored to.
+-- `facing` is the POSE's facing rather than the body's: the spinner tiles
+-- whirl the sprite through all four while `self.facing` stays put (see
+-- :pose), and the blob turns with what is drawn. Defaults to the body's, for
+-- a caller that has no pose in hand.
+function Player:surfBlobCard(facing)
+  facing = facing or self.facing
+  if not self.surfing then return nil end
   -- and nothing to sit on down there: the cartridge destroys the surf blob
   -- when you dive and makes another when you come back up
-  if self:isUnderwater() then return end
+  if self:isUnderwater() then return nil end
   local Game = require("src.core.Game")
   local blob = (Game.data and Game.data.constants or {}).gen3SurfBlob
-  if type(blob) ~= "table" then return end
+  if type(blob) ~= "table" then return nil end
+  if not blob.image then return nil end
+  local fw = blob.frameWidth or 32
+  local fh = blob.frameHeight or 32
+  local frame = BLOB_FRAME[facing] or 0
+  if frame >= (blob.frames or 1) then frame = 0 end
+  return blob, frame, facing == "right",
+         -math.floor((fw - 16) / 2), -(fh - 16) + BLOB_BELOW_PLAYER
+end
+
+function Player:drawSurfBlob(px, py, camX, camY, facing)
+  local blob, frame, mirror, offX, offY = self:surfBlobCard(facing)
+  if not blob then return end
   local path = blob.image
-  if not path then return end
   if self.blobImage == nil or self.blobPath ~= path then
     local ok, img = pcall(require("src.render.Assets").image, path)
     self.blobImage = (ok and img) or false
@@ -871,6 +976,11 @@ function Player:drawSurfBlob(px, py, camX, camY, facing)
   local fw = blob.frameWidth or 32
   local fh = blob.frameHeight or 32
   local frame = BLOB_FRAME[facing] or 0
+  -- FIRERED'S BLOB HAS SIX: two per direction (south, north, west), swapped
+  -- every 48 frames (sSurfBlobAnim_Face*)
+  if (blob.frames or 1) >= 6 then
+    frame = frame * 2 + math.floor(love.timer.getTime() * 60 / 48) % 2
+  end
   if frame >= (blob.frames or 1) then frame = 0 end
   self.blobQuads = self.blobQuads or {}
   local quad = self.blobQuads[frame]
@@ -905,9 +1015,10 @@ function Player:drawSurfBlob(px, py, camX, camY, facing)
   --     strh r0,[r4,#34]
   --
   -- so the offset is not a guess and it is not a matter of taste.
-  local mirror = facing == "right"
-  local sx = math.floor(px - camX) - math.floor((fw - 16) / 2)
-  local sy = math.floor(py - camY) - 4 - (fh - 16) + BLOB_BELOW_PLAYER
+  -- the offsets are surfBlobCard's now, so this states them nowhere: the
+  -- 4px lift is the GB screen lift every sprite here gets, and nothing else
+  local sx = math.floor(px - camX) + offX
+  local sy = math.floor(py - camY) - 4 + offY
   love.graphics.setColor(1, 1, 1, 1)
   if mirror then
     love.graphics.draw(img, quad, sx + fw, sy, 0, -1, 1)

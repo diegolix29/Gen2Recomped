@@ -188,6 +188,12 @@ function ScriptRunner:exec(script, ctx)
     -- report; "the game froze" is not.
     self.lastRow = ("%s (row %d of %d)"):format(tostring(name), pc, #script)
     local fn, meta = Commands.resolve(data, name)
+    if not fn and type(name) == "string" and name:sub(1, 3) == "g3_" then
+      local ok, Gen3Commands = pcall(require, "src.script.Gen3Commands")
+      if ok and Gen3Commands and type(Gen3Commands[name]) == "function" then
+        fn, meta = Gen3Commands[name], nil
+      end
+    end
     if not fn then
       -- api 2 owned scripts fail loudly; everything else keeps the v1
       -- skip so old content degrades instead of dying

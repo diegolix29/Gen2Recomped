@@ -1134,6 +1134,13 @@ function Game:keypressed(key)
   Input:keypressed(key)
 end
 
+function Game:textinput(text)
+  local top = self.stack and self.stack:top()
+  if top and top.onTextInput then
+    top:onTextInput(text)
+  end
+end
+
 -- Mod enablement is stored with persistent options.  Restarting the actual
 -- LÖVE process ensures scripts, registries, and assets are all rebuilt from
 -- the newly selected mod state.

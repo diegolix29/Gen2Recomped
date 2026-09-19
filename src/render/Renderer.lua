@@ -343,6 +343,15 @@ function Renderer:drawBattleWipe(wipe, ww, wh, ox, oy, vpw, vph, Sx, Sy)
     return
   end
 
+  -- a transition that draws its own figure over the whole window (FireRed's
+  -- scanline and sprite transitions), in window pixels
+  if wipe.screenDraw then
+    wipe.screenDraw(wipe, prog, ww, wh, Sx, Sy)
+    love.graphics.setScissor()
+    love.graphics.setColor(1, 1, 1, 1)
+    return
+  end
+
   -- whole-tile padding out to each window edge, keeping the grid in phase
   -- with the letterbox's tiles
   local padL = math.max(0, math.ceil(ox / TW))

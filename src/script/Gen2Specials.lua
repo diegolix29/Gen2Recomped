@@ -220,6 +220,86 @@ function Commands.g2_beasts_check(ctx)
   answer(ctx, all and 1 or 0)
 end
 
+-- ...AND ITS TWO SIBLINGS, which Polished Crystal adds beside it.
+--
+-- The three are one routine shape over one bitfield.  wPlayerCaught ($DB7B)
+-- and a mask, at 12:$4486/$4493/$44A0:
+--
+--     SpecialBeastsCheck  or $e3 / inc a   -> needs bits 2,3,4
+--     SpecialBirdsCheck   or $1f / inc a   -> needs bits 5,6,7
+--     SpecialDuoCheck     or $fc / inc a   -> needs bits 0,1
+--
+-- `or mask / inc a` is nonzero unless every bit the mask does NOT cover is
+-- already set, so each answers "all of this group, caught".  Two bits, three
+-- bits, three bits -- which is the tower duo, the beasts and the birds, and
+-- is how the groups are identified here rather than by guessing at a
+-- cartridge-private bit order.
+--
+-- Answered the same way g2_beasts_check answers: by ownership of the species
+-- themselves, which is the question the bitfield exists to record and the one
+-- this port can actually see.
+function Commands.g2_birds_check(ctx)
+  local all = ownsAnywhere(ctx, "SPECIES_144")   -- Articuno
+    and ownsAnywhere(ctx, "SPECIES_145")         -- Zapdos
+    and ownsAnywhere(ctx, "SPECIES_146")         -- Moltres
+  answer(ctx, all and 1 or 0)
+end
+
+function Commands.g2_duo_check(ctx)
+  local both = ownsAnywhere(ctx, "SPECIES_249")  -- Lugia
+    and ownsAnywhere(ctx, "SPECIES_250")         -- Ho-Oh
+  answer(ctx, both and 1 or 0)
+end
+
+-- CheckBattleCaughtResult (12:$44B1): `ld a,[wBattleResult] / and $40 / rlca /
+-- rlca` -- bit 6 rotated down to bit 0, so 1 when the last battle ended in a
+-- CATCH.  This port already carries that outcome by name.
+function Commands.g2_battle_caught(ctx)
+  answer(ctx, ctx.lastBattleResult == "caught" and 1 or 0)
+end
+
+-- Special_GetOvercastIndex (03:$43AB) hands GetOvercastIndex's answer straight
+-- to the script variable, and that routine (03:$522F) returns ZERO for every
+-- map group but three -- Azalea/Route 33, Lake of Rage/Route 43 and the
+-- stormy beach around Goldenrod -- and only inside those under further flag
+-- and time checks.  This port has no overcast model, so 0 is both the honest
+-- answer and the one the great majority of the world gives.
+function Commands.g2_overcast_index(ctx)
+  answer(ctx, 0)
+end
+
+-- CheckIfTrendyPhraseIsLucky (03:$43B1) compares the player's six-byte trendy
+-- phrase against one fixed phrase and answers 1 only on an exact match.  This
+-- port has no trendy phrase to have set, so the match cannot happen and the
+-- answer is 0 -- which is what the routine returns for all but one phrase
+-- anyway.
+function Commands.g2_trendy_phrase_lucky(ctx)
+  answer(ctx, 0)
+end
+
+-- WarpToSpawnPoint (25:$5707) DOES NOT WARP ANYTHING.
+--
+-- The whole routine is three instructions:
+--
+--     ld hl, wStatusFlags2 ($D7E4)
+--     res 1, [hl]
+--     res 2, [hl]
+--
+-- It clears two bits and returns -- the warp itself is somebody else's job,
+-- and this is the state teardown that has to happen first.  Those two bits
+-- are engine-flag rows 17 and 18 on this cartridge (wStatusFlags2 occupies
+-- rows 16-23, bits 0-7 in order; see ENGINE_FLAG_NAMES_POLISHED), and row 18
+-- is the Bug Contest timer -- which is exactly what a whiteout has to stop.
+--
+-- Written through the same scriptFlag resolver `setflag` and `clearflag` go
+-- through, so the two rows land on the keys a script's own `checkflag` would
+-- read back rather than on a name chosen here.
+function Commands.g2_warp_to_spawn_point(ctx)
+  local Gen2Flags = require("src.script.Gen2Flags")
+  Commands.clear_flag(ctx, Gen2Flags.scriptFlag(17))
+  Commands.clear_flag(ctx, Gen2Flags.scriptFlag(18))
+end
+
 -- FindPartyMonThatSpecies: the party only, and ownership does not matter --
 -- the "...YourTrainerID" variant next door is the strict one, and the port
 -- already has that as g2_find_party_species_own.
@@ -269,6 +349,42 @@ function Commands.g2_prize_mon_dex(ctx)
   -- than yielded on, exactly like g2_card_flip -- the calling script has
   -- nothing after it but closetext/end.
   require("src.ui.Screens").push(ctx.game, "DexEntryMenu", key)
+end
+
+-- HOW FULL IS THE POKEDEX, AGAINST A NUMBER THE SCRIPT NAMED?
+--
+-- Polished Crystal's CountSeen (09:$64D2) and CountCaught (09:$64B6).  Both
+-- farcall Pokedex_CountSeenOwn (10:$5CD9), which fills wTempDexSeen ($D0B2)
+-- and wTempDexOwn ($D0B4), and then answer a BOOLEAN rather than the count:
+--
+--     hl = -hScriptVar        ; $ff85 low, $ff86 high -- a 16-BIT value
+--     xor a / ldh [$ff85], a  ; answer 0
+--     add hl, bc              ; bc = the count
+--     ret nc                  ; count < threshold -> keep 0
+--     inc a / ldh [$ff85], a  ; count >= threshold -> 1
+--
+-- So the script sets the number it cares about and asks "at least this many?".
+-- The 16-bit half matters and is not an assumption: Script_setval16
+-- (25:$6CC6) is Script_setval followed by a second GetScriptByte into $ff86,
+-- and this port's `setval16` already hands the whole word to g2_setvar, so
+-- the threshold arrives here intact.
+--
+-- Unhandled, these left wScriptVar holding the threshold the script had just
+-- set -- a nonzero number -- so every `iftrue` after one took the YES arm
+-- whatever the player had actually caught.
+local function dexCount(ctx, field)
+  local dex = ctx.save.pokedex
+  local total = 0
+  for _ in pairs(dex and dex[field] or {}) do total = total + 1 end
+  return total
+end
+
+function Commands.g2_dex_seen_at_least(ctx)
+  answer(ctx, dexCount(ctx, "seen") >= (ctx.g2Var or 0) and 1 or 0)
+end
+
+function Commands.g2_dex_caught_at_least(ctx)
+  answer(ctx, dexCount(ctx, "owned") >= (ctx.g2Var or 0) and 1 or 0)
 end
 
 -- ---------------------------------------------------------------------------

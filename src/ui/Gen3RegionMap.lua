@@ -220,6 +220,13 @@ function Gen3RegionMap.new(game, opts)
   local grid = constants(game).gen3RegionMapGrid or { width = 28, height = 15 }
   self.grid = grid
 
+  -- FIRERED: the cartridge's own pages and section grids replace Hoenn's
+  -- rectangles (see Gen3RegionMap:initFireRed)
+  local frlg = constants(game).gen3FRLGRegionMap
+  if type(frlg) == "table" and frlg.sections and frlg.sections.kanto then
+    return self:initFireRed(frlg)
+  end
+
   -- ZOOM.  `zoomed` is where it is heading, `zoomFrame` how far along.
   -- opts.zoom = false refuses it outright, which is what the FLY picker
   -- wants: A has to depart, and there is no zoom on the fly map.
@@ -287,6 +294,7 @@ function Gen3RegionMap:sectionAt(cx, cy)
 end
 
 function Gen3RegionMap:current()
+  if self.frlg then return self:frlgPlace(self:frlgSection(1)) end
   return self:sectionAt(self.cx, self.cy)
 end
 
@@ -365,6 +373,7 @@ function Gen3RegionMap:update()
   self.blink = (self.blink + 1) % 60
   self.areaClock = ((self.areaClock or 0) + 1)
                    % (Gen3RegionMap.AREA_CYCLE * math.max(1, #(self.areaPlaces or {})))
+  if self.frlg then return self:updateFireRed() end
   if self:zooming() then
     self.zoomFrame = self.zoomFrame + 1
     -- the sixteenth frame is the one that assigns the endpoints, and nothing
@@ -468,9 +477,286 @@ function Gen3RegionMap:areaName()
 end
 
 -- ---------------------------------------------------------------------------
+-- FIRERED'S TOWN MAP (pokefirered src/region_map.c)
+--
+-- A 22x15 cursor grid whose cell (x, y) is centred on (8x + 36, 8y + 36),
+-- two section layers per page (MAP, DUNGEON), the page picture under it,
+-- and the two name windows at (24,16) and (24,32) that WIN0/WIN1 darken the
+-- map behind by BLDY 6.  The top bar is BG3 text over the picture's own bar.
+-- ---------------------------------------------------------------------------
+local FRLG_W, FRLG_H = 22, 15
+local FRLG_CANCEL = { x = 21, y = 13 }
+local FRLG_SWITCH = { x = 21, y = 11 }
+local FRLG_PAGES = { "kanto", "sevii123", "sevii45", "sevii67" }
+
+local function frlgFlag(game, id)
+  local flags = (game.save or {}).flags or {}
+  return flags[("FLAG_G3_%04X"):format(id)] == true
+end
+
+function Gen3RegionMap:frlgCanSwitch()
+  return not self.area and frlgFlag(self.game, 0x845)
+end
+
+function Gen3RegionMap:frlgSwitchPages()
+  local rows = { { page = "kanto", label = "KANTO" },
+                 { page = "sevii123", label = "ISLANDS 1-2-3" } }
+  if frlgFlag(self.game, 0x846) then
+    rows[#rows + 1] = { page = "sevii45", label = "ISLANDS 4-5" }
+    rows[#rows + 1] = { page = "sevii67", label = "ISLANDS 6-7" }
+  end
+  return rows
+end
+
+function Gen3RegionMap:initFireRed(frlg)
+  self.frlg = frlg
+  self.page = "kanto"
+  local here = self.here
+  local found
+  for _, page in ipairs(FRLG_PAGES) do
+    local grid = frlg.sections[page] and frlg.sections[page][1]
+    for y = 1, FRLG_H do
+      for x = 1, FRLG_W do
+        if grid and here and grid[y][x] == here then
+          found = { page = page, x = x - 1, y = y - 1 }
+          break
+        end
+      end
+      if found then break end
+    end
+    if found then break end
+  end
+  if found then
+    self.page = found.page
+    self.playerPage = found.page
+    self.cx, self.cy = found.x, found.y
+    self.iconAt = { x = found.x, y = found.y }
+  else
+    self.cx, self.cy = 0, 0
+  end
+  self.canZoom = false
+  self.frlgImages = {}
+  return self
+end
+
+function Gen3RegionMap:frlgSection(layer, cx, cy)
+  local grid = self.frlg.sections[self.page]
+  local rows = grid and grid[layer or 1]
+  local v = rows and rows[(cy or self.cy) + 1] and rows[(cy or self.cy) + 1][(cx or self.cx) + 1]
+  if not v or v == self.frlg.none then return nil end
+  return v
+end
+
+-- the engine's place record for a section, for FLY and for anything else
+-- that asks `current()`
+function Gen3RegionMap:frlgPlace(sec)
+  if not sec then return nil end
+  return { section = sec, name = self.frlg.names[sec] or "",
+           x = self.cx, y = self.cy, w = 1, h = 1 }
+end
+
+function Gen3RegionMap:frlgImage(key)
+  local path = self.frlg.images and self.frlg.images[key]
+  if not path then return nil end
+  if self.frlgImages[path] == nil then
+    local ok, image = pcall(require("src.render.Assets").image, path)
+    self.frlgImages[path] = ok and image or false
+  end
+  return self.frlgImages[path] or nil
+end
+
+function Gen3RegionMap:updateFireRed()
+  local game = self.game
+  local input = game.input
+  if not input then return end
+  if input:wasPressed("b") then
+    Sound.play(game.data, "Press_AB")
+    return self:close()
+  end
+  if self.area then
+    if input:wasPressed("a") then
+      Sound.play(game.data, "Press_AB")
+      return self:close()
+    end
+    return
+  end
+  if input:wasPressed("a") then
+    if self.cx == FRLG_CANCEL.x and self.cy == FRLG_CANCEL.y then
+      Sound.play(game.data, "Press_AB")
+      return self:close()
+    end
+    -- the SWITCH button (region_map.c SWITCH_BUTTON_X/Y): Kanto and the
+    -- Sevii pages the save has earned (FLAG_SYS_SEVII_MAP_123 / _4567)
+    if self.cx == FRLG_SWITCH.x and self.cy == FRLG_SWITCH.y and self:frlgCanSwitch() then
+      Sound.play(game.data, "Press_AB")
+      local labels, pages = {}, {}
+      for _, row in ipairs(self:frlgSwitchPages()) do
+        labels[#labels + 1], pages[#pages + 1] = row.label, row.page
+      end
+      local Menu = require("src.ui.Menu")
+      local items = {}
+      for i, label in ipairs(labels) do
+        items[i] = { label = label, onSelect = function()
+          self.page = pages[i]
+          self.lastSec = nil
+        end }
+      end
+      game.stack:push(Menu.new(game, items, { tx = 6, ty = 6, maxVisible = #items }))
+      return
+    end
+    if self.fly then return self:pick() end
+    return
+  end
+  for _, dir in ipairs(DIRECTIONS) do
+    if (input.isDown and input:isDown(dir)) or input:wasPressed(dir) then
+      -- the cartridge's cursor glides a cell over four frames and repeats
+      -- while held; one cell per eight frames is the same pace
+      if input:wasPressed(dir) then self.moveHold = 0 end
+      self.moveHold = (self.moveHold or 0) + 1
+      if self.moveHold == 1 or (self.moveHold > 20 and self.moveHold % 6 == 0) then
+        local d = DELTA[dir]
+        local nx, ny = self.cx + d[1], self.cy + d[2]
+        if nx >= 0 and ny >= 0 and nx < FRLG_W and ny < FRLG_H then
+          self.cx, self.cy = nx, ny
+          local sec = self:frlgSection(1)
+          if sec and sec ~= self.lastSec then Sound.play(game.data, "Select") end
+          self.lastSec = sec
+        end
+      end
+      return
+    end
+  end
+  self.moveHold = 0
+end
+
+function Gen3RegionMap:drawFireRed()
+  local g = love.graphics
+  g.setColor(0, 0, 0, 1)
+  g.rectangle("fill", 0, 0, 240, 160)
+  g.setColor(1, 1, 1, 1)
+  local edges = self:frlgImage("edges")
+  if edges then g.draw(edges, 0, 0) end
+  local bg = self:frlgImage(self.page)
+  if bg then g.draw(bg, 0, 0) end
+
+  local c = self.frlg.colors or {}
+  local function rgb(t, fallback)
+    t = t or fallback
+    return { t[1] / 255, t[2] / 255, t[3] / 255, 1 }
+  end
+  local white = rgb(c.white, { 255, 255, 255 })
+  local shadow = rgb(c.shadow, { 98, 98, 98 })
+  local function text(s, x, y, ink, small)
+    local faced = small and Font.hasFace and Font.hasFace("small") and Font.pushFace("small")
+    local two = Font.beginTwoTone(ink, shadow)
+    if not two then g.setColor(ink) end
+    Font.draw(s, x, y)
+    if two then Font.endTwoTone() end
+    if faced then Font.popFace() end
+    g.setColor(1, 1, 1, 1)
+  end
+
+  -- habitat glow on the AREA page: the cells of each section the Pokemon lives in
+  if self.area then
+    local pulse = 0.35 + 0.3 * math.abs(30 - self.blink) / 30
+    for layer = 1, 2 do
+      for y = 0, FRLG_H - 1 do
+        for x = 0, FRLG_W - 1 do
+          local sec = self:frlgSection(layer, x, y)
+          if sec and self.areaSections[sec] then
+            g.setColor(1, 0.35, 0.2, pulse)
+            g.rectangle("fill", 8 * x + 32, 8 * y + 32, 8, 8)
+          end
+        end
+      end
+    end
+    g.setColor(1, 1, 1, 1)
+  end
+
+  -- the player's head
+  local player = (self.game.save or {}).player
+  local icon = self:frlgImage((player and player.gender == "girl") and "icon_leaf" or "icon_red")
+  if icon and self.iconAt and not self.area and (self.playerPage or "kanto") == self.page then
+    g.draw(icon, 8 * self.iconAt.x + 28, 8 * self.iconAt.y + 28)
+  end
+  -- the SWITCH button, once the Sevii pages are earned
+  if self:frlgCanSwitch() then
+    g.setColor(0, 0, 0, 0.55)
+    g.rectangle("fill", 8 * FRLG_SWITCH.x + 20, 8 * FRLG_SWITCH.y + 30, 40, 12)
+    g.setColor(1, 1, 1, 1)
+    text("SWITCH", 8 * FRLG_SWITCH.x + 22, 8 * FRLG_SWITCH.y + 31, white, true)
+  end
+
+  -- the cursor: two 16x16 frames of twenty
+  local cursor = self:frlgImage("cursor")
+  if cursor and not self.area then
+    local frames = math.max(1, math.floor(cursor:getWidth() / 16))
+    local f = math.floor(self.blink / 20) % frames
+    self._cursorQuads = self._cursorQuads or {}
+    local q = self._cursorQuads[f]
+    if not q then
+      q = g.newQuad(f * 16, 0, 16, 16, cursor:getWidth(), cursor:getHeight())
+      self._cursorQuads[f] = q
+    end
+    g.draw(cursor, q, 8 * self.cx + 28, 8 * self.cy + 28)
+  end
+
+  -- the name windows: the map behind them darkened by BLDY 6
+  local names = self.frlg.names or {}
+  local sec = self:frlgSection(1)
+  local dungeon = self:frlgSection(2)
+  if self.area then
+    sec, dungeon = nil, nil
+  end
+  if sec then
+    g.setColor(0, 0, 0, 6 / 16)
+    g.rectangle("fill", 24, 16, 120, 16)
+    g.setColor(1, 1, 1, 1)
+    text(names[sec] or "", 24 + 2, 16 + 2, white)
+  end
+  if dungeon and names[dungeon] then
+    local width = math.min(216, #names[dungeon] * 10 + 50)
+    g.setColor(0, 0, 0, 6 / 16)
+    g.rectangle("fill", 24, 32, width - 24, 16)
+    g.setColor(1, 1, 1, 1)
+    text(names[dungeon], 24 + 12, 32 + 2, { 0.45, 0.85, 0.45, 1 })
+  end
+  if self.area then
+    g.setColor(0, 0, 0, 6 / 16)
+    g.rectangle("fill", 24, 16, 120, 16)
+    g.setColor(1, 1, 1, 1)
+    text(self:areaTitle(), 26, 18, white)
+    g.setColor(0, 0, 0, 6 / 16)
+    g.rectangle("fill", 24, 32, 120, 16)
+    g.setColor(1, 1, 1, 1)
+    text(self:areaName(), 36, 34, white)
+  end
+
+  -- the top bar: "{DPAD}MOVE" at (144,0) and the A hint at (192,0)
+  local function hint(glyph, word, x)
+    g.setColor(white)
+    g.rectangle("line", x + 0.5, 2.5, 10, 9, 3, 3)
+    text(glyph, x + 2, 0, white, true)
+    text(word, x + 12, 0, white, true)
+  end
+  if not self.area then
+    hint("+", Strings("MOVE"), 144)
+    if self.cx == FRLG_CANCEL.x and self.cy == FRLG_CANCEL.y then
+      hint("A", Strings("CANCEL"), 192)
+    elseif self.fly and sec and self.targets and self.targets[sec] then
+      hint("A", Strings("OK"), 192)
+    end
+  else
+    hint("B", Strings("CANCEL"), 192)
+  end
+  g.setColor(1, 1, 1, 1)
+end
+
+-- ---------------------------------------------------------------------------
 -- DRAWING IT
 -- ---------------------------------------------------------------------------
 function Gen3RegionMap:draw()
+  if self.frlg then return self:drawFireRed() end
   local w, h = self:uiSize()
   local grid = constants(self.game).gen3RegionMapGrid
               or { width = 28, height = 15 }

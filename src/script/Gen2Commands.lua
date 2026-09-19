@@ -3833,6 +3833,24 @@ function Commands.g2_nop() end
 -- the field table has no row for this tree: Prism's table was being cut at
 -- `EndApricornTrees`, so every berry tree (19-29) came back empty and the
 -- tree said "It's a fruit-bearing tree." forever.
+-- DOES THE PARTY HOLD AN EGG ANYWHERE IN IT?
+--
+-- Polished Crystal's own `checkegg` command, which walks the party
+-- (Script_checkegg.loop / .next) rather than looking at the lead slot the way
+-- Crystal's CheckFirstMonIsEgg special does -- so the two are NOT the same
+-- question and must not share a handler.  The name buffer is filled the same
+-- way the special fills it, because the line printed right after this one
+-- splices it.
+function Commands.g2_check_party_egg(ctx)
+  local Party = require("src.pokemon.Party")
+  local found
+  for _, mon in ipairs(ctx.save.party or {}) do
+    if Party.isEgg(mon) then found = mon break end
+  end
+  if found then ctx.game.stringBuffer = "EGG" end
+  setScriptVar(ctx, found and 1 or 0)
+end
+
 function Commands.g2_fruittree(ctx, tree, fallback)
   local game = ctx.game
   local save = ctx.save
@@ -3955,6 +3973,69 @@ end
 -- never matched, and the TM and POKeMON vendors handed the prize over for
 -- free however few coins you had.
 -- The branch flag follows the variable, exactly as in g2_check_money above.
+-- BATTLE POINTS, which are Polished Crystal's third currency.
+--
+-- Read off the cartridge rather than assumed, because "BP" could have been
+-- anything.  Script_givebp (25:$6F1A), takebp ($6F21) and checkbp ($6F28) all
+-- open with LoadCoinAmountToMem -- two script bytes into $FFB3/$FFB2, which
+-- is why their operand is a halfword -- and then far-call into the same
+-- funds routines the coin case uses:
+--
+--   GiveBP  05:$60A0  ld de, wBattlePoints ($DC88) / jr _GiveUpto50K
+--   TakeBP  05:$60C5                                 _TakeDownTo0
+--   CheckBP 05:$6033  then falls into CompareMoneyAction
+--
+-- So the cap is the one _GiveUpto50K's own table holds -- `c3 50`
+-- big-endian, 50000, and the routine is named after it -- the floor is zero,
+-- and the check answers in exactly the three values money and coins already
+-- do: 0 have more, 1 exact, 2 short.  That last part is why leaving `checkbp`
+-- unhandled was worse than it looks: the branch after it read whatever the
+-- previous row left in the script variable, and a 0 there means "you can
+-- afford it".
+local GEN2_BP_MAX = 50000
+
+local function battlePoints(save)
+  return math.max(0, math.floor(tonumber(save.battlePoints) or 0))
+end
+
+function Commands.g2_give_bp(ctx, amount)
+  local save = ctx.save
+  save.battlePoints =
+    math.max(0, math.min(GEN2_BP_MAX, battlePoints(save) + (amount or 0)))
+end
+
+function Commands.g2_check_bp(ctx, amount)
+  local have = battlePoints(ctx.save)
+  amount = amount or 0
+  setScriptVar(ctx, have > amount and 0 or (have == amount and 1 or 2))
+end
+
+-- IS THIS CAVE DARK?  Script_checkdarkness (25:$72E2):
+--
+--     xor a / ldh [hScriptVar], a    ; answer 0
+--     ld hl, wStatusFlags / bit 2, [hl]
+--     ret nz                         ; bit 2 set -> lit, answer stays 0
+--     ld a, 1 / ldh [hScriptVar], a  ; bit 2 clear -> DARK
+--
+-- wStatusFlags bit 2 is the FLASH bit, and this port keeps that one bit
+-- outside save.flags on purpose -- it is the overworld's own darkness state
+-- (save.flashLit; see the note on ENGINE_FLASH in Commands.lua), so asking
+-- for it by flag name would read a second, disagreeing copy.
+function Commands.g2_check_darkness(ctx)
+  setScriptVar(ctx, ctx.save.flashLit and 0 or 1)
+end
+
+-- Script_checkunits (25:$72F2) is `ld a,[wOptions] / bit 5,a / ldh
+-- [hScriptVar],a` -- and `bit` does not touch `a`, so the cartridge writes
+-- the WHOLE options byte where it means to write one bit.  Bit 5 is the
+-- imperial/metric choice, and this port has no such option, so the bit is
+-- clear and the honest answer is 0.  Reproducing the byte instead would mean
+-- reproducing this port's own unrelated option bits, which no script on that
+-- cartridge can have been written against.
+function Commands.g2_check_units(ctx)
+  setScriptVar(ctx, 0)
+end
+
 function Commands.g2_check_coins(ctx, amount)
   local have = coins(ctx.save)
   amount = amount or 0

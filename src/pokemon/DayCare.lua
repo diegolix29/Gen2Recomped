@@ -19,6 +19,8 @@ local DayCare = {}
 
 DayCare.MAN = 1
 DayCare.LADY = 2
+-- FireRed's Route 5 day care: one pen of its own, which grows but never breeds
+DayCare.ROUTE5 = 3
 
 -- DayCareStep rolls for an EGG every 256 steps (01:$735E -> .check_egg).
 DayCare.EGG_STEP_PERIOD = 256
@@ -490,7 +492,7 @@ function DayCare.step(data, save, expPerStep)
   local breed = DayCare.store(save, false)
   if not breed then return false end
   local gained = expPerStep or 1
-  for _, which in ipairs({ DayCare.MAN, DayCare.LADY }) do
+  for _, which in ipairs({ DayCare.MAN, DayCare.LADY, DayCare.ROUTE5 }) do
     local slot = breed[which]
     if slot and slot.mon then slot.steps = (slot.steps or 0) + gained end
   end
