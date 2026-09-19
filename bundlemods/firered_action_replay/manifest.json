@@ -1,0 +1,16 @@
+{
+  "id": "firered_action_replay",
+  "name": "Action Replay",
+  "version": "0.1.0",
+  "api": 2,
+  "entry": "main.lua",
+  "profile": "overhaul",
+  "games": ["firered"],
+  "game_version": ">=0.2.63 <2.0.0",
+  "category": "TOOL",
+  "priority": 500,
+  "permissions": ["engine_internals"],
+  "dependencies": ["firered_complete_dex@>=1.1.0"],
+  "conflicts": ["GameShark"],
+  "description": "FireRed-only Action Replay menu with wall walk, encounter, catch, item, badge, battle and 1025-species spawning cheats."
+}

@@ -1,0 +1,256 @@
+-- Voxel world mode: the glass in the windows, found rather than listed.
+--
+-- Buildings and doors in the overworld art carry small panes -- six texels
+-- wide, framed in black, with a diagonal shine drawn in. This module finds
+-- them by SHAPE in the tileset image itself: a border row of six black
+-- texels, four or five rows of black-flanked non-black glass under it, and
+-- a closing border row. No tile ids are hardcoded, so a total conversion
+-- that draws its own windows in the same idiom gets glass for free, and art
+-- with no windows gets an empty mask and costs nothing.
+--
+-- The scan slides at PIXEL granularity because the art does: the building
+-- window sits a row down inside its tile, and the door's pane straddles a
+-- 2x2 tile block entirely -- a per-tile matcher finds neither.
+--
+-- What the scan yields is a MASK TEXTURE the same size as the tileset
+-- atlas: opaque white on glass texels, transparent everywhere else. Terrain
+-- meshes sample the atlas by normalized coordinates (ChunkMesher.uvRect),
+-- so the scene shader can sample this mask with the SAME coordinates and
+-- know, per fragment, whether it is drawing glass -- on any wall, at any
+-- angle, in free-roam or a staged battle, with no geometry work anywhere.
+-- The recoloured atlases (display modes, RED++) keep the tileset's layout,
+-- so the alignment holds under every palette.
+--
+-- What the shader does with the answer (Voxel3D): by day a thin glint
+-- sweeps across the panes -- a pseudo reflection, view-anchored, preserving
+-- the art under it -- and after dark the panes are LIT: the texel's own
+-- shine pattern, warmed and brightened, exempt from the sun, the shadow
+-- map and the hour's tint, as a window with a lamp behind it is.
+
+-- the mod namespace (see main.lua): V.require loads a sibling module
+local V = ...
+
+local Assets = require("src.render.Assets")
+local CanvasPresentation = V.require("CanvasPresentation")
+
+local GlassMask = {}
+
+local MOBILE_RUNTIME = CanvasPresentation.OS == "iOS"
+  or CanvasPresentation.OS == "Android"
+local MobileDiagnostic = V and V.mod and V.mod._vascMobileDiagnostic or nil
+local function mobileDiagnostic(name, ...)
+  local fn = MobileDiagnostic and MobileDiagnostic[name]
+  if type(fn) ~= "function" then return nil end
+  local ok, a, b = pcall(fn, ...)
+  if ok then return a, b end
+  return nil
+end
+
+-- pane geometry the scan accepts: six glass texels across, and this many
+-- rows of them between the two border rows
+GlassMask.GLASS_W = 6
+GlassMask.ROWS = { 4, 5 }        -- door pane, building pane
+
+-- Whether a channel triple is the border black. The raw tileset art is the
+-- four DMG greys, so black is genuinely zero; the threshold forgives a
+-- rescaled asset without accepting the dark grey rung (85/255 = 0.33).
+local function isBlack(r, g, b)
+  return r < 0.12 and g < 0.12 and b < 0.12
+end
+
+GlassMask._isBlack = isBlack     -- named for the suite
+
+-- Find every pane in an image, through a pure reader so the geometry is
+-- testable headless: `getPixel(x, y)` returns r, g, b in 0..1 for 0-based
+-- coordinates. Returns { {x=, y=, w=, h=}, ... } rects of GLASS texels
+-- (the border is the detector's evidence, not part of the answer).
+function GlassMask.scan(getPixel, w, h, checkpoint)
+  -- Shape tests revisit the same texel many times (a black border candidate
+  -- is read by six horizontal probes and then again by neighbouring
+  -- candidates). ImageData:getPixel crosses the Lua/C boundary, so doing that
+  -- repeatedly turned the first outdoor frame for a new tileset into a large
+  -- synchronous spike. The reader is pure by contract; memoising only its
+  -- black/not-black answer keeps the detector byte-for-byte equivalent while
+  -- bounding native pixel reads to one per atlas texel.
+  local blackPixels = {}
+  local function black(x, y)
+    local i = y * w + x + 1
+    local value = blackPixels[i]
+    if value == nil then
+      if checkpoint then checkpoint() end
+      value = isBlack(getPixel(x, y))
+      blackPixels[i] = value
+    end
+    return value
+  end
+  local function borderRow(x, y)
+    for c = 1, 6 do
+      if not black(x + c, y) then return false end
+    end
+    return true
+  end
+  local function glassRow(x, y)
+    if not (black(x, y) and black(x + 7, y)) then return false end
+    for c = 1, 6 do
+      if black(x + c, y) then return false end
+    end
+    return true
+  end
+  local want = {}
+  for _, n in ipairs(GlassMask.ROWS) do want[n] = true end
+
+  local rects = {}
+  for y = 0, h - 1 do
+    for x = 0, w - 8 do
+      if checkpoint then checkpoint() end
+      if borderRow(x, y) then
+        local n = 0
+        while y + 1 + n < h and glassRow(x, y + 1 + n) do
+          n = n + 1
+        end
+        if want[n] and y + 1 + n < h and borderRow(x, y + 1 + n) then
+          rects[#rects + 1] = { x = x + 1, y = y + 1,
+                                w = GlassMask.GLASS_W, h = n }
+        end
+      end
+    end
+  end
+  return rects
+end
+
+-- ------- the runtime cache, one entry per tileset image
+
+local cache = {}       -- image path -> { rects, texture (or false) }
+
+local function entry(tileset, advance)
+  local path = tileset and tileset.image
+  if not path then return nil end
+  local hit = cache[path]
+  if hit and not hit.scan then return hit end
+  -- Mobile draw-time readers only consume completed work. Preparation runs
+  -- from VoxelScene.prefetch, whose readiness gate keeps the transition up.
+  if MOBILE_RUNTIME and not advance then return nil end
+  if not hit then
+    mobileDiagnostic("checkpoint", "glass-mask-image-read-start", {
+      caller="Assets.imageData", context="world", path=path,
+    })
+    local ok, data = pcall(Assets.imageData, path)
+    if not (ok and data) then
+      cache[path] = { rects = {}, texture = false }
+      return cache[path]
+    end
+    local w, h = data:getDimensions()
+    mobileDiagnostic("checkpoint", "glass-mask-scan-start", {
+      caller="GlassMask.scan", context="world", path=path,
+      width=w, height=h,
+    })
+    hit = { rects = {}, texture = false, w = w, h = h }
+    cache[path] = hit
+    hit.scan = coroutine.create(function()
+      local work = 0
+      local function checkpoint()
+        work = work + 1
+        if work > 1024 then
+          coroutine.yield()
+          work = 1
+        end
+      end
+      return GlassMask.scan(function(x, y) return data:getPixel(x, y) end,
+        w, h, MOBILE_RUNTIME and checkpoint or nil)
+    end)
+  end
+  local ok, rects = coroutine.resume(hit.scan)
+  if not ok then
+    hit.scan = nil
+    mobileDiagnostic("checkpoint", "glass-mask-scan-failed", {
+      caller="GlassMask.prepare", context="world", path=path,
+    })
+    return hit
+  end
+  if coroutine.status(hit.scan) ~= "dead" then return nil end
+  hit.scan = nil
+  local w, h = hit.w, hit.h
+  local texture = false
+  if #rects > 0 and love.image and love.image.newImageData
+     and love.graphics and love.graphics.newImage then
+    mobileDiagnostic("checkpoint", "glass-mask-upload-start", {
+      caller="love.graphics.newImage", context="world", path=path,
+      width=w, height=h, panes=#rects,
+    })
+    local built = pcall(function()
+      local mask = love.image.newImageData(w, h)
+      for _, r in ipairs(rects) do
+        for yy = r.y, r.y + r.h - 1 do
+          for xx = r.x, r.x + r.w - 1 do
+            mask:setPixel(xx, yy, 1, 1, 1, 1)
+          end
+        end
+      end
+      texture = love.graphics.newImage(mask)
+      texture:setFilter("nearest", "nearest")
+    end)
+    if not built then texture = false end
+  end
+  cache[path] = { rects = rects, texture = texture }
+  mobileDiagnostic("checkpoint", "glass-mask-ready", {
+    caller="GlassMask.prepare", context="world", path=path,
+    panes=#rects, texture=texture and true or false,
+  })
+  return cache[path]
+end
+
+-- The panes found in a tileset's art, as glass rects in atlas pixels.
+function GlassMask.rects(tileset)
+  local e = entry(tileset)
+  return e and e.rects or {}
+end
+
+-- The mask texture for a tileset, or nil when it has no panes (or the art
+-- is unreadable, or there is no GPU) -- callers bind the blank instead.
+function GlassMask.texture(tileset)
+  local e = entry(tileset)
+  return (e and e.texture) or nil
+end
+
+-- First-visit preparation seam. VoxelScene calls this from update-time
+-- prefetch, before the world Canvas is bound, so the one scan/texture upload
+-- lands under the transition instead of the first visible 3D draw.
+function GlassMask.prepared(tileset)
+  local path = tileset and tileset.image
+  return not path or (cache[path] ~= nil and cache[path].scan == nil)
+end
+
+function GlassMask.prepare(tileset)
+  entry(tileset, true)
+  return GlassMask.prepared(tileset)
+end
+
+-- A 1x1 transparent stand-in, for the frames (and drivers) with no mask:
+-- the scene shader always declares the sampler, and an unbound sampler is
+-- a driver-dependent crash rather than a fallback.
+local blank = nil
+
+function GlassMask.blank()
+  if blank == nil then
+    local ok, img = pcall(function()
+      local data = love.image.newImageData(1, 1)
+      data:setPixel(0, 0, 0, 0, 0, 0)
+      return love.graphics.newImage(data)
+    end)
+    blank = (ok and img) or false
+  end
+  return blank or nil
+end
+
+-- Drop completed GPU objects and pending scans (window resize, hot reload).
+-- A later update-time prepare starts again from the current artwork.
+function GlassMask.invalidate()
+  for _, e in pairs(cache) do
+    if e.texture and e.texture.release then pcall(e.texture.release, e.texture) end
+    e.texture = false
+  end
+  cache = {}
+  blank = nil
+end
+
+return GlassMask

@@ -1,0 +1,23 @@
+
+return {
+  summary = "full battle engine up to g9 -- moves, abilities, stats and four generational gimmicks. Replaces the native battle engine with a Pokemon Showdown-accurate one. Combat only: no sprites, no overworld spawns, no followers (see g9-battle-engine for those).",
+  author = "tekky",
+  contact = "https://github.com/tectorifter/",
+  tags = { "content", "gen2" },
+  differences = {
+    changed = {
+      "Replaces the native battle engine (damage formula, turn order, statuses, move sub-effects, held items) with a Gen 9 / Pokemon Showdown-accurate engine",
+    },
+    added = {
+      "Full Modern combat engine with move sub effects and four generational gimmicks",
+    },
+    known = {
+      "work in progress -- additional move sub-effects and mechanics are still being added.",
+    },
+  },
+  credits = {
+    { who = "PokemonShowdown (https://github.com/smogon/pokemon-showdown)",
+      for_ = "every combat mechanic up to gen 9, including all generational gimmick and moves sub effects" },
+  },
+  compat = { engine = ">=0.0.0-0 <2.0.0", modApi = 2 },
+}

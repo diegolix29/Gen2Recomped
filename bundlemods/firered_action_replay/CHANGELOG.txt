@@ -1,0 +1,10 @@
+Action Replay v0.1.0
+
+- Initial FireRed-only release.
+- Adds CHEATS to the FireRed START menu.
+- Ports Walk Through Walls, No Wild Battles, 100% Catch Rate, Infinite Rare
+  Candies, All Badges, and One-Hit KO from the original GameShark design.
+- Adds a FireRed-native Spawn Pokemon menu containing all 1025 National Dex
+  species supplied by FireRed Complete Dex, plus Lv.1-100 selection.
+- Uses FireRed internal species IDs when starting the battle, preventing the
+  Bidoof/Lickilicky identity mismatch.
