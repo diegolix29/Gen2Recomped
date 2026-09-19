@@ -71,7 +71,7 @@ function D.tryBegin(screen,generation)
   screen.__cbeDoublesDecision=ok==true
   if not ok then if type(api)=='string' then D.lastSkip=api;log(api) end;return nil end
   local host=generation==2 and screen.battle or screen
-  local party=generation==2 and host.party or host:playerPartyView()
+  local party=generation==2 and host.party or (host.game and host.game.save and host.game.save.party)
   local ready=false;for _,m in ipairs(party) do if live(m) then ready=true end end
   if not ready then return nil end
   D.serial=D.serial+1
@@ -307,12 +307,15 @@ local function finishNative(s)
       if not ok then D.close(s);error(err,0) end
     else
       local previous=host.playerPartyView
-      host.playerPartyView=function()
-        local party={};for _,mon in ipairs(core.playerParty) do
-          if not mon.isEgg and not mon.egg then party[#party+1]=mon end
-        end;return party
+      if type(previous)=='function' then
+        host.playerPartyView=function()
+          local party={};for _,mon in ipairs(core.playerParty) do
+            if not mon.isEgg and not mon.egg then party[#party+1]=mon end
+          end;return party
+        end
       end
-      local ok,err=pcall(host.playerMonFainted,host);host.playerPartyView=previous
+      local ok,err=pcall(host.playerMonFainted,host)
+      if type(previous)=='function' then host.playerPartyView=previous end
       if not ok then D.close(s);error(err,0) end
     end
     screen.afterQueue='finish'
