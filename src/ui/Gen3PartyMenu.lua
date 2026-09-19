@@ -521,6 +521,17 @@ function Gen3PartyMenu:fieldActionsFor(mon)
   end
   rows[#rows + 1] = { label = self:actionWord("cancel", nil, "CANCEL"),
                       action = "cancel" }
+  
+  -- Call the ui.party.submenu hook to allow mods to inject options
+  local Runtime = require("src.mods.Runtime")
+  local ctx = { battle = self.battle, overworld = self.game.overworld }
+  local hooked = Runtime.call("ui.party.submenu", function(game, items, mon_param, ctx_param)
+    return items -- vanilla behavior: return the items unchanged
+  end, self.game, rows, mon, ctx)
+  if type(hooked) == "table" then
+    return hooked
+  end
+  
   return rows
 end
 
@@ -756,6 +767,11 @@ end
 
 function Gen3PartyMenu:runAction(action, mon, row)
   self.submenu = nil
+  -- Handle hook-injected entries with onSelect callbacks
+  if not action and row and row.onSelect then
+    row.onSelect(mon, self.game)
+    return
+  end
   if action == "cancel" then return end
   if action == "enter" then
     local refused = self:orderRefusal(self.index)
