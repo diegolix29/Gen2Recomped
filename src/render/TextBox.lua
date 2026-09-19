@@ -556,7 +556,7 @@ function TextBox:draw()
     r:setUIAnchor(self.boxTx * 8, self.boxTy * 8,
                   self.boxTw * 8, self.boxTh * 8, "bottom")
   end
-  Font.drawBox(self.boxTx, self.boxTy, self.boxTw, self.boxTh)
+  Font.drawDialogueBox(self.boxTx, self.boxTy, self.boxTw, self.boxTh)
   love.graphics.setColor(0, 0, 0, 1)
   if self.scrollPx and self.scrollPx > 0 then
     self.scrollPx = self.scrollPx - 2

@@ -90,6 +90,8 @@ local GBA_W, GBA_H = 240, 160
 local LEAD = { tx = 0, ty = 0, tw = 13, th = 9, tall = true }
 local REST = { tx = 13, ty = 0, tw = 17, th = 4 }   -- th is ONE panel
 local CANCEL = { tx = 0, ty = 16, tw = 13, th = 4 }
+local FIRERED_CANCEL = { x = 192, y = 136, width = 48, height = 16,
+                        ballX = 198, ballY = 148 }
 local HP_BAR_W = 48
 
 -- ...and where the pieces sit INSIDE a panel, when the cartridge has not
@@ -967,6 +969,66 @@ local function loadImage(path)
   return ok and img or nil
 end
 
+local function isFireRed(game)
+  local record = ((game and game.data and game.data.constants) or {}).gen3StartMenu
+  return record and record.layout == "frlg" or false
+end
+
+-- The FireRed cancel window and Poké Ball belong at the cartridge's lower
+-- right coordinates. Clear Emerald's baked-in Cancel art before drawing it.
+function Gen3PartyMenu:drawFireRedCancel(bg, images, party, ball)
+  local g = love.graphics
+  if bg then
+    local iw, ih = bg:getDimensions()
+    if iw >= 56 and ih >= 152 then
+      self.cancelClearQuad = self.cancelClearQuad
+        or g.newQuad(0, 136, 56, 16, iw, ih)
+      g.draw(bg, self.cancelClearQuad, 184, 136)
+    end
+  end
+
+  Font.drawBox(24, 17, 6, 2)
+  ball = ball or loadImage(images.ball)
+  local drewBall = false
+  if ball then
+    local iw, ih = ball:getDimensions()
+    local frameWidth = math.floor(iw / 2)
+    if frameWidth >= 32 and ih >= 32 then
+      local frame = self.index > #party and frameWidth or 0
+      g.setColor(1, 1, 1, 1)
+      g.draw(ball, g.newQuad(frame, 0, 32, 32, iw, ih),
+             FIRERED_CANCEL.ballX - 16, FIRERED_CANCEL.ballY - 16)
+      drewBall = true
+    end
+  end
+  if not drewBall then
+    local cx, cy = FIRERED_CANCEL.ballX, FIRERED_CANCEL.ballY
+    local lineWidth = g.getLineWidth()
+    g.setColor(0.94, 0.94, 0.94, 1)
+    g.circle("fill", cx, cy, 7)
+    g.setColor(0.90, 0.16, 0.20, 1)
+    g.arc("fill", cx, cy, 7, math.pi, math.pi * 2)
+    g.setColor(0.08, 0.08, 0.10, 1)
+    g.setLineWidth(1)
+    g.circle("line", cx, cy, 7)
+    g.line(cx - 7, cy, cx + 7, cy)
+    g.setColor(0.94, 0.94, 0.94, 1)
+    g.circle("fill", cx, cy, 2)
+    g.setColor(0.08, 0.08, 0.10, 1)
+    g.circle("line", cx, cy, 2)
+    g.setLineWidth(lineWidth)
+  end
+
+  g.setColor(0, 0, 0, 1)
+  local label = Strings("CANCEL")
+  local lx = FIRERED_CANCEL.x + 3
+    + math.floor((FIRERED_CANCEL.width - Font.width(label)) / 2)
+  local ly = FIRERED_CANCEL.y
+    + math.floor((FIRERED_CANCEL.height - Font.glyphHeight()) / 2)
+  Font.draw(label, lx, ly)
+  g.setColor(1, 1, 1, 1)
+end
+
 -- Where slot n's panel sits, in PIXELS.  The cartridge's window when the
 -- import read it, and the old tile rectangle turned into pixels when it did
 -- not -- so everything downstream works in one unit either way.
@@ -1230,7 +1292,10 @@ function Gen3PartyMenu:drawMember(mon, panel, selected, inset)
 
   local function at(key) return panel.x + rects[key].x, panel.y + rects[key].y end
 
-  local faced = not panel.wide and Font.pushFace("small") or nil
+  -- (FireRed's DisplayPartyPokemonBarDetail prints every field in FONT_SMALL,
+  -- the lead panel's name included)
+  local frlg = require("src.core.GameVersion").get() == "firered"
+  local faced = (not panel.wide or frlg) and Font.pushFace("small") or nil
   love.graphics.setColor(0, 0, 0, 1)
 
   local nx, ny = at("name")
@@ -1375,10 +1440,12 @@ function Gen3PartyMenu:draw()
 
   -- ---- CANCEL ------------------------------------------------------------
   --
-  -- Part of the field's own tilemap when there is one, so only the word and
-  -- the cursor are drawn over it.
+  -- Emerald's CANCEL art is in the field map; FireRed draws its own window
+  -- and selector at the cartridge coordinates over a cleared strip.
   local cancel = rec and rec.cancel
-  if bg and cancel then
+  if isFireRed(self.game) then
+    self:drawFireRedCancel(bg, images, party, ball)
+  elseif bg and cancel then
     love.graphics.setColor(0, 0, 0, 1)
     local label = Strings("CANCEL")
     local lx = cancel.x + math.floor((cancel.width - Font.width(label)) / 2)

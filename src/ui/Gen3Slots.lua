@@ -196,6 +196,19 @@ end
 -- pays on its own; anything else pays nothing.
 function Gen3Slots:matchOf(a, b, c)
   local cfg = self.cfg
+  -- FireRed/LeafGreen uses one 7, one Rocket symbol, two paired Pokemon
+  -- classes, and asymmetric cherries.  Its cartridge pays two cherries
+  -- when the left reel is a cherry and the middle is not, three cherries
+  -- when both are cherries, and otherwise only exact triples.
+  if cfg.rules == "frlg" then
+    if not (a and b and c) then return 0 end
+    if a == (cfg.cherry or 4) then
+      return b == a and (cfg.threeCherry or 2) or (cfg.twoCherry or 1)
+    end
+    if a ~= b or a ~= c then return 0 end
+    local m = cfg.symbolMatch and cfg.symbolMatch[a]
+    return m or 0
+  end
   local none = cfg.noMatch or 9
   if not (a and b and c) then return none end
   if a == b and a == c then
@@ -240,7 +253,8 @@ end
 function Gen3Slots:settleLines()
   local cfg = self.cfg
   local none = cfg.noMatch or 9
-  local replayMatch = cfg.symbolMatch and cfg.symbolMatch[6]
+  local replayMatch = cfg.rules ~= "frlg"
+                      and cfg.symbolMatch and cfg.symbolMatch[6]
   local total, replay, won = 0, false, {}
   for index, line in ipairs(self:linesFor(self.bet)) do
     local m = self:matchOf(self:tagAtRest(1, line[1]),
@@ -251,7 +265,8 @@ function Gen3Slots:settleLines()
       -- cartridge promotes the one-cherry match to the two-cherry one on
       -- every line but the middle, and that promotion is the only difference
       -- between the lines.
-      if not line.centre and m == (cfg.oneCherry or 0) then
+      if cfg.rules ~= "frlg" and not line.centre
+         and m == (cfg.oneCherry or 0) then
         m = cfg.twoCherry or m
       end
       local paid = (cfg.payouts and cfg.payouts[m]) or 0
@@ -422,9 +437,10 @@ function Gen3Slots:drawReels()
   end
 end
 
-function Gen3Slots:drawCounter(x, value)
+function Gen3Slots:drawCounter(x, value, y)
   local text = ("%04d"):format(math.max(0, math.min(9999, value or 0)))
   local img = self.digitImg
+  y = y or COUNTER_Y
   for i = 1, DIGITS do
     local d = tonumber(text:sub(i, i)) or 0
     if img then
@@ -432,10 +448,10 @@ function Gen3Slots:drawCounter(x, value)
       love.graphics.setColor(1, 1, 1, 1)
       love.graphics.draw(img,
         love.graphics.newQuad(d * DIGIT_W, 0, DIGIT_W, ih, iw, ih),
-        x + (i - 1) * DIGIT_PITCH, COUNTER_Y)
+        x + (i - 1) * DIGIT_PITCH, y)
     else
       love.graphics.setColor(1, 0.85, 0.2, 1)
-      Font.draw(text:sub(i, i), x + (i - 1) * DIGIT_PITCH, COUNTER_Y + 3)
+      Font.draw(text:sub(i, i), x + (i - 1) * DIGIT_PITCH, y + 3)
     end
   end
   love.graphics.setColor(1, 1, 1, 1)
@@ -602,8 +618,11 @@ function Gen3Slots:draw()
   if self.bgImg then g.draw(self.bgImg, 0, 0) end
   self:drawBetLamps()
   self:drawWinLines()
-  self:drawCounter(CREDIT_X, coins(self))
-  self:drawCounter(PAYOUT_X, self.payout or 0)
+  local counters = self.cfg and self.cfg.screen and self.cfg.screen.counters
+  self:drawCounter(counters and counters.creditX or CREDIT_X, coins(self),
+                   counters and counters.y or COUNTER_Y)
+  self:drawCounter(counters and counters.payoutX or PAYOUT_X,
+                   self.payout or 0, counters and counters.y or COUNTER_Y)
   if self.stage == "info" then
     self:drawInfo()
   else

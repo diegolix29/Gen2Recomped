@@ -859,6 +859,74 @@ local function drawStatusPanel(battle, battler, x, y, player)
   -- not: the foe's cream box is nineteen tall and the player's is
   -- TWENTY-SEVEN, because the player's is the tall box and has a third row
   -- for the current-and-max numbers.
+  -- THE CARTRIDGE'S OWN WINDOWS, when the import recorded them: every piece
+  -- of text goes where UpdateNickInHealthbox / UpdateLvlInHealthbox /
+  -- UpdateHpTextInHealthbox copy it, and the bar where SpriteCB_HealthBar
+  -- puts its sprite.  See RomExtractorGen3.HUD_WINDOWS.
+  local win = record and record.windows
+    and record.windows[player and "player" or "opponent"]
+  if win and win.name and win.level and win.bar then
+    local strip = hpRampFor(record, battler)
+    local maxHp = math.max(1, battler.mon.stats.hp or 1)
+    local barW = HUD_HP_TILES * 8
+    local filled = 0
+    if shownHP(battler) > 0 then
+      filled = math.max(1, math.floor(shownHP(battler) * barW / maxHp))
+    end
+    local badge = statusBadge(record, battle, battler)
+    local label = hudImage(record.bars and record.bars.label)
+    love.graphics.setColor(1, 1, 1, 1)
+    if badge then
+      love.graphics.draw(badge, x + win.label.x, y + win.label.y)
+    elseif label then
+      love.graphics.draw(label, x + win.label.x, y + win.label.y)
+    end
+    drawRamp(strip, x + win.bar.x, y + win.bar.y, HUD_HP_TILES, filled)
+
+    local symbol, symbolInk = genderSymbol(record, battle, battler)
+    local symbolW = symbol and Font.width(symbol) or 0
+    local shown = fitName(battler.name, win.name.w - symbolW)
+    Font.draw(shown, x + win.name.x, y + win.name.y)
+    if symbol then
+      Font.pushStyle(symbolInk)
+      Font.draw(symbol, x + win.name.x + Font.width(shown), y + win.name.y)
+      Font.popStyle()
+    end
+    -- "{LV_2}" then the number left-aligned, shifted right five pixels for
+    -- every digit short of three
+    local digits = #tostring(battler.mon.level)
+    levelAt(battle, battler, x + win.level.x + 5 * (3 - digits),
+            y + win.level.y, "Lv" .. tostring(battler.mon.level))
+
+    if player and win.hpCurrent and win.hpMax then
+      -- both right-aligned in three digit cells, the current one with its
+      -- slash, exactly as ConvertIntToDecimalStringN pads them
+      local cell = Font.width("0")
+      local cur = tostring(shownHP(battler))
+      local max = tostring(battler.mon.stats.hp)
+      Font.draw(cur .. "/", x + win.hpCurrent.x + cell * (3 - #cur),
+                y + win.hpCurrent.y)
+      Font.draw(max, x + win.hpMax.x + cell * (3 - #max), y + win.hpMax.y)
+    end
+    if player then
+      local exp = hudImage(record.bars and record.bars.exp)
+      local place = hudExpStrip(record)
+      if exp and place then
+        local filledExp = 0
+        if battle.expFraction then
+          local okFill, value = pcall(battle.expFraction, battle)
+          filledExp = (okFill and tonumber(value)) or 0
+        end
+        local top = (record.bars and tonumber(record.bars.expTop)) or 0
+        drawRamp(exp, x + place.x, y + place.y - top, math.floor(place.w / 8),
+                 math.floor(place.w * math.max(0, math.min(1, filledExp))))
+      end
+    end
+    Font.popStyle()
+    if faced then Font.popFace() end
+    return
+  end
+
   local inner = hudInterior(record, player)
   local ix, iy = x + inner.x, y + inner.y
 
@@ -2181,14 +2249,26 @@ function Gen3Battle.drawField(battle)
   local ground = Gen3Battle.backdrop(battle)
   if ground then
     g.setColor(1, 1, 1, 1)
-    -- BATTLE LAYOUT = WIDE: the field keeps its own width, centred, and the
-    -- two Pokemon move with it (Gen3Battle.platforms adds the same offset),
-    -- so nothing on the ground is cut or stretched -- only the bands beside
-    -- it are filled.  fieldOffset is 0 on the OG layout and this is the blit
-    -- it has always been.
+    -- BATTLE LAYOUT = WIDE: keep the cartridge field centred and fill only
+    -- the bands beside it.  The FireRed intro then slides its two scanline
+    -- halves inside that field without changing their cartridge timing.
     local ox = Gen3Battle.fieldOffset(battle)
-    g.draw(ground, ox, 0)
     if surface > Gen3Battle.WIDTH then spanGround(g, ground, ox, surface) end
+    local slide = battle.frlgIntro and (battle.introSlide or 0) * 2 or 0
+    if slide > 0 then
+      -- BattleIntroSlide1's scanline split: the foe's half (rows 0-79) comes
+      -- in from the left, the player's half from the right
+      local W, H = Gen3Battle.WIDTH, Gen3Battle.HEIGHT
+      local top = g.newQuad(0, 0, W, 80, ground:getDimensions())
+      local bottom = g.newQuad(0, 80, W, H - 80, ground:getDimensions())
+      -- the background layer wraps, so the far side is never bare paper
+      g.draw(ground, top, ox - slide, 0)
+      g.draw(ground, top, ox + W - slide, 0)
+      g.draw(ground, bottom, ox + slide, 80)
+      g.draw(ground, bottom, ox + slide - W, 80)
+    else
+      g.draw(ground, ox, 0)
+    end
   end
   Gen3Battle.drawWeather(battle)
 end
@@ -2318,15 +2398,22 @@ local function measurePlatforms(path)
 
       local side = (y < h / 2) and "opponent" or "player"
       local blob = blobs[side]
-      local run = 0
+      local run, rowMin, rowMax = 0, w, -1
       for x = 0, w - 1 do
         if keys[x] ~= band then
           run = run + 1
-          if x < blob.minx then blob.minx = x end
-          if x > blob.maxx then blob.maxx = x end
+          if x < rowMin then rowMin = x end
+          if x > rowMax then rowMax = x end
         end
       end
-      if run > blob.best then blob.best, blob.y = run, y end
+      -- Keep the horizontal bounds from the same widest row that supplies
+      -- the platform surface.  FireRed backdrops have edge detail on other
+      -- rows; folding those pixels into global min/max shifts both battlers
+      -- away from the actual platform even though the chosen y is correct.
+      if run > blob.best then
+        blob.best, blob.y = run, y
+        blob.minx, blob.maxx = rowMin, rowMax
+      end
     end
     local out = {}
     for side, blob in pairs(blobs) do
@@ -2737,6 +2824,20 @@ function Gen3Battle.draw(battle)
   shaken(function() Gen3Battle.drawBall(battle) end)
   battle:drawAnimLayer()
   shaken(function() battle:drawTextArea() end)
+
+  -- the window opening out of the middle: 1 row a side for 32 frames, then 4
+  -- (BattleIntroSlide1 cases 2 and 3); nothing shows outside it
+  local fi = battle.frlgIntro
+  if fi and fi.t < 60 then
+    local half = fi.t <= 32 and fi.t or (32 + (fi.t - 32) * 4)
+    if half < 80 then
+      local W, H = Gen3Battle.WIDTH, Gen3Battle.HEIGHT
+      g.setColor(0, 0, 0, 1)
+      g.rectangle("fill", 0, 0, W, 80 - half)
+      g.rectangle("fill", 0, 80 + half, W, H - 80 - half)
+      g.setColor(1, 1, 1, 1)
+    end
+  end
 
   if fx and fx.flash and fx.flash > 0 and battle.frame % 4 < 2 then
     g.setColor(1, 1, 1, 0.85)

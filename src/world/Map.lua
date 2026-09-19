@@ -934,6 +934,75 @@ function Map:clearBlockPatches()
   return true
 end
 
+-- FIRERED'S DIRECTIONAL WARPS, which fire from the WALK and never from the
+-- arrival (field_control_avatar.c TryArrowWarp).
+--
+-- Reported from play: "when exiting the house even the tile beside the
+-- house... the exit is leading to exit... same with stairs".  Both are this
+-- table missing.  On the cartridge an exit mat, an arrow panel and a side
+-- staircase all fire out of ONE routine, and that routine runs only while
+-- `input->heldDirection && input->dpadDirection == playerDirection` -- the
+-- player has to be walking INTO the arrow for it to open.  Stepping onto one
+-- sideways does nothing at all, which is why a two-cell doormat is safe to
+-- walk along on real hardware.
+--
+-- This port fired every Gen 3 warp the instant it was stepped on
+-- (`warpsAreEvents`, below), so the second cell of every exit mat -- 512 of
+-- them on this cartridge -- threw the player back out of the building the
+-- moment they walked across it, and the side staircases did the same thing
+-- one tile early.
+--
+-- The four arrows are MB_EAST/WEST/NORTH/SOUTH_ARROW_WARP ($62..$65).  The
+-- four side staircases are MB_UP_RIGHT/UP_LEFT/DOWN_RIGHT/DOWN_LEFT_STAIR_WARP,
+-- which this cartridge's own data numbers $EC..$EF -- the same four the
+-- arrival slide already reads by those numbers (see the ExitStairsMovement
+-- branch in OverworldController:setMap).  Their directions are the
+-- cartridge's: only EAST and WEST open a side staircase
+-- (IsDirectionalStairWarpMetatileBehavior), never north or south.
+--
+-- The values are taken from what the retail ROM's own warps sit on rather
+-- than from a header: a census of every imported warp event finds 527 on $65,
+-- 68/64/32 on $62/$63/$64 and 246 across $EC..$EF, and NOTHING on $6C..$6F,
+-- which is where a current pret header names the staircases.
+--
+-- EMERALD IS DELIBERATELY NOT INCLUDED.  Hoenn numbers these bytes
+-- differently ($6C is its WATER DOOR), so the rule is asked for by version
+-- rather than applied to every Gen 3 dataset.
+local FRLG_DIRECTIONAL_WARP = {
+  [0x62] = "right", [0x63] = "left", [0x64] = "up", [0x65] = "down",
+  [0xEC] = "right", [0xEE] = "right",
+  [0xED] = "left",  [0xEF] = "left",
+}
+
+-- Warp behaviours that FireRed's field controller accepts on a completed
+-- step (field_control_avatar.c IsWarpMetatileBehavior).  A warp EVENT by
+-- itself is not enough: hundreds of script destinations intentionally sit on
+-- ordinary floor and must stay inert when the player walks across them.
+--
+-- Directional arrow/mat/stair behaviours are deliberately absent.  Those are
+-- TryArrowWarp and are handled by frlgWarpDirection + Warp.extraCheck when the
+-- player walks in the behaviour's own direction.
+local FRLG_ARRIVAL_WARP = {
+  [0x60] = true, -- CAVE_DOOR
+  [0x61] = true, -- LADDER
+  [0x66] = true, -- FALL_WARP
+  [0x67] = true, -- REGULAR_WARP
+  [0x68] = true, -- LAVARIDGE_1F_WARP
+  [0x69] = true, -- WARP_DOOR
+  [0x6A] = true, -- UP_ESCALATOR
+  [0x6B] = true, -- DOWN_ESCALATOR
+  [0x71] = true, -- UNION_ROOM_WARP
+}
+
+-- The direction this cell's behaviour must be walked in for its warp to fire,
+-- or nil when the cell is not one of FireRed's directional warps.
+function Map:frlgWarpDirection(cx, cy)
+  if not self.tileset.behaviourBytes then return nil end
+  if GameVersion.get() ~= "firered" then return nil end
+  local b = self:cellBehaviour(cx, cy)
+  return b and FRLG_DIRECTIONAL_WARP[b] or nil
+end
+
 -- SWAP THE MAP FOR ITS ALTERNATE ONE.  `setmaplayoutindex`.
 --
 -- A Gen 3 map header names a layout, and a script can name a different one:
@@ -1009,7 +1078,17 @@ function Map:isDoorTileCell(cx, cy)
   -- reason.  This is the same fix in the same shape.
   if self.tileset.behaviourBytes then
     local b = self:cellBehaviour(cx, cy)
-    return (b ~= nil and self.doorTiles[b]) and true or false
+    -- ...EXCEPT A DIRECTIONAL WARP, which is never a door however the
+    -- tileset's list describes it: a door fires on arrival and auto-steps the
+    -- player south out of it, and an arrow panel or side staircase does
+    -- neither.  See FRLG_DIRECTIONAL_WARP above.
+    if b ~= nil and self.doorTiles[b] and not self:frlgWarpDirection(cx, cy) then
+      return true
+    end
+    -- An exit mat is not a door: no opening animation, no step-out.  It stays
+    -- ARMED for a directional press through isWarpTileCell below, which
+    -- refreshStandingOnWarp reads together with this.
+    return false
   end
   local t = self:cellTile(cx, cy)
   if self.doorTiles[t] then return true end
@@ -1041,13 +1120,14 @@ function Map:isStepWarpCell(cx, cy)
 end
 
 function Map:isWarpTileCell(cx, cy)
-  -- GEN 3 DOES NOT GATE A WARP ON THE TILE UNDER IT.
+  -- GEN 3 STORES WARP EVENTS SEPARATELY FROM THEIR METATILE BEHAVIOUR.
   --
   -- On a Game Boy map a warp only fires from a door or carpet tile, and the
-  -- tileset's two lists are that filter.  On this cartridge the warp EVENT is
-  -- the whole thing: the behaviour byte says what KIND of opening it is -- a
-  -- door you step out of, a ladder you do not -- and about a tenth of warp
-  -- events sit on ordinary ground because a script puts you there.
+  -- tileset's two lists are that filter.  Emerald's existing import treats a
+  -- warp EVENT as sufficient here, but FireRed's field controller explicitly
+  -- gates completed-step warps through IsWarpMetatileBehavior.  That distinction
+  -- matters because hundreds of FireRed warp events sit on ordinary ground as
+  -- script destinations and are not entrances the player may trigger by walking.
   --
   -- Saying so explicitly matters.  Gen 3 tilesets used to ship no lists at
   -- all, and the empty-table fallback below let every warp through by
@@ -1056,6 +1136,16 @@ function Map:isWarpTileCell(cx, cy)
   -- not name stopped firing.  The tileset now states the rule instead of the
   -- engine inferring it from a gap.
   if self.tileset.warpsAreEvents then
+    if GameVersion.get() == "firered" then
+      if not self:warpAtCell(cx, cy) then return false end
+      local b = self:cellBehaviour(cx, cy)
+      return b ~= nil and FRLG_ARRIVAL_WARP[b] == true
+    end
+    -- ...BUT A DIRECTIONAL WARP IS NOT ONE OF THEM.  An arrow panel, an exit
+    -- mat and a side staircase are taken by walking INTO them and are inert
+    -- underfoot otherwise, so they are never an arrival warp -- see
+    -- FRLG_DIRECTIONAL_WARP and Warp.extraCheck, which fires them.
+    if self:frlgWarpDirection(cx, cy) then return false end
     return self:warpAtCell(cx, cy) ~= nil
   end
   local t = self:cellTile(cx, cy)

@@ -393,13 +393,21 @@ function Gen3Title:draw()
   -- The fallback, for a dataset whose overlay pass found nothing: the words
   -- set in the cartridge's own font over a band dark enough to read them.
   local prompt = Strings("PRESS START")
+  local promptY = GBA_H - 34
+  local GameVersion = require("src.core.GameVersion")
+  local fireRed = GameVersion.get() == "firered"
   if not drewBrand then
-    local brand = self.title.brandText or Strings("POKéMON EMERALD")
+    local brand = self.title.brandText
+                  or (fireRed and Strings("POKéMON FIRERED"))
+                  or Strings("POKéMON EMERALD")
     local bandY = GBA_H - 40
     love.graphics.setColor(0.04, 0.09, 0.16, 0.72)
     love.graphics.rectangle("fill", 0, bandY, W, 40)
     love.graphics.setColor(1, 1, 1, 1)
     Font.draw(brand, math.floor((W - Font.width(brand)) / 2), bandY + 6)
+    -- Keep the FireRed fallback prompt below its wordmark; Emerald uses the
+    -- measured cartridge prompt position below.
+    promptY = bandY + 22
   end
 
   -- PRESS START AND THE COPYRIGHT, IN THE CARTRIDGE'S OWN PIXELS.
@@ -433,7 +441,7 @@ function Gen3Title:draw()
   end
   if not drewPrompt and self.blink < 40 then
     local px = math.floor((W - Font.width(prompt)) / 2)
-    Font.draw(prompt, px, PRESS_START_Y)
+    Font.draw(prompt, px, fireRed and promptY or PRESS_START_Y)
   end
   love.graphics.setColor(1, 1, 1, 1)
 end

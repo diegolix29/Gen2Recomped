@@ -139,6 +139,11 @@ local function line(game, key, fallback, vars)
   return fallback
 end
 
+local function buyRecord(game)
+  local r = (game.data.constants or {}).gen3BuyMenu
+  return type(r) == "table" and type(r.windows) == "table" and r or nil
+end
+
 local function price(game, amount)
   local money = mart(game).money
   if type(money) == "string" then
@@ -238,6 +243,8 @@ function Gen3ShopMenu.new(game, opts)
   self.under = opts.under
   self.index, self.top = 1, 1
   self.say = nil
+  -- FireRed's screen shows the shop floor through its frame
+  if buyRecord(game) and self.kind == "item" then self.isOpaque = false end
   self:rebuild()
   return self
 end
@@ -583,18 +590,36 @@ function Gen3ShopMenu.sellItem(game, id, host)
     onDone = function(qty)
       if not qty then return end
       local paid = unit * qty
+      -- WHICH {VARn} CARRIES THE PRICE IS NOT THE SAME NUMBER ON BOTH
+      -- CARTRIDGES.  Emerald's line is "I can pay ¥{STR_VAR_1}." -- FireRed's
+      -- is "I can pay ¥{STR_VAR_3}." (strings.c, both games).  This message
+      -- has exactly one placeholder, so it costs nothing to fill every slot
+      -- with the same value rather than pick the wrong one and print a
+      -- blank amount, which is what a hard-coded VAR1 did against FireRed.
       local ask = line(game, "sellPrice",
                        Strings("I can pay you\n%s for that.",
                                price(game, paid)),
-                       { VAR1 = tostring(paid) })
+                       { VAR1 = tostring(paid), VAR2 = tostring(paid),
+                         VAR3 = tostring(paid) })
       game.stack:push(TextBox.new(game, ask, nil, {
         choice = function(yes)
           if not yes then return end
           game.save.money = (tonumber(game.save.money) or 0) + paid
           Bag.remove(game.save, id, qty)
           if host and host.refresh then host.refresh() end
-          say(line(game, "sold", Strings("Thank you!"),
-                   { VAR1 = tostring(paid), VAR2 = label }))
+          -- Emerald: "Turned over the {VAR2}\nand received ¥{VAR1}." --
+          -- FireRed: "Turned over the {VAR1}...\nworth ¥{VAR3}."  The two
+          -- meanings (amount, item) sit in DIFFERENT slots per game -- VAR1
+          -- is the amount on one cartridge and the item on the other -- so
+          -- unlike sellPrice above this cannot be answered with one value
+          -- in every slot; it has to know which cartridge it is.
+          local soldVars
+          if require("src.core.GameVersion").get() == "firered" then
+            soldVars = { VAR1 = label, VAR3 = tostring(paid) }
+          else
+            soldVars = { VAR1 = tostring(paid), VAR2 = label }
+          end
+          say(line(game, "sold", Strings("Thank you!"), soldVars))
         end,
       }))
     end,
@@ -680,6 +705,87 @@ local function drawRows(self, box, rows, field)
   end
 end
 
+-- FIRERED'S BUY SCREEN, when the import lifted it (constants.gen3BuyMenu):
+-- the cartridge's own frame over the world, and every piece of text in the
+-- window sShopBuyMenuWindowTemplatesNormal gives it.  The frame's empty left
+-- column is BuyMenuDrawMapView's shop floor, which here is the live world
+-- drawn underneath (the screen is not opaque while this record exists).
+
+function Gen3ShopMenu:drawFrlg(r)
+  local W = r.windows
+  local ok, frame = pcall(require("src.render.Assets").image, r.image)
+  love.graphics.setColor(1, 1, 1, 1)
+  if ok and frame then love.graphics.draw(frame, 0, 0) end
+
+  -- money: a standard window with the amount right-aligned in it
+  local mw = W.money
+  Font.drawBox(math.floor(mw.x / 8) - 1, math.floor(mw.y / 8) - 1,
+               math.floor(mw.width / 8) + 2, math.floor(mw.height / 8) + 2)
+  local label = self:moneyLabel()
+  if label then Font.draw(label, mw.x, mw.y) end
+  local amount = price(self.game, tonumber(self.game.save.money) or 0)
+  Font.draw(amount, mw.x + mw.width - Font.width(amount), mw.y + 12)
+
+  -- the list: name at item_X, price in the small face at 0x69, cursor at 1
+  local L = r.list or {}
+  local lw = W.list
+  local pitch = tonumber(L.rowHeight) or ROW_PITCH
+  local rows = tonumber(L.rows) or VISIBLE_ROWS
+  for i = 0, rows - 1 do
+    local row = self.rows[self.top + i]
+    if not row then break end
+    local y = lw.y + (tonumber(L.upTextY) or 2) + i * pitch
+    Font.draw(row.label, lw.x + (tonumber(L.itemX) or 9), y)
+    if row.unit and not row.close then
+      local faced = Font.pushFace("small")
+      local text = price(self.game, row.unit)
+      Font.draw(text, lw.x + (tonumber(L.priceX) or 105), y)
+      if faced then Font.popFace() end
+    end
+    if self.top + i == self.index then
+      Font.drawCode(Theme.cursor, lw.x + (tonumber(L.cursorX) or 1), y)
+    end
+  end
+
+  -- description (or the clerk's line) and the item's picture
+  local row = self:selected()
+  local dw, D = W.description, r.description or {}
+  local text = self.say or (row and (row.close and line(self.game,
+                 "quitShopping", "Quit shopping.") or row.description)) or ""
+  local y = dw.y + (tonumber(D.y) or 3)
+  for chunk in (tostring(text) .. "\n"):gmatch("([^\n]*)\n") do
+    Font.draw(chunk, dw.x + (tonumber(D.x) or 0), y)
+    y = y + (tonumber(D.lineHeight) or 14)
+  end
+  local icons = (self.game.data.constants or {}).gen3ItemIcons
+  local def = row and row.id and self.game.data.items and self.game.data.items[row.id]
+  local index = row and row.close and (icons and icons.listEnd)
+                or (def and tonumber(def.index))
+  if icons and icons.image and index then
+    local okI, img = pcall(require("src.render.Assets").image, icons.image)
+    if okI and img then
+      local size, cols = icons.size or 24, icons.cols or 1
+      local iw, ih = img:getDimensions()
+      local quad = love.graphics.newQuad((index % cols) * size,
+                                         math.floor(index / cols) * size,
+                                         size, size, iw, ih)
+      local at = r.itemIcon or { x = 8, y = 124 }
+      love.graphics.draw(img, quad, at.x, at.y)
+    end
+  end
+
+  -- IN BAG, for the row under the cursor
+  if row and not row.close then
+    local have = (self.game.save.inventory or {})[row.id] or 0
+    local ib = W.inBag
+    Font.drawBox(math.floor(ib.x / 8) - 1, math.floor(ib.y / 8) - 1,
+                 math.floor(ib.width / 8) + 2, math.floor(ib.height / 8) + 2)
+    Font.draw(line(self.game, "inBag", Strings("IN BAG: %d", have),
+                   { VAR1 = tostring(have) }), ib.x, ib.y)
+  end
+  love.graphics.setColor(1, 1, 1, 1)
+end
+
 -- The counter's own background, when this cache carries it.
 function Gen3ShopMenu:field()
   local path = ((self.game.data.constants or {}).gen3ShopMenu or {}).image
@@ -692,6 +798,8 @@ end
 
 function Gen3ShopMenu:draw()
   love.graphics.setColor(1, 1, 1, 1)
+  local frlg = buyRecord(self.game)
+  if frlg and self.kind == "item" then return self:drawFrlg(frlg) end
 
   -- THE CARTRIDGE'S FIELD, when it is in the cache.
   --

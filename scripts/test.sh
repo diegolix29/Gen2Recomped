@@ -67,6 +67,7 @@ run_tier() {
 
 run_tier "T1/T2 engine invariants + parity gates" "$LUA" tests/run_engine.lua
 run_tier "T4 mod-SDK" "$LUA" tests/run_modkit.lua
+run_tier "Dramatic Shape B30 profile" "$LUA" tests/dramatic_shape_b30.lua
 
 # The modded-link desync suite (symmetric mod, handshake fail-closed,
 # extra-bag round trip) is ROM-free and runs inside the T4 tier above, as

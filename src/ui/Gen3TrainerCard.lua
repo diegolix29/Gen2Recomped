@@ -142,8 +142,29 @@ function Gen3TrainerCard:close()
   if self.onCancel then self.onCancel() end
 end
 
+function Gen3TrainerCard:frlgRecord()
+  local r = (self.game.data.constants or {}).gen3FRLGTrainerCard
+  return type(r) == "table" and type(r.images) == "table" and r.images.bg_boy_0 and r or nil
+end
+
 function Gen3TrainerCard:update(dt)
   local input = self.game.input
+  if self:frlgRecord() then
+    -- the card flips top-to-bottom over the midline (Task_AnimateCardFlipDown/Up)
+    if self.flip then
+      self.flip = self.flip + 1
+      if self.flip == 12 then self.back = not self.back end
+      if self.flip >= 24 then self.flip = nil end
+      return
+    end
+    if input:wasPressed("a") then
+      self.flip = 0
+      pcall(function() require("src.core.Sound").play(self.game.data, "Press_AB") end)
+    elseif input:wasPressed("b") or input:wasPressed("start") then
+      if self.back then self.flip = 0 else self:close() end
+    end
+    return
+  end
   if input:wasPressed("a") then
     self.back = not self.back
   elseif input:wasPressed("b") or input:wasPressed("start") then
@@ -169,6 +190,98 @@ function Gen3TrainerCard:rows()
     { labels[5] or "TIME",
       ("%d:%02d"):format(math.floor(t / 3600), math.floor(t / 60) % 60) },
   }
+end
+
+-- FIRERED'S CARD: every position below is trainer_card.c's CARD_TYPE_FRLG
+-- column, relative to text window 1 at tile (1,1).
+local FRLG_INK = { 0.38, 0.38, 0.38 }
+local FRLG_SHADOW = { 0.84, 0.84, 0.80 }
+
+local function frlgText(text, x, y)
+  local two = Font.beginTwoTone(FRLG_INK, FRLG_SHADOW)
+  if not two then love.graphics.setColor(FRLG_INK[1], FRLG_INK[2], FRLG_INK[3], 1) end
+  Font.draw(text, x + 8, y + 8)
+  if two then Font.endTwoTone() end
+  love.graphics.setColor(1, 1, 1, 1)
+end
+
+local function frlgRight(text, right, y)
+  frlgText(text, right - Font.width(text), y)
+end
+
+function Gen3TrainerCard:drawFireRed(record)
+  local g = love.graphics
+  local Assets = require("src.render.Assets")
+  local save = self.game.save or {}
+  local player = save.player or {}
+  local gender = player.gender == "girl" and "girl" or "boy"
+  local stars = math.max(0, math.min(4, tonumber(save.trainerStars) or 0))
+  local function img(key)
+    local path = record.images[key]
+    if not path then return nil end
+    local ok, image = pcall(Assets.image, path)
+    return ok and image or nil
+  end
+  local labels = record.labels or {}
+  g.setColor(1, 1, 1, 1)
+  local bg = img(("bg_%s_%d"):format(gender, stars))
+  if bg then g.draw(bg, 0, 0) end
+
+  -- the flip squashes the card toward its middle row and back out
+  local sy = 1
+  if self.flip then sy = math.abs(12 - self.flip) / 12 end
+  g.push()
+  g.translate(0, 80)
+  g.scale(1, math.max(0.02, sy))
+  g.translate(0, -80)
+  local face = img(("%s_%s_%d"):format(self.back and "back" or "front", gender, stars))
+  if face then g.draw(face, 0, 0) end
+
+  if not self.back then
+    frlgText((labels.name or "NAME: ") .. (player.name or ""), 20, 29)
+    local id = tonumber(player.id) or 0
+    frlgText((labels.id or "IDNo.") .. ("%05d"):format(id % 100000), 142, 10)
+    frlgText(labels.money or "MONEY", 20, 56)
+    frlgRight((labels.yen or "$") .. tostring(math.floor(save.money or 0)), 134, 56)
+    local flags = save.flags or {}
+    if flags.FLAG_G3_0829 then
+      local dex = 0
+      for _ in pairs((save.pokedex or {}).owned or {}) do dex = dex + 1 end
+      frlgText(labels.pokedex or "POKéDEX", 20, 72)
+      frlgRight(tostring(dex), 136, 72)
+    end
+    local t = math.floor(require("src.core.SaveData").playSeconds(save))
+    frlgText(labels.time or "TIME", 20, 88)
+    frlgRight(tostring(math.min(999, math.floor(t / 3600))), 119, 88)
+    -- the colon blinks once a second (BlinkTimeColon)
+    if t % 2 == 0 then frlgText(":", 119, 88) end
+    frlgText(("%02d"):format(math.floor(t / 60) % 60), 124, 88)
+
+    -- the trainer, in window 2 at tile (19,5), offset 13,4
+    local path = require("src.pokemon.Sprites").playerPath(self.game.data, "front",
+      { kind = "trainer_card", save = save })
+    if type(path) == "string" then
+      local ok, pic = pcall(Assets.image, path)
+      if ok and pic then g.draw(pic, 19 * 8 + 13, 5 * 8 + 4) end
+    end
+
+    -- stars from tile (15,7), badges on rows 16-17 four tiles in, three apart
+    local star = img("star")
+    for i = 0, stars - 1 do if star then g.draw(star, (15 + i) * 8, 7 * 8) end end
+    local sheet = img("badges")
+    if sheet then
+      local iw, ih = sheet:getDimensions()
+      for i, entry in ipairs(Badges.list(self.game.data)) do
+        if i <= 8 and Badges.has(save, entry) then
+          g.draw(sheet, g.newQuad((i - 1) * 16, 0, 16, 16, iw, ih), (4 + (i - 1) * 3) * 8, 16 * 8)
+        end
+      end
+    end
+  else
+    frlgText(player.name or "", 138, 11)
+  end
+  g.pop()
+  g.setColor(1, 1, 1, 1)
 end
 
 -- The three baked screens, or nil where the dataset has none.
@@ -279,6 +392,8 @@ function Gen3TrainerCard:drawArt(art)
 end
 
 function Gen3TrainerCard:draw()
+  local frlg = self:frlgRecord()
+  if frlg then return self:drawFireRed(frlg) end
   local art = self:art()
   if art then return self:drawArt(art) end
 

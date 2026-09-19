@@ -222,6 +222,13 @@ function Gen3SummaryMenu.new(game, opts)
   self.onCancel = opts.onCancel
   self.page = 1
   self.pages = pageNames(game)
+  -- FireRed has three pages (INFO, SKILLS, KNOWN MOVES) and no contest page
+  local frlg = Gen3SummaryMenu.frlgRecord(game)
+  if frlg then
+    local t = frlg.text or {}
+    self.pages = { t.pageInfo or "POKéMON INFO", t.pageSkills or "POKéMON SKILLS",
+                   t.pageMoves or "KNOWN MOVES" }
+  end
   -- PICKING A MOVE TO FORGET.
   --
   -- Emerald does not put up a list of its own when a Pokemon has four moves
@@ -1615,7 +1622,256 @@ function Gen3SummaryMenu:drawMoves(contest)
   end
 end
 
+-- ---------------------------------------------------------------------------
+-- FIRERED (pokemon_summary_screen.c)
+--
+-- Every coordinate below is a window template plus the print call's own
+-- offset, named beside it; constants.gen3FRLGSummary carries the art.
+-- ---------------------------------------------------------------------------
+function Gen3SummaryMenu.frlgRecord(game)
+  local r = ((game and game.data and game.data.constants) or {}).gen3FRLGSummary
+  return type(r) == "table" and type(r.images) == "table" and r.images.page_info and r or nil
+end
+
+local function frlgColor(t) return { t[1] / 255, t[2] / 255, t[3] / 255, 1 } end
+
+function Gen3SummaryMenu:frlgImage(key)
+  local r = Gen3SummaryMenu.frlgRecord(self.game)
+  local path = r and r.images[key]
+  if not path then return nil end
+  self._frlgImages = self._frlgImages or {}
+  if self._frlgImages[path] == nil then
+    local ok, image = pcall(require("src.render.Assets").image, path)
+    self._frlgImages[path] = ok and image or false
+  end
+  return self._frlgImages[path] or nil
+end
+
+local function frlgText(s, x, y, pair, small)
+  if not s then return end
+  local ink, shadow = frlgColor(pair[1]), frlgColor(pair[2])
+  local pushed = small and Font.hasFace and Font.hasFace("small")
+  if pushed then Font.pushFace("small") end
+  local two = Font.beginTwoTone(ink, shadow)
+  if not two then love.graphics.setColor(ink) end
+  Font.draw(tostring(s), x, y)
+  if two then Font.endTwoTone() end
+  if pushed then Font.popFace() end
+  love.graphics.setColor(1, 1, 1, 1)
+end
+
+local function frlgRight(s, right, y, pair)
+  frlgText(s, right - Font.width(tostring(s)), y, pair)
+end
+
+function Gen3SummaryMenu:frlgTypeIcon(r, typeName, x, y)
+  local sheet = self:frlgImage("menu_info")
+  local off = typeName and (r.typeIcons or {})[tostring(typeName):upper()]
+  if not (sheet and off) then return end
+  local iw, ih = sheet:getDimensions()
+  love.graphics.draw(sheet, love.graphics.newQuad((off % 16) * 8, math.floor(off / 16) * 8, 32, 12, iw, ih), x, y)
+end
+
+-- UpdateHpBarObjs / UpdateExpBarObjs: caps on tiles 0, 1 and the last, whole
+-- tiles as frame 8, the partial tile as a fraction of 8 (EXP) or 6 (HP)
+function Gen3SummaryMenu:frlgBar(key, x, y, tilesMid, fraction, partialSteps)
+  local sheet = self:frlgImage(key)
+  if not sheet then return end
+  local iw, ih = sheet:getDimensions()
+  local function frame(f, i)
+    love.graphics.draw(sheet, love.graphics.newQuad(f * 8, 0, 8, 8, iw, ih), x + i * 8, y)
+  end
+  local total = tilesMid
+  frame(9, 0); frame(10, 1); frame(11, total + 2)
+  local filled = math.max(0, math.min(1, fraction)) * total
+  for i = 0, total - 1 do
+    local f
+    if filled >= i + 1 then f = 8
+    elseif filled > i then f = math.floor((filled - i) * partialSteps + 0.5) * math.floor(8 / partialSteps)
+    else f = 0 end
+    frame(math.max(0, math.min(8, f)), i + 2)
+  end
+end
+
+function Gen3SummaryMenu:drawFireRed(r)
+  local g = love.graphics
+  local mon, def = self.mon, self.def or {}
+  local data = self.game.data
+  local colors = r.colors or {}
+  local pane = colors.pane or { { 74, 74, 74 }, { 206, 206, 206 } }
+  local header = colors.header or { { 255, 255, 255 }, { 90, 90, 90 } }
+  local picking = type(self.choose) == "table"
+  local detail = self.page == 3 and (self.moveSelect or picking)
+
+  g.setColor(1, 1, 1, 1)
+  local base = self:frlgImage(picking and "base_moves" or "base_movesInfo")
+  if base then g.draw(base, 0, 0) end
+  local tabs = self:frlgImage(({ "progress_info", "progress_skills", "progress_moves" })[self.page]
+                              .. "")
+  if detail then tabs = self:frlgImage("progress_movesInfo") end
+  if tabs then g.draw(tabs, 0, 0) end
+  local layer = self:frlgImage(({ "page_info", "page_skills", "page_moves" })[self.page])
+  if layer then g.draw(layer, 0, 0) end
+  if detail then
+    local info = self:frlgImage("page_movesInfo")
+    if info then g.draw(info, 0, 0) end
+  end
+
+  -- header windows: page name (0,0)+4,1; level (0,2)+4,2; nickname +40; gender +105
+  frlgText(self.pages[self.page], 4, 1, header)
+  if not mon then return end
+  local t = r.text or {}
+  if not detail then
+    frlgText("Lv" .. tostring(mon.level or 1), 4, 18, header, true)
+  end
+  frlgText(mon.nickname or def.name or tostring(mon.species), 40, 18, header)
+  local mark = self:genderMark()
+  if mark then
+    frlgText(mark, 105, 18, mark == "\u{2640}" and (colors.female or header) or (colors.male or header))
+  end
+
+  -- the move-detail page swaps the pic for the party icon, centred on (24,32)
+  -- (PokeSum_CreateMonIconSprite)
+  if detail then
+    local ok, img, frameH = pcall(require("src.ui.Gen3PartyMenu").iconFor, { game = self.game }, mon)
+    if ok and img then
+      local iw, ih = img:getDimensions()
+      frameH = math.min(frameH or ih, ih)
+      local frame = (math.floor(love.timer.getTime() / 0.32) % math.max(1, math.floor(ih / frameH)))
+      self._iconQuads = self._iconQuads or {}
+      local key = ("%d:%d:%d"):format(iw, frameH, frame)
+      self._iconQuads[key] = self._iconQuads[key] or g.newQuad(0, frame * frameH, iw, frameH, iw, ih)
+      g.draw(img, self._iconQuads[key], 24 - math.floor(iw / 2), 32 - math.floor(frameH / 2))
+    end
+  end
+
+  -- the Pokemon, centred on (60,65)
+  if self.pic and not detail then
+    local frame = self.picAnim and self.picAnim.image and self.picAnim:image() or self.pic
+    self:drawMon(frame or self.pic, 60 - 32, 65 - 32)
+  end
+
+  local types = {}
+  local t1 = def.type1 or (def.types and def.types[1])
+  local t2 = def.type2 or (def.types and def.types[2])
+  types[1] = t1
+  if t2 and t2 ~= t1 then types[2] = t2 end
+
+  if self.page == 1 then
+    -- right pane (15,2)
+    local px, py = 120, 16
+    frlgText(def.dex and ("%03d"):format(def.dex) or "---", px + 47, py + 5, pane)
+    frlgText(def.name or tostring(mon.species), px + 47, py + 19, pane)
+    self:frlgTypeIcon(r, types[1], px + 47, py + 35)
+    if types[2] then self:frlgTypeIcon(r, types[2], px + 83, py + 35) end
+    frlgText(mon.ot or (self.game.save.player or {}).name or "", px + 47, py + 49, pane)
+    frlgText(("%05d"):format((tonumber(mon.otId or (self.game.save.player or {}).id) or 0) % 65536),
+             px + 47, py + 64, pane)
+    local held = mon.item and (data.items or {})[mon.item]
+    frlgText((held and held.name) or (mon.item and tostring(mon.item)) or t.itemNone or "NONE",
+             px + 47, py + 79, pane)
+    -- trainer memo (1,14)
+    for i, line in ipairs(self:memoLines()) do
+      frlgText(line, 8, 112 + 3 + (i - 1) * 14, pane)
+    end
+  elseif self.page == 2 then
+    local px, py = 160, 16
+    local stats = mon.stats or {}
+    frlgRight(("%d/%d"):format(mon.hp or 0, stats.hp or 0), px + 77, py + 4, pane)
+    local order = { "attack", "defense", "spatk", "spdef", "speed" }
+    for i, key in ipairs(order) do
+      frlgRight(tostring(stats[key] or 0), px + 77, py + 22 + (i - 1) * 13, pane)
+    end
+    frlgRight(tostring(mon.exp or 0), px + 78, py + 87, pane)
+    local remaining = self:expToNext()
+    frlgRight(tostring(remaining or 0), px + 78, py + 100, pane)
+    frlgText(t.expPoints or "EXP. POINTS", 48 + 26, 96 + 7, pane)
+    frlgText(t.nextLv or "NEXT LV.", 48 + 26, 96 + 20, pane)
+    frlgText(self:abilityName(), 8 + 66, 128 + 1, pane)
+    local blurb = self:abilityDescription()
+    if blurb then frlgText((blurb:gsub("\n", " ")), 8 + 2, 128 + 15, pane) end
+    -- the HP bar (9 tiles at 168,32) and the EXP bar (11 tiles at 152,128)
+    local maxHp = math.max(1, stats.hp or 1)
+    local frac = (mon.hp or 0) / maxHp
+    local hpKey = (frac <= 0.2 and "bar_hp_red") or (frac <= 0.5 and "bar_hp_yellow") or "bar_hp_green"
+    self:frlgBar(hpKey, 168, 32, 6, frac, 6)
+    local expFrac = 0
+    local ok, Growth = pcall(require, "src.pokemon.Growth")
+    if ok and Growth.expForLevel and self.def then
+      local rates = (data.constants or {}).experienceTables
+      local okA, lo = pcall(Growth.expForLevel, self.def.growthRate, mon.level or 1, rates)
+      local okB, hi = pcall(Growth.expForLevel, self.def.growthRate, (mon.level or 1) + 1, rates)
+      if okA and okB and hi > lo then expFrac = ((mon.exp or 0) - lo) / (hi - lo) end
+    end
+    self:frlgBar("bar_exp", 152, 128, 8, expFrac, 8)
+  else
+    local px, py = 160, 16
+    local moves = mon.moves or {}
+    local moveColors = colors.moves or { pane, pane, pane, pane }
+    local function drawMove(i, id, pp)
+      local mdef = id and (data.moves or {})[id]
+      local y = py + (i - 1) * 28
+      frlgText(mdef and mdef.name or "-", px + 3, y + 5, moveColors[1])
+      if mdef then
+        local maxPP = mdef.pp or 0
+        local cur = pp or maxPP
+        local idx = 1
+        if cur == 0 then idx = 4
+        elseif cur < maxPP then
+          if cur <= math.floor(maxPP / 4) then idx = 3 elseif cur <= math.floor(maxPP / 2) then idx = 2 end
+        end
+        frlgText("PP", px + 30, y + 16, moveColors[idx], true)
+        frlgRight(tostring(cur), px + 58, y + 16, moveColors[idx])
+        frlgText("/", px + 58, y + 16, moveColors[idx])
+        frlgRight(tostring(maxPP), px + 76, y + 16, moveColors[idx])
+        self:frlgTypeIcon(r, mdef.type, 120 + 3, y + 5)
+      end
+    end
+    for i = 1, 4 do
+      local slot = moves[i]
+      local id = (type(slot) == "table") and slot.id or slot
+      drawMove(i, id, type(slot) == "table" and slot.pp or nil)
+    end
+    if picking then drawMove(5, self.choose.move, nil) end
+    if detail then
+      -- the mon's own types at (48,35) and the move's POWER / ACCURACY / EFFECT
+      self:frlgTypeIcon(r, types[1], 48, 32 + 3)
+      if types[2] then self:frlgTypeIcon(r, types[2], 84, 32 + 3) end
+      local index = math.max(1, math.floor(self.moveIndex or 1))
+      local slot = moves[index]
+      local id = (index == 5 and picking) and self.choose.move or ((type(slot) == "table") and slot.id or slot)
+      local mdef = id and (data.moves or {})[id]
+      if mdef then
+        frlgText(tostring(mdef.power and mdef.power > 1 and mdef.power or "---"), 57, 56 + 1, pane)
+        frlgText(tostring(mdef.accuracy and mdef.accuracy > 0 and mdef.accuracy or "---"), 57, 56 + 15, pane)
+        local line = 0
+        for text in ((mdef.description or "") .. "\n"):gmatch("([^\n]*)\n") do
+          frlgText(text, 7, 56 + 42 + line * 14, pane)
+          line = line + 1
+        end
+      end
+      -- the move cursor: two 64x32 halves at (120, 18 + 28*row)
+      local cursor = self:frlgImage("cursor")
+      if cursor then
+        local iw, ih = cursor:getDimensions()
+        local y = 18 + (index - 1) * 28
+        g.draw(cursor, g.newQuad(0, 0, 64, 32, iw, ih), 120, y)
+        g.draw(cursor, g.newQuad(64, 0, 64, 32, iw, ih), 184, y)
+      end
+      if self.moveSwapFrom and self.moveSwapFrom ~= index and cursor then
+        g.setColor(1, 1, 1, 0.5)
+        local iw, ih = cursor:getDimensions()
+        g.draw(cursor, g.newQuad(0, 0, 64, 32, iw, ih), 120, 18 + (self.moveSwapFrom - 1) * 28)
+        g.draw(cursor, g.newQuad(64, 0, 64, 32, iw, ih), 184, 18 + (self.moveSwapFrom - 1) * 28)
+        g.setColor(1, 1, 1, 1)
+      end
+    end
+  end
+end
+
 function Gen3SummaryMenu:draw()
+  local frlg = Gen3SummaryMenu.frlgRecord(self.game)
+  if frlg then return self:drawFireRed(frlg) end
   love.graphics.setColor(0.20, 0.42, 0.36, 1)
   love.graphics.rectangle("fill", 0, 0, GBA_W, GBA_H)
   love.graphics.setColor(1, 1, 1, 1)

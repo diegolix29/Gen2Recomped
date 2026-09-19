@@ -790,19 +790,33 @@ GameVersion.VERSIONS = {
     manifest = "tools/rom_manifest_polishedcrystal.json",
     cachePrefix = "polishedcrystal/",
     saveSuffix = "_polishedcrystal",
-    -- LOCKED DOWN FOR NOW -- "COMING SOON" IN THE LAUNCHER.
+    -- OPEN, AS A BETA -- the gate came off deliberately, not by default.
     --
-    -- The tables all read off the cartridge and the world loads, but a
-    -- play-through keeps turning up runtime issues (the move-effect
-    -- numbering, the scripted player-name substitution, running shoes,
-    -- and more the next session will find), so the version is held back
-    -- rather than offered as importable while those are worked through.
-    -- `importable = false` refuses the import AND makes the launcher panel
-    -- draw the COMING SOON pill with the button disabled
-    -- (RomImporter: `withheld` -> `locked`).  Flip this back to true (and
-    -- restore `experimental = true` for the BETA pill) once the runtime is
-    -- proven on a full run.  POKEPORT_UNLOCK still opens it for local work.
-    importable = false,
+    -- This was held at `importable = false` ("COMING SOON", button disabled)
+    -- while the runtime was worked through, on the argument that a version
+    -- whose play-through keeps turning up issues should not be offered.  The
+    -- note that gate carried said to flip it back "once the runtime is proven
+    -- on a full run", and that is not quite what has happened -- what has
+    -- happened is that the runtime work reached the point where the REMAINING
+    -- gaps are known, bounded and named rather than unknown:
+    --
+    --   * the script commands the cartridge dispatches are lowered but for
+    --     thirteen, each one read off its own handler and listed;
+    --   * 123 of the 160 specials its SpecialsPointers table names resolve,
+    --     and the rest are this hack's own systems (its Battle Tower rework,
+    --     hidden grottoes, Mint Tea, Hyper Training, Wonder Trade) rather
+    --     than anything Gold or Crystal would have had;
+    --   * the engine-flag table is this cartridge's own, read off it and
+    --     joined to Crystal's on (WRAM byte, bit) -- so its badges land on
+    --     its badges instead of on Gold's;
+    --   * the TM/HM pocket hands machines over, and BP is a real currency.
+    --
+    -- A closed gate cannot be tested through, and the things still missing
+    -- are the kind a play-through finds, not the kind that stops one
+    -- starting.  So it opens with the BETA pill saying plainly what it is.
+    importable = true,
+    -- the stage pill, and the panel copy that goes with it
+    experimental = true,
     -- hold B to run (DoPlayerMovement's .run branch); see Player.beginStep
     hasRunning = true,
   },
@@ -864,6 +878,25 @@ GameVersion.VERSIONS = {
 -- sha1 is the canonical (USA, Europe) dump, game code BPEE, revision 0 --
 -- the build pokeemerald targets, which is what makes the discovered
 -- addresses meaningful.
+  -- FireRed, added locally to test an FRLG port of the Gen 3 pipeline.
+  -- Manifest built by a patched gen3_discover.py plus a pret-derived
+  -- symbol table; see docs/frlg-gen3-symbol-map.md in the recomp repo.
+  firered = {
+    id = "firered",
+    generation = 3,
+    label = "FireRed",
+    displayName = "Pokemon FireRed",
+    launcherName = "FireRed",
+    sha1 = "41cb23d8dccc8ebd7c649cd8fbb58eeace6e2fdc",
+    manifest = "tools/rom_manifest_firered.json",
+    cachePrefix = "firered/",
+    saveSuffix = "_firered",
+    importable = true,
+    experimental = true,
+    experimentalLabel = "ALPHA",
+    hasRunning = true,
+  },
+
   emerald = {
     id = "emerald",
     generation = 3,
@@ -893,7 +926,7 @@ GameVersion.VERSIONS = {
 -- put a Game Boy Advance game behind two Game Boy Color hacks, and broke the
 -- ordering rule tests/polished_crystal_registration_test.lua asserts.
 GameVersion.ORDER = { "red", "blue", "yellow", "gold", "silver", "crystal",
-                      "emerald", "prism", "polishedcrystal" }
+                      "firered", "emerald", "prism", "polishedcrystal" }
 
 GameVersion.current = "red"
 

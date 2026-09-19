@@ -79,6 +79,10 @@ local function price(game, amount)
   if said and type(said.money) == "string" then
     return fill(said.money, { VAR1 = tostring(amount) })
   end
+  -- Gen 3 has its own POKé DOLLAR glyph; the Game Boy font uses MONEY_GLYPH.
+  if require("src.core.GameVersion").isGen3() then
+    return ("₽%d"):format(amount)
+  end
   return MONEY_GLYPH .. tostring(amount)
 end
 
@@ -264,24 +268,52 @@ local function gen3Box(game)
            tw = width + 2, th = height + 2 }
 end
 
+-- FireRed's buy screen lets the shop floor show through its frame, so the
+-- stack draws what is under it -- including this BUY / SELL / SEE YA! box,
+-- which the cartridge takes down while the list is up.  The box under the
+-- screen stops drawing until the screen closes.
+function ShopMenu.coverWith(game, screen)
+  local under = game.stack:top()
+  if under and screen.isOpaque == false then
+    local draw = under.draw
+    under.draw = function() end
+    local quit = screen.onQuit
+    screen.onQuit = function(...)
+      under.draw = draw
+      if quit then return quit(...) end
+    end
+  end
+  game.stack:push(screen)
+end
+
 function ShopMenu.new(game, stock, onQuit)
   local counter = gen3Counter(game)
   if counter then
+    local fireRed = require("src.core.GameVersion").get() == "firered"
     local Menu = require("src.ui.Menu")
     local menu
     menu = Menu.new(game, {
       { label = line(game, "buy", Strings("BUY")), keepOpen = true,
         onSelect = function()
-          -- the Hoenn counter is an overlay, so the three-row box goes away
-          -- while its list is up (see Gen3ShopMenu.counter)
+          if fireRed then
+            -- FireRed's extracted counter is translucent and the cartridge
+            -- removes the BUY/SELL/QUIT box while its list is open.
+            return ShopMenu.coverWith(game,
+              counter.new(game, { mode = "buy", stock = stock }))
+          end
+          -- Emerald's generic counter stays on the stack but hides its menu.
           menu.hidden = true
-          game.stack:push(counter.new(game, { mode = "buy", stock = stock,
-                                              under = menu }))
+          game.stack:push(counter.new(game, {
+            mode = "buy", stock = stock, under = menu,
+          }))
         end },
       { label = line(game, "sell", Strings("SELL")), keepOpen = true,
         onSelect = function()
-          -- Hoenn sells out of THE BAG, pockets and all (see
-          -- Gen3ShopMenu.sellItem); the list of its own was the report
+          if fireRed then
+            return ShopMenu.coverWith(game,
+              counter.new(game, { mode = "sell" }))
+          end
+          -- Emerald sells from the bag's own pocket list.
           if counter.openSellBag then return counter.openSellBag(game) end
           game.stack:push(counter.new(game, { mode = "sell" }))
         end },

@@ -99,10 +99,14 @@ function Gen3StorageMenu.new(game, opts)
     end
     rows[#rows + 1] = row
   end
-  return Menu.new(game, rows, {
+  local menu = Menu.new(game, rows, {
     noSound = true,
+    -- sWindowTemplate_MainMenu: (1,1), 17 wide inside its frame
+    tx = 0, ty = 0, tw = 19,
     onCancel = close,
   })
+  function menu:uiSize() return 240, 160 end
+  return menu
 end
 
 return Gen3StorageMenu

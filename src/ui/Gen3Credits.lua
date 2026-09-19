@@ -63,6 +63,11 @@ end
 function Gen3Credits.new(game, onDone)
   local record = Gen3Credits.record(game)
   if not record then return nil end
+  -- FireRed's roll is a scripted scene over its own maps
+  if type(record.frlg) == "table" and type(record.frlg.script) == "table" then
+    local ok, FRLG = pcall(require, "src.ui.Gen3CreditsFRLG")
+    if ok then return FRLG.new(game, record, onDone) end
+  end
   local self = setmetatable({}, Gen3Credits)
   self.game = game
   self.onDone = onDone

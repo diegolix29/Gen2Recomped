@@ -71,6 +71,11 @@ function Menu.new(game, items, opts)
   -- it to swap the pic above the box to whichever character is under the
   -- cursor; menus that do not pass it behave exactly as before.
   self.onHighlight = opts.onHighlight
+  -- opts.index: open with the cursor on this row (1-based) rather than the
+  -- first -- FireRed's elevator opens on the floor you are standing on
+  if tonumber(opts.index) then
+    self.index = math.max(1, math.min(#items, math.floor(tonumber(opts.index))))
+  end
   -- A LINE UNDER THE MENU SAYING WHAT THE ROW DOES.
   --
   -- Emerald's PC menus are two windows, not one: the list, and a message

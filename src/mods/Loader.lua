@@ -277,6 +277,9 @@ end
 
 function Loader:_discover()
   if not self.fs.getDirectoryItems then return end
+  -- POKEPORT_NO_MODS=1: a verification run against the plain game, without
+  -- touching the user's saved enable flags
+  if os.getenv("POKEPORT_NO_MODS") == "1" then return end
   local roots = { "mods" }
   -- THE SAME CONFINEMENT THE LAUNCHER APPLIES.  When the player has chosen a
   -- game-data folder, a mod counts only if it is in it -- and the game has to

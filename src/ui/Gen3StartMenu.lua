@@ -146,11 +146,36 @@ local ACTIONS = {
   { key = "exit", screen = nil },
 }
 
+local FIRERED_HELP_TUTORIAL = "fireredStartMenu"
+
+local function isFireRed(game)
+  local record = ((game and game.data and game.data.constants) or {}).gen3StartMenu
+  return record and record.layout == "frlg" or false
+end
+
 function Gen3StartMenu.new(game)
   local self = setmetatable({}, Gen3StartMenu)
   self.game = game
   self.index = 1
   self.blink = 0
+
+  local options = game.save and game.save.options
+  if type(options) ~= "table" then
+    local ok, SaveData = pcall(require, "src.core.SaveData")
+    if ok then
+      local loaded, value = pcall(SaveData.loadOptions)
+      if loaded then options = value end
+    end
+  end
+  local tutorials = type(options) == "table" and options.tutorials or nil
+  local savedHelp = type(tutorials) == "table"
+    and tutorials[FIRERED_HELP_TUTORIAL] or nil
+  self.seenHelp = {}
+  if type(savedHelp) == "table" then
+    for key, seen in pairs(savedHelp) do
+      if seen == true then self.seenHelp[key] = true end
+    end
+  end
 
   local record = (game.data.constants or {}).gen3StartMenu
   local labels = record and record.items
@@ -169,7 +194,52 @@ function Gen3StartMenu.new(game)
 
   self.rows = {}
   self:buildRows(game, labels, playerName)
+  self:refreshHelpRow()
   return self
+end
+
+function Gen3StartMenu:refreshHelpRow()
+  local row = self.rows[self.index]
+  self.helpRowKey = isFireRed(self.game) and row and row.slot
+    and not self.seenHelp[row.key] and row.key or nil
+end
+
+function Gen3StartMenu:markHelpSeen(key)
+  if not key or self.seenHelp[key] then return end
+  self.seenHelp[key] = true
+  if self.helpRowKey == key then self.helpRowKey = nil end
+
+  local save = self.game.save
+  if save then
+    if type(save.options) ~= "table" then save.options = {} end
+    if type(save.options.tutorials) ~= "table" then
+      save.options.tutorials = {}
+    end
+    local flags = save.options.tutorials[FIRERED_HELP_TUTORIAL]
+    if type(flags) ~= "table" then
+      flags = {}
+      save.options.tutorials[FIRERED_HELP_TUTORIAL] = flags
+    end
+    flags[key] = true
+  end
+
+  local ok, SaveData = pcall(require, "src.core.SaveData")
+  if ok then
+    local wrote, saved = pcall(SaveData.markTutorialSeen,
+                               FIRERED_HELP_TUTORIAL, key)
+    if not wrote or not saved then
+      Logger.warn("gen3 start menu: could not persist help tutorial for %s", key)
+    end
+  end
+end
+
+function Gen3StartMenu:markCurrentHelpSeen()
+  local row = self.rows[self.index]
+  if row and row.key and self.helpRowKey == row.key
+     and self.displayedHelpKey == row.key then
+    self:markHelpSeen(row.key)
+  end
+  self.displayedHelpKey = nil
 end
 
 local function sameRows(_, rows) return rows end
@@ -217,8 +287,16 @@ function Gen3StartMenu:buildRows(game, labels, playerName)
     end
   end
 
-  if #((game.save or {}).party or {}) > 0 then
+  local frlg = ((game.data.constants or {}).gen3StartMenu or {}).layout == "frlg"
+  if #((game.save or {}).party or {}) > 0 and not frlg then
     insertBeforeExit({ label = Strings("LINK"), key = "link" })
+  end
+  -- FireRed's help bar describes each row; remember which cartridge row
+  -- each one is
+  for _, row in ipairs(self.rows) do
+    for i, action in ipairs(ACTIONS) do
+      if action.key == row.key then row.slot = i end
+    end
   end
 
   local status = game.modStatus
@@ -242,7 +320,7 @@ function Gen3StartMenu:buildRows(game, labels, playerName)
   -- `boot.startMenuQuit = false` takes it away again for a dataset that wants
   -- the cartridge's menu and nothing else.
   local boot = game.data.field and game.data.field.boot
-  if not (boot and boot.startMenuQuit == false) then
+  if not (boot and boot.startMenuQuit == false) and not frlg then
     self.rows[#self.rows + 1] = { label = Strings("QUIT GAME"), key = "quit" }
   end
 
@@ -491,12 +569,18 @@ function Gen3StartMenu:update(dt)
   local n = #self.rows
   if n == 0 then return self:close() end
   if input:wasPressed("down") then
+    self:markCurrentHelpSeen()
     self.index = self.index % n + 1
+    self:refreshHelpRow()
   elseif input:wasPressed("up") then
+    self:markCurrentHelpSeen()
     self.index = (self.index - 2) % n + 1
+    self:refreshHelpRow()
   elseif input:wasPressed("a") then
+    self:markCurrentHelpSeen()
     self:choose(self.rows[self.index])
   elseif input:wasPressed("b") or input:wasPressed("start") then
+    self:markCurrentHelpSeen()
     self:close()
   end
 end
@@ -513,9 +597,60 @@ function Gen3StartMenu:drawSavePanel(inset)
   love.graphics.setColor(1, 1, 1, 1)
 end
 
+-- FireRed shows a row's explanation once, then remembers it in shared options.
+function Gen3StartMenu:drawFireRed(record)
+  local g = love.graphics
+  local n = #self.rows
+  local innerH = math.ceil((n * 15) / 8) + 1
+  local left = 22
+  local width = 7
+  -- widen for the port's own rows (QUIT GAME) so nothing spills
+  for _, row in ipairs(self.rows) do
+    width = math.max(width, math.ceil((Font.width(row.label) + 10) / 8))
+  end
+  left = math.min(left, 29 - width)
+  Font.drawBox(left - 1, 0, width + 2, innerH + 2)
+  g.setColor(0, 0, 0, 1)
+  for i, row in ipairs(self.rows) do
+    local y = 8 + (i - 1) * 15
+    Font.draw(row.label, left * 8 + 8, y)
+    if i == self.index then Font.drawCode(Theme.cursor, left * 8, y) end
+  end
+  g.setColor(1, 1, 1, 1)
+  local row = self.rows[self.index]
+  local desc = row and row.slot and (record.descriptions or {})[row.slot]
+  if not desc or self.helpRowKey ~= row.key then
+    self.displayedHelpKey = nil
+    return
+  end
+  local ok, bar = false, nil
+  if record.helpBar then ok, bar = pcall(require("src.render.Assets").image, record.helpBar) end
+  if ok and bar then
+    local iw, ih = bar:getDimensions()
+    local quads = { g.newQuad(0, 0, 8, 8, iw, ih), g.newQuad(0, 8, 8, 8, iw, ih),
+                    g.newQuad(0, 16, 8, 8, iw, ih) }
+    for ty = 15, 19 do
+      local q = (ty == 15 and quads[1]) or (ty == 19 and quads[3]) or quads[2]
+      for tx = 0, 29 do g.draw(bar, q, tx * 8, ty * 8) end
+    end
+  end
+  local ink = record.helpInk or { 1, 1, 1 }
+  local two = Font.beginTwoTone({ ink[1], ink[2], ink[3], 1 }, { 0.38, 0.38, 0.38, 1 })
+  local line = 0
+  for text in (desc .. "\n"):gmatch("([^\n]*)\n") do
+    Font.draw(text, 2, 15 * 8 + 5 + line * 14)
+    line = line + 1
+  end
+  if two then Font.endTwoTone() end
+  g.setColor(1, 1, 1, 1)
+  self.displayedHelpKey = row.key
+end
+
 function Gen3StartMenu:draw()
   local inset = textInsetY()
   if self.savePanel then return self:drawSavePanel(inset) end
+  local record = (self.game.data.constants or {}).gen3StartMenu
+  if record and record.layout == "frlg" then return self:drawFireRed(record) end
   local th = #self.rows * ROW_STEP + 2
   Font.drawBox(BOX_TX, BOX_TY, BOX_TW, th)
   love.graphics.setColor(0, 0, 0, 1)

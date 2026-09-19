@@ -3353,6 +3353,9 @@ local profile = {
   --   frontEave  how far the roof overhangs the facade
   --   ledge      a band that juts two voxels past the walls (an awning),
   --              or nil
+  --   silhouette  `footprint` when the drawing is clipped without a closed
+  --              outline and its matched tile grid is the authoritative
+  --              silhouette; otherwise the light-pixel border flood is used
   --   seal       sides the drawing runs off rather than closing with its
   --              own outline, as a string of n/s/e/w; the silhouette
   --              flood does not seed there. Only needed by a drawing
@@ -4144,11 +4147,13 @@ local profile = {
       -- out as two buildings, one per half.
       --
       -- `topRows` composites ROUTE_10's twelve rows ABOVE the matched
-      -- grid, so the model is built from the COMPLETE twenty-row drawing
-      -- -- 96px of facade under the real 64px roof -- while placement
-      -- still matches only the eight Lavender rows.  Its `claimOnly`
-      -- twin below claims the ROUTE_10 rows and stamps nothing, so the
-      -- roof half does not also stand as its own building.
+      -- grid, so the model is built from the COMPLETE twenty-row facade
+      -- while placement still matches only the eight Lavender rows.  The
+      -- drawing runs off every edge and has no closed roof outline, so the
+      -- explicit footprint silhouette keeps its light window courses in the
+      -- upright model instead of flooding them away as terrain.  Its
+      -- `claimOnly` twin below claims the ROUTE_10 rows and stamps nothing,
+      -- so the upper half does not also stand as its own building.
       --
       -- BOTH COME FIRST IN THIS LIST ON PURPOSE.  The tower's upper
       -- twelve rows are `gabled_block_6x6` tile for tile -- the artist
@@ -4190,8 +4195,9 @@ local profile = {
           { 15, 75, 75, 75, 75, 75, 75, 75, 75, 75, 75, 31 },
           { 78, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 79, 17 },
         },
-        roofRows = 64, roofBack = 8, roofFront = 8, roofCycle = { 8, 31 },
-        slab = 4, frontEave = 4, ledge = nil,
+        silhouette = "footprint",
+        roofRows = 0, roofBack = 0, roofFront = 0, roofCycle = { 0, 0 },
+        slab = 0, frontEave = 0, ledge = nil,
       },
       -- the tower's roof half, where it actually stands on ROUTE_10:
       -- claimed flat so the drawing does not ALSO fold up as a building

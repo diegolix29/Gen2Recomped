@@ -862,6 +862,14 @@ end
 
 function Gen3Save.crosswalks(data)
   local pokemonByIndex, pokemonIndex = byIndex(data and data.pokemon)
+  -- Pokedex bits use national numbers, while party and box records use the
+  -- cartridge's internal species index. Keep this mapping separate so a
+  -- save's dex flags are attached to the right species.
+  local pokemonDex = {}
+  for id, def in pairs((data and data.pokemon) or {}) do
+    local dex = type(def) == "table" and tonumber(def.dex)
+    if dex and dex >= 1 then pokemonDex[id] = math.floor(dex) end
+  end
   local movesByIndex, movesIndex = byIndex(data and data.moves)
   local itemsByIndex, itemsIndex = byIndex(data and data.items)
   local mapsByGroupNumber, haveGroups = {}, false
@@ -884,6 +892,7 @@ function Gen3Save.crosswalks(data)
     end
   end
   return { pokemonByIndex = pokemonByIndex, pokemonIndex = pokemonIndex,
+           pokemonDex = pokemonDex,
            movesByIndex = movesByIndex, movesIndex = movesIndex,
            itemsByIndex = itemsByIndex, itemsIndex = itemsIndex,
            -- ...and the records themselves, because writing the bag back
@@ -1062,6 +1071,114 @@ local function b16(v) return string.char(v % 256, math.floor(v / 256) % 256) end
 local function b32(v)
   return string.char(v % 256, math.floor(v / 256) % 256,
                      math.floor(v / 65536) % 256, math.floor(v / 16777216) % 256)
+end
+
+local function arrayFlag(bytes, base, bitIndex)
+  if not (bytes and base and bitIndex and bitIndex >= 0) then return false end
+  local byte = u8(bytes, base + math.floor(bitIndex / 8))
+  return math.floor(byte / (2 ^ (bitIndex % 8))) % 2 == 1
+end
+
+local function setArrayFlag(bytes, base, bitIndex, value)
+  if not (bytes and base and bitIndex and bitIndex >= 0) then return bytes end
+  local offset = base + math.floor(bitIndex / 8)
+  local mask = 2 ^ (bitIndex % 8)
+  local byte = u8(bytes, offset)
+  local has = math.floor(byte / mask) % 2 == 1
+  value = value and true or false
+  if has == value then return bytes end
+  return put(bytes, offset, b8(value and (byte + mask) or (byte - mask)))
+end
+
+-- FireRed's dex calls use one-based National Dex numbers; its packed arrays
+-- start at zero, so number N maps to bit N-1, least-significant bit first.
+local function dexFlag(bytes, base, dexNumber)
+  if not (dexNumber and dexNumber >= 1) then return false end
+  return arrayFlag(bytes, base, dexNumber - 1)
+end
+
+local function setDexFlag(bytes, base, dexNumber, value)
+  if not (dexNumber and dexNumber >= 1) then return bytes end
+  return setArrayFlag(bytes, base, dexNumber - 1, value)
+end
+
+local function readPokedex(blocks, cw)
+  local out = { seen = {}, owned = {} }
+  local f = Gen3Save.fields or {}
+  local pdx = (f.saveBlock2 or {}).pokedex
+  local s1 = f.saveBlock1 or {}
+  local count = pdx and tonumber(pdx.flagBytes)
+  if not (count and count > 0 and pdx.owned and pdx.seen
+          and s1.pokedexSeen1 and s1.pokedexSeen2) then
+    return out
+  end
+
+  for species, dexNumber in pairs(cw.pokemonDex or {}) do
+    if dexNumber <= count * 8 then
+      local seen = dexFlag(blocks.block2, pdx.seen, dexNumber)
+        and dexFlag(blocks.block1, s1.pokedexSeen1, dexNumber)
+        and dexFlag(blocks.block1, s1.pokedexSeen2, dexNumber)
+      if seen then
+        out.seen[species] = true
+        if dexFlag(blocks.block2, pdx.owned, dexNumber) then
+          out.owned[species] = true
+        end
+      end
+    end
+  end
+  return out
+end
+
+local function writePokedex(blocks, save, cw)
+  local f = Gen3Save.fields or {}
+  local pdx = (f.saveBlock2 or {}).pokedex
+  local s1 = f.saveBlock1 or {}
+  local b1, b2 = blocks.block1, blocks.block2
+
+  if pdx and type(save.pokedex) == "table" and pdx.flagBytes
+     and pdx.owned and pdx.seen and s1.pokedexSeen1 and s1.pokedexSeen2 then
+    local count = math.floor(tonumber(pdx.flagBytes) or 0)
+    local dexSeen, dexOwned = {}, {}
+    for species, dexNumber in pairs(cw.pokemonDex or {}) do
+      if dexNumber <= count * 8 then
+        local owned = (save.pokedex.owned or {})[species] and true or false
+        -- A caught Pokemon must also be registered as seen, matching the
+        -- cartridge's GetSetPokedexFlag behavior.
+        local seen = owned or ((save.pokedex.seen or {})[species] and true or false)
+        dexSeen[dexNumber] = dexSeen[dexNumber] or seen
+        dexOwned[dexNumber] = dexOwned[dexNumber] or owned
+      end
+    end
+    -- Patch only national numbers the loaded ROM data knows about. This
+    -- preserves reserved bits and any entries from a newer/extended cache.
+    for dexNumber in pairs(dexSeen) do
+      local owned = dexOwned[dexNumber] and true or false
+      local seen = owned or (dexSeen[dexNumber] and true or false)
+      b2 = setDexFlag(b2, pdx.owned, dexNumber, owned)
+      b2 = setDexFlag(b2, pdx.seen, dexNumber, seen)
+      b1 = setDexFlag(b1, s1.pokedexSeen1, dexNumber, seen)
+      b1 = setDexFlag(b1, s1.pokedexSeen2, dexNumber, seen)
+    end
+  end
+
+  -- FireRed requires all three pieces of its National Dex unlock state. The
+  -- game never revokes this upgrade, so only stamp it when the port has
+  -- unlocked it; otherwise the untouched template bytes remain intact.
+  if pdx and save.nationalDex == true and pdx.nationalMagic
+     and pdx.nationalMagicValue and pdx.nationalFlagId and pdx.nationalVarId
+     and pdx.nationalVarValue and s1.flags and s1.vars then
+    b2 = put(b2, pdx.nationalMagic, b8(pdx.nationalMagicValue))
+    local flag = tonumber(pdx.nationalFlagId)
+    if flag and flag > 0 then b1 = setArrayFlag(b1, s1.flags, flag, true) end
+    local varId = tonumber(pdx.nationalVarId)
+    local base = tonumber(f.varsStartId) or 0x4000
+    local varCount = tonumber(f.varCount) or 0
+    local varIndex = varId and (varId - base) or -1
+    if varIndex >= 0 and varIndex < varCount then
+      b1 = put(b1, s1.vars + varIndex * 2, b16(pdx.nationalVarValue))
+    end
+  end
+  return b1, b2
 end
 
 -- One Pokemon, patched in place: decrypt the 48 secure bytes, change only what
@@ -1381,6 +1498,8 @@ function Gen3Save.applyBlocks(blocks, save, cw)
       if v ~= nil then b1 = put(b1, s1.vars + i * 2, b16(v % 65536)) end
     end
   end
+
+  b1, b2 = writePokedex({ block1 = b1, block2 = b2 }, save, cw)
 
   -- The berry trees, written back the same eight bytes they were read from.
   --
@@ -2074,6 +2193,7 @@ function Gen3Save.decode(bytes, data)
     gen3Vars = {},
     party = {},
     boxes = {},
+    pokedex = { seen = {}, owned = {} },
     currentBox = Gen3Save.currentBox(blocks.storage) or 1,
     -- this project keeps play time as a single float of SECONDS
     playTime = player.playTime.hours * 3600 + player.playTime.minutes * 60
@@ -2137,6 +2257,16 @@ function Gen3Save.decode(bytes, data)
   for i = 0, (f.varCount or 0) - 1 do
     local v = Gen3Save.var(blocks.block1, base + i)
     if v and v ~= 0 then save.gen3Vars[base + i] = v end
+  end
+  save.pokedex = readPokedex(blocks, cw)
+  local pdx = (f.saveBlock2 or {}).pokedex
+  if pdx and pdx.nationalMagic and pdx.nationalMagicValue
+     and pdx.nationalFlagId and pdx.nationalVarId and pdx.nationalVarValue then
+    local flagName = ("FLAG_G3_%04X"):format(pdx.nationalFlagId)
+    save.nationalDex = u8(blocks.block2, pdx.nationalMagic)
+        == pdx.nationalMagicValue
+      and save.flags[flagName] == true
+      and save.gen3Vars[pdx.nationalVarId] == pdx.nationalVarValue
   end
 
   -- ...AND WHAT IS GROWING IN HOENN'S EIGHTY-EIGHT PLOTS.  A cache from

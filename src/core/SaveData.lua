@@ -445,6 +445,9 @@ function SaveData.defaultOptions()
     -- is kept rather than pruned, so re-enabling the mod restores the mode
     -- the player left it in.
     pipelines = {},
+    -- Installation-wide one-time explanations, keyed by tutorial and option.
+    -- Keep these in shared launcher options so dismissals survive save slots.
+    tutorials = {},
     -- Native mod enablement is an installation option, not save-slot data.
     -- Missing entries mean enabled so newly installed mods work by default.
     mods = {},
@@ -573,6 +576,29 @@ function SaveData.saveOptions(opts, fs, gen)
     end
     opts.modOptions = merged
   end
+  -- Tutorial acknowledgements are append-only. Preserve flags written by a
+  -- newer options snapshot so saving stale in-memory options cannot show a
+  -- dismissed explanation again.
+  if onDisk and type(onDisk.tutorials) == "table" then
+    local merged = {}
+    for tutorial, flags in pairs(onDisk.tutorials) do
+      merged[tutorial] = flags
+    end
+    local pending = type(opts.tutorials) == "table" and opts.tutorials or {}
+    for tutorial, flags in pairs(pending) do
+      if type(flags) == "table" and type(merged[tutorial]) == "table" then
+        local copy = {}
+        for key, seen in pairs(merged[tutorial]) do copy[key] = seen end
+        for key, seen in pairs(flags) do
+          if seen == true then copy[key] = true end
+        end
+        merged[tutorial] = copy
+      else
+        merged[tutorial] = flags
+      end
+    end
+    opts.tutorials = merged
+  end
   local ok, err = fs.write(OPTIONS_FILENAME, SaveSerializer.encode(opts))
   if not ok then
     Logger.error("options save failed: %s", tostring(err))
@@ -621,6 +647,24 @@ function SaveData.loadOptions(fs)
     return SaveData.defaultOptions()
   end
   return SaveData.mergeOptions(data)
+end
+
+-- Persist one installation-wide tutorial acknowledgement.
+function SaveData.markTutorialSeen(tutorial, key, fs)
+  if type(tutorial) ~= "string" or tutorial == ""
+     or type(key) ~= "string" or key == "" then
+    return nil
+  end
+  local opts = SaveData.loadOptions(fs)
+  opts.tutorials = type(opts.tutorials) == "table" and opts.tutorials or {}
+  local flags = opts.tutorials[tutorial]
+  if type(flags) ~= "table" then
+    flags = {}
+    opts.tutorials[tutorial] = flags
+  end
+  if flags[key] == true then return opts end
+  flags[key] = true
+  return SaveData.saveOptions(opts, fs)
 end
 
 -- ------- save slots

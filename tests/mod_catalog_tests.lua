@@ -115,6 +115,12 @@ end
 ]]
 
 local data = fixtureData()
+-- Gen 3 cartridges name several types with the ROM's seven-byte labels
+-- (PSYCHC/ELECTR/FIGHT). The registry rebuild must retain those generated
+-- records; otherwise their moves silently fall back to physical damage.
+data.type_chart.types.PSYCHC = {
+  id = "PSYCHC", name = "PSYCHC", index = 14, category = "special",
+}
 local loader = Loader.new({ fs = memfs({
   ["mods/catalog/manifest.json"] =
     '{"id":"catalog","name":"catalog","version":"1.0.0","entry":"main.lua","api":2}',
@@ -135,6 +141,8 @@ local function at(path)
 end
 
 check(at("type_chart.types").FAIRY.category == "special", "type_chart type record merges")
+check(at("type_chart.types").PSYCHC.category == "special",
+  "type_chart keeps generated Gen 3 type records")
 check(at("statuses").CRS.label == "CRS", "statuses record merges")
 check(at("move_effects").SAP_PP_EFFECT.kind == "primary", "move_effects record merges")
 check(at("item_effects").MOON_FLUTE.field == true, "item_effects record merges")
@@ -371,5 +379,15 @@ check(mixedData.audio.cries.OLD ~= nil and mixedData.audio.cries.NEW ~= nil,
   "the whole-table cries swap and the granular id both survive")
 check(mixedData.audio.sfx.OLD ~= nil and mixedData.audio.sfx.NEW ~= nil,
   "the whole-table sfx swap and the granular id both survive")
+
+-- Lazy Gen3 loading must not bypass a mod-owned command override.  The
+-- registry record is intentionally a different function from the engine
+-- handler, which is the case for an api-2 override after catalog merge.
+local commandOverride = function() return "mod-command" end
+local resolved = Commands.resolve({ commands = {
+  g3_set_wild = commandOverride,
+} }, "g3_set_wild")
+check(resolved == commandOverride,
+  "Gen3 command overrides keep precedence over lazy engine loading")
 
 S.finish()

@@ -430,8 +430,76 @@ Gen3ScriptOps.MOVEMENT_ACTIONS = {
   [0x96] = "walk_left_affine",
 }
 
-function Gen3ScriptOps.movementName(id)
-  return Gen3ScriptOps.MOVEMENT_ACTIONS[id] or ("movement_%02X"):format(id)
+-- FIRERED'S movement actions are a DIFFERENT enum, not Emerald's with a few
+-- additions: FRLG inserts face_*_fast ($04-$07) and walk_slower ($08-$0B)
+-- ahead of everything else, so every later id is shifted -- FireRed's
+-- walk_down is $10, which the table above reads as Emerald's delay_1. Read
+-- that way, every scripted walk on the cartridge became a pause: Oak's walk
+-- to the lab left the player standing at the grass until the warp.
+-- Names are pokefirered's include/constants/event_object_movement.h, spelled
+-- in the vocabulary Gen3Commands' step reader already parses.
+local function quartet(t, base, kind)
+  local dirs = { "down", "up", "left", "right" }
+  for i = 0, 3 do t[base + i] = kind .. "_" .. dirs[i + 1] end
+end
+Gen3ScriptOps.MOVEMENT_ACTIONS_FRLG = (function()
+  local t = {}
+  quartet(t, 0x00, "face")
+  quartet(t, 0x04, "face")          -- face_*_fast
+  quartet(t, 0x08, "walk_slow")     -- walk_slower
+  quartet(t, 0x0C, "walk_slow")
+  quartet(t, 0x10, "walk")
+  quartet(t, 0x14, "jump2")
+  t[0x18], t[0x19], t[0x1A], t[0x1B], t[0x1C] =
+    "delay_1", "delay_2", "delay_4", "delay_8", "delay_16"
+  quartet(t, 0x1D, "walk_fast")
+  quartet(t, 0x21, "in_place")      -- slow
+  quartet(t, 0x25, "in_place")      -- normal
+  quartet(t, 0x29, "in_place")      -- fast
+  quartet(t, 0x2D, "in_place")      -- faster
+  quartet(t, 0x31, "walk")          -- ride_water_current
+  quartet(t, 0x35, "walk_fastest")  -- walk_faster
+  quartet(t, 0x39, "walk_fast")     -- slide
+  quartet(t, 0x3D, "walk_fast")     -- player_run
+  quartet(t, 0x41, "walk")          -- player_run_slow
+  quartet(t, 0x46, "jump")          -- jump_special
+  t[0x4A] = "face_player"
+  t[0x4B] = "face_away_player"
+  t[0x4C] = "lock_facing"
+  t[0x4D] = "unlock_facing"
+  quartet(t, 0x4E, "jump")
+  quartet(t, 0x52, "jump_in_place")
+  quartet(t, 0x56, "jump_in_place") -- down_up / up_down / left_right / right_left
+  t[0x5A] = "face_original_direction"
+  t[0x5B] = "bow_down"
+  t[0x5C] = "jump_landing_effect_on"
+  t[0x5D] = "jump_landing_effect_off"
+  t[0x5E] = "animation_off"
+  t[0x5F] = "animation_on"
+  t[0x60] = "set_invisible"
+  t[0x61] = "set_visible"
+  t[0x62] = "emote_exclamation"
+  t[0x63] = "emote_question"
+  t[0x64] = "emote_x"
+  t[0x65] = "emote_double_exclamation"
+  t[0x66] = "emote_smile"
+  t[0x67] = "emote_reveal_trainer"
+  t[0x68] = "rock_smash_break"
+  t[0x69] = "cut_tree"
+  t[0x6A] = "fixed_priority_on"
+  t[0x6B] = "fixed_priority_off"
+  t[0x6C] = "affine_anim_start"
+  t[0x6D] = "affine_anim_clear"
+  quartet(t, 0x94, "in_place")      -- spin
+  quartet(t, 0x9B, "walk_slow")     -- walk_slowest
+  quartet(t, 0xA0, "walk_fast")     -- glide
+  return t
+end)()
+
+function Gen3ScriptOps.movementName(id, frlg)
+  local t = frlg and Gen3ScriptOps.MOVEMENT_ACTIONS_FRLG
+            or Gen3ScriptOps.MOVEMENT_ACTIONS
+  return t[id] or ("movement_%02X"):format(id)
 end
 
 return Gen3ScriptOps

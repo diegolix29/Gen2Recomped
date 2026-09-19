@@ -554,6 +554,11 @@ function NPC.new(data, mapId, objDef)
   end
 
   self.facing = (g3 and g3.facing) or FACING_FROM_RANGE[objDef.range] or "down"
+  -- Movement scripts can ask for the object's original direction.  Imported
+  -- Gen 3 defs spell that as a movement type rather than a `facing` field, so
+  -- retain both the initial resolved direction and the current type here.
+  self.spawnFacing = self.facing
+  self.gen3MovementType = objDef.movementType
   -- A fixed sheet frame from the extractor (polished's ball/cut/fruit
   -- sheet: cut trees are frame 1, fruit trees frame 2).  The renderer
   -- draws exactly this 16x16 row and skips facing entirely -- a tree has
@@ -678,6 +683,27 @@ function NPC:refreshSprite(data)
   self.sprite = SpriteRenderer.new(withBigFlag(resolveSpriteDef(data, self.def.sprite), self.def.sprite, self.def), self.id)
 end
 
+-- Gen 3 stores an object's current elevation separately from its template.
+-- The template is only the initial hint (and is still needed for bridge
+-- objects); ordinary objects must pick up the elevation of the cell they are
+-- standing on before Collision.canMove checks their next step.  Without this
+-- sync every NPC had a nil elevation, so the Gen 3 elevation guard was
+-- bypassed and wanderers could step from dry land into water or across a
+-- bridge seam.
+function NPC:updateElevation(map)
+  if not (map and map.cellElevation) then return end
+  local at = map:cellElevation(self.cellX, self.cellY)
+  if at == nil then return end
+  -- 0 matches anything and 15 means "under a bridge"; neither replaces the
+  -- elevation the object already carries.  A cache imported before object
+  -- elevations were written still gets the template value as its fallback.
+  if at ~= 0 and at ~= 15 then
+    self.elevation = at
+  elseif self.elevation == nil then
+    self.elevation = self.gen3Elevation
+  end
+end
+
 function NPC:facePlayer(player)  local dx = player.cellX - self.cellX
   local dy = player.cellY - self.cellY
   if math.abs(dx) > math.abs(dy) then
@@ -696,6 +722,10 @@ function NPC:shake(frames, onDone)
 end
 
 function NPC:update(map, entities)
+  -- Keep the mover's standing elevation current before every collision test.
+  -- This is deliberately lazy so pooled neighbours and scripted placements
+  -- follow the same rule without needing a second rebuild pass.
+  self:updateElevation(map)
   if self.shakeFrames then
     self.shakeFrames = self.shakeFrames - 1
     self.px = self.cellX * 16 + (math.floor(self.shakeFrames / 2) % 2 == 0 and 1 or -1)
@@ -748,6 +778,7 @@ function NPC:update(map, entities)
       self.moving = false
       self.hopStep = nil
       self.stepFlip = not self.stepFlip
+      self:updateElevation(map)
     end
     return
   end
@@ -872,6 +903,18 @@ end
 
 function NPC:walkPhase()
   if not self.moving then return 0 end
+  -- A SHEET WHOSE STEP IS HELD, not cycled.
+  --
+  -- Emerald writes most walk animations as four beats -- step, stand, step,
+  -- stand -- and this phase is what reproduces them.  A handful are written
+  -- as one beat that jumps to itself, which says the opposite: show the step
+  -- frame for the whole movement.  Rayquaza leaving the Sky Pillar is the one
+  -- in Hoenn; his stand is the coil, so cycling made him coil and uncoil over
+  -- and over as he flew.  The import marks those sheets (`holdStep`).
+  --
+  -- Gen 1 and Gen 2 sheets never carry the flag, so their walk is untouched.
+  local def = self.sprite and self.sprite.def
+  if def and def.holdStep then return 1 end
   local p = self.progress % 16
   return (p >= 4 and p < 12) and 1 or 0
 end
@@ -883,7 +926,9 @@ end
 function NPC:pose()
   -- movement_set_sliding: the object keeps its standing frame while it moves,
   -- so it glides rather than walks (Ice Path boulders, the Kimono Girls).
-  return self.sprite, self.px, self.py, self.facing,
+  -- Visual-only x2 (FRLG ship departure). Collision, scripts and terrain
+  -- remain at the map object, matching the cartridge's stationary object.
+  return self.sprite, self.px + (self.shiftPx or 0), self.py, self.facing,
          self.sliding and 0 or self:walkPhase(), self.stepFlip, false
 end
 

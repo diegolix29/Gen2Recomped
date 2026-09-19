@@ -114,8 +114,12 @@ function Gen3MainMenu.new(game, opts)
     items[#items + 1] = { key = "continue", label = Strings("CONTINUE") }
   end
   items[#items + 1] = { key = "newGame", label = Strings("NEW GAME") }
-  items[#items + 1] = { key = "option", label = Strings("OPTION") }
-  items[#items + 1] = { key = "exit", label = Strings("EXIT GAME") }
+  -- FireRed's menu is CONTINUE and NEW GAME only (OPTION lives in the START
+  -- menu); B goes back to the title
+  if GameVersion.get() ~= "firered" then
+    items[#items + 1] = { key = "option", label = Strings("OPTION") }
+    items[#items + 1] = { key = "exit", label = Strings("EXIT GAME") }
+  end
   local hooked = Runtime.call("ui.title_menu.items", sameItems, game, items)
   if type(hooked) == "table" then
     items = hooked
@@ -140,7 +144,10 @@ function Gen3MainMenu:choose()
     self.game.stack:pop()
     return item.onSelect()
   end
-  if item.key == "continue" then
+  if item.key == "continue" and GameVersion.get() == "firered" then
+    -- the stats are already on the window; A loads straight away
+    if self.onContinue then self.onContinue() end
+  elseif item.key == "continue" then
     local ok, loaded = pcall(require("src.core.SaveData").load)
     if ok and loaded then
       self.info = loaded
@@ -222,7 +229,87 @@ function Gen3MainMenu:infoRows(save)
   }
 end
 
+-- ---------------------------------------------------------------------------
+-- FIRERED'S MAIN MENU (pokefirered src/main_menu.c)
+--
+-- Wide white windows 24 tiles across at tile column 3 on a light-blue field:
+-- CONTINUE is ten rows tall and prints PLAYER / POKeDEX / TIME / BADGES in the
+-- player's gender colour, every other row is two.  There is no cursor -- the
+-- chosen window is the one left undimmed (WIN0 over it, BLDY 7 darken
+-- outside).  OPTION and EXIT GAME are this port's rows, laid out the same way.
+-- ---------------------------------------------------------------------------
+local FRLG_BG = { 139 / 255, 148 / 255, 1 }
+local FRLG_INK, FRLG_SHADOW = { 98 / 255, 98 / 255, 98 / 255 }, { 213 / 255, 213 / 255, 205 / 255 }
+local FRLG_BOY, FRLG_GIRL = { 33 / 255, 132 / 255, 1 }, { 1, 24 / 255, 173 / 255 }
+
+function Gen3MainMenu:frlgWindows()
+  local wins, top = {}, 1
+  local total = 0
+  for _, item in ipairs(self.items) do total = total + (item.key == "continue" and 10 or 2) end
+  local gap = (1 + total + 2 * #self.items) <= 20 and 2 or 1
+  for i, item in ipairs(self.items) do
+    local h = item.key == "continue" and 10 or 2
+    wins[i] = { tx = 3, ty = top, tw = 24, th = h }
+    top = top + h + gap
+  end
+  return wins
+end
+
+local function frlgText(text, x, y, ink)
+  local two = Font.beginTwoTone(ink, FRLG_SHADOW)
+  if not two then love.graphics.setColor(ink[1], ink[2], ink[3], 1) end
+  Font.draw(text, x, y)
+  if two then Font.endTwoTone() end
+end
+
+function Gen3MainMenu:drawFireRed()
+  local g = love.graphics
+  local width = select(1, self:uiSize())
+  g.setColor(FRLG_BG[1], FRLG_BG[2], FRLG_BG[3], 1)
+  g.rectangle("fill", 0, 0, width, GBA_H)
+  g.setColor(1, 1, 1, 1)
+  if self.frlgSave == nil then
+    local ok, loaded = pcall(require("src.core.SaveData").load)
+    self.frlgSave = ok and loaded or false
+  end
+  local save = self.frlgSave
+  local wins = self:frlgWindows()
+  for i, item in ipairs(self.items) do
+    local w = wins[i]
+    Font.drawBox(w.tx - 1, w.ty - 1, w.tw + 2, w.th + 2)
+    local x, y = w.tx * 8, w.ty * 8
+    frlgText(item.label, x + 2, y + 2, FRLG_INK)
+    if item.key == "continue" and save then
+      local rows = self:infoRows(save)
+      local ink = (save.player and save.player.gender == "girl") and FRLG_GIRL or FRLG_BOY
+      -- the cartridge's order: PLAYER, POKeDEX (once you have one), TIME, BADGES
+      local order = { rows[1], rows[3], rows[4], rows[2] }
+      local line = 0
+      for _, row in ipairs(order) do
+        if row then
+          frlgText(row[1], x + 2, y + 18 + line * 16, ink)
+          frlgText(row[2], x + 62, y + 18 + line * 16, ink)
+          line = line + 1
+        end
+      end
+    end
+  end
+  -- dim everything but the chosen window
+  local sel = wins[self.index]
+  if sel then
+    local top = (sel.ty - 1) * 8 + 2
+    local bottom = (sel.ty + sel.th + 1) * 8 - 2
+    g.setColor(0, 0, 0, 7 / 16)
+    g.rectangle("fill", 0, 0, width, top)
+    g.rectangle("fill", 0, bottom, width, GBA_H - bottom)
+    g.rectangle("fill", 0, top, 18, bottom - top)
+    g.rectangle("fill", 222, top, width - 222, bottom - top)
+  end
+  g.setColor(1, 1, 1, 1)
+end
+
 function Gen3MainMenu:draw()
+  if GameVersion.get() == "firered" then return self:drawFireRed() end
   -- the plain field the cartridge clears to, not the title art: the menu is
   -- its own screen and nothing shows through it
   -- the plain field runs the whole width of whatever surface this is on, so a

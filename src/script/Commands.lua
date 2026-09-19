@@ -14,6 +14,22 @@ local Strings = require("src.core.Strings")
 
 local Commands = {}
 
+-- Gen3ScriptVM rows are dispatched through this shared registry. Keep the
+-- wild setup verbs available even when the optional Gen3 module is loaded
+-- lazily, as happens during imported FireRed map scripts.
+function Commands.g3_set_wild(ctx, species, level, item)
+  local G3 = require("src.script.Gen3Commands")
+  ctx.g3Wild = { species = G3.speciesId(ctx.game and ctx.game.data, species),
+                 level = tonumber(level), item = item }
+end
+
+function Commands.g3_wild_battle(ctx)
+  local wild = ctx.g3Wild
+  if not wild or not wild.species then return end
+  Commands.start_battle(ctx, "wild", wild.species, wild.level or 5,
+                        wild.item and { heldItem = wild.item } or nil)
+end
+
 -- "mod:" keys route to save.modData[owner], the mod-private namespace
 -- (09 §4.8); owner comes from the dispatching contribution's source
 -- attribution, so an engine-owned script using one is a script error
@@ -491,6 +507,9 @@ function Commands.start_battle(ctx, kind, a, b, opts)
   end
   if kind == "wild" then
     battle = BattleState.newWild(ctx.game, a, b, opts)
+    if a == "SNORLAX" then
+      require("src.core.Sound").play(ctx.game and ctx.game.data, "Pokeflute")
+    end
     -- BATTLE_TYPE_LEGENDARY, which only the three legendary specials set.
     -- The transition reads it (see OverworldState:pushBattleTransition).
     if opts and opts.legendary then battle.legendary = true end
@@ -510,6 +529,7 @@ function Commands.start_battle(ctx, kind, a, b, opts)
     -- the battle here so there is one place that knows, whichever way it
     -- was decided.
     if opts and opts.double then battle.double = true end
+    if opts and opts.canLose then battle.canLose = true end
     if battle.trainer and battle.trainer.doubleBattle then battle.double = true end
     -- AND WHO THE OTHER ONE IS, when two walked up together.  The battle
     -- fills its second opponent slot from this trainer's own party rather
@@ -1651,13 +1671,39 @@ function FadeOverlay:update(dt)
       for i = #states, 1, -1 do
         if states[i] == self then table.remove(states, i) break end
       end
+      self:releaseVeil()
       if ow then ow.fadeOverlay = nil end
     end
     if ramp.onDone then ramp.onDone() end
   end
 end
 
+-- ...AND ON THE WHOLE SURFACE'S ORIGIN.  A state with no uiSize is centred as
+-- Game Boy furniture (Game:draw's classicOffset), which slid the 240x160
+-- rectangle 40 right and 8 down and left an unfaded L down the left and top
+-- through Mom's heal.
+function FadeOverlay:uiSize()
+  return require("src.ui.Theme").uiSize()
+end
+
+function FadeOverlay:releaseVeil()
+  local r = self.game and self.game.renderer
+  if self.ownsVeil and r then r.screenVeil = nil end
+  self.ownsVeil = nil
+end
+
 function FadeOverlay:draw()
+  -- A PALETTE FADE HAS NO OUTSIDE.  When nothing is drawn over the fade it is
+  -- painted as the renderer's whole-window veil, so the world bleeding past
+  -- the 240x160 surface darkens with it; with a box above it, it stays a
+  -- rectangle in the surface so the box remains readable.
+  local r = self.game and self.game.renderer
+  if r and self.game.stack:top() == self then
+    r.screenVeil = { self.color == "white" and 1 or 0, self.alpha or 0 }
+    self.ownsVeil = true
+    return
+  end
+  self:releaseVeil()
   if self.color == "white" then
     love.graphics.setColor(1, 1, 1, self.alpha)
   else
@@ -1819,9 +1865,17 @@ local registered = {}
 function Commands.resolve(data, name)
   if NOT_VERBS[name] then return nil end
   local record = data and data.commands and data.commands[name]
-  if record == nil or record == registered[name] then
-    record = Commands[name]
+  -- A mod-owned registry record must win even for Gen3 verbs. The lazy
+  -- Gen3 fallback below exists only when the registry has no override.
+  if record ~= nil and record ~= registered[name] then
+    if type(record) == "table" then return record.fn, record end
+    if type(record) == "function" then return record, Commands.meta[name] end
   end
+  if type(name) == "string" and name:sub(1, 3) == "g3_"
+      and type(Commands[name]) == "function" then
+    return Commands[name], Commands.meta[name]
+  end
+  record = Commands[name]
   if type(record) == "table" then return record.fn, record end
   if type(record) ~= "function" then return nil end
   return record, Commands.meta[name]
@@ -1834,6 +1888,17 @@ function Commands.registerInto(registry, _, owner)
     if type(fn) == "function" and not NOT_VERBS[verb] then
       registry:register(verb, fn, owner)
       registered[verb] = fn
+    end
+  end
+  -- Imported Gen3 rows share ScriptRunner's command registry. Register their
+  -- handlers here so generated FireRed events cannot silently skip battle
+  -- verbs when the Gen3 module is loaded lazily.
+  local ok, Gen3 = pcall(require, "src.script.Gen3Commands")
+  if ok and Gen3 then
+    for verb, fn in pairs(Gen3) do
+      if type(fn) == "function" and verb:sub(1, 3) == "g3_" then
+        registry:register(verb, fn, owner)
+      end
     end
   end
 end

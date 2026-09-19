@@ -73,6 +73,61 @@ FreeMove.RADIUS = 5.5
 FreeMove.WALK = 1.0
 FreeMove.BIKE = 2.0
 
+-- THE RUN, ASKED OF THE ENGINE RATHER THAN RESTATED HERE.
+--
+-- Reported from play: "add the ability to sprint in first and third person
+-- currently it doesnt work".  It did not: the speed below picked between WALK
+-- and BIKE on Game.save.onBike alone, so holding B on Route 119 with the
+-- SHOES on covered exactly as much ground as strolling -- measured, 60px over
+-- 60 frames either way, while the grid walk beside it covered 120.
+--
+-- This is the fourth round of one disease in this module, so it is fixed the
+-- way the other three were: by ASKING.  Every gate already exists in
+-- OverworldState:runFrames (src/world/OverworldController.lua:4359) -- the
+-- dataset's runStepFrames, Hoenn's SHOES flag, the map header's may-run bit
+-- (228 of the region's 519 maps), the seven ground behaviours the shoes do
+-- not work on, Prism's no-gates-at-all, and the B button itself.  Not one of
+-- them is restated here; a copy would only lose some, which is precisely how
+-- the doormat, the whirlpool and blockedCell each went wrong.  If runFrames
+-- says nil, the free walk does not sprint, whatever the reason was.
+--
+-- RIDING AND SURFING ANSWER FIRST, as the engine's own comment at the call
+-- site says (src/world/Player.lua:451): a bicycle already has its own speed
+-- and the sprint does not stack on it, and runFrames refuses a surfer itself.
+--
+-- THE SPEED IS DERIVED, NOT A HARDCODED MULTIPLIER.  The grid measures a step
+-- in FRAMES and the free walk measures it in PIXELS PER FRAME, so the honest
+-- conversion between them is the ratio of the two step lengths: a walk step is
+-- `stepFrames` and a run step is `runFrames`, so a free sprint at
+-- WALK * stepFrames / runFrames covers ground at exactly the rate the grid
+-- sprint does.  On the shipped Emerald cache that is 1.0 * 16 / 8 = 2.0 px a
+-- frame, the same 120px per 60 frames the grid walk was measured covering --
+-- but it is read off the dataset, so a cache with different figures gets its
+-- own answer rather than this one.
+--
+-- runningBlockedAt is a PER-CELL verdict, so this is asked every moving frame
+-- rather than once: a continuous walk crosses into long grass mid-stride, and
+-- the sprint has to end on the cell it enters, not at the next grid step.
+-- runFrames reads state.player.cellX/cellY, which the tick below keeps synced
+-- to wherever the body stands.
+--
+-- Returns the sprint speed in world px per frame, or nil to leave WALK alone.
+function FreeMove.runSpeed(state)
+  local Game = require("src.core.Game")
+  -- riding wins outright; surfing runFrames refuses for itself, but a free
+  -- walk that never reaches it (no overworld to ask) must refuse it too
+  if Game.save and Game.save.onBike then return nil end
+  local p = state and state.player
+  if p and p.surfing then return nil end
+  if not (state and state.runFrames) then return nil end
+  local run = state:runFrames()
+  if type(run) ~= "number" or run <= 0 then return nil end
+  local walk = require("src.world.FieldDefaults").world(Game.data, "stepFrames")
+  if type(walk) ~= "number" or walk <= 0 then return nil end
+  if run >= walk then return nil end   -- a "run" no faster than the walk is none
+  return FreeMove.WALK * walk / run
+end
+
 local EPS = 0.01
 
 -- the free position (player centre, world px) and the px/py we last wrote
@@ -384,7 +439,13 @@ function FreeMove.tick(state)
     end
   end
 
-  if not moving then return end
+  if not moving then
+    -- standing still is never a run: the sheet has to come back off the run
+    -- cycle the moment the pad is released, exactly as the grid walk's own
+    -- `self.running = false` does at the top of its speed branch.
+    p.running = false
+    return
+  end
 
   -- and once there IS a direction of travel, the body may point along it
   -- rather than along the head: on the boom (3RD) you can see yourself, so
@@ -398,9 +459,40 @@ function FreeMove.tick(state)
   -- the rung was picked
   state.bumpCooldown = math.max(0, (state.bumpCooldown or 0) - 1)
 
-  local speed = (Game.save and Game.save.onBike) and FreeMove.BIKE
+  -- the bike's own speed, else the engine's sprint (derived, see runSpeed
+  -- above -- asked fresh this frame because the ground gate is per cell),
+  -- else the walk
+  local sprint = FreeMove.runSpeed(state)
+  local speed = ((Game.save and Game.save.onBike) and FreeMove.BIKE)
+                or sprint
                 or FreeMove.WALK
   local dx, dz = wx * speed, wz * speed
+
+  -- A RUN IS A SHEET, AND THE FREE WALK WAS MOVING AT ONE WITHOUT WEARING IT.
+  --
+  -- MOTIVATED BY SPRINTING ANYWHERE IN HOENN IN 1ST/3RD.  Reported from play:
+  -- "for the first person and third person sprint make sure your using the
+  -- players sprint animation currently its not using it at all".
+  --
+  -- `Player:pose` picks `self.runSprite` on `self.running` (Player.lua's
+  -- "running is the walk's own sheet only for a character with no run cycle
+  -- of its own"), and `running` is set ONLY inside the grid step's speed
+  -- branch -- the branch this module replaces wholesale.  So the free walk
+  -- moved at the run speed and animated on the walk sheet.
+  --
+  -- Set from the SPEED that was actually chosen rather than from the button,
+  -- which is the same rule the engine settled on for its own second clause
+  -- ("a step on foot that takes fewer frames than a walk IS a run, whoever
+  -- decided it"): `runSpeed` has already refused the bike, the surf and every
+  -- gate, so a non-nil answer here IS the run.  DERIVED: no cadence change
+  -- belongs with it -- `animClock` ticks once per real frame while moving in
+  -- both paths, and Player.lua states that the leg cadence stays constant
+  -- when the speed changes.  Only the sheet moves.
+  --
+  -- Harmless where a character has no run cycle: `runSprite` is nil for those
+  -- and `pose` falls straight through to `self.sprite`, which is what plays
+  -- today.
+  p.running = sprint ~= nil
 
   -- AN EDDY IS NOT A WALL, WHICH IS WHY THE BLOCKED-PUSH LIST COULD NOT HOLD
   -- IT.

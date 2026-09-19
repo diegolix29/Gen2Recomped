@@ -65,6 +65,10 @@ end
 function Gen3HallOfFame.new(game, onDone)
   local record = Gen3HallOfFame.record(game)
   if not record then return nil end
+  -- FireRed runs its own ceremony (fly-in team, confetti, the player's walk)
+  if record.frlg then
+    return require("src.ui.Gen3HallOfFameFRLG").new(game, record, onDone)
+  end
   local self = setmetatable({}, Gen3HallOfFame)
   self.game = game
   self.onDone = onDone
@@ -233,8 +237,14 @@ function Gen3HallOfFame:drawPlayerPanel()
   -- which special 275 counts.
   local number = math.floor(tonumber(save.hallOfFame) or 1)
   if number < 1 then number = 1 end
+  -- FireRed's line carries its own slot for the number ("...No. {VAR1}");
+  -- Emerald's ends where the number goes
   local heading = tostring(self.text.number or "HALL OF FAME No. ")
-                  .. ("%d"):format(number)
+  if heading:find("VAR1", 1, true) then
+    heading = heading:gsub("{?VAR1}?", tostring(number))
+  else
+    heading = heading .. ("%d"):format(number)
+  end
   Font.draw(heading, math.floor((GBA_W - Font.width(heading)) / 2),
             BOX_TY * 8 - line - 4)
   -- the champion's two lines, which the cartridge prints together

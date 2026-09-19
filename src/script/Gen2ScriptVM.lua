@@ -580,6 +580,17 @@ L.checkitem = function(ir, s)
     emit(s, { "check_item", itemId(ir[2]) })
   end
 end
+-- BP: `givebp`/`takebp`/`checkbp` carry a HALFWORD (LoadCoinAmountToMem reads
+-- two script bytes), so the amount is the first operand rather than money's
+-- second -- givemoney below takes an account byte ahead of its amount and
+-- these do not.  See Commands.g2_give_bp for where the cap and the check's
+-- three answers come from.
+L.givebp = function(ir, s) emit(s, { "g2_give_bp", ir[2] }) end
+L.takebp = function(ir, s) emit(s, { "g2_give_bp", -(tonumber(ir[2]) or 0) }) end
+L.checkbp = function(ir, s) emit(s, { "g2_check_bp", ir[2] }) end
+L.checkdarkness = function(_, s) emit(s, { "g2_check_darkness" }) end
+L.checkunits = function(_, s) emit(s, { "g2_check_units" }) end
+
 L.givemoney = function(ir, s) emit(s, { "give_money", ir[3] }) end
 L.takemoney = function(ir, s) emit(s, { "give_money", -(ir[3] or 0) }) end
 L.checkmoney = function(ir, s) emit(s, { "g2_check_money", ir[3] }) end
@@ -706,11 +717,6 @@ L.startpokeonly = function(ir, s)
   emit(s, { "g2_setvar", 1 })
 end
 L.endpokeonly = L.startpokeonly
--- movement, warps, presentation -------------------------------------------
-
-L.warp = function(ir, s) emit(s, { "g2_warp", ir[2], ir[4], ir[5] }) end
-L.warpfacing = function(ir, s) emit(s, { "g2_warp", ir[3], ir[5], ir[6], ir[2] }) end
-L.blackoutmod = function(ir, s) emit(s, { "g2_blackout_point", ir[2] }) end
 
 -- Script_halloffame (pokegold scripting.asm): induction + credits.
 -- HallOfFameEnterScript ends with: HealParty → (optional SS Ticket call) → halloffame.
@@ -794,6 +800,12 @@ L.loadmenu = function(ir, s) emit(s, { "g2_loadmenu", ir[2] }) end
 L.writecmdqueue = function(ir, s)
   if type(ir[2]) == "table" then emit(s, { "g2_stonetable", ir[2] }) end
 end
+-- Polished Crystal takes the stone table's pointer DIRECTLY where Crystal
+-- queues it through writecmdqueue, and the extractor already resolves both
+-- operands the same way (the `writecmdqueue or usestonetable` arm) -- so the
+-- lowering is the same lowering.  Without it the boulder-into-hole rows were
+-- decoded, resolved, and then thrown away.
+L.usestonetable = L.writecmdqueue
 L.verticalmenu = function(_, s) emit(s, { "g2_verticalmenu" }) end
 L.checktime = function(ir, s) emit(s, { "g2_checktime", ir[2] }) end
 -- No phone model yet, but the answer still has to be written: the nurse's
@@ -1107,6 +1119,63 @@ local SPECIALS = {
   Function10383c = "g2_unavailable",
   Function10387b = "g2_unavailable",
   Function103780 = "g2_unavailable",
+
+  -- POLISHED CRYSTAL'S OWN NAMES for operations this VM already models.
+  --
+  -- The prefix rule above (specialKey) reaches the ones this cartridge spells
+  -- `Special_<X>` over a name the tables already carry.  These are the rest:
+  -- the routine was RENAMED as well as prefixed, so there is nothing for a
+  -- rule to strip and the pairing has to be stated.  Each was matched by what
+  -- the routine is, not by how close the spelling is.
+  --
+  --   FindThatSpecies            Crystal's FindPartyMonThatSpecies -- "is this
+  --                              species in your party", and the ...
+  --                              YourTrainerID form is the same test limited
+  --                              to mons you raised.  38 call sites each.
+  --   CianwoodPhotograph         the photo studio.  Crystal's special is
+  --                              named after the building, this one after
+  --                              what it does.
+  --   DaisyMassage               Daisy's grooming.
+  --   SoftReset                  Crystal calls the same routine `Reset`.
+  --   RandomPhoneRareWildMon     the phone caller's "a rare one is out here"
+  --                              line.  Crystal has only the common form, and
+  --                              this port has no rare table to roll -- but
+  --                              the buffer it fills is the one the line
+  --                              splices, and leaving it unwritten prints
+  --                              whatever species was in there from an
+  --                              earlier call, which is the exact failure the
+  --                              common form was fixed for.
+  --   HallOfFame                 the induction the `halloffame` OPCODE also
+  --                              reaches; this build offers it as a special
+  --                              as well.
+  --
+  -- The two link routines answer a definite "unavailable" for the same reason
+  -- every cable-club special above does: the port cannot link, and a script
+  -- that branches on a stale wScriptVar takes an arm at random.
+  Special_FindThatSpecies = "g2_find_party_species",
+  Special_FindThatSpeciesYourTrainerID = "g2_find_party_species_own",
+  Special_CianwoodPhotograph = "g2_photo_studio",
+  Special_DaisyMassage = "g2_daisys_grooming",
+  SoftReset = "g2_soft_reset",
+  RandomPhoneRareWildMon = "g2_random_phone_wild_mon",
+  HallOfFame = "record_hall_of_fame",
+  PerformLinkChecks = "g2_unavailable",
+  Special_CheckLinkTimeout = "g2_unavailable",
+  -- "is the dex at least this full?", against the 16-bit number the script
+  -- just set -- see the note on Commands.g2_dex_seen_at_least
+  CountSeen = "g2_dex_seen_at_least",
+  CountCaught = "g2_dex_caught_at_least",
+  -- BeastsCheck's two siblings, keyed bare so the prefix rule reaches this
+  -- cartridge's SpecialBirdsCheck / SpecialDuoCheck the same way it reaches
+  -- its SpecialBeastsCheck
+  BirdsCheck = "g2_birds_check",
+  DuoCheck = "g2_duo_check",
+  CheckBattleCaughtResult = "g2_battle_caught",
+  GetOvercastIndex = "g2_overcast_index",
+  CheckIfTrendyPhraseIsLucky = "g2_trendy_phrase_lucky",
+  -- ...and one whose NAME is the least useful thing about it: see
+  -- Commands.g2_warp_to_spawn_point.
+  WarpToSpawnPoint = "g2_warp_to_spawn_point",
 }
 
 -- Fades / presentation (Route 24 Rocket uses FadeOutMusic + FadeOutToBlack +
@@ -1202,6 +1271,38 @@ local SPECIALS_NOOP = {
   -- Prism's own fade wrappers that turned up alongside it
   CelebiShrineEvent = true,
   Special_CelebiShrineEvent = true,
+
+  -- POLISHED CRYSTAL'S PRESENTATION AND SAVE-STATE SPECIALS.
+  --
+  -- Nothing branches on any of these -- they paint, they reload a font, or
+  -- they move bytes into SRAM -- so a no-op is the whole of what the port
+  -- owes them, exactly as it is for Crystal's fades above.
+  --
+  --   ClearTileMap                     Crystal spells it ClearTilemap.
+  --   FadeBlackQuickly /               two more fade wrappers this build adds
+  --   FadeInPalettes_EnableDynNoApply  beside the ones already listed.
+  --   LoadFonts_NoOAMUpdate            reloads the text font mid-scene; this
+  --                                    port's font is always loaded.
+  --   SaveOptions                      writes the options block to SRAM, which
+  --                                    the port persists for itself.
+  --   SaveMusic / RestoreMusic /       a PAIR that parks the current track
+  --   DeleteSavedMusic                 over a scene and puts it back.  Both
+  --                                    halves no-op together, so the track
+  --                                    simply keeps playing -- which is the
+  --                                    outcome the pair exists to produce.
+  --   ShowItemIcon / ShowKeyItemIcon / the little icon beside a "received"
+  --   ShowTMHMIcon                     line; give_item already prints the line.
+  ClearTileMap = true,
+  Special_FadeBlackQuickly = true,
+  FadeInPalettes_EnableDynNoApply = true,
+  LoadFonts_NoOAMUpdate = true,
+  SaveOptions = true,
+  SaveMusic = true,
+  RestoreMusic = true,
+  DeleteSavedMusic = true,
+  ShowItemIcon = true,
+  ShowKeyItemIcon = true,
+  ShowTMHMIcon = true,
 }
 
 -- Specials that print their own prompt and are immediately followed by a
@@ -1290,6 +1391,60 @@ local GOLD_SPECIAL_LABELS = {
   [0x6D] = "InitialClearDSTFlag",
 }
 
+-- A SPECIAL'S LABEL, NORMALISED PAST THIS CARTRIDGE'S OWN PREFIX.
+--
+-- POLISHED CRYSTAL NAMES MOST OF ITS SPECIALS `Special_<X>` OR `Special<X>`,
+-- and every table below is keyed on `<X>` -- which is what Gold, Silver and
+-- Crystal call the same routine.  The extractor resolves a special's index by
+-- following the SpecialsPointers row (`db bank, dw address`) to the routine
+-- it points at and naming THAT, so what arrives here is the routine's own
+-- label, prefix and all.
+--
+-- Measured against the cartridge itself: of the 160 rows its table names, 70
+-- matched a key outright and 25 more differ from one by nothing but that
+-- prefix -- SpecialNameRater, SpecialSnorlaxAwake, SpecialBuenasPassword,
+-- SpecialBeastsCheck, the Ho-Oh and Omanyte chambers, Bill's grandfather, the
+-- four lucky-number routines, both DST flags, SurfStartStep and the Bug
+-- Contest contestant draw.  Falling through to `g2_special` does not just
+-- skip them: it leaves wScriptVar holding whatever the previous row put
+-- there, so a special standing between a check and its `iftrue` flips the
+-- branch.
+--
+-- The trailing `Special` comes off as well, for a cartridge whose table
+-- labels the ROW rather than the routine (`add_special X` emits `XSpecial::`
+-- over the row, and this build does that too -- all 160 rows carry such a
+-- label).  The extractor prefers the shortest symbol at the TARGET address,
+-- so that spelling does not reach here on this build; it costs nothing and
+-- the two rules compose for one that does.
+--
+-- THE EXACT KEY IS ALWAYS TRIED FIRST, so nothing that resolves today can
+-- start resolving to something else; this only changes what happens after a
+-- miss.  Checked: every key in the three tables still maps to itself, so Gold,
+-- Silver, Crystal and Prism are untouched.  The 65 that remain are genuinely
+-- this hack's own -- hidden grottoes, its Battle Tower rework, Hyper Training,
+-- Wonder Trade, the maniac price checks -- and stay in the audit.
+local function specialUnprefixed(name)
+  return name:match("^Special_(.+)$") or name:match("^Special(%u.*)$")
+end
+
+local function specialKnown(name)
+  return name ~= nil
+    and (SPECIALS[name] or SPECIALS_NOOP[name] or SPECIALS_PROMPT[name]) ~= nil
+end
+
+local function specialKey(key)
+  if specialKnown(key) then return key end
+  local bare = specialUnprefixed(key)
+  if specialKnown(bare) then return bare end
+  local base = key:match("^(.+)Special$")
+  if base then
+    if specialKnown(base) then return base end
+    bare = specialUnprefixed(base)
+    if specialKnown(bare) then return bare end
+  end
+  return key
+end
+
 L.special = function(ir, s)
   local key = ir[3]
   if type(key) ~= "string" then key = GOLD_SPECIAL_LABELS[ir[2]] end
@@ -1297,6 +1452,7 @@ L.special = function(ir, s)
     emit(s, { "g2_special", ir[2] })
     return
   end
+  key = specialKey(key)
   if SPECIALS_NOOP[key] then return end
   local prompt = SPECIALS_PROMPT[key]
   if prompt then
@@ -1811,6 +1967,56 @@ L.givetmnomessage = function(ir, s)
   if type(ir[2]) == "string" then emit(s, { "g2_giveitem", ir[2], 1 }) end
 end
 
+-- ---------------------------------------------------------------------------
+-- POLISHED CRYSTAL'S TM/HM POCKET.
+--
+-- Five commands the cartridge dispatches in its own right -- Script_givetmhm,
+-- Script_verbosegivetmhm, Script_checktmhm, Script_gettmhmname and
+-- Script_tmhmnotify are all in the ROM's jumptable under those names -- and
+-- between them they are 53 of the instructions the unhandled audit was still
+-- counting.  Unhandled means the TM was never handed over: beating a gym
+-- played the whole conversation and gave nothing, and the `checktmhm /
+-- iftrue` that guards a second gift read a stale answer.
+--
+-- The operand is a MACHINE NUMBER, which the extractor has already turned
+-- into the TM_nn / HM_nn item (see the note beside it).  A cartridge where
+-- that did not resolve leaves a number here, and a number is not an item, so
+-- nothing is emitted rather than handing over whichever potion shares the id
+-- -- the same rule `givetm` above follows.
+--
+-- The verbose/silent split is the cartridge's own and matches the item
+-- family beside it: `giveitem` is silent and `verbosegiveitem` prints, so
+-- `givetmhm` is silent and `verbosegivetmhm` prints.
+L.givetmhm = function(ir, s)
+  if type(ir[2]) == "string" then emit(s, { "g2_giveitem", ir[2], 1 }) end
+end
+L.verbosegivetmhm = function(ir, s)
+  if type(ir[2]) == "string" then emit(s, { "give_item", ir[2], 1 }) end
+end
+-- CheckTMHM/InnerCheckTMHM answer into wScriptVar, which is what the
+-- `iftrue`/`iffalse` after it reads -- so an unresolved machine must still
+-- write a definite answer rather than leave the last command's behind.
+L.checktmhm = function(ir, s)
+  if type(ir[2]) == "string" then
+    emit(s, { "check_item", ir[2] })
+  else
+    emit(s, { "g2_false" })
+  end
+end
+-- `gettmhmname <tmhm>, <buffer>`: the buffer operand is written LAST by
+-- every name macro in this disassembly (getitemname, gettrainername,
+-- getlandmarkname all do), so ir[2] is the machine and ir[3] the buffer --
+-- and a machine is named exactly like the item it resolves to.
+L.gettmhmname = function(ir, s)
+  if type(ir[2]) == "string" then
+    emit(s, { "g2_getitemname", ir[2], ir[3] })
+  end
+end
+-- and the notify line, which `give_item` above already prints -- the same
+-- reasoning as itemnotify and keyitemnotify.
+L.tmhmnotify = function() end
+L.keyitemnotify = function() end
+
 -- PRISM'S EVENT VARIABLES (wEventVariables, sixty-four bytes at $D73D) are a
 -- separate space from the event FLAGS checkevent/setevent use, and its longer
 -- errands count with them.  The operand packs the operation into the top two
@@ -1988,6 +2194,21 @@ L.changemap = function(ir, s)
     emit(s, { "g2_changemap", ir[2] })
   end
 end
+-- POLISHED CRYSTAL'S NAME FOR THE SAME COMMAND -- and not the only command
+-- called that.
+--
+-- Script_changemapblocks takes a FAR POINTER to a compressed block table, so
+-- it is Prism's `changemap` exactly, and the extractor now decodes the
+-- operand for it (the "D" arm).  Gold, Silver and Crystal also have a
+-- `changemapblocks`, and it is a different command: three plain bytes, no
+-- pointer.  Those rows arrive here as numbers, and the table guard drops
+-- them untouched -- which is what they did before this existed, so the older
+-- cartridges are no worse off and their command stays a known gap.
+L.changemapblocks = function(ir, s)
+  if type(ir[2]) == "table" and #ir[2] > 0 then
+    emit(s, { "g2_changemap", ir[2] })
+  end
+end
 
 -- The map-refresh family.  All of these redraw the loaded map after a
 -- changeblock or a warp -- refreshmap/reloadmap/newloadmap re-run the tile
@@ -2083,6 +2304,23 @@ L.takekeyitem = L.takeitem
 L.verbosegivekeyitem = L.verbosegiveitem
 L.givespecialitem = L.giveitem
 L.applyonemovement = L.applymovement
+-- `loadtrainerwithpal <group>, <id>, <palette>` is `loadtrainer` plus the
+-- palette the trainer's pic is drawn in -- Script_loadtrainerwithpal falls
+-- into the same battle setup, and the port picks a pic's palette from the
+-- pic.  The two ids are in the same two operands, so the alias is exact and
+-- only the presentation operand is dropped.
+L.loadtrainerwithpal = L.loadtrainer
+
+-- checkunits, trainerpic and paintingpic stay in the audit for the same
+-- reason checksave does (see the note beside L.wait): each is a question or a
+-- picture whose exact answer has not been read off the cartridge, and an
+-- invented one would branch a script on a guess.
+--
+-- `checkegg` WALKS THE PARTY (Script_checkegg has a .loop and a .next), so it
+-- is not Crystal's CheckFirstMonIsEgg special under another name -- that one
+-- looks at the lead slot only.  Day-care and hatching scripts gate on this,
+-- and with no lowering they read whatever the last command left.
+L.checkegg = function(_, s) emit(s, { "g2_check_party_egg" }) end
 
 -- Lower `entry` and every script reachable from it into one row list.
 -- Coverage hook: an unrecognised opcode lowers to nothing, so the only way to

@@ -16,7 +16,10 @@ local Theme = {
   rows = Renderer.HEIGHT / 8,
   textBox = { tx = 0, ty = 12, tw = 20, th = 6, maxCols = 18 },
   -- InitYesNoTextBoxParameters / AskName: hlcoord 14, 7 (YES_NO_MENU 4x3)
-  choiceBox = { tx = 14, ty = 7, tw = 6, th = 5 },
+  -- FireRed's YES/NO menu is one tile farther left and wider than the
+  -- compact Gen1 default; this keeps both labels and the cursor inside the
+  -- framed box on the Poké Flute confirmation.
+  choiceBox = { tx = 13, ty = 7, tw = 7, th = 6 },
 }
 
 -- THE SURFACE THIS DATASET'S SCREEN FURNITURE NEEDS.
