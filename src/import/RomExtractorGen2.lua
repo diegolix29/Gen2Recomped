@@ -130,6 +130,18 @@ RomExtractorGen2.GEN2_OBJECT_KIND_TEXT = {
   [8] = true,   -- PERSONTYPE_MART     -- mart type and id
   [9] = true,   -- PERSONTYPE_FRUITTREE
 }
+-- `callasm` routines whose FIRST act is to read a halfword out of the script
+-- stream (LoadCoinAmountToMem -> GetScriptHalfwordOrVar).  The operand is the
+-- routine's, not the command's, so it cannot live in the command table's spec.
+--
+-- A class field rather than a chunk local: this file sits ON Lua's
+-- 200-local-per-chunk ceiling, and one more `local` here makes the whole
+-- module fail to LOAD (which, through a pcall'd path, reads as "the import
+-- silently does nothing").
+RomExtractorGen2.GEN2_ASM_TAKES_HALFWORD = {
+  CheckOrphanPointsFromScript = true,
+  TakeOrphanPointsFromScript = true,
+}
 local GEN2_EVENT_FLAG_NONE = 0xFFFF
 local GEN2_TIME_OF_DAY_ANY = 0xFF
 -- ItemAttributes row: dw price, then effect/param/property/pocket/menu bytes
@@ -3746,6 +3758,13 @@ function RomExtractorGen2:gen2Machines()
     end)
     if ok and type(bytes) == "table" then
       for n = 1, total do
+        -- THE TABLE TERMINATES ITSELF.  CanLearnTMHMMove walks TMHMMoves with
+        -- `ld a, [hli] / and a / jr z, .end`, so a zero byte is the end of the
+        -- list and not a move.  Prism has 101 machines and no move tutors, so
+        -- reading the default three tutor slots past the terminator invented
+        -- three machines out of whatever bytes followed -- and 45 species have
+        -- padding bits set at exactly those positions.
+        if (bytes[n] or 0) == 0 then break end
         local move = byIndex[bytes[n] or 0]
         if move then
           local kind, number = "TM", n
@@ -4068,6 +4087,22 @@ function RomExtractorGen2:extractPokemon()
     self:layout("baseEggGroupsAt", RomExtractorGen2.GEN2_BASE_EGG_GROUPS)
   local tmhmAt = self:layout("baseTmhmAt", GEN2_BASE_TMHM_FIRST)
   local tmhmBytes = self:layout("baseTmhmBytes", 8)
+  -- WHERE THE LEARNSET BITS LIVE WHEN THEY DO NOT FIT IN THE BASE-STATS ROW.
+  --
+  -- Gold, Silver and Crystal close every 32-byte base_stats row with an
+  -- 8-byte bitfield and CanLearnTMHMMove tests it in place.  Prism cannot do
+  -- that: its rows are 24 bytes and it has 101 machines, so it moved the
+  -- learnsets into a table of their own -- TMHMLearnsets, 13 bytes per
+  -- species indexed by species - 1, which its CanLearnTMHMMove FarCopyBytes
+  -- into wCurBaseData before running the same FlagAction test.
+  --
+  -- Read from the base row instead, offset 25 of a 24-byte entry is simply
+  -- not there: every byte came back nil, every bitfield read as zero, and all
+  -- 253 species came out unable to learn a single TM or HM.  That is "can't
+  -- teach Pokemon moves they should be able to learn, like Cut" -- the bag's
+  -- compatibility check is whether `speciesDef.tmhm` names the move.
+  local learnSym = self:symbol("TMHMLearnsets")
+  local learnBytes = self:layout("tmhmLearnsetBytes", 13)
   local picDimsAt = self:layout("basePicDimsAt", GEN2_BASE_PIC_DIMS)
   local machines = self:gen2Machines()
 
@@ -4126,8 +4161,19 @@ function RomExtractorGen2:extractPokemon()
           eggGroups = { g1 }
           if g2 and g2 ~= g1 then eggGroups[2] = g2 end
         end
-        for byteIndex = 0, tmhmBytes - 1 do
-          local value = entry[tmhmAt + byteIndex] or 0
+        local flags, first, count = entry, tmhmAt, tmhmBytes
+        if learnSym then
+          local okLearn, raw = pcall(function()
+            return self.rom:bytes(learnSym.bank,
+                                  learnSym.address + (i - 1) * learnBytes,
+                                  learnBytes)
+          end)
+          if okLearn and type(raw) == "table" then
+            flags, first, count = raw, 1, learnBytes
+          end
+        end
+        for byteIndex = 0, count - 1 do
+          local value = flags[first + byteIndex] or 0
           for bit = 0, 7 do
             if math.floor(value / 2 ^ bit) % 2 == 1 then
               local slot = machines[byteIndex * 8 + bit + 1]
@@ -5680,6 +5726,78 @@ function RomExtractorGen2:gen2FruitTreeItems()
   return items
 end
 
+-- PRISM'S PACHISI BOARD (event/pachisi.asm), which is four flat byte tables
+-- and nothing else.
+--
+--   Pachisi<Board>Tiles       one byte per board POSITION: the tile kind, and
+--                             the index the script's anonjumptable takes
+--   Pachisi<Board>Directions  one byte per position: a `step_*` movement
+--                             ($10 down, $11 up, $12 left, $13 right), with
+--                             `step_end` ($47) closing each SECTION -- which
+--                             is what stops a roll walking past a warp square
+--   PachisiGrass/Water/CavePokemon  16 species each (`Random and $f`)
+--   PachisiItems              64 items (`Random and $3f`)
+--
+-- The position lives in an event variable the script already owns, so nothing
+-- here is state; these are the board itself.  Bounded by the End symbols the
+-- source declares, which is exact rather than a guess.
+function RomExtractorGen2:gen2PachisiBoard()
+  local function span(from, to, map)
+    local start = self:symbol(from)
+    local stop = self:symbol(to)
+    if not (start and stop and self.rom) then return nil end
+    local count = stop.address - start.address
+    if count < 1 or count > 512 then return nil end
+    local ok, bytes = pcall(function()
+      return self.rom:bytes(start.bank, start.address, count)
+    end)
+    if not (ok and type(bytes) == "table") then return nil end
+    if map then
+      for i = 1, #bytes do bytes[i] = map(bytes[i]) end
+    end
+    return bytes
+  end
+  local function species(n) return string.format("SPECIES_%03d", n) end
+  local out = {}
+  out.torenia = {
+    tiles = span("PachisiToreniaTiles", "PachisiToreniaTilesEnd"),
+    directions = span("PachisiToreniaDirections", "PachisiToreniaDirectionsEnd"),
+  }
+  out.botan = {
+    tiles = span("PachisiBotanTiles", "PachisiBotanTilesEnd"),
+    directions = span("PachisiBotanDirections", "PachisiBotanDirectionsEnd"),
+  }
+  out.grass = span("PachisiGrassPokemon", "PachisiWaterPokemon", species)
+  out.water = span("PachisiWaterPokemon", "PachisiCavePokemon", species)
+  out.cave = span("PachisiCavePokemon", "PachisiItems", species)
+  -- the source declares no PachisiItemsEnd: the table is exactly the 64
+  -- entries `Random and $3f` can reach
+  local itemsSym = self:symbol("PachisiItems")
+  if itemsSym and self.rom then
+    local ok, bytes = pcall(function()
+      return self.rom:bytes(itemsSym.bank, itemsSym.address, 64)
+    end)
+    if ok and type(bytes) == "table" then
+      for i = 1, #bytes do bytes[i] = string.format("ITEM_%03d", bytes[i]) end
+      out.items = bytes
+    end
+  end
+  -- `writehalfword PachisiGrassPokemon` names its table by ADDRESS, so the
+  -- runtime needs those three addresses to tell which one was asked for.
+  out.monTables = {}
+  for key, name in pairs({ grass = "PachisiGrassPokemon",
+                           water = "PachisiWaterPokemon",
+                           cave = "PachisiCavePokemon" }) do
+    local sym = self:symbol(name)
+    if sym then out.monTables[tostring(sym.address)] = key end
+  end
+  if not (out.torenia.tiles and out.torenia.directions
+          and out.botan.tiles and out.botan.directions) then
+    return nil
+  end
+  return out
+end
+
 -- InitializeEventsScript is a flat run of `setevent` commands run once on a
 -- new game.  An object whose event flag is in this set starts out hidden --
 -- that is how the ROM keeps the Elm's Lab officer and the Cherrygrove rival
@@ -7147,8 +7265,38 @@ function RomExtractorGen2:gen2MenuItems(bank, address)
     if count < 1 or count > 16 then return nil end
     local out = { default = self.rom:byte(bank, address + 7) }
     local at = data + 2
+    -- A MENU OPTION IS NOT A TEXT BLOCK.
+    --
+    -- MenuData's strings are handed straight to PlaceString, so they are
+    -- plain glyph bytes ending in "@" -- no TX_ commands, no TX_FAR, and on
+    -- Prism none of its compressed or biased-pointer forms either.  Reading
+    -- them with the DIALOGUE decoder is a guess: on Prism it takes the
+    -- cartridge's own compressed reader first, which can answer with a
+    -- different byte count and walk `at` off the row -- and one unusable
+    -- label used to throw the WHOLE menu away.
+    --
+    -- The Pokemon orphanage's adoption list is exactly that: four rows of
+    -- "Chikorita    100@" that came back nil, so `loadmenudata` kept a bare
+    -- address, no list opened, `verticalmenu` left the script variable alone
+    -- and `addvar -1 / sif >, 3` took the exit -- the adoption lady said
+    -- hello and goodbye and never offered anything.
+    local function plainLabel(from)
+      local chars, used = {}, 0
+      while used < 40 do
+        local byte = self.rom:byte(bank, from + used)
+        used = used + 1
+        if type(byte) ~= "number" or byte == 0x50 then break end
+        chars[#chars + 1] = byte
+      end
+      return self:gen2GlyphBytes(chars, self._menuCharmap), used
+    end
     for _ = 1, count do
-      local text, used = self:decodeGen2TextAt(bank, at, self._menuCharmap)
+      local text, used = plainLabel(at)
+      -- ...with the dialogue reader kept as the second answer, for a menu
+      -- whose rows really are text pointers rather than inline strings
+      if text == "" or #text > 20 then
+        text, used = self:decodeGen2TextAt(bank, at, self._menuCharmap)
+      end
       -- a header whose MenuData is built at runtime decodes to noise; the
       -- label lengths are the cheapest tell
       if text == "" or #text > 20 then return nil end
@@ -7338,6 +7486,19 @@ function RomExtractorGen2:gen2DecodeScript(bank, address, label, pool)
         value = self:gen2AsmName(self.rom:byte(bank, pc), self.rom:word(bank, pc + 1))
           or string.format("%02X:%04X",
             self.rom:byte(bank, pc), self.rom:word(bank, pc + 1))
+        -- TWO ROUTINES READ THE SCRIPT STREAM THEMSELVES.
+        --
+        -- CheckOrphanPointsFromScript and TakeOrphanPointsFromScript both open
+        -- with LoadCoinAmountToMem -> GetScriptHalfwordOrVar, so the HALFWORD
+        -- after the callasm belongs to the routine and is not bytecode.
+        -- Walked as bytecode it desynced on the `dw -1` the first time the
+        -- Pokemon orphanage's adoption script reached one, and everything
+        -- after it -- the party-space check, the confirmation, the givepoke --
+        -- was lost with it.
+        if RomExtractorGen2.GEN2_ASM_TAKES_HALFWORD[value] then
+          extra = self.rom:word(bank, pc + 3)
+          pc = pc + 2
+        end
       end
       argCount = argCount + 1
       row[argCount + 1] = value == nil and "" or value
@@ -7714,12 +7875,26 @@ function RomExtractorGen2:gen2SpawnPoints(maps, keys)
   end
   if not next(points) then return nil end
 
+  -- WHICH MAPS ARE POKEMON CENTERS, asked of the dataset rather than of a
+  -- tileset NUMBER.
+  --
+  -- `GEN2_POKECENTER_TILESET = 6` is not TilesetPokecenter in Crystal -- id 6
+  -- is TilesetPlayersHouse there, so this picked out the player's house, Elm's
+  -- house, Red's house and the Copycat's and no Pokemon Center at all.  The
+  -- map def already names its tileset, and the name is the thing that is
+  -- stable across these carts, so match on that first and keep the id as the
+  -- fallback for a dataset whose names do not say.
   local centers = {}
   for label, mapId in pairs(keyByLabel) do
     local header = headerByLabel[label]
-    if header and header.tileset == GEN2_POKECENTER_TILESET then
-      centers[mapId] = true
+    local named = maps[mapId] and maps[mapId].tileset
+    local isCenter
+    if type(named) == "string" then
+      isCenter = named:upper():find("POKECENTER", 1, true) ~= nil
+    else
+      isCenter = header and header.tileset == GEN2_POKECENTER_TILESET
     end
+    if isCenter then centers[mapId] = true end
   end
 
   return { points = points, centers = centers, order = order }
@@ -7733,11 +7908,27 @@ function RomExtractorGen2:gen2FlyWarps()
   local spawns = self._gen2Spawns
   local points = spawns and spawns.points
   if not points then return nil end
+  -- ...AND THE BIRD ONLY EVER LANDS OUTDOORS.
+  --
+  -- Excluding Pokemon Centers was the right idea reached the wrong way: the
+  -- spawn list also holds the BEDROOM (SPAWN_HOME) and a Fast Ship cabin, and
+  -- both came through.  Worse, a spawn interior shares its LANDMARK with the
+  -- town it stands in -- PLAYERS_HOUSE2_F is landmark 1 with NEW_BARK_TOWN,
+  -- VIRIDIAN_POKECENTER1_F is landmark 49 with VIRIDIAN_CITY -- so the Fly
+  -- cursor, which walks landmarks, listed "NEW BARK TOWN" twice and dropped
+  -- the player in their bedroom on the second one.
+  --
+  -- The cartridge's own rule is the environment: FlyFromAnim sets you down on
+  -- a TOWN or a ROUTE, which is the same test EnterMapWarp.SetSpawn makes on
+  -- the other side (see OverworldState:noteGen2Spawn).  A dataset with no
+  -- environment byte keeps the old centre-only filter.
+  local defs = self._gen2MapDefs
+  local OUTDOOR = { [1] = true, [2] = true }   -- ENVIRONMENT_TOWN, _ROUTE
   local out = {}
   for mapId, at in pairs(points) do
-    -- a Pokemon Center is a spawn (a blackout lands inside one) but never a
-    -- fly destination: the bird sets you down on the town it stands in
-    if not (spawns.centers and spawns.centers[mapId]) then
+    local env = tonumber((defs and defs[mapId] or {}).environment)
+    local outdoors = (env == nil) or OUTDOOR[env]
+    if outdoors and not (spawns.centers and spawns.centers[mapId]) then
       out[mapId] = { x = at.x, y = at.y }
     end
   end
@@ -11867,9 +12058,26 @@ end
 function RomExtractorGen2:gen2FruitTrees()
   local table_ = self:symbol("FruitTreeItems")
   if not (table_ and self.rom) then return nil end
+  -- AN `End*` LABEL IS INSIDE THIS TABLE, NOT AFTER IT.
+  --
+  -- Prism's FruitTreeItems is 18 apricorn trees followed by 11 berry trees,
+  -- and it marks the seam with `EndApricornTrees:` -- a label that exists
+  -- only so CheckFruitTree can do `cp EndApricornTrees - FruitTreeItems` and
+  -- tell an apricorn from a berry.  Bounding the table at "the next symbol in
+  -- the bank" stopped dead on it, so the cache carried 18 rows and every
+  -- BERRY tree in the game -- trees 19 to 29, the CHESTO / LUM / SITRUS /
+  -- ORAN / PECHA / LEPPA / CHERI / ASPEAR / PERSIM / RAWST ones -- had no
+  -- item at all.  g2_fruittree answers a missing row with "It's a fruit-
+  -- bearing tree." and hands nothing over, which is exactly "berry trees
+  -- don't give anything".
+  --
+  -- The convention is pret's: a label that names the END of a run, rather
+  -- than the start of the next thing, is not a boundary.  Gold, Silver and
+  -- Crystal have no such label here, so their bound is unchanged.
   local stop = table_.address + 64
-  for _, location in pairs(self.symbols or {}) do
-    if type(location) == "table" and tonumber(location[1]) == table_.bank then
+  for name, location in pairs(self.symbols or {}) do
+    if type(location) == "table" and tonumber(location[1]) == table_.bank
+       and not tostring(name):match("^End") then
       local address = tonumber(location[2])
       if address and address > table_.address and address < stop then
         stop = address
@@ -13354,6 +13562,7 @@ function RomExtractorGen2:extractField()
     src.engineFlags = self:gen2EngineFlags() or src.engineFlags
     src.spawnFlags = self:gen2SpawnFlags() or src.spawnFlags
     src.gen2FruitTrees = self:gen2FruitTrees() or src.gen2FruitTrees
+    src.gen2Pachisi = self:gen2PachisiBoard() or src.gen2Pachisi
     src.gen2DarkMaps = self:gen2DarkMaps() or src.gen2DarkMaps
     src.gen2TreeMons = self:gen2TreeMons() or src.gen2TreeMons
     src.gen2BugContest = self:gen2BugContest() or src.gen2BugContest

@@ -2294,9 +2294,41 @@ function Commands.g3_animate_flash(ctx, level)
   require("src.world.Gen3Flash").animateTo(game, valueOf(ctx, level))
 end
 
+-- setmaplayoutindex: the same place, redrawn from a different layout.
+--
+-- This used to write `gen3LayoutOverride` on the map and stop.  Nothing in the
+-- engine ever read that field -- it was recorded on every one of Hoenn's
+-- layout swaps and thrown away -- so a map that changes shape with the story
+-- never did.  Sootopolis is the one that shows: while Groudon and Kyogre are
+-- in the lake its ON_TRANSITION names layout 357, which puts the two rock
+-- platforms under the gym that they stand on.  Without it the lake is the
+-- header's open water and the pair have nowhere to be.
+--
+-- The swap goes through Map:applyGen3Layout, which patches the cells that
+-- differ rather than editing the shared map def -- see the note there.
 function Commands.g3_set_layout(ctx, layoutId)
   local ow = ctx.overworld
-  if ow and ow.map then ow.map.gen3LayoutOverride = tonumber(layoutId) end
+  local map = ow and ow.map
+  local id = tonumber(valueOf(ctx, layoutId))
+  if not (map and id) then return end
+  map.gen3LayoutOverride = id
+  local layouts = ctx.game and ctx.game.data and ctx.game.data.map_layouts
+  local layout = layouts and layouts[id]
+  if not layout then
+    Logger.warn("setmaplayoutindex: %s asked for layout %s and there is no "
+                  .. "such layout -- the map keeps the one its header names",
+                tostring(map.id), tostring(id))
+    return
+  end
+  if not map.applyGen3Layout then return end
+  local changed, why = map:applyGen3Layout(layout)
+  if changed == nil then
+    Logger.warn("setmaplayoutindex: %s could not take layout %d -- %s",
+                tostring(map.id), id, tostring(why))
+  elseif changed > 0 then
+    Logger.info("setmaplayoutindex: %s redrawn from layout %d (%d cell(s) "
+                  .. "differ)", tostring(map.id), id, changed)
+  end
 end
 
 function Commands.g3_door(ctx, action, x, y)
@@ -11834,10 +11866,33 @@ Gen3Commands.SPECIALS[275] = function(ctx)
   -- that index into a place.
   local game, runner = ctx.game, ctx.runner
   local okHof, Gen3HallOfFame = pcall(require, "src.ui.Gen3HallOfFame")
+  -- ...AND THE EVENT DISTRIBUTION, WHICH IS THIS PORT'S ADDITION.
+  --
+  -- The four island events arrive on a cartridge over the link cable from a
+  -- Nintendo broadcast that has not run in twenty years, so Latios, Lugia,
+  -- Ho-Oh, Deoxys and Mew are simply absent from a retail save.  This port
+  -- cannot receive that broadcast either; it hands one event out per
+  -- induction instead and lets the player pick.  See src/ui/Gen3MysteryGift.
+  --
+  -- It sits INSIDE the ceremony's callback rather than beside it because the
+  -- script is suspended on `waitstate` until `runner:resume()` -- so the
+  -- picker has to run before that, and whatever it does it has to reach the
+  -- same two lines exactly once.  Gen3MysteryGift.offer guarantees that; a
+  -- dataset with no SS Tidal table falls straight through it.
   local ceremony = okHof and game and game.stack
                    and Gen3HallOfFame.new(game, function()
-                         Gen3Commands.goHomeAfterLeague(ctx)
-                         if runner then runner:resume() end
+                         local function carryOn()
+                           Gen3Commands.goHomeAfterLeague(ctx)
+                           if runner then runner:resume() end
+                         end
+                         local okGift, Gift =
+                           pcall(require, "src.ui.Gen3MysteryGift")
+                         if okGift and Gift and Gift.offer then
+                           local okRun = pcall(Gift.offer, game, carryOn)
+                           if not okRun then carryOn() end
+                         else
+                           carryOn()
+                         end
                        end) or nil
   if not (ceremony and runner) then
     Logger.warn("gen3 game clear: no ceremony in this dataset -- the league "

@@ -170,6 +170,16 @@ function Commands.show_text(ctx, textId, subs, extraOpts)
         local value = ctx.game.stringBuffer
         return value ~= nil and tostring(value) or nil
       end
+      -- A NUMBER A SCRIPT ROUTINE JUST COMPUTED.
+      --
+      -- Prism's `deciram wTempNumber, 2, 0` prints a value a callasm left in
+      -- WRAM -- the orphanage's "I have put <n> points on your card" is one
+      -- -- and there is no string buffer behind it to fill.  A command that
+      -- produces such a value records it under the symbol's own name, and
+      -- only that name resolves: an empty table leaves every token exactly as
+      -- it is today.
+      local named = ctx.g2RamValues and ctx.g2RamValues[name]
+      if named ~= nil then return tostring(named) end
       -- everything else (wPlayerName, wRivalName, wTrendyPhrase, ...) is
       -- left untouched for TextBox.substitute to resolve
       return nil
@@ -283,9 +293,39 @@ end
 --
 -- Targeted, like g2_object's: only the objects whose own eventFlag is this
 -- flag, so no other live actor is re-derived out from under a script.
+--- ...AND ONLY WHILE THE MAP IS STILL BEING SET UP, on a Game Boy cartridge.
+---
+--- The ROM does not re-sync at all: setevent/clearevent decide what the NEXT
+--- LoadMapObjects spawns, and the Tin Tower monk appears because his callback
+--- runs DURING map setup, before the player has an input frame.  A coord
+--- trigger or an NPC's own script is a different thing entirely -- the player
+--- is standing there watching -- and re-deriving an actor under one of those
+--- swaps a sprite out mid-sentence.
+---
+--- Mom's Pokegear scene is that bug, and it is worth spelling out because it
+--- looks like nothing to do with flags.  PlayersHouse1F carries FOUR Moms: one
+--- for the scene (object 1, event 1735) and three time-of-day copies (objects
+--- 2-4, event 1736), and the DAY copy stands on the very same tile facing
+--- LEFT.  Half way through the conversation the script runs
+---
+---     setscene 1 / setevent 1735 / clearevent 1736
+---     writetext ... / yesorno ...        <- the rest of the scene
+---
+--- so the Mom who had just turned to face the player was deleted and the
+--- day copy spawned in her place, still facing the wall, for the remainder of
+--- the dialogue.  Reported as "Mom looks away while talking to me".
+---
+--- Gated on the generation rather than removed: Gen 3's map scripts reveal
+--- actors this way too and its scenes are built around it, and Gen 1 has no
+--- such object model.  A Gen 2 script that is not a map callback now does what
+--- the cartridge does -- writes the flag, and lets the next map load place the
+--- objects.
 local function syncFlagObjects(ctx, name)
   local ow = ctx.overworld
   if not (ow and ow.syncObjectVisibility and ow.map and ow.map.def) then return end
+  if not ctx.mapCallback and require("src.core.GameVersion").isGen2() then
+    return
+  end
   local objects = ow.map.def.objects
   if type(objects) ~= "table" then return end
   for _, obj in ipairs(objects) do

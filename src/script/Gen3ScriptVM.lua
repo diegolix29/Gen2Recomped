@@ -135,6 +135,9 @@ L.call_if = function(ir, s)
 end
 
 L.nop = function() end
+-- $CF hands the script context a script held in save RAM and jumps into it.
+-- This port has no mystery-gift RAM script, so there is nothing to jump to.
+L.trywondercardscript = function() end
 
 -- ------------------------------------------------------- the rest of the table
 --
@@ -556,6 +559,9 @@ L.warpdoor = warp
 L.warpteleport = warp
 L.warpmossdeepgym = warp
 L.warpwhitefade = warp
+-- $D1.  The cartridge spins the player on arrival; the destination is the
+-- same five operands every other warp carries, and the spin is cosmetic.
+L.warpspinenter = warp
 -- FALLING THROUGH A HOLE keeps your position: `warphole <group> <num>` puts
 -- you on that map at the cell you were standing on, and MAP_UNDEFINED
 -- (255, 255) means "wherever setholewarp last pointed".  Lowering it to a
@@ -726,7 +732,9 @@ L.bufferboxname = function(ir, s) emit(s, { "g3_buffer", ir[2], "box", ir[3] }) 
 L.buffertrainername = function(ir, s) emit(s, { "g3_buffer", ir[2], "trainer", ir[3] }) end
 L.buffertrainerclassname = function(ir, s) emit(s, { "g3_buffer", ir[2], "class", ir[3] }) end
 L.bufferdecorationname = function(ir, s) emit(s, { "g3_buffer", ir[2], "decoration", ir[3] }) end
-L.buffercontesttypestring = function(ir, s) emit(s, { "g3_buffer", ir[2], "contest", ir[3] }) end
+L.buffercontestname = function(ir, s) emit(s, { "g3_buffer", ir[2], "contest", ir[3] }) end
+-- the name this slot carried while the table had it one place too high
+L.buffercontesttypestring = L.buffercontestname
 -- showmonpic carries the window's tile position as well as the species, and
 -- both are needed: the cartridge puts the box where the script says.
 L.showmonpic = function(ir, s)

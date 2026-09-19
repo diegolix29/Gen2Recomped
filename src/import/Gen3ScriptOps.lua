@@ -19,19 +19,33 @@
 -- calls counted; that pins every two- and four-byte operand exactly, and it
 -- agrees with the specs below for all 228 slots.  ScriptReadByte is inlined
 -- by the compiler and leaves no call to count, so byte operands come from
--- the macro definitions instead -- and were then validated the only way that
--- really counts: disassembling every script reachable from all 518 map
--- headers (object events, both bg-event script kinds, coord events and both
--- kinds of map script), which walks 2796 roots into 6897 scripts and 50775
--- commands with ZERO desyncs.  One wrong width anywhere shows up as a run of
--- garbage opcodes within a few dozen bytes, so that number is the proof.
+-- the macro definitions instead.
+--
+-- AND "ZERO DESYNCS OVER THE CORPUS" IS NOT THE PROOF IT LOOKS LIKE.  That
+-- claim stood here, and the tail of the table was wrong anyway: $E0 is
+-- warpwhitefade, `bbbww`, and it had been called bufferitemnameplural,
+-- `bww` -- two bytes short.  A two-byte slip does not print garbage.  It
+-- lands on a plausible opcode and keeps going, and the run it produces is
+-- valid-looking bytecode, so a desync counter that only looks for nonsense
+-- never sees it.  What it produced instead was Sootopolis: the Rayquaza
+-- scene's own `warpwhitefade MAP_SOOTOPOLIS_CITY, 43, 32` vanished, the
+-- decode walked off the end of the script and re-entered the NEXT one, and
+-- the cutscene came out with a second copy of itself glued on, no warp to
+-- put the player back in front of the Pokemon Center, and no way to reach
+-- the `end` that would have released the controls.
+--
+-- So the tail is now pret's `gScriptCmdTable`, slot for slot, $C7-$E2 --
+-- checked against it rather than reasoned out from handler call shapes.  The
+-- two that had been guessed from those shapes were each one slot off: $D1 is
+-- warpspinenter and $D7 is warpmossdeepgym, and warpwhitefade is neither.
+-- All three are `bbbww` and all three lower to a warp, which is why that
+-- particular mistake cost nothing and hid for as long as it did.
 --
 -- $D1-$E2 deserve a note.  Those handlers are not laid out in table order in
--- scrcmd.c, so their names could not simply be read off a source listing;
--- they were identified by what each handler calls.  $D1 and $D7 have the
--- exact call shape of $39 `warp` (two halfword reads, then the same
--- SetWarpDestination/DoWarp pair), and warpmossdeepgym and warpwhitefade are
--- the only two warp commands left unaccounted for, so those two are they.
+-- scrcmd.c, so their names cannot simply be read off a source listing.  $D1,
+-- $D7 and $E0 all have the exact call shape of $39 `warp` (two halfword
+-- reads, then the same SetWarpDestination/DoWarp pair) -- which is THREE, not
+-- the two that were assumed, and the third is what the old table lost.
 -- $D3-$D6 call into the rotating-tile-puzzle module at 0x1A89xx and appear
 -- exactly nine times each across the corpus -- one init, move, turn and free
 -- per rotating-tile puzzle: five in the Mossdeep Gym and four in the Trick
@@ -47,7 +61,9 @@
 -- (TurnRotatingTileObjects); [$D5] reads a halfword and calls 01A8934
 -- (InitRotatingTilePuzzle); [$D6] takes nothing and calls 01A895C.  $DA sits
 -- immediately after ScrCmd_braillemessage in the binary and takes no operand,
--- which is closebraillemessage.
+-- which is closebraillemessage.  Everything from $C7 up now simply follows
+-- pret's table order, which is the one authority that settles all of them at
+-- once.
 --
 -- Spec letters:
 --   b  one byte    w  two byte little-endian value    d  four byte value
@@ -118,17 +134,26 @@ Gen3ScriptOps.COMMANDS = {
   { "vgoto_if", "bd" }, { "vcall_if", "bd" }, { "vmessage", "d" }, { "vbuffermessage", "d" },
   { "vbufferstring", "bd" }, { "showcoinsbox", "bb" }, { "hidecoinsbox", "bb" },
   { "updatecoinsbox", "bb" }, { "incrementgamestat", "b" }, { "setescapewarp", "bbbww" },
-  { "waitmoncry", "" }, { "bufferboxname", "bw" }, { "textcolor", "b" },
-  { "loadhelp", "d" }, { "unloadhelp", "" }, { "signmsg", "" }, { "normalmsg", "" },
-  { "comparehiddenvar", "bd" }, { "setmonobedient", "w" }, { "checkmonobedience", "w" },
-  { "execram", "" }, { "setmonmetlocation", "wb" }, { "warpmossdeepgym", "bbbww" },
-  { "buffertrainerclassname", "bw" }, { "moverotatingtileobjects", "w" },
-  { "turnrotatingtileobjects", "" }, { "initrotatingtilepuzzle", "w" },
-  { "freerotatingtilepuzzle", "" }, { "warpwhitefade", "bbbww" }, { "selectapproachingtrainer", "" },
+  { "waitmoncry", "" }, { "bufferboxname", "bw" },
+  -- $C7-$CC and $D0 are the seven slots Emerald fills with ScrCmd_nop1.  They
+  -- take NO OPERAND.  Naming them after the FireRed commands that occupy the
+  -- same indices there -- textcolor, loadhelp, comparehiddenvar,
+  -- setmonmetlocation -- and giving them FireRed's operand widths was wrong
+  -- twice over: Emerald's handler reads nothing and its interpreter steps one
+  -- byte past them, and the names pushed every later slot out of place.
+  { "nop1", "" }, { "nop1", "" }, { "nop1", "" }, { "nop1", "" },
+  { "nop1", "" }, { "nop1", "" },
+  { "setmodernfatefulencounter", "w" }, { "checkmodernfatefulencounter", "w" },
+  { "trywondercardscript", "" }, { "nop1", "" },
+  { "warpspinenter", "bbbww" }, { "setmonmetlocation", "wb" },
+  { "moverotatingtileobjects", "w" }, { "turnrotatingtileobjects", "" },
+  { "initrotatingtilepuzzle", "w" }, { "freerotatingtilepuzzle", "" },
+  { "warpmossdeepgym", "bbbww" }, { "selectapproachingtrainer", "" },
   { "lockfortrainer", "" }, { "closebraillemessage", "" }, { "messageinstant", "d" },
-  { "fadescreenswapbuffers", "b" }, { "buffertrainername", "bw" }, { "buffercontesttypestring", "bw" },
-  { "pokenavcall", "d" }, { "bufferitemnameplural", "bww" }, { "setmodernfatefulencounter", "w" },
-  { "checkmodernfatefulencounter", "ww" }, { "nop_e3", "" },
+  { "fadescreenswapbuffers", "b" }, { "buffertrainerclassname", "bw" },
+  { "buffertrainername", "bw" }, { "pokenavcall", "d" },
+  { "warpwhitefade", "bbbww" }, { "buffercontestname", "bw" },
+  { "bufferitemnameplural", "bww" }, { "nop_e3", "" },
 }
 
 -- trainerbattle ($5C) is the one variable-length command: the byte after the
@@ -258,7 +283,10 @@ Gen3ScriptOps.TERMINATORS = {
   [0x5E] = true,  -- gotopostbattlescript
   [0x5F] = true,  -- gotobeatenscript
   [0xB9] = true,  -- vgoto
-  [0xCF] = true,  -- execram
+  -- trywondercardscript hands the context a script in SAVE RAM and jumps to
+  -- it.  Nothing after it in the cartridge is reachable by a static walk, so
+  -- the disassembler stops here for the same reason it stops on a `goto`.
+  [0xCF] = true,  -- trywondercardscript
 }
 
 -- A warp does not end a script, it YIELDS: the handler returns "stop for this
@@ -273,8 +301,9 @@ Gen3ScriptOps.WARP_YIELD = {
   [0x3B] = true,  -- warpdoor
   [0x3C] = true,  -- warphole
   [0x3D] = true,  -- warpteleport
-  [0xD1] = true,  -- warpmossdeepgym
-  [0xD7] = true,  -- warpwhitefade
+  [0xD1] = true,  -- warpspinenter
+  [0xD7] = true,  -- warpmossdeepgym
+  [0xE0] = true,  -- warpwhitefade
 }
 
 -- Map-script table types.  `mapScripts` is a flat list of `u8 type, u32 ptr`

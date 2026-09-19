@@ -41,9 +41,17 @@
 -- WHAT DOES NOT: HOW LONG EACH SCREEN HOLDS, and how the Pokemon move across
 -- it.  Each step is its own C function counting its own frames, and none of
 -- that is data.  So the hold below is this port's, one number for every
--- screen, and the sprites are placed rather than choreographed.  The scene
--- plays the cartridge's pictures in the cartridge's order for the cartridge's
--- two halves; it does not claim to be frame-accurate inside a screen.
+-- screen.  The scene plays the cartridge's pictures in the cartridge's order
+-- for the cartridge's two halves; it does not claim to be frame-accurate
+-- inside a screen.
+--
+-- WHERE THE PIECES SIT IS NOT A GUESS ANY MORE.  It was -- "the biggest sheet
+-- in the middle" -- and that is not a layout, it is a coin toss that Groudon
+-- won and Kyogre lost.  See COMPOSITION below: the duo fight and the descent
+-- are now laid out at the cartridge's own CreateSprite coordinates.  The
+-- take-off smoke and the chase-away finale are not, because their C functions
+-- spread sprites from tables this port has not read yet, and those two
+-- screens still fall back to the old single sheet.
 local Assets = require("src.render.Assets")
 
 local Gen3Cutscene = {}
@@ -55,6 +63,139 @@ local GBA_W, GBA_H = 240, 160
 local HOLD = 150               -- frames a screen is up for
 local FADE = 20                -- ...of which the first and last are a fade
 local SPRITE_HOLD = 8          -- frames per frame of a Pokemon's animation
+
+-- WHERE EACH PIECE GOES, AND WHICH PIECE IT IS.  READ OFF THE CARTRIDGE.
+--
+-- A Pokemon on these screens is not one sprite.  Groudon is two 64x64 halves
+-- with a shoulder and a claw over them; Kyogre is NINE 32x16 tiles in a grid
+-- plus two fins.  The hardware builds each out of OAM entries at fixed
+-- coordinates and animates only some of them.  Drawing "the biggest sheet,
+-- centred" -- which is what this did -- drew a chunk of Groudon and nothing
+-- else, and Kyogre, whose tiles are eight times smaller, never appeared at
+-- all.  On the finale it drew Groudon alone in the middle of the screen with
+-- his legs off the bottom of his own frame.
+--
+-- EVERY NUMBER BELOW IS THE CARTRIDGE'S.  The scene's step table at $62A6A0
+-- names six screens and a teardown; each step was disassembled and its
+-- `bl CreateSprite` ($006DF4) calls read for the template pointer in r0 and
+-- the x, y and subpriority in r1, r2, r3.  Each template's own OAM gives the
+-- frame size and its anim table gives the image list -- as TILE offsets,
+-- divided here by the frame's tile count, because a tile offset means nothing
+-- to a quad.  Forty CreateSprite calls in the scene; they are all here.
+--
+--   * `x` and `y` are CreateSprite's arguments, which are the sprite's
+--     CENTRE, not its corner -- the hardware adds centerToCornerVec itself.
+--   * `sub` is the subpriority: LOWER IS NEARER, so the draw runs downward.
+--   * `images` is the anim's own image list.  Groudon's body reads
+--     FRAME(192), FRAME(256), FRAME(320), FRAME(256), and a 64x64 image is
+--     64 tiles, so it is images 3, 4, 5, 4.
+--   * `hold` is that anim's own frame count, which differs per part and
+--     between the two halves of the duo fight: 30 frames before the Sky
+--     Pillar, 20 after.
+--   * `to` is NOT the cartridge's.  Three sprites are created off the top of
+--     the screen and flown in by a sprite callback -- Rayquaza's descent at
+--     (160, 0), and his head and tail in the finale at y -65 and -113.  A
+--     callback is code, not data, so `to` is this port's own straight run;
+--     without it those three hang off the edge where they were made.
+--
+-- Keyed by the screen and then by the sprite's TAG, which is what the
+-- extractor records and what the cartridge keys its sheets by.
+--
+-- The duo fight is laid out TWICE because the cartridge lays it out twice:
+-- steps 0 and 1 are the same art at coordinates ten pixels apart, holding 30
+-- frames against 20.  The early half plays step 0 and stops; the half after
+-- the Sky Pillar starts at step 1.
+local COMPOSITION = {
+  -- step 0: the duo fight, before the Sky Pillar
+  cloudsPre = {
+    [30505] = {
+      { images = { 0, 1, 2, 1 }, hold = 30, x = 88, y = 72,  sub = 3 },
+      { images = { 3, 4, 5, 4 }, hold = 30, x = 56, y = 104, sub = 3 },
+    },
+    [30506] = { { images = { 0 }, x = 75,  y = 101, sub = 0 } },
+    [30507] = { { images = { 0 }, x = 109, y = 114, sub = 1 } },
+    [30508] = {
+      { images = { 0 }, x = 136, y = 96,  sub = 1 },
+      { images = { 1 }, x = 168, y = 96,  sub = 1 },
+      { images = { 2 }, x = 136, y = 112, sub = 1 },
+      { images = { 3 }, x = 168, y = 112, sub = 1 },
+      { images = { 4 }, x = 136, y = 128, sub = 1 },
+      { images = { 5 }, x = 168, y = 128, sub = 1 },
+      { images = { 6, 8, 10, 8 },    hold = 36, x = 104, y = 128, sub = 2 },
+      { images = { 7, 9, 11, 9 },    hold = 36, x = 136, y = 128, sub = 2 },
+      { images = { 12, 13, 14, 13 }, hold = 36, x = 184, y = 128, sub = 0 },
+    },
+    [30509] = { { images = { 0, 1, 2, 1 }, hold = 36, x = 208, y = 132, sub = 0 } },
+    [30510] = { { images = { 0 }, x = 200, y = 120, sub = 1 } },
+  },
+  -- step 1: the same fight, after the Sky Pillar
+  clouds = {
+    [30505] = {
+      { images = { 0, 1, 2, 1 }, hold = 20, x = 98, y = 72,  sub = 3 },
+      { images = { 3, 4, 5, 4 }, hold = 20, x = 66, y = 104, sub = 3 },
+    },
+    [30506] = { { images = { 0 }, x = 85,  y = 101, sub = 0 } },
+    [30507] = { { images = { 0 }, x = 119, y = 114, sub = 1 } },
+    [30508] = {
+      { images = { 0 }, x = 126, y = 96,  sub = 1 },
+      { images = { 1 }, x = 158, y = 96,  sub = 1 },
+      { images = { 2 }, x = 126, y = 112, sub = 1 },
+      { images = { 3 }, x = 158, y = 112, sub = 1 },
+      { images = { 4 }, x = 126, y = 128, sub = 1 },
+      { images = { 5 }, x = 158, y = 128, sub = 1 },
+      { images = { 6, 8, 10, 8 },    hold = 24, x = 94,  y = 128, sub = 2 },
+      { images = { 7, 9, 11, 9 },    hold = 24, x = 126, y = 128, sub = 2 },
+      { images = { 12, 13, 14, 13 }, hold = 24, x = 174, y = 128, sub = 0 },
+    },
+    [30509] = { { images = { 0, 1, 2, 1 }, hold = 24, x = 198, y = 132, sub = 0 } },
+    [30510] = { { images = { 0 }, x = 190, y = 120, sub = 1 } },
+  },
+  -- step 2: the smoke Rayquaza leaves taking off.  The cartridge spreads
+  -- several of these from a coordinate table scaled by four about (120, 80);
+  -- that table is the one piece of this scene still unread, so one puff sits
+  -- at its origin.
+  storm = {
+    [30555] = { { images = { 0 }, x = 120, y = 80, sub = 0 } },
+  },
+  -- step 3: the descent.  Tag 30557 is Rayquaza's TAIL -- the cartridge loads
+  -- its sheet (record $0862AB04, 512 bytes) and the extractor's loader walk
+  -- does not find it, so the entry below waits on a sheet the record does not
+  -- carry yet and draws nothing until it does.
+  chase = {
+    [30556] = { { images = { 0, 1 }, hold = 32, x = 160, y = 0,
+                  sub = 0, to = { x = 110, y = 108 } } },
+    [30557] = { { images = { 0, 1 }, hold = 32, x = 184, y = -48,
+                  sub = 0, to = { x = 134, y = 60 } } },
+  },
+  -- step 5: the finale.  Groudon bottom left with his tail, Kyogre in three
+  -- tiles along the bottom right, Rayquaza down the middle from off the top,
+  -- and a splash under each of the two that are leaving.
+  light = {
+    [30565] = { { images = { 0 }, x = 64, y = 120, sub = 0 } },
+    [30566] = { { images = { 0 }, x = 16, y = 130, sub = 0 } },
+    [30568] = {
+      { images = { 0 }, x = 160, y = 128, sub = 1 },
+      { images = { 1 }, x = 192, y = 128, sub = 1 },
+      { images = { 2 }, x = 224, y = 128, sub = 1 },
+    },
+    [30569] = { { images = { 0 }, x = 120, y = -65,
+                  sub = 0, to = { x = 120, y = 60 } } },
+    [30570] = { { images = { 0 }, x = 120, y = -113,
+                  sub = 0, to = { x = 120, y = 12 } } },
+    [30571] = {
+      { images = { 0, 1, 2, 3, 4, 5 }, hold = 8, x = 152, y = 132, sub = 0 },
+      { images = { 0, 1, 2, 3, 4, 5 }, hold = 8, x = 224, y = 132, sub = 0 },
+    },
+  },
+}
+
+-- Which layout a screen gets.  The duo fight is the only screen that appears
+-- twice, and the early half is always its first appearance.
+function Gen3Cutscene:layoutFor(scene)
+  local key = scene and scene.key
+  if key == "clouds" and (tonumber(self.part) or 0) == 0 then key = "cloudsPre" end
+  return COMPOSITION[key] or {}
+end
 
 function Gen3Cutscene:uiSize() return GBA_W, GBA_H end
 function Gen3Cutscene:wantsFillScale() return true end
@@ -165,46 +306,114 @@ function Gen3Cutscene:draw()
   local layers = {}
   for _, layer in ipairs(scene.layers or {}) do layers[#layers + 1] = layer end
   table.sort(layers, function(a, b) return (a.bg or 0) > (b.bg or 0) end)
+  -- A LAYER IS A SCREEN BLOCK, AND A SCREEN BLOCK HAS AN ORIGIN.
+  --
+  -- Every one of these comes off the cartridge 256x256: that is the size of a
+  -- GBA text background's tilemap, 32x32 tiles, and it has nothing to do with
+  -- where the picture sits.  What the hardware shows is the 240x160 window at
+  -- the background's own scroll, and each of these scenes is installed with
+  -- that scroll at zero -- so the visible picture is the TOP-LEFT 240x160 of
+  -- the block.
+  --
+  -- Centring it instead put the window at (-8, -48).  Forty-eight rows down
+  -- the tilemap is past the end of the art and simply empty, so every screen
+  -- came out shifted eight pixels sideways with a black band along the bottom
+  -- -- which is exactly what the scene looked like in play: "the graphics
+  -- arent correct ... not filling the screen".
+  --
+  -- Clipped, because a block is 256 wide and the screen is 240: without this
+  -- the right-hand 16 columns of the tilemap -- the wrap the hardware never
+  -- shows -- spill over whatever the frame draws next.
+  g.setScissor(0, 0, GBA_W, GBA_H)
   for _, layer in ipairs(layers) do
     local ok, img = pcall(Assets.image, layer.image)
     if ok and img and img.getWidth then
       g.setColor(1, 1, 1, alpha)
-      -- the layer is a 256x256 screen block and the screen is 240x160: it is
-      -- centred, which is where the hardware's own scroll leaves it
-      g.draw(img, math.floor((GBA_W - img:getWidth()) / 2),
-             math.floor((GBA_H - img:getHeight()) / 2))
+      g.draw(img, 0, 0)
     end
   end
+  g.setScissor()
 
-  -- ...and the Pokemon on it.  Placed, not choreographed -- the biggest sheet
-  -- in the middle and anything else beside it -- because where each one flies
-  -- is its own C function and not data.
-  local sprites = {}
-  for _, s in ipairs(scene.sprites or {}) do sprites[#sprites + 1] = s end
-  table.sort(sprites, function(a, b)
-    return (a.width or 0) * (a.height or 0) > (b.width or 0) * (b.height or 0)
-  end)
-  local biggest = sprites[1]
-  if biggest then
-    local ok, img = pcall(Assets.image, biggest.image)
-    if ok and img and img.getWidth then
-      local w = biggest.width or img:getWidth()
-      local h = biggest.height or img:getHeight()
-      local frames = math.max(1, biggest.frames or 1)
-      local index = math.floor(self.frame / SPRITE_HOLD) % frames
-      self.quads = self.quads or {}
-      local key = tostring(biggest.image) .. ":" .. index
-      local quad = self.quads[key]
-      if not quad then
-        quad = g.newQuad(index * w, 0, w, h, img:getWidth(), img:getHeight())
-        self.quads[key] = quad
+  -- ...and the Pokemon on it, assembled out of their pieces.
+  local layout = self:layoutFor(scene)
+  local parts = {}
+  for _, s in ipairs(scene.sprites or {}) do
+    for _, place in ipairs(layout[s.tag] or {}) do
+      parts[#parts + 1] = { sprite = s, place = place, seq = #parts }
+    end
+  end
+  if #parts > 0 then
+    -- back to front: subpriority counts DOWN towards the viewer, and
+    -- table.sort is not stable, so ties fall back on creation order -- which
+    -- is the order the cartridge's own CreateSprite calls run in.
+    table.sort(parts, function(a, b)
+      if a.place.sub ~= b.place.sub then return a.place.sub > b.place.sub end
+      return a.seq < b.seq
+    end)
+    for _, part in ipairs(parts) do
+      self:drawPart(part.sprite, part.place, alpha)
+    end
+  else
+    -- A SCREEN WHOSE LAYOUT IS NOT IN THE TABLE still shows something.  The
+    -- chase-away finale spreads Groudon, Kyogre and Rayquaza over the screen
+    -- from a C function this port has not read, so until it does, that screen
+    -- gets what it always got: the biggest sheet, in the middle.
+    local biggest
+    for _, s in ipairs(scene.sprites or {}) do
+      local area = (s.width or 0) * (s.height or 0)
+      if not biggest or area > (biggest.width or 0) * (biggest.height or 0) then
+        biggest = s
       end
-      g.setColor(1, 1, 1, alpha)
-      g.draw(img, quad, math.floor((GBA_W - w) / 2),
-             math.floor((GBA_H - h) / 2))
+    end
+    if biggest then
+      self:drawPart(biggest, nil, alpha)
     end
   end
   g.setColor(1, 1, 1, 1)
+end
+
+-- One OAM entry's worth of a Pokemon.  `place` nil means the fallback: the
+-- sheet's own animation, centred.
+function Gen3Cutscene:drawPart(sprite, place, alpha)
+  local g = love.graphics
+  local ok, img = pcall(Assets.image, sprite.image)
+  if not (ok and img and img.getWidth) then return end
+  local w = sprite.width or img:getWidth()
+  local h = sprite.height or img:getHeight()
+  local frames = math.max(1, sprite.frames or 1)
+
+  local index, x, y
+  if place then
+    local seq = place.images
+    local step = math.floor(self.frame / (place.hold or SPRITE_HOLD)) % #seq
+    index = seq[step + 1]
+    -- a sheet that came out of the cartridge short must not read past its end
+    if index >= frames then index = frames - 1 end
+    local cx, cy = place.x, place.y
+    if place.to then
+      -- eased so the arrival settles rather than stopping dead
+      local p = math.min(1, math.max(0, self.frame / HOLD))
+      p = p * p * (3 - 2 * p)
+      cx = cx + (place.to.x - cx) * p
+      cy = cy + (place.to.y - cy) * p
+    end
+    x = math.floor(cx - w / 2)
+    y = math.floor(cy - h / 2)
+  else
+    index = math.floor(self.frame / SPRITE_HOLD) % frames
+    x = math.floor((GBA_W - w) / 2)
+    y = math.floor((GBA_H - h) / 2)
+  end
+
+  self.quads = self.quads or {}
+  local key = tostring(sprite.image) .. ":" .. index
+  local quad = self.quads[key]
+  if not quad then
+    quad = g.newQuad(index * w, 0, w, h, img:getWidth(), img:getHeight())
+    self.quads[key] = quad
+  end
+  g.setColor(1, 1, 1, alpha)
+  g.draw(img, quad, x, y)
 end
 
 return Gen3Cutscene

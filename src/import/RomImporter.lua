@@ -996,7 +996,102 @@ end
 -- (Groudon's 31, Kyogre's 47) that each handler animates through a table at
 -- $0D85CD0 -- black, blue, purple, magenta, RED -- so the markings are composed
 -- as their own mask and wear that colour at run time.
-local CACHE_FORMAT = "rom-cache-v309:"
+-- v310: EMERALD'S SCRIPT TABLE HAD THE WRONG TAIL.  Opcodes $C7-$E2 were named
+-- and sized from FireRed's table and from guesses at what each handler calls,
+-- and pret's gScriptCmdTable disagrees with fourteen of those slots.  Most of
+-- the disagreements were names only -- $D1 is warpspinenter and $D7 is
+-- warpmossdeepgym, both `bbbww`, both lowering to a warp -- but $E0 is
+-- warpwhitefade, `bbbww`, and it had been bufferitemnameplural, `bww`.  Two
+-- bytes short, twice, in Sootopolis City.  The Rayquaza scene's own
+-- `warpwhitefade MAP_SOOTOPOLIS_CITY, 43, 32` disappeared, the decode ran off
+-- the end of the script and straight into the next one, and the scene came
+-- out with a whole second copy of itself attached: Rayquaza descended twice,
+-- the player was never warped back in front of the Pokemon Center, and the
+-- `end` that would have handed the controls back was on the far side of the
+-- damage.  $C7-$CC and $D0 are ScrCmd_nop1 and take no operand at all.
+-- v311: A CUTSCENE BACKGROUND WITH NO TILES OF ITS OWN IS NOT A FREE GUESS.
+-- The Rayquaza scene's layer pass fell back to "whichever character block the
+-- scene did load" for a BG that had a tilemap and no tiles, scanning BG0
+-- upwards.  Which block a background really reads is in its BGCNT register,
+-- which that walk does not decode, so the fallback is a guess -- and it is
+-- only a safe one when the scene loaded exactly one block.  Rayquaza's charge
+-- loads several: BG0 borrowed BG1's, which is Rayquaza's own sheet, and the
+-- screen came out with chunks of him scattered over himself in tidy 8x8
+-- blocks that look for all the world like corruption.  An unresolvable
+-- background is now left out instead.
+-- v312: ...AND THE LAYER THAT FIX TOOK OUT WAS NEEDED.  Leaving out every
+-- unresolvable background dropped three, and two of them were real: the
+-- chase's sky and the chase-away's backdrop, which is why Rayquaza came down
+-- against black instead of through the hole in the clouds.  A shared
+-- character block is what a BACKDROP is drawn from, so the inference is now
+-- checked against what it draws rather than refused outright -- the two real
+-- ones paint 712 and 1024 cells of 1024, the wrong one paints 78.
+-- v313: ...AND COUNT PIXELS, NOT CELLS.  The v312 check kept a borrowed
+-- background if it touched half the 8x8 grid, and debris composed from the
+-- wrong sheet is precisely the thing that touches most of the grid while
+-- filling none of it: the chase's BG3 scored 712 cells of 1024 on 17% of the
+-- pixels, passed, and sat as a checkered band across Rayquaza's descent.  By
+-- pixels the scene's three borrowed layers are 17%, 5% and 100%.
+-- v314b: ...AND HIS TAIL WAS DROPPED ON THE WAY OUT OF THE CARTRIDGE.  A
+-- CompressedSpriteSheet's `size` is the VRAM it is given and the load copies
+-- exactly that: short blobs are zero filled, LONG ones are cut off.  Only the
+-- short case was handled, so tag 30557 -- 512 bytes of VRAM, two 16x32
+-- frames, decompressing to 1100 -- sized itself at 34 tiles, divided by
+-- nothing, fitted no shape and was skipped; Rayquaza came down the descent
+-- with no tail.  Six of this scene's sprites also borrow their owner's
+-- palette rather than naming one under their own tag, which is now read off
+-- the template instead of landing on a fallback.
+-- v314: RAYQUAZA HAS FOUR FACINGS AND WAS EXTRACTED AS ONE STILL.  The
+-- object-event facing test wants three DISTINCT standing pictures and an east
+-- mirrored from the west; graphics row 207 has neither -- all three of his
+-- stands are the same coil, and his east is drawn.  So he came out
+-- `frames = 1, walker = false` and the Sky Pillar flew him away without ever
+-- reaching image 4, the one where he is uncoiled and climbing.  A second pass
+-- accepts the twelve-slot layout when its four standing anims are
+-- single-frame; over all 246 rows that admits exactly one the first pass
+-- turns away, and it is him.
+-- v315: PRISM'S BERRY TREES HANDED OUT NOTHING, because FruitTreeItems was
+-- being cut in half.  The table is 18 apricorn trees then 11 berry trees, and
+-- it marks the seam with `EndApricornTrees:` -- a label that exists only so
+-- CheckFruitTree can tell one kind from the other.  Bounding the table at
+-- "the next symbol in the bank" stopped there, so trees 19-29 had no item and
+-- every berry tree in the game said "It's a fruit-bearing tree." forever.
+-- Labels naming the END of a run are no longer treated as boundaries.
+-- v316: PRISM COULD NOT LEARN A SINGLE TM OR HM.  Its base_stats rows are 24
+-- bytes, so the 8-byte learnset bitfield Crystal keeps at offset 25 is simply
+-- not there -- every species came out with an EMPTY tmhm list and the bag
+-- refused Cut, Surf, Strength and all 96 TMs.  Prism keeps them in a table of
+-- its own instead (TMHMLearnsets, 13 bytes per species), which is what its
+-- CanLearnTMHMMove copies into wCurBaseData.  Read from there when the ROM
+-- has that symbol.  TMHMMoves is also walked to its own zero terminator now,
+-- so Prism's 101 machines no longer gain three imaginary tutor slots.
+-- v317: THE POKEMON ORPHANAGE'S ADOPTION SCRIPT DESYNCED ON ITS OWN OPERAND.
+-- CheckOrphanPointsFromScript and TakeOrphanPointsFromScript read a halfword
+-- out of the script stream themselves (LoadCoinAmountToMem ->
+-- GetScriptHalfwordOrVar), so the `dw -1` after each callasm is the routine's
+-- operand and not bytecode.  Walked as bytecode the decode stopped there and
+-- everything after it -- the party-space check, the confirmation, the givepoke
+-- -- was lost.  Also: menu option strings now decode as plain PlaceString
+-- glyphs, which is what the adoption LIST itself was failing on.
+-- v318: PRISM'S PACHISI BOARD IS NOW IN THE CACHE.  The whole minigame is four
+-- flat byte tables -- the tile at each board position, the step that leaves
+-- it, sixteen species per habitat and sixty-four items -- which nothing ever
+-- extracted, so the five `callasm` routines that read them had nothing to
+-- read.  field.gen2Pachisi carries them, bounded by the End symbols the source
+-- declares.  Verified by walking the real tables: the section terminators sit
+-- exactly one square before each warp destination the script writes back.
+-- v319: THE FLY LIST OFFERED THE PLAYER'S BEDROOM.  A spawn interior shares its
+-- LANDMARK with the town it stands in -- PLAYERS_HOUSE2_F is landmark 1 with
+-- NEW_BARK_TOWN, VIRIDIAN_POKECENTER1_F is landmark 49 with VIRIDIAN_CITY --
+-- so the Fly cursor, which walks landmarks, listed "NEW BARK TOWN" twice and
+-- the second one dropped the player in their bedroom.  gen2FlyWarps meant to
+-- exclude interiors and asked the wrong question: its Pokemon Center test was
+-- `tileset == 6`, and id 6 is TilesetPlayersHouse in Crystal, so it caught the
+-- player's house, Elm's, Red's and the Copycat's and no Center at all.  Now
+-- the Center test reads the tileset NAME off the map def, and a Fly
+-- destination additionally has to be a TOWN or a ROUTE -- FlyFromAnim's own
+-- rule, and the same one EnterMapWarp.SetSpawn makes on the other side.
+local CACHE_FORMAT = "rom-cache-v319:"
 -- The completion marker is written under each version's cache prefix
 -- (rom-cache.complete for Red, blue/rom-cache.complete for Blue).
 local MARKER_PATH = "rom-cache.complete"

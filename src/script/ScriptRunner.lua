@@ -141,6 +141,28 @@ function ScriptRunner:run(script, extra)
         Gen3Commands.restoreFade(ctx)
       end
     end
+    -- ...AND A SCRIPT THAT TOOK THE PLAYER'S CONTROLS AND ENDED HOLDING THEM.
+    --
+    -- `lock`/`lockall` freezes the player and every object on the map, and
+    -- the script is meant to give them back with `release`/`releaseall`
+    -- before it ends.  A script that stops early -- a wait that is never
+    -- answered, a branch that could not resolve, an error swallowed by a
+    -- pcall -- ends still holding them, and the player is left standing in a
+    -- world that will not respond.  From the outside that is indistinguishable
+    -- from a freeze, which is how it gets reported: "i cant move anywhere".
+    --
+    -- Not repaired here, deliberately.  Ending locked is legitimate when a
+    -- script hands straight over to another that will do the releasing -- a
+    -- cutscene continued by an ON_FRAME row is the common shape -- so
+    -- releasing on its behalf would let the player walk through the middle of
+    -- a scene.  What is always worth knowing is WHERE it stopped, and
+    -- `lastRow` has carried that all along.
+    if ctx.g3Locked then
+      local map = ctx.overworld and ctx.overworld.map
+      Logger.warn("script: ended with the player still locked -- last row was "
+                  .. "%s, on map %s.  If the controls are dead, this is why.",
+                  tostring(self.lastRow), tostring(map and map.id))
+    end
     if ctx.onDone then ctx.onDone() end
     if Runtime.wants("script.ended") then
       Runtime.emit("script.ended", { ctx = ctx, completed = true })

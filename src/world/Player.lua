@@ -372,6 +372,33 @@ function Player:turnWindow()
 end
 
 -- Attempt to start a step; returns "moved"|"turned"|"blocked"|nil.
+-- WOULD THIS PRESS BE A STEP, or only a turn on the spot?
+--
+-- The field handlers that run BEFORE tryMove -- the ledge hop, the boulder,
+-- the rotating gates -- all act on "the player is trying to walk into this
+-- cell".  But a press is not always a step: pressing a direction you are not
+-- already facing turns you in place and costs the turn window, and a press
+-- inside that window does nothing at all.  tryMove knows this and returns
+-- "turned" or nil; a handler that ran first does not, and has already acted.
+--
+-- Reported from play, of Fortree Gym: the gates were "sometimes turnning too
+-- much or incorrectly", and separately "when i walk into one it moves but
+-- doesnt move my player".  Those are one bug seen twice.  Walk up to a gate
+-- facing along the wall and press into it: the gate is pushed, and then
+-- tryMove turns you on the spot instead of stepping.  Press again -- the push
+-- lands a SECOND time and the gate has gone half a turn for one crossing.
+--
+-- Deliberately beside tryMove and not copied into the callers: these are its
+-- own early-outs and the two must not drift.  It only ASKS -- tryMove is
+-- where facing, turnArmed and turnTimer are written, and a predicate that
+-- moved them would consume the turn it was asked about.
+function Player:stepWouldStart(dir)
+  if self.moving or self.inputLocked then return false end
+  if self.facing ~= dir and self.turnArmed then return false end
+  if (self.turnTimer or 0) > 0 then return false end
+  return true
+end
+
 function Player:tryMove(dir, map, entities)
   if self.moving or self.inputLocked then return nil end
   if self.facing ~= dir then

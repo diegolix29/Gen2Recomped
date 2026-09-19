@@ -465,6 +465,14 @@ function Map.new(def, tilesetDef)
   -- case: its beams are drawn by those rows, so the puzzle could be watched
   -- and not walked through.
   self.collisionPatch = {}
+  -- ...AND THE THIRD THING A CELL CARRIES.  A Gen 3 cell is a metatile, a
+  -- collision bit and an ELEVATION, and until now only the first two could be
+  -- changed at run time.  `setmaplayoutindex` swaps the whole map for an
+  -- alternate one, and two layouts may differ in any of the three, so all
+  -- three need somewhere to go.  (Sootopolis's pair happens to differ in the
+  -- first two only -- its rock platforms stay at the water's own elevation
+  -- and are fenced off by collision instead.)
+  self.elevationPatch = {}
   -- ...and the same answer keyed by COORDINATE rather than by a computed
   -- index.  See Map:setBlock: the index form depends on writer and reader
   -- agreeing about def.width, and a cell a script shut must not be able to
@@ -671,7 +679,10 @@ function Map:cellElevation(cx, cy)
   if cx < 0 or cy < 0 or cx >= self.widthCells or cy >= self.heightCells then
     return nil
   end
-  return cells[cy * self.def.width + cx + 1] or 0
+  local i = cy * self.def.width + cx + 1
+  local patched = self.elevationPatch and self.elevationPatch[i]
+  if patched ~= nil then return patched end
+  return cells[i] or 0
 end
 
 local ELEVATION_ANY, ELEVATION_UNDER_BRIDGE = 0, 15
@@ -917,9 +928,65 @@ function Map:clearBlockPatches()
   end
   self.blockPatch = {}
   self.collisionPatch = {}
+  self.elevationPatch = {}
   self.shutCells = {}
   self.blocksDirty = nil
   return true
+end
+
+-- SWAP THE MAP FOR ITS ALTERNATE ONE.  `setmaplayoutindex`.
+--
+-- A Gen 3 map header names a layout, and a script can name a different one:
+-- the same place, redrawn.  Hoenn uses it for the few maps that change shape
+-- with the story, and Sootopolis is the one that shows -- while Groudon and
+-- Kyogre are in the lake, layout 357 puts two rock platforms under the gym
+-- for them to stand on, and the header's layout 8 is open water there.
+--
+-- Reported from play: "the islands dont appear when i first fly there ...
+-- the ones that groudon and kyogre are supposed to be on".  The command was
+-- lowered, it reached a handler, and the handler wrote `gen3LayoutOverride`
+-- on the map -- which NOTHING IN THE ENGINE EVER READ.  Recorded faithfully
+-- and ignored, like `setobjectxyperm` before it.
+--
+-- Done as a bulk patch rather than by swapping the def, deliberately.  The
+-- def is shared -- one table per map for the whole process -- so editing it
+-- would leak the alternate layout into every later visit, and there is no
+-- command that puts it back: the cartridge reloads the header's layout on
+-- every map load and lets ON_TRANSITION override it again.  A patch lives on
+-- the Map, which is rebuilt on entry, so the same thing falls out for free.
+--
+-- Only differing cells are touched, so a map whose script names the layout it
+-- already has costs one comparison per cell and changes nothing.
+function Map:applyGen3Layout(layout)
+  if not (layout and self.def) then return 0 end
+  local w, h = self.def.width or 0, self.def.height or 0
+  if (layout.width or 0) ~= w or (layout.height or 0) ~= h then
+    return nil, ("layout %s is %sx%s, this map is %dx%d")
+      :format(tostring(layout.id), tostring(layout.width),
+              tostring(layout.height), w, h)
+  end
+  local want = Map.blockArray(layout)
+  local have = Map.blockArray(self.def)
+  if not (want and have) then return nil, "no block data" end
+  self.blockPatch = self.blockPatch or {}
+  self.collisionPatch = self.collisionPatch or {}
+  self.elevationPatch = self.elevationPatch or {}
+  local changed = 0
+  for i = 1, w * h do
+    local to = want[i]
+    if to ~= nil and to ~= have[i] then
+      self.blockPatch[i] = to
+      if layout.collisionCells then
+        self.collisionPatch[i] = layout.collisionCells[i] or 0
+      end
+      if layout.elevationCells and self.def.elevationCells then
+        self.elevationPatch[i] = layout.elevationCells[i] or 0
+      end
+      changed = changed + 1
+    end
+  end
+  if changed > 0 then self.blocksDirty = true end
+  return changed
 end
 
 -- true if the cell's collision tile is a door tile
@@ -1315,12 +1382,29 @@ end
 -- Answers nil when nothing covers the position: that is the cartridge's
 -- border block, which is impassable, and it is the honest answer rather than
 -- clamping onto a neighbour that does not reach.
-function Map:connectionFor(dir, coord, srcMax, extentOf)
+--- AND THE OFFSET IS IN BLOCKS, WHICH IS NOT THE UNIT ANYTHING ELSE HERE IS.
+---
+--- `coord`, `srcMax` and `extentOf` all speak CELLS.  A Gen 3 metatile IS the
+--- cell, so the two units coincide and this went unnoticed; a Game Boy block
+--- is four cells in a 2x2, so every Gen 2 window came out at half the offset
+--- it should have.  `cells` is how many cells a block of the map being left
+--- holds -- 1 for Hoenn, 2 for Johto and Kanto -- and defaults to 1 so a
+--- caller that already works in cells is unaffected.
+---
+--- What it cost: Route 9's south connection to Route 10 NORTH is offset 20
+--- blocks, so the strip the cartridge accepts is cells 40..60 -- the right
+--- hand third of Route 9, which is the way down to the POWER PLANT.  Halved,
+--- the window became 20..40 and the real seam was refused: an invisible wall
+--- along the whole crossing.  Route 45's west edge to Route 46 (offset 36)
+--- went the same way, and so did every other Game Boy seam with a non-zero
+--- offset.
+function Map:connectionFor(dir, coord, srcMax, extentOf, cells)
   local first = self:connection(dir)
   if not first then return nil end
+  cells = math.max(1, math.floor(tonumber(cells) or 1))
   local list = first.list or { first }
   for _, row in ipairs(list) do
-    local offset = tonumber(row.offset) or 0
+    local offset = (tonumber(row.offset) or 0) * cells
     local destMax = extentOf and extentOf(row.map)
     local lo = math.max(offset, 0)
     local hi = destMax and math.min(srcMax, destMax + offset) or srcMax

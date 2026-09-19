@@ -6993,8 +6993,46 @@ function RomExtractorGen3:animSecondFrame(anims, index)
   return low
 end
 
+-- How many FRAME entries an animation has before it ends or jumps.  A
+-- standing pose is one; a walk cycles.
+function RomExtractorGen3:animLength(anims, index)
+  local list = self.rom:pointer(anims + index * 4)
+  if not list then return nil end
+  local n = 0
+  for i = 0, 15 do
+    local word = self.rom:u32(list + i * 4)
+    local low = word % 65536
+    if low >= 0xFFFD or math.floor(word / 0x1000000) ~= 0 then break end
+    n = n + 1
+  end
+  return n
+end
+
 -- Where the facing set starts, by shape: three distinct frames then the third
 -- again, flipped.  Returns nil for anything that does not turn to face.
+--
+-- ...AND THE ONE WALKER IN HOENN THAT DOES NOT HAVE THAT SHAPE.
+--
+-- Reported from play: "rayquaza is still coiled up when it flies away from
+-- the sky pillar instead of using the flying away animation".  He was.  His
+-- graphics row (207) is the ordinary twelve-slot walker layout and his five
+-- pictures are real per-direction art -- south 0, north 4, west 2, east 3 --
+-- but the test above rejected him twice over: his three standing facings are
+-- all the SAME picture, the coil, and his east is drawn rather than mirrored
+-- from his west.  So `order` came back nil, he fell through to the pose
+-- fallback as a one-frame still, and nothing ever drew image 4.
+--
+-- The second pass below is the same twelve slots with four SINGLE-FRAME
+-- standing poses, which is what a stand is -- a walk cycles, a stand does
+-- not.  Measured over all 246 graphics rows in the cartridge it admits
+-- exactly ONE that the first pass turns away, and that one is Rayquaza; the
+-- other seven rejects keep their multi-frame anim 0 or paired anim 1 and are
+-- not walkers at all.  It does not loosen anything for the 238 the first pass
+-- already accepts, because it only runs when that one has failed.
+--
+-- East is still the mirrored west afterwards, because that is the shape of
+-- the sheet this port writes.  For the one sprite this reaches, east is a
+-- pose he is never in: the Sky Pillar walks him north and off the screen.
 function RomExtractorGen3:facingAnchor(anims)
   for base = 0, 5 do
     local a, aFlip = self:animFirstFrame(anims, base)
@@ -7010,6 +7048,22 @@ function RomExtractorGen3:facingAnchor(anims)
       if ok then return base end
     end
   end
+  local ok = true
+  for k = 0, 11 do
+    if not self:animFirstFrame(anims, k) then ok = false break end
+  end
+  if ok then
+    for k = 0, 3 do
+      if self:animLength(anims, k) ~= 1 then ok = false break end
+    end
+  end
+  if ok then
+    for k = 0, 2 do
+      local _, flip = self:animFirstFrame(anims, k)
+      if flip then ok = false break end
+    end
+  end
+  if ok then return 0 end
   return nil
 end
 
@@ -35585,6 +35639,27 @@ end
 -- Rayquaza's 64x64 -- so the answer is the LARGEST shape whose tile count
 -- divides the sheet evenly.  A shape that does not divide it is not the
 -- shape the sheet is laid out in, whatever else it is.
+-- The palette tag the template that names this sheet asks for.  A piece of a
+-- bigger animal borrows the owner's: Rayquaza's tail names his, Kyogre's fins
+-- name hers.  Same table scan as raySpriteShape, same memo.
+function RomExtractorGen3:raySpritePalette(tag)
+  local R = RomExtractorGen3.RAY_SCENE
+  if not self._rayPalTags then
+    local pals, rom = {}, self.rom
+    local at = R.TEMPLATES.first
+    while at < R.TEMPLATES.last - 24 do
+      local okT, t = pcall(rom.u16, rom, at)
+      if okT and t and t >= R.TAG_FIRST then
+        local okP, p = pcall(rom.u16, rom, at + 2)
+        if okP and p and p >= R.TAG_FIRST and pals[t] == nil then pals[t] = p end
+      end
+      at = at + 4
+    end
+    self._rayPalTags = pals
+  end
+  return self._rayPalTags[tag]
+end
+
 function RomExtractorGen3:raySpriteShape(tag, bytes)
   local R = RomExtractorGen3.RAY_SCENE
   if not self._rayShapes then
@@ -35749,11 +35824,37 @@ function RomExtractorGen3:extractRayquazaScene()
     for bg = 0, 3 do
       local mapAt = read.maps[bg]
       if mapAt then
-        -- a background with no tiles of its own draws from whichever block
-        -- the scene did load; the cartridge points several BGs at one
-        local tilesAt = read.tiles[bg]
+        -- A BACKGROUND WITH NO TILES OF ITS OWN IS ONLY GUESSABLE ONCE.
+        --
+        -- The cartridge does point several BGs at one character block, and
+        -- which block is in that BG's BGCNT register, which this walk does
+        -- not read.  Taking "whichever block the scene did load" is therefore
+        -- a guess, and it is only a safe one when the scene loaded exactly
+        -- ONE: then there is nothing else it could have been.
+        --
+        -- With more than one it is a coin toss, and losing it does not look
+        -- like a missing layer -- it looks like a PRESENT one.  The tilemap
+        -- is real, so it indexes the wrong sheet in perfectly coherent 8x8
+        -- blocks and paints them over the scene.  Rayquaza's charge is the
+        -- one that showed it: BG0 had a map and no tiles, borrowed BG1's --
+        -- which is Rayquaza himself, black outlines and yellow markings --
+        -- and scattered chunks of him across his own screen.  Reported as
+        -- "a bunch of scrambled tiles around rayquayza".
+        --
+        -- So an unresolvable background is left out.  A screen missing a
+        -- layer it should have had is a screen somebody can still read.
+        local tilesAt, borrowed = read.tiles[bg], false
         if not tilesAt then
-          for k = 0, 3 do tilesAt = tilesAt or read.tiles[k] end
+          local only, count = nil, 0
+          for k = 0, 3 do
+            if read.tiles[k] then count = count + 1; only = only or read.tiles[k] end
+          end
+          tilesAt = only
+          -- ...and with more than one loaded, the guess is CHECKED against
+          -- what it produces.  See `borrowed` below: a shared block is what a
+          -- BACKDROP is drawn from, so a borrow that comes out as a backdrop
+          -- is taken and one that comes out as scattered debris is not.
+          borrowed = count > 1
         end
         local tiles = tilesAt and lz(tilesAt - 0x08000000)
         local tmap = lz(mapAt - 0x08000000, R.MAP_BYTES)
@@ -35766,9 +35867,11 @@ function RomExtractorGen3:extractRayquazaScene()
             -- and not recorded -- otherwise the scene would carry two
             -- transparent images and nothing would say they were meant to be.
             local painted = false
+            local cells, paint = 0, 0
             for cy = 0, R.ROWS - 1 do
               for cx = 0, R.CELLS - 1 do
                 local c = cy * R.CELLS + cx
+                local cellPainted = false
                 local entry = (tmap[c * 2 + 1] or 0) + (tmap[c * 2 + 2] or 0) * 256
                 local tid = entry % 1024
                 local hflip = math.floor(entry / 1024) % 2 == 1
@@ -35783,7 +35886,8 @@ function RomExtractorGen3:extractRayquazaScene()
                                           or math.floor(byte / 16))
                     local col = idx and idx ~= 0 and bank[pal * 16 + idx + 1]
                     if col then
-                      painted = true
+                      painted, cellPainted = true, true
+                      paint = paint + 1
                       image:setPixel(cx * 8 + px, cy * 8 + py,
                                      col[1] / 255, col[2] / 255, col[3] / 255, 1)
                     else
@@ -35791,9 +35895,55 @@ function RomExtractorGen3:extractRayquazaScene()
                     end
                   end
                 end
+                if cellPainted then cells = cells + 1 end
               end
             end
             if not painted then return end
+
+            -- WHAT A BORROWED CHARACTER BLOCK HAS TO LOOK LIKE.
+            --
+            -- Which block a background reads is in its BGCNT register, and
+            -- this walk does not decode BGCNT -- so for a background with a
+            -- tilemap and no block of its own, the block is inferred.  With
+            -- one loaded there is nothing else it could be.  With several the
+            -- inference is checked against what it draws, because the cost of
+            -- being wrong is not a missing layer but a PRESENT one: the
+            -- tilemap is real, so it indexes the wrong sheet in perfectly
+            -- coherent 8x8 blocks and scatters them over the screen.
+            --
+            -- The check is what block-sharing is FOR.  A background points at
+            -- another's block when it is a BACKDROP -- a sky, a gradient --
+            -- drawn from tiles already in memory, and a backdrop is SOLID.
+            --
+            -- COUNT PIXELS, NOT CELLS.  Counting cells was the first try and
+            -- it let the worst case straight through: debris composed from
+            -- the wrong sheet lands as a dotted scatter that TOUCHES most of
+            -- the grid while FILLING almost none of it.  The chase's bad BG3
+            -- scored 712 cells of 1024 on 17% of the pixels, passed, and sat
+            -- as a checkered band across Rayquaza's descent.  By pixels the
+            -- three borrowed layers in this scene separate with room to
+            -- spare:
+            --
+            --     chase BG3      17%   debris, read from the tunnel's sheet
+            --     descent BG0     5%   debris, read from Rayquaza's own
+            --     light BG1     100%   the real chase-away sky
+            --
+            -- So half the screen's PIXELS, which is nowhere near any of them.
+            --
+            -- This is a heuristic and it says so.  The principled fix is to
+            -- read the scene's BgTemplate array, which is data; until then a
+            -- layer that fails is logged rather than silently dropped.
+            local area = (R.CELLS * 8) * (R.ROWS * 8)
+            if borrowed and paint * 2 < area then
+              Logger.warn("gen3 cutscene: %s BG%d has a tilemap but no tile "
+                            .. "block of its own, and the block it was given "
+                            .. "fills only %d%% of the picture (%d cells "
+                            .. "touched) -- too thin for the backdrop a shared "
+                            .. "block draws, so the layer is left out rather "
+                            .. "than scattered over the scene",
+                          loader.key, bg, math.floor(paint * 100 / area), cells)
+              return
+            end
             local rel = ("cutscene/ray_%s_bg%d.png"):format(loader.key, bg)
             self:saveImage(image, rel)
             scene.layers[#scene.layers + 1] =
@@ -35828,19 +35978,39 @@ function RomExtractorGen3:extractRayquazaScene()
       local record = at - 0x08000000
       local src = rom:pointer(record)
       local tag = rom:u16(record + 6)
-      -- the record's size is the VRAM the sheet occupies, and THAT is the
-      -- number the frame count divides: two of these sheets decompress a
-      -- little short of it and the hardware zero-fills the rest
+      -- THE RECORD'S SIZE IS THE SHEET, both ways.
+      --
+      -- `size` is the VRAM the sheet is given, and LoadCompressedSpriteSheet
+      -- copies exactly that much: a blob that decompresses SHORT is zero
+      -- filled to it, and one that decompresses LONG is cut off at it.  Only
+      -- the short case was handled, and `math.max` then handed the frame
+      -- sizer the decompressed length instead.
+      --
+      -- Rayquaza's tail on the descent is the long case.  Tag 30557 is given
+      -- 512 bytes -- sixteen tiles, two frames of the 16x32 its template
+      -- declares -- and its blob decompresses to 1100, which is not a whole
+      -- number of tiles at all.  34 tiles divides by nothing, so no shape
+      -- fitted, the sprite was dropped, and Rayquaza came down the screen
+      -- with no tail behind him.
       local vram = rom:u16(record + 4)
       local raw = lz(src)
-      if raw and vram > #raw then
+      if raw then
         for i = #raw + 1, vram do raw[i] = 0 end
+        for i = #raw, vram + 1, -1 do raw[i] = nil end
       end
       local cols = spalBank[tag]
-      -- a sheet with no palette of its own borrows the only one loaded, which
-      -- is what the hardware does when one tag's palette covers a group
+      -- A SHEET'S PALETTE IS ITS TEMPLATE'S, NOT ITS OWN TAG'S.  Six of this
+      -- scene's sprites are pieces of a bigger animal and carry the owner's
+      -- paletteTag -- the tail reads Rayquaza's, the fins read Kyogre's -- so
+      -- keying the bank by tile tag misses on every one of them.  The
+      -- fallback below caught it by accident while one palette was loaded;
+      -- with several it would have picked whichever came out of `pairs`
+      -- first.
+      if not cols then cols = spalBank[self:raySpritePalette(tag) or -1] end
+      -- ...and failing that, the only one loaded, which is what the hardware
+      -- does when one tag's palette covers a group
       if not cols then for _, c in pairs(spalBank) do cols = cols or c end end
-      local shape = raw and self:raySpriteShape(tag, math.max(vram, #raw))
+      local shape = raw and self:raySpriteShape(tag, vram)
       if raw and cols and shape and canCompose then
         local wide, tall = shape[1], shape[2]
         local per = (wide / 8) * (tall / 8)

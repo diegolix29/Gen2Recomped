@@ -184,7 +184,14 @@ function Gen3Gates.step(record, save, puzzle, dir, x, y, passable)
             local step = tonumber((record.turn or {})[code]) or 0
             local turned = (orientation + step) % 4
             Gen3Gates.setOrientation(save, record, index - 1, turned)
-            return "rotated", index, turned
+            -- ...AND HOW FAR IT TURNED, SIGNED, which the stored orientation
+            -- cannot say.  The orientation is one of four numbers and the
+            -- turn wraps, so 3 -> 0 is indistinguishable from 3 -> 0 the long
+            -- way round once it has been written down.  A caller that wants
+            -- to DRAW the turn rather than just its result needs the
+            -- direction, or a gate swinging from west to north spins three
+            -- quarters backwards to get there.
+            return "rotated", index, turned, step
           end
           return "blocked", index, orientation
         end

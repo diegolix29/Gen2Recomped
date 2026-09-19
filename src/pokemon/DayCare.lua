@@ -104,8 +104,35 @@ local OBJECT_EVENT_SLOTS = {
   { map = "ROUTE_34", index = 9, want = "ladyMon" },
 }
 
-local function objectEventFlag(data, mapId, index)
-  local def = data and data.maps and data.maps[mapId]
+-- ...AND THE DATASET DOES NOT SPELL "ROUTE_34" THAT WAY.
+--
+-- The extractor names a map from its pret label, and Route 34's label is
+-- `Route34` -- so a Gold, Silver or Crystal cache calls the map "ROUTE34".
+-- The hardcoded id above matched nothing at all, so three of the four slots
+-- were skipped every time: the Day-Care Man never appeared at the Route 34
+-- fence when an egg was waiting, and the two boarded mons in the yard were
+-- never shown or hidden with the pen.  Only DAY_CARE, whose label happens to
+-- be `DayCare`, ever resolved.
+--
+-- Both spellings are tried rather than one being corrected, because the id a
+-- cache uses is the cartridge's own label and a hack may well write either.
+local MAP_ALIASES = {
+  ROUTE_34 = { "ROUTE_34", "ROUTE34", "MAP_ROUTE_34" },
+  DAY_CARE = { "DAY_CARE", "DAYCARE", "MAP_DAY_CARE" },
+}
+
+-- The id this dataset actually files the map under, or nil when it has none.
+function DayCare.mapId(data, key)
+  if not (data and data.maps and key) then return nil end
+  for _, id in ipairs(MAP_ALIASES[key] or { key }) do
+    if data.maps[id] then return id end
+  end
+  return nil
+end
+
+local function objectEventFlag(data, mapKey, index)
+  local mapId = DayCare.mapId(data, mapKey)
+  local def = mapId and data.maps[mapId] or nil
   for _, obj in ipairs(def and def.objects or {}) do
     if obj.index == index then return obj.eventFlag end
   end

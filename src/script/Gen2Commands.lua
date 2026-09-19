@@ -1315,6 +1315,60 @@ function Commands.g2_blinding_flash(ctx)
   if ow and ow.setDark then ow:setDark(false) end
 end
 
+-- `callasm OxalisSalonCustomization` -- THE STYLIST'S MAKEOVER.
+--
+-- The salon script pays first and asks the routine afterwards:
+--
+--   yesorno / iffalse .no / checkmoney 0, 1000 / sif =, 2 -> no money
+--   takemoney 0, 1000 / closetext / refreshscreen
+--   callasm OxalisSalonCustomization
+--   anonjumptable  dw .giveBackMoney, dw .done, dw .didNotChange
+--
+-- and OxalisSalonCustomization (event/customization.asm) writes hScriptVar
+-- 0 when the player backed out, 1 when the confirmed look DIFFERS from the
+-- one they walked in with, and 2 when it is identical (StringCmp against
+-- wSavedPlayerCharacteristics).  `.giveBackMoney` falls THROUGH into `.no`,
+-- which is the stylist's "That's a big disappointment" line.
+--
+-- With the routine unlowered, callasm emitted nothing, the script variable
+-- still held whatever checkmoney had left -- 0 for anyone with more than
+-- \194\1651000 -- and the jump table took arm 0 every time: refund, then the
+-- refusal text.  That is exactly "I have 1000 and she acts like I said no".
+local function salonLook(save)
+  local p = save and save.player or {}
+  local c = p.clothes or {}
+  return string.format("%s/%s/%s,%s,%s", tostring(p.gender),
+                       tostring(p.skinTone), tostring(c.r), tostring(c.g),
+                       tostring(c.b))
+end
+
+function Commands.g2_prism_salon(ctx)
+  local game, runner = ctx.game, ctx.runner
+  local okCust, Cust = pcall(require, "src.ui.PrismCustomization")
+  -- A dataset with no customisation table has nothing to change, which is
+  -- the ROM's "you didn't change your look at all" arm -- refund and say so,
+  -- rather than the refusal, because the player DID say yes.
+  if not (okCust and Cust and game and game.stack and Cust.available
+          and Cust.available(game)) then
+    setScriptVar(ctx, 2)
+    return
+  end
+  local before = salonLook(game.save)
+  local done = false
+  local screen = Cust.new(game, function(_, outcome)
+    if done then return end
+    done = true
+    if outcome == "cancel" then
+      setScriptVar(ctx, 0)
+    else
+      setScriptVar(ctx, salonLook(game.save) ~= before and 1 or 2)
+    end
+    if runner then runner:resume() end
+  end, { allowCancel = true })
+  game.stack:push(screen)
+  if runner then runner:yield() end
+end
+
 -- Movement is Gen2's second bytecode language: applymovement points at a list
 -- of step/turn commands terminated by step_end.  Everything the overworld can
 -- actually animate is a directional step or a head turn, so collapse the list
@@ -1402,6 +1456,16 @@ function Commands.g2_move(ctx, target, movementLabel)
   local data = ctx.game and ctx.game.data
   local store = data and data.map_scripts
   local rows = store and store.movements and store.movements[movementLabel]
+  -- A MOVEMENT THE SCRIPT BUILT IN RAM.
+  --
+  -- `applymovement PLAYER, wPachisiPath` names a WRAM buffer rather than a
+  -- label, so there is nothing in the ROM for the extractor to read and the
+  -- operand lowers to "".  The routine that FILLED that buffer leaves its rows
+  -- here instead, and this is where they are spent -- once, like the buffer.
+  if not rows and (movementLabel == nil or movementLabel == "") then
+    rows = ctx.g2MoveBuffer
+    ctx.g2MoveBuffer = nil
+  end
   if not rows then return end
 
   local index
@@ -1818,11 +1882,22 @@ end
 
 -- CheckMoney writes wScriptVar, not the carry: 0 richer, 1 exact, 2 short.
 -- Every caller branches with `ifequal 2`, so lastCheck alone is not enough.
+--
+-- The BRANCH flag has to follow the variable, not affordability.  `iftrue`,
+-- `iffalse` and Prism's `sif true` / `sif false` all read the script variable
+-- itself (ScriptCheckCondition's `ld a, c`), so "true" after a money check
+-- means "the variable is not zero" -- that is, exact OR short.  Setting the
+-- flag from `have >= amount` inverted every one of those branches: Prism's
+-- coin vendor is `checkcoins 9949 / sif false / CoinCaseFullText`, and an
+-- empty COIN CASE scores 2 (short), which is NOT zero, so the ROM walks past
+-- the line -- while a flag built from `have >= amount` was false there and
+-- ran it, which is why buying coins with an empty case answered "you are
+-- maxed out".  The three-way `ifequal 2` branches are unaffected: those read
+-- the variable through g2_compare and always did.
 function Commands.g2_check_money(ctx, amount)
   local have = ctx.save.money or 0
   amount = amount or 0
-  ctx.g2Var = have > amount and 0 or (have == amount and 1 or 2)
-  ctx.lastCheck = have >= amount
+  setScriptVar(ctx, have > amount and 0 or (have == amount and 1 or 2))
 end
 
 function Commands.g2_pocket_full(ctx)
@@ -2726,10 +2801,30 @@ end
 -- caller that does not.  The jingle restores the map theme when it ends,
 -- which is why the RestartMapMusic ($3C) that follows is a VM no-op --
 -- honouring it would cut the jingle off after the nurse's `pause 30`.
+-- HEALMACHINE_POKECENTER.  The nurse writes the machine's own id into the
+-- script variable one command earlier (`writebyte 0 / special
+-- HealMachineAnim`); Elm's lab machine is 1 and the Hall of Fame's is 2, and
+-- neither is somewhere to wake up after a blackout.
+local GEN2_HEALMACHINE_POKECENTER = 0
+
 function Commands.g2_heal_machine_anim(ctx)
   local ow = ctx.overworld
   local runner = ctx.runner
   if not (ow and runner and ow.player) then return end
+  -- ...and THIS is the Pokemon Center, so it is the heal that owns the
+  -- blackout point -- the one thing `special HealParty` must not claim for
+  -- itself (see g2_heal_party).  Escape Rope, Dig and Teleport read the same
+  -- field, so they follow the nurse too.
+  if scriptVar(ctx) == GEN2_HEALMACHINE_POKECENTER and ow.map then
+    ctx.save.lastHeal = {
+      map = ow.map.id,
+      x = ow.player.cellX,
+      y = ow.player.cellY,
+      outdoor = ow.lastOutdoor and {
+        id = ow.lastOutdoor.id, x = ow.lastOutdoor.x, y = ow.lastOutdoor.y,
+      } or nil,
+    }
+  end
   require("src.core.Music").stop()
   ow.healAnim = {
     balls = #ctx.save.party,
@@ -3046,8 +3141,338 @@ function Commands.g2_select_mon_from_party(ctx)
   ctx.g2Var, ctx.lastCheck = index, index ~= 0
   -- the name the following text splices in
   ctx.g2MonName = picked.nickname or picked.species
+  -- ...AND THE MON ITSELF, which is wCurPartyMon on the cartridge.  Every
+  -- routine a script runs after this one works on the CHOSEN SLOT, not on
+  -- its species: Prism's orphanage scores the mon's DVs and level and then
+  -- removes it from the party.  The species number alone cannot say which
+  -- of two Chikoritas was picked.
+  ctx.g2PartyMon = picked
 end
 
+
+-- ---------------------------------------------------------------------------
+-- Prism's Pokemon orphanage (maps/Orphanage.asm)
+--
+-- You donate a party Pokemon for ORPHAN POINTS and spend the points on one of
+-- four adoptable mons.  The whole thing is five `callasm` routines and a
+-- script command pair, none of which were lowered -- so the donation lady
+-- scored nothing, took nothing and removed nothing, and the adoption lady
+-- could not price anything.
+-- ---------------------------------------------------------------------------
+
+-- MAX_ASH (constants/misc_constants.asm); GiveOrphanPoints caps there.
+local ORPHAN_POINTS_MAX = 50000
+-- wTempNumber, which `.thank_you_text` prints with `deciram wTempNumber, 2, 0`
+local ORPHAN_AWARD_RAM = "wTempNumber"
+
+local function orphanPoints(save)
+  return math.floor(tonumber(save.g2OrphanPoints) or 0)
+end
+
+local function setOrphanPoints(save, value)
+  save.g2OrphanPoints = math.max(0, math.min(ORPHAN_POINTS_MAX,
+                                             math.floor(value or 0)))
+end
+
+-- The slot Special_SelectMonFromParty handed over, and where it sits now --
+-- the party can have been reordered between the pick and the routine.
+local function orphanChoice(ctx)
+  local mon = ctx.g2PartyMon
+  if type(mon) ~= "table" then return nil, nil end
+  for i, m in ipairs(ctx.save.party or {}) do
+    if m == mon then return mon, i end
+  end
+  return mon, nil
+end
+
+-- named apart from the file's other speciesName (which takes a data table and
+-- a species id) so neither shadows the other
+local function orphanSpeciesName(ctx, mon)
+  local data = ctx.game and ctx.game.data
+  local def = data and data.pokemon and data.pokemon[mon and mon.species]
+  return (def and def.name) or (mon and mon.species) or ""
+end
+
+-- `callasm IsThisPokemonPlayerLarvitar` -- "is this one we must not take?".
+--
+-- It opens with GetCurNick (the confirmation line splices <STRBF1>) and then
+-- CheckIfMonIsYourOT, whose carry -- read off the routine at 27:$7BA9, where
+-- BOTH `jr nz` arms land on `scf / ret` -- means the OT name or id does NOT
+-- match the player.  A traded mon is refused.  A mon that IS yours then has
+-- to be the Larvitar line AND caught in the ACQUA MINES to be refused, which
+-- is Prism's story Larvitar.
+--
+-- The port keeps no caught location, so that second arm can only be as strict
+-- as the data allows: an ordinary Larvitar is accepted rather than refused on
+-- its species alone, which is the error that costs the player nothing.
+local ORPHAN_PROTECTED_LINE = {
+  LARVITAR = true, PUPITAR = true, TYRANITAR = true,
+}
+
+function Commands.g2_orphan_refuses_mon(ctx)
+  local mon = orphanChoice(ctx)
+  if mon then
+    setBuffer(ctx.game, 1, mon.nickname or orphanSpeciesName(ctx, mon))
+  end
+  local refuse = false
+  if mon then
+    local player = ctx.save.player or {}
+    local nameOk = mon.otName == nil or mon.otName == player.name
+    local idOk = mon.otId == nil or player.id == nil or mon.otId == player.id
+    if not (nameOk and idOk) then
+      refuse = true
+    elseif ORPHAN_PROTECTED_LINE[orphanSpeciesName(ctx, mon)] then
+      -- MON_CAUGHTLOCATION == ACQUA_MINES is the rest of the ROM's test; with
+      -- no caught location on the record there is nothing here to compare.
+      refuse = mon.caughtLocation ~= nil
+        and tostring(mon.caughtLocation):upper():find("ACQUA") ~= nil
+    end
+  end
+  setScriptVar(ctx, refuse and 1 or 0)
+end
+
+-- `callasm OrphanageCalculatePoints` -- what the donation is worth.
+--
+-- Read off the routine, accumulating in c and starting at 1:
+--
+--   +(atk >> 2) +(def >> 2) +(spd >> 2) +(spc >> 2)   -- the TOP TWO BITS of
+--                                                        each DV  (max 13)
+--   +(level >> 2)                                     -- (max 38)
+--   +((255 - catchRate) >> 3)                         -- (max 69)
+--   +(baseExp >> 3)                                   -- (max 100)
+--   x4 if CheckShininessHL says so                    -- (max 400)
+--
+-- The two `add a, a` that quadruple it are why the result is stored as a
+-- halfword with the carry as its high byte; nothing below 101 can overflow
+-- the first doubling, so the single captured carry is enough.
+function Commands.g2_orphan_points(ctx)
+  local mon = orphanChoice(ctx)
+  local data = ctx.game and ctx.game.data
+  local def = mon and data and data.pokemon and data.pokemon[mon.species] or nil
+  local score = 1
+  local dvs = type(mon) == "table" and mon.dvs or nil
+  if type(dvs) == "table" then
+    for _, key in ipairs({ "attack", "defense", "speed", "special" }) do
+      score = score + math.floor((tonumber(dvs[key]) or 0) / 4)
+    end
+  end
+  score = score + math.floor((tonumber(mon and mon.level) or 1) / 4)
+  if def then
+    score = score + math.floor((255 - (tonumber(def.catchRate) or 0)) / 8)
+    score = score + math.floor((tonumber(def.baseExp) or 0) / 8)
+  end
+  local okShiny, Pokemon = pcall(require, "src.pokemon.Pokemon")
+  if mon and okShiny and Pokemon and Pokemon.isShiny and Pokemon.isShiny(mon) then
+    score = score * 4
+  end
+  ctx.g2OrphanAward = score
+  -- `.thank_you_text` prints it straight out of WRAM
+  ctx.g2RamValues = ctx.g2RamValues or {}
+  ctx.g2RamValues[ORPHAN_AWARD_RAM] = score
+  local mem = wram(ctx)
+  if mem then
+    mem[0xD204] = math.floor(score / 256) % 256
+    mem[0xD205] = score % 256
+  end
+end
+
+-- `callasm OrphanageDonationLady.process_donation` (17:$6D3A) -- a LOCAL label,
+-- so the extractor has only its bank and address to name it by, exactly as it
+-- has for the Battle Tower's room chooser.  The routine shifts the donation
+-- history along, plays the mon's cry, banks the points through
+-- GiveOrphanPoints and adds them to the lifetime total.
+function Commands.g2_orphan_donate(ctx)
+  local save = ctx.save
+  local award = math.floor(tonumber(ctx.g2OrphanAward) or 0)
+  local mon = orphanChoice(ctx)
+  if mon and mon.species then
+    require("src.core.Sound").playCry(ctx.game.data, mon.species)
+    -- wOrphanageDonation1..End is a ring of the last few donations; the port
+    -- keeps the same list so a screen that wants to show it has one
+    save.g2OrphanDonations = save.g2OrphanDonations or {}
+    table.insert(save.g2OrphanDonations, 1, mon.species)
+    for i = #save.g2OrphanDonations, 6, -1 do save.g2OrphanDonations[i] = nil end
+  end
+  setOrphanPoints(save, orphanPoints(save) + award)
+  save.g2OrphanPointsTotal =
+    math.floor(tonumber(save.g2OrphanPointsTotal) or 0) + award
+end
+
+-- `callasm DeletePartyPoke` -- RemoveMonFromPartyOrBox on the chosen slot.
+function Commands.g2_delete_party_mon(ctx)
+  local _, index = orphanChoice(ctx)
+  if not index then return end
+  table.remove(ctx.save.party, index)
+  ctx.g2PartyMon = nil
+end
+
+-- `callasm CheckOrphanPointsFromScript` / `TakeOrphanPointsFromScript`.
+--
+-- Both open with LoadCoinAmountToMem -> GetScriptHalfwordOrVar, so a HALFWORD
+-- follows the callasm in the script stream; $FFFF means "take the script
+-- variable instead", which is how the adoption list prices a row it just read
+-- out of its own array.  The check then falls into CompareMoneyAction, so it
+-- answers 0 richer / 1 exact / 2 short like every other funds test.
+local function orphanAmount(ctx, operand)
+  local amount = tonumber(operand)
+  if amount == nil or amount == 0xFFFF then return scriptVar(ctx) end
+  return amount
+end
+
+function Commands.g2_check_orphan_points(ctx, operand)
+  local have = orphanPoints(ctx.save)
+  local amount = orphanAmount(ctx, operand)
+  setScriptVar(ctx, have > amount and 0 or (have == amount and 1 or 2))
+end
+
+function Commands.g2_take_orphan_points(ctx, operand)
+  setOrphanPoints(ctx.save,
+                  orphanPoints(ctx.save) - orphanAmount(ctx, operand))
+end
+
+-- ---------------------------------------------------------------------------
+-- Prism's PACHISI BOARD (event/pachisi.asm)
+--
+-- Pay 2000, walk onto the board, and roll a die 25 or 30 times.  The whole
+-- game is two flat byte tables per board -- the TILE at each position and the
+-- STEP that leaves it -- plus a position counter in an event variable the
+-- script itself owns.  Five `callasm` routines read them, and none of the five
+-- was lowered: the roll left the DICE VALUE in the script variable where the
+-- TILE kind belonged, so the jump table took one of the wild-battle arms with
+-- no mon loaded, and `startbattle / reloadmap / iftrue .game_over` ended the
+-- run on the first roll.  That is "rolling results in an instant loss" and
+-- "the board boots me out right after the yes/no prompt".
+-- ---------------------------------------------------------------------------
+
+-- movement_step_down/up/left/right are $10-$13; movement_turn_head_* are the
+-- same four in $00-$03, which is why FacePlayerToNextTile can just `and 3`.
+local PACHISI_STEP_FIRST, PACHISI_STEP_LAST = 0x10, 0x13
+local PACHISI_DIR = { [0] = "down", "up", "left", "right" }
+-- BackwardsTile reverses a step with `xor 1`: down <-> up, left <-> right
+local PACHISI_REVERSE = { [0] = 1, [1] = 0, [2] = 3, [3] = 2 }
+-- EVAR_PACHISI_POSITION is EVAR_X, index 1 of the event variables -- the same
+-- block g2_eventvarop reads, so the script's own `writeeventvar` after a warp
+-- square and these routines are looking at one counter.
+local PACHISI_POSITION_VAR = 1
+
+-- Which board.  GetPachisiTile picks by EVENT_PACHISI_GAME_IN_BOTAN; the map
+-- says the same thing without pinning a flag number to one cartridge -- the
+-- two boards are two maps and the game never leaves the one it started on.
+local function pachisiBoard(ctx)
+  local field = ctx.game and ctx.game.data and ctx.game.data.field
+  local board = field and field.gen2Pachisi
+  if type(board) ~= "table" then return nil, nil end
+  local mapId = ctx.overworld and ctx.overworld.map and ctx.overworld.map.id
+  local side = board.torenia
+  if tostring(mapId or ""):find("BOTAN", 1, true) then side = board.botan end
+  return board, side
+end
+
+local function pachisiPosition(ctx, set)
+  local mem = wram(ctx)
+  if not mem then return 0 end
+  local addr = EVENT_VARS + PACHISI_POSITION_VAR
+  if set ~= nil then mem[addr] = math.max(0, math.floor(set)) % 256 end
+  return mem[addr] or 0
+end
+
+-- `callasm FacePlayerToNextTile`: one turn, toward the square the next step
+-- leaves for.  It writes a movement of exactly one row, so it goes into the
+-- same buffer the walk does.
+function Commands.g2_pachisi_face(ctx)
+  local _, side = pachisiBoard(ctx)
+  local dirs = side and side.directions
+  if not dirs then return end
+  local step = dirs[pachisiPosition(ctx) + 1]
+  if type(step) ~= "number" then return end
+  ctx.g2MoveBuffer = { { "turn_head_" .. (PACHISI_DIR[step % 4] or "down") } }
+end
+
+-- `callasm CreatePachisiPath`: copy up to <roll> steps out of the direction
+-- table, STOPPING AT step_end -- which is what closes each section, so a roll
+-- can never walk past a warp square -- and advance the position by however
+-- many were actually taken.
+function Commands.g2_pachisi_path(ctx)
+  local _, side = pachisiBoard(ctx)
+  local dirs = side and side.directions
+  if not dirs then return end
+  local pos = pachisiPosition(ctx)
+  local want = math.floor(scriptVar(ctx))
+  local rows, moved = {}, 0
+  while moved < want do
+    local step = dirs[pos + moved + 1]
+    if type(step) ~= "number"
+       or step < PACHISI_STEP_FIRST or step > PACHISI_STEP_LAST then
+      break
+    end
+    rows[#rows + 1] = { "step_" .. (PACHISI_DIR[step % 4] or "down") }
+    moved = moved + 1
+  end
+  rows[#rows + 1] = { "step_end" }
+  ctx.g2MoveBuffer = rows
+  pachisiPosition(ctx, pos + moved)
+end
+
+-- `callasm BackwardsTile`: the same walk read the other way, each step
+-- reversed, and the position moved back rather than on.
+function Commands.g2_pachisi_back(ctx)
+  local _, side = pachisiBoard(ctx)
+  local dirs = side and side.directions
+  if not dirs then return end
+  local pos = pachisiPosition(ctx)
+  local want = math.floor(scriptVar(ctx))
+  local rows, moved = {}, 0
+  while moved < want do
+    -- the ROM reads directions[position - 1 - moved], which is this 1-based
+    -- table's [position - moved]
+    local step = dirs[pos - moved]
+    if type(step) ~= "number"
+       or step < PACHISI_STEP_FIRST or step > PACHISI_STEP_LAST then
+      break
+    end
+    local back = PACHISI_REVERSE[step % 4] or 0
+    rows[#rows + 1] = { "step_" .. (PACHISI_DIR[back] or "down") }
+    moved = moved + 1
+  end
+  rows[#rows + 1] = { "step_end" }
+  ctx.g2MoveBuffer = rows
+  pachisiPosition(ctx, pos - moved)
+end
+
+-- `callasm GetPachisiTile`: the square the player has just landed on, which is
+-- the index the anonjumptable right after it takes.
+function Commands.g2_pachisi_tile(ctx)
+  local _, side = pachisiBoard(ctx)
+  local tiles = side and side.tiles
+  local value = tiles and tiles[pachisiPosition(ctx) + 1]
+  setScriptVar(ctx, tonumber(value) or 0)
+end
+
+-- `callasm PachisiGetPokemon`: `Random and $f` into the 16-entry table the
+-- preceding `writehalfword` named, at level 25 + (`Random and 7`).  The
+-- halfword is the table's ADDRESS, so the board carries the three addresses.
+function Commands.g2_pachisi_mon(ctx)
+  local board = pachisiBoard(ctx)
+  if not board then return end
+  local key = board.monTables
+    and board.monTables[tostring(math.floor(tonumber(ctx.g2HalfwordVar) or -1))]
+  local list = (key and board[key]) or board.grass
+  if type(list) ~= "table" or #list < 1 then return end
+  local species = list[(math.random(0, 15) % #list) + 1]
+  if not species then return end
+  ctx.g2Wild = { species = species, level = 25 + math.random(0, 7) }
+  ctx.g2Trainer = nil
+end
+
+-- `callasm GetPachisiItem`: `Random and $3f` into a 64-entry item table, left
+-- in the script variable for the `verbosegiveitem ITEM_FROM_MEM` after it.
+function Commands.g2_pachisi_item(ctx)
+  local board = pachisiBoard(ctx)
+  local items = board and board.items
+  if type(items) ~= "table" or #items < 1 then return end
+  local pick = items[(math.random(0, 63) % #items) + 1]
+  setScriptVar(ctx, tonumber(tostring(pick or ""):match("(%d+)$")) or 0)
+end
 
 function Commands.g2_seen_mon(ctx)
   local n = ctx.g2Var or 0
@@ -3060,12 +3485,33 @@ end
 -- first real party mon and answers its happiness byte.  Scripts branch on the
 -- value, so leaving it to g2_special -- which answers a flat false -- took the
 -- unhappy arm every time.
+--
+-- IT ALSO NAMES THE MON, and that is half of what the routine is for:
+-- GetFirstPokemonHappiness ends in `GetPokemonName` / `jp
+-- CopyPokemonName_Buffer1_Buffer3`, so buffers 1 and 3 come back holding the
+-- SPECIES name of the mon it just scored (wd265 is the species byte that
+-- broke the EGG loop, not the nickname).
+--
+-- Prism's happiness rater prints "Can I see your <STRBF3> for just a moment"
+-- and then "Your <STRBF3> scored <happiness>/255", so with the buffer left
+-- alone she read out whatever was last written there -- which, after any NPC
+-- that hands something over, is the ITEM's name.  That is the "happiness
+-- rater rates the last item obtained from an NPC".
+local function firstPartySpeciesName(ctx, mon)
+  local data = ctx.game and ctx.game.data
+  local def = data and data.pokemon and data.pokemon[mon.species]
+  return (def and def.name) or mon.species
+end
+
 function Commands.g2_first_happiness(ctx)
   local Party = require("src.pokemon.Party")
   for _, mon in ipairs(ctx.save.party or {}) do
     if not Party.isEgg(mon) then
       ctx.g2Var = mon.happiness or 0
       ctx.lastCheck = ctx.g2Var ~= 0
+      local name = firstPartySpeciesName(ctx, mon)
+      setBuffer(ctx.game, 1, name)
+      setBuffer(ctx.game, 3, name)
       return
     end
   end
@@ -3381,12 +3827,22 @@ function Commands.g2_nop() end
 -- FruitTreeScript (17:$4000).  GetFruitTreeItem indexes FruitTreeItems by
 -- wCurFruitTree - 1; GetFruitTreeFlag remembers the pick so the tree is bare
 -- until the next daily reset.
-function Commands.g2_fruittree(ctx, tree)
+--
+-- `fallback` is the tree object's OWN item, which the extractor reads from
+-- FruitTreeItems while it is building the object.  It is only consulted when
+-- the field table has no row for this tree: Prism's table was being cut at
+-- `EndApricornTrees`, so every berry tree (19-29) came back empty and the
+-- tree said "It's a fruit-bearing tree." forever.
+function Commands.g2_fruittree(ctx, tree, fallback)
   local game = ctx.game
   local save = ctx.save
   local t = game.data.text
   save.g2FruitTrees = save.g2FruitTrees or {}
   local itemId = ((game.data.field or {}).gen2FruitTrees or {})[tree]
+  if not itemId and type(fallback) == "string" and fallback ~= ""
+     and fallback ~= "0" then
+    itemId = fallback
+  end
   -- CheckFruitTree: a picked tree (or one the table has no row for) is just
   -- scenery until TryResetFruitTrees clears the flags
   if save.g2FruitTrees[tree] or not itemId then
@@ -3498,11 +3954,11 @@ end
 -- either Game Corner prize counter takes when you cannot afford the prize --
 -- never matched, and the TM and POKeMON vendors handed the prize over for
 -- free however few coins you had.
+-- The branch flag follows the variable, exactly as in g2_check_money above.
 function Commands.g2_check_coins(ctx, amount)
   local have = coins(ctx.save)
   amount = amount or 0
-  ctx.g2Var = have > amount and 0 or (have == amount and 1 or 2)
-  ctx.lastCheck = have >= amount
+  setScriptVar(ctx, have > amount and 0 or (have == amount and 1 or 2))
 end
 
 function Commands.g2_give_coins(ctx, amount)
@@ -4321,19 +4777,18 @@ function Commands.g2_heal_party(ctx)
       end
     end
   end
-  -- Always refresh the blackout/heal point when the nurse heals so Escape
-  -- Rope / white-out work even if the script's blackoutmod row was skipped.
-  local ow = ctx.overworld
-  if ow and ow.map and ow.player then
-    ctx.save.lastHeal = {
-      map = ow.map.id,
-      x = ow.player.cellX,
-      y = ow.player.cellY,
-      outdoor = ow.lastOutdoor and {
-        id = ow.lastOutdoor.id, x = ow.lastOutdoor.x, y = ow.lastOutdoor.y,
-      } or nil,
-    }
-  end
+  -- THE BLACKOUT POINT IS NOT SET HERE ANY MORE, and `special HealParty` is
+  -- exactly why: it is a plain routine, not the nurse.  Prism calls it from
+  -- the middle of a minigame -- the Pachisi board's heal square is `special
+  -- HealParty / special Special_BattleTowerFade / playwaitsfx / special
+  -- FadeInPalettes` -- so landing on that square wrote the BOARD as the
+  -- blackout point, and a trainer battle lost on some other map put the
+  -- player back inside the Pachisi board.  Reported exactly that way.
+  --
+  -- The spawn now rides the HEALING MACHINE instead (g2_heal_machine_anim),
+  -- which only a Pokemon Center runs and which the ROM tells apart by the
+  -- byte the nurse writes before it.  Gen 2's own answer, EnterMapWarp's
+  -- SetSpawn, is in OverworldState:noteGen2Spawn and is unaffected.
   ctx.lastCheck = true
 end
 

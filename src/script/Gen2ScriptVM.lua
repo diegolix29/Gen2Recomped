@@ -1317,6 +1317,16 @@ end
 -- no party check at all.
 local ASM = {
   HasRockSmash     = { "g2_party_move", "ROCK_SMASH", true },
+  -- Prism's own name for the same test, and it really is the same test:
+  -- CanUseRockSmash (engine/field_moves.asm) is `CheckEngine
+  -- ENGINE_MUSCLEBADGE / CheckPartyMove ROCK_SMASH`, answering 1 when either
+  -- fails and 0 when both pass -- which is the polarity g2_party_move already
+  -- writes, and partyKnows already charges the badge from constants.hmBadges
+  -- (Prism lists ROCK_SMASH -> ENGINE_MUSCLEBADGE).  Unlowered,
+  -- AskRockSmashScript's `sif =, 1` read whatever the previous command left,
+  -- so a breakable rock either refused a player who could smash it or skipped
+  -- straight past the "you have no HM" line for one who could not.
+  CanUseRockSmash  = { "g2_party_move", "ROCK_SMASH", true },
   TryStrengthOW    = { "g2_try_strength" },
   SetStrengthFlag  = { "g2_strength_on" },
   GetPartyNickname = { "g2_party_nickname" },
@@ -1340,6 +1350,44 @@ local ASM = {
   -- player answered YES and the cave stayed dark.
   BlindingFlash = { "g2_blinding_flash" },
   ["50:77A8"] = { "g2_blinding_flash" },
+  -- The Oxalis Salon's makeover.  The screen it opens has existed since
+  -- PrismCustomization was written -- the new game runs it -- but nothing
+  -- reached it from a script, so the salon took the player's money, ran no
+  -- routine, and fell into arm 0 of its own jump table: refund, then "That's
+  -- a big disappointment."  See Commands.g2_prism_salon for the three values.
+  OxalisSalonCustomization = { "g2_prism_salon" },
+  -- Prism's Pokemon orphanage.  The donation lady scores the chosen party mon
+  -- and removes it; the adoption lady prices a row of her list against the
+  -- points.  See the block in Gen2Commands under "Prism's Pokemon orphanage".
+  IsThisPokemonPlayerLarvitar = { "g2_orphan_refuses_mon" },
+  OrphanageCalculatePoints    = { "g2_orphan_points" },
+  DeletePartyPoke             = { "g2_delete_party_mon" },
+  CheckOrphanPointsFromScript = { "g2_check_orphan_points" },
+  TakeOrphanPointsFromScript  = { "g2_take_orphan_points" },
+  -- OrphanageDonationLady.process_donation: a LOCAL label, and the symbol
+  -- export keeps none of those, so the extractor can only name it by bank and
+  -- address -- the same way the Battle Tower's room chooser is listed above.
+  ["17:6D3A"] = { "g2_orphan_donate" },
+  -- Prism's Pachisi board.  Five routines over two flat byte tables per board
+  -- -- the tile at each position and the step that leaves it -- plus the
+  -- position counter the script keeps in an event variable.  See the block in
+  -- Gen2Commands under "Prism's PACHISI BOARD".
+  FacePlayerToNextTile = { "g2_pachisi_face" },
+  CreatePachisiPath    = { "g2_pachisi_path" },
+  BackwardsTile        = { "g2_pachisi_back" },
+  GetPachisiTile       = { "g2_pachisi_tile" },
+  PachisiGetPokemon    = { "g2_pachisi_mon" },
+  GetPachisiItem       = { "g2_pachisi_item" },
+}
+
+-- Two of those read the SCRIPT STREAM themselves: CheckOrphanPointsFromScript
+-- and TakeOrphanPointsFromScript both open with LoadCoinAmountToMem ->
+-- GetScriptHalfwordOrVar, so a halfword follows the callasm.  The extractor
+-- reads it as a second operand (RomExtractorGen2, the "D" operand kind) and it
+-- is passed through to the command here.
+local ASM_TAKES_HALFWORD = {
+  CheckOrphanPointsFromScript = true,
+  TakeOrphanPointsFromScript = true,
 }
 
 L.callasm = function(ir, s)
@@ -1347,6 +1395,7 @@ L.callasm = function(ir, s)
   if not row then return end
   local copy = {}
   for i = 1, #row do copy[i] = row[i] end
+  if ASM_TAKES_HALFWORD[ir[2]] then copy[#copy + 1] = ir[3] end
   emit(s, copy)
 end
 L.memcallasm = L.callasm
@@ -2399,7 +2448,11 @@ local function contributionFor(data, mapId, entry, mapDef)
         end
       end
       for _, cb in ipairs(callbacks) do
-        queue(overworld, cb, { mapId = mapId })
+        -- `mapCallback` marks the one kind of script the cartridge runs while
+        -- the map is still being built, which is the only kind allowed to move
+        -- a live object with a bare setevent/clearevent -- see the note by
+        -- syncFlagObjects in Commands.
+        queue(overworld, cb, { mapId = mapId, mapCallback = true })
       end
       if #scenes > 0 then
         queue(overworld, { { "g2_run_map_scene", mapId } }, { mapId = mapId })

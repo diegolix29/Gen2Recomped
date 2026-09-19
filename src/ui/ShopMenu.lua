@@ -58,13 +58,28 @@ local function line(game, key, fallback, vars)
   return fallback
 end
 
+-- THE MONEY SIGN, NOT THREE LETTERS.
+--
+-- The Game Boy fallback here was the literal bytes <01>"94u", so every mart
+-- price on a Game Boy cartridge read "94u300" where it should have read
+-- "\194\165300".  Reported from Prism, but Gold, Silver and Crystal print
+-- through this same line and were showing it too; only Emerald escaped,
+-- because its clerk carries his own `money` string from the cartridge and
+-- never reaches this fallback.
+--
+-- "\194\165" is U+00A5 in UTF-8, which is what the Gen 1 and Gen 2 charmaps
+-- spell $F0 as (charmap.asm) -- so Font.encode turns it straight back into
+-- the money tile the cartridge draws.  Written as escapes rather than as a
+-- literal so no editor or tool can mangle the two bytes again.
+local MONEY_GLYPH = "\194\165"
+
 -- A price in the cartridge's own currency.
 local function price(game, amount)
   local said = martText(game)
   if said and type(said.money) == "string" then
     return fill(said.money, { VAR1 = tostring(amount) })
   end
-  return ("94u%d"):format(amount)
+  return MONEY_GLYPH .. tostring(amount)
 end
 
 local function buy(game, stock)

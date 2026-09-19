@@ -49,10 +49,21 @@ function PrismCustomization.available(game)
   return s ~= nil and type(s.skinTones) == "table" and (s.models or 0) >= 1
 end
 
-function PrismCustomization.new(game, onDone)
+-- `opts.allowCancel` is the OXALIS SALON's door out, and only the salon's.
+--
+-- OxalisSalonCustomization (event/customization.asm) lets B off the category
+-- menu, asks "Are you sure you want to cancel?", and on YES puts
+-- wSavedPlayerCharacteristics back and answers the script with 0 -- which is
+-- the arm that refunds the \194\1651000 and prints the stylist's
+-- disappointment.  PlayerCustomization, the one the new game runs, has no
+-- such exit: it is called through RunProtectedPlayerCustFunction and the
+-- player must come out of it as somebody.  So the escape is a per-caller
+-- option rather than a property of the screen.
+function PrismCustomization.new(game, onDone, opts)
   local self = setmetatable({}, PrismCustomization)
   self.game = game
   self.onDone = onDone
+  self.allowCancel = (opts and opts.allowCancel) and true or false
   self.spec = spec(game)
   local d = (self.spec and self.spec.default) or {}
   local player = game.save and game.save.player or {}
@@ -189,7 +200,31 @@ end
 function PrismCustomization:finish()
   self:commit()
   self.game.stack:pop()
-  if self.onDone then self.onDone(self:formId()) end
+  if self.onDone then self.onDone(self:formId(), "done") end
+end
+
+-- Leave WITHOUT committing: wPlayerCharacteristics is never written, so the
+-- save still holds whoever walked in.  The second argument is how the salon
+-- tells a cancel from a confirm that happened to change nothing -- the ROM
+-- answers 0 for the first and 2 for the second, and they print different
+-- lines.
+function PrismCustomization:cancelOut()
+  self.game.stack:pop()
+  if self.onDone then self.onDone(nil, "cancel") end
+end
+
+-- The ROM asks before it lets you go (.cancel_text, then YesNoBox; NO returns
+-- to the category menu).
+function PrismCustomization:askCancel()
+  local okBox, TextBox = pcall(require, "src.render.TextBox")
+  if not (okBox and TextBox) then self:cancelOut() return end
+  local screen = self
+  self.game.stack:push(TextBox.new(self.game,
+    Strings("Are you sure you\nwant to cancel?"), nil, {
+      choice = function(yes)
+        if yes then screen:cancelOut() end
+      end,
+    }))
 end
 
 function PrismCustomization:updateCategory(input)
@@ -211,6 +246,9 @@ function PrismCustomization:updateCategory(input)
       self.mode = id
       self.channel = 1
     end
+  elseif self.allowCancel and input:wasPressed("b") then
+    beep(self)
+    self:askCancel()
   end
 end
 
