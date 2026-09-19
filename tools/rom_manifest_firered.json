@@ -1448,6 +1448,26 @@
   482
  ],
  "scriptCommands": {
+  "199": [
+   "textcolor",
+   "b"
+  ],
+  "200": [
+   "loadhelp",
+   "d"
+  ],
+  "201": [
+   "unloadhelp",
+   ""
+  ],
+  "202": [
+   "signmsg",
+   ""
+  ],
+  "203": [
+   "normalmsg",
+   ""
+  ],
   "208": [
    "setworldmapflag",
    "w"
