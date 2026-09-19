@@ -255,7 +255,7 @@ function M.open(g,selected,group)
 end
 function M.toggle(g)if M.current(g)then return M.close(g)end;return M.open(g)end
 local function safeRect()
-  return require("src.core.SafeArea").rect()
+  return require("src.core.SafeArea").windowRect()
 end
 local function hit(r,x,y)return x>=r[1]and x<r[1]+r[3]and y>=r[2]and y<r[2]+r[4]end
 function M.layout(g)
