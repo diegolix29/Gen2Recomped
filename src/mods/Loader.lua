@@ -213,7 +213,31 @@ end
 
 function Loader:_discover()
   if not self.fs.getDirectoryItems then return end
+  
+  -- POKEPORT_NO_MODS=1: a verification run against the plain game, without
+  -- touching the user's saved enable flags
+  if os.getenv("POKEPORT_NO_MODS") == "1" then return end
+
   local roots = { "mods", "bundlemods" }
+
+  -- THE SAME CONFINEMENT THE LAUNCHER APPLIES. When the player has chosen a
+  -- game-data folder, a mod counts only if it is in it -- and the game has to
+  -- agree with the panel about that, or the launcher hides a mod and the game
+  -- loads it anyway, which is the worst of both answers. nil (and so no
+  -- filtering at all) for an injected fs, a portable install and the ordinary
+  -- save-directory case, which is every setup that predates the setting.
+  -- Only when this loader is running on the REAL love.filesystem: a test's
+  -- injected fs has its own tree with no relationship to any root on disk, and
+  -- filtering it against one would discover nothing at all.
+  local confine = nil
+  if love and love.filesystem and self.fs == love.filesystem then
+    local okLM, LauncherMods = pcall(require, "src.mods.LauncherMods")
+    if okLM and LauncherMods and LauncherMods.confinedRoot then
+      local okRoot, root = pcall(LauncherMods.confinedRoot)
+      if okRoot then confine = root end
+    end
+  end
+
   for _, root in ipairs(roots) do
     -- Check if directory exists and is listable
     local dirInfo = self.fs.getInfo(root)
@@ -236,17 +260,29 @@ function Loader:_discover()
         for _, name in ipairs(items) do
           local path = root .. "/" .. name
           local info = self.fs.getInfo(path)
-          if info and info.type == "directory" then
+          
+          -- Apply launcher confinement only to user mods ("mods"), not bundled mods
+          if confine and root == "mods" then
+            local okIn, inside = pcall(
+              require("src.mods.LauncherMods").underRoot, confine, path)
+            if okIn and not inside then info = nil end
+          end
+          
+          -- A dev-linked mod dir (ln -s) reports type "symlink" even with
+          -- setSymlinksEnabled(true) -- PhysFS never resolves the symlink's
+          -- own getInfo, only traversal into it. readManifest below still
+          -- correctly no-ops on a symlink that isn't a directory.
+          if info and (info.type == "directory" or info.type == "symlink") then
             local manifest, err = readManifest(self.fs, path)
             if manifest then
               if self.mods[manifest.id] then
                 self.errors[#self.errors + 1] =
                   ("%s: duplicate mod id (ignored %s)"):format(manifest.id, path)
               else
-                -- Mark bundled mods as bundled
                 local isBundled = (root == "bundlemods")
                 self.mods[manifest.id] = { manifest = manifest, path = path, bundled = isBundled }
-                -- Bundled mods are enabled by default
+                
+                -- Bundled mods are enabled by default if not explicitly disabled
                 if isBundled and self.disabled[manifest.id] == nil then
                   self.mods[manifest.id].enabled = true
                 end
@@ -259,6 +295,7 @@ function Loader:_discover()
       end
     end
   end
+
   local ok, err = pcall(self._warnShadowed, self)
   if not ok then
     Logger.debug("mod shadow check: %s", tostring(err))
