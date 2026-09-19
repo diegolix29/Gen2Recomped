@@ -6,14 +6,17 @@
   "entry": "main.lua",
   "profile": "content",
   "game_version": ">=0.1.45",
-  "generations": [
-    1,
-    2
+  "games": [
+    "gen1",
+    "gen2"
   ],
   "category": "OTHER",
   "priority": 250,
   "permissions": [
     "engine_internals"
+  ],
+  "dependencies": [
+    "national_dex"
   ],
   "optional_dependencies": [
     "g9-battle-engine",

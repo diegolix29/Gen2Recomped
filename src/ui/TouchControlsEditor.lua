@@ -118,7 +118,7 @@ end
 function Editor.draw()
   local SafeArea = require("src.core.SafeArea")
   local fullW, fullH = love.graphics.getDimensions()
-  local ox, oy, ww, wh = SafeArea.windowRect()()
+  local ox, oy, ww, wh = SafeArea.rect()
   local s = math.max(0.75, math.min(1.4, wh / 768))
   -- resolve the orientation bucket before any chrome reads scale (#633)
   local bucket = TouchControls:currentBucket()

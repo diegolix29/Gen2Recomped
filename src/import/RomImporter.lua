@@ -4375,7 +4375,7 @@ local PAD_DPAD_SPEED = 420
 
 function RomImporter:_activatePadCursor()
   if self._padCursorActive then return end
-  local ox, oy, w, h = SafeArea.windowRect()
+  local ox, oy, w, h = SafeArea.rect()
   if not self._padInited then
     self._padCursor.x = ox + w * 0.5
     self._padCursor.y = oy + h * 0.45
@@ -4432,7 +4432,7 @@ function RomImporter:_updatePadCursor(dt)
     if mag > 1 then dx, dy = dx / mag, dy / mag end
     local speed = (math.abs(ax) > PAD_DEAD or math.abs(ay) > PAD_DEAD)
       and PAD_SPEED or PAD_DPAD_SPEED
-    local ox, oy, w, h = SafeArea.windowRect()
+    local ox, oy, w, h = SafeArea.rect()
     local nx = self._padCursor.x + dx * speed * dt
     local ny = self._padCursor.y + dy * speed * dt
     self._padCursor.x = math.max(ox, math.min(ox + w, nx))
@@ -4863,7 +4863,7 @@ function RomImporter:draw()
   -- Full window for immersive backdrop; safe rect for interactive chrome so
   -- notch / Dynamic Island / home indicator / Android cutouts are respected.
   local fullW, fullH = love.graphics.getDimensions()
-  local ox, oy, width, height = SafeArea.windowRect()
+  local ox, oy, width, height = SafeArea.rect()
   local s = clamp(height / 768, 0.7, 1.6)
   local pulse = self.pulse
   self._s = s

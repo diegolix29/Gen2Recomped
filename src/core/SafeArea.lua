@@ -9,7 +9,7 @@
 
 local SafeArea = {}
 
-function SafeArea.windowRect()
+function SafeArea.rect()
   local ww, wh = 0, 0
   if love and love.graphics and love.graphics.getDimensions then
     ww, wh = love.graphics.getDimensions()

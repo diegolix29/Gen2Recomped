@@ -34,7 +34,7 @@ function Layout.metrics(maxAppW)
   if love and love.graphics and love.graphics.getDimensions then
     W, H = love.graphics.getDimensions()
   end
-  local ox, oy, sw, sh = SafeArea.windowRect()()
+  local ox, oy, sw, sh = SafeArea.rect()
   local s = Kit.layout(sw, sh)
 
   local appW = math.min(sw, (maxAppW or 1200) * s)
