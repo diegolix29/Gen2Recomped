@@ -47,7 +47,12 @@ function A.new(host,generation)
     -- leaving native singles/mod registries untouched. Gen II source semantics:
     -- pret/pokecrystal engine/battle/move_effects/psych_up.asm and the PsychUp
     -- list in data/moves/effects.asm (no checkhit; fail for all-neutral stages).
-    local psych=self.native.moveEffectRecordFor(self.data,'EFFECT_PSYCH_UP')
+    -- self.native.moveEffectRecordFor never existed on the native module (only
+    -- BattleState:effectRecord(effect) does, which reads self.data internally
+    -- rather than taking it as a parameter). Calling the old name crashed here
+    -- unconditionally -- every time a Gen II kernel was constructed, whether or
+    -- not Psych Up was ever used -- which is why Gen II doubles never started.
+    local psych=self.native.effectRecord and self.native.effectRecord(self,'EFFECT_PSYCH_UP')
     if not (psych and type(psych.run)=='function') then
       k.data=copy(self.data);k.data.gen2MoveEffects=copy(self.data.gen2MoveEffects)
       k.data.gen2MoveEffects.EFFECT_PSYCH_UP={kind='primary',run=function(kernel,user,target)
@@ -167,7 +172,7 @@ end
 function A:maxHP(mon) return math.max(1,mon.maxHp or mon.maxHP or (mon.stats and mon.stats.hp) or mon.hp or 1) end
 function A:makeBattler(s,opening)
   if self.generation==2 then
-    self.k:clearVolatile(s.mon)
+    self.k:clearVolatiles(s.mon)
     if s.side=='player' and self.host.checkAmuletCoin then self.host:checkAmuletCoin(s.mon) end
     return {mon=s.mon,name=self:name(s.mon),isPlayer=s.side=='player',stages=self:newStages()}
   end
@@ -337,7 +342,15 @@ function A:onEnter(s)
   self:onEnterAbilities(s)
 end
 function A:speed(s)
-  if self.generation==2 then self:bind(s,s);return self.k:effectiveSpeed(s.mon) end
+  if self.generation==2 then
+    self:bind(s,s)
+    if type(self.k.effectiveSpeed)=='function' then
+      return self.k:effectiveSpeed(s.mon)
+    end
+    -- Fallback if effectiveSpeed doesn't exist on native kernel
+    local stats=s.mon and s.mon.stats
+    return stats and stats.speed or 0
+  end
   local multiplier=AbilityEffectsGen1 and AbilityEffectsGen1.speedMultiplier(self.k,s.battler) or 1
   return self.order.effectiveSpeed(s.battler)*multiplier
 end
@@ -357,11 +370,8 @@ function A:beginTurn()
   for _,s in ipairs(self.core:aliveSlots()) do
     if self.generation==1 then s.battler.flinched=false;s.battler.residualDone=nil
     else
-      -- Guard against missing volatile method
-      local v = self.k and type(self.k.volatile)=="function" and self.k:volatile(s.mon)
-      if v then
-        v.flinched=nil;v.tookThisTurn=nil;v.tookKind=nil
-      end
+      local v=self.k:volatile(s.mon)
+      v.flinched=nil;v.tookThisTurn=nil;v.tookKind=nil
     end
   end
 end
@@ -376,19 +386,13 @@ function A:specialField(s,def,move)
     end
     self:message('All stat changes were eliminated!')
   elseif def.id=='PERISH_SONG' then
-    for _,peer in ipairs(self.core:aliveSlots()) do
-      local v = self.k and type(self.k.volatile)=="function" and self.k:volatile(peer.mon)
-      if v and not v.perish then v.perish=4 end
-    end
+    for _,peer in ipairs(self.core:aliveSlots()) do local v=self.k:volatile(peer.mon);if not v.perish then v.perish=4 end end
     self:message('All active Pokemon heard the PERISH SONG!')
   else
     for _,mon in ipairs(self.core:party(s.side)) do mon.status=nil;mon.statusCount=nil;mon.sleepTurns=nil end
     for _,peer in ipairs(self.core:aliveSlots(s.side)) do
       if self.generation==1 then peer.battler.sleepTurns=nil;peer.battler.toxicCounter=nil
-      else
-        local v = self.k and type(self.k.volatile)=="function" and self.k:volatile(peer.mon)
-        if v then v.toxicCount=nil end
-      end
+      else local v=self.k:volatile(peer.mon);v.toxicCount=nil end
     end
     self:message('A bell chimed! The party recovered from status conditions.')
   end
@@ -430,8 +434,8 @@ function A:performNoTarget(s,action)
   end
   local continuation=false
   if self.generation==2 then
-    local v = k and type(k.volatile)=="function" and k:volatile(s.mon)
-    continuation = v and (v.chargeMove==action.moveId or v.rampageMove==action.moveId or v.rolloutLock==action.moveId) or false
+    local v=k:volatile(s.mon)
+    continuation=v.chargeMove==action.moveId or v.rampageMove==action.moveId or v.rolloutLock==action.moveId
     if v.chargeMove==action.moveId then v.chargeMove=nil;v.vanished=nil end
     if v.rampageMove==action.moveId then
       v.rampageTurns=(v.rampageTurns or 1)-1
@@ -525,7 +529,7 @@ function A:perform(s,targets,action)
         -- restore the exact target state afterwards. Substitute is deliberately
         -- left alone: the local Psych Up effect copies stages without touching
         -- it, matching the cartridge command list.
-        local volatile=nativeTarget.mon.volatile or (k and type(k.volatile)=="function" and k:volatile(nativeTarget.mon))
+        local volatile=nativeTarget.mon.volatile or k:volatile(nativeTarget.mon)
         local protect,vanished=volatile.protect,volatile.vanished
         volatile.protect=nil;volatile.vanished=nil
         local ok,err=pcall(k.useMove,k,s.mon,nativeTarget.mon,action.moveId)
@@ -609,8 +613,7 @@ function A:endTurn()
       if suppressed then return end
       for _,s in ipairs(living) do
         local d=k:speciesDef(s.mon)
-        local v = k and type(k.volatile)=="function" and k:volatile(s.mon)
-        if v and not v.vanished and E.sandstormHits((d and d.types) or s.mon.types) then
+        if not k:volatile(s.mon).vanished and E.sandstormHits((d and d.types) or s.mon.types) then
           s.mon.hp=math.max(0,s.mon.hp-E.sandstormDamage(self:maxHP(s.mon)))
           self:message(self:name(s.mon)..' is buffeted by the sandstorm!')
         end
@@ -636,7 +639,7 @@ function A:endTurn()
     for _,s in ipairs(living) do
       self:bind(s,s)
       if s.mon.hp>0 then k:tickStatus(s.mon) end
-      local v = k and type(k.volatile)=="function" and k:volatile(s.mon)
+      local v=k:volatile(s.mon)
       if v.leechSeed and s.mon.hp>0 then
         local n=math.min(s.mon.hp,math.max(1,math.floor(self:maxHP(s.mon)/8)));s.mon.hp=s.mon.hp-n
         local source=s.seedSource and self.core.slots[s.seedSource]
@@ -693,9 +696,15 @@ function A:onReveal(s)
   local save=self.host.save or (self.host.game and self.host.game.save)
   if not save then return end
   if self.generation==2 then
-    local screen=req('src.ui.battle.BattleState')
-    local view=self.screen or {save=save}
-    screen.markSeen(view,s.mon);screen.noteFirstUnown(view,s.mon)
+    local BattleState=req('src.battle.BattleState')
+    if BattleState and type(BattleState.markSeen)=='function' then
+      BattleState.markSeen(self.host.game,s.mon.species)
+    else
+      -- Fallback if module or function doesn't exist
+      save.pokedex=save.pokedex or {seen={},owned={}}
+      save.pokedex.seen=save.pokedex.seen or {}
+      save.pokedex.seen[s.mon.species]=true
+    end
   else
     save.pokedex=save.pokedex or {seen={},owned={}}
     save.pokedex.seen=save.pokedex.seen or {}

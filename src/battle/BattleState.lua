@@ -897,6 +897,7 @@ local function markSeen(game, species)
   local dex = game.save.pokedex
   if dex then dex.seen[species] = true end
 end
+BattleState.markSeen = markSeen
 
 -- newly obtained mons carry the player's OT name/ID (status screen)
 --
@@ -4139,6 +4140,14 @@ function BattleState:statusLabel(mon)
     return record.hudLabel or record.label or mon.status
   end
   return mon.status
+end
+
+
+
+function BattleState:volatile(mon)
+  if not mon then return {} end
+  mon.volatile = mon.volatile or {}
+  return mon.volatile
 end
 
 -- The one accuracy roll (MoveHitTest), hooked as battle.accuracy.

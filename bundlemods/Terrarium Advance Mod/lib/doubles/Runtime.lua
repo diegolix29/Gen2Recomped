@@ -609,7 +609,7 @@ function D.install()
   end
   -- Gen 2 has always had its own separate class, so it is unambiguous: this
   -- update method is only ever reached by a Gen II battle.
-  local okG2,classG2=pcall(req,'src.ui.battle.BattleState')
+  local okG2,classG2=pcall(req,'src.battle.BattleState')
   if okG2 then
     patchClass(classG2,function() return 2 end)
   end
