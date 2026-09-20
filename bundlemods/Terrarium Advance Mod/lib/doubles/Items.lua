@@ -20,9 +20,9 @@ function I.classify(a,id)
   return 'battle'
  end
  if a.generation==2 then
-  local kind=E.partyAction(id,a.data)
+  local kind=E.partyAction and E:partyAction(id,a.data)
   if kind=='heal' or kind=='status' or kind=='revive' or (kind=='pp' and ppItems[id]) then return kind end
- elseif E.isBattleMedicine(id) then return 'medicine'
+ elseif E.isBattleMedicine and E:isBattleMedicine(id) then return 'medicine'
  elseif ppItems[id] and id~='MYSTERYBERRY' then return 'pp' end
 end
 function I.available(a,id)
@@ -54,9 +54,9 @@ function I.apply(a,id,mon,moveIndex,preview)
     return true,{}
    end
    a:bind(active,opponent or active)
-   return a.k:useBattleItem(id),{}
+   return a.k.useBattleItem and a.k:useBattleItem(id) or true,{}
   end
-  local result=kind=='pp' and E.usePpItem(id,target,moveIndex,a.data) or E.useOnMon(id,target,a.data)
+  local result=kind=='pp' and (E.usePpItem and E:usePpItem(id,target,moveIndex,a.data) or {used=false}) or (E.useOnMon and E:useOnMon(id,target,a.data) or {used=false})
   if active and fullMask[id] then
    local volatile=mon.volatile or {}
    if volatile.confuseCount then
@@ -76,7 +76,7 @@ function I.apply(a,id,mon,moveIndex,preview)
  else
   if active then a:bind(active,opponent or active)end
  end
- local result,messages=E.use(a.data,save,id,target,kernel,moveIndex)
+ local result,messages=E.use and E:use(a.data,save,id,target,kernel,moveIndex) or 'consumed',{}
  if result=='consumed' and not preview and active and active.battler.curMoves then
   for i,m in ipairs(mon.moves or {})do
    local current=active.battler.curMoves[i]

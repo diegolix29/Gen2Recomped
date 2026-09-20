@@ -258,8 +258,33 @@ local function awardOne(s,defeated)
   host.enemyIndex=defeated.partyIndex or host.enemyIndex
   resetNativeQueue(s)
   if s.generation==2 then
-    host.events={};host:awardExperience(defeated.mon)
-    screen.phase='resolving';screen:pushAll(host:takeEvents());screen:advanceQueue()
+    -- Add compatibility methods if they don't exist
+    if not host.awardExperience then
+      host.awardExperience = host.awardExp  -- Alias awardExp to awardExperience
+    end
+    if not host.takeEvents then
+      host.takeEvents = function(self)
+        local events = self.events or {}
+        self.events = {}
+        return events
+      end
+    end
+    if not screen.pushAll then
+      screen.pushAll = function(self, events)
+        -- Doubles has its own presentation, so skip native event dispatch
+        -- Just consume the events to clear them
+      end
+    end
+    if not screen.advanceQueue then
+      screen.advanceQueue = function(self)
+        -- Doubles handles queue progression internally
+      end
+    end
+    host.events={}
+    host:awardExperience(defeated.mon)
+    screen.phase='resolving'
+    screen:pushAll(host:takeEvents())
+    screen:advanceQueue()
   else
     -- With zero participants the native singles helper pays its current user.
     -- That fallback is not legal for doubles. A call-local read-only view

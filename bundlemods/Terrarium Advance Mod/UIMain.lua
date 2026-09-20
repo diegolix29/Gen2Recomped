@@ -149,7 +149,7 @@ function GoldCompat.experienceRatio(data,mon,generation,growthHint)
   if generation=="gen2" or mon.experience~=nil then
     local Mon=GoldCompat.__gen2MonModule
     if Mon==nil then
-      local okMon,value=pcall(require,"src.battle.gen2.Mon")
+      local okMon,value=pcall(require,"src.pokemon.Pokemon")
       Mon=(okMon and value) or false
       GoldCompat.__gen2MonModule=Mon
     end
@@ -2283,7 +2283,7 @@ function GoldCompat.presentBattleState(state)
       local def=source and source.species and data.pokemon
         and data.pokemon[source.species]
       if def and source and source.dvs then
-        local okMon,Mon=pcall(require,"src.battle.gen2.Mon")
+        local okMon,Mon=pcall(require,"src.pokemon.Pokemon")
         if okMon and Mon and type(Mon.gender)=="function" then
           local ok,value=pcall(Mon.gender,def,source.dvs,{
             species=source.species, level=source.level,
@@ -5270,7 +5270,7 @@ local function directBattleGender(battle,sideName,side)
   local src=GoldCompat.sourceBattleState(battle)
   if src and src.game and src.game.data then data=src.game.data end
 
-  local okMon,Mon=pcall(require,"src.battle.gen2.Mon")
+  local okMon,Mon=pcall(require,"src.pokemon.Pokemon")
 
   local function resolve(mon)
     if type(mon)~="table" then return nil end
@@ -16624,7 +16624,7 @@ function GoldCompat.summaryExpRatio(summary)
   if not (mon and def and mon.level and mon.experience) then return 0 end
   if mon.level>=100 then return 1 end
 
-  local ok,Mon=pcall(require,"src.battle.gen2.Mon")
+  local ok,Mon=pcall(require,"src.pokemon.Pokemon")
   if not ok or not Mon then return 0 end
   local growth=summary.growth and summary:growth()
   if not growth then return 0 end
@@ -23798,7 +23798,7 @@ function GoldCompat.buildLevelUpPopup(state,event)
       and battle.party[event.index]
   if not mon then return nil end
 
-  local okMon,Mon=pcall(require,"src.battle.gen2.Mon")
+  local okMon,Mon=pcall(require,"src.pokemon.Pokemon")
   local def=state.pokemon and mon.species and state.pokemon[mon.species]
   local newStats=mon.stats or {}
   local oldStats={}

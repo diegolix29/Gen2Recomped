@@ -60,7 +60,7 @@ local function nativeAudio(s,m)
  local data=s.screen.game.data;local def=m.event.moveDef or {}
  if s.generation==2 then
   local anims=data.gen2BattleAnims;local key=anims and anims.moves and anims.moves[m.event.move]
-  local loaded,Runner=pcall(req,'src.battle.gen2.AnimRunner')
+  local loaded,Runner=pcall(req,'src.battle.Gen2AnimPlayer')
   local result=(m.event.targetResults or {})[m.target] or {}
   if loaded and key then
    m.audioRunner=Runner.new{data=anims,constants=s.screen.animConstants,battleTurn=0,animId=m.event.move,param=tonumber(result.animParam) or 0,
