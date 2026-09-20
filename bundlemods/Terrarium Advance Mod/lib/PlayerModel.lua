@@ -54,8 +54,12 @@ local currentColosseumDex = nil
 -- shaped/textured/scaled overworld option, the same kind of deliberate
 -- scope limit GLBModel.lua documents for its own static-only .glb models.
 local usingCharacter = false
+local characterWalkTime = 0  -- Track walking animation time
+local characterIdleTime = 0  -- Track idle animation time
+local characterNativeTrack = nil  -- Store native animation track
+local characterNativeAge = 0  -- Track native animation age
 local currentCharacterId = nil
-local characterGroups = nil    -- array of {mesh=, texture=} for the current character
+local characterGroups = nil    -- array of {mesh=, texture=, baseVertices=} for the current character
 local characterCache = {}      -- id -> {groups=, scale=}, kept separate from modelCache/textureCache below since a character is several mesh+texture pairs, not one
 
 -- Target overworld world-unit height for a standing human figure. Matches
@@ -158,10 +162,7 @@ end
 
 -- Convert OBJ data to a mesh compatible with Voxel3D
 local function objToMesh(vertices, texCoords, faces)
-  print("objToMesh: Starting conversion with", #vertices, "vertices,", #texCoords, "texCoords and", #faces, "faces")
-  
   if #vertices == 0 or #faces == 0 then
-    print("objToMesh: No vertices or faces")
     return nil
   end
   
@@ -190,27 +191,20 @@ local function objToMesh(vertices, texCoords, faces)
           1.0             -- shade
         }
         table.insert(vertexData, vertex)
-      else
-        print("objToMesh: Invalid vertex index", vertexIndex, "in face", faceIndex)
       end
     end
   end
-  
-  print("objToMesh: Generated", #vertexData, "vertices")
-  
+
   if #vertexData == 0 then
-    print("objToMesh: No vertex data generated")
     return nil
   end
-  
+
   -- Create mesh
   local ok, mesh = pcall(love.graphics.newMesh, Voxel3D.FORMAT, vertexData, "triangles")
   if not ok then
-    print("objToMesh: love.graphics.newMesh failed:", mesh)
     return nil
   end
-  
-  print("objToMesh: Mesh created successfully")
+
   return mesh
 end
 
@@ -219,15 +213,12 @@ end
 -- Load a model from a file. Returns success plus mesh or error message.
 function PlayerModel.load(filename)
   if not filename then return false, "no filename" end
-  
-  print("PlayerModel.load: Attempting to load", filename)
-  
+
   -- Check cache first
   if modelCache[filename] then
     currentModel = modelCache[filename]
     currentTexture = textureCache[filename]
     currentFilename = filename
-    print("PlayerModel.load: Loaded from cache")
     return true
   end
   
@@ -238,67 +229,46 @@ function PlayerModel.load(filename)
   -- Read file
   local ok, data = pcall(f.read, path)
   if not ok or not data then
-    print("PlayerModel.load: Failed to read file -", ok, data)
     return false, "could not read file"
   end
-  
-  print("PlayerModel.load: File read successfully, size:", #data)
-  
+
   -- Determine file type and parse accordingly
   local ext = filename:lower():match("%.([^.]+)$")
   local mesh = nil
   local texture = nil
   
-  print("PlayerModel.load: File extension:", ext)
-  
   if ext == "obj" then
     local vertices, texCoords, faces, mtlFile = parseObj(data)
-    print("PlayerModel.load: Parsed OBJ - vertices:", #vertices, "texCoords:", #texCoords, "faces:", #faces, "mtl:", mtlFile or "none")
-    
+
     -- Load texture if MTL file is specified
     if mtlFile then
       local mtlPath = PlayerModelInstall.DIR .. "/" .. mtlFile
       local mtlOk, mtlData = pcall(f.read, mtlPath)
       if mtlOk and mtlData then
-        print("PlayerModel.load: MTL file read successfully")
         local materials = parseMtl(mtlData)
-        
+
         -- Get the first material's texture (simplified - uses first found texture)
         for matName, matData in pairs(materials) do
           if matData.texture then
             local texturePath = PlayerModelInstall.DIR .. "/" .. matData.texture
             local texOk, texData = pcall(f.read, texturePath)
             if texOk and texData then
-              print("PlayerModel.load: Texture file read successfully:", matData.texture)
               local imgOk, image = pcall(love.graphics.newImage, love.filesystem.newFileData(texData, matData.texture))
               if imgOk and image then
                 texture = image
-                print("PlayerModel.load: Texture loaded successfully")
                 break
-              else
-                print("PlayerModel.load: Failed to create image from texture data:", image)
               end
-            else
-              print("PlayerModel.load: Failed to read texture file:", texOk, texData)
             end
           end
         end
-      else
-        print("PlayerModel.load: Failed to read MTL file:", mtlOk, mtlData)
       end
     end
-    
+
     mesh = objToMesh(vertices, texCoords, faces)
-    print("PlayerModel.load: Mesh creation", mesh and "succeeded" or "failed")
   elseif ext == "glb" then
     local GLBModel = V.require("GLBModel")
     local glbMesh, glbTexture, glbErr, glbStats = GLBModel.load(data, Voxel3D)
-    if glbStats then
-      print("PlayerModel.load: Parsed GLB - vertices:", glbStats.vertexCount,
-            "triangles:", glbStats.triangleCount, "hasTexCoords:", glbStats.hasTexCoords)
-    end
     if not glbMesh then
-      print("PlayerModel.load: GLB load failed -", glbErr)
       return false, glbErr or "failed to load glb"
     end
     mesh = glbMesh
@@ -307,26 +277,22 @@ function PlayerModel.load(filename)
     -- .gltf (JSON + separate .bin/.png files) isn't handled yet -- only the
     -- single-file .glb container is. Convert with e.g. Blender's glTF
     -- exporter set to "glTF Binary (.glb)".
-    print("PlayerModel.load: .gltf (non-binary) is not supported yet. Please export as .glb.")
     return false, ".gltf not supported yet - please export as .glb"
   else
-    print("PlayerModel.load: Unsupported file format:", ext)
     return false, "unsupported file format: " .. (ext or "unknown")
   end
   
   if not mesh then
-    print("PlayerModel.load: Failed to create mesh from model")
     return false, "failed to create mesh from model"
   end
-  
+
   -- Cache the mesh and texture
   modelCache[filename] = mesh
   textureCache[filename] = texture
   currentModel = mesh
   currentTexture = texture
   currentFilename = filename
-  
-  print("PlayerModel.load: Successfully loaded model")
+
   return true
 end
 
@@ -339,16 +305,13 @@ end
 -- installed is capped at that source's own roster rather than failing outright.
 function PlayerModel.loadStadium(dex)
   if not dex then return false, "no dex number" end
-  
-  print("PlayerModel.loadStadium: Attempting to load dex", dex)
-  
+
   -- Check cache first (Stadium/Stadium2 rigs only -- a Colosseum actor is
   -- ColosseumMon's own shared cache, checked via .available()/.matrix() below
   -- instead of here)
   local cacheKey = "stadium_" .. dex
   if usingColosseum and currentColosseumDex == dex then
     currentFilename = "colosseum_" .. dex
-    print("PlayerModel.loadStadium: Colosseum model already current")
     return true
   end
   if modelCache[cacheKey] then
@@ -358,7 +321,6 @@ function PlayerModel.loadStadium(dex)
     currentFilename = "stadium_" .. dex
     isStadiumModel = true
     usingColosseum = false
-    print("PlayerModel.loadStadium: Loaded from cache")
     return true
   end
 
@@ -374,7 +336,6 @@ function PlayerModel.loadStadium(dex)
     isStadiumModel = false
     usingColosseum = true
     currentColosseumDex = dex
-    print("PlayerModel.loadStadium: Loaded Colosseum model for dex", dex)
     return true
   end
 
@@ -385,31 +346,19 @@ function PlayerModel.loadStadium(dex)
   -- player with only one imported isn't capped below what that one pack
   -- alone provides.
   local model
-  print("[PlayerModel] No Colosseum model, falling back to Stadium/Stadium2 for dex:", dex)
-  
   local stadium2Available = Stadium2Pack.available()
-  
+
   if stadium2Available then
-    print("[PlayerModel] Stadium2Pack available, using it for all Pokemon (1-251)")
     model = Stadium2Pack.load(dex, false)
-    print("[PlayerModel] Stadium2Pack.load returned:", model ~= nil, "for dex:", dex)
     if not model then
-      print("[PlayerModel] Stadium2Pack failed, trying StadiumPack as fallback")
       model = StadiumPack.load(dex, false)
-      print("[PlayerModel] StadiumPack.load returned:", model ~= nil, "for dex:", dex)
     end
   elseif dex > 151 then
-    print("[PlayerModel] Gen 2/3 dex with no Stadium2Pack, trying StadiumPack anyway")
     model = StadiumPack.load(dex, false)
-    print("[PlayerModel] StadiumPack.load returned:", model ~= nil, "for dex:", dex)
   else
-    print("[PlayerModel] Gen 1 Pokemon detected, using StadiumPack")
     model = StadiumPack.load(dex, false)
-    print("[PlayerModel] StadiumPack.load returned:", model ~= nil, "for dex:", dex)
     if not model then
-      print("[PlayerModel] StadiumPack failed, trying Stadium2Pack as fallback")
       model = Stadium2Pack.load(dex, false)
-      print("[PlayerModel] Stadium2Pack.load returned:", model ~= nil, "for dex:", dex)
     end
   end
   
@@ -432,17 +381,10 @@ function PlayerModel.loadStadium(dex)
       rig:pose(1, 0, true)  -- Animation 1 is idle, time 0, loop true
       rig:skin(0)  -- No rotation initially
 
-      print("PlayerModel.loadStadium: Successfully loaded Stadium model")
       return true
     end
-    print("PlayerModel.loadStadium: Failed to create rig")
-  elseif model and model.staticPose then
-    print("PlayerModel.loadStadium: Model has static pose, declining")
-  else
-    print("[PlayerModel] No Stadium/Stadium2 model for dex", dex)
   end
 
-  print("[PlayerModel] Failed to load Colosseum or Stadium model for dex", dex)
   return false, "could not load colosseum or stadium model"
 end
 
@@ -484,28 +426,18 @@ function PlayerModel.loadColosseumCharacter(id)
     currentTexture = nil
     currentRig = nil
     currentStadiumModel = nil
-    print("PlayerModel.loadColosseumCharacter: Loaded from cache", id)
     return true
   end
 
   local cfg = ColosseumTrainer.configFor(id)
   if not cfg or not cfg.cache then
-    print("PlayerModel.loadColosseumCharacter: character not available", id)
     return false, "colosseum trainer data not available: " .. tostring(id)
   end
-  
-  print("PlayerModel.loadColosseumCharacter: Loading character", id, "from cache:", cfg.cache, "requested id:", id)
 
   local cache, err = GeneratedAssets.readLua(cfg.cache)
   if type(cache) ~= "table" or type(cache.groups) ~= "table" or #cache.groups == 0 then
-    print("PlayerModel.loadColosseumCharacter: failed to read", cfg.cache, "err:", err, "cache type:", type(cache))
-    if type(cache) == "table" then
-      print("PlayerModel.loadColosseumCharacter: cache keys:", table.concat(table.keys(cache), ", "))
-    end
     return false, tostring(err or "empty trainer cache")
   end
-  
-  print("PlayerModel.loadColosseumCharacter: Successfully loaded cache with", #cache.groups, "groups")
 
   if not (love and love.graphics and love.graphics.newMesh) then
     return false, "love.graphics unavailable"
@@ -515,6 +447,14 @@ function PlayerModel.loadColosseumCharacter(id)
   for gi, g in ipairs(cache.groups) do
     local vertices = g.vertices
     if type(vertices) == "table" and #vertices > 0 then
+      -- Store base vertices and UVs for native animation offset application
+      local baseVertices = {}
+      local baseUVs = {}
+      for _, v in ipairs(vertices) do
+        baseVertices[#baseVertices + 1] = {v[1] or 0, v[2] or 0, v[3] or 0}
+        baseUVs[#baseUVs + 1] = {v[4] or 0, v[5] or 0}
+      end
+
       -- Base (rest-pose) position + UV only -- v[1..3] is the authored
       -- source position TrainerExtractor.normalize already centered on X/Z
       -- and grounded at Y=0 (feet), v[4..5] is U/V. The dense format also
@@ -524,14 +464,14 @@ function PlayerModel.loadColosseumCharacter(id)
       -- the same fallback GLBModel/objToMesh use for a model with no baked
       -- per-vertex lighting channel of their own.
       local vertexData = {}
-      for _, v in ipairs(vertices) do
+      for vi, v in ipairs(vertices) do
         vertexData[#vertexData + 1] = {
           v[1] or 0, v[2] or 0, v[3] or 0,
           v[4] or 0, v[5] or 0,
           1.0, 0.0,
         }
       end
-      local meshOk, mesh = pcall(love.graphics.newMesh, Voxel3D.FORMAT, vertexData, "triangles")
+      local meshOk, mesh = pcall(love.graphics.newMesh, Voxel3D.FORMAT, vertexData, "triangles", "dynamic")
       if meshOk and mesh then
         local texture = nil
         local tex = g.texture
@@ -543,19 +483,11 @@ function PlayerModel.loadColosseumCharacter(id)
               local imgOk, img = pcall(love.graphics.newImage, imgData)
               if imgOk and img then
                 texture = img
-              else
-                print("PlayerModel.loadColosseumCharacter: texture upload failed", tex.path, img)
               end
-            else
-              print("PlayerModel.loadColosseumCharacter: bad texture data", tex.path, imgData)
             end
-          else
-            print("PlayerModel.loadColosseumCharacter: texture read failed", tex.path, texErr)
           end
         end
-        groups[#groups + 1] = { mesh = mesh, texture = texture }
-      else
-        print("PlayerModel.loadColosseumCharacter: mesh build failed for group", gi, mesh)
+        groups[#groups + 1] = { mesh = mesh, texture = texture, baseVertices = baseVertices, baseUVs = baseUVs }
       end
     end
   end
@@ -579,8 +511,17 @@ function PlayerModel.loadColosseumCharacter(id)
   currentTexture = nil
   currentRig = nil
   currentStadiumModel = nil
+  
+  -- Load the native animation track for idle animations
+  local trackPath = ("cache/trainers/%s/native_v1/index.lua"):format(id)
+  local track, trackErr = GeneratedAssets.readLua(trackPath)
+  if track and track.version == 1 and track.roles then
+    characterNativeTrack = track
+    characterNativeAge = 0
+  else
+    characterNativeTrack = nil
+  end
 
-  print("PlayerModel.loadColosseumCharacter: Loaded", id, "groups:", #groups, "scale:", scale)
   return true
 end
 
@@ -650,6 +591,7 @@ function PlayerModel.clear()
   usingCharacter = false
   currentCharacterId = nil
   characterGroups = nil
+  characterWalkTime = 0  -- Reset walk animation time
 end
 
 -- Check if a model is currently loaded.
@@ -871,9 +813,123 @@ function PlayerModel.draw(px, py, y, facing, mirror)
   
   -- Handle Colosseum character models (static rest-pose trainer models)
   if usingCharacter and characterGroups then
+    -- Debug: log character draw (throttled)
+    if math.floor(characterIdleTime) > (PlayerModel._lastDrawLogTime or -999) then
+      PlayerModel._lastDrawLogTime = math.floor(characterIdleTime)
+      print("[PlayerModel.draw] Drawing character:", currentCharacterId, "idleTime:", characterIdleTime, "walkTime:", characterWalkTime, "hasNativeTrack:", characterNativeTrack ~= nil)
+    end
+
     -- Use the same movement behavior as Pokemon player models
     local FirstPerson = V.require("FirstPerson")
     local b = FirstPerson.cardBlend()
+
+    -- Detect if player is moving by checking actual input
+    local Game = require("src.core.Game")
+    local isMoving = Game.input:isDown("up") or Game.input:isDown("down")
+                    or Game.input:isDown("left") or Game.input:isDown("right")
+
+    -- Update animation time
+    if isMoving then
+      characterWalkTime = characterWalkTime + 0.15  -- Walk animation speed
+      characterIdleTime = 0  -- Reset idle when walking
+    else
+      characterIdleTime = characterIdleTime + 0.016  -- Idle animation speed (60fps)
+      characterWalkTime = 0  -- Reset walk when idle
+    end
+
+    -- Sample native idle animation from track if available
+    if characterNativeTrack and not isMoving then
+      local TrainerMorph = V.TrainerMorph
+      if TrainerMorph then
+        local clip, a, b, u, role = TrainerMorph.trackSample(characterNativeTrack, nil, characterIdleTime, nil, nil)
+
+        -- Debug: log sampling result
+        if math.floor(characterIdleTime) > (PlayerModel._lastNativeSampleLogTime or -999) then
+          PlayerModel._lastNativeSampleLogTime = math.floor(characterIdleTime)
+          print("[PlayerModel.draw] Native sample result: clip:", clip, "a:", a, "b:", b, "u:", u, "role:", role)
+          if clip then
+            print("[PlayerModel.draw] Clip has groups:", clip.groups and #clip.groups or "nil")
+          end
+        end
+
+        if clip and a and b and clip.groups then
+          -- Debug: log native sampling (throttled)
+          if math.floor(characterIdleTime) > (PlayerModel._lastNativeSampleLogTime or -999) then
+            PlayerModel._lastNativeSampleLogTime = math.floor(characterIdleTime)
+            print("[PlayerModel.draw] Native idle sample: clip:", a, b, "u:", u, "role:", role, "groups:", #clip.groups, "characterGroups:", #characterGroups)
+          end
+
+          -- Apply vertex offsets from native track to each mesh group
+          for gi, group in ipairs(characterGroups) do
+            local clipGroup = clip.groups[gi]
+            if clipGroup and clipGroup.path and group.baseVertices then
+              -- Read native vertex data for this frame
+              local clipPath = clipGroup.path
+              local verticesPerFrame = #group.baseVertices
+              local bytesPerVertex = 24  -- 6 floats * 4 bytes each (NativePosition + NativeNormal)
+              local frameOffsetA = (a - 1) * verticesPerFrame * bytesPerVertex
+              local frameOffsetB = (b - 1) * verticesPerFrame * bytesPerVertex
+
+              local bytes = GeneratedAssets.read(clipPath)
+              if bytes and #bytes >= frameOffsetB + verticesPerFrame * bytesPerVertex then
+                -- Apply interpolated offsets to mesh
+                local vertexData = {}
+                for vi = 1, #group.baseVertices do
+                  local base = group.baseVertices[vi]
+                  local uv = group.baseUVs[vi]
+                  local offsetA = frameOffsetA + (vi - 1) * bytesPerVertex
+                  local offsetB = frameOffsetB + (vi - 1) * bytesPerVertex
+
+                  -- Read interpolated position (first 3 floats = NativePosition)
+                  local ax, ay, az = 0, 0, 0
+                  local bx, by, bz = 0, 0, 0
+
+                  -- Parse frame A position
+                  if offsetA + 12 <= #bytes then
+                    ax = string.unpack("<f", bytes, offsetA + 1)
+                    ay = string.unpack("<f", bytes, offsetA + 5)
+                    az = string.unpack("<f", bytes, offsetA + 9)
+                  end
+
+                  -- Parse frame B position
+                  if offsetB + 12 <= #bytes then
+                    bx = string.unpack("<f", bytes, offsetB + 1)
+                    by = string.unpack("<f", bytes, offsetB + 5)
+                    bz = string.unpack("<f", bytes, offsetB + 9)
+                  end
+
+                  -- Native track stores absolute positions, use them directly (interpolated)
+                  local ox = ax + (bx - ax) * u
+                  local oy = ay + (by - ay) * u
+                  local oz = az + (bz - az) * u
+
+                  vertexData[#vertexData + 1] = {
+                    ox, oy, oz,
+                    uv[1] or 0, uv[2] or 0,
+                    1.0, 0.0
+                  }
+                end
+
+                -- Update mesh with new vertex positions
+                if group.mesh then
+                  group.mesh:setVertices(vertexData)
+                end
+              else
+                -- Debug: log why bytes check failed
+                if math.floor(characterIdleTime) > (PlayerModel._lastNativeSampleLogTime or -999) then
+                  print("[PlayerModel.draw] Bytes check failed: bytes:", bytes and #bytes or "nil", "needed:", frameOffsetB + verticesPerFrame * bytesPerVertex, "path:", clipPath)
+                end
+              end
+            else
+              -- Debug: log why clipGroup check failed
+              if math.floor(characterIdleTime) > (PlayerModel._lastNativeSampleLogTime or -999) then
+                print("[PlayerModel.draw] ClipGroup check failed: clipGroup:", clipGroup, "has baseVertices:", group.baseVertices ~= nil)
+              end
+            end
+          end
+        end
+      end
+    end
     
     -- Calculate the model matrix based on position and facing
     local m = Mat4.translate(px + 8, y, py + 8)
@@ -884,11 +940,6 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     if b > 0 then
       -- In free-roam mode, use camera-relative rotation like Pokemon models
       local cameraYaw = FirstPerson.cardYaw(px + 8, py + 8)
-      
-      -- Detect if player is moving by checking actual input
-      local Game = require("src.core.Game")
-      local isMoving = Game.input:isDown("up") or Game.input:isDown("down") 
-                      or Game.input:isDown("left") or Game.input:isDown("right")
       
       if isMoving then
         -- When moving in free-roam mode, detect which key is pressed and use that direction
@@ -930,6 +981,20 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     
     -- Add 180-degree rotation so character faces the right direction
     m = Mat4.mul(m, Mat4.rotateY(yaw + math.pi))
+    
+    -- Apply simple walk animation (bobbing + slight rocking when moving)
+    if isMoving then
+      local walkSin = math.sin(characterWalkTime)
+      local walkCos = math.cos(characterWalkTime)
+      
+      -- Vertical bobbing (up/down oscillation)
+      local bobAmount = 0.15 * walkSin
+      m = Mat4.mul(m, Mat4.translate(0, bobAmount, 0))
+      
+      -- Slight forward/back rocking (simulates leaning into steps)
+      local rockAmount = 0.05 * walkCos
+      m = Mat4.mul(m, Mat4.rotateX(rockAmount))
+    end
     
     -- Apply mirroring if needed
     if mirror then

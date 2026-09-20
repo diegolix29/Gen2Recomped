@@ -135,18 +135,18 @@ end
 -- Draw character model (called by VoxelScene)
 function CharacterSprite.draw(p)
   if not p or not p.characterId or not p.characterConfig then return false end
-  
+
   local characterId = p.characterId
   local charConfig = p.characterConfig
   local matrix = p.characterMatrix
-  
+
   if not matrix then return false end
-  
+
   -- For now, try to use the Trainer system to render the character
   -- This is complex, so we'll log it and return false to fall back to sprite
   logOnce("character-draw:" .. tostring(characterId),
     "Attempting to draw character 3D model for %s (using Trainer system)", tostring(characterId))
-  
+
   -- TODO: Integrate with Trainer rendering system
   -- The Trainer system is quite complex and would need:
   -- 1. Loading the trainer model from cache
@@ -190,7 +190,6 @@ function CharacterSprite.tagPlayer(game, ow)
   if TrainerRoster and TrainerRoster.available and TrainerRoster.available(characterId) then
     player._characterTagged = true
     player._characterId = characterId
-    DebugLog.info(V.mod, "CharacterSprite: Tagged player as", characterId)
   else
     player._characterTagged = false
     player._characterId = nil
@@ -219,14 +218,14 @@ function CharacterSprite.installHooks(mod)
     VoxelScene.prepare = function(posed)
       -- Call original prepare (includes OverworldStadium.prepare)
       local result = originalPrepare(posed)
-      
+
       -- Add character model preparation
       CharacterSprite.safePrepare(posed)
-      
+
       return result
     end
   end
-  
+
   -- Hook into VoxelScene.draw to handle character rendering
   if VoxelScene and VoxelScene.draw then
     local originalDraw = VoxelScene.draw
@@ -238,13 +237,12 @@ function CharacterSprite.installHooks(mod)
           return true  -- Character 3D drawn successfully
         end
       end
-      
+
       -- Fall back to original draw
       return originalDraw(p)
     end
   end
-  
-  DebugLog.info(mod, "CharacterSprite: Hooks installed (using Trainer system)")
+
   return true
 end
 

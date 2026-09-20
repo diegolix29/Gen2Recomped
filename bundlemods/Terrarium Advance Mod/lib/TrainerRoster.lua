@@ -103,26 +103,22 @@ local function catalogEntry(id)
   
   -- First try the base MODELS table (skip the index for now)
   local base=MODELS[id]
-  if base and exists(base.cache) then 
+  if base and exists(base.cache) then
     local out={};for k,v in pairs(base) do out[k]=v end
-    print("TrainerRoster.catalogEntry: Returning base entry for", id, "cache:", out.cache)
     return out
   end
-  
+
   -- Only use index if base doesn't exist
   local fromIndex=indexEntry("models",id)
-  if fromIndex then 
-    print("TrainerRoster.catalogEntry: Using index entry for", id, "cache:", fromIndex.cache)
-    return fromIndex 
+  if fromIndex then
+    return fromIndex
   end
-  
-  if not base then 
-    print("TrainerRoster.catalogEntry: No base entry for", id)
-    return nil 
+
+  if not base then
+    return nil
   end
-  if not exists(base.cache) then 
-    print("TrainerRoster.catalogEntry: Cache does not exist for", id, "path:", base.cache)
-    return nil 
+  if not exists(base.cache) then
+    return nil
   end
 end
 function R.normalizeChoice(id,role)
@@ -153,15 +149,11 @@ end
 function R.modelById(id)
   -- Skip normalization for character model system - use exact ID
   -- This prevents the default-to-red behavior for our character IDs
-  local originalId = id
   id=tostring(id or ""):lower()
   if id=="green" then id="leaf" elseif id=="seth" then id="wes" end
   if id=="off" or id=="auto" then return nil end
-  
-  print("TrainerRoster.modelById: Looking up", id, "(original:", originalId, ")")
-  local result = catalogEntry(id)
-  print("TrainerRoster.modelById: Result cache:", result and result.cache, "for id:", id)
-  return result
+
+  return catalogEntry(id)
 end
 
 function R.isRival(ctx)

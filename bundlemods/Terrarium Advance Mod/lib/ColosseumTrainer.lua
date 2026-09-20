@@ -45,8 +45,7 @@ M.CHARACTERS = {
   "miror_b",       -- Miror B. (boss555_a1.dat)
 }
 
--- Debug: log the character catalog
-print("ColosseumTrainer: Character catalog has", #M.CHARACTERS, "entries")
+
 
 -- Service accessor: reach TrainerRoster through the mod.exports bridge.
 local function service()
@@ -103,15 +102,7 @@ function M.configFor(id)
 
   local ok, cfg = pcall(svc.modelById, id)
   if not ok or not cfg then 
-    print("ColosseumTrainer.configFor: Failed to get config for", id, "ok:", ok, "cfg:", cfg)
     return nil 
-  end
-  
-  print("ColosseumTrainer.configFor: Got config for", id, "cache:", cfg.cache, "requested id:", id)
-  
-  -- Verify the cache matches the requested ID
-  if cfg.cache and cfg.cache:find("red") and id ~= "red" then
-    print("ColosseumTrainer.configFor: WARNING - cache path doesn't match ID!", id, cfg.cache)
   end
   
   return cfg
