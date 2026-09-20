@@ -22,6 +22,17 @@ function C.current()
     local okGen,value=pcall(GameVersion.generation)
     if okGen and tonumber(value) then detectedGeneration=tonumber(value) end
   end
+  -- Fallback detection for Gen 3: check if Gen 3 battle classes exist
+  if not detectedGeneration or detectedGeneration == 1 then
+    local okGen3, Gen3Battle = pcall(engineRequire, "src.battle.BattleState")
+    if okGen3 and Gen3Battle then
+      -- Check if this is actually Gen 3 by looking for Gen 3-specific features
+      local okData, Data = pcall(engineRequire, "src.core.Data")
+      if okData and Data and Data.constants and Data.constants.gen3ItemEffects then
+        detectedGeneration = 3
+      end
+    end
+  end
   return detectedGeneration or 1
 end
 

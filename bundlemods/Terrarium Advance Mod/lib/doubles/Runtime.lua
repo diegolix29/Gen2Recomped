@@ -49,11 +49,34 @@ local function eligible(screen,generation)
   local game=screen.game
   local p=game and game.save and ((V.BattleSettings and V.BattleSettings.prefs(game)) or game.save.colosseumBattle)
   if not (p and p.doubleBattlesEnabled==true) then return false end
+  
+  -- Check if engine is already in double battle mode
+  local isDoubleBattle = false
+  
+  -- Gen 3: Check for native double battle indicators
+  if generation==3 then
+    -- Gen 3 might have native double battle support - check for double battle flags
+    isDoubleBattle = (host.doubleBattle == true) or 
+                     (host.isDoubleBattle == true) or
+                     (host.battleType and (host.battleType==2 or host.battleType=="double")) or
+                     (host.kind=='trainer' and host.enemyParty and #host.enemyParty>=2)
+  -- Gen 2: Check for double battle indicators  
+  elseif generation==2 then
+    isDoubleBattle = (host.doubleBattle == true) or 
+                     (host.isDoubleBattle == true) or
+                     (host.kind=='trainer' and host.enemyParty and #host.enemyParty>=2)
+  -- Gen 1: Use original logic
+  else
+    isDoubleBattle = (host.kind=='trainer' and host.enemyParty and #host.enemyParty>=2)
+  end
+  
+  if not isDoubleBattle then return false end
+  
+  -- Relax the other conditions - just check basic battle validity
   if generation==2 then
-    if not host.trainer or host.wild or host.linkBattle or host.inBattleTowerBattle
-      or screen.tutorial or screen.contest or host.battleType==3 or host.battleType==6 then return false end
+    if host.wild or host.linkBattle then return false end
   elseif host.kind~='trainer' or host.demo or host.ghost or host.link or host.spectator then return false end
-  if not host.enemyParty or #host.enemyParty<=2 then return false end
+  
   if p.arenasEnabled==false then return false,'Double battles require Colosseum Arenas ON' end
   local api,why=consumer(game);if not api then return false,why end
   return true,api
@@ -61,10 +84,22 @@ end
 local function openingBoundary(screen,generation)
   if type(screen)~='table' then return false end
   local arena=V.StandaloneHost and V.StandaloneHost.session
-  return arena and arena.started and (arena.battle==screen
+  -- More permissive opening boundary - accept arena OR native double battle start
+  local arenaMatch = arena and arena.started and (arena.battle==screen
     or (V.GenerationCompat and V.GenerationCompat.matches and V.GenerationCompat.matches(arena.battle,screen)))
-    and ((generation==1 and screen.phase=='messages' and screen.showPlayerBack==true and screen.showEnemyTrainer==true)
-      or (generation==2 and screen.phase=='intro' and screen.showPlayerTrainer==true)) or false
+  
+  -- For all generations, accept native double battle phases even without arena
+  local nativeDoubleStart = false
+  if generation==3 then
+    nativeDoubleStart = (screen.phase=='messages' and screen.showPlayerBack==true and screen.showEnemyTrainer==true)
+  elseif generation==2 then
+    nativeDoubleStart = (screen.phase=='intro' and screen.showPlayerTrainer==true)
+  else
+    nativeDoubleStart = (screen.phase=='messages' and screen.showPlayerBack==true and screen.showEnemyTrainer==true)
+  end
+  
+  -- Make arena optional - if native double battle is detected, accept it even without arena
+  return nativeDoubleStart or arenaMatch or false
 end
 -- Draw can occur once after the native battle screen enters its opening state
 -- but before the next BattleState:update call gives doubles ownership to
@@ -81,6 +116,7 @@ function D.openingPending(value,generation)
   end
   if type(screen)~='table' or screen.__cbeDoublesActive then return false end
   generation=generation or ((type(value)=='table' and value.__cbeGeneration==2) and 2)
+    or ((type(value)=='table' and value.__cbeGeneration==3) and 3)
     or ((screen.battle and screen.battle~=screen) and 2) or 1
   if not openingBoundary(screen,generation) then return false end
   local ok=eligible(screen,generation)
@@ -94,6 +130,7 @@ function D.tryBegin(screen,generation)
   screen.__cbeDoublesDecision=ok==true
   if not ok then if type(api)=='string' then D.lastSkip=api;log(api) end;return nil end
   local host=generation==2 and screen.battle or screen
+  -- Gen 3 uses the same party structure as Gen 1
   local party=generation==2 and host.party or (host.game and host.game.save and host.game.save.party)
   local ready=false;for _,m in ipairs(party) do if live(m) then ready=true end end
   if not ready then return nil end
@@ -112,6 +149,7 @@ function D.tryBegin(screen,generation)
   local adapter=V.DoublesNativeAdapter.new(host,generation)
   adapter.screen=screen
   local pi=generation==2 and host.playerIndex or nil
+  -- Gen 3 uses the same playerIndex logic as Gen 1
   if not pi then for i,m in ipairs(party) do if host.player and host.player.mon==m then pi=i end end end
   local core=V.DoublesCore.new{adapter=adapter,id='cbe-double-'..D.serial,generation=generation,
     playerParty=party,enemyParty=host.enemyParty,playerIndex=pi,enemyIndex=host.enemyIndex,
@@ -177,7 +215,7 @@ function D.abort(s)
   for key,row in pairs(s.backup.itemSaveFields or {})do s.screen.game.save[key]=row.value end
   host.amuletCoin=s.oldAmuletCoin
   host.player=s.oldPlayer;host.enemy=s.oldEnemy;host.playerIndex=s.oldPlayerIndex;host.enemyIndex=s.oldEnemyIndex
-  if s.generation==1 then
+  if s.generation==1 or s.generation==3 then
     host.player=s.adapter.native.makeBattler(host.data,s.oldPlayer.mon,true,host.game.save)
     host.enemy=s.adapter.native.makeBattler(host.data,s.oldEnemy.mon,false)
   end
@@ -203,8 +241,8 @@ local function bindNativeView(s)
       if core.slots[id].mon then player=core.slots[id];break end
     end
   end
-  if player then host.player=s.generation==2 and player.mon or player.battler;host.playerIndex=player.partyIndex end
-  host.turn=s.generation==2 and core.turn or host.turn;host.turnCount=core.turn
+  if player then host.player=(s.generation==2 and player.mon or player.battler);host.playerIndex=player.partyIndex end
+  host.turn=(s.generation==2 and core.turn or host.turn);host.turnCount=core.turn
   if type(host.syncSides)=='function' then host:syncSides() end
 end
 local function installProgressGuards(s)
@@ -265,7 +303,7 @@ function D.startHandoff(s)
   bindNativeView(s)
   local last=s.core.defeated[#s.core.defeated]
   if last then
-    s.host.enemy=s.generation==2 and last.mon or last.battler
+    s.host.enemy=(s.generation==2 and last.mon or last.battler)
     s.host.enemyIndex=last.partyIndex or s.host.enemyIndex
   end
   s.host.payDay=s.adapter.k.payDay or s.host.payDay
@@ -282,15 +320,16 @@ local function awardOne(s,defeated)
     local mon=core.playerParty[index]
     -- The controller captured eligibility at this KO. No later-turn HP filter
     -- is permitted here; live combat is suspended until this queue completes.
-    if mon then host.participants[s.generation==2 and index or mon]=true end
+    if mon then host.participants[(s.generation==2 and index or mon)]=true end
   end
-  host.enemy=s.generation==2 and defeated.mon or defeated.battler
+  host.enemy=(s.generation==2 and defeated.mon or defeated.battler)
   host.enemyIndex=defeated.partyIndex or host.enemyIndex
   resetNativeQueue(s)
   if s.generation==2 then
     host.events={};host:awardExperience(defeated.mon)
     screen.phase='resolving';screen:pushAll(host:takeEvents());screen:advanceQueue()
   else
+    -- Gen 1 and Gen 3 use the same experience awarding logic
     -- With zero participants the native singles helper pays its current user.
     -- That fallback is not legal for doubles. A call-local read-only view
     -- suppresses ONLY that fallback, without writing any real Pokemon's HP,
@@ -330,6 +369,7 @@ local function finishNative(s)
     end
     screen.phase='resolving';screen:pushAll(host:takeEvents());screen:advanceQueue()
   else
+    -- Gen 1 and Gen 3 use the same finishing logic
     screen.phase='messages'
     if core.outcome=='win' then
       local previous=host.awardExp;host.awardExp=function() end
@@ -506,6 +546,7 @@ function D.install()
     Runtime.__cbeDoublesEmitGuard=true
   end
   local generation=V.GenerationCompat.current()
+  -- Gen 3 uses the same BattleState class as Gen 1
   local class=req(generation==2 and 'src.ui.battle.BattleState' or 'src.battle.BattleState')
   local old=assert(class.update,'Native battle update is unavailable')
   class.update=function(screen,dt,...)
