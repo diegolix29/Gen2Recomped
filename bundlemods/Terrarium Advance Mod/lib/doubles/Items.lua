@@ -10,7 +10,14 @@ local battleItems={X_ATTACK=true,X_DEFEND=true,X_DEFENSE=true,X_SPEED=true,X_SPE
 local ppItems={ETHER=true,MAX_ETHER=true,ELIXER=true,MAX_ELIXER=true,MYSTERYBERRY=true}
 local fullMask={FULL_HEAL=true,FULL_RESTORE=true,HEAL_POWDER=true,MIRACLEBERRY=true}
 local function effects(a)return req(a.generation==2 and 'src.core.gen2.ItemEffects' or 'src.inventory.ItemEffects')end
-function I.save(a)return a.host.save or (a.host.game and a.host.game.save)end
+function I.save(a)
+ local host=a and a.host
+ -- Mt. Battle supplies a save-shaped proxy whose inventory is the temporary
+ -- Challenge Bag and whose party is the Level-50 clone roster. Prefer it over
+ -- the real save so battle items cannot consume the player's permanent bag.
+ if host and host.__cbeMtBattleItemSave then return host.__cbeMtBattleItemSave end
+ return host and (host.save or (host.game and host.game.save)) or nil
+end
 function I.classify(a,id)
  if type(id)~='string' or not (a.data.items and a.data.items[id]) then return nil end
  local E=effects(a)
@@ -20,9 +27,9 @@ function I.classify(a,id)
   return 'battle'
  end
  if a.generation==2 then
-  local kind=E.partyAction and E:partyAction(id,a.data)
+  local kind=E.partyAction(id,a.data)
   if kind=='heal' or kind=='status' or kind=='revive' or (kind=='pp' and ppItems[id]) then return kind end
- elseif E.isBattleMedicine and E:isBattleMedicine(id) then return 'medicine'
+ elseif E.isBattleMedicine(id) then return 'medicine'
  elseif ppItems[id] and id~='MYSTERYBERRY' then return 'pp' end
 end
 function I.available(a,id)
@@ -54,9 +61,9 @@ function I.apply(a,id,mon,moveIndex,preview)
     return true,{}
    end
    a:bind(active,opponent or active)
-   return a.k.useBattleItem and a.k:useBattleItem(id) or true,{}
+   return a.k:useBattleItem(id),{}
   end
-  local result=kind=='pp' and (E.usePpItem and E:usePpItem(id,target,moveIndex,a.data) or {used=false}) or (E.useOnMon and E:useOnMon(id,target,a.data) or {used=false})
+  local result=kind=='pp' and E.usePpItem(id,target,moveIndex,a.data) or E.useOnMon(id,target,a.data)
   if active and fullMask[id] then
    local volatile=mon.volatile or {}
    if volatile.confuseCount then
@@ -76,7 +83,7 @@ function I.apply(a,id,mon,moveIndex,preview)
  else
   if active then a:bind(active,opponent or active)end
  end
- local result,messages=E.use and E:use(a.data,save,id,target,kernel,moveIndex) or 'consumed',{}
+ local result,messages=E.use(a.data,save,id,target,kernel,moveIndex)
  if result=='consumed' and not preview and active and active.battler.curMoves then
   for i,m in ipairs(mon.moves or {})do
    local current=active.battler.curMoves[i]

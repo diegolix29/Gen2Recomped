@@ -1,4 +1,4 @@
--- Native Gen I/II effect kernels for the experimental four-position scheduler.
+-- Native Gen I/II effect kernels for the production four-position scheduler.
 -- Native *individual moves* are reused. Neither native takeTurn/resolveTurn nor
 -- its two-battler faint/replacement pipeline is called during doubles.
 local V=... or {}
@@ -11,14 +11,18 @@ local function set(words) local o={} for w in words:gmatch('%S+') do o[w]=true e
 local selfMoves=set([[SWORDS_DANCE GROWTH MEDITATE AGILITY DOUBLE_TEAM HARDEN MINIMIZE WITHDRAW DEFENSE_CURL BARRIER AMNESIA FOCUS_ENERGY RECOVER SOFTBOILED REST SUBSTITUTE SPLASH SHARPEN ACID_ARMOR CONVERSION CONVERSION2 BELLY_DRUM MILK_DRINK SYNTHESIS MOONLIGHT MORNING_SUN PROTECT DETECT ENDURE]])
 local sideMoves=set([[REFLECT LIGHT_SCREEN MIST SAFEGUARD HEAL_BELL]])
 local fieldMoves=set([[HAZE PERISH_SONG RAIN_DANCE SUNNY_DAY SANDSTORM]])
-local foesMoves=set([[SURF SWIFT RAZOR_LEAF BLIZZARD POWDER_SNOW ICY_WIND ROCK_SLIDE ACID TWISTER GROWL LEER TAIL_WHIP STRING_SHOT SWEET_SCENT]])
-local allMoves=set([[EARTHQUAKE MAGNITUDE SELFDESTRUCT SELF_DESTRUCT EXPLOSION]])
--- Explicitly unavailable in this test, not silently converted into ordinary hits.
--- These require cross-action identities or native UI/party mutation which the
--- singles effect implementation cannot safely express through a target pair.
-local unsupported=set([[BIDE COUNTER MIRROR_COAT MIRROR_MOVE METRONOME MIMIC SLEEP_TALK FUTURE_SIGHT BATON_PASS ROAR WHIRLWIND TELEPORT TRANSFORM ATTRACT PURSUIT BEAT_UP DESTINY_BOND NIGHTMARE SKETCH]])
-local gen1Unsupported=set([[BIND WRAP FIRE_SPIN CLAMP]])
-local unsafeEffects=set([[EFFECT_BIDE EFFECT_COUNTER EFFECT_MIRROR_COAT EFFECT_MIRROR_MOVE EFFECT_METRONOME EFFECT_MIMIC EFFECT_SLEEP_TALK EFFECT_FUTURE_SIGHT EFFECT_BATON_PASS EFFECT_FORCE_SWITCH EFFECT_TELEPORT EFFECT_TRANSFORM EFFECT_ATTRACT EFFECT_PURSUIT EFFECT_BEAT_UP EFFECT_DESTINY_BOND EFFECT_NIGHTMARE EFFECT_SKETCH]])
+local foesMoves=set([[SWIFT RAZOR_LEAF BLIZZARD POWDER_SNOW ICY_WIND ROCK_SLIDE ACID TWISTER GROWL LEER TAIL_WHIP STRING_SHOT SWEET_SCENT]])
+-- GC6E01 / Gen III doubles "all other battlers" attacks include the user's
+-- partner as well as both opposing positions. Surf belongs in this class just
+-- like Earthquake/Magnitude and the explosion moves; treating Surf as foes-only
+-- incorrectly granted the partner immunity in CBE doubles.
+local allMoves=set([[SURF EARTHQUAKE MAGNITUDE SELFDESTRUCT SELF_DESTRUCT EXPLOSION]])
+-- Cross-action adapters for these Gen I/II effects are now routed through the
+-- native doubles kernels. Keep this list empty unless a move needs explicit
+-- exclusion from native handling.
+local unsupported=set([[]])
+local gen1Unsupported=set([[]])
+local unsafeEffects=set([[EFFECT_FORCE_SWITCH]])
 A.UNSUPPORTED=unsupported
 function A.new(host,generation)
   local self=setmetatable({host=host,generation=generation,data=assert(host.data),
@@ -43,7 +47,7 @@ function A.new(host,generation)
     -- leaving native singles/mod registries untouched. Gen II source semantics:
     -- pret/pokecrystal engine/battle/move_effects/psych_up.asm and the PsychUp
     -- list in data/moves/effects.asm (no checkhit; fail for all-neutral stages).
-    local psych=self.native.moveEffectRecordFor and self.native:moveEffectRecordFor(self.data,'EFFECT_PSYCH_UP')
+    local psych=self.native.moveEffectRecordFor(self.data,'EFFECT_PSYCH_UP')
     if not (psych and type(psych.run)=='function') then
       k.data=copy(self.data);k.data.gen2MoveEffects=copy(self.data.gen2MoveEffects)
       k.data.gen2MoveEffects.EFFECT_PSYCH_UP={kind='primary',run=function(kernel,user,target)
@@ -52,7 +56,7 @@ function A.new(host,generation)
         local changed=false
         for _,key in ipairs(keys) do if source and (source.stages[key] or 0)~=0 then changed=true;break end end
         if not changed or not destination then
-          if kernel.markMissed then kernel:markMissed() end;self:message('But it failed!');return
+          kernel:markMissed();self:message('But it failed!');return
         end
         -- Preserve the slot's table identity: native damage/turn-order
         -- calculations read these seven stages on demand, and no partner/target table is aliased.
@@ -60,6 +64,13 @@ function A.new(host,generation)
         self:message(self:name(user)..' copied '..self:name(target).."'s stat changes!")
       end}
     end
+    -- Real Gen II Psych Up has no CheckHit command at all. The current host
+    -- Battle.lua performs its common Protect/vanished gates before dispatching
+    -- move-effect records and no longer exposes the old Effects.NO_CHECKHIT
+    -- compatibility table. Keep the correction local to this doubles kernel:
+    -- perform() temporarily suppresses only those target-side CheckHit flags
+    -- while invoking Psych Up, then restores them byte/logically unchanged.
+    -- Lock-On is separately left untouched by consumeLockOn() below.
     -- Stage tables are battler-specific; screens/hazards are side-specific.
     k.sideOf=function(_,mon) local s=self.core and self.core:slotFor(mon);return s and s.id or 'enemy' end
     k.sideRecord=function(_,mon)
@@ -74,12 +85,12 @@ function A.new(host,generation)
     k.battleStat=function(kernel,mon,key)
       local s=self.core:slotFor(mon);local old=kernel.player
       kernel.player=(s and s.side=='player') and mon or nil
-      local n=self.native.battleStat and self.native:battleStat(kernel,mon,key) or 0;kernel.player=old;return n
+      local n=self.native.battleStat(kernel,mon,key);kernel.player=old;return n
     end
     k.badgeTypeBoost=function(kernel,mon,kind)
       local s=self.core:slotFor(mon);local old=kernel.player
       kernel.player=(s and s.side=='player') and mon or nil
-      local n=self.native.badgeTypeBoost and self.native:badgeTypeBoost(kernel,mon,kind) or 1;kernel.player=old;return n
+      local n=self.native.badgeTypeBoost(kernel,mon,kind);kernel.player=old;return n
     end
     -- The native flag belongs to a target. Bind ownership to a battler token
     -- so another opponent cannot consume a partner's accuracy guarantee.
@@ -89,14 +100,14 @@ function A.new(host,generation)
       if self.action and self.action.moveId=='PSYCH_UP' then return false end
       local target=self.core and self.core:slotFor(mon)
       if target and target.lockOnSource and (not self.acting or target.lockOnSource~=self.acting.battlerId) then return false end
-      local result=self.native.consumeLockOn and self.native:consumeLockOn(kernel,mon) or false
+      local result=self.native.consumeLockOn(kernel,mon)
       if result and target then target.lockOnSource=nil end
       return result
     end
     k.selfdestructUser=function(_,mon) self.destruct=mon end
     k.dealDamage=function(kernel,attacker,target,damage,opts)
       if self.spread and opts and opts.move then damage=math.max(1,math.floor(damage*.5)) end
-      return self.native.dealDamage and self.native:dealDamage(kernel,attacker,target,damage,opts) or damage
+      return self.native.dealDamage(kernel,attacker,target,damage,opts)
     end
   else
     self.status=req('src.battle.Status');self.order=req('src.battle.TurnOrder')
@@ -119,7 +130,7 @@ function A.new(host,generation)
     k.selfDestruct=function(_,battler) self.destruct=battler.mon end
     k.cancelMoveAnim=function(kernel) if kernel.moveAnimRow then kernel.moveAnimRow.cancelled=true end end
     k.computeDamage=function(kernel,user,target,move,opts)
-      local n,info=self.native.computeDamage and self.native:computeDamage(kernel,user,target,move,opts) or 0,{}
+      local n,info=self.native.computeDamage(kernel,user,target,move,opts)
       if self.spread and move.id~='CONFUSED' and n>0 then n=math.max(1,math.floor(n*.5)) end
       return n,info
     end
@@ -156,20 +167,20 @@ end
 function A:maxHP(mon) return math.max(1,mon.maxHp or mon.maxHP or (mon.stats and mon.stats.hp) or mon.hp or 1) end
 function A:makeBattler(s,opening)
   if self.generation==2 then
-    if self.k.clearVolatile then self.k:clearVolatile(s.mon) end
+    self.k:clearVolatile(s.mon)
     if s.side=='player' and self.host.checkAmuletCoin then self.host:checkAmuletCoin(s.mon) end
     return {mon=s.mon,name=self:name(s.mon),isPlayer=s.side=='player',stages=self:newStages()}
   end
   local lead=s.side=='player' and self.host.player or self.host.enemy
   if opening and lead and lead.mon==s.mon then return lead end
-  local b=self.native.makeBattler and self.native:makeBattler(self.data,s.mon,s.side=='player',self.host.game and self.host.game.save) or {mon=s.mon,name=self:name(s.mon),isPlayer=s.side=='player',stages=self:newStages()}
+  local b=self.native.makeBattler(self.data,s.mon,s.side=='player',self.host.game and self.host.game.save)
   for _,key in ipairs({'reflect','lightScreen','mist'}) do if self.screens[s.side][key] then b[key]=true end end
   return b
 end
 function A:withdraw(s)
   if self.generation==2 then
     if AbilityEffectsGen2 then AbilityEffectsGen2.onLeave(self.k, s.mon) end
-    if self.k.clearVolatile then self.k:clearVolatile(s.mon) end
+    self.k:clearVolatile(s.mon)
   elseif AbilityEffectsGen1 then
     AbilityEffectsGen1.onLeave(self.k, s)
   end
@@ -201,12 +212,18 @@ function A:supports(def)
     return false,'Requires a doubles-specific effect adapter'
   end
   if self.generation==1 then
-    local r=self.k.effectRecord and self.k:effectRecord(def.effect)
+    local r=self.k:effectRecord(def.effect)
     if r and (r.callsMove or r.perform) then return false,'Native special flow not yet adapted' end
   end
   return true
 end
 function A:targetMode(def)
+  if def and (def.colosseumTarget=='self' or def.colosseumTarget=='side'
+      or def.colosseumTarget=='field' or def.colosseumTarget=='foes'
+      or def.colosseumTarget=='all-other' or def.colosseumTarget=='random'
+      or def.colosseumTarget=='ally' or def.colosseumTarget=='selected') then
+    return def.colosseumTarget
+  end
   local id=def and def.id
   if selfMoves[id] then return 'self' end
   if sideMoves[id] then return 'side' end
@@ -218,13 +235,13 @@ function A:targetMode(def)
   return 'selected'
 end
 function A:forced(s)
-  if self.generation==2 then local id=self.k.forcedMove and self.k:forcedMove(s.mon);return id and {id=id} end
+  if self.generation==2 then local id=self.k:forcedMove(s.mon);return id and {id=id} end
   local b=s.battler
   if b.mustRecharge then return {special='recharge'} end
   return b.charging or b.thrashMove or b.rageMove
 end
 function A:disabled(s,index,move)
-  if self.generation==2 then return self.k.moveDisabled and self.k:moveDisabled(s.mon,move.id) or false end
+  if self.generation==2 then return self.k:moveDisabled(s.mon,move.id) end
   return s.battler.disabledSlot==index
 end
 function A:abilityTraps(s)
@@ -277,10 +294,7 @@ function A:bind(s,t)
     for _,slot in pairs(self.core.slots) do if slot.mon then
       k.stages[slot.id]=slot.stages;k.screens[slot.id]=self.screens[slot.side]
     end end
-    local playerSlot=self.core and self.core:slotFor(k.player)
-    local enemySlot=self.core and self.core:slotFor(k.enemy)
-    k.stages.player=playerSlot and playerSlot.stages or {}
-    k.stages.enemy=enemySlot and enemySlot.stages or {}
+    k.stages.player=self.core:slotFor(k.player).stages;k.stages.enemy=self.core:slotFor(k.enemy).stages
     k.spikes=setmetatable({}, {__index=function(_,id) local slot=self.core.slots[id];return self.spikes[slot and slot.side or id] end,
       __newindex=function(_,id,value) local slot=self.core.slots[id];self.spikes[slot and slot.side or id]=value end})
   else
@@ -318,32 +332,32 @@ end
 function A:onEnter(s)
   if self.generation==2 then
     self:bind(s,s)
-    if self.k.spikesDamage then self.k:spikesDamage(s.mon) end
+    self.k:spikesDamage(s.mon)
   end
   self:onEnterAbilities(s)
 end
 function A:speed(s)
-  if self.generation==2 then self:bind(s,s);return self.k.effectiveSpeed and self.k:effectiveSpeed(s.mon) or 0 end
+  if self.generation==2 then self:bind(s,s);return self.k:effectiveSpeed(s.mon) end
   local multiplier=AbilityEffectsGen1 and AbilityEffectsGen1.speedMultiplier(self.k,s.battler) or 1
   return self.order.effectiveSpeed(s.battler)*multiplier
 end
 function A:priority(id)
   local d=self:moveDef(id)
   if d and d.priority then return d.priority end
-  if self.generation==2 then return self.k.movePriority and self.k:movePriority(id) or 0 end
+  if self.generation==2 then return self.k:movePriority(id) end
   return id=='QUICK_ATTACK' and 1 or 0
 end
 function A:quickClaw(s)
   if self.generation~=2 then return false end
   self:bind(s,s)
-  local effect,param=self.k.heldEffect and self.k:heldEffect(s.mon,'priority')
+  local effect,param=self.k:heldEffect(s.mon,'priority')
   return effect=='HELD_QUICK_CLAW' and self.core.rng(0,255)<(tonumber(param) or 0)
 end
 function A:beginTurn()
   for _,s in ipairs(self.core:aliveSlots()) do
     if self.generation==1 then s.battler.flinched=false;s.battler.residualDone=nil
     else
-      local v=self.k.volatile and self.k:volatile(s.mon) or {}
+      local v=self.k:volatile(s.mon)
       v.flinched=nil;v.tookThisTurn=nil;v.tookKind=nil
     end
   end
@@ -359,13 +373,13 @@ function A:specialField(s,def,move)
     end
     self:message('All stat changes were eliminated!')
   elseif def.id=='PERISH_SONG' then
-    for _,peer in ipairs(self.core:aliveSlots()) do local v=self.k.volatile and self.k:volatile(peer.mon) or {};if not v.perish then v.perish=4 end end
+    for _,peer in ipairs(self.core:aliveSlots()) do local v=self.k:volatile(peer.mon);if not v.perish then v.perish=4 end end
     self:message('All active Pokemon heard the PERISH SONG!')
   else
     for _,mon in ipairs(self.core:party(s.side)) do mon.status=nil;mon.statusCount=nil;mon.sleepTurns=nil end
     for _,peer in ipairs(self.core:aliveSlots(s.side)) do
       if self.generation==1 then peer.battler.sleepTurns=nil;peer.battler.toxicCounter=nil
-      else local v=self.k.volatile and self.k:volatile(peer.mon) or {};v.toxicCount=nil end
+      else local v=self.k:volatile(peer.mon);v.toxicCount=nil end
     end
     self:message('A bell chimed! The party recovered from status conditions.')
   end
@@ -391,12 +405,12 @@ function A:performNoTarget(s,action)
   self.presentationEvent=nil;self.suppressAnnouncement=false;self.spread=false
   self:bind(s,foe)
   if self.generation==2 then
-    if k.canAct and k:canAct(s.mon,action.moveId)==false then return end
+    if not k:canAct(s.mon,action.moveId) then return end
   else
     if s.battler.mustRecharge then
       s.battler.mustRecharge=nil;self:message(self:name(s.mon)..' must recharge!');return
     end
-    if k.statusInterrupt and k:statusInterrupt(s.battler,foe.battler,action.moveId) then return end
+    if k:statusInterrupt(s.battler,foe.battler,action.moveId) then return end
   end
   local move=self:moves(s)[action.moveIndex]
   if action.moveIndex~=0 and (not move or move.id~=action.moveId) then
@@ -407,7 +421,7 @@ function A:performNoTarget(s,action)
   end
   local continuation=false
   if self.generation==2 then
-    local v=k.volatile and k:volatile(s.mon) or {}
+    local v=k:volatile(s.mon)
     continuation=v.chargeMove==action.moveId or v.rampageMove==action.moveId or v.rolloutLock==action.moveId
     if v.chargeMove==action.moveId then v.chargeMove=nil;v.vanished=nil end
     if v.rampageMove==action.moveId then
@@ -450,13 +464,13 @@ function A:perform(s,targets,action)
   if first==s then local foes=self.core:aliveSlots(s.side=='player' and 'enemy' or 'player');first=foes[1] or s end
   self:bind(s,first)
   if self.generation==2 then
-    if k.canAct and k:canAct(s.mon,action.moveId)==false then return end
+    if not k:canAct(s.mon,action.moveId) then return end
   else
     k.queue={};k.nextInsert=0
     if s.battler.mustRecharge then
       s.battler.mustRecharge=nil;self:message(self:name(s.mon)..' must recharge!');return
     end
-    if k.statusInterrupt and k:statusInterrupt(s.battler,first.battler,action.moveId) then return end
+    if k:statusInterrupt(s.battler,first.battler,action.moveId) then return end
   end
   local move=self:moves(s)[action.moveIndex]
   -- Recheck at execution: a faster Disable may invalidate a move selected
@@ -486,22 +500,38 @@ function A:perform(s,targets,action)
       local wasWrapped=nativeTarget.mon.volatile and nativeTarget.mon.volatile.wrapCount
       local wasTrapping=(s.mon.volatile or {}).trapsTarget
       k.moveEvent=nil
-      if k.useMove then
-        k:useMove(s.mon,nativeTarget.mon,action.moveId)
+      -- One doubles action spends the selected move's base PP exactly once.
+      -- The current Gen2 host no longer interprets copyDepth as a PP-free
+      -- continuation, so repeated target dispatches would otherwise debit once
+      -- per foe (and a 1-PP spread move would fail to reach target two). Give a
+      -- repeated native dispatch enough temporary PP to execute, then restore
+      -- the post-first-target value. Pressure is applied once per holder below.
+      local repeatPP=index>1 and move and move.pp or nil
+      if repeatPP~=nil and repeatPP<=0 then move.pp=1 end
+      local function useNativeTarget()
+      if action.moveId=='PSYCH_UP' then
+        -- Psych Up's source effect list has no CheckHit command. Current host
+        -- Gen2 Battle.lua applies Protect/vanished in its shared pre-dispatch
+        -- path, so hide only those two CheckHit-owned flags for this call and
+        -- restore the exact target state afterwards. Substitute is deliberately
+        -- left alone: the local Psych Up effect copies stages without touching
+        -- it, matching the cartridge command list.
+        local volatile=nativeTarget.mon.volatile or k:volatile(nativeTarget.mon)
+        local protect,vanished=volatile.protect,volatile.vanished
+        volatile.protect=nil;volatile.vanished=nil
+        local ok,err=pcall(k.useMove,k,s.mon,nativeTarget.mon,action.moveId)
+        volatile.protect=protect;volatile.vanished=vanished
+        if not ok then error(err,0) end
       else
-        -- Fallback to Gen 1 performMove when useMove is not available
-        self:announce()
-        k.queue={};k.nextInsert=0
-        if k.performMove then
-          -- Wrap mon objects in proper battler objects with required fields
-          local userStages=s.stages or self:newStages()
-          local targetStages=nativeTarget.stages or self:newStages()
-          local userTypes=s.mon and s.mon.types or {}
-          local targetTypes=nativeTarget.mon and nativeTarget.mon.types or {}
-          local userBattler={mon=s.mon,name=self:name(s.mon),isPlayer=s.side=='player',stages=userStages,curStats=s.mon and s.mon.stats or {},curTypes=userTypes}
-          local targetBattler={mon=nativeTarget.mon,name=self:name(nativeTarget.mon),isPlayer=nativeTarget.side=='player',stages=targetStages,curStats=nativeTarget.mon and nativeTarget.mon.stats or {},curTypes=targetTypes}
-          k:performMove(userBattler,targetBattler,move or {id=action.moveId,pp=1,struggle=action.moveId=='STRUGGLE'},index>1)
-        end
+        k:useMove(s.mon,nativeTarget.mon,action.moveId)
+      end
+      end
+      if repeatPP~=nil then
+        local ok,err=pcall(useNativeTarget)
+        move.pp=repeatPP
+        if not ok then error(err,0) end
+      else
+        useNativeTarget()
       end
       local row=k.moveEvent
       if self.presentationEvent and row then
@@ -564,14 +594,13 @@ function A:endTurn()
   local k=self.k;local living=self.core:aliveSlots()
   if self.generation==2 then
     local function sandstormChip(checkCloudNine)
-      local E=req('src.battle.MoveEffects')
+      local E=req('src.battle.gen2.Effects')
       local suppressed=checkCloudNine and AbilityEffectsGen2 and V.AbilityWeather
         and V.AbilityWeather.isSuppressed(k, function(mon) return AbilityEffectsGen2.hasAbility(k,mon,"CLOUD_NINE") end)
       if suppressed then return end
       for _,s in ipairs(living) do
-        local d=k.speciesDef and k:speciesDef(s.mon)
-        local v=k.volatile and k:volatile(s.mon) or {}
-        if not v.vanished and E.sandstormHits((d and d.types) or s.mon.types) then
+        local d=k:speciesDef(s.mon)
+        if not k:volatile(s.mon).vanished and E.sandstormHits((d and d.types) or s.mon.types) then
           s.mon.hp=math.max(0,s.mon.hp-E.sandstormDamage(self:maxHP(s.mon)))
           self:message(self:name(s.mon)..' is buffeted by the sandstorm!')
         end
@@ -596,22 +625,19 @@ function A:endTurn()
     end
     for _,s in ipairs(living) do
       self:bind(s,s)
-      if s.mon.hp>0 and k.tickStatus then k:tickStatus(s.mon) end
-      local v=k.volatile and k:volatile(s.mon) or {}
+      if s.mon.hp>0 then k:tickStatus(s.mon) end
+      local v=k:volatile(s.mon)
       if v.leechSeed and s.mon.hp>0 then
         local n=math.min(s.mon.hp,math.max(1,math.floor(self:maxHP(s.mon)/8)));s.mon.hp=s.mon.hp-n
         local source=s.seedSource and self.core.slots[s.seedSource]
-        if source and source.mon and source.mon.hp>0 and k.heal then k:heal(source.mon,n) end
+        if source and source.mon and source.mon.hp>0 then k:heal(source.mon,n) end
         self:message('LEECH SEED saps '..self:name(s.mon)..'!')
       end
       if v.cursed and s.mon.hp>0 then s.mon.hp=math.max(0,s.mon.hp-math.max(1,math.floor(self:maxHP(s.mon)/4)));self:message(self:name(s.mon)..' is hurt by CURSE!') end
-      if k.tickWrap then k:tickWrap(s.mon) end
-      if k.tickHeldItem then k:tickHeldItem(s.mon) end
-      if k.tickPerish then k:tickPerish(s.mon) end
-      if k.tickCounters then k:tickCounters(s.mon) end
+      k:tickWrap(s.mon);k:tickHeldItem(s.mon);k:tickPerish(s.mon);k:tickCounters(s.mon)
     end
     -- Exact two SIDE records, not four aliases, for screen duration.
-    if k.tickScreens then k:tickScreens() end
+    k:tickScreens()
   else
     for side,fields in pairs(self.screens) do
       for key,turns in pairs(fields) do
@@ -657,10 +683,9 @@ function A:onReveal(s)
   local save=self.host.save or (self.host.game and self.host.game.save)
   if not save then return end
   if self.generation==2 then
-    local screen=req('src.ui.gen2.BattleState')
+    local screen=req('src.ui.battle.BattleState')
     local view=self.screen or {save=save}
-    if screen.markSeen then screen:markSeen(view,s.mon) end
-    if screen.noteFirstUnown then screen:noteFirstUnown(view,s.mon) end
+    screen.markSeen(view,s.mon);screen.noteFirstUnown(view,s.mon)
   else
     save.pokedex=save.pokedex or {seen={},owned={}}
     save.pokedex.seen=save.pokedex.seen or {}

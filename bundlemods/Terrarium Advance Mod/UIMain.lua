@@ -3543,7 +3543,7 @@ function GoldCompat.installBattleUiFirewall()
     GoldCompat.patchShapeHudCompat(
       "DRAMATIC_SHAPE","dramatic","Dramatic Shape 1.8")
   else
-    local okGold,GoldBattleState=pcall(require,"src.ui.gen2.BattleState")
+    local okGold,GoldBattleState=pcall(require,"src.ui.battle.BattleState")
     if okGold and type(GoldBattleState)=="table" then
       GoldCompat.installBattlePredicateGuard(GoldBattleState,"bottomUIVisible",
         "__colosseumGen2BottomPredicate")
@@ -24114,7 +24114,7 @@ function GoldCompat.installGoldBattlePresentation()
   if GoldCompat.generation~="gen2" or goldBattleScrubInstalled then return end
   goldBattleScrubInstalled=true
 
-  local ok,GoldBattleState=pcall(require,"src.ui.gen2.BattleState")
+  local ok,GoldBattleState=pcall(require,"src.ui.battle.BattleState")
   if not (ok and GoldBattleState and type(GoldBattleState.drawPanel)=="function")
       then return end
   if GoldBattleState.__gen3uiPanelScrubbed then return end

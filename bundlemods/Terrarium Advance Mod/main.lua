@@ -54,13 +54,13 @@ local V = { mod = mod, path = mod.path }
 
 -- Compatibility shims for STADIUM2_IMPORTER dependencies
 -- Register these before other mods load so STADIUM2_IMPORTER can find them
-package.preload["src.core.gen2.Unown"] = function()
+package.preload["src.core.battle.Unown"] = function()
   local chunk, err = load(mod:read("lib/compat/gen2_unown.lua"), "@" .. mod.path .. "/lib/compat/gen2_unown.lua")
   if not chunk then error(("Failed to load Unown compat shim: %s"):format(tostring(err)), 0) end
   return chunk()
 end
 
-package.preload["src.ui.gen2.BattleAnimView"] = function()
+package.preload["src.ui.battle.BattleAnimView"] = function()
   local chunk, err = load(mod:read("lib/compat/gen2_battle_anim_view.lua"), "@" .. mod.path .. "/lib/compat/gen2_battle_anim_view.lua")
   if not chunk then error(("Failed to load BattleAnimView compat shim: %s"):format(tostring(err)), 0) end
   return chunk()
