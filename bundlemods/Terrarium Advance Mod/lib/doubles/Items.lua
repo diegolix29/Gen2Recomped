@@ -30,7 +30,7 @@ function I.classify(a,id)
   return 'battle'
  end
  if a.generation==2 then
-  local kind=E.partyAction(id,a.data)
+  local kind=type(E.partyAction)=='function' and E.partyAction(id,a.data)
   if kind=='heal' or kind=='status' or kind=='revive' or (kind=='pp' and ppItems[id]) then return kind end
  else
   -- Gen 1 and Gen 3 use the same item classification logic
