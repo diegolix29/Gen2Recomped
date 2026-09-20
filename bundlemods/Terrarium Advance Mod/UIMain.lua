@@ -3384,6 +3384,15 @@ function GoldCompat.locationBannerPresentationEnabled()
 end
 
 function GoldCompat.battlePresentationEnabledFor(battle)
+  -- Check if this is a doubles battle - the doubles system sets __cbeDoublesActive
+  local isDoubles = battle and (battle.__cbeDoublesActive or 
+    (battle.battle and battle.battle.__cbeDoublesActive) or
+    (battle.screen and battle.screen.__cbeDoublesActive))
+  
+  if isDoubles then
+    return true  -- Always hide native UI during doubles battles
+  end
+  
   local safari=battle and GoldCompat.resolvedSafariState(battle) or nil
   if not safari then
     local game=(battle and battle.game) or GoldCompat.game

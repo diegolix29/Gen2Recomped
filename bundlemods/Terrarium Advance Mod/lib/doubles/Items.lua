@@ -29,8 +29,16 @@ function I.classify(a,id)
  if a.generation==2 then
   local kind=E.partyAction(id,a.data)
   if kind=='heal' or kind=='status' or kind=='revive' or (kind=='pp' and ppItems[id]) then return kind end
- elseif E.isBattleMedicine(id) then return 'medicine'
- elseif ppItems[id] and id~='MYSTERYBERRY' then return 'pp' end
+ else
+  -- Gen 1: check if item is battle medicine (healing/status items usable in battle)
+  -- Use the existing ItemEffects.healsHP function or check against known medicine items
+  local okHeals, isHeal = pcall(E.healsHP, id)
+  if okHeals and isHeal then return 'medicine' end
+  -- Also check status healing items
+  local STATUS_HEAL = {ANTIDOTE=true, BURN_HEAL=true, ICE_HEAL=true, AWAKENING=true, PARLYZ_HEAL=true, FULL_HEAL=true}
+  if STATUS_HEAL[id] then return 'medicine' end
+ end
+ if ppItems[id] and id~='MYSTERYBERRY' then return 'pp' end
 end
 function I.available(a,id)
  local save=I.save(a);local n=save and save.inventory and tonumber(save.inventory[id]) or 0
