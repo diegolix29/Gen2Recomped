@@ -1,6 +1,0 @@
-COLOSSEUM INSPIRED UI OVERHAUL 3.1.0 — STANDALONE
-
-Presentation/UI half synchronized to Colosseum Overhaul 2.0.1.
-Works by itself with native gameplay; CBE is optional.
-When CBE 2.0.1 is present, uses its doubles, abilities, ColosseumDex and 3D information-model services.
-Includes latest Gen I/II menu, battle HUD, portrait, mobile-layout, camera/showroom and UI-flow fixes.

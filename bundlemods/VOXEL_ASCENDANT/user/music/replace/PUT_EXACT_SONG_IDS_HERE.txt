@@ -1,1 +1,0 @@
-Name files after the exact Game/KASC song ID, for example Music_WildBattle.mp3.

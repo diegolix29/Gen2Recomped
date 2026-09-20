@@ -1,3 +1,0 @@
-local V = ...
-local source = assert(V.mod:read('shared/SceneryWeather.lua'))
-return assert((loadstring or load)(source, '@shared/SceneryWeather.lua'))()
