@@ -16,6 +16,8 @@ local Stadium2Pack = V.require("Stadium2Pack")
 local StadiumRig = V.require("StadiumRig")
 local StadiumMon = V.require("StadiumMon")
 local ColosseumMon = V.require("ColosseumMon")
+local ColosseumTrainer = V.require("ColosseumTrainer")
+local GeneratedAssets = V.require("GeneratedAssets")
 
 local PlayerModel = {}
 
@@ -40,6 +42,31 @@ local isStadiumModel = false
 local usingColosseum = false
 local colosseumVariant = "normal"
 local currentColosseumDex = nil
+
+-- A Colosseum trainer/character model standing in for the player sprite
+-- (see PlayerModel.loadColosseumCharacter / lib/ColosseumTrainer.lua).
+-- Static geometry only: the source dense-morph/idle-breath system that
+-- animates a trainer in battle lives entirely in the battle-only
+-- PlayerTrainer.lua/TrainerMorph.lua pipeline (its own shader, its own
+-- vp/pose contract) and isn't something this overworld module can reach or
+-- drive -- see ColosseumTrainer.lua's header for why. A motionless standing
+-- figure using each model's authored rest pose is still a real, correctly
+-- shaped/textured/scaled overworld option, the same kind of deliberate
+-- scope limit GLBModel.lua documents for its own static-only .glb models.
+local usingCharacter = false
+local currentCharacterId = nil
+local characterGroups = nil    -- array of {mesh=, texture=} for the current character
+local characterCache = {}      -- id -> {groups=, scale=}, kept separate from modelCache/textureCache below since a character is several mesh+texture pairs, not one
+
+-- Target overworld world-unit height for a standing human figure. Matches
+-- FirstPerson.EYE_HEIGHT (13, near the top of the head on the default 16px
+-- player sprite) -- see FirstPerson.lua -- so a Colosseum character model
+-- lines up with the same world scale the sprite and camera already assume.
+-- Source Colosseum trainer models are normalized to their own real HSD
+-- source-unit height by TrainerExtractor (see model_cache.lua's `bounds`),
+-- so the actual per-model scale is CHARACTER_HEIGHT / that source height,
+-- computed once when a character is loaded (see loadColosseumCharacter).
+local CHARACTER_HEIGHT = 16
 
 -- Animation state
 local animTime = 0
@@ -435,6 +462,133 @@ function PlayerModel.getStadiumDex()
   return nil
 end
 
+-- Load a Colosseum trainer/character model (e.g. "red", "wes", "miror_b" --
+-- see ColosseumTrainer.CHARACTERS) to stand in for the player's own
+-- overworld appearance. Static rest-pose mesh only -- see the state comment
+-- above for why. Builds one love.graphics.Mesh + optional texture per
+-- material group in the trainer's model_cache.lua, the same per-group shape
+-- PlayerTrainer.lua's battle renderer reads, just without that renderer's
+-- dense vertex-morph/shader machinery this module has no way to drive.
+function PlayerModel.loadColosseumCharacter(id)
+  if not id or id == "" then return false, "no character id" end
+
+  local cached = characterCache[id]
+  if cached then
+    characterGroups = cached.groups
+    currentCharacterId = id
+    currentFilename = "colosseum_character_" .. id
+    usingCharacter = true
+    isStadiumModel = false
+    usingColosseum = false
+    currentModel = nil
+    currentTexture = nil
+    currentRig = nil
+    currentStadiumModel = nil
+    print("PlayerModel.loadColosseumCharacter: Loaded from cache", id)
+    return true
+  end
+
+  local cfg = ColosseumTrainer.configFor(id)
+  if not cfg or not cfg.cache then
+    print("PlayerModel.loadColosseumCharacter: character not available", id)
+    return false, "colosseum trainer data not available: " .. tostring(id)
+  end
+
+  local cache, err = GeneratedAssets.readLua(cfg.cache)
+  if type(cache) ~= "table" or type(cache.groups) ~= "table" or #cache.groups == 0 then
+    print("PlayerModel.loadColosseumCharacter: failed to read", cfg.cache, err)
+    return false, tostring(err or "empty trainer cache")
+  end
+
+  if not (love and love.graphics and love.graphics.newMesh) then
+    return false, "love.graphics unavailable"
+  end
+
+  local groups = {}
+  for gi, g in ipairs(cache.groups) do
+    local vertices = g.vertices
+    if type(vertices) == "table" and #vertices > 0 then
+      -- Base (rest-pose) position + UV only -- v[1..3] is the authored
+      -- source position TrainerExtractor.normalize already centered on X/Z
+      -- and grounded at Y=0 (feet), v[4..5] is U/V. The dense format also
+      -- carries a baked normal at v[6..8] and twelve morph-target position
+      -- triples after that (see TrainerExtractor.cacheLua), none of which
+      -- Voxel3D.FORMAT has room for or uses -- shade is left flat (1.0),
+      -- the same fallback GLBModel/objToMesh use for a model with no baked
+      -- per-vertex lighting channel of their own.
+      local vertexData = {}
+      for _, v in ipairs(vertices) do
+        vertexData[#vertexData + 1] = {
+          v[1] or 0, v[2] or 0, v[3] or 0,
+          v[4] or 0, v[5] or 0,
+          1.0, 0.0,
+        }
+      end
+      local meshOk, mesh = pcall(love.graphics.newMesh, Voxel3D.FORMAT, vertexData, "triangles")
+      if meshOk and mesh then
+        local texture = nil
+        local tex = g.texture
+        if tex and tex.path and love.image then
+          local bytes, texErr = GeneratedAssets.read(tex.path)
+          if bytes then
+            local dataOk, imgData = pcall(love.image.newImageData, tex.w, tex.h, "rgba8", bytes)
+            if dataOk and imgData then
+              local imgOk, img = pcall(love.graphics.newImage, imgData)
+              if imgOk and img then
+                texture = img
+              else
+                print("PlayerModel.loadColosseumCharacter: texture upload failed", tex.path, img)
+              end
+            else
+              print("PlayerModel.loadColosseumCharacter: bad texture data", tex.path, imgData)
+            end
+          else
+            print("PlayerModel.loadColosseumCharacter: texture read failed", tex.path, texErr)
+          end
+        end
+        groups[#groups + 1] = { mesh = mesh, texture = texture }
+      else
+        print("PlayerModel.loadColosseumCharacter: mesh build failed for group", gi, mesh)
+      end
+    end
+  end
+
+  if #groups == 0 then
+    return false, "no drawable mesh groups for " .. tostring(id)
+  end
+
+  local b = cache.bounds
+  local sourceHeight = b and ((tonumber(b.max and b.max[2]) or 0) - (tonumber(b.min and b.min[2]) or 0)) or 0
+  local scale = (sourceHeight > 0) and (CHARACTER_HEIGHT / sourceHeight) or 1.0
+
+  characterCache[id] = { groups = groups, scale = scale }
+  characterGroups = groups
+  currentCharacterId = id
+  currentFilename = "colosseum_character_" .. id
+  usingCharacter = true
+  isStadiumModel = false
+  usingColosseum = false
+  currentModel = nil
+  currentTexture = nil
+  currentRig = nil
+  currentStadiumModel = nil
+
+  print("PlayerModel.loadColosseumCharacter: Loaded", id, "groups:", #groups, "scale:", scale)
+  return true
+end
+
+-- Get the id of the currently loaded Colosseum character, or nil.
+function PlayerModel.getCharacterId()
+  if usingCharacter then return currentCharacterId end
+  return nil
+end
+
+-- Get the current character model ID from settings (delegates to CharacterModelPick)
+function PlayerModel.getCurrentCharacterId()
+  local CharacterModelPick = V.require("CharacterModelPick")
+  return CharacterModelPick.getCurrentCharacterId()
+end
+
 -- Load the currently installed model (if any).
 function PlayerModel.loadInstalled()
   local filename = PlayerModelInstall.modelFilename()
@@ -452,12 +606,28 @@ function PlayerModel.loadInstalled()
       return PlayerModel.loadStadium(dex)
     end
   end
+
+  -- Or a Colosseum trainer/character marker (format:
+  -- colosseum_character_ID -- see loadColosseumCharacter/followerRow).
+  local characterId = filename:match("^colosseum_character_(.+)$")
+  if characterId then
+    return PlayerModel.loadColosseumCharacter(characterId)
+  end
+  
+  -- Check if it's a character model setting (from CharacterModelPick)
+  local CharacterModelPick = V.require("CharacterModelPick")
+  local currentCharacterId = CharacterModelPick.getCurrentCharacterId()
+  if currentCharacterId and currentCharacterId ~= "off" then
+    return PlayerModel.loadColosseumCharacter(currentCharacterId)
+  end
   
   -- Otherwise load as regular OBJ model
   return PlayerModel.load(filename)
 end
 
--- Clear the current model.
+-- Clear the current model. Leaves modelCache/textureCache/characterCache
+-- alone (same contract as the Stadium/Colosseum branches above) -- only
+-- clearCache() below tears those down.
 function PlayerModel.clear()
   if currentRig then
     currentRig:release()
@@ -470,11 +640,14 @@ function PlayerModel.clear()
   isStadiumModel = false
   usingColosseum = false
   currentColosseumDex = nil
+  usingCharacter = false
+  currentCharacterId = nil
+  characterGroups = nil
 end
 
 -- Check if a model is currently loaded.
 function PlayerModel.loaded()
-  return currentModel ~= nil or (currentRig ~= nil and currentStadiumModel ~= nil) or usingColosseum
+  return currentModel ~= nil or (currentRig ~= nil and currentStadiumModel ~= nil) or usingColosseum or usingCharacter
 end
 
 -- Get the filename of the currently loaded model.
@@ -689,6 +862,90 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     return true
   end
   
+  -- Handle Colosseum character models (static rest-pose trainer models)
+  if usingCharacter and characterGroups then
+    -- Use the same movement behavior as Pokemon player models
+    local FirstPerson = V.require("FirstPerson")
+    local b = FirstPerson.cardBlend()
+    
+    -- Calculate the model matrix based on position and facing
+    local m = Mat4.translate(px + 8, y, py + 8)
+    
+    -- Apply rotation based on facing direction (same as Pokemon models)
+    local yaw = 0
+    
+    if b > 0 then
+      -- In free-roam mode, use camera-relative rotation like Pokemon models
+      local cameraYaw = FirstPerson.cardYaw(px + 8, py + 8)
+      
+      -- Detect if player is moving by checking actual input
+      local Game = require("src.core.Game")
+      local isMoving = Game.input:isDown("up") or Game.input:isDown("down") 
+                      or Game.input:isDown("left") or Game.input:isDown("right")
+      
+      if isMoving then
+        -- When moving in free-roam mode, detect which key is pressed and use that direction
+        local moveDirection = facing
+        if Game.input:isDown("up") then
+          moveDirection = "up"
+        elseif Game.input:isDown("down") then
+          moveDirection = "down"
+        elseif Game.input:isDown("left") then
+          moveDirection = "left"
+        elseif Game.input:isDown("right") then
+          moveDirection = "right"
+        end
+        
+        -- Calculate rotation based on camera yaw and movement direction
+        if moveDirection == "down" then
+          yaw = (cameraYaw + math.pi) * b
+        elseif moveDirection == "up" then
+          yaw = cameraYaw * b
+        elseif moveDirection == "right" then
+          yaw = (cameraYaw - math.pi / 2) * b
+        elseif moveDirection == "left" then
+          yaw = (cameraYaw + math.pi / 2) * b
+        end
+      else
+        -- When idle in free-roam mode, follow camera yaw
+        yaw = cameraYaw * b
+      end
+    else
+      -- In other modes, use simple movement direction
+      if facing == "right" then
+        yaw = math.pi / 2
+      elseif facing == "up" then
+        yaw = math.pi
+      elseif facing == "left" then
+        yaw = -math.pi / 2
+      end
+    end
+    
+    -- Add 180-degree rotation so character faces the right direction
+    m = Mat4.mul(m, Mat4.rotateY(yaw + math.pi))
+    
+    -- Apply mirroring if needed
+    if mirror then
+      m = Mat4.mul(m, Mat4.scale(-1, 1, 1))
+    end
+    
+    -- Apply character scale from cache
+    local cached = characterCache[currentCharacterId]
+    local scale = cached and cached.scale or 1.0
+    m = Mat4.mul(m, Mat4.scale(scale, scale, scale))
+    
+    -- Draw each material group with its texture
+    local drawn = false
+    for _, group in ipairs(characterGroups) do
+      if group.mesh then
+        Voxel3D.draw(group.mesh, group.texture, m)
+        drawn = true
+      end
+    end
+    
+    return drawn
+  end
+  
   -- Handle static OBJ models
   if not currentModel then 
     return false 
@@ -746,8 +1003,22 @@ function PlayerModel.clearCache()
       pcall(function() texture:release() end)
     end
   end
+  -- Clear character cache
+  for id, cached in pairs(characterCache) do
+    if cached and cached.groups then
+      for _, group in ipairs(cached.groups) do
+        if group.mesh then
+          pcall(function() group.mesh:release() end)
+        end
+        if group.texture then
+          pcall(function() group.texture:release() end)
+        end
+      end
+    end
+  end
   modelCache = {}
   textureCache = {}
+  characterCache = {}
   currentModel = nil
   currentTexture = nil
   currentFilename = nil
@@ -756,6 +1027,9 @@ function PlayerModel.clearCache()
   isStadiumModel = false
   usingColosseum = false
   currentColosseumDex = nil
+  usingCharacter = false
+  currentCharacterId = nil
+  characterGroups = nil
   -- ColosseumMon's actor cache is shared with StadiumFollower/StadiumWilds/
   -- RoamerStadium3D, so this is a full teardown (ROM change, mod unload),
   -- same as StadiumFollower.clearCache -- not something to call per-swap.

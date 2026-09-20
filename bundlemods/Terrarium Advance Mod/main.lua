@@ -2454,18 +2454,16 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
     table.insert(out, mewtwoRow) 
   end
 
-  local okFollower, followerRow = pcall(function()
-    local StadiumInstall = V.require("StadiumInstall")
-    local Stadium2Install = V.require("Stadium2Install")
-    local ColosseumMon = V.require("ColosseumMon")
-    if StadiumInstall.available() or Stadium2Install.available()
-       or ColosseumMon.available(1, "normal") then
-      return V.require("PlayerModelPick").followerRow()
+  -- Character model row (for Colosseum trainer characters)
+  local okCharacter, characterRow = pcall(function()
+    local ColosseumTrainer = V.require("ColosseumTrainer")
+    if ColosseumTrainer.available("red") then
+      return V.require("CharacterModelPick").row()
     end
     return nil
   end)
-  if okFollower and followerRow and not rowExists(followerRow.id) then 
-    table.insert(out, followerRow) 
+  if okCharacter and characterRow and not rowExists(characterRow.id) then 
+    table.insert(out, characterRow) 
   end
 
   local okWilds, wildsRow = pcall(function()
@@ -3989,6 +3987,15 @@ local function initializeColosseumIntegration()
     if PokemonActors and PokemonActors.service then
       mod.exports.pokemonActorsOverworld = PokemonActors.service
       V.PokemonActors = PokemonActors
+    end
+
+    -- Publish the TrainerRoster catalog for OVERWORLD consumers (see
+    -- lib/ColosseumTrainer.lua, the same kind of thin bridge ColosseumMon
+    -- above is for PokemonActors). TrainerRoster.modelById is stateless
+    -- catalog lookup with no per-frame lifecycle, so the module itself can
+    -- be published directly rather than through a .service indirection.
+    if TrainerRoster then
+      mod.exports.trainerRosterOverworld = TrainerRoster
     end
 
     if CurrentSpriteModels and PokemonActors and not CurrentSpriteModels.__cbePokemonDebugWrapped then
