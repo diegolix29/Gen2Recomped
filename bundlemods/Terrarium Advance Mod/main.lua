@@ -156,6 +156,11 @@ local DrawDistance = V.require("DrawDistance")
 local OverworldBattle = V.require("OverworldBattle")
 local WildRoamers = V.require("WildRoamers")
 local BattleExit = V.require("BattleExit")
+-- Battle UI hiding system for all generations
+local BattleBoxXY = V.require("BattleBoxXY")
+
+-- Make BattleBoxXY globally accessible for UIMain.lua
+_G.TerrariumBattleBoxXY = BattleBoxXY
 -- Stadium 2 support (Gen 2 Pokemon models)
 local okS2, Stadium2Setting = pcall(V.require, "Stadium2Setting")
 -- restored: shiny Pokemon (the "RBY virtual shiny" indicator), on always,
@@ -2778,6 +2783,14 @@ QoL.install()
 Carry.install()
 -- Walk-on-ice when frozen, gated on Surf (Soul Badge + party knows SURF).
 if Water.installWalk then pcall(Water.installWalk) end
+
+-- ------- Battle UI hiding system
+--
+-- Install the BattleBoxXY system to hide original battle UI across all generations
+-- This wraps BattleState.drawTextArea to suppress the native fight box when appropriate
+if BattleBoxXY and BattleBoxXY.install then
+  pcall(function() BattleBoxXY.install() end)
+end
 
 -- ------- three more mercies on the same row
 --

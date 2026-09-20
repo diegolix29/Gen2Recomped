@@ -26025,6 +26025,12 @@ function GoldCompat.renderHudBattleLayer(mod,game)
   -- the tiny predicate/HUD guards here is effectively free when nothing moved
   -- and guarantees our UI remains the final presentation layer.
   if battleStateInStack(game) then GoldCompat.installBattleUiFirewall() end
+  
+  -- Activate BattleBoxXY for battle UI hiding across all generations
+  local battle=battleStateInStack(game)
+  if battle and _G.TerrariumBattleBoxXY and _G.TerrariumBattleBoxXY.claim then
+    pcall(function() _G.TerrariumBattleBoxXY.claim(battle) end)
+  end
 
   -- Battle-only pushed UI states own the foreground, but should still feel
   -- like part of the current battle rather than dropping back to classic boxes.
@@ -26941,6 +26947,12 @@ return function(mod)
       local battle=payload and (payload.battle or payload.state)
       if battle then State.activeBattle=battle end
       GoldCompat.installBattleUiFirewall()
+      
+      -- Activate BattleBoxXY for battle UI hiding across all generations
+      if battle and _G.TerrariumBattleBoxXY and _G.TerrariumBattleBoxXY.claim then
+        pcall(function() _G.TerrariumBattleBoxXY.claim(battle) end)
+      end
+      
       local states=mod.game and mod.game.stack and mod.game.stack.states or {}
       for _,state in ipairs(states) do
         if state~=battle then GoldCompat.installBattleSurfaceProxy(state) end
