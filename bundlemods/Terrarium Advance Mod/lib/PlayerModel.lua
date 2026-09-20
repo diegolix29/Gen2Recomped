@@ -633,6 +633,18 @@ end
 
 -- Draw the player model at the given position with the given transform.
 -- This integrates with the existing Voxel3D pipeline.
+--- `mirror` is the sprite step-flip flag (see stepFlip in movement.lua /
+--- GoldVoxelBridge.lua): the 2D sprite renderer toggles it every other
+--- footstep and flips the flat sprite card left/right to fake a second walk
+--- frame out of one drawn frame. That trick only works because a sprite is a
+--- flat billboard with no back side. None of the four model branches below
+--- apply it to the mesh: mirroring real geometry with Mat4.scale(-1,1,1)
+--- inverts triangle winding (culling/lighting read as inverted) and mirrors
+--- any asymmetric detail to the wrong side, on top of whatever real walk
+--- animation the branch already drives from movement/time (CharacterWalkCycle,
+--- the Stadium rig, ColosseumMon). `mirror` is only still accepted as a
+--- parameter so callers can keep passing the same stepFlip value used for
+--- the 2D sprite path without needing a special case.
 function PlayerModel.draw(px, py, y, facing, mirror)
   -- In free-roam mode with FreeMove, use the actual body facing direction
   local FirstPerson = V.require("FirstPerson")
@@ -749,9 +761,7 @@ function PlayerModel.draw(px, py, y, facing, mirror)
       end
     end
 
-    if mirror then
-      m = Mat4.mul(m, Mat4.scale(-1, 1, 1))
-    end
+    -- `mirror` intentionally unused here -- see the note above PlayerModel.draw.
 
     return ColosseumMon.draw(currentColosseumDex, colosseumVariant, m)
   end
@@ -808,10 +818,7 @@ function PlayerModel.draw(px, py, y, facing, mirror)
       m = Mat4.mul(m, Mat4.rotateY(yaw))
     end
     
-    -- Apply mirroring if needed
-    if mirror then
-      m = Mat4.mul(m, Mat4.scale(-1, 1, 1))
-    end
+    -- `mirror` intentionally unused here -- see the note above PlayerModel.draw.
     
     -- Apply scaling for Stadium model (use similar scale to Pokemon in battles)
     local model = currentStadiumModel
@@ -1046,10 +1053,7 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     -- smaller torso bob, timed to the footfalls rather than a flat sine on
     -- the whole matrix). See the vertex-buffer block above.
 
-    -- Apply mirroring if needed
-    if mirror then
-      m = Mat4.mul(m, Mat4.scale(-1, 1, 1))
-    end
+    -- `mirror` intentionally unused here -- see the note above PlayerModel.draw.
     
     -- Apply character scale from cache
     local cached = characterCache[currentCharacterId]
@@ -1090,10 +1094,7 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     m = Mat4.mul(m, Mat4.rotateY(yaw))
   end
   
-  -- Apply mirroring if needed
-  if mirror then
-    m = Mat4.mul(m, Mat4.scale(-1, 1, 1))
-  end
+  -- `mirror` intentionally unused here -- see the note above PlayerModel.draw.
   
   -- Apply scaling to match game world units
   -- Increased scale to make the model more visible
