@@ -9,7 +9,7 @@ local N = {}
 N.KEY = "drawDistance"
 N.LABEL = "DRAW DIST"
 
-N.setting = V.require('ModSetting').new(N.KEY, N.LABEL, {true, false}, {'ON', 'OFF'})
+N.setting = V.require('ModSetting').new(N.KEY, N.LABEL, {1, 0}, {'FAR', 'NEAR'})
 
 function N.apply(state)
   if not state then return state end
@@ -17,7 +17,9 @@ function N.apply(state)
     state.neighbors = {}
     return state
   end
-  if not N.setting:get() then return state end
+  -- FAR (1): render all neighbors (max quality, shows void fill trees)
+  -- NEAR (0): filter to only connected neighbors (performance mode)
+  if N.setting:get() == 1 then return state end
   if not (state.map and state.map.def) then return state end
   local keep = {[state.map.id] = true}
   local con = state.map.def.connections
@@ -42,11 +44,11 @@ end
 
 -- Legacy compatibility functions
 function N.level()
-  return N.setting:get() and 1 or 0
+  return N.setting:get() or 1  -- Default to FAR (1)
 end
 
 function N.neighborLimit()
-  return N.setting:get() and math.huge or 0
+  return N.setting:get() == 1 and math.huge or 0
 end
 
 function N.row()
