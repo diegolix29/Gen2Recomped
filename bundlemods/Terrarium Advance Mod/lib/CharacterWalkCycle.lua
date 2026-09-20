@@ -187,6 +187,38 @@ function M.build(id, groups, bounds)
   return rig
 end
 
+-- Apply manual vertex overrides exported from the Python editor.
+-- `overridesPath` is the path to a Lua file like {char_id}_walk_overrides.lua
+-- that contains: return { [1]={{ [1]={bucket="arm",weight=1.0}, ... }}, ... }
+-- where the outer keys are 1-based group indices and inner keys are 1-based vertex indices.
+function M.applyOverrides(rig, overridesPath)
+  local ok, overrides = pcall(dofile, overridesPath)
+  if not ok or type(overrides) ~= "table" then
+    print("CharacterWalkCycle: failed to load overrides from " .. tostring(overridesPath))
+    return
+  end
+  
+  local appliedCount = 0
+  for groupIdx, groupOverrides in pairs(overrides) do
+    if rig.groups[groupIdx] then
+      for vertexIdx, override in pairs(groupOverrides) do
+        local bucket = rig.groups[groupIdx][vertexIdx]
+        if bucket then
+          if override.bucket then
+            bucket.bucket = override.bucket
+          end
+          if override.weight then
+            bucket.weight = override.weight
+          end
+          appliedCount = appliedCount + 1
+        end
+      end
+    end
+  end
+  
+  print("CharacterWalkCycle: applied " .. appliedCount .. " manual overrides from " .. tostring(overridesPath))
+end
+
 -- Advance/decay a smooth 0..1 blend toward `movingNow`, so starting or
 -- stopping eases the swing in/out over a few frames instead of snapping --
 -- same idea as red_3d_player's startBlendRate/stopBlendRate.
