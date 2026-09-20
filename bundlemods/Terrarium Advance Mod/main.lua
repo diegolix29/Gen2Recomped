@@ -1734,18 +1734,6 @@ mod.hooks:wrap("Game.keypressed", function(next, game, key)
   return next(game, key)
 end)
 
--- Simple jump trigger without setting check for testing
-local function canJump(player)
-  if not player then return false end
-  if player.inputLocked then return false end
-  if player.fishing then return false end
-  if player.surfing then return false end
-  if player.onBike then return false end
-  if player.hopFrames and player.hopFrames > 0 then return false end
-  if player.red3dManualJumpFrames and player.red3dManualJumpFrames > 0 then return false end
-  return true
-end
-
 -- Handle gamepad button capture for jump binding. Mirrors the keypressed
 -- hook above but for a real pad press (button names here are LÖVE's own
 -- gamepad button constants -- "a", "leftshoulder", "dpup", and so on --
@@ -1767,85 +1755,6 @@ do
       _G.keyBindingState.active = false
       return
     end
-
-    -- Check if this is the bound jump button
-    local jumpKey = getJumpKey()
-    local bindingType, jumpButton = parseJumpKey(jumpKey)
-    if bindingType == "gamepad" and button == jumpButton then
-      local top = self.stack and self.stack:top()
-      local player = top and top.isOverworld and top.player
-      if player and canJump(player) then
-        -- Trigger jump directly (no need for HOTKEYS system)
-        if not (top and top.onKeyPressed) then
-          local ow = self.overworld
-          local p = ow and ow.player
-          if canJump(p) then
-            -- Check if player is currently moving
-            local isMoving = p.moving or (p.targetX ~= nil) or (p.targetY ~= nil)
-
-            if isMoving then
-              -- Moving: try to jump forward 1 tile
-              local dx, dy = 0, 0
-              if p.facing == "left" then dx = -1
-              elseif p.facing == "right" then dx = 1
-              elseif p.facing == "up" then dy = -1
-              elseif p.facing == "down" then dy = 1
-              else return end
-
-              local targetX = (p.cellX or 0) + dx
-              local targetY = (p.cellY or 0) + dy
-
-              -- Check if target tile is walkable
-              local okCollision, Collision = pcall(require, "src.world.Collision")
-              local canMove = false
-              if okCollision and Collision and top and top.map then
-                if top.map:inBounds(targetX, targetY) then
-                  local okTile, tile = pcall(function() return top.map:getTile(targetX, targetY) end)
-                  if okTile and tile and not tile.blocked then
-                    canMove = true
-                  end
-                end
-              end
-
-              if canMove then
-                -- Jump forward 1 tile
-                p.targetX = targetX
-                p.targetY = targetY
-                p.moving = true
-                p.hopFrames = 32
-                -- Set lift property so Jump.lua can add visual effects
-                p.lift = 16
-                -- Real movement owns the 32-frame hop
-                p.red3dManualJumpFrames = nil
-                p.red3dManualJumpTotal = nil
-              else
-                -- Can't move forward, do cosmetic jump
-                local jumpFrames = 32
-                p.red3dManualJumpTotal = jumpFrames
-                p.red3dManualJumpFrames = jumpFrames
-                -- Set lift property so Jump.lua can add visual effects
-                p.lift = 16
-              end
-            else
-              -- Idle: cosmetic jump in place
-              local jumpFrames = 32
-              p.red3dManualJumpTotal = jumpFrames
-              p.red3dManualJumpFrames = jumpFrames
-              -- Set lift property so Jump.lua can add visual effects
-              p.lift = 16
-            end
-            -- Invalidate cached skin keys so takeoff appears immediately
-            local renderer = rawget(_G, "red3dPlayerRenderer")
-            if renderer then
-              renderer.skinKey = nil
-              renderer.voxelUploadedKey = nil
-            end
-            return
-          end
-        end
-      end
-    end
-
     if inner then return inner(self, joystick, button, ...) end
   end
 end
@@ -2019,26 +1928,18 @@ end
 VR.cycleVoxel = cycleVoxel
 VR.setVoxelLevel = setVoxelLevel
 
--- Dynamic HOTKEYS table that checks the configured jump key
-local function getHotkeys()
-  local jumpKey = getJumpKey()
-  local bindingType, key = parseJumpKey(jumpKey)
-  -- Only add jump key if it's a keyboard key (gamepad handled separately)
-  local jumpEntry = (bindingType == "keyboard") and { [key] = "jump" } or {}
-
-  return {
-    [KEY_VOXEL]  = "pipeline",
-    [KEY_TILT]   = "pipeline",
-    [KEY_GRID]   = VoxelGrid.setting,
-    [KEY_CURVE]  = WorldCurve.setting,
-    [KEY_HAZE]   = Aerial.setting,
-    [KEY_SKYLINE] = Skyline.setting,
-    [KEY_BATTLE] = OverworldBattle.setting,
-    [KEY_WILD]   = WildRoamers.setting,
-    [KEY_MAP]    = MiniMap.setting,
-    [KEY_FX]     = "vfxdemo",
-  }
-end
+local HOTKEYS = {
+  [KEY_VOXEL]  = "pipeline",
+  [KEY_TILT]   = "pipeline",
+  [KEY_GRID]   = VoxelGrid.setting,
+  [KEY_CURVE]  = WorldCurve.setting,
+  [KEY_HAZE]   = Aerial.setting,
+  [KEY_SKYLINE] = Skyline.setting,
+  [KEY_BATTLE] = OverworldBattle.setting,
+  [KEY_WILD]   = WildRoamers.setting,
+  [KEY_MAP]    = MiniMap.setting,
+  [KEY_FX]     = "vfxdemo",
+}
 
 -- Which sheet the demo key fires next. Kept here rather than in Vfx because
 -- it is a property of the KEY, not of the effect player -- nothing else in
@@ -2062,6 +1963,7 @@ local function manualJumpEnabled()
   local jumpSetting = getSettingValue(fpJump, "SUBTLE")
   return jumpSetting ~= "OFF"
 end
+
 -- Simple jump trigger without setting check for testing
 local function canJump(player)
   if not player then return false end
@@ -2096,8 +1998,6 @@ local function tryLedgeHop(top, player)
     player.targetY = targetY
     player.moving = true
     player.hopFrames = 32
-    -- Set lift property so Jump.lua can add visual effects
-    player.lift = 16
     return true
   end
   return false
@@ -2146,8 +2046,6 @@ local function tryBorderJump(top, player, facing)
   player.moving = true
   player.progress = 0
   player.hopFrames = 32
-  -- Set lift property so Jump.lua can add visual effects
-  player.lift = 16
   return true
 end
 
@@ -2158,6 +2056,18 @@ do
   local inner = Game.keypressed
 
   function Game:keypressed(key)
+    -- Handle jump on space key directly, before HOTKEYS table
+    -- This ensures jump works regardless of voxel mode or other conditions
+    if key == KEY_JUMP then
+      local top = self.stack and self.stack:top()
+      local player = top and top.isOverworld and top.player
+      -- Try the engine's real ledge crossing without canJump check
+      if player then
+        if tryLedgeHop(top, player) then
+          return
+        end
+      end
+    end
     -- HORDE MODE owns the keyboard's spare keys while it runs (restored
     -- from DRAMATIC_SHAPE): R reloads, and every mode key below is
     -- swallowed rather than left to change the rung or the post-
@@ -2182,17 +2092,7 @@ do
        and not (topEarly and topEarly.onKeyPressed) then
       if CamControl.zoomBy(key == "q" and 1 or -1) then return end
     end
-    local hotkeys = getHotkeys()
-    local claim = hotkeys[key]
-    -- Also check the configured jump key
-    if not claim then
-      local jumpKey = getJumpKey()
-      local bindingType, jumpKeyName = parseJumpKey(jumpKey)
-      if bindingType == "keyboard" and key == jumpKeyName then
-        claim = "jump"
-      end
-    end
-
+    local claim = HOTKEYS[key]
     local top = self.stack and self.stack:top()
     -- A screen with its own key handler gets the key first, exactly as the
     -- engine's first branch does: typing a nickname must not toggle a
@@ -2253,64 +2153,32 @@ do
         return
       elseif claim == "jump" then
         -- Manual jump: keyboard space or controller X button
-        -- When moving: jump forward 1 tile (if not blocked)
-        -- When idle: cosmetic jump in place
+        -- When a real ledge is directly in front, call the overworld's
+        -- checkLedgeHop() so landing validation, NPC collision, SFX and
+        -- the two-cell movement all stay owned by the engine.
+        -- Everywhere else the button remains a visual jump in place.
         local ow = self.overworld
         local p = ow and ow.player
         if canJump(p) then
-          -- Check if player is currently moving
-          local isMoving = p.moving or (p.targetX ~= nil) or (p.targetY ~= nil)
-
-          if isMoving then
-            -- Moving: try to jump forward 1 tile
-            local dx, dy = 0, 0
-            if p.facing == "left" then dx = -1
-            elseif p.facing == "right" then dx = 1
-            elseif p.facing == "up" then dy = -1
-            elseif p.facing == "down" then dy = 1
-            else return end
-
-            local targetX = (p.cellX or 0) + dx
-            local targetY = (p.cellY or 0) + dy
-
-            -- Check if target tile is walkable
-            local okCollision, Collision = pcall(require, "src.world.Collision")
-            local canMove = false
-            if okCollision and Collision and top and top.map then
-              if top.map:inBounds(targetX, targetY) then
-                local okTile, tile = pcall(function() return top.map:getTile(targetX, targetY) end)
-                if okTile and tile and not tile.blocked then
-                  canMove = true
-                end
-              end
-            end
-
-            if canMove then
-              -- Jump forward 1 tile
-              p.targetX = targetX
-              p.targetY = targetY
-              p.moving = true
-              p.hopFrames = 32
-              -- Set lift property so Jump.lua can add visual effects
-              p.lift = 16
-              -- Real movement owns the 32-frame hop
-              p.red3dManualJumpFrames = nil
-              p.red3dManualJumpTotal = nil
-            else
-              -- Can't move forward, do cosmetic jump
-              local jumpFrames = 32
-              p.red3dManualJumpTotal = jumpFrames
-              p.red3dManualJumpFrames = jumpFrames
-              -- Set lift property so Jump.lua can add visual effects
-              p.lift = 16
-            end
+          -- First try the engine's real ledge crossing
+          local crossed = false
+          if top and type(top.checkLedgeHop) == "function" then
+            local ok, result = pcall(top.checkLedgeHop, top, p.facing)
+            crossed = ok and result == true
+          end
+          if not crossed then
+            -- Try border jump (one cell fence hop)
+            crossed = tryBorderJump(top, p, p.facing)
+          end
+          if crossed then
+            -- Real ledge/border crossing owns the 32-frame hop
+            p.red3dManualJumpFrames = nil
+            p.red3dManualJumpTotal = nil
           else
-            -- Idle: cosmetic jump in place
+            -- Cosmetic jump in place
             local jumpFrames = 32
             p.red3dManualJumpTotal = jumpFrames
             p.red3dManualJumpFrames = jumpFrames
-            -- Set lift property so Jump.lua can add visual effects
-            p.lift = 16
           end
           -- Invalidate cached skin keys so takeoff appears immediately
           local renderer = rawget(_G, "red3dPlayerRenderer")
@@ -3136,12 +3004,10 @@ mod.hooks:wrap("input.step", function(next, game, dt)
   local out = next(game, dt)
   local top = game.stack and game.stack:top()
   local player = top and top.isOverworld and top.player
+  local jumpKey = getJumpKey()
+  local bindingType, key = parseJumpKey(jumpKey)
 
   if player then
-    -- Check the configured jump key
-    local jumpKey = getJumpKey()
-    local bindingType, key = parseJumpKey(jumpKey)
-
     -- Poll LÖVE directly rather than the engine's input:wasPressed(),
     -- which only recognizes its own fixed action names. A raw keyboard
     -- key (e.g. "f1") or a raw gamepad button (e.g. "leftshoulder")
@@ -3160,22 +3026,6 @@ mod.hooks:wrap("input.step", function(next, game, dt)
       if tryLedgeHop(top, player) then
         -- Jump succeeded
       end
-    end
-
-    -- Decrement manual jump frames counter for cosmetic jumps
-    if player.red3dManualJumpFrames and player.red3dManualJumpFrames > 0 then
-      player.red3dManualJumpFrames = player.red3dManualJumpFrames - 10
-      if player.red3dManualJumpFrames <= 0 then
-        player.red3dManualJumpFrames = nil
-        player.red3dManualJumpTotal = nil
-        -- Reset lift when cosmetic jump completes
-        player.lift = 0
-      end
-    end
-
-    -- Reset lift when hopFrames completes (engine-managed jumps)
-    if player.hopFrames and player.hopFrames <= 10 then
-      player.lift = 0
     end
   end
   return out

@@ -861,17 +861,23 @@ function PlayerModel.draw(px, py, y, facing, mirror)
                     or Game.input:isDown("left") or Game.input:isDown("right")
 
     -- Detect whether a manual (cosmetic, in-place) hop is currently
-    -- playing. red3dManualJumpFrames/Total are the base engine's own
-    -- countdown for the JUMP key when it isn't crossing a real ledge (see
-    -- main.lua's "jump" HOTKEYS branch) -- nothing in this mod ticks them
-    -- down, so by the time this draws they've already been advanced by
-    -- whatever owns the actual jump arc. They count down linearly from
-    -- Total to 0, so 1 - frames/total is a clean 0 (takeoff) .. 1 (landing)
-    -- progress with no extra smoothing needed -- CharacterWalkCycle.
-    -- applyJump's own envelope already fades to 0 at both ends, so there's
-    -- nothing to pop when the jump starts or ends.
-    local jumpTop = Game.stack and Game.stack:top()
-    local jumper = jumpTop and jumpTop.isOverworld and jumpTop.player
+    -- playing, by reading the exact same fields off the exact same player
+    -- table main.lua's "jump" key handler writes to. That handler (search
+    -- main.lua for `claim == "jump"`) sets red3dManualJumpFrames/Total on
+    -- `self.overworld.player` -- i.e. Game.overworld.player, the same
+    -- accessor every other lib file in this mod uses to reach the live
+    -- player (see e.g. WildRoamers.lua, MiniMap.lua, Weather.lua) -- not
+    -- Game.stack:top(), which can be some other screen (a dialog, a menu)
+    -- stacked on top of the frozen overworld while this still draws.
+    -- Nothing in this mod ticks the counter down; that's the same engine
+    -- that owns the actual vertical jump arc, so by the time this draws
+    -- it's already been advanced. It counts down linearly from Total to 0,
+    -- so 1 - frames/total is a clean 0 (takeoff) .. 1 (landing) progress
+    -- with no extra smoothing needed -- CharacterWalkCycle.applyJump's own
+    -- envelope already fades to 0 at both ends, so there's nothing to pop
+    -- when the jump starts or ends.
+    local ow = Game.overworld
+    local jumper = ow and ow.player
     local jumpFrames = jumper and jumper.red3dManualJumpFrames
     local jumpTotal = jumper and jumper.red3dManualJumpTotal
     local jumpProgress = (jumpFrames and jumpTotal and jumpTotal > 0)
