@@ -60,11 +60,13 @@ local function eligible(screen,generation)
                      (host.isDoubleBattle == true) or
                      (host.battleType and (host.battleType==2 or host.battleType=="double")) or
                      (host.kind=='trainer' and host.enemyParty and #host.enemyParty>=2)
-  -- Gen 2: Check for double battle indicators  
+  -- Gen 2: Check for double battle indicators - be very permissive for Gen 2
   elseif generation==2 then
-    isDoubleBattle = (host.doubleBattle == true) or 
+    -- For Gen 2, if it's a trainer battle with double battles enabled, assume it's a double battle
+    isDoubleBattle = (host.kind=='trainer' and not host.wild) or
+                     (host.doubleBattle == true) or 
                      (host.isDoubleBattle == true) or
-                     (host.kind=='trainer' and host.enemyParty and #host.enemyParty>=2)
+                     (host.enemyParty and #host.enemyParty>=2)
   -- Gen 1: Use original logic
   else
     isDoubleBattle = (host.kind=='trainer' and host.enemyParty and #host.enemyParty>=2)
@@ -77,8 +79,8 @@ local function eligible(screen,generation)
     if host.wild or host.linkBattle then return false end
   elseif host.kind~='trainer' or host.demo or host.ghost or host.link or host.spectator then return false end
   
-  -- Temporarily disable arena requirement to debug
-  -- if p.arenasEnabled==false then return false,'Double battles require Colosseum Arenas ON' end
+  -- Re-enable arena requirement
+  if p.arenasEnabled==false then return false,'Double battles require Colosseum Arenas ON' end
   local api,why=consumer(game);if not api then return false,why end
   return true,api
 end
