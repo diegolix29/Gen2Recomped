@@ -30,6 +30,7 @@ function CharacterModelPick.cycleCharacterModel(dir)
   
   -- Get current character model from settings
   local currentId = CharacterModelPick.getCurrentCharacterId()
+  print("CharacterModelPick.cycleCharacterModel: Current ID:", currentId)
   
   -- Find current index in character list
   local currentIndex = 0
@@ -39,6 +40,8 @@ function CharacterModelPick.cycleCharacterModel(dir)
       break
     end
   end
+  
+  print("CharacterModelPick.cycleCharacterModel: Current index:", currentIndex)
   
   -- Move to next/previous character based on direction
   local nextIndex
@@ -61,15 +64,16 @@ function CharacterModelPick.cycleCharacterModel(dir)
     end
   end
   
+  print("CharacterModelPick.cycleCharacterModel: Next index:", nextIndex)
+  
   -- Set the new character model
   if nextIndex == 0 then
     -- Disable character model (back to normal player sprite)
     CharacterModelPick.setCharacterModel("off")
-    print("CharacterModelPick.cycleCharacterModel: Character model disabled")
   else
     local character = CharacterModelPick.CHARACTERS[nextIndex]
+    print("CharacterModelPick.cycleCharacterModel: Setting character to", character.id, character.label)
     CharacterModelPick.setCharacterModel(character.id)
-    print("CharacterModelPick.cycleCharacterModel: Player model set to", character.label)
   end
 end
 

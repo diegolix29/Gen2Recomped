@@ -100,11 +100,30 @@ local function catalogEntry(id)
   id=tostring(id or ""):lower()
   if id=="green" or id=="female" then id="leaf" end
   if id=="seth" or id=="colosseum" or id=="protagonist" then id="wes" end
-  local fromIndex=indexEntry("models",id)
-  if fromIndex then return fromIndex end
+  
+  -- First try the base MODELS table (skip the index for now)
   local base=MODELS[id]
-  if not base or not exists(base.cache) then return nil end
-  local out={};for k,v in pairs(base) do out[k]=v end;return out
+  if base and exists(base.cache) then 
+    local out={};for k,v in pairs(base) do out[k]=v end
+    print("TrainerRoster.catalogEntry: Returning base entry for", id, "cache:", out.cache)
+    return out
+  end
+  
+  -- Only use index if base doesn't exist
+  local fromIndex=indexEntry("models",id)
+  if fromIndex then 
+    print("TrainerRoster.catalogEntry: Using index entry for", id, "cache:", fromIndex.cache)
+    return fromIndex 
+  end
+  
+  if not base then 
+    print("TrainerRoster.catalogEntry: No base entry for", id)
+    return nil 
+  end
+  if not exists(base.cache) then 
+    print("TrainerRoster.catalogEntry: Cache does not exist for", id, "path:", base.cache)
+    return nil 
+  end
 end
 function R.normalizeChoice(id,role)
   id=tostring(id or ""):lower()
@@ -132,9 +151,17 @@ function R.options(role)
   return out
 end
 function R.modelById(id)
-  id=R.normalizeChoice(id,"player")
+  -- Skip normalization for character model system - use exact ID
+  -- This prevents the default-to-red behavior for our character IDs
+  local originalId = id
+  id=tostring(id or ""):lower()
+  if id=="green" then id="leaf" elseif id=="seth" then id="wes" end
   if id=="off" or id=="auto" then return nil end
-  return catalogEntry(id)
+  
+  print("TrainerRoster.modelById: Looking up", id, "(original:", originalId, ")")
+  local result = catalogEntry(id)
+  print("TrainerRoster.modelById: Result cache:", result and result.cache, "for id:", id)
+  return result
 end
 
 function R.isRival(ctx)

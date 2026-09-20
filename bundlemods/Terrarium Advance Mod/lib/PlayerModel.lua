@@ -493,12 +493,19 @@ function PlayerModel.loadColosseumCharacter(id)
     print("PlayerModel.loadColosseumCharacter: character not available", id)
     return false, "colosseum trainer data not available: " .. tostring(id)
   end
+  
+  print("PlayerModel.loadColosseumCharacter: Loading character", id, "from cache:", cfg.cache, "requested id:", id)
 
   local cache, err = GeneratedAssets.readLua(cfg.cache)
   if type(cache) ~= "table" or type(cache.groups) ~= "table" or #cache.groups == 0 then
-    print("PlayerModel.loadColosseumCharacter: failed to read", cfg.cache, err)
+    print("PlayerModel.loadColosseumCharacter: failed to read", cfg.cache, "err:", err, "cache type:", type(cache))
+    if type(cache) == "table" then
+      print("PlayerModel.loadColosseumCharacter: cache keys:", table.concat(table.keys(cache), ", "))
+    end
     return false, tostring(err or "empty trainer cache")
   end
+  
+  print("PlayerModel.loadColosseumCharacter: Successfully loaded cache with", #cache.groups, "groups")
 
   if not (love and love.graphics and love.graphics.newMesh) then
     return false, "love.graphics unavailable"
