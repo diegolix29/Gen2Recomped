@@ -77,7 +77,8 @@ local function eligible(screen,generation)
     if host.wild or host.linkBattle then return false end
   elseif host.kind~='trainer' or host.demo or host.ghost or host.link or host.spectator then return false end
   
-  if p.arenasEnabled==false then return false,'Double battles require Colosseum Arenas ON' end
+  -- Temporarily disable arena requirement to debug
+  -- if p.arenasEnabled==false then return false,'Double battles require Colosseum Arenas ON' end
   local api,why=consumer(game);if not api then return false,why end
   return true,api
 end
