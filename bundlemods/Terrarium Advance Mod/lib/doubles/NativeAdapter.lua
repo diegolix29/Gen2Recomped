@@ -7,6 +7,18 @@ local AbilityEffectsGen1=V.AbilityEffectsGen1
 local AbilityEffectsGen2=V.AbilityEffectsGen2
 local A={};A.__index=A
 local function copy(t) local o={} for k,v in pairs(t or {}) do o[k]=v end return o end
+local function safeCall(kernel,method,...)
+  if type(kernel[method])=='function' then return kernel[method](kernel,...) end
+  return nil
+end
+local function safeNativeCall(native,method,...)
+  if type(native[method])=='function' then return native[method](native,...) end
+  return nil
+end
+local function safeRequire(path)
+  local ok,module=pcall(function() return req(path) end)
+  return ok and module or nil
+end
 local function set(words) local o={} for w in words:gmatch('%S+') do o[w]=true end return o end
 local selfMoves=set([[SWORDS_DANCE GROWTH MEDITATE AGILITY DOUBLE_TEAM HARDEN MINIMIZE WITHDRAW DEFENSE_CURL BARRIER AMNESIA FOCUS_ENERGY RECOVER SOFTBOILED REST SUBSTITUTE SPLASH SHARPEN ACID_ARMOR CONVERSION CONVERSION2 BELLY_DRUM MILK_DRINK SYNTHESIS MOONLIGHT MORNING_SUN PROTECT DETECT ENDURE]])
 local sideMoves=set([[REFLECT LIGHT_SCREEN MIST SAFEGUARD HEAL_BELL]])
@@ -27,7 +39,7 @@ A.UNSUPPORTED=unsupported
 function A.new(host,generation)
   local self=setmetatable({host=host,generation=generation,data=assert(host.data),
     messages={},screens={player={},enemy={}},spikes={player=false,enemy=false}},A)
-  self.native=generation==2 and req('src.battle.BattleState') or req('src.battle.BattleState')
+  self.native=generation==2 and safeRequire('src.battle.BattleState') or safeRequire('src.battle.BattleState')
   self.k=setmetatable(copy(host),{__index=self.native})
   local k=self.k
   k.__cbeAbilityActives=function()
@@ -47,7 +59,7 @@ function A.new(host,generation)
     -- leaving native singles/mod registries untouched. Gen II source semantics:
     -- pret/pokecrystal engine/battle/move_effects/psych_up.asm and the PsychUp
     -- list in data/moves/effects.asm (no checkhit; fail for all-neutral stages).
-    local psych=self.native.moveEffectRecordFor(self.data,'EFFECT_PSYCH_UP')
+    local psych=type(self.native.moveEffectRecordFor)=='function' and self.native.moveEffectRecordFor(self.data,'EFFECT_PSYCH_UP') or nil
     if not (psych and type(psych.run)=='function') then
       k.data=copy(self.data);k.data.gen2MoveEffects=copy(self.data.gen2MoveEffects)
       k.data.gen2MoveEffects.EFFECT_PSYCH_UP={kind='primary',run=function(kernel,user,target)
@@ -85,12 +97,12 @@ function A.new(host,generation)
     k.battleStat=function(kernel,mon,key)
       local s=self.core:slotFor(mon);local old=kernel.player
       kernel.player=(s and s.side=='player') and mon or nil
-      local n=self.native.battleStat(kernel,mon,key);kernel.player=old;return n
+        local n=safeNativeCall(self.native,'battleStat',kernel,mon,key);kernel.player=old;return n or 0
     end
     k.badgeTypeBoost=function(kernel,mon,kind)
       local s=self.core:slotFor(mon);local old=kernel.player
       kernel.player=(s and s.side=='player') and mon or nil
-      local n=self.native.badgeTypeBoost(kernel,mon,kind);kernel.player=old;return n
+      local n=safeNativeCall(self.native,'badgeTypeBoost',kernel,mon,kind);kernel.player=old;return n or 0
     end
     -- The native flag belongs to a target. Bind ownership to a battler token
     -- so another opponent cannot consume a partner's accuracy guarantee.
@@ -100,17 +112,19 @@ function A.new(host,generation)
       if self.action and self.action.moveId=='PSYCH_UP' then return false end
       local target=self.core and self.core:slotFor(mon)
       if target and target.lockOnSource and (not self.acting or target.lockOnSource~=self.acting.battlerId) then return false end
-      local result=self.native.consumeLockOn(kernel,mon)
+      local result=safeNativeCall(self.native,'consumeLockOn',kernel,mon)
       if result and target then target.lockOnSource=nil end
-      return result
+      return result or false
     end
     k.selfdestructUser=function(_,mon) self.destruct=mon end
     k.dealDamage=function(kernel,attacker,target,damage,opts)
       if self.spread and opts and opts.move then damage=math.max(1,math.floor(damage*.5)) end
-      return self.native.dealDamage(kernel,attacker,target,damage,opts)
+      local result=safeNativeCall(self.native,'dealDamage',kernel,attacker,target,damage,opts)
+      return result or damage
     end
   else
-    self.status=req('src.battle.Status');self.order=req('src.battle.TurnOrder')
+    self.status=safeRequire('src.battle.Status');self.order=safeRequire('src.battle.TurnOrder')
+    if not self.status or not self.order then self.status={};self.order={effectiveSpeed=function(b) return b.speed or 0 end} end
     k.ruleset=copy(host.ruleset);k.ruleset.enemyUnlimitedPP=false;k.ruleset.residualAfterMove=false
     k.ruleset.hyperBeamSkipRechargeOnKO=false
     -- These routines enqueue only presentation or invoke a native effect's
@@ -130,7 +144,8 @@ function A.new(host,generation)
     k.selfDestruct=function(_,battler) self.destruct=battler.mon end
     k.cancelMoveAnim=function(kernel) if kernel.moveAnimRow then kernel.moveAnimRow.cancelled=true end end
     k.computeDamage=function(kernel,user,target,move,opts)
-      local n,info=self.native.computeDamage(kernel,user,target,move,opts)
+      local n,info=safeNativeCall(self.native,'computeDamage',kernel,user,target,move,opts)
+      if n==nil then n=0 end
       if self.spread and move.id~='CONFUSED' and n>0 then n=math.max(1,math.floor(n*.5)) end
       return n,info
     end
@@ -167,20 +182,21 @@ end
 function A:maxHP(mon) return math.max(1,mon.maxHp or mon.maxHP or (mon.stats and mon.stats.hp) or mon.hp or 1) end
 function A:makeBattler(s,opening)
   if self.generation==2 then
-    self.k:clearVolatile(s.mon)
+    if type(self.k.clearVolatile)=='function' then self.k:clearVolatile(s.mon) end
     if s.side=='player' and self.host.checkAmuletCoin then self.host:checkAmuletCoin(s.mon) end
     return {mon=s.mon,name=self:name(s.mon),isPlayer=s.side=='player',stages=self:newStages()}
   end
   local lead=s.side=='player' and self.host.player or self.host.enemy
   if opening and lead and lead.mon==s.mon then return lead end
-  local b=self.native.makeBattler(self.data,s.mon,s.side=='player',self.host.game and self.host.game.save)
+  local b=safeNativeCall(self.native,'makeBattler',self.data,s.mon,s.side=='player',self.host.game and self.host.game.save)
+  if not b then b={mon=s.mon,name=self:name(s.mon),isPlayer=s.side=='player'} end
   for _,key in ipairs({'reflect','lightScreen','mist'}) do if self.screens[s.side][key] then b[key]=true end end
   return b
 end
 function A:withdraw(s)
   if self.generation==2 then
     if AbilityEffectsGen2 then AbilityEffectsGen2.onLeave(self.k, s.mon) end
-    self.k:clearVolatile(s.mon)
+    if type(self.k.clearVolatile)=='function' then self.k:clearVolatile(s.mon) end
   elseif AbilityEffectsGen1 then
     AbilityEffectsGen1.onLeave(self.k, s)
   end
@@ -212,7 +228,7 @@ function A:supports(def)
     return false,'Requires a doubles-specific effect adapter'
   end
   if self.generation==1 then
-    local r=self.k:effectRecord(def.effect)
+    local r=safeCall(self.k,'effectRecord',def.effect)
     if r and (r.callsMove or r.perform) then return false,'Native special flow not yet adapted' end
   end
   return true
@@ -235,13 +251,13 @@ function A:targetMode(def)
   return 'selected'
 end
 function A:forced(s)
-  if self.generation==2 then local id=self.k:forcedMove(s.mon);return id and {id=id} end
+  if self.generation==2 then local id=safeCall(self.k,'forcedMove',s.mon);return id and {id=id} end
   local b=s.battler
   if b.mustRecharge then return {special='recharge'} end
   return b.charging or b.thrashMove or b.rageMove
 end
 function A:disabled(s,index,move)
-  if self.generation==2 then return self.k:moveDisabled(s.mon,move.id) end
+  if self.generation==2 then return safeCall(self.k,'moveDisabled',s.mon,move.id) end
   return s.battler.disabledSlot==index
 end
 function A:abilityTraps(s)
@@ -332,25 +348,25 @@ end
 function A:onEnter(s)
   if self.generation==2 then
     self:bind(s,s)
-    self.k:spikesDamage(s.mon)
+    safeCall(self.k,'spikesDamage',s.mon)
   end
   self:onEnterAbilities(s)
 end
 function A:speed(s)
-  if self.generation==2 then self:bind(s,s);return self.k:effectiveSpeed(s.mon) end
+  if self.generation==2 then self:bind(s,s);return safeCall(self.k,'effectiveSpeed',s.mon) end
   local multiplier=AbilityEffectsGen1 and AbilityEffectsGen1.speedMultiplier(self.k,s.battler) or 1
   return self.order.effectiveSpeed(s.battler)*multiplier
 end
 function A:priority(id)
   local d=self:moveDef(id)
   if d and d.priority then return d.priority end
-  if self.generation==2 then return self.k:movePriority(id) end
+  if self.generation==2 then return safeCall(self.k,'movePriority',id) end
   return id=='QUICK_ATTACK' and 1 or 0
 end
 function A:quickClaw(s)
   if self.generation~=2 then return false end
   self:bind(s,s)
-  local effect,param=self.k:heldEffect(s.mon,'priority')
+  local effect,param=safeCall(self.k,'heldEffect',s.mon,'priority')
   return effect=='HELD_QUICK_CLAW' and self.core.rng(0,255)<(tonumber(param) or 0)
 end
 function A:beginTurn()
@@ -414,12 +430,12 @@ function A:performNoTarget(s,action)
   self.presentationEvent=nil;self.suppressAnnouncement=false;self.spread=false
   self:bind(s,foe)
   if self.generation==2 then
-    if not k:canAct(s.mon,action.moveId) then return end
+    if not safeCall(k,'canAct',s.mon,action.moveId) then return end
   else
     if s.battler.mustRecharge then
       s.battler.mustRecharge=nil;self:message(self:name(s.mon)..' must recharge!');return
     end
-    if k:statusInterrupt(s.battler,foe.battler,action.moveId) then return end
+    if safeCall(k,'statusInterrupt',s.battler,foe.battler,action.moveId) then return end
   end
   local move=self:moves(s)[action.moveIndex]
   if action.moveIndex~=0 and (not move or move.id~=action.moveId) then
@@ -473,13 +489,13 @@ function A:perform(s,targets,action)
   if first==s then local foes=self.core:aliveSlots(s.side=='player' and 'enemy' or 'player');first=foes[1] or s end
   self:bind(s,first)
   if self.generation==2 then
-    if not k:canAct(s.mon,action.moveId) then return end
+    if not safeCall(k,'canAct',s.mon,action.moveId) then return end
   else
     k.queue={};k.nextInsert=0
     if s.battler.mustRecharge then
       s.battler.mustRecharge=nil;self:message(self:name(s.mon)..' must recharge!');return
     end
-    if k:statusInterrupt(s.battler,first.battler,action.moveId) then return end
+    if safeCall(k,'statusInterrupt',s.battler,first.battler,action.moveId) then return end
   end
   local move=self:moves(s)[action.moveIndex]
   -- Recheck at execution: a faster Disable may invalidate a move selected
@@ -532,7 +548,7 @@ function A:perform(s,targets,action)
         volatile.protect=protect;volatile.vanished=vanished
         if not ok then error(err,0) end
       else
-        k:useMove(s.mon,nativeTarget.mon,action.moveId)
+        safeCall(k,'useMove',s.mon,nativeTarget.mon,action.moveId)
       end
       end
       if repeatPP~=nil then
@@ -558,7 +574,7 @@ function A:perform(s,targets,action)
     else
       self:announce()
       k.queue={};k.nextInsert=0
-      k:performMove(s.battler,nativeTarget.battler,move or {id=action.moveId,pp=1,struggle=action.moveId=='STRUGGLE'},index>1)
+      safeCall(k,'performMove',s.battler,nativeTarget.battler,move or {id=action.moveId,pp=1,struggle=action.moveId=='STRUGGLE'},index>1)
       if self.presentationEvent then
         self.presentationEvent.targetResults[t.id]={battlerId=t.battlerId,cancelled=k.moveAnimRow and k.moveAnimRow.cancelled==true}
       end
@@ -603,15 +619,15 @@ function A:endTurn()
   local k=self.k;local living=self.core:aliveSlots()
   if self.generation==2 then
     local function sandstormChip(checkCloudNine)
-      local E=req('src.battle.gen2.Effects')
+      local E=safeRequire('src.battle.gen2.Effects')
       local suppressed=checkCloudNine and AbilityEffectsGen2 and V.AbilityWeather
         and V.AbilityWeather.isSuppressed(k, function(mon) return AbilityEffectsGen2.hasAbility(k,mon,"CLOUD_NINE") end)
       if suppressed then return end
       for _,s in ipairs(living) do
-        local d=k:speciesDef(s.mon)
+        local d=safeCall(k,'speciesDef',s.mon)
         local v = k and type(k.volatile)=="function" and k:volatile(s.mon)
-        if v and not v.vanished and E.sandstormHits((d and d.types) or s.mon.types) then
-          s.mon.hp=math.max(0,s.mon.hp-E.sandstormDamage(self:maxHP(s.mon)))
+        if v and not v.vanished and E and E.sandstormHits and E.sandstormHits((d and d.types) or s.mon.types) then
+          s.mon.hp=math.max(0,s.mon.hp-(E.sandstormDamage and E.sandstormDamage(self:maxHP(s.mon)) or math.max(1,math.floor(self:maxHP(s.mon)/16))))
           self:message(self:name(s.mon)..' is buffeted by the sandstorm!')
         end
       end
@@ -635,19 +651,19 @@ function A:endTurn()
     end
     for _,s in ipairs(living) do
       self:bind(s,s)
-      if s.mon.hp>0 then k:tickStatus(s.mon) end
+      if s.mon.hp>0 then safeCall(k,'tickStatus',s.mon) end
       local v = k and type(k.volatile)=="function" and k:volatile(s.mon)
       if v.leechSeed and s.mon.hp>0 then
         local n=math.min(s.mon.hp,math.max(1,math.floor(self:maxHP(s.mon)/8)));s.mon.hp=s.mon.hp-n
         local source=s.seedSource and self.core.slots[s.seedSource]
-        if source and source.mon and source.mon.hp>0 then k:heal(source.mon,n) end
+        if source and source.mon and source.mon.hp>0 then safeCall(k,'heal',source.mon,n) end
         self:message('LEECH SEED saps '..self:name(s.mon)..'!')
       end
       if v.cursed and s.mon.hp>0 then s.mon.hp=math.max(0,s.mon.hp-math.max(1,math.floor(self:maxHP(s.mon)/4)));self:message(self:name(s.mon)..' is hurt by CURSE!') end
-      k:tickWrap(s.mon);k:tickHeldItem(s.mon);k:tickPerish(s.mon);k:tickCounters(s.mon)
+      safeCall(k,'tickWrap',s.mon);safeCall(k,'tickHeldItem',s.mon);safeCall(k,'tickPerish',s.mon);safeCall(k,'tickCounters',s.mon)
     end
     -- Exact two SIDE records, not four aliases, for screen duration.
-    k:tickScreens()
+    safeCall(k,'tickScreens')
   else
     for side,fields in pairs(self.screens) do
       for key,turns in pairs(fields) do
@@ -693,9 +709,10 @@ function A:onReveal(s)
   local save=self.host.save or (self.host.game and self.host.game.save)
   if not save then return end
   if self.generation==2 then
-    local screen=req('src.ui.battle.BattleState')
+    local screen=safeRequire('src.ui.battle.BattleState')
     local view=self.screen or {save=save}
-    screen.markSeen(view,s.mon);screen.noteFirstUnown(view,s.mon)
+    if screen and screen.markSeen then screen.markSeen(view,s.mon) end
+    if screen and screen.noteFirstUnown then screen.noteFirstUnown(view,s.mon) end
   else
     save.pokedex=save.pokedex or {seen={},owned={}}
     save.pokedex.seen=save.pokedex.seen or {}
@@ -718,18 +735,20 @@ function A:onFaint(s,source)
   end
   if s.side=='player' then
     if self.generation==2 and self.k.faintHappiness then
-      if foe then self:bind(s,foe);self.k:faintHappiness(s.mon) end
+      if foe then self:bind(s,foe);safeCall(self.k,'faintHappiness',s.mon) end
     elseif self.generation==1 then
       local reason=foe and (foe.mon.level or 0)-(s.mon.level or 0)>=30 and 'CARELESSTRAINER' or 'FAINTED'
-      req('src.world.PikachuFollower').modifyHappiness(self.host.game.save,reason,s.mon)
+      local P=safeRequire('src.world.PikachuFollower')
+      if P and P.modifyHappiness then P.modifyHappiness(self.host.game.save,reason,s.mon) end
     end
   end
   local sideIndex=s.side=='player' and 1 or 2
   local side=self.host.sides and self.host.sides[sideIndex]
-  req('src.mods.Runtime').emit('battle.fainted',{battle=self.host,
+  local Runtime=safeRequire('src.mods.Runtime')
+  if Runtime and Runtime.emit then Runtime.emit('battle.fainted',{battle=self.host,
     battler=self.generation==2 and s.mon or s.battler,side=side,
     mon=s.mon,index=s.partyIndex,partyIndex=s.partyIndex,slot=s.id,
-    battlerId=s.battlerId,sideKey=s.side,doubles=true})
+    battlerId=s.battlerId,sideKey=s.side,doubles=true}) end
 end
 function A:refreshAfterProgression(levels)
   for _,s in pairs(self.core.slots) do if s.mon then
