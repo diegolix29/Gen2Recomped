@@ -9,31 +9,40 @@ local V=...
 local C={}
 local byModel=setmetatable({},{__mode="k"})
 local byView=setmetatable({},{__mode="k"})
-local detectedGeneration=nil
 
 local function engineRequire(name)
   return (V.engineRequire or require)(name)
 end
 
+-- NOT CACHED. GameVersion.current is a live, mutable field the launcher
+-- changes with GameVersion.set(id) whenever the player switches between
+-- bundled cartridges/ROM hacks (red/crystal/firered/prism/polishedcrystal
+-- etc) without restarting the process -- see src/core/GameVersion.lua. A
+-- module-level memo here used to freeze whatever generation happened to be
+-- current the FIRST time anything called C.current(), which for callers that
+-- install once at mod-load time (doubles/Runtime.lua's D.install, in
+-- particular) meant every battle for the rest of the session was evaluated
+-- against a stale generation -- wiring the CBE doubles hook onto the wrong
+-- BattleState class, or evaluating the wrong generation's eligibility
+-- branch, the moment the player left whichever game was loaded first.
+-- GameVersion.generation() is a cheap table lookup, so asking fresh every
+-- call costs nothing.
 function C.current()
-  if detectedGeneration then return detectedGeneration end
   local ok,GameVersion=pcall(engineRequire,"src.core.GameVersion")
   if ok and GameVersion and type(GameVersion.generation)=="function" then
     local okGen,value=pcall(GameVersion.generation)
-    if okGen and tonumber(value) then detectedGeneration=tonumber(value) end
+    if okGen and tonumber(value) then return tonumber(value) end
   end
-  -- Fallback detection for Gen 3: check if Gen 3 battle classes exist
-  if not detectedGeneration or detectedGeneration == 1 then
-    local okGen3, Gen3Battle = pcall(engineRequire, "src.battle.BattleState")
-    if okGen3 and Gen3Battle then
-      -- Check if this is actually Gen 3 by looking for Gen 3-specific features
-      local okData, Data = pcall(engineRequire, "src.core.Data")
-      if okData and Data and Data.constants and Data.constants.gen3ItemEffects then
-        detectedGeneration = 3
-      end
+  -- Fallback detection for Gen 3, for callers reached before GameVersion is
+  -- available: check whether Gen 3-specific data is loaded.
+  local okGen3, Gen3Battle = pcall(engineRequire, "src.battle.BattleState")
+  if okGen3 and Gen3Battle then
+    local okData, Data = pcall(engineRequire, "src.core.Data")
+    if okData and Data and Data.constants and Data.constants.gen3ItemEffects then
+      return 3
     end
   end
-  return detectedGeneration or 1
+  return 1
 end
 
 local function isGen2View(value)

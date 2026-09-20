@@ -55,18 +55,23 @@ local function eligible(screen,generation)
   
   -- Gen 3: Check for native double battle indicators
   if generation==3 then
-    -- Gen 3 might have native double battle support - check for double battle flags
+    -- The native engine's real flag is `self.double` (see BattleState:isDouble()
+    -- in src/battle/BattleState.lua) -- not `doubleBattle`/`isDoubleBattle`,
+    -- which nothing in the engine ever sets, and not `battleType`, which
+    -- holds strings like "roaming"/"suicune" rather than a doubles marker.
+    -- Those three checks never matched anything real; eligibility was
+    -- riding on the enemyParty>=2 guess alone, which also fires for an
+    -- ordinary single battle against any trainer with a full team. Check the
+    -- real flag first and keep the guess only as a fallback for battles that
+    -- reach here before `double` is set.
+    isDoubleBattle = host.double == true or
+                     (type(host.isDouble)=='function' and host:isDouble()) or
+                     (host.kind=='trainer' and host.enemyParty and #host.enemyParty>=2)
+  -- Gen 2: Check for double battle indicators  
+  elseif generation==2 then
     isDoubleBattle = (host.doubleBattle == true) or 
                      (host.isDoubleBattle == true) or
-                     (host.battleType and (host.battleType==2 or host.battleType=="double")) or
                      (host.kind=='trainer' and host.enemyParty and #host.enemyParty>=2)
-  -- Gen 2: Check for double battle indicators - be very permissive for Gen 2
-  elseif generation==2 then
-    -- For Gen 2, if it's a trainer battle with double battles enabled, assume it's a double battle
-    isDoubleBattle = (host.kind=='trainer' and not host.wild) or
-                     (host.doubleBattle == true) or 
-                     (host.isDoubleBattle == true) or
-                     (host.enemyParty and #host.enemyParty>=2)
   -- Gen 1: Use original logic
   else
     isDoubleBattle = (host.kind=='trainer' and host.enemyParty and #host.enemyParty>=2)
@@ -79,7 +84,6 @@ local function eligible(screen,generation)
     if host.wild or host.linkBattle then return false end
   elseif host.kind~='trainer' or host.demo or host.ghost or host.link or host.spectator then return false end
   
-  -- Re-enable arena requirement
   if p.arenasEnabled==false then return false,'Double battles require Colosseum Arenas ON' end
   local api,why=consumer(game);if not api then return false,why end
   return true,api
@@ -548,30 +552,66 @@ function D.install()
     end
     Runtime.__cbeDoublesEmitGuard=true
   end
-  local generation=V.GenerationCompat.current()
-  -- Gen 3 uses the same BattleState class as Gen 1
-  local class=req(generation==2 and 'src.ui.battle.BattleState' or 'src.battle.BattleState')
-  local old=assert(class.update,'Native battle update is unavailable')
-  class.update=function(screen,dt,...)
-    local s=D.byState[screen] or D.tryBegin(screen,generation)
-    if s and not s.closed then
-      if s.handoff or s.progressing then
-        -- Native dialogs/stat boxes/learning run, but native combat submission
-        -- cannot. The arena presenter keeps its four independent actor handles.
-        if s.progressing and V.DoublesPresenter then V.DoublesPresenter.update(s,dt) end
-        local ok,handled=pcall(D.rewardStep,s)
-        if not ok then D.fail(s,handled);return end
-        if handled then return end
-        local success,result=pcall(old,screen,dt,...)
-        if not success then D.fail(s,result);return end
-        if not s.closed and (s.progressing or s.handoff) then
-          local settled,why=pcall(D.rewardStep,s)
-          if not settled then D.fail(s,why) end
-        end
-        return result
-      else D.update(s,dt);return end
+  -- Both native battle classes are patched unconditionally, every session,
+  -- regardless of which cartridge happens to be loaded when install() runs.
+  --
+  -- This mod bundles several generations at once and the launcher can switch
+  -- between them (GameVersion.set) without restarting the process, so there
+  -- is no single "the generation" to read once here -- a session can (and,
+  -- per play reports, routinely does) visit Gen II and Gen III in the same
+  -- run. Previously this read V.GenerationCompat.current() ONE TIME, at
+  -- mod-install, and used that single answer both to pick ONE of the two
+  -- classes below to patch and as the fixed `generation` handed to every
+  -- later D.tryBegin call. Whichever class did not match the one-shot
+  -- snapshot never got the CBE doubles hook wired onto its update method at
+  -- all, so at most one of {Gen II} or {Gen I/III} could ever trigger CBE
+  -- doubles in a given process lifetime -- and if the snapshot was taken
+  -- before any save was loaded (GameVersion.current defaults to "red"), it
+  -- was possible for neither branch to line up with what was actually being
+  -- played. That is what made doubles look permanently off for Gen II and
+  -- Gen III alike: only whichever generation happened to be current at
+  -- mod-load time was ever wired up, and often that was neither.
+  local function patchClass(class,resolveGeneration)
+    if not class or type(class.update)~='function' then return end
+    if class.__cbeDoublesPatched then return end
+    class.__cbeDoublesPatched=true
+    local old=class.update
+    class.update=function(screen,dt,...)
+      local generation=resolveGeneration(screen)
+      local s=D.byState[screen] or D.tryBegin(screen,generation)
+      if s and not s.closed then
+        if s.handoff or s.progressing then
+          -- Native dialogs/stat boxes/learning run, but native combat
+          -- submission cannot. The arena presenter keeps its four
+          -- independent actor handles.
+          if s.progressing and V.DoublesPresenter then V.DoublesPresenter.update(s,dt) end
+          local ok,handled=pcall(D.rewardStep,s)
+          if not ok then D.fail(s,handled);return end
+          if handled then return end
+          local success,result=pcall(old,screen,dt,...)
+          if not success then D.fail(s,result);return end
+          if not s.closed and (s.progressing or s.handoff) then
+            local settled,why=pcall(D.rewardStep,s)
+            if not settled then D.fail(s,why) end
+          end
+          return result
+        else D.update(s,dt);return end
+      end
+      return old(screen,dt,...)
     end
-    return old(screen,dt,...)
+  end
+  -- Gen 3 uses the same BattleState class as Gen 1, so this one class serves
+  -- both -- ask GenerationCompat fresh (it is no longer cached) rather than
+  -- assume either.
+  local okG13,classG13=pcall(req,'src.battle.BattleState')
+  if okG13 then
+    patchClass(classG13,function() return V.GenerationCompat.current() end)
+  end
+  -- Gen 2 has always had its own separate class, so it is unambiguous: this
+  -- update method is only ever reached by a Gen II battle.
+  local okG2,classG2=pcall(req,'src.ui.battle.BattleState')
+  if okG2 then
+    patchClass(classG2,function() return 2 end)
   end
   -- Freeze native checkpoints at the unsupported custom phase (not 'menu').
   -- Engine BattleSafety already rejects this phase; no save serializer changes.
