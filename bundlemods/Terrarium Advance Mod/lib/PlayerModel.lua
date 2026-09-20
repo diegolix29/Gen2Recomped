@@ -18,6 +18,7 @@ local StadiumMon = V.require("StadiumMon")
 local ColosseumMon = V.require("ColosseumMon")
 local ColosseumTrainer = V.require("ColosseumTrainer")
 local GeneratedAssets = V.require("GeneratedAssets")
+local CharacterWalkCycle = V.require("CharacterWalkCycle")
 
 local PlayerModel = {}
 
@@ -60,7 +61,17 @@ local characterNativeTrack = nil  -- Store native animation track
 local characterNativeAge = 0  -- Track native animation age
 local currentCharacterId = nil
 local characterGroups = nil    -- array of {mesh=, texture=, baseVertices=} for the current character
-local characterCache = {}      -- id -> {groups=, scale=}, kept separate from modelCache/textureCache below since a character is several mesh+texture pairs, not one
+local characterCache = {}      -- id -> {groups=, scale=, walkRig=}, kept separate from modelCache/textureCache below since a character is several mesh+texture pairs, not one
+
+-- Per-vertex hip/knee/shoulder bucket rig for the current character (see
+-- lib/CharacterWalkCycle.lua) and the smoothed 0..1 blend that eases the
+-- swing in when the player starts moving and back out when they stop.
+-- characterWalkVertexBuffers holds one reusable vertexData table per mesh
+-- group so CharacterWalkCycle.apply doesn't allocate a fresh table of
+-- tables every single frame the player is walking.
+local characterWalkRig = nil
+local characterWalkBlend = 0
+local characterWalkVertexBuffers = {}
 
 -- Target overworld world-unit height for a standing human figure. Matches
 -- FirstPerson.EYE_HEIGHT (13, near the top of the head on the default 16px
@@ -417,6 +428,8 @@ function PlayerModel.loadColosseumCharacter(id)
   local cached = characterCache[id]
   if cached then
     characterGroups = cached.groups
+    characterWalkRig = cached.walkRig
+    characterWalkVertexBuffers = {}
     currentCharacterId = id
     currentFilename = "colosseum_character_" .. id
     usingCharacter = true
@@ -500,8 +513,17 @@ function PlayerModel.loadColosseumCharacter(id)
   local sourceHeight = b and ((tonumber(b.max and b.max[2]) or 0) - (tonumber(b.min and b.min[2]) or 0)) or 0
   local scale = (sourceHeight > 0) and (CHARACTER_HEIGHT / sourceHeight) or 1.0
 
-  characterCache[id] = { groups = groups, scale = scale }
+  -- Build the hip/knee/shoulder vertex-bucket rig once here (see
+  -- lib/CharacterWalkCycle.lua) rather than every frame -- it's the same
+  -- per-character shoulder/width landmarks TrainerRig.profile already
+  -- computes for the throw-anchor system, just sorted into buckets.
+  local walkRigOk, walkRig = pcall(CharacterWalkCycle.build, id, groups, b)
+  if not walkRigOk then walkRig = nil end
+
+  characterCache[id] = { groups = groups, scale = scale, walkRig = walkRig }
   characterGroups = groups
+  characterWalkRig = walkRig
+  characterWalkVertexBuffers = {}
   currentCharacterId = id
   currentFilename = "colosseum_character_" .. id
   usingCharacter = true
@@ -592,6 +614,9 @@ function PlayerModel.clear()
   currentCharacterId = nil
   characterGroups = nil
   characterWalkTime = 0  -- Reset walk animation time
+  characterWalkBlend = 0
+  characterWalkRig = nil
+  characterWalkVertexBuffers = {}
 end
 
 -- Check if a model is currently loaded.
@@ -830,15 +855,48 @@ function PlayerModel.draw(px, py, y, facing, mirror)
 
     -- Update animation time
     if isMoving then
-      characterWalkTime = characterWalkTime + 0.15  -- Walk animation speed
+      characterWalkTime = characterWalkTime + 0.15  -- Walk animation speed / gait phase
       characterIdleTime = 0  -- Reset idle when walking
     else
       characterIdleTime = characterIdleTime + 0.016  -- Idle animation speed (60fps)
-      characterWalkTime = 0  -- Reset walk when idle
+      -- characterWalkTime deliberately isn't reset here -- see the
+      -- characterWalkBlend easing right below. Freezing the gait phase
+      -- where it stopped (rather than snapping it to 0) is what lets the
+      -- leg swing relax smoothly back to neutral instead of jumping.
     end
 
-    -- Sample native idle animation from track if available
-    if characterNativeTrack and not isMoving then
+    -- Smoothed 0..1 "how much walk swing should show right now" -- eases
+    -- up over a few frames when the player starts moving, and back down
+    -- over a few frames when they stop, instead of an instant on/off cut.
+    -- See lib/CharacterWalkCycle.lua.
+    characterWalkBlend = CharacterWalkCycle.updateBlend(characterWalkBlend, isMoving, 0.016, 10, 6)
+
+    -- Procedural leg/arm swing (see lib/CharacterWalkCycle.lua's header for
+    -- why this is a per-vertex heuristic rather than real bone animation
+    -- like red_3d_player's humanoids: these Colosseum battle-actor models
+    -- carry no skin weights, only baked idle morph targets). Runs whenever
+    -- there's any swing left to show, not just while isMoving is literally
+    -- true this frame, so characterWalkBlend's stop-easing above actually
+    -- has motion to ease out of.
+    if characterWalkRig and characterWalkBlend > 0.001 then
+      for gi, group in ipairs(characterGroups) do
+        if group.mesh and group.baseVertices then
+          local buf = CharacterWalkCycle.apply(
+            characterWalkRig, gi, group,
+            characterWalkTime, characterWalkBlend,
+            characterWalkVertexBuffers[gi]
+          )
+          characterWalkVertexBuffers[gi] = buf
+          group.mesh:setVertices(buf)
+        end
+      end
+    end
+
+    -- Sample native idle animation from track if available. Held off
+    -- until the walk swing has eased all the way back out (rather than
+    -- simply "not isMoving") so the two systems don't fight over the same
+    -- frame's vertex positions during the stop transition.
+    if characterNativeTrack and not isMoving and characterWalkBlend <= 0.001 then
       local TrainerMorph = V.TrainerMorph
       if TrainerMorph then
         local clip, a, b, u, role = TrainerMorph.trackSample(characterNativeTrack, nil, characterIdleTime, nil, nil)
@@ -982,20 +1040,12 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     -- Add 180-degree rotation so character faces the right direction
     m = Mat4.mul(m, Mat4.rotateY(yaw + math.pi))
     
-    -- Apply simple walk animation (bobbing + slight rocking when moving)
-    if isMoving then
-      local walkSin = math.sin(characterWalkTime)
-      local walkCos = math.cos(characterWalkTime)
-      
-      -- Vertical bobbing (up/down oscillation)
-      local bobAmount = 0.15 * walkSin
-      m = Mat4.mul(m, Mat4.translate(0, bobAmount, 0))
-      
-      -- Slight forward/back rocking (simulates leaning into steps)
-      local rockAmount = 0.05 * walkCos
-      m = Mat4.mul(m, Mat4.rotateX(rockAmount))
-    end
-    
+    -- The old whole-body bob+rock hack that used to stand in for a walk
+    -- animation lived here -- it's gone now that CharacterWalkCycle
+    -- actually swings the legs/arms per vertex (including its own, much
+    -- smaller torso bob, timed to the footfalls rather than a flat sine on
+    -- the whole matrix). See the vertex-buffer block above.
+
     -- Apply mirroring if needed
     if mirror then
       m = Mat4.mul(m, Mat4.scale(-1, 1, 1))
@@ -1102,6 +1152,10 @@ function PlayerModel.clearCache()
   usingCharacter = false
   currentCharacterId = nil
   characterGroups = nil
+  characterWalkTime = 0
+  characterWalkBlend = 0
+  characterWalkRig = nil
+  characterWalkVertexBuffers = {}
   -- ColosseumMon's actor cache is shared with StadiumFollower/StadiumWilds/
   -- RoamerStadium3D, so this is a full teardown (ROM change, mod unload),
   -- same as StadiumFollower.clearCache -- not something to call per-swap.
