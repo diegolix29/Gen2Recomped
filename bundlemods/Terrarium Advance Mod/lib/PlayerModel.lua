@@ -860,6 +860,23 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     local isMoving = Game.input:isDown("up") or Game.input:isDown("down")
                     or Game.input:isDown("left") or Game.input:isDown("right")
 
+    -- Detect whether a manual (cosmetic, in-place) hop is currently
+    -- playing. red3dManualJumpFrames/Total are the base engine's own
+    -- countdown for the JUMP key when it isn't crossing a real ledge (see
+    -- main.lua's "jump" HOTKEYS branch) -- nothing in this mod ticks them
+    -- down, so by the time this draws they've already been advanced by
+    -- whatever owns the actual jump arc. They count down linearly from
+    -- Total to 0, so 1 - frames/total is a clean 0 (takeoff) .. 1 (landing)
+    -- progress with no extra smoothing needed -- CharacterWalkCycle.
+    -- applyJump's own envelope already fades to 0 at both ends, so there's
+    -- nothing to pop when the jump starts or ends.
+    local jumpTop = Game.stack and Game.stack:top()
+    local jumper = jumpTop and jumpTop.isOverworld and jumpTop.player
+    local jumpFrames = jumper and jumper.red3dManualJumpFrames
+    local jumpTotal = jumper and jumper.red3dManualJumpTotal
+    local jumpProgress = (jumpFrames and jumpTotal and jumpTotal > 0)
+      and (1 - jumpFrames / jumpTotal) or nil
+
     -- Update animation time
     if isMoving then
       characterWalkTime = characterWalkTime + 0.15  -- Walk animation speed / gait phase
@@ -885,14 +902,25 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     -- there's any swing left to show, not just while isMoving is literally
     -- true this frame, so characterWalkBlend's stop-easing above actually
     -- has motion to ease out of.
-    if characterWalkRig and characterWalkBlend > 0.001 then
+    if characterWalkRig and (jumpProgress or characterWalkBlend > 0.001) then
       for gi, group in ipairs(characterGroups) do
         if group.mesh and group.baseVertices then
-          local buf = CharacterWalkCycle.apply(
-            characterWalkRig, gi, group,
-            characterWalkTime, characterWalkBlend,
-            characterWalkVertexBuffers[gi]
-          )
+          local buf
+          if jumpProgress then
+            -- A hop has no gait to loop -- one clean up/down arc, not a
+            -- repeating stride -- so it gets its own single-pass pose
+            -- instead of another position on the walk cycle's phase wheel.
+            buf = CharacterWalkCycle.applyJump(
+              characterWalkRig, gi, group, jumpProgress,
+              characterWalkVertexBuffers[gi]
+            )
+          else
+            buf = CharacterWalkCycle.apply(
+              characterWalkRig, gi, group,
+              characterWalkTime, characterWalkBlend,
+              characterWalkVertexBuffers[gi]
+            )
+          end
           characterWalkVertexBuffers[gi] = buf
           group.mesh:setVertices(buf)
         end
@@ -903,7 +931,7 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     -- until the walk swing has eased all the way back out (rather than
     -- simply "not isMoving") so the two systems don't fight over the same
     -- frame's vertex positions during the stop transition.
-    if characterNativeTrack and not isMoving and characterWalkBlend <= 0.001 then
+    if characterNativeTrack and not isMoving and not jumpProgress and characterWalkBlend <= 0.001 then
       local TrainerMorph = V.TrainerMorph
       if TrainerMorph then
         local clip, a, b, u, role = TrainerMorph.trackSample(characterNativeTrack, nil, characterIdleTime, nil, nil)
