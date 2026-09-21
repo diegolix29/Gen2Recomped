@@ -523,10 +523,13 @@ function PlayerModel.loadColosseumCharacter(id)
 
   -- Native idle clip from the extracted cache. Optional: a character with
   -- no native_v1 cache (or a topology mismatch) just keeps its rest pose.
-  local nativeOk, native, nativeErr = pcall(CharacterNativeAnim.load, id, groups, { "idle" })
+  -- Load the currently selected animation from settings
+  local CharacterModelPick = V.require("CharacterModelPick")
+  local selectedAnimation = CharacterModelPick.getCurrentAnimation()
+  local nativeOk, native, nativeErr = pcall(CharacterNativeAnim.load, id, groups, { selectedAnimation })
   if not nativeOk then native, nativeErr = nil, native end
   if not native then
-    print("[PlayerModel] no native idle animation for '" .. tostring(id) .. "': " .. tostring(nativeErr))
+    print("[PlayerModel] no native " .. selectedAnimation .. " animation for '" .. tostring(id) .. "': " .. tostring(nativeErr))
   end
 
   characterCache[id] = { groups = groups, scale = scale, walkRig = walkRig, native = native }
@@ -551,6 +554,40 @@ end
 function PlayerModel.getCharacterId()
   if usingCharacter then return currentCharacterId end
   return nil
+end
+
+-- Get the current character groups (for animation reloading)
+function PlayerModel.getCharacterGroups()
+  return characterGroups
+end
+
+-- Get the character cache (for animation reloading)
+function PlayerModel.getCharacterCache()
+  return characterCache
+end
+
+-- Reload the character animation with the current selection
+function PlayerModel.reloadCharacterAnimation()
+  if not usingCharacter or not currentCharacterId or not characterGroups then
+    return
+  end
+  
+  -- Release old animation
+  if characterNative then
+    CharacterNativeAnim.release(characterNative)
+  end
+  
+  -- Load new animation with current selection
+  local CharacterModelPick = V.require("CharacterModelPick")
+  local selectedAnimation = CharacterModelPick.getCurrentAnimation()
+  local nativeOk, native, nativeErr = pcall(CharacterNativeAnim.load, currentCharacterId, characterGroups, { selectedAnimation })
+  
+  if nativeOk and native then
+    characterNative = native
+  else
+    print("[PlayerModel] failed to reload animation " .. selectedAnimation .. " for '" .. tostring(currentCharacterId) .. "': " .. tostring(nativeErr))
+    characterNative = nil
+  end
 end
 
 -- Get the current character model ID from settings (delegates to CharacterModelPick)
@@ -936,7 +973,9 @@ function PlayerModel.draw(px, py, y, facing, mirror)
       if isMoving or jumpProgress or characterWalkBlend > 0.001 then
         CharacterNativeAnim.reset(characterNative)
       else
-        CharacterNativeAnim.tick(characterNative, "idle")
+        local CharacterModelPick = V.require("CharacterModelPick")
+        local selectedAnimation = CharacterModelPick.getCurrentAnimation()
+        CharacterNativeAnim.tick(characterNative, selectedAnimation)
       end
     end
 

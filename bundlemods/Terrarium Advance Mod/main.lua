@@ -2476,6 +2476,18 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
     table.insert(out, characterRow) 
   end
 
+  -- Character animation row (appears below character model when enabled)
+  local okAnimation, animationRow = pcall(function()
+    local ColosseumTrainer = V.require("ColosseumTrainer")
+    if ColosseumTrainer.available("red") then
+      return V.require("CharacterModelPick").animationRow()
+    end
+    return nil
+  end)
+  if okAnimation and animationRow and not rowExists(animationRow.id) then 
+    table.insert(out, animationRow) 
+  end
+
   local okWilds, wildsRow = pcall(function()
     local StadiumInstall = V.require("StadiumInstall")
     local Stadium2Install = V.require("Stadium2Install")
