@@ -390,66 +390,53 @@ local function awardOne(s,defeated)
   if not host.game or not host.game.save then
     error("Host game or save not available for experience awarding",0)
   end
-  -- For Gen 2, construct a battler object if we only have the mon
-  if s.generation==2 then
-    if defeated.battler then
-      host.enemy=defeated.battler
-    else
-      -- Construct a minimal battler object for rendering and exp calculation
-      local def=host.data and host.data.pokemon and host.data.pokemon[defeated.mon.species]
-      host.enemy={
-        mon=defeated.mon,
-        def=def,
-        name=defeated.mon.nickname or (def and def.name) or tostring(defeated.mon.species or '?'),
-        species=defeated.mon.species,
-        isPlayer=false,
-        shownHP=defeated.mon.hp,
-        shownStatus=defeated.mon.status,
-        curStats=defeated.mon.stats,
-        curTypes=def and def.types,
-      }
-    end
-  else
-    host.enemy=defeated.battler
-  end
+  -- Every generation now shares ONE BattleState/awardExp contract in this
+  -- engine (src/core/ModCompat.lua aliases src.ui.gen2.BattleState straight
+  -- onto src.battle.BattleState -- there is no separate Gen 2 battle class
+  -- left to special-case here). The one real gap left is that
+  -- NativeAdapter's Gen 2 slot battler is still the OLD split-engine's bare
+  -- {mon,name,isPlayer,stages} shape, missing `.def`/`.curStats`/`.curTypes`
+  -- that awardExp needs (Experience.apply indexes defeatedDef.baseStats/
+  -- evYield directly). Backfill whatever the slot battler is missing
+  -- instead of assuming it is already complete; for Gen 1/3 every field is
+  -- already present (native.makeBattler fills them all), so this is a no-op.
+  host.enemy=defeated.battler or {}
+  host.enemy.mon=host.enemy.mon or defeated.mon
+  host.enemy.def=host.enemy.def or (host.data and host.data.pokemon and host.data.pokemon[defeated.mon.species])
+  host.enemy.name=host.enemy.name or defeated.mon.nickname or (host.enemy.def and host.enemy.def.name) or tostring(defeated.mon.species or '?')
+  host.enemy.species=host.enemy.species or defeated.mon.species
+  if host.enemy.isPlayer==nil then host.enemy.isPlayer=false end
+  host.enemy.shownHP=host.enemy.shownHP or defeated.mon.hp
+  host.enemy.shownStatus=host.enemy.shownStatus or defeated.mon.status
+  host.enemy.curStats=host.enemy.curStats or defeated.mon.stats
+  host.enemy.curTypes=host.enemy.curTypes or (host.enemy.def and host.enemy.def.types)
   host.enemyIndex=defeated.partyIndex or host.enemyIndex
   resetNativeQueue(s)
-  if s.generation==2 then
-    host.events={}
-    -- Use awardExperience for Gen 2 (the original mod uses this)
-    if type(host.awardExperience)=='function' then
-      local ok,err=pcall(host.awardExperience,host,defeated.mon)
-      if not ok then error(err,0) end
-    elseif type(host.awardExp)=='function' then
-      local ok,err=pcall(host.awardExp,host,defeated.mon)
-      if not ok then error(err,0) end
-    else
-      -- Fallback: use Gen 1/3 experience logic
-      local player=host.player
-      if next(host.participants)==nil and player and player.mon and (player.mon.hp or 0)>0 then
-        local facade={};for k,v in pairs(player) do facade[k]=v end
-        facade.mon=setmetatable({hp=0},{__index=player.mon});host.player=facade
-      end
-      local ok,err=pcall(host.awardExp,host);host.player=player
-      if not ok then error(err,0) end
-    end
-    -- Use Gen 1/3 approach for event handling
-    screen.phase='messages';screen.afterQueue='menu'
-  else
-    -- Gen 1 and Gen 3 use the same experience awarding logic
-    -- With zero participants the native singles helper pays its current user.
-    -- That fallback is not legal for doubles. A call-local read-only view
-    -- suppresses ONLY that fallback, without writing any real Pokemon's HP,
-    -- bypassing EXP.ALL, replacing applyShare, or changing deferred commits.
-    local player=host.player
-    if next(host.participants)==nil and player and player.mon and (player.mon.hp or 0)>0 then
-      local facade={};for k,v in pairs(player) do facade[k]=v end
-      facade.mon=setmetatable({hp=0},{__index=player.mon});host.player=facade
-    end
-    local ok,err=pcall(host.awardExp,host);host.player=player
-    if not ok then error(err,0) end
-    screen.phase='messages';screen.afterQueue='menu'
+  -- Gen 2's own `events` bucket is vestigial (the unified engine has no
+  -- `takeEvents`/`emit` queue), kept only so nothing downstream that still
+  -- reads host.events sees a stale table from a previous KO.
+  if s.generation==2 then host.events={} end
+  -- With zero participants the native singles helper pays whichever mon is
+  -- currently active. That fallback is not legal for doubles: this defeated
+  -- enemy's participant list already reflects exactly who fought it. A
+  -- call-local read-only view suppresses ONLY that fallback, without writing
+  -- any real Pokemon's HP, bypassing EXP.ALL, replacing applyShare, or
+  -- changing deferred commits.
+  --
+  -- Previously this suppression only ran for Gen 1/3; Gen 2 took a separate
+  -- branch that called host:awardExp(host, defeated.mon) -- passing the raw
+  -- party-record `mon`, not a battler, as `fallen`. awardExp's own
+  -- `if not (foe and foe.mon) then return end` guard then found no `foe.mon`
+  -- on a plain mon record and returned immediately, silently skipping EXP on
+  -- every Gen 2 double-battle KO.
+  local player=host.player
+  if next(host.participants)==nil and player and player.mon and (player.mon.hp or 0)>0 then
+    local facade={};for k,v in pairs(player) do facade[k]=v end
+    facade.mon=setmetatable({hp=0},{__index=player.mon});host.player=facade
   end
+  local ok,err=pcall(host.awardExp,host);host.player=player
+  if not ok then error(err,0) end
+  screen.phase='messages';screen.afterQueue='menu'
 end
 local function finishNative(s)
   if s.finalizing then return false end
