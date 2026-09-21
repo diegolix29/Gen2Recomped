@@ -78,6 +78,7 @@ function I.apply(a,id,mon,moveIndex,preview)
   local result=kind=='pp' and E.usePpItem(id,target,moveIndex,a.data) or E.useOnMon(id,target,a.data)
  else
   -- Gen 1 and Gen 3 use the same item application logic
+  local result={used=false,text=nil}
   if active and fullMask[id] then
    local volatile=mon.volatile or {}
    if volatile.confuseCount then

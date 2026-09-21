@@ -172,7 +172,7 @@ end
 function A:maxHP(mon) return math.max(1,mon.maxHp or mon.maxHP or (mon.stats and mon.stats.hp) or mon.hp or 1) end
 function A:makeBattler(s,opening)
   if self.generation==2 then
-    self.k:clearVolatiles(s.mon)
+    self.k:clearVolatile(s.mon)
     if s.side=='player' and self.host.checkAmuletCoin then self.host:checkAmuletCoin(s.mon) end
     return {mon=s.mon,name=self:name(s.mon),isPlayer=s.side=='player',stages=self:newStages()}
   end
@@ -310,7 +310,10 @@ function A:bind(s,t)
     for _,slot in pairs(self.core.slots) do if slot.mon then
       k.stages[slot.id]=slot.stages;k.screens[slot.id]=self.screens[slot.side]
     end end
-    k.stages.player=self.core:slotFor(k.player).stages;k.stages.enemy=self.core:slotFor(k.enemy).stages
+    local playerSlot=self.core:slotFor(k.player);local enemySlot=self.core:slotFor(k.enemy)
+    -- If slot lookup fails, use the source slot's stages as fallback
+    k.stages.player=(playerSlot and playerSlot.stages) or (s.side=='player' and s.stages) or {}
+    k.stages.enemy=(enemySlot and enemySlot.stages) or (s.side=='enemy' and s.stages) or {}
     k.spikes=setmetatable({}, {__index=function(_,id) local slot=self.core.slots[id];return self.spikes[slot and slot.side or id] end,
       __newindex=function(_,id,value) local slot=self.core.slots[id];self.spikes[slot and slot.side or id]=value end})
   else
@@ -326,11 +329,16 @@ function A:onEnterAbilities(s)
     if AbilityEffectsGen2 then
       local oppMons={}
       for _,opp in ipairs(opponents) do oppMons[#oppMons+1]=opp.mon end
-      AbilityEffectsGen2.onEnter(self.k, s.mon, oppMons)
+      -- Check if onEnter method exists before calling
+      if type(AbilityEffectsGen2.onEnter)=='function' then
+        AbilityEffectsGen2.onEnter(self.k, s.mon, oppMons)
+      end
     end
   elseif AbilityEffectsGen1 then
     local battlers={};for _,opp in ipairs(opponents) do battlers[#battlers+1]=opp.battler end
-    AbilityEffectsGen1.onEnter(self.k,s.battler,battlers)
+    if type(AbilityEffectsGen1.onEnter)=='function' then
+      AbilityEffectsGen1.onEnter(self.k,s.battler,battlers)
+    end
   end
 end
 function A:onOpeningAbilities()
@@ -347,23 +355,29 @@ function A:abilityInfo(mon)
 end
 function A:onEnter(s)
   if self.generation==2 then
-    self:bind(s,s)
-    self.k:spikesDamage(s.mon)
+    -- Find an opponent to bind against, prefer live opponent over self
+    local opponents=self.core:aliveSlots(s.side=='player' and 'enemy' or 'player')
+    local target=opponents[1] or s
+    self:bind(s,target)
+    -- Apply spikes damage if the side has spikes set
+    if self.spikes and self.spikes[s.side] then
+      local mon=s.mon
+      if mon and mon.hp and mon.hp>0 then
+        local damage=math.max(1,math.floor((mon.stats and mon.stats.hp or mon.maxHp or 100)/8))
+        mon.hp=math.max(0,mon.hp-damage)
+        self.core:message(self:name(mon).." was hurt by the spikes!")
+      end
+    end
   end
   self:onEnterAbilities(s)
 end
 function A:speed(s)
   if self.generation==2 then
     self:bind(s,s)
-    if type(self.k.effectiveSpeed)=='function' then
-      return self.k:effectiveSpeed(s.mon)
-    end
-    -- Fallback if effectiveSpeed doesn't exist on native kernel
-    local stats=s.mon and s.mon.stats
-    return stats and stats.speed or 0
+    return self.k:effectiveSpeed(s.mon)
   end
   local multiplier=AbilityEffectsGen1 and AbilityEffectsGen1.speedMultiplier(self.k,s.battler) or 1
-  return self.order.effectiveSpeed(s.battler)*multiplier
+  return (self.order.effectiveSpeed(s.battler) or 0)*multiplier
 end
 function A:priority(id)
   local d=self:moveDef(id)

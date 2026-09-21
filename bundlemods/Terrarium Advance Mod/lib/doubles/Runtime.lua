@@ -184,7 +184,8 @@ function D.tryBegin(screen,generation)
   if V.DoublesPresenter then V.DoublesPresenter.begin(s) end
   core.onEvent=function(e) if V.DoublesPresenter then V.DoublesPresenter.event(s,e) end end
   core.onProgression=function(phase)
-    if s.awardIndex>#core.defeated then return false end
+    -- Allow progression even if no defeated enemies (for completion)
+    if s.awardIndex>#core.defeated and #core.defeated>0 then return false end
     D.startProgression(s,phase);return true
   end
   log(core.id..' started: generation '..generation..', trainer party '..#host.enemyParty)
@@ -373,18 +374,28 @@ local function awardOne(s,defeated)
   defeated.rewardState='started';s.rewardCurrent=defeated;s.rewardsStarted=true
   s.rewardLevels={};for _,m in ipairs(core.playerParty) do s.rewardLevels[m]=m.level end
   host.participants={}
-  for index in pairs(defeated.participants or {}) do
-    local mon=core.playerParty[index]
+  for mon in pairs(defeated.participants or {}) do
     -- The controller captured eligibility at this KO. No later-turn HP filter
     -- is permitted here; live combat is suspended until this queue completes.
-    if mon then host.participants[(s.generation==2 and index or mon)]=true end
+    if mon then host.participants[mon]=true end
+  end
+  -- Debug: check if participants table is being populated
+  if next(host.participants) == nil then
+    -- Fallback: use all alive player Pokemon as participants
+    for _,m in ipairs(core.playerParty) do
+      if healthy(m) then host.participants[m]=true end
+    end
+  end
+  -- Debug logging
+  if not host.game or not host.game.save then
+    error("Host game or save not available for experience awarding",0)
   end
   -- For Gen 2, construct a battler object if we only have the mon
   if s.generation==2 then
     if defeated.battler then
       host.enemy=defeated.battler
     else
-      -- Construct a minimal battler object for rendering
+      -- Construct a minimal battler object for rendering and exp calculation
       local def=host.data and host.data.pokemon and host.data.pokemon[defeated.mon.species]
       host.enemy={
         mon=defeated.mon,
@@ -405,10 +416,13 @@ local function awardOne(s,defeated)
   resetNativeQueue(s)
   if s.generation==2 then
     host.events={}
-    if type(host.awardExp)=='function' then
-      host:awardExp(defeated.mon)
-    elseif type(host.awardExperience)=='function' then
-      host:awardExperience(defeated.mon)
+    -- Use awardExperience for Gen 2 (the original mod uses this)
+    if type(host.awardExperience)=='function' then
+      local ok,err=pcall(host.awardExperience,host,defeated.mon)
+      if not ok then error(err,0) end
+    elseif type(host.awardExp)=='function' then
+      local ok,err=pcall(host.awardExp,host,defeated.mon)
+      if not ok then error(err,0) end
     else
       -- Fallback: use Gen 1/3 experience logic
       local player=host.player
@@ -448,25 +462,25 @@ local function finishNative(s)
       -- already-presented faint and its already-settled EXP. Both temporary
       -- interceptors are restored even if the native handler raises an error.
       local rt=req('src.mods.Runtime')
-      local oldAward,oldEmit,oldPublic=host.awardExp or host.awardExperience,host.emit,rt.emit
-      if type(host.awardExp)=='function' then
-        host.awardExp=function() end
-      elseif type(host.awardExperience)=='function' then
+      local oldAward,oldEmit,oldPublic=host.awardExperience or host.awardExp,host.emit,rt.emit
+      if type(host.awardExperience)=='function' then
         host.awardExperience=function() end
+      elseif type(host.awardExp)=='function' then
+        host.awardExp=function() end
       end
       host.emit=function(h,e,...) if e.kind=='faint' then return e end;return oldEmit(h,e,...) end
       rt.emit=function(name,e,...) if name=='battle.fainted' and e and e.battle==host then return end;return oldPublic(name,e,...) end
-      local ok,err=pcall(host.resolveFaints,host)
-      if type(host.awardExp)=='function' then
-        host.awardExp=oldAward
-      elseif type(host.awardExperience)=='function' then
+      -- Call enemyMonFainted instead of resolveFaints (which doesn't exist in Gen 2)
+      local ok,err=pcall(host.enemyMonFainted,host)
+      if type(host.awardExperience)=='function' then
         host.awardExperience=oldAward
+      elseif type(host.awardExp)=='function' then
+        host.awardExp=oldAward
       end
       host.emit=oldEmit;rt.emit=oldPublic
       if not ok then D.close(s);error(err,0) end
     else
       host:emit{kind='message',text='You have no more POKéMON!'}
-      if host.battleType==1 then host:printWinLossText('lose') end
       host:endBattle('lose')
     end
     -- Use Gen 1/3 approach for event handling
