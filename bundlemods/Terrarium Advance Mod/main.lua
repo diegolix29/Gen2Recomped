@@ -1431,6 +1431,12 @@ local SETTINGS = {
   { V.require("FreeFly").settings.quickstart,
     "Quick start: Pallet Town gift Pidgeot with FLY for early flight access.",
     cat = "freefly" },
+  { V.require("FreeFly").settings.fullFly,
+    "Full Fly: picking a town on FLY's map takes off and autopilots the "
+    .. "freefly flight there across the whole map, landing on arrival, "
+    .. "instead of warping you there instantly. FREEFLY (manual takeoff, "
+    .. "land anywhere) is unaffected either way.",
+    cat = "freefly" },
   -- ------- ds_fp_ceiling integrated settings
   -- Interior ceiling and walls
   { Ceiling.setting,

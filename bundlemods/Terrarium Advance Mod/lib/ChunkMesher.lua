@@ -98,6 +98,14 @@ function ChunkMesher.clearCache()
   return false
 end
 
+function ChunkMesher.diskCacheEnabled()
+  return DiskCache ~= nil
+    and (type(DiskCache.enabled) ~= "function" or DiskCache.enabled())
+end
+
+-- GoldVoxelBridge reports this under its own name; same data as cacheStatus.
+ChunkMesher.diskCacheStatus = ChunkMesher.cacheStatus
+
 -- Ring of border blocks meshed around the body, matching the width
 -- TileRenderer draws so the two modes end at the same place.
 local RING = 3
@@ -1305,6 +1313,29 @@ local function swapSlot(c, slot, mesh)
   c[slot] = mesh
 end
 
+-- A disk-cache hit hands back one flat terrain mesh and (maybe) one flat
+-- water mesh -- not the chunked Group runGeometry's live path produces. Wrap
+-- them as a one-or-two-chunk Group so Voxel3D.drawGroup/ShadowMap can draw a
+-- cache-loaded slot exactly like a freshly built one. The chunk boxes are
+-- left unbounded (drawGroup's box test always passes) rather than guessed at
+-- from map dimensions: this file's own rule is "over-drawing is slow, and
+-- under-drawing is a hole in the world", and a wrong guess here would be the
+-- second kind. A live-built slot still gets its normal per-chunk culling --
+-- only cache-loaded slots skip it.
+local function wrapCachedMesh(terrainMesh, waterMesh)
+  local chunks = {}
+  if terrainMesh then
+    chunks[#chunks + 1] = { mesh = terrainMesh,
+      x0 = -math.huge, z0 = -math.huge, x1 = math.huge, z1 = math.huge, ymax = 0 }
+  end
+  if waterMesh then
+    chunks[#chunks + 1] = { mesh = waterMesh,
+      x0 = -math.huge, z0 = -math.huge, x1 = math.huge, z1 = math.huge, ymax = 0 }
+  end
+  if #chunks == 0 then return nil end
+  return setmetatable({ chunks = chunks }, Group)
+end
+
 -- ------------------------------------------------------------- the cache
 
 local function entry(id)
@@ -1331,6 +1362,13 @@ end
 
 local jobs = {}       -- FIFO of pending jobs
 local jobIndex = {}   -- "id:slot" -> job
+
+-- Cache-only "warm" jobs (see warmDisk below): background disk-cache writes
+-- for maps nobody is looking at yet. Kept off the real `jobs` queue on
+-- purpose -- a warm job must never win the urgent pick or delay a mesh the
+-- player is actually waiting on -- and drained only once `jobs` is empty.
+local warmJobs = {}    -- FIFO of pending warm jobs
+local warmIndex = {}   -- "id:slot" -> warm job, for de-duplication
 
 local clock = (love and love.timer and love.timer.getTime) or os.clock
 
@@ -1396,10 +1434,30 @@ local function runJob(job)
     c.figures = (okX and figures) or false
     if c.stale then c.stale.aux = nil end
   end
+  -- v0.3.60: this used to test an upvalue named `cachedTerrain` that nothing
+  -- ever set, so it was always nil and the persistent disk cache -- despite
+  -- being fully written by VoxelPrebake/warmDisk -- was never read back on
+  -- the live path; every arrival re-ran Structures + runGeometry from
+  -- scratch. Actually ask VoxelDiskCache first.
+  local cachedTerrain, cachedWater
+  if DiskCache and (type(DiskCache.enabled) ~= "function" or DiskCache.enabled()) then
+    local okLoad, hit, terrainMesh, waterMesh =
+      pcall(DiskCache.load, map, job.slot, job.masks)
+    if okLoad and hit then
+      cachedTerrain, cachedWater = terrainMesh, waterMesh
+    end
+  end
   if cachedTerrain == nil then
     local sink = newChunkedSink()
     runGeometry(map, job.slot == "body", job.masks, sink)
     local mesh = sink.finish()
+    if (gen[job.id] or 0) ~= job.gen then
+      if mesh and mesh.release then pcall(mesh.release, mesh) end
+      return
+    end
+    swapSlot(c, job.slot, mesh or false)
+  else
+    local mesh = wrapCachedMesh(cachedTerrain, cachedWater)
     if (gen[job.id] or 0) ~= job.gen then
       if mesh and mesh.release then pcall(mesh.release, mesh) end
       return
@@ -1470,6 +1528,102 @@ end
 
 function ChunkMesher.lastSlice() return lastSpend end
 
+-- Cache-only work gets a bigger slice than a real render job's idle share --
+-- it never touches the GPU or blocks anything visible, so desktop can let it
+-- run long; mobile stays conservative since the same core is doing everything
+-- else too.
+local WARM_SLICE_MOBILE = 0.004
+local WARM_SLICE_DESKTOP = 0.010
+
+local function warmSlice()
+  local osName = love and love.system and love.system.getOS
+    and love.system.getOS() or ""
+  if osName == "Android" or osName == "iOS" then return WARM_SLICE_MOBILE end
+  return WARM_SLICE_DESKTOP
+end
+
+-- Drain warm jobs until `deadline` or the queue empties. Each job just bakes
+-- straight to VoxelDiskCache -- see ChunkMesher.bake -- so a finished one
+-- leaves nothing in GPU memory and nothing in the live mesh cache to release.
+local function pumpWarmJobs(deadline)
+  while #warmJobs > 0 and clock() < deadline do
+    local job = warmJobs[1]
+    if not job.co then
+      job.co = coroutine.create(function()
+        return ChunkMesher.bake(job.map, job.slot, job.masks)
+      end)
+    end
+    Budget.begin(job.co, deadline - clock())
+    local ok = coroutine.resume(job.co)
+    Budget.finish()
+    if not ok or coroutine.status(job.co) == "dead" then
+      table.remove(warmJobs, 1)
+      warmIndex[jobKey(job.id, job.slot)] = nil
+    else
+      return -- slice spent mid-bake; resume next frame
+    end
+  end
+end
+
+-- Queue a low-priority disk-cache write for a map nobody is rendering yet.
+-- Returns (true, state) where state is "live" (already in the GPU-side mesh
+-- cache, nothing to do), "hit" (already on disk), or "queued" (a warm job was
+-- added, or one was already running for this map/slot); returns false when
+-- there is no disk cache to warm. `region` is an arbitrary tag the caller can
+-- later pass to warmPending/cancelWarmRegion to track or drop its own batch
+-- without touching anyone else's.
+function ChunkMesher.warmDisk(map, bodyOnly, masks, region)
+  if not (DiskCache and map and map.id) then return false end
+  if type(DiskCache.enabled) == "function" and not DiskCache.enabled() then
+    return false
+  end
+  local slot = bodyOnly and "body" or "full"
+  local c = cache[map.id]
+  if c and c[slot] ~= nil and c[slot] ~= false
+     and not (c.stale and (c.stale[slot] or c.stale.aux)) then
+    return true, "live"
+  end
+  local key = jobKey(map.id, slot)
+  if jobIndex[key] or warmIndex[key] then
+    return true, "queued"
+  end
+  if type(DiskCache.has) == "function" then
+    local okHas, hit = pcall(DiskCache.has, map, slot, masks)
+    if okHas and hit then return true, "hit" end
+  end
+  local job = { id = map.id, map = map, slot = slot, masks = masks,
+                region = region, co = nil }
+  warmIndex[key] = job
+  warmJobs[#warmJobs + 1] = job
+  return true, "queued"
+end
+
+-- Warm jobs currently queued, optionally narrowed to one region tag.
+function ChunkMesher.warmPending(region)
+  if region == nil then return #warmJobs end
+  local n = 0
+  for _, j in ipairs(warmJobs) do
+    if j.region == region then n = n + 1 end
+  end
+  return n
+end
+
+-- Drop every queued warm job tagged with `region` (a running one finishes its
+-- current slice but is not resumed). Used when a region's render data is
+-- unloaded, so cache warming does not keep working for a place nobody can see.
+function ChunkMesher.cancelWarmRegion(region)
+  local kept = {}
+  for _, j in ipairs(warmJobs) do
+    if j.region == region then
+      warmIndex[jobKey(j.id, j.slot)] = nil
+    else
+      kept[#kept + 1] = j
+    end
+  end
+  warmJobs = kept
+  return true
+end
+
 function ChunkMesher.pump(covered)
   local seamDirty = Structures.gen3SeamDirty
   if seamDirty then
@@ -1482,8 +1636,12 @@ function ChunkMesher.pump(covered)
       for _, id in ipairs(due) do ChunkMesher.refresh(id) end
     end
   end
-  
-  if #jobs == 0 then lastSpend = 0 return end
+
+  if #jobs == 0 then
+    lastSpend = 0
+    if #warmJobs > 0 then pumpWarmJobs(clock() + warmSlice()) end
+    return
+  end
   local pick = jobs[1]
   for _, j in ipairs(jobs) do
     if j.urgent then
