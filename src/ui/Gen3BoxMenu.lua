@@ -322,7 +322,16 @@ function Gen3BoxMenu:openSlotMenu(slot)
       onSelect = function() self:withdraw(slot) end },
     { label = Strings("SUMMARY"), keepOpen = true,
       onSelect = function()
-        require("src.ui.Screens").push(game, "SummaryMenu", mon)
+        local box = self:box()
+        require("src.ui.Screens").push(game, "Gen3SummaryMenu", {
+          mon = mon,
+          party = box,
+          partyIndex = slot,
+          onMonChange = function(index)
+            self.row = math.floor((index - 1) / COLS) + 1
+            self.col = (index - 1) % COLS + 1
+          end,
+        })
       end },
     { label = Strings("RELEASE"),
       onSelect = function() self:release(slot) end },

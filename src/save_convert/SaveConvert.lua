@@ -186,7 +186,7 @@ local function ensureData(gameVersion)
       if not layout then
         return nil, "this ROM cache has no Gen 3 save layout -- re-import the ROM"
       end
-      Gen3Save.setLayout(layout, layout.substructOrders, layout.fields)
+      Gen3Save.setLayout(layout, layout.substructOrders, layout.fields, gameVersion)
       local cm = loadCacheTable(gameVersion, GEN3_CHARMAP[2])
                  or loadTable(GEN3_CHARMAP[1], GEN3_CHARMAP[2])
       Gen3Save.setCharmap(cm)

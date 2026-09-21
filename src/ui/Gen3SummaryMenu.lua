@@ -219,6 +219,9 @@ function Gen3SummaryMenu.new(game, opts)
   self.game = game
   opts = opts or {}
   self.mon = opts.mon
+  self.party = opts.party
+  self.partyIndex = opts.partyIndex
+  self.onMonChange = opts.onMonChange
   self.onCancel = opts.onCancel
   self.page = 1
   self.pages = pageNames(game)
@@ -278,6 +281,58 @@ function Gen3SummaryMenu.new(game, opts)
     if self.monAnim then self.monAnim:start() end
   end
   return self
+end
+
+function Gen3SummaryMenu:setDisplayedMon(mon, index)
+  if not mon then return false end
+  self.mon = mon
+  self.partyIndex = index or self.partyIndex
+  self.def = self.game.data.pokemon
+             and self.game.data.pokemon[mon.species] or nil
+  if not self.def then
+    warnOnce("no species record for %s", tostring(mon.species))
+  end
+
+  self.pic, self.picAnim, self.monAnim = nil, nil, nil
+  local ok, path = pcall(function()
+    return require("src.pokemon.Sprites").path(self.game.data, mon.species,
+                                               "front", { mon = mon })
+  end)
+  if ok and path then
+    local okImg, img = pcall(love.graphics.newImage, path)
+    if okImg then self.pic = img end
+  end
+  local okAnim, anim = pcall(function()
+    return require("src.pokemon.PicAnim").forMon(self.game.data, mon)
+  end)
+  self.picAnim = okAnim and anim or nil
+  if self.picAnim then self.picAnim:start() end
+  local okMon, monAnim = pcall(function()
+    return require("src.pokemon.MonAnim").new(self.game.data, mon.species)
+  end)
+  self.monAnim = okMon and monAnim or nil
+  if self.monAnim then self.monAnim:start() end
+  self.moveIndex, self.moveSwapFrom = 1, nil
+  if self.onMonChange and self.partyIndex then
+    self.onMonChange(self.partyIndex, mon)
+  end
+  return true
+end
+
+function Gen3SummaryMenu:seekPartyMon(direction)
+  local party = self.party
+  local at = tonumber(self.partyIndex)
+  if type(party) ~= "table" or not at or direction == 0 then return false end
+  at = math.floor(at)
+  local nextAt = at + direction
+  while nextAt >= 1 and nextAt <= #party do
+    local mon = party[nextAt]
+    if mon and (self.page == 1 or mon.isEgg ~= true) then
+      return self:setDisplayedMon(mon, nextAt)
+    end
+    nextAt = nextAt + direction
+  end
+  return false
 end
 
 -- The pic, through whatever the species' own routine is doing to it this
@@ -471,7 +526,11 @@ function Gen3SummaryMenu:update(dt)
     return
   end
   local n = #self.pages
-  if input:wasPressed("right") then
+  if input:wasPressed("up") then
+    self:seekPartyMon(-1)
+  elseif input:wasPressed("down") then
+    self:seekPartyMon(1)
+  elseif input:wasPressed("right") then
     self.page = self.page % n + 1
     self:leaveMoveSelect()
   elseif input:wasPressed("left") then

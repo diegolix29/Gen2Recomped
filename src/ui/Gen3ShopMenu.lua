@@ -652,6 +652,16 @@ function Gen3ShopMenu:update()
   if self.asking then
     if input:wasPressed("up") then return self:askQuantityInput(1) end
     if input:wasPressed("down") then return self:askQuantityInput(-1) end
+    if input:wasPressed("right") then
+      local ask = self.asking
+      ask.qty = math.min(ask.max, ask.qty + 10)
+      return true
+    end
+    if input:wasPressed("left") then
+      local ask = self.asking
+      ask.qty = math.max(1, ask.qty - 10)
+      return true
+    end
     if input:wasPressed("a") then return self:askQuantityInput(0, true) end
     if input:wasPressed("b") then return self:askQuantityInput(0, false, true) end
     return
@@ -667,6 +677,16 @@ function Gen3ShopMenu:keypressed(key)
   if self.asking then
     if key == "up" then return self:askQuantityInput(1) end
     if key == "down" then return self:askQuantityInput(-1) end
+    if key == "right" then
+      local ask = self.asking
+      ask.qty = math.min(ask.max, ask.qty + 10)
+      return true
+    end
+    if key == "left" then
+      local ask = self.asking
+      ask.qty = math.max(1, ask.qty - 10)
+      return true
+    end
     if key == "a" then return self:askQuantityInput(0, true) end
     if key == "b" then return self:askQuantityInput(0, false, true) end
     return
@@ -747,8 +767,40 @@ function Gen3ShopMenu:drawFrlg(r)
     end
   end
 
-  -- description (or the clerk's line) and the item's picture
   local row = self:selected()
+  local ask = self.asking
+  if ask then
+    local function windowBox(w)
+      Font.drawBox(math.floor(w.x / 8) - 1, math.floor(w.y / 8) - 1,
+                   math.floor(w.width / 8) + 2,
+                   math.floor(w.height / 8) + 2)
+    end
+    local ib = W.inBag
+    windowBox(ib)
+    local have = (self.game.save.inventory or {})[ask.row.id] or 0
+    Font.draw(line(self.game, "inBag", Strings("IN BAG: %d", have),
+                   { VAR1 = tostring(have) }), ib.x, ib.y)
+
+    local qw = W.quantity
+    windowBox(qw)
+    local faced = Font.pushFace("small")
+    Font.draw(self:quantityGlyph(ask.qty), qw.x + 2, qw.y + 10)
+    local total = price(self.game, ask.unit * ask.qty)
+    Font.draw(total, qw.x + qw.width - Font.width(total), qw.y + 10)
+    if faced then Font.popFace() end
+
+    local msg = W.message
+    windowBox(msg)
+    local my = msg.y
+    for chunk in (tostring(ask.message or "") .. "\n"):gmatch("([^\n]*)\n") do
+      Font.draw(chunk, msg.x, my)
+      my = my + 14
+    end
+    love.graphics.setColor(1, 1, 1, 1)
+    return
+  end
+
+  -- description (or the clerk's line) and the item's picture
   local dw, D = W.description, r.description or {}
   local text = self.say or (row and (row.close and line(self.game,
                  "quitShopping", "Quit shopping.") or row.description)) or ""
@@ -774,15 +826,6 @@ function Gen3ShopMenu:drawFrlg(r)
     end
   end
 
-  -- IN BAG, for the row under the cursor
-  if row and not row.close then
-    local have = (self.game.save.inventory or {})[row.id] or 0
-    local ib = W.inBag
-    Font.drawBox(math.floor(ib.x / 8) - 1, math.floor(ib.y / 8) - 1,
-                 math.floor(ib.width / 8) + 2, math.floor(ib.height / 8) + 2)
-    Font.draw(line(self.game, "inBag", Strings("IN BAG: %d", have),
-                   { VAR1 = tostring(have) }), ib.x, ib.y)
-  end
   love.graphics.setColor(1, 1, 1, 1)
 end
 

@@ -81,6 +81,9 @@ Gen3Save.MON_IS_EGG = 4
 -- the moment there is something to ask, they are not used at all.
 Gen3Save.LANGUAGE_ENGLISH = 2
 Gen3Save.MET_GAME_EMERALD = 3
+Gen3Save.MET_GAME_FIRE_RED = 4
+Gen3Save.MET_GAME_LEAF_GREEN = 5
+Gen3Save.defaultMetGame = Gen3Save.MET_GAME_EMERALD
 
 -- What language and game of origin THIS save already says, taken from the
 -- first complete record in it.  A save carrying real cartridge Pokemon
@@ -88,7 +91,7 @@ Gen3Save.MET_GAME_EMERALD = 3
 -- constants above.
 function Gen3Save.saveDefaults(blocks)
   local out = { language = Gen3Save.LANGUAGE_ENGLISH,
-                metGame = Gen3Save.MET_GAME_EMERALD }
+                metGame = Gen3Save.defaultMetGame or Gen3Save.MET_GAME_EMERALD }
   local f = Gen3Save.fields
   if not (f and blocks) then return out end
   local function ask(source, at)
@@ -130,10 +133,17 @@ end
 -- never puts it in a literal pool at all.
 Gen3Save.fields = nil
 
-function Gen3Save.setLayout(layout, orders, fields)
+function Gen3Save.setLayout(layout, orders, fields, gameVersion)
   Gen3Save.layout = layout
   Gen3Save.substructOrders = orders
   Gen3Save.fields = fields
+  if gameVersion == "firered" then
+    Gen3Save.defaultMetGame = Gen3Save.MET_GAME_FIRE_RED
+  elseif gameVersion == "leafgreen" then
+    Gen3Save.defaultMetGame = Gen3Save.MET_GAME_LEAF_GREEN
+  else
+    Gen3Save.defaultMetGame = Gen3Save.MET_GAME_EMERALD
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -237,13 +247,32 @@ end
 function Gen3Save.currentSlot(bytes)
   local a, b = Gen3Save.readSlot(bytes, 0), Gen3Save.readSlot(bytes, 1)
   if not a.valid and not b.valid then return nil, a, b end
-  if not b.valid then return a, a, b end
-  if not a.valid then return b, a, b end
   local MAX = 4294967295
-  if a.counter == 0 and b.counter == MAX then return a, a, b end
-  if b.counter == 0 and a.counter == MAX then return b, a, b end
-  if a.counter >= b.counter then return a, a, b end
-  return b, a, b
+  local counter
+  if not b.valid then
+    counter = a.counter
+  elseif not a.valid then
+    counter = b.counter
+  elseif a.counter == 0 and b.counter == MAX then
+    counter = a.counter
+  elseif b.counter == 0 and a.counter == MAX then
+    counter = b.counter
+  elseif a.counter >= b.counter then
+    counter = a.counter
+  else
+    counter = b.counter
+  end
+
+  local current = (counter % 2 == 0) and a or b
+  if not current.valid or current.counter ~= counter then
+    local state = current.valid
+      and ("carries counter " .. tostring(current.counter))
+      or "is not intact"
+    return nil, a, b,
+      ("save counter %d points to physical slot %d, but that slot %s")
+      :format(counter, counter % 2, state)
+  end
+  return current, a, b
 end
 
 -- Reassemble the three save structures out of the current slot's sectors.
@@ -253,9 +282,9 @@ end
 function Gen3Save.readBlocks(bytes)
   local layout = Gen3Save.layout
   if not layout then error("Gen3Save: no sector layout (setLayout first)") end
-  local current, a, b = Gen3Save.currentSlot(bytes)
+  local current, a, b, why = Gen3Save.currentSlot(bytes)
   if not current then
-    return nil, "neither save slot is intact", a, b
+    return nil, why or "neither save slot is intact", a, b
   end
   local parts = { block2 = {}, block1 = {}, storage = {} }
   for id = 0, Gen3Save.SECTORS_PER_SLOT - 1 do
@@ -1315,7 +1344,8 @@ local function boxOrigins(mon, cw)
     -- the game of origin: EMERALD is what a Pokemon caught in this port was
     -- caught in, and the number is the one the import reads back out of the
     -- same field (unpackOrigins) rather than a new claim
-    metGame = mon.gen3MetGame or Gen3Save.MET_GAME_EMERALD,
+    metGame = mon.gen3MetGame or Gen3Save.defaultMetGame
+              or Gen3Save.MET_GAME_EMERALD,
     ball = (cw and mon.ball and cw.itemsIndex[mon.ball]) or nil,
     otFemale = mon.gen3OtFemale,
   })
@@ -1405,7 +1435,7 @@ function Gen3Save.buildBoxMon(mon, cw, owner)
     changes.origins = Gen3Save.packOrigins({
       metLevel = mon.metLevel or mon.level,
       metGame = mon.gen3MetGame or defaults.metGame
-                or Gen3Save.MET_GAME_EMERALD,
+                or Gen3Save.defaultMetGame or Gen3Save.MET_GAME_EMERALD,
       ball = (cw and mon.ball and cw.itemsIndex[mon.ball]) or nil,
       otFemale = mon.gen3OtFemale,
     })
@@ -2009,10 +2039,9 @@ end
 -- does).  A key this port invented would have to be written consistently into
 -- six different places to mean anything, and means nothing if it is.
 --
--- WRITTEN INTO SLOT 0 WITH COUNTER 1, leaving slot 1 unsigned.  That is not a
--- half-written save: currentSlot takes the only valid slot when the other
--- carries no 08012025 signature, which is the same path a cartridge's very
--- first save takes.
+-- WRITTEN INTO SLOT 1 WITH COUNTER 1, matching FireRed's own
+-- `gSaveCounter % NUM_SAVE_SLOTS` selection rule.  Counter 1 in slot 0 is
+-- self-consistent enough for a naive decoder but real FireRed selects slot 1.
 function Gen3Save.blank()
   local layout = Gen3Save.layout
   local f = need("a blank save")
@@ -2038,7 +2067,7 @@ function Gen3Save.blank()
     block1 = string.rep("\0", layout.saveBlock1Size),
     storage = storage,
   }
-  return Gen3Save.writeSlot(string.rep("\0", Gen3Save.SAVE_SIZE), 0, blocks, 1)
+  return Gen3Save.writeSlot(string.rep("\0", Gen3Save.SAVE_SIZE), 1, blocks, 1)
 end
 
 -- Lay the three structures back across fourteen sectors and sign each one.

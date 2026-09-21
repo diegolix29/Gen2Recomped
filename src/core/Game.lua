@@ -1148,6 +1148,19 @@ function Game:restartWithMods()
   require("src.core.HostShell").restart()
 end
 
+-- Leave this game and go back to the launcher's game list.
+--
+-- Not returnToTitle's neighbour by accident: the two are the two halves of
+-- "put this down".  returnToTitle stays inside the cartridge and lands on its
+-- own CONTINUE / NEW GAME menu; this one leaves the cartridge entirely.  The
+-- menus that used to call love.event.quit for the second case were killing
+-- the process instead, which is only the right answer on a build with no
+-- launcher behind it -- and HostShell decides that, not the menu.
+function Game:returnToLauncher()
+  require("src.core.Music").stop()
+  require("src.core.HostShell").toLauncher()
+end
+
 -- Releases reach Input even while a top state captures raw input: a
 -- swallowed key-up would strand a held-state flag for a key Input saw go
 -- down before the capture armed (the stuck-flag hazard Input:reset

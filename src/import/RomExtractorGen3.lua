@@ -7583,28 +7583,72 @@ function RomExtractorGen3:surfBlob()
 end
 
 function RomExtractorGen3:overworldFramePixels(raw, width, height, subsprites)
-  -- Ordinary sheets are already row-major. Oversized objects such as the
-  -- S.S. Anne exceed hardware OAM dimensions and store each piece separately.
-  if width <= 64 and height <= 64 then
-    return RomGba.tiles4bpp(raw, width / 8, height / 8)
-  end
-  assert(subsprites, "oversized object has no subsprite table")
   local rom = self.rom
-  local count, at = rom:u8(subsprites), rom:pointer(subsprites + 4)
-  assert(at and count > 0 and count <= 64, "invalid object subsprite table")
   local dimensions = {
     [0] = {{8,8}, {16,16}, {32,32}, {64,64}},
     [1] = {{16,8}, {32,8}, {32,16}, {64,32}},
     [2] = {{8,16}, {8,32}, {16,32}, {32,64}},
   }
+  local function dimensionsAt(at)
+    local bits = rom:u16(at + 2)
+    local dims = dimensions[bits % 4]
+    return dims and dims[math.floor(bits / 4) % 4 + 1]
+  end
+
+  -- Object-event graphics are stored in the gbagfx macroblock shape used by
+  -- their OAM pieces, not always as one row-major logical frame. FireRed's
+  -- 32x16 Town Map, for example, is two 16x16 blocks. Rebuild any rectangular
+  -- macroblock grid before falling back to the explicit subsprite compositor.
+  if subsprites then
+    local cellW, cellH
+    for tableIndex = 0, 1 do
+      local row = subsprites + tableIndex * 8
+      local count, at = rom:u8(row), rom:pointer(row + 4)
+      if at and count > 0 and count <= 64 then
+        local dim = dimensionsAt(at)
+        if dim then cellW, cellH = dim[1], dim[2] break end
+      end
+    end
+    if cellW and cellH
+       and width % cellW == 0 and height % cellH == 0
+       and width * height / 2 == #raw then
+      local cols, rows = width / cellW, height / cellH
+      if cols == 1 and rows == 1 then
+        return RomGba.tiles4bpp(raw, width / 8, height / 8)
+      end
+      local pixels = RomGba.tiles4bpp({}, width / 8, height / 8)
+      local cellBytes = cellW * cellH / 2
+      for cell = 0, cols * rows - 1 do
+        local chunk = {}
+        for j = 1, cellBytes do
+          chunk[j] = raw[cell * cellBytes + j]
+        end
+        local block = RomGba.tiles4bpp(chunk, cellW / 8, cellH / 8)
+        local dstX = (cell % cols) * cellW
+        local dstY = math.floor(cell / cols) * cellH
+        for y = 1, cellH do
+          for x = 1, cellW do
+            pixels[dstY + y][dstX + x] = block[y][x]
+          end
+        end
+      end
+      return pixels
+    end
+  end
+
+  if width <= 64 and height <= 64 then
+    return RomGba.tiles4bpp(raw, width / 8, height / 8)
+  end
+  assert(subsprites, "oversized object has no subsprite table")
+  local count, at = rom:u8(subsprites), rom:pointer(subsprites + 4)
+  assert(at and count > 0 and count <= 64, "invalid object subsprite table")
   local pieces, minX, minY, maxX, maxY = {}, math.huge, math.huge, -math.huge, -math.huge
   for i = 0, count - 1 do
     local p = at + i * 4
     local x, y, bits = rom:u8(p), rom:u8(p + 1), rom:u16(p + 2)
     if x >= 128 then x = x - 256 end
     if y >= 128 then y = y - 256 end
-    local dims = dimensions[bits % 4]
-    local dim = dims and dims[math.floor(bits / 4) % 4 + 1]
+    local dim = dimensionsAt(p)
     assert(dim, "invalid object subsprite shape")
     local offset = math.floor(bits / 16) % 1024 * 32
     local size = dim[1] * dim[2] / 2
@@ -7880,8 +7924,9 @@ function RomExtractorGen3:extractOverworldSprites()
         for i, frame in ipairs(runOrder) do
           local at = self.rom:pointer(images + frame * 8)
           if not at then runCells = nil break end
-          runCells[i] = RomGba.tiles4bpp(self.rom:bytes(at, frameBytes),
-                                         width / 8, frameHeight / 8)
+          runCells[i] = self:overworldFramePixels(
+            self.rom:bytes(at, frameBytes), width, frameHeight,
+            self.rom:pointer(info + 20))
         end
       end
 
@@ -7903,6 +7948,7 @@ function RomExtractorGen3:extractOverworldSprites()
         -- full colour: this cartridge's sprites are 16-colour, so they must
         -- not go through the DMG shade remap every Game Boy sheet does
         trueColor = true,
+        gen3ObjectEvent = true,
         frameWidth = width,
         frameHeight = frameHeight,
         -- the run cycle, when this sprite has one: its own sheet, laid out
@@ -7918,6 +7964,7 @@ function RomExtractorGen3:extractOverworldSprites()
           frames = #runCells,
           walker = true,
           trueColor = true,
+          gen3ObjectEvent = true,
           frameWidth = width,
           frameHeight = frameHeight,
           source = ("ROM:gObjectEventGraphicsInfoPointers[%d], run cycle")
@@ -8938,7 +8985,16 @@ function RomExtractorGen3:extractTrainers()
   -- reaches for a trainer that does not exist, which is the same shape as the
   -- species, item, move and ability bridges.
   local trainerOrder = {}
-  local count = 855
+  -- HOW MANY TRAINERS THIS CARTRIDGE HAS, which is not always Hoenn's 855.
+  --
+  -- FireRed's gTrainers ends at 742 -- the last real row is PAXTON, and
+  -- 0245EE0 onwards is whatever happens to follow the table.  Reading 855
+  -- of them made 112 trainers out of that: classes in the 200s, party sizes
+  -- of 187, names like a single letter.  The one that surfaced was the
+  -- encounter sting: a "trainer" asking for sting 127 is what made the
+  -- encounter-music stage refuse the fourteen it had just read, because the
+  -- byte it cross-checks against only goes up to 13 on a real row.
+  local count = self:layoutValue("numTrainers", 855)
   local strides = self:partyStrides(base, count)
   for i = 0, count - 1 do
     local o = base + i * 40
@@ -10110,14 +10166,45 @@ function RomExtractorGen3:extractSongRoles()
   if type(songs) ~= "table" then return end
   local R = RomExtractorGen3.SONG_ROLES
   local heal, healN, deleted, deletedN, healTotal = self:songRoleProof()
-  if heal ~= R.special.heal or deleted ~= R.special.moveDeleted then
+
+  -- WHOSE NUMBERING IS THIS?
+  --
+  -- SONG_ROLES is EMERALD's MUS_ numbering, and the two fanfares the proof
+  -- above re-derives out of this dump's own scripts are the check on it: a
+  -- cartridge that plays the healing machine's fanfare where Emerald does is
+  -- running Emerald's list.
+  --
+  -- That check used to be more than a check -- a disagreement RETURNED and
+  -- nothing was named at all.  Right for a cartridge nobody has described,
+  -- and wrong for FireRed, which plays them at 256 and 270 and has a
+  -- manifest to say so.  The cost was not a missing jingle: audio.battle was
+  -- never written, and Music.playBattle does nothing whatsoever without it,
+  -- so every wild, trainer, gym and champion battle on that cartridge came
+  -- up SILENT -- as did every victory theme and every scene fanfare the
+  -- engine asks for by role.
+  --
+  -- So: the manifest's table when it declares one, Emerald's when the proof
+  -- says this is Emerald, and an EMPTY one otherwise -- because even on a
+  -- dump nobody has described, the roles the proof established a moment ago
+  -- are worth writing, and a silent healing machine is not an improvement on
+  -- a named one.
+  local declared = self.manifest.songRoles
+  local matchesEmerald = heal == R.special.heal
+    and deleted == R.special.moveDeleted
+  local roles
+  if type(declared) == "table" then
+    roles = { battle = declared.battle or {}, special = declared.special or {} }
+  elseif matchesEmerald then
+    roles = R
+  else
+    roles = { battle = {}, special = {} }
     Logger.warn("gen3 song roles: this dump plays fanfare %s where the "
                   .. "healing machine is and %s where the Move Deleter is, "
-                  .. "not %d and %d -- the numbering is not the one the role "
-                  .. "table was written against, so no theme is named",
+                  .. "not %d and %d -- the numbering is not Emerald's and the "
+                  .. "manifest declares none, so only the roles this dump "
+                  .. "proves for itself are named",
                 tostring(heal), tostring(deleted),
                 R.special.heal, R.special.moveDeleted)
-    return
   end
   local function named(number)
     local key = ("SONG_%03X"):format(number)
@@ -10125,13 +10212,31 @@ function RomExtractorGen3:extractSongRoles()
     return (type(def) == "table" and def.tracks) and key or nil
   end
   local battle, special, kept, missing = {}, {}, 0, 0
-  for role, number in pairs(R.battle) do
+  for role, number in pairs(roles.battle) do
     local key = named(number)
     if key then battle[role] = key; kept = kept + 1 else missing = missing + 1 end
   end
-  for role, number in pairs(R.special) do
+  for role, number in pairs(roles.special) do
     local key = named(number)
     if key then special[role] = key; kept = kept + 1 else missing = missing + 1 end
+  end
+  -- ...AND THE PROOF OUTRANKS WHATEVER WAS DECLARED.  It was read out of
+  -- THIS dump's scripts; a table, Emerald's or a manifest's, is a
+  -- description of some build, and where the two disagree the cartridge in
+  -- hand wins.  Said out loud when they do, because a table that is wrong
+  -- about the one role we can check is not to be trusted on the rest.
+  for role, number in pairs({ heal = heal, moveDeleted = deleted }) do
+    local key = named(number)
+    if key then
+      if special[role] and special[role] ~= key then
+        Logger.warn("gen3 song roles: the role table names %s as %s, but "
+                      .. "this dump's own scripts play %s there -- taking "
+                      .. "the cartridge's answer", role, special[role], key)
+      elseif not special[role] then
+        kept = kept + 1
+      end
+      special[role] = key
+    end
   end
   local audio = self._audio or {}
   audio.battle = battle
@@ -10143,10 +10248,13 @@ function RomExtractorGen3:extractSongRoles()
   }
   self._audio = audio
   self:write("audio", audio)
-  Logger.info("Gen3 song roles: %d named, %d not in this dump -- heal is "
-                .. "SONG_%03X off %d healing scripts, the Move Deleter's is "
-                .. "SONG_%03X off %d", kept, missing, heal, healN, deleted,
-              deletedN)
+  -- `heal` and `deleted` are no longer guaranteed: the guard above used to
+  -- make them Emerald's two constants or nothing at all, and a dump whose
+  -- scripts answer neither now reaches here with both nil.  %s, not %03X.
+  Logger.info("Gen3 song roles: %d named, %d not in this dump -- heal is %s "
+                .. "off %d healing scripts, the Move Deleter's is %s off %d",
+              kept, missing, tostring(special.heal), healN,
+              tostring(special.moveDeleted), deletedN)
 end
 
 -- ---------------------------------------------------------------------------
@@ -10347,20 +10455,6 @@ function RomExtractorGen3:extractEmotes()
     return out
   end
 
-  -- the one the heart loads, which is the one its own template names
-  local palette = nil
-  for _, icon in ipairs(icons) do palette = palette or icon.palette end
-  if not palette then
-    Logger.warn("gen3 emotes: none of the three names a palette -- left "
-                .. "unripped rather than guessed")
-    return
-  end
-  local colors = paletteAt(palette)
-  if not colors then
-    Logger.warn("gen3 emotes: the palette is short")
-    return
-  end
-
   -- ...and OBJ palette slot 0, for the two that name no tag at all
   local slot0, slot0At = nil, nil
   do
@@ -10382,6 +10476,39 @@ function RomExtractorGen3:extractEmotes()
                     .. "the heart's colours, which makes them tan",
                   E.OBJ_PAL_SLOT0)
     end
+  end
+
+  -- the one the heart loads, which is the one its own template names
+  local palette = nil
+  for _, icon in ipairs(icons) do palette = palette or icon.palette end
+  local colors = palette and paletteAt(palette) or nil
+  if palette and not colors then
+    Logger.warn("gen3 emotes: the palette is short")
+    return
+  end
+  if not colors then
+    -- THE CARTRIDGE WHERE NONE OF THE THREE LOADS A PALETTE.
+    --
+    -- Hoenn's heart reaches its native through `loadfadedpal_callnative`, so
+    -- the record in front of that call is where the bubbles' colours come
+    -- from -- and the other two ride on it.  FireRed's three all use the
+    -- plain `callnative`, so there is no such record anywhere, and this
+    -- stopped: no bubble at all, which is a trainer spotting you in silence.
+    --
+    -- OBJ palette slot 0 is the honest answer for that cartridge rather than
+    -- a guess.  It is already what the two TAGLESS icons wear here -- the
+    -- note above says so, and the slot-0 branch below recolours them onto it
+    -- -- because a template with TAG_NONE leaves oam.paletteNum at zero and
+    -- draws in whatever the field loaded into slot 0, which is the player's
+    -- own palette.  With no heart palette to start from, that is the palette
+    -- for all three.
+    if not slot0 then
+      Logger.warn("gen3 emotes: none of the three names a palette and OBJ "
+                    .. "slot 0 is not readable either -- left unripped "
+                    .. "rather than guessed")
+      return
+    end
+    colors = slot0
   end
 
   -- WHICH PALETTE EACH ICON GETS, off its own template rather than a list
@@ -10417,7 +10544,7 @@ function RomExtractorGen3:extractEmotes()
     source = ("ROM:gFieldEffectScriptPointers %07X, effects %d/%d/%d, "
               .. "the heart's palette %07X, OBJ slot 0 %s")
              :format(E.SCRIPTS, E.ROLES[1][2], E.ROLES[2][2], E.ROLES[3][2],
-                     palette,
+                     palette or 0,
                      slot0At and ("%07X"):format(slot0At) or "not found"),
   }
   for _, icon in ipairs(icons) do
@@ -12789,9 +12916,18 @@ function RomExtractorGen3:extractPCMenu()
         labels[i + 1] = label
         lines[i + 1] = line
       end
-      -- the four that DO something each describe themselves; the fifth is
-      -- the way out, and that is what pins the order
-      if ok and (lines[1] or ""):find("your party", 1, true) == nil then
+      -- the four that DO something each describe themselves, and the first
+      -- of them has to be the one that takes a Pokemon OUT -- that is what
+      -- pins the order the three modes are read off.
+      --
+      -- Both cartridges say so, in their own words: Hoenn's row describes
+      -- moving a Pokemon "to your party", Kanto's says you can "withdraw" one
+      -- if you have any in a BOX.  Testing only for Hoenn's phrase left
+      -- FireRed with no storage menu at all -- the screen fell back to the
+      -- port's own five English rows with no descriptions under them.
+      local first = (lines[1] or ""):lower()
+      if ok and not (first:find("your party", 1, true)
+                     or first:find("withdraw", 1, true)) then
         Logger.warn("gen3 PC menu: the first storage row does not describe "
                     .. "taking a Pokemon out (%s) -- the menu is left out",
                     tostring(lines[1]))
@@ -19369,6 +19505,61 @@ function RomExtractorGen3:extractMapSections()
       wantFirst = true
       break
     end
+  end
+
+  -- FIRERED KEEPS ITS SECTION NAMES A DIFFERENT SHAPE, and looking for
+  -- Emerald's found nothing at all.
+  --
+  -- Hoenn's sRegionMapEntries is a record per section -- x, y, width, height
+  -- and a name pointer -- because its region map places each section as a
+  -- RECTANGLE.  FireRed places them cell by cell instead (a grid per page;
+  -- see FRLG_REGION_MAP.SECTIONS and Gen3RegionMap:initFireRed), so its
+  -- sMapNames is a flat array of name pointers with no geometry beside them,
+  -- and the scan below -- two hundred consecutive EIGHT-byte records, inside
+  -- Emerald's address range -- cannot see it.
+  --
+  -- The cost was not just the map-name popup.  `gen3MapSections` is what
+  -- extractSongNames proves the song numbering against ("a town's theme is
+  -- what that town's maps play"), so an empty table took the whole music
+  -- naming down with it.  An import log reads
+  --
+  --     Gen3 map sections: no run of 200 region-map records found
+  --     gen3 song names: only 0 of 0 place themes are played by the place
+  --                      they are named after
+  --
+  -- one after the other, and the second is caused by the first.
+  --
+  -- The addresses are the region-map stage's own, already read off this
+  -- cartridge and already proven there: FRLG_REGION_MAP.NAMES, 109 entries
+  -- numbered from MAPSEC $58, which is where FireRed's sections start
+  -- because Hoenn's occupy $00-$57.  No rectangles are kept, because
+  -- FireRed has none.
+  local frlgMap = (self.manifest or {}).frlgItemMenu ~= nil
+    and RomExtractorGen3.FRLG_REGION_MAP or nil
+  if frlgMap then
+    local sections, count = {}, 0
+    for i = 0, frlgMap.NAME_COUNT - 1 do
+      local ptr = rom:pointer(frlgMap.NAMES + i * 4)
+      local text = ptr and self:readText(ptr, 24)
+      if type(text) == "string" and text ~= "" and #text <= 16 then
+        sections[frlgMap.MAPSEC_START + i] = text
+        count = count + 1
+      end
+    end
+    if count > 0 then
+      constants.gen3MapSections = sections
+      constants.gen3MapSectionSource =
+        ("ROM:sMapNames %07X, %d sections from MAPSEC $%02X")
+        :format(frlgMap.NAMES, count, frlgMap.MAPSEC_START)
+      self._constants = constants
+      self:write("constants", self._constants)
+      Logger.info("Gen3 map sections (FRLG): %d names at %07X, first is %s",
+                  count, frlgMap.NAMES,
+                  tostring(sections[frlgMap.MAPSEC_START]))
+      return
+    end
+    Logger.warn("Gen3 map sections (FRLG): sMapNames at %07X read no names",
+                frlgMap.NAMES)
   end
 
   -- FIVE RECORDS FIRST, then two hundred.  The full test costs two hundred
@@ -27639,8 +27830,67 @@ function RomExtractorGen3:extractFanfares()
     return out
   end
 
+  -- THE TABLE THIS CARTRIDGE DECLARES, when it declares one.
+  --
+  -- The scan below is Emerald-shaped in a way that is easy to miss: it
+  -- refuses any row whose song number is under 300, because Emerald's
+  -- jingles all sit above that.  FireRed's do not -- its whole fanfare list
+  -- is 256 to 271 with three strays in the 317-338 range -- so the run broke
+  -- on its FIRST row and the stage reported that nothing in the cartridge
+  -- looked like a fanfare table.  Nothing did, to that test.
+  --
+  -- The consequence was not a missing jingle either: this stage is what
+  -- writes audio.sfx for Get_Item, Get_Key_Item, Heal_HP, Slots_Reward and
+  -- Wrong, so every one of those was silent in FireRed.
+  --
+  -- A manifest that names the table is taken at its word, including the
+  -- ORDER of the names -- FireRed's sFanfares is not Emerald's list with
+  -- entries missing, it is its own list in its own order, so the
+  -- Emerald-order sanity checks below are skipped for it rather than
+  -- failed.
+  local NAMES = GEN3_FANFARE_NAMES
+  local declared = (self.manifest or {}).fanfares
   local found, at = nil, 0
-  while at < rom.size - GEN3_FANFARE_MIN * 4 do
+  if type(declared) == "table" and tonumber(declared.at) then
+    local base = math.floor(tonumber(declared.at))
+    local count = math.floor(tonumber(declared.count) or 0)
+    -- A DECLARED ADDRESS IS STILL CHECKED.  It is a hand-written number in a
+    -- JSON file, and one off by 0x200 lands on graphics that read back as a
+    -- perfectly well-formed table of nonsense -- which, with the agreement
+    -- gate skipped for a declared table, is exactly the shape that gets
+    -- written out as the cartridge's fanfares.  So every row has to name a
+    -- song this dump actually has, and last a length a jingle can last.
+    local rows = {}
+    for i = 0, count - 1 do
+      local song = rom:u16(base + i * 4)
+      local duration = rom:u16(base + i * 4 + 2)
+      if not (song and duration) then break end
+      if not playable[song] then
+        Logger.warn("gen3 fanfares: the manifest's table at %07X names song "
+                      .. "%d in row %d and this dump has no such song -- the "
+                      .. "scan is used instead", base, song, i)
+        rows = {}
+        break
+      end
+      if duration < GEN3_FANFARE_LO or duration > GEN3_FANFARE_HI then
+        Logger.warn("gen3 fanfares: the manifest's table at %07X gives row %d "
+                      .. "a length of %d frames, which is not a jingle -- the "
+                      .. "scan is used instead", base, i, duration)
+        rows = {}
+        break
+      end
+      rows[#rows + 1] = { song = song, duration = duration }
+    end
+    if #rows == count and count > 0 then
+      found = { at = base, rows = rows, declared = true }
+      if type(declared.names) == "table" then NAMES = declared.names end
+    else
+      Logger.warn("gen3 fanfares: the manifest names a table at %07X with %d "
+                    .. "rows and only %d could be read, so the scan is used "
+                    .. "instead", base, count, #rows)
+    end
+  end
+  while not found and at < rom.size - GEN3_FANFARE_MIN * 4 do
     local run = runAt(at)
     if #run >= GEN3_FANFARE_MIN then
       if found then
@@ -27682,7 +27932,7 @@ function RomExtractorGen3:extractFanfares()
       if off <= GEN3_FANFARE_TOLERANCE then agreed = agreed + 1 end
     end
   end
-  if agreed < GEN3_FANFARE_AGREE then
+  if agreed < GEN3_FANFARE_AGREE and not found.declared then
     Logger.warn("gen3 fanfares: only %d of %d songs at %07X last as long as "
                   .. "the table says, so it is not the fanfare table",
                 agreed, #found.rows, found.at)
@@ -27692,23 +27942,27 @@ function RomExtractorGen3:extractFanfares()
   -- ---- and the two the ordering implies -----------------------------------
   local byName = {}
   for i, row in ipairs(found.rows) do
-    local name = GEN3_FANFARE_NAMES[i]
+    local name = NAMES[i]
     if name then byName[name] = row end
   end
   local badge, item, heal = byName.OBTAIN_BADGE, byName.OBTAIN_ITEM,
                             byName.HEAL
+  if found.declared then
+    badge, item, heal = badge or true, item or true, heal or true
+  end
   if not (badge and item and heal) then
     Logger.warn("gen3 fanfares: the table is %d long, which is fewer roles "
                   .. "than this cartridge is named against", #found.rows)
     return
   end
-  if badge.duration <= item.duration then
+  if not found.declared and badge.duration <= item.duration then
     Logger.warn("gen3 fanfares: a badge takes no longer than an item here "
                   .. "(%d vs %d), so the table is not in the order the roles "
                   .. "are named in", badge.duration, item.duration)
     return
   end
-  if math.abs(heal.duration - item.duration) > item.duration then
+  if not found.declared
+     and math.abs(heal.duration - item.duration) > item.duration then
     Logger.warn("gen3 fanfares: healing and picking an item up are nothing "
                   .. "like the same length here (%d vs %d), so the table is "
                   .. "not in the order the roles are named in",
@@ -27719,7 +27973,7 @@ function RomExtractorGen3:extractFanfares()
   -- ---- write them ---------------------------------------------------------
   local fanfares = {}
   for i, row in ipairs(found.rows) do
-    local name = GEN3_FANFARE_NAMES[i] or ("FANFARE_%d"):format(i - 1)
+    local name = NAMES[i] or ("FANFARE_%d"):format(i - 1)
     fanfares[name] = {
       song = ("SONG_%03X"):format(row.song),
       index = row.song,
@@ -27883,6 +28137,66 @@ function RomExtractorGen3:extractSongNames()
       byIndex[song.index] = song
       count = count + 1
     end
+  end
+
+  -- THE CARTRIDGE THAT NAMES ITS OWN SONGS.
+  --
+  -- The check below proves Hoenn's numbering by asking whether a song named
+  -- after a town is the song that town's maps play.  It cannot ask that of
+  -- FireRed -- GEN3_SONG_PLACES is Hoenn, every one of its places is absent,
+  -- and 0 of 0 agreements is not a pass -- so no song on that cartridge got
+  -- a name at all.
+  --
+  -- A manifest may give the list instead, and FireRed's does.  That is not a
+  -- weaker claim than the check: the numbering has already been proved on
+  -- that cartridge from a different table entirely -- sFanfares, at an
+  -- address the manifest names, whose fourteen rows land on the fourteen
+  -- numbers the list calls LEVEL_UP, OBTAIN_ITEM, HEAL and the rest -- and
+  -- the healing machine's own fanfare, re-derived from this dump's scripts,
+  -- agrees with it.
+  local declaredNames = (self.manifest or {}).songNames
+  if type(declaredNames) == "table" and type(declaredNames.names) == "table"
+     and tonumber(declaredNames.first) then
+    local first = math.floor(tonumber(declaredNames.first))
+    local names, named = {}, 0
+    for i, name in ipairs(declaredNames.names) do
+      local number = first + i - 1
+      local song = byIndex[number]
+      if song then
+        names[number] = name
+        song.musName = name
+        named = named + 1
+      end
+    end
+    local special = audio.special or {}
+    local roles = 0
+    for role, name in pairs(GEN3_SONG_ROLES) do
+      for i, n in ipairs(declaredNames.names) do
+        if n == name then
+          local song = byIndex[first + i - 1]
+          if song then
+            special[role] = ("SONG_%03X"):format(song.index)
+            roles = roles + 1
+          end
+          break
+        end
+      end
+    end
+    audio.special = special
+    audio.songs = songs
+    local constants = self._constants or {}
+    constants.gen3SongNames = {
+      first = first, names = names, declared = true,
+      source = ("manifest:songNames, %d of %d named"):format(named,
+                                                             #declaredNames.names),
+    }
+    self._constants = constants
+    self:write("constants", constants)
+    self:write("audio", audio)
+    Logger.info("Gen3 song names: %d named from the manifest's own list "
+                  .. "(first %d), %d scene role(s) answered", named, first,
+                roles)
+    return
   end
 
   -- ---- THE CHECK: a town's theme is what that town's maps play -----------
@@ -28295,10 +28609,43 @@ function RomExtractorGen3:extractEncounterMusic()
     return nil
   end
 
+  -- THE CARTRIDGE THAT DOES NOT USE A SWITCH OVER SONGS.
+  --
+  -- FireRed indexes the same fourteen stings with the same trainer byte, but
+  -- its PlayTrainerEncounterMusic collapses them onto THREE songs -- the
+  -- girl's, the boy's and Team Rocket's -- so its arms load the same number
+  -- again and again, and the scan below, which insists every arm be
+  -- different, correctly finds nothing.  Nothing was then written, and the
+  -- engine fell back on a Gen 1 list of class names for the whole of Kanto.
+  --
+  -- So a manifest may give the fourteen numbers outright, in the order the
+  -- names above are in.  They are read rather than scanned, and then
+  -- cross-checked against the trainers' own byte exactly as a scanned
+  -- switch is.
   local found = nil
+  local declaredMusic = (self.manifest or {}).encounterMusic
+  if type(declaredMusic) == "table" and type(declaredMusic.songs) == "table"
+     and #declaredMusic.songs == GEN3_ENCOUNTER_ARMS then
+    local vals, ok = {}, true
+    for i = 1, GEN3_ENCOUNTER_ARMS do
+      local v = tonumber(declaredMusic.songs[i])
+      if not (v and playable[v]) then
+        Logger.warn("gen3 encounter music: the manifest names song %s for "
+                      .. "sting %d and this dump has no such song, so the "
+                      .. "scan is used instead", tostring(v), i - 1)
+        ok = false
+        break
+      end
+      vals[i] = v
+    end
+    if ok then
+      found = { at = tonumber(declaredMusic.at) or 0, songs = vals,
+                declared = true }
+    end
+  end
   local at = 4
   local limit = rom.size - GEN3_ENCOUNTER_ARMS * 4 - GEN3_ENCOUNTER_SPAN - 16
-  while at < limit do
+  while not found and at < limit do
     -- one byte first: the word before the table is the table's own ROM
     -- address, so its top byte is 08 and nothing else in the scan is read
     -- for the other 255 positions in 256
@@ -31601,14 +31948,34 @@ function RomExtractorGen3:reflectionPaletteSets()
     end
     return nil
   end
-  local found, seen = {}, {}
-  for at = R.SCAN_FROM, R.SCAN_TO, 4 do
-    local n = rows(at)
-    if n and n >= R.MIN_ROWS then
-      seen[at] = true
-      -- a table's own tail matches the same shape; only the head counts
-      if not seen[at - R.STRIDE] then found[#found + 1] = { at = at, n = n } end
+  -- WHERE TO LOOK, which is not the same place on every cartridge.
+  --
+  -- The window below is where Hoenn keeps these two tables.  FireRed keeps
+  -- its at 03A5208 and 03A5278 -- a long way under it -- so the scan found
+  -- NOTHING on that cartridge, and every reflection in Kanto wore its
+  -- sprite's own colours, on water, where a reflection is supposed to be the
+  -- cooled-down second palette the cartridge keeps for it.
+  --
+  -- So: the window first, because it is eight times smaller and answers for
+  -- Hoenn, and the whole cartridge only when the window does not produce the
+  -- two tables.  Checked both ways -- a full sweep of Emerald finds exactly
+  -- the two it always found, and a full sweep of FireRed finds its own two
+  -- and nothing else.
+  local function scan(from, to)
+    local out, seen = {}, {}
+    for at = from, to, 4 do
+      local n = rows(at)
+      if n and n >= R.MIN_ROWS then
+        seen[at] = true
+        -- a table's own tail matches the same shape; only the head counts
+        if not seen[at - R.STRIDE] then out[#out + 1] = { at = at, n = n } end
+      end
     end
+    return out
+  end
+  local found = scan(R.SCAN_FROM, math.min(R.SCAN_TO, rom.size - R.STRIDE))
+  if #found ~= 2 then
+    found = scan(0, rom.size - R.STRIDE)
   end
   if #found ~= 2 then
     Logger.warn("gen3 reflections: %d reflection palette set tables match the "
@@ -40552,9 +40919,69 @@ RomExtractorGen3.FRLG_POKEDEX = {
   KANTO_TILES = 0x440274, NAT_TILES = 0x4403AC,
   KANTO_PAL = 0x4404C8, NAT_PAL = 0x4406E0,
   CAUGHT = 0x443600, FOOTPRINTS = 0x43FAB0, FOOTPRINT_COUNT = 413,
-  TEXT = { listTitle = 0x415F3C, pickOkExit = 0x415F50, pokemon = 0x415F8E,
-           ht = 0x415F98, wt = 0x415F9A, lbs = 0x415FA0, cry = 0x415FAC,
-           nextDataCancel = 0x415FB2, next = 0x415FC8 },
+  -- THE AREA PAGE (DexScreen_DrawMonAreaPage, pokedex_area_markers.c,
+  -- wild_pokemon_area.c).  Every address below was found in THIS cartridge,
+  -- with pret/pokefirered only to say what each table is:
+  --   AREA_MAP       map_kanto.4bpp.lz, 12x9 tiles, drawn in the window's
+  --                  own palette 0 -- so the dex palette's bank 0, the same
+  --                  bank as the rest of the screen.
+  --   AREA_SEVII     the seven island maps, each { gfx, left, top, w, h }
+  --                  in tiles, from sAreaMapStructs_SeviiIslands.
+  --   AREA_MARKERS   sAreaMarkers: s8[4] a row -- shape, x, y -- indexed by
+  --                  DEX_AREA, 80 rows with DEX_AREA_NONE first.
+  --   DEX_AREAS_*    sDexAreas_Kanto (55 rows) and sSeviiDexAreas (7 rows of
+  --                  { table, count }), both u16 pairs MAPSEC -> DEX_AREA.
+  AREA_MAP = 0x443620,
+  AREA_SEVII = { { 0x443910, 13, 4, 4, 3 }, { 0x443988, 13, 7, 4, 3 },
+                 { 0x4439FC, 13, 10, 4, 3 }, { 0x443A78, 13, 13, 4, 4 },
+                 { 0x443AF8, 17, 13, 4, 4 }, { 0x443BB0, 21, 13, 4, 4 },
+                 { 0x443C54, 25, 13, 4, 4 } },
+  AREA_MARKER_TILES = 0x46343C, AREA_MARKER_PAL = 0x46341C,
+  AREA_MARKERS = 0x463580, AREA_MARKER_COUNT = 80,
+  -- THE DEX'S OWN FRONT PAGE, which this port did not have.
+  --
+  -- FireRed does not open on the numerical list.  It opens on a menu -- the
+  -- list, the nine habitats, four orderings and the way out -- and the
+  -- numerical list is only the first row of it.  Both mode lists are
+  -- { const u8 *label; s32 id } pairs, with -3 a heading and -2 the cancel
+  -- row; an id under DEX_CATEGORY_COUNT is a habitat and anything at or
+  -- above it is DEX_MODE(order), so the order is id - 9.
+  MODE_LIST_KANTO = 0x451F6C, MODE_LIST_KANTO_ROWS = 19,
+  MODE_LIST_NATIONAL = 0x45201C, MODE_LIST_NATIONAL_ROWS = 20,
+  -- gDexCategories: nine { const struct PokedexCategoryPage *page; u8 count }
+  -- rows, each page a { const u16 *species; u8 count } of at most four.  The
+  -- check on the whole structure is that it names 386 species -- one per
+  -- National Dex slot, no more and no fewer.
+  CATEGORIES = 0x452C4C, CATEGORY_COUNT = 9, CATEGORY_TOTAL = 386,
+  DEX_AREAS_KANTO = 0x464148, DEX_AREAS_KANTO_COUNT = 55,
+  DEX_AREAS_SEVII = 0x4642BC, DEX_AREAS_SEVII_COUNT = 7,
+  SILHOUETTE_PAL = 0x452368,
+  -- the seven subsprite shapes the markers are cut from (marker.4bpp is one
+  -- 37-tile sheet; a shape is { width, height, first tile }), from
+  -- pokedex_area_markers.c's sSubsprites
+  MARKER_SHAPES = { [0] = { 8, 8, 0 }, [1] = { 16, 8, 1 }, [2] = { 8, 16, 3 },
+                    [3] = { 32, 16, 5 }, [4] = { 16, 32, 13 },
+                    [5] = { 32, 16, 21 }, [6] = { 16, 32, 29 } },
+  -- THE WORDS, at the addresses this cartridge actually keeps them.
+  --
+  -- Walked as a block of $FF-terminated strings from 0415F20 rather than
+  -- trusted one at a time: several of the old addresses pointed AT the
+  -- previous string's terminator, so they read as empty and the +1/-1 retry
+  -- below landed on a keypad glyph it could not decode.  The cache came out
+  -- holding `nextDataCancel = "Y"` and `pickOkExit = "H"` -- one letter each,
+  -- where the cartridge has whole control bars.
+  --
+  -- AND THE THREE THE PORT NEVER ASKED FOR.  AREA, SIZE and PAGE sit right
+  -- after CANCEL/PREVIOUS DATA, with AREA UNKNOWN beside them -- which is
+  -- the cartridge saying plainly that its dex entry has an area page, a size
+  -- page and a way to turn between them.  This port's FireRed dex had none
+  -- of the three.
+  TEXT = { listTitle = 0x415F3D, search = 0x415F4A, pickOkExit = 0x415F51,
+           pickFlipPage = 0x415F6C, pokemon = 0x415F8F,
+           ht = 0x415F98, wt = 0x415F9B, lbs = 0x415FA0, cry = 0x415FAD,
+           nextDataCancel = 0x415FB3, next = 0x415FC8,
+           cancelPrevious = 0x415FCF, area = 0x415FE8, size = 0x415FED,
+           areaUnknown = 0x415FF2, page = 0x416002 },
 }
 
 function RomExtractorGen3:extractFireRedPokedex()
@@ -40604,7 +41031,40 @@ function RomExtractorGen3:extractFireRedPokedex()
     end
     save("field", fill(1, 0, all, true))
     save("listField", fill(0x0E, 0, all, true))
-    save("bars", fill(3, 15, { 0, 1, 18, 19 }, true))
+    -- EACH SCREEN HAS ITS OWN GROUND, and they are three different tiles.
+    -- DexScreen_LoadResources lays tile 1 for the mode menu and the entry
+    -- page (a flat white), the three list screens lay 0x0E (the faint
+    -- pattern), and DexScreen_CreateCategoryListGfx lays tile 2 -- a flat
+    -- cream that is neither of the other two.
+    save("catField", fill(2, 0, all, true))
+    -- THE BARS ARE NOT A TILE, AND THAT IS WHY THEY CAME OUT GREY.
+    --
+    -- Reported from play: "the pokedex in firered is showing a gray top bar
+    -- and bottom bar which doesnt seem correct".  This drew TILE 3 across
+    -- rows 0-1 and 18-19, and the bars are not drawn from a tile at all.
+    -- sWindowTemplates[0] and [1] are two 30x2 windows on BG0 in palette
+    -- FIFTEEN, and DexScreen_CreateCategoryListGfx fills each of them with
+    -- FillWindowPixelBuffer(PIXEL_FILL(15)) -- a flat wash of colour 15 of
+    -- that bank, with the words printed on top of it.
+    --
+    -- Colour 15 of bank 15 is a warm tan in the Kanto palette (C0B088) and
+    -- an olive in the National one (A8C018); whatever tile 3 happens to hold
+    -- is neither.  The ink and its shadow were already right -- colours 1
+    -- and 2 of the same bank, white on a grey -- which is what made the
+    -- wrong background look like a deliberate grey rather than a bug.
+    local barBg = pal[15 * 16 + 15]
+    local barsImg = ImageWriter.blank(240, 160)
+    if barBg then
+      local r, g, b = barBg[1] / 255, barBg[2] / 255, barBg[3] / 255
+      for _, ty in ipairs({ 0, 1, 18, 19 }) do
+        for y = 0, 7 do
+          for x = 0, 239 do
+            barsImg:setPixel(x, ty * 8 + y, r, g, b, 1)
+          end
+        end
+      end
+    end
+    save("bars", barsImg)
     -- the entry page frame at scale 6
     local img = ImageWriter.blank(240, 160)
     local left, top, width, height = 0, 2, 28, 14
@@ -40622,8 +41082,45 @@ function RomExtractorGen3:extractFireRedPokedex()
     at(7, false, left, divY); at(7, true, left + 1 + width, divY)
     for ty = divY + 1, top + height do at(9, false, left, ty); at(9, true, left + 1 + width, ty) end
     save("pageFrame", img)
+    -- THE AREA PAGE'S MAPS, which are plain 4bpp pictures copied straight
+    -- into their windows (CopyToWindowPixelBuffer) rather than tilemaps --
+    -- so they come out of the ROM as one rectangle each, in bank 0.
+    local function picture(at, wTiles, hTiles)
+      local okPic, pic = RomExtractorGen3.lz77ok(rom, at)
+      if not okPic then return nil end
+      local out = ImageWriter.blank(wTiles * 8, hTiles * 8)
+      for t2 = 0, wTiles * hTiles - 1 do
+        local px, py = (t2 % wTiles) * 8, math.floor(t2 / wTiles) * 8
+        for y = 0, 7 do
+          for x = 0, 7 do
+            local byte = pic[t2 * 32 + y * 4 + math.floor(x / 2) + 1]
+            if byte then
+              local v = (x % 2 == 0) and byte % 16 or math.floor(byte / 16)
+              local c = pal[v]
+              if c then out:setPixel(px + x, py + y, c[1] / 255, c[2] / 255, c[3] / 255, 1) end
+            end
+          end
+        end
+      end
+      return out
+    end
+    local kanto = picture(P.AREA_MAP, 12, 9)
+    if kanto then save("areaMap", kanto) end
+    for i, row in ipairs(P.AREA_SEVII) do
+      local isle = picture(row[1], row[4], row[5])
+      if isle then save("areaSevii" .. i, isle) end
+    end
     colors[prefix] = {
       ink = pal[1], shadow = pal[3], barInk = pal[15 * 16 + 1], barShadow = pal[15 * 16 + 2],
+      -- the wash the two bars are filled with, kept beside its ink so a
+      -- screen can draw the bar itself when the picture is not to hand
+      bar = pal[15 * 16 + 15],
+      -- AND THE GREYED-OUT ROW.  ItemPrintFunc_DexModeSelect prints a
+      -- habitat you have seen nothing in with ListMenuOverrideSetColors
+      -- (TEXT_DYNAMIC_COLOR_1, transparent, TEXT_DYNAMIC_COLOR_2) rather
+      -- than the white-on-grey the other rows get -- colours 10 and 11 of
+      -- this same bank, a near-white over a light grey.
+      dimInk = pal[10], dimShadow = pal[11],
       red = pal[5],
     }
   end
@@ -40670,15 +41167,232 @@ function RomExtractorGen3:extractFireRedPokedex()
     self:saveImage(img, "pokedex_frlg/footprints.png")
     images.footprints = { path = "assets/generated/pokedex_frlg/footprints.png", cols = cols }
   end)
+  -- WHERE A SPECIES LIVES, as this cartridge marks it.
+  --
+  -- The area page does not tint cells the way the town map does: it lays ONE
+  -- subsprite per place over the map, cut from a 37-tile sheet in one of
+  -- seven shapes, at a position sAreaMarkers keeps for that DEX_AREA.  The
+  -- sprite itself sits at (104, voff*8 + 32), so a marker's screen position
+  -- is that plus the row's x and y -- which is why the numbers below look
+  -- like they start 32 pixels left of the map: they do.
+  local area
+  pcall(function()
+    local okM, mt = RomExtractorGen3.lz77ok(rom, P.AREA_MARKER_TILES)
+    if not okM then return end
+    local mraw = rom:bytes(P.AREA_MARKER_PAL, 32)
+    local mpal = {}
+    for i = 0, 15 do
+      local r, g, b = RomGba.bgr555(mraw[i * 2 + 1] + mraw[i * 2 + 2] * 256)
+      mpal[i] = { r, g, b }
+    end
+    local shapes = {}
+    for shape = 0, 6 do
+      local s = P.MARKER_SHAPES[shape]
+      local w, h, off = s[1], s[2], s[3]
+      local cols = w / 8
+      local img = ImageWriter.blank(w, h)
+      for ty = 0, h / 8 - 1 do
+        for tx = 0, cols - 1 do
+          local base = (off + ty * cols + tx) * 32
+          for y = 0, 7 do
+            for x = 0, 7 do
+              local byte = mt[base + y * 4 + math.floor(x / 2) + 1]
+              if byte then
+                local v = (x % 2 == 0) and byte % 16 or math.floor(byte / 16)
+                local c = v ~= 0 and mpal[v]
+                if c then img:setPixel(tx * 8 + x, ty * 8 + y, c[1] / 255, c[2] / 255, c[3] / 255, 1) end
+              end
+            end
+          end
+        end
+      end
+      local key = ("pokedex_frlg/areaMarker%d.png"):format(shape)
+      self:saveImage(img, key)
+      shapes[shape] = { path = "assets/generated/" .. key, w = w, h = h }
+    end
+    local function s8(v) return v >= 128 and v - 256 or v end
+    local markers = {}
+    for i = 1, P.AREA_MARKER_COUNT - 1 do
+      local b = rom:bytes(P.AREA_MARKERS + i * 4, 4)
+      if b and b[1] then markers[i] = { shape = b[1], x = s8(b[2]), y = s8(b[3]) } end
+    end
+    local kanto, sevii = {}, {}
+    for i = 0, P.DEX_AREAS_KANTO_COUNT - 1 do
+      local sec = rom:u16(P.DEX_AREAS_KANTO + i * 4)
+      local dex = rom:u16(P.DEX_AREAS_KANTO + i * 4 + 2)
+      if sec and dex and dex ~= 0 then kanto[sec] = dex end
+    end
+    for j = 0, P.DEX_AREAS_SEVII_COUNT - 1 do
+      local ptr = rom:pointer(P.DEX_AREAS_SEVII + j * 8)
+      local count = rom:u16(P.DEX_AREAS_SEVII + j * 8 + 4) or 0
+      local rows = {}
+      if ptr and count > 0 and count < 64 then
+        for i = 0, count - 1 do
+          local sec = rom:u16(ptr + i * 4)
+          local dex = rom:u16(ptr + i * 4 + 2)
+          if sec and dex and dex ~= 0 then rows[sec] = dex end
+        end
+      end
+      sevii[j + 1] = rows
+    end
+    -- the silhouette the SIZE half is drawn in: one colour for every index
+    local sraw = rom:bytes(P.SILHOUETTE_PAL, 32)
+    local sr, sg, sb = RomGba.bgr555(sraw[3] + sraw[4] * 256)
+    area = { shapes = shapes, markers = markers, kanto = kanto, sevii = sevii,
+             silhouette = { sr, sg, sb },
+             -- the page's own geometry, in pixels, out of its window
+             -- templates: the maps and the AREA label move down by voff*8
+             -- when no island map is on screen
+             layout = { sprite = { x = 104, y = 32 }, voff = 4,
+                        kantoMap = { x = 136, y = 32, w = 96, h = 72 },
+                        monIcon = { x = 8, y = 16 }, name = { x = 40, y = 16 },
+                        types = { x = 40, y = 40 },
+                        sizeLabel = { x = 16, y = 56, w = 80 },
+                        areaLabel = { x = 144, y = 16, w = 80 },
+                        mon = { x = 40, y = 104 }, trainer = { x = 80, y = 104 },
+                        lifeSize = 256 } }
+    local seviiBoxes = {}
+    for i, row in ipairs(P.AREA_SEVII) do
+      seviiBoxes[i] = { x = row[2] * 8, y = row[3] * 8, w = row[4] * 8, h = row[5] * 8 }
+    end
+    area.layout.seviiMaps = seviiBoxes
+  end)
+  -- ---- THE FRONT PAGE AND THE NINE HABITATS ------------------------------
+  local modes, categories = nil, nil
+  pcall(function()
+    local function s32(v)
+      return v >= 0x80000000 and (v - 0x100000000) or v
+    end
+    local function modeList(at, rows)
+      local out = {}
+      for i = 0, rows - 1 do
+        local ptr = rom:pointer(at + i * 8)
+        local id = s32(rom:u32(at + i * 8 + 4) or 0)
+        local label = ptr and self:readText(ptr, 40) or nil
+        if type(label) ~= "string" or label == "" then return nil, i end
+        local row = { label = label }
+        if id == -3 then row.kind = "header"
+        elseif id == -2 then row.kind = "close"
+        elseif id >= 0 and id < P.CATEGORY_COUNT then
+          row.kind = "category"; row.category = id + 1
+        else
+          row.kind = "order"; row.order = id - P.CATEGORY_COUNT
+        end
+        out[i + 1] = row
+      end
+      return out
+    end
+    local kanto, badRow = modeList(P.MODE_LIST_KANTO, P.MODE_LIST_KANTO_ROWS)
+    local national = kanto
+      and modeList(P.MODE_LIST_NATIONAL, P.MODE_LIST_NATIONAL_ROWS)
+    if not (kanto and national) then
+      Logger.warn("gen3 FireRed pokedex: row %s of a mode list does not read "
+                    .. "as a label -- the dex keeps opening on its list",
+                  tostring(badRow))
+      return
+    end
+
+    local names = {}
+    for _, row in ipairs(kanto) do
+      if row.kind == "category" then names[row.category] = row.label end
+    end
+    local built, total = {}, 0
+    for c = 0, P.CATEGORY_COUNT - 1 do
+      local pagesAt = rom:pointer(P.CATEGORIES + c * 8)
+      local pageCount = rom:u8(P.CATEGORIES + c * 8 + 4) or 0
+      if not (pagesAt and pageCount > 0) then
+        Logger.warn("gen3 FireRed pokedex: category %d names no pages -- the "
+                      .. "habitats are left out", c)
+        return
+      end
+      local pages = {}
+      for p = 0, pageCount - 1 do
+        local speciesAt = rom:pointer(pagesAt + p * 8)
+        local count = rom:u8(pagesAt + p * 8 + 4) or 0
+        if not (speciesAt and count > 0 and count <= 4) then
+          Logger.warn("gen3 FireRed pokedex: category %d page %d holds %s "
+                        .. "species -- the habitats are left out", c, p,
+                      tostring(count))
+          return
+        end
+        local page = {}
+        for i = 0, count - 1 do
+          local internal = rom:u16(speciesAt + i * 2)
+          local id = internal and self._speciesIds and self._speciesIds[internal]
+          if not id then
+            Logger.warn("gen3 FireRed pokedex: category %d page %d names "
+                          .. "species %s, which this dump does not have -- "
+                          .. "the habitats are left out", c, p,
+                        tostring(internal))
+            return
+          end
+          page[#page + 1] = id
+          total = total + 1
+        end
+        pages[#pages + 1] = page
+      end
+      built[c + 1] = { name = names[c + 1], pages = pages }
+    end
+    -- EVERY SPECIES IS IN EXACTLY ONE HABITAT, and 386 of them are: that is
+    -- what says the three levels of pointers were walked correctly rather
+    -- than landing on something else shaped like them.
+    if total ~= P.CATEGORY_TOTAL then
+      Logger.warn("gen3 FireRed pokedex: the habitats name %d species, not "
+                    .. "%d -- left out rather than written half-read",
+                  total, P.CATEGORY_TOTAL)
+      return
+    end
+    modes = { kanto = kanto, national = national }
+    categories = built
+    Logger.info("Gen3 FireRed pokedex: %d mode rows, %d habitats, %d species "
+                  .. "placed", #kanto, #built, total)
+  end)
+
+  -- A CONTROL STRING OPENS WITH A KEYPAD GLYPH, and readText cannot see one.
+  --
+  -- FireRed writes a button as $F8 followed by one selector byte -- $F8 $00
+  -- is the A button, $01 B, $0A the d-pad -- and that pair is not a
+  -- character.  readText stopped on it, which is how a whole control bar
+  -- came back as the single letter the glyph byte happens to decode as.
+  --
+  -- Strip the pairs and decode what is left: the port draws its own button
+  -- icons beside the words (Gen3PokedexFRLG:drawBars), so the glyph is not
+  -- wanted in the string, only the words are.
   local text = {}
   for key, a in pairs(P.TEXT) do
-    for _, d in ipairs({ 0, 1, -1 }) do
-      local ok, t = pcall(self.readText, self, a + d, 60)
-      if ok and t and t ~= "" then text[key] = t break end
+    -- Read it in SEGMENTS, split on the glyph pairs, so each run of real
+    -- characters goes through readText as the plain string it is and the
+    -- pairs simply do not appear.
+    local ok, got = pcall(function()
+      local parts, at, from = {}, a, a
+      for _ = 1, 60 do
+        local b = rom:u8(at)
+        if b == nil or b == 0xFF then break end
+        if b == 0xF8 then
+          if at > from then parts[#parts + 1] = self:readText(from, at - from) end
+          at = at + 2
+          from = at
+        else
+          at = at + 1
+        end
+      end
+      if at > from then parts[#parts + 1] = self:readText(from, at - from) end
+      return table.concat(parts)
+    end)
+    if not (ok and got and got ~= "") then
+      -- every string that carries no glyph at all, and the old +1/-1 retry
+      -- for an address that still turns out to be off
+      got = nil
+      for _, d in ipairs({ 0, 1, -1 }) do
+        local okR, t2 = pcall(self.readText, self, a + d, 60)
+        if okR and t2 and t2 ~= "" then got = t2 break end
+      end
     end
+    if got and got ~= "" then text[key] = got end
   end
   local constants = self._constants or {}
   constants.gen3FRLGPokedex = { images = images, colors = colors, text = text,
+    area = area, modes = modes, categories = categories,
     source = "ROM:pokedex_screen.c sKantoDexTiles/sNatDexTiles and palettes" }
   self._constants = constants
   self:write("constants", constants)
@@ -44119,6 +44833,37 @@ function RomExtractorGen3:extractBattleHud()
   local textInk, gender = nil, nil
   do
     local rows, ok_ = {}, true
+    -- THE CARTRIDGE THAT KEEPS NO GENDER STRING AT ALL.
+    --
+    -- Hoenn's UpdateNickInHealthbox copies a ready-made two-glyph string for
+    -- each gender, and the pair of them is what this reads.  FireRed builds
+    -- the same bytes by hand, in code -- the colour selector and the symbol
+    -- are immediates written into gDisplayedStringBattle, one after the
+    -- other -- so there is no such string anywhere in that cartridge and
+    -- this stopped with "at nowhere": no symbol beside either nickname.
+    --
+    -- A manifest may name the two directly.  What it names is the same two
+    -- numbers a string would have carried -- the colour index and the
+    -- symbol -- and they are checked here the same way the read ones are:
+    -- the two colours must differ and both must exist in the healthbox
+    -- palette.
+    local declaredGender = (self.manifest or {}).healthboxGender
+    if type(declaredGender) == "table" then
+      for _, arm in ipairs(G.ARMS) do
+        local row = declaredGender[arm.key]
+        local index = type(row) == "table" and tonumber(row.index)
+        local glyph = (type(row) == "table" and tonumber(row.glyph))
+                      or arm.glyph
+        if not index then
+          Logger.warn("gen3 battle HUD: the manifest names no colour for the "
+                        .. "%s symbol -- the symbols are left out", arm.key)
+          ok_ = false
+          break
+        end
+        rows[arm.key] = { index = index, glyph = glyph, declared = true,
+                          text = self:charmap()[glyph] }
+      end
+    else
     for _, arm in ipairs(G.ARMS) do
       local at = self:thumbLiteral(G.NICK_FN + arm.at)
       local str = at and (at - 0x08000000)
@@ -44140,6 +44885,8 @@ function RomExtractorGen3:extractBattleHud()
                         -- the drawing side would have to translate
                         text = self:readText(str + 3, 2) }
     end
+    end
+    if ok_ and (not rows.male or not rows.female) then ok_ = false end
     if ok_ and rows.male.index == rows.female.index then
       Logger.warn("gen3 battle HUD: both gender symbols print in colour %d, "
                   .. "which cannot be -- the symbols are left out",

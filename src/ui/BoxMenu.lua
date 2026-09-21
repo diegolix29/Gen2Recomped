@@ -62,11 +62,12 @@ local function monSubmenu(game, action, mons, list, onAction)
           -- an options table, so "SummaryMenu" would fail the alias' own
           -- option whitelist and open the Game Boy screen in Hoenn.
           --
-          -- No paging opts: on Emerald's summary left and right change the
-          -- PAGE, and up and down -- which is what would step through the box
-          -- -- are not read yet, so handing this screen `mons` would promise
-          -- a movement it does not make.
-          Screens.push(game, "Gen3SummaryMenu", { mon = mon })
+          Screens.push(game, "Gen3SummaryMenu", {
+            mon = mon,
+            party = mons,
+            partyIndex = list.index,
+            onMonChange = function(index) setListIndex(list, index) end,
+          })
         else
           Screens.push(game, "SummaryMenu", mon, {
             mons = mons,

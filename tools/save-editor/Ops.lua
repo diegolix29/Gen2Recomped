@@ -285,12 +285,24 @@ end
 
 function Ops.setDv(S, mon, key, value)
   if not mon then return false end
+  mon.dvs = mon.dvs or { attack = 0, defense = 0, speed = 0, special = 0 }
   local want = clamp(math.floor(value), 0, 15)
   if want == mon.dvs[key] then
     return Ops.say(S, ("%s DV is already %d"):format(key, want))
   end
   MonOps.setDv(S.data, mon, key, want)
   return Ops.mark(S, ("%s DV %d  (HP DV now %d)"):format(key, mon.dvs[key], mon.dvs.hp))
+end
+
+function Ops.setIv(S, mon, key, value)
+  if not mon then return false end
+  mon.ivs = mon.ivs or {}
+  local want = clamp(math.floor(value), 0, 31)
+  if want == (mon.ivs[key] or 0) then
+    return Ops.say(S, ("%s IV is already %d"):format(key, want))
+  end
+  MonOps.setIv(S.data, mon, key, want)
+  return Ops.mark(S, ("%s IV %d"):format(key, mon.ivs[key]))
 end
 
 function Ops.cycleMove(S, mon, slot)

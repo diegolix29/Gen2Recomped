@@ -83,6 +83,32 @@ end
 -- JNI bridge (love.system.restartApp), which schedules our launch intent
 -- and kills the process so no native state can leak into the fresh run.
 -- On every other platform the in-process restart works, so keep it.
+-- ------- back to the launcher ----------------------------------------------
+--
+-- A launcher build boots the game list first and hands a chosen game to
+-- bootGame, which replaces it.  Nothing in src/ can rebuild it -- main.lua
+-- owns that local -- so main.lua registers the way back here and the menus
+-- ask for it by name, exactly as Game:restartWithMods asks for a restart.
+--
+-- The fallback is a real one rather than a no-op: a process restart lands on
+-- the launcher too.  It is slower and it drops the session, but a build with
+-- no hook registered (the standalone editor, a scripted run) still gets a
+-- working button instead of a dead one.
+local launcherHook = nil
+
+function HostShell.setLauncherHook(fn)
+  launcherHook = type(fn) == "function" and fn or nil
+end
+
+function HostShell.hasLauncher()
+  return launcherHook ~= nil
+end
+
+function HostShell.toLauncher()
+  if launcherHook then return launcherHook() end
+  return HostShell.restart()
+end
+
 function HostShell.restart()
   if not (love and love.event and love.event.quit) then return end
 

@@ -111,6 +111,10 @@ function SpriteRenderer.new(spriteDef, seed)
   local self = setmetatable({}, SpriteRenderer)
   self.def = spriteDef
   self.seed = seed
+  local source = type(spriteDef.source) == "string" and spriteDef.source or ""
+  local gen3ObjectEvent = spriteDef.gen3ObjectEvent == true
+    or source:find("gObjectEventGraphicsInfoPointers", 1, true) ~= nil
+  self.cellYBias = gen3ObjectEvent and 0 or -4
   self.image = getImage(spriteDef.image)
   local iw, ih = self.image:getDimensions()
   -- Big dolls (Snorlax / Lapras): FacingBigDollSymmetric uses a 16x32 left
@@ -293,7 +297,7 @@ end
 -- 16x16 sheet, so nothing that worked moves.
 function SpriteRenderer:drawFixedFrame(px, py, camX, camY, frame)
   local x = math.floor(px - camX) - (self.offsetX or 0)
-  local y = math.floor(py - camY) - 4 - (self.offsetY or 0)
+  local y = math.floor(py - camY) + (self.cellYBias or -4) - (self.offsetY or 0)
   local image, redraw = self:resolveModeImage(x, y)
   local quad = self.frames[frame] or self.frames[0]
   if quad then blitFrame(image, quad, x, y, false, redraw) end
@@ -301,7 +305,7 @@ end
 
 function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip, topHalf)
   local x = math.floor(px - camX) - (self.offsetX or 0)
-  local y = math.floor(py - camY) - 4 - (self.offsetY or 0)
+  local y = math.floor(py - camY) + (self.cellYBias or -4) - (self.offsetY or 0)
   local image = self.image
   local redraw = false
   -- full-color art claims its 16x16 cell out of the shade-remap pass
@@ -390,7 +394,7 @@ function SpriteRenderer:drawPose(index, px, py, camX, camY)
   local n = self:poseCount()
   index = math.max(0, math.min(n - 1, math.floor(tonumber(index) or 0)))
   local x = math.floor(px - camX) - (self.offsetX or 0)
-  local y = math.floor(py - camY) - 4 - (self.offsetY or 0)
+  local y = math.floor(py - camY) + (self.cellYBias or -4) - (self.offsetY or 0)
   if self.def.trueColor then
     PaletteFX.markTrueColor(x, y, self.tileW or 16, self.tileH or 16)
   end
@@ -539,7 +543,7 @@ function SpriteRenderer:reflect(px, py, camX, camY, facing, walkPhase,
   end
   local w, h = self.tileW or 16, self.tileH or 16
   local x = math.floor(px - camX) - (self.offsetX or 0)
-  local y = math.floor(py - camY) - 4 - (self.offsetY or 0)
+  local y = math.floor(py - camY) + (self.cellYBias or -4) - (self.offsetY or 0)
   -- WHERE THE MIRRORED IMAGE SITS, to the pixel.
   --
   -- GetReflectionVerticalOffset (ROM:0153F98) is the whole of it: it loads

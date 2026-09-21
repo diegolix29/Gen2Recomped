@@ -1123,7 +1123,20 @@ end
 --       water routines, not just AnimateWaterTile -- Kanto, Safari,
 --       the islands and Snowtop Mountain had a frozen sea -- and the
 --       tile ids come off each script (tileset.animWaterTiles)
-local CACHE_FORMAT = "rom-cache-v328:"
+-- v329: FireRed named no music at all.  Its map-section names are a flat
+--       pointer array, not Hoenn's eight-byte records, so gen3MapSections
+--       came up empty -- and that is what extractSongNames proves the
+--       song numbering against, so the names went with it and then the
+--       roles did: audio.battle unwritten, and Music.playBattle plays
+--       nothing without it
+-- v330: FireRed's dex text.  Several TEXT addresses pointed at the
+--       previous string's terminator and the retry landed on a keypad
+--       glyph the reader could not decode, so whole control bars came
+--       back as one letter -- and AREA, SIZE, PAGE and AREA UNKNOWN
+--       were never asked for at all
+-- v337: Gen 3 object-event frames preserve their gbagfx macroblock layout;
+--       this fixes FireRed's 32x16 Town Map and changes generated sprite data.
+local CACHE_FORMAT = "rom-cache-v337:"
 -- The completion marker is written under each version's cache prefix
 -- (rom-cache.complete for Red, blue/rom-cache.complete for Blue).
 local MARKER_PATH = "rom-cache.complete"

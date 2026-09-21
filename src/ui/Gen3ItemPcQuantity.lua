@@ -30,7 +30,16 @@ function Gen3ItemPcQuantity.new(game, itemPc, opts)
   self.onDone = opts.onDone
   self.itemName = tostring(opts.itemName or "")
   self.verb = tostring(opts.verb or "WITHDRAW"):upper()
+  if itemPc and itemPc.setTransientWindow then itemPc:setTransientWindow("quantity") end
   return self
+end
+
+local function finish(self, qty)
+  if self.itemPc and self.itemPc.setTransientWindow then
+    self.itemPc:setTransientWindow(nil)
+  end
+  self.game.stack:pop()
+  if self.onDone then self.onDone(qty) end
 end
 
 local function wrap(v, max)
@@ -48,12 +57,10 @@ function Gen3ItemPcQuantity:update()
     self.qty = wrap(self.qty - 1, self.max)
   elseif input:wasPressed("a") then
     Sound.play(self.game.data, "Press_AB")
-    self.game.stack:pop()
-    if self.onDone then self.onDone(self.qty) end
+    finish(self, self.qty)
   elseif input:wasPressed("b") then
     Sound.play(self.game.data, "Press_AB")
-    self.game.stack:pop()
-    if self.onDone then self.onDone(nil) end
+    finish(self, nil)
   end
 end
 
@@ -61,13 +68,10 @@ function Gen3ItemPcQuantity:keypressed(key)
   if key == "up" then self.qty = wrap(self.qty + 1, self.max); return end
   if key == "down" then self.qty = wrap(self.qty - 1, self.max); return end
   if key == "a" then
-    self.game.stack:pop()
-    if self.onDone then self.onDone(self.qty) end
-    return
+    return finish(self, self.qty)
   end
   if key == "b" then
-    self.game.stack:pop()
-    if self.onDone then self.onDone(nil) end
+    return finish(self, nil)
   end
 end
 

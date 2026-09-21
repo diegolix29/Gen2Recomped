@@ -271,6 +271,20 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
 
   -- the TOWN MAP screen (engine/menus/town_map.asm)
   if result == "townmap" then
+    -- KANTO AND HOENN HAVE THEIR OWN MAP, AND IT IS NOT THIS ONE.
+    --
+    -- Reported from play with a screenshot: using the TOWN MAP in FireRed put
+    -- up the Game Boy screen, and because a Gen 3 cache carries none of the
+    -- Game Boy town-map art that screen fell through to its LIST layout --
+    -- a banner and six rows reading MAP G03 N07, MAP G03 N08, MAP G03 N09.
+    --
+    -- The right screen was already built and already had its data: the wall
+    -- map in a Pokemon Centre opens it through openRegionMap, which picks
+    -- Hoenn's rectangles or FireRed's own cartridge grid.  The bag simply
+    -- never asked.  It asks first now, and keeps the Game Boy screen as the
+    -- fallback for the generations that own it.
+    local ow = game and game.overworld
+    if ow and ow.openRegionMap and ow:openRegionMap() then return end
     local ok = pcall(function()
       require("src.ui.Screens").push(game, "TownMap")
     end)

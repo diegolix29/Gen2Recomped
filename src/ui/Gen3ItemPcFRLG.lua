@@ -55,7 +55,19 @@ function Gen3ItemPcFRLG.new(game, opts)
   self.onCancel = opts.onCancel
   self.onReorder = opts.onReorder
   self.index, self.top = 1, 1
+  self.transientWindow = nil
   return self
+end
+
+-- item_pc.c keeps the base screen alive while it places transient BG0 windows
+-- over the lower description area.  In the port those transient windows are
+-- separate transparent stack states, so the base screen is redrawn first on
+-- every frame.  Marking the active transient lets the base omit its description
+-- text while a submenu / quantity prompt / result owns that same rectangle;
+-- otherwise the old description remains visible around the smaller overlay and
+-- looks like two windows were composited together.
+function Gen3ItemPcFRLG:setTransientWindow(kind)
+  self.transientWindow = kind
 end
 
 function Gen3ItemPcFRLG:uiSize() return GBA_W, GBA_H end
@@ -270,13 +282,15 @@ function Gen3ItemPcFRLG:draw()
   self:drawRows()
 
   local row = self:selected()
-  local desc = self:box("description")
-  local D = self:screen().description or FALLBACK.description
-  local description = row and (row.close and Strings("Return to the PC.")
-                                or row.description) or ""
-  drawLines(description, desc.x + (tonumber(D.x) or 0),
-            desc.y + (tonumber(D.y) or 3),
-            tonumber(D.lineHeight) or FALLBACK.description.lineHeight)
+  if not self.transientWindow then
+    local desc = self:box("description")
+    local D = self:screen().description or FALLBACK.description
+    local description = row and (row.close and Strings("Return to the PC.")
+                                  or row.description) or ""
+    drawLines(description, desc.x + (tonumber(D.x) or 0),
+              desc.y + (tonumber(D.y) or 3),
+              tonumber(D.lineHeight) or FALLBACK.description.lineHeight)
+  end
 
   if row and row.id then
     local ok, icon, quad, size =

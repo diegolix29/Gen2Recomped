@@ -451,10 +451,15 @@ function TitleState:openMenu()
   table.insert(items, { label = Strings("OPTION"), onSelect = function()
     require("src.ui.Screens").push(game, "OptionsMenu")
   end })
+  -- EXIT GAME LEAVES THE GAME, NOT THE APP.
+  --
+  -- This is the launcher's main menu one level down, so the door out of it
+  -- is the door back in: the game list, with every other cartridge still on
+  -- it.  Quitting the process from here was the only way out the port had
+  -- before there was a launcher to go back to, and on a build with none
+  -- Game:returnToLauncher still ends up quitting -- HostShell decides.
   table.insert(items, { label = Strings("EXIT GAME"), onSelect = function()
-    if love.event and love.event.quit then
-      love.event.quit()
-    end
+    game:returnToLauncher()
   end })
   local hooked = Runtime.call("ui.title_menu.items", sameItems, game, items)
   if type(hooked) == "table" then

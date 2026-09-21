@@ -114,12 +114,17 @@ function Gen3MainMenu.new(game, opts)
     items[#items + 1] = { key = "continue", label = Strings("CONTINUE") }
   end
   items[#items + 1] = { key = "newGame", label = Strings("NEW GAME") }
-  -- FireRed's menu is CONTINUE and NEW GAME only (OPTION lives in the START
-  -- menu); B goes back to the title
-  if GameVersion.get() ~= "firered" then
-    items[#items + 1] = { key = "option", label = Strings("OPTION") }
-    items[#items + 1] = { key = "exit", label = Strings("EXIT GAME") }
-  end
+  -- OPTION AND EXIT GAME ON EVERY GEN 3 MENU, FIRERED INCLUDED.
+  --
+  -- FireRed's cartridge menu really is CONTINUE and NEW GAME only -- its
+  -- OPTION lives in the START menu and a GBA has no "exit" -- and this was
+  -- written to match.  But EXIT GAME is not the cartridge's row, it is the
+  -- launcher's: it is how the player puts this game down and picks another,
+  -- and leaving it off meant FireRed was the one game with no way out of it
+  -- but the window close button.  OPTION comes with it so the two menus a
+  -- player moves between do not differ by a row.
+  items[#items + 1] = { key = "option", label = Strings("OPTION") }
+  items[#items + 1] = { key = "exit", label = Strings("EXIT GAME") }
   local hooked = Runtime.call("ui.title_menu.items", sameItems, game, items)
   if type(hooked) == "table" then
     items = hooked
@@ -161,7 +166,9 @@ function Gen3MainMenu:choose()
     local screens = boot and boot.screens or {}
     Screens.push(self.game, screens.options or "OptionsMenu")
   elseif item.key == "exit" then
-    if love.event and love.event.quit then love.event.quit() end
+    -- back to the game list, not out of the process -- see
+    -- Game:returnToLauncher
+    self.game:returnToLauncher()
   elseif item.onSelect then
     item.onSelect()
   end
@@ -242,13 +249,56 @@ local FRLG_BG = { 139 / 255, 148 / 255, 1 }
 local FRLG_INK, FRLG_SHADOW = { 98 / 255, 98 / 255, 98 / 255 }, { 213 / 255, 213 / 255, 205 / 255 }
 local FRLG_BOY, FRLG_GIRL = { 33 / 255, 132 / 255, 1 }, { 1, 24 / 255, 173 / 255 }
 
+-- WHAT FITS ON A 160-PIXEL SCREEN.
+--
+-- Twenty tile rows, and every window draws a border row above and below
+-- itself -- so the stack runs from `top - 1` down to
+-- `top + total + (n - 1) * gap`, and that last row has to be 19 or less.
+--
+-- The cartridge's own look is a two-row gap and sixteen pixels between the
+-- CONTINUE panel's four lines, and it has room for that because its menu is
+-- three windows.  A launcher build shows FOUR -- EXIT GAME is ours, not the
+-- cartridge's -- and four at those sizes wants twenty-one rows.  The old
+-- fixed layout simply ran off the bottom: the last window's lower border
+-- landed on row 20 and was never drawn.
+--
+-- So the spacing is chosen rather than fixed, widest first, closing the gap
+-- before tightening the panel.  Three windows keep the cartridge's exact
+-- layout; four sit one row closer with two pixels less leading.
+local FRLG_LINE_STEPS = { 16, 14, 12 }
+local FRLG_GAPS = { 2, 1 }
+local FRLG_LAST_ROW = 19
+
+-- The CONTINUE panel is its label plus four lines at `step`, and the lines
+-- start 18px down: 26 + 3 * step pixels of content, in whole tiles.
+local function frlgPanelRows(step)
+  return math.ceil((26 + 3 * step) / 8)
+end
+
 function Gen3MainMenu:frlgWindows()
-  local wins, top = {}, 1
-  local total = 0
-  for _, item in ipairs(self.items) do total = total + (item.key == "continue" and 10 or 2) end
-  local gap = (1 + total + 2 * #self.items) <= 20 and 2 or 1
+  local n = #self.items
+  local function rowsFor(step)
+    local total = 0
+    for _, item in ipairs(self.items) do
+      total = total + (item.key == "continue" and frlgPanelRows(step) or 2)
+    end
+    return total
+  end
+  local step, gap = FRLG_LINE_STEPS[1], FRLG_GAPS[1]
+  local fitted = false
+  for _, s in ipairs(FRLG_LINE_STEPS) do
+    for _, g in ipairs(FRLG_GAPS) do
+      if not fitted and 1 + rowsFor(s) + (n - 1) * g <= FRLG_LAST_ROW then
+        step, gap, fitted = s, g, true
+      end
+    end
+  end
+  -- Nothing fitted only if a mod has added rows past what the screen holds;
+  -- the tightest layout is still the best answer, and the rows past the
+  -- bottom are that mod's problem rather than a silently broken menu.
+  local wins, top = { step = step }, 1
   for i, item in ipairs(self.items) do
-    local h = item.key == "continue" and 10 or 2
+    local h = item.key == "continue" and frlgPanelRows(step) or 2
     wins[i] = { tx = 3, ty = top, tw = 24, th = h }
     top = top + h + gap
   end
@@ -285,10 +335,12 @@ function Gen3MainMenu:drawFireRed()
       -- the cartridge's order: PLAYER, POKeDEX (once you have one), TIME, BADGES
       local order = { rows[1], rows[3], rows[4], rows[2] }
       local line = 0
+      -- ...at whatever leading the window was sized for (frlgWindows)
+      local step = wins.step or 16
       for _, row in ipairs(order) do
         if row then
-          frlgText(row[1], x + 2, y + 18 + line * 16, ink)
-          frlgText(row[2], x + 62, y + 18 + line * 16, ink)
+          frlgText(row[1], x + 2, y + 18 + line * step, ink)
+          frlgText(row[2], x + 62, y + 18 + line * step, ink)
           line = line + 1
         end
       end

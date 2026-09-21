@@ -1790,11 +1790,20 @@ function Commands.g3_trainer_battle(ctx, kind, trainerId, winScript, cantText,
     if lost and healAfter then
       local Pokemon = require("src.pokemon.Pokemon")
       for _, mon in ipairs((ctx.save or {}).party or {}) do Pokemon.heal(mon) end
-    end
-    if lost and ctx.g3Trainer then
-      Gen3Commands.markTrainerBeaten(ctx, ctx.g3Trainer)   -- SetBattledTrainerFlag
+      if ctx.g3Trainer then
+        -- CB2_EndTrainerBattle sets the flag only on the tutorial-loss path
+        -- that heals and returns to the field.  A normal Route 22 loss jumps
+        -- straight to CB2_WhiteOut before SetBattledTrainerFlag is reached.
+        Gen3Commands.markTrainerBeaten(ctx, ctx.g3Trainer)
+      end
     end
     setVar(ctx.save, VAR_RESULT, lost and 1 or 0)
+    if lost and not healAfter then
+      -- Ordinary early-rival losses do not resume the caller at all.  Route
+      -- 22 must white out here; falling through would run the rival's
+      -- post-battle speech / exit movement as though the player had won.
+      return "end"
+    end
     return
   end
   if FLAG_CHECKED_KINDS[k] then
@@ -1884,6 +1893,14 @@ function Commands.g3_trainer_battle(ctx, kind, trainerId, winScript, cantText,
   end
   startTrainer(ctx, vsTrainer or ctx.g3Trainer,
                isDouble and { double = true, trainerB = partner } or nil)
+  if ctx.lastBattleResult == "lose" then
+    -- CB2_EndTrainerBattle routes an ordinary trainer defeat directly to
+    -- CB2_WhiteOut.  The map script is not resumed, so none of the bytes after
+    -- trainerbattle -- including post-win text and movement -- may execute.
+    -- The one FireRed can-lose trainer battle is handled above (kind 9 with
+    -- RIVAL_BATTLE_HEAL_AFTER).
+    return "end"
+  end
   if vsTrainer and ctx.lastBattleResult == "win" then
     require("src.world.VsSeeker").clear(ctx.save, ctx.game.overworld, vsNpc)
     Gen3Commands.markTrainerBeaten(ctx, vsTrainer)

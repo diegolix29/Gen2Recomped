@@ -23,6 +23,7 @@ function Gen3ItemPcMessage.new(game, itemPc, text, onDone, kind)
   self.text = tostring(text or "")
   self.onDone = onDone
   self.kind = kind or "result"
+  if itemPc and itemPc.setTransientWindow then itemPc:setTransientWindow("message") end
   return self
 end
 
@@ -37,6 +38,9 @@ end
 
 local function finish(self)
   Sound.play(self.game.data, "Press_AB")
+  if self.itemPc and self.itemPc.setTransientWindow then
+    self.itemPc:setTransientWindow(nil)
+  end
   self.game.stack:pop()
   if self.onDone then self.onDone() end
 end

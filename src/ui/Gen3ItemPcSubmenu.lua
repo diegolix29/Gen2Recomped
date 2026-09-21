@@ -23,10 +23,12 @@ local ENTRIES = {
 local SELECTED = { x = 48, y = 120, width = 112, height = 32 }
 
 function Gen3ItemPcSubmenu.new(game, itemPc, itemName, onPick)
-  return setmetatable({
+  local self = setmetatable({
     game = game, itemPc = itemPc, itemName = itemName or "",
     onPick = onPick, index = 1,
   }, Gen3ItemPcSubmenu)
+  if itemPc and itemPc.setTransientWindow then itemPc:setTransientWindow("submenu") end
+  return self
 end
 
 function Gen3ItemPcSubmenu:move(delta)
@@ -35,6 +37,9 @@ function Gen3ItemPcSubmenu:move(delta)
 end
 
 function Gen3ItemPcSubmenu:close(kind)
+  if self.itemPc and self.itemPc.setTransientWindow then
+    self.itemPc:setTransientWindow(nil)
+  end
   self.game.stack:pop()
   if kind and kind ~= "cancel" and self.onPick then self.onPick(kind) end
 end

@@ -22,12 +22,21 @@ local PAL = Theme.PAL
 local MonEditor = {}
 
 local DV_KEYS = { "attack", "defense", "speed", "special" }
+local IV_KEYS = { "hp", "attack", "defense", "speed", "spatk", "spdef" }
 local STAT_KEYS = {
   { key = "HP", field = "hp" },
   { key = "ATK", field = "attack" },
   { key = "DEF", field = "defense" },
   { key = "SPD", field = "speed" },
   { key = "SPC", field = "special" },
+}
+local STAT_KEYS_GEN3 = {
+  { key = "HP", field = "hp" },
+  { key = "ATK", field = "attack" },
+  { key = "DEF", field = "defense" },
+  { key = "SPD", field = "speed" },
+  { key = "SpA", field = "spatk" },
+  { key = "SpD", field = "spdef" },
 }
 
 -- Front sprites are read straight off the generated cache.  One image per
@@ -109,13 +118,17 @@ function MonEditor.draw(S, Kit, x, y, w, h)
     -- than collapsing and reflowing the panel underneath it.
     local tw = math.min(w - 40 * s, 340 * s)
     Kit.textCenter("button",
-      "Pick a slot on the left to inspect it. Every change here re-runs the " ..
-      "Gen1 stat formulas, so HP and stats stay legal.",
+      "Pick a slot on the left to inspect it. Every change here recalculates " ..
+      "the Pokemon's stats, so HP and stats stay legal.",
       x + (w - tw) / 2, y + h / 2 - Kit.textHeight("button"), tw, PAL.muted)
     return
   end
 
   local def = S.data.pokemon[mon.species]
+  local gen3 = type(mon.ivs) == "table"
+  local statKeys = gen3 and STAT_KEYS_GEN3 or STAT_KEYS
+  local geneKeys = gen3 and IV_KEYS or DV_KEYS
+  local geneMax = gen3 and 31 or 15
   local cx, cy = x + pad, y + pad
   local inner = w - 2 * pad
   -- Backstop for a window too short for even the compacted rhythm below:
@@ -178,10 +191,11 @@ function MonEditor.draw(S, Kit, x, y, w, h)
 
   -- ------------------------------------------------------- derived stats
   local statsY = cy + sprite + 18 * s
-  Kit.caption(cx, statsY, "STATS . recalculated from level + DVs")
+  Kit.caption(cx, statsY, gen3 and "STATS . recalculated from level + IVs + EVs"
+                               or "STATS . recalculated from level + DVs")
   statsY = statsY + Kit.textHeight("caption") + 10 * s
   local gap = 12 * s
-  local cellW = (inner - gap * 4) / 5
+  local cellW = (inner - gap * (#statKeys - 1)) / #statKeys
   -- Everything below the header competes for one vertical budget.  At the
   -- design size it is generous; in a 720px-tall window (a phone held
   -- sideways) it is not, and the DV / move rows used to run past the card and
@@ -195,8 +209,10 @@ function MonEditor.draw(S, Kit, x, y, w, h)
   local budget = (y + h - pad) - statsY - (Kit.textHeight("caption") + 10 * s)
     - 18 * s - actH - 4 * s
   local cellH = Theme.clamp(budget * 0.3, 46 * s, 68 * s)
-  local rowH = Theme.clamp((budget - cellH) / 4 - rowGap, 26 * s, 34 * s)
-  for i, st in ipairs(STAT_KEYS) do
+  local geneRows = #geneKeys
+  if gen3 then rowGap = 4 * s end
+  local rowH = Theme.clamp((budget - cellH) / geneRows - rowGap, 22 * s, 34 * s)
+  for i, st in ipairs(statKeys) do
     local bx = cx + (i - 1) * (cellW + gap)
     Theme.row(bx, statsY, cellW, cellH, 10 * s, 0.6)
     local value = (mon.stats and mon.stats[st.field]) or 0
@@ -207,43 +223,53 @@ function MonEditor.draw(S, Kit, x, y, w, h)
       value / STAT_SCALE * 100, PAL.blue)
   end
 
-  -- --------------------------------------------------- DVs | moves split
+  -- ------------------------------------------------ DVs/IVs | moves split
   local colY = statsY + cellH + 18 * s
   local colGap = 18 * s
   local colW = (inner - colGap) / 2
   local rightX = cx + colW + colGap
 
-  Kit.caption(cx, colY, "DVs")
-  Kit.textRight("tiny", ("HP DV auto-derived . %d"):format(mon.dvs.hp or 0),
-    cx + colW, colY, PAL.caption)
+  Kit.caption(cx, colY, gen3 and "IVs" or "DVs")
+  if gen3 then
+    Kit.textRight("tiny", "0-31 each", cx + colW, colY, PAL.caption)
+  else
+    Kit.textRight("tiny", ("HP DV auto-derived . %d"):format((mon.dvs and mon.dvs.hp) or 0),
+      cx + colW, colY, PAL.caption)
+  end
   Kit.caption(rightX, colY, "MOVES")
   Kit.textRight("tiny", "click a slot to cycle", rightX + colW, colY, PAL.caption)
 
   local rowY = colY + Kit.textHeight("caption") + 10 * s
 
-  for i, key in ipairs(DV_KEYS) do
+  for i, key in ipairs(geneKeys) do
     local ry = rowY + (i - 1) * (rowH + rowGap)
     Theme.row(cx, ry, colW, rowH, 10 * s, 0.6)
-    local v = mon.dvs[key] or 0
-    Kit.text("tiny", key:upper(), cx + 10 * s,
+    local genes = gen3 and mon.ivs or (mon.dvs or {})
+    local v = genes[key] or 0
+    local label = ({ spatk = "SP.ATK", spdef = "SP.DEF" })[key] or key:upper()
+    Kit.text("tiny", label, cx + 10 * s,
       ry + (rowH - Kit.textHeight("tiny")) / 2, PAL.muted)
     local btn = 26 * s
     local btnX = cx + colW - 10 * s - 3 * btn - 18 * s
     local meterX = cx + 66 * s
     local meterW = math.max(20 * s, btnX - meterX - 34 * s)
-    Kit.meter(meterX, ry + (rowH - 8 * s) / 2, meterW, 8 * s, v / 15 * 100,
-      v >= 15 and PAL.green or (v >= 10 and PAL.blue or PAL.steel))
+    Kit.meter(meterX, ry + (rowH - 8 * s) / 2, meterW, 8 * s, v / geneMax * 100,
+      v >= geneMax and PAL.green
+       or (v >= math.floor(geneMax * 2 / 3) and PAL.blue or PAL.steel))
     Kit.textRight("monoRow", tostring(v), meterX + meterW + 28 * s,
       ry + (rowH - Kit.textHeight("monoRow")) / 2, PAL.heading)
     if Kit.stepper(btnX, ry + (rowH - btn) / 2, btn, btn, "-") then
-      Ops.setDv(S, mon, key, v - 1)
+      if gen3 then Ops.setIv(S, mon, key, v - 1)
+      else Ops.setDv(S, mon, key, v - 1) end
     end
     if Kit.stepper(btnX + btn + 6 * s, ry + (rowH - btn) / 2, btn, btn, "+") then
-      Ops.setDv(S, mon, key, v + 1)
+      if gen3 then Ops.setIv(S, mon, key, v + 1)
+      else Ops.setDv(S, mon, key, v + 1) end
     end
     if Kit.button(btnX + 2 * btn + 12 * s, ry + (rowH - btn) / 2, btn, btn,
-        "15", { kind = "good", font = "micro", radius = 6 * s }) then
-      Ops.setDv(S, mon, key, 15)
+        tostring(geneMax), { kind = "good", font = "micro", radius = 6 * s }) then
+      if gen3 then Ops.setIv(S, mon, key, geneMax)
+      else Ops.setDv(S, mon, key, geneMax) end
     end
   end
 
@@ -274,7 +300,7 @@ function MonEditor.draw(S, Kit, x, y, w, h)
     end
   end
 
-  local actY = rowY + 4 * (rowH + rowGap) + 4 * s
+  local actY = rowY + math.max(4, geneRows) * (rowH + rowGap) + 4 * s
   local actW = (colW - 10 * s) / 2
   if Kit.button(rightX, actY, actW, actH, "Reset to learnset",
       { font = "small", radius = 9 * s }) then

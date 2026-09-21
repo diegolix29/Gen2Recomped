@@ -156,7 +156,12 @@ local function buildLocations(game)
     if not seen[mapId] and def
        and (Map.isOutdoor(def) or def.tileset == "PLATEAU") then
       seen[mapId] = true
-      local loc = { name = mapId:gsub("_", " ") }
+      -- THE NAME THE PLAYER KNOWS IT BY, which the fly warp already carries.
+      -- Kanto's map ids read as their own town names; Hoenn's and FireRed's
+      -- are MAP_G03_N09, which is nobody's idea of INDIGO PLATEAU -- and this
+      -- fallback printed exactly that.
+      local warp = (field.flyWarps or {})[mapId]
+      local loc = { name = (warp and warp.name) or mapId:gsub("_", " ") }
       table.insert(locs, loc)
       byMap[mapId] = loc
     end
@@ -221,7 +226,9 @@ local function buildFlyList(game, byMap)
     if not seen[mapId] and visited[mapId] and flyWarps[mapId]
        and def and (Map.isOutdoor(def) or def.tileset == "PLATEAU") then
       seen[mapId] = true
-      local loc = byMap[mapId] or { name = mapId:gsub("_", " ") }
+      local loc = byMap[mapId]
+                  or { name = (flyWarps[mapId] and flyWarps[mapId].name)
+                              or mapId:gsub("_", " ") }
       table.insert(flyLocs, loc)
       flyMapIds[#flyLocs] = mapId
     end

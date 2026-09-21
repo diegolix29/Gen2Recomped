@@ -17,7 +17,11 @@ end
 function MonOps.recalc(data, mon)
   local def = data.pokemon[mon.species]
   assert(def, "unknown species")
-  mon.stats = Stats.calc(def, mon.level, mon.dvs, mon.statExp)
+  if type(mon.ivs) == "table" then
+    mon.stats = Stats.calcGen3(def, mon.level, mon.ivs, mon.evs, mon.nature)
+  else
+    mon.stats = Stats.calc(def, mon.level, mon.dvs or {}, mon.statExp)
+  end
   mon.hp = math.max(0, math.min(mon.hp or mon.stats.hp, mon.stats.hp))
 end
 
@@ -49,10 +53,17 @@ function MonOps.syncHpDv(dvs)
 end
 
 function MonOps.setDv(data, mon, key, value)
+  mon.dvs = mon.dvs or { attack = 0, defense = 0, speed = 0, special = 0 }
   mon.dvs[key] = math.max(0, math.min(15, math.floor(value)))
   if key ~= "hp" then
     MonOps.syncHpDv(mon.dvs)
   end
+  MonOps.recalc(data, mon)
+end
+
+function MonOps.setIv(data, mon, key, value)
+  mon.ivs = mon.ivs or {}
+  mon.ivs[key] = math.max(0, math.min(31, math.floor(value)))
   MonOps.recalc(data, mon)
 end
 

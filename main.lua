@@ -340,6 +340,55 @@ local function bootGame(version)
   Game.speedOverride = (autopilot or driverCo) and 1 or speedOverride
 end
 
+-- THE LAUNCHER, BUILT IN ONE PLACE.
+--
+-- love.load raises it at boot and the in-game menus raise it again on the way
+-- out, and the two must agree about what a launcher is -- the Edit buttons on
+-- a save row exist only because these opts are passed, and a second
+-- construction that forgot them would quietly drop the editor.
+local function openLauncher(forceImport)
+  local RomImporter = require("src.import.RomImporter")
+  Importer = RomImporter.new(function(version)
+    Importer = nil
+    bootGame(version)
+  end, {
+    launcher = true,
+    forceImport = forceImport,
+    onEditSave = openEditor,
+    onEditMaps = openMapEditor,
+    onEditTouchControls = openTouchControlsEditor,
+  })
+end
+
+-- ...AND THE WAY BACK TO IT FROM A RUNNING GAME.
+--
+-- Until now the only exit a game offered was love.event.quit: EXIT GAME on
+-- the main menu and QUIT GAME in the Gen 3 start menu both killed the
+-- process, which on a launcher build is the wrong door -- the player wanted
+-- the game list, not the desktop.
+--
+-- Nothing needs tearing down here beyond letting go of `Game`: bootGame is
+-- already written to run twice in one process and does the whole job on the
+-- way back IN (unmount the old cache overlay, evict the generated modules,
+-- mount and reload), which is the same work whether the next pick is this
+-- game or another one.  Doing it here as well would only mean doing it
+-- twice, and would leave the launcher itself running with no data mounted.
+--
+-- The music is this side's business, though: it is playing right now, and
+-- the launcher has its own.
+local function returnToLauncher()
+  if Importer then return end
+  pcall(function() require("src.core.Music").stop() end)
+  autopilot, driverCo = nil, nil
+  Game = nil
+  openLauncher(false)
+end
+
+-- The game reaches this through HostShell, the way it already reaches the
+-- process restart mods need (Game:restartWithMods).  Registered here because
+-- main.lua owns `Importer` and nothing below it can.
+require("src.core.HostShell").setLauncherHook(returnToLauncher)
+
 -- Chunk level, not inside love.load: this is the earliest point Lua code of
 -- ours runs with a writable save directory (conf.lua has already applied
 -- t.identity by now).  So NO boot_trace.txt at all is itself a result -- it
@@ -512,16 +561,7 @@ function realLoad(args)
   -- SHA-1 (GameVersion.forSha1); pressing Play boots that game.  Edit on a
   -- save row opens the bundled editor on that slot (openEditor).
   BootTrace.mark("launcher: constructing")
-  Importer = RomImporter.new(function(version)
-    Importer = nil
-    bootGame(version)
-  end, {
-    launcher = true,
-    forceImport = forceImport,
-    onEditSave = openEditor,
-    onEditMaps = openMapEditor,
-    onEditTouchControls = openTouchControlsEditor,
-  })
+  openLauncher(forceImport)
   BootTrace.mark("launcher: ready")
   BootTrace.booted()
 end

@@ -2713,6 +2713,22 @@ local GEN3_LEGEND_MUSIC = {
 }
 BattleState.GEN3_LEGEND_MUSIC = GEN3_LEGEND_MUSIC
 
+-- ...AND KANTO'S, WHICH ARE NOT HOENN'S.
+--
+-- StartLegendaryBattle is a switch on SPECIES in this cartridge too, and it
+-- answers with three different songs: MUS_VS_MEWTWO for Mewtwo alone,
+-- MUS_VS_DEOXYS for Deoxys alone, and MUS_VS_LEGEND for the birds and the
+-- two Johto legends -- which StartRoamerBattle also uses, so the three
+-- roaming beasts land on the same theme.  Reading Hoenn's table here put
+-- Deoxys on Mewtwo's song and left Mewtwo himself on the wild theme.
+local GEN3_LEGEND_MUSIC_FRLG = {
+  MEWTWO = "mew", DEOXYS = "deoxys",
+  ARTICUNO = "legend", ZAPDOS = "legend", MOLTRES = "legend",
+  LUGIA = "legend", ["HO-OH"] = "legend", HO_OH = "legend", HOOH = "legend",
+  ENTEI = "legend", RAIKOU = "legend", SUICUNE = "legend",
+}
+BattleState.GEN3_LEGEND_MUSIC_FRLG = GEN3_LEGEND_MUSIC_FRLG
+
 function BattleState:gen3MusicKind()
   local audio = self.data and self.data.audio
   local themes = audio and audio.battle
@@ -2773,7 +2789,11 @@ function BattleState:gen3MusicKind()
     local mon = self.enemy and self.enemy.mon
     local species = mon and mon.species
     local def = species and self.data.pokemon and self.data.pokemon[species]
-    local kind = GEN3_LEGEND_MUSIC[(def and def.name) or species]
+    local table_ = GEN3_LEGEND_MUSIC
+    if require("src.core.GameVersion").get() == "firered" then
+      table_ = GEN3_LEGEND_MUSIC_FRLG
+    end
+    local kind = table_[tostring((def and def.name) or species):upper()]
     if kind and themes[kind] then return kind end
   end
   return nil

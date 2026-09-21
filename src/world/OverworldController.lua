@@ -11224,7 +11224,13 @@ function OverworldState:healPoint(whiteout)
     -- (FireRed's sWhiteoutRespawnHealCenterMapIdxs); FLY and TELEPORT keep
     -- the outdoor point
     if row and whiteout and row.respawn then
-      return { map = row.respawn.map, x = row.respawn.x, y = row.respawn.y }
+      return {
+        map = row.respawn.map, x = row.respawn.x, y = row.respawn.y,
+        -- FireRed's first heal location is PALLET TOWN, whose whiteout
+        -- destination is the player's house; every later ordinary entry uses
+        -- the Pokemon Center recovery line instead.
+        whiteoutHome = index == 1,
+      }
     end
     if row then return { map = row.map, x = row.x, y = row.y } end
   end
@@ -11407,7 +11413,27 @@ function OverworldState:warpToHealPoint(onDone, opts)
       y = fw and fw.y or out.y
     end
   end
-  self:startWarpTo(map, x, y, "down", onDone)
+  local finished = onDone
+  if opts and opts.whiteout and GameVersion.get() == "firered" then
+    finished = function()
+      -- FieldCB_RushInjuredPokemonToCenter prints this recovery message after
+      -- the whiteout warp and before the nurse/mom follow-up script.  The port
+      -- previously jumped straight to the destination, so a real trainer loss
+      -- looked like an unexplained teleport and the cartridge's recovery text
+      -- was never shown at all.
+      local TextBox = require("src.render.TextBox")
+      local line
+      if heal.whiteoutHome then
+        line = "{PLAYER} scurried back home, protecting the exhausted and fainted POKéMON from further harm…"
+      else
+        line = "{PLAYER} scurried to a POKéMON CENTER, protecting the exhausted and fainted POKéMON from further harm…"
+      end
+      Game.stack:push(TextBox.new(Game, line, function()
+        if onDone then onDone() end
+      end))
+    end
+  end
+  self:startWarpTo(map, x, y, "down", finished)
   -- Blackouts land at the interior heal cell, so re-point LAST_MAP exits at
   -- the remembered town door.  The teleport branch already lands ON that
   -- outdoor map, so startWarpTo remembers it on the next exit; re-pointing

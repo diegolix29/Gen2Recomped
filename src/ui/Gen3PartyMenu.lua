@@ -154,6 +154,7 @@ function Gen3PartyMenu.new(game, opts)
   self.onOrder = opts.onOrder
   self.order = {}
   self.index = 1
+  self.lastSelectedSlot = 2
   self.words = screenText(game, "partyActions")
   if not self.words then
     Logger.warn("gen3 party: this dataset carries no action words -- falling "
@@ -824,7 +825,8 @@ function Gen3PartyMenu:openSummary(mon)
                  and "Gen3SummaryMenu" or "SummaryMenu"
   local ok = pcall(function()
     Screens.push(self.game, screen,
-                 { mon = mon, onCancel = function() end })
+                 { mon = mon, party = self:party(), partyIndex = self.index,
+                   onCancel = function() end })
   end)
   if not ok then
     Logger.info("gen3 party: %s is not implemented yet",
@@ -937,6 +939,16 @@ function Gen3PartyMenu:update(dt)
   local n = self:slots()
   if input:wasPressed("down") then self.index = self.index % n + 1
   elseif input:wasPressed("up") then self.index = (self.index - 2) % n + 1
+  elseif input:wasPressed("right") then
+    local count = #self:party()
+    if self.index == 1 and count > 1 then
+      self.index = math.max(2, math.min(count, self.lastSelectedSlot or 2))
+    end
+  elseif input:wasPressed("left") then
+    if self.index >= 2 and self.index <= #self:party() then
+      self.lastSelectedSlot = self.index
+      self.index = 1
+    end
   elseif input:wasPressed("a") then
     if self.index > #self:party() then
       -- the CANCEL button VALIDATES when a team is being chosen; everywhere
@@ -1304,10 +1316,17 @@ function Gen3PartyMenu:drawMember(mon, panel, selected, inset)
   local lx, ly = at("level")
   Font.draw(Strings("Lv%d", mon.level or 1), lx, ly)
 
-  -- the gender symbol is an ordinary font glyph on the cartridge too
-  if mon.gender == "male" or mon.gender == "female" then
+  -- Gen 3 derives gender from species ratio + personality when the save does
+  -- not carry an explicit field. Use the engine's common derivation instead of
+  -- requiring mon.gender to have been stamped beforehand.
+  local Pokemon = require("src.pokemon.Pokemon")
+  local gender = Pokemon.genderOf(data, mon)
+  local dex = def and tonumber(def.dex)
+  local namedNidoran = (dex == 29 or dex == 32)
+    and (not mon.nickname or mon.nickname == def.name)
+  if not namedNidoran and (gender == "male" or gender == "female") then
     local gx, gy = at("gender")
-    Font.draw(mon.gender == "male" and "♂" or "♀", gx, gy)
+    Font.draw(gender == "male" and "♂" or "♀", gx, gy)
   end
 
   -- WITH A MACHINE OPEN the panel answers the question instead of showing
