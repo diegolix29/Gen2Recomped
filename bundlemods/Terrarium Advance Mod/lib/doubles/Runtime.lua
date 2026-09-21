@@ -248,7 +248,37 @@ local function bindNativeView(s)
       if core.slots[id].mon then player=core.slots[id];break end
     end
   end
-  if player then host.player=(s.generation==2 and player.mon or player.battler);host.playerIndex=player.partyIndex end
+  if player then
+    if s.generation==2 then
+      -- For Gen 2, use battler if available, otherwise construct one
+      if player.battler then
+        host.player=player.battler
+      else
+        local def=host.data and host.data.pokemon and host.data.pokemon[player.mon.species]
+        host.player={
+          mon=player.mon,
+          def=def,
+          name=player.mon.nickname or (def and def.name) or tostring(player.mon.species or '?'),
+          species=player.mon.species,
+          isPlayer=true,
+          badges=host.game and host.game.save and host.game.save.inventory,
+          badgeBoosts=host.data and host.data.constants and host.data.constants.badgeBoosts,
+          statuses=host.data and host.data.statuses,
+          items=host.data and host.data.items,
+          natures=host.data and host.data.constants and host.data.constants.natures,
+          shownHP=player.mon.hp,
+          shownStatus=player.mon.status,
+          stages=player.stages or {},
+          curStats=player.mon.stats,
+          curTypes=def and def.types,
+          curMoves=player.mon.moves,
+        }
+      end
+    else
+      host.player=player.battler
+    end
+    host.playerIndex=player.partyIndex
+  end
   host.turn=(s.generation==2 and core.turn or host.turn);host.turnCount=core.turn
   if type(host.syncSides)=='function' then host:syncSides() end
 end
@@ -310,7 +340,27 @@ function D.startHandoff(s)
   bindNativeView(s)
   local last=s.core.defeated[#s.core.defeated]
   if last then
-    s.host.enemy=(s.generation==2 and last.mon or last.battler)
+    if s.generation==2 then
+      if last.battler then
+        s.host.enemy=last.battler
+      else
+        -- Construct a minimal battler object for rendering
+        local def=s.host.data and s.host.data.pokemon and s.host.data.pokemon[last.mon.species]
+        s.host.enemy={
+          mon=last.mon,
+          def=def,
+          name=last.mon.nickname or (def and def.name) or tostring(last.mon.species or '?'),
+          species=last.mon.species,
+          isPlayer=false,
+          shownHP=last.mon.hp,
+          shownStatus=last.mon.status,
+          curStats=last.mon.stats,
+          curTypes=def and def.types,
+        }
+      end
+    else
+      s.host.enemy=last.battler
+    end
     s.host.enemyIndex=last.partyIndex or s.host.enemyIndex
   end
   s.host.payDay=s.adapter.k.payDay or s.host.payDay
@@ -329,12 +379,48 @@ local function awardOne(s,defeated)
     -- is permitted here; live combat is suspended until this queue completes.
     if mon then host.participants[(s.generation==2 and index or mon)]=true end
   end
-  host.enemy=(s.generation==2 and defeated.mon or defeated.battler)
+  -- For Gen 2, construct a battler object if we only have the mon
+  if s.generation==2 then
+    if defeated.battler then
+      host.enemy=defeated.battler
+    else
+      -- Construct a minimal battler object for rendering
+      local def=host.data and host.data.pokemon and host.data.pokemon[defeated.mon.species]
+      host.enemy={
+        mon=defeated.mon,
+        def=def,
+        name=defeated.mon.nickname or (def and def.name) or tostring(defeated.mon.species or '?'),
+        species=defeated.mon.species,
+        isPlayer=false,
+        shownHP=defeated.mon.hp,
+        shownStatus=defeated.mon.status,
+        curStats=defeated.mon.stats,
+        curTypes=def and def.types,
+      }
+    end
+  else
+    host.enemy=defeated.battler
+  end
   host.enemyIndex=defeated.partyIndex or host.enemyIndex
   resetNativeQueue(s)
   if s.generation==2 then
-    host.events={};host:awardExperience(defeated.mon)
-    screen.phase='resolving';screen:pushAll(host:takeEvents());screen:advanceQueue()
+    host.events={}
+    if type(host.awardExp)=='function' then
+      host:awardExp(defeated.mon)
+    elseif type(host.awardExperience)=='function' then
+      host:awardExperience(defeated.mon)
+    else
+      -- Fallback: use Gen 1/3 experience logic
+      local player=host.player
+      if next(host.participants)==nil and player and player.mon and (player.mon.hp or 0)>0 then
+        local facade={};for k,v in pairs(player) do facade[k]=v end
+        facade.mon=setmetatable({hp=0},{__index=player.mon});host.player=facade
+      end
+      local ok,err=pcall(host.awardExp,host);host.player=player
+      if not ok then error(err,0) end
+    end
+    -- Use Gen 1/3 approach for event handling
+    screen.phase='messages';screen.afterQueue='menu'
   else
     -- Gen 1 and Gen 3 use the same experience awarding logic
     -- With zero participants the native singles helper pays its current user.
@@ -362,19 +448,29 @@ local function finishNative(s)
       -- already-presented faint and its already-settled EXP. Both temporary
       -- interceptors are restored even if the native handler raises an error.
       local rt=req('src.mods.Runtime')
-      local oldAward,oldEmit,oldPublic=host.awardExperience,host.emit,rt.emit
-      host.awardExperience=function() end
+      local oldAward,oldEmit,oldPublic=host.awardExp or host.awardExperience,host.emit,rt.emit
+      if type(host.awardExp)=='function' then
+        host.awardExp=function() end
+      elseif type(host.awardExperience)=='function' then
+        host.awardExperience=function() end
+      end
       host.emit=function(h,e,...) if e.kind=='faint' then return e end;return oldEmit(h,e,...) end
       rt.emit=function(name,e,...) if name=='battle.fainted' and e and e.battle==host then return end;return oldPublic(name,e,...) end
       local ok,err=pcall(host.resolveFaints,host)
-      host.awardExperience=oldAward;host.emit=oldEmit;rt.emit=oldPublic
+      if type(host.awardExp)=='function' then
+        host.awardExp=oldAward
+      elseif type(host.awardExperience)=='function' then
+        host.awardExperience=oldAward
+      end
+      host.emit=oldEmit;rt.emit=oldPublic
       if not ok then D.close(s);error(err,0) end
     else
       host:emit{kind='message',text='You have no more POKéMON!'}
       if host.battleType==1 then host:printWinLossText('lose') end
       host:endBattle('lose')
     end
-    screen.phase='resolving';screen:pushAll(host:takeEvents());screen:advanceQueue()
+    -- Use Gen 1/3 approach for event handling
+    screen.phase='messages'
   else
     -- Gen 1 and Gen 3 use the same finishing logic
     screen.phase='messages'

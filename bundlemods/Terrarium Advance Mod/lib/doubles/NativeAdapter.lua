@@ -240,7 +240,18 @@ function A:targetMode(def)
   return 'selected'
 end
 function A:forced(s)
-  if self.generation==2 then local id=self.k:forcedMove(s.mon);return id and {id=id} end
+  if self.generation==2 then
+    -- self.k:forcedMove never existed on the native module (BattleState has
+    -- no forcedMove method at all -- confirmed by search). Gen II's lock-in
+    -- state lives in mon.volatile under recharge/chargeMove/rampageMove/
+    -- rolloutLock, exactly as switchLocked() and perform() already read it
+    -- a few functions away; forced() just needs to agree with them instead
+    -- of calling into the engine for something the engine never exposed.
+    local v=self.k:volatile(s.mon)
+    if v.recharge then return {special='recharge'} end
+    local id=v.chargeMove or v.rampageMove or v.rolloutLock
+    return id and {id=id}
+  end
   local b=s.battler
   if b.mustRecharge then return {special='recharge'} end
   return b.charging or b.thrashMove or b.rageMove
