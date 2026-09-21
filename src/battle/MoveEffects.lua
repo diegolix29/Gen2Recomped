@@ -1275,4 +1275,210 @@ function MoveEffects.warnUnknown(effect)
   end
 end
 
+MoveEffects.STAT_CHANGES = {
+  EFFECT_ATTACK_UP = { "attack", 1, "self" },
+  EFFECT_DEFENSE_UP = { "defense", 1, "self" },
+  EFFECT_SP_ATK_UP = { "specialAttack", 1, "self" },
+  EFFECT_EVASION_UP = { "evasion", 1, "self" },
+  EFFECT_ATTACK_UP_2 = { "attack", 2, "self" },
+  EFFECT_DEFENSE_UP_2 = { "defense", 2, "self" },
+  EFFECT_SPEED_UP_2 = { "speed", 2, "self" },
+  EFFECT_SP_DEF_UP_2 = { "specialDefense", 2, "self" },
+  -- Defense Curl also arms Rollout, which Battle tracks separately.
+  EFFECT_DEFENSE_CURL = { "defense", 1, "self" },
+
+  EFFECT_ATTACK_DOWN = { "attack", -1, "foe" },
+  EFFECT_DEFENSE_DOWN = { "defense", -1, "foe" },
+  EFFECT_SPEED_DOWN = { "speed", -1, "foe" },
+  EFFECT_ACCURACY_DOWN = { "accuracy", -1, "foe" },
+  EFFECT_EVASION_DOWN = { "evasion", -1, "foe" },
+  EFFECT_ATTACK_DOWN_2 = { "attack", -2, "foe" },
+  EFFECT_DEFENSE_DOWN_2 = { "defense", -2, "foe" },
+  EFFECT_SPEED_DOWN_2 = { "speed", -2, "foe" },
+}
+
+-- Animation timing for move effects
+MoveEffects.AFTER_ANIM = {
+  EFFECT_NORMAL_HIT = "damage",
+  EFFECT_POISON_HIT = "damage",
+  EFFECT_LEECH_HIT = "damage",
+  EFFECT_BURN_HIT = "damage",
+  EFFECT_FREEZE_HIT = "damage",
+  EFFECT_PARALYZE_HIT = "damage",
+  EFFECT_SELFDESTRUCT = "damage",
+  EFFECT_DREAM_EATER = "damage",
+  EFFECT_ALWAYS_HIT = "damage",
+  EFFECT_BIDE = "damage",
+  EFFECT_RAMPAGE = "damage",
+  EFFECT_MULTI_HIT = "damage",
+  EFFECT_FLINCH_HIT = "damage",
+  EFFECT_PAY_DAY = "damage",
+  EFFECT_TRI_ATTACK = "damage",
+  EFFECT_UNUSED_25 = "damage",
+  EFFECT_OHKO = "damage",
+  EFFECT_RAZOR_WIND = "damage",
+  EFFECT_SUPER_FANG = "damage",
+  EFFECT_STATIC_DAMAGE = "damage",
+  EFFECT_TRAP_TARGET = "damage",
+  EFFECT_UNUSED_2B = "damage",
+  EFFECT_DOUBLE_HIT = "damage",
+  EFFECT_JUMP_KICK = "damage",
+  EFFECT_RECOIL_HIT = "damage",
+  EFFECT_ATTACK_DOWN_HIT = "damage",
+  EFFECT_DEFENSE_DOWN_HIT = "damage",
+  EFFECT_SPEED_DOWN_HIT = "damage",
+  EFFECT_SP_ATK_DOWN_HIT = "damage",
+  EFFECT_SP_DEF_DOWN_HIT = "damage",
+  EFFECT_ACCURACY_DOWN_HIT = "damage",
+  EFFECT_EVASION_DOWN_HIT = "damage",
+  EFFECT_SKY_ATTACK = "damage",
+  EFFECT_CONFUSE_HIT = "damage",
+  EFFECT_POISON_MULTI_HIT = "damage",
+  EFFECT_UNUSED_4E = "damage",
+  EFFECT_HYPER_BEAM = "damage",
+  EFFECT_RAGE = "damage",
+  EFFECT_LEVEL_DAMAGE = "damage",
+  EFFECT_PSYWAVE = "damage",
+  EFFECT_COUNTER = "damage",
+  EFFECT_SNORE = "damage",
+  EFFECT_REVERSAL = "damage",
+  EFFECT_FALSE_SWIPE = "damage",
+  EFFECT_PRIORITY_HIT = "damage",
+  EFFECT_TRIPLE_KICK = "damage",
+  EFFECT_THIEF = "damage",
+  EFFECT_FLAME_WHEEL = "damage",
+  EFFECT_UNUSED_6E = "damage",
+  EFFECT_ROLLOUT = "damage",
+  EFFECT_FURY_CUTTER = "damage",
+  EFFECT_RETURN = "damage",
+  EFFECT_FRUSTRATION = "damage",
+  EFFECT_SACRED_FIRE = "damage",
+  EFFECT_MAGNITUDE = "damage",
+  EFFECT_PURSUIT = "damage",
+  EFFECT_RAPID_SPIN = "damage",
+  EFFECT_UNUSED_82 = "damage",
+  EFFECT_UNUSED_83 = "damage",
+  EFFECT_HIDDEN_POWER = "damage",
+  EFFECT_DEFENSE_UP_HIT = "damage",
+  EFFECT_ATTACK_UP_HIT = "damage",
+  EFFECT_ALL_UP_HIT = "damage",
+  EFFECT_FAKE_OUT = "damage",
+  EFFECT_MIRROR_COAT = "damage",
+  EFFECT_SKULL_BASH = "damage",
+  EFFECT_TWISTER = "damage",
+  EFFECT_EARTHQUAKE = "damage",
+  EFFECT_FUTURE_SIGHT = "damage",
+  EFFECT_GUST = "damage",
+  EFFECT_STOMP = "damage",
+  EFFECT_SOLARBEAM = "damage",
+  EFFECT_THUNDER = "damage",
+  EFFECT_BEAT_UP = "damage",
+  EFFECT_FLY = "damage",
+  EFFECT_ATTACK_DOWN = "statdown",
+  EFFECT_DEFENSE_DOWN = "statdown",
+  EFFECT_SPEED_DOWN = "statdown",
+  EFFECT_SP_ATK_DOWN = "statdown",
+  EFFECT_SP_DEF_DOWN = "statdown",
+  EFFECT_ACCURACY_DOWN = "statdown",
+  EFFECT_EVASION_DOWN = "statdown",
+  EFFECT_ATTACK_DOWN_2 = "statdown",
+  EFFECT_DEFENSE_DOWN_2 = "statdown",
+  EFFECT_SPEED_DOWN_2 = "statdown",
+  EFFECT_SP_ATK_DOWN_2 = "statdown",
+  EFFECT_SP_DEF_DOWN_2 = "statdown",
+  EFFECT_ACCURACY_DOWN_2 = "statdown",
+  EFFECT_EVASION_DOWN_2 = "statdown",
+}
+
+MoveEffects.COUNTER = {
+  EFFECT_COUNTER = "physical",
+  EFFECT_MIRROR_COAT = "special",
+}
+
+MoveEffects.RAMPING = {
+  EFFECT_ROLLOUT = 5,
+  EFFECT_FURY_CUTTER = 5,
+}
+
+function MoveEffects.multiHitCount(random)
+  local function roll(n)
+    if random then return random(n) end
+    if love and love.math and love.math.random then
+      return love.math.random(n) - 1
+    end
+    return math.random(n) - 1
+  end
+  -- engine/battle/effect_commands.asm:5228
+  local first = roll(4)
+  if first < 2 then return first + 2 end
+  return roll(4) + 2
+end
+
+MoveEffects.HIT_COUNTS = {
+  EFFECT_DOUBLE_HIT = 2,
+  EFFECT_POISON_MULTI_HIT = 2,
+  -- Triple Kick stops early if a hit misses; Battle rolls that per hit.
+  EFFECT_TRIPLE_KICK = 3,
+}
+
+function MoveEffects.drainAmount(damageDealt)
+  return math.max(1, math.floor((damageDealt or 0) / 2))
+end
+
+MoveEffects.DRAIN = {
+  EFFECT_LEECH_HIT = true,
+  EFFECT_DREAM_EATER = true,
+}
+
+function MoveEffects.weatherModifier(weather, moveType, effect)
+  if not weather then return 1 end
+  local byType = Effects.WEATHER_TYPE_MODIFIERS[weather]
+  if byType and byType[moveType] then return byType[moveType] end
+  local byMove = Effects.WEATHER_MOVE_MODIFIERS[weather]
+  if byMove and byMove[effect] then return byMove[effect] end
+  return 1
+end
+
+function MoveEffects.hitCount(effect, random)
+  if effect == "EFFECT_MULTI_HIT" then
+    return MoveEffects.multiHitCount(random)
+  end
+  return MoveEffects.HIT_COUNTS[effect] or 1
+end
+
+MoveEffects.CHARGE = {
+  EFFECT_RAZOR_WIND = { text = Strings.source("%s made a whirlwind!") },
+  EFFECT_SOLARBEAM = { text = Strings.source("%s took in sunlight!") },
+  EFFECT_SKULL_BASH = { text = Strings.source("%s lowered its head!") },
+  EFFECT_SKY_ATTACK = { text = Strings.source("%s is glowing!") },
+  EFFECT_FLY = { text = Strings.source("%s flew up high!"), vanish = true },
+}
+
+MoveEffects.STAT_CHANGES_ON_HIT = {
+  EFFECT_ATTACK_UP_HIT = { "attack", 1, "self" },
+  EFFECT_DEFENSE_UP_HIT = { "defense", 1, "self" },
+  EFFECT_ATTACK_DOWN_HIT = { "attack", -1, "foe" },
+  EFFECT_DEFENSE_DOWN_HIT = { "defense", -1, "foe" },
+  EFFECT_SPEED_DOWN_HIT = { "speed", -1, "foe" },
+  EFFECT_ACCURACY_DOWN_HIT = { "accuracy", -1, "foe" },
+  EFFECT_SP_DEF_DOWN_HIT = { "specialDefense", -1, "foe" },
+}
+
+-- Ancient Power raises every one of the user's stats at once.
+MoveEffects.ALL_UP_STATS = {
+  "attack", "defense", "speed", "specialAttack", "specialDefense",
+}
+
+MoveEffects.STAT_NAMES = {
+  attack = Strings.source("ATTACK"), defense = Strings.source("DEFENSE"),
+  speed = Strings.source("SPEED"),
+  specialAttack = Strings.source("SPCL.ATK"),
+  specialDefense = Strings.source("SPCL.DEF"),
+  accuracy = Strings.source("ACCURACY"), evasion = Strings.source("EVASION"),
+}
+
+-- Stages clamp at ±6 (BattleCommand_StatUp's .CantRaise / .CantLower).
+MoveEffects.MAX_STAGE = 6
+
+
 return MoveEffects
