@@ -496,6 +496,19 @@ function PlayerModel.loadColosseumCharacter(id)
               local imgOk, img = pcall(love.graphics.newImage, imgData)
               if imgOk and img then
                 texture = img
+                -- Set texture filter mode to match battle rendering
+                if img.setFilter then
+                  local minFilt = tonumber(tex.minFilt) or 5
+                  local minName = (minFilt % 2) == 0 and "nearest" or "linear"
+                  local magName = (tonumber(tex.magFilt) or 1) == 0 and "nearest" or "linear"
+                  local maxAniso = math.max(0, math.min(2, math.floor(tonumber(tex.maxAnisotropy) or 0)))
+                  local anisotropy = 2 ^ maxAniso
+                  pcall(img.setFilter, img, minName, magName, anisotropy)
+                end
+                -- Set texture wrap mode to match battle rendering
+                local wrapS = tex.wrapS == 1 and "repeat" or (tex.wrapS == 2 and "mirroredrepeat" or "clamp")
+                local wrapT = tex.wrapT == 1 and "repeat" or (tex.wrapT == 2 and "mirroredrepeat" or "clamp")
+                if img.setWrap then pcall(img.setWrap, img, wrapS, wrapT) end
               end
             end
           end
@@ -860,6 +873,15 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     local isMoving = Game.input:isDown("up") or Game.input:isDown("down")
                     or Game.input:isDown("left") or Game.input:isDown("right")
 
+    -- If we're in a preview context (not in overworld), always animate idle
+    local CharacterModelPick = V.CharacterModelPick
+    local isPreview = CharacterModelPick and CharacterModelPick.isPreviewActive and CharacterModelPick.isPreviewActive() or false
+    if isPreview then
+      -- Sync idle time from CharacterModelPick
+      local previewIdleTime = CharacterModelPick.getPreviewIdleTime and CharacterModelPick.getPreviewIdleTime() or 0
+      characterIdleTime = previewIdleTime
+    end
+
     -- Detect whether a manual (cosmetic, in-place) hop is currently
     -- playing, by reading the exact same fields off the exact same player
     -- table main.lua's "jump" key handler writes to. That handler (search
@@ -884,7 +906,10 @@ function PlayerModel.draw(px, py, y, facing, mirror)
       and (1 - jumpFrames / jumpTotal) or nil
 
     -- Update animation time
-    if isMoving then
+    if isPreview then
+      -- In preview mode, idle time is managed externally (already synced above)
+      -- Don't modify it here to avoid conflicts with CharacterModelPick.updatePreview
+    elseif isMoving then
       characterWalkTime = characterWalkTime + 0.15  -- Walk animation speed / gait phase
       characterIdleTime = 0  -- Reset idle when walking
     else
@@ -899,7 +924,8 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     -- up over a few frames when the player starts moving, and back down
     -- over a few frames when they stop, instead of an instant on/off cut.
     -- See lib/CharacterWalkCycle.lua.
-    characterWalkBlend = CharacterWalkCycle.updateBlend(characterWalkBlend, isMoving, 0.016, 10, 6)
+    local isWalking = isMoving and not isPreview
+    characterWalkBlend = CharacterWalkCycle.updateBlend(characterWalkBlend, isWalking, 0.016, 10, 6)
 
     -- Procedural leg/arm swing (see lib/CharacterWalkCycle.lua's header for
     -- why this is a per-vertex heuristic rather than real bone animation
@@ -908,7 +934,7 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     -- there's any swing left to show, not just while isMoving is literally
     -- true this frame, so characterWalkBlend's stop-easing above actually
     -- has motion to ease out of.
-    if characterWalkRig and (jumpProgress or characterWalkBlend > 0.001) then
+    if characterWalkRig and (jumpProgress or characterWalkBlend > 0.001) and not isPreview then
       for gi, group in ipairs(characterGroups) do
         if group.mesh and group.baseVertices then
           local buf
@@ -937,7 +963,9 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     -- until the walk swing has eased all the way back out (rather than
     -- simply "not isMoving") so the two systems don't fight over the same
     -- frame's vertex positions during the stop transition.
-    if characterNativeTrack and not isMoving and not jumpProgress and characterWalkBlend <= 0.001 then
+    -- In preview mode, always animate idle regardless of movement state.
+    local allowIdle = isPreview or (not isMoving and not jumpProgress and characterWalkBlend <= 0.001)
+    if characterNativeTrack and allowIdle then
       local TrainerMorph = V.TrainerMorph
       if TrainerMorph then
         local clip, a, b, u, role = TrainerMorph.trackSample(characterNativeTrack, nil, characterIdleTime, nil, nil)
