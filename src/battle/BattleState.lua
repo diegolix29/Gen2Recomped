@@ -38,6 +38,9 @@ local WideBattle = require("src.battle.WideBattle")
 local Gen3Battle = require("src.battle.Gen3Battle")
 local GameVersion = require("src.core.GameVersion")
 
+-- Alias for move effects
+local Effects = MoveEffects
+
 -- FORWARD-DECLARED, because they are defined next to the other doubles
 -- helpers two thousand lines down but read from `stepHPDrain` up here.  A
 -- `local function` at the definition site would have made a SECOND local
@@ -52,6 +55,53 @@ local TEXT_AREA_ROWS = { 112, 128 }
 local BattleState = {}
 BattleState.__index = BattleState
 BattleState.isOpaque = true
+
+-- Battle constants table for move effects and priorities
+local Battle = {}
+
+-- Move effect records table (fallback when no custom effects are loaded)
+BattleState.MOVE_EFFECT_RECORDS = {}
+
+BattleState.BADGE_STAT_BOOSTS = {
+  attack = "ZEPHYR",
+  defense = "MINERAL",
+  speed = "PLAIN",
+  specialAttack = "GLACIER",
+}
+
+-- data/types/badge_type_boosts.asm, in the cart's own walk order: the eight
+-- wJohtoBadges bits, then the eight wKantoBadges bits.  DoBadgeTypeBoosts
+-- boosts the player's damage by 1/8 when an owned badge's type matches the
+-- move's.
+BattleState.BADGE_TYPE_BOOSTS = {
+  { store = "badges", badge = "ZEPHYR", type = "FLYING" },
+  { store = "badges", badge = "HIVE", type = "BUG" },
+  { store = "badges", badge = "PLAIN", type = "NORMAL" },
+  { store = "badges", badge = "FOG", type = "GHOST" },
+  { store = "badges", badge = "MINERAL", type = "STEEL" },
+  { store = "badges", badge = "STORM", type = "FIGHTING" },
+  { store = "badges", badge = "GLACIER", type = "ICE" },
+  { store = "badges", badge = "RISING", type = "DRAGON" },
+  { store = "kantoBadges", badge = "BOULDER", type = "ROCK" },
+  { store = "kantoBadges", badge = "CASCADE", type = "WATER" },
+  { store = "kantoBadges", badge = "THUNDER", type = "ELECTRIC" },
+  { store = "kantoBadges", badge = "RAINBOW", type = "GRASS" },
+  { store = "kantoBadges", badge = "SOUL", type = "POISON" },
+  { store = "kantoBadges", badge = "MARSH", type = "PSYCHIC_TYPE" },
+  { store = "kantoBadges", badge = "VOLCANO", type = "FIRE" },
+  { store = "kantoBadges", badge = "EARTH", type = "GROUND" },
+}
+
+-- Local random function helper
+local function rand(rng, n)
+  if rng then
+    return rng(1, n)
+  elseif love and love.math then
+    return love.math.random(1, n)
+  else
+    return math.random(1, n)
+  end
+end
 
 -- pokered prints the battle lines itself (engine/battle/core.asm and the
 -- move-effect banks), and the importer extracts every one of them, so the
@@ -318,6 +368,7 @@ function BattleState:wantsFillScale()
   return options and options.battleFit == "fill" or false
 end
 
+
 -- BATTLE BG: what fills the screen AROUND the battle -- the letterbox voids
 -- that grow as the window gets bigger or the view is zoomed out.  The battle
 -- screen itself is untouched: it keeps its white paper field in every mode.
@@ -414,6 +465,51 @@ function BattleState:worldBackdrop()
   return live
 end
 
+
+function BattleState:hasBadge(store, badge)
+  local player = self.save and self.save.player
+  local owned = player and player[store]
+  if type(owned) ~= "table" then return false end
+  if owned[badge] then return true end
+  local order = store == "kantoBadges" and Battle.KANTO_BADGE_ORDER
+    or Battle.JOHTO_BADGE_ORDER
+  for index, name in ipairs(order) do
+    if name == badge then return owned[index] == true end
+  end
+  return false
+end
+
+function BattleState.boostStat(value)
+  return math.min(999, value + math.floor(value / 8))
+end
+
+function BattleState.glacierBoostsSpDef(boostedSpAtk)
+  local v = boostedSpAtk or 0
+  if v >= 999 then return true end
+  local borrow = (v % 256) < 231 and 1 or 0
+  local a = (math.floor(v / 256) - 3 - borrow) % 256
+  return a % 2 == 1
+end
+
+function BattleState:battleStat(mon, key)
+  local value = (mon.stats or {})[key] or 1
+  if mon ~= self.player then return value end
+  -- BadgeStatBoosts' second early return (engine/battle/core.asm:6786-6788):
+  -- adventure badges do not follow the player into the standardised Tower.
+  if self.inBattleTowerBattle then return value end
+  local badge = BattleState.BADGE_STAT_BOOSTS[key]
+  if badge and self:hasBadge("badges", badge) then
+    return BattleState.boostStat(value)
+  end
+  if key == "specialDefense" and self:hasBadge("badges", "GLACIER") then
+    local spAtk = BattleState.boostStat((mon.stats or {}).specialAttack or 1)
+    if BattleState.glacierBoostsSpDef(spAtk) then
+      return BattleState.boostStat(value)
+    end
+  end
+  return value
+end
+
 -- The style this battle's windows wear, or nil for the Game Boy's solid
 -- white paper.  Separate from worldBackdrop so a caller can override the
 -- look without re-deciding when it applies.
@@ -449,6 +545,7 @@ function BattleState:sgbPalettes()
   end
   return nil
 end
+
 
 local Rulesets = {
   gen1_faithful = require("src.battle.rulesets.gen1_faithful"),
@@ -894,6 +991,7 @@ function BattleState:speciesSprite(species, isPlayerSide)
 end
 
 local function markSeen(game, species)
+  if not game or not game.save then return end
   local dex = game.save.pokedex
   if dex then dex.seen[species] = true end
 end
@@ -4069,6 +4167,1609 @@ function BattleState:openOldManBag()
   end)
 end
 
+function BattleState:untransform(mon)
+  local state = mon and mon.volatile
+  local before = state and state.preTransform
+  if not before then return false end
+  mon.species = before.species
+  mon.types = before.types
+  mon.moves = before.moves
+  mon.shiny = before.shiny
+  -- The stat table is written through in place (a mon's `stats` is handed
+  -- around by reference), so the five copied numbers are put back one by one.
+  local stats = mon.stats
+  if stats then
+    for key, value in pairs(before.stats) do stats[key] = value end
+  end
+  state.preTransform = nil
+  state.transformed = nil
+  return true
+end
+
+function BattleState:markMissed()
+  if self.moveEvent then self.moveEvent.missed = true end
+end
+
+function BattleState:tickHeldItem(mon)
+  if (mon.hp or 0) <= 0 then return end
+  local def = self:itemDef(mon.item)
+  if not def then return end
+  -- Through Battle:heldEffect rather than off the record, so the end-of-turn
+  -- arm is one more held_item.trigger site and not a hole in it.  `def` stays
+  -- the item's own record: the messages below name the ITEM the mon is
+  -- holding, which a substituted effect does not change.
+  local effect, parameter = self:heldEffect(mon, "residual")
+  if not effect then return end
+  local maxHp = mon.maxHp or (mon.stats and mon.stats.hp) or 1
+  local name = self:monName(mon)
+
+  if effect == "HELD_LEFTOVERS" then
+    if (mon.hp or 0) >= maxHp then return end
+    local healed = self:heal(mon, math.max(1, math.floor(maxHp / 16)))
+    if healed > 0 then
+      self:emit({ kind = "message",
+        text = Strings("%s's %s restored health!", name,
+          def.name or "item") })
+    end
+    return
+  end
+
+  if effect == "HELD_BERRY" and (mon.hp or 0) * 2 <= maxHp then
+    -- pokegold engine/battle/core.asm:4074 ItemRecoveryAnim
+    self:heal(mon, parameter > 0 and parameter or 10, { anim = "RECOVER" })
+    mon.item = nil
+    self:emit({ kind = "message",
+      text = Strings("%s ate the %s!", name, def.name or "BERRY") })
+    return
+  end
+
+  local cure = BattleState.HELD_STATUS_CURES[effect]
+  if effect == "HELD_HEAL_STATUS" then cure = mon.status end
+  if cure and mon.status == cure then
+    mon.status = nil
+    mon.statusTurns = nil
+    mon.toxicCounter = nil
+    mon.item = nil
+    self:emit({ kind = "status", side = self:sideOf(mon), status = nil,
+      text = Strings("%s's %s cured its status!", name,
+        def.name or "item") })
+  end
+
+  -- UseConfusionHealingItem: HELD_HEAL_CONFUSION (a Bitter Berry) and the
+  -- catch-all HELD_HEAL_STATUS also clear the confusion volatile, and are
+  -- consumed doing it.
+  if (effect == "HELD_HEAL_CONFUSION" or effect == "HELD_HEAL_STATUS")
+      and self:volatile(mon).confuseCount then
+    self:volatile(mon).confuseCount = nil
+    mon.item = nil
+    self:emit({ kind = "message",
+      text = Strings("%s's %s cured its confusion!", name,
+        def.name or "item") })
+  end
+end
+
+function BattleState:tickSeedAndCurse(mon)
+  local state = self:volatile(mon)
+  local maxHp = mon.maxHp or (mon.stats and mon.stats.hp) or 8
+  if state.leechSeed and (mon.hp or 0) > 0 then
+    local damage = math.min(math.max(1, math.floor(maxHp / 8)), mon.hp)
+    mon.hp = mon.hp - damage
+    self:emit({ kind = "message",
+      text = Strings("LEECH SEED saps %s!", self:monName(mon)) })
+    -- ANIM_SAP plays between two SwitchTurnCore calls, from the seeder's side
+    -- (core.asm:1013-1021).
+    self:emit({ kind = "damage", side = self:sideOf(mon), amount = damage,
+      hp = mon.hp, anim = "ANIM_SAP" })
+    local other = mon == self.player and self.enemy or self.player
+    if (other.hp or 0) > 0 then self:heal(other, damage) end
+  end
+  if state.cursed and (mon.hp or 0) > 0 then
+    local damage = math.max(1, math.floor(maxHp / 4))
+    mon.hp = math.max(0, mon.hp - damage)
+    self:emit({ kind = "message",
+      text = Strings("%s's hurt by the CURSE!", self:monName(mon)) })
+    -- The curse arm borrows ANIM_IN_NIGHTMARE, on the sufferer's own turn
+    -- (core.asm:1057-1060).
+    self:emit({ kind = "damage", side = self:sideOf(mon), amount = damage,
+      hp = mon.hp, anim = "ANIM_IN_NIGHTMARE", animSide = self:sideOf(mon) })
+  end
+end
+
+-- HandleWrap (engine/battle/core.asm:1153): the count on the trapped mon
+-- decrements FIRST -- release at zero, else a sixteenth of max HP.  A
+-- Substitute suspends the whole tick, count included.
+function BattleState:tickWrap(mon)
+  local state = self:volatile(mon)
+  if not state.wrapCount or (mon.hp or 0) <= 0 then return end
+  if (state.substitute or 0) > 0 then return end
+  state.wrapCount = state.wrapCount - 1
+  local moveName = state.wrapMove or "the trap"
+  if state.wrapCount <= 0 then
+    state.wrapCount, state.wrapMove, state.wrapMoveId = nil, nil, nil
+    self:emit({ kind = "message",
+      text = Strings("%s was released from %s!", self:monName(mon), moveName) })
+    return
+  end
+  local maxHp = mon.maxHp or (mon.stats and mon.stats.hp) or 16
+  local damage = math.max(1, math.floor(maxHp / 16))
+  mon.hp = math.max(0, mon.hp - damage)
+  self:emit({ kind = "message",
+    text = Strings("%s's hurt by %s!", self:monName(mon), moveName) })
+  -- The trapping move's own anim, played from the trapper's side between two
+  -- SwitchTurnCore calls (core.asm:1198-1203).
+  self:emit({ kind = "damage", side = self:sideOf(mon), amount = damage,
+    hp = mon.hp, anim = false, animMove = state.wrapMoveId })
+end
+
+-- HandleScreens (engine/battle/core.asm:1564): each side's five-turn counts
+-- tick down and the screen falls the turn its count reaches zero.
+BattleState.SCREEN_SIDE_LABEL = {
+  player = Strings.source("Your"), enemy = Strings.source("Enemy"),
+}
+BattleState.SCREEN_FALL_TEXT = {
+  lightScreen = Strings.source("%s POKéMON's LIGHT SCREEN fell!"),
+  reflect = Strings.source("%s POKéMON's REFLECT faded!"),
+}
+
+function BattleState:tickScreens()
+  for _, side in ipairs({ "player", "enemy" }) do
+    local screens = self.screens[side]
+    for _, field in ipairs({ "lightScreen", "reflect", "safeguard" }) do
+      if (screens[field] or 0) > 0 then
+        screens[field] = screens[field] - 1
+        if screens[field] <= 0 then
+          screens[field] = nil
+          if field == "safeguard" then
+            -- engine/battle/core.asm:1527
+            self:emit({ kind = "message",
+              text = Strings("%s's SAFEGUARD faded!",
+                self:monName(self[side])) })
+          else
+            self:emit({ kind = "message",
+              text = Strings(BattleState.SCREEN_FALL_TEXT[field],
+                Strings(BattleState.SCREEN_SIDE_LABEL[side])) })
+          end
+        end
+      end
+    end
+  end
+end
+
+BattleState.RESIDUAL_ANIM = {
+  burn = "ANIM_BRN", poison = "ANIM_PSN", toxic = "ANIM_PSN",
+}
+
+function BattleState:tickCounters(mon)
+  local state = self:volatile(mon)
+  state.protect, state.endure = nil, nil
+  -- A flinch lasts only the turn it was inflicted; a leftover one (the
+  -- target moved first, or fainted) must not eat next turn.
+  state.flinched = nil
+  if state.encoreTurns then
+    state.encoreTurns = state.encoreTurns - 1
+    if state.encoreTurns <= 0 then
+      state.encore, state.encoreTurns = nil, nil
+      self:emit({ kind = "message",
+        text = Strings("%s's ENCORE ended!", self:monName(mon)) })
+    end
+  end
+  if state.disabledTurns then
+    state.disabledTurns = state.disabledTurns - 1
+    if state.disabledTurns <= 0 then
+      state.disabled, state.disabledTurns = nil, nil
+      self:emit({ kind = "message",
+        text = Strings("%s's move is no longer disabled!",
+          self:monName(mon)) })
+    end
+  end
+end
+
+
+
+function BattleState.statusRecordFor(data, status)
+  if status == nil then return nil end
+  local merged = data and data.gen2Statuses
+  return (merged and merged[status]) or BattleState.STATUSES[status]
+end
+-- Held items with an end-of-turn effect.
+--
+--   HELD_LEFTOVERS  heals maxHP / 16 every turn (HandleLeftovers)
+--   HELD_BERRY      heals its parameter once the holder drops below half
+--                   (HandleHealingItems), and is consumed
+--   HELD_HEAL_*     cures the status it names, and is consumed
+--
+-- The rest of the held effects act inside a hit rather than at the end of a
+-- turn, so they are not this function's business.
+-- Confusion is a volatile, not a status byte, so HELD_HEAL_CONFUSION is not
+-- in this table: its cure (and HELD_HEAL_STATUS's catch-all) reads the
+-- confuseCount volatile in tickHeldItem's own arm below.
+BattleState.HELD_STATUS_CURES = {
+  HELD_HEAL_POISON = "poison",
+  HELD_HEAL_SLEEP = "sleep",
+  HELD_HEAL_BURN = "burn",
+  HELD_HEAL_FREEZE = "freeze",
+  HELD_HEAL_PARALYZE = "paralyze",
+}
+
+function BattleState:itemDef(itemId)
+  local items = self.data.items
+  return itemId and items and items[itemId] or nil
+end
+
+function BattleState:tickPerish(mon)
+  local state = self:volatile(mon)
+  if not state.perish or (mon.hp or 0) <= 0 then return end
+  state.perish = state.perish - 1
+  if state.perish > 0 then
+    self:emit({ kind = "message", text = Strings("%s's PERISH count is %d!",
+      self:monName(mon), state.perish) })
+    return
+  end
+  state.perish = nil
+  mon.hp = 0
+  -- HandlePerishSong just zeroes both HP bytes (core.asm:1119-1135).
+  self:emit({ kind = "damage", side = self:sideOf(mon), amount = 0, hp = 0,
+    anim = false })
+end
+
+function BattleState:tickWrap(mon)
+  local state = self:volatile(mon)
+  if not state.wrapCount or (mon.hp or 0) <= 0 then return end
+  if (state.substitute or 0) > 0 then return end
+  state.wrapCount = state.wrapCount - 1
+  local moveName = state.wrapMove or "the trap"
+  if state.wrapCount <= 0 then
+    state.wrapCount, state.wrapMove, state.wrapMoveId = nil, nil, nil
+    self:emit({ kind = "message",
+      text = Strings("%s was released from %s!", self:monName(mon), moveName) })
+    return
+  end
+  local maxHp = mon.maxHp or (mon.stats and mon.stats.hp) or 16
+  local damage = math.max(1, math.floor(maxHp / 16))
+  mon.hp = math.max(0, mon.hp - damage)
+  self:emit({ kind = "message",
+    text = Strings("%s's hurt by %s!", self:monName(mon), moveName) })
+  -- The trapping move's own anim, played from the trapper's side between two
+  -- SwitchTurnCore calls (core.asm:1198-1203).
+  self:emit({ kind = "damage", side = self:sideOf(mon), amount = damage,
+    hp = mon.hp, anim = false, animMove = state.wrapMoveId })
+end
+
+-- ResidualDamage: burn and poison chip damage, through the merged record's
+-- `residual`.  The record computes and advances its own counter; the emit pair
+-- stays here because the event shape belongs to this engine, not to the status.
+function BattleState:tickStatus(mon)
+  if (mon.hp or 0) <= 0 or not mon.status then return end
+  local record = BattleState.statusRecordFor(self.data, mon.status)
+  local residual = record and record.residual
+  if not residual then return end
+  local maxHp = mon.maxHp or (mon.stats and mon.stats.hp) or 1
+  local name = self:monName(mon)
+  local damage, text = residual(self, mon, maxHp)
+  if not damage or damage <= 0 then return end
+  mon.hp = math.max(0, mon.hp - damage)
+  local template = BattleState.STATUS_RESIDUAL_TEMPLATES[mon.status]
+  local suffix = BattleState.STATUS_RESIDUAL_SUFFIXES[mon.status]
+  self:emit({ kind = "message", text = template and text == suffix
+      and Strings(template, name)
+      or Strings("%s%s", name, Strings(text or " is hurt!")) })
+  -- Call_PlayBattleAnim_OnlyIfVisible runs on the sufferer's own turn
+  -- (core.asm:970-976); a mod status the cart never had gets nothing.
+  self:emit({ kind = "damage", side = self:sideOf(mon), amount = damage,
+    hp = mon.hp, anim = BattleState.RESIDUAL_ANIM[mon.status] or false,
+    animSide = self:sideOf(mon) })
+end
+
+
+
+function BattleState:badgeTypeBoost(attacker, moveType)
+  if attacker ~= self.player or not moveType then return false end
+  -- DoBadgeTypeBoosts' own tower guard (engine/battle/misc.asm:152-154).
+  if self.inBattleTowerBattle then return false end
+  for _, row in ipairs(BattleState.BADGE_TYPE_BOOSTS) do
+    if row.type == moveType then
+      return self:hasBadge(row.store, row.badge)
+    end
+  end
+  return false
+end
+
+
+function BattleState:dealDamage(attacker, defender, damage, opts)
+  opts = opts or {}
+  damage = math.max(0, math.floor(damage or 0))
+  local state = self:volatile(defender)
+  if (state.substitute or 0) > 0 then
+    local absorbed = math.min(state.substitute, damage)
+    state.substitute = state.substitute - absorbed
+    self:emit({ kind = "message",
+      text = Strings("The SUBSTITUTE took damage for %s!",
+        self:monName(defender)) })
+    if state.substitute <= 0 then
+      state.substitute = nil
+      self:emit({ kind = "message",
+        text = Strings("%s's SUBSTITUTE broke!", self:monName(defender)) })
+    end
+    return absorbed
+  end
+
+  local defenderState = self:volatile(defender)
+  -- Endure leaves the holder on one hit point, however big the hit was.
+  -- BattleCommand_ApplyDamage calls BattleCommand_FalseSwipe unconditionally
+  -- for the Endure bit and FalseSwipe clamps wCurDamage to MonHP - 1, so a mon
+  -- braced at exactly 1 HP takes zero and still holds.
+  -- HELD_FOCUS_BAND rides the same clamp: the band is only consulted once
+  -- Endure is down, rolling one byte against the item parameter
+  -- (30 -> 30/256) and reusing the False Swipe clamp on success.
+  local endured, hungOn = false, false
+  if defenderState.endure and damage >= (defender.hp or 0)
+      and (defender.hp or 0) > 0 then
+    damage = (defender.hp or 0) - 1
+    endured = true
+  elseif damage >= (defender.hp or 0) and (defender.hp or 0) > 0 then
+    local effect, parameter = self:heldEffect(defender, "endure")
+    if effect == "HELD_FOCUS_BAND"
+        and rand(self.random, 256) < parameter then
+      damage = (defender.hp or 0) - 1
+      hungOn = true
+    end
+  end
+  defender.hp = math.max(0, (defender.hp or 0) - damage)
+  defenderState.tookThisTurn = (defenderState.tookThisTurn or 0) + damage
+  defenderState.tookKind = opts.kind or "physical"
+  -- Bide stores everything the user takes while it is counting down.
+  if defenderState.bideTurns then
+    defenderState.bideStored = (defenderState.bideStored or 0) + damage
+  end
+  self:emit({
+    kind = "damage", side = self:sideOf(defender),
+    amount = damage, hp = defender.hp, critical = opts.critical,
+    effectiveness = opts.effectiveness,
+  })
+  if opts.critical then
+    self:emit({ kind = "message", text = Strings("A critical hit!") })
+  end
+  -- SuperEffectiveText / NotVeryEffectiveText (data/text/battle.asm:603,608).
+  -- The cart breaks both across the box's two lines and hyphenates "super-"
+  -- to do it, and the not-very line ends on the single ellipsis glyph Gold's
+  -- charmap carries at $75, not three periods.
+  if opts.effectiveness and opts.effectiveness > 10 then
+    self:emit({ kind = "message", text = Strings("It's super-\neffective!") })
+  elseif opts.effectiveness and opts.effectiveness < 10 then
+    self:emit({ kind = "message",
+      text = Strings("It's not very\neffective…") })
+  end
+  if endured then
+    self:emit({ kind = "message",
+      text = Strings("%s endured the hit!", self:monName(defender)) })
+  elseif hungOn then
+    -- HungOnText, named after the item the way the cart pipes it through
+    -- wStringBuffer1.
+    local def = self:itemDef(defender.item)
+    self:emit({ kind = "message",
+      text = Strings("%s hung on with %s!", self:monName(defender),
+        (def and def.name) or "FOCUS BAND") })
+  end
+  -- SUBSTATUS_RAGE: being hit while raging raises the rager's Attack.
+  if defenderState.rage and damage > 0 and (defender.hp or 0) > 0 then
+    self:changeStage(defender, "attack", 1)
+  end
+  -- battle.damage_dealt, the payload src/battle/EffectRegistry.lua emits once
+  -- per landed hit on Gen 1, guarded the same way so an unsubscribed boot
+  -- builds nothing.  `typeMult` is the x10 type multiplier under Gen 1's name;
+  -- Gen 2's own name for the same number is `effectiveness`, and both are here.
+  -- `move` is nil for the damage no move owns (Counter's answer, Future Sight's
+  -- delayed hit, spikes), which is a Gen 2 shape Gen 1 has no site for.
+  if Runtime.wants("battle.damage_dealt") then
+    Runtime.emit("battle.damage_dealt", {
+      battle = self, user = attacker, target = defender,
+      move = opts.move, moveId = opts.moveId,
+      damage = damage, crit = opts.critical or false,
+      typeMult = opts.effectiveness or 10,
+      -- Gen 2 additions: which side took it and whether the hit was physical
+      -- or special, which is what Counter and Mirror Coat answer.
+      effectiveness = opts.effectiveness or 10,
+      side = self:sideOf(defender), kind = opts.kind,
+    })
+  end
+  return damage
+end
+
+function BattleState:screenActive(defender, physical)
+  local side = self.screens and self.screens[self:sideOf(defender)]
+  if not side then return false end
+  local turns = physical and (side.reflect or 0) or (side.lightScreen or 0)
+  return turns > 0
+end
+
+-- The one stat this mon's status cuts, applied.  Burn halves Attack and
+-- paralysis quarters Speed on the cart; both come off statPenalty so a mod
+-- status cuts a stat through the same seam.
+function BattleState.statusPenaltyFor(data, mon, stat, value)
+  local record = BattleState.statusRecordFor(data, mon and mon.status)
+  local penalty = record and record.statPenalty
+  if not penalty or penalty.stat ~= stat then return value end
+  return math.max(1, math.floor(value / math.max(1, penalty.div or 1)))
+end
+
+-- engine/battle/effect_commands.asm:6325
+function BattleState:safeguarded(mon)
+  return (self.screens[self:sideOf(mon)].safeguard or 0) > 0
+end
+
+function BattleState:speciesDef(mon)
+  return mon and self.data.pokemon and self.data.pokemon[mon.species] or nil
+end
+
+function BattleState:matchupsAgainst(defender)
+  local chart = self.data.type_chart
+  local rows = chart and chart.matchups
+  if not rows or not defender then return rows end
+  if not self:volatile(defender).identified then return rows end
+  local skipped = chart.foresightMatchups
+  if not skipped or #skipped == 0 then return rows end
+  if not self.identifiedMatchups then
+    local drop = {}
+    for _, row in ipairs(skipped) do
+      drop[tostring(row.attacker) .. "/" .. tostring(row.defender)] = true
+    end
+    local out = {}
+    for _, row in ipairs(rows) do
+      if not drop[tostring(row.attacker) .. "/" .. tostring(row.defender)] then
+        out[#out + 1] = row
+      end
+    end
+    self.identifiedMatchups = out
+  end
+  return self.identifiedMatchups
+end
+
+function BattleState:hitOnce(attacker, defender, def, opts)
+  opts = opts or {}
+  local attackerStages = self.stages[self:sideOf(attacker)]
+  local defenderStages = self.stages[self:sideOf(defender)]
+  local types = self.data.type_chart and self.data.type_chart.types
+  local matchups = self:matchupsAgainst(defender)
+
+  local heldEffect, heldParam = self:heldEffect(attacker, "damage")
+  -- BattleCommand_Critical: SUBSTATUS_FOCUS_ENERGY (Focus Energy or a
+  -- DIRE HIT) and HELD_CRITICAL_UP (Scope Lens) each raise the ladder a
+  -- rung; a high-crit move raises it two.
+  local criticalLevel = Damage.criticalLevel({
+    highCritMove = def.effect == "EFFECT_ALWAYS_CRIT",
+    focusEnergy = self:volatile(attacker).focusEnergy,
+    scopeLens = heldEffect == "HELD_CRITICAL_UP",
+  })
+  -- battle.crit, the same hook src/battle/Damage.lua calls on Gen 1, with the
+  -- same ctx keys: a mod that forces or refuses criticals reads `attacker`,
+  -- `moveId` and `highCrit` exactly where it did on Red.  `ruleset` has no Gen 2
+  -- counterpart (Gold's engine IS the ruleset) so it is absent rather than
+  -- invented, and `criticalLevel` is the Gen 2 addition -- the rung of
+  -- data/battle/critical_hit_chances.asm this hit reached, which Gen 1's
+  -- base-Speed derivation had no equivalent of.
+  local critical
+  if Runtime.wantsHook("battle.crit") then
+    critical = Runtime.call("battle.crit", function(c)
+      return Damage.rollCritical(c.criticalLevel, c.battle.random)
+    end, { battle = self, attacker = attacker, moveId = opts.moveId or def.id,
+           rng = self:roller(), random = self.random,
+           highCrit = def.effect == "EFFECT_ALWAYS_CRIT",
+           criticalLevel = criticalLevel })
+  else
+    critical = Damage.rollCritical(criticalLevel, self.random)
+  end
+  local attack = self:battleStat(attacker, "attack")
+  -- Burn halves physical Attack (Gen 2 does this in DamageStats), off the
+  -- status record's statPenalty.
+  attack = BattleState.statusPenaltyFor(self.data, attacker, "attack", attack)
+  -- The HELD_<TYPE>_BOOST items (Charcoal, Mystic Water, ...): the item's
+  -- parameter is the percent boost DamageCalc's .DoneItem applies when the
+  -- held type matches the move's.  PSYCHIC's type id is PSYCHIC_TYPE in the
+  -- port's chart, so the effect name is rebuilt from the move type.
+  local itemBoost
+  if def.type and heldEffect then
+    local wanted = "HELD_" .. (def.type == "PSYCHIC_TYPE" and "PSYCHIC"
+      or def.type) .. "_BOOST"
+    if heldEffect == wanted then itemBoost = heldParam end
+  end
+  local calcOpts = {
+    level = attacker.level or 1,
+    power = opts.power or def.power,
+    moveType = def.type,
+    attacker = {
+      attack = attack,
+      specialAttack = self:battleStat(attacker, "specialAttack"),
+      types = (self:speciesDef(attacker) or {}).types or attacker.types,
+      stages = attackerStages,
+    },
+    defender = {
+      defense = self:battleStat(defender, "defense"),
+      specialDefense = self:battleStat(defender, "specialDefense"),
+      types = (self:speciesDef(defender) or {}).types or defender.types,
+      stages = defenderStages,
+    },
+    types = types,
+    matchups = matchups,
+    critical = critical,
+    itemBoostPercent = itemBoost,
+    -- DoWeatherModifiers, the first thing BattleCommand_Stab farcalls
+    -- (effect_commands.asm:1254): rain boosts Water and cuts Fire, sun the
+    -- reverse, and rain cuts Solarbeam by its EFFECT rather than its type.
+    -- Scaled to the cart's tenths here so Damage.calc can apply it where the
+    -- cart does, ahead of the badge boost, STAB, the type rows and the roll.
+    weatherPercent = math.floor(
+      Effects.weatherModifier(self.weather, def.type, def.effect) * 10),
+    -- DoBadgeTypeBoosts, farcalled between the weather modifiers and STAB.
+    badgeTypeBoost = self:badgeTypeBoost(attacker, def.type),
+    -- SCREENS_REFLECT / SCREENS_LIGHT_SCREEN on the defending side double
+    -- the matching defence (the crit exemption lives in Damage.calc).
+    screen = self:screenActive(defender,
+      Damage.isPhysical(def.type, types)),
+    -- BattleCommand_DamageCalc's `srl c` (effect_commands.asm:2905-2913).
+    defenseHalved = def.effect == "EFFECT_SELFDESTRUCT",
+    random = self.random,
+  }
+  -- battle.damage, the same hook BattleState:computeDamage calls on Gen 1 and
+  -- with the same ctx keys: `user`, `target`, `move` and the `opts` table the
+  -- formula is actually run on, so a mod that edits c.opts (or returns its own
+  -- number) works the same way it does on Red.  Gen 2's opts carry more than
+  -- Gen 1's -- the split special stats live inside c.opts.attacker /
+  -- c.opts.defender, and the weather, badge and held-item modifiers are there
+  -- as their own fields.  `ruleset` is absent for the reason given on
+  -- battle.crit above.  The ctx table is only built when a chain is installed,
+  -- so a mod-free boot pays nothing.
+  local damage, info
+  if Runtime.wantsHook("battle.damage") then
+    damage, info = Runtime.call("battle.damage", function(c)
+      return Damage.calc(c.opts)
+    end, { battle = self, user = attacker, target = defender, move = def,
+           moveId = opts.moveId or def.id, opts = calcOpts,
+           rng = self:roller(), random = self.random })
+    info = normalizeDamageInfo(info) or { effectiveness = 10 }
+    damage = damage or 0
+  else
+    damage, info = Damage.calc(calcOpts)
+  end
+
+  if info.effectiveness == 0 then
+    -- BattleCommand_Stab's `.GotMatchup` arm writes wAttackMissed when the
+    -- matchup byte is 0 (effect_commands.asm:1337), and `stab` runs ahead of
+    -- `moveanim` in every damaging effect list (data/moves/effects.asm:5), so
+    -- BattleCommand_MoveAnimNoSub's wAttackMissed early-out (:1958) turns an
+    -- immune hit into MoveDelay and no animation at all.
+    self:markMissed()
+    self:emit({ kind = "message",
+      text = Strings("It doesn't affect %s...", self:monName(defender)) })
+    return 0, info
+  end
+  -- BattleCommand_FalseSwipe (engine/battle/move_effects/false_swipe.asm):
+  -- wCurDamage is capped at the target's HP minus one before applydamage, so
+  -- the move can never KO -- the clamp that makes it a safe catching tool
+  -- against a mon (a roamer above all) a win would retire.
+  if def.effect == "EFFECT_FALSE_SWIPE" and damage >= (defender.hp or 0) then
+    damage = math.max(0, (defender.hp or 0) - 1)
+  end
+  -- engine/battle_anims/anim_commands.asm:1200
+  if self.moveEvent then self.moveEvent.effectiveness = info.effectiveness end
+  return self:dealDamage(attacker, defender, damage, {
+    critical = critical, effectiveness = info.effectiveness,
+    -- Counter answers physical damage and Mirror Coat special, so what kind
+    -- of hit this was has to be recorded with it.
+    kind = Damage.isPhysical(def.type, types) and "physical" or "special",
+    -- Carried only so battle.damage_dealt can name the move, the way Gen 1's
+    -- EffectRegistry damage loop does.
+    move = def, moveId = opts.moveId or def.id,
+  }), info
+end
+
+
+function BattleState:useMove(attacker, defender, moveId)
+  local move = self:findMove(attacker, moveId)
+  local def = self:moveDef(moveId)
+  local name = self:monName(attacker)
+  local state = self:volatile(attacker)
+  -- wAttackMissed is per-move: BattleTurn's ResetTurn clears it before the
+  -- effect list runs, so nothing a previous move set can reach this one.
+  self.moveEvent = nil
+  if not def then
+    self:emit({ kind = "message", text = Strings("%s has no move to use!", name) })
+    return
+  end
+
+  -- A mon locked into the second half of a two-turn move spends no PP and
+  -- makes no new choice: it just lands the stored attack.
+  local charging = state.chargeMove == moveId
+  -- engine/battle/effect_commands.asm:5421
+  local wasVanished = (charging and state.vanished) and true or nil
+  if charging then
+    state.chargeMove = nil
+    state.vanished = nil
+  end
+
+  -- BattleCommand_CheckRampage (effect_commands.asm:4851) is the FIRST command
+  -- in the Rampage list, ahead of checkobedience and doturn, and
+  -- SkipToBattleCommand leaves the script pointer PAST the command it looked
+  -- for (:6674-6689) -- so a continuing Thrash or Petal Dance spends no PP,
+  -- makes no obedience check and never re-rolls its count.  The counter runs
+  -- down here; when it reaches zero the lock ends and the user is confused,
+  -- and the move STILL resolves this turn (`.continue_rampage`).
+  local rampaging = def.effect == "EFFECT_RAMPAGE"
+    and state.rampageMove == moveId and (state.rampageTurns or 0) > 0
+  if rampaging then
+    state.rampageTurns = state.rampageTurns - 1
+    if state.rampageTurns <= 0 then
+      state.rampageMove, state.rampageTurns = nil, nil
+      -- CheckRampage writes SUBSTATUS_CONFUSED and the count itself rather
+      -- than calling FinishConfusingTarget, so there is no text, no
+      -- Substitute test and no HELD_PREVENT_CONFUSE test -- just the same
+      -- `and %00000001` plus two roll, 2 or 3 turns.  The cart's one
+      -- exemption is the user's own Safeguard, which this port does not model
+      -- yet.
+      state.confuseCount = state.confuseCount or (rand(self.random, 2) + 2)
+    end
+  end
+
+  -- BattleCommand_CheckRollout (move_effects/rollout.asm) skips past
+  -- doturn_command while SUBSTATUS_ROLLOUT is set, so a continuing Rollout is
+  -- free of PP and obedience in exactly the same way.
+  local rolling = state.rolloutLock == moveId
+
+  -- engine/battle/effect_commands.asm:977-979, data/moves/effects.asm:795-800,
+  -- engine/battle/move_effects/bide.asm:62-68
+  local biding = def.effect == "EFFECT_BIDE" and state.bideTurns ~= nil
+
+  -- engine/battle/effect_commands.asm:6222-6234, :949-951
+  local called = (self.copyDepth or 0) > 0
+
+  if not (charging or rampaging or rolling or biding or called) then
+    if move and (move.pp or 0) <= 0 then
+      -- BattleText_TheresNoPPLeftForThisMove (data/text/battle.asm:315).
+      self:emit({ kind = "message",
+        text = Strings("There's no PP left\nfor this move!") })
+      return
+    end
+    if move then move.pp = (move.pp or 1) - 1 end
+    -- BattleCommand_Rampage (effect_commands.asm:4886): the opening turn rolls
+    -- 1 or 2 MORE turns of lock-in, so Thrash and Petal Dance run for two or
+    -- three turns in all.  A mon acting through Sleep Talk never rampages.
+    if def.effect == "EFFECT_RAMPAGE" and attacker.status ~= "sleep" then
+      state.rampageMove = moveId
+      state.rampageTurns = rand(self.random, 2) + 1
+    end
+  end
+
+  -- BattleCommand_Rage sets SUBSTATUS_RAGE and leaves the move to hit
+  -- normally; any OTHER move clears it, which is why Rage has no entry in
+  -- MOVE_EFFECTS -- it falls straight through to the damage path.
+  state.rage = (def.effect == "EFFECT_RAGE") or nil
+  -- Fury Cutter and Rollout reset the moment another move is used; the ramp
+  -- itself is maintained below.
+  -- UsedMoveText is built out of _ActorNameText followed by _UsedMove1Text,
+  -- which is `text_start` plus `line "used @"` (data/text/common_2.asm:339),
+  -- so the break after the user's name is part of the string and lands on the
+  -- box's second row however short the name is.  It is not a wrap, and the
+  -- panel must not be left to invent one.
+  --
+  -- The event is kept so the miss paths below can mark it: the screen animates
+  -- off this event, and BattleCommand_MoveAnimNoSub
+  -- (engine/battle/effect_commands.asm:1958) opens on
+  -- `ld a, [wAttackMissed] / and a / jp nz, BattleCommand_MoveDelay`, so a
+  -- move that missed or failed burns the delay and plays nothing at all.
+  self.moveEvent = self:emit({ kind = "move", side = self:sideOf(attacker),
+    move = moveId, wasVanished = wasVanished,
+    afterAnim = Effects.AFTER_ANIM[def.effect],
+    text = Strings("%s\nused %s!", name, def.name or moveId) })
+
+  -- battle.move_used, where BattleState:executeMove raises it on Gen 1: after
+  -- the announcement and before the effect runs, so a mod sees the move that
+  -- is about to resolve.  `move` is the move record (it carries `id`, the way
+  -- Gen 1's does) and `isCalled` is true for the move Metronome or Mirror Move
+  -- picked -- Gen 2 tracks that as the copy depth rather than a flag argument.
+  if Runtime.wants("battle.move_used") then
+    Runtime.emit("battle.move_used", {
+      battle = self, user = attacker, target = defender, move = def,
+      isCalled = (self.copyDepth or 0) > 0,
+      -- Gen 2 additions: the id on its own (Gen 1 mods read move.id), and
+      -- which side is swinging.
+      moveId = moveId, side = self:sideOf(attacker),
+    })
+  end
+
+  -- Metronome and Mirror Move do not attack: they pick another move and run
+  -- it instead (both end in `ResetTurn`).  `copyDepth` is the port's own
+  -- guard -- the cart cannot recurse because it restarts the turn, and
+  -- Metronome's own exception list keeps it from picking itself.
+  if def.effect == "EFFECT_METRONOME" or def.effect == "EFFECT_MIRROR_MOVE" then
+    local picked
+    if def.effect == "EFFECT_METRONOME" then
+      local order = (self.data.constants or {}).moveOrder
+        or (self.data.moves and self.data.moves.order)
+      picked = Effects.metronomePick(order or self:moveOrder(),
+        attacker.moves, self.random)
+    else
+      -- Mirror Move copies the OPPONENT's last move and fails when there is
+      -- none, or when the user already knows it (CheckUserMove).
+      local last = self:volatile(defender).lastMove
+      picked = last
+      for _, own in ipairs(attacker.moves or {}) do
+        if own.id == last then picked = nil break end
+      end
+    end
+    if not picked or (self.copyDepth or 0) > 0 then
+      self:markMissed()
+      self:emit({ kind = "message", text = Strings("But it failed!") })
+      return
+    end
+    self.copyDepth = (self.copyDepth or 0) + 1
+    self:useMove(attacker, defender, picked)
+    self.copyDepth = self.copyDepth - 1
+    return
+  end
+
+  -- engine/battle/move_effects/sleep_talk.asm:2, :16-19, :61
+  if def.effect == "EFFECT_SLEEP_TALK" then
+    local picked
+    if attacker.status == "sleep" and (self.copyDepth or 0) == 0 then
+      -- engine/battle/move_effects/sleep_talk.asm:40-44, :117-141
+      local pool = {}
+      for _, own in ipairs(attacker.moves or {}) do
+        local ownDef = self:moveDef(own.id)
+        local effect = ownDef and ownDef.effect
+        if own.id ~= moveId and not self:moveDisabled(attacker, own.id)
+            and not Effects.CHARGE[effect] and effect ~= "EFFECT_BIDE" then
+          pool[#pool + 1] = own.id
+        end
+      end
+      if #pool > 0 then picked = pool[rand(self.random, #pool) + 1] end
+    end
+    if not picked then
+      self:markMissed()
+      self:emit({ kind = "message", text = Strings("But it failed!") })
+      return
+    end
+    state.lastMove = nil
+    self.copyDepth = (self.copyDepth or 0) + 1
+    self:useMove(attacker, defender, picked)
+    self.copyDepth = self.copyDepth - 1
+    return
+  end
+
+  -- Everything past here counts as "the user's last move" for Mirror Move,
+  -- Encore and Disable.  A called move skips the write
+  -- (engine/battle/used_move_text.asm:30-36).
+  if (self.copyDepth or 0) == 0 then state.lastMove = moveId end
+  state.turnsTaken = (state.turnsTaken or 0) + 1
+  state.usedMoves = state.usedMoves or {}
+  local seen = false
+  for _, id in ipairs(state.usedMoves) do if id == moveId then seen = true end end
+  if not seen then state.usedMoves[#state.usedMoves + 1] = moveId end
+
+  -- ParsePlayerAction (core.asm:618-624) and its enemy twin (core.asm:5621-
+  -- 5627) zero the protect count for any move that is not Protect or Endure.
+  if def.effect ~= "EFFECT_PROTECT" and def.effect ~= "EFFECT_ENDURE" then
+    state.protectCount = nil
+  end
+
+  -- Turn one of a charge move: print the line, remember the move, done.
+  -- BattleCommand_SkipSunCharge (effect_commands.asm:6488): in sun,
+  -- Solarbeam's effect list jumps straight past the charge command and the
+  -- beam fires in one turn.
+  local charge = Effects.CHARGE[def.effect]
+  if def.effect == "EFFECT_SOLARBEAM" and self.weather == "sun" then
+    charge = nil
+  end
+  if charge and not charging and Runtime.wantsHook("battle.charge_required") then
+    local required = Runtime.call("battle.charge_required", function(c)
+      return c.charge
+    end, {
+      battle = self, user = attacker, target = defender, move = def,
+      charge = true, isCalled = (self.copyDepth or 0) > 0,
+    })
+    if required == false then charge = nil end
+  end
+  if charge and not charging then
+    state.chargeMove = moveId
+    state.vanished = charge.vanish or nil
+    -- engine/battle/effect_commands.asm:5456-5458
+    if self.moveEvent then
+      self.moveEvent.animParam = 1
+      self.moveEvent.afterAnim = nil
+    end
+    -- BattleCommand_Charge picks the line off the MOVE, not the shared
+    -- EFFECT_FLY (`cp DIG`, effect_commands.asm:5464).
+    local text = charge.text
+    if moveId == "DIG" then text = Strings.source("%s dug a hole!") end
+    self:emit({ kind = "message", text = Strings(text, name) })
+    return
+  end
+
+  -- BattleCommand_Snore (engine/battle/move_effects/snore.asm:1-9)
+  if def.effect == "EFFECT_SNORE" and attacker.status ~= "sleep" then
+    self:markMissed()
+    self:emit({ kind = "message", text = Strings("But it failed!") })
+    return
+  end
+
+  -- Counter and Mirror Coat answer what the user took this turn, at double,
+  -- and fail outright when nothing of the right kind landed.
+  local counterKind = Effects.COUNTER[def.effect]
+  if counterKind then
+    local taken = state.tookThisTurn or 0
+    if taken <= 0 or state.tookKind ~= counterKind then
+      self:markMissed()
+      self:emit({ kind = "message", text = Strings("But it failed!") })
+      return
+    end
+    self:dealDamage(attacker, defender, Effects.counterDamage(taken),
+      { move = def, moveId = moveId })
+    return
+  end
+
+  -- Protect turns the whole move aside before accuracy is even rolled.
+  if self:volatile(defender).protect
+      and not Effects.NO_CHECKHIT[def.effect] then
+    -- CheckHit's .Protect arm jumps to .Miss (effect_commands.asm:1557).
+    if def.effect == "EFFECT_SELFDESTRUCT" then self:selfdestructUser(attacker) end
+    self:markMissed()
+    self:emit({ kind = "message",
+      text = Strings("%s protected itself!", self:monName(defender)) })
+    return
+  end
+
+  -- BattleCommand_CheckHit's .LockOn: the flag Lock-On left on the TARGET is
+  -- read and cleared by the very next move aimed at it, and while it is up the
+  -- accuracy roll does not happen at all.
+  local locked = self:consumeLockOn(defender)
+  -- CheckHit's .XAccuracy and EFFECT_ALWAYS_HIT arms
+  -- (effect_commands.asm:1572-1579).
+  local sureHit = locked or self:volatile(attacker).xAccuracy == true
+    or def.effect == "EFFECT_ALWAYS_HIT"
+
+  -- .LockOn runs ahead of .FlyDigMoves and returns a HIT unless the target is
+  -- flying and the move is one of the three (effect_commands.asm:1563-1567,
+  -- :1674-1691).
+  local lockedThrough = locked and not (
+    self:volatile(defender).chargeMove == "FLY"
+    and BattleState.LOCK_ON_GROUND_MOVES[moveId])
+
+  -- .FlyDigMoves: four moves reach a flying target, three an underground one
+  -- (effect_commands.asm:1566-1567, :1713-1746).
+  if self:volatile(defender).vanished and not lockedThrough
+      and not Effects.NO_CHECKHIT[def.effect]
+      and not Effects.hitsVanished(self:volatile(defender).chargeMove, moveId) then
+    -- CheckHit's .Miss only sets wAttackMissed (effect_commands.asm:1619-1630),
+    -- so `selfdestruct` still runs ahead of failuretext.
+    if def.effect == "EFFECT_SELFDESTRUCT" then self:selfdestructUser(attacker) end
+    self:markMissed()
+    self:emit({ kind = "message", text = Strings("%s's attack missed!", name) })
+    return
+  end
+
+  -- The status-shaped moves: each one either sets its own state and returns,
+  -- or falls through to the ordinary damage path.  Through the merged
+  -- `move_effects` record, so a mod's own primary effect is dispatched here
+  -- the way BattleState:performMove dispatches one on Gen 1.
+  local effectRecord = self:moveEffectRecordFor(def.effect)
+  local handler = effectRecord and effectRecord.run
+  if handler then
+    handler(self, attacker, defender, def, moveId, sureHit)
+    return
+  end
+
+  -- BattleCommand_CheckHit opens on `call .DreamEater / jp z, .Miss`
+  -- (engine/battle/effect_commands.asm:1554): DREAM EATER against a target
+  -- that is not asleep is a MISS, before anything is rolled, so no damage
+  -- lands and nothing is sapped.  The gate sits ahead of CheckHit's .LockOn
+  -- and .XAccuracy arms, which is why `sureHit` does not carry the move past
+  -- it -- and ahead of the damage block, which is where this used to sit,
+  -- refusing the move only after it had already hit and healed.
+  if def.effect == "EFFECT_DREAM_EATER" and defender.status ~= "sleep" then
+    self:markMissed()
+    self:emit({ kind = "message", text = Strings("%s's attack missed!", name) })
+    return
+  end
+
+  -- MAGNITUDE rolls its power before checkhit (`getmagnitude` sits between
+  -- damagestats and damagecalc, data/moves/effects.asm:1705), so the number is
+  -- announced even on a miss.  The rolled power replaces the move's stored
+  -- one, which the ROM keeps at 1 for exactly this reason.
+  local powerOverride
+  if def.effect == "EFFECT_MAGNITUDE" then
+    local rolled, number = Effects.magnitudePower(self.random)
+    powerOverride = rolled
+    -- engine/battle/move_effects/magnitude.asm:20-22
+    if self.moveEvent then
+      self.moveEvent.deferAnim = true
+      self.moveEvent.animDelay = true
+    end
+    self:emit({ kind = "message",
+      text = Strings("Magnitude %d!", number) })
+    -- data/moves/effects.asm:1705-1711
+    self.moveEvent = self:emit({ kind = "message",
+      moveAnim = moveId, side = self:sideOf(attacker) })
+  end
+
+  -- data/moves/effects.asm:1607, :1649
+  if def.effect == "EFFECT_RETURN" then
+    powerOverride = Effects.happinessPower(attacker.happiness)
+  elseif def.effect == "EFFECT_FRUSTRATION" then
+    powerOverride = Effects.happinessPower(attacker.happiness, true)
+  end
+
+  if not sureHit
+      and not self:accuracyRoll(def, attacker, defender) then
+    -- data/moves/effects.asm:148-151: `selfdestruct` sits between checkhit and
+    -- failuretext, so a missed Explosion still kills the user.
+    if def.effect == "EFFECT_SELFDESTRUCT" then self:selfdestructUser(attacker) end
+    self:markMissed()
+    self:emit({ kind = "message", text = Strings("%s's attack missed!", name) })
+    -- Fury Cutter's ramp resets the moment it misses.
+    state.rampMove = nil
+    state.rampCount = nil
+    -- BattleCommand_RolloutPower reads wAttackMissed before it touches the
+    -- counter and clears SUBSTATUS_ROLLOUT outright (rollout.asm), so a missed
+    -- Rollout releases the lock as well as the power ramp.  A missed rampage
+    -- does NOT: `rampage` runs ahead of checkhit and nothing reads the miss.
+    state.rolloutLock = nil
+    return
+  end
+
+  -- move_effects/selfdestruct.asm:6-12, run before applydamage.
+  if def.effect == "EFFECT_SELFDESTRUCT" then self:selfdestructUser(attacker) end
+
+  -- Substitute: a quarter of max HP, refused when the user has no more than
+  -- that to give.
+  if def.effect == "EFFECT_SUBSTITUTE" then
+    local maxHp = attacker.maxHp or (attacker.stats and attacker.stats.hp) or 1
+    local cost = Effects.substituteCost(maxHp)
+    if (attacker.hp or 0) <= cost or (state.substitute or 0) > 0 then
+      self:markMissed()
+      self:emit({ kind = "message", text = Strings("But it failed!") })
+      return
+    end
+    attacker.hp = attacker.hp - cost
+    state.substitute = cost
+    -- The cost is paid silently: SUBSTITUTE's own anim is all that plays
+    -- (move_effects/substitute.asm:57-68).
+    self:emit({ kind = "damage", side = self:sideOf(attacker), amount = cost,
+      hp = attacker.hp, anim = false })
+    self:emit({ kind = "message",
+      text = Strings("%s made a SUBSTITUTE!", name) })
+    return
+  end
+
+  -- Damage that skips the formula entirely.  The move's own power goes with
+  -- it: EFFECT_STATIC_DAMAGE's arm of BattleCommand_ConstantDamage reads
+  -- BATTLE_VARS_MOVE_POWER as the damage (effect_commands.asm:3157-3161).
+  local fixed = self:fixedDamage(def.effect, attacker, defender, self.random,
+    def.power)
+  if fixed then
+    -- The constant-damage effect list carries `resettypematchup` instead of
+    -- `stab`, and that command misses the move outright when the matchup byte
+    -- is 0 (effect_commands.asm:1480-1493) -- an immune target is the one
+    -- thing that stops SONIC BOOM, NIGHT SHADE or SUPER FANG.
+    local defenderTypes = (self:speciesDef(defender) or {}).types
+      or defender.types
+    local matchups = self:matchupsAgainst(defender)
+    if Damage.typeMultiplier(def.type, defenderTypes, matchups) == 0 then
+      self:markMissed()
+      self:emit({ kind = "message",
+        text = Strings("It doesn't affect %s...", self:monName(defender)) })
+      return
+    end
+    self:dealDamage(attacker, defender, fixed, { move = def, moveId = moveId })
+    return
+  end
+
+  local dealt, info = 0, nil
+  if ((powerOverride or def.power) or 0) > 0 then
+    -- Rollout and Fury Cutter double their power for each consecutive use.
+    local power = powerOverride or def.power
+    if Effects.RAMPING[def.effect] then
+      -- The two ramps are separate bytes on the cart with separate reset
+      -- rules, so "is this a continuation?" is asked differently for each.
+      --
+      -- ROLLOUT: BattleCommand_CheckRollout's `.reset` arm zeroes
+      -- wPlayerRolloutCount whenever SUBSTATUS_ROLLOUT is CLEAR as the move
+      -- starts (move_effects/rollout.asm), and the fifth hit is what clears
+      -- that bit.  So a sequence that has run its five hits out does NOT feed
+      -- the next one: picking ROLLOUT again opens a fresh count, at base power
+      -- and re-locked.  Testing "was the last move also ROLLOUT?" instead kept
+      -- the spent counter, which left the second sequence starting at the 16x
+      -- cap and never locking the menu at all.
+      --
+      -- FURY CUTTER: wPlayerFuryCutterCount has no such bit.  It is zeroed by
+      -- ResetFuryCutterCount, which move_effects/fury_cutter.asm calls on a
+      -- miss and effect_commands.asm:355 calls whenever another move is used,
+      -- which is exactly the same-move test below.
+      local continuing
+      if def.effect == "EFFECT_ROLLOUT" then
+        continuing = state.rolloutLock == moveId
+      else
+        continuing = state.rampMove == moveId
+      end
+      if continuing then
+        state.rampCount = math.min((state.rampCount or 0) + 1,
+          Effects.RAMPING[def.effect] - 1)
+      else
+        state.rampMove, state.rampCount = moveId, 0
+      end
+      power = Effects.rampedPower(def.power, state.rampCount,
+        def.effect == "EFFECT_ROLLOUT" and state.curled)
+      -- BattleCommand_RolloutPower's `.hit` arm sets SUBSTATUS_ROLLOUT while
+      -- the incremented counter is still short of MAX_ROLLOUT_COUNT and
+      -- clears it on the fifth (rollout.asm), and CheckPlayerLockedIn
+      -- (core.asm:546) offers no menu at all while the bit is set.  Fury
+      -- Cutter shares the power ramp but not the lock: its effect list
+      -- carries no checkrollout.  `rampCount` is the cart's counter minus
+      -- one, so the last locked turn is the one below the cap.
+      if def.effect == "EFFECT_ROLLOUT" then
+        local last = state.rampCount >= (Effects.RAMPING[def.effect] - 1)
+        state.rolloutLock = (not last) and moveId or nil
+      end
+    else
+      state.rampMove, state.rampCount = nil, nil
+      state.rolloutLock = nil
+    end
+
+    local hits = Effects.hitCount(def.effect, self:roller())
+    local landed = 0
+    for hit = 1, hits do
+      if (defender.hp or 0) <= 0 then break end
+      local hitPower = power
+      if def.effect == "EFFECT_TRIPLE_KICK" then
+        hitPower = Effects.tripleKickPower(def.power, hit)
+        -- Each kick rolls its own accuracy and the sequence stops on a miss.
+        if hit > 1 and not sureHit
+            and not self:accuracyRoll(def, attacker, defender) then
+          break
+        end
+      end
+      local amount
+      amount, info = self:hitOnce(attacker, defender, def, { power = hitPower })
+      if info and info.effectiveness == 0 then
+        -- rolloutpower sits after checkhit and reads the wAttackMissed that
+        -- `stab` set for the immunity, so an immune target breaks the Rollout
+        -- lock (rollout.asm, the arm above `.hit`).
+        state.rolloutLock = nil
+        return
+      end
+      dealt = dealt + amount
+      landed = landed + 1
+    end
+    if landed > 1 then
+      -- PlayerHitTimesText / EnemyHitTimesText (data/text/battle.asm:749,755)
+      -- are "Hit @ times!".  Gen 2 has no singular form of this line, so the
+      -- plural stands even at one hit rather than the "(s)" this printed.
+      -- Gen 1 already says it this way (src/battle/EffectRegistry.lua,
+      -- _HitXTimesText).
+      self:emit({ kind = "message", text = Strings("Hit %d times!", landed) })
+    end
+
+    -- move_effects/pay_day.asm:13
+    if def.effect == "EFFECT_PAY_DAY" and dealt > 0 then
+      self.payDay = (self.payDay or 0) + 2 * (attacker.level or 1)
+      self:emit({ kind = "message",
+        text = Strings("Coins scattered\neverywhere!") })
+    end
+
+    -- Recoil is a quarter of what was dealt; drain heals half of it.
+    if def.effect == "EFFECT_RECOIL_HIT" and dealt > 0 then
+      local recoil = Effects.recoilDamage(dealt)
+      attacker.hp = math.max(0, (attacker.hp or 0) - recoil)
+      -- BattleCommand_Recoil is bar, huds and RecoilText only: no anim at all
+      -- (effect_commands.asm:5674-5687).
+      self:emit({ kind = "damage", side = self:sideOf(attacker),
+        amount = recoil, hp = attacker.hp, anim = false })
+      self:emit({ kind = "message",
+        text = Strings("%s is hit with recoil!", name) })
+    elseif Effects.DRAIN[def.effect] and dealt > 0 then
+      self:heal(attacker, Effects.drainAmount(dealt))
+      self:emit({ kind = "message",
+        text = Strings("%s's energy was drained!", self:monName(defender)) })
+    end
+
+    -- BattleCommand_RechargeNextTurn (effect_commands.asm:5899): HYPER BEAM
+    -- sets SUBSTATUS_RECHARGE on the user, and CheckPlayerTurn /
+    -- CheckEnemyTurn spend the next turn clearing it.  Nothing here implemented
+    -- it, so HYPER BEAM was a 150-power move with no cost at all.
+    --
+    -- Found by the Gold route bot: CHAMPION LANCE's three DRAGONITE all carry
+    -- it, and they were firing it every single turn -- twice the damage output
+    -- the fight is balanced around, against a bot with one healthy mon.
+    -- Unlike Gen 1 there is no "no recharge if it KOs" exemption; the command
+    -- runs at the end of the effect list whenever the move connected.
+    if def.effect == "EFFECT_HYPER_BEAM" and dealt > 0 then
+      state.recharge = true
+    end
+
+    -- BattleCommand_HeldFlinch (effect_commands.asm:5349): a damaging move
+    -- that connected lets the ATTACKER's HELD_FLINCH item (King's Rock)
+    -- flinch the target, one byte against the parameter (30 -> 30/256).
+    -- Silent when it lands -- the message is the target's own "flinched!"
+    -- when it tries to act.  A Substitute blocks it.
+    if dealt > 0 and (defender.hp or 0) > 0 then
+      local held, parameter = self:heldEffect(attacker, "flinch")
+      if held == "HELD_FLINCH"
+          and (self:volatile(defender).substitute or 0) <= 0
+          and rand(self.random, 256) < parameter then
+        self:volatile(defender).flinched = true
+      end
+    end
+
+    -- BattleCommand_FlinchTarget (effect_commands.asm:5314): the *_HIT
+    -- flinch moves (Rock Slide, Headbutt, Bite) roll the move's effect
+    -- chance after a connected hit; a Substitute blocks it.  Silent when it
+    -- lands, same as the held-item flinch above.
+    if def.effect == "EFFECT_FLINCH_HIT" and dealt > 0
+        and (defender.hp or 0) > 0
+        and (self:volatile(defender).substitute or 0) <= 0 then
+      local chance = def.effectChance or 0
+      if chance > 0 and rand(self.random, 100) < chance then
+        self:volatile(defender).flinched = true
+      end
+    end
+
+    -- BattleCommand_TrapTarget (effect_commands.asm:5569): a connected Bind
+    -- class hit starts a 2-5 turn partial trap on the target -- unless one
+    -- is already running or a Substitute is up.  The stored count is
+    -- `and %11` plus three because HandleWrap decrements BEFORE it acts, so
+    -- a count of n hurts on n-1 turns and releases on the last.
+    if def.effect == "EFFECT_TRAP_TARGET" and dealt > 0
+        and (defender.hp or 0) > 0 then
+      local target = self:volatile(defender)
+      if not target.wrapCount and (target.substitute or 0) <= 0 then
+        target.wrapCount = rand(self.random, 4) + 3
+        target.wrapMove = def.name or moveId
+        -- wFXAnimID keeps the trapping move itself, which is what HandleWrap
+        -- replays every turn (core.asm:1185-1202).
+        target.wrapMoveId = moveId
+        local trapText = BattleState.TRAP_TEXT[moveId]
+        self:emit({ kind = "message",
+          text = trapText and trapText(self:monName(defender), name)
+            or Strings("%s was trapped!", self:monName(defender)) })
+      end
+    end
+  end
+
+  -- Defense Curl arms Rollout as well as raising Defense.
+  if def.effect == "EFFECT_DEFENSE_CURL" then state.curled = true end
+
+  -- A refused primary change writes wAttackMissed (effect_commands.asm:4191,
+  -- :4380-4400); the *_HIT twins animate first and must stay unmarked.
+  local change = Effects.STAT_CHANGES[def.effect]
+  if change then
+    local target = change[3] == "self" and attacker or defender
+    -- CheckMist first (effect_commands.asm:4290), then .ComputerMiss (:4318)
+    local misted = target ~= attacker and (change[2] or 0) < 0
+      and self:volatile(target).mist
+    if not misted and change[3] == "foe"
+        and def.effect ~= "EFFECT_ACCURACY_DOWN_HIT"
+        and self:aiRandomFail(attacker, target) then
+      self:markMissed()
+      self:emit({ kind = "message", text = Strings("But it failed!") })
+    elseif not self:changeStageAgainstMist(attacker, target, change[1], change[2])
+    then
+      self:markMissed()
+    end
+  else
+    local onHit = Effects.STAT_CHANGES_ON_HIT[def.effect]
+    if onHit and dealt > 0 then
+      local chance = def.effectChance or 0
+      if chance > 0 and rand(self.random, 100) < chance then
+        local target = onHit[3] == "self" and attacker or defender
+        self:changeStageAgainstMist(attacker, target, onHit[1], onHit[2])
+      end
+    elseif def.effect == "EFFECT_ALL_UP_HIT" and dealt > 0 then
+      local chance = def.effectChance or 0
+      if chance > 0 and rand(self.random, 100) < chance then
+        for _, stat in ipairs(Effects.ALL_UP_STATS) do
+          self:changeStage(attacker, stat, 1)
+        end
+      end
+    end
+  end
+
+  -- Status moves land their status; damaging moves roll their effect chance.
+  -- Both come off the merged `move_effects` record: a primary record's
+  -- `status` is the one a zero-power move lands, a secondary record's is the
+  -- one rolled against the move's effect chance after a hit.
+  local record = self:moveEffectRecordFor(def.effect)
+  local status = record and record.kind == "primary" and record.status or nil
+  if status and (def.power or 0) == 0 then
+    -- A refused primary status is a failed move (effect_commands.asm:3748,
+    -- :6656); a refused secondary already animated and stays unmarked (:3752).
+    if self:statusRefusedByType(defender, def.type, status) then
+      self:markMissed()
+      self:emit({ kind = "message",
+        text = Strings("It doesn't affect %s...", self:monName(defender)) })
+    elseif BattleState.AI_FAIL_STATUSES[status]
+        and self:aiRandomFail(attacker, defender) then
+      self:markMissed()
+      self:emit({ kind = "message", text = Strings("But it failed!") })
+    elseif not self:applyStatus(defender, status, attacker) then
+      self:markMissed()
+    end
+  else
+    local secondary = record and record.kind == "secondary"
+      and record.status or nil
+    -- engine/battle/effect_commands.asm:6325
+    if secondary and (defender.hp or 0) > 0
+        and not self:safeguarded(defender)
+        and not self:statusRefusedByType(defender, def.type, secondary) then
+      local chance = def.effectChance or 0
+      if chance > 0 and rand(self.random, 100) < chance then
+        self:applyStatus(defender, secondary, attacker)
+      end
+    end
+  end
+end
+
+function BattleState:heldEffect(mon, trigger)
+  local def = self:itemDef(mon and mon.item)
+  local effect = def and def.heldEffect or nil
+  local parameter = (def and def.heldParameter) or 0
+  if not Runtime.wantsHook("held_item.trigger") then return effect, parameter end
+  local hookedEffect, hookedParameter = Runtime.call("held_item.trigger",
+    function(c) return c.effect, c.parameter end,
+    { battle = self, mon = mon, item = mon and mon.item, def = def,
+      effect = effect, parameter = parameter, trigger = trigger or "check" })
+  if type(hookedEffect) ~= "string" then return nil, 0 end
+  return hookedEffect, tonumber(hookedParameter) or parameter
+end
+
+local function encoredMove(state, mon)
+  if not state.encore then return nil end
+  for _, move in ipairs(mon.moves or {}) do
+    if move.id == state.encore and (move.pp or 0) > 0 then
+      return state.encore
+    end
+  end
+  state.encore, state.encoreTurns = nil, nil
+  return nil
+end
+
+function BattleState:lockedInMove(mon)
+  local state = self:volatile(mon)
+  -- engine/battle/core.asm:543
+  if state.chargeMove then return state.chargeMove end
+  if state.rolloutLock then return state.rolloutLock end
+  if state.rampageMove and (state.rampageTurns or 0) > 0 then
+    return state.rampageMove
+  end
+  return nil
+end
+
+-- ParsePlayerAction's bide arm (engine/battle/core.asm:569-576), enemy twin
+-- at :5650
+function BattleState:fightLockedMove(mon)
+  local state = self:volatile(mon)
+  if state.bideTurns then return state.bideMove end
+  return nil
+end
+
+function BattleState:forcedMove(mon)
+  local locked = self:lockedInMove(mon)
+  if locked then return locked end
+  -- ParsePlayerAction reads SUBSTATUS_ENCORED ahead of the bide arm
+  -- (engine/battle/core.asm:561-566).
+  local encored = encoredMove(self:volatile(mon), mon)
+  if encored then return encored end
+  return self:fightLockedMove(mon)
+end
+
+function BattleState:moveDisabled(mon, moveId)
+  return self:volatile(mon).disabled == moveId
+end
+
+-- Effective Speed for ordering: stat stages, then the paralysis quarter.
+function BattleState:effectiveSpeed(mon)
+  if not mon or not mon.stats then return 0 end
+  local stages = self.stages[self:sideOf(mon)]
+  local speed = Damage.applyStage(mon.stats.speed, stages.speed)
+  -- Apply paralysis penalty
+  if mon.status == "PAR" then
+    speed = math.max(1, math.floor(speed / 4))
+  end
+  return speed
+end
+
+-- DetermineMoveOrder: faster side first, a coin flip on a tie.  Priority comes
+-- from the move (Quick Attack and friends) and beats Speed outright.
+function BattleState:orderOf(playerMove, enemyMove)
+  local playerPriority = self:movePriority(playerMove)
+  local enemyPriority = self:movePriority(enemyMove)
+  if playerPriority ~= enemyPriority then
+    return playerPriority > enemyPriority and "player" or "enemy"
+  end
+  -- HELD_QUICK_CLAW (engine/battle/core.asm `.equal_priority`): consulted
+  -- only once priority ties, ahead of the Speed compare.  One byte against
+  -- the item's parameter (60 -> 60/256).  When both sides hold one the
+  -- ENEMY's roll goes first, exactly as the non-link `.both_have_quick_claw`
+  -- arm orders them.
+  local playerClaw = self.player.mon and self.player.mon.item and self.player.mon.item == "QUICK_CLAW"
+  local enemyClaw = self.enemy.mon and self.enemy.mon.item and self.enemy.mon.item == "QUICK_CLAW"
+  if playerClaw and enemyClaw then
+    if self.mirrored then
+      if (self.rng or love.math.random)(1, 256) <= 60 then return "player" end
+      if (self.rng or love.math.random)(1, 256) <= 60 then return "enemy" end
+    else
+      if (self.rng or love.math.random)(1, 256) <= 60 then return "enemy" end
+      if (self.rng or love.math.random)(1, 256) <= 60 then return "player" end
+    end
+  elseif playerClaw then
+    if (self.rng or love.math.random)(1, 256) <= 60 then return "player" end
+  elseif enemyClaw then
+    if (self.rng or love.math.random)(1, 256) <= 60 then return "enemy" end
+  end
+  local playerSpeed = self:effectiveSpeed(self.player.mon)
+  local enemySpeed = self:effectiveSpeed(self.enemy.mon)
+  if playerSpeed ~= enemySpeed then
+    return playerSpeed > enemySpeed and "player" or "enemy"
+  end
+  local playerFirst = (self.rng or love.math.random)(1, 2) == 1
+  if self.mirrored then playerFirst = not playerFirst end
+  return playerFirst and "player" or "enemy"
+end
+
+-- Volatile priority threshold for status effects
+BattleState.VOLATILE_PRIORITY = 20
+
+-- Gen 2 priority moves.  data/moves/effects_priorities.asm keys off the move
+-- *effect*, so a modded move inherits the priority of whatever it copies.
+BattleState.PRIORITY = {
+  EFFECT_PRIORITY_HIT = 1,   -- Quick Attack, Mach Punch
+  EFFECT_PROTECT = 3,
+  EFFECT_ENDURE = 3,
+  EFFECT_COUNTER = -1,
+  EFFECT_MIRROR_COAT = -1,
+  EFFECT_FORCE_SWITCH = -1,  -- Whirlwind, Roar: priority 0, below BASE
+}
+
+function BattleState:movePriority(moveId)
+  -- GetMovePriority `cp VITAL_THROW / ld a, 0 / ret z`
+  -- (engine/battle/core.asm:787-789).
+  if moveId == "VITAL_THROW" then return -1 end
+  local def = self:moveDef(moveId)
+  return (def and BattleState.PRIORITY[def.effect]) or 0
+end
+
+-- engine/battle/effect_commands.asm:192-197 (enemy twin :383-390)
+BattleState.SLEEP_BYPASS_MOVES = { SNORE = true, SLEEP_TALK = true }
+
+-- Can this mon act?  Returns true, or false plus the message the cart prints.
+-- `moveId` is wCurPlayerMove / wCurEnemyMove (effect_commands.asm:193).
+local function clearBide(state)
+  state.bideTurns, state.bideStored, state.bideMove = nil, nil, nil
+end
+
+local function checkTurn(self, mon, moveId)
+  local name = mon and mon.name or "Pokemon"
+  -- SUBSTATUS_RECHARGE, and it is checked BEFORE status: CheckPlayerTurn reads
+  -- it first, clears it, prints MustRechargeText and jumps to EndTurn, so a mon
+  -- that is both recharging and asleep spends this turn recharging.
+  local vol = self:volatile(mon)
+  if vol.recharge then
+    vol.recharge = nil
+    self:emit({ kind = "message", text = Strings("%s must recharge!", name) })
+    return false
+  end
+  -- Status check - simplified for Gen 2
+  if mon.status == "SLP" then
+    local bypass = BattleState.SLEEP_BYPASS_MOVES[moveId]
+    if not bypass then
+      self:emit({ kind = "message", text = Strings("%s is fast asleep!", name) })
+      return false
+    end
+  elseif mon.status == "FRZ" then
+    self:emit({ kind = "message", text = Strings("%s is frozen solid!", name) })
+    return false
+  elseif mon.status == "PAR" then
+    if (self.rng or love.math.random)(1, 256) < 63 then
+      self:emit({ kind = "message", text = Strings("%s is fully paralyzed!", name) })
+      return false
+    end
+  end
+  -- SUBSTATUS_FLINCHED, read and cleared right after the freeze check
+  -- (CheckPlayerTurn / CheckEnemyTurn `.not_frozen`).  Set this turn by the
+  -- opponent's HELD_FLINCH item (King's Rock) -- and the EFFECT_FLINCH_HIT
+  -- moves once they write the same flag.
+  if vol.flinched then
+    vol.flinched = nil
+    self:emit({ kind = "message", text = Strings("%s flinched!", name) })
+    return false
+  end
+  -- SUBSTATUS_CONFUSED (CheckPlayerTurn past `.not_flinched`): the count
+  -- decrements FIRST and zero snaps out -- the mon still acts that turn.
+  -- While it holds, one byte under 50 percent + 1 spends the turn on
+  -- HitConfusion's self-hit instead.
+  if vol.confuseCount then
+    vol.confuseCount = vol.confuseCount - 1
+    if vol.confuseCount <= 0 then
+      vol.confuseCount = nil
+      self:emit({ kind = "message",
+        text = Strings("%s's confused no more!", name) })
+    else
+      self:emit({ kind = "message", text = Strings("%s is confused!", name) })
+      if (self.rng or love.math.random)(1, 256) < 128 then
+        -- Simple self-hit logic
+        self:emit({ kind = "message", text = Strings("It hurt itself in\nits confusion!") })
+        return false
+      end
+    end
+  end
+  -- engine/battle/effect_commands.asm:291-310, enemy twin :539-558
+  if vol.attract then
+    local partner = (mon == self.player.mon) and self.enemy.mon or self.player.mon
+    -- data/text/battle.asm:484
+    self:emit({ kind = "message",
+      text = Strings("%s\nis in love with", name) })
+    self:emit({ kind = "message",
+      text = Strings("is in love with\n%s!", partner and partner.name or "Pokemon") })
+    if (self.rng or love.math.random)(1, 256) >= 128 then
+      -- data/text/battle.asm:490
+      self:emit({ kind = "message",
+        text = Strings("%s's\ninfatuation kept", name) })
+      self:emit({ kind = "message",
+        text = Strings("infatuation kept\nit from attacking!") })
+      return false
+    end
+  end
+  return true
+end
+
+-- CantMove (engine/battle/effect_commands.asm:344-353) clears BIDE on every
+-- arm of CheckPlayerTurn / CheckEnemyTurn that spends the turn.
+function BattleState:canAct(mon, moveId)
+  local acted = checkTurn(self, mon, moveId)
+  if not acted then clearBide(self:volatile(mon)) end
+  return acted
+end
+
+-- Helper function to get mon name with proper prefix
+function BattleState:monName(mon)
+  if not mon or not mon.name then return "" end
+  -- Check if this is the player's mon
+  local isPlayer = false
+  if self.player and self.player.mon == mon then
+    isPlayer = true
+  elseif self.enemy and self.enemy.mon == mon then
+    isPlayer = false
+  else
+    -- Default to player if unsure
+    isPlayer = true
+  end
+  return isPlayer and mon.name or ("Enemy " .. mon.name)
+end
+
+
+
+function BattleState:roller()
+  if not self.rollerFn then
+    self.rollerFn = function(n) 
+      if self.random then
+        return self.random(1, n)
+      elseif love and love.math then
+        return love.math.random(1, n)
+      else
+        return math.random(1, n)
+      end
+    end
+  end
+  return self.rollerFn
+end
+
+function BattleState:fixedDamage(effect, attacker, defender, random, power)
+  if effect == "EFFECT_LEVEL_DAMAGE" then
+    local level = attacker and attacker.level or (attacker.mon and attacker.mon.level) or 1
+    return math.max(1, level)
+  end
+  if effect == "EFFECT_SUPER_FANG" then
+    local hp = defender and defender.hp or (defender.mon and defender.mon.hp) or 1
+    return math.max(1, math.floor(hp / 2))
+  end
+  if effect == "EFFECT_PSYWAVE" then
+    -- .psywave rerolls until the byte is nonzero AND below level * 1.5, so the
+    -- top of the range is that ceiling minus one (effect_commands.asm:3163).
+    local level = attacker and attacker.level or (attacker.mon and attacker.mon.level) or 1
+    local ceiling = math.max(2, math.floor(level * 3 / 2))
+    return math.max(1, (random and random(ceiling - 1) or 0) + 1)
+  end
+  -- SONIC BOOM and DRAGON RAGE share EFFECT_STATIC_DAMAGE, whose arm reads
+  -- BATTLE_VARS_MOVE_POWER straight into the damage word: their stored power
+  -- (20 and 40) IS the damage, never a formula input
+  -- (effect_commands.asm:3157-3161).
+  if effect == "EFFECT_STATIC_DAMAGE" then
+    return math.max(1, math.floor(power or 0))
+  end
+  return nil
+end
+
+function BattleState:moveEffectRecordFor(effect)
+  if effect == nil then return nil end
+  local merged = self.data and self.data.gen2MoveEffects
+  return (merged and merged[effect]) or BattleState.MOVE_EFFECT_RECORDS[effect]
+end
+
+-- STRUGGLE, the move a mon with nothing left to spend falls back to
+-- (engine/battle/core.asm `.CheckPlayerHasUsableMoves` for the player and
+-- `.struggle` for the enemy).  It lives in the move table like any other move
+-- -- typeless-in-practice NORMAL, 50 power, EFFECT_RECOIL_HIT -- and is
+-- deliberately NOT in anyone's move list, which is why useMove's PP guard is
+-- written `if move and ...`: findMove returns nil for it and the guard is
+-- skipped rather than tripped.
+BattleState.STRUGGLE = "STRUGGLE"
+
+-- .LockOn's three exceptions against a flying target
+-- (engine/battle/effect_commands.asm:1683-1688).
+BattleState.LOCK_ON_GROUND_MOVES = { EARTHQUAKE = true, FISSURE = true,
+  MAGNITUDE = true }
+
+-- .CheckPlayerHasUsableMoves skips the disabled slot (engine/battle/core.asm:5290-5305).
+function BattleState:hasUsableMoves(mon)
+  local disabled = mon and mon.volatile and mon.volatile.disabled
+  for _, move in ipairs((mon and mon.moves) or {}) do
+    if (move.pp or 0) > 0 and move.id ~= disabled then return true end
+  end
+  return false
+end
+
+function BattleState:findMove(mon, moveId)
+  for _, move in ipairs(mon.moves or {}) do
+    if move.id == moveId then return move end
+  end
+  return nil
+end
+
+function BattleState:volatile(mon)
+  mon.volatile = mon.volatile or {}
+  return mon.volatile
+end
+
+
+function BattleState:consumeLockOn(defender)
+  local target = self:volatile(defender)
+  if not target.lockOn then return false end
+  target.lockOn = nil
+  return true
+end
+-- Clears everything a switch clears (ResetBattleParticipants / SwitchOutMon).
+--
+-- SwitchOutMon reloads the battle struct from the party slot, which is what
+-- takes a Transform down with the switch; the port's one-table-per-mon shape
+-- makes that a restore rather than a reload (Battle:untransform).  It has to
+-- happen HERE and not only at the switch sites, because CleanUpBattleRAM at
+-- the end of the battle runs through Battle:clearAllVolatiles -- and for a
+-- wild catch that table is already sitting in the player's party.
+function BattleState:clearVolatile(mon)
+  if not mon then return end
+  self:untransform(mon)
+  mon.volatile = nil
+  -- engine/battle/core.asm:3871
+  if mon == self.player or mon == self.enemy then
+    if self.player and self.player.volatile then
+      self.player.volatile.attract = nil
+    end
+    if self.enemy and self.enemy.volatile then
+      self.enemy.volatile.attract = nil
+    end
+  end
+end
+
+-- The cart keeps every substatus in battle RAM (wPlayerSubStatus1-5), which
+-- NewBattleMonStatus zeroes at each send-out and CleanUpBattleRAM zeroes on
+-- the way out of the battle.  This port hangs the same bookkeeping off the mon
+-- record, and Battle.party IS save.party, so nothing a battle wrote may be
+-- left on a party table: an X item's bit, a confusion count or a wrap counter
+-- would otherwise be written to the save file and read back by the next
+-- battle, where DIRE HIT is then refused forever as an already-set bit.
+function BattleState:clearAllVolatiles()
+  for _, mon in ipairs(self.party or {}) do self:clearVolatile(mon) end
+  for _, mon in ipairs(self.enemyParty or {}) do self:clearVolatile(mon) end
+  self:clearVolatile(self.player)
+  self:clearVolatile(self.enemy)
+end
+
 -- ItemUseBall for BATTLE_TYPE_OLD_MAN: the party/box-full checks are
 -- skipped (item_effects.asm:114-118), every capture calculation is
 -- skipped -- the old man branch jumps straight to .captured, $43 anim
@@ -4142,14 +5843,6 @@ function BattleState:statusLabel(mon)
   return mon.status
 end
 
-
-
-function BattleState:volatile(mon)
-  if not mon then return {} end
-  mon.volatile = mon.volatile or {}
-  return mon.volatile
-end
-
 -- The one accuracy roll (MoveHitTest), hooked as battle.accuracy.
 -- accuracyRaw is a 0-255 threshold that stands in for the move's accuracy byte
 -- this turn -- Gen 2's BattleCommand_ThunderAccuracy overwrites that byte in
@@ -4172,6 +5865,45 @@ function BattleState:accuracyRoll(move, user, target, accuracyRaw)
   end
   return Damage.accuracyRoll(self.ruleset, move, user, target, self.rng,
                              accuracyRaw, self.data, Weather.current(self))
+end
+
+function BattleState:accuracyRoll(def, attacker, defender, accuracy)
+  accuracy = accuracy or (def and def.accuracy)
+  if Runtime.wantsHook("battle.accuracy") then
+    return Runtime.call("battle.accuracy", function(c)
+      return c.battle:vanillaAccuracyRoll(c.accuracy, c.user, c.target)
+    end, { battle = self, move = def, moveId = def and def.id,
+           user = attacker, target = defender, accuracy = accuracy,
+           rng = self:roller(), random = self.random })
+  end
+  return self:vanillaAccuracyRoll(accuracy, attacker, defender)
+end
+
+
+function BattleState:moveAccuracy(accuracy, defender)
+  if not accuracy or accuracy <= 0 then return accuracy end
+  local effect, parameter = self:heldEffect(defender, "accuracy")
+  if effect == "HELD_BRIGHTPOWDER" then
+    accuracy = math.max(1,
+      accuracy - math.floor((parameter or 0) * 100 / 256))
+  end
+  return accuracy
+end
+
+function BattleState:vanillaAccuracyRoll(accuracy, attacker, defender)
+  local sideA = self:sideOf(attacker)
+  local sideD = self:sideOf(defender)
+  local stagesA = self.stages and self.stages[sideA] or {}
+  local stagesD = self.stages and self.stages[sideD] or {}
+  local acc = stagesA.accuracy or 0
+  local eva = stagesD.evasion or 0
+  -- engine/battle/effect_commands.asm:1786
+  if defender and self:volatile(defender).identified
+      and (eva or 0) >= (acc or 0) then
+    acc, eva = 0, 0
+  end
+  return Damage.rollHit(self:moveAccuracy(accuracy, defender), acc, eva,
+    self.random)
 end
 
 -- Damage.compute, hooked as battle.damage; the ctx table is only built
