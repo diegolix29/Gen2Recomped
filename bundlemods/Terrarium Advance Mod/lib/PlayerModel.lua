@@ -526,39 +526,20 @@ function PlayerModel.loadColosseumCharacter(id)
   -- Load the currently selected animation from settings
   local CharacterModelPick = V.require("CharacterModelPick")
   local selectedAnimation = CharacterModelPick.getCurrentAnimation()
-  local nativeOk, native, nativeErr = pcall(CharacterNativeAnim.load, id, groups, { selectedAnimation })
+  
+  -- For Wes, load both victory (idle) and walk animations
+  local animationsToLoad = { selectedAnimation }
+  if id == "wes" then
+    animationsToLoad = { "victory", "walk" }
+  end
+  
+  local nativeOk, native, nativeErr = pcall(CharacterNativeAnim.load, id, groups, animationsToLoad)
   if not nativeOk then native, nativeErr = nil, native end
   if not native then
-    print("[PlayerModel] no native " .. selectedAnimation .. " animation for '" .. tostring(id) .. "': " .. tostring(nativeErr))
+    print("[PlayerModel] no native animations for '" .. tostring(id) .. "': " .. tostring(nativeErr))
   end
 
-  -- For Wes with victory animation, extract a frame to use as base pose for walk cycle
-  -- This makes the procedural walking start from a more dynamic pose
-  local baseFrameVertices = nil
-  if id == "wes" and selectedAnimation == "victory" and native then
-    -- Try to extract frame 0 (first frame - neutral pose) as base pose
-    local frameOk, frameVertices = pcall(CharacterNativeAnim.extractFrame, native, "victory", 0)
-    if frameOk and frameVertices then
-      baseFrameVertices = frameVertices
-      print("[PlayerModel] Using victory animation frame 0 (first frame) as base pose for Wes walk cycle")
-      
-      -- Store frame vertices as walkBaseVertices (separate from baseVertices)
-      for gi, group in ipairs(groups) do
-        if frameVertices[gi] then
-          group.walkBaseVertices = frameVertices[gi]
-        end
-      end
-      
-      -- Rebuild walk rig with new walk base vertices
-      walkRig = nil
-      local walkRigOk2, walkRig2 = pcall(CharacterWalkCycle.build, id, groups, b)
-      if walkRigOk2 then walkRig = walkRig2 end
-    else
-      print("[PlayerModel] Could not extract victory frame for Wes: " .. tostring(frameVertices))
-    end
-  end
-
-  characterCache[id] = { groups = groups, scale = scale, walkRig = walkRig, native = native, baseFrameVertices = baseFrameVertices }
+  characterCache[id] = { groups = groups, scale = scale, walkRig = walkRig, native = native }
   characterGroups = groups
   characterWalkRig = walkRig
   characterNative = native
@@ -966,7 +947,10 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     -- there's any swing left to show, not just while isMoving is literally
     -- true this frame, so characterWalkBlend's stop-easing above actually
     -- has motion to ease out of.
-    if characterWalkRig and (jumpProgress or characterWalkBlend > 0.001) then
+    -- Skip procedural walk for Wes if he has a native walk animation
+    local useProceduralWalk = not (currentCharacterId == "wes" and characterNative and CharacterNativeAnim.hasRole(characterNative, "walk"))
+    
+    if characterWalkRig and useProceduralWalk and (jumpProgress or characterWalkBlend > 0.001) then
       for gi, group in ipairs(characterGroups) do
         if group.mesh and group.baseVertices then
           local buf
@@ -997,8 +981,15 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     -- rewound, so it always restarts from frame 0 when the player stops.
     if characterNative then
       if isMoving or jumpProgress or characterWalkBlend > 0.001 then
-        CharacterNativeAnim.reset(characterNative)
+        -- For Wes, use walk animation when moving
+        if currentCharacterId == "wes" and CharacterNativeAnim.hasRole(characterNative, "walk") then
+          CharacterNativeAnim.tick(characterNative, "walk")
+        else
+          -- For other characters or if walk animation not available, reset
+          CharacterNativeAnim.reset(characterNative)
+        end
       else
+        -- When idle, use the selected animation (victory for Wes by default)
         local CharacterModelPick = V.require("CharacterModelPick")
         local selectedAnimation = CharacterModelPick.getCurrentAnimation()
         CharacterNativeAnim.tick(characterNative, selectedAnimation)

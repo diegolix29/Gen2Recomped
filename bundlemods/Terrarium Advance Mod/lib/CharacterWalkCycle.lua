@@ -155,8 +155,7 @@ function M.build(id, groups, bounds)
 
   for gi, g in ipairs(groups) do
     local buckets = {}
-    -- Use walkBaseVertices if available (for animation-based walk poses), otherwise fall back to baseVertices
-    local base = g.walkBaseVertices or g.baseVertices
+    local base = g.baseVertices
     if base then
       for vi, v in ipairs(base) do
         local up = v[2]
@@ -243,8 +242,7 @@ end
 function M.apply(rig, groupIndex, group, phase, blend, out)
   out = out or {}
   local buckets = rig.groups[groupIndex]
-  -- Use walkBaseVertices if available (for animation-based walk poses), otherwise fall back to baseVertices
-  local base, uv = (group.walkBaseVertices or group.baseVertices), group.baseUVs
+  local base, uv = group.baseVertices, group.baseUVs
   if not buckets or not base then return out end
 
   local hipY, kneeY, shoulderY = rig.hipY, rig.kneeY, rig.shoulderY
@@ -346,8 +344,7 @@ end
 function M.applyJump(rig, groupIndex, group, progress, out)
   out = out or {}
   local buckets = rig.groups[groupIndex]
-  -- Use walkBaseVertices if available (for animation-based walk poses), otherwise fall back to baseVertices
-  local base, uv = (group.walkBaseVertices or group.baseVertices), group.baseUVs
+  local base, uv = group.baseVertices, group.baseUVs
   if not buckets or not base then return out end
 
   local hipY, kneeY, shoulderY = rig.hipY, rig.kneeY, rig.shoulderY
