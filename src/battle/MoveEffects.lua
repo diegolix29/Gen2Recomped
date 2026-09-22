@@ -1275,6 +1275,33 @@ function MoveEffects.warnUnknown(effect)
   end
 end
 
+function MoveEffects.stageMessage(name, stat, applied)
+  local label = Strings(MoveEffects.STAT_NAMES[stat] or stat)
+  if applied > 0 then
+    if math.abs(applied) >= 2 then
+      return Strings("%s's %s sharply rose!", name, label)
+    end
+    return Strings("%s's %s rose!", name, label)
+  end
+  if math.abs(applied) >= 2 then
+    return Strings("%s's %s sharply fell!", name, label)
+  end
+  return Strings("%s's %s fell!", name, label)
+end
+
+MoveEffects.MAX_STAGE = 6
+
+function MoveEffects.applyStage(stages, stat, delta)
+  if not (stages and stat) then return nil end
+  local current = stages[stat] or 0
+  local wanted = current + delta
+  if wanted > MoveEffects.MAX_STAGE then wanted = MoveEffects.MAX_STAGE end
+  if wanted < -MoveEffects.MAX_STAGE then wanted = -MoveEffects.MAX_STAGE end
+  if wanted == current then return nil end
+  stages[stat] = wanted
+  return wanted - current
+end
+
 MoveEffects.STAT_CHANGES = {
   EFFECT_ATTACK_UP = { "attack", 1, "self" },
   EFFECT_DEFENSE_UP = { "defense", 1, "self" },

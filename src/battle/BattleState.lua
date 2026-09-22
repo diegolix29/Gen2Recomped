@@ -4595,6 +4595,48 @@ function BattleState:dealDamage(attacker, defender, damage, opts)
   return damage
 end
 
+function BattleState:changeStageAgainstMist(attacker, target, stat, stages)
+  if target ~= attacker and (stages or 0) < 0
+      and self:volatile(target).mist then
+    self:emit({ kind = "message",
+      text = Strings("%s's protected by MIST.", self:monName(target)) })
+    return false
+  end
+  return self:changeStage(target, stat, stages)
+end
+
+function BattleState:changeStage(target, stat, stages)
+  local applied = Effects.applyStage(self.stages[self:sideOf(target)], stat,
+    stages)
+  local name = self:monName(target)
+  if not applied then
+    -- WontRiseAnymoreText / WontDropAnymoreText (data/text/battle.asm:718-732).
+    local label = Strings(MoveEffects.STAT_NAMES[stat] or stat)
+    local source = stages > 0
+      and Strings.source("%s's %s won't rise anymore!")
+      or Strings.source("%s's %s won't drop anymore!")
+    self:emit({ kind = "message", text = Strings(source, name, label) })
+    return false
+  end
+  self:emit({ kind = "stage", side = self:sideOf(target), stat = stat,
+    stages = applied, text = MoveEffects.stageMessage(name, stat, applied) })
+  return true
+end
+
+-- wAttackMissed, modelled on the event the screen animates off.  Every path
+-- that sets it (CheckHit's .Miss arms and the effect commands' own `.failed`
+-- tails, which reach AnimateFailedMove: a delay and no animation) marks the
+-- move event, and the screen skips the attack animation for a marked one --
+-- BattleCommand_MoveAnimNoSub, engine/battle/effect_commands.asm:1958.
+function BattleState:markMissed()
+  if self.moveEvent then self.moveEvent.missed = true end
+end
+
+-- engine/battle/effect_commands.asm:3615
+BattleState.AI_FAIL_STATUSES = {
+  sleep = true, poison = true, toxic = true, paralyze = true,
+}
+
 function BattleState:screenActive(defender, physical)
   local side = self.screens and self.screens[self:sideOf(defender)]
   if not side then return false end

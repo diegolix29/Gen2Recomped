@@ -406,6 +406,13 @@ function Damage.truncateStats(attack, defense, fixed)
   return a % 256, d % 256
 end
 
+function Damage.applyStage(value, stage)
+  local numerator, denominator = Damage.stageMultiplier(stage)
+  local out = math.floor(value * numerator / denominator)
+  -- ../pokecrystal/engine/battle/core.asm:6739
+  return math.max(1, math.min(Damage.MAX_STAT_VALUE, out))
+end
+
 -- Is this move physical?
 function Damage.isPhysical(moveType, types)
   local record = types and types[moveType]
