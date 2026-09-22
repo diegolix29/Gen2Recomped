@@ -3846,10 +3846,12 @@ local function initializeColosseumIntegration()
       BattleSettings = loadColosseumModule("BattleSettings")
     end
     namespace.BattleSettings = BattleSettings
+    mod.exports.BattleSettings = BattleSettings
 
     loadColosseumModule("MoveTargeting")
     local RealtimeBattle = loadColosseumModule("RealtimeBattle")
     namespace.RealtimeBattle = RealtimeBattle
+    mod.exports.RealtimeBattle = RealtimeBattle
     loadColosseumModule("RealtimeBattleBridge")
 
     loadColosseumModule("AbilityData")

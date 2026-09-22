@@ -1549,16 +1549,24 @@ local function commandRect()
 end
 
 local function realtimeBattleUiActive(battle)
-  -- Realtime battles own their own attack grid / side commands. Suppress the
-  -- classic FIGHT diamond so it cannot paint over that HUD.
+  -- Prefer the shared GoldCompat detector once UIMain has finished loading.
+  -- It also finds RealtimeBattle itself; this fallback only covers chunk load.
+  if GoldCompat and type(GoldCompat.realtimeBattleUiActive)=="function" then
+    return GoldCompat.realtimeBattleUiActive(battle)
+  end
   local game=(battle and battle.game) or (modRef and modRef.game)
   local lib=modRef and modRef.exports and modRef.exports.lib
   local settings=lib and lib.BattleSettings
-  if not (game and settings and type(settings.realtimeEnabled)=="function") then
-    return false
+  local realtime=lib and lib.RealtimeBattle
+  if settings and type(settings.realtimeEnabled)=="function" then
+    local ok,enabled=pcall(settings.realtimeEnabled,game)
+    if ok and enabled==true then return true end
   end
-  local ok,enabled=pcall(settings.realtimeEnabled,game)
-  return ok and enabled==true
+  if realtime and type(realtime.enabled)=="function" then
+    local ok,enabled=pcall(realtime.enabled,game)
+    if ok and enabled==true then return true end
+  end
+  return false
 end
 
 local function drawCommandMenu(battle)
@@ -2064,6 +2072,10 @@ local function drawBattlePresentation(game)
     activeSourceBattle=nil
     return false
   end
+  -- Realtime battles already draw their own HP rails, attack grid, and side
+  -- commands. Claiming this frame without painting keeps the Gold/Gen3
+  -- fallback HUD from stacking on top of that overlay.
+  if realtimeBattleUiActive(source or battle) then return true end
 
   love.graphics.push("all")
 
@@ -2093,6 +2105,7 @@ local function drawSafariPresentation(game,battle,source)
   if not battle or not resolvedSafariState(battle) then
     return false
   end
+  if realtimeBattleUiActive(source or battle) then return true end
 
   -- Safari is presentation-only here: native BattleState remains authoritative
   -- for encounter setup, catch odds, bait/rock, flee, counters, and naming.
@@ -2186,6 +2199,7 @@ function ColosseumUI.install(mod)
 end
 
 function ColosseumUI.draw(game,presentationBattle,sourceBattle)
+  if realtimeBattleUiActive(sourceBattle or presentationBattle) then return true end
   local provider=GoldCompat.findLoadedMod("DRAMATIC_SHAPE")
   local boss=provider and provider.exports and provider.exports.bossIntro
   if boss and boss.version==1 and boss.active(sourceBattle or presentationBattle) then return true end
@@ -2197,6 +2211,9 @@ function ColosseumUI.draw(game,presentationBattle,sourceBattle)
 end
 
 function ColosseumUI.drawSafari(game,presentationBattle,sourceBattle)
+  if realtimeBattleUiActive(sourceBattle or presentationBattle) then
+    return true
+  end
   if not GoldCompat.safariPresentationEnabled() then return false end
   if not presentationBattle or not resolvedSafariState(presentationBattle) then
     return false
@@ -4647,6 +4664,7 @@ end
 local function shouldDrawStatusHUD(game, battle)
   -- Bag, Party, Summary, Naming, etc. are pushed above BattleState. When one
   -- owns the foreground, no battle status chrome should leak over it.
+  if GoldCompat.realtimeBattleUiActive(battle) then return false end
   if not battleOwnsForeground(game, battle) then return false end
 
   -- Move selection is a full battle-owned menu rather than a battlefield
@@ -5629,17 +5647,46 @@ local function drawPanelBase(rect)
 end
 
 function GoldCompat.realtimeBattleUiActive(battle)
-  -- Realtime battles own their own attack grid / side commands. Suppress the
-  -- classic FIGHT diamond so it cannot paint over that HUD.
+  -- Realtime battles own HP banners, the attack grid, and side commands.
+  -- Hide every Colosseum / classic battle HUD while that mode is on.
+  --
+  -- BattleSettings lives on the Colosseum runtime namespace, NOT on
+  -- exports.lib (that table is the voxel Dramatic Shape V). Detect from
+  -- the settings module when we can find it, otherwise read the same save
+  -- tables BattleSettings writes.
   battle=GoldCompat.sourceBattleState(battle) or battle
   local game=(battle and battle.game) or (modRef and modRef.game) or GoldCompat.game
-  local lib=modRef and modRef.exports and modRef.exports.lib
-  local settings=lib and lib.BattleSettings
-  if not (game and settings and type(settings.realtimeEnabled)=="function") then
-    return false
+  if not game then return false end
+
+  local function fromModule(mod)
+    if not mod then return nil end
+    local exports=mod.exports or {}
+    local lib=exports.lib
+    local settings=exports.BattleSettings
+      or (lib and lib.BattleSettings)
+    if settings and type(settings.realtimeEnabled)=="function" then
+      local ok,enabled=pcall(settings.realtimeEnabled,game)
+      if ok then return enabled==true end
+    end
+    local realtime=exports.RealtimeBattle or (lib and lib.RealtimeBattle)
+    if realtime and type(realtime.enabled)=="function" then
+      local ok,enabled=pcall(realtime.enabled,game)
+      if ok then return enabled==true end
+    end
+    return nil
   end
-  local ok,enabled=pcall(settings.realtimeEnabled,game)
-  return ok and enabled==true
+
+  local found=fromModule(modRef)
+  if found~=nil then return found end
+
+  local save=game.save
+  if type(save)=="table" then
+    local p=save.terrariumBattle
+    if type(p)=="table" and p.realtimeBattle==true then return true end
+    p=save.colosseumBattle
+    if type(p)=="table" and p.realtimeBattle==true then return true end
+  end
+  return false
 end
 
 local function drawCommandMenu(battle)
@@ -24906,6 +24953,12 @@ function GoldCompat.renderHudUnderlays(mod,game)
 
     local visualBattle=GoldCompat.presentBattleState(battle)
 
+    -- Realtime owns the visible fight HUD. Do not stack Colosseum cards,
+    -- FIGHT diamond, or Gold extras on top of the attack grid.
+    if GoldCompat.realtimeBattleUiActive(visualBattle or battle) then
+      return true
+    end
+
     -- Colosseum is routed HERE on Gold because the Gen 2 compatibility layer
     -- consumes battle rendering inside renderHudUnderlays before the generic
     -- renderHudBattleLayer is reached. Safari deliberately uses its dedicated
@@ -26136,6 +26189,12 @@ function GoldCompat.renderHudBattleLayer(mod,game)
   end
 
   local visualBattle=GoldCompat.presentBattleState(battle)
+
+  -- Realtime owns the visible fight HUD. Skip Colosseum cards, FIGHT diamond,
+  -- and the fallback status plates so they cannot stack on the attack grid.
+  if GoldCompat.realtimeBattleUiActive(visualBattle or battle) then
+    return false
+  end
 
   -- The opening trainer-party row used to require wrapping BattleState.draw.
   -- Draw it here in the final UI layer instead so renderer/camera mods keep
