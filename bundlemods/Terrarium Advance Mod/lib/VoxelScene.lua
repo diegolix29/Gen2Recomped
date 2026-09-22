@@ -2410,11 +2410,19 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
     end
 
     if ChunkMesher.grass then
-      Voxel3D.draw(ChunkMesher.grass(state.map), grassTex, nil, pull, nil, sway)
+      -- ChunkMesher.grass returns one small mesh PER terrace height under
+      -- this map's tall grass (see ChunkMesher.buildGrassMesh) rather than
+      -- one mesh for the whole map -- a route whose grass climbs a ledge
+      -- needs each level drawn translated up to where it actually stands.
+      for _, b in ipairs(ChunkMesher.grass(state.map) or {}) do
+        Voxel3D.draw(b.mesh, grassTex, Mat4.translate(0, b.y, 0), pull, nil, sway)
+      end
       for i, nb in ipairs(state.neighbors or {}) do
         local ntex = grassTex
         if not Grass3D then ntex = atlasFor(nb.map) end
-        Voxel3D.draw(ChunkMesher.grass(nb.map), ntex, Mat4.translate(nb.ox, 0, nb.oy), pull, nil, sway)
+        for _, b in ipairs(ChunkMesher.grass(nb.map) or {}) do
+          Voxel3D.draw(b.mesh, ntex, Mat4.translate(nb.ox, b.y, nb.oy), pull, nil, sway)
+        end
       end
     end
 

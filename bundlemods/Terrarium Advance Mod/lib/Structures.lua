@@ -25136,7 +25136,16 @@ function Structures.buildGen3GrassInstances(S, map, x0, x1, y0, y1, Grass3D)
       if s and s.art == "grass" and not S.skip[k]
          and gen3GrassKind(g3c, kinds, math.floor(tx / 2), math.floor(ty / 2))
              == "tuft" then
-        instances[#instances + 1] = Grass3D.instanceForTile(tx, ty)
+        -- the ground this tuft is actually rooted in -- the shared column
+        -- run FIRST, the tile's own shape only when there is none, exactly
+        -- how the flat mat pass above (`buildGen3Grass`) and
+        -- `ChunkMesher.heightAt` both read it. Without this every tuft
+        -- instance was implicitly `gz = 0`, so a terrace's tall grass
+        -- stamped its tufts at the map's own ground floor instead of the
+        -- terrace it stands on.
+        local run = S.runs[k]
+        local gz = (run and run.h) or s.h or 0
+        instances[#instances + 1] = Grass3D.instanceForTile(tx, ty, gz)
       end
     end
   end
@@ -25316,6 +25325,14 @@ function Structures.buildGrass(S, map, x0, x1, y0, y1, data)
       local road = isCustomRoadTile(map, tileId)
       local ground = isCustomGroundTile(map, tileId)
       local water = isCustomWaterTile(map, tileId)
+      -- same ground height the Gen3 tuft pass now reads: the shared column
+      -- run first, the tile's own shape only when there is none. Kanto is
+      -- almost entirely flat under its tall grass, which is why this was
+      -- never noticed there, but Johto's few raised grass patches (National
+      -- Park, the odd route ledge) were stamping their tufts at the map's
+      -- floor exactly like Hoenn's terraces were.
+      local run = S.runs[k]
+      local gz = (run and run.h) or (s and s.h) or 0
 
       -- tufts only where the CELL is tall grass by the engine's own rule
       -- (isGrassCell: the cell's collision tile). The grass GRAPHIC also
@@ -25328,7 +25345,7 @@ function Structures.buildGrass(S, map, x0, x1, y0, y1, data)
           and map:isGrassCell(math.floor(tx / 2), math.floor(ty / 2)))
          or decor then
         if Grass3D then
-          local instance = Grass3D.instanceForTile(tx, ty)
+          local instance = Grass3D.instanceForTile(tx, ty, gz)
           if decor then
             -- decorative filler stands HALF the height of real tall
             -- grass and carries no gameplay-facing texture cues

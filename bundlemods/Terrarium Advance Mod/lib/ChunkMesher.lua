@@ -1233,16 +1233,55 @@ local function quadsMesh(quads)
   return Voxel3D.newMesh(verts, indices)
 end
 
+-- Group grass instances by their tile's real ground height (Grass3D.
+-- instanceForTile's `gz`, rounded to the nearest world pixel -- the source
+-- heights are whole numbers almost everywhere, and a bucket a pixel either
+-- way is invisible next to the meadow's own wind sway) so a route with
+-- several terrace levels under its tall grass gets one small mesh PER
+-- level rather than one mesh for the whole map stamped flat at y=0.
+--
+-- Each tuft's own geometry is built exactly as it always was -- local,
+-- planted at its own root -- only WHICH bucket it lands in changes, and the
+-- bucket's height is applied afterward as a plain translate when the mesh
+-- is drawn (see VoxelScene/BattleScene). That keeps the wind shader's own
+-- assumption intact: it reads a stamped vertex's raw Y as "how far up
+-- THIS tuft" it is, not as a world height, so the fix has to live outside
+-- the vertex data rather than inside it.
+local function bucketByHeight(instances)
+  local order, buckets = {}, {}
+  for i = 1, #instances do
+    local inst = instances[i]
+    local y = math.floor((inst.gz or 0) + 0.5)
+    local bucket = buckets[y]
+    if not bucket then
+      bucket = {}
+      buckets[y] = bucket
+      order[#order + 1] = y
+    end
+    bucket[#bucket + 1] = inst
+  end
+  return order, buckets
+end
+
+-- Returns a LIST of `{ mesh, y }` (parallel to buildFigureMeshes below)
+-- rather than one mesh -- see bucketByHeight above for why.
 local function buildGrassMesh(map)
   local S = Structures.forMap(map)
+  local out = {}
   if S.grassInstances and #S.grassInstances > 0 then
     local ok, G = pcall(V.require, "Grass3D")
     if ok and G and G.meshFromInstances then
-      local mesh = G.meshFromInstances(S.grassInstances)
-      if mesh then return mesh end
+      local order, buckets = bucketByHeight(S.grassInstances)
+      for _, y in ipairs(order) do
+        local mesh = G.meshFromInstances(buckets[y])
+        if mesh then out[#out + 1] = { mesh = mesh, y = y } end
+      end
+      if #out > 0 then return out end
     end
   end
-  return quadsMesh(S.grassQuads)
+  local mesh = quadsMesh(S.grassQuads)
+  if mesh then out[#out + 1] = { mesh = mesh, y = 0 } end
+  return out
 end
 
 local function buildDecorMesh(map)
@@ -1313,6 +1352,22 @@ local function swapSlot(c, slot, mesh)
   c[slot] = mesh
 end
 
+-- `c.grass` is a LIST of `{ mesh, y }` buckets (buildGrassMesh above), not
+-- one mesh, so it needs its own release/swap pair rather than swapSlot's
+-- single-object one -- the same reason figures got releaseFigures instead
+-- of swapSlot.
+local function releaseGrass(list)
+  for _, b in ipairs(type(list) == "table" and list or {}) do
+    if b.mesh and b.mesh.release then pcall(b.mesh.release, b.mesh) end
+  end
+end
+
+local function swapGrassSlot(c, list)
+  local old = c.grass
+  if old and old ~= list then releaseGrass(old) end
+  c.grass = list
+end
+
 -- A disk-cache hit hands back one flat terrain mesh and (maybe) one flat
 -- water mesh -- not the chunked Group runGeometry's live path produces. Wrap
 -- them as a one-or-two-chunk Group so Voxel3D.drawGroup/ShadowMap can draw a
@@ -1348,11 +1403,13 @@ local function entry(id)
 end
 
 local function releaseEntry(c)
-  for _, slot in ipairs({ "full", "body", "grass", "flowers", "custom", "road", "ground", "decor" }) do
+  for _, slot in ipairs({ "full", "body", "flowers", "custom", "road", "ground", "decor" }) do
     local mesh = c[slot]
     if mesh and mesh.release then pcall(mesh.release, mesh) end
     c[slot] = nil
   end
+  releaseGrass(c.grass)
+  c.grass = nil
   releaseFigures(c.figures)
   c.figures = nil
   c.stale = nil
@@ -1414,7 +1471,7 @@ local function runJob(job)
     local okGnd, ground = pcall(buildGroundMesh, map)
     local okD, decor = pcall(buildDecorMesh, map)
     if (gen[job.id] or 0) ~= job.gen then
-      if okG and grass and grass.release then pcall(grass.release, grass) end
+      if okG and grass then releaseGrass(grass) end
       if okF and flowers and flowers.release then pcall(flowers.release, flowers) end
       if okX then releaseFigures(figures) end
       if okC and custom and custom.release then pcall(custom.release, custom) end
@@ -1423,7 +1480,7 @@ local function runJob(job)
       if okD and decor and decor.release then pcall(decor.release, decor) end
       return
     end
-    swapSlot(c, "grass", (okG and grass) or false)
+    swapGrassSlot(c, (okG and grass) or false)
     swapSlot(c, "flowers", (okF and flowers) or false)
     swapSlot(c, "figures", (okX and figures) or false)
     swapSlot(c, "custom", (okC and custom) or false)
@@ -1709,7 +1766,7 @@ function ChunkMesher.get(map, bodyOnly, masks)
     local okR, road = pcall(buildRoadMesh, map)
     local okGnd, ground = pcall(buildGroundMesh, map)
     local okD, decor = pcall(buildDecorMesh, map)
-    swapSlot(c, "grass", (okG and grass) or false)
+    swapGrassSlot(c, (okG and grass) or false)
     swapSlot(c, "flowers", (okF and flowers) or false)
     swapSlot(c, "custom", (okC and custom) or false)
     swapSlot(c, "road", (okR and road) or false)
@@ -1743,6 +1800,8 @@ function ChunkMesher.peek(map, bodyOnly)
   return mesh or nil
 end
 
+-- A LIST of `{ mesh, y }` height buckets (see buildGrassMesh), not a single
+-- mesh -- draw each one translated up by its own `y`.
 function ChunkMesher.grass(map)
   local c = cache[map.id]
   return c and c.grass or nil

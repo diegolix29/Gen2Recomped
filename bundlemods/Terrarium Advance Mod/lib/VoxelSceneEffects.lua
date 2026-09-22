@@ -1306,13 +1306,18 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor)
     end
     Voxel3D.crush = crush
   end
-  Voxel3D.draw(ChunkMesher.grass(state.map), grassTex, nil, pull,
-               nil, sway)
+  -- one mesh per terrace height under the tall grass -- see
+  -- ChunkMesher.buildGrassMesh / VoxelScene's matching loop
+  for _, b in ipairs(ChunkMesher.grass(state.map) or {}) do
+    Voxel3D.draw(b.mesh, grassTex, Mat4.translate(0, b.y, 0), pull, nil, sway)
+  end
   for _, nb in ipairs(state.neighbors or {}) do
     local ntex = grassTex
     if not Grass3D then ntex = atlasFor(nb.map) end
-    Voxel3D.draw(ChunkMesher.grass(nb.map), ntex,
-                 Mat4.translate(nb.ox, 0, nb.oy), pull, nil, sway)
+    for _, b in ipairs(ChunkMesher.grass(nb.map) or {}) do
+      Voxel3D.draw(b.mesh, ntex,
+                   Mat4.translate(nb.ox, b.y, nb.oy), pull, nil, sway)
+    end
   end
 
   -- decorative grass mesh (no effects)
