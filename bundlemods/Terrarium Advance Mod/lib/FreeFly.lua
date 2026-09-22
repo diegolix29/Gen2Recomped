@@ -65,16 +65,6 @@ local quickstartSetting = ModSetting.new("free_fly_quickstart", "QUICK START",
 local ALTS = { low = 32, med = 56, high = 80 }
 local SPEEDS = { normal = 8, fast = 6, turbo = 4 }
 
-local function cruiseAlt()
-  local alt = altitudeSetting:get()
-  return ALTS[alt] or 56
-end
-
-local function flyFrames()
-  local speed = speedSetting:get()
-  return SPEEDS[speed] or 8
-end
-
 local GIFT_SPECIES = "PIDGEOT"
 local GIFT_LEVEL = 10
 local GIFT_TAKEN = "MOD_FREE_FLY_PIDGEY_TAKEN"
@@ -133,6 +123,24 @@ local state = {
   -- CURRENT map's own pixel space, refreshed on every crossing
   autopilot = nil,
 }
+
+local function cruiseAlt()
+  -- FULL FLY always uses highest altitude
+  if state.autopilot then
+    return ALTS.high
+  end
+  local alt = altitudeSetting:get()
+  return ALTS[alt] or 56
+end
+
+local function flyFrames()
+  -- FULL FLY always uses fastest speed (turbo = 4 frames)
+  if state.autopilot then
+    return SPEEDS.turbo
+  end
+  local speed = speedSetting:get()
+  return SPEEDS[speed] or 8
+end
 
 local function flying()
   return state.phase ~= "idle"
@@ -723,10 +731,8 @@ local function openFullFlyMap(game, mon)
   return pushed
 end
 
--- shared by both ui.party.submenu registrations below -- this file
--- wraps that hook twice (once at module load, once from
--- FreeFly.init(), see the comment at the second copy), and FULL FLY
--- only needs writing once
+-- Adds FULL FLY and FREEFLY options to the party submenu
+-- Hook is registered once in FreeFly.init() to avoid duplication
 local function addFlyOptions(out, game, ow, mon)
   V.mod.log:info("FREEFLY HOOK: ow=%s, map=%s, flying=%s",
                tostring(ow ~= nil),
@@ -771,13 +777,7 @@ local function addFlyOptions(out, game, ow, mon)
   return out
 end
 
-V.mod.hooks:wrap("ui.party.submenu", function(next, game, items, mon, ctx)
-  local out = next(game, items, mon, ctx)
-  if type(out) ~= "table" then return out end
-  local ow = ctx and ctx.overworld
-  addFlyOptions(out, game, ow, mon)
-  return out
-end)
+-- Hook registration moved to FreeFly.init() to avoid duplication
 
 -- ------- the Pallet Town Pidgeot: a quick way to get a FLY user
 
@@ -2807,8 +2807,6 @@ function FreeFly.init()
   local ok, err = pcall(function()
     -- Set up the hooks that should be registered outside game.ready
     -- Hook into party submenu to add FULL FLY and FREEFLY options
-    -- (shared with the module-load registration above -- see
-    -- addFlyOptions)
     V.mod.hooks:wrap("ui.party.submenu", function(next, game, items, mon, ctx)
       local out = next(game, items, mon, ctx)
       if type(out) ~= "table" then return out end
@@ -2849,50 +2847,8 @@ function FreeFly.init()
       end
     end)
 
-    -- Hook into movement speed for flying
-    V.mod.hooks:wrap("movement.speed", function(next, frames, ctx)
-      if flying() then return math.min(frames, flyFrames()) end
-      return next(frames, ctx)
-    end)
-
-    -- Hook into collision to allow free movement while flying
-    V.mod.hooks:wrap("movement.collision", function(next, allowed, ctx)
-      if flying() and ctx.mover and ctx.mover.freeFlying then
-        -- very tall buildings stay walls even to a flyer, sealed rooftop
-        -- plazas included: you ride up to the facade and bump
-        local lm = state.landmark
-        if lm and lm.cells and ctx.map and lm.mapId == ctx.map.id
-           and lm.cells[ctx.toY * lm.w + ctx.toX] then
-          ctx.reason = "tile"
-          return false
-        end
-        if ctx.reason == "tile" or ctx.reason == "entity" then
-          ctx.reason = nil
-          return true
-        end
-      end
-      return next(allowed, ctx)
-    end)
-
-    -- airborne you can only flush other flyers: the vanilla roll stands,
-    -- but a non-FLYING result becomes no encounter at all
-    V.mod.hooks:wrap("encounter.roll", function(next, encDef, ctx)
-      local enc = next(encDef, ctx)
-      if not (enc and flying()) then return enc end
-      if not encountersSetting:get() then return nil end
-      local game = require("src.core.Game")
-      if Sky.hasType(game.data, enc.species, "FLYING") then return enc end
-      return nil
-    end)
-
-    -- Hook into save.write to prevent saving mid-flight
-    V.mod.hooks:wrap("save.write", function(next, game)
-      if flying() then
-        V.mod.log:warn("can't save mid-flight; land first (press B)")
-        return false
-      end
-      return next(game)
-    end)
+    -- Other hooks (encounter.roll, save.write, movement.collision, movement.speed) 
+    -- are already registered at module load to avoid duplication
   end)
   if not ok then
     V.mod.log:error("Free Fly initialization failed: " .. tostring(err))
