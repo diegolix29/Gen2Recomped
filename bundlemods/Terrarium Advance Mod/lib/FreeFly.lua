@@ -562,6 +562,25 @@ end
 -- whose step lands a pixel past it would circle the point forever
 local AUTOPILOT_ARRIVE_PX = 8
 
+-- tryMove never crosses a map seam: Collision.canMove refuses
+-- out-of-bounds cells, and the engine's checkEdgeExit lives on the
+-- d-pad path (held direction, facing already matching). Autopilot
+-- holds no pad, so a step off this map has to ask for that seam the
+-- same way a held press would -- otherwise FULL FLY bonks the border
+-- forever while FREEFLY (player steering) walks through to neighbors.
+local function tryFlyMove(ow, p, dir)
+  if not (ow and p and dir) then return nil end
+  local Collision = require("src.world.Collision")
+  local tx, ty = Collision.target(p.cellX, p.cellY, dir)
+  if ow.map and ow.map.inBounds and not ow.map:inBounds(tx, ty) then
+    if ow.checkEdgeExit and ow:checkEdgeExit(dir) then
+      return "moved"
+    end
+    return "blocked"
+  end
+  return p:tryMove(dir, ow.map, ow.entities)
+end
+
 -- one tick of autopilot steering. Returns false once it is time to
 -- hand off to landing (arrived, close enough, not mid-step), true
 -- otherwise -- including while the destination is momentarily out of
@@ -580,7 +599,7 @@ local function autopilotStep(ow, p)
     -- the destination map through natural map transitions
     local dirs = {"up", "down", "left", "right"}
     for _, dir in ipairs(dirs) do
-      local result = p:tryMove(dir, ow.map, ow.entities)
+      local result = tryFlyMove(ow, p, dir)
       if result == "moved" then
         V.mod.log:info("FULL FLY: autopilot exploring direction %s", dir)
         return true
@@ -607,7 +626,7 @@ local function autopilotStep(ow, p)
     dir = dy > 0 and "down" or "up"
   end
   V.mod.log:info("FULL FLY: autopilot moving %s toward target (dx=%d, dy=%d)", dir, dx, dy)
-  local result = p:tryMove(dir, ow.map, ow.entities)
+  local result = tryFlyMove(ow, p, dir)
   if result == "blocked" then
     -- go around: a landmark facade or the edge of the connection graph
     -- across the primary axis shouldn't stall the whole approach when
@@ -619,7 +638,7 @@ local function autopilotStep(ow, p)
       altDir = dx > 0 and "right" or "left"
     end
     V.mod.log:info("FULL FLY: autopilot blocked, trying alternative direction %s", altDir)
-    p:tryMove(altDir, ow.map, ow.entities)
+    tryFlyMove(ow, p, altDir)
   end
   return true
 end
