@@ -1548,8 +1548,22 @@ local function commandRect()
   return {x=(sw-w)/2,y=sh-h-24*u,w=w,h=h,u=u}
 end
 
+local function realtimeBattleUiActive(battle)
+  -- Realtime battles own their own attack grid / side commands. Suppress the
+  -- classic FIGHT diamond so it cannot paint over that HUD.
+  local game=(battle and battle.game) or (modRef and modRef.game)
+  local lib=modRef and modRef.exports and modRef.exports.lib
+  local settings=lib and lib.BattleSettings
+  if not (game and settings and type(settings.realtimeEnabled)=="function") then
+    return false
+  end
+  local ok,enabled=pcall(settings.realtimeEnabled,game)
+  return ok and enabled==true
+end
+
 local function drawCommandMenu(battle)
   if battle.phase~="menu" then return end
+  if realtimeBattleUiActive(battle) then return end
 
   local r=commandRect()
   local u=r.u
@@ -1653,6 +1667,7 @@ local function drawMoveMenu(battle)
       or not (battle.player and battle.player.curMoves) then
     return
   end
+  if realtimeBattleUiActive(battle) then return end
 
   local sw,sh=love.graphics.getDimensions()
   local u=scaleForWindow()
@@ -5613,8 +5628,23 @@ local function drawPanelBase(rect)
   roundedRect("line", rect.x+1.25, rect.y+1.25, rect.w-2.5, rect.h-2.5, 14)
 end
 
+function GoldCompat.realtimeBattleUiActive(battle)
+  -- Realtime battles own their own attack grid / side commands. Suppress the
+  -- classic FIGHT diamond so it cannot paint over that HUD.
+  battle=GoldCompat.sourceBattleState(battle) or battle
+  local game=(battle and battle.game) or (modRef and modRef.game) or GoldCompat.game
+  local lib=modRef and modRef.exports and modRef.exports.lib
+  local settings=lib and lib.BattleSettings
+  if not (game and settings and type(settings.realtimeEnabled)=="function") then
+    return false
+  end
+  local ok,enabled=pcall(settings.realtimeEnabled,game)
+  return ok and enabled==true
+end
+
 local function drawCommandMenu(battle)
   if not (battle and battle.phase == "menu" and not battle.demo) then return end
+  if GoldCompat.realtimeBattleUiActive(battle) then return end
 
   local rect = commandGeometry()
   drawPanelBase(rect)
@@ -5873,6 +5903,7 @@ local function drawMoveSelect(battle)
       and battle.player and battle.player.curMoves) then
     return
   end
+  if GoldCompat.realtimeBattleUiActive(battle) then return end
 
   local rect = GoldCompat.moveGeometry()
   drawPanelBase(rect)

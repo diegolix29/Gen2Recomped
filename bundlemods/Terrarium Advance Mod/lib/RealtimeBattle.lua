@@ -123,7 +123,7 @@ local state={
   playerBaseSpeedStat=20,enemyBaseSpeedStat=20,
   playerSpeedStage=0,enemySpeedStage=0,playerSpeedStageFactor=1,enemySpeedStageFactor=1,
   uiCursorMode=false,uiCursorActive=false,commandMovesOpen=false,
-  uiHover=nil,nativeModalActive=false,nativeModalName=nil,
+  uiHover=nil,uiPadFocus=1,nativeModalActive=false,nativeModalName=nil,
   playerStatus=nil,enemyStatus=nil,
   playerStatusEvent=nil,enemyStatusEvent=nil,playerStatusEventTTL=0,enemyStatusEventTTL=0,
   playerSleepTimer=0,enemySleepTimer=0,playerSleepMonRef=nil,enemySleepMonRef=nil,
@@ -1008,16 +1008,100 @@ local function actionPressed(k)
   -- Fallback for hosts/builds where raw callback capture is unavailable.
   return pressed(k)
 end
-local function mouseDown(button)
-  return love and love.mouse and type(love.mouse.isDown)=="function"
-    and love.mouse.isDown(button) and true or false
-end
-local function mousePressed(button)
-  local d=mouseDown(button)
-  local was=state.mouseButtons[button]==true
-  state.mouseButtons[button]=d
-  return d and not was
-end
+
+-- Gamepad + mouse helpers live on R._pad so they do not burn main-chunk locals
+-- (Lua 5.1/LOVE caps each function at 200 locals).
+R._pad=(function()
+  local PAD_DEADZONE=.22
+  local PAD_LOOK_SENS=.055
+  local function mappedGamepad()
+    local J=love and love.joystick
+    if not (J and type(J.getJoysticks)=="function") then return nil end
+    local ok,list=pcall(J.getJoysticks)
+    if not ok or type(list)~="table" then return nil end
+    local best,bestMag=nil,-1
+    for _,js in ipairs(list) do
+      local okPad,isPad=pcall(function()
+        return js and type(js.isGamepad)=="function" and js:isGamepad()
+      end)
+      if okPad and isPad and type(js.getGamepadAxis)=="function" then
+        local okX,lx=pcall(js.getGamepadAxis,js,"leftx")
+        local okY,ly=pcall(js.getGamepadAxis,js,"lefty")
+        if okX and okY then
+          lx,ly=tonumber(lx) or 0,tonumber(ly) or 0
+          local mag=lx*lx+ly*ly
+          if mag>bestMag then best,bestMag={js=js,lx=lx,ly=ly},mag end
+        end
+      end
+    end
+    if best and type(best.js.getGamepadAxis)=="function" then
+      local okRX,rx=pcall(best.js.getGamepadAxis,best.js,"rightx")
+      local okRY,ry=pcall(best.js.getGamepadAxis,best.js,"righty")
+      best.rx=okRX and tonumber(rx) or 0
+      best.ry=okRY and tonumber(ry) or 0
+    end
+    return best
+  end
+  local function applyDeadzone(x,y,dz)
+    x,y=tonumber(x) or 0,tonumber(y) or 0
+    local mag=math.sqrt(x*x+y*y)
+    if mag<=(dz or PAD_DEADZONE) then return 0,0 end
+    local scale=(mag-(dz or PAD_DEADZONE))/(1-(dz or PAD_DEADZONE))
+    scale=clamp(scale,0,1)/mag
+    return x*scale,y*scale
+  end
+  local function padButtonLive(js,button)
+    if not (js and type(js.isGamepadDown)=="function") then return false end
+    local ok,down=pcall(js.isGamepadDown,js,button)
+    return ok and down and true or false
+  end
+  local function padPressed(button)
+    button=tostring(button or ""):lower()
+    local br=V and V.BattleRuntime
+    local hasLatch=br and type(br.consumeRealtimePad)=="function"
+    if hasLatch then
+      local ok,hit=pcall(br.consumeRealtimePad,button)
+      if ok and hit then return true end
+      return false
+    end
+    local pad=mappedGamepad()
+    local d=pad and padButtonLive(pad.js,button) or false
+    local key="pad:"..button
+    local was=state.keys[key]==true
+    state.keys[key]=d
+    return d and not was
+  end
+  local function padDown(button)
+    button=tostring(button or ""):lower()
+    local br=V and V.BattleRuntime
+    if br and type(br.realtimePadIsDown)=="function" then
+      local ok,down=pcall(br.realtimePadIsDown,button)
+      if ok and down then return true end
+    end
+    local pad=mappedGamepad()
+    return pad and padButtonLive(pad.js,button) or false
+  end
+  local function mouseDown(button)
+    return love and love.mouse and type(love.mouse.isDown)=="function"
+      and love.mouse.isDown(button) and true or false
+  end
+  local function mousePressed(button)
+    local d=mouseDown(button)
+    local was=state.mouseButtons[button]==true
+    state.mouseButtons[button]=d
+    return d and not was
+  end
+  return {
+    DEADZONE=PAD_DEADZONE,
+    LOOK_SENS=PAD_LOOK_SENS,
+    mappedGamepad=mappedGamepad,
+    applyDeadzone=applyDeadzone,
+    padPressed=padPressed,
+    padDown=padDown,
+    mouseDown=mouseDown,
+    mousePressed=mousePressed,
+  }
+end)()
 
 local function settings()
   return V and V.BattleSettings
@@ -3875,6 +3959,22 @@ local function renderSize(context)
   return tonumber(r.width) or 1280,tonumber(r.height) or 720
 end
 
+R._pad.mouseToRender=function(context)
+  local mx,my=0,0
+  if love and love.mouse and type(love.mouse.getPosition)=="function" then
+    mx,my=love.mouse.getPosition()
+  end
+  local rw,rh=renderSize(context)
+  local ww,wh=0,0
+  if love and love.graphics and type(love.graphics.getDimensions)=="function" then
+    ww,wh=love.graphics.getDimensions()
+  end
+  if ww and wh and ww>0 and wh>0 and (rw~=ww or rh~=wh) then
+    return mx*(rw/ww),my*(rh/wh)
+  end
+  return mx,my
+end
+
 local function drawAimCrosshair(context)
   local g=love.graphics
   local w,h=renderSize(context)
@@ -4907,22 +5007,24 @@ function R._drawAttackGrid(context)
   local hf=hudFont(10*scale);if hf then g.setFont(hf) end
   g.setColor(1,1,1,.62)
   local y=rects[1].y-15*scale
-  g.printf("LCTRL: MOVE    LMB: ATTACK    RMB: CAMERA LOCK    X: ROLL / AIR DASH",rects[1].x-95*scale,y,(rects[2].x+rects[2].w)-rects[1].x+190*scale,"center")
+  g.printf("LCTRL / DPAD: MOVE    LMB / A: ATTACK    B: ROLL    Y: JUMP    RMB: CAMERA LOCK",rects[1].x-140*scale,y,(rects[2].x+rects[2].w)-rects[1].x+280*scale,"center")
 end
 
 local function drawSideCommandMenu(context)
   if not battleTopIsActive(context) then return end
   local g=love.graphics
   local buttons,moves,scale=commandMenuLayout(context)
-  local mx,my=-1,-1
-  if love.mouse and type(love.mouse.getPosition)=="function" then mx,my=love.mouse.getPosition() end
+  local mx,my=R._pad.mouseToRender(context)
   state.uiHover=nil
+  local padFocus=tonumber(state.uiPadFocus) or 1
   local f=hudFont(14*scale);if f then g.setFont(f) end
   for i,r in ipairs(buttons) do
     local hover=state.uiCursorActive and pointInRect(mx,my,r)
+    local padSel=state.uiCursorActive and padFocus==i and not state.commandMovesOpen
     if hover then state.uiHover="command:"..i end
+    if padSel then state.uiHover="command:"..i end
     g.setColor(0,0,0,.50);g.rectangle("fill",r.x,r.y,r.w,r.h,7*scale,7*scale)
-    if hover then g.setColor(.24,.27,.31,.96) else g.setColor(.10,.11,.13,.88) end
+    if hover or padSel then g.setColor(.24,.27,.31,.96) else g.setColor(.10,.11,.13,.88) end
     g.rectangle("fill",r.x+2*scale,r.y+2*scale,r.w-4*scale,r.h-4*scale,6*scale,6*scale)
     if i==1 and state.commandMovesOpen then g.setColor(.95,.65,.18,.95) else g.setColor(1,1,1,.94) end
     local label=r.label
@@ -4932,16 +5034,22 @@ local function drawSideCommandMenu(context)
       elseif (tonumber(state.playerGlobalAttackLock) or 0)>0 then label="ATTACK  REC "..string.format("%.1f",state.playerGlobalAttackLock) end
     end
     g.printf(label,r.x,r.y+10*scale,r.w,"center")
+    if padSel then
+      g.setColor(.95,.65,.18,.95);g.setLineWidth(math.max(2,2*scale))
+      g.rectangle("line",r.x+1*scale,r.y+1*scale,r.w-2*scale,r.h-2*scale,6*scale,6*scale)
+    end
   end
   if state.commandMovesOpen then
     for i,r in ipairs(moves) do
       local hover=state.uiCursorActive and pointInRect(mx,my,r)
+      local padSel=state.uiCursorActive and padFocus==i
       if hover then state.uiHover="move:"..i end
+      if padSel then state.uiHover="move:"..i end
       local name,pp=currentMoveLabel(context,i)
       g.setColor(0,0,0,.50);g.rectangle("fill",r.x,r.y,r.w,r.h,7*scale,7*scale)
       local slotCd=R._slotCooldown("player",i)
       local onCooldown=slotCd>0 or (tonumber(state.playerGlobalAttackLock) or 0)>0
-      if hover and not onCooldown then g.setColor(.25,.28,.32,.96)
+      if (hover or padSel) and not onCooldown then g.setColor(.25,.28,.32,.96)
       elseif onCooldown then g.setColor(.08,.09,.10,.82)
       else g.setColor(.11,.12,.14,.91) end
       g.rectangle("fill",r.x+2*scale,r.y+2*scale,r.w-4*scale,r.h-4*scale,6*scale,6*scale)
@@ -4953,12 +5061,16 @@ local function drawSideCommandMenu(context)
         g.printf(right,r.x,r.y+12*scale,r.w-10*scale,"right")
         if f then g.setFont(f) end
       end
+      if padSel then
+        g.setColor(.95,.65,.18,.95);g.setLineWidth(math.max(2,2*scale))
+        g.rectangle("line",r.x+1*scale,r.y+1*scale,r.w-2*scale,r.h-2*scale,6*scale,6*scale)
+      end
     end
   end
   local hint
-  if state.uiCursorActive then hint="TAB: RETURN TO AIM"
+  if state.uiCursorActive then hint="TAB / BACK: RETURN TO AIM    A: CONFIRM"
   elseif state.groundCursorOwnsWASD then hint="WASD: MOVE TARGET   SHIFT: FAST   LMB: CAST   RMB: CAMERA"
-  else hint="TAB: MENU CURSOR" end
+  else hint="TAB / BACK: MENU CURSOR" end
   local hf=hudFont(10*scale);if hf then g.setFont(hf) end
   g.setColor(1,1,1,.58)
   g.printf(hint,buttons[1].x-230*scale,buttons[4].y+buttons[4].h+8*scale,buttons[1].w+230*scale,"right")
@@ -4993,12 +5105,20 @@ local function triggerSideCommand(context,command)
   command=tostring(command or ""):lower()
   if command=="attack" then
     state.commandMovesOpen=not state.commandMovesOpen
+    if state.commandMovesOpen then state.uiPadFocus=tonumber(state.selectedMoveSlot) or 1 end
     return true
   end
   state.commandMovesOpen=false
-  local action=({pokemon="party",party="party",item="item",run="run"})[command]
-  if action and type(battle.chooseMenu)=="function" then
-    local ok=pcall(battle.chooseMenu,battle,action)
+  -- BattleState has no chooseMenu; openParty / openItems / tryRun are the
+  -- real menu actions used by the native FIGHT command diamond.
+  if command=="item" and type(battle.openItems)=="function" then
+    local ok=pcall(battle.openItems,battle)
+    return ok
+  elseif (command=="pokemon" or command=="party") and type(battle.openParty)=="function" then
+    local ok=pcall(battle.openParty,battle)
+    return ok
+  elseif command=="run" and type(battle.tryRun)=="function" then
+    local ok=pcall(battle.tryRun,battle)
     return ok
   end
   return false
@@ -5028,6 +5148,52 @@ local function handleSideMenuClick(context,x,y)
     end
   end
   return false
+end
+
+R._pad.confirmPadSideFocus=function(context)
+  if not state.uiCursorActive then return false end
+  local focus=math.max(1,math.min(4,math.floor(tonumber(state.uiPadFocus) or 1)))
+  if state.commandMovesOpen then
+    local ok=fireRealtimeSlot(context,focus)
+    state.commandMovesOpen=false
+    if ok then state.uiCursorMode=false end
+    return true
+  end
+  return triggerSideCommand(context,({[1]="attack",[2]="item",[3]="pokemon",[4]="run"})[focus])
+end
+
+R._pad.navigatePadSideFocus=function(dir)
+  if not state.uiCursorActive then return false end
+  local focus=math.max(1,math.min(4,math.floor(tonumber(state.uiPadFocus) or 1)))
+  if dir=="up" then focus=focus>1 and focus-1 or 4
+  elseif dir=="down" then focus=focus<4 and focus+1 or 1
+  elseif dir=="left" and not state.commandMovesOpen then
+    state.commandMovesOpen=true;focus=tonumber(state.selectedMoveSlot) or 1
+  elseif dir=="right" and state.commandMovesOpen then
+    state.commandMovesOpen=false;focus=1
+  end
+  state.uiPadFocus=focus
+  return true
+end
+
+R._pad.selectMoveFromDpad=function(context)
+  -- Navigate the visible 2x2 attack grid from the current selection.
+  --   1 2
+  --   3 4
+  local cur=math.max(1,math.min(4,math.floor(tonumber(state.selectedMoveSlot) or 1)))
+  local nextSlot=nil
+  local padPressed=R._pad.padPressed
+  if padPressed("dpup") then
+    nextSlot=(cur<=2) and cur or (cur-2)
+  elseif padPressed("dpdown") then
+    nextSlot=(cur>=3) and cur or (cur+2)
+  elseif padPressed("dpleft") then
+    nextSlot=((cur%2)==1) and cur or (cur-1)
+  elseif padPressed("dpright") then
+    nextSlot=((cur%2)==0) and cur or (cur+1)
+  end
+  if nextSlot then R._selectRealtimeSlot(context,nextSlot);return nextSlot end
+  return nil
 end
 
 function R._drawSideActionHUD(context,side)
@@ -5257,10 +5423,14 @@ function R:update(context,dt,arena)
   updateFaintSide("player",rdt)
   updateFaintSide("enemy",rdt)
 
-  -- FPS/TPS aim owns the mouse by default. TAB toggles a real desktop cursor
-  -- for the side command buttons; holding either ALT key also gives temporary
-  -- cursor access. The native hidden battle menu remains input-blocked.
-  if pressed("tab") then state.uiCursorMode=not state.uiCursorMode end
+  -- FPS/TPS aim owns the mouse by default. TAB / Back toggles a real desktop
+  -- cursor for the side command buttons; holding either ALT key also gives
+  -- temporary cursor access. The native hidden battle menu remains input-blocked.
+  local Pad=R._pad
+  if pressed("tab") or Pad.padPressed("back") then
+    state.uiCursorMode=not state.uiCursorMode
+    if state.uiCursorMode then state.uiPadFocus=tonumber(state.uiPadFocus) or 1 end
+  end
   state.uiCursorActive=state.uiCursorMode or isDown("lalt") or isDown("ralt")
   if state.uiCursorActive then
     setMouseCapture(false)
@@ -5268,8 +5438,19 @@ function R:update(context,dt,arena)
   else
     updateMouse()
   end
-  state.aimHeld=(not state.uiCursorActive) and mouseDown(2)
+  state.aimHeld=(not state.uiCursorActive) and (Pad.mouseDown(2) or Pad.padDown("leftshoulder"))
   state.cameraLockHeld=state.aimHeld
+
+  -- Right stick look (always when not in UI cursor mode). Mouse look still
+  -- applies through updateMouse above.
+  local pad=Pad.mappedGamepad()
+  if pad and not state.uiCursorActive and not state.nativeModalActive then
+    local rx,ry=Pad.applyDeadzone(pad.rx,pad.ry,Pad.DEADZONE)
+    if rx~=0 or ry~=0 then
+      state.yaw=state.yaw-rx*Pad.LOOK_SENS
+      state.pitch=clamp((state.pitch or 0)+ry*Pad.LOOK_SENS,-0.70,1.05)
+    end
+  end
 
   -- Mouse wheel camera zoom: wheel up = closer, wheel down = farther.
   -- Exponential stepping feels consistent at both close and very wide views.
@@ -5307,29 +5488,47 @@ function R:update(context,dt,arena)
   elseif actionPressed("kp.") then triggerSideCommand(context,"run")
   end
 
+  -- D-pad: in UI cursor mode navigate the side panel; otherwise select a live
+  -- move slot on the 2x2 attack grid.
+  if state.uiCursorActive then
+    if Pad.padPressed("dpup") then Pad.navigatePadSideFocus("up")
+    elseif Pad.padPressed("dpdown") then Pad.navigatePadSideFocus("down")
+    elseif Pad.padPressed("dpleft") then Pad.navigatePadSideFocus("left")
+    elseif Pad.padPressed("dpright") then Pad.navigatePadSideFocus("right")
+    end
+  else
+    Pad.selectMoveFromDpad(context)
+  end
+
   -- Realtime move hotkeys are reserved here, outside Gen1Recomp's native
   -- FIGHT menu. 6/7/8/9 correspond to live move slots 1/2/3/4.
-  -- v0.4.3 only executes slot 1 when that move is TACKLE; the other slots are
-  -- intentionally selection-only until their realtime action classes exist.
   local hotSlot=nil
   if actionPressed("6") then hotSlot=1
   elseif actionPressed("7") then hotSlot=2
   elseif actionPressed("8") then hotSlot=3
   elseif actionPressed("9") then hotSlot=4
   end
-  -- Shooter control: LMB repeats the selected live move while aiming. In UI
-  -- cursor mode, LMB belongs exclusively to the visible side command panel.
-  local lmbPressed=mousePressed(1)
-  if state.uiCursorActive and lmbPressed and love.mouse and type(love.mouse.getPosition)=="function" then
-    local mx,my=love.mouse.getPosition()
-    handleSideMenuClick(context,mx,my)
-  elseif not hotSlot and lmbPressed then
-    hotSlot=state.selectedMoveSlot or 1
+  -- Shooter control: LMB / A fires the selected live move while aiming. In UI
+  -- cursor mode, LMB / A belongs exclusively to the visible side command panel.
+  local lmbPressed=Pad.mousePressed(1)
+  local padAttack=Pad.padPressed("a")
+  if state.uiCursorActive then
+    if lmbPressed then
+      local mx,my=Pad.mouseToRender(context)
+      handleSideMenuClick(context,mx,my)
+    elseif padAttack then
+      Pad.confirmPadSideFocus(context)
+    end
+  else
+    if not hotSlot and (lmbPressed or padAttack) then
+      hotSlot=state.selectedMoveSlot or 1
+    end
   end
   if hotSlot and not state.nativeModalActive then fireRealtimeSlot(context,hotSlot) end
 
-  -- Space belongs to vertical movement; attacks stay on live slots 6/7/8/9.
-  local jumpPressed=(not state.nativeModalActive) and actionPressed("space")
+  -- Space / Y belong to vertical movement; attacks stay on LMB / A / slots.
+  local jumpPressed=(not state.nativeModalActive) and (actionPressed("space") or Pad.padPressed("y"))
+  local jumpHeld=isDown("space") or Pad.padDown("y")
 
   -- 0 is reserved for the future Item/Pokemon/Run utility overlay. It is not
   -- forwarded to the hidden native 4-command menu.
@@ -5381,6 +5580,17 @@ function R:update(context,dt,arena)
 
   local ix=(isDown("d") and 1 or 0)-(isDown("a") and 1 or 0)
   local iz=(isDown("w") and 1 or 0)-(isDown("s") and 1 or 0)
+  -- Left stick overlays keyboard WASD when present.
+  if pad and not movementLocked then
+    local lx,ly=Pad.applyDeadzone(pad.lx,pad.ly,Pad.DEADZONE)
+    if lx~=0 or ly~=0 then
+      -- Stick: +x right, +y down. Match WASD: ix=+right, iz=+forward(W).
+      ix=ix+lx
+      iz=iz+(-ly)
+      local stickMag=len2(ix,iz)
+      if stickMag>1 then ix,iz=ix/stickMag,iz/stickMag end
+    end
+  end
   local groundCursorOwnsWASD=false
   do
     local okCursor,ownsOrErr=pcall(R._updateGroundTargetCursor,context,rdt,ix,iz)
@@ -5405,7 +5615,7 @@ function R:update(context,dt,arena)
   if playerConfused then mx,mz=rotate2(mx,mz,state.playerConfuseAngle) end
   local mag=len2(mx,mz)
 
-  local dodgePressed=actionPressed("x")
+  local dodgePressed=actionPressed("x") or Pad.padPressed("b")
   local airborne=(tonumber(state.py) or 0)>.06 or state.flightMode==true
   if dodgePressed and (tonumber(state.rollCooldown) or 0)<=0
       and (tonumber(state.rollTimer) or 0)<=0 and not airborne
@@ -5523,7 +5733,7 @@ function R:update(context,dt,arena)
       end
 
       if state.flightMode then
-        local lifting=verticalControlAllowed and isDown("space") and (tonumber(state.flightStamina) or 0)>0
+        local lifting=verticalControlAllowed and jumpHeld and (tonumber(state.flightStamina) or 0)>0
         if lifting then
           state.flightStamina=math.max(0,(tonumber(state.flightStamina) or 0)-rdt)
           if state.flightStamina<=0 then state.flightExhausted=true end

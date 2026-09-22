@@ -9,6 +9,8 @@ function B.attach(R)
   R.rawInputCaptureInstalled=R.rawInputCaptureInstalled or false
   R.realtimeKeyPressed=R.realtimeKeyPressed or {}
   R.realtimeKeyDown=R.realtimeKeyDown or {}
+  R.realtimePadPressed=R.realtimePadPressed or {}
+  R.realtimePadDown=R.realtimePadDown or {}
   R.realtimeWheelY=tonumber(R.realtimeWheelY) or 0
   R.realtimeMouseDX=tonumber(R.realtimeMouseDX) or 0
   R.realtimeMouseDY=tonumber(R.realtimeMouseDY) or 0
@@ -219,6 +221,18 @@ function R.realtimeKeyIsDown(key)
   return R.realtimeKeyDown[tostring(key or ""):lower()]==true
 end
 
+function R.consumeRealtimePad(button)
+  button=tostring(button or ""):lower()
+  if button=="" then return false end
+  local hit=R.realtimePadPressed[button]==true
+  R.realtimePadPressed[button]=nil
+  return hit
+end
+
+function R.realtimePadIsDown(button)
+  return R.realtimePadDown[tostring(button or ""):lower()]==true
+end
+
 function R.consumeRealtimeWheel()
   local y=tonumber(R.realtimeWheelY) or 0
   R.realtimeWheelY=0
@@ -245,6 +259,21 @@ local function latchRealtimeKeyReleased(key)
   key=tostring(key or ""):lower()
   if key=="" then return end
   R.realtimeKeyDown[key]=nil
+end
+
+local function latchRealtimePadPressed(button)
+  button=tostring(button or ""):lower()
+  if button=="" then return end
+  if not R.realtimePadDown[button] then
+    R.realtimePadPressed[button]=true
+  end
+  R.realtimePadDown[button]=true
+end
+
+local function latchRealtimePadReleased(button)
+  button=tostring(button or ""):lower()
+  if button=="" then return end
+  R.realtimePadDown[button]=nil
 end
 
 local function installRawRealtimeInputCapture()
@@ -303,12 +332,14 @@ local function installRawRealtimeInputCapture()
     end
   end
 
-  -- Same isolation for controller virtual-pad inputs. The realtime prototype
-  -- can later read raw joystick state directly without feeding the native menu.
+  -- Isolate controller inputs from the native FIGHT menu while latching edges
+  -- for RealtimeBattle (left stick / right stick are polled live; face/D-pad
+  -- presses are edge-latched here the same way keyboard hotkeys are).
   local REALTIME_PAD_BUTTONS={
     a=true,b=true,x=true,y=true,start=true,back=true,
     dpup=true,dpdown=true,dpleft=true,dpright=true,
     leftshoulder=true,rightshoulder=true,
+    leftstick=true,rightstick=true,
   }
   local function blocksRealtimePad(button)
     return REALTIME_PAD_BUTTONS[tostring(button):lower()]==true
@@ -319,6 +350,7 @@ local function installRawRealtimeInputCapture()
     R.rawGamepadPressedInner=inner
     Game.gamepadpressed=function(self,joystick,button,...)
       if realtimeOwnsBattleInput(self) and blocksRealtimePad(button) then
+        latchRealtimePadPressed(button)
         return
       end
       return inner(self,joystick,button,...)
@@ -330,6 +362,7 @@ local function installRawRealtimeInputCapture()
     R.rawGamepadReleasedInner=inner
     Game.gamepadreleased=function(self,joystick,button,...)
       if realtimeOwnsBattleInput(self) and blocksRealtimePad(button) then
+        latchRealtimePadReleased(button)
         return
       end
       return inner(self,joystick,button,...)
