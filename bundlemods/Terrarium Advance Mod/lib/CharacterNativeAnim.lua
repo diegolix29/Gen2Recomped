@@ -246,6 +246,37 @@ function M.release(anim)
   anim.roles = {}
 end
 
+-- Extract a single frame from an animation role for use as a base pose.
+-- Returns a table mapping group index to vertex positions, or nil on error.
+function M.extractFrame(anim, roleName, frameIndex)
+  local role = anim and anim.roles[roleName or "idle"]
+  if not role then return nil, "role not found" end
+  
+  -- Clamp frame index to valid range
+  frameIndex = math.max(0, math.min(frameIndex, role.count - 1))
+  local frameOffset = frameIndex * SRC_FLOATS
+  
+  local frameVertices = {}
+  for gi = 1, #role.groups do
+    local g = role.groups[gi]
+    local n = g.n
+    local groupVertices = {}
+    
+    -- Extract vertex positions for this frame
+    for i = 0, n - 1 do
+      local s = i * SRC_FLOATS + frameOffset
+      groupVertices[i + 1] = {
+        g.src[s],     -- x
+        g.src[s + 1], -- y  
+        g.src[s + 2]  -- z
+      }
+    end
+    frameVertices[gi] = groupVertices
+  end
+  
+  return frameVertices
+end
+
 -- Exposed for tests / diagnostics.
 M._frameFor = frameFor
 M._sourceFps = sourceFps

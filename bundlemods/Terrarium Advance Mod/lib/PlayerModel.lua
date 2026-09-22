@@ -532,7 +532,33 @@ function PlayerModel.loadColosseumCharacter(id)
     print("[PlayerModel] no native " .. selectedAnimation .. " animation for '" .. tostring(id) .. "': " .. tostring(nativeErr))
   end
 
-  characterCache[id] = { groups = groups, scale = scale, walkRig = walkRig, native = native }
+  -- For Wes with victory animation, extract a frame to use as base pose for walk cycle
+  -- This makes the procedural walking start from a more dynamic pose
+  local baseFrameVertices = nil
+  if id == "wes" and selectedAnimation == "victory" and native then
+    -- Try to extract frame 0 (first frame - neutral pose) as base pose
+    local frameOk, frameVertices = pcall(CharacterNativeAnim.extractFrame, native, "victory", 0)
+    if frameOk and frameVertices then
+      baseFrameVertices = frameVertices
+      print("[PlayerModel] Using victory animation frame 0 (first frame) as base pose for Wes walk cycle")
+      
+      -- Store frame vertices as walkBaseVertices (separate from baseVertices)
+      for gi, group in ipairs(groups) do
+        if frameVertices[gi] then
+          group.walkBaseVertices = frameVertices[gi]
+        end
+      end
+      
+      -- Rebuild walk rig with new walk base vertices
+      walkRig = nil
+      local walkRigOk2, walkRig2 = pcall(CharacterWalkCycle.build, id, groups, b)
+      if walkRigOk2 then walkRig = walkRig2 end
+    else
+      print("[PlayerModel] Could not extract victory frame for Wes: " .. tostring(frameVertices))
+    end
+  end
+
+  characterCache[id] = { groups = groups, scale = scale, walkRig = walkRig, native = native, baseFrameVertices = baseFrameVertices }
   characterGroups = groups
   characterWalkRig = walkRig
   characterNative = native
