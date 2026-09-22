@@ -3397,6 +3397,23 @@ function A:render(ctx,arena,drawActors)
       if not okPost then renderErrors.movefxPost=tostring(postErr) else renderErrors.movefxPost=nil end
     end
 
+    -- FINAL REALTIME PRESENTATION PASS
+    -- After opaque/cutout actors, trainers, transparent materials and post FX,
+    -- while the arena canvas is still bound. Realtime VFX/HUD overlays must not
+    -- depend on the host actor callback (which XD/CBE model ownership can skip).
+    local realtime=V.RealtimeBattle
+    if realtime and type(realtime.drawWorld)=="function" then
+      love.graphics.setShader()
+      love.graphics.setDepthMode()
+      local okR,errR=pcall(realtime.drawWorld,realtime,ctx)
+      if okR then renderErrors.realtime=nil
+      else
+        renderErrors.realtime=tostring(errR)
+        pcall(love.graphics.setShader);pcall(love.graphics.setDepthMode)
+        log(ctx,"warn","realtime VFX overlay failed open: %s",tostring(errR))
+      end
+    end
+
     love.graphics.setShader()
     love.graphics.setDepthMode()
     love.graphics.setCanvas(prior)
@@ -3408,6 +3425,13 @@ function A:render(ctx,arena,drawActors)
     error(why)
   end
   return out
+end
+function A:navigation(arena)
+  if not scene then
+    local ok,value=pcall(loadScene,{})
+    if not ok or not value then return nil end
+  end
+  return scene and scene.realtimeNav or nil
 end
 function A:finish(ctx,reason)
   if Trainer then Trainer:finish(ctx,reason) end

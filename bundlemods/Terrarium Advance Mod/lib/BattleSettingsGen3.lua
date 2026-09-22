@@ -9,6 +9,7 @@ local function prefs(game)
   if not (game and game.save) then
     return {
       music="normal",arena="auto",arenasEnabled=true,cameraEnabled=true,pokemonModelsEnabled=true,
+      realtimeBattle=false,realtimeZoom=1.0,
       playerModel="red",enemyTrainerModel="auto",rivalModel="leaf",
       doubleBattlesEnabled=true,abilitiesEnabled=true,freeLookEnabled=true,
       autoProgressEnabled=true,bossIntroEnabled=false,battleSoundsEnabled=true,
@@ -22,6 +23,11 @@ local function prefs(game)
   p.cameraEnabled=p.cameraEnabled and true or false
   if p.pokemonModelsEnabled==nil then p.pokemonModelsEnabled=true end
   p.pokemonModelsEnabled=p.pokemonModelsEnabled and true or false
+  if p.realtimeBattle==nil then p.realtimeBattle=false end
+  p.realtimeBattle=p.realtimeBattle==true
+  p.realtimeZoom=tonumber(p.realtimeZoom) or 1.0
+  local zoomOK={ [1.0]=true,[1.25]=true,[1.5]=true,[1.75]=true,[2.0]=true }
+  if not zoomOK[p.realtimeZoom] then p.realtimeZoom=1.0 end
   if p.battleSoundsEnabled==nil then p.battleSoundsEnabled=true end
   p.battleSoundsEnabled=p.battleSoundsEnabled==true
   if p.bossIntroEnabled==nil then p.bossIntroEnabled=false end
@@ -125,6 +131,21 @@ local function buildBattleMenu(game)
     modelsToggle.label="COLOSSEUM MODELS  "..(p.pokemonModelsEnabled and "ON" or "OFF")
     refresh()
   end
+
+  local realtimeToggle={keepOpen=true,label="REALTIME BATTLE  "..(p.realtimeBattle and "ON" or "OFF")}
+  realtimeToggle.onSelect=function()
+    p.realtimeBattle=not p.realtimeBattle
+    realtimeToggle.label="REALTIME BATTLE  "..(p.realtimeBattle and "ON" or "OFF")
+    refresh()
+  end
+
+  local realtimeZoomOpts={1.0,1.25,1.5,1.75,2.0}
+  local realtimeZoomToggle={keepOpen=true,label=("REALTIME ZOOM  %.2fX"):format(p.realtimeZoom or 1.0)}
+  realtimeZoomToggle.onSelect=function()
+    p.realtimeZoom=cycle(realtimeZoomOpts,p.realtimeZoom or 1.0)
+    realtimeZoomToggle.label=("REALTIME ZOOM  %.2fX"):format(p.realtimeZoom or 1.0)
+    refresh()
+  end
   
   local playerOpts = {"red", "leaf", "brendan", "may", "off"}
   local playerModelToggle = {keepOpen=true, label="PLAYER MODEL  "..string.upper(p.playerModel)}
@@ -194,6 +215,8 @@ local function buildBattleMenu(game)
     cameraToggle,
     freeLookToggle,
     modelsToggle,
+    realtimeToggle,
+    realtimeZoomToggle,
     playerModelToggle,
     enemyModelToggle,
     soundsToggle,
@@ -227,7 +250,7 @@ local function buildBattleMenu(game)
   menu.screenId="CbeBattleSettingsGen3"
 
   if BattleMenuUI and BattleMenuUI.mark then
-    BattleMenuUI.mark(menu,"COLOSSEUM BATTLE",mainRows,10,"ENVIRONMENT / CAMERA / POKEMON / AUDIO")
+    BattleMenuUI.mark(menu,"COLOSSEUM BATTLE",mainRows,10,"ENVIRONMENT / CAMERA / REALTIME / POKEMON / AUDIO")
   end
 
   if modRef and modRef.log then modRef.log:info("Gen3 battle settings menu created successfully") end
@@ -330,6 +353,11 @@ end
 function S.prefs(game) return prefs(game) end
 function S.cameraEnabled(game) return prefs(game or (modRef and modRef.game)).cameraEnabled~=false end
 function S.pokemonModelsEnabled(game) return prefs(game or (modRef and modRef.game)).pokemonModelsEnabled~=false end
+function S.realtimeEnabled(game) return prefs(game or (modRef and modRef.game)).realtimeBattle==true end
+function S.realtimeZoom(game) return tonumber(prefs(game or (modRef and modRef.game)).realtimeZoom) or 1.0 end
+function S.setRealtimeEnabled(game,value)
+  local p=prefs(game or (modRef and modRef.game)); p.realtimeBattle=value==true; return p.realtimeBattle
+end
 function S.abilitiesEnabled(game) return prefs(game or (modRef and modRef.game)).abilitiesEnabled==true end
 function S.setCameraEnabled(game,value)
   local p=prefs(game or (modRef and modRef.game)); p.cameraEnabled=value~=false; return p.cameraEnabled
@@ -338,6 +366,7 @@ function S.status(game)
   local p=prefs(game or (modRef and modRef.game))
   return {
     installed=installed,arenasEnabled=p.arenasEnabled,cameraEnabled=p.cameraEnabled,pokemonModelsEnabled=p.pokemonModelsEnabled,
+    realtimeBattle=p.realtimeBattle,realtimeZoom=p.realtimeZoom,
     battleSoundsEnabled=p.battleSoundsEnabled,freeLookEnabled=p.freeLookEnabled,autoProgressEnabled=p.autoProgressEnabled,bossIntroEnabled=p.bossIntroEnabled,doubleBattlesEnabled=p.doubleBattlesEnabled,
     abilitiesEnabled=p.abilitiesEnabled,
     music=p.music,musicLabel=Music and Music.themeLabel and Music.themeLabel(game,p.music),

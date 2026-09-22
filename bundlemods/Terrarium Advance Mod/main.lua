@@ -3845,6 +3845,12 @@ local function initializeColosseumIntegration()
     else
       BattleSettings = loadColosseumModule("BattleSettings")
     end
+    namespace.BattleSettings = BattleSettings
+
+    loadColosseumModule("MoveTargeting")
+    local RealtimeBattle = loadColosseumModule("RealtimeBattle")
+    namespace.RealtimeBattle = RealtimeBattle
+    loadColosseumModule("RealtimeBattleBridge")
 
     loadColosseumModule("AbilityData")
     Abilities = loadColosseumModule("Abilities")

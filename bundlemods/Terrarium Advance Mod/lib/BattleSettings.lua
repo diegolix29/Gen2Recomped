@@ -16,6 +16,7 @@ local function prefs(game)
   if not (game and game.save) then
     return {
       music="normal",arena="auto",arenasEnabled=true,cameraEnabled=true,pokemonModelsEnabled=true,
+      realtimeBattle=false,realtimeZoom=1.0,
       playerModel="red",enemyTrainerModel="auto",rivalModel="leaf",
       doubleBattlesEnabled=true,abilitiesEnabled=true,freeLookEnabled=true,
       autoProgressEnabled=true,bossIntroEnabled=false,battleSoundsEnabled=true,
@@ -34,6 +35,11 @@ local function prefs(game)
   -- declines them and the user's normal resolved sprite/model pipeline wins.
   if p.pokemonModelsEnabled==nil then p.pokemonModelsEnabled=true end
   p.pokemonModelsEnabled=p.pokemonModelsEnabled and true or false
+  if p.realtimeBattle==nil then p.realtimeBattle=false end
+  p.realtimeBattle=p.realtimeBattle==true
+  p.realtimeZoom=tonumber(p.realtimeZoom) or 1.0
+  local zoomOK={ [1.0]=true,[1.25]=true,[1.5]=true,[1.75]=true,[2.0]=true }
+  if not zoomOK[p.realtimeZoom] then p.realtimeZoom=1.0 end
 
   -- Migrate older boolean trainer settings into the current model selectors.
   if p.battleSoundsEnabled==nil then p.battleSoundsEnabled=true end
@@ -127,6 +133,8 @@ local function openBattleMenu(game,returnId,returnParent)
   local environmentToggle={keepOpen=true}
   local cameraToggle={keepOpen=true}
   local pokemonModelsToggle={keepOpen=true}
+  local realtimeToggle={keepOpen=true}
+  local realtimeZoomRow={keepOpen=true}
   local doublesToggle={keepOpen=true}
   local abilitiesToggle={keepOpen=true}
   local bossIntroToggle={keepOpen=true}
@@ -151,6 +159,8 @@ local function openBattleMenu(game,returnId,returnParent)
     environmentToggle.label="COLOSSEUM ARENAS  "..(p.arenasEnabled and "ON" or "OFF")
     cameraToggle.label="COLOSSEUM CAMERA  "..(p.cameraEnabled and "ON" or "OFF")
     pokemonModelsToggle.label="COLOSSEUM MODELS  "..(p.pokemonModelsEnabled and "ON" or "OFF")
+    realtimeToggle.label="REALTIME BATTLE  "..(p.realtimeBattle and "ON" or "OFF")
+    realtimeZoomRow.label=("REALTIME ZOOM  %.2fX"):format(p.realtimeZoom or 1.0)
     freeLookToggle.label="FREE LOOK CAMERA  "..(p.freeLookEnabled~=false and "ON" or "OFF")
     autoProgressToggle.label="AUTO BATTLE FLOW  "..(p.autoProgressEnabled~=false and "ON" or "OFF")
     soundsToggle.label="BATTLE SOUNDS  "..(p.battleSoundsEnabled and "COLOSSEUM" or "ORIGINAL")
@@ -210,6 +220,20 @@ local function openBattleMenu(game,returnId,returnParent)
   end
   pokemonModelsToggle.onSelect=function()
     p.pokemonModelsEnabled=not p.pokemonModelsEnabled
+    refresh()
+  end
+  realtimeToggle.onSelect=function()
+    p.realtimeBattle=not p.realtimeBattle
+    refresh()
+  end
+  realtimeZoomRow.onSelect=function()
+    local z=tonumber(p.realtimeZoom) or 1.0
+    if z<1.24 then z=1.25
+    elseif z<1.49 then z=1.50
+    elseif z<1.74 then z=1.75
+    elseif z<1.99 then z=2.00
+    else z=1.00 end
+    p.realtimeZoom=z
     refresh()
   end
   doublesToggle.onSelect=function()
@@ -492,11 +516,11 @@ local function openBattleMenu(game,returnId,returnParent)
   refresh()
   -- Trainer presentation is intentionally three independent ownership rows:
   -- player Red, ordinary/special enemy trainers, and the Kanto rival substitute.
-  local mainRows={environmentToggle,cameraToggle,pokemonModelsToggle,doublesToggle,abilitiesToggle,wildSpawnRow,wildSpawnStatusRow,wildEncountersToggle,trainerEncountersToggle,gymEncountersToggle,eliteFourEncountersToggle,autoProgressToggle,freeLookToggle,bossIntroToggle,musicRow,soundsToggle,audioQualityRow,arenaRow,playerTrainerRow,enemyTrainerRow,rivalRow,hardCacheRow,cacheRow,back}
+  local mainRows={environmentToggle,cameraToggle,pokemonModelsToggle,realtimeToggle,realtimeZoomRow,doublesToggle,abilitiesToggle,wildSpawnRow,wildSpawnStatusRow,wildEncountersToggle,trainerEncountersToggle,gymEncountersToggle,eliteFourEncountersToggle,autoProgressToggle,freeLookToggle,bossIntroToggle,musicRow,soundsToggle,audioQualityRow,arenaRow,playerTrainerRow,enemyTrainerRow,rivalRow,hardCacheRow,cacheRow,back}
   menu=Menu.new(game,mainRows,{tx=1,ty=2,tw=24,maxVisible=12,onCancel=function() reopen(game,returnId,returnParent) end})
   menu.screenId="TerrariumBattleSettings"
   if BattleMenuUI and BattleMenuUI.mark then
-    BattleMenuUI.mark(menu,"TERRARIUM BATTLES",mainRows,12,"ENVIRONMENT / CAMERA / POKEMON / AUDIO / TRAINERS / ROM SOURCE")
+    BattleMenuUI.mark(menu,"TERRARIUM BATTLES",mainRows,12,"ENVIRONMENT / CAMERA / REALTIME / POKEMON / AUDIO / TRAINERS / ROM SOURCE")
   end
   game.stack:push(menu)
 end
@@ -535,6 +559,11 @@ end
 function S.prefs(game) return prefs(game) end
 function S.cameraEnabled(game) return prefs(game or (modRef and modRef.game)).cameraEnabled~=false end
 function S.pokemonModelsEnabled(game) return prefs(game or (modRef and modRef.game)).pokemonModelsEnabled~=false end
+function S.realtimeEnabled(game) return prefs(game or (modRef and modRef.game)).realtimeBattle==true end
+function S.realtimeZoom(game) return tonumber(prefs(game or (modRef and modRef.game)).realtimeZoom) or 1.0 end
+function S.setRealtimeEnabled(game,value)
+  local p=prefs(game or (modRef and modRef.game)); p.realtimeBattle=value==true; return p.realtimeBattle
+end
 function S.abilitiesEnabled(game) return prefs(game or (modRef and modRef.game)).abilitiesEnabled==true end
 function S.wildSpawnMode(game) return prefs(game or (modRef and modRef.game)).wildSpawnMode end
 function S.setCameraEnabled(game,value)
@@ -548,6 +577,7 @@ function S.status(game)
   local p=prefs(game or (modRef and modRef.game))
   return {
     installed=installed,arenasEnabled=p.arenasEnabled,cameraEnabled=p.cameraEnabled,pokemonModelsEnabled=p.pokemonModelsEnabled,
+    realtimeBattle=p.realtimeBattle,realtimeZoom=p.realtimeZoom,
     battleSoundsEnabled=p.battleSoundsEnabled,freeLookEnabled=p.freeLookEnabled,autoProgressEnabled=p.autoProgressEnabled,bossIntroEnabled=p.bossIntroEnabled,doubleBattlesEnabled=p.doubleBattlesEnabled,
     abilitiesEnabled=p.abilitiesEnabled,wildSpawnMode=p.wildSpawnMode,wildSpawnRuntime=S.wildSpawnStatus(),
     wildEncountersEnabled=p.wildEncountersEnabled,trainerEncountersEnabled=p.trainerEncountersEnabled,gymEncountersEnabled=p.gymEncountersEnabled,eliteFourEncountersEnabled=p.eliteFourEncountersEnabled,
