@@ -6713,6 +6713,45 @@ function Gen3.installIsGrassCell()
   Map._dsGen3Grass = true
 end
 
+--- TRUE on a Gen 3 cell whose behaviour byte is a water class.
+--- Excludes bridge reflection water (MB_REFLECTION_UNDER_BRIDGE) which should
+--- not get full water effects when covered by bridges.
+function Gen3.isWaterCell(map, cx, cy)
+  local ctx = Gen3.forMap(map)
+  if not (ctx and ctx.metatileAt and ctx.attributes) then return false end
+  local okM, m = pcall(ctx.metatileAt, cx, cy)
+  if not okM or type(m) ~= "number" then return false end
+  local okA, b = pcall(ctx.attributes, m)
+  if not okA or type(b) ~= "number" then return false end
+  local sp = spec()
+  local behaviour = sp and sp.behaviour
+  -- Check if it's water but exclude bridge reflection (0x2B)
+  if behaviour and behaviour[b] == "water" then
+    return b ~= 0x2B  -- Exclude MB_REFLECTION_UNDER_BRIDGE
+  end
+  return false
+end
+
+-- Monkey-patches `Map:isWaterCell` once, the same way `Gen3.installIsGrassCell`
+-- patches `Map:isGrassCell`: keep the original for every map it already got right
+-- (Gen 1, Gen 2, Prism), and answer Gen 3 maps with the behaviour byte instead.
+-- Call once at load time (see main.lua, beside `Gen3.installIsGrassCell`).
+function Gen3.installIsWaterCell()
+  local ok, Map = pcall(require, "src.world.Map")
+  if not ok or not Map or Map._dsGen3Water then return end
+  local original = Map.isWaterCell
+  function Map:isWaterCell(cx, cy)
+    if Gen3.mapIsGen3(self) then
+      return Gen3.isWaterCell(self, cx, cy)
+    end
+    if type(original) == "function" then
+      return original(self, cx, cy)
+    end
+    return false
+  end
+  Map._dsGen3Water = true
+end
+
 -- ---------------------------------------------------------------------------
 -- THE OUTDOOR FLAG.
 --

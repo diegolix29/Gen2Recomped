@@ -2806,6 +2806,9 @@ QoL.install()
 Carry.install()
 -- Walk-on-ice when frozen, gated on Surf (Soul Badge + party knows SURF).
 if Water.installWalk then pcall(Water.installWalk) end
+-- Gen 3 byte-level water detection (excludes bridge reflection water)
+local Gen3 = V.require("Gen3")
+if Gen3.installIsWaterCell then pcall(Gen3.installIsWaterCell) end
 
 -- ------- Battle UI hiding system
 --

@@ -420,6 +420,11 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
     local k = keyOf(tx, ty)
     local s = S.shapeAt[k]
     if not s then return false end
+    -- For Gen3, use byte-level water detection to exclude bridge reflection water
+    if S.isGen3 then
+      local okW, water = pcall(map.isWaterCell, map, math.floor(tx / 2), math.floor(ty / 2))
+      return okW and water
+    end
     return s.class == "water"
   end
 
@@ -734,9 +739,10 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
             neY = math.max(run.h, hN - 8)
           end
           local u0, u1, v0, v1 = uvRect(roofTile, rv0, rv1)
+          local isWater = isWaterAt(tx, ty)
           push({ { x0, swY, z0 + 8 }, { x0 + 8, seY, z0 + 8 },
                  { x0 + 8, neY, z0 }, { x0, nwY, z0 } },
-               { { u0, v1 }, { u1, v1 }, { u1, v0 }, { u0, v0 } }, 0.95, nil, s.class == "water")
+               { { u0, v1 }, { u1, v1 }, { u1, v0 }, { u0, v0 } }, 0.95, nil, isWater)
 
           local function profileH(nr, d)
             local ne = nr.gableExtent or nr.extent
@@ -768,12 +774,12 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
               push({ { fx, bS, z0 + 8 }, { fx, bN, z0 },
                      { fx, nY, z0 }, { fx, sY, z0 + 8 } },
                    { { u0, v1 }, { u1, v1 }, { u1, v0 }, { u0, v0 } },
-                   Voxel3D.FACE_SHADE[1], nil, s.class == "water")
+                   Voxel3D.FACE_SHADE[1], nil, isWater)
             else
               push({ { fx, bN, z0 }, { fx, bS, z0 + 8 },
                      { fx, sY, z0 + 8 }, { fx, nY, z0 } },
                    { { u0, v1 }, { u1, v1 }, { u1, v0 }, { u0, v0 } },
-                   Voxel3D.FACE_SHADE[2], nil, s.class == "water")
+                   Voxel3D.FACE_SHADE[2], nil, isWater)
             end
           end
           
@@ -810,12 +816,12 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
               push({ { x0, bW, z0 + 8 }, { x0 + 8, bE, z0 + 8 },
                      { x0 + 8, eY, z0 + 8 }, { x0, wY, z0 + 8 } },
                    { { u0, v1 }, { u1, v1 }, { u1, v0 }, { u0, v0 } },
-                   Voxel3D.FACE_SHADE[5], nil, s.class == "water")
+                   Voxel3D.FACE_SHADE[5], nil, isWater)
             else
               push({ { x0 + 8, bE, z0 }, { x0, bW, z0 },
                      { x0, wY, z0 }, { x0 + 8, eY, z0 } },
                    { { u0, v1 }, { u1, v1 }, { u1, v0 }, { u0, v0 } },
-                   Voxel3D.FACE_SHADE[6], nil, s.class == "water")
+                   Voxel3D.FACE_SHADE[6], nil, isWater)
             end
           end
           
@@ -838,7 +844,8 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
             m = math.min(run.roofArtRows, run.front - artTop + 1)
           end
           if roomTop then
-            topQuad(x0, z0, h, roomTop, VOLUME_TOP_SHADE, s.class == "water")
+            local isWater = isWaterAt(tx, ty)
+            topQuad(x0, z0, h, roomTop, VOLUME_TOP_SHADE, isWater)
           elseif S.isGen3 and run.extent > m then
             local d = ty - run.north
             local band = m * 8
@@ -850,10 +857,12 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
             local topTile = S.tileAt[keyOf(tx, artTop + ai)] or Gen3.tileAt(map, tx, artTop + ai)
             local tv0 = math.max(0, math.min(7.5, p0 - ai * 8))
             local tv1 = math.max(tv0 + 0.5, math.min(8, p1 - ai * 8))
-            topQuad(x0, z0, h, topTile, VOLUME_TOP_SHADE, s.class == "water", nil, tv0, tv1)
+            local isWater = isWaterAt(tx, ty)
+            topQuad(x0, z0, h, topTile, VOLUME_TOP_SHADE, isWater, nil, tv0, tv1)
           else
             local topTile = S.tileAt[keyOf(tx, artTop + ((ty - run.north) % m))] or Gen3.tileAt(map, tx, artTop + ((ty - run.north) % m))
-            topQuad(x0, z0, h, topTile, VOLUME_TOP_SHADE, s.class == "water")
+            local isWater = isWaterAt(tx, ty)
+            topQuad(x0, z0, h, topTile, VOLUME_TOP_SHADE, isWater)
           end
         else
           local topTile = tile
@@ -898,9 +907,10 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
             end
             topTile = S.tileAt[keyOf(tx, row)]
           end
+          local isWater = isWaterAt(tx, ty)
           topQuad(x0, z0, h, topTile,
-                  s.art == "upright" and VOLUME_TOP_SHADE or 1, s.class == "water",
-                  (s.class == "water") and waterPush or nil, capV0, capV1)
+                  s.art == "upright" and VOLUME_TOP_SHADE or 1, isWater,
+                  isWater and waterPush or nil, capV0, capV1)
         end
 
         if s.class == "bridge" then
@@ -1064,7 +1074,7 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
                 sideQuad(d, x0, z0, y0, y1, src,
                          vT or ((band * 8 + 8) - y1),
                          vB or ((band * 8 + 8) - y0),
-                         sideShades(hl, hr, y0, y1, y0 <= nh, shade), s.class == "water")
+                         sideShades(hl, hr, y0, y1, y0 <= nh, shade), isWaterAt(tx, ty))
               end
             end
           end
