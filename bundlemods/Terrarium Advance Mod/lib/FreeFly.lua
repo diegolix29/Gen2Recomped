@@ -94,6 +94,7 @@ local state = {
   riseGlide = 0,
   glide = 0,
   landRequest = nil,
+  wantLand = nil,
   approachPath = nil,
   fpRef = nil,
   v3dRef = nil,
@@ -272,6 +273,7 @@ local function startFlight(game, mon)
     return
   end
   state.phase, state.alt, state.bob = "rising", 0, 0
+  state.wantLand = nil
   -- wild flyers climb on a diagonal; so does the mount
   state.riseGlide = 2
   
@@ -558,9 +560,12 @@ local function autopilotRefresh(ow)
   end
 end
 
--- half a cell either side counts as arrived; any tighter and a flyer
--- whose step lands a pixel past it would circle the point forever
-local AUTOPILOT_ARRIVE_PX = 8
+-- standing still, player px/py is the cell's TOP-LEFT, so a pixel test
+-- against the cell CENTER (x*16+8) is always 8px away on the dest tile
+-- itself -- `< 8` never fires and the flyer oscillates north/south of
+-- the fly spot forever. Arrive by cell instead: on the fly tile, or
+-- the 8-neighborhood if that tile is a wall we cannot stand on.
+local AUTOPILOT_ARRIVE_CELLS = 1
 
 -- tryMove never crosses a map seam: Collision.canMove refuses
 -- out-of-bounds cells, and the engine's checkEdgeExit lives on the
@@ -611,11 +616,26 @@ local function autopilotStep(ow, p)
   local targetPx = ap.ox + ap.x * 16 + 8
   local targetPy = ap.oy + ap.y * 16 + 8
   local dx, dy = targetPx - p.px, targetPy - p.py
-  -- Only declare arrival if we're on the destination map AND close to the target
-  -- AND not currently moving (to avoid mid-transition false positives)
-  if ow.map.id == ap.mapId and math.abs(dx) < AUTOPILOT_ARRIVE_PX
-     and math.abs(dy) < AUTOPILOT_ARRIVE_PX and not p.moving then
-    V.mod.log:info("FULL FLY: autopilot arrived at destination (dx=%d, dy=%d)", dx, dy)
+  local cellDist = math.max(math.abs((p.cellX or 0) - (ap.x or 0)),
+                            math.abs((p.cellY or 0) - (ap.y or 0)))
+  if ow.map.id == ap.mapId and not p.moving
+     and cellDist <= AUTOPILOT_ARRIVE_CELLS then
+    -- one last step onto the fly tile when it is free; otherwise land
+    -- on this neighboring cell instead of circling the facade
+    if cellDist > 0 then
+      local toX, toY = (ap.x or 0) - p.cellX, (ap.y or 0) - p.cellY
+      local lastDir
+      if math.abs(toX) > math.abs(toY) then
+        lastDir = toX > 0 and "right" or "left"
+      elseif toY ~= 0 then
+        lastDir = toY > 0 and "down" or "up"
+      end
+      if lastDir and tryFlyMove(ow, p, lastDir) == "moved" then
+        return true
+      end
+    end
+    V.mod.log:info("FULL FLY: autopilot arrived at destination (cell dx=%d, dy=%d)",
+                 (p.cellX or 0) - (ap.x or 0), (p.cellY or 0) - (ap.y or 0))
     return false
   end
   if p.moving then return true end
@@ -638,7 +658,13 @@ local function autopilotStep(ow, p)
       altDir = dx > 0 and "right" or "left"
     end
     V.mod.log:info("FULL FLY: autopilot blocked, trying alternative direction %s", altDir)
-    tryFlyMove(ow, p, altDir)
+    local alt = tryFlyMove(ow, p, altDir)
+    -- parked against the fly-spot building: stop steering and land
+    if alt ~= "moved" and ow.map.id == ap.mapId
+       and cellDist <= AUTOPILOT_ARRIVE_CELLS + 2 then
+      V.mod.log:info("FULL FLY: autopilot blocked near destination, landing")
+      return false
+    end
   end
   return true
 end
@@ -1444,10 +1470,11 @@ end
 local APPROACH_RANGE = 12
 local APPROACH_DIRS = { { 0, 1 }, { 1, 0 }, { -1, 0 }, { 0, -1 } }
 
-local function findLandingPath(ow, p)
+local function findLandingPath(ow, p, maxRange)
   local map = ow.map
   local lm = state.landmark
   local w = map.widthCells
+  maxRange = maxRange or APPROACH_RANGE
   local function facade(cx, cy)
     return lm and lm.mapId == map.id and lm.cells[cy * lm.w + cx]
   end
@@ -1476,7 +1503,7 @@ local function findLandingPath(ow, p)
       if kind == "ground" then return pathTo(cy * w + cx) end
       if kind == "water" and not waterKey then waterKey = cy * w + cx end
     end
-    if depth < APPROACH_RANGE then
+    if depth < maxRange then
       for _, d in ipairs(APPROACH_DIRS) do
         local nx, ny = cx + d[1], cy + d[2]
         local key = ny * w + nx
@@ -1490,6 +1517,27 @@ local function findLandingPath(ow, p)
     end
   end
   return waterKey and pathTo(waterKey) or nil
+end
+
+-- FULL FLY: once the bird is over the chosen town, keep trying to set
+-- down until a walkable cell is reached or the player takes the stick.
+local function beginAutoLand(ow, p, canLand)
+  if canLand then
+    state.phase, state.glide, state.wantLand = "landing", 0, nil
+    V.mod.log:info("FULL FLY: landing on current cell")
+    return true
+  end
+  local path = findLandingPath(ow, p, 24) or findLandingPath(ow, p, 48)
+  if path then
+    state.phase = "approach"
+    state.approachPath = path
+    state.wantLand = true
+    V.mod.log:info("FULL FLY: gliding to a landing spot (%d steps)", #path)
+    return true
+  end
+  state.wantLand = true
+  V.mod.log:info("FULL FLY: no landing spot yet, searching")
+  return false
 end
 
 -- Public API
@@ -2005,32 +2053,22 @@ function FreeFly.init()
           local steering = Game.input:isDown("up") or Game.input:isDown("down")
             or Game.input:isDown("left") or Game.input:isDown("right")
           if steering then
-            state.autopilot = nil
+            state.autopilot, state.wantLand = nil, nil
             V.mod.log:info("FULL FLY: autopilot handed back to the player due to steering")
           elseif not (Game.input:wasPressed("b") or state.landRequest) then
             local continue = autopilotStep(ow, p)
             if not continue then
               V.mod.log:info("FULL FLY: autopilot arrived at destination")
               state.autopilot = nil
-              if canLand then
-                state.phase, state.glide = "landing", 0
-                V.mod.log:info("FULL FLY: arrived, landing")
-              else
-                local path = findLandingPath(ow, p)
-                if path then
-                  state.phase = "approach"
-                  state.approachPath = path
-                  V.mod.log:info("FULL FLY: arrived, gliding to a landing spot")
-                else
-                  V.mod.log:info("FULL FLY: arrived, nowhere to land nearby -- circling")
-                end
-              end
+              beginAutoLand(ow, p, canLand)
             end
           end
+        elseif state.wantLand then
+          beginAutoLand(ow, p, canLand)
         end
 
         if Game.input:wasPressed("b") or state.landRequest then
-          state.autopilot = nil
+          state.autopilot, state.wantLand = nil, nil
           state.landRequest = nil
           if canLand then
             state.phase, state.glide = "landing", 0
@@ -2092,15 +2130,32 @@ function FreeFly.init()
         local cancel = steering or Game.input:wasPressed("b")
           or state.landRequest
         state.landRequest = nil
-        if cancel or not state.approachPath then
-          state.phase, state.approachPath = "flying", nil
+        if cancel then
+          state.phase, state.approachPath, state.wantLand = "flying", nil, nil
+        elseif not state.approachPath then
+          if state.wantLand then
+            beginAutoLand(ow, p, canLand)
+            if state.phase == "approach" and not state.approachPath then
+              state.phase = "flying"
+            end
+          else
+            state.phase = "flying"
+          end
         elseif not p.moving then
           local nextCell = state.approachPath[1]
           if not nextCell then
             state.approachPath = nil
             -- recheck on arrival: an NPC may have wandered onto the spot
-            state.phase = canLand and "landing" or "flying"
-            state.glide = 0
+            if canLand then
+              state.phase, state.glide, state.wantLand = "landing", 0, nil
+            elseif state.wantLand then
+              beginAutoLand(ow, p, canLand)
+              if state.phase == "approach" and not state.approachPath then
+                state.phase = "flying"
+              end
+            else
+              state.phase = "flying"
+            end
           else
             local dir
             if nextCell[1] > p.cellX then dir = "right"
@@ -2114,7 +2169,15 @@ function FreeFly.init()
               if result == "moved" then
                 table.remove(state.approachPath, 1)
               elseif result == "blocked" then
-                state.phase, state.approachPath = "flying", nil
+                state.approachPath = nil
+                if state.wantLand then
+                  beginAutoLand(ow, p, canLand)
+                  if state.phase == "approach" and not state.approachPath then
+                    state.phase = "flying"
+                  end
+                else
+                  state.phase = "flying"
+                end
               end
             end
           end
