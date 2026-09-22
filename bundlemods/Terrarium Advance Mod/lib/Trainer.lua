@@ -433,7 +433,7 @@ function T:isBossBattle(ctx)
 end
 
 function T:getMode(game)
-  local p=game and game.save and game.save.colosseumBattle
+  local p=game and game.save and game.save.terrariumBattle
   if type(p)=="table" then
     if p.enemyTrainerModel then return tostring(p.enemyTrainerModel) end
     if p.enemyTrainerModels==false then return "off" end
@@ -442,8 +442,8 @@ function T:getMode(game)
 end
 function T:setMode(game,mode)
   if not (game and game.save) then return end
-  local p=game.save.colosseumBattle
-  if type(p)~="table" then p={};game.save.colosseumBattle=p end
+  local p=game.save.terrariumBattle
+  if type(p)~="table" then p={};game.save.terrariumBattle=p end
   local off=mode=="off" or mode=="player"
   p.enemyTrainerModels=not off
   if off then p.enemyTrainerModel="off" elseif not p.enemyTrainerModel or p.enemyTrainerModel=="off" then p.enemyTrainerModel="auto" end

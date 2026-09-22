@@ -23,8 +23,8 @@ local function prefs(game)
       wildEncountersEnabled=true,trainerEncountersEnabled=true,gymEncountersEnabled=true,eliteFourEncountersEnabled=true,
     }
   end
-  local p=game.save.colosseumBattle
-  if type(p)~="table" then p={}; game.save.colosseumBattle=p end
+  local p=game.save.terrariumBattle
+  if type(p)~="table" then p={}; game.save.terrariumBattle=p end
   if p.arenasEnabled==nil then p.arenasEnabled=true end
   p.arenasEnabled=p.arenasEnabled and true or false
   if p.cameraEnabled==nil then p.cameraEnabled=true end
@@ -494,9 +494,9 @@ local function openBattleMenu(game,returnId,returnParent)
   -- player Red, ordinary/special enemy trainers, and the Kanto rival substitute.
   local mainRows={environmentToggle,cameraToggle,pokemonModelsToggle,doublesToggle,abilitiesToggle,wildSpawnRow,wildSpawnStatusRow,wildEncountersToggle,trainerEncountersToggle,gymEncountersToggle,eliteFourEncountersToggle,autoProgressToggle,freeLookToggle,bossIntroToggle,musicRow,soundsToggle,audioQualityRow,arenaRow,playerTrainerRow,enemyTrainerRow,rivalRow,hardCacheRow,cacheRow,back}
   menu=Menu.new(game,mainRows,{tx=1,ty=2,tw=24,maxVisible=12,onCancel=function() reopen(game,returnId,returnParent) end})
-  menu.screenId="CbeBattleSettings"
+  menu.screenId="TerrariumBattleSettings"
   if BattleMenuUI and BattleMenuUI.mark then
-    BattleMenuUI.mark(menu,"COLOSSEUM BATTLE",mainRows,12,"ENVIRONMENT / CAMERA / POKEMON / AUDIO / TRAINERS / ROM SOURCE")
+    BattleMenuUI.mark(menu,"TERRARIUM BATTLES",mainRows,12,"ENVIRONMENT / CAMERA / POKEMON / AUDIO / TRAINERS / ROM SOURCE")
   end
   game.stack:push(menu)
 end
@@ -506,17 +506,18 @@ function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trai
   modRef,Trainer,Music,ArenaCatalog,BattleMenuUI,CacheManager,TrainerRoster,Compat,AudioFidelity=mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trainerRoster,compat,audioFidelity
   if BattleMenuUI and BattleMenuUI.install then BattleMenuUI.install() end
   if not (mod and mod.hooks and type(mod.hooks.wrap)=="function") then return false end
+  -- Use a higher priority to run after other mods like XD_BATTLE_ENVIRONMENTS
   mod.hooks:wrap("ui.start_menu.items",function(next,game,items)
     local out=next(game,items)
     if type(out)~="table" then out=items end
     for _,entry in ipairs(out) do
-      if entry.__colosseumBattleEntry or tostring(entry.label or ""):upper()=="BATTLE" then return out end
+      if entry.__terrariumBattleEntry then return out end
     end
     local at=#out+1
     for i,entry in ipairs(out) do
       if tostring(entry.label or ""):upper()=="OPTION" then at=i;break end
     end
-    table.insert(out,at,{label="BATTLE",__colosseumBattleEntry=true,onSelect=function()
+    table.insert(out,at,{label="TERRARIUM BATTLES",__terrariumBattleEntry=true,onSelect=function()
       -- Gen 1's generic StartMenu pops before invoking onSelect. Gold's
       -- injected-row arm intentionally does not. Keep a live Gold parent on
       -- the stack; a synthetic replacement lacks onChoose/onClose and is dead.
@@ -527,7 +528,7 @@ function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trai
       openBattleMenu(game,returnId,returnParent)
     end})
     return out
-  end,650)
+  end,200) -- Run after XD_BATTLE_ENVIRONMENTS (priority 115) but before other high-priority mods
   installed=true
   return true
 end

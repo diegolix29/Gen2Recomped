@@ -177,7 +177,7 @@ end
 
 local function saved(game)
   local save=game and game.save
-  local p=save and save.colosseumBattle
+  local p=save and save.terrariumBattle
   local id=p and p.arena or "auto"
   if not VALID[id] then id="auto" end
   return id
@@ -185,8 +185,8 @@ end
 
 local function ensurePrefs(game)
   if not (game and game.save) then return nil end
-  local p=game.save.colosseumBattle
-  if type(p)~="table" then p={};game.save.colosseumBattle=p end
+  local p=game.save.terrariumBattle
+  if type(p)~="table" then p={};game.save.terrariumBattle=p end
   return p
 end
 
@@ -203,7 +203,7 @@ end
 
 function C.enabled(game)
   local save=game and game.save
-  local p=save and save.colosseumBattle
+  local p=save and save.terrariumBattle
   if not p then return true end
   if p.arenasEnabled==nil then p.arenasEnabled=true end
   return p.arenasEnabled and true or false

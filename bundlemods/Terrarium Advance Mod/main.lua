@@ -4371,6 +4371,50 @@ mod.exports.keys = V.KEYS
 -- This allows gen1_true_3d_characters and other mods to find us via mod.find("DRAMATIC_SHAPE")
 mod.exports._dramaticShapeCompat = true
 
+-- Export Voxel3D directly for POKEMON_XD_GEN1 compatibility
+if Voxel3D then
+  mod.exports.Voxel3D = Voxel3D
+end
+
+-- voxel_companion API compatibility for POKEMON_XD_GEN1 and similar mods
+-- This provides a minimal companion registration API that works with the existing Voxel3D pipeline
+local companionSpecs = {}
+local companionHandle = nil
+
+local function makeVoxelCompanion()
+  local api = { api = 1 }
+  
+  function api.register(spec)
+    if type(spec) ~= "table" then return nil, "invalid companion spec" end
+    companionSpecs[#companionSpecs + 1] = spec
+    table.sort(companionSpecs, function(a, b) 
+      return (tonumber(a.priority) or 0) < (tonumber(b.priority) or 0) 
+    end)
+    
+    if type(spec.attach) == "function" then
+      pcall(spec.attach, {})
+    end
+    
+    local handle = {}
+    function handle.dispose()
+      for i = #companionSpecs, 1, -1 do
+        if companionSpecs[i] == spec then
+          table.remove(companionSpecs, i)
+          break
+        end
+      end
+      if type(spec.dispose) == "function" then
+        pcall(spec.dispose)
+      end
+    end
+    return handle
+  end
+  
+  return api
+end
+
+mod.exports.voxel_companion = makeVoxelCompanion()
+
 -- Compatibility layer for gen1_true_3d_characters and other Dramatic Shape-dependent mods
 -- Ensure VoxelScene and related modules are properly exported for compatibility
 if VoxelScene then
