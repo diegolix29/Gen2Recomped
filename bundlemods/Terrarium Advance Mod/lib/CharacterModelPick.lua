@@ -105,6 +105,20 @@ function CharacterModelPick.setCharacterModel(characterId)
     mod.options:set("character_model", characterId)
   end
   
+  -- Set appropriate default animation based on character
+  local defaultAnim = "idle"
+  if characterId == "wes" then
+    defaultAnim = "victory"
+  elseif characterId == "off" then
+    defaultAnim = "idle"
+  end
+  
+  if Config and type(Config.setOption) == "function" then
+    Config.setOption(mod, "character_animation", defaultAnim, "character_animation_set", {})
+  elseif mod.options and type(mod.options.set) == "function" then
+    mod.options:set("character_animation", defaultAnim)
+  end
+  
   -- Load the model and write marker immediately
   local PlayerModel = V.require("PlayerModel")
   local PlayerModelInstall = V.require("PlayerModelInstall")
@@ -199,12 +213,16 @@ function CharacterModelPick.getCurrentAnimation()
   local mod = V.mod
   local Config = V.require("config")
   
+  -- Get the stored animation setting
+  local storedAnim = nil
   if Config and type(Config.get) == "function" then
-    return Config.get(mod, "character_animation") or "idle"
+    storedAnim = Config.get(mod, "character_animation")
   elseif mod.options and type(mod.options.get) == "function" then
-    return mod.options:get("character_animation") or "idle"
+    storedAnim = mod.options:get("character_animation")
   end
-  return "idle"
+  
+  -- Return stored animation or default to idle
+  return storedAnim or "idle"
 end
 
 -- Set the animation in settings
