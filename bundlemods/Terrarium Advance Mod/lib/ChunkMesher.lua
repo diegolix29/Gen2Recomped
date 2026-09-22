@@ -1494,6 +1494,18 @@ function ChunkMesher.pending()
   return #jobs
 end
 
+-- Has `map`'s slot already finished building (whether it came out as a real
+-- mesh or legitimately empty)? Read-only twin of the check `request` itself
+-- uses to decide whether to return early -- used by WarpPrefetch to poll a
+-- warm-up request without re-triggering or promoting it.
+function ChunkMesher.ready(map, bodyOnly)
+  if not (map and map.id) then return false end
+  local slot = bodyOnly and "body" or "full"
+  local c = cache[map.id]
+  local stale = c and c.stale and (c.stale[slot] or c.stale.aux)
+  return c ~= nil and c[slot] ~= nil and not stale
+end
+
 local URGENT_SLICE = 0.012
 local IDLE_SLICE = 0.005
 local COVERED_SLICE = 0.030

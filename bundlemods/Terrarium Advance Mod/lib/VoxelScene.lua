@@ -14,6 +14,7 @@ local V = ...
 
 local Mat4 = V.require("Mat4")
 local Voxel3D = V.require("Voxel3D")
+local PropVisibility = V.require("PropVisibility")
 local ShadowMap = V.require("ShadowMap")
 local Shadows = V.require("Shadows")
 local ChunkMesher = V.require("ChunkMesher")
@@ -992,11 +993,29 @@ local function figureCaster(f, offX, offZ)
     Mat4.scale(1, 1, 0))
 end
 
--- Every figure on `map`, drawn with `draw(mesh, model, caster)`.
-local function eachFigure(map, offX, offZ, draw)
+-- Every figure on `map`, drawn with `draw(mesh, model, caster)`. `cull`,
+-- when true, skips a figure whose static bounds fall entirely outside the
+-- current camera frustum -- only safe for the camera-facing draw pass: the
+-- shadow-cast pass uses the SUN's frustum, not the camera's, so it always
+-- calls this with `cull` left nil/false and draws every figure, exactly as
+-- before.
+local function eachFigure(map, offX, offZ, draw, cull)
   local figs = ChunkMesher.figures(map) or {}
+  if #figs == 0 then return end
+  local visible = cull
+    and PropVisibility.forView(Voxel3D.vp, Voxel3D.curveK,
+                                Voxel3D.curveX, Voxel3D.curveZ)
+    or nil
   for _, f in ipairs(figs) do
-    draw(f.mesh, figureMatrix(f, offX, offZ), figureCaster(f, offX, offZ))
+    local show = true
+    if visible then
+      local b = PropVisibility.staticMeshBounds(f.mesh)
+      show = not b or visible(b, Mat4.translate(f.wx + (offX or 0), f.y,
+                                                 f.wz + (offZ or 0)))
+    end
+    if show then
+      draw(f.mesh, figureMatrix(f, offX, offZ), figureCaster(f, offX, offZ))
+    end
   end
 end
 
@@ -2267,12 +2286,12 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
     local figPull = billboardPull()
     eachFigure(state.map, 0, 0, function(mesh, model, caster)
       Voxel3D.draw(mesh, atlasFor(state.map), model, figPull, ShadowMap.snug(caster))
-    end)
+    end, true)
     for i, nb in ipairs(state.neighbors or {}) do
       if ViewBox.showsMap(nb) then
         eachFigure(nb.map, nb.ox, nb.oy, function(mesh, model, caster)
           Voxel3D.draw(mesh, atlasFor(nb.map), model, figPull, ShadowMap.snug(caster))
-        end)
+        end, true)
       end
     end
 

@@ -141,6 +141,7 @@ local Voxel3D = V.require("Voxel3D")
 local VoxelScene = V.require("VoxelScene")
 local TiltShift = V.require("TiltShift")
 local ChunkMesher = V.require("ChunkMesher")
+local WarpPrefetch = V.require("WarpPrefetch")
 local VoxelGrid = V.require("VoxelGrid")
 local WorldCurve = V.require("WorldCurve")
 local Aerial = V.require("Aerial")
@@ -675,8 +676,13 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
     -- is the flag the rest of the mod already reads as "stand down, the
     -- screen is not the player's right now" (Weather, AmbientSound,
     -- WildRoamers all gate on it), and it is the honest answer here too.
-    ChunkMesher.pump((Game and Game.stack and Game.stack:top() ~= ow)
-                     or (ow and ow.transitioning) or false)
+    local covered = (Game and Game.stack and Game.stack:top() ~= ow)
+                     or (ow and ow.transitioning) or false
+    -- Same COVERED window a door fade gives ChunkMesher's own idle slice:
+    -- the destination of an in-flight warp is known the instant the fade
+    -- starts, so its mesh can be built during the fade instead of after it.
+    pcall(WarpPrefetch.update, Game, covered)
+    ChunkMesher.pump(covered)
   end,
 
   drawWorld = function(ctx)
@@ -1430,12 +1436,6 @@ local SETTINGS = {
     cat = "freefly" },
   { V.require("FreeFly").settings.quickstart,
     "Quick start: Pallet Town gift Pidgeot with FLY for early flight access.",
-    cat = "freefly" },
-  { V.require("FreeFly").settings.fullFly,
-    "Full Fly: picking a town on FLY's map takes off and autopilots the "
-    .. "freefly flight there across the whole map, landing on arrival, "
-    .. "instead of warping you there instantly. FREEFLY (manual takeoff, "
-    .. "land anywhere) is unaffected either way.",
     cat = "freefly" },
   -- ------- ds_fp_ceiling integrated settings
   -- Interior ceiling and walls
@@ -3158,6 +3158,17 @@ end)
 mod.events:on("save.created", function()
   DayNight.restore()
   pinEngineFx()
+end)
+
+-- Warm the destination map's mesh while a warp's own fade covers the
+-- screen (see WarpPrefetch). Registered unconditionally -- independent of
+-- Colosseum import status, unlike the "game.ready" handler further down
+-- that wires up battle-side systems -- since this is an ordinary overworld
+-- optimization, not a Colosseum Overhaul feature.
+mod.events:on("game.ready", function(payload)
+  local game = (type(payload) == "table" and payload.game)
+    or require("src.core.Game")
+  pcall(WarpPrefetch.install, game)
 end)
 
 -- The engine's own time-of-day seam. OverworldState:timeOfDay() is an
