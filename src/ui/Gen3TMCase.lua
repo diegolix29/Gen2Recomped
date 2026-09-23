@@ -91,6 +91,13 @@ end
 
 function Gen3TMCase:rebuild()
   local game, save = self.game, self.game.save
+  if self.scriptRows then
+    self.rows = self.scriptRows
+    self.index = math.min(self.index or 1, #self.rows)
+    self.top = math.max(1, math.min(self.top or 1,
+                                    math.max(1, #self.rows - self:listRows() + 1)))
+    return
+  end
   local rows = {}
   for _, id in ipairs(Bag.order(save)) do
     local def = game.data.items and game.data.items[id]
@@ -116,6 +123,10 @@ function Gen3TMCase.new(game, opts)
   local self = setmetatable({}, Gen3TMCase)
   self.game = game
   self.onCancel = opts.onCancel
+  self.script = opts.script
+  self.noInput = opts.noInput and true or false
+  self.scriptRows = opts.rows
+  self.tick = 0
   self.index, self.top = 1, 1
   self:rebuild()
   return self
@@ -176,6 +187,9 @@ end
 
 function Gen3TMCase:update()
   if self:frlgArt() then self:updateDisc() end
+  self.tick = (self.tick or 0) + 1
+  if self.script then self.script(self) end
+  if self.noInput then return end
   local input = self.game.input
   if not input then return end
   if input:wasPressed("down") then self:moveCursor(1)

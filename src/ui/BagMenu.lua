@@ -306,6 +306,19 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
     return
   end
 
+  -- FireRed's TEACHY TV (teachy_tv.c).  It owns a full-screen tutorial menu,
+  -- so close the bag first just as the cartridge fades out of ItemMenu.
+  if result == "teachy_tv" then
+    if list and list.close then list:close() end
+    local ok = pcall(function()
+      require("src.ui.Screens").push(game, "Gen3TeachyTV", {})
+    end)
+    if not ok then
+      showMessages(game, { Strings("The TEACHY TV\nwon't turn on.") })
+    end
+    return
+  end
+
   -- ITEMFINDER (engine/items/itemfinder.asm): responds if the current
   -- map still has an unfound hidden item
   if result == "itemfinder" then

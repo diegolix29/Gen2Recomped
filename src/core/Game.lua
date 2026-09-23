@@ -1478,6 +1478,13 @@ function Game:restoreSave(loaded, recovered)
   -- SaveData.load and skip on the format guard
   local activeMods = self.modStatus and self.modStatus.loaded
   SaveData.runMigrations(loaded, self.mods and self.mods.migrations, activeMods)
+  -- Pre-fix FireRed port saves could already own a TM/HM without ITEM_TM_CASE.
+  -- Repair that impossible-on-cartridge state before validation/UI adoption.
+  local okBag, Bag = pcall(require, "src.inventory.Bag")
+  if okBag and Bag and Bag.repairFireRedTMCase
+     and Bag.repairFireRedTMCase(loaded, self.data) then
+    Logger.info("FireRed save repair: restored missing TM CASE for existing machines")
+  end
   -- Issue #103: 0.1.11 softlocks left CONTINUE in HALL_OF_FAME with
   -- lastOutdoor on Indigo.  One-shot relocate + heal before validate.
   if SaveData.needsPostGameRescue(loaded) then

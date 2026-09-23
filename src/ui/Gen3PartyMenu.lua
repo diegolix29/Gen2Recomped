@@ -136,6 +136,11 @@ function Gen3PartyMenu.new(game, opts)
   self.battle = opts.battle
   self.forceSwitch = opts.forceSwitch
   self.pickOnly = opts.pickOnly
+  -- FireRed's POKé DUDE drives the ordinary party screen with synthetic
+  -- input.  The screen stays the cartridge one; only its input source changes.
+  self.script = opts.script
+  self.noInput = opts.noInput and true or false
+  self.scriptTick = 0
   -- TM/HM TEACHING.  The bag pushes the party menu with the machine's move on
   -- it; each panel then answers ABLE or NOT ABLE out of that Pokemon's own
   -- learnset, and the box at the bottom asks Emerald's question.  Without
@@ -919,6 +924,9 @@ function Gen3PartyMenu:update(dt)
     end
     return
   end
+  self.scriptTick = (self.scriptTick or 0) + 1
+  if self.script then self.script(self) end
+  if self.noInput then return end
   local input = self.game.input
 
   -- the pick's own submenu takes the stick while it is up

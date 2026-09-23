@@ -753,6 +753,7 @@ local function genderSymbol(record, battle, battler)
   local ink = record.text or {}
   return row.text, { text = normInk(row.color), shadow = normInk(ink.shadow) }
 end
+Gen3Battle.genderSymbol = genderSymbol
 
 local function hpRampFor(record, battler)
   local bars = record and record.bars or {}

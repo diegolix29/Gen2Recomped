@@ -1905,6 +1905,14 @@ function Commands.g3_trainer_battle(ctx, kind, trainerId, winScript, cantText,
     require("src.world.VsSeeker").clear(ctx.save, ctx.game.overworld, vsNpc)
     Gen3Commands.markTrainerBeaten(ctx, vsTrainer)
   end
+  -- A normal trainer loss never returns to the event script.  FireRed's
+  -- CB2_EndTrainerBattle jumps straight to CB2_WhiteOut; only a win returns
+  -- through ContinueScript.  Falling through here made gym leaders say their
+  -- post-battle/reward lines after a loss even though the badge/TM continuation
+  -- (correctly) had not run, and did the same to no-intro rival cutscenes.
+  if ctx.lastBattleResult ~= "win" then
+    return "end"
+  end
   -- The defeat line plays when the player wins. Keeping this after battle
   -- result handling also prevents duplicate trainer speech around the battle.
   if ctx.lastBattleResult == "win" and type(defeatText) == "string" then
@@ -4281,9 +4289,18 @@ local MAUVILLE_OFF = {
   [0x250] = { 0x251, false },
 }
 
-local function mauvilleMap(ctx)
+-- SAY WHEN THE ROOM IS NOT THERE.
+--
+-- All three of these specials used to return in silence when the map could
+-- not answer, which is the one failure that looks exactly like the puzzle
+-- being broken: the script runs, the flag flips, the switch sprite changes
+-- and not one beam moves.  Named, it is a line in the log instead of a
+-- report that the gym does not work.
+local function mauvilleMap(ctx, who)
   local map = ctx.overworld and ctx.overworld.map
   if map and map.blockAt and map.setBlock then return map end
+  Logger.warn("mauville gym: %s has no map to write to (map=%s) -- the beams "
+                .. "cannot move", tostring(who), tostring(map and map.id))
   return nil
 end
 
@@ -4293,7 +4310,7 @@ end
 -- tile in a vertical beam decides which COLOUR of beam to become from what
 -- the toggle just did to the pole above it.
 local function mauvilleSweep(ctx, table_, floorCase)
-  local map = mauvilleMap(ctx)
+  local map = mauvilleMap(ctx, "the barrier sweep")
   if not map then return 0 end
   local M = Gen3Commands.MAUVILLE
   local changed = 0
@@ -4316,33 +4333,167 @@ local function mauvilleSweep(ctx, table_, floorCase)
 end
 Gen3Commands.mauvilleSweep = mauvilleSweep
 
+-- WHAT EACH BEAM METATILE MEANS FOR WALKING, and why it is worth writing
+-- down twice.
+--
+-- Reported from play, with a screenshot: "it seems like theres a border i
+-- cant pass after getting through the puzzle ... looks like clear path but
+-- is invisible barrier".  That is the one symptom the toggle tables cannot
+-- produce on their own -- the picture and the passability are written in the
+-- SAME call, out of the same row of the same table -- so either the
+-- collision half of that call is being lost on the way to the map, or
+-- something is putting it back afterwards.
+--
+-- This table is the answer independently of the call: in this room the
+-- metatile IS the passability, with no exceptions, so what the picture ends
+-- up saying can be ASKED rather than remembered.  It is the cartridge's own
+-- pairing and it checks out against BOTH of the barrier layouts the ROM
+-- ships -- the shipped blockdata of gMapLayouts[88] and the 26 `setmetatile`
+-- rows its ON_LOAD can reach -- on all 30 puzzle cells of the window, with
+-- nothing left over either way.
+--
+-- The rule it encodes: a horizontal beam's TOP half never blocks and its
+-- BOTTOM half blocks only while the beam is lit; a vertical beam blocks over
+-- both of its cells, and when it goes out the POLE stays -- a post you still
+-- cannot walk through -- while the cell beneath becomes plain floor.
+--
+-- Deliberately silent about the room's scenery (the emitters, the pillars,
+-- the walls).  The puzzle never writes those, so a cell whose metatile is
+-- not named here is left exactly as the map shipped it.
+--
+-- Hung off Gen3Commands rather than declared local: this chunk is already
+-- close to Lua's 200-local ceiling for a main function, and three more would
+-- have stopped the whole Gen 3 command table from loading.
+Gen3Commands.MAUVILLE_SOLID = {
+  [0x220] = false, [0x221] = false,  -- green H1/H2, lit: you walk under it
+  [0x228] = true,  [0x229] = true,   -- green H3/H4, lit: the wall
+  [0x230] = false, [0x231] = false,  -- green H1/H2, out
+  [0x238] = false, [0x239] = false,  -- green H3/H4, out
+  [0x222] = false, [0x223] = false,  -- red H1/H2, lit
+  [0x22A] = true,  [0x22B] = true,   -- red H3/H4, lit
+  [0x232] = false, [0x233] = false,  -- red H1/H2, out
+  [0x23A] = false, [0x23B] = false,  -- red H3/H4, out
+  [0x240] = true,  [0x241] = true,   -- green/red V1, lit
+  [0x248] = true,  [0x249] = true,   -- green/red V2, lit
+  [0x242] = true,  [0x243] = true,   -- the pole a dead beam leaves standing
+  [0x250] = true,  [0x251] = false,  -- pole top, lit / out
+  [0x21A] = false,                   -- the floor under a dead beam
+  [0x205] = false, [0x206] = false,  -- the switches themselves
+}
+
+-- MAKE THE ROOM WALK THE WAY IT LOOKS.
+--
+-- Run after every barrier change, over the same window the sweep walks.  For
+-- each cell whose metatile the table above names, it asks the map what that
+-- cell currently answers and, where the two disagree, says it again through
+-- Map:setCellShut -- the one-argument door, which has no branch to fall down
+-- the wrong side of.
+--
+-- On a run where nothing is wrong this corrects nothing and says nothing,
+-- and that silence is the diagnosis: a non-zero count means the collision
+-- half of a barrier write is not landing, and names the first cell it missed.
+function Gen3Commands.mauvilleAssert(ctx, why)
+  local map = mauvilleMap(ctx, why)
+  if not (map and map.setCellShut and map.cellCollision) then return 0 end
+  local M = Gen3Commands.MAUVILLE
+  local fixed, first = 0, nil
+  for y = M.Y0, M.Y1 do
+    for x = M.X0, M.X1 do
+      local solid = Gen3Commands.MAUVILLE_SOLID[map:blockAt(x, y)]
+      if solid ~= nil and (map:cellCollision(x, y) ~= 0) ~= solid then
+        map:setCellShut(x, y, solid)
+        fixed = fixed + 1
+        first = first or ("%d,%d"):format(x, y)
+      end
+    end
+  end
+  if fixed > 0 then
+    Logger.warn("mauville gym: %s left %d cell(s) walking the wrong way "
+                  .. "(first %s) -- re-stated from the metatile",
+                tostring(why), fixed, tostring(first))
+    map.blocksDirty = true
+  end
+  return fixed
+end
+
+-- THE ROOM AS THE PLAYER IS ABOUT TO MEET IT, one line per row: the metatile
+-- and `#` where that cell is a wall.  Cheap, and it settles from a log file
+-- what three readings of the tables could not.
+function Gen3Commands.mauvilleReport(ctx, why)
+  local map = ctx.overworld and ctx.overworld.map
+  if not (map and map.blockAt and map.cellCollision) then return end
+  local M = Gen3Commands.MAUVILLE
+  Logger.debug("mauville gym: %s -- window x%d..%d y%d..%d",
+               tostring(why), M.X0, M.X1, M.Y0, M.Y1)
+  for y = M.Y0, M.Y1 do
+    local row = {}
+    for x = M.X0, M.X1 do
+      row[#row + 1] = ("%03X%s"):format(map:blockAt(x, y) or 0,
+                                        (map:cellCollision(x, y) ~= 0)
+                                          and "#" or ".")
+    end
+    Logger.debug("mauville gym:  y%2d %s", y, table.concat(row, " "))
+  end
+end
+
 -- 143: press the switch named by 0x8004 and raise the other three
 Gen3Commands.SPECIALS[143] = function(ctx)
-  local map = mauvilleMap(ctx)
+  local map = mauvilleMap(ctx, "MauvilleGymPressSwitch")
   if not map then return end
   local M = Gen3Commands.MAUVILLE
   local pressed = tonumber(getVar(ctx.save, 0x8004))
+  -- 0x8004 IS THE WHOLE ARGUMENT, and a nil one presses nothing: every
+  -- switch comes up raised and the room looks untouched.  The four coord
+  -- scripts and the four ON_LOAD arms all set it immediately before calling
+  -- this, so a nil here means the row that sets it did not run.
+  if not pressed then
+    Logger.warn("mauville gym: PressSwitch with no 0x8004 -- every switch "
+                  .. "raised, which is not a state the cartridge has")
+  end
   for i, at in ipairs(M.SWITCHES) do
     map:setBlock(at[1], at[2],
                  (i - 1 == pressed) and M.PRESSED_SWITCH or M.RAISED_SWITCH,
                  false)
   end
+  Logger.debug("mauville gym: switch %s pressed", tostring(pressed))
+  Gen3Commands.mauvilleAssert(ctx, "PressSwitch")
 end
 
 -- 142: flip every beam in the room
 Gen3Commands.SPECIALS[142] = function(ctx)
-  return mauvilleSweep(ctx, MAUVILLE_TOGGLE, true)
+  local changed = mauvilleSweep(ctx, MAUVILLE_TOGGLE, true)
+  -- THE COUNT IS THE CHECK.  The shipped layout has beams in this window on
+  -- every visit -- the puzzle is never empty -- so a sweep that changes
+  -- NOTHING means the window was read somewhere the beams are not: wrong
+  -- coordinates, or a map whose blocks do not come back as bare metatile
+  -- ids.  Either way the player sees a switch go down and the room stay put.
+  if changed == 0 then
+    Logger.warn("mauville gym: SetDefaultBarriers changed no cells -- the "
+                  .. "window x%d..%d y%d..%d holds no beam this reads",
+                Gen3Commands.MAUVILLE.X0, Gen3Commands.MAUVILLE.X1,
+                Gen3Commands.MAUVILLE.Y0, Gen3Commands.MAUVILLE.Y1)
+  else
+    Logger.debug("mauville gym: toggled %d cell(s)", changed)
+  end
+  Gen3Commands.mauvilleAssert(ctx, "SetDefaultBarriers")
+  Gen3Commands.mauvilleReport(ctx, "after the toggle")
+  return changed
 end
 
 -- 147: the puzzle is over -- every switch down, every beam out
 Gen3Commands.SPECIALS[147] = function(ctx)
-  local map = mauvilleMap(ctx)
+  local map = mauvilleMap(ctx, "MauvilleGymDeactivatePuzzle")
   if not map then return end
   local M = Gen3Commands.MAUVILLE
   for _, at in ipairs(M.SWITCHES) do
     map:setBlock(at[1], at[2], M.PRESSED_SWITCH, false)
   end
-  return mauvilleSweep(ctx, MAUVILLE_OFF, false)
+  local changed = mauvilleSweep(ctx, MAUVILLE_OFF, false)
+  Logger.debug("mauville gym: puzzle deactivated, %d cell(s) turned off",
+               changed)
+  Gen3Commands.mauvilleAssert(ctx, "DeactivatePuzzle")
+  Gen3Commands.mauvilleReport(ctx, "after deactivating")
+  return changed
 end
 
 -- ---------------------------------------------------------------------------

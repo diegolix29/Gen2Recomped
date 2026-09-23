@@ -135,6 +135,15 @@ function Bag.add(save, id, qty, data)
       if cap and Bag.pocketSlots(save, pocket, data) >= cap then
         return false
       end
+      -- FireRed/LeafGreen AddBagItem automatically puts the TM CASE in the
+      -- KEY ITEMS pocket when the first TM/HM is acquired.  The TM is refused
+      -- if that key-item slot cannot be made.  Without this, Brock could hand
+      -- over TM39 while the UI truthfully had no TM CASE to open afterwards.
+      if pocket == "TM_HM"
+         and require("src.core.GameVersion").get() == "firered"
+         and not save.inventory.TM_CASE then
+        if not Bag.add(save, "TM_CASE", 1, data) then return false end
+      end
     elseif require("src.core.GameVersion").isGen2() then
       -- Gen2: each pocket has its own limit; TM/HM pocket is unlimited
       local pocket = pocketOf(id, data)
@@ -156,6 +165,37 @@ function Bag.add(save, id, qty, data)
   if isNew and not isBadge(id) then
     table.insert(Bag.order(save), id)
   end
+  return true
+end
+
+-- Saves made before the FRLG AddBagItem parity fix could contain TMs/HMs but
+-- no TM CASE.  Retail never permits that state: acquiring the first machine
+-- inserts ITEM_TM_CASE at the same time.  Repair such old port saves on load
+-- so players regain access to machines they already own.
+--
+-- This intentionally bypasses the normal KEY ITEM capacity check.  A pre-fix
+-- save may have filled that pocket after receiving a TM without the case;
+-- refusing the repair would strand those machines forever.  Future Bag.add
+-- calls still enforce the cartridge capacity, so the repair cannot compound.
+function Bag.repairFireRedTMCase(save, data)
+  if require("src.core.GameVersion").get() ~= "firered" then return false end
+  if type(save) ~= "table" or type(save.inventory) ~= "table" then return false end
+  if save.inventory.TM_CASE then return false end
+  data = data or require("src.core.Data")
+  if not Bag.gen3Pockets(data) then return false end
+
+  local hasMachine = false
+  for id, qty in pairs(save.inventory) do
+    if tonumber(qty) and tonumber(qty) > 0 and pocketOf(id, data) == "TM_HM" then
+      hasMachine = true
+      break
+    end
+  end
+  if not hasMachine then return false end
+
+  save.inventory.TM_CASE = 1
+  -- Bag.order rebuilds/normalizes legacy order tables and appends TM_CASE once.
+  Bag.order(save)
   return true
 end
 

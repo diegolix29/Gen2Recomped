@@ -88,6 +88,8 @@ end
 -- opts.kind: "battle" | "intro" | "trainer_card" | "hof"
 -- opts.demo: the catch tutorial, where the old man fights in the player's
 --            place and stands in for the back pic
+-- opts.pokedudeDemo: FireRed's Teachy TV, where POKé DUDE uses his own back
+--            sprite while scripted battles demonstrate mechanics
 -- opts.oakDemo: the Yellow variant of that demo (BATTLE_TYPE_PIKACHU), where
 --            PROF.OAK fights in the player's place behind his own back pic
 -- opts.battle: the live battle, for kind == "battle"
@@ -119,6 +121,7 @@ function Sprites.playerPath(data, side, opts)
   -- demo keys mirror LoadPlayerBackPic's wBattleType branch (#557).
   local key = side == "front" and "front"
               or (opts.oakDemo and "oakBack")
+              or (opts.pokedudeDemo and "pokedudeBack")
               or (opts.demo and "demoBack" or "back")
   local path = FieldDefaults.fieldValue(data, "playerPics", key)
   -- ProfOakPicBack is a Yellow-only rip, so a cache imported before it
@@ -152,7 +155,7 @@ function Sprites.playerPath(data, side, opts)
   -- Gen 3 art, so it has to be marked true-colour or the zone shader repaints
   -- it to a four-shade ramp and it comes out grey anyway.
   local demoTrueColor = false
-  if key == "demoBack" or key == "oakBack" then
+  if key == "demoBack" or key == "oakBack" or key == "pokedudeBack" then
     demoTrueColor = FieldDefaults.fieldValue(data, "playerPics",
                                              key .. "TrueColor") and true or false
   end
@@ -161,6 +164,7 @@ function Sprites.playerPath(data, side, opts)
     kind = opts.kind or "battle",
     demo = opts.demo and true or false,
     oakDemo = opts.oakDemo and true or false,
+    pokedudeDemo = opts.pokedudeDemo and true or false,
     battle = opts.battle,
     -- a baked form pic already carries its own colours, so the zone shader
     -- has to leave it alone or KRIS comes out in CHRIS's browns

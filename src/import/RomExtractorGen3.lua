@@ -53,7 +53,7 @@ RomExtractorGen3.__index = RomExtractorGen3
 -- The progress denominator.  Kept honest with the two stage lists below: a
 -- mismatch does not break anything, it just makes the bar lie, which is the
 -- kind of small wrongness that survives for months.
-local STAGE_COUNT = 92
+local STAGE_COUNT = 93
 
 -- ---------------------------------------------------------------------------
 -- The stage tables below are keyed to Emerald's ROM.  A sibling cartridge
@@ -25187,11 +25187,16 @@ function RomExtractorGen3:fieldMoveGates(scripts)
   -- The eight FLAG numbers are already derived above (they are what the field
   -- moves are gated on); this is the same eight under the name the save
   -- writes them as -- `FLAG_G3_%04X`, exactly as Gen3ScriptVM's flagName and
-  -- the field-move gate spell it.  The order is the trainer card's, which is
-  -- the badge order: Stone, Knuckle, Dynamo, Heat, Balance, Feather, Mind,
-  -- Rain.
-  local BADGE_NAMES = { "STONE", "KNUCKLE", "DYNAMO", "HEAT",
-                        "BALANCE", "FEATHER", "MIND", "RAIN" }
+  -- the field-move gate spell it.  The order is the trainer card's.  Emerald
+  -- uses Stone/Knuckle/...; FRLG's same eight positions are the Kanto set.
+  -- Keeping Hoenn ids on a FireRed cache did not break Badges.has (it keys on
+  -- `item` below), but it leaked the wrong badge identity into every consumer
+  -- that reads entry.id/name rather than only asking whether the flag is set.
+  local BADGE_NAMES = self:isFireRedManifest()
+    and { "BOULDER", "CASCADE", "THUNDER", "RAINBOW",
+          "SOUL", "MARSH", "VOLCANO", "EARTH" }
+    or  { "STONE", "KNUCKLE", "DYNAMO", "HEAT",
+          "BALANCE", "FEATHER", "MIND", "RAIN" }
   local list = {}
   for i, name in ipairs(BADGE_NAMES) do
     list[i] = {
@@ -27237,7 +27242,7 @@ local GEN3_BACK_PAL_MARGIN = 3
 -- Without this the battle fell back to Gen 1's redb.png path, which a Gen 3
 -- cache never writes.
 RomExtractorGen3.FRLG_BACK = { TABLE = 0x239FA4, PALETTES = 0x239FD4, COUNT = 6,
-                    RED = 0, LEAF = 1, OLD_MAN = 5 }
+                    RED = 0, LEAF = 1, POKEDUDE = 4, OLD_MAN = 5 }
 
 function RomExtractorGen3:extractPlayerBackPicFireRed()
   local FRLG_BACK = RomExtractorGen3.FRLG_BACK
@@ -27307,6 +27312,12 @@ function RomExtractorGen3:extractPlayerBackPicFireRed()
     local pics = field.playerPics or {}
     pics.demoBack = images[FRLG_BACK.OLD_MAN].pic
     pics.demoBackTrueColor = true
+    field.playerPics = pics
+  end
+  if images[FRLG_BACK.POKEDUDE] then
+    local pics = field.playerPics or {}
+    pics.pokedudeBack = images[FRLG_BACK.POKEDUDE].pic
+    pics.pokedudeBackTrueColor = true
     field.playerPics = pics
   end
   self._field = field
@@ -30849,6 +30860,7 @@ local GEN3_BW_MOVE_H = 2
 function RomExtractorGen3:extractBattleWindows()
   self:beginStage("Gen3 battle windows")
   local rom = self.rom
+  local isFRLG = (self.manifest or {}).frlgItemMenu ~= nil
   local function rec(o)
     if o + 8 > rom.size then return nil end
     return { bg = rom:u8(o), left = rom:u8(o + 1), top = rom:u8(o + 2),
@@ -30872,8 +30884,20 @@ function RomExtractorGen3:extractBattleWindows()
       if not r[i] then return nil end
     end
     -- 1. the message window itself
-    if not (r[0].left == mw.left and r[0].top == mw.top
-            and r[0].w == mw.width and r[0].h == mw.height) then
+    if isFRLG then
+      -- FireRed's FIELD message window is 26x4 at (2,15), while battle_bg.c's
+      -- sStandardBattleWindowTemplates deliberately opens with the wider
+      -- B_WIN_MSG: 28x4 at (1,15).  Anchoring this scan to the field window
+      -- therefore rejected the real retail array and forced every FireRed
+      -- battle onto guessed move-slot coordinates.  These four numbers are
+      -- the battle window's own distinctive first record; the rest of the
+      -- array is still proved structurally below before we accept it.
+      if not (r[0].left == 1 and r[0].top == 15
+              and r[0].w == 28 and r[0].h == 4) then
+        return nil
+      end
+    elseif not (r[0].left == mw.left and r[0].top == mw.top
+                 and r[0].w == mw.width and r[0].h == mw.height) then
       return nil
     end
     -- 2. a prompt and a menu, the same height, side by side, in that order
@@ -39436,6 +39460,18 @@ RomExtractorGen3.HB_GENDER = {
   AT_SPECIES_A = 0x4E, AT_SPECIES_B = 0x52,
 }
 
+-- The two species whose DEFAULT names already contain a gender glyph.  Hoenn's
+-- function exposes those ids through literal loads at the offsets above, but
+-- FireRed compares against SPECIES_NIDORAN_F / SPECIES_NIDORAN_M directly and
+-- the same byte offsets are unrelated Thumb instructions.  Keep this choice in
+-- one small function so the importer can be regression-tested without a ROM.
+function RomExtractorGen3.healthboxNamedSpecies(self, rom)
+  if self:isFireRedManifest() then return { 29, 32 } end
+  local G = RomExtractorGen3.HB_GENDER
+  return { rom:u16(G.NICK_FN + G.AT_SPECIES_A) % 256,
+           rom:u16(G.NICK_FN + G.AT_SPECIES_B) % 256 }
+end
+
 -- ---------------------------------------------------------------------------
 -- THE ROW OF BALLS THAT SLIDES IN WHEN A BATTLE STARTS.
 --
@@ -40273,6 +40309,62 @@ RomExtractorGen3.BERRY_POUCH_SCREEN = {
   DESC_X = 2, DESC_Y = 3, DESC_LINE = 14,
 }
 
+-- teachy_tv.c's menu shell.  These are named retail FireRed symbols from the
+-- local firered3d all_symbols.tsv, not guessed offsets: gTeachyTv_Gfx,
+-- gTeachyTvScreen_Tilemap, gTeachyTvTitle_Tilemap and gTeachyTv_Pal.  The
+-- strings below are the corresponding gTeachyTvString_* / gTeachyTvText_*
+-- symbols.  Nothing extracted here is committed -- the generated PNG/text is
+-- rebuilt from the player's ROM like the TM Case and Berry Pouch above.
+RomExtractorGen3.TEACHY_TV_SCREEN = {
+  GFX = 0xE86240, SCREEN = 0xE86BE8, TITLE = 0xE86D6C, PALETTE = 0xE86F98,
+  GFX_BYTES = 0x1D20, MAP_BYTES = 0x800, PAL_BYTES = 0x80,
+  TILES = 233, COLS = 32, ROWS = 20, PALETTE_BANKS = 4,
+  -- sWindowTemplates + sListMenuTemplate in teachy_tv.c.
+  LIST = { x = 4 * 8, y = 1 * 8, width = 22 * 8, height = 12 * 8,
+           itemX = 8, cursorX = 0, upTextY = 6, noCaseUpTextY = 14,
+           rowHeight = 16, maxShowed = 6, noCaseMaxShowed = 5,
+           -- sScrollIndicatorArrowPair in teachy_tv.c.
+           arrowX = 0x78, arrowUpY = 0x0C, arrowDownY = 0x64 },
+  MESSAGE = { x = 2 * 8, y = 15 * 8, width = 26 * 8, height = 4 * 8 },
+  -- TTVcmd_RenderAndRemoveBg1EndGraphic copies these exact tile ids into an
+  -- 8x2 rectangle at tile (20,10), with palette 0x11 -> Teachy palette bank 1.
+  END_TILES = {
+    0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8,
+    0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8,
+  },
+  LABELS = {
+    battle   = { 0x41B7A4, 0x18 },
+    status   = { 0x41B7BC, 0x1A },
+    matchups = { 0x41B7D6, 0x18 },
+    catch    = { 0x41B7EE, 0x19 },
+    tms      = { 0x41B806, 0x14 },
+    register = { 0x41B81A, 0x1B },
+    cancel   = { 0x41B836, 0x07 },
+  },
+  TEXTS = {
+    hello           = { 0x41B83C, 0x82 },
+    battleBefore    = { 0x41B8BE, 0x182 }, battleAfter    = { 0x41BA40, 0x0FF },
+    statusBefore    = { 0x41BB40, 0x1D0 }, statusAfter    = { 0x41BD10, 0x166 },
+    matchupsBefore  = { 0x41BE76, 0x239 }, matchupsAfter  = { 0x41C0AE, 0x18C },
+    catchBefore     = { 0x41C23A, 0x149 }, catchAfter     = { 0x41C384, 0x0D5 },
+    tmsBefore       = { 0x41C458, 0x12E },
+    tmTypes         = { 0x41C586, 0x10C },
+    tmDescription   = { 0x41C692, 0x121 },
+    tmsAfter        = { 0x41C7B4, 0x076 },
+    registerBefore  = { 0x41C82A, 0x16A }, registerAfter  = { 0x41C994, 0x1A8 },
+  },
+  -- battle_controller_pokedude.c's voice-over strings.  Reading these from
+  -- the cartridge keeps the demonstrations localized with the rest of the
+  -- imported game and avoids baking a second English copy into the runtime.
+  VOICEOVERS = {
+    battle = { 0x1C5F68, 0x1C5FA6, 0x1C5FDC, 0x1C601C },
+    status = { 0x1C60FA, 0x1C60FA, 0x1C615A, 0x1C6196, 0x1C61EA },
+    matchups = { 0x1C6202, 0x1C6300, 0x1C63A8, 0x1C63F8,
+                 0x1C6446, 0x1C657A, 0x1C6636 },
+    catch = { 0x1C6644, 0x1C6644, 0x1C66CE, 0x1C6786, 0x1C684A, 0x1C686C },
+  },
+}
+
 -- Shared by both: an opaque 240x160 background from a 32x32 tilemap over a
 -- male/female palette split, exactly like extractBagScreenFireRed's own.
 -- `femaleMode`: "bank" replaces palette bank 0 with a second blob (the bag
@@ -40436,6 +40528,218 @@ function RomExtractorGen3:extractBerryPouchScreen()
   Logger.info("Gen3 berry pouch screen: %d tiles, list (%d,%d) %dx%d = %d rows",
               S.TILES, win.list.x, win.list.y, win.list.width,
               win.list.height, record.list.rows)
+end
+
+function RomExtractorGen3:extractFireRedTeachyTV()
+  self:beginStage("FireRed Teachy TV")
+  if (self.manifest or {}).frlgItemMenu == nil then
+    Logger.warn("gen3 Teachy TV: not a FireRed manifest -- skipped")
+    return
+  end
+
+  local S, rom = RomExtractorGen3.TEACHY_TV_SCREEN, self.rom
+  local okG, tiles = RomExtractorGen3.lz77ok(rom, S.GFX)
+  local okS, screen = RomExtractorGen3.lz77ok(rom, S.SCREEN)
+  local okT, title = RomExtractorGen3.lz77ok(rom, S.TITLE)
+  local okP, palRaw = RomExtractorGen3.lz77ok(rom, S.PALETTE)
+  if not (okG and okS and okT and okP) then
+    Logger.warn("gen3 Teachy TV: one of the four named blobs did not decompress")
+    return
+  end
+  if #tiles ~= S.GFX_BYTES or #screen ~= S.MAP_BYTES
+     or #title ~= S.MAP_BYTES or #palRaw ~= S.PAL_BYTES then
+    Logger.warn("gen3 Teachy TV: unexpected blob sizes gfx=%d screen=%d title=%d pal=%d",
+                #tiles, #screen, #title, #palRaw)
+    return
+  end
+
+  local colors = {}
+  for i = 0, S.PALETTE_BANKS * 16 - 1 do
+    local value = palRaw[i * 2 + 1] + palRaw[i * 2 + 2] * 256
+    local r, g, b = RomGba.bgr555(value)
+    colors[i + 1] = { r, g, b }
+  end
+  -- TeachyTvLoadGraphic overwrites BG palette colour 0 with RGB_BLACK.
+  colors[1] = { 0, 0, 0 }
+
+  local function compose(map, key)
+    local img = ImageWriter.blank(240, 160)
+    for ty = 0, S.ROWS - 1 do
+      for tx = 0, 29 do
+        local cell = ty * S.COLS + tx
+        local e = map[cell * 2 + 1] + map[cell * 2 + 2] * 256
+        local tid = e % 1024
+        local flipX = math.floor(e / 1024) % 2 == 1
+        local flipY = math.floor(e / 2048) % 2 == 1
+        local bank = math.floor(e / 4096) % 16
+        if tid < S.TILES and bank < S.PALETTE_BANKS then
+          RomExtractorGen3.partyTile(img, tiles, colors, tid, bank,
+                                     tx * 8, ty * 8, flipX, flipY, true)
+        end
+      end
+    end
+    self:saveImage(img, "ui/teachytv_" .. key .. ".png")
+    return "assets/generated/ui/teachytv_" .. key .. ".png"
+  end
+
+  -- The two small animated pieces do not have named standalone graphics:
+  -- they are tiles inside gTeachyTv_Gfx.  Rip them here instead of
+  -- approximating either one in the runtime.
+  local function composeEndGraphic()
+    local img = ImageWriter.blank(8 * 8, 2 * 8)
+    for i, tid in ipairs(S.END_TILES) do
+      local tx, ty = (i - 1) % 8, math.floor((i - 1) / 8)
+      RomExtractorGen3.partyTile(img, tiles, colors, tid, 1,
+                                 tx * 8, ty * 8, false, false, false)
+    end
+    self:saveImage(img, "ui/teachytv_end.png")
+    return "assets/generated/ui/teachytv_end.png"
+  end
+
+  -- TeachyTvBg2AnimController fills the TV area with tile $1F while varying
+  -- only its palette bank (Random() & 3).  Keeping the four cartridge renders
+  -- in a 32x8 strip lets Gen3TeachyTV reproduce that static/noise wipe exactly
+  -- without baking any hand-picked colours.
+  local function composeNoiseStrip()
+    local img = ImageWriter.blank(4 * 8, 8)
+    for bank = 0, 3 do
+      RomExtractorGen3.partyTile(img, tiles, colors, 0x1F, bank,
+                                 bank * 8, 0, false, false, true)
+    end
+    self:saveImage(img, "ui/teachytv_noise.png")
+    return "assets/generated/ui/teachytv_noise.png"
+  end
+
+  -- BG3 is not part of gTeachyTv_Gfx at all.  teachy_tv.c builds it from a
+  -- precise 16x9-metatile crop of Route1_Layout (columns 8..23, rows 6..14),
+  -- flattens both metatile layers into the background tiles and then scrolls
+  -- that 256x256 BG around the stationary host.  Reuse the port's normal Gen 3
+  -- metatile compositor here so palette ownership, tile flips and the
+  -- primary/secondary bank boundaries remain identical to the overworld.
+  local function composeRoute1()
+    local route = self._maps and self._maps.MAP_G03_N19
+    local layout = route and self._layoutRecords
+                   and self._layoutRecords[route.layoutId]
+    local rawSets = self._tilesets
+    if not (route and layout and type(layout.blocks) == "string"
+            and type(rawSets) == "table") then
+      Logger.warn("gen3 Teachy TV: Route 1 layout/tilesets unavailable")
+      return nil
+    end
+
+    local primary = rawSets[("TILESET_%07X"):format(layout.primaryTileset)]
+    local secondary = layout.secondaryTileset
+      and rawSets[("TILESET_%07X"):format(layout.secondaryTileset)] or nil
+    if not primary then
+      Logger.warn("gen3 Teachy TV: Route 1 primary tileset unavailable")
+      return nil
+    end
+
+    local Gen3Tiles = require("src.render.Gen3Tiles")
+    local mapTiles = Gen3Tiles.new({ primary = primary, secondary = secondary },
+                                   (self._constants or {}).gen3Layout)
+    -- BG3 screenSize=0 is 256x256.  Only its first 32x18 tile entries are
+    -- populated by TeachyTvLoadBg3Map; the Teachy shell masks the unused part.
+    local img = ImageWriter.blank(256, 256)
+    local backdrop = mapTiles:backdrop()
+    local br, bg, bb = (backdrop[1] or 0) / 255,
+                       (backdrop[2] or 0) / 255,
+                       (backdrop[3] or 0) / 255
+    for my = 0, 8 do
+      for mx = 0, 15 do
+        local cell = (my + 6) * layout.width + (mx + 8)
+        local at = cell * 2 + 1
+        local lo, hi = layout.blocks:byte(at, at + 1)
+        local metatile = ((lo or 0) + (hi or 0) * 256) % 1024
+        local ox, oy = mx * 16, my * 16
+        -- Transparent colour 0 on BG3 reveals the backdrop.  Fill the whole
+        -- metatile first, then let both cartridge layers overpaint nonzero
+        -- pixels exactly as TeachyTvComputeMapTilesFromTilesetAndMetaTiles does.
+        for py = 0, 15 do
+          for px = 0, 15 do
+            img:setPixel(ox + px, oy + py, br, bg, bb, 1)
+          end
+        end
+        mapTiles:draw(metatile, ox, oy, function(x, y, rr, gg, bb2)
+          img:setPixel(x, y, rr / 255, gg / 255, bb2 / 255, 1)
+        end)
+      end
+    end
+    self:saveImage(img, "ui/teachytv_route1.png")
+    return "assets/generated/ui/teachytv_route1.png"
+  end
+
+  -- firered3d's data-symbol map deliberately aliases some adjacent string
+  -- symbols onto the previous string's EOS byte (for example AboutTMs is
+  -- reported at 041B806, whose byte is FF and whose text begins at +1).
+  -- Accept that symbol convention here instead of silently emitting an empty
+  -- label/text.  A real empty string remains empty if the next byte is EOS too.
+  local function textStart(at)
+    if rom:u8(at) == EOS and rom:u8(at + 1) ~= EOS then return at + 1 end
+    return at
+  end
+
+  local labels, labelCount = {}, 0
+  for key, rec in pairs(S.LABELS) do
+    labels[key] = self:readString(textStart(rec[1]), rec[2] + 1)
+    if labels[key] ~= "" then labelCount = labelCount + 1 end
+  end
+  local texts = {}
+  for key, rec in pairs(S.TEXTS) do
+    local at = textStart(rec[1])
+    local text = self:readText(at, rec[2] + (at - rec[1]))
+    if type(text) == "string" and text ~= "" then texts[key] = text end
+  end
+  local voiceovers = {}
+  for lesson, list in pairs(S.VOICEOVERS) do
+    voiceovers[lesson] = {}
+    for i, at in ipairs(list) do
+      local text = self:readText(textStart(at), 0x300)
+      if type(text) == "string" and text ~= "" then
+        voiceovers[lesson][i] = text
+      end
+    end
+  end
+
+  local record = {
+    images = {
+      screen = compose(screen, "screen"),
+      title = compose(title, "title"),
+      endGraphic = composeEndGraphic(),
+      noise = composeNoiseStrip(),
+      route1 = composeRoute1(),
+    },
+    list = S.LIST, message = S.MESSAGE,
+    transition = {
+      noise = { x = 2 * 8, y = 1 * 8, cols = 26, rows = 12 },
+      ending = { x = 20 * 8, y = 10 * 8, width = 8 * 8, height = 2 * 8 },
+    },
+    -- Both Teachy windows use palette bank 3.  The list menu template says
+    -- fill=0 / text=1 / shadow=2; TeachyTvInitTextPrinter says the dialogue is
+    -- fg=1 / bg=$C / shadow=3.  Publish those cartridge colours so the runtime
+    -- does not fall back to the generic black-on-white menu/textbox palette.
+    colors = {
+      list = {
+        background = colors[3 * 16 + 0 + 1],
+        foreground = colors[3 * 16 + 1 + 1],
+        shadow = colors[3 * 16 + 2 + 1],
+      },
+      message = {
+        background = colors[3 * 16 + 12 + 1],
+        foreground = colors[3 * 16 + 1 + 1],
+        shadow = colors[3 * 16 + 3 + 1],
+      },
+    },
+    labels = labels, texts = texts, voiceovers = voiceovers,
+    source = ("ROM:gTeachyTv_Gfx %07X, screen %07X, title %07X, palette %07X")
+             :format(S.GFX, S.SCREEN, S.TITLE, S.PALETTE),
+  }
+  local constants = self._constants or {}
+  constants.gen3TeachyTV = record
+  self._constants = constants
+  self:write("constants", constants)
+  Logger.info("FireRed Teachy TV: %d tiles, %d labels, screen + Route 1 BG composed",
+              S.TILES, labelCount)
 end
 
 -- ---------------------------------------------------------------------------
@@ -44903,18 +45207,21 @@ function RomExtractorGen3:extractBattleHud()
                   paper = ink(G.PAPER),
                   inkIndex = G.INK, shadowIndex = G.SHADOW,
                   paperIndex = G.PAPER }
-      gender = {
-        male = { index = rows.male.index, color = ink(rows.male.index),
-                 glyph = rows.male.glyph, text = rows.male.text },
-        female = { index = rows.female.index, color = ink(rows.female.index),
-                   glyph = rows.female.glyph, text = rows.female.text },
+        -- FireRed used to read code bytes here and produce {71, 1}; species 1
+        -- is BULBASAUR, so an ordinary Bulbasaur silently lost its symbol.
+        -- healthboxNamedSpecies keeps the cartridge-specific source of truth.
+        local namedSpecies = RomExtractorGen3.healthboxNamedSpecies(self, rom)
+        gender = {
+          male = { index = rows.male.index, color = ink(rows.male.index),
+                   glyph = rows.male.glyph, text = rows.male.text },
+          female = { index = rows.female.index, color = ink(rows.female.index),
+                     glyph = rows.female.glyph, text = rows.female.text },
         -- ...AND THE TWO THAT SHOW NO SYMBOL AT ALL.  A NIDORAN carrying its
         -- own name already ends in one, so the healthbox prints none beside
         -- it -- 0807422E compares the species against these two and skips
         -- the symbol when the nickname has not been changed.
-        namedSpecies = { rom:u16(G.NICK_FN + G.AT_SPECIES_A) % 256,
-                         rom:u16(G.NICK_FN + G.AT_SPECIES_B) % 256 },
-      }
+          namedSpecies = namedSpecies,
+        }
     end
   end
 
@@ -53939,6 +54246,7 @@ RomExtractorGen3.ASSET_STAGES = {
   "extractFireRedItemPc",
   "extractTMCaseScreen",
   "extractBerryPouchScreen",
+  "extractFireRedTeachyTV",
   "extractFireRedIntro",
   "extractFireRedOakSpeech",
   "extractFireRedTitle",
