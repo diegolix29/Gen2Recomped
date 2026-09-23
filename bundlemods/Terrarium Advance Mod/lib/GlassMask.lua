@@ -3,8 +3,8 @@
 -- Buildings and doors in the overworld art carry small panes -- six texels
 -- wide, framed in black, with a diagonal shine drawn in. This module finds
 -- them by SHAPE in the tileset image itself: a border row of six black
--- texels, four or five rows of black-flanked non-black glass under it, and a
--- closing border row. No tile ids are hardcoded, so a total conversion
+-- texels, four or five rows of black-flanked non-black glass under it, and
+-- a closing border row. No tile ids are hardcoded, so a total conversion
 -- that draws its own windows in the same idiom gets glass for free, and art
 -- with no windows gets an empty mask and costs nothing.
 --
@@ -26,15 +26,11 @@
 -- the art under it -- and after dark the panes are LIT: the texel's own
 -- shine pattern, warmed and brightened, exempt from the sun, the shadow
 -- map and the hour's tint, as a window with a lamp behind it is.
---
--- MANUAL OVERRIDES: For windows that don't match the automatic pattern
--- (different Gen2/Gen3 styles), manual coordinates can be provided via
--- WindowCoords.lua. These are merged with the auto-detected windows.
 
 -- the mod namespace (see main.lua): V.require loads a sibling module
 local V = ...
+
 local Assets = require("src.render.Assets")
-local WindowCoords = V.require("WindowCoords")
 
 local GlassMask = {}
 
@@ -113,9 +109,6 @@ local function entry(tileset)
   local rects = GlassMask.scan(function(x, y)
     return data:getPixel(x, y)
   end, w, h)
-  -- Merge with manual window coordinates (Gen2)
-  rects = WindowCoords.mergeWithAuto(tileset, rects)
-  
   local texture = false
   if #rects > 0 and love.image and love.image.newImageData
      and love.graphics and love.graphics.newImage then
