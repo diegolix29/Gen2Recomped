@@ -85,6 +85,9 @@ local SEMANTIC_EVENTS={
 
 local function contextFor(battle)
   battle=Compat and Compat.prepare(battle) or battle
+  local fx=V.ColosseumMoveFX
+  local context=fx and fx.contextFor(battle)
+  if context then return context end
   return {battle=battle,game=(battle and battle.game) or mod.game}
 end
 
@@ -610,6 +613,8 @@ function R.install()
       if BattleDirector and R.activeBattle and type(BattleDirector.update)=="function" then
         pcall(BattleDirector.update,BattleDirector,contextFor(R.activeBattle),dt)
       end
+      if V.ColosseumMoveFX then V.ColosseumMoveFX.update(dt) end
+
       -- Legacy hosts/tests without Game.update retain the old paced fallback.
       -- On native Gen I/II, preparation drains once AFTER the real update.
       if not (FrameWork and FrameWork.active(game)) then

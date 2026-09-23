@@ -27,6 +27,7 @@ local P={
   mode="sprites",modeId="builtin:resolved-sprites",externalProvider=nil,
   externalBegun=false,externalError=nil,presentationFallback=nil,
   moveFxActive={},moveFxImages={},moveFxShader=nil,moveFxError=nil,
+  overworldContext=nil,overworldMoveStarted=false,
 }
 local OWNER=(V.mod and V.mod.id) or "DRAMATIC_SHAPE"
 local ModLookup=V.ModLookup
@@ -373,6 +374,7 @@ local function arenasEnabled(context)
 end
 
 local function ourArena(context)
+  if context and context.services and context.services.colosseumOverworld then return true end
   local arena=context and context.arena
   local id=arena and tostring(arena.id or "") or ""
   return id:find("^DRAMATIC_SHAPE:")~=nil
@@ -570,6 +572,10 @@ end
 
 local function stadiumActor(context,side)
   if P.mode~="stadium" then return nil end
+  if P.overworldContext then
+    local record=P.stadiumActors[side]
+    return record and record.actor
+  end
   local api=P.actorApi or stadiumService()
   if not api then return nil end
   local battler=liveBattler(context,side)
@@ -2461,6 +2467,7 @@ function P:available(context)
 end
 
 function P:begin(context)
+  if self.overworldContext then self:finish(self.overworldContext,"host-changed") end
   self.drawn.player=false;self.drawn.enemy=false
   self.presented.player=false;self.presented.enemy=false
   self.moveFxActive={};self.moveFxError=nil;self.moveFxRenderFaults=0
@@ -2477,6 +2484,17 @@ function P:begin(context)
   -- begins drawing; uncached mobile bodies are scheduled cooperatively rather
   -- than extracted on the transition frame or replaced by a native picture.
   return available
+end
+
+function P:bindOverworld(context,records)
+  if self.overworldContext~=context then
+    self:finish(context,"overworld-begin")
+    self.overworldContext=context
+    self.moveFxError=nil
+    installWazaHandlers()
+    self.mode="stadium";self.modeId="cbe:overworld-pokemon"
+  end
+  self.stadiumActors=records
 end
 
 local function actorDelta(context,dt)
@@ -2519,6 +2537,12 @@ local function beginPendingFaintReturn(context,side,record)
 end
 
 function P:update(context,dt)
+  if self.overworldContext then
+    if self.overworldContext~=context then return end
+    directedMoveFx(context)
+    updateMoveFx(context,dt)
+    return
+  end
   if V.DoublesRuntime and (V.DoublesRuntime.presentation or V.DoublesRuntime.combat)(context and context.battle) then return end
   -- Keep both side references synchronized even if the switch event is emitted
   -- before/after another mod's listener. The next update/draw always observes
@@ -2675,6 +2699,12 @@ end
 function P:cameraLocked() return false end
 
 function P:drawWorld(context)
+  if self.overworldContext then
+    if self.overworldContext~=context then return false end
+    local wh=V.WazaHandlers
+    local drew=wh and wh.drawWorld(context) or false
+    return drawMoveFx(context) or drew
+  end
   local doubles=V.DoublesRuntime and (V.DoublesRuntime.presentation or V.DoublesRuntime.combat)(context and context.battle)
   if doubles then return V.DoublesPresenter.draw(doubles,context) end
   local g=love and love.graphics
@@ -2862,6 +2892,11 @@ function P:realtimeActorMetrics(side,context)
 end
 
 function P:event(context,name,payload)
+  if self.overworldContext then
+    if self.overworldContext~=context then return end
+    if name~="battle.move_used" and name~="battle.presentation_move"
+        and name~="battle.damage_dealt" and name~="battle.presentation_damage" then return end
+  end
   -- BattleRuntime guarantees delivery when CBE actors are hosted outside the
   -- standalone compositor. A host that also forwards the same payload must not
   -- restart a one-shot animation, so table payloads are deduplicated by identity.
@@ -2977,6 +3012,17 @@ function P:event(context,name,payload)
         end
       elseif resolvedId~=nil then
         startMoveFx(context,side,resolvedId,move,"attack")
+      end
+      if P.overworldContext==context then
+        P.overworldMoveStarted=(directorSeq and directorSeq.wazaAttackSerial~=nil)
+          or #P.moveFxActive>0
+        if WazaSequence then
+          for _,inst in ipairs(WazaSequence.active) do
+            if inst.side==side and inst.role=="attack" and not inst.done then
+              P.overworldMoveStarted=true
+            end
+          end
+        end
       end
       return true
     end
@@ -3121,6 +3167,9 @@ function P:event(context,name,payload)
   end
 end
 function P:finish(context,reason)
+  -- Stadium owns the borrowed actors' updates, drawing and release.
+  if self.overworldContext then self.stadiumActors={} end
+  self.overworldContext=nil;self.overworldMoveStarted=false
   self.drawn.player=false;self.drawn.enemy=false
   self.moveFxActive={}
   local RP=V and V.ReleasePresentation

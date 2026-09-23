@@ -3867,6 +3867,8 @@ local function initializeColosseumIntegration()
     StandaloneHost = loadColosseumModule("StandaloneHost")
     StadiumBridge = loadColosseumModule("StadiumBridge")
     ResidentPrewarm = loadColosseumModule("ResidentPrewarm")
+    namespace.OverworldStadium = V.require("Stadium")
+    V.ColosseumMoveFX = loadColosseumModule("ColosseumMoveFX")
     BattleRuntime = loadColosseumModule("BattleRuntime")
     namespace.BattleRuntime = BattleRuntime
 

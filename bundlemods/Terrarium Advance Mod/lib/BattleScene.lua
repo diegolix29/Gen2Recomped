@@ -577,6 +577,9 @@ function BattleScene.render(state, arena, textures, token)
 
     local canvas = AntiAlias.resolve(Voxel3D.endScene(), pw, ph, "battle")
     if not canvas then return end
+    if V.ColosseumMoveFX then
+      V.ColosseumMoveFX.drawPost(canvas, pw, ph)
+    end
 
     local vp = Voxel3D.vp
     local pmx, pmy = BattleScene.toGB(vp, arena.player[1], groundY, arena.player[2], lx, ly, s, pw, ph)

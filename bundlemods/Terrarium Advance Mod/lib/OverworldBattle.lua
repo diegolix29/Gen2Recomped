@@ -605,7 +605,7 @@ function OverworldBattle.begin(state, battle)
   BattleCam.reset()
   local mode = OverworldBattle.setting:get()
   V.mod.log:info("[OverworldBattle] Calling Stadium.begin, mode=%s", tostring(mode))
-  pcall(function() V.require("Stadium").begin(arena) end)
+  pcall(function() V.require("Stadium").begin(arena, battle) end)
   
   -- Activate BattleBoxXY to hide the original fight box UI
   if battle and BattleBoxXY and BattleBoxXY.claim then
