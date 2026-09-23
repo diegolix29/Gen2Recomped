@@ -196,7 +196,11 @@ local function dispatch(name,payload)
     local ok,status=pcall(StandaloneHost.status)
     standaloneActive=ok and type(status)=="table" and status.active==true
   end
-  if not standaloneActive and CurrentSpriteModels and type(CurrentSpriteModels.event)=="function" then
+  -- Stadium-owned overworld COLOSSEUM A/B still needs the actor/MoveFX event
+  -- even when a StandaloneHost session exists. That host may be live because
+  -- COLOSSEUM ARENAS is on, but BattleScene is the canvas the player sees.
+  local overworldFx=ctx and ctx.services and ctx.services.colosseumOverworld==true
+  if (overworldFx or not standaloneActive) and CurrentSpriteModels and type(CurrentSpriteModels.event)=="function" then
     pcall(CurrentSpriteModels.event,CurrentSpriteModels,ctx,name,payload)
   end
 
@@ -309,7 +313,11 @@ local function finishPresentation(battle,reason)
     local ok,status=pcall(StandaloneHost.status)
     standaloneWasActive=ok and type(status)=="table" and status.active==true
   end
+  local fx=V.ColosseumMoveFX
+  local overworldFx=fx and type(fx.active)=="function" and fx.active(battle)==true
+  local ctx=contextFor(battle)
   local hostFinishStart=wallNow()
+  if fx and type(fx.finish)=="function" then pcall(fx.finish,reason or "battle.ended") end
   if StandaloneHost then StandaloneHost.finish(reason or "battle.ended") end
   if PokemonActors and type(PokemonActors.cancelBattlePrewarm)=="function" then
     pcall(PokemonActors.cancelBattlePrewarm,"battle-ended")
@@ -318,16 +326,17 @@ local function finishPresentation(battle,reason)
   -- A delegated Stadium compositor has no StandaloneHost session to own actor
   -- cleanup. Close CBE's portable actors explicitly at the same authoritative
   -- screen boundary; StandaloneHost already does this when it was active.
-  if not standaloneWasActive and CurrentSpriteModels and type(CurrentSpriteModels.finish)=="function" then
-    pcall(CurrentSpriteModels.finish,CurrentSpriteModels,contextFor(battle),reason or "battle.ended")
+  -- ColosseumMoveFX.finish already closed the overworld WZX bind.
+  if not standaloneWasActive and not overworldFx and CurrentSpriteModels and type(CurrentSpriteModels.finish)=="function" then
+    pcall(CurrentSpriteModels.finish,CurrentSpriteModels,ctx,reason or "battle.ended")
   end
   if NativeTrainerSprites then NativeTrainerSprites:finish({battle=battle}) end
   if ArenaCatalog and ArenaCatalog.releaseBattle then ArenaCatalog.releaseBattle(battle) end
   if BattleDirector and type(BattleDirector.finish)=="function" then
-    pcall(BattleDirector.finish,BattleDirector,contextFor(battle),reason or "battle.ended")
+    pcall(BattleDirector.finish,BattleDirector,ctx,reason or "battle.ended")
   end
   if MoveFXOwnership and type(MoveFXOwnership.finish)=="function" then
-    pcall(MoveFXOwnership.finish,MoveFXOwnership,contextFor(battle),reason or "battle.ended")
+    pcall(MoveFXOwnership.finish,MoveFXOwnership,ctx,reason or "battle.ended")
   end
   -- Mobile keeps a small runtime-ready working set instead of throwing away
   -- every parsed/uploaded actor at the end of every battle. 1.7.2's full purge

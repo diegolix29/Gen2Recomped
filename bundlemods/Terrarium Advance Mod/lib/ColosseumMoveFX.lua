@@ -6,8 +6,9 @@ local M = {}
 local context
 
 function M.contextFor(battle)
-  local host = V.StandaloneHost
-  if host and host.status().active then return nil end
+  -- Overworld COLOSSEUM A/B is a separate compositor from CBE's standalone
+  -- arena. A live StandaloneHost session must not hide this path: BattleScene
+  -- is what the player sees, and MoveFX audio already advances from update().
   local session = Stadium and Stadium.colosseumSession(battle)
   if not (session and battle and Models) then return nil end
   if not context or context.battle ~= battle then
@@ -60,8 +61,32 @@ function M.actorVisible(side)
   return Handlers:actorVisible(side) ~= false
 end
 
+local function boundCanvasSize()
+  local g = love and love.graphics
+  if not (g and g.getCanvas) then return nil end
+  local ok, canvas = pcall(function() return select(1, g.getCanvas()) end)
+  if not ok then return nil end
+  if type(canvas) == "table" then canvas = canvas[1] or canvas.canvas end
+  if not canvas then return nil end
+  if canvas.getPixelDimensions then
+    local w, h = canvas:getPixelDimensions()
+    if w and h and w > 0 and h > 0 then return w, h end
+  end
+  if canvas.getDimensions then
+    local w, h = canvas:getDimensions()
+    if w and h and w > 0 and h > 0 then return w, h end
+  end
+  return nil
+end
+
 function M.draw(vp, width, height)
-  if not (M.active() and vp and width > 0 and height > 0) then return false end
+  if not (M.active() and vp) then return false end
+  width = tonumber(width)
+  height = tonumber(height)
+  if not (width and height and width > 0 and height > 0) then
+    width, height = boundCanvasSize()
+  end
+  if not (width and height and width > 0 and height > 0) then return false end
   local services = context.services
   services.vp, services.stageVP = vp, vp
   services.renderSize = { width = width, height = height }

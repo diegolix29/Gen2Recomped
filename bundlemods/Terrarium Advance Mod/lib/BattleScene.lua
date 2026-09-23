@@ -575,6 +575,15 @@ function BattleScene.render(state, arena, textures, token)
       end
     end
 
+    -- Particle/Waza meshes are a world pass (ColosseumMoveFX.draw). drawPost is
+    -- only Type-4 filter/blur/distort on the resolved color buffer, which is
+    -- why overworld COLOSSEUM A/B could play source MoveFX audio with no
+    -- visible FX: the hook existed, but the compositor never called draw().
+    pcall(function()
+      local fx = V.ColosseumMoveFX
+      if fx and Voxel3D.vp then fx.draw(Voxel3D.vp) end
+    end)
+
     local canvas = AntiAlias.resolve(Voxel3D.endScene(), pw, ph, "battle")
     if not canvas then return end
     if V.ColosseumMoveFX then
