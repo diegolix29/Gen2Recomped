@@ -325,45 +325,6 @@ local defs = {}
 local function build(species, mayBake)
   local Game = require("src.core.Game")
   local mon = Game.data and Game.data.pokemon and Game.data.pokemon[species]
-  
-  -- If direct lookup fails, try to resolve species name to find the right entry
-  if not mon or not mon.spriteFront then
-    local data = Game and Game.data
-    if data and data.pokemon then
-      -- Try numeric species ID first
-      local numericSpecies = tonumber(species)
-      if numericSpecies then
-        mon = data.pokemon[numericSpecies]
-      end
-      
-      -- If still no match, try species name matching using ColosseumDexNames
-      if not mon or not mon.spriteFront and type(species) == "string" then
-        local okNames, ColosseumDexNames = pcall(require, "lib.ColosseumDexNames")
-        if okNames and ColosseumDexNames then
-          local speciesUpper = species:upper()
-          for checkDex, checkName in pairs(ColosseumDexNames) do
-            if checkName:upper() == speciesUpper then
-              mon = data.pokemon[checkDex]
-              species = checkDex  -- Update species to the actual dex number
-              break
-            end
-          end
-        end
-      end
-      
-      -- If still no match, try species name matching using game data
-      if not mon or not mon.spriteFront then
-        for checkKey, checkMon in pairs(data.pokemon) do
-          if checkMon and checkMon.name and checkMon.name:upper() == tostring(species):upper() then
-            mon = checkMon
-            species = checkKey  -- Update species to the actual key
-            break
-          end
-        end
-      end
-    end
-  end
-  
   if not (mon and mon.spriteFront) then return nil end
 
   -- Shipped Gen-2 style walk sheet wins: true colour, already 16x96, no bake.
@@ -467,52 +428,8 @@ do
         
         -- Fallback: try to convert species to dex and look up by dex
         local pokemon = data.pokemon and data.pokemon[species]
-        local dex = nil
-        
-        -- Try to get dex from pokemon definition
-        if pokemon then
-          dex = tonumber(pokemon.dex or pokemon.id or pokemon.index or pokemon.number)
-        end
-        
-        -- If still no dex, try to resolve species name to dex number using ColosseumDexNames
-        if not dex and type(species) == "string" then
-          -- Try numeric conversion first
-          local numericSpecies = tonumber(species)
-          if numericSpecies and numericSpecies >= 1 and numericSpecies <= 386 then
-            dex = numericSpecies
-          else
-            -- Try to resolve by English species name using ColosseumDexNames
-            local okNames, ColosseumDexNames = pcall(require, "lib.ColosseumDexNames")
-            if okNames and ColosseumDexNames then
-              local speciesUpper = species:upper()
-              for checkDex, checkName in pairs(ColosseumDexNames) do
-                if checkName:upper() == speciesUpper then
-                  dex = tonumber(checkDex)
-                  if dex and dex >= 1 and dex <= 386 then
-                    break
-                  end
-                end
-              end
-            end
-            
-            -- If still no dex, try to resolve by species name using game data
-            if not dex then
-              for checkDex, checkDef in pairs(data.pokemon) do
-                if checkDef.name and checkDef.name:upper() == species:upper() then
-                  local checkNum = tonumber(checkDex)
-                  if checkNum and checkNum >= 1 and checkNum <= 386 then
-                    dex = checkNum
-                    break
-                  end
-                end
-              end
-            end
-          end
-        end
-        
-        -- Look up palette by dex if we found one
-        if dex then
-          local pal2, name2 = PaletteFX.monPal(data, dex), PaletteFX.monPalName(data, dex)
+        if pokemon and pokemon.id then
+          local pal2, name2 = PaletteFX.monPal(data, pokemon.id), PaletteFX.monPalName(data, pokemon.id)
           if pal2 then return pal2, name2 end
         end
         

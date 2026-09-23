@@ -168,21 +168,7 @@ local function speciesDex(v)
     local n = tonumber(v)
     if n then return dexNumber(n) end
     
-    -- Try to resolve English species name using ColosseumDexNames first
-    local okNames, ColosseumDexNames = pcall(V.require, "ColosseumDexNames")
-    if okNames and ColosseumDexNames then
-      local speciesUpper = v:upper()
-      for dex, name in pairs(ColosseumDexNames) do
-        if name:upper() == speciesUpper then
-          local dexNum = tonumber(dex)
-          if dexNum and dexNum >= 1 and dexNum <= 386 then
-            return dexNum
-          end
-        end
-      end
-    end
-    
-    -- Fallback: try to resolve English species name using game data
+    -- Try to resolve English species name using game data
     local data = gameData()
     if data and data.pokemon then
       -- Try exact match first

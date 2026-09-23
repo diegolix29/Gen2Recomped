@@ -2536,75 +2536,9 @@ local function beginPendingFaintReturn(context,side,record)
   return false,"source-unavailable"
 end
 
-local function driveStadiumActors(context,dt)
-  local actorDt=actorDelta(context,dt)
-  local RP=V and V.ReleasePresentation
-
-  -- Kizetu/downin runs in an isolated source Waza world. Advance it before
-  -- lifecycle synchronization so an instance that completes on this tick can
-  -- authorize the same post-WZX actor/grid retirement that retail performs.
-  for _,side in ipairs(SIDES_PE) do
-    local sourceReturn=P.faintReturns and P.faintReturns[side]
-    if sourceReturn and RP and type(RP.updateFaintSingle)=="function" then
-      local okReturn,advanced=pcall(RP.updateFaintSingle,context,sourceReturn,actorDt)
-      if not okReturn or advanced==false then
-        P.moveFxError="source faint-return runtime failed closed: "..tostring(okReturn and sourceReturn.error or advanced)
-        if type(RP.finishFaint)=="function" then pcall(RP.finishFaint,sourceReturn,context,nil,"source-runtime-failed") end
-        P.faintReturns[side]=nil -- no ordinary-return/generic-beam substitution
-      end
-    end
-  end
-
-  -- Detached return/faint tails continue in real presentation time.
-  for i=#P.retiringActors,1,-1 do
-    local record=P.retiringActors[i]
-    local actor=record and record.actor
-    driveRetiringActor(context,record)
-    if actor and type(actor.update)=="function" then pcall(actor.update,actor,actorDt) end
-    local done=false
-    if actor and type(actor.terminalComplete)=="function" then
-      local ok,value=pcall(actor.terminalComplete,actor)
-      done=ok and value==true
-    elseif actor and actor.state=="removal" then
-      done=true
-    end
-    if done then
-      table.remove(P.retiringActors,i)
-      releaseActorRecord(record,record.retireReason or "tail-complete")
-    end
-  end
-
-  for _,side in ipairs(SIDES_PE) do
-    syncStadiumActor(context,side)
-    local existing=P.stadiumActors[side] and P.stadiumActors[side].actor
-    local actor=existing or (actorVisible(context,side,existing) and stadiumActor(context,side) or nil)
-    driveSpawn(context,side,actor)
-    local actorStep=actorDt
-    local WH=V and V.WazaHandlers
-    if WH and type(WH.actorControllerState)=="function" and not (actor and (actor.state=="faint" or actor.pendingFaint)) then
-      local okController,controller=pcall(WH.actorControllerState,WH,side)
-      if okController and type(controller)=="table" and controller.motionFrozen==true then actorStep=0 end
-    end
-    -- The isolated Kizetu/downin controller owns return effects and eventual
-    -- visibility, not the Pokemon's native faint animation clock. Let the body
-    -- keep advancing while the withdraw effect plays in tandem.
-    if actor and type(actor.update)=="function" then pcall(actor.update,actor,actorStep) end
-    if P.stadiumActors[side] and P.stadiumActors[side].faintReturnPending then
-      beginPendingFaintReturn(context,side,P.stadiumActors[side])
-    end
-  end
-end
-
 function P:update(context,dt)
   if self.overworldContext then
     if self.overworldContext~=context then return end
-    -- Overworld COLOSSEUM A/B actors must run through the same per-frame
-    -- actor lifecycle the standalone stadium path uses below. Without this,
-    -- stadiumActors[side].actor never advances its action/nativeAction state
-    -- to "attack", so startWazaSequence's timingActor gate always fails and
-    -- move FX is silently withheld on every attempt (P.moveFxError:
-    -- "source PKX attack bank not initialized; Waza attack timeline withheld").
-    driveStadiumActors(context,dt)
     directedMoveFx(context)
     updateMoveFx(context,dt)
     return
@@ -2631,7 +2565,62 @@ function P:update(context,dt)
       P.mode="sprites";P.modeId="builtin:resolved-sprites"
     end
   elseif P.mode=="stadium" then
-    driveStadiumActors(context,dt)
+    local actorDt=actorDelta(context,dt)
+    local RP=V and V.ReleasePresentation
+
+    -- Kizetu/downin runs in an isolated source Waza world. Advance it before
+    -- lifecycle synchronization so an instance that completes on this tick can
+    -- authorize the same post-WZX actor/grid retirement that retail performs.
+    for _,side in ipairs(SIDES_PE) do
+      local sourceReturn=P.faintReturns and P.faintReturns[side]
+      if sourceReturn and RP and type(RP.updateFaintSingle)=="function" then
+        local okReturn,advanced=pcall(RP.updateFaintSingle,context,sourceReturn,actorDt)
+        if not okReturn or advanced==false then
+          P.moveFxError="source faint-return runtime failed closed: "..tostring(okReturn and sourceReturn.error or advanced)
+          if type(RP.finishFaint)=="function" then pcall(RP.finishFaint,sourceReturn,context,nil,"source-runtime-failed") end
+          P.faintReturns[side]=nil -- no ordinary-return/generic-beam substitution
+        end
+      end
+    end
+
+    -- Detached return/faint tails continue in real presentation time.
+    for i=#P.retiringActors,1,-1 do
+      local record=P.retiringActors[i]
+      local actor=record and record.actor
+      driveRetiringActor(context,record)
+      if actor and type(actor.update)=="function" then pcall(actor.update,actor,actorDt) end
+      local done=false
+      if actor and type(actor.terminalComplete)=="function" then
+        local ok,value=pcall(actor.terminalComplete,actor)
+        done=ok and value==true
+      elseif actor and actor.state=="removal" then
+        done=true
+      end
+      if done then
+        table.remove(P.retiringActors,i)
+        releaseActorRecord(record,record.retireReason or "tail-complete")
+      end
+    end
+
+    for _,side in ipairs(SIDES_PE) do
+      syncStadiumActor(context,side)
+      local existing=P.stadiumActors[side] and P.stadiumActors[side].actor
+      local actor=existing or (actorVisible(context,side,existing) and stadiumActor(context,side) or nil)
+      driveSpawn(context,side,actor)
+      local actorStep=actorDt
+      local WH=V and V.WazaHandlers
+      if WH and type(WH.actorControllerState)=="function" and not (actor and (actor.state=="faint" or actor.pendingFaint)) then
+        local okController,controller=pcall(WH.actorControllerState,WH,side)
+        if okController and type(controller)=="table" and controller.motionFrozen==true then actorStep=0 end
+      end
+      -- The isolated Kizetu/downin controller owns return effects and eventual
+      -- visibility, not the Pokemon's native faint animation clock. Let the body
+      -- keep advancing while the withdraw effect plays in tandem.
+      if actor and type(actor.update)=="function" then pcall(actor.update,actor,actorStep) end
+      if P.stadiumActors[side] and P.stadiumActors[side].faintReturnPending then
+        beginPendingFaintReturn(context,side,P.stadiumActors[side])
+      end
+    end
   end
 end
 
