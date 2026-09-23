@@ -209,6 +209,31 @@ function H.begin(battle)
   if s.battle then s.battle.__cbePresentationQueueSync=true end
   H.lastError=nil;H.lastUpdateError=nil
   log("info","standalone arena host began: arena=%s actor=current-sprites",tostring(s.context.arena and s.context.arena.id))
+  
+  -- Enable WZX move effects for COLOSSEUM modes in overworld battles
+  local Stadium=V and V.OverworldStadium
+  local mode=Stadium and Stadium.mode()
+  local isColosseumMode=(mode=="COLOSSEUM_A" or mode=="COLOSSEUM_B")
+  if isColosseumMode and CurrentSprites and type(CurrentSprites.bindOverworld)=="function" then
+    local session=Stadium and Stadium.colosseumSession(s.battle)
+    if session then
+      -- Augment context with services needed for WZX rendering
+      if not s.context.services then s.context.services={} end
+      s.context.services.colosseumOverworld=true
+      s.context.services.figureScale=1
+      s.context.groundY=session.groundY
+      
+      local records={}
+      for _, side in ipairs({"player","enemy"}) do
+        local mon, battler = session[side], s.battle and s.battle[side]
+        if mon.actor and session.at[side] == battler then
+          records[side] = { actor = mon.actor, battler = battler, dex = mon.species }
+        end
+      end
+      local ok=pcall(CurrentSprites.bindOverworld,CurrentSprites,s.context,records)
+      log("info","Colosseum WZX move effects integration: %s",ok and "enabled" or "failed")
+    end
+  end
   return true
 end
 
@@ -227,6 +252,20 @@ function H.update(dt)
   if releaseGen1PresentationFaints then releaseGen1PresentationFaints(s) end
   local realtimeOn=RealtimeBattle and type(RealtimeBattle.enabled)=="function"
     and RealtimeBattle.enabled(s.context.game)
+  -- Update CurrentSpriteModels for WZX move effects in COLOSSEUM modes
+  local Stadium=V and V.OverworldStadium
+  local mode=Stadium and Stadium.mode()
+  local isColosseumMode=(mode=="COLOSSEUM_A" or mode=="COLOSSEUM_B")
+  if isColosseumMode then
+    -- Update groundY from session
+    local session=Stadium and Stadium.colosseumSession(s.battle)
+    if session then
+      s.context.groundY=session.groundY
+    end
+  end
+  if CurrentSprites and type(CurrentSprites.update)=="function" then
+    pcall(CurrentSprites.update,CurrentSprites,s.context,dt)
+  end
   if not realtimeOn and syncCameraOwnership(s) then pcall(Camera.update,Camera,s.context,dt) end
   if Arena then
     local ok,err=pcall(Arena.update,Arena,s.context,dt,s.context.arena)
@@ -416,6 +455,13 @@ function H.event(name,payload)
   if MoveFXOwnership and type(MoveFXOwnership.event)=="function" then
     pcall(MoveFXOwnership.event,MoveFXOwnership,s.context,name,payload)
   end
+  -- Forward events to CurrentSpriteModels for WZX move effects in COLOSSEUM modes
+  local Stadium=V and V.OverworldStadium
+  local mode=Stadium and Stadium.mode()
+  local isColosseumMode=(mode=="COLOSSEUM_A" or mode=="COLOSSEUM_B")
+  if isColosseumMode and CurrentSprites and type(CurrentSprites.event)=="function" then
+    pcall(CurrentSprites.event,CurrentSprites,s.context,name,payload)
+  end
   if name=="battle.turn_started" or name=="battle.turn_ended" then s.context.phase="passive"
   elseif name=="battle.move_used" or name=="battle.presentation_move" then s.context.phase="attack"
   elseif name=="battle.damage_dealt" or name=="battle.presentation_damage" then s.context.phase="damage"
@@ -478,6 +524,15 @@ local function render(s)
       s.context.services.project=world.project
     elseif vp and w and h then
       s.context.services.project=function(x,y,z) return project(vp,w,h,x,y,z) end
+    end
+    -- For COLOSSEUM modes, ensure WZX rendering services are set up
+    local Stadium=V and V.OverworldStadium
+    local mode=Stadium and Stadium.mode()
+    local isColosseumMode=(mode=="COLOSSEUM_A" or mode=="COLOSSEUM_B")
+    if isColosseumMode then
+      s.context.services.vp=vp
+      s.context.services.stageVP=vp
+      s.context.services.renderSize={width=w,height=h}
     end
     if CurrentSprites then CurrentSprites:drawWorld(s.context) end
   end)
