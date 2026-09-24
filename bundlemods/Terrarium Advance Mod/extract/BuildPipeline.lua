@@ -16,7 +16,7 @@ end
 local EXPECTED_MARKER="cbe-runtime=2\nextractor=15\n"
 local LEGACY_EXPECTED_MARKER="cbe-runtime=2\nextractor=14\n"
 local VISUAL_CORE={
-  "cache/M1_water_cache.lua","cache/orre_colosseum_cache.lua","cache/M3_shrine_1F_bf_cache.lua","cache/M3_cave_1F_1_bf_cache.lua","cache/S1_out_bf_cache.lua","cache/M2_earth_colo_cache.lua","cache/M4_bottom_colo_cache.lua","cache/realgam_colosseum_cache.lua","cache/outdoor_wild_cache.lua","cache/D2_mt_battle_platform100_cache.lua","cache/D1_labo_B1_bf_cache.lua",
+  "cache/M1_water_cache.lua","cache/orre_colosseum_cache.lua","cache/M3_shrine_1F_bf_cache.lua","cache/M3_cave_1F_1_bf_cache.lua","cache/S1_out_bf_cache.lua","cache/M2_earth_colo_cache.lua","cache/M4_bottom_colo_cache.lua","cache/realgam_colosseum_cache.lua","cache/outdoor_wild_cache.lua","cache/overworld_terrain_cache.lua","cache/D2_mt_battle_platform100_cache.lua","cache/D1_labo_B1_bf_cache.lua",
   "cache/trainers/red/model_cache.lua","cache/trainers/leaf/model_cache.lua","cache/trainers/wes/model_cache.lua","cache/trainers/brendan/model_cache.lua","cache/trainers/may/model_cache.lua","cache/trainers/cooltrainer_m/model_cache.lua","cache/trainers/cooltrainer_f/model_cache.lua","cache/trainers/dakim/model_cache.lua","cache/trainers/nascour/model_cache.lua","cache/trainers/miror_b/model_cache.lua","cache/trainers/generic/index.lua",
   "cache/capture/index.lua",
   "assets/transition/wipe_ball00.rgba","assets/transition/wipe_ball01.rgba",
@@ -83,7 +83,7 @@ local LEGACY_ARENA_MARKER=PREVIOUS_ARENA_MARKER:gsub("source%-texture%-state=[^\
 -- predates native scene instances. Only Water and Deep contain those objects.
 local CHECKPOINT_ARENA_MARKER=ARENA_MARKER:gsub("source%-instances=[^\n]+\n","",1)
 local ARENA_CORE={
-  "cache/M1_water_cache.lua","cache/orre_colosseum_cache.lua","cache/M3_shrine_1F_bf_cache.lua","cache/M3_cave_1F_1_bf_cache.lua","cache/S1_out_bf_cache.lua","cache/M2_earth_colo_cache.lua","cache/M4_bottom_colo_cache.lua","cache/realgam_colosseum_cache.lua","cache/outdoor_wild_cache.lua","cache/D2_mt_battle_platform100_cache.lua","cache/D1_labo_B1_bf_cache.lua",
+  "cache/M1_water_cache.lua","cache/orre_colosseum_cache.lua","cache/M3_shrine_1F_bf_cache.lua","cache/M3_cave_1F_1_bf_cache.lua","cache/S1_out_bf_cache.lua","cache/M2_earth_colo_cache.lua","cache/M4_bottom_colo_cache.lua","cache/realgam_colosseum_cache.lua","cache/outdoor_wild_cache.lua","cache/overworld_terrain_cache.lua","cache/D2_mt_battle_platform100_cache.lua","cache/D1_labo_B1_bf_cache.lua",
 }
 local AUDIO_CORE={
   "assets/audio/themes/cipher_admin_intro.wav","assets/audio/themes/cipher_admin_loop.wav",

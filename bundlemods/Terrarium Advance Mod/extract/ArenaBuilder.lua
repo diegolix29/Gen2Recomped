@@ -73,6 +73,7 @@ local ARENAS={
     minVertices=30000,minGroups=10,maxVertices=300000,maxDisplayOps=1800000,maxSceneRoots=64,
     maxJobjs=20000,maxDobjs=60000,maxPobjs=100000,honorRenderPass=true,skipShadowMaterials=true},
   {recipe="recipes/arenas/outdoor_wild.lua",cache="cache/outdoor_wild_cache.lua",id="outdoor_wild",label="ORRE WILDLANDS"},
+  {recipe="recipes/arenas/overworld_terrain.lua",cache="cache/overworld_terrain_cache.lua",id="overworld_terrain",label="OVERWORLD TERRAIN"},
   {cache="cache/D2_mt_battle_platform100_cache.lua",id="mt_battle_summit",label="MT. BATTLE SUMMIT",
     sourceFsys="D2_crater_colo.fsys",sourceMember="D2_crater_colo.dat",textureRoot="cache/stages/d2_crater/textures",
     minVertices=8000,minGroups=20,maxVertices=360000,maxDisplayOps=1900000,maxSceneRoots=40,maxJobjs=18000,maxDobjs=54000,maxPobjs=90000},
@@ -245,6 +246,7 @@ local ARENA_RUNTIME_SETTINGS={
   pyrite_colosseum={sceneRadiusRaw=3600,maxGroupSpanRaw=8600,vertexRadiusRaw=3500},
   deep_colosseum={sceneRadiusRaw=12000,maxGroupSpanRaw=32000,vertexRadiusRaw=11500},
   outdoor_wild={sceneRadiusRaw=620,maxGroupSpanRaw=1350,vertexRadiusRaw=610},
+  overworld_terrain={sceneRadiusRaw=450,maxGroupSpanRaw=900,vertexRadiusRaw=440},
   realgam_colosseum={sceneRadiusRaw=4400,maxGroupSpanRaw=9000,vertexRadiusRaw=4300},
   mt_battle_summit={sceneRadiusRaw=7000,maxGroupSpanRaw=15000,vertexRadiusRaw=6900},
 }

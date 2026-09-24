@@ -161,25 +161,8 @@ local function syncBattlers(s)
 end
 
 local function beginProviders(s)
-  local arena
-  -- Use ArenaCatalog.resolve to get the arena definition (handles dynamic terrain)
-  if Catalog and type(Catalog.resolve)=="function" then
-    log("info","StandaloneHost: calling ArenaCatalog.resolve")
-    local ok,def,reason=pcall(Catalog.resolve,s.context.game,s.battle)
-    if ok and def then
-      arena=def
-      log("info","StandaloneHost: ArenaCatalog.resolve returned arena id=%s, has dynamicData=%s",tostring(def.id),tostring(def.dynamicData~=nil))
-    else
-      log("warn","ArenaCatalog.resolve failed: %s",tostring(reason or def))
-    end
-  end
-  -- Fallback to direct Arena:arena if catalog fails or doesn't exist
-  if not arena then
-    log("info","StandaloneHost: falling back to Arena:arena")
-    arena=Arena and Arena:arena(s.context)
-  end
+  local arena=Arena and Arena:arena(s.context)
   if not arena then return false,"arena definition unavailable" end
-  log("info","StandaloneHost: final arena id=%s, has dynamicData=%s",tostring(arena.id),tostring(arena.dynamicData~=nil))
   s.context.arena=arena
   local ok,accepted=pcall(Arena.begin,Arena,s.context,arena)
   if not ok then return false,accepted end

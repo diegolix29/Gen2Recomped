@@ -86,7 +86,7 @@ local function prefs(game)
   local validMusic={random=true,normal=true,first=true,cipher_peon=true,miror_b=true,cipher_admin=true,mirakle_b=true,semifinal=true,final=true,link1=true,link2=true,link3=true,original=true}
   if p.music=="colosseum" or p.music=="wild" or p.music=="trainer" or p.music=="gym" then p.music="normal" end
   if not validMusic[p.music] then p.music="normal" end
-  local validArena={auto=true,random=true,open_water=true,water=true,orre_colosseum=true,relic_chamber=true,relic_cave=true,outskirts=true,pyrite_colosseum=true,deep_colosseum=true,realgam_colosseum=true,outdoor_wild=true,dynamic_terrain=true,mt_battle_summit=true,cipher_lab_underground=true}
+  local validArena={auto=true,random=true,open_water=true,water=true,orre_colosseum=true,relic_chamber=true,relic_cave=true,outskirts=true,pyrite_colosseum=true,deep_colosseum=true,realgam_colosseum=true,outdoor_wild=true,mt_battle_summit=true,cipher_lab_underground=true}
   if not validArena[p.arena] then p.arena="auto" end
   return p
 end
@@ -362,11 +362,6 @@ local function openBattleMenu(game,returnId,returnParent)
   end
 
   arenaRow.onSelect=function()
-    local V=rawget(_G,"V") or {}
-    local log=V.mod and V.mod.log
-    if log and type(log.info)=="function" then
-      log.info(log,"BattleSettings: arenaRow.onSelect called, current p.arena=%s",tostring(p.arena))
-    end
     local options=(ArenaCatalog and ArenaCatalog.options and ArenaCatalog.options()) or {{id="auto",label="AUTO"},{id="water",label="WATER COLOSSEUM"}}
     local rows={}
     for _,opt in ipairs(options) do
@@ -374,11 +369,9 @@ local function openBattleMenu(game,returnId,returnParent)
       rows[#rows+1]={
         label=((captured.id==p.arena) and "> " or "  ")..captured.label,
         onSelect=function()
-          if log and type(log.info)=="function" then
-            log.info(log,"BattleSettings: arena option selected, captured.id=%s",tostring(captured.id))
-          end
           local chosen=captured.id
           if ArenaCatalog and ArenaCatalog.setSelected then chosen=ArenaCatalog.setSelected(game,captured.id) end
+          p.arena=chosen or captured.id
           refresh()
         end,
       }
