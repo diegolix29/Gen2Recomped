@@ -146,6 +146,31 @@ BattleBoxXY.PHASES = {
 -- about whether it is drawing right now -- that is covers().)
 function BattleBoxXY.wants(battle)
   if not (battle and BattleBoxXY.available()) then return false end
+  
+  -- Check if doubles UI token is set - this takes priority
+  if battle and (battle.__doublesBattleToken or 
+    (battle.battle and battle.battle.__doublesBattleToken) or
+    (battle.screen and battle.screen.__doublesBattleToken)) then
+    return false
+  end
+  
+  -- Check if this is a doubles battle - if so, let the doubles UI handle it
+  local isDoubles = battle and (battle.__cbeDoublesActive or 
+    (battle.battle and battle.battle.__cbeDoublesActive) or
+    (battle.screen and battle.screen.__cbeDoublesActive))
+  
+  -- Engine-level doubles indicators
+  if battle and not isDoubles then
+    local host = battle.battle or battle
+    isDoubles = (host.double == true)
+      or (type(host.isDouble)=="function" and host:isDouble() == true)
+      or (host.doubleBattle == true)
+      or (host.isDoubleBattle == true)
+  end
+  
+  -- Don't try to draw for doubles battles - let the doubles UI handle it
+  if isDoubles then return false end
+  
   -- Stadium Battle FX sets stadiumTrainerPortraitToken when it takes control
   if battle.stadiumTrainerPortraitToken then return false end
   return BattleBoxXY.PHASES[battle.phase] and true or false
@@ -166,6 +191,21 @@ BattleBoxXY.EXTERNAL_PHASES = {
 }
 
 function BattleBoxXY.externalOwns(battle)
+  -- Check if doubles UI token is set - this takes priority
+  if battle and (battle.__doublesBattleToken or 
+    (battle.battle and battle.battle.__doublesBattleToken) or
+    (battle.screen and battle.screen.__doublesBattleToken)) then
+    return true
+  end
+  
+  -- Check if doubles UI is active (legacy check)
+  if battle and (battle.__doublesUIActive or 
+    (battle.battle and battle.battle.__doublesUIActive) or
+    (battle.screen and battle.screen.__doublesUIActive)) then
+    return true
+  end
+  
+  -- Check the external UI callback
   local fn = BattleBoxXY.ownedByExternalUI
   if type(fn) ~= "function" then return false end
   local ok, owns = pcall(fn, battle)
@@ -176,6 +216,26 @@ end
 -- replacement in this file painted this battle very recently.
 function BattleBoxXY.covers(battle)
   if not (battle and BattleBoxXY.available()) then return false end
+  
+  -- Check if this is a doubles battle - multiple detection methods
+  local isDoubles = battle and (battle.__cbeDoublesActive or 
+    (battle.battle and battle.battle.__cbeDoublesActive) or
+    (battle.screen and battle.screen.__cbeDoublesActive))
+  
+  -- Engine-level doubles indicators
+  if battle and not isDoubles then
+    local host = battle.battle or battle
+    isDoubles = (host.double == true)
+      or (type(host.isDouble)=="function" and host:isDouble() == true)
+      or (host.doubleBattle == true)
+      or (host.isDoubleBattle == true)
+  end
+  
+  -- Always hide native UI during doubles battles
+  if isDoubles then
+    return BattleBoxXY.EXTERNAL_PHASES[battle.phase] and true or false
+  end
+  
   -- The Colosseum UI draws the command menu, the messages AND the attack list
   -- itself, so while it owns the box every one of those phases is silenced in
   -- the engine (the attack list is "moves" in Gen I, "moveSelect" in the Gold
@@ -423,6 +483,24 @@ function BattleBoxXY.install()
                 (BattleBoxXY.available() and ".avail" or ".unavail")
       st[k] = (st[k] or 0) + 1
     end
+    
+    local isDoubles = self and (self.__cbeDoublesActive or 
+      (self.battle and self.battle.__cbeDoublesActive) or
+      (self.screen and self.screen.__cbeDoublesActive) or
+      (self.__doublesBattleToken) or 
+      (self.battle and self.battle.__doublesBattleToken) or
+      (self.screen and self.screen.__doublesBattleToken))
+    
+    if self and not isDoubles then
+      local host = self.battle or self
+      isDoubles = (host.double == true)
+        or (type(host.isDouble)=="function" and host:isDouble() == true)
+        or (host.doubleBattle == true)
+        or (host.isDoubleBattle == true)
+    end
+    
+    if isDoubles then return end
+    
     -- `dramaticShapeShot` is how the rest of the mod asks "is this battle
     -- being drawn over the diorama": on the plain battle background the
     -- engine's own box is right and nothing here should run.
