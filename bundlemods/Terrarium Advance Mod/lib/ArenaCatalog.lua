@@ -1,5 +1,6 @@
 local C={}
 local BattleSettings=nil
+local V=...  -- Capture V at module load time
 
 -- Arena selection stays centralized in this module. The
 -- StadiumBattleFX provider is acquired once per battle; the selected id is
@@ -139,8 +140,8 @@ local DEFINITIONS={
     camera={side=59,back=18,height=29,lookX=0,lookY=6.0,frameH=51,safe={minRadius=29,maxRadius=87,minY=7.0,maxY=43,maxPitch=33,minPitch=-10,minFov=31,maxFov=54}},
     backdrop={top={0.08,0.31,0.65},bottom={0.68,0.84,0.76}},profile="outdoor",crowd="none",
   },
-  overworld_terrain={
-    id="overworld_terrain",label="OVERWORLD TERRAIN",cache="cache/overworld_terrain_cache.lua",ready=true,
+  dynamic_terrain={
+    id="dynamic_terrain",label="DYNAMIC TERRAIN",dynamic=true,ready=true,cache="dynamic",
     stageScale=0.25,stageYaw=0,sceneRadiusRaw=450,maxGroupSpanRaw=900,vertexRadiusRaw=440,
     pokemon={player={-4.5,18.0},enemy={4.5,-18.0}},figureScale=0.365,trainers={player={14.0,29.5},enemy={-14.0,-29.5}},trainerScale={player=0.425,enemy=0.205},
     camera={side=59,back=18,height=29,lookX=0,lookY=6.0,frameH=51,safe={minRadius=29,maxRadius=87,minY=7.0,maxY=43,maxPitch=33,minPitch=-10,minFov=31,maxFov=54}},
@@ -159,8 +160,12 @@ local DEFINITIONS={
   },
 }
 
-local ORDER={"auto","random","open_water","water","orre_colosseum","relic_chamber","relic_cave","outskirts","pyrite_colosseum","deep_colosseum","realgam_colosseum","outdoor_wild","overworld_terrain","mt_battle_summit","cipher_lab_underground"}
-local VALID={auto=true,random=true,open_water=true,water=true,orre_colosseum=true,relic_chamber=true,relic_cave=true,outskirts=true,pyrite_colosseum=true,deep_colosseum=true,realgam_colosseum=true,outdoor_wild=true,overworld_terrain=true,mt_battle_summit=true,cipher_lab_underground=true}
+local ORDER={"auto","random","open_water","water","orre_colosseum","relic_chamber","relic_cave","outskirts","pyrite_colosseum","deep_colosseum","realgam_colosseum","outdoor_wild","dynamic_terrain","mt_battle_summit","cipher_lab_underground"}
+local VALID={auto=true,random=true,open_water=true,water=true,orre_colosseum=true,relic_chamber=true,relic_cave=true,outskirts=true,pyrite_colosseum=true,deep_colosseum=true,realgam_colosseum=true,outdoor_wild=true,dynamic_terrain=true,mt_battle_summit=true,cipher_lab_underground=true}
+
+-- Per-battle cache for dynamic arena data (using battle object as key with safety checks)
+local dynamicArenaCache={}
+local dynamicArenaKeyCounter=0
 
 local function randomDefinition()
   local pool={}
@@ -186,7 +191,17 @@ local function saved(game)
   local save=game and game.save
   local p=save and save.terrariumBattle
   local id=p and p.arena or "auto"
-  if not VALID[id] then id="auto" end
+  local V=rawget(_G,"V") or {}
+  local log=V.mod and V.mod.log
+  if log and type(log.info)=="function" then
+    log.info(log,"ArenaCatalog.saved: p.arena=%s, id=%s, VALID[id]=%s",tostring(p and p.arena),tostring(id),tostring(VALID[id]))
+  end
+  if not VALID[id] then
+    if log and type(log.warn)=="function" then
+      log.warn(log,"saved arena id '%s' not in VALID, defaulting to auto",tostring(id))
+    end
+    id="auto"
+  end
   return id
 end
 
@@ -238,7 +253,7 @@ function C.options()
     {id="deep_colosseum",label="DEEP COLOSSEUM"},
     {id="realgam_colosseum",label="REALGAM COLOSSEUM"},
     {id="outdoor_wild",label="ORRE WILDLANDS"},
-    {id="overworld_terrain",label="OVERWORLD TERRAIN"},
+    {id="dynamic_terrain",label="DYNAMIC TERRAIN"},
     {id="mt_battle_summit",label="MT. BATTLE SUMMIT"},
     {id="cipher_lab_underground",label="CIPHER LAB UNDERGROUND"},
   }
@@ -263,12 +278,31 @@ local function waterWildEncounter(game,battle)
 end
 
 function C.setSelected(game,id)
-  if not VALID[id] then id="auto" end
+  local V=rawget(_G,"V") or {}
+  local log=V.mod and V.mod.log
+  if log and type(log.info)=="function" then
+    log.info(log,"ArenaCatalog.setSelected: id=%s, VALID[id]=%s",tostring(id),tostring(VALID[id]))
+  end
+  if not VALID[id] then
+    if log and type(log.warn)=="function" then
+      log.warn(log,"ArenaCatalog.setSelected: invalid id '%s', defaulting to auto",tostring(id))
+    end
+    id="auto"
+  end
   runtimeSelected=id
   pendingSelected=id
   if id~="random" then primedRandom=nil end
   local p=ensurePrefs(game)
-  if p then p.arena=id end
+  if p then
+    p.arena=id
+    if log and type(log.info)=="function" then
+      log.info(log,"ArenaCatalog.setSelected: saved to p.arena=%s",tostring(p.arena))
+    end
+  else
+    if log and type(log.warn)=="function" then
+      log.warn(log,"ArenaCatalog.setSelected: ensurePrefs returned nil, cannot save")
+    end
+  end
   if id=="random" then C.primeRandom(game) end
   -- Arena providers are acquired once at battle start. Never mutate a battle
   -- already in progress; stage the explicit choice so the NEXT acquire cannot
@@ -349,6 +383,12 @@ local function isArenaEnabledForEncounter(game,battle)
 end
 
 function C.resolve(game,battle)
+  print("ArenaCatalog.resolve: called, battle="..tostring(battle~=nil))
+  local V=rawget(_G,"V") or {}
+  local log=V.mod and V.mod.log
+  if log and type(log.info)=="function" then
+    log.info(log,"ArenaCatalog.resolve: called with battle=%s",tostring(battle~=nil))
+  end
   -- Check if arenas are enabled for this specific encounter type
   if not isArenaEnabledForEncounter(game,battle) then
     return nil,"encounter_disabled"
@@ -362,14 +402,16 @@ function C.resolve(game,battle)
   end
   local selected
   if battle then
-    -- Bind one immutable manual selection to this exact battle.  StadiumBattleFX
-    -- acquires the arena once at battle.started; Agatha/Nascour, Lance, camera
-    -- events, or later save reads cannot change the selected arena underneath it.
-    if boundBattle~=battle then
-      boundBattle=battle
-      -- A selection made in the BATTLE overlay is authoritative for this
-      -- acquisition even if ctx.game still exposes an older save snapshot.
+    if not boundBattle then
+      -- Authoritative acquisition: bind the choice permanently for this battle.
+      -- pendingSelected takes priority over the save to allow menu changes to
+      -- take effect immediately even if ctx.game still exposes an older save snapshot.
       boundSelected=pendingSelected or C.selected(game)
+      local V=rawget(_G,"V") or {}
+      local log=V.mod and V.mod.log
+      if log and type(log.info)=="function" then
+        log.info(log,"ArenaCatalog.resolve: battle acquisition, pendingSelected=%s, C.selected(game)=%s, boundSelected=%s",tostring(pendingSelected),tostring(C.selected(game)),tostring(boundSelected))
+      end
       runtimeSelected=boundSelected
       pendingSelected=nil
       if boundSelected=="random" then
@@ -404,6 +446,78 @@ function C.resolve(game,battle)
   end
   local def=DEFINITIONS[wanted] or DEFINITIONS.water
   if not def.ready then def=DEFINITIONS.water end
+
+  print("ArenaCatalog.resolve: wanted="..tostring(wanted)..", def.id="..tostring(def.id)..", def.dynamic="..tostring(def.dynamic)..", battle="..tostring(battle~=nil))
+  local log=V.mod and V.mod.log
+  if log and type(log.info)=="function" then
+    log.info(log,"ArenaCatalog.resolve: wanted=%s, def.id=%s, def.dynamic=%s, battle=%s",tostring(wanted),tostring(def.id),tostring(def.dynamic),tostring(battle~=nil))
+  end
+
+  -- Handle dynamic terrain generation
+  if def.dynamic and battle then
+    print("ArenaCatalog.resolve: entering dynamic generation block")
+    if log and type(log.info)=="function" then
+      log.info(log,"ArenaCatalog.resolve: entering dynamic generation block")
+    end
+    local okDynamic, DynamicArena = pcall(function() return V.require("DynamicArena") end)
+    print("ArenaCatalog.resolve: DynamicArena require ok="..tostring(okDynamic)..", error="..tostring(DynamicArena))
+    if log and type(log.info)=="function" then
+      log.info(log,"ArenaCatalog.resolve: DynamicArena require ok=%s, error=%s",tostring(okDynamic),tostring(DynamicArena))
+    end
+    if okDynamic and DynamicArena then
+      -- Use a counter-based key for the cache to avoid table reference issues
+      local battleKey=battle.__dynamicArenaKey
+      if not battleKey then
+        dynamicArenaKeyCounter=dynamicArenaKeyCounter+1
+        battleKey=dynamicArenaKeyCounter
+        battle.__dynamicArenaKey=battleKey
+      end
+      print("ArenaCatalog.resolve: battleKey="..tostring(battleKey)..", cache exists="..tostring(dynamicArenaCache[battleKey]~=nil))
+      if not dynamicArenaCache[battleKey] then
+        print("ArenaCatalog.resolve: cache miss, generating dynamic terrain")
+        if log and type(log.info)=="function" then
+          log.info(log,"ArenaCatalog.resolve: cache miss, generating dynamic terrain")
+        end
+        -- Get the current map from the game context
+        local world=game and (game.world or game.overworld)
+        local map=world and world.map
+        print("ArenaCatalog.resolve: world="..tostring(world~=nil)..", map="..tostring(map~=nil))
+        if log and type(log.info)=="function" then
+          log.info(log,"ArenaCatalog.resolve: world=%s, map=%s",tostring(world~=nil),tostring(map~=nil))
+        end
+        if map then
+          -- Create a simple arena descriptor for the dynamic generator
+          local arenaDesc = {
+            x = world.player and world.player.cellX or 0,
+            y = world.player and world.player.cellY or 0,
+            w = 10, -- Default width
+            h = 10  -- Default height
+          }
+          local okGen, dynamicData = pcall(DynamicArena.generate, map, arenaDesc)
+          print("ArenaCatalog.resolve: DynamicArena.generate ok="..tostring(okGen)..", dynamicData="..tostring(dynamicData~=nil))
+          if log and type(log.info)=="function" then
+            log.info(log,"ArenaCatalog.resolve: DynamicArena.generate ok=%s, dynamicData=%s",tostring(okGen),tostring(dynamicData~=nil))
+          end
+          if okGen and dynamicData then
+            -- Cache the dynamic data for this battle
+            dynamicArenaCache[battleKey]=dynamicData
+          else
+            -- Log generation failure but don't crash
+            local V=rawget(_G,"V") or {}
+            local log=V.mod and V.mod.log
+            if log and type(log.warn)=="function" then
+              log.warn(log,"dynamic arena generation failed: %s",tostring(dynamicData))
+            end
+          end
+        end
+      end
+      -- Attach cached dynamic data to the definition (per-battle, not global)
+      if dynamicArenaCache[battleKey] then
+        def.dynamicData = dynamicArenaCache[battleKey]
+      end
+    end
+  end
+  
   return def,selected
 end
 
@@ -415,6 +529,11 @@ function C.releaseBattle(battle)
     boundBattle=nil
     boundSelected=nil
     boundResolved=nil
+    -- Clear dynamic arena cache for this battle using the counter key
+    if battle and battle.__dynamicArenaKey then
+      dynamicArenaCache[battle.__dynamicArenaKey]=nil
+      battle.__dynamicArenaKey=nil
+    end
   end
 end
 

@@ -1751,6 +1751,55 @@ local function loadScene(ctx)
     errorText="LÖVE 3D graphics API unavailable"; return nil,errorText
   end
   local def=activeDef or (ArenaCatalog and ArenaCatalog.definition and ArenaCatalog.definition("water")) or {id="water",cache="cache/M1_water_cache.lua"}
+  
+  -- Check for dynamic terrain data
+  if def.dynamicData then
+    log(ctx,"info","using dynamic terrain data for arena %s",tostring(def.id))
+    local cache=def.dynamicData
+    local materialized,packedErr=materializeArenaVertices(cache)
+    if not materialized then errorText=tostring(packedErr);return nil,errorText end
+    local textures={}; local opaque, cutout, crowd, translucent, additive = {}, {}, {}, {}, {}
+    for i,g in ipairs(cache.groups or {}) do
+      local center,span,extent,boundsCenter=groupStats(g.vertices)
+      local sourcePath=g and g.texture and tostring(g.texture.path or "") or ""
+      local tex,terr=texture(g.texture,textures)
+      if not tex then errorText=tostring(terr);return nil,errorText end
+      local alpha=tonumber(g.alpha) or 1
+      local mode=materialMode(g,tex)
+      local meshVertices=withNormals(g.vertices,mode,BATTLE_VERTEX_RADIUS_RAW)
+      if #meshVertices==0 then
+        -- skip empty groups
+      else
+        local ok,mesh=pcall(love.graphics.newMesh,FORMAT,meshVertices,"triangles","static")
+        if not ok then errorText="mesh "..i..": "..tostring(mesh);return nil,errorText end
+        mesh:setTexture(tex.image)
+        local bucketName,bucket
+        if mode>=3 and mode<3.5 then
+          bucketName,bucket="cutout",cutout
+        elseif not g.xlu then
+          bucketName,bucket="opaque",opaque
+        else
+          bucketName,bucket="translucent",translucent
+        end
+        if bucket then
+          bucket[#bucket+1]={mesh=mesh,alpha=alpha,noz=g.noz and true or false,center=center or {0,0,0},boundsCenter=boundsCenter,span=tonumber(span) or 0,extent=extent or {0,0,0},
+            mode=tonumber(g.mode) or 0,flow=tonumber(g.flow) or 0,detail=g.detail,texelStep=g.texelStep or {1,1},diffuse=g.diffuse or {1,1,1},
+            ambient=g.ambient or {1,1,1},specular=g.specular or {0,0,0},shininess=tonumber(g.shininess) or 0,renderFlags=tonumber(g.renderFlags) or 0,effect=g.effect and true or false,
+            useConstant=g.useConstant and true or false,useVertexColor=g.useVertexColor and true or false,useVertexAlpha=sourceVertexAlphaEnabled(g),useDiffuseLighting=g.useDiffuseLighting~=false,textureSlot=tonumber(g.textureSlot) or -1,
+            textureColorMap=tonumber(g.texture and g.texture.colorMap) or 4,textureBlending=tonumber(g.texture and g.texture.blending) or 1}
+        end
+      end
+    end
+    local sh,serr=ensureArenaShader(ctx)
+    if not sh then return nil,errorText end
+    scene={opaque=opaque,cutout=cutout,crowd=crowd,translucent=translucent,additive=additive,bounds=cache.bounds,source="dynamic terrain",textures=textures,culled=0,
+      crowdOriginal=0,crowdKept=#crowd,crowdPolicy="none",preserveSourceShell=false,cachePath="dynamic",runtimeSidecar=false }
+    touchResident(activeArenaId,scene);errorText=nil
+    log(ctx,"info","loaded dynamic arena: %d opaque + %d cutout + %d translucent groups",#opaque,#cutout,#translucent)
+    return scene
+  end
+  
+  -- Standard arena loading from cache
   local cachePath=def.cache or "cache/M1_water_cache.lua"
   local rt
   local preserveArenaRuntime=false

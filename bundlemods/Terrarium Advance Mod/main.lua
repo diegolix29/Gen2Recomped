@@ -2516,7 +2516,7 @@ end)
 mod.events:on("mod.options_changed", function(payload)
   if not (payload and payload.mod == mod.id) then return end
   for _, entry in ipairs(SETTINGS) do
-    if payload.key == entry[1].key then entry[1]:sync(payload.value) end
+    if entry and entry[1] and entry[1].key and payload.key == entry[1].key then entry[1]:sync(payload.value) end
   end
   -- 3D-BTL switched on from the manager's page pins BATTLE LAYOUT exactly as
   -- the OPTIONS row does. The manager persists its own value; this is the one
