@@ -3708,14 +3708,18 @@ function GoldCompat.battlePresentationEnabledFor(battle)
     (battle.battle and battle.battle.__cbeDoublesActive) or
     (battle.screen and battle.screen.__cbeDoublesActive))
   
-  -- Also check for engine-level double battle indicators - be very permissive
+  -- Engine-level doubles indicators. Only REAL flags count: `double` /
+  -- isDouble() is the native Gen III marker and `__cbeDoublesActive` (above)
+  -- is set the moment the doubles runtime engages. Guessing from
+  -- `#enemyParty>=2` matched every ordinary trainer battle (even with Double
+  -- Battles OFF or the Colosseum UI OFF) and hid the native command box with
+  -- nothing drawn in its place.
   if battle and not isDoubles then
     local host = battle.battle or battle
-    -- Check if enemy has multiple Pokemon (common double battle indicator)
-    isDoubles = (host.enemyParty and #host.enemyParty>=2) or
-                 (host.doubleBattle == true) or 
-                 (host.isDoubleBattle == true) or
-                 (host.battleType and (host.battleType==2 or host.battleType=="double"))
+    isDoubles = (host.double == true)
+      or (type(host.isDouble)=="function" and host:isDouble() == true)
+      or (host.doubleBattle == true)
+      or (host.isDoubleBattle == true)
   end
   
   if isDoubles then
@@ -3744,6 +3748,16 @@ function GoldCompat.ownsNativeBattleLayer(state)
   end
   return battle and (GoldCompat.battlePresentationEnabledFor(battle)
     or featureEnabled("hideNativeBattleUI")) or false
+end
+
+-- BattleBoxXY silences the engine's message/command box on the battle
+-- instance. Tell it when the Colosseum UI owns that box, so the native box is
+-- hidden while the Colosseum UI is on and shown again when it is off.
+function GoldCompat.bindBattleBoxOwnership()
+  local box=_G.TerrariumBattleBoxXY
+  if type(box)=="table" and box.ownedByExternalUI~=GoldCompat.ownsNativeBattleLayer then
+    box.ownedByExternalUI=GoldCompat.ownsNativeBattleLayer
+  end
 end
 
 GoldCompat.__shapeHudCompatCache=GoldCompat.__shapeHudCompatCache or {}
@@ -26419,7 +26433,7 @@ function GoldCompat.renderHudBattleLayer(mod,game)
   -- Activate BattleBoxXY for battle UI hiding across all generations
   local battle=battleStateInStack(game)
   if battle and _G.TerrariumBattleBoxXY and _G.TerrariumBattleBoxXY.claim then
-    pcall(function() _G.TerrariumBattleBoxXY.claim(battle) end)
+    pcall(GoldCompat.bindBattleBoxOwnership); pcall(function() _G.TerrariumBattleBoxXY.claim(battle) end)
   end
 
   -- Battle-only pushed UI states own the foreground, but should still feel
@@ -27346,7 +27360,7 @@ return function(mod)
       
       -- Activate BattleBoxXY for battle UI hiding across all generations
       if battle and _G.TerrariumBattleBoxXY and _G.TerrariumBattleBoxXY.claim then
-        pcall(function() _G.TerrariumBattleBoxXY.claim(battle) end)
+        pcall(GoldCompat.bindBattleBoxOwnership); pcall(function() _G.TerrariumBattleBoxXY.claim(battle) end)
       end
       
       local states=mod.game and mod.game.stack and mod.game.stack.states or {}
@@ -27362,6 +27376,7 @@ return function(mod)
   -- Reassert the UI-only compatibility firewall after every renderer that
   -- loaded before us has installed its battle presentation wrappers.
   GoldCompat.installBattleUiFirewall()
+  pcall(GoldCompat.bindBattleBoxOwnership)
 
   if GoldCompat.generation=="gen1" then
     State.Installers.installOverworldUI(mod)
