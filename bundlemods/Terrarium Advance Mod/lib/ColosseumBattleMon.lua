@@ -315,7 +315,27 @@ function ColosseumBattleMon:play(state, animIndex, auxIndex, moveDef)
   elseif state == "attack" then
     moveDef = moveDef or moveDefFor(animIndex)
     local nativeSlot = retailNativeSlot(animIndex, moveDef, self.species)
-    actor:attack(animIndex, moveDef, { nativeSlot = nativeSlot })
+    local started, attackState = actor:attack(animIndex, moveDef, { nativeSlot = nativeSlot })
+    -- This hook (Stadium.lua's performMove wrapper) always reaches the
+    -- shared PokemonActors Actor before CurrentSpriteModels' own
+    -- battle.move_used handler does, for the same move. CurrentSpriteModels
+    -- used to always call actor:attack() again a moment later to bind the
+    -- Waza/MoveFX presentation via its onStarted callback -- resetting
+    -- actionAge and re-rolling selectNativeSlot on every overworld
+    -- COLOSSEUM A/B move even though the native pose had just started here.
+    -- Mark the move as already live so that second call can bind off THIS
+    -- action instead of restarting it (see CurrentSpriteModels.lua's
+    -- P.modeId=="cbe:overworld-pokemon" branch). Only when it actually
+    -- started immediately: if this call queued behind an in-progress hit
+    -- reaction (attackState=="queued"), CurrentSpriteModels' later call
+    -- queues right behind it and overwrites actor.pendingAttack with its own
+    -- onStarted-carrying opts before hitAge clears, so that path must run
+    -- normally instead.
+    if started and attackState ~= "queued" then
+      actor.cbeOverworldAttackPending = animIndex
+    else
+      actor.cbeOverworldAttackPending = nil
+    end
   else
     -- "idle" AND "entrance" both land here: Colosseum's native slot set has
     -- no separate entrance bank (see the file header), so a send-out grows
