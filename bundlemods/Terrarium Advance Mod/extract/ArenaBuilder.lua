@@ -73,6 +73,7 @@ local ARENAS={
     minVertices=30000,minGroups=10,maxVertices=300000,maxDisplayOps=1800000,maxSceneRoots=64,
     maxJobjs=20000,maxDobjs=60000,maxPobjs=100000,honorRenderPass=true,skipShadowMaterials=true},
   {recipe="recipes/arenas/outdoor_wild.lua",cache="cache/outdoor_wild_cache.lua",id="outdoor_wild",label="ORRE WILDLANDS"},
+  {recipe="recipes/arenas/overworld_terrain.lua",cache="cache/overworld_terrain_cache.lua",id="overworld_terrain",label="OVERWORLD TERRAIN"},
   {cache="cache/D2_mt_battle_platform100_cache.lua",id="mt_battle_summit",label="MT. BATTLE SUMMIT",
     sourceFsys="D2_crater_colo.fsys",sourceMember="D2_crater_colo.dat",textureRoot="cache/stages/d2_crater/textures",
     minVertices=8000,minGroups=20,maxVertices=360000,maxDisplayOps=1900000,maxSceneRoots=40,maxJobjs=18000,maxDobjs=54000,maxPobjs=90000},
@@ -245,6 +246,7 @@ local ARENA_RUNTIME_SETTINGS={
   pyrite_colosseum={sceneRadiusRaw=3600,maxGroupSpanRaw=8600,vertexRadiusRaw=3500},
   deep_colosseum={sceneRadiusRaw=12000,maxGroupSpanRaw=32000,vertexRadiusRaw=11500},
   outdoor_wild={sceneRadiusRaw=620,maxGroupSpanRaw=1350,vertexRadiusRaw=610},
+  overworld_terrain={sceneRadiusRaw=450,maxGroupSpanRaw=900,vertexRadiusRaw=440},
   realgam_colosseum={sceneRadiusRaw=4400,maxGroupSpanRaw=9000,vertexRadiusRaw=4300},
   mt_battle_summit={sceneRadiusRaw=7000,maxGroupSpanRaw=15000,vertexRadiusRaw=6900},
 }
@@ -541,8 +543,11 @@ function A.repair(mod,disc,progress,generated,options)
     if not scoped or (scope=="relic-scenes" and (arena.id=="relic_chamber" or arena.id=="relic_cave"))
         or (scope=="source-instances" and (arena.id=="water" or arena.id=="deep_colosseum")) then sourceArenas[#sourceArenas+1]=arena end
   end end
-  local rebuildWild=not cacheExists("cache/outdoor_wild_cache.lua")
-  local total=#sourceArenas+(rebuildWild and 1 or 0)
+  local recipeArenas={}
+  for _,arena in ipairs(ARENAS) do if arena.recipe then recipeArenas[#recipeArenas+1]=arena end end
+  local rebuildRecipes=false
+  for _,arena in ipairs(recipeArenas) do if not cacheExists(arena.cache) then rebuildRecipes=true;break end end
+  local total=#sourceArenas+(rebuildRecipes and #recipeArenas or 0)
   local mode=complete and "all-source-colors" or "full"
   if scoped then mode=scope end
   local report={"return {revision="..tostring(A.arenaRevision)..",mode="..string.format("%q",mode)..","}
@@ -554,17 +559,17 @@ function A.repair(mod,disc,progress,generated,options)
     local value=buildSourceArenaFromDisc(mod,disc,progress,generated,arena)
     report[#report+1]=string.format("%s={cache=%q,groups=%d,vertices=%d,source=%q,textures=%d},",arena.id,arena.cache,tonumber(value.groups) or 0,tonumber(value.vertices) or 0,tostring(value.source or "GC6E01 source"),tonumber(value.textures) or 0)
   end
-  if rebuildWild then
-    local wild
-    for _,arena in ipairs(ARENAS) do if arena.recipe then wild=arena;break end end
-    assert(wild,"Wildlands arena recipe missing")
-    progress("ORRE WILDLANDS / AUTHORED PARITY",#sourceArenas,math.max(1,total))
-    local keys={};for path in pairs(SPECS) do if path:find("cache/stages/wildlands/",1,true) then keys[#keys+1]=path end end;table.sort(keys)
-    for _,path in ipairs(keys) do local sp=SPECS[path];write(mod,path,textureBytes(mod,path,sp),generated) end
-    local src=assert(mod:read(wild.recipe),"missing arena recipe: "..wild.recipe);local chunk,err=load(src,"@"..wild.recipe);assert(chunk,err)
-    local ok,recipe=pcall(chunk);assert(ok,recipe);assert(type(recipe)=="table" and type(recipe.groups)=="table" and #recipe.groups>0,"invalid arena recipe: "..wild.id)
-    write(mod,wild.cache,src,generated)
-    report[#report+1]=string.format("%s={cache=%q,groups=%d,vertices=%d,source=%q,textures=%d},",wild.id,wild.cache,#recipe.groups,tonumber(recipe.vertexCount) or 0,tostring(recipe.source or "recipe"),#keys)
+  if rebuildRecipes then
+    assert(#recipeArenas>0,"No recipe-based arenas found")
+    for _,arena in ipairs(recipeArenas) do
+      progress((arena.label or arena.id).." / AUTHORED PARITY",#sourceArenas,math.max(1,total))
+      local keys={};for path in pairs(SPECS) do if path:find("cache/stages/wildlands/",1,true) then keys[#keys+1]=path end end;table.sort(keys)
+      for _,path in ipairs(keys) do local sp=SPECS[path];write(mod,path,textureBytes(mod,path,sp),generated) end
+      local src=assert(mod:read(arena.recipe),"missing arena recipe: "..arena.recipe);local chunk,err=load(src,"@"..arena.recipe);assert(chunk,err)
+      local ok,recipe=pcall(chunk);assert(ok,recipe);assert(type(recipe)=="table" and type(recipe.groups)=="table" and #recipe.groups>0,"invalid arena recipe: "..arena.id)
+      write(mod,arena.cache,src,generated)
+      report[#report+1]=string.format("%s={cache=%q,groups=%d,vertices=%d,source=%q,textures=%d},",arena.id,arena.cache,#recipe.groups,tonumber(recipe.vertexCount) or 0,tostring(recipe.source or "recipe"),#keys)
+    end
   end
   report[#report+1]="}\n";write(mod,"build/arena_repair.lua",table.concat(report),generated)
   progress("ARENA SOURCE FIDELITY READY",math.max(1,total),math.max(1,total));return true
