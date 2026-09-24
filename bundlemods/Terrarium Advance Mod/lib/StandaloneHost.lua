@@ -210,10 +210,30 @@ function H.begin(battle)
   H.lastError=nil;H.lastUpdateError=nil
   log("info","standalone arena host began: arena=%s actor=current-sprites",tostring(s.context.arena and s.context.arena.id))
   
-  -- Overworld COLOSSEUM A/B MoveFX is owned by ColosseumMoveFX + BattleScene.
-  -- Binding CurrentSpriteModels.overworldContext here stole that compositor:
-  -- audio kept advancing, but drawWorld ran against this CBE context (or was
-  -- skipped) and never landed in the voxel battle shot.
+  -- Enable WZX move effects for COLOSSEUM modes in overworld battles
+  local Stadium=V and V.OverworldStadium
+  local mode=Stadium and Stadium.mode()
+  local isColosseumMode=(mode=="COLOSSEUM_A" or mode=="COLOSSEUM_B")
+  if isColosseumMode and CurrentSprites and type(CurrentSprites.bindOverworld)=="function" then
+    local session=Stadium and Stadium.colosseumSession(s.battle)
+    if session then
+      -- Augment context with services needed for WZX rendering
+      if not s.context.services then s.context.services={} end
+      s.context.services.colosseumOverworld=true
+      s.context.services.figureScale=1
+      s.context.groundY=session.groundY
+      
+      local records={}
+      for _, side in ipairs({"player","enemy"}) do
+        local mon, battler = session[side], s.battle and s.battle[side]
+        if mon.actor and session.at[side] == battler then
+          records[side] = { actor = mon.actor, battler = battler, dex = mon.species }
+        end
+      end
+      local ok=pcall(CurrentSprites.bindOverworld,CurrentSprites,s.context,records)
+      log("info","Colosseum WZX move effects integration: %s",ok and "enabled" or "failed")
+    end
+  end
   return true
 end
 
@@ -434,6 +454,13 @@ function H.event(name,payload)
   end
   if MoveFXOwnership and type(MoveFXOwnership.event)=="function" then
     pcall(MoveFXOwnership.event,MoveFXOwnership,s.context,name,payload)
+  end
+  -- Forward events to CurrentSpriteModels for WZX move effects in COLOSSEUM modes
+  local Stadium=V and V.OverworldStadium
+  local mode=Stadium and Stadium.mode()
+  local isColosseumMode=(mode=="COLOSSEUM_A" or mode=="COLOSSEUM_B")
+  if isColosseumMode and CurrentSprites and type(CurrentSprites.event)=="function" then
+    pcall(CurrentSprites.event,CurrentSprites,s.context,name,payload)
   end
   if name=="battle.turn_started" or name=="battle.turn_ended" then s.context.phase="passive"
   elseif name=="battle.move_used" or name=="battle.presentation_move" then s.context.phase="attack"
