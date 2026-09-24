@@ -139,13 +139,6 @@ local DEFINITIONS={
     camera={side=59,back=18,height=29,lookX=0,lookY=6.0,frameH=51,safe={minRadius=29,maxRadius=87,minY=7.0,maxY=43,maxPitch=33,minPitch=-10,minFov=31,maxFov=54}},
     backdrop={top={0.08,0.31,0.65},bottom={0.68,0.84,0.76}},profile="outdoor",crowd="none",
   },
-  overworld_terrain={
-    id="overworld_terrain",label="OVERWORLD TERRAIN",cache="cache/overworld_terrain_cache.lua",ready=true,
-    stageScale=0.25,stageYaw=0,sceneRadiusRaw=450,maxGroupSpanRaw=900,vertexRadiusRaw=440,
-    pokemon={player={-4.5,18.0},enemy={4.5,-18.0}},figureScale=0.365,trainers={player={14.0,29.5},enemy={-14.0,-29.5}},trainerScale={player=0.425,enemy=0.205},
-    camera={side=59,back=18,height=29,lookX=0,lookY=6.0,frameH=51,safe={minRadius=29,maxRadius=87,minY=7.0,maxY=43,maxPitch=33,minPitch=-10,minFov=31,maxFov=54}},
-    backdrop={top={0.12,0.35,0.60},bottom={0.65,0.80,0.70}},profile="outdoor",crowd="none",
-  },
   mt_battle_summit={
     id="mt_battle_summit",label="MT. BATTLE SUMMIT",cache="cache/D2_mt_battle_platform100_cache.lua",ready=true,
     stageScale=0.25,stageYaw=0,sceneRadiusRaw=7000,maxGroupSpanRaw=15000,vertexRadiusRaw=6900,
@@ -159,8 +152,8 @@ local DEFINITIONS={
   },
 }
 
-local ORDER={"auto","random","open_water","water","orre_colosseum","relic_chamber","relic_cave","outskirts","pyrite_colosseum","deep_colosseum","realgam_colosseum","outdoor_wild","overworld_terrain","mt_battle_summit","cipher_lab_underground"}
-local VALID={auto=true,random=true,open_water=true,water=true,orre_colosseum=true,relic_chamber=true,relic_cave=true,outskirts=true,pyrite_colosseum=true,deep_colosseum=true,realgam_colosseum=true,outdoor_wild=true,overworld_terrain=true,mt_battle_summit=true,cipher_lab_underground=true}
+local ORDER={"auto","random","open_water","water","orre_colosseum","relic_chamber","relic_cave","outskirts","pyrite_colosseum","deep_colosseum","realgam_colosseum","outdoor_wild","mt_battle_summit","cipher_lab_underground"}
+local VALID={auto=true,random=true,open_water=true,water=true,orre_colosseum=true,relic_chamber=true,relic_cave=true,outskirts=true,pyrite_colosseum=true,deep_colosseum=true,realgam_colosseum=true,outdoor_wild=true,mt_battle_summit=true,cipher_lab_underground=true}
 
 local function randomDefinition()
   local pool={}
@@ -238,7 +231,6 @@ function C.options()
     {id="deep_colosseum",label="DEEP COLOSSEUM"},
     {id="realgam_colosseum",label="REALGAM COLOSSEUM"},
     {id="outdoor_wild",label="ORRE WILDLANDS"},
-    {id="overworld_terrain",label="OVERWORLD TERRAIN"},
     {id="mt_battle_summit",label="MT. BATTLE SUMMIT"},
     {id="cipher_lab_underground",label="CIPHER LAB UNDERGROUND"},
   }
