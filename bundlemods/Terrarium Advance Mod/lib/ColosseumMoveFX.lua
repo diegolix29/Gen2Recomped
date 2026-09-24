@@ -4,7 +4,7 @@ local Stadium = V.OverworldStadium
 local Handlers = V.WazaHandlers
 local M = {}
 local context
-
+ 
 function M.contextFor(battle)
   local host = V.StandaloneHost
   if host and host.status().active then return nil end
@@ -34,32 +34,32 @@ function M.contextFor(battle)
   Models:bindOverworld(context, records)
   return context
 end
-
+ 
 function M.active(battle)
   return context ~= nil and Models.overworldContext == context
     and (battle == nil or context.battle == battle)
 end
-
+ 
 function M.ownsMove(battle)
   return M.active(battle) and Models.overworldMoveStarted == true
 end
-
+ 
 function M.update(dt)
   if M.active() then Models:update(context, dt) end
 end
-
+ 
 function M.actorStep(side, dt)
   if not (M.active() and Handlers) then return dt end
   local state = Handlers:actorControllerState(side)
   if state and state.motionFrozen then return 0 end
   return dt
 end
-
+ 
 function M.actorVisible(side)
   if not (M.active() and Handlers) then return true end
   return Handlers:actorVisible(side) ~= false
 end
-
+ 
 function M.draw(vp, width, height)
   if not (M.active() and vp and width > 0 and height > 0) then return false end
   local services = context.services
@@ -74,14 +74,14 @@ function M.draw(vp, width, height)
   end
   return Models:drawWorld(context)
 end
-
+ 
 function M.drawPost(canvas, width, height)
   if M.active() and Handlers then
     return Handlers.drawPost(context, canvas, width, height)
   end
   return false
 end
-
+ 
 function M.finish(reason)
   if M.active() then
     Models:finish(context, reason)
@@ -91,5 +91,5 @@ function M.finish(reason)
   end
   context = nil
 end
-
+ 
 return M
