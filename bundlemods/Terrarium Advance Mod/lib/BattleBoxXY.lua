@@ -157,6 +157,14 @@ end
 -- answers false (Colosseum UI off) the engine's box is shown again.
 BattleBoxXY.ownedByExternalUI = nil
 
+-- Every phase whose native drawing an owning external UI replaces. A superset
+-- of PHASES: this file's own replacement only paints menu + messages, so the
+-- extra ones are only ever silenced on an external UI's say-so.
+BattleBoxXY.EXTERNAL_PHASES = {
+  menu = true, messages = true,
+  moves = true, moveSelect = true, mimicSelect = true, ["choose-forget"] = true,
+}
+
 function BattleBoxXY.externalOwns(battle)
   local fn = BattleBoxXY.ownedByExternalUI
   if type(fn) ~= "function" then return false end
@@ -167,8 +175,15 @@ end
 -- Should the ENGINE'S box stay silent? Only if an external UI owns it, or the
 -- replacement in this file painted this battle very recently.
 function BattleBoxXY.covers(battle)
+  if not (battle and BattleBoxXY.available()) then return false end
+  -- The Colosseum UI draws the command menu, the messages AND the attack list
+  -- itself, so while it owns the box every one of those phases is silenced in
+  -- the engine (the attack list is "moves" in Gen I, "moveSelect" in the Gold
+  -- presentation, plus Mimic's picker and the forget-a-move picker).
+  if BattleBoxXY.EXTERNAL_PHASES[battle.phase] and BattleBoxXY.externalOwns(battle) then
+    return true
+  end
   if not BattleBoxXY.wants(battle) then return false end
-  if BattleBoxXY.externalOwns(battle) then return true end
   local at = rawget(battle, "__xyBoxDrawnAt")
   if type(at) ~= "number" then return false end
   return (clockNow() - at) <= BattleBoxXY.LIVE_WINDOW
