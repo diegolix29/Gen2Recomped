@@ -370,6 +370,245 @@ local COLOSSEUM_ICON_FRAMES = {
   [149]=1,
   [150]=1,
   [151]=1,
+
+  -- Gen 2 (152-251)
+  [152]=1,
+  [153]=1,
+  [154]=1,
+  [155]=1,
+  [156]=1,
+  [157]=1,
+  [158]=1,
+  [159]=1,
+  [160]=1,
+  [161]=1,
+  [162]=1,
+  [163]=1,
+  [164]=1,
+  [165]=1,
+  [166]=1,
+  [167]=1,
+  [168]=1,
+  [169]=1,
+  [170]=1,
+  [171]=1,
+  [172]=1,
+  [173]=1,
+  [174]=1,
+  [175]=1,
+  [176]=1,
+  [177]=1,
+  [178]=1,
+  [179]=1,
+  [180]=1,
+  [181]=1,
+  [182]=1,
+  [183]=1,
+  [184]=1,
+  [185]=1,
+  [186]=1,
+  [187]=1,
+  [188]=1,
+  [189]=1,
+  [190]=1,
+  [191]=1,
+  [192]=1,
+  [193]=1,
+  [194]=1,
+  [195]=1,
+  [196]=1,
+  [197]=1,
+  [198]=1,
+  [199]=1,
+  [200]=1,
+  [201]=1,
+  [202]=1,
+  [203]=1,
+  [204]=1,
+  [205]=1,
+  [206]=1,
+  [207]=1,
+  [208]=1,
+  [209]=1,
+  [210]=1,
+  [211]=1,
+  [212]=1,
+  [213]=1,
+  [214]=1,
+  [215]=1,
+  [216]=1,
+  [217]=1,
+  [218]=1,
+  [219]=1,
+  [220]=1,
+  [221]=1,
+  [222]=1,
+  [223]=1,
+  [224]=1,
+  [225]=1,
+  [226]=1,
+  [227]=1,
+  [228]=1,
+  [229]=1,
+  [230]=1,
+  [231]=1,
+  [232]=1,
+  [233]=1,
+  [234]=1,
+  [235]=1,
+  [236]=1,
+  [237]=1,
+  [238]=1,
+  [239]=1,
+  [240]=1,
+  [241]=1,
+  [242]=1,
+  [243]=1,
+  [244]=1,
+  [245]=1,
+  [246]=1,
+  [247]=1,
+  [248]=1,
+  [249]=1,
+  [250]=1,
+  [251]=1,
+
+  -- Gen 3 (252-386)
+  [252]=1,
+  [253]=1,
+  [254]=1,
+  [255]=1,
+  [256]=1,
+  [257]=1,
+  [258]=1,
+  [259]=1,
+  [260]=1,
+  [261]=1,
+  [262]=1,
+  [263]=1,
+  [264]=1,
+  [265]=1,
+  [266]=1,
+  [267]=1,
+  [268]=1,
+  [269]=1,
+  [270]=1,
+  [271]=1,
+  [272]=1,
+  [273]=1,
+  [274]=1,
+  [275]=1,
+  [276]=1,
+  [277]=1,
+  [278]=1,
+  [279]=1,
+  [280]=1,
+  [281]=1,
+  [282]=1,
+  [283]=1,
+  [284]=1,
+  [285]=1,
+  [286]=1,
+  [287]=1,
+  [288]=1,
+  [289]=1,
+  [290]=1,
+  [291]=1,
+  [292]=1,
+  [293]=1,
+  [294]=1,
+  [295]=1,
+  [296]=1,
+  [297]=1,
+  [298]=1,
+  [299]=1,
+  [300]=1,
+  [301]=1,
+  [302]=1,
+  [303]=1,
+  [304]=1,
+  [305]=1,
+  [306]=1,
+  [307]=1,
+  [308]=1,
+  [309]=1,
+  [310]=1,
+  [311]=1,
+  [312]=1,
+  [313]=1,
+  [314]=1,
+  [315]=1,
+  [316]=1,
+  [317]=1,
+  [318]=1,
+  [319]=1,
+  [320]=1,
+  [321]=1,
+  [322]=1,
+  [323]=1,
+  [324]=1,
+  [325]=1,
+  [326]=1,
+  [327]=1,
+  [328]=1,
+  [329]=1,
+  [330]=1,
+  [331]=1,
+  [332]=1,
+  [333]=1,
+  [334]=1,
+  [335]=1,
+  [336]=1,
+  [337]=1,
+  [338]=1,
+  [339]=1,
+  [340]=1,
+  [341]=1,
+  [342]=1,
+  [343]=1,
+  [344]=1,
+  [345]=1,
+  [346]=1,
+  [347]=1,
+  [348]=1,
+  [349]=1,
+  [350]=1,
+  [351]=1,
+  [352]=1,
+  [353]=1,
+  [354]=1,
+  [355]=1,
+  [356]=1,
+  [357]=1,
+  [358]=1,
+  [359]=1,
+  [360]=1,
+  [361]=1,
+  [362]=1,
+  [363]=1,
+  [364]=1,
+  [365]=1,
+  [366]=1,
+  [367]=1,
+  [368]=1,
+  [369]=1,
+  [370]=1,
+  [371]=1,
+  [372]=1,
+  [373]=1,
+  [374]=1,
+  [375]=1,
+  [376]=1,
+  [377]=1,
+  [378]=1,
+  [379]=1,
+  [380]=1,
+  [381]=1,
+  [382]=1,
+  [383]=1,
+  [384]=1,
+  [385]=1,
+  [386]=1,
 }
 
 -- Corrected official Colosseum portraits for fossil entries that were
@@ -382,28 +621,73 @@ local COLOSSEUM_ICON_CORRECTIONS = {
     shiny="assets/portrait_corrections/141_shiny.png"},
 }
 
+-- Portrait identity (National Dex -> poke_face.fsys face id) lives in
+-- lib/ColosseumPortraitIndex + lib/ColosseumPortraitCatalog. Kanto/Johto faces
+-- equal the National Dex, but Hoenn faces do NOT (109 of 135 Gen III species
+-- differ, e.g. Taillow #276 is face 279). The catalog was never loaded by
+-- main.lua, so it is self-loaded here from the mod's own lib.
+local portraitCatalog=nil      -- nil = not tried yet, false = unavailable
+local portraitCatalogWarned=false
+
+local function colosseumPortraitCatalog()
+  if portraitCatalog~=nil then return portraitCatalog or nil end
+  local exp=modRef and modRef.exports
+  local ready=exp and exp.colosseumPortraits
+  if type(ready)=="table" and ready.assetPath and ready.dexForMon then
+    portraitCatalog=ready
+    return ready
+  end
+  local lib=exp and exp.lib
+  if not (lib and type(lib.require)=="function"
+      and modRef and type(modRef.read)=="function") then
+    return nil -- lib not exported yet; retry next draw instead of caching a miss
+  end
+  local okI,Index=pcall(lib.require,"ColosseumPortraitIndex")
+  local okN,Names=pcall(lib.require,"ColosseumDexNames")
+  local src=modRef:read("lib/ColosseumPortraitCatalog.lua")
+  local chunk=okI and okN and src and load(src,"@ColosseumPortraitCatalog.lua")
+  local okC,Cat=false,nil
+  if chunk then okC,Cat=pcall(chunk,{names=Names,portraitIndex=Index}) end
+  if okC and type(Cat)=="table" and Cat.assetPath and Cat.dexForMon then
+    portraitCatalog=Cat
+  else
+    portraitCatalog=false
+    if not portraitCatalogWarned and modRef.log and modRef.log.warn then
+      portraitCatalogWarned=true
+      pcall(modRef.log.warn,modRef.log,
+        "UIMain: Colosseum portrait catalog unavailable; Gen III icons may mismatch")
+    end
+  end
+  return portraitCatalog or nil
+end
+
 local function colosseumIconFrame(game,mon)
+  local cat=colosseumPortraitCatalog()
   local dex=nil
-  if game and game.data and game.data.pokemon and mon and mon.species then
+  if cat then
+    -- Species name wins over any legacy numeric field (see catalog notes).
+    dex=cat.dexForMon(game,mon)
+  end
+  if not dex and game and game.data and game.data.pokemon and mon and mon.species then
     local def=game.data.pokemon[mon.species]
     dex=def and tonumber(def.dex) or nil
   end
   if not dex or dex<1 or dex>386 then return nil end
 
-  -- Every species in the base Gen 1, Gen 2, and Gen 3 Pokédex now has at least one
-  -- authentic Colosseum frame. Preserve the extra animated Kanto frames where
-  -- supplied, and use frame one for the complete #001-#386 baseline.
-  local count=COLOSSEUM_ICON_FRAMES[dex] or 1
+  local count
+  if cat then
+    count=cat.frameCount(dex)          -- 0 when no face exists
+  else
+    count=COLOSSEUM_ICON_FRAMES[dex] or 1
+  end
   if count<=0 then
-    -- This exact species is absent from the supplied Colosseum icon sheet.
-    -- Never substitute another Pokemon: use the engine's correct sprite fallback.
+    -- Never substitute another Pokemon: use the engine's sprite fallback.
     return nil
   end
 
   local shiny=GoldCompat.monIsShiny(mon)
-  -- Alternate sheet frames often change facing rather than pose. Keep every
-  -- species stable across battle, Party, and PC -- except Gloom (#044), whose
-  -- harmless little side-to-side gag is intentionally retained.
+  -- Alternate frames mostly change facing, so keep every species on frame 1
+  -- except Gloom (#044), whose little side-to-side gag is intentionally kept.
   local now=love.timer and love.timer.getTime and love.timer.getTime() or 0
   local frame=(dex==44 and count>1) and ((math.floor(now/0.34)%count)+1) or 1
   local key=("%d:%d:%d"):format(dex,frame,shiny and 1 or 0)
@@ -417,7 +701,11 @@ local function colosseumIconFrame(game,mon)
 
   local corrected=COLOSSEUM_ICON_CORRECTIONS[dex]
   local correction=corrected and (shiny and corrected.shiny or corrected.normal)
-  local relative=correction or ("assets/portraits/%03d_%d%s.png"):format(
+  local relative=correction
+  if not relative and cat then
+    relative=cat.assetPath(dex,frame,shiny) -- uses the FACE id, not the dex
+  end
+  relative=relative or ("assets/portraits/%03d_%d%s.png"):format(
     dex,frame,shiny and "_shiny" or ""
   )
   -- Launcher mod API v2 sandboxes love.filesystem. Load packaged artwork
@@ -438,7 +726,6 @@ local function colosseumIconFrame(game,mon)
   if State.visualCache then State.visualCache.registerPortrait(img,relative) end
   return img
 end
-
 
 local dramatic = {
   V=nil,
