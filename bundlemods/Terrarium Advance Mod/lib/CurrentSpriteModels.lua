@@ -3029,37 +3029,18 @@ function P:event(context,name,payload)
 
     if P.mode=="stadium" then
       if actor and type(actor.attack)=="function" and resolvedId~=nil then
-        -- Overworld COLOSSEUM A/B (lib/ColosseumBattleMon.lua) already drove
-        -- this exact move through Stadium.lua's native performMove hook, one
-        -- step ahead of this semantic event, and marked the actor with the
-        -- move it started (cbeOverworldAttackPending). Re-issuing
-        -- actor:attack() here unconditionally reset actionAge and re-rolled
-        -- selectNativeSlot a second time on every move, and this onStarted
-        -- callback was the only thing that ever armed a Waza sequence or
-        -- MoveFX particle -- while the native attack pose (from Stadium's
-        -- own call) and the engine's own unsuppressed SFX had already
-        -- played regardless. Bind off the action that is already live on
-        -- the actor instead of restarting it a second time.
-        local pending=actor.cbeOverworldAttackPending
-        local pendingMatches=pending~=nil
-          and (pending==resolvedId or tostring(pending)==tostring(resolvedId))
-        actor.cbeOverworldAttackPending=nil
-        if P.modeId=="cbe:overworld-pokemon" and pendingMatches then
-          bindStartedAttack(actor,actor.nativeSlotSampled==true)
-        else
-          local sourceSlot,sourceSequenceKind=sourceNativeSlot(spec,"attack")
-          local okAttack,accepted,attackState=pcall(actor.attack,actor,resolvedId,move,{
-            sourceWaza=type(spec)=="table" and roleHasTimeline(spec,"attack"),
-            nativeSlot=sourceSlot,
-            sourceSequenceKind=sourceSequenceKind,
-            onStarted=bindStartedAttack,
-          })
-          if not okAttack or accepted==false then
-            P.moveFxError="source Pokemon attack dispatch failed: "..tostring(okAttack and attackState or accepted)
-          elseif attackState=="queued" then
-            -- Actor.pendingAttack owns the callback until Damage has completed.
-            P.moveFxError=nil
-          end
+        local sourceSlot,sourceSequenceKind=sourceNativeSlot(spec,"attack")
+        local okAttack,accepted,attackState=pcall(actor.attack,actor,resolvedId,move,{
+          sourceWaza=type(spec)=="table" and roleHasTimeline(spec,"attack"),
+          nativeSlot=sourceSlot,
+          sourceSequenceKind=sourceSequenceKind,
+          onStarted=bindStartedAttack,
+        })
+        if not okAttack or accepted==false then
+          P.moveFxError="source Pokemon attack dispatch failed: "..tostring(okAttack and attackState or accepted)
+        elseif attackState=="queued" then
+          -- Actor.pendingAttack owns the callback until Damage has completed.
+          P.moveFxError=nil
         end
       elseif resolvedId~=nil then
         P.moveFxError="resident Colosseum Pokemon actor unavailable at move boundary; source attack withheld"

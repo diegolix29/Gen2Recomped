@@ -40,19 +40,6 @@ local function cbeOwnsWorld(battle)
     local ok,v=pcall(bridge.ownsArena,battle)
     if ok and v==true then return true end
   end
-  -- Overworld COLOSSEUM A/B (lib/ColosseumMoveFX.lua) is a third CBE world
-  -- compositor, alongside StandaloneHost's own arena and the StadiumBridge
-  -- path above -- neither of which it ever registered with. Without this,
-  -- suppressesNativeVisuals() fell through to self:suppresses(), which is
-  -- gated on a move having already armed (self.active): a move whose Waza
-  -- timeline hadn't (yet, or ever) armed left the native Crystal/GB visual
-  -- layer compositing over the 3D world instead of hidden, the same class
-  -- of regression this module's header describes for the other two hosts.
-  local fx=V and V.ColosseumMoveFX
-  if fx and type(fx.active)=="function" then
-    local ok,v=pcall(fx.active,battle)
-    if ok and v==true then return true end
-  end
   return false
 end
 local function moveParts(payload)
