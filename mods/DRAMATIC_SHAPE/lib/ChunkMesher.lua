@@ -156,6 +156,19 @@ local SIDES = {
   { 0, -1, 6 },   -- -Z north
 }
 
+-- A run the cartridge's own WARPS say is a building, as against a compact
+-- mass of landscape.
+--
+-- `gen3RoofRows` is deliberately NOT evidence here: a sea stack carries the
+-- above-player layer too -- the same fact `g3-back-333` had to gate against
+-- -- and including it moved the deck UVs on thirteen of Hoenn's sea routes
+-- and Underwater_SealedChamber.  `gen3Bld` is the row span of a building a
+-- warp named and `door` is its doorstep, which is what `ctx.buildings`
+-- founds a building on.
+local function gen3Built(run)
+  return run ~= nil and (run.gen3Bld ~= nil or run.door == true)
+end
+
 local function keyOf(tx, ty)
   return (ty + 64) * 4096 + (tx + 64)
 end
@@ -1177,7 +1190,16 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
             -- the drawn band, which may reach a cell further north than the
             -- volume does -- see `roofArtAbove` in Structures
             local artRows = run.roofArtRows or run.roofRows
-            local artTop = run.roofArtTop or run.north
+            -- ...AND THE FALLBACK STEPS PAST A ROW THE BUILDING DOES NOT
+            -- DRAW.  See `Gen3.roofArtStart`: `run.north` is the top of the
+            -- blocked mass with the walkable course folded in, and Kanto's
+            -- fold is the roof's outline over grass (solid 0.50), not a
+            -- ridge.  Lavender's roofs came out patched with mint green.
+            local artTop = run.roofArtTop
+                           or (S.outdoor and gen3Built(run)
+                               and Gen3.roofArtStart(map, tx, run.north,
+                                                     run.front))
+                           or run.north
             local band = artRows * 8
             -- HOW DEEP THE DRAWING LIES, which is not how deep the roof
             -- rises.  A shed rises over `shed` rows and is flat behind that,
@@ -1488,7 +1510,20 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
           -- roof more of its own drawing.
           -- derived: every count above from a sweep of `S.runs` over all 518
           -- maps; nothing here is a tuned constant.
-          local artTop = run.north
+          -- ...AND THE FALLBACK STEPS PAST A ROW THE BUILDING DOES NOT DRAW
+          -- (`Gen3.roofArtStart`) -- the same fold this branch's own note is
+          -- about, read for whether the cartridge really drew it.
+          -- OUTDOORS ONLY, the same rule `ctx.roofAt` states for itself:
+          -- "above-player art indoors is the top of a wall, a doorframe, a
+          -- shelf", and there is no walk-behind roof course to step past.
+          -- Applied indoors it moved the UVs on 96 maps of interior rooms.
+          -- ...AND ONLY FOR A BUILDING.  A rock mass has a top row too, and
+          -- stepping its art down moved the deck UVs on 24 outdoor maps of
+          -- landscape -- Route 23, Treasure Beach, Ruin Valley -- for a
+          -- change that is about the course you walk behind a HOUSE.
+          local artTop = (S.isGen3 and S.outdoor and gen3Built(run)
+                          and Gen3.roofArtStart(map, tx, run.north, run.front))
+                         or run.north
           if S.isGen3 and (run.roofArtRows or 0) > 0 and run.roofArtTop
              and run.roofArtTop <= run.front then
             -- THE BAND MAY START NORTH OF THE RUN.  Emerald draws a tall
@@ -1568,7 +1603,43 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
             topTile = S.tileAt[keyOf(tx, cap.n + ci)] or topTile
             capV0 = math.max(0, math.min(7.5, cp0 - ci * 8))
             capV1 = math.max(capV0 + 0.5, math.min(8, cp1 - ci * 8))
-          elseif s.art == "upright" and s.authored then
+          elseif s.class == "waterfall" then
+            -- THE TOP OF A FALL IS THE RIVER RUNNING TO THE LIP.
+            --
+            -- A fall's drawing is its FACE -- that is the whole point of the
+            -- side arm below -- so laying the same rows flat on the cells the
+            -- fall occupies in plan drew the sheet twice: once plumb down the
+            -- drop, where it belongs, and once as a striped apron across the
+            -- five cells above it.  METEOR FALLS 1F_1R showed it as a blue
+            -- carpet banded across the head pool; ROUTE 119 as a striped
+            -- table top.
+            --
+            -- Those cells are not the sheet.  They are where the water is
+            -- before it goes over, and the cartridge says what that looks
+            -- like in the pool immediately upstream -- the same surface, at
+            -- the same height, since `g3-fall-350` hangs the fall from that
+            -- pool's own lip.  So the apron wears the river's tile and the
+            -- drawing is spent once, on the face.
+            --
+            -- Only where there IS a pool upstream: a fall with rock above it
+            -- keeps its own art rather than inventing water that is not
+            -- drawn there.
+            local n = ty
+            while ty - n < 32 do
+              local bs = S.shapeAt[keyOf(tx, n - 1)]
+              if bs and bs.class == "waterfall" then n = n - 1 else break end
+            end
+            local up = S.shapeAt[keyOf(tx, n - 1)]
+            if up and up.class == "water" then
+              topTile = S.tileAt[keyOf(tx, n - 1)] or topTile
+            end
+          elseif s.art == "upright" and s.authored and not s.topIsOwn then
+            -- ...unless the pass that stood this cell says its own tile IS
+            -- the top.  `topIsOwn` marks a BLOCKED cell the cartridge draws
+            -- with the map's own floor art -- a raised slab, a shelf you
+            -- cannot walk on -- where folding a face onto the top lays the
+            -- wrong picture flat.  See `buildGen3CaveTerraces`.
+            --
             -- Top art for a pinned box.  A furniture drawing is top-view
             -- rows over floor(h/8) face-on rows the fold stands upright;
             -- a face row's top would repeat its front art lying flat, so
@@ -1612,7 +1683,8 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
           -- on the pond.
           topQuad(x0, z0, h, topTile,
                   s.art == "upright" and VOLUME_TOP_SHADE or 1,
-                  (s.class == "water") and waterPush or nil, capV0, capV1)
+                  (s.class == "water" or s.class == "waterfall")
+                    and waterPush or nil, capV0, capV1)
         end
 
         -- ...AND THE FOREST FLOOR UNDER THE BRIDGE.
@@ -1805,7 +1877,171 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
                   -- over a 32px step then read as the cliff the cartridge
                   -- draws, at whatever depth the step happens to be, with
                   -- nothing stretched and nothing repeated.
-                  if run.face then
+                  -- THE WALL'S DRAWING STOPS WHERE THE ROOF'S BEGINS.
+                  --
+                  -- MOTIVATED BY CERULEAN CITY'S TERRACE, (8..15, 9..11),
+                  -- and by every Kanto street behind it.
+                  --
+                  -- That run is six rows deep with `roofArtTop = 18` and
+                  -- `roofArtRows = 4`, so the wall is DRAWN in rows 22..23 --
+                  -- 16px of art.  The volume stands 24px of facade (`base`
+                  -- 16, `h` 40), because `GEN3_OUTDOOR_FACADE_CAP` is a FLOOR
+                  -- as well as a ceiling ("a building whose front reads as
+                  -- one row is still drawn as a house") and holds the
+                  -- measurement at 40 where the drawing would say 32.  One
+                  -- course of facade therefore has no drawn row to wear, and
+                  -- the southward fold -- `front - bb`, clamped only at the
+                  -- run's north edge -- walked past the wall into row 21, the
+                  -- roof's bottom course, and wore the eave on the wall.
+                  -- That is the striped facade under a clean roof.
+                  --
+                  -- g3-eave-330 stopped the ROOF wearing the WALL by trimming
+                  -- `roofArtRows` at the wall's first row.  This is the same
+                  -- boundary read from the other side.  Past the top of its
+                  -- own rows a facade carries on in the topmost one -- the
+                  -- plain panel the cartridge draws under the eave -- exactly
+                  -- as an indoor room's wall carries on plain above its
+                  -- drawing (`roomWall`, above).
+                  --
+                  -- The boundary is the run's OWN measurement, not a constant:
+                  -- where the roof band is not measured, or covers the front
+                  -- row too, nothing moves.  Applied to the south face and the
+                  -- two flanks, which wear the facade; the north face folds
+                  -- from the other end and is left alone.
+                  --
+                  -- MEASURED, building runs (those carrying `roofArtTop` and
+                  -- a non-zero `roofArtRows`) over every outdoor map:
+                  --   FireRed  2,743 runs, 1,710 (62.3%) fold past the wall,
+                  --            3,452 rows over -- 693 by one row, 779 by two
+                  --   Emerald  2,124 runs,   842 (39.6%), 1,986 rows over
+                  -- derived: both from a sweep of `S.runs`; no tuned number.
+                  local wallTop = artNorth
+                  if run.roofArtTop and (run.roofArtRows or 0) > 0 then
+                    local w = run.roofArtTop + run.roofArtRows
+                    if w > wallTop and w <= run.front then wallTop = w end
+                  elseif (run.gen3FlatRows or 0) > 0 then
+                    -- ...AND A FLAT ROOFTOP IS A ROOF TOO.
+                    --
+                    -- The band above is set only for a run that RISES, so a
+                    -- flat-topped building had nothing for the wall to stop
+                    -- at and the fold walked up through the wall into the
+                    -- roof.  CERULEAN CITY'S GYM, (28..37, 18..21), wore its
+                    -- own tan rooftop tiled down its front with the Pokeball
+                    -- emblem drawn three times over the GYM sign.
+                    --
+                    -- `gen3FlatRows` is the depth Structures measured off the
+                    -- vote's own evidence at the moment it flattened the run,
+                    -- so this is the same sentence as the branch above --
+                    -- "the wall's drawing stops where the roof's begins" --
+                    -- for the other kind of roof.
+                    local w = artNorth + run.gen3FlatRows
+                    if w > wallTop and w <= run.front then wallTop = w end
+                  end
+                  -- ...AND WHAT IT REPEATS PAST THE TOP IS A PANEL, NOT A
+                  -- SIGN.
+                  --
+                  -- MOTIVATED BY CERULEAN CITY'S GYM, (28..37, 18..21).  Its
+                  -- wall band is one cell deep and its facade stands eight
+                  -- courses, so four of them are past the drawing and the
+                  -- fold clamps -- "past the top of its own rows a facade
+                  -- carries on in the topmost one -- the plain panel the
+                  -- cartridge draws under the eave", as the note above says.
+                  -- On the DOOR column that topmost row is not a plain
+                  -- panel: it is the Pokeball plate over the entrance, and
+                  -- the gym wore five of them stacked up its front.
+                  --
+                  -- A hanging feature -- a sign, an emblem, an awning -- is
+                  -- drawn on the ABOVE-PLAYER layer, because it overhangs;
+                  -- the plain panel beside it is not.  MEASURED on the gym's
+                  -- own wall row, (29..34, 20): `337, 338, 339, 340, 341,
+                  -- 342`, and only `339`, the plate, reads `overhead`.
+                  --
+                  -- So a clamped course takes the nearest column of the SAME
+                  -- BUILDING whose cell on that row is a panel.  The courses
+                  -- that legitimately LAND on the feature's row still wear
+                  -- it, so the plate is drawn once, where the cartridge puts
+                  -- it.  MEASURED over every outdoor map, building runs
+                  -- whose facade clamps at all:
+                  --
+                  --   FireRed  825 runs on 38 maps, 170 (20.6%) clamp on a
+                  --            feature -- Fuchsia 31, Saffron 23, Celadon 14
+                  --   Emerald  429 runs on 15 maps, 105 (24.5%) -- Dewford
+                  --            28, the Battle Frontier 36, Oldale 14
+                  --
+                  -- derived: swept with `S.runs`; no tuned number. The reach
+                  -- sideways is bounded by the building itself (`gen3Bld`),
+                  -- not by a distance.
+                  local clampTile = nil
+                  if S.isGen3 and S.outdoor and run.front
+                     and (run.gen3Bld ~= nil or run.door == true)
+                     and wallTop <= run.front then
+                    local okA, g3a = pcall(Gen3.analyse, map.tileset)
+                    local gs = okA and g3a and g3a.stats or nil
+                    local wy = math.floor(wallTop / 2)
+                    local function statAt(x)
+                      local mm = gs and Gen3.metatileNumAt(map, math.floor(x / 2), wy)
+                      return mm and gs[mm] or nil
+                    end
+                    local own = statAt(tx)
+                    if own and own.overhead == true then
+                      for step = 2, 16, 2 do
+                        for _, dx in ipairs({ -step, step }) do
+                          local nx = tx + dx
+                          local nr = S.runs[keyOf(nx, wallTop)]
+                          if nr and nr.gen3Bld ~= nil
+                             and nr.gen3Bld == run.gen3Bld then
+                            local st2 = statAt(nx)
+                            if st2 and st2.overhead ~= true
+                               and (st2.solid or 0) >= 0.75 then
+                              clampTile = S.tileAt[keyOf(nx, wallTop)]
+                                          or Gen3.tileAt(map, nx, wallTop)
+                              break
+                            end
+                          end
+                        end
+                        if clampTile then break end
+                      end
+                    end
+                  end
+                  -- ...AND A BUILDING'S BACK IS A WALL, NOT A ROOF.
+                  --
+                  -- The north face folds from the drawing's NORTH end and
+                  -- walks south as it rises (`artNorth + bb`).  That is a
+                  -- CLIFF rule and right for one: a headland's north side
+                  -- sees the north end of the rock drawn on it.  On a
+                  -- building it hands the back wall the roof: Cerulean's
+                  -- terrace stands `artNorth = 18` with the roof drawn in
+                  -- rows 18..21, its facade is three courses, so the north
+                  -- face wears rows 18, 19 and 20 -- shingles from eave to
+                  -- pavement, with the wall band never shown.  Seen from the
+                  -- north every house in the town is a slab of roof.
+                  --
+                  -- A building has one drawing and it is its FACADE, which
+                  -- is why the flanks already wear the south face's stack
+                  -- darkened rather than a jumble of their own.  The back is
+                  -- the fourth side of the same box, so it wears the same
+                  -- stack -- only the south stays at full brightness.
+                  -- TERRAIN KEEPS THE NORTH-FIRST FOLD, and the gate is the
+                  -- CARTRIDGE'S OWN evidence of a building rather than the
+                  -- art's.  A measured roof band alone is not that: the sea
+                  -- routes' rocks carry one.  MEASURED, runs with a roof
+                  -- band: Route129 24, Route130 46, SouthernIsland 16 and
+                  -- OneIsland_TreasureBeach 28 -- every one of them with no
+                  -- `gen3BldRows`, no door and no pitch, because the roof
+                  -- band there is the above-player layer lying over a rock
+                  -- in the water.  `gen3BldRows` is the row span of a
+                  -- building A WARP NAMED (`bldRows[e.bld]`), and `door` is
+                  -- the doorstep, so the two together are the same evidence
+                  -- `ctx.buildings` founds a building on.  A house the warps
+                  -- do not name keeps the old back -- 10 of Cerulean's 102
+                  -- runs, 6 of Saffron's 316 -- which is the conservative
+                  -- side of the line.
+                  local facadeAllSides =
+                    (run.roofArtTop ~= nil and (run.roofArtRows or 0) > 0)
+                    and (run.gen3BldRows ~= nil or run.door == true)
+                  if run.gen3WallArtFront then
+                    src = foldTile(math.max(artNorth, run.gen3WallArtFront - bb))
+                  elseif run.face then
                     local faceH = h - bottom
                     local rows = run.face.rows or 1
                     local idx = 0
@@ -1848,7 +2084,7 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
                     else
                       src = foldTile(run.front - idx)
                     end
-                  elseif d == 6 then
+                  elseif d == 6 and not facadeAllSides then
                     if period then
                       src = foldTile(artNorth + (bb % period))
                     elseif roomWall and artNorth + bb > run.front then
@@ -1864,11 +2100,77 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
                     elseif roomWall and run.front - bb < artNorth then
                       src = roomWall[((run.front - bb) % 2) * 2 + (tx % 2) + 1]
                             or src
+                    elseif clampTile and run.front - bb < wallTop then
+                      src = clampTile
                     else
-                      src = foldTile(math.max(artNorth, run.front - bb))
+                      src = foldTile(math.max(wallTop, run.front - bb))
                     end
                   end
                   if d == 5 then shade = 1 end
+                elseif s.class == "waterfall" then
+                  -- A FALL'S DRAWING IS THE WHOLE DROP, ONCE, TOP TO BOTTOM.
+                  --
+                  -- MOTIVATED BY METEOR FALLS 1F_1R, (8..15, 10..14), and
+                  -- ROUTE 119, (17..19, 25..28).  Since `g3-fall-350` a fall
+                  -- hangs from its lip and the whole drop is ONE vertical
+                  -- face at its foot, so that face has to wear the fall's
+                  -- whole picture: crest foam at the top, the body of the
+                  -- sheet down the middle, splash at the bottom.
+                  --
+                  -- It was wearing three courses of ONE mid-sheet row instead.
+                  -- A fall has no run -- `setBody` clears it -- so it fell to
+                  -- the profile-authored `upright` arm below, which scans at
+                  -- most SIX tile rows and maps them over the cell's height
+                  -- from the datum rather than over the exposed face.  At
+                  -- Meteor Falls that took rows 24..29 of a ten-row drawing
+                  -- and sampled 185/0, 185/1, 185/0 down a 16px drop: the
+                  -- same band of water three times, which is the smear this
+                  -- file already names on stacked cliff edges.
+                  --
+                  -- The fall's own rows are its contiguous `waterfall` cells.
+                  -- Index 0 is the SOUTHMOST -- the row the cartridge draws
+                  -- at the bottom of the sheet -- so the mapping is measured
+                  -- downward from `h` and the crest row lands at the top of
+                  -- the face.  Where the face is exactly as tall as the
+                  -- drawing the slices land on row boundaries and this is one
+                  -- drawn row per course exactly.
+                  --
+                  -- All four sides, like every other fold here: the flanks
+                  -- wear the same stack darkened, which is what keeps a
+                  -- fall's edge against the gorge wall from smearing a
+                  -- different row per course.
+                  if d == 5 then shade = 1 end
+                  local front = ty
+                  while front < ty + 32 do
+                    local fs2 = S.shapeAt[keyOf(tx, front + 1)]
+                    if fs2 and fs2.class == "waterfall" then
+                      front = front + 1
+                    else
+                      break
+                    end
+                  end
+                  local rows = 0
+                  while rows < 32 do
+                    local rs = S.shapeAt[keyOf(tx, front - rows)]
+                    if rs and rs.class == "waterfall" then
+                      rows = rows + 1
+                    else
+                      break
+                    end
+                  end
+                  local faceH = h - bottom
+                  if rows > 0 and faceH > 0 then
+                    local artH = rows * 8
+                    local p0 = ((h - y1) / faceH) * artH
+                    local p1 = ((h - y0) / faceH) * artH
+                    local ri = math.floor(((p0 + p1) / 2) / 8)
+                    if ri < 0 then ri = 0 end
+                    if ri > rows - 1 then ri = rows - 1 end
+                    local sk = keyOf(tx, front - rows + 1 + ri)
+                    src = S.tileAt[sk] or src
+                    vT = math.max(0, math.min(7.5, p0 - ri * 8))
+                    vB = math.max(vT + 0.5, math.min(8, p1 - ri * 8))
+                  end
                 elseif s.art == "upright" then
                   -- profile-authored upright (a pinned wall or furniture
                   -- box): fold the drawing up the face, band 0 the
@@ -1931,7 +2233,46 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
                       break
                     end
                   end
-                  if S.isGen3 and rows > 0 and h > 0 then
+                  -- ...AND ROCK TILES HERE TOO.
+                  --
+                  -- The run path above already draws this line -- "Terrain
+                  -- wraps instead... a tall cliff reads as courses of the
+                  -- rock it is drawn from rather than as a smear" -- and it
+                  -- was never drawn on THIS path, the fallback for a cell
+                  -- that carries no run.  REPORTED from play at Meteor Falls
+                  -- once its cliffs got their real height: "some textures
+                  -- aren't correct".  MEASURED at (29, 18..24), the map's
+                  -- own outer wall: sixteen cells of metatile 572 standing
+                  -- 160 units tall with no run on any of them, so each 8px
+                  -- course was handed (8/160) x 48 = 2.4px of art blown up
+                  -- to fill it -- one pale sliver magnified three and a
+                  -- third times, the length of the map.
+                  --
+                  -- The run path tiles only where the art PROVES it repeats,
+                  -- and the same proof is available here: look for the
+                  -- smallest period the sampled rows actually satisfy.  Rock
+                  -- drawn from one metatile repeats at two tile rows and is
+                  -- found at once; a facade with a window in it has no
+                  -- period, finds none, and keeps the spread -- which is the
+                  -- rule this arm was written for and still the right one
+                  -- for a piece of furniture that is its picture once.
+                  local period = nil
+                  if S.isGen3 and rows >= 2 and h > rows * 8 then
+                    for pp = 1, math.floor(rows / 2) do
+                      local same = true
+                      for r = 0, rows - 1 - pp do
+                        if S.tileAt[keyOf(tx, front - r)]
+                           ~= S.tileAt[keyOf(tx, front - r - pp)] then
+                          same = false
+                          break
+                        end
+                      end
+                      if same then period = pp break end
+                    end
+                  end
+                  if period then
+                    src = S.tileAt[keyOf(tx, front - (band % period))] or src
+                  elseif S.isGen3 and rows > 0 and h > 0 then
                     local artH = rows * 8
                     local p0 = (y0 / h) * artH
                     local p1 = (y1 / h) * artH

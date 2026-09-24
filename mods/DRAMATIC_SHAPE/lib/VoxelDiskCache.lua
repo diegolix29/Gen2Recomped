@@ -189,6 +189,28 @@ function Cache.setRulesTag(tag)
   end
 end
 
+-- ONE MAP'S BODY HASH, DROPPED.
+--
+-- `bodySignature` reads every tile of the map and is memoised per map table,
+-- because it is asked once per mesh build and a route is a quarter of a
+-- million tiles.  That memo is a CACHE OF THE BLOCK LAYER, so anything that
+-- rewrites a block makes it a lie -- and a lie in exactly the worst place:
+-- the signature is the disk cache's key, so a rebuild after an edit looked
+-- the OLD geometry straight back up and loaded it.
+--
+-- REPORTED from play: "in mauville gym when standing on the tiles that
+-- switch the electric fences, they switch spots in 2d but with voxels on
+-- they dont move at all".  The gym's switch rewrites up to 90 blocks through
+-- `Map:setBlock`, the mod's hook dropped the mesh and asked for a rebuild,
+-- and the rebuild was served the pre-switch mesh off disk.
+--
+-- `setRulesTag` above already had to drop this memo, and it drops the whole
+-- of it because a rules change invalidates every map.  A block edit
+-- invalidates ONE, so it says which.
+function Cache.forget(map)
+  if map ~= nil then signatureMemo[map] = nil end
+end
+
 -- The editor's per-tile class pins (`map.def.voxelClassPins`) are read live
 -- by TileShape on every shape lookup, deliberately, so that re-pinning a tile
 -- shows on the next frame. That is exactly why they have to be in the cache

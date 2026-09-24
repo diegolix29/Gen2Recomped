@@ -865,6 +865,15 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
     end
     return "vs_seeker"
   end
+  -- FireRed's TEACHY TV is a real key-item screen, not an inert key item.
+  -- ItemUseOutOfBattle_TeachyTv switches main callbacks to teachy_tv.c; the
+  -- bag only needs to identify that request and let the UI own the tutorial.
+  if itemId == "TEACHY_TV" then
+    if battle then
+      return "failed", { Strings("OAK: %s!\nThis isn't the\ntime to use that!", save.player.name) }
+    end
+    return "teachy_tv"
+  end
   if itemId == "COIN_CASE" then
     return "failed", { Strings("Coin count:\n%d", save.coins or 0) }
   end

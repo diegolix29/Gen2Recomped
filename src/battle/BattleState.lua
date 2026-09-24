@@ -1240,6 +1240,126 @@ function BattleState.newWild(game, species, level, opts)
   return self
 end
 
+-- FireRed's TEACHY TV uses BATTLE_TYPE_POKEDUDE: a temporary party replaces
+-- the player's for one scripted demonstration, then the real party is restored
+-- byte-for-byte on return.  This is deliberately NOT `self.demo`; that flag is
+-- the old-man/Wally catch tutorial and hard-wires a different one-ball script.
+-- The parties and move selections below are battle_controller_pokedude.c's
+-- sParties_* and sInputScripts_* tables, translated from zero-based move slots.
+local POKEDUDE_DEMOS = {
+  battle = {
+    player = {
+      { species="RATTATA", level=15, nature="LONELY",
+        moves={"TACKLE","TAIL_WHIP","HYPER_FANG","QUICK_ATTACK"} },
+    },
+    enemy = { species="PIDGEY", level=18, nature="NAUGHTY",
+              moves={"TACKLE","SAND_ATTACK","GUST","QUICK_ATTACK"} },
+    turns = {
+      { action="fight", playerMove=3, enemyMove=3, voices={1} },
+      { action="fight", playerMove=3, enemyMove=3, voices={2,3}, repeatTurn=true },
+    },
+    finalVoice=4,
+  },
+  status = {
+    player = {
+      { species="RATTATA", level=15, nature="LONELY",
+        moves={"TACKLE","TAIL_WHIP","HYPER_FANG","QUICK_ATTACK"} },
+    },
+    enemy = { species="ODDISH", level=14, nature="RASH",
+              moves={"ABSORB","SWEET_SCENT","POISONPOWDER"} },
+    turns = {
+      { action="fight", playerMove=3, enemyMove=3 },
+      { action="item", item="ANTIDOTE", enemyMove=1, voices={1,2} },
+      { action="fight", playerMove=3, enemyMove=1, voices={3,4}, repeatTurn=true },
+    },
+    finalVoice=5,
+  },
+  matchups = {
+    player = {
+      { species="POLIWAG", level=15, nature="RASH",
+        moves={"WATER_GUN","HYPNOSIS","BUBBLE"} },
+      { species="BUTTERFREE", level=15, nature="RASH",
+        moves={"CONFUSION","POISONPOWDER","STUN_SPORE","SLEEP_POWDER"} },
+    },
+    enemy = { species="ODDISH", level=14, nature="RASH",
+              moves={"ABSORB","SWEET_SCENT","POISONPOWDER"} },
+    turns = {
+      { action="fight", playerMove=3, enemyMove=1 },
+      { action="switch", switchTo=2, enemyMove=1, voices={1,2,3} },
+      { action="fight", playerMove=1, enemyMove=1, voices={4,5,6}, repeatTurn=true },
+    },
+    finalVoice=7,
+  },
+  catch = {
+    player = {
+      { species="BUTTERFREE", level=15, nature="RASH",
+        moves={"CONFUSION","POISONPOWDER","SLEEP_POWDER","STUN_SPORE"} },
+    },
+    enemy = { species="JIGGLYPUFF", level=11, nature="CAREFUL",
+              moves={"SING","DEFENSE_CURL","POUND"} },
+    turns = {
+      { action="fight", playerMove=1, enemyMove=3, voices={1} },
+      { action="fight", playerMove=3, enemyMove=3, voices={2,3} },
+      { action="ball", enemyMove=3, voices={4,5} },
+    },
+    finalVoice=6,
+  },
+}
+
+local function pokedudeMon(game, spec)
+  -- Fixed mid-range IVs keep the scripted demonstrations deterministic while
+  -- still using the ordinary Gen-3 stat path.  Retail's creator also forces
+  -- the requested nature/gender rather than using the player's Pokémon.
+  local mon = Pokemon.new(game.data, spec.species, spec.level,
+                          function(a, b) return math.floor((a + b) / 2) end)
+  mon.nature = spec.nature
+  mon.gender = "male"
+  mon.stats = require("src.pokemon.Stats").calc(game.data.pokemon[spec.species],
+                                                spec.level, mon.ivs, mon.evs,
+                                                mon.nature)
+  mon.hp = mon.stats.hp
+  mon.moves = {}
+  for _, id in ipairs(spec.moves) do
+    local def = game.data.moves[id]
+    mon.moves[#mon.moves + 1] = { id=id, pp=def and def.pp or 0,
+                                  maxPp=def and def.pp or 0 }
+  end
+  return mon
+end
+
+function BattleState.newPokedudeDemo(game, lesson)
+  local def = POKEDUDE_DEMOS[lesson]
+  assert(def, "unknown POKé DUDE lesson " .. tostring(lesson))
+  local savedParty = game.save.party
+  local party = {}
+  for _, spec in ipairs(def.player) do party[#party + 1] = pokedudeMon(game, spec) end
+  game.save.party = party
+
+  local self = newBattle(game)
+  self.kind = "wild"
+  self.noRun = true
+  self.player = makeBattler(game.data, party[1], true, game.save)
+  self.enemyParty = { pokedudeMon(game, def.enemy) }
+  self.enemy = makeBattler(game.data, self.enemyParty[1], false)
+  self.introText = self:romText("_WildMonAppearedText", "Wild %s\nappeared!",
+                                self.enemy.name)
+  self.demoName = "POKé DUDE"
+  self.pokedudeDemo = {
+    lesson=lesson, def=def, turn=1, timer=0, savedParty=savedParty,
+    voiceDone={},
+  }
+  -- The retail tutorial is a prerecorded demonstration, not a battle whose
+  -- damage/accuracy swings with the player's global RNG state.  A midpoint
+  -- generator keeps the scripted turns stable while still running through the
+  -- ordinary Gen-3 battle formulas and status checks.
+  self.rng = function(a, b)
+    if a ~= nil and b ~= nil then return math.floor((a + b) / 2) end
+    if a ~= nil then return math.max(1, math.floor((a + 1) / 2)) end
+    return 0.5
+  end
+  return self
+end
+
 -- data/trainers/special_moves.asm + read_trainer_party.asm: boss move
 -- overrides, always written into the mon's THIRD move slot.
 --   LoneMoves: the gym scripts write the gym number to wGymLeaderNo, so
@@ -3207,6 +3327,7 @@ function BattleState:enter()
   local backPath, backTrueColor =
     require("src.pokemon.Sprites").playerPath(self.data, "back",
       { kind = "battle", demo = self.demo, oakDemo = self.oakDemo,
+        pokedudeDemo = self.pokedudeDemo ~= nil,
         battle = self })
   self.playerBackPic = getImage(backPath,
     namedPalette(self.data, "MEWMON"), backTrueColor)
@@ -3397,6 +3518,11 @@ end
 -- any pop (finish, script teardown) must silence the alarm loop
 -- (end_of_battle.asm clears wLowHealthAlarm when a battle ends)
 function BattleState:exit()
+  -- Teachy TV temporarily replaces the player's party exactly like
+  -- SavePlayerParty/LoadPlayerParty in teachy_tv.c.  finish() normally
+  -- restores it before the pop, but exit is the safety net for a forced state
+  -- teardown (driver abort, mod screen replacement, etc.).
+  self:restorePokedudeParty()
   require("src.core.Sound").stopLoop("Low_Health_Alarm")
   -- Free this battle's own GPU objects now rather than waiting on a GC
   -- finalizer: the two full-screen wavy-effect canvases (colorMode) and
@@ -3736,6 +3862,18 @@ function BattleState:update(dt)
         self:finish()
       end
     end
+    return
+  end
+
+  -- BATTLE_TYPE_POKEDUDE supplies its own controller.  It deliberately sits
+  -- ahead of the ordinary menu/move input paths: the cartridge renders the
+  -- same menus but feeds them prerecorded cursor choices at 64-frame beats.
+  if self.pokedudeDemo and self.phase == "menu" then
+    self:updatePokedudeMenu()
+    return
+  end
+  if self.pokedudeDemo and self.phase == "moveSelect" then
+    self:updatePokedudeMoveSelect()
     return
   end
 
@@ -5859,6 +5997,242 @@ function BattleState:oldManThrow()
 end
 
 -- ---------------------------------------------------------------------
+-- FireRed POKé DUDE controller (battle_controller_pokedude.c)
+-- ---------------------------------------------------------------------
+
+function BattleState:pokedudeVoice(index)
+  local pd = self.pokedudeDemo
+  if not (pd and index) then return nil end
+  local tv = (self.data.constants or {}).gen3TeachyTV or {}
+  local byLesson = (tv.voiceovers or {})[pd.lesson] or {}
+  return byLesson[index]
+end
+
+function BattleState:queuePokedudeVoices(indices)
+  local pd = self.pokedudeDemo
+  if not (pd and indices) then return false end
+  local queued = false
+  for _, index in ipairs(indices) do
+    if not pd.voiceDone[index] then
+      pd.voiceDone[index] = true
+      local text = self:pokedudeVoice(index)
+      if type(text) == "string" and text ~= "" then
+        self:say(text)
+        queued = true
+      end
+    end
+  end
+  if queued then
+    pd.timer = 0
+    self.phase = "messages"
+    self.afterQueue = "menu"
+  end
+  return queued
+end
+
+local function pokedudeBagRow(battle, id, qty)
+  local def = battle.data.items and battle.data.items[id]
+  return {
+    id = id,
+    label = (def and def.name) or id,
+    qty = qty,
+    important = def and (tonumber(def.importance) or 0) ~= 0 or nil,
+    description = def and (def.description or def.desc),
+  }
+end
+
+-- The little USE/CANCEL window inside a scripted battle bag.  This is the
+-- real Gen3ItemMenu, only fed synthetic A presses, mirroring the dedicated
+-- Task_Bag_TeachyTv* handlers in item_menu.c.
+function BattleState:pokedudeItemContext(onUse)
+  local Gen3ItemMenu = require("src.ui.Gen3ItemMenu")
+  local screen
+  screen = Gen3ItemMenu.new(self.game, {
+    entries = { { label = "USE", kind = "use" },
+                { label = "CANCEL", kind = "cancel" } },
+    columns = 1,
+    noInput = true,
+    script = function(menu)
+      if menu.tick > 72 and not menu._pokedudePicked then
+        menu._pokedudePicked = true
+        menu:close("use")
+      end
+    end,
+    onPick = function(kind)
+      if kind == "use" and onUse then onUse() end
+    end,
+  })
+  self.game.stack:push(screen)
+end
+
+function BattleState:pokedudeUseAntidote(step)
+  local pd = self.pokedudeDemo
+  if not pd then return end
+  pd.enemyMove = step.enemyMove
+  self.phase = "messages"
+  self.afterQueue = "menu"
+  self:say(Strings("POKé DUDE used\nANTIDOTE!"))
+  local result, messages = require("src.inventory.ItemEffects")
+    .use(self.data, self.game.save, "ANTIDOTE", self.player.mon, self)
+  for _, message in ipairs(messages or {}) do self:say(message) end
+  self:syncShownStatus()
+  self:act(function()
+    self:executeAction(self.enemy, self.player, self:enemyAction())
+  end)
+  self:act(function() self:endOfTurn() end)
+end
+
+function BattleState:openPokedudeTarget(step, switchMode)
+  local PartyMenu = require("src.ui.Gen3PartyMenu")
+  local menu
+  menu = PartyMenu.new(self.game, {
+    battle = self,
+    noInput = true,
+    script = function(p)
+      -- Matchups chooses BUTTERFREE (slot 2); the antidote lesson has only
+      -- RATTATA, but still shows the party picker before applying medicine.
+      if switchMode and p.scriptTick == 48 then p.index = step.switchTo or 2 end
+      if p.scriptTick > 96 and not p._pokedudePicked then
+        p._pokedudePicked = true
+        local mon = self.game.save.party[p.index]
+        p:close()
+        if switchMode then
+          self:resolveSwitch(mon)
+        else
+          self:pokedudeUseAntidote(step)
+        end
+      end
+    end,
+  })
+  self.game.stack:push(menu)
+end
+
+function BattleState:openPokedudeBattleBag(kind, step)
+  local BagMenu = require("src.ui.Gen3BagMenu")
+  local rows, pocket
+  if kind == "status" then
+    pocket = "ITEM"
+    rows = { pokedudeBagRow(self, "POTION", 1),
+             pokedudeBagRow(self, "ANTIDOTE", 1) }
+  else
+    pocket = "BALL"
+    rows = { pokedudeBagRow(self, "POKE_BALL", 5),
+             pokedudeBagRow(self, "GREAT_BALL", 1),
+             pokedudeBagRow(self, "NEST_BALL", 1) }
+  end
+
+  local bag
+  bag = BagMenu.new(self.game, {
+    pocket = pocket,
+    rows = rows,
+    noInput = true,
+    script = function(menu)
+      local t = menu.tick or 0
+      if kind == "status" then
+        if t == 72 then menu.index = math.min(2, #menu.rows) end
+        if t > 144 and not menu._pokedudeContext then
+          menu._pokedudeContext = true
+          self:pokedudeItemContext(function()
+            if self.game.stack:top() == bag then bag:close() end
+            self:openPokedudeTarget(step, false)
+          end)
+        end
+      else
+        -- The retail catching script deliberately walks down and back up the
+        -- ball pocket before choosing POKé BALL; keep that visible motion.
+        if t == 54 then menu.index = math.min(2, #menu.rows) end
+        if t == 108 then menu.index = math.min(3, #menu.rows) end
+        if t == 162 then menu.index = math.min(2, #menu.rows) end
+        if t == 216 then menu.index = 1 end
+        if t > 288 and not menu._pokedudeContext then
+          menu._pokedudeContext = true
+          self:pokedudeItemContext(function()
+            if self.game.stack:top() == bag then bag:close() end
+            self:oldManThrow()
+          end)
+        end
+      end
+    end,
+  })
+  self.game.stack:push(bag)
+end
+
+function BattleState:updatePokedudeMenu()
+  local pd = self.pokedudeDemo
+  if not pd then return end
+
+  -- We only know whether a repeating scripted attack needs another pass once
+  -- the ordinary battle queue has completed and returned to the action menu.
+  if pd.awaiting then
+    local previous = pd.def.turns[pd.turn]
+    pd.awaiting = nil
+    if not (previous and previous.repeatTurn and not self.result
+            and self.enemy and self.enemy.mon.hp > 0) then
+      pd.turn = pd.turn + 1
+    end
+    pd.timer = 0
+  end
+
+  local step = pd.def.turns[pd.turn]
+  if not step then
+    -- Defensive: a scripted lesson should normally end by KO or capture.  If
+    -- changed data reaches the end first, end the demo rather than handing
+    -- control to the player with the temporary party still installed.
+    self.result = self.result or "run"
+    self.afterQueue = "finish"
+    self.phase = "messages"
+    return
+  end
+
+  if self:queuePokedudeVoices(step.voices) then return end
+
+  local menuIndex = { fight = 1, item = 2, switch = 3, ball = 2 }
+  self.menuIndex = menuIndex[step.action] or 1
+  pd.timer = (pd.timer or 0) + 1
+  if pd.timer <= 64 then return end
+  pd.timer = 0
+  pd.enemyMove = step.enemyMove
+  pd.currentStep = step
+
+  if step.action == "fight" then
+    self.moveIndex = math.max(1, math.min(step.playerMove or 1,
+                                          #self.player.curMoves))
+    pd.selectingMove = true
+    self.phase = "moveSelect"
+  elseif step.action == "switch" then
+    pd.awaiting = true
+    self:openPokedudeTarget(step, true)
+  elseif step.action == "item" then
+    pd.awaiting = true
+    self:openPokedudeBattleBag("status", step)
+  elseif step.action == "ball" then
+    self:openPokedudeBattleBag("catch", step)
+  end
+end
+
+function BattleState:updatePokedudeMoveSelect()
+  local pd = self.pokedudeDemo
+  if not (pd and pd.selectingMove) then return end
+  pd.timer = (pd.timer or 0) + 1
+  if pd.timer <= 64 then return end
+  pd.timer = 0
+  pd.selectingMove = nil
+  pd.awaiting = true
+  local step = pd.currentStep or pd.def.turns[pd.turn]
+  pd.enemyMove = step and step.enemyMove or pd.enemyMove
+  local move = self.player.curMoves[step and step.playerMove or self.moveIndex]
+  if not move then move = self.player.curMoves[1] end
+  self:resolveTurn(move)
+end
+
+function BattleState:restorePokedudeParty()
+  local pd = self.pokedudeDemo
+  if not (pd and not pd.partyRestored) then return end
+  if pd.savedParty then self.game.save.party = pd.savedParty end
+  pd.partyRestored = true
+end
+
+-- ---------------------------------------------------------------------
 -- turn resolution
 -- ---------------------------------------------------------------------
 
@@ -6099,6 +6473,13 @@ end
 function BattleState:enemyAction(battler)
   battler = battler or self.enemy
   if not battler then return nil end
+  -- The POKé DUDE opponent does not run the AI at all.  Its controller feeds
+  -- one recorded move slot per tutorial beat (sInputScripts_ChooseMove_*).
+  local pd = self.pokedudeDemo
+  if pd and pd.enemyMove then
+    local move = battler.curMoves and battler.curMoves[pd.enemyMove]
+    if move then return move end
+  end
   if Runtime.wantsHook("battle.enemy_action") then
     return Runtime.call("battle.enemy_action", function(battle, who)
       return battle:vanillaEnemyAction(who)
@@ -6390,6 +6771,23 @@ end
 -- of either: choosing POKeMON for the right-hand slot used to withdraw the
 -- LEFT one, because there was no way to say which.
 function BattleState:switchPlayerInto(pos, newMon)
+  -- NOBODY IS ON THE FIELD TWICE.  Not the cartridge's -- it has no such
+  -- test, because its party menu cannot offer a Pokemon that is already
+  -- placed and neither can this one now.  It is here because the duplicate
+  -- send-out was reported from play and a second, silent one would look
+  -- exactly the same: a slot that refuses and says why in the log is a bug
+  -- report, a slot that duplicates is a save file with one Pokemon in two
+  -- places.
+  for p = 0, 3 do
+    local b = (p ~= pos) and self:battlerAt(p) or nil
+    if b and b.mon == newMon then
+      require("src.core.Logger").warn(
+        "double battle: refused to send %s into slot %d -- it is already "
+          .. "battling in slot %d; the menu that offered it twice is the bug",
+        tostring(newMon and newMon.nickname or "?"), pos, p)
+      return
+    end
+  end
   local previous = self:battlerAt(pos)
   self:restoreMimicked(previous)      -- the battle copy leaves with it
   local incoming = makeBattler(self.data, newMon, true, self.game.save)
@@ -10395,8 +10793,52 @@ function BattleState:openParty()
         for _, b in activeBattlers(self) do
           if b.isPlayer and b.mon == mon then standing = b end
         end
+        -- ...AND ONE OF THEM MAY NOT BE OUT YET.
+        --
+        -- Reported from play: "in gen 3 games emerald and firered in double
+        -- battles we have a bug / Can send out the same Pokemon twice from our
+        -- party".  The check above asks who is STANDING on the field, and in a
+        -- double both slots choose before anybody moves -- so the left slot
+        -- picking a switch to a benched Pokemon leaves it still on the bench
+        -- while the right slot's menu opens, still healthy, still not "out",
+        -- and pickable a second time.  Both switches then resolved and the
+        -- same party member walked onto the field twice.
+        --
+        -- The cartridge closes it one slot earlier, in the action loop rather
+        -- than in the menu: battle_main.c's B_ACTION_SWITCH arm opens the
+        -- party menu for battler 2 -- the player's right -- carrying
+        -- `monToSwitchIntoId[0]` as `prevSelectedPartySlot` when, and only
+        -- when, battler 0 has already chosen B_ACTION_SWITCH this turn.  Every
+        -- other opening passes PARTY_SIZE, which no slot can equal, so the
+        -- test below is inert outside the one case it exists for.
+        -- TrySwitchInPokemon (party_menu.c) then refuses that slot with
+        -- gText_PkmnAlreadySelected.
+        --
+        -- `pendingActions` is this port's monToSwitchIntoId: chooseAction has
+        -- already parked the left slot's answer there by the time the right
+        -- slot is asked.  Read for every player slot other than the one
+        -- choosing rather than for PLAYER_LEFT by name -- the cartridge names
+        -- battler 0 because battler 0 always answers first, which is a fact
+        -- about the order, not about the rule.
+        local chosen
+        if self:isDouble() and self.pendingActions then
+          local now = self:choosingSlotNow()
+          for _, p in ipairs({ BattleState.POS.PLAYER_LEFT,
+                               BattleState.POS.PLAYER_RIGHT }) do
+            local act = p ~= now and self.pendingActions[p] or nil
+            if act and act.special == "playerSwitch" and act.mon == mon then
+              chosen = true
+            end
+          end
+        end
         if standing then
           self:say(Strings("%s is\nalready out!", standing.name))
+        elseif chosen then
+          -- gText_PkmnAlreadySelected: "{STR_VAR_1} has already been\nselected."
+          self:say(Strings("%s has already been\nselected.",
+                           mon.nickname
+                             or (self.data.pokemon[mon.species] or {}).name
+                             or "?"))
         elseif Party.isEgg(mon) then
           -- CheckFirstMonIsEgg (01:$728B): an EGG can never be sent out
           self:say(self:romText("_EggNoWillText",
@@ -10438,6 +10880,23 @@ function BattleState:playVictoryMusic()
 end
 
 function BattleState:finish()
+  local pd = self.pokedudeDemo
+  if pd and not pd.finalVoiceQueued then
+    pd.finalVoiceQueued = true
+    local index = pd.def and pd.def.finalVoice
+    local text = index and self:pokedudeVoice(index)
+    if type(text) == "string" and text ~= "" then
+      pd.voiceDone[index] = true
+      self:say(text)
+      self.phase = "messages"
+      self.afterQueue = "finish"
+      return
+    end
+  end
+  -- LoadPlayerParty in TeachyTvRestorePlayerPartyCallback happens before the
+  -- tutorial returns to its menu.  Do the same before ordinary battle teardown
+  -- validates or exposes game.save.party.
+  self:restorePokedudeParty()
   if self.payDay and self.result == "win" then
     self.game.save.money = self.game.save.money + self.payDay
     self:say(self:romText("_PickUpPayDayMoneyText", "%s picked up\n¥%d!", self.game.save.player.name, self.payDay))
@@ -10456,7 +10915,7 @@ function BattleState:finish()
   -- here it did not, so say so rather than silently papering over it.
   -- The old-man / PROF.OAK demo also skips it: the party never fought
   -- (Yellow's Pallet intro runs before the player owns a mon at all).
-  if self.result ~= "lose" and not self.demo
+  if self.result ~= "lose" and not self.demo and not self.pokedudeDemo
      and not Party.firstHealthy(self.game.save.party) then
     Logger.warn("battle finished %s with no healthy party; forcing blackout",
                 tostring(self.result))

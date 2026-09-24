@@ -2119,6 +2119,24 @@ function TileRenderer.invalidate()
   -- builds anything.
   gbcAtlasCache = {}
   atlasFrames = {}
+  -- ...AND THE GEN 3 COMPOSITED PAIRS, which this did not drop either.
+  --
+  -- gen3Sheets is keyed on the tileset pair's id, and two cartridges name
+  -- their pairs from their own ROM addresses -- so a switch between games
+  -- usually misses rather than collides, and the miss is what hid this: the
+  -- stale sheets simply sat there, twelve bakes' worth of GPU textures for a
+  -- game that is no longer running, until the bounded cache evicted them one
+  -- at a time.  A re-import of the SAME game does collide, and then the
+  -- freshly imported tiles are not what gets drawn.
+  --
+  -- Dropped rather than released, like every line above it: gen3Evict
+  -- releases because it runs while the game is live and has just proved the
+  -- sheet is two maps old, and releasing a texture a live renderer still
+  -- holds draws a freed image.  A flush has no such proof, so it lets go and
+  -- leaves the collection to the garbage collector.
+  gen3Sheets = {}
+  gen3Used = {}
+  gen3Said = {}
 end
 
 Assets.register(TileRenderer.invalidate)

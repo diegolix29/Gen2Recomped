@@ -47,6 +47,12 @@ function Gen3ItemMenu.new(game, opts)
   self.entries = opts.entries or {}
   self.columns = math.max(1, math.floor(tonumber(opts.columns) or 2))
   self.onPick = opts.onPick
+  -- Scripted cartridge tutorials (FireRed's POKé DUDE) drive this exact
+  -- context window with synthetic button presses.  Keep that automation on
+  -- the real item-action screen rather than drawing a tutorial-only lookalike.
+  self.script = opts.script
+  self.noInput = opts.noInput and true or false
+  self.tick = 0
   self.rows = math.ceil(#self.entries / self.columns)
 
   -- the window: as wide as its columns and as tall as its rows, tucked into
@@ -102,6 +108,9 @@ function Gen3ItemMenu:close(kind)
 end
 
 function Gen3ItemMenu:update()
+  self.tick = (self.tick or 0) + 1
+  if self.script then self.script(self) end
+  if self.noInput then return end
   local input = self.game.input
   if not input then return end
   if input:wasPressed("b") then

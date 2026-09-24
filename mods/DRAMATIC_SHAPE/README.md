@@ -6,6 +6,75 @@ Project](https://github.com/bryanthaboi/pokemon-gen1-recomp-project).
 The overworld as a voxelized 3D diorama. Also supports experimental
 first-person, third-person and VR.
 
+## Emerald and FireRed Objects
+
+Version 0.7.71 reconstructs selected furniture and plant families from the
+games' own artwork. Emerald couches have 8px cushions, 16px backs and 12px
+arms. FireRed department-store benches and dining chairs have raised backs;
+Center stools remain backless. Registered plant crowns attach to the actual
+pot mesh, gain rounded depth, and no longer leave duplicate foliage on the
+floor. Petalburg's planting bed and grassy border stay below the house roof.
+
+This is not an all-object fidelity guarantee. Some outdoor roof/facade bands
+still overlap, existing tree and terrain shapes need further work, and the
+Emerald couch's upper wall-band artwork remains in place. Hidden depth and
+furniture heights are authored approximations, not measurements uniquely
+recoverable from a single 2D view.
+
+### Authoring
+
+In `data/gen3_shapes.lua`, `tilesets[tilesetName].joinery` adds per-metatile
+overrides to already-classified indoor furniture:
+
+```lua
+joinery = {
+  [860] = {
+    height = 8,
+    layer2 = true,
+    parts = { { 0, 0, 15, 2, 16 }, { 0, 3, 2, 11, 12 } },
+  },
+}
+```
+
+Each part is `{x0, z0, x1, z1, topHeight}` with inclusive local pixel
+coordinates 0..15. Heights are relative to the floor. `layer2` uses the
+source foreground alpha mask when available. Omitting `parts` preserves
+automatic chair-back detection; `parts = false` disables it. Overrides merge
+by metatile from primary to secondary to map, so secondary seating does not
+discard shared primary furniture.
+
+In the version-specific `gen3_palings.lua`, `overhead[pairId].figures` entries
+use `{meta, under, south, round}`. `under` is clean replacement background art;
+`south` locates the supporting object. `round = true` gives each silhouette
+row circular depth centered on that support. The pass measures both direct
+quads and translated round stamps after furniture placement.
+`primaries[primaryHex].figures` shares entries across tileset pairs, provided
+both IDs are below the cartridge's primary boundary (Emerald 512, FireRed
+640). Pair-specific entries take precedence. Validate background candidates
+with `tools/gen3_find_under.py`; its exact layer-1 match is stronger than an
+outside-silhouette match alone. Bump `Structures.SHAPE_REV` after changing
+geometry or profiles to invalidate persisted meshes.
+
+### Validation
+
+Run `tests/gen3_objects_test.lua` as a LÖVE driver from the engine root with
+the mod enabled, imported game data configured, `POKEPORT_VERSION` and
+`POKEPORT_UNLOCK` set to `emerald` or `firered`, and `POKEPORT_DRIVER` set to
+`mods/DRAMATIC_SHAPE/tests/gen3_objects_test.lua`. It checks real generated
+assets, crown attachment/source cleanup, seating heights and unchanged
+walkability. Current results: Emerald 289 checks on 12 maps; FireRed 145 on
+6 maps. The crown census covers 80 cells on 33 Emerald maps and 47 cells on
+17 FireRed maps; geometry is sampled per tileset/metatile combination, not
+every crown placement. All 16 newly pinned planting cells on three Emerald
+maps and Petalburg's two border cells are checked. The separate synthetic
+`tests/gen3_voxel_test.lua` suite passes 83 checks, including Gen 1/2 parity.
+
+The engine's `tests/drivers/g3_shots.lua` takes paired 2D/3D LÖVE captures;
+set `SHOT_MODE=both`, `SHOT_DAY=1`, `SHOT_DIR` and a `SHOT_ONLY` location list.
+The release pass compared houses, labs, Centers, benches, couches, plants,
+towns, a cave, fences and terrain in both games. These are representative
+visual checks, not a complete map-by-map audit.
+
 ## Controls
 
 Every key is free-roam only, and each one is also a row on the OPTIONS

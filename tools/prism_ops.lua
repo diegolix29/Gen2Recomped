@@ -8,6 +8,23 @@
 -- MACRO body gives the exact bytes the assembler emits, so these widths
 -- are the encoder's, not an inference from handler control flow.  Do not
 -- hand-edit: regenerate.
+--
+-- TWO WIDTHS ARE NOT THE GENERATOR'S, because the generator cannot see them.
+-- It pairs `enum X_command` with `MACRO X`, and two commands have no macro of
+-- their own name -- they are written only through aliases:
+--
+--   eventvarop   readeventvar / writeeventvar / addeventvar / compareeventvar,
+--                each `db eventvarop_command / db (var & $3f) | <op << 6>`.
+--                ONE operand byte, and the generator recorded none, so every
+--                one of the eighteen uses ate the opcode after it.
+--   modifyeventvar  inceventvar and deceventvar emit one byte; addtoeventvar
+--                and seteventvartovalue emit TWO (the second is the value).
+--                The top two bits of the first byte say which, so the width is
+--                the `E` variable tail rather than a fixed count.
+--
+-- Checked the same way for every other command in the file: those two are the
+-- only enums with no same-named macro that emit operands, and modifyeventvar
+-- is the only command whose macros disagree on width.
 Gen2ScriptOps.COMMANDS_PRISM = {
   { "scall", "p" }, { "farscall", "f" }, { "ptcall", "d" }, -- 00
   { "jump", "p" }, { "farjump", "f" }, { "ptjump", "d" }, -- 03
@@ -38,7 +55,7 @@ Gen2ScriptOps.COMMANDS_PRISM = {
   { "loadmenudata", "w" }, { "closewindow", "" }, { "jumptextfaceplayer", "t" }, -- 4E
   { "farjumptext", "T" }, { "jumptext", "t" }, { "waitbutton", "" }, -- 51
   { "buttonsound", "" }, { "pokepic", "b" }, { "closepokepic", "" }, -- 54
-  { "eventvarop", "" }, { "verticalmenu", "" }, { "scrollingmenu", "b" }, -- 57
+  { "eventvarop", "b" }, { "verticalmenu", "" }, { "scrollingmenu", "b" }, -- 57
   { "randomwildmon", "" }, { "loadmemtrainer", "" }, { "loadwildmon", "bbbbb" }, -- 5A
   { "loadtrainer", "bb" }, { "startbattle", "" }, { "reloadmapafterbattle", "" }, -- 5D
   { "addhalfwordtovar", "w" }, { "trainertext", "b" }, { "trainerflagaction", "b" }, -- 60
@@ -69,7 +86,7 @@ Gen2ScriptOps.COMMANDS_PRISM = {
   { "addhalfwordtohalfwordvar", "w" }, { "givecraftingEXP", "b" }, { "copybytetohalfwordvar", "w" }, -- AB
   { "givetm", "b" }, { "unused_AF", "" }, { "itemplural", "b" }, -- AE
   { "pullvar", "" }, { "setplayersprite", "b" }, { "setplayercolor", "bb" }, -- B1
-  { "loadsignpost", "ww" }, { "checkpokemontype", "b" }, { "isinarray", "wwbb" }, -- B4
+  { "loadsignpost", "t" }, { "checkpokemontype", "b" }, { "isinarray", "wwbb" }, -- B4
   { "pusharray", "" }, { "poparray", "" }, { "startmirrorbattle", "" }, -- B7
   { "comparevartobyte", "w" }, { "backupsecondpokemon", "" }, { "restoresecondpokemon", "" }, -- BA
   { "loadhalfwordvar", "b" }, { "pullhalfwordvar", "" }, { "divideby", "b" }, -- BD
@@ -86,7 +103,7 @@ Gen2ScriptOps.COMMANDS_PRISM = {
   { "sifeq", "b" }, { "sifne", "b" }, { "readarray", "b" }, -- DE
   { "givetmnomessage", "b" }, { "findpokemontype", "b" }, { "startpokeonly", "bbb" }, -- E1
   { "endpokeonly", "bbb" }, { "fadetomapmusic", "b" }, { "menuanonjumptable", "w" }, -- E4
-  { "modifyeventvar", "b" }, { "showtext", "t" }, { "closetextend", "" }, -- E7
+  { "modifyeventvar", "E" }, { "showtext", "t" }, { "closetextend", "" }, -- E7
   { "toggleevent", "w" }, { "getpartymonname", "b" }, -- EA
 }
 

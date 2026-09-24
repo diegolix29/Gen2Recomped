@@ -41,8 +41,9 @@ return function(game)
           assert(save.flags[G.flagKey(0x81F + index)], gym[1] .. " badge missing")
           assert(save.flags[G.flagKey(0x4AF + index)], gym[1] .. " defeated flag missing")
           assert((save.inventory[gym[5]] or 0) == 1, gym[1] .. " TM missing or duplicated")
+          assert((save.inventory.TM_CASE or 0) == 1, gym[1] .. " TM CASE missing or duplicated")
           assert(U.shot(game, "ngshots/gym_" .. gym[1] .. "_reward.png"))
-          U.log("PASS gym", gym[1], "battle, badge, defeated flag, reward flag,", gym[5], frame)
+          U.log("PASS gym", gym[1], "battle, badge, defeated flag, reward flag, TM CASE,", gym[5], frame)
           completed = true
           break
         end

@@ -28,11 +28,18 @@
 
 local ModGens = {}
 
-ModGens.GENERATIONS = { 1, 2, 3 }
-ModGens.COUNT = 3
+ModGens.GENERATIONS = { 1, 2, 3, 4 }
+ModGens.COUNT = 4
 
+-- Built from COUNT rather than written out, so that adding a generation is the
+-- two lines above and not a hunt for every literal triple.  It used to be
+-- `{ value, value, value }`, which would have handed Gen 4 a nil in every
+-- fresh record -- and since `decode` reads absent as ON, that particular bug
+-- would have looked like it worked.
 local function blankGens(value)
-  return { value, value, value }
+  local out = {}
+  for i = 1, ModGens.COUNT do out[i] = value end
+  return out
 end
 
 -- WHAT THE MOD ITSELF SAYS IT SUPPORTS, as a lookup, or nil when it says
@@ -225,7 +232,7 @@ function ModGens.gensOf(value)
   return gens
 end
 
-ModGens.LABELS = { "GEN 1", "GEN 2", "GEN 3" }
-ModGens.SHORT = { "G1", "G2", "G3" }
+ModGens.LABELS = { "GEN 1", "GEN 2", "GEN 3", "GEN 4" }
+ModGens.SHORT = { "G1", "G2", "G3", "G4" }
 
 return ModGens

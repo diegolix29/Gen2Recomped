@@ -929,6 +929,60 @@ end
 -- dataset without the strip draws the ordinary frame.
 local dialogueSheet = { path = nil, image = nil, quads = nil }
 
+-- PLATINUM'S MESSAGE BOX (pokeplatinum src/render_window.c DrawMessageBoxFrame).
+--
+-- Also eighteen tiles, and also not a nine-slice -- but not FireRed's either.
+-- It is six columns by three rows, the rows begin at 0, 6 and 12, and within a
+-- row the columns are +0, +1, +2 repeated across the width, +3, +4, +5.  One
+-- rule for all three rows, which is what makes it look like two unrelated
+-- halves until it is written down.
+--
+-- Nothing here is mirrored.  The caps are UNEQUAL -- two tiles on the left,
+-- three on the right -- so the box reaches one tile past the left of the
+-- rectangle it is given and two past the right, exactly as the cartridge draws
+-- it around a window.
+--
+-- The middle row's repeating tile is +8, which the cartridge itself never
+-- places because the window's own text bitmap covers that region.  This engine
+-- draws its text straight onto the box instead of into a separate bitmap, so
+-- placing the tile is what produces the same picture; `rec.fill` is only the
+-- floor under a box too narrow to have a middle at all.
+--
+-- The strip is stored one frame per 8px row, twenty of them, and which one is
+-- drawn is the save's FRAME option -- the same row the Gen 3 frames use, so
+-- the existing OPTION screen already selects Platinum's.
+local function gen4DialogueBox(rec, tx, ty, tw, th)
+  local img, q = dialogueSheet.image, dialogueSheet.quads
+  if not (img and q) then return Font.drawBox(tx, ty, tw, th) end
+  -- Six columns is the minimum that has one of each; below that there is no
+  -- arrangement of these tiles that is a box, and the drawn rectangle is
+  -- honest where a squashed frame would not be.
+  if tw < 6 or th < 3 then return Font.drawBox(tx, ty, tw, th) end
+
+  local count = rec.count or 1
+  local frame = 1
+  do
+    local ok, Game = pcall(require, "src.core.Game")
+    local options = ok and Game and Game.save and Game.save.options
+    frame = math.floor(tonumber(options and options.gen3Frame) or 1)
+    if frame < 1 then frame = 1 end
+    if frame > count then frame = count end
+  end
+  local row0 = (frame - 1) * 18
+
+  love.graphics.setColor(1, 1, 1, 1)
+  for row = 0, th - 1 do
+    local base = (row == 0 and 0) or (row == th - 1 and 12) or 6
+    local y = (ty + row) * 8
+    for col = 0, tw - 1 do
+      local k = (col == 0 and 0) or (col == 1 and 1)
+        or (col == tw - 3 and 3) or (col == tw - 2 and 4)
+        or (col == tw - 1 and 5) or 2
+      love.graphics.draw(img, q[row0 + base + k], (tx + col) * 8, y)
+    end
+  end
+end
+
 function Font.hasDialogueFrame()
   local def = state and state.def
   return not FALLBACK.enabled and def ~= nil and def.dialogueFrame ~= nil
@@ -943,15 +997,30 @@ function Font.drawDialogueBox(tx, ty, tw, th)
     if dialogueSheet.image then
       local iw, ih = dialogueSheet.image:getDimensions()
       local quads = {}
-      for i = 0, (rec.tiles or 18) - 1 do
-        quads[i] = love.graphics.newQuad(i * 8, 0, 8, 8, iw, ih)
+      local tiles = rec.tiles or 18
+      -- One row per frame.  A single-frame strip (FireRed's) is the count = 1
+      -- case of this and comes out with exactly the quads it had before.
+      for frame = 0, (rec.count or 1) - 1 do
+        for i = 0, tiles - 1 do
+          quads[frame * tiles + i] =
+            love.graphics.newQuad(i * 8, frame * 8, 8, 8, iw, ih)
+        end
       end
       dialogueSheet.quads = quads
     end
   end
-  if not (rec and dialogueSheet.quads and th >= 4) then
+  if not (rec and dialogueSheet.quads) then
     return Font.drawBox(tx, ty, tw, th)
   end
+  -- PLATINUM'S BOX IS THE SAME EIGHTEEN TILES IN A DIFFERENT ARRANGEMENT, and
+  -- the record says which rather than letting this reader assume FireRed's.
+  -- Eighteen tiles read equally well as two stacked 3x3 frames or as one 6x3
+  -- with fat caps, and both draw a rectangle -- so a Gen 4 strip run through
+  -- the code below produces a box that is merely wrong instead of a failure.
+  if rec.layout == "gen4" then
+    return gen4DialogueBox(rec, tx, ty, tw, th)
+  end
+  if th < 4 then return Font.drawBox(tx, ty, tw, th) end
   local img, q = dialogueSheet.image, dialogueSheet.quads
   local left, cols = tx - 1, tw + 2
   local fill = rec.fill or { 1, 1, 1 }

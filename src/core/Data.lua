@@ -74,6 +74,44 @@ local GEN3_MODULES = {
   "audio",
 }
 
+-- Gen 4 only.  A Platinum cache is SHARED plus these, and the list is short
+-- because a Gen 4 map def carries its own grid, its warps and its objects, so
+-- there is no Gen 1/Gen 2 shaped module left to want.
+--
+--   map_layouts  -- the shared grids; a map that owns its own inlines them,
+--                   and the 291 that sit on a matrix another header also uses
+--                   point at one of these instead of repeating 1.76 MB each.
+--   map_tilesets -- the raw stand-in tileset the renderer composites from.
+--                   Gen 4's world is 3D and has no tileset in the Gen 1-3
+--                   sense, so this one is synthesised from the tile behaviour
+--                   bytes; the pair record it names lives in `tilesets`.
+--   map_scripts  -- the script pool and the per-map talk tables.
+--   font         -- Platinum's own NFGR fonts, published as pages and faces.
+--
+-- NOT here, and each for a reason rather than an oversight: `save_layout` is
+-- the GEN 3 marker and writing one would make a Gen 4 cache claim to be Gen 3;
+-- `sprites`, `icons`, `scenes`, `songs` and `audio` are stages the Gen 4
+-- extractor does not have yet, and requiring a file nothing writes would
+-- refuse every import.  They are in OPTIONAL, so a cache that gains one later
+-- picks it up with no change here.
+local GEN4_MODULES = {
+  "map_layouts", "map_tilesets", "map_scripts", "font",
+}
+
+-- PLATINUM'S OWN TABLES, READ BY THE GEN 4 SCREENS THROUGH `game.data`.
+--
+-- These are loaded by their real, prefixed names and ONLY on a Gen 4 cache.
+-- The prefix is not decoration: an un-prefixed `menus` or `graphics` would
+-- resolve through the additive overlay to the ROOT cache -- Red's -- on every
+-- other game, which is the exact trap CLASSIC_ONLY below exists to close.
+--
+-- The nine OTHER gen4_ modules on disk (gen4_text, gen4_events,
+-- gen4_map_permissions, gen4_overworld, ...) are extractor INPUT: they are
+-- lowered into `text`, `map_scripts`, `maps` and `sprites` before the cache is
+-- written, and no running screen reads them.  They are deliberately absent.
+local GEN4_PREFIXED = { "gen4_menus", "gen4_graphics", "gen4_intro",
+                        "gen4_models" }
+
 -- WHAT A GEN 3 CACHE MUST NOT INHERIT.
 --
 -- The version overlay is ADDITIVE: CacheFs mounts emerald/data/generated over
@@ -1255,13 +1293,24 @@ end
 -- the other way round.  save_layout is the marker: it is written by the Gen 3
 -- extractor and by nothing else.
 local function requiredModules(dir)
-  local gen3 = loadModule(dir, "save_layout")
+  -- GEN 4 IS TESTED FIRST, and the marker is a module only its extractor
+  -- writes.  A Platinum cache has no save_layout -- that is the Gen 3 marker
+  -- and writing one would make it claim to be Gen 3 -- so the two tests cannot
+  -- both answer yes, and testing gen4 first says so rather than relying on it.
+  local gen4 = loadModule(dir, "gen4_map_headers")
+  local gen3 = (not gen4) and loadModule(dir, "save_layout") or false
+
   local out = {}
   for _, name in ipairs(SHARED_MODULES) do out[#out + 1] = name end
-  for _, name in ipairs(gen3 and GEN3_MODULES or CLASSIC_MODULES) do
-    out[#out + 1] = name
-  end
-  return out, gen3 and true or false
+  local set = CLASSIC_MODULES
+  if gen4 then set = GEN4_MODULES
+  elseif gen3 then set = GEN3_MODULES end
+  for _, name in ipairs(set) do out[#out + 1] = name end
+
+  -- The third return is NEW and the first two are unchanged, so every existing
+  -- caller keeps the answer it had: a cache with no gen4 marker takes exactly
+  -- the path it took before this branch existed.
+  return out, gen3 and true or false, gen4 and true or false
 end
 
 -- MAP EDITOR OVERLAY, applied LAST and over the top.
@@ -1362,8 +1411,9 @@ end
 
 function Data:load()
   local dir = os.getenv("POKEPORT_DATA_DIR")
-  local required, isGen3Cache = requiredModules(dir)
+  local required, isGen3Cache, isGen4Cache = requiredModules(dir)
   self.isGen3Cache = isGen3Cache
+  self.isGen4Cache = isGen4Cache
   local isRequired = {}
   for _, name in ipairs(required) do isRequired[name] = true end
   -- FRLG: two generated modules cannot be produced for FireRed at all,
@@ -1395,7 +1445,13 @@ function Data:load()
     self[name] = mod
   end
   local blocked = {}
-  if isGen3Cache then
+  -- A GEN 4 CACHE IS BLOCKED FROM THE SAME MODULES AND FOR THE SAME REASON.
+  -- The version overlay is additive, so any module Platinum did not write
+  -- still resolves -- to the ROOT cache, which is Red's.  That is not
+  -- hypothetical: it is exactly how NEW GAME on Emerald opened Red's intro in
+  -- Red's house before the Gen 3 block existed, and Gen 4 writes even fewer of
+  -- these than Gen 3 does.
+  if isGen3Cache or isGen4Cache then
     for _, name in ipairs(CLASSIC_ONLY) do blocked[name] = true end
   end
   for _, name in ipairs(OPTIONAL) do
@@ -1426,6 +1482,32 @@ function Data:load()
                   name, tostring(mod))
     end
     ::continue::
+  end
+  -- THE GEN 4 CACHE'S OWN MODULES, WHICH NOTHING WAS READING.
+  --
+  -- The Platinum extractor writes these four, and every Gen 4 screen reads
+  -- `game.data.gen4_<name>` -- but no list here ever named them, so Data:load
+  -- never put one on the table.  Every consumer degrades when its record is
+  -- absent, which is why this failed silently and completely: the title drew
+  -- its border field with no logo on it (a black screen with PRESS START),
+  -- Gen4MainMenu sized its boxes from the engine's defaults instead of the
+  -- cartridge's, the bag and the trainer card fell back to the Game Boy frame
+  -- ("this cache carries no pocket names", "no badge case art"), the starter
+  -- select had no models, and Gen4RowanIntro skipped the opening outright
+  -- ("this cache carries no `gen4_intro` record").  One missing list.
+  --
+  -- Optional, each one, and each says so in the log: a cache imported before
+  -- a stage existed must boot and lose that screen's art, not refuse to start.
+  if isGen4Cache then
+    for _, name in ipairs(GEN4_PREFIXED) do
+      local ok, mod = loadModule(dir, name)
+      self[name] = ok and mod or nil
+      if not ok then
+        Logger.warn("gen4 cache: '%s' is missing (%s) -- the screens that "
+                    .. "read it fall back to the engine's own art", name,
+                    tostring(mod))
+      end
+    end
   end
   -- Hand the cartridge's own battle tables to the two modules that would
   -- otherwise have to approximate them.  Both are no-ops on a Gen 1/Gen 2
@@ -1509,6 +1591,54 @@ function Data:unloadGenerated()
       package.loaded["data.generated." .. name] = nil
     end
   end
+  -- ...AND THE ONE CACHE THAT LIVES OUTSIDE THIS TABLE.
+  --
+  -- Gen2Commands memoises field.objectScriptBase in a module upvalue the
+  -- first time a script addresses an object, and its own comment says the
+  -- cached base belongs to one loaded game.  reloadGenerated cleared it and
+  -- nothing else did -- so it was right for a developer hot reload and wrong
+  -- for the path every player takes, which is quitting to the launcher and
+  -- picking a different cartridge.  Crystal's base standing in Gold's game
+  -- is the failure the memo exists to prevent, one game too late.
+  --
+  -- Here rather than beside reloadGenerated's call because THIS is the choke
+  -- point both paths pass through; the duplicate call reloadGenerated now
+  -- makes is a second assignment of nil.
+  pcall(function()
+    require("src.script.Gen2Commands").g2ResetObjectBase()
+  end)
+  -- ...AND THE HAND-PORTED SCRIPTS, WHICH ARE NOT `data.generated`.
+  --
+  -- Reported from play: after quitting Emerald to the launcher and loading
+  -- FireRed, an NPC said "TEXT 1FC45B" -- a constant that exists in Emerald's
+  -- cache and nowhere in FireRed's, on a map id both games have.
+  --
+  -- data/scripts/init.lua does its work IN ITS CHUNK BODY: it walks the
+  -- hand-ported files into MapScripts.attachBase and calls
+  -- Gen2ScriptVM.register / Gen3ScriptVM.register on the loaded dataset.  The
+  -- loop above evicts `data.generated.*` and stops there, so on the second
+  -- boot `require("data.scripts.init")` was served the cached module and the
+  -- body never ran again -- the log says so plainly: two "script vm: N maps
+  -- attached" lines for the first game and none at all for the second.  The
+  -- second cartridge ran on the first one's scripts for the whole session.
+  --
+  -- Both halves are needed and in this order.  Evicting alone would re-run
+  -- the registration INTO a base that still holds the old game's, and
+  -- attachBase merges rather than replaces -- so every talk entry the new
+  -- game does not redefine would still answer.  Resetting alone would empty
+  -- the base and leave nothing to refill it.
+  --
+  -- By prefix rather than by a list: these files require each other freely
+  -- and a named list is a list that goes stale.
+  for name in pairs(package.loaded) do
+    if type(name) == "string"
+       and (name == "data.scripts" or name:sub(1, 13) == "data.scripts.") then
+      package.loaded[name] = nil
+    end
+  end
+  pcall(function()
+    require("src.script.MapScripts").resetBase()
+  end)
 end
 
 -- dev-mode hot reload only (src/dev/HotReload.lua): drop every namespace the

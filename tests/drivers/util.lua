@@ -42,7 +42,14 @@ end
 function U.shot(game, path)
   local dir = path:match("^(.*)[/\\][^/\\]+$")
   if dir and dir ~= "" then
-    os.execute('mkdir -p "' .. dir .. '" 2>/dev/null')
+    -- `mkdir -p` is not a command on Windows and its cmd.exe equivalent does
+    -- not understand forward slashes, so ask love which OS this is rather
+    -- than running one of them and hoping.
+    if love and love._os == "Windows" then
+      os.execute('mkdir "' .. dir:gsub("/", "\\") .. '" 2>nul')
+    else
+      os.execute('mkdir -p "' .. dir .. '" 2>/dev/null')
+    end
   end
   game.capturePath = path
   -- love.draw consumes capturePath once per rendered frame, but fast runs

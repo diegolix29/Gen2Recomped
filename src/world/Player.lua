@@ -296,6 +296,29 @@ function Player:refreshForm(data)
     self.walkId, self.bikeId = walkId, bikeId
     self.sprite = SpriteRenderer.new(pickSpriteDef(data, walkId), "player")
     self.bikeSprite = SpriteRenderer.new(pickSpriteDef(data, bikeId), "player")
+    -- SAY WHICH BODY THE PLAYER IS WEARING, AND WHICH FILE IT CAME OUT OF.
+    --
+    -- Reported from play twice: after quitting one Gen 3 game to the launcher
+    -- and loading the other, "im still seeing the emerald player instead of
+    -- the firered player sprite".  It is a hard thing to reason about from the
+    -- outside because the two cartridges name the sheet IDENTICALLY -- the
+    -- player is object-event graphics 0 in both, so the id is SPRITE_G3_000
+    -- and the path is assets/generated/overworld/g3_000.png whichever game is
+    -- running, and which FILE that is depends on a cache overlay and an image
+    -- cache rather than on anything visible in the record.
+    --
+    -- 157 of FireRed's 167 sprite sheets share a path with Emerald's, so this
+    -- is not a corner: it is the shape of every overworld sprite in both
+    -- games.  One line per boot makes the question answerable from a log
+    -- instead of by elimination -- and if this line names the right file while
+    -- the screen shows the other game's character, then whatever is drawing
+    -- the player is not reading it.
+    local def = pickSpriteDef(data, walkId)
+    local image = type(def) == "table" and def.image or nil
+    require("src.core.Logger").info(
+      "player sheet: %s -> %s (resolved: %s)",
+      tostring(walkId), tostring(image),
+      tostring(image and require("src.render.Assets").resolve(image)))
   end
   -- THE RUN CYCLE, which is a different set of frames rather than the walk
   -- played faster.

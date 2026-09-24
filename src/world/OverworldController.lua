@@ -668,9 +668,59 @@ function OverworldState.computeNeighbors(maps, rootId, hops, reachW, reachH)
   return out
 end
 
+-- WHAT THIS SINGLETON CACHED FOR THE LAST CARTRIDGE IT RAN.
+--
+-- OverworldState is a module TABLE, not an instance: `local OverworldState =
+-- { ... }` at the top of this file, returned at the bottom, and StateStack
+-- pushes that same table on every boot.  So every field it fills in lazily
+-- outlives the game that filled it, and the next game inherits them.
+--
+-- Reported from play three times, the last with a log: after quitting Emerald
+-- to the launcher and loading FireRed, "im still seeing the emerald player
+-- instead of the firered player sprite".  The log is what named it --
+--
+--     [info] version switch: dropped 75 cached image(s) ...
+--     [info] player sheet: SPRITE_G3_000 -> assets/generated/overworld/...
+--
+-- -- the second line appearing on the FIRST boot and NOT on the second.  The
+-- image flush was working; the Player never asked it for anything, because
+-- setMap builds one only `if self.player` is nil and Emerald's was still
+-- there, holding a SpriteRenderer that had captured Emerald's Image before
+-- the flush.  Player:refreshForm could not save it either: it rebuilds when
+-- the sprite ID changes, and the player is object-event graphics 0 in BOTH
+-- cartridges, so the id is SPRITE_G3_000 either way and the guard sees no
+-- change at all.
+--
+-- A list rather than a wipe, because this table also carries the class's own
+-- fields -- STILL_REFLECTIONS, BERRY_TREE_HOLD, isOpaque and the test exports
+-- -- and clearing those would break it in a way no boot recovers from.  What
+-- is listed is everything on this state that is built FROM Game.data and kept
+-- across maps: the player, and each sheet cached on first use behind an `if
+-- not self.<name>` guard.  Anything added to that pattern later belongs here.
+local DATA_DERIVED = {
+  "player",
+  "birdSprite", "flyBirdImg", "flyBirdQuads", "flyMonImg",
+  "healMachineImg", "healMachineQuads",
+  "cutTreeImg", "cutTreeQuads",
+  "rodImg", "rodQuads",
+  "smokeImg", "emoteImg", "pikaPic",
+}
+
 function OverworldState:enter(mapId, x, y, facing)
   Game = require("src.core.Game")
   Game.overworld = self
+  -- ...and this is the moment to notice the cartridge changed.  Not in
+  -- bootGame: the map editor's Play and any future path into the world reach
+  -- here too, and a reset that lives beside the thing it protects cannot be
+  -- forgotten by one of them.
+  local version = GameVersion.get()
+  if self.builtFor and self.builtFor ~= version then
+    for _, key in ipairs(DATA_DERIVED) do self[key] = nil end
+    Logger.info("overworld: rebuilt for %s -- dropped the player and %d "
+                  .. "cached sheet(s) the previous cartridge left behind",
+                tostring(version), #DATA_DERIVED - 1)
+  end
+  self.builtFor = version
   -- The live overworld under BOTH names, and a back-reference to the Game.
   --
   -- `Game.world` is not a second concept: it is `Game.overworld`, published
@@ -11588,6 +11638,40 @@ function OverworldState:startWarpTo(mapId, x, y, facing, onDone, opts)
     end
   end, function()
     self.transitioning = false
+    -- THE ARRIVAL IS WHAT GIVES THE CONTROLS BACK.
+    --
+    -- Reported from play: "Fix the lavaridge gym its bugged When you go
+    -- through the hole you get stuck. Have to leave the game and come back to
+    -- move again."  Exactly that -- the fall worked, the floor changed, and
+    -- the player could never walk again until the save was reloaded, because
+    -- a reload builds a fresh Player and `inputLocked` starts false on it.
+    --
+    -- Three effects lock the controls and then WARP: Lavaridge's sink and its
+    -- geyser (startLavaridgeWarp) and the thin ice giving way
+    -- (gen3ThinIceFall).  Every other lock in this file is released by the
+    -- animation that set it, on a countdown it owns -- the fly bird, the
+    -- teleport spin, the whirlpool, the decoration cursor -- and those three
+    -- have nothing left to count once the map is gone.  So the lock was set
+    -- and nothing, anywhere, cleared it.
+    --
+    -- The cartridge releases it in the same place this does.  Both of
+    -- Lavaridge's holes are `LockPlayerFieldControls()` on the way out
+    -- (DoLavaridgeGym1FWarp, DoLavaridgeGymB1FWarp) and an ARRIVAL callback on
+    -- the way in -- FieldCB_FallWarpExit for the sink, and
+    -- FieldCB_LavaridgeGymB1FWarpExit for the geyser -- whose last state,
+    -- FallWarpEffect_End / LavaridgeGymB1FWarpExitEffect_End, calls
+    -- UnlockPlayerFieldControls() AFTER WarpIntoMap().  This callback is that
+    -- last state: it runs once the transition has finished and the new map is
+    -- already standing.
+    --
+    -- Stated once here rather than at each of the three call sites, because
+    -- the rule is not about holes.  A map load rebuilds the field on the
+    -- cartridge and the only thing that keeps the controls locked across a
+    -- warp is an arrival that deliberately re-locks them; a departure lock
+    -- cannot outlive its own map.  Anything that wants the player held after
+    -- landing -- a cutscene, a scripted walk-in -- locks again on the far
+    -- side, which is what the scripts already do.
+    if self.player then self.player.inputLocked = false end
     if onDone then onDone() end
   end))
 end

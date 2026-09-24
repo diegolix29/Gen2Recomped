@@ -42,21 +42,42 @@ local MAX_COLS = 18
 -- the last page finishes typing, which is where the caller pushes whatever
 -- goes on top of it (#591).
 function TextBox.new(game, text, onDone, opts)
+  opts = opts or {}
   local self = setmetatable({}, TextBox)
   self.game = game
   self.onDone = onDone
-  self.choice = opts and opts.choice
-  self.defaultNo = opts and opts.defaultNo
-  self.choiceNoSound = opts and opts.noSound
-  self.auto = opts and opts.auto
-  self.stay = opts and opts.stay
-  local box = Theme.textBox or {}
+  self.choice = opts.choice
+  self.defaultNo = opts.defaultNo
+  self.choiceNoSound = opts.noSound
+  self.auto = opts.auto
+  self.stay = opts.stay
+  -- A few cartridge screens print through the same text engine without using
+  -- the field's framed dialogue window.  Teachy TV is one: teachy_tv.c gives
+  -- it a 26x4 raw window at (2,15), fills it with palette colour $C and calls
+  -- AddTextPrinterParameterized2 at (0,0).  Let those callers override the
+  -- geometry and ink while leaving every ordinary TextBox byte-identical.
+  local box = opts.box or Theme.textBox or {}
   self.boxTx = box.tx or BOX_TX
   self.boxTy = box.ty or BOX_TY
   self.boxTw = box.tw or BOX_TW
   self.boxTh = box.th or BOX_TH
-  self.maxCols = box.maxCols or MAX_COLS
-  self.textX = (self.boxTx + 1) * 8
+  self.maxCols = opts.maxCols or box.maxCols or MAX_COLS
+  self.maxPixels = tonumber(opts.maxPixels)
+  self.letterSpacing = tonumber(opts.letterSpacing) or 0
+  -- Most of the shared TextBox timing still models the GB/GBC printer, whose
+  -- retained line moves by one 8px tile.  GBA printers scroll by the active
+  -- font's max height + line spacing instead (FireRed text.c), and the amount
+  -- moved per frame depends on the text-speed option.  Screens that use the
+  -- GBA printer can opt into those values without changing classic dialogue.
+  self.scrollDistance = tonumber(opts.scrollDistance)
+  self.scrollStep = tonumber(opts.scrollStep)
+  self.scrollHoldFrames = tonumber(opts.scrollHoldFrames)
+  self.textX = opts.textX or (self.boxTx + 1) * 8
+  self.drawFrame = opts.drawFrame ~= false
+  self.fillColor = opts.fillColor
+  self.textStyle = opts.style
+  self.clipToBox = opts.clipToBox == true
+  self.uiWidth, self.uiHeight = opts.uiWidth, opts.uiHeight
   -- WHERE THE TWO LINES SIT, which stopped being a constant when the font
   -- stopped being 8 pixels tall.
   --
@@ -80,10 +101,12 @@ function TextBox.new(game, text, onDone, opts)
   if overhang > 0 then line1 = line1 - overhang end
   -- never above the frame's own inner edge, however tall the face
   line1 = math.max(line1, (self.boxTy + 1) * 8)
-  self.line1Y = line1
-  self.line2Y = line1 + pitch
+  self.line1Y = opts.line1Y or line1
+  self.line2Y = opts.line2Y or (self.line1Y + pitch)
   text = TextBox.substitute(game, text)
-  self.pages = TextBox.paginate(text, self.maxCols)
+  self.pages = TextBox.paginate(text, self.maxCols,
+                                self.letterSpacing, self.maxPixels,
+                                opts.softWrap ~= false)
   self.pageIndex = 1
   self.lineIndex = 1
   self.charIndex = 0
@@ -191,7 +214,7 @@ end
 -- additional lines on the same page (the box scrolls them).
 -- pages.contBefore[p][i] is true when line i was preceded by \v (cont):
 -- pokered ContText waits for A/B + ▼ before scrolling that line in.
-function TextBox.paginate(text, maxCols)
+function TextBox.paginate(text, maxCols, letterSpacing, maxPixels, softWrap)
   -- A missing line is a content bug, not a reason to take the whole game
   -- down.  It arrives as nil whenever a dataset lacks a symbol some caller
   -- assumed -- Prism's new game died here, at `text .. "\f"` below, on the
@@ -202,16 +225,35 @@ function TextBox.paginate(text, maxCols)
   -- maxCols is a column count, so the budget is that many vanilla 8px
   -- cells.  Measuring in pixels rather than columns is what lets a mod's
   -- variable-advance page wrap correctly (#186).
-  local budget = maxCols * 8
+  local budget = tonumber(maxPixels) or maxCols * 8
+  letterSpacing = tonumber(letterSpacing) or 0
+  if softWrap == nil then softWrap = true end
   local pages = {}
   local contBefore = {}
   -- Soft-wrap on glyph boundaries, never byte boundaries: a line is over
   -- budget by what it *draws*, and the cut falls between glyphs so a
   -- multi-byte char is never torn in half.
   local function pushLine(lines, conts, line, wait)
+    if not softWrap then
+      table.insert(lines, line)
+      table.insert(conts, wait)
+      return
+    end
     while true do
       local spans = Font.split(line)
-      local fit = Font.spansFitting(spans, budget)
+      local fit
+      if letterSpacing == 0 then
+        fit = Font.spansFitting(spans, budget)
+      else
+        local used = 0
+        fit = 0
+        for i, span in ipairs(spans) do
+          if i > 1 then used = used + letterSpacing end
+          used = used + Font.advanceOf(span.code or 0x00)
+          if used > budget then break end
+          fit = fit + 1
+        end
+      end
       if fit >= #spans then break end
       -- a glyph wider than the whole box still has to advance by one
       fit = math.max(fit, 1)
@@ -348,7 +390,7 @@ function TextBox:beginLine()
   self.codes = Font.encode(self:currentLine())
   if #self.shown >= 2 then
     table.remove(self.shown, 1)
-    self.scrollPx = 8 -- pixel scroll-up (ScrollTextUpOneLine)
+    self.scrollPx = self.scrollDistance or 8 -- GB one-tile scroll by default
   end
   table.insert(self.shown, {})
 end
@@ -473,7 +515,7 @@ function TextBox:update(dt)
         self:beginLine()
         -- ScrollTextUpOneLine is 5 blocking frames and, as its own comment
         -- says, is "always called twice in a row" (home/text.asm:280-305)
-        self.holdFrames = Timing.TEXT_SCROLL_PAIR
+        self.holdFrames = self.scrollHoldFrames or Timing.TEXT_SCROLL_PAIR
       else
         self.shown = {}
         self.pageIndex = self.pageIndex + 1
@@ -543,6 +585,7 @@ end
 -- OverworldState:uiSize.  Asking here alone made the whole screen step down a
 -- scale every time a box opened, because the fit scale follows the surface.
 function TextBox:uiSize()
+  if self.uiWidth and self.uiHeight then return self.uiWidth, self.uiHeight end
   return Theme.uiSize()
 end
 
@@ -556,10 +599,24 @@ function TextBox:draw()
     r:setUIAnchor(self.boxTx * 8, self.boxTy * 8,
                   self.boxTw * 8, self.boxTh * 8, "bottom")
   end
-  Font.drawDialogueBox(self.boxTx, self.boxTy, self.boxTw, self.boxTh)
+  if self.drawFrame then
+    Font.drawDialogueBox(self.boxTx, self.boxTy, self.boxTw, self.boxTh)
+  elseif self.fillColor then
+    local c = self.fillColor
+    love.graphics.setColor(c[1] or 0, c[2] or 0, c[3] or 0, c[4] or 1)
+    love.graphics.rectangle("fill", self.boxTx * 8, self.boxTy * 8,
+                            self.boxTw * 8, self.boxTh * 8)
+  end
+  local oldScissor
+  if self.clipToBox and love.graphics.getScissor then
+    oldScissor = { love.graphics.getScissor() }
+    love.graphics.setScissor(self.boxTx * 8, self.boxTy * 8,
+                             self.boxTw * 8, self.boxTh * 8)
+  end
   love.graphics.setColor(0, 0, 0, 1)
+  if self.textStyle then Font.pushStyle(self.textStyle) end
   if self.scrollPx and self.scrollPx > 0 then
-    self.scrollPx = self.scrollPx - 2
+    self.scrollPx = self.scrollPx - (self.scrollStep or 2)
     if self.scrollPx <= 0 then self.scrollPx = nil end
   end
   -- Only the retained line carries the offset: it slides up from where it
@@ -584,7 +641,7 @@ function TextBox:draw()
     local pen = self.textX
     for _, code in ipairs(line) do
       Font.drawCode(code, pen, y)
-      pen = pen + Font.advanceOf(code)
+      pen = pen + Font.advanceOf(code) + self.letterSpacing
     end
   end
   if (self.waiting or (self.done and not self.choice and not self.auto
@@ -595,6 +652,15 @@ function TextBox:draw()
     Font.drawCode(Theme.moreArrow or 0xEE,
                   (self.boxTx + self.boxTw - 2) * 8,
                   (self.boxTy + self.boxTh - 1) * 8 - 4)
+  end
+  if self.textStyle then Font.popStyle() end
+  if self.clipToBox then
+    if oldScissor and oldScissor[1] ~= nil then
+      love.graphics.setScissor(oldScissor[1], oldScissor[2],
+                               oldScissor[3], oldScissor[4])
+    else
+      love.graphics.setScissor()
+    end
   end
   love.graphics.setColor(1, 1, 1, 1)
 end
