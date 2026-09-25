@@ -1750,6 +1750,27 @@ local function loadScene(ctx)
   if not (love and love.graphics and love.image and love.graphics.newMesh and love.graphics.newShader) then
     errorText="LÖVE 3D graphics API unavailable"; return nil,errorText
   end
+  if activeDef and activeDef.liveOverworld then
+    local sh,serr=ensureArenaShader(ctx)
+    if not sh then errorText=tostring(serr);return nil,errorText end
+    -- No HSD groups at all: the "overworld" profile branch of
+    -- paintBackdropStatic below draws ArenaOverworldSnapshot's captured
+    -- image instead of any of this. Actors, camera and crowd all come from
+    -- the def's own stage numbers exactly as for a cached arena.
+    --
+    -- Deliberately NOT touchResident'd: a resident scene is a perf win for a
+    -- cache-backed arena (the same baked stage reused untouched next time),
+    -- but this "scene" is just an empty shell -- keeping it resident would
+    -- hand the NEXT activation of this arena back the SAME table, which
+    -- activateDefinition's cache-signature check can't detect a change on
+    -- (nil==nil), silently freezing the backdrop on whatever was captured
+    -- the very first time this arena was ever picked.
+    scene={opaque={},cutout={},crowd={},translucent={},additive={},bounds=nil,source="overworld-snapshot",textures={},
+      culled=0,oversizeCulled=0,crowdOutliers=0,crowdOriginal=0,crowdKept=0,crowdPolicy=(activeDef.crowd or "none"),
+      preserveSourceShell=false,cachePath=nil,runtimeSidecar=false}
+    errorText=nil
+    return scene
+  end
   local def=activeDef or (ArenaCatalog and ArenaCatalog.definition and ArenaCatalog.definition("water")) or {id="water",cache="cache/M1_water_cache.lua"}
   local cachePath=def.cache or "cache/M1_water_cache.lua"
   local rt
@@ -2858,6 +2879,31 @@ local function paintBackdropStatic(w,h)
     -- frame, in exactly this position in the layer order.
     love.graphics.setColor(1,1,1,1)
     return
+  elseif profile=="overworld" then
+    -- CBE's live-overworld arena: no source HSD sky to sample, so draw the
+    -- still frame ArenaOverworldSnapshot captured the instant this fight
+    -- started, stretched to fill the backdrop exactly like "orre"/"realgam"
+    -- stretch their own source sky cards above. Falls back to the ordinary
+    -- top/bottom gradient (the def's own backdrop colors) on the very first
+    -- battle of a session, or any frame nothing was captured for.
+    local ArenaOverworldSnapshot=V.ArenaOverworldSnapshot
+    local shot,sw,sh=nil,0,0
+    if ArenaOverworldSnapshot and type(ArenaOverworldSnapshot.image)=="function" then
+      shot,sw,sh=ArenaOverworldSnapshot.image()
+    end
+    if shot and sw and sh and sw>0 and sh>0 then
+      love.graphics.setColor(1,1,1,1)
+      love.graphics.draw(shot,0,0,0,w/sw,h/sh)
+      return
+    end
+    for i=0,bands-1 do
+      local t=(i+0.5)/bands; local u=t*t*(3-2*t)
+      love.graphics.setColor(top[1]+(bottom[1]-top[1])*u,top[2]+(bottom[2]-top[2])*u,top[3]+(bottom[3]-top[3])*u,1)
+      local y=math.floor(i*h/bands); local y2=math.ceil((i+1)*h/bands)
+      love.graphics.rectangle("fill",0,y,w,math.max(1,y2-y+1))
+    end
+    love.graphics.setColor(1,1,1,1)
+    return
   end
 
   for i=0,bands-1 do
@@ -3044,6 +3090,7 @@ end
 
 
 local function cacheAvailable(def)
+  if def and def.liveOverworld then return true end
   return def and def.cache and GeneratedAssets.exists(def.cache) or false
 end
 function A:available(ctx)
@@ -3070,7 +3117,13 @@ local function activateDefinition(ctx,def,selected)
     return nil
   end
   local nextId=def.id or "water"
-  if activeArenaId~=nextId or (activeDef and activeDef.cache~=def.cache) then
+  -- A cache-backed arena is correctly left alone when the same id/cache is
+  -- picked twice in a row -- same stage, so the resident scene still applies.
+  -- The live-overworld arena has no cache to key that check on (nil==nil
+  -- never trips it) and its actual content -- the snapshot -- is a NEW
+  -- picture every single time it is chosen, so force the rebuild here
+  -- instead of trusting the id/cache comparison below.
+  if activeArenaId~=nextId or (activeDef and activeDef.cache~=def.cache) or def.liveOverworld then
     scene=nil;errorText=nil
   end
   activeDef=def

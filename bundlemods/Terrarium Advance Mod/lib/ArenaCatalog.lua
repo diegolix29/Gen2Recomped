@@ -150,15 +150,35 @@ local DEFINITIONS={
     -- battle-radius clipping can punch holes in its deck and is not permitted.
     preserveSourceShell=true,
   },
+  overworld={
+    id="overworld",label="OVERWORLD",ready=true,
+    -- Not a baked GC6E01 stage: there is no cache here on purpose. CBE stays
+    -- the owner of this fight end to end -- camera rig, actors, crowd, move
+    -- FX ownership, all of it exactly as for any other entry above. Only the
+    -- world itself is different: instead of loading extracted HSD geometry,
+    -- Arena.lua paints a snapshot of the overworld taken the instant the
+    -- fight started (see snapshotOverworld/paintBackdropStatic's "overworld"
+    -- profile) as this arena's backdrop. Spatial numbers below are copied
+    -- from outdoor_wild, the other generic-open-ground entry, since there is
+    -- no source HSD scene here to measure a stage/camera fit against.
+    liveOverworld=true,
+    stageScale=0.25,stageYaw=0,sceneRadiusRaw=620,maxGroupSpanRaw=1350,vertexRadiusRaw=610,
+    pokemon={player={-4.5,18.0},enemy={4.5,-18.0}},figureScale=0.365,trainers={player={14.0,29.5},enemy={-14.0,-29.5}},trainerScale={player=0.425,enemy=0.205},
+    camera={side=59,back=18,height=29,lookX=0,lookY=6.0,frameH=51,safe={minRadius=29,maxRadius=87,minY=7.0,maxY=43,maxPitch=33,minPitch=-10,minFov=31,maxFov=54}},
+    backdrop={top={0.08,0.31,0.65},bottom={0.68,0.84,0.76}},profile="overworld",crowd="none",
+  },
 }
 
-local ORDER={"auto","random","open_water","water","orre_colosseum","relic_chamber","relic_cave","outskirts","pyrite_colosseum","deep_colosseum","realgam_colosseum","outdoor_wild","mt_battle_summit","cipher_lab_underground"}
-local VALID={auto=true,random=true,open_water=true,water=true,orre_colosseum=true,relic_chamber=true,relic_cave=true,outskirts=true,pyrite_colosseum=true,deep_colosseum=true,realgam_colosseum=true,outdoor_wild=true,mt_battle_summit=true,cipher_lab_underground=true}
+local ORDER={"auto","random","open_water","water","orre_colosseum","relic_chamber","relic_cave","outskirts","pyrite_colosseum","deep_colosseum","realgam_colosseum","outdoor_wild","mt_battle_summit","cipher_lab_underground","overworld"}
+local VALID={auto=true,random=true,open_water=true,water=true,orre_colosseum=true,relic_chamber=true,relic_cave=true,outskirts=true,pyrite_colosseum=true,deep_colosseum=true,realgam_colosseum=true,outdoor_wild=true,mt_battle_summit=true,cipher_lab_underground=true,overworld=true}
 
 local function randomDefinition()
   local pool={}
   for _,id in ipairs(ORDER) do
-    if id~="auto" and id~="random" then
+    -- The live-overworld pick is deliberately excluded from blind rotation:
+    -- it changes which subsystem stages the fight (see H.begin's handoff),
+    -- not just which backdrop loads, so it stays an explicit choice.
+    if id~="auto" and id~="random" and id~="overworld" then
       local def=DEFINITIONS[id]
       if def and def.ready then pool[#pool+1]=def end
     end
@@ -233,6 +253,7 @@ function C.options()
     {id="outdoor_wild",label="ORRE WILDLANDS"},
     {id="mt_battle_summit",label="MT. BATTLE SUMMIT"},
     {id="cipher_lab_underground",label="CIPHER LAB UNDERGROUND"},
+    {id="overworld",label="OVERWORLD"},
   }
 end
 
