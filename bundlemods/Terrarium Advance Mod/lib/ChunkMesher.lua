@@ -904,36 +904,6 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
             topTile = S.tileAt[keyOf(tx, cap.n + ci)] or topTile
             capV0 = math.max(0, math.min(7.5, cp0 - ci * 8))
             capV1 = math.max(capV0 + 0.5, math.min(8, cp1 - ci * 8))
-          elseif s.class == "waterfall" then
-            -- THE TOP OF A FALL IS THE RIVER RUNNING TO THE LIP.
-            --
-            -- A fall's drawing is its FACE -- that is the whole point of the
-            -- side arm below -- so laying the same rows flat on the cells the
-            -- fall occupies in plan drew the sheet twice: once plumb down the
-            -- drop, where it belongs, and once as a striped apron across the
-            -- five cells above it.  METEOR FALLS 1F_1R showed it as a blue
-            -- carpet banded across the head pool; ROUTE 119 as a striped
-            -- table top.
-            --
-            -- Those cells are not the sheet.  They are where the water is
-            -- before it goes over, and the cartridge says what that looks
-            -- like in the pool immediately upstream -- the same surface, at
-            -- the same height, since `g3-fall-350` hangs the fall from that
-            -- pool's own lip.  So the apron wears the river's tile and the
-            -- drawing is spent once, on the face.
-            --
-            -- Only where there IS a pool upstream: a fall with rock above it
-            -- keeps its own art rather than inventing water that is not
-            -- drawn there.
-            local n = ty
-            while ty - n < 32 do
-              local bs = S.shapeAt[keyOf(tx, n - 1)]
-              if bs and bs.class == "waterfall" then n = n - 1 else break end
-            end
-            local up = S.shapeAt[keyOf(tx, n - 1)]
-            if up and up.class == "water" then
-              topTile = S.tileAt[keyOf(tx, n - 1)] or topTile
-            end
           elseif s.art == "upright" and s.authored then
             local north, front = ty, ty
             while ty - north < 6 do
@@ -962,9 +932,8 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
           end
           local isWater = isWaterAt(tx, ty)
           topQuad(x0, z0, h, topTile,
-                  s.art == "upright" and VOLUME_TOP_SHADE or 1,
-                  (isWater or s.class == "waterfall"),
-                  (isWater or s.class == "waterfall") and waterPush or nil, capV0, capV1)
+                  s.art == "upright" and VOLUME_TOP_SHADE or 1, isWater,
+                  isWater and waterPush or nil, capV0, capV1)
         end
 
         if s.class == "bridge" then
@@ -1000,7 +969,6 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
               if y1 > y0 then
                 local src, shade = tile, Voxel3D.FACE_SHADE[d]
                 local vT, vB = nil, nil
-                local isWater = isWaterAt(tx, ty)
                 if run then
                   local bb = band - math.floor((run.base or 0) / 8)
                   if bb < 0 then bb = 0 end
@@ -1296,7 +1264,6 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
                   -- fall's edge against the gorge wall from smearing a
                   -- different row per course.
                   if d == 5 then shade = 1 end
-                  isWater = true
                   local front = ty
                   while front < ty + 32 do
                     local fs2 = S.shapeAt[keyOf(tx, front + 1)]
@@ -1419,8 +1386,7 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
                 sideQuad(d, x0, z0, y0, y1, src,
                          vT or ((band * 8 + 8) - y1),
                          vB or ((band * 8 + 8) - y0),
-                         sideShades(hl, hr, y0, y1, y0 <= nh, shade),
-                         isWater or isWaterAt(tx, ty))
+                         sideShades(hl, hr, y0, y1, y0 <= nh, shade), isWaterAt(tx, ty))
               end
             end
           end
