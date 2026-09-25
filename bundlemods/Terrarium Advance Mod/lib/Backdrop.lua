@@ -68,6 +68,10 @@ local function isOutdoor(map)
     local okC, canopy = pcall(DayNight.isCanopy, map)
     if okC and canopy then return false end
   end
+  if okDN and DayNight and DayNight.isRooftop then
+    local okR, rooftop = pcall(DayNight.isRooftop, map)
+    if okR and rooftop then return true end
+  end
   local tid = def.tileset or (map.tileset and map.tileset.id)
   if tid and OPEN_AIR_TILESETS[tid] then return true end
   local ok, outdoor = pcall(function()

@@ -163,6 +163,12 @@ local function isInterior(map)
     if okC and canopy then return false end
   end
 
+  -- 1.5. on a rooftop, not under a roof: should have sky, not ceiling
+  if okDN and DayNight and DayNight.isRooftop then
+    local okR, rooftop = pcall(DayNight.isRooftop, map)
+    if okR and rooftop then return false end
+  end
+
   -- 2. an open-air tileset is open air whatever its connections say
   local tid = def.tileset or (map.tileset and map.tileset.id)
   if tid and OPEN_AIR_TILESETS[tid] then return false end
@@ -502,19 +508,29 @@ local function build(map, H, mode, pcx, pcy, tex)
   local ROCKY = { CAVERN = true, UNDERGROUND = true }
   local rocky = (tilesetId and ROCKY[tilesetId]) and true or false
   local isGen3 = Gen3.mapIsGen3(map)
-  -- The CAVERN/UNDERGROUND ids above are the Kanto/Johto vocabulary and
-  -- never fire on Hoenn -- Gen3's caves carry a raw ROM tileset name
-  -- (gTileset_Cave and the rest) instead. Structures.lua already has the
-  -- real, purpose-built answer for "is this Gen3 room a cave": the
-  -- `rock_plateau` profile flag that its own rock-mass pass keys off
-  -- (data/gen3_shapes.lua), covering Granite Cave, Victory Road, Meteor
-  -- Falls and the other ~44 maps on that tileset. Reuse it here rather
-  -- than re-guessing from the map id, which misses names like "Meteor
-  -- Falls" or "Sky Pillar" that don't literally say "cave".
-  if not rocky and isGen3 then
-    local okG3c, g3c = pcall(Gen3.forMap, map)
-    rocky = (okG3c and g3c and g3c.profile and g3c.profile.rock_plateau)
-            and true or false
+  
+  -- Use unified cave detection from DayNight for consistency across generations
+  if okDN and DayNight and DayNight.isCave then
+    local okCave, isCave = pcall(DayNight.isCave, map)
+    if okCave and isCave then
+      rocky = true
+    end
+  else
+    -- Fallback to original logic if DayNight.isCave is not available
+    -- The CAVERN/UNDERGROUND ids above are the Kanto/Johto vocabulary and
+    -- never fire on Hoenn -- Gen3's caves carry a raw ROM tileset name
+    -- (gTileset_Cave and the rest) instead. Structures.lua already has the
+    -- real, purpose-built answer for "is this Gen3 room a cave": the
+    -- `rock_plateau` profile flag that its own rock-mass pass keys off
+    -- (data/gen3_shapes.lua), covering Granite Cave, Victory Road, Meteor
+    -- Falls and the other ~44 maps on that tileset. Reuse it here rather
+    -- than re-guessing from the map id, which misses names like "Meteor
+    -- Falls" or "Sky Pillar" that don't literally say "cave".
+    if not rocky and isGen3 then
+      local okG3c, g3c = pcall(Gen3.forMap, map)
+      rocky = (okG3c and g3c and g3c.profile and g3c.profile.rock_plateau)
+              and true or false
+    end
   end
   -- Bump H itself, before anything below reads it: the flat lid, the
   -- risers that rise to meet it, the rock canopy that hangs beneath it,
