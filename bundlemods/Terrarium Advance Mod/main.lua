@@ -1756,7 +1756,31 @@ SettingsMenu.define(SETTINGS)
 -- so it doubles whatever headroom comes back from here when the room is
 -- a cave, and lifts it a further 25% on Gen3 -- 50 becomes 100 in a
 -- Gen1/Gen2 cave, 125 in a Gen3 one. Change AIRY here and both follow.
-local HEADROOM = { AIRY = 50, MID = 24, SNUG = 16 }
+-- Now supports independent headroom values per generation.
+local HEADROOM = {
+  GEN1 = { AIRY = 36, MID = 24, SNUG = 16 },
+  GEN2 = { AIRY = 80, MID = 40, SNUG = 20 },
+  GEN3 = { AIRY = 48, MID = 36, SNUG = 24 }
+}
+-- Ceiling.headroom:get() returns the option VALUE (100/50/24), not the
+-- label (AIRY/MID/SNUG). Map both so generation tables can be keyed by name.
+local HEADROOM_KEY = {
+  AIRY = "AIRY", MID = "MID", SNUG = "SNUG",
+  [100] = "AIRY", [50] = "MID", [24] = "SNUG",
+  [32] = "AIRY", [16] = "SNUG", -- legacy option values
+}
+local function ceilingGeneration()
+  -- GenerationCompat is a Colosseum local loaded much later and never
+  -- published on _G, so looking it up here always missed and fell to GEN1.
+  -- GameVersion.generation() is the live cartridge generation.
+  local ok, GameVersion = pcall(require, "src.core.GameVersion")
+  if ok and GameVersion and type(GameVersion.generation) == "function" then
+    local okGen, value = pcall(GameVersion.generation)
+    local n = okGen and tonumber(value)
+    if n == 1 or n == 2 or n == 3 then return n end
+  end
+  return 1
+end
 _G.__ds_ceiling_config = function()
   -- Use the actual setting objects where available
   local ceilingOn = true
@@ -1768,7 +1792,18 @@ _G.__ds_ceiling_config = function()
   end
   if Ceiling and Ceiling.headroom then
     local ok, v = pcall(function() return Ceiling.headroom:get() end)
-    if ok and v then headroomVal = HEADROOM[v] or 100 end
+    if ok and v then
+      local generation = ceilingGeneration()
+      local headroomTable = HEADROOM["GEN" .. tostring(generation)] or HEADROOM.GEN1
+      local key = HEADROOM_KEY[v]
+      if key and headroomTable[key] then
+        headroomVal = headroomTable[key]
+      elseif headroomTable[v] then
+        headroomVal = headroomTable[v]
+      else
+        headroomVal = headroomTable.AIRY or 100
+      end
+    end
   end
   if Ceiling and Ceiling.cutaway then
     local ok, v = pcall(function() return Ceiling.cutaway:get() end)
