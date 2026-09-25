@@ -904,50 +904,7 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
             topTile = S.tileAt[keyOf(tx, cap.n + ci)] or topTile
             capV0 = math.max(0, math.min(7.5, cp0 - ci * 8))
             capV1 = math.max(capV0 + 0.5, math.min(8, cp1 - ci * 8))
-          elseif s.class == "waterfall" then
-            -- THE TOP OF A FALL IS THE RIVER RUNNING TO THE LIP.
-            --
-            -- A fall's drawing is its FACE -- that is the whole point of the
-            -- side arm below -- so laying the same rows flat on the cells the
-            -- fall occupies in plan drew the sheet twice: once plumb down the
-            -- drop, where it belongs, and once as a striped apron across the
-            -- five cells above it.  METEOR FALLS 1F_1R showed it as a blue
-            -- carpet banded across the head pool; ROUTE 119 as a striped
-            -- table top.
-            --
-            -- Those cells are not the sheet.  They are where the water is
-            -- before it goes over, and the cartridge says what that looks
-            -- like in the pool immediately upstream -- the same surface, at
-            -- the same height, since `g3-fall-350` hangs the fall from that
-            -- pool's own lip.  So the apron wears the river's tile and the
-            -- drawing is spent once, on the face.
-            --
-            -- Only where there IS a pool upstream: a fall with rock above it
-            -- keeps its own art rather than inventing water that is not
-            -- drawn there.
-            local n = ty
-            while ty - n < 32 do
-              local bs = S.shapeAt[keyOf(tx, n - 1)]
-              if bs and bs.class == "waterfall" then n = n - 1 else break end
-            end
-            local up = S.shapeAt[keyOf(tx, n - 1)]
-            if up and up.class == "water" then
-              topTile = S.tileAt[keyOf(tx, n - 1)] or topTile
-            end
-          elseif s.art == "upright" and s.authored and not s.topIsOwn then
-            -- ...unless the pass that stood this cell says its own tile IS
-            -- the top.  `topIsOwn` marks a BLOCKED cell the cartridge draws
-            -- with the map's own floor art -- a raised slab, a shelf you
-            -- cannot walk on -- where folding a face onto the top lays the
-            -- wrong picture flat.  See `buildGen3CaveTerraces`.
-            --
-            -- Top art for a pinned box.  A furniture drawing is top-view
-            -- rows over floor(h/8) face-on rows the fold stands upright;
-            -- a face row's top would repeat its front art lying flat, so
-            -- it wears the nearest row above the face block instead --
-            -- the drawn tabletop (and whatever sits on it) stays on top,
-            -- and a fully-folded structure (wall, desk) tops with its
-            -- northmost row.
+          elseif s.art == "upright" and s.authored then
             local north, front = ty, ty
             while ty - north < 6 do
               local bs = S.shapeAt[keyOf(tx, north - 1)]
@@ -975,9 +932,8 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
           end
           local isWater = isWaterAt(tx, ty)
           topQuad(x0, z0, h, topTile,
-                  s.art == "upright" and VOLUME_TOP_SHADE or 1,
-                  (isWater or s.class == "waterfall")
-                    and waterPush or nil, capV0, capV1)
+                  s.art == "upright" and VOLUME_TOP_SHADE or 1, isWater,
+                  isWater and waterPush or nil, capV0, capV1)
         end
 
         if s.class == "bridge" then
