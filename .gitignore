@@ -138,7 +138,7 @@ mobile/ios/bundle_id.local
 !/tests/console_textinput_driver.lua
 !/tests/firered_launcher_driver.lua
 /mods/*
-
+/Claude outputs/*
 # ...EXCEPT THE ONES THAT SHIP WITH THE LAUNCHER.
 #
 # `/mods/*` above keeps a developer's working folder out of the repo -- the

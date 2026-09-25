@@ -1394,8 +1394,71 @@ local VERSION_REQUIRED_FILES = {
   },
 }
 
+-- WHAT A GEN 4 IMPORT MUST HAVE PRODUCED.
+--
+-- These are the fifteen modules `Data.lua` actually requires of a Gen 4 cache:
+-- the eleven every generation shares, plus the four its own branch adds.
+--
+-- It exists because `requiredFiles` had no generation-4 case and fell through
+-- to the GEN 1 list, and that is not a harmless default.  A Platinum import
+-- that had produced everything it can would be measured against `field.lua`,
+-- `battle_anims.lua`, Pikachu's battle sprite, two move animations and the
+-- audio program bank -- none of which Gen 4 produces or needs -- so the
+-- launcher would report the same five gaps after every successful import and
+-- offer to spend the minutes again, for ever.  The failure is silent in the
+-- worst way: the import WORKED, and the only symptom is the game asking for it
+-- again.
+--
+-- Deliberately SHORTER than the Gen 2 and Gen 3 lists.  Those name individual
+-- PNGs because a cache that wrote its tables and then died partway through the
+-- art is the failure they were written for.  Gen 4's art stages each keep
+-- their own index table and no single image's absence means the import failed,
+-- so naming one here would look stricter and test less.
+local REQUIRED_FILES_GEN4 = {
+  "data/generated/constants.lua",
+  "data/generated/maps.lua",
+  "data/generated/tilesets.lua",
+  "data/generated/text.lua",
+  "data/generated/text_pointers.lua",
+  "data/generated/pokemon.lua",
+  "data/generated/moves.lua",
+  "data/generated/items.lua",
+  "data/generated/type_chart.lua",
+  "data/generated/trainers.lua",
+  "data/generated/encounters.lua",
+  "data/generated/map_layouts.lua",
+  "data/generated/map_tilesets.lua",
+  "data/generated/map_scripts.lua",
+  "data/generated/font.lua",
+  -- NOT one of Data.lua's required fifteen, and listed anyway, for a reason
+  -- the other entries do not have: `field.lua` is where `boot.startMap` lives,
+  -- Data.lua's overlay is ADDITIVE, and a Gen 4 cache without one silently
+  -- reads RED'S -- which is how the first New Game on Platinum opened in
+  -- REDS_HOUSE_2F and died in MapLoader.  Naming it here is also what makes an
+  -- older Platinum cache, extracted before the field stage existed, report a
+  -- gap and offer to re-import instead of crashing the same way for ever.
+  "data/generated/field.lua",
+  -- Same reasoning, one step on: `gen4_menus.lua` is what names the title
+  -- art and carries the menu's own words, and `field.boot.screens` points the
+  -- boot at screens that read it.  A cache with the screens and without the
+  -- record boots to a black title with nothing on it, which looks like a
+  -- broken screen rather than a missing table.
+  "data/generated/gen4_menus.lua",
+  -- And the opening.  `field.boot.screens.newGame` now names
+  -- Gen4RowanIntro, so a cache with the boot record and without this one
+  -- pushes a screen that has no television, no Rowan and no script --
+  -- which skips itself and hands the player a game with no intro, silently.
+  "data/generated/gen4_intro.lua",
+  -- The 3D models, for the same reason and with one difference worth
+  -- stating: nothing draws them YET.  They are listed anyway because the
+  -- screen that will is the next piece of work, and requiring the table
+  -- now means one re-import covers both rather than two.
+  "data/generated/gen4_models.lua",
+}
+
 local function requiredFiles(version)
   local gen = GameVersion.generation(version)
+  if gen == 4 then return REQUIRED_FILES_GEN4 end
   if gen == 3 then return REQUIRED_FILES_GEN3 end
   if gen == 2 then return REQUIRED_FILES_GEN2 end
   return REQUIRED_FILES_GEN1
@@ -1489,6 +1552,12 @@ local PAL = {
   -- follows.
   chipEmeraldTop = { 82, 214, 130 },  -- #52d682  Emerald
   chipEmeraldBot = { 16, 110, 66 },   -- #106e42
+  -- Platinum: the metal, with the cool cast its box art has -- deliberately
+  -- NOT silver (#bfcee2 is near-white), not Crystal's cyan and not Polished
+  -- Crystal's magenta-leaning purple, because all three sit in the same row
+  -- and a chip that has to be read twice has failed.
+  chipPlatinumTop = { 166, 176, 216 }, -- #a6b0d8  Platinum
+  chipPlatinumBot = { 74, 82, 134 },   -- #4a5286
   chipPrismTop = { 106, 240, 150 },   -- #6af096  Prism
   chipPrismBot = { 22, 138, 82 },     -- #168a52
   -- Polished Crystal: amethyst, deliberately far from Crystal's cyan and
@@ -1838,6 +1907,12 @@ local ROM_SIZES = {
   [8 * 1024 * 1024] = true,
   [16 * 1024 * 1024] = true,   -- Emerald
   [32 * 1024 * 1024] = true,
+  -- ...and up here, a NINTENDO DS cartridge.  Platinum is 128 MiB, four times
+  -- the largest Game Boy Advance cart, and the jump is why this is listed
+  -- rather than folded into a range: the size table exists so a file that
+  -- cannot be a cartridge is refused before it is hashed, and a range would
+  -- wave through every truncated dump in between.
+  [128 * 1024 * 1024] = true,  -- Platinum, and Diamond/Pearl after it
 }
 
 local function isSupportedRomSize(byteLength)
@@ -1851,7 +1926,7 @@ end
 local function isRomFileName(name)
   local n = (name or ""):lower()
   return n:match("%.gb$") ~= nil or n:match("%.gbc$") ~= nil
-         or n:match("%.gba$") ~= nil
+         or n:match("%.gba$") ~= nil or n:match("%.nds$") ~= nil
 end
 
 -- LOVE 11.5 on Android has no native file picker (love.window.showFileDialog
@@ -2079,14 +2154,14 @@ local function chooseRom(promptName)
   local platform = love.system.getOS()
   if platform == "OS X" then
     return commandOutput(
-      ([[osascript -e 'POSIX path of (choose file with prompt "%s" of type {"gb", "gbc", "gba"})' 2>/dev/null]])
+      ([[osascript -e 'POSIX path of (choose file with prompt "%s" of type {"gb", "gbc", "gba", "nds"})' 2>/dev/null]])
         :format(prompt))
   elseif platform == "Windows" then
     local script = table.concat({
       "Add-Type -AssemblyName System.Windows.Forms;",
       "$d=New-Object System.Windows.Forms.OpenFileDialog;",
       "$d.Title='" .. prompt .. "';",
-      "$d.Filter='Pokemon ROM (*.gb;*.gbc;*.gba)|*.gb;*.gbc;*.gba|All files (*.*)|*.*';",
+      "$d.Filter='Pokemon ROM (*.gb;*.gbc;*.gba;*.nds)|*.gb;*.gbc;*.gba;*.nds|All files (*.*)|*.*';",
       -- write the pick as UTF-8: the console's OEM codepage would mangle
       -- non-ASCII names (Pokémon -> Pok\x82mon) and crash any text draw
       -- that shows them (#325)
@@ -2096,11 +2171,11 @@ local function chooseRom(promptName)
       'powershell -NoProfile -STA -Command "' .. script .. '"')
   elseif platform == "Linux" then
     local path = commandOutput(
-      ([[zenity --file-selection --title="%s" --file-filter="Pokemon ROM | *.gb *.gbc *.gba" 2>/dev/null]])
+      ([[zenity --file-selection --title="%s" --file-filter="Pokemon ROM | *.gb *.gbc *.gba *.nds" 2>/dev/null]])
         :format(prompt))
     if path then return path end
     return commandOutput(
-      [[kdialog --getopenfilename "$HOME" "*.gb *.gbc *.gba|Pokemon ROM" 2>/dev/null]])
+      [[kdialog --getopenfilename "$HOME" "*.gb *.gbc *.gba *.nds|Pokemon ROM" 2>/dev/null]])
   end
   return nil
 end
@@ -2163,7 +2238,7 @@ local function chooseRoms()
   if platform == "OS X" then
     out = commandOutput(
       ([[osascript -e 'set AppleScript'"'"'s text item delimiters to linefeed' ]]
-       .. [[-e 'set f to choose file with prompt "%s" of type {"gb", "gbc", "gba"} with multiple selections allowed' ]]
+       .. [[-e 'set f to choose file with prompt "%s" of type {"gb", "gbc", "gba", "nds"} with multiple selections allowed' ]]
        .. [[-e 'set p to {}' -e 'repeat with x in f' ]]
        .. [[-e 'set end of p to POSIX path of x' -e 'end repeat' ]]
        .. [[-e 'p as text' 2>/dev/null]]):format(prompt))
@@ -2173,7 +2248,7 @@ local function chooseRoms()
       "$d=New-Object System.Windows.Forms.OpenFileDialog;",
       "$d.Title='" .. prompt .. "';",
       "$d.Multiselect=$true;",
-      "$d.Filter='Pokemon ROM (*.gb;*.gbc;*.gba)|*.gb;*.gbc;*.gba|All files (*.*)|*.*';",
+      "$d.Filter='Pokemon ROM (*.gb;*.gbc;*.gba;*.nds)|*.gb;*.gbc;*.gba;*.nds|All files (*.*)|*.*';",
       -- NOT copied to a temp name, unlike the mod picker: a batch of these is
       -- up to sixteen megabytes apiece and copying them all before reading any
       -- of them is a doubling of disk for nothing.  A non-ASCII path is the
@@ -2199,11 +2274,11 @@ local function chooseRoms()
       -- not expand escapes inside double quotes), so the list came back as one
       -- long line.  Ask for zenity's own default separator and turn it into
       -- newlines with tr, which needs nothing of the shell.
-      ([[zenity --file-selection --multiple --separator="|" --title="%s" --file-filter="Pokemon ROM | *.gb *.gbc *.gba" 2>/dev/null | tr '|' '\n']])
+      ([[zenity --file-selection --multiple --separator="|" --title="%s" --file-filter="Pokemon ROM | *.gb *.gbc *.gba *.nds" 2>/dev/null | tr '|' '\n']])
         :format(prompt))
     if not out then
       local kd = commandOutput(
-        [[kdialog --getopenfilename "$HOME" "*.gb *.gbc *.gba|Pokemon ROM" --multiple 2>/dev/null]])
+        [[kdialog --getopenfilename "$HOME" "*.gb *.gbc *.gba *.nds|Pokemon ROM" --multiple 2>/dev/null]])
       -- kdialog joins with spaces and quotes nothing, so a path with a space
       -- in it cannot be recovered; one file back is still one file
       if kd then out = kd:gsub("%s+", "\n") end
@@ -2671,7 +2746,8 @@ function RomImporter.new(onComplete, opts)
     self.returning[version] =
       (not ready) and marker ~= nil and head ~= markerFor(version)
     self.romName[version] = "pokemon_" .. info.id
-      .. (info.generation == 3 and ".gba"
+      .. (info.generation == 4 and ".nds"
+          or info.generation == 3 and ".gba"
           or ((info.id == "yellow" or info.generation == 2) and ".gbc" or ".gb"))
   end
 
@@ -2732,7 +2808,7 @@ function RomImporter.new(onComplete, opts)
     -- run, and re-applied by _applyLauncherTheme the moment either row steps.
     if okOpt then pcall(RomImporter.applyTheme, options) end
     local g = okOpt and type(options) == "table" and options.launcherGeneration
-    self.genFilter = (g == 1 or g == 2 or g == 3) and g or nil
+    self.genFilter = RomImporter.isGeneration(g)
     -- ...and a filter that hides the tab the launcher opened on would show an
     -- empty row with a panel behind it.
     if self.genFilter and GameVersion.VERSIONS[self.tab]
@@ -2921,23 +2997,31 @@ end
 -- Verify + extract a ROM. The version is decided by the ROM's own SHA-1, so
 -- dropping any supported cart into any column always lands in the
 -- right one.
-function RomImporter:startData(data, displayName)
+-- `sourcePath` is where the file came from on disk, when the caller knows.
+-- Everything up to and including the SHA-1 still works on `data`, because
+-- verifying a cartridge means hashing its bytes and there is no way around
+-- that.  What the path buys is the stage AFTER verification: a Gen 4
+-- extractor must not be handed 128 MiB as a Lua string (see
+-- src/import/RomExtractorGen4.lua), and it is the only thing that can open
+-- the cartridge itself and read ranges out of it on demand.
+function RomImporter:startData(data, displayName, sourcePath)
   if self.workState == "working" then return end
   if type(data) ~= "string" then
     self:setError("The selected file could not be read.")
     return
   end
   if not isSupportedRomSize(#data) then
-    self:setError(("Expected a 1 MiB (Red/Blue/Yellow), 2 MiB (Gold/Silver) "
-      .. "or 16 MiB (Emerald) cartridge; this file is %.2f MiB.")
-      :format(#data / 1024 / 1024))
+    self:setError(("Expected a 1 MiB (Red/Blue/Yellow), 2 MiB (Gold/Silver), "
+      .. "16 MiB (Emerald) or 128 MiB (Platinum) cartridge; this file is "
+      .. "%.2f MiB."):format(#data / 1024 / 1024))
     return
   end
   local actualHash = sha1(data)
   local version = GameVersion.forSha1(actualHash)
   if not version then
     self:setError(("Unsupported ROM (SHA-1 %s). This needs a clean US Pokemon "
-      .. "Red, Blue, Yellow, Gold, Silver, Crystal or Emerald dump; patched, "
+      .. "Red, Blue, Yellow, Gold, Silver, Crystal, FireRed, Emerald or "
+      .. "Platinum dump; patched, "
       .. "trimmed or "
       .. "\"fixed\" dumps "
       .. "(tagged [b] or [BF]) never verify."):format(actualHash))
@@ -2957,6 +3041,7 @@ function RomImporter:startData(data, displayName)
   self.detail = displayName or info.displayName
   self.progress = 0
   self.romData = data
+  self.romPath = sourcePath
   -- BREADCRUMBS THROUGH THE IMPORT, for the same reason boot has them.
   --
   -- An import is the longest, most memory-hungry thing this program does -- a
@@ -3015,6 +3100,11 @@ function RomImporter:startData(data, displayName)
       [1] = { module = "src.import.RomExtractor", takesVersion = false },
       [2] = { module = "src.import.RomExtractorGen2", takesVersion = true },
       [3] = { module = "src.import.RomExtractorGen3", takesVersion = true },
+      -- ...and the fourth is a line here, as the comment above promised.
+      -- `takesPath` is the one thing that made it more than a line: Gen 4
+      -- opens the cartridge itself instead of being handed its bytes.
+      [4] = { module = "src.import.RomExtractorGen4", takesVersion = true,
+              takesPath = true },
     }
     local choice = EXTRACTORS[info.generation]
     if not choice then
@@ -3041,10 +3131,39 @@ function RomImporter:startData(data, displayName)
       end
       coroutine.yield()
     end
-    local extractor = choice.takesVersion
-      and RomExtractor.new(self.romData, version, manifest, onProgress)
-      or RomExtractor.new(self.romData, manifest, onProgress)
+    -- A DROPPED FILE MAY HAVE NO PATH.  love.filedropped gives a File whose
+    -- getFilename is a real path on desktop and need not be anywhere else, and
+    -- the Android save-directory scan reads through love.filesystem rather
+    -- than the disk.  A Gen 4 import that reaches here without one cannot
+    -- proceed, and saying so plainly is much better than passing nil into
+    -- `new` and failing inside NdsRom with something about a missing path.
+    local extractor, extractorError
+    if choice.takesPath then
+      if type(self.romPath) ~= "string" or self.romPath == "" then
+        error(("%s must be imported from a file on disk -- use the Import "
+               .. "button rather than dropping it, so the game can read the "
+               .. "cartridge without holding all %d MB of it in memory")
+              :format(info.displayName or tostring(version),
+                      math.floor(#(self.romData or "") / 1048576)))
+      end
+      extractor, extractorError =
+        RomExtractor.new(self.romPath, version, manifest, onProgress)
+      if not extractor then
+        error(("could not open %s: %s"):format(self.romPath, tostring(extractorError)))
+      end
+      -- The bytes are finished with: verification is done and the extractor
+      -- reads from its own handle.  Dropping them HERE rather than after the
+      -- run is the entire point of taking a path -- otherwise the 128 MiB
+      -- stays live for the whole extraction and nothing was gained.
+      self.romData = nil
+      collectgarbage("collect")
+    else
+      extractor = choice.takesVersion
+        and RomExtractor.new(self.romData, version, manifest, onProgress)
+        or RomExtractor.new(self.romData, manifest, onProgress)
+    end
     extractor:run()
+    if extractor.close then extractor:close() end
     self.romData = nil
     collectgarbage("collect")
     BootTrace.mark(("import %s: extracted (%.0f MB lua)")
@@ -3104,7 +3223,9 @@ function RomImporter:startPath(path)
     self:setError("Could not read the selected file: " .. tostring(readError))
     return
   end
-  self:startData(data, path:match("[^/\\]+$") or path)
+  -- The whole path is kept, not just the basename: a Gen 4 import reopens the
+  -- file after verification rather than carrying its bytes around.
+  self:startData(data, path:match("[^/\\]+$") or path, path)
 end
 
 -- ---------------------------------------------------------------------------
@@ -4205,7 +4326,8 @@ function RomImporter:choose(version)
     return
   end
   if love.system.getOS() ~= "OS X" and love.system.getOS() ~= "Windows" then
-    self:setError("File selection is unavailable here. Drop the .gb/.gbc/.gba file onto the window.")
+    self:setError("File selection is unavailable here. Drop the "
+      .. ".gb/.gbc/.gba/.nds file onto the window.")
   end
 end
 
@@ -6678,7 +6800,31 @@ end
 -- launch is a filter nobody uses twice.
 -- ---------------------------------------------------------------------------
 
-RomImporter.GENERATIONS = { 1, 2, 3 }
+-- THE GENERATIONS THE FILTER OFFERS, derived from what is actually registered
+-- rather than written out.  It was the literal { 1, 2, 3 }, and adding
+-- Platinum would have left a launcher that has a GEN 4 cartridge, counts it,
+-- and offers no way to filter to it -- the same shape as registering a version
+-- with no chip.  Built once at load because GameVersion.ORDER is fixed by
+-- then; a generation with no registered version never appears, so the
+-- dropdown cannot offer an empty row either.
+RomImporter.GENERATIONS = (function()
+  local seen, out = {}, {}
+  for _, id in ipairs(GameVersion.ORDER) do
+    local g = GameVersion.generation(id)
+    if g and not seen[g] then seen[g] = true; out[#out + 1] = g end
+  end
+  table.sort(out)
+  return out
+end)()
+
+-- Is `g` a generation the launcher will accept as a filter?  One test, used
+-- by the saved-filter restore, the settings lens and the settings stepper --
+-- all three of which spelled it `g == 1 or g == 2 or g == 3` in three separate
+-- places, so a fourth generation meant finding all three or silently keeping
+-- a filter the player could select and never restore.
+function RomImporter.isGeneration(g)
+  return require("src.core.GenOptions").isGeneration(g) and tonumber(g) or nil
+end
 
 function RomImporter.generationLabel(g, short)
   if not g then return Strings("ALL") end
@@ -6881,6 +7027,18 @@ function RomImporter:_drawTabBar(x, y, w, h, chip)
     { id = "emerald", letter = "E", top = PAL.chipEmeraldTop,
       bot = PAL.chipEmeraldBot, under = PAL.chipEmeraldTop,
       label = Strings("EMERALD"), ink = PAL.chipInkSilver },
+    -- Platinum closes the cartridge run, because it is a cartridge and the
+    -- row is cartridges in generation order before the hacks -- the same rule
+    -- GameVersion.ORDER follows.  "PL": "P" is Prism's and "PC" is Polished
+    -- Crystal's, and the 44px chip has room for two letters.
+    --
+    -- It is withheld (importable = false) and that is the point of giving it
+    -- a chip anyway: a player who owns the cartridge can reach the panel and
+    -- read what is and is not ready, instead of finding a counter that says
+    -- eleven above a row of ten.
+    { id = "platinum", letter = "PL", top = PAL.chipPlatinumTop,
+      bot = PAL.chipPlatinumBot, under = PAL.chipPlatinumTop,
+      label = Strings("PLATINUM"), ink = PAL.chipInkSilver },
     -- Prism sits after Crystal: it is a Crystal romhack, so it belongs at the
     -- end of the Gen 2 run rather than beside the official carts.
     { id = "prism", letter = "P", top = PAL.chipPrismTop, bot = PAL.chipPrismBot,
@@ -7067,6 +7225,26 @@ end
 -- to the column bottom, and the slot card takes its natural height.  Returns
 -- the panel's natural height either way, which is what draw() measures the page
 -- against on the next frame.
+-- WHY EACH WITHHELD CARTRIDGE IS WITHHELD, in the player's terms and one
+-- sentence each.  This is a table rather than a literal because the literal
+-- it replaced said "Prism imports its data, but its scripts still misbehave"
+-- for EVERY withheld game -- which was true while Prism was the only one, and
+-- became a panel explaining Prism to somebody looking at Platinum the moment
+-- a second game arrived.  A comment right above it said "ONE SENTENCE PER
+-- GAME"; the code had one sentence, full stop.
+--
+-- Hung off the module table rather than declared as a file-local: this file
+-- is half a megabyte and Lua 5.1 allows 200 locals per chunk, so a new
+-- file-scope local here is a real risk of taking the whole launcher out.
+RomImporter.WITHHELD_REASON = {
+  prism = "Prism imports its data, but its scripts still misbehave; "
+    .. "it is not ready to play.",
+  platinum = "Platinum's cartridge is recognised and its filesystem reads, "
+    .. "but Gen 4 extraction is still being built. The DS keeps its data in "
+    .. "archives inside a filesystem rather than in tables at fixed "
+    .. "addresses, so none of the earlier extractors carry over.",
+}
+
 function RomImporter:_drawGamePanel(version, x, y, w, h, paged)
   local s, pulse = self._s, self.pulse
   self.panelVersion = version
@@ -7142,8 +7320,8 @@ function RomImporter:_drawGamePanel(version, x, y, w, h, paged)
   -- The hint names every extension the picker accepts.  Telling a player to
   -- drop a ".gb/.gbc" while the game also takes a .gba is a small lie that
   -- costs someone an hour.
-  local dropHint = self.android and "Copy the .gb/.gbc/.gba via USB."
-    or Strings("Or drop the .gb/.gbc/.gba file here.")
+  local dropHint = self.android and "Copy the .gb/.gbc/.gba/.nds via USB."
+    or Strings("Or drop the .gb/.gbc/.gba/.nds file here.")
   local accent = PAL.blue
   if version == "red" then accent = PAL.red
   elseif version == "yellow" then accent = PAL.gold
@@ -7152,6 +7330,7 @@ function RomImporter:_drawGamePanel(version, x, y, w, h, paged)
   elseif version == "crystal" then accent = PAL.chipCrystalTop
   elseif version == "firered" then accent = PAL.chipFireRedTop
   elseif version == "emerald" then accent = PAL.chipEmeraldTop
+  elseif version == "platinum" then accent = PAL.chipPlatinumTop
   elseif version == "prism" then accent = PAL.chipPrismTop
   -- Without a branch here the panel silently falls back to PAL.blue, which
   -- reads as a rendering bug rather than a missing case.
@@ -7167,8 +7346,9 @@ function RomImporter:_drawGamePanel(version, x, y, w, h, paged)
       romState = "Recognised, not playable yet"
       -- ONE SENTENCE PER GAME: a withheld cartridge is withheld for its own
       -- reason, and a shared line would be whichever game got here first.
-      romDetail = "Prism imports its data, but its scripts still misbehave; "
-        .. "it is not ready to play."
+      romDetail = RomImporter.WITHHELD_REASON[version]
+        or ((info.launcherName or info.displayName or version)
+            .. " is recognised, but its import is not ready yet.")
     else
       romState, romDetail = "Not supported yet", "Support for this game is on the way."
     end
@@ -7923,9 +8103,7 @@ end
 -- pointed at GEN 1 is one where a player changes COLORS and cannot work out
 -- why Emerald ignored them.
 function RomImporter:_settingsGeneration()
-  local g = self.settingsGen
-  if g == 1 or g == 2 or g == 3 then return g end
-  return nil
+  return RomImporter.isGeneration(self.settingsGen)
 end
 
 -- The current value of one entry, whichever scope it lives in.
@@ -7960,7 +8138,7 @@ end
 function RomImporter:_setSettingValue(entry, value)
   local opts = self:_settings()
   if entry.scope == "settingsGen" then
-    self.settingsGen = (value == 1 or value == 2 or value == 3) and value or nil
+    self.settingsGen = RomImporter.isGeneration(value)
     -- The rows below it change meaning, and one of them (USE SHARED VALUES)
     -- appears and disappears with it, so the cached list has to go.
     self._settingsRowCache = nil

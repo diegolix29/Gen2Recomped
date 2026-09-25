@@ -6065,21 +6065,53 @@ function BattleState:pokedudeItemContext(onUse)
   self.game.stack:push(screen)
 end
 
-function BattleState:pokedudeUseAntidote(step)
-  local pd = self.pokedudeDemo
-  if not pd then return end
-  pd.enemyMove = step.enemyMove
-  self.phase = "messages"
-  self.afterQueue = "menu"
-  self:say(Strings("POKé DUDE used\nANTIDOTE!"))
-  local result, messages = require("src.inventory.ItemEffects")
-    .use(self.data, self.game.save, "ANTIDOTE", self.player.mon, self)
-  for _, message in ipairs(messages or {}) do self:say(message) end
-  self:syncShownStatus()
-  self:act(function()
-    self:executeAction(self.enemy, self.player, self:enemyAction())
-  end)
-  self:act(function() self:endOfTurn() end)
+function BattleState:changeStageAgainstMist(attacker, target, stat, stages)
+  if target ~= attacker and (stages or 0) < 0
+      and self:volatile(target).mist then
+    self:emit({ kind = "message",
+      text = Strings("%s's protected by MIST.", self:monName(target)) })
+    return false
+  end
+  return self:changeStage(target, stat, stages)
+end
+
+function BattleState:changeStage(target, stat, stages)
+  local applied = Effects.applyStage(self.stages[self:sideOf(target)], stat,
+    stages)
+  local name = self:monName(target)
+  if not applied then
+    -- WontRiseAnymoreText / WontDropAnymoreText (data/text/battle.asm:718-732).
+    local label = Strings(MoveEffects.STAT_NAMES[stat] or stat)
+    local source = stages > 0
+      and Strings.source("%s's %s won't rise anymore!")
+      or Strings.source("%s's %s won't drop anymore!")
+    self:emit({ kind = "message", text = Strings(source, name, label) })
+    return false
+  end
+  self:emit({ kind = "stage", side = self:sideOf(target), stat = stat,
+    stages = applied, text = MoveEffects.stageMessage(name, stat, applied) })
+  return true
+end
+
+-- wAttackMissed, modelled on the event the screen animates off.  Every path
+-- that sets it (CheckHit's .Miss arms and the effect commands' own `.failed`
+-- tails, which reach AnimateFailedMove: a delay and no animation) marks the
+-- move event, and the screen skips the attack animation for a marked one --
+-- BattleCommand_MoveAnimNoSub, engine/battle/effect_commands.asm:1958.
+function BattleState:markMissed()
+  if self.moveEvent then self.moveEvent.missed = true end
+end
+
+-- engine/battle/effect_commands.asm:3615
+BattleState.AI_FAIL_STATUSES = {
+  sleep = true, poison = true, toxic = true, paralyze = true,
+}
+
+function BattleState:screenActive(defender, physical)
+  local side = self.screens and self.screens[self:sideOf(defender)]
+  if not side then return false end
+  local turns = physical and (side.reflect or 0) or (side.lightScreen or 0)
+  return turns > 0
 end
 
 function BattleState:openPokedudeTarget(step, switchMode)
@@ -6277,6 +6309,14 @@ function BattleState:statusLabel(mon)
     return record.hudLabel or record.label or mon.status
   end
   return mon.status
+end
+
+
+
+function BattleState:volatile(mon)
+  if not mon then return {} end
+  mon.volatile = mon.volatile or {}
+  return mon.volatile
 end
 
 -- The one accuracy roll (MoveHitTest), hooked as battle.accuracy.
@@ -6771,6 +6811,23 @@ end
 -- of either: choosing POKeMON for the right-hand slot used to withdraw the
 -- LEFT one, because there was no way to say which.
 function BattleState:switchPlayerInto(pos, newMon)
+  -- NOBODY IS ON THE FIELD TWICE.  Not the cartridge's -- it has no such
+  -- test, because its party menu cannot offer a Pokemon that is already
+  -- placed and neither can this one now.  It is here because the duplicate
+  -- send-out was reported from play and a second, silent one would look
+  -- exactly the same: a slot that refuses and says why in the log is a bug
+  -- report, a slot that duplicates is a save file with one Pokemon in two
+  -- places.
+  for p = 0, 3 do
+    local b = (p ~= pos) and self:battlerAt(p) or nil
+    if b and b.mon == newMon then
+      require("src.core.Logger").warn(
+        "double battle: refused to send %s into slot %d -- it is already "
+          .. "battling in slot %d; the menu that offered it twice is the bug",
+        tostring(newMon and newMon.nickname or "?"), pos, p)
+      return
+    end
+  end
   local previous = self:battlerAt(pos)
   self:restoreMimicked(previous)      -- the battle copy leaves with it
   local incoming = makeBattler(self.data, newMon, true, self.game.save)
@@ -10776,8 +10833,52 @@ function BattleState:openParty()
         for _, b in activeBattlers(self) do
           if b.isPlayer and b.mon == mon then standing = b end
         end
+        -- ...AND ONE OF THEM MAY NOT BE OUT YET.
+        --
+        -- Reported from play: "in gen 3 games emerald and firered in double
+        -- battles we have a bug / Can send out the same Pokemon twice from our
+        -- party".  The check above asks who is STANDING on the field, and in a
+        -- double both slots choose before anybody moves -- so the left slot
+        -- picking a switch to a benched Pokemon leaves it still on the bench
+        -- while the right slot's menu opens, still healthy, still not "out",
+        -- and pickable a second time.  Both switches then resolved and the
+        -- same party member walked onto the field twice.
+        --
+        -- The cartridge closes it one slot earlier, in the action loop rather
+        -- than in the menu: battle_main.c's B_ACTION_SWITCH arm opens the
+        -- party menu for battler 2 -- the player's right -- carrying
+        -- `monToSwitchIntoId[0]` as `prevSelectedPartySlot` when, and only
+        -- when, battler 0 has already chosen B_ACTION_SWITCH this turn.  Every
+        -- other opening passes PARTY_SIZE, which no slot can equal, so the
+        -- test below is inert outside the one case it exists for.
+        -- TrySwitchInPokemon (party_menu.c) then refuses that slot with
+        -- gText_PkmnAlreadySelected.
+        --
+        -- `pendingActions` is this port's monToSwitchIntoId: chooseAction has
+        -- already parked the left slot's answer there by the time the right
+        -- slot is asked.  Read for every player slot other than the one
+        -- choosing rather than for PLAYER_LEFT by name -- the cartridge names
+        -- battler 0 because battler 0 always answers first, which is a fact
+        -- about the order, not about the rule.
+        local chosen
+        if self:isDouble() and self.pendingActions then
+          local now = self:choosingSlotNow()
+          for _, p in ipairs({ BattleState.POS.PLAYER_LEFT,
+                               BattleState.POS.PLAYER_RIGHT }) do
+            local act = p ~= now and self.pendingActions[p] or nil
+            if act and act.special == "playerSwitch" and act.mon == mon then
+              chosen = true
+            end
+          end
+        end
         if standing then
           self:say(Strings("%s is\nalready out!", standing.name))
+        elseif chosen then
+          -- gText_PkmnAlreadySelected: "{STR_VAR_1} has already been\nselected."
+          self:say(Strings("%s has already been\nselected.",
+                           mon.nickname
+                             or (self.data.pokemon[mon.species] or {}).name
+                             or "?"))
         elseif Party.isEgg(mon) then
           -- CheckFirstMonIsEgg (01:$728B): an EGG can never be sent out
           self:say(self:romText("_EggNoWillText",

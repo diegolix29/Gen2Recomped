@@ -1,0 +1,57 @@
+{
+  "format": 4,
+  "generation": 4,
+  "romSha1": "0862ec35b24de5c7e2dcb88c9eea0873110d755c",
+  "romSha1Alt": [
+    "ce81046eda7d232513069519cb2085349896dec7"
+  ],
+  "notes": [
+    "WHY THIS FILE IS A THOUSAND TIMES SMALLER THAN CRYSTAL'S.",
+    "",
+    "A Gen 1-3 manifest is an ADDRESS BOOK. Those cartridges are flat arrays,",
+    "so the importer cannot find anything without being told where it is, and",
+    "rom_manifest_crystal.json is 3.7 MB of exactly that.",
+    "",
+    "A Nintendo DS cartridge is a FILESYSTEM. Platinum holds 340 files in 89",
+    "directories behind an FNT/FAT pair, and every Gen 4 extraction stage opens",
+    "a file BY NAME -- /poketool/personal/pl_personal.narc, /msgdata/pl_msg.narc,",
+    "/fielddata/land_data/land_data.narc. There is no address to record, so an",
+    "address table here would be invented rather than measured, and inventing",
+    "one is worse than not having one.",
+    "",
+    "So this manifest carries what it can honestly carry: which dumps are this",
+    "game, and what the cartridge says about itself. src/import/RomExtractorGen4.lua",
+    "reads none of it; RomImporter's decodeManifest reads romSha1, and that gate",
+    "is the reason the file has to exist at all.",
+    "",
+    "The few Gen 4 numbers that ARE addresses do not belong here either. The",
+    "type chart is in overlay 16 and gObjectEventGfxTexturesTable in overlay 5,",
+    "and both are found by a STRUCTURAL search rather than by an offset, because",
+    "Rev 0 is a different binary and a hard-coded offset would silently read the",
+    "wrong bytes out of it. See docs/gen4-platinum.md."
+  ],
+  "romHeader": {
+    "title": "POKEMON PL",
+    "gameCode": "CPUE",
+    "makerCode": "01",
+    "unitCode": 0,
+    "romVersion": 1,
+    "fileSize": 134217728,
+    "usedSize": 104607804,
+    "headerSize": 16384,
+    "arm9": { "rom": 16384, "size": 1057784, "ram": 33554432, "entry": 33556480 },
+    "arm7": { "rom": 4233216, "size": 161788, "ram": 37224448, "entry": 37224448 },
+    "fnt": { "at": 4395008, "size": 7092 },
+    "fat": { "at": 4402176, "size": 3696 },
+    "overlays9": 122,
+    "overlays7": 0
+  },
+  "filesystem": {
+    "files": 340,
+    "note": "Counted by walking the FNT/FAT this manifest describes, not assumed."
+  },
+  "revisions": {
+    "0862ec35b24de5c7e2dcb88c9eea0873110d755c": "USA Rev 1 (the project's own cartridge; what pret/pokeplatinum builds)",
+    "ce81046eda7d232513069519cb2085349896dec7": "USA Rev 0 (same game, same filesystem layout, different binaries)"
+  }
+}

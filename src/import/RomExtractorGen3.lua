@@ -28849,14 +28849,43 @@ function RomExtractorGen3:extractStarterSelect()
     return
   end
 
-  -- the labels are the next such table AFTER the anchor with the same x values
-  local labelAt, labelY
-  for ahead = 6, 96, 2 do
-    local xs, ys = coordsAt(anchor + ahead)
-    if xs and xs[1] == ballX[1] and xs[2] == ballX[2] and xs[3] == ballX[3]
-       and ys[1] < ballY[1] then
-      labelAt, labelY = anchor + ahead, ys
-      break
+  -- THE NAME PLATES, WHICH ARE NOT A SECOND SET OF BALL COORDINATES.
+  --
+  -- This used to look forward from the anchor for another table passing
+  -- `coordsAt` whose three x values EQUALLED the balls' -- the reasoning
+  -- being that a plate sits above the ball it names.  It does not, and the
+  -- search could never have matched: sStarterLabelCoords is {0,9}, {16,10},
+  -- {8,4}, which is in TILES, is not in increasing x order, and starts at
+  -- zero -- so `coordsAt` rejects it three ways over before the comparison is
+  -- even reached.  Mudkip's ball is at x 180 and its plate at tile 8, which
+  -- is x 64: the far side of the screen.
+  --
+  -- So nothing was ever recorded, the screen fell back to centring the plate
+  -- on the ball, and it covered the Pokemon.  Reported from play with a
+  -- screenshot: "the text boxes with their name and type of pokemon are over
+  -- the pokemon".
+  --
+  -- It needs no search.  The table is the six bytes between the balls and the
+  -- anchor -- sPokeballCoords, sStarterLabelCoords, sStarterMon, in that
+  -- order -- which in Emerald is 5B1DEC, 5B1DF2, 5B1DF8.  Validated by what
+  -- the window has to fit rather than trusted: 13 tiles by 4 inside a 30x20
+  -- screen, so x is at most 17 and y at most 16.
+  local labelAt, labelX, labelY
+  do
+    local at = ballAt + 6
+    local xs, ys = {}, {}
+    local ok = at + 6 <= anchor
+    for i = 1, 3 do
+      local tx, ty = self.rom:u8(at + (i - 1) * 2), self.rom:u8(at + (i - 1) * 2 + 1)
+      if not (tx and ty and tx <= 30 - 13 and ty <= 20 - 4) then ok = false break end
+      xs[i], ys[i] = tx * 8, ty * 8
+    end
+    if ok then
+      labelAt, labelX, labelY = at, xs, ys
+    else
+      Logger.warn("Gen3 starter select: the six bytes at %07X are not three "
+                    .. "tile positions a 13x4 window fits at -- the name "
+                    .. "plates will fall back to the screen's own table", at)
     end
   end
 
@@ -28952,7 +28981,7 @@ function RomExtractorGen3:extractStarterSelect()
     tilemap = ("%07X"):format(tilemap.at),
     sheet = ("%07X"):format(sheet.at),
     ballX = ballX, ballY = ballY,
-    labelY = labelY,
+    labelX = labelX, labelY = labelY,
     frames = 4,
     frameWidth = 32, frameHeight = 32,
     -- the last of the four frames is the hand; the first three are the ball

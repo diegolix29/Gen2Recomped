@@ -23,8 +23,15 @@
 --     constants.gen3StarterSelect = {
 --       background = "...png",  sprites = "...png",
 --       ballX = { 60, 120, 180 }, ballY = { 64, 88, 64 },
---       labelY = { 32, 56, 32 },  handFrame = 4, ...
+--       labelX = { 0, 128, 64 },  labelY = { 72, 80, 32 },
+--       handFrame = 4, ...
 --     }
+--
+-- The two coordinate tables are NOT related to each other, which is the thing
+-- to know before editing anything here: sPokeballCoords is in pixels and
+-- sStarterLabelCoords, six bytes after it at 5B1DF2, is in TILES, and the
+-- plate a Pokemon's name goes in can sit on the opposite side of the screen
+-- from the ball it names -- Mudkip's ball is at x 180 and its plate at x 64.
 --
 -- WHAT IS RECONSTRUCTED: the bounce the balls do, the speed the hand moves,
 -- and the fact that the picture is drawn above the ball rather than in a
@@ -53,6 +60,7 @@ local Font = require("src.render.Font")
 local Logger = require("src.core.Logger")
 local Strings = require("src.core.Strings")
 local Theme = require("src.ui.Theme")
+local Gen3Wide = require("src.ui.Gen3Wide")
 
 local Gen3StarterSelect = {}
 Gen3StarterSelect.__index = Gen3StarterSelect
@@ -65,7 +73,42 @@ local BOUNCE_PERIOD = 0.45
 
 Gen3StarterSelect.holdsUIAnchors = true
 
-function Gen3StarterSelect:uiSize() return GBA_W, GBA_H end
+-- THE ROUTE IS NOT BEHIND THIS SCREEN.
+--
+-- Reported from play, with a screenshot: "The starter selection menu doesnt
+-- show in full screen".  It was drawing its 240x160 picture over a route that
+-- went on drawing underneath and out to the edges of the display, so the bag
+-- scene sat in a window of grass.
+--
+-- The cartridge does not overlay anything: ChooseStarter sets CB2_ChooseStarter
+-- and Route 101 stops existing until the callback returns.  `isOpaque` is this
+-- stack's word for that -- it stops the draw walking below this state -- and
+-- every comparable full-screen Gen 3 screen already sets it, including
+-- BirchSpeech, which is the scene immediately before this one.
+Gen3StarterSelect.isOpaque = true
+
+-- ...AND IT FILLS THE DISPLAY.  160 rows always, and as many columns as the
+-- window's shape asks for (Gen3Wide), with the cartridge's own 240 centred in
+-- them.  Without this, being opaque would only trade the grass for two black
+-- bars.
+function Gen3StarterSelect:uiSize() return Gen3Wide.uiSize() end
+
+-- WHERE THE NAME PLATE GOES, in tiles, straight off sStarterLabelCoords.
+--
+-- The cartridge keeps this in a table of its own -- {0,9}, {16,10}, {8,4} at
+-- 5B1DF2, six bytes after sPokeballCoords -- and those positions have nothing
+-- to do with where the ball is: Mudkip's ball is at x 180 and its plate is at
+-- x 64, over on the other side of the screen.  The plate was being centred on
+-- the ball instead, which put it on top of the Pokemon it was naming.
+--
+-- Carried here as a fallback because the importer could not read the table
+-- until now (it was looking for a second set of BALL coordinates and this is a
+-- set of TILE coordinates), so every cache imported before that fix has no
+-- answer to give.  A cache that does have one wins.
+local LABEL_TILES = { { 0, 9 }, { 16, 10 }, { 8, 4 } }
+-- sWindowTemplate_StarterLabel: 13 tiles by 4, and the text is centred in its
+-- 104-pixel width rather than left-aligned
+local LABEL_TW, LABEL_TH = 13, 4
 
 local warned = false
 local function warnOnce(fmt, ...)
@@ -219,29 +262,134 @@ function Gen3StarterSelect:ballAt(i)
   return x, y
 end
 
+-- The plate's top-left corner in pixels: the cache's if it has one, else the
+-- cartridge's own table above.
+function Gen3StarterSelect:labelAt(i)
+  local r = self.record
+  local lx = r.labelX and tonumber(r.labelX[i])
+  local ly = r.labelY and tonumber(r.labelY[i])
+  if lx and ly then return lx, ly end
+  local tile = LABEL_TILES[i]
+  if not tile then return nil, nil end
+  return tile[1] * 8, tile[2] * 8
+end
+
 function Gen3StarterSelect:draw()
   love.graphics.setColor(1, 1, 1, 1)
+
+  -- THE SURFACE, AND THE CARTRIDGE'S 240 COLUMNS INSIDE IT.  Everything below
+  -- is written in the cartridge's own coordinates; the translate is the only
+  -- thing that knows the screen is wider.
+  local W = select(1, Gen3Wide.uiSize())
+  local inset = Gen3Wide.inset(W)
+
   if self.bg and self.bgQuad then
-    love.graphics.draw(self.bg, self.bgQuad, 0, 0)
+    -- the margin, painted from the picture's own edge columns.  One pixel
+    -- stretched sideways can only repeat a colour that is already the whole
+    -- of that row, so this fills the slack rather than smearing anything --
+    -- and outside the grass circle this art is a flat field, so it is exact.
+    if inset > 0 then
+      local bw, bh = self.bg:getDimensions()
+      self.edgeL = self.edgeL or love.graphics.newQuad(0, 0, 1, math.min(GBA_H, bh), bw, bh)
+      self.edgeR = self.edgeR or
+        love.graphics.newQuad(math.min(GBA_W, bw) - 1, 0, 1, math.min(GBA_H, bh), bw, bh)
+      love.graphics.draw(self.bg, self.edgeL, 0, 0, 0, inset, 1)
+      love.graphics.draw(self.bg, self.edgeR, inset + GBA_W, 0, 0, inset + 1, 1)
+    end
+    love.graphics.draw(self.bg, self.bgQuad, inset, 0)
   end
 
-  local hw, hh = self.frameW / 2, self.frameH / 2
+  love.graphics.push()
+  love.graphics.translate(inset, 0)
 
+  local hw, hh = self.frameW / 2, self.frameH / 2
   local i = self.index
   local x, y = self:ballAt(i)
-  local labelY = (self.record.labelY and tonumber(self.record.labelY[i]))
-                 or (y - 32)
+  local glyphH = Font.glyphHeight()
+  local textInset = math.max(0, math.floor((16 - glyphH) / 2))
 
-  -- THE PICTURE, and only once a ball has been pressed.  Drawing it under the
-  -- hand the whole time is what the screen used to do, and it is the one
-  -- thing on this screen that is not a staging choice: the cartridge creates
-  -- the sprite in the A-button handler, so before that there is nothing above
-  -- the grass at all.
+  -- WINDOWS FIRST, POKEMON SECOND, and that order is the cartridge's layering
+  -- rather than a preference.  Every box on this screen is a BG0 window and
+  -- the Pokemon is an OBJ sprite, so the sprite is ABOVE all three of them --
+  -- which is why the cartridge can put Mudkip's name plate and its Yes/No box
+  -- where the sprite will stand without hiding it.  Drawn the other way round,
+  -- as this did, the boxes paint over the Pokemon.
+  local confirming = self.stage == "confirm"
+                     and (self.picGrow or 0) >= GROW_FRAMES
+
+  -- THE PLATE BELONGS TO THE POINTING, NOT TO THE CHOOSING.
+  --
+  -- Reported from play: "the box showing the pokemons name is still covered
+  -- have it appear in a way where its not covered and is visible when
+  -- selecting a pokemon".  It was drawn in the confirm half, where a 64-pixel
+  -- front sprite standing on the ball reaches down across it -- and putting
+  -- the box back on top of the sprite is the complaint before last.
+  --
+  -- Neither is the cartridge, and the cartridge has no such collision to
+  -- resolve, because the two are never on screen together.  The A-button
+  -- handler opens `ClearStarterLabel();` and only then creates the circle and
+  -- the Pokemon; the plate is put up by Task_StarterChoose when the screen
+  -- opens, taken down by Task_MoveStarterChooseCursor and put up again for
+  -- the new selection by Task_CreateStarterLabel.  It is what you read WHILE
+  -- pointing, and pressing A is what replaces it with the Pokemon itself.
+  --
+  -- So it moves to the pick half, where nothing can cover it -- which is also
+  -- exactly what was asked for.
+  if self.stage ~= "confirm" then
+    -- the name plate: sStarterLabelCoords, with the dex CATEGORY over the
+    -- species name, each centred across the window's 13 tiles
+    local lx, ly = self:labelAt(i)
+    if lx and ly then
+      local def = self.game.data.pokemon and self.game.data.pokemon[self.species[i]]
+      local name = (def and def.name) or tostring(self.species[i])
+      local rows = def and def.category and { def.category, name } or { name }
+      local tx = math.floor(lx / 8) - 1
+      local ty = math.floor(ly / 8) - 1
+      -- the cartridge's frame bleeds four pixels past the window's left edge
+      -- and Treecko's plate starts at column 0, so on a screen with no margin
+      -- to bleed into the box is nudged back on instead of off
+      if inset <= 0 then tx = math.max(0, tx) end
+      ty = math.max(0, ty)
+      Font.drawBox(tx, ty, LABEL_TW + 2, LABEL_TH + 2)
+      love.graphics.setColor(0, 0, 0, 1)
+      for n, row in ipairs(rows) do
+        local rowX = (tx + 1) * 8
+                     + math.max(0, math.floor((LABEL_TW * 8 - Font.width(row)) / 2))
+        Font.draw(row, math.floor(rowX),
+                  (ty + 1 + (n - 1) * 2) * 8 + textInset)
+      end
+      love.graphics.setColor(1, 1, 1, 1)
+    end
+  end
+
+  if confirming then
+    -- the question (sWindowTemplates[0]: left 3, top 15, 24x4) ...
+    local lines = self:confirmLines()
+    Font.drawBox(2, 14, 26, 6)
+    love.graphics.setColor(0, 0, 0, 1)
+    for n, line in ipairs(lines) do
+      Font.draw(line, 3 * 8, (15 + (n - 1) * 2) * 8 + textInset)
+    end
+    love.graphics.setColor(1, 1, 1, 1)
+
+    -- ...and YES/NO (sWindowTemplate_ConfirmStarter: left 24, top 9, 5x4)
+    local YES_TX, YES_TY = 23, 8
+    Font.drawBox(YES_TX, YES_TY, 7, 6)
+    love.graphics.setColor(0, 0, 0, 1)
+    for n, label in ipairs({ Strings("YES"), Strings("NO") }) do
+      local rowY = (YES_TY + 1 + (n - 1) * 2) * 8 + textInset
+      Font.draw(label, (YES_TX + 2) * 8, rowY)
+      if (self.yes and n == 1) or (not self.yes and n == 2) then
+        Font.drawCode(Theme.cursor, (YES_TX + 1) * 8, rowY)
+      end
+    end
+    love.graphics.setColor(1, 1, 1, 1)
+  end
+
   -- the balls, the chosen one bouncing
   for n = 1, #self.species do
     local bx, by = self:ballAt(n)
-    local frame = 1
-    local lift = 0
+    local frame, lift = 1, 0
     if n == i and self.ballFrames > 1 then
       local phase = (self.t % BOUNCE_PERIOD) / BOUNCE_PERIOD
       frame = 1 + math.floor(phase * self.ballFrames) % self.ballFrames
@@ -254,33 +402,20 @@ function Gen3StarterSelect:draw()
     end
   end
 
-  local pic = self.stage == "confirm" and self.pics[i] or nil
+  -- THE PICTURE, and only once a ball has been pressed.  The cartridge
+  -- creates the sprite in the A-button handler and at the ball's own
+  -- coordinates (CreatePokemonFrontSprite(species, sPokeballCoords[sel][0],
+  -- [1])), so before that there is nothing above the grass at all, and when
+  -- there is, it grows out of the ball it is standing on.
+  local pic = (self.stage == "confirm") and self.pics[i] or nil
   if pic then
     local pw, ph = pic:getDimensions()
     local grow = math.min(1, (self.picGrow or 0) / GROW_FRAMES)
     -- eased so it settles rather than stopping dead
     local scale = 0.25 + 0.75 * (1 - (1 - grow) * (1 - grow))
-    -- ON THE BALL, which is where the cartridge creates the sprite and where
-    -- it grows from.  This used to centre the picture at `labelY - ph/2 - 2`,
-    -- putting it ABOVE the label -- and then the label box was drawn after it
-    -- and over it, so the player saw a name window with the top of a crest
-    -- poking out.
-    --
-    -- The cartridge's own two tables say where each belongs, and they agree
-    -- with each other: the balls are at y 64, 88, 64 and the labels at 32,
-    -- 56, 32 -- exactly 32 less, every time, which is half a 64-pixel front
-    -- pic.  So the label's y is not a position for the label, it is the
-    -- picture's TOP EDGE: the sprite sits centred on its ball and the label
-    -- sits directly above it, touching.  Two tables extracted separately
-    -- turning out to differ by exactly half a sprite is the check.
     love.graphics.draw(pic, math.floor(x), math.floor(y), 0, scale, scale,
                        pw / 2, ph / 2)
   end
-
-  -- ...AND THE PICTURE OVER THEM.  It used to be drawn BEFORE the balls, so
-  -- the ball it is standing on was painted on top of it and the Pokemon
-  -- appeared to be behind its own Poke Ball.  On the cartridge the ball opens
-  -- and the mon comes OUT: it is in front from the first frame it exists.
 
   -- the hand, pointing down at the ball
   local quad = self.quads[self.handFrame]
@@ -289,71 +424,7 @@ function Gen3StarterSelect:draw()
                        math.floor(x - hw), math.floor(y - hh - self.frameH + 4))
   end
 
-  -- THE LABEL AND THE QUESTION, which belong to the confirm half too.  The
-  -- cartridge's label window carries the dex CATEGORY over the species name
-  -- -- "WOOD GECKO" over "TREECKO" -- and it is created in the same handler
-  -- that puts the question up, not while the hand is moving.
-  if self.stage ~= "confirm" then
-    love.graphics.setColor(1, 1, 1, 1)
-    return
-  end
-  if (self.picGrow or 0) < GROW_FRAMES then
-    love.graphics.setColor(1, 1, 1, 1)
-    return
-  end
-
-  local def = self.game.data.pokemon and self.game.data.pokemon[self.species[i]]
-  local name = (def and def.name) or tostring(self.species[i])
-  local category = def and def.category
-
-  local glyphH = Font.glyphHeight()
-  local inset = math.max(0, math.floor((16 - glyphH) / 2))
-
-  -- the label, over the picture
-  do
-    local rows = category and { category, name } or { name }
-    local widest = 0
-    for _, row in ipairs(rows) do widest = math.max(widest, Font.width(row)) end
-    local tw = math.max(6, math.ceil(widest / 8) + 2)
-    local th = #rows * 2 + 2
-    local tx = math.max(0, math.min(30 - tw,
-                                    math.floor(x / 8 - tw / 2)))
-    -- ITS BOTTOM AT THE PICTURE'S TOP.  labelY is where the front pic begins
-    -- (see the note on the picture above), so the box is built upwards from
-    -- there and can never reach down over the Pokemon it is naming.  Clamped
-    -- to the top of the screen: a taller box is pushed down rather than off,
-    -- and the picture keeps its own place either way.
-    local ty = math.max(0, math.floor(labelY / 8) - th)
-    Font.drawBox(tx, ty, tw, th)
-    love.graphics.setColor(0, 0, 0, 1)
-    for n, row in ipairs(rows) do
-      local rowY = (ty + 1 + (n - 1) * 2) * 8 + inset
-      Font.draw(row, math.floor((tx + 1) * 8), rowY)
-    end
-    love.graphics.setColor(1, 1, 1, 1)
-  end
-
-  -- the question, in the message window at the foot of the screen
-  local lines = self:confirmLines()
-  local BOX_TY, BOX_TH = 14, math.max(4, #lines * 2 + 2)
-  Font.drawBox(1, BOX_TY, 28, BOX_TH)
-  love.graphics.setColor(0, 0, 0, 1)
-  for n, line in ipairs(lines) do
-    Font.draw(line, 2 * 8, (BOX_TY + 1 + (n - 1) * 2) * 8 + inset)
-  end
-  love.graphics.setColor(1, 1, 1, 1)
-
-  -- ...and the YES/NO box, which the cartridge puts in the corner above it
-  local YES_TX, YES_TY = 23, 8
-  Font.drawBox(YES_TX, YES_TY, 6, 6)
-  love.graphics.setColor(0, 0, 0, 1)
-  for n, label in ipairs({ Strings("YES"), Strings("NO") }) do
-    local rowY = (YES_TY + 1 + (n - 1) * 2) * 8 + inset
-    Font.draw(label, (YES_TX + 2) * 8, rowY)
-    if (self.yes and n == 1) or (not self.yes and n == 2) then
-      Font.drawCode(Theme.cursor, (YES_TX + 1) * 8, rowY)
-    end
-  end
+  love.graphics.pop()
   love.graphics.setColor(1, 1, 1, 1)
 end
 

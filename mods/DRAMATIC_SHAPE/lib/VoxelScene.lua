@@ -205,6 +205,69 @@ local function groundAt(map, cellX, cellY, elev, px, py)
   local tx, ty = cellX * 2, cellY * 2 + 1
   local s = TileShape.at(map, shapes, Gen3.tileAt(map, tx, ty), tx, ty)
   if not s then return 0 end
+  -- A WATERFALL IS A CLIMB, NOT A DOORWAY.
+  --
+  -- REPORTED from play: "when on the waterfall it has me float above the
+  -- water and below the map as well instead of climbing the waterfall
+  -- vertically tile by tile to the peak of it".
+  --
+  -- A fall's cells are WALKABLE -- that is what lets you ride one -- and
+  -- their art is `upright`, so every one of them fell into the doorway arm
+  -- below and was answered `standHeight`: the rock beside the sheet where
+  -- there is any, and the world datum where there is none.  Measured at
+  -- MeteorFalls_1F_1R (8..15, 10..14), sheet at 172 over a pool at 92:
+  -- 224 on the top row and nil -> 0 on the bottom two.  Above the water at
+  -- one end, under the map at the other, which is the report exactly.
+  --
+  -- The sheet itself is plumb and stays plumb -- `Structures`' fall pass
+  -- argues that at length, and a graded one reads as a weir.  Riding it is
+  -- the other question: the rider leaves the lower pool at its surface,
+  -- arrives at the upper one at the crest, and the drawn rows between
+  -- spread the drop evenly, so a five-row fall over eighty pixels is five
+  -- sixteen-pixel steps -- one per drawn row, which is what "tile by tile"
+  -- asks for.  `py` makes it continuous within each row, the same way the
+  -- flight arm below uses it, so the climb is a ramp rather than a stair
+  -- of teleports.
+  --
+  -- Asked BEFORE the doorway arm because a fall satisfies that arm's test
+  -- and would never reach here otherwise.  A fall with a pool at only one
+  -- end states no climb, answers nil, and keeps the behaviour it had.
+  if s.class == "waterfall" and Structures.fallRide then
+    local okF, foot, crest, minY, maxY =
+      pcall(Structures.fallRide, map, cellX, cellY)
+    if okF and foot and crest and maxY and minY and crest > foot then
+      local n = maxY - minY + 1
+      if n > 0 then
+        -- 0 at the cell's NORTH edge, 1 at its south: py grows southward
+        local sub = 0.5
+        if py then
+          sub = (py % 16) / 16
+          if sub < 0 then sub = 0 elseif sub > 1 then sub = 1 end
+        end
+        -- northward progress up the sheet: 0 where the bottom row meets
+        -- the pool, 1 where the top row meets the river
+        local u = ((maxY - cellY) + (1 - sub)) / n
+        if u < 0 then u = 0 elseif u > 1 then u = 1 end
+        return foot + (crest - foot) * u
+      end
+    end
+    -- ...AND A FALL THE OTHER PASS BUILT RIDES ON ITS OWN SHEET.
+    --
+    -- `Structures.buildFalls` -- the pass that serves every map without a
+    -- stated pool at both ends -- grades a fall row by row already: "a
+    -- stair of water losing one course a row, crest at the top, river
+    -- level at the foot", written into the run.  EVER GRANDE CITY is the
+    -- whole of that case and it is the waterfall the game makes you climb:
+    -- 96 cells over eight rows, runs stepping 90, 78, 66 and down, and
+    -- `standHeight` answered nil on every one of them, so the rider sat at
+    -- the datum under ninety pixels of water.
+    --
+    -- The run IS the surface there, so ride it.  Asked second because a
+    -- stated climb between two pools is the better answer where there is
+    -- one, and `runHeight` says nothing on the maps that have it.
+    local sheet = Structures.runHeight(map, tx, ty)
+    if sheet and sheet > 0 then return sheet end
+  end
   -- a box the walker passes THROUGH rather than onto: Gen 2 pins its
   -- doorways solid so the facade closes over them, and the cell they are
   -- cut into stays walkable

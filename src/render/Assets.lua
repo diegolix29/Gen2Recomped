@@ -104,8 +104,14 @@ end
 -- cache and fan out to every registered downstream one.  A cache whose
 -- invalidator throws must not strand the ones behind it in the list.
 function Assets.invalidate()
+  -- the count is returned, not logged, because this is also the mod loader's
+  -- own flush and that one has nothing to say; the caller who cares -- a
+  -- version switch -- is the one that reports it
+  local dropped = 0
+  for _ in pairs(cache) do dropped = dropped + 1 end
   cache = {}
   for _, fn in ipairs(invalidators) do pcall(fn) end
+  return dropped
 end
 
 Assets.flush = Assets.invalidate

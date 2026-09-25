@@ -419,6 +419,20 @@ return {
   },
 
   overhead = {
+    ["TILESET_03DF884_03DFB6C"] = {
+      figures = {
+        { name = "house plant crown 546", meta = 546, under = 547, south = 1, round = true },
+        { name = "house plant crown 656", meta = 656, under = 525, south = 1, round = true },
+        { name = "house plant crown 657", meta = 657, under = 569, south = 1, round = true },
+        { name = "house plant crown 793", meta = 793, under = 545, south = 1, round = true },
+        { name = "house plant crown 794", meta = 794, under = 553, south = 1, round = true },
+        { name = "house plant crown 796", meta = 796, under = 800, south = 1, round = true },
+        { name = "house plant crown 797", meta = 797, under = 792, south = 1, round = true },
+        { name = "house plant crown 835", meta = 835, under = 832, south = 1, round = true },
+        { name = "house plant crown 838", meta = 838, under = 811, south = 1, round = true },
+        { name = "house plant crown 839", meta = 839, under = 812, south = 1, round = true },
+      },
+    },
     -- (the hull figures above are a different statement: those name a whole
     --  drawing and where a composite block places copies of it; these name
     --  one metatile whose above-player layer belongs to the cell in front.)
@@ -438,6 +452,7 @@ return {
           meta = 559,
           under = 538,
           south = 1,
+          round = true,
         },
       },
     },

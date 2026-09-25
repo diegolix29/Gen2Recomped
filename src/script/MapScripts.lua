@@ -75,6 +75,28 @@ function MapScripts.attachBase(mapId, contribution)
   views[mapId] = nil
 end
 
+-- EVERYTHING ONE CARTRIDGE PUT HERE.
+--
+-- `base` is a MERGE, and that is the whole reason this exists: attachBase
+-- folds each file into what is already filed under the map id, and for `talk`
+-- it folds per TEXT constant rather than replacing the table.  Across a
+-- version switch that is exactly wrong -- the second cartridge's scripts land
+-- on top of the first one's instead of in place of them, and every key the
+-- new game does not happen to define is answered by the old one.
+--
+-- Reported from play: "TEXT 1FC45B" in a dialogue box in FireRed.  That
+-- constant exists in Emerald's cache and in no part of FireRed's, on a map id
+-- both games have -- Emerald's talk entry, surviving under FireRed, asking
+-- FireRed's text table for a string only Hoenn has.
+--
+-- `invalidate` could not do this: it drops the composed VIEWS, which are
+-- rebuilt from `base` and the mod chain, so dropping them re-derives the same
+-- stale answer. The base itself has to go.
+function MapScripts.resetBase()
+  base = {}
+  views = {}
+end
+
 function MapScripts.invalidate(mapId)
   if mapId then
     mapId = normalizeMapId(mapId)

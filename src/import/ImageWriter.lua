@@ -158,6 +158,41 @@ function ImageWriter.columnsToRows(raw, tilesWide, tilesHigh, bytesPerTile)
   return out
 end
 
+-- Wrap raw RGBA8 bytes as an ImageData.
+--
+-- Gen4Graphics.compose returns a screen as one string of width * height * 4
+-- bytes, which is exactly the layout love.image.newImageData takes when it is
+-- given a format and a string -- so the whole picture crosses in one call
+-- instead of 49,152 setPixel calls per 256x192 screen.
+--
+-- That five-argument form is not in every LOVE this engine runs on, and when
+-- it is missing it raises rather than returning nil, so the fast path is
+-- attempted and the per-pixel one is kept behind it.  Both produce the same
+-- image; only the time differs, and it differs by roughly two orders of
+-- magnitude on a full-screen background.
+function ImageWriter.fromRGBA8(width, height, bytes)
+  if not (width and height and bytes) then return nil end
+  if #bytes ~= width * height * 4 then
+    error(("rgba8 payload is %d bytes, expected %d for %dx%d")
+      :format(#bytes, width * height * 4, width, height))
+  end
+
+  local ok, image = pcall(love.image.newImageData, width, height, "rgba8", bytes)
+  if ok and image then return image end
+
+  image = love.image.newImageData(width, height)
+  local byte = string.byte
+  for y = 0, height - 1 do
+    local row = y * width * 4
+    for x = 0, width - 1 do
+      local at = row + x * 4
+      local r, g, b, alpha = byte(bytes, at + 1, at + 4)
+      image:setPixel(x, y, r / 255, g / 255, b / 255, alpha / 255)
+    end
+  end
+  return image
+end
+
 function ImageWriter.save(image, path)
   local ok, fileData = pcall(image.encode, image, "png")
   if not ok then error("could not encode " .. path .. ": " .. tostring(fileData)) end

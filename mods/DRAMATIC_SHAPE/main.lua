@@ -1245,16 +1245,52 @@ end)
 -- out-of-bounds write, and a stamp that rewrites a block with the value
 -- it already held (the door code guards for this, the regrowth does not)
 -- is not a change and must not throw the mesh away.
+--
+-- ...AND EVERY DERIVED CACHE OF THE BLOCK LAYER GOES WITH IT.
+--
+-- REPORTED from play: "in mauville gym when standing on the tiles that
+-- switch the electric fences, they switch spots in 2d but with voxels on
+-- they dont move at all".  MauvilleCity_Gym's switch rewrites up to 90
+-- blocks through this very choke point, the refresh below fired for every
+-- one of them, and the beams still did not move -- because dropping the
+-- MESH is not enough when two other caches still answer with the old map:
+--
+--   VoxelDiskCache memoises `bodySignature`, which is a hash of every tile,
+--     per map table.  It is the disk cache's key, so the rebuild looked the
+--     PRE-SWITCH geometry up and loaded it straight back.
+--   Gen3 memoises the whole per-map context -- the scenery carve, the
+--     building census, the class and role caches -- all of it read off the
+--     block layer.
+--
+-- Both are asked to forget this ONE map, in the same breath as the mesh, so
+-- nothing else on screen is rebuilt.  Neither call is on a frame path.
+--
+-- ...AND THE WRITE IS PASSED THROUGH WHOLE.  `Map:setBlock(x, y, block,
+-- impassable)` takes FOUR arguments and this wrapper forwarded three, so a
+-- caller that writes a block AND its collision in one call -- which is what
+-- MauvilleCity_Gym's beam sweep does, and what the cartridge's own
+-- `setmetatile` row means -- had its passability silently dropped on the
+-- floor.  This mod is presentational and must not touch collision: the
+-- wrapper now forwards every argument and returns every result.
 do
   local Map = require("src.world.Map")
   if not Map.dramaticShapeBlockHook then
     local setBlock = Map.setBlock
-    Map.setBlock = function(self, bx, by, block)
+    Map.setBlock = function(self, bx, by, ...)
       local before = self:blockAt(bx, by)
-      setBlock(self, bx, by, block)
+      local r1, r2, r3 = setBlock(self, bx, by, ...)
       if self.id and self:blockAt(bx, by) ~= before then
+        local okG, Gen3 = pcall(V.require, "Gen3")
+        if okG and Gen3 and type(Gen3.forgetMap) == "function" then
+          pcall(Gen3.forgetMap, self)
+        end
+        local okD, Disk = pcall(V.require, "VoxelDiskCache")
+        if okD and Disk and type(Disk.forget) == "function" then
+          pcall(Disk.forget, self)
+        end
         ChunkMesher.refresh(self.id)
       end
+      return r1, r2, r3
     end
     Map.dramaticShapeBlockHook = true
   end

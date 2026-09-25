@@ -918,6 +918,72 @@ GameVersion.VERSIONS = {
     -- hold-B run path; it costs nothing to declare it now
     hasRunning = true,
   },
+
+  -- ---------------------------------------------------------------------
+  -- POKEMON PLATINUM, and the first NINTENDO DS cartridge here.
+  --
+  -- Everything above this line is one screen, one CPU and a ROM the engine
+  -- can address as a flat array.  Platinum is none of those: two screens, a
+  -- touch panel, ARM9/ARM7 with 122 code overlays, and a ROM that is a
+  -- FILESYSTEM -- 340 files in 89 directories behind a FNT/FAT pair -- so
+  -- "read the table at 0x3DF884" has no meaning and every extraction stage
+  -- has to open a named file first (see src/import/NdsRom.lua).
+  --
+  -- Measured from the user's own cartridge rather than assumed:
+  --   title POKEMON PL, game code CPUE, maker 01, version 1
+  --   128 MB, 104,607,804 bytes used
+  --   ARM9 @00004000 (1,057,784 bytes), ARM7 @00409800 (161,788)
+  --   FNT @00431000, FAT @00432C00 -> 462 entries, 122 ARM9 overlays
+  --
+  -- IMPORTABLE NOW, AND STILL LABELLED WIP, which is two separate claims.
+  --
+  -- It was held at `importable = false` while the extractor could not fill a
+  -- cache the engine would even mount.  It can: a Platinum import writes 28
+  -- tables and satisfies all 15 modules `Data.lua` requires, with none
+  -- missing, and the cache identifies itself as Gen 4 rather than falling
+  -- through to the Gen 3 branch.  Holding the flag past that point stops
+  -- being caution and starts being the reason nobody can find the next bug --
+  -- everything left is on the far side of a boot, and a boot is the one thing
+  -- that cannot be checked offline.
+  --
+  -- WHAT IS PROVEN: the cartridge reads, the tables extract, the art decodes
+  -- and the cache loads.  WHAT IS NOT: anything after that.  No Gen 4 map has
+  -- been walked, no Gen 4 battle has run, no Gen 4 text box exists.  So
+  -- `experimental` stays true and the pill still says WIP -- the launcher
+  -- offers the import and tells the player, in the same breath, that nobody
+  -- has played the result.  A player who meets a failure with no warning
+  -- concludes their dump is bad; that is the outcome the label exists to
+  -- prevent, and it matters MORE now that the button works, not less.
+  --
+  -- POKEPORT_UNLOCK is no longer needed for Platinum.  See
+  -- docs/gen4-platinum.md for what is extracted and what is still missing.
+  platinum = {
+    id = "platinum",
+    generation = 4,
+    label = "Platinum",
+    displayName = "Pokemon Platinum",
+    launcherName = "Platinum",
+    -- Rev 1, which is what pret/pokeplatinum builds and what the project's
+    -- own cartridge hashes to.  Rev 0 is the same game with its own hash and
+    -- pokeplatinum builds it too, so it rides along as an alternate rather
+    -- than needing a second entry -- the filesystem layout is what the
+    -- extractor reads and both revisions carry the same one.
+    sha1 = "0862ec35b24de5c7e2dcb88c9eea0873110d755c",
+    sha1Alt = { "ce81046eda7d232513069519cb2085349896dec7" },
+    manifest = "tools/rom_manifest_platinum.json",
+    cachePrefix = "platinum/",
+    saveSuffix = "_platinum",
+    importable = true,
+    experimental = true,
+    experimentalLabel = "WIP",
+    -- Gen 4 runs by default; the DS has no B-to-run toggle, the Running
+    -- Shoes are simply on once you have them
+    hasRunning = true,
+    -- The two screens are this generation's own problem and nothing above
+    -- has a field for them.  Declared here so the field code can ask the
+    -- VERSION rather than testing the generation number in a dozen places.
+    dualScreen = true,
+  },
 }
 
 -- Launcher column order: the CARTRIDGES in generation order, then the ROM
@@ -926,7 +992,8 @@ GameVersion.VERSIONS = {
 -- put a Game Boy Advance game behind two Game Boy Color hacks, and broke the
 -- ordering rule tests/polished_crystal_registration_test.lua asserts.
 GameVersion.ORDER = { "red", "blue", "yellow", "gold", "silver", "crystal",
-                      "firered", "emerald", "prism", "polishedcrystal" }
+                      "firered", "emerald", "platinum",
+                      "prism", "polishedcrystal" }
 
 GameVersion.current = "red"
 
@@ -959,6 +1026,24 @@ end
 -- widened WITH; it is not, on its own, support.
 function GameVersion.isGen3(id)
   return GameVersion.generation(id) == 3
+end
+
+-- The fourth arm.  Same caveat the Gen 3 one carries and then some: a
+-- predicate is not support, and Gen 4 differs from everything above it in
+-- ways no amount of widening an `isGen2()` reaches -- a filesystem instead of
+-- a flat ROM, two screens instead of one, and a 3D field.  This exists so the
+-- Gen 4 work has a gate to hang itself on without touching the branches the
+-- other three generations take.
+function GameVersion.isGen4(id)
+  return GameVersion.generation(id) == 4
+end
+
+-- Does this cartridge have a second screen?  Asked of the VERSION rather than
+-- computed from the generation, because "Gen 4" and "has two screens" are not
+-- the same claim and the field code should say which one it means.
+function GameVersion.isDualScreen(id)
+  local info = GameVersion.info(id)
+  return (info and info.dualScreen) == true
 end
 
 function GameVersion.isBlue()

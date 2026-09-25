@@ -319,6 +319,43 @@ local function bootGame(version)
         (love.filesystem.getSaveDirectory() .. "/") or "",
       GameVersion.cachePrefix(GameVersion.get())), 0)
   end
+  -- ...AND THE PICTURES, WHICH THE OVERLAY DOES NOT MOVE.
+  --
+  -- Reported from play: "if i launch emerald, and then go to exit game and it
+  -- goes back to the launcher and then i load firered, its loading all the
+  -- data for emerald still ... it shows the emerald player, and when i talk to
+  -- people it shows code instead of their text", and then: "might occur for
+  -- other games too".  It does -- every pair of them.
+  --
+  -- The two lines above are the DATA half of a version switch and they are
+  -- right: the overlay moves and the generated modules are evicted, so
+  -- `data.generated.maps` is re-read off the new cache.  Art never goes
+  -- through `require`.  It is loaded by PATH through Assets.image, and every
+  -- version spells those paths identically -- "assets/generated/sprites/..."
+  -- is the player on all of them -- so what the overlay redirects on disk the
+  -- cache in front of it hands straight back from the game before.  The
+  -- player kept Emerald's body, and the dialogue kept Emerald's glyph sheet,
+  -- which is what "code instead of their text" is: FireRed's text codes
+  -- indexed into Hoenn's font pages.
+  --
+  -- Assets.invalidate is exactly this flush and it already fans out to every
+  -- downstream cache that was built from those images -- the map atlases and
+  -- the loaded Maps holding them, the sprite sheets, the font pages, the HUD
+  -- tiles, the battle art, the menu screens and the sound bank.  It had one
+  -- caller, the mod loader, and a version switch is the same event: the files
+  -- under those paths have changed.
+  --
+  -- After the mount, never before: it drops the cache, and a lookup between
+  -- the two would refill it through the overlay that is on its way out.
+  -- Unconditional, because a first boot has nothing cached and every
+  -- invalidator is a table-drop.
+  pcall(function()
+    local dropped = require("src.render.Assets").invalidate()
+    require("src.core.Logger").info(
+      "version switch: dropped %s cached image(s) so the new cache's own art "
+        .. "is loaded rather than the last game's",
+      tostring(dropped))
+  end)
   if love.window and love.window.setTitle then
     local Version = require("src.core.Version")
     local info = GameVersion.info()

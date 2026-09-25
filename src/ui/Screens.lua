@@ -172,6 +172,57 @@ local GEN3_ALIASES = {
                                                  forceOwned = true } },
 }
 
+-- WHICH GEN 4 SCREENS EXIST, which is currently one.
+--
+-- The same mechanism as GEN3_ALIASES above and for the same reason: every call
+-- site in this engine hardcodes the Game Boy id, so a Platinum player pressing
+-- OPTION in the START menu opened Kanto's option screen -- six Gen 1 rows, and
+-- a FRAME row with nothing to choose between.  The boot record already named
+-- Gen4Options, but only the MAIN MENU reads that record; the START menu pushes
+-- the id.
+--
+-- THE LIST IS SHORT BECAUSE THE SCREENS DO NOT EXIST YET, and that is stated
+-- rather than papered over.  Platinum's bag, party screen, summary pages and
+-- trainer card are all EXTRACTED -- the art is in the cache -- and none of
+-- them has a screen to draw it, so those ids still open the Game Boy ones and
+-- will keep doing so until they do.  Adding an alias for a screen that is not
+-- written would open a module that is not there.
+local GEN4_ALIASES = {
+  OptionsMenu = { id = "Gen4Options", opts = { onCancel = true } },
+  -- Reported from play alongside the options screen: the card was falling
+  -- back to Kanto's.  The Gen 4 one answers the same one option.
+  TrainerCard = { id = "Gen4TrainerCard", opts = { onCancel = true } },
+  -- The bag serves the same options Emerald's does EXCEPT the shop and the
+  -- PC's three stores, which have their own flows: a push carrying `sell`,
+  -- `itemPc` or `store` is declined here and goes to the screen that can
+  -- answer it rather than opening a Platinum bag that cannot.
+  BagMenu = { id = "Gen4BagMenu",
+              opts = { onCancel = true, battle = true, onPick = true,
+                       pick = true, pocket = true } },
+  -- THE FIELD PARTY MENU, and only that.  `battle` is deliberately absent:
+  -- every in-battle push carries it, and the Gen 3 screen already answers
+  -- SHIFT, forced switches and an item's target out of Emerald's own words.
+  -- So are `tmhm`, `chooseOrder` and `onOrder`, each of which needs words this
+  -- cartridge's cache does not carry.  A declined push is Hoenn's screen doing
+  -- the job; a served one that cannot finish it is a dead end.
+  PartyMenu = { id = "Gen4PartyMenu",
+                opts = { onCancel = true, onSwitch = true, pickOnly = true,
+                         forceSwitch = true, keepOpen = true } },
+  -- The summary is pushed with the Pokemon itself, which `servedBy` reads as
+  -- `mon`.  `choose` -- the move-learn screen asking which move to forget --
+  -- is NOT listed: that page needs the cartridge's own forget flow, and until
+  -- it exists the Gen 3 screen answers it.
+  SummaryMenu = { id = "Gen4SummaryMenu",
+                  opts = { onCancel = true, mon = true } },
+}
+
+local function isGen4(game)
+  local data = game and game.data
+  if data and data.isGen4Cache then return true end
+  local ok, V = pcall(require, "src.core.GameVersion")
+  return (ok and V.generation and V.generation(V.get()) == 4) and true or false
+end
+
 local function isGen3(game)
   local data = game and game.data
   if data and data.isGen3Cache then return true end
@@ -219,6 +270,19 @@ end
 -- The id a push should really open, and the arguments it should open with.
 -- Public so the suite can state the rule without driving a whole game.
 function Screens.resolveId(game, id, arg)
+  -- Gen 4 first: a cache is one or the other, and asking in this order means
+  -- the Gen 3 table never has to know that a fourth generation exists.
+  local gen4 = GEN4_ALIASES[id]
+  if gen4 and isGen4(game) then
+    local screens = game and game.data and game.data.screens
+    if not (screens and screens[id]) and servedBy(gen4, arg) then
+      local okG4, moduleG4 = pcall(builtinFor, gen4.id)
+      if okG4 and type(moduleG4) == "table"
+         and type(moduleG4.new) == "function" then
+        return gen4.id, arg
+      end
+    end
+  end
   local alias = GEN3_ALIASES[id]
   if not alias then return id, arg end
   if not isGen3(game) then return id, arg end

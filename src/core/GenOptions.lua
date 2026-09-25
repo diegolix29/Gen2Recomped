@@ -36,8 +36,11 @@
 
 local GenOptions = {}
 
-GenOptions.GENERATIONS = { 1, 2, 3 }
-GenOptions.COUNT = 3
+-- Gen 4 (Platinum) joins here.  `isGeneration` below is the one test the rest
+-- of the app should use; COUNT is what it bounds against, so these two lines
+-- are the whole change and nothing that defers to them needs touching.
+GenOptions.GENERATIONS = { 1, 2, 3, 4 }
+GenOptions.COUNT = 4
 
 GenOptions.SHARED_ONLY = {
   mods = true,
