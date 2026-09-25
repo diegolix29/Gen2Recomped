@@ -149,4 +149,24 @@ return {
     },
     description = "Controls which 2D battle effects are shown: authentic Stadium effects, all effects, or none.",
   },
+  -- Battle Canvas Background Options (managed by BattleCanvas module)
+  {
+    key = "battleCanvasEnabled",
+    type = "toggle",
+    label = "BATTLE BACKGROUNDS",
+    default = false,
+    description = "Use painted PNG arenas as the fight backdrop instead of the overworld map.",
+  },
+  {
+    key = "battleCanvasStyle",
+    type = "choice",
+    label = "BATTLE STYLE",
+    default = "arena",
+    choices = {
+      { "ARENA", "arena" },
+      { "SCENERY", "scenery" },
+      { "OFF", "off" },
+    },
+    description = "ARENA is the PNG backdrop only. SCENERY adds a scenery prop on top of that PNG.",
+  },
 }

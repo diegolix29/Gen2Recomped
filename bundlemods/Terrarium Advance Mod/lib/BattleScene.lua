@@ -1,4 +1,4 @@
-﻿-- Overworld battles: one frame of the arena, as geometry.
+-- Overworld battles: one frame of the arena, as geometry.
 --
 -- The same world the free-roam mode draws, from a placed camera instead of
 -- the orbit, at the WINDOW's own pixel resolution -- not the GB's. The
@@ -292,14 +292,16 @@ end
 
 local function castShadows(state, arena, terrain, nbMesh, cx, cy, vw, vh,
                            atlasFor, cards, token, host, neighbors,
-                           water, nbWater, groundY)
+                           water, nbWater, groundY, drawTerrain)
   if not ShadowMap.available() then return end
   local sig = shadowSignature(state, arena, terrain, nbMesh, token)
   if not ShadowMap.stale(sig) then return end
   if not ShadowMap.begin(cx, cy, vw, vh) then return end
 
   local discs = arena.discs and true or false
-  local drawTerrain = (not discs) or arena.showTerrain
+  if drawTerrain == nil then
+    drawTerrain = (not discs) or arena.showTerrain
+  end
 
   if discs then
     local fxCast = false
@@ -411,9 +413,18 @@ function BattleScene.render(state, arena, textures, token)
                             heightK = atmos.fog.heightK } or nil
 
   local discs = arena.discs and true or false
-  -- Control terrain rendering: Hides terrain for standard stadium voids, 
-  -- but keeps it if requested explicitly with arena.showTerrain
-  local drawTerrain = (not discs) or arena.showTerrain
+  -- Control terrain rendering: Hides terrain for standard stadium voids,
+  -- but keeps it if requested explicitly with arena.showTerrain.
+  -- Painted PNG arenas replace the overworld mesh entirely.
+  local paintedStage = false
+  pcall(function()
+    local BattleCanvas = V.require("BattleCanvas")
+    paintedStage = BattleCanvas and BattleCanvas.usingPaintedStage
+                   and BattleCanvas.usingPaintedStage()
+                   and BattleCanvas.getCanvasForBattle
+                   and BattleCanvas.getCanvasForBattle(state.map, arena) ~= nil
+  end)
+  local drawTerrain = (not paintedStage) and ((not discs) or arena.showTerrain)
 
   local terrain, nbMesh, water, nbWater
   if drawTerrain then
@@ -451,7 +462,7 @@ function BattleScene.render(state, arena, textures, token)
   local cards = monCards(arena, groundY, textures)
   Voxel3D.camera = nil
   castShadows(state, arena, terrain, nbMesh, cx, cy, vw, vh, atlasFor,
-              cards, token, host, neighbors, water, nbWater, groundY)
+              cards, token, host, neighbors, water, nbWater, groundY, drawTerrain)
 
   local sky = VoxelScene.skyColor(host, 1) or VoxelScene.skyShade(INDOOR_SHADE, 1)
   pcall(function()
@@ -481,6 +492,12 @@ function BattleScene.render(state, arena, textures, token)
     if not Voxel3D.beginScene(rw, rh, cx, cy, vw, vh, sky, "battle") then
       return
     end
+
+    -- PNG arena fills the bound battle canvas in screen space (not world 0,0).
+    -- Scenery, if chosen, is a prop on that PNG. 3D fighters/discs draw after.
+    pcall(function()
+      V.require("BattleCanvas").drawPaintedStage(state.map, arena)
+    end)
     
     if discs then
       local fxDrew = false
@@ -494,7 +511,7 @@ function BattleScene.render(state, arena, textures, token)
         V.require("StadiumStage").draw(arena, groundY)
       end
     end
-    
+
     -- Only draw the actual map if terrain is toggled ON
     if drawTerrain then
       Voxel3D.drawGroup(terrain, atlasFor(host), nil, nil, nil, nil)

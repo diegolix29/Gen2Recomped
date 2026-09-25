@@ -54,6 +54,15 @@ end
 local ModSetting = V.require("ModSetting")
 -- Dramatic Shape's own answer for maps under leaves rather than a roof
 local okDN, DayNight = pcall(V.require, "DayNight")
+-- Gen3 rooms carry taller building walls than Kanto/Johto's, which is why
+-- their caves need the extra bump below on top of the general cave one.
+-- Guarded the same way as FirstPerson above: a Gen1/Gen2-only build has
+-- no Gen3 arm to require, and every cave should just get the plain
+-- doubling in that case rather than taking the whole module down.
+local okG3, Gen3 = pcall(V.require, "Gen3")
+if not (okG3 and type(Gen3) == "table" and Gen3.mapIsGen3) then
+  Gen3 = { mapIsGen3 = function() return false end }
+end
 
 -- telemetry for the companion's on-screen panel; absence of the global
 -- means this module never loaded this session
@@ -65,7 +74,7 @@ local Ceiling = {}
 Ceiling.setting = ModSetting.new("fpceiling", "FP CEILING",
                                  { true, false }, { "ON", "OFF" })
 Ceiling.headroom = ModSetting.new("fpheadroom", "HEADROOM",
-                                  { 32, 24, 16 }, { "AIRY", "MID", "SNUG" })
+                                  { 100, 50, 24 }, { "AIRY", "MID", "SNUG" })
 Ceiling.cutaway = ModSetting.new("fpcutaway", "CUTAWAY",
                                  { true, false }, { "ON", "OFF" })
 
@@ -73,11 +82,21 @@ local WALL_H = 16          -- "wall is 16px for every interior in the game"
 local HOLE_RADIUS = 4      -- cutaway ceiling hole, in cells around the player
 local BLEND_GATE = 0.5
 
+-- Caves ride higher than the room's normal headroom: the rock canopy
+-- (the ROCK section, further down) read too close overhead at the stock
+-- height, so every cave -- Gen1, Gen2 or Gen3 -- gets double the room's
+-- configured headroom. Separately, Gen3's own walls run taller than
+-- Kanto/Johto's, so every Gen3 room -- caves included -- gets its
+-- headroom raised 25% before the cave doubling above is even applied,
+-- or the flat lid clips through those taller walls.
+local CAVE_HEIGHT_MULT = 8
+local GEN3_HEADROOM_MULT = 1.5
+
 -- shade language: lit vs shaded riser flanks (matching the mesher's south/
 -- east-lit sun), and the ceiling's checker pair
 local RISER_SHADE = { pz = 0.85, nz = 0.62, px = 0.80, nx = 0.66 }
 local CEIL_SHADE = { 0.42, 0.48 }
-
+    
 local cache = nil  -- { map, key, mesh, note }
 
 status("loaded (v3); awaiting the first frame indoors")
@@ -95,7 +114,7 @@ local function config()
   end
   return {
     ceiling = Ceiling.setting:get() == true,
-    headroom = Ceiling.headroom:get() or 32,
+    headroom = Ceiling.headroom:get() or 100,
     cutaway = Ceiling.cutaway:get() == true,
   }
 end
@@ -482,6 +501,38 @@ local function build(map, H, mode, pcx, pcy, tex)
   -- nobody wants stalactites over Lavender's floorboards.
   local ROCKY = { CAVERN = true, UNDERGROUND = true }
   local rocky = (tilesetId and ROCKY[tilesetId]) and true or false
+  local isGen3 = Gen3.mapIsGen3(map)
+  -- The CAVERN/UNDERGROUND ids above are the Kanto/Johto vocabulary and
+  -- never fire on Hoenn -- Gen3's caves carry a raw ROM tileset name
+  -- (gTileset_Cave and the rest) instead. Structures.lua already has the
+  -- real, purpose-built answer for "is this Gen3 room a cave": the
+  -- `rock_plateau` profile flag that its own rock-mass pass keys off
+  -- (data/gen3_shapes.lua), covering Granite Cave, Victory Road, Meteor
+  -- Falls and the other ~44 maps on that tileset. Reuse it here rather
+  -- than re-guessing from the map id, which misses names like "Meteor
+  -- Falls" or "Sky Pillar" that don't literally say "cave".
+  if not rocky and isGen3 then
+    local okG3c, g3c = pcall(Gen3.forMap, map)
+    rocky = (okG3c and g3c and g3c.profile and g3c.profile.rock_plateau)
+            and true or false
+  end
+  -- Bump H itself, before anything below reads it: the flat lid, the
+  -- risers that rise to meet it, the rock canopy that hangs beneath it,
+  -- the rail band and the light fittings all key off this one value, so
+  -- raising it here keeps the whole room consistent rather than just
+  -- pushing one surface up through a lid that stayed put.
+  --
+  -- Gen3's own walls run taller than Kanto/Johto's, so every Gen3
+  -- interior -- not just its caves -- gets the headroom setting itself
+  -- raised 25% before anything else, or its flat lid clips through those
+  -- walls even outside a cave. Caves then get double whatever headroom
+  -- they ended up with, across all three generations.
+  if isGen3 then
+    H = H * GEN3_HEADROOM_MULT
+  end
+  if rocky then
+    H = H * CAVE_HEIGHT_MULT
+  end
   local okShapes, shapes = pcall(TileShape.forMap, map)
   if not (okShapes and shapes) then return nil, "TileShape refused" end
   local wc, hc = map.widthCells or 0, map.heightCells or 0

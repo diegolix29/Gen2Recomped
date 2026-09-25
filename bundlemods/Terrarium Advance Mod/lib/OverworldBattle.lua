@@ -49,6 +49,8 @@ local Voxel3D = V.require("Voxel3D")
 local ChunkMesher = V.require("ChunkMesher")
 -- Battle UI hiding system
 local BattleBoxXY = V.require("BattleBoxXY")
+-- Battle canvas backgrounds
+local okBC, BattleCanvas = pcall(V.require, "BattleCanvas")
 
 local OverworldBattle = {}
 
@@ -582,6 +584,51 @@ function OverworldBattle.stageFor(state)
   return (okFind and arena) or nil
 end
 
+-- Select appropriate battle background based on map/arena characteristics
+function OverworldBattle.selectBattleBackground(map, arena)
+  if not map then return nil end
+  
+  local def = map.def
+  local tid = def.tileset or (map.tileset and map.tileset.id)
+  
+  -- Map tilesets to appropriate battle backgrounds
+  local bgMap = {
+    OVERWORLD = "grass-kanto-open",
+    FOREST = "forest-viridian",
+    PLATEAU = "safari-kanto",
+    SHIP_PORT = "ship-bow",
+    CAVERN = "cave-mt-moon",
+    UNDERGROUND = "cave-rock-tunnel",
+  }
+  
+  -- Check for specific location names in map ID
+  local mapId = map.id or ""
+  if mapId:find("viridian") then return "gym-viridian" end
+  if mapId:find("pallet") then return "grass-route1" end
+  if mapId:find("pewter") then return "gym-pewter" end
+  if mapId:find("cerulean") then return "cerulean-canal" end
+  if mapId:find("lavender") then return "tower-lavender" end
+  if mapId:find("celadon") then return "gym-celadon" end
+  if mapId:find("fuchsia") then return "gym-fuchsia" end
+  if mapId:find("saffron") then return "gym-saffron" end
+  if mapId:find("cinnabar") then return "gym-cinnabar" end
+  if mapId:find("seafoam") then return "cave-seafoam" end
+  if mapId:find("victory") then return "cave-victory-road" end
+  if mapId:find("indigo") then return "league-champion" end
+  if mapId:find("mt_moon") then return "cave-mt-moon" end
+  if mapId:find("rock") then return "rock-water-route10" end
+  if mapId:find("power") then return "industrial-power-plant" end
+  if mapId:find("silph") then return "industrial-silph" end
+  
+  -- Fallback to tileset-based mapping
+  if tid and bgMap[tid] then
+    return bgMap[tid]
+  end
+  
+  -- Default fallback
+  return "grass-kanto-open"
+end
+
 -- Stage a battle triggered from `state`, if this mode can. Returns true when
 -- a session started -- which is also the only case where anything visible
 -- changes, so a map with no room for an arena plays exactly the vanilla
@@ -603,6 +650,25 @@ function OverworldBattle.begin(state, battle)
               armed = false, token = 0 }
   cullCast(state)
   BattleCam.reset()
+  
+  -- Load battle canvas background if enabled
+  if okBC and BattleCanvas.getSettings then
+    local settings = BattleCanvas.getSettings()
+    if settings.enabled and settings.style ~= "off" then
+      local bgName = (BattleCanvas.selectBattleBackground
+                      and BattleCanvas.selectBattleBackground(state.map, arena))
+                     or OverworldBattle.selectBattleBackground(state.map, arena)
+      if bgName then
+        session.battleBackground = BattleCanvas.loadBattleBackground(bgName)
+        V.mod.log:info("[OverworldBattle] Loaded battle background: %s", tostring(bgName))
+      end
+      if BattleCanvas.selectSceneryForMap then
+        local sceneryName = BattleCanvas.selectSceneryForMap(state.map)
+        session.battleScenery = sceneryName and BattleCanvas.loadScenery(sceneryName)
+      end
+    end
+  end
+  
   local mode = OverworldBattle.setting:get()
   V.mod.log:info("[OverworldBattle] Calling Stadium.begin, mode=%s", tostring(mode))
   pcall(function() V.require("Stadium").begin(arena, battle) end)

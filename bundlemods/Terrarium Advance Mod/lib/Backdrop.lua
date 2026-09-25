@@ -23,6 +23,7 @@ local V = ...
 local Voxel3D = V.require("Voxel3D")
 local Mat4 = V.require("Mat4")
 local okDN, DayNight = pcall(V.require, "DayNight")
+local okBC, BattleCanvas = pcall(V.require, "BattleCanvas")
 
 local Backdrop = {}
 
@@ -33,6 +34,7 @@ local Y_TOP = 300         -- headroom above it
 local DRIFT = 1 / 24000   -- texture drift per world pixel walked
 
 local mesh, image, failed = nil, nil, false
+local sceneryMesh, sceneryImage = nil, nil
 
 local function status(s) _G.__ds_backdrop_status = s end
 status("loaded; awaiting the first outdoor frame")
@@ -140,6 +142,9 @@ function Backdrop.draw(state)
     return
   end
 
+  -- Scenery is drawn during battle scene, not during overworld backdrop rendering
+  -- (Handled by BattleScene.lua for battles)
+
   local tex = texture()
   -- the chosen panorama can change while the game is running, so notice
   -- when the published path is not the one we loaded
@@ -173,11 +178,54 @@ function Backdrop.draw(state)
     love.graphics.setDepthMode("lequal", false)
     Voxel3D.draw(mesh, tex, Mat4.translate(px, 0, pz))
   end)
+
   if drew then
     status(("drawn at r=%d, drift %.3f"):format(RADIUS, (px * DRIFT) % 1))
   else
     status("draw failed")
   end
+end
+
+-- Draw scenery foreground elements (battle PNG overlay; screen-space)
+function Backdrop.drawScenery(state, px, pz)
+  if not (okBC and BattleCanvas and BattleCanvas.drawPaintedStage) then return end
+  BattleCanvas.drawPaintedStage(state and state.map, nil)
+end
+
+-- Select appropriate scenery based on map characteristics
+function Backdrop.selectSceneryForMap(map)
+  local def = map and map.def
+  if not def then return nil end
+  
+  local tid = def.tileset or (map.tileset and map.tileset.id)
+  
+  -- Map tilesets to appropriate scenery
+  local sceneryMap = {
+    OVERWORLD = "kanto_panorama",
+    FOREST = "forest_edge_a",
+    PLATEAU = "route8_horizon",
+    SHIP_PORT = "harbor_edge",
+    -- Add more mappings as needed
+  }
+  
+  -- Fallback to general scenery based on map name/connections
+  if tid and sceneryMap[tid] then
+    return sceneryMap[tid]
+  end
+  
+  -- Check for specific location names in map ID
+  local mapId = map.id or ""
+  if mapId:find("viridian") then return "viridian_town" end
+  if mapId:find("pallet") then return "rural_edge" end
+  if mapId:find("pewter") then return "route8_midground" end
+  if mapId:find("cerulean") then return "coastal_landmarks_v3" end
+  if mapId:find("lavender") then return "pokemon_tower_wall" end
+  if mapId:find("celadon") then return "metropolis" end
+  if mapId:find("fuchsia") then return "mini_trees" end
+  if mapId:find("saffron") then return "cinnabar_story_landmarks" end
+  
+  -- Default fallback
+  return "kanto_panorama"
 end
 
 function Backdrop.invalidate()
