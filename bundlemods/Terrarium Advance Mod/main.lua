@@ -250,7 +250,9 @@ local stadiumFx2DLayer = ModSetting.new("stadiumFx2DLayer", "2D EFFECT LAYER",
 local battleCanvasEnabled = ModSetting.new("battleCanvasEnabled", "BATTLE BACKGROUNDS",
   { true, false }, { "ON", "OFF" })
 local battleCanvasStyle = ModSetting.new("battleCanvasStyle", "BATTLE STYLE",
-  { "arena", "scenery", "off" }, { "ARENA", "SCENERY", "OFF" })
+  { "arena", "off" }, { "ARENA", "OFF" })
+local overworldSceneryEnabled = ModSetting.new("overworldSceneryEnabled", "OVERWORLD SCENERY",
+  { true, false }, { "ON", "OFF" })
 
 -- Camera and movement modules for 1ST/3RD person views
 local Jump = V.require("Jump")
@@ -1228,9 +1230,12 @@ local SETTINGS = {
     .. "Uses assets/battle/ arena backgrounds when ON.",
     cat = "battles" },
   { battleCanvasStyle,
-    "Choose battle background style: ARENA (battle arenas), SCENERY (landscape foregrounds), or OFF (default).",
+    "Choose battle background style: ARENA (battle arenas) or OFF (default).",
     when = function() return battleCanvasEnabled:get() == true end,
     cat = "battles" },
+  { overworldSceneryEnabled,
+    "Enables horizon scenery props in the overworld 3D world. Uses assets/scenery/ images.",
+    cat = "world" },
   -- `full` for the reason the battle rows have it and more plainly: this is
   -- not a knob on the diorama at all, it is what the grass is made of. A
   -- preset that owns the look has no business owning it.
@@ -1755,7 +1760,7 @@ local HEADROOM = { AIRY = 50, MID = 24, SNUG = 16 }
 _G.__ds_ceiling_config = function()
   -- Use the actual setting objects where available
   local ceilingOn = true
-  local headroomVal = 50
+  local headroomVal = 36
   local cutawayOn = true
   if Ceiling and Ceiling.setting then
     local ok, v = pcall(function() return Ceiling.setting:get() end)
@@ -1763,7 +1768,7 @@ _G.__ds_ceiling_config = function()
   end
   if Ceiling and Ceiling.headroom then
     local ok, v = pcall(function() return Ceiling.headroom:get() end)
-    if ok and v then headroomVal = HEADROOM[v] or 50 end
+    if ok and v then headroomVal = HEADROOM[v] or 100 end
   end
   if Ceiling and Ceiling.cutaway then
     local ok, v = pcall(function() return Ceiling.cutaway:get() end)
@@ -1810,6 +1815,7 @@ _G.__ds_ceiling_config = function()
     umbrellas = getSetting(FpCeilingSettings.umbrellas, true) ~= false,
     puddles = getSetting(FpCeilingSettings.puddles, true) ~= false,
     lightning = getSetting(FpCeilingSettings.lightning, true) ~= false,
+    overworldScenery = getSetting(overworldSceneryEnabled, true) ~= false,
     lights = getSetting(FpCeilingSettings.lights, true) ~= false,
     shafts = getSetting(FpCeilingSettings.shafts, true) ~= false,
     canopy = getSetting(FpCeilingSettings.canopy, true) ~= false,

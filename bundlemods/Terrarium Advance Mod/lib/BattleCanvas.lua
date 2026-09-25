@@ -178,9 +178,17 @@ function BattleCanvas.selectBattleBackground(map, arena)
   local tid = def and (def.tileset or (map.tileset and map.tileset.id))
   local mapId = map.id or ""
   
-  -- Debug logging to understand why selection fails
-  status(("selectBattleBackground: mapId=%s, tileset=%s, def=%s"):format(
-    tostring(mapId), tostring(tid), type(def)))
+  -- Try to get map ID from other sources if standard map.id is missing
+  if mapId == "" then
+    mapId = tostring(map.name or map._id or map.identifier or "")
+  end
+  
+  -- Normalize tileset ID for Gen 2 compatibility
+  local normalizedTid = tid
+  if tid then
+    -- Convert Gen 2 tileset names like "TilesetCave" to "CAVERN"
+    normalizedTid = tid:gsub("Tileset", ""):upper()
+  end
   
   local bgMap = {
     OVERWORLD = "grass-kanto-open",
@@ -189,8 +197,12 @@ function BattleCanvas.selectBattleBackground(map, arena)
     SHIP_PORT = "ship-bow",
     CAVERN = "cave-mt-moon",
     UNDERGROUND = "cave-rock-tunnel",
+    -- Gen 2 specific mappings
+    JOHTO = "grass-kanto-open",
+    CAVE = "cave-mt-moon",
   }
 
+  -- Try map ID patterns first (more specific)
   if mapId:find("viridian") then return "gym-viridian" end
   if mapId:find("pallet") then return "grass-route1" end
   if mapId:find("pewter") then return "gym-pewter" end
@@ -207,12 +219,30 @@ function BattleCanvas.selectBattleBackground(map, arena)
   if mapId:find("rock") then return "rock-water-route10" end
   if mapId:find("power") then return "industrial-power-plant" end
   if mapId:find("silph") then return "industrial-silph" end
+  if mapId:find("gym") then return "gym-viridian" end -- Fallback for any gym
+  if mapId:find("forest") then return "forest-viridian" end
+  if mapId:find("cave") then return "cave-mt-moon" end
+  if mapId:find("fall") then return "cave-mt-moon" end -- Waterfall areas are often caves
+  if mapId:find("route") then return "grass-kanto-open" end
+  
+  -- Try tileset matching with both original and normalized names
   if tid and bgMap[tid] then 
-    status(("selectBattleBackground: matched tileset %s -> %s"):format(tid, bgMap[tid]))
     return bgMap[tid] 
   end
+  if normalizedTid and bgMap[normalizedTid] then 
+    return bgMap[normalizedTid] 
+  end
   
-  status(("selectBattleBackground: no match found, defaulting to grass-kanto-open"))
+  -- Try to detect from map properties
+  if def then
+    if def.indoor or def.cave or def.underground then
+      return "cave-mt-moon"
+    end
+    if def.water or def.ocean or def.sea then
+      return "coast-surf"
+    end
+  end
+  
   return "grass-kanto-open"
 end
 
@@ -233,8 +263,12 @@ function BattleCanvas.selectSceneryForMap(map, arena)
   local tid = def and (def.tileset or (map.tileset and map.tileset.id))
   local mapId = map.id or ""
   
-  -- Debug logging for scenery selection
-  status(("selectSceneryForMap: mapId=%s, tileset=%s"):format(tostring(mapId), tostring(tid)))
+  -- Normalize tileset ID for Gen 2 compatibility
+  local normalizedTid = tid
+  if tid then
+    -- Convert Gen 2 tileset names like "TilesetCave" to "CAVERN"
+    normalizedTid = tid:gsub("Tileset", ""):upper()
+  end
   
   local sceneryMap = {
     OVERWORLD = "kanto_panorama",
@@ -243,6 +277,9 @@ function BattleCanvas.selectSceneryForMap(map, arena)
     SHIP_PORT = "harbor_edge",
     CAVERN = "mt_moon_wall",
     UNDERGROUND = "mt_moon_wall",
+    -- Gen 2 specific mappings
+    JOHTO = "kanto_panorama",
+    CAVE = "mt_moon_wall",
   }
   
   if mapId:find("viridian") then return "viridian_town" end
@@ -256,12 +293,16 @@ function BattleCanvas.selectSceneryForMap(map, arena)
   if mapId:find("cinnabar") then return "cinnabar_story_landmarks" end
   if mapId:find("forest") then return "forest_edge_a" end
   if mapId:find("moon") then return "mt_moon_wall" end
+  if mapId:find("fall") then return "mt_moon_wall" end -- Waterfall areas as caves
+  
+  -- Try tileset matching with both original and normalized names
   if tid and sceneryMap[tid] then 
-    status(("selectSceneryForMap: matched tileset %s -> %s"):format(tid, sceneryMap[tid]))
     return sceneryMap[tid] 
   end
+  if normalizedTid and sceneryMap[normalizedTid] then 
+    return sceneryMap[normalizedTid] 
+  end
   
-  status(("selectSceneryForMap: no match found, defaulting to kanto_panorama"))
   return "kanto_panorama"
 end
 
@@ -319,9 +360,9 @@ local function drawCover(img, dw, dh)
   love.graphics.draw(img, 0, 0, 0, dw / iw, dh / ih)
 end
 
--- Scenery sits on the arena PNG as a horizon-anchored overlay, aspect preserved.
--- This positions scenery at the horizon line (upper portion) rather than bottom-anchored.
-local function drawBottomProp(img, dw, dh)
+-- Scenery sits BEHIND the arena PNG as a background layer, aspect preserved.
+-- This positions scenery at the horizon line (upper portion) behind the arena.
+local function drawBackgroundScenery(img, dw, dh)
   local iw, ih = img:getDimensions()
   if iw <= 0 or ih <= 0 then return end
   local scale = dw / iw
@@ -331,8 +372,8 @@ local function drawBottomProp(img, dw, dh)
     h = dh
   end
   local x = (dw - iw * scale) * 0.5
-  -- Position at horizon (upper portion) instead of bottom
-  local y = 0  -- Top-anchored for horizon view
+  -- Position at horizon (upper portion) behind arena
+  local y = dh * 0.05  -- 5% down from top
   love.graphics.draw(img, x, y, 0, scale, scale)
 end
 
@@ -355,13 +396,15 @@ function BattleCanvas.drawPaintedStage(map, arena)
   if g.setBlendMode then g.setBlendMode("alpha") end
   g.setColor(1, 1, 1, 1)
 
-  drawCover(backdrop, dw, dh)
-
+  -- Draw scenery BEHIND arena (background layer)
   local sceneryName = BattleCanvas.selectSceneryForMap(map, arena)
   local scenery = BattleCanvas.loadScenery(sceneryName)
   if scenery then
-    drawBottomProp(scenery, dw, dh)
+    drawBackgroundScenery(scenery, dw, dh)
   end
+
+  -- Draw arena ON TOP of scenery (foreground layer)
+  drawCover(backdrop, dw, dh)
 
   if g.setShader then g.setShader(prevShader) end
   if g.setDepthMode then g.setDepthMode(cmp or "lequal", write ~= false) end

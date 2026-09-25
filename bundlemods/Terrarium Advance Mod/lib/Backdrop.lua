@@ -142,9 +142,6 @@ function Backdrop.draw(state)
     return
   end
 
-  -- Scenery is drawn during battle scene, not during overworld backdrop rendering
-  -- (Handled by BattleScene.lua for battles)
-
   local tex = texture()
   -- the chosen panorama can change while the game is running, so notice
   -- when the published path is not the one we loaded
@@ -184,6 +181,79 @@ function Backdrop.draw(state)
   else
     status("draw failed")
   end
+  
+  -- Draw overworld scenery in front of backdrop
+  Backdrop.drawOverworldScenery(state, px, pz)
+end
+
+-- Draw overworld scenery in front of backdrop (3D world, separate from battles)
+function Backdrop.drawOverworldScenery(state, px, pz)
+  -- Check if overworld scenery is enabled via settings
+  local cfg = {}
+  local pub = rawget(_G, "__ds_ceiling_config")
+  if type(pub) == "function" then
+    local okCfg, c = pcall(pub)
+    if okCfg and type(c) == "table" then cfg = c end
+  end
+  if cfg.overworldScenery == false then
+    return  -- Overworld scenery disabled
+  end
+  
+  if not (okBC and BattleCanvas) then return end
+  
+  local map = state and state.map
+  if not map then return end
+  
+  -- Only draw scenery for outdoor maps
+  if not isOutdoor(map) then return end
+  
+  -- Select scenery based on map (using BattleCanvas's selection logic)
+  local sceneryName = Backdrop.selectSceneryForMap(map)
+  if not sceneryName then return end
+  
+  -- Load scenery using BattleCanvas's loader
+  local scenery = BattleCanvas.loadScenery and BattleCanvas.loadScenery(sceneryName)
+  if not scenery then return end
+  
+  -- Draw scenery as a horizon prop in the 3D world
+  -- This positions it in front of the backdrop but behind the terrain
+  local g = love.graphics
+  if not (g and g.draw) then return end
+  
+  guarded(function()
+    -- Draw scenery at horizon position in 3D space
+    -- Position it at a far distance, following the player
+    local sceneryRadius = RADIUS * 0.95  -- Slightly inside the backdrop
+    local sceneryY = 0  -- Ground level
+    
+    -- Create a simple plane mesh for scenery if needed
+    if not sceneryMesh then
+      sceneryMesh = buildSceneryPlane()
+    end
+    
+    if sceneryMesh then
+      love.graphics.setDepthMode("lequal", false)
+      -- Position scenery around the player like the backdrop
+      Voxel3D.draw(sceneryMesh, scenery, Mat4.translate(px, sceneryY, pz))
+    end
+  end)
+end
+
+-- Build a simple plane for scenery display
+local function buildSceneryPlane()
+  local verts, indexMap, quads = {}, {}, 0
+  local w = 200  -- Width of scenery display
+  local h = 100  -- Height of scenery display
+  
+  -- Simple quad facing the player
+  verts[#verts + 1] = { -w/2, h, 0, 0, 0, 1 }
+  verts[#verts + 1] = { w/2, h, 0, 1, 0, 1 }
+  verts[#verts + 1] = { w/2, 0, 0, 1, 1, 1 }
+  verts[#verts + 1] = { -w/2, 0, 0, 0, 1, 1 }
+  Voxel3D.pushQuad(indexMap, quads)
+  quads = quads + 1
+  
+  return Voxel3D.newMesh(verts, indexMap)
 end
 
 -- Draw scenery foreground elements (battle PNG overlay; screen-space)
