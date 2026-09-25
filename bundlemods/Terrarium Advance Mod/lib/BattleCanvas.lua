@@ -119,11 +119,69 @@ function BattleCanvas.loadScenery(name)
   }, "scenery_" .. name)
 end
 
+local function livePlayer()
+  local ok, Game = pcall(require, "src.core.Game")
+  if not (ok and Game) then return nil end
+  if Game.overworld and Game.overworld.player then return Game.overworld.player end
+  if Game.player then return Game.player end
+  return Game.save and Game.save.player
+end
+
+local function playerCellIsWater(map, player)
+  if not (map and player and type(map.isWaterCell) == "function") then
+    return false
+  end
+  if player.cellX == nil or player.cellY == nil then return false end
+  local ok, water = pcall(map.isWaterCell, map, player.cellX, player.cellY)
+  return ok and water == true
+end
+
+-- True when this fight should use a water/surf PNG, not the map's land art.
+-- Map-id matching otherwise always wins (Cinnabar -> gym, Pallet -> grass)
+-- even while the player is mid-Surf.
+function BattleCanvas.onWater(map, arena)
+  if arena and (arena.water == true or arena.surfing == true) then
+    return true
+  end
+  local player = livePlayer()
+  if player then
+    if player.surfing == true or player.isSurfing == true then return true end
+    local surface = player.surface
+    if surface == "water" or surface == "surfing" or surface == "surf" then
+      return true
+    end
+    if playerCellIsWater(map, player) then return true end
+  end
+  return false
+end
+
+local function waterBackground(map)
+  local mapId = (map and map.id) or ""
+  if mapId:find("cerulean") then return "cerulean-canal" end
+  if mapId:find("cinnabar") then return "coast-cinnabar" end
+  if mapId:find("vermilion") then return "ship-bow" end
+  if mapId:find("rock") then return "rock-water-route10" end
+  if mapId:find("seafoam") then return "cave-seafoam" end
+  return "coast-surf"
+end
+
 function BattleCanvas.selectBattleBackground(map, arena)
-  if not map then return "grass-kanto-open" end
+  if BattleCanvas.onWater(map, arena) then
+    return waterBackground(map)
+  end
+  if not map then 
+    status("selectBattleBackground: no map provided, defaulting to grass-kanto-open")
+    return "grass-kanto-open" 
+  end
 
   local def = map.def
   local tid = def and (def.tileset or (map.tileset and map.tileset.id))
+  local mapId = map.id or ""
+  
+  -- Debug logging to understand why selection fails
+  status(("selectBattleBackground: mapId=%s, tileset=%s, def=%s"):format(
+    tostring(mapId), tostring(tid), type(def)))
+  
   local bgMap = {
     OVERWORLD = "grass-kanto-open",
     FOREST = "forest-viridian",
@@ -133,7 +191,6 @@ function BattleCanvas.selectBattleBackground(map, arena)
     UNDERGROUND = "cave-rock-tunnel",
   }
 
-  local mapId = map.id or ""
   if mapId:find("viridian") then return "gym-viridian" end
   if mapId:find("pallet") then return "grass-route1" end
   if mapId:find("pewter") then return "gym-pewter" end
@@ -150,14 +207,35 @@ function BattleCanvas.selectBattleBackground(map, arena)
   if mapId:find("rock") then return "rock-water-route10" end
   if mapId:find("power") then return "industrial-power-plant" end
   if mapId:find("silph") then return "industrial-silph" end
-  if tid and bgMap[tid] then return bgMap[tid] end
+  if tid and bgMap[tid] then 
+    status(("selectBattleBackground: matched tileset %s -> %s"):format(tid, bgMap[tid]))
+    return bgMap[tid] 
+  end
+  
+  status(("selectBattleBackground: no match found, defaulting to grass-kanto-open"))
   return "grass-kanto-open"
 end
 
-function BattleCanvas.selectSceneryForMap(map)
-  if not map then return "kanto_panorama" end
+function BattleCanvas.selectSceneryForMap(map, arena)
+  if BattleCanvas.onWater(map, arena) then
+    local mapId = (map and map.id) or ""
+    if mapId:find("cerulean") or mapId:find("cinnabar") then
+      return "coastal_landmarks_v3"
+    end
+    return "harbor_edge"
+  end
+  if not map then 
+    status("selectSceneryForMap: no map provided, defaulting to kanto_panorama")
+    return "kanto_panorama" 
+  end
+  
   local def = map.def
   local tid = def and (def.tileset or (map.tileset and map.tileset.id))
+  local mapId = map.id or ""
+  
+  -- Debug logging for scenery selection
+  status(("selectSceneryForMap: mapId=%s, tileset=%s"):format(tostring(mapId), tostring(tid)))
+  
   local sceneryMap = {
     OVERWORLD = "kanto_panorama",
     FOREST = "forest_edge_a",
@@ -166,7 +244,7 @@ function BattleCanvas.selectSceneryForMap(map)
     CAVERN = "mt_moon_wall",
     UNDERGROUND = "mt_moon_wall",
   }
-  local mapId = map.id or ""
+  
   if mapId:find("viridian") then return "viridian_town" end
   if mapId:find("pallet") then return "rural_edge" end
   if mapId:find("pewter") then return "route8_midground" end
@@ -178,17 +256,43 @@ function BattleCanvas.selectSceneryForMap(map)
   if mapId:find("cinnabar") then return "cinnabar_story_landmarks" end
   if mapId:find("forest") then return "forest_edge_a" end
   if mapId:find("moon") then return "mt_moon_wall" end
-  if tid and sceneryMap[tid] then return sceneryMap[tid] end
+  if tid and sceneryMap[tid] then 
+    status(("selectSceneryForMap: matched tileset %s -> %s"):format(tid, sceneryMap[tid]))
+    return sceneryMap[tid] 
+  end
+  
+  status(("selectSceneryForMap: no match found, defaulting to kanto_panorama"))
   return "kanto_panorama"
 end
 
 function BattleCanvas.getCanvasForBattle(map, arena)
   if not BattleCanvas.usingPaintedStage() then
+    status("getCanvasForBattle: painted stage not enabled")
     return nil
   end
+  
+  -- Debug: log what we received
+  status(("getCanvasForBattle: map=%s, arena=%s"):format(
+    type(map), type(arena)))
+  
   local bgName = BattleCanvas.selectBattleBackground(map, arena)
+  status(("canvas pick %s (water=%s)"):format(
+    tostring(bgName), tostring(BattleCanvas.onWater(map, arena))))
   local canvas = BattleCanvas.loadBattleBackground(bgName)
-  if canvas then return canvas end
+  if canvas then 
+    status(("getCanvasForBattle: successfully loaded %s"):format(bgName))
+    return canvas 
+  end
+  
+  status(("getCanvasForBattle: failed to load %s, trying fallbacks"):format(bgName))
+  if BattleCanvas.onWater(map, arena) then
+    canvas = BattleCanvas.loadBattleBackground("coast-surf")
+      or BattleCanvas.loadBattleBackground("coast-cinnabar")
+      or BattleCanvas.loadBattleBackground("cerulean-canal")
+    if canvas then return canvas end
+  end
+  
+  status("getCanvasForBattle: all fallbacks failed, using grass-kanto-open")
   return BattleCanvas.loadBattleBackground("grass-kanto-open")
 end
 
@@ -215,7 +319,8 @@ local function drawCover(img, dw, dh)
   love.graphics.draw(img, 0, 0, 0, dw / iw, dh / ih)
 end
 
--- Scenery sits on the arena PNG as a bottom-anchored overlay, aspect preserved.
+-- Scenery sits on the arena PNG as a horizon-anchored overlay, aspect preserved.
+-- This positions scenery at the horizon line (upper portion) rather than bottom-anchored.
 local function drawBottomProp(img, dw, dh)
   local iw, ih = img:getDimensions()
   if iw <= 0 or ih <= 0 then return end
@@ -226,7 +331,8 @@ local function drawBottomProp(img, dw, dh)
     h = dh
   end
   local x = (dw - iw * scale) * 0.5
-  local y = dh - h
+  -- Position at horizon (upper portion) instead of bottom
+  local y = 0  -- Top-anchored for horizon view
   love.graphics.draw(img, x, y, 0, scale, scale)
 end
 
@@ -251,7 +357,7 @@ function BattleCanvas.drawPaintedStage(map, arena)
 
   drawCover(backdrop, dw, dh)
 
-  local sceneryName = BattleCanvas.selectSceneryForMap(map)
+  local sceneryName = BattleCanvas.selectSceneryForMap(map, arena)
   local scenery = BattleCanvas.loadScenery(sceneryName)
   if scenery then
     drawBottomProp(scenery, dw, dh)

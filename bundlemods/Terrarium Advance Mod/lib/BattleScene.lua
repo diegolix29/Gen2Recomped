@@ -423,6 +423,14 @@ function BattleScene.render(state, arena, textures, token)
                    and BattleCanvas.usingPaintedStage()
                    and BattleCanvas.getCanvasForBattle
                    and BattleCanvas.getCanvasForBattle(state.map, arena) ~= nil
+    -- Debug logging for painted stage detection
+    if BattleCanvas and BattleCanvas.usingPaintedStage then
+      local mod = V and V.mod
+      if mod and mod.log then
+        mod.log:info("[BattleScene] paintedStage=%s, map.id=%s", 
+          tostring(paintedStage), tostring(state.map and state.map.id))
+      end
+    end
   end)
   local drawTerrain = (not paintedStage) and ((not discs) or arena.showTerrain)
 

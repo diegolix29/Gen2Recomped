@@ -189,7 +189,11 @@ end
 -- Draw scenery foreground elements (battle PNG overlay; screen-space)
 function Backdrop.drawScenery(state, px, pz)
   if not (okBC and BattleCanvas and BattleCanvas.drawPaintedStage) then return end
-  BattleCanvas.drawPaintedStage(state and state.map, nil)
+  local arena = nil
+  if state and state.player and state.player.surfing then
+    arena = { surfing = true, water = true }
+  end
+  BattleCanvas.drawPaintedStage(state and state.map, arena)
 end
 
 -- Select appropriate scenery based on map characteristics
