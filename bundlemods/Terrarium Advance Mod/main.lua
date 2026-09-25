@@ -2578,21 +2578,13 @@ do
   local Map = require("src.world.Map")
   if not Map.dramaticShapeBlockHook then
     local setBlock = Map.setBlock
-    Map.setBlock = function(self, bx, by, ...)
+    Map.setBlock = function(self, bx, by, block)
       local before = self:blockAt(bx, by)
-      local r1, r2, r3 = setBlock(self, bx, by, ...)
+      setBlock(self, bx, by, block)
       if self.id and self:blockAt(bx, by) ~= before then
-        local okG, Gen3 = pcall(V.require, "Gen3")
-        if okG and Gen3 and type(Gen3.forgetMap) == "function" then
-          pcall(Gen3.forgetMap, self)
-        end
-        local okD, Disk = pcall(V.require, "VoxelDiskCache")
-        if okD and Disk and type(Disk.forget) == "function" then
-          pcall(Disk.forget, self)
-        end
         ChunkMesher.refresh(self.id)
+        GroundFX.invalidate()
       end
-      return r1, r2, r3
     end
     Map.dramaticShapeBlockHook = true
   end
