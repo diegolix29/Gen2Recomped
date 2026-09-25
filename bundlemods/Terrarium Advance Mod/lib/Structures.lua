@@ -6748,7 +6748,7 @@ end
 --- 32 and counted -- if the count is most of the town the floor writer is what
 --- needs fixing, not this cap.  Ranked-elevation maps (Mt Pyre's six tiers,
 --- Ever Grande's three) are not bowls and keep their floors untouched.
-local GEN3_OUTDOOR_FACADE_CAP = 50      -- 25% higher for Gen3 buildings with higher walls
+local GEN3_OUTDOOR_FACADE_CAP = 40      -- two cells; a house, not a tower
 local GEN3_CRATER_STREET_MAX = 32       -- two courses above the lake
 function Structures.foundGen3Buildings(S, map, x0, x1, y0, y1)
   if not S.isGen3 then return end
