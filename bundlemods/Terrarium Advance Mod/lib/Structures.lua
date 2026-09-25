@@ -13472,6 +13472,12 @@ function Structures.forMap(map)
     -- ...and last of all the planks, which need the water under them settled
     -- before they can be cut out of it.
     pcall(Structures.carveGen3DeckPlanks, S, map)
+    -- ...and the water's own low mesh plane, last of everything above:
+    -- the only reader of a water cell's `S.runs[k]` that needs the
+    -- SETTLED surface rather than the raw art recess, and every pass that
+    -- moves that surface (the pool flood, a fall's lip, a bank's shore,
+    -- the deck cut) has now run.
+    pcall(Structures.buildGen3WaterInstances, S, map, 0, tw, 0, th)
   end
 
   -- A BUILDING'S BOX COVERS ITS WHOLE FOOTPRINT, AND THIS IS THE LAST WORD.

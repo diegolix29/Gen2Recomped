@@ -124,9 +124,55 @@ end
 -- Forest, the Safari Zone areas, Route gatehouse yards and the Plateau
 -- grounds all have no connections, so "warp-only" alone would roof them.
 -- A ceiling over the forest is the one thing worse than no ceiling at all.
+--
+-- Gen 1/2 ONLY: these are the native engine's own symbolic tileset ids
+-- (see lib/TwinRegionWorld.lua and lib/KantoGen2Style.lua for the full
+-- vocabulary). A Gen 3 map's tileset id is never one of these -- Hoenn
+-- carries a raw ROM address (P03DF704 and the like) and FireRed carries
+-- its own frlg_gTileset_* names -- so this table can never fire for a
+-- Gen 3 or FRLG map, and never did. See ROOFTOP_OVERRIDE and
+-- gen3Outdoor() below for their equivalent.
 local OPEN_AIR_TILESETS = {
   OVERWORLD = true, FOREST = true, PLATEAU = true, SHIP_PORT = true,
 }
+
+-- Gen 3/FRLG's warp-only-but-actually-sky maps: the same problem
+-- OPEN_AIR_TILESETS solves for Gen 1/2, by name instead of by tileset,
+-- because Emerald and FireRed's own MAP_TYPE calls every one of these
+-- an INDOOR map (no weather, no wild encounters up there) even though
+-- the room is a rooftop standing under the open sky. Confirmed against
+-- data/gen3_maps.lua and data/firered/gen3_maps.lua -- every row below
+-- reads outdoor = false there and would otherwise fall through
+-- gen3Outdoor() and then the connections test (rooftops are reached by
+-- a single stairwell warp, so they have no def.connections either) and
+-- get sealed with a flat lid, sky and all.
+--
+-- Deliberately NOT included: FRLG's CeladonCity_Condominiums_RoofRoom
+-- (MAP_G10_N11) -- that one IS an enclosed room standing on the roof,
+-- not the open roof itself, and should keep its ceiling.
+local ROOFTOP_OVERRIDE = {
+  MAP_G13_N21 = true,   -- Hoenn: LilycoveCity_DepartmentStoreRooftop
+  MAP_G26_N65 = true,   -- Hoenn: TrainerHill_Roof
+  MAP_G02_N09 = true,   -- FRLG:  TrainerTower_Roof
+  MAP_G10_N05 = true,   -- FRLG:  CeladonCity_DepartmentStore_Roof
+  MAP_G10_N10 = true,   -- FRLG:  CeladonCity_Condominiums_Roof
+}
+
+-- Gen 3/FRLG's OWN outdoor answer, straight from data/gen3_maps.lua (or
+-- data/firered/gen3_maps.lua when FRLG content is what's loaded -- same
+-- require name, resolved per the active game, exactly as Gen3.lua reads
+-- it at ~line 3774 for its own terrain classification). This is the ROM's
+-- MAP_TYPE, not a guess from tileset id or connections, so it is the
+-- right first answer for anything this data file has heard of. Returns
+-- nil (not false) for a map the file has no row for, so the caller can
+-- tell "known indoor" from "unknown" and keep falling through.
+local function gen3Outdoor(map)
+  local okMaps, m = pcall(V.data, "gen3_maps")
+  if not (okMaps and type(m) == "table" and m.maps) then return nil end
+  local entry = m.maps[tostring(map.id)]
+  if not entry or entry.outdoor == nil then return nil end
+  return entry.outdoor and true or false
+end
 
 -- Dramatic Shape 1.5.5 added a 3RD rung: the same first-person rig with
 -- the eye boomed back behind the shoulder.  The blend reads as engaged
@@ -164,17 +210,32 @@ local function isInterior(map)
   end
 
   -- 2. an open-air tileset is open air whatever its connections say
+  -- (Gen 1/2 only -- see OPEN_AIR_TILESETS's own note)
   local tid = def.tileset or (map.tileset and map.tileset.id)
   if tid and OPEN_AIR_TILESETS[tid] then return false end
 
-  -- 3. the engine's own outdoor test where it has one
+  -- 3. Gen 3/FRLG's named rooftop exceptions: physically open air even
+  -- though the ROM calls the room indoors (see ROOFTOP_OVERRIDE)
+  if map.id and ROOFTOP_OVERRIDE[tostring(map.id)] then return false end
+
+  -- 4. Gen 3/FRLG's own MAP_TYPE outdoor answer, where the data file has
+  -- heard of the map (see gen3Outdoor's own note). Checked before the
+  -- generic engine test and the connections fallback below because it is
+  -- the ROM's own statement, not an inference -- and it is what steps 5
+  -- and 6 were only ever standing in for on a Gen 3 map.
+  if Gen3.mapIsGen3(map) then
+    local outdoor = gen3Outdoor(map)
+    if outdoor ~= nil then return not outdoor end
+  end
+
+  -- 5. the engine's own outdoor test where it has one
   local ok, outdoor = pcall(function()
     local Map = require("src.world.Map")
     return Map.isOutdoor and Map.isOutdoor(def)
   end)
   if ok and outdoor ~= nil then return not outdoor end
 
-  -- 4. last resort: a map with neighbours is a map with sky
+  -- 6. last resort: a map with neighbours is a map with sky
   local conns = def.connections
   return not (conns and next(conns) ~= nil)
 end
