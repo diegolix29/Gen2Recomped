@@ -65,7 +65,7 @@ local Ceiling = {}
 Ceiling.setting = ModSetting.new("fpceiling", "FP CEILING",
                                  { true, false }, { "ON", "OFF" })
 Ceiling.headroom = ModSetting.new("fpheadroom", "HEADROOM",
-                                  { 32, 24, 16 }, { "AIRY", "MID", "SNUG" })
+                                  { 64, 48, 32, 24, 16 }, { "CAVE", "TALL", "AIRY", "MID", "SNUG" })
 Ceiling.cutaway = ModSetting.new("fpcutaway", "CUTAWAY",
                                  { true, false }, { "ON", "OFF" })
 
@@ -93,9 +93,10 @@ local function config()
     local okP, cfg = pcall(pub)
     if okP and type(cfg) == "table" then return cfg end
   end
+  local baseHeadroom = Ceiling.headroom:get() or 32
   return {
     ceiling = Ceiling.setting:get() == true,
-    headroom = Ceiling.headroom:get() or 32,
+    headroom = baseHeadroom,
     cutaway = Ceiling.cutaway:get() == true,
   }
 end
@@ -482,6 +483,10 @@ local function build(map, H, mode, pcx, pcy, tex)
   -- nobody wants stalactites over Lavender's floorboards.
   local ROCKY = { CAVERN = true, UNDERGROUND = true }
   local rocky = (tilesetId and ROCKY[tilesetId]) and true or false
+  -- Double the height for caves
+  if rocky then
+    H = H * 2
+  end
   local okShapes, shapes = pcall(TileShape.forMap, map)
   if not (okShapes and shapes) then return nil, "TileShape refused" end
   local wc, hc = map.widthCells or 0, map.heightCells or 0
@@ -843,9 +848,19 @@ local function build(map, H, mode, pcx, pcy, tex)
   local GROUND_ODDS = 0.45                      -- of those, from below
   local rocks, spikes = 0, 0
 
+  -- Double the rock drop values for caves to maintain proportional sag
+  local actualRockDropMin, actualRockDropMax = ROCK_DROP_MIN, ROCK_DROP_MAX
+  local actualStalMin, actualStalMax = STAL_MIN, STAL_MAX
+  if rocky then
+    actualRockDropMin = ROCK_DROP_MIN * 2
+    actualRockDropMax = ROCK_DROP_MAX * 2
+    actualStalMin = STAL_MIN * 2
+    actualStalMax = STAL_MAX * 2
+  end
+
   local function rockAt(cx, cy)
-    return H - (ROCK_DROP_MIN
-                + hash01(cx, cy, 241) * (ROCK_DROP_MAX - ROCK_DROP_MIN))
+    return H - (actualRockDropMin
+                + hash01(cx, cy, 241) * (actualRockDropMax - actualRockDropMin))
   end
 
   -- a four-sided spike between two heights, tapering to a point
@@ -909,7 +924,7 @@ local function build(map, H, mode, pcx, pcy, tex)
           -- and the spikes
           if rockTile
              and math.floor(hash01(cx, cy, 269) * SPIKE_EVERY) == 0 then
-            local len = STAL_MIN + hash01(cx, cy, 271) * (STAL_MAX - STAL_MIN)
+            local len = actualStalMin + hash01(cx, cy, 271) * (actualStalMax - actualStalMin)
             if hash01(cx, cy, 277) < GROUND_ODDS then
               spike(cx, cy, 0, math.min(len, y - 2), rockTile, 2.6)
             else
