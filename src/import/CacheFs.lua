@@ -24,8 +24,9 @@
 --
 -- Portable mode is desktop-only (Windows/Linux/macOS); on Android/iOS the
 -- source is a read-only package with no game folder to write into, so
--- SaveData.isPortable() is false there and this module falls back to the
--- ordinary love.filesystem/save-directory behaviour.
+-- SaveData.isPortable() is false there.  Android can still redirect the
+-- cache through SaveData.dataDir() (phone vs SD card / a writable tree),
+-- which this module mounts the same way as a desktop custom folder.
 
 local CacheFs = {}
 
@@ -120,6 +121,8 @@ local function resolveMount()
   local libs = {
     function() return ffi.C end,
     function() return ffi.load("love") end,
+    -- Android loads love as liblove.so; ffi.C does not search it.
+    function() return ffi.load("liblove.so") end,
   }
   for _, getlib in ipairs(libs) do
     local okl, lib = pcall(getlib)
@@ -144,8 +147,19 @@ end
 -- cache on top of the root (Red) copy and the source.
 local function mountReadable(dir, append)
   local fn = resolveMount()
-  if not fn then return false end
-  return fn(dir, "", append)
+  if fn and fn(dir, "", append) then return true end
+  -- Android: PHYSFS_mount through the JNI bridge (love.system.mountDirectory)
+  -- rather than love.filesystem.mount, which refuses paths outside the save
+  -- dir -- and the phone/SD gamedata folder is a sibling of that save dir.
+  if love and love.system and type(love.system.mountDirectory) == "function" then
+    local ok, mounted = pcall(love.system.mountDirectory, dir)
+    if ok and mounted then return true end
+  end
+  if love and love.filesystem and love.filesystem.mount then
+    local ok, mounted = pcall(love.filesystem.mount, dir, "", append ~= false)
+    if ok and mounted then return true end
+  end
+  return false
 end
 
 -- PHYSFS_unmount, resolved the same way PHYSFS_mount is.  Only
@@ -162,6 +176,8 @@ local function resolveUnmount()
   local libs = {
     function() return ffi.C end,
     function() return ffi.load("love") end,
+    -- Android loads love as liblove.so; ffi.C does not search it.
+    function() return ffi.load("liblove.so") end,
   }
   for _, getlib in ipairs(libs) do
     local okl, lib = pcall(getlib)
@@ -194,6 +210,8 @@ local function resolveMountPoint()
   local libs = {
     function() return ffi.C end,
     function() return ffi.load("love") end,
+    -- Android loads love as liblove.so; ffi.C does not search it.
+    function() return ffi.load("liblove.so") end,
   }
   for _, getlib in ipairs(libs) do
     local okl, lib = pcall(getlib)
@@ -344,9 +362,7 @@ end
 -- chosen game-data folder is writable and may have to create it first.
 function CacheFs.mkdirReal(path)
   if type(path) ~= "string" or path == "" then return false end
-  local mkdir = resolveMkdir()
-  if not mkdir then return false end
-  mkdir(path)
+  tryMkdirs(path)
   return true
 end
 
@@ -357,15 +373,27 @@ end
 -- create every parent directory of `rel` under `root` (best effort; an
 -- already-existing directory is fine, a genuine failure surfaces when the
 -- subsequent io.open write fails)
-local function ensureParents(root, rel)
+local function tryMkdirs(path)
+  if type(path) ~= "string" or path == "" then return end
+  -- Android: Java File.mkdirs() is the call that actually creates trees on
+  -- shared storage. FFI mkdir(2) often returns EACCES there even when a
+  -- one-file probe at the folder root succeeded -- which is LuaWriter's
+  -- "access denied" on data/generated during a ROM import.
+  if love and love.system and type(love.system.mkdirs) == "function" then
+    pcall(love.system.mkdirs, path)
+  end
   local mkdir = resolveMkdir()
-  if not mkdir then return end
+  if mkdir then mkdir(path) end
+end
+
+local function ensureParents(root, rel)
   local parts = {}
   for part in rel:gmatch("[^/]+") do parts[#parts + 1] = part end
   local cur = root
+  tryMkdirs(root)
   for i = 1, #parts - 1 do
     cur = cur .. SEP .. parts[i]
-    mkdir(cur)
+    tryMkdirs(cur)
   end
 end
 
@@ -511,12 +539,11 @@ end
 function CacheFs.rawCreateDirectory(rel)
   local root = rawRoot()
   if root then
-    local mkdir = resolveMkdir()
-    if not mkdir then return false end
     local cur = root
+    tryMkdirs(cur)
     for part in rel:gmatch("[^/]+") do
       cur = cur .. SEP .. part
-      mkdir(cur)
+      tryMkdirs(cur)
     end
     return true
   end

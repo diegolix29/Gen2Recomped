@@ -128,6 +128,32 @@ public:
 	virtual bool createFile(const char *suggestedName = nullptr) const;
 
 	/**
+	 * Android: show a storage-volume dialog (phone vs SD card) plus an
+	 * optional ACTION_OPEN_DOCUMENT_TREE browse. The chosen path is written
+	 * asynchronously to picked_folder.txt in the save identity; see
+	 * GameActivity.showFolderPicker and src/import/RomImporter.lua.
+	 **/
+	virtual bool pickFolder() const;
+
+	/**
+	 * Android: newline-separated "label<TAB>absolute path" rows for each
+	 * app-owned external files volume (phone, SD card, ...), each already
+	 * pointed at a gamedata/ subdirectory. Empty string elsewhere.
+	 **/
+	virtual std::string getExternalDataDirs() const;
+
+	/**
+	 * Android: PHYSFS_mount an absolute directory onto the read path.
+	 * Needed so CacheFs can see a game-data folder that is not the save dir.
+	 **/
+	virtual bool mountDirectory(const char *path) const;
+
+	virtual bool hasStorageAccess() const;
+	virtual bool requestStorageAccess() const;
+	virtual bool pathIsAppOwned(const char *path) const;
+	virtual bool mkdirs(const char *path) const;
+
+	/**
 	 * Pokéwalker: stage pending real-world steps (steps_pending.json in the
 	 * save dir) from the platform step source. Android-only; false elsewhere.
 	 */
