@@ -38,6 +38,12 @@ local V = ...
 
 local Assets = require("src.render.Assets")
 
+-- Gen 3/FRLG: found by CATALOG, not by shape (see GEN3 WINDOWS below).
+local okG3, Gen3 = pcall(V.require, "Gen3")
+if not okG3 or type(Gen3) ~= "table" then Gen3 = { isGen3 = function() return false end } end
+local okWM, WindowMetatiles = pcall(V.require, "Gen3WindowMetatiles")
+if not okWM then WindowMetatiles = nil end
+
 local GlassMask = {}
 
 -- pane geometry the scan accepts. Kanto's simplest door/building panes are
@@ -125,6 +131,84 @@ local function manualRectsFor(tileset)
   return nil
 end
 
+-- ------- GEN 3 WINDOWS: found by CATALOG, not by shape
+--
+-- The shape scan above assumes a black-bordered pane, calibrated against
+-- Gen 1/2's art ("the raw tileset art is the four DMG greys, so black is
+-- genuinely zero" -- see isBlack's own note). Checked against the real
+-- extracted Emerald tile banks: the scan finds 11 rects total across all
+-- 36 Emerald tilesets that carry glass, where the hand-verified catalog
+-- (Gen3WindowMetatiles, read off the composited art metatile by metatile)
+-- counts 570 window metatiles plus 66 glass doors. The border in this art
+-- is a dark NAVY (measured (65,74,106) on TILESET_03DF704, i.e. blue
+-- channel 0.42 -- nowhere near isBlack's 0.12 ceiling on any channel), not
+-- a washed-out black, so no amount of loosening the threshold recovers
+-- this without also catching ordinary mid-blue wall and water art (tried:
+-- 0.20/0.28/0.35/0.45 -- rects barely move until 0.45, where they start
+-- swallowing unrelated tiles). So Gen 3/FRLG windows are listed here
+-- instead of found, from a catalog checked by hand against the composited
+-- art tileset by tileset (see Gen3WindowMetatiles.lua's own header).
+--
+-- The catalog names METATILES, not pixels, so it needs one more step to
+-- become a rect: a metatile is 4 quadrant tiles, `Gen3.tileId(m, tx, ty)`
+-- is the synthetic id of one quadrant, and `Gen3.tileOrigin(tileId)` is
+-- that quadrant's pixel origin on the SAME relaid 8px sheet everything
+-- else in this mod already addresses metatiles on (ChunkMesher's uvRect
+-- and Structures' pixel readers go through the very same function -- see
+-- Gen3.lua's own note on `tileOrigin`). The four quadrants of one metatile
+-- are always four consecutive tiles in one row of that sheet, so the
+-- whole 16x16 block is just the top-left quadrant's origin plus 16x16.
+--
+-- This needs no tileset image at all -- `Gen3.atlasInfoFor` is pure
+-- arithmetic over the pair's own metatile count, not a GPU bake -- so it
+-- works even where `Gen3.atlasDataForTileset` (which DOES bake) can't.
+local function gen3Ids(tileset)
+  if not WindowMetatiles then return nil end
+  local key = tostring(tileset and tileset.id)
+  local ids, seen = {}, {}
+  for _, game in ipairs({ "emerald", "firered" }) do
+    for _, bucket in ipairs({ WindowMetatiles.windows, WindowMetatiles.doors }) do
+      local perGame = bucket and bucket[game]
+      local list = perGame and perGame[key]
+      if list then
+        for _, id in ipairs(list) do
+          if not seen[id] then
+            seen[id] = true
+            ids[#ids + 1] = id
+          end
+        end
+      end
+    end
+  end
+  return #ids > 0 and ids or nil
+end
+
+local function gen3Rects(tileset)
+  local ids = gen3Ids(tileset)
+  if not ids then return nil end
+  -- `tileOrigin`'s default `cols` (SHEET_COLS, 16) counts METATILE columns
+  -- on the PRE-relay sheet (`bakeLinear`'s own `srcCols`); the atlas this
+  -- mask has to align with is the RELAID one (`atlasInfoFor`'s `perRow`,
+  -- 16 TILES per row), which is only 8 metatiles wide -- two tiles per
+  -- metatile. Passing the default here would let any tileset with more
+  -- than 8 metatiles-per-row's worth of ids overflow the real 128px-wide
+  -- atlas (checked: metatile 8 lands at x=128 with the default, x=0 row+1
+  -- with this). `Gen3.atlasInfoFor` is itself cached, so asking it here
+  -- costs nothing extra.
+  local infoOk, info = pcall(Gen3.atlasInfoFor, tileset)
+  local cols = (infoOk and info and info.perRow) and math.floor(info.perRow / 2) or 8
+  local rects = {}
+  for _, m in ipairs(ids) do
+    local ok, x, y = pcall(function()
+      return Gen3.tileOrigin(Gen3.tileId(m, 0, 0), cols)
+    end)
+    if ok and x and y then
+      rects[#rects + 1] = { x = x, y = y, w = 16, h = 16 }
+    end
+  end
+  return rects
+end
+
 -- Find every pane in an image, through a pure reader so the geometry is
 -- testable headless: `getPixel(x, y)` returns r, g, b in 0..1 for 0-based
 -- coordinates. Returns { {x=, y=, w=, h=}, ... } rects of GLASS texels
@@ -180,28 +264,55 @@ end
 
 local cache = {}       -- image path -> { rects, texture (or false) }
 
+-- A Gen 3/FRLG tileset has no `.image` of its own to key a cache on (its
+-- art is a pair baked at runtime, not a single file) -- the tileset's own
+-- id is a fine substitute, since Gen3.atlasInfoFor already caches on the
+-- same string.
+local function cacheKeyFor(tileset)
+  if Gen3.isGen3(tileset) then return "gen3:" .. tostring(tileset and tileset.id) end
+  return tileset and tileset.image
+end
+
 local function entry(tileset)
-  local path = tileset and tileset.image
-  if not path then return nil end
-  local hit = cache[path]
+  local key = cacheKeyFor(tileset)
+  if not key then return nil end
+  local hit = cache[key]
   if hit then return hit end
-  local ok, data = pcall(Assets.imageData, path)
-  if not (ok and data) then
-    -- unreadable art is a verdict for the session, not a retry loop
-    cache[path] = { rects = {}, texture = false }
-    return cache[path]
-  end
 
-  local dimsOk, w, h = pcall(function() return data:getDimensions() end)
-  if not dimsOk then
-    cache[path] = { rects = {}, texture = false }
-    return cache[path]
-  end
+  local w, h, rects
 
-  local scanOk, scanned = pcall(GlassMask.scan, function(x, y)
-    return data:getPixel(x, y)
-  end, w, h)
-  local rects = scanOk and scanned or {}
+  if Gen3.isGen3(tileset) then
+    -- catalog, not scan (see GEN 3 WINDOWS above) -- pure arithmetic, no
+    -- bake, so this works whether or not the atlas ever gets drawn
+    local infoOk, info = pcall(Gen3.atlasInfoFor, tileset)
+    if not (infoOk and info and info.width and info.height) then
+      cache[key] = { rects = {}, texture = false }
+      return cache[key]
+    end
+    w, h = info.width, info.height
+    rects = gen3Rects(tileset) or {}
+  else
+    local path = tileset and tileset.image
+    if not path then return nil end
+    local ok, data = pcall(Assets.imageData, path)
+    if not (ok and data) then
+      -- unreadable art is a verdict for the session, not a retry loop
+      cache[key] = { rects = {}, texture = false }
+      return cache[key]
+    end
+
+    local dimsOk, dw, dh = pcall(function() return data:getDimensions() end)
+    if not dimsOk then
+      cache[key] = { rects = {}, texture = false }
+      return cache[key]
+    end
+    w, h = dw, dh
+
+    local scanOk, scanned = pcall(GlassMask.scan, function(x, y)
+      return data:getPixel(x, y)
+    end, w, h)
+    rects = scanOk and scanned or {}
+  end
 
   -- Clip every rect -- scan-found AND manual -- to the image's ACTUAL
   -- dimensions before it ever reaches setPixel. A manual rect is measured
@@ -246,8 +357,8 @@ local function entry(tileset)
     end)
     if not built then texture = false end
   end
-  cache[path] = { rects = rects, texture = texture }
-  return cache[path]
+  cache[key] = { rects = rects, texture = texture }
+  return cache[key]
 end
 
 -- The panes found in a tileset's art, as glass rects in atlas pixels.

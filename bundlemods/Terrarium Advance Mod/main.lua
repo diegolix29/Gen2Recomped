@@ -3769,6 +3769,8 @@ local function initializeColosseumIntegration()
     if ArenaOverworldSnapshot then V.ArenaOverworldSnapshot = ArenaOverworldSnapshot end
     loadColosseumModule("ArenaAudienceProfile")
     loadColosseumModule("ArenaCacheIdentity")
+    namespace.Voxel3D = Voxel3D  -- give the Colosseum namespace what ArenaOverworldSnapshot needs
+local ArenaOverworldSnapshot = loadColosseumModule("ArenaOverworldSnapshot")
     BattleArtBridge = loadColosseumModule("BattleArtBridge")
     loadColosseumModule("ShinySupport")
     loadColosseumModule("ModelIdentity")
@@ -3833,6 +3835,9 @@ local function initializeColosseumIntegration()
     loadColosseumModule("RelicPresentation")
     loadColosseumModule("SummitNumerals")
     Arena = loadColosseumModule("Arena")
+    if ArenaOverworldSnapshot and type(ArenaOverworldSnapshot.install) == "function" then
+  pcall(ArenaOverworldSnapshot.install)
+end
     loadColosseumModule("CameraPacing")
     Camera = loadColosseumModule("Camera")
     Music = loadColosseumModule("Music")
