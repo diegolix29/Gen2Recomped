@@ -18,6 +18,7 @@ local TypeChart = require("src.battle.TypeChart")
 local Strings = require("src.core.Strings")
 local HeldItems = require("src.battle.HeldItems")
 local Weather = require("src.battle.Weather")
+local GameVersion = require("src.core.GameVersion")
 
 local MoveEffects = {}
 
@@ -369,12 +370,15 @@ MoveEffects.primary = {
   -- returned strings can't express.
 
   TRANSFORM_EFFECT = function(battle, user, target)
-    -- transform.asm:31-53 (AnimationTransformMon) morphs the user's
-    -- on-screen pic into the target species; the port swaps user.sprite
-    -- via the same getImage/monPalette path makeBattler uses so the
-    -- change is visible (the renderer draws battler.sprite directly).
-    user.sprite = battle:speciesSprite(target.mon.species, user.isPlayer)
-                  or user.sprite
+    -- The Game Boy applies its pic replacement as part of the move effect.
+    -- FireRed does not: AnimTask_TransformMon hides the replacement behind
+    -- mosaic and HandleSpeciesGfxDataChange performs it at callback 46.
+    -- Gen3MoveAnim owns that visual midpoint, so changing the FireRed sprite
+    -- here would expose the copied species for the first 45 callbacks.
+    if GameVersion.get() ~= "firered" then
+      user.sprite = battle:speciesSprite(target.mon.species, user.isPlayer)
+                    or user.sprite
+    end
     user.curStats = {
       hp = user.mon.stats.hp, -- HP is kept
       attack = target.curStats.attack, defense = target.curStats.defense,

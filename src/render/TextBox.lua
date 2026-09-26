@@ -62,6 +62,7 @@ function TextBox.new(game, text, onDone, opts)
   self.boxTw = box.tw or BOX_TW
   self.boxTh = box.th or BOX_TH
   self.maxCols = opts.maxCols or box.maxCols or MAX_COLS
+  self.choiceBox = opts.choiceBox or box.choiceBox
   self.maxPixels = tonumber(opts.maxPixels)
   self.letterSpacing = tonumber(opts.letterSpacing) or 0
   -- Most of the shared TextBox timing still models the GB/GBC printer, whose
@@ -481,12 +482,15 @@ function TextBox:update(dt)
       if not self.choicePushed then
         self.choicePushed = true
         local ChoiceBox = require("src.ui.ChoiceBox")
+        local choiceBox = self.choiceBox or {}
         self.game.stack:push(ChoiceBox.new(self.game, function(yes)
           self.game.stack:pop() -- this text box, under the choice
           self.choice(yes)
         end, { defaultNo = self.defaultNo, noSound = self.choiceNoSound,
                -- this box is anchored below it; the pair moves together
-               anchor = "bottom" }))
+               anchor = "bottom",
+               tx = choiceBox.tx, ty = choiceBox.ty,
+               tw = choiceBox.tw, th = choiceBox.th }))
       end
       return
     end

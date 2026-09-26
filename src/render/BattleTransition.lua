@@ -49,6 +49,8 @@ local FLASH_CYCLES = 3
 -- because the omitted decompressors are exactly the unbounded part.  It
 -- wants a frame-by-frame capture against hardware to pin exactly.
 local BLACK_HOLD = 60
+local FRLG_INTRO_FRAMES = 32
+local FRLG_INTRO_GRAY = 11 / 31
 
 local TILE = 8
 local COLS, ROWS = 160 / TILE, 144 / TILE -- 20 x 18 tiles
@@ -590,6 +592,99 @@ local function frlgPokeballsTrail(wipe, prog, ww, wh)
   end
 end
 
+-- B_TRANSITION_SWIRL is not a spiral-shaped blackout.  FireRed writes one
+-- sine-derived BG horizontal offset per scanline while a normal palette fade
+-- takes the entire screen to black (battle_transition.c Task_Swirl).
+--
+-- source is an untouched snapshot of the renderer's finished world+UI
+-- composite.  Redrawing one scanline band at its HBlank offset is the direct
+-- whole-frame equivalent of writing BG1HOFS/BG2HOFS/BG3HOFS on each scanline.
+local swirlQuads = {}
+local function frlgSin(index, amplitude)
+  -- trig.c stores sin(index*pi/128) as Q8.8 truncated toward zero, then Sin()
+  -- multiplies by the amplitude and arithmetic-shifts by 8.  Keeping those
+  -- two quantization steps matters once the wave grows past a few pixels.
+  local s = math.sin((index % 256) * (2 * math.pi / 256)) * 256
+  local q = s < 0 and math.ceil(s) or math.floor(s)
+  return math.floor(amplitude * q / 256)
+end
+
+local function frlgSwirlFade(age)
+  -- BeginNormalPaletteFade(PALETTES_ALL, 4, 0, 16, RGB_BLACK) updates BG and
+  -- OBJ palettes on alternating calls.  With delay 4, both halves have
+  -- completed the next +2 blend step every six main-transition frames:
+  -- t=6,12,...,48.  A single composited canvas cannot split BG/OBJ by the one
+  -- intervening frame, so use the coefficient once both palette halves agree.
+  return math.min(1, math.floor(age / 6) * 2 / 16)
+end
+
+local function frlgSwirl(wipe, prog, ww, wh, Sx, Sy, source, ox, oy, vpw, vph)
+  local age = math.max(0, tonumber(wipe.t) or 0)
+  local fade = frlgSwirlFade(age)
+  if not (source and source.getDimensions) then
+    love.graphics.setColor(0, 0, 0, fade)
+    love.graphics.rectangle("fill", 0, 0, ww, wh)
+    return
+  end
+  local sw, sh = source:getDimensions()
+  local sinIndex = age * 4
+  local amplitude = age * 8
+  love.graphics.setColor(1, 1, 1, 1)
+  -- Renderer supplies a screen-sized frozen composite.  Continue the 160-line
+  -- HBlank wave through any extended world area outside the native viewport,
+  -- keeping line 0 phase-locked to the top of the 240x160 playfield.  This is
+  -- the same whole-window extension used by the other FireRed transitions.
+  if math.abs(sw - ww) < 0.01 and math.abs(sh - wh) < 0.01 then
+    local line = math.max(0.01, Sy or 1)
+    local first = math.floor(-oy / line)
+    local last = math.ceil((wh - oy) / line) - 1
+    for scan = first, last do
+      local y0 = math.max(0, oy + scan * line)
+      local y1 = math.min(wh, oy + (scan + 1) * line)
+      local offset = frlgSin(sinIndex + scan * 2, amplitude)
+      local dx = (offset * (Sx or 1)) % ww
+      if y1 > y0 then
+        -- Clip the untouched whole frame to this scanline band instead of
+        -- building texture quads.  Canvas texture resolution can differ from
+        -- its LOVE-unit dimensions on high-DPI displays, while target scissor
+        -- coordinates stay in the same units as ww/wh.
+        love.graphics.setScissor(0, y0, ww, y1 - y0)
+        -- Hardware BGs wrap.  Three copies cover the surface for either sign.
+        love.graphics.draw(source, -dx, 0)
+        love.graphics.draw(source, -dx + ww, 0)
+        love.graphics.draw(source, -dx - ww, 0)
+      end
+    end
+    love.graphics.setScissor(0, 0, ww, wh)
+  else
+    -- Headless/legacy fallback: a native GBA canvas scales into the viewport.
+    local key = sw .. "x" .. sh
+    local quads = swirlQuads[key]
+    if not quads then
+      quads = {}
+      for y = 0, sh - 1 do
+        quads[y + 1] = love.graphics.newQuad(0, y, sw, 1, sw, sh)
+      end
+      swirlQuads[key] = quads
+    end
+    local sx = vpw / sw
+    local sy = vph / sh
+    love.graphics.rectangle("fill", ox, oy, vpw, vph)
+    for y = 0, sh - 1 do
+      local offset = frlgSin(sinIndex + y * 2, amplitude)
+      local dx = (offset * sx) % vpw
+      local dy = oy + y * sy
+      love.graphics.draw(source, quads[y + 1], ox - dx, dy, 0, sx, sy)
+      love.graphics.draw(source, quads[y + 1], ox - dx + vpw, dy, 0, sx, sy)
+      love.graphics.draw(source, quads[y + 1], ox - dx - vpw, dy, 0, sx, sy)
+    end
+  end
+  -- The renderer has no palette RAM, so the source cadence above is applied as
+  -- one full-screen veil after the scanline offsets have been drawn.
+  love.graphics.setColor(0, 0, 0, fade)
+  love.graphics.rectangle("fill", 0, 0, ww, wh)
+end
+
 -- THE ONES THAT DRAW A PICTURE, which is five of the cartridge's own
 -- backgrounds and three silhouettes.
 --
@@ -671,6 +766,11 @@ BattleTransition.STYLES = {
   frlg_whitebars = { kind = "wipe", frames = 70, screen = frlgWhiteBars },
   frlg_clockwise = { kind = "wipe", frames = 50, screen = frlgClockwise },
   frlg_balltrail = { kind = "wipe", frames = 60, screen = frlgPokeballsTrail },
+  -- The palette reaches black on t=48, then palette.c spends five finishing
+  -- updates before gPaletteFade.active clears.  Task_Swirl sees that on the
+  -- following RunTasks call, so the main task disappears at t=54.
+  frlg_swirl     = { kind = "wipe", frames = 48, blackHold = 6,
+                     screen = frlgSwirl },
   g3_whitefade = { kind = "fade", frames = 48, draw = fadeDraw(1) },
   g3_blackfade = { kind = "fade", frames = 48, draw = fadeDraw(0) },
   g3_grid      = { kind = "wipe", frames = 48 },
@@ -864,16 +964,38 @@ end
 
 local function gen3Style(ctx)
   -- FireRed's two tables (battle_setup.c sBattleTransitionTable_Wild /
-  -- _Trainer): column 0 when the foe is weaker than the lead
+  -- _Trainer): column 0 when the foe is weaker than the lead.  Unlike the old
+  -- shortcut, the ROW matters too: water/flash/cave each have their own pair.
   if require("src.core.GameVersion").get() == "firered" then
     local weaker = ctx.weaker
     if weaker == nil then weaker = not ctx.stronger end
     if ctx.trainer then
-      if ctx.dungeon then return weaker and "g3_angled" or "g3_pokeball" end
-      return weaker and "frlg_balltrail" or "g3_angled"
+      -- GetTrainerBattleTransition checks these before it ever consults the
+      -- terrain/level table.  All five FireRed special ids run the same
+      -- mugshot transition task with a different opponent portrait.
+      local class = tonumber(ctx.trainerClass)
+      local opponent = tonumber(ctx.trainerId)
+      if opponent == 0x400 or class == 87 or class == 90 then
+        return "g3_mugshot"
+      end
     end
-    if ctx.dungeon then return weaker and "frlg_clockwise" or "g3_grid" end
-    return weaker and "frlg_slice" or "frlg_whitebars"
+    local row = tonumber(ctx.mapTransitionType)
+    if row == nil then row = ctx.dungeon and 1 or 0 end
+    if row < 0 or row > 3 then row = 0 end
+    local wild = {
+      [0] = { "frlg_slice",     "frlg_whitebars" },
+      [1] = { "frlg_clockwise", "g3_grid" },
+      [2] = { "g3_blur",        "g3_grid" },
+      [3] = { "g3_wave",        "g3_ripple" },
+    }
+    local trainer = {
+      [0] = { "frlg_balltrail", "g3_angled" },
+      [1] = { "g3_shuffle",     "g3_bigPokeball" },
+      [2] = { "g3_blur",        "g3_grid" },
+      [3] = { "frlg_swirl",     "g3_ripple" },
+    }
+    local pair = (ctx.trainer and trainer or wild)[row]
+    return pair[weaker and 1 or 2]
   end
   local record = gen3Record(ctx)
   if not record then
@@ -988,21 +1110,35 @@ function BattleTransition.new(game, onDone, opts)
   end
   self.style = style
   self.def = def
-  -- only the circle wipes flash first (battle_transitions.asm:585,628)
-  self.phase = def.flash and "flash" or "wipe"
+  self.fireRed = require("src.core.GameVersion").get() == "firered"
+  -- Every FireRed battle transition first runs CreateIntroTask(0,0,2,2,2):
+  -- two 16-frame gray pulses.  It does not use the Gen 1 circle-flash prelude.
+  if self.fireRed then
+    self.phase = "frlg_intro"
+  else
+    self.phase = def.flash and "flash" or "wipe"
+  end
+  self.mainPhase = def.flash and "flash" or "wipe"
+  if self.fireRed then self.mainPhase = "wipe" end
+  self.blackHold = self.fireRed and (def.blackHold or 1) or BLACK_HOLD
   self.wipeLen = def.frames
   return self
 end
 
 function BattleTransition:update(dt)
   self.t = self.t + 1
-  if self.phase == "flash" then
+  if self.phase == "frlg_intro" then
+    if self.t >= FRLG_INTRO_FRAMES then
+      self.phase = self.mainPhase
+      self.t = 0
+    end
+  elseif self.phase == "flash" then
     if self.t >= FLASH_CYCLES * #FLASH_STEPS * FLASH_HOLD then
       self.phase = "wipe"
       self.t = 0
     end
   else
-    if self.t >= self.wipeLen + BLACK_HOLD then
+    if self.t >= self.wipeLen + self.blackHold then
       self.game.stack:pop()
       if self.onDone then self.onDone() end
     end
@@ -1010,7 +1146,21 @@ function BattleTransition:update(dt)
 end
 
 function BattleTransition:draw()
-  if self.phase == "flash" then
+  if self.phase == "frlg_intro" then
+    local p = (math.max(1, self.t) - 1) % 16
+    local blend = p < 8 and (p + 1) * 2 or (15 - p) * 2
+    local a = math.max(0, math.min(1, blend / 16))
+    local r = self.game and self.game.renderer
+    if r then
+      r.screenVeil = { FRLG_INTRO_GRAY, a }
+    else
+      love.graphics.setColor(FRLG_INTRO_GRAY, FRLG_INTRO_GRAY,
+                             FRLG_INTRO_GRAY, a)
+      love.graphics.rectangle("fill", 0, 0, 240, 160)
+      love.graphics.setColor(1, 1, 1, 1)
+    end
+    return
+  elseif self.phase == "flash" then
     local step = math.floor(self.t / FLASH_HOLD) % #FLASH_STEPS + 1
     local v = FLASH_STEPS[step]
     if v ~= 0 then
@@ -1055,7 +1205,8 @@ function BattleTransition:draw()
   if renderer then
     renderer.battleWipe = { style = style, prog = prog, t = self.t,
                             game = self.game,
-                            screenDraw = self.def and self.def.screen }
+                            screenDraw = self.def and self.def.screen,
+                            transition = self }
     return
   end
 

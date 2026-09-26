@@ -1059,6 +1059,18 @@ function Data:seedDefaults()
           maxCols = win.width or 26,
         }
       end
+      local dialogue = self.font and self.font.dialogueFrame
+      if type(dialogue) == "table" and dialogue.layout ~= "gen4" then
+        local box = self.field.theme.textBox
+        -- new_menu_helpers.c sYesNo_WindowTemplate is a 6x4 content window
+        -- at tile (21,9).  DrawStdWindowFrame adds the one-tile border around
+        -- it, so the visible FireRed YES/NO box is x20..27, y8..13.  The
+        -- shared Game Boy default sat at x13 and overlapped showmonpic 10,3
+        -- during Oak's starter confirmation.
+        box.choiceBox = box.choiceBox or {
+          tx = 20, ty = 8, tw = 8, th = 6,
+        }
+      end
     end
     -- THE PLAYER'S OWN SPRITE, which is not an NPC's and does not come from
     -- the map.  Player:refreshForm reads field.playerSprites for the default

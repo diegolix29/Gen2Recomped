@@ -1212,7 +1212,9 @@ end
 function Gen3PartyMenu:canLearn(mon)
   local data = self.game.data
   local def = data.pokemon and data.pokemon[mon.species]
-  for _, move in ipairs((def and def.tmhm) or {}) do
+  local learnset = self.tmhm and self.tmhm.kind == "TUTOR"
+    and (def and def.tutorMoves) or (def and def.tmhm)
+  for _, move in ipairs(learnset or {}) do
     if move == self.tmhm.move then return true end
   end
   return false

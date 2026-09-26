@@ -14,7 +14,7 @@
 --   BATTLE STYLE  SHIFT / SET
 --   SOUND         MONO / STEREO
 --   BUTTON MODE   NORMAL / LR / L=A
---   FRAME         TYPE 1 .. 20
+--   FRAME         TYPE 1 .. cartridge frame count
 --   CANCEL
 --
 -- The ROWS are not in that order in the ROM -- BUTTON MODE sits after CANCEL
@@ -85,7 +85,16 @@ local BINDINGS = {
   frame = { field = "gen3Frame", inert = true },
 }
 
-local FRAME_TYPES = 20
+local function frameTypeCount(game)
+  local frames = game and game.data and game.data.font
+                 and game.data.font.frames
+  local count = math.floor(tonumber(frames and frames.count) or 0)
+  if count > 0 then return count end
+  -- Old/pre-frame caches do not carry the extracted count.  Keep the
+  -- cartridge defaults rather than exposing Emerald's twenty choices on
+  -- FireRed, whose option menu has exactly ten (sOptionMenuItemCounts).
+  return require("src.core.GameVersion").get() == "firered" and 10 or 20
+end
 
 function Gen3Options.new(game, opts)
   local self = setmetatable({}, Gen3Options)
@@ -93,6 +102,7 @@ function Gen3Options.new(game, opts)
   self.onCancel = opts and opts.onCancel
   self.index = 1
   self.blink = 0
+  self.frameTypes = frameTypeCount(game)
 
   local record = (game.data.constants or {}).gen3Options
   -- THE WORD ON THE LAST ROW, which nothing had ever set.
@@ -192,7 +202,7 @@ function Gen3Options:choiceOf(row)
   local bind = row.binding
   if not bind then return 1 end
   if row.key == "frame" then
-    return math.max(1, math.min(FRAME_TYPES, options[bind.field] or 1))
+    return math.max(1, math.min(self.frameTypes, options[bind.field] or 1))
   end
   local current = options[bind.field]
   for i, v in ipairs(bind.choices or {}) do
@@ -214,7 +224,7 @@ function Gen3Options:cycle(row, delta)
   local bind = row.binding
   if row.key == "frame" then
     local at = self:choiceOf(row) - 1
-    save.options[bind.field] = (at + delta) % FRAME_TYPES + 1
+    save.options[bind.field] = (at + delta) % self.frameTypes + 1
   else
     local choices = bind.choices or {}
     if #choices == 0 then return end

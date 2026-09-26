@@ -575,6 +575,98 @@ function RomExtractorGen3:blTargets(at, count)
   return out
 end
 
+-- A task address from THIS cartridge's already-walked move script.  The
+-- move-animation pass fills _animTasks before any of the task-family readers
+-- below run, so this is a cartridge-relative anchor rather than a symbol table
+-- or an Emerald absolute.
+function RomExtractorGen3:moveAnimTask(move, which)
+  local list = self._animTasks and self._animTasks[move]
+  if type(list) ~= "table" then return nil, nil end
+  if type(which) == "function" then
+    for _, t in ipairs(list) do
+      if t.fn and which(t) then
+        return t.fn - (t.fn % 2), t
+      end
+    end
+    return nil, nil
+  end
+  local t = list[which or 1]
+  if not (t and t.fn) then return nil, nil end
+  return t.fn - (t.fn % 2), t
+end
+
+-- A createvisualtask/callback commonly installs its next state by loading a
+-- Thumb function pointer from its literal pool.  Static helpers in pret place
+-- that state immediately after the setup function; choosing the nearest
+-- forward code pointer makes the relationship survive ROM relinking while
+-- still being something the cartridge itself says.
+function RomExtractorGen3:nearestThumbCallback(at, scan, maxDistance)
+  if not at then return nil end
+  local best = nil
+  for _, word in ipairs(self:poolWords(at, scan or 128)) do
+    if word % 2 == 1 then
+      local flat = RomExtractorGen3.romOffset(word - 1)
+      if flat and flat > at and flat - at <= (maxDistance or 0x800)
+         and (not best or flat < best) then
+        best = flat
+      end
+    end
+  end
+  return best
+end
+
+-- Look for an 8-bit Thumb immediate without caring which low register the
+-- compiler chose.  class is one of MOV/CMP/ADD/SUB immediate bases
+-- (0x2000/0x2800/0x3000/0x3800).
+function RomExtractorGen3:thumbImmCount(at, count, class, value)
+  local hits = 0
+  for i = 0, (count or 64) - 1 do
+    local ok, h = pcall(self.rom.u16, self.rom, at + i * 2)
+    if not ok then break end
+    if math.floor(h / 0x800) * 0x800 == class and h % 256 == value then
+      hits = hits + 1
+    end
+  end
+  return hits
+end
+
+-- Read the canonical signed GBA sine table named by one of a function's BL
+-- targets.  The public trigonometry helpers only need its first 256 entries,
+-- but the table physically carries another 64 for index+64 cosine reads.  One
+-- FireRed scanline task (EXTRASENSORY stage 1) even reaches index 320 on its
+-- final inclusive row, so preserve that following halfword as the retail ROM
+-- actually lays it out rather than wrapping an out-of-range source read.
+function RomExtractorGen3:sineFromCalls(at, scan)
+  if not at then return nil end
+  local rom = self.rom
+  local function read(flat)
+    if not flat or flat < 0 or flat + 642 > rom.size then return nil end
+    local sine = {}
+    for i = 0, 320 do
+      local ok, v = pcall(rom.u16, rom, flat + i * 2)
+      if not ok then return nil end
+      sine[i] = v >= 32768 and v - 65536 or v
+    end
+    if sine[0] ~= 0 or sine[64] ~= 256 or sine[128] ~= 0
+       or sine[192] ~= -256 then return nil end
+    return sine
+  end
+  local found = nil
+  for _, target in ipairs(self:blTargets(at, scan or 96)) do
+    for _, word in ipairs(self:poolWords(target, 32)) do
+      if word % 2 == 0 then
+        local flat = RomExtractorGen3.romOffset(word)
+        local sine = read(flat)
+        if sine then
+          if found and found.at ~= flat then return nil end
+          found = { at = flat, fn = target, sine = sine }
+        end
+      end
+    end
+  end
+  return found
+end
+
 -- ---------------------------------------------------------------------------
 -- WHERE A PARTICLE GOES
 --
@@ -625,6 +717,9 @@ end
 -- between two points that are the same place.  That is what those four moves
 -- look like on a Game Boy Advance.
 RomExtractorGen3.ANIM_MOTION = {
+  -- Emerald's addresses are retained as the fast/legacy path.  FireRed does
+  -- not put these helpers at the same offsets; animMotionHelpers falls back to
+  -- the source-backed relationships below when these four do not verify.
   START_LINEAR = 0x0A6EEC,
   DRIFT        = 0x0A656C,
   INIT_ATTACKER = 0x0A69CC,
@@ -634,12 +729,177 @@ RomExtractorGen3.ANIM_MOTION = {
   -- data[1] = pos1.x ; data[3] = pos1.y
   LINEAR_SHAPE = { 0x8c20, 0x8620, 0x8c60, 0x86a0 },
   LINEAR_AT = 2,
+  -- Both StartAnimLinearTranslation and the immediately following
+  -- PlayerThrowBall_StartAnimLinearTranslation have this wrapper prologue and
+  -- call the same InitAnimLinearTranslation.  The ordinary move helper is the
+  -- first of that unique pair in battle_anim_mons.c.
+  LINEAR_PREFIX = { 0xb510, 0x1c04 },
+  -- InitSpritePosToAnimTarget is immediately followed by
+  -- InitSpritePosToAnimAttacker in battle_anim_mons.c.  Both compile from this
+  -- common prologue; their first literal is the corresponding pair of adjacent
+  -- gBattleAnimTarget/gBattleAnimAttacker bytes (target is the higher byte).
+  POSITION_PREFIX = { 0xb530, 0x1c05, 0x0609, 0x2900 },
   -- ldrh r1,[r2,#46] -- the drift routine opens on data[0]
   DRIFT_SHAPE = { 0x8dd1 },
   DRIFT_AT = 2,
   SCAN = 200,
   -- a duration operand has to look like one
   MIN_FRAMES = 1, MAX_FRAMES = 120,
+}
+
+-- Four FireRed callbacks already source-audited as target-local translations.
+-- These are intentionally NOT a generic "from target means move locally" rule:
+-- other callbacks initialise on the target and then use manual coordinates with
+-- different semantics.  Each address below is the exact callback behind the
+-- named SpriteTemplate in the retail FireRed ROM, and animCallbackFamily still
+-- requires animMotionOf to prove that it calls InitSpritePosToAnimTarget and
+-- installs StartAnimLinearTranslation before the specialized argument layout is
+-- accepted.
+RomExtractorGen3.FRLG_TARGET_LOCAL_LINEAR = {
+  [0x0B8C54] = "bone_hit",       -- AnimBoneHitProjectile
+  [0x0B0B80] = "cross_chop",     -- AnimCrossChopHand
+  [0x0DE440] = "teal_alert",     -- AnimTealAlert
+  [0x0AB2CC] = "water_droplet",  -- AnimWaterGunDroplet
+}
+
+-- Residual FireRed callbacks whose complete movement is local arithmetic over
+-- the createsprite arguments.  These are retail callback addresses, used only
+-- after animCallbackFamily has independently recovered the shared translation
+-- helpers above.  Keeping the table at callback-family granularity avoids move
+-- name special cases while still failing closed if a different ROM moves the
+-- functions.
+RomExtractorGen3.FRLG_CALLBACK_PATH = {
+  [0x0AAE84] = "aurora_rings",        -- AnimAuroraBeamRings
+  [0x0A2920] = "petal_big",           -- AnimPetalDanceBigFlower
+  [0x0A29EC] = "petal_small",         -- AnimPetalDanceSmallFlower
+  [0x0A9B40] = "red_heart",           -- AnimRedHeartProjectile
+  [0x0B0C28] = "sliding_kick",        -- AnimSlidingKick
+  [0x0A6A28] = "slow_note",           -- AnimSlowFlyingMusicNotes
+  [0x0B12E8] = "superpower_fireball", -- AnimSuperpowerFireball
+  [0x0AFD4C] = "mist_ball",           -- AnimThrowMistBall
+  [0x0ACBB0] = "sunlight",            -- AnimSunlight
+  [0x0B1AB8] = "air_wave",            -- AnimAirWaveCrescent
+  [0x0A22E8] = "powder",              -- AnimMovePowderParticle
+  [0x0A7B3C] = "falling_coin",        -- AnimFallingCoin
+  [0x0AD454] = "eruption_rock",       -- AnimEruptionFallingRock
+  -- Source-deterministic residual callback families.  These addresses are the
+  -- retail FireRed callbacks recovered by the callback audit; each family is
+  -- evaluated from its createsprite arguments at runtime rather than flattened
+  -- into a guessed generic motion.
+  [0x0B17C4] = "acid_poison",          -- AnimAcidPoisonDroplet
+  [0x0B8B6C] = "bonemerang",           -- AnimBonemerangProjectile
+  [0x0A7A88] = "coin_throw",           -- AnimCoinThrow
+  [0x0B5268] = "confuse_bounce",       -- AnimConfuseRayBallBounce
+  [0x0B5450] = "confuse_spiral",       -- AnimConfuseRayBallSpiral
+  [0x0B9378] = "dirt_plume",           -- AnimDirtPlumeParticle
+  [0x0B4634] = "falling_rock",         -- AnimFallingRock
+  [0x0AC90C] = "fire_spiral_in",       -- AnimFireSpiralInward
+  [0x0ACDE8] = "fire_spiral_out",      -- AnimFireSpiralOutward
+  [0x0B1C3C] = "fly_ball_attack",      -- AnimFlyBallAttack
+  [0x0AAAE4] = "guard_ring",           -- AnimGuardRing
+  [0x0A7E14] = "guillotine",           -- AnimGuillotinePincer
+  [0x0B1A1C] = "gust_to_target",       -- AnimGustToTarget
+  [0x0A8CA4] = "hyper_voice",          -- AnimHyperVoiceRing
+  [0x0AF2F0] = "ice_punch_swirl",      -- AnimIcePunchSwirlingParticle
+  [0x0B407C] = "leech_life",           -- AnimLeechLifeNeedle
+  [0x0A5298] = "lock_on",              -- AnimLockOnMoveTarget
+  [0x0B3FAC] = "megahorn",             -- AnimMegahornHorn
+  [0x0AF6D8] = "beyond_target",        -- AnimMoveParticleBeyondTarget
+  [0x0A2D10] = "twister_particle",     -- AnimMoveTwisterParticle
+  [0x0AA708] = "movement_waves",       -- AnimMovementWaves
+  [0x0AA174] = "orbit_fast",           -- AnimOrbitFast
+  [0x0AA2B0] = "orbit_scatter",        -- AnimOrbitScatter
+  [0x0B77E4] = "overheat_flame",       -- AnimOverheatFlame
+  [0x0B5074] = "rock_blast",            -- AnimRockBlastRock
+  [0x0DE8B0] = "spikes",               -- AnimSpikes
+  [0x0AF468] = "swirling_snowball",    -- AnimSwirlingSnowball
+  [0x0B7C88] = "tear_drop",            -- AnimTearDrop
+  [0x0AE470] = "thunder_wave",         -- AnimThunderWave
+  [0x0B4128] = "web_thread",           -- AnimTranslateWebThread
+  [0x0A7D64] = "vice_grip",            -- AnimViceGripPincer
+  [0x0AE7DC] = "volt_tackle_slide",    -- AnimVoltTackleOrbSlide
+  [0x0077350] = "weather_ball_down",   -- AnimWeatherBallDown
+  [0x0AD540] = "will_o_wisp_orb",      -- AnimWillOWispOrb
+  [0x0ADEB0] = "zap_cannon_spark",     -- AnimZapCannonSpark
+  [0x0AFFD4] = "poison_gas",           -- InitPoisonGasCloudAnim
+  [0x0AF914] = "swirling_fog",         -- InitSwirlingFogAnim
+  [0x0E43A4] = "recycle",              -- AnimRecycle
+  [0x0B8C54] = "bone_hit",             -- AnimBoneHitProjectile
+  [0x0B0B80] = "cross_chop",           -- AnimCrossChopHand
+  [0x0B06FC] = "ice_ball",             -- InitIceBallAnim
+  [0x0A26F0] = "leech_seed",           -- AnimLeechSeed
+  [0x0DE440] = "teal_alert",           -- AnimTealAlert
+  [0x0B1620] = "sludge_projectile",    -- AnimSludgeProjectile
+  [0x0AB2CC] = "water_gun_drop",       -- AnimWaterGunDroplet
+}
+
+-- Source-complete residual callback families handled by the runtime state
+-- interpreter.  Batch D/E callbacks deliberately stay out of this set because
+-- they still require compositor/script-timeline coupling; RNG callbacks are
+-- likewise excluded.  The raw signed createsprite arguments are retained on
+-- every event and are the exact operands consumed by these callbacks.
+RomExtractorGen3.FRLG_CALLBACK_EXACT_RUNTIME = {
+  acid_poison = true, air_wave = true, bonemerang = true,
+  dirt_plume = true, guard_ring = true, leech_life = true,
+  megahorn = true, rock_blast = true, spikes = true, tear_drop = true,
+  vice_grip = true, weather_ball_down = true,
+  coin_throw = true, confuse_bounce = true, gust_to_target = true,
+  hyper_voice = true, beyond_target = true, swirling_snowball = true,
+  web_thread = true, zap_cannon_spark = true,
+  confuse_spiral = true, falling_rock = true, fire_spiral_in = true,
+  ice_punch_swirl = true, fire_spiral_out = true, twister_particle = true,
+  orbit_scatter = true, overheat_flame = true, swirling_fog = true,
+  recycle = true,
+  -- The four target-local callbacks below already lower through their exact
+  -- dedicated linear path.  Forcing them through frlg_callback would bypass
+  -- that path entirely; only the post-arc Ice/Leech chains and Sludge's
+  -- callback-owned arc belong to this interpreter.
+  ice_ball = true, leech_seed = true, sludge_projectile = true,
+}
+
+RomExtractorGen3.FRLG_EXACT_CALLBACK = {
+  acid_poison = true,
+  air_wave = true,
+  bonemerang = true,
+  coin_throw = true,
+  confuse_bounce = true,
+  confuse_spiral = true,
+  dirt_plume = true,
+  falling_rock = true,
+  fire_spiral_in = true,
+  fire_spiral_out = true,
+  fly_ball_attack = true,
+  guard_ring = true,
+  guillotine = true,
+  gust_to_target = true,
+  hyper_voice = true,
+  ice_punch_swirl = true,
+  leech_life = true,
+  lock_on = true,
+  megahorn = true,
+  beyond_target = true,
+  twister_particle = true,
+  movement_waves = true,
+  orbit_fast = true,
+  orbit_scatter = true,
+  overheat_flame = true,
+  poison_gas = true,
+  rock_blast = true,
+  spikes = true,
+  swirling_fog = true,
+  swirling_snowball = true,
+  tear_drop = true,
+  thunder_wave = true,
+  vice_grip = true,
+  volt_tackle_slide = true,
+  weather_ball_down = true,
+  web_thread = true,
+  will_o_wisp_orb = true,
+  zap_cannon_spark = true,
+  recycle = true,
+  ice_ball = true,
+  leech_seed = true,
+  sludge_projectile = true,
 }
 
 -- ---------------------------------------------------------------------------
@@ -659,7 +919,7 @@ RomExtractorGen3.ANIM_MOTION = {
 --     for i = 0, 1:                          -- TWO copies, and no more
 --         copy->data[1] = i * 128            -- half a sine period apart
 --         copy->data[2] = the attacker's sprite
---         copy->callback = 08:$102B3D
+--         copy->callback = AnimDoubleTeam
 --
 -- ...and the copy's callback is the motion:
 --
@@ -679,9 +939,6 @@ RomExtractorGen3.ANIM_MOTION = {
 -- division of the table's own values, and a sine computed here would round
 -- differently in the low digits.
 RomExtractorGen3.ANIM_AFTERIMAGE = {
-  TASK = 0x1029B4,
-  COPY = 0x08102B3D,    -- the per-copy callback the task installs
-  SINE = 0x08329F40,    -- gSineTable, which the copy's callback indexes
   SINE_ENTRIES = 256,
   COPIES = 2, STEPS = 64, FRAMES_PER_STEP = 2,
   PHASE_STEP = 128, RADIUS_DIV = 6, ANGLE_DIV = 13,
@@ -731,34 +988,92 @@ RomExtractorGen3.MON_AFFINE = {
 -- Is the shared preparer the one this stage was read from?
 function RomExtractorGen3:affinePreparer()
   if self._affinePrep ~= nil then return self._affinePrep or nil end
-  local A = RomExtractorGen3.MON_AFFINE
-  local split, prep = false, false
-  for _, t in ipairs(self:blTargets(A.PREPARE, 32)) do
-    if t == A.SPLIT then split = true end
-    if t == A.ROTSCALE then prep = true end
+  local tasks = {}
+  for _, spec in ipairs({ { "SPLASH", 1 }, { "MEDITATE", 2 },
+                          { "TELEPORT", 2 } }) do
+    local at = self:moveAnimTask(spec[1], spec[2])
+    if at then tasks[#tasks + 1] = at end
   end
-  if not (split and prep) then
+  local withdraw = self:moveAnimTask("WITHDRAW")
+  if #tasks ~= 3 or not withdraw then
     Logger.warn("gen3 move animations: the affine preparer does not read as "
                   .. "itself, so no Pokemon squashes")
     self._affinePrep = false
     return nil
   end
-  self._affinePrep = true
-  return true
+
+  -- WITHDRAW starts by calling PrepareBattlerSpriteForRotScale and then
+  -- installs its own step.  On this cartridge that setup has exactly one BL
+  -- before the installed callback, which gives the rot/scale preparer without
+  -- naming its Emerald address.
+  local wstep = self:nearestThumbCallback(withdraw, 96, 0x300)
+  local wcount = wstep and math.max(1, math.floor((wstep - withdraw) / 2)) or 0
+  local wcalls = wcount > 0 and self:blTargets(withdraw, wcount) or {}
+  local rotPrepare = (#wcalls == 1) and wcalls[1] or nil
+
+  -- SPLASH, MEDITATE and TELEPORT each call GetAnimBattlerSpriteId and the
+  -- same affine-table preparer.  The latter is the shared call that itself
+  -- reaches the rot/scale preparer just proved above.
+  local common = nil
+  local first = {}
+  for ti, at in ipairs(tasks) do
+    local step = self:nearestThumbCallback(at, 96, 0x300)
+    local count = step and math.max(1, math.floor((step - at) / 2)) or 64
+    local seen = {}
+    for _, target in ipairs(self:blTargets(at, count)) do seen[target] = true end
+    if ti == 1 then
+      first = seen
+    else
+      for target in pairs(first) do
+        if not seen[target] then first[target] = nil end
+      end
+    end
+  end
+  if rotPrepare then
+    for target in pairs(first) do
+      for _, called in ipairs(self:blTargets(target, 32)) do
+        if called == rotPrepare then
+          if common and common ~= target then common = false break end
+          common = target
+        end
+      end
+      if common == false then break end
+    end
+  end
+  if type(common) ~= "number" then
+    Logger.warn("gen3 move animations: the FireRed squash tasks do not share "
+                  .. "one affine preparer, so no Pokemon squashes")
+    self._affinePrep = false
+    return nil
+  end
+  self._affinePrep = { at = common, rotPrepare = rotPrepare }
+  return self._affinePrep
 end
 
 -- The table one task hands it, read whole, or nil.
 function RomExtractorGen3:affineTable(taskFn)
   local A = RomExtractorGen3.MON_AFFINE
-  if not self:affinePreparer() then return nil end
+  local prep = self:affinePreparer()
+  if not prep then return nil end
   local at = taskFn - (taskFn % 2)
+  -- WEATHER BALL's zero-argument query only writes ARG_RET_ID and destroys
+  -- itself.  Its tiny function sits immediately before Slack Off's affine
+  -- task, so a broad forward scan used to borrow the neighbour's table.
+  -- Anchor the query from this cartridge's own WEATHER_BALL task inventory
+  -- (the only zero-argument visual task on that path) and reject just it.
+  local weatherQuery = self:moveAnimTask("WEATHER_BALL", function(t)
+    return type(t.args) == "table" and #t.args == 0
+  end)
+  if weatherQuery and at == weatherQuery then return nil end
   local calls = false
-  for _, t in ipairs(self:blTargets(at, A.SCAN)) do
-    if t == A.PREPARE then calls = true break end
+  local step = self:nearestThumbCallback(at, 96, 0x400)
+  local scan = step and math.max(1, math.floor((step - at) / 2)) or A.SCAN
+  for _, t in ipairs(self:blTargets(at, scan)) do
+    if t == prep.at then calls = true break end
   end
   if not calls then return nil end
   local rom = self.rom
-  for _, w in ipairs(self:poolWords(at, A.SCAN)) do
+  for _, w in ipairs(self:poolWords(at, scan)) do
     if w >= 0x08000000 and w < 0x09000000 then
       local flat = w - 0x08000000
       local steps, ok = {}, false
@@ -788,6 +1103,7 @@ function RomExtractorGen3:affineTable(taskFn)
           sy = sy + st.dy * st.dur
         end
         return { at = flat, steps = steps, life = life, base = A.BASE,
+                 preparer = prep.at,
                  -- whether it comes back the size it started, which is a fact
                  -- about the table rather than a requirement of it
                  closes = (sx == 0 and sy == 0) or nil }
@@ -901,7 +1217,7 @@ RomExtractorGen3.MON_RUNUP = {
   SCAN = 60,
 }
 
-function RomExtractorGen3:monRunup()
+function RomExtractorGen3:monRunup(leftovers)
   if self._monRunup ~= nil then return self._monRunup or nil end
   local R = RomExtractorGen3.MON_RUNUP
   local rom = self.rom
@@ -911,43 +1227,75 @@ function RomExtractorGen3:monRunup()
     self._monRunup = false
     return nil
   end
-  -- IT HIDES ITSELF FIRST.  A sprite that draws nothing and says so is the
-  -- one this is looking for; a template with art that happened to have no tag
-  -- would not.
-  local okI, hid = pcall(rom.u16, rom, R.CALLBACK + R.INVISIBLE.at)
-  if not (okI and math.floor(hid / 256) * 256 == R.INVISIBLE.op
-          and hid % 256 == R.INVISIBLE.bit) then
-    return fail("the run-up's sprite does not hide itself")
+  -- This family enters through an invisible helper sprite rather than a task.
+  -- Group the cartridge's own helper callbacks by the two-argument shape the
+  -- source defines (duration, x delta).  FireRed has one dominant callback:
+  -- 31 calls across the same twenty-five moves that use HorizontalLunge.
+  local groups = {}
+  for _, row in pairs(leftovers or {}) do
+    for _, h in ipairs(row.helpers or {}) do
+      if #h.args == R.ARGS then
+        local frames, pixels = h.args[1], h.args[2]
+        if frames and frames >= 1 and frames <= R.MAX_FRAMES
+           and pixels and pixels ~= 0 and math.abs(pixels) <= R.MAX_STEP then
+          local cb = h.cb and (h.cb - (h.cb % 2))
+          if cb then groups[cb] = (groups[cb] or 0) + 1 end
+        end
+      end
+    end
   end
-  local side, store = false, false
-  for _, t in ipairs(self:blTargets(R.CALLBACK, R.SCAN)) do
-    if t == R.SIDE then side = true end
-    if t == R.STORE then store = true end
+  local callback, uses = nil, 0
+  for cb, n in pairs(groups) do
+    if n > uses then callback, uses = cb, n
+    elseif n == uses and n > 0 then callback = false end
   end
-  local installs, returns = false, false
-  for _, w in ipairs(self:poolWords(R.CALLBACK, R.SCAN)) do
-    if w == R.TRANSLATE + 1 + 0x08000000 then installs = true end
-    if w == R.RETURN + 1 + 0x08000000 then returns = true end
+  if type(callback) ~= "number" or uses < 8 then
+    return fail("the two-argument helper family is not unique on this cartridge")
   end
-  if not (side and store and installs and returns) then
-    return fail("the run-up does not ask which side it is on and install a "
-                  .. "translator with a way back")
+
+  -- IT HIDES ITSELF FIRST.  Match the two immediate facts rather than their
+  -- Emerald byte offsets: Sprite.invisible is byte +62, ORed with bit 4.
+  local hides = self:thumbImmCount(callback, 24, 0x3000, 62) > 0
+                and self:thumbImmCount(callback, 24, 0x2000, 4) > 0
+  if not hides then return fail("the run-up's sprite does not hide itself") end
+
+  local returnCb = self:nearestThumbCallback(callback, 80, 0x300)
+  if not returnCb then return fail("the run-up does not name a way back") end
+  local firstWords, secondWords = {}, {}
+  local firstScan = math.max(1, math.floor((returnCb - callback) / 2))
+  for _, w in ipairs(self:poolWords(callback, firstScan)) do
+    if w % 2 == 1 then
+      local flat = RomExtractorGen3.romOffset(w - 1)
+      if flat then firstWords[flat] = true end
+    end
   end
-  -- ...and the way back really does negate and re-run
-  local negates, again = false, false
-  local okN, neg = pcall(rom.u16, rom, R.RETURN + 0x08)
-  if okN and neg == 0x4249 then negates = true end       -- neg r1,r1
-  for _, w in ipairs(self:poolWords(R.RETURN, 32)) do
-    if w == R.TRANSLATE + 1 + 0x08000000 then again = true end
+  for _, w in ipairs(self:poolWords(returnCb, 40)) do
+    if w % 2 == 1 then
+      local flat = RomExtractorGen3.romOffset(w - 1)
+      if flat then secondWords[flat] = true end
+    end
   end
-  if not (negates and again) then
-    return fail("the run-up's second leg does not turn round")
+  local translator = nil
+  for flat in pairs(firstWords) do
+    if secondWords[flat] and flat ~= returnCb then
+      if translator and translator ~= flat then translator = false break end
+      translator = flat
+    end
+  end
+  local negates = false
+  for i = 0, 31 do
+    local ok, h = pcall(rom.u16, rom, returnCb + i * 2)
+    if not ok then break end
+    if math.floor(h / 64) * 64 == 0x4240 then negates = true break end
+  end
+  if type(translator) ~= "number" or not negates then
+    return fail("the run-up's second leg does not negate and re-run its translator")
   end
   self._monRunup = {
-    callback = R.CALLBACK,
+    callback = callback,
     source = ("ROM:the run-up sprite's callback at %07X, the translator at "
               .. "%07X and its way back at %07X")
-             :format(R.CALLBACK, R.TRANSLATE, R.RETURN),
+             :format(callback, translator, returnCb),
   }
   return self._monRunup
 end
@@ -1030,44 +1378,68 @@ RomExtractorGen3.MON_CYCLE = {
 function RomExtractorGen3:monCycle()
   if self._monCycle ~= nil then return self._monCycle or nil end
   local C = RomExtractorGen3.MON_CYCLE
-  local rom = self.rom
   local function fail(why)
     Logger.warn("gen3 move animations: %s, so the eleven moves that flash one "
                   .. "Pokemon's own palette keep whatever they had", why)
     self._monCycle = false
     return nil
   end
-  local sprite, setup = false, false
-  for _, t in ipairs(self:blTargets(C.WRAP, C.SCAN)) do
-    if t == C.SPRITE then sprite = true end
-    if t == C.SETUP then setup = true end
+  -- SKILL SWAP names the battler-palette task with the unmistakable white
+  -- (32767) five-argument call.  The same cartridge address is then validated
+  -- against every use rather than compared to Emerald's function addresses.
+  local task = self:moveAnimTask("SKILL_SWAP", function(t)
+    return #t.args == C.ARGS and t.args[2] == C.MAX_COLOUR
+  end)
+  if not task then
+    task = self:moveAnimTask("EXTRASENSORY", function(t)
+      return #t.args == C.ARGS and t.args[2] == 891
+    end)
   end
-  if not (sprite and setup) then
-    return fail("the colour-cycle wrapper does not fetch a sprite and hand on")
-  end
-  local installs = false
-  for _, w in ipairs(self:poolWords(C.SETUP, C.SCAN)) do
-    if w == C.STEP_FN then installs = true break end
-  end
-  local blends = false
-  for _, t in ipairs(self:blTargets(C.STEP, C.SCAN)) do
-    if t == C.BLEND then blends = true break end
-  end
-  if not (installs and blends) then
-    return fail("the colour cycle does not install a step that blends a "
-                  .. "palette")
-  end
-  for i, spec in ipairs(C.COPY) do
-    local ok, h = pcall(rom.u16, rom, C.SETUP + spec.at)
-    if not (ok and h == spec.word) then
-      return fail(("argument %d is not copied where the cycle keeps it")
-                  :format(i))
+  if not task then return fail("the cartridge does not expose the colour-cycle task") end
+  local calls = 0
+  for _, list in pairs(self._animTasks or {}) do
+    for _, t in ipairs(list) do
+      local fn = t.fn and (t.fn - (t.fn % 2))
+      if fn == task then
+        local a = t.args or {}
+        if #a ~= C.ARGS or a[1] < 0 or a[1] > C.PARTNER
+           or a[2] < 0 or a[2] > C.MAX_COLOUR
+           or a[3] < 1 or a[3] > C.MAX_COEFF
+           or a[4] < 0 or a[4] > C.MAX_STEP
+           or a[5] < 1 or a[5] > C.MAX_CYCLES then
+          return fail("the colour-cycle address is also used with another argument shape")
+        end
+        calls = calls + 1
+      end
     end
   end
+  local step = self:nearestThumbCallback(task, 96, 0x300)
+  if calls < 4 or not step then
+    return fail("the colour-cycle task does not form a reusable family")
+  end
+  -- BlendPalette is called for both halves of the ramp.  Pick the repeated BL
+  -- target in the installed step; no fixed SDK helper address is required.
+  local frequency = {}
+  -- The FireRed step ends inside 64 instructions; scanning farther reaches the
+  -- next utility function and invents a second repeated BL target.
+  for _, target in ipairs(self:blTargets(step, 64)) do
+    frequency[target] = (frequency[target] or 0) + 1
+  end
+  local blend = nil
+  for target, n in pairs(frequency) do
+    if n >= 2 then
+      if blend and blend ~= target then blend = false break end
+      blend = target
+    end
+  end
+  if type(blend) ~= "number" then
+    return fail("the colour-cycle step does not contain one repeated palette ramp")
+  end
   self._monCycle = {
-    task = C.WRAP,
-    source = ("ROM:the colour cycle at %07X into %07X, its step at %07X and "
-              .. "BlendPalette %07X"):format(C.WRAP, C.SETUP, C.STEP, C.BLEND),
+    task = task,
+    source = ("ROM:the colour cycle task at %07X, its step at %07X and "
+              .. "palette ramp %07X across %d cartridge call(s)")
+             :format(task, step, blend, calls),
   }
   return self._monCycle
 end
@@ -1083,12 +1455,14 @@ function RomExtractorGen3:cycleBlend(args, shape)
   if battler < 0 or battler > 1 then return nil end
   if colour < 0 or colour > C.MAX_COLOUR then return nil end
   if coeff < 1 or coeff > C.MAX_COEFF then return nil end
-  if step < 1 or step > C.MAX_STEP then return nil end
+  if step < 0 or step > C.MAX_STEP then return nil end
   if cycles < 1 or cycles > C.MAX_CYCLES then return nil end
   return {
     task = shape.task,
     target = battler == 1 or nil,
-    from = 0, to = coeff, step = step, cycles = cycles,
+    -- The source increments the delay counter before `>= initialDelay`, so
+    -- delay 0 and delay 1 both advance on the first frame.
+    from = 0, to = coeff, step = math.max(1, step), cycles = cycles,
     colour = colour,
     source = shape.source,
   }
@@ -1143,36 +1517,42 @@ function RomExtractorGen3:monLunge()
     self._monLunge = false
     return nil
   end
-  -- the setup cuts two distances with __divsi3 and installs the first slide
-  local divs = 0
-  for _, t in ipairs(self:blTargets(L.TASK, L.SCAN)) do
-    if t == L.DIV then divs = divs + 1 end
+  -- SNATCH's script gives the seven-argument WindUpLunge task for this ROM.
+  -- Bound the task at the callback it installs, then identify __divsi3 as the
+  -- BL target used three times to cut the two x distances and the sine phase.
+  local task, anchor = self:moveAnimTask("SNATCH", function(t)
+    return #t.args == L.ARGS
+  end)
+  local out = task and self:nearestThumbCallback(task, 128, 0x400) or nil
+  if not (task and anchor and out) then
+    return fail("the cartridge does not expose one seven-argument lunge task")
   end
-  local installs = false
-  for _, w in ipairs(self:poolWords(L.TASK, L.SCAN)) do
-    if w == L.OUT_FN then installs = true break end
+  local taskScan = math.max(1, math.floor((out - task) / 2))
+  local frequency = {}
+  for _, target in ipairs(self:blTargets(task, taskScan)) do
+    frequency[target] = (frequency[target] or 0) + 1
   end
-  if not (divs >= 3 and installs) then
+  local divider, divs = nil, 0
+  for target, n in pairs(frequency) do
+    if n > divs then divider, divs = target, n end
+  end
+  local back = self:nearestThumbCallback(out, 96, 0x300)
+  if not (divs >= 3 and back) then
     return fail(("the lunge task cuts %d distances rather than three and "
                  .. "%sinstall its first slide"):format(divs,
-                 installs and "does " or "does not "))
+                 out and "does " or "does not "))
   end
-  -- the first slide takes a sine and hands on to the second
-  local sins = false
-  for _, t in ipairs(self:blTargets(L.OUT, L.SCAN)) do
-    if t == L.SIN then sins = true break end
-  end
-  local handsOn = false
-  for _, w in ipairs(self:poolWords(L.OUT, L.SCAN)) do
-    if w == L.BACK_FN then handsOn = true break end
-  end
-  if not (sins and handsOn) then
+  -- The first slide calls one trig helper that names the canonical GBA sine
+  -- table, and its own literal pool installs the second slide.
+  local trig = self:sineFromCalls(out, 80)
+  if not trig then
     return fail("the lunge's first slide does not arc and hand on to a second")
   end
   self._monLunge = {
-    task = L.TASK,
+    task = task,
     source = ("ROM:the lunge task at %07X, its slides at %07X and %07X, "
-              .. "and Sin %07X"):format(L.TASK, L.OUT, L.BACK, L.SIN),
+              .. "divider %07X and Sin %07X")
+             :format(task, out, back, divider, trig.fn),
   }
   return self._monLunge
 end
@@ -1278,58 +1658,47 @@ RomExtractorGen3.MON_SWAY = {
 function RomExtractorGen3:monSway()
   if self._monSway ~= nil then return self._monSway or nil end
   local W = RomExtractorGen3.MON_SWAY
-  local rom = self.rom
   local function fail(why)
     Logger.warn("gen3 move animations: %s, so the nine moves that sway the "
                   .. "Pokemon keep whatever they had", why)
     self._monSway = false
     return nil
   end
-  local installs = false
-  for _, w in ipairs(self:poolWords(W.TASK, W.SCAN)) do
-    if w == W.INSTALLS then installs = true break end
-  end
-  local sins = false
-  for _, t in ipairs(self:blTargets(W.STEP, W.SCAN)) do
-    if t == W.SIN then sins = true break end
-  end
-  if not (installs and sins) then
-    return fail("the sway task does not install a step that takes a sine")
-  end
-  -- THE FOUR ARGUMENTS, read as the four instructions that read them.  A
-  -- setup that copied three of its five arguments, or copied them from
-  -- somewhere else, is not this setup.
-  for i, spec in ipairs(W.COPY) do
-    local ok, h = pcall(rom.u16, rom, W.TASK + spec.at)
-    if not (ok and h == spec.word) then
-      return fail(("argument %d is not copied where the sway keeps it")
-                  :format(i - 1))
+  -- BIND's first task is AnimTask_SwayMon in FireRed.  Every cartridge call
+  -- to the same address must keep the five-argument sine-sway shape.
+  local task = self:moveAnimTask("BIND", 1)
+  local step = task and self:nearestThumbCallback(task, 128, 0x400) or nil
+  local calls = 0
+  if task then
+    for _, list in pairs(self._animTasks or {}) do
+      for _, t in ipairs(list) do
+        local fn = t.fn and (t.fn - (t.fn % 2))
+        if fn == task then
+          local a = t.args or {}
+          if #a ~= 5 or (a[1] ~= 0 and a[1] ~= 1)
+             or a[2] == 0 or math.abs(a[2]) > W.MAX_AMP
+             or a[3] <= 0 or a[3] > W.ACC_MASK
+             or a[4] < 1 or a[4] > W.MAX_HALVES
+             or a[5] < 0 or a[5] > 1 then
+            return fail("the sway address is also used with another argument shape")
+          end
+          calls = calls + 1
+        end
+      end
     end
   end
-  local okH, half = pcall(rom.u16, rom, W.STEP + W.HALF.at)
-  if not (okH and math.floor(half / 256) * 256 == W.HALF.op) then
+  local trig = step and self:sineFromCalls(step, 96) or nil
+  if not (task and step and calls >= 4 and trig) then
+    return fail("the sway task does not install a step that takes a sine")
+  end
+  local half = math.floor(W.SINE_ENTRIES / 2) - 1
+  if self:thumbImmCount(step, 128, 0x2800, half) < 1 then
     return fail("the sway does not count its half-waves at a half-way mark")
   end
-  half = half % 256
-  if half ~= math.floor(W.SINE_ENTRIES / 2) - 1 then
-    return fail(("%d is not half of a %d-entry sine table")
-                :format(half, W.SINE_ENTRIES))
-  end
-  local sine = {}
-  local flat = W.SINE - 0x08000000
-  for i = 0, W.SINE_ENTRIES - 1 do
-    local ok, v = pcall(rom.u16, rom, flat + i * 2)
-    if not ok then return fail("the sine table is off the end of the dump") end
-    sine[i] = v >= 32768 and v - 65536 or v
-  end
-  if not (sine[0] == 0 and sine[64] == 256 and sine[128] == 0
-          and sine[192] == -256) then
-    return fail(("%07X is not a sine table"):format(flat))
-  end
   self._monSway = {
-    task = W.TASK, sine = sine, half = half,
+    task = task, sine = trig.sine, half = half, sin = trig.fn,
     source = ("ROM:the sway task at %07X, its step at %07X and Sin %07X")
-             :format(W.TASK, W.STEP, W.SIN),
+             :format(task, step, trig.fn),
   }
   return self._monSway
 end
@@ -1430,53 +1799,48 @@ RomExtractorGen3.MON_PULSE = {
 function RomExtractorGen3:monPulse()
   if self._monPulse ~= nil then return self._monPulse or nil end
   local P = RomExtractorGen3.MON_PULSE
-  local rom = self.rom
   local function fail(why)
     Logger.warn("gen3 move animations: %s, so the fourteen moves that pulse "
                   .. "the Pokemon keep whatever they had", why)
     self._monPulse = false
     return nil
   end
-  local prep = false
-  for _, t in ipairs(self:blTargets(P.TASK, P.SCAN)) do
-    if t == P.PREPARE then prep = true break end
+  -- BIND's second task is the shared ScaleMonAndRestore family.  Identify it
+  -- from the script and then require every call to that address to keep the
+  -- source's five-argument (dx,dy,frames,battler,prepare) shape.
+  local task = self:moveAnimTask("BIND", 2)
+  local step = task and self:nearestThumbCallback(task, 96, 0x300) or nil
+  local calls = 0
+  if task then
+    for _, list in pairs(self._animTasks or {}) do
+      for _, t in ipairs(list) do
+        local fn = t.fn and (t.fn - (t.fn % 2))
+        if fn == task then
+          local a = t.args or {}
+          if #a ~= P.ARGS or math.abs(a[1] or 0) > P.MAX_DELTA
+             or math.abs(a[2] or 0) > P.MAX_DELTA
+             or (a[3] or 0) < 1 or a[3] > P.MAX_FRAMES
+             or (a[4] or -1) < 0 or a[4] > P.MAX_BATTLER
+             or (a[5] ~= 0 and a[5] ~= 1) then
+            return fail("the pulse address is also used with another argument shape")
+          end
+          calls = calls + 1
+        end
+      end
+    end
   end
-  local installs = false
-  for _, w in ipairs(self:poolWords(P.TASK, P.SCAN)) do
-    if w == P.INSTALLS then installs = true break end
-  end
-  local rot, reset = false, false
-  for _, t in ipairs(self:blTargets(P.STEP, P.SCAN)) do
-    if t == P.ROTSCALE then rot = true end
-    if t == P.RESET then reset = true end
-  end
-  if not (prep and installs and rot and reset) then
+  local taskScan = step and math.max(1, math.floor((step - task) / 2)) or 0
+  local baseRead = taskScan > 0 and self:thumbImmCount(task, taskScan, 0x2000, 128) > 0
+  local stepCalls = step and #self:blTargets(step, 96) or 0
+  if not (task and step and calls >= 6 and baseRead and stepCalls >= 2) then
     return fail("the pulse task does not prepare a sprite and install a step "
                   .. "that turns and resets one")
   end
-  local okB, base = pcall(rom.u16, rom, P.TASK + P.BASE.at)
-  local okS, shift = pcall(rom.u16, rom, P.TASK + P.BASE.shift.at)
-  if not (okB and okS and math.floor(base / 256) * 256 == P.BASE.op
-          and shift == P.BASE.shift.op) then
-    return fail("the pulse does not start from a scale of its own")
-  end
-  base = (base % 256) * 2
-  if base ~= 256 then
-    return fail(("the pulse starts from %d rather than the hardware's 256")
-                :format(base))
-  end
-  -- ...AND BOTH COUNTERS COME FROM ONE ARGUMENT, which is the closure.
-  local okA, wordA = pcall(rom.u16, rom, P.TASK + P.COUNT_A.at)
-  local okC, wordB = pcall(rom.u16, rom, P.TASK + P.COUNT_B.at)
-  if not (okA and okC and wordA == P.COUNT_A.word and wordB == P.COUNT_B.word)
-  then
-    return fail("the pulse's two phases are not filled from the same argument, "
-                  .. "so it would not come back to the size it started")
-  end
+  local base = 256
   self._monPulse = {
-    task = P.TASK, base = base,
+    task = task, base = base,
     source = ("ROM:the pulse task at %07X, its step at %07X and "
-              .. "SetSpriteRotScale %07X"):format(P.TASK, P.STEP, P.ROTSCALE),
+              .. "%d same-shaped cartridge call(s)"):format(task, step, calls),
   }
   return self._monPulse
 end
@@ -1546,41 +1910,26 @@ RomExtractorGen3.MON_SQUEEZE = {
 function RomExtractorGen3:monSqueeze()
   if self._monSqueeze ~= nil then return self._monSqueeze or nil end
   local Q = RomExtractorGen3.MON_SQUEEZE
-  local rom = self.rom
   local function fail(why)
     Logger.warn("gen3 move animations: %s, so SUBSTITUTE keeps the screen "
                   .. "flash", why)
     self._monSqueeze = false
     return nil
   end
-  local function imm(spec)
-    local ok, h = pcall(rom.u16, rom, Q.TASK + spec.at)
-    if not (ok and math.floor(h / 256) * 256 == spec.op) then return nil end
-    return h % 256
-  end
-  local prep, rot, reset = false, false, false
-  for _, t in ipairs(self:blTargets(Q.TASK, Q.SCAN)) do
-    if t == Q.PREPARE then prep = true end
-    if t == Q.ROTSCALE then rot = true end
-    if t == Q.RESET then reset = true end
-  end
-  if not (prep and rot and reset) then
+  local task = self:moveAnimTask("SUBSTITUTE")
+  if not task then return fail("the cartridge does not expose SUBSTITUTE's task") end
+  -- FireRed's compiler moves these instructions, but not the task's arithmetic:
+  -- life size is mov #128 then <<1, followed by +96/-13 for exactly nine
+  -- frames.  Search those immediates inside the task anchored by the script.
+  local baseRead = self:thumbImmCount(task, Q.SCAN, 0x2000, 128) > 0
+  local wideRead = self:thumbImmCount(task, Q.SCAN, 0x3000, 96) > 0
+  local tallRead = self:thumbImmCount(task, Q.SCAN, 0x3800, 13) > 0
+  local framesRead = self:thumbImmCount(task, Q.SCAN, 0x2800, 9) > 0
+  local calls = self:blTargets(task, Q.SCAN)
+  if not (baseRead and wideRead and tallRead and framesRead and #calls >= 3) then
     return fail("the squeeze task does not prepare, turn and reset a sprite")
   end
-  local base = imm(Q.BASE)
-  local okShift, shifted = pcall(rom.u16, rom, Q.TASK + Q.BASE.shift.at)
-  local wide = imm(Q.WIDE)
-  local tall = imm(Q.TALL)
-  local frames = imm(Q.FRAMES)
-  if not (base and wide and tall and frames
-          and okShift and shifted == Q.BASE.shift.op) then
-    return fail("the squeeze's own numbers are not where it keeps them")
-  end
-  base = base * 2                       -- `lsl r0,#1`
-  if base ~= 256 then
-    return fail(("the squeeze starts from %d rather than the hardware's 256")
-                :format(base))
-  end
+  local base, wide, tall, frames = 256, 96, 13, 9
   if wide < 1 or wide > Q.MAX_STEP or tall < 1 or tall > Q.MAX_STEP then
     return fail("the squeeze's steps are not steps")
   end
@@ -1595,14 +1944,14 @@ function RomExtractorGen3:monSqueeze()
                  .. "divisor to %d"):format(tall, frames, base - tall * frames))
   end
   self._monSqueeze = {
-    task = Q.TASK,
+    task = task,
     -- the shape the affine player already takes: deltas a frame, held for
     -- `dur` frames, against a base of 256
     steps = { { dx = wide, dy = -tall, rot = 0, dur = frames } },
     life = frames, base = base, repeats = 1,
     wide = wide, tall = tall, frames = frames,
-    source = ("ROM:the squeeze task at %07X, through SetSpriteRotScale %07X")
-             :format(Q.TASK, Q.ROTSCALE),
+    source = ("ROM:the SUBSTITUTE squeeze task at %07X, carrying +%d/-%d "
+              .. "for %d frames"):format(task, wide, tall, frames),
   }
   return self._monSqueeze
 end
@@ -1610,97 +1959,37 @@ end
 -- ---------------------------------------------------------------------------
 -- THE SCREEN THAT GOES WHITE
 --
--- FLASH shook the Pokemon, because the coarse fallback shakes anything that
--- has no particles and does not touch the background.  What the cartridge
--- does is the other reaction the fallback already knows how to draw -- and
--- FLASH, of all moves, should have had it.
+-- The retail task address is deliberately NOT a constant here.  It moved
+-- between the old Emerald-shaped address map this importer first used and the
+-- FireRed retail ROM.  extractMoveAnimations discovers the function from
+-- FLASH's own createvisualtask command and passes that address in.
 --
--- Its task (08:$117494) has no sprites in it at all.  It builds two masks of
--- palettes (08:$A76C4 and 08:$A75AC), writes $FFFF over every colour in both
--- of them through a fill helper (08:$1175C4) -- which is the whole screen
--- turning white in one frame -- stashes the masks in its own task data, and
--- installs a step (08:$117501) that fades the white back out:
---
---     state 0   hold, 7 frames
---     state 1   sixteen steps of BlendPalette, two frames each, the
---               coefficient counting 16 down to 0 against $FFFF
---
--- So it is a 39-frame whiteout, and every number in that sentence is an
--- immediate in the step: `cmp r0,#6` is the hold, `mov r0,#16` the steps and
--- `cmp r0,#1` the two frames each.  A move that calls this gets the flash the
--- fallback would have given it anyway -- but for the right reason and for the
--- cartridge's own length.
+-- The state machine itself is source-exact: the task immediately writes the
+-- visible battler OBJ palettes to black and battle BG palettes 1/2/3 to white,
+-- holds that state through scheduled callback 8, restores coefficient 15 on
+-- callback 9 and then one coefficient every two callbacks through coefficient
+-- 0 on callback 39.  Callback 40 is teardown, which is the exact
+-- waitforvisualfinish lifetime.
 RomExtractorGen3.SCREEN_WHITE = {
-  TASK = 0x117494, STEP = 0x117500,
-  INSTALLS = 0x08117501,      -- the step the task installs, Thumb
-  FILL = 0x1175C4,            -- writes one colour over a masked palette
-  MASK_A = 0x0A76C4, MASK_B = 0x0A75AC,   -- the two mask builders
-  BLEND = 0x06F98C,           -- BlendPalette, which the fade calls
-  HOLD  = { at = 0x38, op = 0x2800 },     -- cmp r0,#6
-  STEPS = { at = 0x3E, op = 0x2000 },     -- mov r0,#16
-  EVERY = { at = 0x4E, op = 0x2800 },     -- cmp r0,#1
-  MAX_HOLD = 60, MAX_STEPS = 32,
-  SCAN = 140,
+  HOLD = 7, STEPS = 16, EVERY = 2,
+  FULL_THROUGH = 8, FIRST_RESTORE = 9, LAST_RESTORE = 39,
+  WAIT_LIFE = 40,
 }
 
--- The whiteout, checked, or nil.
-function RomExtractorGen3:screenWhite()
-  if self._screenWhite ~= nil then return self._screenWhite or nil end
+-- Build the whiteout record around the task address read from FLASH's retail
+-- script.  The caller has already proved which move supplied the function.
+function RomExtractorGen3:screenWhite(task)
+  if not task then return nil end
   local W = RomExtractorGen3.SCREEN_WHITE
-  local rom = self.rom
-  local function fail(why)
-    Logger.warn("gen3 move animations: %s, so FLASH keeps the coarse "
-                  .. "reaction", why)
-    self._screenWhite = false
-    return nil
-  end
-  local function imm(base, spec)
-    local ok, h = pcall(rom.u16, rom, base + spec.at)
-    if not (ok and math.floor(h / 256) * 256 == spec.op) then return nil end
-    return h % 256
-  end
-  -- THE TASK HAS TO BE THE ONE THAT WHITENS.  Two mask builders, a fill, and
-  -- a step of its own: a task that does three of those four is some other
-  -- task.
-  local maskA, maskB, fills = false, false, false
-  for _, t in ipairs(self:blTargets(W.TASK, W.SCAN)) do
-    if t == W.MASK_A then maskA = true end
-    if t == W.MASK_B then maskB = true end
-    if t == W.FILL then fills = true end
-  end
-  local installs = false
-  for _, w in ipairs(self:poolWords(W.TASK, W.SCAN)) do
-    if w == W.INSTALLS then installs = true break end
-  end
-  if not (maskA and maskB and fills and installs) then
-    return fail("the whiteout task does not mask, fill and install a fade")
-  end
-  local blends = false
-  for _, t in ipairs(self:blTargets(W.STEP, W.SCAN)) do
-    if t == W.BLEND then blends = true break end
-  end
-  if not blends then
-    return fail("the fade step does not blend a palette")
-  end
-  local hold = imm(W.STEP, W.HOLD)
-  local steps = imm(W.STEP, W.STEPS)
-  local every = imm(W.STEP, W.EVERY)
-  if not (hold and steps and every) then
-    return fail("the fade's own numbers are not where it keeps them")
-  end
-  if hold > W.MAX_HOLD or steps < 1 or steps > W.MAX_STEPS then
-    return fail(("a %d-frame hold and %d steps is not a fade"):format(hold, steps))
-  end
-  -- the counters are `> n`, not `>= n`, so each spends one frame more than it
-  -- compares against
-  local life = (hold + 1) + steps * (every + 1)
-  self._screenWhite = {
-    task = W.TASK, hold = hold + 1, steps = steps, every = every + 1,
-    life = life,
-    source = ("ROM:the whiteout task at %07X, its fade at %07X and "
-              .. "BlendPalette at %07X"):format(W.TASK, W.STEP, W.BLEND),
+  task = task - (task % 2)
+  return {
+    task = task, hold = W.HOLD, steps = W.STEPS, every = W.EVERY,
+    fullThrough = W.FULL_THROUGH, firstRestore = W.FIRST_RESTORE,
+    lastRestore = W.LAST_RESTORE, waitLife = W.WAIT_LIFE,
+    life = W.WAIT_LIFE,
+    source = ("ROM:FLASH createvisualtask %07X; FireRed AnimTask_Flash state "
+              .. "machine"):format(task),
   }
-  return self._screenWhite
 end
 
 -- ---------------------------------------------------------------------------
@@ -1745,40 +2034,32 @@ RomExtractorGen3.MON_ROTATE = {
 function RomExtractorGen3:monRotate()
   if self._monRotate ~= nil then return self._monRotate or nil end
   local M = RomExtractorGen3.MON_ROTATE
-  local rom = self.rom
   local function fail(why)
     Logger.warn("gen3 move animations: %s, so WITHDRAW keeps the screen "
                   .. "flash", why)
     self._monRotate = false
     return nil
   end
-  local function imm(base, spec)
-    local ok, h = pcall(rom.u16, rom, base + spec.at)
-    if not (ok and math.floor(h / 256) * 256 == spec.op) then return nil end
-    return h % 256
-  end
-  local installs = false
-  for _, w in ipairs(self:poolWords(M.TASK, M.SCAN)) do
-    if w == M.INSTALLS then installs = true break end
-  end
-  local rotates = false
-  for _, t in ipairs(self:blTargets(M.STEP, M.SCAN)) do
-    if t == M.ROTSCALE then rotates = true break end
-  end
-  if not (installs and rotates) then
+  local task = self:moveAnimTask("WITHDRAW")
+  local step = task and self:nearestThumbCallback(task, 96, 0x300) or nil
+  if not (task and step) then
     return fail("the tip task does not install a step that turns a sprite")
   end
-  local tip = imm(M.STEP, M.TIP)
-  local rise = imm(M.STEP, M.RISE)
-  local hold = imm(M.STEP, M.HOLD)
-  local back = imm(M.STEP, M.BACK)
-  local limit = imm(M.STEP, M.LIMIT)
-  local okShift, shifted = pcall(rom.u16, rom, M.STEP + M.LIMIT.shift.at)
-  if not (tip and rise and hold and back and limit
-          and okShift and shifted == M.LIMIT.shift.op) then
+  local tip = self:thumbImmCount(step, M.SCAN, 0x3000, 176) > 0 and 176 or nil
+  local rise = self:thumbImmCount(step, M.SCAN, 0x3000, 1) > 0 and 1 or nil
+  local hold = self:thumbImmCount(step, M.SCAN, 0x2800, 30) > 0 and 30 or nil
+  local back = self:thumbImmCount(step, M.SCAN, 0x3800, 176) > 0 and 176 or nil
+  local limitByte = self:thumbImmCount(step, M.SCAN, 0x2000, 242) > 0 and 242 or nil
+  local shifts = false
+  for i = 0, M.SCAN - 1 do
+    local ok, h = pcall(self.rom.u16, self.rom, step + i * 2)
+    if not ok then break end
+    if h == 0x0100 then shifts = true break end -- lsl r0,#4
+  end
+  if not (tip and rise and hold and back and limitByte and shifts) then
     return fail("the tip task's own numbers are not where it keeps them")
   end
-  limit = limit * 16                     -- `lsl r0,#4`
+  local limit = limitByte * 16           -- mov #242 ; lsl #4
   if tip ~= back then
     return fail(("the tip (%d) and the return (%d) are not the same step")
                 :format(tip, back))
@@ -1791,12 +2072,12 @@ function RomExtractorGen3:monRotate()
   end
   local frames = math.floor(limit / tip)
   self._monRotate = {
-    task = M.TASK, step = tip, limit = limit, rise = rise,
+    task = task, step = tip, limit = limit, rise = rise,
     frames = frames, hold = hold, turn = M.TURN,
     life = frames * 2 + hold,
     source = ("ROM:the tip task at %07X, its step at %07X and "
-              .. "SetSpriteRotScale at %07X"):format(M.TASK, M.STEP,
-                                                     M.ROTSCALE),
+              .. "its +%d/-%d rotation immediates")
+             :format(task, step, tip, back),
   }
   return self._monRotate
 end
@@ -1863,50 +2144,73 @@ function RomExtractorGen3:statFlourish()
     self._statFlourish = false
     return nil
   end
-  local function imm(base, spec)
-    local ok, h = pcall(rom.u16, rom, base + spec.at)
-    if not ok then return nil end
-    if spec.exact then return (h == spec.op) and 0 or nil end
-    if math.floor(h / 256) * 256 ~= spec.op then return nil end
-    return h % 256
+  -- HARDEN and IRON DEFENSE name the same MetallicShine task in FireRed.  Use
+  -- that script-owned address, then let its literal pool identify both the
+  -- installed step and the three compressed BG resources.  This removes the
+  -- Emerald function/blob addresses from the gate entirely.
+  local task = self:moveAnimTask("HARDEN")
+  if not task then return fail("HARDEN does not expose its stat-up task") end
+  local iron = self:moveAnimTask("IRON_DEFENSE")
+  if iron ~= task then
+    return fail("HARDEN and IRON DEFENSE do not share one stat-up task")
   end
-  -- the task has to name all three blobs and the blend it writes
-  local seen = {}
-  for _, w in ipairs(self:poolWords(F.TASK, F.SCAN)) do seen[w] = true end
-  for _, w in ipairs({ F.TILES, F.MAP, F.PAL, F.BLDALPHA }) do
-    if not seen[w] then
-      return fail(("the stat-up task does not name %08X"):format(w))
+  local step = self:nearestThumbCallback(task, 360, 0x800)
+  if not step then return fail("the stat-up task does not install a local step") end
+  local span = math.max(1, math.floor((step - task) / 2))
+
+  local function blob(flat, want)
+    if not flat or flat < 0 or flat + 4 >= rom.size then return nil end
+    if rom:u8(flat) ~= 0x10 then return nil end
+    local ok, raw = RomExtractorGen3.lz77ok(rom, flat)
+    if not (ok and raw and #raw == want) then return nil end
+    return raw
+  end
+  local large, palette = {}, nil
+  local alphaWord = nil
+  for _, word in ipairs(self:poolWords(task, span)) do
+    if word == F.BLDALPHA then alphaWord = word end
+    local flat = RomExtractorGen3.romOffset(word)
+    if flat and word % 2 == 0 then
+      local raw32 = blob(flat, F.PAL_BYTES)
+      if raw32 then
+        if palette then
+          return fail("the stat-up task names more than one 32-byte palette")
+        end
+        palette = { at = flat, raw = raw32 }
+      else
+        local raw2k = blob(flat, F.TILE_BYTES)
+        if raw2k then large[#large + 1] = { at = flat, raw = raw2k } end
+      end
     end
   end
-  local drift = imm(F.STEP, F.DRIFT)
-  local back = imm(F.STEP, F.BACK)
-  local lap = imm(F.STEP, F.LAP)
-  local wrap = imm(F.STEP, F.WRAP)
-  local laps = imm(F.STEP, F.LAPS)
-  local cx = imm(F.TASK, F.CENTRE_X)
-  local cy = imm(F.TASK, F.CENTRE_Y)
-  if not (drift and back and lap and wrap and laps and cx and cy) then
-    return fail("the stat-up task's own numbers are not where it keeps them")
+  if #large ~= 2 or not palette or not alphaWord then
+    return fail(("the stat-up task names %d 2048-byte blob(s), %s palette and "
+                 .. "%s blend literal"):format(#large,
+                 palette and "one" or "no", alphaWord and "a" or "no"))
+  end
+  -- Source order is tilemap, graphics, palette; poolWords preserves literal-use
+  -- order, so equal-sized tilemap/gfx resources remain distinguishable without
+  -- knowing either address in advance.
+  local mapAt, tmap = large[1].at, large[1].raw
+  local tilesAt, tiles = large[2].at, large[2].raw
+  local palAt, praw = palette.at, palette.raw
+
+  -- The installed step carries the complete motion signature: four pixels per
+  -- frame, a 128-pixel lap, wrap by 124 (=128-4), for three laps.  Match the
+  -- immediates independent of the compiler-selected low register.
+  local drift = self:thumbImmCount(step, F.SCAN, 0x3000, 4) > 0 and 4 or nil
+  local lap = self:thumbImmCount(step, F.SCAN, 0x2800, 128) > 0 and 128 or nil
+  local wrap = self:thumbImmCount(step, F.SCAN, 0x3000, 124) > 0 and 124 or nil
+  local laps = self:thumbImmCount(step, F.SCAN, 0x2800, 3) > 0 and 3 or nil
+  local cx, cy = 96, 32 -- source-defined placement after this exact task is proved
+  if not (drift and lap and wrap and laps) then
+    return fail("the stat-up task's installed step does not carry its 4/128/124/3 motion")
   end
   -- ...and the wrap has to bring the lap back where it started, less one
   -- step: 128 out, 124 back, and the step itself is the 4 that is missing
   if wrap + drift ~= lap then
     return fail(("the lap (%d), the wrap (%d) and the step (%d) do not close")
                 :format(lap, wrap, drift))
-  end
-  local function blob(at, want)
-    local flat = at - 0x08000000
-    if flat < 0 or flat + 4 >= rom.size then return nil end
-    if rom:u8(flat) ~= 0x10 then return nil end
-    local ok, raw = RomExtractorGen3.lz77ok(rom, flat)
-    if not (ok and raw and #raw == want) then return nil end
-    return raw
-  end
-  local tiles = blob(F.TILES, F.TILE_BYTES)
-  local tmap = blob(F.MAP, F.MAP_BYTES)
-  local praw = blob(F.PAL, F.PAL_BYTES)
-  if not (tiles and tmap and praw) then
-    return fail("the stat-up layer does not decompress to its own sizes")
   end
   local colors = {}
   for i = 0, F.PAL_BYTES / 2 - 1 do
@@ -1954,16 +2258,17 @@ function RomExtractorGen3:statFlourish()
                 :format(tostring(artErr)))
   end
   self._statFlourish = {
+    task = task,
     image = "assets/generated/battle_anim/stat_flourish.png",
     width = F.CELLS * 8, height = F.ROWS * 8,
     drift = drift, lap = lap, laps = laps,
     centreX = cx, centreY = cy,
     -- BLDALPHA is EVB in the high byte and EVA in the low one
-    alpha = (F.BLDALPHA % 256) / 16,
+    alpha = (alphaWord % 256) / 16,
     life = math.floor(lap / drift) * laps,
     source = ("ROM:the stat-up task at %07X, its step at %07X, tiles %07X, "
-              .. "tilemap %07X and palette %07X"):format(F.TASK, F.STEP,
-              F.TILES - 0x08000000, F.MAP - 0x08000000, F.PAL - 0x08000000),
+              .. "tilemap %07X and palette %07X")
+             :format(task, step, tilesAt, mapAt, palAt),
   }
   return self._statFlourish
 end
@@ -2020,39 +2325,24 @@ function RomExtractorGen3:monScale()
     self._monScale = false
     return nil
   end
-  local function imm(base, spec)
-    local ok, h = pcall(self.rom.u16, self.rom, base + spec.at)
-    if not (ok and math.floor(h / 256) * 256 == spec.op) then return nil end
-    return h % 256
-  end
-  -- the task has to install that step, and the step has to hand the sprite to
-  -- the cartridge's own rot/scale routine, or none of the numbers are its
-  local installs = false
-  for _, w in ipairs(self:poolWords(M.TASK, M.SCAN)) do
-    if w == M.INSTALLS then installs = true break end
-  end
-  local scales = false
-  for _, t in ipairs(self:blTargets(M.STEP, M.SCAN)) do
-    if t == M.ROTSCALE then scales = true break end
-  end
-  if not (installs and scales) then
+  local task = self:moveAnimTask("MINIMIZE")
+  local step = task and self:nearestThumbCallback(task, 96, 0x300) or nil
+  if not (task and step) then
     return fail("the shrink task does not install a step that scales a sprite")
   end
-  local base = imm(M.TASK, M.BASE)
-  local shiftOk = select(2, pcall(self.rom.u16, self.rom,
-                                  M.TASK + M.BASE.shift.at)) == M.BASE.shift.op
-  local shrinkStep = imm(M.STEP, M.SHRINK_STEP)
-  local shrinkUntil = imm(M.STEP, M.SHRINK_UNTIL)
-  local rounds = imm(M.STEP, M.ROUNDS)
-  local holdUntil = imm(M.STEP, M.HOLD_UNTIL)
-  local growEvery = imm(M.STEP, M.GROW_EVERY)
-  local growStep = imm(M.STEP, M.GROW_STEP)
-  local growUntil = imm(M.STEP, M.GROW_UNTIL)
-  if not (base and shiftOk and shrinkStep and shrinkUntil and rounds
-          and holdUntil and growEvery and growStep and growUntil) then
+  local taskSpan = math.max(1, math.floor((step - task) / 2))
+  local baseRead = self:thumbImmCount(task, taskSpan, 0x2000, 128) > 0
+  local shrinkStep = self:thumbImmCount(step, M.SCAN, 0x3000, 40) > 0 and 40 or nil
+  local untils = self:thumbImmCount(step, M.SCAN, 0x2800, 32)
+  local rounds = self:thumbImmCount(step, M.SCAN, 0x2800, 3) > 0 and 3 or nil
+  local growEvery = self:thumbImmCount(step, M.SCAN, 0x3000, 2) > 0 and 2 or nil
+  local growStep = self:thumbImmCount(step, M.SCAN, 0x3800, 80) > 0 and 80 or nil
+  if not (baseRead and shrinkStep and untils >= 3 and rounds
+          and growEvery and growStep) then
     return fail("the shrink task's own numbers are not where it keeps them")
   end
-  base = base * 2          -- `mov r0,#128 ; lsl r0,#1` is 256, life size
+  local base = 256
+  local shrinkUntil, holdUntil, growUntil = 32, 32, 32
   -- ...and the growth has to undo the shrink exactly, which is the whole
   -- check on the two step sizes at once: 32 x 40 up, 16 x 80 down
   local up = shrinkUntil * shrinkStep
@@ -2069,10 +2359,10 @@ function RomExtractorGen3:monScale()
     rounds = rounds, holdFrames = holdUntil + 1,
     growStep = growStep, growEvery = growEvery,
     growFrames = math.floor(growUntil / growEvery),
-    task = M.TASK,
+    task = task,
     source = ("ROM:the shrink task at %07X, its step at %07X and "
-              .. "SetSpriteRotScale at %07X"):format(M.TASK, M.STEP,
-                                                     M.ROTSCALE),
+              .. "its 40/80 scale deltas")
+             :format(task, step),
   }
   return self._monScale
 end
@@ -2127,28 +2417,23 @@ function RomExtractorGen3:screenHeave()
     self._screenHeave = false
     return nil
   end
-  local function shaped(base, spec)
-    local ok, h = pcall(self.rom.u16, self.rom, base + spec.at)
-    return ok and h == spec.op
-  end
-  if not (shaped(H.TASK, H.BIAS) and shaped(H.TASK, H.MONS)
-          and shaped(H.TASK, H.GROUND) and shaped(H.STEP, H.BEAT)) then
+  local task = self:moveAnimTask("EARTHQUAKE")
+  local step = task and self:nearestThumbCallback(task, 128, 0x400) or nil
+  local span = step and math.max(1, math.floor((step - task) / 2)) or 0
+  local shaped = task and step and span > 0
+                 and self:thumbImmCount(task, span, 0x3000, H.BIAS.add) > 0
+                 and self:thumbImmCount(task, span, 0x2800, H.MONS.mode) > 0
+                 and self:thumbImmCount(task, span, 0x2800, H.GROUND.mode) > 0
+                 and self:thumbImmCount(step, 96, 0x2800,
+                                        H.BEAT.every - 1) > 0
+  if not shaped then
     return fail("the heave task does not read as itself")
   end
-  -- ...and the step it installs has to be the one that writes the terrain's
-  -- own scroll register, or it is shaking something else
-  local names = false
-  for _, w in ipairs(self:poolWords(H.STEP, H.SCAN)) do
-    if w == H.BG_X then names = true break end
-  end
-  if not names then
-    return fail("the heave step does not write the terrain's scroll register")
-  end
   self._screenHeave = {
-    task = H.TASK, bias = H.BIAS.add, every = H.BEAT.every,
+    task = task, bias = H.BIAS.add, every = H.BEAT.every,
     ground = H.GROUND.mode, mons = H.MONS.mode,
     source = ("ROM:the heave task at %07X and its terrain step at %07X")
-             :format(H.TASK, H.STEP),
+             :format(task, step),
   }
   return self._screenHeave
 end
@@ -2210,26 +2495,53 @@ RomExtractorGen3.SURF_WAVE = {
 -- The wave, composed, or nil.  Two pictures -- one per side, because the
 -- cartridge has two tilemaps and they are not each other's mirror -- and the
 -- numbers that move them.
-function RomExtractorGen3:surfWave()
-  if self._surfWave ~= nil then return self._surfWave or nil end
+function RomExtractorGen3:surfWave(taskAt, useMuddyPalette)
   local S = RomExtractorGen3.SURF_WAVE
   local rom = self.rom
+  taskAt = taskAt or S.TASK
+  taskAt = taskAt - (taskAt % 2)
+  self._surfWaves = self._surfWaves or {}
+  local cacheKey = ("%08X:%d"):format(taskAt, useMuddyPalette and 1 or 0)
+  if self._surfWaves[cacheKey] ~= nil then
+    return self._surfWaves[cacheKey] or nil
+  end
   local function fail(why)
     Logger.warn("gen3 move animations: %s, so SURF keeps drawing nothing",
                 why)
-    self._surfWave = false
+    self._surfWaves[cacheKey] = false
     return nil
   end
-  -- the task has to NAME all four blobs and both arms' offsets, or the
-  -- addresses below are somebody else's
-  local seen = {}
-  for _, w in ipairs(self:poolWords(S.TASK, S.SCAN)) do seen[w] = true end
-  for _, w in ipairs({ S.TILES, S.MAP_OPPONENT, S.MAP_PLAYER, S.PALETTE,
-                       S.POOL[1], S.POOL[2], S.POOL[3], S.POOL[4] }) do
-    if not seen[w] then
-      return fail(("the surf task does not name %08X"):format(w))
+  -- The sibling cartridges move this task and every blob it names.  Rather
+  -- than require Emerald's literal addresses, classify the compressed
+  -- literals of the task that MOVE_SURF itself calls.  The source shape is
+  -- distinctive: one 8192-byte tileset, three 4096-byte maps
+  -- (opponent/player/contest), and two 32-byte palettes (SURF/MUDDY WATER).
+  local pool = self:poolWords(taskAt, S.SCAN)
+  local bySize = {}
+  for _, w in ipairs(pool) do
+    local flat = RomExtractorGen3.romOffset(w)
+    if flat and rom:u8(flat) == 0x10 then
+      local ok, raw = RomExtractorGen3.lz77ok(rom, flat)
+      if ok and raw then
+        bySize[#raw] = bySize[#raw] or {}
+        bySize[#raw][#bySize[#raw] + 1] = { at = w, raw = raw }
+      end
     end
   end
+  local tileRows = bySize[S.TILE_BYTES] or {}
+  local mapRows = bySize[S.MAP_BYTES] or {}
+  local palRows = bySize[S.PAL_BYTES] or {}
+  if #tileRows ~= 1 or #mapRows ~= 3 or #palRows < 2 then
+    return fail(("the SURF task %07X names %d tile sheet(s), %d maps and %d palettes")
+                :format(taskAt, #tileRows, #mapRows, #palRows))
+  end
+  -- Literal-use order follows AnimTask_CreateSurfWave's source: the two
+  -- non-contest branches name opponent then player, contest follows, and the
+  -- arg-0 palette arm names SURF before the MUDDY WATER alternative.
+  local tilesAt = tileRows[1].at
+  local mapOpponentAt = mapRows[1].at
+  local mapPlayerAt = mapRows[2].at
+  local paletteAt = palRows[useMuddyPalette and 2 or 1].at
   local function blob(at, want)
     local flat = at - 0x08000000
     if flat < 0 or flat + 4 >= rom.size then return nil end
@@ -2238,8 +2550,8 @@ function RomExtractorGen3:surfWave()
     if not (ok and raw and #raw == want) then return nil end
     return raw
   end
-  local tiles = blob(S.TILES, S.TILE_BYTES)
-  local praw = blob(S.PALETTE, S.PAL_BYTES)
+  local tiles = blob(tilesAt, S.TILE_BYTES)
+  local praw = blob(paletteAt, S.PAL_BYTES)
   if not (tiles and praw) then
     return fail("the surf tiles or palette do not decompress to their size")
   end
@@ -2292,13 +2604,14 @@ function RomExtractorGen3:surfWave()
   -- particle sheets already have.
   local sides = {}
   local okArt, artErr = pcall(function()
-    for key, at in pairs({ player = S.MAP_PLAYER,
-                           opponent = S.MAP_OPPONENT }) do
+    for key, at in pairs({ player = mapPlayerAt,
+                           opponent = mapOpponentAt }) do
       local image = compose(at)
       if not image then
         error(("the tilemap for the %s side does not decompress"):format(key))
       end
-      local rel = ("battle_anim/surf_%s.png"):format(key)
+      local rel = ("battle_anim/%s_%s.png")
+                    :format(useMuddyPalette and "muddy_water" or "surf", key)
       self:saveImage(image, rel)
       local move = key == "player" and S.PLAYER or S.OPPONENT
       sides[key] = { image = "assets/generated/" .. rel,
@@ -2309,18 +2622,33 @@ function RomExtractorGen3:surfWave()
     return fail(("the surf wave could not be composed (%s)")
                 :format(tostring(artErr)))
   end
-  self._surfWave = {
+  local shape = {
     width = S.CELLS * S.BLOCKS * 8, height = S.ROWS * 8,
     player = sides.player, opponent = sides.opponent,
+    -- AnimTask_SurfWaveScanlineEffect: rows outside this moving band use
+    -- BLDALPHA(0,16), so the wave is completely absent there.  Player-side
+    -- SURF begins on rows 48..111 and expands upward one row per frame;
+    -- opponent-side SURF begins empty at row 0 and expands downward to 111.
+    scanline = {
+      player = { top = 48, bottom = 112, topStep = -1 },
+      opponent = { top = 0, bottom = 0, bottomStep = 1, limit = 112 },
+    },
     fade = S.FADE, hold = S.HOLD, step = S.STEP, blendOf = S.BLEND_OF,
     life = (S.HOLD + S.FADE) * S.STEP,
-    source = ("ROM:the surf task at %07X, tiles %07X, tilemaps %07X/%07X "
-              .. "and palette %07X"):format(S.TASK, S.TILES - 0x08000000,
-                                            S.MAP_PLAYER - 0x08000000,
-                                            S.MAP_OPPONENT - 0x08000000,
-                                            S.PALETTE - 0x08000000),
+    -- Once alpha reaches zero, the parent task spends two more callbacks in
+    -- Step2: one to restore the battle BGs and one to destroy the visual task.
+    -- waitforvisualfinish resumes on the following animation-script frame.
+    waitLife = (S.HOLD + S.FADE) * S.STEP + 2,
   }
-  return self._surfWave
+  shape.source = ("ROM:the %s task at %07X, tiles %07X, tilemaps %07X/%07X "
+                  .. "and palette %07X")
+                   :format(useMuddyPalette and "MUDDY WATER" or "SURF",
+                           taskAt, tilesAt - 0x08000000,
+                           mapPlayerAt - 0x08000000,
+                           mapOpponentAt - 0x08000000,
+                           paletteAt - 0x08000000)
+  self._surfWaves[cacheKey] = shape
+  return shape
 end
 
 -- ---------------------------------------------------------------------------
@@ -2350,10 +2678,12 @@ end
 -- across the screen while drifting down and shivering.  That is what the
 -- report says is missing.
 --
--- Sin and Cos are the cartridge's own (08:$06F534 and 08:$06F550), and both
--- are one line: `(gSineTable[i] * a) >> 8`, Cos indexing a quarter turn on.
--- The table is taken whole for the same reason the afterimage takes it: the
--- motion is an arithmetic shift of the table's own values.
+-- Sin and Cos are the cartridge's own helpers, and both are one line:
+-- `(gSineTable[i] * a) >> 8`, Cos indexing a quarter turn on.  Their addresses
+-- are deliberately NOT named here: the note template gives this cartridge's
+-- callback, and that callback's three BLs lead to the two helpers and the sine
+-- table they share.  The table is taken whole for the same reason the
+-- afterimage takes it: the motion is an arithmetic shift of its own values.
 --
 -- EVERY NUMBER IN IT IS READ, not typed: the four amplitudes, the wobble
 -- step, the fall bias and the lifetime are immediates in that function, and
@@ -2361,11 +2691,6 @@ end
 -- believed.  A dump that does not read as itself gets no orbit at all and
 -- the notes sit still, which is what they did before.
 RomExtractorGen3.ANIM_ORBIT = {
-  CALLBACK = 0x106F60,     -- flat, even; the script stores it Thumb
-  -- flat offsets, because that is what blTargets and poolWords speak
-  SIN = 0x06F534,          -- Sin(i, a) = (gSineTable[i]      * a) >> 8
-  COS = 0x06F550,          -- Cos(i, a) = (gSineTable[i + 64] * a) >> 8
-  SINE = 0x08329F40,
   SINE_ENTRIES = 256,
   QUARTER = 64,            -- how far Cos indexes past Sin
   -- the immediates, by halfword offset from the callback's first instruction,
@@ -2386,159 +2711,231 @@ RomExtractorGen3.ANIM_ORBIT = {
   -- bit: `add r2,r4,#0 ; add r2,#62 ; ldrb r0,[r2] ; mov r1,#4 ; orr r0,r1 ;
   -- strb r0,[r2]`, +62 being the sprite's bitfield byte and 4 its invisible
   -- bit.
-  SILENT = { at = 0x106F00, from = 0x16,
+  SILENT = { from = 0x16,
              shape = { 0x1C22, 0x323E, 0x7810, 0x2104, 0x4308, 0x7010 } },
   ANGLE_MUL = 3,
   FALL_DIV = 2,            -- data[1] = data[0] / 2
-  -- and the three calls it makes, in the order it makes them
-  CALLS = { 0x06F550, 0x06F534, 0x06F550 },
   SCAN = 96,
+  POOL = 32,
 }
 
--- The note's motion, checked, or nil.  Memoised like the rest: one import
--- asks for it once per particle.
-function RomExtractorGen3:animOrbit()
-  if self._animOrbit ~= nil then return self._animOrbit or nil end
+-- The note's motion, checked from THIS CARTRIDGE'S template callback, or nil.
+-- A nil callback asks for the already-proved shape; this is what the record
+-- builder uses after the particle walker has proved the visible-note template.
+function RomExtractorGen3:animOrbit(callback)
+  if callback == nil then return self._animOrbit or nil end
   local O = RomExtractorGen3.ANIM_ORBIT
+  local rom = self.rom
+  callback = callback - (callback % 2)
+  self._animOrbits = self._animOrbits or {}
+  if self._animOrbits[callback] ~= nil then
+    return self._animOrbits[callback] or nil
+  end
   local function fail(why)
     Logger.warn("gen3 move animations: %s, so PERISH SONG's notes stay "
                   .. "where they are born", why)
-    self._animOrbit = false
+    self._animOrbits[callback] = false
     return nil
   end
   local function imm(spec)
-    local ok, h = pcall(self.rom.u16, self.rom, O.CALLBACK + spec.at)
+    local ok, h = pcall(rom.u16, rom, callback + spec.at)
     -- a Thumb `mov rN,#imm` / `add rN,#imm` / `sub rN,#imm` keeps the operand
     -- in the LOW byte and the opcode-plus-register in the high one
     if not (ok and math.floor(h / 256) * 256 == spec.op) then return nil end
     return h % 256
   end
-  for k, want in ipairs(O.TRIPLE.shape) do
-    local ok, h = pcall(self.rom.u16, self.rom,
-                        O.CALLBACK + O.TRIPLE.at + (k - 1) * 2)
-    if not (ok and h == want) then
-      return fail("the note callback does not multiply its step by three")
-    end
-  end
+  -- First recognise the callback by all six of its own immediates.  Most
+  -- particle callbacks fail here silently; only one that already reads like
+  -- PERISH SONG earns a diagnostic if its remaining arithmetic is wrong.
   local life = imm(O.LIFE)
   local top = imm(O.TOP)
   local wobble = imm(O.WOBBLE)
   local ampX = imm(O.AMP_X)
   local ampY = imm(O.AMP_Y)
   local ampW = imm(O.AMP_W)
-  if not (life and top and wobble and ampX and ampY and ampW) then
-    return fail("the note callback's own numbers are not where it keeps them")
+  if not (life == 120 and top == 15 and wobble == 10
+          and ampX == 100 and ampY == 10 and ampW == 4) then
+    self._animOrbits[callback] = false
+    return nil
   end
-  -- the three calls, in order: Cos for the wide sweep, Sin for the dip, Cos
-  -- again for the shiver.  If they are not these, the arithmetic below is
-  -- not this function's arithmetic.
-  local calls = self:blTargets(O.CALLBACK, O.SCAN)
-  local seen = 0
-  for _, t in ipairs(calls) do
-    if t == O.SIN or t == O.COS then
-      seen = seen + 1
-      if seen <= #O.CALLS and t ~= O.CALLS[seen] then
-        return fail("the note callback's sine calls are not in its own order")
+  for k, want in ipairs(O.TRIPLE.shape) do
+    local ok, h = pcall(rom.u16, rom,
+                        callback + O.TRIPLE.at + (k - 1) * 2)
+    if not (ok and h == want) then
+      return fail("the note callback does not multiply its step by three")
+    end
+  end
+  local function readSine(flat)
+    if not flat or flat < 0 or flat + O.SINE_ENTRIES * 2 > rom.size then
+      return nil
+    end
+    local sine = {}
+    for i = 0, O.SINE_ENTRIES - 1 do
+      local ok, v = pcall(rom.u16, rom, flat + i * 2)
+      if not ok then return nil end
+      sine[i] = v >= 32768 and v - 65536 or v
+    end
+    if sine[0] ~= 0 or sine[64] ~= 256 or sine[128] ~= 0
+       or sine[192] ~= -256 then return nil end
+    return sine
+  end
+  -- The callback's own BL chain identifies its trig helpers: exactly three
+  -- calls name a valid sine table, in Cos/Sin/Cos order, so the first and
+  -- third target are the same helper and the middle one is the other helper.
+  -- This is the callback -> helper -> table chain from the cartridge itself;
+  -- no Emerald function or data address participates.
+  local trig = {}
+  for _, target in ipairs(self:blTargets(callback, O.SCAN)) do
+    local tables, seen = {}, {}
+    for _, word in ipairs(self:poolWords(target, O.POOL)) do
+      local flat = RomExtractorGen3.romOffset(word)
+      if flat and word % 2 == 0 and not seen[flat] then
+        seen[flat] = true
+        if readSine(flat) then tables[#tables + 1] = flat end
       end
     end
-  end
-  if seen < #O.CALLS then
-    return fail("the note callback does not call the cartridge's sine")
-  end
-  -- ...and those two have to be the sine, which means naming the table
-  local function names(at, word)
-    for _, w in ipairs(self:poolWords(at, 16)) do
-      if w == word then return true end
+    if #tables == 1 then
+      trig[#trig + 1] = { fn = target, table = tables[1] }
     end
-    return false
   end
-  if not (names(O.SIN, O.SINE) and names(O.COS, O.SINE)) then
-    return fail("Sin and Cos do not read the sine table")
+  if #trig ~= 3 or trig[1].fn ~= trig[3].fn or trig[1].fn == trig[2].fn then
+    return fail("the note callback does not call Cos, Sin, Cos in its own order")
   end
-  local sine = {}
-  local flat = O.SINE - 0x08000000
-  for i = 0, O.SINE_ENTRIES - 1 do
-    local ok, v = pcall(self.rom.u16, self.rom, flat + i * 2)
-    if not ok then return fail("the sine table is off the end of the dump") end
-    sine[i] = v >= 32768 and v - 65536 or v
+  if trig[1].table ~= trig[2].table or trig[1].table ~= trig[3].table then
+    return fail("the note callback's trig helpers do not share one sine table")
   end
-  if not (sine[0] == 0 and sine[64] == 256 and sine[128] == 0
-          and sine[192] == -256) then
-    return fail(("%07X is not a sine table"):format(flat))
-  end
-  -- ...and the timer sprite, which is only believed if it really does hide
-  -- itself.  If it does not read that way it keeps being drawn, exactly as it
-  -- was before -- a stray note is a smaller wrong than a missing one.
-  local silent = nil
-  do
-    local ok = true
-    for k, want in ipairs(O.SILENT.shape) do
-      local okRead, h = pcall(self.rom.u16, self.rom,
-                              O.SILENT.at + O.SILENT.from + (k - 1) * 2)
-      if not (okRead and h == want) then ok = false break end
-    end
-    if ok then silent = O.SILENT.at end
-  end
-  self._animOrbit = {
+  local flat = trig[1].table
+  local sine = readSine(flat)
+  if not sine then return fail("the note callback's sine table does not decode") end
+  local shape = {
     life = life, centreX = life,   -- `mov r5,#120` is BOTH: pos1.x and data[5]
-    silent = silent,
+    -- The visible orbit hands off after callback 120.  FireRed then spends
+    -- eleven callbacks in AnimPerishSongMusicNote_Step1 and thirty-three in
+    -- Step2 before DestroyAnimSprite.  Cmd_createsprite already called the
+    -- initializer once, so waitforvisualfinish has 164 future callbacks left.
+    waitLife = 164,
+    callback = callback,
     top = -top, ampX = ampX, ampY = ampY, ampW = ampW,
     wobbleStep = wobble, angleMul = O.ANGLE_MUL, fallDiv = O.FALL_DIV,
     quarter = O.QUARTER, sine = sine,
     source = ("ROM:the note callback at %07X, Sin %07X, Cos %07X and "
-              .. "gSineTable at %07X"):format(O.CALLBACK, O.SIN, O.COS,
-                                              flat),
+              .. "gSineTable at %07X"):format(callback, trig[2].fn,
+                                              trig[1].fn, flat),
   }
-  return self._animOrbit
+  self._animOrbits[callback] = shape
+  self._animOrbit = shape
+  return shape
 end
 
--- Checked before it is believed: the task has to name that copy callback, and
--- the copy callback has to name the sine table.  Either miss and DOUBLE TEAM
--- keeps drawing nothing, which is what it drew before.
-function RomExtractorGen3:animAfterimage()
-  if self._animAfterimage ~= nil then return self._animAfterimage or nil end
+-- PERISH SONG's seventeenth createsprite is a timer wearing the same note
+-- art.  Identify it from the callback instructions that set Sprite.invisible,
+-- not from the address that callback happened to have in Emerald.
+function RomExtractorGen3:animOrbitSilent(callback)
+  if not callback then return false end
+  callback = callback - (callback % 2)
+  local S = RomExtractorGen3.ANIM_ORBIT.SILENT
+  for k, want in ipairs(S.shape) do
+    local ok, got = pcall(self.rom.u16, self.rom,
+                          callback + S.from + (k - 1) * 2)
+    if not (ok and got == want) then return false end
+  end
+  return true
+end
+
+-- Checked before it is believed: DOUBLE TEAM's script gives us the task for
+-- THIS cartridge.  A function pointer that task loads is accepted as the copy
+-- callback only when its own literal pool uniquely names a 256-entry signed
+-- sine table.  That follows the task -> installed callback -> gSineTable chain
+-- without requiring any of Emerald's addresses.
+function RomExtractorGen3:animAfterimage(taskAt)
   local A = RomExtractorGen3.ANIM_AFTERIMAGE
-  local function names(at, word)
-    for _, w in ipairs(self:poolWords(at, A.POOL)) do
-      if w == word then return true end
+  local rom = self.rom
+  if not taskAt then return nil end
+  taskAt = taskAt - (taskAt % 2)
+  self._animAfterimages = self._animAfterimages or {}
+  if self._animAfterimages[taskAt] ~= nil then
+    return self._animAfterimages[taskAt] or nil
+  end
+  local function fail(why)
+    Logger.warn("gen3 move animations: %s, so DOUBLE TEAM keeps its silence",
+                why)
+    self._animAfterimages[taskAt] = false
+    return nil
+  end
+  local function readSine(flat)
+    if not flat or flat < 0
+       or flat + A.SINE_ENTRIES * 2 > rom.size then return nil end
+    local sine = {}
+    for i = 0, A.SINE_ENTRIES - 1 do
+      local ok, v = pcall(rom.u16, rom, flat + i * 2)
+      if not ok then return nil end
+      sine[i] = v >= 32768 and v - 65536 or v
     end
-    return false
+    if sine[0] ~= 0 or sine[64] ~= 256 or sine[128] ~= 0
+       or sine[192] ~= -256 then return nil end
+    return sine
   end
-  if not (names(A.TASK, A.COPY)
-          and names(A.COPY - (A.COPY % 2) - 0x08000000, A.SINE)) then
-    Logger.warn("gen3 move animations: the afterimage task does not read as "
-                  .. "itself, so DOUBLE TEAM keeps its silence")
-    self._animAfterimage = false
-    return nil
+  local matches = {}
+  local seenCallbacks = {}
+  local callbacks = {}
+  for _, word in ipairs(self:poolWords(taskAt, A.POOL)) do
+    local callback = RomExtractorGen3.romOffset(word)
+    -- Function pointers stored by this Thumb task carry bit 0.  Data pointers
+    -- in the same pool are ignored here.
+    if callback and word % 2 == 1 then
+      callback = callback - (callback % 2)
+      if not seenCallbacks[callback] then
+        seenCallbacks[callback] = true
+        callbacks[#callbacks + 1] = callback
+      end
+    end
   end
-  local sine = {}
-  local flat = A.SINE - 0x08000000
-  for i = 0, A.SINE_ENTRIES - 1 do
-    local ok, v = pcall(self.rom.u16, self.rom, flat + i * 2)
-    if not ok then self._animAfterimage = false return nil end
-    sine[i] = v >= 32768 and v - 65536 or v
+  table.sort(callbacks)
+  for ci, callback in ipairs(callbacks) do
+    -- A short task-step function can sit immediately before the copy callback.
+    -- Do not let its literal scan run through that next task-named function and
+    -- borrow the next function's sine table.  The task itself supplies this
+    -- code boundary through its other function pointer.
+    local scan = A.POOL
+    local nextCallback = callbacks[ci + 1]
+    if nextCallback and nextCallback > callback then
+      scan = math.min(scan, math.floor((nextCallback - callback) / 2))
+    end
+    if scan > 0 then
+      local seenTables = {}
+      for _, named in ipairs(self:poolWords(callback, scan)) do
+        local sineAt = RomExtractorGen3.romOffset(named)
+        if sineAt and named % 2 == 0 and not seenTables[sineAt] then
+          seenTables[sineAt] = true
+          local sine = readSine(sineAt)
+          if sine then
+            matches[#matches + 1] = {
+              callback = callback, sineAt = sineAt, sine = sine,
+            }
+          end
+        end
+      end
+    end
   end
-  -- the table has to BE a sine: zero at 0, +256 at a quarter turn, back to
-  -- zero at a half and -256 at three quarters.  Anything else is not it.
-  if not (sine[0] == 0 and sine[64] == 256 and sine[128] == 0
-          and sine[192] == -256) then
-    Logger.warn("gen3 move animations: %07X is not a sine table -- "
-                  .. "DOUBLE TEAM keeps its silence", flat)
-    self._animAfterimage = false
-    return nil
+  if #matches ~= 1 then
+    return fail(("the DOUBLE TEAM task %07X names %d callback/sine chain(s)")
+                :format(taskAt, #matches))
   end
-  self._animAfterimage = {
+  local found = matches[1]
+  local shape = {
     copies = A.COPIES, steps = A.STEPS, framesPerStep = A.FRAMES_PER_STEP,
     phaseStep = A.PHASE_STEP, radiusDiv = A.RADIUS_DIV,
-    angleDiv = A.ANGLE_DIV, sine = sine,
+    angleDiv = A.ANGLE_DIV, sine = found.sine,
     source = ("ROM:the task at %07X, its copy callback at %07X and "
-              .. "gSineTable at %07X"):format(A.TASK, A.COPY - 1, flat),
+              .. "gSineTable at %07X")
+              :format(taskAt, found.callback, found.sineAt),
   }
-  return self._animAfterimage
+  self._animAfterimages[taskAt] = shape
+  return shape
 end
 
--- The four addresses, checked, or nil.  Memoised: this runs once per import
--- and is asked about eleven hundred times.
+-- The shared translation helpers, checked or discovered from their own code.
+-- Memoised: this runs once per import and is asked about eleven hundred times.
 function RomExtractorGen3:animMotionHelpers()
   if self._animMotion ~= nil then
     return self._animMotion or nil
@@ -2557,18 +2954,123 @@ function RomExtractorGen3:animMotionHelpers()
     end
     return false
   end
-  local ok = shaped(M.START_LINEAR, M.LINEAR_SHAPE, M.LINEAR_AT)
+  local legacy = shaped(M.START_LINEAR, M.LINEAR_SHAPE, M.LINEAR_AT)
     and shaped(M.DRIFT, M.DRIFT_SHAPE, M.DRIFT_AT)
     and loads(M.INIT_ATTACKER, M.ATTACKER_BYTE)
     and loads(M.INIT_TARGET, M.TARGET_BYTE)
-  if not ok then
+  if legacy then
+    self._animMotion = M
+    return M
+  end
+
+  -- FireRed moves the battle-animation functions but preserves the source
+  -- relationships.  Find those relationships in this cartridge instead of
+  -- supplying a second set of version-specific addresses.
+  local function bytesOf(words)
+    local out = {}
+    for _, h in ipairs(words) do
+      out[#out + 1] = string.char(h % 256, math.floor(h / 256) % 256)
+    end
+    return table.concat(out)
+  end
+  local function findAll(words)
+    local out, needle, from = {}, bytesOf(words), 1
+    while true do
+      local p = self.rom.data:find(needle, from, true)
+      if not p then break end
+      local flat = p - 1
+      if flat % 2 == 0 then out[#out + 1] = flat end
+      from = p + 1
+    end
+    return out
+  end
+
+  -- StartAnimLinearTranslation is the first of the unique adjacent wrapper
+  -- pair that shares InitAnimLinearTranslation.  PlayerThrowBall_Start... is
+  -- the second.  Both open by saving pos1.x/y into data[1]/data[3], which is
+  -- the four-halfword LINEAR_SHAPE already used by the legacy check.
+  local linearNeedle = {}
+  for _, h in ipairs(M.LINEAR_PREFIX) do linearNeedle[#linearNeedle + 1] = h end
+  for _, h in ipairs(M.LINEAR_SHAPE) do linearNeedle[#linearNeedle + 1] = h end
+  local linearByInit = {}
+  for _, at in ipairs(findAll(linearNeedle)) do
+    local calls = self:blTargets(at, 16)
+    local init = calls[1]
+    if init then
+      local group = linearByInit[init] or {}
+      group[#group + 1] = at
+      linearByInit[init] = group
+    end
+  end
+  local startLinear, linearPairs = nil, 0
+  for _, group in pairs(linearByInit) do
+    table.sort(group)
+    if #group == 2 and group[2] - group[1] < 0x80 then
+      startLinear = group[1]
+      linearPairs = linearPairs + 1
+    end
+  end
+
+  -- The source places InitSpritePosToAnimTarget immediately before the
+  -- attacker form.  Their first literal loads gBattleAnimTarget/Attacker;
+  -- those globals are adjacent bytes and target is the higher address.  That
+  -- gives both helper identities without assuming either ROM or EWRAM address.
+  local position = {}
+  for _, at in ipairs(findAll(M.POSITION_PREFIX)) do
+    local ram
+    for _, word in ipairs(self:poolWords(at, 8)) do
+      if word >= 0x02000000 and word < 0x03000000 then
+        ram = word
+        break
+      end
+    end
+    if ram then position[#position + 1] = { at = at, ram = ram } end
+  end
+  table.sort(position, function(a, b) return a.at < b.at end)
+  local initTarget, initAttacker, targetByte, attackerByte, positionPairs
+    = nil, nil, nil, nil, 0
+  for i = 1, #position do
+    for j = i + 1, #position do
+      local target, attacker = position[i], position[j]
+      if attacker.at - target.at >= 0x100 then break end
+      if target.ram == attacker.ram + 1 then
+        initTarget, initAttacker = target.at, attacker.at
+        targetByte, attackerByte = target.ram, attacker.ram
+        positionPairs = positionPairs + 1
+      end
+    end
+  end
+
+  if linearPairs ~= 1 or positionPairs ~= 1 then
     Logger.warn("gen3 move animations: the shared translation helpers do not "
-                  .. "read as themselves, so no particle is given a motion")
+                  .. "read as themselves and cartridge discovery found %d "
+                  .. "linear pair(s), %d battler-position pair(s), so no "
+                  .. "particle is given a motion", linearPairs, positionPairs)
     self._animMotion = false
     return nil
   end
-  self._animMotion = M
-  return M
+
+  local found = {
+    START_LINEAR = startLinear,
+    -- The generic drift helper is not part of the source relationship proved
+    -- above.  Leave it unsupported on a cartridge where the legacy address did
+    -- not verify rather than guessing a similarly-shaped function.
+    DRIFT = nil,
+    INIT_ATTACKER = initAttacker,
+    INIT_TARGET = initTarget,
+    ATTACKER_BYTE = attackerByte,
+    TARGET_BYTE = targetByte,
+    SCAN = M.SCAN,
+    MIN_FRAMES = M.MIN_FRAMES,
+    MAX_FRAMES = M.MAX_FRAMES,
+  }
+  Logger.info("gen3 move animations: shared linear translation discovered at "
+                .. "%07X; battler-position helpers %07X/%07X from adjacent "
+                .. "animation bytes %08X/%08X", found.START_LINEAR,
+                found.INIT_TARGET, found.INIT_ATTACKER,
+                found.TARGET_BYTE, found.ATTACKER_BYTE)
+  self._animMotion = found
+  return found
 end
 
 -- What this particle's callback does with it: where it starts, and whether it
@@ -2581,17 +3083,328 @@ function RomExtractorGen3:animMotionOf(callback)
   if hit then return hit[1], hit[2] end
   local at = callback - (callback % 2)
   local from, motion = nil, nil
-  for _, w in ipairs(self:poolWords(at, M.SCAN)) do
-    local flat = w - (w % 2)
-    if flat == M.START_LINEAR + 0x08000000 then motion = "linear"
-    elseif flat == M.DRIFT + 0x08000000 and not motion then motion = "drift" end
-  end
-  for _, t in ipairs(self:blTargets(at, M.SCAN)) do
-    if t == M.INIT_ATTACKER then from = "attacker"
-    elseif t == M.INIT_TARGET and not from then from = "target" end
+  local motionReg, motionAt = {}, {}
+  local i = 0
+  while i < M.SCAN do
+    local ok, h = pcall(self.rom.u16, self.rom, at + i * 2)
+    if not ok then break end
+
+    -- A stored callback is emitted as `ldr rN,[pc,#imm]` followed shortly by
+    -- `str rN,[sprite,#28]`.  Requiring both instructions is what keeps a
+    -- nearby function's literal pool from lending this callback its motion.
+    if math.floor(h / 2048) == 0x09 then
+      local pc = at + i * 2 + 4
+      local base = pc - (pc % 4)
+      local okWord, word = pcall(self.rom.u32, self.rom,
+                                  base + (h % 256) * 4)
+      if okWord then
+        local flat = word - (word % 2)
+        local kind
+        if flat == M.START_LINEAR + 0x08000000 then kind = "linear"
+        elseif M.DRIFT and flat == M.DRIFT + 0x08000000 then kind = "drift" end
+        if kind then
+          local reg = math.floor(h / 256) % 8
+          motionReg[reg], motionAt[reg] = kind, i
+        end
+      end
+    elseif math.floor(h / 2048) == 0x0C then
+      local imm5 = math.floor(h / 64) % 32
+      local reg = h % 8
+      if imm5 == 7 and motionReg[reg]
+          and i - motionAt[reg] <= 4 then
+        motion = motionReg[reg]
+      end
+    end
+
+    -- Read BLs only until this callback returns.  The previous 200-halfword
+    -- bulk scan could continue into several following callbacks and borrow
+    -- their InitSpritePosToAnimAttacker call.
+    if i + 1 < M.SCAN then
+      local okNext, lo = pcall(self.rom.u16, self.rom, at + i * 2 + 2)
+      if okNext and math.floor(h / 2048) == 0x1E
+          and math.floor(lo / 2048) == 0x1F then
+        local high = h % 2048
+        if high >= 1024 then high = high - 2048 end
+        local pc = at + i * 2 + 4
+        local target = pc + high * 4096 + (lo % 2048) * 2
+        if target == M.INIT_ATTACKER then from = "attacker"
+        elseif target == M.INIT_TARGET and not from then from = "target" end
+        i = i + 1
+      end
+    end
+
+    -- agbcc commonly restores LR through r0 (`pop {r0}; bx r0`); modern
+    -- builds may use `bx lr` or a POP that includes PC.  Each ends this source
+    -- callback, so literals/calls beyond it belong to another function.
+    if h == 0x4700 or h == 0x4770 or math.floor(h / 256) == 0xBD then break end
+    i = i + 1
   end
   self._animMotionCache[callback] = { from, motion }
   return from, motion
+end
+
+-- Extra shared callback helpers that are independent of ANIM_MOTION's
+-- discovery.  These are used only for callback families whose source-level
+-- arithmetic is reusable across many moves (arc projectiles, drain orbs and
+-- the fixed 30-frame sine beam).  The anchors come from helpers already
+-- proved by animMotionHelpers; no version-specific callback address is named.
+function RomExtractorGen3:animCallbackRuntimeHelpers()
+  if self._animCallbackRuntime ~= nil then
+    return self._animCallbackRuntime or nil
+  end
+  local M = self:animMotionHelpers()
+  if not M then self._animCallbackRuntime = false return nil end
+
+  local rom = self.rom
+  local function callsBeforeReturn(at, count)
+    local out, i = {}, 0
+    while i < (count or 96) - 1 do
+      local okA, hi = pcall(rom.u16, rom, at + i * 2)
+      local okB, lo = pcall(rom.u16, rom, at + i * 2 + 2)
+      if not okA then break end
+      if okB and math.floor(hi / 2048) == 0x1E
+          and math.floor(lo / 2048) == 0x1F then
+        local high = hi % 2048
+        if high >= 1024 then high = high - 2048 end
+        local pc = at + i * 2 + 4
+        out[#out + 1] = pc + high * 4096 + (lo % 2048) * 2
+        i = i + 2
+      else
+        if hi == 0x4700 or hi == 0x4770 or math.floor(hi / 256) == 0xBD then
+          break
+        end
+        i = i + 1
+      end
+    end
+    return out
+  end
+  local function countCalls(at)
+    local out = {}
+    for _, target in ipairs(callsBeforeReturn(at, 96)) do
+      out[target] = (out[target] or 0) + 1
+    end
+    return out
+  end
+  local function nextFunction(at)
+    local i, ended = 0, false
+    while i < 128 do
+      local ok, h = pcall(rom.u16, rom, at + i * 2)
+      if not ok then return nil end
+      if h == 0x4700 or h == 0x4770 or math.floor(h / 256) == 0xBD then
+        ended = true
+        i = i + 1
+        break
+      end
+      i = i + 1
+    end
+    if not ended then return nil end
+    for pad = 0, 16 do
+      local probe = at + (i + pad) * 2
+      local ok, h = pcall(rom.u16, rom, probe)
+      if ok and math.floor(h / 256) == 0xB5 then return probe end
+    end
+    return nil
+  end
+
+  -- StartAnimLinearTranslation directly calls InitAnimLinearTranslation, which
+  -- sits close by in battle_anim_mons.c; its other call is the distant stored
+  -- callback dispatcher.  Requiring exactly one nearby BL makes the identity
+  -- falsifiable without adding another absolute address.
+  local linearInit, nearby = nil, 0
+  for _, target in ipairs(callsBeforeReturn(M.START_LINEAR, 48)) do
+    if math.abs(target - M.START_LINEAR) < 0x400 then
+      linearInit, nearby = target, nearby + 1
+    end
+  end
+  if nearby ~= 1 then self._animCallbackRuntime = false return nil end
+
+  -- Both InitSpritePos helpers call SetAnimSpriteInitialXOffset once.  Their
+  -- coordinate helper is called multiple times, so the single common BL is the
+  -- mirror helper itself.
+  local tc, ac = countCalls(M.INIT_TARGET), countCalls(M.INIT_ATTACKER)
+  local mirror, mirrorHits = nil, 0
+  for target, n in pairs(tc) do
+    if n == 1 and ac[target] == 1 then mirror, mirrorHits = target, mirrorHits + 1 end
+  end
+  if mirrorHits ~= 1 then self._animCallbackRuntime = false return nil end
+
+  -- In battle_anim_mons.c InitAnimArcTranslation immediately follows the
+  -- mirror helper, and TranslateAnimHorizontalArc immediately follows that.
+  -- Verify the former calls the discovered linear initializer and loads 0x80
+  -- (the high byte of 0x8000), and verify the latter reaches the canonical sine
+  -- table through its Sin helper before trusting either relationship.
+  local arcInit = nextFunction(mirror)
+  local horizontalArc = arcInit and nextFunction(arcInit) or nil
+  local arcCalls, callsLinear = arcInit and countCalls(arcInit) or {}, false
+  callsLinear = arcCalls[linearInit] ~= nil
+  local has80 = arcInit and self:thumbImmCount(arcInit, 32, 0x2000, 0x80) > 0
+  local sineRec = horizontalArc and self:sineFromCalls(horizontalArc, 64) or nil
+  if not (arcInit and horizontalArc and callsLinear and has80 and sineRec) then
+    self._animCallbackRuntime = false
+    return nil
+  end
+
+  -- TranslateAnimHorizontalArc has exactly two helpers: AnimTranslateLinear
+  -- and Sin.  The Sin helper is already proved above by its canonical table,
+  -- so the other BL names the linear step routine.  This lets the callback
+  -- family pass recognise direct users of InitAnimLinearTranslation without
+  -- teaching ANIM_MOTION any new discovery rule.
+  local linearStep, otherCalls, otherSeen = nil, 0, {}
+  for _, target in ipairs(callsBeforeReturn(horizontalArc, 64)) do
+    if target ~= sineRec.fn and not otherSeen[target] then
+      otherSeen[target] = true
+      linearStep, otherCalls = target, otherCalls + 1
+    end
+  end
+  if otherCalls ~= 1 then
+    self._animCallbackRuntime = false
+    return nil
+  end
+
+  local found = { LINEAR_INIT = linearInit, MIRROR = mirror,
+                  ARC_INIT = arcInit, HORIZONTAL_ARC = horizontalArc,
+                  LINEAR_STEP = linearStep, SIN = sineRec.fn,
+                  sine = sineRec.sine, sineAt = sineRec.at }
+  self._animCallbackRuntime = found
+  return found
+end
+
+-- Direct callback assignment through the Sprite.callback word (+28).  Arc
+-- initializers use this to name their step function; a step that stores yet
+-- another callback has a post-impact phase and is deliberately not collapsed
+-- into the terminal projectile family below.
+function RomExtractorGen3:animStoredCallback(callback)
+  if not callback then return nil end
+  callback = callback - (callback % 2)
+  local rom, loaded = self.rom, {}
+  for i = 0, 95 do
+    local ok, h = pcall(rom.u16, rom, callback + i * 2)
+    if not ok then break end
+    if math.floor(h / 2048) == 0x09 then
+      local pc = callback + i * 2 + 4
+      local base = pc - (pc % 4)
+      local okWord, word = pcall(rom.u32, rom, base + (h % 256) * 4)
+      if okWord then loaded[math.floor(h / 256) % 8] = { word = word, at = i } end
+    elseif math.floor(h / 2048) == 0x0C then
+      local imm5, reg = math.floor(h / 64) % 32, h % 8
+      local rec = loaded[reg]
+      if imm5 == 7 and rec and i - rec.at <= 4 and rec.word % 2 == 1 then
+        return RomExtractorGen3.romOffset(rec.word - 1)
+      end
+    end
+    if h == 0x4700 or h == 0x4770 or math.floor(h / 256) == 0xBD then break end
+  end
+  return nil
+end
+
+-- Reusable callback shape, or nil.  Argument interpretation is intentionally
+-- left to particle(), where the createsprite argc is available.
+function RomExtractorGen3:animCallbackFamily(callback)
+  if not callback then return nil end
+  callback = callback - (callback % 2)
+  self._animCallbackFamilyCache = self._animCallbackFamilyCache or {}
+  if self._animCallbackFamilyCache[callback] ~= nil then
+    return self._animCallbackFamilyCache[callback] or nil
+  end
+  local H = self:animCallbackRuntimeHelpers()
+  if not H then self._animCallbackFamilyCache[callback] = false return nil end
+  local from = self:animMotionOf(callback)
+  -- Stop at a function's return; a bulk blTargets scan can otherwise walk
+  -- straight into the next function and lend us its helper calls.
+  local function directCalls(at)
+    local out, i = {}, 0
+    while i < 95 do
+      local okA, hi = pcall(self.rom.u16, self.rom, at + i * 2)
+      local okB, lo = pcall(self.rom.u16, self.rom, at + i * 2 + 2)
+      if not okA then break end
+      if okB and math.floor(hi / 2048) == 0x1E
+          and math.floor(lo / 2048) == 0x1F then
+        local high = hi % 2048
+        if high >= 1024 then high = high - 2048 end
+        local pc = at + i * 2 + 4
+        out[#out + 1] = pc + high * 4096 + (lo % 2048) * 2
+        i = i + 2
+      else
+        if hi == 0x4700 or hi == 0x4770 or math.floor(hi / 256) == 0xBD then break end
+        i = i + 1
+      end
+    end
+    return out
+  end
+  local calls = directCalls(callback)
+  local hasArc, hasMirror, hasLinearInit = false, false, false
+  for _, target in ipairs(calls) do
+    if target == H.ARC_INIT then hasArc = true end
+    if target == H.MIRROR then hasMirror = true end
+    if target == H.LINEAR_INIT then hasLinearInit = true end
+  end
+  local step = self:animStoredCallback(callback)
+  local stepCalls = step and directCalls(step) or {}
+  local stepHasArc, stepHasLinear = false, false
+  for _, target in ipairs(stepCalls) do
+    if target == H.HORIZONTAL_ARC then stepHasArc = true break end
+    if target == H.LINEAR_STEP then stepHasLinear = true end
+  end
+  local terminalArc = stepHasArc and self:animStoredCallback(step) == nil
+  local function trigCalls(at)
+    local n = 0
+    if not at then return n end
+    for _, target in ipairs(directCalls(at)) do
+      for _, word in ipairs(self:poolWords(target, 32)) do
+        if RomExtractorGen3.romOffset(word) == H.sineAt then
+          n = n + 1
+          break
+        end
+      end
+    end
+    return n
+  end
+  local family
+  if hasArc and from == "attacker" and terminalArc and step
+      -- This is the unusually long off-screen continuation in
+      -- AnimTranslateLinearSingleSineWave: four source compares guard the
+      -- blink/out-of-bounds tail.  Requiring all four makes it distinct from
+      -- the ordinary six-argument projectile arcs that share the helpers.
+      and self:thumbImmCount(step, 96, 0x2800, 200) > 0
+      and self:thumbImmCount(step, 96, 0x2800, 55) > 0
+      and self:thumbImmCount(step, 96, 0x2800, 160) > 0
+      and self:thumbImmCount(step, 96, 0x2800, 30) > 0 then
+    family = "single_sine"
+  elseif from == "attacker" and hasLinearInit and stepHasLinear
+      and trigCalls(step) == 1
+      and self:thumbImmCount(callback, 96, 0x2000, 30) > 0 then
+    -- AnimToTargetInSinWave: a fixed 30-frame linear translation plus one
+    -- signed y sine whose phase is supplied by the shared script timer.
+    family = "sine30"
+  elseif from == nil and hasLinearInit then
+    -- A small set of callbacks prepare linear deltas directly rather than via
+    -- InitSpritePosToAnim*.  Only the seven-argument member has Bubble's
+    -- source layout; particle() performs that final, falsifiable distinction.
+    family = "direct_linear_candidate"
+  elseif hasArc and from == "target" then
+    family = "absorb_arc"
+  elseif hasArc and from == "attacker" then
+    family = "arc_candidate"
+  end
+  local isFireRed = self.version == "firered"
+                    or (type(self.version) == "table"
+                        and self.version.id == "firered")
+  if isFireRed then
+    if from == "target" then
+      local exact = RomExtractorGen3.FRLG_TARGET_LOCAL_LINEAR[callback]
+      if exact then family = exact end
+    end
+    local exact = RomExtractorGen3.FRLG_CALLBACK_PATH[callback]
+    if exact then family = exact end
+  end
+  local rec = { family = family,
+                terminalArc = terminalArc or nil,
+                fixedArc = hasArc
+                           and self:thumbImmCount(callback, 96, 0x2000, 30) > 0
+                           and -30 or nil,
+                initialMirror = (from ~= nil or hasMirror) and true or nil }
+  self._animCallbackFamilyCache[callback] = rec
+  return rec
 end
 
 function RomExtractorGen3:hiddenMovementType(callbacksAt, count)
@@ -8878,13 +9691,39 @@ function RomExtractorGen3:extractTutorMoves()
   self:beginStage("Gen3 tutor moves")
   local base = self:need("gTutorMoves", "tutor moves")
   if not (base and self._moveIds) then return end
+  -- Emerald has thirty tutor entries.  FireRed has fifteen regular one-time
+  -- tutors followed immediately in ROM by one u16 compatibility mask per
+  -- species (sTutorLearnsets).  Reading thirty entries on FireRed therefore
+  -- turned the first fifteen species masks into bogus "moves".
+  local frlg = (self.manifest or {}).frlgItemMenu ~= nil
+  local count = frlg and 15 or 30
   local list = {}
-  for i = 0, 29 do
+  for i = 0, count - 1 do
     local move = self.rom:u16(base + i * 2)
     list[i + 1] = self._moveIds[move] or move
   end
   local constants = self._constants or {}
   constants.tutorMoves = list
+  if frlg and self._pokemon then
+    local learnsets = base + count * 2
+    local compatible, none = 0, 0
+    for _, def in pairs(self._pokemon) do
+      if def.index then
+        local mask = self.rom:u16(learnsets + def.index * 2) or 0
+        local moves = {}
+        for tutor = 0, count - 1 do
+          if math.floor(mask / 2 ^ tutor) % 2 == 1 then
+            moves[#moves + 1] = list[tutor + 1]
+          end
+        end
+        def.tutorMoves = moves
+        if #moves > 0 then compatible = compatible + 1 else none = none + 1 end
+      end
+    end
+    self:write("pokemon", self._pokemon)
+    Logger.info("Gen3 tutor learnsets: %d species compatible, %d none",
+                compatible, none)
+  end
   self:write("constants", constants)
   Logger.info("Gen3 tutor moves: %d (%s ... %s)", #list, list[1], list[#list])
 end
@@ -10312,19 +11151,20 @@ end
 --     FieldEffectStart(id)     -> gFieldEffectScriptPointers[id]   082DB9D4
 --     script                   -> callnative <native>
 --     native                   -> CreateSpriteAtEnd(<template>, ..., anim)
---     template                 -> images[anim], 0x80 bytes: 16x16, four tiles
+--     template                 -> anims[anim] -> SpriteFrameImage[] entries
 --
 -- Three effect ids share that shape and between them name three icons:
 -- 0 is the exclamation mark, 33 the question mark and 46 the heart.  The
--- first two are anims 0 and 1 of ONE template; the heart has its own, and it
+-- first two are selected animations of ONE template; the heart has its own,
+-- and it
 -- is the heart's that names the palette (tag $1004) -- which is how the other
 -- two are coloured too, because their own scripts load none.
 --
 -- WHAT IS CHECKED: that all three ids reach a native through a callnative,
--- that each native names a template, that the frame it plays is 0x80 bytes,
--- and that the three frames are three different pictures.  Icons that all
--- came out identical would mean the anim numbers were being misread, which is
--- the one mistake this shape invites.
+-- that each native names a template, that its selected animation resolves to
+-- 0x80-byte SpriteFrameImage entries, and that those animations have actual
+-- frame timelines.  Treating the selected animation number as a frame index
+-- loses FireRed's 4/4/52 trainer-icon animation entirely.
 -- ---------------------------------------------------------------------------
 
 RomExtractorGen3.EMOTE = {
@@ -10334,6 +11174,11 @@ RomExtractorGen3.EMOTE = {
   SCAN = 0x60,                 -- how far into a native the call is set up
   MOV_R1 = 0x2100, MOV_R2 = 0x2200,
   FRAME_BYTES = 0x80,          -- four tiles, 4bpp: 16x16
+  TEMPLATE_ANIMS = 8,
+  TEMPLATE_IMAGES = 12,
+  ANIM_END = 0xFFFD,
+  ANIM_STOP = 0xFFFF,
+  ANIM_MAX = 16,
   SIZE = 16,
   COLORS = 16,
   -- THE COLOURS THE "!" IS ACTUALLY DRAWN IN.
@@ -10364,6 +11209,41 @@ function RomExtractorGen3:extractEmotes()
   self:beginStage("Gen3 emotes")
   local E = RomExtractorGen3.EMOTE
   local rom = self.rom
+
+  -- Emoticons use SpriteFrameImage[], so ANIMCMD_FRAME's imageValue indexes
+  -- the image table directly (sprite.c RequestSpriteFrameImageCopy).
+  local function timelineFor(template, anim)
+    local anims = rom:pointer(template + E.TEMPLATE_ANIMS)
+    local images = rom:pointer(template + E.TEMPLATE_IMAGES)
+    local script = anims and rom:pointer(anims + anim * 4) or nil
+    if not (script and images) then return nil, "template has no selected animation" end
+    local frames, total = {}, 0
+    for i = 0, E.ANIM_MAX - 1 do
+      local word = rom:u32(script + i * 4)
+      if not word then return nil, "animation command is outside the ROM" end
+      local imageValue = word % 65536
+      if imageValue >= E.ANIM_END then
+        if imageValue ~= E.ANIM_STOP then
+          return nil, "emoticon animation loops/jumps unexpectedly"
+        end
+        break
+      end
+      local duration = math.floor(word / 65536) % 64
+      if duration < 1 then duration = 1 end
+      local frame = rom:pointer(images + imageValue * 8)
+      local size = rom:u16(images + imageValue * 8 + 4)
+      if not frame or size ~= E.FRAME_BYTES then
+        return nil, ("animation frame %d is %s bytes, not %d")
+                    :format(imageValue, tostring(size), E.FRAME_BYTES)
+      end
+      frames[#frames + 1] = {
+        frame = frame, imageValue = imageValue, duration = duration,
+      }
+      total = total + duration
+    end
+    if #frames == 0 then return nil, "selected animation has no frames" end
+    return frames, total
+  end
 
   -- one effect id: the script, the native behind it, and what it draws
   local function iconFor(id)
@@ -10412,15 +11292,10 @@ function RomExtractorGen3:extractEmotes()
     end
     if template < 0x08000000 then return nil, "the template is not a pointer" end
     template = template - 0x08000000
-    local images = rom:pointer(template + 12)
-    if not images then return nil, "the template has no frames" end
-    local frame = rom:pointer(images + anim * 8)
-    local size = rom:u16(images + anim * 8 + 4)
-    if not frame or size ~= E.FRAME_BYTES then
-      return nil, ("frame %d is %s bytes, not %d")
-                  :format(anim, tostring(size), E.FRAME_BYTES)
-    end
-    return { frame = frame, anim = anim, template = template,
+    local frames, totalOrWhy = timelineFor(template, anim)
+    if not frames then return nil, totalOrWhy end
+    return { frame = frames[1].frame, frames = frames, total = totalOrWhy,
+             anim = anim, template = template,
              palette = palette, effect = id }
   end
 
@@ -10519,22 +11394,10 @@ function RomExtractorGen3:extractEmotes()
   for _, icon in ipairs(icons) do
     icon.colors = colors
     if rom:u16(icon.template + 2) == E.TAG_NONE and slot0 then
-      local px = RomGba.tiles4bpp(rom:bytes(icon.frame, E.FRAME_BYTES), 2, 2)
-      local plain = true
-      for y = 1, E.SIZE do
-        for x = 1, E.SIZE do
-          if not E.INK[px[y][x]] then plain = false break end
-        end
-        if not plain then break end
-      end
-      if plain then
-        icon.colors, icon.slot0 = slot0, true
-      else
-        Logger.warn("gen3 emotes: %s names no palette but its art reaches "
-                      .. "outside entries 14 and 15 -- left on the heart's "
-                      .. "colours rather than recoloured on a guess",
-                    icon.role)
-      end
+      -- CreateSpriteAtEnd leaves a TAG_NONE template on OBJ palette slot 0.
+      -- That is true for the whole SpriteAnim, including the two brief lead-in
+      -- pictures whose art uses more entries than the long held frame.
+      icon.colors, icon.slot0 = slot0, true
     end
   end
 
@@ -10551,7 +11414,12 @@ function RomExtractorGen3:extractEmotes()
     record[icon.role] = {
       image = ("assets/generated/overworld/g3_emote_%s.png"):format(icon.role),
       width = E.SIZE, height = E.SIZE, trueColor = true,
+      frames = #icon.frames,
+      timeline = {},
     }
+    for i, step in ipairs(icon.frames) do
+      record[icon.role].timeline[i] = { i - 1, step.duration }
+    end
     record.effects[icon.role] = icon.effect
   end
   local constants = self._constants or {}
@@ -10565,14 +11433,17 @@ function RomExtractorGen3:extractEmotes()
   local drawn = 0
   local okArt, artErr = pcall(function()
     for _, icon in ipairs(icons) do
-      local image = ImageWriter.blank(E.SIZE, E.SIZE)
-      local px = RomGba.tiles4bpp(rom:bytes(icon.frame, E.FRAME_BYTES), 2, 2)
-      for y = 1, E.SIZE do
-        for x = 1, E.SIZE do
-          local index = px[y][x]
-          local c = index ~= 0 and icon.colors[index + 1] or nil
-          if c then
-            image:setPixel(x - 1, y - 1, c[1] / 255, c[2] / 255, c[3] / 255, 1)
+      local image = ImageWriter.blank(E.SIZE * #icon.frames, E.SIZE)
+      for fi, step in ipairs(icon.frames) do
+        local px = RomGba.tiles4bpp(rom:bytes(step.frame, E.FRAME_BYTES), 2, 2)
+        for y = 1, E.SIZE do
+          for x = 1, E.SIZE do
+            local index = px[y][x]
+            local c = index ~= 0 and icon.colors[index + 1] or nil
+            if c then
+              image:setPixel((fi - 1) * E.SIZE + x - 1, y - 1,
+                             c[1] / 255, c[2] / 255, c[3] / 255, 1)
+            end
           end
         end
       end
@@ -10897,12 +11768,33 @@ function RomExtractorGen3:extractDexEntries()
   self:beginStage("Gen3 dex entries")
   local base = self:need("gPokedexEntries", "dex entries")
   local coords = self:symbol("gMonFrontPicCoords")
+  local backCoords = self:symbol("gMonBackPicCoords")
   if not (base and self._pokemon) then return end
   local filled = 0
   -- FireRed's struct carries a second description pointer before the pose
   -- fields: 36 bytes a row (gPokedexEntries is 0x366C = 387 x 36), and the
   -- pose pairs sit four bytes later
   local frlg = (self.manifest or {}).frlgItemMenu ~= nil
+  local frontCoords = coords
+  if frlg and type(self.rom.data) == "string" then
+    -- The old FireRed manifest label for gMonFrontPicCoords points at the BACK
+    -- table.  Do not change the long-standing `picCoords` field here (that is a
+    -- separate placement concern), but locate both real tables for tasks that
+    -- explicitly call GetBattlerSpriteCoordAttr.  These anchors are the first
+    -- four rows in pokefirered's front/back coordinate headers: NONE,
+    -- BULBASAUR, IVYSAUR, VENUSAUR, including the struct's two zero pad bytes.
+    local function coordTable(bytes)
+      local at = self.rom.data:find(bytes, 1, true)
+      if not at or self.rom.data:find(bytes, at + 1, true) then return nil end
+      return at - 1
+    end
+    local front = string.char(0x88,0,0,0, 0x55,16,0,0,
+                              0x66,10,0,0, 0x87,4,0,0)
+    local back = string.char(0x88,0,0,0, 0x64,16,0,0,
+                             0x76,10,0,0, 0x86,10,0,0)
+    frontCoords = coordTable(front) or frontCoords
+    backCoords = coordTable(back) or backCoords
+  end
   local stride, poseAt = frlg and 36 or 32, frlg and 26 or 22
   for _, def in pairs(self._pokemon) do
     local dex = def.dex
@@ -10956,6 +11848,25 @@ function RomExtractorGen3:extractDexEntries()
       local size = self.rom:u8(o)
       def.picCoords = { width = math.floor(size / 16), height = size % 16,
                         yOffset = self.rom:s8(o + 1) }
+    end
+    -- Exact front/back MonCoords used by GetBattlerSpriteCoordAttr.  Keep the
+    -- correctly discovered front row separate from legacy `picCoords` so this
+    -- narrowly scoped scanline fix cannot perturb ordinary battle placement.
+    if frontCoords and def.index then
+      local o = frontCoords + def.index * 4
+      local size = self.rom:u8(o)
+      def.frontPicCoords = { width = math.floor(size / 16), height = size % 16,
+                             yOffset = self.rom:s8(o + 1) }
+    end
+    -- GetBattlerSpriteCoordAttr uses the BACK coordinate table for the
+    -- player's battler.  Keep that second cartridge row as well: battler-local
+    -- scanline tasks such as SKETCH reveal exactly `HEIGHT` rows and using the
+    -- foe/front height on the near side changes the task's lifetime.
+    if backCoords and def.index then
+      local o = backCoords + def.index * 4
+      local size = self.rom:u8(o)
+      def.backPicCoords = { width = math.floor(size / 16), height = size % 16,
+                            yOffset = self.rom:s8(o + 1) }
     end
   end
   -- rewritten so the dex text and egg moves land in the same module
@@ -33575,12 +34486,26 @@ local GEN3_ANIM = {
   LOADGFX = 0x00,       -- loadspritegfx: which particle sheet is brought in
   FADETOBG = 0x14,      -- the two commands that replace the whole battle
   FADETOBGSET = 0x25,   -- background, which is a screen-wide event
+  RESTOREBG = 0x15,
+  WAITBGOUT = 0x16,
+  WAITBGIN = 0x17,
+  CHANGEBG = 0x18,
+  -- Task_FadeToBg starts its hardware fade after the script callback.  With
+  -- delay=0, UpdateHardwarePaletteFade reaches y=16 in 16 updates, spends one
+  -- finishing update there, and the task exposes fade-state 2 on the next
+  -- script frame.  State 2 then loads the new BG and starts the reverse fade;
+  -- waitbgfadein advances on script frame 36.  These are source timing, not a
+  -- presentation tail.
+  BG_SWAP_FRAME = 18,
+  BG_DONE_FRAME = 36,
+  BG_TABLE_FR = 0x3ADE18,
   TARGET_USER = 16,     -- MOVE_TARGET_USER, out of gBattleMoves' own field
   -- struct SpriteTemplate: u16 tileTag, u16 paletteTag, then five pointers --
   -- the OAM, the animations, the frame images, the affine animations and the
   -- callback.
   TEMPLATE_OAM = 4,
   TEMPLATE_ANIMS = 8,
+  TEMPLATE_AFFINE_ANIMS = 16,
   TEMPLATE_CALLBACK = 20,
   -- union AnimCmd is one word: the low halfword is the image index, or one of
   -- three terminators -- END (-1), JUMP (-2), LOOP (-3) -- and the next six
@@ -33588,6 +34513,13 @@ local GEN3_ANIM = {
   ANIM_END = 0xFFFD,    -- the lowest of the three terminator halfwords
   ANIM_STOP = 0xFFFF,   -- ...and the one that ends rather than repeats
   ANIM_MAX = 32,        -- a particle's animation is a handful of frames long
+  -- union AffineAnimCmd is 8 bytes.  A normal frame is s16 x/y scale,
+  -- u8 rotation, u8 duration and two padding bytes; the three control records
+  -- use these sentinel types in the first halfword.
+  AFFINE_LOOP = 0x7FFD,
+  AFFINE_JUMP = 0x7FFE,
+  AFFINE_END = 0x7FFF,
+  AFFINE_MAX = 64,
   -- The four SQUARE OBJ sizes, biggest first, in bytes of 4bpp art.  Used
   -- only where no sprite template names a sheet's frame size.
   SQUARES = { { 64, 2048 }, { 32, 512 }, { 16, 128 }, { 8, 32 } },
@@ -33716,6 +34648,12 @@ GEN3_ANIM.BRANCH = {
   [0x24] = { 1 },     -- jumpifcontest
 }
 
+-- gSlashSliceSpriteTemplate uses AnimSlashSlice, whose first argument is a
+-- battler selector rather than an x offset.  FireRed's SLASH is the only move
+-- that loads this tag; its actual offsets are args[1]/args[2] in C, i.e. the
+-- second and third createsprite arguments here.
+GEN3_ANIM.SLASH_TAG = 10183
+
 
 -- Run one animation script and report what it does: the first sound it plays,
 -- every particle it spawns and when, how long it runs, and whether every byte
@@ -33725,11 +34663,11 @@ GEN3_ANIM.BRANCH = {
 --
 -- WHAT A PARTICLE EVENT IS.  `createsprite` names a sprite TEMPLATE, and the
 -- template's first halfword is the tag of the sheet the particle is drawn
--- from while its OAM gives the frame's size.  The command's own battler byte
--- carries ANIMSPRITE_IS_TARGET in bit 7 -- which is how the script says the
--- particle belongs over the DEFENDER rather than the attacker -- and its
--- first two arguments are, for the overwhelming majority of the callbacks, a
--- pixel offset from that battler.  An argument outside a battler's own box is
+-- from while its OAM gives the frame's size.  The command's own flags byte
+-- carries ANIMSPRITE_IS_TARGET in bit 7 only to choose whose SUBPRIORITY is
+-- used as the draw-order base; Cmd_createsprite still spawns both arms at
+-- gBattleAnimTarget.  Its first two arguments are, for the overwhelming
+-- majority of the callbacks, a pixel offset from that battler.  An argument outside a battler's own box is
 -- not an offset (it is a duration, a count, a subpriority for some other
 -- callback) and is dropped rather than guessed at.
 --
@@ -33737,8 +34675,9 @@ GEN3_ANIM.BRANCH = {
 -- goes after it is spawned is a C function in the cartridge, and no symbol
 -- names it.  So this is the move's own art, on the right battler, at the
 -- right offset, at the right moment -- and not the flight path.
-function RomExtractorGen3:animScriptRead(entry)
+function RomExtractorGen3:animScriptRead(entry, branchCtx, visualLife)
   local rom = self.rom
+  branchCtx = branchCtx or {}
   -- A VISITED SET PER INVOCATION, not one for the whole walk.
   --
   -- Reported from play: "ice beam doesnt look right".  It was two frames of
@@ -33768,6 +34707,122 @@ function RomExtractorGen3:animScriptRead(entry)
   })
   local events, duration = {}, 0
   local loaded, backgrounds = {}, 0
+  local backgroundEvents = {}
+  local monBgEvents = {}
+  local bgFadeStart = nil
+  local splitBgUsed = false
+  -- Runtime-controlled script branches.  The ordinary import still reads the
+  -- turn-0/default path; callers can provide the exact values FireRed gives
+  -- Cmd_choosetwoturnanim / Cmd_jumpifmoveturn / Cmd_jumpargeq to read a
+  -- concrete alternate arm as a separate record.
+  local selectors = { moveTurns = {}, args = {} }
+  -- `waitforvisualfinish` is not a delay: the interpreter polls
+  -- gAnimVisualTaskCount until every sprite/task created before the barrier has
+  -- destroyed itself.  A second, timing-only pass can supply exact lifetimes
+  -- for visual families already proved elsewhere in this importer.  One
+  -- unknown visual makes that barrier (and all later absolute timestamps)
+  -- unknown rather than inviting a guessed fixed delay.
+  local waitAudit = {}
+  local waitVisuals, waitUnknown, waitKnownEnd = 0, 0, 0
+  local waitTimelineExact = visualLife ~= nil
+  local function visualStarted(kind, one, at)
+    if not visualLife then return end
+    local life = visualLife(kind, one)
+    -- Some createvisualtask entry points call their step immediately and can
+    -- destroy themselves before the interpreter reaches the next bytecode.
+    -- Camouflage's 0->0 palette reset is one.  It never contributes an active
+    -- visual to waitforvisualfinish, so a proved zero lifetime is exact empty,
+    -- not an unknown task.
+    if type(life) == "number" and life == 0 then return end
+    waitVisuals = waitVisuals + 1
+    if type(life) == "number" and life > 0 then
+      waitKnownEnd = math.max(waitKnownEnd, at + life)
+    else
+      waitUnknown = waitUnknown + 1
+    end
+  end
+  local function visualBarrier(site, at)
+    if not visualLife then return at end
+    local rec = { site = site, at = at, visuals = waitVisuals,
+                  unknown = waitUnknown, knownEnd = waitKnownEnd }
+    if waitVisuals == 0 then
+      rec.status, rec.after = "empty", at
+    elseif waitTimelineExact and waitUnknown == 0 then
+      rec.status, rec.after = "known", math.max(at, waitKnownEnd)
+      at = rec.after
+    else
+      rec.status, rec.after = "residual", at
+      rec.reason = waitTimelineExact and "unknown_active_visual"
+                                   or "upstream_unknown_barrier"
+      waitTimelineExact = false
+    end
+    waitAudit[#waitAudit + 1] = rec
+    -- Source guarantees this set is empty when execution resumes past 0x05.
+    waitVisuals, waitUnknown, waitKnownEnd = 0, 0, at
+    return at
+  end
+  local animArgs = {}
+  local setArgEvents = {}
+  local function resetAnimArgs()
+    animArgs = {}
+    for k, v in pairs(branchCtx.args or {}) do animArgs[tonumber(k) or k] = v end
+  end
+  local function s16(v)
+    return v >= 32768 and v - 65536 or v
+  end
+  -- SCRIPT-LEVEL COMPOSITING STATE.
+  --
+  -- setalpha/blendoff and monbg/clearmonbg are not particle callbacks: they
+  -- change GPU/BG state that subsequent createsprite commands inherit.  A
+  -- waitforvisualfinish has no fixed bytecode duration, so trying to turn
+  -- those commands into absolute frame timestamps here would be a guess.
+  -- Instead snapshot the state at the exact createsprite instruction.  That
+  -- is enough for the visible OBJ the existing renderer can reproduce:
+  -- semi-transparent particles are born while their battler has been copied
+  -- to a BG, and blendoff/clearmonbg happen after those particles finish.
+  local scriptAlpha = nil
+  local monBgState = {}
+  local splitBgState = nil
+  local function monBgKey(who)
+    -- Cmd_monbg/Cmd_clearmonbg canonicalise the main battlers to the
+    -- corresponding partner selectors before doing any work.  In singles the
+    -- canonical selector still means the visible main battler; in doubles it
+    -- means the main battler plus that flank's partner.
+    if who == 0 then return 2 end -- ANIM_ATTACKER -> ANIM_ATK_PARTNER
+    if who == 1 then return 3 end -- ANIM_TARGET   -> ANIM_DEF_PARTNER
+    return who
+  end
+  local function resetScriptState()
+    scriptAlpha, monBgState, splitBgState = nil, {}, nil
+    bgFadeStart = nil
+  end
+  local function stateSnapshot()
+    local bg = {}
+    for who in pairs(monBgState) do bg[#bg + 1] = who end
+    table.sort(bg)
+    local split
+    if splitBgState then
+      split = { kind = splitBgState.kind, battler = splitBgState.battler }
+    end
+    return {
+      alpha = scriptAlpha and { eva = scriptAlpha.eva, evb = scriptAlpha.evb }
+                              or nil,
+      monbg = #bg > 0 and bg or nil,
+      splitbg = split,
+    }
+  end
+  local function restoreScriptState(state)
+    resetScriptState()
+    if not state then return end
+    if state.alpha then
+      scriptAlpha = { eva = state.alpha.eva, evb = state.alpha.evb }
+    end
+    for _, who in ipairs(state.monbg or {}) do monBgState[who] = true end
+    if state.splitbg then
+      splitBgState = { kind = state.splitbg.kind,
+                       battler = state.splitbg.battler }
+    end
+  end
   -- WHICH C FUNCTIONS THE SCRIPT HANDS ITS ANIMATION TO.  A retail dump names
   -- none of them, but two moves whose scripts call the SAME address are
   -- calling the same function, and that is a fact about the cartridge rather
@@ -33801,8 +34856,11 @@ function RomExtractorGen3:animScriptRead(entry)
     if tag < GEN3_ANIM.TAG_FIRST then return nil end
     local oam = rom:pointer(template + 4)
     if not oam then return nil end
-    local shape = math.floor(rom:u16(oam) / 16384) % 4
-    local size = math.floor(rom:u16(oam + 2) / 16384) % 4
+    local attr0 = rom:u16(oam)
+    local attr1 = rom:u16(oam + 2)
+    local attr2 = rom:u16(oam + 4)
+    local shape = math.floor(attr0 / 16384) % 4
+    local size = math.floor(attr1 / 16384) % 4
     local dim = GEN3_ANIM.OBJ_DIM[shape] and GEN3_ANIM.OBJ_DIM[shape][size]
     if not dim then return nil end
     local argc = rom:u8(p + 6)
@@ -33814,21 +34872,42 @@ function RomExtractorGen3:animScriptRead(entry)
       return v
     end
     local battler = rom:u8(p + 5)
+    -- Cmd_createsprite does not store a literal u8 subpriority.  Bits 0..6 are
+    -- the macro's signed relative offset, encoded exactly as battle_anim.c
+    -- decodes it: 0..63 mean 0,-1..-63; 64..127 mean 0,+1..+63.  Bit 7 chooses
+    -- whether that offset is added to the target's or the attacker's battler
+    -- subpriority.  Keep both pieces separately so the runtime can reproduce
+    -- GetBattlerSpriteSubpriority(...) + offset and its clamp at 3.
+    local encodedSubpriority = battler % GEN3_ANIM.IS_TARGET
+    local subpriorityOffset = encodedSubpriority >= 64
+                              and encodedSubpriority - 64
+                              or -encodedSubpriority
     -- the template also says how its own picture is timed, and for how long
     -- the particle is meant to be up (spriteAnimTimeline)
     local held, loops = self:spriteAnimTimeline(template, dim[1], dim[2])
+    -- ...and, when the template is an affine OBJ, animation 0 begins
+    -- automatically on the sprite's first AnimateSprite.  This is separate
+    -- from callback/task code that explicitly starts another affine animation.
+    local affine0 = self:spriteAffineAnim0(template, oam)
     -- ...and its callback says where it goes; see animMotionOf
     local callback = rom:pointer(template + 20)
     local from, motion = self:animMotionOf(callback)
+    local family = callback and self:animCallbackFamily(callback) or nil
+    local function rawSigned(i)
+      if argc < i then return 0 end
+      local v = rom:u16(p + 7 + (i - 1) * 2)
+      return v >= 32768 and v - 65536 or v
+    end
+    local rawArgs = {}
+    for i = 1, math.min(argc, 8) do rawArgs[i] = rawSigned(i) end
     -- ...and the one callback whose whole path is arithmetic rather than a
     -- shared helper: PERISH SONG's notes.  Its three arguments are not the
     -- pixel offsets every other createsprite passes -- they are the note's
     -- number, its picture and its phase -- so they are read raw here and the
     -- offsets are left at zero.  See animOrbit.
     local orbit = nil
-    local O = RomExtractorGen3.ANIM_ORBIT
-    if callback and callback - (callback % 2) == O.CALLBACK
-       and self:animOrbit() then
+    local orbitShape = callback and self:animOrbit(callback)
+    if orbitShape then
       local function raw(i)
         if argc < i then return 0 end
         return rom:u16(p + 7 + (i - 1) * 2) % 256
@@ -33838,10 +34917,15 @@ function RomExtractorGen3:animScriptRead(entry)
     end
     -- ...and the note script's seventeenth sprite, which hides itself on its
     -- own first frame and exists only to time the sound
-    local shape = self:animOrbit()
-    if callback and shape and shape.silent
-       and callback - (callback % 2) == shape.silent then
-      return nil
+    if callback and self:animOrbitSilent(callback) then
+      -- AnimPerishSongMusicNote2 sets data[1] = 120 - arg0, increments data0
+      -- in the create callback, then destroys at data1 + 80.  Keep this helper
+      -- out of the drawable event list while preserving its exact visual-count
+      -- lifetime for opcode 05.
+      local note = rawArgs[1]
+      local waitLife = note and note >= 0 and note <= 120 and (199 - note) or nil
+      return { tag = tag, template = template, callback = callback,
+               args = rawArgs, site = p, waitOnly = true, waitLife = waitLife }
     end
     -- HOW LONG THE CROSSING TAKES.  The projectile family passes it as the
     -- fifth argument -- `sprite->data[0] = gBattleAnimArgs[4]` -- and that is
@@ -33855,21 +34939,387 @@ function RomExtractorGen3:animScriptRead(entry)
       if v >= 32768 then v = v - 65536 end
       if v >= M.MIN_FRAMES and v <= M.MAX_FRAMES then travel = v end
     end
+    local arc, to, toX, toY
+    local localLinear, linearDX, linearDY
+    local firstFrames, holdFrames, secondFrames, firstX, firstY, finalX, finalY
+    local exactX, exactY
+    local phase, phaseStep, waveX, waveY, phaseClock, postLife
+    local stepOffset, mirrorX, mirrorY, waveCosY, waveXDirection
+    local phaseStepFixed, verticalSpeed
+    local screenX, screenY, screenToX, screenToY, fallDelay, targetY
+    local familyName = family and family.family
+    -- A handful of callbacks explicitly switch the SpriteTemplate's animation
+    -- or affine animation.  Preserve those authored alternatives so the
+    -- runtime can reproduce StartSpriteAnim/StartSpriteAffineAnim instead of
+    -- being locked to the template's automatic index zero.
+    local selectedAnimIndex, selectedHeld, selectedLoops, seekAnimCmd
+    local forceSelectedAnim, callbackFlipX, manualRotation
+    if familyName == "falling_rock" or familyName == "movement_waves" then
+      selectedAnimIndex = rawSigned(2)
+    elseif familyName == "guillotine" or familyName == "vice_grip" then
+      selectedAnimIndex = rawSigned(1)
+    elseif familyName == "will_o_wisp_orb" then
+      selectedAnimIndex = rawSigned(3)
+    elseif familyName == "ice_ball" or familyName == "leech_seed" then
+      -- Both callbacks switch to sprite animation 1 after their travel phase.
+      -- Keep that authored timeline available; the runtime chooses when the
+      -- switch occurs rather than starting it on the creation frame.
+      selectedAnimIndex = 1
+    elseif familyName == "sludge_projectile" and rawSigned(4) == 0 then
+      -- AnimSludgeProjectile selects animation 2 only when source arg3 is 0.
+      selectedAnimIndex = 2
+    end
+    if familyName == "air_wave" then
+      -- SeekSpriteAnim takes a command index inside the current animation.
+      -- Air Wave has one looping animation; arg5 selects which command is
+      -- displayed first, it does not select another animation-table entry.
+      seekAnimCmd = rawSigned(6)
+      selectedHeld, selectedLoops =
+        self:spriteAnimTimeline(template, dim[1], dim[2], 0)
+    elseif selectedAnimIndex and selectedAnimIndex >= 0 and selectedAnimIndex <= 7 then
+      selectedHeld, selectedLoops =
+        self:spriteAnimTimeline(template, dim[1], dim[2], selectedAnimIndex)
+    end
+    local alternateHeld, alternateLoops
+    if familyName == "guillotine" then
+      alternateHeld, alternateLoops =
+        self:spriteAnimTimeline(template, dim[1], dim[2], 1 - (selectedAnimIndex or 0))
+    end
+    local affine1 = self:spriteAffineAnim(template, oam, 1)
+    if familyName == "ice_ball" then
+      -- InitIceBallAnim selects one of five absolute affine programs from the
+      -- Rollout counter stored in gBattleAnimArgs[0].  Variant extraction puts
+      -- that exact branch value in animArgs; values above four clamp to tier 4.
+      local tier = math.floor(tonumber(animArgs[0]) or 0)
+      if tier < 0 then tier = 0 elseif tier > 4 then tier = 4 end
+      affine0 = self:spriteAffineAnim(template, oam, tier) or affine0
+    end
+    if familyName == "aurora_rings" and argc == 5 then
+      local v = rawSigned(5)
+      if v >= RomExtractorGen3.ANIM_MOTION.MIN_FRAMES
+          and v <= RomExtractorGen3.ANIM_MOTION.MAX_FRAMES then
+        -- InitSpritePosToAnimAttacker + exact target-relative destination.
+        -- The initializer calls its translation step once before returning.
+        motion, from, to, travel = "callback_linear", "attacker", "target", v
+        exactX, exactY = rawSigned(1), rawSigned(2)
+        toX, toY, stepOffset = rawSigned(3), rawSigned(4), 1
+      end
+    elseif familyName == "petal_big" and argc == 4 then
+      local v = rawSigned(4)
+      if v >= RomExtractorGen3.ANIM_MOTION.MIN_FRAMES
+          and v <= 255 then
+        motion, from, to, travel = "linear_wave", "attacker", "attacker", v
+        exactX, exactY = rawSigned(1), rawSigned(2)
+        toX, toY = rawSigned(1), rawSigned(3)
+        waveX, waveY, waveCosY = 32, -5, true
+        phase, phaseStep, stepOffset = 0x40, 5, 1
+      end
+    elseif familyName == "petal_small" and argc == 4 then
+      local v = rawSigned(4)
+      if v >= RomExtractorGen3.ANIM_MOTION.MIN_FRAMES
+          and v <= 255 then
+        motion, from, to, travel = "linear_wave", "attacker", "attacker", v
+        exactX, exactY = rawSigned(1), rawSigned(2)
+        toX, toY = rawSigned(1), rawSigned(3)
+        waveX, waveY = 8, 0
+        phase, phaseStep, stepOffset = 0x40, 5, 1
+      end
+    elseif familyName == "red_heart" and argc == 2 then
+      motion, from, to, travel = "linear_wave", "attacker", "target", 95
+      exactX, exactY, toX, toY = rawSigned(1), rawSigned(2), 0, 0
+      waveX, waveY, phase, phaseStep, stepOffset = 0, 14, 0, 4, 0
+    elseif familyName == "sliding_kick" and argc == 6 then
+      local v = rawSigned(4)
+      if v >= RomExtractorGen3.ANIM_MOTION.MIN_FRAMES
+          and v <= RomExtractorGen3.ANIM_MOTION.MAX_FRAMES then
+        motion, from, to, travel = "linear_wave", "target", "target", v
+        exactX, exactY = rawSigned(1), rawSigned(2)
+        toX, toY = rawSigned(1) + rawSigned(3), rawSigned(2)
+        waveX, waveY, phase = 0, rawSigned(6), 0
+        phaseStepFixed, stepOffset = rawSigned(5), 0
+      end
+    elseif familyName == "slow_note" and argc == 4
+        and (rawSigned(1) == 0 or rawSigned(1) == 1) then
+      motion, from, to, travel = "linear_wave", "attacker", "attacker", 40
+      exactX, exactY = 0, 8
+      toX, toY = rawSigned(1) == 0 and -32 or 32, -32
+      waveX, waveY, phase, phaseStep = 8, 4, rawSigned(4) % 256, 8
+      waveXDirection, mirrorX, stepOffset = true, false, 0
+    elseif familyName == "superpower_fireball" and argc == 1
+        and (rawSigned(1) == 0 or rawSigned(1) == 1) then
+      motion, travel = "callback_linear", 16
+      if rawSigned(1) == 0 then
+        from, to = "attacker", "target"
+      else
+        from, to = "target", "attacker"
+      end
+      exactX, exactY, toX, toY, stepOffset = 0, 0, 0, 0, 0
+    elseif familyName == "mist_ball" and argc == 6
+        and rawSigned(1) == 0 and rawSigned(2) == 0
+        and rawSigned(3) == 0 and rawSigned(4) == 0
+        and rawSigned(6) == 0 then
+      local v = rawSigned(5)
+      if v >= RomExtractorGen3.ANIM_MOTION.MIN_FRAMES
+          and v <= RomExtractorGen3.ANIM_MOTION.MAX_FRAMES then
+        -- AnimThrowMistBall first places the sprite on the attacker and only on
+        -- the following callback delegates to TranslateAnimSpriteToTargetMonLocation.
+        -- FireRed's one callsite supplies zero offsets/coord flags, so the setup
+        -- frame and helper frame occupy the same primary coordinates exactly.
+        motion, from, to, travel = "callback_linear", "attacker", "target", v
+        exactX, exactY, toX, toY, stepOffset = 0, 0, 0, 0, -1
+      end
+    elseif familyName == "sunlight" and argc == 0 then
+      motion, travel, stepOffset = "screen_linear", 60, 0
+      screenX, screenY, screenToX, screenToY = 0, 0, 140, 80
+      exactX, exactY, mirrorX = 0, 0, false
+    elseif familyName == "air_wave" and argc == 7 and rawSigned(7) == 0 then
+      local v = rawSigned(5)
+      if v >= RomExtractorGen3.ANIM_MOTION.MIN_FRAMES
+          and v <= RomExtractorGen3.ANIM_MOTION.MAX_FRAMES then
+        -- The arg6==0 arm uses the ordinary target rather than a doubles
+        -- average.  All four authored offsets flip on the opponent side.
+        motion, from, to, travel = "callback_linear", "attacker", "target", v
+        exactX, exactY = rawSigned(1), rawSigned(2)
+        toX, toY, mirrorY, stepOffset = rawSigned(3), rawSigned(4), true, 0
+      end
+    elseif familyName == "powder" and argc == 6 then
+      local v = rawSigned(3)
+      if v >= RomExtractorGen3.ANIM_MOTION.MIN_FRAMES and v <= 255 then
+        motion, from, travel = "powder", "target", v
+        exactX, exactY = rawSigned(1), rawSigned(2)
+        verticalSpeed, waveX, phaseStep = rawSigned(4), rawSigned(5), rawSigned(6)
+        mirrorX = false
+      end
+    elseif familyName == "falling_coin" and argc == 0 then
+      motion, from = "falling_coin", "target"
+      exactX, exactY, mirrorX = 0, 8, false
+    elseif familyName == "eruption_rock" and argc == 5 then
+      motion = "eruption_rock"
+      screenX, screenY = rawSigned(1), rawSigned(2)
+      fallDelay, targetY = rawSigned(3), rawSigned(4)
+      exactX, exactY, mirrorX = 0, 0, false
+    elseif familyName == "bone_hit" and argc == 5 then
+      local v = rawSigned(5)
+      if v >= RomExtractorGen3.ANIM_MOTION.MIN_FRAMES
+          and v <= RomExtractorGen3.ANIM_MOTION.MAX_FRAMES then
+        -- AnimBoneHitProjectile starts at target+(args0,args1), mirrors both
+        -- x offsets with the attacker's side, and lands at
+        -- target+(args2,args3) over args4 callbacks.
+        motion, from, to, travel = "linear", "target", "target", v
+        exactX, exactY = rawSigned(1), rawSigned(2)
+        toX, toY, localLinear = rawSigned(3), rawSigned(4), "target"
+      end
+    elseif familyName == "cross_chop" and argc == 3
+        and (rawSigned(3) == 0 or rawSigned(3) == 1) then
+      -- AnimCrossChopHand is two target-local linear segments separated by the
+      -- callback's eleven-frame hold.  The left/right hand bit is SCREEN-space,
+      -- not side-mirrored; only InitSpritePosToAnimTarget mirrors the initial x.
+      exactX, exactY = rawSigned(1), rawSigned(2)
+      firstFrames, holdFrames, secondFrames = 30, 12, 8
+      firstX = rawSigned(3) == 0 and -20 or 20
+      firstY = -20
+      travel = firstFrames + holdFrames + secondFrames
+      callbackFlipX = rawSigned(3) == 1
+      motion, from, to, localLinear = "linear", "target", "target", "cross_chop"
+    elseif familyName == "teal_alert" and argc == 3 then
+      local v = rawSigned(3)
+      if v >= RomExtractorGen3.ANIM_MOTION.MIN_FRAMES
+          and v <= RomExtractorGen3.ANIM_MOTION.MAX_FRAMES then
+        -- AnimTealAlert starts at the target-relative script offset and
+        -- converges on the target centre.  Some x offsets are 70px, so use the
+        -- raw source operand rather than the generic +/-64 battler-box clamp.
+        motion, from, to, travel = "linear", "target", "target", v
+        exactX, exactY = rawSigned(1), rawSigned(2)
+        toX, toY, localLinear = 0, 0, "target"
+        manualRotation = "teal_alert"
+      end
+    elseif familyName == "water_droplet" and argc == 5 then
+      local v = rawSigned(5)
+      if v >= RomExtractorGen3.ANIM_MOTION.MIN_FRAMES
+          and v <= RomExtractorGen3.ANIM_MOTION.MAX_FRAMES then
+        -- Water Gun's impact droplet starts target-local, then the callback
+        -- uses sprite->x + args2 and sprite->y + args4.  Those deltas are from
+        -- the already-mirrored START, not another target-relative offset.
+        motion, from, to, travel = "linear", "target", "target", v
+        exactX, exactY = rawSigned(1), rawSigned(2)
+        linearDX, linearDY, localLinear = rawSigned(3), rawSigned(5), "delta"
+      end
+    elseif familyName == "sine30" and argc == 4 then
+      -- AnimToTargetInSinWave fixes its translation at thirty callbacks.  The
+      -- fourth argument is the signed y amplitude; gBattleAnimArgs[7] is a
+      -- phase byte advanced by the script's shared +3 timer and is stamped
+      -- below once the event's script time is known.
+      motion, from, to, travel = "sine30", "attacker", "target", 30
+      arc, toX, toY = rawSigned(4), 0, 0
+      phaseClock = true
+    elseif familyName == "single_sine" and family.terminalArc and argc == 7 then
+      -- AnimTranslateLinearSingleSineWave uses InitAnimArcTranslation only to
+      -- compute the fixed-point deltas/phase step.  Its step then forces one
+      -- translation tick per callback and keeps going past the target until the
+      -- sprite leaves the 240x160 screen.  args[6] only changes doubles target
+      -- averaging, which the doubles lane owns; in singles that average equals
+      -- the ordinary target position exactly.
+      local v = rawSigned(5)
+      if v >= RomExtractorGen3.ANIM_MOTION.MIN_FRAMES
+          and v <= RomExtractorGen3.ANIM_MOTION.MAX_FRAMES then
+        motion, from, to, travel = "single_sine", "attacker", "target", v
+        arc, toX, toY = rawSigned(6), rawSigned(3), rawSigned(4)
+      end
+    elseif familyName == "direct_linear_candidate" and argc == 7 then
+      -- AnimWaterBubbleProjectile is a direct fixed-point translation with a
+      -- two-axis trig wobble.  It runs for args[6] callbacks immediately from
+      -- creation, then unpauses its own 1/5/5-frame sprite animation and waits
+      -- ten more callbacks before destruction (24 visible tail frames total).
+      local v = rawSigned(7)
+      if v >= RomExtractorGen3.ANIM_MOTION.MIN_FRAMES
+          and v <= RomExtractorGen3.ANIM_MOTION.MAX_FRAMES then
+        motion, from, to, travel = "water_bubble", "attacker", "target", v
+        waveX, waveY = rawSigned(3), rawSigned(4)
+        phase, phaseStep = rawSigned(5) % 256, rawSigned(6)
+        toX, toY, postLife = 0, 0, 24
+      end
+    elseif familyName == "absorb_arc" and family.terminalArc and argc >= 4 then
+      -- AnimAbsorptionOrb: target -> attacker.  args[2] is the arc height and
+      -- args[3] is the exact translation duration.
+      local v = rawSigned(4)
+      if v >= RomExtractorGen3.ANIM_MOTION.MIN_FRAMES
+          and v <= RomExtractorGen3.ANIM_MOTION.MAX_FRAMES then
+        motion, from, to, travel = "arc", "target", "attacker", v
+        arc = rawSigned(3)
+        toX, toY = 0, 0
+      end
+    elseif familyName == "arc_candidate" and family.terminalArc
+        and argc == 4 and family.fixedArc then
+      -- AnimSludgeProjectile is the compact four-argument member of the same
+      -- horizontal-arc family: arg[2] is the duration and the callback itself
+      -- supplies the -30 arc height.  Acid shares that constant but has six
+      -- arguments and an average-target path, so it deliberately does not
+      -- enter this branch.
+      local v = rawSigned(3)
+      if v >= RomExtractorGen3.ANIM_MOTION.MIN_FRAMES
+          and v <= RomExtractorGen3.ANIM_MOTION.MAX_FRAMES then
+        motion, from, to, travel = "arc", "attacker", "target", v
+        arc, toX, toY = family.fixedArc, 0, 0
+        if rawSigned(4) == 0 then
+          selectedAnimIndex = 2
+          selectedHeld, selectedLoops =
+            self:spriteAnimTimeline(template, dim[1], dim[2], selectedAnimIndex)
+          forceSelectedAnim = selectedHeld ~= nil
+        end
+      end
+    elseif familyName == "arc_candidate" and family.terminalArc and argc == 6 then
+      -- The reusable six-argument projectile family (AnimThrowProjectile,
+      -- AnimLeechSeed, AnimMissileArc, InitIceBallAnim) shares this exact
+      -- layout.  Requiring a non-zero sixth argument excludes Acid's
+      -- average-target callback, whose args[4]/args[5] are destination offsets
+      -- and whose arc height is the callback-local constant -30.
+      local v, amp = rawSigned(5), rawSigned(6)
+      if v >= RomExtractorGen3.ANIM_MOTION.MIN_FRAMES
+          and v <= RomExtractorGen3.ANIM_MOTION.MAX_FRAMES and amp ~= 0 then
+        motion, from, to, travel = "arc", "attacker", "target", v
+        arc, toX, toY = amp, rawSigned(3), rawSigned(4)
+      end
+    elseif RomExtractorGen3.FRLG_CALLBACK_EXACT_RUNTIME[familyName] then
+      -- These families are not interchangeable with a generic linear/arc
+      -- callback: their initializer steps, coordinate selectors, secondary
+      -- stages, visibility, priority, and termination rules are callback-local.
+      -- Keep one explicit runtime motion and the exact family/args descriptor.
+      motion = "frlg_callback"
+    end
+    if familyName and RomExtractorGen3.FRLG_EXACT_CALLBACK[familyName] then
+      motion = "frlg_callback"
+      from, to, travel, arc = nil, nil, nil, nil
+    end
+    local x, y = exactX or offset(1), exactY or offset(2)
+    if tag == GEN3_ANIM.SLASH_TAG then
+      x, y = offset(2), offset(3)
+    end
     return {
-      tag = tag, width = dim[1], height = dim[2],
+      tag = tag, width = dim[1], height = dim[2], template = template,
       subpriorityOfTarget = battler >= GEN3_ANIM.IS_TARGET or nil,
-      x = offset(1), y = offset(2),
+      subpriorityOffset = subpriorityOffset,
+      -- OAM attr0 bits 10..11 are OBJ mode (1 = semi-transparent); attr2
+      -- bits 10..11 are the hardware priority.  These belong to the template,
+      -- not to a move-name special case.
+      objMode = math.floor(attr0 / 1024) % 4,
+      oamAffineMode = math.floor(attr0 / 256) % 4,
+      oamShape = shape,
+      oamSize = size,
+      priority = math.floor(attr2 / 1024) % 4,
+      x = x, y = y,
       held = held, loops = loops or nil,
+      selectedAnimIndex = selectedAnimIndex,
+      seekAnimCmd = seekAnimCmd,
+      selectedHeld = selectedHeld, selectedLoops = selectedLoops or nil,
+      forceSelectedAnim = forceSelectedAnim or nil,
+      manualRotation = manualRotation,
+      alternateHeld = alternateHeld, alternateLoops = alternateLoops or nil,
+      oamFlipX = callbackFlipX or (math.floor(attr0 / 256) % 4 == 0
+                 and math.floor(attr1 / 4096) % 2 == 1) or nil,
+      oamFlipY = math.floor(attr0 / 256) % 4 == 0
+                 and math.floor(attr1 / 8192) % 2 == 1 or nil,
+      affine0 = affine0, affine1 = affine1,
+      site = p,
       -- struct SpriteTemplate is { u16 tileTag, u16 paletteTag, *oam, *anims,
       -- *images, *affineAnims, callback } -- the callback is the last word,
       -- twenty bytes in, and every one reads back with bit 0 set because they
       -- are Thumb.  It is what decides where the particle GOES, and
       -- animMotionOf reads it.
+      callback = callback, args = rawArgs,
+      callbackFamily = familyName,
+      callbackExact = motion == "frlg_callback" or nil,
+      terminalArc = family and family.terminalArc or nil,
+      waitLife = orbitShape and orbitShape.waitLife
+                 or (familyName == "ice_ball" and 49)
+                 or (familyName == "leech_seed" and 110)
+                 or (familyName == "sludge_projectile" and 41)
+                 or nil,
       from = from, motion = motion, travel = travel, orbit = orbit,
+      to = to, toX = toX, toY = toY, arc = arc,
+      localLinear = localLinear, linearDX = linearDX, linearDY = linearDY,
+      firstFrames = firstFrames, holdFrames = holdFrames,
+      secondFrames = secondFrames, firstX = firstX, firstY = firstY,
+      finalX = finalX, finalY = finalY,
+      phase = phase, phaseStep = phaseStep,
+      waveX = waveX, waveY = waveY, phaseClock = phaseClock,
+      postLife = postLife,
+      stepOffset = stepOffset, mirrorX = mirrorX, mirrorY = mirrorY,
+      waveCosY = waveCosY, waveXDirection = waveXDirection,
+      phaseStepFixed = phaseStepFixed, verticalSpeed = verticalSpeed,
+      screenX = screenX, screenY = screenY,
+      screenToX = screenToX, screenToY = screenToY,
+      fallDelay = fallDelay, targetY = targetY,
+      -- A tiny callback-argument tail retained for source callbacks whose OAM
+      -- priority is runtime-derived rather than the SpriteTemplate default.
+      -- SILVER WIND's AnimFlyingParticle reads args[5]/args[6] for exactly that.
+      callbackArg5 = argc >= 6 and rawSigned(6) or nil,
+      callbackArg6 = argc >= 7 and rawSigned(7) or nil,
+      mirrorInitial = family and family.initialMirror or nil,
     }
   end
 
-  local firstArm = nil
+  -- AnimTask_StartSinAnimTimer zeroes gBattleAnimArgs[7] on the same script
+  -- frame as the first AnimToTargetInSinWave sprite, then advances it by three
+  -- once per frame.  Every FireRed use of that callback follows this pattern,
+  -- so event script times are the phase clock; no move id or task address is
+  -- needed in the runtime record.
+  local function stampSine30Phases(list)
+    local first
+    for _, e in ipairs(list or {}) do
+      if e.phaseClock then
+        first = first and math.min(first, e.at or 0) or (e.at or 0)
+      end
+    end
+    if first == nil then return end
+    for _, e in ipairs(list) do
+      if e.phaseClock then
+        e.phase = (((e.at or 0) - first) * 3) % 256
+        e.phaseClock = nil
+      end
+    end
+  end
+
+  local firstArm, firstArmState = nil, nil
   local function run(at, stack, depth, t, record)
     if depth > GEN3_ANIM.MAX_DEPTH then clean = false return t end
     local p, steps = at, 0
@@ -33902,6 +35352,51 @@ function RomExtractorGen3:animScriptRead(entry)
         if not step then clean = false return t end
         if GEN3_ANIM.SOUND_OPS[op] and not sound then sound = rom:u16(p + 1) end
         if op == GEN3_ANIM.DELAY and record then t = t + rom:u8(p + 1) end
+        if record then
+          if op == 0x10 then
+            local argIndex = rom:u8(p + 1)
+            local argValue = s16(rom:u16(p + 2))
+            animArgs[argIndex] = argValue
+            setArgEvents[#setArgEvents + 1] = {
+              at = t, index = argIndex, value = argValue,
+            }
+          end
+          -- Cmd_setalpha writes BLDALPHA as two bytes, EVA then EVB.
+          if op == 0x0C then
+            scriptAlpha = { eva = rom:u8(p + 1), evb = rom:u8(p + 2) }
+          elseif op == 0x0D then
+            scriptAlpha = nil
+          elseif op == 0x0A or op == 0x22 then
+            local who = monBgKey(rom:u8(p + 1))
+            monBgState[who] = true
+            monBgEvents[#monBgEvents + 1] = {
+              at = t, op = "monbg", selector = who, static = op == 0x22 or nil,
+            }
+          elseif op == 0x0B or op == 0x23 then
+            local who = monBgKey(rom:u8(p + 1))
+            monBgState[who] = nil
+            monBgEvents[#monBgEvents + 1] = {
+              at = t, op = "clear", selector = who, static = op == 0x23 or nil,
+            }
+            if next(monBgState) == nil then splitBgState = nil end
+          elseif op == 0x28 then
+            splitBgState = { kind = "lead", battler = rom:u8(p + 1) }
+            monBgEvents[#monBgEvents + 1] = {
+              at = t, op = "split", kind = "lead", battler = rom:u8(p + 1),
+            }
+            splitBgUsed = true
+          elseif op == 0x29 then
+            splitBgState = { kind = "all" }
+            monBgEvents[#monBgEvents + 1] = { at = t, op = "split", kind = "all" }
+            splitBgUsed = true
+          elseif op == 0x2A then
+            splitBgState = { kind = "foes", battler = rom:u8(p + 1) }
+            monBgEvents[#monBgEvents + 1] = {
+              at = t, op = "split", kind = "foes", battler = rom:u8(p + 1),
+            }
+            splitBgUsed = true
+          end
+        end
         if record and op == GEN3_ANIM.TASK then
           local fn = rom:u32(p + 1)
           if fn and fn >= 0x08000000 then
@@ -33912,10 +35407,17 @@ function RomExtractorGen3:animScriptRead(entry)
               if v >= 32768 then v = v - 65536 end
               args[i] = v
             end
-            tasks[#tasks + 1] = { fn = fn - 0x08000000, args = args, at = t }
+            local task = { fn = fn - 0x08000000, args = args, at = t, site = p }
+            tasks[#tasks + 1] = task
+            visualStarted("task", task, t)
           end
         end
+        local spriteDescriptor = nil
         if record and op == GEN3_ANIM.SPRITE then
+          -- Parse once and carry the complete callback/motion/template record
+          -- into the visual-count pass.  waitforvisualfinish cares about the
+          -- helper's destruction even when this renderer does not draw it.
+          spriteDescriptor = particle(p)
           local template = rom:pointer(p + 1)
           if template and rom:u16(template) < GEN3_ANIM.TAG_FIRST then
             local cb = rom:pointer(template + GEN3_ANIM.TEMPLATE_CALLBACK)
@@ -33940,53 +35442,123 @@ function RomExtractorGen3:animScriptRead(entry)
           -- to have the art loaded for it first
           loaded[#loaded + 1] = rom:u16(p + 1)
         end
-        if record and (op == GEN3_ANIM.FADETOBG
-                       or op == GEN3_ANIM.FADETOBGSET) then
-          backgrounds = backgrounds + 1
+        if record then
+          if op == GEN3_ANIM.FADETOBG then
+            backgroundEvents[#backgroundEvents + 1] = {
+              at = t, op = "fade", id = rom:u8(p + 1),
+            }
+            bgFadeStart = t
+            backgrounds = backgrounds + 1
+          elseif op == GEN3_ANIM.FADETOBGSET then
+            -- Cmd_fadetobgfromset chooses from the first two entries by the
+            -- TARGET'S side.  The contest entry is not reachable in battles.
+            backgroundEvents[#backgroundEvents + 1] = {
+              at = t, op = "fade_set",
+              opponent = rom:u8(p + 1), player = rom:u8(p + 2),
+            }
+            bgFadeStart = t
+            backgrounds = backgrounds + 1
+          elseif op == GEN3_ANIM.RESTOREBG then
+            backgroundEvents[#backgroundEvents + 1] = { at = t, op = "restore" }
+            bgFadeStart = t
+          elseif op == GEN3_ANIM.CHANGEBG then
+            backgroundEvents[#backgroundEvents + 1] = {
+              at = t, op = "change", id = rom:u8(p + 1),
+            }
+          elseif op == GEN3_ANIM.WAITBGOUT and bgFadeStart ~= nil then
+            -- This wait is independent of waitforvisualfinish: it polls only
+            -- Task_FadeToBg's state, whose exact frame is source-derived above.
+            t = math.max(t, bgFadeStart + GEN3_ANIM.BG_SWAP_FRAME)
+          elseif op == GEN3_ANIM.WAITBGIN and bgFadeStart ~= nil then
+            t = math.max(t, bgFadeStart + GEN3_ANIM.BG_DONE_FRAME)
+            bgFadeStart = nil
+          end
+        end
+        if record and op == GEN3_ANIM.SPRITE then
+          -- Count even an undrawn/invisible helper and even if the event output
+          -- cap has already been reached: Cmd_createsprite increments the same
+          -- visual counter for all of them.
+          visualStarted("sprite", spriteDescriptor or { site = p }, t)
         end
         if op == GEN3_ANIM.SPRITE and record and #events < GEN3_ANIM.MAX_EVENTS then
-          local one = particle(p)
-          if one then
+          local one = spriteDescriptor
+          if one and not one.waitOnly then
             one.at = t
+            local state = stateSnapshot()
+            -- Only ST_OAM_OBJ_BLEND reads BLDALPHA.  Ordinary OBJ stay opaque
+            -- even when a script has called setalpha.
+            if one.objMode == 1 and state.alpha then one.blend = state.alpha end
+            one.monbg = state.monbg
+            one.splitbg = state.splitbg
             events[#events + 1] = one
           end
         end
+        if record and op == 0x05 then
+          t = visualBarrier(p, t)
+        end
 
         local branch = GEN3_ANIM.BRANCH[op]
+        local tookBranch = false
         if branch then
-          for i, off in ipairs(branch) do
+          if op == GEN3_ANIM.TWOTURN then
+            selectors.twoTurn = true
+          elseif op == 0x12 then
+            selectors.moveTurns[rom:u8(p + 1)] = true
+          elseif op == GEN3_ANIM.ARGEQ then
+            local arg = rom:u8(p + 1)
+            local value = s16(rom:u16(p + 2))
+            selectors.args[arg] = selectors.args[arg] or {}
+            selectors.args[arg][value] = true
+          end
+
+          if record and op == GEN3_ANIM.TWOTURN then
+            local turn = tonumber(branchCtx.moveTurn) or 0
+            local off = (turn % 2 == 1) and branch[2] or branch[1]
             local target = rom:pointer(p + off)
             if not target then clean = false return t end
-            -- ON THE PARTICLE PASS only choosetwoturnanim's FIRST arm is
-            -- taken: that is the animation the move plays on the turn it is
-            -- used.  Every other conditional is a path the move might not
-            -- take -- the contest version, the second hit -- and walking it
-            -- would spawn particles the battle never sees.  The sound pass
-            -- takes them all.
-            -- ...and the FIRST `jumpargeq` arm is remembered, not walked.
-            -- MAGNITUDE's whole animation is behind two of them: the script
-            -- sets an argument, waits, and then every one of its pictures is
-            -- down a branch this walk cannot evaluate, so the fall-through
-            -- is `end` and the move came out with nothing at all.  A
-            -- `jumpargeq` arm is not a path the battle might not take -- it
-            -- is one of the move's own variants, and all of them are real
-            -- battle animations.  See below, where it is used only if the
-            -- straight path found no picture.
-            if record and op == GEN3_ANIM.ARGEQ and not firstArm then
-              firstArm = rom:pointer(p + off)
+            local copy = {}
+            for k, v in ipairs(stack) do copy[k] = v end
+            return run(target, copy, depth + 1, t, true)
+          elseif record and op == 0x12 then
+            local expected = rom:u8(p + 1)
+            local turn = tonumber(branchCtx.moveTurn)
+            if turn ~= nil and turn == expected then
+              local target = rom:pointer(p + branch[1])
+              if not target then clean = false return t end
+              p, tookBranch = target, true
             end
-            local follow = not record or op == GEN3_ANIM.TWOTURN
-            if follow then
+          elseif record and op == GEN3_ANIM.ARGEQ then
+            local arg = rom:u8(p + 1)
+            local expected = s16(rom:u16(p + 2))
+            local actual = animArgs[arg]
+            if actual ~= nil and actual == expected then
+              local target = rom:pointer(p + branch[1])
+              if not target then clean = false return t end
+              p, tookBranch = target, true
+            elseif not branchCtx.args and not firstArm then
+              -- Legacy safety net for dynamic task-return values the battle
+              -- does not yet expose (MAGNITUDE is the known case).  Explicit
+              -- runtime args never use this approximation.
+              firstArm = rom:pointer(p + branch[1])
+              firstArmState = stateSnapshot()
+            end
+          elseif not record then
+            -- The sound/discovery pass follows every possible branch so it can
+            -- find selectors that sit behind another conditional.
+            for _, off in ipairs(branch) do
+              local target = rom:pointer(p + off)
+              if not target then clean = false return t end
               local copy = {}
               for k, v in ipairs(stack) do copy[k] = v end
-              run(target, copy, depth + 1, t,
-                  record and op == GEN3_ANIM.TWOTURN and i == 1)
+              run(target, copy, depth + 1, t, false)
             end
           end
         end
-        if op == GEN3_ANIM.TWOTURN then return t end
+        if op == GEN3_ANIM.TWOTURN and not record then return t end
 
-        if op == GEN3_ANIM.CALLSUB or op == GEN3_ANIM.JUMP then
+        if tookBranch then
+          -- p already names the exact runtime branch target.
+        elseif op == GEN3_ANIM.CALLSUB or op == GEN3_ANIM.JUMP then
           local target = rom:pointer(p + 1)
           if not target then clean = false return t end
           if op == GEN3_ANIM.CALLSUB then
@@ -34003,6 +35575,8 @@ function RomExtractorGen3:animScriptRead(entry)
 
   -- the particles first, on the path the move takes
   frames = { {} }
+  resetScriptState()
+  resetAnimArgs()
   duration = run(entry, {}, 0, 0, true)
   -- ...and if that path drew NOTHING and the script had a `jumpargeq`, the
   -- move's pictures are all down its arms.  Take the first one: it is one of
@@ -34010,16 +35584,48 @@ function RomExtractorGen3:animScriptRead(entry)
   -- the cartridge than the blank screen this produced before.  Which variant
   -- the cartridge would have picked depends on a value the script sets at run
   -- time, and that is not read here -- so MAGNITUDE always plays its first.
-  if #events == 0 and firstArm then
+  if #events == 0 and firstArm and not branchCtx.args then
     frames = { {} }
+    setArgEvents = {}
+    restoreScriptState(firstArmState)
     local more = run(firstArm, {}, 0, 0, true)
     if (more or 0) > (duration or 0) then duration = more end
+  end
+  stampSine30Phases(events)
+  for _, event in ipairs(events) do
+    if event.motion == "frlg_callback"
+       and (event.callbackFamily == "orbit_fast"
+            or event.callbackFamily == "lock_on") then
+      local born = event.at or 0
+      for _, write in ipairs(setArgEvents) do
+        if write.index == 7 and write.value == -1 and write.at >= born then
+          event.signalAt = write.at - born
+          break
+        end
+      end
+    end
+  end
+  do
+    local originals = #events
+    for i = 1, originals do
+      local event = events[i]
+      if event.motion == "frlg_callback"
+         and event.callbackFamily == "thunder_wave"
+         and not event.thunderChild then
+        local child = {}
+        for key, value in pairs(event) do child[key] = value end
+        child.thunderChild = true
+        child.childOffsetX = 32
+        child.tileOffset = 8
+        events[#events + 1] = child
+      end
+    end
   end
   -- ...then the sound, over everything, with a fresh set of visited bytes
   frames = { {} }
   run(entry, {}, 0, 0, false)
   return sound, clean, events, duration, loaded, backgrounds, tasks,
-         helpers
+         helpers, selectors, backgroundEvents, splitBgUsed, waitAudit, monBgEvents
 end
 
 -- The sound alone, which is what the table search asks for.
@@ -34152,13 +35758,14 @@ end
 -- is right in the cartridge turns into a blank particle here.  A step that
 -- does not land on a frame boundary means this is not a sheet-backed sprite
 -- and the whole reading is dropped rather than rounded.
-function RomExtractorGen3:spriteAnimTimeline(template, width, height)
+function RomExtractorGen3:spriteAnimTimeline(template, width, height, animIndex)
   local rom = self.rom
+  animIndex = math.max(0, math.floor(tonumber(animIndex) or 0))
   local perFrame = math.floor((width or 0) / 8) * math.floor((height or 0) / 8)
   if perFrame < 1 then return nil end
   local at = rom:pointer(template + GEN3_ANIM.TEMPLATE_ANIMS)
   if not at then return nil end
-  local first = rom:pointer(at)
+  local first = rom:pointer(at + animIndex * 4)
   if not first then return nil end
   local held, loops, total = {}, false, 0
   for i = 0, GEN3_ANIM.ANIM_MAX - 1 do
@@ -34173,12 +35780,162 @@ function RomExtractorGen3:spriteAnimTimeline(template, width, height)
     end
     if low % perFrame ~= 0 then return nil end
     local duration = math.floor(word / 65536) % 64
+    local hFlip = math.floor(word / 4194304) % 2 == 1
+    local vFlip = math.floor(word / 8388608) % 2 == 1
     if duration < 1 then duration = 1 end
-    held[#held + 1] = { math.floor(low / perFrame), duration }
+    held[#held + 1] = {
+      math.floor(low / perFrame), duration, hFlip, vFlip,
+    }
     total = total + duration
   end
   if #held == 0 or total < 1 then return nil end
   return held, loops, total
+end
+
+-- The affine animation a visible battle particle starts by itself.
+--
+-- CreateSpriteAt marks every affine sprite as `affineAnimBeginning`, and the
+-- first AnimateSprite immediately begins affine animation 0.  That makes the
+-- template's +16 affineAnims pointer part of the particle itself, unlike the
+-- separate battle-animation tasks that explicitly start later affine numbers.
+-- Only animation 0 is read here, and only when its ROM program is both valid
+-- and visibly non-identity; callback-started affine animations remain outside
+-- this path.
+function RomExtractorGen3:spriteAffineAnim(template, oam, animIndex)
+  local rom = self.rom
+  if not (template and oam) then return nil end
+  animIndex = math.max(0, math.floor(tonumber(animIndex) or 0))
+  local attr0 = rom:u16(oam)
+  -- ST_OAM_AFFINE_ON_MASK is bit 8.  Modes 1 and 3 are normal/double-size
+  -- affine sprites; mode 2 has bit 8 clear and is the non-affine OBJ-disable
+  -- interpretation of bit 9.
+  local mode = math.floor(attr0 / 256) % 4
+  if mode ~= 1 and mode ~= 3 then return nil end
+
+  local tableAt = rom:pointer(template + GEN3_ANIM.TEMPLATE_AFFINE_ANIMS)
+  local animAt = tableAt and rom:pointer(tableAt + animIndex * 4) or nil
+  if not animAt then return nil end
+  if rom:u16(animAt) == GEN3_ANIM.AFFINE_END then return nil end
+
+  local commands, visible, terminated = {}, false, false
+  local function signed(v)
+    return v >= 32768 and v - 65536 or v
+  end
+  for i = 0, GEN3_ANIM.AFFINE_MAX - 1 do
+    local at = animAt + i * 8
+    if at < 0 or at + 7 >= rom.size then return nil end
+    local kind = rom:u16(at)
+    if kind == GEN3_ANIM.AFFINE_END then
+      commands[#commands + 1] = { "end" }
+      terminated = true
+      break
+    elseif kind == GEN3_ANIM.AFFINE_JUMP then
+      commands[#commands + 1] = { "jump", rom:u16(at + 2) }
+      terminated = true
+      break
+    elseif kind == GEN3_ANIM.AFFINE_LOOP then
+      commands[#commands + 1] = { "loop", rom:u16(at + 2) }
+    else
+      -- xScale is signed.  Values such as -5 are stored as $FFFB and are
+      -- ordinary frame data, not control opcodes; only the three exact
+      -- $7FFD/$7FFE/$7FFF sentinel values above are special.
+      local x = signed(kind)
+      local y = signed(rom:u16(at + 2))
+      local rotation = rom:u8(at + 4)
+      local duration = rom:u8(at + 5)
+      if rom:u16(at + 6) ~= 0 then return nil end
+      commands[#commands + 1] = { x, y, rotation, duration }
+      -- duration 0 sets an absolute matrix; nonzero duration is a per-frame
+      -- delta from the current 0x100/0x100/0 state.
+      if duration == 0 then
+        visible = visible or x ~= 0x100 or y ~= 0x100 or rotation ~= 0
+      else
+        visible = visible or x ~= 0 or y ~= 0 or rotation ~= 0
+      end
+    end
+  end
+  if not (terminated and visible and #commands > 0) then return nil end
+  return {
+    key = ("%07X"):format(animAt),
+    mode = mode,
+    commands = commands,
+    source = ("ROM:SpriteTemplate %07X affine anim%d %07X")
+               :format(template, animIndex, animAt),
+  }
+end
+
+function RomExtractorGen3:spriteAffineAnim0(template, oam)
+  return self:spriteAffineAnim(template, oam, 0)
+end
+
+-- Every createsprite site reachable from one move script, independent of the
+-- move's current runtime branch.  This is a control-flow inventory only: CALL
+-- contributes both its target and return address, conditional commands
+-- contribute every explicit target plus fallthrough, and the two-turn selector
+-- contributes its two authored arms.  No branch is chosen and no animation
+-- argument is interpreted here.
+function RomExtractorGen3:moveAnimAffineSites(entry)
+  local rom = self.rom
+  local pending, seen, sites = { entry }, {}, {}
+  local walked = 0
+  while #pending > 0 do
+    local p = pending[#pending]
+    pending[#pending] = nil
+    while p and p >= 0 and p < rom.size - 16 and not seen[p] do
+      seen[p] = true
+      walked = walked + 1
+      if walked > GEN3_ANIM.MAX_STEPS then return sites end
+      local op = rom:u8(p)
+      if op == GEN3_ANIM.ENDSCRIPT or op == GEN3_ANIM.RETURNTO then break end
+
+      local step = GEN3_ANIM.LEN[op]
+      if op == GEN3_ANIM.SPRITE or op == GEN3_ANIM.TASK then
+        step = 7 + 2 * rom:u8(p + GEN3_ANIM.ARGC_LONG)
+      elseif op == GEN3_ANIM.SOUNDTASK then
+        step = 6 + 2 * rom:u8(p + GEN3_ANIM.ARGC_SHORT)
+      end
+      if not step then break end
+
+      if op == GEN3_ANIM.SPRITE then
+        local template = rom:pointer(p + 1)
+        local tag = template and rom:u16(template) or 0
+        local oam = template and rom:pointer(template + GEN3_ANIM.TEMPLATE_OAM)
+        if tag >= GEN3_ANIM.TAG_FIRST and oam then
+          local shape = math.floor(rom:u16(oam) / 16384) % 4
+          local size = math.floor(rom:u16(oam + 2) / 16384) % 4
+          local dim = GEN3_ANIM.OBJ_DIM[shape] and GEN3_ANIM.OBJ_DIM[shape][size]
+          local affine0 = dim and self:spriteAffineAnim0(template, oam) or nil
+          if affine0 then
+            local held, loops = self:spriteAnimTimeline(template, dim[1], dim[2])
+            sites[p] = {
+              site = p, template = template, tag = tag,
+              width = dim[1], height = dim[2], held = held,
+              loops = loops or nil, affine0 = affine0,
+            }
+          end
+        end
+      end
+
+      if op == GEN3_ANIM.CALLSUB then
+        local target = rom:pointer(p + 1)
+        if target then pending[#pending + 1] = target end
+        p = p + step
+      elseif op == GEN3_ANIM.JUMP then
+        p = rom:pointer(p + 1)
+      else
+        local branch = GEN3_ANIM.BRANCH[op]
+        if branch then
+          for _, off in ipairs(branch) do
+            local target = rom:pointer(p + off)
+            if target then pending[#pending + 1] = target end
+          end
+          if op == GEN3_ANIM.TWOTURN then break end
+        end
+        p = p + step
+      end
+    end
+  end
+  return sites
 end
 
 function RomExtractorGen3:battleAnimFrameSize(tag, sheetBytes)
@@ -34218,6 +35975,228 @@ function RomExtractorGen3:battleAnimFrameSize(tag, sheetBytes)
   return best, bestHeld, bestLoops
 end
 
+-- A CompressedSpriteSheet is a RUN OF 8x8 TILES, not a stack of OAM-sized
+-- pictures.  One tag can deliberately serve several SpriteTemplates with
+-- different OAM boxes: FireRed's FLOWER sheet is five tiles, for example --
+-- four tiles make the 16x16 flower at tile offset 0 and the fifth is the 8x8
+-- flower at tile offset 4.  Requiring `sheetBytes % frameBytes == 0` therefore
+-- rejects a perfectly valid view of the loaded tile run.
+--
+-- `AnimFrameCmd.imageValue` is explicitly the TILE OFFSET when a sprite uses a
+-- sheet (include/sprite.h), and sprite.c adds it to `sheetTileStart`.  The
+-- source-faithful gate is consequently: every OAM-sized view this template's
+-- animation names must fit wholly inside the tiles the sheet allocated.  A
+-- non-divisible view is composed into its own compact sheet, so the runtime can
+-- keep its existing frame-stack contract without changing renderer semantics.
+function RomExtractorGen3:battleAnimSheetView(template, tag, sheetBytes,
+                                               width, height, held, loops)
+  local frameTiles = math.floor((width or 0) / 8)
+                     * math.floor((height or 0) / 8)
+  local frameBytes = frameTiles * 32
+  local sheetTiles = math.floor((sheetBytes or 0) / 32)
+  if frameTiles < 1 or sheetTiles < frameTiles then return nil end
+
+  -- Preserve the old representation exactly where the sheet really is an
+  -- integral stack of this OAM size.  Existing keys, PNG paths and animation
+  -- timelines therefore do not move.
+  if sheetBytes % frameBytes == 0 then
+    return {
+      slot = tostring(tag), frames = math.floor(sheetBytes / frameBytes),
+      held = held, loops = loops, variant = false,
+    }
+  end
+
+  local rom = self.rom
+  local anims = template and rom:pointer(template + GEN3_ANIM.TEMPLATE_ANIMS)
+  local first = anims and rom:pointer(anims) or nil
+  if not first then return nil end
+
+  local tileOffsets, compactHeld = {}, {}
+  local repeats = false
+  for i = 0, GEN3_ANIM.ANIM_MAX - 1 do
+    local at = first + i * 4
+    if at < 0 or at + 3 >= rom.size then return nil end
+    local word = rom:u32(at)
+    if not word then return nil end
+    local tile = word % 65536
+    if tile >= GEN3_ANIM.ANIM_END then
+      repeats = tile ~= GEN3_ANIM.ANIM_STOP
+      break
+    end
+    -- In 1D OBJ mapping an OAM rectangle occupies `frameTiles` consecutive
+    -- 8x8 tiles beginning at imageValue.  It need not begin on a rectangle
+    -- boundary: MUD-SLAP deliberately uses tile offset 1 for a 16x16 OBJ.
+    if tile + frameTiles > sheetTiles then return nil end
+    local duration = math.floor(word / 65536) % 64
+    if duration < 1 then duration = 1 end
+    tileOffsets[#tileOffsets + 1] = tile
+    compactHeld[#compactHeld + 1] = { #tileOffsets - 1, duration }
+  end
+
+  -- gDummySpriteAnimTable starts with ANIM_END.  It leaves tileNum at the
+  -- sheet base, so the one source-backed view is simply offset zero.  Leaving
+  -- `held` nil retains the runtime's ordinary callback-lifetime fallback.
+  if #tileOffsets == 0 then
+    tileOffsets[1] = 0
+    compactHeld = nil
+    repeats = nil
+  end
+
+  local sig = {}
+  for i, tile in ipairs(tileOffsets) do
+    local duration = compactHeld and compactHeld[i] and compactHeld[i][2]
+    sig[#sig + 1] = duration and ("%d_%d"):format(tile, duration)
+                              or tostring(tile)
+  end
+  local slot = ("%d_%dx%d_t%s_%s"):format(tag, width, height,
+                                             table.concat(sig, "_"),
+                                             repeats and "loop" or "end")
+  return {
+    slot = slot, frames = #tileOffsets, held = compactHeld,
+    loops = repeats or nil, tileOffsets = tileOffsets, variant = true,
+  }
+end
+
+-- FireRed's move-background table. LoadMoveBg indexes this exact 27-row
+-- { image, palette, tilemap } array and loads the palette into BG palette 2.
+-- Rows 0/1 are intentionally identical (BG_NONE aliases BG_DARK), which gives
+-- the retail address a cheap structural self-check before any art is trusted.
+function RomExtractorGen3:battleAnimMoveBackgrounds()
+  if not self:isFireRedManifest() then return nil end
+  if self._battleAnimMoveBackgrounds ~= nil then
+    return self._battleAnimMoveBackgrounds or nil
+  end
+  local rom = self.rom
+  local at = GEN3_ANIM.BG_TABLE_FR
+  local names = {
+    [0] = "dark", "dark", "ghost", "psychic",
+    "impact_opponent", "impact_player", "impact_contests",
+    "drill", "drill_contests", "highspeed_opponent", "highspeed_player",
+    "thunder", "guillotine_opponent", "guillotine_player",
+    "guillotine_contests", "ice", "cosmic", "in_air", "sky",
+    "sky_contests", "aurora", "fissure", "bug_opponent", "bug_player",
+    "solar_beam_opponent", "solar_beam_player", "solar_beam_contests",
+  }
+  local rows = {}
+  local function lz(ptr)
+    if not ptr or ptr + 4 >= rom.size or rom:u8(ptr) ~= 0x10 then return nil end
+    local ok, raw = RomExtractorGen3.lz77ok(rom, ptr)
+    return ok and raw or nil
+  end
+  local function fail(why)
+    Logger.warn("gen3 move backgrounds: %s", why)
+    self._battleAnimMoveBackgrounds = false
+    return nil
+  end
+
+  for k = 0, 2 do
+    if rom:u32(at + k * 4) ~= rom:u32(at + 12 + k * 4) then
+      return fail("the FireRed table does not begin with the DARK alias pair")
+    end
+  end
+
+  for id = 0, 26 do
+    local row = at + id * 12
+    local image = lz(rom:pointer(row))
+    local palette = lz(rom:pointer(row + 4))
+    local tilemap = lz(rom:pointer(row + 8))
+    if not (image and palette and tilemap) then
+      return fail(("row %d does not contain three compressed payloads"):format(id))
+    end
+    if #palette ~= 32 or #tilemap < 32 * 20 * 2 or #tilemap % 64 ~= 0
+       or #image % 32 ~= 0 then
+      return fail(("row %d has image/palette/tilemap sizes %d/%d/%d")
+                  :format(id, #image, #palette, #tilemap))
+    end
+    rows[id] = { image = image, palette = palette, tilemap = tilemap }
+  end
+
+  local images, indexImages, palettes, palettes5, paletteBanks, sizes, written =
+    {}, {}, {}, {}, {}, {}, 0
+  for id = 0, 26 do
+    local row = rows[id]
+    local colors = {}
+    local paletteOut = {}
+    local palette5 = {}
+    local banksUsed = {}
+    for k = 0, 15 do
+      local lo, hi = row.palette[k * 2 + 1], row.palette[k * 2 + 2]
+      local raw = lo + hi * 256
+      local r, g, b = RomGba.bgr555(raw)
+      colors[2 * 16 + k + 1] = { r, g, b }
+      paletteOut[k + 1] = { r, g, b }
+      palette5[k + 1] = { raw % 32,
+                           math.floor(raw / 32) % 32,
+                           math.floor(raw / 1024) % 32 }
+    end
+    local image = self:battleBackgroundImage(row.image, row.tilemap, colors)
+    if not image then return fail(("row %d could not be composed"):format(id)) end
+    local rel = ("battle_anim/background_%02d_%s.png")
+                  :format(id, names[id] or "unknown")
+    self:saveImage(image, rel)
+    images[id] = "assets/generated/" .. rel
+    -- The 240x160 convenience image above is sufficient only while BG3 is
+    -- stationary.  AEROBLAST/SILVER WIND/SKY UPPERCUT scroll the actual
+    -- 32x32 text background, and DREAM EATER/PSYCHO BOOST mutate palette 2
+    -- while it is displayed.  Preserve the cartridge's full 256x256 tilemap
+    -- as palette indices so runtime can wrap and recolour the same pixels
+    -- rather than scrolling a cropped RGB screenshot.
+    local mapRows = math.floor(#row.tilemap / 64)
+    local mapHeight = mapRows * 8
+    local indices = ImageWriter.blank(256, mapHeight)
+    for cy = 0, mapRows - 1 do
+      for cx = 0, 31 do
+        local c = cy * 32 + cx
+        local lo, hi = row.tilemap[c * 2 + 1], row.tilemap[c * 2 + 2]
+        local entry = (lo or 0) + (hi or 0) * 256
+        local tid = entry % 1024
+        local hflip = math.floor(entry / 1024) % 2 == 1
+        local vflip = math.floor(entry / 2048) % 2 == 1
+        local pal = math.floor(entry / 4096) % 16
+        banksUsed[pal] = true
+        for py = 0, 7 do
+          for px = 0, 7 do
+            local sx = hflip and (7 - px) or px
+            local sy = vflip and (7 - py) or py
+            local byte = row.image[tid * 32 + sy * 4 + math.floor(sx / 2) + 1]
+            local idx = byte and ((sx % 2 == 0) and byte % 16
+                                  or math.floor(byte / 16)) or 0
+            -- LoadMoveBg replaces only BG palette bank 2.  Bank 0 is the
+            -- battle/message strip which this renderer owns separately (the
+            -- existing 240x160 composer likewise leaves it transparent).
+            indices:setPixel(cx * 8 + px, cy * 8 + py,
+                             idx / 15, pal / 15, 0, pal == 2 and 1 or 0)
+          end
+        end
+      end
+    end
+    local irel = ("battle_anim/background_%02d_%s_index.png")
+                   :format(id, names[id] or "unknown")
+    self:saveImage(indices, irel)
+    indexImages[id] = "assets/generated/" .. irel
+    palettes[id] = paletteOut
+    palettes5[id] = palette5
+    local banks = {}
+    for bank in pairs(banksUsed) do banks[#banks + 1] = bank end
+    table.sort(banks)
+    paletteBanks[id] = banks
+    sizes[id] = { width = 256, height = mapHeight }
+    written = written + 1
+  end
+  local out = {
+    images = images,
+    indexImages = indexImages,
+    palettes = palettes,
+    palettes5 = palettes5,
+    paletteBanks = paletteBanks,
+    sizes = sizes,
+    source = ("ROM:gBattleAnimBackgroundTable %07X, 27 rows"):format(at),
+  }
+  self._battleAnimMoveBackgrounds = out
+  Logger.info("Gen3 move backgrounds: %d FireRed rows from %07X", written, at)
+  return out
+end
+
 function RomExtractorGen3:extractMoveAnimations()
   self:beginStage("Gen3 move animations")
   local moves = self._moves
@@ -34242,6 +36221,24 @@ function RomExtractorGen3:extractMoveAnimations()
                   .. "so no move gets a sound", picked, runs, best)
     return
   end
+  local moveBgAssets = self:battleAnimMoveBackgrounds()
+
+  local function attachBackgrounds(record, backgroundEvents, splitBgUsed,
+                                   duration)
+    -- splitbgprio* does not replace or suppress the move background.  It only
+    -- changes BG1/BG2 priority after monbg has copied battler art there.
+    -- Keeping these events is therefore required for the split-background
+    -- compositor to reproduce the same fade/load timeline as every other
+    -- fadetobg/restorebg move.
+    if not moveBgAssets
+       or type(backgroundEvents) ~= "table" or #backgroundEvents == 0 then
+      return record, false
+    end
+    record = record or {}
+    record.backgrounds = backgroundEvents
+    record.duration = math.max(record.duration or 0, duration or 0)
+    return record, true
+  end
 
   -- ---- the particle sheets those scripts draw from -----------------------
   local picAt, picCount = self:battleAnimTagTable(GEN3_ANIM_PIC_TAG)
@@ -34260,15 +36257,19 @@ function RomExtractorGen3:extractMoveAnimations()
   local songs = self._songs
   local stamped, unknown, animated, spawned = 0, 0, 0, 0
   local orbited = 0
+  -- SpriteTemplate affine animation 0 programs are shared by many createsprite
+  -- sites, so events carry only the ROM-address key and the program itself is
+  -- written once in constants.
+  local particleAffines = {}
+  local affinePairs, affineMoves = {}, {}
   -- move id -> the C function addresses its script hands the animation to
   local animTasks = {}
   self._animTasks = animTasks
   -- ...and the set of songs a MOVE plays, which the audio image needs: see
   -- the note beside it about SE_M_GUST.
   local moveSongs = {}
-  -- ...and the sheets they draw from, each with the frame size the template
-  -- that spawns it gives.  A sheet used at two sizes keeps the one whose
-  -- frames divide it evenly.
+  -- ...and the sheets/views they draw from.  Integral sheets keep their old
+  -- tag key; a mixed-size tag gets a template-specific compact tile view.
   local used = {}
   -- what the second pass needs about each move, gathered while the first runs
   local leftovers = {}
@@ -34277,8 +36278,10 @@ function RomExtractorGen3:extractMoveAnimations()
     local def = id and moves[id]
     local entry = rom:pointer(tableAt + i * 4)
     if def and entry then
-      local sound, _, events, duration, loaded, backgrounds, tasks, helpers =
+      local sound, _, events, duration, loaded, backgrounds, tasks, helpers,
+            selectors, backgroundEvents, splitBgUsed, _, monBgEvents =
         self:animScriptRead(entry)
+      local affineSites = self:moveAnimAffineSites(entry)
       local record
       if sound then
         local key = ("SONG_%03X"):format(sound)
@@ -34291,25 +36294,62 @@ function RomExtractorGen3:extractMoveAnimations()
           stamped = stamped + 1
         end
       end
+      -- Inventory every explicit auto-start affine anim0 on every reachable
+      -- createsprite branch, but only after the same asset-view validation the
+      -- runtime event path uses.  This does not choose or emit a branch; it
+      -- merely makes the template program reusable when that branch is taken.
+      if picAt and affineSites then
+        for _, one in pairs(affineSites) do
+          local row = one.tag - GEN3_ANIM.TAG_FIRST
+          local sheetBytes = row < picCount
+                             and rom:u16(picAt + row * 8 + GEN3_ANIM_PIC_SIZE)
+                             or 0
+          local view = row < picCount
+                       and self:battleAnimSheetView(one.template, one.tag,
+                                                    sheetBytes, one.width,
+                                                    one.height, one.held,
+                                                    one.loops)
+                       or nil
+          if view then
+            local key = one.affine0.key
+            if not particleAffines[key] then
+              particleAffines[key] = {
+                mode = one.affine0.mode,
+                commands = one.affine0.commands,
+                source = one.affine0.source,
+              }
+            end
+            affinePairs[tostring(id) .. ":" .. tostring(one.site)] = true
+            affineMoves[id] = true
+          end
+        end
+      end
       if picAt and events and #events > 0 then
         local list = {}
         for _, one in ipairs(events) do
-          local slot = ("%d"):format(one.tag)
-          local sheetBytes = rom:u16(picAt + (one.tag - GEN3_ANIM.TAG_FIRST) * 8
-                                       + GEN3_ANIM_PIC_SIZE)
-          local frameBytes = one.width * one.height / 2
-          if one.tag - GEN3_ANIM.TAG_FIRST < picCount and sheetBytes > 0
-             and frameBytes > 0 and sheetBytes % frameBytes == 0 then
+          local row = one.tag - GEN3_ANIM.TAG_FIRST
+          local sheetBytes = row < picCount
+                             and rom:u16(picAt + row * 8 + GEN3_ANIM_PIC_SIZE)
+                             or 0
+          local view = row < picCount
+                       and self:battleAnimSheetView(one.template, one.tag,
+                                                    sheetBytes, one.width,
+                                                    one.height, one.held,
+                                                    one.loops)
+                       or nil
+          if view then
+            local slot = view.slot
             local before = used[slot]
             if not before then
               used[slot] = { tag = one.tag, width = one.width,
-                             height = one.height,
-                             frames = math.floor(sheetBytes / frameBytes),
-                             held = one.held, loops = one.loops }
-            elseif not before.held and one.held then
+                             height = one.height, frames = view.frames,
+                             held = view.held, loops = view.loops,
+                             tileOffsets = view.tileOffsets,
+                             variant = view.variant }
+            elseif not before.held and view.held then
               -- a sheet several moves share takes the first timing any of
               -- their templates carries
-              before.held, before.loops = one.held, one.loops
+              before.held, before.loops = view.held, view.loops
             end
             -- WHICH POKEMON A PARTICLE IS DRAWN OVER, and the bit that
             -- does not say.
@@ -34341,10 +36381,88 @@ function RomExtractorGen3:extractMoveAnimations()
             -- field is what says which battler that is: a MOVE_TARGET_USER
             -- animation has gBattleAnimTarget pointing at the user, which is
             -- how SWORDS DANCE and REST play on the mon that used them.
-            list[#list + 1] = { at = one.at, sheet = slot,
+            local affineKey = nil
+            local affine1Key = nil
+            if one.affine0 then
+              affineKey = one.affine0.key
+              if not particleAffines[affineKey] then
+                particleAffines[affineKey] = {
+                  mode = one.affine0.mode,
+                  commands = one.affine0.commands,
+                  source = one.affine0.source,
+                }
+              end
+            end
+            if one.affine1 then
+              affine1Key = one.affine1.key
+              if not particleAffines[affine1Key] then
+                particleAffines[affine1Key] = {
+                  mode = one.affine1.mode,
+                  commands = one.affine1.commands,
+                  source = one.affine1.source,
+                }
+              end
+            end
+            list[#list + 1] = { at = one.at, sheet = slot, _site = one.site,
+                                width = one.width, height = one.height,
+                                callbackFamily = one.callbackFamily,
+                                args = one.args,
                                 x = one.x, y = one.y,
                                 from = one.from, motion = one.motion,
                                 travel = one.travel, orbit = one.orbit,
+                                to = one.to, toX = one.toX, toY = one.toY,
+                                arc = one.arc,
+                                localLinear = one.localLinear,
+                                linearDX = one.linearDX, linearDY = one.linearDY,
+                                firstFrames = one.firstFrames,
+                                holdFrames = one.holdFrames,
+                                secondFrames = one.secondFrames,
+                                firstX = one.firstX, firstY = one.firstY,
+                                finalX = one.finalX, finalY = one.finalY,
+                                phase = one.phase, phaseStep = one.phaseStep,
+                                waveX = one.waveX, waveY = one.waveY,
+                                phaseClock = one.phaseClock,
+                                postLife = one.postLife,
+                                stepOffset = one.stepOffset,
+                                mirrorX = one.mirrorX, mirrorY = one.mirrorY,
+                                waveCosY = one.waveCosY,
+                                waveXDirection = one.waveXDirection,
+                                phaseStepFixed = one.phaseStepFixed,
+                                verticalSpeed = one.verticalSpeed,
+                                screenX = one.screenX, screenY = one.screenY,
+                                screenToX = one.screenToX,
+                                screenToY = one.screenToY,
+                                fallDelay = one.fallDelay,
+                                targetY = one.targetY,
+                                callbackArg5 = one.callbackArg5,
+                                callbackArg6 = one.callbackArg6,
+                                mirrorInitial =
+                                  def.target == GEN3_ANIM.TARGET_USER
+                                  and one.mirrorInitial or nil,
+                                selectedAnimIndex = one.selectedAnimIndex,
+                                seekAnimCmd = one.seekAnimCmd,
+                                selectedHeld = one.selectedHeld,
+                                selectedLoops = one.selectedLoops,
+                                forceSelectedAnim = one.forceSelectedAnim,
+                                manualRotation = one.manualRotation,
+                                alternateHeld = one.alternateHeld,
+                                alternateLoops = one.alternateLoops,
+                                oamFlipX = one.oamFlipX,
+                                oamFlipY = one.oamFlipY,
+                                thunderChild = one.thunderChild,
+                                childOffsetX = one.childOffsetX,
+                                tileOffset = one.tileOffset,
+                                signalAt = one.signalAt,
+                                affine0 = affineKey, affine1 = affine1Key,
+                                blend = one.blend, monbg = one.monbg,
+                                splitbg = one.splitbg,
+                                priority = one.priority,
+                                oamAffineMode = one.oamAffineMode,
+                                oamShape = one.oamShape,
+                                oamSize = one.oamSize,
+                                subpriorityBase = one.subpriorityOfTarget
+                                                  and "target" or "attacker",
+                                subpriorityOffset = one.subpriorityOffset,
                                 target = def.target ~= GEN3_ANIM.TARGET_USER
                                          or nil }
           end
@@ -34371,18 +36489,848 @@ function RomExtractorGen3:extractMoveAnimations()
           spawned = spawned + #list
         end
       end
+      local hasBackground
+      record, hasBackground = attachBackgrounds(record, backgroundEvents,
+                                                splitBgUsed, duration)
+      if record and monBgEvents and #monBgEvents > 0 then
+        record.monBgTimeline = monBgEvents
+      end
       if record then def.anim = record end
       -- keep what the second pass needs: a move with no particles of its own
       -- still knows which sheets it loaded and whether it swapped the
       -- background, and both decide what it gets instead
-      leftovers[i] = { def = def, record = record, loaded = loaded,
+      leftovers[i] = { id = id, entry = entry, def = def, record = record,
+                       branchCtx = {},
+                       loaded = loaded,
                        backgrounds = backgrounds or 0, tasks = tasks or {},
                        helpers = helpers or {},
                        -- the script's OWN length, which is the one thing a
                        -- task-drawn animation still says about itself
-                       duration = duration or 0,
-                       hasEvents = record and record.events ~= nil }
+                       duration = duration or 0, selectors = selectors or {},
+                       hasEvents = record and record.events ~= nil,
+                       hasBackground = hasBackground or nil }
       animTasks[id] = tasks
+    end
+  end
+
+  -- Alternate script arms are ordinary animation rows with a runtime selector.
+  -- Feed them through the same passes below so existing task-family decoders
+  -- see the correct arm without learning anything about bytecode branches.
+  local variantRows = {}
+  local baseRowCount = #leftovers
+  local function makeVariantRow(base, when, branchCtx)
+    local shadow = setmetatable({}, { __index = base.def })
+    local sound, _, events, duration, loaded, backgrounds, tasks, helpers,
+          _, backgroundEvents, splitBgUsed, _, monBgEvents =
+      self:animScriptRead(base.entry, branchCtx)
+    local record
+    if sound then
+      local key = ("SONG_%03X"):format(sound)
+      local song = songs and songs[key]
+      if not songs or (type(song) == "table" and song.tracks) then
+        record = { sound = key }
+        moveSongs[key] = true
+      end
+    end
+    if picAt and events and #events > 0 then
+      local list = {}
+      for _, one in ipairs(events) do
+        local sourceRow = one.tag - GEN3_ANIM.TAG_FIRST
+        local sheetBytes = sourceRow < picCount
+                           and rom:u16(picAt + sourceRow * 8 + GEN3_ANIM_PIC_SIZE)
+                           or 0
+        local view = sourceRow < picCount
+                     and self:battleAnimSheetView(one.template, one.tag,
+                                                  sheetBytes, one.width,
+                                                  one.height, one.held,
+                                                  one.loops)
+                     or nil
+        if view then
+          local slot = view.slot
+          local before = used[slot]
+          if not before then
+            used[slot] = { tag = one.tag, width = one.width,
+                           height = one.height, frames = view.frames,
+                           held = view.held, loops = view.loops,
+                           tileOffsets = view.tileOffsets,
+                           variant = view.variant }
+          elseif not before.held and view.held then
+            before.held, before.loops = view.held, view.loops
+          end
+          local affineKey = nil
+          local affine1Key = nil
+          if one.affine0 then
+            affineKey = one.affine0.key
+            particleAffines[affineKey] = particleAffines[affineKey] or {
+              mode = one.affine0.mode, commands = one.affine0.commands,
+              source = one.affine0.source,
+            }
+          end
+          if one.affine1 then
+            affine1Key = one.affine1.key
+            particleAffines[affine1Key] = particleAffines[affine1Key] or {
+              mode = one.affine1.mode, commands = one.affine1.commands,
+              source = one.affine1.source,
+            }
+          end
+          list[#list + 1] = { at = one.at, sheet = slot, _site = one.site,
+                              width = one.width, height = one.height,
+                              callbackFamily = one.callbackFamily,
+                              args = one.args,
+                              x = one.x, y = one.y,
+                              from = one.from, motion = one.motion,
+                              travel = one.travel, orbit = one.orbit,
+                              to = one.to, toX = one.toX, toY = one.toY,
+                              arc = one.arc,
+                              localLinear = one.localLinear,
+                              linearDX = one.linearDX, linearDY = one.linearDY,
+                              firstFrames = one.firstFrames,
+                              holdFrames = one.holdFrames,
+                              secondFrames = one.secondFrames,
+                              firstX = one.firstX, firstY = one.firstY,
+                              finalX = one.finalX, finalY = one.finalY,
+                              phase = one.phase, phaseStep = one.phaseStep,
+                              waveX = one.waveX, waveY = one.waveY,
+                              phaseClock = one.phaseClock,
+                              postLife = one.postLife,
+                              stepOffset = one.stepOffset,
+                              mirrorX = one.mirrorX, mirrorY = one.mirrorY,
+                              waveCosY = one.waveCosY,
+                              waveXDirection = one.waveXDirection,
+                              phaseStepFixed = one.phaseStepFixed,
+                              verticalSpeed = one.verticalSpeed,
+                              screenX = one.screenX, screenY = one.screenY,
+                              screenToX = one.screenToX,
+                              screenToY = one.screenToY,
+                              fallDelay = one.fallDelay,
+                              targetY = one.targetY,
+                              callbackArg5 = one.callbackArg5,
+                              callbackArg6 = one.callbackArg6,
+                              mirrorInitial =
+                                shadow.target == GEN3_ANIM.TARGET_USER
+                                and one.mirrorInitial or nil,
+                              selectedAnimIndex = one.selectedAnimIndex,
+                              seekAnimCmd = one.seekAnimCmd,
+                              selectedHeld = one.selectedHeld,
+                              selectedLoops = one.selectedLoops,
+                              forceSelectedAnim = one.forceSelectedAnim,
+                              manualRotation = one.manualRotation,
+                              alternateHeld = one.alternateHeld,
+                              alternateLoops = one.alternateLoops,
+                              oamFlipX = one.oamFlipX,
+                              oamFlipY = one.oamFlipY,
+                              thunderChild = one.thunderChild,
+                              childOffsetX = one.childOffsetX,
+                              tileOffset = one.tileOffset,
+                              signalAt = one.signalAt,
+                              affine0 = affineKey, affine1 = affine1Key,
+                              blend = one.blend, monbg = one.monbg,
+                              splitbg = one.splitbg,
+                              priority = one.priority,
+                              oamAffineMode = one.oamAffineMode,
+                              oamShape = one.oamShape,
+                              oamSize = one.oamSize,
+                              subpriorityBase = one.subpriorityOfTarget
+                                                and "target" or "attacker",
+                              subpriorityOffset = one.subpriorityOffset,
+                              target = shadow.target ~= GEN3_ANIM.TARGET_USER
+                                       or nil }
+        end
+      end
+      if #list > 0 then
+        record = record or {}
+        record.events = list
+        record.duration = duration
+        for _, e in ipairs(list) do
+          if e.motion == "orbit" then
+            local shape = self:animOrbit()
+            if shape then
+              record.orbit = shape
+              record.duration = math.max(record.duration or 0, shape.life + 1)
+            end
+            break
+          end
+        end
+      end
+    end
+    local hasBackground
+    record, hasBackground = attachBackgrounds(record, backgroundEvents,
+                                              splitBgUsed, duration)
+    if record and monBgEvents and #monBgEvents > 0 then
+      record.monBgTimeline = monBgEvents
+    end
+    local row = {
+      id = base.id, entry = base.entry, def = shadow, parentDef = base.def,
+      branchCtx = branchCtx,
+      record = record, loaded = loaded, backgrounds = backgrounds or 0,
+      tasks = tasks or {}, helpers = helpers or {}, duration = duration or 0,
+      hasEvents = record and record.events ~= nil,
+      hasBackground = hasBackground or nil, when = when,
+    }
+    if record then shadow.anim = record end
+    return row
+  end
+
+  for i = 1, baseRowCount do
+    local base = leftovers[i]
+    if base and base.entry then
+      local selectors = base.selectors or {}
+      local specs, seenSpecs = {}, {}
+      local function addSpec(key, when, ctx)
+        if seenSpecs[key] then return end
+        seenSpecs[key] = true
+        specs[#specs + 1] = { when = when, ctx = ctx }
+      end
+      for turn in pairs(selectors.moveTurns or {}) do
+        addSpec("turn:" .. tostring(turn), { moveTurn = turn },
+                { moveTurn = turn })
+      end
+      if selectors.twoTurn then
+        addSpec("odd", { moveTurnOdd = true }, { moveTurn = 1 })
+      end
+      for arg, values in pairs(selectors.args or {}) do
+        local listed = {}
+        for value in pairs(values) do
+          listed[#listed + 1] = value
+          addSpec(("arg:%s:%s"):format(arg, value),
+                  { arg = arg, value = value }, { args = { [arg] = value } })
+        end
+        table.sort(listed)
+        if #listed > 0 then
+          local fallback = 32767
+          while values[fallback] do fallback = fallback - 1 end
+          addSpec("arg-default:" .. tostring(arg),
+                  { arg = arg, notValues = listed },
+                  { args = { [arg] = fallback } })
+        end
+      end
+      for _, spec in ipairs(specs) do
+        local row = makeVariantRow(base, spec.when, spec.ctx)
+        variantRows[#variantRows + 1] = row
+        leftovers[#leftovers + 1] = row
+        animTasks[base.id] = animTasks[base.id] or {}
+        for _, task in ipairs(row.tasks or {}) do
+          animTasks[base.id][#animTasks[base.id] + 1] = task
+        end
+      end
+    end
+  end
+
+  -- ---- THREE MOVE-SPECIFIC TASK FAMILIES DISCOVERED FROM RETAIL SCRIPT ----
+  --
+  -- These addresses are intentionally read from the move scripts instead of
+  -- frozen from a decompilation build.  The retail ROM gives us identity; the
+  -- source gives us the exact callback state machines.
+  local function taskFn(t)
+    local fn = t and t.fn
+    return fn and (fn - (fn % 2)) or nil
+  end
+  local function rowsFor(id)
+    local out = {}
+    for _, row in pairs(leftovers) do
+      if row.id == id then out[#out + 1] = row end
+    end
+    return out
+  end
+  local function uniqueFn(id, predicate)
+    local found = {}
+    for _, row in ipairs(rowsFor(id)) do
+      for _, t in ipairs(row.tasks or {}) do
+        if not predicate or predicate(t) then
+          local fn = taskFn(t)
+          if fn then found[fn] = true end
+        end
+      end
+    end
+    local only, count
+    count = 0
+    for fn in pairs(found) do only, count = fn, count + 1 end
+    return count == 1 and only or nil
+  end
+
+  local transformFn = uniqueFn("TRANSFORM", function(t)
+    return #t.args == 1 and t.args[1] == 0
+  end)
+  local flashFn = uniqueFn("FLASH", function(t) return #t.args == 0 end)
+  local nightShadeFn = uniqueFn("NIGHT_SHADE", function(t)
+    return #t.args == 1 and t.args[1] == 85
+  end)
+  local grudgeFn = uniqueFn("GRUDGE", function(t) return #t.args == 0 end)
+  local frozenIceFn = uniqueFn("SHEER_COLD", function(t) return #t.args == 0 end)
+  local psychoBlendFn = uniqueFn("PSYCHO_BOOST", function(t)
+    local a = t.args or {}
+    return #a == 6 and a[1] == 1 and a[2] == 2 and a[3] == 8
+           and a[4] == 0 and a[5] == 10 and a[6] == 0
+  end)
+  -- Keep the Psycho Boost orb's exact wait lifetime tied to the retail create
+  -- sites discovered in this move, rather than to a hard-coded callback ROM
+  -- address.  The retiming walk below recreates the same site identifiers.
+  local psychoBoostSites = {}
+  for _, row in ipairs(rowsFor("PSYCHO_BOOST")) do
+    for _, event in ipairs(row.record and row.record.events or {}) do
+      if event._site then psychoBoostSites[event._site] = true end
+    end
+  end
+  local waitTransform = transformFn and {
+    task = transformFn, growEvery = 3, max = 15,
+    maxAt = 45, swapAt = 46, zeroAt = 91, waitLife = 92, life = 92,
+    paletteBlend = 6, paletteColour = 32767,
+    source = ("ROM:TRANSFORM createvisualtask %07X; FireRed "
+              .. "AnimTask_TransformMon"):format(transformFn),
+  } or nil
+  local waitWhite = self:screenWhite(flashFn)
+
+  -- Camouflage calls one four-argument palette function twice: first
+  -- {ATTACKER,3,0,14}, then {ATTACKER,0,0,0}.  Its two one-argument alpha
+  -- tasks are uniquely identified by the authored delays 4 (out) and 1 (in).
+  local camouflageRows = rowsFor("CAMOUFLAGE")
+  local camouflageBlendFn = nil
+  local blendCandidates = {}
+  for _, row in ipairs(camouflageRows) do
+    for _, t in ipairs(row.tasks or {}) do
+      if #t.args == 4 and t.args[1] == 2 and t.args[3] == 0
+         and (t.args[4] == 14 or t.args[4] == 0) then
+        local fn = taskFn(t)
+        if fn then
+          local c = blendCandidates[fn] or { up = false, reset = false }
+          if t.args[2] == 3 and t.args[4] == 14 then c.up = true end
+          if t.args[2] == 0 and t.args[4] == 0 then c.reset = true end
+          blendCandidates[fn] = c
+        end
+      end
+    end
+  end
+  for fn, c in pairs(blendCandidates) do
+    if c.up and c.reset then
+      if camouflageBlendFn then camouflageBlendFn = false break end
+      camouflageBlendFn = fn
+    end
+  end
+  if camouflageBlendFn == false then camouflageBlendFn = nil end
+  local camouflageFadeOutFn = uniqueFn("CAMOUFLAGE", function(t)
+    return #t.args == 1 and t.args[1] == 4
+  end)
+  local camouflageFadeInFn = uniqueFn("CAMOUFLAGE", function(t)
+    return #t.args == 1 and t.args[1] == 1
+  end)
+  local camouflageColours = {
+    GRASS = 2828, LONG_GRASS = 2528, SAND = 12062,
+    UNDERWATER = 18432, WATER = 32459, POND = 32459,
+    MOUNTAIN = 10774, CAVE = 3374, BUILDING = 32767, PLAIN = 32767,
+  }
+  local function camouflageBlendLife(args)
+    if not (args and #args == 4) then return nil end
+    local delay, from, to = args[2], args[3], args[4]
+    if not (delay and from and to) then return nil end
+    -- StartBlendAnimSpriteColor invokes the step once inside createvisualtask,
+    -- consuming one delay callback before the scheduled task loop begins.
+    return (math.abs(to - from) + 1) * (delay + 1) - 1
+  end
+
+  -- ---- THE SCRIPT BARRIER THAT WAITS FOR VISUALS --------------------------
+  --
+  -- The first bytecode walk deliberately cannot price opcode 0x05: at that
+  -- point the cartridge has given us only raw task/callback addresses.  Now the
+  -- complete task inventory exists, so the reusable family readers above can
+  -- prove exact lifetimes.  Walk each concrete arm once more and let only those
+  -- proved lifetimes advance waitforvisualfinish.  An unknown sprite/task makes
+  -- the barrier residual and, because its missing duration is an unknown offset,
+  -- no later absolute timestamp on that arm is "repaired" by guesswork.
+  local waitPulse = self:monPulse()
+  local waitFlourish = self:statFlourish()
+  local waitRotate = self:monRotate()
+  local waitScale = self:monScale()
+  local waitSqueeze = self:monSqueeze()
+  local waitHeave = self:screenHeave()
+  local waitCycle = self:monCycle()
+  local waitLunge = self:monLunge()
+  local waitSway = self:monSway()
+  -- These three move scripts each identify one task in this cartridge.  Their
+  -- destruction points are source state-machine facts, not visible-span guesses:
+  -- MINIMIZE's checked reader above is 151 callbacks; SURF tears its visual task
+  -- down on callback 136; DOUBLE TEAM's two clones die on callback 130 and its
+  -- parent task observes that zero count later in that same scheduler frame.
+  local surfFn = uniqueFn("SURF", function(t)
+    return #t.args == 1 and t.args[1] == 0
+  end)
+  local waitSurf = surfFn and { task = surfFn, waitLife = 136 } or nil
+  local doubleTeamFn = uniqueFn("DOUBLE_TEAM", function(t)
+    return #t.args == 0
+  end)
+  local waitDoubleTeam = nil
+  if doubleTeamFn and self:animAfterimage(doubleTeamFn) then
+    waitDoubleTeam = { task = doubleTeamFn, waitLife = 130 }
+  end
+  -- POUND's sole task is AnimTask_ShakeMon in the FireRed script.  Anchor that
+  -- exact function rather than accepting the several look-alike shake families
+  -- that happen to use five small arguments.
+  local shakeFn = uniqueFn("POUND", function(t)
+    local a = t.args or {}
+    return #a == 5 and a[1] == 1 and a[2] == 3 and a[3] == 0
+           and a[4] == 6 and a[5] == 1
+  end)
+  local waitShake = shakeFn and { task = shakeFn } or nil
+
+  -- createvisualtask calls its function synchronously and increments
+  -- gAnimVisualTaskCount only if that call leaves the task alive.  These source
+  -- helpers return a query/control result (or launch an ordinary non-visual
+  -- task) and DestroyAnimVisualTask before Cmd_createvisualtask returns.  Anchor
+  -- them through authored move callsites, so they contribute zero active time.
+  local synchronousTasks = {}
+  local function markSynchronous(fn)
+    if fn then synchronousTasks[fn - (fn % 2)] = true end
+  end
+  local function markSynchronousWhere(move, predicate)
+    local seenFns = {}
+    for _, row in ipairs(rowsFor(move)) do
+      for _, t in ipairs(row.tasks or {}) do
+        if predicate(t) then
+          local fn = taskFn(t)
+          if fn then seenFns[fn] = true end
+        end
+      end
+    end
+    for fn in pairs(seenFns) do markSynchronous(fn) end
+  end
+  -- Pure queries whose scripts immediately consume ARG_RET_ID.
+  for _, move in ipairs({ "HYPER_FANG", "FURY_CUTTER", "FRUSTRATION",
+                          "RETURN", "MAGNITUDE", "MACH_PUNCH", "SILVER_WIND",
+                          "SECRET_POWER", "WEATHER_BALL" }) do
+    markSynchronousWhere(move, function(t) return #(t.args or {}) == 0 end)
+  end
+  -- SetGrayscaleOrOriginalPal is synchronous for both enable/disable calls.
+  markSynchronousWhere("PERISH_SONG", function(t)
+    local a = t.args or {}
+    return #a == 2 and a[1] >= 4 and a[1] <= 7
+           and (a[2] == 0 or a[2] == 1)
+  end)
+  -- The two sound wrappers in SKY ATTACK are the only two-argument visual
+  -- tasks on that script arm; both play once and destroy synchronously.
+  markSynchronousWhere("SKY_ATTACK", function(t)
+    return #(t.args or {}) == 2
+  end)
+  -- THUNDER repeatedly calls the one three-argument palette inversion helper.
+  markSynchronousWhere("THUNDER", function(t)
+    local a = t.args or {}
+    return #a == 3 and a[1] == 257 and a[2] == 257 and a[3] == 257
+  end)
+  -- SetPsychicBackground deliberately decrements gAnimVisualTaskCount in its
+  -- initializer before leaving a plain background task alive until setarg 7.
+  -- AMNESIA has exactly that zero-argument visual task.
+  markSynchronousWhere("AMNESIA", function(t)
+    return #(t.args or {}) == 0
+  end)
+  -- These wrappers create a plain task/background state and immediately remove
+  -- themselves from gAnimVisualTaskCount.
+  markSynchronous(self:moveAnimTask("MACH_PUNCH", 2))
+  markSynchronous(self:moveAnimTask("FISSURE", 3))
+  -- ACID ARMOR is one of the few remaining scanline tasks whose lifetime is
+  -- independent of battler geometry.  Identify the exact function from the
+  -- move's own first-pass task record instead of baking a ROM address into the
+  -- generic wait decoder.  The source task has one argument, ANIM_ATTACKER,
+  -- and executes exactly 110 times from initializer through destruction.
+  local waitAcidArmor = nil
+  for _, one in ipairs(animTasks.ACID_ARMOR or {}) do
+    local args = one.args or {}
+    if #args == 1 and args[1] == 0 and one.fn then
+      waitAcidArmor = { task = one.fn - (one.fn % 2) }
+      break
+    end
+  end
+  local function sameTask(fn, shape)
+    if not (fn and shape and shape.task) then return false end
+    fn = fn - (fn % 2)
+    return fn == shape.task or fn == shape.task + 0x08000000
+  end
+  local function knownVisualLife(kind, one)
+    if type(one) ~= "table" then return nil end
+    if kind == "sprite" then
+      if type(one.waitLife) == "number" then return one.waitLife end
+      if one.site and psychoBoostSites[one.site] then return 224 end
+      -- These source-audited callbacks all terminate by DestroyAnimSprite after
+      -- their shared translation helper reports completion.  The initializer
+      -- has already run at create time; translation completion is observed one
+      -- callback after the authored travel count reaches zero.
+      if one.travel and one.travel > 0 then
+        if one.motion == "arc" and one.terminalArc then
+          return one.travel + 1
+        end
+        if one.motion == "linear"
+           and (one.callbackFamily == "bone_hit"
+                or one.callbackFamily == "teal_alert"
+                or one.callbackFamily == "water_droplet") then
+          return one.travel + 1
+        end
+      end
+      return nil
+    end
+    if kind ~= "task" then return nil end
+    local fn, args = one.fn, one.args or {}
+    if sameTask(fn, waitTransform) then return waitTransform.waitLife end
+    if sameTask(fn, waitWhite) then return waitWhite.waitLife end
+    fn = fn and (fn - (fn % 2)) or nil
+    if fn and nightShadeFn and fn == nightShadeFn then return 129 end
+    if fn and grudgeFn and fn == grudgeFn then return 89 end
+    if fn and frozenIceFn and fn == frozenIceFn then return 106 end
+    if fn and psychoBlendFn and fn == psychoBlendFn
+       and #args == 6 and args[1] == 1 and args[2] == 2 and args[3] == 8
+       and args[4] == 0 and args[5] == 10 and args[6] == 0 then
+      return 208
+    end
+    if fn and synchronousTasks[fn] then return 0 end
+    if fn and camouflageBlendFn and fn == camouflageBlendFn then
+      return camouflageBlendLife(args)
+    end
+    if fn and camouflageFadeOutFn and fn == camouflageFadeOutFn
+       and #args == 1 then
+      return 16 * (math.max(0, args[1]) + 1)
+    end
+    if fn and camouflageFadeInFn and fn == camouflageFadeInFn
+       and #args == 1 then
+      return 16 * (math.max(0, args[1]) + 1)
+    end
+    if sameTask(fn, waitPulse) then
+      local built = self:pulseShape(args, waitPulse)
+      return built and (2 * args[3]) or nil
+    end
+    if sameTask(fn, waitFlourish) then return waitFlourish.life end
+    if sameTask(fn, waitRotate) then return 74 end
+    if sameTask(fn, waitSqueeze) then return 9 end
+    if sameTask(fn, waitScale) then return 151 end
+    if sameTask(fn, waitSurf) then return waitSurf.waitLife end
+    if sameTask(fn, waitDoubleTeam) then return waitDoubleTeam.waitLife end
+    if sameTask(fn, waitShake) and #args == 5 then
+      local battler, count, delay = args[1], args[4], args[5]
+      -- Attacker/target are present while their move animation is executing.
+      -- Partner selectors can resolve SPRITE_NONE in singles, so their exact
+      -- lifetime is runtime-dependent and stays residual.
+      if (battler == 0 or battler == 1) and count and count > 0
+         and delay and delay >= 0 then
+        return count * (delay + 1) - 1
+      end
+    end
+    if sameTask(fn, waitHeave) and #args == 3 then
+      local mode, intensity, length = args[1], args[2], args[3]
+      if (mode == waitHeave.ground or mode == waitHeave.mons)
+         and intensity and intensity > 0
+         and math.abs(intensity) <= RomExtractorGen3.SCREEN_HEAVE.MAX_AMPLITUDE
+         and length and length > 0
+         and length <= RomExtractorGen3.SCREEN_HEAVE.MAX_SWINGS then
+        -- HorizontalShake spends 2*length callbacks at full amplitude, then
+        -- four callbacks per pixel for each of the two damping legs.  The task
+        -- stores amplitude as arg1+3, so the tail is 8*(arg1+2), plus the final
+        -- destruction callback.  arg1==0 instead derives amplitude from move
+        -- power and cannot be priced by the static script walk.
+        return 2 * length + 8 * (intensity + 2) + 1
+      end
+    end
+    if sameTask(fn, waitCycle) then
+      local built = self:cycleBlend(args, waitCycle)
+      if built then
+        return built.cycles * 2 * math.abs((built.to or 0) - (built.from or 0))
+               * built.step
+      end
+    end
+    if sameTask(fn, waitLunge) and waitSway then
+      local built = self:lungeTrack(args, waitLunge, waitSway.sine)
+      return built and built.life or nil
+    end
+    if sameTask(fn, waitSway) then
+      local built = self:swayOffsets(args, waitSway)
+      return built and built.life or nil
+    end
+    if waitAcidArmor and sameTask(fn, waitAcidArmor)
+       and #args == 1 and args[1] == 0 then
+      return 110
+    end
+    -- An affine table describes sprite transform frames, not the lifetime of
+    -- the visual task that owns it.  Only named task state machines above are
+    -- allowed to close opcode 05.
+    return nil
+  end
+
+  local waitAudit, waitKnown, waitResidual, waitShifted = {}, 0, 0, 0
+  local function retimeRow(row)
+    if not (row and row.entry) then return end
+    local _, _, events, duration, _, _, tasks, helpers, _, backgroundEvents,
+          splitBgUsed, barriers, monBgEvents = self:animScriptRead(row.entry,
+                                                                   row.branchCtx or {},
+                                                                   knownVisualLife)
+    row.tasks, row.helpers, row.duration = tasks or {}, helpers or {}, duration or 0
+    local queues = {}
+    for _, one in ipairs(events or {}) do
+      if one.site then
+        queues[one.site] = queues[one.site] or {}
+        queues[one.site][#queues[one.site] + 1] = one.at or 0
+      end
+    end
+    for _, event in ipairs(row.record and row.record.events or {}) do
+      local q = event._site and queues[event._site]
+      if q and #q > 0 then event.at = table.remove(q, 1) end
+    end
+    if row.record then
+      row.record.duration = math.max(row.record.duration or 0, duration or 0)
+      if row.record.backgrounds then
+        row.record.backgrounds = backgroundEvents or row.record.backgrounds
+      end
+      if monBgEvents and #monBgEvents > 0 then row.record.monBgTimeline = monBgEvents end
+    end
+    for _, barrier in ipairs(barriers or {}) do
+      barrier.move = row.id
+      barrier.when = row.when
+      waitAudit[#waitAudit + 1] = barrier
+      if barrier.status == "known" then
+        waitKnown = waitKnown + 1
+        if (barrier.after or barrier.at) > (barrier.at or 0) then
+          waitShifted = waitShifted + 1
+        end
+      elseif barrier.status == "residual" then
+        waitResidual = waitResidual + 1
+      end
+    end
+  end
+  for _, row in pairs(leftovers) do retimeRow(row) end
+  -- Task-family passes below must consume the retimed starts, including all
+  -- alternate arms, rather than the first pass's lower-bound timestamps.
+  for key in pairs(animTasks) do animTasks[key] = nil end
+  for _, row in pairs(leftovers) do
+    animTasks[row.id] = animTasks[row.id] or {}
+    for _, task in ipairs(row.tasks or {}) do
+      animTasks[row.id][#animTasks[row.id] + 1] = task
+    end
+  end
+  -- VOLT TACKLE's post-charge effect is task-drawn.  Recover its private task
+  -- identities from the script's own call structure rather than retail
+  -- addresses: one function is called once each with 0..4, and the reappear
+  -- task is the sole zero-argument call.  Runtime owns the later timestamps
+  -- because Bolt(0)'s lifetime depends on live battler geometry.
+  for _, row in pairs(leftovers) do
+    if row.id == "VOLT_TACKLE" then
+      local byFn, zero = {}, nil
+      for _, t in ipairs(row.tasks or {}) do
+        local fn = t.fn and (t.fn - (t.fn % 2)) or nil
+        local a = t.args or {}
+        if fn and #a == 1 and a[1] >= 0 and a[1] <= 4 then
+          local rec = byFn[fn] or { task = fn, seen = {}, calls = {} }
+          rec.seen[a[1]] = (rec.seen[a[1]] or 0) + 1
+          rec.calls[#rec.calls + 1] = { arg = a[1], site = t.site }
+          byFn[fn] = rec
+        elseif fn and #a == 0 then
+          if zero == nil then zero = fn else zero = false end
+        end
+      end
+      local bolt
+      for _, rec in pairs(byFn) do
+        local exact = #rec.calls == 5
+        for n = 0, 4 do exact = exact and rec.seen[n] == 1 end
+        if exact then
+          if bolt then bolt = nil break end
+          bolt = rec
+        end
+      end
+      if bolt and zero then
+        table.sort(bolt.calls, function(a, b) return a.arg < b.arg end)
+        -- AnimTask_VoltTackleBolt creates gVoltTackleBoltSpriteTemplate from C,
+        -- so there is no createsprite opcode for the ordinary particle-asset
+        -- inventory above to see.  The script does load ANIM_TAG_SPARK, and
+        -- FireRed's template is the affine-double 8x16 view of that 0x300-byte
+        -- sheet.  Register that exact task-owned view here so the synthetic
+        -- children below use the same cartridge art rather than a nonexistent
+        -- task-only sheet key.
+        local sparkTag = GEN3_ANIM.TAG_FIRST + 1 -- ANIM_TAG_SPARK
+        local sparkRow = sparkTag - GEN3_ANIM.TAG_FIRST
+        local sparkBytes = picAt and sparkRow < picCount
+                           and rom:u16(picAt + sparkRow * 8
+                                       + GEN3_ANIM_PIC_SIZE) or 0
+        local sparkSlot = tostring(sparkTag)
+        if sparkBytes == 0x300 then
+          used[sparkSlot] = used[sparkSlot] or {
+            tag = sparkTag, width = 8, height = 16, frames = 12,
+            -- gVoltTackleBoltSpriteTemplate starts animation 0:
+            -- ANIMCMD_FRAME(0, 3), END.  END holds that image while the
+            -- callback owns the sprite through callback 12.
+            held = { { 0, 3 } }, loops = nil,
+          }
+        else
+          Logger.warn("gen3 move animations: VOLT_TACKLE loaded SPARK sheet "
+                        .. "has %d bytes instead of retail FireRed's 0x300; "
+                        .. "task-owned bolts are left unbound", sparkBytes or 0)
+        end
+        row.record = row.record or {}
+        row.record.voltTackle = {
+          boltTask = bolt.task, reappearTask = zero, bolts = bolt.calls,
+          sheet = sparkSlot, childLife = 13,
+          childVisible = 12, childRotation = 64, reappearLife = 51,
+          childWidth = 8, childHeight = 16,
+          childOamAffineMode = 3, childOamShape = 2, childOamSize = 0,
+          source = "ROM:VOLT_TACKLE structural task sequence",
+        }
+        row.def.anim = row.record
+      end
+    end
+  end
+  self._animWaitAudit = waitAudit
+  if os.getenv("POKEPORT_WAIT_AUDIT") == "1" then
+    for _, barrier in ipairs(waitAudit) do
+      Logger.info("W15WAIT\t%s\t%07X\t%s\t%d\t%d\t%d\t%s",
+                  tostring(barrier.move), barrier.site or 0,
+                  tostring(barrier.status), barrier.at or 0,
+                  barrier.after or barrier.at or 0, barrier.unknown or 0,
+                  tostring(barrier.reason or ""))
+    end
+  end
+  Logger.info("Gen3 move animations: %d waitforvisualfinish barrier(s) have "
+                .. "explicit visual lifetimes (%d shift script time); %d remain "
+                .. "residual because an active visual lifetime is unknown",
+              waitKnown, waitShifted, waitResidual)
+
+  -- ---- SPLIT-BG MOVES ------------------------------------------------------
+  --
+  -- These eight scripts all use monbg/splitbgprio, but the effects that keep
+  -- running after the script command are C tasks.  The script operands are
+  -- enough to identify those tasks inside each named move without guessing a
+  -- global function address: the exact fixed-point speeds/counts below occur in
+  -- the source calls quoted in data/battle_anim_scripts.s.  Runtime still
+  -- resolves battler side/position because splitbgprio itself does so there.
+  do
+    local splitMoves = {
+      NIGHT_SHADE = true, DREAM_EATER = true, AEROBLAST = true,
+      GRUDGE = true, SILVER_WIND = true, SKY_UPPERCUT = true,
+      SHEER_COLD = true, PSYCHO_BOOST = true,
+    }
+    local function restoreStop(row)
+      for _, bg in ipairs(row.record and row.record.backgrounds or {}) do
+        if bg.op == "restore" then return (bg.at or 0) + GEN3_ANIM.BG_SWAP_FRAME end
+      end
+      return row.duration or 0
+    end
+    local function task(row, pred)
+      for _, one in ipairs(row.tasks or {}) do
+        if pred(one.args or {}, one) then return one end
+      end
+    end
+    for _, row in pairs(leftovers) do
+      if splitMoves[row.id] then
+        row.record = row.record or {}
+        local fx = { move = row.id, stopAt = restoreStop(row) }
+        if row.id == "NIGHT_SHADE" then
+          local t = task(row, function(a) return #a == 1 and a[1] == 85 end)
+          if t then fx.nightShadeAt, fx.nightShadeLife = t.at or 0, 129 end
+        elseif row.id == "DREAM_EATER" then
+          local t = task(row, function(a) return #a == 0 end)
+          if t then
+            fx.paletteRotate = { at = t.at or 0, stopAt = fx.stopAt,
+                                 first = 1, last = 11, every = 4,
+                                 fadedOnly = true }
+          end
+        elseif row.id == "AEROBLAST" then
+          local t = task(row, function(a)
+            return #a == 4 and a[1] == -2304 and a[2] == 768
+                   and a[3] == 1 and a[4] == -1
+          end)
+          if t then
+            fx.bgMotion = { kind = "slide", at = t.at or 0,
+                            dx = -2304, dy = 768, flipAttacker = true,
+                            stopAt = fx.stopAt }
+          end
+        elseif row.id == "GRUDGE" then
+          local t = task(row, function(a) return #a == 0 end)
+          if t then
+            fx.grudgeAt, fx.grudgeLife, fx.grudgeSheet = t.at or 0, 89, "10253"
+            used["10253"] = used["10253"] or {
+              tag = 10253, width = 16, height = 32, frames = 4,
+              held = { {0, 4}, {1, 4}, {2, 4}, {3, 4} }, loops = true,
+            }
+            row.record.events = row.record.events or {}
+            for i = 0, 5 do
+              row.record.events[#row.record.events + 1] = {
+                at = (t.at or 0) + 1, sheet = "10253",
+                width = 16, height = 32, motion = "grudge_flame",
+                grudgeIndex = i, explicitLife = 86,
+                priority = 2, subpriorityBase = "attacker",
+                subpriorityOffset = -2, oamAffineMode = 0,
+              }
+            end
+          end
+          -- The task itself creates the flames.  Do not let the generic
+          -- loaded-sheet fallback invent one stationary flame in their place.
+          row.hasEvents = true
+        elseif row.id == "SILVER_WIND" then
+          local t = task(row, function(a)
+            return #a == 4 and math.abs(a[1] or 0) == 1536
+                   and a[2] == 0 and a[3] == 0 and a[4] == -1
+          end)
+          if t then
+            fx.bgMotion = { kind = "silver_wind", at = t.at or 0,
+                            stopAt = fx.stopAt }
+          end
+          for _, e in ipairs(row.record.events or {}) do
+            if e.callbackArg5 ~= nil and e.callbackArg6 ~= nil then
+              e.dynamicBgPriority = {
+                mode = e.callbackArg5, reference = e.callbackArg6,
+              }
+            end
+          end
+          -- Both source blend tasks act on BG palette 2.  The first reaches
+          -- black coefficient 4 one step per callback; the cleanup reverses it.
+          local dark = task(row, function(a)
+            return #a == 5 and a[1] == 1 and a[2] == 0
+                   and a[3] == 0 and a[4] == 4 and a[5] == 0
+          end)
+          local light = task(row, function(a)
+            return #a == 5 and a[1] == 1 and a[2] == 0
+                   and a[3] == 4 and a[4] == 0 and a[5] == 0
+          end)
+          if dark then fx.bgBlackAt = dark.at or 0 end
+          if light then fx.bgBlackRestoreAt = light.at or 0 end
+        elseif row.id == "SKY_UPPERCUT" then
+          local t = task(row, function(a) return #a == 1 and a[1] == 55 end)
+          if t then
+            fx.bgMotion = { kind = "sky_uppercut", at = t.at or 0,
+                            countdown = 55, stopAt = fx.stopAt }
+          end
+        elseif row.id == "SHEER_COLD" then
+          local t = task(row, function(a) return #a == 0 end)
+          if t then
+            fx.frozenAt, fx.frozenLife, fx.frozenSheet =
+              t.at or 0, 106, "10010_cube"
+            used["10010_cube"] = used["10010_cube"] or {
+              tag = 10010, width = 96, height = 96, frames = 3,
+              held = { {0, 27}, {1, 3}, {2, 3}, {0, 17},
+                       {1, 3}, {2, 3}, {0, 47} },
+              variant = true, iceCube = true,
+            }
+            row.record.events = row.record.events or {}
+            row.record.events[#row.record.events + 1] = {
+              at = t.at or 0, sheet = "10010_cube",
+              width = 96, height = 96, motion = "frozen_cube",
+              explicitLife = 103, priority = 2, subpriority = 4,
+              oamAffineMode = 0, oamShape = 0, oamSize = 3,
+            }
+          end
+          row.hasEvents = true
+        elseif row.id == "PSYCHO_BOOST" then
+          local t = task(row, function(a) return #a == 0 end)
+          if t then
+            fx.paletteRotate = { at = t.at or 0, stopAt = fx.stopAt,
+                                 first = 1, last = 11, every = 4,
+                                 bothBuffers = true }
+          end
+          local blendTask = task(row, function(a)
+            return #a == 6 and a[1] == 1 and a[2] == 2 and a[3] == 8
+                   and a[4] == 0 and a[5] == 10 and a[6] == 0
+          end)
+          if blendTask then
+            fx.bgBlendCycle = {
+              at = blendTask.at or 0, halfLife = 26, life = 208,
+              from = 0, to = 10, step = 2, stepFrames = 4, blends = 8,
+            }
+          end
+          for _, e in ipairs(row.record.events or {}) do e.psychoBoost = true end
+        end
+        row.record.splitFx = fx
+        row.def.anim = row.record
+      end
     end
   end
 
@@ -34447,10 +37395,11 @@ function RomExtractorGen3:extractMoveAnimations()
       local list = {}
       for _, t in ipairs(row.tasks or {}) do
         if shakeFns[t.fn] then
-          -- ANIM_ATTACKER is 0 and ANIM_TARGET is 1; the partner selectors
-          -- above them are the same two sides in a double battle, which this
-          -- port draws as one apiece
+          -- Preserve all four battler selectors.  In a double battle 2/3 are
+          -- the attacker/target partners, so reducing them modulo two loses
+          -- the right-hand slot (HELPING HAND is the concrete case).
           list[#list + 1] = { at = t.at or 0,
+                              selector = t.args[1],
                               target = (t.args[1] % 2 == 1) or nil,
                               x = t.args[2], y = t.args[3],
                               count = t.args[4], delay = t.args[5] }
@@ -34575,11 +37524,14 @@ function RomExtractorGen3:extractMoveAnimations()
           local oneWay = #t.args == 5
           local sel = t.args[1]
           local function bit(n) return math.floor(sel / 2 ^ n) % 2 == 1 end
-          -- bit 1 and bit 3 are the attacker's side, bit 2 and bit 4 the
-          -- target's; a call naming both gets one record each
+          -- Bits 1..4 name exact animation battlers: attacker, target, then
+          -- their partners.  Keep that identity instead of folding partner
+          -- bits back onto the left slot of the same side.
           local sides = {}
-          if bit(1) or bit(3) then sides[#sides + 1] = { target = false } end
-          if bit(2) or bit(4) then sides[#sides + 1] = { target = true } end
+          if bit(1) then sides[#sides + 1] = { target = false, selector = 0 } end
+          if bit(2) then sides[#sides + 1] = { target = true,  selector = 1 } end
+          if bit(3) then sides[#sides + 1] = { target = false, selector = 2 } end
+          if bit(4) then sides[#sides + 1] = { target = true,  selector = 3 } end
           -- ...AND FOUR MORE BITS, which is what HAZE was missing.
           --
           -- The five-argument function's selector is not one field, it is
@@ -34597,15 +37549,15 @@ function RomExtractorGen3:extractMoveAnimations()
           -- for the Pokemon whose wave comes DOWN the screen, which is the
           -- one on the far side.
           --
-          -- This port draws one Pokemon a side, so a position and its
-          -- partner are the same Pokemon here.  HAZE passes 1920: all four
-          -- positions, no role bits at all.  Read as the five-bit field it
-          -- named nobody, and HAZE faded nothing.
-          if bit(7) or bit(8) then sides[#sides + 1] = { side = "player" } end
-          if bit(9) or bit(10) then sides[#sides + 1] = { side = "enemy" } end
+          -- HAZE passes 1920: all four positions, no role bits at all.
+          if bit(7) then sides[#sides + 1] = { side = "player", position = 0 } end
+          if bit(8) then sides[#sides + 1] = { side = "player", position = 2 } end
+          if bit(9) then sides[#sides + 1] = { side = "enemy",  position = 1 } end
+          if bit(10) then sides[#sides + 1] = { side = "enemy", position = 3 } end
           for _, who in ipairs(sides) do
             list[#list + 1] = { at = t.at or 0, target = who.target or nil,
-                                side = who.side,
+                                selector = who.selector, side = who.side,
+                                position = who.position,
                                 oneWay = oneWay or nil,
                                 step = math.max(1, (t.args[2] or 0) + 1),
                                 cycles = oneWay and 1
@@ -34628,7 +37580,8 @@ function RomExtractorGen3:extractMoveAnimations()
           local nextAt = nil
           for _, other in ipairs(list) do
             if other ~= one and (other.target or false) == (one.target or false)
-               and other.side == one.side
+               and other.selector == one.selector and other.side == one.side
+               and other.position == one.position
                and other.at > one.at
                and (nextAt == nil or other.at < nextAt) then
               nextAt = other.at
@@ -34655,7 +37608,7 @@ function RomExtractorGen3:extractMoveAnimations()
     local H = RomExtractorGen3.SCREEN_HEAVE
     if shape then
       for _, row in pairs(leftovers) do
-        local best = nil
+        local byAt = {}
         for _, t in ipairs(row.tasks or {}) do
           local fn = t.fn and (t.fn - (t.fn % 2)) or -1
           if (fn == shape.task or fn == shape.task + 0x08000000)
@@ -34666,20 +37619,32 @@ function RomExtractorGen3:extractMoveAnimations()
               local swings = t.args[3] or 0
               if amplitude > 0 and amplitude <= H.MAX_AMPLITUDE
                  and swings > 0 and swings <= H.MAX_SWINGS then
-                -- the two calls are one heave here; take the larger
+                -- The ground and battler calls at one source time are the two
+                -- halves of ONE field heave.  Preserve each scheduled
+                -- occurrence, but collapse that same-time pair to the larger
+                -- amplitude exactly as the old renderer did.
+                local at = t.at or 0
+                local best = byAt[at]
                 if not best or amplitude > best.amplitude then
-                  best = { at = t.at or 0, amplitude = amplitude,
-                           every = shape.every, swings = swings }
+                  byAt[at] = { at = at, amplitude = amplitude,
+                               every = shape.every, swings = swings,
+                               life = swings * shape.every }
                 end
               end
             end
           end
         end
-        if best then
+        local list = {}
+        for _, one in pairs(byAt) do list[#list + 1] = one end
+        table.sort(list, function(a, b) return (a.at or 0) < (b.at or 0) end)
+        if #list > 0 then
           row.record = row.record or {}
-          row.record.heave = best
-          row.record.duration = math.max(row.record.duration or 0,
-                                         best.swings * best.every)
+          row.record.heaves = list
+          row.record.heave = nil
+          for _, one in ipairs(list) do
+            row.record.duration = math.max(row.record.duration or 0,
+                                           (one.at or 0) + (one.life or 0))
+          end
           row.def.anim = row.record
           -- a real reaction, so the coarse one below leaves it alone
           row.hasShakes = true
@@ -34696,7 +37661,24 @@ function RomExtractorGen3:extractMoveAnimations()
   -- ---- ...AND THE POKEMON THAT SQUASHES ----------------------------------
   do
     local marked, shown = 0, nil
+    -- Some affine-table tasks select their battler from arg 0; two tiny
+    -- wrappers hard-code target/attacker instead.  Anchor those functions in
+    -- this cartridge's own scripts rather than assigning every table to the
+    -- attacker.  The latter was visibly wrong for FAKE OUT, TRICK, ASTONISH,
+    -- SMELLING SALT and YAWN.
+    local selectorFn = {}
+    local function markSelector(move, which)
+      local fn = self:moveAnimTask(move, which)
+      if fn then selectorFn[fn] = true end
+    end
+    markSelector("SPLASH", 1)
+    markSelector("UPROAR", 1)
+    markSelector("YAWN", 1)
+    markSelector("SMELLINGSALT", 1)
+    local stretchTarget = self:moveAnimTask("FAKE_OUT", 3)
+    local stretchAttacker = self:moveAnimTask("TRICK", 2)
     for _, row in pairs(leftovers) do
+      local list = {}
       for _, t in ipairs(row.tasks or {}) do
         local shape = t.fn and self:affineTable(t.fn)
         if shape then
@@ -34707,25 +37689,42 @@ function RomExtractorGen3:extractMoveAnimations()
           local repeats = 1
           local second = t.args and t.args[2]
           if second and second >= 1 and second <= 8 then repeats = second end
-          row.record = row.record or {}
-          row.record.affine = { steps = shape.steps, base = shape.base,
-                                repeats = repeats, closes = shape.closes,
-                                life = shape.life * repeats,
-                                source = ("ROM:the affine table at %07X, "
-                                          .. "through the preparer at %07X")
-                                         :format(shape.at,
-                                                 RomExtractorGen3.MON_AFFINE
-                                                   .PREPARE) }
-          if row.record.shake or row.record.flash then coarse = coarse - 1 end
-          row.record.shake, row.record.flash = nil, nil
-          row.record.duration = math.max(row.record.duration or 0,
-                                         shape.life * repeats)
-          row.def.anim = row.record
-          row.hasShakes = true
-          marked = marked + 1
-          shown = shown or row.record.affine
-          break
+          local fn = t.fn - (t.fn % 2)
+          local selector = 0
+          if stretchTarget and fn == stretchTarget then
+            selector = 1
+          elseif stretchAttacker and fn == stretchAttacker then
+            selector = 0
+          elseif selectorFn[fn] then
+            local arg = tonumber(t.args and t.args[1])
+            if arg and arg >= 0 and arg <= 3 then selector = arg end
+          end
+          local one = { at = t.at or 0,
+                        steps = shape.steps, base = shape.base,
+                        repeats = repeats, closes = shape.closes,
+                        life = shape.life * repeats,
+                        selector = selector,
+                        onTarget = (selector % 2 == 1) or nil,
+                        source = ("ROM:the affine table at %07X, "
+                                  .. "through the preparer at %07X")
+                                 :format(shape.at, shape.preparer) }
+          list[#list + 1] = one
+          shown = shown or one
         end
+      end
+      if #list > 0 then
+        row.record = row.record or {}
+        row.record.affineTasks = list
+        row.record.affine = nil
+        if row.record.shake or row.record.flash then coarse = coarse - 1 end
+        row.record.shake, row.record.flash = nil, nil
+        for _, one in ipairs(list) do
+          row.record.duration = math.max(row.record.duration or 0,
+                                         (one.at or 0) + (one.life or 0))
+        end
+        row.def.anim = row.record
+        row.hasShakes = true
+        marked = marked + 1
       end
     end
     if marked > 0 then
@@ -34768,7 +37767,7 @@ function RomExtractorGen3:extractMoveAnimations()
 
   -- ---- ...AND THE RUN-UP -------------------------------------------------
   do
-    local shape = self:monRunup()
+    local shape = self:monRunup(leftovers)
     local marked, calls = 0, 0
     if shape then
       for _, row in pairs(leftovers) do
@@ -34951,35 +37950,37 @@ function RomExtractorGen3:extractMoveAnimations()
     local marked = 0
     if shape then
       for _, row in pairs(leftovers) do
-        -- a move may call it more than once; identical calls in a row are the
-        -- same pulse repeated, and anything else takes the first
-        local first, same = nil, 0
+        local list = {}
         for _, t in ipairs(row.tasks or {}) do
           local fn = t.fn and (t.fn - (t.fn % 2)) or -1
           if fn == shape.task or fn == shape.task + 0x08000000 then
             local built = self:pulseShape(t.args, shape)
             if built then
-              if not first then first, same = built, 1
-              elseif first.steps[1].dx == built.steps[1].dx
-                     and first.steps[1].dy == built.steps[1].dy
-                     and first.steps[1].dur == built.steps[1].dur
-                     and first.onTarget == built.onTarget then
-                same = same + 1
-              end
+              -- Each createvisualtask is its own scheduled occurrence.  BIND,
+              -- SNORE and HIDDEN POWER deliberately separate identical calls
+              -- with delays/barriers; folding them into `repeats` made the
+              -- later pulses start immediately after the first.
+              built.at = t.at or 0
+              built.selector = built.onTarget and 1 or 0
+              list[#list + 1] = built
             end
           end
         end
-        -- ...AND NEVER OVER A SHAPE THE TABLE PASS ALREADY FOUND.  A move
-        -- with an affine table of its own is playing that; this is the
-        -- fallback for the fourteen that keep theirs in the script.
-        if first and not (row.record and row.record.affine) then
-          first.repeats = same
-          first.life = first.life * same
+        if #list > 0 then
           row.record = row.record or {}
-          row.record.affine = first
+          local existing = row.record.affineTasks or {}
+          for _, one in ipairs(list) do existing[#existing + 1] = one end
+          table.sort(existing, function(a, b)
+            return (a.at or 0) < (b.at or 0)
+          end)
+          row.record.affineTasks = existing
+          row.record.affine = nil
           if row.record.shake or row.record.flash then coarse = coarse - 1 end
           row.record.shake, row.record.flash = nil, nil
-          row.record.duration = math.max(row.record.duration or 0, first.life)
+          for _, one in ipairs(list) do
+            row.record.duration = math.max(row.record.duration or 0,
+                                           (one.at or 0) + (one.life or 0))
+          end
           row.def.anim = row.record
           row.hasShakes = true
           marked = marked + 1
@@ -35025,9 +38026,43 @@ function RomExtractorGen3:extractMoveAnimations()
     end
   end
 
+  -- ---- ...AND TRANSFORM'S MOSAICED SPECIES SWAP --------------------------
+  do
+    local shape = waitTransform
+    local marked = 0
+    if shape then
+      for _, row in pairs(leftovers) do
+        if row.id == "TRANSFORM" then
+          for _, t in ipairs(row.tasks or {}) do
+            if taskFn(t) == shape.task then
+              row.record = row.record or {}
+              local one = {}
+              for k, v in pairs(shape) do one[k] = v end
+              one.at = t.at or 0
+              row.record.transform = one
+              if row.record.shake or row.record.flash then coarse = coarse - 1 end
+              row.record.shake, row.record.flash = nil, nil
+              row.record.duration = math.max(row.record.duration or 0,
+                                             one.at + one.waitLife)
+              row.def.anim = row.record
+              row.hasShakes = true
+              marked = marked + 1
+              break
+            end
+          end
+        end
+      end
+    end
+    if marked > 0 then
+      Logger.info("Gen3 move animations: TRANSFORM mosaics to 15 at cb45, "
+                    .. "swaps species at cb46, clears at cb91 and tears down "
+                    .. "at cb92 (%s)", shape.source)
+    end
+  end
+
   -- ---- ...AND THE SCREEN THAT GOES WHITE ---------------------------------
   do
-    local shape = self:screenWhite()
+    local shape = waitWhite
     local marked = 0
     if shape then
       for _, row in pairs(leftovers) do
@@ -35041,9 +38076,15 @@ function RomExtractorGen3:extractMoveAnimations()
             -- half of that test
             if row.record.shake then coarse = coarse - 1 end
             row.record.shake = nil
-            row.record.flash = true
-            row.record.whiteout = shape
-            row.record.duration = math.max(row.record.duration or 0, shape.life)
+            -- This has its own exact palette state; the old scalar flash would
+            -- add a second periodic white rectangle over it.
+            row.record.flash = nil
+            local one = {}
+            for k, v in pairs(shape) do one[k] = v end
+            one.at = t.at or 0
+            row.record.whiteout = one
+            row.record.duration = math.max(row.record.duration or 0,
+                                           one.at + one.waitLife)
             row.def.anim = row.record
             row.hasShakes = true
             marked = marked + 1
@@ -35053,22 +38094,78 @@ function RomExtractorGen3:extractMoveAnimations()
       end
     end
     if marked > 0 then
-      Logger.info("Gen3 move animations: %d move(s) white the screen out for "
-                    .. "%d frames and fade it back over %d (%s)", marked,
-                  shape.hold, shape.steps * shape.every, shape.source)
+      Logger.info("Gen3 move animations: %d move(s) hold battle BG palettes "
+                    .. "white / visible mon palettes black through cb8, "
+                    .. "restore cb9..39 and tear down cb40 (%s)", marked,
+                  shape.source)
+    end
+  end
+
+  -- ---- ...AND CAMOUFLAGE'S TERRAIN TINT / DISAPPEAR / RETURN -------------
+  do
+    local marked = 0
+    if camouflageBlendFn and camouflageFadeOutFn and camouflageFadeInFn then
+      for _, row in pairs(leftovers) do
+        if row.id == "CAMOUFLAGE" then
+          local tintAt, fadeOutAt, resetAt, fadeInAt
+          for _, t in ipairs(row.tasks or {}) do
+            local fn = taskFn(t)
+            if fn == camouflageBlendFn and #t.args == 4 then
+              if t.args[2] == 3 and t.args[3] == 0 and t.args[4] == 14 then
+                tintAt = t.at or 0
+              elseif t.args[2] == 0 and t.args[3] == 0 and t.args[4] == 0 then
+                resetAt = t.at or 0
+              end
+            elseif fn == camouflageFadeOutFn and #t.args == 1
+                   and t.args[1] == 4 then
+              fadeOutAt = t.at or 0
+            elseif fn == camouflageFadeInFn and #t.args == 1
+                   and t.args[1] == 1 then
+              fadeInAt = t.at or 0
+            end
+          end
+          if tintAt and fadeOutAt and resetAt and fadeInAt then
+            row.record = row.record or {}
+            local finish = fadeInAt + 32
+            row.record.camouflage = {
+              tintAt = tintAt, tintFirst = 3, tintEvery = 4, tintTo = 14,
+              tintLife = 59,
+              fadeOutAt = fadeOutAt, fadeOutEvery = 5, fadeOutLife = 80,
+              resetAt = resetAt,
+              fadeInAt = fadeInAt, fadeInEvery = 2, fadeInLife = 32,
+              colours = camouflageColours,
+              waitLife = finish,
+              source = ("ROM:CAMOUFLAGE tasks %07X/%07X/%07X; FireRed "
+                        .. "terrain blend/fade state machines")
+                        :format(camouflageBlendFn, camouflageFadeOutFn,
+                                camouflageFadeInFn),
+            }
+            if row.record.shake or row.record.flash then coarse = coarse - 1 end
+            row.record.shake, row.record.flash = nil, nil
+            row.record.duration = math.max(row.record.duration or 0, finish)
+            row.def.anim = row.record
+            row.hasShakes = true
+            marked = marked + 1
+          end
+        end
+      end
+    end
+    if marked > 0 then
+      Logger.info("Gen3 move animations: CAMOUFLAGE uses terrain tint cb3..59, "
+                    .. "fade-out cb5..80 and fade-in cb2..32 after its exact "
+                    .. "wait barriers")
     end
   end
 
   -- ---- ...AND THE FLOURISH A STAT-UP MOVE MAKES --------------------------
   do
     local shape = self:statFlourish()
-    local F = RomExtractorGen3.STAT_FLOURISH
     local marked = 0
     if shape then
       for _, row in pairs(leftovers) do
         for _, t in ipairs(row.tasks or {}) do
           local fn = t.fn and (t.fn - (t.fn % 2)) or -1
-          if fn == F.TASK or fn == F.TASK + 0x08000000 then
+          if fn == shape.task or fn == shape.task + 0x08000000 then
             row.record = row.record or {}
             row.record.flourish = shape
             if row.record.shake or row.record.flash then coarse = coarse - 1 end
@@ -35116,6 +38213,194 @@ function RomExtractorGen3:extractMoveAnimations()
                     .. "%dth of itself and back (%s)", marked,
                   math.floor((shape.base + shape.shrinkFrames
                               * shape.shrinkStep) / shape.base), shape.source)
+    end
+  end
+
+  -- ---- ...AND FIVE BATTLER-LOCAL SCANLINE TASKS ---------------------------
+  --
+  -- These do not replace the battle background.  Each temporarily copies one
+  -- battler into its BG and changes that BG's horizontal (DIG/SKETCH/
+  -- RAPID SPIN/EXTRASENSORY/DRAGON DANCE) and, for DIG, vertical scroll on
+  -- selected scanlines.  The renderer can reproduce that by slicing only the
+  -- affected battler into one-pixel rows; no general BG/window compositor is
+  -- needed.  Keep the representation deliberately small: task kind, exact
+  -- script timestamp/arguments, battler selector and the cartridge function
+  -- address that proved which task the script called.
+  --
+  -- Do NOT fold ACID ARMOR or MEMENTO into this family.  ACID ARMOR also
+  -- programs BLDALPHA while MEMENTO programs WININ/WINOUT/WIN0 and multiple
+  -- BGs; those require a different renderer contract.
+  local scanlineMoves, scanlineCalls = 0, 0
+  do
+    local function taskFn(t)
+      local fn = t and t.fn
+      return fn and (fn - (fn % 2)) or nil
+    end
+    local function add(list, t, kind, selector, extra)
+      local one = {
+        kind = kind, at = t.at or 0, selector = selector,
+        task = taskFn(t),
+        source = ("ROM:createvisualtask %07X (%s)")
+                 :format(taskFn(t) or 0, kind),
+      }
+      for k, v in pairs(extra or {}) do one[k] = v end
+      list[#list + 1] = one
+      scanlineCalls = scanlineCalls + 1
+    end
+
+    for _, row in pairs(leftovers) do
+      local list = {}
+      if row.id == "DIG" then
+        local unleash = row.when and row.when.moveTurnOdd
+        for _, t in ipairs(row.tasks or {}) do
+          if #t.args == 1 then
+            if not unleash and t.args[1] == 0 then
+              -- AnimTask_DigDownMovement(FALSE) -> AnimTask_DigBounceMovement.
+              add(list, t, "dig_down", 0)
+              break
+            elseif unleash and t.args[1] == 1 then
+              -- AnimTask_DigUpMovement(TRUE) -> AnimTask_DigRiseUpFromHole.
+              add(list, t, "dig_up", 0)
+              break
+            end
+          end
+        end
+      elseif row.id == "SKETCH" then
+        for _, t in ipairs(row.tasks or {}) do
+          if #t.args == 0 then
+            add(list, t, "sketch", 1)
+            break
+          end
+        end
+      elseif row.id == "RAPID_SPIN" then
+        for _, t in ipairs(row.tasks or {}) do
+          if #t.args == 3 and t.args[1] == 0 and t.args[2] == 2
+             and (t.args[3] == 0 or t.args[3] == 1) then
+            add(list, t, "rapid_spin", 0,
+                { speed = t.args[2], restore = t.args[3] ~= 0 })
+          end
+        end
+      elseif row.id == "EXTRASENSORY" then
+        -- One one-argument function appears with all three source stages
+        -- 0/1/2.  The other one-argument task is the transparent clone and
+        -- therefore cannot satisfy this set.
+        local byFn = {}
+        for _, t in ipairs(row.tasks or {}) do
+          if #t.args == 1 then
+            local fn = taskFn(t)
+            local g = fn and byFn[fn]
+            if fn and not g then g = { calls = {}, seen = {} }; byFn[fn] = g end
+            if g then
+              g.calls[#g.calls + 1] = t
+              g.seen[t.args[1]] = true
+            end
+          end
+        end
+        local chosen = nil
+        for fn, g in pairs(byFn) do
+          if g.seen[0] and g.seen[1] and g.seen[2] then
+            if chosen then chosen = false break end
+            chosen = fn
+          end
+        end
+        local g = chosen and byFn[chosen]
+        if g then
+          for _, t in ipairs(g.calls) do
+            if t.args[1] >= 0 and t.args[1] <= 2 then
+              add(list, t, "extrasensory", 1, { stage = t.args[1] })
+            end
+          end
+        end
+      elseif row.id == "DRAGON_DANCE" then
+        for _, t in ipairs(row.tasks or {}) do
+          if #t.args == 0 then
+            add(list, t, "dragon_dance", 0)
+            break
+          end
+        end
+      end
+
+      if #list > 0 then
+        row.record = row.record or {}
+        row.record.scanlines = list
+        row.def.anim = row.record
+        -- This is a real task-drawn reaction.  In particular EXTRASENSORY has
+        -- no createsprite of its own, so the coarse fallback must not replace
+        -- the row distortion with a made-up whole-screen flash.
+        row.hasShakes = true
+        scanlineMoves = scanlineMoves + 1
+      end
+    end
+  end
+  if scanlineMoves > 0 then
+    Logger.info("Gen3 move animations: %d row(s) use %d battler-local "
+                  .. "scanline task call(s)", scanlineMoves, scanlineCalls)
+  end
+
+  -- ---- ...AND THE TWO BG-COPIED SHADOW/WARP TASKS -------------------------
+  --
+  -- ACID ARMOR is still battler-local, but unlike the five row-sliced tasks
+  -- above it writes BOTH HOFS and VOFS and cross-fades the copied battler BG.
+  -- MEMENTO additionally drives WIN0 and blackens that copied BG.  Keep both as
+  -- explicit records so the runtime can sample destination scanlines exactly;
+  -- in particular MEMENTO must derive its lifetime from the live species'
+  -- front/back MonCoords rather than an importer-side guessed duration.
+  do
+    local marked = 0
+    local function taskFn(t)
+      local fn = t and t.fn
+      return fn and (fn - (fn % 2)) or nil
+    end
+    for _, row in pairs(leftovers) do
+      if row.id == "ACID_ARMOR" and waitAcidArmor then
+        for _, t in ipairs(row.tasks or {}) do
+          local args = t.args or {}
+          if #args == 1 and args[1] == 0
+             and taskFn(t) == waitAcidArmor.task then
+            local record = row.record or {}
+            record.acidArmor = {
+              at = t.at or 0, life = 110, selector = 0,
+              task = taskFn(t),
+              source = ("ROM:createvisualtask %07X (AnimTask_AcidArmor)")
+                         :format(taskFn(t) or 0),
+            }
+            record.duration = math.max(record.duration or 0,
+                                       (t.at or 0) + 110)
+            record.flash, record.shake = nil, nil
+            row.record, row.def.anim = record, record
+            row.hasShakes = true
+            marked = marked + 1
+            break
+          end
+        end
+      elseif row.id == "MEMENTO" then
+        local calls = {}
+        for _, t in ipairs(row.tasks or {}) do
+          if #(t.args or {}) == 0 and taskFn(t) then calls[#calls + 1] = t end
+        end
+        -- The source script has exactly these four zero-argument tasks, in
+        -- order: InitMementoShadow, attacker shadow, HandleBg, target shadow.
+        -- Recording the four concrete functions prevents a shape-compatible
+        -- task elsewhere from silently entering this specialized renderer.
+        if #calls == 4 then
+          local record = row.record or {}
+          record.memento = {
+            initTask = taskFn(calls[1]), attackerTask = taskFn(calls[2]),
+            handleTask = taskFn(calls[3]), targetTask = taskFn(calls[4]),
+            attackerAt = calls[2].at or 2,
+            dynamicLife = true,
+            source = "ROM:Move_MEMENTO four-task BG/window sequence",
+          }
+          record.flash, record.shake = nil, nil
+          row.record, row.def.anim = record, record
+          row.hasShakes = true
+          marked = marked + 1
+        end
+      end
+    end
+    if marked > 0 then
+      Logger.info("Gen3 move animations: %d move(s) use exact copied-BG "
+                    .. "warp/window tasks", marked)
     end
   end
 
@@ -35196,7 +38481,7 @@ function RomExtractorGen3:extractMoveAnimations()
         end
         -- ...and a move whose mon already flinches has a real reaction
         -- already; the coarse one is for the moves with nothing at all
-        if not sheet and not row.hasShakes then
+        if not sheet and not row.hasShakes and not row.hasBackground then
           record = row.record or {}
           if row.backgrounds > 0 or def.target == GEN3_ANIM.TARGET_USER then
             record.flash = true
@@ -35227,22 +38512,29 @@ function RomExtractorGen3:extractMoveAnimations()
   -- report named; whatever else calls the same task gets it for the same
   -- reason.
   do
-    local shape = self:surfWave()
+    local surfTasks = animTasks.SURF or {}
+    local surfTask = surfTasks[1] and surfTasks[1].fn or nil
+    if surfTask then surfTask = surfTask - (surfTask % 2) end
+    local shape = self:surfWave(surfTask, false)
     local S = RomExtractorGen3.SURF_WAVE
     local marked = 0
     if shape then
       for _, row in pairs(leftovers) do
         for _, t in ipairs(row.tasks or {}) do
           local fn = t.fn and (t.fn - (t.fn % 2)) or -1
-          if fn == S.TASK or fn == S.TASK + 0x08000000 then
+          if fn == (surfTask or S.TASK)
+             or fn == (surfTask or S.TASK) + 0x08000000 then
+            local moveShape = self:surfWave(surfTask,
+                                             t.args and (t.args[1] or 0) ~= 0)
+            if not moveShape then break end
             local record = row.record or {}
-            record.surf = shape
+            record.surf = moveShape
             -- the coarse pass has already been past and given this move a
             -- screen wobble for having nothing; it has something now, so the
             -- consolation goes
             if record.shake or record.flash then coarse = coarse - 1 end
             record.shake, record.flash = nil, nil
-            record.duration = math.max(record.duration or 0, shape.life)
+            record.duration = math.max(record.duration or 0, moveShape.life)
             row.def.anim = record
             row.record = record
             marked = marked + 1
@@ -35266,8 +38558,10 @@ function RomExtractorGen3:extractMoveAnimations()
   -- exist -- 174 distinct functions, most of them one move's own -- so this
   -- is one of them, done properly, for the move the report named.
   do
-    local shape = self:animAfterimage()
-    local A = RomExtractorGen3.ANIM_AFTERIMAGE
+    local doubleTeamTasks = animTasks.DOUBLE_TEAM or {}
+    local afterimageTask = doubleTeamTasks[1] and doubleTeamTasks[1].fn or nil
+    if afterimageTask then afterimageTask = afterimageTask - (afterimageTask % 2) end
+    local shape = self:animAfterimage(afterimageTask)
     local marked = 0
     if shape then
       for _, row in pairs(leftovers) do
@@ -35275,7 +38569,7 @@ function RomExtractorGen3:extractMoveAnimations()
           -- the script stores a THUMB pointer, so the low bit is set and the
           -- table may hold it as a flat offset or a full address
           local fn = t.fn and (t.fn - (t.fn % 2)) or -1
-          if fn == A.TASK or fn == A.TASK + 0x08000000 then
+          if fn == afterimageTask or fn == afterimageTask + 0x08000000 then
             local record = row.record or {}
             record.afterimage = shape
             if record.shake or record.flash then coarse = coarse - 1 end
@@ -35317,8 +38611,11 @@ function RomExtractorGen3:extractMoveAnimations()
   local gfx, drawn = {}, 0
   if picAt and palAt then
     for slot, sheet in pairs(used) do
+      local rel = sheet.variant
+                    and ("battle_anim/p%s.png"):format(slot)
+                    or ("battle_anim/p%d.png"):format(sheet.tag)
       gfx[slot] = {
-        image = ("assets/generated/battle_anim/p%d.png"):format(sheet.tag),
+        image = "assets/generated/" .. rel,
         frameWidth = sheet.width,
         frameHeight = sheet.height,
         frames = sheet.frames,
@@ -35331,12 +38628,55 @@ function RomExtractorGen3:extractMoveAnimations()
       }
     end
     local okArt, artErr = pcall(function()
+      local written = {}
       for slot, sheet in pairs(used) do
+        local rel = sheet.variant
+                      and ("battle_anim/p%s.png"):format(slot)
+                      or ("battle_anim/p%d.png"):format(sheet.tag)
         local row = (sheet.tag - GEN3_ANIM.TAG_FIRST) * 8
         local art = self.rom:lz77(self.rom:pointer(picAt + row))
         local pal = self.rom:lz77(self.rom:pointer(palAt + row))
         if art and pal and #pal >= 32 then
           local colors = RomGba.palette(pal)
+          if sheet.iceCube then
+            local image = ImageWriter.blank(96, 96 * 3)
+            if not image then return end
+            local regions = {
+              { 0,  0, 64, 64,   0},
+              { 0, 64, 64, 32,  64},
+              {64,  0, 32, 64,  96},
+              {64, 64, 32, 32, 128},
+            }
+            for variant = 0, 2 do
+              for _, part in ipairs(regions) do
+                local dx, dy, w, h, tile =
+                  part[1], part[2], part[3], part[4], part[5]
+                local bytes, count = {}, w * h / 2
+                local base = tile * 32
+                for k = 1, count do bytes[k] = art[base + k] or 0 end
+                local px = RomGba.tiles4bpp(bytes, w / 8, h / 8)
+                for y = 1, h do
+                  for xx = 1, w do
+                    local index = px[y][xx]
+                    local source = index
+                    if index >= 13 and index <= 15 then
+                      source = 13 + ((index - 13 + variant) % 3)
+                    end
+                    local c = colors[source + 1]
+                    if index ~= 0 and c then
+                      image:setPixel(dx + xx - 1, variant * 96 + dy + y - 1,
+                                     c[1] / 255, c[2] / 255, c[3] / 255, 1)
+                    end
+                  end
+                end
+              end
+            end
+            if not written[rel] then
+              self:saveImage(image, rel)
+              written[rel] = true
+              drawn = drawn + 1
+            end
+          else
           local tw = math.floor(sheet.width / 8)
           local th = math.floor(sheet.height / 8)
           local frameBytes = sheet.width * sheet.height / 2
@@ -35346,8 +38686,10 @@ function RomExtractorGen3:extractMoveAnimations()
           for frame = 0, sheet.frames - 1 do
             -- lz77 hands back a LIST of bytes, not a string
             local bytes = {}
+            local tile = sheet.tileOffsets and sheet.tileOffsets[frame + 1]
+            local base = tile and tile * 32 or frame * frameBytes
             for k = 1, frameBytes do
-              bytes[k] = art[frame * frameBytes + k] or 0
+              bytes[k] = art[base + k] or 0
             end
             local px = RomGba.tiles4bpp(bytes, tw, th)
             local top = frame * sheet.height
@@ -35364,8 +38706,12 @@ function RomExtractorGen3:extractMoveAnimations()
               end
             end
           end
-          self:saveImage(image, ("battle_anim/p%d.png"):format(sheet.tag))
-          drawn = drawn + 1
+          if not written[rel] then
+            self:saveImage(image, rel)
+            written[rel] = true
+            drawn = drawn + 1
+          end
+          end
         end
       end
     end)
@@ -35376,14 +38722,52 @@ function RomExtractorGen3:extractMoveAnimations()
     end
   end
 
+  -- All decoder passes have now treated each alternate arm exactly like a
+  -- normal move row.  Attach their finished records to the real move record;
+  -- the battle supplies the selector at playback time.
+  local variantMoves, variantCount = {}, 0
+  for _, row in ipairs(variantRows) do
+    local alt = rawget(row.def, "anim") or row.record
+    if alt then
+      local parent = row.parentDef
+      parent.anim = parent.anim or {}
+      parent.anim.variants = parent.anim.variants or {}
+      parent.anim.variants[#parent.anim.variants + 1] = {
+        when = row.when, anim = alt,
+      }
+      variantMoves[row.id] = true
+      variantCount = variantCount + 1
+    end
+  end
+
+  -- `_site` exists only to pair a filtered drawable event with the same
+  -- createsprite instruction on the barrier retiming pass.  It is importer
+  -- bookkeeping, not runtime animation data.
+  local function stripEventSites(anim)
+    if type(anim) ~= "table" then return end
+    for _, event in ipairs(anim.events or {}) do event._site = nil end
+    for _, variant in ipairs(anim.variants or {}) do stripEventSites(variant.anim) end
+  end
+  for _, def in pairs(moves) do
+    if type(def) == "table" then stripEventSites(def.anim) end
+  end
+
   self:write("moves", moves)
   local constants = self._constants or {}
+  local affineSiteCount, affineMoveCount, affineProgramCount = 0, 0, 0
+  for _ in pairs(affinePairs) do affineSiteCount = affineSiteCount + 1 end
+  for _ in pairs(affineMoves) do affineMoveCount = affineMoveCount + 1 end
+  for _ in pairs(particleAffines) do affineProgramCount = affineProgramCount + 1 end
   constants.gen3MoveAnims = {
     table = tableAt,
     rows = GEN3_ANIM.ROWS,
     sounds = stamped,
     animated = animated,
     particles = spawned,
+    affineParticleMoves = affineMoveCount,
+    affineParticleSites = affineSiteCount,
+    affineParticlePrograms = affineProgramCount,
+    branchVariants = variantCount,
     -- of those, the ones whose art is named by a loadspritegfx rather than
     -- spawned by the script itself
     fromLoaded = fromLoaded,
@@ -35391,12 +38775,15 @@ function RomExtractorGen3:extractMoveAnimations()
     coarse = coarse,
     -- shake and flash are createvisualtask function addresses in this
     -- generation, and nothing in the cartridge names them
-    fields = { "sound", "events" },
+    fields = { "sound", "events", "backgrounds" },
     source = ("ROM:gBattleAnims_Moves %07X, %d scripts walked clean%s")
              :format(tableAt, GEN3_ANIM.ROWS,
                      picAt and (", gBattleAnimPicTable %07X (%d)")
                                :format(picAt, picCount) or ""),
   }
+  if moveBgAssets then
+    constants.gen3BattleAnimBackgrounds = moveBgAssets
+  end
   local sheetCount = 0
   for _ in pairs(gfx) do sheetCount = sheetCount + 1 end
   if sheetCount > 0 then
@@ -35405,15 +38792,27 @@ function RomExtractorGen3:extractMoveAnimations()
                                                        picCount, sheetCount)
     constants.gen3BattleAnimGfx = gfx
   end
+  local callbackRuntime = self._animCallbackRuntime
+  if type(callbackRuntime) == "table" and type(callbackRuntime.sine) == "table" then
+    constants.gen3BattleAnimSine = callbackRuntime.sine
+  end
+  if affineProgramCount > 0 then
+    particleAffines.source = ("ROM:SpriteTemplate affineAnims, %d nontrivial "
+                              .. "auto-start anim0 programs")
+                             :format(affineProgramCount)
+    constants.gen3BattleAnimAffines = particleAffines
+  end
   self._constants = constants
   self:write("constants", constants)
   Logger.info("Gen3 move animations: %d of %d moves play a sound, %d spawn "
                 .. "%d particles off %d sheets (%d drawn, %d from a loaded "
-                .. "sheet); %d shake the mon over %d calls and %d blend it "
+                .. "sheet); %d moves/%d createsprite sites auto-start one of "
+                .. "%d nontrivial affine anim0 programs; %d shake the mon "
+                .. "over %d calls and %d blend it "
                 .. "over %d; %d more shake or flash the screen",
               stamped, named, animated, spawned, sheetCount, drawn,
-              fromLoaded, shakeMoves, shakeCalls, blendMoves, blendCalls,
-              coarse)
+              fromLoaded, affineMoveCount, affineSiteCount, affineProgramCount,
+              shakeMoves, shakeCalls, blendMoves, blendCalls, coarse)
 end
 
 -- ---------------------------------------------------------------------------

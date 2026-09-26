@@ -1136,7 +1136,9 @@ end
 --       were never asked for at all
 -- v337: Gen 3 object-event frames preserve their gbagfx macroblock layout;
 --       this fixes FireRed's 32x16 Town Map and changes generated sprite data.
-local CACHE_FORMAT = "rom-cache-v337:"
+-- v338: FireRed exports its fifteen tutor moves and per-species tutor
+--       compatibility instead of overreading sTutorLearnsets as moves.
+local CACHE_FORMAT = "rom-cache-v338:"
 -- The completion marker is written under each version's cache prefix
 -- (rom-cache.complete for Red, blue/rom-cache.complete for Blue).
 local MARKER_PATH = "rom-cache.complete"

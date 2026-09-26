@@ -325,7 +325,7 @@ end
 -- window is the classic wipe unchanged.
 --
 -- Sx/Sy are LOVE-unit scales (Sy defaults to Sx on uniform surfaces).
-function Renderer:drawBattleWipe(wipe, ww, wh, ox, oy, vpw, vph, Sx, Sy)
+function Renderer:drawBattleWipe(wipe, ww, wh, ox, oy, vpw, vph, Sx, Sy, source)
   if not wipe or not wipe.prog or wipe.prog <= 0 then return end
   Sy = Sy or Sx
   local TW, TH = 8 * Sx, 8 * Sy
@@ -346,7 +346,8 @@ function Renderer:drawBattleWipe(wipe, ww, wh, ox, oy, vpw, vph, Sx, Sy)
   -- a transition that draws its own figure over the whole window (FireRed's
   -- scanline and sprite transitions), in window pixels
   if wipe.screenDraw then
-    wipe.screenDraw(wipe, prog, ww, wh, Sx, Sy)
+    wipe.screenDraw(wipe, prog, ww, wh, Sx, Sy,
+                    source or self.canvas, ox, oy, vpw, vph)
     love.graphics.setScissor()
     love.graphics.setColor(1, 1, 1, 1)
     return
@@ -869,7 +870,15 @@ function Renderer:endFrame(zones, worldZones)
   -- same reason GBC FX does, so either one alone is enough to take the
   -- present path; with neither, the frame draws straight to the screen
   -- exactly as it always did.
+  -- A scanline transition has to read the finished world+UI composite while
+  -- drawing the warped result.  Force the ordinary present target for those
+  -- frames so there is a texture we can snapshot before the wipe; reading the
+  -- texture that is also the active render target is undefined on GPUs.
+  local battleNeedsSource = self.battleWipe
+                            and self.battleWipe.style == "frlg_swirl"
+                            and self.battleWipe.screenDraw
   local needPresent = GBCFX.active() or Pipelines.wantsPresent()
+                      or battleNeedsSource
   local present = nil
   if needPresent then
     if not self.presentCanvas or self.presentCanvas:getWidth() ~= ww
@@ -1250,8 +1259,32 @@ function Renderer:endFrame(zones, worldZones)
   -- The battle wipe covers the whole surface, letterbox included, so it goes
   -- over the finished composite rather than under the UI blit.  On hardware
   -- it is the tilemap being overwritten -- there is nothing it does not cover.
+  local battleSource = nil
+  if battleNeedsSource and present then
+    -- Snapshot the untouched finished frame into a second screen-sized canvas.
+    -- `present` is the current render target here, so sampling it directly in
+    -- frlg_swirl would create a read/write feedback loop.  Copying present ->
+    -- battleSource, then drawing battleSource -> present keeps every world/UI
+    -- pixel available to the HBlank-style row warp without feedback artifacts.
+    if not self.battleSourceCanvas
+       or self.battleSourceCanvas:getWidth() ~= ww
+       or self.battleSourceCanvas:getHeight() ~= wh then
+      if self.battleSourceCanvas and self.battleSourceCanvas.release then
+        self.battleSourceCanvas:release()
+      end
+      self.battleSourceCanvas = love.graphics.newCanvas(ww, wh)
+      self.battleSourceCanvas:setFilter("nearest", "nearest")
+    end
+    battleSource = self.battleSourceCanvas
+    love.graphics.setCanvas(battleSource)
+    love.graphics.clear(0, 0, 0, 0)
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.draw(present, 0, 0)
+    love.graphics.setCanvas(present)
+  end
   if self.battleWipe then
-    self:drawBattleWipe(self.battleWipe, ww, wh, ox, oy, vpw, vph, Sx, Sy)
+    self:drawBattleWipe(self.battleWipe, ww, wh, ox, oy, vpw, vph, Sx, Sy,
+                        battleSource)
   end
 
   -- Palette-register effects (BattleTransition_FlashScreen's rBGP writes, the

@@ -267,7 +267,22 @@ function EffectRegistry.runDamaging(battle, ctx, record)
       end
     else
       battle.nextInsert = (battle.nextInsert or 0) + 1
-      hitRow = { anim = move.id, attackerIsPlayer = user.isPlayer }
+      -- FireRed re-enters attackanimation for every strike with
+      -- sB_ANIM_TURN advanced to that strike.  The move-animation bytecode
+      -- uses that value for alternating multi-hit arms (DOUBLESLAP,
+      -- FURY_ATTACK, TRIPLE_KICK, ARM_THRUST, ...).  Keep the exact battler
+      -- slots too: a replay from the right slot of a double battle must not
+      -- silently fall back to the left/main battlers after hit one.
+      local baseCtx = battle.moveAnimRow and battle.moveAnimRow.animContext
+      local hitCtx = {}
+      if type(baseCtx) == "table" then
+        for k, v in pairs(baseCtx) do hitCtx[k] = v end
+      end
+      hitCtx.moveTurn = h - 1
+      hitRow = { anim = move.id, attackerIsPlayer = user.isPlayer,
+                 attackerPosition = user.position,
+                 targetPosition = target and target.position,
+                 animContext = hitCtx }
       table.insert(battle.queue, battle.nextInsert, hitRow)
     end
     local hadSub = target.substituteHP ~= nil

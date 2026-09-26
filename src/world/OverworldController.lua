@@ -2048,12 +2048,35 @@ end
 -- the wipe finishes; by default that is pushing the battle.
 function OverworldState:pushBattleTransition(battle, opts, onDone)
   local BattleTransition = require("src.render.BattleTransition")
+  local Party = require("src.pokemon.Party")
   local lead
   for _, mon in ipairs(Game.save.party) do
-    if mon.hp > 0 then lead = mon break end
+    if mon.hp > 0 and not Party.isEgg(mon) then lead = mon break end
   end
   local enemyLevel = battle and battle.enemy and battle.enemy.mon
     and battle.enemy.mon.level or 0
+  local compareEnemyLevel = enemyLevel
+  local comparePlayerLevel = lead and lead.level or nil
+  -- FireRed's trainer transition comparison sums two Pokemon only when the
+  -- trainer record itself is flagged as a double battle.  Equal levels take
+  -- the second column, just like stronger opponents do.
+  if GameVersion.get() == "firered" and battle and battle.kind == "trainer"
+     and battle.trainer and battle.trainer.doubleBattle then
+    compareEnemyLevel = 0
+    for i = 1, math.min(2, #(battle.enemyParty or {})) do
+      compareEnemyLevel = compareEnemyLevel
+        + (tonumber(battle.enemyParty[i] and battle.enemyParty[i].level) or 0)
+    end
+    comparePlayerLevel = 0
+    local count = 0
+    for _, mon in ipairs(Game.save.party) do
+      if (tonumber(mon.hp) or 0) > 0 and not Party.isEgg(mon) then
+        comparePlayerLevel = comparePlayerLevel + (tonumber(mon.level) or 0)
+        count = count + 1
+        if count == 2 then break end
+      end
+    end
+  end
   -- The fade back in from white on the way out is BattleState:finish()'s
   -- job now -- the one choke point every battle passes through on exit,
   -- guaranteed regardless of which caller pushed the battle -- so this
@@ -2075,15 +2098,16 @@ function OverworldState:pushBattleTransition(battle, opts, onDone)
     trainer = battle and battle.kind == "trainer",
     stronger = lead ~= nil and enemyLevel >= lead.level + 3,
     -- FireRed picks on a plain comparison (GetWildBattleTransition)
-    weaker = lead ~= nil and enemyLevel < lead.level,
+    weaker = comparePlayerLevel ~= nil and compareEnemyLevel < comparePlayerLevel,
     dungeon = self:isDungeonTransitionMap(),
     tutorial = opts and opts.tutorial or nil,
     contest = opts and opts.contest or nil,
     safari = opts and opts.safari or nil,
     mapTransitionType = self:gen3TransitionType(),
-    enemyLevel = enemyLevel,
-    leadLevel = lead and lead.level or nil,
+    enemyLevel = compareEnemyLevel,
+    leadLevel = comparePlayerLevel,
     trainerClass = trainer and tonumber(trainer.class) or nil,
+    trainerId = trainer and tonumber(trainer.index) or nil,
     trainerName = trainer and trainer.name or nil,
     legendary = battle and battle.legendary or nil,
     legendSpecies = (speciesDef and speciesDef.name) or enemySpecies,
@@ -9812,7 +9836,7 @@ function OverworldState:startTrainerApproach(npc, dist, partner)
   -- the "!" bubble pause before the walk-up (EmotionBubble holds the
   -- world for 60 frames, engine/overworld/emotion_bubbles.asm)
   self.emote = {
-    npc = npc, frames = 60,
+    npc = npc, frames = 60, totalFrames = 60,
     onDone = function()
       if dist > 1 then
         self:scriptMove(npc, npc.facing, dist - 1, fight)
@@ -13669,8 +13693,41 @@ function OverworldState:drawWorld()
           self.gen3EmoteImages[path] = held
         end
         if held then
+          local age = math.max(0, (self.emote.totalFrames or 60)
+                                  - self.emote.frames)
+          local frame = 0
+          local left = age
+          for _, step in ipairs(record.timeline or {}) do
+            local duration = tonumber(step[2]) or 1
+            if left < duration then
+              frame = tonumber(step[1]) or 0
+              break
+            end
+            left = left - duration
+            frame = tonumber(step[1]) or frame
+          end
+          -- SpriteCB_TrainerIcons starts data[3] at -5, accumulates it into
+          -- data[4], and increments that velocity until the offset returns 0.
+          local bounce, velocity = 0, -5
+          for _ = 1, math.min(age + 1, 11) do
+            bounce = bounce + velocity
+            if bounce ~= 0 then velocity = velocity + 1 else velocity = 0 end
+          end
+          local fw, fh = tonumber(record.width) or 16, tonumber(record.height) or 16
+          local iw, ih = held:getDimensions()
+          local q = nil
+          if (tonumber(record.frames) or 1) > 1 then
+            self.gen3EmoteQuads = self.gen3EmoteQuads or {}
+            local key = path .. ":" .. tostring(frame)
+            q = self.gen3EmoteQuads[key]
+            if not q then
+              q = love.graphics.newQuad(frame * fw, 0, fw, fh, iw, ih)
+              self.gen3EmoteQuads[key] = q
+            end
+          end
           love.graphics.setColor(1, 1, 1, 1)
-          love.graphics.draw(held, ex, ey)
+          if q then love.graphics.draw(held, q, ex, ey + bounce)
+          else love.graphics.draw(held, ex, ey + bounce) end
           drawn = true
         end
       end

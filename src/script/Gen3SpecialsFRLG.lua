@@ -895,6 +895,141 @@ return function(Gen3Commands)
     { species = "CHARIZARD", move = "BLAST_BURN", tutor = 16, flag = 0x2DF },
     { species = "BLASTOISE", move = "HYDRO_CANNON", tutor = 17, flag = 0x2E0 },
   }
+
+  -- FireRed's ChooseMonForMoveTutor has a different contract from Emerald's
+  -- same-named special.  In FireRed the party action owns the ENTIRE teach:
+  -- compatibility, already-known check, insertion/replacement, and only then
+  -- VAR_RESULT=TRUE.  The importer maps the name to shared special 477, whose
+  -- Emerald implementation is intentionally only a picker (it returns a slot
+  -- in 0x8008 for a later script step).  Route 4 therefore used to consume its
+  -- one-shot tutor flag after any party pick while leaving the mon unchanged.
+  --
+  -- Keep Emerald's handler intact globally and replace it only while FireRed's
+  -- specials are installed.
+  local emeraldChooseMonForMoveTutor = S[477]
+  local function capeBrinkTutor(tutor)
+    for _, row in ipairs(CAPE_BRINK) do
+      if row.tutor == tutor then return row end
+    end
+  end
+  local function regularTutorMove(ctx, tutor)
+    local moves = ((data_(ctx) or {}).constants or {}).tutorMoves or {}
+    return moves[tutor + 1]
+  end
+  local function tutorCompatible(ctx, mon, tutor, move)
+    if tutor >= 15 then
+      local row = capeBrinkTutor(tutor)
+      return row ~= nil and mon.species == row.species
+    end
+    local def = ((data_(ctx) or {}).pokemon or {})[mon.species]
+    for _, id in ipairs((def and def.tutorMoves) or {}) do
+      if id == move then return true end
+    end
+    return false
+  end
+  local function knowsMove(mon, move)
+    for _, slot in ipairs(mon.moves or {}) do
+      local id = type(slot) == "table" and slot.id or slot
+      if id == move then return true end
+    end
+    return false
+  end
+  local function tutorLine(ctx, role, mon, move)
+    local d = data_(ctx) or {}
+    local lines = (d.constants or {}).gen3MoveLearn or {}
+    local mdef = (d.moves or {})[move]
+    local pdef = (d.pokemon or {})[mon.species]
+    local monName = mon.nickname or (pdef and pdef.name) or tostring(mon.species)
+    local moveName = (mdef and mdef.name) or tostring(move)
+    local fallback = ({
+      learned = "{VAR1} learned\n{VAR2}!",
+      alreadyKnows = "{VAR1} already knows\n{VAR2}.",
+      notCompatible = "{VAR1} and {VAR2}\nare not compatible.",
+    })[role] or ""
+    local text = lines[role] or fallback
+    text = text:gsub("{VAR1}", function() return monName end)
+               :gsub("{VAR2}", function() return moveName end)
+    Commands.show_text(ctx, text)
+  end
+
+  S[477] = function(ctx)
+    if require("src.core.GameVersion").get() ~= "firered" then
+      return emeraldChooseMonForMoveTutor and emeraldChooseMonForMoveTutor(ctx)
+    end
+    local game, runner = ctx.game, ctx.runner
+    local tutor = var(ctx, 0x8005)
+    -- A malformed/new tutor id should retain the shared behavior rather than
+    -- turning an unrelated script into a failed teach.
+    if tutor < 0 or tutor > 17 then
+      return emeraldChooseMonForMoveTutor and emeraldChooseMonForMoveTutor(ctx)
+    end
+
+    local move
+    if tutor < 15 then
+      move = regularTutorMove(ctx, tutor)
+    else
+      local row = capeBrinkTutor(tutor)
+      move = row and row.move
+    end
+    setVar(ctx.save, VAR_RESULT, 0)
+    if not (game and game.stack and runner and move) then return end
+
+    local mon
+    if tutor >= 15 then
+      -- Cape Brink preselects the lead mon in 0x8007 and the cartridge skips
+      -- the ordinary party picker for these three ultimate moves.
+      mon = party(ctx)[var(ctx, 0x8007) + 1]
+    else
+      local okScreens, Screens = pcall(require, "src.ui.Screens")
+      if not okScreens then return end
+      local picked
+      local pushed = pcall(Screens.push, game, "PartyMenu", {
+        pickOnly = true,
+        tmhm = { move = move, kind = "TUTOR" },
+        onCancel = function() runner:resume() end,
+        onSwitch = function(chosen)
+          picked = chosen
+          runner:resume()
+        end,
+      })
+      if not pushed then return end
+      runner:yield()
+      mon = picked
+    end
+
+    if not mon or mon.isEgg or mon.egg or mon.species == "EGG" then return end
+    if not tutorCompatible(ctx, mon, tutor, move) then
+      tutorLine(ctx, "notCompatible", mon, move)
+      return
+    end
+    if knowsMove(mon, move) then
+      tutorLine(ctx, "alreadyKnows", mon, move)
+      return
+    end
+
+    local d = data_(ctx) or {}
+    local mdef = (d.moves or {})[move]
+    mon.moves = mon.moves or {}
+    if #mon.moves < (Gen3Commands.MAX_MON_MOVES or 4) then
+      table.insert(mon.moves, { id = move, pp = (mdef and mdef.pp) or 5 })
+      setVar(ctx.save, VAR_RESULT, 1)
+      tutorLine(ctx, "learned", mon, move)
+      return
+    end
+
+    local okScreens, Screens = pcall(require, "src.ui.Screens")
+    if not okScreens then return end
+    local learned = false
+    local pushed = pcall(Screens.push, game, "MoveLearnMenu", mon, move,
+                         function(ok)
+                           learned = ok and true or false
+                           runner:resume()
+                         end)
+    if not pushed then return end
+    runner:yield()
+    setVar(ctx.save, VAR_RESULT, learned and 1 or 0)
+  end
+
   def(419, function(ctx)                     -- CapeBrinkGetMoveToTeachLeadPokemon
     local list = party(ctx)
     local lead = 0

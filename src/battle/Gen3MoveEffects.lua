@@ -884,16 +884,37 @@ ACC.ROLE_PLAY_EFFECT = true
 -- rather than a constant -- and NORMAL is the cartridge's own answer for
 -- the ordinary case (a building, a plain route in the link/battle screens).
 local TERRAIN_TYPE = {
-  CAVE = "ROCK", SAND = "GROUND", GRASS = "GRASS", WATER = "WATER",
-  UNDERWATER = "WATER", MOUNTAIN = "ROCK", BUILDING = "NORMAL",
+  GRASS = "GRASS", LONG_GRASS = "GRASS",
+  SAND = "GROUND",
+  UNDERWATER = "WATER", WATER = "WATER", POND = "WATER",
+  MOUNTAIN = "ROCK", CAVE = "ROCK",
+  BUILDING = "NORMAL", PLAIN = "NORMAL",
 }
 Gen3MoveEffects.TERRAIN_TYPE = TERRAIN_TYPE
 
 P.CAMOUFLAGE_EFFECT = function(battle, user)
-  local terrain = battle.terrain or (battle.field and battle.field.terrain)
+  -- FireRed's Cmd_settypetoterrain indexes sTerrainToType with the battle
+  -- terrain chosen when the field was built. Gen3Battle already derives that
+  -- same terrain from the live map/behaviour and caches it on BattleState;
+  -- battle.terrain was never populated here, which silently made every
+  -- Camouflage NORMAL.
+  local terrain = battle.gen3Terrain or battle.terrain
+                  or (battle.field and battle.field.terrain)
+  if not terrain and battle.game then
+    local ok, Gen3Battle = pcall(require, "src.battle.Gen3Battle")
+    if ok and Gen3Battle and Gen3Battle.terrainFor then
+      terrain = Gen3Battle.terrainFor(battle.game)
+      battle.gen3Terrain = terrain
+    end
+  end
   local newType = TERRAIN_TYPE[terrain or ""] or "NORMAL"
-  if #(user.curTypes or {}) == 1 and user.curTypes[1] == newType then
-    return { Strings("But, it failed!") }
+  -- IS_BATTLER_OF_TYPE checks BOTH type slots before SET_BATTLER_TYPE writes
+  -- the terrain type into both.  A dual-type mon that already carries the
+  -- result therefore fails too.
+  for _, current in ipairs(user.curTypes or {}) do
+    if current == newType then
+      return { Strings("But, it failed!") }
+    end
   end
   user.curTypes = { newType }
   return { Strings("%s transformed\ninto the %s type!", displayName(user),

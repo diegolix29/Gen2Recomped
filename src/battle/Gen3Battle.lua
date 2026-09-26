@@ -44,6 +44,7 @@ local PaletteFX = require("src.render.PaletteFX")
 local Runtime = require("src.mods.Runtime")
 local Strings = require("src.core.Strings")
 local TypeChart = require("src.battle.TypeChart")
+local GameVersion = require("src.core.GameVersion")
 
 local Gen3Battle = {
   WIDTH = 240,
@@ -216,6 +217,66 @@ end
 local stripCache = {}
 local stripQuads = {}
 local bandQuads = setmetatable({}, { __mode = "k" })
+local moveBgIndexShaderCache = nil
+
+local function moveBgIndexShader()
+  if moveBgIndexShaderCache ~= nil then return moveBgIndexShaderCache or nil end
+  if not (love.graphics and love.graphics.newShader) then
+    moveBgIndexShaderCache = false
+    return nil
+  end
+  local uniforms, choices = {}, {}
+  for i = 0, 15 do uniforms[#uniforms + 1] = ("extern vec3 c%d;"):format(i) end
+  for i = 0, 15 do
+    choices[#choices + 1] = ((i == 0) and "if" or "else if")
+      .. (" (idx < %.1f) rgb = c%d;"):format(i + 0.5, i)
+  end
+  local src = table.concat(uniforms, "\n") .. [[
+    vec4 effect(vec4 colour, Image tex, vec2 uv, vec2 screen) {
+      vec4 px = Texel(tex, uv);
+      number idx = floor(px.r * 15.0 + 0.5);
+      vec3 rgb = c0;
+  ]] .. table.concat(choices, "\n") .. [[
+      return vec4(rgb, px.a) * colour;
+    }
+  ]]
+  local ok, shader = pcall(love.graphics.newShader, src)
+  moveBgIndexShaderCache = ok and shader or false
+  return ok and shader or nil
+end
+
+local function drawIndexedMoveBg(g, battle, layer)
+  if not (layer and layer.indexed and layer.indexImage and layer.palette) then
+    return false
+  end
+  local okImage, image = pcall(Assets.image, layer.indexImage)
+  local shader = moveBgIndexShader()
+  if not (okImage and image and shader) then return false end
+  for i = 0, 15 do
+    local c = layer.palette[i + 1] or { 0, 0, 0 }
+    shader:send("c" .. i, { c[1] or 0, c[2] or 0, c[3] or 0 })
+  end
+  local oldShader = g.getShader and g.getShader() or nil
+  local sx, sy, sw, sh
+  if g.getScissor then sx, sy, sw, sh = g.getScissor() end
+  local ox = Gen3Battle.fieldOffset(battle)
+  local w, h = tonumber(layer.width) or 256, tonumber(layer.height) or 256
+  local scrollX = (tonumber(layer.scrollX) or 0) % w
+  local scrollY = (tonumber(layer.scrollY) or 0) % h
+  if g.setScissor then g.setScissor(ox, 0, Gen3Battle.WIDTH, Gen3Battle.HEIGHT) end
+  g.setShader(shader)
+  local b = tonumber(layer.brightness) or 1
+  g.setColor(b, b, b, 1)
+  for x = ox - scrollX - w, ox + Gen3Battle.WIDTH, w do
+    for y = -scrollY - h, Gen3Battle.HEIGHT, h do g.draw(image, x, y) end
+  end
+  g.setColor(1, 1, 1, 1)
+  g.setShader(oldShader)
+  if g.setScissor then
+    if sx then g.setScissor(sx, sy, sw, sh) else g.setScissor() end
+  end
+  return true
+end
 
 -- ---------------------------------------------------------------------------
 -- THE BOTTOM STRIP, OFF THE CARTRIDGE'S OWN WINDOW RECORD
@@ -389,6 +450,22 @@ local TERRAIN_BY_MAP_TYPE = {
   UNDERWATER = "UNDERWATER",
 }
 
+-- FireRed's metatile helpers are not the Emerald set above.  In particular,
+-- SHALLOW_WATER is sand for battle-terrain purposes, cycling-road pull-down
+-- grass is tall grass, and long-grass/bridge predicates are hard false in
+-- pokefirered.  Keep the exact FireRed surfable table separate so Camouflage
+-- and the battle background ask the same cartridge question.
+local FR_SURFABLE = {
+  POND_WATER = true, FAST_WATER = true, DEEP_WATER = true,
+  WATERFALL = true, OCEAN_WATER = true, UNUSED_WATER = true,
+  CYCLING_ROAD_WATER = true, EASTWARD_CURRENT = true,
+  WESTWARD_CURRENT = true, NORTHWARD_CURRENT = true,
+  SOUTHWARD_CURRENT = true,
+}
+local FR_DEEP_WATER = {
+  FAST_WATER = true, DEEP_WATER = true, OCEAN_WATER = true,
+}
+
 -- the name the import stage gave the behaviour under the player, or nil
 function Gen3Battle.behaviourUnder(game)
   local ow = game and game.overworld
@@ -415,6 +492,39 @@ function Gen3Battle.terrainFor(game)
   local cx = player and (player.cellX or player.x)
   local cy = player and (player.cellY or player.y)
   local behaviour = Gen3Battle.behaviourUnder(game)
+
+  if GameVersion.get() == "firered" then
+    -- BattleSetup_GetTerrainId, in source order.
+    if behaviour == "TALL_GRASS"
+       or behaviour == "CYCLING_ROAD_PULL_DOWN_GRASS" then
+      return "GRASS"
+    end
+    -- MetatileBehavior_IsLongGrass is literally FALSE in FireRed.
+    if behaviour == "SAND" or behaviour == "SHALLOW_WATER" then
+      return "SAND"
+    end
+
+    local mapType = def.mapType
+    if mapType == "UNDERGROUND" then
+      if behaviour == "INDOOR_ENCOUNTER" then return "BUILDING" end
+      if behaviour and FR_SURFABLE[behaviour] then return "POND" end
+      return "CAVE"
+    elseif mapType == "INDOOR" or mapType == "SECRET_BASE" then
+      return "BUILDING"
+    elseif mapType == "UNDERWATER" then
+      return "UNDERWATER"
+    elseif mapType == "OCEAN_ROUTE" then
+      if behaviour and FR_SURFABLE[behaviour] then return "WATER" end
+      return "PLAIN"
+    end
+
+    if behaviour and FR_DEEP_WATER[behaviour] then return "WATER" end
+    if behaviour and FR_SURFABLE[behaviour] then return "POND" end
+    if behaviour == "MOUNTAIN_TOP" then return "MOUNTAIN" end
+    -- FireRed's bridge predicates are also hard FALSE, so the surfing bridge
+    -- arm cannot change this answer.
+    return "PLAIN"
+  end
 
   local function onWater()
     if player and player.surfing then return true end
@@ -2166,7 +2276,8 @@ local function drawAnimationLayer(battle)
   -- that region exists to squeeze a Game Boy animation's 160x144 coordinates
   -- into this field, and a Gen 3 particle already knows where it goes.
   if battle.gen3AnimPlaying and battle.gen3Anim then
-    local ok = pcall(battle.gen3Anim.draw, battle.gen3Anim, battle)
+    local skipEvents = battle._gen3OamCompositedFrame == battle.frame
+    local ok = pcall(battle.gen3Anim.draw, battle.gen3Anim, battle, skipEvents)
     if ok then return end
   end
   local sprites = currentAnimationSprites(battle)
@@ -2179,6 +2290,115 @@ local function drawAnimationLayer(battle)
   inRegion(0, 0, Gen3Battle.width(battle), Gen3Battle.FIELD_BOTTOM,
     dx + Gen3Battle.fieldOffset(battle), dy,
     function() battle:drawAnimLayer(false) end)
+end
+
+-- FireRed does not have a separate "Pokemon then particles" layer.  Battler
+-- pics and ordinary createsprite particles are OBJ and BuildOamBuffer sorts
+-- them together by priority/subpriority/live Y.  In a single battle we can
+-- preserve BattleState's full per-side drawing path while treating each side
+-- as one OAM object, then insert direct particles between them.
+--
+-- Doubles are intentionally left residual here: drawPicsLayer's side selector
+-- draws both partners together, while FireRed gives them distinct subpriorities
+-- (20/30 and 40/50).  In singles, monbg copies are inserted between the exact
+-- OBJ priority bands: same-priority OBJ wins over BG, while splitbgprio can
+-- promote BG1 from priority 2 to priority 1.
+function Gen3Battle.drawMoveOamObjects(battle, slide, sx, sy)
+  local anim = battle and battle.gen3AnimPlaying and battle.gen3Anim
+  if not (anim and anim.oamEventDescriptors) then return false, "inactive" end
+  if battle.isDouble then
+    local ok, double = pcall(battle.isDouble, battle)
+    if ok and double then return false, "double-battler-slot" end
+  end
+
+  local events, reason = anim:oamEventDescriptors(battle, Gen3Battle)
+  if not events then return false, reason end
+  local copies = anim.monBgCopies and anim:monBgCopies(battle, "oam") or {}
+  if #events == 0 and #copies == 0 then return false, "no-active-particles" end
+
+  local objects = {}
+  local function addBattler(battler, side, seed)
+    if not battler then return true end
+    if anim.monBgHidesBattler and anim:monBgHidesBattler(battle, battler) then
+      return true
+    end
+    local key = anim:battlerPriorityKey(battler)
+    local y = anim:battlerOamY(battle, battler)
+    if not (key and y ~= nil) then return false end
+    objects[#objects + 1] = {
+      kind = "battler", battler = battler, side = side,
+      key = key, oamY = y, seed = seed,
+    }
+    return true
+  end
+  if not addBattler(battle.player, "player", 1)
+     or not addBattler(battle.enemy, "enemy", 2) then
+    return false, "unknown-battler-oam"
+  end
+  for _, item in ipairs(events) do
+    item.seed = 1000 + (item.index or 0)
+    objects[#objects + 1] = item
+  end
+
+  -- We can preserve FireRed's stable order once an object has a prior rank,
+  -- but the first exact key+Y tie depends on the global gSpriteOrder history
+  -- (free sprite slot reuse across the whole battle), which this compact
+  -- renderer does not model.  Keep that residual explicit instead of claiming
+  -- the deterministic seed below is cartridge-proven.
+  local exactTie = false
+  for i = 1, #objects - 1 do
+    for j = i + 1, #objects do
+      if objects[i].key == objects[j].key
+         and objects[i].oamY == objects[j].oamY then
+        exactTie = true
+        break
+      end
+    end
+    if exactTie then break end
+  end
+  battle._gen3OamGlobalTieResidual = exactTie and "global-sprite-slot-history" or nil
+
+  local previous = battle._gen3OamObjectRanks or setmetatable({}, { __mode = "k" })
+  table.sort(objects, function(a, b)
+    if a.key ~= b.key then return a.key < b.key end
+    if a.oamY ~= b.oamY then return a.oamY > b.oamY end
+    local ar = previous[a.event or a.battler] or a.rank or a.seed
+    local br = previous[b.event or b.battler] or b.rank or b.seed
+    if ar ~= br then return ar < br end
+    return a.seed < b.seed
+  end)
+  for i, item in ipairs(objects) do
+    previous[item.event or item.battler] = i
+    if item.event and anim.oamRanks then anim.oamRanks[item.event] = i end
+  end
+  battle._gen3OamObjectRanks = previous
+
+  local function drawObject(item)
+    if item.kind == "battler" then
+      battle:drawPicsLayer(slide, sx, sy, item.side, true)
+    else
+      anim:drawEvent(item.event, battle, Gen3Battle, Assets, item.pose, true)
+    end
+  end
+  -- Hardware order above is front-to-back (low OAM index first); LOVE needs
+  -- back-to-front.  A copied BG at priority N is behind every OBJ at priority N
+  -- but in front of every OBJ at priority N+1.  Draw exactly those four bands.
+  for priority = 3, 0, -1 do
+    for _, copy in ipairs(copies) do
+      if (tonumber(copy.priority) or 2) == priority
+         and battle.drawGen3MonBgState then
+        battle:drawGen3MonBgState(copy)
+      end
+    end
+    for i = #objects, 1, -1 do
+      local item = objects[i]
+      if math.floor((tonumber(item.key) or 0) / 256) == priority then
+        drawObject(item)
+      end
+    end
+  end
+  battle._gen3OamCompositedFrame = battle.frame
+  return true
 end
 
 -- ---------------------------------------------------------------------------
@@ -2248,8 +2468,25 @@ function Gen3Battle.drawField(battle)
   -- showing through where the message window goes -- which is what the
   -- cartridge does with it too.
   local ground = Gen3Battle.backdrop(battle)
+  local groundBrightness = 1
+  local moveBgLayer = nil
+  -- FireRed move backgrounds replace BG3 itself.  Ask the active Gen3 move
+  -- player for that underlay here, before battlers/HUD/particles are drawn;
+  -- drawing it later as an animation sprite would put it over the Pokemon.
+  if battle.gen3AnimPlaying and battle.gen3Anim
+     and battle.gen3Anim.backgroundLayer then
+    local okLayer, layer = pcall(battle.gen3Anim.backgroundLayer, battle.gen3Anim)
+    if okLayer and layer then
+      moveBgLayer = layer
+      groundBrightness = tonumber(layer.brightness) or 1
+      if not layer.default and not layer.indexed and layer.image then
+        local okImage, image = pcall(Assets.image, layer.image)
+        if okImage and image and image.getDimensions then ground = image end
+      end
+    end
+  end
   if ground then
-    g.setColor(1, 1, 1, 1)
+    g.setColor(groundBrightness, groundBrightness, groundBrightness, 1)
     -- BATTLE LAYOUT = WIDE: keep the cartridge field centred and fill only
     -- the bands beside it.  The FireRed intro then slides its two scanline
     -- halves inside that field without changing their cartridge timing.
@@ -2269,6 +2506,23 @@ function Gen3Battle.drawField(battle)
       g.draw(ground, bottom, ox + slide - W, 80)
     else
       g.draw(ground, ox, 0)
+    end
+    g.setColor(1, 1, 1, 1)
+  end
+  if moveBgLayer and moveBgLayer.indexed then
+    drawIndexedMoveBg(g, battle, moveBgLayer)
+  end
+  -- AnimTask_Flash touches the battle-background palettes only.  Draw this
+  -- after the field and before weather/battlers/HUD so the rest of the UI does
+  -- not become a generic white rectangle.  flashState is the exact 16-level
+  -- palette coefficient: full through cb8, 15/16 at cb9 ... zero at cb39.
+  if battle.gen3AnimPlaying and battle.gen3Anim
+     and battle.gen3Anim.flashState then
+    local okFlash, white = pcall(battle.gen3Anim.flashState, battle.gen3Anim)
+    if okFlash and type(white) == "number" and white > 0 then
+      g.setColor(1, 1, 1, math.max(0, math.min(1, white)))
+      g.rectangle("fill", 0, 0, surface, Gen3Battle.HEIGHT)
+      g.setColor(1, 1, 1, 1)
     end
   end
   Gen3Battle.drawWeather(battle)
@@ -2561,7 +2815,7 @@ function Gen3Battle.picPlacement(battle, battler, img, path, scale)
     footX, footY = w / 2, h
   end
   local lift = 0
-  local species = battler.mon and battler.mon.species
+  local species = battler.species or (battler.mon and battler.mon.species)
   local table_ = battle.data and battle.data.constants
                  and battle.data.constants.gen3Elevation
   -- only the FOE is lifted: the player's own Pokemon is seen from behind and
@@ -2587,9 +2841,10 @@ function Gen3Battle.battlerCentre(battle, battler)
   if not (ok and img and img.getWidth) then return nil end
   local BattleState = require("src.battle.BattleState")
   local scale = 1
+  local species = battler.species or (battler.mon and battler.mon.species)
   local okScale, s = pcall(BattleState.resolveBattleScale, battle.data,
                            battler.isPlayer and "back" or "front", nil,
-                           battler.mon and battler.mon.species)
+                           species)
   if okScale and type(s) == "number" and s > 0 then scale = s end
   local x, y = Gen3Battle.picPlacement(battle, battler, img, battler.sprite,
                                        scale)
@@ -2794,9 +3049,25 @@ function Gen3Battle.draw(battle)
   -- drawBattlerPic not to apply the GAME BOY's per-side tile windows (80x96
   -- and 88..160) during a displacement effect, and those windows describe a
   -- 160x144 screen that this layout is not.
+  -- ACID ARMOR's monbg copy is a priority-2 BG.  It sits behind ordinary
+  -- priority-2 OBJ battlers, so draw that copied layer before the pic pass;
+  -- BattleState suppresses only the attacker-side OBJ sprites that monbg moved
+  -- into BG1/BG2.
+  if battle.drawGen3MonBg then battle:drawGen3MonBg("pre") end
   battle.wideRegion = true
-  battle:drawPicsLayer(slide, sx, sy, nil, true)
+  local composited, residual = Gen3Battle.drawMoveOamObjects(battle, slide, sx, sy)
+  if not composited then
+    battle._gen3OamResidual = residual
+    battle:drawPicsLayer(slide, sx, sy, nil, true)
+  else
+    battle._gen3OamResidual = nil
+  end
   battle.wideRegion = nil
+
+  -- MEMENTO forces every battler OBJ to priority 3 while its black copied BG
+  -- remains priority 2.  The shadow therefore belongs above the Pokemon but
+  -- below HUD/window layers.
+  if battle.drawGen3MonBg then battle:drawGen3MonBg("post") end
 
   -- A battle sets rWY to 0, so the window the shakes move IS the whole
   -- screen: the HUDs and the message window travel with the pics.  The OAM

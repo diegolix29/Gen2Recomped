@@ -2500,8 +2500,10 @@ function BattleState:updateQueue()
         -- single-sound fallback below still runs and the move both looks and
         -- sounds like itself.  The queue is held with waitFrames instead, for
         -- as long as the script's own delays plus the particles' life.
-        if self.gen3Anim and self.gen3Anim:has(item.anim)
-           and self.gen3Anim:start(item.anim, item.attackerIsPlayer) then
+        if self.gen3Anim and self.gen3Anim:has(item.anim, item.animContext)
+           and self.gen3Anim:start(item.anim, item.attackerIsPlayer,
+                                   item.attackerPosition, item.targetPosition,
+                                   item.animContext, self) then
           self.gen3AnimPlaying = true
           self.waitFrames = math.max(self.waitFrames or 0,
                                      self.gen3Anim.total or 0)
@@ -2599,7 +2601,9 @@ function BattleState:updateQueue()
         -- the move's pitch/tempo modifiers; GROWL/ROAR play the
         -- attacker's cry -- GetMoveSound/IsCryMove)
         if item.anim == "GROWL" or item.anim == "ROAR" then
-          local attacker = item.attackerIsPlayer and self.player or self.enemy
+          local attacker = item.attackerPosition ~= nil
+                           and self:battlerAt(item.attackerPosition)
+                           or (item.attackerIsPlayer and self.player or self.enemy)
           if attacker then
             require("src.core.Sound").playMoveCry(self.data, attacker.mon.species,
                                                    anim and anim.tempo)
@@ -7622,7 +7626,8 @@ function BattleState:cancelMoveAnim()
   if not row then return end
   self.moveAnimRow = nil
   if row.anim == "DIG" or row.anim == "FLY" then
-    local user = row.attackerIsPlayer and self.player or self.enemy
+    local user = row.attackerPosition ~= nil and self:battlerAt(row.attackerPosition)
+                 or (row.attackerIsPlayer and self.player or self.enemy)
     local pf = user and self.picFx and self.picFx[user]
     if pf then pf.hidden = nil end
   end
@@ -8296,6 +8301,13 @@ function BattleState:updateFx()
         fx.shakeProg = nil
       end
     end
+    if self.gen3AnimPlaying and self.gen3Anim and self.gen3Anim.fieldOffset then
+      local ok, hx, hy = pcall(self.gen3Anim.fieldOffset, self.gen3Anim)
+      if ok then
+        fx.shakeX = (fx.shakeX or 0) + (hx or 0)
+        fx.shakeY = (fx.shakeY or 0) + (hy or 0)
+      end
+    end
     fx.hudShakeX = 0
     if fx.hudShakeProg then
       local st = stepProgram(fx.hudShakeProg)
@@ -8579,18 +8591,29 @@ function BattleState:executeAction(user, target, action)
     -- exactly the one target that was passed in, and this is the single call
     -- it has always been.
     local list = { target }
+    local spreadAnimation = false
     if self:isDouble() then
       local def = self:moveDef(action)
       if def then
+        local targetKind = tonumber(def.target)
+        spreadAnimation = targetKind == Targeting.BOTH
+                          or targetKind == Targeting.FOES_AND_ALLY
         local chosen = (self.chosenTargets or {})[user.position] or target
         local got = Targeting.resolve(self, user, def, chosen)
         if #got > 0 then list = got end
       end
     end
+    local animationPlayed = false
     for i, one in ipairs(list) do
       if one and one.mon and (one.mon.hp or 0) > 0 then
         -- only the first announces; the rest are the same move landing again
-        self:performMove(user, one, action, i > 1)
+        self:performMove(user, one, action, i > 1,
+                         spreadAnimation and animationPlayed)
+        -- FireRed's Cmd_attackanimation increments animTargetsHit only when an
+        -- animation actually survives the no-effect/failure path.  If the
+        -- first target cancels it, a later spread target is still allowed to
+        -- animate; once one row survives, every later target skips it.
+        if spreadAnimation and self.moveAnimRow then animationPlayed = true end
       end
     end
   end
@@ -8794,7 +8817,80 @@ local function primaryEffectFailed(msgs)
   return false
 end
 
-function BattleState:performMove(user, target, moveInst, isCalled)
+-- FireRed TRANSFORM is not the Gen 1/SGB gray-mon rule above.  The GBA loads
+-- the TARGET species/form into the attacker's slot, chooses the palette using
+-- the ATTACKER's identity, then permanently blends that palette 6/16 toward
+-- white.  Keep the form and shiny inputs separate by giving Sprites.path a
+-- tiny proxy: target form DVs, attacker personality/OT/shininess.
+function BattleState:applyGen3TransformVisual(user, target, whiteCoeff)
+  if not (user and target and target.mon and target.mon.species) then return end
+  local species = target.mon.species
+  local Sprites = require("src.pokemon.Sprites")
+  local proxy = {}
+  for k, v in pairs(user.mon or {}) do proxy[k] = v end
+  if target.mon.dvs ~= nil then proxy.dvs = target.mon.dvs end
+  local path, tc = Sprites.path(self.data, species,
+    user.isPlayer and "back" or "front", { mon = proxy, kind = "battle" })
+  local pal = not tc and monPalette(self.data, species, Pokemon.isShiny(proxy)) or nil
+  local sprite = getImage(path, pal, tc)
+  if sprite then user.sprite = sprite end
+  user.species = species
+  user.picAnim = nil
+  user.monAnim = nil
+  user.gen3Transformed = true
+  user.gen3TransformWhite = math.max(0, math.min(16, tonumber(whiteCoeff) or 6)) / 16
+end
+
+local function battlerHasType(battler, wanted)
+  for _, t in ipairs(battler and battler.curTypes or {}) do
+    if t == wanted then return true end
+  end
+  return false
+end
+
+local function hasMoveTurnVariant(anim)
+  for _, variant in ipairs(type(anim) == "table" and anim.variants or {}) do
+    local when = variant.when
+    if type(when) == "table"
+       and (when.moveTurn ~= nil or when.moveTurnOdd) then return true end
+  end
+  return false
+end
+
+local function frustrationAnimTier(user)
+  local mon = user and user.mon or {}
+  local friendship = tonumber(mon.happiness or mon.friendship) or 0
+  if friendship <= 30 then return 0 end
+  if friendship <= 100 then return 1 end
+  if friendship <= 200 then return 2 end
+  return 3
+end
+
+-- Values the FireRed move-animation controller copies into gBattleAnimArgs
+-- before the animation script runs.  Keep these derived from the same live
+-- battle state the cartridge uses so jumpargeq/jumpret arms select the real
+-- terrain/weather/friendship/rollout branch instead of the importer's default.
+local function returnAnimTier(user)
+  local mon = user and user.mon or {}
+  local friendship = tonumber(mon.happiness or mon.friendship) or 0
+  -- AnimTask_GetReturnPowerLevel (battle_anim_effects_3.c): 60 stays in the
+  -- initial tier 0 because the next comparison is strictly > 60.
+  if friendship <= 60 then return 0 end
+  if friendship <= 91 then return 1 end
+  if friendship <= 200 then return 2 end
+  return 3
+end
+
+local SECRET_POWER_TERRAIN = {
+  GRASS = 0, LONG_GRASS = 1, SAND = 2, UNDERWATER = 3, WATER = 4,
+  POND = 5, MOUNTAIN = 6, CAVE = 7, BUILDING = 8, PLAIN = 9,
+}
+
+local WEATHER_BALL_ANIM = {
+  SUN = 1, RAIN = 2, SANDSTORM = 3, HAIL = 4,
+}
+
+function BattleState:performMove(user, target, moveInst, isCalled, suppressAnimation)
   local move = self:moveDef(moveInst)
   if not move then
     Logger.warn("unknown move instance %s", tostring(moveInst.id))
@@ -8811,6 +8907,41 @@ function BattleState:performMove(user, target, moveInst, isCalled)
     user.charging, user.chargeReady, user.invulnerable = nil, nil, nil
     user.hiddenAs = nil
   end
+  local skipCharge = record and record.charge and not releasing
+                     and Weather.skipsCharge(self, record)
+  local animTurn = releasing and 1 or 0
+  if skipCharge then animTurn = 1 end
+  -- FireRed's Curse battle script writes sB_ANIM_TURN explicitly: Ghost takes
+  -- the first arm, every other type takes the stat-change arm.
+  if move.id == "CURSE" then
+    animTurn = battlerHasType(user, "GHOST") and 0 or 1
+  end
+  local animArgs
+  local function setAnimArg(index, value)
+    if value == nil then return end
+    animArgs = animArgs or {}
+    animArgs[index] = value
+  end
+  if move.id == "FRUSTRATION" then
+    setAnimArg(7, frustrationAnimTier(user))
+  elseif move.id == "RETURN" then
+    setAnimArg(7, returnAnimTier(user))
+  elseif move.id == "WEATHER_BALL" then
+    setAnimArg(7, WEATHER_BALL_ANIM[Weather.current(self)] or 0)
+  elseif move.id == "SECRET_POWER" then
+    local terrain = require("src.battle.Gen3Battle").terrainFor(self.game)
+    setAnimArg(0, SECRET_POWER_TERRAIN[terrain] or 9)
+  elseif move.id == "ICE_BALL" then
+    -- AnimTask_GetRolloutCounter returns the number of already-landed hits.
+    -- rampRun is incremented only after a successful hit, so before this
+    -- animation it is the exact 0..4 counter the cartridge exposes.
+    setAnimArg(0, math.min(4, math.max(0, user.rampRun or 0)))
+  elseif move.id == "SPIT_UP" or move.id == "SWALLOW" then
+    -- stockpiletobasedamage / stockpiletohpheal copy the pre-consumption
+    -- stockpile count into gBattleScripting.animTurn before clearing it.
+    animTurn = math.min(3, math.max(0, user.stockpile or 0))
+  end
+  local animContext = { moveTurn = animTurn, args = animArgs }
 
   -- PP: not for continuations, struggle, called moves, or (under
   -- gen1_faithful) wild/trainer enemies -- pokered DecrementPP only ever
@@ -8844,9 +8975,12 @@ function BattleState:performMove(user, target, moveInst, isCalled)
     -- blink follows the animation (pokered's order).  Mimic is the
     -- exception (announceAnim = false): PlayCurrentMoveAnimation runs
     -- only after a successful copy, never on a miss -- applyMimic queues it
-    if not (record and record.announceAnim == false) then
+    if not suppressAnimation and not (record and record.announceAnim == false) then
       self.nextInsert = (self.nextInsert or 0) + 1
-      self.moveAnimRow = { anim = move.id, attackerIsPlayer = user.isPlayer }
+      self.moveAnimRow = { anim = move.id, attackerIsPlayer = user.isPlayer,
+                           attackerPosition = user.position,
+                           targetPosition = target and target.position,
+                           animContext = animContext }
       table.insert(self.queue, self.nextInsert, self.moveAnimRow)
     end
   end
@@ -8900,9 +9034,10 @@ function BattleState:performMove(user, target, moveInst, isCalled)
   -- BattleCommand_SkipSunCharge (effect_commands.asm:6535): Solar Beam jumps
   -- straight past `charge` while the sun is up and fires on the turn it was
   -- selected.  Every other charge move ignores the weather.
-  if record and record.charge and not releasing
-     and not Weather.skipsCharge(self, record) then
-    self:cancelMoveAnim()
+  if record and record.charge and not releasing and not skipCharge then
+    local branchAware = GameVersion.get() == "firered"
+                        and hasMoveTurnVariant(move.anim)
+    if not branchAware then self:cancelMoveAnim() end
     user.charging = moveInst
     user.chargeReady = true
     local invulnerable = move.semiInvulnerable
@@ -8916,14 +9051,16 @@ function BattleState:performMove(user, target, moveInst, isCalled)
       -- the other, each for double damage.
       user.hiddenAs = (move.id == "DIG") and "underground" or "air"
     end
-    local chargeAnim = record.charge.anim
-    if move.id == "DIG" then
-      chargeAnim = "SLIDE_DOWN_ANIM"
-    elseif record.charge.enemyAnim and not user.isPlayer then
-      chargeAnim = record.charge.enemyAnim
-    end
-    if chargeAnim then
-      self:animNext(chargeAnim, user.isPlayer)
+    if not branchAware then
+      local chargeAnim = record.charge.anim
+      if move.id == "DIG" then
+        chargeAnim = "SLIDE_DOWN_ANIM"
+      elseif record.charge.enemyAnim and not user.isPlayer then
+        chargeAnim = record.charge.enemyAnim
+      end
+      if chargeAnim then
+        self:animNext(chargeAnim, user.isPlayer)
+      end
     end
     local chargeText = move.chargeText or CHARGE_TEXT[move.id]
                        or Strings.source("%s\nis charging up!")
@@ -11285,6 +11422,128 @@ end
 
 BattleState.drawMonAnimated = drawMonAnimated
 
+-- One reusable 1px-high quad per source row.  The GBA HBlank tasks below write
+-- a register once per SCREEN row; slicing the battler texture at one source
+-- pixel is exact for Gen 3's native 1x battle sprites and remains well-defined
+-- if a mod changes their scale.
+local scanlineQuads = setmetatable({}, { __mode = "k" })
+local function drawGen3ScanlineRows(battle, img, x, y, scale, state)
+  local anim = battle and battle.gen3Anim
+  if not (anim and anim.scanlineRow and img and img.getDimensions) then
+    return false
+  end
+  local w, h = img:getDimensions()
+  local quads = scanlineQuads[img]
+  if not quads then
+    quads = {}
+    scanlineQuads[img] = quads
+  end
+  for row = 0, h - 1 do
+    local q = quads[row]
+    if not q then
+      q = love.graphics.newQuad(0, row, w, 1, w, h)
+      quads[row] = q
+    end
+    local screenY = math.floor(y + row * scale)
+    local dx, dy, hidden = anim:scanlineRow(state, screenY)
+    if not hidden then
+      love.graphics.draw(img, q, x + (dx or 0),
+                         y + row * scale + (dy or 0), 0, scale, scale)
+    end
+  end
+  return true
+end
+
+-- Acid Armor and Memento DMA VOFS, so a source-row displacement is not enough:
+-- the hardware chooses a SOURCE row separately for every destination scanline.
+-- This tiny copied-BG pass stays native 240x160 and uses the battler's 64x64
+-- cartridge texture directly, including its transparent padding.
+local function drawGen3BgCopyRows(battle, state)
+  local anim = battle and battle.gen3Anim
+  if not (anim and anim.bgCopyRow and state and state.battler) then return false end
+  local img = battle:battlerPic(state.battler)
+  if not (img and img.getDimensions) then return false end
+  local g = love.graphics
+  local w, h = img:getDimensions()
+  local quads = scanlineQuads[img]
+  if not quads then quads = {}; scanlineQuads[img] = quads end
+  local fieldX = Gen3Battle.fieldOffset and Gen3Battle.fieldOffset(battle) or 0
+
+  local sx, sy, sw, sh
+  local clipped = state.windowLeft ~= nil and state.windowRight ~= nil
+  if clipped then
+    local left, right = state.windowLeft, state.windowRight
+    if right <= left then return true end
+    if g.getScissor then sx, sy, sw, sh = g.getScissor() end
+    if g.intersectScissor then
+      g.intersectScissor(fieldX + left, 0, right - left, Gen3Battle.HEIGHT or 160)
+    elseif g.setScissor then
+      g.setScissor(fieldX + left, 0, right - left, Gen3Battle.HEIGHT or 160)
+    end
+  end
+
+  for screenY = 0, (Gen3Battle.HEIGHT or 160) - 1 do
+    local sourceRow, dx, hidden = anim:bgCopyRow(state, screenY)
+    sourceRow = sourceRow and math.floor(sourceRow)
+    if not hidden and sourceRow and sourceRow >= 0 and sourceRow < h then
+      local q = quads[sourceRow]
+      if not q then
+        q = love.graphics.newQuad(0, sourceRow, w, 1, w, h)
+        quads[sourceRow] = q
+      end
+      local drawX = fieldX - (state.baseHofs or 0) + (dx or 0)
+      if state.black then
+        local mask = 1 - math.max(0, math.min(16, state.evb or 16)) / 16
+        if mask > 0 then
+          g.setBlendMode("alpha")
+          g.setColor(0, 0, 0, mask)
+          g.draw(img, q, drawX, screenY)
+        end
+      elseif state.kind == "acid_armor" and anim.drawHardwareAlpha then
+        anim.drawHardwareAlpha(g, img, q,
+          { eva = state.eva or 16, evb = state.evb or 0 },
+          drawX, screenY)
+      else
+        g.setBlendMode("alpha")
+        g.setColor(1, 1, 1, 1)
+        g.draw(img, q, drawX, screenY)
+      end
+    end
+  end
+  g.setBlendMode("alpha")
+  g.setColor(1, 1, 1, 1)
+  if clipped and g.setScissor then
+    if sx then g.setScissor(sx, sy, sw, sh) else g.setScissor() end
+  end
+  return true
+end
+
+function BattleState:drawGen3MonBg(phase)
+  if not (self.gen3AnimPlaying and self.gen3Anim and self.gen3Anim.monBgCopies) then
+    return
+  end
+  local ok, copies = pcall(self.gen3Anim.monBgCopies, self.gen3Anim, self, phase)
+  if not (ok and type(copies) == "table") then return end
+  for _, state in ipairs(copies) do BattleState.drawGen3MonBgState(self, state) end
+end
+
+function BattleState:drawGen3MonBgState(state)
+  return drawGen3BgCopyRows(self, state)
+end
+
+function BattleState:gen3AnimMonBgHidden(battler)
+  if not (self.gen3AnimPlaying and self.gen3Anim and battler
+          and self.gen3Anim.monBgHidesBattler) then return false end
+  local ok, hidden = pcall(self.gen3Anim.monBgHidesBattler,
+                           self.gen3Anim, self, battler)
+  if ok and hidden then return true end
+  if self.gen3Anim.monHidden then
+    local okTask, taskHidden = pcall(self.gen3Anim.monHidden, self.gen3Anim, battler)
+    if okTask and taskHidden then return true end
+  end
+  return false
+end
+
 -- HOW FAR A GEN 3 MOVE HAS SHOVED THIS POKEMON OUT OF ITS PLACE.
 --
 -- AnimTask_ShakeMon writes the battler's OWN sprite offset, so the flinch has
@@ -11294,10 +11553,22 @@ function BattleState:gen3AnimShake(battler)
   if not (self.gen3AnimPlaying and self.gen3Anim and battler) then
     return 0, 0
   end
-  local ok, dx, dy = pcall(self.gen3Anim.monOffset, self.gen3Anim,
-                           battler == self.player)
+  local ok, dx, dy = pcall(self.gen3Anim.monOffset, self.gen3Anim, battler)
   if not ok then return 0, 0 end
   return dx or 0, dy or 0
+end
+
+-- ...AND WHICH HBLANK ROW TRANSFORM ITS COPIED BG IS USING.
+--
+-- Five FireRed move tasks copy one battler to BG1/BG2 and alter only that
+-- battler's rows.  Gen3MoveAnim reproduces the task state machine; the battle
+-- draw keeps the effect local to the battler rather than inventing a general
+-- BG/window subsystem for it.
+function BattleState:gen3AnimScanline(battler)
+  if not (self.gen3AnimPlaying and self.gen3Anim and battler
+          and self.gen3Anim.monScanline) then return nil end
+  local ok, state = pcall(self.gen3Anim.monScanline, self.gen3Anim, self, battler)
+  return ok and state or nil
 end
 
 -- ...AND WHAT COLOUR IT HAS BEEN WASHED.
@@ -11308,10 +11579,104 @@ end
 function BattleState:gen3AnimTint(battler)
   if not (self.gen3AnimPlaying and self.gen3Anim and battler) then return nil end
   if not love.graphics.setBlendMode then return nil end
-  local ok, r, g, b, c = pcall(self.gen3Anim.monTint, self.gen3Anim,
-                               battler == self.player)
+  local ok, r, g, b, c = pcall(self.gen3Anim.monTint, self.gen3Anim, battler)
   if not (ok and c and c > 0) then return nil end
   return r, g, b, c
+end
+
+-- Palette/alpha/mosaic state that belongs to the battler itself.  This stays
+-- separate from monTint: the latter is the generic task-family decoder and is
+-- already drawn by drawBattlerPicAt; these three exact move tasks need palette
+-- composition around the whole battler draw, including stadium/custom paths.
+function BattleState:gen3AnimSpecialMonState(battler)
+  if not battler then return nil end
+  local state = {
+    white = tonumber(battler.gen3TransformWhite) or 0,
+    tint = 0, r = 1, g = 1, b = 1,
+    alpha = 1, brightness = 1, mosaic = 1,
+  }
+  local anim = self.gen3AnimPlaying and self.gen3Anim or nil
+  if anim then
+    if anim.monMosaic then
+      local ok, block = pcall(anim.monMosaic, anim, battler)
+      if ok and type(block) == "number" then state.mosaic = math.max(1, block) end
+    end
+    if anim.camouflageState then
+      local ok, camo = pcall(anim.camouflageState, anim, battler)
+      if ok and type(camo) == "table" then
+        state.tint = tonumber(camo.tint) or 0
+        state.r, state.g, state.b = camo.r or 1, camo.g or 1, camo.b or 1
+        state.alpha = tonumber(camo.alpha) or 1
+      end
+    end
+    if anim.flashState then
+      local ok, _, monBrightness = pcall(anim.flashState, anim)
+      if ok and type(monBrightness) == "number" then
+        state.brightness = math.max(0, math.min(1, monBrightness))
+      end
+    end
+    if anim.nightShadeState then
+      local ok, shade = pcall(anim.nightShadeState, anim, battler)
+      if ok and type(shade) == "table" then state.nightShade = shade end
+    end
+  end
+  local active = state.white > 0 or state.tint > 0 or state.alpha < 1
+                 or state.brightness < 1 or state.mosaic > 1
+                 or state.nightShade ~= nil
+  return active and state or nil
+end
+
+local gen3MonFxShader = nil
+local function monFxShader()
+  if gen3MonFxShader ~= nil then return gen3MonFxShader or nil end
+  if not (love.graphics and love.graphics.newShader) then
+    gen3MonFxShader = false
+    return nil
+  end
+  local ok, shader = pcall(love.graphics.newShader, [[
+    extern number transformWhite;
+    extern vec3 terrainColour;
+    extern number terrainBlend;
+    extern number flashBrightness;
+    vec4 effect(vec4 colour, Image tex, vec2 uv, vec2 screen) {
+      vec4 px = Texel(tex, uv);
+      px.rgb = mix(px.rgb, vec3(1.0), transformWhite);
+      px.rgb = mix(px.rgb, terrainColour, terrainBlend);
+      px.rgb *= flashBrightness;
+      return px * colour;
+    }
+  ]])
+  gen3MonFxShader = ok and shader or false
+  return ok and shader or nil
+end
+
+local mosaicQuads = setmetatable({}, { __mode = "k" })
+local function drawMosaicBattler(battle, battler, x, y, scale, block)
+  local img = battle:battlerPic(battler)
+  if not (img and img.getDimensions) then return end
+  local w, h = img:getDimensions()
+  block = math.max(1, math.floor(block or 1))
+  if block <= 1 then
+    love.graphics.draw(img, x, y, 0, scale, scale)
+    return
+  end
+  local byBlock = mosaicQuads[img]
+  if not byBlock then byBlock = {}; mosaicQuads[img] = byBlock end
+  local cache = byBlock[block]
+  if not cache then cache = {}; byBlock[block] = cache end
+  for py = 0, h - 1, block do
+    for px = 0, w - 1, block do
+      local key = py * w + px
+      local q = cache[key]
+      if not q then
+        q = love.graphics.newQuad(px, py, 1, 1, w, h)
+        cache[key] = q
+      end
+      local bw, bh = math.min(block, w - px), math.min(block, h - py)
+      love.graphics.draw(img, q, x + px * scale, y + py * scale, 0,
+                         bw * scale, bh * scale)
+    end
+  end
 end
 
 -- ...AND THE COPIES OF IT.
@@ -11325,8 +11690,7 @@ end
 function BattleState:gen3AnimGhosts(battler)
   if not (self.gen3AnimPlaying and self.gen3Anim and battler) then return nil end
   if not self.gen3Anim.monGhosts then return nil end
-  local ok, list = pcall(self.gen3Anim.monGhosts, self.gen3Anim,
-                         battler == self.player)
+  local ok, list = pcall(self.gen3Anim.monGhosts, self.gen3Anim, battler)
   if not (ok and type(list) == "table" and #list > 0) then return nil end
   return list
 end
@@ -11339,8 +11703,7 @@ end
 function BattleState:gen3AnimScale(battler)
   if not (self.gen3AnimPlaying and self.gen3Anim and battler) then return nil end
   if not self.gen3Anim.monScale then return nil end
-  local ok, mul = pcall(self.gen3Anim.monScale, self.gen3Anim,
-                        battler == self.player)
+  local ok, mul = pcall(self.gen3Anim.monScale, self.gen3Anim, battler)
   if not (ok and type(mul) == "number" and mul > 0 and mul < 1) then
     return nil
   end
@@ -11356,8 +11719,7 @@ end
 function BattleState:gen3AnimRotate(battler)
   if not (self.gen3AnimPlaying and self.gen3Anim and battler) then return nil end
   if not self.gen3Anim.monRotate then return nil end
-  local ok, angle, rise = pcall(self.gen3Anim.monRotate, self.gen3Anim,
-                                battler == self.player)
+  local ok, angle, rise = pcall(self.gen3Anim.monRotate, self.gen3Anim, battler)
   if not (ok and type(angle) == "number" and angle ~= 0) then return nil end
   return angle, tonumber(rise) or 0
 end
@@ -11375,8 +11737,7 @@ end
 function BattleState:gen3AnimSquash(battler)
   if not (self.gen3AnimPlaying and self.gen3Anim and battler) then return nil end
   if not self.gen3Anim.monAffine then return nil end
-  local ok, sx, sy = pcall(self.gen3Anim.monAffine, self.gen3Anim,
-                           battler == self.player)
+  local ok, sx, sy = pcall(self.gen3Anim.monAffine, self.gen3Anim, battler)
   if not (ok and type(sx) == "number" and type(sy) == "number") then
     return nil
   end
@@ -11385,9 +11746,26 @@ function BattleState:gen3AnimSquash(battler)
 end
 
 function BattleState:drawBattlerPic(battler, x, y, scale)
+  if self:gen3AnimMonBgHidden(battler) then return end
   local angle, rise = self:gen3AnimRotate(battler)
   local sqx, sqy = self:gen3AnimSquash(battler)
-  if not (angle or sqx) then
+  local special = self:gen3AnimSpecialMonState(battler)
+  if special and special.nightShade then
+    local img = self:battlerPic(battler)
+    local anim = self.gen3Anim
+    if img and anim and anim.drawHardwareAlphaImage then
+      local dx, dy = self:gen3AnimShake(battler)
+      local cx = x + dx + img:getWidth() * scale / 2
+      local cy = y + dy + img:getHeight() * scale / 2
+      local mul = tonumber(special.nightShade.scale) or 1
+      anim.drawHardwareAlphaImage(love.graphics, img,
+        { eva = special.nightShade.eva or 0, evb = special.nightShade.evb or 16 },
+        cx, cy, 0, scale * mul, scale * mul,
+        img:getWidth() / 2, img:getHeight() / 2)
+      return
+    end
+  end
+  if not (angle or sqx or special) then
     return self:drawBattlerPicAt(battler, x, y, scale)
   end
   local pic = self:battlerPic(battler)
@@ -11414,7 +11792,28 @@ function BattleState:drawBattlerPic(battler, x, y, scale)
     g.rotate(angle)
     g.translate(-cx, -cy)
   end
-  local ok, err = pcall(self.drawBattlerPicAt, self, battler, x, y, scale)
+  local oldShader = g.getShader and g.getShader() or nil
+  local shader = special and monFxShader() or nil
+  if shader then
+    shader:send("transformWhite", math.max(0, math.min(1, special.white or 0)))
+    shader:send("terrainColour", { special.r or 1, special.g or 1, special.b or 1 })
+    shader:send("terrainBlend", math.max(0, math.min(1, special.tint or 0)))
+    shader:send("flashBrightness", math.max(0, math.min(1, special.brightness or 1)))
+    g.setShader(shader)
+  end
+  local cr, cg, cb, ca = g.getColor()
+  if special and special.alpha < 1 then
+    g.setColor(cr, cg, cb, ca * math.max(0, special.alpha))
+  end
+  local ok, err
+  if special and (special.mosaic or 1) > 1 then
+    ok, err = pcall(drawMosaicBattler, self, battler, x, y, scale,
+                    special.mosaic)
+  else
+    ok, err = pcall(self.drawBattlerPicAt, self, battler, x, y, scale)
+  end
+  g.setColor(cr, cg, cb, ca)
+  if shader and g.setShader then g.setShader(oldShader) end
   g.pop()
   if not ok then error(err) end
 end
@@ -11486,7 +11885,29 @@ function BattleState:drawBattlerPicAt(battler, x, y, scale)
   local pf = self.picFx and self.picFx[battler]
   if not pf or (not pf.kind and not pf.hidden and not pf.minimized
                 and (pf.ox or 0) == 0 and (pf.oy or 0) == 0) then
-    if self:drawStadiumBattlerPic(battler, img, x, y, scale) then return end
+    local scanline = self:gen3AnimScanline(battler)
+    if scanline then
+      -- A scanline task operates on the cartridge sprite copied into a BG.
+      -- Keep using that sprite even in stadium mode while the task is active;
+      -- a 3D model has no equivalent per-row BG scroll registers.
+      local tr, tg, tb, tc = self:gen3AnimTint(battler)
+      if tc then
+        local cr, cg, cb, ca = love.graphics.getColor()
+        local keep = 1 - tc
+        love.graphics.setColor(cr * keep, cg * keep, cb * keep, ca)
+        drawGen3ScanlineRows(self, img, x, y, scale, scanline)
+        love.graphics.setBlendMode("add")
+        love.graphics.setColor(tr * tc, tg * tc, tb * tc, ca)
+        drawGen3ScanlineRows(self, img, x, y, scale, scanline)
+        love.graphics.setBlendMode("alpha")
+        love.graphics.setColor(cr, cg, cb, ca)
+      else
+        drawGen3ScanlineRows(self, img, x, y, scale, scanline)
+      end
+      return
+    end
+    if not battler.gen3Transformed
+       and self:drawStadiumBattlerPic(battler, img, x, y, scale) then return end
     local tr, tg, tb, tc = self:gen3AnimTint(battler)
     if tc then
       local cr, cg, cb, ca = love.graphics.getColor()
