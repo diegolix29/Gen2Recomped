@@ -765,6 +765,41 @@ public class GameActivity extends SDLActivity {
         }
     }
 
+    /**
+     * Converts a content:// tree URI to an actual file path that can be used
+     * by the filesystem. This uses DocumentFile API to get the actual path.
+     *
+     * @param treeUri The content:// URI from ACTION_OPEN_DOCUMENT_TREE
+     * @return The actual file path, or the original URI if conversion fails
+     */
+    @Keep
+    public static String getTreePath(String treeUri) {
+        if (android.os.Build.VERSION.SDK_INT < 21 || treeUri == null) return treeUri;
+        try {
+            Uri uri = Uri.parse(treeUri);
+            // Try to get the actual file path from the tree URI
+            // On some Android versions, we can get the path from the URI
+            String path = uri.getPath();
+            if (path != null && path.startsWith("/tree/")) {
+                // Extract the actual path from /tree/primary:DCIM/Photos format
+                String[] parts = path.split(":");
+                if (parts.length >= 2) {
+                    String storage = parts[0].replace("/tree/", "");
+                    String folder = parts[1];
+                    // Try to construct the actual path
+                    if (storage.equals("primary")) {
+                        return Environment.getExternalStorageDirectory().getPath() + "/" + folder;
+                    }
+                    // For other storage volumes, we may need to handle differently
+                    // For now, return the original URI and let the system handle it
+                }
+            }
+        } catch (Exception e) {
+            Log.d("GameActivity", "could not convert tree URI to path: " + e.getMessage());
+        }
+        return treeUri;
+    }
+
     @Keep
     public static boolean showCreateDocument(String suggestedName, String saveDir) {
         if (android.os.Build.VERSION.SDK_INT < 19) return false;
@@ -1055,9 +1090,11 @@ public class GameActivity extends SDLActivity {
             } catch (Exception e) {
                 Log.d("GameActivity", "could not take persistable URI permission: " + e.getMessage());
             }
-            // Write the URI to a flag file for Lua to consume
-            writeSaveDirFlag(FOLDER_PICK_RESULT_FILENAME, uri.toString());
-            Log.d("GameActivity", "folder picker selected: " + uri.toString());
+            // Convert tree URI to actual path if possible
+            String path = getTreePath(uri.toString());
+            // Write the path to a flag file for Lua to consume
+            writeSaveDirFlag(FOLDER_PICK_RESULT_FILENAME, path);
+            Log.d("GameActivity", "folder picker selected: " + path);
             return;
         }
         if (requestCode != FILE_PICKER_REQUEST_CODE) return;

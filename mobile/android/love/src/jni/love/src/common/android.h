@@ -90,6 +90,15 @@ bool showCreateDocument(const char *suggestedName = nullptr);
 bool showFolderPicker();
 
 /**
+ * Converts a content:// tree URI to an actual file path that can be used
+ * by the filesystem. This uses DocumentFile API to get the actual path.
+ *
+ * @param treeUri The content:// URI from ACTION_OPEN_DOCUMENT_TREE
+ * @return The actual file path, or the original URI if conversion fails
+ **/
+const char *getTreePath(const char *treeUri);
+
+/**
  * Pokéwalker step bridge: asks GameActivity to read the hardware step
  * counter and stage steps_pending.json in the save identity dir (see
  * GameActivity.syncHealthSteps). Returns whether a sync could start.

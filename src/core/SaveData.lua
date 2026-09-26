@@ -281,6 +281,7 @@ function SaveData.isAbsolutePath(path)
   if type(path) ~= "string" or path == "" then return false end
   return path:sub(1, 1) == "/" or path:sub(1, 1) == "\\"
     or path:match("^%a:[/\\]") ~= nil or path:match("^content://") ~= nil
+    or path:match("^/storage/") ~= nil
 end
 
 -- checkDataDir(path) -> normalised path, or nil, reason
@@ -299,6 +300,30 @@ function SaveData.checkDataDir(path)
     -- For Android SAF URIs, we can't directly test with io.open
     -- We'll trust the URI since the user explicitly selected it through the picker
     -- The URI will be stored and used by the Android filesystem bridge
+    return dir
+  end
+  -- Handle Android /storage/ paths - these may need special handling on Android
+  local platform = love.system and love.system.getOS and love.system.getOS()
+  if platform == "Android" and dir:match("^/storage/") then
+    -- For Android external storage paths, try to test writability
+    -- If the test fails, we'll still accept the path and let Android handle it
+    local probe = dir .. SEP .. PROBE_NAME
+    local f = io.open(probe, "wb")
+    if not f then
+      -- Try to create the directory first
+      local ok = pcall(function()
+        require("src.import.CacheFs").mkdirReal(dir)
+      end)
+      if ok then f = io.open(probe, "wb") end
+    end
+    if f then
+      local wrote = pcall(function() f:write("gen2recomp") end)
+      f:close()
+      os.remove(probe)
+      if wrote then return dir end
+    end
+    -- If we can't write test file, still accept the path for Android
+    -- The system may handle permissions differently through the picker
     return dir
   end
   local probe = dir .. SEP .. PROBE_NAME

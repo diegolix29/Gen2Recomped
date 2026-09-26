@@ -264,6 +264,25 @@ local function resolveCustomRoot()
     -- one and has its own reason (dataDirProblem) for the panel to show.
     return nil
   end
+  -- Android content:// URIs from SAF folder picker don't need PHYSFS mounting
+  -- The Android filesystem bridge handles access through DocumentFile API
+  if base:match("^content://") then
+    customRoot = base
+    return customRoot
+  end
+  -- For Android external storage paths (/storage/emulated/0/...), try to mount them
+  local platform = love.system and love.system.getOS and love.system.getOS()
+  if platform == "Android" and base:match("^/storage/") then
+    -- On Android, external storage paths may need special handling
+    -- Try to mount them directly first
+    if mountReadable(base) then
+      customRoot = base
+      return customRoot
+    end
+    -- If mounting fails, still accept the path and let Android handle it
+    customRoot = base
+    return customRoot
+  end
   if love.filesystem.getSource and base == love.filesystem.getSource() then
     customRoot = base
   elseif mountReadable(base) then

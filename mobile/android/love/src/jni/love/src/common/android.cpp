@@ -267,6 +267,36 @@ bool showFolderPicker()
 	return result;
 }
 
+const char *getTreePath(const char *treeUri)
+{
+	if (treeUri == nullptr || treeUri[0] == '\0')
+		return treeUri;
+
+	static std::string pathStorage;
+	JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();
+	jclass activity = env->FindClass("org/love2d/android/GameActivity");
+
+	jmethodID method = env->GetStaticMethodID(activity, "getTreePath", "(Ljava/lang/String;)Ljava/lang/String;");
+	jstring juri = env->NewStringUTF(treeUri);
+	jobject result = env->CallStaticObjectMethod(activity, method, juri);
+
+	if (result != nullptr)
+	{
+		const char *path = env->GetStringUTFChars((jstring)result, nullptr);
+		pathStorage = path;
+		env->ReleaseStringUTFChars((jstring)result, path);
+		env->DeleteLocalRef(result);
+	}
+	else
+	{
+		pathStorage = treeUri;
+	}
+
+	env->DeleteLocalRef(juri);
+	env->DeleteLocalRef(activity);
+	return pathStorage.c_str();
+}
+
 bool syncHealthSteps()
 {
 	JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();
