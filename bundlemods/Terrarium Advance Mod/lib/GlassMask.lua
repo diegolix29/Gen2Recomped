@@ -149,32 +149,54 @@ end
 -- instead of found, from a catalog checked by hand against the composited
 -- art tileset by tileset (see Gen3WindowMetatiles.lua's own header).
 --
--- The catalog names METATILES, not pixels, so it needs one more step to
--- become a rect: a metatile is 4 quadrant tiles, `Gen3.tileId(m, tx, ty)`
--- is the synthetic id of one quadrant, and `Gen3.tileOrigin(tileId)` is
--- that quadrant's pixel origin on the SAME relaid 8px sheet everything
--- else in this mod already addresses metatiles on (ChunkMesher's uvRect
--- and Structures' pixel readers go through the very same function -- see
--- Gen3.lua's own note on `tileOrigin`). The four quadrants of one metatile
--- are always four consecutive tiles in one row of that sheet, so the
--- whole 16x16 block is just the top-left quadrant's origin plus 16x16.
+-- The catalog names METATILES, not pixels. A metatile is four 8px
+-- quadrants whose synthetic ids are `m*4 + q`. The atlas GlassMask has
+-- to paint is the RELAID tile sheet (`bakeLinear` / `atlasInfoFor`):
+-- 16 TILES per row, each 8px, addressed the same way ChunkMesher.uvRect
+-- does -- `(t % perRow) * 8`, not Gen3.tileOrigin's 16x16-cell layout
+-- (that layout is the PRE-relay metatile sheet). Because 16 is a multiple
+-- of 4, one metatile is always a 32x8 strip of four consecutive tiles.
+--
+-- The catalog itself is keyed by the INDIVIDUAL halves (`primaryKey` /
+-- `secondaryKey`, e.g. TILESET_03DF704), never by the pair id the map
+-- carries (TILESET_03DF704_03DF77C). Looking up tileset.id therefore
+-- matches nothing and the mask stays empty on every Hoenn/Kanto map.
 --
 -- This needs no tileset image at all -- `Gen3.atlasInfoFor` is pure
 -- arithmetic over the pair's own metatile count, not a GPU bake -- so it
 -- works even where `Gen3.atlasDataForTileset` (which DOES bake) can't.
+local function gen3CatalogKeys(tileset)
+  local keys, seen = {}, {}
+  local function add(k)
+    if type(k) ~= "string" or k == "" or seen[k] then return end
+    seen[k] = true
+    keys[#keys + 1] = k
+  end
+  add(tileset and tileset.primaryKey)
+  add(tileset and tileset.secondaryKey)
+  local id = tostring(tileset and tileset.id or "")
+  add(id)
+  local p, s = id:match("^(TILESET_%x+)_(%x+)$")
+  if p and s then
+    add(p)
+    add("TILESET_" .. s)
+  end
+  return keys
+end
+
 local function gen3Ids(tileset)
   if not WindowMetatiles then return nil end
-  local key = tostring(tileset and tileset.id)
   local ids, seen = {}, {}
-  for _, game in ipairs({ "emerald", "firered" }) do
-    for _, bucket in ipairs({ WindowMetatiles.windows, WindowMetatiles.doors }) do
-      local perGame = bucket and bucket[game]
-      local list = perGame and perGame[key]
-      if list then
-        for _, id in ipairs(list) do
-          if not seen[id] then
-            seen[id] = true
-            ids[#ids + 1] = id
+  for _, key in ipairs(gen3CatalogKeys(tileset)) do
+    for _, game in ipairs({ "emerald", "firered" }) do
+      for _, bucket in ipairs({ WindowMetatiles.windows, WindowMetatiles.doors }) do
+        local list = bucket and bucket[game] and bucket[game][key]
+        if list then
+          for _, id in ipairs(list) do
+            if not seen[id] then
+              seen[id] = true
+              ids[#ids + 1] = id
+            end
           end
         end
       end
@@ -186,24 +208,62 @@ end
 local function gen3Rects(tileset)
   local ids = gen3Ids(tileset)
   if not ids then return nil end
-  -- `tileOrigin`'s default `cols` (SHEET_COLS, 16) counts METATILE columns
-  -- on the PRE-relay sheet (`bakeLinear`'s own `srcCols`); the atlas this
-  -- mask has to align with is the RELAID one (`atlasInfoFor`'s `perRow`,
-  -- 16 TILES per row), which is only 8 metatiles wide -- two tiles per
-  -- metatile. Passing the default here would let any tileset with more
-  -- than 8 metatiles-per-row's worth of ids overflow the real 128px-wide
-  -- atlas (checked: metatile 8 lands at x=128 with the default, x=0 row+1
-  -- with this). `Gen3.atlasInfoFor` is itself cached, so asking it here
-  -- costs nothing extra.
   local infoOk, info = pcall(Gen3.atlasInfoFor, tileset)
-  local cols = (infoOk and info and info.perRow) and math.floor(info.perRow / 2) or 8
+  local perRow = (infoOk and info and info.perRow) or 16
   local rects = {}
   for _, m in ipairs(ids) do
-    local ok, x, y = pcall(function()
-      return Gen3.tileOrigin(Gen3.tileId(m, 0, 0), cols)
-    end)
-    if ok and x and y then
-      rects[#rects + 1] = { x = x, y = y, w = 16, h = 16 }
+    local t = (tonumber(m) or 0) * 4
+    rects[#rects + 1] = {
+      x = (t % perRow) * 8,
+      y = math.floor(t / perRow) * 8,
+      w = 32,
+      h = 8,
+    }
+  end
+  return rects
+end
+
+-- Pane vs everything else in a catalog metatile, measured off the verify
+-- contact sheets (4x composites of the same metatiles, navy frame
+-- (65,74,106), inner grey (98,98,123), cyan/blue glass, cool near-white
+-- shine). Applied only INSIDE listed window/door cells, so blue roofs and
+-- water elsewhere never get a vote.
+local function isGen3Glass(r, g, b)
+  if type(r) ~= "number" then return false end
+  if b < 0.42 then return false end
+  local br = b - r
+  if b >= 0.85 and br >= 0.02 and b >= g then return true end
+  if br < 0.11 then return false end
+  if b < g - 0.03 then return false end
+  return true
+end
+
+GlassMask._isGen3Glass = isGen3Glass
+
+-- When the relaid atlas exists, keep only glass texels. If the bake has
+-- not happened yet, the caller keeps the 32x8 strips so the mask is not
+-- empty for the session.
+local function gen3GlassPixels(tileset, ids, w, h, perRow)
+  if not (ids and Gen3.atlasDataForTileset) then return nil end
+  local ok, data = pcall(Gen3.atlasDataForTileset, tileset)
+  if not (ok and data and data.getPixel) then return nil end
+  local rects = {}
+  for _, m in ipairs(ids) do
+    local t0 = (tonumber(m) or 0) * 4
+    for q = 0, 3 do
+      local t = t0 + q
+      local ox, oy = (t % perRow) * 8, math.floor(t / perRow) * 8
+      for yy = 0, 7 do
+        for xx = 0, 7 do
+          local x, y = ox + xx, oy + yy
+          if x < w and y < h then
+            local pok, pr, pg, pb = pcall(data.getPixel, data, x, y)
+            if pok and isGen3Glass(pr, pg, pb) then
+              rects[#rects + 1] = { x = x, y = y, w = 1, h = 1 }
+            end
+          end
+        end
+      end
     end
   end
   return rects
@@ -290,7 +350,14 @@ local function entry(tileset)
       return cache[key]
     end
     w, h = info.width, info.height
-    rects = gen3Rects(tileset) or {}
+    local ids = gen3Ids(tileset)
+    local perRow = info.perRow or 16
+    local pixels = ids and gen3GlassPixels(tileset, ids, w, h, perRow)
+    if pixels and #pixels > 0 then
+      rects = pixels
+    else
+      rects = gen3Rects(tileset) or {}
+    end
   else
     local path = tileset and tileset.image
     if not path then return nil end
