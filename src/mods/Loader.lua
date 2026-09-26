@@ -1067,6 +1067,9 @@ function Loader:_api(mod)
   setmetatable(api, { __index = function(_, key)
     if key == "game" then return loader:_game() end
     if key == "storage" then
+      -- Do not pass loader.fs when it is love.filesystem: that always writes
+      -- the OS save directory and leaves modstorage/ on internal storage.
+      -- Storage.fsOr routes the live LOVE fs through CacheFs.dataFs.
       if not storage then storage = ModStorage.new(modId, loader.fs) end
       return storage
     end

@@ -218,9 +218,11 @@ end
 -- machine by definition, and two relocation mechanisms arguing over one
 -- cache is a bug report nobody can read.
 --
--- DESKTOP ONLY, for the same reason portable mode is.  On Android/iOS there
--- is no arbitrary writable folder to point at, and the io.* writes CacheFs
--- would make into one fail per file rather than up front.
+-- Desktop always, Android once a folder can be proved writable with the
+-- same io.* probe CacheFs uses.  iOS still has no arbitrary writable
+-- folder to point at.  Android 11+ will refuse most shared folders
+-- (Downloads, DCIM); app-owned dirs on phone storage or an SD card still
+-- pass, which is the whole point of offering the setting there.
 local PROBE_NAME = ".gen2recomp-write-test"
 
 local dataDirChecked = false
@@ -232,6 +234,27 @@ function SaveData.dataDirSupported()
   if not (love.system and love.system.getOS) then return false end
   local osName = love.system.getOS()
   return osName == "Windows" or osName == "Linux" or osName == "OS X"
+    or osName == "Android"
+end
+
+-- Extra app-owned volumes the Android bridge can name (phone vs SD card).
+-- Each line from love.system.getExternalDataDirs is "label<TAB>absolute path".
+-- Empty on every other OS, and on an APK older than the bridge.
+function SaveData.externalDataDirs()
+  if not (love and love.system and type(love.system.getExternalDataDirs) == "function") then
+    return {}
+  end
+  local ok, raw = pcall(love.system.getExternalDataDirs)
+  if not ok or type(raw) ~= "string" or raw == "" then return {} end
+  local out = {}
+  for line in raw:gmatch("[^\r\n]+") do
+    local label, path = line:match("^(.-)\t(.+)$")
+    path = SaveData.normalizeDataDir(path or line)
+    if path then
+      out[#out + 1] = { label = (label and label ~= "" and label) or path, path = path }
+    end
+  end
+  return out
 end
 
 -- Trailing separators removed and slashes left alone otherwise: this string

@@ -328,7 +328,19 @@ apply_android_branding() {
 
   say "applying Android branding (gradle.properties + permission trim)"
 
-  python3 - "$props" "$APPLICATION_ID" "$APP_NAME" "$VERSION" "$VERSION_CODE" <<'PY'
+  # Detect if running on Windows (Git Bash) or Linux/macOS
+  local is_windows=false
+  if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
+    is_windows=true
+  fi
+
+  if [ "$is_windows" = true ]; then
+    local win_props
+    local win_manifest
+    win_props="$(git_bash_to_windows_path "$props")"
+    win_manifest="$(git_bash_to_windows_path "$manifest")"
+
+    py - "$win_props" "$APPLICATION_ID" "$APP_NAME" "$VERSION" "$VERSION_CODE" <<'PY'
 import pathlib, re, sys
 path = pathlib.Path(sys.argv[1])
 app_id, name, version, version_code = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
@@ -352,19 +364,18 @@ if version:
 path.write_text(text)
 PY
 
-  python3 - "$manifest" <<'PY'
+    py - "$win_manifest" <<'PY'
 import pathlib, re, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
 
-# Drop mic / legacy storage, not needed by this game.
-# Keep VIBRATE (love.system.vibrate), BLUETOOTH (optional gamepads) and
-# INTERNET: link play is not offline-only any more, and stripping INTERNET
-# made every LAN host and every relay connect fail with EPERM (issue #287).
-# Orientation / label come from gradle.properties placeholders.
+# Drop mic only. WRITE_EXTERNAL_STORAGE / MANAGE_EXTERNAL_STORAGE stay:
+# a player-chosen game-data folder (ROM cache, non-mod files) is POSIX
+# io.open + PhysFS, which Android 11+ otherwise denies. Keep VIBRATE,
+# BLUETOOTH, INTERNET (issue #287). Orientation / label come from
+# gradle.properties placeholders.
 for perm in (
     "android.permission.RECORD_AUDIO",
-    "android.permission.WRITE_EXTERNAL_STORAGE",
 ):
     text = re.sub(
         rf'\s*<uses-permission android:name="{re.escape(perm)}"[^/]*/>\s*',
@@ -374,6 +385,54 @@ for perm in (
 text = re.sub(r'\s*android:usesCleartextTraffic="true"', "", text)
 path.write_text(text)
 PY
+  else
+    # Linux/macOS - use native paths
+    python3 - "$props" "$APPLICATION_ID" "$APP_NAME" "$VERSION" "$VERSION_CODE" <<'PY'
+import pathlib, re, sys
+path = pathlib.Path(sys.argv[1])
+app_id, name, version, version_code = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+text = path.read_text()
+
+def set_prop(text, key, value):
+    pat = re.compile(rf"(?m)^{re.escape(key)}=.*$")
+    line = f"{key}={value}"
+    if pat.search(text):
+        return pat.sub(line, text)
+    return text.rstrip() + "\n" + line + "\n"
+
+# Prefer plain app.name; clear byte-array form so it cannot win.
+text = re.sub(r"(?m)^app\.name_byte_array=.*\n?", "", text)
+text = set_prop(text, "app.name", name)
+text = set_prop(text, "app.application_id", app_id)
+text = set_prop(text, "app.orientation", "fullUser")
+if version:
+    text = set_prop(text, "app.version_name", version)
+    text = set_prop(text, "app.version_code", version_code)
+path.write_text(text)
+PY
+
+    python3 - "$manifest" <<'PY'
+import pathlib, re, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+
+# Drop mic only. WRITE_EXTERNAL_STORAGE / MANAGE_EXTERNAL_STORAGE stay:
+# a player-chosen game-data folder (ROM cache, non-mod files) is POSIX
+# io.open + PhysFS, which Android 11+ otherwise denies. Keep VIBRATE,
+# BLUETOOTH, INTERNET (issue #287). Orientation / label come from
+# gradle.properties placeholders.
+for perm in (
+    "android.permission.RECORD_AUDIO",
+):
+    text = re.sub(
+        rf'\s*<uses-permission android:name="{re.escape(perm)}"[^/]*/>\s*',
+        "\n",
+        text,
+    )
+text = re.sub(r'\s*android:usesCleartextTraffic="true"', "", text)
+path.write_text(text)
+PY
+  fi
 }
 
 # --------------------------------------------------------------- game.love

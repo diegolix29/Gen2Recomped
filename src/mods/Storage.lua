@@ -30,21 +30,21 @@ Storage.RECORD_EXT = ".rec"
 Storage.BYTES_EXT = ".bin"
 Storage.MAX_KEY = 180
 
--- An injected fs always wins (the mod loader's stub, the headless tests).
--- Otherwise modstorage/ follows the player's chosen game-data folder the same
--- way installed mods and the ROM cache do: CacheFs.dataFs reads through
--- love.filesystem, which sees every home at once, and routes writes at
--- whichever root is live -- love.filesystem's own write always lands in the
--- OS save directory, which is why this tree used to stay behind when the
--- folder changed.
+-- An injected stub (the mod loader's tests, a headless fs) always wins.
+-- love.filesystem itself does NOT: it always writes the OS save directory,
+-- so passing it in -- which Loader does as loader.fs -- stranded
+-- modstorage/ on internal storage after the player picked a game-data
+-- folder.  Treat the live LOVE fs as "no preference" and use CacheFs.dataFs
+-- instead, which reads every home and writes the live root.
 local function fsOr(fs)
-  if fs then return fs end
+  local loveFs = love and love.filesystem
+  if fs and fs ~= loveFs then return fs end
   local ok, CacheFs = pcall(require, "src.import.CacheFs")
   if ok and CacheFs and CacheFs.dataFs then
     local okFs, handle = pcall(CacheFs.dataFs)
     if okFs and handle then return handle end
   end
-  return (love and love.filesystem) or nil
+  return loveFs
 end
 
 -- id and key both land in a filesystem path, so both are validated rather

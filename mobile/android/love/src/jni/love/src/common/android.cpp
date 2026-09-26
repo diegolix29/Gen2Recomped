@@ -36,6 +36,7 @@
 #include <unistd.h>
 
 #include "filesystem/physfs/PhysfsIo.h"
+#include "libraries/physfs/physfs.h"
 
 namespace love
 {
@@ -217,6 +218,96 @@ bool showCreateDocument(const char *suggestedName)
 
 	env->DeleteLocalRef(activity);
 	return result;
+}
+
+bool showFolderPicker()
+{
+	JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();
+	jclass activity = env->FindClass("org/love2d/android/GameActivity");
+
+	jmethodID method = env->GetStaticMethodID(activity, "showFolderPicker",
+		"(Ljava/lang/String;)Z");
+	jstring jsavedir = env->NewStringUTF(bridgeSaveDirectory());
+	jboolean result = env->CallStaticBooleanMethod(activity, method, jsavedir);
+	env->DeleteLocalRef(jsavedir);
+
+	env->DeleteLocalRef(activity);
+	return result;
+}
+
+std::string getExternalDataDirs()
+{
+	JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();
+	jclass activity = env->FindClass("org/love2d/android/GameActivity");
+
+	jmethodID method = env->GetStaticMethodID(activity, "getExternalDataDirs",
+		"()Ljava/lang/String;");
+	jstring jresult = (jstring) env->CallStaticObjectMethod(activity, method);
+	std::string result;
+	if (jresult != nullptr)
+	{
+		const char *chars = env->GetStringUTFChars(jresult, nullptr);
+		if (chars != nullptr)
+		{
+			result = chars;
+			env->ReleaseStringUTFChars(jresult, chars);
+		}
+		env->DeleteLocalRef(jresult);
+	}
+
+	env->DeleteLocalRef(activity);
+	return result;
+}
+
+bool mountDirectory(const char *path)
+{
+	if (path == nullptr || path[0] == '\0')
+		return false;
+	if (!PHYSFS_isInit())
+		return false;
+	return PHYSFS_mount(path, nullptr, 1) != 0;
+}
+
+static bool callStaticBool(const char *name, const char *sig, const char *arg)
+{
+	JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();
+	jclass activity = env->FindClass("org/love2d/android/GameActivity");
+	jmethodID method = env->GetStaticMethodID(activity, name, sig);
+	jboolean result;
+	if (arg != nullptr)
+	{
+		jstring jarg = env->NewStringUTF(arg);
+		result = env->CallStaticBooleanMethod(activity, method, jarg);
+		env->DeleteLocalRef(jarg);
+	}
+	else
+		result = env->CallStaticBooleanMethod(activity, method);
+	env->DeleteLocalRef(activity);
+	return result;
+}
+
+bool hasStorageAccess()
+{
+	return callStaticBool("hasStorageAccess", "()Z", nullptr);
+}
+
+bool requestStorageAccess()
+{
+	return callStaticBool("requestStorageAccess", "()Z", nullptr);
+}
+
+bool pathIsAppOwned(const char *path)
+{
+	if (path == nullptr)
+		return false;
+	return callStaticBool("pathIsAppOwned", "(Ljava/lang/String;)Z", path);
+}
+
+bool mkdirsReal(const char *path)
+{
+	if (path == nullptr || path[0] == '\0')
+		return false;
+	return callStaticBool("mkdirsReal", "(Ljava/lang/String;)Z", path);
 }
 
 bool syncHealthSteps()
