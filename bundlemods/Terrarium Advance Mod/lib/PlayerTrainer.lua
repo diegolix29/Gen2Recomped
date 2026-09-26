@@ -497,7 +497,7 @@ local function loadScene(ctx)
     releaseJointScore=tonumber(cache.releaseJointScore),runtimeSidecar=fromRuntime==true};sceneKey=wanted
   scene.nativeTrack=TrainerMorph.loadTracks(wanted,groups)
   scene.drawGroups=TrainerMorph.materialOrder and TrainerMorph.materialOrder(groups) or groups
-  log(ctx,"info","loaded player trainer %s: %d material groups%s",cfg.label or wanted,#groups,fromRuntime and " (runtime sidecar)" or "")
+  -- log(ctx,"info","loaded player trainer %s: %d material groups%s",cfg.label or wanted,#groups,fromRuntime and " (runtime sidecar)" or "")
   return scene
 end
 local function battleOf(ctx) if type(ctx)~="table" then return nil end;return ctx.battle or (ctx.kind and ctx) or nil end

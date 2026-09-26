@@ -161,7 +161,7 @@ local DEFINITIONS={
     -- overwritten at acquire time from BattleArena.find / BattleCam.
     liveOverworld=true,
     stageScale=0.25,stageYaw=0,sceneRadiusRaw=620,maxGroupSpanRaw=1350,vertexRadiusRaw=610,
-    pokemon={player={-4.5,18.0},enemy={4.5,-18.0}},figureScale=0.365,trainers={player={14.0,29.5},enemy={-14.0,-29.5}},trainerScale={player=0.425,enemy=0.205},
+    pokemon={player={-4.5,18.0},enemy={4.5,-18.0}},figureScale=0.4745,trainers={player={14.0,29.5},enemy={-14.0,-29.5}},trainerScale={player=0.5525,enemy=0.2665},
     camera={side=59,back=18,height=29,lookX=0,lookY=6.0,frameH=51,safe={minRadius=29,maxRadius=87,minY=7.0,maxY=43,maxPitch=33,minPitch=-10,minFov=31,maxFov=54}},
     backdrop={top={0.08,0.31,0.65},bottom={0.68,0.84,0.76}},profile="overworld",crowd="none",
   },
@@ -424,8 +424,9 @@ C._test.mtBattleOwned=mtBattleOwned
 function C.releaseBattle(battle)
   if not battle or boundBattle==battle then
     boundBattle=nil
-    boundSelected=nil
-    boundResolved=nil
+    -- Don't clear boundSelected - it should persist across battles
+    -- The user's manual selection is stored in runtimeSelected via save file
+    -- boundResolved=nil
   end
 end
 

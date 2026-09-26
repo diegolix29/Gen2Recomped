@@ -216,7 +216,7 @@ function H.begin(battle)
   s.started=true
   if s.battle then s.battle.__cbePresentationQueueSync=true end
   H.lastError=nil;H.lastUpdateError=nil
-  log("info","standalone arena host began: arena=%s actor=current-sprites",tostring(s.context.arena and s.context.arena.id))
+  -- log("info","standalone arena host began: arena=%s actor=current-sprites",tostring(s.context.arena and s.context.arena.id))
   return true
 end
 

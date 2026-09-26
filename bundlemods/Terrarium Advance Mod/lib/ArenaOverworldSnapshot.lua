@@ -157,7 +157,7 @@ local function trainerBehind(pocket, side)
   local len = math.sqrt(dx * dx + dz * dz)
   if len < 1e-3 then dx, dz, len = 0, 1, 1 end
   dx, dz = dx / len, dz / len
-  local behind = 24
+  local behind = 19.2  -- 20% closer (was 24)
   if side == "player" then
     return { p[1] + dx * behind, p[2] + dz * behind }
   end

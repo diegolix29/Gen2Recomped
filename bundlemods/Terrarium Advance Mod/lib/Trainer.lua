@@ -411,7 +411,7 @@ local function loadConfig(ctx,cfg,reason)
   entry.nativeTrack=TrainerMorph.loadTracks(wanted,groups)
   sceneCache[wanted]=entry
   activateScene(cfg,reason,wanted,entry);trimSceneCache()
-  log(ctx,"info","loaded %s source actor: %d material groups",cfg.label or wanted,#groups)
+  -- log(ctx,"info","loaded %s source actor: %d material groups",cfg.label or wanted,#groups)
   return entry
 end
 
