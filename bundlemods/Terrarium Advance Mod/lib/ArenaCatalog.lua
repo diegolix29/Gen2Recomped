@@ -1,6 +1,10 @@
 local C={}
 local BattleSettings=nil
 
+-- Global scaling multiplier for actors (trainers and Pokémon)
+-- Default to 1.0 (normal size), can be overridden by user preference
+local ACTOR_SCALE_MULTIPLIER = 1.0
+
 -- Arena selection stays centralized in this module. The
 -- StadiumBattleFX provider is acquired once per battle; the selected id is
 -- resolved here before any cache is loaded and is then stamped onto the arena
@@ -181,11 +185,11 @@ local function randomDefinition()
     -- it changes which subsystem stages the fight (see H.begin's handoff),
     -- not just which backdrop loads, so it stays an explicit choice.
     if id~="auto" and id~="random" and id~="overworld" then
-      local def=DEFINITIONS[id]
+      local def=C.definition(id)
       if def and def.ready then pool[#pool+1]=def end
     end
   end
-  if #pool==0 then return DEFINITIONS.water end
+  if #pool==0 then return C.definition("water") end
   if #pool==1 then return pool[1] end
   local candidates={}
   for _,def in ipairs(pool) do
@@ -237,7 +241,58 @@ function C.setEnabled(game,value)
   return value and true or false
 end
 
-function C.definition(id) return DEFINITIONS[id] end
+function C.definition(id)
+  local def = DEFINITIONS[id]
+  if not def then return nil end
+
+  -- Apply global scaling multiplier to actors
+  local scaledDef = {}
+  for k, v in pairs(def) do
+    scaledDef[k] = v
+  end
+
+  -- Scale Pokémon figure size
+  if scaledDef.figureScale then
+    scaledDef.figureScale = scaledDef.figureScale * ACTOR_SCALE_MULTIPLIER
+  end
+
+  -- Scale trainer sizes
+  if scaledDef.trainerScale then
+    scaledDef.trainerScale = {}
+    if scaledDef.trainerScale.player then
+      scaledDef.trainerScale.player = scaledDef.trainerScale.player * ACTOR_SCALE_MULTIPLIER
+    end
+    if scaledDef.trainerScale.enemy then
+      scaledDef.trainerScale.enemy = scaledDef.trainerScale.enemy * ACTOR_SCALE_MULTIPLIER
+    end
+  end
+
+  return scaledDef
+end
+
+-- Allow users to adjust the global scale multiplier
+function C.setScaleMultiplier(multiplier)
+  if type(multiplier)=="number" and multiplier>0 then
+    ACTOR_SCALE_MULTIPLIER = multiplier
+  end
+  return ACTOR_SCALE_MULTIPLIER
+end
+
+function C.getScaleMultiplier()
+  return ACTOR_SCALE_MULTIPLIER
+end
+
+-- Load scale multiplier from user preferences
+function C.loadUserPreference(game)
+  if not (game and game.save) then return end
+  local p = game.save.colosseumBattle
+  if type(p)=="table" and p.actorScaleMultiplier then
+    local scale = tonumber(p.actorScaleMultiplier)
+    if scale and scale>0 then
+      ACTOR_SCALE_MULTIPLIER = scale
+    end
+  end
+end
 function C.order() return ORDER end
 function C.options()
   return {
@@ -372,7 +427,7 @@ function C.resolve(game,battle)
   -- arena preference. Gen II may surface its Battle model, BattleState view, or
   -- CBE facade at arena acquisition; all three must retain Summit ownership.
   if mtBattleOwned(battle) then
-    local summit=DEFINITIONS.mt_battle_summit or DEFINITIONS.water
+    local summit=C.definition("mt_battle_summit") or C.definition("water")
     return summit,"mt_battle_challenge"
   end
   local selected
@@ -405,8 +460,8 @@ function C.resolve(game,battle)
     -- arena the next battle receives.
     local def
     if battle then def=boundResolved
-    else def=primedRandom or (lastRandomResolved and DEFINITIONS[lastRandomResolved]) or DEFINITIONS.water end
-    if not def or not def.ready then def=DEFINITIONS.water end
+    else def=primedRandom or (lastRandomResolved and C.definition(lastRandomResolved)) or C.definition("water") end
+    if not def or not def.ready then def=C.definition("water") end
     return def,selected
   end
   local wanted=selected
@@ -417,8 +472,8 @@ function C.resolve(game,battle)
       wanted=(battle and (battle.kind=="wild" or battle.kind=="safari" or battle.wild==true)) and "outdoor_wild" or "water"
     end
   end
-  local def=DEFINITIONS[wanted] or DEFINITIONS.water
-  if not def.ready then def=DEFINITIONS.water end
+  local def=C.definition(wanted) or C.definition("water")
+  if not def.ready then def=C.definition("water") end
   return def,selected
 end
 
@@ -436,9 +491,9 @@ end
 function C.status(game,battle)
   local def,selected=C.resolve(game,battle)
   if not def then
-    return {enabled=C.enabled(game),selected=selected,resolved=nil,cache=nil,runtimeSelected=runtimeSelected,pendingSelected=pendingSelected,boundSelected=boundSelected,boundResolved=boundResolved and boundResolved.id or nil,lastRandomResolved=lastRandomResolved,primedRandom=primedRandom and primedRandom.id or nil,boundBattle=boundBattle~=nil,definitions=DEFINITIONS}
+    return {enabled=C.enabled(game),selected=selected,resolved=nil,cache=nil,runtimeSelected=runtimeSelected,pendingSelected=pendingSelected,boundSelected=boundSelected,boundResolved=boundResolved and boundResolved.id or nil,lastRandomResolved=lastRandomResolved,primedRandom=primedRandom and primedRandom.id or nil,boundBattle=boundBattle~=nil,definitions=DEFINITIONS,scaleMultiplier=ACTOR_SCALE_MULTIPLIER}
   end
-  return {enabled=C.enabled(game),selected=selected,resolved=def.id,cache=def.cache,runtimeSelected=runtimeSelected,pendingSelected=pendingSelected,boundSelected=boundSelected,boundResolved=boundResolved and boundResolved.id or nil,lastRandomResolved=lastRandomResolved,primedRandom=primedRandom and primedRandom.id or nil,boundBattle=boundBattle~=nil,definitions=DEFINITIONS}
+  return {enabled=C.enabled(game),selected=selected,resolved=def.id,cache=def.cache,runtimeSelected=runtimeSelected,pendingSelected=pendingSelected,boundSelected=boundSelected,boundResolved=boundResolved and boundResolved.id or nil,lastRandomResolved=lastRandomResolved,primedRandom=primedRandom and primedRandom.id or nil,boundBattle=boundBattle~=nil,definitions=DEFINITIONS,scaleMultiplier=ACTOR_SCALE_MULTIPLIER}
 end
 
 return C

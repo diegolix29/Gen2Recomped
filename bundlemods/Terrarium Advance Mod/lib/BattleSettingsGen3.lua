@@ -13,6 +13,7 @@ local function prefs(game)
       playerModel="red",enemyTrainerModel="auto",rivalModel="leaf",
       doubleBattlesEnabled=true,abilitiesEnabled=true,freeLookEnabled=true,
       autoProgressEnabled=true,bossIntroEnabled=false,battleSoundsEnabled=true,
+      actorScaleMultiplier=1.0,
     }
   end
   local p=game.save.colosseumBattle
@@ -38,6 +39,8 @@ local function prefs(game)
   p.abilitiesEnabled=p.abilitiesEnabled==true
   if p.freeLookEnabled==nil then p.freeLookEnabled=true end
   if p.autoProgressEnabled==nil then p.autoProgressEnabled=true end
+  if p.actorScaleMultiplier==nil then p.actorScaleMultiplier=1.0 end
+  p.actorScaleMultiplier=tonumber(p.actorScaleMultiplier) or 1.0
   local legacy=p.sprites
   if p.playerModel==nil then
     p.playerModel=(p.playerTrainerModel==false or legacy=="off") and "off" or "red"
@@ -62,6 +65,8 @@ local function prefs(game)
   if not validMusic[p.music] then p.music="normal" end
   local validArena={auto=true,random=true,open_water=true,water=true,orre_colosseum=true,relic_chamber=true,relic_cave=true,outskirts=true,pyrite_colosseum=true,deep_colosseum=true,realgam_colosseum=true,outdoor_wild=true,mt_battle_summit=true,cipher_lab_underground=true,overworld=true}
   if not validArena[p.arena] then p.arena="auto" end
+  local validScale={ [1.0]=true, [1.5]=true, [2.0]=true, [2.5]=true, [3.0]=true }
+  if not validScale[p.actorScaleMultiplier] then p.actorScaleMultiplier=1.0 end
   return p
 end
 
@@ -78,6 +83,7 @@ local function buildBattleMenu(game)
   local p=prefs(game)
   if ArenaCatalog and ArenaCatalog.sync then ArenaCatalog.sync(game) end
   if ArenaCatalog and ArenaCatalog.selected then p.arena=ArenaCatalog.selected(game) end
+  if ArenaCatalog and ArenaCatalog.loadUserPreference then ArenaCatalog.loadUserPreference(game) end
 
   local function refresh()
     if modRef and modRef.log then modRef.log:info("Refreshing Gen3 battle settings menu") end
@@ -216,6 +222,15 @@ local function buildBattleMenu(game)
     refresh()
   end
 
+  local actorScaleOpts = {1.0, 1.5, 2.0, 2.5, 3.0}
+  local actorScaleToggle = {keepOpen=true, label=("ACTOR SIZE  %.1fX"):format(p.actorScaleMultiplier or 1.0)}
+  actorScaleToggle.onSelect = function()
+    p.actorScaleMultiplier = cycle(actorScaleOpts, p.actorScaleMultiplier or 1.0)
+    actorScaleToggle.label = ("ACTOR SIZE  %.1fX"):format(p.actorScaleMultiplier or 1.0)
+    if ArenaCatalog and ArenaCatalog.setScaleMultiplier then ArenaCatalog.setScaleMultiplier(p.actorScaleMultiplier) end
+    refresh()
+  end
+
   -- Assemble all active items into our UI array
   local mainRows={
     arenaToggle,
@@ -233,6 +248,7 @@ local function buildBattleMenu(game)
     abilitiesToggle,
     autoProgressToggle,
     bossIntroToggle,
+    actorScaleToggle,
     {label="BACK",onSelect=function()
       if modRef and modRef.log then modRef.log:info("BACK selected in Gen3 battle settings") end
       if game.stack and type(game.stack.pop)=="function" then
