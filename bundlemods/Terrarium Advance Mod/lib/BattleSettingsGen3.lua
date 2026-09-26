@@ -81,6 +81,10 @@ local function buildBattleMenu(game)
 
   local function refresh()
     if modRef and modRef.log then modRef.log:info("Refreshing Gen3 battle settings menu") end
+    -- Ensure settings are persisted to save
+    if game and game.save then
+      game.save.colosseumBattle = p
+    end
   end
 
   -- Helper to cycle through lists (e.g. for arenas, music, player models)
@@ -103,11 +107,12 @@ local function buildBattleMenu(game)
     refresh()
   end
 
-  local arenaOpts = {"auto", "random", "water", "orre_colosseum", "relic_chamber", "relic_cave", "outskirts", "pyrite_colosseum", "deep_colosseum", "realgam_colosseum", "outdoor_wild", "mt_battle_summit", "cipher_lab_underground"}
+  local arenaOpts = {"auto", "random", "water", "orre_colosseum", "relic_chamber", "relic_cave", "outskirts", "pyrite_colosseum", "deep_colosseum", "realgam_colosseum", "outdoor_wild", "mt_battle_summit", "cipher_lab_underground", "overworld"}
   local arenaSelectToggle = {keepOpen=true, label="ARENA  "..string.upper(p.arena)}
   arenaSelectToggle.onSelect = function()
     p.arena = cycle(arenaOpts, p.arena)
     arenaSelectToggle.label = "ARENA  "..string.upper(p.arena)
+    if ArenaCatalog and ArenaCatalog.setSelected then ArenaCatalog.setSelected(game, p.arena) end
     refresh()
   end
 
@@ -153,6 +158,7 @@ local function buildBattleMenu(game)
     p.playerModel = cycle(playerOpts, p.playerModel)
     p.playerTrainerModel = (p.playerModel ~= "off")
     playerModelToggle.label = "PLAYER MODEL  "..string.upper(p.playerModel)
+    if TrainerRoster and TrainerRoster.setPlayerModel then TrainerRoster.setPlayerModel(game, p.playerModel) end
     refresh()
   end
   
@@ -162,6 +168,7 @@ local function buildBattleMenu(game)
     p.enemyTrainerModel = cycle(enemyOpts, p.enemyTrainerModel)
     p.enemyTrainerModels = (p.enemyTrainerModel ~= "off")
     enemyModelToggle.label = "ENEMY MODEL  "..string.upper(p.enemyTrainerModel)
+    if TrainerRoster and TrainerRoster.setEnemyModel then TrainerRoster.setEnemyModel(game, p.enemyTrainerModel) end
     refresh()
   end
 
@@ -177,6 +184,7 @@ local function buildBattleMenu(game)
   musicToggle.onSelect = function()
     p.music = cycle(musicOpts, p.music)
     musicToggle.label = "MUSIC  "..string.upper(p.music)
+    if Music and Music.setTheme then Music.setTheme(game, p.music) end
     refresh()
   end
 
