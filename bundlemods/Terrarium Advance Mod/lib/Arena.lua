@@ -3380,7 +3380,20 @@ function A:render(ctx,arena,drawActors)
           Snap.draw(w,h,pose)
         end
       end)
-      if depthActive then love.graphics.setDepthMode("lequal",true) end
+      -- Terrain was projected with Voxel3D's matrix into this same depth
+      -- buffer. Actors must use that VP or they fail the depth test (and
+      -- sit at Y=0 inside the cave floor). MoveFX stays visible because it
+      -- is a post pass.
+      local Voxel3D=V.Voxel3D
+      if Voxel3D and type(Voxel3D.vp)=="table" then
+        vp=Voxel3D.vp
+        actorVP=Mat4.mul(vp,Mat4.scale(figureScale,figureScale,figureScale))
+      end
+      local worldY=tonumber(arena and arena.groundY) or 0
+      ctx.groundY=worldY/math.max(0.001,figureScale)
+      if arena then arena.groundY=worldY;arena.liveField=true end
+      local rebound=bindArenaCanvas(out)
+      if rebound and depthActive then love.graphics.setDepthMode("lequal",true) end
       love.graphics.setColor(1,1,1,1)
     else
     -- 1) Isolate arena buckets on Android/portable drivers. One malformed mesh or
@@ -3426,7 +3439,7 @@ function A:render(ctx,arena,drawActors)
       installActorServices(ctx,actorVP,vp,w,h,figureScale,pose)
       actorOk,actorErr=pcall(CurrentSpriteModels.drawWorld,CurrentSpriteModels,ctx)
     else
-      actorOk,actorErr=pcall(drawActors,{vp=actorVP,stageVP=vp,figureScale=figureScale,groundY=0,width=w,height=h})
+      actorOk,actorErr=pcall(drawActors,{vp=actorVP,stageVP=vp,figureScale=figureScale,groundY=ctx.groundY or 0,width=w,height=h})
     end
     if actorOk then renderErrors.actors=nil else
       renderErrors.actors=tostring(actorErr)
