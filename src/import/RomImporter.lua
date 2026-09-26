@@ -2204,7 +2204,7 @@ end
 -- the surprise).
 local function hasNativePicker()
   local platform = love.system.getOS()
-  return platform == "OS X" or platform == "Windows" or platform == "Linux"
+  return platform == "OS X" or platform == "Windows" or platform == "Linux" or platform == "Android"
 end
 
 local function pickedFileList(out)
@@ -2401,7 +2401,15 @@ end
 local function chooseFolder(prompt)
   prompt = prompt or Strings("Choose a folder of mod .zip files")
   local platform = love.system.getOS()
-  if platform == "OS X" then
+  if platform == "Android" then
+    -- Use Android's Storage Access Framework folder picker
+    -- This is async: the result will be written to picked_folder.txt
+    -- and consumed on the next focus/poll cycle, similar to file picks
+    if love.system.pickFolder then
+      return love.system.pickFolder()
+    end
+    return nil
+  elseif platform == "OS X" then
     return commandOutput(
       ([[osascript -e 'POSIX path of (choose folder with prompt "%s")' 2>/dev/null]])
         :format(prompt))
@@ -2854,6 +2862,16 @@ end
 -- moments later (it clears pickPending itself once something is found).
 function RomImporter:focus(f)
   if not (f and self.android and self.workState ~= "working") then return end
+  -- SAF folder picker finished: GameActivity wrote picked_folder.txt.
+  if love.filesystem.getInfo("picked_folder.txt", "file") then
+    local uri = love.filesystem.read("picked_folder.txt")
+    love.filesystem.remove("picked_folder.txt")
+    if uri and uri ~= "" then
+      -- Call setDataDir with the selected folder URI
+      self:setDataDir(uri)
+    end
+    return
+  end
   -- SAF create-document finished: GameActivity wrote export_done.flag.
   if love.filesystem.getInfo("export_done.flag", "file") then
     love.filesystem.remove("export_done.flag")
@@ -8381,6 +8399,12 @@ function RomImporter:chooseDataDir()
   end
   local folder = chooseFolder(Strings("Choose where to install games"))
   if not folder or folder == "" then return end
+  -- On Android, folder picker is async - folder will be true if launched successfully
+  -- The actual path will come through focus() when GameActivity writes picked_folder.txt
+  if self.android then
+    self.settingsNotice = Strings("Choose a folder in the system picker...")
+    return
+  end
   self:setDataDir(folder)
 end
 

@@ -80,6 +80,7 @@ public class GameActivity extends SDLActivity {
     public static final int FILE_CREATE_REQUEST_CODE = 5;
     public static final int STEP_PERMISSION_REQUEST_CODE = 6;
     public static final int RESTART_REQUEST_CODE = 7;
+    public static final int FOLDER_PICKER_REQUEST_CODE = 8;
     /** @deprecated Prefer FILE_PICKER_REQUEST_CODE; kept for older call sites. */
     public static final int ROM_PICKER_REQUEST_CODE = FILE_PICKER_REQUEST_CODE;
     // Mirrors conf.lua's t.identity ("pokemon-love2d"): where the picked file
@@ -116,6 +117,8 @@ public class GameActivity extends SDLActivity {
     // field reset and was filed as picked_rom.gb, which Lua then rejected as a
     // bad ROM instead of installing it (#553).
     private String pendingPickFilename = PICKED_ROM_FILENAME;
+    // Selected folder path from folder picker, written to a flag file for Lua to consume
+    private static final String FOLDER_PICK_RESULT_FILENAME = "picked_folder.txt";
     /**
      * One-shot: has this pick already been retried through ACTION_GET_CONTENT?
      *
@@ -736,6 +739,32 @@ public class GameActivity extends SDLActivity {
         return showCreateDocument(suggestedName, null);
     }
 
+    /**
+     * Shows ACTION_OPEN_DOCUMENT_TREE so the player can select a folder for
+     * game data storage. This is useful on Android where storage space is limited
+     * in the app's default directory.
+     *
+     * The selected folder URI is written to picked_folder.txt in the save
+     * identity directory for Lua to consume on the next focus event.
+     *
+     * OPEN_DOCUMENT_TREE requires API 21+, so this returns false on older versions.
+     */
+    @Keep
+    public static boolean showFolderPicker() {
+        if (android.os.Build.VERSION.SDK_INT < 21) return false;
+        GameActivity self = (GameActivity) mSingleton;
+        if (self == null) return false;
+
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        try {
+            self.startActivityForResult(intent, FOLDER_PICKER_REQUEST_CODE);
+            return true;
+        } catch (Exception e) {
+            Log.d("GameActivity", "could not open folder picker: " + e.getMessage());
+            return false;
+        }
+    }
+
     @Keep
     public static boolean showCreateDocument(String suggestedName, String saveDir) {
         if (android.os.Build.VERSION.SDK_INT < 19) return false;
@@ -1009,6 +1038,26 @@ public class GameActivity extends SDLActivity {
             } else {
                 Log.d("GameActivity", "could not write export to " + uri);
             }
+            return;
+        }
+        if (requestCode == FOLDER_PICKER_REQUEST_CODE) {
+            if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+                Log.d("GameActivity", "folder picker cancelled");
+                return;
+            }
+            Uri uri = data.getData();
+            // Take persistable URI permission so we can access this folder across app restarts
+            try {
+                int takeFlags = data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                if (android.os.Build.VERSION.SDK_INT >= 19) {
+                    getContentResolver().takePersistableUriPermission(uri, takeFlags);
+                }
+            } catch (Exception e) {
+                Log.d("GameActivity", "could not take persistable URI permission: " + e.getMessage());
+            }
+            // Write the URI to a flag file for Lua to consume
+            writeSaveDirFlag(FOLDER_PICK_RESULT_FILENAME, uri.toString());
+            Log.d("GameActivity", "folder picker selected: " + uri.toString());
             return;
         }
         if (requestCode != FILE_PICKER_REQUEST_CODE) return;

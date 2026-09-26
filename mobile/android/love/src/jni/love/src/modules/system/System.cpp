@@ -204,6 +204,15 @@ bool System::pickFile(const char *kind) const
 #endif
 }
 
+bool System::pickFolder() const
+{
+#ifdef LOVE_ANDROID
+	return love::android::showFolderPicker();
+#else
+	return false;
+#endif
+}
+
 bool System::createFile(const char *suggestedName) const
 {
 #ifdef LOVE_ANDROID

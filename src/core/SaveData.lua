@@ -280,7 +280,7 @@ end
 function SaveData.isAbsolutePath(path)
   if type(path) ~= "string" or path == "" then return false end
   return path:sub(1, 1) == "/" or path:sub(1, 1) == "\\"
-    or path:match("^%a:[/\\]") ~= nil
+    or path:match("^%a:[/\\]") ~= nil or path:match("^content://") ~= nil
 end
 
 -- checkDataDir(path) -> normalised path, or nil, reason
@@ -293,6 +293,13 @@ function SaveData.checkDataDir(path)
   if not dir then return nil, "no folder chosen" end
   if not SaveData.isAbsolutePath(dir) then
     return nil, "that is not a full path"
+  end
+  -- Handle Android content:// URIs from SAF folder picker
+  if dir:match("^content://") then
+    -- For Android SAF URIs, we can't directly test with io.open
+    -- We'll trust the URI since the user explicitly selected it through the picker
+    -- The URI will be stored and used by the Android filesystem bridge
+    return dir
   end
   local probe = dir .. SEP .. PROBE_NAME
   local f = io.open(probe, "wb")

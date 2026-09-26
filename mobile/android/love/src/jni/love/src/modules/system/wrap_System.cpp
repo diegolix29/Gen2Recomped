@@ -102,6 +102,12 @@ int w_pickFile(lua_State *L)
 	return 1;
 }
 
+int w_pickFolder(lua_State *L)
+{
+	luax_pushboolean(L, instance()->pickFolder());
+	return 1;
+}
+
 int w_createFile(lua_State *L)
 {
 	const char *suggested = luaL_optstring(L, 1, nullptr);
@@ -149,6 +155,7 @@ static const luaL_Reg functions[] =
 	{ "openURL", w_openURL },
 	{ "vibrate", w_vibrate },
 	{ "pickFile", w_pickFile },
+	{ "pickFolder", w_pickFolder },
 	{ "createFile", w_createFile },
 	{ "syncHealthSteps", w_syncHealthSteps },
 	{ "restartApp", w_restartApp },

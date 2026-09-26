@@ -118,6 +118,15 @@ public:
 	virtual bool pickFile(const char *kind = nullptr) const;
 
 	/**
+	 * Shows the platform's native "pick a folder" UI (Android SAF
+	 * ACTION_OPEN_DOCUMENT_TREE). The selected folder URI is written to
+	 * picked_folder.txt in the save directory for Lua to consume.
+	 *
+	 * @return Whether the folder picker was shown.
+	 **/
+	virtual bool pickFolder() const;
+
+	/**
 	 * Shows the platform's native "create / save a file" UI (Android SAF
 	 * ACTION_CREATE_DOCUMENT). Copies staged pending_export.sav from the app
 	 * save directory to the user-chosen URI. See GameActivity.showCreateDocument.

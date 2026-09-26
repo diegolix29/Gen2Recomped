@@ -83,6 +83,13 @@ bool showImagePicker();
 bool showCreateDocument(const char *suggestedName = nullptr);
 
 /**
+ * Shows ACTION_OPEN_DOCUMENT_TREE so the player can select a folder for
+ * game data storage. The selected folder URI is written to picked_folder.txt
+ * in the save identity directory for Lua to consume.
+ **/
+bool showFolderPicker();
+
+/**
  * Pokéwalker step bridge: asks GameActivity to read the hardware step
  * counter and stage steps_pending.json in the save identity dir (see
  * GameActivity.syncHealthSteps). Returns whether a sync could start.
