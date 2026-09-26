@@ -54,10 +54,6 @@ end
 local ModSetting = V.require("ModSetting")
 -- Dramatic Shape's own answer for maps under leaves rather than a roof
 local okDN, DayNight = pcall(V.require, "DayNight")
--- Gen3 rooms carry taller building walls than Kanto/Johto's, which is why
--- their caves need the extra bump below on top of the general cave one.
--- Guarded the same way as FirstPerson above: a Gen1/Gen2-only build has
--- no Gen3 arm to require, and every cave should just get the plain
 -- doubling in that case rather than taking the whole module down.
 local okG3, Gen3 = pcall(V.require, "Gen3")
 if not (okG3 and type(Gen3) == "table" and Gen3.mapIsGen3) then
@@ -74,7 +70,7 @@ local Ceiling = {}
 Ceiling.setting = ModSetting.new("fpceiling", "FP CEILING",
                                  { true, false }, { "ON", "OFF" })
 Ceiling.headroom = ModSetting.new("fpheadroom", "HEADROOM",
-                                  { 100, 50, 24 }, { "AIRY", "MID", "SNUG" })
+                                  { 32, 24, 16 }, { "AIRY", "MID", "SNUG" })
 Ceiling.cutaway = ModSetting.new("fpcutaway", "CUTAWAY",
                                  { true, false }, { "ON", "OFF" })
 
@@ -82,21 +78,11 @@ local WALL_H = 16          -- "wall is 16px for every interior in the game"
 local HOLE_RADIUS = 4      -- cutaway ceiling hole, in cells around the player
 local BLEND_GATE = 0.5
 
--- Caves ride higher than the room's normal headroom: the rock canopy
--- (the ROCK section, further down) read too close overhead at the stock
--- height, so every cave -- Gen1, Gen2 or Gen3 -- gets double the room's
--- configured headroom. Separately, Gen3's own walls run taller than
--- Kanto/Johto's, so every Gen3 room -- caves included -- gets its
--- headroom raised 25% before the cave doubling above is even applied,
--- or the flat lid clips through those taller walls.
-local CAVE_HEIGHT_MULT = 8
-local GEN3_HEADROOM_MULT = 1.5
-
 -- shade language: lit vs shaded riser flanks (matching the mesher's south/
 -- east-lit sun), and the ceiling's checker pair
 local RISER_SHADE = { pz = 0.85, nz = 0.62, px = 0.80, nx = 0.66 }
 local CEIL_SHADE = { 0.42, 0.48 }
-    
+
 local cache = nil  -- { map, key, mesh, note }
 
 status("loaded (v3); awaiting the first frame indoors")
@@ -114,7 +100,7 @@ local function config()
   end
   return {
     ceiling = Ceiling.setting:get() == true,
-    headroom = Ceiling.headroom:get() or 100,
+    headroom = Ceiling.headroom:get() or 32,
     cutaway = Ceiling.cutaway:get() == true,
   }
 end
@@ -124,32 +110,9 @@ end
 -- Forest, the Safari Zone areas, Route gatehouse yards and the Plateau
 -- grounds all have no connections, so "warp-only" alone would roof them.
 -- A ceiling over the forest is the one thing worse than no ceiling at all.
---
--- Gen 1/2 ONLY: these are the native engine's own symbolic tileset ids
--- (see lib/TwinRegionWorld.lua and lib/KantoGen2Style.lua for the full
--- vocabulary). A Gen 3 map's tileset id is never one of these -- Hoenn
--- carries a raw ROM address (P03DF704 and the like) and FireRed carries
--- its own frlg_gTileset_* names -- so this table can never fire for a
--- Gen 3 or FRLG map, and never did. See ROOFTOP_OVERRIDE and
--- gen3Outdoor() below for their equivalent.
 local OPEN_AIR_TILESETS = {
   OVERWORLD = true, FOREST = true, PLATEAU = true, SHIP_PORT = true,
 }
-
--- Gen 3/FRLG's warp-only-but-actually-sky maps: the same problem
--- OPEN_AIR_TILESETS solves for Gen 1/2, by name instead of by tileset,
--- because Emerald and FireRed's own MAP_TYPE calls every one of these
--- an INDOOR map (no weather, no wild encounters up there) even though
--- the room is a rooftop standing under the open sky. Confirmed against
--- data/gen3_maps.lua and data/firered/gen3_maps.lua -- every row below
--- reads outdoor = false there and would otherwise fall through
--- gen3Outdoor() and then the connections test (rooftops are reached by
--- a single stairwell warp, so they have no def.connections either) and
--- get sealed with a flat lid, sky and all.
---
--- Deliberately NOT included: FRLG's CeladonCity_Condominiums_RoofRoom
--- (MAP_G10_N11) -- that one IS an enclosed room standing on the roof,
--- not the open roof itself, and should keep its ceiling.
 local ROOFTOP_OVERRIDE = {
   MAP_G13_N21 = true,   -- Hoenn: LilycoveCity_DepartmentStoreRooftop
   MAP_G26_N65 = true,   -- Hoenn: TrainerHill_Roof
@@ -157,15 +120,6 @@ local ROOFTOP_OVERRIDE = {
   MAP_G10_N05 = true,   -- FRLG:  CeladonCity_DepartmentStore_Roof
   MAP_G10_N10 = true,   -- FRLG:  CeladonCity_Condominiums_Roof
 }
-
--- Gen 3/FRLG's OWN outdoor answer, straight from data/gen3_maps.lua (or
--- data/firered/gen3_maps.lua when FRLG content is what's loaded -- same
--- require name, resolved per the active game, exactly as Gen3.lua reads
--- it at ~line 3774 for its own terrain classification). This is the ROM's
--- MAP_TYPE, not a guess from tileset id or connections, so it is the
--- right first answer for anything this data file has heard of. Returns
--- nil (not false) for a map the file has no row for, so the caller can
--- tell "known indoor" from "unknown" and keep falling through.
 local function gen3Outdoor(map)
   local okMaps, m = pcall(V.data, "gen3_maps")
   if not (okMaps and type(m) == "table" and m.maps) then return nil end
@@ -173,7 +127,6 @@ local function gen3Outdoor(map)
   if not entry or entry.outdoor == nil then return nil end
   return entry.outdoor and true or false
 end
-
 -- Dramatic Shape 1.5.5 added a 3RD rung: the same first-person rig with
 -- the eye boomed back behind the shoulder.  The blend reads as engaged
 -- there, so a sealed ceiling would slam shut in front of a camera that
@@ -210,9 +163,9 @@ local function isInterior(map)
   end
 
   -- 2. an open-air tileset is open air whatever its connections say
-  -- (Gen 1/2 only -- see OPEN_AIR_TILESETS's own note)
   local tid = def.tileset or (map.tileset and map.tileset.id)
   if tid and OPEN_AIR_TILESETS[tid] then return false end
+
 
   -- 3. Gen 3/FRLG's named rooftop exceptions: physically open air even
   -- though the ROM calls the room indoors (see ROOFTOP_OVERRIDE)
@@ -225,7 +178,6 @@ local function isInterior(map)
   -- and 6 were only ever standing in for on a Gen 3 map.
   if Gen3.mapIsGen3(map) then
     local outdoor = gen3Outdoor(map)
-    if outdoor ~= nil then return not outdoor end
   end
 
   -- 5. the engine's own outdoor test where it has one
@@ -239,7 +191,6 @@ local function isInterior(map)
   local conns = def.connections
   return not (conns and next(conns) ~= nil)
 end
-
 -- ------- per-cell facts, by the same shapes the mesher used:
 --   h      extrusion height (max of the four tiles)
 --   wall   true when any tile classifies as wall/cliff -- furniture at
@@ -562,38 +513,6 @@ local function build(map, H, mode, pcx, pcy, tex)
   -- nobody wants stalactites over Lavender's floorboards.
   local ROCKY = { CAVERN = true, UNDERGROUND = true }
   local rocky = (tilesetId and ROCKY[tilesetId]) and true or false
-  local isGen3 = Gen3.mapIsGen3(map)
-  -- The CAVERN/UNDERGROUND ids above are the Kanto/Johto vocabulary and
-  -- never fire on Hoenn -- Gen3's caves carry a raw ROM tileset name
-  -- (gTileset_Cave and the rest) instead. Structures.lua already has the
-  -- real, purpose-built answer for "is this Gen3 room a cave": the
-  -- `rock_plateau` profile flag that its own rock-mass pass keys off
-  -- (data/gen3_shapes.lua), covering Granite Cave, Victory Road, Meteor
-  -- Falls and the other ~44 maps on that tileset. Reuse it here rather
-  -- than re-guessing from the map id, which misses names like "Meteor
-  -- Falls" or "Sky Pillar" that don't literally say "cave".
-  if not rocky and isGen3 then
-    local okG3c, g3c = pcall(Gen3.forMap, map)
-    rocky = (okG3c and g3c and g3c.profile and g3c.profile.rock_plateau)
-            and true or false
-  end
-  -- Bump H itself, before anything below reads it: the flat lid, the
-  -- risers that rise to meet it, the rock canopy that hangs beneath it,
-  -- the rail band and the light fittings all key off this one value, so
-  -- raising it here keeps the whole room consistent rather than just
-  -- pushing one surface up through a lid that stayed put.
-  --
-  -- Gen3's own walls run taller than Kanto/Johto's, so every Gen3
-  -- interior -- not just its caves -- gets the headroom setting itself
-  -- raised 25% before anything else, or its flat lid clips through those
-  -- walls even outside a cave. Caves then get double whatever headroom
-  -- they ended up with, across all three generations.
-  if isGen3 then
-    H = H * GEN3_HEADROOM_MULT
-  end
-  if rocky then
-    H = H * CAVE_HEIGHT_MULT
-  end
   local okShapes, shapes = pcall(TileShape.forMap, map)
   if not (okShapes and shapes) then return nil, "TileShape refused" end
   local wc, hc = map.widthCells or 0, map.heightCells or 0

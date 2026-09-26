@@ -1758,16 +1758,15 @@ SettingsMenu.define(SETTINGS)
 -- Gen1/Gen2 cave, 125 in a Gen3 one. Change AIRY here and both follow.
 -- Now supports independent headroom values per generation.
 local HEADROOM = {
-  GEN1 = { AIRY = 36, MID = 24, SNUG = 16 },
-  GEN2 = { AIRY = 80, MID = 40, SNUG = 20 },
-  GEN3 = { AIRY = 48, MID = 36, SNUG = 24 }
+  GEN1 = { AIRY = 32, MID = 24, SNUG = 16 },
+  GEN2 = { AIRY = 100, MID = 32, SNUG = 24 },
+  GEN3 = { AIRY = 32, MID = 24, SNUG = 16 }
 }
 -- Ceiling.headroom:get() returns the option VALUE (100/50/24), not the
 -- label (AIRY/MID/SNUG). Map both so generation tables can be keyed by name.
 local HEADROOM_KEY = {
   AIRY = "AIRY", MID = "MID", SNUG = "SNUG",
-  [100] = "AIRY", [50] = "MID", [24] = "SNUG",
-  [32] = "AIRY", [16] = "SNUG", -- legacy option values
+  [32] = "AIRY", [24] = "MID", [16] = "SNUG",
 }
 local function ceilingGeneration()
   -- GenerationCompat is a Colosseum local loaded much later and never
@@ -1784,7 +1783,7 @@ end
 _G.__ds_ceiling_config = function()
   -- Use the actual setting objects where available
   local ceilingOn = true
-  local headroomVal = 36
+  local headroomVal = 32
   local cutawayOn = true
   if Ceiling and Ceiling.setting then
     local ok, v = pcall(function() return Ceiling.setting:get() end)
@@ -1801,7 +1800,7 @@ _G.__ds_ceiling_config = function()
       elseif headroomTable[v] then
         headroomVal = headroomTable[v]
       else
-        headroomVal = headroomTable.AIRY or 100
+        headroomVal = headroomTable.AIRY or 32
       end
     end
   end
