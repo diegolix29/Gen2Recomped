@@ -158,10 +158,14 @@ local DEFINITIONS={
     -- Only the world itself is different: instead of loading extracted HSD geometry,
     -- Arena.lua draws the live voxel field pocket cached at battle start (see
     -- ArenaOverworldSnapshot) as this arena's stage. Spatial numbers below are
-    -- overwritten at acquire time from BattleArena.find / BattleCam.
+    -- overwritten at acquire time from BattleArena.find / BattleCam -- EXCEPT
+    -- figureScale/trainerScale, which are not touched by that path and are the
+    -- actual model scale used. Bumped 20% over the outdoor_wild baseline
+    -- (0.365/0.425/0.205): the fixed-frame CBE camera here sits farther back
+    -- than the stage arenas were tuned for, so actors otherwise read small.
     liveOverworld=true,
     stageScale=0.25,stageYaw=0,sceneRadiusRaw=620,maxGroupSpanRaw=1350,vertexRadiusRaw=610,
-    pokemon={player={-4.5,18.0},enemy={4.5,-18.0}},figureScale=0.4745,trainers={player={14.0,29.5},enemy={-14.0,-29.5}},trainerScale={player=0.5525,enemy=0.2665},
+    pokemon={player={-4.5,18.0},enemy={4.5,-18.0}},figureScale=1,trainers={player={14.0,29.5},enemy={-14.0,-29.5}},trainerScale={player=0.51,enemy=0.246},
     camera={side=59,back=18,height=29,lookX=0,lookY=6.0,frameH=51,safe={minRadius=29,maxRadius=87,minY=7.0,maxY=43,maxPitch=33,minPitch=-10,minFov=31,maxFov=54}},
     backdrop={top={0.08,0.31,0.65},bottom={0.68,0.84,0.76}},profile="overworld",crowd="none",
   },
@@ -424,9 +428,8 @@ C._test.mtBattleOwned=mtBattleOwned
 function C.releaseBattle(battle)
   if not battle or boundBattle==battle then
     boundBattle=nil
-    -- Don't clear boundSelected - it should persist across battles
-    -- The user's manual selection is stored in runtimeSelected via save file
-    -- boundResolved=nil
+    boundSelected=nil
+    boundResolved=nil
   end
 end
 

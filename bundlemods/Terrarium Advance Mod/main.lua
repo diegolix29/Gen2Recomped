@@ -4005,7 +4005,7 @@ end
       pcall(namespace.MtBattleLevelLock.install, mod)
     end
     if BattleSettings and type(BattleSettings.install) == "function" then
-      -- if mod.log then mod.log:info("Calling BattleSettings.install") end
+      if mod.log then mod.log:info("Calling BattleSettings.install") end
       local okInstall, installErr = pcall(BattleSettings.install, mod, Trainer, Music, ArenaCatalog, BattleMenuUI, CacheManager, TrainerRoster, GenerationCompat, AudioFidelity)
       if not okInstall then
         if mod.log then mod.log:warn("BattleSettings.install failed: " .. tostring(installErr)) end

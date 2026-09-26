@@ -1692,7 +1692,7 @@ local function ensureArenaShader(ctx)
     ok,sh=pcall(love.graphics.newShader,MOBILE_VERTEX,MOBILE_PIXEL)
     if ok and sh then
       shaderMode="android-mobile"
-      -- log(ctx,"info","Android GLES-safe arena shader active")
+      log(ctx,"info","Android GLES-safe arena shader active")
     else
       local mobileErr=sh
       local okSafe,safe=pcall(love.graphics.newShader,ANDROID_SAFE_VERTEX,ANDROID_SAFE_PIXEL)
@@ -1740,7 +1740,7 @@ local function loadRuntimeArena(ctx,meta,def,animationOverlay)
     end
   end
   arenaRuntimeHits=arenaRuntimeHits+1
-  -- log(ctx,"info","loaded arena runtime sidecar %s (%d material groups)",tostring(def.id),#out.opaque+#out.cutout+#out.crowd+#out.translucent+#out.additive)
+  log(ctx,"info","loaded arena runtime sidecar %s (%d material groups)",tostring(def.id),#out.opaque+#out.cutout+#out.crowd+#out.translucent+#out.additive)
   return out
 end
 local function loadScene(ctx)
@@ -1904,13 +1904,12 @@ local function loadScene(ctx)
       opaque=runtimeRows.opaque,cutout=runtimeRows.cutout,crowd=runtimeRows.crowd,
       translucent=runtimeRows.translucent,additive=runtimeRows.additive}
     local wok=RuntimeMeshCache.writeLua(arenaRuntimeMetaPath(def.id),meta,preserveArenaRuntime)
-    if wok then arenaRuntimeWrites=arenaRuntimeWrites+1 end
-    -- log(ctx,"info","wrote compact runtime arena sidecar for %s",tostring(def.id))
+    if wok then arenaRuntimeWrites=arenaRuntimeWrites+1;log(ctx,"info","wrote compact runtime arena sidecar for %s",tostring(def.id)) end
   end
   cache=nil
   touchResident(activeArenaId,scene);errorText=nil
-  -- log(ctx,"info","loaded arena: %d opaque + %d cutout + %d animated crowd + %d translucent + %d additive groups (%d remote/effect groups omitted); crowd cards %d/%d (%s, %d hanging outliers removed) from %s",#opaque,#cutout,#crowd,#translucent,#additive,culled,
-  --   scene.crowdKept,scene.crowdOriginal,tostring(scene.crowdPolicy or "legacy"),scene.crowdOutliers or 0,tostring(scene.source))
+  log(ctx,"info","loaded arena: %d opaque + %d cutout + %d animated crowd + %d translucent + %d additive groups (%d remote/effect groups omitted); crowd cards %d/%d (%s, %d hanging outliers removed) from %s",#opaque,#cutout,#crowd,#translucent,#additive,culled,
+    scene.crowdKept,scene.crowdOriginal,tostring(scene.crowdPolicy or "legacy"),scene.crowdOutliers or 0,tostring(scene.source))
   return scene
 end
 -- love.graphics.getSystemLimits() is a driver query, and pixelSize() called
@@ -3192,7 +3191,7 @@ function A:arena(ctx)
   if selected=="encounter_disabled" then return nil end
   def=def or (ArenaCatalog and ArenaCatalog.definition and ArenaCatalog.definition("water")) or {id="water",cache="cache/M1_water_cache.lua",stageScale=0.25,stageYaw=0,sceneRadiusRaw=430,maxGroupSpanRaw=920,vertexRadiusRaw=415,camera={side=58,back=14,height=24,lookX=0,lookY=6,frameH=50},pokemon={player={0,14.5},enemy={0,-14.5}},figureScale=0.38}
   local arena=activateDefinition(ctx,def,selected)
-  if arena then --log(ctx,"info","arena acquire selected=%s resolved=%s cache=%s",tostring(selected),tostring(activeArenaId),tostring(def.cache)) end
+  if arena then log(ctx,"info","arena acquire selected=%s resolved=%s cache=%s",tostring(selected),tostring(activeArenaId),tostring(def.cache)) end
   return arena
 end
 

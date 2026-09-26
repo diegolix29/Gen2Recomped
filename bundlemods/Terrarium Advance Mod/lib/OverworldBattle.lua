@@ -636,9 +636,9 @@ function OverworldBattle.begin(state, battle)
                      or OverworldBattle.selectBattleBackground(state.map, arena)
       if bgName then
         session.battleBackground = BattleCanvas.loadBattleBackground(bgName)
-        -- V.mod.log:info("[OverworldBattle] Loaded battle background: %s (surf=%s)",
-        --                tostring(bgName),
-        --                tostring(arena.surfing == true))
+        V.mod.log:info("[OverworldBattle] Loaded battle background: %s (surf=%s)",
+                       tostring(bgName),
+                       tostring(arena.surfing == true))
       end
       if BattleCanvas.selectSceneryForMap then
         local sceneryName = BattleCanvas.selectSceneryForMap(state.map, arena)
@@ -648,7 +648,7 @@ function OverworldBattle.begin(state, battle)
   end
   
   local mode = OverworldBattle.setting:get()
-  -- V.mod.log:info("[OverworldBattle] Calling Stadium.begin, mode=%s", tostring(mode))
+  V.mod.log:info("[OverworldBattle] Calling Stadium.begin, mode=%s", tostring(mode))
   pcall(function() V.require("Stadium").begin(arena, battle) end)
   
   -- Activate BattleBoxXY to hide the original fight box UI
@@ -1584,14 +1584,14 @@ function OverworldBattle.install()
   -- at the scale the GB always put them -- feet on the box, 2x, back view.
   innerPics = BattleState.drawPicsLayer
   function BattleState:drawPicsLayer(slide, sx, sy, onlySide, skipMenuClip)
-    -- V.mod.log:info("[drawPicsLayer] Called with shot=%s onlySide=%s", tostring(self.dramaticShapeShot ~= nil), tostring(onlySide))
+    V.mod.log:info("[drawPicsLayer] Called with shot=%s onlySide=%s", tostring(self.dramaticShapeShot ~= nil), tostring(onlySide))
     
     -- Check if COLOSSEUM A/B mode is selected - render Colosseum models FIRST
     -- This must happen BEFORE the shot check so it works for regular native battles
     local mode = nil
     if OverworldBattle and type(OverworldBattle.setting)=="table" and type(OverworldBattle.setting.get)=="function" then
       local ok,value = pcall(OverworldBattle.setting.get, OverworldBattle.setting)
-      -- V.mod.log:info("[drawPicsLayer] Setting read: ok=%s value=%s", tostring(ok), tostring(value))
+      V.mod.log:info("[drawPicsLayer] Setting read: ok=%s value=%s", tostring(ok), tostring(value))
       if ok then
         if value == OverworldBattle.COLOSSEUM_A then mode = "COLOSSEUM_A"
         elseif value == OverworldBattle.COLOSSEUM_B then mode = "COLOSSEUM_B"
@@ -1599,13 +1599,13 @@ function OverworldBattle.install()
       end
     end
     
-    -- V.mod.log:info("[drawPicsLayer] Mode detected: %s", tostring(mode))
+    V.mod.log:info("[drawPicsLayer] Mode detected: %s", tostring(mode))
     
     if mode then
       -- Use PokemonActors.service directly like the Pokemon info screen does
       local PokemonActors = V.PokemonActors
       local api = PokemonActors and PokemonActors.service
-      -- V.mod.log:info("[drawPicsLayer] PokemonActors available: %s, api=%s", tostring(PokemonActors ~= nil), tostring(api ~= nil))
+      V.mod.log:info("[drawPicsLayer] PokemonActors available: %s, api=%s", tostring(PokemonActors ~= nil), tostring(api ~= nil))
       
       if api then
         local sidesToRender = onlySide and {onlySide} or {"player", "enemy"}
@@ -1620,19 +1620,19 @@ function OverworldBattle.install()
             if not dex or type(dex) ~= "number" then
               local species = battler.mon.species
               if species and type(species) == "string" then
-                -- V.mod.log:info("[drawPicsLayer] Species name: %s", tostring(species))
+                V.mod.log:info("[drawPicsLayer] Species name: %s", tostring(species))
                 -- Try to look up dex from ColosseumDexNames
                 local okNames, ColosseumDexNames = pcall(V.require, "ColosseumDexNames")
                 if okNames and ColosseumDexNames then
                   for i, name in ipairs(ColosseumDexNames) do
                     if name == species then
                       dex = i
-                      -- V.mod.log:info("[drawPicsLayer] Found dex %d for species %s", i, species)
+                      V.mod.log:info("[drawPicsLayer] Found dex %d for species %s", i, species)
                       break
                     end
                   end
                 else
-                  -- V.mod.log:info("[drawPicsLayer] Failed to load ColosseumDexNames: %s", tostring(ColosseumDexNames))
+                  V.mod.log:info("[drawPicsLayer] Failed to load ColosseumDexNames: %s", tostring(ColosseumDexNames))
                 end
               end
             end
