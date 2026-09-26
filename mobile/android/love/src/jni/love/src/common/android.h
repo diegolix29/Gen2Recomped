@@ -75,6 +75,29 @@ bool showFilePicker(const char *destFilename = nullptr);
 bool showCreateDocument(const char *suggestedName = nullptr);
 
 /**
+ * Game-data / mods folder picker. Volume dialog plus optional
+ * ACTION_OPEN_DOCUMENT_TREE; the path lands in picked_folder.txt.
+ **/
+bool showFolderPicker();
+
+/**
+ * "label\\tab path" rows for app-owned external files volumes.
+ **/
+std::string getExternalDataDirs();
+
+/**
+ * Mount an absolute directory onto the PhysFS search path (appended).
+ * love.filesystem.mount refuses paths outside the save dir; the game-data
+ * folder lives beside it (phone/SD gamedata/), so CacheFs needs this.
+ **/
+bool mountDirectory(const char *path);
+
+bool hasStorageAccess();
+bool requestStorageAccess();
+bool pathIsAppOwned(const char *path);
+bool mkdirsReal(const char *path);
+
+/**
  * Pokéwalker step bridge: asks GameActivity to read the hardware step
  * counter and stage steps_pending.json in the save identity dir (see
  * GameActivity.syncHealthSteps). Returns whether a sync could start.

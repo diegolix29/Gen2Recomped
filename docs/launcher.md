@@ -34,6 +34,29 @@ for the launcher to acknowledge on refocus.
 
 After a successful import the consumed save-dir file is removed.
 
+## Android game-data / mods folder
+
+Android's default save identity (`Android/data/<package>/files/save/pokemon-love2d`)
+is often on a small internal volume. Mods, ROM caches and imported base files
+follow **GAME DATA FOLDER** in launcher Settings instead:
+
+- `love.system.pickFolder()` → `GameActivity.showFolderPicker`: a volume dialog
+  listing each `getExternalFilesDirs()` app folder (phone, SD card, with free
+  space) plus optional `ACTION_OPEN_DOCUMENT_TREE`. The chosen absolute path
+  is written to `picked_folder.txt`; `RomImporter:focus` / `_pollPickedFiles`
+  calls `SaveData.setDataDir`.
+- Direct rows for each volume (`love.system.getExternalDataDirs`) skip the
+  dialog. `USE THE DEFAULT FOLDER` clears the setting.
+- Writes go through `CacheFs` (`io.*`); reads need the folder on the PhysFS
+  path, so Android also exposes `love.system.mountDirectory`.
+- Saves and `options.lua` stay in the identity folder on purpose. After
+  switching, **MOVE EXISTING DATA HERE** copies `mods/`, `modstorage/` and
+  `imports/base/` into the new place.
+
+Most shared folders (Downloads, Drive) are not writable via `io.open` on
+Android 11+; the picker rejects those and asks for Phone storage or an SD
+card. iOS still keeps everything in the app folder.
+
 **Manual check (device/emulator):** import Red → switch to Blue → Choose →
 system file picker must appear (not a silent Red re-extract) → pick Blue →
 Blue becomes ready beside Red. On the MODS tab, Import mod .zip must open the

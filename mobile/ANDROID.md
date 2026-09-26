@@ -83,6 +83,13 @@ chosen file under the app save directory as `picked_rom.gb`,
 from that folder on Choose / refocus; see `docs/launcher.md`. The APK payload
 itself remains data-free (no embedded ROM or generated cache).
 
+Mods and imported game data can leave that identity folder: launcher Settings
+→ GAME DATA FOLDER → CHOOSE STORAGE (`love.system.pickFolder`) lists each
+app-owned volume (`getExternalFilesDirs`, typically phone plus SD card) and
+optionally a tree picker. The path is stored in `options.dataDir`;
+`CacheFs` installs mods there and `love.system.mountDirectory` puts it on
+the read path. Saves stay in the identity folder. See `docs/launcher.md`.
+
 ROM routing is SHA-1 based (not filename based): the importer accepts
 canonical 1 MiB carts (Red/Blue/Yellow) and 2 MiB carts (Gold/Silver), then
 selects the target version from `src/core/GameVersion.lua` by ROM hash.
