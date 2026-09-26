@@ -109,6 +109,51 @@ int w_createFile(lua_State *L)
 	return 1;
 }
 
+int w_pickFolder(lua_State *L)
+{
+	luax_pushboolean(L, instance()->pickFolder());
+	return 1;
+}
+
+int w_getExternalDataDirs(lua_State *L)
+{
+	luax_pushstring(L, instance()->getExternalDataDirs());
+	return 1;
+}
+
+int w_mountDirectory(lua_State *L)
+{
+	const char *path = luaL_checkstring(L, 1);
+	luax_pushboolean(L, instance()->mountDirectory(path));
+	return 1;
+}
+
+int w_hasStorageAccess(lua_State *L)
+{
+	luax_pushboolean(L, instance()->hasStorageAccess());
+	return 1;
+}
+
+int w_requestStorageAccess(lua_State *L)
+{
+	luax_pushboolean(L, instance()->requestStorageAccess());
+	return 1;
+}
+
+int w_pathIsAppOwned(lua_State *L)
+{
+	const char *path = luaL_checkstring(L, 1);
+	luax_pushboolean(L, instance()->pathIsAppOwned(path));
+	return 1;
+}
+
+int w_mkdirs(lua_State *L)
+{
+	const char *path = luaL_checkstring(L, 1);
+	luax_pushboolean(L, instance()->mkdirs(path));
+	return 1;
+}
+
 int w_syncHealthSteps(lua_State *L)
 {
 	luax_pushboolean(L, instance()->syncHealthSteps());
@@ -150,6 +195,13 @@ static const luaL_Reg functions[] =
 	{ "vibrate", w_vibrate },
 	{ "pickFile", w_pickFile },
 	{ "createFile", w_createFile },
+	{ "pickFolder", w_pickFolder },
+	{ "getExternalDataDirs", w_getExternalDataDirs },
+	{ "mountDirectory", w_mountDirectory },
+	{ "hasStorageAccess", w_hasStorageAccess },
+	{ "requestStorageAccess", w_requestStorageAccess },
+	{ "pathIsAppOwned", w_pathIsAppOwned },
+	{ "mkdirs", w_mkdirs },
 	{ "syncHealthSteps", w_syncHealthSteps },
 	{ "restartApp", w_restartApp },
 	{ "httpDownload", w_httpDownload },
