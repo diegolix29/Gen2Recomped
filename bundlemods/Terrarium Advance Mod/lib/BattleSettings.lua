@@ -22,6 +22,7 @@ local function prefs(game)
       autoProgressEnabled=true,bossIntroEnabled=false,battleSoundsEnabled=true,
       wildSpawnMode="mixed",
       wildEncountersEnabled=true,trainerEncountersEnabled=true,gymEncountersEnabled=true,eliteFourEncountersEnabled=true,
+      actorScaleMultiplier=1.0,
     }
   end
   local p=game.save.terrariumBattle
@@ -62,6 +63,10 @@ local function prefs(game)
   p.gymEncountersEnabled=p.gymEncountersEnabled and true or false
   if p.eliteFourEncountersEnabled==nil then p.eliteFourEncountersEnabled=true end
   p.eliteFourEncountersEnabled=p.eliteFourEncountersEnabled and true or false
+  if p.actorScaleMultiplier==nil then p.actorScaleMultiplier=1.0 end
+  p.actorScaleMultiplier=tonumber(p.actorScaleMultiplier) or 1.0
+  local validScale={ [1.0]=true, [1.5]=true, [2.0]=true, [2.5]=true, [3.0]=true }
+  if not validScale[p.actorScaleMultiplier] then p.actorScaleMultiplier=1.0 end
   local legacy=p.sprites
   if p.playerModel==nil then
     p.playerModel=(p.playerTrainerModel==false or legacy=="off") and "off" or "red"
@@ -128,6 +133,7 @@ local function openBattleMenu(game,returnId,returnParent)
   if not ok or not Menu then return end
   local p=prefs(game)
   if ArenaCatalog and ArenaCatalog.sync then ArenaCatalog.sync(game) end
+  if ArenaCatalog and ArenaCatalog.loadUserPreference then ArenaCatalog.loadUserPreference(game) end
   if ArenaCatalog and ArenaCatalog.selected then p.arena=ArenaCatalog.selected(game) end
   local menu
   local environmentToggle={keepOpen=true}
@@ -153,6 +159,7 @@ local function openBattleMenu(game,returnId,returnParent)
   local playerTrainerRow={keepOpen=true}
   local enemyTrainerRow={keepOpen=true}
   local rivalRow={keepOpen=true}
+  local actorScaleRow={keepOpen=true}
   local hardCacheRow={keepOpen=true}
   local cacheRow={keepOpen=true}
   local function refresh()
@@ -174,6 +181,7 @@ local function openBattleMenu(game,returnId,returnParent)
     trainerEncountersToggle.label="TRAINER BATTLES  "..(p.trainerEncountersEnabled and "ON" or "OFF")
     gymEncountersToggle.label="GYM BATTLES  "..(p.gymEncountersEnabled and "ON" or "OFF")
     eliteFourEncountersToggle.label="ELITE FOUR  "..(p.eliteFourEncountersEnabled and "ON" or "OFF")
+    actorScaleRow.label=("ACTOR SIZE  %.1fX"):format(p.actorScaleMultiplier or 1.0)
     local ws=S.wildSpawnStatus()
     wildSpawnStatusRow.label="SPAWN STATUS  "..(ws.active and "ACTIVE" or "UNAVAILABLE")
     local musicLabel=(Music and Music.themeLabel and Music.themeLabel(game,p.music)) or tostring(p.music):upper()
@@ -512,15 +520,32 @@ local function openBattleMenu(game,returnId,returnParent)
   rivalRow.onSelect=function()
     openTrainerPicker("rival",p.rivalModel,function(id) p.rivalModel=id end,"RIVAL MODEL")
   end
+
+  -- Actor scale multiplier option
+  local actorScaleOpts = {1.0, 1.5, 2.0, 2.5, 3.0}
+  local actorScaleRow={keepOpen=true,label=("ACTOR SIZE  %.1fX"):format(p.actorScaleMultiplier or 1.0)}
+  actorScaleRow.onSelect=function()
+    local currentIndex
+    for i,v in ipairs(actorScaleOpts) do
+      if v==p.actorScaleMultiplier then currentIndex=i; break end
+    end
+    if not currentIndex then currentIndex=1 end
+    local nextIndex=(currentIndex % #actorScaleOpts)+1
+    p.actorScaleMultiplier=actorScaleOpts[nextIndex]
+    actorScaleRow.label=("ACTOR SIZE  %.1fX"):format(p.actorScaleMultiplier)
+    if ArenaCatalog and ArenaCatalog.setScaleMultiplier then ArenaCatalog.setScaleMultiplier(p.actorScaleMultiplier) end
+    refresh()
+  end
+
   local back={label="BACK",onSelect=function() reopen(game,returnId,returnParent) end}
   refresh()
   -- Trainer presentation is intentionally three independent ownership rows:
   -- player Red, ordinary/special enemy trainers, and the Kanto rival substitute.
-  local mainRows={environmentToggle,cameraToggle,pokemonModelsToggle,realtimeToggle,realtimeZoomRow,doublesToggle,abilitiesToggle,wildSpawnRow,wildSpawnStatusRow,wildEncountersToggle,trainerEncountersToggle,gymEncountersToggle,eliteFourEncountersToggle,autoProgressToggle,freeLookToggle,bossIntroToggle,musicRow,soundsToggle,audioQualityRow,arenaRow,playerTrainerRow,enemyTrainerRow,rivalRow,hardCacheRow,cacheRow,back}
+  local mainRows={environmentToggle,cameraToggle,pokemonModelsToggle,realtimeToggle,realtimeZoomRow,doublesToggle,abilitiesToggle,wildSpawnRow,wildSpawnStatusRow,wildEncountersToggle,trainerEncountersToggle,gymEncountersToggle,eliteFourEncountersToggle,autoProgressToggle,freeLookToggle,bossIntroToggle,musicRow,soundsToggle,audioQualityRow,arenaRow,playerTrainerRow,enemyTrainerRow,rivalRow,actorScaleRow,hardCacheRow,cacheRow,back}
   menu=Menu.new(game,mainRows,{tx=1,ty=2,tw=24,maxVisible=12,onCancel=function() reopen(game,returnId,returnParent) end})
   menu.screenId="TerrariumBattleSettings"
   if BattleMenuUI and BattleMenuUI.mark then
-    BattleMenuUI.mark(menu,"TERRARIUM BATTLES",mainRows,12,"ENVIRONMENT / CAMERA / REALTIME / POKEMON / AUDIO / TRAINERS / ROM SOURCE")
+    BattleMenuUI.mark(menu,"TERRARIUM BATTLES",mainRows,12,"ENVIRONMENT / CAMERA / REALTIME / POKEMON / AUDIO / TRAINERS / ACTOR SIZE / ROM SOURCE")
   end
   game.stack:push(menu)
 end
@@ -584,6 +609,7 @@ function S.status(game)
     music=p.music,musicLabel=Music and Music.themeLabel and Music.themeLabel(game,p.music),
     arena=p.arena,playerModel=p.playerModel,enemyTrainerModel=p.enemyTrainerModel,rivalModel=p.rivalModel,
     playerTrainerModel=p.playerTrainerModel,enemyTrainerModels=p.enemyTrainerModels,
+    actorScaleMultiplier=p.actorScaleMultiplier,
     cache=CacheManager and CacheManager.status and CacheManager.status() or nil,
     audioFidelity=AudioFidelity and AudioFidelity.status(modRef) or nil,
   }

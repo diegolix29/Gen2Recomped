@@ -396,6 +396,7 @@ function S.status(game)
     music=p.music,musicLabel=Music and Music.themeLabel and Music.themeLabel(game,p.music),
     arena=p.arena,playerModel=p.playerModel,enemyTrainerModel=p.enemyTrainerModel,rivalModel=p.rivalModel,
     playerTrainerModel=p.playerTrainerModel,enemyTrainerModels=p.enemyTrainerModels,
+    actorScaleMultiplier=p.actorScaleMultiplier,
     cache=CacheManager and CacheManager.status and CacheManager.status() or nil,
     audioFidelity=AudioFidelity and AudioFidelity.status(modRef) or nil,
   }
