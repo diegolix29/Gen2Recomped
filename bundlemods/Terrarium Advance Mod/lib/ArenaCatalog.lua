@@ -155,12 +155,10 @@ local DEFINITIONS={
     -- Not a baked GC6E01 stage: there is no cache here on purpose. CBE stays
     -- the owner of this fight end to end -- camera rig, actors, crowd, move
     -- FX ownership, all of it exactly as for any other entry above. Only the
-    -- world itself is different: instead of loading extracted HSD geometry,
-    -- Arena.lua paints a snapshot of the overworld taken the instant the
-    -- fight started (see snapshotOverworld/paintBackdropStatic's "overworld"
-    -- profile) as this arena's backdrop. Spatial numbers below are copied
-    -- from outdoor_wild, the other generic-open-ground entry, since there is
-    -- no source HSD scene here to measure a stage/camera fit against.
+    -- Only the world itself is different: instead of loading extracted HSD geometry,
+    -- Arena.lua draws the live voxel field pocket cached at battle start (see
+    -- ArenaOverworldSnapshot) as this arena's stage. Spatial numbers below are
+    -- overwritten at acquire time from BattleArena.find / BattleCam.
     liveOverworld=true,
     stageScale=0.25,stageYaw=0,sceneRadiusRaw=620,maxGroupSpanRaw=1350,vertexRadiusRaw=610,
     pokemon={player={-4.5,18.0},enemy={4.5,-18.0}},figureScale=0.365,trainers={player={14.0,29.5},enemy={-14.0,-29.5}},trainerScale={player=0.425,enemy=0.205},

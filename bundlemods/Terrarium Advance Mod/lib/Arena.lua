@@ -1753,10 +1753,9 @@ local function loadScene(ctx)
   if activeDef and activeDef.liveOverworld then
     local sh,serr=ensureArenaShader(ctx)
     if not sh then errorText=tostring(serr);return nil,errorText end
-    -- No HSD groups at all: the "overworld" profile branch of
-    -- paintBackdropStatic below draws ArenaOverworldSnapshot's captured
-    -- image instead of any of this. Actors, camera and crowd all come from
-    -- the def's own stage numbers exactly as for a cached arena.
+    -- No HSD groups at all: ArenaOverworldSnapshot.draw paints the cached
+    -- voxel field into this framebuffer. Actors and camera come from the
+    -- BattleArena pocket captured at pushBattle.
     --
     -- Deliberately NOT touchResident'd: a resident scene is a perf win for a
     -- cache-backed arena (the same baked stage reused untouched next time),
@@ -2039,7 +2038,7 @@ local function viewProjection(ctx,w,h)
   -- arena plane.
   local profile=(activeDef and activeDef.profile) or "water"
   local sourceFar=math.max(345,(BATTLE_VERTEX_RADIUS_RAW or 415)*(STAGE_SCALE or 0.25)+120)
-  local profileBoost=(profile=="summit" and 260) or (profile=="deep" and 180) or (profile=="realgam" and 160) or 0
+  local profileBoost=(profile=="summit" and 260) or (profile=="deep" and 180) or (profile=="realgam" and 160) or (profile=="overworld" and 1800) or 0
   local baseFar=sourceFar+profileBoost
   local tail=math.max(265,sourceFar*.72)
   local far=math.max(baseFar,dist+tail)
@@ -2880,22 +2879,8 @@ local function paintBackdropStatic(w,h)
     love.graphics.setColor(1,1,1,1)
     return
   elseif profile=="overworld" then
-    -- CBE's live-overworld arena: no source HSD sky to sample, so draw the
-    -- still frame ArenaOverworldSnapshot captured the instant this fight
-    -- started, stretched to fill the backdrop exactly like "orre"/"realgam"
-    -- stretch their own source sky cards above. Falls back to the ordinary
-    -- top/bottom gradient (the def's own backdrop colors) on the very first
-    -- battle of a session, or any frame nothing was captured for.
-    local ArenaOverworldSnapshot=V.ArenaOverworldSnapshot
-    local shot,sw,sh=nil,0,0
-    if ArenaOverworldSnapshot and type(ArenaOverworldSnapshot.image)=="function" then
-      shot,sw,sh=ArenaOverworldSnapshot.image()
-    end
-    if shot and sw and sh and sw>0 and sh>0 then
-      love.graphics.setColor(1,1,1,1)
-      love.graphics.draw(shot,0,0,0,w/sw,h/sh)
-      return
-    end
+    -- Sky only. The voxel field is drawn as 3D geometry in A:render, not
+    -- as a still of the last overworld frame (that blit included the player).
     for i=0,bands-1 do
       local t=(i+0.5)/bands; local u=t*t*(3-2*t)
       love.graphics.setColor(top[1]+(bottom[1]-top[1])*u,top[2]+(bottom[2]-top[2])*u,top[3]+(bottom[3]-top[3])*u,1)
@@ -3079,12 +3064,36 @@ local function drawTransparent(groups,pose)
   drawGroups(groups,pose)
 end
 local function updateAnchors(arena)
+  local Snap=V.ArenaOverworldSnapshot
+  local liveField=false
+  if activeDef and activeDef.liveOverworld and Snap and type(Snap.field)=="function" then
+    local cached=Snap.field()
+    local pocket=cached and cached.pocket
+    if pocket and pocket.player and pocket.enemy then
+      liveField=true
+      VIS_PLAYER={pocket.player[1],pocket.player[2]}
+      VIS_ENEMY={pocket.enemy[1],pocket.enemy[2]}
+      STAGE_SCALE=1
+      STAGE_YAW=0
+      STAGE_COS,STAGE_SIN=1,0
+      STAGE_MODEL=composeStageModel(1,0)
+      arena.stageScale=1
+      arena.stageYaw=0
+      if type(Snap.applyTo)=="function" then pcall(Snap.applyTo,arena,activeDef) end
+    end
+  end
   local k=math.max(0.001,figureScale)
   arena.visualPlayer={VIS_PLAYER[1],VIS_PLAYER[2]}
   arena.visualEnemy={VIS_ENEMY[1],VIS_ENEMY[2]}
   arena.player={VIS_PLAYER[1]/k,VIS_PLAYER[2]/k}
   arena.enemy={VIS_ENEMY[1]/k,VIS_ENEMY[2]/k}
-  arena.mid={0,0}
+  if liveField and Snap then
+    local cached=Snap.field()
+    local mid=cached and cached.pocket and cached.pocket.mid
+    arena.mid=mid and {mid[1],mid[2]} or {VIS_PLAYER[1],VIS_PLAYER[2]}
+  else
+    arena.mid={0,0}
+  end
   arena.figureScale=k
 end
 
@@ -3136,8 +3145,8 @@ local function activateDefinition(ctx,def,selected)
     VIS_PLAYER={def.pokemon.player[1],def.pokemon.player[2]}
     VIS_ENEMY={def.pokemon.enemy[1],def.pokemon.enemy[2]}
   end
-  STAGE_SCALE=tonumber(def.stageScale) or 0.25
-  STAGE_YAW=(tonumber(def.stageYaw) or 0)+(summitVariation and tonumber(summitVariation.yaw) or 0)
+  STAGE_SCALE=def.liveOverworld and 1 or (tonumber(def.stageScale) or 0.25)
+  STAGE_YAW=def.liveOverworld and 0 or ((tonumber(def.stageYaw) or 0)+(summitVariation and tonumber(summitVariation.yaw) or 0))
   STAGE_COS,STAGE_SIN=math.cos(STAGE_YAW),math.sin(STAGE_YAW)
   local scaleModel=Mat4.scale(STAGE_SCALE,STAGE_SCALE,STAGE_SCALE)
   STAGE_MODEL=Mat4.mul(Mat4.rotateY(STAGE_YAW),scaleModel)
@@ -3300,6 +3309,12 @@ function A:update(ctx,dt,arena)
   if CurrentSpriteModels and cbePokemonModelsEnabled(ctx) and not standaloneContext(ctx) then
     pcall(CurrentSpriteModels.update,CurrentSpriteModels,ctx,dt)
   end
+  if activeDef and activeDef.liveOverworld then
+    local ChunkMesher=V.voxelRequire and V.voxelRequire("ChunkMesher")
+    if ChunkMesher and type(ChunkMesher.pump)=="function" then pcall(ChunkMesher.pump,true) end
+    local BattleCam=V.voxelRequire and V.voxelRequire("BattleCam")
+    if BattleCam and type(BattleCam.update)=="function" then pcall(BattleCam.update,dt) end
+  end
   updateAnchors(arena)
 end
 local function clearArenaTarget(out)
@@ -3357,6 +3372,17 @@ function A:render(ctx,arena,drawActors)
     if not cleared then error("arena framebuffer clear: "..tostring(clearErr)) end
     safeArenaPass(ctx,"backdrop",function() drawBackdrop(w,h,vp,baked) end)
 
+    local liveField=activeDef and activeDef.liveOverworld
+    if liveField then
+      safeArenaPass(ctx,"overworldField",function()
+        local Snap=V.ArenaOverworldSnapshot
+        if Snap and type(Snap.draw)=="function" then
+          Snap.draw(w,h,pose)
+        end
+      end)
+      if depthActive then love.graphics.setDepthMode("lequal",true) end
+      love.graphics.setColor(1,1,1,1)
+    else
     -- 1) Isolate arena buckets on Android/portable drivers. One malformed mesh or
     -- backend-specific material draw must not discard the entire completed frame.
     safeArenaPass(ctx,"opaque",function()
@@ -3366,6 +3392,7 @@ function A:render(ctx,arena,drawActors)
     end)
     safeArenaPass(ctx,"cutout",function() setStageState(vp,model,true,pose);drawGroups(s.cutout,pose) end)
     safeArenaPass(ctx,"crowd",function() setStageState(vp,model,true,pose);drawCrowd(s.crowd,vp,model,pose) end)
+    end
 
     -- Runtime-only platform number: one floor mesh prepared at begin, not
     -- a per-frame text draw and not a new arena/cache variant. Depth testing is
@@ -3489,6 +3516,8 @@ end
 function A:finish(ctx,reason)
   if Trainer then Trainer:finish(ctx,reason) end
   if PlayerTrainer then PlayerTrainer:finish(ctx,reason) end
+  local Snap=V.ArenaOverworldSnapshot
+  if Snap and type(Snap.clear)=="function" then pcall(Snap.clear) end
 end
 function A:invalidate()
   canvas=nil;depthCanvas=nil;depthMode=nil;depthActive=false;cw=nil;ch=nil

@@ -99,6 +99,14 @@ local function baseCamera(arena)
 end
 
 local function cameraPose(s)
+  local Snap=V.ArenaOverworldSnapshot
+  if Snap and type(Snap.cameraPose)=="function" then
+    local okField,fieldPose=pcall(Snap.cameraPose)
+    if okField and fieldPose and fieldPose.eye and fieldPose.focus and fieldPose.fov then
+      local adjusted=V.FreeLookCamera and V.FreeLookCamera.pose(s.context,fieldPose)
+      return adjusted or fieldPose
+    end
+  end
   local base=baseCamera(s.context.arena)
   if RealtimeBattle and type(RealtimeBattle.cameraPose)=="function" then
     local ok,pose=pcall(RealtimeBattle.cameraPose,RealtimeBattle,s.context,s.context.arena)

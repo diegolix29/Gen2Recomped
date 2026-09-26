@@ -3726,6 +3726,8 @@ local function initializeColosseumIntegration()
 
     namespace = {
       mod = mod, FALLBACK = nil, engineRequire = require, OverworldBattle = OverworldBattle,
+      Voxel3D = Voxel3D,
+      voxelRequire = function(name) return V.require(name) end,
       PayloadPreserver = colosseumPackage("extract/PayloadPreserver.lua"), GeneratedCacheReset = GeneratedCacheReset,
     }
     local function loadColosseumModule(name, arg)
@@ -3763,6 +3765,8 @@ local function initializeColosseumIntegration()
     NativeTrainerSprites = loadColosseumModule("NativeTrainerSprites")
     MoveFXOwnership = loadColosseumModule("MoveFXOwnership")
     ArenaCatalog = loadColosseumModule("ArenaCatalog")
+    local ArenaOverworldSnapshot = loadColosseumModule("ArenaOverworldSnapshot")
+    if ArenaOverworldSnapshot then V.ArenaOverworldSnapshot = ArenaOverworldSnapshot end
     loadColosseumModule("ArenaAudienceProfile")
     loadColosseumModule("ArenaCacheIdentity")
     BattleArtBridge = loadColosseumModule("BattleArtBridge")
@@ -4022,6 +4026,9 @@ local function initializeColosseumIntegration()
     end
 
     if ArenaCatalog and ArenaCatalog.sync then pcall(ArenaCatalog.sync, mod.game) end
+    if namespace.ArenaOverworldSnapshot and type(namespace.ArenaOverworldSnapshot.install) == "function" then
+      pcall(namespace.ArenaOverworldSnapshot.install)
+    end
     if Transition and type(Transition.install) == "function" then pcall(Transition.install, mod) end
     if StandaloneHost and type(StandaloneHost.install) == "function" then pcall(StandaloneHost.install, force) end
     if BattleArtBridge and type(BattleArtBridge.install) == "function" then pcall(BattleArtBridge.install) end

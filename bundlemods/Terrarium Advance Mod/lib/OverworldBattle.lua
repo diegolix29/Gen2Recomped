@@ -597,6 +597,12 @@ end
 -- changes, so a map with no room for an arena plays exactly the vanilla
 -- battle it always did, cast and all.
 function OverworldBattle.begin(state, battle)
+  -- Last-frame voxel blit for CBE's OVERWORLD arena. Outer pushBattle hook
+  -- (ArenaOverworldSnapshot.install) is the preferred seam; this also fires
+  -- if that hook was not installed yet, still before Stadium.begin.
+  if V.ArenaOverworldSnapshot and type(V.ArenaOverworldSnapshot.capture) == "function" then
+    pcall(V.ArenaOverworldSnapshot.capture, battle, state)
+  end
   OverworldBattle.finish()
   if not OverworldBattle.enabled() then return false end
   if not (state and state.map and state.player) then return false end
