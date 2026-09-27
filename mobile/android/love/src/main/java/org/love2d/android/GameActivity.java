@@ -59,7 +59,9 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.StatFs;
 import android.os.Vibrator;
+import android.provider.DocumentsContract;
 import android.util.Log;
 import android.util.DisplayMetrics;
 import android.view.*;
@@ -80,6 +82,7 @@ public class GameActivity extends SDLActivity {
     public static final int FILE_CREATE_REQUEST_CODE = 5;
     public static final int STEP_PERMISSION_REQUEST_CODE = 6;
     public static final int RESTART_REQUEST_CODE = 7;
+    public static final int FOLDER_PICKER_REQUEST_CODE = 8;
     /** @deprecated Prefer FILE_PICKER_REQUEST_CODE; kept for older call sites. */
     public static final int ROM_PICKER_REQUEST_CODE = FILE_PICKER_REQUEST_CODE;
     // Mirrors conf.lua's t.identity ("pokemon-love2d"): where the picked file
@@ -93,6 +96,11 @@ public class GameActivity extends SDLActivity {
     private static final String PICKED_IMAGE_FILENAME = "picked_sky.png";
     private static final String PENDING_EXPORT_FILENAME = "pending_export.sav";
     private static final String EXPORT_DONE_FILENAME = "export_done.flag";
+    private static final String PICKED_FOLDER_FILENAME = "picked_folder.txt";
+    // App-owned subdirectory under each getExternalFilesDir volume: mods and
+    // imported games land here so they are not competing with saves for the
+    // identity folder's space.
+    private static final String GAME_DATA_SUBDIR = "gamedata";
     // Written when a SAF pick cannot be read at all, with the destination
     // basename as its body, so RomImporter:focus can say so in the launcher
     // instead of leaving the player on "No ROM imported" (issue #442).

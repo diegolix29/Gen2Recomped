@@ -120,6 +120,8 @@ local function resolveMount()
   local libs = {
     function() return ffi.C end,
     function() return ffi.load("love") end,
+    -- Android loads love as liblove.so; ffi.C does not search it.
+    function() return ffi.load("liblove.so") end,
   }
   for _, getlib in ipairs(libs) do
     local okl, lib = pcall(getlib)
@@ -162,6 +164,8 @@ local function resolveUnmount()
   local libs = {
     function() return ffi.C end,
     function() return ffi.load("love") end,
+    -- Android loads love as liblove.so; ffi.C does not search it.
+    function() return ffi.load("liblove.so") end,
   }
   for _, getlib in ipairs(libs) do
     local okl, lib = pcall(getlib)
@@ -194,6 +198,8 @@ local function resolveMountPoint()
   local libs = {
     function() return ffi.C end,
     function() return ffi.load("love") end,
+    -- Android loads love as liblove.so; ffi.C does not search it.
+    function() return ffi.load("liblove.so") end,
   }
   for _, getlib in ipairs(libs) do
     local okl, lib = pcall(getlib)

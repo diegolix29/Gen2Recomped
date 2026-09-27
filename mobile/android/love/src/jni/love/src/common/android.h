@@ -83,6 +83,17 @@ bool showImagePicker();
 bool showCreateDocument(const char *suggestedName = nullptr);
 
 /**
+ * Game-data / mods folder picker. Volume dialog plus optional
+ * ACTION_OPEN_DOCUMENT_TREE; the path lands in picked_folder.txt.
+ **/
+bool showFolderPicker();
+
+/**
+ * "label\\tab path" rows for app-owned external files volumes.
+ **/
+std::string getExternalDataDirs();
+
+/**
  * Pokéwalker step bridge: asks GameActivity to read the hardware step
  * counter and stage steps_pending.json in the save identity dir (see
  * GameActivity.syncHealthSteps). Returns whether a sync could start.

@@ -109,6 +109,18 @@ int w_createFile(lua_State *L)
 	return 1;
 }
 
+int w_pickFolder(lua_State *L)
+{
+	luax_pushboolean(L, instance()->pickFolder());
+	return 1;
+}
+
+int w_getExternalDataDirs(lua_State *L)
+{
+	luax_pushstring(L, instance()->getExternalDataDirs());
+	return 1;
+}
+
 int w_syncHealthSteps(lua_State *L)
 {
 	luax_pushboolean(L, instance()->syncHealthSteps());
@@ -150,6 +162,8 @@ static const luaL_Reg functions[] =
 	{ "vibrate", w_vibrate },
 	{ "pickFile", w_pickFile },
 	{ "createFile", w_createFile },
+	{ "pickFolder", w_pickFolder },
+	{ "getExternalDataDirs", w_getExternalDataDirs },
 	{ "syncHealthSteps", w_syncHealthSteps },
 	{ "restartApp", w_restartApp },
 	{ "httpDownload", w_httpDownload },

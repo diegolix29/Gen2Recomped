@@ -214,6 +214,24 @@ bool System::createFile(const char *suggestedName) const
 #endif
 }
 
+bool System::pickFolder() const
+{
+#ifdef LOVE_ANDROID
+	return love::android::showFolderPicker();
+#else
+	return false;
+#endif
+}
+
+std::string System::getExternalDataDirs() const
+{
+#ifdef LOVE_ANDROID
+	return love::android::getExternalDataDirs();
+#else
+	return "";
+#endif
+}
+
 bool System::syncHealthSteps() const
 {
 #ifdef LOVE_ANDROID

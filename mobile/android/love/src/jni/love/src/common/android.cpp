@@ -255,6 +255,45 @@ bool showCreateDocument(const char *suggestedName)
 	return result;
 }
 
+bool showFolderPicker()
+{
+	JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();
+	jclass activity = env->FindClass("org/love2d/android/GameActivity");
+
+	jmethodID method = env->GetStaticMethodID(activity, "showFolderPicker",
+		"(Ljava/lang/String;)Z");
+	jstring jsavedir = env->NewStringUTF(bridgeSaveDirectory());
+	jboolean result = env->CallStaticBooleanMethod(activity, method, jsavedir);
+	env->DeleteLocalRef(jsavedir);
+
+	env->DeleteLocalRef(activity);
+	return result;
+}
+
+std::string getExternalDataDirs()
+{
+	JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();
+	jclass activity = env->FindClass("org/love2d/android/GameActivity");
+
+	jmethodID method = env->GetStaticMethodID(activity, "getExternalDataDirs",
+		"()Ljava/lang/String;");
+	jstring jresult = (jstring) env->CallStaticObjectMethod(activity, method);
+	std::string result;
+	if (jresult != nullptr)
+	{
+		const char *chars = env->GetStringUTFChars(jresult, nullptr);
+		if (chars != nullptr)
+		{
+			result = chars;
+			env->ReleaseStringUTFChars(jresult, chars);
+		}
+		env->DeleteLocalRef(jresult);
+	}
+
+	env->DeleteLocalRef(activity);
+	return result;
+}
+
 bool syncHealthSteps()
 {
 	JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();

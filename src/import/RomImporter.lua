@@ -36,6 +36,15 @@ local function pickFile(...)
   return fn(...) and true or false
 end
 
+-- Android folder picker for the game-data / mods install path.  Same bridge
+-- pattern as pickFile: the dialog is a separate UI, and the chosen path lands
+-- later as picked_folder.txt in the save identity (see GameActivity).
+local function pickFolder()
+  local fn = love.system.pickFolder
+  if not fn then return false end
+  return fn() and true or false
+end
+
 -- v17: Force a fresh Gen2 re-import after tileset registry and map-id fixes.
 -- v32: item ItemAttributes property bits (CANT_SELECT / CANT_TOSS).
 -- v33: shiny half of each PokemonPalettes row (MON_<id>_SHINY).
