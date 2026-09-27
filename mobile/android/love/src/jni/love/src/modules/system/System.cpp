@@ -194,6 +194,8 @@ bool System::pickFile(const char *kind) const
 			dest = "picked_save.sav";
 		else if (strcmp(kind, "rom") == 0)
 			dest = "picked_rom.gb";
+		else if (strcmp(kind, "image") == 0)
+			return love::android::showImagePicker();
 	}
 	return love::android::showFilePicker(dest);
 #else

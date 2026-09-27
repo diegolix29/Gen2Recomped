@@ -6114,6 +6114,13 @@ local function armedDelete(a, kind, id, version)
     and (love.timer.getTime() - a.t) <= DELETE_CONFIRM_SECONDS
 end
 
+function RomImporter:touchpressed(id, x, y, dx, dy, pressure)
+  -- Android-specific touch handler to avoid mouse emulation issues
+  if self._rename then return end -- the rename modal swallows all clicks
+  -- Route to the same mousepressed logic but with touch handling
+  return self:mousepressed(x, y, 1)
+end
+
 function RomImporter:mousepressed(x, y, button)
   if self._rename then return end -- the rename modal swallows all clicks
   -- The add-index prompt swallows clicks too, except its PASTE button: a
@@ -7694,14 +7701,22 @@ local MAX_FIND_QUERY = 48
 -- lowers on mobile -- setTextInput is global SDL state, not per-widget.
 function RomImporter:_armTextInput()
   if love.keyboard and love.keyboard.setTextInput then
-    pcall(love.keyboard.setTextInput, true)
+    local ok, err = pcall(love.keyboard.setTextInput, true)
+    if not ok then
+      -- Log error but don't crash - text input failure on Android is non-critical
+      print("Failed to arm text input: " .. tostring(err))
+    end
   end
 end
 
 function RomImporter:_disarmTextInput()
   if not self.android then return end
   if love.keyboard and love.keyboard.setTextInput then
-    pcall(love.keyboard.setTextInput, false)
+    local ok, err = pcall(love.keyboard.setTextInput, false)
+    if not ok then
+      -- Log error but don't crash - text input failure on Android is non-critical
+      print("Failed to disarm text input: " .. tostring(err))
+    end
   end
 end
 

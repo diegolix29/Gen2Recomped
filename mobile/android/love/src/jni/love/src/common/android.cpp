@@ -38,25 +38,17 @@
 #include "filesystem/physfs/PhysfsIo.h"
 #include "libraries/physfs/physfs.h"
 
+// #604 / #839: the SAF bridges below must hand GameActivity the exact
+// directory physfs mounted as the save dir -- the same contract the iOS
+// GRPickerBridge already gets (mobile/ios/patch_love_src.py,
+// gr_saveDirectory) -- instead of letting Java recompute the root on its
+// own, which can name a different volume on merged / adopted-SD storage.
 #include "filesystem/Filesystem.h"
 
 namespace love
 {
 namespace android
 {
-
-// The directory physfs actually mounted as the save dir, or "" before the
-// filesystem module is up.  GameActivity must copy SAF picks HERE: its own
-// getExternalFilesDir(null) recomputation can disagree with the mounted
-// root on merged / adopted-SD storage (#604, #839).
-static const char *bridgeSaveDirectory()
-{
-	auto fs = Module::getInstance<love::filesystem::Filesystem>(Module::M_FILESYSTEM);
-	if (fs == nullptr)
-		return "";
-	const char *dir = fs->getSaveDirectory();
-	return dir != nullptr ? dir : "";
-}
 
 void setImmersive(bool immersive_active)
 {
@@ -199,6 +191,19 @@ void vibrate(double seconds)
 	env->DeleteLocalRef(activity);
 }
 
+// The directory physfs actually mounted as the save dir, or "" before the
+// filesystem module is up.  GameActivity must copy SAF picks HERE: its own
+// getExternalFilesDir(null) recomputation can disagree with the mounted
+// root on merged / adopted-SD storage (#604, #839).
+static const char *bridgeSaveDirectory()
+{
+	auto fs = Module::getInstance<love::filesystem::Filesystem>(Module::M_FILESYSTEM);
+	if (fs == nullptr)
+		return "";
+	const char *dir = fs->getSaveDirectory();
+	return dir != nullptr ? dir : "";
+}
+
 bool showFilePicker(const char *destFilename)
 {
 	if (destFilename == nullptr || destFilename[0] == '\0')
@@ -214,6 +219,18 @@ bool showFilePicker(const char *destFilename)
 	jboolean result = env->CallStaticBooleanMethod(activity, method, jname, jsavedir);
 	env->DeleteLocalRef(jsavedir);
 	env->DeleteLocalRef(jname);
+
+	env->DeleteLocalRef(activity);
+	return result;
+}
+
+bool showImagePicker()
+{
+	JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();
+	jclass activity = env->FindClass("org/love2d/android/GameActivity");
+
+	jmethodID method = env->GetStaticMethodID(activity, "showImageFilePicker", "()Z");
+	jboolean result = env->CallStaticBooleanMethod(activity, method);
 
 	env->DeleteLocalRef(activity);
 	return result;
@@ -369,6 +386,14 @@ bool httpDownload(const char *url, const char *destPath, const char *userAgent, 
 		return false;
 
 	JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();
+	// NOT FindClass: this is the one bridge called off the main thread
+	// (love.thread workers in src/net/fetch_worker.lua and
+	// src/update/check_worker.lua).  A worker is a raw pthread whose JNI
+	// class loader is the system one, which cannot see app classes, so
+	// FindClass("org/love2d/android/GameActivity") left a pending
+	// ClassNotFoundException and the next JNI call aborted the process --
+	// opening FIND MODS killed the app on the first stats fetch.  Resolving
+	// through the live activity instance works from any attached thread.
 	jobject activityObj = (jobject) SDL_AndroidGetActivity();
 	if (activityObj == nullptr)
 		return false;
