@@ -2864,13 +2864,11 @@ function RomImporter:focus(f)
   if not (f and self.android and self.workState ~= "working") then return end
   -- SAF folder picker finished: GameActivity wrote picked_folder.txt.
   if love.filesystem.getInfo("picked_folder.txt", "file") then
-    local path = love.filesystem.read("picked_folder.txt")
+    local uri = love.filesystem.read("picked_folder.txt")
     love.filesystem.remove("picked_folder.txt")
-    if path and path ~= "" then
-      -- The path should now be a real file path (e.g., /storage/emulated/0/DCIM/Photos)
-      -- or still a content:// URI if conversion failed
-      -- Call setDataDir with the selected folder path
-      self:setDataDir(path)
+    if uri and uri ~= "" then
+      -- Call setDataDir with the selected folder URI
+      self:setDataDir(uri)
     end
     return
   end
