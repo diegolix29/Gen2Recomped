@@ -1,3 +1,4 @@
+local V=...
 local S={}
 local installed=false
 local modRef,Trainer,Music,ArenaCatalog,BattleMenuUI,CacheManager,TrainerRoster,Compat,AudioFidelity
@@ -452,6 +453,49 @@ local function openBattleMenu(game,returnId,returnParent)
     end
     game.stack:push(picker)
   end
+  packCacheRow.onSelect=function()
+    local A=(V and V.CacheArchive) or (modRef and modRef.exports and modRef.exports.cacheArchive)
+    local rows={}
+    local statusRow={label="",keepOpen=true}
+    local sizeRow={label="",keepOpen=true}
+    local toolRow={label="",keepOpen=true}
+    local errRow={label="",keepOpen=true}
+    local function labels()
+      local st=A and A.status and A.status() or {}
+      if st.running then statusRow.label=tostring(st.stage or "PACKING")
+      elseif st.pokemonPacked and st.movefxPacked then statusRow.label="PACKED / READY"
+      elseif st.pokemonPacked or st.movefxPacked then statusRow.label="PARTIAL / CONTINUE"
+      elseif st.toolAvailable then statusRow.label="LOOSE FILES / NOT PACKED"
+      else statusRow.label="ZLIB UNAVAILABLE" end
+      sizeRow.label=(st.originalLabel or "0 B").." -> "..(st.archiveLabel or "0 B")
+      toolRow.label=st.toolLabel and ("CODEC  "..tostring(st.toolLabel)) or "CODEC  UNAVAILABLE"
+      errRow.label=st.error and tostring(st.error):sub(1,30) or (st.savedLabel and ("SAVED  "..tostring(st.savedLabel)) or "PACK AFTER EXTRACTION")
+      refresh()
+    end
+    local function start(scope)
+      if not (A and A.beginPack) then return end
+      A.beginPack(scope)
+      labels()
+    end
+    rows[#rows+1]={label="PACK POKEMON + MOVEFX",keepOpen=true,onSelect=function() start("all") end}
+    rows[#rows+1]={label="PACK POKEMON ONLY",keepOpen=true,onSelect=function() start("pokemon") end}
+    rows[#rows+1]={label="PACK MOVEFX ONLY",keepOpen=true,onSelect=function() start("movefx") end}
+    rows[#rows+1]={label="CANCEL PACKING",keepOpen=true,onSelect=function() if A and A.cancelPack then A.cancelPack() end;labels() end}
+    rows[#rows+1]=statusRow;rows[#rows+1]=sizeRow;rows[#rows+1]=toolRow;rows[#rows+1]=errRow
+    rows[#rows+1]={label="LOOSE ORIGINALS DELETE AFTER VERIFY",keepOpen=true}
+    rows[#rows+1]={label="RUNTIME UNPACKS ONE SPECIES / MOVE",keepOpen=true}
+    labels()
+    local picker=Menu.new(game,rows,{tx=1,ty=1,tw=29,maxVisible=10})
+    if BattleMenuUI and BattleMenuUI.mark then BattleMenuUI.mark(picker,"PACK GENERATED CACHE",rows,10,"ZLIB UNITS / ON-DEMAND LOAD") end
+    local nativeUpdate=picker.update
+    picker.update=function(self,dt,...)
+      if nativeUpdate then nativeUpdate(self,dt,...) end
+      if A and A.pump then A.pump(40) end
+      self._cbePackClock=(self._cbePackClock or 0)+(tonumber(dt) or 0)
+      if self._cbePackClock>=.25 then self._cbePackClock=0;labels() end
+    end
+    game.stack:push(picker)
+  end
   cacheRow.onSelect=function()
     local cs=CacheManager and CacheManager.inspect and CacheManager.inspect()
       or {ready=false,runtimeReady=false,sourceReady=false,sourceStatus="UNKNOWN",source="UNKNOWN",files=0,sizeLabel="0 B",componentCounts={}}
@@ -550,7 +594,7 @@ local function openBattleMenu(game,returnId,returnParent)
   refresh()
   -- Trainer presentation is intentionally three independent ownership rows:
   -- player Red, ordinary/special enemy trainers, and the Kanto rival substitute.
-  local mainRows={environmentToggle,cameraToggle,pokemonModelsToggle,realtimeToggle,realtimeZoomRow,doublesToggle,abilitiesToggle,wildSpawnRow,wildSpawnStatusRow,wildEncountersToggle,trainerEncountersToggle,gymEncountersToggle,eliteFourEncountersToggle,autoProgressToggle,freeLookToggle,bossIntroToggle,musicRow,soundsToggle,audioQualityRow,arenaRow,playerTrainerRow,enemyTrainerRow,rivalRow,actorScaleRow,hardCacheRow,cacheRow,back}
+  local mainRows={environmentToggle,cameraToggle,pokemonModelsToggle,realtimeToggle,realtimeZoomRow,doublesToggle,abilitiesToggle,wildSpawnRow,wildSpawnStatusRow,wildEncountersToggle,trainerEncountersToggle,gymEncountersToggle,eliteFourEncountersToggle,autoProgressToggle,freeLookToggle,bossIntroToggle,musicRow,soundsToggle,audioQualityRow,arenaRow,playerTrainerRow,enemyTrainerRow,rivalRow,actorScaleRow,hardCacheRow,packCacheRow,cacheRow,back}
   menu=Menu.new(game,mainRows,{tx=1,ty=2,tw=24,maxVisible=12,onCancel=function() reopen(game,returnId,returnParent) end})
   menu.screenId="TerrariumBattleSettings"
   if BattleMenuUI and BattleMenuUI.mark then

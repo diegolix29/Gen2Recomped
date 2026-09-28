@@ -92,6 +92,9 @@ function A.available()
   end
   return nil
 end
+function A.running()
+  return job~=nil
+end
 
 local function compressBytes(raw)
   local tool=A.available()
@@ -226,23 +229,49 @@ local function pokemonManifestPaths()
   return out
 end
 
-local function generatedMovefxPaths()
+local function generatedPrefixPaths(prefix)
   local out={}
   local raw=select(1,call(mod.cache,"read","build/generated_paths.lua"))
   local list=loadLua(raw)
   if type(list)=="table" then
     for _,path in ipairs(list) do
-      if type(path)=="string" and path:find("^cache/movefx/",1,true) then out[#out+1]=path end
+      if type(path)=="string" and path:find(prefix,1,true) then out[#out+1]=path end
     end
   end
   local registry=select(1,call(mod.cache,"read","build/hard_cache_registry_v1.lua"))
   local parsed=loadLua(registry)
   if type(parsed)=="table" and type(parsed.entries)=="table" then
     for path in pairs(parsed.entries) do
-      if type(path)=="string" and path:find("^cache/movefx/",1,true) then out[#out+1]=path end
+      if type(path)=="string" and path:find(prefix,1,true) then out[#out+1]=path end
     end
   end
   return out
+end
+
+local function addRuntimeSidecars(path,add)
+  if type(path)~="string" or not path:find("%.lua$") then return end
+  local root=path:gsub("%.lua$","").."_runtime_v1"
+  add(root.."/base.lua")
+  for i=0,48 do add(root..("/base_%02d.f32"):format(i)) end
+end
+
+local function collectMovefxFromIndex(add)
+  local index=loadLua(select(1,call(mod.cache,"read","cache/movefx/index.lua")))
+  local seenStem={}
+  for _,row in pairs(type(index)=="table" and index.moves or {}) do
+    local stem=type(row)=="table" and tostring(row.stem or "") or ""
+    if stem~="" and not seenStem[stem] then
+      seenStem[stem]=true
+      local effect="cache/movefx/"..stem.."/effect.lua"
+      add(effect)
+      local raw=select(1,call(mod.cache,"read",effect))
+      if type(raw)=="string" then
+        for quoted in raw:gmatch('"cache/movefx/[^"]+"') do
+          add(quoted:sub(2,-2))
+        end
+      end
+    end
+  end
 end
 
 local function queueFor(kind)
@@ -253,18 +282,14 @@ local function queueFor(kind)
     if looseExists(path) then
       queue[#queue+1]={path=path,key=unitKey(kind,path)}
     end
+    addRuntimeSidecars(path,add)
   end
   if kind=="pokemon" then
     for _,path in ipairs(pokemonManifestPaths()) do add(path) end
-    local registry=select(1,call(mod.cache,"read","build/hard_cache_registry_v1.lua"))
-    local parsed=loadLua(registry)
-    if type(parsed)=="table" and type(parsed.entries)=="table" then
-      for path in pairs(parsed.entries) do
-        if type(path)=="string" and path:find("^cache/pokemon/",1,true) then add(path) end
-      end
-    end
+    for _,path in ipairs(generatedPrefixPaths("cache/pokemon/")) do add(path) end
   else
-    for _,path in ipairs(generatedMovefxPaths()) do add(path) end
+    for _,path in ipairs(generatedPrefixPaths("cache/movefx/")) do add(path) end
+    collectMovefxFromIndex(add)
   end
   return queue
 end

@@ -3741,6 +3741,9 @@ local function initializeColosseumIntegration()
     if PokemonExtractorRef and type(PokemonExtractorRef.installGeneratedAssets) == "function" then
       pcall(PokemonExtractorRef.installGeneratedAssets, GeneratedAssets)
     end
+    if MoveFXExtractorRef and type(MoveFXExtractorRef.installGeneratedAssets) == "function" then
+      pcall(MoveFXExtractorRef.installGeneratedAssets, GeneratedAssets)
+    end
     loadColosseumModule("RuntimeMeshCache")
     loadColosseumModule("WorkBudget")
     local CacheArchive = loadColosseumModule("CacheArchive")
