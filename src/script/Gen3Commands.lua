@@ -321,6 +321,179 @@ function Commands.g3_compare_var(ctx, a, b)
   setResult(ctx, compare(getVar(ctx.save, a), getVar(ctx.save, b)))
 end
 
+-- FireRed's native League scripts use their own run-scoped FLAG_DEFEATED_*
+-- bits while the older shared Kanto story layer still names the equivalent
+-- progress with EVENT_BEAT_* flags.  Both names have to describe the same win:
+-- otherwise Lance and the Champion work through the ROM script but the
+-- existing Hall-of-Fame/postgame checks believe they were never beaten.
+--
+-- Keep the cartridge bit as the primary flag so FireRed save serialization
+-- remains exact.  The compatibility names are mirrors for the shared story
+-- code.  Champion's persistent EVENT_BEAT_CHAMPION_RIVAL intentionally stays
+-- set when the cartridge clears FLAG_DEFEATED_CHAMP for a new League run;
+-- only the port's THIS_RUN marker is cleared with it.
+-- Saves made before the FireRed League flag bridge existed can be partway
+-- through the Elite Four with only one representation of a victory recorded.
+-- Fresh/current saves write both in g3_set_flag/checkVictoryRewards below, but
+-- an older port save commonly has only EVENT_BEAT_*; an imported cartridge
+-- save can have only FLAG_DEFEATED_*.
+--
+-- Repair only while VAR_MAP_SCENE_POKEMON_LEAGUE says a League run is active,
+-- or when an older port save is physically inside one of the League rooms and
+-- predates that native scene variable.  Hall of Fame/lobby are deliberately
+-- absent from the inference table: completed runs stay at scene 0 and cannot
+-- resurrect a previous run's defeated Elite Four.
+function Gen3Commands.repairFireRedLeagueFlags(save)
+  if require("src.core.GameVersion").get() ~= "firered" then return false end
+  if type(save) ~= "table" or type(save.flags) ~= "table" then return false end
+  local scene = math.floor(tonumber(getVar(save, 0x4068)) or 0)
+  local changed = false
+  local priorChampion = save.flags.EVENT_BEAT_CHAMPION_RIVAL == true
+    or save.flags.FLAG_G3_082C == true
+    or (tonumber(save.hallOfFame) or 0) > 0
+
+  -- Hall of Fame resets FireRed's native FLAG_DEFEATED_* bits and League
+  -- scene back to zero.  Builds before PR #60 did not clear the port-side
+  -- EVENT_BEAT_* mirrors at the same time, so a completed old save can sit in
+  -- the real Indigo Plateau lobby with stale previous-run progress.  Clear
+  -- only that run-scoped compatibility state here.  This is deliberately
+  -- limited to scene 0 + lobby + prior Champion history, so a first-ever
+  -- in-progress League save is never mistaken for a completed run.
+  local playerMap = save.player and save.player.map
+  if scene <= 0 and priorChampion
+     and (playerMap == "MAP_G13_N00" or playerMap == "INDIGO_PLATEAU_LOBBY") then
+    local staleFlags = {
+      "EVENT_STARTED_ELITE_4",
+      "EVENT_BEAT_LORELEIS_ROOM_TRAINER_0",
+      "EVENT_AUTOWALKED_INTO_LORELEIS_ROOM",
+      "EVENT_BEAT_BRUNOS_ROOM_TRAINER_0",
+      "EVENT_AUTOWALKED_INTO_BRUNOS_ROOM",
+      "EVENT_BEAT_AGATHAS_ROOM_TRAINER_0",
+      "EVENT_AUTOWALKED_INTO_AGATHAS_ROOM",
+      "EVENT_BEAT_LANCES_ROOM_TRAINER_0",
+      "EVENT_BEAT_LANCE",
+      "EVENT_LANCES_ROOM_LOCK_DOOR",
+      "EVENT_BEAT_CHAMPION_RIVAL_THIS_RUN",
+    }
+    for _, flag in ipairs(staleFlags) do
+      if save.flags[flag] ~= nil then
+        save.flags[flag] = nil
+        changed = true
+      end
+    end
+    if type(save.defeatedTrainers) == "table" then
+      for _, key in ipairs({
+        "LORELEIS_ROOM_obj_1", "BRUNOS_ROOM_obj_1",
+        "AGATHAS_ROOM_obj_1", "LANCES_ROOM_obj_1",
+      }) do
+        if save.defeatedTrainers[key] ~= nil then
+          save.defeatedTrainers[key] = nil
+          changed = true
+        end
+      end
+    end
+    return changed
+  end
+
+  if scene <= 0 then
+    local room = save.player and save.player.map
+    local roomScenes = {
+      MAP_G01_N75 = 1, LORELEIS_ROOM = 1,
+      MAP_G01_N76 = 2, BRUNOS_ROOM = 2,
+      MAP_G01_N77 = 3, AGATHAS_ROOM = 3,
+      MAP_G01_N78 = 4, LANCES_ROOM = 4,
+      MAP_G01_N79 = 4, CHAMPIONS_ROOM = 4,
+    }
+    scene = roomScenes[room]
+    if not scene then return false end
+    setVar(save, 0x4068, scene)
+    changed = true
+  end
+
+  local mirrors = {
+    FLAG_G3_04B8 = { "EVENT_BEAT_LORELEIS_ROOM_TRAINER_0", 1,
+                      "LORELEIS_ROOM_obj_1" },
+    FLAG_G3_04B9 = { "EVENT_BEAT_BRUNOS_ROOM_TRAINER_0", 2,
+                      "BRUNOS_ROOM_obj_1" },
+    FLAG_G3_04BA = { "EVENT_BEAT_AGATHAS_ROOM_TRAINER_0", 3,
+                      "AGATHAS_ROOM_obj_1" },
+    FLAG_G3_04BB = { "EVENT_BEAT_LANCE", 4,
+                      "LANCES_ROOM_obj_1" },
+    -- The persistent EVENT_BEAT_CHAMPION_RIVAL survives future League runs.
+    -- THIS_RUN is the run-scoped mirror of FLAG_DEFEATED_CHAMP.
+    FLAG_G3_04BC = { "EVENT_BEAT_CHAMPION_RIVAL_THIS_RUN", 4 },
+  }
+  -- A completed pre-bridge save is special: Hall of Fame already cleared the
+  -- native defeated bits and scene, but older builds did not clear their
+  -- legacy EVENT_BEAT_* mirrors. Once that player starts a rematch, those
+  -- stale legacy flags are ambiguous unless a native flag confirms the win.
+  -- Prefer making the player refight a member over silently skipping one.
+  for native, row in pairs(mirrors) do
+    local legacy, minScene, trainerKey = row[1], row[2], row[3]
+    local nativeSet = save.flags[native] == true
+    local legacySet = save.flags[legacy] == true
+    if nativeSet and not legacySet then
+      -- Cartridge/imported/current-run state is authoritative.
+      save.flags[legacy] = true
+      changed = true
+    elseif legacySet and not nativeSet then
+      if priorChampion then
+        -- Conservative cleanup for pre-PR #60 rematches. Their old
+        -- defeatedTrainers entry is stale for the same reason as the flag.
+        save.flags[legacy] = false
+        if trainerKey and type(save.defeatedTrainers) == "table" then
+          save.defeatedTrainers[trainerKey] = nil
+        end
+        changed = true
+      elseif scene >= minScene then
+        -- On a first-ever League run there is no previous run to confuse this
+        -- with, so the legacy bit is trustworthy compatibility evidence.
+        save.flags[native] = true
+        changed = true
+      end
+    end
+  end
+  if scene >= 4 and save.flags.FLAG_G3_04BC == true
+     and save.flags.EVENT_BEAT_CHAMPION_RIVAL ~= true then
+    save.flags.EVENT_BEAT_CHAMPION_RIVAL = true
+    changed = true
+  end
+  return changed
+end
+
+function Commands.g3_set_flag(ctx, name)
+  Commands.set_flag(ctx, name)
+  if require("src.core.GameVersion").get() ~= "firered" then return end
+  if name == "FLAG_G3_04B8" then
+    Commands.set_flag(ctx, "EVENT_BEAT_LORELEIS_ROOM_TRAINER_0")
+  elseif name == "FLAG_G3_04B9" then
+    Commands.set_flag(ctx, "EVENT_BEAT_BRUNOS_ROOM_TRAINER_0")
+  elseif name == "FLAG_G3_04BA" then
+    Commands.set_flag(ctx, "EVENT_BEAT_AGATHAS_ROOM_TRAINER_0")
+  elseif name == "FLAG_G3_04BB" then
+    Commands.set_flag(ctx, "EVENT_BEAT_LANCE")
+  elseif name == "FLAG_G3_04BC" then
+    Commands.set_flag(ctx, "EVENT_BEAT_CHAMPION_RIVAL")
+    Commands.set_flag(ctx, "EVENT_BEAT_CHAMPION_RIVAL_THIS_RUN")
+  end
+end
+
+function Commands.g3_clear_flag(ctx, name)
+  Commands.clear_flag(ctx, name)
+  if require("src.core.GameVersion").get() ~= "firered" then return end
+  if name == "FLAG_G3_04B8" then
+    Commands.clear_flag(ctx, "EVENT_BEAT_LORELEIS_ROOM_TRAINER_0")
+  elseif name == "FLAG_G3_04B9" then
+    Commands.clear_flag(ctx, "EVENT_BEAT_BRUNOS_ROOM_TRAINER_0")
+  elseif name == "FLAG_G3_04BA" then
+    Commands.clear_flag(ctx, "EVENT_BEAT_AGATHAS_ROOM_TRAINER_0")
+  elseif name == "FLAG_G3_04BB" then
+    Commands.clear_flag(ctx, "EVENT_BEAT_LANCE")
+  elseif name == "FLAG_G3_04BC" then
+    Commands.clear_flag(ctx, "EVENT_BEAT_CHAMPION_RIVAL_THIS_RUN")
+  end
+end
+
 -- checkflag writes the FLAG'S OWN VALUE into the register, not a comparison:
 -- that is what makes `checkflag / goto_if 1` mean "if set".
 function Commands.g3_check_flag(ctx, name)

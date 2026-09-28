@@ -1478,6 +1478,18 @@ function Game:restoreSave(loaded, recovered)
   -- SaveData.load and skip on the format guard
   local activeMods = self.modStatus and self.modStatus.loaded
   SaveData.runMigrations(loaded, self.mods and self.mods.migrations, activeMods)
+  -- PR #60 taught future FireRed League wins to keep the cartridge-native
+  -- FLAG_DEFEATED_* bits and the older port EVENT_BEAT_* names in sync.  Saves
+  -- already partway through the Elite Four predate that bridge and may have
+  -- only one side, leaving the next room sealed after an update.  Reconcile
+  -- those run-scoped flags before the room's ON_LOAD script evaluates them.
+  if require("src.core.GameVersion").get() == "firered" then
+    local okG3, G3 = pcall(require, "src.script.Gen3Commands")
+    if okG3 and G3 and G3.repairFireRedLeagueFlags
+       and G3.repairFireRedLeagueFlags(loaded) then
+      Logger.info("FireRed save repair: synchronized in-progress Elite Four flags")
+    end
+  end
   -- Pre-fix FireRed port saves could already own a TM/HM without ITEM_TM_CASE.
   -- Repair that impossible-on-cartridge state before validation/UI adoption.
   local okBag, Bag = pcall(require, "src.inventory.Bag")

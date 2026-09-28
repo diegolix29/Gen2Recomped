@@ -11,6 +11,7 @@ local Screens = {}
 -- ids whose builtin module is not under src/ui/
 local BUILTIN = {
   ManagerState = "src.mods.ManagerState",
+  Gen2StartMenu = "src.ui.StartMenu",
 }
 
 local cache = {}
