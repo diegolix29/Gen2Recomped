@@ -121,6 +121,13 @@ int w_getExternalDataDirs(lua_State *L)
 	return 1;
 }
 
+int w_mountDirectory(lua_State *L)
+{
+	const char *path = luaL_checkstring(L, 1);
+	luax_pushboolean(L, instance()->mountDirectory(path));
+	return 1;
+}
+
 int w_syncHealthSteps(lua_State *L)
 {
 	luax_pushboolean(L, instance()->syncHealthSteps());
@@ -164,6 +171,7 @@ static const luaL_Reg functions[] =
 	{ "createFile", w_createFile },
 	{ "pickFolder", w_pickFolder },
 	{ "getExternalDataDirs", w_getExternalDataDirs },
+	{ "mountDirectory", w_mountDirectory },
 	{ "syncHealthSteps", w_syncHealthSteps },
 	{ "restartApp", w_restartApp },
 	{ "httpDownload", w_httpDownload },

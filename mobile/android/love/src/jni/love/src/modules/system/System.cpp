@@ -232,6 +232,16 @@ std::string System::getExternalDataDirs() const
 #endif
 }
 
+bool System::mountDirectory(const char *path) const
+{
+#ifdef LOVE_ANDROID
+	return love::android::mountDirectory(path);
+#else
+	LOVE_UNUSED(path);
+	return false;
+#endif
+}
+
 bool System::syncHealthSteps() const
 {
 #ifdef LOVE_ANDROID

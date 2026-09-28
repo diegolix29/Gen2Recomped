@@ -36,6 +36,7 @@
 #include <unistd.h>
 
 #include "filesystem/physfs/PhysfsIo.h"
+#include "libraries/physfs/physfs.h"
 
 // #604 / #839: the SAF bridges below must hand GameActivity the exact
 // directory physfs mounted as the save dir -- the same contract the iOS
@@ -292,6 +293,15 @@ std::string getExternalDataDirs()
 
 	env->DeleteLocalRef(activity);
 	return result;
+}
+
+bool mountDirectory(const char *path)
+{
+	if (path == nullptr || path[0] == '\0')
+		return false;
+	if (!PHYSFS_isInit())
+		return false;
+	return PHYSFS_mount(path, nullptr, 1) != 0;
 }
 
 bool syncHealthSteps()

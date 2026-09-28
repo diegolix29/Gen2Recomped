@@ -148,8 +148,13 @@ end
 local function mountReadable(dir, append)
   local fn = resolveMount()
   if fn and fn(dir, "", append) then return true end
-  -- Android: love.filesystem.mount can see app-owned external dirs even
-  -- when FFI cannot find PHYSFS_mount in liblove.so.
+  -- Android: PHYSFS_mount through the JNI bridge (love.system.mountDirectory)
+  -- rather than love.filesystem.mount, which refuses paths outside the save
+  -- dir -- and the phone/SD gamedata folder is a sibling of that save dir.
+  if love and love.system and type(love.system.mountDirectory) == "function" then
+    local ok, mounted = pcall(love.system.mountDirectory, dir)
+    if ok and mounted then return true end
+  end
   if love and love.filesystem and love.filesystem.mount then
     local ok, mounted = pcall(love.filesystem.mount, dir, "", append ~= false)
     if ok and mounted then return true end

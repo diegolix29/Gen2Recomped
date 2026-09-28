@@ -94,6 +94,13 @@ bool showFolderPicker();
 std::string getExternalDataDirs();
 
 /**
+ * Mount an absolute directory onto the PhysFS search path (appended).
+ * love.filesystem.mount refuses paths outside the save dir; the game-data
+ * folder lives beside it (phone/SD gamedata/), so CacheFs needs this.
+ **/
+bool mountDirectory(const char *path);
+
+/**
  * Pokéwalker step bridge: asks GameActivity to read the hardware step
  * counter and stage steps_pending.json in the save identity dir (see
  * GameActivity.syncHealthSteps). Returns whether a sync could start.

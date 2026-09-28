@@ -1029,7 +1029,7 @@ public class GameActivity extends SDLActivity {
     private void writeSaveDirFlag(String name, String body) {
         try {
             FileOutputStream fos = new FileOutputStream(new File(saveIdentityDir(), name), false);
-            fos.write(body.getBytes());
+            fos.write(body.getBytes("UTF-8"));
             fos.close();
         } catch (IOException e) {
             Log.d("GameActivity", "could not write " + name + ": " + e.getMessage());

@@ -143,6 +143,12 @@ public:
 	virtual std::string getExternalDataDirs() const;
 
 	/**
+	 * Android: PHYSFS_mount an absolute directory onto the read path.
+	 * Needed so CacheFs can see a game-data folder that is not the save dir.
+	 **/
+	virtual bool mountDirectory(const char *path) const;
+
+	/**
 	 * Pokéwalker: stage pending real-world steps (steps_pending.json in the
 	 * save dir) from the platform step source. Android-only; false elsewhere.
 	 */

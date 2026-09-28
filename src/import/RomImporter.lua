@@ -7983,8 +7983,13 @@ function RomImporter:_launcherSettingsRows()
             note = "portable.txt sits beside the game, so everything is kept "
                 .. "in the game folder. Remove it to choose a folder here." })
     else
-      add({ kind = "action", label = "CHOOSE FOLDER", value = "BROWSE",
-            action = "chooseDataDir" })
+      add({ kind = "action",
+            label = self.android and "CHOOSE STORAGE" or "CHOOSE FOLDER",
+            value = self.android and "PICK" or "BROWSE",
+            action = "chooseDataDir",
+            note = self.android
+              and "Phone storage, an SD card, or Browse for another writable folder. Android will not let this app write to Downloads."
+              or nil })
       for _, vol in ipairs(SaveData.externalDataDirs()) do
         add({ kind = "action", label = vol.label,
               value = "USE", action = "setDataDirVolume",
