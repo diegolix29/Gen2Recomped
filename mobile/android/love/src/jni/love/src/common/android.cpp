@@ -45,6 +45,19 @@ namespace love
 namespace android
 {
 
+// The directory physfs actually mounted as the save dir, or "" before the
+// filesystem module is up.  GameActivity must copy SAF picks HERE: its own
+// getExternalFilesDir(null) recomputation can disagree with the mounted
+// root on merged / adopted-SD storage (#604, #839).
+static const char *bridgeSaveDirectory()
+{
+	auto fs = Module::getInstance<love::filesystem::Filesystem>(Module::M_FILESYSTEM);
+	if (fs == nullptr)
+		return "";
+	const char *dir = fs->getSaveDirectory();
+	return dir != nullptr ? dir : "";
+}
+
 void setImmersive(bool immersive_active)
 {
 	JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();
@@ -184,15 +197,6 @@ void vibrate(double seconds)
 	env->CallStaticVoidMethod(activity, vibrate_method, seconds);
 
 	env->DeleteLocalRef(activity);
-}
-
-static const char *bridgeSaveDirectory()
-{
-	auto fs = Module::getInstance<love::filesystem::Filesystem>(Module::M_FILESYSTEM);
-	if (fs == nullptr)
-		return "";
-	const char *dir = fs->getSaveDirectory();
-	return dir != nullptr ? dir : "";
 }
 
 bool showFilePicker(const char *destFilename)
