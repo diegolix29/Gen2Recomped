@@ -100,6 +100,11 @@ std::string getExternalDataDirs();
  **/
 bool mountDirectory(const char *path);
 
+bool hasStorageAccess();
+bool requestStorageAccess();
+bool pathIsAppOwned(const char *path);
+bool mkdirsReal(const char *path);
+
 /**
  * Pokéwalker step bridge: asks GameActivity to read the hardware step
  * counter and stage steps_pending.json in the save identity dir (see

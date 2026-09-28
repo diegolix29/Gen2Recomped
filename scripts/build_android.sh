@@ -378,14 +378,13 @@ import pathlib, re, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
 
-# Drop mic / legacy storage, not needed by this game.
-# Keep VIBRATE (love.system.vibrate), BLUETOOTH (optional gamepads) and
-# INTERNET: link play is not offline-only any more, and stripping INTERNET
-# made every LAN host and every relay connect fail with EPERM (issue #287).
-# Orientation / label come from gradle.properties placeholders.
+# Drop mic only. WRITE_EXTERNAL_STORAGE / MANAGE_EXTERNAL_STORAGE stay:
+# a player-chosen game-data folder (ROM cache, non-mod files) is POSIX
+# io.open + PhysFS, which Android 11+ otherwise denies. Keep VIBRATE,
+# BLUETOOTH, INTERNET (issue #287). Orientation / label come from
+# gradle.properties placeholders.
 for perm in (
     "android.permission.RECORD_AUDIO",
-    "android.permission.WRITE_EXTERNAL_STORAGE",
 ):
     text = re.sub(
         rf'\s*<uses-permission android:name="{re.escape(perm)}"[^/]*/>\s*',
@@ -426,14 +425,13 @@ import pathlib, re, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
 
-# Drop mic / legacy storage, not needed by this game.
-# Keep VIBRATE (love.system.vibrate), BLUETOOTH (optional gamepads) and
-# INTERNET: link play is not offline-only any more, and stripping INTERNET
-# made every LAN host and every relay connect fail with EPERM (issue #287).
-# Orientation / label come from gradle.properties placeholders.
+# Drop mic only. WRITE_EXTERNAL_STORAGE / MANAGE_EXTERNAL_STORAGE stay:
+# a player-chosen game-data folder (ROM cache, non-mod files) is POSIX
+# io.open + PhysFS, which Android 11+ otherwise denies. Keep VIBRATE,
+# BLUETOOTH, INTERNET (issue #287). Orientation / label come from
+# gradle.properties placeholders.
 for perm in (
     "android.permission.RECORD_AUDIO",
-    "android.permission.WRITE_EXTERNAL_STORAGE",
 ):
     text = re.sub(
         rf'\s*<uses-permission android:name="{re.escape(perm)}"[^/]*/>\s*',

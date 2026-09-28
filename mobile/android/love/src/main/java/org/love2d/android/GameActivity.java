@@ -64,6 +64,7 @@ import android.os.Vibrator;
 import android.os.storage.StorageManager;
 import android.os.storage.StorageVolume;
 import android.provider.DocumentsContract;
+import android.provider.Settings;
 import android.util.Log;
 import android.util.DisplayMetrics;
 import android.view.*;
@@ -652,6 +653,94 @@ public class GameActivity extends SDLActivity {
     }
 
     /**
+     * True when POSIX fopen / PhysFS can use shared storage (Downloads, a
+     * user-picked tree, the SD card root). App-owned dirs never need this.
+     */
+    @Keep
+    public static boolean hasStorageAccess() {
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            return Environment.isExternalStorageManager();
+        }
+        GameActivity self = (GameActivity) mSingleton;
+        if (self == null) return false;
+        if (android.os.Build.VERSION.SDK_INT < 23) return true;
+        return ActivityCompat.checkSelfPermission(self,
+            Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** True when path is under this app's files / external-files dirs. */
+    @Keep
+    public static boolean pathIsAppOwned(String path) {
+        if (path == null || path.length() == 0) return false;
+        GameActivity self = (GameActivity) mSingleton;
+        if (self == null) return false;
+        String norm = path.replace('\\', '/');
+        if (!norm.endsWith("/")) norm = norm + "/";
+        File internal = self.getFilesDir();
+        if (internal != null && under(norm, internal)) return true;
+        File[] dirs = self.getExternalFilesDirs(null);
+        if (dirs != null) {
+            for (int i = 0; i < dirs.length; i++) {
+                if (dirs[i] != null && under(norm, dirs[i])) return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean under(String normPathWithSlash, File dir) {
+        String base = dir.getAbsolutePath().replace('\\', '/');
+        if (!base.endsWith("/")) base = base + "/";
+        return normPathWithSlash.equals(base) || normPathWithSlash.startsWith(base);
+    }
+
+    /**
+     * Opens the system "all files access" screen (API 30+) or the legacy
+     * write-storage prompt. Does not block: Lua retries on the next focus.
+     */
+    @Keep
+    public static boolean requestStorageAccess() {
+        if (hasStorageAccess()) return true;
+        final GameActivity self = (GameActivity) mSingleton;
+        if (self == null) return false;
+        self.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (android.os.Build.VERSION.SDK_INT >= 30) {
+                    try {
+                        Intent intent = new Intent(
+                            Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+                        intent.setData(Uri.parse("package:" + self.getPackageName()));
+                        self.startActivity(intent);
+                    } catch (Exception e) {
+                        try {
+                            self.startActivity(new Intent(
+                                Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                        } catch (Exception e2) {
+                            Log.d("GameActivity", "could not open storage settings: "
+                                + e2.getMessage());
+                        }
+                    }
+                } else if (android.os.Build.VERSION.SDK_INT >= 23) {
+                    ActivityCompat.requestPermissions(self, new String[] {
+                        Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                        Manifest.permission.READ_EXTERNAL_STORAGE
+                    }, EXTERNAL_STORAGE_REQUEST_CODE);
+                }
+            }
+        });
+        return true;
+    }
+
+    /** Java mkdirs for a game-data tree; FFI mkdir often EACCES on shared storage. */
+    @Keep
+    public static boolean mkdirsReal(String path) {
+        if (path == null || path.length() == 0) return false;
+        File dir = new File(path);
+        return dir.isDirectory() || dir.mkdirs();
+    }
+
+    /**
      * Volume dialog (phone / SD) plus optional ACTION_OPEN_DOCUMENT_TREE.
      * The chosen absolute path is written to picked_folder.txt in the
      * mounted save identity so RomImporter can apply it on the next poll
@@ -779,10 +868,19 @@ public class GameActivity extends SDLActivity {
                 + "\nno folder chosen");
             return;
         }
+        File dir = new File(path);
+        if (!dir.exists() && !dir.mkdirs()) {
+            writeSaveDirFlag(PICK_ERROR_FILENAME, PICKED_FOLDER_FILENAME
+                + "\ncould not create that folder");
+            return;
+        }
+        if (!pathIsAppOwned(path) && !hasStorageAccess()) {
+            requestStorageAccess();
+        }
         if (!folderIsWritable(path)) {
             writeSaveDirFlag(PICK_ERROR_FILENAME, PICKED_FOLDER_FILENAME
-                + "\nthat folder could not be written to. Android only lets "
-                + "this app write inside its own folders (phone or SD card).");
+                + "\nthat folder could not be written to. Grant All files access "
+                + "when Android asks, or pick Phone storage / SD card from the list.");
             return;
         }
         writeSaveDirFlag(PICKED_FOLDER_FILENAME, path);

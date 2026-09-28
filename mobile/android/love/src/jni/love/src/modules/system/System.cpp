@@ -242,6 +242,44 @@ bool System::mountDirectory(const char *path) const
 #endif
 }
 
+bool System::hasStorageAccess() const
+{
+#ifdef LOVE_ANDROID
+	return love::android::hasStorageAccess();
+#else
+	return true;
+#endif
+}
+
+bool System::requestStorageAccess() const
+{
+#ifdef LOVE_ANDROID
+	return love::android::requestStorageAccess();
+#else
+	return false;
+#endif
+}
+
+bool System::pathIsAppOwned(const char *path) const
+{
+#ifdef LOVE_ANDROID
+	return love::android::pathIsAppOwned(path);
+#else
+	LOVE_UNUSED(path);
+	return true;
+#endif
+}
+
+bool System::mkdirs(const char *path) const
+{
+#ifdef LOVE_ANDROID
+	return love::android::mkdirsReal(path);
+#else
+	LOVE_UNUSED(path);
+	return false;
+#endif
+}
+
 bool System::syncHealthSteps() const
 {
 #ifdef LOVE_ANDROID

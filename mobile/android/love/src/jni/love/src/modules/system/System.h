@@ -148,6 +148,11 @@ public:
 	 **/
 	virtual bool mountDirectory(const char *path) const;
 
+	virtual bool hasStorageAccess() const;
+	virtual bool requestStorageAccess() const;
+	virtual bool pathIsAppOwned(const char *path) const;
+	virtual bool mkdirs(const char *path) const;
+
 	/**
 	 * Pokéwalker: stage pending real-world steps (steps_pending.json in the
 	 * save dir) from the platform step source. Android-only; false elsewhere.

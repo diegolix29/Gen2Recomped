@@ -362,9 +362,7 @@ end
 -- chosen game-data folder is writable and may have to create it first.
 function CacheFs.mkdirReal(path)
   if type(path) ~= "string" or path == "" then return false end
-  local mkdir = resolveMkdir()
-  if not mkdir then return false end
-  mkdir(path)
+  tryMkdirs(path)
   return true
 end
 
@@ -375,15 +373,27 @@ end
 -- create every parent directory of `rel` under `root` (best effort; an
 -- already-existing directory is fine, a genuine failure surfaces when the
 -- subsequent io.open write fails)
-local function ensureParents(root, rel)
+local function tryMkdirs(path)
+  if type(path) ~= "string" or path == "" then return end
+  -- Android: Java File.mkdirs() is the call that actually creates trees on
+  -- shared storage. FFI mkdir(2) often returns EACCES there even when a
+  -- one-file probe at the folder root succeeded -- which is LuaWriter's
+  -- "access denied" on data/generated during a ROM import.
+  if love and love.system and type(love.system.mkdirs) == "function" then
+    pcall(love.system.mkdirs, path)
+  end
   local mkdir = resolveMkdir()
-  if not mkdir then return end
+  if mkdir then mkdir(path) end
+end
+
+local function ensureParents(root, rel)
   local parts = {}
   for part in rel:gmatch("[^/]+") do parts[#parts + 1] = part end
   local cur = root
+  tryMkdirs(root)
   for i = 1, #parts - 1 do
     cur = cur .. SEP .. parts[i]
-    mkdir(cur)
+    tryMkdirs(cur)
   end
 end
 
@@ -529,12 +539,11 @@ end
 function CacheFs.rawCreateDirectory(rel)
   local root = rawRoot()
   if root then
-    local mkdir = resolveMkdir()
-    if not mkdir then return false end
     local cur = root
+    tryMkdirs(cur)
     for part in rel:gmatch("[^/]+") do
       cur = cur .. SEP .. part
-      mkdir(cur)
+      tryMkdirs(cur)
     end
     return true
   end

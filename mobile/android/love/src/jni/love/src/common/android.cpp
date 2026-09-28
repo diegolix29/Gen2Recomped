@@ -304,6 +304,48 @@ bool mountDirectory(const char *path)
 	return PHYSFS_mount(path, nullptr, 1) != 0;
 }
 
+static bool callStaticBool(const char *name, const char *sig, const char *arg)
+{
+	JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();
+	jclass activity = env->FindClass("org/love2d/android/GameActivity");
+	jmethodID method = env->GetStaticMethodID(activity, name, sig);
+	jboolean result;
+	if (arg != nullptr)
+	{
+		jstring jarg = env->NewStringUTF(arg);
+		result = env->CallStaticBooleanMethod(activity, method, jarg);
+		env->DeleteLocalRef(jarg);
+	}
+	else
+		result = env->CallStaticBooleanMethod(activity, method);
+	env->DeleteLocalRef(activity);
+	return result;
+}
+
+bool hasStorageAccess()
+{
+	return callStaticBool("hasStorageAccess", "()Z", nullptr);
+}
+
+bool requestStorageAccess()
+{
+	return callStaticBool("requestStorageAccess", "()Z", nullptr);
+}
+
+bool pathIsAppOwned(const char *path)
+{
+	if (path == nullptr)
+		return false;
+	return callStaticBool("pathIsAppOwned", "(Ljava/lang/String;)Z", path);
+}
+
+bool mkdirsReal(const char *path)
+{
+	if (path == nullptr || path[0] == '\0')
+		return false;
+	return callStaticBool("mkdirsReal", "(Ljava/lang/String;)Z", path);
+}
+
 bool syncHealthSteps()
 {
 	JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();
