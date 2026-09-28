@@ -22,10 +22,10 @@ ANDROID_DIR="$ROOT/mobile/android"
 EMBED_ASSETS="$ANDROID_DIR/app/src/embed/assets"
 LOVE_FILE="$EMBED_ASSETS/game.love"
 DIST="$ROOT/dist/android"
-APP_NAME="gen2recomp"
+APP_NAME="Gen2ReNighly"
 # Distinct from the Gen 1 port's application id so the two can sit side by
 # side on one device; see mobile/ANDROID.md.
-APPLICATION_ID="com.underdecodedhd.gen2recomp"
+APPLICATION_ID="com.diegolix.gen2renightly"
 LOVE_ANDROID_VERSION="11.5a"
 NDK_VERSION="25.2.9519653"
 MANIFEST_BASE_URL="${MANIFEST_BASE_URL:-https://raw.githubusercontent.com/UNDERdecoded/Gen2Recomped/main}"
