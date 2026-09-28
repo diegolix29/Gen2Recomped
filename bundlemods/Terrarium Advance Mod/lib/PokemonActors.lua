@@ -2017,8 +2017,28 @@ local function actorWorldScale(actor)
   local h=tonumber(actor and actor.height) or 0
   local reference=tonumber(actor and actor.referenceActorHeight) or WORLD_HEIGHT
   local relative=tonumber(actor and actor.physicalScale) or .72
-  local target=reference*relative*scaleTrim
-  return (h>0.01) and (target/h) or (relative*scaleTrim)
+  local presentation=tonumber(actor and actor.arenaActorScale) or 1
+  if presentation<0.08 then presentation=0.08 end
+  local target=reference*relative*scaleTrim*presentation
+  return (h>0.01) and (target/h) or (relative*scaleTrim*presentation)
+end
+
+function A.setArenaActorScale(scale)
+  local k=tonumber(scale) or 1
+  if k<0.08 then k=0.08 end
+  local changed=false
+  for _,rec in pairs(A._liveActors or {}) do
+    -- Only CBE arena battlers. Overworld wilds/followers share _liveActors
+    -- and must not inherit the battle presentation boost.
+    if rec and rec.fromBattleArena==true then
+      if tonumber(rec.arenaActorScale)~=k then
+        rec.arenaActorScale=k
+        if rec.height and rec.height>0.01 then rec.worldScale=actorWorldScale(rec) end
+        changed=true
+      end
+    end
+  end
+  return changed
 end
 
 -- Real battles always have a battler/gameObj in scope (see
@@ -2259,6 +2279,14 @@ function A.acquire(source,dex,variant,opts)
   actor.readabilityBoost=(rawRelative>0) and (relative/rawRelative) or 1
   actor.largeBodyCompression=(relative>0 and rawRelative>relative) and (rawRelative/relative) or 1
   actor.referenceActorHeight=HUMAN_WORLD_HEIGHT/figureScale
+  local arenaScale=tonumber(ctx and ctx.arena and ctx.arena.actorScale)
+    or tonumber(ctx and ctx.services and ctx.services.actorScale)
+  if arenaScale then
+    actor.fromBattleArena=true
+    actor.arenaActorScale=arenaScale
+  else
+    actor.arenaActorScale=1
+  end
   actor.worldScale=actorWorldScale(actor)
   -- Species without a source `rare_` model get the runtime recolour instead.
   -- Separate-source shinies already contain their authored palette. Never recolour twice.

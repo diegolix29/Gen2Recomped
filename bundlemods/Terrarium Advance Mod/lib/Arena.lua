@@ -51,6 +51,7 @@ local function installActorServices(ctx,actorVP,stageVP,w,h,figure,pose)
   ctx.services.vp=actorVP
   ctx.services.stageVP=stageVP
   ctx.services.figureScale=figure
+  ctx.services.actorScale=math.max(0.08,tonumber(ctx.arena and ctx.arena.actorScale) or 1)
   projVP,projW,projH=actorVP,w,h
   renderSizeService.width=w;renderSizeService.height=h
   ctx.services.renderSize=renderSizeService
@@ -3095,6 +3096,11 @@ local function updateAnchors(arena)
     arena.mid={0,0}
   end
   arena.figureScale=k
+  arena.actorScale=math.max(0.08,tonumber(activeDef and activeDef.actorScale) or 1)
+  local PokemonActors=V.PokemonActors
+  if PokemonActors and type(PokemonActors.setArenaActorScale)=="function" then
+    pcall(PokemonActors.setArenaActorScale,arena.actorScale)
+  end
 end
 
 
@@ -3175,6 +3181,7 @@ local function activateDefinition(ctx,def,selected)
     -- Keeping both explicit prevents embedded retail cameras from being
     -- accidentally double-scaled through the actor VP.
     stageScale=STAGE_SCALE,stageYaw=STAGE_YAW,
+    actorScale=math.max(0.08,tonumber(def.actorScale) or 1),
     mtBattleNumber=battle and battle.cbeMtBattleNumber or (summitVariation and summitVariation.battleNumber),
     mtBattleVariation=summitVariation,
     _cbeArenaId=activeArenaId,
