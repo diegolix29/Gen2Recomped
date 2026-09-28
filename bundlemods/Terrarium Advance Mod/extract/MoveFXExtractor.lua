@@ -479,8 +479,18 @@ local function saneRange(off,size,n)
   return type(off)=="number" and type(size)=="number" and off>=0 and size>=0 and off+size<=n
 end
 local function cacheReadLua(path)
-  local mod=M.mod;if not (mod and mod.cache and type(mod.cache.read)=="function") then return nil end
-  local ok,src=pcall(mod.cache.read,mod.cache,path); if not ok or type(src)~="string" then return nil end
+  local src
+  local Assets=V and V.GeneratedAssets
+  if Assets and type(Assets.read)=="function" then
+    src=select(1,Assets.read(path))
+  else
+    local mod=M.mod
+    if mod and mod.cache and type(mod.cache.read)=="function" then
+      local ok,raw=pcall(mod.cache.read,mod.cache,path)
+      if ok then src=raw end
+    end
+  end
+  if type(src)~="string" then return nil end
   local f=load(src,"@generated/"..path);if not f then return nil end
   local ok2,v=pcall(f);return ok2 and v or nil
 end

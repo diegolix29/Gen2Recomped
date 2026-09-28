@@ -161,6 +161,7 @@ local function openBattleMenu(game,returnId,returnParent)
   local rivalRow={keepOpen=true}
   local actorScaleRow={keepOpen=true}
   local hardCacheRow={keepOpen=true}
+  local packCacheRow={keepOpen=true}
   local cacheRow={keepOpen=true}
   local function refresh()
     environmentToggle.label="COLOSSEUM ARENAS  "..(p.arenasEnabled and "ON" or "OFF")
@@ -214,6 +215,14 @@ local function openBattleMenu(game,returnId,returnParent)
     elseif hs.teamReady then hardCacheRow.label="HARD CACHE SAVE   TEAM READY / MORE"
     elseif hs.needsRefresh then hardCacheRow.label="HARD CACHE SAVE   UPDATE CACHE"
     else hardCacheRow.label="HARD CACHE SAVE   BUILD" end
+    local pack=V.CacheArchive and V.CacheArchive.status and V.CacheArchive.status() or nil
+    if pack and pack.running then packCacheRow.label="PACK CACHE   "..tostring(pack.stage or "WORKING")
+    elseif pack and pack.pokemonPacked and pack.movefxPacked then
+      packCacheRow.label=("PACK CACHE   %s / SAVED %s"):format(tostring(pack.archiveLabel),tostring(pack.savedLabel))
+    elseif pack and (pack.pokemonPacked or pack.movefxPacked) then
+      packCacheRow.label="PACK CACHE   PARTIAL / CONTINUE"
+    elseif pack and pack.toolAvailable then packCacheRow.label="PACK CACHE   LOOSE FILES"
+    else packCacheRow.label="PACK CACHE   UNAVAILABLE" end
     local cs=CacheManager and CacheManager.inspect and CacheManager.inspect() or {sourceReady=false,sourceStatus="UNKNOWN"}
     cacheRow.label="ROM SOURCE   "..(cs.sourceReady and "READY" or tostring(cs.sourceStatus or "NOT IMPORTED"))
   end

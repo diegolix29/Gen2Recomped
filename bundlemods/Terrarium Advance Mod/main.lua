@@ -3743,6 +3743,8 @@ local function initializeColosseumIntegration()
     end
     loadColosseumModule("RuntimeMeshCache")
     loadColosseumModule("WorkBudget")
+    local CacheArchive = loadColosseumModule("CacheArchive")
+    if CacheArchive then mod.exports.cacheArchive = CacheArchive end
     loadColosseumModule("FrameWork")
     namespace.MoveFXExtractor = MoveFXExtractorRef
     loadColosseumModule("WazaPhasePolicy")
