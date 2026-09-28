@@ -61,7 +61,7 @@ name: Release
 
 on:
   push:
-    branches: [**]
+    branches: [main]
     # CI/workflow and docs-only changes don't ship anything to users, so they
     # don't earn a release. A push touching these *and* real source still
     # releases; only pushes confined entirely to these paths are skipped.
