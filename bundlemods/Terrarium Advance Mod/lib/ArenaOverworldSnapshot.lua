@@ -304,8 +304,12 @@ function M.draw(w, h, pose)
     if water then Voxel3D.draw(water, atlasFor(host)) end
     local Wind = voxel("Wind")
     local sway = (Wind and Wind.amount and Wind.amount()) or 0
-    local pitch = 0.2
-    local pull = (VoxelScene.pull and VoxelScene.pull(math.max(pitch, 0.05))) or 0
+    -- Overworld walking pulls Grass3D camera-ward so tufts overdraw feet
+    -- (the GB grass-over-sprite trick). CBE overworld-arena fights are not
+    -- that mode: Pokemon/trainers draw after this pass into the same depth
+    -- buffer, and a 6-20px pull puts every tuft nearer the lens than the
+    -- actors, so grass wins the depth test and covers the whole fight.
+    -- Plant the meadow at world depth (pull=0) and let actors sit on top.
     local grassTex = atlasFor(host)
     local Grass3D = voxel("Grass3D")
     if Grass3D and Grass3D.available and Grass3D.available() and Grass3D.texture then
@@ -314,12 +318,12 @@ function M.draw(w, h, pose)
     end
     for _, b in ipairs(ChunkMesher.grass(host) or {}) do
       local model = Mat4 and Mat4.translate and Mat4.translate(0, b.y, 0) or nil
-      Voxel3D.draw(b.mesh, grassTex, model, pull, nil, sway)
+      Voxel3D.draw(b.mesh, grassTex, model, 0, nil, sway)
     end
     for _, nb in ipairs(neighbors) do
       for _, b in ipairs(ChunkMesher.grass(nb.map) or {}) do
         local model = Mat4 and Mat4.translate and Mat4.translate(nb.ox, b.y, nb.oy) or nil
-        Voxel3D.draw(b.mesh, grassTex, model, pull, nil, sway)
+        Voxel3D.draw(b.mesh, grassTex, model, 0, nil, sway)
       end
     end
     Voxel3D.endScene()
