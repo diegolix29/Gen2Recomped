@@ -2873,6 +2873,17 @@ function RomImporter:focus(f)
     if self.tab == "mods" then self.tab = version end
     return
   end
+  -- Game-data folder pick: GameActivity wrote the absolute path into
+  -- picked_folder.txt.  The volume dialog does not steal focus, so this
+  -- also has to run from _pollPickedFiles.
+  if love.filesystem.getInfo("picked_folder.txt", "file") then
+    local path = love.filesystem.read("picked_folder.txt")
+    love.filesystem.remove("picked_folder.txt")
+    self.pickPending = nil
+    path = type(path) == "string" and path:match("^%s*(.-)%s*$") or ""
+    if path ~= "" then self:setDataDir(path) end
+    return
+  end
   -- The SAF pick failed inside GameActivity, which wrote pick_error.flag with
   -- the destination basename in it: some OEM shells (ColorOS) let a third-party
   -- archive manager win the ACTION_OPEN_DOCUMENT chooser and hand back a URI
@@ -2904,7 +2915,16 @@ function RomImporter:focus(f)
     if detail and detail ~= "" then
       text = text .. "  [" .. detail:gsub("\n", " / ") .. "]"
     end
-    if pickError:find("picked_mod", 1, true) then
+    if pickError:find("picked_folder", 1, true) then
+      local text = "Could not use that folder."
+      if detail and detail ~= "" then
+        text = text .. "  " .. detail:gsub("\n", " ")
+      end
+      self.settingsNotice = text
+      self._settingsRowCache = nil
+      self.pickPending = nil
+      return
+    elseif pickError:find("picked_mod", 1, true) then
       self.modNotice = { ok = false, text = text }
     elseif pickError:find("picked_save", 1, true) then
       local version = self.androidPendingVersion or self:_savedropTarget()
@@ -4387,10 +4407,13 @@ function RomImporter:_pollPickedFiles(dt)
     return
   end
   local found = love.filesystem.getInfo("export_done.flag", "file") ~= nil
+    or love.filesystem.getInfo("pick_error.flag", "file") ~= nil
+    or love.filesystem.getInfo("picked_folder.txt", "file") ~= nil
   if not found then
     for _, name in ipairs(love.filesystem.getDirectoryItems("")) do
       local n = name:lower()
-      if isRomFileName(n) or n == "picked_mod.zip" or n == "picked_save.sav" then
+      if isRomFileName(n) or n == "picked_mod.zip" or n == "picked_save.sav"
+          or n == "picked_folder.txt" then
         found = true
         break
       end
@@ -7962,12 +7985,19 @@ function RomImporter:_launcherSettingsRows()
     else
       add({ kind = "action", label = "CHOOSE FOLDER", value = "BROWSE",
             action = "chooseDataDir" })
+      for _, vol in ipairs(SaveData.externalDataDirs()) do
+        add({ kind = "action", label = vol.label,
+              value = "USE", action = "setDataDirVolume",
+              path = vol.path, note = vol.path })
+      end
       if SaveData.dataDirSetting() then
         add({ kind = "action", label = "USE THE DEFAULT FOLDER",
               value = "RESET", action = "clearDataDir" })
       end
-      add({ kind = "action", label = "OPEN FOLDER", value = "SHOW",
-            action = "openDataDir" })
+      if not self.android then
+        add({ kind = "action", label = "OPEN FOLDER", value = "SHOW",
+              action = "openDataDir" })
+      end
       -- ...and the way to stop having TWO homes.  Changing the folder points
       -- future writes at it and leaves what is already installed where it was;
       -- love.filesystem shows both at once, so the launcher goes on listing
@@ -8092,6 +8122,12 @@ function RomImporter:_dataDirNote()
   lines[#lines + 1] = "Changing this does not move games you have already "
     .. "imported; they stay where they are and can be re-imported or copied "
     .. "across by hand."
+  if self.android then
+    lines[#lines + 1] = "On Android, Phone storage is the same drive as the "
+      .. "app folder; pick an SD card (or Browse a writable folder on it) "
+      .. "when the app folder is out of space. Then use MOVE EXISTING DATA "
+      .. "HERE if mods are already installed."
+  end
   return table.concat(lines, "\n")
 end
 
@@ -8333,6 +8369,8 @@ function RomImporter:_settingsAction(entry)
     self.settingsNotice = Strings("Appearance back to the default")
   elseif action == "chooseDataDir" then
     self:chooseDataDir()
+  elseif action == "setDataDirVolume" then
+    self:setDataDir(entry.path)
   elseif action == "clearDataDir" then
     self:setDataDir(nil)
   elseif action == "openDataDir" then
@@ -8384,6 +8422,20 @@ function RomImporter:chooseDataDir()
     self.settingsNotice = Strings("This platform keeps games in one place")
     return
   end
+  -- Android: a native volume / tree picker writes picked_folder.txt into
+  -- the save identity (same async contract as pickFile).  hasNativePicker
+  -- is desktop-only (osascript / PowerShell / zenity) and must not gate
+  -- this path.
+  if self.android then
+    if pickFolder() then
+      self.pickPending = true
+      self.pickTimer = 0
+      self.settingsNotice = Strings("Pick where to keep games and mods.")
+    else
+      self.settingsNotice = Strings("No folder picker on this device")
+    end
+    return
+  end
   if not hasNativePicker() then
     self.settingsNotice = Strings("No folder picker on this device")
     return
@@ -8413,6 +8465,7 @@ function RomImporter:setDataDir(path)
   -- one who points at an empty folder should see the truth rather than a row
   -- of PLAY buttons for data that is no longer on the read path.
   self:_recheckReady()
+  pcall(function() self:_refreshMods() end)
   -- Reported from CacheFs, for the same reason the note above is: SaveData
   -- accepting a folder is not the same as the cache being able to live in it,
   -- and a confirmation that names a folder nothing will be written to is

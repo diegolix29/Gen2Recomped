@@ -24,8 +24,9 @@
 --
 -- Portable mode is desktop-only (Windows/Linux/macOS); on Android/iOS the
 -- source is a read-only package with no game folder to write into, so
--- SaveData.isPortable() is false there and this module falls back to the
--- ordinary love.filesystem/save-directory behaviour.
+-- SaveData.isPortable() is false there.  Android can still redirect the
+-- cache through SaveData.dataDir() (phone vs SD card / a writable tree),
+-- which this module mounts the same way as a desktop custom folder.
 
 local CacheFs = {}
 
@@ -146,8 +147,14 @@ end
 -- cache on top of the root (Red) copy and the source.
 local function mountReadable(dir, append)
   local fn = resolveMount()
-  if not fn then return false end
-  return fn(dir, "", append)
+  if fn and fn(dir, "", append) then return true end
+  -- Android: love.filesystem.mount can see app-owned external dirs even
+  -- when FFI cannot find PHYSFS_mount in liblove.so.
+  if love and love.filesystem and love.filesystem.mount then
+    local ok, mounted = pcall(love.filesystem.mount, dir, "", append ~= false)
+    if ok and mounted then return true end
+  end
+  return false
 end
 
 -- PHYSFS_unmount, resolved the same way PHYSFS_mount is.  Only
