@@ -400,4 +400,29 @@ function H.meters(dex)
   return dm and (dm / 10) or nil
 end
 
+-- Colosseum (and Stadium) battle models are scaled from H.meters via
+-- PokemonActors. The published Pokédex figure is often body LENGTH, a
+-- sitting/floating stance, or a wingspan-heavy silhouette -- not the
+-- compact height of the authored mesh. These multipliers are applied on
+-- top of the shared allometric curve so the heights file actually owns
+-- those species instead of leaving them at a generic trainer-relative size.
+--
+-- Dragonair/Onix/Ekans already have length compensation in PokemonActors;
+-- this table is the remainder, including the species that were still
+-- reading as giants in Colosseum A/B (Dratini, Abra, Wingull).
+H.BATTLE_BODY_FACTOR = {
+  [63] = 0.68,  -- abra: 0.9 m is standing; Colosseum pose is seated/floating
+  [147] = 0.48, -- dratini: 1.8 m is body length (Dragonair already compensated)
+  [278] = 0.78, -- wingull: 0.6 m plus spread-wing AABB reads oversized
+  [336] = 0.50, -- seviper: 3.5 m is length
+  [350] = 0.46, -- milotic: 6.2 m is length
+  [367] = 0.55, -- huntail
+  [368] = 0.55, -- gorebyss
+}
+
+function H.battleBodyFactor(dex)
+  local factor = H.BATTLE_BODY_FACTOR[tonumber(dex)]
+  return (factor and factor > 0) and factor or 1
+end
+
 return H

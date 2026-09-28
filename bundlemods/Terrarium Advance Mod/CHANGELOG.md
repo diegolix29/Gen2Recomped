@@ -25,6 +25,13 @@ Tags and packages:
 
 ## Unreleased
 
+### Colosseum model scale
+
+- **ColosseumMon / Colosseum A/B now size from `PokemonHeights` by dex.** Gen 3
+  (Wingull) no longer falls through to a generic trainer-relative size. Dratini’s
+  1.8 m length, Abra’s sitting pose, and Wingull’s spread-wing mesh get
+  `BATTLE_BODY_FACTOR` corrections in that heights file.
+
 ### Roamer overworld art
 
 - **Gen-2-style walk sheets are optional and not redistributed.** Same policy

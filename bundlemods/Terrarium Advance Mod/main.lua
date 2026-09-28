@@ -3215,6 +3215,7 @@ local function installOverworldStadium()
     mod.log:warn("PokemonHeights not loaded: %s", tostring(heightsErr))
     return false
   end
+  V.PokemonHeights = PokemonHeights
 
   local PokemonLocomotion, locoErr = loadLocal("lib/PokemonLocomotion.lua", V)
   if not PokemonLocomotion then
@@ -3726,9 +3727,17 @@ local function initializeColosseumIntegration()
     namespace = {
       mod = mod, FALLBACK = nil, engineRequire = require, OverworldBattle = OverworldBattle,
       Voxel3D = Voxel3D,
+      PokemonHeights = V.PokemonHeights,
       voxelRequire = function(name) return V.require(name) end,
       PayloadPreserver = colosseumPackage("extract/PayloadPreserver.lua"), GeneratedCacheReset = GeneratedCacheReset,
     }
+    if not namespace.PokemonHeights then
+      local okHeights, heightsMod = pcall(colosseumPackage, "lib/PokemonHeights.lua")
+      if okHeights then
+        namespace.PokemonHeights = heightsMod
+        V.PokemonHeights = heightsMod
+      end
+    end
     local function loadColosseumModule(name, arg)
       local value = colosseumModule(name, arg == nil and namespace or arg)
       if value then namespace[name] = value end
