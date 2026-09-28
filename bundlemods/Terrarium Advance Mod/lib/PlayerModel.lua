@@ -426,6 +426,11 @@ function PlayerModel.loadColosseumCharacter(id)
   if not id or id == "" then return false, "no character id" end
 
   local cached = characterCache[id]
+  if cached and cached.walkVersion ~= CharacterWalkCycle.version then
+    if cached.native then pcall(CharacterNativeAnim.release, cached.native) end
+    characterCache[id] = nil
+    cached = nil
+  end
   if cached then
     characterGroups = cached.groups
     characterWalkRig = cached.walkRig
@@ -519,11 +524,21 @@ function PlayerModel.loadColosseumCharacter(id)
   local sourceHeight = b and ((tonumber(b.max and b.max[2]) or 0) - (tonumber(b.min and b.min[2]) or 0)) or 0
   local scale = (sourceHeight > 0) and (CHARACTER_HEIGHT / sourceHeight) or 1.0
 
-  -- Build the hip/knee/shoulder vertex-bucket rig once here (see
-  -- lib/CharacterWalkCycle.lua) rather than every frame -- it's the same
-  -- per-character shoulder/width landmarks TrainerRig.profile already
-  -- computes for the throw-anchor system, just sorted into buckets.
-  local walkRigOk, walkRig = pcall(CharacterWalkCycle.build, id, groups, b)
+  -- Bind walk overlay verts from the trainer rest skeleton so only
+  -- arms/hands and legs/feet stride on top of idle (victory for Wes).
+  -- Prefer model_cache.lua joints; native_v1/index.lua is the same skeleton
+  -- per clip frame, but the whole index is large, so only open it if the
+  -- rest-pose table is missing.
+  local joints = cache.jointPositions
+  if type(joints) ~= "table" or #joints == 0 then
+    local nativeIndex = GeneratedAssets.readLua(("cache/trainers/%s/native_v1/index.lua"):format(id))
+    local roles = nativeIndex and nativeIndex.roles
+    local role = roles and (roles.idle or roles.victory)
+    local frames = role and role.joints
+    if type(frames) == "table" then joints = frames[1] end
+  end
+  local skeleton = { jointPositions = joints, jointParents = cache.jointParents }
+  local walkRigOk, walkRig = pcall(CharacterWalkCycle.build, id, groups, b, skeleton)
   if not walkRigOk then walkRig = nil end
 
   -- Native idle (or Wes victory) clip from the extracted cache. Optional: a
@@ -543,7 +558,7 @@ function PlayerModel.loadColosseumCharacter(id)
     print("[PlayerModel] no native animations for '" .. tostring(id) .. "': " .. tostring(nativeErr))
   end
 
-  characterCache[id] = { groups = groups, scale = scale, walkRig = walkRig, native = native }
+  characterCache[id] = { groups = groups, scale = scale, walkRig = walkRig, native = native, walkVersion = CharacterWalkCycle.version }
   characterGroups = groups
   characterWalkRig = walkRig
   characterNative = native

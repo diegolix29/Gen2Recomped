@@ -23,28 +23,22 @@
 -- Native locomotion tracks were tried: they dropped feet and corrupted other
 -- clips' lower body, so they stay unextracted. Overworld walking instead
 -- overlays this gait on the live idle/victory pose PlayerModel samples each
--- frame (see CharacterNativeAnim.sample / copyPositions). Short of going back
--- into extract/TrainerExtractor.lua and HSD.lua to pull a real joint hierarchy
--- + skin weights out of the source discs (a much bigger job, and Colosseum's
--- battle actors may not even have authored locomotion joints to extract), the
--- animation surface this module has is those posed vertex positions. So instead
--- of rotating bones, this rotates BUCKETS of vertices -- picked by height and
--- left/right side, reusing the same per-character shoulder-height/width
--- landmarks TrainerRig.profile already exposes for the throw-anchor system
--- -- as a coarse two-joint (hip+knee) leg and one-joint (shoulder) arm
--- swing. It's a heuristic "pseudo-skin", not a real one: a vertex sitting
--- exactly on the seam (inner thigh, armpit, groin) has no blend weight to
--- soften it, only a smoothed-but-still-approximate side/height bucket, so
--- up close it can stretch a little rather than deform the way a properly
--- skinned mesh would. At Terrarium's overworld scale/camera that reads
--- fine in testing; if a particular character's proportions make it look
--- wrong, retune HIP_FRACTION_OF_SHOULDER/KNEE_FRACTION_OF_HIP/SEAM_SOFTEN
--- below rather than the FK math itself.
+-- frame (see CharacterNativeAnim.sample / copyPositions), so Wes keeps his
+-- victory body language while only arms/hands and legs/feet stride. Vertex
+-- membership comes from the rest HSD skeleton in model_cache.lua
+-- (jointPositions + jointParents) -- the same joint coordinates each native_v1
+-- index.lua clip stores per frame, which is why those constructed clips do not
+-- pull hair, back, torso, or hip. Height/side buckets are only a fallback
+-- when that skeleton is missing. The overlay itself is still a coarse
+-- two-joint (hip+knee) leg and one-joint (shoulder) arm swing, not a real
+-- skin: retune HIP_FRACTION_OF_SHOULDER/KNEE_FRACTION_OF_HIP/SEAM_SOFTEN
+-- or LOCK_BIAS below rather than the FK math if a character's proportions
+-- look off.
 
 local V = ...
 local TrainerRig = V.require("TrainerRig")
 
-local M = { version = 1 }
+local M = { version = 3 }
 
 -- ------- tuning constants (generic human-ish proportions + gait feel)
 
@@ -64,11 +58,31 @@ local KNEE_FRACTION_OF_HIP = 0.50
 -- smoothly (see smooth01 below) instead of snapping straight to full
 -- weight, which is what keeps the crotch and spine from visibly tearing
 -- when the two legs/arms swing apart.
-local SEAM_SOFTEN = 0.16
+local SEAM_SOFTEN = 0.22
 
--- Lateral distance (as a fraction of half-width) above which a vertex in
--- the hip-to-shoulder height band counts as "arm" rather than "torso".
-local ARM_LATERAL_CUTOFF = 0.35
+-- Gait half-width fractions. Spine/ribs stay idle; feet sit closer to the
+-- centerline than sleeves, so they use a much smaller floor than arms.
+local ARM_LATERAL_CUTOFF = 0.30
+local LEG_LATERAL_CUTOFF = 0.12
+local FOOT_LATERAL_CUTOFF = 0.03
+
+-- Height (as a fraction of the hip) above which a "leg" vertex is treated
+-- as pelvis/hip mesh and left on the idle pose. Long coats and hanging
+-- hair that dip into the thigh band are rejected separately as "back".
+local HIP_LOCK_FRACTION = 0.86
+
+-- Prefer a torso/head/hip joint over a limb joint unless the limb is
+-- clearly closer. Only used to pick thigh vs shin vs arm, not to drop a
+-- limb the geometry already accepted (that froze the trailing leg/arm).
+local LOCK_BIAS = 1.18
+
+-- Stop walking up a foot's parent chain once the joint is this high
+-- (fraction of model height). Keeps the pelvis/spine out of the leg set.
+local LEG_CHAIN_MAX_NY = 0.46
+
+-- Stop walking up a hand's parent chain once the joint is this close to
+-- the centerline (fraction of model height). Keeps clavicle/chest idle.
+local ARM_CHAIN_MIN_LAT = 0.11
 
 -- Which local axis is "forward" for a step (the other horizontal axis is
 -- left the vertex's untouched "side" coordinate). TrainerExtractor centers
@@ -84,20 +98,20 @@ local ARM_LATERAL_CUTOFF = 0.35
 local FORWARD_INDEX = 3
 local SIDE_INDEX = (FORWARD_INDEX == 3) and 1 or 3
 
--- Swing amplitudes, in radians. Same idea as red_3d_player's default GAIT
--- curves (main.lua's boneDelta fallback): opposite legs 180 degrees out of
--- phase, the arm on a given side counter-swings that side's own leg, and
--- the knee only really folds on the trailing (recovering) leg.
-local HIP_SWING = 0.55
-local KNEE_BEND = 0.85
-local ARM_SWING = 0.42
+-- Swing amplitudes, in radians. Keep these modest -- the overlay sits on
+-- an already-posed idle/victory clip, so a full red_3d_player stride reads
+-- as the legs ripping around. Smoothstep weights on the seam also keep
+-- the motion from snapping at the hip/shoulder.
+local HIP_SWING = 0.28
+local KNEE_BEND = 0.38
+local ARM_SWING = 0.26
 local KNEE_LAG = 0.12 -- fraction of a full stride the knee-bend peak lags the hip
 
 -- A small torso bob riding on top of the leg motion, the way a real walk
 -- bobs down-and-up once per FOOTFALL (twice per full left/right cycle) --
 -- see red_3d_player's own `bounce=0.5-0.5*math.cos(phase*2)` for the same
 -- idea applied to its bone rig.
-local BOB_AMOUNT = 0.05
+local BOB_AMOUNT = 0.025
 
 -- ------- jump pose tuning (see M.applyJump below)
 --
@@ -133,6 +147,319 @@ local function rotate2(up, fwd, pivotUp, pivotFwd, angle)
   return pivotUp + du * c - df * s, pivotFwd + du * s + df * c
 end
 
+local function dist2(ax, ay, az, p)
+  local dx = ax - (p[1] or 0)
+  local dy = ay - (p[2] or 0)
+  local dz = az - (p[3] or 0)
+  return dx * dx + dy * dy + dz * dz
+end
+
+-- Which way the rest pose faces, from the feet vs the body center. Coat
+-- tails and hanging hair sit on the opposite side of that axis and must
+-- not inherit the leg swing just because they overlap the thigh height band.
+local function facingSign(groups, bounds, minY, height, centerFwd)
+  local footSum, footN = 0, 0
+  local limit = minY + height * 0.10
+  for _, g in ipairs(groups or {}) do
+    local base = g.baseVertices
+    if base then
+      for i = 1, #base do
+        local v = base[i]
+        if (v[2] or 0) <= limit then
+          footSum = footSum + (v[FORWARD_INDEX] or 0)
+          footN = footN + 1
+        end
+      end
+    end
+  end
+  if footN == 0 then return 1, centerFwd end
+  local footFwd = footSum / footN
+  local sign = (footFwd >= centerFwd) and 1 or -1
+  return sign, footFwd
+end
+
+-- Label rest-pose HSD joints (model_cache.jointPositions / native_v1 index
+-- roles[role].joints[1]) as arm, thigh, shin, or lock. Parent-chain walk
+-- from the lowest joint per side (foot) and the most lateral upper-body
+-- joint per side (hand) so pelvis, spine, chest, neck, and hair joints
+-- stay locked. Constructed native clips already move the right vertices;
+-- this is only a membership mask for the procedural overlay.
+local function classifyJoints(positions, parents, bounds, minY, height, centerX)
+  local n = type(positions) == "table" and #positions or 0
+  if n < 4 then return nil end
+  parents = type(parents) == "table" and parents or {}
+  local children = {}
+  for i = 1, n do children[i] = {} end
+  for i = 1, n do
+    local p = math.floor(tonumber(parents[i]) or 0)
+    if p >= 1 and p <= n then
+      children[p][#children[p] + 1] = i
+    end
+  end
+
+  local function ny(i)
+    local p = positions[i]
+    return (((p and p[2]) or 0) - minY) / height
+  end
+  local function lat(i)
+    local p = positions[i]
+    return math.abs(((p and p[1]) or 0) - centerX) / height
+  end
+  local function sideOf(i)
+    local p = positions[i]
+    return (((p and p[1]) or 0) >= centerX) and 1 or -1
+  end
+
+  local foot, footY = { [-1] = nil, [1] = nil }, { [-1] = math.huge, [1] = math.huge }
+  local hand, handScore = { [-1] = nil, [1] = nil }, { [-1] = -1, [1] = -1 }
+  for i = 1, n do
+    if type(positions[i]) == "table" then
+      local s = sideOf(i)
+      local y = positions[i][2] or 0
+      if y < footY[s] then footY[s] = y; foot[s] = i end
+      local h = ny(i)
+      if h > 0.50 and h < 0.94 then
+        local sc = lat(i) * 2.2 + (1 - math.abs(h - 0.72)) * 0.25
+        if sc > handScore[s] then handScore[s] = sc; hand[s] = i end
+      end
+    end
+  end
+
+  local kind = {}
+  for i = 1, n do kind[i] = "lock" end
+  local parentCount = 0
+  for i = 1, n do
+    if (tonumber(parents[i]) or 0) > 0 then parentCount = parentCount + 1 end
+  end
+
+  -- Mark only the parent chain first. Never tag the root/pelvis/spine:
+  -- those sit on the centerline (or branch to both legs AND the torso).
+  -- Flooding from a ground-level root painted the whole actor as a leg,
+  -- so the idle torso/head split into opposite gait phases.
+  local kneeNy = LEG_CHAIN_MAX_NY * KNEE_FRACTION_OF_HIP
+  local function isSpine(j)
+    -- Centerline only. A thigh JOBJ with extra helper children is still a
+    -- leg -- treating "3 children" as spine froze one side's chain.
+    return lat(j) < 0.07
+  end
+  for _, s in ipairs({ -1, 1 }) do
+    local j, guard = foot[s], 0
+    while j and j >= 1 and j <= n and guard < 64 do
+      guard = guard + 1
+      if ny(j) >= LEG_CHAIN_MAX_NY or isSpine(j) then break end
+      kind[j] = (ny(j) < kneeNy) and "shin" or "thigh"
+      j = math.floor(tonumber(parents[j]) or 0)
+    end
+    j, guard = hand[s], 0
+    while j and j >= 1 and j <= n and guard < 64 do
+      guard = guard + 1
+      if lat(j) < ARM_CHAIN_MIN_LAT or ny(j) < 0.44 or isSpine(j) then break end
+      kind[j] = "arm"
+      j = math.floor(tonumber(parents[j]) or 0)
+    end
+  end
+
+  local function flood(j, label, guard)
+    local kids = children[j]
+    if not kids or guard > 48 then return end
+    for k = 1, #kids do
+      local c = kids[k]
+      if kind[c] == "lock" and not isSpine(c) then
+        kind[c] = label
+        flood(c, label, guard + 1)
+      end
+    end
+  end
+  for i = 1, n do
+    if kind[i] ~= "lock" then flood(i, kind[i], 0) end
+  end
+
+  -- Caches without jointParents: classify each joint by rest pose alone.
+  if parentCount < n * 0.5 then
+    for i = 1, n do
+      if type(positions[i]) == "table" then
+        local h, l = ny(i), lat(i)
+        if h < LEG_CHAIN_MAX_NY and l > 0.05 then
+          kind[i] = (h < kneeNy) and "shin" or "thigh"
+        elseif h > 0.50 and h < 0.94 and l > ARM_CHAIN_MIN_LAT then
+          kind[i] = "arm"
+        else
+          kind[i] = "lock"
+        end
+      end
+    end
+  end
+
+  local limb, lock = {}, {}
+  local hipSum, hipN, kneeSum, kneeN, shSum, shN = 0, 0, 0, 0, 0, 0
+  for i = 1, n do
+    local p = positions[i]
+    if type(p) == "table" then
+      local row = { p = p, k = kind[i], side = sideOf(i) }
+      if kind[i] == "lock" then
+        lock[#lock + 1] = row
+      else
+        limb[#limb + 1] = row
+        local y = p[2] or 0
+        if kind[i] == "thigh" then hipSum = hipSum + y; hipN = hipN + 1
+        elseif kind[i] == "shin" then kneeSum = kneeSum + y; kneeN = kneeN + 1
+        else shSum = shSum + y; shN = shN + 1 end
+      end
+    end
+  end
+  if #limb == 0 then return nil end
+  return {
+    limb = limb, lock = lock,
+    hipY = hipN > 0 and (hipSum / hipN) or nil,
+    kneeY = kneeN > 0 and (kneeSum / kneeN) or nil,
+    shoulderY = shN > 0 and (shSum / shN) or nil,
+  }
+end
+
+local function bindNearest(vx, vy, vz, classified)
+  local bestLimb, bestLimbD, bestLockD = nil, math.huge, math.huge
+  local limb, lock = classified.limb, classified.lock
+  for i = 1, #limb do
+    local d = dist2(vx, vy, vz, limb[i].p)
+    if d < bestLimbD then bestLimbD = d; bestLimb = limb[i] end
+  end
+  for i = 1, #lock do
+    local d = dist2(vx, vy, vz, lock[i].p)
+    if d < bestLockD then bestLockD = d end
+  end
+  if not bestLimb then return "torso", 0, 1 end
+  -- Hair, back, and hip verts sit closer to lock joints than to a wrist
+  -- or ankle. Bias lock so a tie (armpit, inner thigh, scalp) stays idle.
+  if bestLockD <= bestLimbD * LOCK_BIAS then
+    return "torso", 0, bestLimb.side
+  end
+  local ratio = math.sqrt(bestLockD) / (math.sqrt(bestLimbD) + 1e-8)
+  local weight = smooth01((ratio - LOCK_BIAS) / 0.70)
+  return bestLimb.k, weight, bestLimb.side
+end
+
+-- Height/side membership. Spine/head/coat stay idle; both shoes and both
+-- sleeves must still qualify even when the rest pose is a bit off-center
+-- (tucked arm, trailing leg, inner sole).
+local function geometricBucket(up, sideCoord, fwd, hipY, kneeY, shoulderY, minY, height, centerSide, halfWidth, softenSide, faceSign, centerFwd)
+  local side = (sideCoord >= centerSide) and 1 or -1
+  local lateralAbs = math.abs(sideCoord - centerSide)
+  local sideFrac = lateralAbs / halfWidth
+  local seam = smooth01(lateralAbs / math.max(softenSide, 0.0001))
+  local behind = ((fwd - centerFwd) * faceSign) < -(halfWidth * 0.12)
+  local footTop = minY + height * 0.16
+
+  -- Head, neck, scalp: never a limb. Rest-pose hands sit lower and wider.
+  if up >= shoulderY * 0.90 then
+    return "torso", 0, side
+  end
+  -- Coat / hair / backpack on the BACK OF THE TORSO only -- a trailing
+  -- stance leg is also "behind" and must still walk.
+  if behind and up >= hipY then
+    return "torso", 0, side
+  end
+  -- Shoes: keep the inner sole. One leftover sole vert was the old
+  -- LEG_LATERAL_CUTOFF rejecting the medial bottom of the foot.
+  if up <= footTop or up < kneeY * 0.42 then
+    if sideFrac < FOOT_LATERAL_CUTOFF then
+      return "torso", 0, side
+    end
+    return "shin", math.max(0.85, seam), side
+  end
+  -- Spine / chest / belly -- not the legs under it.
+  if up >= hipY and sideFrac < LEG_LATERAL_CUTOFF then
+    return "torso", 0, side
+  end
+  if up < hipY then
+    if up >= hipY * HIP_LOCK_FRACTION and sideFrac < 0.32 then
+      return "torso", 0, side
+    end
+    if sideFrac < LEG_LATERAL_CUTOFF then
+      return "torso", 0, side
+    end
+    local w = smooth01((sideFrac - LEG_LATERAL_CUTOFF) / 0.20)
+    return (up < kneeY) and "shin" or "thigh", math.min(1, math.max(seam, w)), side
+  end
+  -- Arms: out from the ribs, between hip and shoulder. A tucked rest pose
+  -- (Wes's left) is still an arm; 0.30 of half-width is the sleeve, not
+  -- the far reach of the throwing hand.
+  if up > hipY * 1.02 and up <= shoulderY * 1.06 and sideFrac > ARM_LATERAL_CUTOFF then
+    local w = smooth01((sideFrac - ARM_LATERAL_CUTOFF) / 0.22)
+    return "arm", math.max(w, 0.45), side
+  end
+  return "torso", 0, side
+end
+
+-- Any sole vert that sat just inside the cutoff still inherits the nearest
+-- swinging shoe instead of stretching off the mesh.
+local function stitchFeet(groups, rig, kneeY, minY, height, halfWidth)
+  local radius = halfWidth * 0.38
+  local r2 = radius * radius
+  local footTop = minY + height * 0.18
+  for gi, g in ipairs(groups or {}) do
+    local base = g.baseVertices
+    local buckets = rig.groups[gi]
+    if base and buckets then
+      local seeds = {}
+      for vi = 1, #base do
+        local b = buckets[vi]
+        if b and (b.bucket == "shin" or b.bucket == "thigh") and (b.weight or 0) > 0.4 then
+          local v = base[vi]
+          if (v[2] or 0) <= footTop then
+            seeds[#seeds + 1] = { v[1] or 0, v[2] or 0, v[3] or 0, b.side, b.bucket }
+          end
+        end
+      end
+      if #seeds > 0 then
+        for vi = 1, #base do
+          local b = buckets[vi]
+          local v = base[vi]
+          local up = v[2] or 0
+          if b and (not b.weight or b.weight <= 0 or b.bucket == "torso") and up <= footTop then
+            local bx, by, bz = v[1] or 0, up, v[3] or 0
+            local best, bestD = nil, r2
+            for s = 1, #seeds do
+              local p = seeds[s]
+              local dx, dy, dz = bx - p[1], by - p[2], bz - p[3]
+              local d = dx * dx + dy * dy + dz * dz
+              if d < bestD then bestD = d; best = p end
+            end
+            if best then
+              buckets[vi] = { bucket = "shin", side = best[4], weight = 1 }
+            end
+          end
+        end
+      end
+    end
+  end
+end
+
+-- Split left/right from the actual shoes so a slightly off-center rest
+-- pose does not dump one whole leg on the spine side of centerX.
+local function footSplitX(groups, minY, height, fallback)
+  local acc = { [-1] = 0, [1] = 0 }
+  local n = { [-1] = 0, [1] = 0 }
+  local limit = minY + height * 0.12
+  for _, g in ipairs(groups or {}) do
+    local base = g.baseVertices
+    if base then
+      for i = 1, #base do
+        local v = base[i]
+        if (v[2] or 0) <= limit then
+          local x = v[SIDE_INDEX] or 0
+          local s = (x >= fallback) and 1 or -1
+          acc[s] = acc[s] + x
+          n[s] = n[s] + 1
+        end
+      end
+    end
+  end
+  if n[-1] > 0 and n[1] > 0 then
+    return 0.5 * (acc[-1] / n[-1] + acc[1] / n[1])
+  end
+  return fallback
+end
+
 -- Build (once, when a character model loads -- see PlayerModel.loadColosseumCharacter)
 -- the per-vertex bucket assignment for one character's mesh groups: which
 -- limb each vertex belongs to, which side, and how much weight it gets.
@@ -141,19 +468,39 @@ end
 -- `groups` is PlayerModel's array of {mesh=, texture=, baseVertices=, baseUVs=}.
 -- `bounds` is the trainer cache's own cache.bounds (min/max/center), the
 -- same table TrainerRig.profile already reads for the throw-anchor system.
-function M.build(id, groups, bounds)
+-- `skeleton`, when given, is { jointPositions=, jointParents= } from
+-- model_cache.lua (rest pose). native_v1/index.lua stores the same joint
+-- coordinates per clip frame under roles[role].joints -- those authored
+-- tracks already skin arms/legs correctly; we only use rest joints here
+-- so the walk overlay does not swing torso, hip, back, or hair verts.
+function M.build(id, groups, bounds, skeleton)
   local prof = TrainerRig.profile(id, bounds)
   local minY = prof.minY
   local hipY = minY + prof.height * prof.shoulder * HIP_FRACTION_OF_SHOULDER
   local shoulderY = minY + prof.height * prof.shoulder
   local kneeY = minY + (hipY - minY) * KNEE_FRACTION_OF_HIP
   local centerSide = (SIDE_INDEX == 1) and prof.centerX or prof.centerZ
+  local centerFwd = (FORWARD_INDEX == 3) and prof.centerZ or prof.centerX
+  if SIDE_INDEX == 1 then
+    centerSide = footSplitX(groups, minY, prof.height, centerSide)
+  end
   local halfWidth = math.max(prof.halfWidth, 0.001)
   local softenSide = halfWidth * SEAM_SOFTEN
+  local faceSign = facingSign(groups, bounds, minY, prof.height, centerFwd)
 
+  local classified = nil
+  local joints = skeleton and skeleton.jointPositions
+  if (not joints or #joints == 0) and skeleton and skeleton.joints then
+    joints = skeleton.joints
+  end
+  if type(joints) == "table" and #joints > 0 then
+    classified = classifyJoints(joints, skeleton.jointParents, bounds, minY, prof.height, centerSide)
+  end
+  -- Pivots stay on the authored shoulder/hip profile. Joint averages were
+  -- pulled toward the spine when a root joint got tagged as a leg.
   local rig = {
     hipY = hipY, kneeY = kneeY, shoulderY = shoulderY,
-    centerSide = centerSide, groups = {},
+    centerSide = centerSide, version = M.version, groups = {},
   }
 
   for gi, g in ipairs(groups) do
@@ -161,31 +508,34 @@ function M.build(id, groups, bounds)
     local base = g.baseVertices
     if base then
       for vi, v in ipairs(base) do
-        local up = v[2]
-        local sideCoord = v[SIDE_INDEX]
-        local side = (sideCoord >= centerSide) and 1 or -1
-        local lateral = smooth01(math.abs(sideCoord - centerSide) / math.max(softenSide, 0.0001))
-
-        local bucket, weight
-        if up < hipY then
-          bucket = (up < kneeY) and "shin" or "thigh"
-          weight = lateral
-        elseif up <= shoulderY * 1.02 and lateral > ARM_LATERAL_CUTOFF then
-          -- Between hip and shoulder height AND clearly off to one side:
-          -- an arm, not the chest/spine (which sits in this same height
-          -- band but close to the centerline).
-          bucket = "arm"
-          weight = lateral
-        else
-          bucket = "torso"
-          weight = 0
+        local up = v[2] or 0
+        local vx, vz = v[1] or 0, v[3] or 0
+        local sideCoord = v[SIDE_INDEX] or 0
+        local fwd = v[FORWARD_INDEX] or 0
+        local bucket, weight, side = geometricBucket(
+          up, sideCoord, fwd, hipY, kneeY, shoulderY, minY, prof.height,
+          centerSide, halfWidth, softenSide, faceSign, centerFwd
+        )
+        -- Joints may refine thigh/shin/arm, but must not freeze a limb
+        -- the rest-pose silhouette already accepted.
+        if classified and weight > 0 then
+          local jBucket, jWeight, jSide = bindNearest(vx, up, vz, classified)
+          if jBucket == "thigh" or jBucket == "shin" or jBucket == "arm" then
+            if (jBucket == "arm") == (bucket == "arm") then
+              bucket = jBucket
+            end
+            if jSide then side = jSide end
+            if jWeight and jWeight > 0 then
+              weight = math.max(weight, jWeight)
+            end
+          end
         end
-
-        buckets[vi] = { bucket = bucket, side = side, weight = weight }
+        buckets[vi] = { bucket = bucket, side = side, weight = weight or 0 }
       end
     end
     rig.groups[gi] = buckets
   end
+  stitchFeet(groups, rig, kneeY, minY, prof.height, halfWidth)
 
   return rig
 end
