@@ -1989,16 +1989,14 @@ local LARGE_SPECIES_CEILING={
 }
 
 -- Species whose canonical Pokédex "height" is visually much closer to body
--- LENGTH than standing height. The global curve still applies first; these
--- factors convert the published measurement into the compact/coiled battle
--- silhouette actually authored in Colosseum. This is not an Ekans-only hack:
--- the complete Gen-I/II elongated-body family is handled by the same rule.
+-- LENGTH than standing height. Used ONLY if PokemonHeights.lua failed to
+-- load -- the live path is H.battleBodyFactor (shape rules for every dex).
 local LENGTH_MEASURED_FACTOR={
   [23]=.50,  -- Ekans
   [24]=.54,  -- Arbok
   [95]=.42,  -- Onix
   [130]=.47, -- Gyarados
-  [147]=.48, -- Dratini (Pokédex 1.8 m is length; see also PokemonHeights)
+  [147]=.48, -- Dratini
   [148]=.52, -- Dragonair
   [162]=.62, -- Furret
   [206]=.60, -- Dunsparce
@@ -2038,12 +2036,10 @@ local function normalizedPresentationRelative(meters,dex)
   raw=math.max(.04,raw)
   local curved=raw^SCALE_CURVE_EXP
   local id=tonumber(dex)
-  -- LENGTH_MEASURED_FACTOR and PokemonHeights.BATTLE_BODY_FACTOR must not
-  -- both fire on the same dex or Dratini would be squared-down. Prefer the
-  -- heights-file factor when it exists; otherwise the local length table.
-  local fromHeights=heightsBodyFactor(id)
-  local fromLength=LENGTH_MEASURED_FACTOR[id] or 1
-  local body=(fromHeights~=1) and fromHeights or fromLength
+  -- PokemonHeights.battleBodyFactor is the global rule (shape + rare
+  -- exceptions). The local LENGTH table is only a loader fallback.
+  local body=heightsBodyFactor(id)
+  if not (body and body~=1) then body=LENGTH_MEASURED_FACTOR[id] or 1 end
   return curved*body,raw,curved,body
 end
 local scaleTrim=1.0

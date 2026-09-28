@@ -27,10 +27,10 @@ Tags and packages:
 
 ### Colosseum model scale
 
-- **ColosseumMon / Colosseum A/B now size from `PokemonHeights` by dex.** Gen 3
-  (Wingull) no longer falls through to a generic trainer-relative size. Dratini’s
-  1.8 m length, Abra’s sitting pose, and Wingull’s spread-wing mesh get
-  `BATTLE_BODY_FACTOR` corrections in that heights file.
+- **Colosseum model scale is global, not a three-species patch.** Every
+  ColosseumMon / Colosseum A/B actor sizes from `PokemonHeights` metres by
+  dex, then a PokeAPI body-shape rule (long squiggles, winged meshes,
+  tentacles, giant fish). Abra and Furret stay as the only named exceptions.
 
 ### Roamer overworld art
 
