@@ -887,7 +887,8 @@ local function prepareOneColosseum(p, dex, dt)
   -- Gen4View, not FirstPerson; keep world compass there.
   local okCam, Cam = pcall(V.require, "Gen4ActorCam")
   if okCam and Cam and Cam.active and Cam.active() then
-    fx, fz = Cam.facingVector(renderFacing)
+    local camFx, camFz = Cam.facingVector(renderFacing)
+    fx, fz = -camFx, -camFz
   else
     local okFirstPerson, FirstPerson = pcall(V.require, "FirstPerson")
     if okFirstPerson and FirstPerson then
@@ -989,7 +990,8 @@ local function prepareOne(p, dex, dt)
   local fx, fz = facingVector(renderFacing)
 
   if okCam and Cam and Cam.active and Cam.active() then
-    fx, fz = Cam.facingVector(renderFacing)
+    local camFx, camFz = Cam.facingVector(renderFacing)
+    fx, fz = -camFx, -camFz
   else
     local okFirstPerson, FirstPerson = pcall(V.require, "FirstPerson")
     if okFirstPerson and FirstPerson then

@@ -833,10 +833,10 @@ end
 local function yawForDraw(px, py, facing, kind, b, FirstPerson)
   local Cam = V.require("Gen4ActorCam")
   if Cam and Cam.active() then
-    return Cam.worldYaw(facing)
+    return -Cam.worldYaw(facing)
   end
   if not (b and b > 0 and FirstPerson) then
-    return (Cam and Cam.worldYaw(facing)) or 0
+    return (Cam and -Cam.worldYaw(facing)) or 0
   end
   local cameraYaw = FirstPerson.cardYaw(px + 8, py + 8)
   facing = type(facing) == "string" and string.lower(facing) or facing
