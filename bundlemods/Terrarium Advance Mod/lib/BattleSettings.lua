@@ -96,16 +96,10 @@ local function prefs(game)
   if not validArena[p.arena] then p.arena="auto" end
   return p
 end
-local function isOptionsLabel(label)
-  local s=tostring(label or ""):upper()
-  return s=="OPTION" or s=="OPTIONS"
-end
 local function startMenuId()
   if Compat and type(Compat.current)=="function" then
     local ok,generation=pcall(Compat.current)
-    generation=ok and tonumber(generation) or nil
-    if generation==2 then return "Gen2StartMenu" end
-    if generation==3 or generation==4 then return "StartMenu" end
+    if ok and tonumber(generation)==2 then return "Gen2StartMenu" end
   end
   return GEN1_START
 end
@@ -609,6 +603,22 @@ local function openBattleMenu(game,returnId,returnParent)
   game.stack:push(menu)
 end
 
+-- The START-menu row, built in ONE place so every generation opens the same
+-- screen: the Game Boy hook below inserts it, and Gen 4's start menu (which never
+-- runs ui.start_menu.items) gets it from lib/Gen4StartMenuHook.lua.
+function S.startMenuEntry(game)
+  return {label="TERRARIUM BATTLES",__terrariumBattleEntry=true,onSelect=function()
+      -- Gen 1's generic StartMenu pops before invoking onSelect. Gold's
+      -- injected-row arm intentionally does not. Keep a live Gold parent on
+      -- the stack; a synthetic replacement lacks onChoose/onClose and is dead.
+      local parent=game and game.stack and type(game.stack.top)=="function" and game.stack:top() or nil
+      local returnId=(parent and (parent.screenId==GEN1_START or parent.screenId=="Gen2StartMenu"))
+        and parent.screenId or startMenuId()
+      local returnParent=(parent and parent.screenId==returnId) and parent or nil
+      openBattleMenu(game,returnId,returnParent)
+  end}
+end
+
 function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trainerRoster,compat,audioFidelity)
   if installed then return true end
   modRef,Trainer,Music,ArenaCatalog,BattleMenuUI,CacheManager,TrainerRoster,Compat,AudioFidelity=mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trainerRoster,compat,audioFidelity
@@ -623,18 +633,9 @@ function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trai
     end
     local at=#out+1
     for i,entry in ipairs(out) do
-      if isOptionsLabel(entry.label) then at=i;break end
+      local u=tostring(entry.label or ""):upper(); if u=="OPTION" or u=="OPTIONS" then at=i;break end
     end
-    table.insert(out,at,{label="TERRARIUM BATTLES",__terrariumBattleEntry=true,onSelect=function()
-      -- Gen 1's generic StartMenu pops before invoking onSelect. Gold's
-      -- injected-row arm intentionally does not. Keep a live Gold parent on
-      -- the stack; a synthetic replacement lacks onChoose/onClose and is dead.
-      local parent=game and game.stack and type(game.stack.top)=="function" and game.stack:top() or nil
-      local returnId=(parent and (parent.screenId==GEN1_START or parent.screenId=="Gen2StartMenu"))
-        and parent.screenId or startMenuId()
-      local returnParent=(parent and parent.screenId==returnId) and parent or nil
-      openBattleMenu(game,returnId,returnParent)
-    end})
+    table.insert(out,at,S.startMenuEntry(game))
     return out
   end,200) -- Run after XD_BATTLE_ENVIRONMENTS (priority 115) but before other high-priority mods
   installed=true
