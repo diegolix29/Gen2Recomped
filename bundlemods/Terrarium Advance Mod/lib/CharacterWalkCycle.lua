@@ -24,22 +24,18 @@
 -- clips' lower body, so they stay unextracted. Overworld walking instead
 -- overlays this gait on the live idle/victory pose PlayerModel samples each
 -- frame (see CharacterNativeAnim.sample / copyPositions), so Wes keeps his
--- victory body language while only arms/hands and legs/feet stride. Vertex
--- membership comes from the rest HSD skeleton in model_cache.lua
--- (jointPositions + jointParents) -- the same joint coordinates each native_v1
--- index.lua clip stores per frame, which is why those constructed clips do not
--- pull hair, back, torso, or hip. Height/side buckets are only a fallback
--- when that skeleton is missing. The overlay itself is still a coarse
--- two-joint (hip+knee) leg and one-joint (shoulder) arm swing, not a real
--- skin: retune HIP_FRACTION_OF_SHOULDER/KNEE_FRACTION_OF_HIP/SEAM_SOFTEN
--- or LOCK_BIAS below rather than the FK math if a character's proportions
--- look off.
+-- victory body language while only arms/hands and legs/feet stride.
+--
+-- Wes is the reference gait (shared HIP_SWING / timing). Every other
+-- trainer has a different mesh, so limb membership is per-id in
+-- cache/trainers/<id>/walk_overrides.lua -- applied ONLY to this overlay's
+-- buckets. That file never replaces model_cache.lua or native_v1 clips.
 
 local V = ...
 local TrainerRig = V.require("TrainerRig")
 local GeneratedAssets = V.require("GeneratedAssets")
 
-local M = { version = 7 }
+local M = { version = 8 }
 
 -- ------- tuning constants (generic human-ish proportions + gait feel)
 
@@ -62,8 +58,10 @@ local KNEE_FRACTION_OF_HIP = 0.50
 local SEAM_SOFTEN = 0.22
 
 -- Gait half-width fractions. Spine/ribs stay idle; feet sit closer to the
--- centerline than sleeves, so they use a much smaller floor than arms.
-local ARM_LATERAL_CUTOFF = 0.30
+-- centerline than sleeves. Arms below the hip must be farther out than a
+-- thigh or the hip itself is stolen as a left/right arm.
+local ARM_LATERAL_CUTOFF = 0.42
+local ARM_BELOW_HIP_CUTOFF = 0.58
 local LEG_LATERAL_CUTOFF = 0.12
 local FOOT_LATERAL_CUTOFF = 0.03
 
@@ -177,9 +175,10 @@ end
 -- so a trailing stance leg and a tucked or hanging arm still walk.
 local function collectAnchors(groups, minY, height, hipY, shoulderY)
   local footLimit = minY + height * 0.15
-  local handFloor = minY + height * 0.22
-  local handCeil = shoulderY * 0.98
-  local handLat = height * ARM_CHAIN_MIN_LAT
+  local sleeveLo, sleeveHi = hipY * 1.04, shoulderY * 0.92
+  local tipLo, tipHi = hipY * 0.55, hipY * 1.08
+  local sleeveLat = height * 0.13
+  local tipLat = height * 0.20
   local feet, hands = {}, {}
   for _, g in ipairs(groups or {}) do
     local base = g.baseVertices
@@ -187,12 +186,13 @@ local function collectAnchors(groups, minY, height, hipY, shoulderY)
       for i = 1, #base do
         local v = base[i]
         local y = v[2] or 0
+        local ax = math.abs(v[1] or 0)
         if y <= footLimit then
           feet[#feet + 1] = v
-        elseif y >= handFloor and y <= handCeil then
-          if math.abs(v[1] or 0) > handLat then
-            hands[#hands + 1] = v
-          end
+        elseif y >= sleeveLo and y <= sleeveHi and ax > sleeveLat then
+          hands[#hands + 1] = v
+        elseif y >= tipLo and y <= tipHi and ax > tipLat then
+          hands[#hands + 1] = v
         end
       end
     end
@@ -281,10 +281,10 @@ local function classifyJoints(positions, parents, bounds, minY, height, centerX)
       local y = positions[i][2] or 0
       if y < footY[s] then footY[s] = y; foot[s] = i end
       local h = ny(i)
-      -- Prefer the hanging wrist/palm (~0.40) over a high sleeve joint so
-      -- finger JOBJs flood from a seed that is actually in the hand.
-      if h > ARM_CHAIN_MIN_NY and h < 0.94 then
-        local sc = lat(i) * 2.2 + (1 - math.abs(h - 0.40)) * 0.45
+      -- Wrist/palm, not hip. Hip JOBJs sit near 0.40 height with modest
+      -- lateral and used to win this score, painting both thighs as arms.
+      if h > 0.48 and h < 0.94 and lat(i) > 0.14 then
+        local sc = lat(i) * 2.6 + (1 - math.abs(h - 0.68)) * 0.35
         if sc > handScore[s] then handScore[s] = sc; hand[s] = i end
       end
     end
@@ -344,13 +344,9 @@ local function classifyJoints(positions, parents, bounds, minY, height, centerX)
     for i = 1, n do
       if type(positions[i]) == "table" then
         local h, l = ny(i), lat(i)
-        if h < 0.20 and l > 0.05 then
+        if h < LEG_CHAIN_MAX_NY and l > 0.05 then
           kind[i] = (h < kneeNy) and "shin" or "thigh"
-        elseif h < LEG_CHAIN_MAX_NY and l > 0.16 then
-          kind[i] = "arm"
-        elseif h < LEG_CHAIN_MAX_NY and l > 0.05 then
-          kind[i] = (h < kneeNy) and "shin" or "thigh"
-        elseif h > ARM_CHAIN_MIN_NY and h < 0.96 and l > ARM_CHAIN_MIN_LAT then
+        elseif h > 0.50 and h < 0.96 and l > ARM_CHAIN_MIN_LAT then
           kind[i] = "arm"
         else
           kind[i] = "lock"
@@ -428,10 +424,39 @@ local function geometricBucket(up, vx, vz, fwd, hipY, kneeY, shoulderY, minY, he
     local dFR = dist2pt(vx, up, vz, footR)
     dFoot = (dFL <= dFR) and dFL or dFR
   end
+  local sideFrac = math.abs(vx - centerSide) / math.max(halfWidth, 0.0001)
 
-  -- Arms first, including verts below the hip: hanging fingers sit in the
-  -- thigh height band and used to be claimed as legs or left as torso.
-  if handL and handR and up > footTop and up < shoulderY * 0.98 then
+  -- Legs first below the hip. Hanging fingers still win when they sit
+  -- farther out than a thigh and much closer to a hand than a shoe.
+  if footL and footR and up < hipY then
+    local dL = dist2pt(vx, up, vz, footL)
+    local dR = dist2pt(vx, up, vz, footR)
+    side = (dL <= dR) and -1 or 1
+    local dHip = dist2pt(vx, up, vz, {
+      ((footL[1] or 0) + (footR[1] or 0)) * 0.5,
+      hipY,
+      ((footL[3] or 0) + (footR[3] or 0)) * 0.5,
+    })
+    if handL and handR and sideFrac > ARM_BELOW_HIP_CUTOFF and up > footTop then
+      local dHL = dist2pt(vx, up, vz, handL)
+      local dHR = dist2pt(vx, up, vz, handR)
+      local dHand = (dHL <= dHR) and dHL or dHR
+      if dHand * 1.35 < dFoot then
+        return "arm", 1, (dHL <= dHR) and -1 or 1
+      end
+    end
+    if up <= footTop then
+      return "shin", 1, side
+    end
+    if up >= hipY * HIP_LOCK_FRACTION and dHip <= dFoot then
+      return "torso", 0, side
+    end
+    if dFoot <= dHip * 1.25 or up < kneeY then
+      return (up < kneeY) and "shin" or "thigh", 1, side
+    end
+  end
+
+  if handL and handR and up >= hipY and up < shoulderY * 0.98 and sideFrac > ARM_LATERAL_CUTOFF then
     local dL = dist2pt(vx, up, vz, handL)
     local dR = dist2pt(vx, up, vz, handR)
     local handSide = (dL <= dR) and -1 or 1
@@ -442,28 +467,8 @@ local function geometricBucket(up, vx, vz, fwd, hipY, kneeY, shoulderY, minY, he
       ((handL[3] or 0) + (handR[3] or 0)) * 0.5,
     }
     local dChest = dist2pt(vx, up, vz, chest)
-    if dHand * 1.12 < dChest and dHand <= dFoot * 1.20 then
+    if dHand * 1.12 < dChest then
       return "arm", 1, handSide
-    end
-  end
-
-  if footL and footR and up < hipY then
-    local dL = dist2pt(vx, up, vz, footL)
-    local dR = dist2pt(vx, up, vz, footR)
-    side = (dL <= dR) and -1 or 1
-    local dHip = dist2pt(vx, up, vz, {
-      ((footL[1] or 0) + (footR[1] or 0)) * 0.5,
-      hipY,
-      ((footL[3] or 0) + (footR[3] or 0)) * 0.5,
-    })
-    if up <= footTop then
-      return "shin", 1, side
-    end
-    if up >= hipY * HIP_LOCK_FRACTION and dHip <= dFoot then
-      return "torso", 0, side
-    end
-    if dFoot <= dHip * 1.25 or up < kneeY then
-      return (up < kneeY) and "shin" or "thigh", 1, side
     end
   end
 
@@ -516,11 +521,12 @@ end
 
 -- Palms and fingers sit past the sleeve cluster. Grow arm membership from
 -- already-tagged arm verts so a hanging hand is not left on the idle pose.
-local function stitchHands(groups, rig, minY, height, halfWidth)
-  local radius = halfWidth * 0.62
+local function stitchHands(groups, rig, minY, height, halfWidth, hipY)
+  local radius = halfWidth * 0.28
   local r2 = radius * radius
-  local lo = minY + height * 0.22
+  local lo = hipY * 1.02
   local hi = minY + height * 0.92
+  local minLat = halfWidth * ARM_LATERAL_CUTOFF
   for gi, g in ipairs(groups or {}) do
     local base = g.baseVertices
     local buckets = rig.groups[gi]
@@ -542,6 +548,7 @@ local function stitchHands(groups, rig, minY, height, halfWidth)
           local v = base[vi]
           local up = v[2] or 0
           if b and up >= lo and up <= hi
+             and math.abs(v[1] or 0) >= minLat
              and (not b.weight or b.weight <= 0 or b.bucket == "torso") then
             local bx, by, bz = v[1] or 0, up, v[3] or 0
             local best, bestD = nil, r2
@@ -675,7 +682,8 @@ function M.build(id, groups, bounds, skeleton)
             end
           elseif bucket == "thigh" or bucket == "shin" then
             -- keep geometric segment; side is unified from the feet below
-          elseif jBucket == "arm" and jWeight and jWeight > 0.25 then
+          elseif jBucket == "arm" and jWeight and jWeight > 0.25
+             and (up >= hipY * 0.98 or math.abs(vx - centerSide) > halfWidth * ARM_BELOW_HIP_CUTOFF) then
             bucket, weight, side = "arm", jWeight, jSide or side
           end
         end
@@ -685,7 +693,7 @@ function M.build(id, groups, bounds, skeleton)
     rig.groups[gi] = buckets
   end
   stitchFeet(groups, rig, kneeY, minY, prof.height, halfWidth)
-  stitchHands(groups, rig, minY, prof.height, halfWidth)
+  stitchHands(groups, rig, minY, prof.height, halfWidth, hipY)
   unifyLegSides(groups, rig, footL, footR)
 
   return rig
@@ -693,6 +701,12 @@ end
 
 function M.overridePath(id)
   return ("cache/trainers/%s/walk_overrides.lua"):format(tostring(id or ""))
+end
+
+local function isWalkOverlayPath(path)
+  path = tostring(path or "")
+  return path:find("walk_overrides%.lua", 1, true) ~= nil
+      or path:find("walk_debug%.txt", 1, true) ~= nil
 end
 
 local function overrideGroups(raw)
@@ -737,7 +751,11 @@ function M.applyFromCache(rig, id)
 end
 
 function M.encodeOverrides(rig)
-  local chunks = {"return {version=1,groups={\n"}
+  local chunks = {
+    "-- DRAMATIC_SHAPE walk overlay membership only.\n",
+    "-- Do not treat this as model_cache or native_v1; idle/victory stay extracted.\n",
+    "return {version=1,purpose=\"walk-overlay\",groups={\n",
+  }
   for gi, buckets in ipairs(rig.groups or {}) do
     chunks[#chunks + 1] = "[" .. gi .. "]={"
     local first = true
@@ -759,8 +777,10 @@ end
 
 function M.writeOverrides(id, rig)
   if not (GeneratedAssets and GeneratedAssets.write) then return false, "cache writer unavailable" end
+  local path = M.overridePath(id)
+  if not isWalkOverlayPath(path) then return false, "refusing non-overlay write" end
   local body = M.encodeOverrides(rig)
-  return GeneratedAssets.write(M.overridePath(id), body)
+  return GeneratedAssets.write(path, body)
 end
 
 function M.debugPath(id)
@@ -791,9 +811,35 @@ function M.encodeDebug(id, groups, rig)
   return table.concat(lines, "\n") .. "\n"
 end
 
+function M.hostDebugName(id)
+  return ("walk_debug_" .. tostring(id or "character") .. ".txt")
+end
+
 function M.writeDebug(id, groups, rig)
-  if not (GeneratedAssets and GeneratedAssets.write) then return false, "cache writer unavailable" end
-  return GeneratedAssets.write(M.debugPath(id), M.encodeDebug(id, groups, rig))
+  local body = M.encodeDebug(id, groups, rig)
+  local hostName = M.hostDebugName(id)
+  local saveDir = nil
+  if love and love.filesystem and love.filesystem.getSaveDirectory then
+    saveDir = love.filesystem.getSaveDirectory()
+  end
+  local hostOk, hostErr = false, "love.filesystem.write unavailable"
+  if love and love.filesystem and love.filesystem.write then
+    hostOk, hostErr = love.filesystem.write(hostName, body)
+  end
+  local cacheOk, cacheErr = false, nil
+  if GeneratedAssets and GeneratedAssets.write then
+    local path = M.debugPath(id)
+    if isWalkOverlayPath(path) then
+      cacheOk, cacheErr = GeneratedAssets.write(path, body)
+    end
+  end
+  if hostOk then
+    return true, (saveDir and (saveDir .. "/" .. hostName) or hostName)
+  end
+  if cacheOk then
+    return true, M.debugPath(id)
+  end
+  return false, tostring(hostErr or cacheErr or "walk_debug write failed")
 end
 
 function M.paint(rig, groups, x, y, z, radius, bucket, side, weight)

@@ -1624,7 +1624,7 @@ SettingsMenu.helpFor = function(id)
     return "Press A to bind any keyboard key or gamepad button to the jump action. The jump allows you to hop over ledges in the overworld."
   end
   if id == "DRAMATIC_SHAPE:characterWalkViewer" then
-    return "Opens a limb-color viewer for the current Colosseum character. Left/Right rotate, Up/Down pick a brush, A paints the verts at the crosshair, Select toggles a walk preview, Start saves walk_overrides.lua. Use tools/paint_walk_override.py on the walk_debug.txt dump for desktop painting."
+    return "Opens the current Colosseum character. Left/Right orbit, Select toggles walk, Start re-saves walk_debug_<id>.txt into the LOVE save folder (see the console path) for tools/paint_walk_override.py."
   end
   return originalHelpFor(id)
 end

@@ -743,6 +743,83 @@ end
 
 -- ------- Rendering
 
+-- Pose the loaded Colosseum character meshes (idle clip + optional gait).
+local function poseCharacterMeshes(walkBlend, walkPhase, jumpProgress)
+  if not (usingCharacter and characterGroups) then return end
+  local overlayWalk = characterWalkRig and (jumpProgress or (walkBlend or 0) > 0.001)
+  local posedGroups = nil
+  if characterNative then
+    local CharacterModelPick = V.require("CharacterModelPick")
+    local roleName = CharacterNativeAnim.resolveRole(characterNative, CharacterModelPick.getCurrentAnimation())
+    if roleName then
+      local sampled = CharacterNativeAnim.sample(characterNative, roleName)
+      if overlayWalk then
+        characterNativePose = CharacterNativeAnim.copyPositions(characterNative, roleName, characterNativePose)
+        posedGroups = characterNativePose
+        characterNative.dirty = true
+      elseif sampled or characterNative.dirty then
+        CharacterNativeAnim.upload(characterNative, roleName)
+        characterNative.dirty = false
+      end
+    end
+  end
+  if overlayWalk then
+    for gi, group in ipairs(characterGroups) do
+      if group.mesh and group.baseVertices then
+        local posed = posedGroups and posedGroups[gi] or nil
+        local buf
+        if jumpProgress then
+          buf = CharacterWalkCycle.applyJump(
+            characterWalkRig, gi, group, jumpProgress,
+            characterWalkVertexBuffers[gi], posed
+          )
+        else
+          buf = CharacterWalkCycle.apply(
+            characterWalkRig, gi, group,
+            walkPhase, walkBlend,
+            characterWalkVertexBuffers[gi], posed
+          )
+        end
+        characterWalkVertexBuffers[gi] = buf
+        group.mesh:setVertices(buf)
+      end
+    end
+  end
+end
+
+-- Draw the loaded character into an already-open Voxel3D scene (menu
+-- studio / CHARACTER VIEWER). yaw is model yaw in radians.
+function PlayerModel.drawPreview(yaw, walking)
+  if not (usingCharacter and characterGroups) then return false end
+  if walking then
+    characterWalkTime = characterWalkTime + 0.12
+  end
+  local blend = walking and 1 or 0
+  characterWalkBlend = blend
+  poseCharacterMeshes(blend, characterWalkTime, nil)
+  local cached = characterCache[currentCharacterId]
+  local scale = cached and cached.scale or 1.0
+  local m = Mat4.mul(Mat4.rotateY((yaw or 0) + math.pi), Mat4.scale(scale, scale, scale))
+  local drawn = false
+  for _, group in ipairs(characterGroups) do
+    if group.mesh then
+      Voxel3D.draw(group.mesh, group.texture, m)
+      drawn = true
+    end
+  end
+  return drawn
+end
+
+function PlayerModel.previewHeight()
+  local cached = currentCharacterId and characterCache[currentCharacterId]
+  local b = cached and cached.bounds
+  if type(b) == "table" and type(b.max) == "table" and type(b.min) == "table" then
+    return math.max(0.05, (b.max[2] or 1) - (b.min[2] or 0))
+  end
+  if type(b) == "table" and b.height then return math.max(0.05, b.height) end
+  return 1
+end
+
 -- Draw the player model at the given position with the given transform.
 -- This integrates with the existing Voxel3D pipeline.
 --- `mirror` is the sprite step-flip flag (see stepFlip in movement.lua /
@@ -1011,50 +1088,7 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     -- walking, then swing the procedural gait on those posed vertices.
     -- Native walk tracks are skipped: extraction dropped feet and broke
     -- other clips. See lib/CharacterWalkCycle.lua.
-    local overlayWalk = characterWalkRig and (jumpProgress or characterWalkBlend > 0.001)
-    local posedGroups = nil
-    if characterNative then
-      local CharacterModelPick = V.require("CharacterModelPick")
-      local roleName = CharacterNativeAnim.resolveRole(characterNative, CharacterModelPick.getCurrentAnimation())
-      if roleName then
-        local sampled = CharacterNativeAnim.sample(characterNative, roleName)
-        if overlayWalk then
-          characterNativePose = CharacterNativeAnim.copyPositions(characterNative, roleName, characterNativePose)
-          posedGroups = characterNativePose
-          -- Walk wrote over the mesh; idle stages stay valid for the stop.
-          characterNative.dirty = true
-        elseif sampled or characterNative.dirty then
-          CharacterNativeAnim.upload(characterNative, roleName)
-          characterNative.dirty = false
-        end
-      end
-    end
-
-    if overlayWalk then
-      for gi, group in ipairs(characterGroups) do
-        if group.mesh and group.baseVertices then
-          local posed = posedGroups and posedGroups[gi] or nil
-          local buf
-          if jumpProgress then
-            -- A hop has no gait to loop -- one clean up/down arc, not a
-            -- repeating stride -- so it gets its own single-pass pose
-            -- instead of another position on the walk cycle's phase wheel.
-            buf = CharacterWalkCycle.applyJump(
-              characterWalkRig, gi, group, jumpProgress,
-              characterWalkVertexBuffers[gi], posed
-            )
-          else
-            buf = CharacterWalkCycle.apply(
-              characterWalkRig, gi, group,
-              characterWalkTime, characterWalkBlend,
-              characterWalkVertexBuffers[gi], posed
-            )
-          end
-          characterWalkVertexBuffers[gi] = buf
-          group.mesh:setVertices(buf)
-        end
-      end
-    end
+    poseCharacterMeshes(characterWalkBlend, characterWalkTime, jumpProgress)
 
     -- Calculate the model matrix based on position and facing
     local m = Mat4.translate(px + 8, y, py + 8)

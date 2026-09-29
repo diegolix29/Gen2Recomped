@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Paint Colosseum walk-rig vertices, then write walk_overrides.lua.
 
-The in-game CHARACTER VIEWER writes cache/trainers/<id>/walk_debug.txt
-when you press START. Point this script at that file (or a copy):
+This is the only vertex painter. Opening CHARACTER VIEWER writes
+walk_debug_<id>.txt into the LOVE save folder (console prints the path):
 
-    python tools/paint_walk_override.py path/to/walk_debug.txt
+    python tools/paint_walk_override.py walk_debug_wes.txt
 
-Click a vertex to paint the current brush (keys 0-6). S saves
-walk_overrides.lua next to the debug dump so the mod reloads it.
+Click to paint the current brush (keys 0-6). S saves walk_overrides.lua
+next to the dump. After the buckets look right you can delete this script.
 """
 from __future__ import annotations
 
@@ -67,7 +67,11 @@ def encode_overrides(verts) -> str:
     groups: dict[int, list] = {}
     for vert in verts:
         groups.setdefault(vert["gi"], []).append(vert)
-    out = ["return {version=1,groups={\n"]
+    out = [
+        "-- DRAMATIC_SHAPE walk overlay membership only.\n",
+        "-- Do not treat this as model_cache or native_v1; idle/victory stay extracted.\n",
+        'return {version=1,purpose="walk-overlay",groups={\n',
+    ]
     for gi in sorted(groups):
         out.append("[%d]={" % gi)
         first = True
