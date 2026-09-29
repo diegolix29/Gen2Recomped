@@ -2504,7 +2504,9 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
     end
     return nil
   end)
-  if okViewer and viewerRow and not rowExists(viewerRow.id) then
+  if not okViewer then
+    print("DRAMATIC_SHAPE: CharacterWalkViewer row failed:", viewerRow)
+  elseif viewerRow and not rowExists(viewerRow.id) then
     table.insert(out, viewerRow)
   end
 

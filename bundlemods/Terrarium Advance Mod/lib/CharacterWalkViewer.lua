@@ -224,7 +224,7 @@ function Viewer.row()
     label = "CHARACTER VIEWER",
     value = function()
       local id = CharacterModelPick.getCurrentCharacterId()
-      if not id or id == "off" then return "OFF" end
+      if not id or id == "off" then return "SET MODEL" end
       return "OPEN"
     end,
     activate = function(game)
@@ -234,10 +234,6 @@ function Viewer.row()
       if game and game.stack then
         game.stack:push(Viewer.new(game))
       end
-    end,
-    when = function()
-      local id = CharacterModelPick.getCurrentCharacterId()
-      return id ~= nil and id ~= "off"
     end,
   }
 end

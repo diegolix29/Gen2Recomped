@@ -107,9 +107,9 @@ local SIDE_INDEX = (FORWARD_INDEX == 3) and 1 or 3
 -- Swing amplitudes, in radians. Overlay sits on an already-posed idle clip,
 -- so keep the stride small and the sine a little rounded at the peaks.
 local HIP_SWING = 0.16
-local KNEE_BEND = 0.20
+local KNEE_BEND = 0.07
 local ARM_SWING = 0.18
-local KNEE_LAG = 0.10
+local KNEE_LAG = 0.08
 
 -- A small torso bob riding on top of the leg motion, the way a real walk
 -- bobs down-and-up once per FOOTFALL (twice per full left/right cycle) --
@@ -561,27 +561,6 @@ local function stitchHands(groups, rig, minY, height, halfWidth)
   end
 end
 
--- One visual leg must share one gait phase. A thigh tagged left and a shin
--- tagged right swings the knee apart.
-local function unifyLegSides(groups, rig, footL, footR)
-  if not (footL and footR) then return end
-  for gi, g in ipairs(groups or {}) do
-    local base = g.baseVertices
-    local buckets = rig.groups[gi]
-    if base and buckets then
-      for vi = 1, #base do
-        local b = buckets[vi]
-        if b and (b.bucket == "thigh" or b.bucket == "shin") then
-          local v = base[vi]
-          local dL = dist2pt(v[1] or 0, v[2] or 0, v[3] or 0, footL)
-          local dR = dist2pt(v[1] or 0, v[2] or 0, v[3] or 0, footR)
-          b.side = (dL <= dR) and -1 or 1
-        end
-      end
-    end
-  end
-end
-
 -- Split left/right from the actual shoes so a slightly off-center rest
 -- pose does not dump one whole leg on the spine side of centerX.
 local function footSplitX(groups, minY, height, fallback)
@@ -606,6 +585,27 @@ local function footSplitX(groups, minY, height, fallback)
     return 0.5 * (acc[-1] / n[-1] + acc[1] / n[1])
   end
   return fallback
+end
+
+-- One physical leg must share one gait phase. Nearest-foot side wins so a
+-- shin cannot stride opposite its own thigh.
+local function unifyLegSides(groups, rig, footL, footR)
+  if not (footL and footR and rig and rig.groups) then return end
+  for gi, g in ipairs(groups or {}) do
+    local base = g.baseVertices
+    local buckets = rig.groups[gi]
+    if base and buckets then
+      for vi = 1, #base do
+        local b = buckets[vi]
+        if b and (b.bucket == "thigh" or b.bucket == "shin") then
+          local v = base[vi]
+          local dL = dist2pt(v[1] or 0, v[2] or 0, v[3] or 0, footL)
+          local dR = dist2pt(v[1] or 0, v[2] or 0, v[3] or 0, footR)
+          b.side = (dL <= dR) and -1 or 1
+        end
+      end
+    end
+  end
 end
 
 -- Build (once, when a character model loads -- see PlayerModel.loadColosseumCharacter)
@@ -663,24 +663,18 @@ function M.build(id, groups, bounds, skeleton)
           up, vx, vz, fwd, hipY, kneeY, shoulderY, minY, prof.height,
           centerSide, halfWidth, faceSign, centerFwd, footL, footR, handL, handR
         )
-        -- Joints may refine thigh/shin/arm, and may promote a torso vert
-        -- that the silhouette missed (hanging fingers, tucked wrist).
+        -- Joints may promote a missed hanging hand. They must not retag
+        -- thigh as shin (or the reverse): that moves the FK seam off the
+        -- knee and the two halves of one leg swing independently.
         if classified then
           local jBucket, jWeight, jSide = bindNearest(vx, up, vz, classified)
-          if weight > 0 then
-            if jBucket == "thigh" or jBucket == "shin" or jBucket == "arm" then
-              if (jBucket == "arm") == (bucket == "arm") then
-                bucket = jBucket
-              elseif jBucket == "arm" and (bucket == "thigh" or bucket == "shin") then
-                bucket = "arm"
-              end
-              -- Legs keep nearest-foot side. Joint side can put a shin on
-              -- the opposite gait phase from its thigh and split the knee.
-              if jBucket == "arm" and jSide then side = jSide end
-              if jWeight and jWeight > 0 then
-                weight = math.max(weight, jWeight)
-              end
+          if bucket == "arm" then
+            if jSide then side = jSide end
+            if jBucket == "arm" and jWeight and jWeight > 0 then
+              weight = math.max(weight, jWeight)
             end
+          elseif bucket == "thigh" or bucket == "shin" then
+            -- keep geometric segment; side is unified from the feet below
           elseif jBucket == "arm" and jWeight and jWeight > 0.25 then
             bucket, weight, side = "arm", jWeight, jSide or side
           end
@@ -892,7 +886,6 @@ function M.apply(rig, groupIndex, group, phase, blend, out, posedVertices)
   -- values per frame (the left leg is always exactly half a cycle behind
   -- the right), so compute each pair once here instead of per vertex.
   local hipSinR = math.sin(phase)
-  local kneeSinR = math.sin(phase - KNEE_LAG * math.pi * 2)
   local bob = blend * BOB_AMOUNT * (0.5 - 0.5 * math.cos(phase * 2))
 
   for vi = 1, #base do
@@ -911,23 +904,10 @@ function M.apply(rig, groupIndex, group, phase, blend, out, posedVertices)
         -- as just negating this side's own hip sine.
         local armAngle = -ARM_SWING * hipSin * b.weight * blend
         up, fwd = rotate2(up, fwd, shoulderY, 0, armAngle)
-      elseif b.bucket == "thigh" then
+      elseif b.bucket == "thigh" or b.bucket == "shin" then
+        -- Same hip rotation for the whole leg. Extra knee FK around a
+        -- midline pivot split the calf from the thigh on these meshes.
         up, fwd = rotate2(up, fwd, hipY, 0, hipAngle)
-      elseif b.bucket == "shin" then
-        -- Forward-kinematics chain: rotate the whole leg (this vertex AND
-        -- the knee pivot itself) around the hip first, then bend further
-        -- around the knee's NEW (already-swung) position -- not its rest
-        -- position -- so the shin stays joined to the thigh instead of
-        -- rotating around a point the thigh has already left behind.
-        local kneeSin = (b.side < 0) and -kneeSinR or kneeSinR
-        -- Flex with this leg's hip, never against it. A lagged opposite
-        -- knee sine made the shin walk the other way from the thigh.
-        local fold = math.max(0, hipSin)
-        if kneeSin > 0 then fold = math.max(fold, kneeSin) end
-        local kneeAngle = KNEE_BEND * fold * b.weight * blend
-        local kneeUpNow, kneeFwdNow = rotate2(kneeY, 0, hipY, 0, hipAngle)
-        up, fwd = rotate2(up, fwd, hipY, 0, hipAngle)
-        up, fwd = rotate2(up, fwd, kneeUpNow, kneeFwdNow, kneeAngle)
       end
     end
 
