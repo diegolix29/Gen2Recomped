@@ -14872,15 +14872,6 @@ function OverworldState:drawWorld()
     return (e.py - cam.y) * (1 - groundSin) + rise
   end
 
-  -- In Gen4 free mode, freeEntity handles terrain height via groundY internally.
-  -- Passing screen-space rise would double-correct and cause clipping.
-  local function riseForFreeEntity(e)
-    if freeGround and freeGround:freeMode() then
-      return 0  -- freeEntity uses groundY for 3D projection
-    end
-    return riseOf(e)
-  end
-
   if override then
     -- the pipeline owns the whole frame; nothing else draws into the world
   elseif not tilt then
@@ -14997,7 +14988,7 @@ function OverworldState:drawWorld()
         -- back across the middle of the view.
         if freeGround then
           if not (freeGround:freeMode() == "first" and e == self.player) then
-            local rise = riseForFreeEntity(e)
+            local rise = riseOf(e)
             -- ...AND WHICH WAY THEY FACE ON SCREEN.
             --
             -- Reported from play: *"when i orbit the camera 180 degrees if i
@@ -15015,10 +15006,8 @@ function OverworldState:drawWorld()
             if view and view.worldToScreen then
               e.facing = view:worldToScreen(saved)
             end
-            -- In Gen4 free mode, the 3D projection via groundY already positions
-            -- the sprite correctly. No extra screen-space rise needed.
             freeGround:freeEntity((e.px or 0), (e.py or 0), cam.x, cam.y, rise,
-                                  function() e:draw(cam.x, cam.y) end)
+                                  function() e:draw(cam.x, cam.y + rise) end)
             e.facing = saved
           end
           -- Deliberately without the flat shadow and the grass overdraw below:

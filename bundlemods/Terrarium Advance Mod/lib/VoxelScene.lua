@@ -1209,7 +1209,7 @@ local function drawCast(state, posed, me, atlasFor, yaw)
         -- Update follower animation
         StadiumFollower.update(1 / 60)
         -- Draw Stadium follower model instead of sprite
-        StadiumFollower.draw(p.px, p.py, viewFacing(p), p.gh)
+        StadiumFollower.draw(p.px, p.py, viewFacing(p))
       -- Check if this is a wild Pokemon and Stadium wilds is enabled
       elseif StadiumWilds.enabled() and StadiumWilds.isWildPokemon(p) then
         -- (a debug print stood here, twice, inside the per-entity draw loop.
