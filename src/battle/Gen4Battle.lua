@@ -1424,11 +1424,32 @@ function Gen4Battle.drawHealthboxNumbers(battle, key, battler, boxX, boxY)
   return true
 end
 
+-- A mod that owns the battle HUD (Colosseum UI, realtime host) already
+-- answers `battle.status_hud_visible`.  Gen 1/2 HP rows go through
+-- BattleState:drawHUDs, which those mods wrap.  Sinnoh paints Platinum's
+-- healthboxes HERE instead, so that wrap never ran and the native bars
+-- stayed on screen over the Colosseum HUD.  Returning true (boxes "drawn")
+-- is what keeps Gen4Battle.draw from falling through to the Game Boy panels.
+local function statusHudVisible(battle)
+  if type(battle) == "table" and type(battle.statusHUDVisible) == "function" then
+    local ok, vis = pcall(battle.statusHUDVisible, battle)
+    if ok and vis == false then return false end
+  end
+  local okR, Runtime = pcall(require, "src.mods.Runtime")
+  if okR and Runtime and Runtime.wantsHook and Runtime.wantsHook("battle.status_hud_visible") then
+    local vis = Runtime.call("battle.status_hud_visible",
+                             function() return true end, battle)
+    if vis == false then return false end
+  end
+  return true
+end
+
 -- drawHealthboxes(battle) -> true when BOTH were drawn
 --
 -- All or nothing on purpose: one Platinum box beside one Game Boy panel is
 -- worse than two of either, and the caller's fallback is the whole stand-in.
 function Gen4Battle.drawHealthboxes(battle)
+  if not statusHudVisible(battle) then return true end
   local g = love.graphics
   local sides = {
     { side = "enemy",  battler = battle.enemy,  slot = 1 },
@@ -2517,7 +2538,7 @@ function Gen4Battle.draw(battle)
   -- centring translate, pushed and popped around so nothing downstream inherits
   -- it.  A transform left on is the kind of thing that moves the NEXT screen
   -- instead of this one.
-  if not boxes then
+  if not boxes and statusHudVisible(battle) then
     g.push()
     g.translate(Gen4Battle.CLASSIC_DX, Gen4Battle.CLASSIC_DY)
     pcall(function() battle:drawHUDs(0) end)
