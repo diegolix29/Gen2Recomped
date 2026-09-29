@@ -540,6 +540,7 @@ function PlayerModel.loadColosseumCharacter(id)
   local skeleton = { jointPositions = joints, jointParents = cache.jointParents }
   local walkRigOk, walkRig = pcall(CharacterWalkCycle.build, id, groups, b, skeleton)
   if not walkRigOk then walkRig = nil end
+  if walkRig then pcall(CharacterWalkCycle.applyFromCache, walkRig, id) end
 
   -- Native idle (or Wes victory) clip from the extracted cache. Optional: a
   -- character with no native_v1 cache (or a topology mismatch) just keeps
@@ -558,7 +559,10 @@ function PlayerModel.loadColosseumCharacter(id)
     print("[PlayerModel] no native animations for '" .. tostring(id) .. "': " .. tostring(nativeErr))
   end
 
-  characterCache[id] = { groups = groups, scale = scale, walkRig = walkRig, native = native, walkVersion = CharacterWalkCycle.version }
+  characterCache[id] = {
+    groups = groups, scale = scale, walkRig = walkRig, native = native,
+    walkVersion = CharacterWalkCycle.version, bounds = b, skeleton = skeleton,
+  }
   characterGroups = groups
   characterWalkRig = walkRig
   characterNative = native
@@ -583,9 +587,44 @@ function PlayerModel.getCharacterId()
   return nil
 end
 
--- Get the current character groups (for animation reloading)
 function PlayerModel.getCharacterGroups()
   return characterGroups
+end
+
+function PlayerModel.getCharacterCache()
+  return characterCache
+end
+
+function PlayerModel.getWalkRig()
+  return characterWalkRig
+end
+
+-- Rebuild the gait buckets from rest pose, then re-apply painted
+-- cache/trainers/<id>/walk_overrides.lua (Python editor or model viewer).
+function PlayerModel.reloadWalkOverrides(id)
+  id = id or currentCharacterId
+  local cached = id and characterCache[id]
+  if not cached or not cached.groups then return false, "character not loaded" end
+  local walkRigOk, walkRig = pcall(
+    CharacterWalkCycle.build, id, cached.groups, cached.bounds, cached.skeleton
+  )
+  if not walkRigOk then return false, walkRig end
+  pcall(CharacterWalkCycle.applyFromCache, walkRig, id)
+  cached.walkRig = walkRig
+  cached.walkVersion = CharacterWalkCycle.version
+  if currentCharacterId == id then
+    characterWalkRig = walkRig
+    characterWalkVertexBuffers = {}
+  end
+  return true
+end
+
+function PlayerModel.saveWalkOverrides(id)
+  id = id or currentCharacterId
+  local cached = id and characterCache[id]
+  local rig = cached and cached.walkRig
+  if not rig then return false, "no walk rig" end
+  return CharacterWalkCycle.writeOverrides(id, rig)
 end
 
 -- Get the character cache (for animation reloading)

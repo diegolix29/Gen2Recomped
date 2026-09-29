@@ -37,8 +37,9 @@
 
 local V = ...
 local TrainerRig = V.require("TrainerRig")
+local GeneratedAssets = V.require("GeneratedAssets")
 
-local M = { version = 3 }
+local M = { version = 6 }
 
 -- ------- tuning constants (generic human-ish proportions + gait feel)
 
@@ -84,6 +85,11 @@ local LEG_CHAIN_MAX_NY = 0.46
 -- the centerline (fraction of model height). Keeps clavicle/chest idle.
 local ARM_CHAIN_MIN_LAT = 0.11
 
+-- Rest-pose hands hang near mid-thigh on most Colosseum trainers. Joint
+-- walk-up and the no-parent fallback must still treat that band as arm,
+-- not as a second pair of legs.
+local ARM_CHAIN_MIN_NY = 0.20
+
 -- Which local axis is "forward" for a step (the other horizontal axis is
 -- left the vertex's untouched "side" coordinate). TrainerExtractor centers
 -- every model on both X and Z, so a forward/back stride is a rotation in
@@ -98,20 +104,18 @@ local ARM_CHAIN_MIN_LAT = 0.11
 local FORWARD_INDEX = 3
 local SIDE_INDEX = (FORWARD_INDEX == 3) and 1 or 3
 
--- Swing amplitudes, in radians. Keep these modest -- the overlay sits on
--- an already-posed idle/victory clip, so a full red_3d_player stride reads
--- as the legs ripping around. Smoothstep weights on the seam also keep
--- the motion from snapping at the hip/shoulder.
-local HIP_SWING = 0.28
-local KNEE_BEND = 0.38
-local ARM_SWING = 0.26
-local KNEE_LAG = 0.12 -- fraction of a full stride the knee-bend peak lags the hip
+-- Swing amplitudes, in radians. Overlay sits on an already-posed idle clip,
+-- so keep the stride small and the sine a little rounded at the peaks.
+local HIP_SWING = 0.16
+local KNEE_BEND = 0.20
+local ARM_SWING = 0.18
+local KNEE_LAG = 0.10
 
 -- A small torso bob riding on top of the leg motion, the way a real walk
 -- bobs down-and-up once per FOOTFALL (twice per full left/right cycle) --
 -- see red_3d_player's own `bounce=0.5-0.5*math.cos(phase*2)` for the same
 -- idea applied to its bone rig.
-local BOB_AMOUNT = 0.025
+local BOB_AMOUNT = 0.016
 
 -- ------- jump pose tuning (see M.applyJump below)
 --
@@ -147,11 +151,70 @@ local function rotate2(up, fwd, pivotUp, pivotFwd, angle)
   return pivotUp + du * c - df * s, pivotFwd + du * s + df * c
 end
 
-local function dist2(ax, ay, az, p)
-  local dx = ax - (p[1] or 0)
-  local dy = ay - (p[2] or 0)
-  local dz = az - (p[3] or 0)
+local function dist2pt(x, y, z, p)
+  if not p then return math.huge end
+  local dx = x - (p[1] or 0)
+  local dy = y - (p[2] or 0)
+  local dz = z - (p[3] or 0)
   return dx * dx + dy * dy + dz * dz
+end
+
+local function centroidRange(pts, a, b)
+  local sx, sy, sz, n = 0, 0, 0, 0
+  for i = a, b do
+    local p = pts[i]
+    sx = sx + (p[1] or 0)
+    sy = sy + (p[2] or 0)
+    sz = sz + (p[3] or 0)
+    n = n + 1
+  end
+  if n == 0 then return nil end
+  return { sx / n, sy / n, sz / n }
+end
+
+-- Two shoe clusters and two sleeve/hand clusters from the rest mesh.
+-- Membership is "nearest shoe / nearest hand", not a world centerline cut,
+-- so a trailing stance leg and a tucked or hanging arm still walk.
+local function collectAnchors(groups, minY, height, hipY, shoulderY)
+  local footLimit = minY + height * 0.15
+  local handFloor = minY + height * 0.22
+  local handCeil = shoulderY * 0.98
+  local handLat = height * ARM_CHAIN_MIN_LAT
+  local feet, hands = {}, {}
+  for _, g in ipairs(groups or {}) do
+    local base = g.baseVertices
+    if base then
+      for i = 1, #base do
+        local v = base[i]
+        local y = v[2] or 0
+        if y <= footLimit then
+          feet[#feet + 1] = v
+        elseif y >= handFloor and y <= handCeil then
+          if math.abs(v[1] or 0) > handLat then
+            hands[#hands + 1] = v
+          end
+        end
+      end
+    end
+  end
+  local function splitByX(pts)
+    if #pts < 4 then return nil, nil end
+    table.sort(pts, function(a, b) return (a[1] or 0) < (b[1] or 0) end)
+    local n = #pts
+    local loN = math.max(1, math.floor(n * 0.40))
+    local hi0 = math.max(loN + 1, math.floor(n * 0.60) + 1)
+    return centroidRange(pts, 1, loN), centroidRange(pts, hi0, n)
+  end
+  local function splitHands(pts)
+    if #pts < 4 then return nil, nil end
+    table.sort(pts, function(a, b) return (a[1] or 0) < (b[1] or 0) end)
+    local n = #pts
+    local q = math.max(2, math.floor(n * 0.22))
+    return centroidRange(pts, 1, q), centroidRange(pts, n - q + 1, n)
+  end
+  local fL, fR = splitByX(feet)
+  local hL, hR = splitHands(hands)
+  return fL, fR, hL, hR
 end
 
 -- Which way the rest pose faces, from the feet vs the body center. Coat
@@ -218,8 +281,10 @@ local function classifyJoints(positions, parents, bounds, minY, height, centerX)
       local y = positions[i][2] or 0
       if y < footY[s] then footY[s] = y; foot[s] = i end
       local h = ny(i)
-      if h > 0.50 and h < 0.94 then
-        local sc = lat(i) * 2.2 + (1 - math.abs(h - 0.72)) * 0.25
+      -- Prefer the hanging wrist/palm (~0.40) over a high sleeve joint so
+      -- finger JOBJs flood from a seed that is actually in the hand.
+      if h > ARM_CHAIN_MIN_NY and h < 0.94 then
+        local sc = lat(i) * 2.2 + (1 - math.abs(h - 0.40)) * 0.45
         if sc > handScore[s] then handScore[s] = sc; hand[s] = i end
       end
     end
@@ -253,7 +318,7 @@ local function classifyJoints(positions, parents, bounds, minY, height, centerX)
     j, guard = hand[s], 0
     while j and j >= 1 and j <= n and guard < 64 do
       guard = guard + 1
-      if lat(j) < ARM_CHAIN_MIN_LAT or ny(j) < 0.44 or isSpine(j) then break end
+      if lat(j) < ARM_CHAIN_MIN_LAT or ny(j) < ARM_CHAIN_MIN_NY or isSpine(j) then break end
       kind[j] = "arm"
       j = math.floor(tonumber(parents[j]) or 0)
     end
@@ -279,9 +344,13 @@ local function classifyJoints(positions, parents, bounds, minY, height, centerX)
     for i = 1, n do
       if type(positions[i]) == "table" then
         local h, l = ny(i), lat(i)
-        if h < LEG_CHAIN_MAX_NY and l > 0.05 then
+        if h < 0.20 and l > 0.05 then
           kind[i] = (h < kneeNy) and "shin" or "thigh"
-        elseif h > 0.50 and h < 0.94 and l > ARM_CHAIN_MIN_LAT then
+        elseif h < LEG_CHAIN_MAX_NY and l > 0.16 then
+          kind[i] = "arm"
+        elseif h < LEG_CHAIN_MAX_NY and l > 0.05 then
+          kind[i] = (h < kneeNy) and "shin" or "thigh"
+        elseif h > ARM_CHAIN_MIN_NY and h < 0.96 and l > ARM_CHAIN_MIN_LAT then
           kind[i] = "arm"
         else
           kind[i] = "lock"
@@ -320,11 +389,11 @@ local function bindNearest(vx, vy, vz, classified)
   local bestLimb, bestLimbD, bestLockD = nil, math.huge, math.huge
   local limb, lock = classified.limb, classified.lock
   for i = 1, #limb do
-    local d = dist2(vx, vy, vz, limb[i].p)
+    local d = dist2pt(vx, vy, vz, limb[i].p)
     if d < bestLimbD then bestLimbD = d; bestLimb = limb[i] end
   end
   for i = 1, #lock do
-    local d = dist2(vx, vy, vz, lock[i].p)
+    local d = dist2pt(vx, vy, vz, lock[i].p)
     if d < bestLockD then bestLockD = d end
   end
   if not bestLimb then return "torso", 0, 1 end
@@ -338,55 +407,66 @@ local function bindNearest(vx, vy, vz, classified)
   return bestLimb.k, weight, bestLimb.side
 end
 
--- Height/side membership. Spine/head/coat stay idle; both shoes and both
--- sleeves must still qualify even when the rest pose is a bit off-center
--- (tucked arm, trailing leg, inner sole).
-local function geometricBucket(up, sideCoord, fwd, hipY, kneeY, shoulderY, minY, height, centerSide, halfWidth, softenSide, faceSign, centerFwd)
-  local side = (sideCoord >= centerSide) and 1 or -1
-  local lateralAbs = math.abs(sideCoord - centerSide)
-  local sideFrac = lateralAbs / halfWidth
-  local seam = smooth01(lateralAbs / math.max(softenSide, 0.0001))
+-- Height/side membership. Prefer nearest shoe / nearest sleeve or hanging
+-- hand so both legs and both arms (including fingers) walk even when the
+-- rest pose is a stance with arms down.
+local function geometricBucket(up, vx, vz, fwd, hipY, kneeY, shoulderY, minY, height, centerSide, halfWidth, faceSign, centerFwd, footL, footR, handL, handR)
+  local side = (vx >= centerSide) and 1 or -1
   local behind = ((fwd - centerFwd) * faceSign) < -(halfWidth * 0.12)
-  local footTop = minY + height * 0.16
+  local footTop = minY + height * 0.18
 
-  -- Head, neck, scalp: never a limb. Rest-pose hands sit lower and wider.
   if up >= shoulderY * 0.90 then
     return "torso", 0, side
   end
-  -- Coat / hair / backpack on the BACK OF THE TORSO only -- a trailing
-  -- stance leg is also "behind" and must still walk.
   if behind and up >= hipY then
     return "torso", 0, side
   end
-  -- Shoes: keep the inner sole. One leftover sole vert was the old
-  -- LEG_LATERAL_CUTOFF rejecting the medial bottom of the foot.
-  if up <= footTop or up < kneeY * 0.42 then
-    if sideFrac < FOOT_LATERAL_CUTOFF then
+
+  local dFoot = math.huge
+  if footL and footR then
+    local dFL = dist2pt(vx, up, vz, footL)
+    local dFR = dist2pt(vx, up, vz, footR)
+    dFoot = (dFL <= dFR) and dFL or dFR
+  end
+
+  -- Arms first, including verts below the hip: hanging fingers sit in the
+  -- thigh height band and used to be claimed as legs or left as torso.
+  if handL and handR and up > footTop and up < shoulderY * 0.98 then
+    local dL = dist2pt(vx, up, vz, handL)
+    local dR = dist2pt(vx, up, vz, handR)
+    local handSide = (dL <= dR) and -1 or 1
+    local dHand = (dL <= dR) and dL or dR
+    local chest = {
+      ((handL[1] or 0) + (handR[1] or 0)) * 0.5,
+      ((handL[2] or 0) + (handR[2] or 0)) * 0.5,
+      ((handL[3] or 0) + (handR[3] or 0)) * 0.5,
+    }
+    local dChest = dist2pt(vx, up, vz, chest)
+    if dHand * 1.12 < dChest and dHand <= dFoot * 1.20 then
+      return "arm", 1, handSide
+    end
+  end
+
+  if footL and footR and up < hipY then
+    local dL = dist2pt(vx, up, vz, footL)
+    local dR = dist2pt(vx, up, vz, footR)
+    side = (dL <= dR) and -1 or 1
+    local dHip = dist2pt(vx, up, vz, {
+      ((footL[1] or 0) + (footR[1] or 0)) * 0.5,
+      hipY,
+      ((footL[3] or 0) + (footR[3] or 0)) * 0.5,
+    })
+    if up <= footTop then
+      return "shin", 1, side
+    end
+    if up >= hipY * HIP_LOCK_FRACTION and dHip <= dFoot then
       return "torso", 0, side
     end
-    return "shin", math.max(0.85, seam), side
-  end
-  -- Spine / chest / belly -- not the legs under it.
-  if up >= hipY and sideFrac < LEG_LATERAL_CUTOFF then
-    return "torso", 0, side
-  end
-  if up < hipY then
-    if up >= hipY * HIP_LOCK_FRACTION and sideFrac < 0.32 then
-      return "torso", 0, side
+    if dFoot <= dHip * 1.25 or up < kneeY then
+      return (up < kneeY) and "shin" or "thigh", 1, side
     end
-    if sideFrac < LEG_LATERAL_CUTOFF then
-      return "torso", 0, side
-    end
-    local w = smooth01((sideFrac - LEG_LATERAL_CUTOFF) / 0.20)
-    return (up < kneeY) and "shin" or "thigh", math.min(1, math.max(seam, w)), side
   end
-  -- Arms: out from the ribs, between hip and shoulder. A tucked rest pose
-  -- (Wes's left) is still an arm; 0.30 of half-width is the sleeve, not
-  -- the far reach of the throwing hand.
-  if up > hipY * 1.02 and up <= shoulderY * 1.06 and sideFrac > ARM_LATERAL_CUTOFF then
-    local w = smooth01((sideFrac - ARM_LATERAL_CUTOFF) / 0.22)
-    return "arm", math.max(w, 0.45), side
-  end
+
   return "torso", 0, side
 end
 
@@ -426,6 +506,53 @@ local function stitchFeet(groups, rig, kneeY, minY, height, halfWidth)
             end
             if best then
               buckets[vi] = { bucket = "shin", side = best[4], weight = 1 }
+            end
+          end
+        end
+      end
+    end
+  end
+end
+
+-- Palms and fingers sit past the sleeve cluster. Grow arm membership from
+-- already-tagged arm verts so a hanging hand is not left on the idle pose.
+local function stitchHands(groups, rig, minY, height, halfWidth)
+  local radius = halfWidth * 0.62
+  local r2 = radius * radius
+  local lo = minY + height * 0.22
+  local hi = minY + height * 0.92
+  for gi, g in ipairs(groups or {}) do
+    local base = g.baseVertices
+    local buckets = rig.groups[gi]
+    if base and buckets then
+      local seeds = {}
+      for vi = 1, #base do
+        local b = buckets[vi]
+        if b and b.bucket == "arm" and (b.weight or 0) > 0.4 then
+          local v = base[vi]
+          local y = v[2] or 0
+          if y >= lo and y <= hi then
+            seeds[#seeds + 1] = { v[1] or 0, y, v[3] or 0, b.side }
+          end
+        end
+      end
+      if #seeds > 0 then
+        for vi = 1, #base do
+          local b = buckets[vi]
+          local v = base[vi]
+          local up = v[2] or 0
+          if b and up >= lo and up <= hi
+             and (not b.weight or b.weight <= 0 or b.bucket == "torso") then
+            local bx, by, bz = v[1] or 0, up, v[3] or 0
+            local best, bestD = nil, r2
+            for s = 1, #seeds do
+              local p = seeds[s]
+              local dx, dy, dz = bx - p[1], by - p[2], bz - p[3]
+              local d = dx * dx + dy * dy + dz * dz
+              if d < bestD then bestD = d; best = p end
+            end
+            if best then
+              buckets[vi] = { bucket = "arm", side = best[4], weight = 1 }
             end
           end
         end
@@ -485,8 +612,8 @@ function M.build(id, groups, bounds, skeleton)
     centerSide = footSplitX(groups, minY, prof.height, centerSide)
   end
   local halfWidth = math.max(prof.halfWidth, 0.001)
-  local softenSide = halfWidth * SEAM_SOFTEN
   local faceSign = facingSign(groups, bounds, minY, prof.height, centerFwd)
+  local footL, footR, handL, handR = collectAnchors(groups, minY, prof.height, hipY, shoulderY)
 
   local classified = nil
   local joints = skeleton and skeleton.jointPositions
@@ -510,24 +637,29 @@ function M.build(id, groups, bounds, skeleton)
       for vi, v in ipairs(base) do
         local up = v[2] or 0
         local vx, vz = v[1] or 0, v[3] or 0
-        local sideCoord = v[SIDE_INDEX] or 0
         local fwd = v[FORWARD_INDEX] or 0
         local bucket, weight, side = geometricBucket(
-          up, sideCoord, fwd, hipY, kneeY, shoulderY, minY, prof.height,
-          centerSide, halfWidth, softenSide, faceSign, centerFwd
+          up, vx, vz, fwd, hipY, kneeY, shoulderY, minY, prof.height,
+          centerSide, halfWidth, faceSign, centerFwd, footL, footR, handL, handR
         )
-        -- Joints may refine thigh/shin/arm, but must not freeze a limb
-        -- the rest-pose silhouette already accepted.
-        if classified and weight > 0 then
+        -- Joints may refine thigh/shin/arm, and may promote a torso vert
+        -- that the silhouette missed (hanging fingers, tucked wrist).
+        if classified then
           local jBucket, jWeight, jSide = bindNearest(vx, up, vz, classified)
-          if jBucket == "thigh" or jBucket == "shin" or jBucket == "arm" then
-            if (jBucket == "arm") == (bucket == "arm") then
-              bucket = jBucket
+          if weight > 0 then
+            if jBucket == "thigh" or jBucket == "shin" or jBucket == "arm" then
+              if (jBucket == "arm") == (bucket == "arm") then
+                bucket = jBucket
+              elseif jBucket == "arm" and (bucket == "thigh" or bucket == "shin") then
+                bucket = "arm"
+              end
+              if jSide then side = jSide end
+              if jWeight and jWeight > 0 then
+                weight = math.max(weight, jWeight)
+              end
             end
-            if jSide then side = jSide end
-            if jWeight and jWeight > 0 then
-              weight = math.max(weight, jWeight)
-            end
+          elseif jBucket == "arm" and jWeight and jWeight > 0.25 then
+            bucket, weight, side = "arm", jWeight, jSide or side
           end
         end
         buckets[vi] = { bucket = bucket, side = side, weight = weight or 0 }
@@ -536,40 +668,105 @@ function M.build(id, groups, bounds, skeleton)
     rig.groups[gi] = buckets
   end
   stitchFeet(groups, rig, kneeY, minY, prof.height, halfWidth)
+  stitchHands(groups, rig, minY, prof.height, halfWidth)
 
   return rig
 end
 
--- Apply manual vertex overrides exported from the Python editor.
--- `overridesPath` is the path to a Lua file like {char_id}_walk_overrides.lua
--- that contains: return { [1]={{ [1]={bucket="arm",weight=1.0}, ... }}, ... }
--- where the outer keys are 1-based group indices and inner keys are 1-based vertex indices.
+function M.overridePath(id)
+  return ("cache/trainers/%s/walk_overrides.lua"):format(tostring(id or ""))
+end
+
+local function overrideGroups(raw)
+  if type(raw) ~= "table" then return nil end
+  if type(raw.groups) == "table" then return raw.groups end
+  return raw
+end
+
+function M.applyOverrideTable(rig, raw)
+  if not (rig and rig.groups) then return 0 end
+  local groups = overrideGroups(raw)
+  if not groups then return 0 end
+  local applied = 0
+  for groupIdx, groupOverrides in pairs(groups) do
+    local gi = tonumber(groupIdx) or groupIdx
+    if rig.groups[gi] and type(groupOverrides) == "table" then
+      for vertexIdx, override in pairs(groupOverrides) do
+        local vi = tonumber(vertexIdx) or vertexIdx
+        local bucket = rig.groups[gi][vi]
+        if bucket and type(override) == "table" then
+          if override.bucket then bucket.bucket = override.bucket end
+          if override.weight then bucket.weight = override.weight end
+          if override.side then bucket.side = override.side end
+          applied = applied + 1
+        end
+      end
+    end
+  end
+  return applied
+end
+
+function M.applyFromCache(rig, id)
+  if not id or id == "" then return 0 end
+  local path = M.overridePath(id)
+  local raw = GeneratedAssets and GeneratedAssets.readLua and select(1, GeneratedAssets.readLua(path))
+  if type(raw) ~= "table" then return 0 end
+  local n = M.applyOverrideTable(rig, raw)
+  if n > 0 then
+    print("CharacterWalkCycle: applied " .. n .. " painted verts from " .. path)
+  end
+  return n
+end
+
+function M.encodeOverrides(rig)
+  local chunks = {"return {version=1,groups={\n"}
+  for gi, buckets in ipairs(rig.groups or {}) do
+    chunks[#chunks + 1] = "[" .. gi .. "]={"
+    local first = true
+    for vi, b in pairs(buckets or {}) do
+      if type(b) == "table" and type(vi) == "number" then
+        if not first then chunks[#chunks + 1] = "," end
+        first = false
+        chunks[#chunks + 1] = string.format(
+          "[%d]={bucket=%q,side=%s,weight=%.3f}",
+          vi, tostring(b.bucket or "torso"), tostring(b.side or 1), tonumber(b.weight) or 0
+        )
+      end
+    end
+    chunks[#chunks + 1] = "},\n"
+  end
+  chunks[#chunks + 1] = "}}\n"
+  return table.concat(chunks)
+end
+
+function M.writeOverrides(id, rig)
+  if not (GeneratedAssets and GeneratedAssets.write) then return false, "cache writer unavailable" end
+  local body = M.encodeOverrides(rig)
+  return GeneratedAssets.write(M.overridePath(id), body)
+end
+
+function M.bucketColor(bucket, side)
+  if bucket == "arm" then
+    return (side or 1) < 0 and {0.20, 0.75, 1.00} or {1.00, 0.45, 0.15}
+  elseif bucket == "thigh" then
+    return (side or 1) < 0 and {0.25, 0.90, 0.35} or {0.95, 0.85, 0.15}
+  elseif bucket == "shin" then
+    return (side or 1) < 0 and {0.10, 0.55, 0.25} or {0.85, 0.55, 0.10}
+  end
+  return {0.55, 0.55, 0.62}
+end
+
+-- Apply manual vertex overrides exported from the Python editor or the
+-- in-game model viewer. `overridesPath` is a host filesystem path; prefer
+-- M.applyFromCache for generated cache files.
 function M.applyOverrides(rig, overridesPath)
   local ok, overrides = pcall(dofile, overridesPath)
   if not ok or type(overrides) ~= "table" then
     print("CharacterWalkCycle: failed to load overrides from " .. tostring(overridesPath))
     return
   end
-  
-  local appliedCount = 0
-  for groupIdx, groupOverrides in pairs(overrides) do
-    if rig.groups[groupIdx] then
-      for vertexIdx, override in pairs(groupOverrides) do
-        local bucket = rig.groups[groupIdx][vertexIdx]
-        if bucket then
-          if override.bucket then
-            bucket.bucket = override.bucket
-          end
-          if override.weight then
-            bucket.weight = override.weight
-          end
-          appliedCount = appliedCount + 1
-        end
-      end
-    end
-  end
-  
-  print("CharacterWalkCycle: applied " .. appliedCount .. " manual overrides from " .. tostring(overridesPath))
+  local n = M.applyOverrideTable(rig, overrides)
+  print("CharacterWalkCycle: applied " .. n .. " manual overrides from " .. tostring(overridesPath))
 end
 
 -- Advance/decay a smooth 0..1 blend toward `movingNow`, so starting or
