@@ -1623,6 +1623,9 @@ SettingsMenu.helpFor = function(id)
   if id == "DRAMATIC_SHAPE:jumpKey" then
     return "Press A to bind any keyboard key or gamepad button to the jump action. The jump allows you to hop over ledges in the overworld."
   end
+  if id == "DRAMATIC_SHAPE:characterWalkViewer" then
+    return "Opens a limb-color viewer for the current Colosseum character. Left/Right rotate, Up/Down pick a brush, A paints the verts at the crosshair, Select toggles a walk preview, Start saves walk_overrides.lua. Use tools/paint_walk_override.py on the walk_debug.txt dump for desktop painting."
+  end
   return originalHelpFor(id)
 end
 
@@ -2492,6 +2495,17 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
   end)
   if okAnimation and animationRow and not rowExists(animationRow.id) then 
     table.insert(out, animationRow) 
+  end
+
+  local okViewer, viewerRow = pcall(function()
+    local ColosseumTrainer = V.require("ColosseumTrainer")
+    if ColosseumTrainer.available("red") then
+      return V.require("CharacterWalkViewer").row()
+    end
+    return nil
+  end)
+  if okViewer and viewerRow and not rowExists(viewerRow.id) then
+    table.insert(out, viewerRow)
   end
 
   local okWilds, wildsRow = pcall(function()

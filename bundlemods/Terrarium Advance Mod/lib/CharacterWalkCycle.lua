@@ -39,7 +39,7 @@ local V = ...
 local TrainerRig = V.require("TrainerRig")
 local GeneratedAssets = V.require("GeneratedAssets")
 
-local M = { version = 6 }
+local M = { version = 7 }
 
 -- ------- tuning constants (generic human-ish proportions + gait feel)
 
@@ -561,6 +561,27 @@ local function stitchHands(groups, rig, minY, height, halfWidth)
   end
 end
 
+-- One visual leg must share one gait phase. A thigh tagged left and a shin
+-- tagged right swings the knee apart.
+local function unifyLegSides(groups, rig, footL, footR)
+  if not (footL and footR) then return end
+  for gi, g in ipairs(groups or {}) do
+    local base = g.baseVertices
+    local buckets = rig.groups[gi]
+    if base and buckets then
+      for vi = 1, #base do
+        local b = buckets[vi]
+        if b and (b.bucket == "thigh" or b.bucket == "shin") then
+          local v = base[vi]
+          local dL = dist2pt(v[1] or 0, v[2] or 0, v[3] or 0, footL)
+          local dR = dist2pt(v[1] or 0, v[2] or 0, v[3] or 0, footR)
+          b.side = (dL <= dR) and -1 or 1
+        end
+      end
+    end
+  end
+end
+
 -- Split left/right from the actual shoes so a slightly off-center rest
 -- pose does not dump one whole leg on the spine side of centerX.
 local function footSplitX(groups, minY, height, fallback)
@@ -653,7 +674,9 @@ function M.build(id, groups, bounds, skeleton)
               elseif jBucket == "arm" and (bucket == "thigh" or bucket == "shin") then
                 bucket = "arm"
               end
-              if jSide then side = jSide end
+              -- Legs keep nearest-foot side. Joint side can put a shin on
+              -- the opposite gait phase from its thigh and split the knee.
+              if jBucket == "arm" and jSide then side = jSide end
               if jWeight and jWeight > 0 then
                 weight = math.max(weight, jWeight)
               end
@@ -669,6 +692,7 @@ function M.build(id, groups, bounds, skeleton)
   end
   stitchFeet(groups, rig, kneeY, minY, prof.height, halfWidth)
   stitchHands(groups, rig, minY, prof.height, halfWidth)
+  unifyLegSides(groups, rig, footL, footR)
 
   return rig
 end
@@ -743,6 +767,69 @@ function M.writeOverrides(id, rig)
   if not (GeneratedAssets and GeneratedAssets.write) then return false, "cache writer unavailable" end
   local body = M.encodeOverrides(rig)
   return GeneratedAssets.write(M.overridePath(id), body)
+end
+
+function M.debugPath(id)
+  return ("cache/trainers/%s/walk_debug.txt"):format(tostring(id or ""))
+end
+
+function M.encodeDebug(id, groups, rig)
+  local lines = {
+    "# walk_debug v1 id=" .. tostring(id or ""),
+    "# gi vi x y z bucket side weight",
+  }
+  for gi, g in ipairs(groups or {}) do
+    local base = g.baseVertices
+    local buckets = rig and rig.groups and rig.groups[gi]
+    if base then
+      for vi = 1, #base do
+        local v = base[vi]
+        local b = buckets and buckets[vi]
+        lines[#lines + 1] = string.format(
+          "%d %d %.5f %.5f %.5f %s %s %.3f",
+          gi, vi, v[1] or 0, v[2] or 0, v[3] or 0,
+          (b and b.bucket) or "torso", tostring((b and b.side) or 1),
+          tonumber(b and b.weight) or 0
+        )
+      end
+    end
+  end
+  return table.concat(lines, "\n") .. "\n"
+end
+
+function M.writeDebug(id, groups, rig)
+  if not (GeneratedAssets and GeneratedAssets.write) then return false, "cache writer unavailable" end
+  return GeneratedAssets.write(M.debugPath(id), M.encodeDebug(id, groups, rig))
+end
+
+function M.paint(rig, groups, x, y, z, radius, bucket, side, weight)
+  if not (rig and rig.groups) then return 0 end
+  local r2 = (radius or 0.08) * (radius or 0.08)
+  local painted = 0
+  for gi, g in ipairs(groups or {}) do
+    local base = g.baseVertices
+    local buckets = rig.groups[gi]
+    if base and buckets then
+      for vi = 1, #base do
+        local v = base[vi]
+        local dx = (v[1] or 0) - x
+        local dy = (v[2] or 0) - y
+        local dz = (v[3] or 0) - z
+        if dx * dx + dy * dy + dz * dz <= r2 then
+          local b = buckets[vi]
+          if not b then
+            b = {}
+            buckets[vi] = b
+          end
+          b.bucket = bucket or "torso"
+          if side then b.side = side end
+          b.weight = (bucket == "torso") and 0 or (weight or 1)
+          painted = painted + 1
+        end
+      end
+    end
+  end
+  return painted
 end
 
 function M.bucketColor(bucket, side)
@@ -833,7 +920,11 @@ function M.apply(rig, groupIndex, group, phase, blend, out, posedVertices)
         -- position -- so the shin stays joined to the thigh instead of
         -- rotating around a point the thigh has already left behind.
         local kneeSin = (b.side < 0) and -kneeSinR or kneeSinR
-        local kneeAngle = KNEE_BEND * math.max(0, kneeSin) * b.weight * blend
+        -- Flex with this leg's hip, never against it. A lagged opposite
+        -- knee sine made the shin walk the other way from the thigh.
+        local fold = math.max(0, hipSin)
+        if kneeSin > 0 then fold = math.max(fold, kneeSin) end
+        local kneeAngle = KNEE_BEND * fold * b.weight * blend
         local kneeUpNow, kneeFwdNow = rotate2(kneeY, 0, hipY, 0, hipAngle)
         up, fwd = rotate2(up, fwd, hipY, 0, hipAngle)
         up, fwd = rotate2(up, fwd, kneeUpNow, kneeFwdNow, kneeAngle)
