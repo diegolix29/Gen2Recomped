@@ -394,7 +394,7 @@ function StadiumFollower.draw(x, y, facing, yUp)
   local yaw = 0
 
   if Cam and Cam.active() then
-    yaw = -Cam.worldYaw(facing)
+    yaw = Cam.worldYaw(facing)
   elseif b > 0 then
     -- In free-roam mode, use camera-relative rotation like the player model
     local cameraYaw = FirstPerson.cardYaw(x, y)

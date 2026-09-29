@@ -447,7 +447,7 @@ local function drawFieldActors(state, ground)
         local m = Mat4.translate((p.px or 0) + 8, p.gh or 0, (p.py or 0) + 8)
         local Cam = V.require("Gen4ActorCam")
         local yaw = Cam and Cam.worldYaw(p.facing) or 0
-        if yaw ~= 0 then m = Mat4.mul(m, Mat4.rotateY(-yaw)) end
+        if yaw ~= 0 then m = Mat4.mul(m, Mat4.rotateY(yaw)) end
         local scale = mdl.scale or 4.0
         m = Mat4.mul(m, Mat4.scale(scale, scale, scale))
         drew = pcall(Voxel3D.draw, mdl.mesh, mdl.texture, m)
