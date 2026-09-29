@@ -35,7 +35,7 @@ local V = ...
 local TrainerRig = V.require("TrainerRig")
 local GeneratedAssets = V.require("GeneratedAssets")
 
-local M = { version = 9 }
+local M = { version = 10 }
 
 -- ------- tuning constants (generic human-ish proportions + gait feel)
 
@@ -105,15 +105,20 @@ local SIDE_INDEX = (FORWARD_INDEX == 3) and 1 or 3
 -- Swing amplitudes, in radians. Overlay sits on an already-posed idle clip,
 -- so keep the stride small and the sine a little rounded at the peaks.
 local HIP_SWING = 0.2
-local KNEE_BEND = 0.1
+local KNEE_BEND = 0.6
 local ARM_SWING = 0.4
-local KNEE_LAG = 0.08
+-- A walk has to plant IN FRONT of the idle pose, not only recover behind
+-- it. rotate2 > 0 on a hanging limb pulls toward -forward; strideSign
+-- (from the rest-pose feet) flips that into character-front, and this
+-- extra fraction of HIP_SWING is added on the swing-forward half so the
+-- foot passes the body instead of stopping at the hip plane.
+local STRIDE_FRONT = 0.80
 
 -- A small torso bob riding on top of the leg motion, the way a real walk
 -- bobs down-and-up once per FOOTFALL (twice per full left/right cycle) --
 -- see red_3d_player's own `bounce=0.5-0.5*math.cos(phase*2)` for the same
 -- idea applied to its bone rig.
-local BOB_AMOUNT = 0.1
+local BOB_AMOUNT = 0.3
 
 -- ------- jump pose tuning (see M.applyJump below)
 --
@@ -640,7 +645,7 @@ function M.build(id, groups, bounds, skeleton)
     centerSide = footSplitX(groups, minY, prof.height, centerSide)
   end
   local halfWidth = math.max(prof.halfWidth, 0.001)
-  local faceSign = facingSign(groups, bounds, minY, prof.height, centerFwd)
+  local faceSign, footFwd = facingSign(groups, bounds, minY, prof.height, centerFwd)
   local footL, footR, handL, handR = collectAnchors(groups, minY, prof.height, hipY, shoulderY)
 
   local classified = nil
@@ -656,6 +661,11 @@ function M.build(id, groups, bounds, skeleton)
   local rig = {
     hipY = hipY, kneeY = kneeY, shoulderY = shoulderY,
     centerSide = centerSide, version = M.version, groups = {},
+    -- Pendulum origin between the body and the rest-pose shoes so a stride
+    -- can swing past the hip plane. Pivoting at fwd=0 made "forward" look
+    -- like a lift back to idle, and only the back half read as a step.
+    strideSign = faceSign or 1,
+    stridePivotFwd = 2 * ((footFwd or centerFwd) + centerFwd),
   }
 
   for gi, g in ipairs(groups) do
@@ -945,6 +955,8 @@ function M.apply(rig, groupIndex, group, phase, blend, out, posedVertices)
   if not buckets or not base then return out end
 
   local hipY, kneeY, shoulderY = rig.hipY, rig.kneeY, rig.shoulderY
+  local pivotFwd = rig.stridePivotFwd or 0
+  local strideSign = rig.strideSign or 1
 
   -- Both legs' hip-phase and knee-phase sines only ever take one of two
   -- values per frame (the left leg is always exactly half a cycle behind
@@ -961,17 +973,17 @@ function M.apply(rig, groupIndex, group, phase, blend, out, posedVertices)
     local b = buckets[vi]
     if b and b.weight > 0 and blend > 0 then
       local hipSin = (b.side < 0) and -hipSinR or hipSinR
-      local hipAngle = HIP_SWING * hipSin * b.weight * blend
+      -- Negative rotate2 is character-front once multiplied by strideSign.
+      -- (hipSin + STRIDE_FRONT) makes the forward peak larger than the
+      -- back peak so a step actually overshoots the idle pose.
+      local stride = (hipSin - STRIDE_FRONT) * b.weight * blend
+      local hipAngle = -strideSign * HIP_SWING * stride
 
       if b.bucket == "arm" then
-        -- The arm swings opposite its own side's leg, which is the same
-        -- as just negating this side's own hip sine.
-        local armAngle = -ARM_SWING * hipSin * b.weight * blend
-        up, fwd = rotate2(up, fwd, shoulderY, 0, armAngle)
+        local armAngle = strideSign * ARM_SWING * stride
+        up, fwd = rotate2(up, fwd, shoulderY, pivotFwd, armAngle)
       elseif b.bucket == "thigh" or b.bucket == "shin" then
-        -- Same hip rotation for the whole leg. Extra knee FK around a
-        -- midline pivot split the calf from the thigh on these meshes.
-        up, fwd = rotate2(up, fwd, hipY, 0, hipAngle)
+        up, fwd = rotate2(up, fwd, hipY, pivotFwd, hipAngle)
       end
     end
 
