@@ -727,20 +727,25 @@ function OverworldColosseum.draw(p)
   local fx, fz = facingVector(renderFacing)
 
   -- Handle first-person camera rotation (mirrors OverworldStadium's handling)
-  local okFirstPerson, FirstPerson = pcall(V.require, "FirstPerson")
-  if okFirstPerson and FirstPerson then
-    local b = FirstPerson.cardBlend()
-    if b > 0 then
-      local cameraYaw = FirstPerson.cardYaw(p.px or 0, p.py or 0)
-      local face = type(renderFacing) == "string" and string.lower(renderFacing) or renderFacing
-      local yaw = 0
-      if face == "down" then yaw = cameraYaw * b
-      elseif face == "up" then yaw = (cameraYaw + math.pi) * b
-      elseif face == "left" then yaw = (cameraYaw + math.pi / 2) * b
-      elseif face == "right" then yaw = (cameraYaw - math.pi / 2) * b
+  local okCam, Cam = pcall(V.require, "Gen4ActorCam")
+  if okCam and Cam and Cam.active and Cam.active() then
+    fx, fz = Cam.facingVector(renderFacing)
+  else
+    local okFirstPerson, FirstPerson = pcall(V.require, "FirstPerson")
+    if okFirstPerson and FirstPerson then
+      local b = FirstPerson.cardBlend()
+      if b > 0 then
+        local cameraYaw = FirstPerson.cardYaw(p.px or 0, p.py or 0)
+        local face = type(renderFacing) == "string" and string.lower(renderFacing) or renderFacing
+        local yaw = 0
+        if face == "down" then yaw = cameraYaw * b
+        elseif face == "up" then yaw = (cameraYaw + math.pi) * b
+        elseif face == "left" then yaw = (cameraYaw + math.pi / 2) * b
+        elseif face == "right" then yaw = (cameraYaw - math.pi / 2) * b
+        end
+        fx = math.sin(yaw)
+        fz = math.cos(yaw)
       end
-      fx = math.sin(yaw)
-      fz = math.cos(yaw)
     end
   end
 

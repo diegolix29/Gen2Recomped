@@ -825,6 +825,35 @@ function PlayerModel.previewHeight()
   return 1
 end
 
+-- Yaw for the player mesh. Voxel free-roam uses FirstPerson's eye. Gen 4's
+-- native camera is a separate Gen4View (see Gen4ActorCam): that rig never
+-- owns Voxel3D.camera, so cardBlend is always 0 and cardYaw is always the
+-- south default. On a gen4hostworld map the compass is world-space -- the
+-- same +Z-is-south rotateY the rest of this file uses when not in 1st/3rd.
+local function yawForDraw(px, py, facing, kind, b, FirstPerson)
+  local Cam = V.require("Gen4ActorCam")
+  if Cam and Cam.active() then
+    return Cam.worldYaw(facing)
+  end
+  if not (b and b > 0 and FirstPerson) then
+    return (Cam and Cam.worldYaw(facing)) or 0
+  end
+  local cameraYaw = FirstPerson.cardYaw(px + 8, py + 8)
+  facing = type(facing) == "string" and string.lower(facing) or facing
+  if kind == "awayCam" then
+    if facing == "down" then return (cameraYaw + math.pi) * b end
+    if facing == "up" then return cameraYaw * b end
+    if facing == "right" then return (cameraYaw - math.pi / 2) * b end
+    if facing == "left" then return (cameraYaw + math.pi / 2) * b end
+    return cameraYaw * b
+  end
+  if facing == "down" then return cameraYaw * b end
+  if facing == "up" then return (cameraYaw + math.pi) * b end
+  if facing == "left" then return (cameraYaw + math.pi / 2) * b end
+  if facing == "right" then return (cameraYaw - math.pi / 2) * b end
+  return 0
+end
+
 -- Draw the player model at the given position with the given transform.
 -- This integrates with the existing Voxel3D pipeline.
 --- `mirror` is the sprite step-flip flag (see stepFlip in movement.lua /
@@ -840,11 +869,13 @@ end
 --- parameter so callers can keep passing the same stepFlip value used for
 --- the 2D sprite path without needing a special case.
 function PlayerModel.draw(px, py, y, facing, mirror)
-  -- In free-roam mode with FreeMove, use the actual body facing direction
+  -- In voxel free-roam, use the continuous body facing. Gen4's third-person
+  -- camera is not that rig -- keep the entity's world facing instead.
   local FirstPerson = V.require("FirstPerson")
-  local b = FirstPerson.cardBlend()
+  local Cam = V.require("Gen4ActorCam")
+  local gen4Cam = Cam and Cam.active()
+  local b = (not gen4Cam) and FirstPerson.cardBlend() or 0
   if b > 0 then
-    -- Use the continuous body facing from FirstPerson instead of grid facing
     facing = FirstPerson.pointBody(0, 0)
   end
   
@@ -857,20 +888,21 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     local dt = 1 / 60  -- Assume 60 FPS, same assumption the Stadium branch makes
     ColosseumMon.update(currentColosseumDex, colosseumVariant, dt)
 
-    -- Check if we're in free-roam mode (1st or 3rd person)
-    local FirstPerson = V.require("FirstPerson")
-    local b = FirstPerson.cardBlend()
-    
     -- Detect if player is moving by checking actual input
     local Game = require("src.core.Game")
     local isMoving = Game.input:isDown("up") or Game.input:isDown("down") 
                     or Game.input:isDown("left") or Game.input:isDown("right")
     
     local fx, fz
-    local m
-    
-    if isMoving and b > 0 then
-      -- When moving in free-roam mode, detect which key is pressed and use that direction
+    local m = Mat4.translate(px + 8, y, py + 8)
+    local yaw = yawForDraw(px, py, facing, "awayCam", b, FirstPerson)
+
+    if gen4Cam or not (b > 0) then
+      if yaw ~= 0 then
+        m = Mat4.mul(m, Mat4.rotateY(yaw))
+      end
+      fx, fz = ColosseumMon.towardFor(facing)
+    elseif isMoving then
       local moveDirection = facing
       if Game.input:isDown("up") then
         moveDirection = "up"
@@ -881,78 +913,19 @@ function PlayerModel.draw(px, py, y, facing, mirror)
       elseif Game.input:isDown("right") then
         moveDirection = "right"
       end
-      
-      -- Calculate rotation based on camera yaw and movement direction
-      local cameraYaw = FirstPerson.cardYaw(px + 8, py + 8)
-      local yaw = 0
-      
-      if moveDirection == "down" then
-        yaw = (cameraYaw + math.pi) * b
-      elseif moveDirection == "up" then
-        yaw = cameraYaw * b
-      elseif moveDirection == "right" then
-        yaw = (cameraYaw - math.pi / 2) * b
-      elseif moveDirection == "left" then
-        yaw = (cameraYaw + math.pi / 2) * b
-      end
-      
-      -- Create base matrix with position
-      m = Mat4.translate(px + 8, y, py + 8)
-      
-      -- Apply the calculated rotation
+      yaw = yawForDraw(px, py, moveDirection, "awayCam", b, FirstPerson)
       if yaw ~= 0 then
         m = Mat4.mul(m, Mat4.rotateY(yaw))
       end
-      
-      -- Use forward direction for towardFor (the rotation handles the actual direction)
       fx, fz = ColosseumMon.towardFor("up")
-      local tempM = ColosseumMon.matrix(currentColosseumDex, colosseumVariant, 0, 0, 0, fx, fz)
-      if tempM then
-        -- Extract just the scale/transform parts from the Colosseum matrix
-        -- and apply them to our positioned+rotated matrix
-        m = Mat4.mul(m, tempM)
-      end
-    elseif b > 0 then
-      -- When idle in free-roam mode, follow camera yaw
-      local cameraYaw = FirstPerson.cardYaw(px + 8, py + 8)
-      
-      -- Create base matrix with position
-      m = Mat4.translate(px + 8, y, py + 8)
-      
-      -- Apply camera yaw rotation
-      m = Mat4.mul(m, Mat4.rotateY(cameraYaw))
-      
-      -- Use forward direction for towardFor
-      fx, fz = ColosseumMon.towardFor("up")
-      local tempM = ColosseumMon.matrix(currentColosseumDex, colosseumVariant, 0, 0, 0, fx, fz)
-      if tempM then
-        m = Mat4.mul(m, tempM)
-      end
     else
-      -- In other modes, use simple movement direction
-      -- Create base matrix with position
-      m = Mat4.translate(px + 8, y, py + 8)
-      
-      -- Apply simple rotation based on facing
-      local yaw = 0
-      if facing == "right" then
-        yaw = math.pi / 2
-      elseif facing == "up" then
-        yaw = math.pi
-      elseif facing == "left" then
-        yaw = -math.pi / 2
-      end
-      
-      if yaw ~= 0 then
-        m = Mat4.mul(m, Mat4.rotateY(yaw))
-      end
-      
-      -- Use facing direction for towardFor
-      fx, fz = ColosseumMon.towardFor(facing)
-      local tempM = ColosseumMon.matrix(currentColosceumDex, colosseumVariant, 0, 0, 0, fx, fz)
-      if tempM then
-        m = Mat4.mul(m, tempM)
-      end
+      m = Mat4.mul(m, Mat4.rotateY(FirstPerson.cardYaw(px + 8, py + 8)))
+      fx, fz = ColosseumMon.towardFor("up")
+    end
+
+    local tempM = ColosseumMon.matrix(currentColosseumDex, colosseumVariant, 0, 0, 0, fx, fz)
+    if tempM then
+      m = Mat4.mul(m, tempM)
     end
 
     -- Detect if we're in Gen4's native 3D world and adjust scale
@@ -990,39 +963,8 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     -- Calculate the model matrix based on position and facing
     local m = Mat4.translate(px + 8, y, py + 8)
     
-    -- Check if we're in free-roam mode (1st or 3rd person)
-    local FirstPerson = V.require("FirstPerson")
-    local b = FirstPerson.cardBlend()
-    
     -- Apply rotation based on facing direction
-    local yaw = 0
-    if b > 0 then
-      -- In free-roam mode, use camera-relative rotation like StadiumFollower
-      local cameraYaw = FirstPerson.cardYaw(px + 8, py + 8)
-      
-      if facing == "down" then
-        -- Moving backwards: face the camera
-        yaw = cameraYaw * b
-      elseif facing == "up" then
-        -- Moving forward: face away from the camera
-        yaw = (cameraYaw + math.pi) * b
-      elseif facing == "left" then
-        -- Moving left: turn 90 degrees left
-        yaw = (cameraYaw + math.pi / 2) * b
-      elseif facing == "right" then
-        -- Moving right: turn 90 degrees right
-        yaw = (cameraYaw - math.pi / 2) * b
-      end
-    else
-      -- In other modes, rotate based on movement direction
-      if facing == "right" then
-        yaw = math.pi / 2
-      elseif facing == "up" then
-        yaw = math.pi
-      elseif facing == "left" then
-        yaw = -math.pi / 2
-      end
-    end
+    local yaw = yawForDraw(px, py, facing, "towardCam", b, FirstPerson)
     
     if yaw ~= 0 then
       m = Mat4.mul(m, Mat4.rotateY(yaw))
@@ -1132,14 +1074,9 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     local m = Mat4.translate(px + 8, y, py + 8)
     
     -- Apply rotation based on facing direction (same as Pokemon models)
-    local yaw = 0
-    
-    if b > 0 then
-      -- In free-roam mode, use camera-relative rotation like Pokemon models
-      local cameraYaw = FirstPerson.cardYaw(px + 8, py + 8)
-      
+    local yaw = yawForDraw(px, py, facing, "awayCam", b, FirstPerson)
+    if (not gen4Cam) and b > 0 then
       if isMoving then
-        -- When moving in free-roam mode, detect which key is pressed and use that direction
         local moveDirection = facing
         if Game.input:isDown("up") then
           moveDirection = "up"
@@ -1150,29 +1087,9 @@ function PlayerModel.draw(px, py, y, facing, mirror)
         elseif Game.input:isDown("right") then
           moveDirection = "right"
         end
-        
-        -- Calculate rotation based on camera yaw and movement direction
-        if moveDirection == "down" then
-          yaw = (cameraYaw + math.pi) * b
-        elseif moveDirection == "up" then
-          yaw = cameraYaw * b
-        elseif moveDirection == "right" then
-          yaw = (cameraYaw - math.pi / 2) * b
-        elseif moveDirection == "left" then
-          yaw = (cameraYaw + math.pi / 2) * b
-        end
+        yaw = yawForDraw(px, py, moveDirection, "awayCam", b, FirstPerson)
       else
-        -- When idle in free-roam mode, follow camera yaw
-        yaw = cameraYaw * b
-      end
-    else
-      -- In other modes, use simple movement direction
-      if facing == "right" then
-        yaw = math.pi / 2
-      elseif facing == "up" then
-        yaw = math.pi
-      elseif facing == "left" then
-        yaw = -math.pi / 2
+        yaw = FirstPerson.cardYaw(px + 8, py + 8) * b
       end
     end
     
@@ -1222,14 +1139,7 @@ function PlayerModel.draw(px, py, y, facing, mirror)
   local m = Mat4.translate(px + 8, y, py + 8)
   
   -- Apply rotation based on facing direction
-  local yaw = 0
-  if facing == "right" then
-    yaw = math.pi / 2
-  elseif facing == "up" then
-    yaw = math.pi
-  elseif facing == "left" then
-    yaw = -math.pi / 2
-  end
+  local yaw = yawForDraw(px, py, facing, "towardCam", b, FirstPerson)
   
   if yaw ~= 0 then
     m = Mat4.mul(m, Mat4.rotateY(yaw))

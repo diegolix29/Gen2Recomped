@@ -387,12 +387,15 @@ function StadiumFollower.draw(x, y, facing, yUp)
 
   -- Check if we're in free-roam mode (1st or 3rd person)
   local FirstPerson = V.require("FirstPerson")
+  local Cam = V.require("Gen4ActorCam")
   local b = FirstPerson.cardBlend()
 
   -- Apply rotation based on facing direction
   local yaw = 0
 
-  if b > 0 then
+  if Cam and Cam.active() then
+    yaw = Cam.worldYaw(facing)
+  elseif b > 0 then
     -- In free-roam mode, use camera-relative rotation like the player model
     local cameraYaw = FirstPerson.cardYaw(x, y)
 

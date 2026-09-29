@@ -383,10 +383,10 @@ local function drawFieldActors(state, ground)
     if ground.groundY then
       gh = ground:groundY((mapX or 0) + 8, (mapY or 0) + 8) or 0
     end
+    -- World compass facing, not view:worldToScreen. That remap is for 2D
+    -- sprite frames under an orbited camera; feeding it to a mesh rotateY
+    -- locks the model on south (the cartridge's default look).
     local facing = e.facing or "down"
-    if view.worldToScreen then
-      facing = view:worldToScreen(facing) or facing
-    end
     posed[#posed + 1] = {
       sprite = e.sprite,
       px = (mapX or 0) + ox,
@@ -445,12 +445,8 @@ local function drawFieldActors(state, ground)
       local mdl = p.entity and p.entity.model3d
       if not drew and mdl and mdl.mesh then
         local m = Mat4.translate((p.px or 0) + 8, p.gh or 0, (p.py or 0) + 8)
-        local yaw = 0
-        local facing = p.facing
-        if facing == "right" then yaw = math.pi / 2
-        elseif facing == "up" then yaw = math.pi
-        elseif facing == "left" then yaw = -math.pi / 2
-        end
+        local Cam = V.require("Gen4ActorCam")
+        local yaw = Cam and Cam.worldYaw(p.facing) or 0
         if yaw ~= 0 then m = Mat4.mul(m, Mat4.rotateY(yaw)) end
         local scale = mdl.scale or 4.0
         m = Mat4.mul(m, Mat4.scale(scale, scale, scale))
@@ -585,16 +581,23 @@ function Host.renderBattle(state, arena, textures, token)
     if view and type(view.matrix) == "function" then
       Voxel3D.vp = view:matrix(fw, fh)
     end
-    Voxel3D.eye = worldCam.eye
     Voxel3D.focus = worldCam.focus
+    -- BattleCam cells are map-local. worldCam.eye includes the chunk origin,
+    -- so yawToward(cell, worldEye) treats every mon as if the lens were still
+    -- due south. Pose cards against the map-local eye, then light them with
+    -- the world eye the NSBMD pass already used.
+    local mapEye = { cam.eye[1], worldCam.eye[2], cam.eye[3] }
+    Voxel3D.eye = mapEye
+    local pull = V.require("BattleBillboard").PULL
+    local cards = BattleScene.monCards(arena, groundY, textures) or {}
+    Voxel3D.eye = worldCam.eye
     local sh = love.graphics.getShader()
     if sh then
       pcall(sh.send, sh, "vp", "row", Voxel3D.vp)
       pcall(sh.send, sh, "eye", Voxel3D.eye)
     end
-    local pull = V.require("BattleBillboard").PULL
     pcall(function()
-      for _, card in ipairs(BattleScene.monCards(arena, groundY, textures) or {}) do
+      for _, card in ipairs(cards) do
         local model = card.model
         if worldShift then model = Mat4.mul(worldShift, model) end
         Voxel3D.draw(V.require("BattleBillboard").mesh(), card.tex, model,
