@@ -417,18 +417,31 @@ function Host.renderBattle(state, arena, textures, token)
   local Mat4 = V.require("Mat4")
   local worldShift = (ox ~= 0 or oz ~= 0) and Mat4.translate(ox, 0, oz) or nil
   pcall(function()
-    if not Voxel3D.beginScene(pw, ph, cx, cz, vw, vh, nil, "current") then
+    local St = V.require("Stadium")
+    if St and St.update then
+      -- Same floor the NSBMD mesh is standing on, not the voxel 0 that
+      -- buried every actor in the terrain.
+      pcall(St.update, 0, state, groundY)
+    end
+  end)
+  pcall(function()
+    if not Voxel3D.beginScene(fw, fh, cx, cz, vw, vh, nil, "current") then
       return
     end
-    -- beginScene rebuilds vp from Voxel3D.camera at letterbox size. The
-    -- terrain was rasterised into the supersampled free target with
-    -- Gen4View.matrix; actors have to use that same matrix or they sit
-    -- inside the mesh / off the lens.
+    -- beginScene uploads its own vp. The terrain was drawn with
+    -- Gen4View.matrix into this same target; replace AND re-send or
+    -- Pokemon/trainers project through the old lens (inside the mesh,
+    -- or off the camera entirely).
     if view and type(view.matrix) == "function" then
       Voxel3D.vp = view:matrix(fw, fh)
     end
     Voxel3D.eye = worldCam.eye
     Voxel3D.focus = worldCam.focus
+    local sh = love.graphics.getShader()
+    if sh then
+      pcall(sh.send, sh, "vp", "row", Voxel3D.vp)
+      pcall(sh.send, sh, "eye", Voxel3D.eye)
+    end
     local pull = V.require("BattleBillboard").PULL
     pcall(function()
       for _, card in ipairs(BattleScene.monCards(arena, groundY, textures) or {}) do
