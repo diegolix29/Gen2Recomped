@@ -322,6 +322,11 @@ end
 
 local function wantFieldActor(e, state)
   if not e or e.hidden then return false end
+  -- Sprite-only followers (wildlife/roamers without 3D models) should not be in voxel pass
+  -- They should render through normal sprite path which respects terrain height
+  if (e.wildsFollower or e._wildsFollowerSpecies) and not (e.model3d and e.model3d.mesh) then
+    return false
+  end
   if e.isFollower or e.wildsFollower or e._wildsFollowerSpecies then
     return true
   end
@@ -367,6 +372,7 @@ end
 -- so these actors used to keep voxel y=0 and sit in the mesh.
 local function drawFieldActors(state, ground)
   Host._skipFeet = {}
+
   if not (state and ground) then return end
   local view = ground.view3d
   if not (view and view.isFree and view:isFree()) then return end
@@ -462,13 +468,136 @@ local function drawFieldActors(state, ground)
   Voxel3D.endScene()
 end
 
+local function followerWalkTex(e)
+  local sp = e and e.sprite
+  if not (sp and love and love.graphics) then return nil, 16, 16 end
+  local tw = tonumber(sp.tileW) or 16
+  local th = tonumber(sp.tileH) or 16
+  local img = sp.image
+  if type(sp.resolveImage) == "function" then
+    local okImg, got = pcall(sp.resolveImage, sp)
+    if okImg and got then img = got end
+  end
+  if not img then return nil, tw, th end
+  local facing, phase, flip = e.facing or "down", 0, e.stepFlip
+  if type(e.pose) == "function" then
+    local ok, _, _, _, face, ph, fl = pcall(e.pose, e)
+    if ok then
+      facing = face or facing
+      phase = ph or 0
+      if fl ~= nil then flip = fl end
+    end
+  end
+  local frame, doFlip = 0, flip
+  if type(sp.poseFrame) == "function" then
+    local ok, fr, fl = pcall(sp.poseFrame, sp, facing, phase, e.stepFlip)
+    if ok then
+      frame = fr or 0
+      if fl ~= nil then doFlip = fl end
+    end
+  end
+  local quad = sp.frames and (sp.frames[frame] or sp.frames[0])
+  local g = love.graphics
+  local card = e._gen4FollowerCard
+  if not (card and card.getWidth and card:getWidth() == tw
+      and card.getHeight and card:getHeight() == th) then
+    local okNew, c = pcall(g.newCanvas, tw, th)
+    if not (okNew and c) then return nil, tw, th end
+    e._gen4FollowerCard = c
+    card = c
+  end
+  local prev = { g.getCanvas() }
+  pcall(g.setCanvas, card)
+  g.clear(0, 0, 0, 0)
+  g.setColor(1, 1, 1, 1)
+  if quad then
+    if doFlip then
+      g.draw(img, quad, tw, 0, 0, -1, 1)
+    else
+      g.draw(img, quad, 0, 0)
+    end
+  else
+    g.draw(img, 0, 0)
+  end
+  pcall(function()
+    if prev[1] then g.setCanvas(unpack(prev)) else g.setCanvas() end
+  end)
+  return card, tw, th
+end
+
+-- Wildlife OPTIONS followers: the 2D walk sheet, standing on BDHC height in
+-- the same framebuffer as the NSBMD chunks. Colosseum mesh substitution
+-- buried them (actor origin is the model centre).
+local function drawWildsFollowerSprites(state, ground)
+  if not (state and ground) then return end
+  local view = ground.view3d
+  if not (view and view.isFree and view:isFree()) then return end
+  local Voxel3D = V.require("Voxel3D")
+  local BB = V.require("BattleBillboard")
+  if not (BB and BB.mesh and BB.matrix) then return end
+  local mesh = BB.mesh()
+  if not mesh then return end
+  local ox = ground.offsetX or 0
+  local oz = ground.offsetY or 0
+  local cards = {}
+  local seen = {}
+  local function add(e, mapX, mapY)
+    if not e or e.hidden or seen[e] then return end
+    if not (e.pokepcTrailer or e.wildsFollower or e._wildsFollowerSpecies) then
+      return
+    end
+    -- Exclude sprite-only followers from battle billboard rendering
+    -- They should render through normal sprite path
+    if (e.wildsFollower or e._wildsFollowerSpecies) and not (e.model3d and e.model3d.mesh) then
+      return
+    end
+    seen[e] = true
+    local gh = 0
+    if ground.groundY then
+      gh = ground:groundY((mapX or 0) + 8, (mapY or 0) + 8) or 0
+    end
+    cards[#cards + 1] = {
+      e = e, mapX = mapX, mapY = mapY, gh = gh,
+    }
+  end
+  for _, e in ipairs(state.entities or {}) do add(e, e.px, e.py) end
+  for _, e in ipairs(state.pokepcTrailers or {}) do add(e, e.px, e.py) end
+  for _, g in ipairs(state.ghosts or {}) do
+    local npc = g and g.npc
+    if npc then
+      add(npc, (npc.px or 0) + (g.ox or 0), (npc.py or 0) + (g.oy or 0))
+    end
+  end
+  if #cards == 0 then return end
+  if not beginFieldVoxel(state, ground) then return end
+  pcall(function()
+    local eye = Voxel3D.eye
+    Voxel3D.seams(false)
+    for _, c in ipairs(cards) do
+      local tex, tw, th = followerWalkTex(c.e)
+      if tex then
+        local x = (c.mapX or 0) + 8 + ox
+        local z = (c.mapY or 0) + 8 + oz
+        local yaw = BB.yawToward and BB.yawToward(x, z, eye) or 0
+        local model = BB.matrix(x, c.gh or 0, z, tw, th, yaw)
+        local okDraw = pcall(Voxel3D.draw, mesh, tex, model, BB.PULL or 1.5)
+        if okDraw then
+          Host._skipFeet[spriteKey(c.mapX, c.mapY)] = true
+        end
+      end
+    end
+    Voxel3D.seams(true)
+  end)
+  Voxel3D.endScene()
+end
+
 -- 3D grass into the still-bound gen4 target, before characters (depth test
--- against houses). Followers use the same pass so they stand on BDHC height
--- instead of voxel y=0. Wind/weather wait for endFree, after sprites.
+-- against houses). Wind/weather wait for endFree, after sprites.
 function Host.overlay3D(ground)
   local ow = game() and game().overworld
   if not (ground and ow) then return end
   Host._drawGround = ground
+  Host._skipFeet = {}
   if Host.effectsOn() then
     pcall(drawGrass, ow, ground)
   end

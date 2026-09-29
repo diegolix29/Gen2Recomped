@@ -949,9 +949,25 @@ function PlayerModel.draw(px, py, y, facing, mirror)
       
       -- Use facing direction for towardFor
       fx, fz = ColosseumMon.towardFor(facing)
-      local tempM = ColosseumMon.matrix(currentColosseumDex, colosseumVariant, 0, 0, 0, fx, fz)
+      local tempM = ColosseumMon.matrix(currentColosceumDex, colosseumVariant, 0, 0, 0, fx, fz)
       if tempM then
         m = Mat4.mul(m, tempM)
+      end
+    end
+
+    -- Detect if we're in Gen4's native 3D world and adjust scale
+    -- Gen4 NSBMD world has different proportions than voxel worlds
+    local okGame, Game = pcall(require, "src.core.Game")
+    if okGame and Game then
+      local game = Game.get and Game:get()
+      if game and game.overworld and game.overworld.map then
+        local map = game.overworld.map
+        local renderer = map and map.renderer
+        local gen4Ground = renderer and renderer.gen4Ground
+        if gen4Ground then
+          -- In Gen4's native NSBMD world, scale up to match terrain proportions
+          m = Mat4.mul(m, Mat4.scale(2.0, 2.0, 2.0))
+        end
       end
     end
 
@@ -1017,6 +1033,23 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     -- Apply scaling for Stadium model (use similar scale to Pokemon in battles)
     local model = currentStadiumModel
     local scale = StadiumMon.scaleFor(model) * 1.5  -- 0.5 * 4 = 2.0 (4x larger for Mewtwo)
+    
+    -- Detect if we're in Gen4's native 3D world and adjust scale
+    -- Gen4 NSBMD world has different proportions than voxel worlds
+    local okGame, Game = pcall(require, "src.core.Game")
+    if okGame and Game then
+      local game = Game.get and Game:get()
+      if game and game.overworld and game.overworld.map then
+        local map = game.overworld.map
+        local renderer = map and map.renderer
+        local gen4Ground = renderer and renderer.gen4Ground
+        if gen4Ground then
+          -- In Gen4's native NSBMD world, use larger scale to match terrain proportions
+          scale = scale * 1.7  -- Double the scale for Gen4
+        end
+      end
+    end
+    
     m = Mat4.mul(m, Mat4.scale(scale, scale, scale))
     
     -- Stand the model on its own lowest point and give back HOVER_CAP of
@@ -1157,6 +1190,15 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     -- Apply character scale from cache
     local cached = characterCache[currentCharacterId]
     local scale = cached and cached.scale or 1.0
+    
+    -- Detect if we're in Gen4's native 3D world and adjust scale
+    -- Gen4 NSBMD world has different proportions than voxel worlds
+    local gen4Ground = ow and ow.map and ow.map.renderer and ow.map.renderer.gen4Ground
+    if gen4Ground then
+      -- In Gen4's native NSBMD world, scale up to match terrain proportions
+      scale = scale * 2.0
+    end
+    
     m = Mat4.mul(m, Mat4.scale(scale, scale, scale))
     
     -- Draw each material group with its texture
