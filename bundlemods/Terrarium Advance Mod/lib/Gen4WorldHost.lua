@@ -344,12 +344,19 @@ function Host.renderBattle(state, arena, textures, token)
   if not (pw and ph and pw > 0 and ph > 0) then return nil end
 
   local hostMap = (arena and arena.map) or (state and state.map)
+  local ox = ground.offsetX or 0
+  local oz = ground.offsetY or 0
   local groundY = 0
   if ground.groundY and arena and arena.mid then
     groundY = ground:groundY(arena.mid[1], arena.mid[2]) or 0
   elseif BattleScene.groundY then
     groundY = BattleScene.groundY(hostMap, arena) or 0
   end
+
+  -- The telephoto rig stands five tiles back, which on a Sinnoh interior
+  -- is through a wall. Wide is the same composition at a distance the room
+  -- can actually hold.
+  if arena and arena.cam == nil then arena.cam = "wide" end
 
   local cam = nil
   if BattleCam and BattleCam.rig then
@@ -358,21 +365,34 @@ function Host.renderBattle(state, arena, textures, token)
   if not (cam and cam.eye and cam.focus) then return nil end
   cam.fov = BattleScene.letterboxFov(cam.fov, ph, s)
 
+  -- Gen4View / NSBMD chunks live in origin-offset world units. BattleCam
+  -- and Stadium cells are map-local. One space for the lens and the actors.
+  local worldCam = {
+    eye = { cam.eye[1] + ox, cam.eye[2], cam.eye[3] + oz },
+    focus = { cam.focus[1] + ox, cam.focus[2], cam.focus[3] + oz },
+    fov = cam.fov,
+    curve = 0,
+  }
+
   local Gen4View = engineRequire("src.render.Gen4View")
   if not Gen4View then return nil end
   local view = ground.view3d
   if not view then
-    view = Gen4View.new("field3d")
+    view = Gen4View.new("third")
     ground.view3d = view
   end
-  view.x, view.y, view.z = cam.eye[1], cam.eye[2], cam.eye[3]
-  local dx = cam.focus[1] - cam.eye[1]
-  local dy = cam.focus[2] - cam.eye[2]
-  local dz = cam.focus[3] - cam.eye[3]
+  local savedMode = view.mode
+  -- field3d derives fov from the cartridge camera distance, which is not
+  -- this fight's lens. Third-person uses view.fovY as-is.
+  view.mode = "third"
+  view.x, view.y, view.z = worldCam.eye[1], worldCam.eye[2], worldCam.eye[3]
+  local dx = worldCam.focus[1] - worldCam.eye[1]
+  local dy = worldCam.focus[2] - worldCam.eye[2]
+  local dz = worldCam.focus[3] - worldCam.eye[3]
   local flat = math.sqrt(dx * dx + dz * dz)
   view.yaw = math.atan2(dx, -dz)
   view.pitch = math.deg(math.atan2(-dy, math.max(flat, 1e-6)))
-  view.fovY = math.deg(cam.fov or view.fovY or 50)
+  view.fovY = math.deg(worldCam.fov or view.fovY or 50)
   ground.cameraPlaced = true
 
   Host._inBattle = true
@@ -380,29 +400,53 @@ function Host.renderBattle(state, arena, textures, token)
   local endFree = Host._endFree or ground.endFree
   local painted = drawFree(ground, pw, ph)
   if not painted then
+    view.mode = savedMode
     if endFree then pcall(endFree, ground) end
     Host._inBattle = false
     return nil
   end
   pcall(Host.overlay3D, ground)
 
-  Voxel3D.camera = cam
-  local cx, cz = arena.mid[1], arena.mid[2]
+  Voxel3D.camera = worldCam
+  local cx, cz = arena.mid[1] + ox, arena.mid[2] + oz
   local vh = (BattleCam.frameH and BattleCam.frameH(arena)) or 34
   vh = vh * ph / (select(2, BattleScene.surface()) * s)
   local vw = vh * pw / ph
+  local fw = ground.freeW or pw
+  local fh = ground.freeH or ph
+  local Mat4 = V.require("Mat4")
+  local worldShift = (ox ~= 0 or oz ~= 0) and Mat4.translate(ox, 0, oz) or nil
   pcall(function()
     if not Voxel3D.beginScene(pw, ph, cx, cz, vw, vh, nil, "current") then
       return
     end
+    -- beginScene rebuilds vp from Voxel3D.camera at letterbox size. The
+    -- terrain was rasterised into the supersampled free target with
+    -- Gen4View.matrix; actors have to use that same matrix or they sit
+    -- inside the mesh / off the lens.
+    if view and type(view.matrix) == "function" then
+      Voxel3D.vp = view:matrix(fw, fh)
+    end
+    Voxel3D.eye = worldCam.eye
+    Voxel3D.focus = worldCam.focus
+    local pull = V.require("BattleBillboard").PULL
     pcall(function()
-      V.require("Stadium").draw(V.require("BattleBillboard").PULL)
+      for _, card in ipairs(BattleScene.monCards(arena, groundY, textures) or {}) do
+        local model = card.model
+        if worldShift then model = Mat4.mul(worldShift, model) end
+        Voxel3D.draw(V.require("BattleBillboard").mesh(), card.tex, model,
+                     pull)
+      end
+    end)
+    pcall(function()
+      V.require("Stadium").draw(pull, worldShift)
     end)
     pcall(function()
       local CSM = V.CurrentSpriteModels
       if CSM and type(CSM.drawWorld) == "function" then
         CSM:drawWorld({
           width = pw, height = ph, arena = arena, battle = state,
+          originX = ox, originZ = oz,
         })
       end
     end)
@@ -419,7 +463,13 @@ function Host.renderBattle(state, arena, textures, token)
       local prev = { g.getCanvas() }
       pcall(g.setCanvas, dest)
       g.setColor(1, 1, 1, 1)
-      pcall(g.draw, src, 0, 0)
+      local sw, sh = src.getWidth and src:getWidth() or pw,
+                     src.getHeight and src:getHeight() or ph
+      if sw ~= pw or sh ~= ph then
+        pcall(g.draw, src, 0, 0, 0, pw / sw, ph / sh)
+      else
+        pcall(g.draw, src, 0, 0)
+      end
       pcall(g.setCanvas, prev[1] or nil)
       colour = dest
     else
@@ -428,13 +478,17 @@ function Host.renderBattle(state, arena, textures, token)
   end
   if endFree then pcall(endFree, ground) end
   Host._inBattle = false
-  if not colour then return nil end
+  if not colour then
+    view.mode = savedMode
+    return nil
+  end
 
-  local vp = Voxel3D.vp
-  local pmx, pmy = BattleScene.toGB(vp, arena.player[1], groundY, arena.player[2],
-                                    lx, ly, s, pw, ph)
-  local emx, emy = BattleScene.toGB(vp, arena.enemy[1], groundY, arena.enemy[2],
-                                    lx, ly, s, pw, ph)
+  local vp = (view and view.matrix) and view:matrix(pw, ph) or Voxel3D.vp
+  local pmx, pmy = BattleScene.toGB(vp, arena.player[1] + ox, groundY,
+                                    arena.player[2] + oz, lx, ly, s, pw, ph)
+  local emx, emy = BattleScene.toGB(vp, arena.enemy[1] + ox, groundY,
+                                    arena.enemy[2] + oz, lx, ly, s, pw, ph)
+  view.mode = savedMode
   if not (pmx and emx) then
     pmx, pmy = 40, 100
     emx, emy = 120, 40
@@ -446,8 +500,8 @@ function Host.renderBattle(state, arena, textures, token)
     playerSpan = 16,
     enemySpan = 16,
     lx = lx, ly = ly, scale = s, pw = pw, ph = ph,
-    eye = { cam.eye[1], cam.eye[2], cam.eye[3] },
-    focus = { cam.focus[1], cam.focus[2], cam.focus[3] },
+    eye = { worldCam.eye[1], worldCam.eye[2], worldCam.eye[3] },
+    focus = { worldCam.focus[1], worldCam.focus[2], worldCam.focus[3] },
     vp = vp,
     gen4World = true,
   }

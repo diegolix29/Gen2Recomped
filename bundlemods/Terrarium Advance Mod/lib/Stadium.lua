@@ -719,13 +719,18 @@ function Stadium.captureBody()
            hh = math.max(4, h * 0.55) }
 end
 
-function Stadium.draw(pull)
+function Stadium.draw(pull, worldShift)
   if not session then return end
+  local Mat4 = worldShift and V.require("Mat4") or nil
   for _, side in ipairs({ "enemy", "player" }) do
     local mon = session[side]
     if mon.rig and mon.visible and mon.model_matrix then
       Stadium.guard(side, mon, "draw", function()
-        mon.rig:draw(mon.model_matrix, pull)
+        local matrix = mon.model_matrix
+        if Mat4 and worldShift then
+          matrix = Mat4.mul(worldShift, matrix)
+        end
+        mon.rig:draw(matrix, pull)
       end)
     end
   end
