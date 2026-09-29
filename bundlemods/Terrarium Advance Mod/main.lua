@@ -157,15 +157,6 @@ local DrawDistance = V.require("DrawDistance")
 local OverworldBattle = V.require("OverworldBattle")
 local WildRoamers = V.require("WildRoamers")
 local BattleExit = V.require("BattleExit")
--- Gen 4 (Platinum): the engine already draws a real 3D world, so Terrarium's
--- effects ride on it instead of rebuilding it (lib/Gen4Bridge.lua). Installed
--- only on a Gen 4 cartridge (the hook and the grass effect; on Gen 1-3 the
--- bridge module is loaded but does nothing).
-local Gen4Bridge = V.require("Gen4Bridge")
-V.Gen4Bridge = Gen4Bridge
-if Gen4Bridge.isGen4() and Gen4Bridge.install() then
-  Gen4Bridge.register("grass", V.require("Gen4Grass").draw)
-end
 -- Battle UI hiding system for all generations
 local BattleBoxXY = V.require("BattleBoxXY")
 
@@ -436,9 +427,6 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
   -- answer false here, and the engine keeps the vanilla 2D path -- which
   -- is why no caller ever has to guard for a missing 3D pass.
   available = function()
-    -- Gen 4 draws its own 3D world (Gen4Ground); a voxelised tilemap would
-    -- REPLACE it. Stand down and let lib/Gen4Bridge.lua add effects instead.
-    if Gen4Bridge.isGen4() then return false end
     return Voxel3D.available()
   end,
 
