@@ -139,6 +139,8 @@ end
 local Voxel = V.require("VoxelState")
 local Voxel3D = V.require("Voxel3D")
 local VoxelScene = V.require("VoxelScene")
+local Gen4WorldHost = V.require("Gen4WorldHost")
+V.Gen4WorldHost = Gen4WorldHost
 local TiltShift = V.require("TiltShift")
 local ChunkMesher = V.require("ChunkMesher")
 local WarpPrefetch = V.require("WarpPrefetch")
@@ -157,15 +159,6 @@ local DrawDistance = V.require("DrawDistance")
 local OverworldBattle = V.require("OverworldBattle")
 local WildRoamers = V.require("WildRoamers")
 local BattleExit = V.require("BattleExit")
--- Gen 4 (Platinum): the engine already draws a real 3D world, so Terrarium's
--- effects ride on it instead of rebuilding it (lib/Gen4Bridge.lua). Installed
--- only on a Gen 4 cartridge (the hook and the grass effect; on Gen 1-3 the
--- bridge module is loaded but does nothing).
-local Gen4Bridge = V.require("Gen4Bridge")
-V.Gen4Bridge = Gen4Bridge
-if Gen4Bridge.isGen4() and Gen4Bridge.install() then
-  Gen4Bridge.register("grass", V.require("Gen4Grass").draw)
-end
 -- Battle UI hiding system for all generations
 local BattleBoxXY = V.require("BattleBoxXY")
 
@@ -444,9 +437,6 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
   -- answer false here, and the engine keeps the vanilla 2D path -- which
   -- is why no caller ever has to guard for a missing 3D pass.
   available = function()
-    -- Gen 4 draws its own 3D world (Gen4Ground); a voxelised tilemap would
-    -- REPLACE it. Stand down and let lib/Gen4Bridge.lua add effects instead.
-    if Gen4Bridge.isGen4() then return false end
     return Voxel3D.available()
   end,
 
@@ -519,8 +509,9 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
     pcall(function() V.require("Stadium2Screen").maybePush() end)
     -- Load the player model if one is installed (restored from DRAMATIC_SHAPE)
     pcall(function()
-      if not PlayerModel.loaded() and PlayerModelInstall.installed() then
-        PlayerModel.loadInstalled()
+      if PlayerModelInstall.installed() then
+        local ok, err = PlayerModel.loadInstalled()
+        print("[PlayerModel] loadInstalled result:", ok, err or "success")
       end
     end)
     -- and a ROM the system file picker dropped in the save directory while
@@ -658,6 +649,15 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
     -- PIXEL resolution (see sceneSize) so the 3D pass is crisp rather than
     -- a magnified low-res image, while the FX closures keep drawing in
     -- world-pixel units.
+    --
+    -- GEN 4 already HAS a 3D world (NSBMD + Gen4View). Returning a voxel
+    -- canvas would replace that mesh. Decline the pass so the engine draws
+    -- Sinnoh; Gen4WorldHost composites grass/wind/weather onto that camera.
+    if Gen4WorldHost.isState(ctx.state) then
+      Voxel.ready = true
+      Gen4WorldHost.noteFrame(ctx)
+      return nil
+    end
     local sw, sh = sceneSize(ctx)
     local canvas = VoxelScene.render(ctx.state, sw, sh,
                                      ctx.vw, ctx.vh, ctx.paletteFor)
@@ -1783,7 +1783,8 @@ SettingsMenu.define(SETTINGS)
 local HEADROOM = {
   GEN1 = { AIRY = 32, MID = 24, SNUG = 16 },
   GEN2 = { AIRY = 100, MID = 32, SNUG = 24 },
-  GEN3 = { AIRY = 32, MID = 24, SNUG = 16 }
+  GEN3 = { AIRY = 32, MID = 24, SNUG = 16 },
+  GEN4 = { AIRY = 32, MID = 24, SNUG = 16 }
 }
 -- Ceiling.headroom:get() returns the option VALUE (100/50/24), not the
 -- label (AIRY/MID/SNUG). Map both so generation tables can be keyed by name.
@@ -1799,7 +1800,7 @@ local function ceilingGeneration()
   if ok and GameVersion and type(GameVersion.generation) == "function" then
     local okGen, value = pcall(GameVersion.generation)
     local n = okGen and tonumber(value)
-    if n == 1 or n == 2 or n == 3 then return n end
+    if n == 1 or n == 2 or n == 3 or n == 4 then return n end
   end
   return 1
 end
@@ -2773,6 +2774,7 @@ end
 -- where the reasoning for each one is written down. Installed once, here,
 -- so this file keeps naming every engine seam the mod touches.
 OverworldBattle.install()
+pcall(Gen4WorldHost.install)
 
 -- ------- shiny Pokemon (restored from DRAMATIC_SHAPE)
 --
@@ -4073,18 +4075,6 @@ end
       local okInstall, installErr = pcall(BattleSettings.install, mod, Trainer, Music, ArenaCatalog, BattleMenuUI, CacheManager, TrainerRoster, GenerationCompat, AudioFidelity)
       if not okInstall then
         if mod.log then mod.log:warn("BattleSettings.install failed: " .. tostring(installErr)) end
-      end
-    end
-    -- Platinum's start menu never runs ui.start_menu.items, so the row the hook
-    -- above adds on the other versions has to be put on that menu directly.
-    if BattleSettings and type(BattleSettings.startMenuEntry) == "function"
-       and Gen4Bridge.isGen4() then
-      local okHook, hookErr = pcall(function()
-        return V.require("Gen4StartMenuHook").install(BattleSettings.startMenuEntry)
-      end)
-      if mod.log then
-        if okHook and hookErr then mod.log:info("Gen4 start menu: TERRARIUM BATTLES row installed")
-        else mod.log:warn("Gen4 start menu hook not installed: " .. tostring(hookErr)) end
       end
     end
 
