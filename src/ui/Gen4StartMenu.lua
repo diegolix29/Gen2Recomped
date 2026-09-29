@@ -45,6 +45,7 @@
 local Assets = require("src.render.Assets")
 local Font = require("src.render.Font")
 local Logger = require("src.core.Logger")
+local Runtime = require("src.mods.Runtime")
 local Screens = require("src.ui.Screens")
 local SecondScreen = require("src.ui.SecondScreen")
 local Strings = require("src.core.Strings")
@@ -110,6 +111,31 @@ function Gen4StartMenu.new(game, opts)
       }
     end
   end
+
+  -- Same seam every other START menu uses. Without it, Terrarium / Colosseum
+  -- rows that other generations show never reach Platinum.
+  local function sameRows(_, vanilla) return vanilla end
+  local ok, hooked = pcall(Runtime.call, "ui.start_menu.items", sameRows,
+                           game, self.rows)
+  if not ok then
+    Logger.error("gen4 start menu: ui.start_menu.items failed (%s); keeping "
+                 .. "the vanilla rows", tostring(hooked))
+  elseif type(hooked) ~= "table" then
+    Logger.error("gen4 start menu: ui.start_menu.items returned %s; keeping "
+                 .. "the vanilla rows", type(hooked))
+  else
+    local kept = {}
+    for index, row in ipairs(hooked) do
+      if type(row) == "table" and type(row.label) == "string" then
+        kept[#kept + 1] = row
+      else
+        Logger.warn("gen4 start menu: ui.start_menu.items row %d has no "
+                    .. "label; dropped", index)
+      end
+    end
+    self.rows = kept
+  end
+
   self.index = 1
   return self
 end
@@ -198,6 +224,15 @@ function Gen4StartMenu:select()
   local reopen = self:reopen()
   local id = row.id
   if id == "exit" then return self:close() end
+  if type(row.onSelect) == "function" then
+    if not row.keepOpen then self.game.stack:pop() end
+    local okRun, err = pcall(row.onSelect, self.game)
+    if not okRun then
+      Logger.warn("gen4 start menu: hooked row '%s' raised (%s)",
+                  tostring(row.label), tostring(err))
+    end
+    return
+  end
   self.game.stack:pop()
   if id == "pokedex" then
     Screens.push(self.game, "PokedexMenu", { onCancel = reopen })

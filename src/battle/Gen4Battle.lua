@@ -47,6 +47,14 @@ local Gen4Battle = {}
 -- Platinum fights on the DS's own screen, not the Game Boy's 160x144.
 Gen4Battle.WIDTH, Gen4Battle.HEIGHT = 256, 192
 
+-- A staged 3D fight (Terrarium / Colosseum / Stadium) publishes this the
+-- same way Emerald does: letterboxWhite == false means the world behind
+-- this screen IS the field. The DS backdrop, platforms and 2D sprites
+-- would paint over it.
+local function hideNativeScene(battle)
+  return battle and battle.letterboxWhite == false
+end
+
 -- ---------------------------------------------------------------------------
 -- The two enumerations, 0-based, from generated/battle_backgrounds.txt and
 -- generated/battle_terrains.txt. They are NOT the same list and do not line up
@@ -516,6 +524,7 @@ end
 -- of what a still frame needs, and the right half is there for the scroll this
 -- port does not do yet.
 function Gen4Battle.drawField(battle)
+  if hideNativeScene(battle) then return end
   local g = love.graphics
   g.setColor(1, 1, 1, 1)
   local ground = Gen4Battle.backdrop(battle)
@@ -666,6 +675,7 @@ end
 -- the trainer stands where the Pokemon it is about to send out will stand
 -- rather than at a second set of coordinates that could drift from it.
 function Gen4Battle.drawTrainerBack(battle)
+  if hideNativeScene(battle) then return false end
   if not (battle and battle.showPlayerBack and battle.playerBackPic) then
     return false
   end
@@ -682,6 +692,7 @@ function Gen4Battle.drawTrainerBack(battle)
 end
 
 function Gen4Battle.drawBattlers(battle)
+  if hideNativeScene(battle) then return end
   local g = love.graphics
   g.setColor(1, 1, 1, 1)
   -- The foe first, so where the two overlap the player's Pokemon is in front --
@@ -758,6 +769,7 @@ end
 -- 105 OF THE 501 MOVES REACH THIS, over 8,502 frames of the corpus. It was a
 -- `hold` task until now -- the right number of frames, nothing drawn.
 function Gen4Battle.drawBackgroundFade(battle)
+  if hideNativeScene(battle) then return false end
   local player = battle and battle.gen4AnimPlaying and battle.gen4Anim
   if not (player and player.groupTint) then return false end
   local got, r, g, b, a = pcall(player.groupTint, player, "base")
@@ -814,6 +826,7 @@ end
 -- the cartridge that uses the type-2 fade -- 87, twice, toward white -- switches to
 -- background 19, which is one of the 35.
 function Gen4Battle.drawEffectBackground(battle)
+  if hideNativeScene(battle) then return false end
   local player = battle and battle.gen4AnimPlaying and battle.gen4Anim
   if not (player and player.bgLayerState) then return false end
   local got, st = pcall(player.bgLayerState, player)
@@ -885,6 +898,7 @@ end
 -- particles are: a cell bank's OAM offsets are measured from the sprite's origin,
 -- so the assembled image is centred on it.
 function Gen4Battle.drawCellActors(battle)
+  if hideNativeScene(battle) then return 0 end
   local player = battle and battle.gen4AnimPlaying and battle.gen4Anim
   if not player then return 0 end
   local got, list = pcall(player.cells, player)
@@ -989,6 +1003,7 @@ end
 -- part of this can be right and produce an empty screen if the art did not
 -- import, and a number is what a diagnostic can look at.
 function Gen4Battle.drawParticles(battle)
+  if hideNativeScene(battle) then return 0 end
   local player = battle and battle.gen4AnimPlaying and battle.gen4Anim
   if not player then return 0 end
   local got, list = pcall(player.particles, player)
@@ -2438,6 +2453,7 @@ end
 -- The timing and the cell come from `Gen4BallAnim`, which reads the
 -- cartridge's own NANR; this only puts the named cell where the anim says.
 function Gen4Battle.drawThrownBall(battle)
+  if hideNativeScene(battle) then return false end
   local anim = battle and battle.gen4Ball
   if not (anim and anim.visible) then return false end
   local Gen4BattleRT = require("src.battle.Gen4Battle")

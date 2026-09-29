@@ -501,8 +501,9 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
     pcall(function() V.require("Stadium2Screen").maybePush() end)
     -- Load the player model if one is installed (restored from DRAMATIC_SHAPE)
     pcall(function()
-      if not PlayerModel.loaded() and PlayerModelInstall.installed() then
-        PlayerModel.loadInstalled()
+      if PlayerModelInstall.installed() then
+        local ok, err = PlayerModel.loadInstalled()
+        print("[PlayerModel] loadInstalled result:", ok, err or "success")
       end
     end)
     -- and a ROM the system file picker dropped in the save directory while

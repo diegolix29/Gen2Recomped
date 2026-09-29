@@ -225,7 +225,6 @@ end
 function PlayerModel.load(filename)
   if not filename then return false, "no filename" end
 
-  -- Check cache first
   if modelCache[filename] then
     currentModel = modelCache[filename]
     currentTexture = textureCache[filename]
@@ -237,9 +236,9 @@ function PlayerModel.load(filename)
   local f = love and love.filesystem
   if not (f and f.read) then return false, "no filesystem" end
   
-  -- Read file
   local ok, data = pcall(f.read, path)
   if not ok or not data then
+    print("[PlayerModel] Failed to read:", path)
     return false, "could not read file"
   end
 
@@ -278,12 +277,15 @@ function PlayerModel.load(filename)
     mesh = objToMesh(vertices, texCoords, faces)
   elseif ext == "glb" then
     local GLBModel = V.require("GLBModel")
+    GLBModel.setDirectory(PlayerModelInstall.DIR)
     local glbMesh, glbTexture, glbErr, glbStats = GLBModel.load(data, Voxel3D)
     if not glbMesh then
+      print("[PlayerModel] GLB load failed:", glbErr)
       return false, glbErr or "failed to load glb"
     end
     mesh = glbMesh
     texture = glbTexture
+    print("[PlayerModel] GLB loaded successfully")
   elseif ext == "gltf" then
     -- .gltf (JSON + separate .bin/.png files) isn't handled yet -- only the
     -- single-file .glb container is. Convert with e.g. Blender's glTF
@@ -694,15 +696,18 @@ function PlayerModel.loadInstalled()
     return PlayerModel.loadColosseumCharacter(characterId)
   end
   
-  -- Check if it's a character model setting (from CharacterModelPick)
+  -- Load as regular model (custom GLB/OBJ takes priority over CharacterModelPick)
+  local ok, err = PlayerModel.load(filename)
+  if ok then return true end
+  
+  -- Fallback to CharacterModelPick if custom model fails
   local CharacterModelPick = V.require("CharacterModelPick")
   local currentCharacterId = CharacterModelPick.getCurrentCharacterId()
   if currentCharacterId and currentCharacterId ~= "off" then
     return PlayerModel.loadColosseumCharacter(currentCharacterId)
   end
   
-  -- Otherwise load as regular OBJ model
-  return PlayerModel.load(filename)
+  return false, err
 end
 
 -- Clear the current model. Leaves modelCache/textureCache/characterCache
@@ -1191,8 +1196,8 @@ function PlayerModel.draw(px, py, y, facing, mirror)
   -- `mirror` intentionally unused here -- see the note above PlayerModel.draw.
   
   -- Apply scaling to match game world units
-  -- Increased scale to make the model more visible
-  local scale = 4.0  -- Increased from 0.1 to 1.0
+  -- GLB models from Battle Sprites Reloaded need much smaller scale
+  local scale = 0.1
   m = Mat4.mul(m, Mat4.scale(scale, scale, scale))
   
   -- Draw the mesh using Voxel3D with texture

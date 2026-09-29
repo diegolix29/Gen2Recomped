@@ -115,10 +115,10 @@ function Gen4Options.new(game, opts)
 
   local record = ((game.data and game.data.gen4_menus) or {}).options or {}
   self.title = record.title or Strings("OPTIONS")
-  self.rows = {}
+  local cartridge = {}
   for _, row in ipairs(record.rows or {}) do
     if row.label and row.key ~= "close" then
-      self.rows[#self.rows + 1] = {
+      cartridge[#cartridge + 1] = {
         key = row.key, label = row.label, values = row.values,
         description = row.description, binding = BINDINGS[row.key],
       }
@@ -127,22 +127,17 @@ function Gen4Options.new(game, opts)
       self.closeDescription = row.description
     end
   end
-  self.cartridgeRows = #self.rows
+  self.cartridgeRows = #cartridge
   self.closeLabel = self.closeLabel or Strings("CLOSE")
 
-  -- THE ENGINE'S OWN SETTINGS, APPENDED -- the same argument the Gen 3 screen
-  -- makes.  Platinum's screen has six rows and no volume sliders, no video
-  -- mode, no key bindings and no mod manager; a player on Platinum who could
-  -- not reach those would have lost every setting the other versions have, for
-  -- no better reason than that a DS had no menu for them.
-  --
-  -- Taken through the `ui.options.rows` hook, not straight from buildRows: the
-  -- hook is the seam every mod adds, removes and reorders rows through, and a
-  -- screen that skips it shows a mod's rows on every version but this one.
+  -- Engine + mod rows FIRST, the way every other OPTIONS screen leads with
+  -- ADVANCED SHAPE / UI. Cartridge TEXT SPEED etc. follow so they are not
+  -- hiding the Terrarium list under eight Platinum rows.
   local covered = {
     textSpeed = true, animations = true, battleStyle = true,
     sound = true, stereo = true, frame = true,
   }
+  local extras = {}
   local okRows, extra = pcall(function()
     local rows = require("src.ui.OptionsMenu").buildRows(game)
     local Runtime = require("src.mods.Runtime")
@@ -159,14 +154,18 @@ function Gen4Options.new(game, opts)
   if okRows and type(extra) == "table" then
     for _, row in ipairs(extra) do
       if row.label and not covered[row.id] then
-        self.rows[#self.rows + 1] = {
-          key = row.id, label = row.label, engine = row,
+        extras[#extras + 1] = {
+          id = row.id, key = row.id, label = row.label, engine = row,
         }
       end
     end
   else
     Logger.warn("gen4 options: the engine's own rows are unavailable (%s)",
                 tostring(extra))
+  end
+  self.rows = extras
+  for _, row in ipairs(cartridge) do
+    self.rows[#self.rows + 1] = row
   end
 
   if #self.rows == 0 then

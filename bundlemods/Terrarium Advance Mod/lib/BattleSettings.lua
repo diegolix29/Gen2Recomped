@@ -96,10 +96,16 @@ local function prefs(game)
   if not validArena[p.arena] then p.arena="auto" end
   return p
 end
+local function isOptionsLabel(label)
+  local s=tostring(label or ""):upper()
+  return s=="OPTION" or s=="OPTIONS"
+end
 local function startMenuId()
   if Compat and type(Compat.current)=="function" then
     local ok,generation=pcall(Compat.current)
-    if ok and tonumber(generation)==2 then return "Gen2StartMenu" end
+    generation=ok and tonumber(generation) or nil
+    if generation==2 then return "Gen2StartMenu" end
+    if generation==3 or generation==4 then return "StartMenu" end
   end
   return GEN1_START
 end
@@ -617,7 +623,7 @@ function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trai
     end
     local at=#out+1
     for i,entry in ipairs(out) do
-      if tostring(entry.label or ""):upper()=="OPTION" then at=i;break end
+      if isOptionsLabel(entry.label) then at=i;break end
     end
     table.insert(out,at,{label="TERRARIUM BATTLES",__terrariumBattleEntry=true,onSelect=function()
       -- Gen 1's generic StartMenu pops before invoking onSelect. Gold's
