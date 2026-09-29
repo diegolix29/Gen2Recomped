@@ -45,6 +45,7 @@
 local Assets = require("src.render.Assets")
 local Font = require("src.render.Font")
 local Logger = require("src.core.Logger")
+local Runtime = require("src.mods.Runtime")
 local Screens = require("src.ui.Screens")
 local SecondScreen = require("src.ui.SecondScreen")
 local Strings = require("src.core.Strings")
@@ -110,6 +111,37 @@ function Gen4StartMenu.new(game, opts)
       }
     end
   end
+
+  -- MODS' OWN ROWS, THROUGH THE SEAM THE OTHER VERSIONS ALREADY HAVE.
+  -- src/ui/StartMenu.lua runs its finished item list through the
+  -- `ui.start_menu.items` hook, which is how a mod adds, removes or reorders
+  -- START rows. This screen never did, so on Platinum a mod's row was simply absent.
+  -- Same hook name, same fallback, same "keep the vanilla rows" answer to a hook
+  -- that returns something that is not a list, so one mod works on all versions
+  -- without a branch.
+  local ok, hooked = pcall(Runtime.call, "ui.start_menu.items", self.rows, self.game, self.rows)
+  if not ok then
+    Logger.error("gen4 start menu: ui.start_menu.items failed (%s); keeping "
+                 .. "the vanilla rows", tostring(hooked))
+  elseif type(hooked) ~= "table" then
+    Logger.error("gen4 start menu: ui.start_menu.items returned %s; keeping "
+                 .. "the vanilla rows", type(hooked))
+  else
+    -- A ROW HAS TO BE DRAWABLE.  draw() indexes row.label, so one malformed
+    -- entry from a hook would take the menu down on the next frame rather
+    -- than when it was added.  Dropped with a warning naming the index.
+    local kept = {}
+    for index, row in ipairs(hooked) do
+      if type(row) == "table" and type(row.label) == "string" then
+        kept[#kept + 1] = row
+      else
+        Logger.warn("gen4 start menu: ui.start_menu.items row %d has no "
+                    .. "label; dropped", index)
+      end
+    end
+    self.rows = kept
+  end
+
   self.index = 1
   return self
 end

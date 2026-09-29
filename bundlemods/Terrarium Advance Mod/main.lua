@@ -3895,13 +3895,14 @@ end
     -- Gen3 special-case retained from this merged mod's own prior
     -- integration: Gen1Recomp's stock BattleSettings.lua assumes Gen1/Gen2,
     -- so a Gen3 host loads the dedicated BattleSettingsGen3.lua instead.
-    if generation == 3 then
-      if mod.log then mod.log:info("Loading Gen3 battle settings") end
+    -- Gen4 also uses the Gen3 battle settings as it has a similar structure.
+    if generation == 3 or generation == 4 then
+      if mod.log then mod.log:info("Loading Gen3/Gen4 battle settings") end
       local ok3, result3 = pcall(colosseumPackage, "lib/BattleSettingsGen3.lua")
       if ok3 then
         BattleSettings = result3
       else
-        if mod.log then mod.log:warn("Failed to load Gen3 battle settings: " .. tostring(result3)) end
+        if mod.log then mod.log:warn("Failed to load Gen3/Gen4 battle settings: " .. tostring(result3)) end
         BattleSettings = loadColosseumModule("BattleSettings")
       end
     else
