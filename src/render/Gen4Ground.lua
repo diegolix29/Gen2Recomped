@@ -1838,12 +1838,12 @@ function Gen4Ground:freeEntity(mapX, mapY, camX, camY, rise, draw)
   -- `lequal` rather than `less` for the reason the canopy needs it: a
   -- character standing exactly on a surface shares its depth, and `less`
   -- rejects equal.
-  local shader, depthMode, depthWrite
+  local shader, mode, write
   if Gen4Ground.freeOpen and depth then
     local sp = ensureDepthSprite()
     if sp then
       shader = g.getShader()
-      depthMode, depthWrite = g.getDepthMode()
+      mode, write = g.getDepthMode()
       g.setShader(sp)
       sp:send("spriteZ", depth)
       g.setDepthMode("lequal", true)
@@ -1851,22 +1851,13 @@ function Gen4Ground:freeEntity(mapX, mapY, camX, camY, rise, draw)
   end
   g.push()
   g.translate(sx, sy)
-  -- In Gen4's native 3D world, sprites should maintain consistent size like the
-  -- cartridge's 1:1 field camera. Full perspective scaling makes sprites appear
-  -- too small with distance. Use a more gentle scale that doesn't shrink as much.
-  local viewMode = self.view3d and self.view3d.mode or "field"
-  local spriteScale = scale
-  if viewMode == "field3d" then
-    -- Field mode: use gentler scaling to match cartridge behavior
-    spriteScale = math.max(0.7, math.min(scale, 1.2))
-  end
-  g.scale(spriteScale, spriteScale)
+  g.scale(scale, scale)
   g.translate(-(gx - (camX or 0)),
               -((mapY or 0) + FEET_Y - (camY or 0) - (rise or 0)))
   draw()
   g.pop()
-  if depthMode then
-    g.setDepthMode(depthMode, depthWrite)
+  if mode then
+    g.setDepthMode(mode, write)
     g.setShader(shader)
   end
   return true
