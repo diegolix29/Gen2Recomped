@@ -71,10 +71,48 @@ Gen4Models.FORMATS = {
   "compressed4x4", "a5i3", "direct",
 }
 
--- The formats this reads.  The rest are counted and left alone: a sprite drawn
--- from a format nobody decoded would be wrong rather than missing, and missing
--- is the honest answer.
-Gen4Models.DECODABLE = { [2] = 4, [3] = 16, [4] = 256 }
+-- The formats this reads, and how many colours each one's palette holds.
+--
+-- THE TWO ALPHA FORMATS WERE MISSING, and on the character archive that cost
+-- nothing -- every sprite frame there is format 3.  On the MAP AND BUILDING
+-- texture sets it cost 355 pictures: 198 a3i5 and 40 a5i3 in
+-- `map_tex_set.narc`, 61 and 56 in `areabm_texset.narc`.  Those are the
+-- textures with soft edges -- cliff tops, tree canopies, the lake surface --
+-- so the holes were exactly where a map most looks wrong.
+--
+-- Neither is a paletted format with an alpha bit bolted on; the texel IS a
+-- pair.  a3i5 is three bits of alpha over a five-bit index (32 colours), a5i3
+-- is five bits of alpha over a three-bit index (8 colours), and in both the
+-- alpha is the texel's own rather than the palette's.  `transparent0` does not
+-- apply to either -- index 0 is an ordinary colour there, and treating it as a
+-- hole punches the middle out of every soft edge.
+--
+-- Counted over both archives: 4,306 palette16, 1,484 palette4, 48 palette256,
+-- 259 a3i5, 96 a5i3, and NOTHING else -- no 4x4-compressed and no direct
+-- colour.  So this list is now the whole cartridge rather than most of it.
+Gen4Models.DECODABLE = { [2] = 4, [3] = 16, [4] = 256, [1] = 32, [6] = 8 }
+
+-- The two formats whose alpha is in the texel.  { indexBits, alphaMax }
+Gen4Models.ALPHA_FORMATS = {
+  [1] = { colours = 32, alphaMax = 7 },   -- a3i5
+  [6] = { colours = 8,  alphaMax = 31 },  -- a5i3
+}
+
+-- THE TWO TRANSLUCENT FORMATS, which the sprite archive does not use and the
+-- MAP TEXTURES do: 198 A3I5 and 40 A5I3 across the 74 map texture sets -- 238
+-- of 3,130, and they are the shadows, the water edges and the cloud layers,
+-- so the 7.6% that could not be decoded was the 7.6% that most obviously
+-- looks wrong when it is missing.
+--
+-- Both are ONE BYTE PER PIXEL split between a palette index and an alpha, and
+-- the split is the only difference: A3I5 is five bits of index under three of
+-- alpha, A5I3 three bits of index under five of alpha.  `transparent0` does
+-- not apply to either -- a pixel says its own alpha -- which is why they are a
+-- separate branch rather than another entry in DECODABLE.
+Gen4Models.ALPHA_FORMATS = {
+  [1] = { colours = 32, indexBits = 5, alphaMax = 7 },
+  [6] = { colours = 8,  indexBits = 3, alphaMax = 31 },
+}
 
 -- The largest a character sprite is taken to be.  Every NPC in the archive
 -- is 32x32 or 16x32; this only has to sit above those and below the 512-and-
@@ -195,6 +233,22 @@ function Gen4Models.parse(data, sectionAt)
   }
 end
 
+-- WHICH PALETTE A TEXTURE WEARS, by name.
+--
+-- An NSBTX keeps its textures and its palettes in two dictionaries with no
+-- link between them; the link is made by the MATERIAL in whatever model wears
+-- the texture, which names one of each.  There is no positional rule and
+-- there is no naming rule: across the map texture sets 1,293 of 3,130
+-- textures have no palette of their own name, and across the building sets
+-- 2,104 of 3,063.
+function Gen4Models.paletteIndexByName(parsed, name)
+  if not (parsed and parsed.palettes and type(name) == "string") then return nil end
+  for i, palette in ipairs(parsed.palettes) do
+    if palette.name == name then return i end
+  end
+  return nil
+end
+
 -- colours(parsed, data, paletteIndex, count) -> array of { r, g, b }, 0-based.
 function Gen4Models.colours(parsed, data, paletteIndex, count)
   local palette = parsed.palettes[paletteIndex or 1] or parsed.palettes[1]
@@ -209,11 +263,46 @@ function Gen4Models.colours(parsed, data, paletteIndex, count)
   return out
 end
 
+-- A3I5 and A5I3: index and alpha in the same byte.  Split by ALPHA_FORMATS
+-- above, and the alpha is scaled to eight bits by its own maximum rather than
+-- by a shift, so a fully opaque pixel is 255 and not 248.
+function Gen4Models.decodeAlpha(parsed, data, texture, paletteIndex, spec)
+  local colours = Gen4Models.colours(parsed, data, paletteIndex, spec.colours)
+  local width, height = texture.width, texture.height
+  local base = parsed.texBase + texture.offset
+  local mask = 2 ^ spec.indexBits
+  local out = {}
+  local blank = char(0, 0, 0, 0)
+  for linear = 0, width * height - 1 do
+    local value = u8(data, base + linear)
+    if value then
+      local index = value % mask
+      local a = floor(value / mask)
+      local colour = colours[index]
+      if colour then
+        out[linear + 1] = char(colour[1], colour[2], colour[3],
+                               floor(a * 255 / spec.alphaMax + 0.5))
+      else
+        out[linear + 1] = blank
+      end
+    else
+      out[linear + 1] = blank
+    end
+  end
+  return { width = width, height = height, rgba = concat(out),
+           name = texture.name }
+end
+
 -- decode(parsed, data, index, paletteIndex) -> { width, height, rgba }, or nil
 -- plus the format name when the texture is one this does not read.
 function Gen4Models.decode(parsed, data, index, paletteIndex)
   local texture = parsed and parsed.textures[index]
   if not texture then return nil, "no such texture" end
+
+  local alpha = Gen4Models.ALPHA_FORMATS[texture.format]
+  if alpha then
+    return Gen4Models.decodeAlpha(parsed, data, texture, paletteIndex, alpha)
+  end
 
   local colourCount = Gen4Models.DECODABLE[texture.format]
   if not colourCount then
@@ -225,6 +314,26 @@ function Gen4Models.decode(parsed, data, index, paletteIndex)
   local base = parsed.texBase + texture.offset
   local out = {}
   local blank = char(0, 0, 0, 0)
+
+  -- a3i5 and a5i3: one byte a texel, alpha in the high bits, and the index in
+  -- the low ones.  `transparent0` is deliberately ignored -- see ALPHA_FORMATS.
+  local alpha = Gen4Models.ALPHA_FORMATS[texture.format]
+  if alpha then
+    local span = alpha.colours
+    local scale = 255 / alpha.alphaMax
+    for linear = 0, width * height - 1 do
+      local value = u8(data, base + linear) or 0
+      local index_ = value % span
+      local a = floor(floor(value / span) * scale + 0.5)
+      local colour = colours[index_]
+      if colour and a > 0 then
+        out[linear + 1] = char(colour[1], colour[2], colour[3], a)
+      else
+        out[linear + 1] = blank
+      end
+    end
+    return { width = width, height = height, rgba = concat(out), name = texture.name }
+  end
 
   -- Pixels are packed low-bits-first within a byte, the same way every other
   -- indexed graphic in this cartridge is.

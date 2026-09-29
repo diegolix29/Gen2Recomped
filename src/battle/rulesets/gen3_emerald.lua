@@ -52,6 +52,18 @@ return {
   -- reduction on this cartridge at all -- they hit three Pokemon for full.
   spreadNum = 1, spreadDen = 2,
 
+  -- WHICH MOVES, as data rather than as a literal in BattleState.  The engine
+  -- used to carry `move.target == 0x08` itself, which meant Emerald's rule was
+  -- the only rule any ruleset could have; `gen4_platinum` needs a different
+  -- one, so the test moved here.  `spreadField` names the byte because a Gen 3
+  -- move record calls it `target` and a Gen 4 one calls it `range`, and 0x08
+  -- is MOVE_TARGET_BOTH in the first and RANGE_ALL_ADJACENT in the second.
+  -- `defenderSide` is the CountAliveMonsInBattle(BATTLE_ALIVE_DEF_SIDE) == 2
+  -- gate described above, unchanged -- this is a restatement of what this file
+  -- already said, not a new claim.
+  spreadField = "target",
+  spreadRanges = { [0x08] = "defenderSide" },
+
   -- SCREENS: REFLECT and LIGHT SCREEN take damage to 2*(d/3) rather than
   -- d/2 when two are alive on the defending side (0806_9B70).  Divide first,
   -- then double -- with truncation those are not the same: 50 goes to 32,

@@ -969,6 +969,29 @@ function Renderer:endFrame(zones, worldZones)
                            bx, by, boxX, boxY, boxW, boxH, dpiX, dpiY)
   end
 
+  -- A PUBLISHER MAY HAVE FREED ITS CANVAS SINCE IT HANDED IT OVER.
+  --
+  -- Reported from play on Android, switching CAM TILT between CARTRIDGE and 90:
+  --     src/render/Renderer.lua:997: Cannot use object after it has been
+  --     released.   ... in function 'getDimensions' ... in function 'endFrame'
+  --
+  -- `setWorldOverride` takes a canvas somebody else owns. `Gen4Ground` hands
+  -- over its live 3D target, and `Gen4Ground:liveTargetFor` RELEASES that
+  -- target whenever the requested size changes -- which is exactly what
+  -- changing the camera tilt does, because it switches between the free and
+  -- oblique passes. The override still pointed at it, and `getDimensions` on a
+  -- released object raises rather than returning nil.
+  --
+  -- The owner retracting it (which `liveTargetFor` now does) is the real fix.
+  -- This is the guard that keeps the class of bug from being FATAL: a canvas
+  -- nobody can measure is simply not an override, and the frame falls back to
+  -- the world canvas below -- which is the path every other generation uses
+  -- anyway. Cheap: one pcall per frame, and only when an override is set.
+  if self.worldOverride then
+    local measurable = pcall(self.worldOverride.getDimensions, self.worldOverride)
+    if not measurable then self.worldOverride = nil end
+  end
+
   if self.worldOverride then
     -- A render pipeline already produced the whole world -- terrain,
     -- characters and its own FX overlay -- as one window-resolution image,

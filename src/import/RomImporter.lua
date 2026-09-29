@@ -1145,9 +1145,84 @@ end
 --       were never asked for at all
 -- v337: Gen 3 object-event frames preserve their gbagfx macroblock layout;
 --       this fixes FireRed's 32x16 Town Map and changes generated sprite data.
--- v338: FireRed exports its fifteen tutor moves and per-species tutor
---       compatibility instead of overreading sTutorLearnsets as moves.
-local CACHE_FORMAT = "rom-cache-v338:"
+-- v338: Gen 4 sheets carry `facings` -- which of their own frames faces which
+--       way, read from mmodel.narc's own frame-sequence tables.  Without it
+--       the renderer used the Game Boy's fixed six slots on a sheet that is
+--       not in that order, and the player turned a different way on every
+--       step: "when i try and walk my character spins in circles".  A
+--       Platinum cache written before this has no `facings` at all, and there
+--       is no missing FILE to notice it by, so the format is what says so.
+--       Also: a Gen 4 map's object scripts are filed by the event's POSITION
+--       rather than its localId, which the cartridge reuses inside a map.
+-- v339: the terrain stage.  666 land chunks packed into a side-car binary with
+--       their BDHC heights beside it, the 74 map texture sets as atlases, and
+--       every matrix's chunk grid -- which is what replaces
+--       TILESET_GEN4_STANDIN.  New FILES, but under assets/ and named by a new
+--       module, so the missing-file gate cannot see them either.
+-- v351: Gen 4 `applymovement` carries its DECODED STEPS.  The movement list
+--       lives inside the script member, a signed displacement past the
+--       instruction, so the bytes are only in hand during the import -- an
+--       instruction cached before this has no `movement` field and the
+--       executor falls back to turning the object to face the player, which
+--       is what every one of the cartridge's 3,025 sites did until now.
+-- v352: the Gen 4 scripted menu.  `init(global|local)textmenu` was not lowered
+--       at all, so a cached script carries the menu's entries and its `show`
+--       but not the VAR the choice goes into nor the TEXT BANK its lines come
+--       out of -- 186 menus branching on a register nothing wrote.  The rows
+--       are produced at import, so the fix only reaches a cache built after it.
+-- v353: two Gen 4 faults reported from play, both in the cache rather than in
+--       the engine.  (1) COLLISION.  The map grid wrote its collision flag at
+--       bit 10 and `Map.blockArray` masks the word with `% 1024`, so every one
+--       of Sinnoh's 335,165 blocked tiles -- 49.1% of the region -- arrived
+--       walkable: "still able to walk out of bounds".  Blocked cells are now
+--       the reserved value 255, and the border with them.  (2) OBJECT HIDE
+--       FLAGS.  1,566 of 3,555 object events carry a flag that makes them
+--       absent while it is set; the def never carried it, so nobody a script
+--       dismissed stayed dismissed.
+-- v354: a map's INIT SCRIPTS.  Every Gen 4 header names two members of
+--       `scr_seq` and the port read only one: `initScriptsArchiveID` is the
+--       map's own entry conditions -- what runs when you walk in, and the
+--       var-gated table the cartridge checks every idle frame.  291 of 594
+--       headers have one and none of them had ever run, which is why Mom's
+--       scene in Twinleaf never fired and the actor it would have moved stayed
+--       standing in the doorway.
+-- v355: COORDINATE TRIGGERS.  The third thing on a Gen 4 map that runs a
+--       script, extracted onto `def.coordEvents` since the maps stage was
+--       written and read by nothing.  186 of them across 76 maps, every one
+--       gated on a var and 72 of them covering a rectangle rather than a cell.
+--       Twinleaf's player house has one on its exit tile, which is why the
+--       neighbour standing there only ever spoke when pressed A on.
+-- v356: THE NEW-GAME SCRIPT.  `FieldSystem_InitNewGameState` runs one script
+--       before the first map is built, and it is 112 `setflag`s plus three
+--       `setvarfromvalue`s -- the cutscene actors whose stories have not
+--       started, hidden.  114 object events across Sinnoh are affected,
+--       including the placeholder in the player's bedroom and the one in the
+--       doorway below it.  Extracted as `constants.gen4NewGame` and applied
+--       through `boot.initialFlags`, the seam Gen 3 already uses.
+-- v357: the WAIT-AND-SCROLL control code.  0x25BC was decoded as "\r", which
+--       is not one of TextBox's markers, so it printed as a stray glyph and
+--       the box never waited for A.  It is "\v".  13,576 occurrences across
+--       7,407 of the cartridge's 46,053 strings -- every line long enough to
+--       need a second box, Mom's included.
+-- v358: the DIALOGUE WINDOW's own geometry.  `FieldMessage_AddWindow` puts the
+--       text interior at tiles (2,19), 27 x 4; the port was drawing Sinnoh's
+--       lines into the Game Boy's 20x6 box at row 12, wrapping by character
+--       count with a proportional font, on a 160x144 surface.
+-- v359: SHADOWS.  `gObjectEventGfxRenderDetailsTable` out of overlay 5 (259
+--       rows, 230 of them casting one), the `kage` texture out of fldeff
+--       member 0x11, the five sizes and the nine tile behaviours that turn it
+--       off.  Sinnoh's characters have stood on nothing until now.
+-- v360: MERGED FROM main, which had independently taken v338 for a different
+--       change: "FireRed exports its fifteen tutor moves and per-species tutor
+--       compatibility instead of overreading sTutorLearnsets as moves."
+--
+--       THE NUMBER HAD TO MOVE PAST BOTH. Platinum's chain reached v359 and
+--       main's reached v338, and the two v338s describe different work, so
+--       neither value invalidates the other side's caches. `CACHE_FORMAT` is
+--       the one gate that forces a re-import, and main's change alters what a
+--       FireRed cache CONTAINS -- so keeping v359 would let a FireRed cache
+--       built before the tutor fix pass as current. v360 invalidates both.
+local CACHE_FORMAT = "rom-cache-v360:"
 -- The completion marker is written under each version's cache prefix
 -- (rom-cache.complete for Red, blue/rom-cache.complete for Blue).
 local MARKER_PATH = "rom-cache.complete"
@@ -2037,13 +2112,57 @@ local function pendingRomPaths()
   return paths
 end
 
-local function findPendingRom(ready)
+-- WHERE A PENDING FILE REALLY IS ON DISK, which a Gen 4 import cannot do
+-- without.
+--
+-- Reported from play on Android: "failed to import please import from a file on
+-- disk but i did import from a file on disk". Both halves are true and the
+-- message was the misleading part. The Android route never goes through
+-- `startPath`; it scans the save directory with `love.filesystem` and calls
+-- `startData(data, name)` with NO third argument, so `self.romPath` is nil --
+-- and `RomExtractorGen4` is the one extractor that takes a PATH rather than
+-- bytes, because a 128 MB DS cartridge is reopened rather than carried. So the
+-- "must be imported from a file on disk" guard fired on every Android Platinum
+-- import, however the file got there.
+--
+-- The file IS on disk: `love.filesystem.getRealDirectory` names the directory it
+-- was actually found in -- the save directory for a SAF pick or a USB copy, or
+-- the game directory on an unpacked handheld build -- and both are readable by
+-- `io.open` from our own process.
+--
+-- PROBED, NOT ASSUMED. A file found inside the mounted .love (a zip) has a real
+-- directory too and cannot be opened as a file, so the open is the test. Nil
+-- here leaves the old guard to fire, which is the honest answer for that case.
+local function realPathFor(name)
+  local ok, dir = pcall(love.filesystem.getRealDirectory, name)
+  if not ok or type(dir) ~= "string" or dir == "" then return nil end
+  local path = dir .. "/" .. name
+  local handle = io.open(path, "rb")
+  if not handle then return nil end
+  handle:close()
+  return path
+end
+
+-- `skip` holds the names of files whose import has already FAILED this session.
+--
+-- Reported in the same breath: "its also preventing people from importing other
+-- roms after getting the error on android". That is this loop. It returns the
+-- FIRST pending file whose version is not ready, and a cart that fails is still
+-- pending -- so the next Choose finds the same one, fails the same way, and no
+-- other cartridge can ever be reached. One bad file blocked the whole importer.
+--
+-- Skipped rather than deleted: the file is the player's, it may be perfectly
+-- good and merely unsupported on this build, and quietly removing someone's ROM
+-- is not ours to do. The set lives for the session, so relaunching retries.
+local function findPendingRom(ready, skip)
   for _, name in ipairs(pendingRomPaths()) do
-    local data = love.filesystem.read(name)
-    if type(data) == "string" and isSupportedRomSize(#data) then
-      local version = GameVersion.forSha1(sha1(data))
-      if version and not ready[version] then
-        return name, data
+    if not (skip and skip[name]) then
+      local data = love.filesystem.read(name)
+      if type(data) == "string" and isSupportedRomSize(#data) then
+        local version = GameVersion.forSha1(sha1(data))
+        if version and not ready[version] then
+          return name, data, realPathFor(name)
+        end
       end
     end
   end
@@ -2772,9 +2891,9 @@ function RomImporter.new(onComplete, opts)
     if not self.ready[version] then needRom = true; break end
   end
   if android and needRom then
-    local name, data = findPendingRom(self.ready)
+    local name, data, romPath = findPendingRom(self.ready, self.failedRoms)
     if name then
-      self:startData(data, name)
+      self:startData(data, name, romPath)
     else
       -- The picker runs as its own activity and Android may kill us while it
       -- is up, so a rejected pick can outlive the focus handler (#442).
@@ -2973,9 +3092,9 @@ function RomImporter:focus(f)
   end
   for _, v in ipairs(GameVersion.ORDER) do
     if not self.ready[v] then
-      local name, data = findPendingRom(self.ready)
+      local name, data, romPath = findPendingRom(self.ready, self.failedRoms)
       if name then
-        self:startData(data, name)
+        self:startData(data, name, romPath)
       elseif consumePickedRomError(self) then
         if self:_pickManyActive("rom") then self:_pickManyTally(false) end
       elseif self:_pickManyActive("rom") then
@@ -2993,6 +3112,14 @@ end
 
 function RomImporter:setError(message, version)
   require("src.import.CacheFs").prefix = ""
+  -- THIS FILE HAS HAD ITS TURN. Without this the Android scan hands the same
+  -- failing cartridge back on every attempt and nothing else can be imported;
+  -- with it, the next Choose moves on to the next pending file.
+  if type(self.importSourceName) == "string" and self.importSourceName ~= "" then
+    self.failedRoms = self.failedRoms or {}
+    self.failedRoms[self.importSourceName] = true
+  end
+  self.importSourceName = nil
   self.workState = "error"
   self.errorVersion = version or self.importing or self.chooseVersion or "red"
   self.importing = nil
@@ -3073,6 +3200,10 @@ function RomImporter:startData(data, displayName, sourcePath)
   self.progress = 0
   self.romData = data
   self.romPath = sourcePath
+  -- KEPT SO A FAILURE CAN BE ATTRIBUTED. `setError` clears everything else, and
+  -- without the name there is no way to know which pending file to stop
+  -- offering -- see `findPendingRom`'s `skip`.
+  self.importSourceName = displayName
   -- BREADCRUMBS THROUGH THE IMPORT, for the same reason boot has them.
   --
   -- An import is the longest, most memory-hungry thing this program does -- a
@@ -4293,9 +4424,9 @@ function RomImporter:choose(version)
     -- Prefer a not-yet-imported .gb/.gbc already in the save dir (USB copy, or
     -- a fresh SAF pick).  Never reuse an already-imported cart's file -- that
     -- was the #167 failure mode (second Choose just re-extracted Red).
-    local name, data = findPendingRom(self.ready)
+    local name, data, romPath = findPendingRom(self.ready, self.failedRoms)
     if name then
-      self:startData(data, name)
+      self:startData(data, name, romPath)
     elseif consumePickedRomError(self) then
       return   -- a rejected pick explains itself instead of silently reopening
     elseif not pickFile() then
@@ -4322,9 +4453,9 @@ function RomImporter:choose(version)
   -- kdialog.  Fall back to the same "drop a .gb/.gbc next to the game" scan
   -- used on Android, which works when the game is launched as an unpacked
   -- directory (see build-rg34xxsp.sh).
-  local name, data = findPendingRom(self.ready)
+  local name, data, romPath = findPendingRom(self.ready, self.failedRoms)
   if name then
-    self:startData(data, name)
+    self:startData(data, name, romPath)
     return
   end
   if love.system.getOS() == "Linux" then

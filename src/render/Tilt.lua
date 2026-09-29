@@ -109,7 +109,26 @@ end
 
 -- true while tilt is on *or* still tweening -- i.e. whenever the renderer
 -- must take the perspective path rather than the flat blit
+-- SUPPRESSED WHILE A GEN 4 GROUND OWNS THE WORLD.
+--
+-- This module is the Gen 1/2 pseudo-3D warp: it takes the finished flat world
+-- and shears it through `groundPoint`, which is a perfectly good trick on a map
+-- that really is flat.  A Sinnoh map is NOT -- `Gen4Ground` has already drawn
+-- it through the cartridge's own camera -- so running both warps an already
+-- projected picture and, worse, moves the ground out from under the sprites,
+-- which the overworld places through the GEN 4 camera and not this one.
+--
+-- Reported from play: *"3 to adjust tilt still messes up the placement of
+-- sprites and isnt changing the in game camera tilt/angle"*.  Both halves of
+-- that are this: the key drove this module, which is the wrong one, and this
+-- module's warp is what moved the sprites.
+--
+-- Set by `TileRenderer` as each map's renderer is built, so it follows the map
+-- rather than needing anyone to remember to clear it.
+Tilt.suppressed = false
+
 function Tilt.active()
+  if Tilt.suppressed then return false end
   return Tilt.level > 0 or Tilt.angle > 0
 end
 

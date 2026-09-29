@@ -131,6 +131,50 @@ Gen4IntroScene.ROLE = {
 Gen4IntroScene.FIGURE_ROWS = 16
 
 -- ---------------------------------------------------------------------------
+-- The Poke Ball
+-- ---------------------------------------------------------------------------
+
+-- THE STEP THE PORT SKIPPED ENTIRELY.  Reported from play: "in the intro rowan
+-- isnt thorwing out a pokemon like he does in the rom".  He does, and this is
+-- the art behind it, transcribed from `RowanIntro_LoadPokeballTilemap`.
+--
+-- THREE PICTURES, NOT ONE.  The ball is one tilemap (40) with one palette (41)
+-- and THREE tile sheets loaded into the same place in turn -- 32, then 33, then
+-- 34 -- which is the button being pushed in.  Reading it as a single picture is
+-- the mistake to avoid: the animation is not a transform of the art, it IS
+-- three pieces of art.
+--
+-- THE PALETTE IS THE THIRD ROW OF MEMBER 41, and nothing says so except the
+-- arithmetic in the app: it loads three rows of that member starting at
+-- background row 7 and then points the tilemap's cells at row 9 -- the third.
+-- So the sixteen colours the ball is drawn in are member 41's colours 32..47.
+-- Composing with its first sixteen gives a picture that is wrong without
+-- looking broken, which is this archive's whole hazard.
+--
+-- What the port DOES with these three -- the hold, the flashes, the Pokemon
+-- and its arc -- is `Gen4RowanIntro`'s, not this file's: those are frame counts
+-- and parabolas rather than member indices, and they belong next to the code
+-- that plays them.
+--
+-- AND THE SIXTEEN TILES ARE LOADED AT TILE 32, which is the other half of the
+-- same arithmetic and was missing.  Member 40's cells are tile 0 everywhere
+-- except a 32-cell circle that runs 0x20..0x2F -- exactly sixteen indices for
+-- a sixteen-tile sheet, with `flipX` doing the ball's right-hand side.  A
+-- composition that reads those indices straight finds nothing (the sheet is
+-- 512 bytes; tile 32 begins at byte 1024) and draws the sheet's tile 0 into
+-- all 736 empty cells instead, which is a screen of one repeated glyph with a
+-- 48x48 hole where the ball should be.  That is what shipped, and it is what
+-- "the pokeball screen where your supposed to touch the pokeball isnt
+-- rendering properly" was.
+Gen4IntroScene.BALL = {
+  tilemap = 40,
+  palette = 41,
+  paletteFirst = 32,        -- 0-based; colours 32..47 of member 41
+  tileFirst = 32,           -- the tile the sheet is loaded at, not an offset
+  frames = { 32, 33, 34 },  -- closed, pushed, pushed further
+}
+
+-- ---------------------------------------------------------------------------
 -- The words
 -- ---------------------------------------------------------------------------
 
@@ -179,6 +223,14 @@ Gen4IntroScene.SCRIPT = {
   { text = "hello",           figure = "rowan", backdrop = "speech" },
   { text = "myName",          figure = "rowan", backdrop = "speech" },
   { text = "widelyInhabited", figure = "rowan", backdrop = "speech" },
+  -- The Poke Ball, which the port used to skip straight past: the app fades the
+  -- ball in, reads this line, waits for the player, and then plays the release.
+  -- `scene = "ball"` is what tells the screen this step is not just words.
+  -- Rowan does NOT leave for this: his layer is never faded, he is simply on
+  -- the other screen while the ball is on the touch one.  With one screen the
+  -- ball covers him while it is being pushed in and he is back underneath the
+  -- moment the Pokemon is out.
+  { text = "havePokeBall",    figure = "rowan", backdrop = "speech", scene = "ball" },
   { text = "liveAlongside",   figure = "rowan", backdrop = "speech" },
   { text = "aboutYourself",   figure = "rowan", backdrop = "speech" },
   { text = "gender",          figure = nil,     backdrop = "plain", ask = "gender" },

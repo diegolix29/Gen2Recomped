@@ -107,6 +107,168 @@ function Gen4Battle.background(index, time)
 end
 
 -- ---------------------------------------------------------------------------
+-- The MOVE ANIMATION background layer
+-- ---------------------------------------------------------------------------
+
+-- `switchbg` names one of fifty-eight backgrounds and the game assembles it out
+-- of FIVE members of the same archive the backdrops live in: a tile sheet, one
+-- sixteen-colour palette, and THREE tilemaps over that one sheet.
+--
+-- WHY THREE. `BattleBgSwitch_SetBg` picks between them by situation and nothing
+-- else: the first in a normal battle, the SECOND when the animation is to be
+-- mirrored -- which is what happens when the defender is the player -- and the
+-- THIRD in a contest. So a background is one picture with a left-facing, a
+-- right-facing and a contest arrangement, and a port that only ever loaded the
+-- first would play every enemy attack's background the wrong way round.
+--
+-- WHERE THE TABLE COMES FROM. It is `sBgNarcIndices`, and it is READ OUT OF THE
+-- CARTRIDGE rather than transcribed on faith: the 1,160 bytes below sit at file
+-- offset 0x1C0308, inside overlay 12, and `tools/gen4_moveanim_check.lua`
+-- searches the overlays for the encoding of this very table and asserts it is
+-- found exactly once. Change one number here and the search finds nothing.
+--
+-- It is not derivable. Rows 0-4 are the same five members repeated, row 47 sits
+-- in a different part of the archive from its neighbours, and rows 28 and 30 are
+-- identical while 29 differs only in its palette. There is no formula; this is
+-- the list.
+Gen4Battle.EFFECT_BG_COUNT = 58
+
+-- The five columns, in `BgNarcMemberType` order.
+Gen4Battle.EFFECT_BG_TILES = 1
+Gen4Battle.EFFECT_BG_PALETTE = 2
+Gen4Battle.EFFECT_BG_MAP_NORMAL = 3
+Gen4Battle.EFFECT_BG_MAP_REVERSED = 4
+Gen4Battle.EFFECT_BG_MAP_CONTEST = 5
+
+Gen4Battle.EFFECT_BG_MEMBERS = {
+  [0] = { 0x41, 0x123, 0x3E, 0x3F, 0x40 },
+  [1] = { 0x41, 0x123, 0x3E, 0x3F, 0x40 },
+  [2] = { 0x41, 0x123, 0x3E, 0x3F, 0x40 },
+  [3] = { 0x41, 0x123, 0x3E, 0x3F, 0x40 },
+  [4] = { 0x41, 0x123, 0x3E, 0x3F, 0x40 },
+  [5] = { 0x41, 0x141, 0x3E, 0x3F, 0x40 },
+  [6] = { 0x45, 0x124, 0x42, 0x43, 0x44 },
+  [7] = { 0x45, 0x145, 0x42, 0x43, 0x44 },
+  [8] = { 0x45, 0x148, 0x42, 0x43, 0x44 },
+  [9] = { 0x46, 0x125, 0x47, 0x47, 0x47 },
+  [10] = { 0x46, 0x125, 0x47, 0x47, 0x47 },
+  [11] = { 0x46, 0x13F, 0x47, 0x47, 0x47 },
+  [12] = { 0x46, 0x140, 0x47, 0x47, 0x47 },
+  [13] = { 0x46, 0x147, 0x47, 0x47, 0x47 },
+  [14] = { 0x4C, 0x126, 0x48, 0x48, 0x48 },
+  [15] = { 0x4C, 0x128, 0x48, 0x48, 0x48 },
+  [16] = { 0x4C, 0x130, 0x48, 0x48, 0x48 },
+  [17] = { 0x4C, 0x138, 0x48, 0x48, 0x48 },
+  [18] = { 0x4C, 0x130, 0x48, 0x48, 0x48 },
+  [19] = { 0x51, 0x129, 0x52, 0x52, 0x50 },
+  [20] = { 0x59, 0x12B, 0x56, 0x57, 0x58 },
+  [21] = { 0x5F, 0x12D, 0x5C, 0x5D, 0x5E },
+  [22] = { 0x63, 0x12E, 0x60, 0x61, 0x62 },
+  [23] = { 0x64, 0x12F, 0x65, 0x65, 0x65 },
+  [24] = { 0x66, 0x131, 0x67, 0x67, 0x67 },
+  [25] = { 0x69, 0x132, 0x6A, 0x6A, 0x68 },
+  [26] = { 0x6F, 0x133, 0x6E, 0x6E, 0x6E },
+  [27] = { 0x6F, 0x153, 0x6E, 0x6E, 0x6E },
+  [28] = { 0x70, 0x134, 0x71, 0x71, 0x71 },
+  [29] = { 0x70, 0x135, 0x71, 0x71, 0x71 },
+  [30] = { 0x70, 0x134, 0x71, 0x71, 0x71 },
+  [31] = { 0x77, 0x137, 0x74, 0x75, 0x76 },
+  [32] = { 0x77, 0x137, 0x74, 0x75, 0x76 },
+  [33] = { 0x77, 0x137, 0x74, 0x75, 0x76 },
+  [34] = { 0x7C, 0x13B, 0x7D, 0x7D, 0x7D },
+  [35] = { 0x81, 0x13D, 0x82, 0x82, 0x80 },
+  [36] = { 0x83, 0x13E, 0x84, 0x84, 0x85 },
+  [37] = { 0x8A, 0x143, 0x88, 0x89, 0x89 },
+  [38] = { 0x8B, 0x144, 0x8C, 0x8C, 0x8C },
+  [39] = { 0x8D, 0x146, 0x8E, 0x8E, 0x8E },
+  [40] = { 0x92, 0x149, 0x8F, 0x90, 0x91 },
+  [41] = { 0x96, 0x14A, 0x93, 0x94, 0x95 },
+  [42] = { 0x97, 0x14B, 0x98, 0x98, 0x98 },
+  [43] = { 0x99, 0x14C, 0x9A, 0x9A, 0x9A },
+  [44] = { 0x9B, 0x14D, 0x9C, 0x9C, 0x9C },
+  [45] = { 0xA0, 0x14E, 0x9D, 0x9E, 0x9F },
+  [46] = { 0xA1, 0x14F, 0xA2, 0xA2, 0xA2 },
+  [47] = { 0x34, 0x11E, 0x35, 0x35, 0x35 },
+  [48] = { 0xA3, 0x150, 0xA4, 0xA5, 0xA4 },
+  [49] = { 0xA3, 0x152, 0xA4, 0xA5, 0xA4 },
+  [50] = { 0xA6, 0x151, 0xA8, 0xA7, 0xA7 },
+  [51] = { 0x4E, 0x127, 0x4F, 0x4F, 0x4F },
+  [52] = { 0x5A, 0x12C, 0x5B, 0x5B, 0x5B },
+  [53] = { 0x55, 0x12A, 0x53, 0x53, 0x53 },
+  [54] = { 0x72, 0x136, 0x73, 0x73, 0x73 },
+  [55] = { 0x7A, 0x13A, 0x7B, 0x7B, 0x7B },
+  [56] = { 0x78, 0x139, 0x79, 0x79, 0x79 },
+  [57] = { 0x86, 0x142, 0x87, 0x87, 0x87 },
+}
+
+-- WHICH SUB-PALETTE THE SIXTEEN COLOURS GO IN, and it is not zero: the loader
+-- writes them to `PLTT_DEST(BATTLE_BG_PALETTE_EFFECT)` and the tilemaps' cells
+-- name slot 9 to match. See Gen4Graphics.paletteAtSlot for what composing at the
+-- wrong slot produces (nothing at all).
+Gen4Battle.EFFECT_BG_PALETTE_SLOT = 9
+
+-- The three arrangements, in the order of the three tilemap columns. The names
+-- are the port's; the ORDER is the cartridge's.
+Gen4Battle.EFFECT_VARIANTS = { "normal", "reversed", "contest" }
+
+-- ...and which column each one is, by name rather than by arithmetic on the first.
+-- THE ARITHMETIC IS WHY THIS EXISTS: `row[MAP_NORMAL + which - 1]` gives the right
+-- answer and leaves MAP_REVERSED and MAP_CONTEST declared, unused and looking
+-- load-bearing -- so a reader who swapped those two constants to fix an imagined
+-- bug would change nothing and learn nothing. Measured against the plant: with the
+-- arithmetic, swapping them failed no check in the suite; with this table it fails
+-- 116 column comparisons.
+Gen4Battle.EFFECT_BG_MAP_COLUMN = {
+  normal = Gen4Battle.EFFECT_BG_MAP_NORMAL,
+  reversed = Gen4Battle.EFFECT_BG_MAP_REVERSED,
+  contest = Gen4Battle.EFFECT_BG_MAP_CONTEST,
+}
+
+-- effectBackground(id, variant) -> { tiles, palette, tilemap, slot, art }
+--
+-- `id` is zero-based, matching the `switchbg` operand. `variant` is one of
+-- EFFECT_VARIANTS or its 1-based index.
+--
+-- `art` is the name the composed picture is stored under, and it is spelled from
+-- the THREE MEMBERS rather than from the id, because the members are what decide
+-- the picture: 58 backgrounds x 3 arrangements is 174 combinations but only 81
+-- distinct triples, so naming by id would write the same image up to five times.
+function Gen4Battle.effectBackground(id, variant)
+  id = tonumber(id)
+  if not id or id < 0 or id >= Gen4Battle.EFFECT_BG_COUNT then return nil end
+  local row = Gen4Battle.EFFECT_BG_MEMBERS[id]
+  if not row then return nil end
+  local which
+  if type(variant) == "number" then
+    which = variant
+  else
+    for i, name in ipairs(Gen4Battle.EFFECT_VARIANTS) do
+      if name == variant then which = i end
+    end
+  end
+  if not which or which < 1 or which > #Gen4Battle.EFFECT_VARIANTS then return nil end
+  local name = Gen4Battle.EFFECT_VARIANTS[which]
+  local column = Gen4Battle.EFFECT_BG_MAP_COLUMN[name]
+  if not column then return nil end
+  local tiles = row[Gen4Battle.EFFECT_BG_TILES]
+  local palette = row[Gen4Battle.EFFECT_BG_PALETTE]
+  local tilemap = row[column]
+  return {
+    tiles = tiles, palette = palette, tilemap = tilemap,
+    slot = Gen4Battle.EFFECT_BG_PALETTE_SLOT,
+    variant = name,
+    art = ("%d_%d_%d"):format(tiles, palette, tilemap),
+  }
+end
+
+-- effectKey(id, variant) -> the key the graphics index stores the entry under
+function Gen4Battle.effectKey(id, variant)
+  local spec = Gen4Battle.effectBackground(id, variant)
+  if not spec then return nil end
+  return ("%d_%s"):format(tonumber(id), spec.variant)
+end
+
+-- ---------------------------------------------------------------------------
 -- The touch screen during battle
 -- ---------------------------------------------------------------------------
 

@@ -52,6 +52,8 @@
 -- The check now runs as `Gen4Items.checkPockets`, against the cartridge's own
 -- id ranges rather than against itself.
 
+local Gen4HoldEffects = require("src.import.Gen4HoldEffects")
+
 local Gen4Items = {}
 
 Gen4Items.RECORD_BYTES = 34
@@ -78,8 +80,21 @@ function Gen4Items.parse(record)
   local packed = u16(record, 8)
   return {
     price = u16(record, 0),
-    holdEffect = u8(record, 2),
+    -- A NAME, NOT AN ID.  `battle/HoldItems.lua` compares against 33 names,
+    -- so writing the cartridge's byte here meant no held item did anything in
+    -- Sinnoh -- 158 of the 446 items carry a non-zero hold effect and every
+    -- one of them was silent.  See `Gen4HoldEffects` for how each engine name
+    -- was settled (by the ITEM that carries it, not by the numbering) and for
+    -- the rows deliberately left unmapped.
+    holdEffect = Gen4HoldEffects.name(u8(record, 2)),
+    -- BOTH SPELLINGS, because the two halves of this port disagree about the
+    -- name and each is right in its own place: the cartridge's field is
+    -- `effectParam` and other Gen 4 code reads it, while `HoldItems.effectOf`
+    -- asks for `holdEffectParam`, which is what Gen 3 writes.  With only the
+    -- first, every hold effect's parameter came through as zero -- so
+    -- Leftovers would have healed nothing even once it had a name.
     effectParam = u8(record, 3),
+    holdEffectParam = u8(record, 3),
     pluckEffect = u8(record, 4),
     flingEffect = u8(record, 5),
     flingPower = u8(record, 6),

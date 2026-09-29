@@ -365,7 +365,7 @@ local GEN3_MAX_LAND = 32
 -- footprint is 0 rows for 341 of them, 1 for one, and 5 and 6 for the two
 -- that are towers: Silph Co and the BATTLE TOWER.  Both now stand (48 -> 128,
 -- 64 -> 144); every other building in either region is unmoved.
-Structures.SHAPE_REV = "g3-east-387"
+Structures.SHAPE_REV = "g3-eave-394"
 -- one cell of world height: the step a building may straddle and still be
 -- treated as having one foundation
 local COURSE = 16

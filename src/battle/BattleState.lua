@@ -36,6 +36,7 @@ local Strings = require("src.core.Strings")
 local Weather = require("src.battle.Weather")
 local WideBattle = require("src.battle.WideBattle")
 local Gen3Battle = require("src.battle.Gen3Battle")
+local Gen4Battle = require("src.battle.Gen4Battle")
 local GameVersion = require("src.core.GameVersion")
 
 -- Alias for move effects
@@ -238,6 +239,19 @@ function BattleState:gen3Layout()
   return GameVersion.isGen3() and true or false
 end
 
+-- ...AND PLATINUM FIGHTS ON ITS OWN SCREEN TOO, for the same reason and with
+-- less room for argument: a Gen 4 cache has a 256x192 overworld, every piece of
+-- battle art the extractor wrote is authored against that, and the cartridge's
+-- own battler and healthbox positions are stated in those coordinates (see
+-- `Gen4Battle.BATTLER_POS`). A battle that answered 160x144 would put the Game
+-- Boy's composition inside a third of the screen it was drawn for.
+--
+-- No wide option here, unlike Hoenn: the DS screen IS the layout, and there is
+-- no narrower cartridge shape underneath it to widen.
+function BattleState:gen4Layout()
+  return GameVersion.isGen4() and true or false
+end
+
 -- BATTLE LAYOUT = WIDE, ANSWERED IN EMERALD'S OWN TERMS.
 --
 -- The same option the Game Boy layouts read, on the layout that has a screen
@@ -338,13 +352,26 @@ function BattleState:layoutGeometry()
   return BattleState.CLASSIC_GEOMETRY
 end
 
--- BOTH WIDE LAYOUTS LAY THE FOUR MOVES OUT AS A 2x2, so both navigate it with
--- all four directions rather than the classic vertical list.  The maths is
--- the same grid in either case and lives once; what differs is only which
--- layouts ask for it.  nil means "no direction was pressed", and the caller
--- then runs its own list navigation and its A / B / SELECT handling.
+-- EVERY WIDE LAYOUT LAYS THE FOUR MOVES OUT AS A 2x2, so all of them navigate
+-- it with all four directions rather than the classic vertical list.  The
+-- maths is the same grid in every case and lives once; what differs is only
+-- which layouts ask for it.  nil means "no direction was pressed", and the
+-- caller then runs its own list navigation and its A / B / SELECT handling.
+--
+-- SINNOH WAS MISSING FROM THIS TEST AND DREW THE GRID ANYWAY.  Reported from
+-- play: "for the selection of moves up down left right dont work for selection
+-- seems to move right when i press down".  That is exactly what a 2x2 does
+-- when the grid arm is skipped: `Gen4Battle` draws the four moves two to a row,
+-- but the caller fell through to the classic VERTICAL list, where down is
+-- simply index + 1 -- and index + 1 from the top-left of a 2x2 is the cell to
+-- its RIGHT.  Left and right then did nothing at all, because a vertical list
+-- has no use for them.  The fix is one clause, not new maths: the grid this
+-- layout already draws is the grid it should navigate.
 function BattleState:moveGridNavigate(index, count, input)
-  if not (self:isWideBattleLayout() or self:gen3Layout()) then return nil end
+  if not (self:isWideBattleLayout() or self:gen3Layout()
+          or self:gen4Layout()) then
+    return nil
+  end
   return WideBattle.navigate(index, count, input)
 end
 
@@ -354,6 +381,14 @@ end
 -- who reaches for BAG must not open the party.
 function BattleState:menuActions()
   if self:gen3Layout() then return Gen3Battle.ACTIONS end
+  -- SINNOH'S FOUR, and they are Hoenn's four in the same order rather than the
+  -- Game Boy's.  Platinum's action menu is three buttons wide on the touch
+  -- screen -- sBattleMenuButtonLayout is { {0,0,0}, {1,3,2} }, FIGHT spanning
+  -- the top with ITEM, RUN, PARTY underneath -- so a two-column menu has to
+  -- fold it, and folding the bottom row leaves ITEM then PARTY with RUN last.
+  -- That is Emerald's own cartridge-stated order; see Gen4Battle.ACTIONS for
+  -- why the agreement matters more than a third arrangement would.
+  if self:gen4Layout() then return Gen4Battle.ACTIONS end
   return BattleState.CLASSIC_ACTIONS
 end
 
@@ -528,6 +563,12 @@ function BattleState:uiSize()
   if self:gen3Layout() then
     return self:gen3SurfaceWidth(), Gen3Battle.HEIGHT
   end
+  -- The DS's own screen, and neither number is a variable: the backdrops are
+  -- 512x256 with the visible half 256x192, and the platform and battler
+  -- positions are absolute pixels on that.
+  if self:gen4Layout() then
+    return Gen4Battle.WIDTH, Gen4Battle.HEIGHT
+  end
   return 160, 144
 end
 
@@ -668,6 +709,37 @@ Assets.register(BattleState.invalidate)
 
 -- the species' SGB palette (active COLORS pack), or nil
 local function monPalette(data, species, shiny)
+  -- A SINNOH PIC IS ALREADY IN COLOUR, so there is no Game Boy palette to put
+  -- on it and every COLORS mode that tries makes it worse.
+  --
+  -- Reported from play, with a screenshot: *"you messed up the color of pokemon
+  -- sprites"* -- Turtwig crimson, Chimchar pink and white. The extracted art was
+  -- never wrong (387_turtwig.png carries (58,165,66) green, 390_chimchar.png
+  -- (239,123,66) orange); the remap ran on top of it at draw time.
+  --
+  -- `PaletteFX.monPal` states the mechanism in its own first comment: under OG
+  -- RED a battle mon pic is a BG TILE on the Game Boy Color, so it wears the
+  -- global boot-ROM BG palette rather than a per-species one, "matching the
+  -- hardware capture where BOTH MONS ARE RED/PINK on the white field". That is
+  -- exactly the screenshot, and it is why the two starters came out the same
+  -- wrong colour rather than each wrong in its own way -- one palette, both
+  -- pics. Cedric's options.lua reads `colors = "ogred"`.
+  --
+  -- THE GUARD IS ALREADY WRITTEN ONE FUNCTION DOWN, for the generation before
+  -- this one: `BattleState.trainerPalette` returns nil for Gen 3 because "a GBA
+  -- trainer pic is already in colour: the SGB MEWMON remap would squash it to
+  -- four shades (Trainer Tower's challengers came out purple and orange)".
+  -- Purple and orange then, red and pink now. Gen 4 arrived through the same
+  -- shared path and nobody extended it -- the port's recurring fault, Game
+  -- Boy-era code reaching Gen 4 data.
+  --
+  -- Guarded HERE rather than inside the `ogred` branch, because the fault is not
+  -- one mode's: no COLORS pack has a palette for species 387, so every mode is
+  -- either wrong or nil, and nil is what this should answer. Gen 4 also never
+  -- needs it -- a shiny Sinnoh Pokemon is its own PNG (`spriteShiny`), not the
+  -- same pic under a second palette, which is the only thing the `shiny`
+  -- argument is for.
+  if require("src.core.GameVersion").isGen4() then return nil end
   local PaletteFX = require("src.render.PaletteFX")
   local colors = PaletteFX.monPal(data, species, nil, shiny)
   if not colors then return nil end
@@ -693,7 +765,12 @@ end
 function BattleState.trainerPalette(data, trainer)
   -- A GBA trainer pic is already in colour: the SGB MEWMON remap would squash
   -- it to four shades (Trainer Tower's challengers came out purple and orange)
-  if require("src.core.GameVersion").isGen3() then return nil end
+  --
+  -- ...AND SO IS A DS ONE. Reported in the same breath as the mon sprites:
+  -- *"possibly the trainer sprites too"*. Same reason, same answer; this guard
+  -- was right and was simply never extended when Sinnoh arrived behind it.
+  local V = require("src.core.GameVersion")
+  if V.isGen3() or V.isGen4() then return nil end
   local source = trainer and trainer.paletteSource
   if source then
     local PaletteFX = require("src.render.PaletteFX")
@@ -1084,8 +1161,13 @@ local function newBattle(game)
   -- default with a notice instead of silently switching behavior
   local rulesets = game.data.rulesets or Rulesets
   local selected = game.save.options and game.save.options.ruleset
-  local fallback = (game.data.constants and game.data.constants.defaultRuleset)
-                   or "gen1_faithful"
+  -- THE FALLBACK IS THE CARTRIDGE'S, not Kanto's.  It used to read
+  -- `constants.defaultRuleset or "gen1_faithful"`, and nothing has ever
+  -- written that constant -- so Hoenn fought under Generation One's rules on
+  -- every fresh save while `gen3_emerald.lua` sat beside it, registered and
+  -- unreferenced.  See `src/battle/RulesetDefaults.lua` for the measurement
+  -- and for why Gen 2 is deliberately left where it was.
+  local fallback = require("src.battle.RulesetDefaults").defaultFor(game)
   local ruleset = selected and rulesets[selected]
   if selected and not ruleset then
     Logger.warn("unknown ruleset %s; using %s", tostring(selected), fallback)
@@ -1124,6 +1206,62 @@ local function newBattle(game)
     local ok, Gen3MoveAnim = pcall(require, "src.battle.Gen3MoveAnim")
     if ok and Gen3MoveAnim then
       self.gen3Anim = Gen3MoveAnim.new(game.data)
+    end
+  end
+  -- SINNOH'S IS A FOURTH, and until now there was no fourth: the three above
+  -- are Gen 1, Gen 2 and Emerald, each behind a `pcall` so a missing one is
+  -- silent, and a Platinum battle therefore asked nobody to draw a move.
+  -- Reported from play as "scratch doesnt work and doesnt show a move
+  -- animation or fx".
+  do
+    local ok, Gen4MoveAnimPlayer = pcall(require, "src.battle.Gen4MoveAnimPlayer")
+    if ok and Gen4MoveAnimPlayer then
+      self.gen4Anim = Gen4MoveAnimPlayer.new(game.data)
+      -- ...AND THE SOUND SEAM, WHICH NOTHING HAD EVER SET. The player has emitted
+      -- sound events since it was written and `onSound` was nil on every boot, so
+      -- 1,241 sound commands over 378 of the 501 programs reached nothing and every
+      -- Sinnoh move was SILENT. A callback nobody assigns is the same class of bug as
+      -- a cache table nobody opens and an animator nobody constructs; this port has
+      -- now had all three.
+      --
+      -- WHAT CAN BE PLAYED TODAY IS THE CRIES. Platinum's effects are SDAT
+      -- SEQUENCES and playing one needs a synthesiser this engine does not have, so
+      -- `Sound.playId` will not find them -- it is called anyway, deliberately, so
+      -- that the day the sequences are imported this seam is already the place they
+      -- arrive. The cries are single PCM8 samples and the import stage writes all 493
+      -- into the same `audio.cries` table Gen 1, 2 and 3 fill.
+      if self.gen4Anim then
+        self.gen4Anim.onSound = function(event)
+          local okSound, Sound = pcall(require, "src.core.Sound")
+          if not (okSound and Sound and type(event) == "table") then return end
+          if event.kind == "cry" then
+            -- The cartridge's cry is the ATTACKER's, and the player says so by side
+            -- rather than by species because it is handed a move, not a party.
+            local attacker = self.gen4AnimAttackerIsPlayer and self.player
+              or self.enemy
+            local species = attacker and attacker.mon and attacker.mon.species
+            if species then
+              self.gen4CrySource = Sound.playCry(self.data, species)
+            end
+          elseif event.kind == "play" and event.id and Sound.playId then
+            Sound.playId(self.data, event.id)
+          elseif event.kind == "stopcries" then
+            self.gen4CrySource = nil
+          end
+          -- "stop" and "pan" have nothing to act on while the effects are silent, and
+          -- are deliberately not faked: panning a sound that is not playing and
+          -- stopping one that never started would both be inventions.
+        end
+        -- ...and the one question the player cannot answer itself. `waitforpokemoncries`
+        -- waits on `Sound_IsPokemonCryPlaying()`, and this is the engine's answer; a
+        -- battle that cannot answer is not held up (see the player's own note).
+        self.gen4Anim.cryPlaying = function()
+          local src = self.gen4CrySource
+          if not src then return false end
+          local got, playing = pcall(src.isPlaying, src)
+          return got and playing == true
+        end
+      end
     end
   end
   -- THE WEATHER YOU BROUGHT IN WITH YOU.
@@ -2333,6 +2471,12 @@ function BattleState:updateQueue()
       self.gen3Anim:release()
     end
   end
+  -- ...and Sinnoh's, in the same place and for the same reason as the comment
+  -- above: its frames have to be counted where the hold is counted or the
+  -- animation stands still for exactly as long as it is meant to be moving.
+  if self.gen4AnimPlaying and self.gen4Anim then
+    if not self.gen4Anim:update() then self.gen4AnimPlaying = false end
+  end
   -- ...and the ball's own timeline, ticked in the same place and for the same
   -- reason: its frames are counted where the hold is counted, or it would
   -- stand still for exactly as long as it is meant to be moving.
@@ -2500,7 +2644,27 @@ function BattleState:updateQueue()
         -- single-sound fallback below still runs and the move both looks and
         -- sounds like itself.  The queue is held with waitFrames instead, for
         -- as long as the script's own delays plus the particles' life.
-        if self.gen3Anim and self.gen3Anim:has(item.anim, item.animContext)
+        -- SINNOH FIRST, because `gen4Layout()` and `gen3Layout()` are
+        -- different questions and a Gen 4 battle must not fall into Emerald's
+        -- animator -- which would look up a Hoenn move index in a Hoenn table
+        -- and play whatever happened to be there.
+        if self:gen4Layout() and self.gen4Anim and item.anim
+           and self.gen4Anim:duration(item.anim, item.attackerIsPlayer) > 0 then
+          self.gen4AnimPlaying = true
+          -- WHICH SIDE IS ATTACKING, for the sound seam: a cry event names the side
+          -- and this is what turns that into a Pokemon. Set before the animation
+          -- runs, because `duration` above has already started it.
+          self.gen4AnimAttackerIsPlayer = item.attackerIsPlayer and true or false
+          -- `duration` RAN the program to measure this and then restarted it,
+          -- so the number is the program's own length rather than an estimate,
+          -- and the queue waits exactly that long.
+          self.waitFrames = math.max(self.waitFrames or 0,
+            self.gen4Anim:duration(item.anim, item.attackerIsPlayer))
+        -- MAIN'S WIDER GEN 3 SIGNATURE, kept: `has`/`start` now take the
+        -- animation context and both battler positions. The Gen 4 arm above is
+        -- unaffected -- it never reaches this call -- so the two merge by
+        -- keeping the branch from Platinum and the arguments from main.
+        elseif self.gen3Anim and self.gen3Anim:has(item.anim, item.animContext)
            and self.gen3Anim:start(item.anim, item.attackerIsPlayer,
                                    item.attackerPosition, item.targetPosition,
                                    item.animContext, self) then
@@ -3469,7 +3633,7 @@ function BattleState:enter()
     -- dataset that has the send-out throw the walk-off is handed to
     -- gen3SendOut and happens on the throw's own frame instead of eighteen
     -- frames before the text.
-    local throws = self:gen3ThrowsSendOut()
+    local throws = self:throwsSendOut()
     if not throws then
       self:act(function() self:slidePic("back", 0, -72, 4) end)
       table.insert(self.queue, { wait = 18 })
@@ -3837,6 +4001,33 @@ function BattleState:update(dt)
   end
   local input = self.game.input
 
+  -- L PUTS THE BOTTOM SCREEN AWAY, AND BRINGS IT BACK.
+  --
+  -- From the brief: "allow users to switch between the two with a button".
+  -- L rather than a new binding for the same reason the field's Poketch uses
+  -- it -- it is an action the controls menu already lists, so it is rebindable
+  -- without this screen knowing how rebinding works -- and it means ONE KEY
+  -- WITH ONE MEANING across the game: show or hide the bottom screen. In the
+  -- field that surface is the Poketch; in a battle it is the
+  -- FIGHT/BAG/POKeMON/RUN menu and the move list.
+  --
+  -- HERE RATHER THAN IN THE MENU BRANCH, because BOTH choosing phases put
+  -- something on that surface and a key that worked on one of them and not the
+  -- other would read as a bug. It does nothing in any other phase: while a
+  -- message is typing there is nothing down there to hide.
+  --
+  -- Gated on the Gen 4 layout, so no Gen 1-3 press changes anything. Those
+  -- cartridges have no second screen and SecondScreen.mode answers "off" for
+  -- them regardless, but the gate says so where a reader will look.
+  if input and input:wasPressed("l") and self:gen4Layout()
+     and (self.phase == "menu" or self.phase == "moveSelect") then
+    local okSS, SecondScreen = pcall(require, "src.ui.SecondScreen")
+    if okSS and SecondScreen.mode(self.game) ~= "off" then
+      SecondScreen.toggleStow(self.game)
+      return
+    end
+  end
+
   -- safety net: HP/status changed outside a queued drain (level-up heals,
   -- field effects, bag cures) snaps once the queue is idle
   if self.phase == "menu" then
@@ -3960,18 +4151,36 @@ function BattleState:update(dt)
       self:resolveTurn(locked)
       return
     end
-    local col = (self.menuIndex - 1) % 2
-    local row = math.floor((self.menuIndex - 1) / 2)
-    if input:wasPressed("left") then
-      col = math.max(0, col - 1)
-    elseif input:wasPressed("right") then
-      col = math.min(1, col + 1)
-    elseif input:wasPressed("up") then
-      row = math.max(0, row - 1)
-    elseif input:wasPressed("down") then
-      row = math.min(1, row + 1)
+    -- PLATINUM'S ACTION MENU IS NOT A 2x2, and walking it as one is what a
+    -- player feels as the cursor jumping about.
+    --
+    -- Every other game in this launcher draws FIGHT/BAG over POKeMON/RUN and
+    -- the arithmetic below is exactly right for that. Platinum draws the
+    -- cartridge's own layout -- FIGHT across the top, then ITEM, RUN, PARTY --
+    -- so its d-pad walks that grid instead. See Gen4Battle.actionMove.
+    local dir = (input:wasPressed("left") and "left")
+             or (input:wasPressed("right") and "right")
+             or (input:wasPressed("up") and "up")
+             or (input:wasPressed("down") and "down")
+    if self:gen4Layout() then
+      if dir then
+        self.menuIndex, self.gen4MenuColumn =
+          Gen4Battle.actionMove(self.menuIndex, dir, self.gen4MenuColumn)
+      end
+    else
+      local col = (self.menuIndex - 1) % 2
+      local row = math.floor((self.menuIndex - 1) / 2)
+      if dir == "left" then
+        col = math.max(0, col - 1)
+      elseif dir == "right" then
+        col = math.min(1, col + 1)
+      elseif dir == "up" then
+        row = math.max(0, row - 1)
+      elseif dir == "down" then
+        row = math.min(1, row + 1)
+      end
+      self.menuIndex = row * 2 + col + 1
     end
-    self.menuIndex = row * 2 + col + 1
     if input:wasPressed("a") then
       local choice = self:menuActions()[self.menuIndex]
       -- BattleMenu_Pack `.contest` (core.asm:4990): `ld a, PARK_BALL /
@@ -6424,18 +6633,48 @@ function BattleState:computeDamage(user, target, move, opts)
   -- rather than widening Damage.compute's signature.
   if self:isDouble() and target then
     opts = opts or {}
-    local alive = 0
-    for flank = 1, 2 do
-      local b = self.sides[target.isPlayer and 1 or 2].battlers[flank]
-      if b and b.mon and (b.mon.hp or 0) > 0 then alive = alive + 1 end
+    local function aliveOn(isPlayer)
+      local n = 0
+      for flank = 1, 2 do
+        local b = self.sides[isPlayer and 1 or 2].battlers[flank]
+        if b and b.mon and (b.mon.hp or 0) > 0 then n = n + 1 end
+      end
+      return n
     end
-    if alive == 2 then
-      if opts.doublesScreens == nil then opts.doublesScreens = true end
-      -- ...and the spread half, but ONLY for MOVE_TARGET_BOTH.  The compare
-      -- at 0806_9BA4 is `cmp #8`, not a mask: EARTHQUAKE and EXPLOSION are
-      -- $20 and are not reduced at all on this cartridge.
-      if opts.spread == nil and tonumber(move and move.target) == 0x08 then
-        opts.spread = true
+    local defenderSide = aliveOn(target.isPlayer)
+    if defenderSide == 2 and opts.doublesScreens == nil then
+      opts.doublesScreens = true
+    end
+    -- ...and the spread reduction, WHICH IS NOT ONE RULE.
+    --
+    -- This used to be a literal `move.target == 0x08` here, which was
+    -- Emerald's rule written into the engine instead of into Emerald's
+    -- ruleset -- so Platinum could not have a different one even after
+    -- somebody measured it.  It is now two fields on the ruleset:
+    -- `spreadField` names the byte (a Gen 3 move record calls it `target`,
+    -- a Gen 4 one calls it `range`, and 0x08 does not mean the same thing in
+    -- the two), and `spreadRanges` maps a value to the ALIVE COUNT that gates
+    -- it.  A ruleset with neither, like gen1_faithful, never sets `spread`
+    -- and is untouched by this.
+    --
+    --   "defenderSide"   -- both foes still up.  CountAliveBattlers(sameSide
+    --                       = TRUE) in Platinum, CountAliveMonsInBattle(
+    --                       BATTLE_ALIVE_DEF_SIDE) in Emerald: the same test.
+    --   "othersOnField"  -- two or more alive ANYWHERE except the defender.
+    --                       Platinum only, for RANGE_ALL_ADJACENT: Earthquake
+    --                       is reduced even when the defender is the last foe,
+    --                       because the user's own ally is standing in it.
+    local ruleset = self.ruleset or {}
+    local ranges = ruleset.spreadRanges
+    if opts.spread == nil and ranges then
+      local key = tonumber(move and move[ruleset.spreadField or "target"])
+      local gate = key and ranges[key]
+      if gate == "defenderSide" then
+        opts.spread = defenderSide == 2
+      elseif gate == "othersOnField" then
+        -- The defender is alive -- it is being hit -- so every other living
+        -- battler is the field total less one.
+        opts.spread = (aliveOn(true) + aliveOn(false) - 1) >= 2
       end
     end
   end
@@ -8057,7 +8296,69 @@ local SLOW_SHAKE_EFFECTS = {
 -- block of its 7x7 tiles), 5 frames at 5/7 (5x5), then full size.
 -- Queues a hold so the text stays up while it grows.  Runs inside a
 -- queued fn (updateQueue resets nextInsert before each one).
+-- SINNOH THROWS ITS OWN BALL TO SEND ONE OUT TOO.
+--
+-- Found while measuring the stray textbox: the send-out queue on a Gen 4 battle
+-- still holds `{ anim = "POOF_ANIM" }`, which is GEN 1'S animation name in a
+-- Sinnoh battle -- the same fault, one generation later, that the Gen 3 note
+-- below records fixing for Hoenn:
+--
+--     "There was no send-out animation on Hoenn at all -- the queue ran Gen 1's
+--      POOF_ANIM, which a Gen 3 dataset has no script for, and then Gen 2's
+--      grow-in, which is the Game Boy's three-stage tile beat"
+--
+-- Platinum has no script for `POOF_ANIM` either, so the poof drew nothing and
+-- the Pokemon arrived by the Game Boy's grow-in.
+--
+-- The throw itself is already built: `Gen4BallAnim` in `release` mode is the
+-- same cells and the same cartridge timings as the catch, run so the Pokemon
+-- comes OUT rather than going in.
+--
+-- WHAT THIS DELIBERATELY DOES NOT DO.  Only the player's own send-out is
+-- claimed.  A foe's ball on the cartridge is PLACED rather than thrown -- the
+-- Gen 3 note states that for Hoenn and Platinum has not been measured for it --
+-- and a ball arcing in from off-screen on the wrong side would be worse than
+-- the grow-in it replaced.  Everything else returns false and keeps what it had.
+function BattleState:gen4SendOut(battler)
+  if not (self:gen4Layout() and battler and battler == self.player) then
+    return false
+  end
+  local okAnim, Gen4BallAnim = pcall(require, "src.battle.Gen4BallAnim")
+  if not (okAnim and Gen4BallAnim) then return false end
+  -- Already throwing something: a second ball in the air is worse than none.
+  if self.gen4Ball then return false end
+
+  local pos = Gen4Battle.BATTLER_POS and Gen4Battle.BATTLER_POS[0]
+  if not pos then return false end
+
+  -- WHICH BALL THIS POKEMON LIVES IN.  `MON_DATA_POKEBALL` is an item id and
+  -- `ballThrowFor` reads that id space, so a Pokemon caught in an Ultra Ball
+  -- comes out of one.  An older save with no ball recorded falls back to the
+  -- plain Poke Ball, which is `ballThrowFor`'s own documented answer.
+  local mon = battler.mon
+  local name = Gen4Battle.ballThrowFor(mon and (mon.ball or mon.pokeball))
+
+  self.gen4Ball = Gen4BallAnim.new({
+    ball = name,
+    mode = "release",
+    side = "player",
+    to = { x = pos.x, y = pos.y },
+  })
+  -- The trainer has thrown it, so the back pic goes now rather than staying up
+  -- behind the Pokemon it just released.
+  if self.showPlayerBack then
+    self.showPlayerBack = false
+    self:slidePic("back")
+  end
+  self.nextInsert = (self.nextInsert or 0) + 1
+  table.insert(self.queue, self.nextInsert, { wait = self.gen4Ball:estimate() })
+  return true
+end
+
 function BattleState:startGrowIn(battler)
+  -- Sinnoh first, for the same reason the ball chain asks Gen 4 first: relying
+  -- on a Gen 3 gate to decline a Gen 4 cache is a coincidence, not a rule.
+  if self:gen4SendOut(battler) then return end
   -- ...and on Hoenn the ball is thrown instead; see gen3SendOut.  This is the
   -- one place every send-out in the file goes through, which is why the
   -- switch lives here rather than at each of the seven callers.
@@ -8240,7 +8541,18 @@ function BattleState:picOffset(slot)
   return p and p.x or 0
 end
 
+-- The thrown ball advances a frame at a time, like every other timeline here.
+-- Dropped when it finishes so nothing keeps drawing a settled ball over the
+-- next turn.
+function BattleState:updateGen4Ball()
+  local anim = self.gen4Ball
+  if not anim then return end
+  anim:update()
+  if anim:isDone() then self.gen4Ball = nil end
+end
+
 function BattleState:updateFx()
+  self:updateGen4Ball()
   local fi = self.frlgIntro
   if fi then
     fi.t = fi.t + 1
@@ -9932,7 +10244,13 @@ function BattleState:enemyMonFainted()
         end
       end
     end
-    self:sayNext(self:romText("_MoneyForWinningText", "%s got ¥%d\nfor winning!", self.game.save.player.name, prize))
+    -- The sign is the cartridge's: U+00A5 is the JAPANESE YEN KANJI in
+    -- Platinum's font, so a Sinnoh win read "got 円 480". This default is
+    -- only reached when the dataset has no `_MoneyForWinningText` of its own,
+    -- which is every Gen 3 and Gen 4 cartridge.
+    self:sayNext(self:romText("_MoneyForWinningText",
+      "%s got " .. require("src.core.GameVersion").moneySign() .. "%d\nfor winning!",
+      self.game.save.player.name, prize))
   end
   self.result = "win"
   self.afterQueue = "finish"
@@ -10509,6 +10827,62 @@ end
 -- Emerald's is not a script either: it is a task with a timeline, so this
 -- port's is a timeline too (src/battle/Gen3BallAnim.lua).  The queue holds
 -- for its length and the screen reads its fields.
+-- SINNOH'S BALL.
+--
+-- Reported from play, item 6: *"Ball catching animations do not play"*.  They
+-- could not: this function had a Gen 3 branch, a Gen 2 branch and a Gen 1
+-- fallback, and Sinnoh fell into the Gen 1 one -- which replays `TOSS_ANIM`,
+-- `POOF_ANIM`, `HIDEPIC_ANIM` and `SHAKE_ANIM`, none of which exist in
+-- Platinum's data.  So the chain ran, found nothing to play, and drew nothing,
+-- which is the failure that looks exactly like the feature being unwritten.
+--
+-- Answered BEFORE the Gen 3 branch rather than after.  `gen3BallChain` gates on
+-- `constants.gen3BallAnim`, which a Gen 4 cache does not carry, so the order
+-- does not matter today -- and relying on that is how a later cache that
+-- happens to carry both picks the wrong one.
+function BattleState:gen4BallChain(caught, shakes, ball)
+  if not self:gen4Layout() then return false end
+  local okAnim, Gen4BallAnim = pcall(require, "src.battle.Gen4BallAnim")
+  if not (okAnim and Gen4BallAnim) then return false end
+
+  -- WHICH ART, by the id space the cartridge uses: `sBallThrowGraphics` is
+  -- indexed `ballId - 1` and the ball id IS an item id.  See
+  -- `Gen4Battle.ballThrowFor`.
+  local itemId = self:ballItemId(ball)
+  local name = Gen4Battle.ballThrowFor(itemId)
+
+  -- WHERE IT IS THROWN TO: the foe's own slot, from the cartridge's position
+  -- table, rather than a number typed here.
+  local pos = Gen4Battle.BATTLER_POS and Gen4Battle.BATTLER_POS[1]
+  local anim = Gen4BallAnim.new({
+    ball = name,
+    to = pos and { x = pos.x, y = pos.y } or nil,
+    caught = caught,
+    shakes = shakes,
+  })
+  self.gen4Ball = anim
+  -- The queue holds for exactly the animation's own length, which the anim
+  -- computes from its phase list rather than estimating.
+  self.nextInsert = (self.nextInsert or 0) + 1
+  table.insert(self.queue, self.nextInsert, { wait = anim:estimate() })
+  return true
+end
+
+-- The ITEM ID behind whatever the caller named the ball, which may be an id
+-- already, a cache key, or one of the engine's own `POKE_BALL` names.
+function BattleState:ballItemId(ball)
+  local n = tonumber(ball)
+  if n then return n end
+  local def = self:itemDef(ball)
+  if type(def) == "table" then
+    local id = tonumber(def.id) or tonumber(def.index)
+    if id then return id end
+  end
+  -- Not guessed: with no id to be had, `ballThrowFor` answers its own
+  -- documented fallback, the plain Poke Ball.
+  return nil
+end
+
 function BattleState:gen3BallChain(caught, shakes, ball)
   local record = (self.data.constants or {}).gen3BallAnim
   if type(record) ~= "table" then return false end
@@ -10623,6 +10997,33 @@ function BattleState:gen3BallFor(battler)
   return anim
 end
 
+-- DOES THIS DATASET THROW A BALL TO SEND OUT AT ALL?
+--
+-- Asked separately from `gen3ThrowsSendOut` because the queue above needs the
+-- GENERAL question and the Gen 3 paths below need the Gen 3 one.  Handing the
+-- general question to the Gen 3 gate is what went wrong here: a Gen 4 cache has
+-- no `gen3BallAnim.timing.sendOut`, so `throws` came back false, and the queue
+-- took the Game Boy branch -- walk the trainer off, wait eighteen frames, clear
+-- `showPlayerBack` -- a full second BEFORE `startGrowIn` ran.  Measured on a
+-- Sinnoh battle: the trainer left on tick 223 and the Pokemon stood on the
+-- platform on its own until the ball was finally thrown on tick 286.  The throw
+-- was correct and arrived to send out a Pokemon that was already there.
+--
+-- This is the same fault as the POOF_ANIM one generation up, and the comment on
+-- `startGrowIn` names it exactly: relying on a Gen 3 gate to decline a Gen 4
+-- cache is a coincidence, not a rule.  It was true of the gate one level above
+-- it too, which this pass did not check the first time.
+function BattleState:throwsSendOut()
+  if self:gen4Layout() then
+    -- The same two questions `gen4SendOut` asks that do not depend on which
+    -- battler it is, so the queue and the animation cannot disagree about
+    -- whether a ball is coming.
+    local okAnim = pcall(require, "src.battle.Gen4BallAnim")
+    return okAnim and (Gen4Battle.BATTLER_POS and Gen4Battle.BATTLER_POS[0]) ~= nil
+  end
+  return self:gen3ThrowsSendOut()
+end
+
 function BattleState:gen3ThrowsSendOut()
   local record = (self.data or {}).constants
   record = type(record) == "table" and record.gen3BallAnim or nil
@@ -10702,6 +11103,7 @@ function BattleState:gen3SendOut(battler)
 end
 
 function BattleState:ballChain(tossAnim, caught, shakes, ball)
+  if self:gen4BallChain(caught, shakes, ball) then return end
   if self:gen3BallChain(caught, shakes, ball) then return end
   -- Gen 2 has no chain: BattleAnim_ThrowPokeBall runs the arc, the
   -- RETURN_MON bgeffect that draws the mon in, the wobble loop
@@ -10962,6 +11364,22 @@ function BattleState:openParty()
     return self:buildScreen("PartyMenu", {
       battle = self,
       onSwitch = function(mon)
+        -- NIL IS "I CHANGED MY MIND", NOT A POKEMON.
+        --
+        -- Reported from play as a crash: "when i got inside the pokemn party
+        -- and back out of it i get a crash ... attempt to index local 'mon'
+        -- (a nil value)". A party screen that is NOT a forced switch hands its
+        -- answer back on B as well as on A -- nil for "none" -- because out of
+        -- a battle that is how a caller learns the player cancelled. This
+        -- handler was written for the answer and not for the refusal, and ran
+        -- straight into `mon.hp`.
+        --
+        -- The screen no longer hands nil to a battle (see Gen4PartyMenu:close),
+        -- and this guard stays anyway: a mod can serve PartyMenu, and a
+        -- handler that only works for well-behaved callers is one line short
+        -- of working for all of them. Returning does the right thing on its
+        -- own -- the menu phase is already what the battle goes back to.
+        if not mon then return end
         -- "ALREADY OUT" IS BOTH SLOTS IN A DOUBLE.  The partner standing
         -- beside you cannot be sent out again either, and asking `self.player`
         -- alone let the right-hand slot pick the Pokemon already fighting
@@ -11076,7 +11494,9 @@ function BattleState:finish()
   self:restorePokedudeParty()
   if self.payDay and self.result == "win" then
     self.game.save.money = self.game.save.money + self.payDay
-    self:say(self:romText("_PickUpPayDayMoneyText", "%s picked up\n¥%d!", self.game.save.player.name, self.payDay))
+    self:say(self:romText("_PickUpPayDayMoneyText",
+      "%s picked up\n" .. require("src.core.GameVersion").moneySign() .. "%d!",
+      self.game.save.player.name, self.payDay))
     self.payDay = nil
     self.afterQueue = "finish"
     self.phase = "messages"
@@ -11550,6 +11970,16 @@ end
 -- to happen where the mon is drawn rather than as a particle laid over it --
 -- which is why it is here and not in Gen3MoveAnim's own draw.
 function BattleState:gen3AnimShake(battler)
+  -- SINNOH'S ANIMATOR SPEAKS THE SAME THREE METHODS, which is why
+  -- it plugs in here rather than bringing a second draw path: a
+  -- second one would have none of the grow-in scale, hit shake or
+  -- rotate `drawBattlerPic` already carries.
+  if self.gen4AnimPlaying and self.gen4Anim and battler then
+    local ok4, a, b, c, d = pcall(self.gen4Anim.monOffset, self.gen4Anim,
+                                  battler == self.player)
+    if ok4 then return a or 0, b or 0 end
+    return 0, 0
+  end
   if not (self.gen3AnimPlaying and self.gen3Anim and battler) then
     return 0, 0
   end
@@ -11577,6 +12007,16 @@ end
 -- draws reproduce exactly: the sprite dimmed by (1 - c), and the colour added
 -- back at c through the sprite's own alpha.
 function BattleState:gen3AnimTint(battler)
+  -- SINNOH'S ANIMATOR SPEAKS THE SAME THREE METHODS, which is why
+  -- it plugs in here rather than bringing a second draw path: a
+  -- second one would have none of the grow-in scale, hit shake or
+  -- rotate `drawBattlerPic` already carries.
+  if self.gen4AnimPlaying and self.gen4Anim and battler then
+    local ok4, a, b, c, d = pcall(self.gen4Anim.monTint, self.gen4Anim,
+                                  battler == self.player)
+    if ok4 then return a, b, c, d end
+    return nil
+  end
   if not (self.gen3AnimPlaying and self.gen3Anim and battler) then return nil end
   if not love.graphics.setBlendMode then return nil end
   local ok, r, g, b, c = pcall(self.gen3Anim.monTint, self.gen3Anim, battler)
@@ -11735,6 +12175,16 @@ end
 -- data; Gen3MoveAnim:monAffine walks it (see both).  Two multipliers come
 -- back, not one, because the table moves the axes independently.
 function BattleState:gen3AnimSquash(battler)
+  -- SINNOH'S ANIMATOR SPEAKS THE SAME THREE METHODS, which is why
+  -- it plugs in here rather than bringing a second draw path: a
+  -- second one would have none of the grow-in scale, hit shake or
+  -- rotate `drawBattlerPic` already carries.
+  if self.gen4AnimPlaying and self.gen4Anim and battler then
+    local ok4, a, b, c, d = pcall(self.gen4Anim.monAffine, self.gen4Anim,
+                                  battler == self.player)
+    if ok4 then return a or 1, b or 1 end
+    return nil
+  end
   if not (self.gen3AnimPlaying and self.gen3Anim and battler) then return nil end
   if not self.gen3Anim.monAffine then return nil end
   local ok, sx, sy = pcall(self.gen3Anim.monAffine, self.gen3Anim, battler)
@@ -12293,6 +12743,19 @@ BattleState.BATTLE_SCALE_GEN2 = { front = 1, back = 1 }
 -- pixels tall on a 160-pixel screen: the player's Pokemon filled half the
 -- field and ran off the bottom through the message window.
 BattleState.BATTLE_SCALE_GEN3 = { front = 1, back = 1 }
+-- ...AND GEN 4'S ARE 80x80, WHICH IS THE SAME BUG ONE GENERATION LATER.
+--
+-- Reported from play: "the players pokemon is way too large".  Measured rather
+-- than estimated: `back/390_chimchar.png` is 80 by 80, and the comment above
+-- about Gen 3 spells out what happens next -- with no Gen 4 arm here the
+-- resolver fell through to BATTLE_SCALE_DEFAULT, which is GEN ONE'S, and Gen 1
+-- doubles the back pic because its rips are 40x40.  80 doubled is 160 pixels on
+-- a battle surface 160 pixels tall: the player's Pokemon was not "too large",
+-- it was EXACTLY the height of the screen.
+--
+-- Gen 4's front pics are 80x80 too, so both sides are 1:1 -- the same answer
+-- Gen 2 and Gen 3 already give, for the same reason.
+BattleState.BATTLE_SCALE_GEN4 = { front = 1, back = 1 }
 
 -- image-level override for an asset path, or nil.  scales is the merged
 -- data.battle_sprite_scales table (record id -> { path, scale }).
@@ -12319,7 +12782,9 @@ function BattleState.resolveBattleScale(data, side, path, species)
   if override then return override end
   local V = require("src.core.GameVersion")
   local defaults = BattleState.BATTLE_SCALE_DEFAULT
-  if V.isGen3() then
+  if V.isGen4() then
+    defaults = BattleState.BATTLE_SCALE_GEN4
+  elseif V.isGen3() then
     defaults = BattleState.BATTLE_SCALE_GEN3
   elseif V.isGen2() then
     defaults = BattleState.BATTLE_SCALE_GEN2
@@ -12825,6 +13290,10 @@ function BattleState:drawTextArea()
   -- Gen3Battle.draw used to call its layer functions directly, which meant a
   -- mod wrapping this name never saw a Gen 3 battle at all.
   if self:gen3Layout() then return Gen3Battle.drawTextArea(self) end
+  -- ...and Platinum's, for the same reason.  Its message box is the cartridge's
+  -- own rect on the DS screen rather than the Game Boy's box translated into
+  -- the middle of it; see the text-area block in src/battle/Gen4Battle.lua.
+  if self:gen4Layout() then return Gen4Battle.drawTextArea(self) end
   -- The move list and Mimic's copy menu keep the solid paper (see
   -- WORLD_WINDOW_STYLE); everything else in here is the dialogue box and the
   -- battle menu, which are what goes to glass over a world backdrop.
@@ -13002,6 +13471,7 @@ end
 function BattleState:draw()
   if self:wideLayout() then return WideBattle.draw(self) end
   if self:gen3Layout() then return Gen3Battle.draw(self) end
+  if self:gen4Layout() then return Gen4Battle.draw(self) end
   return self:drawClassic()
 end
 
@@ -13015,6 +13485,7 @@ end
 -- method for exactly this reason.
 function BattleState:drawBattleField()
   if self:gen3Layout() then return Gen3Battle.drawField(self) end
+  if self:gen4Layout() then return Gen4Battle.drawField(self) end
   -- the classic and widescreen layouts paint their field inside their own
   -- draw, where it has always been
 end

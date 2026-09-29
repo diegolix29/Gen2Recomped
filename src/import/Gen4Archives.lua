@@ -305,7 +305,7 @@ end
 -- archive holds exactly one bank and this sheet has no other candidate -- and
 -- the caller should record that it was a guess rather than present the result
 -- as though the cartridge had said so.
-function Gen4Archives.cellBank(path, base)
+function Gen4Archives.cellBank(path, base, at)
 	local names = Gen4Archives.names(path)
 	if not names then return nil end
 
@@ -358,6 +358,42 @@ function Gen4Archives.cellBank(path, base)
 
 	-- sole: one bank in the whole archive and nothing better to go on.
 	if #banks == 1 then return banks[1].at, banks[1].base, "sole" end
+
+	-- ADJACENT: the NCER IMMEDIATELY BEFORE THE SHEET, when the caller says
+	-- which member the sheet is.
+	--
+	-- WHY THIS IS A READING AND NOT A GUESS. pokeplatinum's own
+	-- res/graphics/battle/sprites.order lays this archive out in `anim, cell,
+	-- sheet` triples, and states the healthbox pairing outright:
+	--
+	--     188 healthbox/short_cell.NCER   189 healthbox/enemy.NCGR
+	--     191 healthbox/tall_cell.NCER    192 healthbox/player_singles.NCGR
+	--     200 healthbox/short_cell.NCER   201 healthbox/player_doubles.NCGR
+	--
+	-- The four rules above all miss it because THE BANK IS NAMED FOR THE BOX'S
+	-- SHAPE, NOT FOR THE BOX: `healthbox/enemy` has no `healthbox/enemy_cell`
+	-- to find, and `short_cell` serves three different sheets so no prefix
+	-- reaches it either. Those three are the ONLY sheets in the whole battle
+	-- archive that resolve to nothing (measured: 3 of 326), and they are the
+	-- three healthboxes the battle screen actually needs.
+	--
+	-- LAST, AND ONLY WITH `at`. It is last because the named and folder rules
+	-- are stronger evidence wherever they apply, and it needs `at` because a
+	-- BASE NAME IS NOT UNIQUE HERE -- `healthbox/enemy` is members 189, 195 and
+	-- 198 -- so "the member before the sheet called X" has no single answer
+	-- while "the member before member N" has exactly one.
+	--
+	-- NOT GENERALISED BEYOND A CALLER THAT ASKS. Measured across every .order
+	-- file in pokeplatinum, only 99 of 1,157 sheets (8.6%) are preceded by an
+	-- NCER at all -- it is the layout of THIS archive and the summary screen's,
+	-- not a rule of the format. Reported as its own strength so a consumer can
+	-- tell it apart from a name match.
+	if at then
+		local before = names[at]          -- 1-based table, 0-based member index
+		if before and Gen4Archives.extension(before) == "NCER" then
+			return at - 1, Gen4Archives.baseName(before), "adjacent"
+		end
+	end
 	return nil
 end
 

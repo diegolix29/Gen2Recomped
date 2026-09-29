@@ -46,7 +46,19 @@ function Abilities.of(battler)
   local list = def and def.abilities
   if type(list) ~= "table" then return nil end
   local slot = battler.mon and tonumber(battler.mon.abilitySlot) or 1
-  return list[slot] or list[1]
+  -- THE SECOND SLOT MAY BE A SENTINEL RATHER THAN A HOLE, and `or` does not
+  -- catch it: in Lua 0 is TRUTHY.  The cartridge's own rule is in
+  -- `pokemon.c` -- `if (ability2 != ABILITY_NONE) { ability = personality & 1
+  -- ? ability2 : ability1 } else { ability = ability1 }` -- so an absent
+  -- second ability means slot one, whatever the personality says.  A Gen 4
+  -- cache written before `Gen4Abilities` carries the 0 literally, and this
+  -- read handed it straight back: half of Sinnoh's Pokemon announced
+  -- "<name>'s / 0!" and had no ability at all.  Named here as well as fixed
+  -- at the import, because a stale cache is still a cache this has to read.
+  local chosen = list[slot]
+  if chosen == nil or chosen == 0 or chosen == "NONE" then chosen = list[1] end
+  if chosen == 0 or chosen == "NONE" then return nil end
+  return chosen
 end
 
 local function hpFraction(battler)

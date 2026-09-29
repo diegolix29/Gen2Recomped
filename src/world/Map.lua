@@ -120,7 +120,20 @@ end
 -- GetTileAndCoordsInFrontOfPlayer / collision checks read the neighbor
 -- strip's tile bytes the same way.
 function Map.defCellTile(def, tilesetDef, cx, cy)
-  if not (def and tilesetDef and tilesetDef.blocks) then return nil end
+  -- `blocks` IS ONLY NEEDED BY THE LAST PATH IN HERE.
+  --
+  -- A tileset's `blocks` is the Game Boy metatile table, and the branch below
+  -- that reads it is the last of three.  Demanding it up front refused the
+  -- other two for any tileset that does not carry one -- which is every Gen 4
+  -- tileset, because Sinnoh's collision is per CELL and the stand-in carries a
+  -- `collision` table and `blockCells = 1` instead.
+  --
+  -- That is the whole of *"still can't walk out of twinleaf, invisible wall"*:
+  -- `defPassable` asks this for the neighbour's cell during an edge crossing,
+  -- got nil, and read nil as a wall -- so every seam in Sinnoh was shut.  It is
+  -- the same shape as the Littleroot/Route 101 bug the comment in
+  -- `defPassable` describes, one layer further down.
+  if not (def and tilesetDef) then return nil end
   local function blockAt(bx, by)
     if bx < 0 or by < 0 or bx >= def.width or by >= def.height then
       return def.borderBlock
@@ -149,6 +162,8 @@ function Map.defCellTile(def, tilesetDef, cx, cy)
     return tilesetDef.collision[blockId * cells * cells
       + (cx % cells) + (cy % cells) * cells + 1] or 0xFF
   end
+  -- ...and HERE is where it is genuinely required.
+  if not tilesetDef.blocks then return nil end
   local tx, ty = cx * 2, cy * 2 + 1
   local bx, by = math.floor(tx / tiles), math.floor(ty / tiles)
   local id = blockAt(bx, by)
@@ -228,7 +243,10 @@ function Map.defPassable(def, tilesetDef, cx, cy, surfing)
     if cx < 0 or cy < 0 or cx >= w or cy >= h then return false end
     return (cells[cy * w + cx + 1] or 0) == 0
   end
-  if not (def and tilesetDef and tilesetDef.blocks and tilesetDef.walkable) then
+  -- A per-cell `collision` table answers this just as well as a metatile
+  -- `blocks` table does, and Gen 4 ships the former and not the latter.
+  if not (def and tilesetDef and tilesetDef.walkable
+          and (tilesetDef.blocks or tilesetDef.collision)) then
     -- Gen2 connections to maps with no walkable data: allow the crossing.
     return GameVersion.isGen2()
   end
@@ -432,6 +450,8 @@ function Map.new(def, tilesetDef)
   -- only non-walkable marker so walls/boundaries are blocked but floors open.
   self.gen2BorderBlock = (GameVersion.isGen2() and next(self.walkable) == nil)
       and (def.borderBlock or 0) or nil
+  -- Off the map is off the map, on Gen 4 only.  See isWalkableCell.
+  self.voidOutsideMap = (def.generation == 4) or nil
   self.doorTiles = {}
   for _, t in ipairs(tilesetDef.doorTiles or {}) do self.doorTiles[t] = true end
   self.warpTiles = {}
@@ -478,9 +498,34 @@ function Map.new(def, tilesetDef)
   -- agreeing about def.width, and a cell a script shut must not be able to
   -- go missing down that seam.
   self.shutCells = {}
+  -- THE FIRST WARP ON A TILE WINS, NOT THE LAST.
+  --
+  -- Reported from play: "if i go to the lake next to twinleaf after visiting
+  -- the professor in sangem it starts the team galactic event before ever
+  -- getting to the point where it should be activated."
+  --
+  -- Sinnoh puts TWO warps on each of the lake entrances: Verity Lakefront's
+  -- tile (48, 43) carries warp 2 to header 311 -- the lake as it is at the
+  -- start -- and warp 3 to header 312, the same lake with Team Galactic in
+  -- it. A plain assignment let the later one overwrite the earlier, so both
+  -- entrances led to the Galactic version from a new game.
+  --
+  -- The cartridge takes the FIRST. `MapHeaderData_GetIndexOfWarpEventAtPos`
+  -- walks the array from zero and returns on the first coordinate that
+  -- matches; the later duplicates are ARRIVAL ANCHORS, the place a scripted
+  -- warp puts you down when the story is ready for that version of the map.
+  --
+  -- MEASURED BEFORE CHANGING IT, because this table is every game's:
+  -- Platinum has 15 tiles carrying more than one warp and the destination
+  -- differs on all 15 -- both entrances to all three lakes among them, so
+  -- Valor and Acuity had it too. EMERALD HAS NONE AT ALL, in 439 maps with
+  -- warps, which is what makes this a no-op everywhere but Sinnoh.
   self.warpAt = {}
   for i, w in ipairs(def.warps or {}) do
-    self.warpAt[w.y * self.widthCells + w.x] = { index = i, def = w }
+    local at = w.y * self.widthCells + w.x
+    if self.warpAt[at] == nil then
+      self.warpAt[at] = { index = i, def = w }
+    end
   end
   self.signAt = {}
   for _, s in ipairs(def.signs or {}) do
@@ -754,6 +799,27 @@ function Map:isWalkableCell(cx, cy)
   -- passable.  A cave mouth is a warp cell, so the sealed entrance was
   -- walkable on that line alone no matter what the script had written.
   if self:patchedImpassable(cx, cy) then return false end
+  -- ...AND SECOND: A GEN 4 MAP HAS NO BORDER TO WALK ON.
+  --
+  -- Gen 1-3 tile a border metatile outside the map and the player is allowed
+  -- to stand on it for a step, because that is how a map CONNECTION works --
+  -- you walk onto the border and the seam hands you to the neighbour.  Gen 4
+  -- has neither: Sinnoh's overworld is one seamless matrix, its interiors are
+  -- sealed rooms, and `Gen4Maps.mapDef` sets `borderBlock = 0` with the note
+  -- "every cell outside the map reads as void, which is what the border is".
+  --
+  -- Block 0 is not void.  On the stand-in tileset it is ordinary ground, and
+  -- ordinary ground is walkable -- so the player walked off the edge of
+  -- Twinleaf Town and kept going, over terrain the ground renderer happily
+  -- draws (it draws whole chunks of the shared matrix, not the map's crop) and
+  -- nothing owns.  Reported as "im able to walk outside of the boundaries
+  -- still".
+  --
+  -- This is the edge, not the destination: a Gen 4 map that is a REGION of a
+  -- shared matrix should hand the player to whichever header owns the next
+  -- chunk -- the matrix carries that array -- and until that exists the honest
+  -- answer at the boundary is a wall rather than a field of nothing.
+  if self.voidOutsideMap and not self:inBounds(cx, cy) then return false end
   if self.walkable[self:cellTile(cx, cy)] then return true end
   if self.gen2BorderBlock ~= nil then
     -- Border-block heuristic: any block other than the border block is walkable

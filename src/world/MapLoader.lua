@@ -61,10 +61,56 @@ function MapLoader.tilesetFor(data, def)
   return nil
 end
 
+-- A MAP THAT POINTS AT A SHARED GRID INSTEAD OF CARRYING ONE.
+--
+-- Gen 4 splits its collision the way Gen 3 splits its layouts: a grid is built
+-- once per MATRIX and a map that does not own its matrix outright references
+-- it, because the 30x30 Sinnoh overworld is 921,600 cells and inlining it once
+-- per building standing on it took the extraction from 4 seconds to 22.
+--
+-- NOTHING EVER READ THE OTHER SIDE OF THAT SPLIT.  `map_layouts` is written by
+-- the Gen 4 extractor and, at run time, is only ever touched by one Gen 3
+-- script command.  `Map` reads `def.blocks` and nothing else -- so **291 of
+-- the 593 Gen 4 maps had no collision data at all**, which is what "collisions
+-- dont seem to be correct in the overworld" is: not a wrong grid, an absent
+-- one.
+--
+-- Resolved here rather than in `Map` because this is the one place that has
+-- both the def and the dataset, and written BACK ONTO THE DEF rather than onto
+-- a copy: half the engine compares `map.def` against `data.maps[id]` by
+-- identity, and a copy would quietly become a second map. Idempotent, so a
+-- reload costs nothing.
+function MapLoader.resolveBlocks(data, def)
+  if not def or type(def.blocks) == "string" then return def end
+  local layout = data and data.map_layouts and data.map_layouts[def.layout]
+  local source = layout and layout.blocks
+  if type(source) ~= "string" then return def end
+
+  local stride = layout.width or def.width or 0
+  local rows = layout.height or def.height or 0
+  local w = def.width or stride
+  local h = def.height or rows
+  local ox, oy = def.originX or 0, def.originY or 0
+  if ox == 0 and oy == 0 and w == stride and h == rows then
+    def.blocks = source
+  else
+    -- A region of the shared grid: take its own rows out of it.
+    local out = {}
+    for y = 0, h - 1 do
+      local at = ((oy + y) * stride + ox) * 2
+      out[#out + 1] = source:sub(at + 1, at + w * 2)
+    end
+    def.blocks = table.concat(out)
+  end
+  if def.borderBlock == nil then def.borderBlock = layout.borderBlock end
+  return def
+end
+
 local function build(data, mapId)
   local def = data.maps[mapId]
   assert(def, "unknown map: " .. tostring(mapId) ..
          " (not in the maps registry)")
+  MapLoader.resolveBlocks(data, def)
   local tilesetDef = MapLoader.tilesetFor(data, def)
   assert(tilesetDef, ("map %s wants unknown tileset: %s (not in the " ..
          "tilesets registry)"):format(tostring(mapId), tostring(def.tileset)))

@@ -79,6 +79,67 @@ Gen4ScriptBands.BANDS = {
   {  2000, "common_scripts", "scripts_common" },
 }
 
+-- ...AND THE TEXT BANK EACH ONE READS FROM, which is the third column of the
+-- same dispatcher and was the half this table left out.
+--
+-- `SCRIPT_RANGE_TABLE` (script_manager.c:36) is `Entry(offset, scriptFile,
+-- textBank)`: `ScriptContext_Load` takes BOTH, so a script in a band does not
+-- read the current map's message archive -- it reads the band's.  A common
+-- script's `message 3` is entry 3 of TEXT_BANK_COMMON_STRINGS and has nothing
+-- to do with the town the player is standing in.
+--
+-- The numbers are `generated/text_banks.txt` line minus one, checked against
+-- two the port already knew independently: TEXT_BANK_ROWAN_INTRO is line 390
+-- and `Gen4IntroScene.BANK` is 389, and the move-name banks are lines 648 and
+-- 649 against the 647 and 648 the move stage uses.
+Gen4ScriptBands.TEXT_BANK = {
+  scratch_off_cards = 541,
+  battle_frontier_records = 16,
+  pokemon_center_daily_trainers = 203,
+  counterpart_talk = 552,
+  mystery_gift_deliveryman = 379,
+  tv_reporter_interviews = 621,
+  tv_broadcast = 622,
+  field_moves = 381,
+  pokedex_ratings = 383,
+  unused_0397 = 213,
+  contests = 217,
+  follower_partners = 429,
+  init_new_game = 213,
+  day_care_common = 547,
+  poffin_common = 432,
+  group_connection = 374,
+  pokemon_center_b1f_common = 430,
+  communication_club = 11,
+  pokemon_center_2f_common = 221,
+  poke_radar = 7,
+  vs_seeker = 539,
+  record_chatot_cry = 431,
+  safari_game = 538,
+  hidden_items = 380,
+  visible_items = 369,
+  double_battles = 213,
+  single_battles = 213,
+  berry_tree_interactions = 397,
+  bg_events = 17,
+  common_scripts = 213,
+}
+
+-- THE BANK A *MENU* READS WHEN IT IS NOT READING THE SCRIPT'S OWN.
+--
+-- `initlocaltextmenu` hands FieldMenuManager `ctx->loader` -- the script's own
+-- bank, which is what everything above is about.  `initglobaltextmenu` hands it
+-- NULL, and the manager then opens TEXT_BANK_MENU_ENTRIES itself
+-- (field_menu.c).  90 of the cartridge's 151 field menus are the global kind,
+-- so a port that used the script's bank for all of them would print the wrong
+-- word nearly two times in three.
+--
+-- 361 is `generated/text_banks.txt` line 362 minus one, the same derivation as
+-- the table above, and reading the bank out of the cartridge says it plainly:
+-- entry 5 is "EXIT", 17-21 are COOL/BEAUTY/CUTE/TOUGH/SMART, 22 is "TRADE",
+-- 23 is "CANCEL".
+Gen4ScriptBands.MENU_ENTRIES_BANK = 361
+
 -- The file an id of 0 reaches.  Named so the "no script" case is a fact rather
 -- than a hole.
 Gen4ScriptBands.DUMMY_MEMBER_NAME = "scripts_unk_0402"

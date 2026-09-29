@@ -23,8 +23,14 @@
 --   * EVERYTHING IN A BATTLE still goes to the Gen 3 screen, which already
 --     answers SHIFT, forced switches and an item's target.  The alias does not
 --     list `battle`, so those pushes are declined here and served there.
---   * SO DOES TM TEACHING and the Frontier's team order, for the same reason:
---     each needs words this cartridge's cache does not carry yet.
+--   * TM TEACHING IS THIS SCREEN NOW.  The old note here said it needed words
+--     the cache does not carry; it carries them -- bank 453 -- and what the
+--     gap actually cost was a CRASH, not a wrong-looking list.  See the
+--     `tmhm` note in Screens.lua.
+--   * THE FRONTIER'S TEAM ORDER is still not served, and for a reason that
+--     has nothing to do with words: the only caller in the port that pushes
+--     `chooseOrder` is a GEN 3 script special, so no Platinum cache ever
+--     sends one.
 --   * GIVE/TAKE AN ITEM is not offered.  `BagMenu.giveItem` is published and
 --     would serve it; what is missing is Platinum's own word for it, and a
 --     menu entry in the engine's English on a screen that is otherwise the
@@ -71,16 +77,74 @@ function Gen4PartyMenu.new(game, opts)
   self.pickOnly = opts.pickOnly
   self.forceSwitch = opts.forceSwitch
   self.keepOpen = opts.keepOpen
+  -- THE BATTLE THAT OPENED THIS SCREEN, and what it changes.
+  --
+  -- Reported from play: the party screen in a Platinum battle was KANTO'S.
+  -- The alias in Screens.lua left `battle` out on purpose -- the reasoning is
+  -- in the header above -- but a declined Gen 4 push does not fall through to
+  -- Hoenn's screen on a Gen 4 cache: Screens.resolveId returns early unless
+  -- isGen3(game), so it fell all the way to the Game Boy one.
+  --
+  -- The screen serves it now, and the one thing that had to change to make
+  -- that honest is the submenu. Out of a battle the first row is SUMMARY and
+  -- SWITCH reorders the party. IN a battle, pressing POKeMON and choosing a
+  -- member has to SEND IT OUT -- reordering would be a dead end, which is
+  -- exactly what the header warns against serving.
+  self.battle = opts.battle
+  -- THE MACHINE THAT IS OPEN.  `{ move, kind }`, put there by BagMenu.useOn
+  -- for any item with a `machine` record -- so this arrives on every cache,
+  -- and used to be the one key that made the whole push fall to Kanto's list.
+  self.tmhm = opts.tmhm
   self.index = 1
   self.t = 0
   self.cache = {}
   self.icons = {}
   self.art = ((game.data or {}).gen4_graphics or {}).screens or {}
+  -- The cartridge's own words.  Nothing here falls back to English except
+  -- through Strings(), which is the engine's own translation seam.
+  self.words = (((game.data or {}).gen4_menus or {}).partyMenu or {}).text or {}
+  if self.tmhm and not self.words.able then
+    Logger.warn("gen4 party: this cache carries no party-screen words -- "
+                .. "the machine prompt falls back to the engine's own")
+  end
   if not self.art["party/menu"] then
     Logger.warn("gen4 party: this cache carries no party screen art -- "
                 .. "the panels will be drawn in the engine's own frame")
   end
   return self
+end
+
+function Gen4PartyMenu:word(key, fallback)
+  local said = self.words[key]
+  if type(said) ~= "string" or said == "" then return Strings(fallback) end
+  return said
+end
+
+-- CAN THIS POKEMON LEARN THE MACHINE THAT IS OPEN?
+--
+-- The same scan ItemEffects.use makes when it actually teaches, so the word on
+-- screen can never disagree with what pressing A does -- which is the rule the
+-- Gen 3 screen states and the only thing that keeps an ABLE! from being
+-- followed by a refusal.
+function Gen4PartyMenu:canLearn(mon)
+  local data = self.game.data
+  local def = data.pokemon and data.pokemon[mon.species]
+  for _, move in ipairs((def and def.tmhm) or {}) do
+    if move == self.tmhm.move then return true end
+  end
+  return false
+end
+
+-- ...and which of the three words that is.  A Pokemon that already knows the
+-- move is told so rather than offered it, which is the order ItemEffects tests
+-- them in as well.
+function Gen4PartyMenu:learnWord(mon)
+  for _, slot in ipairs(mon.moves or {}) do
+    local id = (type(slot) == "table" and (slot.id or slot.move)) or slot
+    if id == self.tmhm.move then return self:word("learned", "LEARNED") end
+  end
+  if self:canLearn(mon) then return self:word("able", "ABLE!") end
+  return self:word("unable", "UNABLE!")
 end
 
 function Gen4PartyMenu:img(key)
@@ -124,7 +188,9 @@ end
 function Gen4PartyMenu:choose()
   if self.index > #self:party() then
     if self.switchFrom then self.switchFrom = nil return end
-    if self.onSwitch and not (self.pickOnly or self.forceSwitch) then
+    -- CANCEL is the same refusal as B and takes the same route; see update().
+    if self.onSwitch and not (self.pickOnly or self.forceSwitch)
+       and not self.battle then
       return self:handOff(nil)
     end
     return self:close()
@@ -146,7 +212,14 @@ end
 function Gen4PartyMenu:runAction(action)
   local mon = self:party()[self.index]
   self.submenu = nil
-  if action == "summary" and mon then
+  if action == "send" and mon then
+    -- Straight back to the caller. Whether this member MAY be sent out is the
+    -- caller's question and it already asks it: BattleState's own onSwitch
+    -- rejects an egg, a fainted member and one already standing on the field,
+    -- says so, and reopens this screen. Duplicating those three tests here
+    -- would be a second place for them to drift.
+    return self:handOff(mon)
+  elseif action == "summary" and mon then
     require("src.ui.Screens").push(self.game, "SummaryMenu", mon)
   elseif action == "switch" then
     self.switchFrom = self.index
@@ -154,8 +227,16 @@ function Gen4PartyMenu:runAction(action)
 end
 
 Gen4PartyMenu.ACTIONS = { "summary", "switch", "cancel" }
+-- In a battle the top row sends the member out; the party order is not
+-- something the cartridge lets you rearrange mid-fight either.
+Gen4PartyMenu.BATTLE_ACTIONS = { "send", "summary", "cancel" }
+
+function Gen4PartyMenu:actions()
+  return self.battle and Gen4PartyMenu.BATTLE_ACTIONS or Gen4PartyMenu.ACTIONS
+end
 
 function Gen4PartyMenu:actionLabel(action)
+  if action == "send" then return Strings("SEND OUT") end
   if action == "summary" then return Strings("SUMMARY") end
   if action == "switch" then return Strings("SWITCH") end
   return Strings("CANCEL")
@@ -167,13 +248,14 @@ function Gen4PartyMenu:update(dt)
   if not input then return end
 
   if self.submenu then
-    local n = #Gen4PartyMenu.ACTIONS
+    local actions = self:actions()
+    local n = #actions
     if input:wasPressed("up") then
       self.submenu = (self.submenu - 2) % n + 1
     elseif input:wasPressed("down") then
       self.submenu = self.submenu % n + 1
     elseif input:wasPressed("a") then
-      self:runAction(Gen4PartyMenu.ACTIONS[self.submenu])
+      self:runAction(actions[self.submenu])
     elseif input:wasPressed("b") then
       self.submenu = nil
     end
@@ -193,7 +275,19 @@ function Gen4PartyMenu:update(dt)
     self:choose()
   elseif input:wasPressed("b") or input:wasPressed("start") then
     if self.switchFrom then self.switchFrom = nil
-    elseif self.onSwitch and not (self.pickOnly or self.forceSwitch) then
+    -- B IN A BATTLE IS "BACK TO THE MENU", NOT "I PICK NOTHING".
+    --
+    -- Out of a battle, handing the answer back as nil is how a caller learns
+    -- the player cancelled, and that is right. IN a battle it crashed: the
+    -- battle's own onSwitch is written for a Pokemon and went straight into
+    -- `mon.hp`. Reported from play as a crash on backing out of the party
+    -- screen.
+    --
+    -- The battle already knows what to do when this screen simply closes --
+    -- `afterQueue` put it back in the menu phase before it opened -- so
+    -- closing is both the safe answer and the correct one.
+    elseif self.onSwitch and not (self.pickOnly or self.forceSwitch)
+           and not self.battle then
       self:handOff(nil)
     else
       self:close()
@@ -277,9 +371,20 @@ function Gen4PartyMenu:drawSlot(i, mon)
 
   local hp = tonumber(mon.hp) or 0
   local max = tonumber(mon.maxHp) or tonumber(mon.maxhp) or 0
+  -- WITH A MACHINE OPEN THE PANEL ANSWERS THE QUESTION instead of showing the
+  -- numbers: what is being chosen is whether this Pokemon can learn the move,
+  -- and its current HP has nothing to do with that.  THE BAR STAYS -- it is
+  -- the only thing left saying which of them is hurt, and a player picking a
+  -- target still wants to know.
+  if self.tmhm then
+    local word = self:learnWord(mon)
+    Font.draw(word, at.x + SLOT_W - Font.width(word) - 6, at.y + 18)
+  end
   if max > 0 then
-    local text = ("%d/%d"):format(hp, max)
-    Font.draw(text, at.x + SLOT_W - Font.width(text) - 6, at.y + 18)
+    if not self.tmhm then
+      local text = ("%d/%d"):format(hp, max)
+      Font.draw(text, at.x + SLOT_W - Font.width(text) - 6, at.y + 18)
+    end
     local full = SLOT_W - 48
     local share = math.max(0, math.min(1, hp / max))
     g.setColor(0.10, 0.12, 0.16, 1)
@@ -315,13 +420,34 @@ function Gen4PartyMenu:draw()
     Font.drawCode(Theme.cursor, CANCEL.x + 2, CANCEL.y + 6)
   end
 
+  -- "Teach which Pokemon?" where CANCEL's word is, because with a machine open
+  -- the strip along the bottom is the question rather than a row to land on.
+  -- The CANCEL box is still drawn and still selectable -- backing out of a
+  -- teach is the same press it always was.
+  if self.tmhm then
+    -- RIGHT-ALIGNED AGAINST THE STRIP'S FAR EDGE and cut to whatever CANCEL
+    -- leaves, because the face is proportional and the question is a whole
+    -- sentence: placed at a fixed column it runs through CANCEL on exactly the
+    -- wordings that are long enough to matter. The same budget rule the Gen 3
+    -- panels were rewritten around.
+    local prompt = self:word("teachWhich", "Teach which POKéMON?")
+    local taken = 12 + Font.width(Strings("CANCEL")) + 12
+    local room = CANCEL.w - taken - 12
+    if room > 0 then
+      local fitted = Font.fit(prompt, room)
+      Font.draw(fitted, CANCEL.x + CANCEL.w - Font.width(fitted) - 12,
+                CANCEL.y + 6)
+    end
+  end
+
   if self.submenu then
-    local n = #Gen4PartyMenu.ACTIONS
+    local actions = self:actions()
+    local n = #actions
     local boxW, rowH = 80, 16
     local x, y = W - boxW - 8, H - (n * rowH) - 20
     Font.drawBox(math.floor(x / 8), math.floor(y / 8),
                  math.floor(boxW / 8), math.floor((n * rowH + 12) / 8))
-    for i, action in ipairs(Gen4PartyMenu.ACTIONS) do
+    for i, action in ipairs(actions) do
       local ry = y + 6 + (i - 1) * rowH
       if i == self.submenu then Font.drawCode(Theme.cursor, x + 4, ry) end
       Font.draw(self:actionLabel(action), x + 16, ry)

@@ -90,7 +90,64 @@ local Gen4Maps = {}
 Gen4Maps.CHUNK = 32                  -- tiles per side of a land chunk
 Gen4Maps.PERMISSION_BYTES = 2048     -- 32 * 32 * 2
 Gen4Maps.OBJECT_BYTES = 48
-Gen4Maps.VOID = 0x8000               -- bit 15: this tile is not part of the map
+-- BIT 15 IS COLLISION, NOT "NOT PART OF THE MAP", and this file called it the
+-- second thing for a long time.  The behaviour was right by luck -- both
+-- readings make the tile impassable -- but the NAME sent every later reader
+-- looking for a wall table that does not need to exist.
+--
+-- `TERRAIN_ATTRIBUTES_COLLISION_MASK` is 0x8000 and
+-- `TerrainCollisionManager_CheckCollision` reads exactly that bit and nothing
+-- else.  Measured against this cartridge's own 681,984 tiles, three ways that
+-- cannot borrow from each other:
+--
+--   * 335,165 tiles have it set -- 49.1% of Sinnoh.  Half a region is not
+--     missing; that is walls, cliffs, building footprints and sea.
+--   * The per-chunk share is spread across EVERY decile (88 chunks under 10%,
+--     107 at 10-20%, 101 above 90%).  "Off the map" would be bimodal: a chunk
+--     is either land or it is not.  Per-tile collision is not.
+--   * 26 behaviour values occur both blocked AND open.  A tile that is not
+--     part of the map does not also carry a behaviour that is walkable
+--     elsewhere, so the bit is an independent fact about the tile.
+--
+-- And the rest of the high byte carries nothing at all: bits 8-14 are clear on
+-- every one of the 681,984 tiles, and the highest word in the cartridge is
+-- 0x80E5.  So the word is exactly a collision bit and a behaviour byte.
+Gen4Maps.COLLISION = 0x8000
+
+-- ...AND THE ENGINE'S GRID HAS NO ROOM FOR IT WHERE THIS USED TO PUT IT.
+--
+-- Reported from play: *"still able to walk out of bounds"*, and a screenshot of
+-- the player standing in the black above a bedroom.  Both are one bug.
+--
+-- `mapDef` below packs each cell into the same 16-bit word Gen 3 uses, and it
+-- used to write the collision flag at BIT 10 -- `behaviour + collision * 1024`
+-- -- because that is where Gen 3 keeps its own collision bits.  But Gen 3 does
+-- not READ them from there: `RomExtractorGen3` splits the word at import into
+-- `blocks`, `collisionCells` and `elevationCells`, and the engine's shared
+-- decoder, `Map.blockArray`, therefore ends with `% 1024` -- it is extracting
+-- Gen 3's metatile id and deliberately dropping everything above it.
+--
+-- So every Gen 4 collision bit was masked off between the importer and the
+-- map.  Measured through the real decoder over 200,000 cells of the overworld
+-- matrix: the grid marks 199,560 of them blocked and the engine concluded
+-- **zero**.  All 335,165 blocked tiles in Sinnoh -- 49.1% of the region, every
+-- wall, cliff, building footprint and stretch of sea -- were walkable.
+--
+-- The fix is to stop encoding it as a flag at all and give a blocked cell its
+-- own RESERVED CELL VALUE, inside the ten bits that survive.  255 is free and
+-- provably so: across all 681,984 tiles the behaviour byte takes 94 distinct
+-- values topping out at 229 (0xE5), the highest word in the cartridge is
+-- 0x80E5, and the stand-in tileset's walkable set is 0..254 -- so 255 is a
+-- value the cartridge never emits AND one the engine already refuses.
+--
+-- WHAT THIS COSTS: the behaviour of a blocked tile.  Nothing, in practice --
+-- the old encoding wrote `behaviour = 0` for a blocked cell too, so that
+-- information was already being dropped; it is just now dropped in a way that
+-- survives the journey.
+Gen4Maps.BLOCKED_CELL = 255
+-- The old name, kept so nothing that reads it breaks.  New code asks
+-- `Gen4Maps.blocks`.
+Gen4Maps.VOID = Gen4Maps.COLLISION
 
 -- 20.12 fixed point: the DS's usual coordinate format.
 Gen4Maps.FIXED_ONE = 4096
@@ -187,14 +244,20 @@ function Gen4Maps.permissionAt(land, x, y)
   return u16(land.permissions, (y * Gen4Maps.CHUNK + x) * 2)
 end
 
--- Is this tile part of the map at all?  Bit 15 says no, and a chunk is mostly
--- this at the edges of the land.
-function Gen4Maps.isVoid(word)
-  return word == nil or word >= Gen4Maps.VOID
+-- Can the player stand here?  Bit 15 says no.  A tile outside the chunk is
+-- also blocked, which is the one case where the old "void" reading and this
+-- one still agree.
+function Gen4Maps.blocks(word)
+  return word == nil or word >= Gen4Maps.COLLISION
 end
 
--- The terrain behaviour, which is the low byte -- the high byte carries only
--- the void flag.
+-- The old name for the same test.  Kept because it is called from the map
+-- builder below and from the terrain work's own checks, and renaming a call
+-- site is not worth a merge conflict with the reader who is looking at it.
+Gen4Maps.isVoid = Gen4Maps.blocks
+
+-- The terrain behaviour, which is the low byte, and the low byte is all of it:
+-- bits 8-14 are clear on every tile in the cartridge.
 function Gen4Maps.behaviour(word)
   return word and word % 256 or nil
 end
@@ -257,16 +320,21 @@ end
 -- Gen 4 can map behaviour to appearance; one that does not still gets a grid
 -- of the right size with the right holes in it.
 --
--- WHAT THIS DOES NOT CLAIM.  Collision is set from the VOID BIT ONLY, which is
--- certain: bit 15 means the tile is not part of the map.  Which of the 54
--- behaviour values are walls is NOT established, so no other tile is marked
--- impassable here.  A player dropped into one of these maps would walk
--- through fences.  Filling that in needs the behaviour bytes classified
--- against the cartridge, and inventing it now would put a wrong wall in the
--- cache that later looks like a map bug rather than a missing stage.
+-- COLLISION IS COMPLETE, and the note that used to sit here saying it was not
+-- was wrong.  It read: "Which of the 54 behaviour values are walls is NOT
+-- established ... a player dropped into one of these maps would walk through
+-- fences."  There is no such classification to make.  The cartridge keeps
+-- collision in its OWN BIT -- bit 15, see the measurement above -- and the
+-- behaviour byte says what a tile IS (grass, water, a doorway), not whether
+-- you may stand on it.  A fence carries bit 15 and already blocks.
 --
--- Elevation is left 0 for the same reason: Gen 4 keeps height in the BDHC
--- block, which is not parsed.
+-- The behaviour byte is carried through anyway, because a renderer and the
+-- encounter tables both want it; it is just not what a wall is made of.  There
+-- are 94 distinct values in this cartridge, not 54.
+--
+-- Elevation is still left 0, and that one IS a gap: Gen 4 keeps height in the
+-- BDHC block, which IS parsed now -- see `Gen4Ground:heightsAt` -- but nothing
+-- writes it into this grid, so a bridge and the path under it are one cell.
 
 Gen4Maps.CELL_BYTES = 2
 
@@ -287,13 +355,10 @@ function Gen4Maps.mapDef(matrix, chunkFor)
         local base = row * W + cx * Gen4Maps.CHUNK
         for tx = 0, Gen4Maps.CHUNK - 1 do
           local word = land and u16(land.permissions, (ty * Gen4Maps.CHUNK + tx) * 2)
-          local behaviour, collision
-          if Gen4Maps.isVoid(word) then
-            behaviour, collision = 0, 1
-          else
-            behaviour, collision = word % 256, 0
-          end
-          local v = behaviour + collision * 1024
+          -- A tile with no chunk behind it is off the map, which is blocked
+          -- for the same reason a wall is.
+          local v = (word == nil or Gen4Maps.blocks(word))
+                    and Gen4Maps.BLOCKED_CELL or (word % 256)
           cells[base + tx + 1] = string.char(v % 256, floor(v / 256))
         end
       end
@@ -304,8 +369,11 @@ function Gen4Maps.mapDef(matrix, chunkFor)
     width = W,
     height = H,
     blocks = table.concat(cells),
-    -- Every cell outside the map reads as void, which is what the border is.
-    borderBlock = 0,
+    -- Every cell outside the map reads as blocked, which is what the border
+    -- is.  This was 0 -- an ordinary walkable behaviour -- so `Map:blockAt`
+    -- answered "plain ground" for every coordinate past the edge and the
+    -- border was the second way out of bounds.
+    borderBlock = Gen4Maps.BLOCKED_CELL,
     generation = 4,
   }
 end
@@ -441,25 +509,66 @@ end
 --                     (71 each) and indexed together: one names the building
 --                     models an area uses, the other holds their textures
 --   +2 mapTexture  -> /fielddata/areadata/area_map_tex/map_tex_set.narc
---   +4 lighting    0..9
---   +6 flags       0..2
+--   +4 dummy04     unused by the cartridge, 0..9
+--   +6 areaLight   -> /data/arealight.narc, 0..2
 --
--- THE RANGES ARE WHAT PIN THE FIELDS.  Over all 75 areas +2 reaches 73 against
--- a 74-member archive and +0 reaches 70 against two 71-member ones, so +2 can
--- only be the map textures; +4 never passes 9 and +6 never passes 2, so
--- neither indexes anything here.  What +4 and +6 mean is not established and
--- they are named for what they are not.
+-- THE RANGES ARE WHAT PIN THE FIRST TWO.  Over all 75 areas +2 reaches 73
+-- against a 74-member archive and +0 reaches 70 against two 71-member ones, so
+-- +2 can only be the map textures.
+--
+-- THE NOTE THAT USED TO SIT HERE SAID +4 AND +6 WERE "NOT ESTABLISHED" AND
+-- NAMED THEM `lighting` AND `flags`. Both names were wrong, and they were wrong
+-- in the worst possible way -- the wrong one of the pair was the one the terrain
+-- stage carried onto all 593 maps. pret names every field of `AreaDataFile`:
+--
+--     u16 mapPropArchivesID;    // 0
+--     u16 mapTextureArchiveID;  // 2
+--     u16 dummy04;              // 4  "changes in the NARC, but is unused"
+--     u16 areaLightArchiveID;   // 6
+--
+-- so +4 is the field the cartridge never reads and +6 selects the area light.
+-- See `areaData` below for the measurement that settles it against the ROM.
 Gen4Maps.AREA_RECORD_BYTES = 8
 
 function Gen4Maps.areaData(record)
   if type(record) ~= "string" or #record < Gen4Maps.AREA_RECORD_BYTES then
     return nil, "area data record is too short"
   end
+  -- THE LAST TWO FIELDS WERE THE WRONG WAY ROUND, AND IT COST THE WORLD ITS LIGHT.
+  --
+  -- `AreaDataFile` is four u16s and pret names every one of them:
+  --
+  --     u16 mapPropArchivesID;    // 0
+  --     u16 mapTextureArchiveID;  // 2
+  --     u16 dummy04;              // 4  "changes in the NARC, but is unused"
+  --     u16 areaLightArchiveID;   // 6
+  --
+  -- This function used to call offset 4 `lighting` and offset 6 `flags`, which is
+  -- exactly backwards: offset 4 is the field the cartridge never reads, and
+  -- offset 6 is the `/data/arealight.narc` member. The terrain stage carried the
+  -- wrong one onto all 593 maps under the name `lighting`, and because NOTHING
+  -- read it the mistake sat there unchallenged.
+  --
+  -- THE ROM SETTLES IT AND THE CARTRIDGE'S OWN ASSERT IS THE TEST.
+  -- `AreaLightManager_New` opens with GF_ASSERT(archiveID < AREA_LIGHT_FILE_COUNT)
+  -- and that count is 4. Across the 75 area records offset 6 holds only 0, 1 and
+  -- 2 -- inside the bound with room to spare -- while offset 4 reaches 9 and
+  -- would trip the assert on nine records. A field that fails the cartridge's own
+  -- bound is not that field.
+  --
+  -- Member 3 never appears at offset 6, and that is not a gap: `ov6_0223E140.c`
+  -- is the only thing that asks for it, passing the literal 3 twice, so member 3
+  -- is reachable only from that overlay and never from an area record.
   return {
     buildings = u16(record, 0),
     mapTexture = u16(record, 2),
-    lighting = u16(record, 4),
-    flags = u16(record, 6),
+    -- Kept, named as pret names it, so nothing mistakes it for a live field again.
+    dummy04 = u16(record, 4),
+    areaLight = u16(record, 6),
+    -- `AreaDataManager_IsOutdoorsLighting`, which is the cartridge's own reading
+    -- of this byte rather than an inference about it: members 0 and 3 are outdoor
+    -- and everything else is not.
+    outdoors = (u16(record, 6) == 0 or u16(record, 6) == 3),
   }
 end
 

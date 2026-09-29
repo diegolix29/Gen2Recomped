@@ -433,6 +433,92 @@ function Player:stepWouldStart(dir)
   return true
 end
 
+-- THE PART OF THE PACE RULE BOTH MOVERS SHARE.
+--
+-- Reported from play, item 3 of the Sinnoh list: *"Running shoes do nothing and
+-- have no sprint animation"*.  They did nothing IN FIRST AND THIRD PERSON, which
+-- is where Sinnoh is actually played: `freeWalk` is the Gen 4 free camera's
+-- mover, and it worked its pace out from the walk and bike frames ALONE.  It
+-- never asked `OverworldState:runFrames`, never wrote `stepFramesCur` and never
+-- set `running` -- so the shoes Mum hands over in the opening changed nothing,
+-- and the sprint sheet was never reached either.  The grid step had all three
+-- and the free step had none of them, which is why the shoes worked in the field
+-- view and not in the one Sinnoh is played in.
+--
+-- LIFTED RATHER THAN COPIED INTO `freeWalk`, for the reason the bike note above
+-- gives about the rules living in the overworld: two spellings of a rule is how
+-- the two drift, and this rule had already drifted once.
+--
+-- Takes the base pace the caller has worked out -- walk, bike, and any
+-- DIRECTION-specific rule only the grid step has, like Cycling Road's downhill
+-- -- and applies everything that is not direction-specific: the run, the mods'
+-- speed hook, and the two fields the sprite reads.  Returns the frames actually
+-- settled on, so a caller that needs the number rather than the field can have
+-- it without reaching into `self`.
+function Player:applyPace(save, frames)
+  local Game = require("src.core.Game")
+  -- RUNNING, which only Prism has -- and it has no running SHOES
+  -- either.  DoPlayerMovement's .walk branch falls straight through to
+  -- .run whenever B is held (engine/player_movement.asm .maybe_run),
+  -- gated on nothing but ENGINE_POKEMON_MODE: there is no item to find
+  -- and no flag to earn, so nothing here waits on one.  8 frames is the
+  -- ROM's own figure: its step-vector table's running-shoes row is
+  -- `db 0, 2, 8, 2`, two pixels a frame over eight -- the bicycle's rate
+  -- on foot.  Riding wins (the branch above), surfing and Pokemon mode
+  -- refuse, exactly as the original refuses them.
+  --
+  -- ...AND THE RULES LIVE IN THE OVERWORLD, so this asks rather than decides.
+  --
+  -- Reported from play: "its also letting me sprint before getting the
+  -- running shoes from mom".  It was.  This decided on its own -- the
+  -- version's step table plus the B button -- and never asked
+  -- OverworldState:runFrames, which is where Hoenn's three gates already
+  -- were: the SHOES flag Mom sets, the map header's own may-run bit (228 of
+  -- 519 maps), and the seven ground behaviours the shoes do not work on.  All
+  -- three were written, tested and reachable from nothing.
+  --
+  -- Prism is unaffected: it has no gates, and its runFrames answers the same
+  -- number this did.  Headless, with no overworld to ask, the old rule stands
+  -- so the movement tests keep their subject.
+  local ow = Game.overworld
+  local run
+  if ow and ow.runFrames then
+    run = ow:runFrames()
+  elseif self.runStepFrames and Game.input and Game.input:isDown("b")
+     and not require("src.script.Flags").get(save, "ENGINE_POKEMON_MODE") then
+    run = self.runStepFrames
+  end
+  self.running = false
+  if run and not (save and save.onBike) and not self.surfing then
+    frames = run
+    self.running = true
+  end
+  if Runtime.wantsHook("movement.speed") then
+    frames = Runtime.call("movement.speed", function(f) return f end, frames, {
+      onBike = save and save.onBike or false,
+      surfing = self.surfing and true or false,
+      player = self,
+      input = Game.input,
+      save = save,
+    })
+  end
+  self.stepFramesCur = math.max(1, math.floor(tonumber(frames) or STEP_FRAMES))
+  -- ...AND THE RUN CYCLE FOLLOWS THE SPEED, not the branch that set it.
+  --
+  -- Reported from play: "when doing so even with the running shoes i dont
+  -- have the sprint animation playing on my character".  `running` was set
+  -- only by the branch above, so a step made faster any OTHER way -- the
+  -- movement.speed hook a mod installs, most of all -- moved at a run and
+  -- animated at a walk.  A step on foot that takes fewer frames than a walk
+  -- IS a run, whoever decided it, and the sheet the character carries for it
+  -- is what should be on screen.
+  if not (save and save.onBike) and not self.surfing
+     and self.stepFramesCur < (self.stepFrames or STEP_FRAMES) then
+    self.running = true
+  end
+  return self.stepFramesCur
+end
+
 function Player:tryMove(dir, map, entities)
   if self.moving or self.inputLocked then return nil end
   if self.facing ~= dir then
@@ -498,70 +584,123 @@ function Player:tryMove(dir, map, entities)
       frames = self.stepFrames or STEP_FRAMES
     end
   end
-  -- RUNNING, which only Prism has -- and it has no running SHOES
-  -- either.  DoPlayerMovement's .walk branch falls straight through to
-  -- .run whenever B is held (engine/player_movement.asm .maybe_run),
-  -- gated on nothing but ENGINE_POKEMON_MODE: there is no item to find
-  -- and no flag to earn, so nothing here waits on one.  8 frames is the
-  -- ROM's own figure: its step-vector table's running-shoes row is
-  -- `db 0, 2, 8, 2`, two pixels a frame over eight -- the bicycle's rate
-  -- on foot.  Riding wins (the branch above), surfing and Pokemon mode
-  -- refuse, exactly as the original refuses them.
-  --
-  -- ...AND THE RULES LIVE IN THE OVERWORLD, so this asks rather than decides.
-  --
-  -- Reported from play: "its also letting me sprint before getting the
-  -- running shoes from mom".  It was.  This decided on its own -- the
-  -- version's step table plus the B button -- and never asked
-  -- OverworldState:runFrames, which is where Hoenn's three gates already
-  -- were: the SHOES flag Mom sets, the map header's own may-run bit (228 of
-  -- 519 maps), and the seven ground behaviours the shoes do not work on.  All
-  -- three were written, tested and reachable from nothing.
-  --
-  -- Prism is unaffected: it has no gates, and its runFrames answers the same
-  -- number this did.  Headless, with no overworld to ask, the old rule stands
-  -- so the movement tests keep their subject.
-  local ow = Game.overworld
-  local run
-  if ow and ow.runFrames then
-    run = ow:runFrames()
-  elseif self.runStepFrames and Game.input and Game.input:isDown("b")
-     and not require("src.script.Flags").get(save, "ENGINE_POKEMON_MODE") then
-    run = self.runStepFrames
-  end
-  self.running = false
-  if run and not (save and save.onBike) and not self.surfing then
-    frames = run
-    self.running = true
-  end
-  if Runtime.wantsHook("movement.speed") then
-    frames = Runtime.call("movement.speed", function(f) return f end, frames, {
-      onBike = save and save.onBike or false,
-      surfing = self.surfing and true or false,
-      player = self,
-      input = Game.input,
-      save = save,
-    })
-  end
-  self.stepFramesCur = math.max(1, math.floor(tonumber(frames) or STEP_FRAMES))
-  -- ...AND THE RUN CYCLE FOLLOWS THE SPEED, not the branch that set it.
-  --
-  -- Reported from play: "when doing so even with the running shoes i dont
-  -- have the sprint animation playing on my character".  `running` was set
-  -- only by the branch above, so a step made faster any OTHER way -- the
-  -- movement.speed hook a mod installs, most of all -- moved at a run and
-  -- animated at a walk.  A step on foot that takes fewer frames than a walk
-  -- IS a run, whoever decided it, and the sheet the character carries for it
-  -- is what should be on screen.
-  if not (save and save.onBike) and not self.surfing
-     and self.stepFramesCur < (self.stepFrames or STEP_FRAMES) then
-    self.running = true
-  end
+  self:applyPace(save, frames)
   return "moved"
 end
 
 -- Advance one fixed step; returns true when a step just completed.
+-- OFF-GRID WALKING, for the Gen 4 free camera only.
+--
+-- Requested: *"walking off the grid entirely in first or third person"*.  It is
+-- scoped to those two modes on purpose.  Collision, encounters, scripts, ledges
+-- and warps in this engine are all answered PER CELL and PER FACING, and the
+-- field view and every other cartridge keep the grid untouched -- so this adds a
+-- second way to move rather than replacing the only one.
+--
+-- THE CELL STILL EXISTS, it just follows the body instead of leading it.
+-- `cellX/cellY` are recomputed from the player's CENTRE every frame, and this
+-- returns true exactly when they change -- which is what `Player:update` returns
+-- when a grid step lands.  So the overworld's `stepped` seam, and every warp,
+-- coord event, encounter check and music cue hanging off it, runs unchanged and
+-- never learns that the step was not a step.
+--
+-- PER AXIS, so a diagonal into a wall SLIDES along it rather than stopping dead
+-- -- which is the whole feel of off-grid movement, and it costs one extra
+-- `mayEnter` rather than any new collision rule.
+function Player:freeWalk(vx, vy, map, entities)
+  if self.moving or self.inputLocked then return false end
+  local len = math.sqrt(vx * vx + vy * vy)
+  if len < 0.01 then
+    self.freeWalking = false
+    -- STANDING STILL IS NOT RUNNING.  The grid step only revisits `running`
+    -- when a step STARTS, so it may carry the last step's answer while the
+    -- player stands -- harmless there, because a new step always precedes a
+    -- new pose.  Free walking takes this branch every frame the stick is
+    -- centred, so leaving it set would hold the run sheet up under a
+    -- motionless character for as long as they stood there.
+    self.running = false
+    return false
+  end
+  -- A stick pushed half way walks half as fast; a stick pushed into a corner
+  -- must not walk root-two times faster than one pushed straight.
+  if len > 1 then vx, vy = vx / len, vy / len end
+
+  local Game = require("src.core.Game")
+  local save = Game.save
+  local frames = (save and save.onBike) and self.bikeStepFrames
+                 or self.stepFrames or STEP_FRAMES
+  -- THE SAME PACE RULE THE GRID STEP USES, asked the same way -- see
+  -- `applyPace`.  This line used to be the END of the speed calculation here
+  -- rather than the start of it, which is exactly why the running shoes did
+  -- nothing in first and third person.
+  frames = self:applyPace(save, frames)
+  -- The grid step covers one tile in `frames` frames; free walking covers the
+  -- same ground in the same time, so nothing about pace changes with the mode.
+  local speed = 16 / math.max(frames, 1)
+
+  local startX, startY = self.cellX, self.cellY
+  local function cellOf(px, py)
+    return math.floor((px + 8) / 16), math.floor((py + 8) / 16)
+  end
+
+  local nx = self.px + vx * speed
+  local cx = (cellOf(nx, self.py))
+  if cx == self.cellX
+     or Collision.mayEnter(map, entities, self, cx, self.cellY,
+                           vx > 0 and "right" or "left") then
+    self.px = nx
+  end
+
+  local ny = self.py + vy * speed
+  local _, cy = cellOf(self.px, ny)
+  if cy == self.cellY
+     or Collision.mayEnter(map, entities, self, self.cellX, cy,
+                           vy > 0 and "down" or "up") then
+    self.py = ny
+  end
+
+  self.cellX, self.cellY = cellOf(self.px, self.py)
+  -- The sprite has four facings and the stick has all of them, so the sheet
+  -- shows the dominant axis.  `Gen4View:worldToScreen` then turns this back
+  -- into the camera's frame at draw time.
+  if math.abs(vx) > math.abs(vy) then
+    self.facing = vx > 0 and "right" or "left"
+  else
+    self.facing = vy > 0 and "down" or "up"
+  end
+  self.freeWalking = true
+  self.animClock = (self.animClock or 0) + 1
+  return self.cellX ~= startX or self.cellY ~= startY
+end
+
 function Player:update()
+  -- A PENDING FREE-WALK IS THIS FRAME'S STEP.
+  --
+  -- Consumed here rather than driven from the input handler so that the
+  -- overworld's `local stepped = self.player:update()` keeps being the one
+  -- place that says whether the player arrived somewhere new.  Threading a
+  -- second answer down to it would mean every consumer of `stepped` had to
+  -- learn about a second kind of movement.
+  local free = self.freeInput
+  self.freeInput = nil
+  if free then
+    self.stepLanded = false
+    if self.turnTimer > 0 then self.turnTimer = self.turnTimer - 1 end
+    return self:freeWalk(free[1], free[2], free[3], free[4])
+  end
+  -- LEAVING FREE MODE PUTS THE BODY BACK ON THE GRID.
+  --
+  -- Off-grid, `px/py` lead and the cell follows; on the grid it is the other way
+  -- round -- `Player:update` writes `px = cellX * 16 + dx * progress` every
+  -- frame of a step.  Stepping off the ladder mid-tile would leave the body
+  -- between two cells until the next step snapped it, which reads as the
+  -- character teleporting a few pixels the first time you press a direction.
+  if self.freeWalking then
+    self.freeWalking = false
+    if not self.moving then
+      self.px, self.py = self.cellX * 16, self.cellY * 16
+    end
+  end
   -- land-frame walk pose lasts only through the draw after completion;
   -- the next update (idle or a chained step) clears it
   self.stepLanded = false
@@ -670,6 +809,7 @@ function Player:walkPhase()
   -- moving, the land-frame after a completed step, or an active wall-bonk
   -- (issue #230) animate; a standing sprite otherwise
   if not self.moving and not self.stepLanded and not self.stairExit
+     and not self.freeWalking
      and not (self.bumpFrames and self.bumpFrames > 0) then
     return 0
   end

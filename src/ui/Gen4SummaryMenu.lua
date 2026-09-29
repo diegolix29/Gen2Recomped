@@ -25,9 +25,15 @@
 -- bank and are not drawn: contest stats and ribbons are not modelled by this
 -- engine, and an empty page carrying the cartridge's own title on it would
 -- claim they were.
+--
+-- THE POKEMON'S PICTURE is drawn from `PICTURE` below.  The screen had declared
+-- a slot for it since it was written and never drawn into it, so every summary
+-- page in Sinnoh was a page of numbers with an empty plate beside them.
 
 local Font = require("src.render.Font")
 local Logger = require("src.core.Logger")
+local Party = require("src.pokemon.Party")
+local Sprites = require("src.pokemon.Sprites")
 local Strings = require("src.core.Strings")
 
 local Gen4SummaryMenu = {}
@@ -38,11 +44,32 @@ local W, H = 256, 192
 
 local FALLBACK_LAYOUT = {
   label = { x = 112 }, value = { x = 180 },
-  name = { x = 8, y = 42 }, picture = { x = 20, y = 70 },
+  name = { x = 8, y = 42 }, picture = { x = 52, y = 104, plate = 64 },
   info = { first = 40, pitch = 16, rows = 7 },
   skills = { first = 40, pitch = 16, rows = 6, ability = 144, abilityText = 162 },
   moves = { first = 50, pitch = 32, rows = 4 },
 }
+
+-- WHERE THE POKEMON GOES.  Both numbers are the cartridge's and both are
+-- stated twice; the derivation is written out in `Gen4Menus.SUMMARY_LAYOUT`,
+-- which is where an import gets them from.  Repeated here so a cache that
+-- predates the picture being drawn at all still puts it in the right place.
+Gen4SummaryMenu.PICTURE = { x = 52, y = 104, plate = 64 }
+
+-- THE SPRITE IS 80 SQUARE AND THE PLATE UNDER IT IS 64, so the Pokemon
+-- overhangs its plate on every side.  Not a scale: the cartridge draws the
+-- pokegra cell at 1:1 (MON_AFFINE_SCALE(1)) and lets it overflow.
+Gen4SummaryMenu.PICTURE_SIZE = 80
+
+-- AN EGG IS NOT A SPECIES ROW.  pl_otherpoke files the two eggs under species
+-- 0, so they land in `gen4_species_sprites.forms` rather than on any
+-- `data.pokemon` row.  The key is `Gen4Otherpoke.key`'s own format,
+-- ("%03d_%s_%s"):format(species, name, form), and tools/gen4_summary_check.lua
+-- asserts this string against that function so the spelling cannot drift.
+-- The Manaphy egg is extracted under `000_egg_manaphy` and is deliberately NOT
+-- named here: nothing in this port marks an egg as Manaphy's yet, so a
+-- constant for it would be a key nothing could ever choose.
+Gen4SummaryMenu.EGG_KEY = "000_egg_base"
 
 function Gen4SummaryMenu:uiSize() return W, H end
 function Gen4SummaryMenu:wantsFillScale() return true end
@@ -92,16 +119,22 @@ function Gen4SummaryMenu:word(key, fallback)
   return (text:gsub("{COLOR %d+}", ""))
 end
 
-function Gen4SummaryMenu:img(key)
-  local rec = self.art[key]
-  local path = (type(rec) == "table" and rec.path) or rec
-  if type(path) ~= "string" then return nil end
+-- One loader, by PATH.  The page art arrives as an art key and the Pokemon's
+-- picture as a path off the species row, so the key lookup is the wrapper and
+-- this is the part both share.
+function Gen4SummaryMenu:image(path)
+  if type(path) ~= "string" or path == "" then return nil end
   if self.cache[path] == nil then
     local ok, img = pcall(require("src.render.Assets").image, path)
     self.cache[path] = ok and img or false
     if self.cache[path] then self.cache[path]:setFilter("nearest", "nearest") end
   end
   return self.cache[path] or nil
+end
+
+function Gen4SummaryMenu:img(key)
+  local rec = self.art[key]
+  return self:image((type(rec) == "table" and rec.path) or rec)
 end
 
 function Gen4SummaryMenu:close()
@@ -224,6 +257,71 @@ function Gen4SummaryMenu:drawMoves()
   end
 end
 
+-- A cache imported before any of this carries the PLATE'S TOP-LEFT under
+-- `picture` rather than the sprite's centre, and the two cannot be told apart
+-- by their values.  `plate` is what marks the new shape -- and the fallback is
+-- the cartridge's own pair, so an old cache lands in the right place anyway
+-- rather than eight pixels up and to the left of it.
+function Gen4SummaryMenu:pictureSpot()
+  local spot = self.layout.picture
+  if type(spot) == "table" and tonumber(spot.plate) then return spot end
+  return Gen4SummaryMenu.PICTURE
+end
+
+-- The picture, and whether it is mirrored.
+--
+-- IT IS MIRRORED, AND THAT IS THE CARTRIDGE'S DOING:
+-- `monSprite.flip = SpeciesData_GetFormValue(.., SPECIES_DATA_FLIP_SPRITE) ^ 1`
+-- (3d_anim.c 337), so the summary reverses every species whose flag is CLEAR
+-- -- 480 of the 508 personal records -- and leaves the twenty-eight that are
+-- set alone.
+--
+-- WHAT THE FLAG IS NOT is a facing: the pictures say so outright.  Torterra
+-- has it SET and Bulbasaur CLEAR, and both are drawn facing left, so it cannot
+-- mean "this art happens to point the other way".
+--
+-- WHAT IT READS AS is "do not reverse this one", and the members that settle
+-- it are the ones a mirror would FALSIFY: UNOWN, whose sprite is a LETTER;
+-- SPINDA, whose spots are the whole point of it; the Poliwag line's spiral;
+-- Teddiursa's crescent.  Stated as a reading and not a derivation, because the
+-- twenty-eight are not all obvious from outside the art team -- Torterra and
+-- Chimchar are in the set and I cannot say why.  The CONSEQUENCE is what
+-- matters here and it is not in doubt: those species come up facing the other
+-- way from the rest of the party, on the cartridge as well as here.
+--
+-- The byte has been in the cache the whole time: Gen4Species.parse reads it as
+-- `flipSprite` off the top bit of the byte that carries bodyColor, and nothing
+-- had ever read it back.  On a Gen 1-3 cache there is no such field, and
+-- `not nil` is true -- which would mirror Kanto -- so the mirror is asked for
+-- only where the field EXISTS, and the caller says which.
+function Gen4SummaryMenu:pictureArt()
+  local mon, data = self.mon, self.game.data
+  if not (mon and data) then return nil, false end
+  if Party.isEgg(mon) then
+    -- No flip: an egg has no personal record to read a flag out of, and it is
+    -- drawn facing nowhere.
+    local forms = (data.gen4_species_sprites or {}).forms or {}
+    local rec = forms[Gen4SummaryMenu.EGG_KEY]
+    return self:image(type(rec) == "table" and rec.front or nil), false
+  end
+  local path = Sprites.path(data, mon.species, "front",
+                            { mon = mon, kind = "summary" })
+  local def = data.pokemon and data.pokemon[mon.species]
+  local flip = def ~= nil and def.flipSprite ~= nil and not def.flipSprite
+  return self:image(path), flip
+end
+
+function Gen4SummaryMenu:drawPicture()
+  local image, flip = self:pictureArt()
+  if not image then return end
+  local spot = self:pictureSpot()
+  local w, h = image:getDimensions()
+  love.graphics.setColor(1, 1, 1, 1)
+  -- Drawn from its own centre so the mirror turns it about the middle of the
+  -- plate rather than sliding it a picture's width to the left.
+  love.graphics.draw(image, spot.x, spot.y, 0, flip and -1 or 1, 1, w / 2, h / 2)
+end
+
 function Gen4SummaryMenu:draw()
   local g = love.graphics
   g.setColor(0.08, 0.09, 0.14, 1)
@@ -238,6 +336,11 @@ function Gen4SummaryMenu:draw()
     Font.draw(self:word("unknown", "???"), 100, 90)
     return
   end
+
+  -- The Pokemon itself, on every page: the cartridge only ever takes it down
+  -- for the move-info sub-mode, which scrolls the whole left column away and
+  -- is not a page this port draws.
+  self:drawPicture()
 
   -- The title, and the name and level in the bar the art leaves for them.
   if page and page.title then

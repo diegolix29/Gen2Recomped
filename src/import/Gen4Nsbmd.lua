@@ -517,9 +517,31 @@ function Gen4Nsbmd.parse(data)
       -- two records, neither derived from the other -- is what turns
       -- "untextured" from an excuse into a checked fact.  See `check`.
       local record = header.materials + (mat.offset or 0)
+      -- THE POLYGON ATTRIBUTE, whose alpha is the only thing that makes a DS
+      -- shadow a shadow.
+      --
+      -- `polyAttr` is the u32 at +0x0C and its bits 16..20 are a 0..31 alpha,
+      -- 31 being opaque.  Measured on `funsui`, which carries one shadow and
+      -- two ordinary materials:
+      --
+      --     c1_fun1   polyAttr=001F8081   alpha 31/31
+      --     c1_fun2   polyAttr=001F8088   alpha 31/31
+      --     h_kage    polyAttr=00090081   alpha  9/31
+      --
+      -- Nothing read it, so every building's ground shadow was drawn at full
+      -- strength -- and its texture is a 16x16 of palette index 0, which on
+      -- this material is opaque BLACK rather than transparent.  Reported from
+      -- play: *"there are shadows for the houses but they're showing as black
+      -- not how they look in the actual rom"*.  They were exactly black.
+      local polyAttr = u32(data, record + 0x0C) or 0
       model.materials[#model.materials + 1] = {
         name = mat.name, index = mat.index,
         texScale = u32(data, record + 0x20) or 0,
+        polyAttr = polyAttr,
+        -- Kept as the cartridge's own 0..31 rather than a float: it is what
+        -- the hardware register holds, and the renderer is the right place to
+        -- decide what 9/31 looks like in this engine's blend.
+        alpha = math.floor(polyAttr / 2 ^ 16) % 32,
       }
     end
     -- ...and the same fact the way a renderer wants it: material -> names.

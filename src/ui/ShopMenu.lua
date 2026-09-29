@@ -72,6 +72,8 @@ end
 -- the money tile the cartridge draws.  Written as escapes rather than as a
 -- literal so no editor or tool can mangle the two bytes again.
 local MONEY_GLYPH = "\194\165"
+-- Hoenn's, U+20BD, written as escapes for the same reason.
+local GEN3_MONEY_GLYPH = "\226\130\189"
 
 -- A price in the cartridge's own currency.
 local function price(game, amount)
@@ -79,11 +81,17 @@ local function price(game, amount)
   if said and type(said.money) == "string" then
     return fill(said.money, { VAR1 = tostring(amount) })
   end
-  -- Gen 3 has its own POKé DOLLAR glyph; the Game Boy font uses MONEY_GLYPH.
-  if require("src.core.GameVersion").isGen3() then
-    return ("₽%d"):format(amount)
-  end
-  return MONEY_GLYPH .. tostring(amount)
+  -- THREE FONTS, THREE DIFFERENT CHARACTERS, and none of them is a dollar:
+  -- U+00A5 on the Game Boy, U+20BD in Hoenn, and a literal ASCII "$" in
+  -- Sinnoh, which Platinum's font draws as the Poke-dollar.  The reasoning
+  -- and the measurements are in `GameVersion.moneySign`, which is also why
+  -- the non-Gen-4 answer is handed to it rather than decided there: this
+  -- screen has always printed U+20BD on Gen 3 while four other screens print
+  -- U+00A5, and making those four agree is a separate fix.
+  local Version = require("src.core.GameVersion")
+  local sign = Version.moneySign(
+    Version.isGen3() and GEN3_MONEY_GLYPH or MONEY_GLYPH)
+  return sign .. tostring(amount)
 end
 
 local function buy(game, stock)

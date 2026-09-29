@@ -111,6 +111,42 @@ end
 -- Everything the personality decides is recomputed from it rather than
 -- copied, so a seed carrying only the two numbers the cartridge stores is
 -- enough to rebuild the rest.
+-- THE NATURE WAS GOING INTO THE EVS SLOT.
+--
+-- `Stats.calc(speciesDef, level, dvs, statExp, evs, nature)` takes SIX, and
+-- the three calls in this file passed five -- so `nature` landed in `evs`,
+-- `evs` landed in `statExp`, and the Gen 3 branch's `evs or statExp` then
+-- picked the nature over the real EVs. The two callers outside this file
+-- (Gen3Commands, Gen3SpecialsFRLG) have always passed all six; this file was
+-- the outlier.
+--
+-- It went unnoticed for as long as it did because a Gen 3 nature is a STRING
+-- and Lua lets you index a string: `evs[key]` answered nil, the EVs read as
+-- zero, and a freshly built Pokemon has zero EVs anyway. A GEN 4 nature is a
+-- NUMBER, and indexing a number RAISES -- which is how building any Sinnoh
+-- Pokemon came to take the game down (Stats.lua:105).
+--
+-- THIS DOES CHANGE GEN 3 STATS, and the first version of this note said it did
+-- not.  That claim came from a regression harness whose "before" overlay had
+-- been deleted, so it compared the new file against itself and reported no
+-- difference -- and it also never called `Stats.setNatures`, which `Data:load`
+-- does before `seedDefaults`.  Both faults pointed the same way.  Measured
+-- properly, against a reconstructed pre-fix file with the natures loaded:
+--
+--   crystal (gen 2)   753 builds   0 differ
+--   emerald (gen 3)   900 builds   900 differ
+--
+-- and the direction is the cartridge's.  Over 600 seeded Emerald builds, the
+-- five NEUTRAL natures move nothing (108 builds, 0 changed) and every
+-- modifying one moves exactly two stats (492 builds, all changed): an Adamant
+-- mon gains 10% Attack and loses 10% Sp.Atk, a Bold one loses 10% Attack.
+-- Gen 1 and Gen 2 are untouched, because `Stats.isGen3` is false for them and
+-- the nature never reaches the formula.
+--
+-- So this completes a feature that was written and never took effect, rather
+-- than only removing a crash.  `gen3Seed`'s own comment above calls the
+-- absence a bug -- "nothing in the game ever got the ten percent its nature is
+-- supposed to move" -- and it was still describing an open one.
 function Pokemon.applySeed(data, mon, seed)
   if type(mon) ~= "table" or type(seed) ~= "table" then return false end
   local def = data and data.pokemon and data.pokemon[mon.species]
@@ -130,7 +166,8 @@ function Pokemon.applySeed(data, mon, seed)
   if mon.ivs then
     local full = mon.hp ~= nil and mon.stats ~= nil
                  and mon.hp >= (mon.stats.hp or 0)
-    mon.stats = Stats.calc(def, mon.level or 1, mon.ivs, mon.evs, mon.nature)
+    mon.stats = Stats.calc(def, mon.level or 1, mon.ivs, nil, mon.evs,
+                           mon.nature)
     -- a mon rebuilt at full health stays at full health; one carrying a
     -- wound keeps it, clamped to whatever the new maximum turned out to be
     mon.hp = full and mon.stats.hp
@@ -145,7 +182,7 @@ function Pokemon.new(data, species, level, rng)
   local dvs = Stats.randomDVs(rng)
   local seed = Stats.isGen3(def) and gen3Seed(data, def, rng) or nil
   local stats = seed
-    and Stats.calc(def, level, seed.ivs, seed.evs, seed.nature)
+    and Stats.calc(def, level, seed.ivs, nil, seed.evs, seed.nature)
     or Stats.calc(def, level, dvs)
   local moves = {}
   for _, id in ipairs(Pokemon.movesAtLevel(def, level)) do
@@ -243,7 +280,8 @@ function Pokemon.forceShiny(data, mon, rng, otId)
         mon.abilitySlot = (mon.personality % 2) + 1
       end
       local full = mon.stats and mon.stats.hp
-      mon.stats = Stats.calc(def, mon.level or 1, mon.ivs, mon.evs, mon.nature)
+      mon.stats = Stats.calc(def, mon.level or 1, mon.ivs, nil, mon.evs,
+                             mon.nature)
       mon.hp = (full and mon.hp and mon.hp < full)
                and math.min(mon.hp, mon.stats.hp) or mon.stats.hp
     end

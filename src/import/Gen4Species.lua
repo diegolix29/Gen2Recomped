@@ -38,17 +38,22 @@
 -- screen uses swaps Speed with Special Attack, which produces a table that
 -- looks entirely plausible and is wrong for every species in the game.
 
+local Gen4Abilities = require("src.import.Gen4Abilities")
+
 local Gen4Species = {}
 
 Gen4Species.RECORD_BYTES = 44
 
 -- Gen 4 type ids.  9 is the unused slot left between Steel and Fire where
 -- Gen 2's "bird" type sat; nothing in the cartridge uses it.
-Gen4Species.TYPES = {
-  [0] = "normal", "fighting", "flying", "poison", "ground", "rock", "bug",
-  "ghost", "steel", "unused", "fire", "water", "grass", "electric",
-  "psychic", "ice", "dragon", "dark",
-}
+--
+-- !! TAKEN FROM Gen4TypeChart RATHER THAN SPELLED AGAIN, and in UPPER CASE.
+-- This was its own lower-case copy, so a species came out `types = { "grass" }`
+-- while the type chart every other game in this launcher writes is keyed
+-- `GRASS` -- and `TypeChart` matches on string identity. Two spellings of the
+-- same eighteen names in two files is how that happened; one table is the fix
+-- that cannot drift back. See the note above Gen4TypeChart.TYPES.
+Gen4Species.TYPES = require("src.import.Gen4TypeChart").TYPES
 
 -- The message bank inside /msgdata/pl_msg.narc that holds species names,
 -- indexed by dex number.  Found by looking rather than assumed: bank 412
@@ -103,7 +108,15 @@ function Gen4Species.parse(record)
     baseFriendship = u8(record, 18),
     expRate = u8(record, 19),
     eggGroups = { u8(record, 20), u8(record, 21) },
-    abilities = { u8(record, 22), u8(record, 23) },
+    -- NAMES, NOT IDS.  Every table in `src/battle/Abilities.lua` compares
+    -- against a name, so writing the cartridge's numbers here meant no
+    -- ability did anything in Sinnoh at all -- and the second slot's
+    -- ABILITY_NONE sentinel, written out as a literal 0, is TRUTHY in Lua, so
+    -- `list[slot] or list[1]` handed half of Sinnoh's Pokemon the ability "0".
+    -- `Gen4Abilities.list` resolves both and leaves an absent second ability
+    -- as a HOLE, which is the shape Gen 3 already writes.  See that file for
+    -- the derivation and the 492-species cross-check.
+    abilities = Gen4Abilities.list(u8(record, 22), u8(record, 23)),
     safariFleeRate = u8(record, 24),
     bodyColor = colour % 128,
     flipSprite = colour >= 128,

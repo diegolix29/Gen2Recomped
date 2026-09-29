@@ -110,6 +110,92 @@ end
 -- play_cry's waitForButton form keeps that cry gate but hands the box back
 -- to the A/B path once the cry is over -- see TextBox's opts.auto.wait
 -- (#247, #251).
+-- A GEN 4 LINE CARRIES ITS MARKUP IN BRACES, AND NOTHING READ ANY OF IT.
+--
+-- Gen 1-3 write `{RAM:wStringBufferN}` and the pass below resolves it.  Gen 4's
+-- msgdata has its own escape -- `0xFFFE <type> <argc> <params...>` -- and
+-- `Gen4Text.render` spells it `{STRVAR_1 1 0 0}` or `{COLOR 0}`, which matched
+-- nothing here and went to the player exactly as written.  Measured over the
+-- whole archive: **5,747 of 46,053 strings (12.5%) carry a variable** -- every
+-- "<mon> used <move>!", every line that says the player's name -- and another
+-- **2,068 (4.5%) carry a formatting marker**, 4,044 of them `{COLOR}`.
+--
+-- WHICH NUMBER IS THE SLOT is the part worth writing down, because three of the
+-- four numbers in a `{STRVAR_1 ...}` are not it.  `StringTemplate_Format`
+-- (string_template.c) substitutes an escape only when its TYPE's high byte is
+-- 0x100, 0x500 or 0x600, and what it substitutes is
+-- `CharCode_FormatArgParam(c, 0)` -- the FIRST PARAMETER, not the type's low
+-- byte.  Measured over all 46,053 strings, this cartridge uses exactly four
+-- escape families: 0x0100 (8,377 occurrences), 0x0200 (191), 0x0600 (131) and
+-- 0xFF00 (4,083).  Only 0x0100 and 0x0600 are template arguments, and their
+-- first parameter runs 0..18 -- an argument index -- while the low byte takes
+-- 53 distinct values, which is the printer's own formatting.  0x0200 is
+-- YESNO/PAUSE/WAIT/CURSOR and 0xFF00 is COLOR/SIZE; substituting either would
+-- put a Pokemon's name where a control code belongs.
+--
+-- `Gen4RowanIntro:fill` had already worked the slot out for two names -- "the
+-- middle number is the variable slot" -- and nothing generalised it.  This
+-- agrees with it and with the cartridge.
+--
+-- The slot numbering needs no adjustment: `bufferplayername <slot>` calls
+-- `StringTemplate_SetPlayerName(template, slot, ...)`, `Format` reads
+-- `args[param0]`, and `g4_buffer` files the value at `stringBuffers[slot + 1]`
+-- because Lua counts from one.
+--
+-- AN UNFILLED SLOT IS DROPPED, and the first version of this left it visible
+-- on the theory that a token on screen is a bug report.  It is -- but it is a
+-- bug report delivered to the PLAYER, mid-sentence, in a font with no braces:
+-- reported from play as `that to my /STRVAR_1 3 1 0/./`.  The report belongs in
+-- the log, which is where it goes now, once per slot per session so a scene
+-- with a repeated line does not fill it.
+--
+-- The markers below are DROPPED, not printed.  They are instructions to a text
+-- renderer this port does not have -- colour, size, cursor position, alignment
+-- -- and one line's worth of braces on screen is worse than losing a colour.
+-- `PAUSE` and `WAIT` are the exception worth naming: they are timing, 73
+-- occurrences between them, and dropping them makes those lines advance
+-- without their beat.  Anything not on this list is left exactly as it is,
+-- which is what keeps `{RAM:...}` for the pass below and leaves the decoder's
+-- own `{TRUNCATED}` and `{UNKNOWN_xxxx}` diagnostics legible.
+local GEN4_DROP = {
+  COLOR = true, SIZE = true, CURSOR_X = true, CURSOR_Y = true,
+  ALN_CENTER = true, ALN_RIGHT = true, YESNO = true, PAUSE = true,
+  WAIT = true,
+}
+
+local reportedSlots = {}
+
+local function gen4Markup(text, game)
+  if type(text) ~= "string" or not text:find("{", 1, true) then return text end
+  local slots = game and game.stringBuffers
+  return (text:gsub("{(%u[%u_0-9]*)([^}]*)}", function(name, rest)
+    if name == "STRVAR_1" or name == "STRVAR_6" then
+      -- `<low> <param0> <param1>`: the middle one.
+      local param0 = rest:match("^%s*%d+%s+(%d+)")
+      local value = param0 and slots and slots[tonumber(param0) + 1]
+      if value ~= nil and value ~= "" then return tostring(value) end
+      if param0 and not reportedSlots[param0] then
+        reportedSlots[param0] = true
+        require("src.core.Logger").warn(
+          "gen4 text: string slot %s was never buffered; the line prints with "
+          .. "a gap where its name should be", param0)
+      end
+      -- A malformed token -- no slot number at all -- is left alone, because
+      -- that is a decoder fault rather than an unfilled one and silently
+      -- swallowing it would hide it.
+      return param0 and "" or nil
+    end
+    if GEN4_DROP[name] then return "" end
+    return nil
+  end))
+end
+
+-- Published because a Gen 4 MENU row is a message too -- `addmenuentryimm`
+-- names an entry in a text bank -- and it is drawn by src/ui/Menu rather than
+-- by the text box, so it never passes through show_text.  One spelling of the
+-- rule, two callers.
+Commands.gen4Markup = gen4Markup
+
 function Commands.show_text(ctx, textId, subs, extraOpts)
   -- The ROM has no "text id" at the point a YES/NO or phone prompt opens: the
   -- menu simply rides the box that is already on screen.  Recording the last
@@ -172,6 +258,7 @@ function Commands.show_text(ctx, textId, subs, extraOpts)
   -- "Chikorita" once Lyra's starter set the buffer.  <PLAYER> is charmap
   -- $4F -> wPlayerName (n-gram pointer, 00:$3c16 -> $d47b), so it decodes to
   -- {RAM:wPlayerName}, and this pass must not touch it.
+  text = gen4Markup(text, ctx.game)
   if text:find("{RAM:", 1, true) then
     text = text:gsub("{RAM:([%w_]*)}", function(name)
       local slot = tonumber(name:match("^wStringBuffer(%d)$") or "")
@@ -676,14 +763,26 @@ function Commands.wait(ctx, frames)
   ctx.runner:yield()
 end
 
-local function walkEntity(ctx, entity, dir, tiles)
+-- `rate` is the movement action's own speed, as a multiplier on the walker's
+-- step duration (bigger is slower).  `scriptMove` has taken one all along and
+-- Gen 3 has supplied one all along; Gen 4's table simply did not carry it, so
+-- every scripted walk in Sinnoh ran at one pace.  Optional, so the three
+-- callers that have no opinion are unchanged.
+local function walkEntity(ctx, entity, dir, tiles, rate)
   claimMove(ctx, entity)
   local runner = ctx.runner
   ctx.overworld:scriptMove(entity, dir, tiles or 1, function()
     runner:resume()
-  end)
+  end, nil, rate)
   runner:yield()
 end
+
+-- PUBLISHED, because Gen 4's `applymovement` walks an entity this file has no
+-- verb for: the object is named by its `localID` rather than by the def index
+-- `move_npc` takes, and a movement list is a sequence of steps rather than one
+-- of them.  Sharing the function rather than reimplementing it keeps the move
+-- lock, the yield and the parallel-runner preemption identical.
+Commands.walkEntity = walkEntity
 
 function Commands.move_player(ctx, dir, tiles)
   walkEntity(ctx, ctx.overworld.player, dir, tiles)
@@ -1898,6 +1997,28 @@ function Commands.registerInto(registry, _, owner)
     for verb, fn in pairs(Gen3) do
       if type(fn) == "function" and verb:sub(1, 3) == "g3_" then
         registry:register(verb, fn, owner)
+      end
+    end
+  end
+  -- ...and the same for Sinnoh, which had NO handlers at all.
+  --
+  -- `Gen4ScriptVM` has lowered Platinum's bytecode into `g4_*` rows since it
+  -- was written and nothing ever registered one, so every Gen 4 script went
+  -- through the unknown-command path above: the box opened and shut without
+  -- waiting, name buffers stayed empty, and every `checkflag` and
+  -- `comparevar` left the comparison register untouched so the branch after
+  -- it read whatever the last script had put there.  Reported as "npcs are
+  -- appearing for the events but not triggering, npcs are still missing
+  -- text".
+  --
+  -- The module adds its verbs to THIS table, the way Gen3Commands does, so
+  -- the loop below finds them on `Commands` rather than on the module.
+  local okFour = pcall(require, "src.script.Gen4Commands")
+  if okFour then
+    for verb, fn in pairs(Commands) do
+      if type(fn) == "function" and verb:sub(1, 3) == "g4_" then
+        registry:register(verb, fn, owner)
+        registered[verb] = fn
       end
     end
   end

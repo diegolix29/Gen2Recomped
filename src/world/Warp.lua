@@ -219,8 +219,45 @@ end
 -- room later.
 local GEN3_DYNAMIC_MAP = "MAP_G127_N127"
 
+-- GEN 4 HAS THE SAME SEAM AND THE PORT READ IT AS A HOLE.  A warp event whose
+-- destination header is 0xfff and whose anchor is 0x100 does not go nowhere:
+-- field_control.c 1011 resolves it from the SPECIAL LOCATION, exactly as Gen 3
+-- resolves map group 127.  Six warps in Sinnoh carry that pair and all six are
+-- LIFT CARS -- Jubilife TV, both Hearthome houses, the Veilstone department
+-- store, the Resort Area and the Vista Lighthouse -- so with the pair unread
+-- and `setspeciallocation` lowered to a noop, every lift in the region opened
+-- onto nothing.  The extractor now marks them with this id; see
+-- src/import/Gen4Elevators.lua.
+local GEN4_DYNAMIC_MAP = "GEN4_SPECIAL_LOCATION"
+
+-- WARP_ID_NONE is -1 (include/location.h) in a u16 operand: the slot's warp is
+-- not a warp and its coordinates are.  Gen 3 spells the same rule 0xFF because
+-- there the operand is a byte.
+local GEN4_WARP_NONE = 0xFFFF
+
 local function resolve(data, warpDef, lastMap, backupWarp, save)
   local destMap = warpDef.destMap
+  if destMap == GEN4_DYNAMIC_MAP then
+    local spot = save and save.gen4SpecialLocation
+    if spot and spot.map and data.maps[spot.map] then
+      local destDef = data.maps[spot.map]
+      -- the warp id places you and the coordinates are then overwritten from
+      -- it (field_map_change.c 226); the Veilstone store's middle floors name
+      -- warp 2 where its top and basement name warp 1, so this is not cosmetic
+      local id = tonumber(spot.warp)
+      local dw = id and id ~= GEN4_WARP_NONE and destDef.warps
+                 and destDef.warps[id + 1]
+      if dw then return spot.map, dw.x, dw.y end
+      if spot.x and spot.y then return spot.map, spot.x, spot.y end
+    end
+    -- Same refusal as Gen 3 below, and for the same reason: handing MapLoader
+    -- an id no dataset has raises under the player's feet, where standing
+    -- still leaves them in the car with the reason in the log.
+    require("src.core.Logger").warn(
+      "gen4 dynamic warp taken with no special location set -- the lift's "
+      .. "`setspeciallocation` has not run")
+    return nil
+  end
   if destMap == GEN3_DYNAMIC_MAP then
     local dyn = save and save.gen3DynamicWarp
     if dyn and dyn.map and data.maps[dyn.map] then
@@ -302,6 +339,36 @@ end
 -- reroute one door without owning the warp table (ctx carries the warp
 -- record and the remembered outdoor side the resolution used)
 local function warped(mapId, x, y) return mapId, x, y end
+
+-- THE LIFT REMEMBERS THE FLOOR YOU GOT ON AT, and it is the same slot.
+--
+--     if (warpEvent->destWarpID == 0x100) {
+--         *specialLocation = *entranceLocation;
+--     }
+--
+-- -- field_map_change.c 232, run on ARRIVAL: stepping into a car overwrites
+-- the slot with the door you just left.  That is the whole of how the
+-- two-floor lifts work, because Hearthome's cars and the Vista Lighthouse's
+-- have no panel at all -- they ask `getfloorsabove` about the special location
+-- and warp you to the other floor.  It is also what makes walking straight
+-- back out of any car return you to the floor you came from instead of
+-- wherever the last lift in the game was sent.
+--
+-- Called from the warp the player is TAKING, with the map being left, because
+-- the port resolves a destination rather than loading a header and then asking
+-- which warp it arrived at.  The stored warp id is the cartridge's zero-based
+-- event index, which is what `resolve` above adds one to.
+function Warp.noteGen4Entrance(data, save, warpDef, destMap, fromMap, x, y, facing)
+  if not (data and save and warpDef and destMap and fromMap) then return end
+  local destDef = data.maps and data.maps[destMap]
+  local arrival = destDef and destDef.warps and destDef.warps[warpDef.destWarp]
+  if not (arrival and arrival.destMap == GEN4_DYNAMIC_MAP) then return end
+  save.gen4SpecialLocation = {
+    map = fromMap,
+    warp = (tonumber(warpDef.index) or 1) - 1,
+    x = x, y = y, facing = facing,
+  }
+end
 
 function Warp.destination(data, warpDef, lastMap, backupWarp, save)
   local destMap, x, y = resolve(data, warpDef, lastMap, backupWarp, save)

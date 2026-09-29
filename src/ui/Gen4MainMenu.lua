@@ -230,19 +230,25 @@ function Gen4MainMenu:hasPokedex()
   return next(dex.owned or {}) ~= nil
 end
 
+-- `tx, ty, tw` are the window's CONTENT rect, which is what the cartridge's
+-- own coordinates are in: RenderContinueOption prints at x = 32 and
+-- y = TEXT_LINES(i) INSIDE the window, and the frame is drawn outside it.
 function Gen4MainMenu:drawContinue(tx, ty, tw)
   local L = self.layout
-  local inner = (tx + 1) * 8
-  local right = (tx + tw - 1) * 8
-  local y = (ty + 1) * 8
+  local left = tx * 8
+  local right = (tx + tw) * 8
+  -- Line 0 is the word CONTINUE itself, printed by the caller; the summary
+  -- starts on line 1, exactly as the cartridge's loop does.
+  local line = 1
   for _, row in ipairs(self.continueRows) do
     if not (row.needsPokedex and not self:hasPokedex()) then
       local value = self:value(row.value)
-      Font.draw(tostring(row.label or ""), inner + L.margin - 8, y)
+      local y = ty * 8 + line * L.linePixels
+      Font.draw(tostring(row.label or ""), left + L.margin, y)
       -- Right-aligned with the same margin the labels are inset by, which is
       -- what PrintRightAlignedWithMargin does: one number, used on both sides.
-      Font.draw(value, right - L.margin + 8 - Font.width(value), y)
-      y = y + L.linePixels
+      Font.draw(value, right - L.margin - Font.width(value), y)
+      line = line + 1
     end
   end
 end
@@ -258,51 +264,69 @@ function Gen4MainMenu:draw()
   local glyphH = Font.glyphHeight()
   local inset = math.max(0, math.floor((L.linePixels - glyphH) / 2))
 
-  -- CENTRED VERTICALLY WHEN THE ROWS DO NOT FILL THE SCREEN.
+  -- THE WINDOW THE PLAYER SEES IS THE FRAME AROUND THE CONTENT, and drawing
+  -- the content rect alone is why the boxes were half the height they should
+  -- be.  Reported twice: "the tiles are too small", then "the boxes
+  -- surrounding the text are still too small thry should match the rom".
   --
-  -- The cartridge starts its first window at y = 1 and never has to think
-  -- about this, because its menu is EIGHT rows -- six of them link features
-  -- this port does not offer -- and CONTINUE's window alone is ten tiles.
-  -- With no save and no link rows the stack is three short windows, which at
-  -- the cartridge's own y = 1 sit in the top third of the screen and leave the
-  -- rest empty: the layout is right and it reads as broken.  Reported as "the
-  -- tiles are too small".  The geometry below is still the cartridge's; only
-  -- where the block starts is this port's.
-  local used = 0
-  for _, item in ipairs(self.items) do
-    used = used + (item.lines or 1) * L.lineTiles + L.gap
+  -- `Window_DrawStandardFrame` -> `DrawStandardWindowFrame` (render_window.c)
+  -- lays the frame at `x - 1 .. x + width` and `y - 1 .. y + height`, one tile
+  -- outside the window on every side, and `RenderOptions` advances by
+  -- `height + 2` with the comment "Add 2 to account for the window border".
+  -- So a one-line option is 2 content tiles and FOUR visible ones -- 32 px,
+  -- not 16 -- and the column is 28 tiles wide, not 26: x = 3, width = 26,
+  -- frame from tile 2 to tile 29, which is 16 px to 240 px and centred on a
+  -- 256 px screen.  Drawn as the content rect it was 208 px wide starting at
+  -- 24, which is neither the right size nor centred.
+  --
+  -- Everything below is in the cartridge's own numbers; only the cursor is
+  -- this port's, because Platinum marks the focused option by swapping its
+  -- frame tiles (FOCUSED_OPTION_FRAME_BASE_TILE) rather than by drawing one.
+  local tops = {}
+  local ty = L.firstY
+  for i, item in ipairs(self.items) do
+    tops[i] = ty
+    ty = ty + (item.lines or 1) * L.lineTiles + L.gap
   end
-  used = used - L.gap
   local screenTiles = math.floor(H / 8)
-  local y = L.firstY
-  if used + L.firstY * 2 < screenTiles then
-    y = math.max(L.firstY, math.floor((screenTiles - used) / 2))
-  end
+
+  -- ...AND THE COLUMN CAN BE TALLER THAN THE SCREEN, on the cartridge too:
+  -- CONTINUE alone is 12 visible tiles and eight options do not fit in 24,
+  -- which is what Platinum's scroll arrows are for.  Keeping the selected
+  -- window on screen is the same answer; dropping the rows that fall past the
+  -- bottom edge -- which is what the old `break` did -- makes EXIT
+  -- unreachable the moment a save exists.
+  local selTop = tops[self.index] or L.firstY
+  local selH = (self.items[self.index] and self.items[self.index].lines or 1)
+               * L.lineTiles
+  local scroll = 0
+  local bottomEdge = selTop + selH + 1
+  if bottomEdge > screenTiles then scroll = bottomEdge - screenTiles end
+  if selTop - 1 - scroll < 0 then scroll = selTop - 1 end
 
   for i, item in ipairs(self.items) do
-    -- CONTINUE is five lines whether or not every one of them is filled; the
-    -- others are one.  `lines * lineTiles` is TEXT_LINES_TILES.
     local th = (item.lines or 1) * L.lineTiles
-    Font.drawBox(L.optionX, y, L.optionWidth, th)
+    local y = tops[i] - scroll
+    -- Wholly off either edge: not drawn at all, rather than clipped into a
+    -- half window.
+    if y + th + 1 > 0 and y - 1 < screenTiles then
+      Font.drawBox(L.optionX - 1, y - 1, L.optionWidth + 2, th + 2)
 
-    -- DRAWN AT WHITE, not at black.  Platinum's font page is PRE-TINTED: the
-    -- sheet bakes the letter dark and its shadow light, and Font.drawCode blits
-    -- it as it stands when no style is pushed.  Multiplying it by black -- which
-    -- is what every Game Boy screen in this engine does, because its glyphs are
-    -- a mask -- would paint the shadow black as well and thicken every letter.
-    Font.draw(item.label, (L.optionX + 1) * 8, y * 8 + inset)
-    if item.key == "continue" then
-      self:drawContinue(L.optionX, y, L.optionWidth)
+      -- DRAWN AT WHITE, not at black.  Platinum's font page is PRE-TINTED: the
+      -- sheet bakes the letter dark and its shadow light, and Font.drawCode blits
+      -- it as it stands when no style is pushed.  Multiplying it by black -- which
+      -- is what every Game Boy screen in this engine does, because its glyphs are
+      -- a mask -- would paint the shadow black as well and thicken every letter.
+      Font.draw(item.label, L.optionX * 8, y * 8 + inset)
+      if item.key == "continue" then
+        self:drawContinue(L.optionX, y, L.optionWidth)
+      end
+      if i == self.index then
+        -- In the frame's own left column, so the label keeps the cartridge's
+        -- content origin rather than being pushed a tile right to make room.
+        Font.drawCode(Theme.cursor, (L.optionX - 1) * 8, y * 8 + inset)
+      end
     end
-    if i == self.index then
-      Font.drawCode(Theme.cursor, L.optionX * 8, y * 8 + inset)
-    end
-
-    y = y + th + L.gap
-    -- Off the bottom rather than drawn over the edge.  A mod that adds rows
-    -- can overrun 24 tiles, and a half-drawn window is worse than a missing
-    -- one.
-    if y * 8 >= H then break end
   end
 end
 

@@ -72,9 +72,11 @@ local function rulesetIds(game)
 end
 
 local function rulesetIndex(game, ids)
-  local constants = game.data and game.data.constants
+  -- The same fallback the battle uses, from the same place.  When these two
+  -- disagreed the row showed GEN 1 FAITHFUL on a cartridge that was about to
+  -- fight under it -- which was true, and was the bug rather than the display.
   local cur = game.save.options.ruleset
-              or (constants and constants.defaultRuleset) or "gen1_faithful"
+              or require("src.battle.RulesetDefaults").defaultFor(game)
   for i, id in ipairs(ids) do
     if id == cur then return i end
   end
@@ -574,6 +576,150 @@ local function buildRows(game)
   -- with it rather than at the end of the list where a mod's own
   -- ui.options.rows additions land.  Nothing registered means nothing
   -- spliced, so a vanilla install sees the list it always had.
+  -- THE SECOND SCREEN, and only where there is one.
+  --
+  -- From the original brief: a button to switch between the screens, or an
+  -- inset panel in the top-right with a hotkey and an adjustable size, and a
+  -- choice of where the start menu lives.  Three rows, and they exist only on
+  -- a dual-screen cartridge -- `SecondScreen.available` is the single gate, so
+  -- no Gen 1-3 list gains a row and no Gen 1-3 draw path gains a branch.
+  local SecondScreen = require("src.ui.SecondScreen")
+  local Gen4Camera = require("src.render.Gen4Camera")
+  if SecondScreen.available(game) then
+    local MODE_LABEL = {
+      swap = Strings("SWAP"), inset = Strings("CORNER"), off = Strings("OFF"),
+    }
+    rows[#rows + 1] = { id = "secondScreenMode", label = Strings("2ND SCREEN"),
+      value = function(g)
+        return MODE_LABEL[SecondScreen.mode(g)] or Strings("SWAP")
+      end,
+      step = function(g)
+        local modes = SecondScreen.MODES
+        local current = SecondScreen.mode(g)
+        local at = 1
+        for i, name in ipairs(modes) do if name == current then at = i end end
+        g.save.options.secondScreenMode = modes[at % #modes + 1]
+        return true
+      end }
+    -- ...AND WHETHER IT IS SHOWING RIGHT NOW, which is a different question
+    -- from which SHAPE it takes and needed a control of its own.
+    --
+    -- Reported from play: "its still showing the large second screen options
+    -- when i have it turned off rather than the ones we planned". The only way
+    -- to put the bottom screen away was the L hotkey -- which works, but is a
+    -- REBINDABLE key with no label anywhere, so "turned off" could just as
+    -- easily have meant this menu, and this menu had nothing to say about it.
+    -- A setting the player is expected to change needs a row they can read.
+    --
+    -- It is the same flag L toggles, so the two never disagree.
+    rows[#rows + 1] = { id = "secondScreenStowed",
+      label = Strings("BATTLE MENU"),
+      value = function(g)
+        if SecondScreen.mode(g) == "off" then return Strings("--") end
+        return SecondScreen.stowed(g) and Strings("STRIP") or Strings("2ND")
+      end,
+      step = function(g)
+        if SecondScreen.mode(g) == "off" then return false end
+        SecondScreen.toggleStow(g)
+        return true
+      end }
+    -- The size row only means anything in the corner mode, where there is a
+    -- panel to resize; on SWAP the bottom screen is the window.  It is shown
+    -- either way and says so, rather than appearing and disappearing under the
+    -- cursor as the mode above it changes.
+    rows[#rows + 1] = { id = "secondScreenScale", label = Strings("2ND SIZE"),
+      value = function(g)
+        if SecondScreen.mode(g) ~= "inset" then return Strings("--") end
+        local scale = SecondScreen.scale(g)
+        return Strings("%d%%", math.floor(scale * 100 + 0.5))
+      end,
+      step = function(g)
+        local _, at = SecondScreen.scale(g)
+        g.save.options.secondScreenScale = at % #SecondScreen.SCALES + 1
+        return true
+      end }
+    -- HOW FAR THE FIELD CAMERA LEANS.
+    --
+    -- "CARTRIDGE" is the map header's own `cameraType` -- one of Platinum's
+    -- seventeen, transcribed in `src/render/Gen4Camera.lua`, which is between
+    -- 40.6 and 78.4 degrees depending on where the player is standing.  The
+    -- fixed angles are for a player who wants the flat overhead view back (90)
+    -- or more lean than Sinnoh ever uses.
+    --
+    -- Changing this re-bakes every chunk on screen, because the pitch is baked
+    -- into them; that is one frame's hitch and then nothing.
+    rows[#rows + 1] = { id = "gen4CameraTilt", label = Strings("CAM TILT"),
+      value = function(g)
+        local chosen = Gen4Camera.sync(g)
+        if chosen == "cartridge" then return Strings("CARTRIDGE") end
+        return Strings("%d°", chosen)
+      end,
+      step = function(g)
+        local _, at = Gen4Camera.sync(g)
+        local next_ = at % #Gen4Camera.TILTS + 1
+        g.save.options.gen4CameraTilt = next_
+        Gen4Camera.setTilt(next_)
+        return true
+      end }
+    -- HOW MANY REAL PIXELS THE FIRST/THIRD-PERSON VIEW GETS.
+    --
+    -- Reported from play: *"the first and third person are also really low
+    -- resolution and highly pixelated now add in a resolution option"*.
+    --
+    -- The free camera renders at the DS's own resolution because
+    -- `Renderer:fitScale` divides the window by 256x192 -- right for a 16x16
+    -- tile, wrong for perspective geometry, which has no pixel grid to keep.
+    -- `Gen4Ground` supersamples the 3D target by this factor and blits it back
+    -- down, so the view shows exactly the same amount of Sinnoh either way.
+    --
+    -- ONLY THE FREE CAMERA. The flat and tilted views are composed with the
+    -- pixel-art world canvas and are meant to be crisp at an integer scale, so
+    -- this row deliberately does not reach them.
+    --
+    -- "DS" rather than "1X" for the default, because that is what it is: the
+    -- hardware's own 256x192, and the picture every previous build drew.
+    rows[#rows + 1] = { id = "gen4RenderScale", label = Strings("3D RES"),
+      value = function(g)
+        local scale = require("src.render.Gen4Ground").syncRenderScale(g)
+        if scale == 1 then return Strings("DS") end
+        return Strings("%dX", scale)
+      end,
+      -- LEFT GOES BACK, and the first version of this row ignored `dir`.
+      --
+      -- `Gen4Options:cycle` passes the direction through as
+      -- `row.engine.step(self.game, delta)` -- -1 for left, +1 for right and A
+      -- -- and a step that always advances makes both keys do the same thing.
+      -- With four rungs that is worse than it sounds: from 4X the next press of
+      -- EITHER key wraps to DS, so a player raising the setting to look at it
+      -- lands back on the default and sees nothing change.
+      --
+      -- Reported exactly that way: *"for the resolution it doesnt seem to
+      -- change the camera resolution at all"* -- while the log for that session
+      -- showed one frame drawn at a 4096x3072 target, so the pass was working
+      -- and the row had wrapped past it.
+      step = function(g, dir)
+        local Gen4Ground = require("src.render.Gen4Ground")
+        local _, at = Gen4Ground.syncRenderScale(g)
+        local rungs = #Gen4Ground.RENDER_SCALES
+        local by = (tonumber(dir) or 1) < 0 and -1 or 1
+        local next_ = (at - 1 + by) % rungs + 1
+        g.save.options.gen4RenderScale = next_
+        Gen4Ground.setRenderScale(next_)
+        return true
+      end }
+    rows[#rows + 1] = { id = "startMenuStyle", label = Strings("START MENU"),
+      value = function(g)
+        return (g.save.options.gen4StartMenuStyle == "bottom")
+          and Strings("2ND SCREEN") or Strings("MAIN")
+      end,
+      step = function(g)
+        local o = g.save.options
+        o.gen4StartMenuStyle =
+          (o.gen4StartMenuStyle == "bottom") and "main" or "bottom"
+        return true
+      end }
+  end
+
   local pipelineRows = Pipelines.rows(game)
   if pipelineRows[1] then
     local merged = {}

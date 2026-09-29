@@ -114,6 +114,14 @@ function Gen4Tileset.classOf(behaviour)
   local byName = {}
   for _, class in ipairs(Gen4Tileset.CLASSES) do byName[class.name] = class end
 
+  -- The reserved cell a blocked tile is written as -- see
+  -- `Gen4Maps.BLOCKED_CELL`.  It is not a behaviour the cartridge has, so no
+  -- naming rule can match it and it would otherwise come out MAGENTA, which
+  -- would paint half of Sinnoh as "unclassified".
+  if behaviour == require("src.import.Gen4Maps").BLOCKED_CELL then
+    return byName.blocked
+  end
+
   for _, rule in ipairs(Gen4Tileset.RULES) do
     if name:match(rule[1]) then return byName[rule[2]] end
   end
@@ -249,11 +257,13 @@ function Gen4Tileset.pair()
       return out
     end)(),
     behaviourBytes = true,
-    -- EVERY behaviour is walkable here, and that is not a shortcut: in Gen 4,
-    -- as in Gen 3, passability is the CELL's business.  The map grid's
-    -- collision bit is set from the cartridge's void flag, and Map:cellTile
-    -- already blocks on it; listing behaviours here would block terrain a
-    -- second time and for the wrong reason.
+    -- EVERY REAL behaviour is walkable here, and that is not a shortcut: in
+    -- Gen 4, as in Gen 3, passability is the CELL's business.  What makes a
+    -- wall a wall is the cell's own collision bit, which the importer writes
+    -- as the reserved value 255 (`Gen4Maps.BLOCKED_CELL`) -- and 255 is the
+    -- one value this list stops at, which is why the list stops at 254.
+    -- Listing behaviours here would block terrain a second time and for the
+    -- wrong reason.
     walkable = walkable,
     grassTiles = Gen4Behaviors.group("grass"),
     encounterTiles = encounter,

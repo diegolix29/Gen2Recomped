@@ -123,6 +123,114 @@ end
 -- zeroed rather than absent -- so ask this rather than looking for empty data.
 function Gen4Encounters.hasGrass(area) return area and area.grassRate > 0 end
 
+-- ---------------------------------------------------------------------------
+-- THE GRASS SLOT SUBSTITUTIONS
+-- ---------------------------------------------------------------------------
+--
+-- WHICH SLOT EACH VARIANT REPLACES.  This was the one thing about Sinnoh's
+-- encounters that had NOT been read off the cartridge, so the consumer stood on
+-- the base twelve and said so rather than guessing -- a guess here puts the
+-- wrong species in the grass, which is worse than none.
+--
+-- It is stated outright, in the grass branch of `WildEncounters_TryWildEncounter`
+-- (pokeplatinum src/overlay006/wild_encounters.c).  The table is filled from the
+-- twelve base slots, then FIVE calls each overwrite a named pair, in this order:
+--
+--   ReplaceTimedEncounters      -> encounterTable[2], [3]
+--   ReplaceSwarmEncounters      -> encounterTable[0], [1]
+--   ReplaceTrophyGardenEncounters -> encounterTable[6], [7]
+--   ReplaceDualSlotEncounters   -> encounterTable[8], [9]
+--   ReplaceGreatMarshDailyEncounters -> the whole table
+--
+-- and then, inside `TryGenerateGrassEncounter_WithRadar` and only when the
+-- radar's `shakeType == 1`:
+--
+--   encounterTable[4], [5], [10], [11] <- radarEncounters[0..3]
+--
+-- !! AND `ReplaceSwarmEncounters` NAMES ITS OWN PARAMETERS `radarSlot1` AND
+-- `radarSlot2`.  They are not radar slots; the CALLER passes slots 0 and 1.
+-- Quoting the callee's parameter names would have put the swarm Pokemon in the
+-- radar's slots -- read the caller, not the signature.
+--
+-- Recorded 1-BASED for Lua, so these are the cartridge's indices plus one.
+Gen4Encounters.TIMED_SLOTS = { 3, 4 }
+Gen4Encounters.SWARM_SLOTS = { 1, 2 }
+Gen4Encounters.TROPHY_GARDEN_SLOTS = { 7, 8 }
+Gen4Encounters.DUAL_SLOT_SLOTS = { 9, 10 }
+Gen4Encounters.RADAR_SLOTS = { 5, 6, 11, 12 }
+
+-- ONLY THE SPECIES IS REPLACED.  Every one of those assignments writes
+-- `.species` and nothing else, so a night Pokemon inherits the LEVEL and the
+-- chance of the base slot it displaces.  A substitution that also carried a
+-- level would be inventing one.
+--
+-- `TimeOfDayForHour` (src/rtc.c), from its 24-entry lookup: 0-3 LATE_NIGHT,
+-- 4-9 MORNING, 10-16 DAY, 17-19 TWILIGHT, 20-23 NIGHT, with the enum
+-- MORNING 0, DAY 1, TWILIGHT 2, NIGHT 3, LATE_NIGHT 4.
+--
+-- This lives HERE, in a module with no requires that a check can load on its
+-- own, rather than in the script layer -- `Gen4Commands.timeOfDayValue` now
+-- delegates to it so there is ONE transcription of that table, not two that
+-- can drift.
+Gen4Encounters.TIMEOFDAY_MORNING = 0
+Gen4Encounters.TIMEOFDAY_DAY = 1
+Gen4Encounters.TIMEOFDAY_TWILIGHT = 2
+Gen4Encounters.TIMEOFDAY_NIGHT = 3
+Gen4Encounters.TIMEOFDAY_LATE_NIGHT = 4
+
+function Gen4Encounters.timeOfDayForHour(hour)
+  hour = tonumber(hour) or 12
+  if hour < 4 then return 4 end
+  if hour < 10 then return 0 end
+  if hour < 17 then return 1 end
+  if hour < 20 then return 2 end
+  return 3
+end
+
+-- timedBand(hour) -> "day", "night" or nil
+--
+-- nil is MORNING, and morning is not a third table: the comment above
+-- `ReplaceTimedEncounters` says "Default encounters are morning.  They get
+-- replaced by this if it is not morning", and the function leaves both slots
+-- untouched for it.  Twilight rides with day and late night with night, which
+-- is the cartridge's own pairing and not an approximation.
+function Gen4Encounters.timedBand(hour)
+  local tod = Gen4Encounters.timeOfDayForHour(hour)
+  if tod == Gen4Encounters.TIMEOFDAY_DAY
+    or tod == Gen4Encounters.TIMEOFDAY_TWILIGHT then return "day" end
+  if tod == Gen4Encounters.TIMEOFDAY_NIGHT
+    or tod == Gen4Encounters.TIMEOFDAY_LATE_NIGHT then return "night" end
+  return nil
+end
+
+-- timedGrass(area, hour) -> a NEW twelve-slot array, or nil to use the base one
+--
+-- Safe to apply unconditionally because the data is populated: measured over
+-- all 183 areas, NOT ONE has a zero in either its `day` or its `night` pair, so
+-- this can never write species 0 into the grass.  It is also worth doing --
+-- 115 of the 171 areas with grass vary by time of day (27 differ by day, 115 by
+-- night), so on most of Sinnoh the base twelve were the morning line-up all day.
+function Gen4Encounters.timedGrass(area, hour)
+  local band = Gen4Encounters.timedBand(hour)
+  if not band then return nil end
+  local pair = area and area[band]
+  local slots = area and area.grass
+  if type(pair) ~= "table" or type(slots) ~= "table" then return nil end
+  local out = {}
+  for i = 1, #slots do
+    local s = slots[i]
+    out[i] = { level = s.level, species = s.species, chance = s.chance }
+  end
+  for n, at in ipairs(Gen4Encounters.TIMED_SLOTS) do
+    local species = tonumber(pair[n])
+    -- A zero would be the cartridge saying nothing, and the measurement above
+    -- says it never does -- but refusing one costs a comparison and keeps a
+    -- hacked table from emptying a slot.
+    if species and species > 0 and out[at] then out[at].species = species end
+  end
+  return out
+end
+
 function Gen4Encounters.all(archive)
   local out = {}
   for i = 0, archive.count - 1 do

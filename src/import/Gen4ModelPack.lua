@@ -22,17 +22,44 @@
 -- sixteenths of a texel and are likewise integers already.  Nothing here
 -- rounds anything that was not already round.
 --
---   vertex  14 bytes  x, y, z, u, v as s16; r, g, b as u8; one byte of pad
+--   vertex  16 bytes  x, y, z, u, v as s16; r, g, b as u8; nx, ny, nz as s8
 --   index    2 bytes  u16 into this shape's own vertex array
 --
--- The pad byte is not waste: it makes a vertex an even number of bytes, so the
--- engine's unpacker can step through the string two bytes at a time without a
--- special case, and every field lands on an offset it can compute rather than
--- accumulate.
+-- THE NORMAL IS NOT OPTIONAL, AND LEAVING IT OUT COST THE WHOLE OF SINNOH'S
+-- LIGHTING.
+--
+-- This used to be fourteen bytes with a pad byte on the end, and the pad was
+-- justified as making a vertex an even number of bytes.  It still is even; it
+-- now carries the three axes of the normal instead of nothing, and that is the
+-- difference between a lit world and a flat one.
+--
+-- Platinum's map display lists issue NORMAL (0x21) and NOT COLOR (0x20),
+-- because the DS's geometry engine computes each vertex's colour in hardware
+-- from the normal and the area light.  `Gen4Nsbmd` decodes those normals
+-- correctly and puts them on every vertex table.  THIS FILE THEN THREW THEM
+-- AWAY, one step before the only consumer that wants them -- so every vertex
+-- in the cache kept the decoder's white default and every polygon in Sinnoh
+-- drew at full brightness with no directional term.  Measured over Route 201's
+-- chunk 5, Twinleaf's chunk 0 and the `t1_h01` house: 4,794 vertices, ONE
+-- distinct colour between them, 255,255,255.
+--
+-- The normal is stored as three signed bytes rather than the cartridge's
+-- 10 bits per axis.  That is 1/127 of precision on a unit vector, which is
+-- four times coarser than the source and about two hundred times finer than
+-- anything a diffuse term does with it; it keeps the vertex even, and it keeps
+-- the side-car under 21 MB.
+--
+-- IT IS NOT BAKED INTO THE COLOUR HERE, deliberately.  The light is per MAP
+-- and the geometry is SHARED -- one buildings set of 590 models serves every
+-- town, and one terrain chunk is drawn by every map that reaches it (Route
+-- 201's own log shows chunk 5 baked by six ground instances at once).  Baking
+-- one map's light into shared geometry gives every other reader the wrong one,
+-- so the normal travels and `src/render/Gen4Shade.lua` lights it where the map
+-- -- and therefore the member and the time band -- is known.
 
 local Gen4ModelPack = {}
 
-Gen4ModelPack.VERTEX_BYTES = 14
+Gen4ModelPack.VERTEX_BYTES = 16
 Gen4ModelPack.INDEX_BYTES = 2
 Gen4ModelPack.FX16 = 4096
 -- Texture coordinates arrive in sixteenths of a texel; they are stored that
@@ -40,6 +67,7 @@ Gen4ModelPack.FX16 = 4096
 Gen4ModelPack.UV_UNITS = 16
 
 local floor, char, concat = math.floor, string.char, table.concat
+local abs = math.abs
 
 -- A signed 16-bit value, little endian, clamped rather than wrapped.
 --
@@ -62,6 +90,32 @@ local function u16(value)
   if value < 0 then value = 0 end
   if value > 65535 then value = 65535 end
   return char(value % 256, floor(value / 256))
+end
+
+-- A unit-vector axis as one signed byte, two's complement.
+--
+-- Clamped to +-127 rather than +-128 so that decoding is a plain divide by 127
+-- and +1 and -1 are exactly representable; an asymmetric range would make one
+-- of the two ends land a step short and put a systematic tilt on every normal
+-- that points along it.
+local function s8(value)
+  local v = tonumber(value) or 0
+  -- ROUND HALF AWAY FROM ZERO, and do it through the magnitude.
+  --
+  -- The obvious spelling -- `floor(v * 127 - 0.5)` on the negative branch --
+  -- is wrong, and wrong by a whole step rather than a rounding hair:
+  -- `floor(-72.001)` is -73, not -72, so subtracting the half before flooring
+  -- pushes every negative axis one further out.  A probe over 2,001 values
+  -- reported a worst round-trip error of 0.0118 against a half-step of
+  -- 0.0039 -- three times the format's own precision, on half the normals in
+  -- the cartridge.
+  local n = floor(abs(v) * 127 + 0.5)
+  if v < 0 then n = -n end
+  v = n
+  if v > 127 then v = 127 end
+  if v < -127 then v = -127 end
+  if v < 0 then v = v + 256 end
+  return char(v)
 end
 
 local function u8(value)
@@ -110,7 +164,8 @@ function Gen4ModelPack.pack(model)
         s16(v.z * Gen4ModelPack.FX16),
         s16(v.u * Gen4ModelPack.UV_UNITS),
         s16(v.v * Gen4ModelPack.UV_UNITS),
-        u8(v.r), u8(v.g), u8(v.b), char(0),
+        u8(v.r), u8(v.g), u8(v.b),
+        s8(v.nx), s8(v.ny), s8(v.nz),
       })
     end
 
@@ -135,6 +190,12 @@ function Gen4ModelPack.pack(model)
       material = material and material.name or nil,
       texture = material and material.texture or nil,
       palette = material and material.palette or nil,
+      -- The material's polygon alpha, 0..31, and only when it is not fully
+      -- opaque -- 31 is the overwhelming majority and writing it on every
+      -- shape would grow the cache for a value the renderer already defaults
+      -- to.  A shadow polygon is 9.
+      alpha = (material and material.alpha and material.alpha < 31)
+              and material.alpha or nil,
     }
   end
 
@@ -162,6 +223,13 @@ function Gen4ModelPack.unpack(shape)
     return value
   end
 
+  local function s8At(at)
+    local byte = data:byte(at + 1)
+    if not byte then return nil end
+    if byte >= 128 then byte = byte - 256 end
+    return byte / 127
+  end
+
   for i = 0, shape.vertexCount - 1 do
     local at = i * stride
     local r, g, b = data:byte(at + 11, at + 13)
@@ -172,6 +240,7 @@ function Gen4ModelPack.unpack(shape)
       u = s16At(at + 6) / Gen4ModelPack.UV_UNITS,
       v = s16At(at + 8) / Gen4ModelPack.UV_UNITS,
       r = (r or 255) / 255, g = (g or 255) / 255, b = (b or 255) / 255,
+      nx = s8At(at + 13), ny = s8At(at + 14), nz = s8At(at + 15),
     }
   end
 
@@ -194,6 +263,12 @@ end
 -- in, to the precision the format holds.  The tolerance is half a fixed-point
 -- step, because that is the only rounding this does; anything bigger is a bug
 -- rather than a representation.
+-- One signed byte holds a unit axis to 1/127, so half a step is the most a
+-- correct round trip can move it.  Written out rather than folded into the
+-- position tolerance because the two formats are different and a shared number
+-- would be the loosest of the pair.
+local NORMAL_TOLERANCE = 0.5 / 127 + 1e-9
+
 function Gen4ModelPack.verify(model, packed)
   local tolerance = 0.5 / Gen4ModelPack.FX16
   for i, shape in ipairs(model.shapes) do
@@ -211,6 +286,23 @@ function Gen4ModelPack.verify(model, packed)
         if math.abs(v[axis] - w[axis]) > tolerance then
           return false, ("shape %q vertex %d %s: %f in, %f out")
             :format(shape.name, k, axis, v[axis], w[axis])
+        end
+      end
+      -- THE NORMAL ROUND-TRIPS TOO, at the precision one signed byte holds.
+      -- Checked for the reason the positions are: a packer that dropped this
+      -- field is exactly what this format change exists to undo, and a
+      -- round-trip that does not look at it would not have noticed the first
+      -- time either.
+      for _, axis in ipairs({ "nx", "ny", "nz" }) do
+        local inValue = tonumber(v[axis]) or 0
+        local outValue = w[axis]
+        if outValue == nil then
+          return false, ("shape %q vertex %d %s was not packed")
+            :format(shape.name, k, axis)
+        end
+        if math.abs(inValue - outValue) > NORMAL_TOLERANCE then
+          return false, ("shape %q vertex %d %s: %f in, %f out")
+            :format(shape.name, k, axis, inValue, outValue)
         end
       end
     end

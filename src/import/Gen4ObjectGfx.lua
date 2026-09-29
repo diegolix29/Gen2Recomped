@@ -37,10 +37,15 @@
 --
 -- AN ID THAT IS NOT IN THE TABLE IS NOT A MISSING SPRITE.  427 of the map
 -- objects carry one, and they are the signposts (91-96), berry soil (100) and
--- the thirteen VAR_0..VAR_C slots (101-113) -- objects with no billboard of
--- their own, because a signpost is part of the map and a VAR_ slot is
--- substituted at runtime the way Gen 2 substitutes its $F0+ sprites.  Those
--- return nil with a REASON, not a member.
+-- the thirteen VAR_0..VAR_C slots (101-113) -- objects with no BILLBOARD of
+-- their own.  Those return nil with a REASON, not a member.
+--
+-- NO BILLBOARD IS NOT NO PICTURE, and reading it that way is what left every
+-- sign in Sinnoh invisible.  A signpost is a 3D MODEL in a second archive,
+-- reached through a second table; see `readModels` below for how it is found
+-- and for the measurement that killed the old "part of the map" reason.  A
+-- VAR_ slot really is substituted at runtime, the way Gen 2 substitutes its
+-- $F0+ sprites, and the berry soil really does own no picture.
 
 local Gen4ObjectGfx = {}
 
@@ -150,12 +155,128 @@ function Gen4ObjectGfx.read(data, memberCount)
   return out, n
 end
 
+-- THE SECOND TABLE: THE OBJECTS THAT ARE MODELS.
+--
+-- Reported from play: *"signs also still dont appear ... i cant walk through it
+-- but theres nothing rendered"*, with the sign's TEXT reading correctly -- so
+-- the script and the collision were right and only the art was missing.
+--
+-- The reason recorded below USED TO SAY a signpost is "part of the map".  It is
+-- not, and Twinleaf Town is the counter-example: its chunk carries four
+-- buildings each paired with model 67 `t1_door1` -- FOUR DOORS, nearest one 123
+-- units (7.7 tiles) from the sign -- and all nineteen of its mesh shapes are
+-- terrain materials (tree01, ngrass, nhana, imped, nsand, hage, seaside3,
+-- conttree_b/t, tshadow, lake, puddle_b, s_snow*).  Its 32-model prop allow-list
+-- holds no signpost and no mailbox; `kanban01` and `fs_kanban` exist in
+-- build_model but are not in this area's list.  The art is not in the map.
+--
+-- Signs are ORDINARY OBJECT EVENTS -- Twinleaf places four (91, 92, 92, 94) and
+-- the cartridge has 212 placements of 91-96 across 65 event entries.  The
+-- sprite table above genuinely has no row for them: it goes gfx 90 -> member 88
+-- and then straight to gfx 97 -> member 91.  So "no sprite" is CORRECT and
+-- "part of the map" was the wrong reason for it.
+--
+-- What draws them is a second, nine-row table of the same { id, member } shape,
+-- and its member column indexes A DIFFERENT ARCHIVE -- `data/mmodel/fldeff.narc`
+-- (201 members), not mmodel and not build_model:
+--
+--   91 map_signpost          -> 69  board_a      94 arrow_signpost -> 72 board_d
+--   92 mailbox               -> 70  board_b      95 gym_signpost   -> 73 board_e
+--   93 signboard             -> 71  board_c      96 trainer_tips   -> 74 board_f
+--   183 -> 79 book           209 -> 110 door2    262 -> 149 rotomwall
+--
+-- All nine are BMD0.  Every row landing on a sensibly named model is what makes
+-- the table trustworthy; a member column of plausible numbers would not be.
+--
+-- A NEAR-MISS KEPT ON PURPOSE.  mmodel.narc has 470 members of which 50 are
+-- never named by the 440-row table, and members 429-434 are ALSO called
+-- `board_a`..`board_f`.  Six boards for six ids is a tidy story and it is WRONG:
+-- no table anywhere in overlay 5 contains 429..434, at any stride.  That was
+-- checked before it was believed, and it is written down so the next reader does
+-- not have to spend the same hour on it.
+--
+-- gfx 118 (`snowball`) is NOT in this table even though it is listed as a
+-- map_prop below, so it is reached some other way and this does not cover it.
+Gen4ObjectGfx.MODEL_ARCHIVE = "/data/mmodel/fldeff.narc"
+Gen4ObjectGfx.MODEL_MEMBERS = 201
+
+-- FOUND BY A RULE THAT CAN REJECT, not by the offset it happens to sit at.
+--
+-- Three places in overlay 5 carry the run 91,92,93,94,95,96 at stride 8, so the
+-- ids alone do NOT identify the table -- that is exactly the almost-true
+-- invariant the comment on `find` warns about.  Requiring the member column to
+-- be in range AND strictly ascending cuts it to ONE offset in the whole overlay
+-- (0x2F4B0 on USA Rev 1).  The two rejected candidates fail on the member
+-- column, which is the half that carries the meaning: one has 35,631,104 six
+-- times over and the other has a constant 2.
+function Gen4ObjectGfx.findModels(data, memberCount)
+  if type(data) ~= "string" then return nil end
+  memberCount = memberCount or Gen4ObjectGfx.MODEL_MEMBERS
+  local found = nil
+  for at = 0, #data - 48, 4 do
+    local ok = true
+    for row = 0, 5 do
+      if u32(data, at + row * 8) ~= 91 + row then ok = false break end
+    end
+    if ok then
+      local last, good = -1, true
+      for row = 0, 5 do
+        local member = u32(data, at + row * 8 + 4)
+        if member == nil or member >= memberCount or member <= last then
+          good = false
+          break
+        end
+        last = member
+      end
+      -- Two offsets satisfying this would mean the rule stopped identifying the
+      -- table, so say so rather than taking the first.
+      if good then
+        if found then return nil end
+        found = at
+      end
+    end
+  end
+  return found
+end
+
+-- readModels(overlayData) -> { [graphicsId] = fldeff member }, rowCount
+--
+-- The table has no 0xFFFF terminator of its own: it ends where the ids stop
+-- being ones this cartridge uses for model objects.  So it is read while both
+-- columns stay in range and the ids do not repeat, and it stops at the first row
+-- that fails -- which on USA Rev 1 is the `{17, 18}` that is the next function's
+-- code.  Nine rows is what that yields.
+function Gen4ObjectGfx.readModels(data, memberCount)
+  memberCount = memberCount or Gen4ObjectGfx.MODEL_MEMBERS
+  local at = Gen4ObjectGfx.findModels(data, memberCount)
+  if not at then
+    return nil, "the object-model table was not found in this overlay"
+  end
+  local out, n, off, seen = {}, 0, at, {}
+  while n < 64 do
+    local id, member = u32(data, off), u32(data, off + 4)
+    if id == nil or member == nil then break end
+    -- An id past the highest row of the sprite table, or a member past the
+    -- archive, is code rather than a row.
+    if id == Gen4ObjectGfx.TERMINATOR or member >= memberCount then break end
+    if seen[id] or id < 91 then break end
+    seen[id] = true
+    out[id] = member
+    n = n + 1
+    off = off + 8
+  end
+  if n == 0 then return nil, "the object-model table decoded no rows" end
+  return out, n
+end
+
 -- WHY AN ID CAN HAVE NO ROW.  Recorded as a reason rather than as a failure,
 -- because "this object has no billboard" and "this lookup is broken" must not
 -- look the same in the index.
 Gen4ObjectGfx.NO_SPRITE = {
-  [91] = "signpost", [92] = "signpost", [93] = "signpost",
-  [94] = "signpost", [95] = "signpost", [96] = "signpost",
+  -- "model", not "signpost": the reason a caller needs is WHERE THE ART IS,
+  -- and these six have one -- board_a..board_f in fldeff.narc.
+  [91] = "model", [92] = "model", [93] = "model",
+  [94] = "model", [95] = "model", [96] = "model",
   -- The soil is the PLANTING SPOT.  What gets drawn on it is one of the berry
   -- ids above 4095, chosen by which berry is in it and how grown it is, so the
   -- soil itself owning no picture is correct rather than missing.
@@ -163,8 +284,10 @@ Gen4ObjectGfx.NO_SPRITE = {
   -- Map geometry or their own code, not a billboard: the Snowpoint snowball
   -- you push, the Elite Four doors, a readable book, the wall across Rotom's
   -- room.  35 objects between them.
-  [118] = "map_prop", [183] = "map_prop",
-  [209] = "map_prop", [262] = "map_prop",
+  -- 183, 209 and 262 are rows of the MODEL table below; 118 is not, and is
+  -- still reached by something this file has not found.
+  [118] = "map_prop", [183] = "model",
+  [209] = "model", [262] = "model",
 }
 -- VAR_0 .. VAR_C: thirteen slots whose art is substituted at run time, exactly
 -- the way Gen 2 substitutes its $F0+ sprites.  A daily trainer in a Pokemon

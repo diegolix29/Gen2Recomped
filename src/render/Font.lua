@@ -956,8 +956,9 @@ local function gen4DialogueBox(rec, tx, ty, tw, th)
   if not (img and q) then return Font.drawBox(tx, ty, tw, th) end
   -- Six columns is the minimum that has one of each; below that there is no
   -- arrangement of these tiles that is a box, and the drawn rectangle is
-  -- honest where a squashed frame would not be.
-  if tw < 6 or th < 3 then return Font.drawBox(tx, ty, tw, th) end
+  -- honest where a squashed frame would not be.  The rectangle GROWS by three
+  -- columns on the way out (see below), so three is what has to arrive.
+  if tw < 3 or th < 3 then return Font.drawBox(tx, ty, tw, th) end
 
   local count = rec.count or 1
   local frame = 1
@@ -970,15 +971,48 @@ local function gen4DialogueBox(rec, tx, ty, tw, th)
   end
   local row0 = (frame - 1) * 18
 
+  -- !! THE COMMENT ABOVE AND THE CODE BELOW USED TO DISAGREE, and the comment
+  -- was the one that was right.
+  --
+  -- It says the box "reaches one tile past the left of the rectangle it is
+  -- given and two past the right".  The loop did not: it drew strictly inside
+  -- [tx, tx + tw), so the whole eighteen-tile pattern was squeezed into the
+  -- port's rectangle and the two caps landed three columns in from where the
+  -- cartridge puts them.
+  --
+  -- DrawMessageBoxFrame (pokeplatinum src/render_window.c) is the arithmetic,
+  -- and it is written around the WINDOW -- the text interior -- not around the
+  -- frame:
+  --
+  --     +0 at x-2   +1 at x-1   +2 across [x, x+width)   +3 at x+width
+  --     +4 at x+width+1   +5 at x+width+2
+  --
+  -- Two tiles of cap on the left, THREE on the right.  Every rect in this
+  -- engine is the port's convention instead -- interior plus one tile of
+  -- border on each side, because that is what a nine-slice needs -- so a
+  -- caller hands over tx = interior - 1 and tw = interior + 2.  Converting:
+  --
+  --     cartridge leftmost  = interior - 2 = tx - 1
+  --     cartridge rightmost = interior + width + 2 = tx + tw + 1
+  --
+  -- which is tw + 3 columns starting one to the left.  Sinnoh's field box is
+  -- the case that proves it: the window is (2, 19) 27x4, the theme turns that
+  -- into tx = 1, tw = 29, and tx - 1 = 0 with tx + tw + 1 = 31 is the full
+  -- thirty-two-tile width of the DS screen -- which is exactly how wide
+  -- Platinum's message box is.
+  --
+  -- The ROWS were already right (top row, repeated middle, bottom row over
+  -- ty .. ty + th - 1), so they are untouched.
+  local cols, left = tw + 3, tx - 1
   love.graphics.setColor(1, 1, 1, 1)
   for row = 0, th - 1 do
     local base = (row == 0 and 0) or (row == th - 1 and 12) or 6
     local y = (ty + row) * 8
-    for col = 0, tw - 1 do
+    for col = 0, cols - 1 do
       local k = (col == 0 and 0) or (col == 1 and 1)
-        or (col == tw - 3 and 3) or (col == tw - 2 and 4)
-        or (col == tw - 1 and 5) or 2
-      love.graphics.draw(img, q[row0 + base + k], (tx + col) * 8, y)
+        or (col == cols - 3 and 3) or (col == cols - 2 and 4)
+        or (col == cols - 1 and 5) or 2
+      love.graphics.draw(img, q[row0 + base + k], (left + col) * 8, y)
     end
   end
 end

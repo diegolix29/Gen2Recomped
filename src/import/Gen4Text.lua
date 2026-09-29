@@ -2970,7 +2970,22 @@ Gen4Text.CHARS = {
   [0x0D63] = "쎼",
   [0x0D64] = "쓔",
   [0x0D65] = "쬬",
-  [0x25BC] = "\r",
+  -- WAIT FOR THE PLAYER, THEN SCROLL -- and `TextBox` spells that "\v".
+  --
+  -- This was "\r", which is not one of the box's markers at all, so it fell
+  -- through as an ordinary character: a stray glyph on screen and, worse, no
+  -- wait.  Reported from play as *"still seeing weird \ symbols in text and
+  -- the text is auto scrolling instead of having me hit a when the box is
+  -- filled"* -- one character, both symptoms.
+  --
+  -- It is not a small one: **13,576 occurrences across 7,407 of the
+  -- cartridge's 46,053 strings**, which is every line long enough to need a
+  -- second box.  Mom's own line in Twinleaf carries three.
+  --
+  -- The box's three markers are "\n" (second line), "\v" (wait, scroll one
+  -- line up) and "\f" (wait, clear the box).  0xE000 and 0x25BD were already
+  -- right; this is the third.
+  [0x25BC] = "\v",
   [0x25BD] = "\f",
   [0xE000] = "\n",
 }

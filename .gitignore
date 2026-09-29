@@ -9,6 +9,11 @@ assets/generated/
 *.gba
 *.sav
 *.z64
+# .nds was missing until Gen 4 arrived: this block was written for the
+# Game Boy and GBA carts and never extended when Platinum support began,
+# so a Platinum dump sat in the working tree UNIGNORED -- untracked, but one
+# `git add -A` away from putting a copyrighted cartridge in a public repo.
+*.nds
 
 # Inverted Mew sprites the example mod ships: tools/generate_example_mod_sprite.py
 # derives them from an imported cache, so they are ROM content. mod.card already

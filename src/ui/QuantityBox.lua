@@ -50,7 +50,9 @@ function QuantityBox:draw()
   love.graphics.setColor(0, 0, 0, 1)
   local s = ("×%02d"):format(self.qty) -- the multiply glyph tile
   if self.unitPrice then
-    s = s .. (" ¥%d"):format(self.qty * self.unitPrice)
+    -- The sign is the cartridge's, not Kanto's: see GameVersion.moneySign.
+    local sign = require("src.core.GameVersion").moneySign()
+    s = s .. (" %s%d"):format(sign, self.qty * self.unitPrice)
   end
   Font.draw(s, (tx + 1) * 8, (ty + 1) * 8)
   love.graphics.setColor(1, 1, 1, 1)

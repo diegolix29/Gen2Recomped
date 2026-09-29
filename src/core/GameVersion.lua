@@ -1038,6 +1038,35 @@ function GameVersion.isGen4(id)
   return GameVersion.generation(id) == 4
 end
 
+-- THE MONEY SIGN THIS CARTRIDGE'S FONT DRAWS, which is a different character
+-- in every generation and is never a dollar.
+--
+--   * Gen 1 and Gen 2 spell it $F0, which `charmap.asm` gives as U+00A5.
+--   * Gen 3 has its own POKe DOLLAR glyph at U+20BD.
+--   * PLATINUM'S IS A LITERAL ASCII "$".  Its own format string is
+--     `${STRVAR_1 55, 5, 0}`; the extracted charmap puts "$" at code 424; and
+--     glyph 424 on `font_message_sheet.png` is the Poke-dollar, a P with a
+--     double stroke, confirmed by looking at it.
+--
+-- WHY THE FALLBACK IS THE CALLER'S RATHER THAN THIS FUNCTION'S.  Before this
+-- existed the engine printed money in five places and did not agree with
+-- itself: `ShopMenu` used U+20BD on Gen 3 and U+00A5 elsewhere, while
+-- `QuantityBox`, `ListMenu`, `BagMenu` and `BattleState` used U+00A5 for
+-- everything -- so Hoenn already showed two different signs on two screens.
+-- This answers only the Gen 4 question and hands every other version straight
+-- back what the caller was already printing, so nothing below Sinnoh changes
+-- by one pixel.  Making the four agree on Gen 3 is a real fix and a separate
+-- one; it needs a Hoenn screen looked at, not an assumption.
+--
+-- WITHOUT THIS, Sinnoh fell through to U+00A5, which the Gen 4 charmap maps
+-- to code 274 -- the JAPANESE YEN KANJI.  Every price in the Sinnoh mart read
+-- "\u5186 300", and so did the bag, the quantity box and the prize money
+-- after a battle.
+function GameVersion.moneySign(fallback)
+  if GameVersion.isGen4() then return "$" end
+  return fallback or "\194\165"
+end
+
 -- Does this cartridge have a second screen?  Asked of the VERSION rather than
 -- computed from the generation, because "Gen 4" and "has two screens" are not
 -- the same claim and the field code should say which one it means.

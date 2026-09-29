@@ -12,6 +12,14 @@ local BagMenu = {}
 local Bag = require("src.inventory.Bag")
 local Strings = require("src.core.Strings")
 
+-- The money line under the bag, with the cartridge's own sign -- Kanto's
+-- U+00A5 is the JAPANESE YEN KANJI in Platinum's font.  See
+-- GameVersion.moneySign.
+local function moneyLine(game)
+  local sign = require("src.core.GameVersion").moneySign()
+  return ("%s%d"):format(sign, (game.save or {}).money or 0)
+end
+
 -- Gen2's pack has four pages (engine/items/pack.asm): ITEM, BALL, KEY ITEM
 -- and TM/HM, switched with LEFT/RIGHT.  The pocket lives on the item record
 -- (ItemAttributes byte 5); a cache from before that was extracted -- and
@@ -860,8 +868,8 @@ function BagMenu.new(game, opts)
       local def = row and row.value and game.data.items[row.value]
       local text = def and def.description
       if type(text) == "string" and text ~= "" then return text end
-      return ("¥%d"):format(game.save.money)
-    end or ("¥%d"):format(game.save.money),
+      return moneyLine(game)
+    end or moneyLine(game),
     -- B returns to the start menu when the bag was opened from it
     onCancel = opts.onCancel,
     -- SELECT reorders items like the original bag (swap_items.asm).  A

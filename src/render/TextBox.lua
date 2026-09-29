@@ -62,8 +62,20 @@ function TextBox.new(game, text, onDone, opts)
   self.boxTw = box.tw or BOX_TW
   self.boxTh = box.th or BOX_TH
   self.maxCols = opts.maxCols or box.maxCols or MAX_COLS
+  -- main adds the choice-box flag; Platinum widened the maxPixels lookup. Both
+  -- are kept: they are different fields and neither replaces the other.
   self.choiceBox = opts.choiceBox or box.choiceBox
-  self.maxPixels = tonumber(opts.maxPixels)
+  -- ...AND THE THEME'S PIXEL BUDGET, WHICH WAS BEING IGNORED.
+  --
+  -- `maxCols` wraps by COUNTING CHARACTERS, which is right for a fixed-width
+  -- Game Boy face and meaningless for a proportional one -- so Data.lua
+  -- publishes `maxPixels` beside it for the DS box and says in its own comment
+  -- that "maxPixels is the part that actually stops the spill". This line only
+  -- read `opts`, so the theme's copy never reached the wrapper and the budget
+  -- fell back to maxCols * 8. On Platinum the two happen to be the same 216,
+  -- which is why nothing was visibly wrong and the fault stayed latent -- but
+  -- any theme whose two fields disagree wraps to the wrong one.
+  self.maxPixels = tonumber(opts.maxPixels) or tonumber(box.maxPixels)
   self.letterSpacing = tonumber(opts.letterSpacing) or 0
   -- Most of the shared TextBox timing still models the GB/GBC printer, whose
   -- retained line moves by one 8px tile.  GBA printers scroll by the active

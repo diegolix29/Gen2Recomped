@@ -74,9 +74,35 @@ end
 -- into these cells so that the two casts can see each other (see
 -- OverworldState:updateCast).  A mover meeting its own proxy is meeting
 -- itself, which is why the owner is tested alongside the entity.
+-- AN OBJECT A SCRIPT TOOK OFF THE MAP IS NOT STILL STANDING THERE.
+--
+-- `hidden` was read by the DRAW pass and by nothing else, so a script's
+-- `RemoveObject` made a character invisible and left their tile blocked for
+-- the rest of the session.  Reported from play: *"he greets me at the door but
+-- it won't let me in his house after"* -- Twinleaf's rival stands ON the warp
+-- into his own house (the cartridge puts him there so he blocks it during his
+-- scene), and the scene ends by removing him.  He went invisible; the doorway
+-- stayed shut.  The same wall answered A, which is where the log's
+-- "no text for Twinleaf Town/nil" came from: pressing A at the door talked to
+-- somebody who was no longer in the game.
+--
+-- BURIED IS THE EXCEPTION AND IT IS NOT AN EDGE CASE.  Route 113's trainers
+-- are under the ash: invisible and genuinely in the way, and they rise when
+-- they spot you.  `buried` is kept precisely so "a script hid this" can be
+-- told from "this is covered up", so it is the one hidden thing that still
+-- blocks.
+--
+-- The engine already took this view in one place -- a seam proxy is built with
+-- `passable = body.passable or body.hidden` -- so this is that rule applied
+-- where it was missing rather than a new one.
+local function entityAbsent(e)
+  return e.hidden and not e.buried
+end
+Collision.entityAbsent = entityAbsent
+
 function Collision.occupied(entities, cx, cy, ignore)
   for _, e in ipairs(entities) do
-    if e ~= ignore and e.of ~= ignore and not e.passable then
+    if e ~= ignore and e.of ~= ignore and not e.passable and not entityAbsent(e) then
       if entityBlocks(e, cx, cy) then
         return e
       end

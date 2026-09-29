@@ -437,7 +437,8 @@ function ListMenu:draw()
     -- right-aligned on its middle row
     Font.drawBox(11, 0, 9, 3)
     love.graphics.setColor(0, 0, 0, 1)
-    local money = ("¥%d"):format(self.money and self.money() or 0)
+    local sign = require("src.core.GameVersion").moneySign()
+    local money = ("%s%d"):format(sign, self.money and self.money() or 0)
     Font.draw(money, 152 - Font.width(money), 8)
   end
   -- The footer may be a FUNCTION of the highlighted row, not just a string.

@@ -57,8 +57,25 @@ Gen4Events.STRIDES = {
   bgEvents = 20, objectEvents = 32, warpEvents = 12, coordEvents = 16,
 }
 
--- A warp whose destination is this goes nowhere; six in the cartridge do.
+-- !! A WARP WHOSE DESTINATION IS THIS DOES NOT GO NOWHERE, and the six in the
+-- cartridge that carry it are the six LIFT CARS.
+--
+-- The comment above the block used to call 4095 a "nowhere sentinel". It is
+-- 0xfff, and field_control.c pairs it with an anchor of 0x100:
+--
+--     if (warpEvent->destWarpID == 0x100) {
+--         GF_ASSERT(warpEvent->destHeaderID == 0xfff);
+--         *nextMap = *(FieldOverworldState_GetSpecialLocation(...));
+--     }
+--
+-- -- a DYNAMIC DESTINATION, resolved from the special location at the moment
+-- the door is taken. Gen 3's MAP_G127_N127 by another spelling.
+--
+-- MEASURED: all six are warp 1 at (3, 6) with anchor 256, in Jubilife TV,
+-- both Hearthome houses, the Veilstone store, the Resort Area and the Vista
+-- Lighthouse. See src/import/Gen4Elevators.lua.
 Gen4Events.NO_DESTINATION = 4095
+Gen4Events.DYNAMIC_ANCHOR = 256
 
 -- Gen 4 variables start here, which is what identified the trigger block.
 Gen4Events.VARIABLE_BASE = 0x4000

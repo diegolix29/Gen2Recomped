@@ -439,9 +439,41 @@ end
 -- where the whole point is that the deck covers the reflection and not the
 -- character.  Both callers get the same answer from the same code, so they
 -- cannot show different frames.
+-- A SHEET THAT SAYS WHICH OF ITS OWN PICTURES FACES WHICH WAY.
+--
+-- STAND/WALK/WALK2 above are the Game Boy's layout, and Gen 1, Gen 2 and Gen
+-- 3 all lay their sheets out that way -- six or nine frames in a fixed order,
+-- with east drawn by mirroring west because the cartridge has no east art.
+-- A Platinum sheet is neither: its frames are in the archive's own order, and
+-- it carries a REAL east side.  Read with the fixed slots it shows a back
+-- view where the southward stand belongs, so the character appears to spin as
+-- it walks.
+--
+-- So a def may carry its own answer.  `facings` is { stand, step, step } per
+-- side in the sheet's own frame numbers, written by the import from the
+-- cartridge's own frame-sequence tables (see src/import/Gen4Facings.lua).
+-- Nothing is mirrored on this path: all four sides are drawn, and mirroring a
+-- real east frame would put the bag on the wrong shoulder.
+--
+-- Exported so a second pipeline can ask the same question rather than
+-- re-deriving it, for the same reason STAND/WALK/WALK2 are.
+function SpriteRenderer.facingFrames(def, facing, walkPhase, stepFlip)
+  local own = def and def.facings
+  local cycle = own and (own[facing] or own.down)
+  if type(cycle) ~= "table" or cycle[1] == nil then return nil end
+  if def.walker and walkPhase == 1 then
+    if stepFlip then return cycle[3] or cycle[2] or cycle[1] end
+    return cycle[2] or cycle[1]
+  end
+  return cycle[1]
+end
+
 function SpriteRenderer:poseFrame(facing, walkPhase, stepFlip)
   -- A sheet with the full nine alternates its two REAL step frames; the
   -- six-frame ones keep the Game Boy's mirror, which is all they can do.
+  -- ...unless the sheet said so itself.  Never flipped: see facingFrames.
+  local own = SpriteRenderer.facingFrames(self.def, facing, walkPhase, stepFlip)
+  if own then return own, false end
   local full = (tonumber(self.def.frames) or 0) >= FULL_WALK_FRAMES
   local stepping = self.def.walker and walkPhase == 1
   local frame

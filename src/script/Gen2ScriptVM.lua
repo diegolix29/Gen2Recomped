@@ -2277,9 +2277,28 @@ L.itemnotify = function() end
 -- Gen 3 cache loaded here would be lowered against Gen 2's opcode names --
 -- every one of which would miss, leaving 518 silent maps and no error.  The
 -- extractor stamps its own name; that is the discriminator.
+-- A POOL THIS VM DOES NOT OWN IS NOT THIS VM'S TO LOWER.
+--
+-- The test is a REFUSAL LIST rather than an allow list, and deliberately: a
+-- Gen 1 cache and a hand-built developer pool both carry no `source` at all,
+-- and demanding one would silently unhook every Kanto script.  So anything
+-- unlabelled is still Gen 2's.
+--
+-- GEN 4 WAS MISSING FROM THAT LIST, and the cost was not theoretical.  A
+-- Platinum cache walked straight in: this VM lowered Platinum's decoded
+-- instructions with Gen 2 semantics and attached the result to 478 maps as
+-- their SCENE and coord-event wiring -- "gen2 script vm: 478 maps attached
+-- (scenes)" in a Platinum log, where the number should be zero and the line
+-- should say gen4.  What the player got was Sinnoh running Johto's
+-- interpretation of its own bytes on every map entry and every step.
+local FOREIGN_POOLS = {
+  RomExtractorGen3 = true,
+  RomExtractorGen4 = true,
+}
+
 local function store(data)
   local pool = data and data.map_scripts
-  if pool and pool.source == "RomExtractorGen3" then return nil end
+  if pool and FOREIGN_POOLS[pool.source] then return nil end
   return pool or nil
 end
 

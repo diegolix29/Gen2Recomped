@@ -200,21 +200,80 @@ local GEN4_ALIASES = {
   BagMenu = { id = "Gen4BagMenu",
               opts = { onCancel = true, battle = true, onPick = true,
                        pick = true, pocket = true } },
-  -- THE FIELD PARTY MENU, and only that.  `battle` is deliberately absent:
-  -- every in-battle push carries it, and the Gen 3 screen already answers
-  -- SHIFT, forced switches and an item's target out of Emerald's own words.
-  -- So are `tmhm`, `chooseOrder` and `onOrder`, each of which needs words this
-  -- cartridge's cache does not carry.  A declined push is Hoenn's screen doing
-  -- the job; a served one that cannot finish it is a dead end.
+  -- THE PARTY MENU, IN A BATTLE TOO.
+  --
+  -- `battle` used to be deliberately absent here, on the reasoning that a
+  -- declined push would be served by the Gen 3 screen, which already answers
+  -- SHIFT, forced switches and an item's target. IT WOULD NOT. Look at
+  -- `resolveId` below: once the Gen 4 alias declines it reaches
+  -- `if not isGen3(game) then return id, arg end` and hands back the GAME BOY
+  -- id, because a Platinum cache is not a Hoenn one. So every in-battle
+  -- POKeMON press on Platinum opened KANTO'S party list -- reported from play,
+  -- and the same shape as the keyboard and the Pokedex before it.
+  --
+  -- What made serving it honest rather than a dead end is that Gen4PartyMenu's
+  -- submenu now offers SEND OUT in a battle instead of SWITCH; whether the
+  -- member MAY go out is BattleState's own onSwitch, which already rejects an
+  -- egg, a fainted member and one already on the field.
+  --
+  -- `tmhm` IS SERVED NOW, AND ITS ABSENCE WAS NOT COSMETIC.
+  --
+  -- The note here used to say it needed words the cache does not carry. It
+  -- carries them: bank 453 has ABLE!, UNABLE!, LEARNED and "Teach which
+  -- Pokemon?", and Gen4Menus.PARTY_BANK says how that was settled. What the
+  -- absence actually cost was worse than a wrong-looking screen -- the push
+  -- was declined, `resolveId` handed back the GAME BOY id, and whichever
+  -- screen served it then called ItemEffects.use, which scans
+  -- `speciesDef.tmhm` with a bare ipairs. A Gen 4 cache had no such list. SO
+  -- USING A TM IN SINNOH RAISED. Both halves are fixed: the extractor unpacks
+  -- the cartridge's machine mask into that list, and this alias stops
+  -- declining the push.
+  --
+  -- STILL ABSENT, and the reason is now a different one: `chooseOrder` and
+  -- `onOrder` are pushed by ONE caller in the whole port, Gen3Commands'
+  -- chooseParty, which is a Gen 3 script special. NOTHING ON A GEN 4 CACHE
+  -- PUSHES THEM, so listing them here would serve a push that never arrives.
+  -- (The words are there too -- 154 ENTER, 155 NO ENTRY, 169..174
+  -- FIRST..SIXTH -- so the day a Gen 4 command needs it, only the screen has
+  -- to be written.)
   PartyMenu = { id = "Gen4PartyMenu",
                 opts = { onCancel = true, onSwitch = true, pickOnly = true,
-                         forceSwitch = true, keepOpen = true } },
+                         forceSwitch = true, keepOpen = true,
+                         battle = true, tmhm = true } },
   -- The summary is pushed with the Pokemon itself, which `servedBy` reads as
   -- `mon`.  `choose` -- the move-learn screen asking which move to forget --
   -- is NOT listed: that page needs the cartridge's own forget flow, and until
   -- it exists the Gen 3 screen answers it.
   SummaryMenu = { id = "Gen4SummaryMenu",
                   opts = { onCancel = true, mon = true } },
+  -- THE KEYBOARD, which had no entry at all -- so every name the player types
+  -- opened Kanto's, on a Platinum save.  Reported as "the keyboard where you
+  -- type your name or your pokemons nickname is also not correct for gen4
+  -- platinum its falling back to gen1".
+  --
+  -- Every option the Game Boy screen takes is listed, because `servedBy`
+  -- declines a push carrying a key the alias does not name and a naming
+  -- screen is pushed from a dozen places with different halves of this set:
+  -- the intro asks for a player name with `presets`, a nickname prompt passes
+  -- `mon` and `species`, a box rename passes only `default`.
+  NamingScreen = { id = "Gen4NamingScreen",
+                   opts = { title = true, presets = true, maxLen = true,
+                            default = true, onDone = true, kind = true,
+                            species = true, mon = true } },
+  -- THE POKEDEX, which was the last of the four screens reported as "looking
+  -- like gen1 still" without an entry here.  It was left without one on
+  -- purpose: its art composed blank, and a Gen 4 Pokedex drawn on a blank page
+  -- would have been worse than Kanto's.  The `dex` stage composes it now.
+  PokedexMenu = { id = "Gen4Pokedex", opts = { onCancel = true } },
+  -- THE START MENU, which is the other half of the original brief: Platinum's
+  -- own rows and icons, on the MAIN screen by default like every other version
+  -- in this launcher, with a row on OPTIONS to move it to the second screen.
+  --
+  -- `servedBy` sees a bare push with no options at all from the field, which
+  -- is why `opts` is empty rather than absent -- an alias with no opts table
+  -- declines every push that carries one, and the Safari and Bug Contest
+  -- pushes do not carry any either.
+  StartMenu = { id = "Gen4StartMenu", opts = { onCancel = true } },
 }
 
 local function isGen4(game)

@@ -792,7 +792,14 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
     if not target then return "failed", { Strings("It won't have\nany effect.") } end
     local speciesDef = data.pokemon[target.species]
     local ok = false
-    for _, m in ipairs(speciesDef.tmhm) do
+    -- `or {}` BECAUSE A CACHE CAN ARRIVE WITHOUT THE LIST, and this line
+    -- raised when one did. Every Platinum cache written before the Gen 4
+    -- extractor learned to unpack the 128-bit machine mask has `tmLearnset`
+    -- and no `tmhm`, so `ipairs(nil)` took the game down the moment a TM was
+    -- used in Sinnoh. The fallback answer is "cannot learn", which is the safe
+    -- half of the two: a machine that refuses is a stale cache, a machine that
+    -- teaches off an empty list would be teaching anything to anything.
+    for _, m in ipairs((speciesDef and speciesDef.tmhm) or {}) do
       if m == itemDef.machine.move then ok = true break end
     end
     if not ok then
