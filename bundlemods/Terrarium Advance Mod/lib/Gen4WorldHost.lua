@@ -368,7 +368,7 @@ function Host.renderBattle(state, arena, textures, token)
   -- Gen4View / NSBMD chunks live in origin-offset world units. BattleCam
   -- and Stadium cells are map-local. One space for the lens and the actors.
   local worldCam = {
-    eye = { cam.eye[1] + ox, cam.eye[2], cam.eye[3] + oz },
+    eye = { cam.eye[1] + ox, cam.eye[2] + 18, cam.eye[3] + oz },
     focus = { cam.focus[1] + ox, cam.focus[2], cam.focus[3] + oz },
     fov = cam.fov,
     curve = 0,
