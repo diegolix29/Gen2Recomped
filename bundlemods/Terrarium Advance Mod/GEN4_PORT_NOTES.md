@@ -65,7 +65,52 @@ Not verified in a running game: that the battle settings screen (generic
 `Menu`) lays out correctly on Gen 4's 256x192 surface, and the widened panel's
 look. Both are visual.
 
+## 3D battles on Gen 4 (native world + sprite actors)
+
+`lib/Gen4Battle3D.lua`, diverted to from `OverworldBattle.begin` on Gen 4 (the
+voxel arena is never built there: it would replace the game's real world).
+
+- **World:** the engine's own. The battle reports `bgMode() == "world"` so the
+  overworld keeps drawing under it (`Game.drawBaseInStack`), undimmed
+  (`BG_WORLD_DIM = 0`). The engine's 2D field and 2D pics are switched off
+  through `BattleState:drawBattleField` / `drawBattlerPic`, or every Pokemon
+  would draw twice.
+- **Camera:** `Gen4Ground:placeCamera` is wrapped. While staged it aims at the
+  midpoint of the two combatants, looking from behind the player toward the foe;
+  the player's kept orbit/zoom/heading are restored after every call, so the
+  camera is exactly where they left it when the battle ends.
+- **Actors:** the engine's own battle pic (`battle:battlerPic`) stood up as a
+  camera-facing quad on the terrain (`groundY`), drawn through `Gen4Bridge` so it
+  is depth-tested against buildings and trees. Honours the engine's own
+  hidden / fainted / ball-absorb state. SPRITES ONLY: COLOSSEUM and STADIUM rungs
+  draw sprites on Gen 4 (no Gen 4 3D models in this pipeline).
+- **Foe placement:** 3-4 tiles ahead of the player, on walkable cells, within 12
+  units of the player's ground height; tries the player's facing first, then the
+  sides, then behind.
+- **Cast:** NPCs and the player's own sprite are removed from the draw lists for
+  the fight (the Pokemon takes the player's place) and restored afterwards.
+- **`wantsFront` is false on Gen 4:** the camera is behind the player, so the
+  engine's BACK pic is right.
+
+Declines (the standard 2D Sinnoh battle plays, unchanged): default CARTRIDGE
+camera, first person, no clear ground, surfing/water (not walkable cells).
+Works in third person and the numeric CAM TILT rungs.
+
+Known gaps, not verified or not done:
+- Move-animation particles, the thrown ball and the healthboxes are Platinum's
+  2D layers placed for DS screen slots; they are NOT tracked to the 3D actors.
+- The B rungs (discs) and the disc stage are voxel-only; on Gen 4 they play as
+  the world battle.
+- Sprite scale (`SCALE = 0.5` units/pixel), foe distance, zoom and rise are
+  first guesses at the top of the file, untested against a real screen.
+- The player character is hidden for the whole fight, including before the
+  send-out, so that side is empty until the Pokemon appears.
+
 ## Tested vs untested
+
+Also tested with stubs (`texlua`): foe placement and declines, camera override and
+exact restore of the player's look, 2D suppression only for the staged battle,
+actor placement/facing/hidden/fainted handling, cast restore, auto-finish.
 
 Tested (stubbed harness, `texlua`): hook fires before the engine closes the
 canvas; the matrix reaching `Voxel3D` equals `Gen4View:matrix()` exactly; no-op
