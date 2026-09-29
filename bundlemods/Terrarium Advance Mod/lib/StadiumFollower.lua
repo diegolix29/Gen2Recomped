@@ -15,6 +15,7 @@ local StadiumMon = V.require("StadiumMon")
 local Voxel3D = V.require("Voxel3D")
 local ColosseumMon = V.require("ColosseumMon")
 local ColosseumDex = V.require("ColosseumDex")
+local ColosseumDexNames = V.require("ColosseumDexNames")
 
 local StadiumFollower = {}
 
@@ -510,6 +511,54 @@ end
 -- Check if the follower is using sprite fallback
 function StadiumFollower.isUsingSpriteFallback()
   return usingSpriteFallback
+end
+
+-- ------- Species Cycling (386 Pokemon Support)
+
+-- Cycle through Pokemon species for the follower model
+-- dir: 1 for forward (right arrow), -1 for backward (left arrow)
+function StadiumFollower.cycleSpecies(dir)
+  dir = dir or 1  -- Default to forward if no direction specified
+  local current = StadiumFollower.getSpecies() or 0
+  
+  -- Move to next/previous species based on direction
+  local nextDex
+  if dir > 0 then
+    -- Forward (right arrow): count up
+    nextDex = current + 1
+    if nextDex > ColosseumDex.speciesCount then
+      nextDex = 0  -- Disable (back to normal follower)
+    end
+  else
+    -- Backward (left arrow): count down
+    if current == 0 then
+      -- If currently disabled, go to the last species (386)
+      nextDex = ColosseumDex.speciesCount
+    else
+      nextDex = current - 1
+      if nextDex < 0 then
+        nextDex = 0  -- Disable
+      end
+    end
+  end
+  
+  if nextDex == 0 then
+    -- Disable Stadium follower
+    StadiumFollower.setSpecies(nil)
+    print("StadiumFollower.cycleSpecies: Stadium follower disabled")
+  else
+    local shouty = ColosseumDexNames[nextDex]
+    local speciesName = shouty and (shouty:gsub("(%a)([%a]*)", function(first, rest)
+      return first:upper() .. rest:lower()
+    end)) or ("Dex " .. nextDex)
+    
+    local ok = StadiumFollower.setSpecies(nextDex)
+    if ok then
+      print("StadiumFollower.cycleSpecies: Follower set to", speciesName, "(dex", nextDex .. ")")
+    else
+      print("StadiumFollower.cycleSpecies: Failed to load", speciesName)
+    end
+  end
 end
 
 return StadiumFollower

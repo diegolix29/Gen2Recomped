@@ -372,6 +372,14 @@ local followerCountSetting = ModSetting.new(
   { "0", "1", "2", "3", "4", "5", "6" }
 )
 
+-- Party Follower: enable/disable party follower system
+local partyFollowerSetting = ModSetting.new(
+  "partyFollower",
+  "PARTY FOLLOWER",
+  { false, true },
+  { "OFF", "ON" }
+)
+
 -- Forward declaration: the voxel pipeline's update hook (registered below)
 -- calls this, and it is defined further down with the settings it drives.
 -- Declared rather than left global -- a mod writing to _G would leak into
@@ -2484,6 +2492,21 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
   end)
   if okMewtwo and mewtwoRow and not rowExists(mewtwoRow.id) then 
     table.insert(out, mewtwoRow) 
+  end
+
+  -- Pokemon follower row (386 Pokemon support for Stadium/Colosseum models)
+  local okPokemonFollower, pokemonFollowerRow = pcall(function()
+    local StadiumInstall = V.require("StadiumInstall")
+    local Stadium2Install = V.require("Stadium2Install")
+    local ColosseumMon = V.require("ColosseumMon")
+    if StadiumInstall.available() or Stadium2Install.available()
+       or ColosseumMon.available(1, "normal") then
+      return V.require("PlayerModelPick").pokemonFollowerRow()
+    end
+    return nil
+  end)
+  if okPokemonFollower and pokemonFollowerRow and not rowExists(pokemonFollowerRow.id) then 
+    table.insert(out, pokemonFollowerRow) 
   end
 
   -- Character model row (for Colosseum trainer characters)
