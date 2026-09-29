@@ -260,12 +260,26 @@ function M.draw(w, h, pose)
   end
 
   local neighbors = (host == state.map) and (state.neighbors or {}) or {}
-  local terrain, nbMesh = VoxelScene.prefetch(state)
-  if host ~= state.map then
+  local Host = voxel("Gen4WorldHost")
+  local terrain, nbMesh
+  if VoxelScene and VoxelScene.prefetch then
+    terrain, nbMesh = VoxelScene.prefetch(state)
+  end
+  if host ~= state.map and ChunkMesher then
     terrain = ChunkMesher.peek(host, false) or ChunkMesher.peek(host, true) or terrain
     nbMesh = nbMesh or {}
   end
-  if not terrain then return false end
+  if not terrain then
+    if Host and Host.isMap and Host.isMap(host) and Host.renderBattle then
+      local okShot, shot = pcall(Host.renderBattle, state, pocket)
+      if okShot and shot and shot.canvas then
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.draw(shot.canvas, 0, 0)
+        return true
+      end
+    end
+    return false
+  end
 
   local water = ChunkMesher.pair and select(2, ChunkMesher.pair(host, false))
   if not water and ChunkMesher.pair then

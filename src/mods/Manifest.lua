@@ -112,7 +112,7 @@ end
 -- patches is what it patches, and the registry remains the truth once loaded.
 -- `generations`: [1, 2] -- the generations a mod is written for.
 --
--- Validated to the three that exist and sorted, so the set is comparable and
+-- Validated to the generations that exist and sorted, so the set is comparable and
 -- an out-of-range entry is dropped rather than widening the mod's claim.  An
 -- empty or malformed list reads as "unstated" (nil), NOT as "none": a mod that
 -- says nothing intelligible must keep working exactly as it did.
@@ -122,7 +122,7 @@ local function parseGenerations(raw)
   local seen, out = {}, {}
   for _, entry in ipairs(list) do
     local n = tonumber(entry)
-    if n and n % 1 == 0 and n >= 1 and n <= 3 and not seen[n] then
+    if n and n % 1 == 0 and n >= 1 and n <= 4 and not seen[n] then
       seen[n] = true
       out[#out + 1] = n
     end
@@ -331,7 +331,7 @@ function Manifest.validate(raw, path)
     -- The launcher has had per-generation switches since the chips went in;
     -- what it could not know was which generations a mod SUPPORTS, so it could
     -- not default them or refuse.  Declared here, it can do both.  Absent
-    -- means all three, which is every mod that predates the field.
+    -- means all supported generations, which is every mod that predates the field.
     generations = parseGenerations(raw),
     -- Which maps this mod says it touches; see parseMaps. Absent on every mod
     -- that predates the field, which is why nothing may depend on it.

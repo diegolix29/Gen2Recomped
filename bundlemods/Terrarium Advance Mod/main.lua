@@ -139,6 +139,8 @@ end
 local Voxel = V.require("VoxelState")
 local Voxel3D = V.require("Voxel3D")
 local VoxelScene = V.require("VoxelScene")
+local Gen4WorldHost = V.require("Gen4WorldHost")
+V.Gen4WorldHost = Gen4WorldHost
 local TiltShift = V.require("TiltShift")
 local ChunkMesher = V.require("ChunkMesher")
 local WarpPrefetch = V.require("WarpPrefetch")
@@ -638,6 +640,15 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
     -- PIXEL resolution (see sceneSize) so the 3D pass is crisp rather than
     -- a magnified low-res image, while the FX closures keep drawing in
     -- world-pixel units.
+    --
+    -- GEN 4 already HAS a 3D world (NSBMD + Gen4View). Returning a voxel
+    -- canvas would replace that mesh. Decline the pass so the engine draws
+    -- Sinnoh; Gen4WorldHost composites grass/wind/weather onto that camera.
+    if Gen4WorldHost.isState(ctx.state) then
+      Voxel.ready = true
+      Gen4WorldHost.noteFrame(ctx)
+      return nil
+    end
     local sw, sh = sceneSize(ctx)
     local canvas = VoxelScene.render(ctx.state, sw, sh,
                                      ctx.vw, ctx.vh, ctx.paletteFor)
@@ -1763,7 +1774,8 @@ SettingsMenu.define(SETTINGS)
 local HEADROOM = {
   GEN1 = { AIRY = 32, MID = 24, SNUG = 16 },
   GEN2 = { AIRY = 100, MID = 32, SNUG = 24 },
-  GEN3 = { AIRY = 32, MID = 24, SNUG = 16 }
+  GEN3 = { AIRY = 32, MID = 24, SNUG = 16 },
+  GEN4 = { AIRY = 32, MID = 24, SNUG = 16 }
 }
 -- Ceiling.headroom:get() returns the option VALUE (100/50/24), not the
 -- label (AIRY/MID/SNUG). Map both so generation tables can be keyed by name.
@@ -1779,7 +1791,7 @@ local function ceilingGeneration()
   if ok and GameVersion and type(GameVersion.generation) == "function" then
     local okGen, value = pcall(GameVersion.generation)
     local n = okGen and tonumber(value)
-    if n == 1 or n == 2 or n == 3 then return n end
+    if n == 1 or n == 2 or n == 3 or n == 4 then return n end
   end
   return 1
 end
@@ -2738,6 +2750,7 @@ end
 -- where the reasoning for each one is written down. Installed once, here,
 -- so this file keeps naming every engine seam the mod touches.
 OverworldBattle.install()
+pcall(Gen4WorldHost.install)
 
 -- ------- shiny Pokemon (restored from DRAMATIC_SHAPE)
 --
