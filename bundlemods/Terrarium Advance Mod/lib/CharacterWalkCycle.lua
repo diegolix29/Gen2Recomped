@@ -105,14 +105,14 @@ local SIDE_INDEX = (FORWARD_INDEX == 3) and 1 or 3
 -- Swing amplitudes, in radians. Overlay sits on an already-posed idle clip,
 -- so keep the stride small and the sine a little rounded at the peaks.
 local HIP_SWING = 0.2
-local KNEE_BEND = 0.6
+local KNEE_BEND = 5
 local ARM_SWING = 0.4
--- A walk has to plant IN FRONT of the idle pose, not only recover behind
--- it. rotate2 > 0 on a hanging limb pulls toward -forward; strideSign
--- (from the rest-pose feet) flips that into character-front, and this
--- extra fraction of HIP_SWING is added on the swing-forward half so the
--- foot passes the body instead of stopping at the hip plane.
-local STRIDE_FRONT = 0.80
+-- Legs and arms do not share a front bias. (hipSin - LEG_FRONT) is what
+-- finally plants the step ahead of the body; using that same term on the
+-- arms yanked them into a backstroke/climbing pose. Arms keep the opposite
+-- bias so they still reach forward while the same-side leg does.
+local LEG_FRONT = -0.65
+local ARM_FRONT = -0.80
 
 -- A small torso bob riding on top of the leg motion, the way a real walk
 -- bobs down-and-up once per FOOTFALL (twice per full left/right cycle) --
@@ -973,14 +973,10 @@ function M.apply(rig, groupIndex, group, phase, blend, out, posedVertices)
     local b = buckets[vi]
     if b and b.weight > 0 and blend > 0 then
       local hipSin = (b.side < 0) and -hipSinR or hipSinR
-      -- Negative rotate2 is character-front once multiplied by strideSign.
-      -- (hipSin + STRIDE_FRONT) makes the forward peak larger than the
-      -- back peak so a step actually overshoots the idle pose.
-      local stride = (hipSin - STRIDE_FRONT) * b.weight * blend
-      local hipAngle = -strideSign * HIP_SWING * stride
-
+      local w = b.weight * blend
+      local hipAngle = -strideSign * HIP_SWING * (hipSin - LEG_FRONT) * w
       if b.bucket == "arm" then
-        local armAngle = strideSign * ARM_SWING * stride
+        local armAngle = strideSign * ARM_SWING * (hipSin + ARM_FRONT) * w
         up, fwd = rotate2(up, fwd, shoulderY, pivotFwd, armAngle)
       elseif b.bucket == "thigh" or b.bucket == "shin" then
         up, fwd = rotate2(up, fwd, hipY, pivotFwd, hipAngle)
