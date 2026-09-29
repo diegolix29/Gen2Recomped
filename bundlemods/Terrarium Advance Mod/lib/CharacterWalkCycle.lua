@@ -26,16 +26,16 @@
 -- frame (see CharacterNativeAnim.sample / copyPositions), so Wes keeps his
 -- victory body language while only arms/hands and legs/feet stride.
 --
--- Wes is the reference gait (shared HIP_SWING / timing). Every other
--- trainer has a different mesh, so limb membership is per-id in
--- cache/trainers/<id>/walk_overrides.lua -- applied ONLY to this overlay's
--- buckets. That file never replaces model_cache.lua or native_v1 clips.
+-- Wes is the reference gait (shared HIP_SWING / timing). Painted limb
+-- membership for each trainer lives in lib/walk_membership/<id>.lua and is
+-- applied in M.build as the walk overlay only -- never into model_cache or
+-- native_v1. A cache walk_overrides.lua, if present, can still patch on top.
 
 local V = ...
 local TrainerRig = V.require("TrainerRig")
 local GeneratedAssets = V.require("GeneratedAssets")
 
-local M = { version = 8 }
+local M = { version = 9 }
 
 -- ------- tuning constants (generic human-ish proportions + gait feel)
 
@@ -738,14 +738,32 @@ function M.applyOverrideTable(rig, raw)
   return applied
 end
 
+function M.bundledPath(id)
+  return ("lib/walk_membership/%s.lua"):format(tostring(id or ""))
+end
+
+function M.loadBundled(id)
+  if not id or id == "" then return nil end
+  if not (GeneratedAssets and GeneratedAssets.packageLua) then return nil end
+  local raw = select(1, GeneratedAssets.packageLua(M.bundledPath(id)))
+  if type(raw) == "table" then return raw end
+  return nil
+end
+
 function M.applyFromCache(rig, id)
   if not id or id == "" then return 0 end
+  local n = 0
+  local bundled = M.loadBundled(id)
+  if bundled then
+    n = n + M.applyOverrideTable(rig, bundled)
+  end
   local path = M.overridePath(id)
-  local raw = GeneratedAssets and GeneratedAssets.readLua and select(1, GeneratedAssets.readLua(path))
-  if type(raw) ~= "table" then return 0 end
-  local n = M.applyOverrideTable(rig, raw)
+  local extra = GeneratedAssets and GeneratedAssets.readLua and select(1, GeneratedAssets.readLua(path))
+  if type(extra) == "table" then
+    n = n + M.applyOverrideTable(rig, extra)
+  end
   if n > 0 then
-    print("CharacterWalkCycle: applied " .. n .. " painted verts from " .. path)
+    print("CharacterWalkCycle: applied " .. n .. " painted verts for " .. tostring(id))
   end
   return n
 end
