@@ -538,6 +538,17 @@ end
 -- GEN 2 / SHARED NEW HELPERS
 --------------------------------------------------------------------------------
 
+-- Battle stat stage multipliers (data/battle/stat_modifiers.asm): stages
+-- -6..+6 map to N/D pairs 25/100 .. 400/100.
+local STAGE = {
+  [-6] = { 25, 100 }, [-5] = { 28, 100 }, [-4] = { 33, 100 }, [-3] = { 40, 100 },
+  [-2] = { 50, 100 }, [-1] = { 66, 100 }, [0] = { 100, 100 }, [1] = { 150, 100 },
+  [2] = { 200, 100 }, [3] = { 250, 100 }, [4] = { 300, 100 }, [5] = { 350, 100 },
+  [6] = { 400, 100 },
+}
+
+Damage.MAX_STAT_VALUE = 999
+
 function Damage.stageMultiplier(stage)
   local entry = STAGE[math.max(-6, math.min(6, stage or 0))]
   return entry[1], entry[2]
