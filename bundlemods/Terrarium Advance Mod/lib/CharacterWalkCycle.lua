@@ -104,16 +104,16 @@ local SIDE_INDEX = (FORWARD_INDEX == 3) and 1 or 3
 
 -- Swing amplitudes, in radians. Overlay sits on an already-posed idle clip,
 -- so keep the stride small and the sine a little rounded at the peaks.
-local HIP_SWING = 0.16
-local KNEE_BEND = 0.07
-local ARM_SWING = 0.18
+local HIP_SWING = 0.2
+local KNEE_BEND = 0.1
+local ARM_SWING = 0.4
 local KNEE_LAG = 0.08
 
 -- A small torso bob riding on top of the leg motion, the way a real walk
 -- bobs down-and-up once per FOOTFALL (twice per full left/right cycle) --
 -- see red_3d_player's own `bounce=0.5-0.5*math.cos(phase*2)` for the same
 -- idea applied to its bone rig.
-local BOB_AMOUNT = 0.016
+local BOB_AMOUNT = 0.1
 
 -- ------- jump pose tuning (see M.applyJump below)
 --
