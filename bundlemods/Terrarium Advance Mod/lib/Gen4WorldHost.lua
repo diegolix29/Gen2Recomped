@@ -315,14 +315,164 @@ function Host.noteFrame(ctx)
   end
 end
 
+local function spriteKey(mapX, mapY)
+  return string.format("%d:%d", math.floor((mapX or 0) + 0.5),
+                       math.floor((mapY or 0) + 0.5))
+end
+
+local function wantFieldActor(e, state)
+  if not e or e.hidden then return false end
+  if e.isFollower or e.wildsFollower or e._wildsFollowerSpecies then
+    return true
+  end
+  local okTag, OC = pcall(V.require, "OverworldColosseum")
+  if okTag and OC and type(OC.getTaggedDex) == "function" then
+    local dex = OC.getTaggedDex(e)
+    if dex then return true end
+  end
+  if e.model3d and e.model3d.mesh then return true end
+  if state and e == state.player then
+    local ok, PM = pcall(V.require, "PlayerModel")
+    if ok and PM and PM.loaded and PM.loaded() then return true end
+  end
+  return false
+end
+
+local function beginFieldVoxel(state, ground)
+  local Voxel3D = V.require("Voxel3D")
+  if not bindVoxelCamera(ground) then return false end
+  local view = ground.view3d
+  local vw = ground.freeW or Host._vw or 1
+  local vh = ground.freeH or Host._vh or 1
+  local player = state and state.player
+  local cx = (player and player.px or 0) + 8 + (ground.offsetX or 0)
+  local cz = (player and player.py or 0) + 8 + (ground.offsetY or 0)
+  if not Voxel3D.beginScene(vw, vh, cx, cz, vw, vh, nil, "current") then
+    return false
+  end
+  if view and type(view.matrix) == "function" then
+    Voxel3D.vp = view:matrix(vw, vh)
+  end
+  Voxel3D.eye = Voxel3D.camera and Voxel3D.camera.eye or Voxel3D.eye
+  local sh = love.graphics.getShader()
+  if sh then
+    pcall(sh.send, sh, "vp", "row", Voxel3D.vp)
+    pcall(sh.send, sh, "eye", Voxel3D.eye)
+  end
+  return true
+end
+
+-- Colosseum / Stadium / GLB followers into the same framebuffer as the
+-- NSBMD chunks. VoxelScene never runs on Platinum (drawWorld declines),
+-- so these actors used to keep voxel y=0 and sit in the mesh.
+local function drawFieldActors(state, ground)
+  Host._skipFeet = {}
+  if not (state and ground) then return end
+  local view = ground.view3d
+  if not (view and view.isFree and view:isFree()) then return end
+  local Voxel3D = V.require("Voxel3D")
+  local ox = ground.offsetX or 0
+  local oz = ground.offsetY or 0
+  local posed = {}
+  local function add(e, mapX, mapY)
+    if not wantFieldActor(e, state) then return end
+    if ground.freeMode and ground:freeMode() == "first" and e == state.player then
+      return
+    end
+    local gh = 0
+    if ground.groundY then
+      gh = ground:groundY((mapX or 0) + 8, (mapY or 0) + 8) or 0
+    end
+    local facing = e.facing or "down"
+    if view.worldToScreen then
+      facing = view:worldToScreen(facing) or facing
+    end
+    posed[#posed + 1] = {
+      sprite = e.sprite,
+      px = (mapX or 0) + ox,
+      py = (mapY or 0) + oz,
+      facing = facing,
+      phase = e.phase,
+      flip = e.flip,
+      gh = gh,
+      lift = 0,
+      entity = e,
+      skipKey = spriteKey(mapX, mapY),
+      isFollower = e.isFollower or e.wildsFollower or e._wildsFollowerSpecies ~= nil,
+      isPlayer = e == state.player,
+    }
+  end
+  for _, e in ipairs(state.entities or {}) do
+    add(e, e.px, e.py)
+  end
+  for _, g in ipairs(state.ghosts or {}) do
+    local npc = g and g.npc
+    if npc then
+      add(npc, (npc.px or 0) + (g.ox or 0), (npc.py or 0) + (g.oy or 0))
+    end
+  end
+  if #posed == 0 then return end
+  pcall(function()
+    local OC = V.require("OverworldColosseum")
+    if OC and OC.safePrepare then OC.safePrepare(posed) end
+  end)
+  pcall(function()
+    local OS = V.require("OverworldStadium")
+    if OS and OS.safePrepare then OS.safePrepare(posed) end
+  end)
+  if not beginFieldVoxel(state, ground) then return end
+  pcall(function()
+    local OC = V.require("OverworldColosseum")
+    local OS = V.require("OverworldStadium")
+    local SF = V.require("StadiumFollower")
+    local PM = V.require("PlayerModel")
+    local Mat4 = V.require("Mat4")
+    for _, p in ipairs(posed) do
+      local drew = false
+      if p.isPlayer and PM and PM.loaded and PM.loaded() then
+        drew = pcall(PM.draw, p.px, p.py, p.gh, p.facing, p.flip) and true or drew
+      end
+      if not drew and OC and OC.safeDraw then
+        drew = OC.safeDraw(p) == true
+      end
+      if not drew and OS and OS.safeDraw then
+        drew = OS.safeDraw(p) == true
+      end
+      if not drew and p.isFollower and SF and SF.loaded and SF.loaded() then
+        if SF.update then pcall(SF.update, 1 / 60) end
+        drew = SF.draw(p.px, p.py, p.facing, p.gh) == true
+      end
+      local mdl = p.entity and p.entity.model3d
+      if not drew and mdl and mdl.mesh then
+        local m = Mat4.translate((p.px or 0) + 8, p.gh or 0, (p.py or 0) + 8)
+        local yaw = 0
+        local facing = p.facing
+        if facing == "right" then yaw = math.pi / 2
+        elseif facing == "up" then yaw = math.pi
+        elseif facing == "left" then yaw = -math.pi / 2
+        end
+        if yaw ~= 0 then m = Mat4.mul(m, Mat4.rotateY(yaw)) end
+        local scale = mdl.scale or 4.0
+        m = Mat4.mul(m, Mat4.scale(scale, scale, scale))
+        drew = pcall(Voxel3D.draw, mdl.mesh, mdl.texture, m)
+      end
+      if drew then Host._skipFeet[p.skipKey] = true end
+    end
+  end)
+  Voxel3D.endScene()
+end
+
 -- 3D grass into the still-bound gen4 target, before characters (depth test
--- against houses). Wind/weather wait for endFree, after sprites.
+-- against houses). Followers use the same pass so they stand on BDHC height
+-- instead of voxel y=0. Wind/weather wait for endFree, after sprites.
 function Host.overlay3D(ground)
-  if not Host.effectsOn() then return end
   local ow = game() and game().overworld
   if not (ground and ow) then return end
   Host._drawGround = ground
-  pcall(drawGrass, ow, ground)
+  if Host.effectsOn() then
+    pcall(drawGrass, ow, ground)
+  end
+  pcall(drawFieldActors, ow, ground)
   Host._drawGround = nil
 end
 
@@ -531,6 +681,17 @@ function Host.install()
     local ok = innerDrawFree(self, vw, vh)
     if ok then pcall(Host.overlay3D, self) end
     return ok
+  end
+
+  local innerFreeEntity = Gen4Ground.freeEntity
+  if type(innerFreeEntity) == "function" then
+    function Gen4Ground:freeEntity(mapX, mapY, camX, camY, rise, draw)
+      local skip = Host._skipFeet
+      if skip and skip[spriteKey(mapX, mapY)] then
+        return true
+      end
+      return innerFreeEntity(self, mapX, mapY, camX, camY, rise, draw)
+    end
   end
 
   local innerEndFree = Gen4Ground.endFree

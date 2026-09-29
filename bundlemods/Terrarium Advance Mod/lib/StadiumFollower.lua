@@ -357,7 +357,8 @@ end
 -- Draw the follower at the given position
 -- x, y: world coordinates (pixel position)
 -- facing: direction the follower is facing ("up", "down", "left", "right")
-function StadiumFollower.draw(x, y, facing)
+function StadiumFollower.draw(x, y, facing, yUp)
+  yUp = tonumber(yUp) or 0
   print("[StadiumFollower.draw] Called with x:", x, "y:", y, "facing:", facing, "currentRig:", currentRig ~= nil, "currentModel:", currentModel ~= nil, "currentSprite:", currentSprite ~= nil, "usingSpriteFallback:", usingSpriteFallback)
   
   -- Handle sprite fallback
@@ -372,7 +373,7 @@ function StadiumFollower.draw(x, y, facing)
     -- Camera-relative free-roam rotation isn't wired through ColosseumMon's
     -- simpler toward-vector API yet; it draws facing the raw movement
     -- direction in that mode, same as StadiumWilds' wild Pokemon already do.
-    local matrix = ColosseumMon.matrix(currentSpecies, colosseumVariant, x, 0, y, fx, fz)
+    local matrix = ColosseumMon.matrix(currentSpecies, colosseumVariant, x, yUp, y, fx, fz)
     if not matrix then return false end
     return ColosseumMon.draw(currentSpecies, colosseumVariant, matrix)
   end
@@ -381,7 +382,7 @@ function StadiumFollower.draw(x, y, facing)
   if not currentRig or not currentModel then return false end
 
   -- Calculate the model matrix
-  local m = Mat4.translate(x, 0, y)
+  local m = Mat4.translate(x, yUp, y)
 
   -- Check if we're in free-roam mode (1st or 3rd person)
   local FirstPerson = V.require("FirstPerson")
