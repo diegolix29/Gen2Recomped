@@ -337,7 +337,7 @@ function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trai
       if type(out)~="table" then out=items end
 
       for _,entry in ipairs(out) do
-        if entry.__colosseumBattleEntryGen3 or entry.__colosseumBattleEntryGen4 or tostring(entry.label or ""):upper()=="BATTLE" then
+        if entry.__colosseumBattleEntryGen3 or tostring(entry.label or ""):upper()=="BATTLE" then
           return out
         end
       end
@@ -355,7 +355,6 @@ function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trai
       table.insert(out,at,{
         label="BATTLE",
         __colosseumBattleEntryGen3=true,
-        __colosseumBattleEntryGen4=true,
         screen="CbeBattleSettingsGen3",
       })
 
@@ -366,9 +365,9 @@ function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trai
 
   if ok then
     success = true
-    if mod.log then mod.log:info("Gen3/Gen4 battle settings ui.start_menu.items hook installed successfully") end
+    if mod.log then mod.log:info("Gen3 battle settings ui.start_menu.items hook installed successfully") end
   else
-    if mod.log then mod.log:warn("Gen3/Gen4 battle settings ui.start_menu.items hook failed: " .. tostring(err)) end
+    if mod.log then mod.log:warn("Gen3 battle settings ui.start_menu.items hook failed: " .. tostring(err)) end
   end
 
   installed = success

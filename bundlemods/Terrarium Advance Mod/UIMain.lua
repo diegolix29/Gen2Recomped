@@ -27060,17 +27060,7 @@ return function(mod)
     })
   local liveGame=mod and mod.game or nil
   GoldCompat.game=liveGame
-  -- Detect generation: check Gen4 first, then Gen2, default to Gen1
-  local generation
-  local okGen4, Gen4Bridge = pcall(require, "lib.Gen4Bridge")
-  if okGen4 and Gen4Bridge and type(Gen4Bridge.isGen4)=="function" and Gen4Bridge.isGen4() then
-    generation = "gen4"
-  elseif GoldCompat.isGen2Game(liveGame) then
-    generation = "gen2"
-  else
-    generation = "gen1"
-  end
-  GoldCompat.generation = generation
+  GoldCompat.generation=GoldCompat.isGen2Game(liveGame) and "gen2" or "gen1"
   if mod.log then
     mod.log:info("Colosseum UI runtime compatibility: "..tostring(GoldCompat.generation))
   end
@@ -27421,9 +27411,6 @@ return function(mod)
       __gen3uiUIEntry=true,
     }
     if GoldCompat.isGen2Game(game) then
-      row.onSelect=function(g) GoldCompat.openGoldUISettings(g or game) end
-    elseif GoldCompat.generation=="gen4" then
-      -- Gen4 uses the same UI settings flow as Gen3
       row.onSelect=function(g) GoldCompat.openGoldUISettings(g or game) end
     end
     table.insert(out,at,row)

@@ -42,11 +42,6 @@ function C.current()
       return 3
     end
   end
-  -- Fallback detection for Gen 4: check for Gen4Ground
-  local okGen4, Gen4Ground = pcall(engineRequire, "src.render.Gen4Ground")
-  if okGen4 and Gen4Ground then
-    return 4
-  end
   return 1
 end
 
