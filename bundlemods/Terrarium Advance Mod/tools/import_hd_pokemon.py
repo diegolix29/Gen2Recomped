@@ -24,8 +24,11 @@ from pathlib import Path
 from typing import Iterable
 
 from PIL import Image
+import threading
 
 DEX_MAX_DEFAULT = 493
+PROGRESS_LOCK = threading.Lock()
+PROGRESS_PATH: Path | None = None
 NAME_RE = re.compile(
     r"^(?P<dex>\d+)-(?P<side>front|back)-(?P<color>[ns])(?:-(?P<gender>[fm]))?\.gif$",
     re.IGNORECASE,
@@ -43,6 +46,16 @@ class SourceGif:
             return self.source.read_bytes()
         with zipfile.ZipFile(self.source) as zf:
             return zf.read(self.member)
+
+
+def write_progress(state: str, current: int, total: int, message: str = "") -> None:
+    if PROGRESS_PATH is None:
+        return
+    text = f"{state}\n{int(current)}\n{int(total)}\n{message}\n"
+    with PROGRESS_LOCK:
+        tmp = PROGRESS_PATH.with_suffix(".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(PROGRESS_PATH)
 
 
 def iter_source(path: Path) -> Iterable[SourceGif]:
@@ -226,6 +239,8 @@ def main() -> int:
                     help="Terrarium Advance Mod folder (ignored when --out is set)")
     ap.add_argument("--out", type=Path, default=None,
                     help="Write sheets and data/hd_pokemon.lua here instead of --target")
+    ap.add_argument("--progress-file", type=Path, default=None,
+                    help="Write CONVERTING/DONE/FAIL progress for the in-game import screen")
     ap.add_argument("--clean", action="store_true")
     ap.add_argument("--max-dex", type=int, default=DEX_MAX_DEFAULT)
     ap.add_argument("--force", action="store_true")
@@ -235,95 +250,112 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1))
     ap.add_argument("--compress-level", type=int, choices=range(0, 10), default=6, metavar="0-9")
     args = ap.parse_args()
+    global PROGRESS_PATH
+    if args.progress_file is not None:
+        PROGRESS_PATH = args.progress_file.resolve()
+        PROGRESS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        write_progress("converting", 0, 1, "STARTING")
     if not (0.10 <= args.scale <= 1.00):
         ap.error("--scale must be between 0.10 and 1.00")
     if not (1 <= args.max_dex <= 721):
         ap.error("--max-dex must be between 1 and 721")
 
-    if args.out is not None:
-        dest = args.out.resolve()
-        dest.mkdir(parents=True, exist_ok=True)
-    else:
-        dest = args.target.resolve()
-        if not (dest / "manifest.json").is_file():
-            ap.error(f"target does not look like a Terrarium mod folder: {dest}")
+    try:
+        if args.out is not None:
+            dest = args.out.resolve()
+            dest.mkdir(parents=True, exist_ok=True)
+        else:
+            dest = args.target.resolve()
+            if not (dest / "manifest.json").is_file():
+                ap.error(f"target does not look like a Terrarium mod folder: {dest}")
 
-    asset_root = dest / "assets" / "battle" / "hd-pokemon"
-    metadata_path = dest / "data" / "hd_pokemon.lua"
-    if args.clean:
-        shutil.rmtree(asset_root, ignore_errors=True)
-        try:
-            metadata_path.unlink()
-        except FileNotFoundError:
-            pass
+        asset_root = dest / "assets" / "battle" / "hd-pokemon"
+        metadata_path = dest / "data" / "hd_pokemon.lua"
+        if args.clean:
+            shutil.rmtree(asset_root, ignore_errors=True)
+            try:
+                metadata_path.unlink()
+            except FileNotFoundError:
+                pass
 
-    found = {}
-    for source_path in args.sources:
-        for item in iter_source(source_path.resolve()):
-            m = NAME_RE.match(item.name)
-            if not m:
-                continue
-            dex = int(m.group("dex"))
-            if not (1 <= dex <= args.max_dex):
-                continue
-            side = m.group("side").lower()
-            color = "normal" if m.group("color").lower() == "n" else "shiny"
-            gender_raw = (m.group("gender") or "").lower()
-            gender = "male" if gender_raw == "m" else "female" if gender_raw == "f" else "default"
-            key = (dex, side, color, gender)
-            if key in found:
-                raise RuntimeError(f"duplicate asset for {key}: {found[key].name} and {item.name}")
-            found[key] = item
+        found = {}
+        write_progress("converting", 0, 1, "SCANNING")
+        for source_path in args.sources:
+            for item in iter_source(source_path.resolve()):
+                m = NAME_RE.match(item.name)
+                if not m:
+                    continue
+                dex = int(m.group("dex"))
+                if not (1 <= dex <= args.max_dex):
+                    continue
+                side = m.group("side").lower()
+                color = "normal" if m.group("color").lower() == "n" else "shiny"
+                gender_raw = (m.group("gender") or "").lower()
+                gender = "male" if gender_raw == "m" else "female" if gender_raw == "f" else "default"
+                key = (dex, side, color, gender)
+                if key in found:
+                    raise RuntimeError(f"duplicate asset for {key}: {found[key].name} and {item.name}")
+                found[key] = item
 
-    if not found:
-        raise RuntimeError("no matching HD Pokemon GIFs found")
+        if not found:
+            raise RuntimeError("no matching HD Pokemon GIFs found")
 
-    records: dict[int, dict] = {}
-    total = len(found)
-    if args.metadata_only:
-        for index, ((dex, side, color, gender), item) in enumerate(sorted(found.items()), 1):
-            suffix = "" if gender == "default" else "-m" if gender == "male" else "-f"
-            rel = Path("assets") / "battle" / "hd-pokemon" / side / color / f"{dex:03d}{suffix}.png"
-            meta = gif_metadata(item.read_bytes(), rel.as_posix(), args.max_texture, args.scale)
-            meta["displayScale"] = display_scale(side)
-            species = records.setdefault(dex, {})
-            species.setdefault(side, {}).setdefault(color, {})[gender] = meta
-            if index % 100 == 0 or index == total:
-                print(f"[{index:4d}/{total}] metadata", flush=True)
-    else:
-        jobs = []
-        reused = 0
-        for (dex, side, color, gender), item in sorted(found.items()):
-            suffix = "" if gender == "default" else "-m" if gender == "male" else "-f"
-            rel = Path("assets") / "battle" / "hd-pokemon" / side / color / f"{dex:03d}{suffix}.png"
-            out = dest / rel
-            if not args.force and output_png_is_valid(out):
+        records: dict[int, dict] = {}
+        total = len(found)
+        write_progress("converting", 0, total, "CONVERTING")
+        if args.metadata_only:
+            for index, ((dex, side, color, gender), item) in enumerate(sorted(found.items()), 1):
+                suffix = "" if gender == "default" else "-m" if gender == "male" else "-f"
+                rel = Path("assets") / "battle" / "hd-pokemon" / side / color / f"{dex:03d}{suffix}.png"
                 meta = gif_metadata(item.read_bytes(), rel.as_posix(), args.max_texture, args.scale)
                 meta["displayScale"] = display_scale(side)
                 species = records.setdefault(dex, {})
                 species.setdefault(side, {}).setdefault(color, {})[gender] = meta
-                reused += 1
-            else:
-                jobs.append((dex, side, color, gender, item, out, rel))
-        if reused:
-            print(f"Reusing {reused} sheets; converting {len(jobs)} GIFs.", flush=True)
-        workers = max(1, int(args.workers))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(_convert_job, job, args.max_texture, args.scale, args.compress_level) for job in jobs]
-            for index, fut in enumerate(concurrent.futures.as_completed(futures), 1):
-                dex, side, color, gender, name, meta = fut.result()
-                species = records.setdefault(dex, {})
-                species.setdefault(side, {}).setdefault(color, {})[gender] = meta
-                if index % 25 == 0 or index == len(jobs):
-                    print(f"[{index:4d}/{len(jobs)}] {name}", flush=True)
+                write_progress("converting", index, total, item.name)
+                if index % 100 == 0 or index == total:
+                    print(f"[{index:4d}/{total}] metadata", flush=True)
+        else:
+            jobs = []
+            reused = 0
+            for (dex, side, color, gender), item in sorted(found.items()):
+                suffix = "" if gender == "default" else "-m" if gender == "male" else "-f"
+                rel = Path("assets") / "battle" / "hd-pokemon" / side / color / f"{dex:03d}{suffix}.png"
+                out = dest / rel
+                if not args.force and output_png_is_valid(out):
+                    meta = gif_metadata(item.read_bytes(), rel.as_posix(), args.max_texture, args.scale)
+                    meta["displayScale"] = display_scale(side)
+                    species = records.setdefault(dex, {})
+                    species.setdefault(side, {}).setdefault(color, {})[gender] = meta
+                    reused += 1
+                    write_progress("converting", reused, total, item.name)
+                else:
+                    jobs.append((dex, side, color, gender, item, out, rel))
+            if reused:
+                print(f"Reusing {reused} sheets; converting {len(jobs)} GIFs.", flush=True)
+            workers = max(1, int(args.workers))
+            if jobs:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = [pool.submit(_convert_job, job, args.max_texture, args.scale, args.compress_level) for job in jobs]
+                    for index, fut in enumerate(concurrent.futures.as_completed(futures), 1):
+                        dex, side, color, gender, name, meta = fut.result()
+                        species = records.setdefault(dex, {})
+                        species.setdefault(side, {}).setdefault(color, {})[gender] = meta
+                        write_progress("converting", reused + index, total, name)
+                        if index % 25 == 0 or index == len(jobs):
+                            print(f"[{index:4d}/{len(jobs)}] {name}", flush=True)
 
-    write_metadata(metadata_path, records)
-    write_file_list(dest / "files.txt", records, args.metadata_only)
-    print(f"\nGenerated metadata for {len(records)} species from {total} GIFs (max dex {args.max_dex}).")
-    print(f"Metadata: {metadata_path}")
-    if not args.metadata_only:
-        print(f"Sprites:  {asset_root}")
-    return 0
+        write_progress("converting", total, total, "WRITING")
+        write_metadata(metadata_path, records)
+        write_file_list(dest / "files.txt", records, args.metadata_only)
+        write_progress("done", len(records), total, "READY")
+        print(f"\nGenerated metadata for {len(records)} species from {total} GIFs (max dex {args.max_dex}).")
+        print(f"Metadata: {metadata_path}")
+        if not args.metadata_only:
+            print(f"Sprites:  {asset_root}")
+        return 0
+    except Exception as err:
+        write_progress("fail", 0, 1, str(err))
+        raise
 
 
 if __name__ == "__main__":

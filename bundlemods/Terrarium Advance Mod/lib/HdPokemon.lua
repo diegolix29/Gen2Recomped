@@ -366,8 +366,8 @@ function M.battleImage(battle, side, battler)
   local game = (battle and battle.game) or (mod() and mod().game)
   local dex = battlerDex(battler, game)
   if not dex then return nil end
-  local rec = M.record(dex, side == "player" and "back" or "front",
-    battlerShiny(battler), battlerGender(battler))
+  -- 3D battles: front sheet for every battler. Back sheets are for followers.
+  local rec = M.record(dex, "front", battlerShiny(battler), battlerGender(battler))
   return rec and M.frameImage(rec) or nil
 end
 
@@ -401,15 +401,33 @@ function M.decoratePose(pose)
   local rec = M.record(dex, "front", entity.shiny == true, nil)
   local image = rec and M.frameImage(rec)
   if not image then return false end
+  local iw, ih = image:getDimensions()
+  local fw = math.max(1, math.floor(tonumber(rec.width) or iw))
+  local fh = math.max(1, math.floor(tonumber(rec.height) or ih))
+  local scale = 16 / fh
   local sprite = pose.sprite or entity.sprite
-  if type(sprite) == "table" then
-    sprite.image = image
-    sprite.frames = 1
-    sprite.walker = false
-    sprite.trueColor = true
-  else
-    pose.sprite = { image = image, frames = 1, walker = false, trueColor = true }
+  if type(sprite) ~= "table" then
+    sprite = {}
+    pose.sprite = sprite
   end
+  local def = {}
+  if type(sprite.def) == "table" then
+    for key, value in pairs(sprite.def) do def[key] = value end
+  end
+  def.hdImage = image
+  def.hdFrameW = fw
+  def.hdFrameH = fh
+  def.frames = 1
+  def.trueColor = true
+  def.walker = false
+  def.scale = scale
+  def.heightScale = scale
+  sprite.def = def
+  sprite.image = image
+  sprite.frames = 1
+  sprite.walker = false
+  sprite.trueColor = true
+  sprite.scale = scale
   return true
 end
 

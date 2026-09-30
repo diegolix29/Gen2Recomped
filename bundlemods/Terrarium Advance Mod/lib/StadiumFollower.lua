@@ -97,10 +97,11 @@ local FOLLOWER_SCALE = 1.0
 local function loadSpriteFallback(dex)
   if not dex then return false, "no dex number" end
   
-  -- Prefer HD Reloded sheets (dex 1-493) before native battle fronts.
+  -- HD Reloded: back sheet on the follower; front is the battle/overworld pose.
   local HdPokemon = V.HdPokemon or (V.require and V.require("HdPokemon"))
   if HdPokemon and type(HdPokemon.record) == "function" then
-    local rec = HdPokemon.record(dex, "front", false, nil)
+    local rec = HdPokemon.record(dex, "back", false, nil)
+      or HdPokemon.record(dex, "front", false, nil)
     local image = rec and HdPokemon.frameImage(rec)
     if image then
       spriteCache[dex] = image
@@ -508,11 +509,10 @@ function StadiumFollower.drawSprite(x, y, facing)
   
   lg.push()
   lg.translate(x, y)
-  lg.scale(FOLLOWER_SCALE, FOLLOWER_SCALE)
-  
-  -- Draw sprite centered
   local sw, sh = currentSprite:getDimensions()
-  lg.draw(currentSprite, -sw/2, -sh/2)
+  local s = (16 / math.max(sh, 1)) * FOLLOWER_SCALE
+  lg.scale(s, s)
+  lg.draw(currentSprite, -sw/2, -sh)
   
   lg.pop()
   

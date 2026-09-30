@@ -50,7 +50,8 @@ local function loadSpriteFallback(dex)
   do
     local HdPokemon = V.HdPokemon
     if HdPokemon and type(HdPokemon.record) == "function" then
-      local rec = HdPokemon.record(dex, "front", false, nil)
+      local rec = HdPokemon.record(dex, "back", false, nil)
+        or HdPokemon.record(dex, "front", false, nil)
       local image = rec and HdPokemon.frameImage(rec)
       if image then
         spriteCache[dex] = image
@@ -422,12 +423,10 @@ function FollowerPokemon.drawSprite(px, py, y, facing, mirror)
     if lg then
       lg.push()
       lg.translate(worldX, worldY, worldZ)
-      lg.scale(scale, scale, scale)
-      
-      -- Draw sprite centered
       local sw, sh = currentSprite:getDimensions()
-      lg.draw(currentSprite, -sw/2, -sh/2)
-      
+      local s = (16 / math.max(sh, 1)) * scale
+      lg.scale(s, s, s)
+      lg.draw(currentSprite, -sw/2, -sh)
       lg.pop()
     end
   else
@@ -436,12 +435,10 @@ function FollowerPokemon.drawSprite(px, py, y, facing, mirror)
     if lg then
       lg.push()
       lg.translate(worldX, worldY)
-      lg.scale(followerScale, followerScale)
-      
-      -- Draw sprite centered
       local sw, sh = currentSprite:getDimensions()
-      lg.draw(currentSprite, -sw/2, -sh/2)
-      
+      local s = (16 / math.max(sh, 1)) * followerScale
+      lg.scale(s, s)
+      lg.draw(currentSprite, -sw/2, -sh)
       lg.pop()
     end
   end

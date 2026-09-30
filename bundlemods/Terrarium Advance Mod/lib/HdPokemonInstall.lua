@@ -1,8 +1,8 @@
 -- HD Pokémon sheets (dex 1-493): in-game import, without Kanto in Motion.
 --
 -- OPTIONS row next to CHARACTER VIEWER. Press A, pick a Reloded / HD GIF
--- zip (names like 025-front-n.gif), and Python+Pillow convert them into
--- cache/hd_pokemon. 3D Colosseum/Stadium models still win when present.
+-- zip, then HdPokemonScreen shows CONVERTING progress while
+-- tools/import_hd_pokemon.py runs. Sheets land in cache/hd_pokemon.
 
 local V = ...
 local Compat = V.require("EngineCompat")
@@ -13,9 +13,24 @@ Install.LABEL = "HD POKEMON"
 Install.PICKED = "picked_hd_pokemon.zip"
 Install.SCRIPT = "hd_pokemon_import.py"
 Install.BUILD = "hd_pokemon_build"
+Install.PROGRESS = "hd_pokemon_build/progress.txt"
 Install.DEX_MAX = 493
 
-Install.status = { state = "idle", error = nil }
+Install.status = {
+  state = "idle",
+  error = nil,
+  current = 0,
+  total = 1,
+  message = "",
+  count = 0,
+}
+
+local function pushScreen(game)
+  local ok, Screen = pcall(V.require, "HdPokemonScreen")
+  if ok and Screen and game and game.stack and type(Screen.new) == "function" then
+    pcall(function() game.stack:push(Screen.new(game)) end)
+  end
+end
 
 local function note(game, title, lead, body)
   local ok, StadiumScreen = pcall(V.require, "StadiumScreen")
@@ -54,7 +69,8 @@ function Install.row()
     id = Install.ID,
     label = Install.LABEL,
     value = function()
-      if Install.status.state == "importing" then return "BUSY" end
+      local st = Install.status.state
+      if st == "importing" or st == "starting" then return "BUSY" end
       local n = Install.count()
       if n >= Install.DEX_MAX then return "READY" end
       if n > 0 then return tostring(n) .. " DEX" end
@@ -79,22 +95,18 @@ local function saveDir()
   return nil, f
 end
 
-local function quoteWin(path)
-  return '"' .. tostring(path):gsub('"', '\\"') .. '"'
-end
-
 local function findPython()
   local shell = Compat.hostShell()
   if not shell then return nil end
   local probes = {
-    { run = "py -3", check = 'py -3 -c "from PIL import Image; print(\'OK\')"' },
-    { run = "python", check = 'python -c "from PIL import Image; print(\'OK\')"' },
-    { run = "python3", check = 'python3 -c "from PIL import Image; print(\'OK\')"' },
+    { exe = "py", args = { "-3" }, check = 'py -3 -c "from PIL import Image; print(\'OK\')"' },
+    { exe = "python", args = {}, check = 'python -c "from PIL import Image; print(\'OK\')"' },
+    { exe = "python3", args = {}, check = 'python3 -c "from PIL import Image; print(\'OK\')"' },
   }
   for _, probe in ipairs(probes) do
     local out = Compat.pipeOutput(shell, probe.check)
     if type(out) == "string" and out:find("OK", 1, true) then
-      return probe.run
+      return probe
     end
   end
   return nil
@@ -117,6 +129,7 @@ local function stageImporter(f)
 end
 
 local function ingestBuild(f)
+  Install.status.message = "STORING"
   local handle = V.mod
   if not (handle and handle.cache and type(handle.cache.write) == "function") then
     return nil, "mod cache unavailable"
@@ -144,8 +157,126 @@ local function ingestBuild(f)
   return n
 end
 
+local function parseProgress(text)
+  if type(text) ~= "string" then return nil end
+  local lines = {}
+  for line in text:gmatch("[^\r\n]+") do
+    lines[#lines + 1] = line
+  end
+  if #lines < 1 then return nil end
+  return {
+    state = lines[1] or "",
+    current = tonumber(lines[2]) or 0,
+    total = math.max(1, tonumber(lines[3]) or 1),
+    message = lines[4] or "",
+  }
+end
+
+local function psQuote(s)
+  return "'" .. tostring(s):gsub("'", "''") .. "'"
+end
+
+local function launchPython(python, scriptPath, outDir, zipPath, progressPath)
+  local shell = Compat.hostShell()
+  if not shell then return nil, "no host shell" end
+  local osName = Compat.osName()
+  local args = {}
+  for _, extra in ipairs(python.args or {}) do args[#args + 1] = extra end
+  args[#args + 1] = scriptPath
+  args[#args + 1] = "--max-dex"
+  args[#args + 1] = "493"
+  args[#args + 1] = "--out"
+  args[#args + 1] = outDir
+  args[#args + 1] = "--progress-file"
+  args[#args + 1] = progressPath
+  args[#args + 1] = zipPath
+
+  local command
+  if osName == "Windows" then
+    local listed = {}
+    for _, a in ipairs(args) do
+      listed[#listed + 1] = psQuote(a)
+    end
+    command = "powershell -NoProfile -NonInteractive -Command "
+      .. '"Start-Process -FilePath ' .. psQuote(python.exe)
+      .. " -ArgumentList @(" .. table.concat(listed, ",") .. ")"
+      .. ' -WindowStyle Hidden"'
+  else
+    local quote = (type(shell.quote) == "function")
+      and function(v) return shell.quote(v) end
+      or function(v) return "'" .. tostring(v):gsub("'", "'\\''") .. "'" end
+    local parts = { quote(python.exe) }
+    for _, a in ipairs(args) do parts[#parts + 1] = quote(a) end
+    command = table.concat(parts, " ") .. " >/dev/null 2>&1 &"
+  end
+  Compat.pipeOutput(shell, command)
+  return true
+end
+
+function Install.poll()
+  local st = Install.status
+  if st.state ~= "importing" and st.state ~= "starting" then return end
+  if st.startedAt and (os.clock() - st.startedAt) > 180 and (tonumber(st.current) or 0) < 1 then
+    st.state = "failed"
+    st.error = "importer did not start (need Python 3 + Pillow)"
+    return
+  end
+  local f = Compat.fs()
+  local text
+  if f then
+    local ok, got = pcall(f.read, Install.PROGRESS)
+    if ok then text = got end
+  end
+  if type(text) ~= "string" or text == "" then
+    local dir = saveDir()
+    local shell = Compat.hostShell()
+    if dir and shell then
+      local osName = Compat.osName()
+      local abs = dir .. "/" .. Install.PROGRESS
+      if osName == "Windows" then
+        text = Compat.pipeOutput(shell,
+          "powershell -NoProfile -NonInteractive -Command "
+          .. '"Get-Content -LiteralPath ' .. psQuote(abs) .. ' -Raw"')
+      else
+        local quote = (type(shell.quote) == "function")
+          and function(v) return shell.quote(v) end
+          or function(v) return "'" .. tostring(v):gsub("'", "'\\''") .. "'" end
+        text = Compat.pipeOutput(shell, "cat " .. quote(abs) .. " 2>/dev/null")
+      end
+    end
+  end
+  local parsed = parseProgress(text)
+  if parsed then
+    st.current = parsed.current
+    st.total = parsed.total
+    st.message = parsed.message
+    if parsed.state == "done" then
+      local stored, err = ingestBuild(f)
+      if stored then
+        st.state = "done"
+        st.count = Install.count()
+        st.message = "READY"
+      else
+        st.state = "failed"
+        st.error = err or "could not store sheets"
+      end
+      return
+    end
+    if parsed.state == "fail" then
+      st.state = "failed"
+      st.error = parsed.message
+      return
+    end
+    st.state = "importing"
+  end
+end
+
 function Install.import(game)
-  if Install.status.state == "importing" then return false end
+  local st = Install.status
+  if st.state == "importing" or st.state == "starting" then
+    pushScreen(game)
+    return false
+  end
 
   if not Install.canDialog() then
     note(game, "HD POKEMON", "CONVERT GIF ZIP WITH:", Install.commandHint())
@@ -159,15 +290,15 @@ function Install.import(game)
   if not path then return false end
 
   local function fail(why)
-    Install.status.state = "failed"
-    Install.status.error = why
-    note(game, "HD POKEMON", "IMPORT FAILED", tostring(why))
+    st.state = "failed"
+    st.error = why
+    pushScreen(game)
     return false
   end
 
   local python = findPython()
   if not python then
-    return fail("need Python 3 with Pillow (pip install pillow). " .. Install.commandHint())
+    return fail("need Python 3 with Pillow (pip install pillow)")
   end
 
   local okStage, relOrErr = Compat.stageExternal(path, Install.PICKED)
@@ -178,35 +309,23 @@ function Install.import(game)
   local scriptPath, scriptErr = stageImporter(f)
   if not scriptPath then return fail(scriptErr) end
 
+  pcall(f.write, Install.PROGRESS, "converting\n0\n1\nSTARTING\n")
+  pcall(f.remove, Install.BUILD .. "/files.txt")
+
   local outDir = dir .. "/" .. Install.BUILD
   local zipPath = dir .. "/" .. Install.PICKED
-  local shell = Compat.hostShell()
-  local osName = Compat.osName()
-  local command
-  if osName == "Windows" then
-    command = python .. " " .. quoteWin(scriptPath)
-      .. " --max-dex 493 --out " .. quoteWin(outDir)
-      .. " " .. quoteWin(zipPath)
-  else
-    local quote = (shell and type(shell.quote) == "function")
-      and function(v) return shell.quote(v) end
-      or function(v) return "'" .. tostring(v):gsub("'", "'\\''") .. "'" end
-    command = python .. " " .. quote(scriptPath)
-      .. " --max-dex 493 --out " .. quote(outDir)
-      .. " " .. quote(zipPath)
-  end
+  local progressPath = dir .. "/" .. Install.PROGRESS
+  local okLaunch, launchErr = launchPython(python, scriptPath, outDir, zipPath, progressPath)
+  if not okLaunch then return fail(launchErr or "could not start importer") end
 
-  Install.status.state = "importing"
-  local out = Compat.pipeOutput(shell, command)
-  Install.status.state = "idle"
-
-  local stored, ingestErr = ingestBuild(f)
-  if not stored then
-    local extra = (type(out) == "string" and out:sub(-180)) or ingestErr
-    return fail(ingestErr or extra or "conversion failed")
-  end
-
-  note(game, "HD POKEMON", "READY", tostring(Install.count()) .. " SPECIES CACHED")
+  st.state = "starting"
+  st.error = nil
+  st.current = 0
+  st.total = 1
+  st.message = "STARTING"
+  st.count = 0
+  st.startedAt = os.clock()
+  pushScreen(game)
   return true
 end
 
