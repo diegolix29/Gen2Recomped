@@ -28,7 +28,6 @@ local P={
   externalBegun=false,externalError=nil,presentationFallback=nil,
   moveFxActive={},moveFxImages={},moveFxShader=nil,moveFxError=nil,
   overworldContext=nil,overworldMoveStarted=false,
-  _tryHdFallback={player=false,enemy=false},
 }
 local OWNER=(V.mod and V.mod.id) or "DRAMATIC_SHAPE"
 local ModLookup=V.ModLookup
@@ -604,8 +603,6 @@ local function stadiumActor(context,side)
   local source=api.SELECTED or "selected"
   local cbe=P.modeId=="cbe:colosseum-pokemon"
   local streaming=cbe and api.cooperativePreparation==true
-  -- Reset HD fallback flag for new acquisition attempt
-  P._tryHdFallback[side] = false
   -- An older material certificate may say unavailable although the exact cached
   -- body is valid. Let the CBE service verify it; retain portable-provider rules.
   if not cbe and type(api.available)=="function" then
@@ -645,10 +642,6 @@ local function stadiumActor(context,side)
     P.stadiumPending=pending and reason or nil
     if not pending and P.modeId=="cbe:colosseum-pokemon" and V.BattleCache then
       V.BattleCache.noteRenderError(context.game,P.stadiumError)
-    end
-    -- When 3D model is unavailable and not pending, flag for HD sprite fallback
-    if not pending and P.stadiumError then
-      P._tryHdFallback[side] = true
     end
     return nil
   end
@@ -1025,25 +1018,6 @@ local function imageFor(context,side)
         if resolved~=nil and resolved~=false then image=resolved end
       else
         P.spriteError=tostring(resolved)
-      end
-    end
-    
-    -- HD sprite fallback: when 3D model failed and HD sprites are available
-    if P._tryHdFallback[side] and image==nil then
-      P._tryHdFallback[side] = false
-      -- Try to load HDStadiumSprites for fallback
-      local HDStadiumSprites = V.HDStadiumSprites
-      if HDStadiumSprites and type(HDStadiumSprites.resolve) == "function" then
-        local okHd, hdResolved = pcall(HDStadiumSprites.resolve, context, side, b)
-        if okHd and hdResolved then
-          if type(hdResolved) == "table" and type(hdResolved.getDimensions)~="function"
-              and hdResolved.image~=nil then hdResolved = hdResolved.image end
-          if hdResolved~=nil and hdResolved~=false then 
-            image = hdResolved
-            P.spriteOwner = "hdstadiumsprites:kim-fallback"
-            P.spriteError = nil
-          end
-        end
       end
     end
   else

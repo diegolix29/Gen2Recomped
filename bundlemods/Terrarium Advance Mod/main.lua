@@ -4130,33 +4130,6 @@ end
       pcall(CurrentSpriteModels.registerCapability, "COLOSSEUM_BATTLE_ENVIRONMENTS/pokemon", "battleActors", PokemonActors.service)
     end
 
-    -- Load and register HDStadiumSprites for KIM fallback integration
-    local HDStadiumSprites = loadColosseumModule("HDStadiumSprites")
-    if HDStadiumSprites and type(HDStadiumSprites.install) == "function" then
-      local okInstall, installErr = pcall(HDStadiumSprites.install)
-      if okInstall then
-        V.HDStadiumSprites = HDStadiumSprites
-        if HDStadiumSprites.battleSprites and type(CurrentSpriteModels.registerCapability) == "function" then
-          pcall(CurrentSpriteModels.registerCapability, "DRAMATIC_SHAPE/hdstadiumsprites", "battleSprites", HDStadiumSprites.battleSprites)
-          if mod.log then mod.log:info("HDStadiumSprites: Registered battleSprites capability for KIM fallback") end
-        end
-      else
-        if mod.log then mod.log:warn("HDStadiumSprites installation failed: %s", tostring(installErr)) end
-      end
-    end
-
-    -- Load Gen4AssetManager for Pokemon 387-493 download support
-    local Gen4AssetManager = loadColosseumModule("Gen4AssetManager")
-    if Gen4AssetManager and type(Gen4AssetManager.install) == "function" then
-      local okInstall, installErr = pcall(Gen4AssetManager.install)
-      if okInstall then
-        V.Gen4AssetManager = Gen4AssetManager
-        if mod.log then mod.log:info("Gen4AssetManager: Installed for Pokemon 387-493 support") end
-      else
-        if mod.log then mod.log:warn("Gen4AssetManager installation failed: %s", tostring(installErr)) end
-      end
-    end
-
     -- Publish the same PokemonActors capability for OVERWORLD consumers.
     if PokemonActors and PokemonActors.service then
       mod.exports.pokemonActorsOverworld = PokemonActors.service
