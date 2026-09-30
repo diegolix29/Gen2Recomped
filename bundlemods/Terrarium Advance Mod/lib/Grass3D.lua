@@ -375,12 +375,6 @@ function Grass3D.meshFromInstances(instances)
       local scale = inst.scale or 1
       local heightScale = inst.heightScale or nil
       stamp(verts, indices, tplV, tplI, wx + 4, wz + 4, yaw, scale, heightScale)
-      local gz = tonumber(inst.gz) or 0
-      if gz ~= 0 then
-        for vi = #verts - #tplV + 1, #verts do
-          verts[vi][2] = (verts[vi][2] or 0) + gz
-        end
-      end
     end
   end
   
