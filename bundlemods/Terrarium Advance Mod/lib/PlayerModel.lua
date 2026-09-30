@@ -1096,8 +1096,8 @@ function PlayerModel.draw(px, py, y, facing, mirror)
       end
     end
     
-    -- Add 180-degree rotation so character faces the right direction
-    m = Mat4.mul(m, Mat4.rotateY(yaw + math.pi))
+    -- Apply rotation so character faces the right direction
+    m = Mat4.mul(m, Mat4.rotateY(yaw))
     
     -- The old whole-body bob+rock hack that used to stand in for a walk
     -- animation lived here -- it's gone now that CharacterWalkCycle
