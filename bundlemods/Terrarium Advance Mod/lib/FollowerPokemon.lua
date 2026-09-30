@@ -46,6 +46,22 @@ local function loadSpriteFallback(dex)
     print("FollowerPokemon.loadSpriteFallback: Loaded sprite from cache")
     return true
   end
+
+  do
+    local HdPokemon = V.HdPokemon
+    if HdPokemon and type(HdPokemon.record) == "function" then
+      local rec = HdPokemon.record(dex, "front", false, nil)
+      local image = rec and HdPokemon.frameImage(rec)
+      if image then
+        spriteCache[dex] = image
+        currentSprite = image
+        currentDex = dex
+        currentFilename = "follower_sprite_" .. dex
+        usingSpriteFallback = true
+        return true
+      end
+    end
+  end
   
   -- Try to use the sprite service for proper fallback chain
   local okSpriteService, SpriteService = pcall(function() return V.require("follower.sprite_service") end)

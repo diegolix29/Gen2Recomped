@@ -2737,14 +2737,9 @@ function P:drawWorld(context)
   local spriteOk,_,spriteErr=graphicsScope(g,function()
     g.setShader();g.setDepthMode();g.setColor(1,1,1,1)
     for _,side in ipairs(SIDES_EP) do
-      -- COLOSSEUM MODELS means exactly that: once CBE's GC6E01 actor service
-      -- owns the battle, never fall back to a Game Boy/Battle Art sprite merely
-      -- because the actor is intentionally hidden for recall/faint/capture or
-      -- because a delegated Gen 1 host queried the frame in a different order.
-      -- This was the capture leak that showed the enemy sprite inside the ball.
-      local cbeAbsolute=self.mode=="stadium"
-        and self.modeId=="cbe:colosseum-pokemon"
-        and cbePokemonModelsEnabled(context)
+      -- A live Colosseum/Stadium actor still owns the slot even when it is
+      -- hidden (recall/faint). Only sides with no 3D actor fall through to
+      -- HdPokemon / engine sprites (dex 1-493, including no-ROM installs).
       local captureHidden=false
       local captureScale=1
       if side=="enemy" and PlayerTrainer then
@@ -2757,7 +2752,8 @@ function P:drawWorld(context)
           captureHidden=okHidden and value==true
         end
       end
-      local image=(not self.drawn[side] and not cbeAbsolute and not captureHidden)
+      local hasLiveActor=self.stadiumActors and self.stadiumActors[side]~=nil
+      local image=(not self.drawn[side] and not captureHidden and not hasLiveActor)
         and imageFor(context,side) or nil
       local px,py,targetH=targetGeometry(context,side)
       if image and px and py and targetH then

@@ -1226,12 +1226,21 @@ local function drawCast(state, posed, me, atlasFor, yaw)
           StadiumWilds.updateEntity(p, 1 / 60)
           StadiumWilds.drawEntity(p)
         else
-          -- Fall back to sprite if model not available
+          -- Fall back to HD sheet or native sprite if no 3D model
+          local HdPokemon = V.HdPokemon
+          if HdPokemon and type(HdPokemon.decoratePose) == "function" then
+            pcall(HdPokemon.decoratePose, p)
+          end
           drawEntity(p.sprite, p.px, p.py, viewFacing(p), p.phase, p.flip, p.gh,
                      p.colors, p.lift, p.waterline, p.isPlayer, yaw)
         end
       else
         --.Draw normal sprite entity
+        local HdPokemon = V.HdPokemon
+        if HdPokemon and type(HdPokemon.decoratePose) == "function"
+            and StadiumWilds.isWildPokemon(p) then
+          pcall(HdPokemon.decoratePose, p)
+        end
         drawEntity(p.sprite, p.px, p.py, viewFacing(p), p.phase, p.flip, p.gh,
                    p.colors, p.lift, p.waterline, p.isPlayer, yaw)
       end

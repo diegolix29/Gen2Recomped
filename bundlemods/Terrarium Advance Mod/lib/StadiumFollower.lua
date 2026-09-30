@@ -97,6 +97,20 @@ local FOLLOWER_SCALE = 1.0
 local function loadSpriteFallback(dex)
   if not dex then return false, "no dex number" end
   
+  -- Prefer HD Reloded sheets (dex 1-493) before native battle fronts.
+  local HdPokemon = V.HdPokemon or (V.require and V.require("HdPokemon"))
+  if HdPokemon and type(HdPokemon.record) == "function" then
+    local rec = HdPokemon.record(dex, "front", false, nil)
+    local image = rec and HdPokemon.frameImage(rec)
+    if image then
+      spriteCache[dex] = image
+      currentSprite = image
+      currentSpecies = dex
+      usingSpriteFallback = true
+      return true
+    end
+  end
+
   print("StadiumFollower.loadSpriteFallback: Attempting to load sprite for dex", dex)
   
   -- Check sprite cache first
@@ -197,7 +211,7 @@ function StadiumFollower.setSpecies(dex)
   usingSpriteFallback = false
   usingColosseum = false
   
-  if not dex or dex < 1 or dex > ColosseumDex.speciesCount then
+  if not dex or dex < 1 or dex > 493 then
     -- Save the disabled state
     writeMarker(nil)
     return true  -- Disabled
@@ -360,7 +374,6 @@ end
 -- facing: direction the follower is facing ("up", "down", "left", "right")
 function StadiumFollower.draw(x, y, facing, yUp)
   yUp = tonumber(yUp) or 0
-  print("[StadiumFollower.draw] Called with x:", x, "y:", y, "facing:", facing, "currentRig:", currentRig ~= nil, "currentModel:", currentModel ~= nil, "currentSprite:", currentSprite ~= nil, "usingSpriteFallback:", usingSpriteFallback)
   
   -- Handle sprite fallback
   if usingSpriteFallback and currentSprite then

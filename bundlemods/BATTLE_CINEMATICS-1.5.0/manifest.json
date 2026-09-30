@@ -1,0 +1,36 @@
+{
+  "id": "BATTLE_CINEMATICS",
+  "name": "Battle Cinematics - Dynamic 3D Battle Camera",
+  "version": "1.5.0",
+  "api": 2,
+  "entry": "main.lua",
+  "profile": "content",
+  "category": "GRAPHICS",
+  "game_version": "0.0.0-dev || >=0.1.37 <2.0.0",
+  "priority": 114,
+  "dependencies": [],
+  "optional_dependencies": [
+    "DRAMATIC_SHAPE",
+    "DRAMALESS_SHAPE",
+    "BATTLE_ART_VOXEL_FORK",
+    "BATTLE_ART_VOXEL_GEN2",
+    "STADIUM2_OVERWORLD_MODELS",
+    "STADIUM_BATTLE_FX",
+    "potato_voxel",
+    "VOXEL_ASCENDANT",
+    "STADIUM2_IMPORTER",
+    "crystal_animated_sprites_with_shiny_visuals",
+    "VOXEL_ULTIMATE"
+  ],
+  "conflicts": [],
+  "permissions": [
+    "engine_internals"
+  ],
+  "affects_link": false,
+  "description": "Dynamic 3D battle director for Gen1Recomp/GoldRecomp and validated Gen2Recomped hosts. Stadium 64, DW3 Classic & Hero Portrait idle cameras; Pokémon Intro, Attack & Faint; 4-Way Sprite View; manual camera; structural safety; Secondary View/PiP. Terrarium Advanced Colosseum integration on Gen2Recomped.",
+  "github": "EnterPlayerOne/Battle-Cinematics-Stadium-Camera",
+  "games": [
+    "gen1",
+    "gen2"
+  ]
+}

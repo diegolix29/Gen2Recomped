@@ -130,6 +130,10 @@ local ROW_HELP = {
     .. "cartridge that 3D-BTL's STADIUM rungs need for Gen 1 Pokemon (1-151).",
   ["DRAMATIC_SHAPE:stadium2Rom"] = "Imports the Pokemon Stadium 2 (US) cartridge "
     .. "that 3D-BTL's STADIUM rungs need for Gen 2 Pokemon (152-251).",
+  ["DRAMATIC_SHAPE:hdPokemon"] = "Import Reloded HD GIFs for National Dex 1-493. "
+    .. "Used when Colosseum/Stadium 3D models are missing. Press A and pick a "
+    .. "GIF zip, or run: python tools/import_hd_pokemon.py --max-dex 493 "
+    .. "--target \"<this mod>\" \"<gifs.zip>\". Does not need Kanto in Motion.",
 }
 
 -- ------- what the menus are built from

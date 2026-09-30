@@ -286,6 +286,9 @@ local PlayerModelPick = V.require("PlayerModelPick")
 local ModelRender = V.require("model_render")
 -- restored: Stadium models for wild Pokemon in the overworld
 local StadiumWilds = V.require("StadiumWilds")
+-- HD Reloded battle sheets (dex 1-493) when 3D models are missing
+local HdPokemon = V.require("HdPokemon")
+V.HdPokemon = HdPokemon
 -- restored: battle canvas backgrounds and scenery assets
 local BattleCanvas = V.require("BattleCanvas")
 -- Assign battle canvas settings to the module
@@ -1653,6 +1656,9 @@ SettingsMenu.helpFor = function(id)
   if id == "DRAMATIC_SHAPE:characterWalkViewer" then
     return "Opens the current Colosseum character. Left/Right orbit, Select toggles walk, Start re-saves walk_debug_<id>.txt into the LOVE save folder (see the console path) for tools/paint_walk_override.py."
   end
+  if id == "DRAMATIC_SHAPE:hdPokemon" then
+    return "Import Reloded HD GIFs (National Dex 1-493) for battles and overworld when Colosseum/Stadium 3D is missing. Press A and pick a GIF zip. Does not need Kanto in Motion. Command: python tools/import_hd_pokemon.py --max-dex 493 --target \"<this mod>\" \"<gifs.zip>\""
+  end
   return originalHelpFor(id)
 end
 
@@ -2551,6 +2557,13 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
     print("DRAMATIC_SHAPE: CharacterWalkViewer row failed:", viewerRow)
   elseif viewerRow and not rowExists(viewerRow.id) then
     table.insert(out, viewerRow)
+  end
+
+  local okHdPokemon, hdPokemonRow = pcall(function()
+    return V.require("HdPokemonInstall").row()
+  end)
+  if okHdPokemon and hdPokemonRow and not rowExists(hdPokemonRow.id) then
+    table.insert(out, hdPokemonRow)
   end
 
   local okWilds, wildsRow = pcall(function()
@@ -3844,6 +3857,8 @@ local function initializeColosseumIntegration()
     loadColosseumModule("ArenaAudienceProfile")
     loadColosseumModule("ArenaCacheIdentity")
     namespace.Voxel3D = Voxel3D  -- give the Colosseum namespace what ArenaOverworldSnapshot needs
+    namespace.HdPokemon = HdPokemon
+    V.HdPokemon = HdPokemon
 local ArenaOverworldSnapshot = loadColosseumModule("ArenaOverworldSnapshot")
     BattleArtBridge = loadColosseumModule("BattleArtBridge")
     loadColosseumModule("ShinySupport")
@@ -4136,6 +4151,9 @@ end
 
     if CurrentSpriteModels and type(CurrentSpriteModels.registerCapability) == "function" and PokemonActors and PokemonActors.service then
       pcall(CurrentSpriteModels.registerCapability, "COLOSSEUM_BATTLE_ENVIRONMENTS/pokemon", "battleActors", PokemonActors.service)
+    end
+    if HdPokemon and type(HdPokemon.install) == "function" then
+      pcall(HdPokemon.install, CurrentSpriteModels)
     end
 
     -- Publish the same PokemonActors capability for OVERWORLD consumers.
@@ -4467,6 +4485,18 @@ end
 
 -- Call the Colosseum initialization (wrapped to avoid local variable limit)
 pcall(initializeColosseumIntegration)
+-- Pic hook + battleSprites capability. Runs even when no Colosseum disc is
+-- imported so dex 1-493 HD sheets still cover battles and overworld fallback.
+if HdPokemon and type(HdPokemon.install) == "function" then
+  pcall(HdPokemon.install)
+end
+if mod.events and type(mod.events.on) == "function" then
+  mod.events:on("mods.loaded", function()
+    if HdPokemon and type(HdPokemon.install) == "function" then
+      pcall(HdPokemon.install)
+    end
+  end)
+end
 
 mod.exports.version = "1.15.0-mobile.snow.1"
 -- exposed so a companion mod can pin its own tiles' shapes or read the
@@ -4556,6 +4586,7 @@ V.require = function(name)
     Mat4 = Mat4,
     ShadowMap = ShadowMap,
     SpriteBillboards = SpriteBillboards,
+    HdPokemon = HdPokemon,
   }
   
   if compatMap[name] then

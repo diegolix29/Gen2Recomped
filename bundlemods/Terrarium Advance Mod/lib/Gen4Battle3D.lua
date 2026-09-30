@@ -360,8 +360,19 @@ local function drawActor(scene, battle, battler, spot)
     if okH and hidden then return end
   end
   if not battle.battlerPic then return end
-  local okP, pic = pcall(battle.battlerPic, battle, battler)
-  if not (okP and pic and pic.getWidth) then return end
+  local pic
+  local HdPokemon = V.HdPokemon
+  if HdPokemon and type(HdPokemon.battleImage) == "function" then
+    local side = (battle.player == battler or (battle.player and battle.player.mon == battler)
+      or (battler and battler == battle.player)) and "player" or "enemy"
+    local okHd, hd = pcall(HdPokemon.battleImage, battle, side, battler)
+    if okHd and hd and hd.getWidth then pic = hd end
+  end
+  if not pic then
+    local okP, enginePic = pcall(battle.battlerPic, battle, battler)
+    if not (okP and enginePic and enginePic.getWidth) then return end
+    pic = enginePic
+  end
   pcall(pic.setFilter, pic, "nearest", "nearest")
 
   local scale = 1
