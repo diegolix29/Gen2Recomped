@@ -724,11 +724,14 @@ function OverworldColosseum.draw(p)
   local y = (p.gh or 0) + (p.lift or 0)
 
   local renderFacing = p.facing or "down"
-  local fx, fz = facingVector(renderFacing)
+  local fx, fz
 
-  -- Handle first-person camera rotation (mirrors OverworldStadium's handling)
+  -- Handle camera rotation using the same approach as PlayerModel
   local okCam, Cam = pcall(V.require, "Gen4ActorCam")
-  if okCam and Cam and Cam.active and Cam.active() then
+  if okCam and Cam and Cam.freeRoam and Cam.freeRoam() then
+    local yaw = Cam.modelYaw()
+    fx, fz = math.sin(yaw), math.cos(yaw)
+  elseif okCam and Cam and Cam.active and Cam.active() then
     fx, fz = Cam.facingVector(renderFacing)
   else
     local okFirstPerson, FirstPerson = pcall(V.require, "FirstPerson")
@@ -738,14 +741,21 @@ function OverworldColosseum.draw(p)
         local cameraYaw = FirstPerson.cardYaw(p.px or 0, p.py or 0)
         local face = type(renderFacing) == "string" and string.lower(renderFacing) or renderFacing
         local yaw = 0
-        if face == "down" then yaw = cameraYaw * b
-        elseif face == "up" then yaw = (cameraYaw + math.pi) * b
+        if face == "down" then yaw = (cameraYaw + math.pi) * b
+        elseif face == "up" then yaw = cameraYaw * b
         elseif face == "left" then yaw = (cameraYaw + math.pi / 2) * b
         elseif face == "right" then yaw = (cameraYaw - math.pi / 2) * b
+        else yaw = cameraYaw * b
         end
         fx = math.sin(yaw)
         fz = math.cos(yaw)
+      else
+        -- Only use grid-based facingVector when not in camera-relative mode
+        fx, fz = facingVector(renderFacing)
       end
+    else
+      -- No FirstPerson available, use grid-based facing
+      fx, fz = facingVector(renderFacing)
     end
   end
 

@@ -883,10 +883,12 @@ local function prepareOneColosseum(p, dex, dt)
   local renderFacing = p.facing
   local fx, fz = facingVector(renderFacing)
 
-  -- Camera-relative facing in voxel 1st/3rd. Gen 4's native camera is
-  -- Gen4View, not FirstPerson; keep world compass there.
+  -- Camera-relative facing using the same approach as PlayerModel
   local okCam, Cam = pcall(V.require, "Gen4ActorCam")
-  if okCam and Cam and Cam.active and Cam.active() then
+  if okCam and Cam and Cam.freeRoam and Cam.freeRoam() then
+    local yaw = Cam.modelYaw()
+    fx, fz = math.sin(yaw), math.cos(yaw)
+  elseif okCam and Cam and Cam.active and Cam.active() then
     fx, fz = Cam.facingVector(renderFacing)
   else
     local okFirstPerson, FirstPerson = pcall(V.require, "FirstPerson")
@@ -897,13 +899,20 @@ local function prepareOneColosseum(p, dex, dt)
         cameraYaw = okYaw and cameraYaw or 0
         local face = type(renderFacing) == "string" and string.lower(renderFacing) or renderFacing
         local yaw = 0
-        if face == "down" then yaw = cameraYaw * b
-        elseif face == "up" then yaw = (cameraYaw + math.pi) * b
+        if face == "down" then yaw = (cameraYaw + math.pi) * b
+        elseif face == "up" then yaw = cameraYaw * b
         elseif face == "left" then yaw = (cameraYaw + math.pi / 2) * b
         elseif face == "right" then yaw = (cameraYaw - math.pi / 2) * b
+        else yaw = cameraYaw * b
         end
         fx, fz = math.sin(yaw), math.cos(yaw)
+      else
+        -- Only use grid-based facingVector when not in camera-relative mode
+        fx, fz = facingVector(renderFacing)
       end
+    else
+      -- No FirstPerson available, use grid-based facing
+      fx, fz = facingVector(renderFacing)
     end
   end
 
@@ -982,13 +991,16 @@ local function prepareOne(p, dex, dt)
   local renderFacing = (skyMount and entity._stadiumSkyRideAnchorFacing)
       or p.facing
   
-  -- Voxel 1st/3rd uses FirstPerson. Gen 4 native 3D uses world compass.
+  -- Camera rotation using the same approach as PlayerModel
   local okCam, Cam = pcall(V.require, "Gen4ActorCam")
   local cameraYaw = 0
   local useCameraRotation = false
-  local fx, fz = facingVector(renderFacing)
+  local fx, fz
 
-  if okCam and Cam and Cam.active and Cam.active() then
+  if okCam and Cam and Cam.freeRoam and Cam.freeRoam() then
+    local yaw = Cam.modelYaw()
+    fx, fz = math.sin(yaw), math.cos(yaw)
+  elseif okCam and Cam and Cam.active and Cam.active() then
     fx, fz = Cam.facingVector(renderFacing)
   else
     local okFirstPerson, FirstPerson = pcall(V.require, "FirstPerson")
@@ -1000,17 +1012,25 @@ local function prepareOne(p, dex, dt)
         local face = type(renderFacing) == "string" and string.lower(renderFacing) or renderFacing
         local yaw = 0
         if face == "down" then
-          yaw = cameraYaw * b
-        elseif face == "up" then
           yaw = (cameraYaw + math.pi) * b
+        elseif face == "up" then
+          yaw = cameraYaw * b
         elseif face == "left" then
           yaw = (cameraYaw + math.pi / 2) * b
         elseif face == "right" then
           yaw = (cameraYaw - math.pi / 2) * b
+        else
+          yaw = cameraYaw * b
         end
         fx = math.sin(yaw)
         fz = math.cos(yaw)
+      else
+        -- Only use grid-based facingVector when not in camera-relative mode
+        fx, fz = facingVector(renderFacing)
       end
+    else
+      -- No FirstPerson available, use grid-based facing
+      fx, fz = facingVector(renderFacing)
     end
   end
   

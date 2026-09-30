@@ -370,10 +370,41 @@ function StadiumFollower.draw(x, y, facing, yUp)
   -- Handle Colosseum 3D model (dex outside StadiumPack's 1-151 range, or no
   -- Stadium ROM installed at all)
   if usingColosseum then
-    local fx, fz = ColosseumMon.towardFor(facing)
-    -- Camera-relative free-roam rotation isn't wired through ColosseumMon's
-    -- simpler toward-vector API yet; it draws facing the raw movement
-    -- direction in that mode, same as StadiumWilds' wild Pokemon already do.
+    -- Use the same camera approach as PlayerModel for Gen4 games
+    local FirstPerson = V.require("FirstPerson")
+    local Cam = V.require("Gen4ActorCam")
+    local b = FirstPerson.cardBlend()
+
+    local fx, fz
+
+    -- In camera-relative modes, use camera facing vectors directly, not grid-based towardFor
+    if Cam and Cam.freeRoam and Cam.freeRoam() then
+      local yaw = Cam.modelYaw()
+      fx, fz = math.sin(yaw), math.cos(yaw)
+    elseif Cam and Cam.active and Cam.active() then
+      fx, fz = Cam.facingVector(facing)
+    elseif b > 0 then
+      local cameraYaw = FirstPerson.cardYaw(x, y)
+      local face = type(facing) == "string" and string.lower(facing) or facing
+      local yaw = 0
+      -- Use "awayCam" kind like PlayerModel for follower
+      if face == "down" then
+        yaw = (cameraYaw + math.pi) * b
+      elseif face == "up" then
+        yaw = cameraYaw * b
+      elseif face == "right" then
+        yaw = (cameraYaw - math.pi / 2) * b
+      elseif face == "left" then
+        yaw = (cameraYaw + math.pi / 2) * b
+      else
+        yaw = cameraYaw * b
+      end
+      fx, fz = math.sin(yaw), math.cos(yaw)
+    else
+      -- Only use grid-based towardFor when not in camera-relative mode
+      fx, fz = ColosseumMon.towardFor(facing)
+    end
+
     local matrix = ColosseumMon.matrix(currentSpecies, colosseumVariant, x, yUp, y, fx, fz)
     if not matrix then return false end
     return ColosseumMon.draw(currentSpecies, colosseumVariant, matrix)
@@ -385,37 +416,32 @@ function StadiumFollower.draw(x, y, facing, yUp)
   -- Calculate the model matrix
   local m = Mat4.translate(x, yUp, y)
 
-  -- Check if we're in free-roam mode (1st or 3rd person)
+  -- Use the same camera and movement approach as PlayerModel for Gen4 games
   local FirstPerson = V.require("FirstPerson")
   local Cam = V.require("Gen4ActorCam")
   local b = FirstPerson.cardBlend()
 
-  -- Apply rotation based on facing direction
+  -- Apply rotation based on facing direction (same as PlayerModel.yawForDraw)
   local yaw = 0
 
-  if Cam and Cam.active() then
-    yaw = Cam.worldYaw(facing)
+  if Cam and Cam.freeRoam and Cam.freeRoam() then
+    yaw = Cam.modelYaw()
+  elseif Cam and Cam.active and Cam.active() then
+    yaw = -Cam.worldYaw(facing)
   elseif b > 0 then
-    -- In free-roam mode, use camera-relative rotation like the player model
     local cameraYaw = FirstPerson.cardYaw(x, y)
-
-    if facing == "down" then
-      -- Moving backwards: face the camera
-      yaw = cameraYaw * b
-
-    elseif facing == "up" then
-      -- Moving forward: face away from the camera
+    local face = type(facing) == "string" and string.lower(facing) or facing
+    if face == "down" then
       yaw = (cameraYaw + math.pi) * b
-
-    elseif facing == "left" then
-      -- Moving left: turn 90 degrees left
-      yaw = (cameraYaw + math.pi / 2) * b
-
-    elseif facing == "right" then
-      -- Moving right: turn 90 degrees right
+    elseif face == "up" then
+      yaw = cameraYaw * b
+    elseif face == "right" then
       yaw = (cameraYaw - math.pi / 2) * b
+    elseif face == "left" then
+      yaw = (cameraYaw + math.pi / 2) * b
+    else
+      yaw = cameraYaw * b
     end
-
   else
     -- In other modes, rotate based on movement direction
     if facing == "right" then
