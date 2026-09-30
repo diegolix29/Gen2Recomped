@@ -1,15 +1,21 @@
--- Facing and billboard yaw for actors drawn through Platinum's own camera.
+-- Facing, look, and camera-relative walk for actors on Platinum's own camera.
 --
--- Voxel FirstPerson.cardBlend / cardYaw key off the free-roam rig and only
--- answer while Voxel3D.camera IS that rig. Gen4WorldHost binds a table from
--- Gen4View instead, so those helpers always report blend 0 and yaw 0 -- the
--- cartridge's south look. This module reads Gen4View (eye, yaw, free mode)
--- and is the only facing source 3D player / follower / battle cards should
--- use on a gen4hostworld map.
+-- Voxel FirstPerson / ThirdPerson / FreeMove key off Voxel.level (the 1ST/3RD
+-- tilt rungs) and Voxel3D.camera. Gen4WorldHost never gives that rig the
+-- frame: Gen4View draws the world. If those voxel helpers stay in charge,
+-- the player model keeps the four-way grid facing and FreeMove steers by
+-- the wrong yaw -- or never runs at all.
+--
+-- This module is the gen4 stand-in for that free-roam flag. The gate is
+-- Gen4View mode "third" / "first" (the native 3D chase / head cam), not
+-- the voxel pipeline rung. Tilt field3d stays the cartridge camera and
+-- keeps grid walking.
 
 local V = ...
 
 local Cam = {}
+
+Cam.bodyYaw = nil
 
 local function host()
   local ok, H = pcall(V.require, "Gen4WorldHost")
@@ -22,9 +28,18 @@ function Cam.ground(state)
   return nil
 end
 
+function Cam.onGen4(state)
+  return Cam.ground(state) ~= nil
+end
+
 function Cam.view(ground)
   ground = ground or Cam.ground()
   return ground and ground.view3d or nil
+end
+
+function Cam.mode(ground)
+  local view = Cam.view(ground)
+  return view and view.mode or nil
 end
 
 -- True while Gen4View is drawing a real 3D lens (third, first, or field3d).
@@ -33,10 +48,39 @@ function Cam.active(ground)
   return view and view.isFree and view:isFree() == true
 end
 
+-- The voxel 3RD equivalent: camera stands with the player, look is free,
+-- walk is camera-relative. field3d is only a tilted cartridge camera.
+function Cam.freeRoam(ground)
+  local m = Cam.mode(ground)
+  return m == "third" or m == "first"
+end
+
+function Cam.driving()
+  if not Cam.freeRoam() then return false end
+  local H = host()
+  if H and H._inBattle then return false end
+  local ok, FirstPerson = pcall(V.require, "FirstPerson")
+  if not (ok and FirstPerson and FirstPerson.onTop) then return false end
+  return FirstPerson.onTop() == true
+end
+
 function Cam.eye(ground)
   local view = Cam.view(ground)
   if not (view and view.x) then return nil end
   return { view.x, view.y or 0, view.z or 0 }
+end
+
+function Cam.lookYaw(ground)
+  local view = Cam.view(ground)
+  return (view and view.yaw) or 0
+end
+
+-- World bearing of the look, in the same atan2(east, south) space a mesh
+-- rotateY uses (+Z / yaw 0 = south). Gen4View yaw 0 looks NORTH, so the
+-- unrotated FirstPerson formula (sin, cos) does not apply.
+function Cam.lookBearing(ground)
+  local yaw = Cam.lookYaw(ground)
+  return math.atan2(math.sin(yaw), -math.cos(yaw))
 end
 
 -- Yaw that turns a +Z (south) card toward the live Gen4View eye.
@@ -52,6 +96,47 @@ function Cam.cardYaw(wx, wz, ground)
   local dx, dz = eye[1] - wx, eye[3] - wz
   if dx * dx + dz * dz < 1e-9 then return 0 end
   return math.atan2(dx, dz)
+end
+
+-- Camera-space (mx right, mz forward) into map (east, south), using
+-- Gen4View.yaw. Matches OverworldState's orbited free-walk rotation:
+-- screen up becomes the look's forward even before the player has
+-- touched orbit (voxel 3RD always does this; the grid path only did it
+-- after orbiting, which is why 3rd person still felt like NES walking).
+function Cam.moveWorld(mx, mz)
+  mx, mz = tonumber(mx) or 0, tonumber(mz) or 0
+  local yaw = Cam.lookYaw()
+  local c, s = math.cos(yaw), math.sin(yaw)
+  return mx * c + mz * s, mx * s - mz * c
+end
+
+local function facingOf(a)
+  local s, c = math.sin(a), math.cos(a)
+  if math.abs(s) > math.abs(c) then
+    return s > 0 and "right" or "left"
+  end
+  return c > 0 and "down" or "up"
+end
+
+function Cam.bodyBearing(wx, wz)
+  if Cam.mode() == "third" and wx and wz and (wx ~= 0 or wz ~= 0) then
+    return math.atan2(wx, wz)
+  end
+  return Cam.lookBearing()
+end
+
+function Cam.pointBody(wx, wz)
+  Cam.bodyYaw = Cam.bodyBearing(wx, wz)
+  return facingOf(Cam.bodyYaw)
+end
+
+function Cam.releaseBody()
+  Cam.bodyYaw = nil
+end
+
+-- Continuous rotateY for the player mesh while free-roam owns the walk.
+function Cam.modelYaw()
+  return Cam.bodyYaw or Cam.lookBearing()
 end
 
 -- Model rotateY from a WORLD compass facing.

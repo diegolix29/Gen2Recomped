@@ -825,15 +825,17 @@ function PlayerModel.previewHeight()
   return 1
 end
 
--- Yaw for the player mesh. Voxel free-roam uses FirstPerson's eye. Gen 4's
--- native camera is a separate Gen4View (see Gen4ActorCam): that rig never
--- owns Voxel3D.camera, so cardBlend is always 0 and cardYaw is always the
--- south default. On a gen4hostworld map the compass is world-space -- the
--- same +Z-is-south rotateY the rest of this file uses when not in 1st/3rd.
+-- Yaw for the player mesh. Voxel free-roam uses FirstPerson's eye. Gen 4
+-- third/first uses Gen4ActorCam.modelYaw (Gen4View look + travel), the
+-- same continuous body bearing FreeMove writes. field3d stays world
+-- compass -- that camera is still the cartridge look.
 local function yawForDraw(px, py, facing, kind, b, FirstPerson)
   local Cam = V.require("Gen4ActorCam")
-  if Cam and Cam.active() then
-    return Cam.worldYaw(facing)
+  if Cam and Cam.freeRoam and Cam.freeRoam() then
+    return Cam.modelYaw()
+  end
+  if Cam and Cam.active and Cam.active() then
+    return -Cam.worldYaw(facing)
   end
   if not (b and b > 0 and FirstPerson) then
     return (Cam and Cam.worldYaw(facing)) or 0
@@ -869,11 +871,12 @@ end
 --- parameter so callers can keep passing the same stepFlip value used for
 --- the 2D sprite path without needing a special case.
 function PlayerModel.draw(px, py, y, facing, mirror)
-  -- In voxel free-roam, use the continuous body facing. Gen4's third-person
-  -- camera is not that rig -- keep the entity's world facing instead.
+  -- Voxel free-roam: FirstPerson body. Gen4 third/first: Gen4ActorCam
+  -- already owns facing via FreeMove; do not remap through worldToScreen
+  -- or the voxel cardBlend (that blend is 0 on Platinum).
   local FirstPerson = V.require("FirstPerson")
   local Cam = V.require("Gen4ActorCam")
-  local gen4Cam = Cam and Cam.active()
+  local gen4Cam = Cam and Cam.freeRoam and Cam.freeRoam()
   local b = (not gen4Cam) and FirstPerson.cardBlend() or 0
   if b > 0 then
     facing = FirstPerson.pointBody(0, 0)

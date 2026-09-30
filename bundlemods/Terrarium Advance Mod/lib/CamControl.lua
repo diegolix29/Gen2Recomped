@@ -89,6 +89,14 @@ end
 -- nothing that zooms (1ST, or a screen with no camera of ours behind it).
 function CamControl.zoomTarget()
   if battleLive() then return "battle" end
+  do
+    local ok, Cam = pcall(V.require, "Gen4ActorCam")
+    if ok and Cam and Cam.onGen4 and Cam.onGen4() then
+      -- Gen4View.zoomBy is the engine's 3rd-person dolly. The voxel boom
+      -- must not swallow the wheel on a map that never uses that camera.
+      return nil
+    end
+  end
   if not roaming() then return nil end
   if Voxel.isThirdPerson(Voxel.level) then return "boom" end
   if Voxel.isFirstPerson(Voxel.level) then return nil end
