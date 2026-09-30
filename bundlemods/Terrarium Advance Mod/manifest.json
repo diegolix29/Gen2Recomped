@@ -13,7 +13,8 @@
   "conflicts": [],
   "permissions": [
     "engine_internals",
-    "filesystem"
+    "filesystem",
+    "network"
   ],
   "generations": [
     1,

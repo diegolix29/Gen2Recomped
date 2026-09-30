@@ -1657,7 +1657,7 @@ SettingsMenu.helpFor = function(id)
     return "Opens the current Colosseum character. Left/Right orbit, Select toggles walk, Start re-saves walk_debug_<id>.txt into the LOVE save folder (see the console path) for tools/paint_walk_override.py."
   end
   if id == "DRAMATIC_SHAPE:hdPokemon" then
-    return "Import Reloded HD GIFs (National Dex 1-493) for battles and overworld when Colosseum/Stadium 3D is missing. Press A and pick a GIF zip. Does not need Kanto in Motion. Command: python tools/import_hd_pokemon.py --max-dex 493 --target \"<this mod>\" \"<gifs.zip>\""
+    return "HD Asset Manager (same as Kanto in Motion): A downloads the official PNG pack, START installs a local ZIP. Android: put picked_hd_pokemon.zip in the save folder, then START. Extraction runs a little each frame so the bar can move. Dex 1-493 Reloded GIFs in the zip are converted in-game; PNG sheets are copied once into mod cache."
   end
   return originalHelpFor(id)
 end

@@ -77,16 +77,31 @@ end
 
 local function loadCacheLua()
   local handle = mod()
-  if not (handle and handle.cache and type(handle.cache.read) == "function") then
+  local function run(src, name)
+    if type(src) ~= "string" or src == "" then return nil end
+    local chunk = load(src, name)
+    if not chunk then return nil end
+    local okRun, value = pcall(chunk)
+    if okRun and type(value) == "table" then return value end
     return nil
   end
-  local ok, src = pcall(handle.cache.read, handle.cache, "hd_pokemon/data/hd_pokemon.lua")
-  if not (ok and type(src) == "string" and src ~= "") then return nil end
-  local chunk = load(src, "@cache/hd_pokemon.lua")
-  if not chunk then return nil end
-  local okRun, value = pcall(chunk)
-  if okRun and type(value) == "table" then return value end
-  return nil
+  local merged = {}
+  local function take(src, name)
+    local value = run(src, name)
+    if type(value) ~= "table" then return end
+    for key, row in pairs(value) do merged[key] = row end
+  end
+  if handle and handle.cache and type(handle.cache.read) == "function" then
+    local ok, src = pcall(handle.cache.read, handle.cache, "hd_pokemon/data/hd_pokemon.lua")
+    if ok then take(src, "@cache/hd_pokemon.lua") end
+  end
+  local Compat = V.EngineCompat or (V.require and V.require("EngineCompat"))
+  local f = Compat and Compat.fs and Compat.fs()
+  if f and type(f.read) == "function" then
+    local ok, src = pcall(f.read, "hd_pokemon/data/hd_pokemon.lua")
+    if ok then take(src, "@save/hd_pokemon.lua") end
+  end
+  return next(merged) and merged or nil
 end
 
 local function loadMetadata()
@@ -134,9 +149,20 @@ local function tryImage(relative)
     local ok, got = pcall(function() return handle.assets:image(relative) end)
     if ok and got then image = got end
   end
-  if not image and handle and handle.cache and type(handle.cache.read) == "function" then
-    local ok, bytes = pcall(function() return handle.cache:read("hd_pokemon/" .. relative) end)
-    if ok and type(bytes) == "string" and #bytes > 0
+  if not image then
+    local bytes
+    local Compat = V.EngineCompat or (V.require and V.require("EngineCompat"))
+    local f = Compat and Compat.fs and Compat.fs()
+    if f and type(f.read) == "function" then
+      local ok, got = pcall(f.read, "hd_pokemon/" .. relative)
+      if ok then bytes = got end
+    end
+    if (type(bytes) ~= "string" or #bytes == 0)
+        and handle and handle.cache and type(handle.cache.read) == "function" then
+      local ok, got = pcall(function() return handle.cache:read("hd_pokemon/" .. relative) end)
+      if ok then bytes = got end
+    end
+    if type(bytes) == "string" and #bytes > 0
         and love and love.filesystem and love.filesystem.newFileData then
       local okData, fileData = pcall(love.filesystem.newFileData, bytes, relative)
       if okData and fileData and love.graphics and love.graphics.newImage then

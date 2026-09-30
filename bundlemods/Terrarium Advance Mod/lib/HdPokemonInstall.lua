@@ -1,9 +1,6 @@
--- HD Pokémon sheets (dex 1-493): in-game import, without Kanto in Motion.
---
--- OPTIONS row next to CHARACTER VIEWER. Press A, pick a Reloded / HD GIF
--- zip, then HdPokemonScreen shows CONVERTING progress while
--- tools/import_hd_pokemon.py runs. Sheets land in cache/hd_pokemon.
-
+-- HD Pokémon Asset Manager, same pattern as Kanto in Motion:
+-- Fetch.download (desktop + Android), then incremental ZIP extract into
+-- mod.cache. No Python. No host shell except the optional desktop file picker.
 local V = ...
 local Compat = V.require("EngineCompat")
 
@@ -11,10 +8,17 @@ local Install = {}
 Install.ID = "DRAMATIC_SHAPE:hdPokemon"
 Install.LABEL = "HD POKEMON"
 Install.PICKED = "picked_hd_pokemon.zip"
-Install.SCRIPT = "hd_pokemon_import.py"
-Install.BUILD = "hd_pokemon_build"
-Install.PROGRESS = "hd_pokemon_build/progress.txt"
+Install.TEMP = "hd_pokemon_dl.tmp.zip"
+Install.CACHE_ROOT = "hd_pokemon/"
+Install.COMPLETE_KEY = "hd_pokemon/complete.txt"
 Install.DEX_MAX = 493
+Install.REPO = "HaseoSora/Kanto-in-Motion-Assets"
+Install.ASSET_VERSION = "1.0.0"
+Install.EXTRACT_BUDGET = 0.010
+Install.MAX_CACHE_FILE = 64 * 1024 * 1024
+Install.DOWNLOAD_MAX_SECONDS = 15 * 60
+
+local NAME_RE = "^(%d+)%-(front|back)%-([ns])(?:%-([fm]))?%.gif$"
 
 Install.status = {
   state = "idle",
@@ -23,28 +27,68 @@ Install.status = {
   total = 1,
   message = "",
   count = 0,
+  downloadBytes = 0,
+  downloadTotal = 0,
 }
 
-local function pushScreen(game)
-  local ok, Screen = pcall(V.require, "HdPokemonScreen")
-  if ok and Screen and game and game.stack and type(Screen.new) == "function" then
-    pcall(function() game.stack:push(Screen.new(game)) end)
-  end
+local manager = Install
+
+local function modHandle()
+  return V.mod
 end
 
-local function note(game, title, lead, body)
-  local ok, StadiumScreen = pcall(V.require, "StadiumScreen")
-  if not (ok and StadiumScreen and game and game.stack
-      and type(StadiumScreen.newNote) == "function") then
-    return
-  end
-  pcall(function()
-    game.stack:push(StadiumScreen.newNote(game, title, lead, body))
-  end)
+local function cacheAvailable()
+  local mod = modHandle()
+  return mod and mod.cache
+    and type(mod.cache.read) == "function"
+    and type(mod.cache.write) == "function"
+    and type(mod.cache.info) == "function"
 end
 
-function Install.commandHint()
-  return "python tools/import_hd_pokemon.py --max-dex 493 --target \"<Terrarium Advance Mod>\" \"<reloded-gifs.zip>\""
+local function cacheKey(relative)
+  return Install.CACHE_ROOT .. tostring(relative or "")
+end
+
+local function safeCacheInfo(key)
+  if not cacheAvailable() then return nil end
+  local ok, info = pcall(function() return modHandle().cache:info(key) end)
+  if ok then return info end
+  return nil
+end
+
+local function safeCacheRead(key)
+  if not cacheAvailable() then return nil end
+  local ok, bytes = pcall(function() return modHandle().cache:read(key) end)
+  if ok and type(bytes) == "string" then return bytes end
+  return nil
+end
+
+local function safeCacheWrite(key, bytes)
+  if not cacheAvailable() then return false, "mod.cache is unavailable" end
+  local ok, wrote, err = pcall(function() return modHandle().cache:write(key, bytes) end)
+  if not ok then return false, tostring(wrote) end
+  if wrote == false then return false, tostring(err or "cache write failed") end
+  return true
+end
+
+local function resolveRawFilesystem()
+  local okSave, SaveData = pcall(require, "src.core.SaveData")
+  if not okSave or not SaveData or type(SaveData.persistenceFs) ~= "function" then
+    return nil, "save filesystem unavailable"
+  end
+  local okFs, fs = pcall(SaveData.persistenceFs)
+  if not okFs or type(fs) ~= "table" then
+    return nil, "save filesystem unavailable"
+  end
+  if type(fs.newFile) ~= "function" or type(fs.getInfo) ~= "function" then
+    return nil, "random-access save filesystem unavailable"
+  end
+  return fs
+end
+
+local function setStatus(state, message)
+  Install.status.state = state
+  if message then Install.status.message = message end
 end
 
 function Install.canDialog()
@@ -60,8 +104,9 @@ function Install.count()
   return 0
 end
 
-function Install.ready()
-  return Install.count() > 0
+function Install.isComplete()
+  local value = safeCacheRead(Install.COMPLETE_KEY)
+  return type(value) == "string" and value ~= ""
 end
 
 function Install.row()
@@ -70,263 +115,485 @@ function Install.row()
     label = Install.LABEL,
     value = function()
       local st = Install.status.state
-      if st == "importing" or st == "starting" then return "BUSY" end
-      local n = Install.count()
-      if n >= Install.DEX_MAX then return "READY" end
-      if n > 0 then return tostring(n) .. " DEX" end
-      return Install.canDialog() and "IMPORT" or "WHERE?"
-    end,
-    step = function(game)
-      pcall(Install.import, game)
-      return true
+      if st == "checking" then return "CHECK" end
+      if st == "downloading" then return "GET" end
+      if st == "extracting" then return "INSTALL" end
+      if st == "error" then return "ERROR" end
+      if Install.isComplete() or Install.count() > 0 then return "READY" end
+      return "OPEN"
     end,
     activate = function(game)
-      pcall(Install.import, game)
+      pcall(Install.open, game)
+    end,
+    step = function(game)
+      pcall(Install.open, game)
+      return true
     end,
   }
 end
 
-local function saveDir()
-  local f = Compat.fs()
-  if f and type(f.getSaveDirectory) == "function" then
-    local ok, dir = pcall(f.getSaveDirectory)
-    if ok and type(dir) == "string" and dir ~= "" then return dir, f end
+function Install.open(game)
+  local ok, Screen = pcall(V.require, "HdPokemonScreen")
+  if ok and Screen and game and game.stack then
+    pcall(function() game.stack:push(Screen.new(game)) end)
   end
-  return nil, f
 end
 
-local function findPython()
-  local shell = Compat.hostShell()
-  if not shell then return nil end
-  local probes = {
-    { exe = "py", args = { "-3" }, check = 'py -3 -c "from PIL import Image; print(\'OK\')"' },
-    { exe = "python", args = {}, check = 'python -c "from PIL import Image; print(\'OK\')"' },
-    { exe = "python3", args = {}, check = 'python3 -c "from PIL import Image; print(\'OK\')"' },
-  }
-  for _, probe in ipairs(probes) do
-    local out = Compat.pipeOutput(shell, probe.check)
-    if type(out) == "string" and out:find("OK", 1, true) then
-      return probe
+local function le16(s, p)
+  local a, b = s:byte(p, p + 1)
+  if not b then return nil end
+  return a + b * 256
+end
+
+local function le32(s, p)
+  local a, b, c, d = s:byte(p, p + 3)
+  if not d then return nil end
+  return a + b * 256 + c * 65536 + d * 16777216
+end
+
+local function closeZipReader()
+  local r = manager.zipReader
+  if r and r.file and type(r.file.close) == "function" then
+    pcall(function() r.file:close() end)
+  end
+  manager.zipReader = nil
+end
+
+local function removeTemp()
+  local fs = manager.rawFs
+  if fs and type(fs.remove) == "function" and manager.tempName == Install.TEMP then
+    pcall(fs.remove, manager.tempName)
+  end
+end
+
+local function cleanupArchive()
+  closeZipReader()
+  removeTemp()
+end
+
+local function cancelNetworkJob()
+  if not manager.downloadHandle then return end
+  local okFetch, Fetch = pcall(require, "src.net.Fetch")
+  if okFetch and Fetch then
+    local job = manager.downloadHandle
+    if type(Fetch.cancel) == "function" then pcall(Fetch.cancel, job) end
+    if type(Fetch.release) == "function" then pcall(Fetch.release, job) end
+  end
+  manager.downloadHandle = nil
+end
+
+local function setError(message)
+  cleanupArchive()
+  cancelNetworkJob()
+  manager.releaseHandle = nil
+  Install.status.state = "error"
+  Install.status.error = tostring(message or "unknown error")
+  Install.status.message = "ERROR"
+end
+
+local function openZipReader(name)
+  closeZipReader()
+  local fs = manager.rawFs
+  if not fs then return nil, "save filesystem unavailable" end
+  local okNew, fileOrErr = pcall(fs.newFile, name)
+  if not okNew or not fileOrErr then return nil, tostring(fileOrErr or "could not open zip") end
+  local f = fileOrErr
+  local okOpen, opened, openErr = pcall(function() return f:open("r") end)
+  if not okOpen or opened == false then
+    pcall(function() f:close() end)
+    return nil, tostring(openErr or "could not open zip")
+  end
+  local okSize, size = pcall(function() return f:getSize() end)
+  if not okSize or not tonumber(size) or tonumber(size) < 22 then
+    pcall(function() f:close() end)
+    return nil, "file is too small to be a zip"
+  end
+  local r = { file = f, size = tonumber(size) }
+  function r:readAt(offset, count)
+    if offset < 0 or count < 0 or offset + count > self.size then
+      return nil, "zip read out of range"
     end
+    local okSeek, seeked = pcall(function() return self.file:seek(offset) end)
+    if not okSeek or seeked == false then return nil, "zip seek failed" end
+    local okRead, data = pcall(function() return self.file:read(count) end)
+    if not okRead or type(data) ~= "string" or #data ~= count then
+      return nil, "zip read failed"
+    end
+    return data
+  end
+  manager.zipReader = r
+  manager.tempName = name
+  return r
+end
+
+local function gifName(path)
+  local base = tostring(path or ""):gsub("\\", "/"):match("([^/]+)$") or ""
+  return base:lower()
+end
+
+local function classifyEntry(name)
+  name = tostring(name or ""):gsub("\\", "/")
+  if name:sub(-1) == "/" then return nil end
+  if name == "data/hd_pokemon.lua" or name:match("hd_pokemon%.lua$") then
+    return { kind = "lua", relative = "data/hd_pokemon.lua" }
+  end
+  if name:match("^assets/battle/hd%-pokemon/.+%.png$")
+      or name:match("/assets/battle/hd%-pokemon/.+%.png$") then
+    local rel = name:match("(assets/battle/hd%-pokemon/.+)$")
+    return { kind = "png", relative = rel }
+  end
+  local base = gifName(name)
+  local dex, side, color, gender = base:match(NAME_RE)
+  if dex then
+    return {
+      kind = "gif",
+      relative = name,
+      dex = tonumber(dex),
+      side = side,
+      color = color == "s" and "shiny" or "normal",
+      gender = gender == "m" and "male" or (gender == "f" and "female" or "default"),
+    }
   end
   return nil
 end
 
-local function stageImporter(f)
-  local handle = V.mod
-  if not (handle and type(handle.read) == "function") then
-    return nil, "mod files unavailable"
+local function scanZipDirectory(reader)
+  local tailSize = math.min(reader.size, 22 + 65535 + 256)
+  local tail, tailErr = reader:readAt(reader.size - tailSize, tailSize)
+  if not tail then return nil, tailErr end
+  local eocd
+  for i = #tail - 21, 1, -1 do
+    if tail:sub(i, i + 3) == "PK\005\006" then eocd = i break end
   end
-  local ok, src = pcall(handle.read, handle, "tools/import_hd_pokemon.py")
-  if not (ok and type(src) == "string" and src ~= "") then
-    return nil, "import script missing"
+  if not eocd then return nil, "zip end record not found" end
+  local entries = le16(tail, eocd + 10)
+  local cdSize = le32(tail, eocd + 12)
+  local cdOffset = le32(tail, eocd + 16)
+  if not entries or not cdSize or not cdOffset then return nil, "zip end record truncated" end
+  if entries == 0xFFFF or cdSize == 0xFFFFFFFF or cdOffset == 0xFFFFFFFF then
+    return nil, "zip64 not supported"
   end
-  local okWrite = pcall(f.write, Install.SCRIPT, src)
-  if not okWrite then return nil, "could not copy import script" end
-  local dir = saveDir()
-  if not dir then return nil, "save directory unavailable" end
-  return dir .. "/" .. Install.SCRIPT
+  local cd, cdErr = reader:readAt(cdOffset, cdSize)
+  if not cd then return nil, cdErr end
+  local out, pos = {}, 1
+  for _ = 1, entries do
+    if cd:sub(pos, pos + 3) ~= "PK\001\002" then return nil, "invalid zip directory" end
+    local flags = le16(cd, pos + 8) or 0
+    local method = le16(cd, pos + 10)
+    local compSize = le32(cd, pos + 20)
+    local uncompSize = le32(cd, pos + 24)
+    local nameLen = le16(cd, pos + 28)
+    local extraLen = le16(cd, pos + 30)
+    local commentLen = le16(cd, pos + 32)
+    local localOffset = le32(cd, pos + 42)
+    local nameStart = pos + 46
+    local name = cd:sub(nameStart, nameStart + nameLen - 1)
+    pos = nameStart + nameLen + extraLen + commentLen
+    if (flags % 2) == 1 then return nil, "encrypted zip" end
+    local cls = classifyEntry(name)
+    if cls then
+      if method ~= 0 and method ~= 8 then
+        return nil, "unsupported zip method for " .. name
+      end
+      if uncompSize > Install.MAX_CACHE_FILE then
+        return nil, "file exceeds 64 MB: " .. name
+      end
+      cls.method = method
+      cls.compressedSize = compSize
+      cls.size = uncompSize
+      cls.localOffset = localOffset
+      out[#out + 1] = cls
+    end
+  end
+  return out
 end
 
-local function ingestBuild(f)
-  Install.status.message = "STORING"
-  local handle = V.mod
-  if not (handle and handle.cache and type(handle.cache.write) == "function") then
-    return nil, "mod cache unavailable"
+local function readZipEntry(reader, item)
+  local hdr, hdrErr = reader:readAt(item.localOffset, 30)
+  if not hdr then return nil, hdrErr end
+  if hdr:sub(1, 4) ~= "PK\003\004" then return nil, "invalid zip local header" end
+  local method = le16(hdr, 9)
+  local nameLen = le16(hdr, 27)
+  local extraLen = le16(hdr, 29)
+  local dataOffset = item.localOffset + 30 + nameLen + extraLen
+  local packed, packedErr = reader:readAt(dataOffset, item.compressedSize)
+  if not packed then return nil, packedErr end
+  local bytes = packed
+  if item.method == 8 then
+    if not (love and love.data and type(love.data.decompress) == "function") then
+      return nil, "deflate unavailable"
+    end
+    local okInflate, inflated = pcall(love.data.decompress, "string", "deflate", packed)
+    if not okInflate or type(inflated) ~= "string" then return nil, "deflate failed" end
+    bytes = inflated
   end
-  local okList, list = pcall(f.read, Install.BUILD .. "/files.txt")
-  if not (okList and type(list) == "string" and list ~= "") then
-    return nil, "import produced no file list"
+  return bytes
+end
+
+local function luaRecord(image, meta)
+  local durs = {}
+  for i = 1, #(meta.durations or {}) do
+    durs[i] = tostring(meta.durations[i])
   end
-  local n = 0
-  for line in list:gmatch("[^\r\n]+") do
-    local rel = line:gsub("^%s+", ""):gsub("%s+$", "")
-    if rel ~= "" then
-      local okRead, bytes = pcall(f.read, Install.BUILD .. "/" .. rel)
-      if okRead and type(bytes) == "string" and #bytes > 0 then
-        local okWrite = pcall(handle.cache.write, handle.cache, "hd_pokemon/" .. rel, bytes)
-        if okWrite then n = n + 1 end
+  return string.format(
+    '{ image = "%s", width = %d, height = %d, columns = %d, frames = %d, durations = {%s}, displayScale = %.6f }',
+    image, meta.width, meta.height, meta.columns, meta.frames,
+    table.concat(durs, ","), tonumber(meta.displayScale) or 0.33)
+end
+
+local function writeMetadata()
+  local records = manager.records or {}
+  local lines = { "return {" }
+  local dexes = {}
+  for dex in pairs(records) do dexes[#dexes + 1] = dex end
+  table.sort(dexes)
+  for _, dex in ipairs(dexes) do
+    local species = records[dex]
+    lines[#lines + 1] = string.format("  [%d] = {", dex)
+    lines[#lines + 1] = string.format("    dex = %d,", dex)
+    for _, side in ipairs({ "front", "back" }) do
+      local sideRec = species[side]
+      if sideRec then
+        lines[#lines + 1] = "    " .. side .. " = {"
+        for _, color in ipairs({ "normal", "shiny" }) do
+          local colorRec = sideRec[color]
+          if colorRec then
+            lines[#lines + 1] = "      " .. color .. " = {"
+            for _, gender in ipairs({ "default", "male", "female" }) do
+              local rec = colorRec[gender]
+              if rec then
+                lines[#lines + 1] = "        " .. gender .. " = " .. luaRecord(rec.image, rec) .. ","
+              end
+            end
+            lines[#lines + 1] = "      },"
+          end
+        end
+        lines[#lines + 1] = "    },"
       end
     end
+    lines[#lines + 1] = "  },"
   end
-  if n < 1 then return nil, "could not store converted sheets" end
-  local HdPokemon = V.HdPokemon or (V.require and V.require("HdPokemon"))
-  if HdPokemon and type(HdPokemon.reload) == "function" then
-    pcall(HdPokemon.reload)
-  end
-  return n
+  lines[#lines + 1] = "}"
+  return safeCacheWrite(cacheKey("data/hd_pokemon.lua"), table.concat(lines, "\n") .. "\n")
 end
 
-local function parseProgress(text)
-  if type(text) ~= "string" then return nil end
-  local lines = {}
-  for line in text:gmatch("[^\r\n]+") do
-    lines[#lines + 1] = line
+local function finishExtraction()
+  if manager.wroteGifs then
+    local okMeta, err = writeMetadata()
+    if not okMeta then return setError("could not write metadata: " .. tostring(err)) end
   end
-  if #lines < 1 then return nil end
-  return {
-    state = lines[1] or "",
-    current = tonumber(lines[2]) or 0,
-    total = math.max(1, tonumber(lines[3]) or 1),
-    message = lines[4] or "",
-  }
+  safeCacheWrite(Install.COMPLETE_KEY, "zip:" .. tostring(Install.status.current or 0))
+  cleanupArchive()
+  local HdPokemon = V.HdPokemon
+  if HdPokemon and type(HdPokemon.reload) == "function" then pcall(HdPokemon.reload) end
+  Install.status.state = "done"
+  Install.status.count = Install.count()
+  Install.status.message = "READY"
+  Install.status.error = nil
 end
 
-local function psQuote(s)
-  return "'" .. tostring(s):gsub("'", "''") .. "'"
+local function installGif(bytes, item)
+  local HdGif = V.require("HdGif")
+  local decoded, err = HdGif.decode(bytes)
+  if not decoded then return nil, err end
+  local packed, packErr = HdGif.packSheet(decoded, 0.60)
+  if not packed then return nil, packErr end
+  local suffix = ""
+  if item.gender == "male" then suffix = "-m"
+  elseif item.gender == "female" then suffix = "-f" end
+  local rel = string.format("assets/battle/hd-pokemon/%s/%s/%03d%s.png",
+    item.side, item.color, item.dex, suffix)
+  packed.image = rel
+  packed.displayScale = item.side == "back" and 0.315 or 0.33
+  local ok, writeErr = safeCacheWrite(cacheKey(rel), packed.bytes)
+  if not ok then return nil, writeErr end
+  local records = manager.records
+  records[item.dex] = records[item.dex] or {}
+  records[item.dex][item.side] = records[item.dex][item.side] or {}
+  records[item.dex][item.side][item.color] = records[item.dex][item.side][item.color] or {}
+  records[item.dex][item.side][item.color][item.gender] = packed
+  manager.wroteGifs = true
+  return rel
 end
 
-local function launchPython(python, scriptPath, outDir, zipPath, progressPath)
-  local shell = Compat.hostShell()
-  if not shell then return nil, "no host shell" end
-  local osName = Compat.osName()
-  local args = {}
-  for _, extra in ipairs(python.args or {}) do args[#args + 1] = extra end
-  args[#args + 1] = scriptPath
-  args[#args + 1] = "--max-dex"
-  args[#args + 1] = "493"
-  args[#args + 1] = "--out"
-  args[#args + 1] = outDir
-  args[#args + 1] = "--progress-file"
-  args[#args + 1] = progressPath
-  args[#args + 1] = zipPath
+local function beginExtraction(zipName, official)
+  local reader, openErr = openZipReader(zipName)
+  if not reader then return setError(openErr) end
+  local entries, scanErr = scanZipDirectory(reader)
+  if not entries then return setError(scanErr) end
+  if #entries == 0 then return setError("zip has no HD pokemon files") end
+  manager.extractFiles = entries
+  manager.extractPos = 1
+  manager.records = {}
+  manager.wroteGifs = false
+  Install.status.current = 0
+  Install.status.total = #entries
+  Install.status.message = "EXTRACTING"
+  setStatus("extracting")
+end
 
-  local command
-  if osName == "Windows" then
-    local listed = {}
-    for _, a in ipairs(args) do
-      listed[#listed + 1] = psQuote(a)
+local function pumpExtraction()
+  if Install.status.state ~= "extracting" then return end
+  local reader = manager.zipReader
+  if not reader then return setError("zip closed") end
+  local started = love.timer and love.timer.getTime and love.timer.getTime() or nil
+  local processed = 0
+  while manager.extractPos <= #manager.extractFiles do
+    local item = manager.extractFiles[manager.extractPos]
+    local bytes, readErr = readZipEntry(reader, item)
+    if type(bytes) ~= "string" then
+      return setError("extract failed: " .. tostring(readErr))
     end
-    command = "powershell -NoProfile -NonInteractive -Command "
-      .. '"Start-Process -FilePath ' .. psQuote(python.exe)
-      .. " -ArgumentList @(" .. table.concat(listed, ",") .. ")"
-      .. ' -WindowStyle Hidden"'
-  else
-    local quote = (type(shell.quote) == "function")
-      and function(v) return shell.quote(v) end
-      or function(v) return "'" .. tostring(v):gsub("'", "'\\''") .. "'" end
-    local parts = { quote(python.exe) }
-    for _, a in ipairs(args) do parts[#parts + 1] = quote(a) end
-    command = table.concat(parts, " ") .. " >/dev/null 2>&1 &"
+    local ok, err
+    if item.kind == "gif" then
+      if item.dex and item.dex >= 1 and item.dex <= Install.DEX_MAX then
+        ok, err = installGif(bytes, item)
+      else
+        ok = true
+      end
+    elseif item.kind == "lua" then
+      ok, err = safeCacheWrite(cacheKey("data/hd_pokemon.lua"), bytes)
+    else
+      ok, err = safeCacheWrite(cacheKey(item.relative), bytes)
+    end
+    if not ok then return setError(tostring(err or "install failed")) end
+    manager.extractPos = manager.extractPos + 1
+    Install.status.current = manager.extractPos - 1
+    Install.status.message = (item.relative or ""):match("([^/]+)$") or "FILE"
+    processed = processed + 1
+    if started and love.timer and love.timer.getTime then
+      if love.timer.getTime() - started >= Install.EXTRACT_BUDGET then break end
+    elseif processed >= 1 then
+      break
+    end
   end
-  Compat.pipeOutput(shell, command)
+  if manager.extractPos > #manager.extractFiles then finishExtraction() end
+end
+
+local function beginDownloadForRelease(release)
+  if type(release) ~= "table" or not release.zip or not release.zip.url then
+    return setError("github release has no zip")
+  end
+  local okFetch, Fetch = pcall(require, "src.net.Fetch")
+  if not okFetch or not Fetch or type(Fetch.download) ~= "function" then
+    return setError("engine downloader unavailable")
+  end
+  manager.rawFs = manager.rawFs or select(1, resolveRawFilesystem())
+  if manager.rawFs and type(manager.rawFs.remove) == "function" then
+    pcall(manager.rawFs.remove, Install.TEMP)
+  end
+  Install.status.downloadTotal = tonumber(release.zip.size) or 0
+  Install.status.downloadBytes = 0
+  manager.downloadHandle = Fetch.download(release.zip.url, Install.TEMP, {
+    size = Install.status.downloadTotal > 0 and Install.status.downloadTotal or nil,
+    userAgent = "terrarium-hd-pokemon",
+    maxSeconds = Install.DOWNLOAD_MAX_SECONDS,
+  })
+  if not manager.downloadHandle then return setError("could not start download") end
+  setStatus("downloading", "DOWNLOADING")
+end
+
+local function pumpReleaseCheck()
+  if Install.status.state ~= "checking" then return end
+  local okModUpdate, ModUpdate = pcall(require, "src.mods.ModUpdate")
+  if not okModUpdate or not ModUpdate then return setError("release checker unavailable") end
+  local done, releases, err = ModUpdate.pumpFetchReleases(manager.releaseHandle)
+  if not done then return end
+  manager.releaseHandle = nil
+  if not releases then return setError(err or "could not check release") end
+  local wanted
+  for _, rel in ipairs(releases) do
+    if tostring(rel.version or "") == Install.ASSET_VERSION and rel.zip and rel.zip.url then
+      wanted = rel
+      break
+    end
+  end
+  if not wanted and releases[1] and releases[1].zip then wanted = releases[1] end
+  if not wanted then return setError("asset release not found") end
+  beginDownloadForRelease(wanted)
+end
+
+local function pumpDownload()
+  if Install.status.state ~= "downloading" then return end
+  local okFetch, Fetch = pcall(require, "src.net.Fetch")
+  if not okFetch or not Fetch then return setError("downloader unavailable") end
+  local fs = manager.rawFs
+  if fs then
+    local okInfo, info = pcall(fs.getInfo, Install.TEMP, "file")
+    if okInfo and info then
+      Install.status.downloadBytes = tonumber(info.size) or Install.status.downloadBytes
+    end
+  end
+  local st = Fetch.poll(manager.downloadHandle)
+  if st.status == "pending" then
+    if Install.status.downloadTotal > 0 and tonumber(st.progress) then
+      Install.status.downloadBytes = math.max(
+        Install.status.downloadBytes or 0,
+        Install.status.downloadTotal * tonumber(st.progress))
+    end
+    return
+  end
+  local job = manager.downloadHandle
+  manager.downloadHandle = nil
+  Fetch.release(job)
+  if st.status ~= "ok" then return setError(st.err or "download failed") end
+  beginExtraction(Install.TEMP, true)
+end
+
+function Install.startDownload()
+  Install.status.error = nil
+  local fs, fsErr = resolveRawFilesystem()
+  if not fs then return setError(fsErr) end
+  manager.rawFs = fs
+  local okModUpdate, ModUpdate = pcall(require, "src.mods.ModUpdate")
+  if not okModUpdate or not ModUpdate or type(ModUpdate.beginFetchReleases) ~= "function" then
+    return setError("engine release downloader unavailable")
+  end
+  cleanupArchive()
+  manager.releaseHandle = ModUpdate.beginFetchReleases(Install.REPO, nil, { force = true })
+  setStatus("checking", "CHECKING")
   return true
+end
+
+function Install.startLocalZip(game)
+  Install.status.error = nil
+  local fs, fsErr = resolveRawFilesystem()
+  if not fs then return setError(fsErr) end
+  manager.rawFs = fs
+  if Install.canDialog() then
+    local path = Compat.chooseFile("Choose HD Pokemon zip", { "zip" }, "HD Pokemon ZIP")
+    if not path then return false end
+    local ok, err = Compat.stageExternal(path, Install.PICKED)
+    if not ok then return setError(err or "could not copy zip") end
+  else
+    local okInfo, info = pcall(fs.getInfo, Install.PICKED, "file")
+    if not (okInfo and info) then
+      return setError("put the zip in the save folder as " .. Install.PICKED)
+    end
+  end
+  beginExtraction(Install.PICKED, false)
+  return true
+end
+
+function Install.cancel()
+  cancelNetworkJob()
+  manager.releaseHandle = nil
+  cleanupArchive()
+  Install.status.state = "idle"
+  Install.status.error = nil
+  Install.status.message = ""
+end
+
+function Install.update()
+  local st = Install.status.state
+  if st == "checking" then pumpReleaseCheck()
+  elseif st == "downloading" then pumpDownload()
+  elseif st == "extracting" then pumpExtraction()
+  end
 end
 
 function Install.poll()
-  local st = Install.status
-  if st.state ~= "importing" and st.state ~= "starting" then return end
-  if st.startedAt and (os.clock() - st.startedAt) > 180 and (tonumber(st.current) or 0) < 1 then
-    st.state = "failed"
-    st.error = "importer did not start (need Python 3 + Pillow)"
-    return
-  end
-  local f = Compat.fs()
-  local text
-  if f then
-    local ok, got = pcall(f.read, Install.PROGRESS)
-    if ok then text = got end
-  end
-  if type(text) ~= "string" or text == "" then
-    local dir = saveDir()
-    local shell = Compat.hostShell()
-    if dir and shell then
-      local osName = Compat.osName()
-      local abs = dir .. "/" .. Install.PROGRESS
-      if osName == "Windows" then
-        text = Compat.pipeOutput(shell,
-          "powershell -NoProfile -NonInteractive -Command "
-          .. '"Get-Content -LiteralPath ' .. psQuote(abs) .. ' -Raw"')
-      else
-        local quote = (type(shell.quote) == "function")
-          and function(v) return shell.quote(v) end
-          or function(v) return "'" .. tostring(v):gsub("'", "'\\''") .. "'" end
-        text = Compat.pipeOutput(shell, "cat " .. quote(abs) .. " 2>/dev/null")
-      end
-    end
-  end
-  local parsed = parseProgress(text)
-  if parsed then
-    st.current = parsed.current
-    st.total = parsed.total
-    st.message = parsed.message
-    if parsed.state == "done" then
-      local stored, err = ingestBuild(f)
-      if stored then
-        st.state = "done"
-        st.count = Install.count()
-        st.message = "READY"
-      else
-        st.state = "failed"
-        st.error = err or "could not store sheets"
-      end
-      return
-    end
-    if parsed.state == "fail" then
-      st.state = "failed"
-      st.error = parsed.message
-      return
-    end
-    st.state = "importing"
-  end
-end
-
-function Install.import(game)
-  local st = Install.status
-  if st.state == "importing" or st.state == "starting" then
-    pushScreen(game)
-    return false
-  end
-
-  if not Install.canDialog() then
-    note(game, "HD POKEMON", "CONVERT GIF ZIP WITH:", Install.commandHint())
-    return false
-  end
-
-  local path = Compat.chooseFile(
-    "Choose HD Pokemon GIF zip (Reloded / 1-493)",
-    { "zip", "gif" },
-    "HD Pokemon GIFs")
-  if not path then return false end
-
-  local function fail(why)
-    st.state = "failed"
-    st.error = why
-    pushScreen(game)
-    return false
-  end
-
-  local python = findPython()
-  if not python then
-    return fail("need Python 3 with Pillow (pip install pillow)")
-  end
-
-  local okStage, relOrErr = Compat.stageExternal(path, Install.PICKED)
-  if not okStage then return fail(relOrErr or "could not open that file") end
-
-  local dir, f = saveDir()
-  if not dir then return fail("save directory unavailable") end
-  local scriptPath, scriptErr = stageImporter(f)
-  if not scriptPath then return fail(scriptErr) end
-
-  pcall(f.write, Install.PROGRESS, "converting\n0\n1\nSTARTING\n")
-  pcall(f.remove, Install.BUILD .. "/files.txt")
-
-  local outDir = dir .. "/" .. Install.BUILD
-  local zipPath = dir .. "/" .. Install.PICKED
-  local progressPath = dir .. "/" .. Install.PROGRESS
-  local okLaunch, launchErr = launchPython(python, scriptPath, outDir, zipPath, progressPath)
-  if not okLaunch then return fail(launchErr or "could not start importer") end
-
-  st.state = "starting"
-  st.error = nil
-  st.current = 0
-  st.total = 1
-  st.message = "STARTING"
-  st.count = 0
-  st.startedAt = os.clock()
-  pushScreen(game)
-  return true
+  Install.update()
 end
 
 return Install
