@@ -588,6 +588,10 @@ local function buildRows(game)
   if SecondScreen.available(game) then
     local MODE_LABEL = {
       swap = Strings("SWAP"), inset = Strings("CORNER"), off = Strings("OFF"),
+      -- DEVICE, not "SECOND DISPLAY": the row is already called 2ND SCREEN, and
+      -- what this mode says is WHERE it goes -- the device's own panel rather
+      -- than a corner of the window.
+      display = Strings("DEVICE"),
     }
     rows[#rows + 1] = { id = "secondScreenMode", label = Strings("2ND SCREEN"),
       value = function(g)
@@ -598,8 +602,21 @@ local function buildRows(game)
         local current = SecondScreen.mode(g)
         local at = 1
         for i, name in ipairs(modes) do if name == current then at = i end end
-        g.save.options.secondScreenMode = modes[at % #modes + 1]
-        return true
+        -- WALK PAST A MODE THIS MACHINE CANNOT DO.  `display` needs a second
+        -- panel the host can actually reach, and parking the row on DEVICE with
+        -- nothing attached would read as a setting that does nothing -- the
+        -- player picks it, the bottom screen carries on exactly as before, and
+        -- there is no way to tell that from a bug.  One lap at most, so a build
+        -- where every mode were refused still returns rather than spinning.
+        for _ = 1, #modes do
+          at = at % #modes + 1
+          local name = modes[at]
+          if name ~= "display" or SecondScreen.deviceReady() then
+            g.save.options.secondScreenMode = name
+            return true
+          end
+        end
+        return false
       end }
     -- ...AND WHETHER IT IS SHOWING RIGHT NOW, which is a different question
     -- from which SHAPE it takes and needed a control of its own.

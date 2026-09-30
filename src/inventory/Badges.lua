@@ -57,4 +57,40 @@ function Badges.count(data, save, version)
   return n
 end
 
+-- Canonical badge mutation. Reads accept either historical store, but writes
+-- must not leave a truthy duplicate behind in the other one. Turning OFF
+-- therefore clears both stores; turning ON writes only where this generation
+-- actually stores badges.
+function Badges.set(save, entry, on, version)
+  if not (save and entry) then return false end
+  local key = Badges.itemFor(entry)
+  if not key then return false end
+
+  save.inventory = save.inventory or {}
+  save.flags = save.flags or {}
+
+  if not on then
+    save.inventory[key] = nil
+    save.flags[key] = nil
+    return true
+  end
+
+  local GameVersion = require("src.core.GameVersion")
+  local flagBadge = GameVersion.isGen2(version) or GameVersion.isGen3(version)
+  if flagBadge then
+    save.flags[key] = true
+    save.inventory[key] = nil
+  else
+    save.inventory[key] = 1
+    save.flags[key] = nil
+  end
+  return true
+end
+
+function Badges.toggle(save, entry, version)
+  local on = Badges.has(save, entry)
+  Badges.set(save, entry, not on, version)
+  return not on
+end
+
 return Badges

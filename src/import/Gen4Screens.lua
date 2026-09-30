@@ -258,6 +258,28 @@ Gen4Screens.ARCHIVES = {
       font_special_chars = 23, screen_indicators = 3,
     },
   },
+  -- THE UNDERGROUND'S MINING ART, and the one archive in this table that needs
+  -- no widths written down at all.
+  --
+  -- `tilesWide` exists because a sprite sheet usually records no size -- its
+  -- NCGR says 0xFFFF x 0xFFFF and the shape lives in a cell bank instead. Every
+  -- one of ug_parts' 71 NCGR members states a real tilesX/tilesY, measured
+  -- against the cartridge, so the file already answers the question this table
+  -- normally has to. `preferDeclaredSize` says so: take the sheet's word.
+  --
+  -- And it is the right word. Cross-checked against `Gen4Mining.OBJECTS`, whose
+  -- sizes come from a completely separate place -- `sMiningObjects`, compiled
+  -- into an ARM9 overlay -- 70 of the 71 agree exactly, at two tiles per mining
+  -- cell. The one that is not in the mining table is `dirt_tiles`, the seven
+  -- layers of earth over the buried objects, which is not a buried object.
+  {
+    path = "/data/ug_parts.narc", label = "underground mining objects",
+    out = "underground", preferDeclaredSize = true,
+  },
+  {
+    path = "/data/ug_fossil.narc", label = "underground mining interface",
+    out = "underground", preferDeclaredSize = true,
+  },
 }
 
 Gen4Screens.SCREEN = "screen"
@@ -460,6 +482,16 @@ function Gen4Screens.plan(path, options)
           tilesWide = (options.tilesWideFor
                        and options.tilesWideFor[group.base])
                       or options.tilesWide or 8,
+          -- WHICH OF THE THREE ANSWERED, not just what it said. A width written
+          -- down for this group was measured on purpose and outranks everything;
+          -- the archive default and the bare 8 are guesses wearing a number, and
+          -- only those may be overruled by the sheet's own header. Without this
+          -- flag the two are indistinguishable downstream -- `tilesWide = 8` on a
+          -- message box is the archive default falling through, and `= 8` on a
+          -- sheet somebody measured at eight is a statement.
+          tilesWideStated = (options.tilesWideFor
+                             and options.tilesWideFor[group.base]) ~= nil,
+          preferDeclaredSize = options.preferDeclaredSize or nil,
           borrowedTiles = (group.NCGR == nil) or false,
           borrowedPalette = (group.NCLR == nil) or false,
         }

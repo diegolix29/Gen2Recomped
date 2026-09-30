@@ -113,6 +113,42 @@ function Sprites.playerForm(data, save)
   return forms[gender] or forms.boy
 end
 
+-- EVERY PLAYER FORM ON A CARTRIDGE WHOSE ART IS ALREADY IN COLOUR.
+--
+-- Reported from play, on Platinum: "my trainers backsprite and possibly
+-- others are drawing with a red hue overlay rather than their proper colors".
+--
+-- Not a tint and not a palette fault.  The cache carries the right picture --
+-- `field.playerForms.boy.back` is Lucas's own back sprite -- and `playerPath`
+-- below picks it correctly.  What the record does not carry is `trueColor`, so
+-- `playerPath` answers false and `BattleState` hands the art to `getImage`
+-- WITH THE SGB PALETTE THE INTRO USES, which is `MEWMON`.  Mew's palette is
+-- pink, and a full-colour Lucas repainted to a four-shade ramp in it is
+-- exactly what was reported.
+--
+-- The flag already exists and is already honoured -- Crystal's KRIS and
+-- Hoenn's WALLY both set it -- so this only says it for a generation whose
+-- art is in colour by construction.  A dataset or mod that means otherwise
+-- sets the field to false and keeps it, because only `nil` is filled in.
+--
+-- Returns how many it marked, so a caller can say so and a check can measure
+-- it rather than assume it ran.
+function Sprites.markFormsTrueColor(field)
+  local forms = type(field) == "table" and field.playerForms
+  if type(forms) ~= "table" then return 0 end
+  local marked = 0
+  for _, form in pairs(forms) do
+    -- `order` is a list of names living in the same table; only a record with
+    -- a picture in it is a form
+    if type(form) == "table" and (form.back or form.card or form.intro)
+       and form.trueColor == nil then
+      form.trueColor = true
+      marked = marked + 1
+    end
+  end
+  return marked
+end
+
 function Sprites.playerPath(data, side, opts)
   opts = opts or {}
   side = side == "back" and "back" or "front"

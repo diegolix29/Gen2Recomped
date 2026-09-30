@@ -1767,9 +1767,34 @@ function RomExtractorGen4:composeJob(arc, job)
   if not (sheet and palette) then return nil end
 
   local map
+  local layout = "tilemap"
   if job.tilemap then map = Gen4Graphics.tilemap(member(job.tilemap)) end
   if not map then
-    local wide = job.tilesWide or 8
+    -- WHERE THE WIDTH COMES FROM, in order, and the order is the point.
+    --
+    -- A width written down for this group beats everything: it was measured for
+    -- the cases where nothing else is right. Then the sheet's OWN header, if the
+    -- archive invited it -- `Gen4Graphics.tiles` reports tilesX/tilesY as nil for
+    -- the 0xFFFF sprite sheets, so a number here is the cartridge stating a size
+    -- rather than a decoder's guess. Only then the archive default or the bare 8.
+    --
+    -- MEASURED, because this changes which sheets may call themselves final: of
+    -- the 258 sheets in this table laid out by a chosen width, 65 declare their
+    -- own tilesX/tilesY and 193 say 0xFFFF and genuinely need a bank or a stated
+    -- width. Of those 65, twenty-six are currently drawn at a width the file
+    -- contradicts -- pl_winframe's message boxes among them, declared 6x3 and laid
+    -- out at 8. `preferDeclaredSize` is OPT-IN per archive rather than the new
+    -- default for exactly that reason: turning it on everywhere redraws twenty-six
+    -- existing pictures, several of them visible UI, and that wants its own pass
+    -- and its own play-test instead of riding along with the Underground.
+    local wide
+    if job.tilesWideStated then
+      wide, layout = job.tilesWide, "stated"
+    elseif job.preferDeclaredSize and sheet.tilesX and sheet.tilesX > 0 then
+      wide, layout = sheet.tilesX, "declared"
+    else
+      wide, layout = job.tilesWide or 8, "fallback"
+    end
     local cells = {}
     for i = 0, sheet.count - 1 do
       cells[i + 1] = { tile = i, flipX = false, flipY = false, palette = 0 }
@@ -1781,7 +1806,9 @@ function RomExtractorGen4:composeJob(arc, job)
     }
   end
 
-  return Gen4Graphics.compose(map, sheet, palette)
+  -- The layout's provenance rides back with the picture, so the caller does not
+  -- have to re-derive it from the job and get a different answer.
+  return Gen4Graphics.compose(map, sheet, palette), layout
 end
 
 -- Assemble a sheet through its cell bank, returning one image per cell.
@@ -2289,12 +2316,20 @@ function RomExtractorGen4:extractGraphics()
             end
           end
         else
-          local entry = self:saveImage(relative, self:composeJob(arc, job), {
+          local composed, layout = self:composeJob(arc, job)
+          local entry = self:saveImage(relative, composed, {
             kind = job.kind,
-            -- A screen has a tilemap and is final.  A sheet with no cell bank
-            -- anywhere in its archive is laid out at a width nothing in the
-            -- cartridge states, and says so.
-            provisionalLayout = (job.tilemap == nil) or nil,
+            -- A screen has a tilemap and is final.  A sheet laid out at a width
+            -- NOTHING states is provisional and says so.
+            --
+            -- It used to be every sheet, on the reasoning that a sheet records no
+            -- width. Most do not -- 193 of 258 -- but 65 state one outright, and
+            -- calling those provisional is the flag lying in the safe direction,
+            -- which is still lying: the whole point of the flag is that somebody
+            -- can trust its absence. So it now follows where the width actually
+            -- came from, and a sheet laid out at its own declared size is final.
+            provisionalLayout = (layout == "fallback") or nil,
+            layoutFrom = (job.tilemap == nil) and layout or nil,
             borrowedTiles = job.borrowedTiles or nil,
             borrowedPalette = job.borrowedPalette or nil,
             paletteKey = paletteKey,

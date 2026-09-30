@@ -328,48 +328,61 @@ function Gen4Poketch:drawWatch()
   local g = love.graphics
   local app = self:app()
 
-  local border = self:img(self.border)
-  if border then
-    g.setColor(1, 1, 1, 1)
-    g.draw(border, 0, 0)
-  else
-    g.setColor(0.10, 0.13, 0.18, 1)
-    g.rectangle("fill", 0, 0, W, H)
-    g.setColor(0.55, 0.72, 0.42, 1)
-    g.rectangle("fill", FACE.x, FACE.y, FACE.w, FACE.h)
-    g.setColor(1, 1, 1, 1)
-  end
-
-  -- The app's own face, under whatever it draws on top of it.
+  -- APP LCD FIRST. The extracted Poketch app tilemaps are full 256x192
+  -- compositions and may contain opaque pixels outside the LCD. Drawing one
+  -- after the shell used to cover the cartridge's bezel and buttons entirely.
   local face = app and app.art and self:img(app.art)
   if face then
+    -- App tilemaps are composed as full 256x192 screens. Only the LCD hole
+    -- belongs to the app; pixels outside it must never cover the device shell.
+    g.setScissor(FACE.x, FACE.y, FACE.w, FACE.h)
     g.setColor(1, 1, 1, 1)
     g.draw(face, 0, 0)
+  else
+    -- Only apps which genuinely have no composed face use the cartridge's
+    -- unavailable screen. Do not put this over an existing app merely because
+    -- its interactive behaviour has not been implemented yet.
+    local blank = self:img(self.unavailable)
+    if blank then
+      g.setColor(1, 1, 1, 1)
+      g.draw(blank, 0, 0)
+    else
+      g.setColor(0.55, 0.72, 0.42, 1)
+      g.rectangle("fill", FACE.x, FACE.y, FACE.w, FACE.h)
+    end
   end
 
+  -- Live overlays belong on the LCD, above the app's cartridge background.
   if app then
     local body = app.name and DRAW[app.name]
     if body then
       body(self)
-    else
-      -- AN APP WITH NO BEHAVIOUR SAYS SO, on the cartridge's own screen for
-      -- exactly this.  A blank face would read as a bug in the app.
-      local blank = self:img(self.unavailable)
-      if blank then
-        g.setColor(1, 1, 1, 0.85)
-        g.draw(blank, 0, 0)
-        g.setColor(1, 1, 1, 1)
-      end
+    elseif not face then
+      -- Only a truly missing face gets a textual fallback. A valid extracted
+      -- app remains visually faithful even before its behaviour is emulated.
       local label = app.name or Strings("APP")
       Font.draw(label, FACE.x + 8, FACE.y + 8)
       Font.draw(Strings("NOT BUILT YET"), FACE.x + 8, FACE.y + 24)
     end
   end
 
-  -- Which app, and that there are others.
-  if #self.apps > 0 then
-    Font.draw(("%d/%d"):format(self.index, #self.apps), 8, H - 16)
+  g.setScissor()
+
+  -- SHELL LAST. Platinum composes the Poketch device around the LCD; this
+  -- extracted full-screen border contains the bezel and physical app-change
+  -- buttons and must mask the edges of every app tilemap.
+  local border = self:img(self.border)
+  if border then
+    g.setColor(1, 1, 1, 1)
+    g.draw(border, 0, 0)
+  else
+    -- Keep a visible frame if an old cache predates border extraction.
+    g.setColor(0.10, 0.13, 0.18, 1)
+    g.setLineWidth(2)
+    g.rectangle("line", FACE.x - 2, FACE.y - 2, FACE.w + 4, FACE.h + 4)
+    g.setLineWidth(1)
   end
+
   g.setColor(1, 1, 1, 1)
 end
 

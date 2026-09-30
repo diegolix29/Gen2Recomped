@@ -1023,6 +1023,21 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
     end
   end
   self.map = MapLoader.load(Game.data, mapId)
+  -- THE VIEW IS TOLD HOW MUCH WORLD THERE IS, because on a map smaller than
+  -- the window the rest of the window is border -- and a border is not always
+  -- scenery. Petalburg Gym's is metatile 0x208, which is pure black in all 256
+  -- of its pixels, so filling a phone's letterbox with more of it filled the
+  -- screen with black. Renderer:worldViewSize clamps against this and can only
+  -- ever shrink the view, never below the generation's own screen, so every
+  -- map at least that big is unchanged. See the note there.
+  do
+    local px = (tonumber(self.map.blockTiles) or 4) * 8
+    local d = self.map.def
+    if Game.renderer and Game.renderer.setWorldBounds and d then
+      Game.renderer:setWorldBounds((tonumber(d.width) or 0) * px,
+                                   (tonumber(d.height) or 0) * px)
+    end
+  end
   -- Every block change is re-derived from the map's callbacks on each load
   -- (GSC rebuilds wOverworldMap from the ROM blockdata), so the previous
   -- visit's patches have to go first: a Ruins of Alph wall that the callback
@@ -3439,6 +3454,15 @@ function OverworldState:update(dt)
   self:poseBerryTrees()
   self:updateRipples()
   self:updateSparkles()
+  -- GEN 4'S DIG WALLS ride that same effect.  Placed on the first frame in the
+  -- Underground and pulsed after, both no-ops everywhere else -- `ensureSpots`
+  -- opens on `GameVersion.isGen4()` and `tickSparkles` on being down there, so
+  -- Gen 1, 2 and 3 pay one version test a frame and nothing more.
+  do
+    local UG = require("src.world.Gen4Underground")
+    UG.ensureSpots(Game, self)
+    UG.tickSparkles(Game, self)
+  end
   -- every body on screen, home and foreign alike, in this map's cells
   self:updateCast()
   local cast = self.cast or self.entities
@@ -6160,6 +6184,30 @@ function OverworldState:interact()
     end
     interacted(self, fx, fy, "npc", npc)
     return
+  end
+
+  -- A GEN 4 DIG WALL, which is a wall and so can never hold an NPC -- the check
+  -- sits after the NPC one anyway, because "somebody is standing there" beating
+  -- "there is a wall there" is the right precedence even where it cannot happen.
+  --
+  -- Mining_CheckForMiningSpotInteract: you FACE the wall and press A.  The spot
+  -- is spent whichever way the game ends -- won, collapsed, or given up -- because
+  -- the cartridge never puts a dug wall back.
+  do
+    local UG = require("src.world.Gen4Underground")
+    if UG.isUnderground(self) and UG.spotAt(Game, fx, fy) then
+      local Screen = require("src.ui.Gen4MiningScreen")
+      local screen = Screen.new(Game, {
+        onDone = function() UG.removeSpot(Game, fx, fy) end,
+      })
+      -- `new` answers nil when it could not lay out a wall, which is a reason to
+      -- leave the spot alone rather than consume it on a screen that never opened.
+      if screen then
+        Game.stack:push(screen)
+        interacted(self, fx, fy, "mining")
+        return
+      end
+    end
   end
 
   if self:tryPcTile(fx, fy) then
@@ -12373,7 +12421,67 @@ function OverworldState:startWarpTo(mapId, x, y, facing, onDone, opts)
       -- solid cell south of the door (the mansion stair landings back
       -- onto shelves) the step bumps and the player stays on the door,
       -- arrival disable intact, instead of clipping into the wall.
-      if self.map:isDoorTileCell(self.player.cellX, self.player.cellY) then
+      -- GEN 4 DOES NOT ASK THE TILE.  IT ASKS WHICH WAY YOU ARE FACING.
+      --
+      -- Reported from play: "ive noticed when walking out of doors in platinum
+      -- it doesnt make me walk one block out of the door i exit and im standing
+      -- in the doorway".  Third time in this shape -- a Game Boy-era question
+      -- asked of Gen 4 data -- and the line above is where it was asked.
+      --
+      -- Two separate reasons it could never answer yes on this cartridge, both
+      -- measured rather than reasoned about.  Gen4Tileset sets
+      -- `behaviourBytes`, so isDoorTileCell takes the Gen 3 branch and calls
+      -- cellBehaviour -- which opens `if not self.def.collisionCells then
+      -- return nil end`, and Gen4Maps.mapDef emits blocks/borderBlock and no
+      -- collisionCells at all, so it returns nil for every cell in Sinnoh and
+      -- the branch falls to `return false`.  And if it did answer, the list it
+      -- would check is Gen4Behaviors.group("door") = { 0x69 DOOR } -- while of
+      -- the 1,213 warps in the cartridge, joined destMap/destWarp to the
+      -- arrival cell and read through the engine's own origin carve, exactly
+      -- ZERO land on behaviour 0x69.  They land on WARP_ENTRANCE_SOUTH (244),
+      -- WARP_NORTH (177), WARP_SOUTH (92), WARP_STAIRS_EAST/WEST (174),
+      -- ESCALATOR_FLIP_FACE (72), WARP_EAST/WEST (120), WARP_PANEL (55).
+      -- 0x69 is the door tile in the wall, which the player never stands on.
+      --
+      -- SO THE TILE WAS NEVER THE QUESTION.  Platinum picks its arrival
+      -- behaviour from what kind of map it left and what kind it entered
+      -- (sub_02056C18: building -> outdoors is type 0), indexes
+      -- Unk_020EC544 with it, and every arm of that table that steps the
+      -- player out -- ov5_021D5020 for type 0, ov5_021D5150 for 1/4/6 --
+      -- gates the step on ONE thing:
+      --
+      --     if (v3 == 1) { MapObject_SetHidden(v0, 1); ... }
+      --     case 1: MapObject_SetHidden(v0, 0);
+      --             LocalMapObj_SetAnimationCode(v0, MOVEMENT_ACTION_WALK_NORMAL_SOUTH);
+      --
+      -- v3 is PlayerAvatar_GetFacingDir and 1 is DIR_SOUTH
+      -- (constants/map_object.h).  Facing south on arrival: hidden through
+      -- the fade, revealed already walking one tile south.  Any other
+      -- facing: just appear.  Nothing reads the tile.
+      --
+      -- And the facing is the direction you were walking when you took the
+      -- warp -- Field_CheckMapTransition hands transitionDir to Location_Set,
+      -- which is what the arrival reads back.  `facing` above is
+      -- self.player.facing at departure carried across by setMap, so it is
+      -- already the same number: you leave a house by walking SOUTH onto the
+      -- mat, arrive outside facing south, and step south out of the doorway.
+      -- Walk NORTH into a door and you arrive inside facing north and stay on
+      -- the mat, which is what the cartridge does too.
+      --
+      -- NOT PORTED, deliberately: the cartridge checks TileBehavior_IsDoor at
+      -- the arrival cell first and routes that to the door-opening animation
+      -- instead of the step.  It would be dead code here twice over -- there
+      -- is no arrival door animation to route to, and cellBehaviour answers
+      -- nil for Gen 4 anyway.  Fixing that guard is a pass of its own: it
+      -- would switch on fourteen other behaviour-driven branches in Map.lua
+      -- at the same time, and each wants its own look.
+      local stepsOut
+      if GameVersion.isGen4() then
+        stepsOut = self.player.facing == "down"
+      else
+        stepsOut = self.map:isDoorTileCell(self.player.cellX, self.player.cellY)
+      end
+      if stepsOut then
         if Collision.canMove(self.map, self.cast or self.entities,
                              self.player, "down") then
           -- THE ARRIVAL GUARD STAYS UP while the walk-out runs.

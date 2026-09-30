@@ -1654,6 +1654,175 @@ RomExtractorGen3.MON_SWAY = {
   SCAN = 200,
 }
 
+-- ---------------------------------------------------------------------------
+-- THE POKEMON THAT LUNGES ON AN ELLIPSE
+--
+-- Reported from play: "a lot of them seem messed up still".  Nineteen moves
+-- ask the cartridge to swing the battler round an ellipse -- QUICK ATTACK's
+-- nine-frame dart, AERIAL ACE, TAKE DOWN's cousins, WING ATTACK, STEEL WING,
+-- SUBMISSION -- and this port drew none of it.  A contact move whose attacker
+-- never leaves its feet does not read as an attack however right its
+-- particles are, and that is much more of what "messed up" means than a
+-- missing sprite.
+--
+-- TWO ADDRESSES, AND WHICH IS WHICH IS PROVED RATHER THAN ASSUMED.  The
+-- cartridge has a plain task and a wrapper that negates the x amplitude when
+-- the attacker is not on the player's side.  The wrapper is identified by the
+-- fact that it BRANCHES TO the plain one: a tail call from the address
+-- QUICK ATTACK names into the address WING ATTACK names.  Nothing here has to
+-- believe a name.
+--
+-- THE STEP, from the cartridge's own arithmetic:
+--
+--     x2 = Sin(phase, xAmp)
+--     y2 = -Cos(phase, yAmp) + yAmp
+--     phase = (phase + (1 << speed)) & 0xFF
+--     ...and one cycle is spent every time that wrap lands back on zero.
+--
+-- `Cos(i, a)` is `Sin(i + 64, a)` on this cartridge, which is why the sine
+-- table is read 64 entries along rather than a second table being looked for.
+-- The setup calls its own step once before returning, so the first sample
+-- belongs to the frame the task was created on.
+--
+-- Stored as OFFSETS, one pair a frame, for the same reason the sway is: the
+-- shift is arithmetic and floors, so it is not symmetric across zero, and
+-- doing it here off the cartridge's table is exact where redoing it at
+-- runtime off a floating-point sine would not be.
+RomExtractorGen3.MON_ELLIPSE = {
+  -- `gBattleAnimArgs[4] > 5` is clamped to 5 by the cartridge itself, so a
+  -- larger value is not a refusal, it is a five.
+  MAX_SPEED = 5,
+  PHASE_MASK = 0xFF,
+  COS = 64,                   -- Cos(i, a) == Sin(i + 64, a)
+  MAX_AMP = 64, MAX_CYCLES = 16, MAX_LIFE = 600,
+  SCAN = 128,
+}
+
+-- The ellipse's two shapes, without any move's numbers.
+function RomExtractorGen3:monEllipse()
+  if self._monEllipse ~= nil then return self._monEllipse or nil end
+  local E = RomExtractorGen3.MON_ELLIPSE
+  local function fail(why)
+    Logger.warn("gen3 move animations: %s, so the nineteen moves that lunge "
+                  .. "on an ellipse keep whatever they had", why)
+    self._monEllipse = false
+    return nil
+  end
+  -- WING ATTACK's first task is the plain one; QUICK ATTACK's is the wrapper.
+  local plain = self:moveAnimTask("WING_ATTACK", 1)
+  local wrapper = self:moveAnimTask("QUICK_ATTACK", 1)
+  if not (plain and wrapper) then
+    return fail("the two moves that name the ellipse do not both open with a task")
+  end
+  if plain == wrapper then
+    return fail("the plain ellipse and the side-respecting one are one address")
+  end
+  -- THE PROOF OF WHICH IS WHICH: the wrapper tail-calls the plain task. If
+  -- that branch is not there, these are two unrelated functions and the
+  -- negation below would be applied to the wrong one.
+  local branches, reaches = self:blTargets(wrapper, E.SCAN), false
+  for _, target in ipairs(branches or {}) do
+    if target == plain then reaches = true end
+  end
+  if not reaches then
+    return fail("the side-respecting ellipse does not call the plain one")
+  end
+  local step = self:nearestThumbCallback(plain, E.SCAN, 0x400)
+  local trig = step and self:sineFromCalls(step, E.SCAN) or nil
+  if not (step and trig) then
+    return fail("the ellipse task does not install a step that takes a sine")
+  end
+  -- The phase is a byte: the step masks it every frame, and that mask is what
+  -- makes a cycle 256 steps long rather than whatever the accumulator holds.
+  if self:thumbImmCount(step, E.SCAN, 0x2000, E.PHASE_MASK) < 1
+     and self:thumbImmCount(step, E.SCAN, 0x3800, E.PHASE_MASK) < 1 then
+    return fail("the ellipse step does not keep its phase in a byte")
+  end
+  -- ...AND EVERY CALL IN THE GAME KEEPS THE SAME ARGUMENT SHAPE.  One address
+  -- used with two shapes is two functions, and this is the check that would
+  -- notice.
+  local calls = 0
+  for _, list in pairs(self._animTasks or {}) do
+    for _, t in ipairs(list) do
+      local fn = t.fn and (t.fn - (t.fn % 2))
+      if fn == plain or fn == wrapper then
+        local a = t.args or {}
+        if #a ~= 5 or (a[1] ~= 0 and a[1] ~= 1)
+           or a[2] == 0 or math.abs(a[2]) > E.MAX_AMP
+           or a[3] < 0 or a[3] > E.MAX_AMP
+           or a[4] < 1 or a[4] > E.MAX_CYCLES
+           or a[5] < 0 then
+          return fail("an ellipse address is also used with another argument shape")
+        end
+        calls = calls + 1
+      end
+    end
+  end
+  if calls < 8 then
+    return fail(("only %d call(s) to the ellipse carry its argument shape")
+                :format(calls))
+  end
+  self._monEllipse = {
+    plain = plain, wrapper = wrapper, sine = trig.sine, sin = trig.fn,
+    source = ("ROM:the ellipse at %07X, its side-respecting wrapper at %07X, "
+              .. "its step at %07X and Sin %07X")
+             :format(plain, wrapper, step, trig.fn),
+  }
+  return self._monEllipse
+end
+
+-- One script's call, walked frame by frame into the offsets it produces.
+function RomExtractorGen3:ellipseOffsets(args, shape, respectsSide)
+  local E = RomExtractorGen3.MON_ELLIPSE
+  if type(args) ~= "table" or #args < 5 then return nil end
+  local battler, xAmp, yAmp, cycles, speed =
+    args[1], args[2], args[3], args[4], args[5]
+  if battler ~= 0 and battler ~= 1 then return nil end
+  if xAmp == 0 or math.abs(xAmp) > E.MAX_AMP then return nil end
+  if yAmp < 0 or yAmp > E.MAX_AMP then return nil end
+  if cycles < 1 or cycles > E.MAX_CYCLES then return nil end
+  if speed < 0 then return nil end
+  local sine = shape and shape.sine
+  if type(sine) ~= "table" then return nil end
+  -- the cartridge clamps this itself rather than refusing
+  if speed > E.MAX_SPEED then speed = E.MAX_SPEED end
+  local wave = 2 ^ speed
+  local phase, left = 0, cycles
+  local xs, ys = {}, {}
+  for _ = 1, E.MAX_LIFE do
+    local s = sine[phase]
+    local c = sine[phase + E.COS]
+    if s == nil or c == nil then return nil end
+    -- `>> 8` in the cartridge, and it is ARITHMETIC: it floors rather than
+    -- truncating toward zero, so a negative product is one lower than a
+    -- division would give.
+    xs[#xs + 1] = math.floor(xAmp * s / 256)
+    ys[#ys + 1] = -math.floor(yAmp * c / 256) + yAmp
+    phase = (phase + wave) % (E.PHASE_MASK + 1)
+    if phase == 0 then left = left - 1 end
+    if left == 0 then
+      -- the last thing the step does is put the Pokemon back
+      xs[#xs + 1] = 0
+      ys[#ys + 1] = 0
+      break
+    end
+  end
+  if #xs < 2 or left > 0 then return nil end
+  return {
+    task = respectsSide and shape.wrapper or shape.plain,
+    xs = xs, ys = ys,
+    -- argument zero picks whose Pokemon moves
+    target = battler == 1 or nil,
+    -- ONLY THE WRAPPER NEGATES.  It flips its own x when the attacker is not
+    -- the player's, which says the script's number is already the player's.
+    -- The plain task does no such thing, so its number is absolute and
+    -- mirroring it would send the lunge the wrong way.
+    authoredForPlayer = respectsSide or nil,
+    life = #xs,
+    source = shape.source,
+  }
+end
+
 -- The sway's shape, without any move's numbers, plus the cartridge's sine.
 function RomExtractorGen3:monSway()
   if self._monSway ~= nil then return self._monSway or nil end
@@ -37895,6 +38064,56 @@ function RomExtractorGen3:extractMoveAnimations()
       Logger.info("Gen3 move animations: %d move(s) lunge the Pokemon across "
                     .. "the field on an arc and back (%s)", marked,
                   shape.source)
+    end
+  end
+
+  -- ---- ...AND THE POKEMON THAT LUNGES ON AN ELLIPSE ----------------------
+  --
+  -- The same destination as the sway: an offset on the sprite's own pos2, one
+  -- pair a frame, written into `shakes` because to the renderer that is what
+  -- it is. `shakeAt` has read `xs`/`ys` tracks since the sway was decoded, so
+  -- nothing downstream changes.
+  do
+    local shape = self:monEllipse()
+    local marked, calls = 0, 0
+    if shape then
+      for _, row in pairs(leftovers) do
+        local list = nil
+        for _, t in ipairs(row.tasks or {}) do
+          local fn = t.fn and (t.fn - (t.fn % 2)) or -1
+          local plain = fn == shape.plain or fn == shape.plain + 0x08000000
+          local side = fn == shape.wrapper or fn == shape.wrapper + 0x08000000
+          if plain or side then
+            local built = self:ellipseOffsets(t.args, shape, side)
+            if built then
+              built.at = t.at or 0
+              list = list or {}
+              list[#list + 1] = built
+              calls = calls + 1
+            end
+          end
+        end
+        if list then
+          row.record = row.record or {}
+          local existing = row.record.shakes or {}
+          for _, entry in ipairs(list) do existing[#existing + 1] = entry end
+          row.record.shakes = existing
+          if row.record.shake or row.record.flash then coarse = coarse - 1 end
+          row.record.shake, row.record.flash = nil, nil
+          local longest = 0
+          for _, entry in ipairs(list) do
+            longest = math.max(longest, (entry.at or 0) + entry.life)
+          end
+          row.record.duration = math.max(row.record.duration or 0, longest)
+          row.def.anim = row.record
+          row.hasShakes = true
+          marked = marked + 1
+        end
+      end
+    end
+    if marked > 0 then
+      Logger.info("Gen3 move animations: %d move(s) lunge on an ellipse over "
+                    .. "%d call(s) (%s)", marked, calls, shape.source)
     end
   end
 

@@ -827,8 +827,76 @@ run_gradle() {
   fi
 }
 
+# ------------------------------------------------------- second display
+# The AYN Thor's bottom panel. mobile/second-display/SecondDisplayHost.java is
+# a plain Java class kept OUTSIDE mobile/android/ on purpose: that directory is
+# a vendored love-android checkout that gets wiped and re-cloned, and anything
+# left inside it goes with it. This copies it into the app module and
+# registers it.
+#
+# It is registered as a <provider>, not as <application android:name>. A
+# provider is constructed before Application.onCreate and is handed a Context,
+# which is all it needs -- and registering one ADDS an element, where
+# android:name would REPLACE whatever the vendored manifest already declares.
+#
+# Both steps are idempotent: re-running the build re-copies the file and
+# leaves an already-patched manifest alone.
+install_second_display_host() {
+  local host="$ROOT/mobile/second-display/SecondDisplayHost.java"
+  local manifest="$ANDROID_DIR/app/src/main/AndroidManifest.xml"
+  local javadir="$ANDROID_DIR/app/src/main/java/org/love2d/android"
+
+  if [ ! -f "$host" ]; then
+    warn "no mobile/second-display/SecondDisplayHost.java; the bottom screen"
+    warn "  will fall back to the in-window stacked layout"
+    return 0
+  fi
+  [ -f "$manifest" ] || fail "missing $manifest"
+
+  say "installing the second-display host"
+  mkdir -p "$javadir"
+  cp "$host" "$javadir/SecondDisplayHost.java"
+
+  local PYBIN
+  PYBIN="$(command -v python3 || command -v python || command -v py)"
+  [ -n "$PYBIN" ] || fail "no python on PATH to patch the manifest"
+
+  "$PYBIN" - "$manifest" "$APPLICATION_ID" <<'PY'
+import pathlib, re, sys
+
+path = pathlib.Path(sys.argv[1])
+app_id = sys.argv[2]
+text = path.read_text()
+name = "org.love2d.android.SecondDisplayHost"
+
+if name in text:
+    sys.stdout.write("   second-display provider already registered\n")
+    raise SystemExit(0)
+
+# An authority must be unique across the whole device, so it hangs off the
+# application id rather than a fixed string -- two builds of this game side by
+# side would otherwise refuse to install.
+provider = (
+    '\n        <provider\n'
+    '            android:name="%s"\n'
+    '            android:authorities="%s.seconddisplay"\n'
+    '            android:exported="false"\n'
+    '            android:initOrder="100" />\n' % (name, app_id)
+)
+
+m = re.search(r"</application>", text)
+if not m:
+    sys.stderr.write("error: no </application> in the manifest\n")
+    raise SystemExit(1)
+text = text[:m.start()] + provider + "    " + text[m.start():]
+path.write_text(text)
+sys.stdout.write("   registered %s\n" % name)
+PY
+}
+
 # --------------------------------------------------------------- main
 apply_android_branding
+install_second_display_host
 pack_game_love
 
 if $PACKAGE_ONLY; then

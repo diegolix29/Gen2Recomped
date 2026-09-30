@@ -1983,40 +1983,65 @@ end
 -- every verb in this module is the registry's built-in set; a mod adding a
 -- verb registers, a mod replacing one has to say override
 function Commands.registerInto(registry, _, owner)
+  -- BOTH IMPORTED VOCABULARIES ARE LOADED BEFORE ANYTHING IS COUNTED.
+  --
+  -- Reported from play, booting EMERALD: "commands already registered:
+  -- g4_check_two_alive" -- a Sinnoh verb, crashing a Hoenn cartridge at boot.
+  --
+  -- `Gen3Commands` and `Gen4Commands` both add their verbs to THIS table and
+  -- keep their helpers on their own.  Those requires used to sit BELOW the
+  -- general loop, so what the loop saw depended entirely on whether anything
+  -- had required the modules yet -- and this function runs again every time
+  -- `Loader.load` does, which is once at startup and again for every game
+  -- booted from the launcher.
+  --
+  -- Two different faults came out of that, and only one of them crashed:
+  --
+  --   SINNOH.  First call: not loaded, the loop missed the 155 `g4_` verbs and
+  --   the `g4_` pass below registered them.  Second call: loaded, the loop took
+  --   them, and the pass registered them a SECOND time into a registry that had
+  --   just taken them.  That is the reported crash, and it needed two boots to
+  --   appear, which is why it looked like a cartridge problem.
+  --
+  --   HOENN, silently.  All 109 of `Gen3Commands`' verbs live on `Commands`,
+  --   and the `g3_` pass below reads the MODULE table, which has none of them.
+  --   So on a first load they reached the registry only if something else had
+  --   already required the module: 219 verbs on the first call and 326 on the
+  --   second, in the same process.  Dispatch survived it on `resolve`'s lazy
+  --   `g3_` fallback -- which is the only reason this was not a second crash --
+  --   but nothing could OVERRIDE a Hoenn verb that was not in the registry.
+  --
+  -- Requiring both here makes every call identical.
+  pcall(require, "src.script.Gen3Commands")
+  pcall(require, "src.script.Gen4Commands")
   for verb, fn in pairs(Commands) do
     if type(fn) == "function" and not NOT_VERBS[verb] then
       registry:register(verb, fn, owner)
       registered[verb] = fn
     end
   end
-  -- Imported Gen3 rows share ScriptRunner's command registry. Register their
-  -- handlers here so generated FireRed events cannot silently skip battle
-  -- verbs when the Gen3 module is loaded lazily.
-  local ok, Gen3 = pcall(require, "src.script.Gen3Commands")
-  if ok and Gen3 then
+  -- THE TWO PASSES BELOW ARE BACKSTOPS NOW, AND THEY SKIP WHAT IS ALREADY
+  -- THERE.  The loop above has taken everything on `Commands`; these catch a
+  -- verb a module keeps on its OWN table instead, which `Gen3Commands` was
+  -- always assumed to do and never did.  The registry check is the part that
+  -- matters: a require moving back down the function must not be able to bring
+  -- the double registration back, and a guard that asks the registry cannot be
+  -- fooled by load order the way a comment can.
+  local okThree, Gen3 = pcall(require, "src.script.Gen3Commands")
+  if okThree and type(Gen3) == "table" then
     for verb, fn in pairs(Gen3) do
-      if type(fn) == "function" and verb:sub(1, 3) == "g3_" then
+      if type(fn) == "function" and verb:sub(1, 3) == "g3_"
+         and registry:get(verb) == nil then
         registry:register(verb, fn, owner)
+        registered[verb] = fn
       end
     end
   end
-  -- ...and the same for Sinnoh, which had NO handlers at all.
-  --
-  -- `Gen4ScriptVM` has lowered Platinum's bytecode into `g4_*` rows since it
-  -- was written and nothing ever registered one, so every Gen 4 script went
-  -- through the unknown-command path above: the box opened and shut without
-  -- waiting, name buffers stayed empty, and every `checkflag` and
-  -- `comparevar` left the comparison register untouched so the branch after
-  -- it read whatever the last script had put there.  Reported as "npcs are
-  -- appearing for the events but not triggering, npcs are still missing
-  -- text".
-  --
-  -- The module adds its verbs to THIS table, the way Gen3Commands does, so
-  -- the loop below finds them on `Commands` rather than on the module.
-  local okFour = pcall(require, "src.script.Gen4Commands")
-  if okFour then
-    for verb, fn in pairs(Commands) do
-      if type(fn) == "function" and verb:sub(1, 3) == "g4_" then
+  local okFour, Gen4 = pcall(require, "src.script.Gen4Commands")
+  if okFour and type(Gen4) == "table" then
+    for verb, fn in pairs(Gen4) do
+      if type(fn) == "function" and verb:sub(1, 3) == "g4_"
+         and registry:get(verb) == nil then
         registry:register(verb, fn, owner)
         registered[verb] = fn
       end

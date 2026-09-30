@@ -846,8 +846,51 @@ Game.centerClassicZones = centerClassicZones
 
 function Game:draw()
   local closeDraw = FrameProfile.section("draw: whole frame")
+
+  -- A specialized lower-screen state (battle menu, mining, Poketch screen)
+  -- claims the panel by calling SecondScreen.draw during _draw(). If nothing
+  -- claims it, a Gen 4 overworld still needs Platinum's always-present Poketch.
+  self.secondScreenDrawnThisFrame = false
   self:_draw()
+
+  -- Single-screen generations use the physical Android lower panel as a live
+  -- save companion without changing the game's own screen mode.
+  do
+    local okC, Companion = pcall(require, "src.ui.SaveCompanion")
+    if okC and Companion and Companion.tick then pcall(Companion.tick, self) end
+  end
+
+  do
+    local okSS, SS = pcall(require, "src.ui.SecondScreen")
+    if okSS and SS.mode and SS.mode(self) == "display"
+       and not self.secondScreenDrawnThisFrame then
+      local okP, Poketch = pcall(require, "src.ui.Gen4Poketch")
+      if okP and Poketch and Poketch.new then
+        if not self.secondScreenOverworldPoketch then
+          local okNew, p = pcall(Poketch.new, self, {})
+          if okNew then self.secondScreenOverworldPoketch = p end
+        end
+        local p = self.secondScreenOverworldPoketch
+        if p and p.drawWatch then
+          pcall(SS.draw, self, function() p:drawWatch() end)
+        end
+      end
+    end
+  end
+
   closeDraw()
+  -- THE SECOND PANEL'S FRAME LEAVES LAST.
+  --
+  -- In `display` mode the bottom screen was rendered to an offscreen canvas
+  -- somewhere inside the draw above, and this is what hands it to the device's
+  -- own panel.  It has to be after the whole frame rather than inside it,
+  -- because a screen that draws late -- anything pushed over the battle -- still
+  -- has to get out, and because the GPU readback wants the drawing finished.
+  -- A no-op in every other mode and on every machine with one screen.
+  do
+    local okSS, SS = pcall(require, "src.ui.SecondScreen")
+    if okSS and SS.flush then pcall(SS.flush, self) end
+  end
   FrameProfile.frame()
 end
 
@@ -1520,15 +1563,49 @@ function Game:joystickremoved(joystick)
   TouchControls:joystickremoved()
 end
 
+-- A POINTER GOES TO THE SCREEN FIRST, AND TO THE PAD ONLY IF NOBODY WANTED IT.
+--
+-- Every pointer event in this engine went straight to `TouchControls` and
+-- nowhere else, so no game state could ever be touched -- which is fine for
+-- eleven years of Game Boy screens driven by a d-pad, and is not fine for a DS
+-- one. Platinum's Underground mining game is played entirely by tapping the
+-- bottom screen; there is no button for it to bind.
+--
+-- THE FALL-THROUGH IS THE WHOLE DESIGN. A state claims a press by defining the
+-- handler and returning true; anything else -- no handler, or a handler that
+-- returns false because the point was outside it -- and `TouchControls` receives
+-- exactly what it received before. No state in the engine defines these today,
+-- so this cannot change Gen 1, 2 or 3 behaviour: the `top.touchpressed` lookup
+-- is nil and the next line runs, which is what ran before.
+--
+-- `pcall` because a state that raises inside a touch handler would otherwise
+-- take the d-pad down with it, and losing the controls is worse than losing the
+-- tap.
+local function offerPointer(self, method, id, x, y)
+  local top = self.stack and self.stack.top and self.stack:top()
+  if not (top and top[method]) then return false end
+  local ok, claimed = pcall(top[method], top, id, x, y)
+  if not ok then
+    require("src.core.Logger").warn("%s raised in a touch handler: %s",
+                                    tostring(top.name or "a screen"),
+                                    tostring(claimed))
+    return false
+  end
+  return claimed == true
+end
+
 function Game:touchpressed(id, x, y)
+  if offerPointer(self, "touchpressed", id, x, y) then return end
   TouchControls:touchpressed(id, x, y)
 end
 
 function Game:touchmoved(id, x, y)
+  if offerPointer(self, "touchmoved", id, x, y) then return end
   TouchControls:touchmoved(id, x, y)
 end
 
 function Game:touchreleased(id, x, y)
+  if offerPointer(self, "touchreleased", id, x, y) then return end
   TouchControls:touchreleased(id, x, y)
 end
 

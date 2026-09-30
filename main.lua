@@ -416,6 +416,9 @@ end
 local function returnToLauncher()
   if Importer then return end
   pcall(function() require("src.core.Music").stop() end)
+  -- The launcher's bottom-screen shelf starts fresh, and its canvas is not
+  -- held across a whole play session.
+  pcall(function() require("src.ui.LauncherSecondScreen").forget() end)
   autopilot, driverCo = nil, nil
   Game = nil
   openLauncher(false)
@@ -654,14 +657,34 @@ function love.update(dt)
   Game:update(dt)
 end
 
+-- THE LAUNCHER'S OWN BOTTOM SCREEN.
+--
+-- Reported from play: "its still not detecting the second screen on the ayn
+-- thor ... maybe the launcher itself has to intialize with it". It does, and
+-- this is the line that was missing: `SecondScreen.flush` was called only from
+-- `Game:draw`, and every branch of `love.draw` below returns before reaching
+-- it while the launcher, an editor or the boot report owns the window. So no
+-- frame was ever sent to the panel until a cartridge was running -- which
+-- looks exactly like a second display that was never detected.
+--
+-- Inert unless a real second display is attached: see LauncherSecondScreen.
+local function drawSecondPanel()
+  -- A running game draws its own bottom screen and flushes it at the end of
+  -- Game:draw, which is where the readback belongs. This is only for the
+  -- frames that never get there.
+  if Game then return end
+  local ok, LSS = pcall(require, "src.ui.LauncherSecondScreen")
+  if ok and LSS and LSS.tick then pcall(LSS.tick, Importer) end
+end
+
 function love.draw()
   GraphicsStack.drain()
   if bootReport then return drawBootReport() end
-  if editorMode then return EditorApp.draw() end
-  if TouchEditor then return TouchEditor.draw() end
-  if Importer then return Importer:draw() end
+  if editorMode then EditorApp.draw() return drawSecondPanel() end
+  if TouchEditor then TouchEditor.draw() return drawSecondPanel() end
+  if Importer then Importer:draw() return drawSecondPanel() end
 
-  if not Game then return end
+  if not Game then return drawSecondPanel() end
   Game:draw()
   if Game.capturePath then
     local path = Game.capturePath

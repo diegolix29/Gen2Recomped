@@ -236,6 +236,52 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
     return
   end
 
+  -- THE EXPLORER KIT: down to the Underground, and back up again.
+  --
+  -- Both of the cartridge's entry points do the same one thing --
+  -- UseExplorerKitFromMenu and UseExplorerKitInField each build a
+  -- MapChangeUndergroundContext and run FieldTask_MapChangeToUnderground -- so
+  -- there is one arm here and not two.
+  --
+  -- THE ORDER OF THESE TWO TESTS MATTERS. `canUse` refuses underground, on
+  -- purpose, because CanUseExplorerKit does: it reads the map label and the
+  -- Underground's is "Mystery Zone". So "am I down there already?" has to be
+  -- asked first, or climbing out would be answered with the refusal for being
+  -- down there.
+  if result == "explorer_kit" then
+    local Underground = require("src.world.Gen4Underground")
+    local ow = game.overworld
+    if Underground.isUnderground(ow) then
+      list:close()
+      local up, why = Underground.leave(game, ow)
+      -- A refusal here is not cosmetic: it means nothing recorded where the
+      -- player came down, and saying so beats a silent no-op in a place with
+      -- no other way out.
+      if not up then
+        require("src.core.Logger").warn(
+          "explorer kit: could not leave the Underground -- %s", tostring(why))
+      end
+      return
+    end
+    local can, why = Underground.canUse(game, ow)
+    if not can then
+      -- STAND-IN WORDING. The cartridge prints
+      -- CommonStrings_Text_CantDoThatRightNow from TEXT_BANK_COMMON_STRINGS
+      -- with the player's name substituted (BagContext_FormatErrorMessage, the
+      -- `default` arm). That bank is not in this dataset -- searched, not
+      -- assumed -- so this is a paraphrase of the string's own name and should
+      -- be replaced by the real line the moment the bank is joined. The reason
+      -- goes to the log rather than the screen, because the cartridge gives the
+      -- player one generic refusal for all eight causes.
+      require("src.core.Logger").info("explorer kit refused: %s", tostring(why))
+      showMessages(game, { Strings("%s!\nYou can't do that right now.",
+                                   game.save.player.name) })
+      return
+    end
+    list:close()
+    Underground.enter(game, ow)
+    return
+  end
   if result == "bicycle" then
     -- StartMenu_Item .useOrTossItem (engine/menus/start_sub_menus.asm):
     -- while BIT_ALWAYS_ON_BIKE of wStatusFlags6 is set -- the Cycling Road,

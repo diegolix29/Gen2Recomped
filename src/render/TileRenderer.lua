@@ -1765,6 +1765,9 @@ end
 
 local WINDOW_MARGIN = 8 -- tiles of slack kept around the view between refills
 
+-- one window report per map (see the report in ensureWindow)
+local gen3WinSaid = {}
+
 -- The window bounds, written in place.  A fresh table per fill is one
 -- allocation every time the camera leaves the margin, which on a Gen 3 map
 -- used to be several times a second.
@@ -1853,11 +1856,19 @@ function TileRenderer:ensureWindow(camX, camY, vw, vh)
     local cx1, cy1 = math.ceil(tx1 / n), math.ceil(ty1 / n)
     local slots = self.gen3.animSlots
     local moving = false
+    -- COUNTED, because a cell with no quad draws NOTHING and says nothing.
+    -- A metatile id past the end of the baked sheet is skipped here in
+    -- silence, so a room made of such cells is simply black -- no error, no
+    -- warning, and nothing on screen to tell it from a camera that is
+    -- looking the wrong way.  See the report below.
+    local cells, drew = 0, 0
     for cy = cy0, cy1 - 1 do
       for cx = cx0, cx1 - 1 do
+        cells = cells + 1
         local id = map:blockAt(cx, cy)
         local quad = id and self:gen3QuadFor(id)
         if quad then
+          drew = drew + 1
           local wx, wy = cx * 16, cy * 16
           self.winBatch:add(quad, wx, wy)
           self.winBatchTop:add(quad, wx, wy)
@@ -1867,6 +1878,35 @@ function TileRenderer:ensureWindow(camX, camY, vw, vh)
     end
     -- whether the NEXT animation tick has anything to redraw
     self.winAnimated = moving
+    -- WHAT THE WINDOW ACTUALLY DREW.
+    --
+    -- Reported from play, from somebody else's machine: "petalburg gym in
+    -- emerald still showing as a black background when i warp through the
+    -- rooms".  Every static check of that map passes -- the blocks, the
+    -- tileset pair, the id space, the warps, every room's window fill
+    -- (tools/gen3_map_render_check.lua) -- so whatever is wrong is something
+    -- a live session does, and a bug report cannot carry it.
+    --
+    -- This is the line that can.  Once per map, and EVERY time a fill draws
+    -- nothing at all, which is what a black room is: the map, the camera,
+    -- the window the fill settled on, and how many of its cells found a
+    -- picture.  Those four together separate the three things a black screen
+    -- can be -- a camera off the map (an empty window), cells with no quad
+    -- (cells > 0, drew == 0), or a fill that never ran (no line at all).
+    --
+    -- Probe rather than Logger on purpose: Logger buffers 64 lines and
+    -- truncates on boot, so a handful of lines produced while walking around
+    -- never reaches the disk (src/core/Probe.lua says the rest).
+    local mapId = map and map.id
+    if drew == 0 or not gen3WinSaid[mapId or "?"] then
+      gen3WinSaid[mapId or "?"] = true
+      Probe.say("gen3window",
+                "%s cam=(%d,%d) view=%dx%d win=%d,%d..%d,%d cells=%d "
+                .. "drew=%d body=%dx%d slots=%s",
+                tostring(mapId), math.floor(camX), math.floor(camY),
+                math.floor(vw), math.floor(vh), tx0, ty0, tx1, ty1,
+                cells, drew, W, H, tostring(self.gen3.slots))
+    end
     self:setWin(tx0, ty0, tx1, ty1)
     return
   end

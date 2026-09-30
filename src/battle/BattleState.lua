@@ -215,7 +215,7 @@ function BattleState:isWideBattleLayout()
   -- Emerald's own healthboxes on the surface's own edges and Emerald's own
   -- bottom strip spanning it.  This function is the Game Boy layout's
   -- question and keeps the Game Boy layout's answer.
-  if GameVersion.isGen3() then return false end
+  if GameVersion.isGen3() or GameVersion.isGen4() then return false end
   local options = self.game and self.game.save and self.game.save.options
   return options and options.battleLayout == "wide" or false
 end
@@ -292,7 +292,35 @@ function BattleState:gen3SurfaceWidth()
   return self._gen3SurfaceW
 end
 
--- A WIDENED EMERALD BATTLE OWNS THE SURFACE UNTIL IT LEAVES THE STACK.
+-- BATTLE LAYOUT = WIDE, IN SINNOH'S OWN TERMS. Platinum keeps its DS battle
+-- compositor; only its surface grows horizontally.
+function BattleState:gen4WideLayout()
+  if not self:gen4Layout() then return false end
+  local options = self.game and self.game.save and self.game.save.options
+  return options and options.battleLayout == "wide" or false
+end
+
+function BattleState:gen4SurfaceWidth()
+  if not self:gen4WideLayout() then return Gen4Battle.WIDTH end
+  local Renderer = require("src.render.Renderer")
+  local pw, ph = 0, 0
+  if Renderer.pixelSize then
+    local ok, a, b = pcall(Renderer.pixelSize, Renderer)
+    if ok and type(a) == "number" and type(b) == "number" then pw, ph = a, b end
+  end
+  local fill = self:wantsFillScale()
+  local key = pw .. "x" .. ph .. (fill and "/fill" or "/fixed")
+  if self._gen4SurfaceKey ~= key then
+    self._gen4SurfaceKey = key
+    self._gen4SurfaceW = Gen4Battle.surfaceWidth(pw, ph, fill,
+                                                 math.min(Renderer.MAX_UI_WIDTH or 512, 512))
+  end
+  return self._gen4SurfaceW
+end
+
+-- A WIDENED EMERALD OR SINNOH BATTLE OWNS THE SURFACE UNTIL IT LEAVES
+-- the stack, so menus pushed over it cannot collapse the framebuffer.
+
 --
 -- Same rule, and the same reason, as the Game Boy wide layout's
 -- (Game.wideBattleInStack): the party menu, the bag and the dialogue boxes a
@@ -303,6 +331,9 @@ end
 -- redrawing its wider composition into a surface 240 wide, clipped at the
 -- right edge, and snapping back out again when the menu closed.
 function BattleState:holdsUISurface()
+  if self:gen4Layout() then
+    return self:gen4SurfaceWidth() > Gen4Battle.WIDTH
+  end
   return self:gen3SurfaceWidth() > Gen3Battle.WIDTH
 end
 
@@ -567,7 +598,7 @@ function BattleState:uiSize()
   -- 512x256 with the visible half 256x192, and the platform and battler
   -- positions are absolute pixels on that.
   if self:gen4Layout() then
-    return Gen4Battle.WIDTH, Gen4Battle.HEIGHT
+    return self:gen4SurfaceWidth(), Gen4Battle.HEIGHT
   end
   return 160, 144
 end
@@ -3988,6 +4019,57 @@ function BattleState:reportStadiumBattle(when)
   end)
 end
 
+-- TAPPING THE BOTTOM SCREEN IN A BATTLE.
+--
+-- Asked for: *"ensure touch input and mouse clicks works on the bottom screen for
+-- battle, the underground and everything else"*.  `Game:touchpressed` offers a
+-- pointer to the top state before the d-pad now (pass 135), and this is the
+-- battle taking it.
+--
+-- A TAP BECOMES A REAL BUTTON PRESS rather than a second way to choose an
+-- action.  `Input:overlayPressed` is how the on-screen d-pad already works, and
+-- routing through it means the tap goes through every gate a physical A goes
+-- through -- the ghost check, the Bug Contest ball, the forced-replacement
+-- branch, the demo.  A handler that called `menuActions()` itself would be a
+-- second copy of that logic and would drift from it.
+--
+-- Returning TRUE for a tap that hit no button is deliberate: the panel is the
+-- battle's while it is up, and letting a miss fall through would work the d-pad
+-- underneath it.
+function BattleState:touchpressed(_, px, py)
+  if not GameVersion.isGen4() then return false end
+  local over
+  if self.phase == "menu" then over = "action"
+  elseif self.phase == "moveSelect" then over = "moves"
+  else return false end
+
+  local okG, Gen4B = pcall(require, "src.battle.Gen4Battle")
+  if not okG then return false end
+  -- The same question the draw asks, so the hit test can never be live while
+  -- the buttons are somewhere else: `menuPresentation` answers "bottom" only
+  -- when the second screen is actually up and carrying them.
+  local presentation, SecondScreen = Gen4B.menuPresentation(self, self.phase)
+  if presentation ~= "bottom" or not SecondScreen then return false end
+
+  local x, y = SecondScreen.toLocal(self.game, px, py)
+  if not x then return false end
+  local kind, index = Gen4B.bottomHit(x, y, over)
+  local input = self.game and self.game.input
+  if not input then return true end
+  if kind == "cancel" then
+    input:overlayPressed("b")
+    input:overlayReleased("b")
+  elseif kind == "action" then
+    self.menuIndex = index
+    input:overlayPressed("a")
+    input:overlayReleased("a")
+  elseif kind == "move" then
+    self.moveIndex = index
+    input:overlayPressed("a")
+    input:overlayReleased("a")
+  end
+  return true
+end
 function BattleState:update(dt)
   self:tickFx()
   -- one sample a second into the fight, while it is still on screen
@@ -8328,7 +8410,8 @@ function BattleState:gen4SendOut(battler)
   -- Already throwing something: a second ball in the air is worse than none.
   if self.gen4Ball then return false end
 
-  local pos = Gen4Battle.BATTLER_POS and Gen4Battle.BATTLER_POS[0]
+  local pos = Gen4Battle.battlerPos and Gen4Battle.battlerPos(self, 0)
+              or (Gen4Battle.BATTLER_POS and Gen4Battle.BATTLER_POS[0])
   if not pos then return false end
 
   -- WHICH BALL THIS POKEMON LIVES IN.  `MON_DATA_POKEBALL` is an item id and
@@ -10853,7 +10936,8 @@ function BattleState:gen4BallChain(caught, shakes, ball)
 
   -- WHERE IT IS THROWN TO: the foe's own slot, from the cartridge's position
   -- table, rather than a number typed here.
-  local pos = Gen4Battle.BATTLER_POS and Gen4Battle.BATTLER_POS[1]
+  local pos = Gen4Battle.battlerPos and Gen4Battle.battlerPos(self, 1)
+              or (Gen4Battle.BATTLER_POS and Gen4Battle.BATTLER_POS[1])
   local anim = Gen4BallAnim.new({
     ball = name,
     to = pos and { x = pos.x, y = pos.y } or nil,

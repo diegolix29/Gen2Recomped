@@ -255,6 +255,19 @@ end
 -- the whole window with no background peeking at the receded top/bottom
 -- corners; flat mode returns exactly today's size (growth factor is 1 when
 -- tilt is inactive).
+-- THE WORLD THE CURRENT MAP ACTUALLY HAS, in world pixels, or nil for "do not
+-- clamp".  Set by the overworld when it loads a map; every other caller of
+-- `worldViewSize` -- battles, menus, the title screen -- leaves it nil and is
+-- unaffected.
+function Renderer:setWorldBounds(w, h)
+  w, h = tonumber(w), tonumber(h)
+  if not (w and h and w > 0 and h > 0) then
+    self.worldBoundsW, self.worldBoundsH = nil, nil
+    return
+  end
+  self.worldBoundsW, self.worldBoundsH = w, h
+end
+
 function Renderer:worldViewSize()
   local _, _, pw, ph = displayMetrics()
   local sp = Zoom.scale(self:fitScale())
@@ -266,6 +279,33 @@ function Renderer:worldViewSize()
   if Tilt.active() then
     local g = Tilt.viewGrowth()
     vw, vh = math.ceil(vw * g), math.ceil(vh * g)
+  end
+  -- ...AND A MAP SMALLER THAN THE VIEW DOES NOT FILL THE REST WITH SCENERY.
+  --
+  -- Reported from play: "petalburg gym in emerald still showing as a black
+  -- background when i warp through the rooms even with no mods on".
+  --
+  -- Every measurement said the gym renders correctly, and it does. The gym is
+  -- ONE map nine blocks wide, and `data/layouts/PetalburgCity_Gym/border.bin`
+  -- on the cartridge is metatile 0x208 four times over -- a block whose 256
+  -- pixels are, every one of them, pure black. Nine blocks is 144 world
+  -- pixels. The Game Boy Advance shows 240, so even the cartridge draws three
+  -- columns of black either side; this window pass shows `pw / scale`, which
+  -- on a phone in landscape is several times that, and every extra column is
+  -- more of the same black. The void was being filled with more void.
+  --
+  -- So the view never exceeds what there is to see: the map's own extent, or
+  -- the screen the generation was drawn for, whichever is larger. It can only
+  -- ever REDUCE the view, and never below the cartridge's own framing, so a
+  -- map at least as big as that screen -- which is very nearly all of them,
+  -- in every generation -- comes out at exactly the size it did before.
+  local bw, bh = self.worldBoundsW, self.worldBoundsH
+  if bw and bh then
+    local uw, uh = self:uiSize()
+    vw = math.min(vw, math.max(uw, bw))
+    vh = math.min(vh, math.max(uh, bh))
+    if vw % 2 ~= 0 then vw = vw + 1 end
+    if vh % 2 ~= 0 then vh = vh + 1 end
   end
   return vw, vh
 end
@@ -1020,8 +1060,17 @@ function Renderer:endFrame(zones, worldZones)
     local ow, oh = self.worldOverride:getDimensions()
     local osx = (ow and ow > 0) and (ww / ow) or (1 / dpiX)
     local osy = (oh and oh > 0) and (wh / oh) or (1 / dpiY)
+    -- iOS still needs the historical presentation flip for the older
+    -- generations. Gen 4 is the exception: its 3D worldOverride already
+    -- reaches this point in the correct orientation, so applying the same
+    -- iOS flip a second time turns Platinum upside down while its UI remains
+    -- upright.
     local loveMajor = love.getVersion()
-    if love.system and love.system.getOS and love.system.getOS() == "iOS" and loveMajor >= 12 then
+    local gen = require("src.core.GameVersion").generation()
+    if love.system and love.system.getOS
+       and love.system.getOS() == "iOS"
+       and loveMajor >= 12
+       and gen ~= 4 then
       love.graphics.draw(self.worldOverride, 0, wh, 0, osx, -osy)
     else
       love.graphics.draw(self.worldOverride, 0, 0, 0, osx, osy)

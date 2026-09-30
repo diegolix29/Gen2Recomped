@@ -2129,12 +2129,53 @@ function Data:load()
     -- Poketch's party app all look there too. Lifting it here is what lets all
     -- of them work without a Gen 4 branch each.
     --
-    -- Only when the cache has not brought its own -- a mod that ships `icons`
-    -- still wins, which is the rule every other lift in this file follows.
-    if self.icons == nil then
+    -- ...AND IT HAS TO WIN, BECAUSE `icons` ON A GEN 4 CACHE IS RED'S.
+    --
+    -- Reported from play: "missing pokemon party sprites from the pokemon
+    -- start menu". The lift above was right and never ran. `icons` used to sit
+    -- in CLASSIC_ONLY, which blocks it; it left when Emerald gained an
+    -- icons.lua of its own, and nothing put it back for Gen 4 -- so on a
+    -- Sinnoh cache it is not required, not blocked, and merely OPTIONAL, and
+    -- the overlay is additive. Platinum writes no icons.lua, so
+    -- `require("data.generated.icons")` walks through to the ROOT cache, which
+    -- is Red's (its cachePrefix is ""). `self.icons` came back non-nil, the
+    -- `== nil` guard declined, and every Sinnoh party drew from Kanto's table:
+    -- a wrong icon below 152 and, above it, nothing at all -- which is the
+    -- Poke Ball `Gen4PartyMenu:drawIcon` falls back to. Exactly the report.
+    --
+    -- This is the same shape as the type chart, the abilities, the move
+    -- effects and the ball pocket before it: one name, resolved from two
+    -- places that never meet.
+    --
+    -- So on a Gen 4 cache the CARTRIDGE'S OWN table wins outright. Nothing
+    -- writes an un-prefixed icons.lua for Sinnoh, so there is no honest
+    -- candidate for `self.icons` to already hold here; when a Gen 4 extractor
+    -- stage does write one, this is the line that has to learn the difference.
+    --
+    -- `loadModule` with an explicit dir reads that directory and nothing else,
+    -- so the dir case was never wrong -- it is the mounted-overlay path, where
+    -- `require` cannot be scoped to one cache, that needed this.
+    do
       local sprites = self.gen4_species_sprites
       local icons = sprites and sprites.icons
-      if icons and icons.bySpecies then self.icons = icons end
+      if icons and icons.bySpecies then
+        self.icons = icons
+      end
+    end
+
+    -- SINNOH'S TRAINER ART IS ALREADY IN COLOUR, AND NOTHING SAID SO.
+    -- `Sprites.markFormsTrueColor` has the whole story; the short version
+    -- is that the player's back pic was being repainted with Mew's SGB
+    -- palette, which is the reported "red hue overlay".  Stamped here
+    -- rather than in the extractor so an existing cache is fixed without a
+    -- re-import.
+    do
+      local marked = require("src.pokemon.Sprites")
+                       .markFormsTrueColor(self.field)
+      if marked > 0 then
+        Logger.info("gen4 player: %d player form(s) marked true-colour, "
+                    .. "so the back pic keeps its own palette", marked)
+      end
     end
   end
   -- Hand the cartridge's own battle tables to the two modules that would
