@@ -167,6 +167,8 @@ local Gen4Bridge = V.require("Gen4Bridge")
 V.Gen4Bridge = Gen4Bridge
 if Gen4Bridge.isGen4() and Gen4Bridge.install() then
   Gen4Bridge.register("grass", V.require("Gen4Grass").draw)
+  -- 3D battles in the engine's own world, sprites for actors (Gen4Battle3D).
+  pcall(function() V.require("Gen4Battle3D").install() end)
 end
 -- Battle UI hiding system for all generations
 local BattleBoxXY = V.require("BattleBoxXY")
@@ -380,8 +382,6 @@ local followerCountSetting = ModSetting.new(
   { 0, 1, 2, 3, 4, 5, 6 },
   { "0", "1", "2", "3", "4", "5", "6" }
 )
-
--- Party Follower: enable/disable party follower system
 local partyFollowerSetting = ModSetting.new(
   "partyFollower",
   "PARTY FOLLOWER",
@@ -446,6 +446,9 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
   -- answer false here, and the engine keeps the vanilla 2D path -- which
   -- is why no caller ever has to guard for a missing 3D pass.
   available = function()
+    -- Gen 4 draws its own 3D world (Gen4Ground); a voxelised tilemap would
+    -- REPLACE it. Stand down and let lib/Gen4Bridge.lua add effects instead.
+    if Gen4Bridge.isGen4() then return false end
     return Voxel3D.available()
   end,
 
@@ -519,8 +522,7 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
     -- Load the player model if one is installed (restored from DRAMATIC_SHAPE)
     pcall(function()
       if PlayerModelInstall.installed() then
-        local ok, err = PlayerModel.loadInstalled()
-        print("[PlayerModel] loadInstalled result:", ok, err or "success")
+        PlayerModel.loadInstalled()
       end
     end)
     -- and a ROM the system file picker dropped in the save directory while
@@ -658,11 +660,7 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
     -- PIXEL resolution (see sceneSize) so the 3D pass is crisp rather than
     -- a magnified low-res image, while the FX closures keep drawing in
     -- world-pixel units.
-    --
-    -- GEN 4 already HAS a 3D world (NSBMD + Gen4View). Returning a voxel
-    -- canvas would replace that mesh. Decline the pass so the engine draws
-    -- Sinnoh; Gen4WorldHost composites grass/wind/weather onto that camera.
-    if Gen4WorldHost.isState(ctx.state) then
+        if Gen4WorldHost.isState(ctx.state) then
       Voxel.ready = true
       Gen4WorldHost.noteFrame(ctx)
       return nil
@@ -2502,7 +2500,7 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
   if okMewtwo and mewtwoRow and not rowExists(mewtwoRow.id) then 
     table.insert(out, mewtwoRow) 
   end
-
+  
   -- Pokemon follower row (386 Pokemon support for Stadium/Colosseum models)
   local okPokemonFollower, pokemonFollowerRow = pcall(function()
     local StadiumInstall = V.require("StadiumInstall")
@@ -2784,6 +2782,7 @@ end
 -- so this file keeps naming every engine seam the mod touches.
 OverworldBattle.install()
 pcall(Gen4WorldHost.install)
+
 
 -- ------- shiny Pokemon (restored from DRAMATIC_SHAPE)
 --

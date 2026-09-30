@@ -213,6 +213,16 @@ function Bridge.install()
     return original(self, ...)
   end
   Bridge.installed = true
+
+  -- The passes that belong to every Gen 4 game, registered here so they are
+  -- FIRST in draw order: the water sheet is opaque and writes depth, and what
+  -- main.lua registers after install() (grass, the battle actors) draws over it.
+  local okW, GW = pcall(V.require, "Gen4Water")
+  if okW and type(GW) == "table" and GW.draw then
+    Bridge.register("water", GW.draw)
+  else
+    report("water", "the water pass did not load: %s", tostring(GW))
+  end
   return true
 end
 

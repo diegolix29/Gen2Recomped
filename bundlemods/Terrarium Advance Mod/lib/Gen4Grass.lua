@@ -1,150 +1,235 @@
--- Gen4Grass: swaying 3D tall-grass tufts on the cells the engine says are
--- encounter grass, drawn into Gen 4's own world by Gen4Bridge.
+-- Gen4Grass: the voxel scene's own authored 3D grass, planted in Gen 4's world.
 --
--- The tufts use the SAME shader path as the voxel scene's grass: Voxel3D.draw
--- with a `sway` value bends the mesh by its model-space height (y / grassH),
--- driven by Wind, and picks up the hour's tint. So the wind you already tuned
--- moves these too -- nothing here reimplements wind.
+-- This used to be a separate hand-made tuft. It is not any more: the tuft is the
+-- SAME OUTSIDE MESH the voxel scene stamps on every tall-grass tile -- the bake
+-- under assets/ground/grass/ (grass.mesh.bin + grass.png), loaded and stamped by
+-- lib/Grass3D.lua -- so the two worlds grow the same meadow. Wind (Wind.amount /
+-- Wind.load), the bend curve (Voxel3D.grassH) and foot-crush (Grass3D.crushFrame)
+-- are the voxel scene's own too; nothing here reimplements any of them.
 --
--- Where grass goes is asked of the map (Map:isEncounterCell, falling back to
--- isGrassCell), and how high the ground is comes from the engine's own height
--- query (Gen4Ground:groundY, via scene.groundY), so a tuft on a slope stands on
--- the slope. Nothing about the map is assumed or duplicated.
+-- WHERE IT GROWS
 --
--- PERFORMANCE: one draw call per tuft, capped at MAX. That is deliberately the
--- simplest thing that works; baking per-chunk meshes needs the shader's sway
--- to read a per-vertex base height (it reads model-space y today), so that is a
--- follow-up, not a shortcut taken here.
+-- On tall grass and very tall grass, and nowhere else. A Gen 4 map stores the
+-- tile behaviour in the cell itself (Map:blockAt IS the behaviour byte -- see
+-- Gen4Battle.behaviourUnder in the engine), and tall grass is 2 and very tall
+-- grass is 3. The previous version asked Map:isEncounterCell, which is the
+-- broader question "can a wild Pokemon come from here": it answers yes for
+-- surfable water, which is how grass ended up growing on the lakes. Water is
+-- also excluded by Map:isWaterCell as a second, independent guard.
+--
+-- SCALE AND DENSITY
+--
+-- One world unit is one map pixel and a cell is 16 of them in BOTH worlds, so
+-- nothing is rescaled. What differs is the grid the bake is stamped on: the
+-- voxel scene plants one tuft per 8-pixel TILE, which is four to a cell, and
+-- that is what this does too (2x2 per cell, Grass3D.instanceForTile for each).
+-- (An earlier version treated Gen 4's cell as a single tile and stamped one
+-- double-size tuft per cell; that was wrong -- it was half the density at twice
+-- the size, and doubled the wind and crush values to match.)
+--
+-- HEIGHT
+--
+-- Gen 4 terrain is not flat. Tufts are bucketed by the ground height under each
+-- one and each bucket is its own small mesh drawn translated up to that height,
+-- exactly how ChunkMesher.buildGrassMesh does it: the wind shader reads a
+-- vertex's raw Y as "how far up THIS tuft", so the height has to live in the
+-- draw's translation and never in the vertex data.
+--
+-- If the bake is not on disk, or the GRASS row is set to VOXEL (the classic flat
+-- slab, which has no equivalent here), nothing is drawn -- no substitute grass.
 
 local V = ...
 local Voxel3D = V.require("Voxel3D")
 local Mat4 = V.require("Mat4")
 
 local Grass = {
-  HEIGHT = 9,       -- world px a tuft stands; also the shader's bend normaliser
-  WIDTH = 12,       -- world px across each crossed card
-  RADIUS = 8,       -- tiles around the view's ground focus
-  PER_CELL = 2,
-  MAX = 240,        -- draw-call ceiling
-  SWAY = 3.5,       -- wind reach at the tip, world px
+  CHUNK = 4,             -- cells per side of one baked mesh
+  RADIUS = 3,            -- chunks around the view's ground focus that are drawn
+  BUILDS_PER_FRAME = 2,  -- chunk meshes built in one frame (no hitch on entry)
+  TALL_GRASS = 2,        -- Gen 4 tile behaviours
+  VERY_TALL_GRASS = 3,
 }
 
-local mesh, texture
+local warned = {}
+local function once(key, fmt, ...)
+  if warned[key] then return end
+  warned[key] = true
+  if V.mod and V.mod.log then V.mod.log:info("Gen4Grass: " .. fmt:format(...)) end
+end
 
-local function buildTexture()
-  local ok, data = pcall(love.image.newImageData, 16, 16)
-  if not ok then return nil end
-  local centres = { 3.5, 8.0, 12.5 }
-  for y = 0, 15 do
-    -- narrow at the tip (y = 0), broad at the root (y = 15)
-    local half = 0.45 + 1.6 * (y / 15)
-    local light = 1.0 - 0.38 * (y / 15)
-    for x = 0, 15 do
-      local a = 0
-      for _, cx in ipairs(centres) do
-        if math.abs(x + 0.5 - cx) <= half then a = 1 break end
-      end
-      data:setPixel(x, y, 0.30 * light, 0.72 * light, 0.24 * light, a)
-    end
+local function optional(name)
+  local ok, mod = pcall(V.require, name)
+  return ok and mod or nil
+end
+
+-- map -> { chunks = { ["cx:cy"] = { buckets = { {mesh, y}, ... } } } }
+local cache = setmetatable({}, { __mode = "k" })
+
+local function isTallGrass(map, cx, cy)
+  if not (map.blockAt and map.inBounds and map:inBounds(cx, cy)) then return false end
+  local okB, b = pcall(map.blockAt, map, cx, cy)
+  if not (okB and (b == Grass.TALL_GRASS or b == Grass.VERY_TALL_GRASS)) then return false end
+  -- never on water, whatever the behaviour byte says
+  if map.isWaterCell then
+    local okW, water = pcall(map.isWaterCell, map, cx, cy)
+    if okW and water then return false end
   end
-  local okImg, image = pcall(love.graphics.newImage, data)
-  if not okImg then return nil end
-  image:setFilter("nearest", "nearest")
-  return image
+  return true
 end
 
-local function buildMesh()
-  local verts, map = {}, {}
-  local h, hw = Grass.HEIGHT, Grass.WIDTH / 2
-  for card = 0, 2 do
-    local a = card * math.pi / 3
-    local dx, dz = math.cos(a) * hw, math.sin(a) * hw
-    local n = #verts / 4
-    -- bottom-left, bottom-right, top-right, top-left (see Voxel3D.pushQuad)
-    verts[#verts + 1] = { -dx, 0, -dz, 0, 1, 0.72, 0 }
-    verts[#verts + 1] = {  dx, 0,  dz, 1, 1, 0.72, 0 }
-    verts[#verts + 1] = {  dx, h,  dz, 1, 0, 1.00, 0 }
-    verts[#verts + 1] = { -dx, h, -dz, 0, 0, 1.00, 0 }
-    Voxel3D.pushQuad(map, n)
-  end
-  return Voxel3D.newMesh(verts, map)
-end
-
-local function hash(a, b)
-  local s = math.sin(a * 12.9898 + b * 78.233) * 43758.5453
-  return s - math.floor(s)
-end
-
--- The tufts for the cells around a focus, cached until the focus cell (or the
--- map) changes, so the per-frame cost is the draw calls and nothing else.
-local cache = { key = nil, list = {} }
-
-local function collect(scene)
-  local map = scene.map
-  if not map then return {} end
-  local predicate = map.isEncounterCell or map.isGrassCell
-  if not predicate then return {} end
-  local fx, fz = scene.focusPx()
-  local ccx, ccy = math.floor(fx / 16), math.floor(fz / 16)
-  local key = tostring(map) .. ":" .. ccx .. ":" .. ccy
-  if cache.key == key then return cache.list end
-
-  local cells = {}
-  local R = Grass.RADIUS
-  for cy = ccy - R, ccy + R do
-    for cx = ccx - R, ccx + R do
-      local inside = not map.inBounds or map:inBounds(cx, cy)
-      if inside and predicate(map, cx, cy) then
-        local dx, dy = cx - ccx, cy - ccy
-        cells[#cells + 1] = { dx * dx + dy * dy, cx, cy }
+-- One chunk's meshes, or an empty record when it has no tall grass. Instances
+-- come from Grass3D.instanceForTile, so the yaw/scale hash is the voxel
+-- scene's own; only where they stand and how big they are is Gen 4's.
+local function buildChunk(Grass3D, scene, map, kx, ky)
+  local C = Grass.CHUNK
+  local order, buckets = {}, {}
+  for cy = ky * C, ky * C + C - 1 do
+    for cx = kx * C, kx * C + C - 1 do
+      if isTallGrass(map, cx, cy) then
+        local y = math.floor((scene.groundY(cx * 16 + 8, cy * 16 + 8) or 0) + 0.5)
+        local bucket = buckets[y]
+        if not bucket then bucket = {}; buckets[y] = bucket; order[#order + 1] = y end
+        -- the four 8 px tiles of this cell, each planted the way the voxel
+        -- scene plants it (instanceForTile puts the origin at tile * 8)
+        for ty = cy * 2, cy * 2 + 1 do
+          for tx = cx * 2, cx * 2 + 1 do
+            bucket[#bucket + 1] = Grass3D.instanceForTile(tx, ty, y)
+          end
+        end
       end
     end
   end
-  table.sort(cells, function(a, b) return a[1] < b[1] end)
-
-  local list = {}
-  for _, c in ipairs(cells) do
-    if #list >= Grass.MAX then break end
-    local cx, cy = c[2], c[3]
-    for i = 1, Grass.PER_CELL do
-      local px = cx * 16 + 2 + hash(cx + i * 3.1, cy) * 12
-      local pz = cy * 16 + 2 + hash(cx, cy + i * 5.7) * 12
-      list[#list + 1] = { px, pz, hash(cx * 1.7 + i, cy * 2.3) * math.pi }
-      if #list >= Grass.MAX then break end
-    end
+  local out = {}
+  for _, y in ipairs(order) do
+    local mesh = Grass3D.meshFromInstances(buckets[y])
+    if mesh then out[#out + 1] = { mesh = mesh, y = y } end
   end
-  cache.key, cache.list = key, list
-  return list
+  return { buckets = out }
+end
+
+-- Voxel3D's per-scene grass state. beginScene() clears it every frame, so it is
+-- set here each time, the way VoxelScene's grass pass sets it.
+local lastAt = nil
+local function prepare(Grass3D, scene)
+  local Wind = optional("Wind")
+  local sway = 0
+  if Wind and Wind.amount then
+    local ok, v = pcall(Wind.amount)
+    if ok and tonumber(v) then sway = v end
+  end
+  local h
+  local okM, meta = pcall(Grass3D.meta)
+  if okM and meta and tonumber(meta.height) and meta.height > 0.5 then
+    h = meta.height
+  end
+  Voxel3D.grassH = h
+  local wet, snow, gust = 0, 0, 0
+  if Wind and Wind.load then
+    local okL, a, b, c = pcall(Wind.load)
+    if okL then wet, snow, gust = a or 0, b or 0, c or 0 end
+  end
+  Voxel3D.grassLoad = { wet, snow, gust }
+
+  -- Everyone walking the meadow parts it. Only the player is asked for: the
+  -- springs are Grass3D's, this just says where the feet are, in Gen 4 world
+  -- space.
+  local feet = {}
+  local okG, Game = pcall(require, "src.core.Game")
+  local me = okG and Game and Game.overworld and Game.overworld.player
+  if me and tonumber(me.px) and tonumber(me.py) then
+    local moving = math.abs(me.lift or 0) > 0.15
+    feet[1] = { me.px + 8 + scene.offsetX, me.py + 8 + scene.offsetZ,
+                moving and 12 or 10, moving and 1.0 or 0.6 }
+  end
+  local now = (love.timer and love.timer.getTime and love.timer.getTime()) or 0
+  local dt = lastAt and (now - lastAt) or 0
+  lastAt = now
+  if dt < 0 then dt = 0 elseif dt > 0.1 then dt = 0.1 end
+  local crush
+  if Grass3D.crushFrame then
+    local okC, c = pcall(Grass3D.crushFrame, feet, dt)
+    if okC then crush = c end
+  end
+  Voxel3D.crush = crush or { n = #feet, p = feet }
+  return sway
 end
 
 function Grass.draw(scene)
-  if not mesh then
-    texture = texture or buildTexture()
-    mesh = buildMesh()
+  local map = scene.map
+  if not map then return end
+  local Grass3D = optional("Grass3D")
+  if not (Grass3D and Grass3D.available and Grass3D.available()) then
+    once("bake", "the 3D grass bake is unavailable (assets/ground/grass, or GRASS "
+         .. "set to VOXEL) -- no grass drawn on Gen 4")
+    return
   end
-  if not (mesh and texture) then return end
-  local list = collect(scene)
+  local tex = Grass3D.texture()
+  if not tex then return end
+
+  local rec = cache[map]
+  if not rec then rec = { chunks = {} }; cache[map] = rec end
+
+  local fx, fz = scene.focusPx()
+  local span = Grass.CHUNK * 16
+  local kx0, ky0 = math.floor(fx / span), math.floor(fz / span)
+  local R = Grass.RADIUS
+
+  -- nearest chunks first, so the ones under the camera are built before the far
+  local want = {}
+  for ky = ky0 - R, ky0 + R do
+    for kx = kx0 - R, kx0 + R do
+      local dx, dy = kx - kx0, ky - ky0
+      if dx * dx + dy * dy <= R * R + 1 then
+        want[#want + 1] = { dx * dx + dy * dy, kx, ky }
+      end
+    end
+  end
+  table.sort(want, function(a, b) return a[1] < b[1] end)
+
+  local builds = 0
+  local list = {}
+  for _, w in ipairs(want) do
+    local key = w[2] .. ":" .. w[3]
+    local chunk = rec.chunks[key]
+    if not chunk and builds < Grass.BUILDS_PER_FRAME then
+      builds = builds + 1
+      local ok, built = pcall(buildChunk, Grass3D, scene, map, w[2], w[3])
+      if ok then
+        chunk = built
+      else
+        chunk = { buckets = {} }
+        once("chunk", "a chunk failed to build and was skipped: %s", tostring(built))
+      end
+      rec.chunks[key] = chunk
+    end
+    if chunk then
+      for _, b in ipairs(chunk.buckets) do list[#list + 1] = b end
+    end
+  end
   if #list == 0 then return end
 
-  -- These cards are not on the voxel grid and carry no window art.
+  local sway = prepare(Grass3D, scene)
+  -- these meshes are not on the voxel grid and carry no window art
   Voxel3D.seams(false)
   Voxel3D.glass(false)
-  Voxel3D.grassH = Grass.HEIGHT
-  for i = 1, #list do
-    local t = list[i]
-    local px, pz = t[1], t[2]
-    local wx, wz = scene.toWorld(px, pz)
-    local y = scene.groundY(px, pz) or 0
-    local model = Mat4.mul(Mat4.translate(wx, y, wz), Mat4.rotateY(t[3]))
-    Voxel3D.draw(mesh, texture, model, 0, nil, Grass.SWAY)
+  for _, b in ipairs(list) do
+    Voxel3D.draw(b.mesh, tex, Mat4.translate(scene.offsetX, b.y, scene.offsetZ), 0, nil, sway)
   end
-  Voxel3D.grassH = nil
+  Voxel3D.grassH, Voxel3D.grassLoad, Voxel3D.crush = nil, nil, nil
   Voxel3D.seams(true)
   Voxel3D.glass(true)
 end
 
+-- Drop every baked mesh: the GRASS row flipped, or a map was edited.
 function Grass.invalidate()
-  cache.key, cache.list = nil, {}
+  for _, rec in pairs(cache) do
+    for _, chunk in pairs(rec.chunks) do
+      for _, b in ipairs(chunk.buckets or {}) do
+        if b.mesh and b.mesh.release then pcall(b.mesh.release, b.mesh) end
+      end
+    end
+  end
+  cache = setmetatable({}, { __mode = "k" })
 end
 
 return Grass

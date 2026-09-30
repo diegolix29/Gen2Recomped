@@ -35,8 +35,9 @@ Two facts drove the design:
   shader (wind, water, tint, glass mask, lamps, fog) works unchanged.
   `Bridge.register(name, fn(scene))` adds an effect. Errors are isolated per
   effect. Engine files are not modified.
-- `lib/Gen4Grass.lua`: swaying 3D grass on `Map:isEncounterCell` cells, standing
-  on the engine's terrain height, driven by your existing `Wind`.
+- `lib/Gen4Grass.lua`: the voxel scene's own authored grass mesh (`Grass3D`, the
+  bake under `assets/ground/grass/`), planted on Gen 4 tall grass only. See the
+  grass section below.
 - `main.lua`: installs the bridge on a Gen 4 cartridge only; `voxel.available`
   stands down on Gen 4.
 
@@ -65,7 +66,88 @@ Not verified in a running game: that the battle settings screen (generic
 `Menu`) lays out correctly on Gen 4's 256x192 surface, and the widened panel's
 look. Both are visual.
 
+## Grass on Gen 4 (the voxel scene's own mesh)
+
+`Gen4Grass` no longer has a tuft of its own. It stamps the SAME outside mesh the
+voxel scene uses (`Grass3D`: `grass.mesh.bin` + `grass.png`), with the same
+instance hash (`Grass3D.instanceForTile`), wind (`Wind.amount` / `Wind.load`),
+bend height (`Voxel3D.grassH`) and foot-crush (`Grass3D.crushFrame`).
+
+- **Where:** only tile behaviour 2 (tall grass) and 3 (very tall grass), read from
+  `Map:blockAt` (on Gen 4 that IS the behaviour byte), and never where
+  `Map:isWaterCell` is true. The earlier version used `Map:isEncounterCell`,
+  which is "can a wild Pokemon come from here" and includes surfable water --
+  that is why grass grew on lakes.
+- **Scale:** the bake is authored for the voxel 8 px tile; Gen 4's is 16. Tufts
+  are stamped 2x, and `grassH`, the sway reach and the crush radius are doubled.
+- **Height:** one small mesh per (8x8-tile chunk, ground height), drawn
+  translated to that height like `ChunkMesher.buildGrassMesh`, because the wind
+  shader reads a vertex's raw Y as height above its own root.
+- **Bake missing, or GRASS row = VOXEL:** draws nothing (no substitute grass).
+  Flipping the GRASS row clears the Gen 4 cache too.
+- The bake files are NOT in the zip you sent (no `assets/` folder), so I could
+  not check the mesh's vertex count or real height. Chunk size (`CHUNK`, 8) and
+  draw radius (`RADIUS`, 3 chunks) are guesses; lower them if it stutters.
+
+## 3D battles on Gen 4 (native world + sprite actors)
+
+`lib/Gen4Battle3D.lua`, diverted to from `OverworldBattle.begin` on Gen 4 (the
+voxel arena is never built there: it would replace the game's real world).
+
+- **World:** the engine's own. The battle reports `bgMode() == "world"` so the
+  overworld keeps drawing under it (`Game.drawBaseInStack`), undimmed
+  (`BG_WORLD_DIM = 0`). The engine's 2D field and 2D pics are switched off
+  through `BattleState:drawBattleField` / `drawBattlerPic`, or every Pokemon
+  would draw twice.
+- **Camera:** `Gen4Ground:placeCamera` is wrapped. It starts at the midpoint of
+  the two combatants, looking from behind the player toward the foe, and the
+  player can move it: orbit a full turn, raise/lower (clamped to the engine's
+  own rise range), zoom (clamped to the engine's zoom range). Inputs are the
+  Gen 1-3 battle camera's: mouse, right stick, one-finger drag, wheel, Q/E,
+  stick clicks, pinch. `lib/CamControl.lua` now routes them to
+  `Gen4Battle3D` while a Gen 4 battle is live (`Gen4Battle3D.live()`). Changes
+  ease in; each battle starts from the solved shot again. The player's kept
+  orbit/zoom/heading are restored after every call, so the overworld camera is
+  exactly where they left it. On a CAM TILT rung the view is switched to the
+  third-person lens for the fight (a tilt camera is fixed by design) and
+  switched back afterwards.
+- **Actors:** the engine's own battle pic (`battle:battlerPic`) stood up as a
+  camera-facing quad on the terrain (`groundY`), drawn through `Gen4Bridge` so it
+  is depth-tested against buildings and trees. Honours the engine's own
+  hidden / fainted / ball-absorb state. SPRITES ONLY: COLOSSEUM and STADIUM rungs
+  draw sprites on Gen 4 (no Gen 4 3D models in this pipeline).
+- **Foe placement:** 3-4 tiles ahead of the player, on walkable cells, within 12
+  units of the player's ground height; tries the player's facing first, then the
+  sides, then behind.
+- **Cast:** NPCs and the player's own sprite are removed from the draw lists for
+  the fight (the Pokemon takes the player's place) and restored afterwards.
+- **`wantsFront` is false on Gen 4:** the camera is behind the player, so the
+  engine's BACK pic is right.
+
+Declines (the standard 2D Sinnoh battle plays, unchanged): default CARTRIDGE
+camera, first person, no clear ground, surfing/water (not walkable cells).
+Works in third person and the numeric CAM TILT rungs (via the lens switch above).
+
+Known gaps, not verified or not done:
+- Move-animation particles, the thrown ball and the healthboxes are Platinum's
+  2D layers placed for DS screen slots; they are NOT tracked to the 3D actors.
+- The B rungs (discs) and the disc stage are voxel-only; on Gen 4 they play as
+  the world battle.
+- Sprite scale (`SCALE = 0.5` units/pixel), foe distance, starting zoom/rise and
+  the camera-control speeds (`ORBIT_MOUSE`, `ORBIT_DRAG`, ...) are first guesses
+  at the top of the file, untested against a real screen or pad.
+- The `CamControl` routing (wheel, mouse, stick, touch) was syntax-checked only;
+  it needs the engine's `Game`/`TouchControls`, which the stub harness does not
+  fake. The camera controller itself (`Gen4Battle3D.mouseOrbit`, `stepZoom`,
+  ...) is tested.
+- The player character is hidden for the whole fight, including before the
+  send-out, so that side is empty until the Pokemon appears.
+
 ## Tested vs untested
+
+Also tested with stubs (`texlua`): foe placement and declines, camera override and
+exact restore of the player's look, 2D suppression only for the staged battle,
+actor placement/facing/hidden/fainted handling, cast restore, auto-finish.
 
 Tested (stubbed harness, `texlua`): hook fires before the engine closes the
 canvas; the matrix reaching `Voxel3D` equals `Gen4View:matrix()` exactly; no-op
