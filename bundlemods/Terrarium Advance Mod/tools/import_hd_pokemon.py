@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import sys
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,38 @@ import threading
 DEX_MAX_DEFAULT = 493
 PROGRESS_LOCK = threading.Lock()
 PROGRESS_PATH: Path | None = None
+_LAST_PROGRESS = 0.0
+
+
+def write_progress(state: str, current: int, total: int, message: str = "", force: bool = False) -> None:
+    """Update the in-game bar. Never os.replace: LOVE may have the file open on
+    Windows, and replace then raises WinError 5 and aborts the convert."""
+    global _LAST_PROGRESS
+    if PROGRESS_PATH is None:
+        return
+    now = time.monotonic()
+    if not force and state == "converting" and (now - _LAST_PROGRESS) < 0.20:
+        return
+    _LAST_PROGRESS = now
+    safe_message = message.encode('ascii', 'replace').decode('ascii')
+    text = f"{state}\n{int(current)}\n{int(total)}\n{safe_message}\n"
+    with PROGRESS_LOCK:
+        last_error = None
+        for _ in range(12):
+            try:
+                with open(PROGRESS_PATH, "w", encoding="utf-8", newline="\n") as fh:
+                    fh.write(text)
+                    fh.flush()
+                    try:
+                        os.fsync(fh.fileno())
+                    except OSError:
+                        pass
+                return
+            except OSError as err:
+                last_error = err
+                time.sleep(0.05)
+        if last_error and force:
+            raise last_error
 NAME_RE = re.compile(
     r"^(?P<dex>\d+)-(?P<side>front|back)-(?P<color>[ns])(?:-(?P<gender>[fm]))?\.gif$",
     re.IGNORECASE,
@@ -46,16 +79,6 @@ class SourceGif:
             return self.source.read_bytes()
         with zipfile.ZipFile(self.source) as zf:
             return zf.read(self.member)
-
-
-def write_progress(state: str, current: int, total: int, message: str = "") -> None:
-    if PROGRESS_PATH is None:
-        return
-    text = f"{state}\n{int(current)}\n{int(total)}\n{message}\n"
-    with PROGRESS_LOCK:
-        tmp = PROGRESS_PATH.with_suffix(".tmp")
-        tmp.write_text(text, encoding="utf-8")
-        tmp.replace(PROGRESS_PATH)
 
 
 def iter_source(path: Path) -> Iterable[SourceGif]:
@@ -313,7 +336,8 @@ def main() -> int:
                 species.setdefault(side, {}).setdefault(color, {})[gender] = meta
                 write_progress("converting", index, total, item.name)
                 if index % 100 == 0 or index == total:
-                    print(f"[{index:4d}/{total}] metadata", flush=True)
+                    safe_name = item.name.encode('ascii', 'replace').decode('ascii')
+                    print(f"[{index:4d}/{total}] {safe_name}", flush=True)
         else:
             jobs = []
             reused = 0
@@ -342,16 +366,17 @@ def main() -> int:
                         species.setdefault(side, {}).setdefault(color, {})[gender] = meta
                         write_progress("converting", reused + index, total, name)
                         if index % 25 == 0 or index == len(jobs):
-                            print(f"[{index:4d}/{len(jobs)}] {name}", flush=True)
+                            safe_name = name.encode('ascii', 'replace').decode('ascii')
+                            print(f"[{index:4d}/{len(jobs)}] {safe_name}", flush=True)
 
         write_progress("converting", total, total, "WRITING")
         write_metadata(metadata_path, records)
         write_file_list(dest / "files.txt", records, args.metadata_only)
         write_progress("done", len(records), total, "READY")
         print(f"\nGenerated metadata for {len(records)} species from {total} GIFs (max dex {args.max_dex}).")
-        print(f"Metadata: {metadata_path}")
+        print(f"Metadata: {metadata_path.as_posix()}")
         if not args.metadata_only:
-            print(f"Sprites:  {asset_root}")
+            print(f"Sprites:  {asset_root.as_posix()}")
         return 0
     except Exception as err:
         write_progress("fail", 0, 1, str(err))
