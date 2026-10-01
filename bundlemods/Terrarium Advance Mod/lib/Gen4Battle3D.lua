@@ -363,12 +363,17 @@ local function drawActor(scene, battle, battler, spot)
   if not battle.battlerPic then return end
   local pic
   local isHd = false
-  local HdPokemon = V.HdPokemon
-  if HdPokemon and type(HdPokemon.battleImage) == "function" then
+  local HDSheets = V.HDPokemonSheets or (V.mod and V.mod.exports and V.mod.exports.hdPokemonSheets)
+  if HDSheets and type(HDSheets.frame) == "function" then
     local side = (battle.player == battler or (battle.player and battle.player.mon == battler)
-      or (battler and battler == battle.player)) and "player" or "enemy"
-    local okHd, hd = pcall(HdPokemon.battleImage, battle, side, battler)
-    if okHd and hd and hd.getWidth then pic = hd; isHd = true end
+      or (battler and battler == battle.player)) and "back" or "front"
+    local mon = battler.mon or battler
+    local dex = mon and (mon.dex or mon.nationalDex or mon.speciesIndex)
+    local shiny = mon and (mon.shiny or mon.isShiny)
+    if dex then
+      local image, info = HDSheets.frame({dex = dex, facing = side, shiny = shiny})
+      if image then pic = image; isHd = true end
+    end
   end
   if not pic then
     local okP, enginePic = pcall(battle.battlerPic, battle, battler)

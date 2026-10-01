@@ -1227,19 +1227,42 @@ local function drawCast(state, posed, me, atlasFor, yaw)
           StadiumWilds.drawEntity(p)
         else
           -- Fall back to HD sheet or native sprite if no 3D model
-          local HdPokemon = V.HdPokemon
-          if HdPokemon and type(HdPokemon.decoratePose) == "function" then
-            pcall(HdPokemon.decoratePose, p)
+          local HDSheets = V.HDPokemonSheets or (V.mod and V.mod.exports and V.mod.exports.hdPokemonSheets)
+          if HDSheets and StadiumWilds.isWildPokemon(p) then
+            local dex = StadiumWilds.getEntitySpeciesDex and StadiumWilds.getEntitySpeciesDex(p)
+            if dex then
+              local image, info = HDSheets.frame({dex = dex, facing = "front", shiny = p.shiny})
+              if image then
+                p.sprite = p.sprite or {}
+                p.sprite.image = image
+                p.sprite.def = p.sprite.def or {}
+                p.sprite.def.hdImage = image
+                p.sprite.def.hdFrameW = info.w
+                p.sprite.def.hdFrameH = info.h
+                p.sprite.def.scale = 16 / info.h
+              end
+            end
           end
           drawEntity(p.sprite, p.px, p.py, viewFacing(p), p.phase, p.flip, p.gh,
                      p.colors, p.lift, p.waterline, p.isPlayer, yaw)
         end
       else
         --.Draw normal sprite entity
-        local HdPokemon = V.HdPokemon
-        if HdPokemon and type(HdPokemon.decoratePose) == "function"
-            and StadiumWilds.isWildPokemon(p) then
-          pcall(HdPokemon.decoratePose, p)
+        local HDSheets = V.HDPokemonSheets or (V.mod and V.mod.exports and V.mod.exports.hdPokemonSheets)
+        if HDSheets and StadiumWilds.isWildPokemon(p) then
+          local dex = StadiumWilds.getEntitySpeciesDex and StadiumWilds.getEntitySpeciesDex(p)
+          if dex then
+            local image, info = HDSheets.frame({dex = dex, facing = "front", shiny = p.shiny})
+            if image then
+              p.sprite = p.sprite or {}
+              p.sprite.image = image
+              p.sprite.def = p.sprite.def or {}
+              p.sprite.def.hdImage = image
+              p.sprite.def.hdFrameW = info.w
+              p.sprite.def.hdFrameH = info.h
+              p.sprite.def.scale = 16 / info.h
+            end
+          end
         end
         drawEntity(p.sprite, p.px, p.py, viewFacing(p), p.phase, p.flip, p.gh,
                    p.colors, p.lift, p.waterline, p.isPlayer, yaw)

@@ -4596,8 +4596,7 @@ V.require = function(name)
     Mat4 = Mat4,
     ShadowMap = ShadowMap,
     SpriteBillboards = SpriteBillboards,
-    HdPokemon = HdPokemon,
-
+    HDPokemonSheets = mod.exports.hdPokemonSheets,
   }
   
   if compatMap[name] then

@@ -48,11 +48,12 @@ local function loadSpriteFallback(dex)
   end
 
   do
-    local HdPokemon = V.HdPokemon
-    if HdPokemon and type(HdPokemon.record) == "function" then
-      local rec = HdPokemon.record(dex, "back", false, nil)
-        or HdPokemon.record(dex, "front", false, nil)
-      local image = rec and HdPokemon.frameImage(rec)
+    local HDSheets = V.HDPokemonSheets or (V.mod and V.mod.exports and V.mod.exports.hdPokemonSheets)
+    if HDSheets and type(HDSheets.frame) == "function" then
+      local image, info = HDSheets.frame({dex = dex, facing = "back", shiny = false})
+      if not image then
+        image, info = HDSheets.frame({dex = dex, facing = "front", shiny = false})
+      end
       if image then
         spriteCache[dex] = image
         currentSprite = image
