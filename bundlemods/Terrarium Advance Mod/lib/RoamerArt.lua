@@ -327,12 +327,27 @@ local function build(species, mayBake)
   local mon = Game.data and Game.data.pokemon and Game.data.pokemon[species]
   if not (mon and mon.spriteFront) then return nil end
 
-  -- Shipped Gen-2 style walk sheet wins: true colour, already 16x96, no bake.
+  local hdDex
+  do
+    local HDSheets = V.HDPokemonSheets or (V.mod and V.mod.exports and V.mod.exports.hdPokemonSheets)
+    if not HDSheets then
+      local okHd, m = pcall(V.require, "HDPokemonSheets")
+      if okHd then HDSheets = m end
+    end
+    if HDSheets and type(HDSheets.dexOf) == "function" then
+      local Game = require("src.core.Game")
+      local data = Game and Game.data
+      hdDex = HDSheets.dexOf(species, data)
+    end
+  end
+
+  -- Shipped Gen-2 style walk sheet wins for the 2D blit; VoxelScene stamps
+  -- HD Reloded frames onto a per-entity overlay when those sheets exist.
   local shipped = V.path .. "/" .. SHIPPED .. species .. ".png"
   if Assets.exists(shipped) then
     return { id = "TR_ROAM_" .. species, image = shipped,
              frames = RoamerArt.FRAMES, walker = true,
-             trueColor = true, dsSpecies = species }
+             trueColor = true, dsSpecies = species, hdDex = hdDex }
   end
 
   -- Fallback: greyscale bake from the battle front pic (REV in the path so
@@ -343,8 +358,8 @@ local function build(species, mayBake)
     if not writeSheet(mon, path) then return nil end
   end
   return { id = "TR_ROAM_" .. species, image = path,
-           frames = RoamerArt.FRAMES, walker = true,
-           dsSpecies = species }
+           frames = RoamerArt.FRAMES, walker = true, trueColor = hdDex ~= nil,
+           dsSpecies = species, hdDex = hdDex }
 end
 
 -- `mayBake` is the caller's permission to spend a bake HERE, on this frame.

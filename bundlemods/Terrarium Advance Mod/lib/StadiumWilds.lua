@@ -200,6 +200,26 @@ end
 -- Get the species dex number from an entity
 function StadiumWilds.getEntitySpeciesDex(entity)
   if not entity then return nil end
+
+  do
+    local def = entity.sprite and entity.sprite.def
+    local tagged = tonumber(def and def.hdDex)
+    if tagged and tagged >= 1 and tagged <= 493 then return tagged end
+  end
+
+  do
+    local HDSheets = V.HDPokemonSheets or (V.mod and V.mod.exports and V.mod.exports.hdPokemonSheets)
+    if not HDSheets then
+      local ok, m = pcall(V.require, "HDPokemonSheets")
+      if ok then HDSheets = m end
+    end
+    if HDSheets and type(HDSheets.dexOf) == "function" then
+      local game = V.mod and ((V.mod.game) or (V.mod.world and V.mod.world.game))
+      local dex = HDSheets.dexOf(entity, game and game.data)
+        or HDSheets.dexOf(entity.entity, game and game.data)
+      if dex then return dex end
+    end
+  end
   
   -- First check nested entity (the actual game entity)
   if entity.entity and type(entity.entity) == "table" then

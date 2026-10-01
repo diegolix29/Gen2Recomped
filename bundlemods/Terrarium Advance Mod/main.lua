@@ -3215,6 +3215,7 @@ do
   local okHD, HDSheets = pcall(V.require, "HDPokemonSheets")
   if okHD and type(HDSheets) == "table" then
     mod.exports.hdPokemonSheets = HDSheets
+    V.HDPokemonSheets = HDSheets
   else
     mod.log:warn("HDPokemonSheets not loaded: %s", tostring(HDSheets))
   end

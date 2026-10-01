@@ -98,22 +98,30 @@ function SpriteBillboards.mesh(def, frame)
   local key = def.hdImage and def or def.image
   local byFrame = meshes[key]
   if not byFrame then byFrame = {}; meshes[key] = byFrame end
-  if byFrame[frame] == nil then
-    local ok, m = pcall(buildCard, def, frame)
-    byFrame[frame] = (ok and m) or false
-    
-    -- Apply high-quality filtering to the image if mesh was created successfully
-    if ok and m then
-      local scale = def.scale or 1.0
-      local heightScale = def.heightScale or scale
-      local img = def.hdImage
-      if not img then
-        local imgOk, got = pcall(Assets.image, def.image)
-        if imgOk then img = got end
-      end
-      if img then
-        SpriteBillboards.setHighQualityFiltering(img, scale, heightScale)
-      end
+  local cached = byFrame[frame]
+  if cached then
+    -- HD Reloded animates by swapping the decoded frame image on the same
+    -- def; keep the quad and retarget the texture so the card does not stay
+    -- on frame 0.
+    if def.hdImage then
+      pcall(cached.setTexture, cached, def.hdImage)
+    end
+    return cached
+  end
+  if cached == false then return nil end
+  local ok, m = pcall(buildCard, def, frame)
+  byFrame[frame] = (ok and m) or false
+
+  if ok and m then
+    local scale = def.scale or 1.0
+    local heightScale = def.heightScale or scale
+    local img = def.hdImage
+    if not img then
+      local imgOk, got = pcall(Assets.image, def.image)
+      if imgOk then img = got end
+    end
+    if img then
+      SpriteBillboards.setHighQualityFiltering(img, scale, heightScale)
     end
   end
   return byFrame[frame] or nil
@@ -139,22 +147,30 @@ end
 -- reloads -- the same signal that already clears the meshes.
 local dims = setmetatable({}, { __mode = "k" })
 function SpriteBillboards.getSpriteDimensions(def, frame)
-  local hit = dims[def]
-  if hit then return hit[1], hit[2], hit[3], hit[4] end
   local img = def.hdImage
   if not img then
     local ok, got = pcall(Assets.image, def.image)
     if ok then img = got end
   end
-  if not img then return 16, 16, 16, 16 end
-  local iw, ih = img:getDimensions()
-  local frameWidth = def.hdFrameW or iw
-  local frameHeight = def.hdFrameH or (ih / math.max(1, def.frames or 1))
+  local frameWidth = def.hdFrameW
+  local frameHeight = def.hdFrameH
+  if img and not (frameWidth and frameHeight) then
+    local iw, ih = img:getDimensions()
+    frameWidth = frameWidth or iw
+    frameHeight = frameHeight or (ih / math.max(1, def.frames or 1))
+  end
+  frameWidth = frameWidth or 16
+  frameHeight = frameHeight or 16
   local scale = def.scale or 1.0
   local heightScale = def.heightScale or scale
   local worldWidth = frameWidth * scale
   local worldHeight = frameHeight * heightScale
-  dims[def] = { frameWidth, frameHeight, worldWidth, worldHeight }
+  local hit = dims[def]
+  if hit and hit[5] == img and hit[1] == frameWidth and hit[2] == frameHeight
+      and hit[3] == worldWidth and hit[4] == worldHeight then
+    return hit[1], hit[2], hit[3], hit[4]
+  end
+  dims[def] = { frameWidth, frameHeight, worldWidth, worldHeight, img }
   return frameWidth, frameHeight, worldWidth, worldHeight
 end
 

@@ -508,6 +508,123 @@ function M.frame(query)
   }
 end
 
+local function dexFromData(data, species)
+  if not (data and data.pokemon and species ~= nil) then return nil end
+  local def = data.pokemon[species] or data.pokemon[tostring(species)]
+  if type(def) == "table" then
+    local d = tonumber(def.nationalDex or def.dex or def.number or def.index)
+    if M.supported(d) then return d end
+  end
+  if type(species) ~= "string" then return nil end
+  local key = nameKey(species)
+  for id, row in pairs(data.pokemon) do
+    if type(row) == "table" then
+      if nameKey(tostring(id)) == key
+          or (type(row.name) == "string" and nameKey(row.name) == key) then
+        local d = tonumber(row.nationalDex or row.dex or row.number or row.index)
+        if M.supported(d) then return d end
+      end
+    end
+  end
+  return nil
+end
+
+-- Dex number from a species name, "SPECIES_025", a number, or an overworld
+-- entity / pose. Used by roamers and followers (battle identify() wants a
+-- battler table, which those entities are not).
+function M.dexOf(src, data)
+  if src == nil then return nil end
+  if not data then
+    local ok, Game = pcall(require, "src.core.Game")
+    if ok and Game then
+      data = Game.data
+      if not data and type(Game.get) == "function" then
+        local inst = Game:get()
+        data = inst and inst.data
+      end
+    end
+  end
+  if type(src) == "number" then
+    return M.supported(src) and src or nil
+  end
+  if type(src) == "string" then
+    local n = tonumber(src)
+    if M.supported(n) then return n end
+    local tagged = src:match("SPECIES_(%d+)")
+    if tagged then
+      n = tonumber(tagged)
+      return M.supported(n) and n or nil
+    end
+    return dexFromName(src) or dexFromData(data, src)
+  end
+  if type(src) ~= "table" then return nil end
+  local e = src
+  if type(src.entity) == "table" then e = src.entity end
+  local sprite = e.sprite
+  local def = sprite and sprite.def
+  local candidates = {
+    e.dex, e.nationalDex, e.speciesIndex,
+    e.species, e._wildsFollowerSpecies, e.dsSpecies,
+    sprite and (sprite.dsSpecies or sprite.species),
+    def and def.dsSpecies, def and def.hdDex,
+  }
+  for i = 1, #candidates do
+    local d = M.dexOf(candidates[i], data)
+    if d then return d end
+  end
+  local id = identify(data, e)
+  return id and id.dex or nil
+end
+
+-- Overworld cards only have front and back sheets. Followers default to the
+-- back (walking behind the player); roamers face the camera with the front
+-- unless they are walking north.
+function M.sheetFacing(worldFacing, role)
+  local face = type(worldFacing) == "string" and worldFacing:lower() or worldFacing
+  if role == "follower" then
+    if face == "down" then return "front" end
+    return "back"
+  end
+  if face == "up" then return "back" end
+  return "front"
+end
+
+-- Stamp the current HD frame onto a sprite def for SpriteBillboards. Does not
+-- replace def.image: the 2D SpriteRenderer walk sheet stays in place.
+function M.applyOverworld(def, query)
+  if type(def) ~= "table" or type(query) ~= "table" then return false end
+  if not M.isEnabled(query.game) then return false end
+  local image, info = M.frame(query)
+  if not image then return false end
+  local scale = 16 / math.max(info.h or 1, 1)
+  def.hdImage = image
+  def.hdFrameW = info.w
+  def.hdFrameH = info.h
+  def.scale = scale
+  def.heightScale = scale
+  def.trueColor = true
+  def.frames = 1
+  def.walker = false
+  return true
+end
+
+-- Per-entity overlay so two of the same species can hold different frames
+-- without mutating the shared walk-sheet def the 2D blit still uses.
+function M.bindOverworldDef(host, baseDef, query)
+  if type(baseDef) ~= "table" then return nil end
+  local overlay = type(host) == "table" and host._hdOverworldDef or nil
+  if not overlay then
+    overlay = {}
+    if type(host) == "table" then host._hdOverworldDef = overlay end
+  end
+  overlay.id = baseDef.id
+  overlay.image = baseDef.image
+  overlay.dsSpecies = baseDef.dsSpecies
+  overlay.hdDex = baseDef.hdDex or (query and query.dex)
+  if not M.applyOverworld(overlay, query) then return nil end
+  return overlay
+end
+
 -- ------- hosts -------------------------------------------------------------
 
 local function gameOf(host)
