@@ -399,12 +399,18 @@ end
 
 function M.replacePic(battle, img)
   if not (battle and img) then return nil end
+  -- The trainer's own back pic (playerBackPic) is NOT a Pokemon: never swap it.
+  if img == battle.playerBackPic and not (battle.player and img == battle.player.sprite) then
+    return nil
+  end
+  -- Only the Pokemon battler sprites are replaced, and only for battlers that
+  -- really are a species (battleImage returns nil for anything else).
   local player = battle.player
   local enemy = battle.enemy
-  if img == battle.playerBackPic or (player and img == player.sprite) then
+  if player and img == player.sprite then
     return M.battleImage(battle, "player", player)
   end
-  if img == battle.enemyPic or (enemy and img == enemy.sprite) then
+  if enemy and (img == enemy.sprite or img == battle.enemyPic) then
     return M.battleImage(battle, "enemy", enemy)
   end
   return nil
