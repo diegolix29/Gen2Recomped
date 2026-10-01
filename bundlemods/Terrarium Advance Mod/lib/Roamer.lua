@@ -76,20 +76,7 @@ function Roamer.standable(kind, map, cx, cy)
   if map:warpAtCell(cx, cy) then return false end
   if kind == "water" then return map:isWaterCell(cx, cy) end
   if not map:isWalkableCell(cx, cy) then return false end
-  if kind == "grass" then
-    if map.renderer and map.renderer.gen4Ground then
-      local ok, Host = pcall(V.require, "Gen4WorldHost")
-      if ok and Host and Host.isTallGrass then
-        local okG, grass = pcall(Host.isTallGrass, map, cx, cy)
-        if okG then return grass and true or false end
-      end
-      if map.blockAt then
-        local okB, b = pcall(map.blockAt, map, cx, cy)
-        if okB and (b == 2 or b == 3) then return true end
-      end
-    end
-    return map:isGrassCell(cx, cy)
-  end
+  if kind == "grass" then return map:isGrassCell(cx, cy) end
   return true
 end
 

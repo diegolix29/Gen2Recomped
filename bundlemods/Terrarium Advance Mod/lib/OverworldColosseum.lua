@@ -669,7 +669,7 @@ function OverworldColosseum.safeDraw(p)
     logOnce("draw-frame", "Colosseum overworld draw error: %s", tostring(result))
     return false
   end
-  return result == true
+  return result ~= false
 end
 
 -- Shadow casting is best-effort and currently has no real geometry pass of

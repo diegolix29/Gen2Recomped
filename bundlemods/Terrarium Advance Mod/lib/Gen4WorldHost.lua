@@ -98,39 +98,8 @@ function Host.behaviourName(value)
 end
 
 function Host.isTallGrass(map, cx, cy)
-  if not (map and map.inBounds and map:inBounds(cx, cy)) then return false end
-  if map.isWaterCell then
-    local okW, water = pcall(map.isWaterCell, map, cx, cy)
-    if okW and water then return false end
-  end
-  -- On Gen 4, Map:blockAt is the behaviour byte (2 = tall, 3 = very tall).
-  if type(map.blockAt) == "function" then
-    local okB, b = pcall(map.blockAt, map, cx, cy)
-    if okB and (b == 2 or b == 3) then return true end
-  end
   local name = Host.behaviourName(Host.behaviourAt(map, cx, cy))
   return name and GRASS_BEHAVIOURS[name] == true
-end
-
--- WildRoamers / Roamer.standable ask Map:isGrassCell, which is a Gen 1/2
--- grassTiles test and is always false on Platinum. Same seam Gen 3 already
--- has for Hoenn behaviour bytes.
-function Host.installGrassQueries()
-  local Map = engineRequire("src.world.Map")
-  if not (Map and type(Map.isGrassCell) == "function") then return false end
-  if Map._terrariumGen4Grass then return true end
-  local original = Map.isGrassCell
-  function Map:isGrassCell(cx, cy)
-    if Host.isMap(self) then
-      return Host.isTallGrass(self, cx, cy)
-    end
-    if type(original) == "function" then
-      return original(self, cx, cy)
-    end
-    return false
-  end
-  Map._terrariumGen4Grass = true
-  return true
 end
 
 -- World-pixel project through the camera that actually drew this frame.
@@ -723,7 +692,6 @@ end
 
 function Host.install()
   if Host.installed then return true end
-  pcall(Host.installGrassQueries)
   local Gen4Ground = engineRequire("src.render.Gen4Ground")
   if not (Gen4Ground and Gen4Ground.drawFree) then return false end
 
