@@ -541,6 +541,17 @@ local function dexFor(context,battler)
   return tonumber(dex),(V.ShinySupport and V.ShinySupport.variant(battler)) or (mon and mon.shiny and "shiny" or "normal")
 end
 
+-- HD 2D fallback (lib/HDPokemonSheets.lua): a species the Colosseum actor
+-- catalog structurally cannot model (National Dex above 386) that HAS an HD
+-- sheet installed. Only these sides may bypass "CBE owns the battle, never
+-- draw 2D"; hidden/fainted/captured actors of modelled species are unaffected.
+local function hdFallbackOwns(context,side)
+  local hd=V.HDPokemonSheets
+  if not (hd and type(hd.ownsSide)=="function") then return false end
+  local ok,owned=pcall(hd.ownsSide,context,liveBattler(context,side))
+  return ok and owned==true
+end
+
 -- Native battle scripts are free to rebuild lightweight battler wrappers while
 -- their visual queue is running. A resident model in one of these presentation
 -- states is the same visual actor until an explicit replacement event says
@@ -584,6 +595,12 @@ local function stadiumActor(context,side)
   local dex,variant=dexFor(context,battler)
   local record=P.stadiumActors[side]
   if not dex or dex<1 then
+    if hdFallbackOwns(context,side) then
+      -- Not an error: no actor exists for this species and the HD 2D
+      -- fallback draws it. Do not poison BattleCache's render status.
+      releaseStadiumActor(side,"hd-fallback")
+      return nil
+    end
     P.stadiumError="no National Dex mapping for "..tostring(battler and battler.mon and battler.mon.species)
     releaseStadiumActor(side,"missing-dex")
     if P.modeId=="cbe:colosseum-pokemon" and V.BattleCache then V.BattleCache.noteRenderError(context.game,P.stadiumError) end
@@ -2737,9 +2754,15 @@ function P:drawWorld(context)
   local spriteOk,_,spriteErr=graphicsScope(g,function()
     g.setShader();g.setDepthMode();g.setColor(1,1,1,1)
     for _,side in ipairs(SIDES_EP) do
-      -- A live Colosseum/Stadium actor still owns the slot even when it is
-      -- hidden (recall/faint). Only sides with no 3D actor fall through to
-      -- HdPokemon / engine sprites (dex 1-493, including no-ROM installs).
+      -- COLOSSEUM MODELS means exactly that: once CBE's GC6E01 actor service
+      -- owns the battle, never fall back to a Game Boy/Battle Art sprite merely
+      -- because the actor is intentionally hidden for recall/faint/capture or
+      -- because a delegated Gen 1 host queried the frame in a different order.
+      -- This was the capture leak that showed the enemy sprite inside the ball.
+      local cbeAbsolute=self.mode=="stadium"
+        and self.modeId=="cbe:colosseum-pokemon"
+        and cbePokemonModelsEnabled(context)
+        and not hdFallbackOwns(context,side)
       local captureHidden=false
       local captureScale=1
       if side=="enemy" and PlayerTrainer then
@@ -2752,8 +2775,7 @@ function P:drawWorld(context)
           captureHidden=okHidden and value==true
         end
       end
-      local hasLiveActor=self.stadiumActors and self.stadiumActors[side]~=nil
-      local image=(not self.drawn[side] and not captureHidden and not hasLiveActor)
+      local image=(not self.drawn[side] and not cbeAbsolute and not captureHidden)
         and imageFor(context,side) or nil
       local px,py,targetH=targetGeometry(context,side)
       if image and px and py and targetH then
