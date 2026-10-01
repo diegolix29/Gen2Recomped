@@ -116,7 +116,8 @@ function Screen:draw()
       err = err:sub(19)
       y = y + 10
     end
-    centred("A RETRY  B BACK", 128)
+    centred("A RETRY  START ZIP", 118)
+    centred("B BACK", 128)
   elseif state == "done" then
     centred("ASSETS READY", 52)
     centred(tostring(st.count or 0) .. " SPECIES", 68)
