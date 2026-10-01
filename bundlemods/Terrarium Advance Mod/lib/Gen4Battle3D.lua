@@ -60,6 +60,7 @@ local Mat4 = V.require("Mat4")
 
 local M = {
   SCALE = 0.5,        -- world units per sprite pixel (80px pic -> 40 units)
+  HD_HEIGHT = 20,     -- world units tall for HD Pokemon sprites (any pixel size); lower = smaller
   MIN_DIST = 3,       -- tiles between the two combatants
   MAX_DIST = 4,
   MAX_STEP = 12,      -- tallest ground step allowed between them, world units
@@ -361,19 +362,21 @@ local function drawActor(scene, battle, battler, spot)
   end
   if not battle.battlerPic then return end
   local pic
+  local isHd = false
   local HdPokemon = V.HdPokemon
   if HdPokemon and type(HdPokemon.battleImage) == "function" then
     local side = (battle.player == battler or (battle.player and battle.player.mon == battler)
       or (battler and battler == battle.player)) and "player" or "enemy"
     local okHd, hd = pcall(HdPokemon.battleImage, battle, side, battler)
-    if okHd and hd and hd.getWidth then pic = hd end
+    if okHd and hd and hd.getWidth then pic = hd; isHd = true end
   end
   if not pic then
     local okP, enginePic = pcall(battle.battlerPic, battle, battler)
     if not (okP and enginePic and enginePic.getWidth) then return end
     pic = enginePic
   end
-  pcall(pic.setFilter, pic, "nearest", "nearest")
+  if isHd then pcall(pic.setFilter, pic, "linear", "linear")
+  else pcall(pic.setFilter, pic, "nearest", "nearest") end
 
   local scale = 1
   local yLower = 0
@@ -385,11 +388,13 @@ local function drawActor(scene, battle, battler, spot)
   end
   if scale <= 0.001 then return end
 
-  local w = pic:getWidth() * M.SCALE * scale
-  local h = pic:getHeight() * M.SCALE * scale
+  local unit = M.SCALE
+  if isHd then unit = M.HD_HEIGHT / math.max(1, pic:getHeight()) end
+  local w = pic:getWidth() * unit * scale
+  local h = pic:getHeight() * unit * scale
   local gy = scene.groundY(spot.x, spot.z) or 0
   local wx, wz = scene.toWorld(spot.x, spot.z)
-  local y = math.max(gy - 3, gy - yLower * M.SCALE)
+  local y = math.max(gy - 3, gy - yLower * unit)
 
   -- face the camera: rotateY maps +z to (sin a, cos a)
   local ex, ez = scene.eye[1], scene.eye[3]
