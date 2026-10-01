@@ -159,6 +159,21 @@ local DrawDistance = V.require("DrawDistance")
 local OverworldBattle = V.require("OverworldBattle")
 local WildRoamers = V.require("WildRoamers")
 local BattleExit = V.require("BattleExit")
+-- Gen 4 (Platinum): the engine already draws a real 3D world, so Terrarium's
+-- effects ride on it instead of rebuilding it (lib/Gen4Bridge.lua). Installed
+-- only on a Gen 4 cartridge (the hook and the grass effect; on Gen 1-3 the
+-- bridge module is loaded but does nothing).
+local Gen4Bridge = V.require("Gen4Bridge")
+V.Gen4Bridge = Gen4Bridge
+if Gen4Bridge.isGen4() and Gen4Bridge.install() then
+  Gen4Bridge.register("grass", V.require("Gen4Grass").draw)
+  -- hide Platinum's own grass cards and water where the 3D versions draw (Gen4Hide)
+  pcall(function() V.require("Gen4Hide").install() end)
+  -- the voxel scene's RayFX water reflection, pointed at Gen 4's water (Gen4Reflect)
+  pcall(function() V.require("Gen4Reflect").install() end)
+  -- 3D battles in the engine's own world, sprites for actors (Gen4Battle3D).
+  pcall(function() V.require("Gen4Battle3D").install() end)
+end
 -- Battle UI hiding system for all generations
 local BattleBoxXY = V.require("BattleBoxXY")
 
@@ -371,8 +386,6 @@ local followerCountSetting = ModSetting.new(
   { 0, 1, 2, 3, 4, 5, 6 },
   { "0", "1", "2", "3", "4", "5", "6" }
 )
-
--- Party Follower: enable/disable party follower system
 local partyFollowerSetting = ModSetting.new(
   "partyFollower",
   "PARTY FOLLOWER",
@@ -437,6 +450,9 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
   -- answer false here, and the engine keeps the vanilla 2D path -- which
   -- is why no caller ever has to guard for a missing 3D pass.
   available = function()
+    -- Gen 4 draws its own 3D world (Gen4Ground); a voxelised tilemap would
+    -- REPLACE it. Stand down and let lib/Gen4Bridge.lua add effects instead.
+    if Gen4Bridge.isGen4() then return false end
     return Voxel3D.available()
   end,
 
@@ -510,8 +526,7 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
     -- Load the player model if one is installed (restored from DRAMATIC_SHAPE)
     pcall(function()
       if PlayerModelInstall.installed() then
-        local ok, err = PlayerModel.loadInstalled()
-        print("[PlayerModel] loadInstalled result:", ok, err or "success")
+        PlayerModel.loadInstalled()
       end
     end)
     -- and a ROM the system file picker dropped in the save directory while
@@ -649,11 +664,7 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
     -- PIXEL resolution (see sceneSize) so the 3D pass is crisp rather than
     -- a magnified low-res image, while the FX closures keep drawing in
     -- world-pixel units.
-    --
-    -- GEN 4 already HAS a 3D world (NSBMD + Gen4View). Returning a voxel
-    -- canvas would replace that mesh. Decline the pass so the engine draws
-    -- Sinnoh; Gen4WorldHost composites grass/wind/weather onto that camera.
-    if Gen4WorldHost.isState(ctx.state) then
+            if Gen4WorldHost.isState(ctx.state) then
       Voxel.ready = true
       Gen4WorldHost.noteFrame(ctx)
       return nil
@@ -2493,8 +2504,7 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
   if okMewtwo and mewtwoRow and not rowExists(mewtwoRow.id) then 
     table.insert(out, mewtwoRow) 
   end
-
-  -- Pokemon follower row (386 Pokemon support for Stadium/Colosseum models)
+      -- Pokemon follower row (386 Pokemon support for Stadium/Colosseum models)
   local okPokemonFollower, pokemonFollowerRow = pcall(function()
     local StadiumInstall = V.require("StadiumInstall")
     local Stadium2Install = V.require("Stadium2Install")
@@ -2775,6 +2785,7 @@ end
 -- so this file keeps naming every engine seam the mod touches.
 OverworldBattle.install()
 pcall(Gen4WorldHost.install)
+
 
 -- ------- shiny Pokemon (restored from DRAMATIC_SHAPE)
 --
@@ -3197,7 +3208,6 @@ end)
 
 -- Export follower API for companion mods
 mod.exports.follower = followerInstance
-
 -- HD animated 2D fallback for Pokemon with no 3D model (National Dex 1-493).
 -- Independent of the Colosseum disc: the billboard seam in OverworldBattle
 -- reads it through V.require, and it is republished for other mods.
@@ -3226,7 +3236,6 @@ do
     mod.log:warn("HDSheetInstaller not loaded: %s", tostring(HDInstaller))
   end
 end
-
 -- ------- what time it is
 --
 -- The cycle's clock rides the SAVE SLOT (save.modData, via mod.save): what
@@ -4160,7 +4169,6 @@ end
     if CurrentSpriteModels and type(CurrentSpriteModels.registerCapability) == "function" and PokemonActors and PokemonActors.service then
       pcall(CurrentSpriteModels.registerCapability, "COLOSSEUM_BATTLE_ENVIRONMENTS/pokemon", "battleActors", PokemonActors.service)
     end
-
     -- HD 2D fallback as a portable battleSprites v1 provider, for battles where
     -- CurrentSpriteModels owns 2D drawing. Resolves only what has a sheet.
     if CurrentSpriteModels and type(CurrentSpriteModels.registerCapability) == "function"
@@ -4168,6 +4176,7 @@ end
       pcall(CurrentSpriteModels.registerCapability, "COLOSSEUM_BATTLE_ENVIRONMENTS/hd_sheets",
         "battleSprites", mod.exports.hdPokemonSheets.spriteApi)
     end
+
 
     -- Publish the same PokemonActors capability for OVERWORLD consumers.
     if PokemonActors and PokemonActors.service then
@@ -4587,6 +4596,8 @@ V.require = function(name)
     Mat4 = Mat4,
     ShadowMap = ShadowMap,
     SpriteBillboards = SpriteBillboards,
+    HdPokemon = HdPokemon,
+
   }
   
   if compatMap[name] then

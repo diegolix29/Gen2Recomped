@@ -28,6 +28,14 @@ I.config = {
   -- another release: same layout, assets/battle/hd-pokemon/<facing>/<color>/NNN.png
   sources = {
     {
+      name = "Terri-Assets HD Pokemon (full 1-493)",
+      repo = "MINIMI75/Terri-Assets",
+      version = "1.0.0",
+      packId = nil, -- no asset-pack.json for this pack
+      prefix = "hd-pokemon/",
+      userAgent = "terrarium-hd-sheets",
+    },
+    {
       name = "Kanto in Motion assets",
       repo = "HaseoSora/Kanto-in-Motion-Assets",
       version = "1.0.0",
