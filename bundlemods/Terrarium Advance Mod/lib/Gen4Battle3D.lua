@@ -365,8 +365,9 @@ local function drawActor(scene, battle, battler, spot)
   local isHd = false
   local HDSheets = V.HDPokemonSheets or (V.mod and V.mod.exports and V.mod.exports.hdPokemonSheets)
   if HDSheets and type(HDSheets.frame) == "function" then
-    local side = (battle.player == battler or (battle.player and battle.player.mon == battler)
-      or (battler and battler == battle.player)) and "back" or "front"
+    -- 3D battles use the FRONT sheet for both sides; back sheets are for
+    -- followers and roamers only.
+    local side = "front"
     local mon = battler.mon or battler
     local dex = mon and (mon.dex or mon.nationalDex or mon.speciesIndex)
     local shiny = mon and (mon.shiny or mon.isShiny)

@@ -529,7 +529,11 @@ function M.isEnabled(game)
   return true
 end
 
-local function facingFor(side) return side == "player" and "back" or "front" end
+-- Every 3D battle mode (2D-3D A/B, STADIUM A/B, COLOSSEUM A/B) shows the FRONT
+-- sheet for BOTH sides: the camera looks at the player's mon from the side, so
+-- the back-view art is wrong there. Back sheets are reserved for followers and
+-- roamers, which ask HDPokemonSheets.frame({facing = "back"}) directly.
+local function facingFor(side) return "front" end
 
 -- ---- billboard seam (OverworldBattle.textures) ----
 
@@ -580,7 +584,6 @@ function M.ownsSide(context, battler)
   local id = identify(dataOf(context), battler)
   if not id or id.dex <= M.COLOSSEUM_MAX then return false end
   return M.available(id.dex, "front", id.shiny, id.gender, id.form)
-    and M.available(id.dex, "back", id.shiny, id.gender, id.form)
 end
 
 local function slotPad(scale, facing, cellH)
