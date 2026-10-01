@@ -394,6 +394,21 @@ function Game:freeView()
   return nil
 end
 
+-- Whether mouse look should be enabled (free camera OR Gen 4 native first/third person)
+function Game:hasLookCamera()
+  if self:freeView() then return true end
+  local ow = self.overworld
+  local renderer = ow and ow.map and ow.map.renderer
+  local ground = renderer and renderer.gen4Ground
+  local view = ground and ground.view3d
+  -- Gen 4 native camera is active when view3d exists and is NOT orbital
+  -- (orbital means it's a tilt rung which is controlled by the mod, not native)
+  if view and view.orbit and view.isOrbital and not view:isOrbital() then
+    return true
+  end
+  return false
+end
+
 -- Degrees of camera per pixel of mouse, and per second at full stick.
 --
 -- Requested: *"the orbit ... should be mouse and right analog stick
@@ -426,7 +441,20 @@ Game.LOOK_SETTLE_EVENTS = 2
 
 function Game:cameraLook(dx, dy)
   local view = self:freeView()
-  if not view then return false end
+  if not view then
+    -- Check for Gen 4 native camera (first/third person)
+    local ow = self.overworld
+    local map = ow and ow.map
+    if not (map and map.def and map.def.generation == 4) then
+      return false
+    end
+    -- For Gen 4, get the view3d if it exists (first/third person)
+    local renderer = ow and ow.map and ow.map.renderer
+    local ground = renderer and renderer.gen4Ground
+    view = ground and ground.view3d
+    -- If no view3d (default cartridge camera), consume input anyway to keep mouse locked
+    if not view then return true end
+  end
   if (dx == 0 or dx == nil) and (dy == 0 or dy == nil) then return true end
 
   -- A WARP IS NOT A LOOK.
@@ -489,7 +517,15 @@ end
 -- to.  An analog control that means "keep going" has to be read per frame.
 function Game:updateCameraStick(dt)
   local view = self:freeView()
-  if not view then
+  -- Check for Gen 4 - native camera takes precedence over voxel free camera
+  local ow = self.overworld
+  local map = ow and ow.map
+  local isGen4 = map and map.def and map.def.generation == 4
+  if isGen4 then
+    -- On Gen 4, ignore voxel freeView and use native camera instead
+    view = nil
+  end
+  if not view and not isGen4 then
     if self.lookRelative and love.mouse and love.mouse.setRelativeMode then
       pcall(love.mouse.setRelativeMode, false)
       self.lookRelative = false
@@ -505,18 +541,11 @@ function Game:updateCameraStick(dt)
     local ok, focused = pcall(love.window.hasFocus)
     wantRelative = ok and focused or false
   end
-  local actualRelative = self.lookRelative
-  if love.mouse and love.mouse.getRelativeMode then
-    local ok, relative = pcall(love.mouse.getRelativeMode)
-    if ok then actualRelative = relative end
-  end
-  if love.mouse and love.mouse.setRelativeMode and actualRelative ~= wantRelative then
-    local ok = pcall(love.mouse.setRelativeMode, wantRelative)
-    self.lookRelative = ok and wantRelative or false
+  if love.mouse and love.mouse.setRelativeMode and self.lookRelative ~= wantRelative then
+    pcall(love.mouse.setRelativeMode, wantRelative)
+    self.lookRelative = wantRelative
     -- ...and ignore what the warp this causes is about to report.
     self.lookSettle = Game.LOOK_SETTLE_EVENTS
-  else
-    self.lookRelative = actualRelative
   end
   if not (love.joystick and love.joystick.getJoysticks) then return end
   local ok, pads = pcall(love.joystick.getJoysticks)
