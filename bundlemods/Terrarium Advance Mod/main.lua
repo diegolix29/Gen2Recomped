@@ -167,6 +167,8 @@ local Gen4Bridge = V.require("Gen4Bridge")
 V.Gen4Bridge = Gen4Bridge
 if Gen4Bridge.isGen4() and Gen4Bridge.install() then
   Gen4Bridge.register("grass", V.require("Gen4Grass").draw)
+  -- hide Platinum's own grass cards and water where the 3D versions draw (Gen4Hide)
+  pcall(function() V.require("Gen4Hide").install() end)
   -- 3D battles in the engine's own world, sprites for actors (Gen4Battle3D).
   pcall(function() V.require("Gen4Battle3D").install() end)
 end
@@ -663,7 +665,7 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
     -- PIXEL resolution (see sceneSize) so the 3D pass is crisp rather than
     -- a magnified low-res image, while the FX closures keep drawing in
     -- world-pixel units.
-        if Gen4WorldHost.isState(ctx.state) then
+            if Gen4WorldHost.isState(ctx.state) then
       Voxel.ready = true
       Gen4WorldHost.noteFrame(ctx)
       return nil
@@ -1656,7 +1658,7 @@ SettingsMenu.helpFor = function(id)
   if id == "DRAMATIC_SHAPE:characterWalkViewer" then
     return "Opens the current Colosseum character. Left/Right orbit, Select toggles walk, Start re-saves walk_debug_<id>.txt into the LOVE save folder (see the console path) for tools/paint_walk_override.py."
   end
-  if id == "DRAMATIC_SHAPE:hdPokemon" then
+    if id == "DRAMATIC_SHAPE:hdPokemon" then
     return "HD Asset Manager (same as Kanto in Motion): A downloads the official PNG pack, START installs a local ZIP. Android: put picked_hd_pokemon.zip in the save folder, then START. Extraction runs a little each frame so the bar can move. Dex 1-493 Reloded GIFs in the zip are converted in-game; PNG sheets are copied once into mod cache."
   end
   return originalHelpFor(id)
@@ -2506,8 +2508,7 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
   if okMewtwo and mewtwoRow and not rowExists(mewtwoRow.id) then 
     table.insert(out, mewtwoRow) 
   end
-  
-  -- Pokemon follower row (386 Pokemon support for Stadium/Colosseum models)
+    -- Pokemon follower row (386 Pokemon support for Stadium/Colosseum models)
   local okPokemonFollower, pokemonFollowerRow = pcall(function()
     local StadiumInstall = V.require("StadiumInstall")
     local Stadium2Install = V.require("Stadium2Install")
@@ -2558,14 +2559,12 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
   elseif viewerRow and not rowExists(viewerRow.id) then
     table.insert(out, viewerRow)
   end
-
-  local okHdPokemon, hdPokemonRow = pcall(function()
+    local okHdPokemon, hdPokemonRow = pcall(function()
     return V.require("HdPokemonInstall").row()
   end)
   if okHdPokemon and hdPokemonRow and not rowExists(hdPokemonRow.id) then
     table.insert(out, hdPokemonRow)
   end
-
   local okWilds, wildsRow = pcall(function()
     local StadiumInstall = V.require("StadiumInstall")
     local Stadium2Install = V.require("Stadium2Install")
@@ -3859,7 +3858,7 @@ local function initializeColosseumIntegration()
     namespace.Voxel3D = Voxel3D  -- give the Colosseum namespace what ArenaOverworldSnapshot needs
     namespace.HdPokemon = HdPokemon
     V.HdPokemon = HdPokemon
-local ArenaOverworldSnapshot = loadColosseumModule("ArenaOverworldSnapshot")
+    local ArenaOverworldSnapshot = loadColosseumModule("ArenaOverworldSnapshot")
     BattleArtBridge = loadColosseumModule("BattleArtBridge")
     loadColosseumModule("ShinySupport")
     loadColosseumModule("ModelIdentity")
@@ -4152,7 +4151,7 @@ end
     if CurrentSpriteModels and type(CurrentSpriteModels.registerCapability) == "function" and PokemonActors and PokemonActors.service then
       pcall(CurrentSpriteModels.registerCapability, "COLOSSEUM_BATTLE_ENVIRONMENTS/pokemon", "battleActors", PokemonActors.service)
     end
-    if HdPokemon and type(HdPokemon.install) == "function" then
+     if HdPokemon and type(HdPokemon.install) == "function" then
       pcall(HdPokemon.install, CurrentSpriteModels)
     end
 
@@ -4485,18 +4484,6 @@ end
 
 -- Call the Colosseum initialization (wrapped to avoid local variable limit)
 pcall(initializeColosseumIntegration)
--- Pic hook + battleSprites capability. Runs even when no Colosseum disc is
--- imported so dex 1-493 HD sheets still cover battles and overworld fallback.
-if HdPokemon and type(HdPokemon.install) == "function" then
-  pcall(HdPokemon.install)
-end
-if mod.events and type(mod.events.on) == "function" then
-  mod.events:on("mods.loaded", function()
-    if HdPokemon and type(HdPokemon.install) == "function" then
-      pcall(HdPokemon.install)
-    end
-  end)
-end
 
 mod.exports.version = "1.15.0-mobile.snow.1"
 -- exposed so a companion mod can pin its own tiles' shapes or read the
@@ -4586,7 +4573,8 @@ V.require = function(name)
     Mat4 = Mat4,
     ShadowMap = ShadowMap,
     SpriteBillboards = SpriteBillboards,
-    HdPokemon = HdPokemon,
+        HdPokemon = HdPokemon,
+
   }
   
   if compatMap[name] then

@@ -44,10 +44,13 @@ local Mat4 = V.require("Mat4")
 
 local GW = {
   CHUNK = 8,              -- cells per side of one baked sheet
-  RADIUS = 3,             -- chunks around the view's ground focus that are drawn
+  RADIUS = 8,             -- chunks around the view's ground focus that are drawn (8 x 128 = 1024 units,
+                          -- most of what the engine draws, so hiding the native water leaves no far hole)
+  NEAR = 3,               -- ring that must be fully built before Gen4Hide drops the native water
+  ready = false,          -- Gen4Hide reads this: the sheet is complete around the camera
   SUB = 2,                -- quads per cell side (the swell is a vertex effect)
   LIFT = 1.0,             -- world units above the engine's own water height
-  BUILDS_PER_FRAME = 2,
+  BUILDS_PER_FRAME = 4,
   TOP_SHADE = 0.85,       -- ChunkMesher's VOLUME_TOP_SHADE, the water's own
   BEHAVIOURS = { [16] = true, [17] = true, [18] = true, [20] = true, [21] = true },
 }
@@ -108,6 +111,7 @@ local function buildChunk(scene, map, kx, ky)
 end
 
 function GW.draw(scene)
+  GW.ready = false
   local map = scene.map
   if not map then return end
   local Water = optional("Water")
@@ -139,6 +143,7 @@ function GW.draw(scene)
   table.sort(want, function(a, b) return a[1] < b[1] end)
 
   local builds, list = 0, {}
+  local nearMissing = false
   for _, w in ipairs(want) do
     local key = w[2] .. ":" .. w[3]
     local chunk = rec.chunks[key]
@@ -153,8 +158,10 @@ function GW.draw(scene)
       end
       rec.chunks[key] = chunk
     end
+    if not chunk and w[1] <= GW.NEAR * GW.NEAR + 1 then nearMissing = true end
     if chunk and chunk.mesh then list[#list + 1] = chunk.mesh end
   end
+  GW.ready = not nearMissing
   if #list == 0 then return end
 
   Voxel3D.seams(false)
@@ -169,6 +176,7 @@ end
 
 -- Drop every baked sheet: a map was edited, or the mod was reloaded.
 function GW.invalidate()
+  GW.ready = false
   for _, rec in pairs(cache) do
     for _, chunk in pairs(rec.chunks) do
       if chunk.mesh and chunk.mesh.release then pcall(chunk.mesh.release, chunk.mesh) end
