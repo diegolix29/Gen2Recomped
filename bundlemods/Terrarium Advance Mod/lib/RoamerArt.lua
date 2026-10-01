@@ -53,6 +53,47 @@ end
 local DERIVED = derivedRoot()
 local SHIPPED = "assets/roamers/"
 
+-- ------- HD Pokemon Sheets support for roamers -------
+
+local function getDexFromSpecies(species)
+  if not species then return nil end
+  local Game = require("src.core.Game")
+  local data = Game and Game.data
+  if not data or not data.pokemon then return nil end
+  
+  local mon = data.pokemon[species]
+  if not mon then return nil end
+  
+  -- Try to get dex from various fields
+  local dex = tonumber(mon.nationalDex) or tonumber(mon.dex) or tonumber(mon.number) or tonumber(mon.id)
+  if dex and dex >= 1 and dex <= 493 then return dex end
+  
+  return nil
+end
+
+local function getHDSheet(species, dex)
+  local HDSheets = V.HDPokemonSheets or (V.mod and V.mod.exports and V.mod.exports.hdPokemonSheets)
+  if not (HDSheets and type(HDSheets.frame) == "function") then return nil end
+  
+  -- Resolve dex if not provided
+  if not dex then
+    dex = getDexFromSpecies(species)
+  end
+  if not dex then return nil end
+  
+  -- Try back sheet first (appropriate for roamers seen from behind), then front
+  local image, info = HDSheets.frame({dex = dex, facing = "back", shiny = false, key = "roamer"})
+  if not image then
+    image, info = HDSheets.frame({dex = dex, facing = "front", shiny = false, key = "roamer"})
+  end
+  
+  if image then
+    return image, info, dex
+  end
+  
+  return nil
+end
+
 -- The three shades a Game Boy OBJ can actually show.  Color 0 is
 -- transparent in hardware -- which is why every overworld sheet in this
 -- game is drawn in 170/85/0 and nothing lighter -- so a front pic's four
@@ -327,22 +368,19 @@ local function build(species, mayBake)
   local mon = Game.data and Game.data.pokemon and Game.data.pokemon[species]
   if not (mon and mon.spriteFront) then return nil end
 
-  local hdDex
-  do
-    local HDSheets = V.HDPokemonSheets or (V.mod and V.mod.exports and V.mod.exports.hdPokemonSheets)
-    if not HDSheets then
-      local okHd, m = pcall(V.require, "HDPokemonSheets")
-      if okHd then HDSheets = m end
-    end
-    if HDSheets and type(HDSheets.dexOf) == "function" then
-      local Game = require("src.core.Game")
-      local data = Game and Game.data
-      hdDex = HDSheets.dexOf(species, data)
-    end
+  -- HD Pokemon Sheets: highest priority when available
+  local dex = getDexFromSpecies(species)
+  local hdImage, hdInfo = getHDSheet(species, dex)
+  if hdImage then
+    -- HD sheets are true-color and already animated
+    -- We don't set 'image' field here because SpriteRenderer expects a path string
+    -- Instead, we mark it as hdSheet and handle rendering in Roamer.lua
+    return { id = "TR_ROAM_" .. species, image = nil,
+             frames = RoamerArt.FRAMES, walker = true,
+             trueColor = true, dsSpecies = species, hdSheet = true, hdDex = dex }
   end
 
-  -- Shipped Gen-2 style walk sheet wins for the 2D blit; VoxelScene stamps
-  -- HD Reloded frames onto a per-entity overlay when those sheets exist.
+  -- Shipped Gen-2 style walk sheet wins: true colour, already 16x96, no bake.
   local shipped = V.path .. "/" .. SHIPPED .. species .. ".png"
   if Assets.exists(shipped) then
     return { id = "TR_ROAM_" .. species, image = shipped,

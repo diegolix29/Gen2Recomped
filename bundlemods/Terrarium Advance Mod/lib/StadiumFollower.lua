@@ -98,17 +98,20 @@ local function loadSpriteFallback(dex)
   if not dex then return false, "no dex number" end
   
   -- HD Reloded: back sheet on the follower; front is the battle/overworld pose.
+  -- Priority: HD sheets -> regular sprites
   local HDSheets = V.HDPokemonSheets or (V.mod and V.mod.exports and V.mod.exports.hdPokemonSheets)
   if HDSheets and type(HDSheets.frame) == "function" then
-    local image, info = HDSheets.frame({dex = dex, facing = "back", shiny = false})
+    -- Try back sheet first (appropriate for follower), then front
+    local image, info = HDSheets.frame({dex = dex, facing = "back", shiny = false, key = "follower"})
     if not image then
-      image, info = HDSheets.frame({dex = dex, facing = "front", shiny = false})
+      image, info = HDSheets.frame({dex = dex, facing = "front", shiny = false, key = "follower"})
     end
     if image then
       spriteCache[dex] = image
       currentSprite = image
       currentSpecies = dex
       usingSpriteFallback = true
+      print("StadiumFollower.loadSpriteFallback: Loaded HD sheet for dex", dex)
       return true
     end
   end
@@ -363,6 +366,10 @@ function StadiumFollower.update(dt)
     ColosseumMon.update(currentSpecies, colosseumVariant, dt)
     return
   end
+  if usingSpriteFallback then
+    -- HD sheets handle their own animation via frame() call with key
+    return
+  end
   if not currentRig then return end
   
   animTime = animTime + dt
@@ -500,6 +507,19 @@ function StadiumFollower.drawSprite(x, y, facing)
   end
   
   print("[StadiumFollower.drawSprite] Drawing sprite at x:", x, "y:", y, "facing:", facing)
+  
+  -- Try to refresh HD sheet frame (for animated sheets)
+  local HDSheets = V.HDPokemonSheets or (V.mod and V.mod.exports and V.mod.exports.hdPokemonSheets)
+  if HDSheets and type(HDSheets.frame) == "function" and usingSpriteFallback then
+    local image, info = HDSheets.frame({dex = currentSpecies, facing = "back", shiny = false, key = "follower"})
+    if not image then
+      image, info = HDSheets.frame({dex = currentSpecies, facing = "front", shiny = false, key = "follower"})
+    end
+    if image then
+      currentSprite = image
+      spriteCache[currentSpecies] = image
+    end
+  end
   
   -- Try to use love.graphics for sprite rendering
   local lg = love and love.graphics
