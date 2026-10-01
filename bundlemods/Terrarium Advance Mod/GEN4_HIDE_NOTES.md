@@ -1,7 +1,7 @@
 # Gen 4: hide native grass/water, and the 3D grass / water that replace them
 
 Files: `lib/Gen4Hide.lua`, `lib/Gen4Water.lua`, `lib/Gen4Grass.lua`, `lib/Gen4Reflect.lua`,
-`lib/Gen4Bridge.lua`. `main.lua` is NOT shipped: it needs only these two lines inside the
+`lib/Gen4Sand.lua` (new), `lib/Gen4Bridge.lua`. `main.lua` is NOT shipped: it needs only these two lines inside the
 `if Gen4Bridge.isGen4() and Gen4Bridge.install() then` block, after the grass register:
     pcall(function() V.require("Gen4Hide").install() end)
     pcall(function() V.require("Gen4Reflect").install() end)
@@ -63,3 +63,18 @@ set/restore, copy-back, every early exit, error path, uninstall. NOT run in LOVE
 check the reflection in particular (canvas/depth handling is the part only the real driver
 proves), the shoreline where sheet meets bank, and frame time on big seas (25 chunks of sea
 is about 200k triangles).
+
+
+## Round 5: Gen4Sand, the voxel scene's textured ground on the beach
+- The voxel scene's 3D ground is one thin textured quad per 8 px tile (Grass3D.instanceForTile
+  hash for yaw/scale, the 4-vertex template, UV 0..1, shade 0.8) drawn with
+  `Grass3D.groundTexture()` = `assets/ground/grass/ground.png`. `Gen4Sand` stamps exactly that.
+- Where: cells whose tile behaviour is SAND (33, 0x21 in Gen4Behaviors), via `Map:blockAt`, never on
+  water. Edit `Sand.BEHAVIOURS` to add others. It goes OVER the native sand (a terrain chunk has no
+  per-cell hole), `LIFT` 0.4 above it. Sand painted with another behaviour stays native.
+- Height: each tile is baked at `groundY` under its centre, bucketed by height like the grass.
+- Reach: the engine's ground window (`WINDOW` 2), nearest first, 4 ms/frame build budget.
+- `Sand.MODE`: "stamp" (voxel-scene look, default) or "tile" (axis-aligned, no overlap/shimmer).
+- No ground.png on disk => nothing is drawn (logged once as `Gen4Sand:`).
+- Registered by `Gen4Bridge.install()` after water and before grass, so no `main.lua` change.
+- Toggle off: `Sand.enabled = false`, or `Bridge.disabled.sand`.
