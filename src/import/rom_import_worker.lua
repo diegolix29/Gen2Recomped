@@ -7,6 +7,34 @@ require('love.timer')
 require('love.system')
 local extractor
 local ok,err=xpcall(function()
+ if job.action=='scan' then
+  local GV=require('src.core.GameVersion')
+  local results={}
+  for index,path in ipairs(job.paths or {}) do
+   local result={path=path,name=path:match('[^/\\]+$') or path}
+   local file=io.open(path,'rb')
+   local bytes
+   if file then
+    result.size=file:seek('end');file:seek('set',0)
+    if job.sizes[result.size] then bytes=file:read('*a') end
+    file:close()
+   else
+    local info=love.filesystem.getInfo(path)
+    if info then
+     result.size=info.size
+     if job.sizes[result.size] then bytes=love.filesystem.read(path);result.saveDir=true end
+    else result.unreadable=true end
+   end
+   if bytes then
+    result.hash=love.data.encode('string','hex',love.data.hash('sha1',bytes))
+    result.version=GV.forSha1(result.hash)
+   end
+   results[#results+1]=result
+   channel:push({kind='progress',current=index,total=#job.paths,name=result.name})
+  end
+  channel:push({kind='scanned',results=results})
+  return
+ end
  if job.action=='verify' then
   local bytes=job.bytes
   if not bytes then

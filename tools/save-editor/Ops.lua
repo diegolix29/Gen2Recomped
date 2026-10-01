@@ -512,7 +512,7 @@ end
 function Ops.pcOrder(S)
   local ids = {}
   for id in pairs(Ops.pcItems(S)) do ids[#ids + 1] = id end
-  table.sort(ids)
+  table.sort(ids,require('Catalog').keyLess)
   return ids
 end
 

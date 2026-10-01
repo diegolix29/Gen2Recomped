@@ -37,7 +37,7 @@ local HINTS = {
 local function sortedKeys(t)
   local keys = {}
   for k in pairs(t) do keys[#keys + 1] = k end
-  table.sort(keys)
+  table.sort(keys,Catalog.keyLess)
   return keys
 end
 

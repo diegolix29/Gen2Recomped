@@ -46,12 +46,22 @@ local function canShell()
   return true
 end
 
+-- Extracted Gen4 IDs are numeric; merged compatibility/mod entries may use
+-- names. Keep native numeric order without comparing unlike Lua types.
+function Catalog.keyLess(a,b)
+  local ta,tb=type(a),type(b)
+  if ta=='number' and tb=='number' then return a<b end
+  if ta=='number' then return true end
+  if tb=='number' then return false end
+  return tostring(a)<tostring(b)
+end
+
 local function sortedKeys(t)
   local keys = {}
   for k in pairs(t) do
     table.insert(keys, k)
   end
-  table.sort(keys)
+  table.sort(keys,Catalog.keyLess)
   return keys
 end
 

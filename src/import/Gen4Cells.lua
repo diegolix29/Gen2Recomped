@@ -78,6 +78,7 @@ function Gen4Cells.parse(data, Gen4Graphics)
   local attributes = u16(d, body + 2) or 0
   local cellDataOffset = u32(d, body + 4) or 24
   local mappingMode = u32(d, body + 8) or 0
+  local transferOffset = u32(d, body + 12) or 0
   if not count then return nil, "NCER header is truncated" end
 
   -- Tile indices are counted in units of this many bytes.
@@ -96,6 +97,15 @@ function Gen4Cells.parse(data, Gen4Graphics)
     if not (oamCount and oamOffset) then break end
 
     local cell = { oam = {}, index = i }
+    if transferOffset>0 then
+      local transfer=body+transferOffset
+      local entries=u32(d,transfer+4)
+      if entries then
+        local record=transfer+entries+i*8
+        local offset,size=u32(d,record),u32(d,record+4)
+        if offset and size then cell.transfer={offset=offset,size=size} end
+      end
+    end
     if hasBounds then
       local function s16(v) return v and (v >= 32768 and v - 65536 or v) or nil end
       cell.bounds = {
@@ -179,12 +189,8 @@ function Gen4Cells.assemble(cell, sheet, palette, bank, Gen4Graphics)
   -- Rebuild the cell as a tilemap over the same sheet, so that composition
   -- stays in one place.  Every OAM entry is a run of tiles in reading order
   -- within its own rectangle; that is what 1D mapping means.
-  local cols = floor(width / 8)
-  local rows = floor(height / 8)
-  local cells = {}
-  for i = 1, cols * rows do
-    cells[i] = { tile = 0, flipX = false, flipY = false, palette = 0, blank = true }
-  end
+  local pixels = {}
+  for i = 1, width * height do pixels[i] = '\0\0\0\0' end
 
   local perTile = sheet.perTile or (sheet.bpp == 8 and 64 or 32)
   local step = floor((bank and bank.boundary or 32) / perTile)
@@ -193,7 +199,8 @@ function Gen4Cells.assemble(cell, sheet, palette, bank, Gen4Graphics)
   for i = #cell.oam, 1, -1 do
     local o = cell.oam[i]
     local wide, high = floor(o.width / 8), floor(o.height / 8)
-    local base = o.tile * step
+    local base = o.tile * step + floor((cell.transfer and cell.transfer.offset or 0)/perTile)
+    local cells = {}
     for ty = 0, high - 1 do
       for tx = 0, wide - 1 do
         -- Flipping a multi-tile OAM entry mirrors the whole rectangle, so the
@@ -202,21 +209,29 @@ function Gen4Cells.assemble(cell, sheet, palette, bank, Gen4Graphics)
         -- produces a sprite that is subtly scrambled rather than mirrored.
         local sx = o.flipX and (wide - 1 - tx) or tx
         local sy = o.flipY and (high - 1 - ty) or ty
-        local gx = floor((o.x - minX) / 8) + tx
-        local gy = floor((o.y - minY) / 8) + ty
-        if gx >= 0 and gx < cols and gy >= 0 and gy < rows then
-          cells[gy * cols + gx + 1] = {
+          cells[ty * wide + tx + 1] = {
             tile = base + sy * wide + sx,
             flipX = o.flipX, flipY = o.flipY,
             palette = o.palette,
           }
+      end
+    end
+    local picture = Gen4Graphics.compose({width=o.width,height=o.height,cells=cells},sheet,palette)
+    if picture then
+      for y=0,o.height-1 do
+        for x=0,o.width-1 do
+          local at=(y*o.width+x)*4+1
+          -- Transparent OBJ pixels reveal the earlier object underneath.
+          -- OAM offsets are pixels, so rounding them to an 8px grid also
+          -- breaks overlapping trainer limbs and non-tile-aligned cells.
+          if byte(picture.rgba,at+3)~=0 then
+            pixels[(o.y-minY+y)*width+o.x-minX+x+1]=picture.rgba:sub(at,at+3)
+          end
         end
       end
     end
   end
-
-  return Gen4Graphics.compose(
-    { width = cols * 8, height = rows * 8, cells = cells }, sheet, palette)
+  return {width=width,height=height,rgba=table.concat(pixels)}
 end
 
 return Gen4Cells

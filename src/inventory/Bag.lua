@@ -113,7 +113,12 @@ function Bag.order(save)
     for id in pairs(save.inventory) do
       if not isBadge(id) then table.insert(order, id) end
     end
-    table.sort(order)
+    table.sort(order,function(a,b)
+      if type(a)=='number' and type(b)=='number' then return a<b end
+      if type(a)=='number' then return true end
+      if type(b)=='number' then return false end
+      return tostring(a)<tostring(b)
+    end)
     save.bagOrder = order
   end
   -- drop stale ids, append unknown ones (defensive against direct

@@ -46,6 +46,17 @@ function love.load(args)
   end
   assert(textureCount>100,'opening textures not bound')
   local count=0
+  local P=require('src.import.Gen4Particle')
+  local particleArc=assert(require('src.import.NarcArchive').parse(rom:read(P.ARCHIVE_FIELD)))
+  local particleBytes=particleArc:get(4)
+  local particles={textures={},emitters=assert(P.emitters(particleBytes))}
+  assert(#particles.emitters>=12,'opening particle resources missing')
+  for index,texture in ipairs(assert(P.textures(particleBytes))) do
+   local pic=assert(P.rgba(texture));local key='opening-particle/'..index
+   images[key]=love.graphics.newImage(love.image.newImageData(pic.width,pic.height,'rgba8',pic.rgba))
+   particles.textures[index]={path=key,width=pic.width,height=pic.height}
+  end
+  data.gen4_particles={effects={opening_4=particles}}
   for key,pic in pairs(resources) do
    images[key]=love.graphics.newImage(love.image.newImageData(pic.width,pic.height,'rgba8',pic.rgba));data.gen4_graphics.screens[key]={path=key,originX=pic.originX,originY=pic.originY,sequences=pic.sequences};count=count+1
   end
@@ -65,10 +76,18 @@ function love.load(args)
   end
   local game={data=data,save={party={{species=387,level=5,hp=20,stats={hp=20}}},inventory={},money=3000,pokedex={seen={[387]=true},owned={[387]=true}}},stack={pop=function() end},input={wasPressed=function() return false end}}
   local intro=require('src.ui.Gen4Intro').new(game)
-  for _,frame in ipairs({640,975,1100,1250,1450,1650,1950,2150,2300}) do
+  for _,frame in ipairs({640,710,740,800,900,945,975,1100,1189,1193,1250,1450,1650,1950,2025,2035,2100,2140,2150,2252,2300,2342,2424}) do
    intro.openingFrame=frame
    capture('montage-top-'..frame,function() require('src.ui.Gen4Opening').draw(intro,false) end)
+   if frame==740 then
+    assert(#intro.movieParticles.systems==3)
+    local alive=0;for _,system in ipairs(intro.movieParticles.systems) do alive=alive+system:total() end
+    assert(alive>0,'logo particles must be alive')
+   end
+   local before=intro.movieParticles.frame
    capture('montage-bottom-'..frame,function() require('src.ui.Gen4Opening').draw(intro,true) end)
+   capture('montage-pair-'..frame,function() require('src.ui.Gen4Opening').drawPair(intro) end)
+   assert(intro.movieParticles.frame==before,'dual/single rendering must not advance simulation twice')
   end
   local pc=require('src.ui.Gen4BoxMenu').new(game,{mode='move'})
   game.save.boxes[1][1]={species=390,level=8};game.save.boxes[1][30]={species=393,level=8}
@@ -92,6 +111,3 @@ function love.load(args)
  love.graphics.setCanvas();if not ok then print(why) end
  love.event.quit(ok and 0 or 1)
 end
-
-
-

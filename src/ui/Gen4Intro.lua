@@ -78,6 +78,7 @@ function Gen4Intro:update(dt)
     local ticks=math.floor(self.openingRemainder+1e-9)
     self.openingRemainder=self.openingRemainder-ticks
     self.openingFrame=(self.openingFrame or 0)+ticks
+    if self.openingFrame>=508 then require('src.ui.Gen4Opening').update(self,self.openingFrame) end
     if not self.openingMusic then
       self.openingMusic=true
       local data=self.game.data
@@ -150,8 +151,10 @@ function Gen4Intro:draw()
     local dual=mode=='display' or mode=='inset'
     if (self.openingFrame or 0)>=508 and self:openingImage('sky') then
       local movie=require('src.ui.Gen4Opening')
-      movie.draw(self,false)
-      if dual then S.draw(self.game,function() movie.draw(self,true) end) end
+      if dual then
+        movie.draw(self,false)
+        S.draw(self.game,function() movie.draw(self,true) end)
+      else movie.drawPair(self) end
       return
     end
     self:drawStudio(false,not dual)

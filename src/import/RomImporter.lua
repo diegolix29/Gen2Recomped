@@ -1230,7 +1230,7 @@ local MARKER_PATH = "rom-cache.complete"
 -- The marker a finished import writes for a version: the generation tag plus
 -- that version's ROM hash, so both a format bump and a swapped ROM invalidate.
 local function markerFor(version)
-  local revision = version == "platinum" and "platinum-audio-ui-v13:" or ""
+  local revision = version == "platinum" and "platinum-audio-ui-v15:" or ""
   return CACHE_FORMAT .. revision .. GameVersion.info(version).sha1
 end
 
@@ -3518,6 +3518,43 @@ function RomImporter:_scanRomSources(paths)
   return queue, rejects
 end
 
+function RomImporter:_beginRomScan(paths)
+  local task=require('src.import.RomImportTask').new({action='scan',paths=paths,sizes=ROM_SIZES})
+  if not task then return false end
+  self.scanTask=task;self.workState='working';self.status='Checking cartridges'
+  self.progress=0;self.detail='';self.importing=nil
+  return true
+end
+
+function RomImporter:_pollRomScan()
+  if not self.scanTask then return end
+  local message=self.scanTask:poll()
+  while message do
+    if message.kind=='error' then self.scanTask=nil;self:setError(message.error);return end
+    if message.kind=='progress' then
+      self.progress=message.current/math.max(1,message.total);self.detail=message.name
+    elseif message.kind=='scanned' then
+      self.scanTask=nil;self.workState='idle'
+      local queue,seen={},{}
+      local rejects={unknown={},present={},duplicate={},unreadable={}}
+      for _,entry in ipairs(message.results) do
+        if entry.unreadable then table.insert(rejects.unreadable,entry.name)
+        elseif not entry.version then table.insert(rejects.unknown,entry.name)
+        elseif self.ready[entry.version] and not self.returning[entry.version] then
+          table.insert(rejects.present,GameVersion.info(entry.version).displayName)
+        elseif seen[entry.version] then table.insert(rejects.duplicate,entry.name)
+        else seen[entry.version]=true;queue[#queue+1]=entry end
+      end
+      local rank={};for i,v in ipairs(GameVersion.ORDER) do rank[v]=i end
+      table.sort(queue,function(a,b) return (rank[a.version] or 99)<(rank[b.version] or 99) end)
+      self._romQueue={pending=queue,done={},failed={},rejects=rejects,total=#queue,index=0}
+      self:_advanceRomQueue()
+      return
+    end
+    message=self.scanTask and self.scanTask:poll()
+  end
+end
+
 local function countLine(label, list)
   if #list == 0 then return nil end
   return ("%d %s (%s)"):format(#list, label, table.concat(list, ", "))
@@ -3590,6 +3627,12 @@ function RomImporter:_advanceRomQueue()
   end
 
   q.index = (q.index or 0) + 1
+  if require('src.import.RomImportTask').available() then
+    q.active=nextUp
+    self:startPath(nextUp.path)
+    if self.workState~='working' then self._romQueueResume=true end
+    return
+  end
   local data = nextUp.saveDir and love.filesystem.read(nextUp.path)
     or readExternalPath(nextUp.path)
   if type(data) ~= "string" then
@@ -3683,6 +3726,7 @@ function RomImporter:chooseRomBatch()
     end
   end
 
+  if self:_beginRomScan(paths) then return end
   local queue, rejects = self:_scanRomSources(paths)
   self._romQueue = { pending = queue, done = {}, failed = {},
                      rejects = rejects, total = #queue, index = 0 }
@@ -4696,6 +4740,7 @@ function RomImporter:update(dt)
   self:_pollPickedFiles(dt)
   self:_stepDataMove()
   self:_pollRomProbe()
+  self:_pollRomScan()
   if self.workState ~= "working" or not self.worker then return end
   local started = love.timer.getTime()
   repeat
@@ -10921,5 +10966,3 @@ function RomImporter:_drawFindPanel(x, y, w, h, paged)
 end
 
 return RomImporter
-
-

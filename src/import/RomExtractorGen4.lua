@@ -505,11 +505,12 @@ function RomExtractorGen4:extractParticles()
   local sources = {
     { key = "move", path = Gen4Particle.ARCHIVE_MOVES },
     { key = "ball", path = Gen4Particle.ARCHIVE_BALLS },
+    { key = "opening", path = Gen4Particle.ARCHIVE_FIELD, first=4, last=4 },
   }
   local total = 0
   for _, src in ipairs(sources) do
     local arc = self:archiveAt(src.path)
-    if arc then total = total + arc.count end
+    if arc then total = total + (src.first and 1 or arc.count) end
   end
   if total == 0 then
     self:write("gen4_particles", index)
@@ -520,7 +521,7 @@ function RomExtractorGen4:extractParticles()
   for _, src in ipairs(sources) do
     local arc = self:archiveAt(src.path)
     if arc then
-      for member = 0, arc.count - 1 do
+      for member = src.first or 0, src.last or (arc.count - 1) do
         local data = arc:get(member)
         local list = data and Gen4Particle.textures(data)
         if list then

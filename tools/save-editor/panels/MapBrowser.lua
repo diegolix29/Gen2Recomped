@@ -83,9 +83,9 @@ local function sortedMapIds(data, S)
     label[id] = S and mapLabel(S, id) or id
   end
   table.sort(ids, function(a, b)
-    local la, lb = label[a]:lower(), label[b]:lower()
+    local la, lb = tostring(label[a]):lower(), tostring(label[b]):lower()
     if la ~= lb then return la < lb end
-    return a < b
+    return Catalog.keyLess(a,b)
   end)
   sortedCache[data] = ids
   return ids

@@ -1,0 +1,161 @@
+the particle archives
+  ok    waza_particle.narc holds one effect per move slot      485
+  ok    ball_particle.narc holds the ball effects              117
+
+the headers
+  ok    every member of the three archives is an SPA file      608
+  ok    ...and every one's emitter and texture areas meet      608 of 608
+  ok    ...and every texture block walks to its own end        608 of 608
+  ok    the cartridge holds this many particle textures        1724
+  ok    ...which is more than two textures a file on average   2.84 per file
+
+the pixel formats
+  ok    only A3I5 and A5I3 occur, and both are 8bpp            1, 6
+  ok    ...and the smooth-edged one is the common one          A5I3 1382, A3I5 342
+  ok    every texture is a power of two from 8 to 128          12 distinct shapes, all of them
+  ok    ...and the two commonest are 32x32 and 16x16           32x32 768, 16x16 548
+
+the join with the move programs
+  ok    we.arc is readable                                     true
+  ok    the programs name this many distinct effects           419
+  ok    EVERY effect a move names decodes to real textures     419 of 419
+
+scratch
+  ok    effect 40 holds two textures                           2
+  ok    ...one of them 64x64, which is the claw itself         64x64
+  ok    ...and it expands to exactly its own pixel count       16384
+  ok    ...with a real shape in it: some pixels solid, some clear 621 of 4096 pixels visible
+
+the emitters
+  ok    EVERY file's emitters tile their own area exactly      608 of 608
+  ok    the cartridge holds this many emitters                 1744
+  ok    ...which is more than two an effect on average         2.87 per file
+  ok    the emitter base struct is 88 bytes                    88
+  ok    ...with eleven optional blocks behind flag bits        11
+  ok    bit 28 is flagged as resting on one sample             28
+  ok    ...and it really does occur exactly once               1
+  ok    ...while bits 8 and 10 appear over a thousand times each bit 8 1510, bit 10 1681
+  ok    effect 40 has two emitters                             2
+
+the emitter fields
+  ok    every emitter's base struct reads                      1744
+  ok    EVERY emitter names a texture its own file contains    0
+  ok    ...and every one gives its particles a lifetime        0 with none
+  ok    ...and something to emit                               0 with none
+  ok    the longest particle life is a plausible number of frames 108
+  ok    ...and the biggest emission count is plausible too     20
+  ok    Scratch's first emitter throws the 64x64 claw at full alpha texture 1, alpha 31
+  ok    ...once, for eight frames                              1 particle, 8 frames
+  ok    ...and its second throws three of the small one        3 of texture 0
+
+the simulation
+  ok    a system builds for every move effect                  485
+  ok    EVERY effect with an emitter throws at least one particle all of them
+  ok    ...and the effects that throw nothing have no emitter at all 34
+  ok    ...which accounts for every one                        451 + 34
+  ok    the busiest effect fills the cartridge's particle pool exactly 200
+  ok    ...and the three pool constants are the header's own   200 / 20 / 16
+  ok    ...and the longest effect finishes on its own          147 frames
+  ok    enough particles sampled to mean anything              2371
+  ok    no particle is born already dead                       0 of 2371
+  ok    and the great majority of particles move               254 still of 2371
+  ok    the sampled corpus is worth this many particle-frames  53130
+  ok    every emitter's air resistance was read                1468
+  ok    no emitter's air resistance escapes what one byte can say highest multiplier 1.2344
+  ok    ...and none falls below the library's own floor        lowest multiplier 0.7500
+  ok    ...and the cartridge slows, holds AND speeds up particles 542 decay, 819 neutral, 107 accelerate
+  ok    ...in these numbers                                    542 decay, 819 neutral, 107 accelerate
+  ok    enough particles walked to measure travel              2371
+  FAIL  ...and the corpus travels this far in total            got 17909.7 units, expected 17829 within 0.2%
+  ok    a resource run twice at once behaves as it does run once no cross-talk
+
+the blocks, applied
+  ok    all eleven block sizes were compared                   11
+  ok    EVERY MEASURED BLOCK SIZE MATCHES PRET'S OWN STRUCT    all eleven
+  ok    ...and they are walked in the loader's own order       11 blocks, ascending true
+  ok    every emitter's blocks decoded                         1468
+  ok    ...and the two commonest are the scale and alpha curves scale 1255, alpha 1406
+  ok    ...while the collision plane is still the cartridge's one sample 1
+  ok    enough particles watched over their whole lives        2371
+  ok    A PARTICLE'S SCALE CHANGES AS IT LIVES -- this many of them 2080 of 2371
+  ok    ...and so does its alpha                               2350 of 2371
+  ok    ...and this many swap texture mid-flight               64
+  ok    ...and this many have their colour MOVED by a curve    2371
+  ok    ...and this many spin                                  546
+  ok    removing the gravity block changes the trajectory      16 of 16 live (0 inert)
+  ok    removing the magnet block changes the trajectory       16 of 16 live (0 inert)
+  ok    removing the convergence block changes the trajectory  11 of 11 live (5 inert)
+  ok    removing the spin block changes the trajectory         15 of 15 live (1 inert)
+  ok    removing the random block changes the trajectory       7 of 7 live (6 inert)
+  ok    ...and the cartridge really does ship blocks that do nothing 12 inert blocks in the sample
+  ok    the collision plane is applied to the one emitter that has it 1
+  ok    NO BLOCK KIND IS UNAPPLIED ANY MORE -- all eleven are implemented 0 kinds
+  ok    ...and the list it was kept in still exists            true
+  ok    the draw-mode gaps are named                           8 of them
+  ok    ...and texture tiling has left the list                nil
+  ok    ...and every one of them carries its reason            0
+
+the arithmetic behind them
+  ok    THE LIFE RATE IS THE CARTRIDGE'S ARITHMETIC, not the obvious one 6 rows agree
+  ok    ...and it stays inside the 0..255 scale for every lifetime true
+  ok    every scale and alpha curve was read                   2661
+  ok    ...and almost all of them rise before they fall        26 of 2661 have in > out
+  ok    the corpus is worth this many scale-units              33025
+  ok    sixteen magnet emitters were driven                    16
+  FAIL  ...and their particles cross the target exactly this often got 28, expected 34
+  ok    the cartridge's one collision emitter is where it was  1
+  ok    ...and its particles die of age, never reaching its plane oldest 19 of 19 frames
+  ok    a KILL plane ends a particle before its lifetime is up died at 3 of 60 frames
+  ok    ...and a BOUNCE plane sends it back up instead         down true, then up true
+
+children, the pool, and shape
+  ok    this many effects carry a child resource               342
+  ok    EVERY ONE OF THEM ACTUALLY EMITS CHILDREN              all of them
+  ok    ...worth this many child-frames                        399758
+  ok    ...and the busiest child layer is held under the pool  189
+  ok    enough effects driven to see the pool bind             70
+  ok    ...and it does bind: emission was refused this many times 1009
+  ok    A CHILD'S LIFE RATE IS ITS OWN ARITHMETIC, wrap and all 5 rows agree
+  ok    ...and it disagrees with the parent's on three of five rows 3
+  ok    scaleRatio 63 makes a child exactly its parent's size (over 64, not 256) 1.0000
+  ok    every emitter's shape fields were read                 1468
+  ok    this many emitters do not draw a square particle       445
+  ok    ...and the aspect ratio spans a sane range             0.0298 .. 7.9998
+  ok    the scale-animation direction takes only its three declared values XY 1293, X 41, Y 134
+  ok    ...and never a fourth                                  0
+  ok    enough particles drawn to look at their shape          221682
+  ok    ...and this many are drawn wider than they are tall    80243
+  ok    enough XY-direction particles drawn                    52107
+  ok    ...and EVERY one of them is drawn non-square, which only the aspect can do 52107 of 52107
+  ok    a child inherits velocityRatio/256 of its parent's velocity 0.500000
+  ok    ...and only a child that asks for them feels the parent's gravity 0.9461 without, -10.6039 with
+  ok    the cartridge's child blocks split this way on usesBehaviors 27 use them, 718 do not
+  ok    this many emitters draw only their children            22
+  ok    ...and this many draw the children behind              259
+  ok    an emitter that hides its parent was found to drive    true
+  ok    ...and its parents are never in the draw list          0 frames drew one
+  ok    ...while its parents were alive the whole time         64 frames
+
+colour and tiling
+  ok    this many emitters carry a colour of their own         1160 coloured, 308 white
+  ok    ...and the texture repeats in exactly four shapes      1x1 821, 2x2 534, 2x1 67, 1x2 46, shapes 4
+  ok    enough particles watched from birth                    2371
+  ok    EVERY ONE OF THEM IS BORN WITH A COLOUR, not white     2371 of 2371
+  ok    enough particles drawn to look at their colour         101996
+  ok    ...and this many are drawn in a colour rather than white 77442
+  ok    half red on a half-red emitter draws a quarter red     64
+  ok    ...and a white particle takes its emitter's colour unchanged 255,98,0
+  ok    enough particles drawn to see their tiling             101996
+  ok    ...and every tile count arrives as an integer          0 floats
+  ok    ...in the four shapes, with the values the shift produces 1x1 43872, 2x2 47509, 2x1 8549, 1x2 2066
+  ok    ...and never the raw field value, which would be 0 for a single tile 0
+  ok    this many colour animations set randomStartColor       103 of 1102
+  ok    an emitter with randomStartColor and a batch to fill was found true
+  ok    ...and its particles are NOT all born the same colour  3 distinct
+  ok    Scratch builds a system                                true
+  ok    ...and it throws the 64x64 claw                        true
+  ok    ...which travels rather than sitting still             7.29 units
+  ok    ...and the whole effect ends                           23 frames
+  ok    a system reports the behaviour blocks it does not apply 0 kinds on Scratch
+
+136 checks, 2 failures
