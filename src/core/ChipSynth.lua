@@ -35,6 +35,9 @@ ChipSynth.MUSIC_BUFFER_COUNT = MUSIC_BUFFER_COUNT
 -- buffer on both the sync path and the worker (via ChipAudio).
 local channelVolume = { 1, 1, 1, 1 }
 local channelPitch = { 1, 1, 1, 1 }
+local stereo = true
+function ChipSynth.setStereo(value) stereo = value ~= false end
+function ChipSynth.getStereo() return stereo end
 
 local function clampScale(scale)
   return math.max(0, tonumber(scale) or 0)
@@ -1011,8 +1014,8 @@ function Engine:sampleStereo()
   for _, channel in ipairs(self.channels) do
     local value = channel:sample()
     local event = channel.event
-    if not event or event.panLeft ~= false then left = left + value end
-    if not event or event.panRight ~= false then right = right + value end
+    if not stereo or not event or event.panLeft ~= false then left = left + value end
+    if not stereo or not event or event.panRight ~= false then right = right + value end
   end
   return math.max(-1, math.min(1, left / 4)),
     math.max(-1, math.min(1, right / 4))

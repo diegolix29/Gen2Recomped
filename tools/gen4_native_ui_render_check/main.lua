@@ -15,7 +15,7 @@ function love.load(args)
   require('src.render.Font').load({font=load('font')})
   local rom=assert(require('src.import.NdsRom').open('Pokemon - Platinum Version (USA) (Rev 1).nds'))
   local resources=require('src.import.Gen4UIResources').images(rom)
-  local data={pokemon=load('pokemon'),items=load('items'),constants=load('constants'),gen4_graphics=load('gen4_graphics'),gen4_dex=load('gen4_dex'),gen4_menus=load('gen4_menus'),icons=load('gen4_species_sprites').icons}
+  local data={moves=load('moves'),pokemon=load('pokemon'),items=load('items'),constants=load('constants'),gen4_graphics=load('gen4_graphics'),gen4_dex=load('gen4_dex'),gen4_menus=load('gen4_menus'),icons=load('gen4_species_sprites').icons}
   data.gen4_models={sets={opening={models={}}}}
   local G=require('src.import.Gen4Graphics')
   local B=require('src.import.Gen4Nsbmd')
@@ -74,7 +74,7 @@ function love.load(args)
     capture(key:gsub('/','-'),function() love.graphics.setColor(1,1,1,1);love.graphics.draw(images[key],0,0) end)
    end
   end
-  local game={data=data,save={party={{species=387,level=5,hp=20,stats={hp=20}}},inventory={},money=3000,pokedex={seen={[387]=true},owned={[387]=true}}},stack={pop=function() end},input={wasPressed=function() return false end}}
+  local game={data=data,save={party={{species=387,level=5,hp=20,moves={{id=33,pp=35},{id=110,pp=40}},stats={hp=20,attack=13,defense=12,spAttack=10,spDefense=12,speed=8}}},inventory={},money=3000,pokedex={seen={[387]=true},owned={[387]=true}}},stack={pop=function() end},input={wasPressed=function() return false end}}
   local intro=require('src.ui.Gen4Intro').new(game)
   for _,frame in ipairs({640,710,740,800,900,945,975,1100,1189,1193,1250,1450,1650,1950,2025,2035,2100,2140,2150,2252,2300,2342,2424}) do
    intro.openingFrame=frame
@@ -101,6 +101,9 @@ function love.load(args)
   local dex=require('src.ui.Gen4Pokedex').new(game);dex.page='entry'
   for i,id in ipairs(dex.entries) do if id==387 then dex.index=i end end
   for i=1,5 do dex.tab=i;capture('dex-page-'..i,function() dex:draw() end) end
+  dex.tab=4;dex.sizeWeight=true;capture('dex-weight',function() dex:draw() end)
+  local summary=require('src.ui.Gen4SummaryMenu').new(game,game.save.party[1])
+  for i=1,#summary.pages do summary.page=i;capture('summary-page-'..i,function() summary:draw() end) end
   local evolution=require('src.ui.Gen4EvolutionState').new(game,game.save.party[1],388)
   capture('evolution-opening',function() evolution:draw() end)
   evolution.phase='morph';evolution.t=75

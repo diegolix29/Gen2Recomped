@@ -155,6 +155,9 @@ end
 -- inputs, both walk free, and both turn the cards; how far behind the head
 -- the eye ends up is ThirdPerson's business alone.
 function FirstPerson.engaged()
+  local game = require("src.core.Game")
+  local map = game.overworld and game.overworld.map
+  if map and map.def and map.def.generation == 4 then return false end
   return Voxel.isFreeCam(Voxel.level) and Voxel3D.available()
 end
 
@@ -510,7 +513,15 @@ function FirstPerson.update(dt)
     local okF, focus = pcall(love.window.hasFocus)
     wantCapture = okF and focus or false
   end
-  if love.mouse and love.mouse.setRelativeMode then
+  local game = require("src.core.Game")
+  local map = game.overworld and game.overworld.map
+  local native = map and map.def and map.def.generation == 4
+  if native then
+    -- The engine captures and consumes native Gen 4 look input. Releasing
+    -- its capture here makes the cursor stop at the window edge; consuming
+    -- the deltas in our callback would also prevent its camera from turning.
+    captured = false
+  elseif love.mouse and love.mouse.setRelativeMode then
     local okM, isRel = pcall(love.mouse.getRelativeMode)
     if okM and isRel ~= wantCapture then
       pcall(love.mouse.setRelativeMode, wantCapture)

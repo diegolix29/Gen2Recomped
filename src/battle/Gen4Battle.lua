@@ -948,6 +948,15 @@ end
 -- it does not apply. Drawn from the sprite's own centre for the same reason the
 -- particles are: a cell bank's OAM offsets are measured from the sprite's origin,
 -- so the assembled image is centred on it.
+local EffectProjection=require('src.battle.Gen4EffectProjection')
+function Gen4Battle.effectPosition(battle,name,attacker,x,y,absoluteX,absoluteY)
+ local ox,oy=Gen4Battle.particleOrigin(battle,name,attacker)
+ if battle.dramaticNativePositions then
+  ox,oy=EffectProjection.origin(name,attacker)
+  return EffectProjection.point(battle.dramaticNativePositions,absoluteX or ox+(x or 0),absoluteY or oy+(y or 0))
+ end
+ return absoluteX or ox+(x or 0),absoluteY or oy+(y or 0),1,0
+end
 function Gen4Battle.drawCellActors(battle)
   if hideNativeScene(battle) then return 0 end
   local player = battle and battle.gen4AnimPlaying and battle.gen4Anim
@@ -972,8 +981,7 @@ function Gen4Battle.drawCellActors(battle)
       local sx = tonumber(s.x) or 0
       local sy = tonumber(s.y) or 0
       local absX, absY = tonumber(s.absoluteX), tonumber(s.absoluteY)
-      if absX then ox, sx = absX, 0 end
-      if absY then oy, sy = absY, 0 end
+      local fx,fy,perspective,turn=Gen4Battle.effectPosition(battle,s.origin,player.attackerIsPlayer,sx,sy,absX,absY)
       -- +Y IS DOWN, as it is on the hardware. The offsets on these records are
       -- what `ManagedSprite_OffsetPositionXY` would have added, and every
       -- constant in pret is written in that frame -- move 265's (0, 24) puts its
@@ -992,7 +1000,7 @@ function Gen4Battle.drawCellActors(battle)
       if alpha == nil then alpha = 1 end
       local cr, cg, cb = effectFade(player, 1, 1, 1)
       g.setColor(cr, cg, cb, alpha)
-      g.draw(img, ox + sx, oy + sy, tonumber(s.rotation) or 0, scaleX, scaleY,
+      g.draw(img, fx, fy, (tonumber(s.rotation) or 0)+turn, scaleX*perspective, scaleY*perspective,
              img:getWidth() / 2, img:getHeight() / 2)
       drawn = drawn + 1
     end
@@ -1069,6 +1077,7 @@ function Gen4Battle.drawParticles(battle)
       -- DRAWN FROM ITS CENTRE. A particle's position is its middle in the
       -- cartridge and its scale grows both ways from there; anchoring the
       -- top-left instead makes every effect drift down and right as it grows.
+      local fx,fy,perspective,turn=Gen4Battle.effectPosition(battle,q.origin,player.attackerIsPlayer,q.x,q.y)
       local w, h = img:getWidth(), img:getHeight()
       -- TWO SCALES. 445 of the cartridge's 1,468 emitters set an aspect ratio,
       -- and 175 of them animate only one axis, so a single scale draws a third
@@ -1099,11 +1108,11 @@ function Gen4Battle.drawParticles(battle)
         -- nowhere else, and stated so the next caller knows.
         img:setWrap("repeat", "repeat")
         g.draw(img, tiledQuad(w, h, tileS, tileT),
-               ox + (q.x or 0), oy + (q.y or 0), tonumber(q.rotation) or 0,
-               sx / tileS, sy / tileT, w * tileS / 2, h * tileT / 2)
+               fx, fy, (tonumber(q.rotation) or 0)+turn,
+               sx*perspective / tileS, sy*perspective / tileT, w * tileS / 2, h * tileT / 2)
       else
-        g.draw(img, ox + (q.x or 0), oy + (q.y or 0), tonumber(q.rotation) or 0,
-               sx, sy, w / 2, h / 2)
+        g.draw(img, fx, fy, (tonumber(q.rotation) or 0)+turn,
+               sx*perspective, sy*perspective, w / 2, h / 2)
       end
       drawn = drawn + 1
     end

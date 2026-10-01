@@ -600,6 +600,10 @@ function FreeMove.install()
   local inner = OverworldState.handleInput
 
   function OverworldState:handleInput()
+    if self.map and self.map.def and self.map.def.generation==4 then
+      FreeMove.drop()
+      return inner(self)
+    end
     if not FirstPerson.driving() then
       if pos then
         -- stepping off the rung: back onto the grid, on the cell the

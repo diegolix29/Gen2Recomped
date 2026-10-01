@@ -55,6 +55,8 @@ function love.load(args)
    local c=love.graphics.newCanvas(w,h);love.graphics.setCanvas(c);love.graphics.origin();fn();love.graphics.setCanvas()
    local f=assert(io.open(output..'/'..name..'.png','wb'));f:write(c:newImageData():encode('png'):getString());f:close()
   end
+  local zone=title:sgbPalettes()[1]
+  assert(zone.w==512 and zone.h==384,'single-screen title colour region clips the image')
   title.frame=64;capture('title-single',function() title:draw() end)
   title.frame=100;capture('title-single-pulse',function() title:draw() end)
   mode='display';capture('title-top',function() title:draw() end)

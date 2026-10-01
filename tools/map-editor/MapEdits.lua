@@ -161,6 +161,7 @@ MapEdits.WARP_FIELDS = {
 -- Map.lua's `def.blocks[by * def.width + bx + 1]`, which is also why width and
 -- height are in 32px BLOCKS and not cells or pixels.
 MapEdits.MAP_FIELDS = {
+  gen4ModelEdits = 'table',
   name = "string",
   width = "number", height = "number",
   tileset = "string",
@@ -1257,6 +1258,18 @@ function MapEdits.setTileVoxel(store, game, mapId, tx, ty, patch)
   return true, rejected
 end
 
+function MapEdits.writePackedBlock(def,bx,by,id)
+  if type(def.blocks)~='string' or bx<0 or by<0 or bx>=def.width or by>=def.height then return false end
+  local at=(by*def.width+bx)*2+1
+  local a,b=def.blocks:byte(at,at+1)
+  if not b then return false end
+  local value=a+b*256
+  value=value-value%1024+id%1024
+  def.blocks=def.blocks:sub(1,at-1)..string.char(value%256,math.floor(value/256))..def.blocks:sub(at+2)
+  def._blockArray=nil
+  return true
+end
+
 function MapEdits.setBlock(store, game, mapId, bx, by, blockId)
   local m = bucket(store, game, mapId, true)
   if not m then return false end
@@ -2047,7 +2060,8 @@ function MapEdits.applyToMap(store, game, mapId, def, mintIds)
         -- already reported
       elseif bx and by and bx >= 0 and by >= 0
              and bx < def.width and by < def.height then
-        def.blocks[by * def.width + bx + 1] = resolved
+        if type(def.blocks)=='string' then MapEdits.writePackedBlock(def,bx,by,resolved)
+        else def.blocks[by * def.width + bx + 1] = resolved end
         applied = applied + 1
       else
         drop(string.format("block %s is outside this map", tostring(key)))

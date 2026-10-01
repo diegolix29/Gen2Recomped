@@ -340,6 +340,7 @@ function ChipAudio.playMusic(data, header, allowLoops, synthName)
   cmdCh:push({ cmd = "play", gen = gen, header = header, synth = synthName,
                allowLoops = allowLoops, audio = slimAudio(data),
                channelVolumes = ChipSynth.getChannelVolumes(),
+               stereo = ChipSynth.getStereo(),
                channelPitches = ChipSynth.getChannelPitches() })
   currentMusic = { source = source, gen = gen, threaded = true,
                    synth = synth, synthName = synthName,
@@ -356,6 +357,7 @@ local function pushChannelMix()
   if workerReady and cmdCh then
     cmdCh:push({ cmd = "channelMix",
                  volumes = ChipSynth.getChannelVolumes(),
+                 stereo = ChipSynth.getStereo(),
                  pitches = ChipSynth.getChannelPitches() })
   end
 end
@@ -598,6 +600,10 @@ end
 
 function ChipAudio.setChannelVolumes(volumes)
   ChipSynth.setChannelVolumes(volumes)
+  pushChannelMix()
+end
+function ChipAudio.setStereo(value)
+  ChipSynth.setStereo(value)
   pushChannelMix()
 end
 

@@ -158,6 +158,12 @@ end
 
 local function buildRows(game)
   local rows = {
+    { id = "stereo", label = Strings("SOUND"),
+      value = function(g) return Strings(g.save.options.stereo == false and "MONO" or "STEREO") end,
+      step = function(g)
+        g.save.options.stereo = g.save.options.stereo == false
+        return true
+      end },
     { id = "textSpeed", label = Strings("TEXT SPEED"),
       value = function(g) return Strings(SPEEDS[speedIndex(g)][2]) end,
       step = function(g)
@@ -669,6 +675,8 @@ local function buildRows(game)
       value = function(g)
         local chosen = Gen4Camera.sync(g)
         if chosen == "cartridge" then return Strings("CARTRIDGE") end
+        if chosen == "first" then return Strings("FIRST PERSON") end
+        if chosen == "third" then return Strings("THIRD PERSON") end
         return Strings("%d°", chosen)
       end,
       step = function(g)

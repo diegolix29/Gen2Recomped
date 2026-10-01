@@ -332,7 +332,8 @@ local function mapList(S)
   local q = (S.pvQuery or ""):lower()
   local out = {}
   for id, def in pairs((S.data and S.data.maps) or {}) do
-    if q == "" or id:lower():find(q, 1, true)
+    if q == "" or tostring(id):lower():find(q, 1, true)
+       or require('Catalog').mapLabel(S.data,id):lower():find(q,1,true)
        or (def.name and tostring(def.name):lower():find(q, 1, true)) then
       out[#out + 1] = id
     end
@@ -1010,13 +1011,16 @@ function Preview.paintAt(S, cx, cy)
   if not (ok and type(Tiles) == "table") then return false end
   local bx, by = math.floor(cx / 2), math.floor(cy / 2)
   local def = S.data and S.data.maps and S.data.maps[S.mapId or ""]
+  local ts=def and S.data.tilesets and S.data.tilesets[def.tileset]
+  local native=ts and ts.blockCells==1
 
   if S.tileMode == "pick" then
     -- THE EYEDROPPER. Matching ground you can see beats hunting the palette
     -- for it, and on a tileset of two hundred blocks it is the difference
     -- between a tool and a puzzle.
     if def and def.blocks then
-      S.tilePick = def.blocks[by * def.width + bx + 1]
+      if native then bx,by=cx,cy end
+      S.tilePick = require('src.world.Map').blockArray(def)[by * def.width + bx + 1]
       -- and the QUADRANT under the pointer with it, so the eyedropper hands
       -- back the 16px square you pointed at rather than the 32px block it
       -- happens to sit in -- which is the unit the brush paints in.
@@ -1040,6 +1044,7 @@ function Preview.paintAt(S, cx, cy)
     -- Fill stays at BLOCK granularity whatever the paint grain is: it is the
     -- bulk tool, and a flood that had to mint a block per cell would mint four
     -- hundred of them for one room.
+    if native then bx,by=cx,cy end
     local n = Tiles.fill(S, bx, by, S.tilePick)
     S.tileNotice = string.format("filled %d blocks", n)
   elseif (S.tileGrain or "cell") == "cell" then
@@ -1048,6 +1053,7 @@ function Preview.paintAt(S, cx, cy)
     -- repainted cells (4..5, 2..3) -- up and to the left of the pointer.
     Tiles.paintCell(S, cx, cy, S.tilePick, nil, S.tilePickQ)
   else
+    if native then bx,by=cx,cy end
     Tiles.paint(S, bx, by, S.tilePick)
   end
   return true
@@ -2107,7 +2113,7 @@ function Preview.draw(S, Kit, x, y, w, h)
     end
     Kit.row(x + pad, ry, listW - 2 * pad, rowH - 3 * s, id == S.mapId)
     local n = MapEdits.count(store(S), game(S), id)
-    local label = Kit.ellipsize("small", id,
+    local label = Kit.ellipsize("small", require('Catalog').mapLabel(S.data,id),
       listW - 2 * pad - 14 * s - (n > 0 and 26 * s or 0))
     Kit.text("small", label, x + pad + 7 * s, ry + 5 * s)
     if n > 0 then
@@ -2537,8 +2543,7 @@ function Preview.draw(S, Kit, x, y, w, h)
       if S.pvView == "voxel" then
         drawVoxelView(S, map, vinner, vh0)
       else
-        map.renderer:draw(S.pvCamX or 0, S.pvCamY or 0,vinner/S.pvZoom,vh0/S.pvZoom)
-        map.renderer:drawAbove(S.pvCamX or 0,S.pvCamY or 0,vinner/S.pvZoom,vh0/S.pvZoom)
+        require('tools.map-editor.MapView').draw(S,map,'map',S.pvCamX or 0,S.pvCamY or 0,vinner/S.pvZoom,vh0/S.pvZoom)
       end
       drawOverlays(S, map, Kit)
       love.graphics.pop()

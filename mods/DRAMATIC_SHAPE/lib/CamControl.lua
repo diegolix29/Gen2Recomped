@@ -71,6 +71,7 @@ CamControl.SURVEY_PINCH = 2.2
 -- reasoning lives and which the RIG answers to as well -- so a stored
 -- angle from before the setting was switched on stands down with it).
 local function battleLive()
+  if V.require('NativeGen4').battleLive() then return true end
   local ok, shot = pcall(function()
     return V.require("OverworldBattle").shot()
   end)

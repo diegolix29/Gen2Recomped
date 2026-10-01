@@ -334,7 +334,7 @@ local FREE = { third = true, first = true }
 -- Answered from the CHOSEN rung rather than from a second stored flag, so the
 -- ladder stays the single source of truth about which view is up.
 function Gen4Camera.mode()
-  local chosen = Gen4Camera.TILTS[Gen4Camera.chosen]
+  local chosen = Gen4Camera.externalTilt or Gen4Camera.TILTS[Gen4Camera.chosen]
   if FREE[chosen] then return chosen end
   -- A NUMERIC RUNG IS A CAMERA ANGLE, not a stretch.
   --
@@ -378,6 +378,16 @@ end
 -- is what makes the choice survive a restart; without it the module would
 -- start every session on the cartridge's own pitch whatever the save said.
 Gen4Camera.chosen = 1
+-- Presentation pipelines can temporarily choose a native view without
+-- rewriting the player's saved camera preference.
+function Gen4Camera.setExternalTilt(value)
+  assert(value==nil or value=='cartridge' or value=='first' or value=='third'
+    or (type(value)=='number' and value>0 and value<=90),'invalid native camera override')
+  if value~=Gen4Camera.externalTilt then
+    Gen4Camera.externalTilt=value
+    Gen4Camera.generation=Gen4Camera.generation+1
+  end
+end
 Gen4Camera.generation = 0
 
 function Gen4Camera.setTilt(index)
@@ -408,7 +418,7 @@ end
 -- pitch substituted when the player has chosen one.
 function Gen4Camera.forMap(def)
   local config = Gen4Camera.forType(def and def.cameraType)
-  local chosen = Gen4Camera.TILTS[Gen4Camera.chosen]
+  local chosen = Gen4Camera.externalTilt or Gen4Camera.TILTS[Gen4Camera.chosen]
   if chosen == "cartridge" then return config end
   local copy = {}
   for k, v in pairs(config) do copy[k] = v end

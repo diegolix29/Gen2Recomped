@@ -147,7 +147,8 @@ function Gen4Title:wantsEdgeBleed() return false end
 
 function Gen4Title:sgbPalettes()
   local P = require("src.render.PaletteFX")
-  return { P.trueColorZone(0, 0, math.ceil(W / 8) - 1, math.ceil(H / 8) - 1) }
+  local w,h=self:uiSize()
+  return { P.trueColorZone(0, 0, math.ceil(w / 8) - 1, math.ceil(h / 8) - 1) }
 end
 
 function Gen4Title.new(game, opts)

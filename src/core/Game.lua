@@ -501,11 +501,22 @@ function Game:updateCameraStick(dt)
   -- stops dead.  Only while the overworld itself is on top: a menu over a free
   -- camera still wants a real cursor.
   local wantRelative = (self.stack and self.stack:top()) == self.overworld
-  if love.mouse and love.mouse.setRelativeMode and self.lookRelative ~= wantRelative then
-    pcall(love.mouse.setRelativeMode, wantRelative)
-    self.lookRelative = wantRelative
+  if wantRelative and love.window and love.window.hasFocus then
+    local ok, focused = pcall(love.window.hasFocus)
+    wantRelative = ok and focused or false
+  end
+  local actualRelative = self.lookRelative
+  if love.mouse and love.mouse.getRelativeMode then
+    local ok, relative = pcall(love.mouse.getRelativeMode)
+    if ok then actualRelative = relative end
+  end
+  if love.mouse and love.mouse.setRelativeMode and actualRelative ~= wantRelative then
+    local ok = pcall(love.mouse.setRelativeMode, wantRelative)
+    self.lookRelative = ok and wantRelative or false
     -- ...and ignore what the warp this causes is about to report.
     self.lookSettle = Game.LOOK_SETTLE_EVENTS
+  else
+    self.lookRelative = actualRelative
   end
   if not (love.joystick and love.joystick.getJoysticks) then return end
   local ok, pads = pcall(love.joystick.getJoysticks)

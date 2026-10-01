@@ -174,7 +174,13 @@ end
 
 -- ------------------------------------------------------------------ input --
 
+function Gen4Pokedex:stopCry()
+  if self.cry and self.cry.stop then self.cry:stop() end
+  self.cry=nil
+end
+
 function Gen4Pokedex:close()
+  self:stopCry()
   self.game.stack:pop()
   if self.onCancel then self.onCancel() end
 end
@@ -182,6 +188,8 @@ end
 function Gen4Pokedex:move(delta)
   local count = #self.entries
   if count == 0 then return end
+  self:stopCry()
+  self.form=0
   self.index = (self.index - 1 + delta) % count + 1
   if self.index < self.top then self.top = self.index end
   if self.index > self.top + LIST.rows - 1 then
@@ -202,8 +210,9 @@ function Gen4Pokedex:update()
     elseif input:wasPressed("right") then self:move(1); self.scroll = 0
     elseif input:wasPressed("a") then
       if self.tab == 3 or self.tab == 1 then self:playCry()
+      elseif self.tab == 4 then self.sizeWeight=not self.sizeWeight
       elseif self.tab == 5 then self.form = ((self.form or 0) + 1) % #self:forms() end
-    elseif input:wasPressed("b") or input:wasPressed("start") then self.page, self.scroll = "list", 0 end
+    elseif input:wasPressed("b") or input:wasPressed("start") then self:stopCry(); self.page, self.scroll = "list", 0 end
     return
   end
 
@@ -230,6 +239,7 @@ function Gen4Pokedex:touchpressed(_,px,py)
   if self.page=='entry' then
     if y >= 176 then self.tab = math.min(5, math.floor(x / (W / 5)) + 1)
     elseif self.tab == 5 and y >= 128 then self.form = ((self.form or 0) + 1) % #self:forms()
+    elseif self.tab == 4 and y >= 128 then self.sizeWeight=not self.sizeWeight
     elseif self.tab == 3 or x < 96 then self:playCry() end
   elseif y>=LIST.y and y<LIST.y+LIST.rows*LIST.pitch then
     local index=self.top+math.floor((y-LIST.y)/LIST.pitch)
@@ -319,8 +329,8 @@ function Gen4Pokedex:drawEntry()
   end
 
   local words = art.words or {}
-  Font.draw(("%03d  %s"):format((self.numbers and self.numbers[species]) or species or 0, (def and def.name) or "?"),
-            L.nameNumber.x - 60, L.nameNumber.y)
+  local heading=Font.fit(("%03d  %s"):format((self.numbers and self.numbers[species]) or species or 0,(def and def.name) or "?"),136)
+  Font.draw(heading,L.nameNumber.x-math.floor(Font.width(heading)/2),L.nameNumber.y)
 
   local category = (art.category or {})[species]
   if category then Font.draw(category, L.category.x, L.category.y) end
@@ -350,7 +360,7 @@ function Gen4Pokedex:drawEntry()
       local width = Font.width(line)
       local x = (width < L.entry.maxWidth)
         and (L.entry.centre - math.floor(width / 2)) or L.entry.overflowX
-      Font.draw(line, x, L.entry.y + (i - 1) * 14)
+      Font.draw(line, x, L.entry.y + (i - 1) * 10)
     end
   end
 
@@ -365,6 +375,7 @@ end
 
 local TABS = { 'INFO', 'AREA', 'CRY', 'SIZE', 'FORMS' }
 function Gen4Pokedex:playCry()
+  self:stopCry()
   self.cry = require('src.core.Sound').playCry(self.game.data, self:species())
 end
 function Gen4Pokedex:forms()
@@ -388,13 +399,13 @@ function Gen4Pokedex:areas()
   end
   for id,map in pairs(self.game.data.maps or {}) do
     local area = (self.game.data.encounters or {})[map.encounters]
-    local found = area and area.grassRate > 0 and contains(area.grass)
+    local found = area and (tonumber(area.grassRate) or 0) > 0 and contains(area.grass)
     if area then
       for _, method in ipairs({'surf','oldRod','goodRod','superRod'}) do
         local block = area[method]
-        if block and block.rate > 0 and contains(block.slots) then found = true end
+        if block and (tonumber(block.rate) or 0) > 0 and contains(block.slots) then found = true end
       end
-      if area.grassRate > 0 then
+      if (tonumber(area.grassRate) or 0) > 0 then
         for _, method in ipairs({'day','night','swarm','radar'}) do
           for _, id in ipairs(area[method] or {}) do if id == species then found = true end end
         end
@@ -428,7 +439,7 @@ function Gen4Pokedex:drawDetails()
   local g=love.graphics
   g.setColor(0.85,0.9,0.95,1);g.rectangle('fill',0,0,W,H);g.setColor(1,1,1,1)
   local key = self.tab==2 and 'pokedex/area_map' or self.tab==3 and 'pokedex/cry_button'
-    or self.tab==4 and 'pokedex/height_check_main' or 'pokedex/forms_sub'
+    or self.tab==4 and (self.sizeWeight and 'pokedex/weight_check_main' or 'pokedex/height_check_main') or 'pokedex/forms_sub'
   local bg=self:screenArt(key);if bg then g.draw(bg,0,0) end
   local def=self:def();Font.draw((def and def.name) or '?',8,8)
   if self.tab==2 then

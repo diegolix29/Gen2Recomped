@@ -1194,6 +1194,8 @@ end
 -- battle it always did, cast and all.
 function OverworldBattle.begin(state, battle)
   OverworldBattle.finish()
+  -- Gen 4 is staged by NativeGen4 using the extracted model renderer.
+  if state and state.map and state.map.def.generation == 4 then return false end
   if not OverworldBattle.enabled() then return false end
   if not (state and state.map and state.player) then return false end
   if not Voxel3D.available() then return false end

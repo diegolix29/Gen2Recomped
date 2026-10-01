@@ -213,6 +213,7 @@ local Tier = V.require("Tier")
 local Voxel = V.require("VoxelState")
 local Voxel3D = V.require("Voxel3D")
 local VoxelScene = V.require("VoxelScene")
+local NativeGen4 = V.require('NativeGen4')
 local TiltShift = V.require("TiltShift")
 local ChunkMesher = V.require("ChunkMesher")
 -- Forward declaration: the prebake pass is set up far below (it needs the
@@ -311,6 +312,13 @@ mod.content.render_pipelines:register("voxel", {
   -- pump slice -- so stepping out of a door lands on terrain that is
   -- already there instead of a flat flash.
   update = function(dt, level)
+    local game=require('src.core.Game')
+    if NativeGen4.update(game and game.overworld,level) then
+      NativeGen4.tick(dt)
+      Voxel.update(dt,level)
+      FirstPerson.update(dt)
+      return
+    end
     -- FULL is a preset, so it is applied ON THE PRESS rather than held every
     -- frame: it SETS the other rows and then leaves them alone. Holding them
     -- would make the zoom keys and the wheel dead while the mode was on, and
@@ -382,6 +390,7 @@ mod.content.render_pipelines:register("voxel", {
   end,
 
   drawWorld = function(ctx)
+    if NativeGen4.drawWorld(ctx.state) then return nil end
     local tFrame = Perf.now()
     -- the palette closure, stashed for the VR frame: it renders from the
     -- update hook, where no ctx exists to carry one
@@ -1381,6 +1390,7 @@ end
 -- where the reasoning for each one is written down. Installed once, here,
 -- so this file keeps naming every engine seam the mod touches.
 OverworldBattle.install()
+NativeGen4.installBattles(function() return OverworldBattle.enabled() end,V.require('BattleCam'))
 
 -- ------- the free-roam rungs' inputs and their walk
 --

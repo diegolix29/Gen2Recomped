@@ -33,6 +33,7 @@ local PAL = Theme.PAL
 local MapEdits = require("tools.map-editor.MapEdits")
 
 local Tiles = {}
+local gen3Atlases=setmetatable({},{__mode='k'})
 
 -- THIS PANEL FILLS THE RECTANGLE IT IS GIVEN; it does not flow down a page.
 -- The palette below sizes its rows, its page and its own scroll rail from the
@@ -100,6 +101,11 @@ end
 -- pre-palette extraction, or COLORS set to a DMG mode), which is what this was
 -- always showing.
 local function atlasFor(S, ts, tsId)
+  if ts and ts.blockTiles==2 and not ts.standIn then
+    local record=require('src.render.TileRenderer').gen3SheetsFor(ts,S.data,S.data.constants and S.data.constants.gen3Layout)
+    if record then gen3Atlases[record.bottom]=record;return record.bottom end
+    return nil
+  end
   local own = S._pvMap
   if own and own.tileset and own.tileset.id == tsId and own.renderer
       and own.renderer.image then
@@ -227,6 +233,7 @@ function Tiles.usePick(S, srcTsId, blockId, q)
 end
 
 local function blockCount(ts)
+  if ts and ts.blockTiles==2 then return ts.metatileCount or 0 end
   if not (ts and type(ts.blocks) == "table") then return 0 end
   return #ts.blocks
 end
@@ -240,6 +247,14 @@ end
 -- its sixteen tiles are sixteen separate places, which is the whole reason the
 -- format has a block table at all.
 local function drawBlock(ts, image, blockId, x, y, scale)
+  local sheet=image and gen3Atlases[image]
+  if sheet then
+    local cols=sheet.width/16
+    local quad=love.graphics.newQuad((blockId%cols)*16,math.floor(blockId/cols)*16,16,16,sheet.width,sheet.height)
+    love.graphics.draw(sheet.bottom,quad,x,y,0,scale*2,scale*2)
+    love.graphics.draw(sheet.top,quad,x,y,0,scale*2,scale*2)
+    return true
+  end
   if not (ts and image and ts.blocks) then return false end
   local block = ts.blocks[blockId + 1]
   if not block then return false end
@@ -278,6 +293,11 @@ function Tiles.paint(S, bx, by, id)
     return false
   end
   local at = by * def.width + bx + 1
+  if type(def.blocks)=='string' then
+    require('tools.map-editor.MapEdits').writePackedBlock(def,bx,by,id)
+    MapEdits.setBlock(store(S),game(S),S.mapId,bx,by,id)
+    markEdited(S);require('src.world.MapLoader').evict(S.mapId);return true
+  end
   if def.blocks[at] == id then return false end   -- nothing to record
   MapEdits.setBlock(store(S), game(S), S.mapId, bx, by, id)
   def.blocks[at] = id
@@ -353,6 +373,10 @@ Tiles.quadSlots = quadSlots
 function Tiles.paintCell(S, cx, cy, srcBlockId, srcTilesetId, srcQ)
   local def = mapDef(S)
   local ts, tsId = tilesetOf(S)
+  if ts and ts.blockTiles==2 and not ts.standIn then
+    if srcTilesetId and srcTilesetId~=tsId then return false end
+    return Tiles.paint(S,cx,cy,srcBlockId)
+  end
   if not (def and def.blocks and ts and type(ts.blocks) == "table") then
     return false
   end
@@ -438,7 +462,8 @@ function Tiles.fill(S, bx, by, id)
   if not (def and def.blocks and def.width and def.height) then return 0 end
   local w, h = def.width, def.height
   if bx < 0 or by < 0 or bx >= w or by >= h then return 0 end
-  local from = def.blocks[by * w + bx + 1]
+  local blocks=require('src.world.Map').blockArray(def)
+  local from = blocks[by * w + bx + 1]
   if from == id then return 0 end
 
   local seen, stack, n = {}, { { bx, by } }, 0
@@ -447,7 +472,7 @@ function Tiles.fill(S, bx, by, id)
   while #stack > 0 and n < cap do
     local p = table.remove(stack)
     local px, py = p[1], p[2]
-    if def.blocks[py * w + px + 1] == from then
+    if blocks[py * w + px + 1] == from then
       Tiles.paint(S, px, py, id)
       n = n + 1
       local nb = { { px + 1, py }, { px - 1, py }, { px, py + 1 }, { px, py - 1 } }
@@ -490,6 +515,10 @@ local function pickFrom(S, srcId, idx, q, foreign, added)
 end
 
 function Tiles.draw(S, Kit, x, y, w, h)
+  local current=mapDef(S)
+  if current and current.generation==4 then
+    return require('tools.map-editor.panels.Models').draw(S,Kit,x,y,w,h)
+  end
   local s = Kit.scale
   local pad = 16 * s
 

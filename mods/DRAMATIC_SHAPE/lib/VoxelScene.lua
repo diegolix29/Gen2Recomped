@@ -1002,6 +1002,7 @@ ChunkMesher.masksFor = VoxelScene.masksFor
 -- for the first visible frame to request meshes would show the flat
 -- fallback while the first slices run.
 function VoxelScene.prefetch(state)
+  if state and state.map and state.map.def and state.map.def.generation==4 then return nil end
   local Voxel = V.require("VoxelState")
 
   -- The live set is the current map plus its rendered neighbours. When

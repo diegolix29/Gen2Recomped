@@ -167,13 +167,27 @@ end
 
 function Gen4SummaryMenu:row(page, i)
   local box = self.layout[page] or FALLBACK_LAYOUT[page]
-  return box.first + (i - 1) * box.pitch
+  return box.first + (i - 1) * box.pitch + 4
+end
+
+local function fitted(text,x,y,width,align)
+  text=tostring(text)
+  local pixels=Font.width(text)
+  local scale=math.min(1,width/math.max(1,pixels))
+  local g=love.graphics
+  local offset=align=='centre' and (width-pixels*scale)/2 or align=='right' and width-pixels*scale or 0
+  g.push();g.translate(x+offset,y);g.scale(scale,1)
+  Font.draw(text,0,0);g.pop()
 end
 
 function Gen4SummaryMenu:field(page, i, label, value)
   local y = self:row(page, i)
-  Font.draw(label, self.layout.label.x, y)
-  if value ~= nil then Font.draw(tostring(value), self.layout.value.x, y) end
+  fitted(label,self.layout.label.x,y,self.layout.value.x-self.layout.label.x-4)
+  if value ~= nil then
+    local vx=page=='skills' and 188 or 180
+    local vy=page=='skills' and i==1 and 30 or y
+    fitted(value,vx,vy,248-vx,'centre')
+  end
 end
 
 function Gen4SummaryMenu:drawInfo()
@@ -207,7 +221,7 @@ function Gen4SummaryMenu:drawSkills()
   local mon = self.mon
   local stats = mon.stats or {}
   local hp = tonumber(mon.hp) or 0
-  local max = tonumber(mon.maxHp) or tonumber(mon.maxhp) or 0
+  local max = tonumber(mon.maxHp) or tonumber(mon.maxhp) or tonumber(stats.hp) or 0
   self:field("skills", 1, self:word("hp", "HP"),
              ("%d%s%d"):format(hp, self:word("slash", "/"), max))
   self:field("skills", 2, self:word("attack", Strings("Attack")),
@@ -242,13 +256,13 @@ function Gen4SummaryMenu:drawMoves()
     if entry then
       local id = (type(entry) == "table" and (entry.id or entry.move)) or entry
       local record = self.game.data.moves and self.game.data.moves[id]
-      Font.draw(tostring((record and record.name) or id), self.layout.label.x, y)
+      fitted((record and record.name) or id,180,y+4,68,'centre')
       local pp = type(entry) == "table" and entry.pp or nil
       local maxPp = (record and record.pp) or nil
       if pp or maxPp then
-        Font.draw(("%s%s%s"):format(tostring(pp or "-"), self:word("slash", "/"),
+        fitted(("%s%s%s"):format(tostring(pp or "-"), self:word("slash", "/"),
                                     tostring(maxPp or "-")),
-                  self.layout.value.x, y + 14)
+                  180,y+18,68,'centre')
       end
       Font.draw(self:word("pp", "PP"), self.layout.value.x - 24, y + 14)
     else
@@ -348,7 +362,7 @@ function Gen4SummaryMenu:draw()
   end
   local def = self:speciesDef()
   local name = self.mon.nickname or (def and def.name) or tostring(self.mon.species)
-  Font.draw(Font.fit(tostring(name), 96), self.layout.name.x, self.layout.name.y)
+  fitted(name,self.layout.name.x,self.layout.name.y,60)
   local level = tonumber(self.mon.level) or 1
   Font.draw(("Lv%d"):format(level), self.layout.name.x + 64, self.layout.name.y)
 

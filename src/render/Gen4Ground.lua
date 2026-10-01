@@ -730,6 +730,8 @@ end
 -- so the three draws below cannot disagree about what is on a chunk.
 function Gen4Ground:objectsFor(land, record)
   local own = (record and record.objects) or {}
+  local edits=self.def.gen4ModelEdits
+  if edits and edits[tostring(land)] then own=edits[tostring(land)] end
   local mine = self:signpostsFor(land)
   local heal = self.healingProps and self.healingProps[land]
   if (not mine or #mine == 0) and not heal then return own end
@@ -1898,6 +1900,21 @@ function Gen4Ground:freeEntity(mapX, mapY, camX, camY, rise, draw)
   return true
 end
 
+-- Battle billboards share the native terrain depth buffer while their UI
+-- layout and move-animation offsets remain in screen coordinates.
+function Gen4Ground:withFreeDepth(depth, draw)
+  if not Gen4Ground.freeOpen then return draw() end
+  local g=love.graphics
+  local shader=ensureDepthSprite()
+  if not shader then return draw() end
+  g.push('all')
+  g.setShader(shader);shader:send('spriteZ',depth)
+  g.setDepthMode('lequal',true)
+  local ok,err=pcall(draw)
+  g.pop()
+  if not ok then error(err,0) end
+end
+
 function Gen4Ground:beginWorld(camX, camY, vw, vh)
   if self.liveOff then return false end
   local lw, lh = math.floor(vw or 0), math.floor(vh or 0)
@@ -2248,7 +2265,7 @@ function Gen4Ground:endFree()
   --
   -- `require`d rather than read off a global: a bare `_G.Game` is nil in a
   -- real session, which is a fault this port has already paid for once.
-  if scale > 1 and colour then
+  if scale > 1 and colour and not self.suppressWorldOverride then
     local got, Game = pcall(require, "src.core.Game")
     local renderer = got and Game and Game.renderer
     if renderer and renderer.setWorldOverride then

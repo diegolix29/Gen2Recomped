@@ -243,6 +243,9 @@ end
 -- which Gen3Names reads.  Gen 1 and Gen 2 map ids are already words
 -- (PALLET_TOWN), so they are their own label and fall straight through.
 function Catalog.mapLabel(data, id)
+  local def=data and data.maps and data.maps[id]
+  if def and type(def.label)=='string' and def.label~='' then return def.label end
+  if def and type(def.name)=='string' and def.name~='' then return def.name end
   if type(id) ~= "string" then return tostring(id) end
   if id:match("^MAP_G%d+_N%d+$") then
     local ok, Gen3Names = pcall(require, "Gen3Names")

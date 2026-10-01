@@ -518,6 +518,7 @@ end
 -- re-apply persisted audio options (Game calls this on boot and after
 -- loading a save)
 function Music.applyOptions(opts)
+  require("src.core.ChipAudio").setStereo(opts and opts.stereo)
   Music.setVolumeLevel(opts and opts.musicVol or 7)
   Music.setFilterLevel(opts and opts.musicFilter or 0)
 end

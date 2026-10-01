@@ -121,6 +121,7 @@ function Renderer:init()
   -- a render pipeline's finished world image, already at window resolution
   -- (see src/render/Pipelines.lua).  nil is "no pipeline rendered this
   -- frame", which is every vanilla frame.
+  self.uiOverride = nil
   self.worldOverride = nil
 end
 
@@ -335,6 +336,7 @@ function Renderer:beginFrame(transparent)
   fontModule().clearStyles()
   self.worldActive = false
   self.uprightActive = false
+  self.uiOverride = nil
   self.worldOverride = nil
   -- warp-fade overlay from Transition (issue #121); cleared each frame so
   -- a popped transition cannot leave a sticky black veil
@@ -911,7 +913,8 @@ function Renderer:endFrame(zones, worldZones)
     if Runtime.call("render.compose", function() return false end, self, ctx) == true then
       self.worldActive = false
       self.uprightActive = false
-      self.worldOverride = nil
+      self.uiOverride = nil
+  self.worldOverride = nil
       PaletteFX.setPass(nil)
       return {
         width = ww, height = wh, gameX = ox, gameY = oy,
@@ -1279,7 +1282,9 @@ function Renderer:endFrame(zones, worldZones)
     if fills and require("src.core.GameVersion").isGen3() then
       self:bleedEdges(self.canvas, Ux, Uy, uox, uoy, ww, wh)
     end
-    blit(self.canvas, Ux, Uy, zones, Ux, Uy, uox, uoy, uox, uoy, uvpw, uvph)
+    local uiSource=self.uiOverride or self.canvas
+    local uiFactor=uiSource:getWidth()/uiw
+    blit(uiSource, Ux/uiFactor, Uy/uiFactor, zones, Ux, Uy, uox, uoy, uox, uoy, uvpw, uvph)
   else
     local rest = { { uox, uoy, uvpw, uvph } }
     local placed = {}
@@ -1410,6 +1415,7 @@ function Renderer:endFrame(zones, worldZones)
   end
   self.worldActive = false
   self.uprightActive = false
+  self.uiOverride = nil
   self.worldOverride = nil
   PaletteFX.setPass(nil)
   return {

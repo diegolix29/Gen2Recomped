@@ -6,6 +6,21 @@ Project](https://github.com/bryanthaboi/pokemon-gen1-recomp-project).
 The overworld as a voxelized 3D diorama. Also supports experimental
 first-person, third-person and VR.
 
+## Generation 4
+
+Generation 4 uses the engine's extracted terrain and building models directly.
+The mod's field, tilted, first-person and third-person choices select native
+camera modes; native characters, collisions and field effects remain in the
+engine's rendering and movement pipeline. No voxel meshes are needed. Turning
+the mod camera off restores the game's saved camera preference. Gen 4 VR and
+the mod's voxel-specific effects are not supported by this native path.
+
+The 3D battle switch also supports Gen 4: it renders the extracted map behind
+Platinum's battle sprites and menus, with a separate native camera and Platinum's
+lower-left/upper-right actor layout. Pokemon use their ROM battle sprites. The built-in CAM TILT
+row takes control when changed; selecting a different mod camera mode hands
+control back to that mode.
+
 ## Emerald and FireRed Objects
 
 Version 0.7.71 reconstructs selected furniture and plant families from the
