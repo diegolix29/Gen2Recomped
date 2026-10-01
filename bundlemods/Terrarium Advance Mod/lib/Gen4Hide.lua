@@ -27,6 +27,15 @@
 --          Gen4Ground:modelFor is wrapped to copy the cache's own texture name
 --          and alpha onto each terrain shape (srcTexture / srcAlpha).
 --
+-- HIDDEN ONLY WHERE THE SHEET EXISTS
+--
+--   A water shape is dropped only when Gen4Water has built geometry FROM THAT
+--   SHAPE (GW.isCovered(shape.src)). Terrain shapes and prop shapes (lakes are
+--   props: build models) are both tagged with the cache record they came from
+--   (`src`), and Gen4Water marks every record it emitted triangles for. A
+--   water shape the sheet could not use -- a vertical fall, a chunk not built
+--   yet -- keeps drawing natively, so "hidden and not replaced" cannot happen.
+--
 -- WHEN IT STANDS DOWN (so it can never leave a hole)
 --
 --   grass  when Grass3D has no bake, or the "grass" effect was disabled.
@@ -108,8 +117,8 @@ function Hide.classify(shape)
       if containsAny(n, Hide.WATER_SUBSTRINGS) then return "substring" end
     end
   end
-  if Hide.ALPHA_HEURISTIC and shape.srcTexture and tonumber(shape.srcAlpha)
-     and shape.srcAlpha < 31 then
+  if Hide.ALPHA_HEURISTIC and shape.srcKind ~= "prop" and shape.srcTexture
+     and tonumber(shape.srcAlpha) and shape.srcAlpha < 31 then
     return "alpha"
   end
   return nil
@@ -140,6 +149,8 @@ local function waterOn()
     local GW = optional("Gen4Water")
     if GW == nil then
       state, on = "Gen4Water did not load -> native water kept", false
+    elseif type(GW.isCovered) == "function" then
+      state, on = "hiding native water shape by shape, where Gen4Water covers it", true
     elseif GW.ready == false then
       state, on = "Gen4Water sheet not built yet -> native water kept", false
     else
@@ -159,7 +170,10 @@ end
 local cache = setmetatable({}, { __mode = "k" })
 
 local function filtered(model, hideGrass, hideWater)
+  local GW = hideWater and optional("Gen4Water") or nil
+  local covered = GW and type(GW.isCovered) == "function" and GW.isCovered or nil
   local key = (hideGrass and "g" or "-") .. (hideWater and "w" or "-")
+              .. (covered and tostring(GW.coverVersion or 0) or "")
   local rec = cache[model]
   local shapes = model.shapes
   if rec and rec.key == key and rec.source == shapes and rec.count == #shapes then
@@ -173,6 +187,8 @@ local function filtered(model, hideGrass, hideWater)
       note("g:" .. tostring(shape.name), "hid native grass cards '%s'", tostring(shape.name))
     elseif hideWater then
       local why = Hide.classify(shape)
+      -- and only where the sheet really stands in for it
+      if why and covered and not (shape.src and covered(shape.src)) then why = nil end
       if why then
         drop = true
         note("w:" .. (shape.srcMaterial or shape.material or "") .. "|" .. (shape.srcTexture or ""),
@@ -233,6 +249,42 @@ function Hide.install()
               built.srcMaterial = src.material
               built.srcTexture = src.texture
               built.srcAlpha = src.alpha
+              built.srcKind, built.src = "terrain", src
+            end
+          end
+        end)
+      end
+      return model
+    end
+  end
+
+  -- The same for PROPS. Lakes are build models, and a built prop shape keeps
+  -- only its material name, so the cache's own record (name, texture, alpha) is
+  -- copied on, joined by the index the building was built with.
+  Hide.originalBuilding = Ground.building
+  if type(Ground.building) == "function" then
+    local originalBuilding = Ground.building
+    Ground.building = function(self, index, archive, ...)
+      local model = originalBuilding(self, index, archive, ...)
+      if model and not model.srcTagged and type(model.shapes) == "table" then
+        model.srcTagged = true
+        pcall(function()
+          local packed
+          if archive == "fldeff" then
+            local set = self.fldeffSet
+            local at = set and set.byMember and set.byMember[index]
+            packed = at and set.models and set.models[at]
+          else
+            local set = self.buildingSet
+            packed = set and set.models and set.models[index + 1]
+          end
+          if not (packed and packed.shapes) then return end
+          for _, built in ipairs(model.shapes) do
+            local src = built.index and packed.shapes[built.index + 1]
+            if src and src.name == built.name then
+              built.srcMaterial, built.srcTexture, built.srcAlpha =
+                src.material, src.texture, src.alpha
+              built.srcKind, built.src = "prop", src
             end
           end
         end)
@@ -276,6 +328,7 @@ function Hide.uninstall()
   Hide.Model.draw = Hide.originalDraw
   Hide.Ground.drawFree = Hide.originalDrawFree
   Hide.Ground.modelFor = Hide.originalModelFor
+  if Hide.originalBuilding then Hide.Ground.building = Hide.originalBuilding end
   Hide.active, Hide.installed = false, false
 end
 

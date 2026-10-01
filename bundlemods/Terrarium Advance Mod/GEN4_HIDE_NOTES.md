@@ -1,7 +1,24 @@
 # Gen 4: hide native grass/water, and the 3D grass / water that replace them
 
-Files: `lib/Gen4Hide.lua`, `lib/Gen4Water.lua` (rewritten), `lib/Gen4Grass.lua`,
-`lib/Gen4Reflect.lua` (new), `lib/Gen4Bridge.lua` (one hook), `main.lua` (4 lines).
+Files: `lib/Gen4Hide.lua`, `lib/Gen4Water.lua`, `lib/Gen4Grass.lua`, `lib/Gen4Reflect.lua`,
+`lib/Gen4Bridge.lua`. `main.lua` is NOT shipped: it needs only these two lines inside the
+`if Gen4Bridge.isGen4() and Gen4Bridge.install() then` block, after the grass register:
+    pcall(function() V.require("Gen4Hide").install() end)
+    pcall(function() V.require("Gen4Reflect").install() end)
+
+## Round 4: lake water, shore growth, hide-only-where-covered
+- Lakes you cannot reach are PROPS (build models), not terrain. The sheet only read terrain
+  shapes, so lake water was hidden and never replaced. Each land's sheet is now terrain water
+  PLUS the water shapes of every prop on that land, placed like Gen4Ground places a building
+  (scale, then translate, chunk units).
+- Gen4Hide tags prop shapes the same way it tags terrain (wraps `Gen4Ground.building`).
+- Native water is now hidden ONLY where the sheet has built triangles from that exact cache
+  shape (`GW.isCovered(shape.src)`). A water shape the sheet cannot use stays native.
+- The sheet grows `EXPAND_FRAC` (0.10 of a cell = 1.6 units) past every shore edge (a skirt of
+  the same height on each boundary edge) and rides `LIFT_FRAC` (now 0.10 = 1.6 units, i.e. the
+  earlier 5% plus 5% more) above the water. Both are knobs on `GW`.
+- `GW.LOG` (on) writes one line per land with water:
+  `Gen4Water: land N: a terrain + b prop water triangles (c not horizontal, skipped), d shore edges grown`.
 
 ## Gen4Hide (unchanged this round)
 Wraps `Gen4Model.draw` during `Gen4Ground:drawFree` and skips the native grass cards and the

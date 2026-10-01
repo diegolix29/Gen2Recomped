@@ -27,6 +27,28 @@
 -- re-tessellated so the swell has vertices to move, and drawn at every place
 -- the engine draws that chunk.
 --
+-- LAKES ARE PROPS
+--
+-- Sea and shallows are terrain shapes; the lakes you cannot reach are BUILD
+-- MODELS placed on a chunk (the same kind of object a house is). The first
+-- sheet read only the terrain shapes, so lake water was hidden by Gen4Hide and
+-- never replaced. Each land chunk's sheet is now built from its terrain water
+-- AND from the water shapes of every prop standing on it, placed the way
+-- Gen4Ground places a building (scale, then translate, in the chunk's units).
+--
+-- EDGES AND HEIGHT
+--
+-- The painted water on beach sand reaches past the polygon, so the sheet is
+-- grown outward by EXPAND_FRAC of a cell along every shore (a skirt of the same
+-- height on each boundary edge) and rides LIFT_FRAC of a cell above the water,
+-- which also lets it climb the sloping sand a little further.
+--
+-- HIDDEN ONLY WHERE COVERED
+--
+-- GW.isCovered(record) tells Gen4Hide which cache shapes this sheet has built
+-- triangles from; Gen4Hide drops only those. A water shape the sheet could not
+-- use keeps drawing natively instead of vanishing.
+--
 -- HOW FAR IT DRAWS
 --
 -- As far as the ground does: the engine draws the chunks within FREE_RADIUS
@@ -52,7 +74,9 @@ local GW = {
   WINDOW = 2,             -- chunks each way the ENGINE draws (Gen4Ground FREE_RADIUS)
   EDGE = 10,              -- longest triangle edge after tessellation, world units
   MAX_SPLIT = 52,         -- cap on divisions per triangle edge
-  LIFT_FRAC = 0.05,       -- of a cell: how far above the native water the sheet rides
+  LIFT_FRAC = 0.10,       -- of a cell: how far above the native water the sheet rides
+  EXPAND_FRAC = 0.10,     -- of a cell: how far the sheet grows past each shore edge
+  LOG = true,             -- one line per land chunk that has water (turn off when happy)
   CELL = 16,
   BUILDS_PER_FRAME = 4,   -- land chunks built in one frame (at most)
   BUILD_BUDGET = 0.004,   -- seconds; at least one is always built
@@ -62,6 +86,18 @@ local GW = {
   level = nil,            -- world Y of the sheet nearest the camera (Gen4Reflect)
 }
 GW.LIFT = GW.LIFT_FRAC * GW.CELL
+GW.EXPAND = GW.EXPAND_FRAC * GW.CELL
+
+-- Shapes the sheet has emitted triangles for (weak, keyed by the cache record).
+local covered = setmetatable({}, { __mode = "k" })
+GW.coverVersion = 0
+function GW.isCovered(record) return record ~= nil and covered[record] == true end
+local function markCovered(record)
+  if record and not covered[record] then
+    covered[record] = true
+    GW.coverVersion = GW.coverVersion + 1
+  end
+end
 
 local warned = {}
 local function once(key, fmt, ...)
@@ -93,8 +129,11 @@ local FX16 = 4096          -- Gen4Model's fixed-point scale
 -- space, read the way Gen4Model.new reads them (stride measured off the
 -- buffer, positions are the first three s16 of each vertex).
 local function shapeTriangles(ground, s, posScale)
-  local vdata = ground:slice(s.vertexAt, s.vertexBytes)
-  local idata = ground:slice(s.indexAt, s.indexBytes)
+  local vdata, idata = s.vertices, s.indices
+  if type(vdata) ~= "string" or type(idata) ~= "string" then
+    vdata = ground:slice(s.vertexAt, s.vertexBytes)
+    idata = ground:slice(s.indexAt, s.indexBytes)
+  end
   local count, tris = s.vertexCount or 0, s.triangleCount or 0
   if not (vdata and idata) or count < 3 or tris < 1 then return {} end
   local stride = math.floor(#vdata / count)
@@ -169,37 +208,152 @@ local function emit(verts, map, a, b, c)
   end
 end
 
+-- A strip of width `w` laid outward from edge a->b, in the direction (nx, nz),
+-- at the edge's own height, cut along its length so the swell can lift it.
+local function emitSkirt(verts, map, a, b, nx, nz, w)
+  local len = math.sqrt((b[1] - a[1]) ^ 2 + (b[3] - a[3]) ^ 2)
+  if len < 1e-4 then return end
+  local n = math.max(1, math.min(GW.MAX_SPLIT, math.ceil(len / GW.EDGE)))
+  local base = #verts
+  local sh = GW.TOP_SHADE
+  for i = 0, n do
+    local f = i / n
+    local x, y, z = a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f
+    verts[#verts + 1] = { x, y, z, 0, 0, sh, 1 }
+    verts[#verts + 1] = { x + nx * w, y, z + nz * w, 0, 0, sh, 1 }
+  end
+  for i = 0, n - 1 do
+    local p0, p1 = base + i * 2 + 1, base + i * 2 + 2
+    local q0, q1 = base + i * 2 + 3, base + i * 2 + 4
+    map[#map + 1], map[#map + 2], map[#map + 3] = p0, q0, p1
+    map[#map + 1], map[#map + 2], map[#map + 3] = q0, q1, p1
+  end
+end
+
+-- Edges used by exactly one triangle are the shore. Vertices are matched on a
+-- 1/16 unit grid because neighbouring shapes repeat a corner, not its bits.
+local function qkey(p)
+  return ("%d,%d,%d"):format(math.floor(p[1] * 16 + 0.5), math.floor(p[2] * 16 + 0.5),
+                             math.floor(p[3] * 16 + 0.5))
+end
+
+local function shoreSkirts(tris, verts, map)
+  local w = GW.EXPAND
+  if w <= 0 then return 0 end
+  local edges = {}
+  local function add(a, b, opposite)
+    local ka, kb = qkey(a), qkey(b)
+    local key = ka < kb and (ka .. "|" .. kb) or (kb .. "|" .. ka)
+    local e = edges[key]
+    if e then e.count = e.count + 1 else edges[key] = { count = 1, a = a, b = b, o = opposite } end
+  end
+  for _, t in ipairs(tris) do
+    add(t[1], t[2], t[3]); add(t[2], t[3], t[1]); add(t[3], t[1], t[2])
+  end
+  local made = 0
+  for _, e in pairs(edges) do
+    if e.count == 1 then
+      local ex, ez = e.b[1] - e.a[1], e.b[3] - e.a[3]
+      local len = math.sqrt(ex * ex + ez * ez)
+      if len > 1e-4 then
+        local nx, nz = -ez / len, ex / len
+        -- point away from the triangle the edge belongs to
+        local mx, mz = (e.a[1] + e.b[1]) / 2, (e.a[3] + e.b[3]) / 2
+        if (e.o[1] - mx) * nx + (e.o[3] - mz) * nz > 0 then nx, nz = -nx, -nz end
+        emitSkirt(verts, map, e.a, e.b, nx, nz, w)
+        made = made + 1
+      end
+    end
+  end
+  return made
+end
+
 -- ------------------------------------------------------------ building --
 
-local function isWaterShape(Hide, s)
-  local pseudo = { srcMaterial = s.material, srcTexture = s.texture, srcAlpha = s.alpha }
+local function isWaterShape(Hide, s, kind)
+  local pseudo = { srcMaterial = s.material, srcTexture = s.texture, srcAlpha = s.alpha,
+                   srcKind = kind }
   if Hide and Hide.classify then return Hide.classify(pseudo) ~= nil end
   local m = tostring(s.material or ""):lower()
   local t = tostring(s.texture or ""):lower()
   return m == "sea" or t == "sea" or m:find("^water") ~= nil or t:find("^water") ~= nil
 end
 
+-- The packed model a prop object stands for, the way Gen4Ground:building finds it.
+local function packedFor(ground, object)
+  local index = object.model
+  if index == nil then return nil end
+  if object.archive == "fldeff" then
+    local set = ground.fldeffSet
+    local at = set and set.byMember and set.byMember[index]
+    return at and set.models and set.models[at]
+  end
+  local set = ground.buildingSet
+  return set and set.models and set.models[index + 1]
+end
+
 -- One land chunk's sheet, in the chunk's own space. { mesh = nil } when it has
 -- no water, which is most of them.
 local function buildLand(ground, land)
   local record = ground.terrain and ground.terrain.chunks and ground.terrain.chunks[land]
-  if not (record and record.shapes) then return { mesh = nil } end
+  if not record then return { mesh = nil } end
   local Hide = optional("Gen4Hide")
-  local posScale = record.posScale or 1
-  local verts, map = {}, {}
-  local ysum, ycount = 0, 0
-  for _, s in ipairs(record.shapes) do
-    if isWaterShape(Hide, s) then
-      for _, tri in ipairs(shapeTriangles(ground, s, posScale)) do
-        if isUp(tri) then
-          emit(verts, map, tri[1], tri[2], tri[3])
-          ysum = ysum + tri[1][2] + tri[2][2] + tri[3][2]
-          ycount = ycount + 3
+  local tris, ysum, ycount = {}, 0, 0
+  local nTerrain, nProp, nSkipped = 0, 0, 0
+
+  local function take(tri, src, place)
+    local a, b, c = tri[1], tri[2], tri[3]
+    if place then
+      local function at(p)
+        return { p[1] * place.sx + place.x, p[2] * place.sy + place.y, p[3] * place.sz + place.z }
+      end
+      a, b, c = at(a), at(b), at(c)
+    end
+    local t = { a, b, c }
+    if not isUp(t) then nSkipped = nSkipped + 1; return false end
+    tris[#tris + 1] = t
+    ysum = ysum + a[2] + b[2] + c[2]
+    ycount = ycount + 3
+    return true
+  end
+
+  for _, s in ipairs(record.shapes or {}) do
+    if isWaterShape(Hide, s, "terrain") then
+      local any = false
+      for _, tri in ipairs(shapeTriangles(ground, s, record.posScale or 1)) do
+        if take(tri) then any = true; nTerrain = nTerrain + 1 end
+      end
+      if any then markCovered(s) end
+    end
+  end
+
+  for _, object in ipairs(record.objects or {}) do
+    local packed = packedFor(ground, object)
+    if packed and packed.shapes then
+      local function scale(v) return (v and v ~= 0) and v or 1 end
+      local place = { sx = scale(object.scaleX), sy = scale(object.scaleY), sz = scale(object.scaleZ),
+                      x = object.x or 0, y = object.y or 0, z = object.z or 0 }
+      for _, s in ipairs(packed.shapes) do
+        if isWaterShape(Hide, s, "prop") then
+          local any = false
+          for _, tri in ipairs(shapeTriangles(ground, s, packed.posScale or 1)) do
+            if take(tri, s, place) then any = true; nProp = nProp + 1 end
+          end
+          if any then markCovered(s) end
         end
       end
     end
   end
-  if #verts == 0 then return { mesh = nil } end
+
+  if #tris == 0 then return { mesh = nil } end
+  local verts, map = {}, {}
+  for _, t in ipairs(tris) do emit(verts, map, t[1], t[2], t[3]) end
+  local shore = shoreSkirts(tris, verts, map)
+  if GW.LOG then
+    once("land:" .. tostring(land),
+         "land %s: %d terrain + %d prop water triangles (%d not horizontal, skipped), %d shore edges grown",
+         tostring(land), nTerrain, nProp, nSkipped, shore)
+  end
   return { mesh = Voxel3D.newMesh(verts, map), y = ysum / ycount }
 end
 
