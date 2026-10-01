@@ -167,6 +167,10 @@ local Gen4Bridge = V.require("Gen4Bridge")
 V.Gen4Bridge = Gen4Bridge
 if Gen4Bridge.isGen4() and Gen4Bridge.install() then
   Gen4Bridge.register("grass", V.require("Gen4Grass").draw)
+  -- HD Reloded roamers/followers when no Stadium/Colosseum model is bound
+  pcall(function()
+    Gen4Bridge.register("hd_pokemon", V.require("Gen4HdPokemon").draw)
+  end)
   -- hide Platinum's own grass cards and water where the 3D versions draw (Gen4Hide)
   pcall(function() V.require("Gen4Hide").install() end)
   -- the voxel scene's RayFX water reflection, pointed at Gen 4's water (Gen4Reflect)

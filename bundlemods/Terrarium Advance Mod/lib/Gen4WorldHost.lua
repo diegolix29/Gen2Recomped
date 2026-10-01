@@ -325,6 +325,13 @@ local function wantFieldActor(e, state)
   if e.isFollower or e.wildsFollower or e._wildsFollowerSpecies then
     return true
   end
+  if e.roamer or e.overworldWildSpawn or e.species then return true end
+  local def = e.sprite and e.sprite.def
+  if def and (def.hdDex or def.dsSpecies) then return true end
+  local okHd, Hd = pcall(V.require, "Gen4HdPokemon")
+  if okHd and Hd and Hd.wantsEntity and Hd.wantsEntity(e, state) then
+    return true
+  end
   local okTag, OC = pcall(V.require, "OverworldColosseum")
   if okTag and OC and type(OC.getTaggedDex) == "function" then
     local dex = OC.getTaggedDex(e)
@@ -367,6 +374,7 @@ end
 -- so these actors used to keep voxel y=0 and sit in the mesh.
 local function drawFieldActors(state, ground)
   Host._skipFeet = {}
+  Host._drew3d = {}
   if not (state and ground) then return end
   local view = ground.view3d
   if not (view and view.isFree and view:isFree()) then return end
