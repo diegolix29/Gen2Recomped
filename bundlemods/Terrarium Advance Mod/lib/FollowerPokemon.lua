@@ -50,10 +50,9 @@ local function loadSpriteFallback(dex)
   do
     local HDSheets = V.HDPokemonSheets or (V.mod and V.mod.exports and V.mod.exports.hdPokemonSheets)
     if HDSheets and type(HDSheets.frame) == "function" then
-      -- Try back sheet first (appropriate for follower), then front
-      local image, info = HDSheets.frame({dex = dex, facing = "back", shiny = false, key = "follower"})
+      local image, info = HDSheets.frame({dex = dex, facing = "back", shiny = false})
       if not image then
-        image, info = HDSheets.frame({dex = dex, facing = "front", shiny = false, key = "follower"})
+        image, info = HDSheets.frame({dex = dex, facing = "front", shiny = false})
       end
       if image then
         spriteCache[dex] = image
@@ -61,7 +60,6 @@ local function loadSpriteFallback(dex)
         currentDex = dex
         currentFilename = "follower_sprite_" .. dex
         usingSpriteFallback = true
-        print("FollowerPokemon.loadSpriteFallback: Loaded HD sheet for dex", dex)
         return true
       end
     end
@@ -381,19 +379,6 @@ end
 function FollowerPokemon.drawSprite(px, py, y, facing, mirror)
   if not currentSprite then
     return false
-  end
-  
-  -- Try to refresh HD sheet frame (for animated sheets)
-  local HDSheets = V.HDPokemonSheets or (V.mod and V.mod.exports and V.mod.exports.hdPokemonSheets)
-  if HDSheets and type(HDSheets.frame) == "function" and usingSpriteFallback then
-    local image, info = HDSheets.frame({dex = currentDex, facing = "back", shiny = false, key = "follower"})
-    if not image then
-      image, info = HDSheets.frame({dex = currentDex, facing = "front", shiny = false, key = "follower"})
-    end
-    if image then
-      currentSprite = image
-      spriteCache[currentDex] = image
-    end
   end
   
   -- Calculate follower position based on player facing

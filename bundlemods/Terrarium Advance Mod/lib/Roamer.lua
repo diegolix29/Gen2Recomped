@@ -28,7 +28,6 @@ local Collision = require("src.world.Collision")
 local SpriteRenderer = require("src.render.SpriteRenderer")
 local Water = V.require("Water")
 local Wind = V.require("Wind")
-local RoamerArt = V.require("RoamerArt")
 
 local Roamer = {}
 Roamer.__index = Roamer
@@ -88,37 +87,8 @@ function Roamer.new(spriteDef, species, level, kind, cellX, cellY)
   self.def = INERT_DEF
   self.id = ("TR_ROAM_%d"):format(nextId)
   self.species, self.level, self.kind = species, level, kind
-  
-  -- Handle HD sheets specially - create a minimal sprite placeholder for VoxelScene
-  if spriteDef and spriteDef.hdSheet then
-    local spritePlaceholder = { 
-      def = spriteDef, 
-      _colosseumEntity = self,
-      resolveImage = function() 
-        -- Return a placeholder image for VoxelScene (won't actually be used for HD sheets)
-        local HDSheets = V.HDPokemonSheets or (V.mod and V.mod.exports and V.mod.exports.hdPokemonSheets)
-        if HDSheets and type(HDSheets.frame) == "function" then
-          local dex = spriteDef.hdDex
-          if dex then
-            local image, info = HDSheets.frame({dex = dex, facing = "back", shiny = false, key = "roamer"})
-            if not image then
-              image, info = HDSheets.frame({dex = dex, facing = "front", shiny = false, key = "roamer"})
-            end
-            if image then return image end
-          end
-        end
-        return nil
-      end
-    }
-    self.sprite = spritePlaceholder
-    self.spriteDef = spriteDef
-    self.usesHDSheet = true
-  else
-    self.sprite = SpriteRenderer.new(spriteDef, self.id)
-    self.sprite._colosseumEntity = self
-    self.usesHDSheet = false
-  end
-  
+  self.sprite = SpriteRenderer.new(spriteDef, self.id)
+  self.sprite._colosseumEntity = self
   self.cellX, self.cellY = cellX, cellY
   self.px, self.py = cellX * 16, cellY * 16
   self.facing = "down"
@@ -281,49 +251,12 @@ function Roamer:pose()
   elseif not self.moving and math.floor(self.clock / 30) % 2 == 1 then
     vy = vy - 1
   end
-  
-  -- Always return sprite (placeholder for HD sheets) - VoxelScene expects it
   return self.sprite, px, vy, self.facing,
          self:walkPhase(), self.stepFlip, false
 end
 
 function Roamer:draw(camX, camY)
   local sprite, px, py, facing, phase, flip = self:pose()
-  
-  -- Handle HD sheet animation refresh and drawing
-  if self.usesHDSheet then
-    local HDSheets = V.HDPokemonSheets or (V.mod and V.mod.exports and V.mod.exports.hdPokemonSheets)
-    if HDSheets and type(HDSheets.frame) == "function" then
-      local dex = self.spriteDef and self.spriteDef.hdDex
-      if dex then
-        -- Try back sheet first (appropriate for roamers), then front
-        local image, info = HDSheets.frame({dex = dex, facing = "back", shiny = false, key = "roamer"})
-        if not image then
-          image, info = HDSheets.frame({dex = dex, facing = "front", shiny = false, key = "roamer"})
-        end
-        if image then
-          -- Directly draw the HD sheet image
-          local lg = love and love.graphics
-          if lg then
-            lg.push()
-            lg.translate(px - camX, py - camY)
-            local sw, sh = image:getDimensions()
-            -- Scale HD sheet to fit 16x16 cell
-            local scale = 16 / math.max(sh, 1)
-            lg.scale(scale, scale)
-            lg.draw(image, -sw/2, -sh)
-            lg.pop()
-            return
-          end
-        end
-      end
-    end
-    -- If HD sheet failed, don't draw anything (VoxelScene will handle the 3D pass)
-    return
-  end
-  
-  if not sprite then return end
-  
   if self.kind ~= "water" or not love or not love.graphics then
     sprite:draw(px, py, camX, camY, facing, phase, flip)
     return
