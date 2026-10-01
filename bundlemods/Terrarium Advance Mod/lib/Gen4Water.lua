@@ -161,7 +161,10 @@ function GW.draw(scene)
     if not chunk and w[1] <= GW.NEAR * GW.NEAR + 1 then nearMissing = true end
     if chunk and chunk.mesh then list[#list + 1] = chunk.mesh end
   end
-  GW.ready = not nearMissing
+  -- latched per map: once the ring around the camera has been complete, walking
+  -- into new chunks must not hand the native water back for a frame or two
+  if not nearMissing then rec.complete = true end
+  GW.ready = rec.complete == true
   if #list == 0 then return end
 
   Voxel3D.seams(false)

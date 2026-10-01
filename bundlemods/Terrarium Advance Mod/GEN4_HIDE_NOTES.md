@@ -11,9 +11,15 @@ canopies and building passes are untouched.
 
 - **Grass:** hides the standing cards (`<shape>Cards`, index nil) the engine stamps over
   encounter grass. The flat `nectgr` quad stays as ground, so no hole under your tufts.
-- **Water:** hides terrain shapes whose material/texture is `sea`, `water01`, `water02`
-  (Gen4Terrain.append measured these as the translucent water materials) or `^water%d`.
-  Extend `Hide.WATER_NAMES` / `Hide.WATER_PATTERNS` if more show up.
+- **Water (round 2):** a built Gen4Model shape keeps its material name but NOT its texture or
+  alpha, so `Gen4Ground:modelFor` is wrapped to copy the cache's texture name and alpha onto
+  each terrain shape. A shape is hidden when its material OR texture name says water
+  (`sea`, `water01/02`, `water:lambert5`, anything with water/lake/river/wtr/pond...), or when
+  it is translucent terrain (alpha < 31) that is not a shadow/glass/cloud. Waterfalls and
+  fountains are never hidden. Tune `Hide.WATER_NAMES / WATER_PATTERNS / WATER_SUBSTRINGS /
+  KEEP_SUBSTRINGS`, or set `Hide.ALPHA_HEURISTIC = false`.
+- Round 1 only matched three exact names, and the cartridge also names materials like
+  `water:lambert5`, so most water kept drawing.
 
 ## It stands down instead of leaving a hole
 - grass: no Grass3D bake, or the grass effect disabled
@@ -21,12 +27,15 @@ canopies and building passes are untouched.
   camera isn't fully built yet, ring `GW.NEAR` = 3 chunks)
 
 ## Gen4Water changes
+Readiness is latched per map (no native-water flicker when walking into new chunks).
 `RADIUS` 3 -> 8 (1024 units; the engine draws a 5x5 grid of 512-unit chunks, so 3 left a far
 hole once native water is gone), `BUILDS_PER_FRAME` 2 -> 4, new `GW.NEAR` and `GW.ready`.
 
 ## Switches
 `Hide.grass = false` / `Hide.water = false` (e.g. from a console or debug row) to compare.
-`Hide.LOG_NAMES = true` logs every distinct shape/material/texture name once.
+`Hide.LOG_NAMES` (now ON) logs every distinct shape once, as `Gen4Hide: hid water by ...` or
+`Gen4Hide: kept: material ... texture ... alpha ...`. Grep the mod log for `Gen4Hide:`.
+It also logs why water is or is not being hidden (`sheet not built yet`, `no ready flag`...).
 
 ## Tested / not tested
 Tested with stubs (texlua): filtering, exact restore, error path, every stand-down case,

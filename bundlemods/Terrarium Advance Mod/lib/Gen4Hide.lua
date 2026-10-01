@@ -17,9 +17,15 @@
 --          (Gen4Model.addGrassCards: a shape named "<shape>Cards", index nil).
 --          The flat grass quad under them is LEFT, as the ground: removing it
 --          would open a hole in the terrain under your tufts.
---   water  Terrain shapes whose material or texture is a water one: `sea`,
---          `water01`, `water02` (the three the importer measured as translucent
---          water -- see Gen4Terrain.append) plus anything in WATER_NAMES.
+--   water  Shapes whose MATERIAL or TEXTURE name says water (`sea`, `water01`,
+--          `water02`, `water:lambert5`, anything with water/lake/river in it --
+--          see classify()), and terrain shapes the cartridge states as
+--          translucent that are not a shadow/glass/cloud (Gen4Terrain.append
+--          measured every water material as translucent). Waterfalls and
+--          fountains are never hidden: the sheet does not cover them.
+--          A built Gen4Model shape keeps only `material`, not `texture`, so
+--          Gen4Ground:modelFor is wrapped to copy the cache's own texture name
+--          and alpha onto each terrain shape (srcTexture / srcAlpha).
 --
 -- WHEN IT STANDS DOWN (so it can never leave a hole)
 --
@@ -39,9 +45,19 @@ local Hide = {
   -- exact material/texture names (lower case) that are water
   WATER_NAMES = { sea = true, water01 = true, water02 = true },
   -- Lua patterns tried on the same names
-  WATER_PATTERNS = { "^water%d" },
-  -- log every distinct material/texture name seen once (to find more water names)
-  LOG_NAMES = false,
+  WATER_PATTERNS = { "^sea[^%a]", "[^%a]sea[^%a]", "[^%a]sea$", "^water", "[^%a]water" },
+  -- plain substrings that mean water
+  WATER_SUBSTRINGS = { "water", "lake", "river", "wtr", "mizu", "umi_", "pond", "suimen" },
+  -- never hidden, whatever else matches: shadows, glass, clouds, and the
+  -- vertical / decorative water the sheet does not replace
+  KEEP_SUBSTRINGS = { "kage", "shadow", "shade", "garasu", "glass", "cloud", "kumo",
+                      "fall", "funsui", "fount" },
+  -- translucent terrain (alpha < 31 in the cartridge) that is not KEEP is water
+  -- or a water edge: the importer measured every water material that way.
+  ALPHA_HEURISTIC = true,
+  -- log every distinct shape once, with what was decided. Grep the mod log for
+  -- "Gen4Hide:". Turn off once the water you see is gone.
+  LOG_NAMES = true,
 }
 
 local logged = {}
@@ -65,18 +81,40 @@ function Hide.isGrassCards(shape)
   return shape.index == nil and type(name) == "string" and name:sub(-5) == "Cards"
 end
 
-function Hide.isWater(shape)
-  for _, field in ipairs({ shape.material, shape.texture }) do
-    local n = lowered(field)
-    if n ~= "" then
-      if Hide.WATER_NAMES[n] then return true end
-      for _, pat in ipairs(Hide.WATER_PATTERNS) do
-        if n:find(pat) then return true end
-      end
-    end
+local function namesOf(shape)
+  return lowered(shape.srcMaterial or shape.material), lowered(shape.srcTexture or shape.texture)
+end
+
+local function containsAny(name, list)
+  for _, sub in ipairs(list) do
+    if name:find(sub, 1, true) then return true end
   end
   return false
 end
+
+-- -> nil (keep), or a short reason the shape is water
+function Hide.classify(shape)
+  local m, t = namesOf(shape)
+  if containsAny(m, Hide.KEEP_SUBSTRINGS) or containsAny(t, Hide.KEEP_SUBSTRINGS) then
+    return nil
+  end
+  for _, n in ipairs({ m, t }) do
+    if n ~= "" then
+      if Hide.WATER_NAMES[n] then return "name" end
+      for _, pat in ipairs(Hide.WATER_PATTERNS) do
+        if n:find(pat) then return "pattern" end
+      end
+      if containsAny(n, Hide.WATER_SUBSTRINGS) then return "substring" end
+    end
+  end
+  if Hide.ALPHA_HEURISTIC and shape.srcTexture and tonumber(shape.srcAlpha)
+     and shape.srcAlpha < 31 then
+    return "alpha"
+  end
+  return nil
+end
+
+function Hide.isWater(shape) return Hide.classify(shape) ~= nil end
 
 -- ------------------------------------------------------------ per-frame --
 
@@ -90,12 +128,30 @@ local function grassOn()
   return ok and avail and true or false
 end
 
+local lastWaterState
 local function waterOn()
   if not Hide.water then return false end
   local Bridge = optional("Gen4Bridge")
-  if Bridge and Bridge.disabled and Bridge.disabled.water then return false end
-  local GW = optional("Gen4Water")
-  return GW ~= nil and GW.ready == true
+  local state, on
+  if Bridge and Bridge.disabled and Bridge.disabled.water then
+    state, on = "water effect disabled/failed -> native water kept", false
+  else
+    local GW = optional("Gen4Water")
+    if GW == nil then
+      state, on = "Gen4Water did not load -> native water kept", false
+    elseif GW.ready == false then
+      state, on = "Gen4Water sheet not built yet -> native water kept", false
+    else
+      -- ready == true, or an older Gen4Water with no flag at all
+      state, on = (GW.ready == nil) and "Gen4Water has no ready flag -> hiding anyway"
+                                     or "Gen4Water sheet ready -> hiding native water", true
+    end
+  end
+  if state ~= lastWaterState then
+    lastWaterState = state
+    note("state:" .. state, "%s", state)
+  end
+  return on
 end
 
 -- model -> { key = "gw", list = {...} }
@@ -114,16 +170,21 @@ local function filtered(model, hideGrass, hideWater)
     if hideGrass and Hide.isGrassCards(shape) then
       drop = true
       note("g:" .. tostring(shape.name), "hid native grass cards '%s'", tostring(shape.name))
-    elseif hideWater and Hide.isWater(shape) then
-      drop = true
-      note("w:" .. lowered(shape.material) .. "|" .. lowered(shape.texture),
-           "hid native water (material '%s', texture '%s')",
-           tostring(shape.material), tostring(shape.texture))
+    elseif hideWater then
+      local why = Hide.classify(shape)
+      if why then
+        drop = true
+        note("w:" .. (shape.srcMaterial or shape.material or "") .. "|" .. (shape.srcTexture or ""),
+             "hid water by %s: material '%s' texture '%s' alpha %s",
+             why, tostring(shape.srcMaterial or shape.material),
+             tostring(shape.srcTexture or shape.texture), tostring(shape.srcAlpha))
+      end
     end
-    if Hide.LOG_NAMES then
-      note("n:" .. lowered(shape.material) .. "|" .. lowered(shape.texture),
-           "shape name '%s' material '%s' texture '%s'",
-           tostring(shape.name), tostring(shape.material), tostring(shape.texture))
+    if Hide.LOG_NAMES and not drop then
+      note("k:" .. (shape.srcMaterial or shape.material or "") .. "|" .. (shape.srcTexture or ""),
+           "kept: material '%s' texture '%s' alpha %s",
+           tostring(shape.srcMaterial or shape.material),
+           tostring(shape.srcTexture or shape.texture), tostring(shape.srcAlpha))
     end
     if drop then hidden = hidden + 1 else list[#list + 1] = shape end
   end
@@ -144,6 +205,40 @@ function Hide.install()
   end
   Hide.Model, Hide.Ground = Model, Ground
   Hide.originalDraw, Hide.originalDrawFree = Model.draw, Ground.drawFree
+  Hide.originalModelFor = Ground.modelFor
+
+  -- A built shape keeps its material name but not its texture or alpha; the
+  -- cache index still has them. Copy them on, matching by shape name in order.
+  if type(Ground.modelFor) == "function" then
+    local originalModelFor = Ground.modelFor
+    Ground.modelFor = function(self, land, ...)
+      local model = originalModelFor(self, land, ...)
+      if model and type(model.shapes) == "table" then
+        pcall(function()
+          local chunks = self.terrain and self.terrain.chunks
+          local record = chunks and chunks[land]
+          if not (record and record.shapes) then return end
+          local queues = {}
+          for _, src in ipairs(record.shapes) do
+            local q = queues[src.name or ""]
+            if not q then q = { at = 1 }; queues[src.name or ""] = q end
+            q[#q + 1] = src
+          end
+          for _, built in ipairs(model.shapes) do
+            local q = queues[built.name or ""]
+            local src = q and q[q.at]
+            if src then
+              q.at = q.at + 1
+              built.srcMaterial = src.material
+              built.srcTexture = src.texture
+              built.srcAlpha = src.alpha
+            end
+          end
+        end)
+      end
+      return model
+    end
+  end
 
   local drawFilter = { grass = false, water = false }
 
@@ -179,6 +274,7 @@ function Hide.uninstall()
   if not Hide.installed then return end
   Hide.Model.draw = Hide.originalDraw
   Hide.Ground.drawFree = Hide.originalDrawFree
+  Hide.Ground.modelFor = Hide.originalModelFor
   Hide.active, Hide.installed = false, false
 end
 
