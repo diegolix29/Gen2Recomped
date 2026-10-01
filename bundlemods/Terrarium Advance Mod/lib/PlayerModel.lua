@@ -1096,15 +1096,9 @@ function PlayerModel.draw(px, py, y, facing, mirror)
       end
     end
     
-
-        local gen4Ground = ow and ow.map and ow.map.renderer and ow.map.renderer.gen4Ground
-    if gen4Ground then
     -- Apply rotation so character faces the right direction
     m = Mat4.mul(m, Mat4.rotateY(yaw))
-    else     -- Add 180-degree rotation so character faces the right direction
-    m = Mat4.mul(m, Mat4.rotateY(yaw + math.pi))
-
-    end
+    
     -- The old whole-body bob+rock hack that used to stand in for a walk
     -- animation lived here -- it's gone now that CharacterWalkCycle
     -- actually swings the legs/arms per vertex (including its own, much

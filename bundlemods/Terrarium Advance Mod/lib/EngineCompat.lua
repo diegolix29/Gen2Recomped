@@ -380,21 +380,4 @@ end
 -- sandbox-safe file pickers such as custom battle backgrounds.
 Compat.openMobileFilePicker = Compat.openMobileRomPicker
 
--- Prefer pickFile("mod") so the copy lands as picked_mod.zip instead of
--- picked_rom.gb. Sandboxed mods cannot see love.system; try it anyway, then
--- fall back to the engine ROM-importer document picker.
-function Compat.openMobileZipPicker()
-  local osName = Compat.osName()
-  if osName ~= "Android" and osName ~= "iOS" then
-    return false, "not a mobile picker platform"
-  end
-  local okSys, launched = pcall(function()
-    return love and love.system and love.system.pickFile and love.system.pickFile("mod")
-  end)
-  if okSys and launched then return true, "picked_mod.zip" end
-  local ok, err = Compat.openMobileFilePicker()
-  if ok then return true, "picked_rom.gb" end
-  return false, err or "file picker did not open"
-end
-
 return Compat

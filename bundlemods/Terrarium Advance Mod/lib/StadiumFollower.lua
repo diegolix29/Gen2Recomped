@@ -97,21 +97,6 @@ local FOLLOWER_SCALE = 1.0
 local function loadSpriteFallback(dex)
   if not dex then return false, "no dex number" end
   
-  -- HD Reloded: back sheet on the follower; front is the battle/overworld pose.
-  local HdPokemon = V.HdPokemon or (V.require and V.require("HdPokemon"))
-  if HdPokemon and type(HdPokemon.record) == "function" then
-    local rec = HdPokemon.record(dex, "back", false, nil)
-      or HdPokemon.record(dex, "front", false, nil)
-    local image = rec and HdPokemon.frameImage(rec)
-    if image then
-      spriteCache[dex] = image
-      currentSprite = image
-      currentSpecies = dex
-      usingSpriteFallback = true
-      return true
-    end
-  end
-
   print("StadiumFollower.loadSpriteFallback: Attempting to load sprite for dex", dex)
   
   -- Check sprite cache first
@@ -212,7 +197,7 @@ function StadiumFollower.setSpecies(dex)
   usingSpriteFallback = false
   usingColosseum = false
   
-  if not dex or dex < 1 or dex > 493 then
+  if not dex or dex < 1 or dex > ColosseumDex.speciesCount then
     -- Save the disabled state
     writeMarker(nil)
     return true  -- Disabled
@@ -375,6 +360,7 @@ end
 -- facing: direction the follower is facing ("up", "down", "left", "right")
 function StadiumFollower.draw(x, y, facing, yUp)
   yUp = tonumber(yUp) or 0
+  print("[StadiumFollower.draw] Called with x:", x, "y:", y, "facing:", facing, "currentRig:", currentRig ~= nil, "currentModel:", currentModel ~= nil, "currentSprite:", currentSprite ~= nil, "usingSpriteFallback:", usingSpriteFallback)
   
   -- Handle sprite fallback
   if usingSpriteFallback and currentSprite then
@@ -509,10 +495,11 @@ function StadiumFollower.drawSprite(x, y, facing)
   
   lg.push()
   lg.translate(x, y)
+  lg.scale(FOLLOWER_SCALE, FOLLOWER_SCALE)
+  
+  -- Draw sprite centered
   local sw, sh = currentSprite:getDimensions()
-  local s = (16 / math.max(sh, 1)) * FOLLOWER_SCALE
-  lg.scale(s, s)
-  lg.draw(currentSprite, -sw/2, -sh)
+  lg.draw(currentSprite, -sw/2, -sh/2)
   
   lg.pop()
   
@@ -546,6 +533,7 @@ end
 -- Check if a follower is currently loaded
 function StadiumFollower.loaded()
   local result = (currentRig ~= nil and currentModel ~= nil) or (currentSprite ~= nil) or usingColosseum
+  print("[StadiumFollower.loaded] Returning:", result, "currentRig:", currentRig ~= nil, "currentModel:", currentModel ~= nil, "currentSprite:", currentSprite ~= nil, "currentSpecies:", currentSpecies, "usingSpriteFallback:", usingSpriteFallback)
   return result
 end
 

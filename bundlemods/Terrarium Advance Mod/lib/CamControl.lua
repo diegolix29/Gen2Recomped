@@ -70,25 +70,7 @@ CamControl.SURVEY_PINCH = 2.2
 -- half frame and half world (see BattleCam.steerable, which is where the
 -- reasoning lives and which the RIG answers to as well -- so a stored
 -- angle from before the setting was switched on stands down with it).
--- A Platinum battle staged in the engine's own 3D world (lib/Gen4Battle3D) has
--- no voxel shot, so the gate below would never open for it. It is steered by the
--- same devices through the same calls, so it answers the same questions: this
--- says whether it is live, and cam() hands back whichever camera the inputs
--- belong to -- the Gen 4 one, or BattleCam for every other version.
-local function gen4Live()
-  local ok, live = pcall(function()
-    return V.require("Gen4Battle3D").live()
-  end)
-  return ok and live and true or false
-end
-
-local function cam()
-  if gen4Live() then return V.require("Gen4Battle3D") end
-  return BattleCam
-end
-
 local function battleLive()
-  if gen4Live() then return true end
   local ok, shot = pcall(function()
     return V.require("OverworldBattle").shot()
   end)
@@ -107,6 +89,14 @@ end
 -- nothing that zooms (1ST, or a screen with no camera of ours behind it).
 function CamControl.zoomTarget()
   if battleLive() then return "battle" end
+  do
+    local ok, Cam = pcall(V.require, "Gen4ActorCam")
+    if ok and Cam and Cam.onGen4 and Cam.onGen4() then
+      -- Gen4View.zoomBy is the engine's 3rd-person dolly. The voxel boom
+      -- must not swallow the wheel on a map that never uses that camera.
+      return nil
+    end
+  end
   if not roaming() then return nil end
   if Voxel.isThirdPerson(Voxel.level) then return "boom" end
   if Voxel.isFirstPerson(Voxel.level) then return nil end
@@ -135,7 +125,7 @@ function CamControl.zoomBy(notches)
   if not notches or notches == 0 then return false end
   local target = CamControl.zoomTarget()
   if target == "battle" then
-    cam().stepZoom(notches)
+    BattleCam.stepZoom(notches)
     return true
   elseif target == "boom" then
     ThirdPerson.stepZoom(notches)
@@ -160,8 +150,8 @@ function CamControl.pinchBy(factor)
     -- battles take a pinch too: the wheel and the keys reach this camera
     -- and a phone has neither, so without it the lens would be the one
     -- control a touch screen could not work
-    return cam().stepZoom(math.log(1 / factor)
-                          / math.log(cam().ZOOM_STEP))
+    return BattleCam.stepZoom(math.log(1 / factor)
+                              / math.log(BattleCam.ZOOM_STEP))
   elseif target == "survey" then
     CamControl.surveyAccum = (CamControl.surveyAccum or 0)
       + math.log(factor) / math.log(2) * CamControl.SURVEY_PINCH
@@ -201,8 +191,8 @@ CamControl.surveyAccum = 0
 function CamControl.tick(dt)
   if not battleLive() then return end
   local x, y = FirstPerson.stickX(), FirstPerson.stickY()
-  if x ~= 0 then cam().stickOrbit(x, dt) end
-  if y ~= 0 then cam().stickPitch(-y, dt) end
+  if x ~= 0 then BattleCam.stickOrbit(x, dt) end
+  if y ~= 0 then BattleCam.stickPitch(-y, dt) end
 end
 
 -- ------- the wraps
@@ -286,8 +276,8 @@ function CamControl.install()
       if battleLive() and not istouch then
         -- dy is NEGATED for the same reason the stick's is: moving the
         -- mouse away from you sends the camera up and over
-        if dx and dx ~= 0 then cam().mouseOrbit(clamp(dx)) end
-        if dy and dy ~= 0 then cam().mousePitch(-clamp(dy)) end
+        if dx and dx ~= 0 then BattleCam.mouseOrbit(clamp(dx)) end
+        if dy and dy ~= 0 then BattleCam.mousePitch(-clamp(dy)) end
         -- forwarded anyway: the cursor still has UI to point at, and the
         -- steer is a read of the motion rather than a claim on it
       end
@@ -397,10 +387,10 @@ function CamControl.install()
           pcall(function()
             w, h = love.graphics.getWidth(), love.graphics.getHeight()
           end)
-          cam().dragOrbit((x - px) / math.max(320, w))
+          BattleCam.dragOrbit((x - px) / math.max(320, w))
           -- dragged UP sends the camera up and over, the same way the
           -- stick and the mouse do
-          cam().dragPitch(-(y - py) / math.max(240, h))
+          BattleCam.dragPitch(-(y - py) / math.max(240, h))
           return
         end
       end
