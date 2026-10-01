@@ -365,13 +365,12 @@ local function drawActor(scene, battle, battler, spot)
   local isHd = false
   local HDSheets = V.HDPokemonSheets or (V.mod and V.mod.exports and V.mod.exports.hdPokemonSheets)
   if HDSheets and type(HDSheets.frame) == "function" then
-    local side = (battle.player == battler or (battle.player and battle.player.mon == battler)
-      or (battler and battler == battle.player)) and "back" or "front"
+    -- In 3D battles, always use front sprites for all battlers
     local mon = battler.mon or battler
     local dex = mon and (mon.dex or mon.nationalDex or mon.speciesIndex)
     local shiny = mon and (mon.shiny or mon.isShiny)
     if dex then
-      local image, info = HDSheets.frame({dex = dex, facing = side, shiny = shiny})
+      local image, info = HDSheets.frame({dex = dex, facing = "front", shiny = shiny})
       if image then pic = image; isHd = true end
     end
   end

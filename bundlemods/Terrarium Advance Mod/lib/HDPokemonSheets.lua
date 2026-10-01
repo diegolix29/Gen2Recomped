@@ -529,7 +529,21 @@ function M.isEnabled(game)
   return true
 end
 
-local function facingFor(side) return side == "player" and "back" or "front" end
+local function facingFor(side, battle)
+  -- In 3D battle modes, always use front sprites for all battlers
+  -- Back sprites are only for followers/roamers outside battles
+  if battle and battle.game and battle.game.save then
+    local save = battle.game.save
+    local battleMode = save and save.terrariumBattle and save.terrariumBattle.battleMode
+    -- 3D battle modes: "3d", "stadium", "colosseum_a", "colosseum_b"
+    if battleMode and (battleMode == "3d" or battleMode == "stadium" or
+       battleMode == "colosseum_a" or battleMode == "colosseum_b") then
+      return "front"
+    end
+  end
+  -- Default: player uses back, enemy uses front (2D battle behavior)
+  return side == "player" and "back" or "front"
+end
 
 -- ---- billboard seam (OverworldBattle.textures) ----
 
@@ -537,13 +551,13 @@ local function facingFor(side) return side == "player" and "back" or "front" end
 -- `tex` is the descriptor sideTexture() produced: it only exists when nothing
 -- 3D covers this side and the pic is visible, which is exactly "no model".
 function M.textureFor(battle, side, tex)
-  if type(battle) ~= "table" or not FACINGS[facingFor(side)] then return nil end
+  if type(battle) ~= "table" or not FACINGS[facingFor(side, battle)] then return nil end
   if type(tex) ~= "table" or tex.trainer then return nil end
   if not M.isEnabled(gameOf(battle)) then return nil end
   local id = identify(dataOf(battle), battle[side])
   if not id then return nil end
   local image, info = M.frame({
-    dex = id.dex, facing = facingFor(side), shiny = id.shiny,
+    dex = id.dex, facing = facingFor(side, battle), shiny = id.shiny,
     gender = id.gender, form = id.form, key = "bb:" .. side,
   })
   if not image then return nil end
@@ -600,7 +614,8 @@ M.spriteApi = {
   resolve = function(context, side, battler, image)
     local id = identify(dataOf(context), battler)
     if not id then return nil end
-    local facing = facingFor(side)
+    local battle = context and context.battle
+    local facing = facingFor(side, battle)
     -- Size is a property of the sheet, so ask for the geometry first.
     local color = id.shiny and "shiny" or "normal"
     local stem = chooseStem(facing, color, id.dex, id.gender, id.form)
