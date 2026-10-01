@@ -1222,6 +1222,7 @@ function Commands.give_pokemon(ctx, species, level, skipNickname, opts)
   end
   ctx.lastCheck = true
   ctx.addedToParty = addedToParty
+  require('src.pokemon.Gen4PoketchState').remember(ctx.game, mon)
   ctx.boxNum = boxNum
   -- AskName: both AddPartyMon and SendNewMonToBox; skip mod-set nicks
   -- and callback-style callers with no script runner to yield on.

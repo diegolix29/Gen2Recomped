@@ -110,4 +110,21 @@ Gen4Dex.LABEL = { seen = 0, obtained = 1, height = 9, weight = 10 }
 -- index the bank does not have.
 Gen4Dex.MAX_SPECIES = 600
 
+-- pokedex_sort.c: eleven statistic files precede the ordered species lists.
+function Gen4Dex.orders(rom)
+  local bytes=rom:read('/application/zukanlist/zkn_data/zukan_data.narc')
+  local arc=bytes and require('src.import.NarcArchive').parse(bytes)
+  if not arc then return nil end
+  local out={}
+  for i,key in ipairs({'national','sinnoh','alphabetical','heaviest','lightest','tallest','smallest'}) do
+    local list=arc:get(10+i)
+    if list then
+      local ids={}
+      for at=1,#list,2 do ids[#ids+1]=list:byte(at)+list:byte(at+1)*256 end
+      out[key]=ids
+    end
+  end
+  return out
+end
+
 return Gen4Dex

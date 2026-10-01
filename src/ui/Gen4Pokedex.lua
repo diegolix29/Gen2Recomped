@@ -14,11 +14,8 @@
 -- The composition is fixed now -- see `Gen4Dex`, and `Gen4Graphics.stamp` for
 -- the thing the planner could not express -- so this is the screen.
 --
--- TWO PAGES, as the cartridge has: the LIST, and the ENTRY that A opens on it.
--- The entry page is the cartridge's own picture; the list is not, and that is
--- said plainly rather than hidden.  `scroll_main_background` and the scroll
--- wheel are a third composition again (a wheel of sprites over a scrolling
--- background) and are not composed here.
+-- The list and entry use the cartridge's backgrounds. The full DS scroll
+-- wheel, habitat, size, search and form pages still need their own screens.
 --
 -- WHAT THE PAGE SAYS IS THE CARTRIDGE'S TOO, including the three things the
 -- species table does not carry: Platinum stores height, weight and the
@@ -43,7 +40,7 @@ Gen4Pokedex.isOpaque = true
 local W, H = 256, 192
 
 -- The list page, which is this port's and says so.
-local LIST = { x = 16, y = 28, pitch = 16, rows = 9 }
+local LIST = { x = 24, y = 48, pitch = 16, rows = 5 }
 
 -- Where the entry page's words go, when the cache has no layout of its own.
 -- Every number is `Gen4Dex.LAYOUT`'s; they are repeated here only so a cache
@@ -89,6 +86,7 @@ function Gen4Pokedex.new(game, opts)
   self.entries = self:listing()
   self.index = 1
   self.top = 1
+  self.tab = 1
   self.page = "list"
   self.scroll = 0
   return self
@@ -96,15 +94,22 @@ end
 
 -- ------------------------------------------------------------------ data --
 
--- The listing, in NATIONAL ORDER, which for Gen 4 is the species id itself:
--- Platinum numbers its species 1..493 in national order, so there is no
--- separate `dex` field to read and nothing to sort by.  The Sinnoh order is a
--- different table (`/poketool/pl_pokezukan.narc`) and is not extracted, so
--- the mode switch the cartridge offers is not here either.
+-- Prefer the ROM's Sinnoh order until the National Dex is granted. Old
+-- caches without the ordered lists retain their previous national fallback.
 function Gen4Pokedex:listing()
   local data = self.game.data or {}
   local mons = data.pokemon or {}
   local out = {}
+  local orders=self.art and self.art.orders
+  local dex=self.game.save.pokedex or {}
+  local order=orders and orders[dex.national and 'national' or 'sinnoh']
+  if order then
+    self.numbers={}
+    for number,id in ipairs(order) do
+      if mons[id] then out[#out+1]=id;self.numbers[id]=number end
+    end
+    return out
+  end
   -- `x or 493` CANNOT CATCH A ZERO, and the zero is what arrives.
   --
   -- `Data.lua` derives `dexSize` as the highest `def.dex` across the species
@@ -189,14 +194,16 @@ function Gen4Pokedex:update()
   if not input then return end
 
   if self.page == "entry" then
-    if input:wasPressed("up") then self.scroll = math.max(0, self.scroll - 1)
+    if input:wasPressed("l") then self.tab = (self.tab - 2) % 5 + 1
+    elseif input:wasPressed("r") or input:wasPressed("select") then self.tab = self.tab % 5 + 1
+    elseif input:wasPressed("up") then self.scroll = math.max(0, self.scroll - 1)
     elseif input:wasPressed("down") then self.scroll = self.scroll + 1
     elseif input:wasPressed("left") then self:move(-1); self.scroll = 0
     elseif input:wasPressed("right") then self:move(1); self.scroll = 0
-    elseif input:wasPressed("b") or input:wasPressed("a")
-           or input:wasPressed("start") then
-      self.page, self.scroll = "list", 0
-    end
+    elseif input:wasPressed("a") then
+      if self.tab == 3 or self.tab == 1 then self:playCry()
+      elseif self.tab == 5 then self.form = ((self.form or 0) + 1) % #self:forms() end
+    elseif input:wasPressed("b") or input:wasPressed("start") then self.page, self.scroll = "list", 0 end
     return
   end
 
@@ -210,10 +217,32 @@ function Gen4Pokedex:update()
     -- also never lets the cursor rest on one that is not in the listing; this
     -- port lists everything, so the refusal is here instead of a page with
     -- nothing on it.
-    if self:status(self:species()) then self.page = "entry" end
+    if self:status(self:species()) then self.page = "entry"; self.tab = 1; self:playCry() end
   elseif input:wasPressed("b") or input:wasPressed("start") then
     self:close()
   end
+end
+
+function Gen4Pokedex:touchpressed(_,px,py)
+  local r=require('src.render.Renderer').uiPresentation
+  if not r or px<r.x or py<r.y or px>=r.x+r.w or py>=r.y+r.h then return false end
+  local x,y=(px-r.x)/r.scaleX,(py-r.y)/r.scaleY
+  if self.page=='entry' then
+    if y >= 176 then self.tab = math.min(5, math.floor(x / (W / 5)) + 1)
+    elseif self.tab == 5 and y >= 128 then self.form = ((self.form or 0) + 1) % #self:forms()
+    elseif self.tab == 3 or x < 96 then self:playCry() end
+  elseif y>=LIST.y and y<LIST.y+LIST.rows*LIST.pitch then
+    local index=self.top+math.floor((y-LIST.y)/LIST.pitch)
+    if self.entries[index] then
+      self.index=index
+      if self:status(self:species()) then self.page='entry';self.tab=1;self.form=0;self:playCry() end
+    end
+  elseif y>=160 then
+    if x<64 then self:move(-LIST.rows)
+    elseif x>=192 then self:move(LIST.rows)
+    else self:close() end
+  end
+  return true
 end
 
 -- ------------------------------------------------------------------- draw --
@@ -223,6 +252,9 @@ function Gen4Pokedex:drawList()
   g.setColor(0.08, 0.14, 0.24, 1)
   g.rectangle("fill", 0, 0, W, H)
   g.setColor(1, 1, 1, 1)
+
+  local back=self:img(self.art and self.art.list)
+  if back then g.draw(back,0,0) end
 
   local words = (self.art or {}).words or {}
   local seen, owned = 0, 0
@@ -250,7 +282,7 @@ function Gen4Pokedex:drawList()
                     LIST.pitch - 2)
         g.setColor(1, 1, 1, 1)
       end
-      Font.draw(("%03d"):format(id), LIST.x, y)
+      Font.draw(("%03d"):format(self.numbers and self.numbers[id] or id), LIST.x, y)
       Font.draw(tostring(name), LIST.x + 40, y)
       if state == "owned" then Font.draw("*", LIST.x - 14, y) end
     end
@@ -287,7 +319,7 @@ function Gen4Pokedex:drawEntry()
   end
 
   local words = art.words or {}
-  Font.draw(("%03d  %s"):format(species or 0, (def and def.name) or "?"),
+  Font.draw(("%03d  %s"):format((self.numbers and self.numbers[species]) or species or 0, (def and def.name) or "?"),
             L.nameNumber.x - 60, L.nameNumber.y)
 
   local category = (art.category or {})[species]
@@ -331,8 +363,105 @@ function Gen4Pokedex:drawEntry()
   g.setColor(1, 1, 1, 1)
 end
 
+local TABS = { 'INFO', 'AREA', 'CRY', 'SIZE', 'FORMS' }
+function Gen4Pokedex:playCry()
+  self.cry = require('src.core.Sound').playCry(self.game.data, self:species())
+end
+function Gen4Pokedex:forms()
+  local species = self:species()
+  local out = { false }
+  for name, record in pairs((self:def() or {}).forms or {}) do
+    if record.spriteFront then out[#out+1] = name end
+  end
+  table.sort(out,function(a,b) if a==false then return true elseif b==false then return false end return tostring(a)<tostring(b) end)
+  return out
+end
+function Gen4Pokedex:areas()
+  local out, seen = {}, {}
+  local species = self:species()
+  local function contains(t)
+    if type(t) ~= 'table' then return false end
+    for _,v in pairs(t) do
+      if type(v) == 'table' and (v.species == species or contains(v)) then return true end
+    end
+    return false
+  end
+  for id,map in pairs(self.game.data.maps or {}) do
+    local area = (self.game.data.encounters or {})[map.encounters]
+    local found = area and area.grassRate > 0 and contains(area.grass)
+    if area then
+      for _, method in ipairs({'surf','oldRod','goodRod','superRod'}) do
+        local block = area[method]
+        if block and block.rate > 0 and contains(block.slots) then found = true end
+      end
+      if area.grassRate > 0 then
+        for _, method in ipairs({'day','night','swarm','radar'}) do
+          for _, id in ipairs(area[method] or {}) do if id == species then found = true end end
+        end
+        for _, slots in pairs(area.dualSlot or {}) do
+          for _, id in ipairs(slots) do if id == species then found = true end end
+        end
+      end
+    end
+    if found then
+      local label = map.label or id
+      if not seen[label] then seen[label]=true;out[#out+1]=label end
+    end
+  end
+  table.sort(out);return out
+end
+function Gen4Pokedex:screenArt(key)
+  local screens = ((self.game.data.gen4_graphics or {}).screens or {})
+  return self:img(screens[key])
+end
+function Gen4Pokedex:drawDetails()
+  if self.tab == 1 then
+    self:drawEntry()
+    local footprint = self:screenArt(('dex/footprint_%03d'):format(self:species()))
+    if footprint then
+      local at = self:layout().footprint
+      love.graphics.setColor(1,1,1,1)
+      love.graphics.draw(footprint, at.x + 16, at.y + 16)
+    end
+    return
+  end
+  local g=love.graphics
+  g.setColor(0.85,0.9,0.95,1);g.rectangle('fill',0,0,W,H);g.setColor(1,1,1,1)
+  local key = self.tab==2 and 'pokedex/area_map' or self.tab==3 and 'pokedex/cry_button'
+    or self.tab==4 and 'pokedex/height_check_main' or 'pokedex/forms_sub'
+  local bg=self:screenArt(key);if bg then g.draw(bg,0,0) end
+  local def=self:def();Font.draw((def and def.name) or '?',8,8)
+  if self.tab==2 then
+    local locations=self:areas()
+    self.scroll=math.min(self.scroll,math.max(0,#locations-8))
+    if #locations==0 then Font.draw('AREA UNKNOWN',48,80) end
+    for i=1,8 do if locations[self.scroll+i] then Font.draw(Font.fit(locations[self.scroll+i],232),12,28+(i-1)*17) end end
+  elseif self.tab==3 then
+    Font.draw('A: PLAY CRY',72,144)
+    local bar=self:screenArt('pokedex/cry_bar_00');if bar then g.draw(bar,112-bar:getWidth()/2,88-bar:getHeight()/2) end
+  elseif self.tab==4 then
+    if self:status(self:species())=='owned' then
+      Font.draw('HEIGHT '..((self.art.height or {})[self:species()] or '?'),24,120)
+      Font.draw('WEIGHT '..((self.art.weight or {})[self:species()] or '?'),24,144)
+    end
+  elseif self.tab==5 then
+    local forms=self:forms();local form=forms[(self.form or 0)%#forms+1]
+    local path=form and def.forms[form].spriteFront or Sprites.path(self.game.data,self:species(),'front',{kind='dex'})
+    local image=path and self:img(path)
+    if image then g.draw(image,88,48,0,80/image:getWidth(),80/image:getHeight()) end
+    Font.draw('A: NEXT FORM',64,144)
+  end
+end
+function Gen4Pokedex:drawTabs()
+  local g=love.graphics
+  for i,label in ipairs(TABS) do
+    g.setColor(i==self.tab and 0.7 or 0.9,0.8,0.85,1)
+    g.rectangle('fill',(i-1)*W/5,176,W/5,16);g.setColor(1,1,1,1)
+    Font.draw(label,(i-1)*W/5+4,178)
+  end
+end
 function Gen4Pokedex:draw()
-  if self.page == "entry" then return self:drawEntry() end
+  if self.page == "entry" then self:drawDetails();self:drawTabs();return end
   self:drawList()
 end
 

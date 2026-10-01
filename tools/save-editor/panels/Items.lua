@@ -30,7 +30,7 @@ local MONEY_STEPS = { -1000, -100, 100, 1000 }
 local function matches(S, id, query)
   if query == "" then return true end
   local q = query:lower()
-  if id:lower():find(q, 1, true) then return true end
+  if tostring(id):lower():find(q, 1, true) then return true end
   local label = Catalog.itemLabel(S.data, id)
   if label:lower():find(q, 1, true) then return true end
   local entry = S.data and S.data.items and S.data.items[id]

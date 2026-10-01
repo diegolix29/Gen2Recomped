@@ -244,7 +244,7 @@ end
 function Ops.speciesMatches(S, id, query)
   if not query or query == "" then return true end
   local q = tostring(query):lower()
-  if id:lower():find(q, 1, true) then return true end
+  if tostring(id):lower():find(q, 1, true) then return true end
   local def = S.data.pokemon[id]
   local name = def and def.name
   if name and tostring(name):lower():find(q, 1, true) then return true end
@@ -361,22 +361,22 @@ function Ops.boxes(S)
 end
 
 function Ops.selectBox(S, index)
-  S.selectedBox = clamp(index, 1, BoxesMod.COUNT)
+  S.selectedBox = clamp(index, 1, BoxesMod.count())
   S.selectedBoxSlot = 1
   S.save.currentBox = S.selectedBox
   local box = Ops.boxes(S)[S.selectedBox]
-  S.status = ("Box %d  (%d/%d)"):format(S.selectedBox, #box, BoxesMod.CAPACITY)
+  S.status = ("Box %d  (%d/%d)"):format(S.selectedBox, BoxesMod.used(box), BoxesMod.capacity())
   return true
 end
 
 function Ops.stepBox(S, delta)
-  local n = BoxesMod.COUNT
+  local n = BoxesMod.count()
   return Ops.selectBox(S, ((S.selectedBox - 1 + delta) % n) + 1)
 end
 
 function Ops.selectBoxSlot(S, index)
   local box = Ops.boxes(S)[S.selectedBox]
-  S.selectedBoxSlot = clamp(index, 1, BoxesMod.CAPACITY)
+  S.selectedBoxSlot = clamp(index, 1, BoxesMod.capacity())
   local mon = box[S.selectedBoxSlot]
   S.editingMon = mon
   S.status = mon
@@ -388,19 +388,21 @@ end
 
 function Ops.boxAdd(S)
   local box = Ops.boxes(S)[S.selectedBox]
-  if #box >= BoxesMod.CAPACITY then
+  if BoxesMod.used(box)>=BoxesMod.capacity() then
     return Ops.say(S, ("Box %d is full (%d/%d)")
-      :format(S.selectedBox, #box, BoxesMod.CAPACITY))
+      :format(S.selectedBox, BoxesMod.used(box), BoxesMod.capacity()))
   end
   local species = S.cat.species[1]
   local mon = MonOps.create(S.data, species, 5)
   mon.ot = S.save.player.name
   mon.otId = S.save.player.id
-  table.insert(box, mon)
-  S.selectedBoxSlot = #box
+  local slot=BoxesMod.firstFree(box)
+  if BoxesMod.capacity()>20 and S.selectedBoxSlot and not box[S.selectedBoxSlot] then slot=S.selectedBoxSlot end
+  box[slot]=mon
+  S.selectedBoxSlot=slot
   S.editingMon = mon
   return Ops.mark(S, ("Added %s Lv5 to box %d slot %d")
-    :format(species, S.selectedBox, #box))
+    :format(species,S.selectedBox,S.selectedBoxSlot))
 end
 
 function Ops.withdraw(S)
@@ -411,9 +413,10 @@ function Ops.withdraw(S)
     return Ops.say(S, ("Party is full (%d/%d), deposit one first")
       :format(#S.save.party, PartyMod.MAX))
   end
-  table.remove(box, S.selectedBoxSlot)
+  if BoxesMod.capacity()>20 then box[S.selectedBoxSlot]=nil
+  else table.remove(box,S.selectedBoxSlot) end
   table.insert(S.save.party, mon)
-  S.selectedBoxSlot = clamp(S.selectedBoxSlot, 1, math.max(#box, 1))
+  S.selectedBoxSlot = clamp(S.selectedBoxSlot, 1, BoxesMod.capacity())
   S.selectedParty = #S.save.party
   return Ops.mark(S, ("Withdrew %s to party slot %d"):format(mon.species, #S.save.party))
 end
@@ -426,9 +429,10 @@ function Ops.release(S)
       ("Release %s permanently? Click again to confirm"):format(mon.species)) then
     return false
   end
-  table.remove(box, S.selectedBoxSlot)
+  if BoxesMod.capacity()>20 then box[S.selectedBoxSlot]=nil
+  else table.remove(box,S.selectedBoxSlot) end
   if S.editingMon == mon then S.editingMon = nil end
-  S.selectedBoxSlot = clamp(S.selectedBoxSlot, 1, math.max(#box, 1))
+  S.selectedBoxSlot = clamp(S.selectedBoxSlot, 1, BoxesMod.capacity())
   return Ops.mark(S, ("Released %s"):format(mon.species))
 end
 
@@ -479,10 +483,11 @@ function Ops.bagAdjust(S, id, delta)
   if not id then return Ops.say(S, "No bag row selected") end
   if delta > 0 then
     local have = S.save.inventory[id] or 0
-    if have >= Ops.STACK_MAX then
-      return Ops.say(S, ("%s is already at x%d"):format(id, Ops.STACK_MAX))
+    local limit=Bag.stackLimit(id,S.data)
+    if have+delta>limit then
+      return Ops.say(S,("%s cannot exceed x%d"):format(id,limit))
     end
-    Bag.add(S.save, id, delta, S.data)
+    if not Bag.add(S.save,id,delta,S.data) then return Ops.say(S,'That item pocket is full') end
   else
     Bag.remove(S.save, id, -delta)
     if not S.save.inventory[id] then
@@ -544,7 +549,7 @@ end
 -- Badges are truthy inventory flags, not stackable items, which is why the
 -- design gives them toggle chips instead of quantity rows.
 function Ops.isBadgeId(id)
-  return id:find("BADGE", 1, true) ~= nil
+  return type(id)=="string" and id:find("BADGE", 1, true) ~= nil
 end
 
 -- The badge set comes from src/inventory/Badges.lua, not from the item
@@ -592,6 +597,7 @@ end
 -- disagree about whether a badge is earned.
 function Ops.hasBadge(S, id)
   return (S.save.inventory and S.save.inventory[id])
+    or (S.save.badges and S.save.badges[id])
     or (S.save.flags and S.save.flags[id]) and true or false
 end
 
@@ -617,6 +623,9 @@ end
 function Ops.toggleBadge(S, id)
   local on = Ops.hasBadge(S, id)
   local GameVersion = require("src.core.GameVersion")
+  if GameVersion.isGen4 and GameVersion.isGen4(S.version) then
+    S.save.badges=S.save.badges or {};S.save.badges[id]=not on or nil
+  end
   local gen2 = GameVersion.isGen2(S.version) or GameVersion.isGen3(S.version)
   if gen2 then
     S.save.flags = S.save.flags or {}

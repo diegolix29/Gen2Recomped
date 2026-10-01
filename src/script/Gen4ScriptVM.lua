@@ -213,6 +213,17 @@ Gen4ScriptVM.flagName = flagName
 L.setflag = function(ins, s) emit(s, { "set_flag", flagName(ins.args[1]) }) end
 L.clearflag = function(ins, s) emit(s, { "clear_flag", flagName(ins.args[1]) }) end
 L.checkflag = function(ins, s) emit(s, { "g4_check_flag", flagName(ins.args[1]) }) end
+L.checkflagfromvar = function(ins,s) emit(s, {'g4_check_flag_var',ins.args[1],ins.args[2]}) end
+L.setflagfromvar = function(ins,s) emit(s, {'g4_set_flag_var',ins.args[1]}) end
+L.openbag = function(ins,s) emit(s,{'g4_open_bag',ins.args[1]}) end
+L.getselecteditem = function(ins,s) emit(s,{'g4_selected_item',ins.args[1]}) end
+L.checkpockethasitems = function(ins,s) emit(s,{'g4_pocket_has_items',ins.args[1],ins.args[2]}) end
+L.bufferberryname = function(ins,s) emit(s,{'g4_buffer',ins.args[1],'item',ins.args[2]}) end
+for _, name in ipairs({'getberrygrowthstage','getberryitemid','getberrymulchtype',
+  'getberrymoisture','getberryyield','setberrymulch','plantberry','setberrywateringstate','harvestberry'}) do
+  local operation = name
+  L[operation]=function(ins,s) emit(s,{'g4_berry',operation,ins.args[1]}) end
+end
 L.settrainerflag = function(ins, s) emit(s, { "g4_set_trainer_flag", ins.args[1] }) end
 L.cleartrainerflag = function(ins, s) emit(s, { "g4_clear_trainer_flag", ins.args[1] }) end
 L.checktrainerflag = function(ins, s) emit(s, { "g4_check_trainer_flag", ins.args[1] }) end
@@ -258,7 +269,9 @@ L.message = function(ins, s) message(ins.args[1], s) end
 L.messageinstant = L.message
 L.messagenoskip = L.message
 L.messagesynchronized = L.message
-L.messagevar = function(ins, s) emit(s, { "g4_message_var", ins.args[1] }) end
+L.messagevar = function(ins, s)
+  emit(s, { "g4_message_var", ins.args[1], s.bankFor and s.bankFor(s.member) })
+end
 L.closemessage = function(_, s) emit(s, { "g4_close_message" }) end
 L.closemessagewithouterasing = L.closemessage
 L.waitbutton = function(_, s) emit(s, { "g4_wait_button" }) end
@@ -1465,8 +1478,8 @@ L.removemoney2 = function(ins, s) emit(s, { "g4_remove_money", ins.args[1] }) en
 L.updatemoneydisplay = function(_, s)
   emit(s, { "g4_noop", "the money window refresh" })
 end
-L.playpokecenterhealinganimation = function(_, s)
-  emit(s, { "g4_noop", "the Pokemon Centre healing animation" })
+L.playpokecenterhealinganimation = function(ins, s)
+  emit(s, { "g4_heal_animation", ins.args[1] })
 end
 -- `ScrCmd_Dummy` -- a no-op on the cartridge too, like `dummy1f9`.
 L.dummy = function(_, s) emit(s, { "g4_noop", "a cartridge no-op (dummy)" }) end
@@ -1530,13 +1543,9 @@ L["332"] = function(_, s) emit(s, { "g4_noop", "an object status flag (scrcmd 33
 L.startfirstbattle = function(ins, s)
   emit(s, { "g4_start_first_battle", ins.args[1] })
 end
--- The Sandgem demonstration: `Encounter_NewCatchingTutorial` runs a scripted
--- battle nobody plays -- fixed party, fixed throw, fixed outcome -- and this
--- port has one of those for Gen 1/2 only (`makeDudeDemo`), built around that
--- cartridge's own script. Skipping it costs the player a demonstration and
--- nothing else; the three sites are all on Route 202 and the scene continues.
+-- Route 202 parks the field script until the catching demonstration ends.
 L.startcatchingtutorial = function(_, s)
-  emit(s, { "g4_noop", "the catching demonstration" })
+  emit(s, { "g4_catching_tutorial" })
 end
 L.givepokedex = function(_, s) emit(s, { "g4_give_pokedex" }) end
 L.getlocaldexseencount = function(ins, s)
@@ -1836,6 +1845,13 @@ end
 L.findpartyslotwithmove = function(ins, s)
   emit(s, { "g4_find_slot_with_move", ins.args[1], ins.args[2] })
 end
+L.openpokemonstorage = function(ins, s)
+  emit(s, { "g4_storage", ins.args[1] })
+end
+L.slatherhoneytree=function(_,s) emit(s,{'g4_honey_slather'}) end
+L.gethoneytreestatus=function(ins,s) emit(s,{'g4_honey_status',ins.args[1]}) end
+L.starthoneytreebattle=function(_,s) emit(s,{'g4_honey_battle'}) end
+L.stophoneytreeshaking=function(_,s) emit(s,{'g4_honey_stop'}) end
 L.getpcboxesfreeslotcount = function(ins, s)
   emit(s, { "g4_pc_free_slots", ins.args[1] })
 end
@@ -1994,8 +2010,7 @@ L.showdiplomanationaldex = function(_, s)
 end
 
 -- PRESENTATION, and the reason each is a no-op is its own.
--- `stopse` stops a sound effect and there is no Gen 4 SE bank at all.
-L.stopse = function(_, s) emit(s, { "g4_noop", "a sound effect stop" }) end
+L.stopse = function(ins, s) emit(s, { "g4_stop_sound", ins.args[1] }) end
 -- Canalave's library television and the boat cutscene are both scripted
 -- set-pieces with their own screens; the scripts around them continue.
 L.startlibrarytv = function(_, s) emit(s, { "g4_noop", "the Canalave library TV" }) end
@@ -2144,7 +2159,7 @@ end
 -- seals are a ball-decoration system this port does not have. 35 sites, all of
 -- them Sunyshore. Opening a common mart in its place would sell Potions under
 -- a seal sign.
-L.pokemartseal = function(_, s) emit(s, { "g4_pokemart", 0, "specialty" }) end
+L.pokemartseal = function(ins, s) emit(s, { "g4_pokemart", ins.args[1], "seal" }) end
 
 -- THE LAKE GUARDIAN CONTAINMENT UNITS in the Galactic HQ control room, the
 -- Spear Pillar set-pieces, and the rest -- each read on its own.

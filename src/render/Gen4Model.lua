@@ -2246,6 +2246,8 @@ function Gen4Model.new(record)
         end
         self.shapes[#self.shapes + 1] =
           { mesh = mesh, name = shape.name, index = shape.index,
+            matrixSlots=shape.matrixSlots,
+            bindVertices=shape.matrixSlots and vertices or nil,
             facing = facing, wallBand = wallBand,
             -- the WALL vertices, for the back wall's silhouette
             outline = record.capBack and positions or nil,
@@ -2519,6 +2521,22 @@ function Gen4Model:draw(viewProjection, pose, materials, yCut, spread, depthComp
     -- and one colour for the whole model would make one of them wrong.
     g.setColor(1, 1, 1, shapeAlpha(shape))
     local place = pose[shape.index]
+    if shape.matrixSlots and pose.stack then
+      -- A display list can restore a different joint for every vertex.
+      -- Giratina's tentacles share shapes but use separate matrix slots.
+      for i,v in ipairs(shape.bindVertices) do
+        local slot=shape.matrixSlots:byte(i)
+        local m=pose.stack[slot] or place
+        local x,y,z=v[1],v[2],v[3]
+        if m then
+          x,y,z=m[1]*x+m[2]*y+m[3]*z+m[4],
+                m[5]*x+m[6]*y+m[7]*z+m[8],
+                m[9]*x+m[10]*y+m[11]*z+m[12]
+        end
+        shape.mesh:setVertex(i,x,y,z,unpack(v,4))
+      end
+      place=nil
+    end
     shader:send("mvp", place and multiply(viewProjection, place) or viewProjection)
 
     local state = materials and shape.material and materials[shape.material]

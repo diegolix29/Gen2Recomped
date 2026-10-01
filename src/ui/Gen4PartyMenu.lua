@@ -48,11 +48,11 @@ Gen4PartyMenu.isOpaque = true
 local W, H = 256, 192
 
 -- The six slots, in reading order, from the bands above.
-local SLOT_W, SLOT_H = 128, 44
+local SLOT_W, SLOT_H = 128, 48
 local SLOTS = {
-  { x = 0,   y = 5 },   { x = 128, y = 13 },
-  { x = 0,   y = 53 },  { x = 128, y = 61 },
-  { x = 0,   y = 101 }, { x = 128, y = 109 },
+  { x = 0,   y = 0 },   { x = 128, y = 8 },
+  { x = 0,   y = 48 },  { x = 128, y = 56 },
+  { x = 0,   y = 96 },  { x = 128, y = 104 },
 }
 -- The panels stop at 151, so CANCEL gets the strip under them.
 local CANCEL = { x = 8, y = 160, w = 240, h = 24 }
@@ -161,6 +161,29 @@ end
 
 function Gen4PartyMenu:party() return self.game.save.party or {} end
 
+function Gen4PartyMenu:touchpressed(_, px, py)
+  local r=require('src.render.Renderer').uiPresentation
+  if not r or px<r.x or py<r.y or px>=r.x+r.w or py>=r.y+r.h then return false end
+  local x,y=(px-r.x)/r.scaleX,(py-r.y)/r.scaleY
+  if self.submenu then
+    local actions=self:actions()
+    local left,top=W-120,H-#actions*16-20
+    if x>=left and x<left+112 and y>=top+6 and y<top+6+#actions*16 then
+      self:runAction(actions[math.floor((y-top-6)/16)+1])
+    else self.submenu=nil end
+    return true
+  end
+  if y>=CANCEL.y and y<CANCEL.y+CANCEL.h then
+    self.index=self:count();self:choose();return true
+  end
+  for i,at in ipairs(SLOTS) do
+    if x>=at.x and x<at.x+SLOT_W and y>=at.y and y<at.y+SLOT_H and self:party()[i] then
+      self.index=i;self:choose();return true
+    end
+  end
+  return true
+end
+
 -- Slots 1..#party, then CANCEL.
 function Gen4PartyMenu:count() return #self:party() + 1 end
 
@@ -212,6 +235,8 @@ end
 function Gen4PartyMenu:runAction(action)
   local mon = self:party()[self.index]
   self.submenu = nil
+  local field=action:match('^field:(.+)$')
+  if field and mon then return self:useFieldMove(mon,field) end
   if action == "send" and mon then
     -- Straight back to the caller. Whether this member MAY be sent out is the
     -- caller's question and it already asks it: BattleState's own onSwitch
@@ -232,10 +257,39 @@ Gen4PartyMenu.ACTIONS = { "summary", "switch", "cancel" }
 Gen4PartyMenu.BATTLE_ACTIONS = { "send", "summary", "cancel" }
 
 function Gen4PartyMenu:actions()
-  return self.battle and Gen4PartyMenu.BATTLE_ACTIONS or Gen4PartyMenu.ACTIONS
+  if self.battle then return Gen4PartyMenu.BATTLE_ACTIONS end
+  local rows={'summary'}
+  local F=require('src.world.Gen4FieldMoves');local mon=self:party()[self.index]
+  for _,name in ipairs({'CUT','SURF','DIG','TELEPORT','SWEET_SCENT'}) do
+    if F.knows(mon,name) then rows[#rows+1]='field:'..name end
+  end
+  rows[#rows+1]='switch';rows[#rows+1]='cancel';return rows
+end
+
+function Gen4PartyMenu:useFieldMove(mon,move)
+  local ow=self.game.overworld;local F=require('src.world.Gen4FieldMoves')
+  local usable=ow and F.badgeHeld(self.game.data,self.game.save,move)
+  if move=='SURF' then usable=usable and ow:useSurfFieldMove()=='ok'
+  elseif move=='CUT' then usable=usable and ow:useCutFieldMove()=='ok'
+  elseif move=='DIG' then usable=usable and ow.map.def.allowEscapeRope and ow:escapePoint()
+  elseif move=='TELEPORT' then usable=usable and ow.map.def.allowFly and self.game.save.lastHeal
+  elseif move=='SWEET_SCENT' then
+    local enc=ow and require('src.world.Encounter').forMap(self.game.data,ow.map.def,ow.map.id)
+    usable=usable and enc and (ow.player.surfing and enc.water or enc.grass)
+  end
+  if not usable then
+    self.game.stack:push(require('src.render.TextBox').new(self.game,"Can't use that here."));return
+  end
+  self:close()
+  if move=='DIG' then ow:beginTeleportOut(nil,{escape=true})
+  elseif move=='TELEPORT' then ow:beginTeleportOut()
+  elseif move=='SWEET_SCENT' then ow:gen4SweetScent()
+  elseif move=='SURF' then local x,y=ow.player:facingCell();ow:trySurf(x,y)
+  elseif move=='CUT' then local x,y=ow.player:facingCell();ow:tryCut(x,y) end
 end
 
 function Gen4PartyMenu:actionLabel(action)
+  local field=action:match('^field:(.+)$');if field then return Strings(field:gsub('_',' ')) end
   if action == "send" then return Strings("SEND OUT") end
   if action == "summary" then return Strings("SUMMARY") end
   if action == "switch" then return Strings("SWITCH") end
@@ -359,18 +413,19 @@ function Gen4PartyMenu:drawSlot(i, mon)
     g.setColor(1, 1, 1, 1)
   end
 
-  self:drawIcon(mon, at.x + 4, at.y + 4)
+  self:drawIcon(mon, at.x + 14, at.y)
 
   local name = tostring(mon.nickname or mon.name or "")
   if name == "" then
     local def = self.game.data.pokemon and self.game.data.pokemon[mon.species]
     name = (def and def.name) or tostring(mon.species)
   end
-  Font.draw(Font.fit(name, SLOT_W - 44), at.x + 38, at.y + 4)
-  Font.draw(("Lv%d"):format(tonumber(mon.level) or 1), at.x + 38, at.y + 18)
+  Font.draw(Font.fit(name, 72), at.x + 48, at.y + 8)
+  if mon.isEgg then return end
+  Font.draw(("Lv%d"):format(tonumber(mon.level) or 1), at.x + 4, at.y + 32)
 
   local hp = tonumber(mon.hp) or 0
-  local max = tonumber(mon.maxHp) or tonumber(mon.maxhp) or 0
+  local max = tonumber(mon.maxHp) or tonumber(mon.maxhp) or tonumber(mon.stats and mon.stats.hp) or 0
   -- WITH A MACHINE OPEN THE PANEL ANSWERS THE QUESTION instead of showing the
   -- numbers: what is being chosen is whether this Pokemon can learn the move,
   -- and its current HP has nothing to do with that.  THE BAR STAYS -- it is
@@ -378,21 +433,21 @@ function Gen4PartyMenu:drawSlot(i, mon)
   -- target still wants to know.
   if self.tmhm then
     local word = self:learnWord(mon)
-    Font.draw(word, at.x + SLOT_W - Font.width(word) - 6, at.y + 18)
+    Font.draw(word, at.x + SLOT_W - Font.width(word) - 6, at.y + 32)
   end
   if max > 0 then
     if not self.tmhm then
       local text = ("%d/%d"):format(hp, max)
-      Font.draw(text, at.x + SLOT_W - Font.width(text) - 6, at.y + 18)
+      Font.draw(text, at.x + SLOT_W - Font.width(text) - 8, at.y + 32)
     end
-    local full = SLOT_W - 48
+    local full = 48
     local share = math.max(0, math.min(1, hp / max))
     g.setColor(0.10, 0.12, 0.16, 1)
-    g.rectangle("fill", at.x + 38, at.y + 32, full, 4)
+    g.rectangle("fill", at.x + 64, at.y + 24, full, 6)
     if share > 0.5 then g.setColor(0.36, 0.85, 0.36, 1)
     elseif share > 0.2 then g.setColor(0.95, 0.82, 0.28, 1)
     else g.setColor(0.92, 0.32, 0.30, 1) end
-    g.rectangle("fill", at.x + 38, at.y + 32, math.floor(full * share), 4)
+    g.rectangle("fill", at.x + 64, at.y + 24, math.floor(full * share), 6)
     g.setColor(1, 1, 1, 1)
   end
 end
@@ -443,7 +498,7 @@ function Gen4PartyMenu:draw()
   if self.submenu then
     local actions = self:actions()
     local n = #actions
-    local boxW, rowH = 80, 16
+    local boxW, rowH = 112, 16
     local x, y = W - boxW - 8, H - (n * rowH) - 20
     Font.drawBox(math.floor(x / 8), math.floor(y / 8),
                  math.floor(boxW / 8), math.floor((n * rowH + 12) / 8))

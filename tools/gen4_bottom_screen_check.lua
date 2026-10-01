@@ -269,5 +269,15 @@ if ss then
      .. "asks -- the battle draws on `stowed` and every tap would be swallowed")
 end
 
+local oldRenderer=package.loaded['src.render.Renderer']
+package.loaded['src.render.Renderer']={uiPresentation={x=100,y=50,w=512,h=384,scaleX=2,scaleY=2}}
+local scaledGame={save={options={secondScreenMode='swap'}}}
+local lx,ly=SecondScreen.toLocal(scaledGame,300,250)
+ok(lx==100 and ly==100,'window letterbox/scale is inverted before panel hit testing')
+ok(SecondScreen.toLocal(scaledGame,90,100)==nil,'letterbox click is refused')
+scaledGame.save.options.secondScreenMode='display'; scaledGame.secondScreenInjecting=true
+lx,ly=SecondScreen.toLocal(scaledGame,100,100)
+ok(lx==100 and ly==100,'native panel touch bypasses main-window presentation transform')
+package.loaded['src.render.Renderer']=oldRenderer
 io.write(("\n%d checks, %d failed\n"):format(checks, fails))
 os.exit(fails == 0 and 0 or 1)

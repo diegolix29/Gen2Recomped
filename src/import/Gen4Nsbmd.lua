@@ -757,32 +757,10 @@ end
 
 local function nodeBit(flags, n) return math.floor(flags / 2 ^ n) % 2 == 1 end
 
--- The same pivot reconstruction the animations use, with this format's own
--- field positions.  Kept here rather than shared because the two layouts
--- differ, and a shared function would have to be told which -- at which point
--- it is two functions with a flag.
-local function nodePivot(flags, a, b)
-  local p = math.floor(flags / 16) % 16
-  local neg = math.floor(flags / 256) % 4
-  local row, col = math.floor(p / 3), p % 3
-  local sign = ((row + col) % 2 == 0) and 1 or -1
-  local flip = (neg % 2 == 1)
-  if flip then sign = -sign end
-  local m = { 0, 0, 0, 0, 0, 0, 0, 0, 0 }
-  m[row * 3 + col + 1] = sign
-  local rows, cols = {}, {}
-  for i = 0, 2 do if i ~= row then rows[#rows + 1] = i end end
-  for i = 0, 2 do if i ~= col then cols[#cols + 1] = i end end
-  m[rows[1] * 3 + cols[1] + 1] = a
-  m[rows[1] * 3 + cols[2] + 1] = b
-  if flip then
-    m[rows[2] * 3 + cols[1] + 1] = b
-    m[rows[2] * 3 + cols[2] + 1] = -a
-  else
-    m[rows[2] * 3 + cols[1] + 1] = -b
-    m[rows[2] * 3 + cols[2] + 1] = a
-  end
-  return m
+-- Bone pivots use the same encoding as animation pivots, shifted four bits.
+local function nodePivot(flags,a,b)
+  local pivot=math.floor(flags/16)%16+(math.floor(flags/256)%8)*16
+  return require('src.import.Gen4Anim').pivotMatrix(pivot,a,b)
 end
 
 -- nodeMatrix(data, at) -> 4x4 row-major, size in bytes
@@ -810,6 +788,7 @@ function Gen4Nsbmd.nodeMatrix(data, at)
       for i = 0, 7 do
         r[i + 2] = nodeSigned16(data, pos + i * 2) / NODE_FX
       end
+      r={r[1],r[4],r[7],r[2],r[5],r[8],r[3],r[6],r[9]}
       pos = pos + 16
     end
   end
@@ -915,6 +894,7 @@ function Gen4Nsbmd.pose(ops, matrixOf)
       out[entry.shape] = current
     end
   end
+  out.stack=stack
   return out
 end
 

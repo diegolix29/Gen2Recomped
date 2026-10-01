@@ -174,10 +174,9 @@ function Gen4CellAnim.parse(data, Gen4Graphics)
         return nil, ("frame %d of sequence %d ends %04X, not BEEF")
           :format(f, s, pad)
       end
-      -- ONLY elementType 0 OCCURS, and rather than pretend to handle the other
-      -- two this refuses them: a transform read as an index would name a cell
-      -- that happens to exist and draw the wrong picture silently.
-      if elementType ~= Gen4CellAnim.ELEMENT_INDEX then
+      -- Move effects use plain indices; the PC cursor's arrow animations
+      -- additionally carry signed translations. SRT remains unsupported.
+      if elementType ~= Gen4CellAnim.ELEMENT_INDEX and elementType ~= Gen4CellAnim.ELEMENT_TRANSLATE then
         return nil, ("sequence %d uses element type %d, which this port has "
                      .. "never seen in the cartridge"):format(s, elementType)
       end
@@ -187,6 +186,12 @@ function Gen4CellAnim.parse(data, Gen4Graphics)
           :format(f, s)
       end
       frames[f + 1] = { cell = cell, duration = duration }
+      if elementType == Gen4CellAnim.ELEMENT_TRANSLATE then
+        local x,y=u16(d,resultBase+resultAt+4),u16(d,resultBase+resultAt+6)
+        if not (x and y) then return nil,'truncated translated animation result' end
+        frames[f+1].x=x>=32768 and x-65536 or x
+        frames[f+1].y=y>=32768 and y-65536 or y
+      end
       seen = seen + 1
     end
 

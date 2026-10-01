@@ -4,23 +4,8 @@
 -- use it commercially. Cartridge-derived data is excluded and is not the
 -- copyright holder's to license.
 
--- Platinum's opening card, and the reason it is only a card.
---
--- The cartridge's boot is GAME FREAK's credit, then Giratina turning through a
--- portal, then the title.  The middle one is `giratina.nsbmd` -- a 3D model
--- with its own animation and texture tracks -- and this engine has no 3D path
--- for Gen 4 yet, so there is nothing to play it with.  Two honest options: draw
--- the card and move on, or draw nothing.  This draws the card.
---
--- WHAT IT IS NOT is a stand-in for the movie.  No invented swirl, no Giratina
--- redrawn from stills that do not exist as stills -- the sequence that IS in
--- the cartridge as flat art is `gf_presents`, and that is what plays.  When the
--- mesh pipeline lands, the portal belongs here, between this card and the
--- title, and nothing else about this file has to change.
---
--- The boot record names this screen (field.boot.screens.splash), which is what
--- keeps a Platinum boot off IntroMovie -- everything after the studio card in
--- that one is Kanto art out of a manifest a Gen 4 cache does not have.
+-- Copyright and native studio layers precede Gen4Title's portal/model sequence.
+-- GameOpening uses its extracted backgrounds, cells and textured map models.
 
 local Assets = require("src.render.Assets")
 
@@ -30,13 +15,12 @@ Gen4Intro.isOpaque = true
 
 local W, H = 256, 192
 
--- Frames, at the engine's fixed step.  Held short on purpose: this is the one
--- screen between pressing PLAY and seeing the game, and the cartridge fills the
--- same stretch with a movie this cannot show.
+-- Card timings are reconstructed at the engine's fixed step.
 local T_IN = 20       -- the card fades up
 local T_HOLD = 80     -- and sits
 local T_OUT = 100     -- then fades to black
 local T_DONE = 120
+local COPYRIGHT_FRAMES = 120
 
 function Gen4Intro:uiSize() return W, H end
 function Gen4Intro:wantsFillScale() return true end
@@ -82,8 +66,25 @@ function Gen4Intro:finish()
   if self.onDone then self.onDone() end
 end
 
-function Gen4Intro:update()
+function Gen4Intro:enter()
+  require('src.core.Music').stop()
+end
+
+function Gen4Intro:update(dt)
   self.frame = self.frame + 1
+  if self.frame>=COPYRIGHT_FRAMES then
+    local speed=self.game.logicSpeed and self.game:logicSpeed() or 1
+    self.openingRemainder=(self.openingRemainder or 0)+(dt or 1/60)*30/math.max(1,speed)
+    local ticks=math.floor(self.openingRemainder+1e-9)
+    self.openingRemainder=self.openingRemainder-ticks
+    self.openingFrame=(self.openingFrame or 0)+ticks
+    if not self.openingMusic then
+      self.openingMusic=true
+      local data=self.game.data
+      local song=data and data.audio and data.audio.special and data.audio.special.opening
+      if song then require('src.core.Music').play(data,song,false) end
+    end
+  end
   local input = self.game.input
   -- Skippable from the first frame.  A card the player has seen once should
   -- never be something they have to sit through, and the cartridge lets START
@@ -95,19 +96,76 @@ function Gen4Intro:update()
   -- NO ART, NO WAIT.  A cache extracted before the graphics stage existed has
   -- no card to draw, and holding a black screen for two seconds to show it
   -- would read as a hang.
-  if not self:img("presents") then return self:finish() end
-  if self.frame >= T_DONE then self:finish() end
+  if not self:img("presents") and not self:img('copyright') then return self:finish() end
+  if self:openingImage('first_top') then
+    if (self.openingFrame or 0)>=(self:openingImage('sky') and 2430 or 508) then self:finish() end
+  elseif self.frame >= COPYRIGHT_FRAMES + T_DONE then self:finish() end
+end
+
+function Gen4Intro:openingImage(key)
+  local screens=self.game.data and self.game.data.gen4_graphics and self.game.data.gen4_graphics.screens
+  local rec=screens and screens['opening/'..key]
+  if not rec or not rec.path then return nil end
+  if self.cache[rec.path]==nil then
+    local ok,img=pcall(Assets.image,rec.path)
+    self.cache[rec.path]=ok and img or false
+  end
+  return self.cache[rec.path] or nil
+end
+
+function Gen4Intro:drawStudio(bottom,merged)
+  local g=love.graphics
+  g.setColor(0,0,0,1);g.rectangle('fill',0,0,W,H)
+  local f=self.openingFrame or 0
+  local fade=math.max(0,math.min(1,(508-f)/18))
+  -- Native tasks step the studio credit up every six frames and down every
+  -- four, then reveal the top emblem and bottom wordmark in sequence.
+  local creditAlpha=f<115 and math.min(1,math.floor(f/6)/16) or math.max(0,1-math.floor((f-115)/4)/16)
+  if not bottom and creditAlpha>0 then
+    local card=self:img('presents')
+    if card then g.setColor(1,1,1,creditAlpha*fade);g.draw(card,0,0) end
+  end
+  local function layer(key,delay,y)
+    local img=self:openingImage(key)
+    local alpha=math.max(0,math.min(1,math.floor((f-delay)/4)/16))*fade
+    if img and alpha>0 then g.setColor(1,1,1,alpha);g.draw(img,0,y or 0) end
+  end
+  if merged then
+    layer('first_top',265,-32);layer('first_bottom',329,32)
+  else
+    layer(bottom and 'first_bottom' or 'first_top',bottom and 329 or 265)
+  end
+  if (bottom or merged) and creditAlpha>0 then
+    local overlay=self:openingImage('first_overlay')
+    if overlay then g.setColor(1,1,1,creditAlpha*fade);g.draw(overlay,0,0) end
+  end
+  g.setColor(1,1,1,1)
 end
 
 function Gen4Intro:draw()
   local g = love.graphics
+  if self.frame>=COPYRIGHT_FRAMES and self:openingImage('first_top') then
+    local S=require('src.ui.SecondScreen')
+    local mode=S.mode(self.game)
+    local dual=mode=='display' or mode=='inset'
+    if (self.openingFrame or 0)>=508 and self:openingImage('sky') then
+      local movie=require('src.ui.Gen4Opening')
+      movie.draw(self,false)
+      if dual then S.draw(self.game,function() movie.draw(self,true) end) end
+      return
+    end
+    self:drawStudio(false,not dual)
+    if dual then S.draw(self.game,function() self:drawStudio(true,false) end) end
+    return
+  end
   g.setColor(0, 0, 0, 1)
   g.rectangle("fill", 0, 0, W, H)
 
-  local card, box = self:img("presents")
+  local key = self.frame < COPYRIGHT_FRAMES and 'copyright' or 'presents'
+  local card, box = self:img(key)
   if not card then return end
 
-  local f = self.frame
+  local f = self.frame < COPYRIGHT_FRAMES and self.frame or self.frame - COPYRIGHT_FRAMES
   local a = 1
   if f < T_IN then
     a = f / T_IN
@@ -136,3 +194,4 @@ function Gen4Intro:draw()
 end
 
 return Gen4Intro
+

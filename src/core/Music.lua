@@ -266,7 +266,11 @@ local function startSong(data, def, wantLoop)
   -- that hands a Gen 1 game an M4A song is asking for the M4A player, and a
   -- Gen 3 dataset whose music image failed to import still has its chip and
   -- file defs answered by the branches below.
-  if type(def.tracks) == "table" and #def.tracks > 0 then
+  if def.nds ~= nil then
+    local ok, src = pcall(require("src.audio.NitroAudio").new, data, def)
+    if ok and src then return src, nil, false end
+    return nil, nil, nil, tostring(src)
+  elseif type(def.tracks) == "table" and #def.tracks > 0 then
     local ok, src = pcall(
       require("src.core.ChipAudio").playMusic, data, def, wantLoop, "m4a")
     if ok and src then return src, nil, true end
@@ -419,6 +423,11 @@ end
 function Music.playMap(data, mapId, onBike, surfing)
   local song = data and data.audio and data.audio.mapSongs
     and mapId and data.audio.mapSongs[mapId] or nil
+  local nights = data and data.audio and data.audio.mapNightSongs
+  if nights and nights[mapId] then
+    local hour = tonumber(os.date('%H')) or 12
+    if hour < 4 or hour >= 20 then song = nights[mapId] end
+  end
   state.mapSong = song
   state.onBike = not not onBike
   state.surfing = not not surfing
@@ -603,6 +612,7 @@ end
 -- call once per frame: chains a finished intro into its loop body and
 -- restores the map theme after a one-shot jingle
 function Music.update(data)
+  if data and data.audio and data.audio.ndsArchive then require("src.audio.NitroAudio").update() end
   -- INTERRUPTION: the OS holds the audio session (an incoming call), every
   -- Source we had is gone, and Music.resume is what rebuilds them.  Nothing
   -- in here is worth doing against a device that is not there -- and the

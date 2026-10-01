@@ -14,17 +14,8 @@
 --   copyright             the four (c) lines, on black
 --   bottom_screen_border  the dark field those lines sit on
 --
--- ONE SCREEN OUT OF TWO, and deliberately.  A DS title is two panels: the logo
--- above, the copyright below.  This engine draws one surface, and the dual
--- screen work (the Poketch toggle and the corner overlay) is designed and not
--- built -- so the two are composed into one 256x192 screen here rather than the
--- copyright being dropped.  When the second screen exists, this file splits
--- along the seam the two borders already mark.
---
--- WHAT IS MISSING IS NAMED RATHER THAN FAKED.  The centrepiece of the real
--- title is Giratina, an NSBMD model turning behind the logo, and there is no 3D
--- path yet.  So the logo sits on the border field alone.  Nothing here draws a
--- substitute for it.
+-- Native panels are separate in dual-screen mode; single-screen mode overlays
+-- the logo on the animated Giratina panel.
 
 local Assets = require("src.render.Assets")
 local Font = require("src.render.Font")
@@ -41,39 +32,6 @@ Gen4Title.isOpaque = true
 
 local W, H = 256, 192
 
--- WHERE THE TWO PANELS MEET IS MEASURED, NOT PICKED.
---
--- Every sheet in this archive is 256x192 or 256x256 and most of it is empty:
--- the logo's artwork occupies rows 27 to 148 of its own sheet and the
--- copyright's four lines rows 64 to 119.  Drawn at 0,0 on the sheet size the
--- logo lands forty rows low and "VERSION" is cut off at the seam -- which looks
--- like a layout choice rather than a measurement nobody took.
---
--- So the menus stage measures each picture's content box and this splits the
--- screen by what has to fit in each half: the logo's height above, the
--- copyright block's below, and the slack shared between them.  A cache with no
--- boxes falls back to the sheet drawn as it stands, which is the old behaviour
--- rather than a crash.
-local FALLBACK_SPLIT = 129
-
--- THE BAND PRESS START GETS, and it has to be taken out of the screen before
--- the two panels are measured rather than found afterwards.
---
--- The comment below used to say PRESS START is drawn "in the copyright strip
--- where nothing else is", and that was true of the strip and false of the
--- copyright: the four (c) lines are 56 rows and they are centred in that
--- strip, so `H - 20` lands on the third of them.  On screen the words sat
--- across "(c)1995-2009 GAME FREAK inc.", which is what was reported.
---
--- Fourteen rows, because that is exactly what the screen has spare: the
--- logo's content is 122 rows and the copyright's 56, and 122 + 56 + 14 is
--- 192.  The two panels therefore keep every row they need and PRESS START
--- gets the slack instead of borrowing a panel's.
-local PRESS_BAND = 14
-
--- Frames, engine step.  The cartridge fades the logo up out of the border
--- field; the beats here are that fade and nothing invented around it.
-local T_FADE = 24
 local T_READY = 40
 
 -- ---------------------------------------------------------------------------
@@ -88,7 +46,7 @@ local T_READY = 40
 -- camera moving in -- and the logo and the copyright are the LAST things to
 -- appear, which is why the title is a sequence and not a picture.
 local TIMELINE = {
-  { name = "fadeIn",    frames = 15 },   -- FADE_FROM_BLACK, step 3
+  { name = "fadeIn",    frames = 45 },   -- 15 fade steps, three frames per step
   { name = "portal",    frames = 267 },  -- the delay in that same state
   { name = "flashUp1",  frames = 10 },   -- two white flashes, 10 frames each
   { name = "flashDown1", frames = 10 },
@@ -99,6 +57,7 @@ local TIMELINE = {
   { name = "hold",      frames = 10 },   -- main to black
   { name = "reveal",    frames = 48 },   -- FADE_MAIN_FROM_BLACK, step 1
   { name = "camera",    frames = 60 },   -- TITLE_CAM_MOVE_IN_FRAMES
+  { name = "settle",    frames = 90 },
 }
 
 local INTRO_FRAMES = 0
@@ -178,7 +137,11 @@ local GIRA_LIT = 1.0
 -- an option, because it is a fact about this boot and not a preference.
 Gen4Title.showIntro = true
 
-function Gen4Title:uiSize() return W, H end
+function Gen4Title:uiSize()
+  local mode=require('src.ui.SecondScreen').mode(self.game)
+  return (mode=='display' or mode=='inset') and W or W*2,
+         (mode=='display' or mode=='inset') and H or H*2
+end
 function Gen4Title:wantsFillScale() return true end
 function Gen4Title:wantsEdgeBleed() return false end
 
@@ -209,12 +172,26 @@ function Gen4Title.new(game, opts)
   local set = ((game.data or {}).gen4_models or {}).sets
   set = set and set.title
   if set then
+    self.openingModels = {}
+    self.giraMaterials = {}
     for _, record in ipairs(set.models or {}) do
       if record.name == "title_gira" then
         self.gira = Gen4Model.new(record)
+      elseif record.name == 'op_ana' or record.name == 'op_kao' then
+        self.openingModels[record.name] = {model=Gen4Model.new(record),materials={}}
       end
     end
     for _, anim in ipairs(set.animations or {}) do
+      local opening=self.openingModels[anim.name]
+      if opening then
+        if anim.tracks then
+          opening.tracks={};opening.frames=anim.frames or 1
+          for _,track in ipairs(anim.tracks) do opening.tracks[track.index]=track end
+        else opening.materials[#opening.materials+1]=anim end
+      end
+      if anim.name == "title_gira" and anim.srt then
+        self.giraMaterials[#self.giraMaterials + 1] = anim
+      end
       if anim.name == "title_gira" and anim.tracks then
         self.giraTracks = {}
         for _, track in ipairs(anim.tracks) do
@@ -258,7 +235,7 @@ end
 -- How far into the intro the logo and the copyright are allowed to be drawn:
 -- the cartridge turns their layers on at the END of the camera move.
 function Gen4Title:panelsVisible()
-  return (not self.intro) or self.frame >= INTRO_FRAMES
+  return (not self.intro) or self:beat() == 'settle'
 end
 
 -- The picture, and the record that says where its artwork sits inside it.
@@ -278,31 +255,45 @@ function Gen4Title:img(key)
   return img, (type(rec) == "table" and rec.content) or nil
 end
 
--- How tall the logo panel is.  Both halves are sized by what must fit in them,
--- and the rows neither needs are split between them.
--- How tall the logo panel is, and where the copyright panel ends.
---
--- Three bands now, not two: the logo, the copyright, and the row PRESS START
--- is drawn on.  A cache with no content boxes keeps the old fallback and the
--- old behaviour.
-function Gen4Title:split()
-  local _, logoBox = self:img("logo")
-  local _, copyBox = self:img("copyright")
-  if not (logoBox and copyBox) then return FALLBACK_SPLIT, H - PRESS_BAND end
-  local usable = H - PRESS_BAND
-  local slack = usable - logoBox.h - copyBox.h
-  if slack < 0 then return FALLBACK_SPLIT, H - PRESS_BAND end
-  return logoBox.h + math.floor(slack / 2), usable
+-- Average all four source pixels at half size instead of dropping three.
+-- Remove bright outer-edge pixels before averaging; the white lettering's
+-- interior remains intact. Work in premultiplied colour to avoid alpha halos.
+function Gen4Title:drawSmallLogo(logo)
+  local g=love.graphics
+  if not self.logoShader then
+    self.logoShader=g.newShader([[
+      extern vec2 pixel;
+      extern number sampleSpan;
+      vec4 clean(Image image, vec2 uv) {
+        vec4 p=Texel(image,uv);
+        float edge=min(min(Texel(image,uv+vec2(pixel.x,0.0)).a,
+                          Texel(image,uv-vec2(pixel.x,0.0)).a),
+                       min(Texel(image,uv+vec2(0.0,pixel.y)).a,
+                          Texel(image,uv-vec2(0.0,pixel.y)).a));
+        if (min(p.r,min(p.g,p.b))>0.8 && edge<0.01) p.a=0.0;
+        return vec4(p.rgb*p.a,p.a);
+      }
+      vec4 effect(vec4 color, Image image, vec2 uv, vec2 position) {
+        vec4 p=(clean(image,uv+pixel*vec2(-sampleSpan,-sampleSpan))+
+                clean(image,uv+pixel*vec2(sampleSpan,-sampleSpan))+
+                clean(image,uv+pixel*vec2(-sampleSpan,sampleSpan))+
+                clean(image,uv+pixel*vec2(sampleSpan,sampleSpan)))*0.25;
+        return vec4(p.a>0.0 ? p.rgb/p.a : vec3(0.0),p.a)*color;
+      }
+    ]])
+  end
+  local previous=g.getShader();local w,h=logo:getDimensions()
+  self.logoShader:send('pixel',{1/w,1/h});g.setShader(self.logoShader)
+  self.logoShader:send('sampleSpan',self.highResolution and 0 or 0.5)
+  g.draw(logo,W/4,0,0,0.5,0.5);g.setShader(previous)
 end
 
--- The title theme, if the audio stage has run.  Gen 4 songs are not extracted
--- yet, so this is a no-op on every current cache -- written now so it starts
--- working the day they are, rather than being a thing to remember later.
 function Gen4Title:enter()
   self.frame, self.opened = 0, false
   local data = self.game.data
   local songs = data and data.audio and data.audio.songs
   local id = data and data.gen4_menus and data.gen4_menus.titleSong
+  id = id or (data.audio and data.audio.special and data.audio.special.title)
   if id and songs and songs[id] then pcall(Music.play, data, id) end
 end
 
@@ -319,15 +310,21 @@ function Gen4Title:openMenu()
   })
 end
 
-function Gen4Title:update()
+function Gen4Title:update(dt)
   -- updated again with the flag still set means the menu was backed out of
   if self.opened then self:resume() end
-  self.frame = self.frame + 1
-  self.blink = (self.blink + 1) % 90
-  if self.lockout > 0 then self.lockout = self.lockout - 1 end
+  -- Platinum advances its application/animation clock at 30 Hz.
+  local speed=self.game.logicSpeed and self.game:logicSpeed() or 1
+  self.frameRemainder=(self.frameRemainder or 0)+(dt or 1/60)*30/math.max(1,speed)
+  local ticks=math.floor(self.frameRemainder+1e-9)
+  self.frameRemainder=self.frameRemainder-ticks
+  self.frame = self.frame + ticks
+  self.blink = (self.blink + ticks) % 90
+  if self.lockout > 0 then self.lockout = math.max(0,self.lockout - ticks) end
   -- The intro is over when its last beat is, and the frame counter restarts so
   -- the logo's own fade and the prompt's timing read from there.
   if self.intro and self.frame >= INTRO_FRAMES then
+    self.giraPhaseOffset=self:giraTime()
     self.intro = false
     self.frame = 0
   end
@@ -369,7 +366,7 @@ function Gen4Title:cameraEye()
   local name, progress = self:beat()
   local k = 0
   if name == "camera" then k = progress
-  elseif name == nil then k = 1 end
+  elseif name == nil or name == 'settle' then k = 1 end
   return {
     CAM_START_EYE[1] + (CAM_END_EYE[1] - CAM_START_EYE[1]) * k,
     CAM_START_EYE[2] + (CAM_END_EYE[2] - CAM_START_EYE[2]) * k,
@@ -381,24 +378,29 @@ end
 -- starts it -- `GIRATINA_ANIM_STATE_PLAY` is set in the state that fades the
 -- main screen back from white -- so before that it holds on frame zero and
 -- the portal alone is moving.
-function Gen4Title:giraFrame()
-  if not self.giraFrames or self.giraFrames < 1 then return 0 end
-  if not self.intro then return self.frame % self.giraFrames end
-  local before = 0
-  for _, step in ipairs(TIMELINE) do
-    if step.name == "fromWhite" then break end
-    before = before + step.frames
+function Gen4Title:giraTime()
+  if not self.intro then return self.frame+(self.giraPhaseOffset or 0) end
+  local before=0
+  for _,step in ipairs(TIMELINE) do
+    if step.name=='fromWhite' then break end
+    before=before+step.frames
   end
-  if self.frame < before then return 0 end
-  return (self.frame - before) % self.giraFrames
+  return math.max(0,self.frame-before)
+end
+
+function Gen4Title:giraFrame()
+  if not self.giraFrames or self.giraFrames<1 then return 0 end
+  return self:giraTime()%self.giraFrames
 end
 
 -- The model, into a canvas of its own with a depth buffer -- the UI surface
 -- has none, and a 996-triangle model drawn without one comes out inside out.
 function Gen4Title:drawGiratina()
   if not self.gira or self.noDepth then return nil end
-  if not self.colour then
-    self.colour, self.depth = Gen4Model.newTarget(W, H)
+  local resolution=self.highResolution and 2 or 1
+  if not self.colour or self.modelResolution~=resolution then
+    self.colour, self.depth = Gen4Model.newTarget(W*resolution, H*resolution)
+    self.modelResolution=resolution
     if not self.colour then self.noDepth = true return nil end
   end
 
@@ -406,6 +408,32 @@ function Gen4Title:drawGiratina()
   local previous = { g.getCanvas() }
   g.setCanvas({ self.colour, depthstencil = self.depth })
   g.clear(0, 0, 0, 0, true, true)
+
+  local beat=self:beat()
+  if self.intro and (beat=='fadeIn' or beat=='portal' or beat=='flashUp1' or beat=='flashDown1'
+      or beat=='flashUp2' or beat=='flashDown2' or beat=='toWhite') and next(self.openingModels or {}) then
+    local frame=self.frame
+    local pitch=math.rad(319.94)
+    local z=math.max(0,37.5-frame*0.625)
+    local target={0,0,z}
+    local eye={0,-math.sin(pitch)*160,math.cos(pitch)*160+z}
+    local vp=Gen4Model.multiply(FLIP_Y,Gen4Model.multiply(
+      Gen4Model.perspective(math.rad(43.988),W/H,1,4000),Gen4Model.lookAt(eye,target)))
+    for _,name in ipairs({'op_ana','op_kao'}) do
+      local record=self.openingModels[name]
+      local at=name=='op_kao' and frame-75 or frame
+      if record and at>=0 and (name~='op_kao' or at<(record.frames or 174)) then
+        at=at%(record.frames or 240)
+        local pose=record.model:posed(function(node)
+          local track=record.tracks and record.tracks[node]
+          return track and Gen4Anim.unpackFrame(track.matrices,at) or nil
+        end)
+        record.model:draw(vp,pose,require('src.render.Gen4TexAnim').materials(record.materials,at))
+      end
+    end
+    g.setCanvas(previous[1] and previous or nil)
+    return self.colour
+  end
 
   local frame = self:giraFrame()
   local tracks = self.giraTracks
@@ -417,27 +445,11 @@ function Gen4Title:drawGiratina()
   local projection = Gen4Model.perspective(CAM_FOV, W / H, 1, 4000)
   local view = Gen4Model.lookAt(self:cameraEye(), CAM_TARGET)
   self.gira:draw(Gen4Model.multiply(FLIP_Y,
-                                    Gen4Model.multiply(projection, view)), pose)
+                                    Gen4Model.multiply(projection, view)), pose,
+      require("src.render.Gen4TexAnim").materials(self.giraMaterials, self:giraTime()))
 
   g.setCanvas(previous[1] and previous or nil)
   return self.colour
-end
-
--- Draw a picture's content box into a band, centred vertically in it.  Where
--- no box was measured the sheet is drawn as it stands, clipped to the band.
-local function drawInBand(img, box, top, height, alpha)
-  local g = love.graphics
-  g.setColor(1, 1, 1, alpha or 1)
-  local iw, ih = img:getDimensions()
-  if box then
-    local quad = g.newQuad(0, box.y, math.min(W, iw), math.min(box.h, ih - box.y),
-                           iw, ih)
-    g.draw(img, quad, 0, top + math.floor((height - box.h) / 2))
-  else
-    local quad = g.newQuad(0, 0, math.min(W, iw), math.min(height, ih), iw, ih)
-    g.draw(img, quad, 0, top)
-  end
-  g.setColor(1, 1, 1, 1)
 end
 
 -- The white and black the intro fades through, as one number.
@@ -448,6 +460,7 @@ end
 -- The light on Giratina, following `light1State`: DEFAULT while the portal
 -- turns, BRIGHTEN through each white flash, DARKEN after it.
 function Gen4Title:giraLight()
+  if not self.intro then return GIRA_LIT end
   local name, k = self:beat()
   if name == "flashUp1" or name == "flashUp2" or name == "toWhite" then
     return GIRA_DARK + (GIRA_LIT - GIRA_DARK) * k
@@ -472,91 +485,72 @@ function Gen4Title:veil()
   return 0
 end
 
-function Gen4Title:draw()
+function Gen4Title:drawPanel(bottom, merged)
   local g = love.graphics
   g.setColor(0, 0, 0, 1)
   g.rectangle("fill", 0, 0, W, H)
-
-  local split, footer = self:split()
   local panels = self:panelsVisible()
-
-  -- THE LAYER ORDER IS THE CARTRIDGE'S: the field is the backdrop, Giratina is
-  -- drawn into it, and the logo goes on top of both.  `ToggleGiratinaBgLayer`
-  -- comes on before the camera move and `ToggleLogoLayer` only at the end of
-  -- it, which is the order below.
-  --
-  -- The field is clipped at the seam during the title proper and covers the
-  -- whole screen during the intro, when there is no copyright panel yet.
-  local border = self:img("topBorder")
-  if border then
-    g.setColor(1, 1, 1, 1)
-    local cut = panels and split or H
-    g.setScissor()
-    local sx, sy = g.transformPoint(0, 0)
-    local ex, ey = g.transformPoint(W, cut)
-    g.setScissor(math.floor(sx), math.floor(sy),
-                 math.max(0, math.ceil(ex - sx)), math.max(0, math.ceil(ey - sy)))
-    g.draw(border, 0, 0)
-    g.setScissor()
-  end
-
-  local scene = self:drawGiratina()
-  if scene then
-    local lit = self:giraLight()
-    g.setColor(lit, lit, lit, 1)
-    g.draw(scene, 0, 0)
-    g.setColor(1, 1, 1, 1)
-  end
-
-  local logo, logoBox = self:img("logo")
-  if logo and panels then
-    drawInBand(logo, logoBox, 0, split, math.min(1, self.frame / T_FADE))
-  end
-
-  -- the copyright strip
-  -- The dark field runs to the bottom of the screen -- PRESS START sits ON it
-  -- -- but the copyright is confined to its own band above the footer.
-  -- `and ... or nil` AROUND A TWO-VALUE CALL KEEPS ONLY THE FIRST, and that
-  -- is what put a black bar across the bottom of the title.
-  --
-  -- `img` returns the picture AND its measured content box. Wrapping the call
-  -- in `panels and ... or nil` truncates the expression to one value, so
-  -- `copyBox` came back nil, `drawInBand` fell to its no-box branch and drew
-  -- the sheet from row 0 -- and the copyright's four lines live at rows 64 to
-  -- 119 of a 256-row sheet, so what landed in the band was the empty top of
-  -- it. The picture was there and the wrong 56 rows of it were shown.
-  local bottom = self:img("bottomBorder")
-  if panels and bottom then
-    g.setColor(1, 1, 1, 1)
-    local iw, ih = bottom:getDimensions()
-    local quad = g.newQuad(0, 0, math.min(W, iw), math.min(H - split, ih), iw, ih)
-    g.draw(bottom, quad, 0, split)
-  end
-  local copyright, copyBox = self:img("copyright")
-  if panels and copyright then
-    drawInBand(copyright, copyBox, split, math.max(0, footer - split), 1)
-  end
-
-  -- PRESS START is this port's, not the cartridge's -- Platinum simply waits.
-  -- A window with no hardware START button needs to say which key opens the
-  -- menu, and it gets the footer band of its own rather than the copyright's
-  -- rows.
-  if panels and self.frame >= T_READY and self.blink < 60 then
-    g.setColor(1, 1, 1, 1)
-    local text = Strings("PRESS START")
-    local width = Font.width(text)
-    local y = footer + math.floor((H - footer - Font.glyphHeight()) / 2)
-    Font.draw(text, math.floor((W - width) / 2), math.max(footer, y))
-  end
+  local backdrop = self:img(bottom and "bottomBorder" or "topBorder")
   g.setColor(1, 1, 1, 1)
-
-  -- ...and the intro's fade over the lot of it.
+  if backdrop then g.draw(backdrop, 0, 0) end
+  if bottom then
+    local scene = self:drawGiratina()
+    if scene then
+      local lit = self:giraLight()
+      g.setColor(lit, lit, lit, 1)
+      local scale=1/(self.modelResolution or 1)
+      g.draw(scene, 0, 0,0,scale,scale)
+    end
+    if panels and not merged then
+      local copyright = self:img("copyright")
+      g.setColor(1, 1, 1, 1)
+      if copyright then
+        -- Older imports flattened this layer onto black. On the DS palette
+        -- index zero is transparent, so that field must not cover Giratina.
+        self.copyShader = self.copyShader or g.newShader([[
+          vec4 effect(vec4 colour, Image tex, vec2 uv, vec2 screen) {
+            vec4 pixel = Texel(tex, uv);
+            if (max(pixel.r, max(pixel.g, pixel.b)) < 0.01) discard;
+            return pixel * colour;
+          }
+        ]])
+        local previous = g.getShader()
+        g.setShader(self.copyShader)
+        g.draw(copyright, 0, 0)
+        g.setShader(previous)
+      end
+    end
+  end
+  if panels and (not bottom or merged) then
+    local logo = self:img("logo")
+    g.setColor(1, 1, 1, 1)
+    if logo then
+      if merged then self:drawSmallLogo(logo)
+      else g.draw(logo, 0, 0) end
+    end
+    if self.frame >= T_READY and self.frame % 32 < 16 then
+      local text = Strings("PRESS START")
+      g.setColor(21 / 31, 0, 0, 1)
+      Font.draw(text, math.floor((W - Font.width(text)) / 2), 152)
+    end
+  end
   local veil = self:veil()
   if veil ~= 0 then
     if veil > 0 then g.setColor(1, 1, 1, veil) else g.setColor(0, 0, 0, -veil) end
     g.rectangle("fill", 0, 0, W, H)
-    g.setColor(1, 1, 1, 1)
   end
+  g.setColor(1, 1, 1, 1)
+end
+
+function Gen4Title:draw()
+  local SecondScreen = require("src.ui.SecondScreen")
+  local mode = SecondScreen.mode(self.game)
+  local dual = mode == "display" or mode == "inset"
+  self.highResolution=not dual
+  if not dual then love.graphics.push();love.graphics.scale(2,2) end
+  self:drawPanel(not dual, not dual)
+  if not dual then love.graphics.pop() end
+  if dual then SecondScreen.draw(self.game, function() self:drawPanel(true, false) end) end
 end
 
 return Gen4Title

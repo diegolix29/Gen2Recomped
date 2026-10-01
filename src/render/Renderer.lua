@@ -302,12 +302,25 @@ function Renderer:worldViewSize()
   local bw, bh = self.worldBoundsW, self.worldBoundsH
   if bw and bh then
     local uw, uh = self:uiSize()
-    vw = math.min(vw, math.max(uw, bw))
-    vh = math.min(vh, math.max(uh, bh))
+    if require("src.core.GameVersion").isGen4() then
+      -- Cap finite rooms without changing the viewport aspect ratio.
+      local cap = math.min(1, math.max(uw, bw) / vw, math.max(uh, bh) / vh)
+      vw, vh = math.floor(vw * cap), math.floor(vh * cap)
+    else
+      vw = math.min(vw, math.max(uw, bw))
+      vh = math.min(vh, math.max(uh, bh))
+    end
     if vw % 2 ~= 0 then vw = vw + 1 end
     if vh % 2 ~= 0 then vh = vh + 1 end
   end
   return vw, vh
+end
+
+function Renderer:worldPresentationScale(sp, pw, ph, vw, vh)
+  if self.worldBoundsW and require("src.core.GameVersion").isGen4() and not Tilt.active() then
+    return math.max(sp, pw / vw, ph / vh)
+  end
+  return sp
 end
 
 -- transparent: the world pass shows through (UI pass draws overlays only)
@@ -846,6 +859,7 @@ function Renderer:endFrame(zones, worldZones)
   local uvpw, uvph = uiw * Ux, uih * Uy
   local uox = math.floor((pw - uiw * Up) / 2) / dpiX
   local uoy = math.floor((ph - uih * Up) / 2) / dpiY
+  self.uiPresentation = {x=uox,y=uoy,w=uvpw,h=uvph,scaleX=Ux,scaleY=Uy}
   local GBCFX = gbcFX()
   -- Forced mono/Classic modes still need a whole-screen zone when a state
   -- exposes no SGB packets (raw DMG canvas), so sendColors can remap.
@@ -1088,6 +1102,8 @@ function Renderer:endFrame(zones, worldZones)
     local sx, sy = sp / dpiX, sp / dpiY
     local wvw = self.worldCanvas:getWidth()
     local wvh = self.worldCanvas:getHeight()
+    sp = self:worldPresentationScale(sp, pw, ph, wvw, wvh)
+    sx, sy = sp / dpiX, sp / dpiY
     local wox = math.floor((pw - wvw * sp) / 2) / dpiX
     local woy = math.floor((ph - wvh * sp) / 2) / dpiY
     -- Tilt mode projects the ground world pass through the perspective mesh

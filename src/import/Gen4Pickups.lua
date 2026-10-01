@@ -37,6 +37,23 @@ local Gen4Pickups = {}
 
 Gen4Pickups.VISIBLE_BASE = 7000
 Gen4Pickups.HIDDEN_BASE = 8000
+Gen4Pickups.HIDDEN_FLAGS_START = 0x02DA
+
+function Gen4Pickups.hiddenFlag(script)
+  if type(script) ~= 'number' or script < 8000 or script >= 8800 then return nil end
+  return script-8000+Gen4Pickups.HIDDEN_FLAGS_START
+end
+
+function Gen4Pickups.prepareHidden(save, sign)
+  local pickup = sign and sign.pickup
+  local flag = sign and Gen4Pickups.hiddenFlag(sign.script)
+  if not (save and pickup and pickup.kind == 'hidden' and flag) then return false end
+  local key = ('FLAG_G4_%04X'):format(flag)
+  if (save.flags or {})[key] then return false end
+  save.gen4Vars = save.gen4Vars or {}
+  save.gen4Vars[0x8000], save.gen4Vars[0x8001], save.gen4Vars[0x8002] = pickup.item, pickup.quantity or 1, flag
+  return true
+end
 
 Gen4Pickups.VAR_ITEM = 0x8008
 Gen4Pickups.VAR_QUANTITY = 0x8009

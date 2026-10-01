@@ -59,5 +59,11 @@
         <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
       </intent-filter>
     </activity>
-  </application>
+  
+        <provider
+            android:name="org.love2d.android.SecondDisplayHost"
+            android:authorities="com.underdecodedhd.gen2recomp.seconddisplay"
+            android:exported="false"
+            android:initOrder="100" />
+    </application>
 </manifest>

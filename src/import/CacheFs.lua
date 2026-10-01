@@ -946,6 +946,19 @@ function CacheFs.installPrefixShim(prefix)
     end
   end
 
+  -- Native decoders bypass fs.read and call PhysFS directly. Switch cannot
+  -- mount the version overlay, so sounds need the same redirect as images.
+  for _, entry in ipairs({{love.audio,'newSource'},{love.sound,'newSoundData'}}) do
+    local module,name=entry[1],entry[2]
+    if module and type(module[name])=='function' then
+      local real=module[name]
+      module[name]=function(a,...)
+        if type(a)=='string' then a=shimRedirect(a) end
+        return real(a,...)
+      end
+    end
+  end
+
   return true
 end
 

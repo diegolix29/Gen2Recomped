@@ -937,6 +937,7 @@ function RomExtractorGen4:extractMaps()
         width = grid.width,
         height = grid.height,
         blocks = owns and grid.blocks or nil,
+        behaviorCells = owns and grid.behaviorCells or nil,
         borderBlock = grid.borderBlock,
         blockPx = 16,
         generation = 4,
@@ -1209,6 +1210,7 @@ function RomExtractorGen4:extractRegions(events, names)
           return Gen4Pickups.resolve(o.script, visible, hidden)
         end)(),
         scriptBand = band,
+        berryPatch = band == 'berry_tree_interactions' and o.data[1] or nil,
         scriptEntry = (kind == "band" or kind == "map") and entry or nil,
         scriptFile = member,
         movementType = o.movementType,
@@ -1808,7 +1810,7 @@ function RomExtractorGen4:composeJob(arc, job)
 
   -- The layout's provenance rides back with the picture, so the caller does not
   -- have to re-derive it from the job and get a different answer.
-  return Gen4Graphics.compose(map, sheet, palette), layout
+  return Gen4Graphics.compose(map, sheet, palette, job.firstTile), layout
 end
 
 -- Assemble a sheet through its cell bank, returning one image per cell.
@@ -2356,6 +2358,9 @@ function RomExtractorGen4:extractGraphics()
 
   -- Kept for the menus stage, which names the title art by role and would
   -- otherwise have to re-derive the archive member spellings.
+  for name, image in pairs(require("src.import.Gen4UIResources").images(self.rom)) do
+    if image then index.screens[name] = self:saveImage(name, image, {originX=image.originX,originY=image.originY,sequences=image.sequences}) end
+  end
   self._graphicsIndex = index
 
   self:write("gen4_graphics", index)
@@ -3242,12 +3247,13 @@ function RomExtractorGen4:extractConstants()
   -- WHAT THE ORDINARY POKE MART SELLS.  A C array in the ARM9 binary rather
   -- than a NARC member -- see Gen4Mart for why that is, and for the byte
   -- pattern that pins it down.
-  local martCommon, martAt, martHits
+  local martCommon, martSpecialties, martAt, martHits
   do
     local ok, arm9 = pcall(function() return self.rom:arm9() end)
     if ok and type(arm9) == "string" then
       martAt, martHits = Gen4Mart.find(arm9)
       martCommon = martAt and Gen4Mart.parse(arm9, martAt) or nil
+      martSpecialties = Gen4Mart.specialties(arm9, self.rom:header().arm9.ram)
     end
     -- A miss is reported through `constantsReport` rather than thrown: the
     -- import's own report is where a stage says what it found, and a cartridge
@@ -3588,6 +3594,7 @@ function RomExtractorGen4:extractConstants()
   self.tradeReport = { trades = trades and #trades or 0 }
 
   self:write("constants", {
+    gen4HoneyEncounters = require('src.world.Gen4HoneyTrees').tables(self.rom),
     experienceTables = experienceTables,
     tmhmMoves = tmhmMoves,
     gen4Trades = trades,
@@ -3596,6 +3603,15 @@ function RomExtractorGen4:extractConstants()
     generation = 4,
     badges = badges,
     martCommon = martCommon,
+    martSpecialties = martSpecialties,
+    gen4BerryGrowth = require('src.import.Gen4BerryData').growth(
+      self:archiveAt(require('src.import.Gen4BerryData').PATH)),
+    gen4BerryPositions = require('src.import.Gen4BerryData').positions(self.rom),
+    gen4PoketchRoutes = require('src.import.Gen4PoketchMap').routes(self.rom),
+    gen4PoketchCoin = require('src.import.Gen4PoketchSprites').coin(self:archiveAt('/graphic/poketch.narc')),
+    gen4BerryInitial = require('src.import.Gen4BerryData').initial(self.rom),
+    gen4PoketchMapCells = require('src.import.Gen4BerryData').mapCells(
+      self:archiveAt('/graphic/poketch.narc')),
     gen4NewGame = newGame,
     -- THE DIALOGUE WINDOW, in the cartridge's own tiles.
     --
@@ -4833,8 +4849,11 @@ function RomExtractorGen4:extractCries()
   end
 
   if written > 0 then
-    self:write("audio", { cries = cries,
-                          source = ("ROM:Platinum (%s)"):format(Gen4Sdat.PATH) })
+    local audio = require("src.import.Gen4Audio").catalogue(sdat, self._mapHeaders)
+    audio.cries = cries
+    audio.ndsArchive = self:saveBinary("sound/pl_sound_data.sdat", raw)
+    audio.source = ("ROM:Platinum (%s)"):format(Gen4Sdat.PATH)
+    self:write("audio", audio)
   end
   self.cryReport = { written = written, skipped = skipped }
   return cries
@@ -4859,6 +4878,7 @@ function RomExtractorGen4:extractDex()
 
   local out = {
     layout = Gen4Dex.LAYOUT,
+    orders = Gen4Dex.orders(self.rom),
     source = ("ROM:Platinum (%s)"):format(Gen4Dex.PATH),
   }
 
@@ -4875,6 +4895,14 @@ function RomExtractorGen4:extractDex()
   end
 
   local paletteBytes = member(Gen4Dex.PALETTE)
+  local listPalette = member("background_scroll_sinnoh.NCLR")
+  local listTiles = member("scroll_main_background.NCGR.lz")
+  local listMap = member("scroll_main_background.NSCR.lz")
+  if listPalette and listTiles and listMap then
+    out.list = self:saveImage("dex/list_page", Gen4Graphics.compose(
+      Gen4Graphics.tilemap(listMap), Gen4Graphics.tiles(listTiles),
+      Gen4Graphics.paletteAtSlot(Gen4Graphics.palette(listPalette), 5)))
+  end
   local palette = paletteBytes and Gen4Graphics.palette(paletteBytes)
   local tilesBytes = member(Gen4Dex.TILES)
   local sheet = tilesBytes and Gen4Graphics.tiles(tilesBytes)
@@ -5866,6 +5894,18 @@ function RomExtractorGen4:extractModels()
           -- texture table out of geometry.
           local textures = sections and sections.TEX0
             and Gen4Models.parse(bytes, sections.TEX0) or nil
+          local textureBytes=bytes
+          if not textures and entry.out=='opening' then
+            local textureMember=(member==100 or member==101) and 102
+              or (member>=103 and member<=108) and 109
+              or (member==110 or member==111) and 112
+            if textureMember then
+              textureBytes=arc:get(textureMember)
+              if Gen4Graphics.isCompressed(textureBytes) then textureBytes=Gen4Graphics.decompress(textureBytes) end
+              local textureSections=Gen4Nsbmd.sections(textureBytes)
+              textures=Gen4Models.parse(textureBytes,textureSections and textureSections.TEX0)
+            end
+          end
           for _, model in ipairs(parsed and parsed.models or {}) do
             local packed = Gen4ModelPack.pack(model)
             local ok, why = Gen4ModelPack.verify(model, packed)
@@ -5895,7 +5935,7 @@ function RomExtractorGen4:extractModels()
                     if entry2.name == shape.palette then palette = i end
                   end
                   local image = index
-                    and Gen4Models.decode(textures, bytes, index, palette or 1)
+                    and Gen4Models.decode(textures, textureBytes, index, palette or 1)
                   local saved = image and self:saveImage(
                     "models/" .. entry.out .. "/" .. key:gsub("[^%w_/%-]", "_"),
                     image, { texture = name, palette = shape.palette })
@@ -5941,7 +5981,7 @@ function RomExtractorGen4:extractModels()
                         if entry2.name == palettes[i] then palette = j end
                       end
                       local image = index
-                        and Gen4Models.decode(textures, bytes, index, palette or 1)
+                        and Gen4Models.decode(textures, textureBytes, index, palette or 1)
                       local key = ("%s/%s"):format(model.name, name)
                       local saved = image and self:saveImage(
                         "models/" .. entry.out .. "/" .. key:gsub("[^%w_/%-]", "_"),
@@ -6181,3 +6221,4 @@ end
 --     builds the world those objects stand in.
 
 return RomExtractorGen4
+

@@ -22,15 +22,16 @@ local PAL = Theme.PAL
 
 local M = {}
 
-local COLS = 5
-local ROWS = math.ceil(BoxesMod.CAPACITY / COLS)
+
 
 function M.draw(S, Kit, x, y, w, h)
+  local COLS=BoxesMod.capacity()>20 and 6 or 5
+  local ROWS=math.ceil(BoxesMod.capacity()/COLS)
   local s = Kit.scale
   local gap = 20 * s
   local pad = 16 * s
 
-  S.selectedBox = Ops.clamp(S.selectedBox or 1, 1, BoxesMod.COUNT)
+  S.selectedBox = Ops.clamp(S.selectedBox or 1, 1, BoxesMod.count())
   S.save.currentBox = S.selectedBox
   local boxes = Ops.boxes(S)
   local box = boxes[S.selectedBox]
@@ -42,18 +43,28 @@ function M.draw(S, Kit, x, y, w, h)
 
   -- ------------------------------------------------------------ box strip
   Kit.card(x, y, stripW, h)
-  Kit.caption(x + pad, y + pad, ("BOXES . %d"):format(BoxesMod.COUNT))
+  Kit.caption(x + pad, y + pad, ("BOXES . %d"):format(BoxesMod.count()))
   local stripTop = y + pad + Kit.textHeight("caption") + 10 * s
   local stripInner = stripW - 2 * pad
-  local bRowH = math.min(30 * s, math.max(22 * s,
-    (h - (stripTop - y) - pad - (BoxesMod.COUNT - 1) * 6 * s) / BoxesMod.COUNT))
-  for i = 1, BoxesMod.COUNT do
-    local ry = stripTop + (i - 1) * (bRowH + 6 * s)
-    if ry + bRowH > y + h - pad then break end
+  local bRowH=26*s
+  local pagerH=28*s
+  local pagerY=y+h-pad-pagerH
+  local perPage=math.max(1,math.floor((pagerY-8*s-stripTop)/(bRowH+6*s)))
+  S.boxListOffset=Ops.clamp(S.boxListOffset or 0,0,math.max(0,BoxesMod.count()-perPage))
+  if S._boxShownSelection~=S.selectedBox then
+    S._boxShownSelection=S.selectedBox
+    if S.selectedBox<=S.boxListOffset or S.selectedBox>S.boxListOffset+perPage then
+      S.boxListOffset=Ops.clamp(S.selectedBox-perPage,0,math.max(0,BoxesMod.count()-perPage))
+    end
+  end
+  S.boxListOffset=Kit.pager(x+pad,pagerY,stripInner,S.boxListOffset,BoxesMod.count(),perPage)
+  for row=1,math.min(perPage,BoxesMod.count()-S.boxListOffset) do
+    local i=S.boxListOffset+row
+    local ry=stripTop+(row-1)*(bRowH+6*s)
     if Kit.row(x + pad, ry, stripInner, bRowH, i == S.selectedBox, PAL.blue, 9 * s) then
       Ops.selectBox(S, i)
     end
-    local fill = #boxes[i]
+    local fill=BoxesMod.used(boxes[i])
     Kit.text("mono", ("Box %d"):format(i), x + pad + 10 * s,
       ry + (bRowH - Kit.textHeight("mono")) / 2, PAL.text)
     local countW = Kit.textWidth("tiny", tostring(fill))
@@ -61,7 +72,7 @@ function M.draw(S, Kit, x, y, w, h)
       ry + (bRowH - Kit.textHeight("tiny")) / 2, PAL.caption)
     local mx = x + pad + stripInner - 10 * s - countW - 8 * s - 44 * s
     Kit.meter(mx, ry + (bRowH - 5 * s) / 2, 44 * s, 5 * s,
-      fill / BoxesMod.CAPACITY * 100, fill >= BoxesMod.CAPACITY and PAL.yellow or PAL.blue)
+      fill / BoxesMod.capacity() * 100, fill >= BoxesMod.capacity() and PAL.yellow or PAL.blue)
   end
 
   -- ------------------------------------------------------------- the grid
@@ -73,7 +84,7 @@ function M.draw(S, Kit, x, y, w, h)
   Kit.text("tab", ("Box %d"):format(S.selectedBox), gx,
     y + gpad + (headH - Kit.textHeight("tab")) / 2, PAL.heading)
   local titleW = Kit.textWidth("tab", ("Box %d"):format(S.selectedBox))
-  Kit.text("mono", ("%d/%d"):format(#box, BoxesMod.CAPACITY),
+  Kit.text("mono", ("%d/%d"):format(BoxesMod.used(box),BoxesMod.capacity()),
     gx + titleW + 14 * s, y + gpad + (headH - Kit.textHeight("mono")) / 2, PAL.caption)
   local navW = 34 * s
   if Kit.stepper(gx + ginner - 2 * navW - 8 * s, y + gpad, navW, headH, "<",
@@ -93,7 +104,7 @@ function M.draw(S, Kit, x, y, w, h)
   local cellW = (ginner - cellGap * (COLS - 1)) / COLS
   local cellH = math.min((gridH - cellGap * (ROWS - 1)) / ROWS, 110 * s)
 
-  for i = 1, BoxesMod.CAPACITY do
+  for i = 1, BoxesMod.capacity() do
     local cc = (i - 1) % COLS
     local cr = math.floor((i - 1) / COLS)
     local bx = gx + cc * (cellW + cellGap)
@@ -118,7 +129,7 @@ function M.draw(S, Kit, x, y, w, h)
       Kit.textCenter("micro", "+", bx, by + cellH / 2 - Kit.textHeight("micro") / 2,
         cellW, PAL.faint)
       if Kit.press(bx, by, cellW, cellH) then
-        S.selectedBoxSlot = math.min(i, #box + 1)
+        S.selectedBoxSlot = BoxesMod.capacity()>20 and i or math.min(i,BoxesMod.used(box)+1)
         Ops.boxAdd(S)
       end
     end
@@ -132,7 +143,7 @@ function M.draw(S, Kit, x, y, w, h)
   end
   if Kit.button(gx + wdW + 10 * s, actY, 140 * s, actH, "+ Add mon here",
       { font = "small", radius = 9 * s,
-        enabled = #box < BoxesMod.CAPACITY }) then
+        enabled=BoxesMod.firstFree(box)~=nil }) then
     Ops.boxAdd(S)
   end
   local relW = 110 * s

@@ -534,6 +534,14 @@ function SecondScreen.toLocal(game, px, py)
      and not (game and game.secondScreenInjecting) then
     return nil
   end
+  if not (game and game.secondScreenInjecting) then
+    local renderer=package.loaded['src.render.Renderer']
+    local rect=renderer and renderer.uiPresentation
+    if type(rect)=='table' then
+      if px<rect.x or py<rect.y or px>=rect.x+rect.w or py>=rect.y+rect.h then return nil end
+      px,py=(px-rect.x)/rect.scaleX,(py-rect.y)/rect.scaleY
+    end
+  end
   local x, y, scale = SecondScreen.rect(game)
   if not x then x, y, scale = 0, 0, 1 end
   local lx, ly = (px - x) / scale, (py - y) / scale

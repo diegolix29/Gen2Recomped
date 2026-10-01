@@ -1023,6 +1023,7 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
     end
   end
   self.map = MapLoader.load(Game.data, mapId)
+  self.gen4EncounterAttempts = 0
   -- THE VIEW IS TOLD HOW MUCH WORLD THERE IS, because on a map smaller than
   -- the window the rest of the window is border -- and a border is not always
   -- scenery. Petalburg Gym's is metatile 0x208, which is pure black in all 256
@@ -1034,8 +1035,15 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
     local px = (tonumber(self.map.blockTiles) or 4) * 8
     local d = self.map.def
     if Game.renderer and Game.renderer.setWorldBounds and d then
-      Game.renderer:setWorldBounds((tonumber(d.width) or 0) * px,
-                                   (tonumber(d.height) or 0) * px)
+      local w,h=(tonumber(d.width) or 0)*px,(tonumber(d.height) or 0)*px
+      local terrain=Game.data.gen4_terrain
+      local matrix=terrain and terrain.matrices and terrain.matrices[d.layout]
+      if GameVersion.isGen4() and d.layout==0 and matrix then
+        -- Outdoor headers are collision/event windows on the shared landscape.
+        -- They must not cap the camera's visible terrain to the current town.
+        w,h=matrix.width*512,matrix.height*512
+      end
+      Game.renderer:setWorldBounds(w,h)
     end
   end
   -- Every block change is re-derived from the map's callbacks on each load
@@ -3299,6 +3307,10 @@ function OverworldState:update(dt)
   if self.healAnim then
     local ha = self.healAnim
     local ev = OverworldState.stepHealAnim(ha)
+    if ha.gen4 then
+      local ground = self.map and self.map.renderer and self.map.renderer.gen4Ground
+      if ground and ground.setHealingBalls then ground:setHealingBalls(ha.lit, ha.visible) end
+    end
     if ev == "ball" then
       require("src.core.Sound").play(Game.data, "Healing_Machine")
     elseif ev == "jingle" then
@@ -4819,7 +4831,8 @@ function OverworldState:checkLedgeHop(dir)
   -- still wins; this only fills the gap. Gated on the pair shape -- 2x2
   -- tiles to a metatile, one collision cell -- because those byte values
   -- mean something else entirely in Kanto and Johto.
-  local byBehaviour = Game.data.field and Game.data.field.ledgeBehaviours
+  local byBehaviour = self.map.tileset and self.map.tileset.ledgeBehaviours
+    or Game.data.field and Game.data.field.ledgeBehaviours
   if not byBehaviour then
     local ts = self.map.tileset
     if ts and tonumber(ts.blockTiles) == 2 and tonumber(ts.blockCells) == 1
@@ -5381,6 +5394,9 @@ local function gen3BadgeHeld(moveId)
 end
 
 local function partyKnowsVanilla(moveId)
+  if GameVersion.isGen4() then
+    return require('src.world.Gen4FieldMoves').partyMember(Game.data,Game.save,moveId)
+  end
   -- GEN 3 DOES NOT USE THE GEN 1 BADGE TABLE, and asking it was quietly
   -- fatal: field.hmBadges is R/B's list -- SURF costs the SOULBADGE, CUT the
   -- CASCADEBADGE -- and Badges.has answers for a badge no Hoenn save will
@@ -6161,6 +6177,18 @@ function OverworldState:interact()
   local p = self.player
   local fx, fy = p:facingCell()
 
+  if GameVersion.isGen4() and p.facing=='up' then
+    local H=require('src.world.Gen4HoneyTrees')
+    local ground=self.map.renderer and self.map.renderer.gen4Ground
+    if H.treeId(self.map.def.header)~=nil and H.facingTree(ground,fx,fy) then
+      local VM=require('src.script.Gen4ScriptVM');local pool=VM.store(Game.data)
+      local band=pool and pool.bands and pool.bands.common_scripts
+      local label=band and band.entries and band.entries[9]
+      local rows=label and VM.compile(Game.data,label)
+      if rows then self.runner:run(rows,{mapId=self.map.id});interacted(self,fx,fy,'honey-tree');return end
+    end
+  end
+
   local npc = self:npcAtCell(fx, fy)
   if not npc and self.map:isCounterCell(fx, fy) then
     -- talk across counters (mart clerks, nurses); uses the tileset's
@@ -6289,6 +6317,11 @@ function OverworldState:interact()
       return
     end
     if sign.text then
+      if GameVersion.isGen4() and sign.pickup and sign.pickup.kind == 'hidden'
+        and not require('src.import.Gen4Pickups').prepareHidden(Game.save,sign) then
+        interacted(self,fx,fy,'sign',sign)
+        return
+      end
       self:showMapText(sign.text, nil)
     end
     interacted(self, fx, fy, "sign", sign)
@@ -8730,6 +8763,17 @@ function OverworldState:gen2SweetScent()
   return true
 end
 
+-- Sweet Scent chooses a native slot directly, bypassing walking grace/rate rolls.
+function OverworldState:gen4SweetScent()
+  local encDef=Encounter.forMap(Game.data,self.map.def,self.map.id)
+  local slots=encDef and (self.player.surfing and encDef.water or encDef.grass)
+  local enc=slots and Encounter.rollTable(slots,nil,nil,slots.rateMax or 100)
+  if not enc then Game.stack:push(TextBox.new(Game,Strings('Nothing appeared...')));return end
+  local battle=require('src.battle.BattleState').newWild(Game,enc.species,enc.level)
+  battle.onFinish=function(result) self:afterBattle(result,battle) end
+  self:pushBattle(battle)
+end
+
 function OverworldState:tryFieldMoveOW(fx, fy)
   if GameVersion.isGen2() and self:tryCutOW(fx, fy) then return true end
   if not self.map:inBounds(fx, fy) then return false end
@@ -9652,6 +9696,9 @@ end
 -- the ui.pc.items hook; LOG OFF is appended after it so a mod cannot
 -- orphan the exit.
 function OverworldState:openPC(onDone)
+  if GameVersion.isGen4() then
+    return Screens.push(Game, 'StorageMenu', { onDone = onDone })
+  end
   if GameVersion.isGen3() then
     return self:openGen3PC(onDone)
   end
@@ -9796,7 +9843,7 @@ function OverworldState.stepHealAnim(ha)
   ha.phase = ha.phase or "balls"
   if ha.phase == "balls" then
     -- .partyLoop: a ball lights with the machine sfx, then 30 frames
-    if ha.lit == 0 or ha.timer >= 30 then
+    if ha.lit == 0 or ha.timer >= (ha.gen4 and 15 or 30) then
       ha.timer = 0
       if ha.lit < ha.balls then
         ha.lit = ha.lit + 1
@@ -10739,6 +10786,13 @@ function OverworldState:rollEncounter(encDef, terrain)
   -- and the ability scales what comes out.
   local rateOverride
   local grass = encDef and encDef.grass
+  if GameVersion.isGen4() and grass then
+    local rate = grass.rate
+    if rateMod then rate = math.min(100, math.floor(rate * rateMod[1] / rateMod[2])) end
+    local p = self.player
+    local behavior = self.map:cellBehaviour(p.cellX, p.cellY)
+    if not Encounter.gen4StepAllowed(self, rate, Game.save.onBike, behavior == 3) then return nil end
+  end
   if grass then
     local HeldItems = require("src.battle.HeldItems")
     rateOverride = HeldItems.cleanseTagRate(Game.data, Game.save.party,
@@ -10774,6 +10828,7 @@ function OverworldState:stepEggs()
   local Pokemon = require("src.pokemon.Pokemon")
   local def = Game.data.pokemon[hatched.species]
   hatched.isEgg = nil
+  require('src.pokemon.Gen4PoketchState').remember(Game, hatched)
   hatched.eggSteps = nil
   hatched.nickname = nil
   hatched.happiness = 120  -- BaseHappiness after HatchEggs
@@ -11917,6 +11972,7 @@ end
 -- battle is optional; when given, Oak's Lab OPP_RIVAL1 losses skip the
 -- blackout (pret HandlePlayerBlackOut) so the map script can HealParty.
 function OverworldState:afterBattle(result, battle)
+  self.gen4EncounterAttempts = 0
   local lead = Game.save.party[1]
   Logger.info("battle over: %s (lead %s %d/%d)", tostring(result),
               lead and lead.species or "-", lead and lead.hp or 0,
@@ -12193,7 +12249,9 @@ function OverworldState:rememberDigWarp(fromMap, x, y, destMap)
   local from = maps and maps[fromMap]
   local dest = maps and maps[destMap]
   if not (from and dest) then return end
-  if not (DIG_FROM[from.environment] and DIG_TO[dest.environment]) then return end
+  if GameVersion.isGen4() then
+    if not require('src.world.Gen4FieldMoves').recordsEscape(from,dest) then return end
+  elseif not (DIG_FROM[from.environment] and DIG_TO[dest.environment]) then return end
   self.digWarp = { id = fromMap, x = x, y = y }
   Game.save.digWarp = self.digWarp
 end
@@ -14153,6 +14211,12 @@ end
 OverworldState.BERRY_TREE_HOLD = 16  -- ticks a stage's frame is held
 
 function OverworldState:poseBerryTrees()
+  if GameVersion.isGen4() and self.npcs then
+    local B=require('src.world.Gen4BerryPatches')
+    local SR=spriteRenderer()
+    for _,npc in ipairs(self.npcs) do B.pose(Game,npc,SR) end
+    return
+  end
   local trees = Game and Game.data and Game.data.constants
                 and Game.data.constants.gen3Berries
                 and Game.data.constants.gen3Berries.trees
@@ -14270,6 +14334,7 @@ function OverworldState:drawWorld()
     -- record it writes carries the positions already measured from the corner
     -- of the player's own cell, so nothing here has to know where the
     -- cartridge's camera puts anybody.
+    if GameVersion.isGen4() then return end
     if self:drawGen3Heal(ha, cam) then return end
     local fxDef = Game.data.field.overworldFx
     if self.healMachineImg == nil and fxDef and fxDef.healMachine then
@@ -15088,7 +15153,7 @@ function OverworldState:drawWorld()
     end
     local function drawEntity(e)
       if not (self.flyAnim and self:hasFlyBird() and e == self.player)
-         and not e.hidden and not plotEmpty(e) then
+         and not e.hidden and not e.berryVisualEmpty and not plotEmpty(e) then
         -- A FREE CAMERA PLACES ITS OWN CHARACTERS.
         --
         -- Reported from play: *"isnt keeping the player the right size"*, with a

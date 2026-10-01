@@ -40,6 +40,7 @@ end
 
 function Boxes.count()
   if shape then return shape.count end
+  if GameVersion.isGen4() then return 18 end
   return GameVersion.isGen2() and Boxes.GEN2_COUNT or Boxes.COUNT
 end
 
@@ -47,6 +48,7 @@ end
 -- anywhere, so they keep the literal; a dataset that states its own wins.
 function Boxes.capacity()
   if shape then return shape.capacity end
+  if GameVersion.isGen4() then return 30 end
   return Boxes.CAPACITY
 end
 

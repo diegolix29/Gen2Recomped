@@ -140,10 +140,8 @@ Gen4Maps.COLLISION = 0x8000
 -- 0x80E5, and the stand-in tileset's walkable set is 0..254 -- so 255 is a
 -- value the cartridge never emits AND one the engine already refuses.
 --
--- WHAT THIS COSTS: the behaviour of a blocked tile.  Nothing, in practice --
--- the old encoding wrote `behaviour = 0` for a blocked cell too, so that
--- information was already being dropped; it is just now dropped in a way that
--- survives the journey.
+-- Blocked cells keep their terrain type separately in behaviorCells so
+-- counters and ledges can be recognized without making them walkable.
 Gen4Maps.BLOCKED_CELL = 255
 -- The old name, kept so nothing that reads it breaks.  New code asks
 -- `Gen4Maps.blocks`.
@@ -346,7 +344,7 @@ function Gen4Maps.mapDef(matrix, chunkFor)
   -- Built as a flat array of two-character strings and concatenated once:
   -- a 960x960 overworld is 921,600 cells, and appending to a string in a loop
   -- that long is the difference between an import and a hang.
-  local cells = {}
+  local cells, behaviors = {}, {}
   for cy = 0, matrix.height - 1 do
     for ty = 0, Gen4Maps.CHUNK - 1 do
       local row = cy * Gen4Maps.CHUNK + ty
@@ -360,6 +358,7 @@ function Gen4Maps.mapDef(matrix, chunkFor)
           local v = (word == nil or Gen4Maps.blocks(word))
                     and Gen4Maps.BLOCKED_CELL or (word % 256)
           cells[base + tx + 1] = string.char(v % 256, floor(v / 256))
+          behaviors[base + tx + 1] = string.char(word and word % 256 or 255)
         end
       end
     end
@@ -369,6 +368,7 @@ function Gen4Maps.mapDef(matrix, chunkFor)
     width = W,
     height = H,
     blocks = table.concat(cells),
+    behaviorCells = table.concat(behaviors),
     -- Every cell outside the map reads as blocked, which is what the border
     -- is.  This was 0 -- an ordinary walkable behaviour -- so `Map:blockAt`
     -- answered "plain ground" for every coordinate past the edge and the
@@ -477,16 +477,21 @@ function Gen4Maps.crop(def, x, y, width, height)
     return nil, "crop falls outside the layout"
   end
 
-  local rows = {}
+  local rows, behaviors = {}, {}
   for row = 0, height - 1 do
     local from = ((y + row) * def.width + x) * 2 + 1
     rows[row + 1] = def.blocks:sub(from, from + width * 2 - 1)
+    if def.behaviorCells then
+      local at = (y + row) * def.width + x + 1
+      behaviors[row + 1] = def.behaviorCells:sub(at, at + width - 1)
+    end
   end
 
   return {
     width = width,
     height = height,
     blocks = table.concat(rows),
+    behaviorCells = def.behaviorCells and table.concat(behaviors) or nil,
     borderBlock = def.borderBlock,
     generation = 4,
     -- Where this sat in the layout it came from, so a seamless renderer can

@@ -186,7 +186,6 @@ end
 -- ITEM_nnn (RomExtractorGen2); after a real ROM extract, data.items[id].name
 -- is the ROM ItemNames string and .key is POTION / TM_01 / etc.
 function Catalog.itemLabel(data, id)
-  if type(id) ~= "string" then return tostring(id) end
   local entry = data and data.items and data.items[id]
   if type(entry) == "table" then
     local name = entry.name
@@ -197,7 +196,7 @@ function Catalog.itemLabel(data, id)
       return entry.key
     end
   end
-  return id
+  return tostring(id or "?")
 end
 
 -- Friendly event flag label.  Storage stays EVENT_G2_%04d / FLAG_G3_%04X;
@@ -223,7 +222,7 @@ function Catalog.flagLabel(id, data)
     local label = okG and Gen3Names.flag(data, id) or nil
     if label then return label end
   end
-  return id
+  return tostring(id or "?")
 end
 
 -- WHAT A MAP IS CALLED IN THE GAME, for every list that shows a map id.
@@ -240,7 +239,7 @@ function Catalog.mapLabel(data, id)
     local label = ok and Gen3Names.map(data, id) or nil
     if label then return label end
   end
-  return id
+  return tostring(id or "?")
 end
 
 -- Every Hoenn flag this dataset can put a name to, sorted.
@@ -274,7 +273,6 @@ end
 -- Friendly species label.  Gen2 keys are SPECIES_nnn; after a ROM extract
 -- data.pokemon[id].name is the PokemonNames string (BULBASAUR, …).
 function Catalog.speciesLabel(data, id)
-  if type(id) ~= "string" then return tostring(id or "?") end
   local entry = data and data.pokemon and data.pokemon[id]
   if type(entry) == "table" then
     local name = entry.name
@@ -284,7 +282,7 @@ function Catalog.speciesLabel(data, id)
       return name
     end
   end
-  return id
+  return tostring(id or "?")
 end
 
 return Catalog

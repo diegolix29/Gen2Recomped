@@ -91,6 +91,21 @@ function Encounter.roll(encounterDef, rng, rateMod, rateOverride)
   return Encounter.rollTable(encounterDef.grass, rng, rateMod, rateOverride)
 end
 
+-- Platinum checks a movement roll before the map's rate, and suppresses
+-- 95% of attempts during its rate-dependent grace period after a transition
+-- or wild battle (overlay006/wild_encounters.c).
+function Encounter.gen4StepAllowed(state, rate, cycling, veryTallGrass, rng)
+  rate = tonumber(rate) or 0
+  if rate <= 0 then return false end
+  rng = rng or love.math.random
+  local grace = 8 - math.min(8, math.floor(rate / 10))
+  if (state.gen4EncounterAttempts or 0) < grace then
+    state.gen4EncounterAttempts = (state.gen4EncounterAttempts or 0) + 1
+    if rng(0, 99) >= 5 then return false end
+  end
+  return rng(0, 99) < ((cycling or veryTallGrass) and 70 or 40)
+end
+
 -- The lead Pokemon's modifier, ready for the two calls above.  Kept here so
 -- the overworld asks one question rather than reaching into Abilities and
 -- the party itself.

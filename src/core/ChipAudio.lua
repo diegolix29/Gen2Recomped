@@ -229,6 +229,7 @@ local function slimAudio(data)
   local audio = data.audio or {}
   return {
     programFile = audio.programFile,
+    programPrefix = require('src.core.WorkerFs').prefix(),
     bankOrder = audio.bankOrder,
     waveBanks = audio.waveBanks,
     noiseHeaders = audio.noiseHeaders,

@@ -1230,7 +1230,8 @@ local MARKER_PATH = "rom-cache.complete"
 -- The marker a finished import writes for a version: the generation tag plus
 -- that version's ROM hash, so both a format bump and a swapped ROM invalidate.
 local function markerFor(version)
-  return CACHE_FORMAT .. GameVersion.info(version).sha1
+  local revision = version == "platinum" and "platinum-audio-ui-v13:" or ""
+  return CACHE_FORMAT .. revision .. GameVersion.info(version).sha1
 end
 
 -- AND WHAT THAT IMPORT COULD NOT PRODUCE.
@@ -3162,19 +3163,22 @@ end
 -- extractor must not be handed 128 MiB as a Lua string (see
 -- src/import/RomExtractorGen4.lua), and it is the only thing that can open
 -- the cartridge itself and read ranges out of it on demand.
-function RomImporter:startData(data, displayName, sourcePath)
+function RomImporter:startData(data, displayName, sourcePath, verified)
   if self.workState == "working" then return end
+  if not verified and type(data)=='string' then
+    if self:_beginRomProbe(data,sourcePath,displayName) then return end
+  end
   if type(data) ~= "string" then
     self:setError("The selected file could not be read.")
     return
   end
-  if not isSupportedRomSize(#data) then
+  if not isSupportedRomSize(verified and verified.size or #data) then
     self:setError(("Expected a 1 MiB (Red/Blue/Yellow), 2 MiB (Gold/Silver), "
       .. "16 MiB (Emerald) or 128 MiB (Platinum) cartridge; this file is "
       .. "%.2f MiB."):format(#data / 1024 / 1024))
     return
   end
-  local actualHash = sha1(data)
+  local actualHash = verified and verified.hash or sha1(data)
   local version = GameVersion.forSha1(actualHash)
   if not version then
     self:setError(("Unsupported ROM (SHA-1 %s). This needs a clean US Pokemon "
@@ -3221,7 +3225,7 @@ function RomImporter:startData(data, displayName, sourcePath)
   -- file write each would be its own performance bug -- which is a couple of
   -- dozen lines per import.
   BootTrace.mark(("import %s: begin (%.1f MB rom)")
-    :format(tostring(version), #data / 1048576))
+    :format(tostring(version), (verified and verified.size or #data) / 1048576))
   self.worker = coroutine.create(function()
     self.status = "Preparing private game data"
     coroutine.yield()
@@ -3233,10 +3237,34 @@ function RomImporter:startData(data, displayName, sourcePath)
       return
     end
 
+    local CacheFs=require('src.import.CacheFs')
+    local modules={[1]='src.import.RomExtractor',[2]='src.import.RomExtractorGen2',
+      [3]='src.import.RomExtractorGen3',[4]='src.import.RomExtractorGen4'}
+    local task=require('src.import.RomImportTask').new({action='extract',version=version,
+      generation=info.generation,module=modules[info.generation],manifest=manifest,
+      prefix=info.cachePrefix,root=CacheFs.root(),path=self.romPath,bytes=info.generation~=4 and self.romData or nil,clear=true})
+    if task then
+      self.romData=nil
+      local complete=false
+      while not complete do
+        local message=task:poll()
+        while message do
+          if message.kind=='error' then error(message.error) end
+          if message.kind=='complete' then complete=true end
+          if message.kind=='progress' then
+            self.status=message.stage;self.progress=message.progress
+            self.stageCurrent=message.current;self.stageTotal=message.total
+          end
+          message=task:poll()
+        end
+        if not complete then coroutine.yield("background") end
+      end
+      CacheFs.prefix=info.cachePrefix
+    else
     -- Redirect every cache write to this version's subtree, then clear only
     -- that version's previous cache from both homes (save directory and, for
     -- a portable install, the game folder).  The other version is untouched.
-    local CacheFs = require("src.import.CacheFs")
+    CacheFs = require("src.import.CacheFs")
     local prefix = info.cachePrefix
     CacheFs.prefix = prefix
     removeTree(prefix .. "data/generated")
@@ -3330,6 +3358,7 @@ function RomImporter:startData(data, displayName, sourcePath)
     collectgarbage("collect")
     BootTrace.mark(("import %s: extracted (%.0f MB lua)")
       :format(tostring(version), collectgarbage("count") / 1024))
+    end
     -- Written last: the marker is what isReady() checks, so it must only
     -- appear once the extraction has finished.
     --
@@ -3378,8 +3407,32 @@ function RomImporter:startData(data, displayName, sourcePath)
   end)
 end
 
+function RomImporter:_beginRomProbe(bytes,path,name)
+  local task=require('src.import.RomImportTask').new({action='verify',bytes=bytes,path=path})
+  if not task then return false end
+  self.probeTask=task;self.probePath=path;self.probeName=name
+  self.workState='working';self.importing=GameVersion.VERSIONS[self.tab] and self.tab or nil
+  self.status='Verifying cartridge';self.progress=0;self.detail=name or path or 'ROM'
+  return true
+end
+
+function RomImporter:_pollRomProbe()
+  local task=self.probeTask
+  if not task then return end
+  local message=task:poll()
+  if not message then return end
+  if message.kind=='error' then self.probeTask=nil;self:setError(message.error);return end
+  if message.kind=='verified' then
+    local path,name=self.probePath,self.probeName
+    self.probeTask=nil;self.probePath=nil;self.probeName=nil
+    self.workState='idle';self.importing=nil
+    self:startData(message.bytes,name,path,message)
+  end
+end
+
 function RomImporter:startPath(path)
-  if not path then return end
+  if not path or self.workState=='working' then return end
+  if self:_beginRomProbe(nil,path,path:match('[^/\\]+$') or path) then return end
   local data, readError = readExternalPath(path)
   if not data then
     self:setError("Could not read the selected file: " .. tostring(readError))
@@ -3686,6 +3739,12 @@ function RomImporter:filedropped(file)
   -- .gb/.zip routing above.
   if name:lower():match("%.sav$") then
     self:_importSave(self:_savedropTarget(), file)
+    return
+  end
+  -- Desktop drops expose the physical path. Let the worker read it rather
+  -- than allocating a large DS ROM on the UI thread first.
+  if name:match("^%a:[/\\]") or name:sub(1,1)=="/" then
+    self:startPath(name)
     return
   end
   local data, readError = readDroppedFile(file)
@@ -4636,6 +4695,7 @@ function RomImporter:update(dt)
   end
   self:_pollPickedFiles(dt)
   self:_stepDataMove()
+  self:_pollRomProbe()
   if self.workState ~= "working" or not self.worker then return end
   local started = love.timer.getTime()
   repeat
@@ -4665,7 +4725,8 @@ function RomImporter:update(dt)
       self:_romPickContinue()
       return
     end
-  until love.timer.getTime() - started >= 0.008
+    if workerError=="background" then return end
+  until love.timer.getTime() - started >= 0.003
 end
 
 -- ------- gamepad virtual cursor (handheld / PortMaster) --------------------
@@ -8670,7 +8731,7 @@ function RomImporter:_stepDataMove()
       self:_refreshMods()
       return
     end
-  until love.timer.getTime() - started >= 0.008
+  until love.timer.getTime() - started >= 0.003
 end
 
 function RomImporter:openDataDir()
@@ -10860,3 +10921,5 @@ function RomImporter:_drawFindPanel(x, y, w, h, paged)
 end
 
 return RomImporter
+
+

@@ -120,17 +120,18 @@ local cachedBanks
 
 local function loadBanks(data)
   local audio = data.audio
-  if cachedProgramFile == audio.programFile and cachedBanks then
+  local cacheKey=(audio.programPrefix or '')..audio.programFile
+  if cachedProgramFile == cacheKey and cachedBanks then
     return cachedBanks
   end
-  local raw, readError = love.filesystem.read(audio.programFile)
+  local raw, readError = require('src.core.WorkerFs').read(audio.programPrefix,audio.programFile)
   if not raw then error("could not read sound programs: " .. tostring(readError)) end
   local banks = {}
   for index, bank in ipairs(audio.bankOrder) do
     local first = (index - 1) * 0x4000 + 1
     banks[bank] = raw:sub(first, first + 0x3FFF)
   end
-  cachedProgramFile, cachedBanks = audio.programFile, banks
+  cachedProgramFile, cachedBanks = cacheKey, banks
   return banks
 end
 

@@ -171,6 +171,8 @@ function Gen4NamingScreen.new(game, opts)
   self.title = opts.title or Strings("YOUR NAME?")
   self.maxLen = opts.maxLen or 7
   self.onDone = opts.onDone
+  self.presets = opts.presets
+  self.choice = self.presets and #self.presets > 0 and 1 or nil
   self.kind = opts.kind
   self.species = opts.species or (opts.mon and opts.mon.species)
 
@@ -292,6 +294,16 @@ end
 function Gen4NamingScreen:update()
   local input = self.game.input
   if not input then return end
+  if self.choice then
+    local count = #self.presets + 1
+    if input:wasPressed("up") then self.choice = (self.choice - 2) % count + 1 end
+    if input:wasPressed("down") then self.choice = self.choice % count + 1 end
+    if input:wasPressed("a") or input:wasPressed("start") then
+      if self.choice == 1 then self.choice = nil
+      else self:close(self.presets[self.choice - 1]) end
+    end
+    return
+  end
   if input:wasPressed("left") then self:move(-1, 0) end
   if input:wasPressed("right") then self:move(1, 0) end
   if input:wasPressed("up") then self:move(0, -1) end
@@ -301,6 +313,30 @@ function Gen4NamingScreen:update()
     if #self.glyphs > 0 then self.glyphs[#self.glyphs] = nil end
   end
   if input:wasPressed("start") then self:close(self:typed()) end
+end
+
+function Gen4NamingScreen:touchpressed(_, px, py)
+  local r = require("src.render.Renderer").uiPresentation
+  if not r or px < r.x or py < r.y or px >= r.x + r.w or py >= r.y + r.h then return false end
+  local x, y = (px - r.x) / r.scaleX, (py - r.y) / r.scaleY
+  if self.choice then
+    local index = math.floor((y - 48) / 22) + 1
+    if x >= 24 and x < 232 and index >= 1 and index <= #self.presets + 1 then
+      if index == 1 then self.choice = nil else self:close(self.presets[index - 1]) end
+    end
+    return true
+  end
+  local row, col
+  if y >= HOME_Y and y < HOME_Y + HOME_H then
+    row, col = 1, math.floor((x - HOME_X) / CELL_W) + 1
+  elseif y >= GRID_Y and y < GRID_Y + CHAR_ROWS * CELL_H then
+    row, col = math.floor((y - GRID_Y) / CELL_H) + 2, math.floor((x - GRID_X) / CELL_W) + 1
+  end
+  if row and col >= 1 and col <= Gen4NamingScreen.COLS then
+    self.row, self.col = row, col
+    self:press(self:cell(row, col))
+  end
+  return true
 end
 
 -- ------------------------------------------------------------------- draw --
@@ -388,6 +424,24 @@ end
 function Gen4NamingScreen:draw()
   local g = love.graphics
   local art = self.art or {}
+  if self.choice then
+    g.setColor(0.13, 0.16, 0.27, 1)
+    g.rectangle("fill", 0, 0, W, H)
+    frame(16, 16, 224, 160)
+    g.setColor(1, 1, 1, 1)
+    Font.draw(self.title, 24, 24)
+    for i = 1, #self.presets + 1 do
+      local label = i == 1 and Strings("NEW NAME") or self.presets[i - 1]
+      local y = 48 + (i - 1) * 22
+      if self.choice == i then
+        g.setColor(0.38, 0.42, 0.55, 1)
+        g.rectangle("fill", 24, y - 2, 208, 20)
+        g.setColor(1, 1, 1, 1)
+      end
+      Font.draw(label, 32, y)
+    end
+    return
+  end
 
   -- The backdrop.  A flat fill when the cache has none, so a pre-`naming`
   -- cache still gets a readable screen rather than whatever was behind it.

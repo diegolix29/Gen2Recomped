@@ -267,6 +267,7 @@ function Gen4Tileset.pair()
     walkable = walkable,
     grassTiles = Gen4Behaviors.group("grass"),
     encounterTiles = encounter,
+    counterTiles = {0x80}, -- TABLE: clerk/nurse interaction across one blocked tile
     waterTiles = Gen4Behaviors.group("surfable"),
     doorTiles = Gen4Behaviors.group("door"),
     warpTiles = Gen4Behaviors.group("warp"),

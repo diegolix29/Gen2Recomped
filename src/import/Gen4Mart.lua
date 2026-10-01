@@ -112,4 +112,51 @@ function Gen4Mart.stock(rows, badgeCount)
   return out
 end
 
+-- Locate the specialty pointer table through its first, unique stock list.
+-- The table contains twenty ARM9 pointers; every list is bounded and checked.
+-- Stock itself is always read from the cartridge, not copied from source.
+function Gen4Mart.specialties(bytes, ramBase)
+  if type(bytes) ~= 'string' then return nil end
+  ramBase = ramBase or 0x02000000
+  local function u32(at)
+    local a,b = u16(bytes,at),u16(bytes,at+2)
+    return a and b and a+b*65536
+  end
+  local function pointer(at)
+    local p = u32(at)
+    return p and p-ramBase+1
+  end
+  local function stock(at)
+    if not at or at < 1 or at > #bytes or at%2 ~= 1 then return nil end
+    local out = {}
+    for i=0,63 do
+      local item = u16(bytes,at+i*2)
+      if item == 65535 then return #out > 0 and out or nil end
+      if not item or item < 1 or item >= 468 then return nil end
+      out[#out+1] = item
+    end
+  end
+  local anchor = '\146\0\14\0\255\255' -- Air Mail, Heal Ball, END
+  local found, hits
+  hits = 0
+  for at=1,#bytes-79,4 do
+    local first = pointer(at)
+    if first and bytes:sub(first,first+5) == anchor then
+      local lists, valid = {}, true
+      for id=0,19 do
+        lists[id] = stock(pointer(at+id*4))
+        if not lists[id] then valid=false; break end
+      end
+      -- Independent checks distinguish a stock pointer from an incidental ref.
+      if valid and #lists[1] == 3 and lists[1][1] == 141
+        and lists[4][1] == 36 and lists[8][1] == 17
+        and lists[19][1] == 159 then
+        found, hits = lists, hits+1
+      end
+    end
+  end
+  if hits == 1 then return found end
+  return nil, 'specialty table matches: ' .. hits
+end
+
 return Gen4Mart

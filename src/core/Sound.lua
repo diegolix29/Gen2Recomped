@@ -161,19 +161,19 @@ end
 -- Chip SFX and cries are already stereo at the source (ChipSynth
 -- renderEffectData); this covers file defs, i.e. Yellow's 8-bit mono PCM
 -- Pikachu clips (RomExtractor extractPikachuCries) and mod-supplied wav/ogg
--- SFX.  Every step is guarded: a headless love stub without love.sound, or a
+-- SFX. Decode channel count from SoundData and emit 16-bit stereo, including
+-- 8-bit cartridge clips on Switch. Every step is guarded: a stub without love.sound, or a
 -- decoder that will not hand back SoundData, keeps the original Source.
 local function widenMono(source, file)
   if not (source and love.sound and love.sound.newSoundData) then
     return source
   end
-  local ok, channels = pcall(function() return source:getChannelCount() end)
-  if not ok or channels ~= 1 then return source end
   local built, widened = pcall(function()
     local mono = love.sound.newSoundData(file)
+    if mono:getChannelCount()~=1 then return source end
     local frames = mono:getSampleCount()
     local stereo = love.sound.newSoundData(frames, mono:getSampleRate(),
-                                           mono:getBitDepth(), 2)
+                                           16, 2)
     for index = 0, frames - 1 do
       local value = mono:getSample(index)
       stereo:setSample(index, 1, value)
@@ -198,6 +198,12 @@ local function newFileSource(def)
 end
 
 local function newSfxSource(data, key, def, pitch, tempo)
+  if type(def) == "table" and def.nds ~= nil then
+    local ok, src = pcall(require("src.audio.NitroAudio").new, data, def)
+    if not ok then return nil, tostring(src) end
+    src:setLooping(false)
+    return src
+  end
   -- A GEN 3 SOUND EFFECT IS A SONG, played to its end.  The cartridge's own
   -- scripts say so: `playse` takes a number out of the same table the map
   -- themes come from, and the only thing that makes one an effect is that it
@@ -220,6 +226,7 @@ local function newSfxSource(data, key, def, pitch, tempo)
 end
 
 local function playPath(data, key, def, pitch, tempo)
+  key = tostring(key)
   if not love.audio or not def then return nil end
   -- INTERRUPTION: building a Source now would fail and cache `false` below,
   -- permanently disabling this effect (see sessionSuspended, case 2)
@@ -287,7 +294,7 @@ function Sound.playId(data, id)
   if byNumber == nil or byNumber.__sfx ~= sfx then
     byNumber = { __sfx = sfx }
     for name, def in pairs(sfx) do
-      local n = type(def) == "table" and tonumber(def.m4a)
+      local n = type(def) == "table" and tonumber(def.m4a or def.nds)
       if n and byNumber[n] == nil then byNumber[n] = name end
     end
   end
@@ -422,6 +429,10 @@ function Sound.playCry(data, species)
   end
   local cries = data.audio and data.audio.cries
   local def = cries and cries[species]
+  if not def and type(species) == "number" then
+    local mon = data.pokemon and data.pokemon[species]
+    def = cries and mon and cries[mon.name]
+  end
   if not def then return nil end
   local key = "cry:" .. tostring(species)
   local src = cache[key]
@@ -475,7 +486,7 @@ end
 -- .musicLoop polls wChannelSoundIDs+CHAN5 until SFX_SAFARI_ZONE_PA
 -- ends.)  Headless / never-played names read as silent.
 function Sound.isPlaying(name)
-  local src = cache[name]
+  local src = cache[tostring(name)]
   if not src then return false end
   local ok, playing = pcall(src.isPlaying, src)
   return ok and playing or false
@@ -484,8 +495,18 @@ end
 -- cut a one-shot short (the SFX_STOP_ALL_MUSIC beats around the
 -- elevator shake stop the last collision thud mid-ring)
 function Sound.stop(name)
-  local src = cache[name]
+  local src = cache[tostring(name)]
   if src then pcall(src.stop, src) end
+end
+
+function Sound.anyPlaying(kind)
+  for key,src in pairs(cache) do
+    local cry=tostring(key):sub(1,4)=='cry:'
+    if src and ((kind=='cry' and cry) or (kind=='sfx' and not cry)) then
+      local ok,playing=pcall(src.isPlaying,src);if ok and playing then return true end
+    end
+  end
+  return false
 end
 
 -- Looping sources (the low-health alarm): started/stopped by game

@@ -321,6 +321,8 @@ end
 function Gen4BagMenu:selected() return self.rows[self.index] end
 
 function Gen4BagMenu:close()
+  if self.closed then return end
+  self.closed=true
   self.game.stack:pop()
   if self.onCancel then self.onCancel() end
 end
@@ -333,6 +335,7 @@ function Gen4BagMenu:movePocket(delta)
 end
 
 function Gen4BagMenu:choose()
+  if self.closed then return end
   local row = self:selected()
   if not row or row.close then return self:close() end
 
@@ -348,7 +351,7 @@ function Gen4BagMenu:choose()
   -- is what makes a consumed item leave this screen.
   local shim = {
     items = {}, index = 1,
-    close = function() end,
+    close = function() self:close() end,
     refresh = function() self:rebuild() end,
   }
   local ok, err = pcall(function()
@@ -357,7 +360,7 @@ function Gen4BagMenu:choose()
   if not ok then
     Logger.warn("gen4 bag: %s could not be used: %s", tostring(row.id), tostring(err))
   end
-  self:rebuild()
+  if not self.closed then self:rebuild() end
 end
 
 function Gen4BagMenu:update()

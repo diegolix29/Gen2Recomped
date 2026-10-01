@@ -731,11 +731,46 @@ end
 function Gen4Ground:objectsFor(land, record)
   local own = (record and record.objects) or {}
   local mine = self:signpostsFor(land)
-  if not mine or #mine == 0 then return own end
+  local heal = self.healingProps and self.healingProps[land]
+  if (not mine or #mine == 0) and not heal then return own end
   local all = {}
   for _, o in ipairs(own) do all[#all + 1] = o end
-  for _, o in ipairs(mine) do all[#all + 1] = o end
+  for _, o in ipairs(mine or {}) do all[#all + 1] = o end
+  for _, o in ipairs(heal or {}) do all[#all + 1] = o end
   return all
+end
+
+-- The healing balls are map props in Platinum, placed relative to the
+-- console, so they participate in the same depth/camera pass as its ROM art.
+function Gen4Ground:setHealingBalls(count, visible)
+  local key = tostring(count or 0) .. ':' .. tostring(visible)
+  if self.healingPropsKey == key then return end
+  self.healingPropsKey, self.healingProps = key, nil
+  if count and count > 0 and visible ~= false then
+    local A = require('src.import.Gen4Archives')
+    local path = '/fielddata/build_model/build_model.narc'
+    local machine = A.find(path, 'pokecenter_healing_machine.nsbmd')
+    local ball = A.find(path, 'pokecenter_healing_machine_mini_pokeball.nsbmd')
+    if machine and ball then
+      for _, land in ipairs(self.grid.land or {}) do
+        local record = self.terrain.chunks[land]
+        for _, object in ipairs(record and record.objects or {}) do
+          if object.model == machine then
+            local props = {}
+            for i = 1, math.min(6, count) do
+              props[i] = { model = ball, x = (object.x or 0) + ((i-1)%2 == 0 and -4.5 or 4.5),
+                y = (object.y or 0) + 12, z = (object.z or 0) + (math.floor((i-1)/2)-1)*4.5,
+                scaleX = 1, scaleY = 1, scaleZ = 1 }
+            end
+            self.healingProps = { [land] = props }
+            break
+          end
+        end
+        if self.healingProps then break end
+      end
+    end
+  end
+  self:dropBakes()
 end
 
 -- WHERE A BUILDING STANDS, as a row-major matrix in the chunk's own units.

@@ -43,6 +43,12 @@ function Bag.capacity(data)
   if type(configured) == "number" and configured >= 1 then
     return math.floor(configured)
   end
+  local pockets=Bag.gen4Pockets(data) or Bag.gen3Pockets(data)
+  if pockets then
+    local total=0
+    for _,capacity in pairs(pockets) do if type(capacity)=='number' then total=total+capacity end end
+    if total>0 then return total end
+  end
   return DEFAULT_CAPACITY
 end
 
@@ -55,8 +61,24 @@ function Bag.gen3Pockets(data)
   return (type(pockets) == "table" and next(pockets) ~= nil) and pockets or nil
 end
 
+-- Platinum's eight pockets and native ordinary/TM stack limits.
+local GEN4_POCKET_CAP={ITEMS=165,MEDICINE=40,POKE_BALLS=15,TM_HM=100,
+ BERRIES=64,MAIL=12,BATTLE_ITEMS=30,KEY_ITEMS=50}
+function Bag.gen4Pockets(data)
+ data=data or require('src.core.Data')
+ local constants=data and data.constants
+ if constants and constants.gen==4 then
+  return constants.gen4Bag and constants.gen4Bag.pockets or GEN4_POCKET_CAP
+ end
+end
+function Bag.stackLimit(id,data)
+ data=data or require('src.core.Data')
+ if Bag.gen4Pockets(data) and pocketOf(id,data)~='TM_HM' then return 999 end
+ return 99
+end
+
 local function isBadge(id)
-  return id:find("BADGE", 1, true) ~= nil
+  return type(id) == "string" and id:find("BADGE", 1, true) ~= nil
 end
 
 -- exported so item lists that share save.inventory (e.g. the PC deposit
@@ -129,7 +151,12 @@ function Bag.add(save, id, qty, data)
     -- -- the twenty-first was refused with "you can't carry any more", with
     -- 186 slots of empty pockets behind it.
     local gen3 = Bag.gen3Pockets(data)
-    if gen3 then
+    local gen4=Bag.gen4Pockets(data)
+    if gen4 then
+      local pocket=pocketOf(id,data)
+      local cap=gen4[pocket] or gen4.ITEMS
+      if Bag.pocketSlots(save,pocket,data)>=cap then return false end
+    elseif gen3 then
       local pocket = pocketOf(id, data)
       local cap = gen3[pocket]
       if cap and Bag.pocketSlots(save, pocket, data) >= cap then
@@ -157,7 +184,7 @@ function Bag.add(save, id, qty, data)
       end
     end
   end
-  if not isBadge(id) and (inv[id] or 0) + (qty or 1) > 99 then
+  if not isBadge(id) and (inv[id] or 0) + (qty or 1) > Bag.stackLimit(id,data) then
     return false
   end
   local isNew = not inv[id]

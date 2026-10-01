@@ -189,6 +189,10 @@ local GEN3_ALIASES = {
 -- will keep doing so until they do.  Adding an alias for a screen that is not
 -- written would open a module that is not there.
 local GEN4_ALIASES = {
+  EvolutionState = { id = "Gen4EvolutionState", positional = true },
+  StorageMenu = { id = "Gen4StorageMenu", opts = { onCancel = true, onDone = true } },
+  BoxMenu = { id = "Gen4BoxMenu", opts = { mode = true, onCancel = true, onDone = true } },
+  ShopMenu = { id = "Gen4ShopMenu", positional = true },
   OptionsMenu = { id = "Gen4Options", opts = { onCancel = true } },
   -- Reported from play alongside the options screen: the card was falling
   -- back to Kanto's.  The Gen 4 one answers the same one option.
@@ -323,7 +327,7 @@ end
 -- folded, every argument passes through as it stands -- so buildScreen asks
 -- this before giving up on a multi-argument call.
 function Screens.positionalAlias(id)
-  local alias = GEN3_ALIASES[id]
+  local alias = GEN3_ALIASES[id] or GEN4_ALIASES[id]
   return (alias ~= nil and alias.positional == true) and true or false
 end
 
@@ -335,7 +339,7 @@ function Screens.resolveId(game, id, arg)
   local gen4 = GEN4_ALIASES[id]
   if gen4 and isGen4(game) then
     local screens = game and game.data and game.data.screens
-    if not (screens and screens[id]) and servedBy(gen4, arg) then
+    if not (screens and screens[id]) and (gen4.positional or servedBy(gen4, arg)) then
       local okG4, moduleG4 = pcall(builtinFor, gen4.id)
       if okG4 and type(moduleG4) == "table"
          and type(moduleG4.new) == "function" then
@@ -459,8 +463,7 @@ function Screens.push(game, id, ...)
   -- A POSITIONAL alias keeps every argument, because its screen is not an
   -- options-table screen -- MoveLearnMenu takes (mon, moveId, onDone) and
   -- dropping the last two would open it with nothing to teach.
-  local alias = GEN3_ALIASES[id]
-  if alias and alias.positional then
+  if Screens.positionalAlias(id) then
     local resolvedId = Screens.resolveId(game, id, ...)
     return pushWith(game, resolvedId, ...)
   end

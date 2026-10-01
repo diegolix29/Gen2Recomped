@@ -217,12 +217,13 @@ local function loadImage(audio)
   if not (gen3 and gen3.file) then
     error("this dataset carries no Gen 3 music image -- import the ROM again")
   end
-  if cachedFile == gen3.file and cachedImage then return cachedImage end
-  local raw, readError = love.filesystem.read(gen3.file)
+  local cacheKey=(audio.programPrefix or '')..gen3.file
+  if cachedFile == cacheKey and cachedImage then return cachedImage end
+  local raw, readError = require('src.core.WorkerFs').read(audio.programPrefix,gen3.file)
   if not raw then
     error("could not read the music image: " .. tostring(readError))
   end
-  cachedFile, cachedImage = gen3.file, raw
+  cachedFile, cachedImage = cacheKey, raw
   return raw
 end
 

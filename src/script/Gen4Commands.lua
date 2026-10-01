@@ -839,7 +839,8 @@ function Commands.g4_message_bank(ctx, bank, entry)
 end
 
 -- `messagevar` takes its entry out of a var rather than out of the row.
-function Commands.g4_message_var(ctx, id)
+function Commands.g4_message_var(ctx, id, bank)
+  if bank then return Commands.g4_message_bank(ctx, bank, getVar(ctx.save, id)) end
   return Commands.g4_message(ctx, getVar(ctx.save, id))
 end
 
@@ -1281,9 +1282,18 @@ function Commands.g4_signpost_input(ctx, destVar)
 end
 
 Commands.g4_wait_move = noop
-Commands.g4_wait_sound = noop
+function Commands.g4_wait_sound(ctx)
+  local Sound=require('src.core.Sound')
+  ctx.runner.waitingCheck=function() return not Sound.anyPlaying('sfx') end
+  ctx.runner:yield()
+end
 Commands.g4_wait_fanfare = noop
-Commands.g4_wait_cry = noop
+function Commands.g4_wait_cry(ctx)
+  local Sound=require('src.core.Sound')
+  ctx.runner.waitingCheck=function() return not Sound.anyPlaying('cry') end
+  ctx.runner:yield()
+end
+function Commands.g4_stop_sound(_,id) require('src.core.Sound').stop(id) end
 Commands.g4_wait_animation = noop
 Commands.g4_wait_fade = noop
 Commands.g4_return_to_field = noop
@@ -1758,6 +1768,29 @@ Gen4Commands.playerStarter = playerStarter
 Gen4Commands.rivalStarter = rivalStarter
 Gen4Commands.counterpartStarter = counterpartStarter
 
+function Commands.g4_catching_tutorial(ctx)
+  local game = ctx.game
+  local save = {}
+  for k, v in pairs(game.save) do save[k] = v end
+  local female = game.save.player and game.save.player.gender == "girl"
+  save.player = { name = female and "Lucas" or "Dawn", gender = female and "boy" or "girl" }
+  save.party = { require("src.pokemon.Pokemon").new(game.data,
+    counterpartStarter(playerStarter(game.save)), 5) }
+  save.pokedex = { seen = {}, owned = {} }
+  save.inventory = { [4] = 20 }
+  local demoGame = setmetatable({ save = save }, { __index = game })
+  local battle = require("src.battle.BattleState").newWild(demoGame, 399, 2)
+  battle:makeDudeDemo(save.player.name)
+  battle.demoBallCount = "x20"
+  battle.onFinish = function()
+    if ctx.runner then ctx.runner:resume() end
+  end
+  if ctx.overworld and ctx.overworld.pushBattle then ctx.overworld:pushBattle(battle)
+  else game.stack:push(battle) end
+  if ctx.runner then ctx.runner:yield() end
+end
+Commands.meta.g4_catching_tutorial = { foreground = true, blocking = true }
+
 function Commands.g4_starter_species(ctx, destVar)
   setVar(ctx.save, destVar, playerStarter(ctx.save))
 end
@@ -2224,27 +2257,20 @@ local function martStock(ctx)
   return stock, badges, tier
 end
 
-function Commands.g4_pokemart(ctx, _, kind)
-  -- `pokemartspecialties` indexes `PokeMartSpecialties[martID]` -- a SECOND
-  -- table, one stock list per counter, which this cache does not carry. 22
-  -- sites, all of them the Veilstone department store and the game corner.
-  -- Opening a common mart in their place would sell the wrong things under the
-  -- right sign, which is worse than saying so.
-  if kind == "specialty" then
-    Logger.warn("gen4 shop: a specialty counter was opened, but "
-                .. "`PokeMartSpecialties` is not extracted -- the stock lists "
-                .. "for the department store and the game corner are their own "
-                .. "table, so the counter is skipped rather than stocked wrong")
+function Commands.g4_pokemart(ctx, martId, kind)
+  if kind == 'seal' then
+    Logger.warn('gen4 shop: seal counters need the seal inventory and pricing system')
     return
   end
-  local stock, badges, tier = martStock(ctx)
+  local stock, badges, tier
+  if kind == 'specialty' then
+    stock = ((ctx.game.data.constants or {}).martSpecialties or {})[valueOf(ctx, martId)]
+  else stock, badges, tier = martStock(ctx) end
   if not (stock and stock[1]) then
-    Logger.warn("gen4 shop: this cache carries no `martCommon` table, so the "
-                .. "clerk has nothing to sell")
+    Logger.warn('gen4 shop: stock is absent for this counter; re-import the ROM')
     return
   end
-  Logger.info("gen4 shop: %d badge(s) -> tier %d, %d item(s) on the shelf",
-              badges, tier, #stock)
+  Logger.info('gen4 shop: %s counter, %d items', kind or 'common', #stock)
   local runner = ctx.runner
   local Screens = require("src.ui.Screens")
   Screens.push(ctx.game, "ShopMenu", stock, function()
@@ -2255,6 +2281,76 @@ end
 
 Commands.meta = Commands.meta or {}
 Commands.meta.g4_pokemart = { foreground = true, blocking = true }
+
+function Commands.g4_heal_animation(ctx, count)
+  local ow, runner = ctx.overworld, ctx.runner
+  if not (ow and ow.startHealAnim and runner) then return end
+  local ground = ow.map and ow.map.renderer and ow.map.renderer.gen4Ground
+  local animation = ow:startHealAnim(function()
+    if ground and ground.setHealingBalls then ground:setHealingBalls(0) end
+    runner:resume()
+  end)
+  animation.gen4 = true
+  animation.balls = math.max(0, math.min(6, tonumber(valueOf(ctx, count)) or #(ctx.save.party or {})))
+  runner:yield()
+end
+
+function Commands.g4_check_flag_var(ctx, operand, dest)
+  local key = ('FLAG_G4_%04X'):format(getVar(ctx.save,operand))
+  setVar(ctx.save,dest,(ctx.save.flags or {})[key] and 1 or 0)
+end
+
+function Commands.g4_set_flag_var(ctx, operand)
+  ctx.save.flags = ctx.save.flags or {}
+  ctx.save.flags[('FLAG_G4_%04X'):format(getVar(ctx.save,operand))] = true
+end
+
+function Commands.g4_open_bag(ctx, mode)
+  local runner=ctx.runner
+  ctx.g4SelectedItem=0
+  local function finish(item)
+    ctx.g4SelectedItem=tonumber(item) or 0
+    if runner then runner:resume() end
+  end
+  require('src.ui.Screens').push(ctx.game,'BagMenu',{pick=true,
+    pocket=tonumber(mode)==0 and 'ITEMS' or 'BERRIES',
+    onPick=finish,onCancel=function() finish(0) end})
+  if runner then runner:yield() end
+end
+function Commands.g4_selected_item(ctx,dest) setVar(ctx.save,dest,ctx.g4SelectedItem or 0) end
+Commands.meta.g4_open_bag = { foreground = true, blocking = true }
+function Commands.g4_pocket_has_items(ctx,pocket,dest)
+  local found=false
+  for id,count in pairs(ctx.save.inventory or {}) do
+    local def=(ctx.game.data.items or {})[id]
+    if count>0 and def and def.fieldPocket==valueOf(ctx,pocket) then found=true; break end
+  end
+  setVar(ctx.save,dest,found and 1 or 0)
+end
+function Commands.g4_berry(ctx,operation,operand)
+  local B=require('src.world.Gen4BerryPatches')
+  local patch=B.target(ctx)
+  local value=0
+  if operation=='getberrygrowthstage' then value=patch and patch.stage or 0
+  elseif operation=='getberryitemid' then value=patch and patch.item or 0
+  elseif operation=='getberrymulchtype' then value=patch and patch.mulch or 0
+  elseif operation=='getberrymoisture' then
+    local moisture=patch and patch.moisture or 0
+    value=moisture==0 and 0 or moisture<=50 and 1 or 2
+  elseif operation=='getberryyield' then value=patch and patch.yield or 0
+  elseif operation=='setberrymulch' then
+    local item=valueOf(ctx,operand)
+    if patch and patch.stage==0 and item>=95 and item<=98 then patch.mulch=item end
+    return
+  elseif operation=='plantberry' then B.plant(ctx.game,patch,valueOf(ctx,operand)); return
+  elseif operation=='setberrywateringstate' then
+    if patch and patch.stage>0 and patch.stage<5 then patch.moisture=100 end
+    return
+  elseif operation=='harvestberry' then ctx.lastCheck=B.harvest(ctx.game,patch); return
+  else return end
+  setVar(ctx.save,operand,value)
+end
+Commands.meta.g4_heal_animation = { foreground = true, blocking = true }
 
 -- ---------------------------------------------------------------------------
 -- THE NICKNAME PROMPT
@@ -3141,6 +3237,34 @@ function Commands.g4_pc_free_slots(ctx, destVar)
   if destVar then setVar(ctx.save, destVar, free) end
   setResult(ctx, free)
 end
+
+function Commands.g4_storage(ctx, mode)
+  local modes = { [0] = 'deposit', [1] = 'withdraw', [2] = 'move', [3] = 'items' }
+  local done = false
+  require('src.ui.Screens').push(ctx.game, 'BoxMenu', {
+    mode = modes[valueOf(ctx, mode)] or 'move', onCancel = function() done = true end,
+  })
+  ctx.runner.waitingCheck = function() return done end
+  ctx.runner:yield()
+end
+local function honeyId(ctx)
+ local def=ctx.overworld and ctx.overworld.map and ctx.overworld.map.def
+ return require('src.world.Gen4HoneyTrees').treeId(def and def.header)
+end
+function Commands.g4_honey_slather(ctx) require('src.world.Gen4HoneyTrees').slather(ctx.save,honeyId(ctx)) end
+function Commands.g4_honey_status(ctx,dest)
+ local id=honeyId(ctx);local status=id~=nil and require('src.world.Gen4HoneyTrees').status(ctx.save,id) or 1
+ setVar(ctx.save,dest,status)
+end
+function Commands.g4_honey_stop(ctx)
+ local s=ctx.save.gen4HoneyTrees;local tree=s and s.trees[honeyId(ctx)]
+ if tree then tree.shakes=0 end
+end
+function Commands.g4_honey_battle(ctx)
+ local species,level=require('src.world.Gen4HoneyTrees').consume(ctx.game.data,ctx.save,honeyId(ctx))
+ if species then Commands.start_battle(ctx,'wild',species,level) end
+end
+Commands.meta.g4_storage = { foreground = true, blocking = true }
 
 -- `checkdidnotcapture <destVar>` -- `CheckPlayerDidNotCaptureWildMon`, asked
 -- after a legendary or scripted wild battle so the script knows whether to put

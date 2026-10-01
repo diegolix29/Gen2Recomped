@@ -816,11 +816,12 @@ local function spriteQuadFor(S, spriteId, facing)
   -- `SpriteRenderer:resolveImage` is the resolver that answers this, and it is
   -- published for precisely this reason: so a pipeline can texture its own
   -- geometry from the very same image the 2D path draws.
-  local image = nil
+  local image, spriteRenderer = nil, nil
   local okSR, SR = pcall(require, "src.render.SpriteRenderer")
   if okSR and type(SR) == "table" and SR.new then
     local okMake, sr = pcall(SR.new, def)
     if okMake and sr then
+      spriteRenderer=sr
       local okImg, img = pcall(sr.resolveImage, sr)
       if okImg and img and img.getDimensions then image = img end
     end
@@ -848,8 +849,8 @@ local function spriteQuadFor(S, spriteId, facing)
   -- ship as a 16-wide strip carry only the left half, mirrored at draw time;
   -- here that half is drawn as-is rather than reconstructed, so one of those
   -- reads as half a Snorlax instead of as a wrong Snorlax.
-  local w = (def.big and iw >= 32) and 32 or 16
-  local h = (def.big and ih >= 32) and 32 or 16
+  local w = spriteRenderer and spriteRenderer.tileW or tonumber(def.frameWidth) or ((def.big and iw>=32) and 32 or 16)
+  local h = spriteRenderer and spriteRenderer.tileH or tonumber(def.frameHeight) or ((def.big and ih>=32) and 32 or 16)
   w, h = math.min(w, iw), math.min(h, ih)
 
   -- THE ROW THE SHEET ACTUALLY HAS. A fruit tree, a boulder and a Slowpoke are
@@ -859,11 +860,18 @@ local function spriteQuadFor(S, spriteId, facing)
   local rows = math.max(1, math.floor(ih / h))
   local row = FACE_ROW[dir] or 0
   local flip = 1
+  if spriteRenderer and spriteRenderer.poseFrame then
+    local pose, mirrored=spriteRenderer:poseFrame(dir:lower(),0,false)
+    row=pose or 0;flip=mirrored and -1 or 1
+  elseif def.facings then
+    local cycle=def.facings[dir:lower()] or def.facings.down
+    if cycle then row=cycle[1] or 0 end
+  end
   if row >= rows then row = 0 end
   -- Mirrored only when the LEFT row is the one being shown: a sheet that
   -- fell back to row 0 is facing down, and drawing it backwards would be a
   -- second wrong answer on top of the first.
-  if dir == "RIGHT" and row == FACE_ROW.RIGHT then flip = -1 end
+  if not spriteRenderer and not def.facings and dir == "RIGHT" and row == FACE_ROW.RIGHT then flip = -1 end
 
   local okQ, quad = pcall(love.graphics.newQuad, 0, row * h, w, h, iw, ih)
   if not okQ then
@@ -2529,7 +2537,8 @@ function Preview.draw(S, Kit, x, y, w, h)
       if S.pvView == "voxel" then
         drawVoxelView(S, map, vinner, vh0)
       else
-        map.renderer:draw(S.pvCamX or 0, S.pvCamY or 0)
+        map.renderer:draw(S.pvCamX or 0, S.pvCamY or 0,vinner/S.pvZoom,vh0/S.pvZoom)
+        map.renderer:drawAbove(S.pvCamX or 0,S.pvCamY or 0,vinner/S.pvZoom,vh0/S.pvZoom)
       end
       drawOverlays(S, map, Kit)
       love.graphics.pop()

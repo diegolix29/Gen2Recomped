@@ -24,6 +24,7 @@
 --
 --   vertex  16 bytes  x, y, z, u, v as s16; r, g, b as u8; nx, ny, nz as s8
 --   index    2 bytes  u16 into this shape's own vertex array
+--   matrixSlots: optional byte per vertex preserving display-list joint restores
 --
 -- THE NORMAL IS NOT OPTIONAL, AND LEAVING IT OUT COST THE WHOLE OF SINNOH'S
 -- LIGHTING.
@@ -155,9 +156,12 @@ function Gen4ModelPack.pack(model)
 
   for _, shape in ipairs(model.shapes) do
     local material = model.materials[(shape.material or 0) + 1]
-    local vertexParts, indexParts = {}, {}
+    local vertexParts, indexParts, matrixParts = {}, {}, {}
+    local hasMatrices=false
 
     for _, v in ipairs(shape.vertices) do
+      matrixParts[#matrixParts+1]=char(v.matrix or 0)
+      if (v.matrix or 0)~=0 then hasMatrices=true end
       vertexParts[#vertexParts + 1] = concat({
         s16(v.x * Gen4ModelPack.FX16),
         s16(v.y * Gen4ModelPack.FX16),
@@ -184,6 +188,7 @@ function Gen4ModelPack.pack(model)
       -- uses rather than by position in this list.
       index = shape.index,
       vertices = concat(vertexParts),
+      matrixSlots = hasMatrices and concat(matrixParts) or nil,
       indices = concat(indexParts),
       vertexCount = #shape.vertices,
       triangleCount = #shape.triangles,
@@ -241,6 +246,7 @@ function Gen4ModelPack.unpack(shape)
       v = s16At(at + 8) / Gen4ModelPack.UV_UNITS,
       r = (r or 255) / 255, g = (g or 255) / 255, b = (b or 255) / 255,
       nx = s8At(at + 13), ny = s8At(at + 14), nz = s8At(at + 15),
+      matrix = shape.matrixSlots and shape.matrixSlots:byte(i+1) or 0,
     }
   end
 
@@ -282,6 +288,7 @@ function Gen4ModelPack.verify(model, packed)
     for k, v in ipairs(shape.vertices) do
       local w = vertices[k]
       if not w then return false, ("shape %q vertex %d lost"):format(shape.name, k) end
+      if (v.matrix or 0)~=w.matrix then return false,'vertex matrix slot lost' end
       for _, axis in ipairs({ "x", "y", "z" }) do
         if math.abs(v[axis] - w[axis]) > tolerance then
           return false, ("shape %q vertex %d %s: %f in, %f out")

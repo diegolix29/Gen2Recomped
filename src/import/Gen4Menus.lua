@@ -564,6 +564,15 @@ Gen4Menus.POKETCH_LIVE = {
   ["Digital Watch"] = true, ["Analog Watch"] = true, ["Calendar"] = true,
   ["Counter"] = true, ["Coin Toss"] = true, ["Pedometer"] = true,
   ["Pokémon List"] = true,
+  ["Calculator"] = true, ["Stopwatch"] = true, ["Kitchen Timer"] = true,
+  ["Memo Pad"] = true, ["Dot Artist"] = true, ["Marking Map"] = true,
+  ["Roulette"] = true, ["Friendship Checker"] = true,
+  ["Day-Care Checker"] = true,
+  ["Alarm Clock"] = true, ["Dowsing Machine"] = true,
+  ["Move Tester"] = true,
+  ["Color Changer"] = true,
+  ["Matchup Checker"] = true, ["Pokémon History"] = true,
+  ["Berry Searcher"] = true,
 }
 
 return Gen4Menus

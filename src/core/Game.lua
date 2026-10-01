@@ -525,6 +525,7 @@ function Game:updateCameraStick(dt)
 end
 
 function Game:update(dt)
+  require('src.pokemon.Gen4PoketchState').tick(self, dt)
   -- Fast-forward scales only the logic clock (see src/core/GameSpeed.lua).
   -- Give the accumulator room for one full frame at the current speed,
   -- or the anti-spiral clamp quietly caps every level above ~15X.
@@ -1597,6 +1598,11 @@ end
 function Game:touchpressed(id, x, y)
   if offerPointer(self, "touchpressed", id, x, y) then return end
   TouchControls:touchpressed(id, x, y)
+end
+
+function Game:hasPointerScreen()
+  local top=self.stack and self.stack.top and self.stack:top()
+  return top and type(top.touchpressed)=='function' or false
 end
 
 function Game:touchmoved(id, x, y)

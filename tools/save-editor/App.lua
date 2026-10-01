@@ -350,6 +350,10 @@ function App.load(pathOverride, opts)
     App.dataVersion = opts.version
   end
   S.mods = mods
+  require("src.world.MapLoader").invalidateAll()
+  TileRenderer.releaseGen3Sheets()
+  if PreviewPanel and PreviewPanel.forgetSprites then PreviewPanel.forgetSprites() end
+  require("src.pokemon.Boxes").load(Data)
   S.cat = Catalog.build(Data)
   if S.mode == "map" then
     -- Open on the map picker, and hand the Preview panel the tool list the

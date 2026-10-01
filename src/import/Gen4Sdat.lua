@@ -211,4 +211,78 @@ function Gen4Sdat.wav(self, sample)
   })
 end
 
+-- Native sequence metadata and bank note definitions, shared by the importer
+-- and the runtime player. All offsets remain relative to their owning file.
+function Gen4Sdat.sequence(self, index)
+  local base, count = records(self, self.info, Gen4Sdat.SEQ)
+  if not base or index < 0 or index >= count then return nil end
+  local off = u32(self.data, base + 4 + index * 4)
+  if not off or off == 0 then return nil end
+  local at = self.info + off
+  return { file = u16(self.data, at), bank = u16(self.data, at + 4),
+           volume = u8(self.data, at + 6), index = index }
+end
+function Gen4Sdat.instrument(self, bankIndex, program, note)
+  local bank = Gen4Sdat.bank(self, bankIndex)
+  if not bank then return nil end
+  local base = Gen4Sdat.fileAt(self, bank.file)
+  if not base or self.data:sub(base + 1, base + 4) ~= "SBNK" then return nil end
+  local count = u32(self.data, base + 0x38) or 0
+  if program < 0 or program >= count then return nil end
+  local entry = base + 0x3C + program * 4
+  local kind, off = u8(self.data, entry), u16(self.data, entry + 1)
+  if not kind or kind == 0 or not off then return nil end
+  local at = base + off
+  if kind == 16 then
+    local lo, hi = u8(self.data, at), u8(self.data, at + 1)
+    if not hi or note < lo or note > hi then return nil end
+    at = at + 2 + (note - lo) * 12
+    kind, at = u16(self.data, at), at + 2
+  elseif kind == 17 then
+    local region
+    for n = 0, 7 do local hi = u8(self.data, at + n); if hi and note <= hi then region = n; break end end
+    if not region then return nil end
+    at = at + 8 + region * 12
+    kind, at = u16(self.data, at), at + 2
+  end
+  return { kind = kind, wave = u16(self.data, at),
+    archive = bank.waves[(u16(self.data, at + 2) or 0) + 1],
+    root = u8(self.data, at + 4) or 60, attack = u8(self.data, at + 5),
+    decay = u8(self.data, at + 6), sustain = u8(self.data, at + 7),
+    release = u8(self.data, at + 8), pan = u8(self.data, at + 9) or 64 }
+end
+
+-- Convert all three SWAV encodings to normalized PCM for the audio backend.
+local IMA_STEP = {7,8,9,10,11,12,13,14,16,17,19,21,23,25,28,31,34,37,41,45,50,55,60,66,73,80,88,97,107,118,130,143,157,173,190,209,230,253,279,307,337,371,408,449,494,544,598,658,724,796,876,963,1060,1166,1282,1411,1552,1707,1878,2066,2272,2499,2749,3024,3327,3660,4026,4428,4871,5358,5894,6484,7132,7845,8630,9493,10442,11487,12635,13899,15289,16818,18500,20350,22385,24623,27086,29794,32767}
+local IMA_INDEX = {-1,-1,-1,-1,2,4,6,8}
+function Gen4Sdat.pcm(self, sample)
+  if not sample then return nil end
+  local raw = self.data:sub(sample.at + 1, sample.at + sample.bytes)
+  local out = {}
+  if sample.format == 0 then
+    for i = 1, #raw do local v = byte(raw,i);out[i]=(v>=128 and v-256 or v)/128 end
+  elseif sample.format == 1 then
+    for i = 0, #raw-2, 2 do local v=u16(raw,i);out[#out+1]=(v>=32768 and v-65536 or v)/32768 end
+  elseif sample.format == 2 and #raw >= 4 then
+    local value = u16(raw,0);if value>=32768 then value=value-65536 end
+    local index=math.min(88,u16(raw,2)%128);out[1]=value/32768
+    for i=5,#raw do
+      local v=byte(raw,i)
+      for half=0,1 do
+        local code=half==0 and v%16 or floor(v/16)
+        local step=IMA_STEP[index+1];local diff=floor(step/8)
+        if code%2==1 then diff=diff+floor(step/4) end
+        if floor(code/2)%2==1 then diff=diff+floor(step/2) end
+        if floor(code/4)%2==1 then diff=diff+step end
+        value=math.max(-32768,math.min(32767,value+(code>=8 and -diff or diff)))
+        index=math.max(0,math.min(88,index+IMA_INDEX[code%8+1]))
+        out[#out+1]=value/32768
+      end
+    end
+  else return nil end
+  local loop = sample.format == 2 and math.max(0,(sample.loopWords*4-4)*2+1)
+    or sample.loopWords*4/(sample.format==1 and 2 or 1)
+  return out, math.floor(loop)
+end
+
 return Gen4Sdat

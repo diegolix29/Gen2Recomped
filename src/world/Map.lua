@@ -694,6 +694,10 @@ end
 -- the behaviour byte straight off the metatile and lets the caller decide
 -- what the collision means.
 function Map:cellBehaviour(cx, cy)
+  if self.def.behaviorCells then
+    if not self:inBounds(cx, cy) then return nil end
+    return self.def.behaviorCells:byte(cy * self.widthCells + cx + 1)
+  end
   if not self.def.collisionCells then return nil end
   if cx < 0 or cy < 0 or cx >= self.widthCells or cy >= self.heightCells then
     return nil
@@ -1485,6 +1489,7 @@ function Map:isCounterCell(cx, cy)
   -- answer for a cell you are never standing on.
   local t = self.tileset.behaviourBytes and self:cellBehaviour(cx, cy)
             or self:cellTile(cx, cy)
+  if self.tileset.id=='TILESET_GEN4_STANDIN' and t==0x80 then return true end
   for _, c in ipairs(self.tileset.counterTiles or {}) do
     if c == t then return true end
   end

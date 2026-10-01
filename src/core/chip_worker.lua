@@ -21,6 +21,9 @@ require("love.thread")
 require("love.timer")
 require("love.sound")
 require("love.filesystem")
+package.preload['src.core.WorkerFs']=function()
+  return assert(love.filesystem.load('src/core/WorkerFs.lua'))()
+end
 
 -- Load the synth explicitly via love.filesystem (a fresh thread Lua state does
 -- not necessarily carry the package searcher that resolves "src.core..."):

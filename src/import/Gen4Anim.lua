@@ -408,77 +408,28 @@ Gen4Anim.FX = 4096
 -- or out of range.
 Gen4Anim.PIVOT_BIT = 0x8000
 
--- A PIVOT ROTATION is a rotation one of whose rows is an axis: the +-1 sits at
--- position `flags & 0x0F`, its row and column are zero, and the remaining 2x2
--- holds (a, b) -- a cosine and a sine, which is why a^2 + b^2 is 1 in all
--- 24,538 of them.
---
--- The sign of the +-1 is what keeps the determinant at +1: it follows the
--- parity of the position, and bit 6 flips it.  When it flips, the 2x2 flips
--- with it -- (a, b / b, -a) rather than (a, b / -b, a) -- because negating the
--- +-1 alone would make this a reflection.
---
--- BOTH HALVES WERE READ OFF THE CARTRIDGE rather than assumed.  Where an
--- animation crosses between the two tables mid-channel, the pivot frame and
--- the compressed frame beside it are the same rotation described twice, by two
--- encodings that share nothing; every one of the fifteen flag words that
--- occurs was checked against its neighbours that way, and the parity rule was
--- WRONG for the six with bit 6 until the 2x2 flipped with it.
+-- Pivot forms select the fixed unit entry in column-major order. Three
+-- independent flags control its sign and the two remaining mirrored entries.
 function Gen4Anim.pivotMatrix(flags, a, b)
-  local p = flags % 16
-  local row, col = math.floor(p / 3), p % 3
-  local neg = isSet(flags, 6)
-  local sign = ((row + col) % 2 == 0) and 1 or -1
-  if neg then sign = -sign end
-
-  local m = { 0, 0, 0, 0, 0, 0, 0, 0, 0 }
-  m[row * 3 + col + 1] = sign
-  local rows, cols = {}, {}
-  for i = 0, 2 do if i ~= row then rows[#rows + 1] = i end end
-  for i = 0, 2 do if i ~= col then cols[#cols + 1] = i end end
-  m[rows[1] * 3 + cols[1] + 1] = a
-  m[rows[1] * 3 + cols[2] + 1] = b
-  if neg then
-    m[rows[2] * 3 + cols[1] + 1] = b
-    m[rows[2] * 3 + cols[2] + 1] = -a
-  else
-    m[rows[2] * 3 + cols[1] + 1] = -b
-    m[rows[2] * 3 + cols[2] + 1] = a
+  local p=flags%16
+  local row,col=p%3,math.floor(p/3)
+  local m={0,0,0,0,0,0,0,0,0}
+  m[row*3+col+1]=isSet(flags,4) and -1 or 1
+  local rows,cols={},{}
+  for i=0,2 do
+    if i~=row then rows[#rows+1]=i end
+    if i~=col then cols[#cols+1]=i end
   end
+  m[rows[1]*3+cols[1]+1]=a
+  m[rows[1]*3+cols[2]+1]=isSet(flags,5) and -b or b
+  m[rows[2]*3+cols[1]+1]=b
+  m[rows[2]*3+cols[2]+1]=isSet(flags,6) and -a or a
   return m
 end
 
--- A COMPRESSED ROTATION is five numbers for a nine-number matrix: the first
--- row, then the first two of the second.  The rest follows from the matrix
--- being a rotation -- the second row is a unit vector perpendicular to the
--- first, which fixes its third component up to a sign, and the third row is
--- their cross product.
---
--- THE SIGN IS THE WHOLE DIFFICULTY.  The obvious closed form -- solve the
--- perpendicularity for the missing component -- divides by the first row's
--- third element, which is a rounding error away from zero in 727 of the 6,876
--- records here; it produces components past 11 in those, which is not a
--- rotation at all.  Taking the magnitude from the unit-length condition and
--- only the SIGN from perpendicularity is stable everywhere, and it agrees with
--- the division wherever the division is meaningful.
---
--- All 6,876 come out orthonormal with determinant +1.
-function Gen4Anim.compressedMatrix(a, b, c, d, e)
-  local dot = a * d + b * e
-  local square = 1 - d * d - e * e
-  local f = math.sqrt(square > 0 and square or 0)
-  if c ~= 0 then
-    if (dot > 0) == (c > 0) then f = -f end
-  elseif dot > 0 then
-    f = -f
-  end
-  return {
-    a, b, c,
-    d, e, f,
-    b * f - c * e, c * d - a * f, a * e - b * d,
-  }
-end
-
+-- Nitro packs six signed 13-bit basis components into five 16-bit words.
+-- The low three bits of each word carry the sixth component; the remaining
+-- axis is the cross product of the two stored columns.
 -- rotationAt(data, base, pivotAt, matrixAt, value) -> 3x3
 function Gen4Anim.rotationAt(data, base, pivotAt, matrixAt, value)
   if value >= Gen4Anim.PIVOT_BIT then
@@ -488,10 +439,16 @@ function Gen4Anim.rotationAt(data, base, pivotAt, matrixAt, value)
                                 s16at(data, at + 4) / Gen4Anim.FX)
   end
   local at = base + matrixAt + value * 10
-  return Gen4Anim.compressedMatrix(
-    s16at(data, at) / 32768, s16at(data, at + 2) / 32768,
-    s16at(data, at + 4) / 32768, s16at(data, at + 6) / 32768,
-    s16at(data, at + 8) / 32768)
+  local words={u16(data,at+8),u16(data,at),u16(data,at+2),u16(data,at+4),u16(data,at+6)}
+  local values,packed={},0
+  for i,word in ipairs(words) do
+    local v=math.floor(word/8);values[i]=v>=4096 and (v-8192)/4096 or v/4096
+    packed=packed*8+word%8
+  end
+  packed=packed%8192;values[6]=packed>=4096 and (packed-8192)/4096 or packed/4096
+  local ax,ay,az=values[2],values[3],values[4]
+  local bx,by,bz=values[5],values[1],values[6]
+  return {ax,bx,ay*bz-az*by,ay,by,az*bx-ax*bz,az,bz,ax*by-ay*bx}
 end
 
 -- ---------------------------------------------------------------------------

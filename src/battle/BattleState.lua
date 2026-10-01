@@ -4561,6 +4561,22 @@ end
 -- eighty-first frame and the throw still follows.  Only the screen it is
 -- drawn on differs, which is the whole of the report.
 function BattleState:gen3TutorialBag()
+  if require("src.core.GameVersion").isGen4() then
+    self.phase, self.afterQueue = "messages", "menu"
+    self:ui(function()
+      local bag = require("src.ui.Gen4BagMenu").new(self.game, { pocket = "POKé BALLS" })
+      bag.rows = { { id = 4, label = "POKé BALL", qty = 20 } }
+      bag.update = function(b)
+        b.scriptTimer = (b.scriptTimer or 0) + 1
+        if b.scriptTimer > 88 and not b.closed then
+          b:close()
+          self:oldManThrow()
+        end
+      end
+      return bag
+    end)
+    return true
+  end
   if not require("src.core.GameVersion").isGen3() then return false end
   local ok, Gen3BagMenu = pcall(require, "src.ui.Gen3BagMenu")
   if not (ok and type(Gen3BagMenu) == "table"
@@ -10868,11 +10884,13 @@ function BattleState:storeCaughtMon()
     self.enemy.mon.ball = self.lastBall
   end
   if Party.add(game.save.party, self.enemy.mon) then
+    require('src.pokemon.Gen4PoketchState').remember(game, self.enemy.mon)
     askCaughtNickname()
   else
     destination = "box"
     local boxNum = require("src.pokemon.Boxes").deposit(game.save, self.enemy.mon)
     if boxNum then
+      require('src.pokemon.Gen4PoketchState').remember(game, self.enemy.mon)
       askCaughtNickname()
       -- _ItemUseBallText07/08 keyed on EVENT_MET_BILL
       local pc = (game.save.flags and game.save.flags.EVENT_MET_BILL)

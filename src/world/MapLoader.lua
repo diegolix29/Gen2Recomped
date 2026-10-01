@@ -81,8 +81,17 @@ end
 -- identity, and a copy would quietly become a second map. Idempotent, so a
 -- reload costs nothing.
 function MapLoader.resolveBlocks(data, def)
-  if not def or type(def.blocks) == "string" then return def end
+  if not def then return def end
   local layout = data and data.map_layouts and data.map_layouts[def.layout]
+  if layout and layout.behaviorCells and not def.behaviorCells then
+    local rows = {}
+    for y = 0, (def.height or layout.height) - 1 do
+      local at = ((def.originY or 0) + y) * layout.width + (def.originX or 0) + 1
+      rows[#rows + 1] = layout.behaviorCells:sub(at, at + (def.width or layout.width) - 1)
+    end
+    def.behaviorCells = table.concat(rows)
+  end
+  if type(def.blocks) == "string" then return def end
   local source = layout and layout.blocks
   if type(source) ~= "string" then return def end
 

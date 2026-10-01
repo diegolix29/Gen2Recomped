@@ -111,6 +111,8 @@ Gen4Screens.ARCHIVES = {
   {
     path = "/graphic/pl_plist_gra.narc", label = "party screen",
     out = "party", tilesWide = 8,
+    tilesFrom = { menu = "menu_tiles", menu_panels = "menu_tiles", subscreen = "subscreen_tiles" },
+    palettesFrom = { menu_panels = "menu" },
     tilesWideFor = {
       touch_button = 5,
     },
@@ -212,6 +214,9 @@ Gen4Screens.ARCHIVES = {
   {
     path = "/graphic/poketch.narc", label = "Poketch",
     out = "poketch", tilesWide = 8,
+    shared = "generic",
+    firstTileFor = { poketch_border = 64 },
+    paletteSlotFor = { poketch_border = 15 },
     tilesWideFor = {
       generic = 4,
     },
@@ -219,6 +224,7 @@ Gen4Screens.ARCHIVES = {
     tilesFrom = {
       digital_watch = "watch", analog_watch = "watch",
       digital_watch_digits = "digits",
+      marking_map = "map", berry_searcher = "map",
     },
   },
   {
@@ -366,6 +372,7 @@ function Gen4Screens.plan(path, options)
     if group.NCGR and group.base ~= merged.base then
       merged.bgNCGR = merged.bgNCGR or group.NCGR
     end
+    if group.NCGR and group.base == merged.base then merged.spriteNCGR = group.NCGR end
     for _, role in ipairs({ "NCGR", "NCLR", "NSCR" }) do
       if group[role] and not merged[role] then merged[role] = group[role] end
     end
@@ -478,6 +485,8 @@ function Gen4Screens.plan(path, options)
           tiles = tiles,
           palette = palette,
           paletteName = paletteName,
+          firstTile = options.firstTileFor and options.firstTileFor[group.base],
+          paletteSlot = options.paletteSlotFor and options.paletteSlotFor[group.base],
           tilemap = group.NSCR,
           tilesWide = (options.tilesWideFor
                        and options.tilesWideFor[group.base])
@@ -508,6 +517,17 @@ function Gen4Screens.plan(path, options)
           end
         end
         jobs[#jobs + 1] = job
+        -- Poketch apps have a BG tilemap AND an OBJ sheet under the same
+        -- base name. Keep the cell-assembled sprites alongside the background.
+        if path == "/graphic/poketch.narc" and kind == Gen4Screens.SCREEN
+           and group.spriteNCGR and group.bgNCGR then
+          local cell, via, how = Gen4Archives.cellBank(path, group.base)
+          if cell then
+            jobs[#jobs + 1] = { name = group.base .. "_sprite", kind = Gen4Screens.SHEET,
+              tiles = group.spriteNCGR, palette = sharedPalette, paletteName = sharedFrom,
+              cell = cell, cellFrom = via, cellMatch = how, tilesWide = 8 }
+          end
+        end
       end
     end
   end
