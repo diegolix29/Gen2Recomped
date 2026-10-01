@@ -1,59 +1,67 @@
 -- Gen4Water: the voxel scene's water -- its swell, its cel-shaded paint, its
--- glint and its assets/water/water.png -- laid over Platinum's own water.
+-- glint and its assets/water/water.png -- laid over Platinum's world.
 --
 -- HOW THE VOXEL SCENE MAKES WATER, AND WHY THIS CAN JUST REUSE IT
 --
--- There is no separate "water renderer". Water in the voxel scene is ordinary
--- terrain geometry whose vertices carry the VertexWater flag; the scene shader
--- sees the flag and (a) lifts each vertex by the swell (Water.WAVE_A/B, the
--- weather's energy, the freeze, all sent as uniforms), (b) paints the surface in
--- flat dithered bands with the hard-ringed glint, and (c) replaces the albedo
--- with assets/water/water.png sampled in world XZ. The displacement is a
--- function of world XZ alone, so it needs no per-mesh setup at all.
+-- Water in the voxel scene is ordinary terrain geometry whose vertices carry
+-- the VertexWater flag; the scene shader sees the flag and (a) lifts each
+-- vertex by the swell (Water.WAVE_A/B, the weather's energy, the freeze), (b)
+-- paints the surface in flat dithered bands with the hard-ringed glint, and (c)
+-- replaces the albedo with assets/water/water.png sampled in world XZ. The
+-- displacement is a function of world XZ alone, so it needs no per-mesh setup.
+-- Voxel3D.beginScene sends every one of those uniforms and Gen4Bridge opens a
+-- Voxel3D scene each frame, so all this module supplies is the GEOMETRY.
 --
--- Voxel3D.beginScene sends every one of those uniforms, and Gen4Bridge opens a
--- Voxel3D scene each frame, so on Gen 4 they are already in place. All this
--- module has to supply is the GEOMETRY: a flat sheet of water-flagged quads
--- over the cells Platinum says are water. Water.step (the swell clock, ticked
--- by Weather every frame), the WATER row (CALM / SWELL / FLAT), wet/freeze and
--- the water.png drop-in all work exactly as they do in the voxel scene, and
--- for the same reason: they are the same code.
+-- WHERE THE SHEET GOES (this is the second design)
 --
--- WHERE THE SHEET GOES
+-- The first version laid quads over the cells whose tile BEHAVIOUR said water.
+-- That missed every water polygon standing over a cell with another behaviour
+-- (shores, deep sea past the map edge, bridges' undersides...) and put the
+-- sheet at Gen4Ground:groundY, which is not always the water's own height.
 --
--- Cells whose tile behaviour is one of Platinum's still-water values (a Gen 4
--- map stores the behaviour in the cell itself -- Map:blockAt IS the behaviour;
--- see Gen4Battle.behaviourUnder in the engine): WATER_RIVER 16, WATER_SEA 21,
--- and the three unnamed values 17, 18 and 20 the engine's own surfable set
--- lists between them. Left out on purpose: WATERFALL (19, a vertical sheet, not
--- a surface), PUDDLE and SHALLOW_WATER (22, 23 -- you walk through them), and
--- the bridges (115, 120, 124) which are deck, not water.
+-- This one is built from the cartridge's OWN water polygons: the terrain
+-- shapes Gen4Hide.classify says are water (`sea`, `water01`, `water:lambert5`,
+-- translucent terrain...). They are exactly the shapes Gen4Hide stops the
+-- engine drawing, so whatever it hides is covered, at the surface the artists
+-- put it. Each land chunk is built once (they are shared across the map),
+-- re-tessellated so the swell has vertices to move, and drawn at every place
+-- the engine draws that chunk.
 --
--- The sheet sits at the engine's own height for the cell (Gen4Ground:groundY)
--- plus LIFT, so it covers the engine's water rather than fighting it for the
--- same depth. It is opaque and writes depth, like the voxel scene's water.
+-- HOW FAR IT DRAWS
 --
--- The base texture is Water.artBlank(), a 1x1 blue: with water.png present the
--- shader replaces the albedo with it anyway, and without it you get the flat
--- blue with the same paint and glint rather than a tileset tile that Gen 4 does
--- not have.
+-- As far as the ground does: the engine draws the chunks within FREE_RADIUS
+-- (2) of the camera's chunk, and this draws the water on those same chunks.
+-- There is no separate, shorter radius for water to disappear at.
+--
+-- HEIGHT
+--
+-- The sheet sits LIFT above the native surface (LIFT_FRAC of a 16 unit cell).
+--
+-- REFLECTIONS
+--
+-- The water reflection of the voxel scene is not in the water at all: it is
+-- the RayFX screen pass, which finds water by its HEIGHT. GW.level publishes
+-- the height of the sheet nearest the camera so Gen4Reflect can tell RayFX
+-- where Gen 4's water is.
 
 local V = ...
 local Voxel3D = V.require("Voxel3D")
 local Mat4 = V.require("Mat4")
 
 local GW = {
-  CHUNK = 8,              -- cells per side of one baked sheet
-  RADIUS = 8,             -- chunks around the view's ground focus that are drawn (8 x 128 = 1024 units,
-                          -- most of what the engine draws, so hiding the native water leaves no far hole)
-  NEAR = 3,               -- ring that must be fully built before Gen4Hide drops the native water
-  ready = false,          -- Gen4Hide reads this: the sheet is complete around the camera
-  SUB = 2,                -- quads per cell side (the swell is a vertex effect)
-  LIFT = 1.0,             -- world units above the engine's own water height
-  BUILDS_PER_FRAME = 4,
+  WINDOW = 2,             -- chunks each way the ENGINE draws (Gen4Ground FREE_RADIUS)
+  EDGE = 10,              -- longest triangle edge after tessellation, world units
+  MAX_SPLIT = 52,         -- cap on divisions per triangle edge
+  LIFT_FRAC = 0.05,       -- of a cell: how far above the native water the sheet rides
+  CELL = 16,
+  BUILDS_PER_FRAME = 4,   -- land chunks built in one frame (at most)
+  BUILD_BUDGET = 0.004,   -- seconds; at least one is always built
   TOP_SHADE = 0.85,       -- ChunkMesher's VOLUME_TOP_SHADE, the water's own
-  BEHAVIOURS = { [16] = true, [17] = true, [18] = true, [20] = true, [21] = true },
+  UP_ONLY = 0.7,          -- keep triangles whose normal is this far up (not falls)
+  ready = false,          -- Gen4Hide reads this: the sheet covers what is hidden
+  level = nil,            -- world Y of the sheet nearest the camera (Gen4Reflect)
 }
+GW.LIFT = GW.LIFT_FRAC * GW.CELL
 
 local warned = {}
 local function once(key, fmt, ...)
@@ -67,58 +75,150 @@ local function optional(name)
   return ok and mod or nil
 end
 
-local cache = setmetatable({}, { __mode = "k" })   -- map -> { chunks = {...} }
+local cache = setmetatable({}, { __mode = "k" })   -- ground -> { lands = {}, complete }
 
-local function isWater(map, cx, cy)
-  if not (map.blockAt and map.inBounds and map:inBounds(cx, cy)) then return false end
-  local ok, b = pcall(map.blockAt, map, cx, cy)
-  return ok and GW.BEHAVIOURS[b] == true
+-- ----------------------------------------------------------- decoding --
+
+local function s16(data, at)
+  local a, b = data:byte(at + 1, at + 2)
+  if not b then return 0 end
+  local value = a + b * 256
+  if value >= 32768 then value = value - 65536 end
+  return value
 end
 
--- One chunk's sheet: SUBxSUB water-flagged quads per water cell, each at its
--- cell's own height. Vertex layout is Voxel3D.FORMAT: x, y, z, u, v, shade,
--- water. UVs are unused by the water art (it samples world XZ) but must exist.
-local function buildChunk(scene, map, kx, ky)
-  local C, S = GW.CHUNK, GW.SUB
-  local step = 16 / S
-  local verts, indices = {}, {}
-  local n = 0
-  for cy = ky * C, ky * C + C - 1 do
-    for cx = kx * C, kx * C + C - 1 do
-      if isWater(map, cx, cy) then
-        local y = scene.groundY(cx * 16 + 8, cy * 16 + 8) or 0
-        for sy = 0, S - 1 do
-          for sx = 0, S - 1 do
-            local x0, z0 = cx * 16 + sx * step, cy * 16 + sy * step
-            local x1, z1 = x0 + step, z0 + step
-            local sh, w = GW.TOP_SHADE, 1
-            -- winding matches the voxel mesher's top faces (Voxel3D.pushQuad
-            -- takes them bottom-left, bottom-right, top-right, top-left; the
-            -- pipeline draws with culling off, so orientation is not visible)
-            verts[#verts + 1] = { x0, y, z1, 0, 1, sh, w }
-            verts[#verts + 1] = { x1, y, z1, 1, 1, sh, w }
-            verts[#verts + 1] = { x1, y, z0, 1, 0, sh, w }
-            verts[#verts + 1] = { x0, y, z0, 0, 0, sh, w }
-            Voxel3D.pushQuad(indices, n)
-            n = n + 1
-          end
+local FX16 = 4096          -- Gen4Model's fixed-point scale
+
+-- One shape's triangles as { {x,y,z}, {x,y,z}, {x,y,z} } in the chunk's own
+-- space, read the way Gen4Model.new reads them (stride measured off the
+-- buffer, positions are the first three s16 of each vertex).
+local function shapeTriangles(ground, s, posScale)
+  local vdata = ground:slice(s.vertexAt, s.vertexBytes)
+  local idata = ground:slice(s.indexAt, s.indexBytes)
+  local count, tris = s.vertexCount or 0, s.triangleCount or 0
+  if not (vdata and idata) or count < 3 or tris < 1 then return {} end
+  local stride = math.floor(#vdata / count)
+  if stride < 6 then return {} end
+  local pos = {}
+  for i = 0, count - 1 do
+    local at = i * stride
+    pos[i] = {
+      s16(vdata, at) / FX16 * posScale,
+      s16(vdata, at + 2) / FX16 * posScale,
+      s16(vdata, at + 4) / FX16 * posScale,
+    }
+  end
+  local out = {}
+  for t = 0, tris - 1 do
+    local a1, a2 = idata:byte(t * 6 + 1, t * 6 + 2)
+    local b1, b2 = idata:byte(t * 6 + 3, t * 6 + 4)
+    local c1, c2 = idata:byte(t * 6 + 5, t * 6 + 6)
+    if c2 then
+      local a, b, c = pos[a1 + a2 * 256], pos[b1 + b2 * 256], pos[c1 + c2 * 256]
+      if a and b and c then out[#out + 1] = { a, b, c } end
+    end
+  end
+  return out
+end
+
+local function isUp(tri)
+  local a, b, c = tri[1], tri[2], tri[3]
+  local ux, uy, uz = b[1] - a[1], b[2] - a[2], b[3] - a[3]
+  local vx, vy, vz = c[1] - a[1], c[2] - a[2], c[3] - a[3]
+  local nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+  local len = math.sqrt(nx * nx + ny * ny + nz * nz)
+  if len < 1e-6 then return false end
+  return math.abs(ny) / len >= GW.UP_ONLY
+end
+
+-- A triangle cut into n*n smaller ones so the swell has vertices to lift.
+-- Vertex layout is Voxel3D.FORMAT: x, y, z, u, v, shade, water.
+local function emit(verts, map, a, b, c)
+  local function d(p, q)
+    local dx, dz = p[1] - q[1], p[3] - q[3]
+    return math.sqrt(dx * dx + dz * dz)
+  end
+  local longest = math.max(d(a, b), d(b, c), d(c, a))
+  local n = math.max(1, math.min(GW.MAX_SPLIT, math.ceil(longest / GW.EDGE)))
+  local base, k, idx = #verts, 0, {}
+  local sh = GW.TOP_SHADE
+  for i = 0, n do
+    for j = 0, n - i do
+      local fi, fj = i / n, j / n
+      verts[#verts + 1] = {
+        a[1] + (b[1] - a[1]) * fi + (c[1] - a[1]) * fj,
+        a[2] + (b[2] - a[2]) * fi + (c[2] - a[2]) * fj,
+        a[3] + (b[3] - a[3]) * fi + (c[3] - a[3]) * fj,
+        0, 0, sh, 1,
+      }
+      k = k + 1
+      idx[i * (n + 1) + j] = base + k
+    end
+  end
+  for i = 0, n - 1 do
+    for j = 0, n - 1 - i do
+      local p00 = idx[i * (n + 1) + j]
+      local p10 = idx[(i + 1) * (n + 1) + j]
+      local p01 = idx[i * (n + 1) + j + 1]
+      map[#map + 1], map[#map + 2], map[#map + 3] = p00, p10, p01
+      if i + j < n - 1 then
+        local p11 = idx[(i + 1) * (n + 1) + j + 1]
+        map[#map + 1], map[#map + 2], map[#map + 3] = p10, p11, p01
+      end
+    end
+  end
+end
+
+-- ------------------------------------------------------------ building --
+
+local function isWaterShape(Hide, s)
+  local pseudo = { srcMaterial = s.material, srcTexture = s.texture, srcAlpha = s.alpha }
+  if Hide and Hide.classify then return Hide.classify(pseudo) ~= nil end
+  local m = tostring(s.material or ""):lower()
+  local t = tostring(s.texture or ""):lower()
+  return m == "sea" or t == "sea" or m:find("^water") ~= nil or t:find("^water") ~= nil
+end
+
+-- One land chunk's sheet, in the chunk's own space. { mesh = nil } when it has
+-- no water, which is most of them.
+local function buildLand(ground, land)
+  local record = ground.terrain and ground.terrain.chunks and ground.terrain.chunks[land]
+  if not (record and record.shapes) then return { mesh = nil } end
+  local Hide = optional("Gen4Hide")
+  local posScale = record.posScale or 1
+  local verts, map = {}, {}
+  local ysum, ycount = 0, 0
+  for _, s in ipairs(record.shapes) do
+    if isWaterShape(Hide, s) then
+      for _, tri in ipairs(shapeTriangles(ground, s, posScale)) do
+        if isUp(tri) then
+          emit(verts, map, tri[1], tri[2], tri[3])
+          ysum = ysum + tri[1][2] + tri[2][2] + tri[3][2]
+          ycount = ycount + 3
         end
       end
     end
   end
-  if n == 0 then return { mesh = nil } end
-  return { mesh = Voxel3D.newMesh(verts, indices) }
+  if #verts == 0 then return { mesh = nil } end
+  return { mesh = Voxel3D.newMesh(verts, map), y = ysum / ycount }
 end
 
+-- ---------------------------------------------------------------- draw --
+
 function GW.draw(scene)
-  GW.ready = false
-  local map = scene.map
-  if not map then return end
+  GW.level = nil
+  local ground, view = scene.ground, scene.view
+  if not (ground and view and ground.grid and ground.terrain and ground.slice
+          and ground.chunkPx and ground.half) then
+    once("ground", "the ground has no chunk grid to read water from -- native water kept")
+    GW.ready = false
+    return
+  end
   local Water = optional("Water")
-  if not Water then return end
-  local tex = Water.artBlank and Water.artBlank() or nil
+  local tex = Water and Water.artBlank and Water.artBlank() or nil
   if not tex then
     once("tex", "no base texture for the water sheet")
+    GW.ready = false
     return
   end
   if not (Water.artOn and Water.artOn() == 1) then
@@ -126,52 +226,67 @@ function GW.draw(scene)
          .. "with the swell, paint and glint (drop the file in to get the art)")
   end
 
-  local rec = cache[map]
-  if not rec then rec = { chunks = {} }; cache[map] = rec end
+  local rec = cache[ground]
+  if not rec then rec = { lands = {} }; cache[ground] = rec end
 
+  local grid, px, half = ground.grid, ground.chunkPx, ground.half
+  local W = GW.WINDOW
+  local camCx, camCy = math.floor(view.x / px), math.floor(view.z / px)
   local fx, fz = scene.focusPx()
-  local span = GW.CHUNK * 16
-  local kx0, ky0 = math.floor(fx / span), math.floor(fz / span)
-  local R = GW.RADIUS
+  fx, fz = fx + scene.offsetX, fz + scene.offsetZ         -- map pixels -> world
+
   local want = {}
-  for ky = ky0 - R, ky0 + R do
-    for kx = kx0 - R, kx0 + R do
-      local dx, dy = kx - kx0, ky - ky0
-      if dx * dx + dy * dy <= R * R + 1 then want[#want + 1] = { dx * dx + dy * dy, kx, ky } end
+  for cy = camCy - W, camCy + W do
+    for cx = camCx - W, camCx + W do
+      if cx >= 0 and cy >= 0 and cx < grid.width and cy < grid.height then
+        local land = grid.land[cy * grid.width + cx + 1]
+        local dx, dz = cx * px + half - fx, cy * px + half - fz
+        want[#want + 1] = { dx * dx + dz * dz, cx, cy, land }
+      end
     end
   end
   table.sort(want, function(a, b) return a[1] < b[1] end)
 
-  local builds, list = 0, {}
-  local nearMissing = false
+  local now = love.timer and love.timer.getTime
+  local started = now and now() or 0
+  local builds, missing = 0, false
+  local list, nearest, nearestD = {}, nil, math.huge
   for _, w in ipairs(want) do
-    local key = w[2] .. ":" .. w[3]
-    local chunk = rec.chunks[key]
-    if not chunk and builds < GW.BUILDS_PER_FRAME then
-      builds = builds + 1
-      local ok, built = pcall(buildChunk, scene, map, w[2], w[3])
-      if ok then
-        chunk = built
+    local land = w[4]
+    local entry = rec.lands[land]
+    if not entry then
+      local overBudget = builds >= GW.BUILDS_PER_FRAME
+        or (builds > 0 and now and (now() - started) > GW.BUILD_BUDGET)
+      if overBudget then
+        missing = true
       else
-        chunk = { mesh = nil }
-        once("chunk", "a chunk failed to build and was skipped: %s", tostring(built))
+        builds = builds + 1
+        local ok, built = pcall(buildLand, ground, land)
+        if ok then
+          entry = built
+        else
+          entry = { mesh = nil }
+          once("land", "a land chunk failed to build and was skipped: %s", tostring(built))
+        end
+        rec.lands[land] = entry
       end
-      rec.chunks[key] = chunk
     end
-    if not chunk and w[1] <= GW.NEAR * GW.NEAR + 1 then nearMissing = true end
-    if chunk and chunk.mesh then list[#list + 1] = chunk.mesh end
+    if entry and entry.mesh then
+      list[#list + 1] = { mesh = entry.mesh, x = w[2] * px + half, z = w[3] * px + half }
+      if w[1] < nearestD then nearestD, nearest = w[1], entry end
+    end
   end
-  -- latched per map: once the ring around the camera has been complete, walking
-  -- into new chunks must not hand the native water back for a frame or two
-  if not nearMissing then rec.complete = true end
+  -- Latched per ground: once the whole window has been built, walking into
+  -- chunks that are not yet must not hand the native water back for a frame.
+  if not missing then rec.complete = true end
   GW.ready = rec.complete == true
+  if nearest then GW.level = nearest.y + GW.LIFT end
   if #list == 0 then return end
 
   Voxel3D.seams(false)
   Voxel3D.glass(false)
-  local model = Mat4.translate(scene.offsetX, GW.LIFT, scene.offsetZ)
-  for _, mesh in ipairs(list) do
-    Voxel3D.draw(mesh, tex, model, 0, nil, 0, false)
+  for _, item in ipairs(list) do
+    Voxel3D.draw(item.mesh, tex, Mat4.translate(item.x, GW.LIFT, item.z), 0, nil, 0, false)
   end
   Voxel3D.seams(true)
   Voxel3D.glass(true)
@@ -179,10 +294,10 @@ end
 
 -- Drop every baked sheet: a map was edited, or the mod was reloaded.
 function GW.invalidate()
-  GW.ready = false
+  GW.ready, GW.level = false, nil
   for _, rec in pairs(cache) do
-    for _, chunk in pairs(rec.chunks) do
-      if chunk.mesh and chunk.mesh.release then pcall(chunk.mesh.release, chunk.mesh) end
+    for _, entry in pairs(rec.lands) do
+      if entry.mesh and entry.mesh.release then pcall(entry.mesh.release, entry.mesh) end
     end
   end
   cache = setmetatable({}, { __mode = "k" })

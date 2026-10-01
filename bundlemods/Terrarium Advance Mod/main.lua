@@ -169,6 +169,8 @@ if Gen4Bridge.isGen4() and Gen4Bridge.install() then
   Gen4Bridge.register("grass", V.require("Gen4Grass").draw)
   -- hide Platinum's own grass cards and water where the 3D versions draw (Gen4Hide)
   pcall(function() V.require("Gen4Hide").install() end)
+  -- the voxel scene's RayFX water reflection, pointed at Gen 4's water (Gen4Reflect)
+  pcall(function() V.require("Gen4Reflect").install() end)
   -- 3D battles in the engine's own world, sprites for actors (Gen4Battle3D).
   pcall(function() V.require("Gen4Battle3D").install() end)
 end
@@ -1658,7 +1660,7 @@ SettingsMenu.helpFor = function(id)
   if id == "DRAMATIC_SHAPE:characterWalkViewer" then
     return "Opens the current Colosseum character. Left/Right orbit, Select toggles walk, Start re-saves walk_debug_<id>.txt into the LOVE save folder (see the console path) for tools/paint_walk_override.py."
   end
-    if id == "DRAMATIC_SHAPE:hdPokemon" then
+      if id == "DRAMATIC_SHAPE:hdPokemon" then
     return "HD Asset Manager (same as Kanto in Motion): A downloads the official PNG pack, START installs a local ZIP. Android: put picked_hd_pokemon.zip in the save folder, then START. Extraction runs a little each frame so the bar can move. Dex 1-493 Reloded GIFs in the zip are converted in-game; PNG sheets are copied once into mod cache."
   end
   return originalHelpFor(id)
@@ -2508,7 +2510,7 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
   if okMewtwo and mewtwoRow and not rowExists(mewtwoRow.id) then 
     table.insert(out, mewtwoRow) 
   end
-    -- Pokemon follower row (386 Pokemon support for Stadium/Colosseum models)
+      -- Pokemon follower row (386 Pokemon support for Stadium/Colosseum models)
   local okPokemonFollower, pokemonFollowerRow = pcall(function()
     local StadiumInstall = V.require("StadiumInstall")
     local Stadium2Install = V.require("Stadium2Install")
@@ -3858,7 +3860,7 @@ local function initializeColosseumIntegration()
     namespace.Voxel3D = Voxel3D  -- give the Colosseum namespace what ArenaOverworldSnapshot needs
     namespace.HdPokemon = HdPokemon
     V.HdPokemon = HdPokemon
-    local ArenaOverworldSnapshot = loadColosseumModule("ArenaOverworldSnapshot")
+    local ArenaOverworldSnapshot = loadColosseumModule("ArenaOverworldSnapshot") 
     BattleArtBridge = loadColosseumModule("BattleArtBridge")
     loadColosseumModule("ShinySupport")
     loadColosseumModule("ModelIdentity")
@@ -4151,9 +4153,10 @@ end
     if CurrentSpriteModels and type(CurrentSpriteModels.registerCapability) == "function" and PokemonActors and PokemonActors.service then
       pcall(CurrentSpriteModels.registerCapability, "COLOSSEUM_BATTLE_ENVIRONMENTS/pokemon", "battleActors", PokemonActors.service)
     end
-     if HdPokemon and type(HdPokemon.install) == "function" then
+         if HdPokemon and type(HdPokemon.install) == "function" then
       pcall(HdPokemon.install, CurrentSpriteModels)
     end
+
 
     -- Publish the same PokemonActors capability for OVERWORLD consumers.
     if PokemonActors and PokemonActors.service then
@@ -4573,7 +4576,7 @@ V.require = function(name)
     Mat4 = Mat4,
     ShadowMap = ShadowMap,
     SpriteBillboards = SpriteBillboards,
-        HdPokemon = HdPokemon,
+    HdPokemon = HdPokemon,
 
   }
   

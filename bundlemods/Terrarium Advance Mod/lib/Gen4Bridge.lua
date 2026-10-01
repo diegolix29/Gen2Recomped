@@ -43,6 +43,8 @@ local Mat4 = V.require("Mat4")
 local Bridge = {
   effects = {},      -- name -> draw(scene)
   order = {},        -- registration order == draw order
+  after = {},        -- fn(ground, view, vw, vh): screen passes run once the effects
+                     -- are drawn and BEFORE the engine blits the frame (Gen4Reflect)
   disabled = {},     -- name -> true when switched off
   enabled = true,    -- master switch
   installed = false,
@@ -179,6 +181,12 @@ function Bridge.run(ground)
     -- make sure a throw between beginScene/endScene can't leave state behind
     pcall(Voxel3D.endScene)
     report("scene", "scene failed: %s", tostring(err))
+  end
+  for i, fn in ipairs(Bridge.after) do
+    local okA, errA = pcall(fn, ground, view, vw, vh)
+    if not okA then
+      report("after:" .. i, "screen pass %d failed: %s", i, tostring(errA))
+    end
   end
 end
 

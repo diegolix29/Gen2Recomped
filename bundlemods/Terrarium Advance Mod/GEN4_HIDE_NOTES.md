@@ -1,50 +1,48 @@
-# Hiding Platinum's native grass and water (Gen4Hide)
+# Gen 4: hide native grass/water, and the 3D grass / water that replace them
 
-Files: `lib/Gen4Hide.lua` (new), `lib/Gen4Water.lua` (changed), `main.lua` (2 lines).
+Files: `lib/Gen4Hide.lua`, `lib/Gen4Water.lua` (rewritten), `lib/Gen4Grass.lua`,
+`lib/Gen4Reflect.lua` (new), `lib/Gen4Bridge.lua` (one hook), `main.lua` (4 lines).
 
-## How it works
-Terrain is one `Gen4Model` per land chunk and `Gen4Model:draw` loops over `model.shapes`,
-one material per shape. `Gen4Hide` wraps `Gen4Model.draw` and `Gen4Ground:drawFree`; only
-while `drawFree` runs (the free cameras, where Gen4Bridge draws) it hands `draw` a filtered
-shape list, and puts the real list back right after. The CARTRIDGE rung, baked chunks,
-canopies and building passes are untouched.
+## Gen4Hide (unchanged this round)
+Wraps `Gen4Model.draw` during `Gen4Ground:drawFree` and skips the native grass cards and the
+shapes `Hide.classify` calls water. `LOG_NAMES` is off again.
 
-- **Grass:** hides the standing cards (`<shape>Cards`, index nil) the engine stamps over
-  encounter grass. The flat `nectgr` quad stays as ground, so no hole under your tufts.
-- **Water (round 2):** a built Gen4Model shape keeps its material name but NOT its texture or
-  alpha, so `Gen4Ground:modelFor` is wrapped to copy the cache's texture name and alpha onto
-  each terrain shape. A shape is hidden when its material OR texture name says water
-  (`sea`, `water01/02`, `water:lambert5`, anything with water/lake/river/wtr/pond...), or when
-  it is translucent terrain (alpha < 31) that is not a shadow/glass/cloud. Waterfalls and
-  fountains are never hidden. Tune `Hide.WATER_NAMES / WATER_PATTERNS / WATER_SUBSTRINGS /
-  KEEP_SUBSTRINGS`, or set `Hide.ALPHA_HEURISTIC = false`.
-- Round 1 only matched three exact names, and the cartridge also names materials like
-  `water:lambert5`, so most water kept drawing.
+## Gen4Water: built from the cartridge's own water polygons
+- The sheet is now made from the SAME terrain shapes Gen4Hide hides (via `Hide.classify`), read
+  out of the cache with `ground:slice`, kept where the triangle faces up, and re-tessellated
+  (`EDGE` 10 units, `MAX_SPLIT` 52) so the swell has vertices. Whatever is hidden is covered,
+  at the height the artists put it. The old version used tile behaviours + `groundY`, which
+  missed water over other behaviours and sat at the wrong height.
+- One mesh per LAND chunk (shared across the map), drawn at every place the engine draws that
+  chunk: `translate(cx*chunkPx + half, LIFT, cy*chunkPx + half)`.
+- Draws the full engine window (`WINDOW` 2 = Gen4Ground FREE_RADIUS), so water reaches as far
+  as the ground does.
+- `LIFT = LIFT_FRAC (0.05) * 16 = 0.8` units above the native surface. Change `GW.LIFT_FRAC`.
+- Publishes `GW.ready` (window fully built; latched) and `GW.level` (Y of the sheet nearest the
+  camera) for Gen4Hide and Gen4Reflect.
 
-## It stands down instead of leaving a hole
-- grass: no Grass3D bake, or the grass effect disabled
-- water: water effect disabled/failed, or `Gen4Water.ready` is false (the sheet around the
-  camera isn't fully built yet, ring `GW.NEAR` = 3 chunks)
+## Gen4Grass: the same window as the ground
+Grass chunks are wanted on every engine chunk within `WINDOW` (2) of the camera's, nearest
+first, built under a 4 ms/frame budget (`BUILD_BUDGET`, at most `BUILDS_PER_FRAME` 24). The old
+3-chunk circle around the player is only a fallback now. All built chunks are drawn.
 
-## Gen4Water changes
-Readiness is latched per map (no native-water flicker when walking into new chunks).
-`RADIUS` 3 -> 8 (1024 units; the engine draws a 5x5 grid of 512-unit chunks, so 3 left a far
-hole once native water is gone), `BUILDS_PER_FRAME` 2 -> 4, new `GW.NEAR` and `GW.ready`.
+## Gen4Reflect: the voxel scene's water reflection
+The reflection is RayFX (the RTX row, RT/MAX), a screen pass that finds water by HEIGHT. Gen 4's
+water is not at the voxel scene's height, so it never found any. Gen4Reflect:
+1. wraps `Gen4Model.newTarget` to give Gen 4 a READABLE depth buffer;
+2. after Gen4Bridge's effects (new `Bridge.after` hook) and before the engine blits, runs
+   `RayFX.apply` over the Gen 4 colour + depth with `WATER_Y/WATER_BASE` moved to `GW.level`,
+   and copies the result back into the colour canvas.
+Limits: only at RT/MAX; AO comes with it (same pass); one water height per frame (the nearest
+sheet); nothing happens if the driver refuses a readable depth canvas (logged once, "Gen4Reflect:").
 
 ## Switches
-`Hide.grass = false` / `Hide.water = false` (e.g. from a console or debug row) to compare.
-`Hide.LOG_NAMES` (now ON) logs every distinct shape once, as `Gen4Hide: hid water by ...` or
-`Gen4Hide: kept: material ... texture ... alpha ...`. Grep the mod log for `Gen4Hide:`.
-It also logs why water is or is not being hidden (`sheet not built yet`, `no ready flag`...).
+`Hide.grass/water`, `Reflect.enabled`, `GW.LIFT_FRAC`, `GW.EDGE`, `Grass.WINDOW`, `GW.WINDOW`.
 
 ## Tested / not tested
-Tested with stubs (texlua): filtering, exact restore, error path, every stand-down case,
-cache refilter, uninstall, `GW.ready` going false -> true -> false. Syntax of all 3 files.
-NOT tested in LOVE + Platinum. Look for:
-1. Water I did not name. Props (`l_lake`, `r04_w` are build models) go through the same
-   `Gen4Model.draw`, so a prop material named `water*`/`sea` is hidden too, but lakes whose
-   material has another name stay native. Turn on `LOG_NAMES` and add what you find.
-2. Slivers at shorelines: native water follows the artist's polygons, the sheet follows
-   cells (2x2 per cell).
-3. Water height: if `groundY` over water is the lakebed, the sheet sits low (raise `GW.LIFT`).
-4. Frame cost of RADIUS 8 on first entry to a big lake (4 chunk builds/frame).
+Stub tests: sheet geometry (area preserved, placement, height, vertical/shadow shapes skipped,
+cache, latch, no-grid fallback), grass window edges and per-frame bound, reflection band
+set/restore, copy-back, every early exit, error path, uninstall. NOT run in LOVE + Platinum:
+check the reflection in particular (canvas/depth handling is the part only the real driver
+proves), the shoreline where sheet meets bank, and frame time on big seas (25 chunks of sea
+is about 200k triangles).

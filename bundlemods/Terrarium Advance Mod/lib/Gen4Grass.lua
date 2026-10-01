@@ -44,8 +44,12 @@ local Mat4 = V.require("Mat4")
 
 local Grass = {
   CHUNK = 4,             -- cells per side of one baked mesh
-  RADIUS = 3,            -- chunks around the view's ground focus that are drawn
-  BUILDS_PER_FRAME = 2,  -- chunk meshes built in one frame (no hitch on entry)
+  WINDOW = 2,            -- engine chunks each way that Platinum draws ground for
+                         -- (Gen4Ground FREE_RADIUS): grass grows on all of them
+  RADIUS = 3,            -- fallback only: grass chunks around the focus, used when
+                         -- the ground's chunk grid is not available
+  BUILDS_PER_FRAME = 24, -- most chunk meshes built in one frame
+  BUILD_BUDGET = 0.004,  -- seconds of building per frame (at least one is built)
   TALL_GRASS = 2,        -- Gen 4 tile behaviours
   VERY_TALL_GRASS = 3,
 }
@@ -172,26 +176,49 @@ function Grass.draw(scene)
   local fx, fz = scene.focusPx()
   local span = Grass.CHUNK * 16
   local kx0, ky0 = math.floor(fx / span), math.floor(fz / span)
-  local R = Grass.RADIUS
 
-  -- nearest chunks first, so the ones under the camera are built before the far
+  -- WHICH CHUNKS: every one the engine draws ground for. The engine draws the
+  -- engine chunks within WINDOW of the camera's, so grass is wanted on exactly
+  -- that square (in map pixels: world minus the ground's offset) and not on a
+  -- smaller circle around the player, which is what made it fade in only when
+  -- you were close.
   local want = {}
-  for ky = ky0 - R, ky0 + R do
-    for kx = kx0 - R, kx0 + R do
-      local dx, dy = kx - kx0, ky - ky0
-      if dx * dx + dy * dy <= R * R + 1 then
+  local ground, view = scene.ground, scene.view
+  local px = ground and ground.chunkPx
+  if px and view and tonumber(view.x) and tonumber(view.z) then
+    local W = Grass.WINDOW
+    local camCx, camCy = math.floor(view.x / px), math.floor(view.z / px)
+    local x0, x1 = (camCx - W) * px - scene.offsetX, (camCx + W + 1) * px - scene.offsetX
+    local z0, z1 = (camCy - W) * px - scene.offsetZ, (camCy + W + 1) * px - scene.offsetZ
+    for ky = math.floor(z0 / span), math.ceil(z1 / span) - 1 do
+      for kx = math.floor(x0 / span), math.ceil(x1 / span) - 1 do
+        local dx, dy = kx - kx0, ky - ky0
         want[#want + 1] = { dx * dx + dy * dy, kx, ky }
       end
     end
+  else
+    local R = Grass.RADIUS
+    for ky = ky0 - R, ky0 + R do
+      for kx = kx0 - R, kx0 + R do
+        local dx, dy = kx - kx0, ky - ky0
+        if dx * dx + dy * dy <= R * R + 1 then
+          want[#want + 1] = { dx * dx + dy * dy, kx, ky }
+        end
+      end
+    end
   end
+  -- nearest chunks first, so the ones under the camera are built before the far
   table.sort(want, function(a, b) return a[1] < b[1] end)
 
+  local now = love.timer and love.timer.getTime
+  local started = now and now() or 0
   local builds = 0
   local list = {}
   for _, w in ipairs(want) do
     local key = w[2] .. ":" .. w[3]
     local chunk = rec.chunks[key]
-    if not chunk and builds < Grass.BUILDS_PER_FRAME then
+    if not chunk and builds < Grass.BUILDS_PER_FRAME
+       and (builds == 0 or not now or (now() - started) < Grass.BUILD_BUDGET) then
       builds = builds + 1
       local ok, built = pcall(buildChunk, Grass3D, scene, map, w[2], w[3])
       if ok then

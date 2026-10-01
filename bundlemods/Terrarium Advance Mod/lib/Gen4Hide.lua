@@ -56,8 +56,9 @@ local Hide = {
   -- or a water edge: the importer measured every water material that way.
   ALPHA_HEURISTIC = true,
   -- log every distinct shape once, with what was decided. Grep the mod log for
-  -- "Gen4Hide:". Turn off once the water you see is gone.
-  LOG_NAMES = true,
+  -- "Gen4Hide:". Off now that the native water is gone; turn on to find a name
+  -- that still draws.
+  LOG_NAMES = false,
 }
 
 local logged = {}
