@@ -529,7 +529,7 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
     pcall(function() V.require("Stadium2Screen").maybePush() end)
     -- Load the player model if one is installed (restored from DRAMATIC_SHAPE)
     pcall(function()
-      if PlayerModelInstall.installed() then
+      if not PlayerModel.loaded() and PlayerModelInstall.installed() then
         PlayerModel.loadInstalled()
       end
     end)
