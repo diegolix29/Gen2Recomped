@@ -1,12 +1,23 @@
 -- One-shot installer for the HD sheet pack(s) used by lib/HDPokemonSheets.lua.
--- (Patched to use gen2rec HostShell/EngineCompat instead of Gen1 Fetch)
 --
--- Downloads each configured release ZIP with the engine's HostShell,
+-- Downloads each configured release ZIP with the engine's streaming Fetch,
 -- reads the ZIP directly (no unzip dependency) and copies ONLY the sheet PNGs
 -- for National Dex 1..493 into mod.cache under hd_sheets/<facing>/<color>/.
 -- That is exactly where HDPokemonSheets looks first, so nothing else needs to
 -- be told: it re-scans when the install finishes.
-
+--
+-- The cap is HDPokemonSheets.MAX_DEX (493), not whatever the pack happens to
+-- hold: files for dex 494+ are never written, and nothing here assumes the pack
+-- stops at 386. Whatever 1..493 files a release actually contains are
+-- installed; the end-of-install log says how many landed in 1-386 and in
+-- 387-493, so it is obvious what a given pack covers.
+--
+-- Needs the "network" permission (manifest) and the engine's Fetch/ModUpdate.
+-- Pumped once per frame from main.lua's input.step wrap; the OPTIONS-menu row
+-- (I.row) starts/cancels it and shows live progress through its value().
+--
+-- ZIP + release flow is modelled on the engine APIs Kanto in Motion uses for
+-- its own asset pack; the code is written for this mod.
 local V = ...
 local mod = V and V.mod
 
@@ -17,16 +28,17 @@ I.config = {
   -- another release: same layout, assets/battle/hd-pokemon/<facing>/<color>/NNN.png
   sources = {
     {
-      name = "HD Reloded assets",
-      url = "https://github.com/MMNNGG765/Terri-Assets/releases/download/1.0.0/HDReloded.zip",
-      packId = nil, 
+      name = "Kanto in Motion assets",
+      repo = "HaseoSora/Kanto-in-Motion-Assets",
+      version = "1.0.0",
+      packId = "kanto_in_motion_assets", -- checked against asset-pack.json when set
       prefix = "assets/battle/hd-pokemon/",
       userAgent = "terrarium-hd-sheets",
     },
   },
   tempName = "terrarium_hd_sheets.tmp.zip",
   extractBudget = 0.010,       -- seconds of unpacking per frame
-  maxSeconds = 15 * 60,        -- max download time
+  maxSeconds = 15 * 60,        -- the release ZIP is large; Fetch's default is too short
   maxFile = 64 * 1024 * 1024,
 }
 
@@ -82,7 +94,7 @@ local function cacheWrite(key, bytes)
   return true
 end
 
--- ------- ZIP & FILESYSTEM --------------------------------------------------
+-- ------- ZIP ---------------------------------------------------------------
 
 local function le16(s, p)
   local a, b = s:byte(p, p + 1)
@@ -97,12 +109,16 @@ local function le32(s, p)
 end
 
 local function rawFilesystem()
-  local Compat = (V and type(V.require) == "function") and pcall(V.require, "EngineCompat") and V.require("EngineCompat") or nil
-  if Compat and type(Compat.fs) == "function" then
-    local ok, f = pcall(Compat.fs)
-    if ok and type(f) == "table" then return f end
+  local okS, SaveData = pcall(require, "src.core.SaveData")
+  if not okS or not SaveData or type(SaveData.persistenceFs) ~= "function" then
+    return nil, "persistence filesystem is unavailable"
   end
-  return love.filesystem
+  local okF, fs = pcall(SaveData.persistenceFs)
+  if not okF or type(fs) ~= "table" then return nil, "raw filesystem is unavailable" end
+  if type(fs.newFile) ~= "function" or type(fs.getInfo) ~= "function" or type(fs.remove) ~= "function" then
+    return nil, "ZIP install needs the random-access save filesystem (not available in portable mode)"
+  end
+  return fs
 end
 
 local function closeReader()
@@ -113,11 +129,7 @@ end
 
 local function removeTemp()
   local fs = st.fs
-  if fs and type(fs.remove) == "function" then 
-     pcall(fs.remove, I.config.tempName) 
-  else
-     pcall(love.filesystem.remove, I.config.tempName)
-  end
+  if fs and type(fs.remove) == "function" then pcall(fs.remove, I.config.tempName) end
 end
 
 local function cleanup()
@@ -126,17 +138,19 @@ local function cleanup()
 end
 
 local function cancelNetwork()
-  st.blockingDownload = nil
-  if st.downloadChannel and type(st.downloadChannel.clear) == "function" then
-    pcall(function() st.downloadChannel:clear() end)
+  if not st.job then return end
+  local ok, Fetch = pcall(require, "src.net.Fetch")
+  if ok and Fetch then
+    if type(Fetch.cancel) == "function" then pcall(Fetch.cancel, st.job) end
+    if type(Fetch.release) == "function" then pcall(Fetch.release, st.job) end
   end
-  st.downloadChannel = nil
-  st.downloadThread = nil
+  st.job = nil
 end
 
 local function fail(message)
   cleanup()
   cancelNetwork()
+  st.releaseHandle = nil
   st.state = "error"
   st.error = tostring(message or "unknown installer error")
   log("error", "HD sheet installer: %s", st.error)
@@ -144,30 +158,18 @@ end
 
 local function openReader()
   closeReader()
-  local file
-  if st.fs and type(st.fs.newFile) == "function" then
-    local okNew, f = pcall(st.fs.newFile, I.config.tempName)
-    if okNew and f then file = f end
-  end
-  if not file then
-    local okNew, f = pcall(love.filesystem.newFile, I.config.tempName)
-    if okNew and f then file = f end
-  end
-
-  if not file then return nil, "could not open the downloaded ZIP" end
-  
+  local okNew, file, newErr = pcall(st.fs.newFile, I.config.tempName)
+  if not okNew or not file then return nil, tostring(newErr or file or "could not open the downloaded ZIP") end
   local okOpen, opened, openErr = pcall(function() return file:open("r") end)
   if not okOpen or opened == false then
     pcall(function() file:close() end)
     return nil, tostring(openErr or opened or "could not open the downloaded ZIP")
   end
-  
   local okSize, size = pcall(function() return file:getSize() end)
   if not okSize or not tonumber(size) or tonumber(size) < 22 then
     pcall(function() file:close() end)
     return nil, "downloaded file is too small to be a ZIP"
   end
-  
   local r = { file = file, size = tonumber(size) }
   function r:readAt(offset, count)
     if offset < 0 or count < 0 or offset + count > self.size then return nil, "read outside the archive" end
@@ -178,11 +180,11 @@ local function openReader()
     if #data ~= count then return nil, "ZIP read was truncated" end
     return data
   end
-  
   st.reader = r
   return r
 end
 
+-- Every file entry in the archive: { name, method, compressedSize, size, localOffset }
 local function scanDirectory(reader)
   local tailSize = math.min(reader.size, 22 + 65535 + 256)
   local tail, tailErr = reader:readAt(reader.size - tailSize, tailSize)
@@ -248,6 +250,7 @@ end
 
 -- ------- which entries are sheets ------------------------------------------
 
+-- "assets/battle/hd-pokemon/front/normal/154-m.png" -> "front/normal/154-m.png", 154
 local function sheetOf(name, prefix)
   if name:sub(1, #prefix) ~= prefix then return nil end
   local facing, color, num, rest = name:sub(#prefix + 1):match("^(%a+)/(%a+)/(%d%d%d)([%w%-]*)%.png$")
@@ -290,13 +293,26 @@ local function beginExtraction()
   local entries, scanErr = scanDirectory(reader)
   if not entries then return fail("downloaded ZIP is invalid: " .. tostring(scanErr)) end
   local src = source()
+  if src.packId then
+    local meta
+    for _, e in ipairs(entries) do if e.name == "asset-pack.json" then meta = e; break end end
+    if not meta then return fail("asset ZIP has no asset-pack.json") end
+    local raw, rawErr = readEntry(reader, meta)
+    if not raw then return fail("could not read asset-pack.json: " .. tostring(rawErr)) end
+    local id = raw:match('"id"%s*:%s*"([^"]+)"')
+    local version = raw:match('"version"%s*:%s*"([^"]+)"')
+    if version and src.version and version ~= src.version then
+      return fail("asset pack version mismatch: " .. version)
+    end
+    if id and id ~= src.packId then return fail("this ZIP is not the expected asset pack") end
+  end
   local cap = maxDex()
   local queue, c = {}, st.counts
   for _, e in ipairs(entries) do
     local rel, dex = sheetOf(e.name, src.prefix)
     if rel then
       if dex < 1 or dex > cap then
-        c.over = c.over + 1
+        c.over = c.over + 1                      -- dex 494+: never installed
       elseif e.size > I.config.maxFile then
         return fail("sheet exceeds the 64 MB cache limit: " .. e.name)
       else
@@ -348,97 +364,78 @@ local function pumpExtraction()
   if st.pos > #st.files then finishSource() end
 end
 
-local function beginDownload()
-  local src = source()
-  if not src.url then return fail("source has no download URL") end
-
+local function beginDownload(release)
+  if type(release) ~= "table" or not (release.zip and release.zip.url) then
+    return fail("the GitHub release has no asset ZIP")
+  end
+  local okF, Fetch = pcall(require, "src.net.Fetch")
+  if not okF or not Fetch or type(Fetch.download) ~= "function" then
+    return fail("the engine's streaming downloader is unavailable")
+  end
   removeTemp()
-  st.total = 0 
+  st.total = tonumber(release.zip.size) or 0
   st.bytes = 0
-
-  local Compat = (V and type(V.require) == "function") and pcall(V.require, "EngineCompat") and V.require("EngineCompat") or nil
-  local osName = Compat and Compat.osName and Compat.osName() or ""
-
-  local root = nil
-  local okSave, SaveData = pcall(require, "src.core.SaveData")
-  if okSave and SaveData and type(SaveData.portableBaseDir) == "function" then
-    local okBase, base = pcall(SaveData.portableBaseDir)
-    if okBase and type(base) == "string" and base ~= "" then root = base end
-  end
-  if not root then
-    local ok, dir = pcall(function() return love.filesystem.getSaveDirectory() end)
-    if ok and type(dir) == "string" and dir ~= "" then root = dir end
-  end
-  if not root then return fail("save directory unavailable") end
-
-  local sep = package.config:sub(1, 1)
-  local abs = tostring(root):gsub("[/\\]+$", "") .. sep .. I.config.tempName
-
-  local desktop = (osName == "Windows" or osName == "OS X" or osName == "Linux")
-  if desktop and love and love.thread and type(love.thread.newThread) == "function" then
-    local code = [[
-      local url, abs = ...
-      local okReq, HostShell = pcall(require, "src.core.HostShell")
-      local ok, err
-      if okReq and HostShell and type(HostShell.httpDownload) == "function" then
-        ok, err = HostShell.httpDownload(url, abs, "terrarium-hd-sheets")
-      else
-        ok, err = false, "HostShell unavailable"
-      end
-      love.thread.getChannel("terrarium_hd_sheets_dl"):push({
-        ok = ok and true or false,
-        err = err,
-      })
-    ]]
-    st.downloadChannel = love.thread.getChannel("terrarium_hd_sheets_dl")
-    pcall(function() st.downloadChannel:clear() end)
-    st.downloadThread = love.thread.newThread(code)
-    st.downloadThread:start(src.url, abs)
-  else
-    st.blockingDownload = { url = src.url, abs = abs }
-  end
-
+  st.job = Fetch.download(release.zip.url, I.config.tempName, {
+    size = st.total > 0 and st.total or nil,
+    userAgent = source().userAgent or "terrarium-hd-sheets",
+    maxSeconds = I.config.maxSeconds,
+  })
+  if not st.job then return fail("could not start the ZIP download") end
   st.state = "downloading"
 end
 
 local function pumpRelease()
-  return beginDownload()
+  local okM, ModUpdate = pcall(require, "src.mods.ModUpdate")
+  if not okM or not ModUpdate then return fail("the engine's release checker is unavailable") end
+  local done, releases, err = ModUpdate.pumpFetchReleases(st.releaseHandle)
+  if not done then return end
+  st.releaseHandle = nil
+  if not releases then return fail(err or "could not check the asset release") end
+  local src = source()
+  for _, rel in ipairs(releases) do
+    if tostring(rel.version or "") == src.version and rel.zip and rel.zip.url then
+      return beginDownload(rel)
+    end
+  end
+  fail("asset release v" .. tostring(src.version) .. " was not found")
 end
 
 local function pumpDownload()
+  local okF, Fetch = pcall(require, "src.net.Fetch")
+  if not okF or not Fetch then return fail("the engine's streaming downloader is unavailable") end
   local fs = st.fs
-  if fs and type(fs.getInfo) == "function" then
+  local function sizeNow()
+    if not fs then return end
     local ok, info = pcall(fs.getInfo, I.config.tempName, "file")
     if ok and info then st.bytes = tonumber(info.size) or st.bytes end
   end
-
-  if st.blockingDownload then
-    local job = st.blockingDownload
-    st.blockingDownload = nil
-    local okReq, HostShell = pcall(require, "src.core.HostShell")
-    if not okReq or not HostShell or type(HostShell.httpDownload) ~= "function" then
-      return fail("engine downloader unavailable")
+  sizeNow()
+  local s = Fetch.poll(st.job)
+  if s.status == "pending" then
+    if st.total > 0 and tonumber(s.progress) and tonumber(s.progress) > 0 then
+      st.bytes = math.max(st.bytes or 0, st.total * tonumber(s.progress))
     end
-    local ok, err = HostShell.httpDownload(job.url, job.abs, "terrarium-hd-sheets")
-    if not ok then return fail(err or "download failed") end
-    beginExtraction()
     return
   end
-
-  if st.downloadChannel then
-    local msg = st.downloadChannel:pop()
-    if not msg then return end 
-    st.downloadChannel = nil
-    st.downloadThread = nil
-    if type(msg) ~= "table" or not msg.ok then
-      return fail((msg and msg.err) or "download failed")
-    end
-    beginExtraction()
+  local job = st.job
+  st.job = nil
+  Fetch.release(job)
+  if s.status ~= "ok" then return fail(s.err or "the ZIP download failed") end
+  sizeNow()
+  if (st.bytes or 0) <= 0 then return fail("the download finished but wrote no file") end
+  if st.total > 0 and st.bytes ~= st.total then
+    return fail(("the ZIP is incomplete (%d/%d bytes)"):format(st.bytes, st.total))
   end
+  beginExtraction()
 end
 
 function I._startSource(index)
   st.srcIndex = index
+  local okM, ModUpdate = pcall(require, "src.mods.ModUpdate")
+  if not okM or not ModUpdate or type(ModUpdate.beginFetchReleases) ~= "function" then
+    return fail("the engine's release downloader is unavailable")
+  end
+  st.releaseHandle = ModUpdate.beginFetchReleases(source().repo, nil, { force = true })
   st.state = "checking"
 end
 
@@ -451,8 +448,8 @@ function I.start()
     st.state, st.error = "error", "this build does not provide mod.cache"
     return false
   end
-  local fs = rawFilesystem()
-  if not fs then st.state, st.error = "error", "filesystem error"; return false end
+  local fs, fsErr = rawFilesystem()
+  if not fs then st.state, st.error = "error", fsErr; return false end
   st.fs = fs
   cleanup()
   st.counts = { written = 0, existing = 0, low = 0, high = 0, over = 0, other = 0 }
@@ -465,6 +462,7 @@ end
 function I.cancel()
   if st.state == "checking" or st.state == "downloading" then
     cancelNetwork()
+    st.releaseHandle = nil
     cleanup()
     st.state, st.error = "idle", nil
     return true
@@ -488,6 +486,8 @@ function I.active()
   return st.state == "checking" or st.state == "downloading" or st.state == "extracting"
 end
 
+-- Dex with BOTH a front and a back normal sheet installed, split at the
+-- Colosseum boundary. Cached; invalidated when an install finishes.
 function I.coverage()
   if st.coverage then return st.coverage end
   local hd = HD()
@@ -514,6 +514,7 @@ function I.status()
   }
 end
 
+-- Short text for the OPTIONS-menu value column.
 function I.statusText()
   local s = st.state
   if s == "checking" then return "CHECKING" end
