@@ -261,8 +261,21 @@ end
 -- the whole grid and this runs once per battler.
 local staged = { mapId = nil, ok = false }
 
+-- Platinum draws its own 3D world, so it takes a different road: lib/Gen4Battle3D
+-- stands the actors up in THAT world instead of the voxel arena this file builds.
+-- Asked lazily -- Gen4Bridge is required after this file loads.
+local function gen4()
+  local ok, bridge = pcall(V.require, "Gen4Bridge")
+  return ok and bridge and bridge.isGen4() or false
+end
+OverworldBattle.isGen4 = gen4
+
 function OverworldBattle.wantsFront()
   if not OverworldBattle.enabled() then return false end
+  -- Gen 4's camera sits behind the player, so the engine's own BACK pic is the
+  -- right one; swapping in the front pic would show the player's Pokemon
+  -- facing away from the foe it is fighting.
+  if gen4() then return false end
   if OverworldBattle.backPinned() then return false end
   if not Voxel3D.available() then return false end
   -- required here rather than through the file's own helper: this runs
@@ -597,6 +610,22 @@ end
 -- changes, so a map with no room for an arena plays exactly the vanilla
 -- battle it always did, cast and all.
 function OverworldBattle.begin(state, battle)
+  -- Gen 4 never reaches the voxel arena below: a voxelised copy would replace
+  -- the game's real world. It either stages in that world or plays the standard
+  -- Sinnoh battle. Called twice per battle (pushBattle, then battle.started),
+  -- so a battle already staged is left alone.
+  if gen4() then
+    if not OverworldBattle.enabled() then return false end
+    local ok, G3D = pcall(V.require, "Gen4Battle3D")
+    if not (ok and G3D) then return false end
+    if G3D.active(battle) then return true end
+    local okBegin, staged = pcall(G3D.begin, state, battle)
+    if not okBegin then
+      V.mod.log:warn("Gen4Battle3D.begin failed: " .. tostring(staged))
+      return false
+    end
+    return staged and true or false
+  end
   -- Last-frame voxel blit for CBE's OVERWORLD arena. Outer pushBattle hook
   -- (ArenaOverworldSnapshot.install) is the preferred seam; this also fires
   -- if that hook was not installed yet, still before Stadium.begin.
@@ -687,6 +716,10 @@ function OverworldBattle.arena()
 end
 
 function OverworldBattle.finish()
+  if gen4() then
+    local ok, G3D = pcall(V.require, "Gen4Battle3D")
+    if ok and G3D then pcall(G3D.finish) end
+  end
   if not session then return end
   restoreCast()
   session = nil
@@ -1391,14 +1424,6 @@ function OverworldBattle.textures(battle)
   end
   out.enemy = okE and enemy or nil
   out.player = okP and player or nil
-  -- HD 2D fallback (lib/HDPokemonSheets.lua). sideTexture() only yields a
-  -- descriptor for a side no Stadium/Colosseum model covers, so swapping the
-  -- native pic for an HD sheet frame here IS the "no 3D model" fallback. Any
-  -- miss (no sheet, form without art, toggle off) leaves the native pic as is.
-  pcall(function()
-    local HD = V.require("HDPokemonSheets")
-    if HD then HD.applyToTextures(battle, out) end
-  end)
   -- On the STADIUM rung both sides can legitimately have no pic -- the pair
   -- of them are models -- and this table must still come back, because it
   -- carries the HIT FLASH, and because the VR eye pass uses its presence to

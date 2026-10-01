@@ -130,6 +130,10 @@ local ROW_HELP = {
     .. "cartridge that 3D-BTL's STADIUM rungs need for Gen 1 Pokemon (1-151).",
   ["DRAMATIC_SHAPE:stadium2Rom"] = "Imports the Pokemon Stadium 2 (US) cartridge "
     .. "that 3D-BTL's STADIUM rungs need for Gen 2 Pokemon (152-251).",
+  ["DRAMATIC_SHAPE:hdPokemon"] = "HD Asset Manager: A downloads the official "
+    .. "PNG pack (Android and desktop). START installs a local ZIP. On phones, "
+    .. "put picked_hd_pokemon.zip in the save folder first. Sheets extract a "
+    .. "little each frame into cache; Reloded GIFs convert in-game. No Python.",
 }
 
 -- ------- what the menus are built from
@@ -317,16 +321,6 @@ function SettingsMenu.rows(catId, game)
       print("Stadium2RomPick.row() failed:", ok2, importRow2)
     end
     
-    -- HD sheet pack download (animated 2D fallback art, National Dex 1-493).
-    -- An action row like the ROM imports above: it starts/cancels the install
-    -- and its value shows live progress, then how many of the 493 are covered.
-    local okHD, hdRow = pcall(function()
-      return V.require("HDSheetInstaller").row()
-    end)
-    if okHD and hdRow and not rowExists(hdRow.id) then
-      out[#out + 1] = hdRow
-    end
-
     -- Stadium 2 status display (informational only)
     local okS2, Stadium2Setting = pcall(V.require, "Stadium2Setting")
     if okS2 and Stadium2Setting then

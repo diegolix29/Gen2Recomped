@@ -46,6 +46,23 @@ local function loadSpriteFallback(dex)
     print("FollowerPokemon.loadSpriteFallback: Loaded sprite from cache")
     return true
   end
+
+  do
+    local HdPokemon = V.HdPokemon
+    if HdPokemon and type(HdPokemon.record) == "function" then
+      local rec = HdPokemon.record(dex, "back", false, nil)
+        or HdPokemon.record(dex, "front", false, nil)
+      local image = rec and HdPokemon.frameImage(rec)
+      if image then
+        spriteCache[dex] = image
+        currentSprite = image
+        currentDex = dex
+        currentFilename = "follower_sprite_" .. dex
+        usingSpriteFallback = true
+        return true
+      end
+    end
+  end
   
   -- Try to use the sprite service for proper fallback chain
   local okSpriteService, SpriteService = pcall(function() return V.require("follower.sprite_service") end)
@@ -406,12 +423,10 @@ function FollowerPokemon.drawSprite(px, py, y, facing, mirror)
     if lg then
       lg.push()
       lg.translate(worldX, worldY, worldZ)
-      lg.scale(scale, scale, scale)
-      
-      -- Draw sprite centered
       local sw, sh = currentSprite:getDimensions()
-      lg.draw(currentSprite, -sw/2, -sh/2)
-      
+      local s = (16 / math.max(sh, 1)) * scale
+      lg.scale(s, s, s)
+      lg.draw(currentSprite, -sw/2, -sh)
       lg.pop()
     end
   else
@@ -420,12 +435,10 @@ function FollowerPokemon.drawSprite(px, py, y, facing, mirror)
     if lg then
       lg.push()
       lg.translate(worldX, worldY)
-      lg.scale(followerScale, followerScale)
-      
-      -- Draw sprite centered
       local sw, sh = currentSprite:getDimensions()
-      lg.draw(currentSprite, -sw/2, -sh/2)
-      
+      local s = (16 / math.max(sh, 1)) * followerScale
+      lg.scale(s, s)
+      lg.draw(currentSprite, -sw/2, -sh)
       lg.pop()
     end
   end

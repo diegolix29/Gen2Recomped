@@ -40,36 +40,28 @@ local meshes = {}
 -- the actual sprite size. A hair of inset keeps the sampler inside this frame
 -- rather than picking up the neighbouring one along the shared edge.
 local function buildCard(def, frame)
-  local ok, img = pcall(Assets.image, def.image)
-  if not (ok and img) then return nil end
+  local img = def.hdImage
+  if not img then
+    local ok, got = pcall(Assets.image, def.image)
+    if ok then img = got end
+  end
+  if not img then return nil end
   local iw, ih = img:getDimensions()
-  
-  -- Calculate frame dimensions dynamically from the sprite sheet
-  -- Assume frames are arranged vertically in the sheet
-  local frameCount = def.frames or 1
-  local frameHeight = ih / frameCount
-  local frameWidth = iw  -- Assume full width is used for one frame
-  
-  -- Get scale factor from sprite definition (defaults to 1.0)
+  local frameWidth = def.hdFrameW or iw
+  local frameHeight = def.hdFrameH or (ih / math.max(1, def.frames or 1))
   local scale = def.scale or 1.0
-  
-  -- Get height-specific scale factor (defaults to regular scale)
   local heightScale = def.heightScale or scale
-  
-  -- Calculate world dimensions (physical size in 3D space)
   local worldWidth = frameWidth * scale
   local worldHeight = frameHeight * heightScale
-  
-  local fy = frame * frameHeight
+  local fy = (frame or 0) * (def.hdFrameH and 0 or frameHeight)
   if fy + frameHeight > ih then fy = 0 end
-  
-  -- Calculate UV coordinates with small inset to prevent bleeding
   local insetX = 0.02
   local insetY = 0.05
   local u0, u1 = insetX / iw, (frameWidth - insetX) / iw
   local v0, v1 = (fy + insetY) / ih, (fy + frameHeight - insetY) / ih
-  
-  -- Create quad vertices with world dimensions (scaled physical size)
+  if def.hdImage then
+    u0, u1, v0, v1 = 0, 1, 0, 1
+  end
   local verts = {
     { 0, 0, 0, u0, v1, 1 }, { worldWidth, 0, 0, u1, v1, 1 },
     { worldWidth, worldHeight, 0, u1, v0, 1 }, { 0, worldHeight, 0, u0, v0, 1 },
@@ -77,17 +69,13 @@ local function buildCard(def, frame)
   local indices = {}
   Voxel3D.pushQuad(indices, 0)
   local mesh = Voxel3D.newMesh(verts, indices)
-  
-  -- Apply high-quality texture filtering for scaled sprites
   if mesh and love and love.graphics then
-    -- Enable linear filtering for smooth downsampling
     local filterMode = (scale < 1.0 or heightScale < 1.0) and "linear" or "nearest"
     pcall(function()
       mesh:setTexture(img)
-      img:setFilter(filterMode, filterMode, 16) -- 16x anisotropic for quality
+      img:setFilter(filterMode, filterMode, 16)
     end)
   end
-  
   return mesh
 end
 
@@ -107,8 +95,9 @@ end
 -- just to look something up it already had.  Two table indexes cost nothing
 -- and allocate nothing on the hit path.
 function SpriteBillboards.mesh(def, frame)
-  local byFrame = meshes[def.image]
-  if not byFrame then byFrame = {}; meshes[def.image] = byFrame end
+  local key = def.hdImage and def or def.image
+  local byFrame = meshes[key]
+  if not byFrame then byFrame = {}; meshes[key] = byFrame end
   if byFrame[frame] == nil then
     local ok, m = pcall(buildCard, def, frame)
     byFrame[frame] = (ok and m) or false
@@ -117,8 +106,12 @@ function SpriteBillboards.mesh(def, frame)
     if ok and m then
       local scale = def.scale or 1.0
       local heightScale = def.heightScale or scale
-      local imgOk, img = pcall(Assets.image, def.image)
-      if imgOk and img then
+      local img = def.hdImage
+      if not img then
+        local imgOk, got = pcall(Assets.image, def.image)
+        if imgOk then img = got end
+      end
+      if img then
         SpriteBillboards.setHighQualityFiltering(img, scale, heightScale)
       end
     end
@@ -148,25 +141,19 @@ local dims = setmetatable({}, { __mode = "k" })
 function SpriteBillboards.getSpriteDimensions(def, frame)
   local hit = dims[def]
   if hit then return hit[1], hit[2], hit[3], hit[4] end
-  local ok, img = pcall(Assets.image, def.image)
-  if not (ok and img) then return 16, 16, 16, 16 end
+  local img = def.hdImage
+  if not img then
+    local ok, got = pcall(Assets.image, def.image)
+    if ok then img = got end
+  end
+  if not img then return 16, 16, 16, 16 end
   local iw, ih = img:getDimensions()
-  
-  -- Calculate frame dimensions dynamically from the sprite sheet
-  local frameCount = def.frames or 1
-  local frameHeight = ih / frameCount
-  local frameWidth = iw  -- Assume full width is used for one frame
-  
-  -- Get scale factor from sprite definition (defaults to 1.0)
+  local frameWidth = def.hdFrameW or iw
+  local frameHeight = def.hdFrameH or (ih / math.max(1, def.frames or 1))
   local scale = def.scale or 1.0
-  
-  -- Get height-specific scale factor (defaults to regular scale)
   local heightScale = def.heightScale or scale
-  
-  -- Calculate world dimensions (physical size in 3D space)
   local worldWidth = frameWidth * scale
   local worldHeight = frameHeight * heightScale
-  
   dims[def] = { frameWidth, frameHeight, worldWidth, worldHeight }
   return frameWidth, frameHeight, worldWidth, worldHeight
 end

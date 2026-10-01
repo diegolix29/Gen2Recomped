@@ -16,7 +16,7 @@ end
 local function prefs(game)
   if not (game and game.save) then
     return {
-      music="normal",arena="auto",arenasEnabled=true,cameraEnabled=true,pokemonModelsEnabled=true,hdSheetsEnabled=true,
+      music="normal",arena="auto",arenasEnabled=true,cameraEnabled=true,pokemonModelsEnabled=true,
       realtimeBattle=false,realtimeZoom=1.0,
       playerModel="red",enemyTrainerModel="auto",rivalModel="leaf",
       doubleBattlesEnabled=true,abilitiesEnabled=true,freeLookEnabled=true,
@@ -37,10 +37,6 @@ local function prefs(game)
   -- declines them and the user's normal resolved sprite/model pipeline wins.
   if p.pokemonModelsEnabled==nil then p.pokemonModelsEnabled=true end
   p.pokemonModelsEnabled=p.pokemonModelsEnabled and true or false
-  -- HD 2D FALLBACK: animated HD sheets (lib/HDPokemonSheets.lua) for Pokemon
-  -- with no 3D model. Default ON; a species with no sheet stays native anyway.
-  if p.hdSheetsEnabled==nil then p.hdSheetsEnabled=true end
-  p.hdSheetsEnabled=p.hdSheetsEnabled and true or false
   if p.realtimeBattle==nil then p.realtimeBattle=false end
   p.realtimeBattle=p.realtimeBattle==true
   p.realtimeZoom=tonumber(p.realtimeZoom) or 1.0
@@ -100,16 +96,10 @@ local function prefs(game)
   if not validArena[p.arena] then p.arena="auto" end
   return p
 end
-local function isOptionsLabel(label)
-  local s=tostring(label or ""):upper()
-  return s=="OPTION" or s=="OPTIONS"
-end
 local function startMenuId()
   if Compat and type(Compat.current)=="function" then
     local ok,generation=pcall(Compat.current)
-    generation=ok and tonumber(generation) or nil
-    if generation==2 then return "Gen2StartMenu" end
-    if generation==3 or generation==4 then return "StartMenu" end
+    if ok and tonumber(generation)==2 then return "Gen2StartMenu" end
   end
   return GEN1_START
 end
@@ -150,7 +140,6 @@ local function openBattleMenu(game,returnId,returnParent)
   local environmentToggle={keepOpen=true}
   local cameraToggle={keepOpen=true}
   local pokemonModelsToggle={keepOpen=true}
-  local hdSheetsToggle={keepOpen=true}
   local realtimeToggle={keepOpen=true}
   local realtimeZoomRow={keepOpen=true}
   local doublesToggle={keepOpen=true}
@@ -179,7 +168,6 @@ local function openBattleMenu(game,returnId,returnParent)
     environmentToggle.label="COLOSSEUM ARENAS  "..(p.arenasEnabled and "ON" or "OFF")
     cameraToggle.label="COLOSSEUM CAMERA  "..(p.cameraEnabled and "ON" or "OFF")
     pokemonModelsToggle.label="COLOSSEUM MODELS  "..(p.pokemonModelsEnabled and "ON" or "OFF")
-    hdSheetsToggle.label="HD 2D FALLBACK  "..(p.hdSheetsEnabled and "ON" or "OFF")
     realtimeToggle.label="REALTIME BATTLE  "..(p.realtimeBattle and "ON" or "OFF")
     realtimeZoomRow.label=("REALTIME ZOOM  %.2fX"):format(p.realtimeZoom or 1.0)
     freeLookToggle.label="FREE LOOK CAMERA  "..(p.freeLookEnabled~=false and "ON" or "OFF")
@@ -250,10 +238,6 @@ local function openBattleMenu(game,returnId,returnParent)
   end
   pokemonModelsToggle.onSelect=function()
     p.pokemonModelsEnabled=not p.pokemonModelsEnabled
-    refresh()
-  end
-  hdSheetsToggle.onSelect=function()
-    p.hdSheetsEnabled=not p.hdSheetsEnabled
     refresh()
   end
   realtimeToggle.onSelect=function()
@@ -610,13 +594,29 @@ local function openBattleMenu(game,returnId,returnParent)
   refresh()
   -- Trainer presentation is intentionally three independent ownership rows:
   -- player Red, ordinary/special enemy trainers, and the Kanto rival substitute.
-  local mainRows={environmentToggle,cameraToggle,pokemonModelsToggle,hdSheetsToggle,realtimeToggle,realtimeZoomRow,doublesToggle,abilitiesToggle,wildSpawnRow,wildSpawnStatusRow,wildEncountersToggle,trainerEncountersToggle,gymEncountersToggle,eliteFourEncountersToggle,autoProgressToggle,freeLookToggle,bossIntroToggle,musicRow,soundsToggle,audioQualityRow,arenaRow,playerTrainerRow,enemyTrainerRow,rivalRow,actorScaleRow,hardCacheRow,packCacheRow,cacheRow,back}
+  local mainRows={environmentToggle,cameraToggle,pokemonModelsToggle,realtimeToggle,realtimeZoomRow,doublesToggle,abilitiesToggle,wildSpawnRow,wildSpawnStatusRow,wildEncountersToggle,trainerEncountersToggle,gymEncountersToggle,eliteFourEncountersToggle,autoProgressToggle,freeLookToggle,bossIntroToggle,musicRow,soundsToggle,audioQualityRow,arenaRow,playerTrainerRow,enemyTrainerRow,rivalRow,actorScaleRow,hardCacheRow,packCacheRow,cacheRow,back}
   menu=Menu.new(game,mainRows,{tx=1,ty=2,tw=24,maxVisible=12,onCancel=function() reopen(game,returnId,returnParent) end})
   menu.screenId="TerrariumBattleSettings"
   if BattleMenuUI and BattleMenuUI.mark then
     BattleMenuUI.mark(menu,"TERRARIUM BATTLES",mainRows,12,"ENVIRONMENT / CAMERA / REALTIME / POKEMON / AUDIO / TRAINERS / ACTOR SIZE / ROM SOURCE")
   end
   game.stack:push(menu)
+end
+
+-- The START-menu row, built in ONE place so every generation opens the same
+-- screen: the Game Boy hook below inserts it, and Gen 4's start menu (which never
+-- runs ui.start_menu.items) gets it from lib/Gen4StartMenuHook.lua.
+function S.startMenuEntry(game)
+  return {label="TERRARIUM BATTLES",__terrariumBattleEntry=true,onSelect=function()
+      -- Gen 1's generic StartMenu pops before invoking onSelect. Gold's
+      -- injected-row arm intentionally does not. Keep a live Gold parent on
+      -- the stack; a synthetic replacement lacks onChoose/onClose and is dead.
+      local parent=game and game.stack and type(game.stack.top)=="function" and game.stack:top() or nil
+      local returnId=(parent and (parent.screenId==GEN1_START or parent.screenId=="Gen2StartMenu"))
+        and parent.screenId or startMenuId()
+      local returnParent=(parent and parent.screenId==returnId) and parent or nil
+      openBattleMenu(game,returnId,returnParent)
+  end}
 end
 
 function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trainerRoster,compat,audioFidelity)
@@ -633,18 +633,9 @@ function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trai
     end
     local at=#out+1
     for i,entry in ipairs(out) do
-      if isOptionsLabel(entry.label) then at=i;break end
+      local u=tostring(entry.label or ""):upper(); if u=="OPTION" or u=="OPTIONS" then at=i;break end
     end
-    table.insert(out,at,{label="TERRARIUM BATTLES",__terrariumBattleEntry=true,onSelect=function()
-      -- Gen 1's generic StartMenu pops before invoking onSelect. Gold's
-      -- injected-row arm intentionally does not. Keep a live Gold parent on
-      -- the stack; a synthetic replacement lacks onChoose/onClose and is dead.
-      local parent=game and game.stack and type(game.stack.top)=="function" and game.stack:top() or nil
-      local returnId=(parent and (parent.screenId==GEN1_START or parent.screenId=="Gen2StartMenu"))
-        and parent.screenId or startMenuId()
-      local returnParent=(parent and parent.screenId==returnId) and parent or nil
-      openBattleMenu(game,returnId,returnParent)
-    end})
+    table.insert(out,at,S.startMenuEntry(game))
     return out
   end,200) -- Run after XD_BATTLE_ENVIRONMENTS (priority 115) but before other high-priority mods
   installed=true
@@ -653,7 +644,6 @@ end
 function S.prefs(game) return prefs(game) end
 function S.cameraEnabled(game) return prefs(game or (modRef and modRef.game)).cameraEnabled~=false end
 function S.pokemonModelsEnabled(game) return prefs(game or (modRef and modRef.game)).pokemonModelsEnabled~=false end
-function S.hdSheetsEnabled(game) return prefs(game or (modRef and modRef.game)).hdSheetsEnabled~=false end
 function S.realtimeEnabled(game) return prefs(game or (modRef and modRef.game)).realtimeBattle==true end
 function S.realtimeZoom(game) return tonumber(prefs(game or (modRef and modRef.game)).realtimeZoom) or 1.0 end
 function S.setRealtimeEnabled(game,value)
