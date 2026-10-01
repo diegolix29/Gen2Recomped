@@ -231,6 +231,14 @@ function Bridge.install()
   else
     report("water", "the water pass did not load: %s", tostring(GW))
   end
+  -- The voxel scene's textured ground on the beach sand. Opaque, so it goes
+  -- before grass and the actors, after the water it may sit beside.
+  local okS, GS = pcall(V.require, "Gen4Sand")
+  if okS and type(GS) == "table" and GS.draw then
+    Bridge.register("sand", GS.draw)
+  else
+    report("sand", "the sand pass did not load: %s", tostring(GS))
+  end
   return true
 end
 
