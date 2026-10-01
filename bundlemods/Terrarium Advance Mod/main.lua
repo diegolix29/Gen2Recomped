@@ -2952,6 +2952,10 @@ AutoFarm.install()
 mod.hooks:wrap("input.step", function(next, game, dt)
   local out = next(game, dt)
   AutoFarm.update()
+  -- Gen 4 stands the voxel pipeline down (Gen4Ground owns the world), so
+  -- WildRoamers.update never ran there and routes stayed empty. Followers
+  -- use map.entered; roamers only live on this tick.
+  if Gen4Bridge.isGen4() then pcall(WildRoamers.update) end
   return out
 end)
 

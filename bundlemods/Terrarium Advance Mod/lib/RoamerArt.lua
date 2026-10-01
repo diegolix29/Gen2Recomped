@@ -322,42 +322,60 @@ local defs = {}
 -- neither field.
 -- Returns the def, or nil plus DEFERRED when the only thing missing is a
 -- bake the caller did not authorise this time (see RoamerArt.def).
+local function hdModule()
+  local HD = V.HDPokemonSheets or (V.mod and V.mod.exports and V.mod.exports.hdPokemonSheets)
+  if HD then return HD end
+  local ok, m = pcall(V.require, "HDPokemonSheets")
+  if ok and type(m) == "table" then
+    V.HDPokemonSheets = m
+    return m
+  end
+  return nil
+end
+
 local function build(species, mayBake)
   local Game = require("src.core.Game")
-  local mon = Game.data and Game.data.pokemon and Game.data.pokemon[species]
-  if not (mon and mon.spriteFront) then return nil end
+  local data = Game and Game.data
+  local mon = data and data.pokemon and data.pokemon[species]
+  local HDSheets = hdModule()
+  local hdDex = HDSheets and HDSheets.dexOf and HDSheets.dexOf(species, data) or nil
+  local hdReady = hdDex and HDSheets.available
+    and HDSheets.available(hdDex, "front")
 
-  local hdDex
-  do
-    local HDSheets = V.HDPokemonSheets or (V.mod and V.mod.exports and V.mod.exports.hdPokemonSheets)
-    if not HDSheets then
-      local okHd, m = pcall(V.require, "HDPokemonSheets")
-      if okHd then HDSheets = m end
-    end
-    if HDSheets and type(HDSheets.dexOf) == "function" then
-      local Game = require("src.core.Game")
-      local data = Game and Game.data
-      hdDex = HDSheets.dexOf(species, data)
-    end
-  end
-
-  -- Shipped Gen-2 style walk sheet wins for the 2D blit; VoxelScene stamps
-  -- HD Reloded frames onto a per-entity overlay when those sheets exist.
-  local shipped = V.path .. "/" .. SHIPPED .. species .. ".png"
+  -- Shipped Gen-2 style walk sheet wins for the 2D blit; VoxelScene / Gen4
+  -- stamp HD Reloded frames onto a per-entity overlay when those exist.
+  local shipped = V.path .. "/" .. SHIPPED .. tostring(species) .. ".png"
   if Assets.exists(shipped) then
-    return { id = "TR_ROAM_" .. species, image = shipped,
+    return { id = "TR_ROAM_" .. tostring(species), image = shipped,
              frames = RoamerArt.FRAMES, walker = true,
              trueColor = true, dsSpecies = species, hdDex = hdDex }
   end
 
+  -- Platinum / HD-only: do not resample a DS battle pic into a 16px bake.
+  -- One failed bake used to set `broken` and retire EVERY roamer for the
+  -- session, which is how Gen 4 routes went empty while followers still drew.
+  if hdReady then
+    local image = (mon and mon.spriteFront) or nil
+    if not image then
+      image = HDSheets.frame({ dex = hdDex, facing = "front", shiny = false })
+    end
+    if image then
+      return { id = "TR_ROAM_" .. tostring(species), image = image,
+               frames = 1, walker = false, trueColor = true,
+               dsSpecies = species, hdDex = hdDex }
+    end
+  end
+
+  if not (mon and mon.spriteFront) then return nil end
+
   -- Fallback: greyscale bake from the battle front pic (REV in the path so
   -- older unreadable cuts are never reused after a generator change).
-  local path = DERIVED .. species .. "-" .. RoamerArt.REV .. ".png"
+  local path = DERIVED .. tostring(species) .. "-" .. RoamerArt.REV .. ".png"
   if not Assets.exists(path) then
     if not mayBake then return nil, true end
     if not writeSheet(mon, path) then return nil end
   end
-  return { id = "TR_ROAM_" .. species, image = path,
+  return { id = "TR_ROAM_" .. tostring(species), image = path,
            frames = RoamerArt.FRAMES, walker = true, trueColor = hdDex ~= nil,
            dsSpecies = species, hdDex = hdDex }
 end

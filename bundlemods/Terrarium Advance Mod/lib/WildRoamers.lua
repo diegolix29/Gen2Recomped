@@ -194,6 +194,30 @@ end
 -- grass tile but has no grass cell is also nothing to populate -- and it
 -- cannot go stale when a tileset is re-imported.
 --
+local function isGen4Map(map)
+  return map and map.renderer and map.renderer.gen4Ground ~= nil
+end
+
+local function gen4TallGrass(map, cx, cy)
+  if not isGen4Map(map) then return false end
+  local ok, Host = pcall(V.require, "Gen4WorldHost")
+  if ok and Host and Host.isTallGrass then
+    local okG, grass = pcall(Host.isTallGrass, map, cx, cy)
+    if okG then return grass and true or false end
+  end
+  if map.blockAt then
+    local okB, b = pcall(map.blockAt, map, cx, cy)
+    if okB and (b == 2 or b == 3) then return true end
+  end
+  return false
+end
+
+local function cellIsGrass(map, cx, cy)
+  if gen4TallGrass(map, cx, cy) then return true end
+  local ok, g = pcall(map.isGrassCell, map, cx, cy)
+  return ok and g and true or false
+end
+
 -- Stops at the first hit and is memoised per map; `Grass.cells` walks the
 -- whole grid straight afterwards anyway when the answer is yes.
 local mapGrass = setmetatable({}, { __mode = "k" })
@@ -204,13 +228,96 @@ local function mapHasGrass(map)
   local wc, hc = map.widthCells or 0, map.heightCells or 0
   for cy = 0, hc - 1 do
     for cx = 0, wc - 1 do
-      local ok, g = pcall(map.isGrassCell, map, cx, cy)
-      if ok and g then found = true break end
+      if cellIsGrass(map, cx, cy) then found = true break end
     end
     if found then break end
   end
   mapGrass[map] = found
   return found
+end
+
+local function hasSlots(tbl)
+  return type(tbl) == "table" and type(tbl.slots) == "table" and #tbl.slots > 0
+end
+
+local function slotSpecies(slot)
+  if type(slot) ~= "table" then return nil end
+  return slot.species or slot.pokemon or slot.id or slot.dex
+end
+
+local function asEncounterTable(t)
+  if type(t) ~= "table" then return nil end
+  if hasSlots(t) and slotSpecies(t.slots[1]) then return t end
+  local byTime = t.slots or t
+  if type(byTime) == "table" then
+    for _, key in ipairs({ "DAY", "MORN", "NITE", "NIGHT", "MORNING", "day", "morn", "nite" }) do
+      local slots = byTime[key]
+      if type(slots) == "table" and #slots > 0 and slotSpecies(slots[1]) then
+        local rates = t.rates
+        local rate = t.rate
+        if type(rates) == "table" then
+          rate = rates[key] or rates.DAY or rates.day or rate
+        end
+        return { rate = rate or 1, slots = slots, buckets = t.buckets }
+      end
+    end
+    if #t > 0 and slotSpecies(t[1]) then
+      return { rate = t.rate or 1, slots = t, buckets = t.buckets }
+    end
+  end
+  return nil
+end
+
+-- Platinum walk tables are often named walk/land and may omit Gen 1's rate.
+local function grassTableOf(encDef)
+  if type(encDef) ~= "table" then return nil end
+  for _, key in ipairs({ "grass", "walk", "land" }) do
+    local t = asEncounterTable(encDef[key])
+    if t then return t end
+  end
+  return asEncounterTable(encDef)
+end
+
+local function waterTableOf(encDef)
+  if type(encDef) ~= "table" then return nil end
+  for _, key in ipairs({ "water", "surf" }) do
+    local t = asEncounterTable(encDef[key])
+    if t then return t end
+  end
+  return nil
+end
+
+local function normalizeNested(root, mapId)
+  if type(root) ~= "table" then return nil end
+  local direct = root[mapId]
+  if type(direct) == "table" and (grassTableOf(direct) or waterTableOf(direct)) then
+    return direct
+  end
+  local grass = type(root.grass) == "table" and root.grass[mapId] or nil
+  local water = type(root.water) == "table" and root.water[mapId] or nil
+  if type(grass) == "table" or type(water) == "table" then
+    return { grass = grass, water = water }
+  end
+  return nil
+end
+
+local function encDefFor(Game, map)
+  local id = map and map.id
+  if not id then return nil end
+  local data = Game and Game.data
+  local ow = Game and Game.overworld
+  local roots = {
+    ow and ow.encounters,
+    data and data.gen2Encounters,
+    data and data.encounters,
+    data and data.gen4Encounters,
+    map.def and map.def.encounters,
+  }
+  for i = 1, #roots do
+    local got = normalizeNested(roots[i], id)
+    if got then return got end
+  end
+  return nil
 end
 
 local function terrainsFor(ow)
@@ -219,7 +326,7 @@ local function terrainsFor(ow)
   -- A city can have Super Rod water and NO encounter table at all
   -- (Vermilion, Cerulean).  Do not bail on a missing encDef -- grass and
   -- Surf water need it, the rod fallback does not.
-  local encDef = Game.data.encounters and Game.data.encounters[map.id]
+  local encDef = encDefFor(Game, map)
 
   -- The Pokemon Tower keeps its dice.
   --
@@ -231,7 +338,11 @@ local function terrainsFor(ow)
   -- only ever true for terrain something was actually stood on).  Pick the
   -- Scope up and the ghosts have names, and the floor populates like
   -- anywhere else.
-  local ghost = Map.ghostBattles(map.def)
+  local ghost
+  do
+    local ok, g = pcall(Map.ghostBattles, map.def)
+    if ok then ghost = g end
+  end
   if ghost and not (ghost.unlessItem
                     and Game.save.inventory[ghost.unlessItem]) then
     return {}
@@ -239,22 +350,31 @@ local function terrainsFor(ow)
 
   local out = {}
 
-  local indoor = Game.data.field.indoorEncounters
-  local isIndoor = indoor and map.def.index and indoor.firstIndoorMap
+  local indoor = Game.data and Game.data.field and Game.data.field.indoorEncounters
+  local isIndoor = indoor and map.def and map.def.index and indoor.firstIndoorMap
                    and map.def.index >= indoor.firstIndoorMap
                    and map.def.tileset ~= indoor.excludedTileset
+  if isGen4Map(map) then
+    -- Gen 1 indoorEncounters.index would treat every Sinnoh map as a cave.
+    isIndoor = false
+    if map.isOutdoor == false or (Map.isOutdoor and map.def and not Map.isOutdoor(map.def)) then
+      isIndoor = not mapHasGrass(map)
+    end
+  end
 
-  if encDef and encDef.grass and (encDef.grass.rate or 0) > 0 then
+  local grassTbl = grassTableOf(encDef)
+  if grassTbl then
     if isIndoor then
       -- caves, towers, the Mansion, the Power Plant: the whole floor is the
       -- encounter, so the whole floor is where they stand
-      out[#out + 1] = { kind = "indoor", table_ = encDef.grass }
+      out[#out + 1] = { kind = "indoor", table_ = grassTbl }
     elseif mapHasGrass(map) then
-      out[#out + 1] = { kind = "grass", table_ = encDef.grass }
+      out[#out + 1] = { kind = "grass", table_ = grassTbl }
     end
   end
-  if encDef and encDef.water and (encDef.water.rate or 0) > 0 then
-    out[#out + 1] = { kind = "water", table_ = encDef.water }
+  local waterTbl = waterTableOf(encDef)
+  if waterTbl then
+    out[#out + 1] = { kind = "water", table_ = waterTbl }
   else
     -- Maps with fishable water but no Surf encounter table (cities, docks)
     -- still know what lives there: the Super Rod list.  Ecology.waterRoster
@@ -324,13 +444,14 @@ local bakeBudget = 0
 local BAKES_PER_PASS = 2
 
 local function place(ow, kind, slot, cx, cy)
-  -- a species already resolved costs nothing to ask for again, so the budget
-  -- is only spent on ones this session has not seen
-  local known = RoamerArt.known(slot.species)
+  if type(slot) ~= "table" then return nil end
+  local species = slotSpecies(slot)
+  if not species then return nil end
+  local known = RoamerArt.known(species)
   if not known then bakeBudget = bakeBudget - 1 end
-  local def = RoamerArt.def(slot.species, known or bakeBudget >= 0)
+  local def = RoamerArt.def(species, known or bakeBudget >= 0)
   if not def then return nil end
-  local r = Roamer.new(def, slot.species, slot.level, kind, cx, cy)
+  local r = Roamer.new(def, species, slot.level or slot.minLevel or 1, kind, cx, cy)
   ow.npcs[#ow.npcs + 1] = r
   ow.entities[#ow.entities + 1] = r
   state.covered[kind] = true
