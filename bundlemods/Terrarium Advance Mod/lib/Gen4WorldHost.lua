@@ -434,6 +434,7 @@ local function drawFieldActors(state, ground)
     local OS = V.require("OverworldStadium")
     local SF = V.require("StadiumFollower")
     local PM = V.require("PlayerModel")
+    local Hd = V.require("Gen4HdPokemon")
     local Mat4 = V.require("Mat4")
     for _, p in ipairs(posed) do
       local drew = false
@@ -446,7 +447,9 @@ local function drawFieldActors(state, ground)
       if not drew and OS and OS.safeDraw then
         drew = OS.safeDraw(p) == true
       end
-      if not drew and p.isFollower and SF and SF.loaded and SF.loaded() then
+      local stadiumFollower3d = p.isFollower and SF and SF.loaded and SF.loaded()
+        and not (SF.isUsingSpriteFallback and SF.isUsingSpriteFallback())
+      if not drew and stadiumFollower3d then
         if SF.update then pcall(SF.update, 1 / 60) end
         drew = SF.draw(p.px, p.py, p.facing, p.gh) == true
       end
@@ -459,6 +462,12 @@ local function drawFieldActors(state, ground)
         local scale = mdl.scale or 4.0
         m = Mat4.mul(m, Mat4.scale(scale, scale, scale))
         drew = pcall(Voxel3D.draw, mdl.mesh, mdl.texture, m)
+      end
+      if drew then
+        Host._drew3d[p.skipKey] = true
+      elseif Hd and Hd.drawPose then
+        local okHd, okDraw = pcall(Hd.drawPose, p, ground)
+        drew = okHd and okDraw == true
       end
       if drew then Host._skipFeet[p.skipKey] = true end
     end

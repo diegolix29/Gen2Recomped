@@ -88,22 +88,38 @@ local function spriteKey(mapX, mapY)
                        math.floor((mapY or 0) + 0.5))
 end
 
-local function drawOne(e, mapX, mapY, scene, game, drew3d)
+function Hd.drawPose(p, ground)
+  if type(p) ~= "table" then return false end
+  local e = p.entity or p
+  if not Hd.wantsEntity(e) then return false end
+  local overlay = bindOverlay(e, p.facing or e.facing or "down", gameOf())
+  if not overlay or not overlay.hdImage then return false end
+  local mesh = SpriteBillboards.mesh(overlay, 0)
+  if not mesh then return false end
+  local _, _, worldW = SpriteBillboards.getSpriteDimensions(overlay, 0)
+  local wx = (p.px or 0) + 8
+  local wz = (p.py or 0) + 8
+  local gy = (p.gh or 0) + (p.lift or 0)
+  Voxel3D.draw(mesh, overlay.hdImage, cardMatrix(wx, gy, wz, worldW, ground))
+  return true
+end
+
+local function drawOne(e, mapX, mapY, scene, game, skip)
   if not Hd.wantsEntity(e) then return end
-  if drew3d and drew3d[spriteKey(mapX, mapY)] then return end
+  local key = spriteKey(mapX, mapY)
+  if skip and skip[key] then return end
   local overlay = bindOverlay(e, e.facing or "down", game)
   if not overlay or not overlay.hdImage then return end
   local mesh = SpriteBillboards.mesh(overlay, 0)
   if not mesh then return end
-  local _, _, worldW, worldH = SpriteBillboards.getSpriteDimensions(overlay, 0)
+  local _, _, worldW = SpriteBillboards.getSpriteDimensions(overlay, 0)
   local gy = 0
   if scene.groundY then
     gy = scene.groundY((mapX or 0) + 8, (mapY or 0) + 8) or 0
   end
   local wx, wz = scene.toWorld(mapX or 0, mapY or 0)
   Voxel3D.draw(mesh, overlay.hdImage,
-               cardMatrix(wx + 8, gy, wz + 8, worldW, scene.ground),
-               worldH and 0 or nil)
+               cardMatrix(wx + 8, gy, wz + 8, worldW, scene.ground))
 end
 
 function Hd.draw(scene)
@@ -116,24 +132,20 @@ function Hd.draw(scene)
     local ok, h = pcall(V.require, "Gen4WorldHost")
     if ok then Host = h end
   end
-  local drew3d = Host and Host._drew3d
-  local prevGlass
-  if Voxel3D.glass then
-    prevGlass = Voxel3D.glass(false)
-  end
+  -- Field actors already drew 3D or HD and hid the 16px feet; do not stack
+  -- a second card in the endFree pass.
+  local skip = Host and Host._skipFeet
+  if Voxel3D.glass then Voxel3D.glass(false) end
   scene.opaque()
   for _, e in ipairs(ow.entities or {}) do
-    drawOne(e, e.px, e.py, scene, game, drew3d)
+    pcall(drawOne, e, e.px, e.py, scene, game, skip)
   end
   for _, g in ipairs(ow.ghosts or {}) do
     local npc = g and g.npc
     if npc then
-      drawOne(npc, (npc.px or 0) + (g.ox or 0), (npc.py or 0) + (g.oy or 0),
-              scene, game, drew3d)
+      pcall(drawOne, npc, (npc.px or 0) + (g.ox or 0), (npc.py or 0) + (g.oy or 0),
+            scene, game, skip)
     end
-  end
-  if Voxel3D.glass and prevGlass ~= nil then
-    Voxel3D.glass(prevGlass)
   end
 end
 
