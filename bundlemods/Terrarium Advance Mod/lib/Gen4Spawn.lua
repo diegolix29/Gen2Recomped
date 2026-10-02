@@ -263,6 +263,7 @@ end
 
 local GRASS_PCT = { 20, 20, 10, 10, 10, 10, 5, 5, 4, 4, 1, 1 }   -- Gen 4 land slots
 local SURF_PCT = { 60, 30, 5, 4, 1 }                              -- Gen 4 surf slots
+local GEN2_PCT = { 30, 30, 20, 10, 5, 4, 1 }                      -- 7-slot land tables
 
 local KIND_KEYS = {
   grass = { "grass", "land", "walking", "tall_grass", "field" },
@@ -295,7 +296,8 @@ end
 local function bucketsFor(n, kind)
   local pct
   if kind == "grass" and n == #GRASS_PCT then pct = GRASS_PCT
-  elseif kind == "water" and n == #SURF_PCT then pct = SURF_PCT end
+  elseif kind == "water" and n == #SURF_PCT then pct = SURF_PCT
+  elseif kind == "grass" and n == #GEN2_PCT then pct = GEN2_PCT end
   local out, acc = {}, 0
   for i = 1, n do
     acc = acc + (pct and pct[i] or 100 / n)
@@ -312,6 +314,23 @@ local function timeKey()
   if h >= 4 and h < 10 then return "morning" end
   if h >= 10 and h < 20 then return "day" end
   return "night"
+end
+
+-- Morning / day / night variant of a table keyed by time of day, under any of
+-- the spellings the engine's datasets use (morning, MORN, night, NITE ...).
+local TIME_NAMES = {
+  morning = { "morning", "MORNING", "morn", "MORN" },
+  day     = { "day", "DAY" },
+  night   = { "night", "NIGHT", "nite", "NITE" },
+}
+local function pickTime(t)
+  if type(t) ~= "table" then return nil end
+  for _, key in ipairs({ timeKey(), "day" }) do
+    for _, name in ipairs(TIME_NAMES[key]) do
+      if t[name] ~= nil then return t[name] end
+    end
+  end
+  return nil
 end
 
 local function listOf(raw)
@@ -334,9 +353,13 @@ function Spawn.kindTable(encDef, kind)
   local list, holder = listOf(raw), raw
   if not list then
     -- morning / day / night variants: today's by the clock, else any that exists
-    local variant = raw[timeKey()] or raw.day or raw.morning or raw.night
+    local variant = pickTime(raw)
     list = listOf(variant)
     if list then holder = variant end
+  end
+  if not list and type(raw.slots) == "table" then
+    -- { rates = { MORN, DAY, NITE }, slots = { MORN = {...}, DAY = {...}, ... } }
+    list = listOf(pickTime(raw.slots))
   end
   if not list then return nil end
   local slots = {}
@@ -350,6 +373,7 @@ function Spawn.kindTable(encDef, kind)
     buckets = bucketsFor(#slots, kind)
   end
   local rate = rawRate(raw)
+  if rate == nil and type(raw.rates) == "table" then rate = tonumber(pickTime(raw.rates)) end
   if rate == nil then rate = rawRate(holder) end
   if rate == nil then rate = 1 end
   return { rate = rate, slots = slots, buckets = buckets }
@@ -377,7 +401,43 @@ local function findRaw(Game, map)
   for _, field in ipairs(DEF_FIELDS) do
     if usable(def[field]) then return def[field], "map.def." .. field end
   end
+  -- kind first: encounters.grass[mapId] / encounters.water[mapId]
+  for _, name in ipairs(TABLE_NAMES) do
+    local t = data[name]
+    if type(t) == "table" then
+      for _, k in ipairs(keys) do
+        if k ~= nil then
+          local rec = {}
+          for _, kind in ipairs({ "grass", "water" }) do
+            for _, kk in ipairs(KIND_KEYS[kind]) do
+              local sub = t[kk]
+              if type(sub) == "table" and type(sub[k]) == "table" then
+                rec[kind] = sub[k]
+                break
+              end
+            end
+          end
+          if usable(rec) then return rec, "data." .. name .. " (kind first)" end
+        end
+      end
+    end
+  end
   return nil
+end
+
+-- A short text picture of a table, so the real layout can be read off a log.
+local function shape(v, depth)
+  if type(v) ~= "table" then return type(v) .. ":" .. tostring(v) end
+  if depth <= 0 then return "table" end
+  local keys = {}
+  for k in pairs(v) do keys[#keys + 1] = k end
+  table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+  local parts = {}
+  for i = 1, math.min(#keys, 6) do
+    parts[#parts + 1] = tostring(keys[i]) .. "=" .. shape(v[keys[i]], depth - 1)
+  end
+  return "{" .. table.concat(parts, ", ")
+    .. (#keys > 6 and (", ...(" .. #keys .. " keys)") or "") .. "}"
 end
 
 -- The map's normalised encounter record { grass = tbl|nil, water = tbl|nil }, or
@@ -402,6 +462,13 @@ function Spawn.encounterDef(Game, map)
         end
       end
       table.sort(names)
+      local data = Game and Game.data
+      local def = map.def or {}
+      once("dump", "Game.data.encounters shape: %s",
+           shape(data and data.encounters, 5):sub(1, 1800))
+      once("dumpkeys:" .. tostring(map.id),
+           "map keys tried: id=%s def.id=%s def.name=%s def.index=%s",
+           tostring(map.id), tostring(def.id), tostring(def.name), tostring(def.index))
       once("none:" .. tostring(map.id),
            "map %s: no encounter table found (Game.data keys that look related: %s)",
            tostring(map.id), #names > 0 and table.concat(names, ", ") or "none")
@@ -456,6 +523,14 @@ end
 function Spawn.drive()
   if not Spawn.active() then return end
   local t = now()
+  if not Spawn.statusLogged then
+    Spawn.statusLogged = true
+    local W, A = optional("WildRoamers"), optional("RoamerArt")
+    local okE, en = pcall(function() return W and W.enabled and W.enabled() end)
+    local okA, av = pcall(function() return A and A.available and A.available() end)
+    once("status", "driver running; WildRoamers.enabled=%s RoamerArt.available=%s",
+         tostring(okE and en), tostring(okA and av))
+  end
   for _, name in ipairs({ "WildRoamers", "CityLife" }) do
     local m = optional(name)
     if m and type(m.update) == "function"

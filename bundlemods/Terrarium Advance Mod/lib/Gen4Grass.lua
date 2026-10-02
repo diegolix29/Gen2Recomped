@@ -81,6 +81,10 @@ local function isTallGrass(map, cx, cy)
   return true
 end
 
+-- Gen4Spawn asks "is this cell grass?" through this name. Same test the 3D
+-- tufts are planted by, so a roamer stands exactly where the grass grows.
+Grass.isGrassCell = isTallGrass
+
 -- One chunk's meshes, or an empty record when it has no tall grass. Instances
 -- come from Grass3D.instanceForTile, so the yaw/scale hash is the voxel
 -- scene's own; only where they stand and how big they are is Gen 4's.

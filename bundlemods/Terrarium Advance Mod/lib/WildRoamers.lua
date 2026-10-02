@@ -488,8 +488,6 @@ local function tick()
   state.tick = state.tick + 1
   if state.tick % EVERY ~= 0 then return end
   pass(ow)
-  -- Track last pipeline tick for Gen4Spawn's driver
-  WildRoamers.lastPipelineTick = love.timer and love.timer.getTime and love.timer.getTime()
 end
 
 -- This runs inside the voxel pipeline's update hook, and the registry
@@ -500,8 +498,13 @@ end
 -- in 3D.  Warned once, because a per-frame hook fails sixty times a second.
 local failed = false
 
-function WildRoamers.update()
+-- `source` is "driver" when Gen4Spawn's driver calls this, nil from the voxel
+-- pipeline. Only the pipeline stamps lastPipelineTick, on every call.
+function WildRoamers.update(source)
   if failed then return end
+  if source ~= "driver" then
+    WildRoamers.lastPipelineTick = love.timer and love.timer.getTime and love.timer.getTime()
+  end
   local ok, err = pcall(tick)
   if ok then return end
   failed = true
