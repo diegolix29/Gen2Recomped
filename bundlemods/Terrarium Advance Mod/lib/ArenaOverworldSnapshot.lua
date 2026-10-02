@@ -6,6 +6,13 @@
 -- CBE still owns camera, actors, crowd and move FX. This module only holds
 -- the map pocket and draws its terrain into the already-bound arena canvas
 -- (Voxel3D.beginScene slot "current").
+--
+-- GEN 4 (Platinum): there is no voxel field -- the world is the cartridge's own
+-- 3D terrain. capture() still caches the pocket; draw() then renders the native
+-- world through CBE's own camera pose (Gen4WorldHost.renderPose) and keeps the
+-- colour, and blit() lays it into the arena canvas once Arena.lua has rebound
+-- it. Actors keep projecting through the pose, which the world was drawn with,
+-- so they stand on the real ground. See nativeWorld() / blit() below.
 local V = ...
 local M = {}
 
@@ -29,6 +36,14 @@ local function engineReq(name)
   local req = V.engineRequire or require
   local ok, mod = pcall(req, name)
   if ok then return mod end
+  return nil
+end
+
+-- This module runs in the Colosseum namespace, which has no V.require of its
+-- own: main-mod modules are reached through voxel() (-> the main V.require).
+local function gen4Host()
+  local H = voxel("Gen4WorldHost")
+  if type(H) == "table" then return H end
   return nil
 end
 
@@ -94,14 +109,18 @@ end
 function M.capture(battle, stateHint)
   local wanted, why = wantsSnapshot(battle)
   if not wanted then return false end
-  local Voxel3D = V.Voxel3D or voxel("Voxel3D")
-  if not (Voxel3D and Voxel3D.available and Voxel3D.available()) then
-    log("warn", "overworld arena field skipped: voxel unavailable")
-    return false
-  end
   local state = overworldState(stateHint)
   if not state then
     log("warn", "overworld arena field skipped: no overworld state")
+    return false
+  end
+  -- A Gen 4 map is drawn by the engine's own 3D ground: nothing to voxelise.
+  local Host = gen4Host()
+  local native = Host ~= nil and type(Host.isState) == "function"
+    and type(Host.renderPose) == "function" and Host.isState(state) and true or false
+  local Voxel3D = V.Voxel3D or voxel("Voxel3D")
+  if not native and not (Voxel3D and Voxel3D.available and Voxel3D.available()) then
+    log("warn", "overworld arena field skipped: voxel unavailable")
     return false
   end
   local pocket, whyPocket = findPocket(state, battle)
@@ -109,13 +128,20 @@ function M.capture(battle, stateHint)
     log("warn", "overworld arena field skipped: %s", tostring(whyPocket))
     return false
   end
-  local VoxelScene = voxel("VoxelScene")
-  local ChunkMesher = voxel("ChunkMesher")
-  if VoxelScene and type(VoxelScene.prefetch) == "function" then
-    pcall(VoxelScene.prefetch, state)
-  end
-  if ChunkMesher and type(ChunkMesher.pump) == "function" then
-    pcall(ChunkMesher.pump, true)
+  if native then
+    -- The telephoto rig stands five tiles back, which on a Sinnoh interior is
+    -- through a wall. Wide is the same composition at a distance a room holds
+    -- (the same choice Gen4WorldHost.renderBattle makes for the 3D battles).
+    if pocket.cam == nil then pocket.cam = "wide" end
+  else
+    local VoxelScene = voxel("VoxelScene")
+    local ChunkMesher = voxel("ChunkMesher")
+    if VoxelScene and type(VoxelScene.prefetch) == "function" then
+      pcall(VoxelScene.prefetch, state)
+    end
+    if ChunkMesher and type(ChunkMesher.pump) == "function" then
+      pcall(ChunkMesher.pump, true)
+    end
   end
   local host = pocket.map or state.map
   field = {
@@ -124,10 +150,12 @@ function M.capture(battle, stateHint)
     host = host,
     groundY = groundYFor(pocket),
     mapId = host and host.id or (state.map and state.map.id),
+    gen4 = native or nil,
   }
-  log("info", "overworld arena field cached map=%s pocket=%s@(%s,%s) (arena=%s)",
+  log("info", "overworld arena field cached map=%s pocket=%s@(%s,%s) (arena=%s%s)",
       tostring(field.mapId), tostring(pocket.shape),
-      tostring(pocket.x), tostring(pocket.y), tostring(why))
+      tostring(pocket.x), tostring(pocket.y), tostring(why),
+      native and ", native Gen 4 world" or "")
   return true
 end
 
@@ -208,10 +236,75 @@ local function paletteFor(state, home)
   end
 end
 
+-- True while the cached field is a native Gen 4 world. Arena.lua asks this to
+-- decide two things: keep the pose-built view-projection for the actors (there
+-- is no Voxel3D.vp for this field, only a stale one from some earlier scene),
+-- and call blit() once the arena canvas is rebound.
+function M.nativeWorld()
+  return field ~= nil and field.gen4 == true
+end
+
+local function drawNative(w, h, pose)
+  field.worldColour = nil
+  local Host = gen4Host()
+  if not (Host and type(Host.renderPose) == "function") then return false end
+  local cam = pose
+  if not (cam and cam.eye and cam.focus and cam.fov) then
+    cam = M.cameraPose()
+  end
+  if not cam then
+    log("warn", "native arena world skipped: no camera pose")
+    return false
+  end
+  local colour, whyNot = Host.renderPose(field.state, field.pocket, cam, w, h)
+  if not colour then
+    if field.warned ~= whyNot then
+      field.warned = whyNot
+      log("warn", "native arena world not drawn: %s", tostring(whyNot))
+    end
+    return false
+  end
+  field.worldColour = colour
+  return true
+end
+
+-- Lay the native world into the arena canvas. Called by Arena.lua AFTER it has
+-- rebound its own colour+depth target, because rendering the world binds the
+-- engine's canvases and leaves the arena unbound. Colour only: the engine's
+-- depth buffer is a different attachment, so the actors (drawn next) sit in
+-- front of the world and only test against each other.
+function M.blit(w, h)
+  if not (field and field.gen4 and field.worldColour) then return false end
+  local g = love and love.graphics
+  if not g then return false end
+  local src = field.worldColour
+  local prevShader = g.getShader()
+  local blendMode, alphaMode = g.getBlendMode()
+  local depthCmp, depthWrite
+  if g.getDepthMode then depthCmp, depthWrite = g.getDepthMode() end
+  local ok = pcall(function()
+    g.setShader()
+    if g.setDepthMode then g.setDepthMode("always", false) end
+    g.setBlendMode("alpha", "premultiplied")
+    g.setColor(1, 1, 1, 1)
+    local sw = src.getWidth and src:getWidth() or w
+    local sh = src.getHeight and src:getHeight() or h
+    g.draw(src, 0, 0, 0, w / sw, h / sh)
+  end)
+  pcall(g.setBlendMode, blendMode, alphaMode)
+  pcall(g.setShader, prevShader)
+  if g.setDepthMode then
+    if depthCmp then pcall(g.setDepthMode, depthCmp, depthWrite)
+    else pcall(g.setDepthMode) end
+  end
+  return ok
+end
+
 -- Draw cached voxel terrain into the currently bound CBE arena framebuffer.
 -- Caller owns clear/sky; this only submits field meshes with the CBE pose.
 function M.draw(w, h, pose)
   if not (field and field.pocket and field.state) then return false end
+  if field.gen4 then return drawNative(w, h, pose) end
   local Voxel3D = V.Voxel3D or voxel("Voxel3D")
   local VoxelScene = voxel("VoxelScene")
   local ChunkMesher = voxel("ChunkMesher")

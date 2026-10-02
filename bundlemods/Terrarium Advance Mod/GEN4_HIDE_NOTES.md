@@ -1,7 +1,7 @@
 # Gen 4: hide native grass/water, and the 3D grass / water that replace them
 
 Files: `lib/Gen4Hide.lua`, `lib/Gen4Water.lua`, `lib/Gen4Grass.lua`, `lib/Gen4Reflect.lua`,
-`lib/Gen4Sand.lua`, `lib/Gen4Cells.lua` (new), `lib/Gen4Bridge.lua`. `main.lua` is NOT shipped: it needs only these two lines inside the
+`lib/Gen4Sand.lua` (new), `lib/Gen4Bridge.lua`. `main.lua` is NOT shipped: it needs only these two lines inside the
 `if Gen4Bridge.isGen4() and Gen4Bridge.install() then` block, after the grass register:
     pcall(function() V.require("Gen4Hide").install() end)
     pcall(function() V.require("Gen4Reflect").install() end)
@@ -78,17 +78,3 @@ is about 200k triangles).
 - No ground.png on disk => nothing is drawn (logged once as `Gen4Sand:`).
 - Registered by `Gen4Bridge.install()` after water and before grass, so no `main.lua` change.
 - Toggle off: `Sand.enabled = false`, or `Bridge.disabled.sand`.
-
-
-## Round 6: grass and sand only grew inside the current map
-Cause: a Gen 4 `Map` is a rectangle CROPPED out of one shared grid (`MapLoader.resolveBlocks`:
-`def.blocks` = the layout's rows from `originX/originY`, `width x height`). The engine's ground draws
-every chunk of the shared grid around you, neighbouring towns and routes included, but
-`Map:inBounds`/`blockAt` only know the crop, so grass and sand stopped at its edge. (Water was not
-affected: it is built from the chunk geometry, not from the Map.)
-Fix: `lib/Gen4Cells.lua`, `Cells.behaviour(map, cx, cy)`: inside the crop it asks the live Map
-(edits still show); outside it reads `Data.map_layouts[def.layout].blocks` (u16 little-endian,
-modulo 1024, exactly like `Map.blockArray`) at `(originX + cx, originY + cy)`. Gen4Grass and Gen4Sand
-use it. Beyond the crop the behaviour byte alone decides (no `isWaterCell`; 2/3/33 are never water).
-If neighbours still lack grass, search the log for `Gen4Sand:`/`Gen4Grass:` lines; if nothing logs,
-the layout data was not reachable (`Game.data.map_layouts[def.layout]`).
