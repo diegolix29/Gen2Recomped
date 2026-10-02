@@ -180,3 +180,51 @@ ROM here. First things to check in-game:
    shader's sway to read a per-vertex base height.
 6. Shadows/day-night: Gen 4 bakes light into vertex colours (`Gen4Shade`); the
    effect meshes use the mod's tint, so match them via `Voxel3D.tint`.
+
+## Colosseum Battle Environments' OVERWORLD arena on Gen 4 (native world)
+
+CBE's OVERWORLD arena (`ArenaCatalog` `liveOverworld`) used to stage the fight
+on a voxel snapshot of the map (`ArenaOverworldSnapshot`). Platinum has no
+voxel field, so there was nothing to draw and the actors projected through a
+stale `Voxel3D.vp`. Now, on a Gen 4 map:
+
+- `ArenaOverworldSnapshot.capture` still caches the same pocket (`BattleArena`),
+  but skips the voxel prefetch and no longer needs `Voxel3D.available()`. It
+  defaults the pocket to the `wide` camera rig (the telephoto rig stands five
+  tiles back, through a wall on a Sinnoh interior); an authored `cam` wins.
+- `ArenaOverworldSnapshot.draw` calls `Gen4WorldHost.renderPose`, which draws
+  the cartridge's own terrain and buildings through CBE's OWN camera pose. A
+  Gen 4 world is map-local space shifted by `(offsetX, offsetY)`, so a camera at
+  pose + offset sees what the pose sees; CBE's actors (map-local, projected
+  through the pose) therefore line up with no shift.
+- `Arena.lua` keeps its pose-built view-projection for the actors when the field
+  is native (`ArenaOverworldSnapshot.nativeWorld()`), and calls
+  `ArenaOverworldSnapshot.blit` once the arena canvas is rebound.
+- `renderPose` hides the overworld cast (entity/ghost lists) for the call so
+  followers and NPCs are not drawn a second time next to the CBE actors, takes
+  the colour inside `Gen4Bridge.after` (so grass, water and sand are in it),
+  reuses one canvas per size, and restores the camera, `cameraPlaced`, a view it
+  created, and the cast whether or not the draw worked.
+- `Gen4WorldHost` is reached from the snapshot through `voxel()`: that module
+  runs in the Colosseum namespace, which has no `V.require`.
+
+Limits (all visual, none checked in a running LOVE + Platinum):
+- The world is laid in as COLOUR ONLY. The engine's depth buffer is a different
+  attachment, so buildings and trees cannot hide an actor; the pocket is chosen
+  clear, but a camera that ends up behind a wall will show the wall's far side.
+- CBE models exist for species 1-386 only (`ColosseumDex`); Gen 4 species 387+
+  fall back to whatever CBE already did for them.
+- The eye height is the rig's. `Gen4WorldHost.renderBattle` raises its eye by 18
+  units; this path cannot (the actors use the same pose), so if the camera clips
+  terrain, raise the rig, not the lens.
+
+Found while here (not changed): `Gen4Battle3D.begin` has no caller in this
+build -- the section above says `OverworldBattle.begin` diverts to it, but
+nothing does, so the live-world sprite battle is installed and never staged.
+`Gen4WorldHost.renderBattle` allocates a canvas every call and leaves a
+`Gen4View` it created on `ground.view3d`.
+
+Tested with stubs (`tools/test_gen4_arena.lua`, run with `texlua` from the mod
+root): camera placement and exact restore, cast hiding, hook timing and
+removal, canvas reuse, every failure path, capture/draw/blit and the voxel path
+staying on for Gen 1-3.

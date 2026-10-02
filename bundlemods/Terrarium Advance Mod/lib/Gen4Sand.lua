@@ -88,17 +88,10 @@ local function groundTexture(Grass3D)
 end
 
 local function isSand(map, cx, cy)
-  -- Gen4Cells: the live Map inside its crop, the shared layout beyond it, so
-  -- the beach carries on over the neighbouring maps.
-  local Cells = optional("Gen4Cells")
-  local b
-  if Cells then b = Cells.behaviour(map, cx, cy)
-  elseif map.blockAt and map.inBounds and map:inBounds(cx, cy) then
-    local okB, v = pcall(map.blockAt, map, cx, cy)
-    b = okB and v or nil
-  end
-  if not Sand.BEHAVIOURS[b] then return false end
-  if map.isWaterCell and map.inBounds and map:inBounds(cx, cy) then
+  if not (map.blockAt and map.inBounds and map:inBounds(cx, cy)) then return false end
+  local okB, b = pcall(map.blockAt, map, cx, cy)
+  if not (okB and Sand.BEHAVIOURS[b]) then return false end
+  if map.isWaterCell then
     local okW, water = pcall(map.isWaterCell, map, cx, cy)
     if okW and water then return false end
   end

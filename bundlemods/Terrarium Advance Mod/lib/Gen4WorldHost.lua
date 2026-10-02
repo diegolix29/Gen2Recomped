@@ -690,6 +690,166 @@ function Host.renderBattle(state, arena, textures, token)
   }
 end
 
+-- ---------------------------------------------------------------------------
+-- renderPose: the native Sinnoh world through an EXPLICIT camera.
+--
+-- Colosseum Battle Environments' OVERWORLD arena owns its own camera (a pose
+-- in map-local world pixels: eye / focus / fov), its own actors and its own
+-- depth buffer. On Gen 1-3 ArenaOverworldSnapshot fills that buffer with the
+-- voxel field; Gen 4 has no voxel field to draw, so this draws the cartridge's
+-- own terrain and buildings through the SAME pose instead.
+--
+-- Why the actors still line up: a Gen 4 world is the map-local world shifted
+-- by (offsetX, offsetY). Putting the Gen 4 camera at pose + offset sees exactly
+-- what the pose sees in map-local space, so CBE's actors -- which live in
+-- map-local space and project through the pose -- need no shift at all.
+--
+-- No overworld cast is drawn: the entity lists are emptied for the duration of
+-- the call (restored before it returns) so followers, NPCs and roamers do not
+-- stand in the arena a second time next to the CBE actors.
+--
+-- Returns the colour canvas (owned and reused by this module; draw it, do not
+-- keep it) or nil plus a reason. Every piece of engine state it touches is put
+-- back whether or not the draw succeeds.
+local atan2 = math.atan2 or math.atan
+
+local function copyFreeColour(w, h)
+  local g = love and love.graphics
+  local Ground = engineRequire("src.render.Gen4Ground")
+  local src = Ground and Ground.freeColour
+  if not (g and src) then return nil end
+  local dest = Host._poseCanvas
+  if not (dest and Host._poseW == w and Host._poseH == h) then
+    if dest and dest.release then pcall(dest.release, dest) end
+    local okNew, made = pcall(g.newCanvas, w, h)
+    if not (okNew and made) then
+      Host._poseCanvas = nil
+      return nil
+    end
+    dest = made
+    Host._poseCanvas, Host._poseW, Host._poseH = made, w, h
+  end
+  local prevCanvas = g.getCanvas()
+  local blendMode, alphaMode = g.getBlendMode()
+  local depthCmp, depthWrite
+  if g.getDepthMode then depthCmp, depthWrite = g.getDepthMode() end
+  local ok = pcall(function()
+    g.setCanvas(dest)
+    if g.setDepthMode then g.setDepthMode() end
+    g.clear(0, 0, 0, 0)
+    g.setBlendMode("replace")
+    g.setColor(1, 1, 1, 1)
+    local sw = src.getWidth and src:getWidth() or w
+    local sh = src.getHeight and src:getHeight() or h
+    g.draw(src, 0, 0, 0, w / sw, h / sh)
+  end)
+  pcall(g.setBlendMode, blendMode, alphaMode)
+  pcall(g.setCanvas, prevCanvas)
+  if g.setDepthMode and depthCmp then pcall(g.setDepthMode, depthCmp, depthWrite) end
+  return ok and dest or nil
+end
+
+function Host.renderPose(state, pocket, pose, w, h)
+  w, h = math.floor(tonumber(w) or 0), math.floor(tonumber(h) or 0)
+  if w < 2 or h < 2 then return nil, "bad size" end
+  if not (pose and pose.eye and pose.focus and pose.fov) then
+    return nil, "no camera pose"
+  end
+  local ground = (pocket and pocket.map and pocket.map.renderer
+                  and pocket.map.renderer.gen4Ground) or Host.groundOf(state)
+  if not ground then return nil, "no Gen 4 ground" end
+  local Gen4View = engineRequire("src.render.Gen4View")
+  local drawFree = Host._drawFree or ground.drawFree
+  local endFree = Host._endFree or ground.endFree
+  if not (Gen4View and drawFree and endFree) then
+    return nil, "engine camera seams missing"
+  end
+  local g = love and love.graphics
+
+  local view = ground.view3d
+  local madeView = false
+  if not view then
+    view = Gen4View.new("third")
+    ground.view3d = view
+    madeView = true
+  end
+  local saved = {
+    mode = view.mode, x = view.x, y = view.y, z = view.z,
+    yaw = view.yaw, pitch = view.pitch, fovY = view.fovY,
+    placed = ground.cameraPlaced,
+  }
+  local savedEntities, savedGhosts
+  if state then
+    savedEntities, savedGhosts = state.entities, state.ghosts
+    state.entities, state.ghosts = {}, {}
+  end
+  if g and g.push then pcall(g.push, "transform") end
+  if g and g.origin then pcall(g.origin) end
+
+  local result, why
+  local okAll, errAll = pcall(function()
+    local ox, oz = ground.offsetX or 0, ground.offsetY or 0
+    local ex, ey, ez = pose.eye[1] + ox, pose.eye[2], pose.eye[3] + oz
+    local fx, fy, fz = pose.focus[1] + ox, pose.focus[2], pose.focus[3] + oz
+    local dx, dy, dz = fx - ex, fy - ey, fz - ez
+    local flat = math.sqrt(dx * dx + dz * dz)
+    -- third person takes view.fovY as given; field3d would derive its own
+    view.mode = "third"
+    view.x, view.y, view.z = ex, ey, ez
+    view.yaw = atan2(dx, -dz)
+    view.pitch = math.deg(atan2(-dy, math.max(flat, 1e-6)))
+    view.fovY = math.deg(pose.fov)
+    ground.cameraPlaced = true
+
+    Host._inBattle = true
+    local painted = drawFree(ground, w, h)
+    if not painted then
+      why = "the engine declined to draw the world"
+      pcall(endFree, ground)
+      return
+    end
+
+    -- The colour has to be taken AFTER the bridge's passes (grass, water,
+    -- sand) and BEFORE the engine closes the canvas. Bridge.after is exactly
+    -- that window; with no bridge there is nothing to wait for.
+    local Bridge = V.Gen4Bridge
+    local hook
+    local fired = false
+    local function capture()
+      if fired then return end
+      fired = true
+      result = copyFreeColour(w, h)
+    end
+    if Bridge and type(Bridge.after) == "table" then
+      hook = function() capture() end
+      Bridge.after[#Bridge.after + 1] = hook
+    else
+      capture()
+    end
+    local okEnd, errEnd = pcall(endFree, ground)
+    if hook then
+      for i = #Bridge.after, 1, -1 do
+        if Bridge.after[i] == hook then table.remove(Bridge.after, i) break end
+      end
+    end
+    if not fired then capture() end   -- the bridge never reached its hook
+    if not okEnd then why = "endFree failed: " .. tostring(errEnd) end
+  end)
+
+  Host._inBattle = false
+  if state then state.entities, state.ghosts = savedEntities, savedGhosts end
+  view.mode, view.x, view.y, view.z = saved.mode, saved.x, saved.y, saved.z
+  view.yaw, view.pitch, view.fovY = saved.yaw, saved.pitch, saved.fovY
+  ground.cameraPlaced = saved.placed
+  if madeView then ground.view3d = nil end
+  if g and g.pop then pcall(g.pop) end
+  if g and g.setScissor then pcall(g.setScissor) end
+
+  if not okAll then return nil, tostring(errAll) end
+  if not result and not why then why = "could not copy the world's colour" end
+  return result, why
+end
+
 function Host.install()
   if Host.installed then return true end
   local Gen4Ground = engineRequire("src.render.Gen4Ground")

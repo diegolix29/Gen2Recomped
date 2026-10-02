@@ -70,20 +70,11 @@ end
 local cache = setmetatable({}, { __mode = "k" })
 
 local function isTallGrass(map, cx, cy)
-  -- Gen4Cells reads the live Map inside its crop and the shared layout beyond
-  -- it, so grass grows on the neighbouring maps' ground too (a Gen 4 Map is
-  -- only a rectangle cut out of the grid the engine draws around you).
-  local Cells = optional("Gen4Cells")
-  local b
-  if Cells then b = Cells.behaviour(map, cx, cy)
-  elseif map.blockAt and map.inBounds and map:inBounds(cx, cy) then
-    local okB, v = pcall(map.blockAt, map, cx, cy)
-    b = okB and v or nil
-  end
-  if not (b == Grass.TALL_GRASS or b == Grass.VERY_TALL_GRASS) then return false end
-  -- never on water, whatever the behaviour byte says (only the live Map can
-  -- be asked; beyond its crop the behaviour byte alone has to do)
-  if map.isWaterCell and map.inBounds and map:inBounds(cx, cy) then
+  if not (map.blockAt and map.inBounds and map:inBounds(cx, cy)) then return false end
+  local okB, b = pcall(map.blockAt, map, cx, cy)
+  if not (okB and (b == Grass.TALL_GRASS or b == Grass.VERY_TALL_GRASS)) then return false end
+  -- never on water, whatever the behaviour byte says
+  if map.isWaterCell then
     local okW, water = pcall(map.isWaterCell, map, cx, cy)
     if okW and water then return false end
   end

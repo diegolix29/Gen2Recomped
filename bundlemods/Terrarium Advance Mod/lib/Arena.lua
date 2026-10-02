@@ -3392,7 +3392,12 @@ function A:render(ctx,arena,drawActors)
       -- sit at Y=0 inside the cave floor). MoveFX stays visible because it
       -- is a post pass.
       local Voxel3D=V.Voxel3D
-      if Voxel3D and type(Voxel3D.vp)=="table" then
+      -- A native Gen 4 world has no Voxel3D.vp of its own (the one on the class
+      -- is whatever scene drew last), and the world was drawn through THIS
+      -- pose, so the pose-built vp above is already the right one.
+      local SnapN=V.ArenaOverworldSnapshot
+      local nativeWorld=SnapN and type(SnapN.nativeWorld)=="function" and SnapN.nativeWorld() or false
+      if not nativeWorld and Voxel3D and type(Voxel3D.vp)=="table" then
         vp=Voxel3D.vp
         actorVP=Mat4.mul(vp,Mat4.scale(figureScale,figureScale,figureScale))
       end
@@ -3400,6 +3405,10 @@ function A:render(ctx,arena,drawActors)
       ctx.groundY=worldY/math.max(0.001,figureScale)
       if arena then arena.groundY=worldY;arena.liveField=true end
       local rebound=bindArenaCanvas(out)
+      if rebound and nativeWorld and type(SnapN.blit)=="function" then
+        -- Gen 4: lay the engine-drawn world in now that the arena is bound again
+        safeArenaPass(ctx,"overworldBlit",function() SnapN.blit(w,h) end)
+      end
       if rebound and depthActive then love.graphics.setDepthMode("lequal",true) end
       love.graphics.setColor(1,1,1,1)
     else
