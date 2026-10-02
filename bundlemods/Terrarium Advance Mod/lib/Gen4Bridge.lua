@@ -43,6 +43,8 @@ local Mat4 = V.require("Mat4")
 local Bridge = {
   effects = {},      -- name -> draw(scene)
   order = {},        -- registration order == draw order
+  pre = {},          -- name -> draw(scene): effects drawn BEFORE the terrain (the sky),
+  preOrder = {},     -- into the same open Voxel3D scene, see Bridge.runPre
   after = {},        -- fn(ground, view, vw, vh): screen passes run once the effects
                      -- are drawn and BEFORE the engine blits the frame (Gen4Reflect)
   disabled = {},     -- name -> true when switched off
@@ -87,6 +89,18 @@ function Bridge.register(name, fn)
   if type(fn) ~= "function" then return false end
   if not Bridge.effects[name] then Bridge.order[#Bridge.order + 1] = name end
   Bridge.effects[name] = fn
+  return true
+end
+
+-- registerPre(name, drawFn): like register, but the effect runs BEFORE the first
+-- terrain shape of the frame (Gen4Sky's hook calls Bridge.runPre then), with the
+-- depth buffer still clear. Nothing is drawn over yet, so the effect is the
+-- backdrop: everything the engine draws afterwards covers it. Same scene, same
+-- error isolation as register.
+function Bridge.registerPre(name, fn)
+  if type(fn) ~= "function" then return false end
+  if not Bridge.pre[name] then Bridge.preOrder[#Bridge.preOrder + 1] = name end
+  Bridge.pre[name] = fn
   return true
 end
 
@@ -136,7 +150,7 @@ local function buildScene(ground, view, vw, vh)
   return scene
 end
 
-local function runScene(ground, view, vw, vh)
+local function runScene(ground, view, vw, vh, order, effects, tag)
   local vp = view:matrix(vw, vh)          -- Gen4's world->clip, Y already flipped
   local fx, fy, fz = view:forward()
   local saved = Voxel3D.camera
@@ -158,11 +172,11 @@ local function runScene(ground, view, vw, vh)
     return
   end
   local scene = buildScene(ground, view, vw, vh)
-  for _, name in ipairs(Bridge.order) do
+  for _, name in ipairs(order) do
     if not Bridge.disabled[name] then
-      local ok, err = pcall(Bridge.effects[name], scene)
+      local ok, err = pcall(effects[name], scene)
       if not ok then
-        report("fx:" .. name, "effect '%s' failed: %s", name, tostring(err))
+        report(tag .. name, "effect '%s' failed: %s", name, tostring(err))
         Bridge.disabled[name] = true      -- don't fail every frame
       end
     end
@@ -176,7 +190,7 @@ function Bridge.run(ground)
   local view, vw, vh = ground.view3d, ground.freeW, ground.freeH
   if not (view and vw and vh and view.matrix and view.forward) then return end
   if not Bridge.isGen4() then return end
-  local ok, err = pcall(runScene, ground, view, vw, vh)
+  local ok, err = pcall(runScene, ground, view, vw, vh, Bridge.order, Bridge.effects, "fx:")
   if not ok then
     -- make sure a throw between beginScene/endScene can't leave state behind
     pcall(Voxel3D.endScene)
@@ -188,6 +202,23 @@ function Bridge.run(ground)
       report("after:" .. i, "screen pass %d failed: %s", i, tostring(errA))
     end
   end
+end
+
+-- The pre-terrain pass. Called by Gen4Sky from inside Gen4Ground:drawFree, on the
+-- first terrain shape, while the free canvas is bound and its depth is clear.
+-- Returns true when the scene ran.
+function Bridge.runPre(ground)
+  if not (Bridge.enabled and #Bridge.preOrder > 0) then return false end
+  local view, vw, vh = ground.view3d, ground.freeW, ground.freeH
+  if not (view and vw and vh and view.matrix and view.forward) then return false end
+  if not Bridge.isGen4() then return false end
+  local ok, err = pcall(runScene, ground, view, vw, vh, Bridge.preOrder, Bridge.pre, "pre:")
+  if not ok then
+    pcall(Voxel3D.endScene)
+    report("prescene", "pre-terrain scene failed: %s", tostring(err))
+    return false
+  end
+  return true
 end
 
 -- ------------------------------------------------------------- install --
@@ -247,11 +278,22 @@ function Bridge.install()
   else
     report("trees", "the tree pass did not load: %s", tostring(GT))
   end
+  -- The voxel scene's sky (bands, clouds, sun/moon, stars, painted horizon, scenery)
+  -- on Gen 4, with the engine's own horizon image hidden. Pre-terrain, so it is
+  -- the backdrop. See lib/Gen4Sky.lua.
+  local okK, GK = pcall(V.require, "Gen4Sky")
+  if okK and type(GK) == "table" and GK.install then
+    local okI, errI = pcall(GK.install)
+    if not (okI and errI ~= false) then report("sky", "the sky pass did not install: %s", tostring(errI)) end
+  else
+    report("sky", "the sky pass did not load: %s", tostring(GK))
+  end
   return true
 end
 
 function Bridge.uninstall()
   if not Bridge.installed then return end
+  pcall(function() V.require("Gen4Sky").uninstall() end)
   Bridge.Ground.endFree = Bridge.originalEndFree
   Bridge.Ground.forMap = Bridge.originalForMap
   Bridge.installed = false
