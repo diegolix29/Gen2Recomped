@@ -271,6 +271,12 @@ local KIND_KEYS = {
 }
 local TABLE_NAMES = { "encounters", "gen4_encounters", "encounters_gen4",
                       "wild_encounters", "wild", "encounter_tables" }
+-- Platinum's record keeps the per-terrain rate beside the slot list:
+-- { grass = { 12 slots }, grassRate = n, surf = { 5 slots }, surfRate = n, ... }
+local RATE_KEYS = {
+  grass = { "grassRate", "landRate", "walkRate" },
+  water = { "surfRate", "waterRate" },
+}
 local DEF_FIELDS = { "encounters", "wild", "encounterTable", "wildEncounters" }
 
 local function rawRate(raw)
@@ -287,6 +293,7 @@ local function slotOf(e)
   if sp == nil then sp = e.id end
   if sp == nil then sp = e[1] end
   if sp == nil or type(sp) == "table" then return nil end
+  if sp == 0 then return nil end      -- Gen 4 tables pad unused slots with species 0
   local lo = tonumber(e.level or e.lvl or e.levelMin or e.minLevel or e.min_level or e.min or e[2])
   if not lo then return nil end
   local hi = tonumber(e.levelMax or e.maxLevel or e.max_level or e.max or e[3]) or lo
@@ -375,11 +382,38 @@ function Spawn.kindTable(encDef, kind)
   local rate = rawRate(raw)
   if rate == nil and type(raw.rates) == "table" then rate = tonumber(pickTime(raw.rates)) end
   if rate == nil then rate = rawRate(holder) end
+  if rate == nil then
+    for _, key in ipairs(RATE_KEYS[kind] or {}) do
+      if tonumber(encDef[key]) then rate = tonumber(encDef[key]); break end
+    end
+  end
   if rate == nil then rate = 1 end
   return { rate = rate, slots = slots, buckets = buckets }
 end
 
+local function now()
+  return (love and love.timer and love.timer.getTime and love.timer.getTime()) or 0
+end
+
 local rawDefs = setmetatable({}, { __mode = "k" })   -- map -> raw record | false
+local negUntil = setmetatable({}, { __mode = "k" })  -- map -> time a miss may be retried
+Spawn.captured = {}                                   -- map id -> encDef the engine rolled with
+
+-- The engine's own encounter.roll hands over the table it resolved for the map
+-- it is standing on. Remembering it is the one lookup that cannot be wrong
+-- about how a Platinum map finds its table.
+function Spawn.noteEncounter(encDef)
+  if type(encDef) ~= "table" then return end
+  local Game = game()
+  local map = Game and Game.overworld and Game.overworld.map
+  if map and map.id ~= nil then
+    if Spawn.captured[map.id] ~= encDef then
+      once("captured:" .. tostring(map.id), "map %s: took the engine's own encounter table", tostring(map.id))
+    end
+    Spawn.captured[map.id] = encDef
+    rawDefs[map], negUntil[map] = nil, nil
+  end
+end
 
 local function findRaw(Game, map)
   local data = Game and Game.data
@@ -390,6 +424,8 @@ local function findRaw(Game, map)
     return type(rec) == "table"
       and (Spawn.kindTable(rec, "grass") or Spawn.kindTable(rec, "water")) and true or false
   end
+  local cap = map.id ~= nil and Spawn.captured[map.id] or nil
+  if usable(cap) then return cap, "engine encounter.roll" end
   for _, name in ipairs(TABLE_NAMES) do
     local t = data[name]
     if type(t) == "table" then
@@ -422,6 +458,50 @@ local function findRaw(Game, map)
       end
     end
   end
+  -- Platinum: data.encounters is a list (0, 1, 2 ...) and the MAP carries the
+  -- index (or name) of its record in some header field. Look at every field
+  -- named like enc* / wild* on the map def, the map itself and any map /
+  -- header / zone table, most specific names first.
+  local enc = data.encounters
+  if type(enc) == "table" then
+    local PRIORITY = { encounter = 1, encounterid = 1, encounterindex = 1, encountertable = 1,
+                       wildencounter = 1, wildencounterid = 1, wildindex = 1, wild = 1,
+                       enc = 1, encid = 1, encounterfile = 1, wildfile = 1 }
+    local cands = {}
+    local function scan(rec, src)
+      if type(rec) ~= "table" then return end
+      for k, v in pairs(rec) do
+        local ks = tostring(k):lower()
+        if (ks:find("enc", 1, true) or ks:find("wild", 1, true))
+           and (type(v) == "number" or type(v) == "string") then
+          cands[#cands + 1] = { v, src .. "." .. tostring(k), PRIORITY[ks] or 2 }
+        end
+      end
+    end
+    scan(def, "def")
+    scan(map, "map")
+    for k, t in pairs(data) do
+      local ks = tostring(k):lower()
+      if type(t) == "table" and (ks:find("map", 1, true) or ks:find("header", 1, true)
+                                  or ks:find("zone", 1, true)) then
+        if map.id ~= nil then scan(t[map.id], "data." .. tostring(k)) end
+        if def.id ~= nil and def.id ~= map.id then scan(t[def.id], "data." .. tostring(k)) end
+      end
+    end
+    table.sort(cands, function(a, b) return a[3] < b[3] end)
+    local seen = {}
+    for _, c in ipairs(cands) do
+      local v = c[1]
+      if type(v) == "string" and tonumber(v) and enc[tonumber(v)] ~= nil then v = tonumber(v) end
+      local rec = enc[v]
+      if usable(rec) then
+        return rec, "data.encounters[" .. tostring(v) .. "] via " .. c[2]
+      end
+      seen[#seen + 1] = c[2] .. "=" .. tostring(c[1])
+    end
+    once("cands:" .. tostring(map.id), "map %s: encounter-looking fields tried: %s",
+         tostring(map.id), #seen > 0 and table.concat(seen, ", ") or "none")
+  end
   return nil
 end
 
@@ -446,10 +526,12 @@ end
 -- be read off a log instead of guessed.
 function Spawn.encounterDef(Game, map)
   local raw = rawDefs[map]
+  if raw == false and now() >= (negUntil[map] or 0) then raw = nil end
   if raw == nil then
     local src
     raw, src = findRaw(Game, map)
     rawDefs[map] = raw or false
+    if not raw then negUntil[map] = now() + 2 end
     if raw then
       once("found:" .. tostring(map.id), "map %s: encounter table from %s", tostring(map.id), tostring(src))
     else
@@ -457,7 +539,8 @@ function Spawn.encounterDef(Game, map)
       for k in pairs((Game and Game.data) or {}) do
         local s = tostring(k):lower()
         if s:find("enc", 1, true) or s:find("wild", 1, true) or s:find("swarm", 1, true)
-           or s:find("grass", 1, true) then
+           or s:find("grass", 1, true) or s:find("map", 1, true)
+           or s:find("header", 1, true) or s:find("zone", 1, true) then
           names[#names + 1] = tostring(k)
         end
       end
@@ -466,6 +549,7 @@ function Spawn.encounterDef(Game, map)
       local def = map.def or {}
       once("dump", "Game.data.encounters shape: %s",
            shape(data and data.encounters, 5):sub(1, 1800))
+      once("defshape:" .. tostring(map.id), "map.def shape: %s", shape(def, 2):sub(1, 1500))
       once("dumpkeys:" .. tostring(map.id),
            "map keys tried: id=%s def.id=%s def.name=%s def.index=%s",
            tostring(map.id), tostring(def.id), tostring(def.name), tostring(def.index))
@@ -514,10 +598,6 @@ end
 
 -- --------------------------------------------------------------- driver --
 
-local function now()
-  return (love and love.timer and love.timer.getTime and love.timer.getTime()) or 0
-end
-
 -- Tick the roamers from the overworld's own update, but only when the voxel
 -- pipeline is not doing it.
 function Spawn.drive()
@@ -557,6 +637,16 @@ function Spawn.install()
     once("nowrap", "OverworldState.update could not be wrapped; roamers rely on the voxel "
          .. "pipeline tick or Gen4WorldHost's draw-time driver")
   end
+  pcall(function()
+    local hooks = V.mod and V.mod.hooks
+    if hooks and type(hooks.wrap) == "function" then
+      hooks:wrap("encounter.roll", function(next, encDef, ctx)
+        pcall(Spawn.noteEncounter, encDef)
+        return next(encDef, ctx)
+      end)
+      Spawn.rollHooked = true
+    end
+  end)
   Spawn.installed = true
   return true
 end
