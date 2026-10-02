@@ -986,7 +986,7 @@ function love.mousereleased(x, y, button, istouch)
   end
 end
 
-function love.mousemoved(x, y, dx, dy)
+function love.mousemoved(x, y, dx, dy, istouch)
   -- FREE-CAMERA LOOK FIRST, and only when one is up: `Game:cameraLook`
   -- answers false on every other map and camera, so the touch path below
   -- keeps every case it had.

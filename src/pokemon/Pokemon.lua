@@ -149,7 +149,7 @@ end
 -- supposed to move" -- and it was still describing an open one.
 function Pokemon.applySeed(data, mon, seed)
   if type(mon) ~= "table" or type(seed) ~= "table" then return false end
-  local def = data and data.pokemon and data.pokemon[mon.species]
+  local def = require('src.pokemon.Gen4Forms').definition(data,mon)
   if not def then return false end
   mon.personality = seed.personality or mon.personality
   mon.ivs = seed.ivs or mon.ivs
@@ -176,8 +176,10 @@ function Pokemon.applySeed(data, mon, seed)
   return true
 end
 
-function Pokemon.new(data, species, level, rng)
-  local def = data.pokemon[species]
+function Pokemon.new(data, species, level, rng, form)
+  local nativeForm=(data.constants or {}).gen==4 and (form or 0) or nil
+  local def = require('src.pokemon.Gen4Forms').definition(data,
+    {species=species,form=nativeForm})
   assert(def, "unknown species " .. tostring(species))
   local dvs = Stats.randomDVs(rng)
   local seed = Stats.isGen3(def) and gen3Seed(data, def, rng) or nil
@@ -191,6 +193,7 @@ function Pokemon.new(data, species, level, rng)
   end
   local mon = {
     species = species,
+    form = nativeForm,
     level = level,
     exp = Growth.expForLevel(def.growthRate, level),
     dvs = dvs,
@@ -268,7 +271,7 @@ function Pokemon.forceShiny(data, mon, rng, otId)
       return mon
     end
     mon.personality = Stats.shinyPersonality(mon.personality, otId, rng)
-    local def = data and data.pokemon and data.pokemon[mon.species]
+    local def = require('src.pokemon.Gen4Forms').definition(data,mon)
     if def then
       -- the nature rides on the personality, so the stats follow it
       local order = data.constants and data.constants.natureOrder
@@ -290,7 +293,7 @@ function Pokemon.forceShiny(data, mon, rng, otId)
   local dvs = {}
   for k, v in pairs(Pokemon.SHINY_DVS) do dvs[k] = v end
   mon.dvs = dvs
-  local def = data and data.pokemon and data.pokemon[mon.species]
+  local def = require('src.pokemon.Gen4Forms').definition(data,mon)
   if def then
     local full = mon.stats and mon.stats.hp
     mon.stats = Stats.calc(def, mon.level or 1, dvs, mon.statExp)
