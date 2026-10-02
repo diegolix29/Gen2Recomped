@@ -990,7 +990,8 @@ function love.mousemoved(x, y, dx, dy, istouch)
   -- FREE-CAMERA LOOK FIRST, and only when one is up: `Game:cameraLook`
   -- answers false on every other map and camera, so the touch path below
   -- keeps every case it had.
-  if Game and not (editorMode or Importer or TouchEditor)
+  if Game and not istouch and not (editorMode or Importer or TouchEditor)
+     and not Game:hasPointerScreen()
      and Game.cameraLook and Game:cameraLook(dx, dy) then
     return
   end
