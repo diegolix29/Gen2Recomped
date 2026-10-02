@@ -28,14 +28,16 @@
 -- BORDER TREES (`conttree*`)
 --
 -- A strip is split on each texture repeat and every repeat becomes its own
--- tree, so the border matches the trees inside the map.
+-- tree, so the border matches the trees inside the map. A sprite window that
+-- is (nearly) all opaque has no outline to follow, so it is rounded to an
+-- ellipse instead of being built as a slab (GT.DENSE_FRACTION).
 --
 -- WHEN A NATIVE CARD IS HIDDEN (Gen4Hide)
 --
 -- Per cache shape, by record, and only while this module has trees for it.
--- (The old by-texture-name fallback is gone: it hid every shape of that
--- texture in lands that were not built yet, so trees vanished or showed as
--- the old cards beside the new ones.)
+-- When a built shape lost its record pointer, Gen4Hide falls back to
+-- isCoveredName: texture/material names only, and only names that converted
+-- in every land of the window, so a name is never hidden where it was not built.
 --
 -- COST: baked ONCE PER LAND CHUNK, one mesh per texture. The first fill of a
 -- window uses a bigger frame budget (WARM_BUDGET) so the whole window is
@@ -56,18 +58,18 @@ local GT = {
   MIN_HALF = 1,           -- a column's chord is never thinner than this many blocks each side
   MAX_HALF = 9,           -- a tree is never deeper than 2x this many world units, however wide its run
   TREE_UNIT = 33,         -- width of one tree on a card (an ordinary Sinnoh tree card): wider cards are split into this many trees
-  MAX_SOLID = 0.97,       -- a sprite window this full of opaque texels is a block, not a tree
-  MAX_TREE_H = 90,        -- ...nor one taller than this
-  MIN_TREE_H = 3,         -- ...nor one flatter than this (ground quads)
+  MAX_TREE_H = 220,       -- a card taller than this is not a tree
+  MIN_TREE_H = 0.5,       -- ...nor one flatter than this (a ground quad)
   SINK = 0.4,             -- planted this far below the card's base
-  MAX_QUADS = 200000,     -- stop covering shapes in a land past this many quads
+  MAX_QUADS = 450000,     -- stop covering shapes in a land past this many quads (walkable trees go first, then the border)
   BUILDS_PER_FRAME = 4,
   BUILD_BUDGET = 0.006,   -- seconds, steady state
   WARM_BUDGET = 0.04,     -- seconds per frame while the window is still filling
+  DENSE_FRACTION = 0.92,  -- a sprite window this opaque has no silhouette to follow (no real alpha, or a wall tile): it is rounded, never built as a slab
   LOG = true,
   coverVersion = 0,       -- bumps whenever the set of covered shapes changes
   active = {},            -- cache shape record -> true (covered AND in the window)
-  coveredNames = {},      -- kept for logging only; never used to hide
+  coveredNames = {},      -- texture/material names that converted in EVERY land of the window (Gen4Hide's fallback when a shape has no cache pointer)
 }
 
 -- the cartridge's tree lean, the same constants Gen4Model classifies by
@@ -158,6 +160,21 @@ local TREE_SUB = { "tree", "palm", "yashi", "matsu", "sugi" }
 local function namesOf(s)
   return (tostring(s.texture or "") .. "\n" .. tostring(s.material or "")
           .. "\n" .. tostring(s.name or "")):lower()
+end
+
+-- The names a covered shape may be hidden by when its cache-record pointer is
+-- missing: texture and material only. The shape's own name ("polygon8") is
+-- NOT one -- it is reused by unrelated shapes in other lands.
+local function nameKeys(s)
+  local out = {}
+  -- explicit fields, NOT ipairs over a table literal: ipairs stops at the first
+  -- nil, and a cache record has no srcTexture (so nothing was ever registered)
+  local fields = { s.srcTexture, s.texture, s.srcMaterial, s.material }
+  for i = 1, 4 do
+    local k = tostring(fields[i] or ""):lower()
+    if k ~= "" and k ~= "nil" then out[#out + 1] = k end
+  end
+  return out
 end
 
 function GT.isTreeName(s)
@@ -359,11 +376,26 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
     end
     grid[j] = row
   end
-  if not any then return 0 end
-  do
-    local solid, total = 0, nx * ny
-    for j = 1, ny do for i = 1, nx do if grid[j][i] then solid = solid + 1 end end end
-    if solid / total > GT.MAX_SOLID then return 0, solid / total end
+  if not any then return 0, "empty" end   -- nothing opaque: nothing to draw, and nothing native to keep
+
+  -- A window that is (nearly) all opaque has no tree outline to follow: the
+  -- texture has no real alpha, or it is a forest-wall tile. Run through the
+  -- disc recipe below it would be one solid slab -- the "big green block".
+  -- Give it the outline a tree has instead: an ellipse inscribed in the
+  -- window, cut from the same texels. Real sprites (corners transparent, far
+  -- below DENSE_FRACTION) never reach this.
+  local opaque = 0
+  for j = 1, ny do for i = 1, nx do if grid[j][i] then opaque = opaque + 1 end end end
+  local dense = opaque >= GT.DENSE_FRACTION * nx * ny
+  if dense then
+    for j = 1, ny do
+      local ey = ((j - 0.5) / ny) * 2 - 1
+      local half = math.sqrt(math.max(0, 1 - ey * ey))
+      for i = 1, nx do
+        local ex = ((i - 0.5) / nx) * 2 - 1
+        if math.abs(ex) > half then grid[j][i] = nil end
+      end
+    end
   end
 
   -- every RUN of a row is a disc: a row's opaque cells that touch form one
@@ -453,7 +485,7 @@ end
 
 -- One card -> trees in bucket `b`. A wide card is the same sprite tiled
 -- (`conttree*`): one tree per texture repeat.
-local function buildCard(b, tex, positions, comp)
+local function buildCard(b, tex, positions, comp, strip)
   local xmin, xmax, ymin, ymax = math.huge, -math.huge, math.huge, -math.huge
   local zmin, zmax = math.huge, -math.huge
   local umin, umax, vmin, vmax = math.huge, -math.huge, math.huge, -math.huge
@@ -471,14 +503,45 @@ local function buildCard(b, tex, positions, comp)
     if p[5] > vmax then vmax = p[5] end
   end
   local spanX, spanZ = xmax - xmin, zmax - zmin
-  local alongZ = spanZ > spanX
-  local width = math.max(spanX, spanZ)
-  local height = math.sqrt((ymax - ymin) ^ 2 + math.min(spanX, spanZ) ^ 2)
-  if width < 1 or height < 1 then return 0 end
+  -- WHICH WAY THE CARD RUNS comes from its NORMAL. A card leans back 35 degrees,
+  -- so a TALL narrow tree has more z extent than x extent (height * 0.575 >
+  -- width once it is taller than ~1.7x its width). Comparing the extents took
+  -- every such tree for a card running along z: it sampled one texel column,
+  -- came out as a deep green slab, and was given the wrong height. The
+  -- normal's horizontal part points across the card, so the card runs along
+  -- the OTHER axis.
+  local alongZ
+  do
+    local best, bx, bz = 0, 0, 0
+    local n = #comp
+    for a = 1, n - 2 do
+      for c = a + 1, n - 1 do
+        for d = c + 1, n do
+          local pa, pb, pc = positions[comp[a]], positions[comp[c]], positions[comp[d]]
+          local ux, uy, uz = pb[1] - pa[1], pb[2] - pa[2], pb[3] - pa[3]
+          local vx, vy, vz = pc[1] - pa[1], pc[2] - pa[2], pc[3] - pa[3]
+          local nx = uy * vz - uz * vy
+          local ny = uz * vx - ux * vz
+          local nz = ux * vy - uy * vx
+          local len = nx * nx + ny * ny + nz * nz
+          if len > best then best, bx, bz = len, nx, nz end
+        end
+      end
+    end
+    if math.abs(bx) > 1e-9 or math.abs(bz) > 1e-9 then
+      alongZ = math.abs(bx) > math.abs(bz)
+    else
+      alongZ = spanZ > spanX            -- a flat quad: no lean to read
+    end
+  end
+  local width = alongZ and spanZ or spanX
+  local lean = alongZ and spanX or spanZ     -- the extent the card's lean adds
+  local height = math.sqrt((ymax - ymin) ^ 2 + lean ^ 2)
+  if width < 1 or height < 1 then return 0, true end
   -- not a tree: a flat quad, or something far bigger than any tree
   if (ymax - ymin) < GT.MIN_TREE_H or height > GT.MAX_TREE_H then
-    once("flat:" .. tostring(tex.path), "card '%s' rejected: dy %.1f height %.1f", tostring(tex.path), ymax - ymin, height)
-    return 0
+    once("flat:" .. tostring(tex.path), "card '%s' is not a tree: dy %.1f height %.1f", tostring(tex.path), ymax - ymin, height)
+    return 0, true
   end
 
   local uL, uR
@@ -497,6 +560,13 @@ local function buildCard(b, tex, positions, comp)
   -- ONE TREE PER TREE-WIDTH of card: an ordinary card is one tree (~33 wide),
   -- a border strip is several side by side, each its own slice of the art
   local trees = math.max(1, math.floor(width / GT.TREE_UNIT + 0.5))
+  if strip then
+    -- a border strip is the sprite tiled: one tree per texture REPEAT, so each
+    -- slice is exactly one drawn tree (slicing by world width cut repeats in
+    -- half, which is what turned borders into slabs)
+    local repeats = math.abs(uR - uL) / math.max(1, tex.w)
+    if repeats >= 1.5 then trees = math.floor(repeats + 0.5) end
+  end
   local each = width / trees
   local made, solid = 0, nil
   for k = 0, trees - 1 do
@@ -505,16 +575,14 @@ local function buildCard(b, tex, positions, comp)
     local mid = -width * 0.5 + (k + 0.5) * each
     local px, pz = pivX, pivZ
     if alongZ then pz = pivZ + mid else px = pivX + mid end
-    local m, frac = emitTree(b, tex, a, c, vB, vT, px, baseY, pz, each, height)
-    if m == 0 then solid = frac or -1 end
+    local m = emitTree(b, tex, a, c, vB, vT, px, baseY, pz, each, height)
     made = made + m
   end
   once("card:" .. tostring(tex.path),
-       "card '%s' tex %dx%d: width %.1f height %.1f dy %.1f -> %d tree(s) of %.1f; u %.1f..%.1f v %.1f..%.1f%s",
+       "card '%s' tex %dx%d: width %.1f height %.1f dy %.1f -> %d tree(s) of %.1f; u %.1f..%.1f v %.1f..%.1f",
        tostring(tex.path), tex.w, tex.h, width, height, ymax - ymin, trees, each,
-       uL, uR, vB, vT, solid and (" [REJECTED: " .. (solid >= 0 and ("%.0f%% solid"):format(solid * 100) or "no opaque texels") .. "]") or "")
-  if solid then return 0 end   -- all or nothing per card: a half-built border is worse than a native one
-  return made
+       uL, uR, vB, vT)
+  return made, false
 end
 
 local function packedFor(ground, object)
@@ -551,7 +619,7 @@ end
 -- One land chunk -> { buckets = {{mesh, tex}}, shapes = {record,...}, quads }
 local function buildLand(ground, land)
   local record = ground.terrain.chunks[land]
-  local out = { buckets = {}, shapes = {}, quads = 0 }
+  local out = { buckets = {}, shapes = {}, quads = 0, failed = {} }
   if not (record and record.shapes) then return out end
   local byPath, order = {}, {}
   local skipped = {}
@@ -559,6 +627,7 @@ local function buildLand(ground, land)
   local function takeShape(s, posScale, texSet, place)
     local skip
     local named = GT.isTreeName(s)
+    local strip = namesOf(s):find("conttree", 1, true) ~= nil
     if out.quads >= GT.MAX_QUADS then
       skip = "quad budget"
     end
@@ -587,7 +656,6 @@ local function buildLand(ground, land)
     end
     if not skip then
       local leftover
-      local strip = namesOf(s):find("conttree", 1, true) ~= nil
       comps, leftover = cardsFromTris(positions, tris, (not strip) and STRIP_REPEATS * tex.w or nil, false)
       -- a tree-named shape is trees all through: stray triangles are dropped
       -- with it rather than keeping the whole shape native
@@ -596,7 +664,11 @@ local function buildLand(ground, land)
 
     if skip then
       skipped[skip] = (skipped[skip] or 0) + 1
-      if named then once("named:" .. tostring(s.texture or s.name) .. skip, "tree shape '%s' left native: %s", (namesOf(s):gsub("\n", "|")), skip) end
+      if named then
+        for _, k in ipairs(nameKeys(s)) do out.failed[k] = true end
+        once("named:" .. tostring(land) .. tostring(s.texture or s.name) .. skip,
+             "land %s: tree shape '%s' left native: %s", tostring(land), (namesOf(s):gsub("\n", "|")), skip)
+      end
       return
     end
     local b = byPath[tex.path]
@@ -608,39 +680,57 @@ local function buildLand(ground, land)
     -- ALL OR NOTHING PER SHAPE. A shape is hidden once it is covered, so every
     -- card in it has to have become trees; if one did not, undo the lot and
     -- leave the native shape drawing (it used to vanish with 0 quads).
-    local v0, m0, built, ok = #b.verts, #b.map, 0, true
+    local v0, m0, built, ok, bad = #b.verts, #b.map, 0, true, 0
     for _, comp in ipairs(comps) do
-      local n = buildCard(b, tex, positions, comp)
-      if n <= 0 then ok = false; break end
+      local n, failed = buildCard(b, tex, positions, comp, strip)
+      if failed then bad = bad + 1 end
       built = built + n
     end
+    -- A card that is not a tree (flat, giant, degenerate) draws nothing, as it
+    -- always did; it must not put the shape's real trees back to native cards.
+    -- Only a shape that built nothing at all stays native.
+    if built <= 0 then ok = false end
     if not ok or built <= 0 then
       for i = #b.verts, v0 + 1, -1 do b.verts[i] = nil end
       for i = #b.map, m0 + 1, -1 do b.map[i] = nil end
       skipped["card unusable"] = (skipped["card unusable"] or 0) + 1
-      once("unusable:" .. tostring(s.texture or s.name), "shape '%s' left native: a card could not be built", namesOf(s):gsub("\n", "|"))
+      for _, k in ipairs(nameKeys(s)) do out.failed[k] = true end
+      once("unusable:" .. tostring(s.texture or s.name),
+           "shape '%s' left native: nothing built from %d cards (%d not trees)", (namesOf(s):gsub("\n", "|")), #comps, bad)
       return
     end
     out.quads = out.quads + built
     out.shapes[#out.shapes + 1] = s
+    once("ok:" .. tostring(s.texture or s.name),
+         "shape '%s' voxelised: %d cards (%d skipped as not trees), %d quads (land %s)", (namesOf(s):gsub("\n", "|")), #comps, bad, built, tostring(land))
   end
 
-  for _, s in ipairs(record.shapes) do
-    local okS, errS = pcall(takeShape, s, record.posScale or 1, ground.set, nil)
-    if not okS then
-      skipped["error"] = (skipped["error"] or 0) + 1
-      once("shape", "a terrain tree shape failed and was left native: %s", tostring(errS))
-    end
-  end
-  for _, object in ipairs(record.objects or {}) do
-    local packed, texSet = packedFor(ground, object)
-    if packed and packed.shapes then
-      local place = objectPlace(object)
-      for _, s in ipairs(packed.shapes) do
-        local okS, errS = pcall(takeShape, s, packed.posScale or 1, texSet, place)
+  local function isStrip(s) return namesOf(s):find("conttree", 1, true) ~= nil end
+  for pass = 1, 2 do
+    local wantStrip = (pass == 2)
+    for _, s in ipairs(record.shapes) do
+      if isStrip(s) == wantStrip then
+        local okS, errS = pcall(takeShape, s, record.posScale or 1, ground.set, nil)
         if not okS then
           skipped["error"] = (skipped["error"] or 0) + 1
-          once("shape", "a prop tree shape failed and was left native: %s", tostring(errS))
+          for _, k in ipairs(nameKeys(s)) do out.failed[k] = true end
+          once("shape:" .. tostring(s.texture or s.name), "tree shape '%s' ERRORED and was left native: %s", tostring(s.texture or s.name), tostring(errS))
+        end
+      end
+    end
+    for _, object in ipairs(record.objects or {}) do
+      local packed, texSet = packedFor(ground, object)
+      if packed and packed.shapes then
+        local place = objectPlace(object)
+        for _, s in ipairs(packed.shapes) do
+          if isStrip(s) == wantStrip then
+            local okS, errS = pcall(takeShape, s, packed.posScale or 1, texSet, place)
+            if not okS then
+              skipped["error"] = (skipped["error"] or 0) + 1
+              for _, k in ipairs(nameKeys(s)) do out.failed[k] = true end
+              once("shape:" .. tostring(s.texture or s.name), "prop tree shape '%s' ERRORED and was left native: %s", tostring(s.texture or s.name), tostring(errS))
+            end
+          end
         end
       end
     end
@@ -696,6 +786,7 @@ function GT.prepare(ground)
   local started = now and now() or 0
   local builds = 0
   local sig = {}
+  local failedNames = {}
   local missing = 0
   for _, w in ipairs(want) do
     if not rec.lands[w[4]] then missing = missing + 1 end
@@ -716,7 +807,7 @@ function GT.prepare(ground)
         if ok then
           entry = built
         else
-          entry = { buckets = {}, shapes = {}, quads = 0 }
+          entry = { buckets = {}, shapes = {}, quads = 0, failed = {} }
           once("build", "a land chunk failed to build and was skipped: %s", tostring(built))
         end
         rec.lands[land] = entry
@@ -726,16 +817,16 @@ function GT.prepare(ground)
       sig[#sig + 1] = tostring(land)
       for _, s in ipairs(entry.shapes) do
         active[s] = true
-        local n = namesOf(s)
-        for part in n:gmatch("[^\n]+") do
-          if part ~= "" and part ~= "nil" then names[part] = true end
-        end
+        for _, k in ipairs(nameKeys(s)) do names[k] = true end
       end
+      for k in pairs(entry.failed or {}) do failedNames[k] = true end
       if #entry.buckets > 0 then
         list[#list + 1] = { entry = entry, x = w[2] * px + half, z = w[3] * px + half }
       end
     end
   end
+  -- a name that failed in ANY land of the window is not safe to hide by name
+  for k in pairs(failedNames) do names[k] = nil end
   local signature = table.concat(sig, ",")
   if signature ~= lastSignature then
     lastSignature = signature
@@ -748,10 +839,19 @@ function GT.isCovered(record)
   return record ~= nil and GT.active[record] == true
 end
 
--- Kept so older callers still find it; it NEVER hides by name now. A name is
--- shared by every land's shape of that texture, so hiding by it removed trees
--- in lands this module had not (or could not) build.
-function GT.isCoveredName() return false end
+-- The fallback Gen4Hide uses when a built shape did not keep its cache `src`
+-- pointer (so `isCovered` cannot answer): hide by texture / material name --
+-- but only names that converted in EVERY land of the window (see `prepare`),
+-- and never by the shape's own name. This is what lets BOTH kinds of tree
+-- lose their native card once their voxel tree is standing.
+function GT.isCoveredName(shape)
+  local names = GT.coveredNames
+  if not (shape and names) then return false end
+  for _, k in ipairs(nameKeys(shape)) do
+    if names[k] then return true end
+  end
+  return false
+end
 
 -- ---------------------------------------------------------------- draw --
 
