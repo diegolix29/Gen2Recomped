@@ -52,6 +52,7 @@ local Map = require("src.world.Map")
 local Strings = require("src.core.Strings")
 
 local CityLife = {}
+CityLife.lastPipelineTick = nil
 
 local function game()
   return require("src.core.Game")
@@ -298,6 +299,8 @@ local function tick()
   state.tick = state.tick + 1
   if state.tick % EVERY ~= 0 then return end
   pass(ow)
+  -- Track last pipeline tick for Gen4Spawn's driver
+  CityLife.lastPipelineTick = love.timer and love.timer.getTime and love.timer.getTime()
 end
 
 function CityLife.update()
