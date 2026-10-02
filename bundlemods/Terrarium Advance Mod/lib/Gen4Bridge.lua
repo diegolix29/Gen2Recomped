@@ -239,6 +239,14 @@ function Bridge.install()
   else
     report("sand", "the sand pass did not load: %s", tostring(GS))
   end
+  -- The voxel scene's 3D trees in place of Platinum's flat tree cards. Opaque,
+  -- after the ground passes, before grass and the actors.
+  local okT, GT = pcall(V.require, "Gen4Trees")
+  if okT and type(GT) == "table" and GT.draw then
+    Bridge.register("trees", GT.draw)
+  else
+    report("trees", "the tree pass did not load: %s", tostring(GT))
+  end
   return true
 end
 

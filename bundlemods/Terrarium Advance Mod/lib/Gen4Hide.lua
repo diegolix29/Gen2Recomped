@@ -49,6 +49,7 @@ local V = ...
 local Hide = {
   grass = true,
   water = true,
+  trees = true,
   active = false,
   installed = false,
   -- exact material/texture names (lower case) that are water
@@ -138,6 +139,16 @@ local function grassOn()
   return ok and avail and true or false
 end
 
+-- Native tree cards are hidden shape by shape, ONLY where Gen4Trees has voxel
+-- trees for every triangle of the shape right now (GT.isCovered).
+local function treesOn()
+  if not Hide.trees then return false end
+  local Bridge = optional("Gen4Bridge")
+  if Bridge and Bridge.disabled and Bridge.disabled.trees then return false end
+  local GT = optional("Gen4Trees")
+  return (GT and type(GT.isCovered) == "function" and GT.enabled) and true or false
+end
+
 local lastWaterState
 local function waterOn()
   if not Hide.water then return false end
@@ -169,11 +180,13 @@ end
 -- model -> { key = "gw", list = {...} }
 local cache = setmetatable({}, { __mode = "k" })
 
-local function filtered(model, hideGrass, hideWater)
+local function filtered(model, hideGrass, hideWater, hideTrees)
+  local GT = hideTrees and optional("Gen4Trees") or nil
   local GW = hideWater and optional("Gen4Water") or nil
   local covered = GW and type(GW.isCovered) == "function" and GW.isCovered or nil
   local key = (hideGrass and "g" or "-") .. (hideWater and "w" or "-")
               .. (covered and tostring(GW.coverVersion or 0) or "")
+              .. (GT and ("t" .. tostring(GT.coverVersion or 0)) or "-")
   local rec = cache[model]
   local shapes = model.shapes
   if rec and rec.key == key and rec.source == shapes and rec.count == #shapes then
@@ -185,6 +198,10 @@ local function filtered(model, hideGrass, hideWater)
     if hideGrass and Hide.isGrassCards(shape) then
       drop = true
       note("g:" .. tostring(shape.name), "hid native grass cards '%s'", tostring(shape.name))
+    elseif GT and shape.src and GT.isCovered(shape.src) then
+      drop = true
+      note("t:" .. tostring(shape.srcTexture or shape.name),
+           "hid native tree cards '%s' (voxel trees stand in)", tostring(shape.srcTexture or shape.name))
     elseif hideWater then
       local why = Hide.classify(shape)
       -- and only where the sheet really stands in for it
@@ -293,14 +310,14 @@ function Hide.install()
     end
   end
 
-  local drawFilter = { grass = false, water = false }
+  local drawFilter = { grass = false, water = false, trees = false }
 
   local originalDraw = Model.draw
   Model.draw = function(self, ...)
     if not Hide.active then return originalDraw(self, ...) end
     local real = self.shapes
     if type(real) ~= "table" then return originalDraw(self, ...) end
-    local list = filtered(self, drawFilter.grass, drawFilter.water)
+    local list = filtered(self, drawFilter.grass, drawFilter.water, drawFilter.trees)
     if list == real then return originalDraw(self, ...) end
     self.shapes = list
     local ok, a = pcall(originalDraw, self, ...)
@@ -312,7 +329,13 @@ function Hide.install()
   local originalFree = Ground.drawFree
   Ground.drawFree = function(self, ...)
     drawFilter.grass, drawFilter.water = grassOn(), waterOn()
-    Hide.active = drawFilter.grass or drawFilter.water
+    drawFilter.trees = treesOn()
+    if drawFilter.trees then
+      -- decide which tree shapes are covered THIS frame before the native pass
+      local GT = optional("Gen4Trees")
+      if not (GT and pcall(GT.prepare, self)) then drawFilter.trees = false end
+    end
+    Hide.active = drawFilter.grass or drawFilter.water or drawFilter.trees
     local ok, a, b = pcall(originalFree, self, ...)
     Hide.active = false
     if not ok then error(a, 0) end
