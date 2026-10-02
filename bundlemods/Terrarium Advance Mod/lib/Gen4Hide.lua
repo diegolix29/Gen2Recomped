@@ -35,14 +35,17 @@
 --   (`src`), and Gen4Water marks every record it emitted triangles for. A
 --   water shape the sheet could not use -- a vertical fall, a chunk not built
 --   yet -- keeps drawing natively, so "hidden and not replaced" cannot happen.
+--   trees  Terrain and prop shapes Gen4Trees has voxelised for every triangle
+--          (GT.isCovered). Forest-border `conttree*` strips stay native.
 --
 -- WHEN IT STANDS DOWN (so it can never leave a hole)
 --
 --   grass  when Grass3D has no bake, or the "grass" effect was disabled.
 --   water  when the "water" effect was disabled or failed, or Gen4Water has not
 --          finished building the sheet around the camera yet (GW.ready).
+--   trees  when the "trees" effect was disabled or Gen4Trees is missing.
 --
--- Flip Hide.grass / Hide.water to false to compare against the native look.
+-- Flip Hide.grass / Hide.water / Hide.trees to false to compare against the native look.
 
 local V = ...
 
@@ -198,7 +201,8 @@ local function filtered(model, hideGrass, hideWater, hideTrees)
     if hideGrass and Hide.isGrassCards(shape) then
       drop = true
       note("g:" .. tostring(shape.name), "hid native grass cards '%s'", tostring(shape.name))
-    elseif GT and shape.src and GT.isCovered(shape.src) then
+    elseif GT and ((shape.src and GT.isCovered(shape.src))
+                   or (GT.isCoveredName and GT.isCoveredName(shape))) then
       drop = true
       note("t:" .. tostring(shape.srcTexture or shape.name),
            "hid native tree cards '%s' (voxel trees stand in)", tostring(shape.srcTexture or shape.name))
@@ -297,8 +301,16 @@ function Hide.install()
           end
           if not (packed and packed.shapes) then return end
           for _, built in ipairs(model.shapes) do
-            local src = built.index and packed.shapes[built.index + 1]
-            if src and src.name == built.name then
+            -- index 0 is a real shape; `built.index and` would skip it in Lua
+            local idx = built.index
+            local src = idx ~= nil and packed.shapes[idx + 1]
+            if not src and idx ~= nil then src = packed.shapes[idx] end
+            if not src and built.name then
+              for _, cand in ipairs(packed.shapes) do
+                if cand.name == built.name then src = cand; break end
+              end
+            end
+            if src then
               built.srcMaterial, built.srcTexture, built.srcAlpha =
                 src.material, src.texture, src.alpha
               built.srcKind, built.src = "prop", src
