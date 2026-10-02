@@ -60,7 +60,10 @@ local GT = {
   TREE_UNIT = 33,         -- width of one tree on a card (an ordinary Sinnoh tree card): wider cards are split into this many trees
   MAX_TREE_H = 220,       -- a card taller than this is not a tree
   MIN_TREE_H = 0.5,       -- ...nor one flatter than this (a ground quad)
-  SINK = 0.4,             -- planted this far below the card's base
+  Y_OFFSET = -10,          -- the WHOLE tree layer is moved this far along y when drawn (negative = down). The quick fix for floating trees
+  SINK = 1.5,             -- planted this far below the card's base (world units; a tile is 16)
+  PAD_SINK = true,        -- also sink by the transparent rows at the foot of the art, so the trunk (not the empty padding) meets the ground
+  MAX_PAD_FRAC = 0.35,    -- ...but never by more than this fraction of the tree's height
   MAX_QUADS = 450000,     -- stop covering shapes in a land past this many quads (walkable trees go first, then the border)
   BUILDS_PER_FRAME = 4,
   BUILD_BUDGET = 0.006,   -- seconds, steady state
@@ -377,6 +380,17 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
     grid[j] = row
   end
   if not any then return 0, "empty" end   -- nothing opaque: nothing to draw, and nothing native to keep
+
+  -- FLOATING TREES: a sprite is usually drawn with a few empty rows under the
+  -- trunk, and the tree stood on the card's base with that padding underneath
+  -- it. Drop the whole tree by the empty rows so the lowest opaque block, the
+  -- trunk's foot, sits where the card's base is.
+  if GT.PAD_SINK then
+    local lastRow = ny
+    while lastRow > 1 and not lo[lastRow] do lastRow = lastRow - 1 end
+    local pad = math.min((ny - lastRow) * sy, height * GT.MAX_PAD_FRAC)
+    baseY = baseY - pad
+  end
 
   -- A window that is (nearly) all opaque has no tree outline to follow: the
   -- texture has no real alpha, or it is a forest-wall tile. Run through the
@@ -863,7 +877,7 @@ function GT.draw(scene)
   Voxel3D.glass(false)
   for _, item in ipairs(GT.list) do
     for _, b in ipairs(item.entry.buckets) do
-      Voxel3D.draw(b.mesh, b.tex, Mat4.translate(item.x, 0, item.z), 0, nil, 0, false)
+      Voxel3D.draw(b.mesh, b.tex, Mat4.translate(item.x, GT.Y_OFFSET or 0, item.z), 0, nil, 0, false)
     end
   end
   Voxel3D.seams(true)
