@@ -73,6 +73,11 @@ local nextId = 0
 -- Warps are refused outright, for the reason NPC:update refuses them: a
 -- wanderer that steps onto a door is a wanderer that leaves the map.
 function Roamer.standable(kind, map, cx, cy)
+  -- On Gen 4, use Gen4Spawn's standable logic
+  local ok, Spawn = pcall(V.require, "Gen4Spawn")
+  if ok and Spawn and type(Spawn.active) == "function" and Spawn.active() then
+    return Spawn.standable(kind, map, cx, cy)
+  end
   if not map:inBounds(cx, cy) then return false end
   if map:warpAtCell(cx, cy) then return false end
   if kind == "water" then return map:isWaterCell(cx, cy) end
@@ -81,13 +86,14 @@ function Roamer.standable(kind, map, cx, cy)
   return true
 end
 
-function Roamer.new(spriteDef, species, level, kind, cellX, cellY)
+function Roamer.new(spriteDef, species, level, kind, cellX, cellY, map)
   nextId = nextId + 1
   local self = setmetatable({}, Roamer)
   self.roamer = true
   self.def = INERT_DEF
   self.id = ("TR_ROAM_%d"):format(nextId)
   self.species, self.level, self.kind = species, level, kind
+  self.map = map  -- Store map reference for Gen 4 ground height queries
   
   -- Handle HD sheets specially - create a minimal sprite placeholder for VoxelScene
   if spriteDef and spriteDef.hdSheet then
@@ -181,6 +187,7 @@ end
 -- the same dialogue, stopped by the same battle and stepped at the same
 -- rate as the people around it, with nothing scheduling it separately.
 function Roamer:update(map, entities)
+  self.map = map  -- Update map reference in case it changes
   self.clock = self.clock + 1
   if self.moving then
     self.progress = self.progress + 1
@@ -238,7 +245,15 @@ function Roamer:update(map, entities)
   if love.math.random() < lookOnly then return end
   local tx, ty = Collision.target(self.cellX, self.cellY, dir)
   if not Roamer.standable(self.kind, map, tx, ty) then return end
-  if not Collision.canMove(map, entities, self, dir) then return end
+  -- On Gen 4, use Gen4Spawn's canStep logic
+  local ok, Spawn = pcall(V.require, "Gen4Spawn")
+  local canStep = true
+  if ok and Spawn and type(Spawn.active) == "function" and Spawn.active() then
+    canStep = Spawn.canStep(self.kind, map, entities, self, dir)
+  else
+    canStep = Collision.canMove(map, entities, self, dir)
+  end
+  if not canStep then return end
   self.targetX, self.targetY = tx, ty
   self.moving = true
   self.progress = 0
@@ -265,6 +280,17 @@ end
 function Roamer:pose()
   local px, py = self.px, self.py
   local vy = py
+  -- On Gen 4, use Gen4Spawn's actorY for water roamer height adjustment
+  local okSpawn, Spawn = pcall(V.require, "Gen4Spawn")
+  if okSpawn and Spawn and type(Spawn.active) == "function" and Spawn.active() then
+    local Game = require("src.core.Game")
+    local map = Game and Game.overworld and Game.overworld.map
+    local ground = map and map.renderer and map.renderer.gen4Ground
+    local groundY = ground and type(ground.groundY) == "function" and ground.groundY(ground, px + 8, py + 8)
+    if groundY then
+      vy = Spawn.actorY(self, groundY)
+    end
+  end
   if self.kind == "water" then
     local ok, h = pcall(Water.heightAt, px + 8, py + 8)
     if ok and h then vy = vy - h end

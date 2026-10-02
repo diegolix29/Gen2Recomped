@@ -177,6 +177,10 @@ if Gen4Bridge.isGen4() and Gen4Bridge.install() then
   pcall(function() V.require("Gen4Reflect").install() end)
   -- 3D battles in the engine's own world, sprites for actors (Gen4Battle3D).
   pcall(function() V.require("Gen4Battle3D").install() end)
+  -- Gen 4 roamers: spawn logic for grass/water/cave on Platinum (Gen4Spawn)
+  pcall(function() V.require("Gen4Spawn").install() end)
+  -- Gen 4 World Host: draws roamers, followers, and actors in native 3D world
+  pcall(function() Gen4WorldHost.install() end)
 end
 -- Battle UI hiding system for all generations
 local BattleBoxXY = V.require("BattleBoxXY")
