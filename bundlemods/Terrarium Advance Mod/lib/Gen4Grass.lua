@@ -66,6 +66,26 @@ local function optional(name)
   return ok and mod or nil
 end
 
+-- One shared per-frame build budget (lib/Gen4Budget.lua); see Gen4Sand.
+local Budget = optional("Gen4Budget") or { allow = function() return true end, charge = function() end }
+local clock = (love and love.timer and love.timer.getTime) or os.clock
+
+-- Resolved once: these were pcall(V.require, ...) per CELL and per frame.
+local cellsMod
+local function getCells()
+  if cellsMod == nil then cellsMod = optional("Gen4Cells") or false end
+  return cellsMod or nil
+end
+local grass3dMod, windMod
+local function getGrass3D()
+  if not grass3dMod then grass3dMod = optional("Grass3D") end
+  return grass3dMod
+end
+local function getWind()
+  if not windMod then windMod = optional("Wind") end
+  return windMod
+end
+
 -- map -> { chunks = { ["cx:cy"] = { buckets = { {mesh, y}, ... } } } }
 local cache = setmetatable({}, { __mode = "k" })
 
@@ -73,7 +93,7 @@ local function isTallGrass(map, cx, cy)
   -- Gen4Cells reads the live Map inside its crop and the shared layout beyond
   -- it, so grass grows on the neighbouring maps' ground too (a Gen 4 Map is
   -- only a rectangle cut out of the grid the engine draws around you).
-  local Cells = optional("Gen4Cells")
+  local Cells = getCells()
   local b
   if Cells then b = Cells.behaviour(map, cx, cy)
   elseif map.blockAt and map.inBounds and map:inBounds(cx, cy) then
@@ -128,7 +148,7 @@ end
 -- set here each time, the way VoxelScene's grass pass sets it.
 local lastAt = nil
 local function prepare(Grass3D, scene)
-  local Wind = optional("Wind")
+  local Wind = getWind()
   local sway = 0
   if Wind and Wind.amount then
     local ok, v = pcall(Wind.amount)
@@ -171,10 +191,12 @@ local function prepare(Grass3D, scene)
   return sway
 end
 
+local function numKey(kx, ky) return (ky + 32768) * 65536 + (kx + 32768) end
+
 function Grass.draw(scene)
   local map = scene.map
   if not map then return end
-  local Grass3D = optional("Grass3D")
+  local Grass3D = getGrass3D()
   if not (Grass3D and Grass3D.available and Grass3D.available()) then
     once("bake", "the 3D grass bake is unavailable (assets/ground/grass, or GRASS "
          .. "set to VOXEL) -- no grass drawn on Gen 4")
@@ -184,83 +206,105 @@ function Grass.draw(scene)
   if not tex then return end
 
   local rec = cache[map]
-  if not rec then rec = { chunks = {} }; cache[map] = rec end
+  if not rec then rec = { chunks = {}, list = {} }; cache[map] = rec end
 
   local fx, fz = scene.focusPx()
   local span = Grass.CHUNK * 16
   local kx0, ky0 = math.floor(fx / span), math.floor(fz / span)
-
-  -- WHICH CHUNKS: every one the engine draws ground for. The engine draws the
-  -- engine chunks within WINDOW of the camera's, so grass is wanted on exactly
-  -- that square (in map pixels: world minus the ground's offset) and not on a
-  -- smaller circle around the player, which is what made it fade in only when
-  -- you were close.
-  local want = {}
   local ground, view = scene.ground, scene.view
   local px = ground and ground.chunkPx
-  if px and view and tonumber(view.x) and tonumber(view.z) then
-    local W = Grass.WINDOW
-    local camCx, camCy = math.floor(view.x / px), math.floor(view.z / px)
-    local x0, x1 = (camCx - W) * px - scene.offsetX, (camCx + W + 1) * px - scene.offsetX
-    local z0, z1 = (camCy - W) * px - scene.offsetZ, (camCy + W + 1) * px - scene.offsetZ
-    for ky = math.floor(z0 / span), math.ceil(z1 / span) - 1 do
-      for kx = math.floor(x0 / span), math.ceil(x1 / span) - 1 do
-        local dx, dy = kx - kx0, ky - ky0
-        want[#want + 1] = { dx * dx + dy * dy, kx, ky }
+  local grid = (px and view and tonumber(view.x) and tonumber(view.z)) and true or false
+  local camCx, camCy = 0, 0
+  if grid then camCx, camCy = math.floor(view.x / px), math.floor(view.z / px) end
+  local ox, oz = scene.offsetX, scene.offsetZ
+
+  -- WHICH CHUNKS: every one the engine draws ground for (the engine chunks
+  -- within WINDOW of the camera's), nearest first. The list only changes when
+  -- the camera or focus crosses a chunk boundary, so it is built and sorted
+  -- then and reused every other frame.
+  if not (rec.want and rec.kx0 == kx0 and rec.ky0 == ky0 and rec.camCx == camCx
+          and rec.camCy == camCy and rec.ox == ox and rec.oz == oz and rec.grid == grid) then
+    local want = {}
+    if grid then
+      local W = Grass.WINDOW
+      local x0, x1 = (camCx - W) * px - ox, (camCx + W + 1) * px - ox
+      local z0, z1 = (camCy - W) * px - oz, (camCy + W + 1) * px - oz
+      for ky = math.floor(z0 / span), math.ceil(z1 / span) - 1 do
+        for kx = math.floor(x0 / span), math.ceil(x1 / span) - 1 do
+          local dx, dy = kx - kx0, ky - ky0
+          want[#want + 1] = { dx * dx + dy * dy, kx, ky, numKey(kx, ky) }
+        end
       end
-    end
-  else
-    local R = Grass.RADIUS
-    for ky = ky0 - R, ky0 + R do
-      for kx = kx0 - R, kx0 + R do
-        local dx, dy = kx - kx0, ky - ky0
-        if dx * dx + dy * dy <= R * R + 1 then
-          want[#want + 1] = { dx * dx + dy * dy, kx, ky }
+    else
+      local R = Grass.RADIUS
+      for ky = ky0 - R, ky0 + R do
+        for kx = kx0 - R, kx0 + R do
+          local dx, dy = kx - kx0, ky - ky0
+          if dx * dx + dy * dy <= R * R + 1 then
+            want[#want + 1] = { dx * dx + dy * dy, kx, ky, numKey(kx, ky) }
+          end
         end
       end
     end
+    table.sort(want, function(a, b) return a[1] < b[1] end)
+    rec.want, rec.kx0, rec.ky0, rec.camCx, rec.camCy = want, kx0, ky0, camCx, camCy
+    rec.ox, rec.oz, rec.grid, rec.dirty = ox, oz, grid, true
   end
-  -- nearest chunks first, so the ones under the camera are built before the far
-  table.sort(want, function(a, b) return a[1] < b[1] end)
 
-  local now = love.timer and love.timer.getTime
-  local started = now and now() or 0
+  -- BUILD what the shared budget allows, nearest first; nothing past the first
+  -- refusal can build this frame either.
+  local want, chunks = rec.want, rec.chunks
   local builds = 0
-  local list = {}
-  for _, w in ipairs(want) do
-    local key = w[2] .. ":" .. w[3]
-    local chunk = rec.chunks[key]
-    if not chunk and builds < Grass.BUILDS_PER_FRAME
-       and (builds == 0 or not now or (now() - started) < Grass.BUILD_BUDGET) then
-      builds = builds + 1
-      local ok, built = pcall(buildChunk, Grass3D, scene, map, w[2], w[3])
-      if ok then
-        chunk = built
+  for i = 1, #want do
+    local w = want[i]
+    if not chunks[w[4]] then
+      if builds < Grass.BUILDS_PER_FRAME and Budget.allow(false) then
+        builds = builds + 1
+        local t0 = clock()
+        local ok, built = pcall(buildChunk, Grass3D, scene, map, w[2], w[3])
+        Budget.charge(t0, "grass")
+        if ok then
+          chunks[w[4]] = built
+        else
+          chunks[w[4]] = { buckets = {} }
+          once("chunk", "a chunk failed to build and was skipped: %s", tostring(built))
+        end
+        rec.dirty = true
       else
-        chunk = { buckets = {} }
-        once("chunk", "a chunk failed to build and was skipped: %s", tostring(built))
+        break
       end
-      rec.chunks[key] = chunk
-    end
-    if chunk then
-      for _, b in ipairs(chunk.buckets) do list[#list + 1] = b end
     end
   end
+
+  if rec.dirty then
+    local list = {}
+    for i = 1, #want do
+      local chunk = chunks[want[i][4]]
+      if chunk then for _, b in ipairs(chunk.buckets) do list[#list + 1] = b end end
+    end
+    rec.list, rec.dirty = list, false
+  end
+  local list = rec.list
   if #list == 0 then return end
 
   local sway = prepare(Grass3D, scene)
   -- these meshes are not on the voxel grid and carry no window art
   Voxel3D.seams(false)
   Voxel3D.glass(false)
-  for _, b in ipairs(list) do
-    Voxel3D.draw(b.mesh, tex, Mat4.translate(scene.offsetX, b.y, scene.offsetZ), 0, nil, sway)
+  for i = 1, #list do
+    local b = list[i]
+    local m = b.m
+    if not m or b.mox ~= ox or b.moz ~= oz then
+      m = Mat4.translate(ox, b.y, oz)            -- once per bucket, not per frame
+      b.m, b.mox, b.moz = m, ox, oz
+    end
+    Voxel3D.draw(b.mesh, tex, m, 0, nil, sway)
   end
   Voxel3D.grassH, Voxel3D.grassLoad, Voxel3D.crush = nil, nil, nil
   Voxel3D.seams(true)
   Voxel3D.glass(true)
 end
 
--- Drop every baked mesh: the GRASS row flipped, or a map was edited.
 function Grass.invalidate()
   for _, rec in pairs(cache) do
     for _, chunk in pairs(rec.chunks) do

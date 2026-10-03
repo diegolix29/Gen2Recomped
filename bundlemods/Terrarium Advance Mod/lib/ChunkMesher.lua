@@ -1813,6 +1813,33 @@ local function finishJob(job, ok, err)
   end
 end
 
+-- DISK WRITE-BACK. VoxelDiskCache was READ on every build (below) but nothing
+-- ever WROTE to it on the normal path: only ChunkMesher.warmDisk (Kanto's
+-- region warm-up) and VoxelPrebake (which has no caller) store anything, so
+-- on an ordinary run every map was meshed from scratch on every launch -- the
+-- "mobile takes forever to load" case. After a live build that missed the
+-- disk, queue a low-priority bake of the same slot. It rides the existing warm
+-- queue: drained only when no real job is waiting, never before the player's
+-- own mesh. (warmDisk itself cannot be used here: it answers "live" for a map
+-- whose mesh was just swapped in.) Set ChunkMesher.WRITE_BACK = false to turn
+-- it off; the existing "voxelDiskCache" option still gates the store.
+ChunkMesher.WRITE_BACK = true
+local function queueWriteBack(map, slot, masks)
+  if not ChunkMesher.WRITE_BACK then return end
+  if not (DiskCache and map and map.id) then return end
+  if type(DiskCache.enabled) == "function" and not DiskCache.enabled() then return end
+  local key = jobKey(map.id, slot)
+  if jobIndex[key] or warmIndex[key] then return end
+  if type(DiskCache.has) == "function" then
+    local okHas, hit = pcall(DiskCache.has, map, slot, masks)
+    if okHas and hit then return end
+  end
+  local job = { id = map.id, map = map, slot = slot, masks = masks,
+                region = "writeback", co = nil }
+  warmIndex[key] = job
+  warmJobs[#warmJobs + 1] = job
+end
+
 local function runJob(job)
   local map = job.map
   local c = entry(job.id)
@@ -1869,6 +1896,7 @@ local function runJob(job)
       return
     end
     swapSlot(c, job.slot, mesh or false)
+    if mesh then pcall(queueWriteBack, map, job.slot, job.masks) end
   else
     local mesh = wrapCachedMesh(cachedTerrain, cachedWater)
     if (gen[job.id] or 0) ~= job.gen then

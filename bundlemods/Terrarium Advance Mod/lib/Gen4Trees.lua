@@ -92,6 +92,12 @@ local function optional(name)
   return ok and mod or nil
 end
 
+-- One shared per-frame build budget (lib/Gen4Budget.lua); see Gen4Sand. The
+-- old private WARM_BUDGET (40 ms a frame) is gone: it was the biggest single
+-- hitch on desktop and a multi-second freeze on a phone.
+local Budget = optional("Gen4Budget") or { allow = function() return true end, charge = function() end }
+local clock = (love and love.timer and love.timer.getTime) or os.clock
+
 local cache = setmetatable({}, { __mode = "k" })   -- ground -> { lands = {} }
 
 -- ----------------------------------------------------------- decoding --
@@ -772,11 +778,10 @@ local lastSignature = ""
 -- publish GT.active (shape records covered RIGHT NOW). Idempotent per frame;
 -- Gen4Hide calls it before the native pass, GT.draw calls it again.
 function GT.prepare(ground)
-  local active, list, names = {}, {}, {}
-  GT.active, GT.list, GT.coveredNames = active, list, names
   local view = ground and ground.view3d
   if not (GT.enabled and ground and view and ground.grid and ground.terrain
           and ground.slice and ground.chunkPx and ground.half and ground.set) then
+    GT.active, GT.list, GT.coveredNames = {}, {}, {}
     return
   end
   local rec = cache[ground]
@@ -785,6 +790,23 @@ function GT.prepare(ground)
   local grid, px, half = ground.grid, ground.chunkPx, ground.half
   local W = GT.WINDOW
   local camCx, camCy = math.floor(view.x / px), math.floor(view.z / px)
+
+  -- MEMO. Once every land of the window is built, the answer (which shapes are
+  -- covered, which lands to draw) only changes when the camera crosses an
+  -- engine chunk. This ran TWICE a frame (Gen4Hide, then draw), each time
+  -- rebuilding and sorting the window and concatenating a signature string.
+  if rec.done and rec.camCx == camCx and rec.camCy == camCy and rec.W == W then
+    if GT.lastRec ~= rec then
+      GT.lastRec = rec
+      GT.coverVersion = GT.coverVersion + 1       -- a different ground: re-filter
+    end
+    GT.active, GT.list, GT.coveredNames = rec.active, rec.list, rec.names
+    return
+  end
+
+  local active, list, names = {}, {}, {}
+  GT.active, GT.list, GT.coveredNames = active, list, names
+
   local want = {}
   for cy = camCy - W, camCy + W do
     for cx = camCx - W, camCx + W do
@@ -796,8 +818,6 @@ function GT.prepare(ground)
   end
   table.sort(want, function(a, b) return a[1] < b[1] end)
 
-  local now = love.timer and love.timer.getTime
-  local started = now and now() or 0
   local builds = 0
   local sig = {}
   local failedNames = {}
@@ -805,19 +825,20 @@ function GT.prepare(ground)
   for _, w in ipairs(want) do
     if not rec.lands[w[4]] then missing = missing + 1 end
   end
-  -- a window that is still filling gets the bigger budget, so the old cards
-  -- are not on screen beside the new trees for long
-  local budget = (missing > 1) and GT.WARM_BUDGET or GT.BUILD_BUDGET
-  local perFrame = (missing > 1) and #want or GT.BUILDS_PER_FRAME
+  -- a window that is still filling gets the larger shared limit, so the old
+  -- cards are not on screen beside the new trees for long
+  local warm = missing > 1
+  local cap = Budget.covered and 12 or GT.BUILDS_PER_FRAME
+  local pending = 0
   for _, w in ipairs(want) do
     local land = w[4]
     local entry = rec.lands[land]
     if not entry then
-      local over = builds >= perFrame
-        or (builds > 0 and now and (now() - started) > budget)
-      if not over then
+      if builds < cap and Budget.allow(warm) then
         builds = builds + 1
+        local t0 = clock()
         local ok, built = pcall(buildLand, ground, land)
+        Budget.charge(t0, "trees")
         if ok then
           entry = built
         else
@@ -825,6 +846,8 @@ function GT.prepare(ground)
           once("build", "a land chunk failed to build and was skipped: %s", tostring(built))
         end
         rec.lands[land] = entry
+      else
+        pending = pending + 1
       end
     end
     if entry then
@@ -845,6 +868,14 @@ function GT.prepare(ground)
   if signature ~= lastSignature then
     lastSignature = signature
     GT.coverVersion = GT.coverVersion + 1
+  end
+  GT.lastRec = rec
+
+  if pending == 0 then
+    rec.done, rec.camCx, rec.camCy, rec.W = true, camCx, camCy, W
+    rec.active, rec.list, rec.names = active, list, names
+  else
+    rec.done = false
   end
 end
 

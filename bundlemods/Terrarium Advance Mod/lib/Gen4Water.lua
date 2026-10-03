@@ -111,6 +111,10 @@ local function optional(name)
   return ok and mod or nil
 end
 
+-- One shared per-frame build budget (lib/Gen4Budget.lua); see Gen4Sand.
+local Budget = optional("Gen4Budget") or { allow = function() return true end, charge = function() end }
+local clock = (love and love.timer and love.timer.getTime) or os.clock
+
 local cache = setmetatable({}, { __mode = "k" })   -- ground -> { lands = {}, complete }
 
 -- ----------------------------------------------------------- decoding --
@@ -389,45 +393,63 @@ function GW.draw(scene)
   local fx, fz = scene.focusPx()
   fx, fz = fx + scene.offsetX, fz + scene.offsetZ         -- map pixels -> world
 
-  local want = {}
-  for cy = camCy - W, camCy + W do
-    for cx = camCx - W, camCx + W do
-      if cx >= 0 and cy >= 0 and cx < grid.width and cy < grid.height then
-        local land = grid.land[cy * grid.width + cx + 1]
-        local dx, dz = cx * px + half - fx, cy * px + half - fz
-        want[#want + 1] = { dx * dx + dz * dz, cx, cy, land }
+  -- The window's cells only change when the camera crosses an engine chunk;
+  -- they were rebuilt (and the whole lot sorted) every frame before.
+  if not (rec.cells and rec.camCx == camCx and rec.camCy == camCy and rec.W == W) then
+    local cells = {}
+    for cy = camCy - W, camCy + W do
+      for cx = camCx - W, camCx + W do
+        if cx >= 0 and cy >= 0 and cx < grid.width and cy < grid.height then
+          cells[#cells + 1] = { cx, cy, grid.land[cy * grid.width + cx + 1] }
+        end
       end
+    end
+    rec.cells, rec.camCx, rec.camCy, rec.W, rec.dirty = cells, camCx, camCy, W, true
+  end
+  local cells, lands = rec.cells, rec.lands
+
+  -- Distance is per frame (the focus moves smoothly); sorting happens only
+  -- while there is something left to build.
+  local nearest, nearestD, todo = nil, math.huge, nil
+  for i = 1, #cells do
+    local c = cells[i]
+    local dx, dz = c[1] * px + half - fx, c[2] * px + half - fz
+    local d = dx * dx + dz * dz
+    local entry = lands[c[3]]
+    if entry then
+      if entry.mesh and d < nearestD then nearestD, nearest = d, entry end
+    else
+      todo = todo or {}
+      todo[#todo + 1] = { d, c[3] }
     end
   end
-  table.sort(want, function(a, b) return a[1] < b[1] end)
-
-  local now = love.timer and love.timer.getTime
-  local started = now and now() or 0
-  local builds, missing = 0, false
-  local list, nearest, nearestD = {}, nil, math.huge
-  for _, w in ipairs(want) do
-    local land = w[4]
-    local entry = rec.lands[land]
-    if not entry then
-      local overBudget = builds >= GW.BUILDS_PER_FRAME
-        or (builds > 0 and now and (now() - started) > GW.BUILD_BUDGET)
-      if overBudget then
-        missing = true
-      else
-        builds = builds + 1
-        local ok, built = pcall(buildLand, ground, land)
-        if ok then
-          entry = built
+  local missing = false
+  if todo then
+    table.sort(todo, function(a, b) return a[1] < b[1] end)
+    local builds = 0
+    for i = 1, #todo do
+      local t = todo[i]
+      local land = t[2]
+      if lands[land] == nil then
+        if builds < GW.BUILDS_PER_FRAME and Budget.allow(true) then
+          builds = builds + 1
+          local t0 = clock()
+          local ok, built = pcall(buildLand, ground, land)
+          Budget.charge(t0, "water")
+          local entry
+          if ok then
+            entry = built
+          else
+            entry = { mesh = nil }
+            once("land", "a land chunk failed to build and was skipped: %s", tostring(built))
+          end
+          lands[land] = entry
+          rec.dirty = true
+          if entry.mesh and t[1] < nearestD then nearestD, nearest = t[1], entry end
         else
-          entry = { mesh = nil }
-          once("land", "a land chunk failed to build and was skipped: %s", tostring(built))
+          missing = true
         end
-        rec.lands[land] = entry
       end
-    end
-    if entry and entry.mesh then
-      list[#list + 1] = { mesh = entry.mesh, x = w[2] * px + half, z = w[3] * px + half }
-      if w[1] < nearestD then nearestD, nearest = w[1], entry end
     end
   end
   -- Latched per ground: once the whole window has been built, walking into
@@ -435,12 +457,32 @@ function GW.draw(scene)
   if not missing then rec.complete = true end
   GW.ready = rec.complete == true
   if nearest then GW.level = nearest.y + GW.LIFT end
-  if #list == 0 then return end
+
+  if rec.dirty then
+    local list = {}
+    for i = 1, #cells do
+      local c = cells[i]
+      local entry = lands[c[3]]
+      if entry and entry.mesh then
+        list[#list + 1] = { mesh = entry.mesh, x = c[1] * px + half, z = c[2] * px + half }
+      end
+    end
+    rec.list, rec.dirty = list, false
+  end
+  local list = rec.list
+  if not list or #list == 0 then return end
 
   Voxel3D.seams(false)
   Voxel3D.glass(false)
-  for _, item in ipairs(list) do
-    Voxel3D.draw(item.mesh, tex, Mat4.translate(item.x, GW.LIFT, item.z), 0, nil, 0, false)
+  local lift = GW.LIFT
+  for i = 1, #list do
+    local item = list[i]
+    local m = item.m
+    if not m or item.lift ~= lift then
+      m = Mat4.translate(item.x, lift, item.z)     -- once per sheet, not per frame
+      item.m, item.lift = m, lift
+    end
+    Voxel3D.draw(item.mesh, tex, m, 0, nil, 0, false)
   end
   Voxel3D.seams(true)
   Voxel3D.glass(true)

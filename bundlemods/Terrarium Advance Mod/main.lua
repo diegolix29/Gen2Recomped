@@ -742,6 +742,9 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
     ForestAtmos.invalidate()   -- shaft/particle meshes and shader sentinels
     VR.invalidate()            -- the mirror, and FBO ids of dead canvases
     Pokeball.invalidate()      -- the ball's meshes and palette texture
+    -- Gen 4's native-world effects (water, sand, trees, grass) are meshes of
+    -- the same kind and had no reset path at all
+    if Gen4Bridge.installed then Gen4Bridge.invalidateAll() end
   end,
 })
 

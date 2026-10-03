@@ -53,6 +53,34 @@ local Bridge = {
   reported = {},
 }
 
+-- The shared per-frame build budget (lib/Gen4Budget.lua). Resolved once.
+local budgetMod
+local function budget()
+  if not budgetMod then
+    local ok, B = pcall(V.require, "Gen4Budget")
+    if ok and type(B) == "table" then budgetMod = B end
+  end
+  return budgetMod
+end
+
+-- True while a warp fade hides the world: nothing on screen to hitch, so the
+-- budget may spend much more building meshes. Only `transitioning` is read (the
+-- same flag main.lua's own COVERED test uses for warps); the stack-top test is
+-- left out on purpose, because a Gen 4 world can run with an empty stack and
+-- that would read as "covered" for the whole game.
+local function worldCovered()
+  local okG, Game = pcall(require, "src.core.Game")
+  local ow = okG and type(Game) == "table" and Game.overworld or nil
+  return (ow and ow.transitioning) and true or false
+end
+
+local function frameEnd()
+  local B = budget()
+  if not B then return end
+  B.covered = worldCovered()      -- read by the NEXT frame's builds
+  B.nextFrame()
+end
+
 local function report(key, fmt, ...)
   if Bridge.reported[key] then return end
   Bridge.reported[key] = true
@@ -249,7 +277,13 @@ function Bridge.install()
     -- Runs while the free canvas is still open (colour + depth): terrain,
     -- buildings and characters are already in it. See the header.
     if Ground.freeOpen and self and self.freeW then Bridge.run(self) end
-    return original(self, ...)
+    -- close the frame's shared build budget after the engine has finished with
+    -- the canvas, and pass every return value of the original through
+    local function finish(...)
+      frameEnd()
+      return ...
+    end
+    return finish(original(self, ...))
   end
   Bridge.installed = true
 
@@ -289,6 +323,20 @@ function Bridge.install()
     report("sky", "the sky pass did not load: %s", tostring(GK))
   end
   return true
+end
+
+-- Drop every baked Gen 4 effect mesh (water, sand, trees, grass). The voxel
+-- pipeline's invalidate used to be the only reset path and it knew none of
+-- these, so a graphics reset, a mod reload or a cache reset left the old
+-- meshes (and, on a lost GL context, dead ones) in place.
+function Bridge.invalidateAll()
+  for _, name in ipairs({ "Gen4Sand", "Gen4Trees", "Gen4Water", "Gen4Grass" }) do
+    local ok, mod = pcall(V.require, name)
+    if ok and type(mod) == "table" and type(mod.invalidate) == "function" then
+      local okI, err = pcall(mod.invalidate)
+      if not okI then report("inv:" .. name, "%s.invalidate failed: %s", name, tostring(err)) end
+    end
+  end
 end
 
 function Bridge.uninstall()
