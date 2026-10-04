@@ -1231,10 +1231,12 @@ local function buildGrassMesh(map)
     local ok, G = pcall(V.require, "Grass3D")
     if ok and G and G.meshFromInstances then
       local mesh = G.meshFromInstances(S.grassInstances)
-      if mesh then return mesh end
+      if mesh then return {{ mesh = mesh, y = 0 }} end
     end
   end
-  return quadsMesh(S.grassQuads)
+  local mesh = quadsMesh(S.grassQuads)
+  if mesh then return {{ mesh = mesh, y = 0 }} end
+  return false
 end
 
 local function buildDecorMesh(map)
@@ -1551,7 +1553,7 @@ function ChunkMesher.get(map, bodyOnly, masks)
     local okR, road = pcall(buildRoadMesh, map)
     local okGnd, ground = pcall(buildGroundMesh, map)
     local okD, decor = pcall(buildDecorMesh, map)
-    swapSlot(c, "grass", (okG and grass) or false)
+    swapGrassSlot(c, (okG and grass) or false)
     swapSlot(c, "flowers", (okF and flowers) or false)
     swapSlot(c, "custom", (okC and custom) or false)
     swapSlot(c, "road", (okR and road) or false)
