@@ -143,17 +143,7 @@ function Gen3.isGen3(tileset)
 end
 
 function Gen3.mapIsGen3(map)
-  if map == nil then return false end
-  -- Sinnoh's stand-in tileset uses the Gen 3 block shape so 2D tools can
-  -- read it, but the live world is NSBMD. Treating it as Hoenn voxelizes
-  -- TILESET_GEN4_STANDIN over the cartridge mesh.
-  if map.renderer and map.renderer.gen4Ground then return false end
-  local ts = map.tileset
-  if type(ts) == "table" then
-    local id = tostring(ts.id or ts.primaryKey or "")
-    if id == "TILESET_GEN4_STANDIN" then return false end
-  end
-  return Gen3.isGen3(ts)
+  return map ~= nil and Gen3.isGen3(map.tileset)
 end
 
 -- IS THIS CELL A BERRY PLOT?  ONE TEST, SHARED, SO NO TWO PASSES DISAGREE.
@@ -2407,8 +2397,6 @@ function Gen3.forMap(map)
     end
     local function lone(cx, cy)
       if cx < x0 or cy < y0 or cx > x1 or cy > y1 then return false end
-            if scenery[idx(cx, cy)] then return false end
-
       local solid
       if ctx.offMap(cx, cy) then return false end
       if not ctx.blockedAt(cx, cy) then return false end
@@ -2439,7 +2427,6 @@ function Gen3.forMap(map)
       -- must be a DIFFERENT metatile, so a wall's own corner or a porch
       -- returning north cannot pass.
       local m0 = ctx.metatileAt(cx, cy)
-
       -- SOUTH IS NEVER NEGOTIABLE: it is the side you read the sign from.
       if cy + 1 < height and ctx.blockedAt(cx, cy + 1) then return false end
       -- ...AND A RAIL BESIDE A SIGN IS NOT THE SIGN'S BUILDING.
@@ -2486,8 +2473,7 @@ function Gen3.forMap(map)
         end
         return plate
       end
-                  for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 } }) do
-
+      for _, d in ipairs({ { 1, 0 }, { -1, 0 } }) do
         local nx, ny = cx + d[1], cy + d[2]
         if nx >= 0 and ny >= 0 and nx < width and ny < height
            and ctx.blockedAt(nx, ny) then
@@ -4815,7 +4801,7 @@ function Gen3.forMap(map)
       end
       return bespokeCell(cx, cy)
     end
-    local function runAbove(cx, doorY)
+    local function runAbove(cx, doorY, stopAtWood)
       local y = doorY - 1
       if y < 0 then return nil end
       local mass = y
@@ -4834,7 +4820,14 @@ function Gen3.forMap(map)
         if mass < 0 or not blockedCell(cx, mass) then return nil end
       end
       local top = mass
+      -- `stopAtWood` -- see "A FLANK COLUMN MAY HAVE CLIMBED INTO THE WOOD"
+      -- in `take` below.  Off by default, so every existing caller gets the
+      -- walk it always got.
       while top - 1 >= 0 and blockedCell(cx, top - 1) and (y - (top - 1)) < 8 do
+        if stopAtWood and ctx.outdoor and foliageCell(cx, top - 1)
+           and not overheadBespoke(cx, top - 1) then
+          break
+        end
         top = top - 1
       end
       -- ...AND A WALK-BEHIND ROW IN THE MIDDLE OF A BUILDING IS STILL THE
@@ -5107,6 +5100,16 @@ function Gen3.forMap(map)
         end
         return nil
       end
+      -- WHICH WARPS ARE DOORS.  A warp with blocked mass above it is a door
+      -- in a wall; a warp with open ground above it is a place the map hands
+      -- you to another map -- the Safari Zone's area transitions, a route
+      -- seam, a cave floor's connecting hole.  `runAbove` is already exactly
+      -- that question and every other rule in this function asks it.
+      local doorWarp = {}
+      for _, wp2 in ipairs(warps) do
+        local x2, y2 = tonumber(wp2.x), tonumber(wp2.y)
+        if x2 and y2 and runAbove(x2, y2) then doorWarp[y2 * 8192 + x2] = true end
+      end
       for _, wp in ipairs(warps) do
         local wx, wy = tonumber(wp.x), tonumber(wp.y)
         if wx and wy then
@@ -5165,7 +5168,54 @@ function Gen3.forMap(map)
               end
               return top
             end
+            -- A COLUMN ANOTHER DOOR STANDS UNDER IS ANOTHER BUILDING'S.
+            --
+            -- MOTIVATED BY CERULEAN CITY'S POKEMON CENTRE, warp (22,19).
+            -- Neither it nor ROUTE 10's, warp (13,20), is founded at all: the
+            -- flank walk from the building BESIDE it gets there first.
+            --
+            -- MEASURED, CeruleanCity: House3's door is (15,17) and its walk
+            -- ran out to column 23 -- eleven columns -- because the Mart and
+            -- the Centre stand shoulder to shoulder with rooflines within a
+            -- row of each other.  Rows 15..17 of the Centre were claimed as
+            -- House3's, and when the Centre's own warp came up the guard
+            -- above refused it -- "not built.cell[t0 * 8192 + wx]", the top
+            -- of its column is inside a building that exists -- so the Centre
+            -- founded NOTHING and its shopfront row 18 fell through to the
+            -- role table as `cliff`.  Route 10 is the same picture with the
+            -- ROCK TUNNEL mouth doing the swallowing.
+            --
+            -- A WARP IS THE CARTRIDGE'S OWN STATEMENT THAT A BUILDING IS
+            -- HERE -- the sentence this whole function is built on, "a wall
+            -- is a wall because there is a door in it".  The walk was reading
+            -- it in one direction only: as licence to claim, never as a
+            -- boundary against claiming.
+            --
+            -- Three bounds, each measured:
+            --   * DOORS only, not every warp.  Sweeping all of them costs the
+            --     Safari Zone 63 cells across its three maps, whose warps are
+            --     area transitions on open ground -- `doorWarp` above.
+            --   * BELOW the door row only, so the Route 110 gate houses keep
+            --     their TWO front doors, (15,16)+(18,16) and (16,88)+(19,88),
+            --     the only twins in Hoenn.  They sit on the SAME row and are
+            --     what the `twin` guard above exists for.
+            --   * WITHIN ONE COLUMN.  MEASURED against two: at two, ONE
+            --     ISLAND's Pokemon Centre loses a column to its neighbour's
+            --     door four rows below, and ROUTE 10 loses the Rock Tunnel
+            --     mouth entirely instead of keeping both it and the Centre.
+            --     At one, Hoenn moves by two cells on a cave mouth and Kanto
+            --     founds two Pokemon Centres that were never built at all.
+            local function otherDoorUnder(cx)
+              if cx == wx or not ctx.outdoor then return false end
+              for y2 = wy + 1, math.min(height - 1, wy + 4) do
+                for dx2 = -1, 1 do
+                  if doorWarp[y2 * 8192 + cx + dx2] then return true end
+                end
+              end
+              return false
+            end
             local function take(cx)
+              if otherDoorUnder(cx) then return false end
               local aTop = artColumn(cx)
               if aTop then
                 for y = aTop, wy - 1 do
@@ -5186,7 +5236,56 @@ function Gen3.forMap(map)
                 if not r or math.abs(r - t0r) > 1 then return false end
                 t = r
               elseif math.abs(t - t0) > 1 then
-                return false
+                -- A FLANK COLUMN MAY HAVE CLIMBED INTO THE WOOD.
+                --
+                -- MOTIVATED BY PETALBURG CITY'S POKEMON MART, door (25,12),
+                -- footprint (24..27, 10..12).  REPORTED from play: "the marts
+                -- right side is sank probable due to the trees being right
+                -- next to it and some voxel rule we have" -- and the report
+                -- is right about the cause.
+                --
+                -- This test admits a flank column when its blocked run tops
+                -- out within a row of the door column's, and `runAbove`
+                -- climbs BLOCKED cells: a tree is blocked, so a column with
+                -- forest drawn hard against the back of the shop keeps
+                -- climbing out of the building and into the wood.  MEASURED:
+                -- the Mart's door column tops out at row 10, its own roof;
+                -- column 26, which has the trees at (26, 4..8) -- metatiles
+                -- 468 and 476, laid 66 and 49 times on this map -- directly
+                -- above it, tops out at row 4.  |4 - 10| > 1 refused it, the
+                -- walk stopped, and column 27 was never asked: HALF THE SHOP
+                -- left outside the footprint.  It fell through to the
+                -- generated role table as `cliff`, `capGen3Rock` gave those
+                -- columns "the drop they separate", and the right half of the
+                -- Mart sank into the ground with its shopfront art lying on
+                -- top of the rock.
+                --
+                -- This file already says the sentence twice -- the roofline
+                -- levelling refuses to fill a column through a leafy row, and
+                -- the flank walk refuses an all-foliage column, both because
+                -- "foliage is a hull, never a storey".  `runAbove` was the
+                -- one reader that disagreed.
+                --
+                -- ASKED ONLY AS A SECOND CHANCE, on a column this test has
+                -- ALREADY REFUSED, and that is the whole safety of it: it can
+                -- admit a column, never drop one, so no building in Hoenn can
+                -- lose a cell to it and the door column's `t0` -- the datum
+                -- every flank is measured against -- is never touched.
+                -- MEASURED, the alternatives are worse in both directions: a
+                -- stop applied to every walk moves MtPyre_Exterior's shrine
+                -- gate from 16 cells to 4, because its door column has the
+                -- two shrine trees drawn over it and the datum moved with it;
+                -- hoisting the art trim above this comparison instead moves
+                -- 54 maps and costs RustboroCity 92 claimed cells.
+                --
+                -- `foliageCell` already stands down where `building_art` has
+                -- claimed the art (Fortree's bamboo end walls), and a ROOF the
+                -- player walks behind is admitted by `overheadBespoke` -- the
+                -- test Viridian City's GREEN ROOFS are rescued by -- so a roof
+                -- painted the colour of a tree still stops nothing.
+                local t2, b2 = runAbove(cx, wy, true)
+                if not (t2 and math.abs(t2 - t0) <= 1) then return false end
+                t, b, rawTop = t2, b2, t2
               end
               -- A BUILDING STOPS WHERE ITS OWN ART STOPS.
               --
@@ -5519,6 +5618,7 @@ function Gen3.forMap(map)
               -- does.
               local function grab(cx)
                 if cx < 0 or cx >= width then return false end
+                if otherDoorUnder(cx) then return false end
                 local t, b = runAbove(cx, wy)
                 if not t then return false end
                 for cy2 = t, b do
@@ -5562,8 +5662,35 @@ function Gen3.forMap(map)
               -- `grab` asks a new one, and where the answer is yes it is
               -- deepened to its own run.  Strictly weaker than admitting a
               -- new column, and it can only ever add cells.
+              -- ...AND THE WOOD BEHIND A ROOF MUST NOT POISON THE TEST.
+              --
+              -- MOTIVATED BY THREE ISLAND'S HOUSE, door (3,31), footprint
+              -- (2..6, 29..31), and the same shape on FOUR ISLAND, LAVENDER
+              -- TOWN, CERULEAN CITY and SEVEN ISLAND'S SEVAULT CANYON.
+              --
+              -- This loop is the apex rule: a roof's ridge row is drawn on
+              -- the BOTTOM layer, so `roofAt` refuses it and the walk stops
+              -- under it, and what admits it instead is that LANDSCAPE TILES
+              -- and a roof does not -- every row of the run above must be
+              -- bespoke.  `runAbove` climbs BLOCKED cells and a tree is
+              -- blocked, so on a house with forest drawn hard against its
+              -- back the run does not stop at the ridge: it carries on into
+              -- the wood, the wood's metatiles are laid in the tens, and the
+              -- rareness test fails for the WHOLE run -- refusing the one
+              -- genuine apex row along with the trees.
+              --
+              -- MEASURED, ThreeIsland: the house's ridge row 28 is metatiles
+              -- 796, 797, 798, 798, 799, each laid once; the run above it
+              -- runs to row 23 through canopy.  Five cells of roof came back
+              -- `cliff`, were sized by `capGen3Rock` as "the drop they
+              -- separate", and sat above the house as a rock ledge.
+              --
+              -- The stop is the one `take` already uses on a refused flank
+              -- (see "A FLANK COLUMN MAY HAVE CLIMBED INTO THE WOOD"), and it
+              -- can only ever ADD rows here: the rareness test still has to
+              -- pass on everything it admits.
               for _, e in ipairs(taken) do
-                local t2, b2 = runAbove(e.cx, wy)
+                local t2, b2 = runAbove(e.cx, wy, true)
                 if t2 and e.top and t2 < e.top then
                   local rare = true
                   for cy2 = t2, b2 do
@@ -8050,158 +8177,6 @@ function Gen3.isBuildingCell(map, cx, cy)
   if not (ctx and ctx.isBuildingCell) then return false end
   local ok, r = pcall(ctx.isBuildingCell, cx, cy)
   return (ok and r) or false
-end
---- TRUE on a Gen 3 cell whose behaviour byte is a tall/long/ash grass class.
-function Gen3.isGrassCell(map, cx, cy)
-  local ctx = Gen3.forMap(map)
-  if not (ctx and ctx.metatileAt and ctx.attributes) then return false end
-  local okM, m = pcall(ctx.metatileAt, cx, cy)
-  if not okM or type(m) ~= "number" then return false end
-  local okA, b = pcall(ctx.attributes, m)
-  if not okA or type(b) ~= "number" then return false end
-  local sp = spec()
-  local behaviour = sp and sp.behaviour
-  return (behaviour and behaviour[b] == "grass") or false
-end
-
--- Monkey-patches `Map:isGrassCell` once, the same way `Water.installWalk`
--- patches `Map:isWalkableCell`: keep the original for every map it already
--- got right (Gen 1, Gen 2, Prism), and answer Gen 3 maps with the behaviour
--- byte instead of the always-empty `grassTiles` table.  Call once at load
--- time (see main.lua, beside `Water.installWalk`).
-function Gen3.installIsGrassCell()
-  local ok, Map = pcall(require, "src.world.Map")
-  if not ok or not Map or Map._dsGen3Grass then return end
-  local original = Map.isGrassCell
-  function Map:isGrassCell(cx, cy)
-    if Gen3.mapIsGen3(self) then
-      return Gen3.isGrassCell(self, cx, cy)
-    end
-    if type(original) == "function" then
-      return original(self, cx, cy)
-    end
-    return false
-  end
-  Map._dsGen3Grass = true
-end
-
---- TRUE on a Gen 3 cell whose behaviour byte is a water class.
---- Excludes bridge reflection water (MB_REFLECTION_UNDER_BRIDGE) which should
---- not get full water effects when covered by bridges.
-function Gen3.isWaterCell(map, cx, cy)
-  local ctx = Gen3.forMap(map)
-  if not (ctx and ctx.metatileAt and ctx.attributes) then return false end
-  local okM, m = pcall(ctx.metatileAt, cx, cy)
-  if not okM or type(m) ~= "number" then return false end
-  local okA, b = pcall(ctx.attributes, m)
-  if not okA or type(b) ~= "number" then return false end
-  local sp = spec()
-  local behaviour = sp and sp.behaviour
-  -- Check if it's water but exclude bridge reflection (0x2B)
-  if behaviour and behaviour[b] == "water" then
-    return b ~= 0x2B  -- Exclude MB_REFLECTION_UNDER_BRIDGE
-  end
-  return false
-end
-
--- Monkey-patches `Map:isWaterCell` once, the same way `Gen3.installIsGrassCell`
--- patches `Map:isGrassCell`: keep the original for every map it already got right
--- (Gen 1, Gen 2, Prism), and answer Gen 3 maps with the behaviour byte instead.
--- Call once at load time (see main.lua, beside `Gen3.installIsGrassCell`).
-function Gen3.installIsWaterCell()
-  local ok, Map = pcall(require, "src.world.Map")
-  if not ok or not Map or Map._dsGen3Water then return end
-  local original = Map.isWaterCell
-  function Map:isWaterCell(cx, cy)
-    if Gen3.mapIsGen3(self) then
-      return Gen3.isWaterCell(self, cx, cy)
-    end
-    if type(original) == "function" then
-      return original(self, cx, cy)
-    end
-    return false
-  end
-  Map._dsGen3Water = true
-end
-
--- ---------------------------------------------------------------------------
--- THE OUTDOOR FLAG.
---
--- WHAT WAS WRONG.  `Map.isOutdoor(def)` -- a STATIC function, called the same
--- way everywhere in this mod (`Map.isOutdoor(def)`, never as a method on an
--- instance) -- reads Gen 1/Gen 2 `def` fields only (see the header on
--- `Structures.mapMeta` / the "Map.isOutdoor reads three Gen 1/Gen 2 def
--- fields" comment there).  A Gen 3 `def` carries none of them, so it answers
--- "indoor" for every single Hoenn map, town, route and all -- and roughly
--- thirty call sites across this mod gate outdoor-only behaviour on exactly
--- that call: `AmbientLife.update` (butterflies, FIREFLIES, birds, sparrows,
--- dragonflies -- gated at the very top, before any of them ever reach a
--- grass or ground check), `Weather`, `WindFX` leaves, `GroundFX`, `Ecology`,
--- `AmbientSound`, `CityLife`/`StreetLamps` placement, `DayTint`, `Light`,
--- `SkyLayer`/`HorizonArt`/`Backdrop`, `Shelter`, `Interiors`, `WorldAtlas`.
--- Every one of them silently treats Hoenn as one giant interior.  Fireflies
--- specifically never get past `AmbientLife.update`'s own outdoor gate to
--- ever ask a single cell about grass, so the earlier `isGrassCell` fix could
--- never have shown up there -- this is the gate one step before it.
---
--- `Structures.lua` already worked around this FOR ITS OWN MESH PASS
--- (`local outdoor = Map.isOutdoor(def); if gen3 and gen3.outdoor ~= nil then
--- outdoor = gen3.outdoor end`), reading Emerald's own MAP_TYPE out of
--- `data/gen3_maps.lua` instead of trusting the Gen 1/2 heuristic. Every
--- OTHER caller in the mod never got that override, because each one calls
--- the engine's `Map.isOutdoor` directly rather than going through
--- `Structures`.
---
--- THE FIX.  Patch `Map.isOutdoor` itself, once, so every caller gets
--- Emerald's own answer for a Gen 3 map without having to know Gen 3 exists
--- -- exactly the intent of `Structures`' own workaround, just applied at
--- the one shared choke point instead of copied into thirty files.
--- ---------------------------------------------------------------------------
-
---- Emerald's own MAP_TYPE-derived outdoor answer for one map DEF, from
---- `data/gen3_maps.lua`, or nil when this def is not a Gen 3 map the data
---- file has an entry for (a modded/fan-hack map, or simply not Gen 3) --
---- nil means "say nothing", so the caller keeps whatever the un-patched
---- engine function already answered.
-function Gen3.outdoorForDef(def)
-  if type(def) ~= "table" or def.id == nil then return nil end
-  local okMaps, m = pcall(V.data, "gen3_maps")
-  if not (okMaps and type(m) == "table" and type(m.maps) == "table") then
-    return nil
-  end
-  local entry = m.maps[tostring(def.id)]
-  if not (entry and entry.outdoor ~= nil) then return nil end
-  return entry.outdoor and true or false
-end
-
--- Monkey-patches the STATIC `Map.isOutdoor(def)` -- not an instance method,
--- so this reassigns the plain function on the shared, `require`-cached
--- `Map` table rather than anything reached through `self`/`:`. Every file
--- in the mod that does `local Map = require("src.world.Map")` gets the SAME
--- table back (that is what `require` caching means), so one patch here
--- reaches all thirty-odd call sites without editing any of them. Call once
--- at load time (see main.lua, beside `installIsGrassCell`).
-function Gen3.installIsOutdoor()
-  local ok, Map = pcall(require, "src.world.Map")
-  if not ok or not Map or Map._dsGen3Outdoor then return end
-  local original = Map.isOutdoor
-  if type(original) ~= "function" then return end
-  local logged = {}
-  function Map.isOutdoor(def)
-    local override = Gen3.outdoorForDef(def)
-    if override ~= nil then
-      local key = def and def.id
-      if key ~= nil and not logged[key] then
-        logged[key] = true
-        print(("[outdoor-debug] def=%s GEN3 override -> %s (engine said %s)")
-              :format(tostring(key), tostring(override),
-                      tostring(original(def))))
-      end
-      return override
-    end
-    return original(def)
-  end
-  Map._dsGen3Outdoor = true
 end
 
 return Gen3

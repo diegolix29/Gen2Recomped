@@ -213,6 +213,16 @@ local function read(t, data, perRow)
   local inside = {}
   for i = 0, W * H - 1 do inside[i] = not outside[i] end
 
+  -- Some sprites are clipped flush to the map boundary and have no closed
+  -- outline to flood.  `footprint` is an explicit authoring decision for
+  -- those cases: the matched tile grid is the building's silhouette, so
+  -- light window pixels remain part of the upright facade instead of being
+  -- mistaken for terrain.  The profile still supplies the real art for
+  -- every face; this only replaces the unreliable border flood.
+  if t.silhouette == "footprint" then
+    for i = 0, W * H - 1 do inside[i] = true end
+  end
+
   -- `scrub` names pixel rects where the drawing paints an object standing
   -- ON the surface (Red's potted plant on the dining tabletop). The object
   -- keeps its own standee -- the template's `keep` leaves its tiles

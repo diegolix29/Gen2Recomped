@@ -122,12 +122,6 @@ Voxel.angle = 0
 Voxel.from = 0
 Voxel.goal = 0
 Voxel.t = 1
--- FULL remains the diorama preset rung so zoom/quality routing keeps treating
--- it as DIORAMA, but its pitch can now be changed independently from camera
--- distance. v0.2.53 fixes the old "tilt feels like zoom" behavior by keeping
--- DioramaZoom responsible only for distance and this value responsible only
--- for camera pitch.
-Voxel.fullAngleDeg = 35
 
 -- Whether the scene has terrain to show for the current map. VoxelScene
 -- maintains it every frame; while the first mesh of a fresh toggle is
@@ -148,33 +142,7 @@ local function ease(t)
 end
 
 local function goalFor(level)
-  local deg
-  if level == Voxel.FULL_LEVEL then
-    deg = tonumber(Voxel.fullAngleDeg) or 35
-  else
-    deg = Voxel.ANGLES_DEG[level + 1] or 0
-  end
-  return math.rad(deg)
-end
-
-function Voxel.setFullAngle(deg)
-  deg = tonumber(deg) or 35
-  -- The renderer can still accept 0 degrees for direct/internal callers, but
-  -- GoldVoxelBridge no longer maps Gold's fresh-install TILT=OFF to 0 while
-  -- 3D VOXEL WORLD is enabled. That native OFF value now selects the normal
-  -- 35-degree voxel diorama; explicit 15/35/50 rungs remain literal.
-  if deg < 0 then deg = 0 end
-  if deg > 85 then deg = 85 end
-  if math.abs((Voxel.fullAngleDeg or 35) - deg) < 0.001 then return false end
-  Voxel.fullAngleDeg = deg
-  -- Re-running setLevel on the same FULL rung is enough: setLevel compares the
-  -- newly-derived goal against the previous one and starts the normal tween.
-  if Voxel.level == Voxel.FULL_LEVEL then Voxel.setLevel(Voxel.level) end
-  return true
-end
-
-function Voxel.fullAngle()
-  return tonumber(Voxel.fullAngleDeg) or 35
+  return math.rad(Voxel.ANGLES_DEG[level + 1] or 0)
 end
 
 function Voxel.setLevel(level)
@@ -198,7 +166,6 @@ end
 function Voxel.reset()
   Voxel.level, Voxel.angle = 0, 0
   Voxel.from, Voxel.goal, Voxel.t = 0, 0, 1
-  Voxel.fullAngleDeg = 35
 end
 
 function Voxel.levelLabel(level)
