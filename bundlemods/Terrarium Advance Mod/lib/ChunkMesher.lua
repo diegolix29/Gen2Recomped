@@ -84,6 +84,10 @@ function ChunkMesher.setCacheRulesTag(tag)
   end
 end
 
+-- The water flag's rules changed (class-gated again, never on side faces,
+-- finite cached-chunk boxes), so entries baked before this are stale.
+ChunkMesher.setCacheRulesTag("water-class-gated-v2")
+
 function ChunkMesher.cacheStatus()
   if DiskCache and type(DiskCache.status) == "function" then
     return DiskCache.status()
@@ -118,6 +122,12 @@ local INSET = 0.02
 -- standing drawing reads as depth rather than repeating the same art at
 -- the same energy.
 local VOLUME_TOP_SHADE = 0.85
+
+-- The water attribute rides on HORIZONTAL surfaces only. A vertical face
+-- carrying it (a waterfall's whole drop, a shoreline step) gets the water
+-- shader's per-vertex motion applied across its full height, which is what
+-- made water "explode". Flip to true to bisect.
+local WATER_ON_SIDES = false
 
 local cache = {}     -- map id -> { full = mesh|false, body = ..., grass = ... }
 local gen = {}       -- map id -> generation, bumped by invalidate/evict
@@ -421,16 +431,30 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
     return heightAt(tx, ty)
   end
 
+  -- WATER IS A CLASS FIRST.  The shape class decides whether a cell is water
+  -- at all; the cartridge's byte-level data may only VETO that (it is how
+  -- bridge reflection water is excluded), never add water to a cell the
+  -- class says is something else.  The earlier byte-level-only form could
+  -- flag walls, roofs and ledges, and any flagged vertex gets the water
+  -- shader's motion.  Memoized: this used to be a pcall per side band.
+  local waterCache = {}
   local function isWaterAt(tx, ty)
     local k = keyOf(tx, ty)
+    local hit = waterCache[k]
+    if hit ~= nil then return hit end
     local s = S.shapeAt[k]
-    if not s then return false end
-    -- For Gen3, use byte-level water detection to exclude bridge reflection water
-    if S.isGen3 then
-      local okW, water = pcall(map.isWaterCell, map, math.floor(tx / 2), math.floor(ty / 2))
-      return okW and water
+    local w = false
+    if s and s.class == "water" then
+      w = true
+      if S.isGen3 and map.isWaterCell then
+        local okW, isW = pcall(map.isWaterCell, map,
+                               math.floor(tx / 2), math.floor(ty / 2))
+        -- veto only; on error (ring cells outside the map) trust the class
+        if okW and not isW then w = false end
+      end
     end
-    return s.class == "water"
+    waterCache[k] = w
+    return w
   end
 
   local function tileOrigin(tile)
@@ -529,7 +553,9 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
       c = { { x0, y0, z0 }, { x0, y0, z1 }, { x0, y1, z1 }, { x0, y1, z0 } }
     end
     local u0, u1, v0, v1 = uvRect(tile, vTop, vBot)
-    push(c, { { u0, v1 }, { u1, v1 }, { u1, v0 }, { u0, v0 } }, shade, nil, water)
+    -- vertical faces never carry the water attribute (see WATER_ON_SIDES)
+    push(c, { { u0, v1 }, { u1, v1 }, { u1, v0 }, { u0, v0 } }, shade, nil,
+         WATER_ON_SIDES and water or false)
   end
 
   local def = map.def
@@ -1295,6 +1321,9 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
                   -- wear the same stack darkened, which is what keeps a
                   -- fall's edge against the gorge wall from smearing a
                   -- different row per course.
+                  --
+                  -- NOTE: the fall's vertical face does NOT carry the water
+                  -- attribute (sideQuad drops it unless WATER_ON_SIDES).
                   if d == 5 then shade = 1 end
                   isWater = true
                   local front = ty
@@ -1420,7 +1449,7 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
                          vT or ((band * 8 + 8) - y1),
                          vB or ((band * 8 + 8) - y0),
                          sideShades(hl, hr, y0, y1, y0 <= nh, shade),
-                         isWater or isWaterAt(tx, ty))
+                         isWater)
               end
             end
           end
@@ -1562,6 +1591,9 @@ function ChunkMesher.bake(map, slot, masks)
     if okHas and hit then return false, "cached" end
   end
   local sink = newSink()
+  -- NOTE: newFfiSink does not define writeRaw, so this always declines and
+  -- no bake (warmDisk / write-back) ever reaches the disk. Add writeRaw to
+  -- the ffi sink to match whatever VoxelDiskCache.store expects.
   if type(sink.writeRaw) ~= "function" then
     return false, "no ffi sink"
   end
@@ -1727,21 +1759,27 @@ end
 -- A disk-cache hit hands back one flat terrain mesh and (maybe) one flat
 -- water mesh -- not the chunked Group runGeometry's live path produces. Wrap
 -- them as a one-or-two-chunk Group so Voxel3D.drawGroup/ShadowMap can draw a
--- cache-loaded slot exactly like a freshly built one. The chunk boxes are
--- left unbounded (drawGroup's box test always passes) rather than guessed at
--- from map dimensions: this file's own rule is "over-drawing is slow, and
--- under-drawing is a hole in the world", and a wrong guess here would be the
--- second kind. A live-built slot still gets its normal per-chunk culling --
--- only cache-loaded slots skip it.
-local function wrapCachedMesh(terrainMesh, waterMesh)
+-- cache-loaded slot exactly like a freshly built one.
+--
+-- The chunk box is FINITE: the whole map, its border ring and the chunk
+-- margin, with a generous ceiling. It used to be +-math.huge, which is safe
+-- for a pure "is it on screen" test but turns into NaN the moment anything
+-- does arithmetic on the box (a centre, an extent, a light-frustum fit):
+-- inf - inf. Over-drawing is slow and under-drawing is a hole in the world,
+-- so the box errs large -- it just has to be a number.
+local function wrapCachedMesh(map, terrainMesh, waterMesh)
+  local def = map and map.def
+  local pad = RING * 32 + CHUNK_MARGIN
+  local x0, z0 = -pad, -pad
+  local x1 = ((def and def.width or 0) * 32) + pad
+  local z1 = ((def and def.height or 0) * 32) + pad
+  local ymax = 1024
   local chunks = {}
-  if terrainMesh then
-    chunks[#chunks + 1] = { mesh = terrainMesh,
-      x0 = -math.huge, z0 = -math.huge, x1 = math.huge, z1 = math.huge, ymax = 0 }
-  end
-  if waterMesh then
-    chunks[#chunks + 1] = { mesh = waterMesh,
-      x0 = -math.huge, z0 = -math.huge, x1 = math.huge, z1 = math.huge, ymax = 0 }
+  for _, m in ipairs({ terrainMesh or false, waterMesh or false }) do
+    if m then
+      chunks[#chunks + 1] = { mesh = m, x0 = x0, z0 = z0,
+                              x1 = x1, z1 = z1, ymax = ymax }
+    end
   end
   if #chunks == 0 then return nil end
   return setmetatable({ chunks = chunks }, Group)
@@ -1898,7 +1936,7 @@ local function runJob(job)
     swapSlot(c, job.slot, mesh or false)
     if mesh then pcall(queueWriteBack, map, job.slot, job.masks) end
   else
-    local mesh = wrapCachedMesh(cachedTerrain, cachedWater)
+    local mesh = wrapCachedMesh(map, cachedTerrain, cachedWater)
     if (gen[job.id] or 0) ~= job.gen then
       if mesh and mesh.release then pcall(mesh.release, mesh) end
       return
