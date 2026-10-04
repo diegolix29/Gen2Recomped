@@ -1855,6 +1855,22 @@ end
 -- way either way.
 Voxel3D.camera = nil
 
+-- THE FLOOR THE VIEW IS CENTRED ON.
+--
+-- The orbit used to look at Y = 0 -- the world datum -- whatever the player
+-- was standing on.  Walk up a flight of Sootopolis' steps, into a raised cave
+-- floor or along the foot of a tall wall and the terrace rose under you while
+-- the camera stayed pointed at the water level, so the player slid up the
+-- screen and the frame filled with the wall behind them.  In the flat view
+-- the camera follows the player exactly; in 3D it has to follow them in Y as
+-- well, or anything with verticality walks its own subject out of frame.
+--
+-- VoxelScene sets this each frame from the height of the CELL the player is
+-- standing on, not from the sprite: a ledge hop arcs the sprite and the
+-- camera must not arc with it.  Zero wherever the world is flat, so nothing
+-- there moves.  A placed camera (battle, first person) ignores it.
+Voxel3D.groundY = 0
+
 -- This frame's camera RAY FAN, set by viewProjection alongside vp: the
 -- world direction a canvas point looks along (see Sky.paint's `ray`).
 -- Present for every free-pitch camera -- the VR eyes bring theirs
@@ -1979,8 +1995,11 @@ function Voxel3D.viewProjection(cx, cy, vw, vh)
   local fov = 2 * math.atan(1 / (2 * focal))
   Voxel3D.fovY = fov
 
-  local focus = { cx, 0, cy }
-  local eye = { cx, dist * math.cos(a), cy + dist * math.sin(a) }
+  -- ...lifted onto the floor the player is standing on, eye and focus
+  -- together, so the framing is identical and only its datum moves.
+  local gy = Voxel3D.groundY or 0
+  local focus = { cx, gy, cy }
+  local eye = { cx, gy + dist * math.cos(a), cy + dist * math.sin(a) }
   -- exposed for camera-facing billboards (VoxelScene yaws sprites at it)
   Voxel3D.eye = eye
   Voxel3D.focus = focus
@@ -2553,7 +2572,10 @@ function Voxel3D.beginScene(w, h, cx, cy, vw, vh, sky, slot, yaw)
   -- clip w at the focus point, the reference depth project() reports scale
   -- against (so scale == 1 for anything standing at the view centre)
   local m = Voxel3D.vp
-  Voxel3D.focusW = m[13] * cx + m[14] * 0 + m[15] * cy + m[16]
+  -- (at the lifted floor on the orbit, so scale stays 1 for the player's own
+  -- feet; a placed camera keeps the datum it always used)
+  local fy = (not placed) and (Voxel3D.groundY or 0) or 0
+  Voxel3D.focusW = m[13] * cx + m[14] * fy + m[15] * cy + m[16]
   activeShader = sh
   active = true
   return true

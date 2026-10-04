@@ -1263,6 +1263,12 @@ local function castsInto(box, p)
      and y >= box[2] - CAST_PAD and y <= box[4] + CAST_PAD
 end
 
+-- ------- the camera's own vertical follow
+--
+-- Where the view centre currently sits in Y, and the map it was measured on
+-- (a map change snaps rather than glides).
+local groundFollow = { y = nil, map = nil }
+
 -- ------- the cast
 --
 -- Everybody standing on the map: the walkers, and the authored FIGURES the
@@ -1484,7 +1490,7 @@ local function drawRipples(state)
   if not (okSprite and sprite) then return end
   Voxel3D.glass(false)
   Voxel3D.seams(false)
-  Voxel3D.beginDecal()
+  Voxel3D.beginDecals(false)
   for _, r in ipairs(rings) do
     local frame = 0
     if type(state.rippleFrame) == "function" then
@@ -1506,7 +1512,7 @@ local function drawRipples(state)
       Voxel3D.draw(mesh, tex, model)
     end
   end
-  Voxel3D.endDecal()
+  Voxel3D.endDecals()
   Voxel3D.seams(true)
   Voxel3D.glass(true)
 end
@@ -1590,9 +1596,9 @@ local function drawSurfBlob(state, me)
   end
   Voxel3D.glass(false)
   Voxel3D.seams(false)
-  Voxel3D.beginDecal()
+  Voxel3D.beginDecals(false)
   Voxel3D.draw(mesh, tex, model)
-  Voxel3D.endDecal()
+  Voxel3D.endDecals()
   Voxel3D.seams(true)
   Voxel3D.glass(true)
 end
@@ -2665,6 +2671,44 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
 
   local _p = phase('poses (all of it: pose, sprite, ground)')
   local posed, me = posesOf(state, spriteColors)
+
+  -- THE CAMERA RIDES WITH THE PLAYER, IN Y AS WELL AS IN X AND Z.
+  --
+  -- The orbit is centred on the view centre the flat renderer already
+  -- computed, and it used to look at the world datum -- Y = 0 -- however high
+  -- the player had climbed.  On a flat town that is invisible; against a tall
+  -- wall, on a raised cave floor, or on Sootopolis, Mossdeep and Lavaridge it
+  -- is not: step up and the terrace rises under you while the view stays
+  -- pinned to the water level, so the player slides up the frame and the shot
+  -- fills with the wall behind them.  Eye and focus lift together (see
+  -- Voxel3D.viewProjection), so the framing is unchanged and only its datum
+  -- moves.
+  --
+  -- The CELL's height, not the sprite's: `gh` is what the walker is standing
+  -- on, while `py` arcs through a ledge hop and bobs on a surf.  Following the
+  -- sprite would make the whole world jump with every hop.  EASED, not
+  -- snapped: a step up is a whole course in one frame, and moving the camera
+  -- that far at once throws the world down the screen.  A short exponential
+  -- settle (about a twelfth of a second) reads as the camera keeping up.  A
+  -- map change snaps: gliding a storey on arrival is a warp that looks like a
+  -- fall.
+  do
+    local targetY = (me and me.gh) or 0
+    local mapId = state.map and state.map.id
+    local dtc = (love.timer and love.timer.getDelta and love.timer.getDelta())
+                or (1 / 60)
+    if dtc ~= dtc or dtc < 0 then dtc = 1 / 60 end
+    if dtc > 0.1 then dtc = 0.1 end
+    if groundFollow.map ~= mapId or groundFollow.y == nil then
+      groundFollow.map, groundFollow.y = mapId, targetY
+    elseif math.abs(targetY - groundFollow.y) < 0.25 then
+      groundFollow.y = targetY
+    else
+      groundFollow.y = groundFollow.y
+                       + (targetY - groundFollow.y) * (1 - math.exp(-dtc * 14))
+    end
+    Voxel3D.groundY = groundFollow.y
+  end
   if _p then _p() end
 
   -- The first-person rig, built (or blended) for this frame and handed to
