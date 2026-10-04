@@ -180,6 +180,14 @@ local GEN4_PREFIXED = { "gen4_menus", "gen4_graphics", "gen4_intro",
                         -- world is drawn unlit -- which is how the four above it
                         -- were found, one report at a time.
                         "gen4_arealight",
+                        -- WHICH OF BANK 617'S 2,497 LINES EACH TRAINER SPEAKS.
+                        -- The lines themselves are in `text` and always were;
+                        -- this is the index, and without it loaded
+                        -- `g4_print_trainer_dialogue` has nothing to look a
+                        -- trainer up in, which is the fifth instance of
+                        -- "written on every import, loaded by nothing" waiting
+                        -- to happen. Listed from the day the stage was added.
+                        "gen4_trainer_messages",
                         -- the 71 per-area prop allow-lists: a chunk object's
                         -- model id is a GLOBAL build_model.narc member, and one
                         -- outside its area's list draws `dmybox00` rather than
@@ -2175,6 +2183,26 @@ function Data:load()
       if marked > 0 then
         Logger.info("gen4 player: %d player form(s) marked true-colour, "
                     .. "so the back pic keeps its own palette", marked)
+      end
+    end
+
+    -- A PLATINUM TM CARRIES NO `machine` RECORD, and that one absent field is
+    -- what made every TM and HM answer "This isn't the time to use that!".
+    -- `ItemEffects.markGen4Machines` has the whole story; it derives the record
+    -- from the cartridge's own `fieldUseFunc` and `constants.tmhmMoves` and
+    -- refuses to stamp anything if the two disagree.  Here rather than in the
+    -- extractor for the same reason as the line above: an existing cache is
+    -- fixed without a re-import.
+    do
+      local okM, stamped = pcall(function()
+        return require("src.inventory.ItemEffects").markGen4Machines(self)
+      end)
+      if okM and (stamped or 0) > 0 then
+        Logger.info("gen4 items: %d TM/HM machine record(s) derived, so the "
+                    .. "bag can teach them", stamped)
+      elseif not okM then
+        Logger.warn("gen4 items: the machine records could not be derived (%s)",
+                    tostring(stamped))
       end
     end
   end
