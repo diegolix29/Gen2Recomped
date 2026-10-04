@@ -417,6 +417,11 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
   }
   
   local SEAM_DATUM = -16
+  -- A sculpted (sub-tile) cell occludes its LOWEST sub-column, for the same
+  -- reason a hull occludes its foot: a cell is only as occluding as the part
+  -- of it that fills the cell.  Gen 3 only; inert on kerb sculpts, whose
+  -- minimum equals their cell height.
+  local subLow = {}
   local function occludeH(tx, ty)
     if not S.isGen3 then return heightAt(tx, ty) end
     local k = keyOf(tx, ty)
@@ -427,6 +432,29 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
       local b = s.base or 0
       local h = shapeHeight(tx, ty, s)
       return (b < h) and b or h
+    end
+    if s and s.sub and s.sub.res and s.sub.h then
+      local hit = subLow[k]
+      if hit == nil then
+        local h = heightAt(tx, ty)
+        -- sculpt heights are absolute and ride with the cell (see `shift`
+        -- in the sub-tile branch)
+        local shift = 0
+        local z0 = s.sub.z0
+        if type(z0) == "number" then shift = h - z0 end
+        local res = math.max(1, math.min(8, math.floor(s.sub.res)))
+        local lo = h
+        for i = 1, res * res do
+          local v = tonumber(s.sub.h[i])
+          if v ~= nil then
+            v = v + shift
+            if v < lo then lo = v end
+          end
+        end
+        hit = lo
+        subLow[k] = hit
+      end
+      return hit
     end
     return heightAt(tx, ty)
   end
@@ -559,7 +587,12 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
   end
 
   local def = map.def
-  local tw, th = def.width * 4, def.height * 4
+  -- map size in tiles.  A Gen 1/Gen 2 block is 4 tiles on a side; a Gen 3
+  -- metatile is 2, and IS one cell.  Hard-coding 4 doubled a Gen 3 map's
+  -- "body": the ring on its east and south sides counted as body (never
+  -- masked, never hidden indoors) and every bw/bh edge test below was off.
+  local blockTiles = tonumber(tileset.blockTiles) or 4
+  local tw, th = def.width * blockTiles, def.height * blockTiles
   local r = bodyOnly and 0 or RING * 4
 
   local function masked(px0, pz0, px1, pz1)
@@ -674,7 +707,32 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
               local ni, nj = i + side[1], j + side[2]
               local nh = subH(ni, nj)
               if nh == nil then
-                nh = occludeH(tx + side[1], ty + side[2])
+                -- A sculpted neighbour is asked what it draws AT THIS EDGE,
+                -- not what it occludes overall (occludeH answers its lowest
+                -- sub-column).  Otherwise both planks of a step each read
+                -- the other's water as lower, both think they are the taller
+                -- one, and both cut the step: coplanar double faces.
+                local ntx, nty = tx + side[1], ty + side[2]
+                local nk = keyOf(ntx, nty)
+                local ns = S.shapeAt[nk]
+                local nsub = ns and ns.sub
+                if nsub and nsub.res and nsub.h
+                   and not (S.skip[nk] or S.runs[nk]) then
+                  local nres = math.max(1, math.min(8, math.floor(nsub.res)))
+                  local nbase = shapeHeight(ntx, nty, ns)
+                  local nshift = 0
+                  if type(nsub.z0) == "number" then nshift = nbase - nsub.z0 end
+                  local nstep = 8 / nres
+                  local px = (side[1] ~= 0) and ((side[1] > 0) and 0 or 7)
+                             or math.floor(i * step)
+                  local py = (side[2] ~= 0) and ((side[2] > 0) and 0 or 7)
+                             or math.floor(j * step)
+                  local nv = tonumber(nsub.h[math.floor(py / nstep) * nres
+                                            + math.floor(px / nstep) + 1])
+                  nh = (nv ~= nil) and (nv + nshift) or nbase
+                else
+                  nh = occludeH(ntx, nty)
+                end
               end
               if nh < hh then
                 local d = side[3]
@@ -960,7 +1018,12 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
             if up and up.class == "water" then
               topTile = S.tileAt[keyOf(tx, n - 1)] or topTile
             end
-          elseif s.art == "upright" and s.authored then
+          elseif s.art == "upright" and s.authored and not s.topIsOwn then
+            -- ...unless the pass that stood this cell says its own tile IS
+            -- the top.  `topIsOwn` marks a BLOCKED cell the cartridge draws
+            -- with the map's own floor art -- a raised slab, a shelf you
+            -- cannot walk on -- where folding a face onto the top lays the
+            -- wrong picture flat.  See `buildGen3CaveTerraces`.
             local north, front = ty, ty
             while ty - north < 6 do
               local bs = S.shapeAt[keyOf(tx, north - 1)]
@@ -1771,8 +1834,9 @@ local function wrapCachedMesh(map, terrainMesh, waterMesh)
   local def = map and map.def
   local pad = RING * 32 + CHUNK_MARGIN
   local x0, z0 = -pad, -pad
-  local x1 = ((def and def.width or 0) * 32) + pad
-  local z1 = ((def and def.height or 0) * 32) + pad
+  local blockPx = (tonumber(map and map.tileset and map.tileset.blockTiles) or 4) * 8
+  local x1 = ((def and def.width or 0) * blockPx) + pad
+  local z1 = ((def and def.height or 0) * blockPx) + pad
   local ymax = 1024
   local chunks = {}
   for _, m in ipairs({ terrainMesh or false, waterMesh or false }) do
