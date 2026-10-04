@@ -231,6 +231,12 @@ end
 
 local NEIGHBOUR4 = { { 0, -1 }, { 0, 1 }, { -1, 0 }, { 1, 0 } }
 
+-- Gen 3 is an optional module in this build (see the pcall at the top), so
+-- every Gen-3-only arm asks through this rather than indexing it bare.
+local function gen3Map(map)
+  return (Gen3 and Gen3.mapIsGen3 and Gen3.mapIsGen3(map)) or false
+end
+
 -- Lazily, and through pcall: Structures pulls in other modules of this mod and
 -- the load order here is not ours to depend on.  Memoised in an upvalue so the
 -- lookup happens once rather than per cell per frame.
@@ -288,6 +294,49 @@ local function groundRaw(map, cellX, cellY, elev, px, py)
 
   local okWalk, walkable = pcall(map.isWalkableCell, map, cellX, cellY)
   walkable = okWalk and walkable or false
+
+  -- A WATERFALL IS A CLIMB, NOT A DOORWAY.
+  --
+  -- A fall's cells are WALKABLE and their art is `upright`, so every one of
+  -- them used to fall into the doorway arm below and be answered
+  -- `standHeight`: the rock beside the sheet where there is any, the world
+  -- datum where there is none.  Measured at MeteorFalls_1F_1R: 224 on the
+  -- top row and 0 on the bottom two -- above the water at one end, under the
+  -- map at the other.  Asked BEFORE the doorway arm because a fall satisfies
+  -- that arm's test and would never reach here otherwise.
+  --
+  -- The sheet stays plumb; riding it is a different question.  The rider
+  -- leaves the lower pool at its surface and arrives at the upper one at the
+  -- crest, one drawn row at a time, and `py` makes it continuous within each
+  -- row so the climb is a ramp rather than a stair of teleports.
+  if s.class == "waterfall" and S then
+    if S.fallRide then
+      local okF, foot, crest, minY, maxY = pcall(S.fallRide, map, cellX, cellY)
+      if okF and foot and crest and maxY and minY and crest > foot then
+        local n = maxY - minY + 1
+        if n > 0 then
+          -- 0 at the cell's NORTH edge, 1 at its south: py grows southward
+          local sub = 0.5
+          if py then
+            sub = (py % 16) / 16
+            if sub < 0 then sub = 0 elseif sub > 1 then sub = 1 end
+          end
+          local u = ((maxY - cellY) + (1 - sub)) / n
+          if u < 0 then u = 0 elseif u > 1 then u = 1 end
+          return foot + (crest - foot) * u
+        end
+      end
+    end
+    -- ...AND A FALL THE OTHER PASS BUILT RIDES ON ITS OWN SHEET.
+    -- `Structures.buildFalls` grades a fall row by row into the run (Ever
+    -- Grande City is the whole of that case): the run IS the surface there.
+    -- Asked second because a stated climb between two pools is the better
+    -- answer where there is one.
+    if S.runHeight then
+      local okR, sheet = pcall(S.runHeight, map, tx, ty)
+      if okR and sheet and sheet > 0 then return sheet end
+    end
+  end
 
   -- A BOX THE WALKER PASSES THROUGH rather than onto: a doorway is pinned
   -- solid so the facade closes over it, and the cell it is cut into stays
@@ -768,13 +817,21 @@ local YAW_RIGHT = { up = "right", right = "down",  down = "left",  left = "up"  
 local YAW_BACK  = { up = "down",  right = "left",  down = "up",    left = "right" }
 
 local SpriteRenderer = nil
-local function frameFor(def, facing, phase, flip, yaw)
+local function frameFor(def, facing, phase, flip, yaw, stated)
   local SR = SpriteRenderer
   if not SR then
     SR = require("src.render.SpriteRenderer")
     SpriteRenderer = SR
   end
   local frame, mirror = 0, false
+
+  -- A SHEET ROW THE OBJECT NAMES ITSELF OUTRANKS THE FACING TABLE.
+  -- `stated` is the pose's own `frame` (see statedFrame): a fixed-frame
+  -- object's row, or the row a berry tree's GROWTH STAGE names.  No mirror --
+  -- an object with no facing has no left and right to swap.  nil for
+  -- everybody else, so everything below is what every other card still gets.
+  local said = tonumber(stated)
+  if said then return said, false end
 
   -- Adjust facing based on camera yaw (ported from ADVANCED_SHAPE): as the
   -- orbit camera turns, a sprite drawn "facing down" from due south should
@@ -935,9 +992,9 @@ end
 -- beginShadows, which supplies the translucent black; the texture is only
 -- consulted for its alpha, so no palette work is needed.
 local function drawShadow(sprite, px, py, facing, phase, flip, gh, lift,
-                          waterline, yaw, defOverride)
+                          waterline, yaw, defOverride, stated)
   local def = defOverride or sprite.def
-  local frame, mirror = frameFor(def, facing, phase, flip, yaw)
+  local frame, mirror = frameFor(def, facing, phase, flip, yaw, stated)
   local mesh = SpriteBillboards.shadowQuad(def, frame, waterline or 0)
   if not mesh then return end
   
@@ -1111,7 +1168,7 @@ end
 -- `lift` raises the figure off the ground plane (ledge hops arc UP in 3D,
 -- where the 2D path could only slide the sprite north).
 local function drawEntity(sprite, px, py, facing, phase, flip, gh, colors,
-                          lift, waterline, isPlayer, yaw, defOverride)
+                          lift, waterline, isPlayer, yaw, defOverride, stated)
   local def = defOverride or sprite.def
   local tex = cardTexture(sprite, def)
   if colors and not def.trueColor and not def.hdImage then
@@ -1127,7 +1184,7 @@ local function drawEntity(sprite, px, py, facing, phase, flip, gh, colors,
   -- waterline > 0: only the top of the card is built, origin at the
   -- waterline (SpriteBillboards), so a swimming mon is cut by the pond
   -- rather than standing on it.
-  local frame, mirror = frameFor(def, facing, phase, flip, yaw)
+  local frame, mirror = frameFor(def, facing, phase, flip, yaw, stated)
   local mesh = SpriteBillboards.mesh(def, frame, waterline or 0)
   if not mesh then return false end
   
@@ -1305,11 +1362,11 @@ local function drawCast(state, posed, me, atlasFor, yaw)
           StadiumWilds.drawEntity(p)
         else
           drawEntity(p.sprite, p.px, p.py, facing, p.phase, p.flip, p.gh,
-                     p.colors, p.lift, p.waterline, p.isPlayer, yaw, hdDef)
+                     p.colors, p.lift, p.waterline, p.isPlayer, yaw, hdDef, p.frame)
         end
       else
         drawEntity(p.sprite, p.px, p.py, facing, p.phase, p.flip, p.gh,
-                   p.colors, p.lift, p.waterline, p.isPlayer, yaw, hdDef)
+                   p.colors, p.lift, p.waterline, p.isPlayer, yaw, hdDef, p.frame)
       end
     elseif not (p.isPlayer and hideMe) then
       culled = culled + 1
@@ -1332,6 +1389,216 @@ local function drawCast(state, posed, me, atlasFor, yaw)
   Voxel3D.glass(true)
 end
 
+-- ---- THE RINGS A FOOT LEAVES ON THE WATER ---------------------------------
+--
+-- Walking the shallows on Route 104 (or standing on the bridge over them),
+-- every step that finishes on a rippling cell leaves a ring.
+-- OverworldState:spawnRipple / updateRipples own WHEN a ring is made; this
+-- is where and in what order it is drawn.
+--
+-- GEOMETRY, NOT AN OVERLAY.  These used to ride ctx.drawFx, a 2D layer over
+-- the FINISHED scene, so a ring painted ON TOP of the player standing in it
+-- and stood upright and unforeshortened besides.  As a quad lying in the
+-- world it foreshortens with the ground and is covered by whatever is drawn
+-- after it.  Decal mode: depth TESTED (a bridge still hides it), never depth
+-- WRITING (the cards drawn afterwards simply paint over it).
+--
+-- Gen 3 only, with no cartridge test: `state.ripples` is filled only where
+-- Game.data.constants.gen3Ripple exists, so elsewhere this returns on its
+-- first line.
+
+-- THE HEIGHT THE RING LIES AT.  This build's water is a LIVE surface
+-- (Water.surfaceAt, the same two sines the mesh rides), so the ring lies on
+-- that where it answers; otherwise on the cell's recessed sheet, the same
+-- TileShape lookup groundAt asks.
+local function rippleSurfaceY(map, cellX, cellY)
+  local gh = VoxelScene.groundAt(map, cellX, cellY)
+  if Water and Water.surfaceAt then
+    local okW, y = pcall(Water.surfaceAt, cellX * 16 + 8, cellY * 16 + 8)
+    if okW and type(y) == "number" then return y end
+  end
+  if not (map and map.inBounds and map:inBounds(cellX, cellY)) then return gh end
+  local okShapes, shapes = pcall(TileShape.forMap, map)
+  if not (okShapes and type(shapes) == "table") then return gh end
+  local tx, ty = cellX * 2, cellY * 2 + 1
+  local tile = map:tileAt(tx, ty)
+  if gen3Map(map) and Gen3.tileAt then tile = Gen3.tileAt(map, tx, ty) or tile end
+  local okAt, s = pcall(TileShape.at, map, shapes, tile, tx, ty)
+  if not (okAt and type(s) == "table") then return gh end
+  if s.class ~= "water" then return gh end
+  local recess = tonumber(s.h)
+  if not recess or recess >= 0 then return gh end
+  return gh + recess
+end
+
+-- ONE RING'S QUAD, lying in the XZ plane, sized and cut from the
+-- SpriteRenderer the flat path blits with (`tileW`/`tileH`, the row at
+-- `frame * tileH`), so the two paths cannot show different pictures.
+-- Memoised per sprite (weak-keyed) and per frame.
+local rippleMeshes = setmetatable({}, { __mode = "k" })
+
+local function rippleMesh(sprite, frame)
+  local okTex, tex = pcall(sprite.resolveImage, sprite)
+  if not (okTex and tex and tex.getDimensions) then return nil end
+  local iw, ih = tex:getDimensions()
+  if not (iw and ih and iw > 0 and ih > 0) then return nil end
+  local tw = math.floor(tonumber(sprite.tileW) or 16)
+  local th = math.floor(tonumber(sprite.tileH) or 16)
+  if tw < 1 or th < 1 then return nil end
+  local per = rippleMeshes[sprite]
+  if per == nil then per = {}; rippleMeshes[sprite] = per end
+  local key = frame .. "@" .. iw .. "x" .. ih
+  local hit = per[key]
+  if hit == nil then
+    local fy = frame * th
+    if fy + th > ih then fy = 0 end
+    local u0, u1 = 0.02 / iw, (math.min(tw, iw) - 0.02) / iw
+    local v0, v1 = (fy + 0.05) / ih, (fy + th - 0.05) / ih
+    -- the cards' own local space (X right, Y up the sheet, Z zero), tipped
+    -- onto the ground by the model matrix so the sheet's TOP points north.
+    -- Full shade: a ring is drawn art, not a lit face.
+    local verts = {
+      { 0, 0, 0, u0, v1, 1 }, { tw, 0, 0, u1, v1, 1 },
+      { tw, th, 0, u1, v0, 1 }, { 0, th, 0, u0, v0, 1 },
+    }
+    local idx = {}
+    Voxel3D.pushQuad(idx, 0)
+    hit = Voxel3D.newMesh(verts, idx) or false
+    per[key] = hit
+  end
+  if not hit then return nil end
+  return hit, tex, tw, th
+end
+
+-- EVERY LIVE RING, AS GROUND GEOMETRY.  Called between the terrain/water and
+-- the character pass; that position is the fix.  Every engine call is
+-- guarded: a data set whose sprite table predates SPRITE_G3_RIPPLE answers
+-- nil for the sheet and no rings are drawn.
+local function drawRipples(state)
+  local rings = state and state.ripples
+  if not (rings and #rings > 0) then return end
+  local map = state.map
+  if not map then return end
+  if type(state.rippleSprite) ~= "function" then return end
+  local okSprite, sprite = pcall(state.rippleSprite, state)
+  if not (okSprite and sprite) then return end
+  Voxel3D.glass(false)
+  Voxel3D.seams(false)
+  Voxel3D.beginDecal()
+  for _, r in ipairs(rings) do
+    local frame = 0
+    if type(state.rippleFrame) == "function" then
+      local okFrame, f = pcall(state.rippleFrame, state, r.clock)
+      frame = (okFrame and tonumber(f)) or 0
+    end
+    local mesh, tex, tw, th = rippleMesh(sprite, frame)
+    if mesh and r.px and r.py then
+      -- the ring's own CENTRE picks the cell, not its top-left: spawnRipple
+      -- lifts the ring so it closes AROUND the feet
+      local cx = math.floor((r.px + tw * 0.5) / 16)
+      local cy = math.floor((r.py + th * 0.5) / 16)
+      -- SHADOW_EPS: the mod's own calibrated float-clear-of-the-surface
+      local y = rippleSurfaceY(map, cx, cy) + Voxel3D.SHADOW_EPS
+      -- local (x, y, 0) -> (x, 0, -y) under rotateX(-pi/2): translating to the
+      -- ring's SOUTH edge covers exactly [px, px+tw] x [py, py+th]
+      local model = Mat4.mul(Mat4.translate(r.px, y, r.py + th),
+                             Mat4.rotateX(-math.pi / 2))
+      Voxel3D.draw(mesh, tex, model)
+    end
+  end
+  Voxel3D.endDecal()
+  Voxel3D.seams(true)
+  Voxel3D.glass(true)
+end
+
+-- ------------------------------------------------- the thing you sit on
+--
+-- THE SURF BLOB IS GROUND GEOMETRY HERE, NOT A SECOND CARD.
+--
+-- The flat game draws it from `Player:drawSurfBlob`, which `Player:draw`
+-- calls -- and with voxels on the player is a BILLBOARD, so that never runs
+-- ("still missing the surf blob beneath the player when surfing").  A flat
+-- quad rather than a card because in FIRST PERSON the player's own card is
+-- left out (the eye is standing in it), and the one thing you want to see
+-- there, the water immediately under you, is what a card cannot show.
+-- drawRipples' shape, for drawRipples' reasons.
+--
+-- WHICH FRAME AND WHICH WAY ROUND is `Player:surfBlobCard`'s call -- the flat
+-- path's own arithmetic -- so the two cannot show different pictures.  Frames
+-- are FACINGS (south / north / west, east mirrored), and the POSE facing is
+-- used, not `viewFacing`: this one really is lying in the world with a real
+-- bearing.  Gen 1 / Gen 2 / Prism draw nothing (`surfBlobCard` returns nil
+-- unless Game.data.constants.gen3SurfBlob exists).
+local blobMeshes = {}
+
+local function surfBlobMesh(tex, frame, fw, fh)
+  if not (tex and tex.getDimensions) then return nil end
+  local iw, ih = tex:getDimensions()
+  if not (iw and ih and iw > 0 and ih > 0) then return nil end
+  if fw < 1 or fh < 1 then return nil end
+  local key = frame .. "@" .. fw .. "x" .. fh .. "@" .. iw .. "x" .. ih
+  local hit = blobMeshes[key]
+  if hit == nil then
+    local fy = frame * fh
+    if fy + fh > ih then fy = 0 end
+    local u0, u1 = 0.02 / iw, (math.min(fw, iw) - 0.02) / iw
+    local v0, v1 = (fy + 0.05) / ih, (fy + fh - 0.05) / ih
+    local verts = {
+      { 0, 0, 0, u0, v1, 1 }, { fw, 0, 0, u1, v1, 1 },
+      { fw, fh, 0, u1, v0, 1 }, { 0, fh, 0, u0, v0, 1 },
+    }
+    local idx = {}
+    Voxel3D.pushQuad(idx, 0)
+    hit = Voxel3D.newMesh(verts, idx) or false
+    blobMeshes[key] = hit
+  end
+  return hit or nil
+end
+
+-- `me` is the player's own entry in the pose list, which is where the HEIGHT
+-- comes from: `me.gh + me.lift` is the number drawEntity stands the player's
+-- card on, so the blob cannot float away from the player at any water level
+-- or terrace.  (Here, with the live swell already in `gh` -- see
+-- entityGround -- it rides the swell too.)  Deliberately not
+-- rippleSurfaceY: the player's own height is at or above the sheet, so a
+-- decal at it can never lose the depth test.
+local function drawSurfBlob(state, me)
+  if not me then return end
+  local player = state and state.player
+  if not (player and player.surfBlobCard) then return end
+  local okCard, blob, frame, mirror, offX, offY =
+    pcall(player.surfBlobCard, player, me.facing)
+  if not (okCard and type(blob) == "table") then return end
+  local okTex, tex = pcall(require("src.render.Assets").image, blob.image)
+  if not (okTex and tex) then return end
+  local fw = math.floor(tonumber(blob.frameWidth) or 32)
+  local fh = math.floor(tonumber(blob.frameHeight) or 32)
+  local mesh = surfBlobMesh(tex, frame, fw, fh)
+  if not mesh then return end
+  local y = me.gh + (me.lift or 0) + Voxel3D.SHADOW_EPS
+  -- the same world rectangle the flat path blits into: top-left at the
+  -- player's (px, py) plus surfBlobCard's offsets, fw x fh across
+  local x0 = me.px + offX
+  local z0 = me.py + offY
+  local model = Mat4.mul(Mat4.translate(x0, y, z0 + fh),
+                         Mat4.rotateX(-math.pi / 2))
+  if mirror then
+    -- east is west flipped: mirror inside the quad's own box so it still
+    -- covers exactly [x0, x0 + fw]
+    model = Mat4.mul(model, Mat4.mul(Mat4.translate(fw, 0, 0),
+                                     Mat4.scale(-1, 1, 1)))
+  end
+  Voxel3D.glass(false)
+  Voxel3D.seams(false)
+  Voxel3D.beginDecal()
+  Voxel3D.draw(mesh, tex, model)
+  Voxel3D.endDecal()
+  Voxel3D.seams(true)
+  Voxel3D.glass(true)
+end
+
+VoxelScene.drawSurfBlob = drawSurfBlob
+
 -- The player's silhouette, for wherever the scenery is standing in front of
 -- them (Voxel3D.beginGhost inverts the depth test around this call).
 --
@@ -1344,7 +1611,7 @@ end
 -- mesh for it.
 local function drawGhost(p, yaw)
   local def = bindHdOverworld(p, viewFacing(p)) or p.hdDef or p.sprite.def
-  local frame, mirror = frameFor(def, viewFacing(p), p.phase, p.flip, yaw)
+  local frame, mirror = frameFor(def, viewFacing(p), p.phase, p.flip, yaw, p.frame)
   local mesh = SpriteBillboards.shadowQuad(def, frame)
   if not mesh then return end
   local tex = cardTexture(p.sprite, def)
@@ -1368,6 +1635,90 @@ end
 -- The last live-set key, so eviction only runs when the neighbourhood
 -- actually changes (a map crossing), not every frame.
 local lastLiveKey = nil
+
+-- THE RECTANGLES A MAP'S BORDER RING IS CUT AGAINST, IN ITS OWN WORLD PIXELS.
+--
+-- The ring's geometry is suppressed wherever another map's BODY sits, because
+-- with a depth buffer the ring's standing trees would otherwise rise straight
+-- through that map's flat ground.  That set used to be read off
+-- `state.neighbors` at a flat 32 px per block -- right for exactly one map in
+-- the frame (the player's), and twice the size of a Hoenn map, which is 16 px
+-- a metatile (a strip of missing world along every seam).
+--
+-- So ask the engine the same question it asked itself:
+-- `computeNeighbors` IS the placement arithmetic that put the neighbours
+-- where they are drawn, and run from any map id it answers that map's own
+-- neighbourhood.  TWO HOPS, PLUS THE RING'S OWN REACH, AND NOT THE CAMERA'S:
+-- two hops is what the engine LOADS, but on the water the two come apart
+-- (Ever Grande's ring lies over Route 126, three connections away), so the
+-- walk is also given the ring's own 96 px.  The camera's reach is left out on
+-- purpose: it changes with the window, and a mask that does is not a property
+-- of the map -- it would re-mesh maps for having been approached from a
+-- different direction and break the disk-cache key.
+--
+-- `def.blockPx` and not `tileset.blockTiles * 8`: the field the engine's own
+-- placement reads, so a mask can never disagree with where the body it covers
+-- was actually drawn.
+local maskMemo = {}
+local maskMaps, maskCompute = nil, nil
+
+-- The two engine handles the answer needs: the map table, and the neighbour
+-- walk.  From the state when there is one, the live overworld when there is
+-- not, and `Game.data` plus OverworldController's own function when there is
+-- no overworld either -- so a prebake started from the settings menu asks the
+-- same question the renderer does.  A miss is never memoised.
+local function maskEngine(state)
+  if maskMaps and maskCompute then return maskMaps, maskCompute end
+  local okG, G = pcall(require, "src.core.Game")
+  G = okG and G or nil
+  if not state then state = G and G.overworld or nil end
+  local data = (state and state.game and state.game.data) or (G and G.data)
+  local compute = state and state.computeNeighbors
+  if type(compute) ~= "function" then
+    local okO, OS = pcall(require, "src.world.OverworldController")
+    compute = okO and type(OS) == "table" and OS.computeNeighbors or nil
+  end
+  if data and data.maps and type(compute) == "function" then
+    maskMaps, maskCompute = data.maps, compute
+  end
+  return maskMaps, maskCompute
+end
+
+function VoxelScene.masksFor(map, state)
+  local id = map and map.id
+  if not id then return nil end
+  local hit = maskMemo[id]
+  if hit ~= nil then return hit or nil end
+  local maps, compute = maskEngine(state)
+  if not (maps and compute) then return nil end
+  local RING_PX = 96
+  local okN, list = pcall(compute, maps, id, 2, RING_PX, RING_PX)
+  if not (okN and type(list) == "table") then
+    maskMemo[id] = false
+    return nil
+  end
+  local masks = {}
+  for _, n in ipairs(list) do
+    local d = maps[n.id]
+    if d and tonumber(d.width) and tonumber(d.height) then
+      local px = tonumber(d.blockPx) or 32
+      masks[#masks + 1] = { n.ox, n.oy,
+                            n.ox + d.width * px, n.oy + d.height * px }
+    end
+  end
+  maskMemo[id] = masks
+  return masks
+end
+
+-- Map data is static for the run; this is for a host that swaps the
+-- cartridge under us (the dev console's map reload).
+function VoxelScene.forgetMasks()
+  maskMemo, maskMaps, maskCompute = {}, nil, nil
+end
+
+-- ...and the prebake pass asks the same question, so a baked FULL entry
+-- carries the key the live request will look it up under (ChunkMesher.bake).
+ChunkMesher.masksFor = VoxelScene.masksFor
 
 -- Request everything `state`'s frame wants and evict what it no longer
 -- does; returns the current map's terrain mesh (or nil while it builds)
@@ -1413,11 +1764,22 @@ function VoxelScene.prefetch(state)
 
   -- masks: where connected neighbour BODIES sit, so the border ring is
   -- suppressed under them (see runGeometry)
-  local masks = {}
-  for _, nb in ipairs(state.neighbors or {}) do
-    masks[#masks + 1] = { nb.ox, nb.oy,
-                          nb.ox + nb.map.def.width * 32,
-                          nb.oy + nb.map.def.height * 32 }
+  --
+  -- Every map in the frame gets its own set (see masksFor), this one
+  -- included.  nil is NOT an empty mask set -- an unmasked full build stands
+  -- this map's border trees up through every neighbour's ground -- so the
+  -- degenerate case falls back to the rectangles of the bodies the engine
+  -- has already placed around the player, now at the map's own block size.
+  local masks = VoxelScene.masksFor(state.map, state)
+  if not masks then
+    masks = {}
+    for _, nb in ipairs(state.neighbors or {}) do
+      local px = (tonumber(nb.map.def and nb.map.def.blockPx)
+                  or (tonumber(nb.map.tileset and nb.map.tileset.blockTiles) or 4) * 8)
+      masks[#masks + 1] = { nb.ox, nb.oy,
+                            nb.ox + nb.map.def.width * px,
+                            nb.oy + nb.map.def.height * px }
+    end
   end
 
   -- Builds are asynchronous (ChunkMesher.pump runs in the pipeline's
@@ -1470,9 +1832,28 @@ function VoxelScene.prefetch(state)
     -- what is about to be drawn.
     local held = ChunkMesher.peek(nb.map, true)
                  or ChunkMesher.peek(nb.map, false)
-    nbMesh[i] = ChunkMesher.request(nb.map, true, nil,
-                                    (not held) and ChunkMesher.HOLE or nil)
-                or ChunkMesher.peek(nb.map, false)
+    -- ...AND A NEIGHBOUR HAS A HORIZON TOO.  Every neighbour used to be
+    -- meshed body-only, so each simply STOPPED at its own body edge -- a
+    -- straight line of town with the sky behind it ("many of the towns still
+    -- are missing their tree borders").  A neighbour is asked for its FULL
+    -- mesh instead, and its own masks do the asymmetry: the side facing this
+    -- map is covered by this map's body and cut away, so what is built is the
+    -- ring on the sides facing OUT.  The same work moved earlier -- the full
+    -- mesh a map needs when you step onto it is already cached from when it
+    -- was a neighbour.  A neighbour whose masks cannot be resolved is meshed
+    -- body-only exactly as before: it loses its horizon, it does not grow a
+    -- tree wall through the map the player is standing on.
+    local nbMasks = VoxelScene.masksFor(nb.map, state)
+    if nbMasks then
+      nbMesh[i] = ChunkMesher.request(nb.map, false, nbMasks,
+                                      (not held) and ChunkMesher.HOLE or nil)
+                  or ChunkMesher.peek(nb.map, false)
+                  or ChunkMesher.peek(nb.map, true)
+    else
+      nbMesh[i] = ChunkMesher.request(nb.map, true, nil,
+                                      (not held) and ChunkMesher.HOLE or nil)
+                  or ChunkMesher.peek(nb.map, false)
+    end
   end
   
   Voxel.ready = terrain ~= nil
@@ -1492,6 +1873,177 @@ end
 -- below). Only that one entry gets the see-through treatment: NPCs and the
 -- ghosts standing on a neighbour map are left to honest occlusion, because
 -- it is only your own character you cannot afford to lose behind a roof.
+-- ------- WHO IS ACTUALLY ON STAGE
+--
+-- AN OBJECT THE CARTRIDGE NEVER DRAWS IS NOT PART OF THE CAST.
+--
+-- Underwater, the Seafloor Cavern bay: the submarine EXPLORER 1 is drawn in
+-- the MAP ART, and Emerald stands four object events under it so that
+-- talking to any of its four cells prints the hull's name.  All four are
+-- movement type 0x4C -- the cartridge's own HIDDEN type, an object that
+-- exists for its collision and its script and is never blitted.  This pass
+-- drew all four ("the submarine shows 4 player characters").  The same type
+-- is the invisible KECLEON and a few hidden helpers.
+--
+-- The flat 2D pass has always honoured `e.hidden` (the field a script's
+-- set_visible / set_invisible writes) and this one never did.  Both readings
+-- are folded in, in the cartridge's own order of authority:
+--
+--   e.hidden == true    a script has hidden it            -> not drawn
+--   e.hidden == false   a script has REVEALED it          -> drawn
+--   e.hidden == nil     nobody has spoken, so the template's own movement
+--                       type answers
+--
+-- `gen3MovementType` is asked first because `setobjectmovementtype` writes
+-- that and leaves the template alone.  Gen 1 / Gen 2 / Prism objects carry no
+-- `movementType`, so for them this is exactly the `e.hidden` the flat path
+-- already gave.
+local GEN3_MOVEMENT_HIDDEN = 0x4C
+
+-- ------- THE BERRY PLOTS
+--
+-- A berry plot's own cell is impassable and the plant is an object event
+-- standing on it.  Three things here keep that plant honest: its growth
+-- STAGE picks the sheet row (statedFrame), an EMPTY plot is soil rather than a
+-- tree (castHides), and a planted object stands on the drawing at its cell
+-- rather than inside it (plantedOn, inert wherever the shape pass already
+-- levelled the plot -- Gen3.isBerryPlot -- and kept as the rule).
+
+-- THE TOP OF THE HULL STANDING ON A CELL, asked of the only thing that knows:
+-- the ROUND STAMP the mesher expands there.  Reproduces ChunkMesher's own
+-- placement (stamp centred on THIS cell, lifted to its base, plus the
+-- tallest y in its quads).  Memoised per cell against the Structures
+-- analysis, weak-keyed so an evicted map takes its index with it.
+local hullTops = setmetatable({}, { __mode = "k" })
+
+local function drawnTop(map, cellX, cellY)
+  local Sx = structures()
+  if not (Sx and Sx.forMap) then return nil end
+  local okS, S = pcall(Sx.forMap, map)
+  if not (okS and type(S) == "table" and S.roundStamps) then return nil end
+  local memo = hullTops[S]
+  if memo == nil then memo = {}; hullTops[S] = memo end
+  local k = cellY * 8192 + cellX
+  local hit = memo[k]
+  if hit ~= nil then return hit or nil end
+  local mx, mz = cellX * 16 + 8, cellY * 16 + 8
+  local best = nil
+  for _, st in ipairs(S.roundStamps) do
+    if st.mx == mx and st.mz == mz then
+      local sr = st.r or 8
+      local my = tonumber(st.my) or 0
+      if S.isGen3 and S.skip then
+        local acx = math.floor((mx - sr) / 16) * 2
+        local acz = math.floor((mz - sr) / 16) * 2
+        if S.skip[(acz + 64) * 4096 + (acx + 64)] and Sx.stampGround then
+          local okF, fy = pcall(Sx.stampGround, map, acx, acz)
+          if okF and type(fy) == "number" then my = fy end
+        end
+      end
+      local hi = nil
+      for _, q in ipairs(st.quads or {}) do
+        for j = 1, 4 do
+          local y = q[j] and q[j][2]
+          if y and (hi == nil or y > hi) then hi = y end
+        end
+      end
+      if hi then
+        local top = my + hi
+        if best == nil or top > best then best = top end
+      end
+    end
+  end
+  memo[k] = best or false
+  return best
+end
+
+-- A PLANTED OBJECT STANDS ON THE DRAWING, NOT INSIDE IT.  By IDENTITY
+-- (`berryTreeId` is hung on exactly the berry trees), a LIFT only and never a
+-- lowering, and nil for every Gen 1 / Gen 2 / Prism object.
+local function plantedOn(map, e, gh)
+  if e == nil or e.berryTreeId == nil then return gh end
+  if not gen3Map(map) then return gh end
+  local top = drawnTop(map, e.cellX, e.cellY)
+  if type(top) == "number" and type(gh) == "number" and top > gh then
+    return top
+  end
+  return gh
+end
+
+-- The growth stage this plot is at, or nil when the question does not apply.
+-- Asked EVERY FRAME, never remembered: a tree is planted, grows and is picked
+-- without the map reloading.  0 is an empty plot.  pcall'd exactly as the
+-- flat path pcalls it, so an engine with no berry reader answers nil.
+local function berryStage(e)
+  local id = e and e.berryTreeId
+  if id == nil then return nil end
+  local ok, stage = pcall(function()
+    local G = require("src.core.Game")
+    return require("src.script.Gen3Commands").berryTreeStage(G and G.save, id)
+  end)
+  if not ok then return nil end
+  return tonumber(stage) or 0
+end
+
+-- The frame this entity's own drawing STATES, as against the one its facing
+-- implies.  nil for everybody else, in every generation.
+--
+--   1. `e.fixedFrame` -- the engine's channel for an object that draws ONE
+--      sheet row and has no facing at all.
+--   2. A BERRY TREE'S GROWTH STAGE: a sheet chosen by the BERRY and a frame
+--      chosen by the STAGE (`constants.gen3Berries.trees.stages[stage]`, the
+--      first frame -- stages 2..5 sway between two on the cartridge's own
+--      clock, which this pass has none for).  Declines on a one-frame sheet.
+--
+-- GEN 3 ONLY, deliberately: `fixedFrame` also exists for POLISHED's
+-- ball/cut/fruit sheet, whose flat-vs-diorama divergence is real but is a
+-- Gen 2 / Prism behaviour change this port can't prove neutral.
+local function statedFrame(map, e)
+  if e == nil then return nil end
+  if not gen3Map(map) then return nil end
+  local fixed = tonumber(e.fixedFrame)
+  if fixed then return fixed end
+  if e.berryTreeId == nil then return nil end
+  local sp = e.sprite
+  local def = sp and sp.def
+  if not (def and (tonumber(def.frames) or 1) > 1) then return nil end
+  local stage = berryStage(e)
+  if not stage or stage <= 0 then return nil end
+  local ok, frame = pcall(function()
+    local G = require("src.core.Game")
+    local c = G and G.data and G.data.constants
+    local trees = c and c.gen3Berries and c.gen3Berries.trees
+    local row = trees and trees.stages and trees.stages[stage]
+    return row and tonumber(row[1]) or nil
+  end)
+  return (ok and frame) or nil
+end
+
+local function castHides(e, isPlayer)
+  if e == nil then return false end
+  local told = e.hidden
+  if told ~= nil then return told and true or false end
+  -- A BERRY PLOT WITH NOTHING IN IT IS SOIL, NOT A TREE.  HIDDEN RATHER THAN
+  -- ABSENT: the object still blocks its cell and pressing A on it still runs
+  -- the planting script; only the card is dropped.  Ordered after `e.hidden`
+  -- (a script that took a specific object off screen outranks the plot's own
+  -- state) and before the movement type; an empty plot is never the player.
+  local stage = berryStage(e)
+  if stage ~= nil and stage <= 0 then return true end
+  -- THE MOVEMENT TYPE IS ASKED ONLY OF AN OBJECT EVENT.  0x4C indexes
+  -- `gObjectEventGraphicsInfo`'s table and the player is not an object event;
+  -- anything named `movementType` reachable from them is not that index, and
+  -- one collision drops the one actor the camera is following.  `e.hidden`
+  -- is still honoured for the player above (a cutscene statement).
+  if isPlayer then return false end
+  local mt = tonumber(e.gen3MovementType)
+  if mt == nil then
+    local d = e.def
+    mt = d and tonumber(d.movementType) or nil
+  end
+  return mt == GEN3_MOVEMENT_HIDDEN
+end
+
 local function posesOf(state, spriteColors)
   VoxelScene.groundTick()
   -- the ground lookups separately from the rest of posing: pose() advances
@@ -1557,10 +2109,18 @@ local function posesOf(state, spriteColors)
       local okl, lift = pcall(Water.standAnimLift, gpx + 8, gpy + 8)
       hop = (okl and lift) or 0
     end
+    -- pose() ADVANCES the hop / surf-bob / spinner timers and runs exactly once
+    -- per entity per frame, so a hidden actor is still POSED and only its
+    -- card is dropped.
+    if not castHides(g.npc) then
     posed[#posed + 1] = {
       sprite = sprite, px = gpx, py = gpy,
       facing = facing, phase = phase, flip = flip,
-      gh = entityGround(g.map or state.map, g.npc, gpx, gpy) + hop,
+      -- ...on the drawing its cell became, where that is a berry plot (see
+      -- plantedOn); a ghost stands on ITS OWN map
+      gh = plantedOn(g.map or state.map, g.npc,
+                     entityGround(g.map or state.map, g.npc, gpx, gpy)) + hop,
+      frame = statedFrame(g.map or state.map, g.npc),
       lift = onWater and 0 or (g.npc.py - vy),
       waterline = wl,
       colors = spriteColors(g.map or state.map),
@@ -1570,10 +2130,13 @@ local function posesOf(state, spriteColors)
     }
     bindHdOverworld(posed[#posed], facing, state)
     end
+    end
   end
   for ei, e in ipairs(state.entities or {}) do
     if not (state.flyAnim and e == state.player) then
       local sprite, vx, vy, facing, phase, flip = e:pose()
+      -- posed first, hidden after (see the ghost loop above)
+      local hiddenE = castHides(e, e == state.player)
       local waterRoamer = e.roamer and e.kind == "water"
       local onWater = e.surfing or waterRoamer
       -- Grass roamers: pose() already leaned px (vx); recompute the same
@@ -1607,10 +2170,13 @@ local function posesOf(state, spriteColors)
       end
       -- Player mid-Surf also gets the freeze/thaw hop + full body on ice
       -- (no waterline cut on the player card, but hop still reads).
+      if not hiddenE then
       posed[#posed + 1] = {
         sprite = sprite, px = drawPx, py = drawPy,
         facing = facing, phase = phase, flip = flip,
-        gh = entityGround(state.map, e, drawPx, drawPy) + hop,
+        gh = plantedOn(state.map, e,
+                       entityGround(state.map, e, drawPx, drawPy)) + hop,
+        frame = statedFrame(state.map, e),
         lift = onWater and 0 or (drawPy - vy),
         waterline = wl,
         colors = colors,
@@ -1623,6 +2189,7 @@ local function posesOf(state, spriteColors)
         me.isPlayer = true
       else
         bindHdOverworld(posed[#posed], facing, state)
+      end
       end
     end
   end
@@ -1897,7 +2464,7 @@ local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
       -- swaps frame as the eye circles, which costs a redraw the signature
       -- already charges for (FirstPerson.signature) and keeps a card from
       -- fringing against a mirror-flipped record of itself
-      local frame, mirror = frameFor(def, viewFacing(p), p.phase, p.flip, yaw)
+      local frame, mirror = frameFor(def, viewFacing(p), p.phase, p.flip, yaw, p.frame)
       local mesh = SpriteBillboards.shadowQuad(def, frame, p.waterline or 0)
       if mesh then
         local texWidth, texHeight, worldWidth, worldHeight = SpriteBillboards.getSpriteDimensions(def, frame)
@@ -2270,10 +2837,19 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
         local facing = viewFacing(p)
         drawShadow(p.sprite, p.px, p.py, facing, p.phase, p.flip, p.gh,
                    p.lift, p.waterline, yaw,
-                   bindHdOverworld(p, facing, state) or p.hdDef)
+                   bindHdOverworld(p, facing, state) or p.hdDef, p.frame)
       end
       Voxel3D.endShadows()
     end
+
+    -- AND THE RIPPLE RINGS, BEFORE ANYBODY IS STANDING IN THEM.  This line's
+    -- position is the fix: the ring is geometry, down AFTER the water it lies
+    -- on and BEFORE drawCast, so a card rasterised later simply covers it
+    -- ("the ripples are appearing over the player character").  The surf blob
+    -- follows on top of them for the same reason, and outside the first-person
+    -- `hideMe` test the cards run under, so it shows in first person too.
+    drawRipples(state)
+    drawSurfBlob(state, me)
 
     -- Sprite sheets from here to the figure pass: their texture coordinates
     -- mean nothing to the tileset-shaped glass mask, so the glass is off or
