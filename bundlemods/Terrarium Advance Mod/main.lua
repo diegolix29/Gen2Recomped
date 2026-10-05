@@ -125,10 +125,48 @@ function V.require(name)
   return value
 end
 
+-- The explicit form, for anything of ours that is genuinely optional: nil when
+-- it is not there, never an error, never a stub.
+function V.optional(name)
+  local hit = modules[name]
+  if hit ~= nil then return hit end
+  local rel = "lib/" .. name .. ".lua"
+  local source = mod:read(rel)
+  if not source then return nil end
+  local chunk = load(source, "@" .. mod.path .. "/" .. rel)
+  if not chunk then return nil end
+  local ok, value = pcall(chunk, V)
+  if not (ok and value ~= nil) then return nil end
+  modules[name] = value
+  return value
+end
+
 local dataFiles = {}
+-- Tables keyed by EMERALD's own identities -- map numbers, tileset ROM
+-- addresses, metatile ids, map names.  Another Gen 3 cartridge shares the
+-- key shapes and none of the meanings (FireRed's MAP_G05_N04 is Viridian's
+-- Pokemon Center, Emerald's is Fallarbor's), so such a game reads its own
+-- copy from data/<version>/ and, where it has none, reads NOTHING rather than
+-- Emerald's answers.  gen3_shapes is keyed by metatile BEHAVIOUR, which the
+-- importer normalises to Emerald's numbering, and is shared.
+local EMERALD_KEYED = {
+  gen3_maps = { version = 1, maps = {} },
+  gen3_metatiles = { version = 1, roles = {} },
+  gen3_terraces = { version = 1, maps = {} },
+  gen3_palings = { version = 1 },
+}
 function V.data(name)
   local hit = dataFiles[name]
   if hit ~= nil then return hit end
+  local okV, GameVersion = pcall(require, "src.core.GameVersion")
+  local version = okV and GameVersion.get and GameVersion.get() or nil
+  if EMERALD_KEYED[name] and version and version ~= "emerald"
+     and okV and GameVersion.generation(version) == 3 then
+    local rel = ("data/%s/%s.lua"):format(version, name)
+    local value = mod:read(rel) and chunkFor(rel)(V) or EMERALD_KEYED[name]
+    dataFiles[name] = value
+    return value
+  end
   local value = chunkFor("data/" .. name .. ".lua")(V)
   dataFiles[name] = value
   return value
