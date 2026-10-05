@@ -106,3 +106,13 @@ Every cell is solid - this building has no door of its own.
 | map | cell (x,y) | door | leads to |
 | --- | --- | --- | --- |
 | LAVENDER_TOWN | (12,0) | - | scenery, no entrance |
+
+## Voxel profile
+
+The Dramatic Shape mod models B30 with the `pokemon_tower` profile. Because
+the drawing is clipped at the map edge and has no closed outline, the profile
+uses the matched footprint as its silhouette instead of the normal border
+flood. The twelve rows carried by the neighbouring map are supplied through
+`topRows`, and `roofRows = 0` keeps the result as the roofless upright tower
+shown by the source map. A claim-only companion reserves the off-map rows so
+the generic 6x6 building profile cannot stamp a duplicate behind it.

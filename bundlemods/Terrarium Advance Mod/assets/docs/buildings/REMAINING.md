@@ -1,10 +1,10 @@
 # Buildings not yet voxelized
 
 Status of the 34 catalogued drawings against the `buildings` list in
-`data/voxel_heights.lua`. Coverage is **31 of 34 drawings, 144 of 147
-placements**. Three are left, one placement each, and none of them is a
-matter of sitting down and reading the drawing - each defeats a different
-assumption the band-table pipeline is built on.
+`data/voxel_heights.lua`. Coverage is **32 of 34 drawings, 145 of 147
+placements**. Two are left, one placement each, and neither is a matter of
+sitting down and reading the drawing - each defeats a different assumption
+the band-table pipeline is built on.
 
 (Counting note: the catalogue's per-building tables list one row per DOOR,
 so B19, B22 and B23 each appear twice for a single placement. 150 rows,
@@ -13,7 +13,6 @@ so B19, B22 and B23 each appear twice for a single placement. 150 rows,
 | id | tileset | cells | px | used | what defeats it |
 | --- | --- | --- | --- | --- | --- |
 | [B19](B19-unnamed-building.md) | `PLATEAU` | 20 x 5 | 320x80 | 1x | two structures in one drawing |
-| [B30](B30-unnamed-building.md) | `OVERWORLD` | 6 x 4 | 96x64 | 1x | truncated by the map edge; no roof drawn |
 | [B32](B32-unnamed-building.md) | `SHIP_PORT` | 8 x 3 | 128x48 | 1x | not a building |
 
 ## The silhouette test
@@ -27,7 +26,17 @@ can be 95% filled and still be shredded.
 | shipped, for reference | 82-95% | **1** | 100% | |
 | B19 | 76% | **1** | 100% | silhouette is fine; the problem is elsewhere |
 | B32 | 95% | 29 | 98% | mostly intact, fragments are the ship's fittings |
-| B30 | 37% | 126 | 25% | unbounded - see below |
+
+## B30 - completed
+
+The Pokémon Tower is now handled by the `pokemon_tower` profile in
+`data/voxel_heights.lua`. Its drawing is clipped at the map boundary and has
+no closed outline, so the normal light-pixel flood cannot recover its
+silhouette. The profile uses the matched tile footprint as an explicit
+silhouette, keeps the twelve rows carried by the neighbouring map through
+`topRows`, and sets `roofRows = 0` so the tower stays an upright, roofless
+facade. The `pokemon_tower_top` claim-only entry still reserves the off-map
+rows and prevents the generic 6x6 block profile from stamping a second tower.
 
 ## B19 - Indigo Plateau
 
@@ -49,31 +58,6 @@ nothing. Nothing in the band table can say "and the wall stops here".
 It needs either a way to express two stacked footprints in one template, or
 splitting into two drawings - which means changing the extraction, not the
 profile.
-
-## B30 - the Pokemon Tower
-
-`LAVENDER_TOWN` (12,0). A tall face of windows over brick.
-
-Two problems, and the second is the one that stops it.
-
-**Its silhouette is unbounded.** The drawing has no black outline anywhere
-on its boundary: row 0, row H-1 and both side columns are entirely light,
-so the flood enters at 318 separate border seeds and eats everything up to
-the window frames - 126 fragments, largest 25%. `seal` does not rescue it
-the way it did Route 10's block: sealing the south side alone changes
-nothing (37% either way), and sealing all four asserts the whole box is
-building.
-
-**It cannot be sealed, because the box is not all building.** The
-catalogue's own silhouette record says 1552 of the 6144 px are ground -
-a quarter of the box - including interior tile columns. Seal all four sides
-and that quarter becomes wall.
-
-**And it has no roof.** The tower sits at `y=0`, the top row of the map, so
-the drawing is cut off by the map boundary: rows 0..59 are windows and
-brick all the way up, with no roof band. A band table with a small
-`roofRows` caps it with its own top rows, which renders plausibly, but the
-cap is a reading the drawing does not support.
 
 ## B32 - the S.S. Anne
 
