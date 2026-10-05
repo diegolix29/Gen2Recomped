@@ -365,7 +365,11 @@ local GEN3_MAX_LAND = 32
 -- footprint is 0 rows for 341 of them, 1 for one, and 5 and 6 for the two
 -- that are towers: Silph Co and the BATTLE TOWER.  Both now stand (48 -> 128,
 -- 64 -> 144); every other building in either region is unmoved.
-Structures.SHAPE_REV = "g3-eave-394"
+-- g3-eave-395: FireRed (and any non-Emerald Gen 3) now loads
+-- data/<version>/gen3_*.lua through V.data's EMERALD_KEYED path in main.lua.
+-- Same shape rules as 394; the disk cache must miss because Kanto meshes
+-- built under Emerald's map/metatile tables are the wrong geometry.
+Structures.SHAPE_REV = "g3-eave-395"
 -- one cell of world height: the step a building may straddle and still be
 -- treated as having one foundation
 local COURSE = 16
