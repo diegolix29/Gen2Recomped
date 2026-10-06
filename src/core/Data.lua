@@ -171,6 +171,105 @@ local GEN4_PREFIXED = { "gen4_menus", "gen4_graphics", "gen4_intro",
                         -- the name -> archive member hop for `var_0`..`var_f`;
                         -- see the paragraph above for what its absence cost
                         "gen4_overworld",
+                        -- ...AND THE FIFTH INSTANCE OF THE SAME BUG, moved here
+                        -- for the same reason `gen4_overworld` was.
+                        --
+                        -- It really was extractor input: the stage lowers a
+                        -- behaviour grid into the 302 map defs that carry one.
+                        -- The other 291 -- every OUTDOOR map, and so every cave
+                        -- mouth and every bike slope in Sinnoh -- keep theirs
+                        -- only in the land chunk's permission block, which is
+                        -- this module and nothing else.
+                        --
+                        -- `Gen4Ground:behaviourAt` reads it now. Without it the
+                        -- directional cave entrances and the bike slopes have
+                        -- no data at all and silently do nothing -- which is
+                        -- exactly how it was reported: *"walking directly into
+                        -- the cave entrance still doesnt work"*.
+                        "gen4_map_permissions",
+                        -- THE MATRICES, for their ALTITUDE section -- how far up
+                        -- each chunk is drawn (`Gen4Ground:chunkLift`). Written
+                        -- on every import and loaded by nothing, so the lift was
+                        -- zero in the game while a harness that loaded the file
+                        -- itself showed it working. Reported twice: *"map
+                        -- boundaries arent at the proper height"*, then *"i
+                        -- reloaded the game and the borders still looks the same"*.
+                        "gen4_map_matrices",
+                        -- MT. CORONET'S FEEBAS TILES (Gen4Feebas, Gen4Fishing).
+                        -- A cache imported before the stage existed has none,
+                        -- and Feebas simply never bites -- as before.
+                        "gen4_feebas",
+                        -- THE "!" OVER A TRAINER WHO HAS SEEN YOU (Gen4Emotes).
+                        "gen4_emotes",
+                        -- THE MOVE BUTTONS' TYPE COLOURS, MASKS AND PP PALETTE
+                        -- (Gen4MoveButtons) -- what the battle menu's buttons
+                        -- carry besides their names.
+                        "gen4_move_buttons", "gen4_encounter_effects",
+                        -- THE TROPHY GARDEN AND GREAT MARSH DAILY LISTS
+                        -- (Gen4SpecialEncounters).
+                        "gen4_special_encounters",
+                        -- PLATINUM'S TOWN MAP: its sprites, name blocks and
+                        -- fly locations (Gen4TownMap).
+                        "gen4_town_map",
+                        -- THE AREA-NAME SIGNS and the per-header label data
+                        -- (Gen4AreaPopup).
+                        "gen4_area_popup",
+                        -- THE SHARD MOVE TUTORS' moves, costs and masks
+                        -- (Gen4MoveTutor).
+                        "gen4_move_tutor",
+                        -- `sEggMoves` from overlay 5 (Gen4EggMoves).
+                        "gen4_egg_moves",
+                        -- the Game Corner's prize table (Gen4GameCorner).
+                        "gen4_game_corner",
+                        -- the seal table and the daily seal stocks (Gen4Seals).
+                        "gen4_seals",
+                        -- each berry's flavors and smoothness (Gen4BerryData).
+                        "gen4_berry_flavors",
+                        -- each trainer class's eyes-meet theme (Gen4TrainerMusic).
+                        "gen4_trainer_music",
+                        -- contest_data.narc: contestants, judges, dress-ups, themes.
+                        "gen4_contest", "gen4_contest_art",
+                        -- the Poffin cooking, case and icon art (Gen4PoffinArt).
+                        "gen4_poffin_art",
+                        -- the Options screen's backdrop and cursor (Gen4OptionsArt).
+                        "gen4_options_art",
+                        -- the mining game's buttons, sheets and sprites
+                        -- (Gen4MiningArt) and the menus' cursor and
+                        -- Underground icons (Gen4MenuArt).
+                        "gen4_mining_art", "gen4_menu_art",
+                        -- the party screen's panels, sprites and colours (Gen4PartyArt).
+                        "gen4_party_art", "gen4_party_ink",
+                        -- the battle's cursor, party balls and party gauge
+                        -- with their frame timings (Gen4BattleArt).
+                        "gen4_battle_art", "gen4_battle_anims",
+                        -- the bag's sprites, blits and touch screen (Gen4BagArt)
+                        -- and the trainer case in Platinum's colours
+                        -- (Gen4TrainerCardArt).
+                        "gen4_bag_art", "gen4_trainer_card_art",
+                        -- the naming screen's sprites and entry colours (Gen4Naming).
+                        "gen4_naming_art", "gen4_naming_ink",
+                        -- the PC storage screen's layers, sprites and ink
+                        -- (Gen4BoxArt), the main menu's two frames and
+                        -- colours (Gen4MainMenuArt) and the Poke Mart
+                        -- counter's art (Gen4ShopArt).
+                        "gen4_box_art", "gen4_box_ink",
+                        "gen4_main_menu_art", "gen4_main_menu_ink",
+                        "gen4_shop_art",
+                        -- the summary screen's sprites, bars, bottom screen
+                        -- and window colours (Gen4SummaryArt).
+                        "gen4_summary_art", "gen4_summary_ink",
+                        -- the Hall of Fame and credits art and staff roll (Gen4EndingArt).
+                        "gen4_ending_art", "gen4_ending",
+                        -- the Poketch apps' sprites (against each app's own OBJ
+                        -- VRAM), BG tile sheets, animations and tilemaps
+                        -- (Gen4PoketchArt); the evolution scene's particles
+                        -- (Gen4EvolutionArt).
+                        "gen4_poketch_art", "gen4_poketch_ink",
+                        "gen4_evolution_art", "gen4_evolution_ink",
+                        -- each trainer class's prize multiplier (Gen4TrainerPrize).
+                        "gen4_trainer_prize",
+                        -- each trainer class's front picture (the Hall of Fame's player).
+                        "gen4_trainer_sprites",
                         -- `/data/arealight.narc`: four members of fifteen
                         -- time-of-day templates, selected by the `lighting` byte
                         -- that `gen4_terrain`'s `maps` table has carried on all
@@ -883,6 +982,9 @@ local function ensureGen2HomeTextFallbacks(self)
 end
 
 function Data:applyVersionedFieldData()
+  if require("src.core.GameVersion").get()=="polishedcrystal" and self.audio then
+    self.audio.gen2Dialect="polishedcrystal"
+  end
   if require("src.core.GameVersion").isYellow() then
     self.field.trades = copy(YELLOW_TRADES)
     -- The old man's catch demo is a RATTATA in Yellow

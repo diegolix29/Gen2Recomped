@@ -1231,6 +1231,13 @@ local MARKER_PATH = "rom-cache.complete"
 -- that version's ROM hash, so both a format bump and a swapped ROM invalidate.
 local function markerFor(version)
   local revision = version == "platinum" and "platinum-audio-ui-v15:" or ""
+  if version == "emerald" then revision = "emerald-map-popup-v2:" end
+  if version == "polishedcrystal" then revision = "polished-audio-v1:" end
+  -- Include version-specific field encounters, sleep, swarm and rate tables.
+  -- Only these three caches need rebuilding; other markers remain stable.
+  if version == "gold" or version == "silver" or version == "crystal" then
+    revision = "gen2-field-encounters-v7:"
+  end
   return CACHE_FORMAT .. revision .. GameVersion.info(version).sha1
 end
 
@@ -1278,6 +1285,7 @@ local function parseMarker(raw)
   return head, absent
 end
 local COMMUNITY_URL = "https://discord.gg/4VXnEnePT"
+local TILT_RIPS_URL = "https://tiltrips.com/r/GEN2RECOMP/"
 -- Donations.  A plain PayPal checkout link, opened with the same
 -- love.system.openURL the community mark and the release links use.
 local DONATE_URL = "https://www.paypal.com/ncp/payment/F3QPTKT4E8HCS"
@@ -1291,6 +1299,38 @@ local DONATE_URL = "https://www.paypal.com/ncp/payment/F3QPTKT4E8HCS"
 -- after.
 local MAP_EDITOR_LABEL = "Map Editor (Beta)"
 local UD_URL = "https://discord.gg/4VXnEnePT"
+
+-- WHO MADE THE GAME ON THIS TAB, AND WHERE TO THANK THEM.
+--
+-- The footer's credit line and its donate buttons, per tab:
+--   * Red, Blue and Yellow are bryanthaboi's / Boi's Club's work, and they
+--     asked for no donation link -- so there is none on those tabs.
+--   * FireRed is Tranzue's, and the buttons go to Tranzue: Patreon and Ko-fi.
+--   * Everything else -- the other games and the non-game tabs like mods --
+--     is UNDERdecoded's, with the PayPal link.
+-- A table rather than branches in `draw`, so a new tab is one row here.
+local CREDITS = {
+  default = {
+    by = "UNDERdecoded",
+    links = { { label = "DONATE", url = DONATE_URL } },
+  },
+  red = { by = "bryanthaboi / boisclub", links = {} },
+  blue = { by = "bryanthaboi / boisclub", links = {} },
+  yellow = { by = "bryanthaboi / boisclub", links = {} },
+  firered = {
+    by = "Tranzue",
+    links = {
+      { label = "Tranzue on Patreon",
+        url = "https://www.patreon.com/c/cartethyia_bot/shop" },
+      { label = "Tranzue on Ko-fi", url = "https://ko-fi.com/cartethyiabot" },
+    },
+  },
+}
+RomImporter.CREDITS = CREDITS
+
+function RomImporter.creditFor(tab)
+  return CREDITS[tab] or CREDITS.default
+end
 local TRUST_WARNING = "if you did not get this from UNDERdecodedHD's github " ..
   "or a link from the discord that UNDERdecodedHD himself posted, just know " ..
   "it might have been tampered with. go to the discord to verify " ..
@@ -1755,9 +1795,28 @@ end
 -- shadow it, because physfs searches the save directory before the source.
 -- Clear it out once, and only when a remnant is actually present so a clean
 -- install pays nothing.
+--
+-- PORTABLE ONLY, AND THAT IS THE WHOLE POINT OF THE TEST BELOW.  This used to
+-- run for ANY non-save root, which includes the player's chosen game-data
+-- folder -- and the launcher calls readyReport for every version the moment
+-- the folder changes.  So choosing a folder DELETED the installed game out of
+-- AppData, a gigabyte at a time, while the new folder was still empty: the
+-- next line of the same report then said "no cache for this version yet" and
+-- the player was told to re-import a game they already had.
+--
+-- It cannot be right for a chosen folder, because the launcher offers MOVE
+-- EXISTING DATA HERE for exactly this case (RomImporter:startDataMove).  A
+-- purge that runs first deletes the thing the move exists to move.  The
+-- shadowing the purge was there to prevent is handled where it belongs now --
+-- CacheFs prepends the live root's generated trees, so the stale copy loses
+-- the read path instead of being destroyed to get out of its way.
+--
+-- A portable install has no such action and no such choice: its root is a
+-- fact about where the copy lives, so clearing the duplicate is still right.
 local saveDirPurged = false
 local function purgeSaveDirCache()
   if saveDirPurged then return end
+  if not require("src.core.SaveData").isPortable() then return end
   saveDirPurged = true
   local saveDir = love.filesystem.getSaveDirectory()
   local function saveDirHas(rel)
@@ -1790,10 +1849,14 @@ end
 function RomImporter.readyReport(version)
   version = version or "red"
   local CacheFs = require("src.import.CacheFs")
-  if CacheFs.root() then
+  if CacheFs.rootReport().kind == "portable" then
     -- Portable: the cache lives in the game folder next to the executable
     -- (mounted onto the read path for a fused build).  Drop any stale
     -- save-directory copy that would otherwise shadow it at runtime.
+    --
+    -- ASKS rootReport, NOT root().  root() is non-nil for a chosen game-data
+    -- folder too, and purging on that one destroyed the installed game the
+    -- moment the setting changed -- see purgeSaveDirCache above.
     purgeSaveDirCache()
   end
   -- Red generated data in the physfs source (developer checkout / Python
@@ -2756,6 +2819,7 @@ function RomImporter.new(onComplete, opts)
     settingsScroll = 0,
     tab = "red",          -- active launcher tab: "red"/"blue"/"yellow"/"mods"
     logo = love.graphics.newImage("assets/logo/logo.png"),
+    tiltRipsLogo = love.graphics.newImage("assets/logo/tilt-rips.png",{mipmaps=true}),
     bcg = love.graphics.newImage("assets/logo/UD.png"),
     -- Gold/Silver get their own branding: the Gen2 wordmark over the strip and
     -- the UD credit in the footer, swapped in whenever one of those tabs is up.
@@ -5434,38 +5498,92 @@ function RomImporter:draw()
   local bcgW, bcgH = bcgImage:getDimensions()
   local bcgScale = math.min(math.min(appW - 48 * s, 190 * s) / bcgW, height * 0.06 / bcgH)
   local bcgDW, bcgDH = bcgW * bcgScale, bcgH * bcgScale
-  -- The donate chip sits on its own row under the warning, so its height is
-  -- reserved here too: measure it the same way _chipButton will, or the page
-  -- ends up scrolling short and the chip falls off the bottom edge.
+  -- The credit line and the donate chips sit on their own rows under the
+  -- warning, so their height is reserved here too: measure them the same way
+  -- _chipButton will, or the page ends up scrolling short and a chip falls off
+  -- the bottom edge. A tab with no donate links reserves no chip row.
+  local credit = RomImporter.creditFor(self.tab)
+  local footerLinks, paypalLink = {},nil
+  for _,link in ipairs(credit.links) do
+    if link.url==DONATE_URL then paypalLink=link
+    else footerLinks[#footerLinks+1]=link end
+  end
+  local creditH = self.hintFont:getHeight()
   local donateH = self.hintFont:getHeight() + 10 * s
-  local footerH = 10 * s + bcgDH + 6 * s + warningH + 8 * s + donateH + 12 * s
+  local chipsH = (#footerLinks > 0) and (8 * s + donateH) or 0
+  local footerH = 10 * s + bcgDH + 6 * s + warningH + 8 * s + creditH + chipsH + 12 * s
 
   -- Logo: centred over the strip, width clamped, gentle bob + glow pulse.  The
   -- resting metrics fix the tab bar's top so the layout never shifts as it bobs.
   local logoW, logoH = logoImage:getDimensions()
-  local logoTargetW = math.max(math.min(180 * s, appW - 32 * s),
-    math.min(330 * s, appW - 32 * s))
+  local tiltW, tiltH = self.tiltRipsLogo:getDimensions()
+  local tiltTargetW = math.min(116 * s,appW * 0.20)
+  local tiltScale = tiltTargetW / tiltW
+  local tiltDH = tiltH * tiltScale
+  local tiltCodeScale = math.min(1,tiltTargetW / self.warningFont:getWidth("GEN2RECOMP"))
+  local tiltCodeH = self.warningFont:getHeight() * 2 * tiltCodeScale
+  local tiltBlockH = tiltDH + 4 * s + tiltCodeH
+  local paypalW = paypalLink and math.min(self.hintFont:getWidth(paypalLink.label)+24*s,appW*0.20) or 0
+  local paypalFont = self.hintFont
+  if paypalLink and paypalFont:getWidth(paypalLink.label)>paypalW-12*s then paypalFont=self.warningFont end
+  local paypalBaseW = paypalW
+  paypalW = paypalW * 2
+  local paypalH = donateH * 2
+  local paypalStacked = paypalLink and appW < 2 * (paypalW + padH + 8 * s) + 180 * s
+  if paypalLink then
+    local fontSize=paypalFont:getHeight()*2
+    if self._paypalFontSize~=fontSize then
+      self._paypalFontSize=fontSize
+      self._paypalFont=love.graphics.newFont(fontSize)
+    end
+    paypalFont=self._paypalFont
+  end
+  -- Keep the centered wordmark clear of the corner link on narrow screens.
+  local logoTargetW = math.min(appW - 2 * (math.max(tiltTargetW,paypalStacked and paypalBaseW or paypalW) + padH + 8 * s),math.max(math.min(180 * s, appW - 32 * s),
+    math.min(330 * s, appW - 32 * s)))
   local logoScale = math.min(logoTargetW / logoW, height * 0.15 / logoH)
   local logoDW, logoDH = logoW * logoScale, logoH * logoScale
   local logoY = stripY + stripH + 14 * s
+  local paypalY = paypalStacked and (logoY + math.max(logoDH,tiltBlockH) + 12 * s) or (logoY + 16 * s)
 
   -- Tab bar: R/B/Y/divider/MODS chips (label + underline on the active one),
   -- with "N of X ready" right-aligned.
   local chip = 44 * s
-  local tabBarY = logoY + logoDH + 6 * s
+  local tabBarY = math.max(logoY + math.max(logoDH,tiltBlockH),paypalLink and (paypalY+paypalH) or 0) + 6 * s
   local tabBarH = chip + 22 * s
 
   -- Self-updater banner state: computed up front so its band can be reserved
-  -- above the footer, then drawn after the content below.  Only the four
-  -- actionable states surface anything.
-  local upStatus, upLatest, upProgress
+  -- above the footer, then drawn after the content below.
+  --
+  -- WHICH STATES SURFACE is Check's answer, not a list kept here.  It was a
+  -- list, of four, and "error" was not in it -- so a host that cannot check at
+  -- all (the Switch, an Xbox UWP container: no HTTPS client reachable from Lua)
+  -- ended on "error" and the launcher drew NOTHING, which is why those two
+  -- looked like builds with no updater rather than builds with a disabled one.
+  -- Check.STATUS now marks the drawable states and Check.state() reports a
+  -- `notify` one for exactly that case; tools/auto_update_check.lua asserts the
+  -- two halves still agree.
+  --
+  -- upAdvice is "download" | "ota" | "package" | "releases" -- what the player
+  -- should DO on this host, decided in src/update/Check.lua so the banner only
+  -- has to pick the wording.
+  local upStatus, upLatest, upProgress, upAdvice, upCannotCheck
   if self.Check then
     local ok, st = pcall(self.Check.state)
     st = (ok and type(st) == "table") and st or nil
     local status = st and st.status
-    if status == "available" or status == "downloading"
-        or status == "ready" or status == "needs_full" then
+    local drawable = self.Check.STATUS or {}
+    if status and drawable[status] then
       upStatus, upLatest, upProgress = status, st.latest, st.progress
+      upAdvice = st.advice or "releases"
+      -- Resolved HERE and not in the banner below, so that the only places the
+      -- text `upStatus == "<state>"` appears in this file are the branch heads
+      -- of the banner's own dispatch.  tools/auto_update_check.lua derives the
+      -- set of states the banner draws by reading those heads, and a second
+      -- test of the same literal further in made that derivation pass while
+      -- the state was no longer drawn at all -- a vocabulary scan with two
+      -- sources for one token cannot grade membership.
+      upCannotCheck = (status == "notify")
     end
   end
   local bannerActive = upStatus ~= nil
@@ -5764,11 +5882,41 @@ function RomImporter:draw()
         height = rect.height, action = "download" }
       message(upLatest and ("Update v" .. upLatest .. " available")
         or Strings("An update is available"), rect.width)
-    elseif upStatus == "needs_full" then
-      local rect = actionButton("Open releases")
-      self.updateButton = { x = rect.x, y = rect.y, width = rect.width,
-        height = rect.height, action = "openurl" }
-      message("A new version needs a fresh download", rect.width)
+    elseif upStatus == "needs_full" or upStatus == "notify" then
+      -- ONE ROW, THREE TRUTHS, and it used to tell only the first of them.
+      --
+      -- "A new version needs a fresh download" + "Open releases" is right on a
+      -- desktop and on Android: the release carries no in-place payload (or its
+      -- minShell needs a newer native build), and the releases page is where
+      -- the installer is.  It is wrong on both consoles.  A Switch player
+      -- updates by running ports/switch/ota-launcher's gen2recomp.nro, which
+      -- checks GitHub and replaces both NROs itself; an Xbox player installs a
+      -- newer package.  And neither has a browser for the button to open --
+      -- love.system.openURL on those hosts does nothing at best.
+      --
+      -- So the two console advices draw NO button: a dead button is worse than
+      -- no button, because the player taps it and concludes the updater is
+      -- broken.  The sentence is the whole row there.
+      local label, action
+      if upAdvice == "ota" then
+        label = Strings("Update from the OTA launcher (gen2recomp.nro)")
+      elseif upAdvice == "package" then
+        label = Strings("Install the newer package to update")
+      elseif upCannotCheck then
+        label = Strings("Cannot check for updates on this build")
+        action = "openurl"
+      else
+        label = Strings("A new version needs a fresh download")
+        action = "openurl"
+      end
+      local reserve = 0
+      if action then
+        local rect = actionButton("Open releases")
+        self.updateButton = { x = rect.x, y = rect.y, width = rect.width,
+          height = rect.height, action = action }
+        reserve = rect.width
+      end
+      message(label, reserve)
     elseif upStatus == "ready" then
       local rect = actionButton("Restart to update")
       self.updateButton = { x = rect.x, y = rect.y, width = rect.width,
@@ -5844,19 +5992,49 @@ function RomImporter:draw()
     end
   end
 
-  -- Donate: centred on its own row below the warning.  Drawn from warningY so
-  -- it tracks the footer wherever the footer landed (pinned or scrolled).
+  -- "Created by ..." and the tab's donate chips (see CREDITS), centred on
+  -- their own rows below the warning.  Drawn from warningY so they track the
+  -- footer wherever the footer landed (pinned or scrolled).
   do
     love.graphics.setFont(self.hintFont)
-    local dw = self.hintFont:getWidth("DONATE") + 24 * s
-    self.donateButton = self:_chipButton(appX + (appW - dw) / 2,
-      warningY + warningH + 8 * s, "DONATE",
-      { font = self.hintFont, w = dw, h = donateH, kind = "accent" })
+    local creditY = warningY + warningH + 8 * s
+    col(PAL.warning)
+    love.graphics.printf("Created by " .. credit.by, appX, creditY, appW, "center")
+    self.donateButtons = {}
+    self.donateButton = nil
+    if #footerLinks > 0 then
+      local gap = 10 * s
+      local widths, total = {}, 0
+      for i, link in ipairs(footerLinks) do
+        widths[i] = self.hintFont:getWidth(link.label) + 24 * s
+        total = total + widths[i] + (i > 1 and gap or 0)
+      end
+      local x = appX + (appW - total) / 2
+      local y = creditY + creditH + 8 * s
+      for i, link in ipairs(footerLinks) do
+        local rect = self:_chipButton(x, y, link.label,
+          { font = self.hintFont, w = widths[i], h = donateH, kind = "accent" })
+        if rect then
+          rect.url = link.url
+          self.donateButtons[#self.donateButtons + 1] = rect
+        end
+        x = x + widths[i] + gap
+      end
+      self.donateButton = self.donateButtons[1]
+    end
   end
 
   -- End of the scrolling column; the logo and the page scrollbar are pinned and
   -- draw outside it.
   if paged then love.graphics.setScissor() end
+
+  if paypalLink then
+    local rect=self:_chipButton(appX+padH,paypalY,paypalLink.label,
+      {font=paypalFont,w=paypalW,h=paypalH,r=16*s,kind="accent",pinned=true})
+    rect.url=paypalLink.url
+    self.donateButtons[#self.donateButtons+1]=rect
+    self.donateButton=rect
+  end
 
   -- logo, over the split, with a gentle bob + gold glow + sweeping shine
   local bob = math.sin(pulse * (2 * math.pi / 4)) * 6 * s
@@ -5873,6 +6051,24 @@ function RomImporter:draw()
   love.graphics.setColor(1, 1, 1, 1)
   love.graphics.draw(logoImage, lx, ly, 0, logoScale, logoScale)
   love.graphics.setShader()
+
+  local tiltX = appX + appW - padH - tiltTargetW
+  self.tiltRipsButton = {x=tiltX,y=logoY,width=tiltTargetW,height=tiltBlockH,pinned=true}
+  if not self._tiltFilterSet then
+    self.tiltRipsLogo:setFilter("linear","linear")
+    self.tiltRipsLogo:setMipmapFilter("linear")
+    self._tiltFilterSet=true
+  end
+  local tiltHot = self:_hover(self.tiltRipsButton)
+  love.graphics.setColor(1,1,1,tiltHot and 1 or 0.92)
+  love.graphics.draw(self.tiltRipsLogo,tiltX,logoY,0,tiltScale,tiltScale)
+  love.graphics.push("all")
+  love.graphics.translate(tiltX,logoY + tiltDH + 4 * s)
+  love.graphics.scale(tiltCodeScale,tiltCodeScale)
+  love.graphics.setFont(self.warningFont)
+  col(PAL.ink)
+  printfB("Use code\nGEN2RECOMP",0,0,tiltTargetW / tiltCodeScale,"center")
+  love.graphics.pop()
 
   -- page scrollbar: the same thin thumb the lists use, against the app edge
   if paged then
@@ -6480,9 +6676,15 @@ function RomImporter:mousepressed(x, y, button)
     love.system.openURL(self.bcgUrl or COMMUNITY_URL)
     return
   end
-  if inside(self.donateButton, x, y) then
-    love.system.openURL(DONATE_URL)
+  if inside(self.tiltRipsButton,x,y) then
+    love.system.openURL(TILT_RIPS_URL)
     return
+  end
+  for _, button in ipairs(self.donateButtons or {}) do
+    if inside(button, x, y) then
+      love.system.openURL(button.url or DONATE_URL)
+      return
+    end
   end
   if inside(self.linkUrlRect, x, y) then
     love.system.openURL(COMMUNITY_URL)
@@ -6497,7 +6699,11 @@ function RomImporter:mousepressed(x, y, button)
     elseif action == "restart" then
       HostShell.restart()
     elseif action == "openurl" and self.Check then
-      love.system.openURL(self.Check.releaseUrl())
+      -- pcall because this is reachable on hosts whose love.system.openURL is
+      -- a stub or absent; an unguarded call there takes the launcher down on a
+      -- tap.  The banner only offers the button where a page can be opened
+      -- (see upAdvice above), so this is the belt to that braces.
+      pcall(love.system.openURL, self.Check.releaseUrl())
     end
     return
   end
@@ -6731,6 +6937,12 @@ function RomImporter:mousepressed(x, y, button)
   for _, r in ipairs(self.modImportGameRects or {}) do
     if inside(r, x, y) then
       if r.version then self:choose(r.version) end
+      return
+    end
+  end
+  for _, r in ipairs(self.modSupportRects or {}) do
+    if inside(r, x, y) then
+      if r.url then love.system.openURL(r.url) end
       return
     end
   end
@@ -6976,7 +7188,7 @@ function RomImporter:_chipButton(x, y, label, opts)
   local w = opts.w or (font:getWidth(label) + 2 * padX)
   local r = opts.r or math.min(8 * s, h / 2)
   local kind = opts.kind or "neutral"
-  local rect = { x = x, y = y, width = w, height = h, id = opts.id }
+  local rect = { x = x, y = y, width = w, height = h, id = opts.id, pinned = opts.pinned }
   local hot = self:_hover(rect)
 
   if kind == "dangerArmed" then
@@ -8346,6 +8558,23 @@ function RomImporter:_dataDirNote()
     lines[#lines + 1] = "Games are installed in the app's own folder "
       .. "(" .. tostring(report.path or "AppData on Windows") .. ")."
   end
+  -- STAYS ON THE PANEL, not just in the one-shot notice a tab change clears:
+  -- this is true for the rest of the session, and it is the one thing that
+  -- explains a folder the panel says is in use still reading like the old one.
+  if report.restart then
+    lines[#lines + 1] = "The previous folder is still on the read path. "
+      .. "Restart the app to finish applying this."
+  end
+  -- A DIFFERENT PROBLEM WITH THE SAME SYMPTOM, so it gets its own line.  On a
+  -- build where nothing can position a mount (an Android APK whose liblove.so
+  -- the FFI cannot reach), the chosen folder is written and read but cannot be
+  -- put AHEAD of the default one -- so a game imported before the change goes
+  -- on being the one that loads.  A restart does not help; moving it does.
+  if report.shadowed and report.kind ~= "save" then
+    lines[#lines + 1] = "A game already imported to the default folder can "
+      .. "still be the one that loads on this device. Use MOVE EXISTING DATA "
+      .. "HERE to be sure."
+  end
   -- WHAT MOVES AND WHAT DOES NOT, said here rather than discovered.
   --
   -- Everything that grows without bound follows the folder: the ROM cache, the
@@ -8713,14 +8942,28 @@ function RomImporter:setDataDir(path)
   -- and a confirmation that names a folder nothing will be written to is
   -- worse than no confirmation at all.
   local report = require("src.import.CacheFs").rootReport()
+  -- A FOLDER CHANGE THAT CANNOT FULLY TAKE EFFECT SAYS SO.  CacheFs takes the
+  -- previous home's mounts back off the read path so the change applies
+  -- without a restart; where it cannot (Android's mountDirectory bridge has no
+  -- unmount, and a mount something is streaming from will refuse), the old
+  -- home is still in front of the new one for the rest of the session.  A
+  -- setting that silently does nothing is the bug being fixed here; one that
+  -- says "restart to apply" is not.
+  local tail = report.restart
+    and "  Restart the app to finish applying it." or ""
+  if report.shadowed and report.kind ~= "save" then
+    tail = tail .. "  A game already in the default folder can still be the "
+      .. "one that loads; use MOVE EXISTING DATA HERE."
+  end
   if report.kind == "custom" then
     self.settingsNotice = Strings("Games will be installed in %s",
-      tostring(report.path))
+      tostring(report.path)) .. tail
   elseif path ~= nil and path ~= "" then
     self.settingsNotice = Strings("That folder was saved but cannot be used: %s",
       tostring(report.why or "unknown reason"))
   else
-    self.settingsNotice = Strings("Games will be installed in the default folder")
+    self.settingsNotice =
+      Strings("Games will be installed in the default folder") .. tail
   end
   return true
 end
@@ -9788,6 +10031,7 @@ function RomImporter:_drawModsPanel(x, y, w, h, paged)
     self.modVersionsRects = {}
     self.modImportFileRects = {}
     self.modImportGameRects = {}
+    self.modSupportRects = {}
     self.modGenRects = {}
     self._modMax = 0
     return (top - y) + boxH
@@ -9891,8 +10135,13 @@ function RomImporter:_drawModsPanel(x, y, w, h, paged)
         or ("Needs " .. tostring(needGame.name) .. " imported")
     end
 
+    -- "Support the creator": the manifest's `support` link, first in the row
+    -- so it is the button a player reads before the maintenance ones.
+    local supLabel = (m.support and m.support ~= "") and "Support the creator" or nil
+    local supW = supLabel and (self.hintFont:getWidth(supLabel) + 24 * s) or 0
     local btnRowW = delW
     if hasGh then btnRowW = updW + btnGap + verW + btnGap + delW end
+    if supLabel then btnRowW = supW + btnGap + btnRowW end
     if impLabel then btnRowW = impW + btnGap + btnRowW end
     if gameLabel then btnRowW = gameW + btnGap + btnRowW end
     -- PER-GENERATION CHIPS, under the switch.
@@ -9954,7 +10203,8 @@ function RomImporter:_drawModsPanel(x, y, w, h, paged)
       needs = needs, impLabel = impLabel, impW = impW, needLine = needLine,
       readyLine = readyLine,
       needGame = needGame, gameLabel = gameLabel, gameW = gameW,
-      gameLine = gameLine, gameLineH = gameLineH }
+      gameLine = gameLine, gameLineH = gameLineH,
+      supLabel = supLabel, supW = supW, support = m.support }
     total = total + cardH
   end
   total = total + (#mods - 1) * cardGap
@@ -9972,6 +10222,7 @@ function RomImporter:_drawModsPanel(x, y, w, h, paged)
   self.modVersionsRects = {}
   self.modImportFileRects = {}
   self.modImportGameRects = {}
+  self.modSupportRects = {}
   self.modGenRects = {}
 
   if not paged then
@@ -10154,6 +10405,17 @@ function RomImporter:_drawModsPanel(x, y, w, h, paged)
             id = rect.id,
           }
         end
+      end
+      if L.supLabel then
+        local srect = self:_chipButton(btnX, btnY, L.supLabel, {
+          w = L.supW, h = btnH, id = m.id, kind = "accent",
+        })
+        local before = #self.modSupportRects
+        clipHit(srect, self.modSupportRects)
+        if #self.modSupportRects > before then
+          self.modSupportRects[#self.modSupportRects].url = L.support
+        end
+        btnX = btnX + L.supW + btnGap
       end
       if L.impLabel then
         local irect = self:_chipButton(btnX, btnY, L.impLabel, {

@@ -33462,13 +33462,15 @@ bag can teach them"*, HM01 -> HM / move 15 / Cut, `needsTarget` true.
 
 ### Still not complete
 
-41. **Teach a TM from the bag in Platinum.** Select one in the TM/HM pocket:
+41. **DONE, confirmed from play** (*"the last fixes worked for the teaching of
+    tms and hms"*). Teach a TM from the bag in Platinum. Select one in the
+    TM/HM pocket:
     "Booted up a TM." should wait for the button, then "It contained
     <MOVE>." should wait and the question scroll up into the same box. YES
     should open the party with ABLE!/UNABLE! beside each mon; NO should put you
     back in the bag with the TM still there.
-42. **Teach an HM the same way** -- it must read "Booted up an **HM**.", and
-    HM01 must offer Cut.
+42. **DONE, confirmed from play** in the same report. Teach an HM the same
+    way -- "Booted up an **HM**." and HM01 offering Cut.
 43. **A mon that cannot learn the move** must read UNABLE! and refuse.
 44. **Teach a TM at four moves** and choose one to forget.
 45. **The field-poison line**, which changed underneath this: walk a poisoned
@@ -33481,3 +33483,4037 @@ bag can teach them"*, HM01 -> HM / move 15 / Cut, `needsTarget` true.
     markup-once pass.
 48. **Gen 1, 2 and 3 TMs still teach.** Nothing in this pass touches them, and
     that is worth one TM in Crystal to confirm.
+
+## Pass 176 -- the last of `scripts_common.s` that could be derived
+
+`common_scripts` is the one band with reach (97 objects, plus everything
+`callcommonscript` and `ScriptManager_Start` reach from C) that still had
+unlowered commands. Pass 171 took the save dialogue (40 -> 25); pass 173 took
+the PC and the Hall of Fame (25 -> 19). This takes **19 -> 7**, which is
+everything left whose subject pokeplatinum actually names.
+
+### What was done, and what each one is
+
+| uses | command | answer |
+|---|---|---|
+| 1 | `givetrap` | a real 40-slot inventory |
+| 1 | `givesphere` | a real 40-slot inventory, type + size |
+| 1 | `bufferundergroundtrapname` | bank 630 |
+| 1 | `bufferundergrounditemname` | bank 628 |
+| 2 | `buffercontestbackdropname` | bank 388 |
+| 1 | `countmailinmailbox` | `g4_no_feature` -- zero, and zero is true |
+| 1 | `countuniquesealsinsealcase` | `g4_no_feature` -- same |
+| 2 | `opensealcapsuleeditor` | `pending` -- a whole screen |
+| 1 | `messagefromtrainertype` | the band's bank, entry off `ctx.npc` |
+| 1 | `waitfortransition` | a no-op; the warp owns the teardown |
+
+### The inventory is the only part that writes state
+
+The cartridge's two handlers are each one line of real work
+(`scrcmd_underground_inventory.c`):
+
+```c
+*destVar = Underground_TryAddTrap(underground, trapID);
+*destVar = Underground_TryAddSphere(underground, type, size);
+```
+
+**The destination var is the point.** Every call site follows with a `gotoif`
+on it, so an unlowered row did not merely fail to add a trap -- it left the var
+holding whatever the previous comparison had put there and the script branched
+on that.
+
+A fixed array with a zero sentinel is what the cartridge has:
+`Underground_FindEmptyTrapSlot` walks `MAX_TRAP_SLOTS` (40) looking for
+`TRAP_NONE`, `FindEmptySphereSlot` walks `MAX_SPHERE_SLOTS` (40) looking for
+`SPHERE_NONE`, and both sentinels are 0 -- line one of `generated/traps.txt`
+and `generated/sphere_types.txt`. A sphere occupies the same index in two
+parallel arrays, `sphereTypes` and `sphereSizes`, and the TYPE array is the one
+the slot search tests.
+
+Kept as a sparse Lua array of records rather than two fixed runs of 40, because
+the save is serialised as Lua and forty zeros are not worth writing out. The
+**cap** is what matters, and it is enforced and tested from both sides.
+`MAX_SPHERE_SIZE` is 99 and an oversized sphere **saturates** rather than being
+refused, because the cartridge's own growth code caps there. It lives in
+`save.underground`, the table the dig spots already use, so a save written
+before the inventory existed grows the fields instead of needing a migration.
+
+### The bank numbers, which are the part most likely to be quietly wrong
+
+A wrong bank number does not fail. It prints some other table's row -- a trap
+called "Yellow Cushion" -- so all four were established three ways:
+
+1. **the line-number rule**, `generated/text_banks.txt` line minus one;
+2. **three numbers already in the port agreeing** -- 626 and 627 (Underground
+   goods, confirmed in an earlier pass) sit either side of 628 and 630, and the
+   Underground menu's 634 lands on `UNDERGROUND_COMMON`;
+3. **the content, item for item.** Bank 630 entry 1 is "Move Trap UP" and
+   `traps.txt` line 2 is `TRAP_MOVE_UP`, so **the trap id is its own bank
+   index** -- 14 of them agree -- and the five sphere types in 628 do the same.
+
+Two tables from different parts of the cartridge agreeing entry-for-entry is
+worth more than either alone, so that agreement is an assertion rather than a
+note.
+
+The entries carry `{COLOR n}` markup, which is why pass 175's markup-once pass
+over `bufferKind` had to land first: before it, a bank name went into a string
+slot with its tokens still on, and the outer line is marked up *before* the slot
+is spliced in.
+
+### A live bug the new check found on its first run
+
+`pending(verb, what)` installs the handler itself and **returned nothing**, so
+the `Commands.x = pending("x", ...)` spelling overwrote the handler it had just
+installed **with nil**. The bare `pending("x", ...)` spelling worked.
+
+Two verbs were on the broken side: `g4_open_seal_capsule_editor` from this
+pass, and **`g4_open_hall_of_fame`, added in pass 173** -- so the PC's Hall of
+Fame row had never stepped over anything, it had reached no verb at all.
+`gen4_seam_check` had been reporting it as emitted 8 times and unresolved, and
+that report now reads *"every emitted verb resolves."*
+
+One idea, two spellings, one of them silently broken -- the bug this port keeps
+finding. `pending` returns the handler now, so the readable spelling works, and
+the check sweeps **every** verb assigned that way as an invariant rather than a
+list.
+
+### A canary with a to-do item as its subject has a half-life
+
+`gen4_tile_script_check`'s detector canary asserted
+`VM.lowered("opensealcapsuleeditor") == false`. This pass lowered
+`opensealcapsuleeditor`.
+
+That is the **second** time: `gen4_save_check` named
+`checkishalloffamecorrupted` and pass 173 lowered it. The canary now names
+nothing -- over all 840 opcodes it asserts the detector says yes to something
+and no to something, and that its no answer is `false` rather than nil.
+Verified both ways: a detector forced to `true` fails on "yes to 840 and no to
+0", and one forced to `nil` fails on "neither true nor false for 840 of 840".
+
+### The seven that remain are not a backlog of the same kind
+
+Five -- `0a5`, `0b3`, `1b3`, `205`, `2f6` -- are **unnamed in pokeplatinum
+too**: a bare `sub_0209ACF4(ctx->task)` with no identified subject, and `2f6`
+gates on a Wi-Fi login this port has no path to. Lowering one would mean
+guessing what it does, which is the mistake `Gen4ScriptOps`' own header records
+the cost of.
+
+The other two, `showshardcost` and `closeshardcostwindow`, need
+`sTeachableMoves`' four shard costs (red / blue / yellow / green), which are not
+in the cache and want their own extraction stage. The move tutor itself is a
+no-op here, so the window has nothing to price yet.
+
+### The check: `tools/gen4_underground_inventory_check.lua`, 81 checks
+
+Sections 1-2 need no cache and no cartridge. Nine faults planted, **every plant
+verified by md5 to have applied before the run was believed** -- standard now
+after pass 175's `perl \Q` plant that silently substituted nothing. The nine:
+the cap off by one, the cap unenforced, the sentinel storable, the sphere size
+unclamped, the destination var unwritten, `pending` put back to returning
+nothing, bank 630 swapped for its with-articles twin, `messagefromtrainertype`
+hard-coded to entry 0, and the no-op's reason blanked.
+
+Two of the check's own first-draft faults are written up where they happened:
+it reached into `save.vars[id]` instead of asking `Gen4Commands.getVar` (and
+read nil everywhere), and it asserted bank 634 is
+`TEXT_BANK_UNDERGROUND_QUESTIONS` when 634 is `UNDERGROUND_COMMON` and
+QUESTIONS is 633 -- the port's number was right and the check's name was wrong.
+
+### Suite
+
+```
+PASS=61  REPORT=4  NOSPEC=41
+```
+
+No FAIL, no SKIP, no ERROR, no PASS\*. Gen 2 and Gen 3 clean, script registry
+421 (up from 417).
+
+### Still not complete
+
+49. **Dig a wall in the Underground and be given a sphere**, then another, and
+    keep going past forty: the forty-first must be refused and the script must
+    say so rather than branching at random.
+50. **The same for traps**, which come from the same script family.
+51. **A line that names a trap or a sphere** -- it must read "Move Trap UP" or
+    "Red Sphere", not a raw token and not a bank index.
+52. **A contest backdrop named in a line**, for bank 388.
+53. **The PC's Hall of Fame row**, which until this pass reached no verb at
+    all: it must now say the browser is unbuilt and return to the PC menu
+    rather than erroring.
+54. **An NPC whose line is chosen by trainer type**, for
+    `messagefromtrainertype`.
+55. **The poison whiteout**, which `waitfortransition` sits in the middle of:
+    walk a fully-poisoned party to zero and confirm the fade, the message and
+    the heal-point warp still run in that order.
+
+## Pass 177 -- Sinnoh's weather, which the map header carried and nothing read
+
+`OverworldState:applyMapWeather` opened `if not GameVersion.isGen3() then
+return end`. The extractor had been writing `maps[].weather` since the map
+headers went in, one script command read it, and the renderer never did.
+
+Measured on a Platinum cache: **133 of 593 maps set a weather and not one of
+them looked like anything.** Fifty-one of those are fog.
+
+That is the second region with this exact hole -- the comment above
+`fieldWeather` records Hoenn's ninety maps in the same words -- which is why
+the fix is a table of the cartridge's own names feeding the look library that
+already exists, rather than a second weather system.
+
+### Darkness is a WEATHER in Platinum, and that is why the Gen 2 path was dead
+
+`field_map_change.c`, on every map load:
+
+```c
+if ((weather == OVERWORLD_WEATHER_FOG && SystemFlag_CheckDefogActive(varsFlags))
+ || (weather == OVERWORLD_WEATHER_DARK_FLASH && SystemFlag_CheckFlashActive(varsFlags)))
+    weather = OVERWORLD_WEATHER_CLEAR;
+```
+
+So Flash does not light a cave by selecting a palette row -- it makes the map's
+weather CLEAR instead of `DARK_FLASH` (16). Which settles an open question from
+pass 171: `PaletteFX.daytimeFor(mapDef, hour, flashUsed)` has **no callers**,
+and `g4_field_move_flag`'s comment said the dark-cave path was "unwired at the
+renderer end". It was never going to get a caller from here. It is the right
+answer to Gen 2's question, and Sinnoh asks a different one.
+
+Note which fog: **FOG (14) only.** `DEEP_FOG` (15) is not cleared by Defog, and
+adding the obvious second row would be a guess that reads as a fix.
+
+### Five maps have a calendar
+
+Weathers 32..36 are not weathers. They are columns of
+`sYearlyWeather[366][5]`, read at the current day of the year
+(`FieldSystem_GetWeather`) -- Route 212 south, Route 213, Route 216, Acuity
+Lakefront and Snowpoint City, the only places in Sinnoh whose weather is a date.
+
+All **1,830 entries** are transcribed into `Gen4Weather.YEARLY` and re-derived
+from pret by the check, which compares them one at a time. A transcription is
+exactly the kind of thing that is 99% right.
+
+**The leap-year correction is two halves that cancel**, and porting it as
+written is the only way to be sure it still does. `DayNumberForDate` (rtc.c)
+lays March onward out as if the year had 365 days and adds one back in a leap
+year; `FieldSystem_GetWeather` subtracts one and adds one again after February
+in a *non*-leap year. Net: a plain 0-based index into a 366-row calendar where
+29 February is row 59 and exists only in a leap year. Both halves are graded
+against their own file, and the check asserts 1 March reads the same row in
+2024 and 2026 -- getting this wrong shifts every date after February by a day,
+which is a wrong answer that never looks obviously wrong.
+
+### Flash and Defog were on no menu at all
+
+`FieldMoves_CanUseMoves` sets their usable bits from the live weather and from
+nothing else:
+
+```c
+case OVERWORLD_WEATHER_FOG:        ... FIELD_MOVE_FLAG(FIELD_MOVE_DEFOG)
+case OVERWORLD_WEATHER_DARK_FLASH: ... FIELD_MOVE_FLAG(FIELD_MOVE_FLASH)
+```
+
+Both were in `Gen4FieldMoves.ids` and on no party menu, so a party carrying
+Flash in Wayward Cave had no way to use it. They are offered now under one
+condition each -- not behind a badge, because Flash needs none, and offering
+them always would put two rows on every party menu in Sinnoh that work on two
+maps.
+
+Selecting one **runs the cartridge's own script**: `scripts_field_moves.s`
+entries 14 (Defog) and 15 (Flash), confirmed from the C side by
+`FieldMoves_FlashTask`'s `SCRIPT_ID(FIELD_MOVES, 15)`. Those entries carry the
+message, the HM cut-in, `DoFlashFunc FIELD_MOVE_FUNC_SET_ACTIVE` and the
+immediate `ScrCmd_0C3`/`0C4` weather clear -- every one already lowered -- so
+running the entry is both less code and more faithful than reimplementing four
+steps. The same route `tryGen4TileScript` takes.
+
+### One saved value, read by the picture and by the script
+
+`g4_overworld_weather` used to answer from the map def, with a paragraph
+explaining that the port kept no saved Gen 4 weather. That was true and it was
+the right call then. It stopped being true here, so the getter reads
+`save.gen4WeatherActive` -- the value the renderer is drawing. **Route 213 is
+the case that proves it:** its header carries 33, a calendar id, and
+`getoverworldweather` has to answer today's resolved weather rather than 33,
+which is not a weather at all.
+
+And `g4_clear_overworld_weather` now moves the drawn value too, not only the
+getter's field. Without that, Flash would have reported success, said its line,
+and left the cave dark until the next map load -- this pass's own bug,
+reintroduced one step further along.
+
+### The three steps, in the cartridge's order
+
+`applyMapWeather`'s Gen 4 arm resolves the calendar, **then** substitutes for a
+field move, then stores both. Doing it the other way round would be wrong in a
+way nothing would notice -- no calendar map carries fog or darkness -- so the
+order is an assertion rather than luck.
+
+### Six ids pokeplatinum has not named either, and 32 Mt. Coronet maps
+
+`overworld_weather.h` has `#define OVERWORLD_WEATHER_27 27` and no more, for
+ids 23, 26, 27, 28, 29 and 30. Between them they cover **57 maps**:
+
+| id | maps | where |
+|---|---|---|
+| 23 | 3 | Eterna Forest, Fullmoon Island, Newmoon Island |
+| 26 | 5 | Galactic HQ interiors, the Battleground |
+| 27 | 12 | Turnback Cave, the Old Chateau |
+| 28 | 3 | Stark Mountain |
+| 29 | **32** | Mt. Coronet's interior, Solaceon Ruins |
+| 30 | 2 | the Battle Arcade, Route 217's interior |
+
+They are named after their own ids here and given **no look at all** -- not
+`false`, which would launder them into the 460 maps that really are clear.
+`lookFor` returns nil with the name, the field logs it once per session, and
+the check asserts the distinction holds. "Mt. Coronet looks dark to me" is an
+inference, and `Gen4ScriptOps`' header records what inferring a cartridge fact
+costs.
+
+### What it bought, measured
+
+```
+593 maps: 65 draw a weather, 471 are clear by name,
+          57 carry an id pokeplatinum has not named
+```
+
+Sixty-five maps draw something that drew nothing before: 51 fog, 5 calendar,
+8 snow/ash/sand/rain/cloud/blizzard, 1 dark cave. The check floors that number,
+so a look or a name going missing fails rather than quietly reducing it.
+
+`DARKNESS` is the one look in `Gen3Weather.LOOKS` that no Gen 3 weather uses.
+Its alpha (0.72) is this port's, stated plainly: the cartridge says the place is
+dark and that Flash lights it, and draws that with a hardware window the DS has
+and this renderer does not. Dark enough to read as unlit, light enough that the
+player and the tile in front of them stay visible -- a cave you cannot navigate
+at all is a worse lie than one that is too bright. The check asserts it is
+darker than SHADE (0.26, the covered-not-dark case) and not opaque.
+
+### The check: `tools/gen4_weather_check.lua`, 116 checks
+
+Sections 2-4 need no cache and no cartridge. Twelve faults planted, every plant
+md5-verified to have applied. **One did not land**, and it is the shape pass 176
+logged: the party-menu assertion searched the whole module for
+`weatherOffers`, and deleting the gate from the row-building loop left all 113
+checks green -- because `useFieldMove` calls it too, further down, for its own
+reasons. It is scoped to `actions()` now, and `useFieldMove` is asserted
+separately.
+
+Two of the check's own first-draft faults, both pret-reading rather than port
+faults: `#define OVERWORLD_WEATHER_26 26` names nothing, so a naive capture read
+pret's name for id 26 as "26" and complained that this port calls it
+`WEATHER_26`; and `OVERWORLD_WEATHER_YEARLY_START` is 32 as well, but it names
+the block rather than the first table in it. Seven reported disagreements
+against a port that was right -- the same direction as pass 176's bank-634
+mislabel.
+
+### Suite
+
+```
+PASS=62  REPORT=4  NOSPEC=41
+```
+
+No FAIL, no SKIP, no ERROR, no PASS\*. Gen 2 and Gen 3 clean.
+
+### Still not complete
+
+56. **Walk into fog in Sinnoh** -- Route 209's Lost Tower, Eterna Forest's
+    approach, any of the 51. It should look foggy, and it should look like
+    Hoenn's fog does because it is the same look.
+57. **Use Defog there**, from the party menu: the row should only be on the menu
+    while the fog is up, the HM cut-in should play, and the fog should go
+    **immediately** rather than at the next doorway.
+58. **Walk into Wayward Cave** -- it should be dark, navigably dark.
+59. **Use Flash there**, and then leave and come back: the cave must still be
+    lit, because the flag persists and the substitution is recomputed on load.
+60. **The Flash row must disappear** from the party menu once the cave is lit.
+61. **Stand on Route 212 south, Route 213, Route 216, Acuity Lakefront or
+    Snowpoint City** -- each has a weather that depends on today's date.
+62. **Start a battle in Sinnoh snow or sand** and check the battle weather came
+    with you.
+63. **Mt. Coronet's interior should look exactly as it did before** -- 32 maps
+    carry an id nobody has named, and nothing is drawn for them on purpose.
+64. **Hoenn and Johto weather are untouched**: one rainy route in Emerald and
+    one in Crystal.
+
+## Pass 178 -- every door in Sinnoh opened in silence
+
+`loaddooranimation`, `playdooropenanimation` and `playdoorcloseanimation`
+lowered onto `g4_noop`. Measured over the whole decoded script corpus they are
+**194 invocations** -- the largest declined subject in the port, ahead of the
+money box (109) and the journal (78).
+
+### The reason given for declining them had expired
+
+The comment read: *"this port reads NSBMD but not NSBCA, bakes the ground's
+props into a flat canvas, and has no SE bank for Gen 4 yet -- three separate
+stages, none of them close."*
+
+The first two are still true. **The third stopped being true at some point
+nobody re-checked:** `audio.lua` carries **2,030 sound effects**, keyed by the
+cartridge's own SSEQ symbols as well as by id, and `g4_play_sound` has been
+routing `playse` through them all along.
+
+Same shape as `g4_overworld_weather`'s "the port keeps no saved weather" and
+pass 175's `\r` strip: **a declined feature outliving its blocker.** Three
+instances now, which is why the census that found this one -- rank every
+`g4_noop` / `g4_no_feature` subject by its real invocation count over the
+decoded corpus -- is written up as a repeatable measurement.
+
+### The sound comes from the door's model, which is why it is not a one-liner
+
+```c
+// DoorAnimation_PlayOpenAnimation
+if (GetSoundEffectType(id) == SLIDING)        sfx = SEQ_SE_DP_DOOR10;
+else if (GetSoundEffectType(id) == VEILSTONE) sfx = SEQ_SE_PL_DOOR_OPEN5;
+else                                          sfx = SEQ_SE_DP_DOOR_OPEN;
+```
+
+Three tables, all transcribed into `src/world/Gen4Doors.lua` and all graded
+against pret:
+
+| table | what |
+|---|---|
+| `MODELS` | the 20 names in `doorModelIDs[]`, **in order** |
+| `CHIME` / `SLIDING` | `DoorAnimation_GetSoundEffectType`'s three arms |
+| `SOUND` | four SSEQ symbols, and the two that are **silent on close** |
+
+`false` is not "the same as hinged": `DoorAnimation_PlayCloseAnimation` sets
+`soundEffectID = 0` for the sliding and chime arms, and only the hinged one
+gets `SEQ_SE_DP_DOOR_CLOSE2`. A pneumatic door that creaked shut would be
+audibly wrong in every Pokémon Centre in the region.
+
+The symbols are named rather than numbered, because `audio.lua` keys its
+effects under both -- so a re-import that renumbers the archive cannot
+silently play a different sound, and the check can assert the join.
+
+### Finding the model is the cartridge's own hitbox
+
+```c
+TerrainCollisionHitbox_Init(x, z, -1, 0, 3, 1, &hitbox);   // x = mapX*32 + tileX
+FieldSystem_FindCollidingLoadedMapPropByModelIDs(..., doorModelIDs, 20, ...);
+```
+
+A box starting **one tile left** of the named tile, three wide and one deep --
+door props are anchored on half-tiles, and a one-tile box would miss most of
+them. The script's `mapX`/`mapZ` are matrix cells and `tileX`/`tileZ` a tile
+within that 32-tile chunk, which is exactly the space `Gen4Ground` draws in, so
+`def.layout` names the matrix and the chunk record carries the props.
+
+**Measured, and this is what the pass rests on:** of the 52
+`loaddooranimation` sites in the ROM, the 15 on a region map resolve **15 of
+15** through this search. Of the 37 on an indoor map (their own 1×1 matrix), 33
+have a door prop in the hitbox. And over the whole cache, **190 door props
+asked at their own tile are found 190 times**, splitting hinged 111 / sliding
+76 / chime 3 -- so all three arms of the sound table are reached by real
+placements and none is cold.
+
+### The tag is overworld state, not save state
+
+52 loads against 142 plays: a map loads its door once and opens it every time
+somebody walks through, so the tag outlives the script that set it. But
+`MapPropOneShotAnimationManager` is a field-system object, so a tag means
+nothing after a map change -- persisting it into the save would make a door in
+Jubilife answer for one in Hearthome. It lives on `ow.gen4Doors`.
+
+A miss is remembered **as a miss** (`false`) rather than left absent, so `open`
+can tell "loaded, model unidentified" from "never loaded". Both still make a
+sound: hinged, which is what the cartridge plays for every model it does not
+name specially, and which 111 of the 190 placed doors are. The cartridge's own
+answer to "no door found" is `GF_ASSERT(FALSE)`, so each distinct reason is
+logged once.
+
+### What is still missing
+
+**The animation.** A Gen 4 door is an NSBCA one-shot on an NSBMD map prop, and
+this port reads NSBMD without NSBCA and bakes a chunk's props into a flat
+canvas. That has not changed. `waitforanimation` stays a no-op with its reason:
+with nothing animating there is nothing to wait for, and holding the script
+would be a frozen pause rather than a door opening. The check pins the
+animation indices pret uses (0 to open, 1 to close) because that is the pair a
+later pass will need.
+
+The PC-animation rows carried **the same stale claim** and are corrected in
+place rather than deleted -- and they part from the doors for a real reason:
+`FieldSystem_PlayPCBootUpAnimation` calls
+`MapPropOneShotAnimationManager_PlayAnimation`, with no sound argument at all,
+where a door calls `..._PlayAnimationWithSoundEffect`. There is no PC sound to
+be missing.
+
+### The check: `tools/gen4_door_sound_check.lua`, 66 checks
+
+**Section 0 is a canary on the model join, and it is not a formality.** The
+first draft of this measurement reported **0 of 52 sites resolved** -- and the
+fault was the probe's own module loader, which stubbed `Gen4Archives` so every
+`find()` answered nil and no prop could ever be identified as a door. A zero
+from a dead join looks exactly like a zero from wrong geometry. *The harness is
+a subject too*, fourth instance.
+
+Eleven faults planted, every plant md5-verified to have applied.
+
+**One exposed a hole in the check's own control.** The search is graded by
+asking every door prop at its own tile (190/190) with a control that asks
+off-target queries and requires them to miss. Planting `HITBOX_SIZE_X = 64`
+was caught by the pret comparison but **not** by the control -- because
+widening the window moves its far edge away from the door rather than over it,
+so a probe six tiles to the right still missed. The control now probes
+**leftward too**, and the same plant fails it at 234 of 570 (41%) against a 15%
+ceiling.
+
+### Suite
+
+```
+PASS=63  REPORT=4  NOSPEC=41
+```
+
+No FAIL, no SKIP, no ERROR, no PASS\*. Script registry 422 (up from 421). Gen 2
+and Gen 3 clean.
+
+### The census this came from, as a repeatable measurement
+
+Rank every declined subject by its real invocation count over the decoded
+corpus (not by source lines, and not by how many commands it declines):
+
+```
+door animations          194    the money box            109
+journal entry             78    the scripted blackout     65
+menu anchor side          57    the move tutor            73 (49 + 24 shard)
+the TV broadcast system   41    Distortion World cast     31
+```
+
+`tools/gen4_coverage_check.lua`'s walk, with each opcode mapped to the subject
+its lowering names. The money box and the move tutor are the next two.
+
+### Still not complete
+
+65. **Walk into a house, a shop or any hinged door in Sinnoh** -- it should
+    creak open and creak shut.
+66. **Walk into a Pokémon Centre, a gym, the GTS or a lift** -- it should hiss
+    open and close **silently**. A creak on close is the fault to listen for.
+67. **Walk into the Veilstone department store** -- it has a chime of its own.
+68. **Walk back out of each** -- the inside doors are their own models and the
+    tag is loaded per map.
+69. **Nothing should animate yet**, and that is on purpose: the door is a flat
+    prop until NSBCA is read.
+70. **Gen 1, 2 and 3 doors are untouched** -- one door in Crystal and one in
+    Emerald.
+
+## Pass 179 -- the money window
+
+`showmoney`, `hidemoney` and `updatemoneydisplay` lowered onto `g4_noop` with
+the subjects "money box" and "the money window refresh". The census that found
+the door sounds puts them second: **109 invocations** over the decoded corpus
+(`showmoney` 20, `hidemoney` 66, `updatemoneydisplay` 23), behind doors at 194
+and ahead of the journal at 78.
+
+It is **not** the shop's balance -- `ShopMenu` has one of those. This is the
+standalone window a *field* script puts up while you decide: the Game Corner,
+the Day-Care's fee, the Ribbon Syndicate, Floaroma's flower seller, the
+Pastoria gates, the café.
+
+### The operand order is the one thing most likely to be silently wrong
+
+pret's middle layer is actively misleading about it:
+
+```c
+ScrCmd_ShowMoney:  tilemapLeft = GetVar; tilemapTop = GetVar;
+                   FieldMenu_CreateMoneyWindow(fs, tilemapLeft, tilemapTop)
+FieldMenu_CreateMoneyWindow(FieldSystem *fs, u8 tilemapTop, u8 tilemapLeft)
+                   Window_Add(..., tilemapTop, tilemapLeft, ...)
+Window_Add(..., u8 tilemapLeft, u8 tilemapTop, ...)
+```
+
+The parameter names are swapped **twice and cancel**: operand one is the LEFT.
+A reader who follows only the middle function's names gets it backwards and
+puts the window off the bottom of the screen, which looks like a bug in the
+frame drawing rather than in the operands.
+
+The check derives it three ways -- from all three signatures, from the 17
+literal `ShowMoney` call sites in pret's scripts, and from all 20 decoded sites
+in the ROM, every one of which fits on a 32×24-tile screen with this order and
+would not with the other.
+
+### The geometry and the two strings
+
+| | |
+|---|---|
+| `MONEY_WINDOW_WIDTH` / `_HEIGHT` | 10 × 4 tiles |
+| `GLYPH_ROW_HEIGHT` | 16 -- the label at the window origin, the amount one row down |
+| bank | 543 (`TEXT_BANK_UNK_0543`, line 544 minus one) |
+| entry 18 | `"Money"` |
+| entry 19 | `"${STRVAR_1 55 0 0}"` |
+| the number | `StringTemplate_SetNumber(..., 6, PADDING_MODE_SPACES, ...)` |
+
+The amount is **right-aligned** to the window's right edge
+(`printerOffset = WIDTH*8 - Font_CalcStringWidth(...)`), which is also *why*
+the number is space-padded rather than zero-padded: the padding sits inside a
+right-aligned string, so it only ever shows up as the consistent column the
+cartridge wants. Zero-padding would print `$000007`.
+
+Drawn the way `drawGen4SaveInfo` and FireRed's lift window are: the frame one
+tile out and two tiles bigger than the window the cartridge measures.
+
+### The Poké-dollar needs no constant here, and that removed the last one
+
+Entry 19 carries a literal ASCII `$` -- the DS English font draws that
+character as the Poké-dollar -- so resolving the cartridge's own format string
+brings the sign along and there is nothing to hand-spell.
+
+Which surfaced a leftover: **`Gen4TrainerCard` was the only file still keeping
+its own `MONEY_SIGN = "$"`**, with a paragraph ending *"ShopMenu has the same
+line and will have the same fault in a Gen 4 shop; that is its own fix"*. That
+fix had landed -- `GameVersion.moneySign` holds the three cartridge families'
+signs and **seven** files read it -- so the local was the last hand-spelling of
+something with an owner and the forward reference was stale. Both are gone, and
+the check sweeps the tree for a money sign kept privately, with `ShopMenu` the
+argued exception (it holds the two Game Boy glyphs it *hands to* `moneySign`,
+which is the opposite of bypassing it).
+
+### The refresh rebuilds, and that beat matters
+
+`updatemoneydisplay` re-formats the balance into the cartridge string rather
+than the window reading `save.money` at draw time. Reading it live would be
+"more correct" and wrong: the window would change the instant a script took the
+money, **before** the `updatemoneydisplay` the cartridge puts after the
+transaction -- and that beat is what the Game Corner's counter depends on. The
+check asserts it both ways: changing the balance does not move the window, and
+the refresh does.
+
+The panel lives on the overworld, not the save --
+`SCRIPT_MANAGER_MONEY_WINDOW` is a field-system slot, so a saved window would
+come back on a map that never opened one.
+
+### The check: `tools/gen4_money_window_check.lua`, 86 checks
+
+Section 1 needs nothing but the repository. Thirteen faults planted, every
+plant md5-verified to have applied: the operands swapped, the window size, zero
+padding, a left-aligned amount, the frame at the window origin, a hand-spelled
+sign, the refresh not rebuilding, the panel in the save, `hide` not clearing,
+back to a no-op, the field not drawing it, a private sign put back, and
+`moneySign` answering the wrong character.
+
+One plant is worth noting: swapping the operands was caught by the
+**behavioural** assertions (the refresh position and the var operand), not by
+the pret-signature ones -- those grade pret, not the port, which is the
+distinction that keeps a derivation check honest.
+
+### Suite
+
+```
+PASS=64  REPORT=4  NOSPEC=41
+```
+
+No FAIL, no SKIP, no ERROR, no PASS\*. Script registry 423 (up from 422). Gen 2
+and Gen 3 clean.
+
+### Still not complete
+
+71. **The Game Corner's counter** -- `ShowMoney 20, 7`, the one call site that
+    is not at 20,2. The window should sit lower there.
+72. **Buy coins, then watch the balance.** It must not move until the script
+    refreshes it, and then it must.
+73. **The Day-Care fee, the Ribbon Syndicate, Floaroma's flower seller, the
+    Pastoria gates and the café** -- all `ShowMoney 20, 2`, top right.
+74. **The sign must be the Poké-dollar**, not a dollar, a yen kanji or a
+    rouble. The trainer card's MONEY row is the same character and now comes
+    from the same place.
+75. **Walking away with the window up** -- `hidemoney` is called 66 times
+    against 20 shows, so scripts hide defensively; the window must not survive
+    a map change.
+76. **Gen 1, 2 and 3 money displays are untouched** -- one mart in Crystal and
+    one in Emerald, and the Gen 3 trainer card.
+
+## Pass 180 -- the Underground goods PC
+
+`checkhasroomforgoodsinpc` and `sendgoodtopc` were lowered onto
+`g4_no_feature`. That is not the usual case of a feature politely absent: **the
+answer was wrong, and wrong in the direction that lies.** `g4_no_feature`
+writes 0 into the destination var, and 0 for "has room for goods in the PC"
+means *no room* -- so sixteen of the command's seventeen script sites were
+telling the player their goods PC was full on a save where it held nothing.
+
+An absent feature answering "no" is honest. A present one answering "no" is a
+lie, and this inventory is present: pass 176 already built its two siblings.
+
+### What the cartridge does
+
+`Underground_TryAddGoodPC` and `Underground_IsRoomForGoodsInPC` both walk
+`MAX_GOODS_PC_SLOTS` (200) looking for `UG_GOOD_NONE`, which is line one of
+`generated/goods.txt` and therefore 0. The adder writes into the first free
+slot and answers whether it found one; the query answers TRUE on the first free
+slot it sees.
+
+Both scrcmds read three operands in one fixed order --
+`ScriptContext_GetVar`, `ScriptContext_GetVar`, `ScriptContext_GetVarPointer`.
+For `SendGoodToPC` the first is the good id and the second is read into a local
+called `unused`; for `CheckHasRoomForGoodsInPC` both are dropped (the second is
+passed to `Underground_IsRoomForGoodsInPC`'s parameter, which is literally
+named `unused` and never referenced). Either way the **third** is where the
+answer goes.
+
+### The sentinel, which was my invention and had to go
+
+Pass 176 made `addTrap` and `addSphere` refuse `TRAP_NONE` / `SPHERE_NONE`,
+reasoning that storing the empty-slot sentinel would make a slot read as free
+and the count disagree with itself. The state half of that is right. The
+**answer** half is wrong: no cartridge adder rejects the sentinel. Handed NONE,
+`Underground_TryAddTrap` writes NONE into the free slot it found and returns
+TRUE -- because "was there a free slot" is the only question the branch asks,
+and there was one.
+
+This is not hypothetical. Walking `scr_seq.narc` and following jumps and calls
+finds **nineteen** rows for these commands and no more:
+
+| command | rows | bands |
+|---|---|---|
+| `checkhasroomforgoodsinpc` | 16 | 92 (x4), 93 (x12) |
+| `sendgoodtopc` | 1 | 211 |
+| `givetrap` | 1 | 211 |
+| `givesphere` | 1 | 211 |
+
+Every operand of all nineteen is a **var** -- `0x8004`, `0x8005`, destination
+`0x800C` -- never a constant. So the value handed to the adder really is
+whatever the caller left in `0x8004` at run time, and the sentinel case is a
+live path rather than a thought experiment.
+
+Because this port stores the three inventories densely there is no slot to
+write the sentinel into, and writing it would be *worse* than the cartridge
+rather than equal to it: `#list` would grow while the cartridge's slot still
+reads as empty. So the faithful dense equivalent is to **answer TRUE and store
+nothing** -- and, on a full inventory, answer FALSE, because then there
+genuinely is no free slot.
+
+All three adders now go through one `addDense` helper. One question, answered
+in one place. Answering it separately in three sibling functions is exactly how
+the three answers drifted apart in the first place, which is this project's
+recurring bug wearing its usual costume.
+
+### The check: `tools/gen4_underground_inventory_check.lua`, 112 checks
+
+Extended rather than replaced, so the Underground inventory invariants keep one
+owner. The new section 1b covers the goods PC; sections 1 and 2's sentinel
+assertions were **rewritten, because they asserted my invention** and failed
+the moment the port became correct.
+
+Three findings from the plants are worth keeping:
+
+- **A seeded destination var.** `getVar` answers 0 for a var nobody wrote, and
+  0 is also the honest "no room" -- so a handler that forgets to write at all
+  passed the full-PC assertion and failed the empty-PC one with the same
+  message as a genuinely inverted answer. Every destination var is now seeded
+  with 7 first, and the failure message distinguishes "answered no" from "did
+  not answer".
+- **Operand order needs a source assertion.** The handler tests call the
+  handlers directly, so a lowering that forwards `args[2]` where `args[1]`
+  belongs is invisible to them -- a planted swap passed every check. The
+  lowerings' operand order is now read out of the source and required to be
+  `[1,2,3]`.
+- **The sentinel contract is an invariant, not three cases.** Beyond the
+  per-adder assertions there is now a loop over all three adders requiring the
+  same answer, so a fourth inventory that answers differently is caught without
+  anyone remembering to add a case.
+
+Fourteen planted faults, each md5-verified to have applied and each required to
+fail on its own assertion's message.
+
+### Suite
+
+PASS=64, REPORT=4, NOSPEC=41, no FAIL, SKIP, ERROR or PASS*. The count is
+unchanged from pass 179 because this pass extended an existing check instead of
+adding a file; that check went 81 -> 112. Script registry 423 -> 424. Gen 2 and
+Gen 3 clean.
+
+### Still not complete
+
+Nothing writes to the goods PC from the UI, and nothing reads it back: the 200
+stored ids have no screen. The cartridge's goods are the flags, statues, mats
+and dolls you place in your Secret Base, and the base itself is not built.
+What this pass fixes is the **answer** -- the sixteen branches that were taking
+the wrong path -- and the storage behind it, so that when a base screen arrives
+the inventory it reads is already right and already capped where the cartridge
+caps it.
+
+77. **The goods PC answer, which is the bug.** Any script that asks whether
+    there is room must now take the "yes" path on an ordinary save. Band 93
+    holds twelve of the sixteen asks and band 92 the other four.
+78. **Band 211's `sendgoodtopc`** -- the one site that actually stores a good.
+    It shares its band with the single `givetrap` and `givesphere`, so all
+    three fire from the same place; none of them may refuse on a fresh save.
+79. **A trap and a sphere still behave as they did in pass 176** -- the
+    sentinel rewrite changed the answer for `TRAP_NONE` and `SPHERE_NONE`
+    only, and no script passes a constant, so items 49-55 should play exactly
+    as before. This item is the regression check on that claim.
+80. **Gen 1, 2 and 3 have no Underground** -- nothing here may touch Crystal,
+    Gold, Silver, Prism or Emerald.
+
+## Pass 181 -- the Pokemon News Press, and the census that chooses the passes
+
+Two deliverables, and the second is why the first was found.
+
+### The measurement was wrong in two ways
+
+`claude/gen4_declined_subjects.md` ranks every command lowered onto a `g4_noop`
+or a `g4_no_feature` by how much of the script corpus asks for it. Five passes
+have been picked off that ranking. Both of its faults were invisible from the
+numbers themselves.
+
+**It counted decodes, not positions.** The corpus walk queues every entry point
+and every jump target, and a block entered at one address is decoded again from
+a second address inside it -- so an instruction in an overlapping tail is
+counted once per path that reaches it. Measured: **78,189 decodes over 57,333
+distinct byte positions**, 36.4% inflation across 132 bands. Per subject it ran
+to 5x (`the seal case`: five decodes of one position) and took 80% off the TV
+system's 41.
+
+Neither number is wrong -- decodes weight a subject by how many reachable paths
+lead to it, positions by how much of the corpus names it -- but the doc called
+them "invocations", which reads as the second. The tool now reports both and
+ranks on positions.
+
+**And a subject split across several spellings ranked as several subjects.**
+The census reads each row's subject out of the prose in its stub row, and the
+eight `initpersistedmapfeaturesfor*` commands name eight different subjects.
+They are one mechanism behind nine thin wrappers over
+`PersistedMapFeatures_InitFor*`. Ranked apart they came out 11, 9, 4, 3, 1, 1,
+1, 1 and the largest sat eleventh. Ranked together with the two gym buttons and
+the Eterna flower clock, which write the same state, they are **53 sites across
+twelve rows -- the second-largest open subject in the whole census.**
+
+That is this project's recurring bug -- the same thing spelled differently in
+two places that never meet -- eating the measurement meant to find it.
+
+**A third fault turned up while fixing the second.** The scan read `L.name =`
+and not `L["name"] =`, and five rows use the bracket form because their opcodes
+have no name. Closing that found **thirteen more rows and five subjects that
+had never been in the census at all**, one of them the Spear Pillar cutscene at
+20 sites, which would have ranked ninth.
+
+### The corrected ranking
+
+| sites | raw | rows | subject |
+|---|---|---|---|
+| 64 | 65 | 1 | the scripted blackout -- *argued* |
+| 53 | 53 | 12 | **the persisted map features** |
+| 52 | 57 | 2 | menu anchor side -- *argued* |
+| 50 | 79 | 2 | the journal |
+| 48 | 58 | 1 | the door animation's wait -- *argued* |
+| 43 | 73 | 10 | the move tutor -- *blocked* |
+| 22 | 41 | 1 | the TV broadcast system |
+| 22 | 27 | 4 | a cartridge no-op -- *argued* |
+| 20 | 21 | 3 | the Spear Pillar cutscene |
+| 19 | 29 | 2 | trainer score records |
+
+The move tutor drops from a reported 73 to 43 sites; the journal from 78 to 50.
+The persisted map features arrive from nowhere at number two.
+
+### `tools/gen4_declined_census_check.lua` (NEW, 15 checks)
+
+The census is a checked tool now rather than a script someone runs. It asserts
+the two metrics stay distinguishable, floors the corpus at 57,333 positions,
+and -- the part that matters -- **requires every subject it sees to be in
+`KNOWN` or named by `MERGES`, failing with the subject's own name and site
+count otherwise.** A new stub row cannot enter the ranking until somebody has
+said what it belongs to, and a `MERGES` entry no row uses any more fails too,
+so the table cannot rot. It caught six subjects needing classification on its
+first clean run.
+
+It is named `..._check` rather than added to `run_checks.py`'s allow-list,
+because discovery there is by "check" in the filename and a derived rule beats
+a list.
+
+### The first thing the corrected census surfaced
+
+Auditing the 30 `g4_no_feature` rows for *what 0 means to the branch behind
+them* -- pass 180's lesson, run as a measurement -- found
+`getrandomseenspecies` at Solaceon. 0 is `SPECIES_NONE`, so the Pokemon News
+Press named a blank.
+
+**The cartridge's default is not zero**, and that is the fact a reimplementation
+gets wrong:
+
+```c
+u16 seenSpeciesCount = Pokedex_CountSeen_Local(pokedex);
+u16 random = LCRNG_Next() % seenSpeciesCount;
+*destVar = SPECIES_PIKACHU;          /* written BEFORE the loop */
+for (u16 species = 1, i = 0; species <= NATIONAL_DEX_COUNT; species++) {
+    if (Pokedex_HasSeenSpecies(pokedex, species) == TRUE
+        && Pokemon_SinnohDexNumber(species) != FALSE) { ... }
+}
+```
+
+An empty dex answers Pikachu. So does a dex whose seen species are all outside
+the Sinnoh list, because the count and the loop predicate are different
+predicates and the loop falls through. Both are asserted.
+
+Everything this needed was already in the port: `save.pokedex.seen` has been
+kept all along and `g4_dex_seen_count` has filtered it by the Sinnoh dex since
+before this pass -- so the zero was not an absence, it was a wrong answer a
+script then printed. The dex walk was extracted into one `dexIDs` helper rather
+than duplicated, because the counts want its size and the press wants a member,
+and two walks is how one question gets two answers.
+
+**The deadline is a countdown, not a reset**, which is why
+`src/script/Gen4Daily.lua` is a new module rather than a flag beside
+`Gen2Daily`:
+
+```c
+if (deadlineInDays > daysPassed) { deadlineInDays -= daysPassed; }
+else { deadlineInDays = 0; }
+```
+
+Gen 2's resets only need to know the day turned; this needs to know **by how
+much**. Leaving the console off for a week must clear a three-day deadline, not
+take one day off it. It therefore needs an absolute day count --
+`Gen4Weather.dayNumber` is a day-of-year and goes negative across New Year,
+which is right for a calendar column and wrong for a difference -- so
+`Gen4Daily.civilDay` is days_from_civil, exact and with no dependence on
+`os.time`.
+
+Two cases the check pins because they are the ones that quietly lose a player's
+day: a **first** poll on a save with no recorded day counts nothing (otherwise
+every deadline loses a day the moment this module lands, including one set
+seconds earlier), and a **backwards** clock re-anchors without counting.
+
+### The var ids, derived and cross-checked
+
+`VAR_NEWS_PRESS_DEADLINE` is **0x403B** and
+`VAR_POKEMON_NEWS_PRESS_REQUESTED_POKEMON` is **0x40E5**, from the enum walk
+over `generated/vars_flags.txt` this port already uses (a bare name takes the
+next id, `A = B` aliases B). Line arithmetic gets the first one wrong by two,
+so the walk is what the check re-runs -- behind three anchors first, because if
+the walk were wrong both ids would be wrong together and agreeing with a wrong
+module would look like success:
+
+| anchor | from | agrees |
+|---|---|---|
+| `VAR_OBJ_GFX_ID_0` | the object-sprite fix | 0x4020 |
+| `VAR_LAST_TALKED` | the movement-target fix | 0x800D |
+| `VAR_POKEMON_NEWS_PRESS_REQUESTED_POKEMON` | **the cartridge's own script bytes** (`setvarfromvar 0x40E5, 0x800C`) | 0x40E5 |
+
+The third is the good one: the script the feature belongs to names the var
+itself, so the cartridge confirms the table.
+
+### And one subject the audit cleared rather than ported
+
+`getsummaryselectedmoveslot` looked like the worst lie in the list: the
+move-replacement flow reads which move the player chose, `4` is the
+cancel sentinel (`MOVE_TO_LEARN_SLOT = LEARNED_MOVES_MAX`), and 0 is move slot
+one -- so a stub answering 0 forgets the first move whatever you pick and makes
+Cancel unreachable. Pass 175 had just made TM teaching work, so this looked
+live.
+
+It is not. All four sites are in bands 83, 181, 458 and 1103, and all four are
+**move-tutor** bands -- 181, 458 and 1103 carry `checkcanaffordmove`,
+`payshardcost` and `showmovetutormoveselectionmenu`, and 83 carries
+`selectmovetutorpokemon`. The chooser is reached only from the tutors, the
+tutors are blocked on `sTeachableMoves`, so the path is cold. The row's
+original subject -- "the shard move tutor" -- was right, and my suspicion was
+wrong. Recorded because the measurement is what settled it, and a cold
+destructive path is worth knowing about for the pass that unblocks the tutor.
+
+### Suite
+
+PASS=66 (up two: both new checks), REPORT=4, NOSPEC=41, no FAIL, SKIP, ERROR or
+PASS*. Script registry 424 -> 426. Gen 2 and Gen 3 clean. Eighteen planted
+faults across the two checks, each md5-verified to have applied and each
+required to fail on its own assertion's message.
+
+### Still not complete
+
+The News Press line is a one-off NPC exchange; nothing reads the deadline back
+except the NPC itself, which is what the cartridge does too. The journal,
+which the deadline nominally feeds on the cartridge, is still a screen nobody
+has built.
+
+81. **The Solaceon News Press must name a Pokemon you have SEEN** -- and one
+    with a Sinnoh dex number. It must never print a blank, which is what it did
+    before this pass.
+82. **It must vary.** The pick is random over the eligible set, so asking
+    repeatedly should not always name the same species.
+83. **A brand-new save** (nothing seen but your own starter) must still get a
+    real name rather than a hole -- Pikachu is the cartridge's own fallback.
+84. **The deadline must survive a save and reload**, and lose the number of
+    days that actually passed. Set it, close the game for two days, come back:
+    it should be two lower, not one.
+85. **Gen 1, 2 and 3 have no News Press** -- the Gen 2 daily resets must be
+    untouched, and nothing may run the Gen 4 poll on a Johto or Hoenn save.
+
+## Pass 182 -- two infinite script loops, and a command the port already had
+
+Found by the census pass 181 fixed, in the rows pass 181's third fault had
+hidden. Four commands used the bracket form (`L["18c"]`, `L["20d"]`, `L["2b6"]`,
+`L["2fb"]`) because their opcodes have no name, so the old scan never saw them
+at all -- and all four carried a subject naming **the map they appear on**
+rather than what they do: "a Spear Pillar effect", "a Spear Pillar cue", "an
+Iron Island cue". Named that way they read as unimplementable set-pieces.
+
+Three of the four were nothing of the kind.
+
+### `scrcmd 20D` was a hang
+
+```c
+static BOOL ScrCmd_20D(ScriptContext *ctx) {
+    u8 v0 = ScriptContext_ReadByte(ctx);        /* a MODE, 0..9 */
+    u16 *v1 = ScriptContext_GetVarPointer(ctx);
+    *v1 = ov6_02243004(ctx->fieldSystem, v0);
+}
+```
+
+`ov6_02243004` is a **ten-mode switch** over one overlay-6 field effect. Eight
+of the ten start or stop something and fall through to `return 0`. Exactly two
+-- mode 1 and mode 6 -- are completion polls, and both read a staged
+animation's state counter:
+
+```c
+case 1: if (ov6_0223E708(Unk)) { ov6_0223E700(Unk); return 1; } else return 0;
+case 6: if (ov6_0223FCF4(Unk) == 6) { ov6_0223FCE0(Unk); return 1; } else return 0;
+```
+
+(`ov6_0223E708` returns 1 when its task's `unk_00` reaches 11; `ov6_0223FCF4`
+returns that counter and mode 6 compares it against 6.)
+
+And the scripts poll them **in a backwards jump**:
+
+```
+20d 0x1 0x800C  /  comparevartovalue 0x800C 0x0  /  gotoif 1 -18
+20d 0x6 0x800C  /  comparevartovalue 0x800C 0x0  /  gotoif 1 -18
+```
+
+`g4_no_feature` writes 0. For these two modes 0 means *"not finished"* -- so
+the answer never changed and the script span on the spot. **Two infinite loops,
+band 236 and band 237, on the Spear Pillar path.** Not a missing line, not a
+wrong branch: a lock-up.
+
+An effect this port never starts has already finished, so 1 is both the only
+non-hanging answer and the true one. The other eight modes keep writing 0,
+which is what the cartridge writes there too.
+
+**That last sentence is why nobody looked.** The stub was *right* for eight of
+the ten modes, so the row behaved correctly almost everywhere. A row that is
+wrong in two cases out of ten is much harder to doubt than one that is wrong
+always.
+
+The check does not take the loop on trust. It walks the cartridge, finds all
+four `20D` sites, and asserts that each poll-mode site is followed by a compare
+against zero and a `gotoif` **whose target is the poll instruction itself** --
+20D is 5 bytes, the compare 6, the `gotoif` 7, and the operand is -18, so the
+jump lands exactly back on the poll. The hang is derived from the ROM.
+
+### `scrcmd 18C` is `MapObject_TryFace`
+
+```c
+u16 localID = ScriptContext_GetVar(ctx);
+u16 dir     = ScriptContext_GetVar(ctx);
+MapObject *mapObj = MapObjMan_LocalMapObjByIndex(..., localID);
+ov5_021ECDFC(mapObj, dir);
+```
+
+and `ov5_021ECDFC` is `MapObject_TryFace(mapObj, dir)` plus a shadow nudge for
+an object mid-jump. It is **"turn this object to face a direction"** --
+`ScrCmd_FaceTargetObject` and `trainer_encounter.c` call the same function, so
+this port already did this under another name, for another command.
+
+Fifteen sites across bands 236, 367 and 485; local ids 5, 3 and 0xFF
+(`LOCALID_PLAYER`, which `objectById` already resolves), and **all four**
+directions. Measured by the same ROM walk, so the reach is not remembered.
+
+The direction mapping was already in the tree: `Commands.g4_player_dir` holds
+`FACING = { up = 0, down = 1, left = 2, right = 3 }` with
+`PlayerAvatar_GetFacingDir` cited above it, and that matches
+`include/constants/map_object.h`'s `DIR_NORTH 0 / DIR_SOUTH 1 / DIR_WEST 2 /
+DIR_EAST 3`. So `FACE_NAME` is **that table inverted at load**, not a second
+copy -- and the check round-trips every direction through `g4_face_dir` and
+back out through `g4_player_dir`, because two spellings of one mapping is this
+port's recurring bug in its smallest form.
+
+### The two that stay no-ops, argued rather than deferred
+
+**`2B6`** is `sub_02062D80`, which sets or clears `MAP_OBJ_STATUS_18`. That flag
+is read in `sub_02063F00`, the object-vs-object occupancy test: an object
+carrying it is **skipped** when deciding whether another object blocks a tile.
+So the command is "this object is solid to other objects" -- and with the
+parameter inverted, `param1 == TRUE` clears the flag, which means solid.
+
+Both of its two sites (band 329, local id 4) pass 1. That sets the flag off,
+which is **solid** -- the default, and nothing in the game ever sets it on. The
+cartridge is restoring a default here, so a no-op reaches the same state.
+
+**`2FB`** fades the screen out and starts **overlay 100 as a child
+application**, handed the player's options and gender. One site, band 236,
+immediately after the mode-1 poll. That is a whole screen this port does not
+have.
+
+### The census caught its own table going stale
+
+Renaming the four subjects broke `tools/gen4_declined_census_check.lua`
+immediately: two `MERGES` entries now named prose no row uses, and two new
+subjects were in neither table. Both failed with their own names and counts.
+
+That is the fail-closed list from pass 181 working on its first real test, one
+pass after it was written -- and it is the half of the design that mattered,
+because the rename is exactly the kind of change that would otherwise have
+quietly stopped the merge from applying.
+
+The check file is called `gen4_field_effect_check.lua` and not
+`gen4_spear_pillar_check.lua`, for the same reason the rows were renamed.
+
+### Suite
+
+PASS=67 (up one), REPORT=4, NOSPEC=41, no FAIL, SKIP, ERROR or PASS*. Script
+registry 426 -> 428. Gen 2 and Gen 3 clean. Eleven planted faults, each
+md5-verified to have applied and each landing on its own assertion's message.
+
+Two of my own mistakes are recorded in the check because they are instances of
+shapes already in `claude/check_design_lessons.md`: `g4_face_dir` was placed
+above `objectById`, which is a local (pass 180's `addDense`, again), and the
+first draft of the loop assertion tested `target < poll` when the target is
+`== poll`, which failed on a correct port.
+
+### Still not complete
+
+The effect itself is not drawn -- modes 0, 2, 4, 5, 7, 8 and 9 start and stop
+visual effects in overlay 6 that this port has no renderer for, so the Spear
+Pillar sequence will play through without them. What is fixed is that it
+**plays through** instead of locking up, and that the objects in it turn.
+
+86. **The Spear Pillar sequence must complete.** Band 236 and band 237 each
+    held an infinite loop; the test is that the scene runs to its end and
+    hands control back, flags 0x1C8 and 0x1C9 getting set.
+87. **Objects must turn during cutscenes** -- fifteen `18C` sites across the
+    Spear Pillar, band 367 and band 485. The player turns at seven of them.
+88. **Nothing visual appears for the effect itself**, and that is expected: the
+    sequence should look empty where overlay 6 would have drawn, not stall
+    there.
+89. **Band 329's object 4 must behave as before** -- the solidity row is still
+    a no-op and it was argued, not implemented, so this item is the regression
+    check on that argument.
+90. **Gen 1, 2 and 3 have no Spear Pillar** -- nothing here may touch Crystal,
+    Gold, Silver, Prism or Emerald, and `g4_face_dir` must not disturb the
+    Gen 2/3 facing paths.
+
+## Pass 183 -- the door animation's real blocker, and a stale claim in the
+## file that warns about stale claims
+
+`Gen4Doors.lua` opens by saying the door SOUNDS were declined for a reason that
+had stopped being true -- and then, in its own next paragraph, committed the
+same fault:
+
+> A Gen 4 door is an NSBCA one-shot on the door's own NSBMD map prop, and this
+> port reads NSBMD without NSBCA and bakes a chunk's props into a flat canvas.
+
+Both halves were already false when that was written.
+
+* **NSBCA is read.** `Gen4Anim.parse` handles BCA0/BTA0/BTP0/BMA0/BVA0 and
+  `Gen4Anim.jointMatrices` produces per-frame joint matrices. The title
+  sequence (27 joints, 121 frames) and the four starter models already wear
+  them, and the extractor writes packed tracks into `gen4_models.lua`.
+* **Props are not baked.** The land *chunk* is baked into a canvas; every
+  building and prop is drawn as a live model each frame
+  (`building:draw(Gen4Model.multiply(view, placement(object)))`), and
+  `Gen4Model:draw(viewProjection, pose, ...)` takes a pose as its **second**
+  argument, defaulting to the rest pose. `Gen4Model:posed(matrixOf)` exists for
+  exactly this and already falls back per node.
+
+### The real blocker was the join
+
+`/arc/bm_anime.narc` holds **98 animations and no models at all**. The
+extractor pairs an animation with a model by node count *within one archive*,
+so all 98 came out `unworn` -- correctly, by that rule, because there is
+nothing in that archive to wear them. The extractor's own comment says so, and
+names the doors as part of the contents.
+
+The pairing is in a third file, and pokeplatinum's map-format graph names it:
+
+```
+area_build    --> bm_anime_list : mapPropModelIDs
+bm_anime_list --> bm_anime      : animeArchiveIDs
+```
+
+`/arc/bm_anime_list.narc` has 590 members, one per `build_model.narc` model, so
+member N describes prop model N. No node-count guessing is needed.
+
+### The documented record layout is wrong by one
+
+pokeplatinum's `docs/maps/file_format_specifications.md` gives:
+
+| field | offset | type |
+|---|---|---|
+| `hasAnimations` | 0x00 | bool |
+| `flags` | 0x01 | u8 |
+| `isBicycleSlope` | 0x02 | bool |
+| `animeArchiveIDs` | **0x03** | u32[4] |
+
+The records are **20 bytes**, the byte at 0x03 is **0x00 in all 590 of them**,
+and the id array starts at **0x04**.
+
+This is a measurement, not a reading of the prose, and it could have come out
+the other way:
+
+| ids read at | resolved | empty | **out of range** |
+|---|---|---|---|
+| 0x03 (documented) | 3 | 181 | **264** |
+| 0x04 | 166 | 282 | **0** |
+
+The symptom is self-consistent too: at 0x03 every id reads as `real << 8`,
+because it swallows the pad byte as its low byte -- which is exactly what the
+first run showed (1792, 2048, 2304, 2560 for 7, 8, 9, 10). The check re-runs
+**both** offsets every time and requires 0x04 to resolve strictly more, so the
+correction is re-derived rather than remembered.
+
+Also recorded from the doc, and tested: `hasAnimations` is **0xFF**, not 0, when
+a prop has none, so the test is `== 1` and never `~= 0`. A `~= 0` test calls
+every unanimated prop animated.
+
+### All twenty doors resolve
+
+| doors | animations | ids |
+|---|---|---|
+| 11 ordinary hinged | 4 | 7, 8, 9, 10 |
+| Poké Center, inside, GTS inside | 2 | 5, 6 |
+| mansion, Veilstone dept. store | 2 | 29, 30 |
+| gym, card | 2 | 27, 28 |
+| Poké Center counter | 2 | 33, 34 |
+| elevator | 2 | 51, 52 |
+
+**Count and sound type are independent axes**, and the sharpest proof of it is
+that `mansion_door` and `veilstone_dpt_store_door` play the **same two
+animations** and **different sounds** -- the first is hinged, the second is the
+chime. `DoorAnimation_GetSoundEffectType` switches on the model id (the
+Veilstone chime alone, six sliding doors, everything else hinged) and the count
+comes from a different archive. A reader who assumed "hinged means four" is
+wrong about two of the thirteen hinged doors.
+
+Pass 178's sound table is **correct** -- this is a second, orthogonal fact, not
+a correction.
+
+**The index rule is fully derived.** Both of pokeplatinum's count arms collapse
+to the same index:
+
+```c
+if (animationCount == 2)      animationIndex = 0;   /* open  */
+else if (animationCount == 4) animationIndex = 0;
+else { GF_ASSERT(FALSE); animationIndex = 0; }
+```
+
+and close is 1 in both arms. So **open plays index 0 and close plays index 1**,
+and a four-animation door *loads* all four while the door path plays only two.
+Indices 2 and 3 are recorded as deliberately unreached so a later pass does not
+"fix" the port by playing one of them.
+
+### One of the twenty could move today
+
+`elevator_door`'s animations (51, 52) are **BTP0** -- a texture-pattern
+flipbook, which `Gen4TexAnim` already renders. The other nineteen are BCA0 and
+need a pose threaded into the prop draw. The check asserts the complement (19
+entirely BCA0) so a second flipbook door appearing is caught rather than
+averaged away.
+
+### `tools/gen4_prop_anim_check.lua` (NEW, 228 checks)
+
+Every row re-derived from the cartridge: the record size, the pad byte, the
+offset measured both ways with a margin requirement, each door's
+`build_model` member looked up through `Gen4Archives.find`, each id list, the
+deferred-load flag, the animation magics, the 11/9 count split, the independence
+of count from sound type, and the open/close lookup. Eleven planted faults, each
+md5-verified and each landing on its own assertion.
+
+### Suite
+
+PASS=68 (up one), REPORT=4, NOSPEC=41, no FAIL, SKIP, ERROR or PASS*. Gen 2 and
+Gen 3 clean. Registry unchanged at 428 -- this pass adds no script verbs.
+
+### Still not complete
+
+Nothing animates yet. What this pass changes is that the animation for any door
+and any action is now a derived lookup rather than an open question, and the
+three things a renderer pass needs are all identified and present: the pairing
+(`Gen4PropAnim`), the per-frame matrices (`Gen4Anim.jointMatrices`), and the
+draw that takes a pose (`Gen4Model:posed`). The missing step is the extractor
+pairing `bm_anime` against `build_model` **across archives** using this table,
+so the tracks are in the cache, and the prop draw asking for a pose.
+
+91. **The door sounds must be unchanged** -- pass 178's items 65-70 all still
+    hold, because this pass touched no sound and no search. This is the
+    regression check on that.
+92. **Nothing may have started animating by accident.** Doors should still snap
+    open as before; if one moves, the renderer path has been touched when it
+    was not meant to be.
+93. **Gen 1, 2 and 3 doors are untouched** -- one door in Crystal and one in
+    Emerald.
+
+## Pass 184 -- the extractor pairs across archives, and the tracks are real
+
+Pass 183 found the join; this puts it where the cache is built.
+
+The extractor decided "can anything wear this joint animation?" by looking for
+a model in the **same archive** with that many nodes:
+
+```lua
+local wearable = {}
+for _, model in ipairs(set.models) do wearable[#model.nodes] = true end
+```
+
+`bm_anime` has no models, so `wearable` was empty and all 98 of its animations
+came out `unworn`. Right by the rule, wrong about the cartridge.
+
+`RomExtractorGen4:propAnimationClaims()` now builds
+`{ [bm_anime member] = { prop model ids... } }` from `bm_anime_list.narc`, and
+an archive entry that declares `claims = true` takes that route instead of
+counting nodes. The claiming prop models are recorded on the animation as
+`record.props` -- which is the join a renderer needs and the node count could
+never have given, because a node count does not say *which* prop.
+
+### What it produced, measured
+
+| | |
+|---|---|
+| props carrying animations | 112 |
+| `bm_anime` members claimed | **98 of 98** -- nothing orphaned |
+| archive contents | 32 BCA0, 43 BTA0, 23 BTP0 |
+| joint animations now worn | **32**, none left unworn |
+| joints | 90 |
+| joint-frames | 13,093, the longest animation 600 frames |
+| packed matrices | **613.7 KB**, every track passing `verifyTrack` |
+
+Every door animation is claimed, and every claimed BCA0 decodes to joint
+tracks that round-trip.
+
+### The old comment's number was right, and the cost is paid deliberately
+
+The comment being replaced said writing these matrices "cost 2.2 MB of cache
+for poses nothing could apply". 613.7 KB of packed bytes becomes roughly that
+as escaped Lua string literals, so **the estimate was correct**.
+
+Two things are now said plainly in its place, because the first draft of my own
+replacement got one of them wrong:
+
+* **The claim test buys no size saving here.** All 98 members are claimed, so
+  the filter changes `unworn` from 98-of-98 to none and saves nothing. I had
+  written "claimed is the smaller set, not the larger one", which is false for
+  this archive; the measurement corrected it.
+* **What changed is the reason, not the trade.** The old decision was right
+  while nothing could apply a pose. The doors alone are 48 script sites now
+  that the join exists, so the 2.2 MB is deliberate rather than an oversight.
+
+### Two check faults the plants found
+
+Both are shapes already in `claude/check_design_lessons.md`, which is the point
+of keeping that file.
+
+**The check was grading a mirror (shape 6a).** Section 7's first draft built
+the claim map itself, with the same ten lines the extractor uses. A plant that
+emptied the *extractor's* loop changed nothing -- 275 checks green while the
+real builder returned an empty table. It now constructs a real
+`RomExtractorGen4` over the cartridge and calls `propAnimationClaims()`, so the
+subject is graded instead of a copy of it.
+
+**A name is not a call (shape 3b).** The source assertion read
+`src:find("propAnimationClaims%s*%(")`, which matches
+`function RomExtractorGen4:propAnimationClaims()` -- the **definition**. A plant
+that deleted the only call passed. Anchored on `self:propAnimationClaims%s*%(`,
+which only a call can be.
+
+Both were found the same way: a plant that landed, changed the md5, and left
+everything green. That is a finding about the check, not a bad plant.
+
+### `tools/gen4_prop_anim_check.lua` 228 -> 277 checks
+
+Section 7 added: nothing orphaned, the archive's kind split, zero still
+unworn, 32 worn, 90 joints, every track verified, the packed size held between
+a floor and a ceiling (a collapse means the decode stopped producing frames; a
+jump means something is written twice), and four source assertions that the
+extractor really asks -- including that the **`bm_anime` entry specifically**
+declares `claims`, since another archive declaring it would otherwise satisfy
+the general assertion while leaving the 98 unworn.
+
+Fourteen planted faults across the two passes, each md5-verified and each
+landing on its own assertion.
+
+### Suite
+
+PASS=68, REPORT=4, NOSPEC=41, no FAIL, SKIP, ERROR or PASS*. Registry unchanged
+at 428. Gen 2 and Gen 3 clean. `gen4_cache_integrity_check` and
+`gen4_cache_wiring_check` both still clean, which matters because this pass
+changes what the cache will contain.
+
+### Still not complete
+
+**The cache has not been regenerated.** This pass changes what a re-import
+would write; the installed cache still has the 98 animations marked `unworn`,
+so nothing has changed on disk for the game yet. The check proves the pairing
+against the cartridge directly rather than against a regenerated cache, which
+is why it can assert all of the above without a 10 MB rebuild.
+
+So the remaining steps are: re-import (or a models-stage run) to get the tracks
+into `gen4_models.lua`, then `Gen4Ground` asking for a pose when a prop has a
+running one-shot. The second is the only one still needing design.
+
+94. **A re-import must still produce a loadable cache** -- the stage now reads a
+    third archive and writes a `props` field on animation records, so the
+    cache-integrity and cache-wiring checks are the ones to watch.
+95. **The cache grows by about 2.2 MB** and that is expected, not a leak.
+96. **Nothing else may have started wearing a pose.** The node-count route is
+    unchanged for every other archive -- the title sequence and the starter
+    models should be exactly as they were.
+
+## Pass 185 -- the one-shot runner, and a wait that was unreachable
+
+Two faults, and the second hid the first.
+
+`Commands.g4_wait_animation` was `noop`. And there were **two**
+`L.waitforanimation` lowerings in `Gen4ScriptVM.lua` -- an early one onto
+`g4_wait_animation` and a later one onto `g4_noop` which, being later in the
+same table, silently overwrote it. So the handler was unreachable, and the
+declined-subject census filed all **48 sites** under "the door animation's
+wait". Two spellings of one command in one table, with both copies in the same
+file -- this port's recurring bug at its most domestic.
+
+The surviving lowering also threw the operand away. `waitforanimation` is
+`"b"` -- one byte, the **tag** -- and `ScrCmd_WaitForAnimation` reads it with
+`ScriptContext_ReadByte` and waits on
+`MapPropOneShotAnimationManager_IsAnimationLoopFinished(..., tag)`. So even the
+reachable spelling would have waited on the wrong thing.
+
+### `src/world/Gen4PropOneShot.lua` (NEW)
+
+Tag-keyed, like the cartridge's manager: `loaddooranimation` hands a tag,
+`playdooropenanimation` plays on it, `waitforanimation` waits on it,
+`unloadanimation` releases it. Keying on the model or the tile would be a
+second spelling of a join the scripts already make.
+
+**The prop is carried by identity.** `Gen4Doors.modelAt` finds the door in
+`terrain.chunks[land].objects` and now returns that object as a third value --
+third so every existing `local model, why = ...` caller keeps its reason. The
+renderer iterates the *same* table, so the object a script opened IS the object
+drawn, and no coordinate is compared twice.
+
+**Durations are derived.** Measured from `bm_anime.narc`: 6 to 15 frames. Two
+regularities the check asserts, because either breaking means the ids have
+moved -- open and close are always the same length as each other (5/6 both 15,
+7/8 both 8, 27/28 both 10, 29/30 both 9, 33/34 both 10, 51/52 both 8), and a
+four-animation door's *unplayed* pair is a different, shorter animation (7/8
+are 8 frames, 9/10 are 6). A door is open in about an eighth of a second.
+
+**A tag that is not running is finished**, and that is the one thing a real wait
+could get catastrophically wrong. A door this port cannot identify, or whose
+animation will not resolve, is never started -- so `waitforanimation` steps over
+it rather than freezing the script. The old no-op had that behaviour by
+accident; this has it on purpose, and the check asserts it four ways.
+
+**A finished one-shot holds its last frame.** Clearing on completion would snap
+the door shut the instant it finished opening; `unloadanimation` is what
+releases the slot, exactly as on the cartridge.
+
+### The renderer
+
+`Gen4Model:draw(viewProjection, pose, materials, ...)` has taken a pose as its
+second argument all along and every prop draw passed `nil`.
+`Gen4Ground:oneShotPose(object, building)` fills it from the cached joint
+tracks, and the two **live** prop draws now ask for one.
+
+**The first draft of that was cold by construction.** It read
+`self.overworld` -- a field `Gen4Ground` does not have and should not grow,
+since the renderer is built by `MapLoader` and must not depend on the
+controller. It would have answered nil for ever with nothing to say so. The
+overworld now **hands** the slot table over each frame
+(`ground.oneShots = OneShot.all(self)`), the renderer reads a plain field, and
+the check asserts both halves of the handoff *and* that `self.overworld` does
+not appear in that file at all.
+
+The one-shots advance from `update()` rather than the draw, for the reason
+`world.tick` does: a skipped frame must not stop a door closing, and a script
+waiting on one would then wait for ever.
+
+### What this pass deliberately does NOT do
+
+**Door props are still baked, so nothing moves yet.** `animationsFor` answers
+for *texture* animation only, so a door -- whose animation is NSBCA -- stays on
+the baked path and cannot move however correct `oneShotPose` is. Moving the
+twenty door props permanently onto a live path (which is what the cartridge
+effectively does, and what the texture-animated props already get) is a change
+across that bake guard, the `moving` selection in `bakeAnimated`, and the 2D
+passes.
+
+That cannot be checked without looking at the screen, and the cost of getting
+it wrong is a visible regression across the whole overworld. It is its own
+pass. A note saying so sits in the bake guard where a reader will look for it.
+
+Everything in this pass is therefore **inert until a re-import**: with no
+tracks in `animsByMember`, `oneShotPose` returns nil, and nil is the rest pose.
+No visual change, and no visual risk.
+
+### `tools/gen4_prop_anim_check.lua` 277 -> 387 checks
+
+Sections 8 and 9 added. Fifteen plants, and **five of them found faults in the
+check rather than the code** -- all shapes already in
+`claude/check_design_lessons.md`:
+
+- two faults in `advance`'s clamp landed silently, because stepping 0 -> 4 -> 8
+  never executes `8 > 8` and advancing an already-finished slot is skipped. The
+  clamp is only reachable by overshooting in **one** step, which the test now
+  does. *A branch no test reaches is not a tested branch.*
+- `OneShot.running(...).frame` **raised** instead of failing when a plant
+  cleared the slot, taking the run down before the summary. Bare indexing
+  replaced with guarded locals: a crash is a worse diagnostic than a FAIL.
+- the nil-length guards in `finished` and `advance` were cold -- `start`
+  refuses to make such a slot -- so the check now breaks a live slot on purpose
+  to reach them, and calls `finished` through `pcall` because the fault under
+  test is itself a nil comparison.
+
+Two were fixed in the subject rather than the check: `finished` and `advance`
+now treat a slot with no length as finished and skip it, which is the same
+contract as "a tag that is not running is finished" rather than a defensive
+hedge -- a broken `start` guard should fail on `start`'s own assertion, not
+raise inside the overworld's update every frame.
+
+### Suite
+
+PASS=68, REPORT=4, NOSPEC=41, no FAIL, SKIP, ERROR or PASS*. Registry
+unchanged at 428 -- `g4_wait_animation` already existed as a name; what changed
+is that it is now reachable and does something. Gen 2 and Gen 3 clean.
+
+97. **`waitforanimation` must not freeze anything.** 48 sites, and the risk
+    runs the other way now: a door the port cannot identify must step over.
+    Any script that hangs at a door is this.
+98. **Doors still do not move**, and that is expected until the bake split and
+    a re-import. The sounds must be exactly as pass 178 left them.
+99. **The overworld must render identically.** Two prop draws now pass a pose
+    instead of `nil`, and with no tracks in the cache that pose is nil -- so
+    any visual change at all is a fault.
+100. **Gen 1, 2 and 3 are untouched** -- the one-shot advance is behind
+     `GameVersion.isGen4()`.
+
+## Pass 186 -- two namespaces for one door
+
+Taken while de-risking the bake split, and it is the reason that split must not
+be done by name.
+
+**pokeplatinum's `doorModelIDs[]` names the FILE. The cache names the MODEL
+INSIDE the file. They disagree for nineteen of the twenty doors.**
+
+| `doorModelIDs[]` (file) | member | cache (NSBMD internal) |
+|---|---|---|
+| `door01` | 66 | `door01` |
+| `brown_wooden_door` | 67 | `t1_door1` |
+| `green_wooden_door` | 68 | `t2_door1` |
+| `iron_door` | 69 | `t2_door2` |
+| `pokecenter_door` | 70 | `p_door` |
+| `elevator_door` | 75 | `ele_door1` |
+| `pokecenter_inside_counter_door` | 128 | `counter_pc04` |
+| `jubilife_city_building_door` | 246 | `c1_door1` |
+| `hearthome_gym_inside_door` | 260 | `gym_door01` |
+| `gym_door` | 298 | `gym_door00` |
+| `blue_door` | 312 | `c3_door1` |
+| `iron_door_2` | 313 | `c3_door2` |
+| `pokecenter_inside_door` | 427 | `door_pc01` |
+| `yellow_wooden_door` | 438 | `t3_door1` |
+| `mansion_door` | 441 | `d3_door1` |
+| `veilstone_dpt_store_door` | 442 | `c5_door_s` |
+| `blue_wooden_door` | 444 | `c4_door1` |
+| `gts_inside_door` | 456 | `door_wi01` |
+| `card_door` | 484 | `card_door01` |
+| `hotel_grand_lake_door` | 527 | `l2_door1` |
+
+`Gen4Archives.find(MODEL_PATH, name .. ".nsbmd")` resolves the file name;
+`Gen4Ground.animsByName` and `animationsFor` key on the internal name. Both are
+correct -- they are different namespaces -- and **nothing had joined them**,
+because until now nothing had needed to.
+
+This is the recurring bug in its purest form: the same door spelled two ways in
+two tables that never meet.
+
+**`door01` agreeing is the dangerous part.** A reader who spot-checked one door
+would have concluded the two namespaces were the same. The check therefore
+asserts the count -- *exactly one* file name equals its internal name -- rather
+than asserting that they differ.
+
+**And `gym_door` -> `gym_door00` while `hearthome_gym_inside_door` ->
+`gym_door01`.** Those two are close enough to look like a typo of each other,
+and swapping them picks the wrong door with no symptom at all. Pinned as its own
+assertion.
+
+Pass 185's `oneShotPose` is right by construction because it keys on the
+`bm_anime` **member**, not on a name. The bake split that comes next decides,
+per prop, whether it is baked -- and doing that by name would have been wrong
+for nineteen doors out of twenty while looking right for the one anybody
+checked.
+
+### The two prop selections were asking different questions
+
+The static bake draws every object `animationsFor` answers nil for; the animated
+bake draws every object it answers records for. They must be **complements** --
+neither means a prop vanishes, both means it is drawn twice.
+
+The bake guard asked `animationsFor(object.model, object.archive)`. The animated
+bake asked `animationsFor(object.model)`, with no archive. For a `fldeff` prop
+those consult **different models**: the guard returns nil for fldeff and bakes
+it, while the selection looked the index up among the *buildings* and could have
+found a texture animation belonging to an unrelated model -- putting the prop in
+both passes.
+
+Measured: **zero fldeff props are placed in any terrain chunk** (the signposts
+come through the map-object path, not this one), so there was nothing for the
+mismatch to catch. Fixed anyway, and the check now requires all four calls to
+pass both arguments, because two selections that must be complements cannot
+read different tables.
+
+### Also asserted: position is member for the buildings
+
+Every lookup in this area, and the static bake itself, reads
+`models[index + 1]`. The extractor states that holds for all 590 buildings; the
+check now verifies every `byMember` entry is `member + 1` rather than trusting
+it, because 20 door rows and every prop draw depend on it.
+
+### `tools/gen4_prop_anim_check.lua` 387 -> 403 checks
+
+Sections 10 and 11. All twenty internal names re-derived from the cache by
+member, the one-agreement count, the near-miss gym pair, no duplicate internal
+names (which would make the reverse map ambiguous), that the file names do NOT
+resolve against the cache for nineteen of them, the four `animationsFor` call
+sites, and the `byMember` invariant. Seven plants, each md5-verified and each
+landing on its own assertion.
+
+The fldeff count is **reported, not asserted at zero** -- a future pass that
+places signposts as terrain props should see that number move, and a check that
+forbade it would be a pin on today.
+
+### Suite
+
+PASS=68, REPORT=4, NOSPEC=41, no FAIL, SKIP, ERROR or PASS*. Registry unchanged
+at 428. Gen 2 and Gen 3 clean. `gen4_mapprops_check` (5,224 checks) clean, which
+is the one that would notice a prop selection going wrong.
+
+### Still not complete
+
+The bake split itself. What this pass removed is the trap waiting inside it:
+the split must key on member, not name, and its two selections must ask the
+same question. Both are now asserted.
+
+101. **Every prop must still be drawn exactly once.** The animated bake's
+     selection changed; a prop drawn twice shows as a brighter or
+     double-shadowed object, and one drawn zero times simply vanishes.
+102. **Signposts and mailboxes must be unchanged** -- they are the fldeff props
+     the archive argument was about, and they come through a different path.
+103. **Gen 1, 2 and 3 are untouched** -- nothing here runs outside the Gen 4
+     ground renderer.
+
+## Pass 187 -- the bake split, against the regenerated cache
+
+The re-import landed, and every prediction pass 184 made is confirmed on the
+real file:
+
+| | before | after |
+|---|---|---|
+| `gen4_models.lua` | 10.0 MB | **12.3 MB** (predicted ~+2.2 MB) |
+| `tracks` records | 20 | **52** (+32, the BCA0 count) |
+| `unworn` records | 32 | **0** |
+| `props` records | 0 | **32** |
+
+And the tracks are real. Of the doors' 62 animation ids, **60 carry usable
+joint tracks** -- the two that do not are `elevator_door`'s 51 and 52, which
+are BTP0, exactly as pass 183 said. Animation 7's `props` lists eleven prop
+models, which is the eleven ordinary hinged doors, so the claim table round
+trips. And the first joint track of animation 7 is the **identity matrix at
+frame 0** and a **90-degree rotation about Y at frame 7**: a door swinging open
+a quarter turn.
+
+### The split
+
+`Gen4Ground:oneShotProps()` derives, from the cache, the set of prop models a
+tracked joint animation claims -- **by index**, because the two namespaces
+disagree for nineteen of the twenty doors (pass 186). 39 prop models, 218
+placements: the twenty doors plus nineteen other animated props, which is the
+PC, the honey trees and the lift platform coming along for free.
+
+`movesAtRuntime(index, archive)` is the single test both prop selections use,
+and the two decisions are now **named methods**:
+
+```lua
+function Gen4Ground:shouldBake(object)
+  return not self:shouldAnimate(object)
+end
+```
+
+written as one negation of the other rather than as two tests, because two
+tests is how they drift.
+
+**The measured cost, which is the reason to write it down.** 72 more chunks of
+666 (10.8%) now rebuild their moving canvas each frame, on top of the 119
+(17.9%) that already did. A door is only in motion for eight frames, so
+conditional membership -- in the moving set only while a one-shot runs -- would
+cost nothing at rest; it needs the static canvas invalidated on start *and* on
+unload, and a door holds its open pose until the unload, so the saving is
+smaller than it looks. Taken the simple way, with the number recorded, because
+a prop drawn twice or not at all is a worse failure than a chunk re-baking.
+
+### Three plants that did not fail, and what each one was
+
+All three are shapes already in `claude/check_design_lessons.md`. This is the
+most any one pass has produced, and the section they were in was the pass's
+central assertion -- which is the argument for planting against the assertion
+you trust most.
+
+**The complement test was modelling the selections (6a).** It recomputed
+`not movesAtRuntime(...)` for itself. A plant that reverted the static guard to
+the old predicate -- putting every door in **both** passes, drawn twice --
+changed nothing and 427 checks stayed green. Fixed by making the subject expose
+the decision: `shouldBake` and `shouldAnimate` are methods now, the two passes
+call them, and the check asks them.
+
+**A stale pin (shape 2).** Pass 186 asserted `animationsFor(object.model,
+object.archive)` appeared exactly four times. Pass 187 replaced the static
+guard with `movesAtRuntime(...)`, so the assertion failed on a correct tree.
+The fact worth holding was never the count of one spelling -- it is that **no
+per-object call omits the archive**, which is what it asserts now.
+
+**And one plant revealed a real gap in the extractor.** Dropping the `tracks`
+requirement from the renderer's one-shot set changed nothing -- because every
+record carrying `props` also carried `tracks`. That is only true because
+`props` was written inside the loop over `pending`, which holds **BCA0 records
+alone**: the 43 BTA0 and 23 BTP0 claims were never recorded, `elevator_door`
+among them -- the one door that could move through the texture path. The claim
+is now recorded on every animation in the set.
+
+That one needs **another re-import** to appear in the cache. The check asserts
+it at the source, so it cannot be lost in the meantime.
+
+### A measurement that cannot fail, said so
+
+With `shouldBake` defined as `not shouldAnimate`, the complement is true by
+construction: the "in both" and "in neither" assertions can no longer fail. A
+plant that made `shouldAnimate` answer false for everything left both green.
+
+They are kept as cheap cover for the day somebody writes the two decisions as
+two tests -- and the comment says plainly that the assertion actually protecting
+the complement is the source one requiring that definition. A measurement that
+cannot fail says nothing, and a check that pretends otherwise is worse than one
+that admits it.
+
+### `tools/gen4_prop_anim_check.lua` 403 -> 430 checks
+
+Sections 12 and 13: the cache's track and claim counts as floors, the 39-model
+one-shot set, every door present by index with `elevator_door` correctly
+absent, the complement over all **3,476 placed props** (2,968 baked, 508
+animated), the 211/218 split, the three pose sites, 60 door animations with
+usable tracks, `elevator_door`'s two with none, and -- the one that proves the
+door will visibly move -- animation 7's frame 0 being the identity and its last
+frame differing from it.
+
+Eleven plants this pass, each md5-verified, each landing on its own assertion
+after the three above were repaired.
+
+### Suite
+
+PASS=68, REPORT=4, NOSPEC=41, no FAIL, SKIP, ERROR or PASS*. Registry 428.
+Gen 2 and Gen 3 clean. `gen4_cache_integrity_check`, `gen4_cache_wiring_check`
+and `gen4_mapprops_check` (5,224 checks) all clean **against the regenerated
+cache**, which is what items 94-96 asked for.
+
+### Still not complete
+
+Doors should now animate. I cannot see the screen, so that is a claim for
+play-test rather than a result -- and items 101 and 104 are the two that would
+show it going wrong.
+
+104. **Open a door and watch it swing.** A hinged door should rotate a quarter
+     turn over eight frames, about an eighth of a second, and hold open until
+     the script closes it. `elevator_door` animates by texture instead and may
+     not move yet.
+105. **Watch for a stutter entering a town.** 72 more chunks now rebuild a
+     canvas each frame; if that is visible, conditional membership is the fix
+     and the trade is written down in `Gen4Ground`.
+106. **`waitforanimation` must still not freeze** -- now that one-shots really
+     run, the wait really waits, and a door whose animation misresolves is the
+     case to watch.
+
+## Pass 188 -- how a door actually moves, measured
+
+Pass 187 proved a door *can* be posed. This pass asked whether it will look
+like the cartridge, and the answer came with three corrections.
+
+### Sliding doors do not swing, they squash
+
+Read out of the extracted joint matrices rather than assumed:
+
+| kind | animations | motion |
+|---|---|---|
+| hinged | 7/8, 9/10, 27/28, 29/30, 33/34 | a 90-degree rotation about Y; frame 0 is the identity and the last frame is `[0 0 -1 \| 0 1 0 \| 1 0 0]` (33/34 mirror it, swinging the other way) |
+| sliding | 5/6 (the Poké Centre family) | an X **scale** from 1.00 to **0.20**, with no rotation at all |
+
+Six of the twenty doors are the second kind. A reader who pictured all twenty
+swinging would be wrong about the Poké Centre, its inside door and the GTS.
+
+### Open and close are exact mirrors, and the data says so
+
+Open's **last** frame equals close's **first**, and open's first equals close's
+last, for all six pairs. So `close` is its own animation running open-to-shut
+*forwards* -- not the open animation reversed, although the engine has a
+`reversed` flag for other things. That is the cartridge's data confirming
+pret's index rule (0 open, 1 close) rather than only its source.
+
+### The last frame is held, confirmed from the cartridge
+
+```c
+if (animation->paused || animation->looping == FALSE) continue;
+MapPropAnimation_AdvanceFrame(animation);
+if (loopCount != -1 && IsOnLastFrame(animation)) {
+    if (currentLoop + 1 >= loopCount) animation->looping = FALSE;
+}
+```
+
+Once `looping` goes false the animation is never advanced again, and
+`IsAnimationLoopFinished` is literally `looping == FALSE`. So the prop sits on
+its final frame until the slot is released -- which is exactly what
+`Gen4PropOneShot.advance`'s clamp reproduces, and why a finished one-shot is
+kept rather than cleared. Pass 185 got this right from reasoning; it is now
+cited.
+
+### The Veilstone door's panels really do shift, and that is the ROM
+
+The sharpest finding, and it is a cartridge quirk rather than a port fault.
+
+Animation 29 is claimed by **two** models: `d3_door1` (the mansion door, panels
+at ±10 on X) and `c5_door_s` (the Veilstone department store, panels at
+**±12**). Its frame 0 carries −10 and +10 as real **constant translation
+channels** -- `isSet(flags, 1)`, the translation-absent bit, is not set -- so
+the hardware writes those values to the joints.
+
+Opening the Veilstone door therefore moves its panels two units inward.
+Applying the animation verbatim is what the DS does, so **preserving the
+model's own translation instead would be the divergence**. Pinned as an
+enumerated exception, with an assertion that fails if it ever stops being true,
+so it cannot be "fixed" into a difference.
+
+Everything else rests exactly where the static bake draws it: **29 of the 30
+animation-and-model pairings** match their model's own node matrices at frame
+0, so a door joining the animated pass does not pop.
+
+### Four more plants that did not fail
+
+**The pose arithmetic was never executed.** `oneShotPose` needs a built model
+and therefore LOVE, so the check had only read its source -- and faults inside
+it were invisible: writing every track to joint 0 (which leaves two of the
+mansion door's three joints at rest, so it half-moves) and dropping the frame
+clamp both changed nothing. The arithmetic is `Gen4Ground:jointMatricesAt(slot)`
+now, which needs no graphics, and section 15 runs it.
+
+The clamp is not tidiness. `advance` holds a finished one-shot at
+`frame == frames`, and a track has `frames` entries indexed from zero -- so the
+last readable index is `frames - 1` and asking for `frame` itself reads one past
+the end of **every door standing open**.
+
+**A sample of one is not a measurement.** Section 13 inspected `tracks[1]` of
+animation 7 and concluded the doors move. Four of the twelve door animations
+carry **three** joints with joint 1 static at both ends -- the motion is in
+joint 2 -- so that check said nothing about them.
+
+**And my own "rest pose is the identity" assertion was wrong**, failing on
+animation 29 on a correct tree. The identity is only the rest pose for the
+single-joint doors; a multi-joint door's rest frame carries its model's node
+translations. The assertion now compares against the models themselves.
+
+**A duplicate counted twice.** The motion-kind check built one list from both
+tables, so an id in both counted twice and "twelve distinct animations" passed
+over eleven. Deduped, with an assertion that no animation is listed as both
+rotating and scaling.
+
+### `tools/gen4_prop_anim_check.lua` 430 -> 531 checks
+
+Sections 14 and 15. Suite PASS=68, REPORT=4, NOSPEC=41, no FAIL, SKIP, ERROR
+or PASS*. Registry 428. Gen 2 and Gen 3 clean.
+
+### Still not complete
+
+The `props`-on-every-animation fix from pass 187 still needs a second
+re-import before `elevator_door` can move through the texture path.
+
+107. **A Poké Centre door should SQUASH, not swing** -- an X scale to a fifth
+     over fifteen frames. If it rotates, the wrong animation is being played.
+108. **The mansion door has three moving panels**, not one; if only part of it
+     moves, the pose is writing every joint to one index.
+109. **The Veilstone department store's panels shift about two units inward as
+     it opens.** That is the cartridge's behaviour, derived from the animation
+     it shares with the mansion door -- please do not report it as a bug.
+110. **A door held open must stay open and must not flicker** -- the held pose
+     reads the last frame, and an unclamped index would read past the end of
+     the track every frame it stands open.
+
+## Pass 189 -- the persisted map features: one slot, and the var that was not a boolean
+
+The declined census's biggest remaining subject: **53 sites, twelve stub rows**,
+described in the ranking as *"nine separate implementations"*. Measuring it
+says both halves of that were wrong, and finding out how was the pass.
+
+### It is one slot, not nine systems
+
+The cartridge keeps exactly
+
+```c
+typedef struct PersistedMapFeatures {
+    int id;
+    u8  buffer[32];
+} PersistedMapFeatures;
+```
+
+in the misc save block. One id says which feature the save currently holds
+state for; the 32 bytes are reinterpreted per feature, and
+`PersistedMapFeatures_GetBuffer` GF_ASSERTs that the id you ask for is the id
+that is there. So the nine `initpersistedmapfeaturesfor*` rows are nine
+**constructors over one union**, and the thing to build first is the slot.
+
+The union is exactly big enough and no bigger. `DistWorldPersistedData` is
+`u32 valid:1 + hiddenGhostPropGroups:24 + currentFloatingPlatformIndex:4 +
+padding:3` -- one u32 -- plus four u16, a u32 and `u8 dummy10[16]`:
+4 + 8 + 4 + 16 = **32**, which is `PERSISTED_MAP_FEATURES_BUFFER_SIZE`. The
+largest tenant fills the slot to the byte, which is what says it was sized for
+these structures rather than rounded up. Derived in the check from the header's
+own bitfield widths, so the arithmetic is re-done every run.
+
+### The census under-counted the subject by a third, and the reason is the census
+
+Walking the cartridge for the whole family finds **82 sites across nineteen
+commands**. Twenty-four of them, over **six commands, had no lowering at all**:
+
+| command | sites |
+|---|---|
+| `setplayerheightcalculationenabled` | 12 |
+| `checkgreatmarshtramlocation` | 6 |
+| `movegreatmarshtram` | 2 |
+| `movehearthomegymdplift` | 2 |
+| `initgreatmarshtram` | 1 |
+| `initpersistedmapfeaturesforvilla` | 1 |
+
+The census ranks **declared** stubs: it reads its subject out of the prose in
+`g4_noop` / `g4_no_feature` rows, which is the right place, because the subject
+exists nowhere else. But a command with no lowering emits neither row, names no
+subject, and therefore cannot enter the ranking, cannot be classified, and
+cannot be reported. **The tool built to stop a subject hiding had a blind spot
+shaped exactly like the worst case** -- an unlowered command is strictly worse
+than a declared one, because it is stepped over, so an operand it was meant to
+write keeps whatever the last script left there.
+
+53 was the lowered part of 82. `gen4_declined_census_check` now has a
+**section 5** that counts both and prints the two rankings side by side: 301
+unlowered commands over 1,002 sites, dominated by the large absent systems (the
+Battle Tower at 121, the union room, communications, the contests). Those are
+reported rather than classified -- an argued list of 300 names would rot faster
+than it informed -- but the persisted-feature family is **fail-closed**: every
+command whose `ScrCmd_*` reaches `PersistedMapFeatures_*`,
+`DynamicMapFeatures_*` or `GreatMarshTram_*` must be lowered, checked against
+`Gen4ScriptOps.COMMANDS` so a command that exists and is not in the list fails
+too.
+
+### One of the six was a lie: five and six, not one and zero
+
+`checkgreatmarshtramlocation <location>, <destVar>` is the Great Marsh tram's
+own test, and all six of its sites read:
+
+```
+checkgreatmarshtramlocation 0, 0x8004
+setvarfromvalue             0x8005, 0
+comparevartovalue           0x8004, 6        <-- SIX
+callif                      1, +0x464        --> movegreatmarshtram 0x8005, 3
+```
+
+`GREAT_MARSH_TRAM_AT_LOCATION` is **5** and `NOT_AT_LOCATION` is **6**. They
+are not 1 and 0, and the script compares against the literal 6. Unlowered,
+0x8004 keeps whatever the previous script put there, so whether the tram is
+fetched is decided by the last unrelated command to touch that var. And a port
+that wrote the "obvious" boolean would have been **wrong at all six sites in
+the same direction** -- the compare would never match, the tram would never be
+summoned, and the symptom is a player standing at a stop that never answers.
+The check reads the literal out of the cartridge's own script bytes at all six
+sites and asserts that each one is followed by a branch, so neither the values
+nor the fact that something acts on them is taken on trust.
+
+All twelve `setplayerheightcalculationenabled` sites are in the **same script
+member** (497) as those six and both `movegreatmarshtram` rows. Twelve sites
+sounded like a system; it is one script bracketing six rides so the player is
+not dragged up and down by the tram prop's own plate. Counting *where* the
+sites are, not just how many, turned the family's largest unlowered command
+into its smallest subject.
+
+### Pastoria's gates pair with the water inverted
+
+`PastoriaGym_DynamicMapFeaturesCheckCollision` blocks a **HIGH**-ground tile
+unless the height is `PASTORIA_WATER_HEIGHT_LOW`, a MIDDLE-ground tile unless
+MIDDLE, and a **LOW**-ground tile unless **HIGH**. High pairs with low, low
+with high, and only the middle one agrees with its name. Transcribed in that
+order on purpose, and the check states it as the invariant
+(`H_GROUND`'s level must be *below* `L_GROUND`'s) rather than as three rows, so
+a reader who "fixed" the apparent mix-up fails rather than quietly swapping
+which gates are open.
+
+The other initial values that a merely-cleared buffer would get wrong:
+
+| feature | initial state | why it matters |
+|---|---|---|
+| Pastoria | `pressedButton = GREEN` | GREEN is **1**; the enum's zero is ORANGE, so a cleared buffer comes up at LOW water -- a different gym |
+| Canalave | 24-platform bitfield, ten set | `0x00AD0DC0`, from `sCanalaveGymPlatformsStartInPositionB`, re-derived from pret and round-tripped through the unpacker |
+| Sunyshore | room -> rotation 2, 1, 0 | **and** forced back to 0 when the player's own z equals that room's entrance z (14, 21, 25) -- a room-entry test, not a constant, so the same room initialises two ways |
+| Great Marsh | `location = AREA_5_6`, **only if not already the marsh** | the one constructor of eleven that checks the id first; all six marsh maps run that init script, so an unconditional stamp sends the tram home every time you change area -- which is exactly the state the six branch sites test |
+| Eterna | `state = 0`, re-read from a var | capped at `DEFEATED_GYM_LEADER`, which is what stops it walking past the end of `sEternaGymClockTimes` |
+
+`GreatMarshTram_MoveToLocation` is transcribed as its **three arms with their
+else-branches**, not as "go to the destination": from area 1-2 the destination
+is honoured only when it is 3-4, so asking to go from 1-2 to 1-2 moves the tram
+to **5-6**. A self-move is not a no-op, and all nine from/to pairs are asserted.
+
+### The Eterna clock is an honest no, established rather than assumed
+
+`advanceeternagymclock` writes a **var** -- and a var is the one kind of state a
+script can branch on, so this needed checking rather than arguing.
+`VAR_ETERNA_GYM_FLOWER_CLOCK_STATE` is 0x404B by the same enum walk the port's
+other var ids come from (three anchors hold). Scanning **all 1,124 members** of
+`scr_seq.narc` for it finds **zero** sites: the var exists so that
+`EternaGym_DynamicMapFeaturesInit` can pose the hands on a later entry, and
+nothing else reads it. So the gym floor stays open and no branch anywhere takes
+a wrong arm. Tier two of the four, not tier three.
+
+### The three dispatch tables are three different sets
+
+`dynamic_map_features.c` has `sInitFuncs`, `sFreeFuncs` and
+`sCheckCollisionFuncs`, each with one entry per feature and NULL where there is
+none. They are **10 / 7 / 7**, and the exceptions are not the same features:
+Pastoria has a collision function and no free; **Hearthome has a free function
+and no collision**; the Great Marsh and the platform lift have only an init. A
+port that assumed "a feature has all three" would invent a Hearthome collision
+function the cartridge does not have and then have to decide what it does. All
+three sets are re-derived from pret's arrays, with a separate assertion that
+they are still three different sizes, so collapsing them into one table fails.
+
+(Hearthome having no collision function is the same fact from the other side as
+`movehearthomegymdplift` being dead code: the two task functions are
+`HearthomeGymDP_RaiseLift` and `HearthomeGymDP_LowerLift` -- the **DP** suffix
+is the cartridge's own. Platinum rebuilt that gym as Fantina's quiz doors and
+left the lift in the overlay with two script sites still calling it. There is no
+lift to collide with any more.)
+
+### Why there is no collision resolver, measured three ways
+
+The census ranked this subject because three gyms put part of their puzzle in
+the **map**, as behaviour **0x59** `DYNAMIC_HEIGHT_COLLISION`, and this port
+turns every non-void cell into collision 0 -- so those cells read as ordinary
+floor and the puzzle is absent rather than impassable.
+
+**First, the recorded numbers were wrong**, and the error is visible once you
+count rather than quote:
+
+| | recorded | measured |
+|---|---|---|
+| Canalave (chunk 225) | 293 | **293** |
+| Pastoria (chunks 223, 224) | 356 | **445** |
+| Sunyshore (chunks 296-298) | 293 | **411** |
+| total | 942 | **1,149** |
+
+Sunyshore's figure had been copied from Canalave's -- the same 293 twice -- and
+Pastoria's was 89 short. The behaviour appears in those six chunks and
+**nowhere else**, which was the part worth checking and is still true, so the
+conclusion survived its own arithmetic. The H/M/L gate counts (10, 6, 10) were
+right. All of it is now re-measured every run, and the six chunks are tied back
+to `C02GYM0101`, `C06GYM0101` and `C08GYM0101-3` through the headers rather
+than left as three magic numbers.
+
+**Second, the obvious fix is a locked gym.** "0x59 means dynamic, so block it"
+is the reading the behaviour's name invites. Searching over **(cell, water
+level)** -- because the level changes while you walk, so standing on a button
+is a move in the state space -- from Pastoria's entrance warp, whose
+coordinates come from the zone event data rather than from reading the map:
+
+| reading | cells reachable | buttons reachable |
+|---|---|---|
+| 0x59 walkable, gates ignored (today) | 708 of 1,325 | 10 of 10 |
+| 0x59 walkable, gates enforced | **708** | **10** |
+| 0x59 **blocked**, gates enforced | **57** | **0** |
+
+No button means no way to change the level, so blocking those cells is not a
+harder gym, it is an **unfinishable** one. The first draft of this measurement
+used a plain flood and reported 219 reachable cells, which looked survivable --
+the flood was ignoring the gates, so it was crediting the player with gates the
+cartridge keeps shut. **A flood cannot answer "is this finishable".**
+
+**Third, and this is why the resolver is deferred: the gates alone change
+nothing.** 708 either way. Pastoria's 26 H/M/L cells are a 22-cell detour at
+the initial level, and the thing that makes the gym a puzzle is the height
+arithmetic the gates sit on. The cartridge's test compares the tile's level
+against the **player's own y**, and the player's y at a cell is whichever of
+the static BDHC height and the water plate's height is nearer to the y they
+already have, with a step refused only once the two differ by 20 units. The
+BDHC answers 0, 8, 24, 32, 40, 56 and 64 across Pastoria's two chunks -- and
+the three water levels are 0, 32 and 64, three of those exactly. **The gym is a
+three-storey building and the water is the floor that moves between its
+storeys.**
+
+This port's collision is two-dimensional (plus Gen 3's elevation bytes, which
+Gen 4 maps do not carry). Giving the player a height is an engine change, not a
+gym feature, and it is the honest next pass. Implementing the gates without it
+would shut 26 cells the cartridge opens whenever the player's height does not
+happen to match -- trading a missing puzzle for a wrong one, which is worse.
+
+So the resolvers are **declared**, the registry is empty and asserted empty,
+and `checkCollision` answers "not handled" for every feature -- which is the
+truth rather than a stub. The contract it keeps is the cartridge's three-way
+one, because collapsing it to a boolean would lose Canalave entirely:
+
+- `handled = false` -- no opinion, ask the map;
+- `handled, true` -- blocked whatever the map says (Pastoria, which only ever
+  overrides *to* block: its resolver returns FALSE at the end);
+- `handled, false` -- **open** whatever the map says (Canalave, whose resolver
+  returns TRUE unconditionally and whose per-floor collision maps are the only
+  authority in that gym).
+
+### Four check faults worth remembering
+
+- **A lookup that matched nothing and reported agreement.** The family
+  completeness test read `Ops.OPS or Ops.ops or Ops`, fell through to the module
+  table, found no `{name, spec}` rows in it, and passed -- so a plant that
+  deleted `checkgreatmarshtramlocation` from the list stayed green. The table
+  is `Gen4ScriptOps.COMMANDS`, now asserted non-empty before it is used.
+- **The handlers are in the shared registry.** Section 8's first draft looked
+  them up on the `Gen4Commands` module; `Gen4Commands.lua` opens
+  `local Commands = require("src.script.Commands")` and writes into *that*, so
+  all five lookups answered nil and the check failed on a correct tree. A
+  does-not-exist canary now guards it.
+- **A check that cannot find its subject SKIPS.** The Canalave array is in
+  `persisted_map_features_init.c`, not `gym_features.c` where every other
+  Canalave constant lives. Reading the wrong file reported "not run", which
+  looks like a pass at a glance.
+- **A flood is not a search.** See above: 219 versus 57.
+
+### State
+
+`tools/gen4_dynamic_map_features_check.lua`: **181 checks**, ten sections, and
+ten planted faults verified to land on their own assertion's message -- the
+straightened pairing, the boolean tram, the ORANGE default, the unconditional
+marsh init, the go-where-told tram, the dropped Sunyshore override, a `buffer`
+that ignores the id, an uncapped clock, a reverted no-op row and a swapped
+operand. `gen4_declined_census_check` 15 -> **30 checks**.
+
+Suite **PASS=69**, REPORT=4, NOSPEC=41, no FAIL/SKIP/ERROR/PASS*. Registry
+428 -> **433**. Gen 2 and Gen 3 clean.
+
+### Play-test items
+
+111. **The Great Marsh tram should come when you call it.** Walk to a tram stop
+     in an area the tram is not parked at; the script should fetch it rather
+     than do nothing. This is the one item with a behaviour change a player can
+     see -- six script sites that were branching on a stale var.
+112. **The tram should remember where it is.** Ride it, walk between marsh
+     areas, come back: it should still be where you left it, not back at
+     area 5-6.
+113. **The three gyms should still be crossable.** Pastoria, Canalave and
+     Sunyshore are unchanged by this pass -- their puzzles are still absent --
+     and the point of the item is that they have not become *harder*: if any
+     cell has started blocking, the resolver that was deliberately left out has
+     been half-written.
+114. **Eterna's gym floor should still be open** and its trainers reachable in
+     any order; the clock state is now advanced, and nothing reads it.
+115. **Nothing new in the log on entering a gym.** The nine init rows now write
+     state instead of reporting an absence, so the "is decoded and lowered but
+     ... is not built yet" lines for them should be gone.
+
+## Pass 190 -- the prop animation join: the port's was by name, the cartridge's is by claim
+
+### Correction first: this section's own account of the re-import was wrong
+
+The first version of this section said *"the models stage re-ran eight minutes
+before the extractor fix landed, and nothing else in the cache was re-extracted
+at all"*, and concluded that pass 187's prediction was untested. **Both halves
+were false, and the cause is worth more than the conclusion was.**
+
+Every measurement behind them came from the container's read mount of Cedric's
+machine, and **that mount is a point-in-time snapshot, not a live view**:
+
+| off the snapshot | the live file |
+|---|---|
+| `platinum/data/generated/gen4_models.lua` **01:10** | **02:39** |
+| every other cache file **24-29 September** | **02:38-02:40** |
+| `find platinum/assets/generated -type f` -> **401** | many times that |
+
+Cedric had re-imported **fully** while the pass was being written. The 401-file
+asset tree was the snapshot being partial, not his install, and the five
+"failures" that came out of it -- `gen4_ball_throw_check`,
+`gen4_battlescene_check`, `gen4_sheet_layout_check`,
+`gen4_texture_files_check` -- are shape 1 of
+`claude/check_design_lessons.md` arriving through a new door. It is now 1a in
+that file: **a snapshot of the subject is not the subject**, and anything
+asserted about the installed files is measured through the device shell.
+
+### What the live cache really says
+
+`src/import/RomExtractorGen4.lua` on the device is 03:11 -- this pass's own
+commit -- so the 02:39 import ran with the 187/189 tree: the `props` fix
+present, this pass's claim-matching change not. Measured **structurally**, by
+loading the table rather than reading the file:
+
+| | |
+|---|---|
+| field animations | **98** |
+| of those carrying `props` | **98** -- 32 BCA0, 43 BTA0, 23 BTP0 |
+| `tracks` across all six sets | **52** (field 32, fldeff 13, starter 4, title 3) |
+| `unworn` | 0 |
+| build models carrying flipbook pictures | **16** |
+
+**Pass 187's prediction is confirmed exactly.** All 98 claimed members carry
+their claiming props, and `tracks` is identical to the 52 pass 184's re-import
+gave -- nothing regressed.
+
+### The 95 and the 47 were a grep, and this is the trap worth keeping
+
+A quick `grep -o 'props = '` over the live file answers **95** of 98, and
+`'tracks = '` answers **47** where the previous import gave 52. Both numbers
+are plausible and both are wrong, and the second is the alarming shape: a drop
+after a re-import.
+
+The cache writer has a second spelling, for a value too large to sit inside the
+chunk it is being written into:
+
+```
+     95     props = {              47     tracks = {
+      3 __t["props"] = {            5 __t["tracks"] = (function
+```
+
+95 + 3 = 98. 47 + 5 = 52. What settles it in one command is asking for every
+spelling rather than the expected one --
+`grep -o '.\{0,14\}\bprops\b.\{0,14\}' … | sort | uniq -c` -- and the rule is
+simpler still: **a generated cache is a table, so load it; do not count its
+text.** Both checks here read it structurally, which is why they said 98 while
+the greps said 95. Recorded as 3c-ii in `claude/check_design_lessons.md`.
+
+### And the two stale-cache failures are gone
+
+Against the snapshot, `gen4_cache_integrity_check` reported five moves keeping a
+number although a handler row exists and 59 unimplemented effects against a
+pinned 54, and `gen4_constants_wiring_check` reported eight constants keys the
+extractor writes and the cache did not carry. The advice -- *a full re-import is
+needed* -- was right, and it has happened: against the live cache both are
+**clean** (128 checks / 0, and 14 / 0), as are `gen4_cache_wiring_check` (30 /
+0) and `gen4_mapprops_check` (5,224 / 0).
+
+### The elevator door could not have moved, and the reasons were three
+
+`Gen4PropAnim.lua` has said since pass 183 that `elevator_door`'s BTP0 pair
+made it *"the one of the twenty that could move today"*. It could not, for three
+independent reasons in three different files:
+
+1. `Gen4Ground:oneShotProps` gated one-shot capability on `record.tracks`,
+   which no BTP0 record has -- so `ele_door1` went to the **static** bake,
+   where the draw never asks for a pose or a material at all, and the runner's
+   eight frames advanced against a prop nothing was looking at;
+2. `Gen4Ground:animationsFor` joined an animation to a prop **by name**, and
+   the animations are `ele_door1_op` / `ele_door1_cl` while the model is
+   `ele_door1`;
+3. the extractor decoded a BTP0's alternate frames only for a model whose name
+   an animation *shared*, so `ele_door1`'s four `ele_door.*` pictures were
+   never written and there was nothing to flip through.
+
+That is the eighth instance of the pattern `claude/gen4_declined_subjects.md`
+tracks and the first where the stale claim is a **prediction** rather than a
+blocker -- which is why it survived seven passes. A stale blocker reads as a
+claim about the present and invites doubt; a stale prediction reads as a promise
+about the future and does not. It is 8a in the lessons file now.
+
+### And the join is wrong for 44 props, not one
+
+`animsByName` is this port's own join; the cartridge's runs through a third
+archive -- `area_build -> bm_anime_list : mapPropModelIDs`, then
+`bm_anime_list -> bm_anime : animeArchiveIDs`:
+
+| | |
+|---|---|
+| prop models claimed by a `bm_anime` animation | **112** |
+| of those, models sharing a NAME with one | 68 |
+| models reachable by the claim and NOT by a name | **44** |
+| name-reachable and not claim-reachable | **0** -- the claim is a strict superset |
+| of the 44: joint (already reached; `oneShotProps` keys on the claim) | 22 |
+| of the 44: texture -- twelve BTA0, ten BTP0 | **22** |
+| their placements across the 666 terrain chunks | **124** |
+
+The superset measurement is the control the whole fix rests on: if any model
+were name-reachable and not claimed, a union would not be the answer.
+
+```
+wfall3_4  wfall3_5  wfall16_5  wfall11_14  wfall7_4dun  wfall3_4dun
+      all six claimed by animation 18 (`wfall`, 61 frames, 3 SRT targets)
+      and not one of them named `wfall`.  PLATINUM'S WATERFALLS WERE STATIC.
+cy_slope, cy_slope_dun       animations 20/21 (`cy_slope_botm`/`_top`), 21 fr
+ev_o01                       animations 35/36 (`ev_o01_up`/`_down`), 31 fr
+l_lake_l4                    animation 19 (`l_lake`), 61 frames
+c5_o03, r212s02              animation 0 (`funsui`), 16 frames
+stair_pc_u01/d01/u02/d02     animations 15/16, 20 frames -- the escalators
+table_l01/l02/l03, pc01      animations 41/42 (`pc_moni_on`/`_off`), 20 frames
+machine_pc03                 animation 32 (`moniter_mb`), 73 frames
+ele_door1                    animations 51/52 -- the elevator door
+```
+
+`Gen4TexAnim` has rendered both kinds since before any of this. Nothing was
+missing but the question.
+
+### The fourth thing, which was not obvious
+
+A flipbook door must **not** be driven by the frame clock. The clock is a
+free-running loop over the animation's own period, so simply widening the join
+would have put `ele_door1` on it and opened and shut the door for ever by
+itself -- worse than the static door it replaced.
+
+So the clock-driven set excludes the script-owned animations, **derived** from
+`Gen4PropAnim.DOORS` -- the table that comes from pokeplatinum's
+`doorModelIDs[]` -- rather than listed: fourteen distinct ids (5/6, 7/8/9/10,
+27/28, 29/30, 33/34, 51/52) over the twenty doors, so a door added there leaves
+the clock the day it is added. Narrow on purpose: the monitors and the
+escalators are flipbooks too and they *do* loop, so excluding every BTP0 would
+have stopped them along with the door.
+
+### What landed
+
+`src/render/Gen4Ground.lua`
+
+- `animsByProp`, a third index beside `animsByName` and `animsByMember`, built
+  from `record.props`;
+- `Gen4Ground.oneShotAnimations()`, the script-owned ids, derived from `DOORS`.
+  The require is deliberately not wrapped: an empty set here would silently put
+  every door on the clock;
+- `animationsFor` is now the **union** of the two joins, deduplicated by record
+  identity -- three of the 112 models are reachable both ways -- minus the
+  script-owned ids;
+- `oneShotProps` gains a second arm for a texture-pattern one-shot, restricted
+  to the script-owned members so the two arms stay disjoint, and requiring the
+  model to actually carry the animation's pictures. That last is the same test
+  `animates` applies on the clock route, so a prop cannot be animated by one
+  selection and baked by the other;
+- `texturePatternAt(slot, index)`, the flipbook half of `oneShotPose`, split
+  out of the draw for the same reason `jointMatricesAt` was: it needs no LOVE,
+  so a check can execute it rather than read it;
+- `propMaterials(object, frame)`, which the static pass, the flat pass and the
+  animated bake all call. Pass 186 had already found two of those three asking
+  `animationsFor` with different arguments.
+
+`src/import/RomExtractorGen4.lua` -- the flipbook frame extraction matches on
+the claim as well as on the name. Measured first, because the decode reads the
+*model's own* TEX0: all ten claim-only BTP0 models carry **every** one of their
+animation's texture names in their own texture section -- 15 model/animation
+pairs, 0 misses -- so this is the same decode with a longer list of names and
+not a second archive to find. Indexed by `#set.models`, the index the model is
+about to take, because `Gen4Ground` reads a claim as `set.models[index + 1]`.
+
+`src/import/Gen4PropAnim.lua` -- the stale "could move today" paragraph
+replaced with the three reasons it could not.
+
+### The clamp is the one that would be visible
+
+`Gen4PropOneShot.advance` holds a finished one-shot at `frame == frames`, and
+`Gen4TexAnim.materials` takes `frame % period`. An unclamped read of frame 8 of
+an 8-frame animation therefore wraps to **key zero** and snaps the door shut
+the instant it finishes opening. Clamped to `frames - 1` it holds its last key,
+which is what `looping == FALSE` does on the cartridge. Pass 188 found the same
+arithmetic in `jointMatricesAt`; this is the texture copy of it.
+
+### What moves on Cedric's cache today, and what still waits
+
+Measured by driving the real predicate -- `Gen4Ground:movesAtRuntime` over all
+590 build models, with the live 02:39 cache and the live terrain:
+
+| | |
+|---|---|
+| prop models that move at run time, before this pass | 90 |
+| **with this pass's code, on this cache** | **102** |
+| after one more re-import | 112 |
+
+**The twelve BTA0 models move now.** All six waterfalls, `cy_slope`,
+`cy_slope_dun`, `ev_o01`, `l_lake_l4`, `c5_o03` and `r212s02` -- **36
+placements**, 14 chunks newly rebuilding a canvas each frame and 9 that already
+did. A texture scroll needs only `record.srt`, which the live cache has, and
+`props`, which it now also has.
+
+**The ten BTP0 models still cannot**, all ten for the same single reason:
+`patternImages` is 16, so none of them carries its flipbook frames. The
+extractor change that writes them was committed at 03:11, after the 02:39
+import. **One more re-import takes `patternImages` 16 -> 26, the run-time
+count 102 -> 112, and brings in the remaining 88 placements** -- the elevator
+door, the four `stair_pc_*` escalators, the three `table_l*`, `pc01` and
+`machine_pc03`.
+
+### `tools/gen4_prop_claim_check.lua` -- 103 checks
+
+Nine sections. Everything outside sections 2 and 3 runs with no cartridge and
+no cache, against animation records built in the check to the cache's real
+shape -- which is what makes the whole chain provable while half of it waits on
+an import.
+
+Section 9 is the part worth describing. A cache is legitimately in one of
+**two** states -- all 98 claims, or exactly the 32 BCA0 ones -- and a third is
+not. Rather than pin the number this machine happens to have, the check accepts
+either and names which, and **fails on anything between**. It passes against
+both the live cache (reporting *"the claim on all 98 animations"*) and the
+repository's older reference cache (reporting the pre-187 state).
+
+Thirteen plants, each md5-verified as landed, each biting with a message that
+diagnoses that fault. **One landed and nothing failed**, which is a finding
+about the check and not a bad plant: dropping `or claimed` from the extractor's
+guard leaves the whole `record.props` loop above it in place as dead code, so
+all three source assertions still matched while the claim route was switched
+off. That is shape 6c of `claude/check_design_lessons.md` reproduced inside the
+check, and the fix is an assertion on the condition's own text.
+
+A second plant was re-aimed rather than accepted. The door-exclusion assertion
+first pointed at a model with no pictures, which `animates` refuses whatever
+the exclusion does, so it passed for the wrong reason and the plant could not
+reach it. It points at a model claimed by the two door animations and nothing
+else, carrying their pictures.
+
+### `tools/gen4_prop_anim_check.lua` 531 -> 532, and a pin that the re-import tripped
+
+Section 12 read `ok(claimed == 32, …)`. Against the live cache it reported
+*"98 animation(s) carry their claiming prop models, not 32"* -- a correct tree
+failing for having succeeded, which is shape 2d: an assertion whose subject was
+a to-do item, demanding the work not be done.
+
+Re-pinned as the relation each legitimate state rests on rather than as either
+count -- `claimed == total` (current) or `claimed == tracked` (pre-187) -- with
+a floor on `total` and a `report` line naming which it found. Green against
+both caches; and the plant for it is a **real** cache with `props` deleted from
+48 of its 98 records, because a synthetic one tripped four earlier assertions
+and never reached section 12 at all.
+
+### Two stale duplicates, reported and not deleted
+
+`src/world/NPC-1.lua` is a **byte-identical** copy of `NPC.lua` (988 lines) and
+`src/script/Gen4Commands-1.lua` is a 2,944-line copy of the 5,283-line
+`Gen4Commands.lua`. Nothing in the tree requires either, and
+`tools/gen4_machine_check.lua` already carries **two explicit exclusions** for
+the second -- a dead file the suite has to be told to ignore. Both should go;
+neither was touched this pass.
+
+### Suite
+
+**PASS=70**, REPORT=4, NOSPEC=41, no FAIL, SKIP, ERROR or PASS* against the
+repository's reference cache; **PASS=71** combined with the parallel update
+pass. Registry 433. Against the **live** cache the cache-facing checks are
+`gen4_prop_claim_check` 103/0, `gen4_prop_anim_check` 532/0,
+`gen4_cache_integrity_check` 128/0, `gen4_cache_wiring_check` 30/0,
+`gen4_constants_wiring_check` 14/0 and `gen4_mapprops_check` 5,224/0.
+
+Gen 1/2/3 are untouched: the three changed engine files are `Gen4Ground`,
+`RomExtractorGen4` and `Gen4PropAnim`, all Gen 4-only, `Gen4Ground`'s only
+construction site is `Gen4Ground.forMap` in `TileRenderer.new` inside a `pcall`
+that answers nil for every cache with no Gen 4 terrain stage, and the Gen 2 and
+Gen 3 checks in the suite are green.
+
+### Play-test items
+
+116. **Waterfalls should move -- on the cache you already have.** Six models
+     over nine placements, frozen since the 3D field landed. This is the one a
+     player sees first and it needs no further import: the scroll data and the
+     claim are both in the 02:39 cache.
+117. **The Canalave slopes and `ev_o01` should scroll**, and the two fountains
+     (`c5_o03`, `r212s02`) and `l_lake_l4` should run -- the other six of the
+     twelve, 27 more placements, also live today.
+118. **The elevator door, the escalators and the PC monitors need one more
+     re-import.** `patternImages` is 16 and must become **26**; until then
+     those ten models are still drawn flat, which is expected rather than a
+     fault. After the import: the door opens over eight frames and **stays**
+     open -- a snap shut the instant it finishes is the frame clamp, and a door
+     cycling on its own with no script near it is the clock exclusion.
+119. **Nothing should animate that is not on those lists.** The union only ever
+     adds, so a prop that has *started* moving and is not named above means the
+     claim index is keyed wrongly.
+120. **No prop drawn twice.** `shouldBake` is the negation of `shouldAnimate`,
+     and twelve models have just moved from one pass to the other.
+121. **Watch for a stutter on a waterfall route or in Canalave.** 14 more
+     chunks of 666 rebuild a canvas each frame today, and 41 once the flipbooks
+     land. The trade is recorded in `Gen4Ground`; conditional membership is the
+     fix if it shows.
+
+## Platinum's battle transitions
+
+Requested from play: *"add in pokemon platinums battle transitions with rom
+parity"*. Every Platinum battle used to begin behind the Game Boy's spiral.
+
+**The choice** is `src/world/Gen4EncounterEffect.lua`, after
+`EncEffects_CutInEffect` (`src/enc_effects.c`) and `CutInEffects_ForBattle`
+(`overlay005/encounter_effect.c`). The trainer class or the wild lead's species
+picks the effect, and Pal Park keeps its birds and Regis ordinary. Ordinary
+battles use one of six effects per side: plain, water or cave terrain, and
+whether the opponent's lead is *strictly* higher level. The cartridge's own
+bug is kept: a special trainer in a double battle loses their cut-in, except
+Volkner, and Team Galactic.
+
+**The effects** are `src/render/Gen4BattleTransition.lua`. All 31 cut-ins of
+`encounter_effect_core.c` run as coroutines that follow the C state machines,
+at the field's 30 Hz. They use:
+
+- the same interpolators, flashes and master brightness;
+- ScreenSlice, ScreenSplit, and the per-scanline water wave;
+- camera distance and FOV, applied as a zoom of the frame about the camera's
+  target;
+- the screen fades: circle, blinds, the X, the box and the dome.
+
+The pictures come from `/graphic/field_encounteffect.narc`, extracted by
+`src/import/Gen4EncounterEffects.lua` into the cache module
+`gen4_encounter_effects`. On an existing cache, run
+`tools/gen4_encounter_effects_extract.lua`. The pictures are:
+
+- the Poké Balls and the Galactic "G";
+- the leaders' banners and the VS;
+- every mugshot, and the animated League banner.
+
+The window's margin past the DS letterbox is more of the same top screen, so
+every effect runs out to the window's edges.
+
+**Not reproduced:**
+
+- the Elite Four's 3D particle bursts;
+- the mythical camera's pitch and yaw snaps (its FOV, the zoom, is applied);
+- the class battle palette that the cartridge darkens for mugshot silhouettes.
+  The mugshot's own palette is used instead.
+
+Checks:
+
+- `tools/gen4_battle_transition_check.lua` (161 checks) covers the choice, the
+  arithmetic, all 31 effects running to a covered screen, the cache and the
+  wiring.
+- `tools/gen4_transition_harness` renders contact sheets.
+- `tools/gen4_overworld_harness` gained `TRANSITION_AT`.
+
+## The Trophy Garden, Platinum's catch formula, and the Great Marsh Safari Game
+
+**Trophy Garden** (`src/world/Gen4DailySlots.lua`). Mr. Backlot's
+`addtrophygardenmon` and `gettrophygardenslot1species` were unlowered, so the
+garden never gained a Pokémon. They now work as on the cartridge:
+
+- The daily pick comes from `encdata_ex` member 8 (sixteen species) and is never
+  one of the two already in the garden.
+- The new pick SHIFTS into slot 1, and the old slot 1 moves to slot 2.
+- Once the National Dex is obtained, the two slots become Trophy Garden grass
+  slots 7 and 8.
+
+The Great Marsh's daily pair uses the same two grass slots, during a Safari
+Game only. It is the day's `marshDaily`, which is the swarm's value, cut into
+5-bit fields per area. That indexes member 9 (National Dex) or member 10
+(regional). Extracted to `gen4_special_encounters`. On an older cache, run
+`tools/gen4_special_encounters_extract.lua`.
+
+**The catch formula** (`src/battle/Gen4Catching.lua`). Platinum's balls reach
+the battle as item numbers. No ball record matched them, so **every ball in
+Sinnoh ran Gen 1's ItemUseBall**. They now use `BattleScript_CalcCatchShakes`:
+
+- `sBasicBallMod`, plus each special ball's own rule (Net, Dive, Nest, Repeat,
+  Timer, Dusk, Quick);
+- the HP and status terms;
+- the four 16-bit shake rolls against `0xFFFF0 / sqrt(sqrt(0xFF0000 / rate))`.
+
+**The Safari Game**:
+
+- `startendsafarigame` starts a game with 30 balls and ends it.
+  `getcurrentsafarigamecaughtnum` is answered, and still answered after the game
+  has ended, which is the order the gate's exit script asks in.
+- `Field_UpdateSafari` runs the out-of-balls script, or counts steps up to 500.
+- `FieldTask_SafariEncounter`'s endings: out of balls after a miss sends you to
+  the special location the gate set, then entry 9; out of balls on a catch runs
+  entry 2; full party and boxes run entry 22.
+- In the start menu, RETIRE appears (entry 21), SAVE is hidden, and the
+  Safari Ball count shows.
+- Walking between the marsh's six areas no longer ends the game.
+
+The battle (`src/battle/Gen4Safari.lua`) follows the cartridge's rules, not
+Kanto's:
+
+- BAIT and MUD move two stage counters, both starting at 6 of 0..12.
+- The Safari Ball rate is scaled by `sSafariCatchRate`.
+- Fleeing uses the species' own Safari flee rate times the same thirteen
+  fractions.
+- The menu is BALL / BAIT / MUD / RUN on the action menu's four buttons.
+- The Safari healthbox reads "SAFARI BALLS / Left: NN".
+- All the lines are the cartridge's battle strings.
+
+Checks:
+
+- `tools/gen4_daily_slots_check.lua` (18 checks)
+- `tools/gen4_safari_check.lua` (38 checks)
+- `tools/gen4_battle_harness` with `SAFARI=n` renders a Safari battle.
+
+## Fly, and Platinum's town map
+
+**Fly** (`src/world/Gen4Fly.lua`) was missing from Platinum's party menu. It
+now follows `spawn_locations.c` and `FieldMoves_CheckFly`:
+
+- A destination opens when its first-arrival flag is set
+  (`0x9B1 + firstArrival`).
+- Walking into an `unlockOnMapEntry` map sets its flag; the map scripts set the
+  others.
+- Using Fly needs the Cobble Badge, a map that allows Fly, no partner, and no
+  Safari Game. Teleport is refused during a Safari Game too.
+
+**The town map** (`src/ui/Gen4TownMap.lua`, data in
+`src/import/Gen4TownMap.lua`, cache module `gen4_town_map`). This is the top
+screen of `applications/town_map`, used both for Fly and for the Town Map key
+item (item 442, found by its use function):
+
+- **Map art:** the composed region and route layers.
+- **Town blocks:** the twenty `sFlyLocations` blocks, in their shapes, in
+  sub-palette `5 + palette + unlocked`, blinking under the cursor in fly mode.
+  Pal Park's and Victory Road's blocks are hidden until unlocked.
+- **Markers:** the player icon, at the player's matrix cell or, indoors, the
+  last outdoor cell; and the cursor.
+- **Grid:** `7x + 25, 7z - 34`. The cursor keeps to x 1..28 and z 6..28, and
+  steps once every three ticks.
+- **The bar:** names come from `tmap_block.dat` (182 blocks) and the matrix,
+  plus the cartridge's off-matrix Mt. Coronet and Fight Area gate cells. Fly
+  mode shows "Fly to where?".
+- **Landing spot:** a chosen block lands at the spawn row with the same
+  first-arrival id. The League and the outside of Victory Road share a header,
+  so the header alone can't tell them apart.
+
+Not drawn: the bottom screen's zoomed map and signposts.
+
+On an older cache, run `tools/gen4_town_map_extract.lua`. Checks:
+`tools/gen4_fly_check.lua` (14) and `tools/gen4_town_map_check.lua` (20).
+
+## Two bubbles at once, the area sign, and friendship
+
+**The Sandgem freeze.** Reported from play: after getting the Pokédex,
+leaving Rowan's lab, "the exclamation point appears but it freezes there".
+
+- The scene (`M1059/S057D`) gives the player and object 4 an
+  `EMOTE_EXCLAMATION_MARK` together, then runs `waitmovement` on both.
+- The overworld held one emote at a time, so the second bubble replaced the
+  first. The first movement never finished, and the wait held forever.
+- A bubble that arrives while another is up now runs alongside it
+  (`ow.extraEmotes`): it counts down, releases its own movement, and is drawn
+  at its owner (`OverworldState:eachEmote`).
+- `tools/gen4_concurrent_emote_check.lua` runs the cartridge's own two rows
+  from that scene and requires the wait to clear.
+
+**The area-name sign** (`src/world/Gen4AreaPopup.lua`, data in
+`src/import/Gen4AreaPopup.lua`, cache module `gen4_area_popup`), from
+`map_name_popup.c`:
+
+- **Art:** the nine illustrated signs of `area_win_gra`, 17x5 tiles each,
+  chosen by the header's `mapLabelWindowID`. The name is in the system font,
+  in palette colours 3/2.
+- **Timing:** slides in from 38 px up at 4 per 30 Hz tick, holds 60 ticks,
+  slides out. A new place sends the old sign out first.
+- **Crossing a boundary:** shown whenever the location name changes.
+- **Arriving by warp or Fly:** shown only for a signed, non-building header.
+  So walking out of a house announces the town, and a city's several headers
+  never re-announce it.
+
+On an older cache, run `tools/gen4_area_popup_extract.lua`.
+
+**Friendship.**
+
+- **Missing at creation:** Platinum Pokémon were created with no friendship
+  value, so no friendship evolution could fire. They now start at the species'
+  `baseFriendship`. Saves made earlier get it filled in once, on load.
+- **Walking:** follows `Pokemon_UpdateFriendship(WALK_CYCLE)`. Every 128
+  steps, each Pokémon wins a coin flip for +1, plus 1 for a Luxury Ball, plus
+  1 where its *egg* location matches (the cartridge's own comparison), then
+  ×1.5 with a Soothe Bell.
+
+Checks: `tools/gen4_area_popup_check.lua` (23) and
+`tools/gen4_friendship_check.lua` (12).
+
+## The Poké Radar
+
+`src/world/Gen4Radar.lua`, after `pokeradar.c` and the radar arms of
+`wild_encounters.c` and `encounter.c`. This was a named gap.
+
+**Using it:**
+
+- Only standing in tall grass, not on the bike, and not with a partner.
+- Below 50 steps of charge it reports the steps left (`scripts_poke_radar` 0).
+- At 50, one patch spawns on a random cell of each ring: the 9x9, 7x7, 5x5
+  and 3x3 borders. Only tall grass on this map counts. If none land, it shows
+  `scripts_poke_radar` 1.
+- The radar music plays while patches are up.
+
+**The patches:**
+
+- Each patch continues the chain 88/68/48/28 in 100 by ring, or 98/78/58/38
+  after a catch.
+- A continuing patch shakes the chain's way and is shiny 1 in
+  max(200, 8200 − 200 × chain). A breaking patch shakes soft or hard at random.
+
+**Stepping into a patch** is always an encounter, untouched by Repel or
+roamers:
+
+- A continuing patch gives the same species and level, and adds 1 to the
+  chain (capped at 999).
+- Otherwise it is a grass roll, with the radar species in slots 5/6/11/12 on a
+  hard shake. The same species continues the chain; a different one ends it.
+
+**What ends the chain:**
+
+- an ordinary encounter, a map change, or getting on the bike;
+- walking away from every patch;
+- a radar battle that ends in anything but a win or a catch.
+
+After a win or a catch, new patches spawn around the player. The three best
+chains are kept in `save.gen4RadarRecords`.
+
+**Not reproduced:** the patches' 3D shake model (field-effect renderer context
+19). They are drawn as a procedural grass shake (soft, hard, or sparkling for
+a shiny).
+
+Checks: `tools/gen4_radar_check.lua` (24). `tools/gen4_overworld_harness`
+gained `RADAR_AT`, which switches the radar on in real grass and steps onto a
+patch.
+
+## Poketch: the Trainer Counter and the Color Changer
+
+Two of the Poketch's apps had a background and nothing on it.
+
+**Trainer Counter** (`applications/poketch/trainer_counter`):
+
+- Shows the Poke Radar chain now running (from the field's chain) and the
+  three best chains (`save.gen4RadarRecords`).
+- Each row is a species icon and a three-digit count, with leading zeroes
+  hidden (`UpdateChainCountDigits`), drawn with the cartridge's digit sprites.
+- Positions: icons at (96,32), (112,80), (176,96), (48,104); digits from
+  (144,40), (100,144), (164,160), (36,168).
+- The cartridge draws the icons with an LCD luminance palette; the port's icons
+  stay in colour, as in its other Poketch apps.
+
+**Color Changer** (`applications/poketch/color_changer`):
+
+- A held touch at 136 <= y < 160 and 48 <= x < 184 picks colour
+  `(x − 48) / 16`, from 0 to 7.
+- The slider sprite sits at (56 + 16c, 148).
+- Before this the port read only a drag (not a tap), stepped 17 pixels, and
+  drew no slider. The LCD theme swap itself was already in place
+  (`applyLCDPalette`).
+
+**Link Searcher** is wireless-only and keeps its own background.
+
+Checks: `tools/gen4_poketch_apps_check.lua` (10).
+
+## The shard move tutors
+
+The tutors on Route 212, at the Survival Area and in Snowpoint City were 38
+moves of Platinum that no script could teach: every one of their commands was
+a no-op.
+
+**Data** (`src/import/Gen4MoveTutor.lua`, cache module `gen4_move_tutor`). Read
+from overlay 5, found by content (Dive's 2/4/2/0 row):
+
+- `sTeachableMoves`: 38 rows of 12 bytes each, with the move, its four shard
+  costs, and its location.
+- `sSpeciesLearnsetsByTutor`: 505 five-byte masks, one per species, plus 12
+  form movesets read the cartridge's way (`Pokemon_ReadMovesetMaskByte`).
+- The counts match `res/pokemon/move_tutors.json`: 13 / 17 / 8.
+
+**Commands**, all now real:
+
+- `selectmovetutorpokemon`: the party pick.
+- `checkhaslearnabletutormoves`.
+- `showmovetutormoveselectionmenu`: the moves this Pokemon can learn here and
+  doesn't know, in table order, then EXIT; the move id, or 65534 for EXIT/B.
+- `checkcanaffordmove`: every non-zero cost has to be in the bag.
+- `opensummaryscreenteachmove` / `getsummaryselectedmoveslot`: which move to
+  forget, 0–3, or 4 to keep them all. Drawn as a list rather than the summary
+  screen.
+- `payshardcost`.
+- `resetmoveslot`: writes the move with full PP and no PP Ups.
+
+Checks: `tools/gen4_move_tutor_check.lua` (25). It drives each command and
+confirms all four tutor scripts lower with nothing unlowered.
+
+## Move Reminder, Move Deleter and the Route 210 tutor
+
+Three NPCs who teach or remove moves outside battle. Pastoria's Move Reminder
+and Canalave's Move Deleter were never lowered at all, and Grandma Wilma's
+Draco Meteor (Route 210) was a no-op.
+
+**The teach screen** (`move_reminder.c`). This is one flow that
+`openmoveremindermenu` and `openmovetutormenu` both use:
+
+- The moves on offer: the reminder's list, or the tutor's single move.
+- With a free slot, the move goes straight in with full PP.
+- With four moves known, a forget list appears. An HM can't be forgotten here
+  (`PokemonSummaryScreen_PrintHMMovesCantBeForgotten`), and B returns to the
+  moves.
+- B on the moves gives up. `checklearned{remindermove,tutormove}` then
+  answers 0 (learned) or 0xFF (kept the old moves).
+
+**Reminder list** (`MoveReminderData_GetMoves`): the first 22 learnset rows at
+or below the mon's level that it doesn't already know, each once. Forms read
+their own learnset.
+
+**Deleter**:
+
+- `selectpartymonmove`: any move, HMs included. B answers 0xFF.
+- `clearpartymonmoveslot`: `Pokemon_ClearMoveSlot`, which shifts the moves
+  below up.
+- `bufferpartymovename`.
+
+Checks: `tools/gen4_move_relearn_check.lua` (20).
+
+## The Solaceon Day Care
+
+Every Day Care command was unlowered, so nothing could be deposited and no
+egg was ever laid. Platinum's day care is its own model and lives in
+`src/pokemon/Gen4DayCare.lua` (state in `save.gen4DayCare`). The Johto and
+Hoenn model in `src/pokemon/DayCare.lua` is left alone.
+
+**Pens**:
+
+- Two slots. Each banks one EXP per step.
+- Withdrawing pays out the banked EXP, learns the level-up moves on the way
+  (a full set loses its first move), and shifts slot 1 down.
+- Price is 100 plus 100 per level gained.
+- Shaymin returns to Land Forme on deposit.
+
+**The egg** is first just a personality:
+
+- On every 256th step of the second mon, compatibility (0, 20, 50 or 70) is
+  rolled against 0–99. A success stores the offspring's personality, with an
+  Everstone's 50% chance to keep the nature.
+- `Daycare_HasEgg` means "that personality is non-zero".
+
+The man outside builds the actual egg (`Daycare_GiveEggFromDaycare`):
+
+- Species comes from the mother; Ditto takes whichever role is free.
+- Nidoran and Illumise use the personality's gender bit; Manaphy gives
+  Phione.
+- The incense babies hatch only when a parent holds the incense.
+- The form comes from the mother.
+- Three IVs are inherited.
+- Moves: the father's egg moves, then his TM moves the baby can learn, then
+  the moves both parents know that the baby learns by level.
+- A Pichu with a Light Ball parent gets Volt Tackle.
+
+**Egg cycles**, stored in `mon.eggCycles` (the friendship byte):
+
+- A shared counter takes one cycle off every egg every 255 steps (230 on
+  twelve special dates). Flame Body or Magma Armor in the party takes two.
+- An egg already at zero hatches.
+- This replaces the per-step countdown Gen 4 had been borrowing. Older saves'
+  `eggSteps` read as cycles, capped at the species' `hatchCycles`.
+
+**Egg moves** (`src/import/Gen4EggMoves.lua`, cache module `gen4_egg_moves`):
+`sEggMoves` is read from overlay 5 and found by Bulbasaur's opening row,
+198 species in all.
+
+**Also lowered**: `checkmoney2`, `tryrevertpokemonform` (the Griseous Orb goes
+back to the bag; Giratina, Rotom and Shaymin revert), `checkpoketchenabled`,
+`checkpartyhasbadegg` and `increasepartymonfriendship` (Soothe Bell ×1.5,
+Luxury Ball +1, the egg's home location +1).
+
+**Fix**: `DayCare.baseForm` now reads Platinum's evolution `target` field, so
+Gen 4 pre-evolutions resolve.
+
+**Not done**:
+
+- The Masuda method (parents of different languages).
+- The yard sprites of the boarded Pokemon.
+- The party menu's SUMMARY exit from the deposit picker.
+
+Checks:
+
+- `tools/gen4_daycare_check.lua` (25).
+- `gen4_postgame_daycare_check` was updated to the new model.
+
+## The Veilstone Game Corner
+
+Every coin command was unlowered, so coins couldn't be bought, given or
+counted, and the prize counter showed nothing.
+
+**Coins** (`src/import/Gen4GameCorner.lua`; stored in `save.coins`, the same
+field the Coin Case reads):
+
+- Commands: `addcoins`, `checkcanaddcoins`, `getcoinsamount`,
+  `subtractcoinsfrom{value,var}` and `hascoinsfrom{value,var}`.
+- They follow coins.c: a 50,000 cap, `Coins_Add` clamps, `Coins_Subtract` is
+  all or nothing.
+- **Coin window** (`showcoins` / `updatecoindisplay` / `hidecoins`): a
+  10×2-tile panel beside the money window, showing bank 361 entry 197
+  ("{n} Coins") with five space-padded digits, right-aligned.
+- **Coin Case** (item 444) from the bag prints bank 7 entry 57,
+  "Your Coins: n".
+
+**Prize counter**:
+
+- `getgamecornerprizedata` reads `sGameCornerPrizeData`: 19
+  `{item, price}` rows extracted from ARM9 (cache module `gen4_game_corner`),
+  from the Silk Scarf at 1000 to TM68 at 20000.
+- `showlistmenuremembercursor` opens the list where it was left.
+- `buffervarpaddingdigits` is also lowered.
+
+**Also lowered**:
+
+- `checkbonusroundstreak`.
+- `calchiddenpowertype`: the ROM's bit formula; 0xFFFF for the 16 species
+  that can't learn Hidden Power.
+- `buffertypename` (bank 624).
+
+**Not done**: the slot machine (`267`, overlay 101). It's lowered as a named
+no-op so the census tracks it.
+
+Checks: `tools/gen4_game_corner_check.lua` (29).
+
+## Easy chat, ribbons, fossils, ratings and the Regi ruins
+
+**Easy chat** (`src/pokemon/Gen4EasyChat.lua`):
+
+- Word ids are the cumulative offset over the 11 word banks
+  (`EasyChatWord_FromBankAndEntry`). Bank sizes come from the cache's text.
+- `choosecustommessageword` used to always answer "cancelled", which made
+  Sunyshore's Julia unable to give any ribbon. It now opens a group-then-word
+  picker:
+  - group names come from bank 436;
+  - words are listed alphabetically;
+  - Pokemon is limited to species already seen;
+  - locked tough words are left out.
+- `buffercustommessageword` prints the chosen word.
+
+**Ribbons**: `bufferribbonname` reads bank 535. Each ribbon's name entry is
+its own id (checked for all 80).
+
+**Fossils** (`scrcmd_fossil.c`): `getfossilcount`, `getspeciesfromfossil` and
+`findfossilatthreshold`, using the seven-entry fossil table in its ROM
+order.
+
+**Pokedex ratings** (`loadpokedexrating`): Rowan's and Oak's rating message
+ids, using the cartridge's thresholds:
+
+- the local rating counts seen Sinnoh species and checks Eterna's
+  first-arrival flag;
+- the national rating counts caught species, excluding the 11 mythicals, and
+  has gendered lines at 410+ and on completion.
+
+**Regi ruins** (`activateregiruinsdot`): the seven dot coordinates of each
+ruin. All seven lit is state 260.
+
+**Also lowered**:
+
+- `getpartyrotomcountandfirst`
+- `gethour`
+- `countpartyeggs`
+- `tryrevertpartypokemonforms`
+- `findpartyslotwithnature`
+- `messageunown` (the line, without the Unown font)
+
+Checks: `tools/gen4_field_queries_check.lua` (29).
+
+## Ball Seals and Sunyshore's seal counter
+
+The seal counter in Sunyshore Market only logged a warning, and the
+Unown-seal girl's commands were unlowered.
+
+**Data** (`src/import/Gen4Seals.lua`, cache module `gen4_seals`). Two ARM9
+tables, found by content:
+
+- `sealTypeValues`: 80 rows of 10 bytes, each with a name index, the
+  alphabet-seal flag and a price.
+- `SunyshoreMarketDailyStocks`: seven seal lists, one per day, Monday first.
+
+Names come from bank 12 (singular) and bank 13 (plural), looked up through
+each row's own name index.
+
+**Seal Case** (`save.gen4Seals`):
+
+- `GiveOrTakeSeal` rules: at most 99 of a kind, and a change that would go
+  past 99 or below zero is refused rather than clamped.
+- Capsules aren't modelled, so no seal is ever "in use".
+
+**Commands**:
+
+- `giveortakeseal` (the quantity is an s16, so a var holding 0xFFFF takes one)
+- `countsealoccurence`
+- `countuniquesealsinsealcase` (was `g4_no_feature`)
+- `bufferballsealname` / `bufferballsealnameplural`
+- `findpartyslotwithspecies`
+- `getpartymonform`, via the new `Gen4Forms.index`
+
+**Counter**: `pokemartseal <day>` opens the shop screen through a goods
+adapter in `Gen4ShopMenu`:
+
+- BUY / SEE YA! only, as in `MART_TYPE_SEAL`;
+- prices come from the seal table;
+- the count shown is what's in the Seal Case;
+- a purchase that wouldn't fit shows bank 543 entry 14, "The Seal Case is
+  full.", and nothing is charged.
+
+**Seal Case** (item 434) from the bag prints bank 7 entry 92, "Seals: n".
+
+**Not done**: the capsule editor.
+
+Checks: `tools/gen4_seals_check.lua` (24).
+
+## The Route 224 tablet, and link sync
+
+**Tablet** (Oak's Letter, which leads to Shaymin):
+
+- `openshaymintabletnamingscreen` opens the naming screen with 10 characters
+  under bank 422 entry 6, "Thank who?".
+- The name is kept in `save.gen4TabletName` and `buffertabletname` reads it
+  back.
+- The var gets the screen's return code: 0 for a name, 1 for nothing
+  entered.
+- The scene's field-volume dip and BGM fade-in are declared fades, like
+  `fadeoutbgm`.
+
+**Opcode `0x135`** is `CommTiming_StartSync`, used 53 times in the common
+scripts. With fewer than two players connected it resumes at once, so it now
+lowers to nothing, which matches the cartridge's single-player behaviour
+rather than being a gap.
+
+Checks: `tools/gen4_tablet_check.lua` (6).
+
+## Poffins: cooking, the Poffin Case and feeding
+
+The Poffin House and the Poffin Case were stubs. All three parts now work.
+
+**Data**:
+
+- Each berry's five flavors and smoothness are bytes 7–12 of its
+  `nuts_data.narc` record (`Gen4BerryData.flavors`, cache module
+  `gen4_berry_flavors`).
+- Poffin type names are bank 465.
+- The ROM's text comes from four banks:
+  - 464: cooking messages and the results page;
+  - 463: the case;
+  - 462: how the Pokemon ate;
+  - 455 entry 178: "It won't eat any more...".
+
+**Rules** (`src/pokemon/Gen4Poffin.lua`), transcribed:
+
+- `Poffin_MakePoffin`: the type comes from one or two flavors; three is Rich,
+  four or five is Overripe, any flavor ≥ 50 is Mild. A foul cook gives a
+  cleared Poffin with three random flavors set to 2.
+- `Poffin_CalcLevel`.
+- The cooking result from overlay 83:
+  - flavor differences around the five-flavor ring, minus the count of
+    negatives;
+  - × 1,800,000 / frames (one minute is ×1);
+  - minus burns and overflows;
+  - smoothness is average smoothness minus the number of berries, at least
+    15;
+  - a duplicated berry or four negatives makes it Foul.
+- `PoffinCase_UpdateMonContestStats`: flavors go to cool / beauty / cute /
+  smart / tough and smoothness to sheen; the liked flavor ×1.1 and the
+  disliked ×0.9 by nature; each stat capped at 255; friendship +1.
+- The case holds 100.
+
+**Stirring** (`src/pokemon/Gen4PoffinStir.lua`): overlay 83's per-frame
+physics at 30 Hz:
+
+- the finger's tangential arc length ×160, half near the centre and nothing
+  past the rim;
+- per phase: acceleration {8, 7, 7}/204 and friction {64, 72, 80}, with
+  velocity clamped to ±3640;
+- the angle advances `CalcRadialAngle(68, v/160)`;
+- turns only count in the arrow's direction, and the direction changes on
+  random timers;
+- an overflow every 30 frames at full speed (never in the last phase); a burn
+  every 90 slow frames, the first of each slow stretch being only a warning;
+- three phases of 600 frames or 16 turns.
+
+**Screens**:
+
+- `src/ui/Gen4PoffinCooking.lua` (`openpoffincooking 0`, cooking alone):
+  - pick a Berry, then stir by touch or mouse drag, or hold RIGHT / LEFT for
+    a virtual finger that speeds up the longer the key is held;
+  - the results page and the keep-cooking prompt use the ROM's text.
+- `src/ui/Gen4PoffinCase.lua`: the bag's Poffin Case (item 449) with GIVE /
+  TRASH / BACK and the taste lines.
+- The pot is drawn procedurally; the overlay's own art isn't extracted.
+
+**Commands**: `checkcancookpoffin` (1 no berries / 2 case full / 0),
+`openpoffincooking`, `checkhasemptypoffincaseslot`,
+`getemptypoffincaseslotcount` and `givepoffin`.
+
+**Decoder fix**: `givepoffin` (0x289) had been listed as variable-length, so
+the decoder stopped at it and never decoded the rest of the Hotel Grand Lake
+gift script. Its handler reads seven fixed halfwords, so it now has a fixed
+spec. `tools/gen4_scripts_reextract.lua` re-decodes `map_scripts.lua` in an
+existing cache without a full import.
+
+**Not done**:
+
+- Group cooking (it needs the link).
+- The cooking overlay's art.
+
+**Checks**:
+
+- `tools/gen4_poffin_check.lua` (30).
+- `tools/gen4_poffin_harness` plays a cook and renders `poffin_cook.png`.
+  `FOLLOW=0` holds RIGHT only, and `LIFT=0` never lifts the finger.
+
+## Trainer eyes-meet themes and BGM fades
+
+Platinum's music plays from the cartridge's SDAT (`src/audio/NitroAudio.lua`),
+but the script commands around it were still declared no-ops, written when a
+Platinum cache had no music.
+
+**Eyes-meet themes** (`src/import/Gen4TrainerMusic.lua`, cache module
+`gen4_trainer_music`):
+
+- `sTrainerEncounterBGMs` holds 79 `{class, sequence}` rows, read from ARM9
+  by content (Aroma Lady → SEQ_EYE_LADY, Ruin Maniac → SEQ_EYE_MOUNT).
+- A class the table doesn't name gets SEQ_EYE_KID, as in
+  `FieldBGM_GetEyesMeetForTrainer`.
+- `playtrainerencounterbgm`, the first row of the common trainer-encounter
+  script (M1114) that every spotted trainer runs, now plays it.
+- The approach in `OverworldController:startTrainerApproach` starts the same
+  theme when a Gen 4 trainer spots you. Before, it fell back to Game Boy-era
+  class guesses that have no Platinum songs, so Sinnoh's trainers walked up in
+  silence.
+
+**Fades** (`Music.dsFade` / `Music.setPlayerLevel`): the DS player's two
+volume levels, multiplied into the option volume.
+
+- `fadeoutbgm <volume> <frames>` and `fadeinbgm <frames>` (from zero) ramp the
+  BGM's own level over 60 Hz frames, and the script waits for them
+  (`ScriptContext_IsSoundFadeFinished`).
+- `setplayervolume` sets the field player's level, which outlives songs.
+- A new song, or entering a map (`FieldBGM_PlayForMapHeader`), starts at full
+  level.
+
+Checks:
+
+- `tools/gen4_trainer_music_check.lua` (10): every trainer in the cache gets
+  an eyes-meet sequence.
+- `tools/gen4_bgm_fade_check.lua` (11).
+
+## Super Contests, stage one
+
+The Hearthome Contest Hall's 40-odd contest commands were all unlowered. This
+stage adds the contest's data, its rules, the hall's scripts and the
+Visual-round and final scoring. The Dance and Acting competitions and the
+player's dress-up screen come next.
+
+**Data** (`src/import/Gen4ContestData.lua`, cache module `gen4_contest`), from
+`/contest/data/contest_data.narc`:
+
+- 96 NPC contestants, each with species, four moves, condition stats, rank,
+  type flags, the competition/practice/postgame tags, a dress-up per visual
+  theme, and fame;
+- 12 judges, marked regular or head per type;
+- 96 dress-ups of up to 20 placed accessories;
+- 12 theme tables giving each accessory's worth.
+- Names come from banks 205 (contestants), 207 (judges) and 204 (rank and type
+  names).
+
+**Rules** (`src/pokemon/Gen4Contest.lua`):
+
+- The contest LCRNG (0x41C64E6D, 0x6073, 32-bit exact) drives:
+  - the visual theme (`sub_02095A74`'s rank-limited lists);
+  - opponent selection (`sub_02094F04`: rank, type, competition kind, the
+    postgame split, and a special guest placed at random);
+  - the judges (`sub_020954F0`: two regulars and a random head judge, swapped
+    into the middle).
+- **Visual condition score** (`ov17_0223F374`): the type's stat plus half of
+  its two neighbours and Sheen, then ×1.10 for the type's own Scarf or ×1.05
+  for its two neighbours'.
+- **Dress-up score**: the worth of each worn accessory in the theme's table.
+- **Stars and hearts**: the rank's eight and three thresholds.
+- **Final scoring** (`ov17_02251930`): each round scaled to its best
+  contestant, weighted (a third each for an official contest), turned into
+  192-pixel bars and summed; placement breaks ties randomly.
+- Contest fame, the ribbon ids (33 + type × 4 + rank), and the first-win
+  accessories (the barrette, balloons, Ultra prize and Master stage of the
+  type's colour, verified by name against bank 386).
+
+**Commands**:
+
+- Contest flow: `openpartymenuforcontest` / `getcontestpartymenuresult` (the
+  ROM's eligibility rule: not an egg, not fainted, rank ≤ that type's
+  ribbons, two or more moves), `newcontest`, `runcontestapplication`,
+  `endcontest`.
+- Buffers: judge, trainer, Pokemon, entry number, rank, type, winner, ribbon.
+- Queries: placement, winner, entry, object graphic, fame, mode, ribbon,
+  first-win accessory, skip-ceremony.
+- `endcontest` on a win: the ribbon, the Contest Master flag at Master rank,
+  contest records, and the friendship gain (+3 / +2 / +1 by tier, Luxury Ball,
+  Soothe Bell).
+- Accessories: `addaccessory` / `canfitaccessory`, into `save.gen4Accessories`
+  (ids under 61 stack to 9, the rest are unique).
+- `hidepoketch` / `showpoketch` (the watch screen stays blank while hidden).
+- The link syncs, text-speed locks, HBlank toggles and network icon lower to
+  nothing, which is what the cartridge does without a link.
+- The stage's camera flashes and the change into contest attire are declared
+  presentation no-ops.
+
+**Screen**: `src/ui/Gen4ContestScreen.lua` shows the Visual round's stars and
+hearts and the final bars in placement order.
+
+**Not done yet**:
+
+- The player's dress-up screen (the player enters undressed, so gets no
+  hearts).
+- The Dance and Acting competitions. They are scored level for every
+  contestant, which the final normalization turns into equal bars, so they
+  don't affect placement until they're written. The screen says so.
+- The link contest commands.
+
+**Checks**:
+
+- `tools/gen4_contest_check.lua` (30).
+- `tools/gen4_contest_harness` renders the pages to `contest_pages.png`.
+
+## Fix: the opposing trainer in battle
+
+Reported from play: *"Trainer sprites are missing from battle."* The data was
+fine: all 928 trainers carry a `pic`, and `BattleState` loads it as
+`trainerPic`. The Gen 4 layout never drew it. Its renderer drew the player's
+back sprite (`drawTrainerBack`) but had no opposing-trainer branch, and
+`battlerHidden` didn't hold the foe's Pokemon back, so every Sinnoh trainer
+battle opened with the Pokemon already on the field.
+
+- `Gen4Battle.drawEnemyTrainer` draws the trainer on the foe's platform (and
+  the second trainer on the second foe's slot in a two-trainer double),
+  moved by the engine's own "foe" slide. The trainer leaves before the
+  send-out and comes back after the last Pokemon falls.
+- `battlerHidden` now hides the foe while `showEnemyTrainer`,
+  `enemySendingOut` or `enemyHidden` is set, the same flags the shared pic
+  layer uses.
+- A healthbox comes in with its Pokemon: none for the foe while its trainer
+  is up or its ball is in the air, none for the player while the back sprite
+  is up. A box held back on purpose counts as drawn, so the caller doesn't
+  fall back to its stand-in HUD. That fallback had drawn a stray
+  "BURMY…5" over the real box.
+
+Verified frame by frame with `tools/gen4_battle_harness`, which gains
+`TRAINER=<id>` (a trainer battle) and an ImageData override, so the battle
+pics now load from the cache in the harness instead of placeholders:
+
+- the Youngster on the platform for "Youngster Logan wants to fight!";
+- Burmy and its box after "sent out BURMY!";
+- the wild-battle frame unchanged.
+
+## Fix: prize money, and the money lost in defeat
+
+Reported from play: *"Trainers dont give you any money."* The payout read
+`trainer.baseMoney`, which only the Game Boy and Hoenn imports write; a Sinnoh
+trainer record has none, so every win paid $0.
+
+**Prize** (`src/import/Gen4TrainerPrize.lua`, cache module
+`gen4_trainer_prize`): `sTrainerClassPrizeMul`, one byte per trainer class
+(105), read from the battle overlay (16) by content and checked against the
+decomp header (all 105 match). `BattleScript_CalcPrizeMoney`:
+
+- the trainer's **last** party member's level × 4 × the class byte;
+- × 2 for an Amulet Coin. Platinum checks **every** battler that comes onto
+  the field, either side, and its items name the effect "MONEY_UP". The old
+  check compared against a Game Boy-era number, so the coin never counted;
+- × 2 again for one trainer's double battle. Two trainers who walked up
+  together are a tag battle and each pays its own.
+
+Youngster Logan (one Lv5 Burmy) pays $80.
+
+**Defeat**: Platinum takes `BattleSystem_CalcMoneyPenalty`, not half the money:
+
+- the party's highest level × 4 × the badge count's multiplier (2, 4, 6, 9,
+  12, 16, 20, 25, 30), capped at the wallet;
+- taken inside the battle, as `subscript_battle_lost` does, with its lines
+  from bank 368: "is out of usable Pokemon!", then "paid out $N to the
+  winner." (trainer) or "dropped $N in panic!" (wild), then "... ... ... ..."
+  and "blacked out!";
+- a poison whiteout in the field takes nothing, since the cartridge only ever
+  takes money in battle;
+- the Battle Tower's can-lose battles take nothing.
+
+Checks:
+
+- `tools/gen4_trainer_prize_check.lua` (7).
+- `tools/gen4_battle_harness` gains `WIN=1` and `LOSE=1`, which run the
+  faint paths and print the wallet and the lines (win +$80; loss −$96 at
+  Lv12 with no badges, instead of −$1500).
+
+## Super Contest: the Acting competition
+
+The Acting round is now played turn by turn. Before this it scored every
+contestant the same. The rules are in `src/pokemon/Gen4ContestActing.lua`
+and the screen is `src/ui/Gen4ContestActing.lua`, both ported from overlay017.
+
+**The tables**: two tables are read from the ROM by content and added to
+the `gen4_contest` cache:
+
+- `effects`: ARM9 `Unk_020F568C`, 24 × 26 bytes. For each contest effect it
+  holds the base appeal, the two description lines for the move menu
+  (bank 210), and up to five result lines (bank 211).
+- `actingAI`: overlay 17 `Unk_ov17_02253C30`, 165 rows of 12 bytes. These
+  are the NPCs' move-choice rules: the performance position, one of 28
+  conditions, the moves to weight, how the judge marks are used, and the
+  weights by AI level (contest_data's 2-bit field).
+
+**A turn**: each contestant picks a move and a judge. Each performance is
+then scored in the order `ov17_0223C100` uses:
+
+1. base appeal;
+2. the move's effect (most of the 24 effects run here);
+3. last turn's Double Next Turn;
+4. Voltage. Same type +10, opposite types −10, a neighbour type 0. At 50
+   the judge pays +50, or +80 for the head judge (judge 1), then resets.
+
+After all four:
+
+- the judge share: +30, 20, 10 or 0 for 0–3 others on the same judge;
+- the judge-dependent effects (Doubled, Unique and All Same Judge);
+- Pity Points.
+
+The next order is lowest turn score first. On a tie, whoever performed
+later goes first. Perform First / Last and Random Order override this.
+Moves can't be repeated in consecutive turns unless Consecutive Use worked.
+After four turns, the totals feed the final scoring as the Acting round.
+
+**The first order**: after a Dance round it is best Visual + Dance points
+first. Otherwise it is ids 0..3, reversed for a practice.
+
+**The NPCs** follow `ov17_02246F9C`:
+
+- every matching AI row adds weight to moves and judges;
+- the best move wins, with ties broken by the contest RNG;
+- with no judge preference, an NPC avoids the player's judge with a chance
+  of 230/128/51/0 out of 256 by rank.
+
+Checks:
+
+- `tools/gen4_contest_acting_check.lua` (35): the tables, hand-worked
+  turns, and the NPC choice rules.
+- `tools/gen4_contest_harness` now plays an official contest through all
+  four Acting turns. Set `LINES=1` to print every line.
+
+Still missing: the Dance competition, the player's dress-up screen, and
+link contests.
+
+## Super Contest: the cartridge's art
+
+The contest screens now draw Platinum's own graphics instead of the port's
+plain drawing. `src/import/Gen4ContestArt.lua` builds every picture from
+`/contest/graphic/contest_bg.narc` and `contest_obj.narc`.
+
+pokeplatinum ships both NARCs prebuilt, so no member has a name. Each index
+is the one overlay017 passes to its loaders, and the module's header lists
+the source file for each.
+
+The importer writes the pictures to `assets/generated/gen4/contest/` and
+indexes them in the cache module `gen4_contest_art`. To add them to an
+existing cache without a re-import:
+
+```
+love tools/gen4_contest_art_extract <rom> <asset root> <cache dir>
+```
+
+### Acting, top screen
+
+As `ov17_0223BBA8` builds it:
+
+- BG3: the audience and stage.
+- The three judges at their podiums, with up to five Voltage stars each and
+  the head judge's heart.
+- The performer, at (216, 112).
+- BG2: four score panels in turn order, coloured by contestant (slots
+  6/7/10/11). Each has the Pokémon's and trainer's names and up to 24 hearts.
+  There are six hearts to a row, and the colour steps up every six.
+- BG1: the message window, with text at tile (11, 19).
+
+### Acting, bottom screen
+
+These are `ov17_0223F7E4`'s pages:
+
+- the Pokémon Contest logo with the rank and contest name;
+- the four move buttons. Each is in its move's type colours, from the
+  overlay's own table, and greyed when it can't be used. A button shows the
+  move name, its two effect lines and its appeal hearts;
+- the three judge buttons with the head-judge mark, and EXIT.
+
+The bottom screen follows the second-screen setting:
+
+- on a real second panel, or in the corner inset, it is always shown;
+- in swap mode, or with no second screen, it appears only while you pick a
+  move or a judge.
+
+### Visual round
+
+- The stage has its curtain.
+- Each entry comes on in entry order, introduced with bank 209's lines
+  ("Dexter: Entry number 1! ...").
+- Its stars and hearts are drawn above it. That placement is the port's own.
+
+### Results
+
+- `ov17_02250744`'s board: four rows, each with a 192-pixel bar track (the
+  cartridge's bar length).
+- The bars fill in round by round as bank 218 announces each round, then
+  the winner is named and the placings are shown.
+- The audience is on the bottom screen.
+
+### Found on the way
+
+- **Sprite palettes.** `SpriteSystem_NewSprite` gives each sprite an
+  explicit palette: the resource's base plus the template's `plttIdx`. This
+  replaces the cell's own palette instead of adding to it. The podium cell
+  names palette 2, and the three podiums are rows 2, 4 and 5. Treated as an
+  offset, two of them came out black.
+- **Backdrop.** Where every layer is transparent, the DS shows BG palette
+  entry 0. That colour is filled in under each screen's bottom layer.
+- **`CacheFs.mkdirReal`.** It called `tryMkdirs` before that local was
+  defined, so every call raised an error. In the game-data folder picker,
+  SaveData's `pcall` hid the error, and a folder that didn't exist yet was
+  reported as "could not be written to". Fixed by defining the function
+  below its helper.
+- **Acting judge picker.** It read the A button twice, and the first read
+  could swallow the press.
+
+### Checks
+
+- `tools/gen4_contest_art_check.lua` (110). It composes everything from the
+  ROM and checks every size, the solid backdrops, the coloured podiums, five
+  distinct button colours plus the greyed one, and the 192-pixel bar track.
+  With a cache dir, it also checks the index.
+- `tools/gen4_contest_harness` now reads pictures from
+  `POKEPORT_ASSET_ROOT`, as the battle harness does.
+
+### Not yet drawn from the cartridge
+
+- the score bars' own sprites (the bars are plain fills on the cartridge's
+  tracks);
+- the Visual round's audience reactions;
+- the Dance round, which isn't built.
+
+## The Mart counter, the Poffins in the cartridge's art, and a sweep
+
+### The Mart (src/ui/Gen4ShopMenu.lua): the black box was the field camera
+
+The shop art (shop_gra `tilemap`) is see-through at the top left on purpose:
+the field shows through a window there. In `shop_menu.c`, choosing BUY first
+slides the field camera right, eight units a frame for ten frames, or eight
+frames when the player faces west (`Shop_GetCameraPosDest`,
+`Shop_MoveCamera`). Only then does the counter art appear. The slide puts
+the player and the clerk inside that window.
+
+The port never slid the camera. The window showed whatever lay up and to the
+left of the player, which in a small mart is the black outside the room.
+The flow now follows the overlay:
+
+- BUY / SELL / SEE YA! is a framed window at tile (1, 1) over the field,
+  with the clerk's line in the message box.
+- BUY slides the camera (the shop drives `followCamera` plus the offset,
+  since the field doesn't update under it) and then shows the counter.
+- Backing out slides it back with "Is there anything else I may do for
+  you?"; SEE YA! ends on "Please come again!".
+- Every line comes from bank 543, with no more hardcoded English.
+- The money window is "Money" over the right-aligned amount in the
+  standard frame at (1, 1), 9 × 4.
+
+### Platinum's menu arrow
+
+Platinum's font carries no `symbols`, so every Gen 4 menu that drew
+`Theme.cursor` used Gen 1's `$ED`, which is `)` in pl_font's charset.
+`Theme.load` now takes `CHAR_ARROW_MENU` (0x011F, `‣`, as
+`ColoredArrow_New` prints it) and 0x011D `↓` from a Gen 4 font's own
+charmap. This fixes the YES / NO box and every other shared Gen 4 menu.
+
+### Poffins in their own art (src/import/Gen4PoffinArt.lua)
+
+The importer builds three archives into `gen4_poffin_art`:
+
+- **nutmixer**: the cooking.
+- **poru_gra**: the Poffin Case.
+- **poruact**: the 29 Poffin pictures.
+
+To add them to an existing cache:
+
+```
+love tools/gen4_art_extract <rom> <asset root> <cache dir> [contest] [poffin]
+```
+
+**Cooking.** The pot is overlay083's eight 3D software sprites over
+256×256 textures stored as linear bitmaps. They are drawn in
+`ov83_0223E368`'s order:
+
+1. the tablecloth;
+2. the flames for the phase's heat;
+3. the batter, turned by the stir's angle, scaled by 1 + ¼ of the speed
+   above 910 over 2730 (`ov83_0223FB68`), and cross-faded into the next
+   batter over a phase's last 60 frames or last 5 turns
+   (`ov83_0223FC58`);
+4. the rim.
+
+The spoon follows the finger. The stir arrow appears whenever the batter
+turns the wrong way (`ov83_0223C558`). On a second screen, the top screen's
+own picture is shown.
+
+**The Poffin Case** (src/ui/Gen4PoffinCase.lua) is now the two-screen app
+from `applications/poffin_case`, not field menus:
+
+- Top screen:
+  - six rows at a time, newest first, with CLOSE last;
+  - the cursor box at (105, 40 + 16 × row) and the scroll arrows;
+  - the chosen Poffin's picture at (231, 76), its "SMOOTH / n" and its
+    flavour dots;
+  - GIVE / TRASH / BACK, and "Discard this …?" with YES / NO.
+- Bottom screen: the flavour pentagon with its six coloured filter buttons
+  and the chosen filter's line. On the cartridge they are touched; here L / R
+  also work.
+- A cache without the art keeps the old menus.
+
+### Two decoder fixes the Poffin art needed
+
+- **Compressed palettes.** A PMCP palette (nitro `-pcmp`) can write its
+  TTLP size inverted (`-invertsize`, 0x200 − size). poru_gra's says 160
+  bytes for eleven palettes. `Gen4Graphics.palette` now takes the count and
+  each palette's slot from the PMCP list.
+- **Texture bitmaps.** These textures are linear bitmaps, not tiles
+  (`Gen4PoffinArt.bitmap`).
+
+### Options (src/ui/Gen4Options.lua)
+
+The layout now matches `options_menu.c SetupWindows`: the title at tile
+(1, 0), the entries in the standard frame from (1, 3) with seven rows, and
+the description in the MESSAGE box at (2, 19). Before, the description
+shared a four-tile box with the title, the two printed over each other, and
+its second line was cut off.
+
+### Sweep
+
+Every one of the 139 Gen 4 checks was run, with the arguments each one
+asks for:
+
+- **Outdated checks, fixed:**
+  - `gen4_field_moves_check` still listed `givepoffin` (0x289) as
+    variable-width. It is a fixed 16 bytes (`ScrCmd_GivePoffin`), which is
+    now asserted.
+  - `gen4_poketch_services_check` expected the shop to quit on SEE YA!. It
+    now quits after the parting line, and touch input waits for the camera.
+- **Fixed in the screens:** the Poffin screens used a hand-rolled
+  `{STRVAR}` gsub. They now buffer on the game and let `gen4Markup` expand
+  the strings, as the house rule asks.
+- **Not regressions (environment):** the sweeps that list `src/` by
+  shelling out to `ls` (`machine`, `constants_wiring`, `money_window`) read
+  0 files in this runner. `dynamic_power` wants decomp files this checkout
+  lacks.
+- **Pre-existing:** `gen4_prop_anim_check` disagrees on joint-capable prop
+  counts (40 vs 39). It is untouched by this work.
+
+### Harnesses
+
+The overworld, Poffin and new Poffin Case harnesses read pictures from
+`POKEPORT_ASSET_ROOT`. `tools/gen4_poffin_case_harness` renders the case's
+states on both screens.
+
+## Mystery Gift, the Hall of Fame and credits, Options, feeding, group cooking and the Dance
+
+### The Mart's Mystery Gift deliveryman (src/pokemon/Gen4MysteryGift.lua)
+
+The deliveryman stood in every Mart because `mysterygiftgive` (0x23E) had
+no width rule. The decoder stopped at the Mart's OnTransition (common script
+10200) before it reached the check that hides him. The command's width
+depends on its stage (`ScrCmd_MysteryGiftGive`): stages 1-3 read one more
+word, and stages 5-6 read two more. With that rule the scripts were
+re-extracted, and he now appears only when a gift is waiting, as the
+cartridge does.
+
+Stages are lowered to `g4_mystery_gift`:
+
+- whether a gift is waiting, and its type;
+- whether it can be received (bank 379 #4 when the party is full, #5 when
+  the Bag is);
+- giving it:
+  - The **Member Card**, **Oak's Letter** and **Azure Flute** go into the
+    Bag and set var 0x4043 to the distribution's magic value
+    (`checkdistributionevent`).
+  - Oak's Letter also sets Shaymin's state var 0x4057 to 1.
+  - The **Manaphy Egg** joins the party as an egg.
+- the line to say (bank 379 #13-16).
+
+**PORT ADDITION, as in Gen 3:** after each Hall of Fame entry the player
+picks one gift they have not taken yet. Once a gift is taken it leaves the
+list, and one more gift becomes owed per Hall of Fame entry.
+
+Check: `tools/gen4_mystery_gift_check.lua` (30).
+
+### Hall of Fame and credits (src/ui/Gen4HallOfFame.lua, Gen4Credits.lua)
+
+`cleargame` now runs Platinum's order (`g4_clear_game`):
+
+1. the Hall of Fame;
+2. the record;
+3. the Mystery Gift pick;
+4. "Saving..." and the save;
+5. the credits;
+6. back to the title.
+
+**Hall of Fame.** The pictures come from `dendou_demo`: the stage, the
+overlay and the party shot. Timing follows `hall_of_fame.c`:
+
+- each Pokémon slides in, with its name, level, OT and met place (from the
+  area-popup names);
+- then the party with the player's trainer sprite, and the confetti.
+
+The music is SEQ 1171.
+
+**Credits.** The pictures are `ending.narc`'s:
+
+- the bike ride at morning, day and night;
+- ten memories for Lucas or Dawn;
+- Twinleaf;
+- "FIN".
+
+The staff roll is overlay 99's table of 237 lines (y and centring) in bank
+548, with `{COLOR n}` taken from `text.NCLR`. It scrolls 1 px a frame on
+both screens. START skips to FIN only when the game had been cleared
+before (`main.c`). The music is SEQ 1186.
+
+**Not drawn:** the 3D trees and props, and the bike's blink. The Hall of
+Fame spotlights are drawn flat.
+
+`Gen4Graphics.palette` now reads 256-colour (8bpp) palettes from a PMCP
+list. The memories need it.
+
+Harness: `tools/gen4_ending_harness`.
+
+### Options (src/ui/Gen4Options.lua)
+
+The rows are in the cartridge's order (bank 220): text speed, sound, battle
+scene, battle style, button mode, frame, then CLOSE. Every choice of a row
+is printed side by side:
+
+- choices at x 108 + 48 per choice; the button modes are packed by width;
+- the chosen one in red, the rest in ink;
+- the frame shows only its current number;
+- a red rounded bar marks the row the cursor is on.
+
+**Not done:** the YES/NO prompt on leaving with changes. Changes still
+apply at once.
+
+### Feeding (src/ui/Gen4PoffinFeed.lua)
+
+GIVE in the Poffin Case now plays `cutscene.c`, on `porudemo.narc`'s two
+screens:
+
+1. the Poffin arcs up and shrinks while the Pokémon grows and hops forward;
+2. the cry;
+3. back to its place;
+4. three hops if it liked the Poffin, a shake if it did not;
+5. bank 462's line;
+6. the fade.
+
+### Group Poffin cooking (src/ui/Gen4PoffinCooking.lua)
+
+"In a group" runs `StartBattleServer` / `StartBattleClient` mode 6 (the
+Wireless Club), then `OpenPoffinCooking TRUE`.
+
+**Platinum has no computer cooks.** Every partner in a group is another DS.
+
+**PORT ADDITION:** the link commands, when given mode 6, ask how many will
+cook (2-4). Local cooks fill the other places, each bringing a different
+Berry. They stir the right way round, are a little late to notice a change
+of direction, ease off when the pot runs fast, and keep pace with the
+player's finger.
+
+Every other link mode answers COMM_CLUB_RET_ERROR (3), the path each
+script already has for a link that would not start.
+
+The rest is the cartridge's group rules (`ov83_0223F7F4.c`):
+
+- every cook's weighted arc is summed and divided by the number of cooks;
+- **sync** (`ov83_0223FCE8`): the pot neither slow nor overflowing, every
+  finger on the batter and moving more than 600, all within 32 px of the
+  first cook's. After 4 frames like that, each frame counts and sparkles,
+  and the direction holds while the group is in sync;
+- the smoothness loses min(10, (synced / 6) × {0, 1, 5, 10}[cooks] / 10);
+- the same Berry twice makes a Foul Poffin;
+- each cook gets one Poffin per cook.
+
+The top screen is `top_screen_multi`, with the names centred on its plates.
+
+### The Dance competition (src/pokemon/Gen4ContestDance.lua, src/ui/Gen4ContestDance.lua)
+
+The Dance round is no longer scored level. It is played to overlay017's
+rules:
+
+- **Songs.** Seven songs by rank and type (`Unk_ov17_0225312C`). A step
+  is 1800 / BPM frames; a measure is 16 steps (or 12).
+- **Rounds.** Four rounds, led by contestants 3, 2, 1, then the player,
+  for two measures each.
+- **Timing.** The lead moves in the first half and the others copy in the
+  second. A move snaps to the nearest half step and its distance is
+  measured against the song's thresholds:
+  - Excellent: 2 points;
+  - Good: 1;
+  - Miss: 0.
+- **Copying.** A copy counts only if the lead moved exactly half a measure
+  earlier, in the same direction.
+- **Computer dancers.** Their skill comes from contest_data (bits 14-15):
+  - leading follows `ov17_0224E990`: slots, jitter, and repeat odds by rank;
+  - copying follows `ov17_0224EE90`, with errors for the weak direction, a
+    change of direction, a change of beat, and a long gap.
+- **Score.** The points over all four rounds are the contest's `dance`
+  score.
+
+At Normal rank a half step is 7.5 frames and Good reaches 3, so only a
+wrong or unmatched copy can miss.
+
+**Art** (added to `Gen4ContestArt`):
+
+- the stage for each layout (contest_bg 13 with map 14/15, palette 32 +
+  36);
+- the dance pad (18, maps 28 under 17, palette 33);
+- contest_obj palette 6's sprites: the notes by move and by owner (yours,
+  another dancer's, the lead's ghost), the Excellent / Good / Miss bubbles,
+  the beat ball, the playhead, the arrow and the shadow.
+
+The words are bank 206's: the pad's labels, "UP" for Diglett and Dugtrio,
+the verdicts, the instructions, and the leader's announcement.
+
+**Buttons:** UP / X is JUMP, DOWN / B is FRONT, LEFT / Y is LEFT, and
+RIGHT / A is RIGHT. The pad dims while the player cannot move.
+
+**Not done:**
+
+- the 3D particles and fireworks;
+- the pad's press animation;
+- the sound effects (no SE table on hand).
+
+Check: `tools/gen4_contest_dance_check.lua` (26). Harness:
+`tools/gen4_contest_dance_harness`.
+
+### Fixed on the way
+
+`Gen4PoffinCooking` and `Gen4MysteryGift` required `src.ui.TextBox`, which
+does not exist. They now require `src.render.TextBox`, so "keep cooking?"
+and the gift picker's messages no longer error.
+
+## Platinum's own art for the Options screen, group cooking, the Dance pad and the credits' 3D
+
+### Options (src/import/Gen4OptionsArt.lua, cache `gen4_options_art`)
+
+`options_menu.c LoadBgTiles` draws the screen from `/graphic/config_gra.narc`
+(`tiles.NCGR`, `tiles.NCLR`, `tilemap.bin`):
+
+- **Backdrop.** BG_MAIN_2 and the bottom screen's SUB_0 are filled with
+  tile 1, colour (197, 206, 214). The port's hard-coded colour was one shade
+  off.
+- **Cursor.** BG_MAIN_0 shows the tilemap's first two rows, scrolled to
+  row × 16 + 24, at priority 1, above the windows. It is the red rounded bar
+  the port used to draw by hand.
+
+Both are now the cartridge's pictures, and the hand-drawn versions remain
+only as a fallback for a cache without them. Harness:
+`tools/gen4_options_harness`.
+
+### Group cooking (src/import/Gen4PoffinArt.lua, src/ui/Gen4PoffinCooking.lua)
+
+From `ov83_0223E15C` and `ov83_0223DFAC`:
+
+- `top_screen.NCLR`'s two palettes load into slots 2–3. The top screen's
+  map is re-coloured to slot 3, the file's second palette, and the port now
+  composes it that way.
+- Each cook's **plate** is a 10 × 4-tile piece of `player_name.NSCR`, cut at
+  (col × 10, row × 4) and placed at tile (5 + col × 12, 13 + row × 5), in
+  slot 2. They are `cook_plate_<col>_<row>`: red, blue, yellow and green. The
+  names are centred on them.
+- The cooking **messages** belong on the top screen, in a message box at
+  tile (4, 19), 23 × 4 (`ov83_0223E09C`). With a second screen they are drawn
+  there and the pot is left clear. Without one they still come down to the
+  main screen.
+
+### The Dance pad's press (src/import/Gen4ContestArt.lua)
+
+When a button is pressed, `ov17_02249DA0` overwrites that button's 6 × 12
+tiles in the character block:
+
+- The button sits at block column JUMP 0, FRONT 18, LEFT 6 or RIGHT 12.
+- The new tiles come from contest_bg member 16, which holds three frames
+  side by side, 18 tiles wide. Columns 12, 6 and 0 are pressed, half-up and
+  rest, about three frames each (`Unk_ov17_02254630`).
+- The label drops 16, rises 4, then returns.
+
+They are imported as `dance_pad_<move>_<frame>`, and the pad plays them.
+
+### The credits' trees and lampposts (src/import/Gen4EndingArt.lua, src/ui/Gen4Credits.lua)
+
+The credits' BG0 is 3D: seven BMD0 models from `ending.narc`. They are now
+packed with `Gen4ModelPack` and their TEX0 textures decoded
+(`model_<name>_<texture>`); the records are in `gen4_ending.models`, and
+`Gen4Model` draws them. The placement is `common.c`'s:
+
+- Rows of 14 or 16 copies on a diagonal, from the start position minus
+  (116736, 178176, 290816) × j in fx32.
+- Each copy slides offset × count / speed a frame. On reaching the start it
+  jumps back `count` places.
+- Morning has two tree rows, day one lamppost row, and night a tree row
+  plus a row of trees and lampposts. The night's front row follows
+  `sEndCreditsNightTreeTypes`: a lamppost every eighth, then snowy trees.
+- The camera is `EndCredits_InitCamera`'s: eye (−31712, −142304, 496744),
+  target (−31712, −67780, −5704), 44°, clipping 1–900.
+- The props draw over the background (priority 3) and under the bike and
+  the roll.
+
+Positions are computed in closed form from the scene's frame, so seeking in
+the credits still places them right.
+
+**Approximated:** the per-scene light and material colours are reduced to
+one tint per scene (`PROP_TINT`): warm in the morning, cool at night.
+
+### What stays as it is
+
+- **Hall of Fame spotlights and confetti.** These are BG0 polygons with no
+  2D art, drawn flat at the cartridge's angles, speeds and colours.
+- **Menus with no Platinum screen.** The Mystery Gift picker and the "how
+  many cooks" menu are the port's own additions and use the standard menu
+  window.
+
+### Checks
+
+`tools/gen4_screen_art_check.lua <cache> [<asset root>]` (8): the backdrop
+and cursor, the four plates, the pad's twelve press frames, and the seven
+props with every textured shape's picture.
+
+## More screens on Platinum's own art: naming, Pokédex list, party, mining, the Underground menu, and the Pokémon icons
+
+### Naming screen (src/import/Gen4Naming.lua, src/ui/Gen4NamingScreen.lua)
+
+The home row, the cursor and the name entry are sprites from `namein.narc`
+(members 1/10/12/14), now imported into `gen4_naming_art`, with the entry's
+colours in `gen4_naming_ink`. Every label (UPPER, lower, Others, BACK, OK,
+SELECT, B BUTTON, START) is baked into the art.
+
+- **Overlay and buttons.** The overlay sits at (22, 56), and the buttons are
+  its children: tabs at 26/58/90, BACK at 158, OK at 198, all at y 68. The
+  current page's tab is lit. BACK and OK show their pressed frame for 8 ticks.
+- **Cursor.** A white mask tinted with the glow, colour (29, sin(a)·10+15, 0),
+  where a rises 20° per 30 Hz frame. On a key it cycles cells 32/37/38/37;
+  on the home row it is the bracket. Typing a character plays the pop. The
+  cursor starts hidden on the first key, and the first press only shows it.
+- **Movement.** The port's invented SPACE key is gone. Columns 7–8 are SKIP
+  cells, as on the cartridge, and the cursor steps over them. START jumps to
+  OK, B is BACK, and SELECT cycles the page.
+- **Page change.** The new page slides in 24 px a frame while the old one
+  drops away, then the overlay wiggles +4 +4 −3 −3 +2 +2 0.
+- **Name entry.** The typed name sits at (80 + 12i, 24), in background
+  colours 14/15. Underscores are at (80 + 12i, 39), and the next one bobs.
+- **Header icon** at (24, 8): the player (by gender), the rival, the box,
+  Shaymin's tablet, or the Pokémon's own icon hopping. A Pokémon's gender
+  mark is at (80 + 13·max, 27).
+- **Prompt.** It goes in the bottom screen's message box at (2, 19). With no
+  second screen it sits beside the icon.
+- The Rowan intro and the PC now pass `kind`, so the header shows the right
+  picture.
+
+Harness: `tools/gen4_naming_harness`.
+
+### Pokédex list (src/import/Gen4Dex.lua, src/ui/Gen4Pokedex.lua)
+
+The top screen is now `ov21_021D5AEC.c`'s:
+
+- the olive background with the picture frame, and the SINNOH/NATIONAL
+  banner and footer (red for search results);
+- nine curved name plates around the selected entry, each with its own
+  palette row (0, 7, 8, 9 by distance from the middle), with a Poké Ball for
+  caught entries;
+- the preview, or the "?" icon for an unseen entry, and the red scroll thumb;
+- SEEN / OBTAINED at (8, 152) and (128, 152).
+
+Scrolling slides the plates the cartridge's way: 640 down by 60 a frame,
+1.6× faster while held. The yellow highlight and the "*" are gone.
+
+Tool: `tools/gen4_dex_art_extract` (adds the art to an existing cache).
+Harness: `tools/gen4_pokedex_harness`.
+
+### Party screen (src/import/Gen4PartyArt.lua, src/ui/Gen4PartyMenu.lua)
+
+The six panels are BG2 (`menu_panels.NSCR`), which the port had never drawn:
+
+- **Panels.** Lead, back, egg and empty templates. The colour comes from
+  `menu.NCLR` row 3+v: normal, cursor, fainted, or green while switching.
+- **Panel contents.**
+  - The name and ♂/♀ in the menu palette.
+  - "Lv" and the HP numbers in `font_special_chars`.
+  - The HP bar's three rows from x 64, in the cartridge's green, yellow and
+    red.
+  - Status, held-item, mail and seal icons.
+- **Cursor.** The cursor sprite at panel+(0, 1), orange, turning grey while
+  the submenu is open. While switching, a source marker replaces the yellow
+  rectangle.
+- **CANCEL and messages.** The CANCEL button sprite. "Choose a Pokémon." and
+  "Do what with …?" are drawn in message boxes.
+- **Submenu.** Field moves are listed in move-slot order, in blue.
+- **Navigation.** The cartridge's table.
+
+Tool: `tools/gen4_art_extract … party`. Harness:
+`tools/gen4_party_harness`. Check: `tools/gen4_party_art_check.lua`.
+
+### Mining and the Underground menu (src/import/Gen4MiningArt.lua, Gen4MenuArt.lua)
+
+- **Tool buttons.** These are `interface_tiles` blocks (up, transition,
+  pressed) with the cartridge's tap area, replacing the hand-drawn "HAM"/"PIC"
+  boxes.
+- **Crack and dirt palette.** Both use `interface_tiles` row 2; they had been
+  composed in row 0.
+- **Sprites.** The swing, impact and sparkle sprites from `ug_anim`, the crack
+  end, the screen shake, and the sparkles on a fully uncovered treasure.
+- **Messages.** Drawn in the message box from bank 634, including the
+  first-time tutorial.
+- **Behaviour change, as on the cartridge.** A collapse still awards the
+  treasures that were already fully dug out.
+- **Underground menu.** The cursor is `menu_gra`'s cursor sprite in palette
+  row 1 (orange), and the icons are colour on the selected row and grey
+  elsewhere.
+- **Start menu.** Its cursor was composed in row 0, which is grey; it now
+  uses row 1.
+
+Tool: `tools/gen4_art_extract … mining menu`. Check:
+`tools/gen4_mining_sprites_check.lua <rom>` (274).
+
+### Fix: every Pokémon icon was in its neighbour's colours (src/import/Gen4Icons.lua)
+
+`sPokemonIconPaletteIndex` was found by scanning ARM9 for a long run of
+bytes below 3. The run that won begins 118 bytes **before** the real array,
+so every species read another species' ramp: Infernape came out green, and
+Pikachu purple. The seven "checked by eye" anchors had been taken from that
+wrong render, so the check agreed with the wrong table.
+
+The anchors are now fourteen species' `icon_palette` values from
+pokeplatinum's `res/pokemon/<species>/data.json`. The table is the offset,
+inside a qualifying run, where all fourteen hold, which is ARM9+0xF0780.
+
+An existing cache is repaired with `tools/gen4_icon_reextract <rom> <asset
+root>`, which rewrites the 540 icons in place.
+
+### Fix: the Hall of Fame save
+
+`g4_clear_game` called `Game:writeSave` itself, which `gen4_save_check`
+forbids. It now writes through `ScriptSave.write`, like every other script
+save.
+
+## Summary, Bag, Trainer Card, PC, main menu and Mart on Platinum's art; the party menu's field moves
+
+### Summary screen (src/import/Gen4SummaryArt.lua, src/ui/Gen4SummaryMenu.lua)
+
+**Panels.** The move-detail and ribbon panels are `move_info.NSCR`, shown at
+the cartridge's scrolls: (0,0) for battle moves, (0,256) for contest moves and
+(256,56) for ribbons. They were hand-drawn boxes before.
+
+**Bars.** The HP and EXP bars are drawn from tiles 0xC0/0xE0/0x100 and 0xAC,
+using `App_PixelCount` and the green/yellow/red thresholds.
+
+**Sprites.** Now drawn: markings, page arrows, the A-button prompt, the "Lv"
+glyph, the category icon, the move panel's species and type icons, the
+contest dots, the ribbon arrows, and the bottom screen (rings and eight page
+buttons). Type icons take the template's EXPLICIT palette row; before, every
+type came out in one colour.
+
+**Positions and colours.**
+- Move types sit at (151, 42+32i) and the move cursor at (194, 48+32i).
+- Skill labels sit at x 128.
+- Text uses palette row 15's inks.
+
+**Condition graph.** Drawn as `3d_anim.c`'s four quads at alpha 20/31.
+
+**New page.** A contest moves page.
+
+Harness: `tools/gen4_summary_harness`. Checks: `gen4_summary_art_check` (12)
+and `gen4_summary_check` (20). The `ribbonCount` label in Gen4Menus is 182
+(it read 180, which is "INFO").
+
+### Bag (src/import/Gen4BagArt.lua, src/ui/Gen4BagMenu.lua)
+
+**List.** The cartridge's ListMenu:
+- 9 rows, 16 px apart, in the window at tile (14,0);
+- headers that are never selected, and no wrapping;
+- a cursor remembered per pocket.
+
+**Quantities and numbers.** Quantities are "x" plus a number right-aligned to
+134. TMs and Berries show "No." and two digits, HMs their tag, and a
+registered key item the SELECT tag.
+
+**Sprites.** The pocket highlight and arrows, the item highlight, the bag
+sprite for each pocket and gender, and CLOSE BAG's return icon.
+
+**Bottom screen.** The Poké Ball dial with one button per pocket. A bag
+opened on a single pocket shows only that pocket.
+
+### Trainer Card (src/import/Gen4TrainerCardArt.lua, src/ui/Gen4TrainerCard.lua)
+
+**Colours.** The cartridge writes `case_platinum` over row 0 of both screens'
+palettes, so the case, card faces and badge case come out in Platinum's
+cream and gold. The port had been drawing Diamond's light blue.
+
+**Faces.** All seven: normal through black, plus no-Pokédex.
+
+**Case and time.** The case is now drawn around the card. Play time is live,
+and its colon blinks every 15 frames.
+
+**Badge case.** Shown on the bottom screen: the lid on pages 1–2, open with
+the badges on page 3. Badges sit at `sBadgeCoordinates`.
+
+Check: `gen4_bag_card_check` (32). Harnesses: `tools/gen4_bag_harness` and
+`tools/gen4_trainer_card_harness`.
+
+### PC storage, the CONTINUE menu, the Poké Mart (Gen4BoxArt, Gen4MainMenuArt, Gen4ShopArt)
+
+**PC storage** is drawn as ov19's layers:
+- the wallpaper with the box name in its own colours;
+- icons at (112+24c, 40+24r);
+- PARTY PKMN and CLOSE BOX as button sprites;
+- the party panel;
+- the preview: species, No., nickname and gender, "Lv", markings, and an
+  info line that rotates through item, type, nature and ability;
+- the hand cursor with its shadow, and the header arrows;
+- menus in banks 18/19.
+
+The header menu is JUMP / WALLPAPER / NAME, and there is a MARK menu. RELEASE
+asks Yes/No first.
+
+**The CONTINUE menu.**
+- The focused row uses the field frame on white, with its border cycling.
+- Other rows use the system frame on grey.
+- The details are blue for a boy and red for a girl.
+- The menu scrolls smoothly and stops at the ends, with the cartridge's
+  scroll arrows.
+
+**The Mart.**
+- **Buying.** The list stays up. The cursor changes palette when an item is
+  chosen, and the "In Bag:" and quantity windows appear (with arrows),
+  followed by "That will be $N. OK?" and YES/NO.
+- **Scrolling and TMs.** The scroll arrows follow the game's rule, and TMs
+  show "No.NN".
+- **Selling.** SELL picks from the Bag and asks bank 7's questions.
+
+Check: `gen4_pc_mart_menu_check` (33). Harness:
+`tools/gen4_pc_mart_harness`.
+
+### The party menu's field moves (src/ui/Gen4PartyMenu.lua, src/world/Gen4FieldMoves.lua)
+
+`GetContextMenuEntriesForPartyMon` lists every field move the Pokémon knows,
+whatever the badges or weather: CUT, FLY, SURF, STRENGTH, DEFOG, ROCK SMASH,
+WATERFALL, ROCK CLIMB, FLASH, TELEPORT, DIG, SWEET SCENT, CHATTER, MILK DRINK
+and SOFTBOILED. The port listed eight, and Flash/Defog only in matching
+weather.
+
+`FieldMoves_Check*` answers when a row is chosen, with the party menu's own
+lines from bank 453:
+- 76: no badge;
+- 104: can't use it here;
+- 196: someone is with you;
+- 102: already surfing.
+
+The moves themselves:
+- **Cut, Rock Smash, Strength.** These need the faced object's graphics ID
+  (86, 85, 84) and run `scripts_field_moves.s` entries 8, 9 and 10, with
+  VAR_0x8000 set to the slot and VAR_LAST_TALKED to the object.
+- **Waterfall and Rock Climb.** These need the faced tile (WATERFALL, or
+  ROCK_CLIMB_N_S / _E_W by facing) and run entries 13 and 11.
+- **Milk Drink and Softboiled.** These move a fifth of the user's max HP to
+  another member:
+  - "Not enough HP..." (138) when the user has no more than that;
+  - "This can't be used on that Pokémon." (131) for itself, a fainted target
+    or one at full HP;
+  - entry 64 for the result.
+- **Chatter.** It records the player's voice on the cartridge; with no
+  microphone, it plays the cry.
+
+`gen4_weather_check` asserted the old weather gate on the menu rows. It now
+asserts the cartridge's rule: list every known move, and refuse at the press.
+
+The party screen's "Do what with …?" line went through a hand-written STRVAR
+gsub. It is now buffered and expanded the normal way.
+
+### Cache wiring
+
+The Mining/Menu hook writes its two modules by literal name, so the cache
+wiring check sees them written. `gen4_map_matrices` and
+`gen4_trainer_sprites` have readers now, so they have left the
+write-only-dump list.

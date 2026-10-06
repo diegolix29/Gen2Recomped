@@ -905,6 +905,30 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
   local name = itemDef and itemDef.name or itemId
   local rawItemId = itemId
   itemId = alias(itemId, itemDef)
+  local gen2Friendship = require("src.pokemon.Gen2Friendship")
+  if gen2Friendship.isVanilla() and target and require("src.pokemon.Party").isEgg(target) then
+    return "failed", { Strings("It won't have\nany effect.") }
+  end
+  if gen2Friendship.isVanilla() then
+    -- The herbal shop's medicines use the ordinary heal/cure/revive path,
+    -- then apply bitterness only when the medicine was successfully used.
+    local herbs = {
+      ENERGYPOWDER={"SUPER_POTION","BITTERPOWDER"},
+      ENERGY_ROOT={"HYPER_POTION","ENERGYROOT"},
+      HEAL_POWDER={"FULL_HEAL","BITTERPOWDER"},
+      REVIVAL_HERB={"MAX_REVIVE","REVIVALHERB"},
+    }
+    local herb = herbs[itemId]
+    if herb then
+      local kind, messages, extra = ItemEffects.use(data,save,herb[1],target,battle,moveIndex,ow)
+      if kind == "consumed" then
+        gen2Friendship.change(target,herb[2])
+        messages[#messages+1]=(data.text and (data.text._ItemLooksBitterText or data.text.ItemLooksBitterText))
+          or Strings("It looks bitter…")
+      end
+      return kind,messages,extra
+    end
+  end
   -- SINNOH'S RARE CANDY HAS NO NAME TO MATCH ON.  `alias` answers
   -- "ITEM_050" for it, so the branch that raises a level -- which is
   -- already written, already uses the Gen 3 stat formula and already fires
@@ -990,6 +1014,9 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
         .modifyHappiness(save, "USEDXITEM", b and b.mon)
     end
     if itemId == "X_ACCURACY" then
+      if gen2Friendship.isVanilla() and b.xAccuracy then
+        return "failed", { Strings("It won't have\nany effect.") }
+      end
       -- ItemUseXAccuracy sets USING_X_ACCURACY: moves never miss
       -- (not an accuracy stage)
       b.xAccuracy = true
@@ -997,6 +1024,7 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
     end
     if X_ITEMS[itemId] then
       local stat = X_ITEMS[itemId]
+      gen2Friendship.change(b and b.mon,"XITEM")
       local cur = b.stages[stat] or 0
       -- ItemUseXStat removes the item BEFORE running the stat-up
       -- effect, so at +6 it is still consumed and StatModifierUpEffect
@@ -1010,10 +1038,16 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
     -- ItemUseDireHit/ItemUseGuardSpec always set the bit and consume
     -- the item, even when it is already active
     if itemId == "DIRE_HIT" then
+      if gen2Friendship.isVanilla() and b.focusEnergy then
+        return "failed", { Strings("It won't have\nany effect.") }
+      end
       b.focusEnergy = true
       return "consumed", { Strings("%s's\ngetting pumped!", b.name) }
     end
     if itemId == "GUARD_SPEC" then
+      if gen2Friendship.isVanilla() and b.mist then
+        return "failed", { Strings("It won't have\nany effect.") }
+      end
       b.mist = true
       return "consumed", { Strings("%s's\nprotected against\nstat changes!", b.name) }
     end
@@ -1118,7 +1152,8 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
         if b and b.mon == target and b.confusedTurns then confused = b end
       end
     end
-    if not target or ((not target.status or not cures[target.status])
+    if not target or (gen2Friendship.isVanilla() and (target.hp or 0) <= 0)
+                  or ((not target.status or not cures[target.status])
                       and not confused) then
       return "failed", { Strings("It won't have\nany effect.") }
     end
@@ -1168,6 +1203,7 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
     -- PIKAHAPPY_LEVELUP on a candy level (item_effects.asm:1540)
     require("src.world.PikachuFollower")
       .modifyHappiness(save, "LEVELUP", target)
+    gen2Friendship.levelUp(data,save,target)
     return "consumed", { Strings("%s grew\nto level %d!", monName(data, target), target.level) },
            { leveledTo = target.level, beforeStats = old,
              afterStats = target.stats }
@@ -1223,6 +1259,7 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
     target.stats = Stats.calc(data.pokemon[target.species], target.level,
                               target.dvs, target.statExp)
     target.hp = math.min(target.hp, target.stats.hp)
+    gen2Friendship.change(target,"VITAMIN")
     return "consumed", { Strings("%s's %s\nrose!", monName(data, target),
       vitaminStat == "hp" and "HP" or vitaminStat:upper()) }
   end
@@ -1271,6 +1308,23 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
     return (itemDef.machine.kind == "HM" and "learnkept" or "learn"), itemDef.machine.move
   end
 
+  -- SINNOH'S RODS, which are numbered and carry `fieldUseFunc` 16/17/18 rather
+  -- than a Gen 1 name. Matched by name alone they were never rods: every cast
+  -- in Platinum answered the OAK line below. `CanUseFishingRod` allows a rod
+  -- while SURFING (unlike Gen 1/2) and refuses it only in the Distortion World;
+  -- facing water is checked by the bag before `goFishing`.
+  local gen4Rod = require("src.world.Gen4Fishing").rodFor(itemDef)
+    or require("src.world.Gen4Fishing").rodOf(data, rawItemId)
+  if gen4Rod then
+    if battle then
+      return "failed", { Strings("OAK: %s!\nThis isn't the\ntime to use that!", save.player.name) }
+    end
+    local header = ow and ow.map and ow.map.def and ow.map.def.header
+    if header and require("src.world.Gen4Fishing").NO_FISHING[header] then
+      return "failed", { Strings("It can't be used here.") }
+    end
+    return "fish", rawItemId
+  end
   if itemId == "OLD_ROD" or itemId == "GOOD_ROD" or itemId == "SUPER_ROD" then
     if battle then
       return "failed", { Strings("OAK: %s!\nThis isn't the\ntime to use that!", save.player.name) }
@@ -1339,7 +1393,18 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
     end
     return "explorer_kit"
   end
-  if itemId == "TOWN_MAP" then
+  -- THE POKE RADAR (fieldUseFunc 11, ITEM_USE_FUNC_POKE_RADAR)
+  if itemDef and itemDef.fieldUseFunc == 11 and itemDef.name == "Poké Radar" then
+    if battle then
+      return "failed", { Strings("OAK: %s!\nThis isn't the\ntime to use that!", save.player.name) }
+    end
+    return "poke_radar"
+  end
+  -- Platinum's is item 442, which has no Gen 1 name key: its own use
+  -- function row (`fieldUseFunc` 2, UseTownMapFromBag) says what it is
+  local isGen4TownMap = itemDef and itemDef.fieldUseFunc == 2
+    and itemDef.name == "Town Map"
+  if itemId == "TOWN_MAP" or isGen4TownMap then
     if battle then
       return "failed", { Strings("OAK: %s!\nThis isn't the\ntime to use that!", save.player.name) }
     end
@@ -1365,6 +1430,30 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
       return "failed", { Strings("OAK: %s!\nThis isn't the\ntime to use that!", save.player.name) }
     end
     return "teachy_tv"
+  end
+  -- PLATINUM'S COIN CASE (item 444): BagContext_FormatUsageMessage prints bank
+  -- 7 (TEXT_BANK_BAG) #57, "Your Coins: {STRVAR_1 54 0 0}", unpadded.
+  if tonumber(rawItemId) == 444 and itemDef and itemDef.name == "Coin Case" then
+    local key = require("src.import.Gen4Text").label(7, 57)
+    local line = data and data.text and data.text[key]
+    local coins = tostring(require("src.import.Gen4GameCorner").coins(save))
+    line = type(line) == "string" and line:gsub("{STRVAR_1 54 0 0}", coins) or ("Your Coins: " .. coins)
+    return "failed", { line }
+  end
+  -- THE POFFIN CASE (item 449): its own screen (src/ui/Gen4PoffinCase.lua).
+  if tonumber(rawItemId) == 449 and itemDef and itemDef.name == "Poffin Case" then
+    if battle then
+      return "failed", { Strings("OAK: %s!\nThis isn't the\ntime to use that!", save.player.name) }
+    end
+    return "poffin_case"
+  end
+  -- ...and the SEAL CASE (item 434): bank 7 #92, "Seals: n" -- CalcTotalBallSeals.
+  if tonumber(rawItemId) == 434 and itemDef and itemDef.name == "Seal Case" then
+    local key = require("src.import.Gen4Text").label(7, 92)
+    local line = data and data.text and data.text[key]
+    local n = tostring(require("src.import.Gen4Seals").total(save))
+    line = type(line) == "string" and line:gsub("{STRVAR_1 53 0 0}", n) or ("Seals: " .. n)
+    return "failed", { line }
   end
   if itemId == "COIN_CASE" then
     return "failed", { Strings("Coin count:\n%d", save.coins or 0) }

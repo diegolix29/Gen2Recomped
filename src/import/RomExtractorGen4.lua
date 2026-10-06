@@ -295,6 +295,43 @@ end
 -- The same, for an archive named by its cartridge path rather than by a key
 -- in PATH.  The graphics stage walks a table of paths, so keying every one of
 -- them in PATH would be a second list to keep in step with the first.
+-- MAP PROP ANIMATION CLAIMS -- which `bm_anime` members a prop model owns.
+--
+-- `/arc/bm_anime_list.narc` has one 20-byte record per `build_model.narc`
+-- model, each naming up to four `bm_anime` members.  pokeplatinum's own
+-- map-format graph is the authority:
+--
+--     area_build    --> bm_anime_list : mapPropModelIDs
+--     bm_anime_list --> bm_anime      : animeArchiveIDs
+--
+-- Returns { [bm_anime member] = { prop model ids... } }, read once.
+-- `Gen4PropAnim` owns the record layout -- including that the documented
+-- `animeArchiveIDs` offset is wrong by one and that `hasAnimations` is 0xFF
+-- rather than 0 for a prop with none -- so this does not re-spell it.
+function RomExtractorGen4:propAnimationClaims()
+  if self._propClaims ~= nil then
+    if self._propClaims == false then return nil end
+    return self._propClaims
+  end
+  local PropAnim = require("src.import.Gen4PropAnim")
+  local list = self:archiveAt("/arc/bm_anime_list.narc")
+  if not list then self._propClaims = false; return nil end
+  local claims, props = {}, 0
+  for member = 0, list.count - 1 do
+    local entry = PropAnim.parse(list:get(member))
+    if entry and entry.has then
+      props = props + 1
+      for _, id in ipairs(entry.ids) do
+        claims[id] = claims[id] or {}
+        claims[id][#claims[id] + 1] = member
+      end
+    end
+  end
+  self._propClaimCount = props
+  self._propClaims = claims
+  return claims
+end
+
 function RomExtractorGen4:archiveAt(path)
   self._archives = self._archives or {}
   if self._archives[path] then return self._archives[path] end
@@ -1814,6 +1851,7 @@ function RomExtractorGen4:composeJob(arc, job)
   local map
   local layout = "tilemap"
   if job.tilemap then map = Gen4Graphics.tilemap(member(job.tilemap)) end
+  if map and job.watchDigits then map=require("src.import.Gen4PoketchArt").digitalWatchMap(map) end
   if not map then
     -- WHERE THE WIDTH COMES FROM, in order, and the order is the point.
     --
@@ -4967,14 +5005,10 @@ function RomExtractorGen4:extractDex()
   end
 
   local paletteBytes = member(Gen4Dex.PALETTE)
-  local listPalette = member("background_scroll_sinnoh.NCLR")
-  local listTiles = member("scroll_main_background.NCGR.lz")
-  local listMap = member("scroll_main_background.NSCR.lz")
-  if listPalette and listTiles and listMap then
-    out.list = self:saveImage("dex/list_page", Gen4Graphics.compose(
-      Gen4Graphics.tilemap(listMap), Gen4Graphics.tiles(listTiles),
-      Gen4Graphics.paletteAtSlot(Gen4Graphics.palette(listPalette), 5)))
-  end
+  -- The list screen's pictures (`dex/list_*`) come with the other dex art
+  -- through Gen4UIResources into `gen4_graphics.screens`; its text colours
+  -- are recorded here, beside the words.
+  out.listInk = Gen4Dex.listInkFrom(member)
   local palette = paletteBytes and Gen4Graphics.palette(paletteBytes)
   local tilesBytes = member(Gen4Dex.TILES)
   local sheet = tilesBytes and Gen4Graphics.tiles(tilesBytes)
@@ -5128,6 +5162,17 @@ function RomExtractorGen4:extractNaming()
   end
 
   self:write("gen4_naming", out)
+
+  -- the home row, the cursor and the entry's sprites (Gen4Naming.images)
+  local sprites = self.rom and Gen4Naming.images(self.rom)
+  if sprites then
+    local index = {}
+    for key, image in pairs(sprites) do
+      index[key] = self:saveImage("naming/" .. key, image, { originX = image.originX, originY = image.originY })
+    end
+    self:write("gen4_naming_art", index)
+    self:write("gen4_naming_ink", Gen4Naming.data(self.rom))
+  end
 
   local panels = 0
   for _ in pairs(out.panels) do panels = panels + 1 end
@@ -5460,10 +5505,18 @@ function RomExtractorGen4:extractTerrain(names)
     end
     self:tick("terrain", m + 1, land.count + matrices.count + (texArc and texArc.count or 0))
   end
-  local geometry, heights = Gen4Terrain.finish(blob)
+  local geometry, heights, perms = Gen4Terrain.finish(blob)
   out.chunkFile = self:saveBinary("terrain/chunks.bin", geometry)
   out.heightFile = self:saveBinary("terrain/heights.bin", heights)
+  -- ...AND THE PER-TILE BEHAVIOUR OF THE OUTDOOR WORLD.
+  --
+  -- The land chunk's permission block, which this stage has parsed since the
+  -- map work and thrown away ever since. It is what says a tile is a cave
+  -- mouth you walk north into, and without it the outdoor world has no
+  -- behaviour at all -- see `Gen4Terrain.append`.
+  out.permissionFile = self:saveBinary("terrain/permissions.bin", perms)
   out.chunkBytes, out.heightBytes = #geometry, #heights
+  out.permissionBytes = #perms
 
   -- The matrices, which are what says WHICH chunk is where.  A map def already
   -- carries its matrix id and its corner in it, so nothing here is per map.
@@ -5554,6 +5607,32 @@ function RomExtractorGen4:extractTerrain(names)
 
   self:areaLights(out.maps)
   self:mapProps()
+  self:feebas()
+  self:emotes()
+  self:moveButtons()
+  self:encounterEffects()
+  self:specialEncounters()
+  self:townMap()
+  self:areaPopup()
+  self:moveTutor()
+  self:eggMoves()
+  self:gameCorner()
+  self:seals()
+  self:berryFlavors()
+  self:trainerMusic()
+  self:contestData()
+  self:contestArt()
+  self:poffinArt()
+  self:optionsArt()
+  self:miningArt()
+  self:partyArt()
+  self:battleArt()
+  self:summaryArt()
+  self:bagAndCardArt()
+  self:pcMartMenuArt()
+  self:endingArt()
+  self:poketchEvolutionArt()
+  self:trainerPrize()
 
   self:write("gen4_terrain", out)
   self.terrainReport = {
@@ -5720,6 +5799,290 @@ end
 -- KEYED BY THE BYTE, NOT BY MAP. There are four members and 593 maps, so keying
 -- per map would store the same fifteen templates 593 times; the byte is what the
 -- cartridge selects on and it is already on every map record.
+-- THE FEEBAS TILES of Mt. Coronet B1F, from `/arc/encdata_ex.narc` -- see
+-- src/import/Gen4Feebas.lua. Without them Feebas cannot be fished in Sinnoh.
+-- THE "!" AND "!!" BUBBLES -- see src/import/Gen4Emotes.lua.
+-- THE MOVE BUTTONS' TYPE PALETTES, MASKS AND PP TEXT -- see
+-- src/import/Gen4MoveButtons.lua.
+function RomExtractorGen4:moveButtons()
+  local Gen4MoveButtons = require("src.import.Gen4MoveButtons")
+  local arc = self:archiveAt(Gen4Subscreen.PATH)
+  local out = arc and Gen4MoveButtons.extract(self.rom, arc, Gen4Graphics, Gen4Subscreen)
+  if out then self:write("gen4_move_buttons", out) end
+end
+
+-- THE BATTLE TRANSITIONS' PICTURES -- see src/import/Gen4EncounterEffects.lua.
+-- THE TROPHY GARDEN AND GREAT MARSH DAILY LISTS -- see
+-- src/import/Gen4SpecialEncounters.lua.
+-- THE TOWN MAP'S SPRITES, NAME BLOCKS AND FLY LOCATIONS -- see
+-- src/import/Gen4TownMap.lua.
+-- THE AREA-NAME SIGNS -- see src/import/Gen4AreaPopup.lua.
+-- THE SHARD MOVE TUTORS -- see src/import/Gen4MoveTutor.lua.
+-- THE PRIZE MONEY MULTIPLIERS -- see src/import/Gen4TrainerPrize.lua.
+function RomExtractorGen4:trainerPrize()
+  local out = self.rom and require("src.import.Gen4TrainerPrize").extract(self.rom)
+  if out then self:write("gen4_trainer_prize", out) end
+end
+
+-- THE SUPER CONTEST'S DATA -- see src/import/Gen4ContestData.lua.
+function RomExtractorGen4:contestData()
+  local out = self.rom and require("src.import.Gen4ContestData").extract(self.rom)
+  if out then self:write("gen4_contest", out) end
+end
+
+-- THE CONTEST'S OWN ART -- see src/import/Gen4ContestArt.lua.
+function RomExtractorGen4:contestArt()
+  local images = self.rom and require("src.import.Gen4ContestArt").images(self.rom)
+  if not images then return end
+  local index = {}
+  for key, image in pairs(images) do
+    index[key] = self:saveImage("contest/" .. key, image, { originX = image.originX, originY = image.originY })
+  end
+  self:write("gen4_contest_art", index)
+end
+
+-- THE HALL OF FAME AND THE CREDITS -- see src/import/Gen4EndingArt.lua.
+function RomExtractorGen4:endingArt()
+  local E = self.rom and require("src.import.Gen4EndingArt")
+  if not E then return end
+  local images = E.images(self.rom)
+  if images then
+    local index = {}
+    for key, image in pairs(images) do
+      index[key] = self:saveImage("ending/" .. key, image, { originX = image.originX, originY = image.originY })
+    end
+    self:write("gen4_ending_art", index)
+  end
+  self:write("gen4_ending", E.data(self.rom))
+end
+
+-- THE POKETCH APPS' SPRITES AND TILES (src/import/Gen4PoketchArt.lua) AND THE
+-- EVOLUTION SCENE'S PARTICLES (src/import/Gen4EvolutionArt.lua).
+-- (Literal module names, for tools/gen4_cache_wiring_check.lua.)
+function RomExtractorGen4:poketchEvolutionArt()
+  if not self.rom then return end
+  local function save(dir, images)
+    local index = {}
+    for key, image in pairs(images or {}) do
+      index[key] = self:saveImage(dir .. "/" .. key, image, { originX = image.originX, originY = image.originY })
+    end
+    return index
+  end
+  local P = require("src.import.Gen4PoketchArt")
+  local poketch = P.images(self.rom)
+  if poketch then
+    self:write("gen4_poketch_art", save("poketch_art", poketch))
+    self:write("gen4_poketch_ink", P.data(self.rom))
+  end
+  local E = require("src.import.Gen4EvolutionArt")
+  local evolution = E.images(self.rom)
+  if evolution then
+    self:write("gen4_evolution_art", save("evolution_art", evolution))
+    self:write("gen4_evolution_ink", E.data(self.rom))
+  end
+end
+
+-- THE POFFIN COOKING, CASE AND ICONS -- see src/import/Gen4PoffinArt.lua.
+function RomExtractorGen4:poffinArt()
+  local images = self.rom and require("src.import.Gen4PoffinArt").images(self.rom)
+  if not images then return end
+  local index = {}
+  for key, image in pairs(images) do
+    index[key] = self:saveImage("poffin/" .. key, image, { originX = image.originX, originY = image.originY })
+  end
+  self:write("gen4_poffin_art", index)
+end
+
+-- THE OPTIONS SCREEN'S BACKDROP AND CURSOR -- see src/import/Gen4OptionsArt.lua.
+-- THE MINING GAME'S BUTTONS, SHEETS AND SPRITES (Gen4MiningArt) and the field
+-- menus' cursor and Underground icons in their real palette rows (Gen4MenuArt).
+function RomExtractorGen4:miningArt()
+  if not self.rom then return end
+  -- the two modules' names are literal, so the cache-wiring check sees
+  -- each one written
+  local function index(module, dir)
+    local images = require(module).images(self.rom)
+    if not images then return nil end
+    local out = {}
+    for key, image in pairs(images) do
+      out[key] = self:saveImage(dir .. "/" .. key, image, { originX = image.originX, originY = image.originY })
+    end
+    return out
+  end
+  local mining = index("src.import.Gen4MiningArt", "mining")
+  if mining then self:write("gen4_mining_art", mining) end
+  local menu = index("src.import.Gen4MenuArt", "menu_art")
+  if menu then self:write("gen4_menu_art", menu) end
+end
+
+function RomExtractorGen4:optionsArt()
+  local images = self.rom and require("src.import.Gen4OptionsArt").images(self.rom)
+  if not images then return end
+  local index = {}
+  for key, image in pairs(images) do index[key] = self:saveImage("options/" .. key, image) end
+  self:write("gen4_options_art", index)
+end
+
+-- THE PARTY SCREEN'S PANELS, SPRITES AND DIGITS -- see src/import/Gen4PartyArt.lua.
+-- THE SUMMARY SCREEN'S SPRITES, BARS AND BOTTOM SCREEN -- see src/import/Gen4SummaryArt.lua.
+function RomExtractorGen4:summaryArt()
+  local S = require("src.import.Gen4SummaryArt")
+  local images = self.rom and S.images(self.rom)
+  if not images then return end
+  local index = {}
+  for key, image in pairs(images) do
+    index[key] = self:saveImage("summary_art/" .. key, image, { originX = image.originX, originY = image.originY })
+  end
+  self:write("gen4_summary_art", index)
+  self:write("gen4_summary_ink", S.data(self.rom))
+end
+
+function RomExtractorGen4:partyArt()
+  local P = require("src.import.Gen4PartyArt")
+  local images = self.rom and P.images(self.rom)
+  if not images then return end
+  local index = {}
+  for key, image in pairs(images) do
+    index[key] = self:saveImage("party/" .. key, image, { originX = image.originX, originY = image.originY })
+  end
+  self:write("gen4_party_art", index)
+  self:write("gen4_party_ink", P.data(self.rom))
+end
+
+-- THE BATTLE'S CURSOR, PARTY BALLS AND PARTY GAUGE -- see src/import/Gen4BattleArt.lua.
+function RomExtractorGen4:battleArt()
+  local B = require("src.import.Gen4BattleArt")
+  local images = self.rom and B.images(self.rom)
+  if not images then return end
+  local index = {}
+  for key, image in pairs(images) do
+    index[key] = self:saveImage("battle_art/" .. key, image, { originX = image.originX, originY = image.originY })
+  end
+  self:write("gen4_battle_art", index)
+  self:write("gen4_battle_anims", B.data(self.rom))
+end
+
+-- THE BAG'S SPRITES, WINDOW BLITS AND TOUCH SCREEN -- see src/import/Gen4BagArt.lua.
+-- THE TRAINER CASE IN PLATINUM'S OWN PALETTES -- see src/import/Gen4TrainerCardArt.lua.
+-- (Each write names its module literally: tools/gen4_cache_wiring_check.lua
+-- finds the written tables by reading these calls.)
+function RomExtractorGen4:bagAndCardArt()
+  if not self.rom then return end
+  local function save(dir, images)
+    local index = {}
+    for key, image in pairs(images or {}) do
+      index[key] = self:saveImage(dir .. "/" .. key, image, { originX = image.originX, originY = image.originY })
+    end
+    return index
+  end
+  local bag = require("src.import.Gen4BagArt").images(self.rom)
+  if bag then self:write("gen4_bag_art", save("bag_art", bag)) end
+  local card = require("src.import.Gen4TrainerCardArt").images(self.rom)
+  if card then self:write("gen4_trainer_card_art", save("trainer_card_art", card)) end
+end
+
+-- THE PC STORAGE SCREEN (Gen4BoxArt), THE MAIN MENU'S WINDOWS
+-- (Gen4MainMenuArt) AND THE POKE MART COUNTER (Gen4ShopArt) -- each module's
+-- pictures to assets/generated/gen4/<dir>/ and its index (and ink) to the cache.
+-- (Literal module names, for tools/gen4_cache_wiring_check.lua.)
+function RomExtractorGen4:pcMartMenuArt()
+  if not self.rom then return end
+  local function save(dir, images)
+    local index = {}
+    for key, image in pairs(images or {}) do
+      index[key] = self:saveImage(dir .. "/" .. key, image, { originX = image.originX, originY = image.originY })
+    end
+    return index
+  end
+  local Box = require("src.import.Gen4BoxArt")
+  local box = Box.images(self.rom)
+  if box then
+    self:write("gen4_box_art", save("box", box))
+    self:write("gen4_box_ink", Box.data(self.rom))
+  end
+  local MainMenu = require("src.import.Gen4MainMenuArt")
+  local menu = MainMenu.images(self.rom)
+  if menu then
+    self:write("gen4_main_menu_art", save("main_menu", menu))
+    self:write("gen4_main_menu_ink", MainMenu.data(self.rom))
+  end
+  local shop = require("src.import.Gen4ShopArt").images(self.rom)
+  if shop then self:write("gen4_shop_art", save("shop_art", shop)) end
+end
+
+-- THE TRAINER EYES-MEET THEMES -- see src/import/Gen4TrainerMusic.lua.
+function RomExtractorGen4:trainerMusic()
+  local out = self.rom and require("src.import.Gen4TrainerMusic").extract(self.rom)
+  if out then self:write("gen4_trainer_music", out) end
+end
+
+-- THE BERRIES' POFFIN FLAVORS -- see Gen4BerryData.flavors.
+function RomExtractorGen4:berryFlavors()
+  local B = require("src.import.Gen4BerryData")
+  local out = B.flavors(self:archiveAt(B.PATH))
+  if out then self:write("gen4_berry_flavors", out) end
+end
+
+-- THE BALL SEALS AND SUNYSHORE'S SEAL STOCKS -- see src/import/Gen4Seals.lua.
+function RomExtractorGen4:seals()
+  local out = self.rom and require("src.import.Gen4Seals").extract(self.rom)
+  if out then self:write("gen4_seals", out) end
+end
+
+-- THE GAME CORNER'S PRIZES -- see src/import/Gen4GameCorner.lua.
+function RomExtractorGen4:gameCorner()
+  local out = self.rom and require("src.import.Gen4GameCorner").extract(self.rom)
+  if out then self:write("gen4_game_corner", out) end
+end
+
+-- THE EGG MOVES -- see src/import/Gen4EggMoves.lua.
+function RomExtractorGen4:eggMoves()
+  local out = self.rom and require("src.import.Gen4EggMoves").extract(self.rom)
+  if out then self:write("gen4_egg_moves", out) end
+end
+
+function RomExtractorGen4:moveTutor()
+  local out = self.rom and require("src.import.Gen4MoveTutor").extract(self.rom)
+  if out then self:write("gen4_move_tutor", out) end
+end
+
+function RomExtractorGen4:areaPopup()
+  local out = self.rom and require("src.import.Gen4AreaPopup").extract(self.rom)
+  if out then self:write("gen4_area_popup", out) end
+end
+
+function RomExtractorGen4:townMap()
+  local out = self.rom and require("src.import.Gen4TownMap").extract(self.rom)
+  if out then self:write("gen4_town_map", out) end
+end
+
+function RomExtractorGen4:specialEncounters()
+  local out = self.rom and require("src.import.Gen4SpecialEncounters").extract(self.rom)
+  if out then self:write("gen4_special_encounters", out) end
+end
+
+function RomExtractorGen4:encounterEffects()
+  local out = self.rom and require("src.import.Gen4EncounterEffects").extract(self.rom)
+  if out then self:write("gen4_encounter_effects", out) end
+end
+
+function RomExtractorGen4:emotes()
+  local Gen4Emotes = require("src.import.Gen4Emotes")
+  local raw = self.rom and self.rom:read(Gen4Emotes.ARCHIVE)
+  local arc = raw and Narc.parse(raw)
+  local out = arc and Gen4Emotes.extract(arc)
+  if out then self:write("gen4_emotes", out) end
+end
+
+function RomExtractorGen4:feebas()
+  local Gen4Feebas = require("src.import.Gen4Feebas")
+  local raw = self.rom and self.rom:read(Gen4Feebas.PATH)
+  local arc = raw and Narc.parse(raw)
+  local out = arc and Gen4Feebas.parse(arc:get(0), arc:get(1))
+  if out then self:write("gen4_feebas", out) end
+  self.feebasReport = { tiles = out and #out.tiles or 0 }
+end
+
 function RomExtractorGen4:areaLights(mapsByName)
   local raw = self.rom and self.rom:read(Gen4AreaLight.PATH)
   local arc = raw and Narc.parse(raw)
@@ -5772,7 +6135,7 @@ local MODEL_ARCHIVES = {
   -- with no models beside it is exactly the case a reader that assumed models
   -- would get wrong quietly.
   { path = "/arc/bm_anime.narc", out = "field",
-    label = "field animations" },
+    label = "field animations", claims = true },
   -- THE TITLE SEQUENCE'S OWN 3D, which is the whole of what the title screen
   -- is missing.  `title_gira` is member 1: Giratina, four shapes and 996
   -- triangles, carrying its OWN textures, with a 121-frame joint animation
@@ -6048,12 +6411,43 @@ function RomExtractorGen4:extractModels()
             --
             -- `bm_anime` is earlier in MODEL_ARCHIVES than `build_model`, so
             -- its patterns are already read when this runs.  That ordering is
-            -- load-bearing and is why the list is checked rather than assumed
+            -- load-bearing -- now for `props` as well as for `pattern`, since
+            -- the claim is recorded at the end of the `bm_anime` entry's own
+            -- pass -- and is why the list is checked rather than assumed
             -- present.
+            --
+            -- AND THE MATCH IS BY CLAIM AS WELL AS BY NAME, which is the half
+            -- that was missing.  `record.name == model.name` is this port's
+            -- own join; the cartridge's is `bm_anime_list`, and they disagree
+            -- for 44 of the 112 animated prop models.  Ten of those 44 are
+            -- BTP0, so their flipbook frames were never decoded at all and no
+            -- renderer could have played them -- `ele_door1` (animations 51
+            -- and 52) among them, which is the one door of the twenty that
+            -- moves by texture rather than by joint.
+            --
+            -- Measured against this cartridge before widening it: all ten
+            -- claim-only BTP0 models carry EVERY one of their animation's
+            -- texture names in their own TEX0 -- 15 model/animation pairs, 0
+            -- misses -- so this is the same decode with a longer list of
+            -- names and not a second archive to find.
+            --
+            -- BY INDEX, because that is what a claim names.  `bm_anime_list`
+            -- has one record per `build_model` MODEL and `Gen4Ground` reads a
+            -- claim as `set.models[index + 1]`, so the index this model is
+            -- about to take -- `#set.models`, before the append below -- is
+            -- the number the claim can be compared against.  Verified: all
+            -- 590 members of `build_model.narc` hold exactly one model, so
+            -- member and index coincide for this archive; using the index is
+            -- what keeps that a coincidence rather than a dependency.
             local fieldSet = out.sets.field
+            local modelIndex = #set.models
             if textures and fieldSet and model.name then
               for _, record in ipairs(fieldSet.animations or {}) do
-                if record.name == model.name and record.pattern then
+                local claimed = false
+                for _, owner in ipairs(record.props or {}) do
+                  if owner == modelIndex then claimed = true end
+                end
+                if record.pattern and (record.name == model.name or claimed) then
                   local names = record.pattern.textures or {}
                   local palettes = record.pattern.palettes or {}
                   packed.patternImages = packed.patternImages or {}
@@ -6133,8 +6527,59 @@ function RomExtractorGen4:extractModels()
     -- move, are 200 KB and are written.
     local wearable = {}
     for _, model in ipairs(set.models) do wearable[#model.nodes] = true end
+
+    -- ...AND A SECOND WAY TO BE WORN, for the one archive where counting
+    -- nodes cannot work at all.
+    --
+    -- The rule above asks "is there a model HERE with this many nodes", and
+    -- `bm_anime` has no models, so `wearable` is empty and all 98 of its
+    -- joint animations were skipped.  That was correct by the rule and wrong
+    -- about the cartridge: a map prop animation is claimed by a THIRD file.
+    --
+    -- So for an archive that declares `claims`, the question is answered
+    -- EXACTLY instead of by node count -- is this member claimed by a prop
+    -- model? -- and the claiming models are recorded on the animation, which
+    -- is the join a renderer needs and the node count never gave.
+    --
+    -- THE SIZE COST IS REAL AND IS PAID, and the old comment's number was
+    -- right.  Measured: 32 BCA0 animations, 90 joints, 13,093 joint-frames
+    -- (the longest 600 frames) pack to 613.7 KB, which as escaped Lua string
+    -- literals is the ~2.2 MB it warned about.
+    --
+    -- And the claim test buys NO size saving here: all 98 members are
+    -- claimed by the 112 animated props, so nothing in this archive is
+    -- orphaned and the filter changes `unworn` from 98-of-98 to none.  What
+    -- changed is not the size trade but the reason for taking it: the old
+    -- decision was right while nothing could apply a pose, and the doors
+    -- alone are 48 script sites now that the join exists.
+    --
+    -- Said plainly so a later pass weighing cache size knows this is a
+    -- deliberate 2.2 MB and not an oversight.
+    local claims = entry.claims and self:propAnimationClaims() or nil
+
+    -- THE CLAIM IS RECORDED ON EVERY ANIMATION, not only the joint ones.
+    --
+    -- `pending` holds BCA0 records alone, so writing `props` inside that
+    -- loop recorded the claiming props for 32 of the archive's 98
+    -- animations and left the 43 BTA0 and 23 BTP0 without them.  Those are
+    -- claimed too -- `elevator_door` is BTP0, and it is the one door that
+    -- could move through the texture path -- so a consumer asking "which
+    -- prop owns this flipbook" found nothing.
+    --
+    -- Found by a planted fault that did NOT fail: dropping the `tracks`
+    -- requirement from the renderer's one-shot set changed nothing, because
+    -- every record carrying `props` also carried `tracks` -- which is only
+    -- true because `props` was never written anywhere else.
+    if claims then
+      for _, record in ipairs(set.animations) do
+        local owners = record.member and claims[record.member]
+        if owners then record.props = owners end
+      end
+    end
+
     for _, item in ipairs(pending) do
-      if wearable[item.anim.nodes] then
+      local claimedBy = claims and claims[item.record.member]
+      if wearable[item.anim.nodes] or claimedBy then
         local tracks = Gen4Anim.jointMatrices(item.bytes, item.anim)
         item.record.tracks = {}
         for _, joint in ipairs(tracks or {}) do
@@ -6308,4 +6753,3 @@ end
 --     builds the world those objects stand in.
 
 return RomExtractorGen4
-

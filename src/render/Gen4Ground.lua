@@ -145,6 +145,10 @@ local MAX_RISE = 384
 -- does not make; what it buys instead is occlusion at all, for one extra bake
 -- and one extra blit, with no per-frame model draws.
 local CANOPY_Y = 32
+-- The band the canopy pass leaves to the sprite, in world units: from the
+-- player's tile edge (KEEP_FEET south of the feet) to KEEP_BEHIND north of
+-- them. See the cut draw in `livePass`.
+local KEEP_BEHIND, KEEP_FEET = 40, 8
 
 -- HOW TALL A THING HAS TO BE FOR THE HEIGHT CUT TO MEAN ANYTHING.
 --
@@ -254,8 +258,53 @@ function Gen4Ground.forMap(map, data)
 
   local self = setmetatable({}, Gen4Ground)
   self.terrain = terrain
+  -- THE PERMISSION GRIDS, TAKEN FROM `data` RATHER THAN A GLOBAL.
+  --
+  -- `_G.Game` is nil in a real session -- that is a trap this port has already
+  -- paid for once in the Gen 3 world -- and this constructor is handed `data`
+  -- outright, so there is nothing to reach around for.
+  self.perms = data.gen4_map_permissions
   self.def = def
   self.grid = grid
+  -- EACH CHUNK'S ALTITUDE, which is how far up the cartridge draws it.
+  --
+  -- Reported from play at Oreburgh: *"map boundaries arent at the proper
+  -- height"* -- the chunks around the city stood at the wrong level with the
+  -- void showing through the seams.
+  --
+  -- `LandDataManager_CalculateRenderingPosition` (pokeplatinum
+  -- src/overlay005/land_data.c) puts every loaded chunk's model and props at
+  -- `y = altitude * MAP_OBJECT_TILE_SIZE / 2` -- eight units a step -- read
+  -- from the matrix's altitude section. `Gen4Maps.matrix` has parsed that
+  -- section from the start and nothing drew with it, so every chunk sat at 0.
+  --
+  -- It matters most for the FILLER chunks the overworld reuses -- the sea,
+  -- the mountain mass -- which are modelled flat at 0 and lifted into place
+  -- by this number alone: chunk 177 at altitude 4 meets its neighbour's
+  -- ground at 32 exactly. MEASURED over matrix 0: with the lift, 385 seams
+  -- between chunks of different altitude go from 13.4% matching to 55.7%, and
+  -- every other scale makes them worse.
+  --
+  -- RENDERING ONLY, as on the cartridge: `TerrainCollisionManager` reads the
+  -- BDHC with no altitude added, so the walkable height is untouched.
+  --
+  -- Taken from the terrain grid when a newer import carried it there, and
+  -- otherwise from `gen4_map_matrices`, which has held it in every cache.
+  local matrix = data.gen4_map_matrices and data.gen4_map_matrices[def.layout]
+  self.altitudes = grid.altitudes
+    or (matrix and matrix.width == grid.width and matrix.height == grid.height
+        and matrix.altitudes) or nil
+  -- ...AND THE HIDDEN PATHS, which change both: Spring Path's chunks are drawn
+  -- as filler at altitude 2 until it is unlocked, and Seabreak Path's appear
+  -- once Oak's Letter has been used. See Gen4HiddenPaths.
+  do
+    local okG, Game = pcall(require, "src.core.Game")
+    local save = okG and type(Game) == "table" and Game.save or nil
+    local Gen4HiddenPaths = require("src.world.Gen4HiddenPaths")
+    self.grid, self.altitudes =
+      Gen4HiddenPaths.grid(def.layout, self.grid, self.altitudes, save)
+    grid = self.grid
+  end
   self.set = set
   self.chunkPx = (terrain.chunkUnits or 512) * (terrain.pixelsPerUnit or 1)
   self.half = (terrain.chunkUnits or 512) / 2
@@ -336,12 +385,52 @@ function Gen4Ground.forMap(map, data)
   -- and `build_model` are separate archives, so this is the one place the two
   -- meet at run time -- and it is built once per map rather than searched.
   self.animsByName = {}
+  -- ...AND BY MEMBER, which is what a one-shot names.  `animsByName` keys on
+  -- the model name a texture animation drives; a joint one-shot is identified
+  -- by its `bm_anime` member, because that is what `bm_anime_list` points at.
+  self.animsByMember = {}
+  -- ...AND BY THE PROP MODEL THAT CLAIMS IT.  See the loop below.
+  self.animsByProp = {}
   local field = ((data.gen4_models or {}).sets or {}).field
   for _, record in ipairs((field or {}).animations or {}) do
     if record.name then
       local list = self.animsByName[record.name]
       if not list then list = {} ; self.animsByName[record.name] = list end
       list[#list + 1] = record
+    end
+    -- A one-shot asks for a MEMBER, and an animation record carries the member
+    -- it came from whether or not it also carries a name.  First wins: an
+    -- NSBCA member holds one animation in this archive, and taking the last
+    -- would make the result depend on the order the file happens to list them.
+    if record.member and self.animsByMember[record.member] == nil then
+      self.animsByMember[record.member] = record
+    end
+    -- ...AND BY PROP, WHICH IS THE JOIN THE CARTRIDGE ACTUALLY MAKES.
+    --
+    -- `animsByName` is this port's own join, and it is not the hardware's.
+    -- The cartridge pairs an animation with a prop through `bm_anime_list`
+    -- (`area_build -> bm_anime_list : mapPropModelIDs`, then
+    -- `bm_anime_list -> bm_anime : animeArchiveIDs`), which
+    -- `RomExtractorGen4:propAnimationClaims` reads and the extractor records
+    -- on each animation as `props`.  The two joins do not agree, and the gap
+    -- is not small -- measured on this cartridge:
+    --
+    --    112 prop models are claimed by a `bm_anime` animation
+    --     68 of them share a NAME with one, which is all this table saw
+    --     44 do not, and were handed to the static bake and never moved
+    --
+    -- The 44 split 22 joint -- already reached, because `oneShotProps` keys on
+    -- the claim -- and 22 TEXTURE: twelve BTA0 and ten BTP0 over 124
+    -- placements.  Among them all six `wfall*` models, every one claimed by
+    -- animation 18 (`wfall`, 61 frames, three SRT targets) and none of them
+    -- named `wfall`, so PLATINUM'S WATERFALLS WERE STATIC.  Also
+    -- `cy_slope`/`cy_slope_dun` (animations 20/21), `ev_o01` (35/36),
+    -- `l_lake_l4` (19), the four `stair_pc_*` escalators (15/16), the three
+    -- `table_l*` and `pc01` monitors (41/42) and `ele_door1` (51/52).
+    for _, index in ipairs(record.props or {}) do
+      local owned = self.animsByProp[index]
+      if not owned then owned = {} ; self.animsByProp[index] = owned end
+      owned[#owned + 1] = record
     end
   end
   self.animated = {}     -- land -> { canvas, frame } | false
@@ -362,9 +451,27 @@ end
 function Gen4Ground:applyCamera()
   self.camera = Gen4Camera.forMap(self.def)
   self.tiltGeneration = Gen4Camera.generation
-  local sinP, cosP = Gen4Camera.scales(self.camera)
+  -- THE VIEW PITCH, WHEN A CALLER HAS ASKED FOR ONE.
+  --
+  -- `self.viewPitch` is degrees below horizontal, or nil for the cartridge's
+  -- own camera row -- which is the DEFAULT, because the pitch is the picture
+  -- the DS draws and the overworld must keep it.  The map editor sets it so
+  -- a map can be looked at straight down (90) or at any angle between; a
+  -- synthetic one-field config is enough, because `scales` and `lean` read
+  -- nothing else, and everything downstream here is derived from sinP/cosP.
+  --
+  -- READ HERE RATHER THAN SET FROM OUTSIDE, which is the whole point.  The
+  -- pitch is baked into the chunk canvases, so `draw` re-applies the camera
+  -- whenever `Gen4Camera.generation` ticks -- a scale assigned onto the
+  -- instance from a caller would be silently overwritten the first time the
+  -- OPTIONS tilt moved, with no edit to blame.
+  local shot = self.camera
+  if type(self.viewPitch) == "number" then
+    shot = { pitch = self.viewPitch, heightPitch = self.viewPitch }
+  end
+  local sinP, cosP = Gen4Camera.scales(shot)
   self.groundScale, self.heightScale = sinP, cosP
-  self.lean = Gen4Camera.lean(self.camera)
+  self.lean = Gen4Camera.lean(shot)
   -- The canvas is the compressed ground plus room for what stands on it.
   self.canvasPx = math.ceil(self.chunkPx * sinP + cosP * MAX_RISE)
   self.view, self.leanPx = projection(self.half, sinP, cosP, self.canvasPx)
@@ -375,7 +482,11 @@ function Gen4Ground:applyCamera()
   -- hand the frame to `Gen4View` instead of to the matrix above.  Kept across
   -- a re-apply when the mode has not changed, so stepping the ladder does not
   -- throw away a yaw a look control has set.
-  local mode = Gen4Camera.mode()
+  -- ...AND AN EXPLICIT PITCH TAKES NO RUNG OFF THE TILT LADDER.  The last two
+  -- are `third` and `first`, which hand the frame to `Gen4View` and pick
+  -- their own chunks around a free camera; a tool asking for a fixed angle
+  -- would get a player's-eye view instead of the angle it asked for.
+  local mode = (self.viewPitch == nil) and Gen4Camera.mode() or nil
   if mode then
     if not (self.view3d and self.view3d.mode == mode) then
       self.view3d = Gen4View.new(mode)
@@ -387,8 +498,18 @@ function Gen4Ground:applyCamera()
     -- the same `field3d` view at a different pitch -- and a camera that only
     -- read this when it was built would ignore every step after the first.
     if self.view3d.useConfig then
+      -- `rungPitch` FIRST, which is the ladder's own angle.
+      --
+      -- It used to read `heightPitch`, and that field was carrying two
+      -- different decisions at once: how tall to draw what stands on the
+      -- ground (the oblique pass's business) and which angle this camera
+      -- should sit at. Reading it here is what made the stretch load-bearing
+      -- -- remove the exaggeration and every rung drew the same picture -- so
+      -- the angle now has a field of its own and `heightPitch` keeps the map
+      -- header's answer. See `Gen4Camera.forMap`.
       self.view3d:useConfig(self.camera,
-                            self.camera and (self.camera.heightPitch
+                            self.camera and (self.camera.rungPitch
+                                             or self.camera.heightPitch
                                              or self.camera.pitch))
     end
   else
@@ -514,9 +635,54 @@ function Gen4Ground:scale()
   return self.groundScale or 1, self.heightScale or 0
 end
 
+-- LOOK AT THIS MAP FROM A CHOSEN ANGLE, for a caller that is not the
+-- overworld.
+--
+-- `degrees` is pitch below horizontal: 90 is straight down, the cartridge's
+-- own rows run 40.6 to 78.4, and nil hands the map back to its own camera.
+--
+-- The map editor is the caller.  It lays out its viewport, clamps its camera
+-- and turns a mouse position into a cell in FLAT map pixels, while this
+-- renderer draws with the cartridge's pitch -- at the DEFAULT row's 59.05
+-- degrees the ground is compressed to sin(59.05) = 0.858 of its depth, so
+-- 14.2% of a viewport's height has no map in it and shows `GEN4_BACKDROP`.
+-- That is a real effect and it is why the angle is adjustable rather than
+-- fixed; it is NOT, on its own, the whole of the black band that was
+-- reported, which survived pinning the pitch to 90.
+--
+-- NOT THE DEFAULT, and the editor now opens on the cartridge angle: *"add
+-- the tilt back and add an option for changing the camera angle above the
+-- map view"*.  A tool that silently flattened Sinnoh would be answering a
+-- question nobody asked.
+function Gen4Ground:setViewPitch(degrees)
+  local want = tonumber(degrees)
+  if want then want = math.max(5, math.min(90, want)) end
+  if self.viewPitch == want then return self end
+  self.viewPitch = want
+  -- The bakes ARE the old pitch -- a chunk canvas is drawn compressed and
+  -- cached -- so they go with it, or the first frame after the change is the
+  -- old projection laid out on the new one's grid.
+  self:dropBakes()
+  self:applyCamera()
+  return self
+end
+
+-- The straight-down case by name, kept because it reads better at the call
+-- site than the number does and because the checks name it.
+function Gen4Ground:setFlatView(on)
+  return self:setViewPitch(on and 90 or nil)
+end
+
 -- Drop every baked chunk, keeping the store and the height data open.  The
 -- tilt changed; the geometry did not.
 function Gen4Ground:dropBakes()
+  -- THE PAINTED GROUND GOES WITH THEM, and this is not housekeeping: a decal
+  -- is baked INTO the chunk canvas, so a cached decal model outliving the
+  -- canvas it was baked into means a cell painted in the editor does not
+  -- appear until the game is restarted. Every path that invalidates a bake --
+  -- a tilt change, a re-apply, an edit -- has to invalidate these too, and
+  -- doing it here is what makes that true by construction.
+  self.decalModels, self.decalCells, self.decalWhy = nil, nil, nil
   for _, canvas in pairs(self.baked) do
     if canvas and canvas.release then pcall(canvas.release, canvas) end
   end
@@ -548,13 +714,283 @@ end
 -- in the building set.  Handed an fldeff member that lookup does not fail --
 -- it returns whatever building sits at that position and hands a signpost
 -- another model's animations.  A wrong answer, not a missing one.
+-- A RUNNING ONE-SHOT'S POSE, for the prop this object is.
+--
+-- `Gen4Model:draw(viewProjection, pose, materials, ...)` has taken a pose as
+-- its second argument all along and every prop draw passed `nil`, which is
+-- what made a door's NSBCA look unreachable from here.  It is not: the join
+-- (`Gen4PropAnim`, which `bm_anime` member a prop owns) and the matrices
+-- (`Gen4Anim.jointMatrices`, packed into the cache) both exist, and this is
+-- the one place that was missing.
+--
+-- BY OBJECT IDENTITY. `Gen4Doors.propAt` found the door in this same
+-- `terrain.chunks[land].objects` table, so the object a script opened IS the
+-- object drawn here and no coordinate is compared twice.
+--
+-- `self.oneShots` IS HANDED OVER by the overworld each frame, not reached
+-- through it. This renderer is built by `MapLoader` and holds no controller
+-- reference, which is right -- and a `self.overworld` here would have been
+-- cold by construction, returning nil for ever with nothing to say so.
+--
+-- Returns nil when there is no one-shot, no track in the cache for its
+-- animation, or no overworld -- and nil is the rest pose, so a door with no
+-- tracks yet draws exactly as it does today rather than collapsing to the
+-- origin.
+function Gen4Ground:oneShotPose(object, building)
+  if not (object and building) then return nil end
+  local slots = self.oneShots
+  if not slots then return nil end
+  local okO, OneShot = pcall(require, "src.world.Gen4PropOneShot")
+  if not okO or not OneShot then return nil end
+  local slot = OneShot.poseIn(slots, object)
+  if not slot then return nil end
+  local byJoint = self:jointMatricesAt(slot)
+  if not byJoint then return nil end
+  return building:posed(function(node) return byJoint[node] end)
+end
+
+-- jointMatricesAt(slot) -> { [joint index] = 4x4 } | nil
+--
+-- The ARITHMETIC, split out from the draw so it can be graded. `oneShotPose`
+-- needs a built model and therefore LOVE; this needs neither, and planted
+-- faults in it -- writing every track to joint 0, dropping the frame clamp --
+-- were invisible while it lived inside the draw and only its source was read.
+--
+-- The clamp matters beyond tidiness: `advance` holds a finished one-shot on
+-- its last frame, `frame` equals `frames`, and a track has `frames` entries
+-- indexed from zero -- so the last readable index is `frames - 1` and reading
+-- `frame` itself would run one past the end of every held-open door.
+function Gen4Ground:jointMatricesAt(slot)
+  if not slot then return nil end
+  local record = self.animsByMember and self.animsByMember[slot.animation]
+  local tracks = record and record.tracks
+  if not tracks then return nil end
+  local okA, Anim = pcall(require, "src.import.Gen4Anim")
+  if not okA or not Anim or not Anim.unpackFrame then return nil end
+  local frame = math.floor(tonumber(slot.frame) or 0)
+  local byJoint = {}
+  for _, track in ipairs(tracks) do
+    local at = frame
+    if track.frames and at >= track.frames then at = track.frames - 1 end
+    if at < 0 then at = 0 end
+    byJoint[track.index] = Anim.unpackFrame(track.matrices, at)
+  end
+  return byJoint
+end
+
+-- PROP MODELS THAT CAN RUN A JOINT ONE-SHOT, by `build_model` index.
+--
+-- Derived from the cache, not from a list of names: an animation record
+-- carries `props`, the prop models that claim it (`bm_anime_list`), and
+-- `tracks`, the packed joint matrices. A model is one-shot capable when some
+-- animation names it AND that animation has tracks to pose it with.
+--
+-- BY INDEX, because the two namespaces disagree. `doorModelIDs[]` names the
+-- file (`brown_wooden_door`) and the cache names the model inside it
+-- (`t1_door1`) -- different for nineteen of the twenty doors, with `door01`
+-- the one coincidence that makes a spot-check pass. See
+-- claude/gen4_prop_animations.md; keying this on a name would have been wrong
+-- for nineteen doors while looking right for the one anybody checked.
+--
+-- Measured on the regenerated cache: 39 prop models over 218 placements --
+-- the twenty doors plus nineteen other animated props.  211 of those
+-- placements move for a joint reason ALONE; the other 7 are texture-animated
+-- as well, because three of the 39 models are in both sets.
+function Gen4Ground:oneShotProps()
+  if self.oneShotPropSet then return self.oneShotPropSet end
+  local set = {}
+  local models = (self.buildingSet or {}).models or {}
+  local oneShot = Gen4Ground.oneShotAnimations()
+  for _, record in pairs(self.animsByMember or {}) do
+    if record.tracks and record.props then
+      for _, index in ipairs(record.props) do set[index] = true end
+    end
+    -- A TEXTURE-PATTERN ONE-SHOT IS STILL A ONE-SHOT, and `tracks` alone
+    -- cannot see it.  `elevator_door` animates with BTP0 (members 51 and 52,
+    -- 8 frames, textures `ele_door.1`..`.4`) and the other nineteen doors
+    -- with BCA0, so the test above answered no for exactly one of the twenty
+    -- -- which left `ele_door1` in the static bake, where the draw never asks
+    -- for a pose and the runner's 8 frames went nowhere.
+    --
+    -- Restricted to the script-owned members so the two arms stay disjoint: a
+    -- CLOCK-driven flipbook (`pc_moni_on`, `moniter_mb`) is already answered
+    -- by `animationsFor`, and counting it here as well would say nothing.
+    --
+    -- The pictures are required, not assumed: measured against the cartridge,
+    -- all ten claim-only BTP0 models carry every one of their animation's
+    -- texture names in their OWN TEX0 (15 model/animation pairs, 0 misses),
+    -- but a cache imported before those frames were written has the animation
+    -- and not the pictures -- and `animates` is the same test the clock route
+    -- applies, so a prop cannot be animated by one and baked by the other.
+    if record.pattern and record.props and oneShot[record.member or -1] then
+      for _, index in ipairs(record.props) do
+        local packed = models[index + 1]
+        if packed and Gen4TexAnim.animates({ record }, packed.patternImages) then
+          set[index] = true
+        end
+      end
+    end
+  end
+  self.oneShotPropSet = set
+  return set
+end
+
+-- texturePatternAt(slot, index) -> material states | nil
+--
+-- The FLIPBOOK HALF of `oneShotPose`, and the reason the elevator door needed
+-- one.  `jointMatricesAt` answers nil for a BTP0 record because there are no
+-- tracks, nil is the rest pose, and the runner's frame counter was therefore
+-- advancing against a door that drew frame zero throughout.
+--
+-- Split out of the draw for the same reason `jointMatricesAt` was: this needs
+-- no LOVE, so it can be executed by a check rather than read.
+--
+-- THE FRAME IS CLAMPED, and here the clamp is not tidiness either.
+-- `Gen4PropOneShot.advance` holds a finished one-shot at `frame == frames`,
+-- and `Gen4TexAnim.materials` takes `frame % period` -- so an unclamped read
+-- wraps a held-open door back to key zero and SNAPS IT SHUT the instant it
+-- finishes opening.  Clamped to `frames - 1` it holds its last key, which is
+-- what `looping == FALSE` does on the cartridge.
+function Gen4Ground:texturePatternAt(slot, index)
+  if not slot then return nil end
+  local record = self.animsByMember and self.animsByMember[slot.animation]
+  if not (record and record.kind == "BTP0" and record.pattern) then return nil end
+  local models = (self.buildingSet or {}).models or {}
+  local packed = models[(tonumber(index) or -1) + 1]
+  local images = packed and packed.patternImages
+  if not images then return nil end
+  local frames = tonumber(record.frames) or 0
+  local frame = math.floor(tonumber(slot.frame) or 0)
+  if frames > 0 and frame >= frames then frame = frames - 1 end
+  if frame < 0 then frame = 0 end
+  return Gen4TexAnim.materials({ record }, frame, images)
+end
+
+-- THE MATERIALS A PROP WEARS AT A FRAME -- one function, three draw sites.
+--
+-- The static pass, the flat pass and the animated bake each used to spell this
+-- as `animationsFor` plus `Gen4TexAnim.materials`, and pass 186 found two of
+-- the three asking `animationsFor` with different arguments.  Three spellings
+-- of one question is this project's recurring bug; the one-shot flipbook would
+-- have made it three again.
+function Gen4Ground:propMaterials(object, frame)
+  if not object then return nil end
+  local records, images = self:animationsFor(object.model, object.archive)
+  local mats = records and Gen4TexAnim.materials(records, frame, images) or nil
+  if object.archive == "fldeff" then return mats end
+  local slots = self.oneShots
+  if not slots then return mats end
+  local okO, OneShot = pcall(require, "src.world.Gen4PropOneShot")
+  if not (okO and OneShot) then return mats end
+  local slot = OneShot.poseIn(slots, object)
+  local one = slot and self:texturePatternAt(slot, object.model)
+  if not one then return mats end
+  if not mats then return one end
+  -- MERGED rather than assigned, the same reasoning `Gen4TexAnim.materials`
+  -- uses between a scroll and a flipbook: a prop can carry a clock-driven
+  -- scroll and a script-driven flipbook on two different materials, and
+  -- replacing the table would drop whichever was built first.
+  for name, state in pairs(one) do
+    local into = mats[name] or {}
+    for key, value in pairs(state) do into[key] = value end
+    mats[name] = into
+  end
+  return mats
+end
+
+-- movesAtRuntime(index, archive) -- the ONE test both prop selections use.
+--
+-- The static bake draws every prop this says no to; the animated bake draws
+-- every prop it says yes to. They are complements, and that only holds while
+-- they ask the same question -- which is why this is a function and not two
+-- conditions. Pass 186 found them asking different ones (one passed `archive`
+-- and the other did not) and nothing had noticed, because the only props the
+-- difference could reach are never placed.
+function Gen4Ground:movesAtRuntime(index, archive)
+  if self:animationsFor(index, archive) then return true end
+  -- fldeff props are a different archive and carry no `bm_anime` claim
+  if archive == "fldeff" then return false end
+  return self:oneShotProps()[index] == true
+end
+
+-- THE TWO DECISIONS, NAMED.
+--
+-- `shouldBake` and `shouldAnimate` are what the static bake's guard and the
+-- animated bake's selection actually call. They exist as methods rather than
+-- as two inline conditions for one reason: a check can then GRADE them.
+--
+-- The first draft of pass 187's complement assertion recomputed
+-- `not movesAtRuntime(...)` for itself, so a plant that reverted the static
+-- guard to the old predicate -- putting every door in BOTH passes, drawn
+-- twice -- changed nothing and 427 checks stayed green. That is shape 6a of
+-- claude/check_design_lessons.md: setup that mirrors the subject grades the
+-- mirror.
+--
+-- They must be exact complements. Written as one `not` of the other rather
+-- than as two tests, because two tests is how they drift.
+function Gen4Ground:shouldBake(object)
+  return not self:shouldAnimate(object)
+end
+
+function Gen4Ground:shouldAnimate(object)
+  if not object then return false end
+  return self:movesAtRuntime(object.model, object.archive) == true
+end
+
+-- THE ANIMATIONS A SCRIPT OWNS, which must never be put on the frame clock.
+--
+-- `loaddooranimation` hands a tag, `playdooropenanimation` plays on it and
+-- `Gen4PropOneShot` holds the last frame until `unloadanimation`.  The clock
+-- is a free-running loop over the animation's own period, so a flipbook door
+-- driven by it would open and shut for ever on its own -- which is worse than
+-- the static door it replaced, and is what widening the join below would have
+-- done to `elevator_door` without this.
+--
+-- DERIVED from `Gen4PropAnim.DOORS` rather than listed here, because that
+-- table is the one derived from pokeplatinum's `doorModelIDs[]`; a door added
+-- there is excluded from the clock the day it is added.  The require is not
+-- wrapped: an empty set here would silently put every door on the clock, and
+-- a raise names the cause.
+function Gen4Ground.oneShotAnimations()
+  if Gen4Ground._oneShotAnimations then return Gen4Ground._oneShotAnimations end
+  local PropAnim = require("src.import.Gen4PropAnim")
+  local set = {}
+  for _, row in ipairs(PropAnim.DOORS or {}) do
+    for _, id in ipairs(row.ids or {}) do set[id] = true end
+  end
+  for _,id in ipairs(PropAnim.INTERACTION_ANIMATIONS) do set[id]=true end
+  Gen4Ground._oneShotAnimations = set
+  return set
+end
+
+-- THE CLOCK-DRIVEN ANIMATIONS FOR ONE PROP -- both joins, minus the one-shots.
+--
+-- The name route and the claim route are a UNION rather than a fallback,
+-- because three of the 112 claimed models are in both sets and taking only one
+-- route would drop a scroll or a flipbook from them.  Deduplicated by record
+-- identity, since a model reachable both ways would otherwise have the same
+-- animation evaluated twice into the same material.
 function Gen4Ground:animationsFor(index, archive)
   if archive == "fldeff" then return nil end
   local set = self.buildingSet
   local packed = set and set.models and set.models[index + 1]
-  local name = packed and packed.name
-  local list = name and self.animsByName[name]
-  local images = packed and packed.patternImages
+  if not packed then return nil end
+  local images = packed.patternImages
+  local oneShot = Gen4Ground.oneShotAnimations()
+  local list, seen = nil, {}
+  local function add(records)
+    for _, record in ipairs(records or {}) do
+      local scripted=record.member and oneShot[record.member]
+      if record.member==32 and self.healScreenActive then scripted=false end
+      if not seen[record] and not scripted then
+        seen[record] = true
+        list = list or {}
+        list[#list + 1] = record
+      end
+    end
+  end
+  add(packed.name and self.animsByName[packed.name])
+  add(self.animsByProp and self.animsByProp[index])
   if not (list and Gen4TexAnim.animates(list, images)) then return nil end
   return list, images
 end
@@ -745,6 +1181,7 @@ end
 -- The healing balls are map props in Platinum, placed relative to the
 -- console, so they participate in the same depth/camera pass as its ROM art.
 function Gen4Ground:setHealingBalls(count, visible)
+  self.healScreenActive=(count or 0)>0
   local key = tostring(count or 0) .. ':' .. tostring(visible)
   if self.healingPropsKey == key then return end
   self.healingPropsKey, self.healingProps = key, nil
@@ -884,6 +1321,22 @@ function Gen4Ground:modelFor(land)
   if #shapes == 0 then return nil end
   return Gen4Model.new({ name = ("chunk%d"):format(land),
                          posScale = record.posScale, shapes = shapes,
+                         -- WHERE THE CHUNK'S SHAPES STAND.
+                         --
+                         -- A chunk model's shapes are drawn through a node,
+                         -- like every other model here, and `Gen4Model` has
+                         -- posed them all along -- `restPose` walks `ops` with
+                         -- `nodes` and `draw` places each shape by the result.
+                         -- Terrain simply never handed either over, so every
+                         -- chunk was drawn as if its node were the identity.
+                         --
+                         -- Nil on the 649 chunks whose node IS the identity,
+                         -- and on every cache written before the importer
+                         -- started carrying them -- `Gen4Model` defaults both
+                         -- to empty and poses to the origin, which is exactly
+                         -- what it did before. So this costs nothing and
+                         -- changes nothing until the ROM is imported again.
+                         nodes = record.nodes, ops = record.ops,
                          -- ...AND THE LIGHT.  Without this the mesh is built
                          -- from white vertices and no camera can make it read
                          -- as anything but flat.
@@ -953,6 +1406,46 @@ local LIVE_DEPTH = 32768
 --
 -- The `leanPx` that the bake added and the blit took back off cancels here and
 -- is simply absent: a screen row is a screen row.
+-- How far up the chunk at matrix cell (cx, cy) is drawn, in world units --
+-- `altitude * MAP_OBJECT_TILE_SIZE / 2`. Zero where the matrix has no
+-- altitude section, which is most interiors.
+function Gen4Ground:chunkLift(cx, cy)
+  local alt = self.altitudes
+  local grid = self.grid
+  if not (alt and grid) then return 0 end
+  local a = alt[cy * grid.width + cx + 1]
+  if not a or a == 0 then return 0 end
+  return a * 8 * ((self.terrain and self.terrain.pixelsPerUnit) or 1)
+end
+
+-- A raised chunk's spread, in ITS OWN model space.
+--
+-- The spread and the walk-behind cut are both compared against the vertex's
+-- MODEL-LOCAL y in the shader, and the lift is applied by the matrix after
+-- that -- so a chunk drawn `lift` higher has to be asked about a height `lift`
+-- lower, or its perspective spreads about the wrong height and the player's
+-- cut lands in the wrong place.
+local function liftedSpread(spread, lift)
+  if not spread or lift == 0 then return spread end
+  local out = {}
+  for i, v in ipairs(spread) do out[i] = v end
+  out[2] = (out[2] or 0) - lift
+  return out
+end
+
+-- m * translation(0, lift, 0), for a row-major 4x4: only column four moves.
+local function liftMatrix(m, lift)
+  if lift == 0 then return m end
+  local out = {}
+  for i = 1, 16 do out[i] = m[i] end
+  out[4] = m[4] + m[2] * lift
+  out[8] = m[8] + m[6] * lift
+  out[12] = m[12] + m[10] * lift
+  out[16] = m[16] + m[14] * lift
+  return out
+end
+Gen4Ground.liftMatrix = liftMatrix
+
 function Gen4Ground:screenMatrix(offX, offY, vw, vh)
   local sinP = self.groundScale or 1
   local cosP = self.heightScale or 0
@@ -1123,6 +1616,61 @@ end
 -- One pass over the visible chunks, into one target, with the spread on.
 -- `yCut` nil draws the whole world; the canopy pass passes a cut and a colour
 -- mask instead of owning a second loop.
+-- The lean, for the coverage report below -- read through one accessor so the
+-- report and the pass cannot disagree about which number they mean.
+local function sinPOf(self) return self.groundScale or 1 end
+
+-- WHERE THE PLAYER IS, IN MAP PIXELS, AND THE ONE PLACE IT IS DERIVED.
+--
+-- The overworld keeps the player at the centre of the view, so the centre IS
+-- the player to within the follow distance -- the identity the free camera
+-- already places itself with, and the reason none of this needs a new
+-- argument threaded through four files.
+--
+-- It was spelled out FOUR separate times before this existed: the short-prop
+-- sort's `playerZ`, the height spread's datum, the free camera's eye, and the
+-- canopy cut.  Four copies of one derivation is the shape every bug in this
+-- file has had -- the same thing spelled differently in two places that never
+-- meet -- so there is one now.
+function Gen4Ground:viewCentre(camX, camY, vw, vh)
+  local sinP = self.groundScale or 1
+  if not (sinP > 1e-6) then sinP = 1 end
+  return (camX or 0) + (vw or 0) / 2, (camY or 0) + (vh or 0) / (2 * sinP)
+end
+
+-- THE CANOPY CUT, RELATIVE TO THE GROUND THE PLAYER IS STANDING ON.
+--
+-- Reported from play: *"using the cartridges camera view makes sprites
+-- dissapear when walking on an area that has a higher terrain"*.
+--
+-- `CANOPY_Y` is 32 because that is how high a character reaches, and the pass
+-- paints everything ABOVE the cut over the sprites.  Stated as an ABSOLUTE
+-- world height that is only ever right at sea level: climb a hill and the
+-- floor underfoot is itself above 32, so the canopy paints the ground out
+-- from under the player and takes the player with it.
+--
+-- MEASURED over 60,606 plated tiles across 80 chunks: 12,831 of them --
+-- 21.2% -- stand above 32, spread over 30 of the 80.  A fifth of Sinnoh
+-- paints over the player, which is exactly what was reported.
+--
+-- So the cut is the ground under the player PLUS head height, which is what
+-- the number always meant.  At sea level it is still 32 and nothing moves.
+-- WHERE THE PLAYER ACTUALLY IS, for the canopy pass: handed over by the
+-- overworld right before it (`focusX`/`focusZ`, map pixels, the feet), and the
+-- view centre only when nobody did. The view centre is NOT the player whenever
+-- the background offset the canopy is drawn with differs from the camera's --
+-- and both the height cut and the band behind the player were being measured
+-- from wherever the screen's middle happened to be.
+function Gen4Ground:focus(camX, camY, vw, vh)
+  if self.focusX and self.focusZ then return self.focusX, self.focusZ end
+  return self:viewCentre(camX, camY, vw, vh)
+end
+
+function Gen4Ground:canopyCut(camX, camY, vw, vh)
+  local ex, ey = self:focus(camX, camY, vw, vh)
+  return (self:groundY(ex, ey) or 0) + CANOPY_Y
+end
+
 function Gen4Ground:livePass(camX, camY, vw, vh, yCut)
   local grid = self.grid
   if not grid then return 0 end
@@ -1133,14 +1681,29 @@ function Gen4Ground:livePass(camX, camY, vw, vh, yCut)
   local x0, y0 = math.floor(left / px), math.floor(top / px)
   local x1 = math.floor((left + vw) / px)
   local y1 = math.floor((top + vh / sinP) / px)
+  -- HOW FAR DOWN THE CANVAS THE GROUND ACTUALLY REACHES, in view rows.
+  --
+  -- The black band under a Gen 4 map has survived five fixes that were each
+  -- real, and the reason it keeps surviving is that nobody has measured the
+  -- one number that decides it: whether the ground COVERS the canvas it is
+  -- painting into. Every reading of this file says it does -- `y1` is derived
+  -- from `vh / sinP` precisely so that it should -- and a reading has now been
+  -- wrong five times.
+  --
+  -- `(y1 + 1) * px` is the bottom edge of the last chunk row this pass will
+  -- touch, in matrix pixels; minus `top` puts it in world rows below the
+  -- camera, and the lean puts it in view rows. If that is less than `vh`, the
+  -- bottom of the canvas was never painted and the difference IS the band, in
+  -- the same units the screenshot shows it in.
+  self.liveReach = ((y1 + 1) * px - top) * sinP
+  self.liveWant = vh
   local spread = self.spread
   local g = love.graphics
   local drawn = 0
-  -- WHERE THE PLAYER IS, for the short-prop sort.  The overworld keeps them at
-  -- the centre of the view, so the centre is the player -- the same identity
-  -- the free camera places itself with, and for the same reason: it needs no
-  -- new argument threaded through four files to be right.
-  local playerZ = top + vh / (2 * sinP)
+  -- WHERE THE PLAYER IS, for the short-prop sort -- from `viewCentre`, which
+  -- is the only place that identity is written down now.
+  local _, pz = self:focus(camX, camY, vw, vh)
+  local playerZ = pz + (self.offsetY or 0)
 
   for cy = y0, y1 do
     for cx = x0, x1 do
@@ -1148,7 +1711,13 @@ function Gen4Ground:livePass(camX, camY, vw, vh, yCut)
         local land = grid.land[cy * grid.width + cx + 1]
         local model = self:liveModel(land)
         if model then
-          local mvp = self:screenMatrix(cx * px - left, cy * px - top, vw, vh)
+          -- THE CHUNK'S ALTITUDE, on the model and on everything standing on
+          -- it -- shadowed here so the props below inherit the same lift.
+          local lift = self:chunkLift(cx, cy)
+          local mvp = liftMatrix(
+            self:screenMatrix(cx * px - left, cy * px - top, vw, vh), lift)
+          local spread = liftedSpread(spread, lift)
+          local yCut = yCut and (yCut - lift)
           if yCut then
             -- The floor goes in with the COLOUR MASK OFF so the depth buffer
             -- still hides what a hill should hide, and then AGAIN with the cut
@@ -1171,7 +1740,28 @@ function Gen4Ground:livePass(camX, camY, vw, vh, yCut)
             -- ONCE in this pass, against depth nothing else has written. That
             -- asymmetry is exactly what play-testing reported: *"trees should
             -- mask the players character ... but houses do perfectly"*.
+            -- ...EXCEPT THE GROUND JUST BEHIND THE PLAYER.
+            --
+            -- Reported from play on Route 207: *"The mud slides are over my
+            -- character when i walk up to them when they shouldnt be"*. The
+            -- cut is a HEIGHT rule -- anything 32 units above the player's
+            -- ground is painted after the sprites -- and a ramp rising north
+            -- of the player passes it while being BEHIND them. The cartridge
+            -- draws in real 3D and a billboard in front of a slope is never
+            -- covered by it.
+            --
+            -- Only a narrow band can do that: terrain behind the feet lands on
+            -- the sprite's 32 rows only within about two tiles, since every
+            -- unit further back and every unit higher moves it further up the
+            -- screen. So that band -- the player's own tile and 40 units north
+            -- -- is left out of the cut pass, and everything else keeps the
+            -- old rule: a cliff or treetop SOUTH of the player still covers
+            -- them, and terrain further north still covers an NPC behind it.
+            local chunkZ = cy * px + self.half
+            Gen4Model.zKeep = { playerZ - KEEP_BEHIND - chunkZ,
+                                playerZ + KEEP_FEET - chunkZ }
             model:draw(mvp, nil, nil, yCut, spread, "lequal")
+            Gen4Model.zKeep = nil
           else
             model:draw(mvp, nil, nil, nil, spread)
           end
@@ -1182,17 +1772,27 @@ function Gen4Ground:livePass(camX, camY, vw, vh, yCut)
             if building then
               -- A MOVING PROP RUNS HERE NOW, on the frame clock, instead of
               -- needing a canvas of its own re-baked whenever it ticked.
-              local records, images = self:animationsFor(object.model, object.archive)
-              local mats = records
-                and Gen4TexAnim.materials(records, self.clock, images) or nil
+              local mats = self:propMaterials(object, self.clock)
               -- The cut is stated in WORLD units and the shader tests MODEL
               -- ones, so the object's own lift and scale come back off before
               -- it is sent -- the same arithmetic `bakeCanopy` does.
               local cut, skip = nil, false
               if yCut then
                 local sy = (object.scaleY and object.scaleY ~= 0) and object.scaleY or 1
-                local top = (object.y or 0) + building:topY() * sy
-                if top <= SORTED_BELOW then
+                -- THE PROP'S OWN HEIGHT, NOT ITS HEIGHT ABOVE SEA LEVEL.
+                --
+                -- `SORTED_BELOW` asks "is this shorter than a character", and
+                -- its own comment measures it that way -- *"338 of them top
+                -- out below CANOPY_Y"* is a statement about MODELS.  Adding
+                -- `object.y` turned it into a question about the prop's
+                -- ALTITUDE, and measured over all 3,476 placed props, 889 --
+                -- 25.6% -- carry a lift of 32 or more before any model height
+                -- at all.  Every one was forced down the TALL branch however
+                -- short it really is, where the cut came out at `(32 - y)/sy`
+                -- <= 0 and painted the ENTIRE prop over the sprites: a chair
+                -- on a plateau hiding the player standing beside it.
+                local ownTop = building:topY() * sy
+                if ownTop <= SORTED_BELOW then
                   -- SHORT: sorted, not cut.  `playerZ` is the view's own
                   -- centre, which the overworld keeps the player at, so this
                   -- needs nothing passed in that the pass does not already
@@ -1209,7 +1809,8 @@ function Gen4Ground:livePass(camX, camY, vw, vh, yCut)
               end
               if not skip then
                 building:draw(Gen4Model.multiply(mvp, placement(object)),
-                              nil, mats, cut, spread)
+                              self:oneShotPose(object, building),
+                              mats, cut, spread)
               end
             end
           end
@@ -1591,18 +2192,18 @@ function Gen4Ground:drawFree(vw, vh)
           -- A chunk's own vertices are centred on it, so its centre -- not its
           -- corner -- is where it goes in the absolute grid.
           local mvp = Gen4Model.multiply(vp,
-            translation(cx * px + self.half, 0, cy * px + self.half))
+            translation(cx * px + self.half, self:chunkLift(cx, cy),
+                        cy * px + self.half))
           model:draw(mvp, nil, nil, nil, nil)
           drawn = drawn + 1
           local record = self.terrain.chunks[land]
           for _, object in ipairs(self:objectsFor(land, record)) do
             local building = self:building(object.model, object.archive)
             if building then
-              local records, images = self:animationsFor(object.model, object.archive)
-              local mats = records
-                and Gen4TexAnim.materials(records, self.clock, images) or nil
+              local mats = self:propMaterials(object, self.clock)
               building:draw(Gen4Model.multiply(mvp, placement(object)),
-                            nil, mats, nil, nil)
+                            self:oneShotPose(object, building),
+                            mats, nil, nil)
             end
           end
         end
@@ -1851,7 +2452,12 @@ local FEET_Y, FEET_X = Gen4Ground.FEET_Y, Gen4Ground.FEET_X
 --
 -- The height is the TERRAIN's, not zero: Twinleaf's ground is 16 units up, and
 -- projecting a character at y = 0 puts them under it.
-function Gen4Ground:freeEntity(mapX, mapY, camX, camY, rise, draw)
+--
+-- `depthLift`, when given, depth-tests the drawing at a point that many units
+-- ABOVE the feet instead of at them, while it is still placed exactly as the
+-- owner's sprite is. Sinnoh's "!" hangs 32 units up (Gen4Emotes): tested at
+-- the feet it lost to every treetop behind its trainer and never showed.
+function Gen4Ground:freeEntity(mapX, mapY, camX, camY, rise, draw, depthLift)
   if not self:freeMode() then return false end
   local vw, vh = self.freeW, self.freeH
   if not (vw and vh and draw) then return true end
@@ -1864,6 +2470,12 @@ function Gen4Ground:freeEntity(mapX, mapY, camX, camY, rise, draw)
   -- drawing nothing is right: a character behind the camera painted in front of
   -- it is worse than one absent.
   if not sx then return true end
+  if depthLift and depthLift ~= 0 then
+    local _, _, _, lifted = self.view3d:project(gx + (self.offsetX or 0),
+                                                self:groundY(gx, gz) + depthLift,
+                                                gz + (self.offsetY or 0), vw, vh)
+    depth = lifted or depth
+  end
   local g = love.graphics
   -- INTO THE WORLD'S DEPTH BUFFER, while the free pass is still open.
   --
@@ -1995,6 +2607,183 @@ function Gen4Ground:endWorld()
 end
 
 -- bake(land) -> a canvas, or nil.
+-- THE PAINTED CELLS OF ONE CHUNK, as a drawable model.
+--
+-- `def.gen4TextureEdits` is sparse "x,y" -> texture name in MAP cells; this
+-- turns the ones that fall in `land` into a `Gen4Decals` record and builds it
+-- once. Cached per chunk and dropped with the bakes, because a decal is baked
+-- into the chunk canvas exactly like the ground it sits on.
+--
+-- NAMES, NOT PATHS, in the store: a path moves when the cache is re-extracted
+-- and a name does not. The lookup from one to the other happens here, against
+-- whatever the current extraction holds.
+function Gen4Ground:decalModelFor(land)
+  self.decalModels = self.decalModels or {}
+  local hit = self.decalModels[land]
+  if hit ~= nil then return hit or nil end
+
+  local edits = self.def and self.def.gen4TextureEdits
+  if type(edits) ~= "table" or next(edits) == nil then
+    self.decalModels[land] = false
+    return nil
+  end
+  local grid = self.grid
+  local terrain = self.terrain or {}
+  local tiles = terrain.chunkTiles or 32
+  local unit = terrain.tileUnits or 16
+  local half = (terrain.chunkUnits or 512) / 2
+  -- Which chunk cell (cx, cy) this land id sits at, so a map cell can be
+  -- tested against it. Searched rather than stored because a chunk can appear
+  -- at more than one place in the matrix and only its own position matters
+  -- for the cells of THIS map.
+  local cells = {}
+  for key, name in pairs(edits) do
+    local sx, sy = tostring(key):match("^(-?%d+),(-?%d+)$")
+    local mx, my = tonumber(sx), tonumber(sy)
+    if mx and my and type(name) == "string" then
+      -- Map cell -> matrix tile -> which chunk, and where inside it.
+      local tx = math.floor((self.offsetX or 0) / unit) + mx
+      local ty = math.floor((self.offsetY or 0) / unit) + my
+      local cx, cy = math.floor(tx / tiles), math.floor(ty / tiles)
+      local at = grid and grid.land
+                 and (cx >= 0 and cy >= 0 and cx < grid.width and cy < grid.height)
+                 and grid.land[cy * grid.width + cx + 1] or nil
+      if at == land then
+        local rec = self:textureNamed(name)
+        if rec then
+          local lx, ly = tx % tiles, ty % tiles
+          -- The cell's own corner in the chunk's space, which is centred on
+          -- the origin -- so the half-square comes off, exactly as
+          -- `heightsAt` does it.
+          local x0 = lx * unit - half
+          local z0 = ly * unit - half
+          local y = self:heightAt(mx, my) or 0
+          cells[#cells + 1] = { x = x0, z = z0, y = y, texture = name,
+                                image = rec.path, w = rec.width or 16,
+                                h = rec.height or 16 }
+        end
+      end
+    end
+  end
+  -- HOW MANY CELLS ROUTED HERE, recorded separately from the model.
+  --
+  -- `decalModels[land] = false` means "nothing to draw", and that is true
+  -- both when no painted cell belongs to this chunk and when the cells were
+  -- found but the model would not build. Those are different facts and a
+  -- check that cannot tell them apart cannot see a routing bug at all -- the
+  -- map cell to matrix tile to chunk arithmetic is the one piece here that
+  -- can be wrong without anything raising, because a cell routed to the wrong
+  -- chunk simply paints somewhere else.
+  self.decalCells = self.decalCells or {}
+  self.decalCells[land] = #cells
+  if #cells == 0 then self.decalModels[land] = false ; return nil end
+
+  local okD, Gen4Decals = pcall(require, "src.render.Gen4Decals")
+  local record = okD and Gen4Decals.build(cells,
+                   { unit = unit, name = "decals:" .. tostring(land) }) or nil
+  -- `pcall`: `Gen4Model.new` compiles a shader on first use and raises when
+  -- it cannot. A decal that will not build must leave the chunk drawing its
+  -- ordinary ground, not take the bake -- and with it the whole map -- down.
+  -- Latched as `false` below, so a failure costs one attempt per chunk rather
+  -- than one per frame.
+  local okM, model = pcall(function()
+    return record and Gen4Model.new(record) or nil
+  end)
+  if not okM then model = nil end
+
+  -- WHY IT DID NOT BUILD, KEPT RATHER THAN DISCARDED.
+  --
+  -- Reported from play: *"it doesnt seem to paint them onto the world when i
+  -- click with one selected"*. Every stage before this one can be checked
+  -- without a graphics driver, and all of them now are: the store takes the
+  -- edit, the name resolves against the cartridge's own sets, and the cell
+  -- routes to the right chunk on all 593 real map defs. This stage cannot be
+  -- checked that way -- `Gen4Model.new` compiles a shader and loads an image --
+  -- and it was also the one stage that threw its reason away: `if not okM then
+  -- model = nil end` discards the error, and `model or false` then makes
+  -- "raised", "returned nil" and "nothing is painted here" into the same
+  -- answer. A painter whose only failure mode is silence cannot be diagnosed
+  -- from a screenshot, which is all I get.
+  local why
+  if not okD then
+    why = "require failed: " .. tostring(Gen4Decals)
+  elseif not record then
+    why = ("build made no record from %d cells"):format(#cells)
+  elseif not okM then
+    why = "Gen4Model.new raised: " .. tostring(model)
+  elseif not model then
+    why = "Gen4Model.new returned nil -- no shader on this driver, or the "
+          .. "texture would not load"
+  end
+  self.decalWhy = self.decalWhy or {}
+  self.decalWhy[land] = why
+  -- ONCE PER CHUNK rather than once per frame, because the answer is latched
+  -- below and cannot change until the bakes are dropped.
+  if why then
+    Logger.warn("gen4 decals: %s chunk %s -- %d cells painted, %d shapes, "
+                .. "NOT DRAWN (%s)", tostring(self.def and self.def.id),
+                tostring(land), #cells,
+                record and #(record.shapes or {}) or 0, why)
+  else
+    Logger.info("gen4 decals: %s chunk %s -- %d cells painted in %d shapes, "
+                .. "baked", tostring(self.def and self.def.id), tostring(land),
+                #cells, #(record.shapes or {}))
+  end
+  self.decalModels[land] = model or false
+  return model
+end
+
+-- THE PAINTED LAYER'S OWN ONE-LINER, for the editor's footer.
+--
+-- `painted` is how many cells the store holds for this map, `routed` how many
+-- of them landed in a chunk that has actually been asked for, and `drawn` how
+-- many of those chunks ended up with a model. Those three separate "nothing
+-- is painted" from "the paint arrived and would not draw" -- which is the
+-- distinction a screenshot cannot make and the one I kept having to guess.
+function Gen4Ground:decalReport()
+  local edits = self.def and self.def.gen4TextureEdits
+  local painted = 0
+  for _ in pairs(type(edits) == "table" and edits or {}) do
+    painted = painted + 1
+  end
+  local routed, drawn, chunks, why = 0, 0, 0, nil
+  for land, n in pairs(self.decalCells or {}) do
+    chunks = chunks + 1
+    routed = routed + (n or 0)
+    if self.decalModels and self.decalModels[land] then drawn = drawn + 1 end
+    why = why or (self.decalWhy or {})[land]
+  end
+  return ("painted %d, routed %d over %d chunks, drawn %d%s"):format(
+    painted, routed, chunks, drawn, why and (" -- " .. tostring(why)) or "")
+end
+
+-- One texture record by name, across this cartridge's sets.
+function Gen4Ground:textureNamed(name)
+  local sets = self.terrain and self.terrain.sets
+  if not sets then return nil end
+  -- The map's OWN set first: a name can appear in several, and the copy in
+  -- the set this map draws with is the one whose palette matches the ground
+  -- around it.
+  local own = self.set and self.set.textures and self.set.textures[name]
+  if own then return own end
+  -- ...then the others BY ID, which is the order the editor's palette offers
+  -- them in (`tools/map-editor/Gen4Terrain.setOrder`). `pairs` here picked a
+  -- different copy from run to run, so a decal painted from another set could
+  -- draw in different colours from the one the editor showed.
+  if not self.setIds then
+    local ids = {}
+    for id in pairs(sets) do ids[#ids + 1] = id end
+    table.sort(ids, function(a, b) return tostring(a) < tostring(b) end)
+    self.setIds = ids
+  end
+  for _, id in ipairs(self.setIds) do
+    local set = sets[id]
+    local rec = set and set.textures and set.textures[name]
+    if rec then return rec end
+  end
+  return nil
+end
+
 function Gen4Ground:bake(land)
   local model = self:modelFor(land)
   if not model then
@@ -2043,6 +2832,22 @@ function Gen4Ground:bake(land)
   local view = self.view
   model:draw(view)
 
+  -- ...AND THE PAINTED GROUND, if this map has any.
+  --
+  -- Per-cell ground textures are a decal layer: Sinnoh's terrain is an
+  -- irregular triangulation and 87.5% of its triangles straddle a cell
+  -- boundary, so a cell cannot be re-textured by touching the mesh. A painted
+  -- cell gets one quad laid just above the ground instead -- see
+  -- `src/render/Gen4Decals.lua` for the measurement and the vertex format.
+  --
+  -- BAKED WITH THE FLOOR, not drawn per frame, for the reason the buildings
+  -- are: the geometry does not change between frames, and the same depth
+  -- buffer that keeps a basement under its ground keeps a decal under a
+  -- bridge. A map with nothing painted builds no record and costs one table
+  -- lookup.
+  local decals = self:decalModelFor(land)
+  if decals then decals:draw(view) end
+
   -- ...AND THE BUILDINGS STANDING ON IT, into the same canvas and the same
   -- depth buffer.  They are baked with the floor rather than drawn every frame
   -- for the reason the floor is: the geometry does not change, and a town with
@@ -2058,7 +2863,22 @@ function Gen4Ground:bake(land)
     -- ...EXCEPT the ones that move.  A fountain baked into the floor is a
     -- fountain that never runs, and re-baking the whole chunk on the animation
     -- clock to move one of them is the cost this split exists to avoid.
-    if not self:animationsFor(object.model, object.archive) then
+    --
+    -- A JOINT ONE-SHOT COUNTS AS MOVING TOO, since the cache carries the
+    -- tracks.  `movesAtRuntime` is the single test this guard and the animated
+    -- bake's selection both use, so the two stay complements by construction
+    -- rather than by two conditions agreeing.
+    --
+    -- The cost is measured and permanent: 72 more chunks of 666 (10.8%) now
+    -- re-bake their moving canvas each frame, on top of the 119 (17.9%) that
+    -- already did.  A door is only in motion for eight frames, so a
+    -- conditional membership -- in the moving set only while a one-shot runs --
+    -- would cost nothing at rest; it needs the static canvas invalidated on
+    -- start AND on unload, and a door holds its open pose until the unload, so
+    -- the saving is smaller than it looks.  Taken the simple way, with the
+    -- number written down, because a prop drawn twice or not at all is a worse
+    -- failure than a chunk re-baking.
+    if self:shouldBake(object) then
       local building = self:building(object.model, object.archive)
       if building then
         building:draw(Gen4Model.multiply(view, placement(object)))
@@ -2118,7 +2938,7 @@ end
 -- in FIRST WITH THE COLOUR MASK OFF so the depth buffer still hides whatever a
 -- hill should hide, and each building is then drawn with everything below
 -- CANOPY_Y cut away.  Blitted after the entity pass.
-function Gen4Ground:bakeCanopy(land)
+function Gen4Ground:bakeCanopy(land, cut)
   -- WITHOUT THE HEIGHT CUT THIS PASS IS WORSE THAN NOTHING: it would paint
   -- whole buildings over the sprites, so a character standing at a front door
   -- would vanish into it.  No cut, no canopy.
@@ -2129,6 +2949,8 @@ function Gen4Ground:bakeCanopy(land)
   local record = self.terrain.chunks[land]
   if not record then return false end
   local objects = record.objects or {}
+  -- Sea level only when nobody said otherwise, which is what it always was.
+  local yCut = cut or CANOPY_Y
 
   local px = self.chunkPx
   local canvas, depth = Gen4Model.newTarget(px, self.canvasPx)
@@ -2164,7 +2986,7 @@ function Gen4Ground:bakeCanopy(land)
     -- "lequal" for the reason the live pass uses it: this is the same
     -- geometry the masked pass above just wrote depth for, and "less" rejects
     -- every fragment of it.
-    terrain:draw(view, nil, nil, CANOPY_Y, nil, "lequal")
+    terrain:draw(view, nil, nil, yCut, nil, "lequal")
   end
 
   local drawn = 0
@@ -2175,7 +2997,7 @@ function Gen4Ground:bakeCanopy(land)
       -- the object's own lift and scale come back off before it is sent.
       local scale = (object.scaleY and object.scaleY ~= 0) and object.scaleY or 1
       building:draw(Gen4Model.multiply(view, placement(object)), nil, nil,
-                    (CANOPY_Y - (object.y or 0)) / scale)
+                    (yCut - (object.y or 0)) / scale)
       drawn = drawn + 1
     end
   end
@@ -2187,8 +3009,24 @@ function Gen4Ground:bakeCanopy(land)
   return canvas
 end
 
-function Gen4Ground:canopyFor(land)
+function Gen4Ground:canopyFor(land, cut)
   if self.noDepth or land == nil then return nil end
+  -- A BAKED CANOPY HOLDS THE CUT IT WAS BAKED WITH, so a cut that now tracks
+  -- the player's ground has to be allowed to invalidate it.  Without this the
+  -- fallback path keeps a sea-level canopy for the life of the map and the fix
+  -- only lands on machines that can run the live pass.
+  --
+  -- Quantised to one tile unit so walking a slope does not re-bake every
+  -- frame: the cut then only moves when the player's elevation does, which on
+  -- a real map is a handful of times.
+  local want = math.floor(((cut or CANOPY_Y) / 16) + 0.5) * 16
+  if self.canopyCutUsed ~= want then
+    for _, canvas in pairs(self.canopies or {}) do
+      if canvas and canvas.release then pcall(canvas.release, canvas) end
+    end
+    self.canopies = {}
+    self.canopyCutUsed = want
+  end
   local held = self.canopies[land]
   if held ~= nil then return held or nil end
   -- ON THE SAME BUDGET AS THE GROUND, and for the same reason: walking into a
@@ -2199,7 +3037,7 @@ function Gen4Ground:canopyFor(land)
   -- blank while it waits.
   if (self.canopyBudget or 0) <= 0 then return nil end
   self.canopyBudget = self.canopyBudget - 1
-  local made = self:bakeCanopy(land)
+  local made = self:bakeCanopy(land, cut)
   self.canopies[land] = made or false
   return made or nil
 end
@@ -2321,7 +3159,8 @@ function Gen4Ground:drawCanopy(camX, camY, vw, vh)
       local previous = { g.getCanvas() }
       g.setCanvas({ colour, depthstencil = depth })
       g.clear(0, 0, 0, 0, true, true)
-      local painted = self:livePass(camX, camY, lw, lh, CANOPY_Y)
+      local painted = self:livePass(camX, camY, lw, lh,
+                                    self:canopyCut(camX, camY, lw, lh))
       g.setCanvas(previous[1] or nil)
       g.setColor(1, 1, 1, 1)
       g.draw(colour, 0, 0)
@@ -2333,6 +3172,7 @@ function Gen4Ground:drawCanopy(camX, camY, vw, vh)
   local px = self.chunkPx
   local grid = self.grid
   local sinP = self.groundScale or 1
+  local cut = self:canopyCut(camX, camY, vw, vh)
   local left = camX + self.offsetX
   local top = camY + self.offsetY
   local x0 = math.floor(left / px)
@@ -2348,9 +3188,10 @@ function Gen4Ground:drawCanopy(camX, camY, vw, vh)
     for cx = x0, x1 do
       if cx >= 0 and cy >= 0 and cx < grid.width and cy < grid.height then
         local land = grid.land[cy * grid.width + cx + 1]
-        local canopy = self:canopyFor(land)
+        local canopy = self:canopyFor(land, cut)
         if canopy then
-          g.draw(canopy, cx * px - left, (cy * px - top) * sinP - self.leanPx)
+          g.draw(canopy, cx * px - left, (cy * px - top) * sinP - self.leanPx
+                                         - self:chunkLift(cx, cy) * (self.heightScale or 0))
           drawn = drawn + 1
         end
       end
@@ -2374,9 +3215,27 @@ function Gen4Ground:bakeAnimated(land, frame)
 
   local moving = {}
   for _, object in ipairs(objects) do
-    local records, images = self:animationsFor(object.model)
-    if records then
-      moving[#moving + 1] = { object = object, records = records, images = images }
+    -- `object.archive` WAS MISSING HERE and is passed now.  The static bake's
+    -- guard asks `animationsFor(object.model, object.archive)` and this asked
+    -- `animationsFor(object.model)` -- so for a `fldeff` prop the two
+    -- selections consulted DIFFERENT models: the guard returns nil for fldeff
+    -- and bakes it, while this looked the index up among the buildings and
+    -- could have found a texture animation belonging to an unrelated model,
+    -- putting the prop in both passes and drawing it twice.
+    --
+    -- Harmless today, measured: zero fldeff props are placed in any terrain
+    -- chunk (the signposts come through the map-object path, not this one), so
+    -- there is nothing for the mismatch to catch.  Fixed anyway, because these
+    -- two selections have to be complements and one of them reading a
+    -- different table than the other is how that stops being true quietly.
+    -- THE SELECTION NO LONGER CARRIES THE RECORDS, and that is the point:
+    -- `propMaterials` is asked in the draw loop below, so this and the two
+    -- live passes cannot spell the question differently again.  A prop with no
+    -- records still moves -- nineteen of the twenty doors are NSBCA and their
+    -- pose comes from `oneShotPose` -- and `shouldAnimate` is the one test
+    -- that decides, for all three sites.
+    if self:shouldAnimate(object) then
+      moving[#moving + 1] = { object = object }
     end
   end
   if #moving == 0 then return false end
@@ -2409,10 +3268,15 @@ function Gen4Ground:bakeAnimated(land, frame)
   end
 
   for _, item in ipairs(moving) do
-    local building = self:building(item.object.model)
+    -- `item.object.archive` was missing here too, for the same reason as the
+    -- selection above: `building(index)` with no archive resolves a BUILDING
+    -- for a fldeff index.  Zero fldeff props are placed in chunks today, so
+    -- this has never mattered; passing it keeps the three sites consistent.
+    local building = self:building(item.object.model, item.object.archive)
     if building then
-      building:draw(Gen4Model.multiply(view, placement(item.object)), nil,
-                    Gen4TexAnim.materials(item.records, frame, item.images))
+      building:draw(Gen4Model.multiply(view, placement(item.object)),
+                    self:oneShotPose(item.object, building),
+                    self:propMaterials(item.object, frame))
     end
   end
 
@@ -2601,8 +3465,7 @@ function Gen4Ground:draw(camX, camY, vw, vh)
   --
   -- Read at the view's centre, which is where the overworld keeps the player.
   if self.spread then
-    self.spread[2] = self:groundY(camX + (vw or 0) / 2,
-                                  camY + (vh or 0) / (2 * sinP))
+    self.spread[2] = self:groundY(self:viewCentre(camX, camY, vw, vh))
   end
 
   local g = love.graphics
@@ -2626,9 +3489,7 @@ function Gen4Ground:draw(camX, camY, vw, vh)
     -- overworld at all.  A caller that knows better calls `placeCamera` first
     -- and this leaves it alone.
     if not self.cameraPlaced then
-      local sinP = self.groundScale or 1
-      local ex = camX + (vw or 0) / 2
-      local ey = camY + (vh or 0) / (2 * sinP)
+      local ex, ey = self:viewCentre(camX, camY, vw, vh)
       -- NO FACING.  This used to pass `self.view3d.yaw`, which is read BEFORE
       -- `follow` syncs itself to the kept look and would therefore pin the
       -- camera to this view's own stale angle -- the very divergence the sync
@@ -2682,7 +3543,12 @@ function Gen4Ground:draw(camX, camY, vw, vh)
       -- looks EXACTLY like a session where the live pass is not working.  From
       -- the outside those two are indistinguishable, and that is precisely the
       -- shape of report this port has lost whole passes to before.
-      local key = ("live/%d/%.6f"):format(painted, self.spread and self.spread[1] or 0)
+      -- The reach is part of the key, so a frame where the coverage CHANGES
+      -- reports itself rather than being hidden by a latch keyed on the chunk
+      -- count alone.
+      local key = ("live/%d/%.6f/%d/%d"):format(
+        painted, self.spread and self.spread[1] or 0,
+        math.floor(self.liveReach or -1), math.floor(self.liveWant or -1))
       if self.reportedPath ~= key then
         self.reportedPath = key
         Logger.info("gen4 ground: %s drew LIVE -- %d chunk(s), %dx%d target, "
@@ -2691,6 +3557,17 @@ function Gen4Ground:draw(camX, camY, vw, vh)
                     self.spread and self.spread[1] or 0,
                     (self.spread and self.spread[1] or 0) == 0
                       and " (this camera is orthographic on the cartridge too)" or "")
+        -- ...AND WHETHER IT REACHED THE BOTTOM. Said separately and in plain
+        -- words, because this is the question five fixes have been aimed at.
+        local reach = self.liveReach or -1
+        local want = self.liveWant or -1
+        Logger.info("gen4 ground: %s live coverage -- ground reaches %.1f of "
+                    .. "%.0f view rows, lean %.4f%s", 
+                    tostring(self.def and self.def.id), reach, want, sinPOf(self),
+                    (reach + 0.5 < want)
+                      and (" -- UNPAINTED BAND OF %.1f ROWS AT THE BOTTOM")
+                          :format(want - reach)
+                      or " -- covered")
       end
       if painted > 0 then return true end
     end
@@ -2703,12 +3580,29 @@ function Gen4Ground:draw(camX, camY, vw, vh)
                 .. "camera does", tostring(self.def and self.def.id))
   end
 
-  local drawn = 0
+  -- WHAT THIS PASS ACTUALLY PAINTED, recorded for the map editor's footer.
+  --
+  -- The black band under a Gen 4 map in the editor has survived five fixes.
+  -- The footer now shows that the camera is mid-map, the matrix has terrain
+  -- well past it and the clamp is right -- so the renderer is being asked for
+  -- the full height and is painting less, and the only thing that can say why
+  -- is the loop that does the painting.
+  --
+  -- Three numbers, because they separate three different causes: `drawn` is
+  -- chunks painted, `missing` is chunks the grid HAS but whose canvas was not
+  -- ready (a bake budget not yet spent, or a bake that fails every time), and
+  -- `empty` is grid cells with no land at all -- the edge of the matrix. A
+  -- band with `missing > 0` is a baking problem; with `empty > 0` it is the
+  -- world running out; with both zero the geometry is elsewhere.
+  local drawn, missing, empty = 0, 0, 0
+  local paintTop, paintBottom = math.huge, -math.huge
   for cy = y0, y1 do
     for cx = x0, x1 do
       if cx >= 0 and cy >= 0 and cx < grid.width and cy < grid.height then
         local land = grid.land[cy * grid.width + cx + 1]
-        local canvas = self:canvasFor(land)
+        local canvas = land and self:canvasFor(land) or nil
+        if land == nil then empty = empty + 1 end
+        if land ~= nil and not canvas then missing = missing + 1 end
         if canvas then
           -- `leanPx` comes back off: the canvas grew upwards, so its ground
           -- still starts at the chunk's own corner.
@@ -2716,9 +3610,17 @@ function Gen4Ground:draw(camX, camY, vw, vh)
           -- canvas was baked at the camera's pitch, so the only thing left to
           -- do here is put its top-left where that pitch says it goes.
           local sx = cx * px - left
+          -- ...and lifted by the chunk's altitude, which on a flat canvas is a
+          -- move up the screen of `lift * cos(pitch)` -- the same factor the
+          -- live projection gives a unit of height.
           local sy = (cy * px - top) * sinP - self.leanPx
+                     - self:chunkLift(cx, cy) * (self.heightScale or 0)
           g.draw(canvas, sx, sy)
           drawn = drawn + 1
+          if sy < paintTop then paintTop = sy end
+          local reach = sy + (canvas.getHeight and canvas:getHeight()
+                              or self.canvasPx or 0)
+          if reach > paintBottom then paintBottom = reach end
           local moving = self:animatedFor(land)
           if moving then
             g.draw(moving, sx, sy)
@@ -2726,6 +3628,32 @@ function Gen4Ground:draw(camX, camY, vw, vh)
         end
       end
     end
+  end
+  self.lastPaint = { top = paintTop, bottom = paintBottom, drawn = drawn,
+                     missing = missing, empty = empty,
+                     want = vh or 0, chunks = (y1 - y0 + 1) }
+  -- ...AND SAID OUT LOUD, once per distinct answer.
+  --
+  -- The footer carries this too, but a footer only helps if the reader
+  -- happens to screenshot the bottom of the window -- and the screenshots
+  -- that come back are usually cropped above it. A log line survives a copy
+  -- and paste of the log, which is how every other answer in this
+  -- investigation has actually arrived.
+  --
+  -- Keyed on the numbers rather than printed per frame: a flood is not a
+  -- diagnostic.
+  local key = string.format("%d|%d|%d|%.0f|%.0f", drawn, missing, empty,
+                            paintBottom == -math.huge and -1 or paintBottom,
+                            vh or 0)
+  if self.saidPaint ~= key then
+    self.saidPaint = key
+    Logger.info("gen4 ground: %s painted %.0f..%.0f of a %0.f-tall canvas "
+                .. "-- %d chunk(s) in range, %d drawn, %d with no baked "
+                .. "canvas, %d with no land",
+                tostring(self.def and self.def.id),
+                paintTop == math.huge and 0 or paintTop,
+                paintBottom == -math.huge and 0 or paintBottom,
+                vh or 0, (y1 - y0 + 1) * (x1 - x0 + 1), drawn, missing, empty)
   end
   return drawn > 0
 end
@@ -2788,7 +3716,49 @@ end
 --
 -- Map tile coordinates, the same ones collision and the events are in. Empty
 -- means no plate, which is the chunk's base rather than a hole.
+-- THE EDITOR'S HEIGHT OVERRIDE, in world units, or nil.
+--
+-- `def.gen4HeightEdits` is a sparse "x,y" -> height table, the same shape and
+-- the same allow-listed home as `gen4ModelEdits`. Read here rather than baked
+-- into the BDHC blob for the reason every other edit in this tool is a patch:
+-- the blob is cartridge data, a re-import replaces it, and an editor that
+-- rewrote it would make the import destructive.
+--
+-- ONE SURFACE, deliberately. A BDHC tile can carry two -- 652 of 42,624 tiles
+-- do, which is every bridge in Sinnoh -- and an override replaces them with
+-- the single height it names. That is the honest meaning of "this cell is at
+-- this height"; a map maker who needs a bridge keeps the cartridge's tile.
+function Gen4Ground:heightOverride(tileX, tileY)
+  local edits = self.def and self.def.gen4HeightEdits
+  if type(edits) ~= "table" then return nil end
+  local v = edits[tostring(math.floor(tileX)) .. "," .. tostring(math.floor(tileY))]
+  return type(v) == "number" and v or nil
+end
+
+-- KEPT, AND NOW A NO-OP, which is deliberate rather than an oversight.
+--
+-- There was a per-tile height cache here and the editor called this after every
+-- height write to drop it. The cache is gone -- it quantised a value that
+-- varies across a tile, which is the slope bug this file was reported for --
+-- and an override is now read live on every sample, so there is nothing left to
+-- invalidate.
+--
+-- The entry point stays because the editor calls it through `pcall` and because
+-- "tell the ground its heights changed" is a real thing for a caller to want to
+-- say; a future cache would hang itself here. Removing it would be a silent
+-- behaviour change in the editor for no gain.
+function Gen4Ground:dropHeightCache()
+  self.riseCache = nil
+  return self
+end
+
 function Gen4Ground:heightsAt(tileX, tileY)
+  -- BEFORE THE BDHC, so the list and the single answer cannot disagree.
+  -- `heightAt` takes `list[1]`, so an override applied only there would leave
+  -- a caller that asked for the LIST -- the walker picking the surface nearest
+  -- its own height -- reading the cartridge's heights on an edited cell.
+  local over = self:heightOverride(tileX, tileY)
+  if over then return { over } end
   local grid = self.grid
   local tiles = self.terrain.chunkTiles or 32
   local mx = tileX + math.floor(self.offsetX / 16)
@@ -2845,20 +3815,190 @@ end
 -- `height * cos(pitch)`, because that is what the camera does with a vertical
 -- offset.  It was `height * cot(pitch)` to match the oblique, which lifted
 -- everything by a sixth too much at the default pitch.
+-- THE GROUND UNDER AN EXACT POINT, not under the middle of its tile.
+--
+-- Reported from play, twice: *"the player seems to fall beneath raised terrain
+-- not walking up with it"* -- first at a tilt rung, then at the cartridge rung
+-- too, which is what ruled the camera out.
+--
+-- `heightsAt` takes a TILE and asks the BDHC at that tile's CENTRE, so it
+-- answers one height for the whole tile. On flat ground that is exact. On a
+-- SLOPE it is not: the plate is a plane, the mesh drawn from it rises
+-- continuously across the tile, and a character placed by the tile's centre
+-- height therefore steps up in whole-tile jumps while the ground they are
+-- standing on ramps underneath them. For most of every step they are below it.
+--
+-- MEASURED: 8,974 plates across the 666 chunks, 88.8% flat and 11.2% sloped --
+-- and the sloped ones are every ramp, every hill path and every cliff approach
+-- in Sinnoh, which is exactly the "raised terrain" in the report.
+--
+-- The plate already knows: `Gen4Bdhc.heightOn` evaluates
+-- `y = -(nx*x + nz*z + c) / ny` at whatever point it is given. The file said so
+-- and said this did not ask for it yet -- *"a ramp wants the plate's own plane
+-- evaluated at the exact point, which `Gen4Bdhc` can do and this does not ask
+-- for yet"*. This asks for it.
+--
+-- `px`/`py` are MAP PIXELS. One pixel is one world unit here, so the position
+-- inside the chunk is the map position plus the map's offset, modulo the chunk,
+-- less the half-square -- the same arithmetic `heightsAt` does, without the
+-- quantising step in the middle.
+-- THE CARTRIDGE'S PER-TILE BEHAVIOUR, FOR THE OUTDOOR WORLD.
+--
+-- Reported from play: *"i cant walk directly into the cave it wont warp me"*.
+-- A Gen 4 door or cave mouth is opened by pressing the direction the tile
+-- under the player names, and that name is a behaviour byte. Only 302 of
+-- Platinum's 593 map defs carry a behaviour grid of their own; every outdoor
+-- map -- and so every cave mouth in Sinnoh -- keeps its own in the land
+-- chunk's PERMISSION block instead, one u16 per tile, low byte the behaviour.
+--
+-- Read the same way the BDHC is, through one open file handle and a seek, for
+-- the same reason: 666 chunks of 32x32 u16 is 1.3 MB and belongs beside
+-- `heights.bin` rather than inside a Lua table.
+--
+-- `tileX`/`tileY` are MAP-LOCAL tiles, the same space `heightsAt` takes, so a
+-- caller that has a cell has no second coordinate system to learn.
+-- ONE CHUNK'S PERMISSION BLOCK, FROM WHICHEVER OF THE TWO PLACES HAS IT.
+--
+-- The binary side-car beside `heights.bin` is the lean one -- a seek and one
+-- read -- but it is written by an IMPORT, and an install that has not re-run
+-- one since it was added has no side-car at all. Reported from play after the
+-- directional entrances were supposedly fixed: *"walking directly into the
+-- cave entrance still doesnt work"*. The code was right and had no data.
+--
+-- `gen4_map_permissions` has been in every Gen 4 cache since the first one.
+-- MEASURED over it: 666 chunks, 1,363,968 bytes -- exactly 2048 each, which is
+-- 32x32 tiles of u16 -- with the FIRST byte the behaviour (94 distinct values,
+-- carrying all eight warp-entrance constants) and the second only ever 0x00 or
+-- 0x80, the blocked flag.
+--
+-- ONE DECODE, TWO SOURCES. The bytes are identical either way, so the only
+-- thing that differs is where the block is fetched -- which keeps this out of
+-- the shape every bug in this file has had: the same thing spelled differently
+-- in two places that never meet.
+--
+-- Cached per chunk, so a map pays one read for its whole permission grid
+-- rather than one per step.
+function Gen4Ground:permBlockFor(land)
+  if land == nil then return nil end
+  self.permBlocks = self.permBlocks or {}
+  local held = self.permBlocks[land]
+  if held ~= nil then return held or nil end
+
+  local block
+  local terrain = self.terrain
+  local record = terrain and terrain.chunks and terrain.chunks[land]
+  local fs = love and love.filesystem
+  if record and record.permAt and record.permBytes
+     and terrain.permissionFile and fs and fs.newFile then
+    if self.permFile == nil then
+      local file = fs.newFile(Assets.resolve(terrain.permissionFile), "r")
+      self.permFile = file or false
+    end
+    local file = self.permFile or nil
+    if file and file:seek(record.permAt) then
+      local bytes = file:read(record.permBytes)
+      if bytes and #bytes == record.permBytes then block = bytes end
+    end
+  end
+
+  -- THE CACHE'S OWN TABLE, which needs no import to have been re-run.
+  if not block then
+    local got = self.perms and self.perms[land]
+    if type(got) == "string" then block = got end
+  end
+
+  self.permBlocks[land] = block or false
+  return block
+end
+
+-- `tileX`/`tileY` are MAP-LOCAL tiles, the same space `heightsAt` takes, so a
+-- caller that has a cell has no second coordinate system to learn.
+function Gen4Ground:permissionWordAt(tileX, tileY)
+  local grid = self.grid
+  local terrain = self.terrain
+  if not (grid and grid.land and terrain) then return nil end
+  local tiles = terrain.chunkTiles or 32
+  local mx = math.floor(tileX) + math.floor((self.offsetX or 0) / 16)
+  local my = math.floor(tileY) + math.floor((self.offsetY or 0) / 16)
+  if mx < 0 or my < 0 then return nil end
+  local cx, cy = math.floor(mx / tiles), math.floor(my / tiles)
+  if cx >= grid.width or cy >= grid.height then return nil end
+  local block = self:permBlockFor(grid.land[cy * grid.width + cx + 1])
+  if not block then return nil end
+
+  local at = ((my % tiles) * tiles + (mx % tiles)) * 2
+  -- INSIDE THIS CHUNK'S OWN BLOCK, which a short or half-written one would
+  -- otherwise read straight past -- answering another tile with complete
+  -- confidence.
+  if at + 2 > #block then return nil end
+  local lo, hi = block:byte(at + 1, at + 2)
+  return lo + hi * 256
+end
+
+-- The low byte is the behaviour; bit 15 of the word is the blocked flag and is
+-- not part of it.
+function Gen4Ground:behaviourAt(tileX, tileY)
+  local word = self:permissionWordAt(tileX, tileY)
+  if not word then return nil end
+  return word % 256
+end
+
+function Gen4Ground:heightsAtPixel(px, py)
+  -- THE EDITOR'S OVERRIDE STILL WINS, and it is per TILE because that is what
+  -- the editor paints. A cell set to one height is flat by construction.
+  local over = self:heightOverride(math.floor((tonumber(px) or 0) / 16),
+                                   math.floor((tonumber(py) or 0) / 16))
+  if over then return { over } end
+
+  local grid = self.grid
+  local terrain = self.terrain
+  if not (grid and grid.land and terrain) then return {} end
+  local chunkPx = self.chunkPx or ((terrain.chunkUnits or 512)
+                                   * (terrain.pixelsPerUnit or 1))
+  local half = (terrain.chunkUnits or 512) / 2
+  local mx = (tonumber(px) or 0) + (self.offsetX or 0)
+  local my = (tonumber(py) or 0) + (self.offsetY or 0)
+  if mx < 0 or my < 0 then return {} end
+  local cx, cy = math.floor(mx / chunkPx), math.floor(my / chunkPx)
+  if cx >= grid.width or cy >= grid.height then return {} end
+  local land = grid.land[cy * grid.width + cx + 1]
+  local bdhc = land and self:bdhcFor(land)
+  if not bdhc then return {} end
+
+  local x = (mx % chunkPx) - half
+  local z = (my % chunkPx) - half
+  local records = require("src.import.Gen4Bdhc").heightsAt(bdhc, x, z) or {}
+  local list = {}
+  for i = 1, #records do list[i] = records[i].height end
+  table.sort(list, function(a, b) return a > b end)
+  return list
+end
+
+-- The one height to stand on at an exact point. Falls back to the TILE's
+-- answer when no plate covers the point -- which keeps the unplated-tile
+-- neighbour rule in `heightAt` rather than growing a second copy of it here.
+function Gen4Ground:heightAtPixel(px, py)
+  local list = self:heightsAtPixel(px, py)
+  if list[1] then return list[1] end
+  return (self:heightAt(math.floor((tonumber(px) or 0) / 16),
+                        math.floor((tonumber(py) or 0) / 16)))
+end
+
 function Gen4Ground:rise(px, py)
   local cosP = self.heightScale or 0
   if cosP <= 1e-6 then return 0 end
-  local tileX = math.floor((tonumber(px) or 0) / 16)
-  local tileY = math.floor((tonumber(py) or 0) / 16)
-  local cache = self.riseCache
-  if not cache then cache = {} ; self.riseCache = cache end
-  local key = tileY * 8192 + tileX
-  local height = cache[key]
-  if height == nil then
-    height = self:heightAt(tileX, tileY) or 0
-    cache[key] = height
-  end
-  return height * cosP
+  -- THE EXACT POINT, AND SO NO PER-TILE CACHE.
+  --
+  -- The cache held one height per tile, which is the quantising this call was
+  -- reported for: a character crossing a sloped tile was drawn at its centre
+  -- height the whole way across, so they sank into the ramp and then stepped
+  -- up at the boundary instead of walking up it.
+  --
+  -- Caching an answer that legitimately varies within a tile is not a cache,
+  -- it is the bug. The work it saved is one box test per plate of ONE chunk --
+  -- 8,974 plates across all 666, so a dozen or so here -- against a per-frame
+  -- call for a handful of entities.
+  return (self:heightAtPixel(px, py) or 0) * cosP
 end
 
 -- The one height to stand on, when the caller has no opinion: the highest.
@@ -2867,25 +4007,59 @@ end
 -- The terrain height in WORLD UNITS at a map position -- what `rise` returns
 -- before it is multiplied into screen pixels by `cos(pitch)`.
 --
--- Shares `riseCache`, which already stores the height rather than the rise, so
--- the two cannot disagree and the second caller costs no extra lookups.
+-- Shares `rise`'s SAMPLER rather than a cache, which is the same guarantee for
+-- a better reason: the two cannot disagree because there is only one place the
+-- ground is read from.
 function Gen4Ground:groundY(px, py)
-  local tileX = math.floor((tonumber(px) or 0) / 16)
-  local tileY = math.floor((tonumber(py) or 0) / 16)
-  local cache = self.riseCache
-  if not cache then cache = {} ; self.riseCache = cache end
-  local key = tileY * 8192 + tileX
-  local height = cache[key]
-  if height == nil then
-    height = self:heightAt(tileX, tileY) or 0
-    cache[key] = height
-  end
-  return height
+  -- The same exact sample `rise` takes, so the free camera's sprite placement
+  -- and the oblique pass's lift cannot disagree about where the ground is --
+  -- which is why this shared the cache with `rise` before and shares the
+  -- sampler now.
+  return self:heightAtPixel(px, py) or 0
 end
 
+-- AN UNPLATED TILE TAKES THE GROUND AROUND IT, NOT ZERO.
+--
+-- Reported from play: *"the player seems to fall beneath raised terrain not
+-- walking up with it"*, and *"i cant walk through some cave entrances on
+-- raised terrain ... to go through i have to walk into the warp at a weird
+-- angle"*. Those are one fault seen twice -- once as a picture and once as
+-- collision.
+--
+-- `heightsAt` says so itself: *"Empty means no plate, which is the chunk's
+-- base rather than a hole"*. This function then turned that empty list into
+-- `DEFAULT_HEIGHT`, which is 0 -- the bottom of the world. The comment and the
+-- code disagreed, and the code won.
+--
+-- MEASURED over all 666 chunks and 681,984 tiles: 161,182 (23.6%) carry no
+-- plate at all. Nearly all of those are void -- 148,799 have no plated
+-- neighbour either, and answering 0 for them costs nothing because nobody can
+-- stand there. The ones that bite are the other 12,383: tiles with no plate of
+-- their own sitting NEXT TO plated ground, and 7,778 of those neighbours are
+-- at a non-zero height. Stand on one and you drop to zero while the ground you
+-- can see stays up -- and a step onto it from raised ground is a step down a
+-- cliff, which is what refuses the walk into a cave mouth and leaves the one
+-- diagonal approach that happens to come from another unplated tile.
+--
+-- The fallback is the HIGHEST plated 4-neighbour, which is the chunk's base in
+-- the only sense that is observable from the tile: a doorway's threshold takes
+-- the floor it opens onto rather than the void under the wall. One ring only,
+-- and no recursion -- a neighbour is asked with `heightsAt`, never with this
+-- function, so an unplated region cannot walk the whole chunk looking for
+-- ground.
 function Gen4Ground:heightAt(tileX, tileY)
   local list = self:heightsAt(tileX, tileY)
-  return list[1] or Gen4Ground.DEFAULT_HEIGHT, list
+  if list[1] then return list[1], list end
+
+  local best
+  local x, y = math.floor(tileX), math.floor(tileY)
+  local around = { { x - 1, y }, { x + 1, y }, { x, y - 1 }, { x, y + 1 } }
+  for _, at in ipairs(around) do
+    local near = self:heightsAt(at[1], at[2])
+    local h = near[1]
+    if h and (best == nil or h > best) then best = h end
+  end
+  return best or Gen4Ground.DEFAULT_HEIGHT, list
 end
 
 function Gen4Ground:release()
@@ -2913,7 +4087,13 @@ function Gen4Ground:release()
   self.animated, self.depthModels = {}, {}
   if self.file and self.file.close then pcall(self.file.close, self.file) end
   if self.heights and self.heights.close then pcall(self.heights.close, self.heights) end
+  -- ...AND THE PERMISSION SIDE-CAR, which is the third handle this map opens.
+  self.permBlocks = nil
+  if self.permFile and self.permFile.close then
+    pcall(self.permFile.close, self.permFile)
+  end
   self.file, self.heights, self.bdhc = nil, nil, nil
+  self.permFile = nil
 end
 
 return Gen4Ground

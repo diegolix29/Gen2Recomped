@@ -17,6 +17,13 @@ for _,size in ipairs({{1536,1024},{1920,1080},{800,1200},{256,192}}) do
   checks=checks+3
  end
 end
+-- Earlier generations retain the selected scale rather than auto-enlarging
+-- narrow maps. Their full-size view renders border/neighbor tiles instead.
 V.set('emerald');r:setWorldBounds(144,1792)
-assert(r:worldPresentationScale(1,1920,1080,240,1080)==1)
-print(checks..' Platinum viewport checks passed; earlier-generation presentation unchanged')
+local es=r:worldPresentationScale(1,1920,1080,240,1080)
+assert(es==1,'Emerald map bounds must not override selected zoom')
+-- ...and with no bounds set -- a battle, a menu, the title -- nothing moves.
+r:setWorldBounds(nil,nil)
+assert(r:worldPresentationScale(1,1920,1080,240,1080)==1,'unbounded passes keep their scale')
+checks=checks+2
+print(checks..' viewport checks passed; Gen4 bounds preserved, Gen1-3 zoom unchanged by bounds')

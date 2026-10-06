@@ -493,7 +493,8 @@ function Commands.g4_buffer(ctx, slot, kind, value)
     -- A NAME THAT IS JUST A MESSAGE BANK KEYED BY THE OPERAND, which several
     -- of these are: item names with articles (393), contest accessories (386)
     -- and their with-article twin (387), Underground goods (626) and theirs
-    -- (627).  One kind rather than five near-identical branches, because the
+    -- (627), Underground items (628) and traps (630), and contest backdrops
+    -- (388).  One kind rather than eight near-identical branches, because the
     -- only thing that differs is the number.
     --
     -- THE BANK IDS ARE THE LINE NUMBER IN generated/text_banks.txt MINUS ONE,
@@ -647,6 +648,64 @@ end
 
 -- PlayerAvatar_GetFacingDir: 0 up, 1 down, 2 left, 3 right on the cartridge.
 local FACING = { up = 0, down = 1, left = 2, right = 3 }
+
+-- `scrcmd 20D` -- AND THIS ONE WAS A HANG, not a missing feature.
+--
+--     static BOOL ScrCmd_20D(ScriptContext *ctx) {
+--         u8 v0 = ScriptContext_ReadByte(ctx);      -- a MODE, 0..9
+--         u16 *v1 = ScriptContext_GetVarPointer(ctx);
+--         *v1 = ov6_02243004(ctx->fieldSystem, v0);
+--     }
+--
+-- `ov6_02243004` is a ten-mode switch over one overlay-6 field effect. Eight
+-- of the ten start or stop something and fall through to `return 0`. Exactly
+-- TWO -- mode 1 and mode 6 -- are completion polls:
+--
+--     case 1: if (ov6_0223E708(Unk)) { ov6_0223E700(Unk); return 1; }
+--             else { return 0; }
+--     case 6: if (ov6_0223FCF4(Unk) == 6) { ov6_0223FCE0(Unk); return 1; }
+--             else { return 0; }
+--
+-- and both of those read a staged animation's state counter (`unk_00 == 11`,
+-- `unk_00 == 6`) -- "has the effect finished yet".
+--
+-- The scripts poll them in a BACKWARDS JUMP:
+--
+--     20d 0x1 0x800C  /  comparevartovalue 0x800C 0x0  /  gotoif 1 -18
+--     20d 0x6 0x800C  /  comparevartovalue 0x800C 0x0  /  gotoif 1 -18
+--
+-- so `g4_no_feature`, which writes 0, meant "not finished" forever and the
+-- script span on the spot. Two infinite loops, one in band 236 and one in band
+-- 237, on the Spear Pillar path.
+--
+-- This is the sharpest version of pass 180's lesson. The stub was RIGHT for
+-- eight of the ten modes -- the cartridge writes 0 there too -- which is
+-- exactly why nobody looked: the row behaved correctly almost everywhere. An
+-- effect this port never starts has already finished, so the only non-hanging
+-- answer for the two polls is 1, and it is also the true one.
+local OV6_EFFECT_POLL_MODES = { [1] = true, [6] = true }
+local OV6_EFFECT_MAX_MODE = 9
+
+function Commands.g4_field_effect(ctx, mode, destVar)
+  -- the mode is `ScriptContext_ReadByte`, a literal, NOT a var -- so it is not
+  -- put through `valueOf`, which would read 0..9 as something else entirely if
+  -- a mod ever pointed it at a var id.
+  mode = math.floor(tonumber(mode) or -1)
+  if mode < 0 or mode > OV6_EFFECT_MAX_MODE then
+    -- the cartridge's `default:` is `GF_ASSERT(FALSE)`, so there is no
+    -- behaviour to copy; it writes 0 and so do we, loudly.
+    require("src.core.Logger").warn(
+      "gen4 script: scrcmd 20D mode %d is outside the cartridge's 0-%d "
+      .. "switch, which asserts there -- answering 0", mode,
+      OV6_EFFECT_MAX_MODE)
+    if destVar then setVar(ctx.save, destVar, 0) end
+    setResult(ctx, 0)
+    return
+  end
+  local answer = OV6_EFFECT_POLL_MODES[mode] and 1 or 0
+  if destVar then setVar(ctx.save, destVar, answer) end
+  setResult(ctx, answer)
+end
 
 function Commands.g4_player_dir(ctx, destVar)
   local player = ctx.overworld and ctx.overworld.player
@@ -898,15 +957,58 @@ end
 -- has dialogue for. Writing 0 and 0xFFFF takes that branch cleanly; writing
 -- nothing left both destinations holding the previous script's values and the
 -- interview branched at random on its way to using a word nobody picked.
+-- `choosecustommessageword <unused> <resultVar> <destVar>`: the easy-chat
+-- screen, one word (src/pokemon/Gen4EasyChat.lua). The word goes in destVar
+-- (0xFFFF until one is chosen) and resultVar answers 1, or 0 when the player
+-- backs out -- which is what Sunyshore's Julia branches on before her ribbon.
 function Commands.g4_choose_message_word(ctx, _unused, resultVar, destVar)
   if destVar then setVar(ctx.save, destVar, 0xFFFF) end
   if resultVar then setVar(ctx.save, resultVar, 0) end
+  if not (ctx.game and ctx.game.stack) then return end
+  local runner = ctx.runner
+  require("src.pokemon.Gen4EasyChat").pick(ctx.game, function(word)
+    if word then
+      if destVar then setVar(ctx.save, destVar, word) end
+      if resultVar then setVar(ctx.save, resultVar, 1) end
+    end
+    if runner then runner:resume() end
+  end)
+  if runner then runner:yield() end
 end
+Commands.meta.g4_choose_message_word = { foreground = true, blocking = true }
 
 -- `messagevar` takes its entry out of a var rather than out of the row.
 function Commands.g4_message_var(ctx, id, bank)
   if bank then return Commands.g4_message_bank(ctx, bank, getVar(ctx.save, id)) end
   return Commands.g4_message(ctx, getVar(ctx.save, id))
+end
+
+-- `messagefromtrainertype` -- NO OPERANDS AT ALL, and the entry is the object's
+-- own trainer type:
+--
+--     u8 trainerType = MapObject_GetTrainerType(*mapObj);
+--     ScriptMessage_Show(ctx, ctx->loader, trainerType, TRUE, NULL);
+--
+-- `*mapObj` is SCRIPT_MANAGER_TARGET_OBJECT, which is `ctx.npc` here, and a
+-- Gen 4 object record carries `trainerType` (`Gen4Events` reads it at offset 6
+-- of the event row).  The bank came in with the row, resolved at lowering time
+-- from the member the block lives in, exactly as `message`'s does.
+--
+-- WHAT IT IS FOR: a line selected by what KIND of trainer is speaking, so one
+-- script serves a whole class of object.  A missing type is 0, which is the
+-- bank's first entry -- the same thing the cartridge would print for an object
+-- whose type is 0, so there is nothing to invent.
+function Commands.g4_message_trainer_type(ctx, bank)
+  local def = ctx.npc and ctx.npc.def
+  local entry = math.floor(tonumber(def and def.trainerType) or 0)
+  if not def and not Gen4Commands._saidTrainerType then
+    Gen4Commands._saidTrainerType = true
+    Logger.warn("gen4 script: `messagefromtrainertype` ran with no target "
+                .. "object, so the line is the bank's entry 0 rather than the "
+                .. "speaker's own")
+  end
+  if bank then return Commands.g4_message_bank(ctx, bank, entry) end
+  return Commands.g4_message(ctx, entry)
 end
 
 -- `showyesnomenu <destVar>`: the engine's `ask` leaves its answer on the
@@ -1053,6 +1155,48 @@ local function objectById(ctx, id)
   end
   return best
 end
+
+-- THE SAME FOUR NUMBERS, INVERTED. `scrcmd 18C` hands a direction to an
+-- object, and the mapping from the cartridge's number to this engine's facing
+-- name is the table above read the other way -- derived once, not typed twice,
+-- because two spellings of one mapping in two places is this port's recurring
+-- bug in its smallest form.
+local FACE_NAME = {}
+for name, n in pairs(FACING) do FACE_NAME[n] = name end
+
+-- `scrcmd 18C` -- "turn this object to face <dir>", and it was filed as "a
+-- Spear Pillar effect" because that is where most of its fifteen sites are.
+--
+--     static BOOL ScrCmd_18C(ScriptContext *ctx) {
+--         u16 localID = ScriptContext_GetVar(ctx);
+--         u16 dir     = ScriptContext_GetVar(ctx);
+--         MapObject *mapObj = MapObjMan_LocalMapObjByIndex(..., localID);
+--         ov5_021ECDFC(mapObj, dir);
+--     }
+--
+-- and `ov5_021ECDFC` is `MapObject_TryFace(mapObj, dir)` plus a shadow nudge
+-- for an object mid-jump. `ScrCmd_FaceTargetObject` and `trainer_encounter.c`
+-- call the very same function, so this port already does this -- under another
+-- name, for another command. Naming a command after the map it appears on is
+-- how a bread-and-butter object operation ends up looking like an
+-- unimplementable set-piece.
+--
+-- Fifteen sites across three bands: local ids 5, 3 and 0xFF (LOCALID_PLAYER,
+-- which `objectById` already resolves), directions 0 through 3 -- all four.
+function Commands.g4_face_dir(ctx, localID, dir)
+  local e = objectById(ctx, localID)
+  if not e then return end
+  local n = math.floor(tonumber(valueOf(ctx, dir)) or -1)
+  local name = FACE_NAME[n]
+  if not name then
+    require("src.core.Logger").warn(
+      "gen4 script: scrcmd 18C asked for direction %d, which is not one of "
+      .. "DIR_NORTH/SOUTH/WEST/EAST (0-3) -- the object is left as it was", n)
+    return
+  end
+  e.facing = name
+end
+
 
 -- `addobject` / `removeobject`, AND THE FLAG THAT MAKES THEM STICK.
 --
@@ -1346,9 +1490,143 @@ function Commands.g4_signpost_input(ctx, destVar)
   setResult(ctx, 1)
 end
 
-Commands.g4_wait_move = noop
+-- `waitmovement` -- THE JOIN, and until now a no-op.
+--
+-- It could afford to be while `applymovement` blocked: by the time the script
+-- reached this line the movement had already finished, so waiting for it was
+-- waiting for nothing. Now that an apply only QUEUES, this is the line that
+-- makes a cutscene wait for its actors, and 2,167 sites across the cartridge
+-- depend on it.
+--
+-- Waits for ALL movements in flight rather than for the one object named.
+-- `ScrCmd_WaitMovement` takes an id and waits on that object; the honest
+-- version of that needs a per-object handle the queue does not carry yet.
+-- Waiting for all of them is the conservative difference: every scene that
+-- waits for the right actor still waits long enough, and one that would have
+-- run on while a SECOND actor was still walking now holds until they land.
+-- That is the old behaviour's timing in the worst case and the cartridge's in
+-- the common one -- where the script waits once, after the last apply.
+function Commands.g4_wait_move(ctx)
+  if (ctx.g4Moving or 0) <= 0 then return end
+  local runner = ctx.runner
+  if not runner then return end
+  ctx.g4MoveJoin = function() runner:resume() end
+  runner:yield()
+end
 function Commands.g4_play_sound(ctx, soundId)
   Commands.play_sound(ctx, valueOf(ctx, soundId))
+end
+
+-- `loaddooranimation` / `playdooropenanimation` / `playdoorcloseanimation` /
+-- `unloadanimation` -- one handler, because they are one feature with a slot
+-- id in common and splitting them would be four places that have to agree
+-- about what a tag means.
+--
+-- THE TAG IS THE STATE, and it lives on the overworld rather than the save:
+-- `MapPropOneShotAnimationManager` is a field-system object, so a tag means
+-- nothing after a map change, and persisting it into the save would make a
+-- door in Jubilife answer for one in Hearthome. 52 loads against 142 plays
+-- means a tag outlives the script that set it, so it cannot be script-local
+-- either.
+--
+-- `mapX`/`mapZ` are read as raw halfwords by the cartridge and `tileX`/`tileZ`
+-- through `ScriptContext_GetVar`, so only the latter two go through `valueOf`.
+-- Three of the 52 load sites pass a var for a tile, which is why that matters.
+-- `showmoney` / `hidemoney` / `updatemoneydisplay` -- one handler, one piece
+-- of state, for the reason `g4_door_anim` is one handler: three commands with
+-- a single window between them.
+--
+-- THE PANEL IS REBUILT RATHER THAN REFRESHED, and that is the cartridge's
+-- shape rather than a shortcut. `FieldMenu_PrintMoneyToWindow` formats the
+-- balance into bank 543 entry 19 and prints it; the number is spliced into a
+-- cartridge string, so "refresh" means "format it again". Keeping a live
+-- reference to `save.money` and formatting at draw time would be faster and
+-- would also mean the window changed the instant a script took the money,
+-- BEFORE the `updatemoneydisplay` the cartridge puts there -- which is the
+-- beat the Game Corner's counter depends on.
+--
+-- On the overworld rather than the save, like the door tags:
+-- `SCRIPT_MANAGER_MONEY_WINDOW` is a field-system slot, so a window does not
+-- survive a map change and a saved one would come back on a map that never
+-- opened it.
+function Commands.g4_money_window(ctx, which, left, top)
+  local ow = ctx.overworld
+  if not ow then return end
+  if which == "hide" then
+    ow.gen4MoneyWindow = nil
+    return
+  end
+  local MW = require("src.ui.Gen4MoneyWindow")
+  if which == "show" then
+    ow.gen4MoneyWindow = MW.panelFor(ctx.game, valueOf(ctx, left),
+                                     valueOf(ctx, top))
+    return
+  end
+  -- "update": the same window, where it already is. A refresh with no window
+  -- open is not an error on the cartridge either -- the pointer is simply
+  -- stale -- so it is a no-op rather than a warning.
+  local open = ow.gen4MoneyWindow
+  if not open then return end
+  ow.gen4MoneyWindow = MW.panelFor(ctx.game, open.left, open.top)
+end
+
+function Commands.g4_door_anim(ctx, which, a, b, cc, d, e)
+  local ow = ctx.overworld
+  if not ow then return end
+  local Doors = require("src.world.Gen4Doors")
+
+  if which == "load" then
+    local tag = math.floor(tonumber(e) or 0)
+    local mapX = math.floor(tonumber(a) or 0)
+    local mapZ = math.floor(tonumber(b) or 0)
+    local tileX = math.floor(valueOf(ctx, cc) or 0)
+    local tileZ = math.floor(valueOf(ctx, d) or 0)
+    ow.gen4Doors = ow.gen4Doors or {}
+    ow.gen4DoorProps = ow.gen4DoorProps or {}
+    local model, why, info = Doors.modelAt(ctx.game and ctx.game.data,
+                                           ow.map and ow.map.def,
+                                           mapX, mapZ, tileX, tileZ)
+    -- A MISS IS REMEMBERED AS A MISS, not left absent: `open` has to be able
+    -- to tell "this tag was loaded and the model could not be identified"
+    -- from "this tag was never loaded", because the first still gets the
+    -- hinged sound and the second is a script fault worth hearing about.
+    ow.gen4Doors[tag] = model or false
+    -- THE PROP, BY IDENTITY, so the animation can find what to pose.  Kept
+    -- beside the name rather than replacing it: the name is what chooses the
+    -- sound, and a prop the search could not place still gets one.
+    ow.gen4DoorProps[tag] = info and info.object or nil
+    if not model then Doors.note(why) end
+    return
+  end
+
+  if which == "unload" then
+    local tag = math.floor(tonumber(a) or 0)
+    if ow.gen4Doors then ow.gen4Doors[tag] = nil end
+    if ow.gen4DoorProps then ow.gen4DoorProps[tag] = nil end
+    -- `unloadanimation` releases the slot on the cartridge too, and it is why
+    -- a finished one-shot is kept until now rather than cleared when it
+    -- reaches its last frame: that frame is the pose the door holds.
+    require("src.world.Gen4PropOneShot").stop(ow, tag)
+    return
+  end
+
+  local tag = math.floor(tonumber(a) or 0)
+  local model = ow.gen4Doors and ow.gen4Doors[tag]
+  if model == nil then
+    -- Not loaded on this map. The cartridge would have asserted; here the
+    -- door still makes a sound, because a silent door is the fault being
+    -- fixed and the hinged creak is what the cartridge plays for every model
+    -- it does not name specially.
+    Doors.note(("tag %d was never loaded on this map"):format(tag))
+    model = false
+  end
+  Doors.play(ctx.game, model or "unknown-door", which)
+  -- ...AND THE ANIMATION, on the same tag.  `start` refuses a tag whose
+  -- animation cannot be resolved, which is what keeps `waitforanimation` from
+  -- hanging on a door this port could not identify.
+  require("src.world.Gen4PropOneShot").start(
+    ow, tag, model or nil, which,
+    ow.gen4DoorProps and ow.gen4DoorProps[tag] or nil)
 end
 function Commands.g4_play_cry(ctx, species)
   -- Platinum plays immediately. Its second operand is unused, whereas the
@@ -1371,7 +1649,27 @@ end
 function Commands.g4_stop_sound(ctx,id)
   require('src.core.Sound').stop(valueOf(ctx,id))
 end
-Commands.g4_wait_animation = noop
+-- `waitforanimation <tag>` -- and the tag was being thrown away.
+--
+-- Two things were wrong and the second hid the first.  The handler was `noop`,
+-- and there were TWO lowerings for the command -- an early one onto
+-- `g4_wait_animation` and a later one onto `g4_noop` that silently overwrote
+-- it -- so the census filed all 48 sites under "the door animation's wait"
+-- and this handler was never reached at all.
+--
+-- The wait is per-TAG, matching `ScrCmd_WaitForAnimation`'s byte operand, and
+-- a tag that is not running is finished -- so this steps over rather than
+-- stalling whenever the door could not be identified or its animation not
+-- resolved.  That is what the old no-op did by accident and this does on
+-- purpose.
+function Commands.g4_wait_animation(ctx, tag)
+  local ow = ctx.overworld
+  if not ow then return end
+  local OneShot = require("src.world.Gen4PropOneShot")
+  if OneShot.finished(ow, tag) then return end
+  ctx.runner.waitingCheck = function() return OneShot.finished(ow, tag) end
+  ctx.runner:yield()
+end
 Commands.g4_wait_fade = noop
 Commands.g4_return_to_field = noop
 Commands.g4_menu_close = noop
@@ -1511,21 +1809,70 @@ function Commands.g4_move(ctx, id, steps)
                tostring((tonumber(fromX) or 0) + netX),
                tostring((tonumber(fromY) or 0) + netY))
 
-  for _, step in ipairs(steps) do
+  -- QUEUED, NOT PLAYED HERE -- which is what the cartridge does.
+  --
+  -- Reported from play: *"in oreburg where the npc walks you to the gym it has
+  -- me walk to the gym and then the player walks to the gym after i get there
+  -- instead of following"*.
+  --
+  -- `ScrCmd_ApplyMovement` STARTS an animation and lets the script run on to
+  -- `waitmovement`. This played the whole list inline through `walkEntity`,
+  -- which yields per step -- so two objects told to move in consecutive rows
+  -- moved one after the other instead of together. The file said so and called
+  -- it a timing difference; it is a timing difference in exactly the scenes
+  -- that are ABOUT timing.
+  --
+  -- MEASURED over the cartridge's 8,567 scripts: 3,025 `applymovement` against
+  -- 2,167 `waitmovement`, and 862 of those applies are issued BACK-TO-BACK with
+  -- no wait between them -- two or more actors the cartridge moves together.
+  -- All 862 were being serialised, so this is 862 scenes rather than one.
+  --
+  -- The queue the overworld already keeps is the whole mechanism: `scriptMove`,
+  -- `scriptPause` and `marchInPlace` all take a completion callback and advance
+  -- on their own, and `scriptPause`'s own comment says why -- *"a delay that
+  -- BLOCKS the script runner would serialise the two walks it is there to
+  -- separate"*. That was already understood one layer down.
+  --
+  -- NOTHING IN THE CHAIN MAY YIELD. Every link after the first runs from the
+  -- overworld's update rather than from inside the script coroutine, so a
+  -- `Commands.wait` or `Commands.emote` here -- both of which yield -- would
+  -- raise "attempt to yield from outside a coroutine" somewhere far from this
+  -- line. The emote is therefore armed directly, the same way `Commands.emote`
+  -- arms it, minus the yield.
+  Commands.claimMove(ctx, entity)
+  local index, finished = 0, false
+  local function finish()
+    if finished then return end
+    finished = true
+    ctx.g4Moving = math.max(0, (ctx.g4Moving or 1) - 1)
+    -- The join, if a `waitmovement` is already parked on it.
+    if ctx.g4Moving == 0 and ctx.g4MoveJoin then
+      local join = ctx.g4MoveJoin
+      ctx.g4MoveJoin = nil
+      join()
+    end
+  end
+  local nextStep
+  local function advance()
+    index = index + 1
+    local step = steps[index]
+    if not step then return finish() end
     local action = Gen4Movement.action(step.action)
     local count = math.max(tonumber(step.count) or 1, 1)
     if action == nil then
       -- An action nobody has named -- 20 steps in the whole cartridge, all in
       -- the unnamed MOVEMENT_ACTION_1xx range.  Skipped rather than guessed.
+      return nextStep()
     elseif action.kind == "walk" then
       -- ...AT THE ACTION'S OWN SPEED.  A Gen 4 movement action names a speed
       -- as well as a direction and the table carries it now; without it a
       -- scene written in WALK_FAST played at a stroll, which is the same fault
       -- Gen 3 had before `MOVE_SPEED` was read.
-      Commands.walkEntity(ctx, entity, action.dir, (action.tiles or 1) * count,
-                          action.rate)
+      ow:scriptMove(entity, action.dir, (action.tiles or 1) * count,
+                    nextStep, nil, action.rate)
     elseif action.kind == "face" then
       entity.facing = action.dir
+      return nextStep()
     elseif action.kind == "spot" then
       -- Marking time: the sprite animates without moving, which a cutscene
       -- uses as a pause with a facing.  One repetition costs one step, so the
@@ -1534,24 +1881,73 @@ function Commands.g4_move(ctx, id, steps)
       entity.facing = action.dir
       -- The beat is one walk cycle, and the on-spot actions carry the same
       -- five speeds the walking ones do -- a fast mark-time is a short beat.
-      Commands.wait(ctx, math.max(1, math.floor(
-        (entity.stepFrames or 16) * (action.rate or 1) * count + 0.5)))
+      ow:scriptPause(entity, math.max(1, math.floor(
+        (entity.stepFrames or 16) * (action.rate or 1) * count + 0.5)), nextStep)
     elseif action.kind == "wait" then
-      Commands.wait(ctx, (action.frames or 1) * count)
+      ow:scriptPause(entity, (action.frames or 1) * count, nextStep)
     elseif action.kind == "hide" then
       entity.hidden = true
+      return nextStep()
     elseif action.kind == "show" then
       entity.hidden = nil
+      return nextStep()
     elseif action.kind == "emote" then
       -- EMOTE_EXCLAMATION_MARK is 73 of the cartridge's 1,278 steps -- the "!"
       -- over a trainer who has just spotted you.  Both it and the double mark
       -- are the shock bubble; this engine has three (shock, question, happy)
       -- and Platinum's movement table names no others.
-      local target = (entity == ow.player) and "player"
-        or (entity.def and entity.def.index)
-      if target then Commands.emote(ctx, target, "shock") end
+      -- ...and on Sinnoh's own timing and art: 7 frames of bounce and 30 of
+      -- hold (Gen4Emotes.FRAMES), "!!" for EMOTE_DOUBLE_EXCLAMATION_MARK, and
+      -- the SEQ_SE_DP_DECIDE pop the field effect plays as it appears.
+      -- TWO AT ONCE IS ORDINARY, and the slot used to hold one.
+      --
+      -- Reported from play: leaving Rowan's lab in Sandgem after the Pokedex,
+      -- "the exclamation point appears but it freezes there". That scene
+      -- (M1059/S057D) gives the player AND object 4 an
+      -- EMOTE_EXCLAMATION_MARK in the same breath and then `waitmovement`s
+      -- on both. The second bubble overwrote the first in `ow.emote`, so the
+      -- first one's `onDone` never ran, its movement never finished, and the
+      -- wait held the scene forever. A bubble that arrives while another is
+      -- up now runs ALONGSIDE it (`ow.extraEmotes`), as the cartridge's two
+      -- field effects do.
+      local Gen4Emotes = require("src.import.Gen4Emotes")
+      local bubble = { npc = entity, frames = Gen4Emotes.FRAMES,
+                       totalFrames = Gen4Emotes.FRAMES,
+                       bubble = (action.emote == "double_exclamation") and "double" or 1,
+                       onDone = nextStep }
+      if ow.emote then
+        ow.extraEmotes = ow.extraEmotes or {}
+        ow.extraEmotes[#ow.extraEmotes + 1] = bubble
+      else
+        ow.emote = bubble
+      end
+      pcall(function()
+        require("src.core.Sound").play(ctx.game and ctx.game.data, "SEQ_SE_DP_DECIDE")
+      end)
+    else
+      return nextStep()
     end
   end
+  -- A STEP THAT RAISES MUST STILL RELEASE THE JOIN.
+  --
+  -- Every link after the first runs from the overworld's update, outside the
+  -- runner's own error handling, and the counter above is only paid back by
+  -- `finish`. Without this a single failing step -- an overworld missing one
+  -- of the three queue methods, a movement aimed at an object that despawned
+  -- -- left `g4Moving` raised for good, and every later `waitmovement` in the
+  -- script parked forever: a frozen game instead of one skipped animation.
+  -- Found by `gen4_event_completion_check`, whose stub overworld had no
+  -- `scriptPause` and froze Roark in the Oreburgh Mine on exactly this.
+  nextStep = function()
+    local ok, err = pcall(advance)
+    if not ok then
+      Logger.warn("g4_move: step %d for object %s failed (%s); releasing the "
+                  .. "wait on it", index, tostring(id), tostring(err))
+      finish()
+    end
+  end
+  ctx.g4Moving = (ctx.g4Moving or 0) + 1
+  nextStep()
 end
 
 -- THE ONES THAT ARE NOT DONE, and are named rather than silently skipped.
@@ -1670,6 +2066,7 @@ function Commands.g4_menu_show(ctx)
     cancelable = menu.cancelable,
     onCancel = menu.cancelable and function() pick(MENU_CANCEL) end or nil,
     index = menu.cursor,
+    onHighlight = menu.onHighlight,
   }))
   runner:yield()
 end
@@ -1689,6 +2086,91 @@ Commands.meta.g4_move = { blocking = true }
 -- handler for one of those is to do nothing and be able to say so.
 local noopSeen = {}
 
+-- `ScrCmd_SetHiddenLocation` -- sets the location's var to its magic number,
+-- or clears it. The matrix patches that read it run on the next map load, as
+-- the cartridge's do (Gen4HiddenPaths, MapLoader.load).
+function Commands.g4_set_hidden_location(ctx, location, enable)
+  local Gen4HiddenPaths = require("src.world.Gen4HiddenPaths")
+  Gen4HiddenPaths.set(ctx.save, valueOf(ctx, location), (tonumber(enable) or 0) ~= 0)
+end
+
+-- DAILY SWARMS (`ScrCmd_EnableSwarms`, `ScrCmd_GetSwarmMapAndSpecies`).
+function Commands.g4_enable_swarms(ctx)
+  require("src.world.Gen4Swarms").enable(ctx.save)
+end
+function Commands.g4_swarm_map_species(ctx, mapVar, speciesVar)
+  local header, species = require("src.world.Gen4Swarms")
+    .mapAndSpecies(ctx.game and ctx.game.data, ctx.save)
+  setVar(ctx.save, mapVar, header)
+  setVar(ctx.save, speciesVar, species)
+end
+
+-- THE SAFARI GAME (`ScrCmd_StartEndSafariGame`). Starting one is thirty
+-- Safari Balls and a zeroed step count; ending one zeroes both. The flag the
+-- cartridge sets is `save.safari` here, the field reads it
+-- (`OverworldState:gen4SafariStep`, `:gen4SafariAfterBattle`) and so does the
+-- battle (`BattleState:makeSafari`). The catch count is the port's own tally
+-- for `getcurrentsafarigamecaughtnum` -- the cartridge reads it off the TV
+-- broadcast's Safari record, which counts the same thing.
+Commands.SAFARI_BALLS, Commands.SAFARI_STEPS = 30, 500
+function Commands.g4_safari_game(ctx, state)
+  local mode = math.floor(valueOf(ctx, state) or 0)
+  ctx.save = ctx.save or {}
+  if mode == 0 then
+    ctx.save.safari = { balls = Commands.SAFARI_BALLS, steps = 0, caught = 0, gen4 = true }
+  else
+    if ctx.save.safari then ctx.save.gen4SafariLastCaught = ctx.save.safari.caught or 0 end
+    ctx.save.safari = nil
+  end
+end
+function Commands.g4_safari_caught(ctx, destVar)
+  local st = ctx.save and ctx.save.safari
+  local n = st and st.caught or (ctx.save and ctx.save.gen4SafariLastCaught) or 0
+  setVar(ctx.save, destVar, n)
+end
+
+-- THE TROPHY GARDEN (`ScrCmd_AddTrophyGardenMon`,
+-- `ScrCmd_GetTrophyGardenSlot1Species`) -- see src/world/Gen4DailySlots.lua.
+function Commands.g4_add_trophy_garden_mon(ctx)
+  require("src.world.Gen4DailySlots").addTrophyMon(ctx.game and ctx.game.data, ctx.save)
+end
+function Commands.g4_trophy_garden_slot1(ctx, destVar)
+  setVar(ctx.save, destVar, require("src.world.Gen4DailySlots")
+    .trophySlot1Species(ctx.game and ctx.game.data, ctx.save))
+end
+
+-- AMITY SQUARE'S STEP COUNT -- see `OverworldState:gen4CountAmityStep`.
+local AMITY_STEPS = 0x403A
+function Commands.g4_clear_amity_steps(ctx) setVar(ctx.save, AMITY_STEPS, 0) end
+function Commands.g4_get_amity_steps(ctx, destVar)
+  setVar(ctx.save, destVar, getVar(ctx.save, AMITY_STEPS))
+end
+
+-- PARTY FORM CHANGES (pokeplatinum src/scrcmd.c), each followed by the
+-- cartridge's `Pokedex_Capture` so the new form is registered as seen.
+local function partyForms(ctx, species, apply)
+  local Forms = require("src.pokemon.Gen4Forms")
+  local Party = require("src.pokemon.Party")
+  local data = ctx.game and ctx.game.data
+  for _, mon in ipairs((ctx.save and ctx.save.party) or {}) do
+    if Forms.species(mon.species) == species and not Party.isEgg(mon) then
+      apply(Forms, data, mon)
+      Forms.record(ctx.game, mon.species, mon)
+    end
+  end
+end
+function Commands.g4_giratina_form(ctx, form)
+  local origin = (tonumber(valueOf(ctx, form)) or 0) ~= 0
+  partyForms(ctx, 487, function(Forms, data, mon)
+    if origin then Forms.setForm(data, mon, 1)
+    else Forms.giratinaByHeldItem(data, mon) end
+  end)
+end
+function Commands.g4_deoxys_form(ctx, form)
+  local value = tonumber(valueOf(ctx, form)) or 0
+  partyForms(ctx, 386, function(Forms, data, mon) Forms.setForm(data, mon, value) end)
+end
+
 function Commands.g4_noop(_, what)
   local key = tostring(what)
   if not noopSeen[key] then
@@ -1697,13 +2179,28 @@ function Commands.g4_noop(_, what)
   end
 end
 
+-- AND IT RETURNS THE HANDLER IT INSTALLED, which is not a convenience.
+--
+-- There are two spellings of this call in the file -- the bare
+-- `pending("g4_use_rock_climb", ...)` and the assigned
+-- `Commands.g4_open_hall_of_fame = pending("g4_open_hall_of_fame", ...)` --
+-- and while this returned nothing, the assigned form **overwrote the handler
+-- it had just installed with nil**.  Both of them: the PC's Hall of Fame row
+-- (pass 173) and the seal capsule editor reached no handler at all, which is
+-- not a stepped-over row, it is an unknown verb.
+--
+-- The assigned form reads better at a call site that wants to say what the row
+-- is, so the fix is to make it work rather than to ban it.  One idea, two
+-- spellings, one of them silently broken -- the bug this port keeps finding.
 local function pending(verb, what)
-  Commands[verb] = function()
+  local fn = function()
     if said[verb] then return end
     said[verb] = true
     Logger.info("gen4 script: '%s' is decoded and lowered but %s is not built "
                 .. "yet -- the row is stepped over", verb, what)
   end
+  Commands[verb] = fn
+  return fn
 end
 
 -- ---------------------------------------------------------------------------
@@ -1721,6 +2218,141 @@ function Commands.g4_get_map_id(ctx, destVar)
   local mapId = ctx.save and ctx.save.player and ctx.save.player.map
   local def = mapId and data and data.maps and data.maps[mapId]
   setVar(ctx.save, destVar, tonumber(def and def.header) or 0)
+end
+
+-- ---------------------------------------------------------------------------
+-- TURNBACK CAVE
+-- ---------------------------------------------------------------------------
+--
+-- `initturnbackcave <varPillarsSeen> <varRoomsVisited>` -- 20 uses, one in the
+-- init script of every room of the cave, and the most widely reached unlowered
+-- command in the cartridge measured by maps rather than by occurrences.
+--
+-- WITHOUT IT GIRATINA CANNOT BE REACHED, and not as a matter of degree: every
+-- room ships with all four of its exits pointing at the entrance. Measured on
+-- `D17R0105` (PILLAR_1_ROOM_1), whose four warps all carry
+-- `destHeader = 268` -- the entrance. So the cave is one room you walk out of,
+-- for ever, and the Giratina room has no route to it at all.
+--
+-- The cartridge builds the maze by REWRITING THE LOADED ROOM'S WARPS as the
+-- room loads (`ScrCmd_InitTurnbackCave`, src/scrcmd.c): every exit except the
+-- one you came in by is pointed at a freshly chosen room.
+--
+-- THE MAP IDS ARE DERIVED, not guessed, and from two sources that agree.
+-- pokeplatinum's `generated/map_headers.txt` gives the header NUMBER for each
+-- `MAP_HEADER_TURNBACK_CAVE_*` name by its line (line - 1, zero-based), and
+-- every one of our own map defs carries that same number in `def.header` --
+-- `D17R0105.header` is 271, which that list calls PILLAR_1_ROOM_1. The two
+-- were worked out independently and line up across all 21 rooms.
+local TURNBACK_ENTRANCE = 268
+local TURNBACK_PILLAR_ROOM = 269
+local TURNBACK_GIRATINA = 270
+
+-- The eighteen pillar rooms, in the cartridge's own order: pillar 1 rooms 1-6,
+-- then pillar 2, then pillar 3. The split run (271-273 then 518-520) is the
+-- cartridge's own numbering and not a transcription slip -- the first three
+-- rooms were laid out with the entrance and the rest were appended later.
+local TURNBACK_ROOMS = {
+  271, 272, 273, 518, 519, 520,
+  521, 522, 523, 524, 525, 526,
+  527, 528, 529, 530, 531, 532,
+}
+
+-- A header number back to the map id that carries it. Built once and kept on
+-- the data table rather than recomputed per call: 593 defs is not free, and a
+-- room load runs this immediately.
+local function mapForHeader(data, header)
+  if not (data and data.maps and header) then return nil end
+  local index = rawget(data, "_gen4HeaderIndex")
+  if not index then
+    index = {}
+    for id, def in pairs(data.maps) do
+      local h = tonumber(def.header)
+      if h then index[h] = id end
+    end
+    rawset(data, "_gen4HeaderIndex", index)
+  end
+  return index[math.floor(header)]
+end
+
+-- WHICH OF THE FOUR EXITS THE PLAYER CAME IN BY, from where they are standing.
+--
+-- Transcribed from the cartridge, including the shape of its final `else`:
+--
+--     if (xPos == 11) { zPos == 1 ? 0 : zPos == 20 ? 2 : 5 }
+--     else            { xPos == 20 ? 1 : 3 }
+--
+-- 5 is not a warp. Four warps are rewritten in a loop over 0..3, so an entry
+-- of 5 matches none of them and ALL FOUR are repointed -- which is what
+-- happens when the script runs with the player somewhere other than a doorway,
+-- and is reproduced rather than tidied away.
+local function turnbackEntryWarp(x, z)
+  if x == 11 then
+    if z == 1 then return 0 end
+    if z == 20 then return 2 end
+    return 5
+  end
+  if x == 20 then return 1 end
+  return 3
+end
+
+function Commands.g4_init_turnback_cave(ctx, varPillars, varRooms)
+  local ow = ctx.overworld
+  local data = ctx.game and ctx.game.data
+  if not (ow and ow.map and data) then return end
+  local pillarsSeen = math.floor(valueOf(ctx, varPillars) or 0)
+  local roomsVisited = math.floor(valueOf(ctx, varRooms) or 0)
+
+  -- The cartridge's own ladder, in its own order. Three pillars seen is the
+  -- way out to Giratina; thirty rooms without finding them puts you back at
+  -- the entrance; otherwise a one-in-four chance of a pillar room and
+  -- otherwise one of the six rooms belonging to the pillar you are on.
+  local header
+  if pillarsSeen >= 3 then
+    header = TURNBACK_GIRATINA
+  elseif roomsVisited >= 30 then
+    header = TURNBACK_ENTRANCE
+  elseif math.random(0, 99) < 25 then
+    header = TURNBACK_PILLAR_ROOM
+  else
+    -- `pillarRooms[(rand % 6) + pillarsSeen * 6]`. Clamped, because a save
+    -- whose counter has gone past 2 would index off the end of the table and
+    -- raise under the player rather than putting them somewhere.
+    local band = math.min(math.max(pillarsSeen, 0), 2)
+    header = TURNBACK_ROOMS[math.random(0, 5) + band * 6 + 1]
+  end
+
+  local dest = mapForHeader(data, header)
+  if not dest then
+    Logger.warn("gen4 turnback cave: no map carries header %s -- this cache "
+                .. "predates the Turnback rooms, so the maze cannot be built",
+                tostring(header))
+    return
+  end
+
+  local p = ow.player
+  local entry = turnbackEntryWarp(p and p.cellX, p and p.cellY)
+
+  -- HELD ON THE SAVE, NOT WRITTEN INTO THE MAP.
+  --
+  -- The cartridge edits the loaded map header's warp events, which live only
+  -- as long as that load. Here `MapLoader` caches one def per map id and hands
+  -- the SAME table to everything -- the renderer, the editor, the next visit --
+  -- so writing a destination into it would make one visit's maze permanent and
+  -- leak into every other reader of that map.
+  --
+  -- The save is also where `gen4SpecialLocation` keeps the lifts' dynamic
+  -- destination, so this follows the arrangement already there. It survives a
+  -- save inside the cave, which the cartridge achieves by re-running this very
+  -- script on load.
+  ctx.save.gen4Turnback = { map = ow.map.id, dest = dest,
+                            keep = (entry <= 3) and (entry + 1) or nil }
+  Logger.debug("gen4 turnback cave: %s -- %d pillar(s) seen, %d room(s) "
+               .. "visited, player at (%s,%s) came in by warp %d; the other "
+               .. "exits now lead to %s",
+               tostring(ow.map.id), pillarsSeen, roomsVisited,
+               tostring(p and p.cellX), tostring(p and p.cellY), entry,
+               tostring(dest))
 end
 
 -- `*destVar = LCRNG_Next() % upperBound`.
@@ -2588,10 +3220,7 @@ local function martStock(ctx)
 end
 
 function Commands.g4_pokemart(ctx, martId, kind)
-  if kind == 'seal' then
-    Logger.warn('gen4 shop: seal counters need the seal inventory and pricing system')
-    return
-  end
+  if kind == 'seal' then return Commands.g4_seal_mart(ctx, martId) end
   local stock, badges, tier
   if kind == 'specialty' then
     stock = ((ctx.game.data.constants or {}).martSpecialties or {})[valueOf(ctx, martId)]
@@ -3411,13 +4040,22 @@ end
 -- `.owned` whole rather than per-region, so the honest answer is the count of
 -- what has actually been seen, which is right whenever the player has not yet
 -- left Sinnoh -- and that is every script that asks.
-local function dexCount(ctx,field,regional,completion)
+-- THE SET, SORTED, because two callers want different things from it: the
+-- counts below want its size and the News Press wants to pick one member.
+-- Walking the dex twice in two places is how the same question gets two
+-- answers, so the walk lives here once.
+--
+-- Sorted rather than in `pairs` order so a pick made from it is reproducible
+-- for a given RNG value -- an unordered pick would name a different species
+-- run to run on identical input, and a diagnostic nobody can reproduce is not
+-- a diagnostic.
+local function dexIDs(ctx,field,regional)
   local dex=(ctx.save and ctx.save.pokedex) or {}
-  local ids={}
+  local seen={}
   for key,flag in pairs(dex[field] or {}) do
     if flag==true or (type(flag)=='number' and flag>0) then
       local id=speciesNumber({species=key})
-      if id>=1 and id<=493 then ids[id]=true end
+      if id>=1 and id<=493 then seen[id]=true end
     end
   end
   local region={}
@@ -3425,11 +4063,21 @@ local function dexCount(ctx,field,regional,completion)
     local orders=ctx.game and ctx.game.data and ctx.game.data.gen4_dex
     for _,id in ipairs(orders and orders.orders and orders.orders.sinnoh or {}) do region[tonumber(id) or id]=true end
   end
+  local out={}
+  for id in pairs(seen) do
+    if not regional or region[id] then out[#out+1]=id end
+  end
+  table.sort(out)
+  return out
+end
+
+local function dexCount(ctx,field,regional,completion)
+  local ids=dexIDs(ctx,field,regional)
   local excluded={ [151]=true,[249]=true,[250]=true,[251]=true,[385]=true,[386]=true,
     [489]=true,[490]=true,[491]=true,[492]=true,[493]=true }
   local count=0
-  for id in pairs(ids) do
-    if (not regional or region[id]) and (not completion or regional or not excluded[id]) then count=count+1 end
+  for _,id in ipairs(ids) do
+    if (not completion or regional or not excluded[id]) then count=count+1 end
   end
   return count
 end
@@ -3441,6 +4089,60 @@ function Commands.g4_dex_complete(ctx,destVar,national)
   local count=dexCount(ctx,national and 'owned' or 'seen',not national,true)
   setVar(ctx.save,destVar,count>=(national and 482 or 210) and 1 or 0)
 end
+-- THE POKEMON NEWS PRESS at Solaceon.  Three rows: pick a species, remember a
+-- deadline, read the deadline back.
+--
+-- `getrandomseenspecies` was on `g4_no_feature`, which writes 0 -- and 0 is
+-- SPECIES_NONE, so the press named a blank.  This is the goods-PC fault in a
+-- different room: the feature it was declining is PRESENT (the port keeps
+-- `save.pokedex.seen`, and `g4_dex_seen_count` has filtered it by the Sinnoh
+-- dex since before this pass), so the zero was not an absence, it was a wrong
+-- answer the script then printed.
+--
+-- THE DEFAULT IS THE PART TO COPY CAREFULLY.  pret writes it BEFORE the loop:
+--
+--     u16 seenSpeciesCount = Pokedex_CountSeen_Local(pokedex);
+--     u16 random = LCRNG_Next() % seenSpeciesCount;
+--     *destVar = SPECIES_PIKACHU;
+--     for (u16 species = 1, i = 0; species <= NATIONAL_DEX_COUNT; species++) {
+--         if (Pokedex_HasSeenSpecies(pokedex, species) == TRUE
+--             && Pokemon_SinnohDexNumber(species) != FALSE) { ... }
+--     }
+--
+-- so a dex with nothing eligible in it still answers a real Pokemon.  Note
+-- that the cartridge counts with one predicate and iterates with another: if
+-- those ever disagree the loop falls through and Pikachu is what comes out.
+-- Answering Pikachu rather than nothing is therefore the cartridge's
+-- behaviour on the empty case AND on the inconsistent case, and it is the one
+-- species id this command can produce that the player has not necessarily
+-- seen.
+local NEWS_PRESS_DEFAULT_SPECIES = 25 -- SPECIES_PIKACHU
+
+function Commands.g4_news_press_species(ctx,destVar)
+  local ids=dexIDs(ctx,'seen',true)
+  local pick=NEWS_PRESS_DEFAULT_SPECIES
+  if #ids>0 then
+    local r=(love and love.math and love.math.random) or math.random
+    pick=ids[r(1,#ids)]
+  end
+  setVar(ctx.save,destVar,pick)
+  setResult(ctx,pick)
+end
+
+function Commands.g4_news_press_deadline(ctx,mode,operand)
+  local Daily=require("src.script.Gen4Daily")
+  if mode=='set' then
+    local days=math.floor(valueOf(ctx,operand) or 0)
+    if days<0 then days=0 elseif days>0xFFFF then days=0xFFFF end
+    setVar(ctx.save,Daily.NEWS_PRESS_DEADLINE_VAR,days)
+    return
+  end
+  -- `get`: the deadline is a system var like any other, so there is no
+  -- separate store to read -- which is why a save written before this pass
+  -- answers zero rather than nil.
+  setVar(ctx.save,operand,Daily.deadline(ctx.save))
+end
+
 function Commands.g4_dex_caught_count(ctx,destVar,national)
   setVar(ctx.save,destVar,dexCount(ctx,'owned',not national,false))
 end
@@ -3754,6 +4456,73 @@ Commands.g4_open_hall_of_fame = pending("g4_open_hall_of_fame",
   "the PC's Hall of Fame browser is not built; save.hallOfFame holds the "
   .. "records and src/ui/HallOfFame.lua is the induction ceremony, not a viewer")
 
+-- `givetrap <trapID> <unused> <destVar>` and
+-- `givesphere <type> <size> <destVar>` -- the Underground inventory, and the
+-- only two of its eight `scripts_common.s` holes that write real state.
+--
+-- ONE HANDLER, because they are one operation on two 40-slot inventories:
+-- `Underground_TryAddTrap` and `_TryAddSphere` differ in which array they
+-- search for their zero sentinel and whether a second operand rides along.
+-- Writing them twice would be the recurring bug in its favourite shape, and
+-- the cap is the part that must not be spelled twice.
+--
+-- THE DESTINATION VAR IS THE POINT.  Both cartridge handlers end
+-- `*destVar = ...TryAdd...(...)`, and every call site follows with a `gotoif`
+-- on it -- so the var is not a courtesy, it is the branch.  `valueOf` on the
+-- value operands because the cartridge reads both with
+-- `ScriptContext_GetVar`: var-or-literal.
+function Commands.g4_underground_give(ctx, kind, a, b, destVar)
+  local UG = require("src.world.Gen4Underground")
+  local ok
+  if kind == "sphere" then
+    ok = UG.addSphere(ctx.save, valueOf(ctx, a), valueOf(ctx, b))
+  elseif kind == "goodPC" then
+    -- `sendgoodtopc`'s middle operand is `u16 unused` too, so this reads the
+    -- same shape as a trap and drops the same operand.
+    ok = UG.addGoodToPC(ctx.save, valueOf(ctx, a))
+  else
+    -- `givetrap`'s middle operand is `u16 unused` in pokeplatinum; it is read
+    -- off the stream and dropped, which is why it is accepted and ignored here
+    -- rather than left out of the row.
+    ok = UG.addTrap(ctx.save, valueOf(ctx, a))
+  end
+  local answer = ok and 1 or 0
+  if destVar then setVar(ctx.save, destVar, answer) end
+  setResult(ctx, answer)
+end
+
+-- `checkhasroomforgoodsinpc` -- the QUESTION half of the goods PC, and
+-- sixteen of that inventory's seventeen script uses.
+--
+-- It was on `g4_no_feature`, which writes 0 -- and 0 here means "no room", so
+-- every one of those sixteen told the player their PC was full on a save where
+-- it holds nothing. An absent feature answering "no" is honest; a present one
+-- answering "no" is not.
+--
+-- `Underground_IsRoomForGoodsInPC(underground, unused)` returns TRUE on the
+-- first free slot and never looks at its second argument. Both operands are
+-- carried here for the family's sake and both are dropped, which is what the
+-- cartridge does with them.
+function Commands.g4_underground_room(ctx, kind, _a, _b, destVar)
+  local UG = require("src.world.Gen4Underground")
+  local room = (kind == "goodsPC") and UG.roomInGoodsPC(ctx.save) or false
+  local answer = room and 1 or 0
+  if destVar then setVar(ctx.save, destVar, answer) end
+  setResult(ctx, answer)
+end
+
+-- `opensealcapsuleeditor` -- `CapsuleMenu_StartFieldTask`, the screen where a
+-- Ball Capsule's seals are arranged.
+--
+-- `pending` rather than a no-op, for the reason the Hall of Fame row above
+-- states: a no-op claims there is nothing to do, and that is false -- there is a
+-- whole screen to build.  Unlike the Hall of Fame there is no data waiting
+-- either, which is why `countuniquesealsinsealcase` lowers onto
+-- `g4_no_feature` rather than counting something.
+Commands.g4_open_seal_capsule_editor = pending("g4_open_seal_capsule_editor",
+  "the Ball Capsule seal editor (this port has no seal state at all, which is "
+  .. "also why the seal count answers zero)")
+
 -- `savetvsegment*` -- ONE ROW FOR BOTH, which is the point of the change that
 -- introduced it.  There is no TV broadcast system in this engine at all, so a
 -- segment is recorded nowhere and nothing would read it if it were. That is
@@ -3786,8 +4555,22 @@ function Commands.g4_save_tv_segment(_ctx, _segment, _operand) end
 -- now, so the getter consults it first -- otherwise Defog would clear the fog
 -- and the very next `getoverworldweather` would report fog, which is the
 -- asymmetry that comment was worried about.
+-- ...AND IT HAS TO CLEAR WHAT IS ON SCREEN, not only what the getter reports.
+--
+-- `applyMapWeather` recomputes the substitution from the persistent field-move
+-- flag on every map load, which is the cartridge's own arrangement -- the flag
+-- is what makes a lit cave stay lit through the next doorway. But `0C3` and
+-- `0C4` run on the map the player is standing on, right after
+-- `DoFlashFunc SET_ACTIVE`, and the whole point is that the cave lights up
+-- NOW. Setting only the getter's field would have left the darkness drawn
+-- until the next load: Flash would have reported success, said its line, and
+-- changed nothing the player could see -- which is the fault this pass exists
+-- to fix, reintroduced one step further along.
 function Commands.g4_clear_overworld_weather(ctx)
-  if ctx.save then ctx.save.gen4WeatherCleared = true end
+  if ctx.save then
+    ctx.save.gen4WeatherCleared = true
+    ctx.save.gen4WeatherActive = 0
+  end
   if ctx.overworld then ctx.overworld.gen4WeatherCleared = true end
 end
 
@@ -4135,29 +4918,40 @@ end
 
 -- `getoverworldweather <destVar>` -- `FieldOverworldState_GetWeather`.
 --
--- THE PORT KEEPS NO SAVED GEN 4 WEATHER: `applyMapWeather` is Gen 3 only, and
--- inventing a `save.gen4Weather` that one command writes and nothing else
--- reads would be worse than answering from the map. The map's own `weather`
--- byte is extracted on 592 of 593 rows and is what the cartridge seeds the
--- saved value FROM on every load, so on the map you are standing on the two
--- agree. Route 213's two sites are asking about the beach they are on.
+-- THE SAVED VALUE, which this used to say the port did not have.
 --
--- ...AND SOMETHING WRITES ONE NOW, so the paragraph above needed its other
--- half. `g4_clear_overworld_weather` (opcodes 0x0C3 and 0x0C4) is what Flash
--- and Defog call, and it sets `gen4WeatherCleared`. Without this arm, Defog
--- would blow the fog away and the very next `getoverworldweather` would report
--- fog -- the exact asymmetry the reasoning above was guarding against, arrived
--- at from the other direction.
+-- The paragraph here used to read "the port keeps no saved Gen 4 weather:
+-- applyMapWeather is Gen 3 only, and inventing a `save.gen4Weather` that one
+-- command writes and nothing else reads would be worse than answering from
+-- the map". That was true and it was the right call at the time. It stopped
+-- being true when the field weather was wired up: `applyMapWeather` now runs
+-- the cartridge's own three steps on every Gen 4 map load -- resolve a
+-- calendar id against the date, substitute CLEAR for a weather a field move
+-- has turned off, store both -- so there is a saved value and **it is the one
+-- the renderer is drawing**.
 --
--- OVERWORLD_WEATHER_CLEAR IS 0, which is also the answer for the 592 maps that
+-- Reading the map def instead would be the recurring bug exactly: the script
+-- and the picture answering the same question from two places. Route 213 is
+-- the case that proves it -- its header carries 33, a CALENDAR id, and
+-- `getoverworldweather` has to answer today's resolved weather rather than
+-- 33, which is not a weather at all.
+--
+-- The map def stays as the fallback for a save that has not loaded a map yet,
+-- and `gen4WeatherCleared` stays readable because a script may have set it
+-- between loads.
+--
+-- OVERWORLD_WEATHER_CLEAR IS 0, which is also the answer for the 460 maps that
 -- carry no weather at all, so "cleared" and "never had any" are deliberately
 -- the same value -- as they are on the cartridge, where one enum holds both.
 function Commands.g4_overworld_weather(ctx, destVar)
   local ow = ctx.overworld
-  local cleared = (ctx.save and ctx.save.gen4WeatherCleared)
-                  or (ow and ow.gen4WeatherCleared)
-  local def = ow and ow.map and ow.map.def
-  local value = cleared and 0 or (tonumber(def and def.weather) or 0)
+  local value = ctx.save and tonumber(ctx.save.gen4WeatherActive)
+  if value == nil then
+    local cleared = (ctx.save and ctx.save.gen4WeatherCleared)
+                    or (ow and ow.gen4WeatherCleared)
+    local def = ow and ow.map and ow.map.def
+    value = cleared and 0 or (tonumber(def and def.weather) or 0)
+  end
   if destVar then setVar(ctx.save, destVar, value) end
   setResult(ctx, value)
 end
@@ -4380,8 +5174,8 @@ function Commands.g4_game_completed(ctx, destVar)
   setVar(ctx.save, destVar, flag == true and 1 or 0)
 end
 function Commands.g4_daycare_has_egg(ctx, destVar)
-  local breed = require('src.pokemon.DayCare').store(ctx.save, false)
-  setVar(ctx.save, destVar, breed and breed.egg ~= nil and 1 or 0)
+  -- Daycare_HasEgg: the offspring personality is set (src/pokemon/Gen4DayCare.lua)
+  setVar(ctx.save, destVar, require('src.pokemon.Gen4DayCare').hasEgg(ctx.save) and 1 or 0)
 end
 function Commands.g4_prepare_hall_of_fame(ctx)
   Commands.g4_set_game_completed(ctx)
@@ -4663,6 +5457,172 @@ pending("g4_common", "the common-script archive")
 --
 -- Once per opcode rather than once for the wrapper, which is the whole
 -- point; `said` would have hushed the second distinct opcode for ever.
+-- ---------------------------------------------------------------------------
+-- THE PERSISTED MAP FEATURES -- one slot, eleven tenants
+-- ---------------------------------------------------------------------------
+--
+-- See src/world/Gen4DynamicMapFeatures.lua for the whole argument: the
+-- cartridge keeps `{ int id; u8 buffer[32]; }` in the misc save block, one
+-- feature at a time, and the nine `initpersistedmapfeaturesfor*` commands are
+-- nine constructors over that one union rather than nine systems.
+--
+-- ONE HANDLER FOR ALL NINE, which is the point of lowering them together.
+-- The twelve rows had been twelve separately-argued no-ops, and the census
+-- read them as twelve subjects -- "nine separate implementations" was its
+-- phrase. They are one slot, and a single command with a feature id keeps it
+-- that way: a tenth feature is a row in the table below, not a tenth handler
+-- that might clear the slot differently.
+--
+-- The collision resolvers are NOT here and the gyms do not yet block; the
+-- module's `COLLISION_IS_A_HEIGHT_PROBLEM` block has the measurement that
+-- says why (in short: the puzzle is height arithmetic, treating 0x59 as
+-- blocked leaves Pastoria with 57 reachable cells and no button in reach, and
+-- the gates alone change nothing). What lands here is the STATE -- which is
+-- what the save has to carry, what the Great Marsh tram's six branch sites
+-- read, and what a resolver will need to exist before it can be written.
+function Commands.g4_map_feature_init(ctx, which, operand)
+  local M = require("src.world.Gen4DynamicMapFeatures")
+  local save = ctx.save
+  if which == "pastoria" then return M.initForPastoriaGym(save) end
+  if which == "canalave" then return M.initForCanalaveGym(save) end
+  if which == "hearthome" then return M.initForHearthomeGym(save) end
+  if which == "veilstone" then return M.initForVeilstoneGym(save) end
+  if which == "eterna" then return M.initForEternaGym(save) end
+  if which == "villa" then return M.initForVilla(save) end
+  if which == "distortion" then return M.initForDistortionWorld(save) end
+  if which == "platformlift" then return M.initForPlatformLift(save) end
+  if which == "greatmarsh" then return M.initForGreatMarsh(save) end
+  if which == "sunyshore" then
+    -- THE ONLY ONE WITH AN OPERAND, and it needs the player's z as well:
+    -- `PersistedMapFeatures_InitForSunyshoreGym(fieldSystem, roomID)` reads
+    -- `fieldSystem->location->z` and forces the rotation back to 0 when it
+    -- equals the room's entrance z.  The room id is a raw byte operand (the
+    -- opcode spec is "b"), so it does not go through `valueOf`.
+    local player = ctx.overworld and ctx.overworld.player
+    local _, pz = toMatrix(ctx, player and player.cellX, player and player.cellY)
+    return M.initForSunyshoreGym(save, math.floor(tonumber(operand) or 0), pz)
+  end
+  Logger.warn("gen4 script: no persisted map feature named '%s'", tostring(which))
+end
+
+-- `PastoriaGym_PressButton`: the button is whichever of the three models is
+-- under the player's own tile, and nothing happens when there is none.
+function Commands.g4_pastoria_button(ctx)
+  local M = require("src.world.Gen4DynamicMapFeatures")
+  local ow = ctx.overworld
+  local player = ow and ow.player
+  if not player then return end
+  -- The search wants the matrix cell and the tile within it, which is the
+  -- same decomposition `g4_door_anim` hands `Gen4Doors.modelAt` -- except
+  -- that there the script supplies them and here the player's own position
+  -- is the hitbox, so they are derived.
+  local x, z = toMatrix(ctx, player.cellX, player.cellY)
+  local mapX, tileX = math.floor(x / 32), x % 32
+  local mapZ, tileZ = math.floor(z / 32), z % 32
+  local model, why = M.propModelAt(ctx.game and ctx.game.data,
+                                   ow.map and ow.map.def,
+                                   mapX, mapZ, tileX, tileZ,
+                                   M.PASTORIA_BUTTON_MODELS)
+  if not model then
+    -- The cartridge's miss is silent: `FieldSystem_FindCollidingLoadedMapProp`
+    -- answers false and `PressButton` returns.  Logged once because a script
+    -- that pressed nothing and a port that could not find the prop look the
+    -- same from the water level.
+    Logger.debug("gen4 script: no Pastoria button under the player (%s)",
+                 tostring(why))
+    return
+  end
+  if not M.pressPastoriaButton(ctx.save, model) then
+    Logger.warn("gen4 script: the Pastoria button at matrix %d,%d tile %d,%d "
+                .. "is model %s, which is not one of the three -- the slot "
+                .. "holds feature %d",
+                mapX, mapZ, tileX, tileZ, tostring(model), M.id(ctx.save))
+    return
+  end
+  Logger.debug("gen4 script: Pastoria water level -> %s",
+               tostring(M.pastoriaWaterHeight(ctx.save)))
+end
+
+-- `SunyshoreGym_PressButton(fieldSystem, buttonType)` turns the gears, which
+-- is the rotation state the room's collision regions are indexed by.  The
+-- rotation IS persisted state, so it advances here even though nothing turns
+-- on screen yet -- a button that changed nothing would make the room's state
+-- depend on which pass you are playing.
+function Commands.g4_sunyshore_gear_button(ctx, buttonType)
+  local M = require("src.world.Gen4DynamicMapFeatures")
+  local b = M.buffer(ctx.save, M.SUNYSHORE_GYM)
+  if not b then
+    Logger.debug("gen4 script: a Sunyshore gear button ran while the feature "
+                 .. "slot holds %d", M.id(ctx.save))
+    return
+  end
+  b.pressedButton = math.floor(tonumber(buttonType) or 0)
+end
+
+-- `advanceeternagymclock`.  `ScrCmd_AdvanceEternaGymClock` DISCARDS
+-- `EternaGym_AdvanceClockState`'s result and always returns TRUE, so the
+-- refusal at DEFEATED_GYM_LEADER is invisible to the script -- which is why
+-- nothing here writes a var the script could branch on, and why the cap is
+-- still reproduced: it is what stops the state walking past the end of
+-- `sEternaGymClockTimes`.
+function Commands.g4_eterna_clock_advance(ctx)
+  local M = require("src.world.Gen4DynamicMapFeatures")
+  local advanced, state = M.advanceEternaClock(ctx.save)
+  if not advanced then return end
+  -- `SetEternaGymFlowerClockState` mirrors it into
+  -- VAR_ETERNA_GYM_FLOWER_CLOCK_STATE, which is how
+  -- `EternaGym_DynamicMapFeaturesInit` poses the hands on a later entry.  No
+  -- script in the cartridge reads the var -- all 1,124 members of scr_seq
+  -- were scanned for it and none mentions it -- so this is for the engine's
+  -- own benefit, and it is written anyway because the buffer is cleared every
+  -- time another feature takes the slot and the var is not.
+  setVar(ctx.save, M.ETERNA_CLOCK_VAR, state)
+end
+
+-- THE GREAT MARSH TRAM -- three commands, none of which had a lowering, and
+-- one of which is the reason this pass happened.
+--
+-- `checkgreatmarshtramlocation <location>, <destVar>` writes
+-- GREAT_MARSH_TRAM_AT_LOCATION (**5**) or NOT_AT_LOCATION (**6**), and every
+-- one of its six sites is followed by `comparevartovalue <destVar>, 6` and a
+-- `callif` onto `movegreatmarshtram`.  Five and six, not one and zero: a
+-- boolean here is wrong at all six sites in the same direction and the tram
+-- is never summoned.
+function Commands.g4_marsh_tram(ctx, which, a, b)
+  local M = require("src.world.Gen4DynamicMapFeatures")
+  if which == "init" then
+    return M.initForGreatMarsh(ctx.save)
+  end
+  if which == "check" then
+    -- the location is a raw halfword and the destination a var pointer
+    local location = math.floor(tonumber(a) or 0)
+    setVar(ctx.save, b, M.checkTramLocation(ctx.save, location))
+    return
+  end
+  if which == "move" then
+    -- ...and here it is the other way round: `ScrCmd_MoveGreatMarshTram`
+    -- reads the destination through `ScriptContext_GetVarPointer` and the
+    -- movement type as a raw halfword.  The script sets 0x8005 or 0x8006
+    -- immediately before, so reading the operand as a literal would move the
+    -- tram to area 0x8005.
+    local destination = math.floor(valueOf(ctx, a) or 0)
+    local moved = M.moveTramToLocation(ctx.save, destination)
+    if moved == nil then
+      Logger.debug("gen4 script: the tram cannot move; the feature slot holds %d",
+                   M.id(ctx.save))
+      return
+    end
+    -- The ride itself is a FieldTask that walks the tram prop along the
+    -- track and carries the player with it.  Not built: the state is what
+    -- the six branch sites read, and the warp the script does afterwards is
+    -- what actually moves the player between areas.
+    Logger.debug("gen4 script: Great Marsh tram -> area %d (movement %s)",
+                 moved, tostring(b))
+    return
+  end
+  Logger.warn("gen4 script: no Great Marsh tram verb '%s'", tostring(which))
+end
+
 local saidUnlowered = {}
 function Commands.g4_unimplemented(_, name, note)
   local key = tostring(name)
@@ -4672,5 +5632,1364 @@ function Commands.g4_unimplemented(_, name, note)
               .. "stepped over and the script carries on", key,
               note and (" (" .. tostring(note) .. ")") or "")
 end
+
+-- THE SHARD MOVE TUTORS (scrcmd_move_tutor.c) -- see src/import/Gen4MoveTutor.lua.
+local function tutorRec(ctx) return ctx.game and ctx.game.data and ctx.game.data.gen4_move_tutor end
+local MENU_CANCEL = 65534
+
+-- `selectmovetutorpokemon`: the party, pick one; getselectedpartyslot reads it.
+function Commands.g4_select_tutor_mon(ctx)
+  return Commands.g4_open_party_for_trade(ctx)
+end
+Commands.meta.g4_select_tutor_mon = { foreground = true, blocking = true }
+
+function Commands.g4_tutor_has_moves(ctx, slot, location, destVar)
+  local T = require("src.import.Gen4MoveTutor")
+  local mon = partyMon(ctx, slot)
+  local n = mon and #T.learnable(tutorRec(ctx), mon, math.floor(valueOf(ctx, location) or 0)) or 0
+  setVar(ctx.save, destVar, n > 0 and 1 or 0)
+end
+
+-- ScrCmd_ShowMoveTutorMoveSelectionMenu: the moves this Pokemon can learn
+-- here and does not know, in table order, then EXIT.
+function Commands.g4_tutor_menu(ctx, slot, location, destVar)
+  local T = require("src.import.Gen4MoveTutor")
+  local data = ctx.game and ctx.game.data or {}
+  local raw = math.floor(valueOf(ctx, slot) or Gen4Commands.PARTY_SLOT_NONE)
+  local mon = raw ~= Gen4Commands.PARTY_SLOT_NONE and partyMon(ctx, slot) or nil
+  local moves = T.learnable(tutorRec(ctx), mon, math.floor(valueOf(ctx, location) or 0))
+  local items = {}
+  for _, id in ipairs(moves) do
+    local def = data.moves and data.moves[id]
+    items[#items + 1] = { value = id, label = (def and def.name) or ("MOVE " .. id) }
+  end
+  items[#items + 1] = { value = MENU_CANCEL, label = require("src.core.Strings")("EXIT") }
+  local runner = ctx.runner
+  setVar(ctx.save, destVar, MENU_CANCEL)
+  local rows = {}
+  for i, item in ipairs(items) do
+    rows[i] = { label = item.label, onSelect = function()
+      setVar(ctx.save, destVar, item.value)
+      if runner then runner:resume() end
+    end }
+  end
+  ctx.game.stack:push(require("src.ui.Menu").new(ctx.game, rows, {
+    cancelable = true,
+    onCancel = function()
+      setVar(ctx.save, destVar, MENU_CANCEL)
+      if runner then runner:resume() end
+    end,
+  }))
+  if runner then runner:yield() end
+end
+Commands.meta.g4_tutor_menu = { foreground = true, blocking = true }
+
+-- ScrCmd_CheckCanAffordMove: every non-zero cost must be in the bag.
+function Commands.g4_tutor_can_afford(ctx, move, destVar)
+  local T = require("src.import.Gen4MoveTutor")
+  local row = T.row(tutorRec(ctx), math.floor(valueOf(ctx, move) or 0))
+  local inv = (ctx.save and ctx.save.inventory) or {}
+  local ok = row ~= nil
+  if row then
+    for colour, item in pairs(T.SHARDS) do
+      local cost = row[colour] or 0
+      if cost > 0 and (tonumber(inv[item]) or 0) < cost then ok = false end
+    end
+  end
+  setVar(ctx.save, destVar, ok and 1 or 0)
+end
+
+-- ScrCmd_PayShardCost
+function Commands.g4_tutor_pay(ctx, move)
+  local T = require("src.import.Gen4MoveTutor")
+  local row = T.row(tutorRec(ctx), math.floor(valueOf(ctx, move) or 0))
+  if not row then return end
+  local Bag = require("src.inventory.Bag")
+  for colour, item in pairs(T.SHARDS) do
+    local cost = row[colour] or 0
+    if cost > 0 then Bag.remove(ctx.save, item, cost) end
+  end
+end
+
+-- The summary screen's "forget which move?": a list of the four (B keeps
+-- them all -- slot 4, LEARNED_MOVES_MAX).
+function Commands.g4_tutor_forget_menu(ctx, slot, move)
+  local mon = partyMon(ctx, slot)
+  local data = ctx.game and ctx.game.data or {}
+  ctx.g4TutorForget = 4
+  if not mon then return end
+  local items = {}
+  for i, mv in ipairs(mon.moves or {}) do
+    local id = tonumber(mv) or tonumber(mv and mv.id) or 0
+    local def = data.moves and data.moves[id]
+    items[#items + 1] = { value = i - 1, label = (def and def.name) or ("MOVE " .. id) }
+  end
+  local runner = ctx.runner
+  local rows = {}
+  for i, item in ipairs(items) do
+    rows[i] = { label = item.label, onSelect = function()
+      ctx.g4TutorForget = item.value
+      if runner then runner:resume() end
+    end }
+  end
+  ctx.game.stack:push(require("src.ui.Menu").new(ctx.game, rows, {
+    cancelable = true,
+    onCancel = function()
+      ctx.g4TutorForget = 4
+      if runner then runner:resume() end
+    end,
+  }))
+  if runner then runner:yield() end
+end
+Commands.meta.g4_tutor_forget_menu = { foreground = true, blocking = true }
+
+function Commands.g4_tutor_forget_slot(ctx, destVar)
+  setVar(ctx.save, destVar, ctx.g4TutorForget or 4)
+end
+
+-- Pokemon_ResetMoveSlot: the move, full PP, no PP Ups.
+function Commands.g4_tutor_set_move(ctx, slot, move, moveSlot)
+  local mon = partyMon(ctx, slot)
+  if not mon then return end
+  local id = math.floor(valueOf(ctx, move) or 0)
+  local index = math.floor(valueOf(ctx, moveSlot) or 0) + 1
+  local def = ctx.game and ctx.game.data and ctx.game.data.moves and ctx.game.data.moves[id]
+  mon.moves = mon.moves or {}
+  mon.moves[index] = { id = id, pp = def and def.pp or 0, ppUps = 0 }
+end
+
+-- TEACHING AND FORGETTING MOVES OUTSIDE BATTLE: the Move Reminder in
+-- Pastoria (`openmoveremindermenu`), Grandma Wilma's Draco Meteor on Route 210
+-- (`openmovetutormenu`) and the Move Deleter in Canalave
+-- (`selectpartymonmove` / `clearpartymonmoveslot`). scrcmd_party_mon_moves.c,
+-- move_reminder_data.c and applications/move_reminder.c.
+local function learnMoveId(mv) return tonumber(mv) or tonumber(mv and mv.id) or 0 end
+
+-- Item_IsHMMove: the last eight of `sTMHMMoves`.
+function Gen4Commands.isHMMove(data, move)
+  local list = data and data.constants and data.constants.tmhmMoves
+  if not list then return false end
+  for i = 93, #list do
+    if list[i] == move then return true end
+  end
+  return false
+end
+
+-- MoveReminderData_GetMoves: the first 22 rows of the level-up learnset
+-- (MAX_NUMBER_REMINDER_MOVES), those at or below the mon's level that it does
+-- not know, each once, in learnset order. Forms read their own learnset.
+function Gen4Commands.reminderMoves(data, mon)
+  local out = {}
+  if not mon then return out end
+  local def = require("src.pokemon.Gen4Forms").definition(data, mon)
+  local known = {}
+  for _, mv in ipairs(mon.moves or {}) do known[learnMoveId(mv)] = true end
+  local level = tonumber(mon.level) or 1
+  local seen = {}
+  local learnset = (def and def.learnset) or {}
+  for i = 1, math.min(22, #learnset) do
+    local e = learnset[i]
+    if e.level <= level and not known[e.move] and not seen[e.move] then
+      seen[e.move] = true
+      out[#out + 1] = e.move
+    end
+  end
+  return out
+end
+
+local function learnMoveName(data, id)
+  local def = data and data.moves and data.moves[id]
+  return (def and def.name) or ("MOVE " .. id)
+end
+
+-- The teach screen. The moves on offer, then -- with four known -- which one
+-- to forget; an HM cannot be forgotten in this mode
+-- (PokemonSummaryScreen_PrintHMMovesCantBeForgotten), and backing out of the
+-- forget list returns to the moves. B on the moves gives up: keepOldMove.
+local function openLearnMenu(ctx, mon, moves)
+  local game = ctx.game
+  local data = game and game.data or {}
+  local runner = ctx.runner
+  ctx.g4LearnKeepOld = true
+  if not (mon and game and #moves > 0) then return end
+  local Menu = require("src.ui.Menu")
+  local function finish(keepOld)
+    ctx.g4LearnKeepOld = keepOld
+    if runner then runner:resume() end
+  end
+  local function teach(index, move)
+    local def = data.moves and data.moves[move]
+    mon.moves = mon.moves or {}
+    mon.moves[index] = { id = move, pp = def and def.pp or 0, ppUps = 0 }
+    finish(false)
+  end
+  local openMoves
+  local function openForget(move)
+    local rows = {}
+    for i, mv in ipairs(mon.moves or {}) do
+      local id = learnMoveId(mv)
+      if Gen4Commands.isHMMove(data, id) then
+        rows[#rows + 1] = { label = learnMoveName(data, id), keepOpen = true }
+      else
+        rows[#rows + 1] = { label = learnMoveName(data, id), onSelect = function() teach(i, move) end }
+      end
+    end
+    game.stack:push(Menu.new(game, rows, { cancelable = true, onCancel = function() openMoves() end }))
+  end
+  openMoves = function()
+    local rows = {}
+    for _, move in ipairs(moves) do
+      rows[#rows + 1] = { label = learnMoveName(data, move), onSelect = function()
+        local count, free = 0, nil
+        for i = 1, 4 do
+          local id = learnMoveId((mon.moves or {})[i])
+          if id ~= 0 then count = count + 1 elseif not free then free = i end
+        end
+        if count < 4 then teach(free, move) else openForget(move) end
+      end }
+    end
+    game.stack:push(Menu.new(game, rows, {
+      cancelable = true, maxVisible = math.min(#rows, 7),
+      onCancel = function() finish(true) end,
+    }))
+  end
+  openMoves()
+  if runner then runner:yield() end
+end
+
+-- `openmovetutormenu <partySlot> <move>`: the teach screen with one move.
+function Commands.g4_open_move_tutor_menu(ctx, slot, move)
+  openLearnMenu(ctx, partyMon(ctx, slot), { math.floor(valueOf(ctx, move)) })
+end
+Commands.meta.g4_open_move_tutor_menu = { foreground = true, blocking = true }
+
+-- `openmoveremindermenu <partySlot>`
+function Commands.g4_open_move_reminder_menu(ctx, slot)
+  local mon = partyMon(ctx, slot)
+  openLearnMenu(ctx, mon, Gen4Commands.reminderMoves(ctx.game and ctx.game.data, mon))
+end
+Commands.meta.g4_open_move_reminder_menu = { foreground = true, blocking = true }
+
+-- `checklearnedtutormove` / `checklearnedremindermove <destVar>`: 0 when a
+-- move was learned, 0xFF when the old moves were kept.
+function Commands.g4_learned_move(ctx, destVar)
+  setVar(ctx.save, destVar, ctx.g4LearnKeepOld == false and 0 or 0xFF)
+  ctx.g4LearnKeepOld = nil
+end
+
+-- `checkhaslearnableremindermoves <destVar> <partySlot>`
+function Commands.g4_has_reminder_moves(ctx, destVar, slot)
+  local mon = partyMon(ctx, slot)
+  local moves = Gen4Commands.reminderMoves(ctx.game and ctx.game.data, mon)
+  setVar(ctx.save, destVar, #moves > 0 and 1 or 0)
+end
+
+-- `selectpartymonmove <partySlot>`: the summary screen's move cursor, any
+-- move (HMs included -- the deleter's whole point); B is slot 4, which
+-- `getselectedpartymonmove` answers as MOVE_NOT_SELECTED (0xFF).
+function Commands.g4_select_party_mon_move(ctx, slot)
+  local mon = partyMon(ctx, slot)
+  local game = ctx.game
+  local data = game and game.data or {}
+  local runner = ctx.runner
+  ctx.g4SelectedMoveSlot = 4
+  if not (mon and game) then return end
+  local rows = {}
+  for i, mv in ipairs(mon.moves or {}) do
+    local id = learnMoveId(mv)
+    if id ~= 0 then
+      rows[#rows + 1] = { label = learnMoveName(data, id), onSelect = function()
+        ctx.g4SelectedMoveSlot = i - 1
+        if runner then runner:resume() end
+      end }
+    end
+  end
+  game.stack:push(require("src.ui.Menu").new(game, rows, {
+    cancelable = true,
+    onCancel = function()
+      ctx.g4SelectedMoveSlot = 4
+      if runner then runner:resume() end
+    end,
+  }))
+  if runner then runner:yield() end
+end
+Commands.meta.g4_select_party_mon_move = { foreground = true, blocking = true }
+
+function Commands.g4_selected_party_mon_move(ctx, destVar)
+  local v = ctx.g4SelectedMoveSlot or 4
+  setVar(ctx.save, destVar, v == 4 and 0xFF or v)
+  ctx.g4SelectedMoveSlot = nil
+end
+
+-- `clearpartymonmoveslot <partySlot> <moveSlot>`: Pokemon_ClearMoveSlot --
+-- the moves below shift up, PP and PP Ups with them, and the last is empty.
+function Commands.g4_clear_move_slot(ctx, slot, moveSlot)
+  local mon = partyMon(ctx, slot)
+  if not (mon and mon.moves) then return end
+  local index = math.floor(valueOf(ctx, moveSlot)) + 1
+  if index < 1 or index > 4 then return end
+  table.remove(mon.moves, index)
+end
+
+-- `bufferpartymovename <buffer> <partySlot> <moveSlot>`
+function Commands.g4_buffer_party_move(ctx, buffer, slot, moveSlot)
+  local mon = partyMon(ctx, slot)
+  local mv = mon and (mon.moves or {})[math.floor(valueOf(ctx, moveSlot)) + 1]
+  return Commands.g4_buffer(ctx, buffer, "move", learnMoveId(mv))
+end
+
+-- THE SOLACEON DAY CARE (scrcmd_daycare.c) -- see src/pokemon/Gen4DayCare.lua.
+local function setBuffer(ctx, slot, text)
+  local game = ctx.game
+  if not game then return end
+  game.stringBuffers = game.stringBuffers or {}
+  game.stringBuffers[(tonumber(slot) or 0) + 1] = text or ""
+end
+
+local function dcMonName(ctx, mon)
+  local data = ctx.game and ctx.game.data or {}
+  local reg = data.pokemon or {}
+  local def = mon and (reg[mon.species] or reg[require("src.pokemon.Gen4DayCare").speciesOf(mon)])
+  return mon and (mon.nickname or (def and def.name)) or ""
+end
+
+-- ov5_021E72BC: buffer 0 the first mon, 2 its OT, 1 the second.
+function Commands.g4_daycare_names(ctx)
+  local DC = require("src.pokemon.Gen4DayCare")
+  local a, b = DC.slot(ctx.save, 0), DC.slot(ctx.save, 1)
+  if a and a.mon then
+    setBuffer(ctx, 0, dcMonName(ctx, a.mon))
+    setBuffer(ctx, 2, a.mon.otName or (ctx.save.player and ctx.save.player.name) or "")
+  end
+  if b and b.mon then setBuffer(ctx, 1, dcMonName(ctx, b.mon)) end
+end
+
+function Commands.g4_daycare_state(ctx, destVar)
+  setVar(ctx.save, destVar, require("src.pokemon.Gen4DayCare").state(ctx.save))
+end
+
+function Commands.g4_daycare_reset_egg(ctx)
+  local dc = require("src.pokemon.Gen4DayCare").store(ctx.save, true)
+  dc.personality, dc.counter = 0, 0
+end
+
+function Commands.g4_daycare_give_egg(ctx)
+  require("src.pokemon.Gen4DayCare").giveEgg(ctx.game, ctx.save)
+end
+
+-- `movemontopartyfromdaycareslot <destVar> <slot>`: buffer 0 the nickname,
+-- answer the species.
+function Commands.g4_daycare_withdraw(ctx, destVar, slot)
+  local DC = require("src.pokemon.Gen4DayCare")
+  local i = math.floor(valueOf(ctx, slot))
+  local s = DC.slot(ctx.save, i)
+  if s and s.mon then setBuffer(ctx, 0, dcMonName(ctx, s.mon)) end
+  setVar(ctx.save, destVar, DC.withdraw(ctx.game.data, ctx.save, i))
+end
+
+-- `bufferdaycarepricebyslot <destVar> <slot>`: buffer 0 the name, 1 the price.
+function Commands.g4_daycare_price(ctx, destVar, slot)
+  local DC = require("src.pokemon.Gen4DayCare")
+  local i = math.floor(valueOf(ctx, slot))
+  local s = DC.slot(ctx.save, i)
+  local price = DC.price(ctx.game.data, ctx.save, i)
+  if s and s.mon then setBuffer(ctx, 0, dcMonName(ctx, s.mon)) end
+  setBuffer(ctx, 1, tostring(price))
+  setVar(ctx.save, destVar, price)
+end
+
+-- `bufferdaycaregainedlevelsbyslot <destVar> <slot>`: buffer 0 the name, 1 the levels.
+function Commands.g4_daycare_gained(ctx, destVar, slot)
+  local DC = require("src.pokemon.Gen4DayCare")
+  local i = math.floor(valueOf(ctx, slot))
+  local s = DC.slot(ctx.save, i)
+  local n = 0
+  if s and s.mon then
+    n = DC.gainedLevels(ctx.game.data, ctx.save, i)
+    setBuffer(ctx, 1, tostring(n))
+    setBuffer(ctx, 0, dcMonName(ctx, s.mon))
+  end
+  setVar(ctx.save, destVar, n)
+end
+
+-- `bufferpartymonnicknamereturnspecies <unused> <partySlot> <destVar>`
+function Commands.g4_buffer_nickname_species(ctx, slot, destVar)
+  local mon = partyMon(ctx, slot)
+  setBuffer(ctx, 0, dcMonName(ctx, mon))
+  setVar(ctx.save, destVar, mon and require("src.pokemon.Gen4DayCare").speciesOf(mon) or 0)
+end
+
+function Commands.g4_daycare_store(ctx, slot)
+  require("src.pokemon.Gen4DayCare").deposit(ctx.game.data, ctx.save, math.floor(valueOf(ctx, slot)))
+end
+
+-- Daycare_BufferNicknameLevelGender: the level with the banked EXP, and no
+-- gender sign for an un-nicknamed Nidoran (the sign is in its name).
+function Commands.g4_daycare_name_level_gender(ctx, nick, level, gender, slot)
+  local DC = require("src.pokemon.Gen4DayCare")
+  local s = DC.slot(ctx.save, math.floor(valueOf(ctx, slot)))
+  if not (s and s.mon) then return end
+  local data = ctx.game.data
+  setBuffer(ctx, valueOf(ctx, nick), dcMonName(ctx, s.mon))
+  setBuffer(ctx, valueOf(ctx, level), tostring(DC.levelWithSteps(data, s)))
+  local g = DC.gender(data, s.mon)
+  local sp = DC.speciesOf(s.mon)
+  if (sp == 29 or sp == 32) and not s.mon.nickname then g = "none" end
+  setBuffer(ctx, valueOf(ctx, gender), g == "male" and "♂" or g == "female" and "♀" or "")
+end
+
+function Commands.g4_daycare_compatibility(ctx, destVar)
+  setVar(ctx.save, destVar, require("src.pokemon.Gen4DayCare").compatibilityLevel(ctx.game.data, ctx.save))
+end
+
+-- `checkmoney2 <destVar> <amount>` -- the amount through ScriptContext_GetVar.
+function Commands.g4_check_money_var(ctx, destVar, amount)
+  return Commands.g4_check_money(ctx, destVar, valueOf(ctx, amount))
+end
+
+-- `openpartymenufordaycare` / `getdaycarepartymenuresult <slotVar> <summaryVar>`:
+-- the party pick; the SUMMARY exit never comes back from this port's picker,
+-- so the second answer is always FALSE.
+function Commands.g4_daycare_party_menu(ctx)
+  return Commands.g4_open_party_for_trade(ctx)
+end
+Commands.meta.g4_daycare_party_menu = { foreground = true, blocking = true }
+
+function Commands.g4_daycare_party_result(ctx, slotVar, summaryVar)
+  setVar(ctx.save, slotVar, ctx.g4PartySlot or Gen4Commands.PARTY_SLOT_NONE)
+  setVar(ctx.save, summaryVar, 0)
+end
+
+-- `setmonsummary <slot>` / `getmonpartyslot <destVar>`: the summary screen
+-- and the slot it was left on -- the one it opened on, here.
+function Commands.g4_set_mon_summary(ctx, slot)
+  ctx.g4SummarySlot = math.floor(valueOf(ctx, slot))
+end
+
+function Commands.g4_get_mon_party_slot(ctx, destVar)
+  setVar(ctx.save, destVar, ctx.g4SummarySlot or 0)
+  ctx.g4SummarySlot = nil
+end
+
+-- ScrCmd_TryRevertPokemonForm: a held Griseous Orb goes back to the bag (0xFF
+-- when it will not fit), and Giratina, Rotom and Shaymin go to their base forms.
+function Commands.g4_try_revert_form(ctx, slot, destVar)
+  setVar(ctx.save, destVar, 0)
+  local raw = math.floor(valueOf(ctx, slot))
+  if raw == 0xFF then return end
+  local mon = partyMon(ctx, slot)
+  if not mon then return end
+  local item = tonumber(mon.item or mon.heldItem) or 0
+  if item == 112 then
+    local Bag = require("src.inventory.Bag")
+    if Bag.add(ctx.save, 112, 1, ctx.game.data) == false then
+      setVar(ctx.save, destVar, 0xFF)
+      return
+    end
+    mon.item, mon.heldItem = nil, nil
+  end
+  local sp = require("src.pokemon.Gen4DayCare").speciesOf(mon)
+  if (tonumber(mon.form) or 0) > 0 and (sp == 487 or sp == 479 or sp == 492) then
+    require("src.pokemon.Gen4Forms").setForm(ctx.game.data, mon, 0)
+  end
+end
+
+-- `checkpoketchenabled <destVar>`
+function Commands.g4_poketch_enabled(ctx, destVar)
+  local p = ctx.save and ctx.save.poketch
+  setVar(ctx.save, destVar, (p and p.enabled) and 1 or 0)
+end
+
+-- `checkpartyhasbadegg <destVar>`: an egg that failed its checksum. This port
+-- keeps no checksum, so only an egg explicitly marked bad counts.
+function Commands.g4_party_has_bad_egg(ctx, destVar)
+  for _, mon in ipairs((ctx.save and ctx.save.party) or {}) do
+    if mon.isEgg and (mon.isBadEgg or mon.badEgg) then setVar(ctx.save, destVar, 1) return end
+  end
+  setVar(ctx.save, destVar, 0)
+end
+
+-- ScrCmd_IncreasePartyMonFriendship <value> <slot>: a Soothe Bell makes it
+-- 150%, a Luxury Ball and being in the place it hatched add one each; capped
+-- at 255.
+function Commands.g4_increase_friendship(ctx, value, slot)
+  local mon = partyMon(ctx, slot)
+  if not mon then return end
+  local v = math.floor(valueOf(ctx, value))
+  if v > 0 then
+    if tonumber(mon.item or mon.heldItem) == 218 then v = math.floor(v * 150 / 100) end
+    if tonumber(mon.ball) == 11 or mon.ball == "LUXURY_BALL" then v = v + 1 end
+    local here = ctx.overworld and ctx.overworld.map and ctx.overworld.map.id
+    if here and mon.eggLocation and mon.eggLocation == here then v = v + 1 end
+  end
+  local f = tonumber(mon.happiness or mon.friendship) or 0
+  mon.happiness = math.max(0, math.min(255, f + v))
+end
+
+-- THE VEILSTONE GAME CORNER (scrcmd_coins.c, scrcmd_game_corner_prize.c) --
+-- see src/import/Gen4GameCorner.lua. Coins live in save.coins, which the
+-- Coin Case already reads.
+local function GC() return require("src.import.Gen4GameCorner") end
+
+function Commands.g4_coin_window(ctx, which, left, top)
+  local ow = ctx.overworld
+  if not ow then return end
+  if which == "hide" then ow.gen4CoinWindow = nil return end
+  local MW = require("src.ui.Gen4MoneyWindow")
+  if which == "show" then
+    ow.gen4CoinWindow = MW.coinPanelFor(ctx.game, valueOf(ctx, left), valueOf(ctx, top))
+  elseif ow.gen4CoinWindow then
+    ow.gen4CoinWindow = MW.coinPanelFor(ctx.game, ow.gen4CoinWindow.left, ow.gen4CoinWindow.top)
+  end
+end
+
+function Commands.g4_add_coins(ctx, amount)
+  GC().add(ctx.save, math.floor(valueOf(ctx, amount)))
+end
+
+function Commands.g4_subtract_coins(ctx, amount)
+  GC().subtract(ctx.save, math.floor(valueOf(ctx, amount)))
+end
+
+function Commands.g4_get_coins(ctx, destVar)
+  setVar(ctx.save, destVar, GC().coins(ctx.save))
+end
+
+function Commands.g4_can_add_coins(ctx, destVar, amount)
+  setVar(ctx.save, destVar, GC().canAdd(ctx.save, math.floor(valueOf(ctx, amount))) and 1 or 0)
+end
+
+-- `hascoinsfromvar` / `hascoinsfromvalue <destVar> <amount>`
+function Commands.g4_has_coins(ctx, destVar, amount)
+  setVar(ctx.save, destVar, GC().coins(ctx.save) >= math.floor(valueOf(ctx, amount)) and 1 or 0)
+end
+
+-- `getgamecornerprizedata <index> <itemVar> <priceVar>`
+function Commands.g4_prize_data(ctx, index, itemVar, priceVar)
+  local rec = ctx.game and ctx.game.data and ctx.game.data.gen4_game_corner
+  local row = rec and rec.prizes and rec.prizes[math.floor(valueOf(ctx, index)) + 1]
+  setVar(ctx.save, itemVar, row and row.item or 0)
+  setVar(ctx.save, priceVar, row and row.price or 0)
+end
+
+-- `checkbonusroundstreak`: ten consecutive bonus-round wins or more.
+function Commands.g4_bonus_streak(ctx, destVar)
+  setVar(ctx.save, destVar, (tonumber(ctx.save and ctx.save.gen4BonusRoundStreak) or 0) >= 10 and 1 or 0)
+end
+
+-- `showlistmenuremembercursor <offsetVar> <cursorVar>`: the list opens where
+-- it was left and writes the cursor back as it moves.
+function Commands.g4_menu_show_remember(ctx, offsetVar, cursorVar)
+  local menu = ctx.g4Menu
+  if menu then
+    menu.cursor = math.floor(getVar(ctx.save, offsetVar) or 0) + math.floor(getVar(ctx.save, cursorVar) or 0) + 1
+    menu.onHighlight = function(i)
+      setVar(ctx.save, offsetVar, 0)
+      setVar(ctx.save, cursorVar, i - 1)
+    end
+  end
+  return Commands.g4_menu_show(ctx)
+end
+Commands.meta.g4_menu_show_remember = { foreground = true, blocking = true }
+
+-- `buffervarpaddingdigits <slot> <var> <padding> <digits>`
+function Commands.g4_buffer_padded_var(ctx, slot, value, padding, digits)
+  return Commands.g4_buffer_padded_number(ctx, slot, valueOf(ctx, value), padding, digits)
+end
+
+-- `buffertypename <slot> <type>`: bank 624, TEXT_BANK_POKEMON_TYPE_NAMES.
+function Commands.g4_buffer_type_name(ctx, slot, typeVar)
+  local t = math.floor(valueOf(ctx, typeVar))
+  local Gen4Text = require("src.import.Gen4Text")
+  local data = ctx.game and ctx.game.data
+  local text = data and data.text and data.text[Gen4Text.label(624, t)]
+  if not ctx.game then return end
+  ctx.game.stringBuffers = ctx.game.stringBuffers or {}
+  ctx.game.stringBuffers[(tonumber(slot) or 0) + 1] = text or ""
+end
+
+-- ScrCmd_CalcHiddenPowerType <partySlot> <destVar>: the low IV bits; 0xFFFF
+-- for the sixteen species that cannot learn it.
+local NO_HIDDEN_POWER = { [10] = true, [11] = true, [13] = true, [14] = true, [129] = true,
+  [132] = true, [202] = true, [235] = true, [265] = true, [266] = true, [268] = true,
+  [360] = true, [374] = true, [412] = true, [415] = true, [401] = true }
+function Gen4Commands.hiddenPowerType(ivs)
+  ivs = ivs or {}
+  local function bit(k) return math.floor(tonumber(ivs[k]) or 0) % 2 end
+  local n = bit("hp") + 2 * bit("attack") + 4 * bit("defense") + 8 * bit("speed")
+            + 16 * bit("spatk") + 32 * bit("spdef")
+  local t = math.floor(n * 15 / 63) + 1
+  if t >= 9 then t = t + 1 end   -- TYPE_MYSTERY
+  return t
+end
+function Commands.g4_hidden_power_type(ctx, slot, destVar)
+  local mon = partyMon(ctx, slot)
+  if not mon then return end
+  local sp = require("src.pokemon.Gen4DayCare").speciesOf(mon)
+  if not mon.isEgg and NO_HIDDEN_POWER[sp] then setVar(ctx.save, destVar, 0xFFFF) return end
+  setVar(ctx.save, destVar, Gen4Commands.hiddenPowerType(mon.ivs))
+end
+
+-- `buffercustommessageword <slot> <word>` (StringTemplate_SetEasyChatWord)
+function Commands.g4_buffer_message_word(ctx, slot, word)
+  if not ctx.game then return end
+  local text = require("src.pokemon.Gen4EasyChat").toString(ctx.game.data, valueOf(ctx, word))
+  ctx.game.stringBuffers = ctx.game.stringBuffers or {}
+  ctx.game.stringBuffers[math.floor(valueOf(ctx, slot)) + 1] = text
+end
+
+-- `bufferribbonname <slot> <ribbon>`: bank 535 (TEXT_BANK_RIBBON_NAMES), whose
+-- entry for each of the 80 ribbons is its own id (sRibbonDataTable.nameID).
+function Commands.g4_buffer_ribbon_name(ctx, slot, ribbon)
+  if not ctx.game then return end
+  local T = require("src.import.Gen4Text")
+  local data = ctx.game.data
+  local text = data and data.text and data.text[T.label(535, math.floor(valueOf(ctx, ribbon)))]
+  ctx.game.stringBuffers = ctx.game.stringBuffers or {}
+  ctx.game.stringBuffers[(tonumber(slot) or 0) + 1] = text or ""
+end
+
+-- THE OREBURGH MUSEUM (scrcmd_fossil.c): sFossilItemToSpeciesMapping, in order.
+Gen4Commands.FOSSILS = {
+  { item = 103, species = 142 },  -- Old Amber -> Aerodactyl
+  { item = 101, species = 138 },  -- Helix Fossil -> Omanyte
+  { item = 102, species = 140 },  -- Dome Fossil -> Kabuto
+  { item = 99, species = 345 },   -- Root Fossil -> Lileep
+  { item = 100, species = 347 },  -- Claw Fossil -> Anorith
+  { item = 104, species = 410 },  -- Armor Fossil -> Shieldon
+  { item = 105, species = 408 },  -- Skull Fossil -> Cranidos
+}
+local function bagCount(save, item)
+  local inv = save and save.inventory or {}
+  return tonumber(inv[item]) or tonumber(inv[tostring(item)]) or 0
+end
+
+function Commands.g4_fossil_count(ctx, destVar)
+  local n = 0
+  for _, f in ipairs(Gen4Commands.FOSSILS) do n = n + bagCount(ctx.save, f.item) end
+  setVar(ctx.save, destVar, n)
+end
+
+function Commands.g4_species_from_fossil(ctx, destVar, item)
+  local id = math.floor(valueOf(ctx, item))
+  local species = 0
+  for _, f in ipairs(Gen4Commands.FOSSILS) do
+    if f.item == id then species = f.species break end
+  end
+  setVar(ctx.save, destVar, species)
+end
+
+-- `findfossilatthreshold <itemVar> <indexVar> <threshold>`: the running total
+-- in table order, and the first fossil at which it reaches the threshold.
+function Commands.g4_fossil_at_threshold(ctx, itemVar, indexVar, threshold)
+  local want = math.floor(valueOf(ctx, threshold))
+  setVar(ctx.save, itemVar, 0)
+  setVar(ctx.save, indexVar, 0)
+  local n = 0
+  for i, f in ipairs(Gen4Commands.FOSSILS) do
+    n = n + bagCount(ctx.save, f.item)
+    if n >= want then
+      setVar(ctx.save, itemVar, f.item)
+      setVar(ctx.save, indexVar, i - 1)
+      return
+    end
+  end
+end
+
+-- `getpartyrotomcountandfirst <countVar> <slotVar>`: Rotom not in its base form.
+function Commands.g4_party_rotom_forms(ctx, countVar, slotVar)
+  local n, first = 0, Gen4Commands.PARTY_SLOT_NONE
+  for i, mon in ipairs((ctx.save and ctx.save.party) or {}) do
+    local sp = require("src.pokemon.Gen4DayCare").speciesOf(mon)
+    if sp == 479 and (tonumber(mon.form) or 0) ~= 0 and not mon.isEgg then
+      if first == Gen4Commands.PARTY_SLOT_NONE then first = i - 1 end
+      n = n + 1
+    end
+  end
+  setVar(ctx.save, countVar, n)
+  setVar(ctx.save, slotVar, first)
+end
+
+-- `loadpokedexrating <national> <destVar>` (Pokedex_GetRatingMessageID_*): the
+-- entry in Rowan's or Oak's rating bank (pokedex_ratings, the map's own).
+local LOCAL_RATING = { { 15, 6 }, { 30, 7 }, { 45, 8 }, { 60, 9 }, { 80, 10 }, { 100, 11 },
+  { 120, 12 }, { 140, 13 }, { 160, 14 }, { 180, 15 }, { 200, 16 }, { 209, 17 } }
+local NATIONAL_RATING = { { 39, 22 }, { 59, 23 }, { 89, 24 }, { 119, 25 }, { 149, 26 },
+  { 189, 27 }, { 229, 28 }, { 269, 29 }, { 309, 30 }, { 349, 31 }, { 379, 32 }, { 409, 33 },
+  { 429, "gender410" }, { 449, 36 }, { 459, 37 }, { 469, 38 }, { 475, 39 }, { 481, 40 } }
+function Gen4Commands.dexRating(national, count, female, eterna)
+  if not national then
+    for _, r in ipairs(LOCAL_RATING) do if count <= r[1] then return r[2] end end
+    return eterna and 4 or 5
+  end
+  for _, r in ipairs(NATIONAL_RATING) do
+    if count <= r[1] then
+      if r[2] == "gender410" then return female and 35 or 34 end
+      return r[2]
+    end
+  end
+  return female and 42 or 41
+end
+function Commands.g4_dex_rating(ctx, national, destVar)
+  local nat = (tonumber(national) or 0) ~= 0
+  local count = nat and dexCount(ctx, "owned", false, true) or dexCount(ctx, "seen", true, false)
+  local female = ctx.save and ctx.save.player and ctx.save.player.gender == "girl"
+  local eterna = ctx.save and ctx.save.flags and ctx.save.flags.FLAG_G4_09BB
+  setVar(ctx.save, destVar, Gen4Commands.dexRating(nat, count, female, eterna))
+end
+
+-- `gethour <destVar>` (FieldSystem_GetHour)
+function Commands.g4_get_hour(ctx, destVar)
+  setVar(ctx.save, destVar, tonumber(os.date("*t").hour) or 0)
+end
+
+function Commands.g4_count_party_eggs(ctx, destVar)
+  local n = 0
+  for _, mon in ipairs((ctx.save and ctx.save.party) or {}) do if mon.isEgg then n = n + 1 end end
+  setVar(ctx.save, destVar, n)
+end
+
+-- ScrCmd_TryRevertPartyPokemonForms: every held Griseous Orb back to the bag
+-- (0xFF when they will not fit), then Giratina, Rotom and Shaymin revert.
+function Commands.g4_try_revert_party_forms(ctx, destVar)
+  setVar(ctx.save, destVar, 0)
+  local party = (ctx.save and ctx.save.party) or {}
+  local orbs = 0
+  for _, mon in ipairs(party) do if tonumber(mon.item or mon.heldItem) == 112 then orbs = orbs + 1 end end
+  if orbs > 0 then
+    if require("src.inventory.Bag").add(ctx.save, 112, orbs, ctx.game and ctx.game.data) == false then
+      setVar(ctx.save, destVar, 0xFF)
+      return
+    end
+    for _, mon in ipairs(party) do
+      if tonumber(mon.item or mon.heldItem) == 112 then mon.item, mon.heldItem = nil, nil end
+    end
+  end
+  for _, mon in ipairs(party) do
+    local sp = require("src.pokemon.Gen4DayCare").speciesOf(mon)
+    if (tonumber(mon.form) or 0) > 0 and (sp == 487 or sp == 479 or sp == 492) then
+      require("src.pokemon.Gen4Forms").setForm(ctx.game and ctx.game.data, mon, 0)
+    end
+  end
+end
+
+-- `findpartyslotwithnature <destVar> <nature>`: first non-egg, else 0xFF.
+function Commands.g4_party_slot_with_nature(ctx, destVar, nature)
+  local want = math.floor(valueOf(ctx, nature))
+  for i, mon in ipairs((ctx.save and ctx.save.party) or {}) do
+    if not mon.isEgg and mon.personality and math.floor(tonumber(mon.personality)) % 25 == want then
+      setVar(ctx.save, destVar, i - 1)
+      return
+    end
+  end
+  setVar(ctx.save, destVar, 0xFF)
+end
+
+-- THE REGI RUINS' DOTS (ScrCmd_ActivateRegiRuinsDot): standing on one of
+-- the seven dots of the ruin sets its bit; all seven is state 260.
+Gen4Commands.REGI_DOTS = {
+  [588] = { { 4, 7 }, { 5, 5 }, { 5, 9 }, { 7, 7 }, { 9, 5 }, { 9, 9 }, { 10, 7 } },   -- Iron
+  [590] = { { 3, 7 }, { 5, 7 }, { 7, 5 }, { 7, 7 }, { 7, 9 }, { 9, 7 }, { 11, 7 } },   -- Iceberg
+  [592] = { { 5, 5 }, { 5, 7 }, { 5, 9 }, { 7, 7 }, { 9, 5 }, { 9, 7 }, { 9, 9 } },    -- Rock Peak
+}
+function Commands.g4_regi_dot(ctx, destVar, dotType, x, z)
+  local dots = Gen4Commands.REGI_DOTS[math.floor(valueOf(ctx, dotType))]
+  if not dots then return end
+  local v = math.floor(getVar(ctx.save, destVar) or 0)
+  local px, pz = math.floor(valueOf(ctx, x)), math.floor(valueOf(ctx, z))
+  for i, d in ipairs(dots) do
+    if d[1] == px and d[2] == pz then
+      local bit = 2 ^ (i - 1)
+      if math.floor(v / bit) % 2 == 0 then v = v + bit end
+      pcall(function() require("src.core.Sound").play(ctx.game and ctx.game.data, "SEQ_SE_PL_JUMP2") end)
+      break
+    end
+  end
+  if v == 0x7F then v = 260 end
+  setVar(ctx.save, destVar, v)
+end
+
+-- THE BALL SEALS (ball_seal_info.c) -- see src/import/Gen4Seals.lua.
+local function Seals() return require("src.import.Gen4Seals") end
+
+-- `pokemartseal <day>`: Sunyshore Market's seal counter, the day's stock
+-- (SunyshoreMarketDailyStocks, Monday = 0) on the shop screen, BUY / SEE YA!
+-- only, priced and named by the seal table, into the Seal Case.
+function Commands.g4_seal_mart(ctx, day)
+  local data = ctx.game and ctx.game.data
+  local rec = data and data.gen4_seals
+  local stock = rec and rec.stocks and rec.stocks[math.floor(valueOf(ctx, day)) + 1]
+  if not stock then
+    Logger.warn("gen4 shop: no seal stock for this day; re-import the ROM")
+    return
+  end
+  local T = require("src.import.Gen4Text")
+  local full = data.text and data.text[T.label(543, 14)]
+  local goods = {
+    def = function(id)
+      local name = Seals().name(data, id)
+      return name and { name = name, price = Seals().price(data, id), description = "" } or nil
+    end,
+    owned = function(id) return Seals().count(ctx.save, id) end,
+    canAdd = function(id, qty) return Seals().canChange(ctx.save, id, qty) end,
+    add = function(id, qty) Seals().change(ctx.save, id, qty) end,
+    fullMessage = full,
+    ownedLabel = "In Case: ",
+  }
+  local runner = ctx.runner
+  require("src.ui.Screens").push(ctx.game, "ShopMenu", stock, function()
+    if runner then runner:resume() end
+  end, goods)
+  if runner then runner:yield() end
+end
+Commands.meta.g4_seal_mart = { foreground = true, blocking = true }
+
+-- `giveortakeseal <seal> <quantity>`: the quantity is an s16, so a var
+-- holding 0xFFFF takes one away.
+function Commands.g4_give_or_take_seal(ctx, seal, quantity)
+  local q = math.floor(valueOf(ctx, quantity))
+  if q >= 0x8000 then q = q - 0x10000 end
+  Seals().change(ctx.save, math.floor(valueOf(ctx, seal)), q)
+end
+
+function Commands.g4_count_seal(ctx, seal, destVar)
+  setVar(ctx.save, destVar, Seals().count(ctx.save, math.floor(valueOf(ctx, seal))))
+end
+
+function Commands.g4_count_unique_seals(ctx, destVar)
+  setVar(ctx.save, destVar, Seals().unique(ctx.save))
+end
+
+function Commands.g4_buffer_seal_name(ctx, slot, seal, plural)
+  if not ctx.game then return end
+  local name = Seals().name(ctx.game.data, math.floor(valueOf(ctx, seal)), plural)
+  ctx.game.stringBuffers = ctx.game.stringBuffers or {}
+  ctx.game.stringBuffers[(tonumber(slot) or 0) + 1] = name or ""
+end
+
+-- `findpartyslotwithspecies <destVar> <species>`: the first non-egg, else 0xFF.
+function Commands.g4_party_slot_with_species(ctx, destVar, species)
+  local want = math.floor(valueOf(ctx, species))
+  for i, mon in ipairs((ctx.save and ctx.save.party) or {}) do
+    if not mon.isEgg and require("src.pokemon.Gen4DayCare").speciesOf(mon) == want then
+      setVar(ctx.save, destVar, i - 1)
+      return
+    end
+  end
+  setVar(ctx.save, destVar, 0xFF)
+end
+
+-- `getpartymonform <slot> <destVar>` (Pokemon_GetForm)
+function Commands.g4_party_mon_form(ctx, slot, destVar)
+  setVar(ctx.save, destVar, require("src.pokemon.Gen4Forms").index(partyMon(ctx, slot)))
+end
+
+-- THE ROUTE 224 TABLET (Oak's Letter): `openshaymintabletnamingscreen <destVar>`
+-- is the naming screen of type SHAYMIN_TABLET -- ten characters under bank 422
+-- #6, "Thank who?" -- whose text the cartridge keeps in the misc save block
+-- (MiscSaveBlock_SetTabletName) and `buffertabletname` reads back. The var gets
+-- the screen's returnCode: 0 for a name, 1 for nothing entered.
+function Commands.g4_tablet_naming(ctx, destVar)
+  setVar(ctx.save, destVar, 1)
+  if not (ctx.game and ctx.game.stack) then return end
+  local T = require("src.import.Gen4Text")
+  local title = ctx.game.data and ctx.game.data.text and ctx.game.data.text[T.label(422, 6)]
+  title = type(title) == "string" and title:gsub("{YESNO %d+}", "") or "Thank who?"
+  local runner = ctx.runner
+  require("src.ui.Screens").push(ctx.game, "NamingScreen", {
+    kind = "tablet", maxLen = 10, title = title,
+    onDone = function(typed)
+      local name = tostring(typed or "")
+      if name ~= "" then
+        ctx.save.gen4TabletName = name
+        setVar(ctx.save, destVar, 0)
+      end
+      if runner then runner:resume() end
+    end,
+  })
+  if runner then runner:yield() end
+end
+Commands.meta.g4_tablet_naming = { foreground = true, blocking = true }
+
+function Commands.g4_buffer_tablet_name(ctx, slot)
+  if not ctx.game then return end
+  ctx.game.stringBuffers = ctx.game.stringBuffers or {}
+  ctx.game.stringBuffers[(tonumber(slot) or 0) + 1] = ctx.save and ctx.save.gen4TabletName or ""
+end
+
+-- THE POFFIN HOUSE AND THE POFFIN CASE -- src/pokemon/Gen4Poffin.lua.
+-- `checkcancookpoffin <destVar>`: 1 with no Berries, 2 with a full case, else 0.
+function Commands.g4_can_cook_poffin(ctx, destVar)
+  local P = require("src.pokemon.Gen4Poffin")
+  if #P.berries(ctx.game and ctx.game.data, ctx.save) == 0 then setVar(ctx.save, destVar, 1)
+  elseif P.empty(ctx.save) <= 0 then setVar(ctx.save, destVar, 2)
+  else setVar(ctx.save, destVar, 0) end
+end
+
+-- `openpoffincooking <mode>`: FALSE is cooking alone, TRUE the group the
+-- Wireless Club gathered (g4_link_club below).
+function Commands.g4_open_poffin_cooking(ctx, mode)
+  if not (ctx.game and ctx.game.stack) then return end
+  local group = math.floor(valueOf(ctx, mode)) ~= 0 and (ctx.game.gen4LinkGroup or 2) or nil
+  local runner = ctx.runner
+  ctx.game.stack:push(require("src.ui.Gen4PoffinCooking").new(ctx.game, {
+    group = group,
+    onDone = function() if runner then runner:resume() end end,
+  }))
+  if runner then runner:yield() end
+end
+
+-- `startbattleserver / startbattleclient <mode> ... <dest>`. PORT ADDITION:
+-- Platinum gathers 2-4 DSes for mode 6 (Poffin cooking); with no link the
+-- port asks how many will cook and fills the other places with local cooks
+-- who stir alongside the player. COMM_CLUB_RET_0 (0) when gathered,
+-- _CANCEL (1) on B, _ERROR (3) for every other mode.
+function Commands.g4_link_club(ctx, mode, dest)
+  local game = ctx.game
+  if math.floor(valueOf(ctx, mode)) ~= 6 or not (game and game.stack) then
+    setVar(ctx.save, dest, 3)
+    return
+  end
+  local runner = ctx.runner
+  local function answer(v, n)
+    game.gen4LinkGroup = n
+    setVar(ctx.save, dest, v)
+    if runner then runner:resume() end
+  end
+  local rows = {}
+  for n = 2, 4 do
+    rows[#rows + 1] = { label = require("src.core.Strings")("%d cooks", n), onSelect = function() answer(0, n) end }
+  end
+  game.stack:push(require("src.ui.Menu").new(game, rows, {
+    cancelable = true, onCancel = function() answer(1, nil) end,
+  }))
+  if runner then runner:yield() end
+end
+Commands.meta.g4_link_club = { foreground = true, blocking = true }
+
+function Commands.g4_end_communication(ctx)
+  if ctx.game then ctx.game.gen4LinkGroup = nil end
+end
+Commands.meta.g4_open_poffin_cooking = { foreground = true, blocking = true }
+
+function Commands.g4_poffin_case_has_room(ctx, destVar)
+  setVar(ctx.save, destVar, require("src.pokemon.Gen4Poffin").empty(ctx.save) > 0 and 1 or 0)
+end
+
+function Commands.g4_poffin_case_empty_slots(ctx, destVar)
+  setVar(ctx.save, destVar, require("src.pokemon.Gen4Poffin").empty(ctx.save))
+end
+
+-- `givepoffin <destVar> <spicy> <dry> <sweet> <bitter> <sour> <smoothness>`:
+-- the type made, or POFFIN_NONE (0xFFFF) when the case is full.
+function Commands.g4_give_poffin(ctx, destVar, a, b, c, d, e, smooth)
+  local P = require("src.pokemon.Gen4Poffin")
+  local flavors = {}
+  for i, v in ipairs({ a, b, c, d, e }) do flavors[i] = math.floor(valueOf(ctx, v)) % 256 end
+  local p = P.make(flavors, math.floor(valueOf(ctx, smooth)) % 256, false)
+  setVar(ctx.save, destVar, P.add(ctx.save, p) and p.type or 0xFFFF)
+end
+
+-- `playtrainerencounterbgm <trainer>` -- Sound_SwapBGM(FieldBGM_GetEyesMeetForTrainer):
+-- the trainer's class theme, at once.
+function Commands.g4_trainer_encounter_bgm(ctx, trainer)
+  local data = ctx.game and ctx.game.data
+  local seq = require("src.import.Gen4TrainerMusic").forTrainer(data, math.floor(valueOf(ctx, trainer)))
+  ctx.g4LastEncounterBgm = seq
+  if seq then require("src.core.Music").play(data, seq) end
+end
+
+-- THE BGM FADES (scrcmd_sound.c), on the DS player's levels in src/core/Music.lua.
+-- `fadeoutbgm <targetVolume> <frames>` and `fadeinbgm <frames>` (from zero to
+-- 127) both wait for the fade, as ScriptContext_IsSoundFadeFinished does.
+local function waitFade(ctx)
+  local Music = require("src.core.Music")
+  local runner = ctx.runner
+  if not (runner and Music.dsFading()) then return end
+  runner.waitingCheck = function() return not Music.dsFading() end
+  runner:yield()
+end
+
+function Commands.g4_fade_out_bgm(ctx, target, frames)
+  local Music = require("src.core.Music")
+  if Music.dsFading() then return waitFade(ctx) end   -- Sound_FadeOutBGM: an active fade is kept
+  Music.dsFade(math.max(0, math.min(127, tonumber(target) or 0)) / 127, tonumber(frames) or 0)
+  return waitFade(ctx)
+end
+
+function Commands.g4_fade_in_bgm(ctx, frames)
+  require("src.core.Music").dsFade(1, tonumber(frames) or 0, 0)
+  return waitFade(ctx)
+end
+
+-- `setplayervolume <volume>` -- NNS_SndPlayerSetPlayerVolume(PLAYER_FIELD, v).
+function Commands.g4_set_player_volume(ctx, volume)
+  require("src.core.Music").setPlayerLevel(math.floor(valueOf(ctx, volume)) / 127)
+end
+
+-- THE SUPER CONTEST (scrcmd_contests.c, contest.c) -- src/pokemon/Gen4Contest.lua
+-- holds the rules; the running contest lives on the game (SCRIPT_MANAGER_DATA_PTR),
+-- not in the save.
+local function Contest() return require("src.pokemon.Gen4Contest") end
+local function current(ctx) return ctx.game and ctx.game.gen4Contest end
+
+local function setBuf(ctx, slot, text)
+  if not ctx.game then return end
+  ctx.game.stringBuffers = ctx.game.stringBuffers or {}
+  ctx.game.stringBuffers[math.floor(valueOf(ctx, slot)) + 1] = text or ""
+end
+
+local function contestText(ctx, bank, n)
+  local T = require("src.import.Gen4Text")
+  local data = ctx.game and ctx.game.data
+  return data and data.text and data.text[T.label(bank, n)]
+end
+
+-- CheckContestEligibility (party_menu/main.c): not an egg, not fainted, at
+-- least `rank` of the type's ribbons, and two moves or more.
+function Gen4Commands.contestEligible(mon, rank, contestType)
+  if not mon or mon.isEgg or (tonumber(mon.hp) or 1) <= 0 then return false end
+  local ribbons = 0
+  for r = 0, 3 do
+    if mon.ribbons and mon.ribbons[Contest().ribbonId(contestType, r)] then ribbons = ribbons + 1 end
+  end
+  local moves = 0
+  for i = 1, 4 do
+    local mv = (mon.moves or {})[i]
+    local id = tonumber(mv) or tonumber(mv and mv.id) or 0
+    if id == 0 then break end
+    moves = moves + 1
+  end
+  return rank <= ribbons and moves >= 2
+end
+
+-- `openpartymenuforcontest <slot> <rank> <type> <useDefaultRank>` /
+-- `getcontestpartymenuresult <slotVar> <summaryVar>`
+function Commands.g4_contest_party_menu(ctx, _slot, rank, contestType)
+  local game = ctx.game
+  local runner = ctx.runner
+  ctx.g4ContestSlot = Gen4Commands.PARTY_SLOT_NONE
+  local r, t = math.floor(valueOf(ctx, rank)), math.floor(valueOf(ctx, contestType))
+  local rows = {}
+  for i, mon in ipairs((ctx.save and ctx.save.party) or {}) do
+    local def = game.data.pokemon and game.data.pokemon[mon.species]
+    local ok = Gen4Commands.contestEligible(mon, r, t)
+    rows[#rows + 1] = {
+      label = ("%s  %s"):format(mon.isEgg and "EGG" or (mon.nickname or (def and def.name) or "?"), ok and "ABLE" or "NOT ABLE"),
+      keepOpen = not ok,
+      onSelect = ok and function()
+        ctx.g4ContestSlot = i - 1
+        if runner then runner:resume() end
+      end or nil,
+    }
+  end
+  game.stack:push(require("src.ui.Menu").new(game, rows, {
+    cancelable = true,
+    onCancel = function() if runner then runner:resume() end end,
+  }))
+  if runner then runner:yield() end
+end
+Commands.meta.g4_contest_party_menu = { foreground = true, blocking = true }
+
+function Commands.g4_contest_party_result(ctx, slotVar, summaryVar)
+  setVar(ctx.save, slotVar, ctx.g4ContestSlot or Gen4Commands.PARTY_SLOT_NONE)
+  setVar(ctx.save, summaryVar, 0)
+end
+
+-- `newcontest <rank> <type> <competition> <partySlot>` (ScrCmd_NewContest)
+function Commands.g4_new_contest(ctx, rank, contestType, competition, slot)
+  local game = ctx.game
+  local s = math.floor(valueOf(ctx, slot))
+  local save = ctx.save
+  game.gen4Contest = Contest().new({
+    data = game.data,
+    rank = math.floor(valueOf(ctx, rank)), type = math.floor(valueOf(ctx, contestType)),
+    competition = math.floor(valueOf(ctx, competition)), partySlot = s,
+    mon = save.party and save.party[s + 1],
+    playerName = save.player and save.player.name,
+    playerGender = (save.player and save.player.gender == "girl") and 1 or 0,
+    -- isGameCompleted and isNatDexObtained
+    postgame = (save.flags and save.flags.FLAG_G4_0964 and save.pokedex and save.pokedex.national) and true or false,
+    seed = os.time() % 65536,
+  })
+end
+
+function Commands.g4_run_contest(ctx)
+  local c = current(ctx)
+  if not c then return end
+  local runner = ctx.runner
+  ctx.game.stack:push(require("src.ui.Gen4ContestScreen").new(ctx.game, c, function()
+    if runner then runner:resume() end
+  end))
+  if runner then runner:yield() end
+end
+Commands.meta.g4_run_contest = { foreground = true, blocking = true }
+
+-- Contest_EndContest, then Contest_Free.
+function Commands.g4_end_contest(ctx)
+  local c = current(ctx)
+  if not c then return end
+  local C = Contest()
+  local single = c.competition == C.VISUAL or c.competition == C.DANCE or c.competition == C.ACTING
+  if not C.isPractice(c.competition) and not single and c.placement then
+    local mon = c.contestants[0].mon
+    local won = c.placement[0] == 0
+    local save = ctx.save
+    if won then
+      if c.rank >= C.MASTER and c.competition == C.OFFICIAL then
+        save.gen4ContestMaster = save.gen4ContestMaster or {}
+        save.gen4ContestMaster[c.type] = true
+      end
+      mon.ribbons = mon.ribbons or {}
+      mon.ribbons[C.ribbonId(c.type, c.rank)] = true
+      -- Pokemon_UpdateFriendship(FRIENDSHIP_EVENT_CONTEST_WIN): +3 / +2 / +1 by
+      -- tier (under 100, under 200, above), then Luxury Ball +1, Soothe Bell x1.5
+      local f = tonumber(mon.happiness or mon.friendship) or 0
+      local gain = f < 100 and 3 or f < 200 and 2 or 1
+      if tonumber(mon.ball) == 11 or mon.ball == "LUXURY_BALL" then gain = gain + 1 end
+      if tonumber(mon.item or mon.heldItem) == 218 then gain = math.floor(gain * 150 / 100) end
+      mon.happiness = math.min(255, f + gain)
+    end
+    save.gen4ContestRecords = save.gen4ContestRecords or { entered = 0, won = 0 }
+    save.gen4ContestRecords.entered = save.gen4ContestRecords.entered + 1
+    if won then save.gen4ContestRecords.won = save.gen4ContestRecords.won + 1 end
+  end
+  ctx.game.gen4Contest = nil
+end
+
+-- the buffers
+function Commands.g4_contest_buffer(ctx, kind, a, b)
+  local c = current(ctx)
+  if not c then return end
+  local C = Contest()
+  local data = ctx.game.data
+  local function monName(e)
+    local def = data.pokemon and data.pokemon[e.mon and e.mon.species]
+    return (e.mon and e.mon.nickname) or (def and def.name) or "?"
+  end
+  if kind == "judge" then
+    local j = data.gen4_contest.judges[c.judges[math.floor(valueOf(ctx, a)) + 1]]
+    setBuf(ctx, b, j and contestText(ctx, C.JUDGE_NAMES, j.nameId))
+  elseif kind == "trainer" or kind == "mon" then
+    local e = c.contestants[C.entryToId(math.floor(valueOf(ctx, a)))]
+    if e then setBuf(ctx, b, kind == "trainer" and e.trainer or monName(e)) end
+  elseif kind == "entry" then
+    setBuf(ctx, b, tostring(math.floor(valueOf(ctx, a))))
+  elseif kind == "rank" then
+    -- Contest_GetContestRankTitleMessageID: practice, or the rank's name
+    -- (bank 204: NORMAL..MASTER RANK 46..49, PRACTICE 50)
+    setBuf(ctx, a, contestText(ctx, C.TEXT_BANK, C.isPractice(c.competition) and 50 or 46 + c.rank))
+  elseif kind == "type" then
+    -- Contest_GetFullContestTypeMessageID: COOL..TOUGH CONTEST 41..45, or plain
+    -- CONTEST (52) for the practice Dance
+    setBuf(ctx, a, contestText(ctx, C.TEXT_BANK, c.competition == C.PRACTICE_DANCE and 52 or 41 + c.type))
+  elseif kind == "winTrainer" or kind == "winMon" then
+    local e = c.contestants[C.winner(c)]
+    setBuf(ctx, a, kind == "winTrainer" and e.trainer or monName(e))
+  elseif kind == "ribbon" then
+    setBuf(ctx, a, contestText(ctx, 535, C.ribbonId(c.type, c.rank)))
+  end
+end
+
+-- the queries
+function Commands.g4_contest_query(ctx, kind, a, b)
+  local c = current(ctx)
+  local C = Contest()
+  if kind == "true" then return setVar(ctx.save, a, 1) end
+  if not c then return end
+  if kind == "placement" then setVar(ctx.save, a, c.placement and c.placement[0] or 0)
+  elseif kind == "winner" then setVar(ctx.save, a, C.idToEntry(C.winner(c)))
+  elseif kind == "entry" then setVar(ctx.save, a, C.idToEntry(0))
+  elseif kind == "gfx" then
+    local e = c.contestants[C.entryToId(math.floor(valueOf(ctx, a)))]
+    local g = e and e.gfx
+    if g == "player_m" then g = 0 elseif g == "player_f" then g = 97
+    elseif g == "player_m_contest" then g = 186 elseif g == "player_f_contest" then g = 187 end
+    setVar(ctx.save, b, tonumber(g) or 0)
+  elseif kind == "fame" then
+    local e = c.contestants[C.entryToId(math.floor(valueOf(ctx, a)))]
+    setVar(ctx.save, b, e and e.fame or 1)
+  elseif kind == "mode" then setVar(ctx.save, a, C.mode(c))
+  elseif kind == "ribbon" then
+    local mon = c.contestants[0].mon
+    setVar(ctx.save, a, (mon and mon.ribbons and mon.ribbons[C.ribbonId(c.type, c.rank)]) and 1 or 0)
+  elseif kind == "firstWin" then
+    if not c.placement or c.placement[0] ~= 0 then return setVar(ctx.save, a, 0xFFFF) end
+    local acc = C.FIRST_WIN_ACCESSORY[c.type][c.rank]
+    setVar(ctx.save, a, Gen4Commands.canFitAccessory(ctx.save, acc, 1) and acc or 0xFFFF)
+  elseif kind == "skipCeremony" then
+    local single = c.competition == C.VISUAL or c.competition == C.DANCE or c.competition == C.ACTING
+    local skip = C.isPractice(c.competition) or single or C.winner(c) ~= 0
+    setVar(ctx.save, a, skip and 1 or 0)
+  end
+end
+
+function Commands.g4_contest_info(ctx, rankVar, typeVar, compVar, slotVar)
+  local c = current(ctx)
+  if not c then return end
+  setVar(ctx.save, rankVar, c.rank)
+  setVar(ctx.save, typeVar, c.type)
+  setVar(ctx.save, compVar, c.competition)
+  setVar(ctx.save, slotVar, c.partySlot or 0)
+end
+
+-- THE FASHION CASE'S ACCESSORIES (unk_020298BC.c): ids below 61
+-- (NON_UNIQUE_ACCESSORY_COUNT) stack to 9, the rest to 1.
+function Gen4Commands.accessoryCount(save, id)
+  return tonumber(save and save.gen4Accessories and save.gen4Accessories[id]) or 0
+end
+function Gen4Commands.canFitAccessory(save, id, n)
+  local cap = id < 61 and 9 or 1
+  return Gen4Commands.accessoryCount(save, id) + n <= cap
+end
+function Commands.g4_add_accessory(ctx, id, n)
+  local a, k = math.floor(valueOf(ctx, id)), math.floor(valueOf(ctx, n))
+  ctx.save.gen4Accessories = ctx.save.gen4Accessories or {}
+  local cap = a < 61 and 9 or 1
+  ctx.save.gen4Accessories[a] = math.min(cap, Gen4Commands.accessoryCount(ctx.save, a) + k)
+end
+function Commands.g4_can_fit_accessory(ctx, id, n, destVar)
+  setVar(ctx.save, destVar, Gen4Commands.canFitAccessory(ctx.save, math.floor(valueOf(ctx, id)), math.floor(valueOf(ctx, n))) and 1 or 0)
+end
+
+-- `hidepoketch` / `showpoketch` (SystemFlag_Set/ClearPoketchHidden)
+function Commands.g4_poketch_hidden(ctx, hidden)
+  ctx.save.poketch = ctx.save.poketch or {}
+  ctx.save.poketch.hidden = hidden or nil
+end
+
+
+-- ---------------------------------------------------------------------------
+-- MYSTERY GIFTS (src/scrcmd_mystery_gift.c ScrCmd_MysteryGiftGive), the
+-- deliveryman's commands over src/pokemon/Gen4MysteryGift.lua.
+-- ---------------------------------------------------------------------------
+
+-- `mysterygiftgive <stage> [dest] [dest2]`
+function Commands.g4_mystery_gift(ctx, stage, a, b)
+  local MG = require("src.pokemon.Gen4MysteryGift")
+  local save, game = ctx.save, ctx.game
+  stage = math.floor(tonumber(stage) or 0)
+  local g = MG.current(save)
+  if stage == 1 then                                   -- CHECK_AVAILABLE_PGT
+    setVar(save, a, g and 1 or 0)
+  elseif stage == 2 then                               -- GET_PGT_TYPE
+    setVar(save, a, MG.currentType(save))
+  elseif stage == 3 then                               -- CHECK_CAN_RECEIVE
+    setVar(save, a, MG.canReceive(game, save) and 1 or 0)
+  elseif stage == 4 then                               -- GIVE, then free the slot
+    MG.give(game, save, setVar)
+  elseif stage == 5 or stage == 6 then                 -- RECEIVED / CANT_RECEIVE
+    if not g then return end
+    local items = game and game.data and game.data.items or {}
+    local itemName = g.item and items[g.item] and items[g.item].name or ""
+    local player = (save.player and save.player.name) or save.playerName or ""
+    game.stringBuffers = game.stringBuffers or {}
+    local id
+    if stage == 5 then
+      id = g.text
+      game.stringBuffers[1], game.stringBuffers[2] = player, itemName
+    else
+      id = g.item and MG.TEXT.CANNOT_TOO_MANY or MG.TEXT.CANNOT_PARTY_FULL
+      game.stringBuffers[1] = itemName
+    end
+    setVar(save, a, MG.BANK)
+    setVar(save, b, id)
+  end
+  -- 0 LOAD, 7 / 8 the UNLOADs: the save's gift block, which needs no loading here
+end
+Commands.meta = Commands.meta or {}
+
+-- `checkdistributionevent <event> <dest>`: SystemVars_CheckDistributionEvent,
+-- the event var holding its magic number
+function Commands.g4_check_distribution_event(ctx, event, dest)
+  local MG = require("src.pokemon.Gen4MysteryGift")
+  local e = math.floor(valueOf(ctx, event) or 0)
+  local magic = MG.MAGIC[e]
+  local on = magic ~= nil and getVar(ctx.save, MG.DISTRIBUTION_VAR + e) == magic
+  setVar(ctx.save, dest, on and 1 or 0)
+  setResult(ctx, on and 1 or 0)
+end
+
+-- After the Hall of Fame: this port's offer of one gift per induction
+-- (src/pokemon/Gen4MysteryGift.lua). The script waits for the picker.
+function Commands.g4_mystery_gift_offer(ctx)
+  local runner, game = ctx.runner, ctx.game
+  local MG = require("src.pokemon.Gen4MysteryGift")
+  if not (game and game.stack) or MG.owed(ctx.save) < 1 or #MG.available(ctx.save) == 0 then return end
+  local resumed = false
+  MG.offer(game, function()
+    resumed = true
+    if runner and runner.resume then runner:resume() end
+  end)
+  if runner and not resumed then runner:yield() end
+end
+Commands.meta.g4_mystery_gift_offer = { foreground = true, blocking = true }
+
+
+-- `cleargame` -- ClearGame (src/clear_game.c), Platinum's own end:
+--   1. the Hall of Fame app (src/ui/Gen4HallOfFame.lua)
+--   2. [this port's addition] the Mystery Gift offer, one per induction
+--   3. "Saving... Don't turn off the power." (bank 213 #15), the party
+--      healed, the induction recorded, the save, "{player} saved the game."
+--      (#16)
+--   4. the end credits (src/ui/Gen4Credits.lua), START skipping them only if
+--      the game had been cleared before this time
+--   5. OS_ResetSystem: the cartridge reboots, so this returns to the title
+--      and the script never resumes
+function Commands.g4_clear_game(ctx)
+  local game, save, runner = ctx.game, ctx.save, ctx.runner
+  local flag = (save.flags or {})[Gen4Commands.GAME_COMPLETED_FLAG]
+  local clearedBefore = flag == true or #((save and save.hallOfFame) or {}) > 0
+  Commands.g4_prepare_hall_of_fame(ctx)
+  local T = require("src.import.Gen4Text")
+  local TextBox = require("src.render.TextBox")
+  local function line(n)
+    T.buffer(game, (save.player and save.player.name) or "")
+    return T.resolve(game.data, 213, n, game) or ""
+  end
+  local function credits()
+    game.stack:push(require("src.ui.Gen4Credits").new(game, {
+      canSkip = clearedBefore,
+      onDone = function() if game.returnToTitle then game:returnToTitle() end end,
+    }))
+  end
+  local function saveGame()
+    local Pokemon = require("src.pokemon.Pokemon")
+    for _, mon in ipairs(save.party or {}) do pcall(Pokemon.heal, mon) end
+    local SaveData = require("src.core.SaveData")
+    local boot = game.data.field and game.data.field.boot or {}
+    pcall(SaveData.applyPostGameHome, save, boot)
+    if game.overworld then game.overworld.lastOutdoor = save.lastOutdoor end
+    -- the one save write every script save goes through (ScriptSave); the
+    -- capture puts the player back where they stand, so the post-game home is
+    -- applied again after it and that save written as it stands
+    local allowed = require("src.script.ScriptSave").write(ctx, "hall of fame")
+    pcall(SaveData.applyPostGameHome, save, boot)
+    if allowed then pcall(SaveData.save, save) end
+  end
+  local party = {}
+  for _, mon in ipairs(save.party or {}) do party[#party + 1] = mon end
+  game.stack:push(require("src.ui.Gen4HallOfFame").new(game, {
+    party = party,
+    onDone = function()
+      -- the induction (HallOfFame_AddEntry), which the gift offer counts
+      save.hallOfFame = save.hallOfFame or {}
+      local entry = {}
+      for _, mon in ipairs(party) do
+        entry[#entry + 1] = { species = mon.species, level = mon.level, nickname = mon.nickname }
+      end
+      table.insert(save.hallOfFame, entry)
+      require("src.pokemon.Gen4MysteryGift").offer(game, function()
+        game.stack:push(TextBox.new(game, line(15), function()
+          saveGame()
+          game.stack:push(TextBox.new(game, line(16), credits))
+        end))
+      end)
+    end,
+  }))
+  if runner then runner:yield() end
+end
+Commands.meta = Commands.meta or {}
+Commands.meta.g4_clear_game = { foreground = true, blocking = true }
 
 return Gen4Commands
