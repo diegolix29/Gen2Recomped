@@ -1230,7 +1230,7 @@ local MARKER_PATH = "rom-cache.complete"
 -- The marker a finished import writes for a version: the generation tag plus
 -- that version's ROM hash, so both a format bump and a swapped ROM invalidate.
 local function markerFor(version)
-  local revision = version == "platinum" and "platinum-audio-ui-v15:" or ""
+  local revision = version == "platinum" and "platinum-audio-ui-v16:" or ""
   if version == "emerald" then revision = "emerald-map-popup-v2:" end
   if version == "polishedcrystal" then revision = "polished-audio-v1:" end
   -- Include version-specific field encounters, sleep, swarm and rate tables.
@@ -5527,11 +5527,12 @@ function RomImporter:draw()
   local paypalFont = self.hintFont
   if paypalLink and paypalFont:getWidth(paypalLink.label)>paypalW-12*s then paypalFont=self.warningFont end
   local paypalBaseW = paypalW
-  paypalW = paypalW * 2
-  local paypalH = donateH * 2
-  local paypalStacked = paypalLink and appW < 2 * (paypalW + padH + 8 * s) + 180 * s
+  local paypalMultiplier = height > width and 1 or 2
+  paypalW = paypalW * paypalMultiplier
+  local paypalH = donateH * paypalMultiplier
+  local paypalStacked = paypalLink and paypalMultiplier==2 and appW < 2 * (paypalW + padH + 8 * s) + 180 * s
   if paypalLink then
-    local fontSize=paypalFont:getHeight()*2
+    local fontSize=paypalFont:getHeight()*paypalMultiplier
     if self._paypalFontSize~=fontSize then
       self._paypalFontSize=fontSize
       self._paypalFont=love.graphics.newFont(fontSize)
