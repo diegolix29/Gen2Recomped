@@ -56,7 +56,7 @@ that is exactly the case the updater exists to avoid a reinstall for.
 
 ## Release assets
 
-Each tagged release `vX.Y.Z` carries the existing per-platform archives
+Each tagged release `F+X.Y.Z` (fork-specific prefix) carries the existing per-platform archives
 (`Gen2Recomped-X.Y.Z-macos.zip`, `-windows.zip`, `-linux.zip`,
 `-android.apk`, `-switch.zip`, `-xbox-uwp.zip`, `-windows.msix`, `-ios.ipa`,
 `-rg34xxsp-stockos64-mod.zip`, `-linux-arm64.AppImage`) plus two assets the
@@ -77,7 +77,7 @@ updater itself consumes:
 
 A release missing either asset is treated as "no in-place update available":
 `Check` reports `needs_full` and sends the player to `Check.releaseUrl()`
-(`https://github.com/UNDERdecoded/Gen2Recomped/releases/latest`).
+(`https://github.com/diegolix29/Gen2Recomped/releases/latest`).
 
 ## Save-directory layout
 

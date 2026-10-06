@@ -29,7 +29,7 @@ local Check = {}
 -- failed" on every platform.  An updater that points at the wrong repo fails
 -- exactly like an updater with no network, so verify this against the remote
 -- rather than against how the account name is written down anywhere else.
-Check.REPO = "UNDERdecoded/Gen2Recomped"
+Check.REPO = "diegolix29/Gen2Recomped"
 
 local CMD = "update_check_cmd"
 local STATE = "update_check_state"
@@ -51,7 +51,7 @@ function Check.pickAsset(assets, name)
 end
 
 local function stripV(tag)
-  return (tostring(tag):gsub("^[vV]", ""))
+  return (tostring(tag):gsub("^[vVFf]", ""))
 end
 
 -- Decode a GitHub "releases/latest" response into just the fields the updater

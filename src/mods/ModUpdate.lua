@@ -8,7 +8,7 @@ local ModUpdate = {}
 ModUpdate.CACHE_TTL = 6 * 60 * 60  -- six hours
 
 local function stripV(tag)
-  return (tostring(tag):gsub("^[vV]", ""))
+  return (tostring(tag):gsub("^[vVFf]", ""))
 end
 
 -- Prefer "<id>-<version>.zip", then any "<id>*.zip", then the first .zip.

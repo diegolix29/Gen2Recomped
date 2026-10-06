@@ -124,7 +124,7 @@ The Switch's real update bug was not in Lua at all. `ota_protocol.h` had
 
 ```c
 #define OTA_RELEASES_API \
-  "https://api.github.com/repos/UNDERdecodedHD/Gen2Recomped/releases/latest"
+  "https://api.github.com/repos/diegolix29/Gen2Recomped/releases/latest"
 ```
 
 and `src/main.c` built its checksum URL from the same owner, spelled out a
@@ -133,7 +133,7 @@ second time. Measured on 2026-10-04:
 | slug | HTTP |
 |---|---|
 | `UNDERdecodedHD/Gen2Recomped` | **404** |
-| `UNDERdecoded/Gen2Recomped` (`Check.REPO`) | **200** |
+| `diegolix29/Gen2Recomped` (`Check.REPO`) | **200** |
 
 **`UNDERdecodedHD` is the author name** — the NACP author, the MSIX publisher,
 the intro credit — and is correct everywhere it appears as a name. The GitHub
@@ -150,6 +150,13 @@ Both URLs now derive from one `OTA_REPO_SLUG`, and the check asserts it equals
 the tree had been comparing. The launcher's own host suite
 (`make host-test`, 34 cases) builds and passes on the change, and `main.c`
 syntax-checks clean for the host branch.
+
+## Fork-specific tag prefix
+
+This fork uses `F` prefixed tags (e.g., `F0.1.0`) instead of the standard `v` prefix
+to distinguish fork releases from upstream releases. The auto-updater strips both
+`v` and `F` prefixes when comparing versions, so it will only see and update to
+releases tagged with `F` from this fork, not upstream `v` tags.
 
 The README's dangling pointer to `src/update/SwitchOta.lua` — a file that has
 never existed in this tree — is corrected to the C files that really hold the
