@@ -98,7 +98,12 @@ end
 local Budget = optional("Gen4Budget") or { allow = function() return true end, charge = function() end }
 local clock = (love and love.timer and love.timer.getTime) or os.clock
 
-local cache = setmetatable({}, { __mode = "k" })   -- ground -> { lands = {} }
+-- Land meshes, keyed by the engine's land id (shared across crops of the
+-- same grid). A route swap builds a new Ground, so a weak Ground-keyed cache
+-- dropped every voxel tree and let native cards flash back. Number keys stay;
+-- table keys (a land record) go with the record. Dropped only by invalidate().
+local landEntries = setmetatable({}, { __mode = "k" })
+local window = {}
 
 -- ----------------------------------------------------------- decoding --
 
@@ -760,6 +765,10 @@ local function buildLand(ground, land)
     local mesh = Voxel3D.newMesh(b.verts, b.map)
     if mesh then out.buckets[#out.buckets + 1] = { mesh = mesh, tex = b.tex } end
   end
+  out.coveredKeys = {}
+  for _, s in ipairs(out.shapes) do
+    for _, k in ipairs(nameKeys(s)) do out.coveredKeys[k] = true end
+  end
   if GT.LOG and (#out.shapes > 0 or next(skipped)) then
     local why = {}
     for k, n in pairs(skipped) do why[#why + 1] = ("%d %s"):format(n, k) end
@@ -774,6 +783,41 @@ end
 
 local lastSignature = ""
 
+-- Hide native cards for this land's live shape records (the current Ground's
+-- copies, which are not the pointers stored when the land was first built).
+local function coverLiveShapes(ground, land, entry, active, names)
+  local keys = entry.coveredKeys
+  if not keys then
+    keys = {}
+    for _, s in ipairs(entry.shapes or {}) do
+      for _, k in ipairs(nameKeys(s)) do keys[k] = true end
+    end
+    entry.coveredKeys = keys
+  end
+  for _, s in ipairs(entry.shapes or {}) do
+    active[s] = true
+    for _, k in ipairs(nameKeys(s)) do names[k] = true end
+  end
+  local record = ground.terrain and ground.terrain.chunks and ground.terrain.chunks[land]
+  if not record then return end
+  local function consider(s)
+    for _, k in ipairs(nameKeys(s)) do
+      if keys[k] then
+        active[s] = true
+        names[k] = true
+        return
+      end
+    end
+  end
+  for _, s in ipairs(record.shapes or {}) do consider(s) end
+  for _, object in ipairs(record.objects or {}) do
+    local packed = packedFor(ground, object)
+    if packed and packed.shapes then
+      for _, s in ipairs(packed.shapes) do consider(s) end
+    end
+  end
+end
+
 -- Work out which lands are in the window, build what the budget allows, and
 -- publish GT.active (shape records covered RIGHT NOW). Idempotent per frame;
 -- Gen4Hide calls it before the native pass, GT.draw calls it again.
@@ -784,8 +828,6 @@ function GT.prepare(ground)
     GT.active, GT.list, GT.coveredNames = {}, {}, {}
     return
   end
-  local rec = cache[ground]
-  if not rec then rec = { lands = {} }; cache[ground] = rec end
 
   local grid, px, half = ground.grid, ground.chunkPx, ground.half
   local W = GT.WINDOW
@@ -793,19 +835,12 @@ function GT.prepare(ground)
 
   -- MEMO. Once every land of the window is built, the answer (which shapes are
   -- covered, which lands to draw) only changes when the camera crosses an
-  -- engine chunk. This ran TWICE a frame (Gen4Hide, then draw), each time
-  -- rebuilding and sorting the window and concatenating a signature string.
-  if rec.done and rec.camCx == camCx and rec.camCy == camCy and rec.W == W then
-    if GT.lastRec ~= rec then
-      GT.lastRec = rec
-      GT.coverVersion = GT.coverVersion + 1       -- a different ground: re-filter
-    end
-    GT.active, GT.list, GT.coveredNames = rec.active, rec.list, rec.names
+  -- engine chunk -- or when Ground is replaced (new shape pointers to hide).
+  if window.done and window.ground == ground and window.camCx == camCx
+      and window.camCy == camCy and window.W == W then
+    GT.active, GT.list, GT.coveredNames = window.active, window.list, window.names
     return
   end
-
-  local active, list, names = {}, {}, {}
-  GT.active, GT.list, GT.coveredNames = active, list, names
 
   local want = {}
   for cy = camCy - W, camCy + W do
@@ -823,16 +858,17 @@ function GT.prepare(ground)
   local failedNames = {}
   local missing = 0
   for _, w in ipairs(want) do
-    if not rec.lands[w[4]] then missing = missing + 1 end
+    if not landEntries[w[4]] then missing = missing + 1 end
   end
   -- a window that is still filling gets the larger shared limit, so the old
   -- cards are not on screen beside the new trees for long
   local warm = missing > 1
   local cap = Budget.covered and 12 or GT.BUILDS_PER_FRAME
   local pending = 0
+  local active, list, names = {}, {}, {}
   for _, w in ipairs(want) do
     local land = w[4]
-    local entry = rec.lands[land]
+    local entry = land and landEntries[land]
     if not entry then
       if builds < cap and Budget.allow(warm) then
         builds = builds + 1
@@ -842,20 +878,17 @@ function GT.prepare(ground)
         if ok then
           entry = built
         else
-          entry = { buckets = {}, shapes = {}, quads = 0, failed = {} }
+          entry = { buckets = {}, shapes = {}, quads = 0, failed = {}, coveredKeys = {} }
           once("build", "a land chunk failed to build and was skipped: %s", tostring(built))
         end
-        rec.lands[land] = entry
+        landEntries[land] = entry
       else
         pending = pending + 1
       end
     end
     if entry then
       sig[#sig + 1] = tostring(land)
-      for _, s in ipairs(entry.shapes) do
-        active[s] = true
-        for _, k in ipairs(nameKeys(s)) do names[k] = true end
-      end
+      coverLiveShapes(ground, land, entry, active, names)
       for k in pairs(entry.failed or {}) do failedNames[k] = true end
       if #entry.buckets > 0 then
         list[#list + 1] = { entry = entry, x = w[2] * px + half, z = w[3] * px + half }
@@ -865,18 +898,17 @@ function GT.prepare(ground)
   -- a name that failed in ANY land of the window is not safe to hide by name
   for k in pairs(failedNames) do names[k] = nil end
   local signature = table.concat(sig, ",")
-  if signature ~= lastSignature then
+  if signature ~= lastSignature or window.ground ~= ground then
     lastSignature = signature
     GT.coverVersion = GT.coverVersion + 1
   end
-  GT.lastRec = rec
 
-  if pending == 0 then
-    rec.done, rec.camCx, rec.camCy, rec.W = true, camCx, camCy, W
-    rec.active, rec.list, rec.names = active, list, names
-  else
-    rec.done = false
-  end
+  -- Publish after the fill so a Ground swap does not clear hide/draw for a
+  -- frame while overlapping lands are already in landEntries.
+  GT.active, GT.list, GT.coveredNames = active, list, names
+  window.ground, window.camCx, window.camCy, window.W = ground, camCx, camCy, W
+  window.active, window.list, window.names = active, list, names
+  window.done = pending == 0
 end
 
 -- Gen4Hide asks this per cache shape record.
@@ -917,14 +949,14 @@ end
 
 -- Drop every baked tree: a map was edited, or the mod was reloaded.
 function GT.invalidate()
-  for _, rec in pairs(cache) do
-    for _, entry in pairs(rec.lands) do
-      for _, b in ipairs(entry.buckets or {}) do
-        if b.mesh and b.mesh.release then pcall(b.mesh.release, b.mesh) end
-      end
+  for _, entry in pairs(landEntries) do
+    for _, b in ipairs(entry.buckets or {}) do
+      if b.mesh and b.mesh.release then pcall(b.mesh.release, b.mesh) end
     end
   end
-  cache = setmetatable({}, { __mode = "k" })
+  landEntries = setmetatable({}, { __mode = "k" })
+  window = {}
+  lastSignature = ""
   textures = {}
   GT.active, GT.list, GT.coveredNames = {}, {}, {}
   GT.coverVersion = GT.coverVersion + 1
