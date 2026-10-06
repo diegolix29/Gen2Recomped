@@ -89,7 +89,10 @@ local function getGrass3D()
   return grass3dMod
 end
 
-local cache = setmetatable({}, { __mode = "k" })    -- map -> { chunks = {} }
+-- World-pixel origin of a sand chunk -> baked buckets. Not keyed by Map:
+-- neighbouring routes share beach cells, and a new Map must not drop them.
+local chunks = {}
+local window = {}
 local texture                                        -- Image | false | nil (untried)
 
 local function groundTexture(Grass3D)
@@ -175,6 +178,11 @@ end
 
 local function numKey(kx, ky) return (ky + 32768) * 65536 + (kx + 32768) end
 
+local function worldChunkKey(kx, ky, ox, oz, span)
+  return numKey(math.floor(kx * span + (ox or 0) + 0.5),
+                math.floor(ky * span + (oz or 0) + 0.5))
+end
+
 function Sand.draw(scene)
   if not Sand.enabled then return end
   local map = scene.map
@@ -183,9 +191,6 @@ function Sand.draw(scene)
   if not (Grass3D and Grass3D.instanceForTile) then return end
   local tex = groundTexture(Grass3D)
   if not tex then return end
-
-  local rec = cache[map]
-  if not rec then rec = { chunks = {}, list = {} }; cache[map] = rec end
 
   local fx, fz = scene.focusPx()
   local span = Sand.CHUNK * 16
@@ -200,8 +205,9 @@ function Sand.draw(scene)
   -- WHICH CHUNKS. The list only changes when the camera or focus crosses a
   -- chunk boundary, so it is built (and sorted) then and reused every other
   -- frame instead of being rebuilt, re-sorted and re-keyed 60 times a second.
-  if not (rec.want and rec.kx0 == kx0 and rec.ky0 == ky0 and rec.camCx == camCx
-          and rec.camCy == camCy and rec.ox == ox and rec.oz == oz and rec.grid == grid) then
+  -- World-pixel keys: a new Map crop must still hit the beach already baked.
+  if not (window.want and window.kx0 == kx0 and window.ky0 == ky0 and window.camCx == camCx
+          and window.camCy == camCy and window.ox == ox and window.oz == oz and window.grid == grid) then
     local want = {}
     if grid then
       local W = Sand.WINDOW
@@ -210,7 +216,7 @@ function Sand.draw(scene)
       for ky = math.floor(z0 / span), math.ceil(z1 / span) - 1 do
         for kx = math.floor(x0 / span), math.ceil(x1 / span) - 1 do
           local dx, dy = kx - kx0, ky - ky0
-          want[#want + 1] = { dx * dx + dy * dy, kx, ky, numKey(kx, ky) }
+          want[#want + 1] = { dx * dx + dy * dy, kx, ky, worldChunkKey(kx, ky, ox, oz, span) }
         end
       end
     else
@@ -219,19 +225,19 @@ function Sand.draw(scene)
         for kx = kx0 - R, kx0 + R do
           local dx, dy = kx - kx0, ky - ky0
           if dx * dx + dy * dy <= R * R + 1 then
-            want[#want + 1] = { dx * dx + dy * dy, kx, ky, numKey(kx, ky) }
+            want[#want + 1] = { dx * dx + dy * dy, kx, ky, worldChunkKey(kx, ky, ox, oz, span) }
           end
         end
       end
     end
     table.sort(want, function(a, b) return a[1] < b[1] end)
-    rec.want, rec.kx0, rec.ky0, rec.camCx, rec.camCy = want, kx0, ky0, camCx, camCy
-    rec.ox, rec.oz, rec.grid, rec.dirty = ox, oz, grid, true
+    window.want, window.kx0, window.ky0, window.camCx, window.camCy = want, kx0, ky0, camCx, camCy
+    window.ox, window.oz, window.grid, window.dirty = ox, oz, grid, true
   end
 
   -- BUILD what the shared budget allows, nearest first. Nothing past the first
   -- refusal can build this frame either, so stop looking.
-  local want, chunks = rec.want, rec.chunks
+  local want = window.want
   local builds = 0
   for i = 1, #want do
     local w = want[i]
@@ -241,39 +247,43 @@ function Sand.draw(scene)
         local t0 = clock()
         local ok, built = pcall(buildChunk, Grass3D, scene, map, w[2], w[3])
         Budget.charge(t0, "sand")
-        if ok then
-          chunks[w[4]] = built
-        else
-          chunks[w[4]] = { buckets = {} }
+        if not ok then
           once("build", "a chunk failed to build and was skipped: %s", tostring(built))
+          built = { buckets = {} }
         end
-        rec.dirty = true
+        built.ox, built.oz = ox, oz
+        for _, b in ipairs(built.buckets or {}) do
+          b.cox, b.coz = ox, oz
+        end
+        chunks[w[4]] = built
+        window.dirty = true
       else
         break
       end
     end
   end
 
-  if rec.dirty then
+  if window.dirty then
     local list = {}
     for i = 1, #want do
       local chunk = chunks[want[i][4]]
       if chunk then for _, b in ipairs(chunk.buckets) do list[#list + 1] = b end end
     end
-    rec.list, rec.dirty = list, false
+    window.list, window.dirty = list, false
   end
-  local list = rec.list
-  if #list == 0 then return end
+  local list = window.list
+  if not list or #list == 0 then return end
 
   Voxel3D.seams(false)
   Voxel3D.glass(false)
   local lift = Sand.LIFT
   for i = 1, #list do
     local b = list[i]
+    local cox, coz = b.cox or ox, b.coz or oz
     local m = b.m
-    if not m or b.mox ~= ox or b.moz ~= oz or b.mlift ~= lift then
-      m = Mat4.translate(ox, b.y + lift, oz)       -- once per bucket, not per frame
-      b.m, b.mox, b.moz, b.mlift = m, ox, oz, lift
+    if not m or b.mox ~= cox or b.moz ~= coz or b.mlift ~= lift then
+      m = Mat4.translate(cox, b.y + lift, coz)     -- once per bucket, not per frame
+      b.m, b.mox, b.moz, b.mlift = m, cox, coz, lift
     end
     Voxel3D.draw(b.mesh, tex, m, Sand.PULL, nil, 0)
   end
@@ -282,14 +292,13 @@ function Sand.draw(scene)
 end
 
 function Sand.invalidate()
-  for _, rec in pairs(cache) do
-    for _, chunk in pairs(rec.chunks) do
-      for _, b in ipairs(chunk.buckets or {}) do
-        if b.mesh and b.mesh.release then pcall(b.mesh.release, b.mesh) end
-      end
+  for _, chunk in pairs(chunks) do
+    for _, b in ipairs(chunk.buckets or {}) do
+      if b.mesh and b.mesh.release then pcall(b.mesh.release, b.mesh) end
     end
   end
-  cache = setmetatable({}, { __mode = "k" })
+  chunks = {}
+  window = {}
   texture = nil
 end
 
