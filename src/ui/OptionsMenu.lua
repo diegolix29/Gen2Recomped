@@ -501,6 +501,12 @@ local function buildRows(game)
       activate = function(g)
         require("src.ui.Screens").push(g, "BindingsMenu")
       end },
+    -- hotkey rebinding UI (one-shot actions like COLORS/TILT/ZOOM); captured
+    -- inputs live in options.hotkeyBindings, so the row costs a vanilla install nothing
+    { id = "hotkeys", label = Strings("HOTKEYS"),
+      activate = function(g)
+        require("src.ui.Screens").push(g, "HotkeyBindingsMenu")
+      end },
     -- permanent on-screen pad toggle (#327); layout editing stays in the
     -- launcher.  Hidden where the overlay never appears (desktop without
     -- POKEPORT_TOUCH), so the row costs a non-mobile install nothing.

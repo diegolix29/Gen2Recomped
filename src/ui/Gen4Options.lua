@@ -136,8 +136,8 @@ function Gen4Options.new(game, opts)
   -- the bank's: TEXT SPEED, SOUND, BATTLE SCENE, BATTLE STYLE, BUTTON MODE,
   -- FRAME, then CLOSE
   local ORDER = { textSpeed = 1, sound = 2, battleScene = 3, battleStyle = 4, buttonMode = 5, frame = 6 }
-  table.sort(self.rows, function(a, b) return (ORDER[a.key] or 99) < (ORDER[b.key] or 99) end)
-  self.cartridgeRows = #self.rows
+  table.sort(cartridge, function(a, b) return (ORDER[a.key] or 99) < (ORDER[b.key] or 99) end)
+  self.cartridgeRows = #cartridge
   self.closeLabel = self.closeLabel or Strings("CLOSE")
 
   -- Engine + mod rows FIRST, the way every other OPTIONS screen leads with

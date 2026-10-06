@@ -1277,11 +1277,127 @@ function Game:cycleGen4CameraTilt()
   return true
 end
 
+-- Fire a hotkey action by ID (from Input:hotkeyForKey or Input:hotkeyForPad)
+function Game:fireHotkey(actionId)
+  if not actionId then return false end
+
+  -- System hotkeys (always active)
+  if actionId == "quit" then
+    love.event.quit()
+    return true
+  elseif actionId == "softReset" then
+    -- Soft reset is handled by Input:softResetStep, trigger it here
+    self.stack:push(require("src.ui.StartMenu").new(self))
+    return true
+  elseif actionId == "saveGame" then
+    self:writeSave()
+    return true
+  elseif actionId == "loadGame" then
+    local loaded, recovered = SaveData.load()
+    if loaded then self:restoreSave(loaded, recovered) end
+    return true
+  elseif actionId == "toggleModMenu" then
+    self:toggleModManager()
+    return true
+  elseif actionId == "reloadMods" then
+    if devMode then
+      require("src.dev.HotReload").run(self)
+    end
+    return true
+  end
+
+  -- Display hotkeys (need gate checks)
+  if actionId == "colors" then
+    local ow = self.overworld
+    local top = self.stack:top()
+    local busy = ow and (ow.transitioning
+      or (top == ow and (
+           (ow.runner and ow.runner.isRunning and ow.runner:isRunning())
+        or (ow.scriptMoves and #ow.scriptMoves > 0)
+        or ow.engaging or ow.emote)))
+    if not busy then
+      local PaletteFX = require("src.render.PaletteFX")
+      self.save.options.colors = PaletteFX.cycleMode()
+      self:writeOptions()
+    end
+    return true
+  elseif actionId == "tilt" then
+    local Tilt = require("src.render.Tilt")
+    if Tilt.gateOK(self.stack:top(), self.overworld) then
+      if self:cycleGen4CameraTilt() then
+        -- handled
+      else
+        self.save.options.tilt = Tilt.cycle()
+      end
+      self:writeOptions()
+    end
+    return true
+  elseif actionId == "fastForward" then
+    local Zoom = require("src.render.Zoom")
+    if Zoom.gateOK(self.stack:top(), self.overworld) then
+      self.save.options.zoom = Zoom.cycle(Renderer:fitScale())
+      self:writeOptions()
+    end
+    return true
+  elseif actionId == "gbcfx" then
+    local GBCFX = require("src.render.GBCFX")
+    if not GBCFX.isSupported() then return true end
+    self.save.options.gbcfx = GBCFX.cycle()
+    self:writeOptions()
+    return true
+  elseif actionId == "vortex" then
+    -- Voxel mode hotkey - handled by Pipelines
+    local Pipelines = require("src.render.Pipelines")
+    if Pipelines.hotkey("6", self.stack:top(), self.overworld) then
+      Pipelines.syncOptions(self.save.options)
+      require("src.render.Tilt").setLevel(self.save.options.tilt or 0)
+      self:writeOptions()
+    end
+    return true
+  elseif actionId == "zoomOut" then
+    self:zoomStep(-1)
+    return true
+  elseif actionId == "zoomIn" then
+    self:zoomStep(1)
+    return true
+  elseif actionId == "cameraRotateLeft" or actionId == "cameraRotateRight" then
+    -- Camera rotation for free camera
+    local ow = self.overworld
+    local renderer = ow and ow.map and ow.map.renderer
+    local ground = renderer and renderer.gen4Ground
+    local view = ground and ground.view3d
+    if view and view.isFree and view:isFree() and view.orbit then
+      local Gen4View = require("src.render.Gen4View")
+      local step = (actionId == "cameraRotateLeft") and -Gen4View.ORBIT_YAW_STEP or Gen4View.ORBIT_YAW_STEP
+      view:orbit(step, 0)
+    end
+    return true
+  end
+
+  -- Check mod hotkeys
+  local Pipelines = require("src.render.Pipelines")
+  if Pipelines.hotkey(actionId, self.stack:top(), self.overworld) then
+    Pipelines.syncOptions(self.save.options)
+    require("src.render.Tilt").setLevel(self.save.options.tilt or 0)
+    self:writeOptions()
+    return true
+  end
+
+  return false
+end
+
 function Game:keypressed(key)
   -- ...ahead of the delegation below, which is unconditional.
   if key == "f9" then return self:unstick() end
   if key == "f11" then return self:toggleFrameProfile() end
   if key == "f10" then return self:toggleModManager() end
+
+  -- Check hotkey bindings first
+  local hotkeyAction = Input:hotkeyForKey(key)
+  if hotkeyAction and self:fireHotkey(hotkeyAction) then
+    return
+  end
+
   if self.stack and self.stack:top() and self.stack:top().onKeyPressed then
     self.stack:top():onKeyPressed(key)
     return
@@ -1448,6 +1564,13 @@ function Game:gamepadpressed(joystick, button)
   -- a controller is being used: the touch overlay steps aside until the
   -- next screen touch (mobile only; a no-op elsewhere)
   TouchControls:noteGamepad()
+
+  -- Check hotkey bindings first
+  local hotkeyAction = Input:hotkeyForPad(button)
+  if hotkeyAction and self:fireHotkey(hotkeyAction) then
+    return
+  end
+
   -- BindingsMenu's pad capture rides the same top-state routing as keys
   local top = self.stack and self.stack:top()
   if top and top.onGamepadPressed then
@@ -1467,6 +1590,32 @@ end
 function Game:gamepadaxis(joystick, axis, value)
   -- past-deadzone only, so resting-stick drift can't hide the overlay
   if math.abs(value) > 0.5 then TouchControls:noteGamepad() end
+
+  -- Check hotkey bindings for stick directions
+  if math.abs(value) > 0.5 then
+    local hotkeyButton = nil
+    if axis == "leftx" then
+      hotkeyButton = value > 0 and "stickright" or "stickleft"
+    elseif axis == "lefty" then
+      hotkeyButton = value > 0 and "stickdown" or "stickup"
+    elseif axis == "rightx" then
+      hotkeyButton = value > 0 and "rightstickright" or "rightstickleft"
+    elseif axis == "righty" then
+      hotkeyButton = value > 0 and "rightstickdown" or "rightstickup"
+    elseif axis == "triggerleft" then
+      hotkeyButton = "lefttrigger"
+    elseif axis == "triggerright" then
+      hotkeyButton = "righttrigger"
+    end
+
+    if hotkeyButton then
+      local hotkeyAction = Input:hotkeyForPad(hotkeyButton)
+      if hotkeyAction and self:fireHotkey(hotkeyAction) then
+        return
+      end
+    end
+  end
+
   Input:gamepadaxis(joystick, axis, value)
 end
 
