@@ -115,10 +115,7 @@ end
 local Budget = optional("Gen4Budget") or { allow = function() return true end, charge = function() end }
 local clock = (love and love.timer and love.timer.getTime) or os.clock
 
--- land id/record -> water sheet. Not keyed by Ground: a route swap used to
--- drop the sheet (and GW.ready) while the native water flashed back.
-local landSheets = setmetatable({}, { __mode = "k" })
-local window = {}   -- camera chunk + draw list; Ground identity is coverage only
+local cache = setmetatable({}, { __mode = "k" })   -- ground -> { lands = {}, complete }
 
 -- ----------------------------------------------------------- decoding --
 
