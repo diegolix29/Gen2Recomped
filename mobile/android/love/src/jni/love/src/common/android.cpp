@@ -304,22 +304,69 @@ bool mountDirectory(const char *path)
 	return PHYSFS_mount(path, nullptr, 1) != 0;
 }
 
+// Safe from ANY attached thread, including love.thread workers.
+//
+// NOT FindClass: a love.thread worker (e.g. rom_import_worker.lua, which
+// reaches here through CacheFs -> love.system.mkdirs while writing a ROM
+// import into a custom game-data folder) is a raw pthread whose JNI class
+// loader is the system one.  It cannot see app classes, so FindClass(
+// "org/love2d/android/GameActivity") returned null with a pending
+// ClassNotFoundException, and the very next JNI call (GetStaticMethodID on a
+// null class) made ART abort the process.  Resolving the class through the
+// live activity instance works from any attached thread -- the same fix
+// httpDownload() already has.
+//
+// Also fails soft: a missing method (old APK / new liblove skew) or a Java
+// exception becomes "false" instead of an abort.
 static bool callStaticBool(const char *name, const char *sig, const char *arg)
 {
 	JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();
-	jclass activity = env->FindClass("org/love2d/android/GameActivity");
+	if (env == nullptr)
+		return false;
+
+	jobject activityObj = (jobject) SDL_AndroidGetActivity();
+	if (activityObj == nullptr)
+		return false;
+	jclass activity = env->GetObjectClass(activityObj);
+	env->DeleteLocalRef(activityObj);
+	if (activity == nullptr)
+	{
+		env->ExceptionClear();
+		return false;
+	}
+
 	jmethodID method = env->GetStaticMethodID(activity, name, sig);
-	jboolean result;
+	if (method == nullptr)
+	{
+		env->ExceptionClear();
+		env->DeleteLocalRef(activity);
+		return false;
+	}
+
+	jboolean result = JNI_FALSE;
 	if (arg != nullptr)
 	{
 		jstring jarg = env->NewStringUTF(arg);
+		if (jarg == nullptr)
+		{
+			env->ExceptionClear();
+			env->DeleteLocalRef(activity);
+			return false;
+		}
 		result = env->CallStaticBooleanMethod(activity, method, jarg);
 		env->DeleteLocalRef(jarg);
 	}
 	else
 		result = env->CallStaticBooleanMethod(activity, method);
+
+	if (env->ExceptionCheck())
+	{
+		env->ExceptionClear();
+		result = JNI_FALSE;
+	}
+
 	env->DeleteLocalRef(activity);
-	return result;
+	return result == JNI_TRUE;
 }
 
 bool hasStorageAccess()

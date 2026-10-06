@@ -32,6 +32,14 @@ local CacheFs = {}
 
 local SEP = package.config:sub(1, 1)
 
+-- Absolute directories already created this process, so a bulk import does
+-- not repeat the same mkdir for every file it writes.  On Android each
+-- tryMkdirs is a JNI round-trip, and ensureParents runs once per file --
+-- tens of thousands of calls for a Gen 3/4 import.  Cleared whenever a
+-- directory is removed (the rmdir wrappers below) or the root changes, so it
+-- can never claim a directory that is gone.
+local madeDirs = {}
+
 -- Cache-relative paths are prefixed with this before every read/write, so a
 -- Blue/Yellow import lands under its GameVersion.cachePrefix (blue/, yellow/)
 -- while a Red import keeps the historical root.  The launcher sets it per
@@ -90,13 +98,19 @@ local function resolveRmdir()
     pcall(ffi.cdef, "int RemoveDirectoryA(const char *lpPathName);")
     local resolved = pcall(function() return ffi.C.RemoveDirectoryA end)
     if resolved then
-      rmdirFn = function(path) pcall(ffi.C.RemoveDirectoryA, path) end
+      rmdirFn = function(path)
+        madeDirs = {}
+        pcall(ffi.C.RemoveDirectoryA, path)
+      end
     end
   else
     pcall(ffi.cdef, "int rmdir(const char *pathname);")
     local resolved = pcall(function() return ffi.C.rmdir end)
     if resolved then
-      rmdirFn = function(path) pcall(ffi.C.rmdir, path) end
+      rmdirFn = function(path)
+        madeDirs = {}
+        pcall(ffi.C.rmdir, path)
+      end
     end
   end
   return rmdirFn
@@ -355,15 +369,7 @@ function CacheFs.forgetRoot()
   customResolved = false
   customRoot = nil
   customWhy = nil
-end
-
--- Create a real directory (and only that one -- no parents), for callers
--- outside this module that need the same windowless mkdir: SaveData proves a
--- chosen game-data folder is writable and may have to create it first.
-function CacheFs.mkdirReal(path)
-  if type(path) ~= "string" or path == "" then return false end
-  tryMkdirs(path)
-  return true
+  madeDirs = {}
 end
 
 local function realPath(root, rel)
@@ -373,17 +379,47 @@ end
 -- create every parent directory of `rel` under `root` (best effort; an
 -- already-existing directory is fine, a genuine failure surfaces when the
 -- subsequent io.open write fails)
-local function tryMkdirs(path)
+-- `force` skips the madeDirs cache (SaveData's writability probe wants a real
+-- attempt every time).
+local function tryMkdirs(path, force)
   if type(path) ~= "string" or path == "" then return end
+  if not force and madeDirs[path] then return end
   -- Android: Java File.mkdirs() is the call that actually creates trees on
   -- shared storage. FFI mkdir(2) often returns EACCES there even when a
   -- one-file probe at the folder root succeeded -- which is LuaWriter's
   -- "access denied" on data/generated during a ROM import.
-  if love and love.system and type(love.system.mkdirs) == "function" then
-    pcall(love.system.mkdirs, path)
+  --
+  -- love.system.mkdirs is a JNI call that is safe from love.thread workers
+  -- (the ROM import runs in one); see callStaticBool in common/android.cpp.
+  local viaJava = love and love.system
+    and type(love.system.mkdirs) == "function"
+  local made = false
+  if viaJava then
+    local ok, res = pcall(love.system.mkdirs, path)
+    made = ok and res == true
   end
   local mkdir = resolveMkdir()
   if mkdir then mkdir(path) end
+  -- Only remember a directory once we have evidence it exists: a Java success
+  -- where the bridge is present, or (no bridge) the syscall having been tried,
+  -- since its result is not observable here and a real failure still surfaces
+  -- as the io.open error on the write that follows.
+  if made or not viaJava then madeDirs[path] = true end
+end
+
+-- Create a real directory (and any missing parents on Android, where Java
+-- File.mkdirs() makes the tree), for callers outside this module that need
+-- the same windowless mkdir: SaveData proves a chosen game-data folder is
+-- writable and may have to create it first.
+--
+-- Defined AFTER tryMkdirs on purpose.  It used to sit above it, where the
+-- name resolved to a nil global: every call threw, SaveData.checkDataDir
+-- swallowed the error in a pcall, and a folder that did not exist yet could
+-- never be created -- "that folder could not be written to".
+function CacheFs.mkdirReal(path)
+  if type(path) ~= "string" or path == "" then return false end
+  tryMkdirs(path, true)
+  return true
 end
 
 local function ensureParents(root, rel)
