@@ -28,7 +28,7 @@ APP_NAME="Gen2ReNighly"
 APPLICATION_ID="com.diegolix.gen2renightly"
 LOVE_ANDROID_VERSION="11.5a"
 NDK_VERSION="25.2.9519653"
-MANIFEST_BASE_URL="${MANIFEST_BASE_URL:-https://raw.githubusercontent.com/diegolix29/Gen2Recomped/main}"
+MANIFEST_BASE_URL="${MANIFEST_BASE_URL:-https://raw.githubusercontent.com/UNDERdecoded/Gen2Recomped/main}"
 MANIFESTS=""
 GEN2_SOURCES=""
 # RomExtractorGen2:readSourceTable falls back to data/generated_gen2_<version>/

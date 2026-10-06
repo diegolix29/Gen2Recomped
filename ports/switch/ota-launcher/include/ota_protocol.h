@@ -36,13 +36,11 @@ extern "C" {
  * tools/auto_update_check.lua asserts it equals src/update/Check.lua's
  * Check.REPO -- the cross-language half of this port's recurring bug (the
  * same thing spelled differently in two places that never meet).
- *
- * Updated to diegolix29/Gen2Recomped for the fork.
  */
-#define OTA_REPO_SLUG "diegolix29/Gen2Recomped"
+#define OTA_REPO_SLUG "UNDERdecoded/Gen2Recomped"
 #define OTA_RELEASES_API \
   "https://api.github.com/repos/" OTA_REPO_SLUG "/releases/latest"
-/* Takes the release tag ("F0.8.3" for this fork). */
+/* Takes the release tag ("v0.8.3"). */
 #define OTA_SUMS_URL_FMT \
   "https://github.com/" OTA_REPO_SLUG "/releases/download/%s/sha256sums.txt"
 

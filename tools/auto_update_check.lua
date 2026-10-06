@@ -1064,7 +1064,7 @@ section("7. the hand-placed console payload, verified before it is trusted")
 -- with no integrity question asked at all.
 --
 -- The hashes below are the LIVE v0.8.3 release's own, read from
--- https://github.com/diegolix29/Gen2Recomped/releases/download/v0.8.3/sha256sums.txt
+-- https://github.com/UNDERdecoded/Gen2Recomped/releases/download/v0.8.3/sha256sums.txt
 -- on 2026-10-04 (HTTP 200, 1,171 bytes, 12 rows).  Using the real manifest
 -- rather than a made-up one is what makes "verified" mean verified: a parser
 -- that only handles invented input is a parser graded against itself.

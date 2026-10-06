@@ -115,9 +115,9 @@ jobs:
           if [ -n "${DISPATCH_VERSION:-}" ]; then
             override="$DISPATCH_VERSION"
           else
-            # 2) Override from the commit message: [release X.Y.Z] or [release F+X.Y.Z]
+            # 2) Override from the commit message: [release X.Y.Z]
             msg="$(git log -1 --pretty=%B || true)"
-            tag_ver="$(printf '%s' "$msg" | sed -n -E 's/.*\[release[[:space:]]+(F+)?([0-9]+\.[0-9]+\.[0-9]+)\].*/\2/p' | head -1)"
+            tag_ver="$(printf '%s' "$msg" | sed -n -E 's/.*\[release[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+)\].*/\1/p' | head -1)"
             if [ -n "$tag_ver" ]; then
               override="$tag_ver"
             fi
@@ -143,8 +143,8 @@ jobs:
             # newer than anything published and no player was ever offered an
             # update.  Taking the higher of the two makes the declared engine
             # line authoritative without giving up per-push auto-increment.
-            latest="$(git tag -l 'F*' \
-              | sed -E 's/^F//' \
+            latest="$(git tag -l 'v*' \
+              | sed -E 's/^v//' \
               | grep -E "$semver_re" \
               | sort -t. -k1,1n -k2,2n -k3,3n \
               | tail -1 || true)"
@@ -162,7 +162,7 @@ jobs:
             [ -n "$base" ] || base="0.1.0"
 
             if [ "$base" = "$declared" ] \
-                && ! git rev-parse -q --verify "refs/tags/F${base}" >/dev/null; then
+                && ! git rev-parse -q --verify "refs/tags/v${base}" >/dev/null; then
               # The tree asked for a version that has never shipped: ship
               # exactly that, so Version.lua means what it says.
               version="$base"
@@ -182,7 +182,7 @@ jobs:
             fi
           fi
 
-          tag="F${version}"
+          tag="v${version}"
           if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
             echo "::error::Tag $tag already exists. Pick a different version."
             exit 1
@@ -1156,7 +1156,7 @@ jobs:
           #      with "CLOSES #N #M" still lands in the notes.
           # Scans every commit since the previous tag so a skipped release
           # run doesn't drop issues on the floor.
-          prev_tag="$(git tag -l 'F*' --sort=-v:refname | grep -v "^${tag}$" | head -1 || true)"
+          prev_tag="$(git tag -l 'v*' --sort=-v:refname | grep -v "^${tag}$" | head -1 || true)"
           range="${prev_tag:+${prev_tag}..}$GITHUB_SHA"
 
           # every #N on a line that carries a closing keyword (handles the
@@ -1251,9 +1251,9 @@ jobs:
 
           date="$(date -u +"%Y-%m-%d")"
           size="$(wc -c < "$ipa" | tr -d '[:space:]')"
-          download_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/F${v}/Gen2Recomped-${v}-ios.ipa"
+          download_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${v}/Gen2Recomped-${v}-ios.ipa"
           localized_description="Gen2Recomped - A native Lua / LÖVE2D recreation of Gen 2 Poke"
-          release_notes="$(GH_TOKEN="${{ github.token }}" gh release view "F${v}" --json body --jq '.body // ""' 2>/dev/null || true)"
+          release_notes="$(GH_TOKEN="${{ github.token }}" gh release view "v${v}" --json body --jq '.body // ""' 2>/dev/null || true)"
           if [ -n "$release_notes" ]; then
             localized_description="$release_notes"
           fi

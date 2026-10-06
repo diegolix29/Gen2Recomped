@@ -67,7 +67,7 @@ PACKAGE_ONLY=false
 INSTALL=false
 CREATE_IPA=false
 # Last resort for an incomplete source export, mirroring build_android.sh.
-MANIFEST_BASE_URL="${MANIFEST_BASE_URL:-https://raw.githubusercontent.com/diegolix29/Gen2Recomped/main}"
+MANIFEST_BASE_URL="${MANIFEST_BASE_URL:-https://raw.githubusercontent.com/UNDERdecodedHD/Gen2Recomped/main}"
 MANIFESTS=""
 
 VERSION=""

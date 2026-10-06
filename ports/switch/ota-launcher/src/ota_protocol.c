@@ -20,7 +20,7 @@ static void set_reason(char *buf, size_t n, const char *r) {
 static int parse_semver(const char *s, semver_t *out) {
   memset(out, 0, sizeof(*out));
   if (!s || !*s) return 0;
-  if (s[0] == 'v' || s[0] == 'V' || s[0] == 'f' || s[0] == 'F') s++;
+  if (s[0] == 'v' || s[0] == 'V') s++;
   int maj = 0, min = 0, pat = 0;
   char trail = 0;
   if (sscanf(s, "%d.%d.%d%c", &maj, &min, &pat, &trail) != 3) return 0;

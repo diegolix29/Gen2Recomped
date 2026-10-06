@@ -37,8 +37,6 @@ Both URLs derive from one `OTA_REPO_SLUG` in `include/ota_protocol.h` now, and
 `tools/auto_update_check.lua` asserts it equals `Check.REPO` in
 `src/update/Check.lua` — the cross-language half of this port's recurring bug.
 
-**Updated to diegolix29/Gen2Recomped for the fork.**
-
 ## Layout on microSD
 
 ```text
