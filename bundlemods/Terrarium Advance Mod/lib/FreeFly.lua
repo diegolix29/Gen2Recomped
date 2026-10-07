@@ -345,6 +345,16 @@ local function emitLanded(reason, p)
   end)
 end
 
+-- the follower sprite service was written for string species ids; a
+-- failure there (Gen 4 numeric ids included) falls back to the stock mount
+local function safeResolveSprite(spriteService, opts)
+  local ok, resolved = pcall(spriteService.resolveFollowerSprite, spriteService, opts)
+  if ok then return resolved end
+  V.mod.log:warn("mount sprite service failed for species %s: %s",
+               tostring(opts and opts.species), tostring(resolved))
+  return nil
+end
+
 local function startFlight(game, mon)
   if flying() then return end
   local ow = V.mod.world and V.mod.world:overworld()
@@ -390,7 +400,11 @@ local function startFlight(game, mon)
     
     -- Try to get dex number from species name
     -- Handle Gen2 SPECIES_XXX format first (e.g., SPECIES_006 -> dex 6)
-    if species:match("^SPECIES_%d+$") then
+    -- Gen 4 species ids are plain numbers (and ARE the national dex number)
+    if type(species) == "number" then
+      flyingPokemonDex = species
+    end
+    if type(species) == "string" and species:match("^SPECIES_%d+$") then
       local dexNum = tonumber(species:match("^SPECIES_(%d+)$"))
       if dexNum then
         flyingPokemonDex = dexNum
@@ -454,7 +468,7 @@ local function startFlight(game, mon)
     local ok, spriteService = pcall(V.require, "follower/sprite_service")
     if ok and spriteService and spriteService.resolveFollowerSprite then
       local shiny = mon.shiny == true or mon.isShiny == true
-      local resolved = spriteService:resolveFollowerSprite({
+      local resolved = safeResolveSprite(spriteService, {
         species = mountSpecies,
         shiny = shiny,
         surface = "land",
@@ -1226,7 +1240,7 @@ local function spawnGift()
         local ok, spriteService = pcall(V.require, "follower/sprite_service")
         V.mod.log:info("Sprite service available: %s", tostring(ok))
         if ok and spriteService and spriteService.resolveFollowerSprite then
-          local resolved = spriteService:resolveFollowerSprite({
+          local resolved = safeResolveSprite(spriteService, {
             species = spriteSpecies,
             shiny = false,
             surface = "land",
@@ -2997,7 +3011,7 @@ function FreeFly.init()
         local ok, spriteService = pcall(V.require, "follower/sprite_service")
         if ok and spriteService and spriteService.resolveFollowerSprite then
           local shiny = mon.shiny == true or mon.isShiny == true
-          local resolved = spriteService:resolveFollowerSprite({
+          local resolved = safeResolveSprite(spriteService, {
             species = species,
             shiny = shiny,
             surface = "land",

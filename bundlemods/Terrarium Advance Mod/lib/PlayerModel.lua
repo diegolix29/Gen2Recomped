@@ -900,7 +900,20 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     local m = Mat4.translate(px + 8, y, py + 8)
     local yaw = yawForDraw(px, py, facing, "awayCam", b, FirstPerson)
 
-    if gen4Cam or not (b > 0) then
+    -- Gen 4: hand the camera-derived facing straight to the actor, exactly
+    -- like StadiumFollower's Colosseum branch. Do NOT also rotateY(yaw) the
+    -- matrix or pass the grid-snapped towardFor(facing): the actor already
+    -- turns itself toward (fx, fz), so doing both stacks a continuous yaw on
+    -- a 4-way compass facing and the Pokemon ignores the camera.
+    local gen4Active = Cam and Cam.active and Cam.active()
+    if gen4Cam then
+      -- third / first person: Gen4View look + travel bearing
+      local gyaw = Cam.modelYaw()
+      fx, fz = math.sin(gyaw), math.cos(gyaw)
+    elseif gen4Active then
+      -- field3d (tilted cartridge camera): world compass facing
+      fx, fz = Cam.facingVector(facing)
+    elseif not (b > 0) then
       if yaw ~= 0 then
         m = Mat4.mul(m, Mat4.rotateY(yaw))
       end
