@@ -322,6 +322,13 @@ end
 
 local function wantFieldActor(e, state)
   if not e or e.hidden then return false end
+  -- FREE FLY: the player is the mount sprite with the rider seated on it
+  -- (drawn through freeEntity below, raised in world space). The 3D player
+  -- model would stand on the ground under it, and its _skipFeet entry
+  -- would swallow the mount, so a flyer is not a field actor.
+  if state and e == state.player and (tonumber(e.freeFlyAlt) or 0) > 0 then
+    return false
+  end
   if e.isFollower or e.wildsFollower or e._wildsFollowerSpecies then
     return true
   end
@@ -865,12 +872,40 @@ function Host.install()
 
   local innerFreeEntity = Gen4Ground.freeEntity
   if type(innerFreeEntity) == "function" then
-    function Gen4Ground:freeEntity(mapX, mapY, camX, camY, rise, draw)
+    function Gen4Ground:freeEntity(mapX, mapY, camX, camY, rise, draw,
+                                   depthLift)
       local skip = Host._skipFeet
       if skip and skip[spriteKey(mapX, mapY)] then
         return true
       end
-      return innerFreeEntity(self, mapX, mapY, camX, camY, rise, draw)
+      -- A flyer (Host.flightLift is set by FreeFly) is placed at its real
+      -- height: the shadow first, on the ground, then the whole figure
+      -- with groundY raised for this one call so the projection (scale,
+      -- position) and the depth test both see the height, not a sprite-
+      -- space shove at ground depth.
+      local lift, shadow
+      if type(Host.flightLift) == "function" and not Host._worldLifted then
+        local okL, l, s = pcall(Host.flightLift, mapX, mapY)
+        if okL then lift, shadow = l, s end
+      end
+      if lift and lift > 0 then
+        if shadow then
+          innerFreeEntity(self, mapX, mapY, camX, camY, 0,
+                          function() shadow(camX, camY) end)
+        end
+        local own = rawget(self, "groundY")
+        local base = self.groundY
+        self.groundY = function(s, x, z) return (base(s, x, z) or 0) + lift end
+        Host._worldLifted = true
+        local ok, res = pcall(innerFreeEntity, self, mapX, mapY, camX, camY,
+                              rise, draw, depthLift)
+        Host._worldLifted = false
+        self.groundY = own
+        if not ok then error(res, 0) end
+        return res
+      end
+      return innerFreeEntity(self, mapX, mapY, camX, camY, rise, draw,
+                             depthLift)
     end
   end
 
