@@ -146,8 +146,58 @@ local function flying()
   return state.phase ~= "idle"
 end
 
+-- ------- Gen 4 (Platinum)
+--
+-- Gen 1-3 fly through the voxel scene: the scene adds ground height back
+-- under the card and a "placed camera" lifts the 75-degree orbit. Gen 4
+-- never runs that scene (the voxel pipeline stands down, Gen4WorldHost
+-- keeps the engine's own Gen4Ground frame), so here the same ride goes
+-- through the engine's camera instead:
+--   * the free camera (third / first / field3d tilt rungs, Gen4View) is
+--     raised by the flight height in a Gen4Ground:placeCamera wrap, and
+--   * Gen4WorldHost's freeEntity wrap raises the flyer in WORLD space
+--     (Host.flightLift) so perspective and depth-testing see real height.
+-- The flat rungs (cartridge camera / numeric tilt) have no Gen4View and
+-- keep the plain 2D ride below.
+
+-- how high the ride sits above the terrain. Platinum's own houses are
+-- real meshes (a Twinleaf house is 71 units), not the voxel scene's
+-- 48px-capped volumes, so the constant ride clears them with room to spare
+local GEN4_MIN_RIDE = 88
+
+-- Platinum rows that have a perspective camera but no sky: caves and
+-- interiors that the cartridge draws with a perspective lens
+local GEN4_NO_SKY = {
+  cave = true, pastoria_gym = true, canalave_gym = true,
+  oreburgh_gym = true, veilstone_gym = true, stark_room2 = true,
+  hall_of_origin = true,
+}
+
+-- the Gen 4 ground while a 3D camera (not the flat cartridge view) owns
+-- the frame, or nil on every other generation and camera
+local function gen4FreeGround(ow)
+  local Host = V.Gen4WorldHost
+  if not (Host and Host.isGen4 and Host.isGen4()) then return nil end
+  local ground = Host.groundOf and Host.groundOf(ow)
+  if not (ground and ground.freeMode) then return nil end
+  local ok, mode = pcall(ground.freeMode, ground)
+  if ok and mode then return ground, mode end
+  return nil
+end
+
 local function knowsFly(mon)
-  return Sky.knowsMove(mon, "FLY")
+  if Sky.knowsMove(mon, "FLY") then return true end
+  -- Gen 4 stores move ids as numbers (FLY = 19), which Sky.knowsMove's
+  -- name compare never matches; the engine's own field-move table does
+  local Host = V.Gen4WorldHost
+  if Host and Host.isGen4 and Host.isGen4() then
+    local ok, F = pcall(require, "src.world.Gen4FieldMoves")
+    if ok and F and F.knows then
+      local okK, knows = pcall(F.knows, mon, "FLY")
+      return okK and knows == true
+    end
+  end
+  return false
 end
 
 -- where the sky exists: outside maps, plus Viridian Forest, whose
@@ -166,6 +216,18 @@ local function skyAbove(game, mapDef)
     if OUTDOOR_ENVIRONMENTS[mapDef.environment] then
       return true
     end
+  end
+  -- Gen 4: map defs carry no tileset. The cartridge's own camera row says
+  -- whether the lens is outdoor (perspective) or an interior box
+  local Host = V.Gen4WorldHost
+  if Host and Host.isGen4 and Host.isGen4() then
+    local okCam, outdoors = pcall(function()
+      local Gen4Camera = require("src.render.Gen4Camera")
+      local row = Gen4Camera.forType(mapDef.cameraType)
+      return row and row.projection == "perspective"
+             and not GEN4_NO_SKY[row.id]
+    end)
+    if okCam and outdoors then return true end
   end
   return mapDef.tileset == "FOREST"
 end
@@ -231,6 +293,16 @@ local function badgeOk(game, mon)
   if mon.freeFlyGift then
     V.mod.log:info("BADGE CHECK: gift mon, returning true")
     return true
+  end
+  -- Gen 4: ask the engine's own field-move badge table, the same answer
+  -- the vanilla FLY row gets
+  local Host = V.Gen4WorldHost
+  if Host and Host.isGen4 and Host.isGen4() then
+    local okF, F = pcall(require, "src.world.Gen4FieldMoves")
+    if okF and F and F.badgeHeld then
+      local okB, held = pcall(F.badgeHeld, game.data, game.save, "FLY")
+      return okB and held and true or false
+    end
   end
   local Badges = require("src.inventory.Badges")
   -- Gen1 uses THUNDERBADGE, Gen2 uses STORMBADGE for FLY
@@ -775,6 +847,152 @@ local function addFlyOptions(out, game, ow, mon)
     startFlight(g, m)
   end })
   return out
+end
+
+-- ------- Gen 4: the party menu has no ui.party.submenu hook
+--
+-- src/ui/Gen4PartyMenu builds its submenu from action id strings
+-- (Gen4PartyMenu:actions) and never asks the hook chain, so addFlyOptions
+-- above never runs on Platinum. Same rows, added by wrapping the menu:
+-- actions() gets two extra ids just above FLY, actionLabel() names them,
+-- runAction() runs them. The submenu is drawn, navigated and touched
+-- through those three, so nothing else needs to learn about the rows.
+
+-- FULL FLY's Town Map on Platinum is the engine's own fly-mode map, the
+-- exact screen and callback the vanilla FLY row uses (Gen4PartyMenu:
+-- useFieldMove). Returns the screen to push, or nil
+local function buildGen4FlyScreen(game, mon)
+  local ow = game.overworld
+  local okF, Fly = pcall(require, "src.world.Gen4Fly")
+  if not (ow and okF and Fly) then
+    V.mod.log:warn("FULL FLY: Gen4Fly unavailable")
+    return nil
+  end
+  if game.data.gen4_town_map then
+    local okT, TownMap = pcall(require, "src.ui.Gen4TownMap")
+    if not (okT and TownMap and TownMap.new) then
+      V.mod.log:warn("FULL FLY: src.ui.Gen4TownMap unavailable")
+      return nil
+    end
+    local made, screen = pcall(TownMap.new, game, { mode = "fly",
+      onFly = function(firstArrival)
+        local dest = Fly.destinationFor(game.data, firstArrival)
+        if dest then ow:gen4FlyTo(dest, mon) end
+      end })
+    if made and screen then return screen end
+    V.mod.log:warn("FULL FLY: Gen4TownMap.new failed: %s", tostring(screen))
+    return nil
+  end
+  -- a cache without the town map's data: the same list the vanilla row
+  -- falls back to
+  local dests = Fly.destinations(game.data, game.save) or {}
+  if #dests == 0 then return nil end
+  local items = {}
+  for _, d in ipairs(dests) do items[#items + 1] = { value = d, label = d.label } end
+  local made, screen = pcall(function()
+    return require("src.ui.ListMenu").new(game, "FLY TO?", items, {
+      onChoose = function(item, list)
+        list:close()
+        ow:gen4FlyTo(item.value, mon)
+      end })
+  end)
+  return made and screen or nil
+end
+
+-- the two ids go in just above FLY (FULL FLY on top, FREEFLY under it);
+-- a flyer that does not know FLY itself (the gift, an HM-relaxing mod)
+-- gets them right under SUMMARY
+local function gen4FlyRows(menu, rows)
+  local game = menu.game
+  local ow = game.overworld
+  local mon = menu:party()[menu.index]
+  if not (mon and ow and ow.map and ow.map.def) or flying() then return rows end
+  local okE, isEgg = pcall(function() return require("src.pokemon.Party").isEgg(mon) end)
+  if okE and isEgg then return rows end
+  if not (eligibleFlyer(game, ow, mon) and badgeOk(game, mon)) then return rows end
+  if (ow.player and ow.player.onBike) or (game.save and game.save.onBike) then
+    return rows
+  end
+  if not skyAbove(game, ow.map.def) then return rows end
+  local at = 2
+  for i, a in ipairs(rows) do
+    if a == "field:FLY" then at = i break end
+  end
+  table.insert(rows, at, "mod:freefly")
+  table.insert(rows, at, "mod:fullfly")
+  return rows
+end
+
+local function installGen4PartyMenu()
+  local ok, M = pcall(require, "src.ui.Gen4PartyMenu")
+  if not (ok and type(M) == "table" and M.actions and M.runAction
+          and M.actionLabel and M.choose) then
+    return false
+  end
+  -- logic lives on the table so F5 hot reload runs the latest; the wraps
+  -- below are thin and install once
+  M.__freeFlyActions = function(self, rows)
+    if self.itemMenu or self.battle then return rows end
+    local mon = self:party()[self.index]
+    local c = self._freeFlyRows
+    if c and c.mon == mon then return c.rows end
+    local copy = {}
+    for i, a in ipairs(rows) do copy[i] = a end
+    local out = gen4FlyRows(self, copy)
+    self._freeFlyRows = { mon = mon, rows = out }
+    return out
+  end
+  M.__freeFlyRun = function(self, action)
+    local mon = self:party()[self.index]
+    self.submenu, self.itemMenu = nil, nil
+    local game = self.game
+    if action == "mod:fullfly" then
+      local screen = buildGen4FlyScreen(game, mon)
+      if not screen then return end
+      screen.__fullFlyMap = true
+      state.fullFlyArmed = { mon = mon }
+      self:close()
+      if not pcall(function() game.stack:push(screen) end) then
+        state.fullFlyArmed = nil
+        V.mod.log:warn("FULL FLY: could not push the Town Map")
+      end
+    else
+      -- unwind party menu / start menu back to the overworld, then lift off
+      local stack = game.stack
+      while stack:top() and not stack:top().isOverworld do stack:pop() end
+      startFlight(game, mon)
+    end
+  end
+  if M.__freeFlyWrapped then return true end
+  M.__freeFlyWrapped = true
+  local origActions, origLabel = M.actions, M.actionLabel
+  local origRun, origChoose = M.runAction, M.choose
+  M.actions = function(self)
+    local rows = origActions(self)
+    local impl = M.__freeFlyActions
+    return impl and impl(self, rows) or rows
+  end
+  M.actionLabel = function(self, action)
+    if action == "mod:fullfly" then return "FULL FLY" end
+    if action == "mod:freefly" then return "FREEFLY" end
+    return origLabel(self, action)
+  end
+  M.runAction = function(self, action)
+    if action == "mod:fullfly" or action == "mod:freefly" then
+      local impl = M.__freeFlyRun
+      if impl then return impl(self, action) end
+      return
+    end
+    return origRun(self, action)
+  end
+  -- the rows are worked out once per time the submenu opens, not on every
+  -- frame it is drawn and polled
+  M.choose = function(self)
+    self._freeFlyRows = nil
+    return origChoose(self)
+  end
+  V.mod.log:info("FREEFLY: Gen4PartyMenu wrapped for FULL FLY / FREEFLY rows")
+  return true
 end
 
 -- Hook registration moved to FreeFly.init() to avoid duplication
@@ -1653,7 +1871,9 @@ function FreeFly.init()
     -- Seam crossings then never load anything.  Indoor maps keep the
     -- engine's normal LRU.
     local outdoorSet = {}
-    do
+    local onGen4 = V.Gen4WorldHost and V.Gen4WorldHost.isGen4
+                   and V.Gen4WorldHost.isGen4()
+    if not onGen4 then
       local MapField = require("src.world.FieldDefaults")
       local outside = MapField.field(Game.data, "outsideTilesets")
       for id, def in pairs(Game.data.maps) do
@@ -2198,7 +2418,22 @@ function FreeFly.init()
       local lift = state.alt + hover
       local gh, voxelOn = voxelGroundHeight(ow, p)
       local camLift
-      if voxelOn then
+      local g4 = gen4FreeGround(ow)
+      state.gen4CamLift = nil
+      if g4 then
+        -- Platinum under a Gen4View camera: height is measured above the
+        -- terrain (Gen4Ground:groundY is added back by the camera and by
+        -- freeEntity), so the ride is simply constant over the ground.
+        -- Takeoff and landing ramp it exactly like the voxel mount.
+        local total = math.max(lift, GEN4_MIN_RIDE)
+        if state.phase == "rising" or state.phase == "landing" then
+          total = total * math.min(1, state.alt / math.max(1, cruiseAlt()))
+        end
+        p.freeFlyAlt = total
+        state.gen4CamLift = total
+        state.placeWanted = false
+        camLift = total
+      elseif voxelOn then
         -- constant 52px TOTAL ride: the scene's building volumes cap at
         -- 48px from the ground plane (their mesher's MAX_ROWS), so this
         -- clears every small building everywhere with no climbs at all.
@@ -2410,6 +2645,30 @@ function FreeFly.init()
         return origFlyTo(self, mapId, mon, ...)
       end
 
+      -- FULL FLY on Platinum: the fly-mode Town Map ends in gen4FlyTo(dest,
+      -- mon), dest = { map, x, y }. Same conversion as flyTo above
+      if OC.gen4FlyTo then
+        local origGen4FlyTo = OC.gen4FlyTo
+        OC.gen4FlyTo = function(self, dest, mon, ...)
+          local armed = state.fullFlyArmed
+          if armed and type(dest) == "table" and dest.map then
+            state.fullFlyArmed = nil
+            state.pendingAutopilot = { mon = armed.mon, mapId = dest.map,
+                                       x = dest.x, y = dest.y }
+            V.mod.log:info("FULL FLY: intercepted gen4FlyTo %s (%s,%s)",
+                         tostring(dest.map), tostring(dest.x), tostring(dest.y))
+            local G = require("src.core.Game")
+            require("src.core.Sound").play(G.data, "Fly")
+            G.save.onBike = false
+            self:clearBikeFlags()
+            self.player.surfing = false
+            self:closeToMap()
+            return
+          end
+          return origGen4FlyTo(self, dest, mon, ...)
+        end
+      end
+
       -- trainers don't spot what flies over their head (unless the
       -- hardcore option says they do); the gate is swappable so hot
       -- reload always runs the latest logic
@@ -2609,14 +2868,10 @@ function FreeFly.init()
     -- airborne the player rides: the bird sheet as the mount, the
     -- player's own top half seated on its back.  Both images come out
     -- of the player's imported cache, so nothing ships.
-    Player.__freeFlyDrawImpl = function(self, camX, camY, origDraw)
-      local lift = self.freeFlyAlt
-      local bird = Player.__freeFlyMount or Player.__freeFlyBird
-      if not (lift and lift > 0 and bird) then
-        return origDraw(self, camX, camY)
-      end
-      -- the shadow shrinks with height and turns green over landable
-      -- ground, so B-to-land reads at a glance
+    -- the shadow shrinks with height and turns green over landable
+    -- ground, so B-to-land reads at a glance
+    Player.__freeFlyShadow = function(self, camX, camY)
+      local lift = self.freeFlyAlt or 0
       if self.freeFlyCanLand then
         love.graphics.setColor(0.1, 0.45, 0.15, 0.45)
       else
@@ -2627,7 +2882,25 @@ function FreeFly.init()
       love.graphics.ellipse("fill", self.px + 8 - camX, self.py + 13 - camY,
                             r, r * 0.4)
       love.graphics.setColor(1, 1, 1, 1)
-      local ry = self.py - math.floor(lift + 0.5)
+    end
+
+    Player.__freeFlyDrawImpl = function(self, camX, camY, origDraw)
+      local lift = self.freeFlyAlt
+      local bird = Player.__freeFlyMount or Player.__freeFlyBird
+      if not (lift and lift > 0 and bird) then
+        return origDraw(self, camX, camY)
+      end
+      -- Gen 4: Gen4WorldHost's freeEntity wrap has already raised this
+      -- whole figure in world space (and drawn the shadow on the ground
+      -- itself), so neither the sprite-space lift nor the shadow apply
+      local Host4 = V.Gen4WorldHost
+      local worldLift = Host4 and Host4._worldLifted
+      local s = Player.__freeFlyMountScale or 1
+      if not worldLift then
+        Player.__freeFlyShadow(self, camX, camY)
+      end
+      love.graphics.setColor(1, 1, 1, 1)
+      local ry = worldLift and self.py or (self.py - math.floor(lift + 0.5))
       local flap = math.floor(love.timer.getTime()
                               * (self.freeFlyFlapRate or 8)) % 2
       -- rider FIRST, tucked low, then the mount over it: the mount's body
@@ -2652,6 +2925,55 @@ function FreeFly.init()
     if Game.data.sprites.SPRITE_BIRD then
       Player.__freeFlyBird = SpriteRenderer.new(Game.data.sprites.SPRITE_BIRD,
                                                 "free_fly_mount")
+    end
+
+    -- Gen 4 (Platinum) seams. Both are inert on Gen 1-3 (no Gen4Ground,
+    -- no Gen4WorldHost hook consumer) and on Platinum's flat camera rungs.
+    do
+      local okG, Gen4Ground = pcall(require, "src.render.Gen4Ground")
+      if okG and Gen4Ground and Gen4Ground.placeCamera
+         and not Gen4Ground.__freeFlyWrapped then
+        Gen4Ground.__freeFlyWrapped = true
+        local origPlace = Gen4Ground.placeCamera
+        Gen4Ground.placeCamera = function(self, px, py, facing)
+          origPlace(self, px, py, facing)
+          local impl = Gen4Ground.__freeFlyCamImpl
+          if impl then impl(self) end
+        end
+      end
+      -- hot-reload safe: the wrap above is thin, this is the logic. The
+      -- engine places the camera on the GROUND under the player; a flyer
+      -- raises the whole rig by the flight height, so the pivot, the
+      -- orbit and the zoom all stay exactly as the player left them
+      if okG and Gen4Ground then
+        Gen4Ground.__freeFlyCamImpl = function(self)
+          local lift = state.gen4CamLift
+          if not (lift and lift > 0 and flying()) then return end
+          local view = self.view3d
+          if view and view.isFree and view:isFree() then
+            view.y = view.y + lift
+          end
+        end
+      end
+
+      -- asked by Gen4WorldHost's freeEntity wrap for every character it
+      -- places: how high is the thing standing at this map position?
+      local Host4 = V.Gen4WorldHost
+      if Host4 then
+        Host4.flightLift = function(mapX, mapY)
+          local ow = Game.overworld
+          local pl = ow and ow.player
+          local lift = pl and pl.freeFlyAlt
+          if not (lift and lift > 0 and flying()) then return nil end
+          if math.abs((mapX or 0) - pl.px) > 0.5
+             or math.abs((mapY or 0) - pl.py) > 0.5 then
+            return nil
+          end
+          return lift, function(camX, camY)
+            Player.__freeFlyShadow(pl, camX, camY)
+          end
+        end
+      end
     end
 
     -- mount identity: use the follower sprite service to get species-specific sprites
@@ -2814,6 +3136,9 @@ function FreeFly.init()
       addFlyOptions(out, game, ow, mon)
       return out
     end)
+
+    -- Platinum's party menu never calls the hook above: wrap it directly
+    pcall(installGen4PartyMenu)
 
     -- Event handlers
     V.mod.events:on("map.entered", function(ev)
