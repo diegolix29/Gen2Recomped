@@ -14,6 +14,12 @@ local V = ...
 
 local Host = {
   installed = false,
+  -- True while Colosseum Battle Environments' OVERWORLD arena is staging a
+  -- Gen 4 fight. That path re-draws the cartridge world through the arena
+  -- camera (renderPose). Leaving the walking-camera drawFree running too
+  -- paints a second full Platinum world every frame and ping-pongs tree/
+  -- water prepare windows between two cameras -- the CBE hitch on Gen 4.
+  cbeNativeArena = false,
 }
 
 local GRASS_BEHAVIOURS = {
@@ -64,6 +70,17 @@ end
 
 function Host.isMap(map)
   return map and map.renderer and map.renderer.gen4Ground ~= nil
+end
+
+function Host.setCbeNativeArena(on)
+  Host.cbeNativeArena = on and true or false
+  if not Host.cbeNativeArena then Host._skippedOverworld = false end
+end
+
+-- Walking-camera Gen4Ground:drawFree. False while CBE is already drawing the
+-- native world for the arena; renderPose sets _inBattle so it still runs.
+function Host.shouldDrawOverworld()
+  return not (Host.cbeNativeArena and not Host._inBattle)
 end
 
 -- Permission / behaviour byte for a 16px cell. Gen 4 stores that in
@@ -858,6 +875,13 @@ function Host.install()
   local innerDrawFree = Gen4Ground.drawFree
   function Gen4Ground:drawFree(vw, vh)
     Host._vw, Host._vh = vw, vh
+    -- renderPose calls Host._drawFree (this inner), not this wrap, so the
+    -- arena world still draws. The engine's walking pass hits this wrap.
+    if not Host.shouldDrawOverworld() then
+      Host._skippedOverworld = true
+      return false
+    end
+    Host._skippedOverworld = false
     local ok = innerDrawFree(self, vw, vh)
     if ok then pcall(Host.overlay3D, self) end
     return ok
@@ -877,7 +901,11 @@ function Host.install()
   local innerEndFree = Gen4Ground.endFree
   if type(innerEndFree) == "function" then
     function Gen4Ground:endFree()
-      if not Host._inBattle then
+      if Host._skippedOverworld then
+        Host._skippedOverworld = false
+        return
+      end
+      if Host.shouldDrawOverworld() and not Host._inBattle then
         local ow = game() and game().overworld
         local sw = self.freeW or Host._vw
         local sh = self.freeH or Host._vh
@@ -895,7 +923,7 @@ function Host.install()
     function TileRenderer:drawAbove(camX, camY, vw, vh)
       local r = innerAbove(self, camX, camY, vw, vh)
       -- Field (non-free) camera: sprites are already on the world canvas.
-      if self.gen4Ground and not (self.gen4Ground.freeMode
+      if Host.shouldDrawOverworld() and self.gen4Ground and not (self.gen4Ground.freeMode
           and self.gen4Ground:freeMode()) then
         local ow = game() and game().overworld
         if ow then

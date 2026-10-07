@@ -3406,7 +3406,8 @@ function A:render(ctx,arena,drawActors)
       if arena then arena.groundY=worldY;arena.liveField=true end
       local rebound=bindArenaCanvas(out)
       if rebound and nativeWorld and type(SnapN.blit)=="function" then
-        -- Gen 4: lay the engine-drawn world in now that the arena is bound again
+        -- Gen 4: the walking overworld pass is stood down (Gen4WorldHost
+        -- cbeNativeArena); this blit is the only world on screen.
         safeArenaPass(ctx,"overworldBlit",function() SnapN.blit(w,h) end)
       end
       if rebound and depthActive then love.graphics.setDepthMode("lequal",true) end

@@ -69,6 +69,21 @@ end
 
 local pose = { eye = { 10, 40, 90 }, focus = { 10, 6, 20 }, fov = math.rad(40) }
 
+-- 0. walking world stands down while CBE owns the native arena --------------
+do
+  Host.setCbeNativeArena(false)
+  Host._inBattle = false
+  check(Host.shouldDrawOverworld() == true, "walking world draws outside CBE")
+  Host.setCbeNativeArena(true)
+  check(Host.shouldDrawOverworld() == false, "walking world skipped during CBE native arena")
+  Host._inBattle = true
+  check(Host.shouldDrawOverworld() == true, "renderPose still draws (inBattle)")
+  Host._inBattle = false
+  Host.setCbeNativeArena(false)
+  check(Host.shouldDrawOverworld() == true, "walking world restored after CBE")
+  check(Host.cbeNativeArena == false, "flag cleared")
+end
+
 -- 1. camera, restore, hook ------------------------------------------------
 do
   local state = { entities = { "a", "b" }, ghosts = { "g" } }
@@ -177,6 +192,7 @@ do
   state.map.renderer = { gen4Ground = ground }
 
   check(Snap.capture(nil, state) == true, "capture succeeds on Gen 4 with voxel unavailable")
+  check(Host.cbeNativeArena == true, "walking Platinum pass stood down for the fight")
   check(Snap.nativeWorld() == true, "field flagged as a native world")
   check(Snap.field().gen4 == true and Snap.field().groundY == 12, "field carries gen4 flag and ground height")
   check(pocket.cam == "wide", "interior-safe wide rig chosen")
@@ -210,6 +226,7 @@ do
 
   Snap.clear()
   check(Snap.nativeWorld() == false, "clear drops the native flag")
+  check(Host.cbeNativeArena == false, "walking Platinum pass restored when the fight ends")
 
   -- a non-Gen-4 state still takes the voxel path (and still needs voxel)
   local plain = { entities = {}, ghosts = {}, map = {}, player = { cellX = 1, cellY = 1 } }
