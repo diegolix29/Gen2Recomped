@@ -155,6 +155,8 @@ end
 do
   local clockT = 100
   love.timer = { getTime = function() return clockT end }
+  engine["src.core.Game"] = { stack = { states = { { isOverworld = true, isOpaque = false }, { isOpaque = false } },
+                                         visibleBase = function() return 1 end } }
   local logs = {}
   V.mod.log = { warn = function(_, f, ...) logs[#logs+1] = f:format(...) end,
                 info = function(_, f, ...) logs[#logs+1] = f:format(...) end }
@@ -188,6 +190,11 @@ do
   check(Snap.blit(100, 80) == false, "blit before a draw does nothing")
   check(Snap.draw(256, 192, pose) == true, "draw renders the native world")
   check(Snap.field().worldColour ~= nil, "world colour kept for the blit")
+  local stackLine
+  for _, l in ipairs(logs) do if l:find("Gen4 arena stack:") then stackLine = l end end
+  check(stackLine and stackLine:find("depth 2") and stackLine:find("visibleBase 1")
+        and stackLine:find("%(overworld%)") and stackLine:find("drawn under the arena: YES"),
+        "first arena frame logs the stack and says the overworld is drawn under it")
   check(seen.w == 256 and seen.h == 192, "world drawn at the full arena size by default")
   check(Snap.field().worldSize[1] == 256 and Snap.field().worldSize[2] == 192, "render size remembered")
 
@@ -246,6 +253,12 @@ do
   Snap.draw(256, 192, { eye = { 16, 40, 90 }, focus = pose.focus, fov = pose.fov })
   fovLogs = 0; for _, l in ipairs(logs) do if l:find("FOV mismatch") then fovLogs = fovLogs + 1 end end
   check(fovLogs == 0, "no warning when the helper matches the pose fov")
+  logs = {}
+  clockT = clockT + 6
+  Snap.draw(256, 192, drift)
+  local sofar
+  for _, l in ipairs(logs) do if l:find("Gen4 arena world %(so far%)") then sofar = l end end
+  check(sofar ~= nil, "running totals are logged every few seconds, not only at the end")
   local st = Snap.stats()
   check(st and st.frames > 0 and st.renders + st.reuses == st.frames, "every successful frame is counted as render or reuse")
 
@@ -262,9 +275,17 @@ do
   Snap.clear()
   check(Snap.nativeWorld() == false, "clear drops the native flag")
   local summary
-  for _, l in ipairs(logs) do if l:find("Gen4 arena world:") then summary = l end end
+  for _, l in ipairs(logs) do if l:find("Gen4 arena world %(fight over%)") then summary = l end end
   check(summary ~= nil, "clear logs the per-fight summary")
   check(summary and summary:find("world renders") and summary:find("overworld world passes"), "summary names renders and overworld passes")
+  engine["src.core.Game"].stack.visibleBase = function() return 2 end
+  check(Snap.capture(nil, state) == true, "capture again for the stack check")
+  logs = {}
+  Snap.draw(256, 192, pose)
+  local no
+  for _, l in ipairs(logs) do if l:find("drawn under the arena: no") then no = true end end
+  check(no, "an opaque state above the overworld is reported as not drawn under the arena")
+  Snap.clear()
 
   -- a non-Gen-4 state still takes the voxel path (and still needs voxel)
   local plain = { entities = {}, ghosts = {}, map = {}, player = { cellX = 1, cellY = 1 } }
@@ -302,6 +323,24 @@ do
   Vr.pose = false
   R.run({}, {}, 1, 1)
   check(lvl == 1, "Gen4Reflect still runs in the overworld's own pass")
+end
+
+-- 8. Gen4Cull: only ever says "no" for a sphere well outside the view ----------------
+do
+  local Cull = assert(loadfile(ROOT .. "Gen4Cull.lua"))()
+  local see = Cull.sphereTest({ 0, 50, 0 }, { 0, 0, -1 }, math.rad(50), 4 / 3)
+  check(see(0, 0, -1000, 100) == true, "a sphere dead ahead is visible")
+  check(see(600, 0, -1000, 300) == true, "a big sphere straddling the view edge is kept")
+  check(see(0, 0, 1000, 100) == false, "a sphere behind the camera is culled")
+  check(see(1000, 0, 0, 100) == false, "a sphere far off to the side is culled")
+  check(see(10, 0, 5, 200) == true, "a sphere containing the eye is always visible")
+  local down = Cull.sphereTest({ 0, 500, 0 }, { 0, -1, 0 }, math.rad(50), 1)
+  check(down(0, 0, 0, 100) == true and down(0, 1000, 0, 100) == false, "looking straight down: ground visible, sky behind culled")
+  local dflt = function(f) return f(0, 0, 1000, 1) == true end
+  check(dflt(Cull.sphereTest(nil, { 0, 0, -1 }, 1, 1)), "no eye: nothing is culled")
+  check(dflt(Cull.sphereTest({ 0, 0, 0 }, { 0, 0, 0 }, 1, 1)), "zero forward: nothing is culled")
+  check(dflt(Cull.sphereTest({ 0, 0, 0 }, { 0, 0, -1 }, nil, 1)), "no fov: nothing is culled")
+  check(dflt(Cull.sphereTest({ 0, 0, 0 }, { 0, 0, -1 }, math.pi, 1)), "180 degree fov: nothing is culled")
 end
 
 print(string.format("%d passed, %d failed", passes, fails))
