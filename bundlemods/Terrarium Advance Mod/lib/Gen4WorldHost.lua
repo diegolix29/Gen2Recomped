@@ -14,12 +14,6 @@ local V = ...
 
 local Host = {
   installed = false,
-  -- True while Colosseum Battle Environments' OVERWORLD arena is staging a
-  -- Gen 4 fight. That path re-draws the cartridge world through the arena
-  -- camera (renderPose). Leaving the walking-camera drawFree running too
-  -- paints a second full Platinum world every frame and ping-pongs tree/
-  -- water prepare windows between two cameras -- the CBE hitch on Gen 4.
-  cbeNativeArena = false,
 }
 
 local GRASS_BEHAVIOURS = {
@@ -30,6 +24,20 @@ local GRASS_BEHAVIOURS = {
 }
 
 local grassCache = { mapId = nil, mesh = nil, at = -1 }
+
+-- Counters for the overworld's OWN world passes (the wrapped drawFree in
+-- Host.install). renderPose calls the engine's unwrapped drawFree, so it is
+-- not counted here: ArenaOverworldSnapshot compares this against its own
+-- arena frame count to show whether the real overworld is still drawing
+-- underneath a Colosseum overworld arena.
+Host.stats = { draws = 0 }
+
+-- True only while renderPose is drawing the arena's backdrop world. Heavy
+-- effects that the arena does not want (the RayFX water pass, HD roamers) read
+-- it through Host.inPose() and stand down. Unlike _inBattle it is NOT set by
+-- renderBattle, so the 3D-battle path is unchanged.
+Host._poseDraw = false
+function Host.inPose() return Host._poseDraw == true end
 
 local function engineRequire(name)
   local req = (V and V.engineRequire) or require
@@ -70,17 +78,6 @@ end
 
 function Host.isMap(map)
   return map and map.renderer and map.renderer.gen4Ground ~= nil
-end
-
-function Host.setCbeNativeArena(on)
-  Host.cbeNativeArena = on and true or false
-  if not Host.cbeNativeArena then Host._skippedOverworld = false end
-end
-
--- Walking-camera Gen4Ground:drawFree. False while CBE is already drawing the
--- native world for the arena; renderPose sets _inBattle so it still runs.
-function Host.shouldDrawOverworld()
-  return not (Host.cbeNativeArena and not Host._inBattle)
 end
 
 -- Permission / behaviour byte for a 16px cell. Gen 4 stores that in
@@ -407,7 +404,7 @@ local function drawFieldActors(state, ground)
     local gh = 0
     if ground.groundY then
       gh = ground:groundY((mapX or 0) + 8, (mapY or 0) + 8) or 0
-    end
+        end
     local fly = (e.freeFlying and tonumber(e.freeFlyAlt)) or 0
     gh = gh + fly
     -- World compass facing, not view:worldToScreen. That remap is for 2D
@@ -819,8 +816,18 @@ function Host.renderPose(state, pocket, pose, w, h)
     view.pitch = math.deg(atan2(-dy, math.max(flat, 1e-6)))
     view.fovY = math.deg(pose.fov)
     ground.cameraPlaced = true
+    -- What the engine will actually draw with at this canvas height. The actors
+    -- project with the pose's own fov, so any difference is a world/actor
+    -- perspective mismatch (ArenaOverworldSnapshot warns once if it sees one).
+    local eff
+    if type(view.effectiveFovY) == "function" then
+      local okF, e = pcall(view.effectiveFovY, view, h)
+      if okF then eff = tonumber(e) end
+    end
+    Host.lastFov = { want = view.fovY, eff = eff, h = h }
 
     Host._inBattle = true
+    Host._poseDraw = true
     local painted = drawFree(ground, w, h)
     if not painted then
       why = "the engine declined to draw the world"
@@ -856,6 +863,7 @@ function Host.renderPose(state, pocket, pose, w, h)
   end)
 
   Host._inBattle = false
+  Host._poseDraw = false
   if state then state.entities, state.ghosts = savedEntities, savedGhosts end
   view.mode, view.x, view.y, view.z = saved.mode, saved.x, saved.y, saved.z
   view.yaw, view.pitch, view.fovY = saved.yaw, saved.pitch, saved.fovY
@@ -877,13 +885,7 @@ function Host.install()
   local innerDrawFree = Gen4Ground.drawFree
   function Gen4Ground:drawFree(vw, vh)
     Host._vw, Host._vh = vw, vh
-    -- renderPose calls Host._drawFree (this inner), not this wrap, so the
-    -- arena world still draws. The engine's walking pass hits this wrap.
-    if not Host.shouldDrawOverworld() then
-      Host._skippedOverworld = true
-      return false
-    end
-    Host._skippedOverworld = false
+    Host.stats.draws = Host.stats.draws + 1
     local ok = innerDrawFree(self, vw, vh)
     if ok then pcall(Host.overlay3D, self) end
     return ok
@@ -904,19 +906,14 @@ function Host.install()
         if dx * dx + dy * dy < 1 then
           rise = (rise or 0) + p.freeFlyAlt
         end
-      end
-      return innerFreeEntity(self, mapX, mapY, camX, camY, rise, draw)
+      end      return innerFreeEntity(self, mapX, mapY, camX, camY, rise, draw)
     end
   end
 
   local innerEndFree = Gen4Ground.endFree
   if type(innerEndFree) == "function" then
     function Gen4Ground:endFree()
-      if Host._skippedOverworld then
-        Host._skippedOverworld = false
-        return
-      end
-      if Host.shouldDrawOverworld() and not Host._inBattle then
+      if not Host._inBattle then
         local ow = game() and game().overworld
         local sw = self.freeW or Host._vw
         local sh = self.freeH or Host._vh
@@ -934,7 +931,7 @@ function Host.install()
     function TileRenderer:drawAbove(camX, camY, vw, vh)
       local r = innerAbove(self, camX, camY, vw, vh)
       -- Field (non-free) camera: sprites are already on the world canvas.
-      if Host.shouldDrawOverworld() and self.gen4Ground and not (self.gen4Ground.freeMode
+      if self.gen4Ground and not (self.gen4Ground.freeMode
           and self.gen4Ground:freeMode()) then
         local ow = game() and game().overworld
         if ow then
