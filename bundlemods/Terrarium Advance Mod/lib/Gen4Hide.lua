@@ -342,6 +342,11 @@ function Hide.install()
   Ground.drawFree = function(self, ...)
     drawFilter.grass, drawFilter.water = grassOn(), waterOn()
     drawFilter.trees = treesOn()
+    if drawFilter.water then
+      -- re-tag covered water shapes for this Ground before the native pass
+      local GW = optional("Gen4Water")
+      if GW and GW.prepare then pcall(GW.prepare, self) end
+    end
     if drawFilter.trees then
       -- decide which tree shapes are covered THIS frame before the native pass
       local GT = optional("Gen4Trees")

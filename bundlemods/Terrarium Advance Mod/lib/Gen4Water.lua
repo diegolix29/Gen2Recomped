@@ -299,11 +299,49 @@ local function packedFor(ground, object)
   return set and set.models and set.models[index + 1]
 end
 
+local function shapeKeys(s)
+  local out = {}
+  local fields = { s.material, s.texture, s.srcMaterial, s.srcTexture }
+  for i = 1, 4 do
+    local k = tostring(fields[i] or ""):lower()
+    if k ~= "" and k ~= "nil" then out[#out + 1] = k end
+  end
+  return out
+end
+
+local function rememberCovered(entry, s)
+  markCovered(s)
+  entry.coveredKeys = entry.coveredKeys or {}
+  for _, k in ipairs(shapeKeys(s)) do entry.coveredKeys[k] = true end
+end
+
+-- A new Ground copies shape records. Re-tag the live ones whose names this
+-- sheet actually emitted, so Hide does not flash native water for a frame.
+local function rematchCovered(ground, land, entry)
+  local keys = entry and entry.coveredKeys
+  if not (entry and entry.mesh and keys) then return end
+  local record = ground.terrain and ground.terrain.chunks and ground.terrain.chunks[land]
+  if not record then return end
+  local function consider(s)
+    for _, k in ipairs(shapeKeys(s)) do
+      if keys[k] then markCovered(s); return end
+    end
+  end
+  for _, s in ipairs(record.shapes or {}) do consider(s) end
+  for _, object in ipairs(record.objects or {}) do
+    local packed = packedFor(ground, object)
+    if packed and packed.shapes then
+      for _, s in ipairs(packed.shapes) do consider(s) end
+    end
+  end
+end
+
 -- One land chunk's sheet, in the chunk's own space. { mesh = nil } when it has
 -- no water, which is most of them.
 local function buildLand(ground, land)
   local record = ground.terrain and ground.terrain.chunks and ground.terrain.chunks[land]
-  if not record then return { mesh = nil } end
+  local entry = { mesh = nil, coveredKeys = {} }
+  if not record then return entry end
   local Hide = optional("Gen4Hide")
   local tris, ysum, ycount = {}, 0, 0
   local nTerrain, nProp, nSkipped = 0, 0, 0
@@ -330,7 +368,7 @@ local function buildLand(ground, land)
       for _, tri in ipairs(shapeTriangles(ground, s, record.posScale or 1)) do
         if take(tri) then any = true; nTerrain = nTerrain + 1 end
       end
-      if any then markCovered(s) end
+      if any then rememberCovered(entry, s) end
     end
   end
 
@@ -346,13 +384,13 @@ local function buildLand(ground, land)
           for _, tri in ipairs(shapeTriangles(ground, s, packed.posScale or 1)) do
             if take(tri, s, place) then any = true; nProp = nProp + 1 end
           end
-          if any then markCovered(s) end
+          if any then rememberCovered(entry, s) end
         end
       end
     end
   end
 
-  if #tris == 0 then return { mesh = nil } end
+  if #tris == 0 then return entry end
   local verts, map = {}, {}
   for _, t in ipairs(tris) do emit(verts, map, t[1], t[2], t[3]) end
   local shore = shoreSkirts(tris, verts, map)
@@ -361,44 +399,31 @@ local function buildLand(ground, land)
          "land %s: %d terrain + %d prop water triangles (%d not horizontal, skipped), %d shore edges grown",
          tostring(land), nTerrain, nProp, nSkipped, shore)
   end
-  return { mesh = Voxel3D.newMesh(verts, map), y = ysum / ycount }
+  entry.mesh = Voxel3D.newMesh(verts, map)
+  entry.y = ysum / ycount
+  return entry
 end
 
--- ---------------------------------------------------------------- draw --
+-- ---------------------------------------------------------------- window --
 
-function GW.draw(scene)
-  GW.level = nil
-  local ground, view = scene.ground, scene.view
+-- Build / look up sheets for the camera window. Gen4Hide calls this before the
+-- native pass so isCovered sees the current Ground's shape records; draw()
+-- calls it again (idempotent) before painting the sheets.
+function GW.prepare(ground)
+  local view = ground and ground.view3d
   if not (ground and view and ground.grid and ground.terrain and ground.slice
           and ground.chunkPx and ground.half) then
     once("ground", "the ground has no chunk grid to read water from -- native water kept")
-    GW.ready = false
-    return
+    GW.ready, GW.level = false, nil
+    return false
   end
-  local Water = optional("Water")
-  local tex = Water and Water.artBlank and Water.artBlank() or nil
-  if not tex then
-    once("tex", "no base texture for the water sheet")
-    GW.ready = false
-    return
-  end
-  if not (Water.artOn and Water.artOn() == 1) then
-    once("art", "assets/water/water.png not found -- drawing the flat-blue base "
-         .. "with the swell, paint and glint (drop the file in to get the art)")
-  end
-
-  local rec = cache[ground]
-  if not rec then rec = { lands = {} }; cache[ground] = rec end
 
   local grid, px, half = ground.grid, ground.chunkPx, ground.half
   local W = GW.WINDOW
   local camCx, camCy = math.floor(view.x / px), math.floor(view.z / px)
-  local fx, fz = scene.focusPx()
-  fx, fz = fx + scene.offsetX, fz + scene.offsetZ         -- map pixels -> world
+  local fx, fz = view.x, view.z
 
-  -- The window's cells only change when the camera crosses an engine chunk;
-  -- they were rebuilt (and the whole lot sorted) every frame before.
-  if not (rec.cells and rec.camCx == camCx and rec.camCy == camCy and rec.W == W) then
+  if not (window.cells and window.camCx == camCx and window.camCy == camCy and window.W == W) then
     local cells = {}
     for cy = camCy - W, camCy + W do
       for cx = camCx - W, camCx + W do
@@ -407,18 +432,26 @@ function GW.draw(scene)
         end
       end
     end
-    rec.cells, rec.camCx, rec.camCy, rec.W, rec.dirty = cells, camCx, camCy, W, true
+    window.cells, window.camCx, window.camCy, window.W, window.dirty = cells, camCx, camCy, W, true
   end
-  local cells, lands = rec.cells, rec.lands
 
-  -- Distance is per frame (the focus moves smoothly); sorting happens only
-  -- while there is something left to build.
+  -- New Ground: same land ids, new shape pointers. Re-tag Hide coverage and
+  -- rebuild the draw list without dropping landSheets.
+  if window.ground ~= ground then
+    for _, c in ipairs(window.cells) do
+      local entry = landSheets[c[3]]
+      if entry then rematchCovered(ground, c[3], entry) end
+    end
+    window.ground, window.dirty = ground, true
+  end
+
+  local cells = window.cells
   local nearest, nearestD, todo = nil, math.huge, nil
   for i = 1, #cells do
     local c = cells[i]
     local dx, dz = c[1] * px + half - fx, c[2] * px + half - fz
     local d = dx * dx + dz * dz
-    local entry = lands[c[3]]
+    local entry = landSheets[c[3]]
     if entry then
       if entry.mesh and d < nearestD then nearestD, nearest = d, entry end
     else
@@ -433,7 +466,7 @@ function GW.draw(scene)
     for i = 1, #todo do
       local t = todo[i]
       local land = t[2]
-      if lands[land] == nil then
+      if landSheets[land] == nil then
         if builds < GW.BUILDS_PER_FRAME and Budget.allow(true) then
           builds = builds + 1
           local t0 = clock()
@@ -443,11 +476,11 @@ function GW.draw(scene)
           if ok then
             entry = built
           else
-            entry = { mesh = nil }
+            entry = { mesh = nil, coveredKeys = {} }
             once("land", "a land chunk failed to build and was skipped: %s", tostring(built))
           end
-          lands[land] = entry
-          rec.dirty = true
+          landSheets[land] = entry
+          window.dirty = true
           if entry.mesh and t[1] < nearestD then nearestD, nearest = t[1], entry end
         else
           missing = true
@@ -455,24 +488,40 @@ function GW.draw(scene)
       end
     end
   end
-  -- Latched per ground: once the whole window has been built, walking into
-  -- chunks that are not yet must not hand the native water back for a frame.
-  if not missing then rec.complete = true end
-  GW.ready = rec.complete == true
-  if nearest then GW.level = nearest.y + GW.LIFT end
+  -- Latched once a window has been fully filled: walking into unbuilt chunks
+  -- must not hand the native water back for a frame.
+  if not missing then window.complete = true end
+  GW.ready = window.complete == true
+  GW.level = nearest and (nearest.y + GW.LIFT) or nil
 
-  if rec.dirty then
+  if window.dirty then
     local list = {}
     for i = 1, #cells do
       local c = cells[i]
-      local entry = lands[c[3]]
+      local entry = landSheets[c[3]]
       if entry and entry.mesh then
         list[#list + 1] = { mesh = entry.mesh, x = c[1] * px + half, z = c[2] * px + half }
       end
     end
-    rec.list, rec.dirty = list, false
+    window.list, window.dirty = list, false
   end
-  local list = rec.list
+  return true
+end
+
+function GW.draw(scene)
+  local ground = scene and scene.ground
+  if not GW.prepare(ground) then return end
+  local Water = optional("Water")
+  local tex = Water and Water.artBlank and Water.artBlank() or nil
+  if not tex then
+    once("tex", "no base texture for the water sheet")
+    return
+  end
+  if not (Water.artOn and Water.artOn() == 1) then
+    once("art", "assets/water/water.png not found -- drawing the flat-blue base "
+         .. "with the swell, paint and glint (drop the file in to get the art)")
+  end
+  local list = window.list
   if not list or #list == 0 then return end
 
   Voxel3D.seams(false)
@@ -494,12 +543,13 @@ end
 -- Drop every baked sheet: a map was edited, or the mod was reloaded.
 function GW.invalidate()
   GW.ready, GW.level = false, nil
-  for _, rec in pairs(cache) do
-    for _, entry in pairs(rec.lands) do
-      if entry.mesh and entry.mesh.release then pcall(entry.mesh.release, entry.mesh) end
-    end
+  for _, entry in pairs(landSheets) do
+    if entry.mesh and entry.mesh.release then pcall(entry.mesh.release, entry.mesh) end
   end
-  cache = setmetatable({}, { __mode = "k" })
+  landSheets = setmetatable({}, { __mode = "k" })
+  window = {}
+  covered = setmetatable({}, { __mode = "k" })
+  GW.coverVersion = GW.coverVersion + 1
 end
 
 return GW
