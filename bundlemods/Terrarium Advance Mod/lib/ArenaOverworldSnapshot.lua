@@ -37,7 +37,6 @@ M.REFRESH = 0.25
 M.POSE_EPS = 0.05
 M.POSE_EPS_FOV = 0.0005
 M.LOG_STATS = true
-M.STATS_EVERY = 5      -- seconds between running-total log lines during a fight
 
 local function log(level, fmt, ...)
   local m = V.mod
@@ -191,52 +190,17 @@ end
 -- One line per fight: how many arena frames there were, how many re-rendered the
 -- world, and how many world passes the overworld itself still drew meanwhile.
 -- overworldPerFrame ~1.0 means the real overworld is drawing underneath the arena.
-local function logStats(label)
+local function logStats()
   local st = field and field.stats
   if not (M.LOG_STATS and st and st.frames > 0) then return end
   local Host = gen4Host()
   local own = Host and Host.stats and (Host.stats.draws - st.draws0) or 0
-  log("info", "Gen4 arena world (" .. (label or "fight over") .. "): %d arena frames, %d world renders (%.0f%%), %d reused, "
+  log("info", "Gen4 arena world: %d arena frames, %d world renders (%.0f%%), %d reused, "
       .. "%.2f ms avg render submit (CPU), %d overworld world passes during the fight "
       .. "(%.2f per arena frame), scale %.2f, refresh %.2fs",
       st.frames, st.renders, 100 * st.renders / st.frames, st.reuses,
       st.renders > 0 and st.ms / st.renders or 0, own, own / st.frames,
       tonumber(M.WORLD_SCALE) or 1, tonumber(M.REFRESH) or 0)
-end
-
--- What the engine's stack will draw under the arena. visibleBase is the lowest
--- state the stack draws; if the overworld sits at or above it, the overworld is
--- still being drawn under the arena (a second full world pass for nothing).
-local function logStack()
-  if not M.LOG_STATS then return end
-  local Game = engineReq("src.core.Game")
-  local stack = Game and Game.stack
-  local states = stack and stack.states
-  if type(states) ~= "table" then
-    log("info", "Gen4 arena stack: unavailable (no stack.states)")
-    return
-  end
-  local base
-  if type(stack.visibleBase) == "function" then
-    local ok, v = pcall(stack.visibleBase, stack)
-    if ok then base = tonumber(v) end
-  end
-  local ow, parts = nil, {}
-  for i, s in ipairs(states) do
-    if type(s) == "table" and s.isOverworld == true then ow = i end
-  end
-  for i = math.max(1, #states - 3), #states do
-    local s = states[i]
-    local flag = type(s) == "table" and s.isOpaque
-    parts[#parts + 1] = string.format("[%d]%s%s", i,
-      flag == true and "opaque" or (flag == false and "clear" or "?"),
-      (type(s) == "table" and s.isOverworld == true) and "(overworld)" or "")
-  end
-  local under
-  if base and ow then under = ow >= base end   -- not and/or: false must stay false
-  log("info", "Gen4 arena stack: depth %d, visibleBase %s, %s -- overworld drawn under the arena: %s",
-      #states, tostring(base), table.concat(parts, " "),
-      under == nil and "unknown" or (under and "YES" or "no"))
 end
 
 function M.stats()
@@ -351,18 +315,7 @@ end
 -- host's reused canvas, which nothing else writes between renders.
 local function drawNative(w, h, pose)
   local st = field.stats
-  if st then
-    st.frames = st.frames + 1
-    if st.frames == 1 then pcall(logStack) end
-    -- A run that ends mid-fight (crash, closed window) never reaches clear();
-    -- log the running totals every few seconds so the numbers survive.
-    local tn = now()
-    field.statAt = field.statAt or tn
-    if tn - field.statAt >= (tonumber(M.STATS_EVERY) or 5) then
-      field.statAt = tn
-      pcall(logStats, "so far")
-    end
-  end
+  if st then st.frames = st.frames + 1 end
   local Host = gen4Host()
   if not (Host and type(Host.renderPose) == "function") then
     field.worldColour = nil

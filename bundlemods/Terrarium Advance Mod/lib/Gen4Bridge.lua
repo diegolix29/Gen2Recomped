@@ -175,22 +175,6 @@ local function buildScene(ground, view, vw, vh)
   function scene.opaque()
     love.graphics.setDepthMode("lequal", true)
   end
-  -- scene.sphereVisible(x, y, z, r): false only when a sphere (world units) is
-  -- well outside the view. Effects use it to skip whole chunks the camera cannot
-  -- see (see Gen4Cull). Absent when the view's fov is unreadable: callers must
-  -- treat nil as "draw everything".
-  do
-    local okC, Cull = pcall(V.require, "Gen4Cull")
-    local fovRad
-    if type(view.effectiveFovY) == "function" then
-      local okF, f = pcall(view.effectiveFovY, view, vh)
-      if okF and tonumber(f) then fovRad = math.rad(f) end
-    end
-    if okC and type(Cull) == "table" and fovRad then
-      scene.sphereVisible = Cull.sphereTest(scene.eye, scene.forward, fovRad,
-                                            (tonumber(vw) or 1) / math.max(tonumber(vh) or 1, 1))
-    end
-  end
   return scene
 end
 

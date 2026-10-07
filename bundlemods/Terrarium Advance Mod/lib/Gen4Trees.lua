@@ -938,26 +938,10 @@ function GT.draw(scene)
   if #GT.list == 0 then return end
   Voxel3D.seams(false)
   Voxel3D.glass(false)
-  -- Every land in the window used to be drawn whatever the camera was looking
-  -- at (~2M quads on Route 202). Skip the lands that are wholly outside the
-  -- view cone; the radius is the land's half-diagonal plus tree height and
-  -- terrain relief, so a visible tree is never dropped.
-  local visible = scene.sphereVisible
-  local ground = scene.ground
-  local radius = ((ground and ground.chunkPx) or 512) * 0.72 + 160
-  local drawn = 0
   for _, item in ipairs(GT.list) do
-    if (not visible) or visible(item.x, 0, item.z, radius) then
-      drawn = drawn + 1
-      for _, b in ipairs(item.entry.buckets) do
-        Voxel3D.draw(b.mesh, b.tex, Mat4.translate(item.x, GT.Y_OFFSET or 0, item.z), 0, nil, 0, false)
-      end
+    for _, b in ipairs(item.entry.buckets) do
+      Voxel3D.draw(b.mesh, b.tex, Mat4.translate(item.x, GT.Y_OFFSET or 0, item.z), 0, nil, 0, false)
     end
-  end
-  GT.lastDrawn, GT.lastTotal = drawn, #GT.list
-  if visible and drawn < #GT.list then
-    once("cull", "view culling skips tree lands the camera cannot see (%d of %d drawn this frame)",
-         drawn, #GT.list)
   end
   Voxel3D.seams(true)
   Voxel3D.glass(true)
