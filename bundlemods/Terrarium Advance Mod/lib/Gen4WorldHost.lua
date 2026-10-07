@@ -907,6 +907,25 @@ function Host.install()
                             function() s(camX, camY) end)
           end
         end
+        -- The mount is a 3D model here, so the rider (a 2D figure) would be
+        -- lost with the skipped feet. FreeFly hands it over as its own
+        -- billboard, raised to flight height exactly like a 2D flyer; it
+        -- returns nil on FULL FLY, so a full-fly mount flies alone.
+        if type(Host.flightRider) == "function" and not Host._worldLifted then
+          local okR, rl, rdraw = pcall(Host.flightRider, mapX, mapY)
+          if okR and rl and rl > 0 and type(rdraw) == "function" then
+            local own = rawget(self, "groundY")
+            local base = self.groundY
+            self.groundY = function(g, x, z) return (base(g, x, z) or 0) + rl end
+            Host._worldLifted = true
+            local okD, errD = pcall(innerFreeEntity, self, mapX, mapY, camX,
+                                    camY, rise, function() rdraw(camX, camY) end,
+                                    depthLift)
+            Host._worldLifted = false
+            self.groundY = own
+            if not okD then error(errD, 0) end
+          end
+        end
         return true
       end
       -- A flyer (Host.flightLift is set by FreeFly) is placed at its real

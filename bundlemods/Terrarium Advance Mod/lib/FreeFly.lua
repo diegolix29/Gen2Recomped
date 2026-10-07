@@ -122,6 +122,11 @@ local state = {
   -- destination; ox/oy/rootedOn are the cached bearing to it in the
   -- CURRENT map's own pixel space, refreshed on every crossing
   autopilot = nil,
+  -- FULL FLY: true for the WHOLE flight that was launched from the fly-mode
+  -- Town Map (it stays true even if the player grabs the stick and the
+  -- autopilot is handed back). Full fly shows NO rider on any generation;
+  -- plain FREEFLY always shows one. Cleared at every takeoff.
+  fullFly = false,
 }
 
 local function cruiseAlt()
@@ -357,6 +362,9 @@ end
 
 local function startFlight(game, mon)
   if flying() then return end
+  -- every takeoff is a plain FREEFLY (rider shown) until beginAutopilot
+  -- marks it as a FULL FLY right after this returns
+  state.fullFly = false
   local ow = V.mod.world and V.mod.world:overworld()
   if not (ow and ow.player) then
     V.mod.log:warn("no overworld to take off from; FREEFLY skipped")
@@ -774,6 +782,7 @@ end
 local function beginAutopilot(game, mon, destMap, destX, destY)
   if not destMap then return end
   startFlight(game, mon)
+  state.fullFly = true
   state.autopilot = {
     mapId = destMap,
     x = tonumber(destX) or 0,
@@ -1589,6 +1598,11 @@ local function dropRider(ow)
 end
 
 local function syncRider(ow, p)
+  -- FULL FLY: no rider at all, so make sure no ghost is left in the list
+  if state.fullFly then
+    dropRider(ow)
+    return
+  end
   local r = state.rider
   if not r or r.player ~= p then
     dropRider(ow)
@@ -2920,9 +2934,12 @@ function FreeFly.init()
       -- rider FIRST, tucked low, then the mount over it: the mount's body
       -- hides the crop line, so the figure reads as seated behind its
       -- neck instead of a head floating above it
-      local walk = self.freeFlyWalkSprite or self.sprite
-      walk:draw(self.px, ry - math.floor(1 + 2 * s + 0.5),
-                camX, camY, self.facing, 0, false, true)
+      -- (FULL FLY: the mount flies alone, no rider layer)
+      if not state.fullFly then
+        local walk = self.freeFlyWalkSprite or self.sprite
+        walk:draw(self.px, ry - math.floor(1 + 2 * s + 0.5),
+                  camX, camY, self.facing, 0, false, true)
+      end
       if s ~= 1 then
         local fx = math.floor(self.px + 8 - camX)
         local fy = math.floor(ry + 12 - camY)
@@ -2985,6 +3002,30 @@ function FreeFly.init()
           end
           return lift, function(camX, camY)
             Player.__freeFlyShadow(pl, camX, camY)
+          end
+        end
+
+        -- Gen 4: when the mount is a 3D model (Pokemon Player), Gen4WorldHost
+        -- draws the mount itself and skips the 2D figure, which is where the
+        -- rider lives. This hands it the rider as a separate billboard.
+        -- nil on FULL FLY, when not airborne, or for any other character.
+        Host4.flightRider = function(mapX, mapY)
+          if state.fullFly then return nil end
+          local ow = Game.overworld
+          local pl = ow and ow.player
+          local lift = pl and pl.freeFlyAlt
+          if not (lift and lift > 0 and flying()) then return nil end
+          if math.abs((mapX or 0) - pl.px) > 0.5
+             or math.abs((mapY or 0) - pl.py) > 0.5 then
+            return nil
+          end
+          local walk = pl.freeFlyWalkSprite
+          if not walk then return nil end
+          local sc = Player.__freeFlyMountScale or 1
+          return lift, function(camX, camY)
+            love.graphics.setColor(1, 1, 1, 1)
+            walk:draw(pl.px, pl.py - math.floor(1 + 2 * sc + 0.5),
+                      camX, camY, pl.facing, 0, false, true)
           end
         end
       end
