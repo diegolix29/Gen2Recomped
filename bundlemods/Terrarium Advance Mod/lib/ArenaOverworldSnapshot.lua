@@ -13,11 +13,6 @@
 -- colour, and blit() lays it into the arena canvas once Arena.lua has rebound
 -- it. Actors keep projecting through the pose, which the world was drawn with,
 -- so they stand on the real ground. See nativeWorld() / blit() below.
---
--- That renderPose pass is a full Platinum drawFree. capture() therefore tells
--- Gen4WorldHost to skip the walking-camera drawFree until clear(), otherwise
--- every fight frame paints two worlds and Gen4Trees/Gen4Water prepare windows
--- fight each other.
 local V = ...
 local M = {}
 
@@ -161,12 +156,6 @@ function M.capture(battle, stateHint)
       tostring(field.mapId), tostring(pocket.shape),
       tostring(pocket.x), tostring(pocket.y), tostring(why),
       native and ", native Gen 4 world" or "")
-  -- Stand down the walking-camera Platinum pass for the fight. Arena.lua
-  -- already re-draws that world through renderPose; two drawFrees a frame
-  -- is the Gen 4 CBE hitch.
-  if Host and type(Host.setCbeNativeArena) == "function" then
-    pcall(Host.setCbeNativeArena, native)
-  end
   return true
 end
 
@@ -176,10 +165,6 @@ end
 
 function M.clear()
   field = nil
-  local Host = gen4Host()
-  if Host and type(Host.setCbeNativeArena) == "function" then
-    pcall(Host.setCbeNativeArena, false)
-  end
 end
 
 -- BattleCam pose in world pixels, so CBE's compositor and the voxel field
