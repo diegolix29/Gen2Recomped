@@ -559,7 +559,7 @@ end
 
 function ControlEngine:_partyPikachuIndex(save)
   for i, mon in ipairs(save and save.party or {}) do
-    if mon and mon.species == "PIKACHU" and (mon.hp or 0) > 0 then
+    if mon and tostring(mon.species) == "PIKACHU" and (mon.hp or 0) > 0 then
       return i
     end
   end
@@ -662,8 +662,9 @@ function ControlEngine:forceYellowStockPikachuArt(ow, game)
   -- what made Pikachu take priority over the chosen follower.
   local mon = self:getActiveFollowerMon(game)
   local species = (mon and mon.species) or "PIKACHU"
+  local speciesStr = tostring(species)
   local resolved = self:resolveFollowerSprite({
-    species = species,
+    species = speciesStr,
     shiny = isShinyMon(mon),
     surface = "land",
     role = "primary",
@@ -884,9 +885,10 @@ function ControlEngine:applyPlayerAsPokemon(game, ow, force)
   end
   local mon = self:getLeaderMon(game)
   local species = mon and mon.species or "CHARMANDER"
+  local speciesStr = tostring(species)
   local shiny = isShinyMon(mon)
   local resolved = self:resolveFollowerSprite({
-    species = species,
+    species = speciesStr,
     shiny = shiny,
     surface = "land",
     role = "player_controlled",
@@ -999,7 +1001,7 @@ function ControlEngine:makeTrailer(game, ow, x, y, facing, kind, mon, slot)
   npc.pikachuFollower = false
   npc.pokepcTalkablePikachu = (kind ~= "trainer"
     and self:_isYellow()
-    and mon and mon.species == "PIKACHU") and true or false
+    and mon and tostring(mon.species) == "PIKACHU") and true or false
 
   if kind == "trainer" then
     -- Walk sheets are DMG greyscale; trueColor would draw raw greys.
@@ -1017,10 +1019,11 @@ function ControlEngine:makeTrailer(game, ow, x, y, facing, kind, mon, slot)
     end
   else
     local species = mon and mon.species or "CHARMANDER"
+    local speciesStr = tostring(species)
     local shiny = isShinyMon(mon)
     npc.pokepcShiny = shiny and true or false
     local resolved = self:resolveFollowerSprite({
-      species = species,
+      species = speciesStr,
       shiny = shiny,
       form = mon and mon.form,
       surface = "land",
@@ -1736,8 +1739,8 @@ local function compositionDirty(trailers, want)
       -- non-shiny copies). A species-only comparison leaves the old mon bound
       -- after a party-leader switch, so compare the actual party object too.
       if spec.mon ~= t.pokepcMon then return true end
-      local sp = spec.mon and spec.mon.species
-      local cur = t.pokepcMon and t.pokepcMon.species
+      local sp = spec.mon and tostring(spec.mon.species)
+      local cur = t.pokepcMon and tostring(t.pokepcMon.species)
       if sp ~= cur then return true end
     end
   end
@@ -2363,6 +2366,7 @@ function ControlEngine:_refreshTrailerWaterSprites(game, ow, surface)
     if npc and npc.pokepcTrailerKind == "mon" and npc.pokepcMon then
       local mon = npc.pokepcMon
       local species = mon.species or npc._wildsFollowerSpecies
+      local speciesStr = species and tostring(species) or nil
       local shiny = isShinyMon(mon) or (npc.pokepcShiny == true)
       local resolved = nil
 
@@ -2370,7 +2374,7 @@ function ControlEngine:_refreshTrailerWaterSprites(game, ow, surface)
         -- Load the submerged poke_followers sheet directly.  Naming is
         -- follower_NNN_{variant}_submerged.png; pick based on COLORS mode.
         local dex = AnimatedSprites and AnimatedSprites.resolveSpeciesId
-          and AnimatedSprites.resolveSpeciesId(species, game, self.mod)
+          and AnimatedSprites.resolveSpeciesId(speciesStr, game, self.mod)
         if dex then
           -- Gold is CGB-native, so the follower must keep the original RGBA
           -- submerged sheet. The old Gen-1 luminance branch left the sprite
@@ -2410,7 +2414,7 @@ function ControlEngine:_refreshTrailerWaterSprites(game, ow, surface)
         -- No submerged sheet (land surface, or species outside the set).
         -- Fall back to the standard sprite resolution chain.
         resolved = self:resolveFollowerSprite({
-          species = species,
+          species = speciesStr,
           shiny = shiny,
           form = mon.form,
           surface = surface,
@@ -2530,7 +2534,7 @@ function ControlEngine:_installTalkWrap()
          and npc.pokepcTrailerKind ~= "trainer" and npc.pokepcMon then
         local mon = npc.pokepcMon
         -- Yellow Pikachu keeps vanilla talk (Pikachu-specific options).
-        if engine:_isYellow() and mon.species == "PIKACHU" then
+        if engine:_isYellow() and tostring(mon.species) == "PIKACHU" then
           if PF and PF.talk then
             PF.talk(engine:_game(), owSelf, npc)
           end

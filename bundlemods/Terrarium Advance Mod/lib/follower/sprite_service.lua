@@ -371,17 +371,18 @@ end
 function SpriteService:resolvePartyIconDef(mon, game)
   if not mon then return nil end
   local species = mon.species or "CHARMANDER"
+  local speciesStr = tostring(species)
   local shiny = isShinyMon(mon)
   local activeStyle = Config.spriteStyle and Config.spriteStyle(self.mod)
   -- Gen-2 follower art stays full color in every display mode, so style +
   -- species + shiny state fully identify the cached icon definition.
-  local cacheKey = tostring(activeStyle or "") .. "|" .. tostring(species)
+  local cacheKey = tostring(activeStyle or "") .. "|" .. speciesStr
     .. (shiny and "|s" or "|n")
   local cached = self._partyIconDefCache[cacheKey]
   if cached then return cached end
 
   local def = self:resolveFollowerSprite({
-    species = species,
+    species = speciesStr,
     shiny = shiny,
     form = mon.form,
     surface = "land",

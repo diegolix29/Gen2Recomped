@@ -236,7 +236,9 @@ end
 -- machine-teach path checks, so eligibility exactly matches "could this
 -- mon legitimately learn FLY"
 local function canLearnFly(game, mon)
-  local def = mon and game.data.pokemon[mon.species]
+  local species = mon and mon.species
+  local speciesStr = species and tostring(species) or nil
+  local def = mon and game.data.pokemon[speciesStr]
   for _, m in ipairs((def and def.tmhm) or {}) do
     if m == "FLY" then return true end
   end
@@ -264,7 +266,7 @@ end
 -- HM02 compatibility still gates as the machine-teach path would
 local function eligibleFlyer(game, ow, mon)
   V.mod.log:info("ELIGIBLE CHECK: mon=%s, freeFlyGift=%s, knowsFly=%s",
-               mon and mon.species or "nil",
+               tostring(mon and mon.species or "nil"),
                tostring(mon and mon.freeFlyGift),
                tostring(knowsFly(mon)))
   if mon and mon.freeFlyGift then return true end
@@ -389,8 +391,12 @@ local function startFlight(game, mon)
     end
     
     -- Try to get dex number from species name
+    -- If species is already a number, use it directly
+    if type(species) == "number" then
+      flyingPokemonDex = species
+      V.mod.log:info("Species is already a number: %d", species)
     -- Handle Gen2 SPECIES_XXX format first (e.g., SPECIES_006 -> dex 6)
-    if species:match("^SPECIES_%d+$") then
+    elseif type(species) == "string" and species:match("^SPECIES_%d+$") then
       local dexNum = tonumber(species:match("^SPECIES_(%d+)$"))
       if dexNum then
         flyingPokemonDex = dexNum
@@ -399,7 +405,7 @@ local function startFlight(game, mon)
     end
     
     -- If not found, try ColosseumDexNames reverse lookup for regular names
-    if not flyingPokemonDex and ColosseumDexNames then
+    if not flyingPokemonDex and ColosseumDexNames and type(species) == "string" then
       -- Reverse lookup: find dex number for this species name
       for dex, name in pairs(ColosseumDexNames) do
         if name == species then
@@ -409,13 +415,34 @@ local function startFlight(game, mon)
         end
       end
     end
-    
+
     -- If not found in ColosseumDexNames, try to look up in game data
-    if not flyingPokemonDex then
+    if not flyingPokemonDex and type(species) == "string" then
       local pokemonDef = Game.data.pokemon[species]
       if pokemonDef and pokemonDef.number then
         flyingPokemonDex = pokemonDef.number
         V.mod.log:info("Found dex %d from game data for species %s", flyingPokemonDex, species)
+      end
+    end
+
+    -- If species is a number, also get the species name for sprite resolution
+    local speciesForSprite = species
+    if type(species) == "number" then
+      -- Look up species name from ColosseumDexNames
+      speciesForSprite = ColosseumDexNames and ColosseumDexNames[species]
+      if not speciesForSprite then
+        -- If not in ColosseumDexNames, search game data
+        for name, def in pairs(Game.data.pokemon or {}) do
+          if def.number == species then
+            speciesForSprite = name
+            V.mod.log:info("Found species name %s for dex %d", name, species)
+            break
+          end
+        end
+      end
+      if not speciesForSprite then
+        V.mod.log:warn("Could not find species name for dex %d", species)
+        speciesForSprite = tostring(species)
       end
     end
     
@@ -427,14 +454,14 @@ local function startFlight(game, mon)
         if okLoad then
           if okInstall and PlayerModelInstall then
             PlayerModelInstall.writeMarker("stadium_player_" .. flyingPokemonDex)
-            V.mod.log:info("Set Pokemon Player to dex %d (%s) for FreeFly", flyingPokemonDex, species)
+            V.mod.log:info("Set Pokemon Player to dex %d (%s) for FreeFly", flyingPokemonDex, tostring(species))
           end
         else
           V.mod.log:warn("Failed to load Pokemon Player model for dex %d", flyingPokemonDex)
         end
       end
     else
-      V.mod.log:warn("Could not find dex number for species %s", species)
+      V.mod.log:warn("Could not find dex number for species %s", tostring(species))
     end
   end
   
@@ -447,8 +474,8 @@ local function startFlight(game, mon)
 
   -- Try to use the Pokémon's actual sprite using the follower sprite service
   local monSprite = nil
-  local mountSpecies = species
-  
+  local mountSpecies = speciesForSprite
+
   if mountSpecies then
     -- Try to use the follower sprite service (same as roamers/followers)
     local ok, spriteService = pcall(V.require, "follower/sprite_service")
@@ -2982,7 +3009,28 @@ function FreeFly.init()
       state.mountMon = mon
       local species = mon and mon.species
       local SpriteRenderer = require("src.render.SpriteRenderer")
-      
+
+      -- Convert species to species name for sprite resolution
+      local speciesForSprite = species
+      if type(species) == "number" then
+        -- Look up species name from ColosseumDexNames
+        speciesForSprite = ColosseumDexNames and ColosseumDexNames[species]
+        if not speciesForSprite then
+          -- If not in ColosseumDexNames, search game data
+          for name, def in pairs(Game.data.pokemon or {}) do
+            if def.number == species then
+              speciesForSprite = name
+              V.mod.log:info("resolveMount: Found species name %s for dex %d", name, species)
+              break
+            end
+          end
+        end
+        if not speciesForSprite then
+          V.mod.log:warn("resolveMount: Could not find species name for dex %d", species)
+          speciesForSprite = tostring(species)
+        end
+      end
+
       -- Ensure SPRITE_BIRD is loaded as fallback
       if not Player.__freeFlyBird then
         if Game.data.sprites.SPRITE_BIRD then
@@ -2992,13 +3040,13 @@ function FreeFly.init()
 
       -- Try to use the Pokémon's actual sprite using the follower sprite service
       local monSprite = nil
-      if species then
+      if speciesForSprite then
         -- Try to use the follower sprite service (same as roamers/followers)
         local ok, spriteService = pcall(V.require, "follower/sprite_service")
         if ok and spriteService and spriteService.resolveFollowerSprite then
           local shiny = mon.shiny == true or mon.isShiny == true
           local resolved = spriteService:resolveFollowerSprite({
-            species = species,
+            species = speciesForSprite,
             shiny = shiny,
             surface = "land",
             role = "free_fly_mount",
@@ -3011,20 +3059,20 @@ function FreeFly.init()
               frames = resolved.frames or 6,
               walker = resolved.walker ~= false,
               trueColor = resolved.trueColor ~= false,
-            }, "free_fly_" .. species)
-            V.mod.log:info("Using follower sprite service for species %s: %s", tostring(species), tostring(resolved.image))
+            }, "free_fly_" .. speciesForSprite)
+            V.mod.log:info("resolveMount: Using follower sprite service for species %s: %s", speciesForSprite, tostring(resolved.image))
           else
-            V.mod.log:info("Follower sprite service returned nil for species %s", tostring(species))
+            V.mod.log:info("resolveMount: Follower sprite service returned nil for species %s", speciesForSprite)
           end
         else
-          V.mod.log:info("Follower sprite service not available")
+          V.mod.log:info("resolveMount: Follower sprite service not available")
         end
       end
 
       -- Fall back to Sky.mountSprite if species sprite not available
-      Player.__freeFlyMount = monSprite or (species and Sky.mountSprite(Game.data, species, "free_fly")) or Player.__freeFlyBird
-      Player.__freeFlyMountScale = species and Sky.dexScale(Game.data, species) or 1
-      V.mod.log:info("Mount resolved: species=%s, scale=%s, using=%s", tostring(species), tostring(Player.__freeFlyMountScale), tostring(monSprite and "species_sprite" or "fallback"))
+      Player.__freeFlyMount = monSprite or (speciesForSprite and Sky.mountSprite(Game.data, speciesForSprite, "free_fly")) or Player.__freeFlyBird
+      Player.__freeFlyMountScale = speciesForSprite and Sky.dexScale(Game.data, speciesForSprite) or 1
+      V.mod.log:info("resolveMount: Mount resolved: species=%s, scale=%s, using=%s", tostring(species), tostring(Player.__freeFlyMountScale), tostring(monSprite and "species_sprite" or "fallback"))
     end
 
     -- crossConnection re-validates the landing tile on the neighbor map

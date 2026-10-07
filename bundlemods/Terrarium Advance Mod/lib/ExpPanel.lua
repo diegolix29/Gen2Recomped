@@ -79,9 +79,11 @@ function ExpPanel:draw()
     local y = y0 + ROW_H + (i - 1) * ROW_H
     if y > (ROWS - 1) * TILE then break end
     local mon = r.mon
+    local species = mon.species
+    local speciesStr = species and tostring(species) or nil
     local name = mon.nickname
-                 or (self.game.data.pokemon[mon.species] or {}).name
-                 or tostring(mon.species)
+                 or (self.game.data.pokemon[speciesStr] or {}).name
+                 or speciesStr
     F.draw(name, x0, y)
     -- a level-up is called out where it happened rather than left to the
     -- message that follows, so the card reads as the whole story

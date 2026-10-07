@@ -255,12 +255,14 @@ local function bindNativeView(s)
       if player.battler then
         host.player=player.battler
       else
-        local def=host.data and host.data.pokemon and host.data.pokemon[player.mon.species]
+        local species = player.mon.species
+        local speciesStr = species and tostring(species) or nil
+        local def=host.data and host.data.pokemon and host.data.pokemon[speciesStr]
         host.player={
           mon=player.mon,
           def=def,
-          name=player.mon.nickname or (def and def.name) or tostring(player.mon.species or '?'),
-          species=player.mon.species,
+          name=player.mon.nickname or (def and def.name) or tostring(species or '?'),
+          species=species,
           isPlayer=true,
           badges=host.game and host.game.save and host.game.save.inventory,
           badgeBoosts=host.data and host.data.constants and host.data.constants.badgeBoosts,
