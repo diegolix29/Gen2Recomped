@@ -408,6 +408,8 @@ local function drawFieldActors(state, ground)
     if ground.groundY then
       gh = ground:groundY((mapX or 0) + 8, (mapY or 0) + 8) or 0
     end
+    local fly = (e.freeFlying and tonumber(e.freeFlyAlt)) or 0
+    gh = gh + fly
     -- World compass facing, not view:worldToScreen. That remap is for 2D
     -- sprite frames under an orbited camera; feeding it to a mesh rotateY
     -- locks the model on south (the cartridge's default look).
@@ -420,7 +422,7 @@ local function drawFieldActors(state, ground)
       phase = e.phase,
       flip = e.flip,
       gh = gh,
-      lift = 0,
+      lift = fly,
       entity = e,
       skipKey = spriteKey(mapX, mapY),
       isFollower = e.isFollower or e.wildsFollower or e._wildsFollowerSpecies ~= nil,
@@ -893,6 +895,15 @@ function Host.install()
       local skip = Host._skipFeet
       if skip and skip[spriteKey(mapX, mapY)] then
         return true
+      end
+      local ow = game() and game().overworld
+      local p = ow and ow.player
+      if p and p.freeFlying and (p.freeFlyAlt or 0) > 0 then
+        local dx = (mapX or 0) - (p.px or 0)
+        local dy = (mapY or 0) - (p.py or 0)
+        if dx * dx + dy * dy < 1 then
+          rise = (rise or 0) + p.freeFlyAlt
+        end
       end
       return innerFreeEntity(self, mapX, mapY, camX, camY, rise, draw)
     end

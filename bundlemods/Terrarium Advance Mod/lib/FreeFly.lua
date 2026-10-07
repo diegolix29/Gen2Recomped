@@ -146,6 +146,20 @@ local function flying()
   return state.phase ~= "idle"
 end
 
+local function gen4Host()
+  local ok, H = pcall(V.require, "Gen4WorldHost")
+  return ok and H or nil
+end
+
+-- Platinum's overworld is Gen4Ground, not the voxel pipeline.
+local function onGen4(ow)
+  local H = gen4Host()
+  if not H then return false end
+  if ow and H.isState and H.isState(ow) then return true end
+  if ow and ow.map and H.isMap and H.isMap(ow.map) then return true end
+  return H.isGen4 and H.isGen4() == true
+end
+
 local function knowsFly(mon)
   return Sky.knowsMove(mon, "FLY")
 end
@@ -167,7 +181,16 @@ local function skyAbove(game, mapDef)
       return true
     end
   end
-  return mapDef.tileset == "FOREST"
+  if mapDef.tileset == "FOREST" then return true end
+  -- Gen 4 headers do not use GB outsideTilesets / environment bytes, so
+  -- Map.isOutside reads every Sinnoh map as indoor and FREEFLY never
+  -- appears (and map.entered would ground a flight immediately).
+  local okS, Spawn = pcall(V.require, "Gen4Spawn")
+  if okS and Spawn and Spawn.isOutdoor then
+    local ok, outdoor = pcall(Spawn.isOutdoor, { def = mapDef, id = mapDef.id })
+    if ok and outdoor then return true end
+  end
+  return false
 end
 
 -- HM02 compatibility: the species' tmhm list is the same one the
@@ -454,7 +477,11 @@ function Rider:pose()
   local p = self.player
   local lift = math.floor((p.freeFlyAlt or 0) + 0.5)
   -- always the WALKING sheet: while airborne p.sprite is the mount
-  return p.freeFlyWalkSprite or p.sprite, p.px, p.py - lift - 6,
+  -- Gen 4 py is south on the ground plane, not screen Y; subtracting
+  -- altitude would slide the rider north instead of lifting them.
+  local py = p.py
+  if not onGen4() then py = py - lift - 6 end
+  return p.freeFlyWalkSprite or p.sprite, p.px, py,
          p.facing, 0, false, false
 end
 function Rider:draw() end
@@ -471,7 +498,10 @@ V.mod.hooks:wrap("movement.collision", function(next, allowed, ctx)
       ctx.reason = "tile"
       return false
     end
-    if ctx.reason == "tile" or ctx.reason == "entity" then
+    -- Gen 4 Collision.mayEnter also refuses elevation (cliffs, bridges,
+    -- water vs shore). A flyer is off the ground, so those must pass.
+    if ctx.reason == "tile" or ctx.reason == "entity"
+       or ctx.reason == "elevation" then
       ctx.reason = nil
       return true
     end
@@ -2196,9 +2226,15 @@ function FreeFly.init()
       -- under the card, so standing geometry eats into the visual lift
       -- instead of stacking on top of it (min 10 keeps clearance)
       local lift = state.alt + hover
+      local gen4 = onGen4(ow)
       local gh, voxelOn = voxelGroundHeight(ow, p)
       local camLift
-      if voxelOn then
+      if gen4 then
+        -- 1 unit = 1 map pixel, +Y is up. Gen4View follows the player
+        -- through placeCamera; Voxel3D.camera is rebound every frame.
+        p.freeFlyAlt = lift
+        state.placeWanted = false
+      elseif voxelOn then
         -- constant 52px TOTAL ride: the scene's building volumes cap at
         -- 48px from the ground plane (their mesher's MAX_ROWS), so this
         -- clears every small building everywhere with no climbs at all.
@@ -2250,6 +2286,7 @@ function FreeFly.init()
         p.freeFlyAlt = state.alt
         camLift = state.alt
       end
+      if not gen4 then
       local camLift = p.freeFlyAlt
       -- Calculate camera position: same fixed, UNROTATED offset vanilla
       -- Camera:follow uses (viewW/2-16, viewH/2-8). The Renderer already
@@ -2326,6 +2363,7 @@ function FreeFly.init()
       elseif not state.placeWanted and V3 and state.placedCam
              and V3.camera == state.placedCam then
         V3.camera = nil
+      end
       end
     end
 
@@ -2594,7 +2632,10 @@ function FreeFly.init()
       local sprite, px, py, facing, phase, flip, hopping = origPose(self)
       local lift = self.freeFlyAlt
       if lift and lift > 0 then
-        py = py - math.floor(lift + 0.5)
+        -- Gen 4 py is ground-south; height is applied in Gen4WorldHost.
+        if not onGen4() then
+          py = py - math.floor(lift + 0.5)
+        end
         local mount = Player.__freeFlyMount or Player.__freeFlyBird
         if mount then
           sprite = mount
@@ -2612,7 +2653,7 @@ function FreeFly.init()
     Player.__freeFlyDrawImpl = function(self, camX, camY, origDraw)
       local lift = self.freeFlyAlt
       local bird = Player.__freeFlyMount or Player.__freeFlyBird
-      if not (lift and lift > 0 and bird) then
+      if onGen4() or not (lift and lift > 0 and bird) then
         return origDraw(self, camX, camY)
       end
       -- the shadow shrinks with height and turns green over landable
@@ -2724,11 +2765,17 @@ function FreeFly.init()
     -- (Map:isWalkableCell + Collision.occupied directly, never
     -- Collision.canMove), so the airborne pass-through above never
     -- reaches it.  Wrapping its tick opens a permissive window scoped to
-    -- exactly that call while the player flies.
+    -- exactly that call while the player flies. On Gen 4 the same FreeMove
+    -- drives Gen4ActorCam, loaded as a sibling rather than via exports.
     do
-      local exports = Game.mods and Game.mods.exports
-      local V_module = exports and exports.DRAMATIC_SHAPE and exports.DRAMATIC_SHAPE.lib
-      local okFM, FreeMove = pcall(function() return V_module and V_module.require("FreeMove") end)
+      local okFM, FreeMove = pcall(V.require, "FreeMove")
+      if not (okFM and FreeMove and FreeMove.tick) then
+        local exports = Game.mods and Game.mods.exports
+        local V_module = exports and exports.DRAMATIC_SHAPE and exports.DRAMATIC_SHAPE.lib
+        okFM, FreeMove = pcall(function()
+          return V_module and V_module.require("FreeMove")
+        end)
+      end
       if okFM and FreeMove and FreeMove.tick then
         if not MapMod.__freeFlyWalkWrapped then
           MapMod.__freeFlyWalkWrapped = true
@@ -2798,6 +2845,29 @@ function FreeFly.init()
     end
     migrateGiftMarker()
     V.mod.events:on("save.loaded", migrateGiftMarker)
+
+    -- Gen4View is placed every frame by Gen4Ground:placeCamera. Raise the
+    -- eye after that so the chase / first-person / tilt cameras follow
+    -- the flyer instead of staying on the BDHC ground.
+    do
+      local okG, Ground = pcall(require, "src.render.Gen4Ground")
+      if okG and Ground and Ground.placeCamera and not Ground.__freeFlyCamWrapped then
+        Ground.__freeFlyCamWrapped = true
+        local innerPlace = Ground.placeCamera
+        function Ground:placeCamera(px, py, facing)
+          local a, b, c = innerPlace(self, px, py, facing)
+          local H = gen4Host()
+          if H and H._inBattle then return a, b, c end
+          local p = Game.overworld and Game.overworld.player
+          local extra = (p and p.freeFlying and p.freeFlyAlt) or 0
+          local view = self.view3d
+          if view and extra > 0 then
+            view.y = (view.y or 0) + extra
+          end
+          return a, b, c
+        end
+      end
+    end
 
     -- a save loaded while already standing in Pallet Town gets its bird too
     spawnGift()
