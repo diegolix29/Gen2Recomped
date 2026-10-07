@@ -160,26 +160,8 @@ local function onGen4(ow)
   return H.isGen4 and H.isGen4() == true
 end
 
--- Platinum stores species as a national dex number, not a name string.
-local function speciesDex(species)
-  if type(species) == "number" then return species end
-  if type(species) ~= "string" then return nil end
-  local n = species:match("^SPECIES_(%d+)$")
-  return n and tonumber(n) or nil
-end
-
 local function knowsFly(mon)
-  if Sky.knowsMove(mon, "FLY") then return true end
-  -- Gen 4 stores move ids as numbers (FLY = 19), which Sky.knowsMove's
-  -- name compare never matches; the engine's own field-move table does
-  if onGen4() then
-    local ok, F = pcall(require, "src.world.Gen4FieldMoves")
-    if ok and F and F.knows then
-      local okK, knows = pcall(F.knows, mon, "FLY")
-      return okK and knows == true
-    end
-  end
-  return false
+  return Sky.knowsMove(mon, "FLY")
 end
 
 -- where the sky exists: outside maps, plus Viridian Forest, whose
@@ -200,26 +182,13 @@ local function skyAbove(game, mapDef)
     end
   end
   if mapDef.tileset == "FOREST" then return true end
-  -- Gen 4: map defs carry no tileset. The cartridge's own camera row says
-  -- whether the lens is outdoor (perspective) or an interior box.
-  if onGen4() then
-    local GEN4_NO_SKY = {
-      cave = true, pastoria_gym = true, canalave_gym = true,
-      oreburgh_gym = true, veilstone_gym = true, stark_room2 = true,
-      hall_of_origin = true,
-    }
-    local okCam, outdoors = pcall(function()
-      local Gen4Camera = require("src.render.Gen4Camera")
-      local row = Gen4Camera.forType(mapDef.cameraType)
-      return row and row.projection == "perspective"
-             and not GEN4_NO_SKY[row.id]
-    end)
-    if okCam and outdoors then return true end
-    local okS, Spawn = pcall(V.require, "Gen4Spawn")
-    if okS and Spawn and Spawn.isOutdoor then
-      local ok, outdoor = pcall(Spawn.isOutdoor, { def = mapDef, id = mapDef.id })
-      if ok and outdoor then return true end
-    end
+  -- Gen 4 headers do not use GB outsideTilesets / environment bytes, so
+  -- Map.isOutside reads every Sinnoh map as indoor and FREEFLY never
+  -- appears (and map.entered would ground a flight immediately).
+  local okS, Spawn = pcall(V.require, "Gen4Spawn")
+  if okS and Spawn and Spawn.isOutdoor then
+    local ok, outdoor = pcall(Spawn.isOutdoor, { def = mapDef, id = mapDef.id })
+    if ok and outdoor then return true end
   end
   return false
 end
@@ -285,15 +254,6 @@ local function badgeOk(game, mon)
   if mon.freeFlyGift then
     V.mod.log:info("BADGE CHECK: gift mon, returning true")
     return true
-  end
-  -- Gen 4: ask the engine's own field-move badge table, the same answer
-  -- the vanilla FLY row gets
-  if onGen4() then
-    local okF, F = pcall(require, "src.world.Gen4FieldMoves")
-    if okF and F and F.badgeHeld then
-      local okB, held = pcall(F.badgeHeld, game.data, game.save, "FLY")
-      return okB and held and true or false
-    end
   end
   local Badges = require("src.inventory.Badges")
   -- Gen1 uses THUNDERBADGE, Gen2 uses STORMBADGE for FLY
@@ -379,10 +339,14 @@ local function startFlight(game, mon)
       V.mod.log:warn("PlayerModelInstall not available, cannot save previous Pokemon Player state")
     end
     
-    -- Try to get dex number from species (Gen 4 is already a number)
-    flyingPokemonDex = speciesDex(species)
-    if flyingPokemonDex then
-      V.mod.log:info("Extracted dex %d from species %s", flyingPokemonDex, tostring(species))
+    -- Try to get dex number from species name
+    -- Handle Gen2 SPECIES_XXX format first (e.g., SPECIES_006 -> dex 6)
+    if species:match("^SPECIES_%d+$") then
+      local dexNum = tonumber(species:match("^SPECIES_(%d+)$"))
+      if dexNum then
+        flyingPokemonDex = dexNum
+        V.mod.log:info("Extracted dex %d from Gen2 species format %s", dexNum, species)
+      end
     end
     
     -- If not found, try ColosseumDexNames reverse lookup for regular names
@@ -391,7 +355,7 @@ local function startFlight(game, mon)
       for dex, name in pairs(ColosseumDexNames) do
         if name == species then
           flyingPokemonDex = dex
-          V.mod.log:info("Found dex %d for species %s", dex, tostring(species))
+          V.mod.log:info("Found dex %d for species %s", dex, species)
           break
         end
       end
@@ -402,7 +366,7 @@ local function startFlight(game, mon)
       local pokemonDef = Game.data.pokemon[species]
       if pokemonDef and pokemonDef.number then
         flyingPokemonDex = pokemonDef.number
-        V.mod.log:info("Found dex %d from game data for species %s", flyingPokemonDex, tostring(species))
+        V.mod.log:info("Found dex %d from game data for species %s", flyingPokemonDex, species)
       end
     end
     
@@ -414,14 +378,14 @@ local function startFlight(game, mon)
         if okLoad then
           if okInstall and PlayerModelInstall then
             PlayerModelInstall.writeMarker("stadium_player_" .. flyingPokemonDex)
-            V.mod.log:info("Set Pokemon Player to dex %d (%s) for FreeFly", flyingPokemonDex, tostring(species))
+            V.mod.log:info("Set Pokemon Player to dex %d (%s) for FreeFly", flyingPokemonDex, species)
           end
         else
           V.mod.log:warn("Failed to load Pokemon Player model for dex %d", flyingPokemonDex)
         end
       end
     else
-      V.mod.log:warn("Could not find dex number for species %s", tostring(species))
+      V.mod.log:warn("Could not find dex number for species %s", species)
     end
   end
   
@@ -455,7 +419,7 @@ local function startFlight(game, mon)
           frames = resolved.frames or 6,
           walker = resolved.walker ~= false,
           trueColor = resolved.trueColor ~= false,
-        }, "free_fly_" .. tostring(mountSpecies))
+        }, "free_fly_" .. mountSpecies)
         V.mod.log:info("Using follower sprite service for species %s: %s", tostring(mountSpecies), tostring(resolved.image))
       else
         V.mod.log:info("Follower sprite service returned nil for species %s", tostring(mountSpecies))
@@ -465,14 +429,9 @@ local function startFlight(game, mon)
     end
   end
 
-  -- Fall back to Sky.mountSprite if species sprite not available (names only)
-  local skySprite, skyScale
-  if type(mountSpecies) == "string" then
-    skySprite = Sky.mountSprite(Game.data, mountSpecies, "free_fly")
-    skyScale = Sky.dexScale(Game.data, mountSpecies)
-  end
-  Player.__freeFlyMount = monSprite or skySprite or Player.__freeFlyBird
-  Player.__freeFlyMountScale = skyScale or 1
+  -- Fall back to Sky.mountSprite if species sprite not available
+  Player.__freeFlyMount = monSprite or (mountSpecies and Sky.mountSprite(Game.data, mountSpecies, "free_fly")) or Player.__freeFlyBird
+  Player.__freeFlyMountScale = mountSpecies and Sky.dexScale(Game.data, mountSpecies) or 1
   V.mod.log:info("Mount resolved: species=%s, scale=%s, using=%s", tostring(mountSpecies), tostring(Player.__freeFlyMountScale), tostring(monSprite and "species_sprite" or "fallback"))
   
   -- taking off from a surf dismounts into the air
@@ -846,138 +805,6 @@ local function addFlyOptions(out, game, ow, mon)
     startFlight(g, m)
   end })
   return out
-end
-
--- ------- Gen 4: the party menu has no ui.party.submenu hook
---
--- src/ui/Gen4PartyMenu builds its submenu from action id strings
--- (Gen4PartyMenu:actions) and never asks the hook chain, so addFlyOptions
--- above never runs on Platinum. Same rows, added by wrapping the menu:
--- actions() gets two extra ids just above FLY, actionLabel() names them,
--- runAction() runs them.
-
-local function buildGen4FlyScreen(game, mon)
-  local ow = game.overworld
-  local okF, Fly = pcall(require, "src.world.Gen4Fly")
-  if not (ow and okF and Fly) then
-    V.mod.log:warn("FULL FLY: Gen4Fly unavailable")
-    return nil
-  end
-  if game.data.gen4_town_map then
-    local okT, TownMap = pcall(require, "src.ui.Gen4TownMap")
-    if not (okT and TownMap and TownMap.new) then
-      V.mod.log:warn("FULL FLY: src.ui.Gen4TownMap unavailable")
-      return nil
-    end
-    local made, screen = pcall(TownMap.new, game, { mode = "fly",
-      onFly = function(firstArrival)
-        local dest = Fly.destinationFor(game.data, firstArrival)
-        if dest then ow:gen4FlyTo(dest, mon) end
-      end })
-    if made and screen then return screen end
-    V.mod.log:warn("FULL FLY: Gen4TownMap.new failed: %s", tostring(screen))
-    return nil
-  end
-  local dests = Fly.destinations(game.data, game.save) or {}
-  if #dests == 0 then return nil end
-  local items = {}
-  for _, d in ipairs(dests) do items[#items + 1] = { value = d, label = d.label } end
-  local made, screen = pcall(function()
-    return require("src.ui.ListMenu").new(game, "FLY TO?", items, {
-      onChoose = function(item, list)
-        list:close()
-        ow:gen4FlyTo(item.value, mon)
-      end })
-  end)
-  return made and screen or nil
-end
-
-local function gen4FlyRows(menu, rows)
-  local game = menu.game
-  local ow = game.overworld
-  local mon = menu:party()[menu.index]
-  if not (mon and ow and ow.map and ow.map.def) or flying() then return rows end
-  local okE, isEgg = pcall(function() return require("src.pokemon.Party").isEgg(mon) end)
-  if okE and isEgg then return rows end
-  if not (eligibleFlyer(game, ow, mon) and badgeOk(game, mon)) then return rows end
-  if (ow.player and ow.player.onBike) or (game.save and game.save.onBike) then
-    return rows
-  end
-  if not skyAbove(game, ow.map.def) then return rows end
-  local at = 2
-  for i, a in ipairs(rows) do
-    if a == "field:FLY" then at = i break end
-  end
-  table.insert(rows, at, "mod:freefly")
-  table.insert(rows, at, "mod:fullfly")
-  return rows
-end
-
-local function installGen4PartyMenu()
-  local ok, M = pcall(require, "src.ui.Gen4PartyMenu")
-  if not (ok and type(M) == "table" and M.actions and M.runAction
-          and M.actionLabel and M.choose) then
-    return false
-  end
-  M.__freeFlyActions = function(self, rows)
-    if self.itemMenu or self.battle then return rows end
-    local mon = self:party()[self.index]
-    local c = self._freeFlyRows
-    if c and c.mon == mon then return c.rows end
-    local copy = {}
-    for i, a in ipairs(rows) do copy[i] = a end
-    local out = gen4FlyRows(self, copy)
-    self._freeFlyRows = { mon = mon, rows = out }
-    return out
-  end
-  M.__freeFlyRun = function(self, action)
-    local mon = self:party()[self.index]
-    self.submenu, self.itemMenu = nil, nil
-    local game = self.game
-    if action == "mod:fullfly" then
-      local screen = buildGen4FlyScreen(game, mon)
-      if not screen then return end
-      screen.__fullFlyMap = true
-      state.fullFlyArmed = { mon = mon }
-      self:close()
-      if not pcall(function() game.stack:push(screen) end) then
-        state.fullFlyArmed = nil
-        V.mod.log:warn("FULL FLY: could not push the Town Map")
-      end
-    else
-      local stack = game.stack
-      while stack:top() and not stack:top().isOverworld do stack:pop() end
-      startFlight(game, mon)
-    end
-  end
-  if M.__freeFlyWrapped then return true end
-  M.__freeFlyWrapped = true
-  local origActions, origLabel = M.actions, M.actionLabel
-  local origRun, origChoose = M.runAction, M.choose
-  M.actions = function(self)
-    local rows = origActions(self)
-    local impl = M.__freeFlyActions
-    return impl and impl(self, rows) or rows
-  end
-  M.actionLabel = function(self, action)
-    if action == "mod:fullfly" then return "FULL FLY" end
-    if action == "mod:freefly" then return "FREEFLY" end
-    return origLabel(self, action)
-  end
-  M.runAction = function(self, action)
-    if action == "mod:fullfly" or action == "mod:freefly" then
-      local impl = M.__freeFlyRun
-      if impl then return impl(self, action) end
-      return
-    end
-    return origRun(self, action)
-  end
-  M.choose = function(self)
-    self._freeFlyRows = nil
-    return origChoose(self)
-  end
-  V.mod.log:info("FREEFLY: Gen4PartyMenu wrapped for FULL FLY / FREEFLY rows")
-  return true
 end
 
 -- Hook registration moved to FreeFly.init() to avoid duplication
@@ -2621,30 +2448,6 @@ function FreeFly.init()
         return origFlyTo(self, mapId, mon, ...)
       end
 
-      -- FULL FLY on Platinum: the fly-mode Town Map ends in gen4FlyTo(dest,
-      -- mon), dest = { map, x, y }. Same conversion as flyTo above
-      if OC.gen4FlyTo then
-        local origGen4FlyTo = OC.gen4FlyTo
-        OC.gen4FlyTo = function(self, dest, mon, ...)
-          local armed = state.fullFlyArmed
-          if armed and type(dest) == "table" and dest.map then
-            state.fullFlyArmed = nil
-            state.pendingAutopilot = { mon = armed.mon, mapId = dest.map,
-                                       x = dest.x, y = dest.y }
-            V.mod.log:info("FULL FLY: intercepted gen4FlyTo %s (%s,%s)",
-                         tostring(dest.map), tostring(dest.x), tostring(dest.y))
-            local G = require("src.core.Game")
-            require("src.core.Sound").play(G.data, "Fly")
-            G.save.onBike = false
-            self:clearBikeFlags()
-            self.player.surfing = false
-            self:closeToMap()
-            return
-          end
-          return origGen4FlyTo(self, dest, mon, ...)
-        end
-      end
-
       -- trainers don't spot what flies over their head (unless the
       -- hardcore option says they do); the gate is swappable so hot
       -- reload always runs the latest logic
@@ -2927,7 +2730,7 @@ function FreeFly.init()
               frames = resolved.frames or 6,
               walker = resolved.walker ~= false,
               trueColor = resolved.trueColor ~= false,
-            }, "free_fly_" .. tostring(species))
+            }, "free_fly_" .. species)
             V.mod.log:info("Using follower sprite service for species %s: %s", tostring(species), tostring(resolved.image))
           else
             V.mod.log:info("Follower sprite service returned nil for species %s", tostring(species))
@@ -2938,13 +2741,8 @@ function FreeFly.init()
       end
 
       -- Fall back to Sky.mountSprite if species sprite not available
-      local skySprite, skyScale
-      if type(species) == "string" then
-        skySprite = Sky.mountSprite(Game.data, species, "free_fly")
-        skyScale = Sky.dexScale(Game.data, species)
-      end
-      Player.__freeFlyMount = monSprite or skySprite or Player.__freeFlyBird
-      Player.__freeFlyMountScale = skyScale or 1
+      Player.__freeFlyMount = monSprite or (species and Sky.mountSprite(Game.data, species, "free_fly")) or Player.__freeFlyBird
+      Player.__freeFlyMountScale = species and Sky.dexScale(Game.data, species) or 1
       V.mod.log:info("Mount resolved: species=%s, scale=%s, using=%s", tostring(species), tostring(Player.__freeFlyMountScale), tostring(monSprite and "species_sprite" or "fallback"))
     end
 
@@ -3086,9 +2884,6 @@ function FreeFly.init()
       addFlyOptions(out, game, ow, mon)
       return out
     end)
-
-    -- Platinum's party menu never calls the hook above: wrap it directly
-    pcall(installGen4PartyMenu)
 
     -- Event handlers
     V.mod.events:on("map.entered", function(ev)
