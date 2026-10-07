@@ -54,7 +54,7 @@ local function makeGround(opts)
     self.freeOpen = true; self.freeW, self.freeH = w, h
     local v = self.view3d
     seen = { mode = v.mode, x = v.x, y = v.y, z = v.z, yaw = v.yaw, pitch = v.pitch, fovY = v.fovY,
-             placed = self.cameraPlaced, inBattle = Host._inBattle, poseDraw = Host._poseDraw, w = w, h = h,
+             placed = self.cameraPlaced, inBattle = Host._inBattle, w = w, h = h,
              entities = opts.state and #opts.state.entities or nil }
     if opts.declineDraw then return false end
     return true
@@ -68,6 +68,21 @@ local function makeGround(opts)
 end
 
 local pose = { eye = { 10, 40, 90 }, focus = { 10, 6, 20 }, fov = math.rad(40) }
+
+-- 0. walking world stands down while CBE owns the native arena --------------
+do
+  Host.setCbeNativeArena(false)
+  Host._inBattle = false
+  check(Host.shouldDrawOverworld() == true, "walking world draws outside CBE")
+  Host.setCbeNativeArena(true)
+  check(Host.shouldDrawOverworld() == false, "walking world skipped during CBE native arena")
+  Host._inBattle = true
+  check(Host.shouldDrawOverworld() == true, "renderPose still draws (inBattle)")
+  Host._inBattle = false
+  Host.setCbeNativeArena(false)
+  check(Host.shouldDrawOverworld() == true, "walking world restored after CBE")
+  check(Host.cbeNativeArena == false, "flag cleared")
+end
 
 -- 1. camera, restore, hook ------------------------------------------------
 do
@@ -87,14 +102,12 @@ do
   check(math.abs(seen.yaw) < 1e-9, "yaw looks along the pose (due north)")
   check(seen.placed == true, "cameraPlaced set during the draw")
   check(seen.inBattle == true, "Host._inBattle set during the draw")
-  check(seen.poseDraw == true, "Host._poseDraw set during the draw")
   check(seen.entities == 0, "overworld cast hidden during the draw")
   check(state.entities == origEnt and state.ghosts == origGh, "cast restored by identity")
   check(existing.mode == "field3d" and existing.x == 1 and existing.y == 2 and existing.z == 3
         and existing.yaw == 0.5 and existing.pitch == 12 and existing.fovY == 50, "player's view restored exactly")
   check(ground.cameraPlaced == false, "cameraPlaced restored")
   check(Host._inBattle == false, "_inBattle cleared")
-  check(Host._poseDraw == false and Host.inPose() == false, "_poseDraw cleared after the draw")
   check(#V.Gen4Bridge.after == 0, "temporary bridge hook removed")
   check(seen.hooksAtClose == 1, "hook was present when the canvas closed")
   check(ground.view3d == existing, "existing view kept")
@@ -153,8 +166,6 @@ end
 
 -- 5. ArenaOverworldSnapshot -------------------------------------------------------
 do
-  local clockT = 100
-  love.timer = { getTime = function() return clockT end }
   local logs = {}
   V.mod.log = { warn = function(_, f, ...) logs[#logs+1] = f:format(...) end,
                 info = function(_, f, ...) logs[#logs+1] = f:format(...) end }
@@ -181,6 +192,7 @@ do
   state.map.renderer = { gen4Ground = ground }
 
   check(Snap.capture(nil, state) == true, "capture succeeds on Gen 4 with voxel unavailable")
+  check(Host.cbeNativeArena == true, "walking Platinum pass stood down for the fight")
   check(Snap.nativeWorld() == true, "field flagged as a native world")
   check(Snap.field().gen4 == true and Snap.field().groundY == 12, "field carries gen4 flag and ground height")
   check(pocket.cam == "wide", "interior-safe wide rig chosen")
@@ -188,8 +200,7 @@ do
   check(Snap.blit(100, 80) == false, "blit before a draw does nothing")
   check(Snap.draw(256, 192, pose) == true, "draw renders the native world")
   check(Snap.field().worldColour ~= nil, "world colour kept for the blit")
-  check(seen.w == 128 and seen.h == 96, "world drawn at WORLD_SCALE (0.5) of the arena canvas")
-  check(Snap.field().worldSize[1] == 128 and Snap.field().worldSize[2] == 96, "render size remembered")
+  check(seen.w == 256 and seen.h == 192, "world drawn at the arena canvas size")
 
   local arenaCanvas = newCanvas(256, 192); bound = arenaCanvas
   drawn = {}
@@ -204,40 +215,7 @@ do
   -- no pose given: falls back to the BattleCam pose
   check(Snap.draw(256, 192, nil) == true, "draw without a pose uses BattleCam's")
 
-  -- world reuse: count real renders through the engine's drawFree
-  local n0 = 0
-  local innerDraw = ground.drawFree
-  ground.drawFree = function(self, w, h) n0 = n0 + 1; return innerDraw(self, w, h) end
-  Snap.REFRESH = 0.25
-  clockT = clockT + 1                       -- expire whatever is cached
-  check(Snap.draw(256, 192, pose) == true and n0 == 1, "an expired cache re-renders")
-  for _ = 1, 5 do Snap.draw(256, 192, pose) end
-  check(n0 == 1, "a static pose reuses the world instead of re-rendering")
-  check(Snap.field().worldColour ~= nil, "reused world is still available to blit")
-  clockT = clockT + 0.1; Snap.draw(256, 192, pose)
-  check(n0 == 1, "still reused inside REFRESH")
-  clockT = clockT + 0.2; Snap.draw(256, 192, pose)
-  check(n0 == 2, "re-rendered once REFRESH has passed")
-  local moved = { eye = { 10.5, 40, 90 }, focus = pose.focus, fov = pose.fov }
-  Snap.draw(256, 192, moved)
-  check(n0 == 3, "a moved camera re-renders at once")
-  local drift = { eye = { 10.51, 40, 90 }, focus = pose.focus, fov = pose.fov }
-  Snap.draw(256, 192, drift)
-  check(n0 == 3, "drift under POSE_EPS keeps the cached world")
-  Snap.draw(128, 96, drift)
-  check(n0 == 4, "a new canvas size re-renders")
-  Snap.REFRESH = 0
-  Snap.draw(128, 96, drift); Snap.draw(128, 96, drift)
-  check(n0 == 6, "REFRESH = 0 renders every frame (the old behaviour)")
-  Snap.WORLD_SCALE = 1
-  Snap.draw(256, 192, drift)
-  check(seen.w == 256 and seen.h == 192, "WORLD_SCALE = 1 renders at the full arena size")
-  Snap.WORLD_SCALE = 0.5
-  local st = Snap.stats()
-  check(st and st.frames > 0 and st.renders + st.reuses == st.frames, "every successful frame is counted as render or reuse")
-
   -- world fails: blit is a no-op, the failure is logged once
-  Snap.REFRESH = 0
   ground.drawFree = function() error("gpu") end
   logs = {}
   check(Snap.draw(256, 192, pose) == false, "draw reports failure")
@@ -248,47 +226,13 @@ do
 
   Snap.clear()
   check(Snap.nativeWorld() == false, "clear drops the native flag")
-  local summary
-  for _, l in ipairs(logs) do if l:find("Gen4 arena world:") then summary = l end end
-  check(summary ~= nil, "clear logs the per-fight summary")
-  check(summary and summary:find("world renders") and summary:find("overworld world passes"), "summary names renders and overworld passes")
+  check(Host.cbeNativeArena == false, "walking Platinum pass restored when the fight ends")
 
   -- a non-Gen-4 state still takes the voxel path (and still needs voxel)
   local plain = { entities = {}, ghosts = {}, map = {}, player = { cellX = 1, cellY = 1 } }
   check(Snap.capture(nil, plain) == false, "Gen 1-3 with voxel unavailable still declines")
   V.Voxel3D.available = function() return true end
   check(Snap.capture(nil, plain) == true and Snap.nativeWorld() == false, "Gen 1-3 with voxel keeps the voxel path")
-end
-
--- 6. the overworld's own passes are counted; renderPose's are not ------------------
-do
-  local n = 0
-  local G = { drawFree = function() n = n + 1; return true end, endFree = function() end }
-  local saved = engine["src.render.Gen4Ground"]
-  engine["src.render.Gen4Ground"] = G
-  local H2 = assert(loadfile(ROOT .. "Gen4WorldHost.lua"))(V)
-  check(H2.install() == true, "install hooks a stub ground")
-  G.drawFree({}, 10, 10); G.drawFree({}, 10, 10)
-  check(H2.stats.draws == 2, "the overworld's own passes are counted")
-  H2._drawFree({}, 10, 10)
-  check(H2.stats.draws == 2 and n == 3, "the unwrapped drawFree renderPose uses is not counted")
-  engine["src.render.Gen4Ground"] = saved
-end
-
--- 7. Gen4Reflect stands down during the arena's world pass --------------------------
-do
-  local lvl = 0
-  local Vr = { mod = V.mod, pose = true }
-  Vr.require = function(name)
-    if name == "Gen4WorldHost" then return { inPose = function() return Vr.pose end } end
-    if name == "RayFX" then return { level = function() lvl = lvl + 1; return "off" end, apply = function() end } end
-  end
-  local R = assert(loadfile(ROOT .. "Gen4Reflect.lua"))(Vr)
-  R.run({}, {}, 1, 1)
-  check(lvl == 0, "Gen4Reflect does nothing inside the arena's world pass")
-  Vr.pose = false
-  R.run({}, {}, 1, 1)
-  check(lvl == 1, "Gen4Reflect still runs in the overworld's own pass")
 end
 
 print(string.format("%d passed, %d failed", passes, fails))

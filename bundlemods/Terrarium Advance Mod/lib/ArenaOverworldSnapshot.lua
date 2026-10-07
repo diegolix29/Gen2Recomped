@@ -13,26 +13,15 @@
 -- colour, and blit() lays it into the arena canvas once Arena.lua has rebound
 -- it. Actors keep projecting through the pose, which the world was drawn with,
 -- so they stand on the real ground. See nativeWorld() / blit() below.
+--
+-- That renderPose pass is a full Platinum drawFree. capture() therefore tells
+-- Gen4WorldHost to skip the walking-camera drawFree until clear(), otherwise
+-- every fight frame paints two worlds and Gen4Trees/Gen4Water prepare windows
+-- fight each other.
 local V = ...
 local M = {}
 
 local field = nil
-
--- GEN 4 cost knobs. Every arena frame used to re-render the whole native world
--- (all Gen4Bridge effects included) at window-pixel size. Now:
---   WORLD_SCALE  fraction of the arena canvas the world is rendered at (the blit
---                scales it back up). 1 = full size. 0.5 = a quarter of the pixels.
---   REFRESH      seconds a rendered world is reused while the camera has not
---                moved. 0 = render every frame (old behaviour); math.huge = only
---                when the camera moves (water / wind / sky freeze meanwhile).
---   POSE_EPS     world units / radians the arena pose may drift before the
---                cached world is thrown away. At ~20 px per unit, 0.05 is ~1 px,
---                so the actors cannot visibly slide against a reused world.
-M.WORLD_SCALE = 0.5
-M.REFRESH = 0.25
-M.POSE_EPS = 0.05
-M.POSE_EPS_FOV = 0.0005
-M.LOG_STATS = true
 
 local function log(level, fmt, ...)
   local m = V.mod
@@ -168,14 +157,16 @@ function M.capture(battle, stateHint)
     mapId = host and host.id or (state.map and state.map.id),
     gen4 = native or nil,
   }
-  if native then
-    field.stats = { frames = 0, renders = 0, reuses = 0, ms = 0,
-                    draws0 = (Host.stats and Host.stats.draws) or 0 }
-  end
   log("info", "overworld arena field cached map=%s pocket=%s@(%s,%s) (arena=%s%s)",
       tostring(field.mapId), tostring(pocket.shape),
       tostring(pocket.x), tostring(pocket.y), tostring(why),
       native and ", native Gen 4 world" or "")
+  -- Stand down the walking-camera Platinum pass for the fight. Arena.lua
+  -- already re-draws that world through renderPose; two drawFrees a frame
+  -- is the Gen 4 CBE hitch.
+  if Host and type(Host.setCbeNativeArena) == "function" then
+    pcall(Host.setCbeNativeArena, native)
+  end
   return true
 end
 
@@ -183,29 +174,12 @@ function M.field()
   return field
 end
 
--- One line per fight: how many arena frames there were, how many re-rendered the
--- world, and how many world passes the overworld itself still drew meanwhile.
--- overworldPerFrame ~1.0 means the real overworld is drawing underneath the arena.
-local function logStats()
-  local st = field and field.stats
-  if not (M.LOG_STATS and st and st.frames > 0) then return end
-  local Host = gen4Host()
-  local own = Host and Host.stats and (Host.stats.draws - st.draws0) or 0
-  log("info", "Gen4 arena world: %d arena frames, %d world renders (%.0f%%), %d reused, "
-      .. "%.2f ms avg render submit (CPU), %d overworld world passes during the fight "
-      .. "(%.2f per arena frame), scale %.2f, refresh %.2fs",
-      st.frames, st.renders, 100 * st.renders / st.frames, st.reuses,
-      st.renders > 0 and st.ms / st.renders or 0, own, own / st.frames,
-      tonumber(M.WORLD_SCALE) or 1, tonumber(M.REFRESH) or 0)
-end
-
-function M.stats()
-  return field and field.stats or nil
-end
-
 function M.clear()
-  pcall(logStats)
   field = nil
+  local Host = gen4Host()
+  if Host and type(Host.setCbeNativeArena) == "function" then
+    pcall(Host.setCbeNativeArena, false)
+  end
 end
 
 -- BattleCam pose in world pixels, so CBE's compositor and the voxel field
@@ -285,65 +259,19 @@ function M.nativeWorld()
   return field ~= nil and field.gen4 == true
 end
 
-local function now()
-  local t = love and love.timer and love.timer.getTime
-  return t and t() or os.clock()
-end
-
-local function copyPose(p)
-  return { eye = { p.eye[1], p.eye[2], p.eye[3] },
-           focus = { p.focus[1], p.focus[2], p.focus[3] }, fov = p.fov }
-end
-
-local function poseMoved(a, b)
-  if not (a and b) then return true end
-  local eps = tonumber(M.POSE_EPS) or 0.05
-  for i = 1, 3 do
-    if math.abs((a.eye[i] or 0) - (b.eye[i] or 0)) > eps then return true end
-    if math.abs((a.focus[i] or 0) - (b.focus[i] or 0)) > eps then return true end
-  end
-  return math.abs((a.fov or 0) - (b.fov or 0)) > (tonumber(M.POSE_EPS_FOV) or 0.0005)
-end
-
--- Render the native world through the arena pose, or reuse the last render.
--- A render is reused while: same size, the pose has not moved past POSE_EPS, and
--- less than REFRESH seconds have passed. field.worldColour keeps pointing at the
--- host's reused canvas, which nothing else writes between renders.
 local function drawNative(w, h, pose)
-  local st = field.stats
-  if st then st.frames = st.frames + 1 end
+  field.worldColour = nil
   local Host = gen4Host()
-  if not (Host and type(Host.renderPose) == "function") then
-    field.worldColour = nil
-    return false
-  end
+  if not (Host and type(Host.renderPose) == "function") then return false end
   local cam = pose
   if not (cam and cam.eye and cam.focus and cam.fov) then
     cam = M.cameraPose()
   end
   if not cam then
-    field.worldColour = nil
     log("warn", "native arena world skipped: no camera pose")
     return false
   end
-
-  local scale = tonumber(M.WORLD_SCALE) or 1
-  if scale < 0.25 then scale = 0.25 elseif scale > 1 then scale = 1 end
-  local rw = math.max(2, math.floor(w * scale + 0.5))
-  local rh = math.max(2, math.floor(h * scale + 0.5))
-
-  local t0 = now()
-  local refresh = tonumber(M.REFRESH) or 0
-  if refresh > 0 and field.worldColour and field.worldSize
-      and field.worldSize[1] == rw and field.worldSize[2] == rh
-      and (t0 - (field.worldAt or -math.huge)) < refresh
-      and not poseMoved(field.worldPose, cam) then
-    if st then st.reuses = st.reuses + 1 end
-    return true
-  end
-
-  field.worldColour = nil
-  local colour, whyNot = Host.renderPose(field.state, field.pocket, cam, rw, rh)
+  local colour, whyNot = Host.renderPose(field.state, field.pocket, cam, w, h)
   if not colour then
     if field.warned ~= whyNot then
       field.warned = whyNot
@@ -352,13 +280,6 @@ local function drawNative(w, h, pose)
     return false
   end
   field.worldColour = colour
-  field.worldPose = copyPose(cam)
-  field.worldSize = { rw, rh }
-  field.worldAt = t0
-  if st then
-    st.renders = st.renders + 1
-    st.ms = st.ms + (now() - t0) * 1000
-  end
   return true
 end
 
