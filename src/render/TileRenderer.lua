@@ -1003,12 +1003,64 @@ local function gen3Evict()
     end
     if not oldest then return end
     local record = gen3Sheets[oldest]
-    for _, image in ipairs({ record.bottom, record.top }) do
+    for _, image in ipairs({ record.bottom, record.top, record.cover }) do
       if image and image.release then pcall(image.release, image) end
     end
     gen3Sheets[oldest] = nil
     gen3Used[oldest] = nil
     count = count - 1
+  end
+end
+
+-- A released LÖVE Image still looks like a table; using it in newSpriteBatch
+-- is the "Cannot use object after it has been released" crash.
+local function gpuAlive(obj)
+  if not obj then return false end
+  if obj.isReleased then
+    local ok, released = pcall(obj.isReleased, obj)
+    if ok then return not released end
+  end
+  return pcall(function()
+    if obj.getWidth then
+      obj:getWidth()
+    elseif obj.getDimensions then
+      obj:getDimensions()
+    else
+      error("no size")
+    end
+  end)
+end
+
+local function gen3RecordAlive(record)
+  return type(record) == "table"
+     and gpuAlive(record.bottom)
+     and gpuAlive(record.top)
+end
+
+local function dropGen3Window(self)
+  if self.winBatch and self.winBatch.release then
+    pcall(self.winBatch.release, self.winBatch)
+  end
+  if self.winBatchTop and self.winBatchTop.release then
+    pcall(self.winBatchTop.release, self.winBatchTop)
+  end
+  self.winBatch, self.winBatchTop = nil, nil
+  self.win = nil
+  if self.borderFill and self.borderFill.release then
+    pcall(self.borderFill.release, self.borderFill)
+  end
+  self.borderFill, self.borderFillMode = nil, nil
+end
+
+local function attachGen3(self, record)
+  self.gen3 = record
+  self.gen3Quads = {}
+  if not record then return end
+  local cols = require("src.render.Gen3Tiles").SHEET_COLS
+  for id = 0, (record.slots or record.metatiles) - 1 do
+    self.gen3Quads[id] = love.graphics.newQuad(
+      (id % cols) * 16, math.floor(id / cols) * 16, 16, 16,
+      record.width, record.height)
   end
 end
 
@@ -1021,6 +1073,28 @@ function TileRenderer.touchGen3(key)
     gen3Clock = gen3Clock + 1
     gen3Used[key] = gen3Clock
   end
+end
+
+-- Re-acquire composited sheets if the bounded cache released them out from
+-- under this renderer.  Fly, free-fly and a Hoenn neighbour rebuild load many
+-- maps in one stretch -- more unique tileset pairs than GEN3_SHEET_CACHE --
+-- and the "two newest" eviction guard cannot cover a whole live strip.
+function TileRenderer:rebindGen3()
+  local key = self.gen3Key
+  if not key then return end
+  local cached = gen3Sheets[key]
+  if gen3RecordAlive(cached) then
+    if cached ~= self.gen3 then
+      dropGen3Window(self)
+      attachGen3(self, cached)
+    end
+    return
+  end
+  dropGen3Window(self)
+  local map, data = self.map, self.data
+  local fresh = TileRenderer.gen3SheetsFor(map and map.tileset, data,
+    data and data.constants and data.constants.gen3Layout)
+  attachGen3(self, fresh)
 end
 
 -- THE HALF OF A METATILE THAT HAS TO COVER A REFLECTION.
@@ -1579,6 +1653,9 @@ end
 -- choice changes.  OVERWORLD "black" leaves borderFill nil and draws a
 -- solid clear; "water" keeps the live hshift textures instead of a bake.
 function TileRenderer:ensureBorderFill()
+  if self.gen3 or self.gen3Key then
+    self:rebindGen3()
+  end
   local block = borderBlockFor(self.map)
   -- a Gen 3 map paints its void from its OWN border patch, so it is always
   -- "map" -- the VOID FILL option picks between three Gen 1 tileset blocks
@@ -1781,6 +1858,11 @@ function TileRenderer:setWin(tx0, ty0, tx1, ty1)
 end
 
 function TileRenderer:ensureWindow(camX, camY, vw, vh)
+  -- Before the "window still valid" early-out: a live batch can still point
+  -- at sheets gen3Evict already released (fly / neighbour rebuild).
+  if self.gen3 or self.gen3Key then
+    self:rebindGen3()
+  end
   local W, H = self.bodyTilesW, self.bodyTilesH
   vw = vw or W * 8 -- a nil view (headless draw) means the whole body
   vh = vh or H * 8
@@ -1844,12 +1926,31 @@ function TileRenderer:ensureWindow(camX, camY, vw, vh)
     -- one quad per CELL into each of the two layer batches.  The tile-grid
     -- bounds above are still the right window -- a Gen 3 cell is two tiles
     -- wide, so dividing by blockTiles gives the cell range directly.
-    if not self.winBatch then
-      self.winBatch = love.graphics.newSpriteBatch(self.gen3.bottom, 1024, "dynamic")
-      self.winBatchTop = love.graphics.newSpriteBatch(self.gen3.top, 1024, "dynamic")
+    --
+    -- The sheets can still be gone (a failed rebake after eviction).  Skip
+    -- the fill rather than throwing from newSpriteBatch: a blank window for
+    -- one frame is recoverable, a released-object crash is not.
+    if not gen3RecordAlive(self.gen3) then
+      dropGen3Window(self)
+      self:setWin(tx0, ty0, tx1, ty1)
+      return
     end
-    self.winBatch:clear()
-    self.winBatchTop:clear()
+    if not self.winBatch then
+      local okB, batch = pcall(love.graphics.newSpriteBatch, self.gen3.bottom, 1024, "dynamic")
+      local okT, batchTop = pcall(love.graphics.newSpriteBatch, self.gen3.top, 1024, "dynamic")
+      if not (okB and okT and batch and batchTop) then
+        dropGen3Window(self)
+        self:setWin(tx0, ty0, tx1, ty1)
+        return
+      end
+      self.winBatch, self.winBatchTop = batch, batchTop
+    end
+    if not (pcall(self.winBatch.clear, self.winBatch)
+            and pcall(self.winBatchTop.clear, self.winBatchTop)) then
+      dropGen3Window(self)
+      self:setWin(tx0, ty0, tx1, ty1)
+      return
+    end
     local map = self.map
     local n = self.blockTiles
     local cx0, cy0 = math.floor(tx0 / n), math.floor(ty0 / n)
