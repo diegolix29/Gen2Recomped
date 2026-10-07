@@ -6701,10 +6701,8 @@ function KantoGameplay.openTrade(world, region, mapId, obj, tradeIndex)
     local items = {}
     for _, m in ipairs(matches) do
       local mon = m.mon
-      local species = mon.species
-      local speciesStr = species and tostring(species) or nil
-      local def = game.data.pokemon and game.data.pokemon[speciesStr]
-      local name = mon.nickname or (def and def.name) or speciesStr
+      local def = game.data.pokemon and game.data.pokemon[mon.species]
+      local name = mon.nickname or (def and def.name) or mon.species
       items[#items + 1] = {label=name .. " L" .. tostring(mon.level or 1), value=m}
     end
     items[#items + 1] = {label="CANCEL"}

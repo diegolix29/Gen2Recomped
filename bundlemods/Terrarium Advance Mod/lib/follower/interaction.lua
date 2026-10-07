@@ -71,10 +71,8 @@ function Interaction:showFollowMessage(game, ow, npc, mon, done)
 
   local Strings = tryRequire("src.core.Strings")
   local TextBox = tryRequire("src.render.TextBox")
-  local species = mon.species
-  local speciesStr = species and tostring(species) or nil
-  local def = game and game.data and game.data.pokemon and game.data.pokemon[speciesStr]
-  local name = mon.nickname or (def and def.name) or speciesStr
+  local def = game and game.data and game.data.pokemon and game.data.pokemon[mon.species]
+  local name = mon.nickname or (def and def.name) or mon.species
   local text
   if Strings then
     local ok, formatted = pcall(Strings, "%s is following\nyou!", name)
@@ -115,7 +113,7 @@ function Interaction:makeTalkWrapper(originalTalk)
 
     -- Yellow Pikachu keeps vanilla talk (PokéPC behaviour).
     local ver = gameVersion()
-    if ver == "yellow" and tostring(mon.species) == "PIKACHU" and originalTalk then
+    if ver == "yellow" and mon.species == "PIKACHU" and originalTalk then
       return originalTalk(a, b, c, d)
     end
 

@@ -77,7 +77,7 @@ function Follower:installDefaultSpriteRefreshHandler()
 
     if mon and follower.spriteService then
       local resolved = follower.spriteService:resolveFollowerSprite({
-        species = tostring(mon.species),
+        species = mon.species,
         shiny = mon.shiny == true or mon.isShiny == true,
         form = mon.form,
         surface = surface,

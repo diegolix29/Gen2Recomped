@@ -1465,18 +1465,17 @@ local function drawPartyModelPreview(screen, ww, wh, o, listX, listY, listH, gap
   local titleFont = font(math.max(18, wh * 0.023))
   local metaFont = font(math.max(11, wh * 0.013))
   local name = cleanText(monName(screen, mon))
-  local species = mon.species
-  local speciesStr = species and tostring(species) or "POKéMON"
+  local species = cleanText(mon.species or "POKéMON")
   local def = screen and screen.game and screen.game.data and screen.game.data.pokemon
-    and screen.game.data.pokemon[speciesStr]
-  if def and def.name then speciesStr = cleanText(def.name) end
+    and screen.game.data.pokemon[mon.species]
+  if def and def.name then species = cleanText(def.name) end
   local dex = def and tonumber(def.dex or def.index) or nil
   if titleFont then G.setFont(titleFont) end
   G.setColor(1, 1, 1, 0.98)
   G.print(name, x + w * 0.055, y + h * 0.035)
   if metaFont then G.setFont(metaFont) end
   G.setColor(1, 1, 1, 0.58)
-  local subtitle = speciesStr .. (dex and ("    #" .. string.format("%03d", dex)) or "")
+  local subtitle = species .. (dex and ("    #" .. string.format("%03d", dex)) or "")
   G.print(subtitle, x + w * 0.055, y + h * 0.085)
 
   local infoH = math.max(92, math.min(132, h * 0.20))

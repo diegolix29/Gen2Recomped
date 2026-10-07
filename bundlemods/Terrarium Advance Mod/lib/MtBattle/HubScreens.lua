@@ -402,10 +402,8 @@ local function button(g,r,selected,title,sub,accent)
 end
 local function speciesName(game,mon)
   if not mon then return "EMPTY" end
-  local species = mon.species
-  local speciesStr = species and tostring(species) or nil
-  local def=game and game.data and game.data.pokemon and game.data.pokemon[speciesStr]
-  return tostring(mon.nickname or mon.name or (def and def.name) or speciesStr or "POKéMON"):upper()
+  local def=game and game.data and game.data.pokemon and game.data.pokemon[mon.species]
+  return tostring(mon.nickname or mon.name or (def and def.name) or mon.species or "POKéMON"):upper()
 end
 local function partyReady(game)
   local party=game and game.save and game.save.party or {}

@@ -390,11 +390,9 @@ local function partyModelPanel(screen, mon, geo, ww, wh)
 
   panel(x, y, w, h, geo.r, 0.80, s)
   local game = screen and screen.game
-  local species = mon and mon.species
-  local speciesStr = species and tostring(species) or nil
   local def = mon and game and game.data and game.data.pokemon
-    and game.data.pokemon[speciesStr]
-  local speciesName = cleanText((def and def.name) or speciesStr or "POKéMON")
+    and game.data.pokemon[mon.species]
+  local speciesName = cleanText((def and def.name) or (mon and mon.species) or "POKéMON")
   local nickname = cleanText(mon and (mon.nickname or mon.name) or speciesName)
   local dex = def and tonumber(def.dex or def.index) or nil
   local subtitle = dex and (speciesName .. "    #" .. string.format("%03d", dex)) or speciesName
