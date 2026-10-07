@@ -132,9 +132,6 @@ function Hd.draw(scene)
     local ok, h = pcall(V.require, "Gen4WorldHost")
     if ok then Host = h end
   end
-  -- The Colosseum overworld arena's backdrop world has no overworld cast: its
-  -- actors are CBE's own. Nothing to draw, so don't walk the entity list.
-  if Host and type(Host.inPose) == "function" and Host.inPose() then return end
   -- Field actors already drew 3D or HD and hid the 16px feet; do not stack
   -- a second card in the endFree pass.
   local skip = Host and Host._skipFeet
