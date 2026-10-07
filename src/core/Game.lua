@@ -1742,6 +1742,14 @@ function Game:audioSession(active, why)
   end
 end
 
+-- A pad that appears mid-session is already in use: hide the touch overlay
+-- the same way a first button press would.  love.joystickadded is the
+-- callback name; there is no love.gamepadadded.
+function Game:joystickadded(joystick)
+  if isAccelerometer(joystick) then return end
+  TouchControls:noteGamepad()
+end
+
 -- A disconnected/dropped controller can't send the button-up for whatever
 -- it was holding, so drop all input state rather than try to guess which
 -- flags it owned.
