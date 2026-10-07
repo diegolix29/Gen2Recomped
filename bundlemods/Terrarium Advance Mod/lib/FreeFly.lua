@@ -151,6 +151,64 @@ local function flying()
   return state.phase ~= "idle"
 end
 
+-- Party trailers, Yellow Pikachu, Gold's native follower, Stadium/Colosseum
+-- 3D followers: none of them belong in the air.  The engine already skips
+-- `e.hidden` on the 2D/Gen4 draw (OverworldController.drawEntity,
+-- Gen4WorldHost.wantFieldActor); voxel posesOf is patched to match.
+local function isFlightFollower(e, player)
+  if type(e) ~= "table" or e == player then return false end
+  if state.rider and e == state.rider then return false end
+  if e.pokepcTrailer or e.pikachuFollower or e.wildsFollower then return true end
+  if e.isFollower or e.follower or e.isPokemonFollower then return true end
+  if e._wildsFollowerSpecies or e._pokepcFollowerSpecies then return true end
+  local def = e.sprite and e.sprite.def
+  local sid = def and def.id
+  return sid == "SPRITE_POKEPC_MON" or sid == "SPRITE_PLAYER_POKEMON"
+end
+
+local function eachFollower(ow, fn)
+  if not (ow and fn) then return end
+  local player = ow.player
+  local seen = {}
+  local function visit(e)
+    if e and not seen[e] then
+      seen[e] = true
+      fn(e, player)
+    end
+  end
+  for _, e in ipairs(ow.entities or {}) do visit(e) end
+  for _, e in ipairs(ow.npcs or {}) do visit(e) end
+  for _, e in ipairs(ow.pokepcTrailers or {}) do visit(e) end
+  visit(ow.follower)
+  for _, g in ipairs(ow.ghosts or {}) do
+    if g then visit(g.npc) end
+  end
+end
+
+local function hideFollowers(ow)
+  eachFollower(ow, function(e, player)
+    if not isFlightFollower(e, player) then return end
+    if e._freeFlyHiddenFollower then return end
+    e._freeFlyPrevHidden = e.hidden
+    e._freeFlyPrevVisible = e.visibleSprite
+    e._freeFlyHiddenFollower = true
+    e.hidden = true
+    e.visibleSprite = false
+  end)
+end
+
+local function showFollowers(ow)
+  ow = ow or (V.mod.world and V.mod.world:overworld())
+  eachFollower(ow, function(e)
+    if not e._freeFlyHiddenFollower then return end
+    e.hidden = e._freeFlyPrevHidden or nil
+    e.visibleSprite = e._freeFlyPrevVisible
+    e._freeFlyPrevHidden = nil
+    e._freeFlyPrevVisible = nil
+    e._freeFlyHiddenFollower = nil
+  end)
+end
+
 -- ------- Gen 4 (Platinum)
 --
 -- Gen 1-3 fly through the voxel scene: the scene adds ground height back
@@ -508,6 +566,7 @@ local function startFlight(game, mon)
   -- taking off from a surf dismounts into the air
   ow.player.surfing = nil
   ow.player.freeFlying = true
+  hideFollowers(ow)
   pcall(function()
     require("src.core.Sound").play(require("src.core.Game").data, "Fly")
   end)
@@ -1362,6 +1421,7 @@ V.mod.events:on("map.entered", function(ev)
           state.pokemonPlayerStateSaved = false
         end
         
+        showFollowers(ow)
         emitLanded("indoors", ow.player)
       end
     end
@@ -1499,6 +1559,7 @@ V.mod.events:on("save.loaded", function()
       state.previousPokemonPlayerDex = nil
       state.previousPokemonPlayerMarker = nil
     end
+    showFollowers()
     emitLanded("save_loaded", nil) 
   end
 end)
@@ -1572,6 +1633,7 @@ V.mod.events:on("world.blacked_out", function()
       state.previousPokemonPlayerMarker = nil
     end
     
+    showFollowers()
     emitLanded("blackout", nil)
   end
 end)
@@ -2113,9 +2175,11 @@ function FreeFly.init()
           state.v3dRef.camera = nil
         end
         dropRider(ow)
+        showFollowers(ow)
         return
       end
       p.freeFlying = true
+      hideFollowers(ow)
       -- the mount IS the player's sheet while airborne, so every renderer
       -- (voxel first/third person frame remaps included) shows it; the
       -- walking sheet is stashed for the rider overlay and the landing
@@ -2283,6 +2347,7 @@ function FreeFly.init()
               V.mod.log:info("LANDING: No previous Pokemon Player state to restore")
             end
             
+            showFollowers(ow)
             emitLanded("landed", p)
             return
           end
