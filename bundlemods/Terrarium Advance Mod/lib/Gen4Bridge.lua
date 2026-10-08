@@ -338,6 +338,14 @@ function Bridge.install()
   else
     report("trees", "the tree pass did not load: %s", tostring(GT))
   end
+  -- Small grey voxel rocks where Platinum draws its route rocks (`imped`). Opaque,
+  -- after the trees. Gen4Lawn hides the native rock card only where these are built.
+  local okR, GR = pcall(V.require, "Gen4Rocks")
+  if okR and type(GR) == "table" and GR.draw then
+    Bridge.register("rocks", GR.draw)
+  else
+    report("rocks", "the rock pass did not load: %s", tostring(GR))
+  end
   -- The voxel scene's sky (bands, clouds, sun/moon, stars, painted horizon, scenery)
   -- on Gen 4, with the engine's own horizon image hidden. Pre-terrain, so it is
   -- the backdrop. See lib/Gen4Sky.lua.
@@ -356,7 +364,7 @@ end
 -- these, so a graphics reset, a mod reload or a cache reset left the old
 -- meshes (and, on a lost GL context, dead ones) in place.
 function Bridge.invalidateAll()
-  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Trees", "Gen4Water", "Gen4Grass" }) do
+  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Rocks", "Gen4Trees", "Gen4Water", "Gen4Grass" }) do
     local ok, mod = pcall(V.require, name)
     if ok and type(mod) == "table" and type(mod.invalidate) == "function" then
       local okI, err = pcall(mod.invalidate)

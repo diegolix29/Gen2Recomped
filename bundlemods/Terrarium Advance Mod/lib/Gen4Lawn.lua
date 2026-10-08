@@ -41,15 +41,15 @@ local Lawn = {
   TEXTURES = {
     ngrass    = { image = "grass.png", uv = 1 },     -- lawn
     bf_ngrass = { image = "grass.png", uv = 1 },     -- lawn, another area's prefix
-    -- PROBE MODE: each candidate gets its own flat colour (assets/ground/grass/probe_*.png).
-    -- Walk a route and note which COLOUR the yellow dirt turns -> that name is the dirt.
-    imped     = { image = "probe_red.png",     uv = 1 },
-    hage      = { image = "floor.png",    uv = 1 },
-    nsand     = { image = "road.png", uv = 1 },
-    nsandp    = { image = "ground.png",    uv = 1 },
-    lgreen    = { image = "sand.png",   uv = 1 },
-    lgreenp   = { image = "road.png",   uv = 1 },
-    allpeak   = { image = "edges.png",  uv = 1 },
+    -- imped = the little route rocks. Native card hidden (transparent picture)
+    -- ONLY on lands where Gen4Rocks has built its voxel rocks.
+    imped     = { image = "transparent.png", uv = 1, whenBuilt = "Gen4Rocks" },
+    hage      = { image = "floor.png",   uv = 1 },
+    nsand     = { image = "road.png",    uv = 1 },
+    nsandp    = { image = "ground.png",  uv = 1 },
+    lgreen    = { image = "sand.png",    uv = 1 },
+    lgreenp   = { image = "road.png",    uv = 1 },
+    allpeak   = { image = "edges.png",   uv = 1 },
   },
   DIR = "/assets/ground/grass/",
   LOG_NAMES = false,     -- log every distinct terrain texture/material once (grep "Gen4Lawn:")
@@ -82,15 +82,26 @@ end
 -- model -> { source = shapes, count = n, mats = table|false }
 local cache = setmetatable({}, { __mode = "k" })
 
+local function builtVersion()
+  local ok, R = pcall(V.require, "Gen4Rocks")
+  return (ok and type(R) == "table") and R.version or 0
+end
+
 local function lawnMaterials(model)
   local shapes = model.shapes
+  local ver = builtVersion()
   local rec = cache[model]
-  if rec and rec.source == shapes and rec.count == #shapes then return rec.mats or nil end
+  if rec and rec.source == shapes and rec.count == #shapes and rec.ver == ver then return rec.mats or nil end
   local mats = false
   for _, shape in ipairs(shapes) do
     local tex = tostring(shape.lawnTexture or ""):lower()
     local cfg = Lawn.TEXTURES[tex]
-    local path = cfg and shape.material and resolvePath(cfg.image)
+    local gate = true
+    if cfg and cfg.whenBuilt then
+      local ok, M = pcall(V.require, cfg.whenBuilt)
+      gate = ok and type(M) == "table" and M.isBuilt and M.isBuilt(model.lawnLand) or false
+    end
+    local path = cfg and gate and shape.material and resolvePath(cfg.image)
     if path then
       local k = cfg.uv or 1
       mats = mats or {}
@@ -98,7 +109,7 @@ local function lawnMaterials(model)
       note("swap:" .. tex, "swapping texture '%s' (material '%s') -> %s", tex, tostring(shape.material), cfg.image)
     end
   end
-  cache[model] = { source = shapes, count = #shapes, mats = mats }
+  cache[model] = { source = shapes, count = #shapes, mats = mats, ver = ver }
   return mats or nil
 end
 
@@ -124,6 +135,7 @@ function Lawn.install()
   Ground.modelFor = function(self, land, ...)
     local model = originalModelFor(self, land, ...)
     if model and type(model.shapes) == "table" then
+      model.lawnLand = land
       pcall(function()
         local chunks = self.terrain and self.terrain.chunks
         local record = chunks and chunks[land]
