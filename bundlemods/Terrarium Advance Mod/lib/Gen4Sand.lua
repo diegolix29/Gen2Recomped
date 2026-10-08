@@ -57,7 +57,7 @@ local Sand = {
   LIFT = 0.4,                     -- world units above the native ground
   PULL = 0,                       -- Voxel3D.draw's toward-the-eye bias, if LIFT is not enough
   SHADE = 0.8,                    -- Grass3D's quad template shade
-  HALF = 4,                       -- Grass3D's quad template is +-4 about the tile
+  HALF = 8,                       -- Grass3D's quad template is +-8 about the tile (increased for larger texture)
 }
 
 local warned = {}
