@@ -134,7 +134,6 @@ mods.Gen4Sky = GS
 -- Gen4Bridge.install asks for these; not under test here
 mods.Gen4Water = { draw = function() end }
 mods.Gen4Sand = { draw = function() end }
-mods.Gen4GreenGround = { draw = function() end }
 mods.Gen4Trees = { draw = function() end }
 
 -- --------------------------------------------------------------- a ground --
