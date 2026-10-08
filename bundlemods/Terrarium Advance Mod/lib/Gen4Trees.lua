@@ -43,7 +43,13 @@
 -- window uses a bigger frame budget (WARM_BUDGET) so the whole window is
 -- voxel trees within a moment, not a trickle of pop-in.
 --
--- KNOBS: GT.enabled, GT.WINDOW, GT.TEX_STEP, GT.MAX_QUADS, GT.WARM_BUDGET.
+-- DRAW DISTANCE (lib/Gen4Distance.lua, row "G4 DRAW DIST"): only lands within
+-- the chosen reach of the camera get voxel trees, built or drawn. Farther lands
+-- keep Platinum's flat cards (Gen4Hide hides cards only on covered lands), and
+-- baked lands the camera has left are released (GT.MAX_RESIDENT).
+--
+-- KNOBS: GT.enabled, GT.WINDOW, GT.TEX_STEP, GT.MAX_QUADS, GT.WARM_BUDGET,
+-- GT.HYSTERESIS, GT.MAX_RESIDENT.
 -- Bridge.disabled.trees turns the effect off.
 
 local V = ...
@@ -52,7 +58,10 @@ local Mat4 = V.require("Mat4")
 
 local GT = {
   enabled = true,
-  WINDOW = 2,             -- chunks each way (same window as Gen4Ground / water)
+  WINDOW = 2,             -- chunks each way: the MOST lands ever considered (same window as Gen4Ground / water)
+  HYSTERESIS = 1.15,      -- a land already built stays covered out to this multiple of the draw-distance reach, so the edge does not flicker
+  MAX_RESIDENT = 14,      -- built lands kept in memory when the draw distance is limited (the rest are released, oldest first)
+  MAX_RESIDENT_MAX = 30,  -- ...and at MAX, which has no distance limit
   TEX_STEP = 2,           -- texels per block edge (1 = full resolution, 4x the quads)
   MAX_BLOCKS = 40,        -- most blocks across one card, whatever the step says
   MIN_HALF = 1,           -- a column's chord is never thinner than this many blocks each side
@@ -73,6 +82,8 @@ local GT = {
   coverVersion = 0,       -- bumps whenever the set of covered shapes changes
   active = {},            -- cache shape record -> true (covered AND in the window)
   coveredNames = {},      -- texture/material names that converted in EVERY land of the window (Gen4Hide's fallback when a shape has no cache pointer)
+  coveredLands = {},      -- land id -> true for every land inside the draw distance (Gen4Hide's name fallback is only valid there)
+  limited = false,        -- true while a finite draw distance is in force
 }
 
 -- the cartridge's tree lean, the same constants Gen4Model classifies by
@@ -98,12 +109,17 @@ end
 local Budget = optional("Gen4Budget") or { allow = function() return true end, charge = function() end }
 local clock = (love and love.timer and love.timer.getTime) or os.clock
 
+-- G4 DRAW DIST (lib/Gen4Distance.lua). Absent = the old behaviour, every land.
+local Distance = optional("Gen4Distance")
+
 -- Land meshes, keyed by the engine's land id (shared across crops of the
 -- same grid). A route swap builds a new Ground, so a weak Ground-keyed cache
 -- dropped every voxel tree and let native cards flash back. Number keys stay;
 -- table keys (a land record) go with the record. Dropped only by invalidate().
 local landEntries = setmetatable({}, { __mode = "k" })
 local window = {}
+local resident = 0     -- built lands in landEntries
+local tick = 0         -- bumps per window recompute; entry.used = last tick the land was wanted
 
 -- ----------------------------------------------------------- decoding --
 
@@ -825,7 +841,7 @@ function GT.prepare(ground)
   local view = ground and ground.view3d
   if not (GT.enabled and ground and view and ground.grid and ground.terrain
           and ground.slice and ground.chunkPx and ground.half and ground.set) then
-    GT.active, GT.list, GT.coveredNames = {}, {}, {}
+    GT.active, GT.list, GT.coveredNames, GT.coveredLands = {}, {}, {}, {}
     return
   end
 
@@ -833,21 +849,47 @@ function GT.prepare(ground)
   local W = GT.WINDOW
   local camCx, camCy = math.floor(view.x / px), math.floor(view.z / px)
 
+  -- DRAW DISTANCE. Only lands within `reach` of the eye get voxel trees; past
+  -- it Platinum's flat cards keep drawing (Gen4Hide only hides covered lands).
+  local reach = math.huge
+  if Distance and Distance.reach then
+    local okR, r = pcall(Distance.reach, px)
+    if okR and tonumber(r) then reach = r end
+  end
+  GT.limited = reach ~= math.huge
+
   -- MEMO. Once every land of the window is built, the answer (which shapes are
-  -- covered, which lands to draw) only changes when the camera crosses an
-  -- engine chunk -- or when Ground is replaced (new shape pointers to hide).
-  if window.done and window.ground == ground and window.camCx == camCx
-      and window.camCy == camCy and window.W == W then
-    GT.active, GT.list, GT.coveredNames = window.active, window.list, window.names
+  -- covered, which lands to draw) only changes when the camera moves a quarter
+  -- chunk (the reach is measured to a land's NEAREST EDGE, so the chunk the
+  -- camera stands in is not fine enough) -- or when Ground is replaced (new
+  -- shape pointers to hide), or the draw distance changes.
+  local qx, qy = math.floor(view.x * 4 / px), math.floor(view.z * 4 / px)
+  if window.done and window.ground == ground and window.qx == qx
+      and window.qy == qy and window.W == W and window.reach == reach then
+    GT.active, GT.list, GT.coveredNames, GT.coveredLands =
+      window.active, window.list, window.names, window.lands
     return
   end
 
+  tick = tick + 1
   local want = {}
+  local keepReach = reach * GT.HYSTERESIS
   for cy = camCy - W, camCy + W do
     for cx = camCx - W, camCx + W do
       if cx >= 0 and cy >= 0 and cx < grid.width and cy < grid.height then
-        local dx, dz = cx - camCx, cy - camCy
-        want[#want + 1] = { dx * dx + dz * dz, cx, cy, grid.land[cy * grid.width + cx + 1] }
+        local land = grid.land[cy * grid.width + cx + 1]
+        local lx, lz = cx * px + half, cy * px + half
+        -- built lands get the wider (hysteresis) reach; new ones must be inside the plain one
+        local r = (land and landEntries[land]) and keepReach or reach
+        if Distance and Distance.landInReach then
+          if Distance.landInReach(view.x, view.z, lx, lz, px, r) then
+            local dx, dz = lx - view.x, lz - view.z
+            want[#want + 1] = { dx * dx + dz * dz, cx, cy, land }
+          end
+        else
+          local dx, dz = cx - camCx, cy - camCy
+          want[#want + 1] = { dx * dx + dz * dz, cx, cy, land }
+        end
       end
     end
   end
@@ -865,7 +907,7 @@ function GT.prepare(ground)
   local warm = missing > 1
   local cap = Budget.covered and 12 or GT.BUILDS_PER_FRAME
   local pending = 0
-  local active, list, names = {}, {}, {}
+  local active, list, names, lands = {}, {}, {}, {}
   for _, w in ipairs(want) do
     local land = w[4]
     local entry = land and landEntries[land]
@@ -882,11 +924,14 @@ function GT.prepare(ground)
           once("build", "a land chunk failed to build and was skipped: %s", tostring(built))
         end
         landEntries[land] = entry
+        resident = resident + 1
       else
         pending = pending + 1
       end
     end
     if entry then
+      entry.used = tick
+      lands[land] = true
       sig[#sig + 1] = tostring(land)
       coverLiveShapes(ground, land, entry, active, names)
       for k in pairs(entry.failed or {}) do failedNames[k] = true end
@@ -905,10 +950,34 @@ function GT.prepare(ground)
 
   -- Publish after the fill so a Ground swap does not clear hide/draw for a
   -- frame while overlapping lands are already in landEntries.
-  GT.active, GT.list, GT.coveredNames = active, list, names
-  window.ground, window.camCx, window.camCy, window.W = ground, camCx, camCy, W
-  window.active, window.list, window.names = active, list, names
+  GT.active, GT.list, GT.coveredNames, GT.coveredLands = active, list, names, lands
+  window.ground, window.qx, window.qy, window.W, window.reach = ground, qx, qy, W, reach
+  window.active, window.list, window.names, window.lands = active, list, names, lands
   window.done = pending == 0
+
+  -- EVICT. landEntries was never freed before invalidate(), so every land the
+  -- player had ever walked past kept its baked trees in GPU memory. Keep the
+  -- most recently wanted ones and release the rest (oldest first); a released
+  -- land simply rebuilds if the player walks back.
+  local cap = GT.limited and GT.MAX_RESIDENT or GT.MAX_RESIDENT_MAX
+  if resident > cap then
+    local old = {}
+    for land, entry in pairs(landEntries) do
+      if entry.used ~= tick then old[#old + 1] = { entry.used or 0, land, entry } end
+    end
+    table.sort(old, function(a, b) return a[1] < b[1] end)
+    local i = 1
+    while resident > cap and old[i] do
+      local item = old[i]
+      for _, b in ipairs(item[3].buckets or {}) do
+        if b.mesh and b.mesh.release then pcall(b.mesh.release, b.mesh) end
+      end
+      landEntries[item[2]] = nil
+      resident = resident - 1
+      i = i + 1
+    end
+    once("evict", "released baked tree lands past the draw distance (keeping %d)", cap)
+  end
 end
 
 -- Gen4Hide asks this per cache shape record.
@@ -921,9 +990,12 @@ end
 -- but only names that converted in EVERY land of the window (see `prepare`),
 -- and never by the shape's own name. This is what lets BOTH kinds of tree
 -- lose their native card once their voxel tree is standing.
-function GT.isCoveredName(shape)
+function GT.isCoveredName(shape, land)
   local names = GT.coveredNames
   if not (shape and names) then return false end
+  -- With a finite draw distance a name covers only the lands inside it: a
+  -- terrain shape of a FAR land keeps its native cards (nothing replaces them).
+  if land ~= nil and GT.limited and not GT.coveredLands[land] then return false end
   for _, k in ipairs(nameKeys(shape)) do
     if names[k] then return true end
   end
@@ -971,11 +1043,15 @@ function GT.invalidate()
     end
   end
   landEntries = setmetatable({}, { __mode = "k" })
+  resident = 0
   window = {}
   lastSignature = ""
   textures = {}
-  GT.active, GT.list, GT.coveredNames = {}, {}, {}
+  GT.active, GT.list, GT.coveredNames, GT.coveredLands = {}, {}, {}, {}
   GT.coverVersion = GT.coverVersion + 1
 end
+
+-- built lands currently held (tests and the log read this)
+function GT.residentCount() return resident end
 
 return GT

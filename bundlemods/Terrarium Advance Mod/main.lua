@@ -194,6 +194,8 @@ local SpriteBillboards = V.require("SpriteBillboards")
 -- diorama's own draw-distance ladder, both dropped by TERRARIUM's fork
 local ViewBox = V.require("ViewBox")
 local DrawDistance = V.require("DrawDistance")
+-- Gen 4 only: how far the voxel trees reach (DrawDistance above never runs on Platinum)
+local Gen4Distance = V.require("Gen4Distance")
 local OverworldBattle = V.require("OverworldBattle")
 local WildRoamers = V.require("WildRoamers")
 local BattleExit = V.require("BattleExit")
@@ -943,6 +945,13 @@ local SETTINGS = {
     .. "behavior), NEAR (0 neighbors) for best performance on low-end "
     .. "devices, MILD (2 neighbors) for balanced quality, or FAR "
     .. "(4 neighbors) for moderate quality/performance balance.",
+    full = true, cat = "perf" },
+  { Gen4Distance.setting,
+    "How far the 3D trees reach in the Gen 4 world: NEAR, MID, FAR or MAX "
+    .. "(every land, the old behaviour). Past the range Platinum's flat tree "
+    .. "cards keep drawing, so the far field is cheap trees rather than bare "
+    .. "ground. Lower is faster.",
+    when = function() return Gen4Bridge.isGen4() end,
     full = true, cat = "perf" },
   { Grass3D.simpleMeshes,
     "Simplified meshes for roads, ground and decorative grass. ON uses "

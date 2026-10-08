@@ -202,7 +202,7 @@ local function filtered(model, hideGrass, hideWater, hideTrees)
       drop = true
       note("g:" .. tostring(shape.name), "hid native grass cards '%s'", tostring(shape.name))
     elseif GT and ((shape.src and GT.isCovered(shape.src))
-                   or (GT.isCoveredName and GT.isCoveredName(shape))) then
+                   or (GT.isCoveredName and GT.isCoveredName(shape, model.terrariumLand))) then
       drop = true
       note("t:" .. tostring(shape.srcTexture or shape.name),
            "hid native tree cards '%s' (voxel trees stand in)", tostring(shape.srcTexture or shape.name))
@@ -252,6 +252,8 @@ function Hide.install()
     Ground.modelFor = function(self, land, ...)
       local model = originalModelFor(self, land, ...)
       if model and type(model.shapes) == "table" then
+        -- which land this model is: Gen4Trees' name fallback only holds inside its draw distance
+        model.terrariumLand = land
         pcall(function()
           local chunks = self.terrain and self.terrain.chunks
           local record = chunks and chunks[land]
