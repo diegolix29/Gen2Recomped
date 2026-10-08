@@ -337,6 +337,29 @@ local function spriteKey(mapX, mapY)
                        math.floor((mapY or 0) + 0.5))
 end
 
+-- A sprite whose entity was drawn as a 3D model this frame is hidden by POSITION
+-- (the engine's freeEntity only hands us map pixels, not the entity). The old key
+-- was the rounded pixel, which misses by one when the engine passes a slightly
+-- different coordinate mid-step, leaving the 2D sprite beside the 3D model. This
+-- matches within SKIP_TOL pixels instead, and falls back to the old key.
+local SKIP_TOL = 2
+function Host.isSkipped(mapX, mapY)
+  local pts = Host._skipPoints
+  if pts then
+    local x, y = mapX or 0, mapY or 0
+    for i = 1, #pts do
+      local q = pts[i]
+      if math.abs(q[1] - x) <= SKIP_TOL and math.abs(q[2] - y) <= SKIP_TOL then
+        return true
+      end
+    end
+  end
+  local skip = Host._skipFeet
+  return (skip and skip[spriteKey(mapX, mapY)]) and true or false
+end
+
+local dupReported = false
+
 local function wantFieldActor(e, state)
   if not e or e.hidden then return false end
   if e.isFollower or e.wildsFollower or e._wildsFollowerSpecies then
@@ -391,6 +414,8 @@ end
 -- so these actors used to keep voxel y=0 and sit in the mesh.
 local function drawFieldActors(state, ground)
   Host._skipFeet = {}
+  Host._skipPoints = {}
+  Host._drawnEnt = {}      -- entity -> true once it has a 3D model this frame
   Host._drew3d = {}
   if not (state and ground) then return end
   local view = ground.view3d
@@ -399,8 +424,22 @@ local function drawFieldActors(state, ground)
   local ox = ground.offsetX or 0
   local oz = ground.offsetY or 0
   local posed = {}
+  local seen = {}
   local function add(e, mapX, mapY)
     if not wantFieldActor(e, state) then return end
+    -- One model per entity: the same table can sit in both entities and ghosts
+    -- (a follower or NPC across a map seam), which used to pose it twice.
+    if seen[e] then
+      if not dupReported then
+        dupReported = true
+        if V.mod and V.mod.log and V.mod.log.warn then
+          pcall(V.mod.log.warn, V.mod.log,
+                "Gen4WorldHost: entity listed twice (entities/ghosts); drawing it once")
+        end
+      end
+      return
+    end
+    seen[e] = true
     if ground.freeMode and ground:freeMode() == "first" and e == state.player then
       return
     end
@@ -427,6 +466,8 @@ local function drawFieldActors(state, ground)
       gh = gh,
       lift = 0,
       entity = e,
+      mapX = mapX or 0,
+      mapY = mapY or 0,
       skipKey = spriteKey(mapX, mapY),
       isFollower = e.isFollower or e.wildsFollower or e._wildsFollowerSpecies ~= nil,
       isPlayer = e == state.player,
@@ -460,23 +501,29 @@ local function drawFieldActors(state, ground)
     local Mat4 = V.require("Mat4")
     for _, p in ipairs(posed) do
       local drew = false
+      -- The player model is the only thing that may draw the player. Once it has
+      -- been tried, no other model path runs: an error after a partial draw used
+      -- to fall through and stack a second model on top.
+      local playerTried = false
       if p.isPlayer and PM and PM.loaded and PM.loaded() then
-        drew = pcall(PM.draw, p.px, p.py, p.gh, p.facing, p.flip) and true or drew
+        playerTried = true
+        local okP, rP = pcall(PM.draw, p.px, p.py, p.gh, p.facing, p.flip)
+        drew = okP and rP ~= false
       end
-      if not drew and OC and OC.safeDraw then
+      if not drew and not playerTried and OC and OC.safeDraw then
         drew = OC.safeDraw(p) == true
       end
-      if not drew and OS and OS.safeDraw then
+      if not drew and not playerTried and OS and OS.safeDraw then
         drew = OS.safeDraw(p) == true
       end
       local stadiumFollower3d = p.isFollower and SF and SF.loaded and SF.loaded()
         and not (SF.isUsingSpriteFallback and SF.isUsingSpriteFallback())
-      if not drew and stadiumFollower3d then
+      if not drew and not playerTried and stadiumFollower3d then
         if SF.update then pcall(SF.update, 1 / 60) end
         drew = SF.draw(p.px, p.py, p.facing, p.gh) == true
       end
       local mdl = p.entity and p.entity.model3d
-      if not drew and mdl and mdl.mesh then
+      if not drew and not playerTried and mdl and mdl.mesh then
         local m = Mat4.translate((p.px or 0) + 8, p.gh or 0, (p.py or 0) + 8)
         local Cam = V.require("Gen4ActorCam")
         local yaw = Cam and Cam.worldYaw(p.facing) or 0
@@ -487,11 +534,15 @@ local function drawFieldActors(state, ground)
       end
       if drew then
         Host._drew3d[p.skipKey] = true
-      elseif Hd and Hd.drawPose then
+      elseif Hd and Hd.drawPose and not playerTried then
         local okHd, okDraw = pcall(Hd.drawPose, p, ground)
         drew = okHd and okDraw == true
       end
-      if drew then Host._skipFeet[p.skipKey] = true end
+      if drew then
+        Host._skipFeet[p.skipKey] = true
+        Host._skipPoints[#Host._skipPoints + 1] = { p.mapX, p.mapY }
+        if p.entity then Host._drawnEnt[p.entity] = true end
+      end
     end
   end)
   Voxel3D.endScene()
@@ -877,8 +928,17 @@ function Host.install()
   local Gen4Ground = engineRequire("src.render.Gen4Ground")
   if not (Gen4Ground and Gen4Ground.drawFree) then return false end
 
+  -- Only the NEWEST install is live. If this file runs again (mod reload) the old
+  -- wrappers stay on Gen4Ground; they see a different token and pass straight
+  -- through, so the overlay, the sprite skip and the effects run once, not twice.
+  local token = {}
+  Gen4Ground.__terrariumHostToken = token
+
   local innerDrawFree = Gen4Ground.drawFree
   function Gen4Ground:drawFree(vw, vh)
+    if Gen4Ground.__terrariumHostToken ~= token then
+      return innerDrawFree(self, vw, vh)
+    end
     Host._vw, Host._vh = vw, vh
     -- renderPose calls Host._drawFree (this inner), not this wrap, so the
     -- arena world still draws. The engine's walking pass hits this wrap.
@@ -896,8 +956,11 @@ function Host.install()
   if type(innerFreeEntity) == "function" then
     function Gen4Ground:freeEntity(mapX, mapY, camX, camY, rise, draw,
                                    depthLift)
-      local skip = Host._skipFeet
-      if skip and skip[spriteKey(mapX, mapY)] then
+      if Gen4Ground.__terrariumHostToken ~= token then
+        return innerFreeEntity(self, mapX, mapY, camX, camY, rise, draw,
+                               depthLift)
+      end
+      if Host.isSkipped(mapX, mapY) then
         -- drawn as a 3D model instead: only the ground shadow is left to
         -- draw for a flyer
         if type(Host.flightLift) == "function" then
@@ -962,6 +1025,9 @@ function Host.install()
   local innerEndFree = Gen4Ground.endFree
   if type(innerEndFree) == "function" then
     function Gen4Ground:endFree()
+      if Gen4Ground.__terrariumHostToken ~= token then
+        return innerEndFree(self)
+      end
       if Host._skippedOverworld then
         Host._skippedOverworld = false
         return
@@ -983,6 +1049,7 @@ function Host.install()
     local innerAbove = TileRenderer.drawAbove
     function TileRenderer:drawAbove(camX, camY, vw, vh)
       local r = innerAbove(self, camX, camY, vw, vh)
+      if Gen4Ground.__terrariumHostToken ~= token then return r end
       -- Field (non-free) camera: sprites are already on the world canvas.
       if Host.shouldDrawOverworld() and self.gen4Ground and not (self.gen4Ground.freeMode
           and self.gen4Ground:freeMode()) then

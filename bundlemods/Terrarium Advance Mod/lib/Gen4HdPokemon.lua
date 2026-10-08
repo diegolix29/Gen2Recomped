@@ -127,10 +127,13 @@ function Hd.drawPose(p, ground)
   return true
 end
 
-local function drawOne(e, mapX, mapY, scene, game, skip)
+-- `skip(mapX, mapY)` is Host.isSkipped (position, with tolerance); `drawn` is the
+-- set of entities Gen4WorldHost already gave a 3D model this frame. The entity
+-- check is exact, so it does not depend on the position match at all.
+local function drawOne(e, mapX, mapY, scene, game, skip, drawn)
   if not Hd.wantsEntity(e) then return end
-  local key = spriteKey(mapX, mapY)
-  if skip and skip[key] then return end
+  if drawn and drawn[e] then return end
+  if skip and skip(mapX, mapY) then return end
   local overlay = bindOverlay(e, e.facing or "down", game)
   if not overlay or not overlay.hdImage then return end
   local mesh = SpriteBillboards.mesh(overlay, 0)
@@ -158,17 +161,29 @@ function Hd.draw(scene)
   end
   -- Field actors already drew 3D or HD and hid the 16px feet; do not stack
   -- a second card in the endFree pass.
-  local skip = Host and Host._skipFeet
+  local skip
+  if Host and type(Host.isSkipped) == "function" then
+    skip = Host.isSkipped
+  elseif Host and Host._skipFeet then
+    local t = Host._skipFeet
+    skip = function(x, y) return t[spriteKey(x, y)] end
+  end
+  local drawn = Host and Host._drawnEnt
+  local seen = {}          -- an entity in both lists is still one card
   if Voxel3D.glass then Voxel3D.glass(false) end
   scene.opaque()
   for _, e in ipairs(ow.entities or {}) do
-    pcall(drawOne, e, e.px, e.py, scene, game, skip)
+    if not seen[e] then
+      seen[e] = true
+      pcall(drawOne, e, e.px, e.py, scene, game, skip, drawn)
+    end
   end
   for _, g in ipairs(ow.ghosts or {}) do
     local npc = g and g.npc
-    if npc then
+    if npc and not seen[npc] then
+      seen[npc] = true
       pcall(drawOne, npc, (npc.px or 0) + (g.ox or 0), (npc.py or 0) + (g.oy or 0),
-            scene, game, skip)
+            scene, game, skip, drawn)
     end
   end
 end

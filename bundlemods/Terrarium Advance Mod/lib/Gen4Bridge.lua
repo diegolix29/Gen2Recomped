@@ -272,8 +272,15 @@ function Bridge.install()
     end
   end
 
+  -- Only the newest install is live; a wrapper left over from an earlier run of
+  -- this file (mod reload) passes straight through instead of drawing every
+  -- effect a second time.
+  local token = {}
+  Ground.__terrariumBridgeToken = token
+
   local original = Ground.endFree
   Ground.endFree = function(self, ...)
+    if Ground.__terrariumBridgeToken ~= token then return original(self, ...) end
     -- Runs while the free canvas is still open (colour + depth): terrain,
     -- buildings and characters are already in it. See the header.
     if Ground.freeOpen and self and self.freeW then Bridge.run(self) end
@@ -342,6 +349,7 @@ end
 function Bridge.uninstall()
   if not Bridge.installed then return end
   pcall(function() V.require("Gen4Sky").uninstall() end)
+  Bridge.Ground.__terrariumBridgeToken = nil
   Bridge.Ground.endFree = Bridge.originalEndFree
   Bridge.Ground.forMap = Bridge.originalForMap
   Bridge.installed = false
