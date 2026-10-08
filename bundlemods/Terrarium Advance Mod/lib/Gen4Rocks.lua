@@ -8,11 +8,12 @@
 --
 -- WHAT THIS BUILDS INSTEAD
 --
--- For every card of an `imped` shape: one chunky rock made of three stacked
--- voxel blocks (wide base, narrower middle, small cap), offset and sized from a
--- hash of the card's position so the rocks differ but never change between
--- frames. Flat grey, per-face shade like the voxel trees (top 1.0, front .9,
--- side .78, back .68). Same Voxel3D mesh path as Gen4Trees / Gen4Sand.
+-- For every card of an `imped` shape: a low-poly boulder (a lumpy 80-facet
+-- sphere, flattened underneath and planted in the ground) plus one or two small
+-- satellite stones. Shape, squash and lumps come from a hash of the card's
+-- position, so rocks differ but never change between frames. Each facet is lit
+-- flat from the upper-front (so the rock reads as faceted stone, not a block)
+-- and wears a grey texel with the odd darker crack / lighter face / mossy tint.
 --
 -- HIDING THE NATIVE CARD
 --
@@ -31,12 +32,14 @@ local Rocks = {
   enabled = true,
   TEXTURES = { imped = true },   -- terrain texture names that are rocks
   WINDOW = 2,                    -- lands each way around the camera
-  SIZE = 0.7,                    -- rock width as a fraction of the card's width
-  MIN_W = 5,                     -- never narrower than this (world units; a tile is 16)
-  MAX_W = 11,                    -- ...never wider than this
-  HEIGHT = 0.75,                 -- rock height as a fraction of its width
+  SIZE = 1.35,                    -- rock width as a fraction of the card's width
+  MIN_W = 14,                    -- never narrower than this (world units; a tile is 16)
+  MAX_W = 28,                    -- ...never wider than this
+  HEIGHT = 0.9,                 -- rock height as a fraction of its width
+  LUMP = 0.30,                   -- how lumpy the surface is (0 = smooth egg, 0.4 = very rough)
+  SATELLITES = 2,                -- up to this many small stones beside each rock
   -- Trees need Y_OFFSET = -10 because a tall card still shows after the sink.
-  -- A rock is only ~8 units tall: the same -10 bury the whole mesh under the
+  -- A rock is only ~8 units tall: the same -10 buries the whole mesh under the
   -- terrain, Lawn then hides the native card, and nothing is left on screen.
   Y_OFFSET = 0,
   SINK = 1.0,                    -- planted this far into the ground
@@ -47,7 +50,7 @@ local Rocks = {
 }
 
 local FX16, UV_UNITS = 4096, 16
-local SHADE = { top = 1.0, front = 0.9, side = 0.78, back = 0.68 }
+local LIGHT = { 0.35, 0.80, 0.50 }      -- toward the light: up and a little to the front
 
 local warned = {}
 local function once(key, fmt, ...)
@@ -66,8 +69,9 @@ local clock = (love and love.timer and love.timer.getTime) or os.clock
 
 -- ---------------------------------------------------------------- texture --
 
--- An 8x8 grey noise picture generated here, so there is no file to ship. Each
--- block face samples one texel (flat grey, voxel look).
+-- An 8x8 picture generated here (no file to ship). Rows 0-5 are the stone
+-- (mid greys, a hint of warm/cool), row 6 darker cracks, row 7 lighter faces and
+-- a mossy tint. Each facet samples ONE texel, picked by hash.
 local GRID = 8
 local texture                 -- Image | false
 local function rockTexture()
@@ -76,8 +80,16 @@ local function rockTexture()
     local data = love.image.newImageData(GRID, GRID)
     for y = 0, GRID - 1 do
       for x = 0, GRID - 1 do
-        local g = 0.50 + 0.16 * (((x * 7 + y * 13 + x * y) % 5) / 4 - 0.5) * 2   -- 0.34..0.66
-        data:setPixel(x, y, g, g, g * 1.04, 1)
+        local n = ((x * 7 + y * 13 + x * y * 3) % 6) / 5           -- 0..1
+        local g = 0.46 + 0.14 * n
+        local r, gg, b = g * 1.02, g, g * 0.97                       -- slightly warm stone
+        if x % 2 == 1 then r, gg, b = g * 0.97, g, g * 1.04 end     -- ...and slightly cool
+        if y == 6 then r, gg, b = g * 0.62, g * 0.62, g * 0.64       -- cracks / shadowed
+        elseif y == 7 then
+          if x < 5 then r, gg, b = g * 1.28, g * 1.28, g * 1.25      -- light faces
+          else r, gg, b = g * 0.85, g * 1.05, g * 0.72 end           -- moss
+        end
+        data:setPixel(x, y, math.min(r, 1), math.min(gg, 1), math.min(b, 1), 1)
       end
     end
     local image = love.graphics.newImage(data)
@@ -171,45 +183,114 @@ local function hash(x, z)
   return h / 2147483648
 end
 
-local function box(b, x0, y0, z0, w, h, d, cell)
-  local u = ((cell % GRID) + 0.5) / GRID
-  local v = (math.floor(cell / GRID) % GRID + 0.5) / GRID
-  local function face(f, shade)
-    local corners = Voxel3D.FACE_CORNERS[f]
-    local sh = (f == 3) and -shade or shade      -- +Y is flagged "faces the sky"
-    local n = #b.verts / 4
-    for k = 1, 4 do
-      local c = corners[k]
-      b.verts[#b.verts + 1] = { x0 + c[1] * w, y0 + c[2] * h, z0 + c[3] * d, u, v, sh, 0 }
-    end
-    Voxel3D.pushQuad(b.map, n)
+-- Unit icosphere, subdivided once: 42 vertices, 80 triangles. Built once.
+local template
+local function icosphere()
+  if template then return template end
+  local t = (1 + math.sqrt(5)) / 2
+  local v = {
+    { -1, t, 0 }, { 1, t, 0 }, { -1, -t, 0 }, { 1, -t, 0 },
+    { 0, -1, t }, { 0, 1, t }, { 0, -1, -t }, { 0, 1, -t },
+    { t, 0, -1 }, { t, 0, 1 }, { -t, 0, -1 }, { -t, 0, 1 },
+  }
+  local function norm(p)
+    local l = math.sqrt(p[1] * p[1] + p[2] * p[2] + p[3] * p[3])
+    return { p[1] / l, p[2] / l, p[3] / l }
   end
-  face(3, SHADE.top)
-  face(5, SHADE.front)
-  face(6, SHADE.back)
-  face(1, SHADE.side)
-  face(2, SHADE.side)
+  for i = 1, #v do v[i] = norm(v[i]) end
+  local f = {
+    { 1, 12, 6 }, { 1, 6, 2 }, { 1, 2, 8 }, { 1, 8, 11 }, { 1, 11, 12 },
+    { 2, 6, 10 }, { 6, 12, 5 }, { 12, 11, 3 }, { 11, 8, 7 }, { 8, 2, 9 },
+    { 4, 10, 5 }, { 4, 5, 3 }, { 4, 3, 7 }, { 4, 7, 9 }, { 4, 9, 10 },
+    { 5, 10, 6 }, { 3, 5, 12 }, { 7, 3, 11 }, { 9, 7, 8 }, { 10, 9, 2 },
+  }
+  local cache, out = {}, {}
+  local function mid(a, b)
+    local key = a < b and (a .. ":" .. b) or (b .. ":" .. a)
+    local hit = cache[key]
+    if hit then return hit end
+    local pa, pb = v[a], v[b]
+    v[#v + 1] = norm({ (pa[1] + pb[1]) / 2, (pa[2] + pb[2]) / 2, (pa[3] + pb[3]) / 2 })
+    cache[key] = #v
+    return #v
+  end
+  for _, tri in ipairs(f) do
+    local a, b, c = tri[1], tri[2], tri[3]
+    local ab, bc, ca = mid(a, b), mid(b, c), mid(c, a)
+    out[#out + 1] = { a, ab, ca }
+    out[#out + 1] = { b, bc, ab }
+    out[#out + 1] = { c, ca, bc }
+    out[#out + 1] = { ab, bc, ca }
+  end
+  template = { verts = v, faces = out }
+  return template
+end
+
+-- One boulder centred at (cx, cz), standing on baseY. `w` is its width.
+local function boulder(b, cx, baseY, cz, w, seed)
+  local tpl = icosphere()
+  local r1, r2, r3, r4 = hash(seed, 1.7), hash(2.3, seed), hash(seed + 4.1, seed - 9.2), hash(seed * 0.37, 5.5)
+  local ax, az = 0.5 * w * (0.85 + 0.35 * r1), 0.5 * w * (0.85 + 0.35 * r2)   -- half widths
+  local hy = w * Rocks.HEIGHT * (0.8 + 0.4 * r3) * 0.5                          -- half height
+  local yaw = r4 * 6.2832
+  local cs, sn = math.cos(yaw), math.sin(yaw)
+  local p1, p2, p3 = r1 * 6.28, r2 * 6.28, r3 * 6.28
+  local flatY = -0.38                                  -- unit-sphere y below which it is cut flat
+  local pts = {}
+  for i, u in ipairs(tpl.verts) do
+    -- smooth lumps (three low-frequency sines) plus a little per-vertex jitter
+    local lump = math.sin(u[1] * 2.3 + p1) * math.sin(u[2] * 2.9 + p2)
+               + 0.6 * math.sin(u[3] * 3.1 + p3 + u[1])
+    local jit = hash(seed + i * 0.731, i * 1.37 + seed) - 0.5
+    local r = 1 + Rocks.LUMP * 0.5 * lump + Rocks.LUMP * 0.45 * jit
+    local x, y, z = u[1] * r, u[2] * r, u[3] * r
+    if y < flatY then y = flatY end                    -- flat underside that sits in the ground
+    local lx, lz = x * ax, z * az
+    pts[i] = { cx + lx * cs - lz * sn, y * hy, cz + lx * sn + lz * cs }
+  end
+  local lift = baseY - Rocks.SINK - flatY * hy       -- put the flat underside at the ground (minus the sink)
+  for fi, face in ipairs(tpl.faces) do
+    local a, c2, d = pts[face[1]], pts[face[2]], pts[face[3]]
+    -- face normal, oriented away from the rock's centre
+    local ux, uy, uz = c2[1] - a[1], c2[2] - a[2], c2[3] - a[3]
+    local vx, vy, vz = d[1] - a[1], d[2] - a[2], d[3] - a[3]
+    local nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+    local len = math.sqrt(nx * nx + ny * ny + nz * nz)
+    if len > 1e-6 then
+      nx, ny, nz = nx / len, ny / len, nz / len
+      local mx, my, mz = (a[1] + c2[1] + d[1]) / 3 - cx, (a[2] + c2[2] + d[2]) / 3, (a[3] + c2[3] + d[3]) / 3 - cz
+      if nx * mx + ny * my + nz * mz < 0 then nx, ny, nz = -nx, -ny, -nz end
+      local lit = math.max(0, nx * LIGHT[1] + ny * LIGHT[2] + nz * LIGHT[3])
+      local shade = math.min(1.0, 0.50 + 0.55 * lit)
+      if ny > 0.55 then shade = -shade end             -- faces the sky (same flag the voxel trees use)
+      -- texel: mostly stone, sometimes a crack / light face / moss
+      local roll = hash(seed + fi * 3.3, fi + seed * 0.1)
+      local cell
+      if roll < 0.82 then cell = math.floor(hash(fi, seed) * 48)
+      elseif roll < 0.90 then cell = 48 + math.floor(hash(seed, fi) * 8)
+      else cell = 56 + math.floor(hash(fi * 2.1, seed) * 8) end
+      local u = ((cell % GRID) + 0.5) / GRID
+      local v = (math.floor(cell / GRID) % GRID + 0.5) / GRID
+      local base = #b.verts
+      b.verts[base + 1] = { a[1], a[2] + lift, a[3], u, v, shade, 0 }
+      b.verts[base + 2] = { c2[1], c2[2] + lift, c2[3], u, v, shade, 0 }
+      b.verts[base + 3] = { d[1], d[2] + lift, d[3], u, v, shade, 0 }
+      b.map[#b.map + 1], b.map[#b.map + 2], b.map[#b.map + 3] = base + 1, base + 2, base + 3
+    end
+  end
 end
 
 local function buildRock(b, cx, baseY, cz, cardW)
   local w = math.max(Rocks.MIN_W, math.min(Rocks.MAX_W, cardW * Rocks.SIZE))
-  local h = w * Rocks.HEIGHT
-  local r1, r2, r3, r4 = hash(cx, cz), hash(cz, cx + 3.1), hash(cx + 9.7, cz - 4.3), hash(cx - 2.2, cz + 8.8)
-  local y = baseY - Rocks.SINK
-  -- base
-  local w0, d0, h0 = w, w * (0.8 + 0.25 * r1), h * 0.45 + Rocks.SINK
-  box(b, cx - w0 / 2, y, cz - d0 / 2, w0, h0, d0, math.floor(r1 * 60))
-  y = y + h0
-  -- middle, shifted off-centre
-  local w1, d1, h1 = w0 * (0.62 + 0.12 * r2), d0 * (0.6 + 0.12 * r3), h * 0.35
-  local ox, oz = (r2 - 0.5) * (w0 - w1), (r3 - 0.5) * (d0 - d1)
-  box(b, cx - w1 / 2 + ox, y, cz - d1 / 2 + oz, w1, h1, d1, math.floor(r2 * 60))
-  y = y + h1
-  -- cap
-  local w2, d2, h2 = w1 * (0.5 + 0.15 * r4), d1 * (0.5 + 0.15 * r1), h * 0.25
-  local px, pz = ox + (r4 - 0.5) * (w1 - w2), oz + (r1 - 0.5) * (d1 - d2)
-  box(b, cx - w2 / 2 + px, y, cz - d2 / 2 + pz, w2, h2, d2, math.floor(r3 * 60))
-  return 15
+  boulder(b, cx, baseY, cz, w, cx * 0.91 + cz * 1.73)
+  local extra = math.min(Rocks.SATELLITES or 0, math.floor(hash(cx + 5.5, cz - 1.1) * 3))
+  for k = 1, extra do
+    local ang = hash(cx * k, cz + k) * 6.2832
+    local dist = w * (0.55 + 0.25 * hash(cz, cx * k + 2))
+    local sw = w * (0.28 + 0.2 * hash(cx + k, cz * 2.3))
+    boulder(b, cx + math.cos(ang) * dist, baseY, cz + math.sin(ang) * dist, sw, cx * 0.57 + cz * 2.11 + k * 7.7)
+  end
+  return 80
 end
 
 -- ------------------------------------------------------------------ lands --
