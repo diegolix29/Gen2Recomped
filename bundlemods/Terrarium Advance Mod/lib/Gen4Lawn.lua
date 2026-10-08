@@ -1,4 +1,5 @@
--- Gen4Lawn: wear the mod's grass.png on Platinum's LAWN -- and only the lawn.
+-- Gen4Lawn: wear the mod's own ground pictures (grass.png, roads.png...) on chosen
+-- Platinum terrain textures -- and only those. Edit Lawn.TEXTURES below.
 --
 -- WHY Gen4GreenGround CHANGED THE WHOLE GROUND
 --
@@ -35,13 +36,23 @@ local V = ...
 local Lawn = {
   enabled = true,
   installed = false,
-  -- exact texture names (lower case) that are lawn
-  TEXTURES = { ngrass = true, bf_ngrass = true },
-  IMAGE = "/assets/ground/grass/grass.png",
-  -- UV scale: 1 = one repeat per whatever the native lawn tile covered.
-  -- 0.5 = grass.png twice as large, 2 = twice as dense.
-  UV_SCALE = 1,
-  LOG_NAMES = false,     -- log every distinct terrain texture once (to confirm names)
+  -- texture name (lower case) -> { image = <file under assets/ground/grass/>, uv = scale }
+  -- uv: 1 = one repeat per whatever the native tile covered; 0.5 = twice as large.
+  TEXTURES = {
+    ngrass    = { image = "grass.png", uv = 1 },     -- lawn
+    bf_ngrass = { image = "grass.png", uv = 1 },     -- lawn, another area's prefix
+    -- PROBE MODE: each candidate gets its own flat colour (assets/ground/grass/probe_*.png).
+    -- Walk a route and note which COLOUR the yellow dirt turns -> that name is the dirt.
+    imped     = { image = "probe_red.png",     uv = 1 },
+    hage      = { image = "floor.png",    uv = 1 },
+    nsand     = { image = "road.png", uv = 1 },
+    nsandp    = { image = "ground.png",    uv = 1 },
+    lgreen    = { image = "sand.png",   uv = 1 },
+    lgreenp   = { image = "road.png",   uv = 1 },
+    allpeak   = { image = "edges.png",  uv = 1 },
+  },
+  DIR = "/assets/ground/grass/",
+  LOG_NAMES = false,     -- log every distinct terrain texture/material once (grep "Gen4Lawn:")
 }
 
 local logged = {}
@@ -51,20 +62,21 @@ local function note(key, fmt, ...)
   if V.mod and V.mod.log then V.mod.log:info("Gen4Lawn: " .. fmt:format(...)) end
 end
 
-local imagePath          -- string | false (missing)
-local function resolvePath()
-  if imagePath ~= nil then return imagePath or nil end
-  imagePath = false
+local imagePaths = {}     -- file -> path | false (missing)
+local function resolvePath(file)
+  local hit = imagePaths[file]
+  if hit ~= nil then return hit or nil end
+  imagePaths[file] = false
   local okA, Assets = pcall(require, "src.render.Assets")
   if okA and Assets then
-    local path = V.path .. Lawn.IMAGE
+    local path = V.path .. Lawn.DIR .. file
     local okE, exists = pcall(Assets.exists, path)
-    if okE and exists then imagePath = path end
+    if okE and exists then imagePaths[file] = path end
   end
-  if not imagePath then
-    note("img", "no %s -- lawn keeps its native texture", Lawn.IMAGE)
+  if not imagePaths[file] then
+    note("img:" .. file, "no %s%s -- that texture keeps its native look", Lawn.DIR, file)
   end
-  return imagePath or nil
+  return imagePaths[file] or nil
 end
 
 -- model -> { source = shapes, count = n, mats = table|false }
@@ -74,16 +86,16 @@ local function lawnMaterials(model)
   local shapes = model.shapes
   local rec = cache[model]
   if rec and rec.source == shapes and rec.count == #shapes then return rec.mats or nil end
-  local mats, path = false, resolvePath()
-  if path then
-    local uvs = Lawn.UV_SCALE
-    for _, shape in ipairs(shapes) do
-      local tex = tostring(shape.lawnTexture or ""):lower()
-      if Lawn.TEXTURES[tex] and shape.material then
-        mats = mats or {}
-        mats[shape.material] = { image = path, uv = { uvs, 0, 0, uvs, 0, 0 } }
-        note("lawn:" .. tex, "lawn shape found: texture '%s' material '%s'", tex, tostring(shape.material))
-      end
+  local mats = false
+  for _, shape in ipairs(shapes) do
+    local tex = tostring(shape.lawnTexture or ""):lower()
+    local cfg = Lawn.TEXTURES[tex]
+    local path = cfg and shape.material and resolvePath(cfg.image)
+    if path then
+      local k = cfg.uv or 1
+      mats = mats or {}
+      mats[shape.material] = { image = path, uv = { k, 0, 0, k, 0, 0 } }
+      note("swap:" .. tex, "swapping texture '%s' (material '%s') -> %s", tex, tostring(shape.material), cfg.image)
     end
   end
   cache[model] = { source = shapes, count = #shapes, mats = mats }
@@ -170,7 +182,7 @@ end
 
 function Lawn.invalidate()
   cache = setmetatable({}, { __mode = "k" })
-  imagePath = nil
+  imagePaths = {}
 end
 
 function Lawn.uninstall()
