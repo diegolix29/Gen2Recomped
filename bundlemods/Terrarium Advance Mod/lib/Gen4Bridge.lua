@@ -351,12 +351,12 @@ function Bridge.install()
   return true
 end
 
--- Drop every baked Gen 4 effect mesh (water, sand, trees, grass). The voxel
+-- Drop every baked Gen 4 effect mesh (water, sand, lawn, trees, grass). The voxel
 -- pipeline's invalidate used to be the only reset path and it knew none of
 -- these, so a graphics reset, a mod reload or a cache reset left the old
 -- meshes (and, on a lost GL context, dead ones) in place.
 function Bridge.invalidateAll()
-  for _, name in ipairs({ "Gen4Sand", "Gen4Trees", "Gen4Water", "Gen4Grass" }) do
+  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Trees", "Gen4Water", "Gen4Grass" }) do
     local ok, mod = pcall(V.require, name)
     if ok and type(mod) == "table" and type(mod.invalidate) == "function" then
       local okI, err = pcall(mod.invalidate)
@@ -368,6 +368,7 @@ end
 function Bridge.uninstall()
   if not Bridge.installed then return end
   pcall(function() V.require("Gen4Sky").uninstall() end)
+  pcall(function() V.require("Gen4Lawn").uninstall() end)
     Bridge.Ground.__terrariumBridgeToken = nil
 
   Bridge.Ground.endFree = Bridge.originalEndFree

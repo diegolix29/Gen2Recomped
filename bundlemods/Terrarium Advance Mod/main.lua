@@ -218,6 +218,7 @@ if Gen4Bridge.isGen4() and Gen4Bridge.install() then
   end)
   -- hide Platinum's own grass cards, water, and tree cards where the 3D versions draw
   pcall(function() V.require("Gen4Hide").install() end)
+  pcall(function() V.require("Gen4Lawn").install() end)
   -- the voxel scene's RayFX water reflection, pointed at Gen 4's water (Gen4Reflect)
   pcall(function() V.require("Gen4Reflect").install() end)
   -- 3D battles in the engine's own world, sprites for actors (Gen4Battle3D).
