@@ -35,7 +35,10 @@ local Rocks = {
   MIN_W = 5,                     -- never narrower than this (world units; a tile is 16)
   MAX_W = 11,                    -- ...never wider than this
   HEIGHT = 0.75,                 -- rock height as a fraction of its width
-  Y_OFFSET = -10,                -- same quick fix as Gen4Trees.Y_OFFSET (cards float otherwise)
+  -- Trees need Y_OFFSET = -10 because a tall card still shows after the sink.
+  -- A rock is only ~8 units tall: the same -10 bury the whole mesh under the
+  -- terrain, Lawn then hides the native card, and nothing is left on screen.
+  Y_OFFSET = 0,
   SINK = 1.0,                    -- planted this far into the ground
   BUILDS_PER_FRAME = 4,
   MAX_RESIDENT = 20,
@@ -224,8 +227,10 @@ local function buildLand(ground, land)
   local b = { verts = {}, map = {} }
   local shapesSeen, leftover = 0, 0
   for _, s in ipairs(record.shapes) do
-    local tex = tostring(s.texture or ""):lower()
-    if Rocks.TEXTURES[tex] then
+    local tex = tostring(s.texture or s.srcTexture or ""):lower()
+    local mat = tostring(s.material or s.srcMaterial or ""):lower()
+    if Rocks.TEXTURES[tex] or Rocks.TEXTURES[mat]
+        or tex:find("imped", 1, true) or mat:find("imped", 1, true) then
       shapesSeen = shapesSeen + 1
       local positions, tris = readShape(ground, s, record.posScale or 1)
       if positions then

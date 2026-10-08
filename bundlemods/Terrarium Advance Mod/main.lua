@@ -212,6 +212,10 @@ if Gen4Bridge.isGen4() and Gen4Bridge.install() then
   pcall(function()
     Gen4Bridge.register("trees", V.require("Gen4Trees").draw)
   end)
+  -- voxel rocks on Platinum `imped` cards (also registered in Gen4Bridge.install)
+  pcall(function()
+    Gen4Bridge.register("rocks", V.require("Gen4Rocks").draw)
+  end)
   -- HD Reloded roamers/followers when no Stadium/Colosseum model is bound
   pcall(function()
     Gen4Bridge.register("hd_pokemon", V.require("Gen4HdPokemon").draw)
