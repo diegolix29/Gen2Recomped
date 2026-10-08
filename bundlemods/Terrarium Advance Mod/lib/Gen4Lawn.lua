@@ -52,7 +52,7 @@ local Lawn = {
     allpeak   = { image = "edges.png",   uv = 1 },
   },
   DIR = "/assets/ground/grass/",
-  LOG_NAMES = false,     -- log every distinct terrain texture/material once (grep "Gen4Lawn:")
+  LOG_NAMES = true,      -- log every distinct land/texture/material once (grep "Gen4Lawn:")
 }
 
 local logged = {}
@@ -154,8 +154,12 @@ function Lawn.install()
             q.at = q.at + 1
             built.lawnTexture = src.texture
             if Lawn.LOG_NAMES then
-              note("t:" .. tostring(src.texture) .. "|" .. tostring(src.material),
-                   "terrain texture '%s' material '%s'", tostring(src.texture), tostring(src.material))
+              local texName = tostring(src.texture)
+              local mapped = Lawn.TEXTURES[texName:lower()] and " mapped" or " UNMAPPED"
+              note("t:" .. tostring(land) .. "|" .. texName .. "|" .. tostring(src.material),
+                   "land %s texture '%s' material '%s' shape '%s'%s",
+                   tostring(land), texName, tostring(src.material),
+                   tostring(src.name), mapped)
             end
           end
         end

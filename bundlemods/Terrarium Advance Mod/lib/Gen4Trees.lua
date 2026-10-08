@@ -21,9 +21,13 @@
 --     into a round, slightly irregular crown that differs tree to tree but never
 --     changes between frames;
 --   * every triangle is lit FLAT from the upper front (like the rocks) and wears
---     ONE texel of the card's own art, picked where the facet sits in the sprite,
---     so the leaves, the outline on the rim and the trunk keep their colours;
---   * round in plan means it reads the same from every orbit angle.
+--     ONE texel of the card's own art. Native cards are billboards, so the
+--     canopy "hat" is always on the camera-facing side. A world-X projection
+--     froze that hat onto one meridian (usually north), and from the default
+--     south camera you only saw the back. Colour is a SHELL instead: each
+--     cardinal face of the lathe gets the FRONT VIEW, hat in the middle,
+--     outline on the rims, so every yaw reads like the sprite;
+--   * round in plan means the silhouette matches from every orbit angle.
 --
 -- BORDER TREES (`conttree*`)
 --
@@ -671,6 +675,14 @@ local function buildCard(b, tex, positions, comp, strip)
   for k = 0, trees - 1 do
     local a = uL + (uR - uL) * (k / trees)
     local c = uL + (uR - uL) * ((k + 1) / trees)
+    -- Native cards are billboards: the engine yaws them so the FRONT of the
+    -- sprite faces the camera. Voxel trees are frozen, so they must wear that
+    -- same front. emitTree paints column 0 at world -X, which is screen-left
+    -- for the default camera (south, looking north). A rest-pose card that
+    -- faces away has U running xmax->xmin; sampling that as-is put the back
+    -- of the art toward the camera. Always feed the slice left-to-right in
+    -- texture space (low U = sprite left = camera left).
+    if a > c then a, c = c, a end
     local mid = -width * 0.5 + (k + 0.5) * each
     local px, pz = pivX, pivZ
     if alongZ then pz = pivZ + mid else px = pivX + mid end
