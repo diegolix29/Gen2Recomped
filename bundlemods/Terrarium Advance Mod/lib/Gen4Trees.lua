@@ -1,4 +1,4 @@
--- Gen4Trees: the voxel scene's round trees, standing in Gen 4's world.
+-- Gen4Trees: round, low-poly trees standing in Gen 4's world.
 --
 -- WHAT PLATINUM DRAWS
 --
@@ -7,23 +7,23 @@
 -- (`tree01`, `tree2_01`, `tree04_2`, `tree3_02`, `bf_tree03`) plus the
 -- `conttree*` forest-border strips (one wide card = several trees tiled).
 --
--- WHAT THIS BUILDS INSTEAD: THE VOXEL SCENE'S OWN TREE
+-- WHAT THIS BUILDS INSTEAD: A LOW-POLY ROUND TREE (the Gen4Rocks recipe)
 --
--- The same recipe Structures.roundTemplate uses for the Gen 1-3 trees:
---   * the card's art is cut into blocks (one block = TEX_STEP texels);
---   * each ROW is a DISC: the row's opaque span gives a centre and a
---     half-width, and every column of that row runs the circle's CHORD in z,
---     quantised to whole blocks -- so the front view IS the sprite and the
---     plan view is the sprite's own width profile turned in depth. Canopy
---     rows bulge round, trunk rows stay slim;
---   * front and back faces carry the art per block (runs of one colour are one
---     quad); side / step / underside faces take their own column's texel, so
---     the drawn outline sits on the silhouette's rim;
---   * a fully exposed cap keeps the outline only on its rim blocks and wears
---     the canopy a couple of rows deeper inside -- the dome, not a stripe;
---   * the same face shades (front 1.0, back .68, side .78, top 1.0, bottom
---     .55) so a Gen 4 tree is lit like a Gen 1-3 one.
--- Round in plan means it reads the same from every orbit angle.
+-- The old build cut the card into square blocks and stacked them as discs, which
+-- is why trees looked like staircases. Now each tree is built the way Gen4Rocks
+-- builds a boulder -- a smooth faceted solid with flat-lit facets:
+--   * the card's art is still sampled on a grid, but only to read the tree's
+--     SILHOUETTE: for every row, where the opaque pixels start and stop gives a
+--     centre and a half-width (so the canopy bulges and the trunk stays slim);
+--   * those rows become RINGS of SIDES points (a lathe / surface of revolution),
+--     joined into triangles, closed at the top with a pole. Smoothing the
+--     profile and a little hash-driven lumpiness (GT.LUMP) turn the stair-steps
+--     into a round, slightly irregular crown that differs tree to tree but never
+--     changes between frames;
+--   * every triangle is lit FLAT from the upper front (like the rocks) and wears
+--     ONE texel of the card's own art, picked where the facet sits in the sprite,
+--     so the leaves, the outline on the rim and the trunk keep their colours;
+--   * round in plan means it reads the same from every orbit angle.
 --
 -- BORDER TREES (`conttree*`)
 --
@@ -41,14 +41,15 @@
 --
 -- COST: baked ONCE PER LAND CHUNK, one mesh per texture. The first fill of a
 -- window uses a bigger frame budget (WARM_BUDGET) so the whole window is
--- voxel trees within a moment, not a trickle of pop-in.
+-- trees within a moment, not a trickle of pop-in.
 --
 -- DRAW DISTANCE (lib/Gen4Distance.lua, row "G4 DRAW DIST"): only lands within
--- the chosen reach of the camera get voxel trees, built or drawn. Farther lands
+-- the chosen reach of the camera get trees, built or drawn. Farther lands
 -- keep Platinum's flat cards (Gen4Hide hides cards only on covered lands), and
 -- baked lands the camera has left are released (GT.MAX_RESIDENT).
 --
--- KNOBS: GT.enabled, GT.WINDOW, GT.TEX_STEP, GT.MAX_QUADS, GT.WARM_BUDGET,
+-- KNOBS: GT.enabled, GT.WINDOW, GT.TEX_STEP, GT.SIDES, GT.MAX_RINGS, GT.LUMP,
+-- GT.DEPTH, GT.SMOOTH, GT.FLIP_WINDING, GT.MAX_QUADS, GT.WARM_BUDGET,
 -- GT.HYSTERESIS, GT.MAX_RESIDENT.
 -- Bridge.disabled.trees turns the effect off.
 
@@ -62,18 +63,27 @@ local GT = {
   HYSTERESIS = 1.15,      -- a land already built stays covered out to this multiple of the draw-distance reach, so the edge does not flicker
   MAX_RESIDENT = 14,      -- built lands kept in memory when the draw distance is limited (the rest are released, oldest first)
   MAX_RESIDENT_MAX = 30,  -- ...and at MAX, which has no distance limit
-  TEX_STEP = 2,           -- texels per block edge (1 = full resolution, 4x the quads)
-  MAX_BLOCKS = 40,        -- most blocks across one card, whatever the step says
-  MIN_HALF = 1,           -- a column's chord is never thinner than this many blocks each side
-  MAX_HALF = 9,           -- a tree is never deeper than 2x this many world units, however wide its run
-  TREE_UNIT = 33,         -- width of one tree on a card (an ordinary Sinnoh tree card): wider cards are split into this many trees
+  TEX_STEP = 2,           -- texels per sampling cell of the art (1 = finer silhouette and colour, 4x the sampling work)
+  MAX_BLOCKS = 40,        -- most cells across one card, whatever the step says
+
+  -- SHAPE OF A TREE (the "less blocky" knobs)
+  SIDES = 10,             -- facets around a tree (8 = chunky gem, 12-14 = rounder, more triangles)
+  MAX_RINGS = 16,         -- most height slices of one tree (fewer = fewer triangles, coarser silhouette)
+  LUMP = 0.12,            -- how irregular the crown is (0 = perfectly smooth, 0.25 = very bushy)
+  DEPTH = 0.7,            -- tree depth (front to back) as a fraction of its width; 1.0 = perfectly round in plan
+  SMOOTH = true,          -- soften the pixel staircase of the silhouette before building rings
+  FLIP_WINDING = false,   -- set true if trees look inside-out / see-through (flips triangle winding)
+  MIN_HALF = 1,           -- a tree is never thinner (front to back) than this many cells
+  MAX_HALF = 12,          -- a tree is never deeper than 2x this many world units, however wide it is
+
   MAX_TREE_H = 220,       -- a card taller than this is not a tree
   MIN_TREE_H = 0.5,       -- ...nor one flatter than this (a ground quad)
+  TREE_UNIT = 33,         -- width of one tree on a card (an ordinary Sinnoh tree card): wider cards are split into this many trees
   Y_OFFSET = -10,          -- the WHOLE tree layer is moved this far along y when drawn (negative = down). The quick fix for floating trees
   SINK = 1.5,             -- planted this far below the card's base (world units; a tile is 16)
   PAD_SINK = true,        -- also sink by the transparent rows at the foot of the art, so the trunk (not the empty padding) meets the ground
   MAX_PAD_FRAC = 0.35,    -- ...but never by more than this fraction of the tree's height
-  MAX_QUADS = 450000,     -- stop covering shapes in a land past this many quads (walkable trees go first, then the border)
+  MAX_QUADS = 450000,     -- stop covering shapes in a land past this many quads (a quad = 2 triangles; walkable trees go first, then the border)
   BUILDS_PER_FRAME = 4,
   BUILD_BUDGET = 0.006,   -- seconds, steady state
   WARM_BUDGET = 0.04,     -- seconds per frame while the window is still filling
@@ -90,6 +100,7 @@ local GT = {
 local TREE_NY, TREE_NZ, TREE_TOL = 0.819, 0.575, 0.04
 local STRIP_REPEATS = 1.25
 local FX16, UV_UNITS = 4096, 16
+local LIGHT = { 0.30, 0.75, 0.55 }      -- toward the light: up and a little to the front (+z is the camera side)
 
 local warned = {}
 local function once(key, fmt, ...)
@@ -114,7 +125,7 @@ local Distance = optional("Gen4Distance")
 
 -- Land meshes, keyed by the engine's land id (shared across crops of the
 -- same grid). A route swap builds a new Ground, so a weak Ground-keyed cache
--- dropped every voxel tree and let native cards flash back. Number keys stay;
+-- dropped every tree and let native cards flash back. Number keys stay;
 -- table keys (a land record) go with the record. Dropped only by invalidate().
 local landEntries = setmetatable({}, { __mode = "k" })
 local window = {}
@@ -324,19 +335,15 @@ end
 
 -- ------------------------------------------------------------ meshing --
 
-local ROUND_SHADE = { front = 1.0, back = 0.68, side = 0.78, top = 1.0, bottom = 0.55 }
-
--- one axis-aligned quad of face `f` (Voxel3D face ids), `shade` as baked
-local function quad(b, f, x0, y0, z0, dx, dy, dz, u, v, shade)
-  if dz <= 0 or dx <= 0 or dy <= 0 then return end
-  local corners = Voxel3D.FACE_CORNERS[f]
-  if f == 3 then shade = -shade end          -- the mesher's "faces the sky" flag
-  local n = #b.verts / 4
-  for k = 1, 4 do
-    local c = corners[k]
-    b.verts[#b.verts + 1] = { x0 + c[1] * dx, y0 + c[2] * dy, z0 + c[3] * dz, u, v, shade, 0 }
-  end
-  Voxel3D.pushQuad(b.map, n)
+-- A stable pseudo-random number in 0..1 from two numbers (same as Gen4Rocks's
+-- idea): trees differ from each other but never change between frames. A small
+-- multiplier keeps every product exact in a double.
+local function hash(x, z)
+  local h = math.floor(x * 73.1 + z * 151.7) % 2147483647
+  if h == 0 then h = 1 end
+  h = (h * 16807) % 2147483647
+  h = (h * 16807) % 2147483647
+  return h / 2147483647
 end
 
 local function nearBase(positions, comp, ymin)
@@ -366,16 +373,10 @@ local function meanWhere(positions, comp, axis, value, tol, field)
   return sum / n
 end
 
--- The parts of [za, zb] that a neighbour covering [nza, nzb] does not.
-local function exposedPieces(za, zb, nza, nzb, emit)
-  if not nza then emit(za, zb, true); return end
-  if za < nza then emit(za, math.min(zb, nza), false) end
-  if zb > nzb then emit(math.max(za, nzb), zb, false) end
-end
-
--- ONE TREE, the voxel scene's way (see the header). `uL..uR` / `vB..vT` is the
--- art's texel window, `pivX/pivZ` the trunk's foot, `width` / `height` the
--- card's size in world units.
+-- ONE TREE, built like a Gen4Rocks boulder (see the header). `uL..uR` /
+-- `vB..vT` is the art's texel window, `pivX/pivZ` the trunk's foot, `width` /
+-- `height` the card's size in world units. Returns the quads it made (two
+-- triangles count as one) -- or 0 and a reason.
 local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height)
   if width < 1 or height < 1 then return 0 end
   local nx = math.max(1, math.min(GT.MAX_BLOCKS, math.floor(math.abs(uR - uL) / GT.TEX_STEP + 0.5)))
@@ -384,7 +385,7 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
   local originX = pivX - width * 0.5
 
   -- sample the art; row 1 is the top
-  local grid, lo, hi, any = {}, {}, {}, false
+  local grid, lo, any = {}, {}, false
   for j = 1, ny do
     local row = {}
     local v = vT + (vB - vT) * ((j - 0.5) / ny)
@@ -396,11 +397,8 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
       if not okP then r, g, bl, a = 0, 0, 0, 0 end
       if a > 1 then r, g, bl, a = r / 255, g / 255, bl / 255, a / 255 end
       if a >= 0.5 then
-        row[i] = { key = math.floor(r * 255 + 0.5) * 65536 + math.floor(g * 255 + 0.5) * 256
-                         + math.floor(bl * 255 + 0.5),
-                   u = (tx + 0.5) / tex.w, v = (ty + 0.5) / tex.h }
+        row[i] = { u = (tx + 0.5) / tex.w, v = (ty + 0.5) / tex.h }
         lo[j] = lo[j] or i
-        hi[j] = i
         any = true
       end
     end
@@ -420,11 +418,10 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
   end
 
   -- A window that is (nearly) all opaque has no tree outline to follow: the
-  -- texture has no real alpha, or it is a forest-wall tile. Run through the
-  -- disc recipe below it would be one solid slab -- the "big green block".
-  -- Give it the outline a tree has instead: an ellipse inscribed in the
-  -- window, cut from the same texels. Real sprites (corners transparent, far
-  -- below DENSE_FRACTION) never reach this.
+  -- texture has no real alpha, or it is a forest-wall tile. Built as-is it would
+  -- be one solid slab -- the "big green block". Give it the outline a tree has
+  -- instead: an ellipse inscribed in the window, cut from the same texels.
+  -- Real sprites (corners transparent, far below DENSE_FRACTION) never reach this.
   local opaque = 0
   for j = 1, ny do for i = 1, nx do if grid[j][i] then opaque = opaque + 1 end end end
   local dense = opaque >= GT.DENSE_FRACTION * nx * ny
@@ -439,89 +436,150 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
     end
   end
 
-  -- every RUN of a row is a disc: a row's opaque cells that touch form one
-  -- tree-sized blob (a border sprite holds several trees side by side, and
-  -- one disc across all of them was a wall). Its z chord is a circle of the
-  -- run's half-width, but never deeper than MAX_HALF world units a side.
-  local capHalf = math.max(GT.MIN_HALF, GT.MAX_HALF / sx)
+  -- 1. THE PROFILE. Every row that still has opaque cells gives one slice of
+  -- the tree: where it starts and stops across the card = a centre and a
+  -- half-width. (A tree sprite is one blob per row, so first..last is enough.)
+  local prof, fallback = {}, nil
   for j = 1, ny do
     local row = grid[j]
-    local i = 1
-    while i <= nx do
-      if row[i] then
-        local k = i
-        while row[k + 1] do k = k + 1 end
-        local cc = (i - 1 + k) * 0.5
-        local hw = (k - i + 1) * 0.5
-        local depthHalf = math.min(hw, capHalf)
-        for c = i, k do
-          local dx = (c - 0.5) - cc
-          local chord = depthHalf * math.sqrt(math.max(0, 1 - (dx * dx) / (hw * hw)))
-          local n = math.max(GT.MIN_HALF, math.floor(chord + 0.5))
-          row[c].za, row[c].zb = pivZ - n * sx, pivZ + n * sx
-        end
-        i = k + 1
-      else
-        i = i + 1
+    local first, last
+    for i = 1, nx do
+      if row[i] then first = first or i; last = i end
+    end
+    if first then
+      fallback = fallback or row[first]
+      prof[#prof + 1] = { j = j,
+                          y = baseY + (ny - j + 0.5) * sy,
+                          cx = originX + (first - 1 + last) * 0.5 * sx,
+                          hw = (last - first + 1) * 0.5 * sx }
+    end
+  end
+  if #prof == 0 then return 0, "empty" end
+
+  -- soften the pixel staircase: a [1 2 1] blur of centre and half-width
+  if GT.SMOOTH and #prof > 2 then
+    local sm = {}
+    for n, p in ipairs(prof) do
+      local a, c = prof[n > 1 and n - 1 or n], prof[n < #prof and n + 1 or n]
+      sm[n] = { j = p.j, y = p.y,
+                cx = (a.cx + 2 * p.cx + c.cx) * 0.25,
+                hw = (a.hw + 2 * p.hw + c.hw) * 0.25 }
+    end
+    prof = sm
+  end
+
+  -- keep the triangle count in check: at most MAX_RINGS slices, evenly spread
+  local cap = math.max(2, math.floor(GT.MAX_RINGS))
+  if #prof > cap then
+    local pick = {}
+    for q = 0, cap - 1 do
+      pick[#pick + 1] = prof[1 + math.floor((#prof - 1) * q / (cap - 1) + 0.5)]
+    end
+    prof = pick
+  end
+
+  local maxHw = 0
+  for _, p in ipairs(prof) do if p.hw > maxHw then maxHw = p.hw end end
+
+  -- rings, top to bottom: a pole above the first row (radius 0), the slices,
+  -- then one more ring at the foot of the last row so the trunk reaches the ground
+  local rings = {}
+  rings[1] = { y = baseY + (ny - prof[1].j + 1) * sy, cx = prof[1].cx, hw = 0 }
+  for _, p in ipairs(prof) do rings[#rings + 1] = p end
+  local last = prof[#prof]
+  rings[#rings + 1] = { y = baseY + (ny - last.j) * sy, cx = last.cx, hw = last.hw }
+
+  -- 2. THE POINTS. Each ring is SIDES points around the tree's axis; the radius
+  -- gets a smooth lump (a few low-frequency sines) plus a little per-vertex
+  -- jitter, strongest on the crown and nearly zero on the trunk.
+  local sides = math.max(5, math.floor(GT.SIDES))
+  local turn = 6.2831853
+  local seed = pivX * 0.91 + pivZ * 1.73
+  local phase = hash(seed, 1.3) * turn / sides
+  local p1, p2, p3 = hash(seed, 1.7) * turn, hash(2.3, seed) * turn, hash(seed + 4.1, seed - 9.2) * turn
+  for r, ring in ipairs(rings) do
+    local pts = {}
+    ring.pts = pts
+    if ring.hw <= 0 then
+      for k = 1, sides do pts[k] = { ring.cx, ring.y, pivZ } end
+    else
+      local amp = GT.LUMP * math.min(1, ring.hw / (0.6 * maxHw))
+      local yn = (ring.y - baseY) / height
+      local depth = math.max(GT.MIN_HALF * sx * 0.5, math.min(ring.hw * GT.DEPTH, GT.MAX_HALF))
+      for k = 1, sides do
+        local th = phase + (k - 1) * turn / sides
+        local c, s = math.cos(th), math.sin(th)
+        local lump = math.sin(c * 2.3 + p1) * math.sin(yn * 5.3 + p2)
+                   + 0.6 * math.sin(s * 3.1 + p3 + yn * 4.0)
+        local jit = hash(seed + r * 0.731, k * 1.37 + seed) - 0.5
+        local scale = 1 + amp * (0.5 * lump + 0.45 * jit)
+        pts[k] = { ring.cx + ring.hw * scale * c, ring.y, pivZ + depth * scale * s }
       end
     end
   end
 
-  local before = #b.verts / 4
-  for j = 1, ny do
-    local row = grid[j]
-    local y0 = baseY + (ny - j) * sy
-    -- front and back: the drawing per block, runs of one colour and one chord
-    local i = 1
-    while i <= nx do
-      local cell = row[i]
-      if cell then
-        local k = i
-        while row[k + 1] and row[k + 1].key == cell.key
-              and row[k + 1].za == cell.za do k = k + 1 end
-        local x0, w = originX + (i - 1) * sx, (k - i + 1) * sx
-        quad(b, 5, x0, y0, cell.zb - 0.001, w, sy, 0.001, cell.u, cell.v, ROUND_SHADE.front)
-        quad(b, 6, x0, y0, cell.za, w, sy, 0.001, cell.u, cell.v, ROUND_SHADE.back)
-        i = k + 1
-      else
-        i = i + 1
-      end
-    end
-    -- sides, top, underside: the column's own texel, only where no neighbour covers
-    for i2 = 1, nx do
-      local cell = row[i2]
-      if cell then
-        local x0 = originX + (i2 - 1) * sx
-        local za, zb = cell.za, cell.zb
-        local L, R = row[i2 - 1], row[i2 + 1]
-        exposedPieces(za, zb, L and L.za, L and L.zb, function(a, c)
-          quad(b, 2, x0, y0, a, 0.001, sy, c - a, cell.u, cell.v, ROUND_SHADE.side)
-        end)
-        exposedPieces(za, zb, R and R.za, R and R.zb, function(a, c)
-          quad(b, 1, x0 + sx - 0.001, y0, a, 0.001, sy, c - a, cell.u, cell.v, ROUND_SHADE.side)
-        end)
-        local up = grid[j - 1] and grid[j - 1][i2]
-        exposedPieces(za, zb, up and up.za, up and up.zb, function(a, c, whole)
-          if whole and (c - a) >= 3 * sx then
-            -- the dome cap: outline on the rim blocks, canopy a couple of rows deeper inside
-            local deep = (grid[j + 2] and grid[j + 2][i2]) or (grid[j + 1] and grid[j + 1][i2]) or cell
-            quad(b, 3, x0, y0 + sy - 0.001, a, sx, 0.001, sx, cell.u, cell.v, ROUND_SHADE.top)
-            quad(b, 3, x0, y0 + sy - 0.001, a + sx, sx, 0.001, c - a - 2 * sx, deep.u, deep.v, ROUND_SHADE.top)
-            quad(b, 3, x0, y0 + sy - 0.001, c - sx, sx, 0.001, sx, cell.u, cell.v, ROUND_SHADE.top)
-          else
-            quad(b, 3, x0, y0 + sy - 0.001, a, sx, 0.001, c - a, cell.u, cell.v, ROUND_SHADE.top)
+  -- 3. THE COLOUR. A facet wears the texel of the art where it sits (the card's
+  -- x and y), so the front still looks like the sprite and the rim carries the
+  -- outline. A spot outside the art (a lump pushed out) takes the nearest opaque cell.
+  local function colourAt(mx, my)
+    local i = math.max(1, math.min(nx, math.floor((mx - originX) / sx) + 1))
+    local j = math.max(1, math.min(ny, ny - math.floor((my - baseY) / sy)))
+    local cell = grid[j][i]
+    if cell then return cell end
+    for rad = 1, 4 do
+      for dj = -rad, rad do
+        local row = grid[j + dj]
+        if row then
+          for di = -rad, rad do
+            local c = row[i + di]
+            if c then return c end
           end
-        end)
-        if j < ny then
-          local dn = grid[j + 1] and grid[j + 1][i2]
-          exposedPieces(za, zb, dn and dn.za, dn and dn.zb, function(a, c)
-            quad(b, 4, x0, y0, a, sx, 0.001, c - a, cell.u, cell.v, ROUND_SHADE.bottom)
-          end)
         end
       end
     end
+    return fallback
   end
-  return #b.verts / 4 - before
+
+  -- 4. THE FACETS. Each triangle is lit flat from the upper front and takes one
+  -- texel (one flat colour), exactly like a rock facet.
+  local count = 0
+  local function tri(p, q, s)
+    local ux, uy, uz = q[1] - p[1], q[2] - p[2], q[3] - p[3]
+    local vx, vy, vz = s[1] - p[1], s[2] - p[2], s[3] - p[3]
+    local fx, fy, fz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+    local len = math.sqrt(fx * fx + fy * fy + fz * fz)
+    if len < 1e-6 then return end            -- the pole's collapsed triangles
+    fx, fy, fz = fx / len, fy / len, fz / len  -- outward by construction (see below)
+    local cell = colourAt((p[1] + q[1] + s[1]) / 3, (p[2] + q[2] + s[2]) / 3)
+    if not cell then return end
+    local lit = math.max(0, fx * LIGHT[1] + fy * LIGHT[2] + fz * LIGHT[3])
+    local shade = math.min(1.0, 0.64 + 0.50 * lit)
+    -- a hair of facet-to-facet variation so the planes read as planes
+    shade = math.min(1.0, shade * (0.94 + 0.10 * hash(seed + count * 3.3, count + seed * 0.1)))
+    if fy > 0.55 then shade = -shade end       -- faces the sky (same flag the rocks and old trees use)
+    if GT.FLIP_WINDING then q, s = s, q end
+    local base = #b.verts
+    b.verts[base + 1] = { p[1], p[2], p[3], cell.u, cell.v, shade, 0 }
+    b.verts[base + 2] = { q[1], q[2], q[3], cell.u, cell.v, shade, 0 }
+    b.verts[base + 3] = { s[1], s[2], s[3], cell.u, cell.v, shade, 0 }
+    local m = #b.map
+    b.map[m + 1], b.map[m + 2], b.map[m + 3] = base + 1, base + 2, base + 3
+    count = count + 1
+  end
+
+  -- Rings run top to bottom and points run round with rising angle, so the
+  -- triangle order (A, B, C) / (A, C, D) has its cross product pointing OUT --
+  -- the same winding the Gen4Rocks icosphere uses.
+  for r = 1, #rings - 1 do
+    local A, B = rings[r].pts, rings[r + 1].pts
+    for k = 1, sides do
+      local k2 = k % sides + 1
+      tri(A[k], A[k2], B[k2])
+      tri(A[k], B[k2], B[k])
+    end
+  end
+
+  return count * 0.5
 end
 
 -- One card -> trees in bucket `b`. A wide card is the same sprite tiled
@@ -743,7 +801,7 @@ local function buildLand(ground, land)
     out.quads = out.quads + built
     out.shapes[#out.shapes + 1] = s
     once("ok:" .. tostring(s.texture or s.name),
-         "shape '%s' voxelised: %d cards (%d skipped as not trees), %d quads (land %s)", (namesOf(s):gsub("\n", "|")), #comps, bad, built, tostring(land))
+         "shape '%s' built: %d cards (%d skipped as not trees), %d quads (land %s)", (namesOf(s):gsub("\n", "|")), #comps, bad, built, tostring(land))
   end
 
   local function isStrip(s) return namesOf(s):find("conttree", 1, true) ~= nil end
@@ -789,7 +847,7 @@ local function buildLand(ground, land)
     local why = {}
     for k, n in pairs(skipped) do why[#why + 1] = ("%d %s"):format(n, k) end
     once("land" .. tostring(land),
-         "land %s: %d tree shapes voxelised (%d quads); left native: %s",
+         "land %s: %d tree shapes built (%d quads); left native: %s",
          tostring(land), #out.shapes, out.quads, #why > 0 and table.concat(why, ", ") or "none")
   end
   return out
@@ -849,7 +907,7 @@ function GT.prepare(ground)
   local W = GT.WINDOW
   local camCx, camCy = math.floor(view.x / px), math.floor(view.z / px)
 
-  -- DRAW DISTANCE. Only lands within `reach` of the eye get voxel trees; past
+  -- DRAW DISTANCE. Only lands within `reach` of the eye get trees; past
   -- it Platinum's flat cards keep drawing (Gen4Hide only hides covered lands).
   local reach = math.huge
   if Distance and Distance.reach then
@@ -989,7 +1047,7 @@ end
 -- pointer (so `isCovered` cannot answer): hide by texture / material name --
 -- but only names that converted in EVERY land of the window (see `prepare`),
 -- and never by the shape's own name. This is what lets BOTH kinds of tree
--- lose their native card once their voxel tree is standing.
+-- lose their native card once their new tree is standing.
 function GT.isCoveredName(shape, land)
   local names = GT.coveredNames
   if not (shape and names) then return false end
