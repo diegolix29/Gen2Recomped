@@ -97,14 +97,23 @@ local texture                                        -- Image | false | nil (unt
 
 local function groundTexture(Grass3D)
   if texture ~= nil then return texture or nil end
-  if not (Grass3D and Grass3D.groundTexture) then texture = false; return nil end
-  local ok, img = pcall(Grass3D.groundTexture)
-  texture = (ok and img) or false
-  if not texture then
-    once("tex", "no ground texture (assets/ground/grass/ground.png) -- Gen 4 beach keeps "
-         .. "its native sand")
+  local okA, Assets = pcall(require, "src.render.Assets")
+  if okA and Assets then
+    local path = V.path .. "/assets/ground/grass/sand.png"
+    local okE, exists = pcall(Assets.exists, path)
+    if okE and exists then
+      local ok, img = pcall(Assets.image, path)
+      if ok and img then
+        pcall(img.setFilter, img, "nearest", "nearest")
+        texture = img
+        return img
+      end
+    end
   end
-  return texture or nil
+  texture = false
+  once("tex", "no ground texture (assets/ground/grass/sand.png) -- Gen 4 beach keeps "
+       .. "its native sand")
+  return nil
 end
 
 local function isSand(map, cx, cy)
