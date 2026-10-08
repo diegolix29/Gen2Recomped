@@ -612,6 +612,51 @@ function Rider:pose()
 end
 function Rider:draw() end
 
+-- Seat the walking sprite on the mount.  GB 16x16 sheets use SpriteRenderer's
+-- topHalf (upper 8px = the whole head).  Gen 3/4 heroes are 16x32: the extra
+-- height hangs above the cell, but the first rows are empty/hat, so topHalf
+-- of tileH/2 only shows the brim.  Crop 16px starting 8px into that hanging
+-- region so the hat, head and shoulders sit on the mount the same way.
+local function drawFreeFlyRider(walk, px, py, camX, camY, facing)
+  if not (walk and walk.draw) then return end
+  local tileH = tonumber(walk.tileH) or 16
+  local tileW = tonumber(walk.tileW) or 16
+  if tileH <= 16 or type(walk.poseFrame) ~= "function" or not walk.image then
+    walk:draw(px, py, camX, camY, facing, 0, false, true)
+    return
+  end
+  local frame, flip = walk:poseFrame(facing, 0, false)
+  frame = tonumber(frame) or 0
+  local inset = math.min(8, math.max(0, tileH - 16))
+  local cropH = math.min(16, tileH - inset)
+  if cropH < 8 then
+    walk:draw(px, py, camX, camY, facing, 0, false, true)
+    return
+  end
+  local srcY = frame * tileH + inset
+  walk.__freeFlyRiderQuads = walk.__freeFlyRiderQuads or {}
+  local key = frame .. ":" .. inset .. ":" .. cropH
+  local quad = walk.__freeFlyRiderQuads[key]
+  if not quad then
+    local iw, ih = walk.image:getDimensions()
+    quad = love.graphics.newQuad(0, srcY, tileW, cropH, iw, ih)
+    walk.__freeFlyRiderQuads[key] = quad
+  end
+  local x = math.floor(px - camX) - (walk.offsetX or 0)
+  local y = math.floor(py - camY) + (walk.cellYBias or -4)
+            - (walk.offsetY or 0) + inset
+  local image = walk.image
+  if walk.resolveModeImage then
+    local ok, img = pcall(walk.resolveModeImage, walk, x, y)
+    if ok and img then image = img end
+  end
+  if flip then
+    love.graphics.draw(image, quad, x + tileW, y, 0, -1, 1)
+  else
+    love.graphics.draw(image, quad, x, y)
+  end
+end
+
 -- ------- public hooks, all pass-through unless airborne
 
 V.mod.hooks:wrap("movement.collision", function(next, allowed, ctx)
@@ -3002,8 +3047,8 @@ function FreeFly.init()
       -- (FULL FLY: the mount flies alone, no rider layer)
       if not state.fullFly then
         local walk = self.freeFlyWalkSprite or self.sprite
-        walk:draw(self.px, ry - math.floor(1 + 2 * s + 0.5),
-                  camX, camY, self.facing, 0, false, true)
+        drawFreeFlyRider(walk, self.px, ry - math.floor(1 + 2 * s + 0.5),
+                         camX, camY, self.facing)
       end
       if s ~= 1 then
         local fx = math.floor(self.px + 8 - camX)
@@ -3089,8 +3134,9 @@ function FreeFly.init()
           local sc = Player.__freeFlyMountScale or 1
           return lift, function(camX, camY)
             love.graphics.setColor(1, 1, 1, 1)
-            walk:draw(pl.px, pl.py - math.floor(1 + 2 * sc + 0.5),
-                      camX, camY, pl.facing, 0, false, true)
+            drawFreeFlyRider(walk, pl.px,
+                             pl.py - math.floor(1 + 2 * sc + 0.5),
+                             camX, camY, pl.facing)
           end
         end
       end
