@@ -5,12 +5,21 @@
 -- tested against NSBMD terrain. Stadium / Colosseum models still win: those
 -- are drawn earlier by Gen4WorldHost, which marks Host._drew3d so this pass
 -- leaves them alone.
+--
+-- SIZE: an HD overworld card is born exactly one tile tall for EVERY species
+-- (HDPokemonSheets.applyOverworld: scale = 16 / frameH), which is right for the
+-- 2D Gen 1-3 overworld but wrong on Platinum's native world. Here each card is
+-- re-scaled through Gen4PokemonScale so its height comes from PokemonHeights,
+-- exactly like the Colosseum / Stadium models drawn beside it.
 
 local V = ...
 
 local Voxel3D = V.require("Voxel3D")
 local Mat4 = V.require("Mat4")
 local SpriteBillboards = V.require("SpriteBillboards")
+-- Optional on purpose: if the shared sizing module ever fails to load, HD cards
+-- fall back to the old one-tile size instead of disappearing.
+local Scale = V.optional and V.optional("Gen4PokemonScale") or nil
 
 local Hd = {}
 
@@ -71,7 +80,19 @@ local function bindOverlay(e, facing, game)
   })
 end
 
-local function cardMatrix(wx, gy, wz, worldW, ground)
+-- Species-correct size multiplier for a bound HD overlay (1 = the old,
+-- species-blind one-tile card). `cardH` is the card's natural world height.
+local function sizeFor(overlay, cardH)
+  if not (Scale and Scale.active and Scale.active()) then return 1 end
+  local ok, k = pcall(Scale.cardScale, overlay and overlay.hdDex, cardH)
+  if ok and type(k) == "number" and k > 0 then return k end
+  return 1
+end
+
+-- `k` scales the card uniformly about its feet-centre. The scale is applied
+-- after the yaw and BEFORE the -half centring, so the card stays centred on
+-- (wx, wz) and keeps standing on gy at any size.
+local function cardMatrix(wx, gy, wz, worldW, ground, k)
   local Cam = V.require("Gen4ActorCam")
   local yaw = 0
   if Cam and Cam.cardYaw then
@@ -80,6 +101,7 @@ local function cardMatrix(wx, gy, wz, worldW, ground)
   local half = (worldW or 16) / 2
   local m = Mat4.translate(wx, gy, wz)
   if yaw ~= 0 then m = Mat4.mul(m, Mat4.rotateY(yaw)) end
+  if k and k ~= 1 then m = Mat4.mul(m, Mat4.scale(k, k, k)) end
   return Mat4.mul(m, Mat4.translate(-half, 0, 0))
 end
 
@@ -96,11 +118,12 @@ function Hd.drawPose(p, ground)
   if not overlay or not overlay.hdImage then return false end
   local mesh = SpriteBillboards.mesh(overlay, 0)
   if not mesh then return false end
-  local _, _, worldW = SpriteBillboards.getSpriteDimensions(overlay, 0)
+  local _, _, worldW, worldH = SpriteBillboards.getSpriteDimensions(overlay, 0)
   local wx = (p.px or 0) + 8
   local wz = (p.py or 0) + 8
   local gy = (p.gh or 0) + (p.lift or 0)
-  Voxel3D.draw(mesh, overlay.hdImage, cardMatrix(wx, gy, wz, worldW, ground))
+  Voxel3D.draw(mesh, overlay.hdImage,
+               cardMatrix(wx, gy, wz, worldW, ground, sizeFor(overlay, worldH)))
   return true
 end
 
@@ -112,14 +135,15 @@ local function drawOne(e, mapX, mapY, scene, game, skip)
   if not overlay or not overlay.hdImage then return end
   local mesh = SpriteBillboards.mesh(overlay, 0)
   if not mesh then return end
-  local _, _, worldW = SpriteBillboards.getSpriteDimensions(overlay, 0)
+  local _, _, worldW, worldH = SpriteBillboards.getSpriteDimensions(overlay, 0)
   local gy = 0
   if scene.groundY then
     gy = scene.groundY((mapX or 0) + 8, (mapY or 0) + 8) or 0
   end
   local wx, wz = scene.toWorld(mapX or 0, mapY or 0)
   Voxel3D.draw(mesh, overlay.hdImage,
-               cardMatrix(wx + 8, gy, wz + 8, worldW, scene.ground))
+               cardMatrix(wx + 8, gy, wz + 8, worldW, scene.ground,
+                          sizeFor(overlay, worldH)))
 end
 
 function Hd.draw(scene)
