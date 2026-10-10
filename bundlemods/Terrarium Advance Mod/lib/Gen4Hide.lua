@@ -45,7 +45,11 @@
 --          finished building the sheet around the camera yet (GW.ready).
 --   trees  when the "trees" effect was disabled or Gen4Trees is missing.
 --
--- Flip Hide.grass / Hide.water / Hide.trees / Hide.rocks to false to compare against the native look.
+--   flowers  Native flower-bed CARDS, only where Gen4Flowers has voxel flowers for every
+--          triangle of the shape (GF.isCovered). A flat bed floor is never hidden: Gen4Lawn
+--          repaints it instead.
+--
+-- Flip Hide.grass / Hide.water / Hide.trees / Hide.rocks / Hide.flowers to false to compare against the native look.
 
 local V = ...
 
@@ -54,6 +58,7 @@ local Hide = {
   water = true,
   trees = true,
   rocks = true,
+  flowers = true,
   active = false,
   installed = false,
   -- exact material/texture names (lower case) that are water
@@ -163,6 +168,15 @@ local function rocksOn()
   return (GR and type(GR.isCovered) == "function" and GR.enabled) and true or false
 end
 
+-- Native flower-bed cards, only where Gen4Flowers converted the WHOLE shape.
+local function flowersOn()
+  if Hide.flowers == false then return false end
+  local Bridge = optional("Gen4Bridge")
+  if Bridge and Bridge.disabled and Bridge.disabled.flowers then return false end
+  local GF = optional("Gen4Flowers")
+  return (GF and type(GF.isCovered) == "function" and GF.enabled) and true or false
+end
+
 local lastWaterState
 local function waterOn()
   if not Hide.water then return false end
@@ -194,15 +208,17 @@ end
 -- model -> { key = "gw", list = {...} }
 local cache = setmetatable({}, { __mode = "k" })
 
-local function filtered(model, hideGrass, hideWater, hideTrees, hideRocks)
+local function filtered(model, hideGrass, hideWater, hideTrees, hideRocks, hideFlowers)
   local GT = hideTrees and optional("Gen4Trees") or nil
   local GR = hideRocks and optional("Gen4Rocks") or nil
+  local GF = hideFlowers and optional("Gen4Flowers") or nil
   local GW = hideWater and optional("Gen4Water") or nil
   local covered = GW and type(GW.isCovered) == "function" and GW.isCovered or nil
   local key = (hideGrass and "g" or "-") .. (hideWater and "w" or "-")
               .. (covered and tostring(GW.coverVersion or 0) or "")
               .. (GT and ("t" .. tostring(GT.coverVersion or 0)) or "-")
               .. (GR and ("r" .. tostring(GR.coverVersion or 0)) or "-")
+              .. (GF and ("f" .. tostring(GF.coverVersion or 0)) or "-")
   local rec = cache[model]
   local shapes = model.shapes
   if rec and rec.key == key and rec.source == shapes and rec.count == #shapes then
@@ -223,6 +239,11 @@ local function filtered(model, hideGrass, hideWater, hideTrees, hideRocks)
       drop = true
       note("r:" .. tostring(shape.srcTexture or shape.name),
            "hid native rock cards '%s' (voxel rocks stand in; fence banners kept)",
+           tostring(shape.srcTexture or shape.name))
+    elseif GF and shape.src and GF.isCovered(shape.src) then
+      drop = true
+      note("f:" .. tostring(shape.srcTexture or shape.name),
+           "hid native flower cards '%s' (voxel flowers stand in)",
            tostring(shape.srcTexture or shape.name))
     elseif hideWater then
       local why = Hide.classify(shape)
@@ -349,7 +370,7 @@ function Hide.install()
     if not Hide.active then return originalDraw(self, ...) end
     local real = self.shapes
     if type(real) ~= "table" then return originalDraw(self, ...) end
-    local list = filtered(self, drawFilter.grass, drawFilter.water, drawFilter.trees, drawFilter.rocks)
+    local list = filtered(self, drawFilter.grass, drawFilter.water, drawFilter.trees, drawFilter.rocks, drawFilter.flowers)
     if list == real then return originalDraw(self, ...) end
     self.shapes = list
     local ok, a = pcall(originalDraw, self, ...)
@@ -377,7 +398,13 @@ function Hide.install()
       local GR = optional("Gen4Rocks")
       if not (GR and pcall(GR.prepare, self)) then drawFilter.rocks = false end
     end
+    drawFilter.flowers = flowersOn()
+    if drawFilter.flowers then
+      local GF = optional("Gen4Flowers")
+      if not (GF and pcall(GF.prepare, self)) then drawFilter.flowers = false end
+    end
     Hide.active = drawFilter.grass or drawFilter.water or drawFilter.trees or drawFilter.rocks
+                  or drawFilter.flowers
     local ok, a, b = pcall(originalFree, self, ...)
     Hide.active = false
     if not ok then error(a, 0) end

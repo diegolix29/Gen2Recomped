@@ -353,6 +353,14 @@ function Bridge.install()
   else
     report("rocks", "the rock pass did not load: %s", tostring(GR))
   end
+  -- Small voxel flowers on Platinum's flower beds (`nhana`). Opaque, after the
+  -- rocks. Gen4Lawn repaints the bed's floor with grass.png once they exist.
+  local okF, GF = pcall(V.require, "Gen4Flowers")
+  if okF and type(GF) == "table" and GF.draw then
+    Bridge.register("flowers", GF.draw)
+  else
+    report("flowers", "the flower pass did not load: %s", tostring(GF))
+  end
   -- The voxel scene's sky (bands, clouds, sun/moon, stars, painted horizon, scenery)
   -- on Gen 4, with the engine's own horizon image hidden. Pre-terrain, so it is
   -- the backdrop. See lib/Gen4Sky.lua.
@@ -371,7 +379,7 @@ end
 -- these, so a graphics reset, a mod reload or a cache reset left the old
 -- meshes (and, on a lost GL context, dead ones) in place.
 function Bridge.invalidateAll()
-  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Rocks", "Gen4Trees", "Gen4Water", "Gen4Grass" }) do
+  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Rocks", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass" }) do
     local ok, mod = pcall(V.require, name)
     if ok and type(mod) == "table" and type(mod.invalidate) == "function" then
       local okI, err = pcall(mod.invalidate)

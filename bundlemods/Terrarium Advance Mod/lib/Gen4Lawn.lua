@@ -53,7 +53,9 @@ local Lawn = {
     -- Twinleaf / Route 201 leftover ids (from Gen4Lawn LOG_NAMES). Same swirl
     -- probes already in this folder, plus extra hues for groups that had none.
     nectgr    = { image = "highgrass.png",    uv = 1 },   -- wild-Pokemon grass floor
-    nhana     = { image = "dflowers.png", uv = 1 },   -- flower beds
+    -- flower beds: grass.png floor, but only on a land where Gen4Flowers has built
+    -- its voxel flowers (whenBuilt), so a bed is never left bare or half-changed
+    nhana     = { image = "grass.png", uv = 1, whenBuilt = "Gen4Flowers" },
     beach     = { image = "sand.png",    uv = 1 },
     beachp    = { image = "sand.png",    uv = 1 },
     hamabe    = { image = "sand.png",    uv = 1 },   -- shore
@@ -135,8 +137,17 @@ end
 local cache = setmetatable({}, { __mode = "k" })
 
 local function builtVersion()
-  local ok, R = pcall(V.require, "Gen4Rocks")
-  return (ok and type(R) == "table") and R.version or 0
+  -- Every module a whenBuilt gate can name: the cache must notice when its set of
+  -- built lands changes. A module may give a richer `gateKey()` (Gen4Flowers also
+  -- changes it when switched on/off); otherwise its `version` is used.
+  local parts = {}
+  for _, name in ipairs({ "Gen4Rocks", "Gen4Flowers" }) do
+    local ok, M = pcall(V.require, name)
+    if ok and type(M) == "table" then
+      parts[#parts + 1] = tostring(type(M.gateKey) == "function" and M.gateKey() or M.version or 0)
+    end
+  end
+  return table.concat(parts, "|")
 end
 
 local function lawnMaterials(model)
