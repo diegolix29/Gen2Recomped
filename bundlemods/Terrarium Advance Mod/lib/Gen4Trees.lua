@@ -92,6 +92,9 @@ local GT = {
   SMOOTH = true,          -- build the tree as ONE continuous inflated surface (no stair-step slab walls). false = the old blocky stack of discs
   SMOOTH_PASSES = 1,      -- extra blur passes over the depth field (0 = as sampled, 2-3 = rounder, softer)
   RIM = 0.35,             -- depth kept at the silhouette, as a fraction of the depth just inside it (0 = razor edge, 1 = full slab wall)
+  FLAT = true,            -- front and back faces sit in (almost) the SAME place: the tree keeps the sprite's silhouette and height but has no depth, so both sides show the same art at the same spot. false = the round disc profile
+  FLAT_HALF = 8.4,        -- ...half the slab's thickness in world units when FLAT (0.4 = 0.8 thick: enough that the two faces never z-fight)
+  SAME_FACE = true,       -- both z ends of a tree wear the FRONT shade, like the native card that always turns its face to the camera. false = the old lit-front / dark-back pair (see FACING)
   FACING = "camera",      -- "camera" = the lit side follows the camera like the native cards do (two meshes per land, one drawn per frame); or a fixed world side: "south" (+z), "north" (-z), "east" (+x), "west" (-x), or a compass bearing in degrees (0 = north, 90 = east, 180 = south, 270 = west). Baked into the meshes: change it with GT.setFacing(), which re-bakes
   TEX_STEP = 2,           -- texels per block edge (1 = full resolution, 4x the quads)
   MAX_BLOCKS = 40,        -- most blocks across one card, whatever the step says
@@ -386,7 +389,7 @@ end
 local function surfaceShade(nx, ny, nz, fx, fz)
   local along = nx * fx + nz * fz
   local across = nx * fz - nz * fx
-  local horiz = (along >= 0) and ROUND_SHADE.front or ROUND_SHADE.back
+  local horiz = (GT.SAME_FACE or along >= 0) and ROUND_SHADE.front or ROUND_SHADE.back
   local vert = (ny >= 0) and ROUND_SHADE.top or ROUND_SHADE.bottom
   return horiz * along * along + ROUND_SHADE.side * across * across + vert * ny * ny
 end
@@ -405,6 +408,7 @@ local FACE_NORMALS = {
 -- ends of z (lit side south, then lit side north) and GT.draw picks the one
 -- that looks at the camera; every other setting is a single fixed facing.
 local function variantFacings()
+  if GT.SAME_FACE then return { { 0, 1 } } end   -- both ends shade alike: one mesh, nothing to swap
   if type(GT.FACING) == "string" and GT.FACING:lower() == "camera" then
     return { { 0, 1 }, { 0, -1 } }
   end
@@ -502,7 +506,7 @@ end
 -- the gradient runs smoothly across the tree instead of jumping per block.
 local SMOOTH_SKY_NY = 0.6   -- a quad whose mean normal points this far up gets the "faces the sky" flag
 
-local function smoothSurface(b, grid, nx, ny, sx, sy, originX, baseY, pivZ)
+local function smoothSurface(b, grid, nx, ny, sx, sy, originX, baseY, pivZ, lean)
   -- 1. half-depth at every grid corner (corner (i0, j0): j0 = 0 is the top edge of row 1)
   local D = {}
   for j0 = 0, ny do
@@ -517,7 +521,7 @@ local function smoothSurface(b, grid, nx, ny, sx, sy, originX, baseY, pivZ)
       if c3 then sum, n = sum + c3.h, n + 1 end
       if c4 then sum, n = sum + c4.h, n + 1 end
       if n == 4 then r[i0] = sum / 4
-      elseif n > 0 then r[i0] = GT.RIM * sum / n end
+      elseif n > 0 then r[i0] = (GT.FLAT and 0.1 or GT.RIM) * sum / n end
     end
     D[j0] = r
   end
@@ -569,11 +573,15 @@ local function smoothSurface(b, grid, nx, ny, sx, sy, originX, baseY, pivZ)
       local c = corners[k]
       local i0, j0 = i - 1 + c[1], j - c[2]
       local d = D[j0][i0]
-      pts[k] = { originX + i0 * sx, baseY + (ny - j0) * sy, pivZ + (c[3] == 1 and d or -d) }
+      local py = baseY + (ny - j0) * sy
+      
+      -- Lean logic removed to keep tree straight
+      pts[k] = { originX + i0 * sx, py, pivZ + (c[3] == 1 and d or -d) }
+      
       if flat then
         nrm[k] = flat
       else
-        -- outward normal of z = ±depth(x, y): (-gx, -gy, ±1), normalised
+        -- outward normal of z =  depth(x, y): (-gx, -gy,  1), normalised
         local gx, gy = slope(i0, j0)
         local inv = 1 / math.sqrt(gx * gx + gy * gy + 1)
         local zSide = (c[3] == 1) and 1 or -1
@@ -610,7 +618,7 @@ end
 -- ONE TREE, the voxel scene's way (see the header). `uL..uR` / `vB..vT` is the
 -- art's texel window, `pivX/pivZ` the trunk's foot, `width` / `height` the
 -- card's size in world units.
-local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height)
+local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height, leanX, leanZ)
   if width < 1 or height < 1 then return 0 end
   local nx = math.max(1, math.min(GT.MAX_BLOCKS, math.floor(math.abs(uR - uL) / GT.TEX_STEP + 0.5)))
   local ny = math.max(1, math.min(GT.MAX_BLOCKS, math.floor(math.abs(vB - vT) / GT.TEX_STEP + 0.5)))
@@ -694,8 +702,10 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
           -- the blocky recipe rounds the chord to whole blocks; the smooth one keeps it exact
           local n = GT.SMOOTH and chord or math.floor(chord + 0.5)
           n = math.max(GT.MIN_HALF, n)
-          row[c].za, row[c].zb = pivZ - n * sx, pivZ + n * sx
-          row[c].h = n * sx
+          local half = n * sx
+          if GT.FLAT then half = GT.FLAT_HALF end   -- one plane: no depth profile at all
+          row[c].za, row[c].zb = pivZ - half, pivZ + half
+          row[c].h = half
         end
         i = k + 1
       else
@@ -706,13 +716,17 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
 
   local before = #b.verts / 4
   if GT.SMOOTH then
-    smoothSurface(b, grid, nx, ny, sx, sy, originX, baseY, pivZ)
+    -- lean is explicitly removed (nil) to prevent smoothSurface from bending the tree
+    smoothSurface(b, grid, nx, ny, sx, sy, originX, baseY, pivZ, nil)
     return #b.verts / 4 - before
   end
   local sh = FACE_NORMALS
   for j = 1, ny do
     local row = grid[j]
     local y0 = baseY + (ny - j) * sy
+    
+    -- Lean math block completely removed here
+
     -- the +Z end (zb) and the -Z end (za): the drawing per block, runs of one colour and one chord;
     -- which of them is the bright front is GT.FACING's call, not the face id's
     local i = 1
@@ -723,6 +737,8 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
         while row[k + 1] and row[k + 1].key == cell.key
               and row[k + 1].za == cell.za do k = k + 1 end
         local x0, w = originX + (i - 1) * sx, (k - i + 1) * sx
+        
+        -- shZ offsets removed from cell.zb and cell.za calculations
         quad(b, 5, x0, y0, cell.zb - 0.001, w, sy, 0.001, cell.u, cell.v, sh.zb)
         quad(b, 6, x0, y0, cell.za, w, sy, 0.001, cell.u, cell.v, sh.za)
         i = k + 1
@@ -734,7 +750,8 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
     for i2 = 1, nx do
       local cell = row[i2]
       if cell then
-        local x0 = originX + (i2 - 1) * sx
+        -- shX offset removed from origin calculation
+        local x0 = originX + (i2 - 1) * sx 
         local za, zb = cell.za, cell.zb
         local L, R = row[i2 - 1], row[i2 + 1]
         exposedPieces(za, zb, L and L.za, L and L.zb, function(a, c)
@@ -821,6 +838,19 @@ local function buildCard(b, tex, positions, comp, strip)
   local width = alongZ and spanZ or spanX
   local lean = alongZ and spanX or spanZ     -- the extent the card's lean adds
   local height = math.sqrt((ymax - ymin) ^ 2 + lean ^ 2)
+  -- The card's lean as a shift from its foot to its top, read off its own vertices
+  -- (top centroid minus base centroid). FLAT trees follow it so they stand where the
+  -- native billboard did, and take the card's VERTICAL extent as their height.
+  local leanX, leanZ = 0, 0
+  if GT.FLAT then
+    local tx, tz, tn, bx2, bz2, bn = 0, 0, 0, 0, 0, 0
+    for _, i in ipairs(comp) do
+      local p = positions[i]
+      if p[2] - ymin <= 0.5 then bx2, bz2, bn = bx2 + p[1], bz2 + p[3], bn + 1 end
+      if ymax - p[2] <= 0.5 then tx, tz, tn = tx + p[1], tz + p[3], tn + 1 end
+    end
+    if tn > 0 and bn > 0 then leanX, leanZ = tx / tn - bx2 / bn, tz / tn - bz2 / bn end
+  end
   if width < 1 or height < 1 then return 0, true end
   -- not a tree: a flat quad, or something far bigger than any tree
   if (ymax - ymin) < GT.MIN_TREE_H or height > GT.MAX_TREE_H then
@@ -841,6 +871,7 @@ local function buildCard(b, tex, positions, comp, strip)
 
   local pivX, pivZ = nearBase(positions, comp, ymin)
   local baseY = ymin - GT.SINK
+  if GT.FLAT then height = math.max(1, ymax - ymin) end   -- the card's vertical extent; the lean carries the rest
   -- ONE TREE PER TREE-WIDTH of card: an ordinary card is one tree (~33 wide),
   -- a border strip is several side by side, each its own slice of the art
   local trees = math.max(1, math.floor(width / GT.TREE_UNIT + 0.5))
@@ -859,7 +890,7 @@ local function buildCard(b, tex, positions, comp, strip)
     local mid = -width * 0.5 + (k + 0.5) * each
     local px, pz = pivX, pivZ
     if alongZ then pz = pivZ + mid else px = pivX + mid end
-    local m = emitTree(b, tex, a, c, vB, vT, px, baseY, pz, each, height)
+    local m = emitTree(b, tex, a, c, vB, vT, px, baseY, pz, each, height, leanX, leanZ)
     made = made + m
   end
   once("card:" .. tostring(tex.path),
