@@ -43,7 +43,7 @@ local Lawn = {
     bf_ngrass = { image = "grass.png", uv = 1 },     -- lawn, another area's prefix
     -- imped = the little route rocks. Native card hidden (transparent picture)
     -- ONLY on lands where Gen4Rocks has built its voxel rocks.
-    imped     = { image = "transparent.png", uv = 1, whenBuilt = "Gen4Rocks", noBlend = true },
+    imped     = { image = "transparent.png", uv = 1, whenBuilt = "Gen4Rocks" },
     hage      = { image = "floor.png",   uv = 1 },
     nsand     = { image = "road.png",    uv = 1 },
     nsandp    = { image = "ground.png",  uv = 1 },
@@ -65,10 +65,10 @@ local Lawn = {
     fenter    = { image = "step.png",    uv = 1 },
     newstep   = { image = "step.png",    uv = 1 },
     cyclestop = { image = "step.png",    uv = 1 },
-    ["s_snow"]   = { image = "sdnow.png",   uv = 1 },
-    ["s_snow02"] = { image = "sdnow.png",   uv = 1 },
-    ["s_snow04"] = { image = "sdnow.png",   uv = 1 },
-    ["s_sonwp"]  = { image = "sdnow.png",   uv = 1 },
+    ["s_snow"]   = { image = "snow.png",   uv = 1 },
+    ["s_snow02"] = { image = "snow.png",   uv = 1 },
+    ["s_snow04"] = { image = "snow.png",   uv = 1 },
+    ["s_sonwp"]  = { image = "snow.png",   uv = 1 },
     puddle    = { image = "waterp.png",  uv = 1 },
     puddlep   = { image = "waterp.png",  uv = 1 },
     puddle_b  = { image = "waterp.png",  uv = 1 },
@@ -106,14 +106,6 @@ local Lawn = {
   },
   DIR = "/assets/ground/grass/",
   LOG_NAMES = true,      -- log every distinct land/texture/material once (grep "Gen4Lawn:")
-  -- Opaque edge treatment baked into every swapped picture (the model shader
-  -- discards alpha < 0.5, so real transparency would punch holes in the mesh).
-  -- Each texture is one rounded tile: corners curve in, and the rim mixes
-  -- toward BLEND_IMAGE so neighbouring lawn ids share a dirt seam.
-  ROUND = 0.22,          -- corner radius, 0..0.5 of the tile
-  BLEND = 0.18,          -- how far the mix reaches inward from the rim
-  TILES = 1,             -- rounded cells across the picture (1 = whole layer)
-  BLEND_IMAGE = "ground.png",
 }
 
 local logged = {}
@@ -124,8 +116,6 @@ local function note(key, fmt, ...)
 end
 
 local imagePaths = {}     -- file -> path | false (missing)
-local blendPaths = {}     -- file -> processed path | false | nil (untried)
-
 local function resolvePath(file)
   local hit = imagePaths[file]
   if hit ~= nil then return hit or nil end
@@ -140,148 +130,6 @@ local function resolvePath(file)
     note("img:" .. file, "no %s%s -- that texture keeps its native look", Lawn.DIR, file)
   end
   return imagePaths[file] or nil
-end
-
-local function smoothstep(e0, e1, x)
-  if e1 == e0 then return x < e0 and 0 or 1 end
-  local t = (x - e0) / (e1 - e0)
-  if t < 0 then t = 0 elseif t > 1 then t = 1 end
-  return t * t * (3 - 2 * t)
-end
-
--- Signed distance to a rounded square covering 0..1. Negative is inside.
-local function roundedBox(px, py, radius)
-  local r = radius
-  if r < 0 then r = 0 elseif r > 0.49 then r = 0.49 end
-  local qx = math.abs(px - 0.5) - 0.5 + r
-  local qy = math.abs(py - 0.5) - 0.5 + r
-  local mx = qx > 0 and qx or 0
-  local my = qy > 0 and qy or 0
-  local outside = math.sqrt(mx * mx + my * my)
-  local inside = qx > qy and qx or qy
-  if inside > 0 then inside = 0 end
-  return outside + inside - r
-end
-
-local function sampleWrap(data, w, h, x, y)
-  x = x % w
-  if x < 0 then x = x + w end
-  y = y % h
-  if y < 0 then y = y + h end
-  return data:getPixel(x, y)
-end
-
-local function loadImageData(path)
-  local okA, Assets = pcall(require, "src.render.Assets")
-  local resolved = path
-  if okA and Assets and Assets.resolve then
-    local okR, got = pcall(Assets.resolve, path)
-    if okR and got then resolved = got end
-  end
-  local ok, data = pcall(love.image.newImageData, resolved)
-  if ok and data then return data end
-  if okA and Assets and Assets.imageData then
-    local okD, pixels = pcall(Assets.imageData, path)
-    if okD and pixels then return pixels end
-  end
-  return nil
-end
-
-local function ensureDir(path)
-  local win = path:gsub("/", "\\")
-  pcall(os.execute, 'if not exist "' .. win .. '" mkdir "' .. win .. '"')
-end
-
-local function writePngFile(absPath, fileData)
-  if not fileData then return false end
-  local bytes = fileData.getString and fileData:getString() or tostring(fileData)
-  local f = io.open(absPath, "wb")
-  if not f then return false end
-  f:write(bytes)
-  f:close()
-  return true
-end
-
--- Bake rounded corners + a dirt rim into a copy of `file`. Fully opaque.
-local function blendPath(file, skip)
-  if skip or file == "transparent.png" then return resolvePath(file) end
-  local hit = blendPaths[file]
-  if hit ~= nil then return hit or resolvePath(file) end
-  blendPaths[file] = false
-  local srcPath = resolvePath(file)
-  if not srcPath then return nil end
-  if not (love and love.image and love.image.newImageData) then return srcPath end
-
-  local src = loadImageData(srcPath)
-  if not src then return srcPath end
-  local w, h = src:getDimensions()
-  if not (w and h and w > 4 and h > 4) then return srcPath end
-
-  local mix = nil
-  local blendFile = Lawn.BLEND_IMAGE
-  if blendFile and blendFile ~= file then
-    local mixPath = resolvePath(blendFile)
-    if mixPath then mix = loadImageData(mixPath) end
-  end
-  local mw, mh = 1, 1
-  if mix then mw, mh = mix:getDimensions() end
-
-  local tiles = tonumber(Lawn.TILES) or 1
-  if tiles < 1 then tiles = 1 end
-  local radius = tonumber(Lawn.ROUND) or 0.22
-  local band = tonumber(Lawn.BLEND) or 0.18
-  if band < 0.02 then band = 0.02 end
-
-  local out = love.image.newImageData(w, h)
-  for y = 0, h - 1 do
-    for x = 0, w - 1 do
-      local r, g, b, a = src:getPixel(x, y)
-      local u, v = (x + 0.5) / w, (y + 0.5) / h
-      local fx, fy = (u * tiles) % 1, (v * tiles) % 1
-      local sdf = roundedBox(fx, fy, radius)
-      local rim = smoothstep(-band, band, sdf)
-      local edge = math.min(fx, fy, 1 - fx, 1 - fy)
-      local edgeMix = 1 - smoothstep(0, band, edge)
-      local amt = rim
-      if edgeMix > amt then amt = amt + (edgeMix - amt) * 0.65 end
-      if amt < 0 then amt = 0 elseif amt > 1 then amt = 1 end
-      local br, bg, bb = r * 0.72, g * 0.72, b * 0.72
-      if mix then
-        br, bg, bb = sampleWrap(mix, mw, mh, math.floor(u * mw), math.floor(v * mh))
-      end
-      r = r + (br - r) * amt
-      g = g + (bg - g) * amt
-      b = b + (bb - b) * amt
-      if a < 1 then a = 1 end
-      out:setPixel(x, y, r, g, b, a)
-    end
-  end
-
-  local safe = tostring(file):gsub("[^%w%.%-_]", "_")
-  local encoded = out:encode("png")
-  local relDir = Lawn.DIR .. "_blend/"
-  local absDir = V.path .. relDir
-  ensureDir(absDir)
-  local abs = absDir .. safe
-  if writePngFile(abs, encoded) then
-    blendPaths[file] = abs
-    note("blend:" .. file, "rounded + blended %s -> %s", file, relDir .. safe)
-    return abs
-  end
-  if love.filesystem then
-    pcall(love.filesystem.createDirectory, "gen4lawn_blend")
-    local rel = "gen4lawn_blend/" .. safe
-    pcall(function() out:encode("png", rel) end)
-    local save = love.filesystem.getSaveDirectory and love.filesystem.getSaveDirectory()
-    if save and love.filesystem.getInfo and love.filesystem.getInfo(rel) then
-      local saved = save .. "/" .. rel
-      blendPaths[file] = saved
-      return saved
-    end
-  end
-  note("blendfail:" .. file, "could not write blended %s -- using the raw picture", file)
-  blendPaths[file] = srcPath
-  return srcPath
 end
 
 -- model -> { source = shapes, count = n, mats = table|false }
@@ -306,7 +154,7 @@ local function lawnMaterials(model)
       local ok, M = pcall(V.require, cfg.whenBuilt)
       gate = ok and type(M) == "table" and M.isBuilt and M.isBuilt(model.lawnLand) or false
     end
-    local path = cfg and gate and shape.material and blendPath(cfg.image, cfg.noBlend)
+    local path = cfg and gate and shape.material and resolvePath(cfg.image)
     if path then
       local k = cfg.uv or 1
       mats = mats or {}
@@ -404,7 +252,6 @@ end
 function Lawn.invalidate()
   cache = setmetatable({}, { __mode = "k" })
   imagePaths = {}
-  blendPaths = {}
 end
 
 function Lawn.uninstall()

@@ -330,6 +330,13 @@ function Bridge.install()
   else
     report("sand", "the sand pass did not load: %s", tostring(GS))
   end
+  -- Neighbour-tile blend skirts for Gen4Lawn swaps (grass/road/sand seams).
+  local okL, GL = pcall(V.require, "Gen4Lawn")
+  if okL and type(GL) == "table" and GL.draw then
+    Bridge.register("lawn", GL.draw)
+  else
+    report("lawn", "the lawn blend pass did not load: %s", tostring(GL))
+  end
   -- The voxel scene's 3D trees in place of Platinum's flat tree cards. Opaque,
   -- after the ground passes, before grass and the actors.
   local okT, GT = pcall(V.require, "Gen4Trees")
