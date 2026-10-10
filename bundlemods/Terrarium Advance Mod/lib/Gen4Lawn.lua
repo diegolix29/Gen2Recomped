@@ -41,9 +41,8 @@ local Lawn = {
   TEXTURES = {
     ngrass    = { image = "grass.png", uv = 1 },     -- lawn
     bf_ngrass = { image = "grass.png", uv = 1 },     -- lawn, another area's prefix
-    -- imped = the little route rocks. Native card hidden (transparent picture)
-    -- ONLY on lands where Gen4Rocks has built its voxel rocks.
-    imped     = { image = "transparent.png", uv = 1, whenBuilt = "Gen4Rocks" },
+    -- imped is rocks AND fence banners. Gen4Rocks hides only rock-only shapes;
+    -- Lawn must not paint the whole material transparent or fences vanish.
     hage      = { image = "floor.png",   uv = 1 },
     nsand     = { image = "road.png",    uv = 1 },
     nsandp    = { image = "ground.png",  uv = 1 },
@@ -54,7 +53,7 @@ local Lawn = {
     -- Twinleaf / Route 201 leftover ids (from Gen4Lawn LOG_NAMES). Same swirl
     -- probes already in this folder, plus extra hues for groups that had none.
     nectgr    = { image = "highgrass.png",    uv = 1 },   -- wild-Pokemon grass floor
-    nhana     = { image = "flowers.png", uv = 1 },   -- flower beds
+    nhana     = { image = "dflowers.png", uv = 1 },   -- flower beds
     beach     = { image = "sand.png",    uv = 1 },
     beachp    = { image = "sand.png",    uv = 1 },
     hamabe    = { image = "sand.png",    uv = 1 },   -- shore
@@ -65,10 +64,10 @@ local Lawn = {
     fenter    = { image = "step.png",    uv = 1 },
     newstep   = { image = "step.png",    uv = 1 },
     cyclestop = { image = "step.png",    uv = 1 },
-    ["s_snow"]   = { image = "snow.png",   uv = 1 },
-    ["s_snow02"] = { image = "snow.png",   uv = 1 },
-    ["s_snow04"] = { image = "snow.png",   uv = 1 },
-    ["s_sonwp"]  = { image = "snow.png",   uv = 1 },
+    ["s_snow"]   = { image = "dsnow.png",   uv = 1 },
+    ["s_snow02"] = { image = "dsnow.png",   uv = 1 },
+    ["s_snow04"] = { image = "dsnow.png",   uv = 1 },
+    ["s_sonwp"]  = { image = "dsnow.png",   uv = 1 },
     puddle    = { image = "waterp.png",  uv = 1 },
     puddlep   = { image = "waterp.png",  uv = 1 },
     puddle_b  = { image = "waterp.png",  uv = 1 },

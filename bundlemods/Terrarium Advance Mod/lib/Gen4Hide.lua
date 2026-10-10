@@ -45,7 +45,7 @@
 --          finished building the sheet around the camera yet (GW.ready).
 --   trees  when the "trees" effect was disabled or Gen4Trees is missing.
 --
--- Flip Hide.grass / Hide.water / Hide.trees to false to compare against the native look.
+-- Flip Hide.grass / Hide.water / Hide.trees / Hide.rocks to false to compare against the native look.
 
 local V = ...
 
@@ -53,6 +53,7 @@ local Hide = {
   grass = true,
   water = true,
   trees = true,
+  rocks = true,
   active = false,
   installed = false,
   -- exact material/texture names (lower case) that are water
@@ -152,6 +153,16 @@ local function treesOn()
   return (GT and type(GT.isCovered) == "function" and GT.enabled) and true or false
 end
 
+-- Native imped rock cards, only where Gen4Rocks converted the WHOLE shape.
+-- Fence banners that share the texture stay.
+local function rocksOn()
+  if Hide.rocks == false then return false end
+  local Bridge = optional("Gen4Bridge")
+  if Bridge and Bridge.disabled and Bridge.disabled.rocks then return false end
+  local GR = optional("Gen4Rocks")
+  return (GR and type(GR.isCovered) == "function" and GR.enabled) and true or false
+end
+
 local lastWaterState
 local function waterOn()
   if not Hide.water then return false end
@@ -183,13 +194,15 @@ end
 -- model -> { key = "gw", list = {...} }
 local cache = setmetatable({}, { __mode = "k" })
 
-local function filtered(model, hideGrass, hideWater, hideTrees)
+local function filtered(model, hideGrass, hideWater, hideTrees, hideRocks)
   local GT = hideTrees and optional("Gen4Trees") or nil
+  local GR = hideRocks and optional("Gen4Rocks") or nil
   local GW = hideWater and optional("Gen4Water") or nil
   local covered = GW and type(GW.isCovered) == "function" and GW.isCovered or nil
   local key = (hideGrass and "g" or "-") .. (hideWater and "w" or "-")
               .. (covered and tostring(GW.coverVersion or 0) or "")
               .. (GT and ("t" .. tostring(GT.coverVersion or 0)) or "-")
+              .. (GR and ("r" .. tostring(GR.coverVersion or 0)) or "-")
   local rec = cache[model]
   local shapes = model.shapes
   if rec and rec.key == key and rec.source == shapes and rec.count == #shapes then
@@ -206,6 +219,11 @@ local function filtered(model, hideGrass, hideWater, hideTrees)
       drop = true
       note("t:" .. tostring(shape.srcTexture or shape.name),
            "hid native tree cards '%s' (voxel trees stand in)", tostring(shape.srcTexture or shape.name))
+    elseif GR and shape.src and GR.isCovered(shape.src) then
+      drop = true
+      note("r:" .. tostring(shape.srcTexture or shape.name),
+           "hid native rock cards '%s' (voxel rocks stand in; fence banners kept)",
+           tostring(shape.srcTexture or shape.name))
     elseif hideWater then
       local why = Hide.classify(shape)
       -- and only where the sheet really stands in for it
@@ -331,7 +349,7 @@ function Hide.install()
     if not Hide.active then return originalDraw(self, ...) end
     local real = self.shapes
     if type(real) ~= "table" then return originalDraw(self, ...) end
-    local list = filtered(self, drawFilter.grass, drawFilter.water, drawFilter.trees)
+    local list = filtered(self, drawFilter.grass, drawFilter.water, drawFilter.trees, drawFilter.rocks)
     if list == real then return originalDraw(self, ...) end
     self.shapes = list
     local ok, a = pcall(originalDraw, self, ...)
@@ -354,7 +372,12 @@ function Hide.install()
       local GT = optional("Gen4Trees")
       if not (GT and pcall(GT.prepare, self)) then drawFilter.trees = false end
     end
-    Hide.active = drawFilter.grass or drawFilter.water or drawFilter.trees
+    drawFilter.rocks = rocksOn()
+    if drawFilter.rocks then
+      local GR = optional("Gen4Rocks")
+      if not (GR and pcall(GR.prepare, self)) then drawFilter.rocks = false end
+    end
+    Hide.active = drawFilter.grass or drawFilter.water or drawFilter.trees or drawFilter.rocks
     local ok, a, b = pcall(originalFree, self, ...)
     Hide.active = false
     if not ok then error(a, 0) end

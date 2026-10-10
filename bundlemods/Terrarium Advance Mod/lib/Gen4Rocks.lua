@@ -2,9 +2,12 @@
 --
 -- WHAT PLATINUM DRAWS
 --
--- The little rocks scattered on routes are terrain shapes whose texture is
--- `imped` (found with the Gen4Lawn colour probe). They are flat cards, like the
--- tree cards Gen4Trees replaces.
+-- Route clutter and fence runs share the terrain texture `imped` (found with
+-- the Gen4Lawn colour probe). Both are flat cards, like the tree cards
+-- Gen4Trees replaces:
+--   * a roughly square card is a rock sprite
+--   * a long banner (wide vs tall) is a fence run
+-- Only the square cards become voxel rocks. Banner cards stay native.
 --
 -- WHAT THIS BUILDS INSTEAD
 --
@@ -17,11 +20,12 @@
 --
 -- HIDING THE NATIVE CARD
 --
--- Gen4Lawn swaps `imped` for a fully transparent picture (the model shader
--- discards alpha < 0.5) -- but ONLY on lands where this module has built rocks
--- (Rocks.isBuilt(land)), so a rock is never hidden without a replacement.
+-- Gen4Hide drops a native `imped` shape only when EVERY card in that shape
+-- converted to a rock. A shape that is all fence banners, or mixed, keeps
+-- drawing natively so fences never vanish. Lawn no longer paints the whole
+-- `imped` material transparent (that was turning fences into holes).
 --
--- KNOBS: Rocks.SIZE (rock width / card width), MIN_W, MAX_W, Y_OFFSET, SINK,
+-- KNOBS: Rocks.SIZE, MIN_W, MAX_W, FENCE_ASPECT, FENCE_MIN_W, Y_OFFSET, SINK,
 -- WINDOW, enabled. Bridge.disabled.rocks turns it off.
 
 local V = ...
@@ -30,11 +34,13 @@ local Mat4 = V.require("Mat4")
 
 local Rocks = {
   enabled = true,
-  TEXTURES = { imped = true },   -- terrain texture names that are rocks
+  TEXTURES = { imped = true },   -- terrain texture names that are rocks OR fence banners
   WINDOW = 2,                    -- lands each way around the camera
   SIZE = 1.35,                    -- rock width as a fraction of the card's width
   MIN_W = 14,                    -- never narrower than this (world units; a tile is 16)
   MAX_W = 28,                    -- ...never wider than this
+  FENCE_ASPECT = 1.75,           -- card width/height at or above this is a fence banner
+  FENCE_MIN_W = 40,              -- ...or any card this wide (a rock is one tile)
   HEIGHT = 0.9,                 -- rock height as a fraction of its width
   LUMP = 0.30,                   -- how lumpy the surface is (0 = smooth egg, 0.4 = very rough)
   SATELLITES = 2,                -- up to this many small stones beside each rock
@@ -142,7 +148,7 @@ local function posKey(p)
 end
 
 -- Pair consecutive triangles into cards: each pair that shares an edge has four
--- distinct corners. Returns { {cx, baseY, cz, width}, ... }.
+-- distinct corners. Returns { {cx, baseY, cz, planeW, planeH}, ... }.
 local function cardsOf(positions, tris)
   local cards = {}
   local i = 1
@@ -158,21 +164,30 @@ local function cardsOf(positions, tris)
       end
     end
     if #corners == 4 then
-      local sx, sz, ymin = 0, 0, math.huge
+      local sx, sz, ymin, ymax = 0, 0, math.huge, -math.huge
       local xmin, xmax, zmin, zmax = math.huge, -math.huge, math.huge, -math.huge
       for _, p in ipairs(corners) do
         sx, sz = sx + p[1], sz + p[3]
-        ymin = math.min(ymin, p[2])
+        ymin, ymax = math.min(ymin, p[2]), math.max(ymax, p[2])
         xmin, xmax = math.min(xmin, p[1]), math.max(xmax, p[1])
         zmin, zmax = math.min(zmin, p[3]), math.max(zmax, p[3])
       end
-      cards[#cards + 1] = { sx / 4, ymin, sz / 4, math.max(xmax - xmin, zmax - zmin) }
+      local planeW = math.max(xmax - xmin, zmax - zmin)
+      local planeH = math.max(0.01, ymax - ymin)
+      cards[#cards + 1] = { sx / 4, ymin, sz / 4, planeW, planeH }
       i = i + 2
     else
       i = i + 1        -- not a pair: slide by one and try again
     end
   end
   return cards
+end
+
+-- Long banners are fence runs that share the `imped` texture with rocks.
+local function isFenceCard(c)
+  local w, h = c[4] or 0, math.max(c[5] or 0, 0.01)
+  if w >= (Rocks.FENCE_MIN_W or 40) then return true end
+  return (w / h) >= (Rocks.FENCE_ASPECT or 1.75)
 end
 
 -- ------------------------------------------------------------------ mesh --
@@ -295,14 +310,17 @@ end
 
 -- ------------------------------------------------------------------ lands --
 
-local landEntries = setmetatable({}, { __mode = "k" })   -- land -> { mesh, rocks }
+local landEntries = setmetatable({}, { __mode = "k" })   -- land -> { mesh, rocks, shapes }
 local resident = 0
 local list = {}
 local window = {}
 local tick = 0
+Rocks.active = {}
+Rocks.coverVersion = 0
+local lastCoverSig = ""
 
 local function buildLand(ground, land)
-  local out = { rocks = 0 }
+  local out = { rocks = 0, fences = 0, shapes = {} }
   local record = ground.terrain.chunks[land]
   if not (record and record.shapes) then return out end
   local b = { verts = {}, map = {} }
@@ -317,17 +335,30 @@ local function buildLand(ground, land)
       if positions then
         local cards = cardsOf(positions, tris)
         if #cards == 0 then leftover = leftover + 1 end
+        local rockN, fenceN = 0, 0
         for _, c in ipairs(cards) do
-          buildRock(b, c[1], c[2], c[3], c[4])
-          out.rocks = out.rocks + 1
+          if isFenceCard(c) then
+            fenceN = fenceN + 1
+            out.fences = out.fences + 1
+          else
+            buildRock(b, c[1], c[2], c[3], c[4])
+            rockN = rockN + 1
+            out.rocks = out.rocks + 1
+          end
+        end
+        -- Hide this native shape only when it was rocks all the way through.
+        -- A banner, or a mix, stays on screen so fences are never replaced.
+        if rockN > 0 and fenceN == 0 then
+          out.shapes[#out.shapes + 1] = s
         end
       end
     end
   end
   if #b.verts > 0 then out.mesh = Voxel3D.newMesh(b.verts, b.map) end
   if Rocks.LOG and shapesSeen > 0 then
-    once("land" .. tostring(land), "land %s: %d imped shape(s) -> %d rocks (%d shape(s) had no usable cards)",
-         tostring(land), shapesSeen, out.rocks, leftover)
+    once("land" .. tostring(land),
+         "land %s: %d imped shape(s) -> %d rocks, %d fence banner(s) left native (%d shape(s) had no usable cards)",
+         tostring(land), shapesSeen, out.rocks, out.fences, leftover)
   end
   return out
 end
@@ -414,6 +445,31 @@ local function prepare(ground)
   end
   list = out
   window.ground, window.qx, window.qy, window.list, window.done = ground, qx, qy, out, (pending == 0)
+
+  local active, sig = {}, {}
+  for _, w in ipairs(want) do
+    local entry = landEntries[w[4]]
+    if entry then
+      for _, s in ipairs(entry.shapes or {}) do
+        active[s] = true
+        sig[#sig + 1] = tostring(s)
+      end
+    end
+  end
+  Rocks.active = active
+  local coverSig = table.concat(sig, ",")
+  if coverSig ~= lastCoverSig then
+    lastCoverSig = coverSig
+    Rocks.coverVersion = Rocks.coverVersion + 1
+  end
+end
+
+function Rocks.prepare(ground)
+  prepare(ground)
+end
+
+function Rocks.isCovered(record)
+  return record ~= nil and Rocks.active[record] == true
 end
 
 function Rocks.draw(scene)
