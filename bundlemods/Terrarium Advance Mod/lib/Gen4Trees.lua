@@ -57,7 +57,25 @@
 -- keep Platinum's flat cards (Gen4Hide hides cards only on covered lands), and
 -- baked lands the camera has left are released (GT.MAX_RESIDENT).
 --
--- KNOBS: GT.enabled, GT.SMOOTH, GT.SMOOTH_PASSES, GT.RIM, GT.WINDOW,
+-- FACING (GT.FACING, GT.setFacing)
+--
+-- A tree is round and both z ends carry the same art, so which way it "faces"
+-- is only which side wears the bright front shade. Every surface is shaded by
+-- its own normal against the facing -- not by a Voxel3D face id.
+--
+-- The engine's own native tree cards turn to face the camera every frame
+-- (Gen4Model turnToCamera, billboardYaw = view.yaw). A baked tree cannot turn,
+-- so the DEFAULT, "camera", bakes each tree lit from the south and from the
+-- north and GT.draw shows the one whose lit end looks at the camera (the
+-- south-lit one while the view looks north, the north-lit one while it looks
+-- south). That costs a second mesh per land.
+--
+-- A fixed facing ("south" | "north" | "east" | "west" | degrees) bakes one mesh
+-- and keeps the lit side on that world direction whatever the camera does. The
+-- shade is baked, so change it with GT.setFacing(...), which re-bakes;
+-- assigning GT.FACING alone only reaches lands built later.
+--
+-- KNOBS: GT.enabled, GT.FACING, GT.SMOOTH, GT.SMOOTH_PASSES, GT.RIM, GT.WINDOW,
 -- GT.TEX_STEP, GT.MAX_QUADS, GT.WARM_BUDGET, GT.HYSTERESIS, GT.MAX_RESIDENT.
 -- Bridge.disabled.trees turns the effect off.
 
@@ -74,6 +92,7 @@ local GT = {
   SMOOTH = true,          -- build the tree as ONE continuous inflated surface (no stair-step slab walls). false = the old blocky stack of discs
   SMOOTH_PASSES = 1,      -- extra blur passes over the depth field (0 = as sampled, 2-3 = rounder, softer)
   RIM = 0.35,             -- depth kept at the silhouette, as a fraction of the depth just inside it (0 = razor edge, 1 = full slab wall)
+  FACING = "camera",      -- "camera" = the lit side follows the camera like the native cards do (two meshes per land, one drawn per frame); or a fixed world side: "south" (+z), "north" (-z), "east" (+x), "west" (-x), or a compass bearing in degrees (0 = north, 90 = east, 180 = south, 270 = west). Baked into the meshes: change it with GT.setFacing(), which re-bakes
   TEX_STEP = 2,           -- texels per block edge (1 = full resolution, 4x the quads)
   MAX_BLOCKS = 40,        -- most blocks across one card, whatever the step says
   MIN_HALF = 1,           -- a column's chord is never thinner than this many blocks each side
@@ -130,6 +149,7 @@ local Distance = optional("Gen4Distance")
 -- table keys (a land record) go with the record. Dropped only by invalidate().
 local landEntries = setmetatable({}, { __mode = "k" })
 local window = {}
+local northLit = false -- camera mode: draw the north-lit variant (the camera looks south)
 local resident = 0     -- built lands in landEntries
 local tick = 0         -- bumps per window recompute; entry.used = last tick the land was wanted
 
@@ -338,17 +358,103 @@ end
 
 local ROUND_SHADE = { front = 1.0, back = 0.68, side = 0.78, top = 1.0, bottom = 0.55 }
 
--- one axis-aligned quad of face `f` (Voxel3D face ids), `shade` as baked
-local function quad(b, f, x0, y0, z0, dx, dy, dz, u, v, shade)
+-- WHICH WAY A TREE FACES. The tree is a round, symmetric solid and both of its
+-- z ends carry the same art, so "facing" is purely which side wears the bright
+-- `front` shade. It used to be welded to Voxel3D's face ids (5 = front, 6 =
+-- back), i.e. to one world direction, and a hand swap of the two ids can only
+-- ever move it to the other end of z. Here it is a direction in the ground
+-- plane (+x east, +z south, the Bridge's convention) and every surface is
+-- shaded by where its own normal points relative to it, so a face's id never
+-- decides it.
+local FACING_DIRS = { south = { 0, 1 }, north = { 0, -1 }, east = { 1, 0 }, west = { -1, 0 } }
+
+local function facingVec()
+  local f = GT.FACING
+  local d = FACING_DIRS[type(f) == "string" and f:lower() or ""]
+  if d then return d[1], d[2] end
+  local bearing = tonumber(f)
+  if bearing then
+    local a = math.rad(bearing)
+    return math.sin(a), -math.cos(a)        -- 0 = north (-z), 90 = east (+x)
+  end
+  return 0, 1                               -- anything unreadable: south
+end
+
+-- shade of a surface whose UNIT normal is (nx, ny, nz): front / back by the
+-- part of the normal along the facing, side by the part across it, top /
+-- bottom by the vertical part (the squares of the three parts sum to 1)
+local function surfaceShade(nx, ny, nz, fx, fz)
+  local along = nx * fx + nz * fz
+  local across = nx * fz - nz * fx
+  local horiz = (along >= 0) and ROUND_SHADE.front or ROUND_SHADE.back
+  local vert = (ny >= 0) and ROUND_SHADE.top or ROUND_SHADE.bottom
+  return horiz * along * along + ROUND_SHADE.side * across * across + vert * ny * ny
+end
+
+-- The outward normal of each flat quad, keyed by where it stands (zb = the +z
+-- end, za = the -z end, xr = +x, xl = -x). The meshers record the NORMAL on
+-- every vertex and the shade is worked out afterwards (finishBucket), because
+-- the shade depends on which way the tree faces and, in camera mode, a tree
+-- is baked once for each of two facings.
+local FACE_NORMALS = {
+  zb = { 0, 0, 1 }, za = { 0, 0, -1 }, xr = { 1, 0, 0 }, xl = { -1, 0, 0 },
+  top = { 0, 1, 0 }, bottom = { 0, -1, 0 },
+}
+
+-- The facings a tree is baked for, as { fx, fz } pairs. Camera mode bakes both
+-- ends of z (lit side south, then lit side north) and GT.draw picks the one
+-- that looks at the camera; every other setting is a single fixed facing.
+local function variantFacings()
+  if type(GT.FACING) == "string" and GT.FACING:lower() == "camera" then
+    return { { 0, 1 }, { 0, -1 } }
+  end
+  local fx, fz = facingVec()
+  return { { fx, fz } }
+end
+
+-- one axis-aligned quad of face `f` (Voxel3D face ids), `normal` = FACE_NORMALS.*.
+-- Vertex = { x, y, z, u, v, shade, 0, nx, ny, nz, sky }; the shade (fields 6)
+-- is filled in and the normal stripped by finishBucket before the mesh is made.
+local function quad(b, f, x0, y0, z0, dx, dy, dz, u, v, normal)
   if dz <= 0 or dx <= 0 or dy <= 0 then return end
   local corners = Voxel3D.FACE_CORNERS[f]
-  if f == 3 then shade = -shade end          -- the mesher's "faces the sky" flag
+  local sky = (f == 3)                         -- the mesher's "faces the sky" flag
   local n = #b.verts / 4
   for k = 1, 4 do
     local c = corners[k]
-    b.verts[#b.verts + 1] = { x0 + c[1] * dx, y0 + c[2] * dy, z0 + c[3] * dz, u, v, shade, 0 }
+    b.verts[#b.verts + 1] = { x0 + c[1] * dx, y0 + c[2] * dy, z0 + c[3] * dz, u, v, 1, 0,
+                              normal[1], normal[2], normal[3], sky }
   end
   Voxel3D.pushQuad(b.map, n)
+end
+
+-- Turn a bucket's recorded normals into baked shades and make its mesh(es).
+-- Returns the first mesh and, in camera mode, the second (lit from the north).
+local function finishBucket(b)
+  local verts = b.verts
+  local facings = variantFacings()
+  local count = #verts
+  local shades = {}
+  for k, fv in ipairs(facings) do
+    local s = {}
+    for i = 1, count do
+      local v = verts[i]
+      local value = surfaceShade(v[8], v[9], v[10], fv[1], fv[2])
+      s[i] = v[11] and -value or value
+    end
+    shades[k] = s
+  end
+  for i = 1, count do                      -- strip the bookkeeping fields
+    local v = verts[i]
+    v[8], v[9], v[10], v[11] = nil, nil, nil, nil
+  end
+  local meshes = {}
+  for k = 1, #facings do
+    local s = shades[k]
+    for i = 1, count do verts[i][6] = s[i] end
+    meshes[k] = Voxel3D.newMesh(verts, b.map)
+  end
+  return meshes[1], meshes[2]
 end
 
 local function nearBase(positions, comp, ymin)
@@ -451,38 +557,40 @@ local function smoothSurface(b, grid, nx, ny, sx, sy, originX, baseY, pivZ)
   end
 
   -- 3. one face of one cell. Corner order and winding come from Voxel3D's own
-  -- FACE_CORNERS: c[1] = right edge, c[2] = top edge, c[3] = front (+z) side.
+  -- FACE_CORNERS: c[1] = right edge, c[2] = top edge, c[3] = +Z side. Which end
+  -- is "front" is NOT read from the face id: each vertex records its surface
+  -- normal and finishBucket shades it against the tree's facing.
   local function face(f, i, j, cell, flat)
     local corners = Voxel3D.FACE_CORNERS[f]
-    local base = #b.verts
-    local nq = base / 4
-    local ups, shade = 0, {}
-    local pts = {}
+    local nq = #b.verts / 4
+    local ups = 0
+    local pts, nrm = {}, {}
     for k = 1, 4 do
       local c = corners[k]
       local i0, j0 = i - 1 + c[1], j - c[2]
       local d = D[j0][i0]
       pts[k] = { originX + i0 * sx, baseY + (ny - j0) * sy, pivZ + (c[3] == 1 and d or -d) }
       if flat then
-        shade[k] = flat
+        nrm[k] = flat
       else
+        -- outward normal of z = ±depth(x, y): (-gx, -gy, ±1), normalised
         local gx, gy = slope(i0, j0)
-        local len2 = gx * gx + gy * gy + 1
-        local zShade = (f == 5) and ROUND_SHADE.front or ROUND_SHADE.back
-        local yShade = (gy < 0) and ROUND_SHADE.top or ROUND_SHADE.bottom
-        shade[k] = (zShade + ROUND_SHADE.side * gx * gx + yShade * gy * gy) / len2
-        ups = ups + (-gy) / math.sqrt(len2)
+        local inv = 1 / math.sqrt(gx * gx + gy * gy + 1)
+        local zSide = (c[3] == 1) and 1 or -1
+        nrm[k] = { -gx * inv, -gy * inv, zSide * inv }
+        ups = ups + (-gy) * inv
       end
     end
     local sky
     if flat then sky = (f == 3) else sky = (ups / 4) > SMOOTH_SKY_NY end
     for k = 1, 4 do
-      local p = pts[k]
-      b.verts[#b.verts + 1] = { p[1], p[2], p[3], cell.u, cell.v, sky and -shade[k] or shade[k], 0 }
+      local p, n = pts[k], nrm[k]
+      b.verts[#b.verts + 1] = { p[1], p[2], p[3], cell.u, cell.v, 1, 0, n[1], n[2], n[3], sky }
     end
     Voxel3D.pushQuad(b.map, nq)
   end
 
+  local sh = FACE_NORMALS
   for j = 1, ny do
     local row = grid[j]
     for i = 1, nx do
@@ -490,10 +598,10 @@ local function smoothSurface(b, grid, nx, ny, sx, sy, originX, baseY, pivZ)
       if cell then
         face(5, i, j, cell)
         face(6, i, j, cell)
-        if not row[i - 1] then face(2, i, j, cell, ROUND_SHADE.side) end
-        if not row[i + 1] then face(1, i, j, cell, ROUND_SHADE.side) end
-        if not (grid[j - 1] and grid[j - 1][i]) then face(3, i, j, cell, ROUND_SHADE.top) end
-        if j < ny and not (grid[j + 1] and grid[j + 1][i]) then face(4, i, j, cell, ROUND_SHADE.bottom) end
+        if not row[i - 1] then face(2, i, j, cell, sh.xl) end
+        if not row[i + 1] then face(1, i, j, cell, sh.xr) end
+        if not (grid[j - 1] and grid[j - 1][i]) then face(3, i, j, cell, sh.top) end
+        if j < ny and not (grid[j + 1] and grid[j + 1][i]) then face(4, i, j, cell, sh.bottom) end
       end
     end
   end
@@ -601,10 +709,12 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
     smoothSurface(b, grid, nx, ny, sx, sy, originX, baseY, pivZ)
     return #b.verts / 4 - before
   end
+  local sh = FACE_NORMALS
   for j = 1, ny do
     local row = grid[j]
     local y0 = baseY + (ny - j) * sy
-    -- front and back: the drawing per block, runs of one colour and one chord
+    -- the +Z end (zb) and the -Z end (za): the drawing per block, runs of one colour and one chord;
+    -- which of them is the bright front is GT.FACING's call, not the face id's
     local i = 1
     while i <= nx do
       local cell = row[i]
@@ -613,8 +723,8 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
         while row[k + 1] and row[k + 1].key == cell.key
               and row[k + 1].za == cell.za do k = k + 1 end
         local x0, w = originX + (i - 1) * sx, (k - i + 1) * sx
-        quad(b, 5, x0, y0, cell.zb - 0.001, w, sy, 0.001, cell.u, cell.v, ROUND_SHADE.front)
-        quad(b, 6, x0, y0, cell.za, w, sy, 0.001, cell.u, cell.v, ROUND_SHADE.back)
+        quad(b, 5, x0, y0, cell.zb - 0.001, w, sy, 0.001, cell.u, cell.v, sh.zb)
+        quad(b, 6, x0, y0, cell.za, w, sy, 0.001, cell.u, cell.v, sh.za)
         i = k + 1
       else
         i = i + 1
@@ -628,27 +738,27 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
         local za, zb = cell.za, cell.zb
         local L, R = row[i2 - 1], row[i2 + 1]
         exposedPieces(za, zb, L and L.za, L and L.zb, function(a, c)
-          quad(b, 2, x0, y0, a, 0.001, sy, c - a, cell.u, cell.v, ROUND_SHADE.side)
+          quad(b, 2, x0, y0, a, 0.001, sy, c - a, cell.u, cell.v, sh.xl)
         end)
         exposedPieces(za, zb, R and R.za, R and R.zb, function(a, c)
-          quad(b, 1, x0 + sx - 0.001, y0, a, 0.001, sy, c - a, cell.u, cell.v, ROUND_SHADE.side)
+          quad(b, 1, x0 + sx - 0.001, y0, a, 0.001, sy, c - a, cell.u, cell.v, sh.xr)
         end)
         local up = grid[j - 1] and grid[j - 1][i2]
         exposedPieces(za, zb, up and up.za, up and up.zb, function(a, c, whole)
           if whole and (c - a) >= 3 * sx then
             -- the dome cap: outline on the rim blocks, canopy a couple of rows deeper inside
             local deep = (grid[j + 2] and grid[j + 2][i2]) or (grid[j + 1] and grid[j + 1][i2]) or cell
-            quad(b, 3, x0, y0 + sy - 0.001, a, sx, 0.001, sx, cell.u, cell.v, ROUND_SHADE.top)
-            quad(b, 3, x0, y0 + sy - 0.001, a + sx, sx, 0.001, c - a - 2 * sx, deep.u, deep.v, ROUND_SHADE.top)
-            quad(b, 3, x0, y0 + sy - 0.001, c - sx, sx, 0.001, sx, cell.u, cell.v, ROUND_SHADE.top)
+            quad(b, 3, x0, y0 + sy - 0.001, a, sx, 0.001, sx, cell.u, cell.v, sh.top)
+            quad(b, 3, x0, y0 + sy - 0.001, a + sx, sx, 0.001, c - a - 2 * sx, deep.u, deep.v, sh.top)
+            quad(b, 3, x0, y0 + sy - 0.001, c - sx, sx, 0.001, sx, cell.u, cell.v, sh.top)
           else
-            quad(b, 3, x0, y0 + sy - 0.001, a, sx, 0.001, c - a, cell.u, cell.v, ROUND_SHADE.top)
+            quad(b, 3, x0, y0 + sy - 0.001, a, sx, 0.001, c - a, cell.u, cell.v, sh.top)
           end
         end)
         if j < ny then
           local dn = grid[j + 1] and grid[j + 1][i2]
           exposedPieces(za, zb, dn and dn.za, dn and dn.zb, function(a, c)
-            quad(b, 4, x0, y0, a, sx, 0.001, c - a, cell.u, cell.v, ROUND_SHADE.bottom)
+            quad(b, 4, x0, y0, a, sx, 0.001, c - a, cell.u, cell.v, sh.bottom)
           end)
         end
       end
@@ -911,8 +1021,8 @@ local function buildLand(ground, land)
   end
 
   for _, b in ipairs(order) do
-    local mesh = Voxel3D.newMesh(b.verts, b.map)
-    if mesh then out.buckets[#out.buckets + 1] = { mesh = mesh, tex = b.tex } end
+    local mesh, meshN = finishBucket(b)
+    if mesh then out.buckets[#out.buckets + 1] = { mesh = mesh, meshN = meshN, tex = b.tex } end
   end
   out.coveredKeys = {}
   for _, s in ipairs(out.shapes) do
@@ -1104,6 +1214,7 @@ function GT.prepare(ground)
       local item = old[i]
       for _, b in ipairs(item[3].buckets or {}) do
         if b.mesh and b.mesh.release then pcall(b.mesh.release, b.mesh) end
+        if b.meshN and b.meshN.release then pcall(b.meshN.release, b.meshN) end
       end
       landEntries[item[2]] = nil
       resident = resident - 1
@@ -1151,11 +1262,21 @@ function GT.draw(scene)
   local ground = scene.ground
   local radius = ((ground and ground.chunkPx) or 512) * 0.72 + 160
   local drawn = 0
+  -- CAMERA MODE: the engine turns its native tree cards to face the camera
+  -- every frame (Gen4Model's turnToCamera, billboardYaw = view.yaw); a baked
+  -- tree cannot turn, so it is baked lit from the south AND from the north
+  -- (b.mesh / b.meshN) and the one whose lit end looks at the camera is drawn.
+  -- Looking north (forward z < 0) the camera is south of the trees, so the
+  -- south-lit mesh; looking south, the north-lit one. A small dead band keeps
+  -- the choice from flickering when the view runs along east-west.
+  local lookZ = scene.forward and scene.forward[3] or 0
+  if lookZ > 0.05 then northLit = true elseif lookZ < -0.05 then northLit = false end
   for _, item in ipairs(GT.list) do
     if (not visible) or visible(item.x, 0, item.z, radius) then
       drawn = drawn + 1
       for _, b in ipairs(item.entry.buckets) do
-        Voxel3D.draw(b.mesh, b.tex, Mat4.translate(item.x, GT.Y_OFFSET or 0, item.z), 0, nil, 0, false)
+        local mesh = (northLit and b.meshN) or b.mesh
+        Voxel3D.draw(mesh, b.tex, Mat4.translate(item.x, GT.Y_OFFSET or 0, item.z), 0, nil, 0, false)
       end
     end
   end
@@ -1173,6 +1294,7 @@ function GT.invalidate()
   for _, entry in pairs(landEntries) do
     for _, b in ipairs(entry.buckets or {}) do
       if b.mesh and b.mesh.release then pcall(b.mesh.release, b.mesh) end
+      if b.meshN and b.meshN.release then pcall(b.meshN.release, b.meshN) end
     end
   end
   landEntries = setmetatable({}, { __mode = "k" })
@@ -1182,6 +1304,14 @@ function GT.invalidate()
   textures = {}
   GT.active, GT.list, GT.coveredNames, GT.coveredLands = {}, {}, {}, {}
   GT.coverVersion = GT.coverVersion + 1
+end
+
+-- Turn the trees: "south" / "north" / "east" / "west" or a compass bearing.
+-- The shade is baked into each land's mesh, so this drops the baked lands and
+-- the next frame rebuilds them facing the new way.
+function GT.setFacing(value)
+  GT.FACING = value
+  GT.invalidate()
 end
 
 -- built lands currently held (tests and the log read this)
