@@ -6,7 +6,7 @@
 -- the Gen4Lawn colour probe). Both are flat cards, like the tree cards
 -- Gen4Trees replaces:
 --   * a roughly square card is a rock sprite
---   * a long banner (wide vs tall) is a fence run
+--   * a long banner -- wide (east/west) OR tall (north/south / standing) -- is a fence
 -- Only the square cards become voxel rocks. Banner cards stay native.
 --
 -- WHAT THIS BUILDS INSTEAD
@@ -39,8 +39,8 @@ local Rocks = {
   SIZE = 1.35,                    -- rock width as a fraction of the card's width
   MIN_W = 14,                    -- never narrower than this (world units; a tile is 16)
   MAX_W = 28,                    -- ...never wider than this
-  FENCE_ASPECT = 1.75,           -- card width/height at or above this is a fence banner
-  FENCE_MIN_W = 40,              -- ...or any card this wide (a rock is one tile)
+  FENCE_ASPECT = 1.75,           -- longest/shortest edge at or above this is a banner
+  FENCE_MIN_W = 40,              -- ...or any card this long in XZ or Y (a rock is one tile)
   HEIGHT = 0.9,                 -- rock height as a fraction of its width
   LUMP = 0.30,                   -- how lumpy the surface is (0 = smooth egg, 0.4 = very rough)
   SATELLITES = 2,                -- up to this many small stones beside each rock
@@ -183,11 +183,14 @@ local function cardsOf(positions, tris)
   return cards
 end
 
--- Long banners are fence runs that share the `imped` texture with rocks.
+-- Banners share `imped` with rocks. Horizontal runs are wide in XZ; vertical
+-- runs are tall in Y. Either way the card is elongated -- a rock is square.
 local function isFenceCard(c)
   local w, h = c[4] or 0, math.max(c[5] or 0, 0.01)
-  if w >= (Rocks.FENCE_MIN_W or 40) then return true end
-  return (w / h) >= (Rocks.FENCE_ASPECT or 1.75)
+  local long, short = w, h
+  if h > w then long, short = h, w end
+  if long >= (Rocks.FENCE_MIN_W or 40) then return true end
+  return (long / short) >= (Rocks.FENCE_ASPECT or 1.75)
 end
 
 -- ------------------------------------------------------------------ mesh --

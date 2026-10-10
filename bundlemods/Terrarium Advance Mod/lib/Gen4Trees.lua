@@ -20,16 +20,10 @@
 --     profile and a little hash-driven lumpiness (GT.LUMP) turn the stair-steps
 --     into a round, slightly irregular crown that differs tree to tree but never
 --     changes between frames;
---   * every triangle wears ONE texel of the card's own art. With GT.SHELL (the
---     default) the texel depends only on WHERE the facet sits on the tree, never
---     on which way the camera looks: its height picks the sprite row, a facet
---     facing UP wears the sprite's top rows (the little "hat" of the canopy seen
---     from above, so it shows from every side), the body takes the middle of its
---     row with a stable scatter of leaf clumps, and the underside takes the edge
---     (outline) texel. Lighting depends only on how far up a facet faces. The
---     tree is round in plan, so it reads the same from every orbit angle;
---   * with GT.SHELL = false each facet instead takes the texel the sprite shows
---     at its x / y when seen from the front, lit flat from the upper front.
+--   * every triangle is lit FLAT from the upper front (like the rocks) and wears
+--     ONE texel of the card's own art, picked where the facet sits in the sprite,
+--     so the leaves, the outline on the rim and the trunk keep their colours;
+--   * round in plan means it reads the same from every orbit angle.
 --
 -- BORDER TREES (`conttree*`)
 --
@@ -55,7 +49,7 @@
 -- baked lands the camera has left are released (GT.MAX_RESIDENT).
 --
 -- KNOBS: GT.enabled, GT.WINDOW, GT.TEX_STEP, GT.SIDES, GT.MAX_RINGS, GT.LUMP,
--- GT.SCALE, GT.SHELL, GT.DEPTH, GT.SMOOTH, GT.FLIP_SPRITE, GT.FLIP_WINDING, GT.MAX_QUADS, GT.WARM_BUDGET,
+-- GT.DEPTH, GT.SMOOTH, GT.FLIP_WINDING, GT.MAX_QUADS, GT.WARM_BUDGET,
 -- GT.HYSTERESIS, GT.MAX_RESIDENT.
 -- Bridge.disabled.trees turns the effect off.
 
@@ -69,21 +63,18 @@ local GT = {
   HYSTERESIS = 1.15,      -- a land already built stays covered out to this multiple of the draw-distance reach, so the edge does not flicker
   MAX_RESIDENT = 14,      -- built lands kept in memory when the draw distance is limited (the rest are released, oldest first)
   MAX_RESIDENT_MAX = 30,  -- ...and at MAX, which has no distance limit
-  TEX_STEP = 1,           -- texels per sampling cell of the art (1 = every texel is read, so tiny details like snow specks survive; 2 = coarser, 4x less sampling)
+  TEX_STEP = 2,           -- texels per sampling cell of the art (1 = finer silhouette and colour, 4x the sampling work)
   MAX_BLOCKS = 40,        -- most cells across one card, whatever the step says
 
   -- SHAPE OF A TREE (the "less blocky" knobs)
-  SCALE = 0.95,           -- overall tree size (1.0 = the card's size; planted at the trunk's foot, so it shrinks toward the ground)
-  SIDES = 16,             -- facets around a tree (10 = chunky gem, 16-20 = fine detail, more triangles)
-  MAX_RINGS = 28,         -- most height slices of one tree (fewer = fewer triangles, coarser silhouette)
-  SHELL = true,           -- colour the tree as a shell that looks the same from every angle (see header); false = project the sprite from the front only
-  LUMP = 0.08,            -- how irregular the crown is (0 = perfectly smooth, 0.25 = very bushy)
-  DEPTH = 1.0,            -- tree depth (front to back) as a fraction of its width; 1.0 = perfectly round in plan (same width from every angle)
+  SIDES = 10,             -- facets around a tree (8 = chunky gem, 12-14 = rounder, more triangles)
+  MAX_RINGS = 16,         -- most height slices of one tree (fewer = fewer triangles, coarser silhouette)
+  LUMP = 0.12,            -- how irregular the crown is (0 = perfectly smooth, 0.25 = very bushy)
+  DEPTH = 0.7,            -- tree depth (front to back) as a fraction of its width; 1.0 = perfectly round in plan
   SMOOTH = true,          -- soften the pixel staircase of the silhouette before building rings
-  FLIP_SPRITE = true,     -- mirror the sprite left-to-right before building (set false if trees come out mirrored the wrong way)
-  FLIP_WINDING = nil,     -- nil = ask the engine which triangle winding is a front face (see windingFlip); true / false forces it
+  FLIP_WINDING = false,   -- set true if trees look inside-out / see-through (flips triangle winding)
   MIN_HALF = 1,           -- a tree is never thinner (front to back) than this many cells
-  MAX_HALF = 18,          -- a tree is never deeper than 2x this many world units, however wide it is
+  MAX_HALF = 12,          -- a tree is never deeper than 2x this many world units, however wide it is
 
   MAX_TREE_H = 220,       -- a card taller than this is not a tree
   MIN_TREE_H = 0.5,       -- ...nor one flatter than this (a ground quad)
@@ -382,53 +373,6 @@ local function meanWhere(positions, comp, axis, value, tol, field)
   return sum / n
 end
 
--- The sampled art of one sprite window, kept and reused: every tree of a kind
--- reads the same texels, and at TEX_STEP = 1 that is a lot of getPixel calls.
--- Read-only once stored. Dropped by GT.invalidate().
-local gridCache, gridCacheN = {}, 0
-
--- WHICH WINDING IS A FRONT FACE? The engine draws only the front of a triangle,
--- and "front" depends on the order of its corners. Trees were coming out
--- inside-out (the far inner wall showing, lit backwards) because that order was
--- assumed. So ask Voxel3D itself: build its six cube faces from FACE_CORNERS in
--- the order pushQuad indexes them, and check whether the first triangle of each
--- runs counter-clockwise around the face's outward normal (the way this file
--- builds its own triangles) or the other way round. Face ids as the old meshing
--- used them: 1 = +x, 2 = -x, 3 = top, 4 = bottom, 5 = +z (front), 6 = -z (back).
-local engineFlip
-local function windingFlip()
-  if GT.FLIP_WINDING ~= nil then return GT.FLIP_WINDING and true or false end
-  if engineFlip ~= nil then return engineFlip end
-  engineFlip = false
-  local ok, why = pcall(function()
-    local normals = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } }
-    local map = {}
-    Voxel3D.pushQuad(map, 0)
-    local lowest = math.huge
-    for i = 1, 3 do lowest = math.min(lowest, map[i]) end
-    local score = 0
-    for f = 1, 6 do
-      local corners = Voxel3D.FACE_CORNERS[f]
-      local p, q, s = corners[map[1] - lowest + 1], corners[map[2] - lowest + 1], corners[map[3] - lowest + 1]
-      local ux, uy, uz = q[1] - p[1], q[2] - p[2], q[3] - p[3]
-      local vx, vy, vz = s[1] - p[1], s[2] - p[2], s[3] - p[3]
-      local cx, cy, cz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
-      local n = normals[f]
-      local d = cx * n[1] + cy * n[2] + cz * n[3]
-      if d > 1e-9 then score = score + 1 elseif d < -1e-9 then score = score - 1 end
-    end
-    engineFlip = score < 0
-  end)
-  if not ok then
-    engineFlip = false
-    once("windingFail", "could not read the engine's face winding (%s); using the rock winding", tostring(why))
-  else
-    once("winding", "engine front-face winding %s the rock winding -> trees %s",
-         engineFlip and "is the OPPOSITE of" or "matches", engineFlip and "are flipped" or "are not flipped")
-  end
-  return engineFlip
-end
-
 -- ONE TREE, built like a Gen4Rocks boulder (see the header). `uL..uR` /
 -- `vB..vT` is the art's texel window, `pivX/pivZ` the trunk's foot, `width` /
 -- `height` the card's size in world units. Returns the quads it made (two
@@ -440,59 +384,25 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
   local sx, sy = width / nx, height / ny
   local originX = pivX - width * 0.5
 
-  -- sample the art; row 1 is the top. The same sprite window recurs on every
-  -- tree of a kind, so the grid is sampled once and reused (read-only).
-  local gkey = string.format("%s|%.2f|%.2f|%.2f|%.2f|%d|%d|%s", tostring(tex.path), uL, uR, vB, vT,
-                             nx, ny, GT.FLIP_SPRITE and "f" or "n")
-  local grid, lo, any
-  local hit = gridCache[gkey]
-  if hit then
-    grid, lo, any = hit.grid, hit.lo, hit.any
-  else
-    grid, lo, any = {}, {}, false
-    for j = 1, ny do
-      local row = {}
-      local v = vT + (vB - vT) * ((j - 0.5) / ny)
-      local ty = math.floor(v) % tex.h
-      for i = 1, nx do
-        -- FLIP_SPRITE reads the art right-to-left, so the whole tree (silhouette
-        -- AND colours, everything below is built from this grid) is mirrored
-        local col = GT.FLIP_SPRITE and (nx - i + 1) or i
-        local u = uL + (uR - uL) * ((col - 0.5) / nx)
-        local tx = math.floor(u) % tex.w
-        local okP, r, g, bl, a = pcall(tex.data.getPixel, tex.data, tx, ty)
-        if not okP then r, g, bl, a = 0, 0, 0, 0 end
-        if a > 1 then r, g, bl, a = r / 255, g / 255, bl / 255, a / 255 end
-        if a >= 0.5 then
-          row[i] = { u = (tx + 0.5) / tex.w, v = (ty + 0.5) / tex.h }
-          lo[j] = lo[j] or i
-          any = true
-        end
-      end
-      grid[j] = row
-    end
-    -- A window that is (nearly) all opaque has no tree outline to follow: the
-    -- texture has no real alpha, or it is a forest-wall tile. Built as-is it would
-    -- be one solid slab -- the "big green block". Give it the outline a tree has
-    -- instead: an ellipse inscribed in the window, cut from the same texels.
-    -- Real sprites (corners transparent, far below DENSE_FRACTION) never reach this.
-    if any then
-      local opaque = 0
-      for j = 1, ny do for i = 1, nx do if grid[j][i] then opaque = opaque + 1 end end end
-      if opaque >= GT.DENSE_FRACTION * nx * ny then
-        for j = 1, ny do
-          local ey = ((j - 0.5) / ny) * 2 - 1
-          local half = math.sqrt(math.max(0, 1 - ey * ey))
-          for i = 1, nx do
-            local ex = ((i - 0.5) / nx) * 2 - 1
-            if math.abs(ex) > half then grid[j][i] = nil end
-          end
-        end
+  -- sample the art; row 1 is the top
+  local grid, lo, any = {}, {}, false
+  for j = 1, ny do
+    local row = {}
+    local v = vT + (vB - vT) * ((j - 0.5) / ny)
+    local ty = math.floor(v) % tex.h
+    for i = 1, nx do
+      local u = uL + (uR - uL) * ((i - 0.5) / nx)
+      local tx = math.floor(u) % tex.w
+      local okP, r, g, bl, a = pcall(tex.data.getPixel, tex.data, tx, ty)
+      if not okP then r, g, bl, a = 0, 0, 0, 0 end
+      if a > 1 then r, g, bl, a = r / 255, g / 255, bl / 255, a / 255 end
+      if a >= 0.5 then
+        row[i] = { u = (tx + 0.5) / tex.w, v = (ty + 0.5) / tex.h }
+        lo[j] = lo[j] or i
+        any = true
       end
     end
-    if gridCacheN > 400 then gridCache, gridCacheN = {}, 0 end
-    gridCache[gkey] = { grid = grid, lo = lo, any = any }
-    gridCacheN = gridCacheN + 1
+    grid[j] = row
   end
   if not any then return 0, "empty" end   -- nothing opaque: nothing to draw, and nothing native to keep
 
@@ -507,10 +417,29 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
     baseY = baseY - pad
   end
 
+  -- A window that is (nearly) all opaque has no tree outline to follow: the
+  -- texture has no real alpha, or it is a forest-wall tile. Built as-is it would
+  -- be one solid slab -- the "big green block". Give it the outline a tree has
+  -- instead: an ellipse inscribed in the window, cut from the same texels.
+  -- Real sprites (corners transparent, far below DENSE_FRACTION) never reach this.
+  local opaque = 0
+  for j = 1, ny do for i = 1, nx do if grid[j][i] then opaque = opaque + 1 end end end
+  local dense = opaque >= GT.DENSE_FRACTION * nx * ny
+  if dense then
+    for j = 1, ny do
+      local ey = ((j - 0.5) / ny) * 2 - 1
+      local half = math.sqrt(math.max(0, 1 - ey * ey))
+      for i = 1, nx do
+        local ex = ((i - 0.5) / nx) * 2 - 1
+        if math.abs(ex) > half then grid[j][i] = nil end
+      end
+    end
+  end
+
   -- 1. THE PROFILE. Every row that still has opaque cells gives one slice of
   -- the tree: where it starts and stops across the card = a centre and a
   -- half-width. (A tree sprite is one blob per row, so first..last is enough.)
-  local prof, fallback, spans, topJ = {}, nil, {}, nil
+  local prof, fallback = {}, nil
   for j = 1, ny do
     local row = grid[j]
     local first, last
@@ -519,8 +448,6 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
     end
     if first then
       fallback = fallback or row[first]
-      spans[j] = { first, last }
-      topJ = topJ or j
       prof[#prof + 1] = { j = j,
                           y = baseY + (ny - j + 0.5) * sy,
                           cx = originX + (first - 1 + last) * 0.5 * sx,
@@ -594,9 +521,9 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
   -- 3. THE COLOUR. A facet wears the texel of the art where it sits (the card's
   -- x and y), so the front still looks like the sprite and the rim carries the
   -- outline. A spot outside the art (a lump pushed out) takes the nearest opaque cell.
-  local function cellNear(i, j)
-    i = math.max(1, math.min(nx, i))
-    j = math.max(1, math.min(ny, j))
+  local function colourAt(mx, my)
+    local i = math.max(1, math.min(nx, math.floor((mx - originX) / sx) + 1))
+    local j = math.max(1, math.min(ny, ny - math.floor((my - baseY) / sy)))
     local cell = grid[j][i]
     if cell then return cell end
     for rad = 1, 4 do
@@ -613,44 +540,9 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
     return fallback
   end
 
-  local function rowAt(my)
-    return math.max(1, math.min(ny, ny - math.floor((my - baseY) / sy)))
-  end
-
-  -- front projection (SHELL = false): the texel the sprite shows at this x / y
-  local function colourAt(mx, my)
-    return cellNear(math.floor((mx - originX) / sx) + 1, rowAt(my))
-  end
-
-  -- SHELL: the texel depends on the facet's height and tilt only, never on the
-  -- viewing side. `fy` is the facet's up-ness (1 = faces the sky), `n` its index
-  -- (a stable seed for the scatter).
-  local function shellColour(my, fy, n)
-    local j = rowAt(my)
-    local h1 = hash(seed + n * 1.7, n * 0.37 + seed)
-    local h2 = hash(n * 2.9 + seed, seed * 0.13 + n)
-    local spread = 1.2
-    if fy > 0.55 then
-      -- the hat: facets facing the sky wear the sprite's top rows (up to three)
-      j = math.min(ny, topJ + math.floor((1 - fy) / 0.45 * 2.999))
-      spread = 0.6
-    end
-    local sp = spans[j] or spans[topJ]
-    if not sp then return cellNear(math.floor(nx / 2) + 1, j) end
-    local i
-    if fy < -0.25 or (fy <= 0.55 and h1 > 0.88) then
-      i = (h2 < 0.5) and sp[1] or sp[2]        -- outline: the underside, and the odd clump edge
-    else
-      i = math.floor((sp[1] + sp[2]) * 0.5 + (h2 - 0.5) * spread * (sp[2] - sp[1]) * 0.5 + 0.5)
-    end
-    return cellNear(i, j)
-  end
-
   -- 4. THE FACETS. Each triangle is lit flat from the upper front and takes one
   -- texel (one flat colour), exactly like a rock facet.
   local count = 0
-  local flip = windingFlip()
-  local S = GT.SCALE or 1
   local function tri(p, q, s)
     local ux, uy, uz = q[1] - p[1], q[2] - p[2], q[3] - p[3]
     local vx, vy, vz = s[1] - p[1], s[2] - p[2], s[3] - p[3]
@@ -658,31 +550,18 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
     local len = math.sqrt(fx * fx + fy * fy + fz * fz)
     if len < 1e-6 then return end            -- the pole's collapsed triangles
     fx, fy, fz = fx / len, fy / len, fz / len  -- outward by construction (see below)
-    local my = (p[2] + q[2] + s[2]) / 3
-    local cell
-    if GT.SHELL then
-      cell = shellColour(my, fy, count)
-    else
-      cell = colourAt((p[1] + q[1] + s[1]) / 3, my)
-    end
+    local cell = colourAt((p[1] + q[1] + s[1]) / 3, (p[2] + q[2] + s[2]) / 3)
     if not cell then return end
-    local shade
-    if GT.SHELL then
-      shade = 0.82 + 0.18 * math.max(0, fy)      -- only up-ness lights it: the same from every side
-    else
-      local lit = math.max(0, fx * LIGHT[1] + fy * LIGHT[2] + fz * LIGHT[3])
-      shade = math.min(1.0, 0.64 + 0.50 * lit)
-    end
+    local lit = math.max(0, fx * LIGHT[1] + fy * LIGHT[2] + fz * LIGHT[3])
+    local shade = math.min(1.0, 0.64 + 0.50 * lit)
     -- a hair of facet-to-facet variation so the planes read as planes
     shade = math.min(1.0, shade * (0.94 + 0.10 * hash(seed + count * 3.3, count + seed * 0.1)))
     if fy > 0.55 then shade = -shade end       -- faces the sky (same flag the rocks and old trees use)
-    if flip then q, s = s, q end                -- the engine's front is the other way round
-    -- SCALE shrinks the finished tree toward its foot (colour and light were
-    -- worked out above at full size; a uniform scale leaves the normals alone)
+    if GT.FLIP_WINDING then q, s = s, q end
     local base = #b.verts
-    b.verts[base + 1] = { pivX + (p[1] - pivX) * S, baseY + (p[2] - baseY) * S, pivZ + (p[3] - pivZ) * S, cell.u, cell.v, shade, 0 }
-    b.verts[base + 2] = { pivX + (q[1] - pivX) * S, baseY + (q[2] - baseY) * S, pivZ + (q[3] - pivZ) * S, cell.u, cell.v, shade, 0 }
-    b.verts[base + 3] = { pivX + (s[1] - pivX) * S, baseY + (s[2] - baseY) * S, pivZ + (s[3] - pivZ) * S, cell.u, cell.v, shade, 0 }
+    b.verts[base + 1] = { p[1], p[2], p[3], cell.u, cell.v, shade, 0 }
+    b.verts[base + 2] = { q[1], q[2], q[3], cell.u, cell.v, shade, 0 }
+    b.verts[base + 3] = { s[1], s[2], s[3], cell.u, cell.v, shade, 0 }
     local m = #b.map
     b.map[m + 1], b.map[m + 2], b.map[m + 3] = base + 1, base + 2, base + 3
     count = count + 1
@@ -1226,7 +1105,6 @@ function GT.invalidate()
   window = {}
   lastSignature = ""
   textures = {}
-  gridCache, gridCacheN = {}, 0
   GT.active, GT.list, GT.coveredNames, GT.coveredLands = {}, {}, {}, {}
   GT.coverVersion = GT.coverVersion + 1
 end
