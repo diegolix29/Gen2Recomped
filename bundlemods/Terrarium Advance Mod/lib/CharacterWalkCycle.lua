@@ -128,6 +128,7 @@ local ARM_BIAS = -0.32
 -- every trainer model regardless of source units.
 local BOB_DROP = 0.035      -- body sinks this much when the legs are spread
 local SWAY = 0.010          -- weight shift toward the stance leg
+local LEAN = 0.25           -- forward lean of the upper body (radians, ~7 deg); 0 = upright
 local TWIST = 0.12          -- shoulder yaw (radians), opposite the hips
 local BOB_AMOUNT = 0.3      -- fallback only, for rigs built without rig.height
 
@@ -1020,7 +1021,16 @@ function M.apply(rig, groupIndex, group, phase, blend, out, posedVertices)
 
     local b = buckets[vi]
     local twistW = 0
+    local leanW = 0
     if blend > 0 then
+      -- Spine lean: everything above the hip tips forward about the hip,
+      -- ramping in over the torso. The head is NOT faded out here (unlike the
+      -- twist) so it leans with the body; arm verts hanging below the hip
+      -- still follow their shoulder.
+      if restUp > hipY * 0.9 then
+        leanW = smooth01((restUp - hipY * 0.9) / math.max(shoulderY - hipY * 0.9, 1e-4))
+      end
+
       -- Shoulders/arms/chest follow the spine twist; head fades back out so it
       -- keeps looking where the character walks.
       if restUp > hipY then
@@ -1039,6 +1049,7 @@ function M.apply(rig, groupIndex, group, phase, blend, out, posedVertices)
           end
           up, fwd = rotate2(up, fwd, shoulderY, pivotFwd, st.arm * w)
           if w > twistW then twistW = w end   -- hands must stay with the shoulder
+          if w > leanW then leanW = w end
         elseif bk == "thigh" or bk == "shin" then
           -- Innermost joint first, each about its REST pivot; the parent
           -- rotation afterwards carries the child pivots along with it.
@@ -1054,6 +1065,9 @@ function M.apply(rig, groupIndex, group, phase, blend, out, posedVertices)
         end
       end
 
+      if leanW > 0 then
+        up, fwd = rotate2(up, fwd, hipY, centerFwd, sgn * LEAN * blend * leanW)
+      end
       if twistW > 0 then
         side, fwd = rotate2(side, fwd, centerSide, centerFwd, twistTotal * twistW)
       end
