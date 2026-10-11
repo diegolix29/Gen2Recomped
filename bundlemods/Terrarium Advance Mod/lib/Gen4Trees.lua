@@ -25,6 +25,14 @@
 --     .55) so a Gen 4 tree is lit like a Gen 1-3 one.
 -- Round in plan means it reads the same from every orbit angle.
 --
+-- ALIGNMENT (GT.ALIGN)
+--
+-- The sprite's tiers (hat / middle / base) are drawn a little off-centre from
+-- one another. Flat, that hides; as a 3D tree it shows as tiers shifted
+-- sideways. ALIGN slides every row (whole blocks) so the tiers stack on ONE
+-- vertical axis: the trunk ("base"), the card's middle ("window"), or false
+-- to keep the sprite's own offsets.
+--
 -- SMOOTH MODE (GT.SMOOTH, on by default)
 --
 -- The per-row slabs above leave stair-stepped ledges. Smooth mode keeps the
@@ -75,9 +83,9 @@
 -- shade is baked, so change it with GT.setFacing(...), which re-bakes;
 -- assigning GT.FACING alone only reaches lands built later.
 --
--- KNOBS: GT.enabled, GT.FACING, GT.SMOOTH, GT.SMOOTH_PASSES, GT.RIM, GT.WINDOW,
--- GT.TEX_STEP, GT.MAX_QUADS, GT.WARM_BUDGET, GT.HYSTERESIS, GT.MAX_RESIDENT.
--- Bridge.disabled.trees turns the effect off.
+-- KNOBS: GT.enabled, GT.FACING, GT.ALIGN, GT.SMOOTH, GT.SMOOTH_PASSES, GT.RIM,
+-- GT.WINDOW, GT.TEX_STEP, GT.MAX_QUADS, GT.WARM_BUDGET, GT.HYSTERESIS,
+-- GT.MAX_RESIDENT. Bridge.disabled.trees turns the effect off.
 
 local V = ...
 local Voxel3D = V.require("Voxel3D")
@@ -92,10 +100,11 @@ local GT = {
   SMOOTH = true,          -- build the tree as ONE continuous inflated surface (no stair-step slab walls). false = the old blocky stack of discs
   SMOOTH_PASSES = 1,      -- extra blur passes over the depth field (0 = as sampled, 2-3 = rounder, softer)
   RIM = 0.35,             -- depth kept at the silhouette, as a fraction of the depth just inside it (0 = razor edge, 1 = full slab wall)
+  ALIGN = "base",         -- centre every row on ONE vertical axis so the tiers (hat / middle / base) stack straight: "base" = the trunk (lowest opaque row), "window" = the card's centre, false = keep the sprite's own sideways offsets. Baked: call GT.invalidate() after changing it
   FLAT = true,            -- front and back faces sit in (almost) the SAME place: the tree keeps the sprite's silhouette and height but has no depth, so both sides show the same art at the same spot. false = the round disc profile
-  FLAT_HALF = 8.4,        -- ...half the slab's thickness in world units when FLAT (0.4 = 0.8 thick: enough that the two faces never z-fight)
+  FLAT_HALF = 10.4,        -- ...half the slab's thickness in world units when FLAT (0.4 = 0.8 thick: enough that the two faces never z-fight)
   SAME_FACE = true,       -- both z ends of a tree wear the FRONT shade, like the native card that always turns its face to the camera. false = the old lit-front / dark-back pair (see FACING)
-  FACING = "camera",      -- "camera" = the lit side follows the camera like the native cards do (two meshes per land, one drawn per frame); or a fixed world side: "south" (+z), "north" (-z), "east" (+x), "west" (-x), or a compass bearing in degrees (0 = north, 90 = east, 180 = south, 270 = west). Baked into the meshes: change it with GT.setFacing(), which re-bakes
+  FACING = "south",      -- "camera" = the lit side follows the camera like the native cards do (two meshes per land, one drawn per frame); or a fixed world side: "south" (+z), "north" (-z), "east" (+x), "west" (-x), or a compass bearing in degrees (0 = north, 90 = east, 180 = south, 270 = west). Baked into the meshes: change it with GT.setFacing(), which re-bakes
   TEX_STEP = 2,           -- texels per block edge (1 = full resolution, 4x the quads)
   MAX_BLOCKS = 40,        -- most blocks across one card, whatever the step says
   MIN_HALF = 1,           -- a column's chord is never thinner than this many blocks each side
@@ -574,10 +583,10 @@ local function smoothSurface(b, grid, nx, ny, sx, sy, originX, baseY, pivZ, lean
       local i0, j0 = i - 1 + c[1], j - c[2]
       local d = D[j0][i0]
       local py = baseY + (ny - j0) * sy
-      
+
       -- Lean logic removed to keep tree straight
       pts[k] = { originX + i0 * sx, py, pivZ + (c[3] == 1 and d or -d) }
-      
+
       if flat then
         nrm[k] = flat
       else
@@ -649,6 +658,56 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
     grid[j] = row
   end
   if not any then return 0, "empty" end   -- nothing opaque: nothing to draw, and nothing native to keep
+
+  -- ALIGN: the sprite's tiers (hat / middle / base) are drawn off-centre from
+  -- each other. Slide every row sideways, whole blocks only, so its run is
+  -- centred on one axis and the tiers stack on the trunk instead of leaning
+  -- apart. Runs before the dense check, the discs and the smooth surface, so
+  -- all of them work on the aligned grid.
+  if GT.ALIGN then
+    local axis = nx * 0.5                      -- "window": centre of the card
+    if GT.ALIGN ~= "window" then
+      for j = ny, 1, -1 do                     -- "base": centre of the lowest opaque row
+        if lo[j] then axis = (lo[j] - 1 + hi[j]) * 0.5; break end
+      end
+    end
+    -- how far each row must slide (whole blocks). The WHOLE row moves, holes
+    -- and all: a row with a stray transparent texel used to be skipped, which
+    -- left that tier where the sprite drew it.
+    local delta, minA, maxZ = {}, math.huge, -math.huge
+    for j = 1, ny do
+      if lo[j] then
+        local cc = (lo[j] - 1 + hi[j]) * 0.5
+        delta[j] = math.floor(axis - cc + 0.5)
+        minA = math.min(minA, lo[j] + delta[j])
+        maxZ = math.max(maxZ, hi[j] + delta[j])
+      end
+    end
+    -- the card may be too narrow to hold the moved rows (the sprite fills its
+    -- window edge to edge): grow it on the side that needs room, and keep the
+    -- trunk where it was by moving the origin the same distance
+    local padL = math.max(0, 1 - minA)
+    local padR = math.max(0, maxZ - nx)
+    if padL > 0 or padR > 0 then
+      nx = nx + padL + padR
+      originX = originX - padL * sx
+      width = width + (padL + padR) * sx
+    end
+    for j = 1, ny do
+      local d = delta[j]
+      if d then
+        local moved = {}
+        for i = lo[j], hi[j] do
+          local cell = grid[j][i]
+          if cell then moved[i + d + padL] = cell end
+        end
+        grid[j] = moved
+        lo[j], hi[j] = lo[j] + d + padL, hi[j] + d + padL
+      else
+        grid[j] = {}
+      end
+    end
+  end
 
   -- FLOATING TREES: a sprite is usually drawn with a few empty rows under the
   -- trunk, and the tree stood on the card's base with that padding underneath
@@ -724,8 +783,6 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
   for j = 1, ny do
     local row = grid[j]
     local y0 = baseY + (ny - j) * sy
-    
-    -- Lean math block completely removed here
 
     -- the +Z end (zb) and the -Z end (za): the drawing per block, runs of one colour and one chord;
     -- which of them is the bright front is GT.FACING's call, not the face id's
@@ -737,8 +794,7 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
         while row[k + 1] and row[k + 1].key == cell.key
               and row[k + 1].za == cell.za do k = k + 1 end
         local x0, w = originX + (i - 1) * sx, (k - i + 1) * sx
-        
-        -- shZ offsets removed from cell.zb and cell.za calculations
+
         quad(b, 5, x0, y0, cell.zb - 0.001, w, sy, 0.001, cell.u, cell.v, sh.zb)
         quad(b, 6, x0, y0, cell.za, w, sy, 0.001, cell.u, cell.v, sh.za)
         i = k + 1
@@ -750,8 +806,7 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
     for i2 = 1, nx do
       local cell = row[i2]
       if cell then
-        -- shX offset removed from origin calculation
-        local x0 = originX + (i2 - 1) * sx 
+        local x0 = originX + (i2 - 1) * sx
         local za, zb = cell.za, cell.zb
         local L, R = row[i2 - 1], row[i2 + 1]
         exposedPieces(za, zb, L and L.za, L and L.zb, function(a, c)
