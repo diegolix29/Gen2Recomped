@@ -35,7 +35,7 @@ local V = ...
 local TrainerRig = V.require("TrainerRig")
 local GeneratedAssets = V.require("GeneratedAssets")
 
-local M = { version = 11 }
+local M = { version = 12 }
 
 -- ------- tuning constants (generic human-ish proportions + gait feel)
 
@@ -100,6 +100,17 @@ local ARM_CHAIN_MIN_NY = 0.20
 -- character's source mesh is built facing X instead -- flip this one
 -- constant to 1 rather than touching the rotation code below.
 local FORWARD_INDEX = 3
+
+-- Trainers whose walk (stride, arm swing, elbows, body lean) came out mirrored
+-- front-to-back because the auto facing detection (feet vs body center) picked
+-- the wrong way for their mesh. Listed ids get the whole animation inverted.
+-- Only the animation is flipped; mesh-part classification (coat tails, hair)
+-- still uses the detected facing. Keys are the trainer ids (lowercase).
+-- Set a value to false, or delete the line, to put a trainer back to normal.
+local FLIP_WALK = {
+  leaf = true,
+  dakim = true,
+}
 local SIDE_INDEX = (FORWARD_INDEX == 3) and 1 or 3
 
 -- Swing amplitudes, in radians. The overlay still sits on an already-posed
@@ -128,7 +139,7 @@ local ARM_BIAS = -0.32
 -- every trainer model regardless of source units.
 local BOB_DROP = 0.035      -- body sinks this much when the legs are spread
 local SWAY = 0.010          -- weight shift toward the stance leg
-local LEAN = 0.25           -- forward lean of the upper body (radians, ~7 deg); 0 = upright
+local LEAN = 0.12           -- forward lean of the upper body (radians, ~7 deg); 0 = upright
 local TWIST = 0.12          -- shoulder yaw (radians), opposite the hips
 local BOB_AMOUNT = 0.3      -- fallback only, for rigs built without rig.height
 
@@ -678,7 +689,7 @@ function M.build(id, groups, bounds, skeleton)
     -- Pendulum origin between the body and the rest-pose shoes so a stride
     -- can swing past the hip plane. Pivoting at fwd=0 made "forward" look
     -- like a lift back to idle, and only the back half read as a step.
-    strideSign = faceSign or 1,
+    strideSign = (faceSign or 1) * (FLIP_WALK[tostring(id or ""):lower()] and -1 or 1),
     stridePivotFwd = 2 * ((footFwd or centerFwd) + centerFwd),
   }
 
