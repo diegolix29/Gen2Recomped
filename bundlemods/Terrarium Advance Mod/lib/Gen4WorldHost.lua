@@ -315,6 +315,10 @@ function Host.overlayFx(state, ground, sw, sh, scale)
   pcall(function() V.require("AmbientLife").draw(project, scale or 1) end)
   pcall(function() V.require("Vfx").draw(project, scale or 1) end)
   pcall(function() V.require("WindFX").draw(project, scale or 1) end)
+  -- the fp-ceiling weather (RAIN / LIGHTNING / NPC UMBRELLAS rows): 3D drops and
+  -- umbrellas through the live Gen 4 camera. Defined further down (it needs
+  -- beginFieldVoxel), so it is looked up on Host at call time.
+  if Host.drawFpWeather then pcall(Host.drawFpWeather, state, ground) end
   pcall(function() V.require("Interiors").draw(project, scale or 1) end)
   pcall(function() V.require("HiddenItems").draw(project, scale or 1) end)
   pcall(function()
@@ -414,6 +418,38 @@ local function beginFieldVoxel(state, ground)
     pcall(sh.send, sh, "eye", Voxel3D.eye)
   end
   return true
+end
+
+-- The ds_fp_ceiling weather on Platinum: rain drops, NPC umbrellas, lightning.
+-- Flora.draw owns these on Gen 1-3 but is only ever called by VoxelScene, which
+-- Gen 4 never reaches. Needs the free camera (the cartridge's fixed field camera
+-- has no matrix to put 3D billboards through); the 2D Weather streaks and the
+-- sky's own rain still cover that camera.
+function Host.drawFpWeather(state, ground)
+  if not (state and state.map and ground) then return end
+  local view = ground.view3d
+  if not (view and view.isFree and view:isFree()) then return end
+  local okF, Flora = pcall(V.require, "Flora")
+  if not (okF and Flora and Flora.drawGen4) then return end
+  local Voxel3D = V.require("Voxel3D")
+  -- Map.isOutdoor reads Gen 1/2 header fields: Gen4Spawn has the real answer
+  local outdoor = true
+  local okS, Spawn = pcall(V.require, "Gen4Spawn")
+  if okS and Spawn and Spawn.isOutdoor then
+    local ok, r = pcall(Spawn.isOutdoor, state.map)
+    outdoor = ok and r and true or false
+  end
+  -- FirstPerson's yaw: look direction = (sin yaw, cos yaw) in world x/z
+  local fx, _, fz = 0, 0, -1
+  if type(view.forward) == "function" then fx, _, fz = view:forward() end
+  local yaw = math.atan2(fx, fz)
+  if not beginFieldVoxel(state, ground) then return end
+  local ok, err = pcall(Flora.drawGen4, state, ground, yaw, outdoor)
+  pcall(Voxel3D.endScene)
+  if not ok and not Host._fpWeatherWarned then
+    Host._fpWeatherWarned = true
+    print("Gen4WorldHost: fp weather failed: " .. tostring(err))
+  end
 end
 
 -- Colosseum / Stadium / GLB followers into the same framebuffer as the
