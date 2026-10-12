@@ -135,6 +135,7 @@ local GT = {
   LAYER_GROUP = 8,        -- cards of one shape whose centres are within this many world units (sideways) are the LAYERS of ONE tree: hat / middle / base, ranked by height. A tree made of several cards moves each card as a whole piece with LAYER_OFFSET; a tree of ONE card is cut into row bands instead (LAYER_COUNT). 0 = always row bands
   LAYER_COUNT = 3,        -- how many canopy layers the sprite has (hat / middle / base): the cuts go at the deepest notches of its outline, or evenly if it has none. false = find them by LAYER_DROP instead
   TRUNK_OWN = false,      -- true: the narrow trunk rows at the bottom are layer 4 (LAYER_OFFSET[4]); false: they move with the base layer
+  STRIP_LAYERS = false,   -- false: a border (conttree) tree is ONE rigid piece, never cut into row bands or offset per layer
   DEBUG_LAYERS = false,   -- true: tint every layer a different brightness (1 bright, 2 mid, 3 dark) so you can SEE which rows each layer took, then set GT.LAYER_CUTS
   LAYER_DROP = 0.12,      -- how much narrower than the widest row the sprite must get between two layers to count as a boundary (fraction of the widest row). Lower = splits more, higher = fewer layers
   TRUNK_FRAC = 0.4,       -- the narrow rows at the very bottom, at most this fraction of the widest row, are the trunk (its own layer)
@@ -851,7 +852,7 @@ end
 -- ONE TREE, the voxel scene's way (see the header). `uL..uR` / `vB..vT` is the
 -- art's texel window, `pivX/pivZ` the trunk's foot, `width` / `height` the
 -- card's size in world units.
-local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height, leanX, leanZ, cardLayer)
+local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height, leanX, leanZ, cardLayer, isStrip)
   if width < 1 or height < 1 then return 0 end
   local nx = math.max(1, math.min(GT.MAX_BLOCKS, math.floor(math.abs(uR - uL) / GT.TEX_STEP + 0.5)))
   local ny = math.max(1, math.min(GT.MAX_BLOCKS, math.floor(math.abs(vB - vT) / GT.TEX_STEP + 0.5)))
@@ -973,6 +974,8 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
     local off, nz = layerOffset(cardLayer)
     if nz then pivX, baseY, pivZ = pivX + off[1], baseY + off[2], pivZ + off[3]; originX = originX + off[1] end
     layerOf = setmetatable({}, { __index = function() return cardLayer end })
+  elseif isStrip and not GT.STRIP_LAYERS then
+    -- border tree: a single sprite, one rigid piece. No row bands, no per-layer offset.
   else
     rowOff, layerOf, layerRanges, widths, firstRow, lastRow2 = layerRows(grid, nx, ny, tex.path)
   end
@@ -1247,7 +1250,7 @@ local function buildCard(b, tex, positions, comp, strip, layer)
     local mid = -width * 0.5 + (k + 0.5) * each
     local px, pz = pivX, pivZ
     if alongZ then pz = pivZ + mid else px = pivX + mid end
-    local m = emitTree(b, tex, a, c, vB, vT, px, baseY, pz, each, height, leanX, leanZ, layer)
+    local m = emitTree(b, tex, a, c, vB, vT, px, baseY, pz, each, height, leanX, leanZ, layer, strip)
     made = made + m
   end
   once("card:" .. tostring(tex.path),
