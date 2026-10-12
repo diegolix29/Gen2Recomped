@@ -35,7 +35,7 @@ local V = ...
 local TrainerRig = V.require("TrainerRig")
 local GeneratedAssets = V.require("GeneratedAssets")
 
-local M = { version = 12 }
+local M = { version = 13 }
 
 -- ------- tuning constants (generic human-ish proportions + gait feel)
 
@@ -109,6 +109,16 @@ local FORWARD_INDEX = 3
 -- Set a value to false, or delete the line, to put a trainer back to normal.
 local FLIP_WALK = {
   leaf = true,
+  dakim = true,
+}
+
+-- Trainers whose arms swung up/down instead of front/back. The shoulder swing
+-- pivots at the shared stride pendulum origin (stridePivotFwd, derived from
+-- where the shoes sit), and for a model whose shoes are far from the body
+-- center that origin is nowhere near the arms: a rotation about a point far
+-- ahead of/behind the arm moves it mostly vertically. Listed ids pivot the
+-- arms (shoulder + elbow) at the arms' own forward position instead.
+local ARM_PIVOT_AUTO = {
   dakim = true,
 }
 local SIDE_INDEX = (FORWARD_INDEX == 3) and 1 or 3
@@ -689,6 +699,7 @@ function M.build(id, groups, bounds, skeleton)
     -- Pendulum origin between the body and the rest-pose shoes so a stride
     -- can swing past the hip plane. Pivoting at fwd=0 made "forward" look
     -- like a lift back to idle, and only the back half read as a step.
+    armPivotAuto = ARM_PIVOT_AUTO[tostring(id or ""):lower()] and true or nil,
     strideSign = (faceSign or 1) * (FLIP_WALK[tostring(id or ""):lower()] and -1 or 1),
     stridePivotFwd = 2 * ((footFwd or centerFwd) + centerFwd),
   }
@@ -985,6 +996,26 @@ function M.apply(rig, groupIndex, group, phase, blend, out, posedVertices)
   local centerFwd = rig.centerFwd or 0
   local centerSide = rig.centerSide or 0
   local sgn = rig.strideSign or 1
+  local armPivot = pivotFwd
+  if rig.armPivotAuto then
+    -- Mean forward position of this group's arm verts in the rest mesh,
+    -- computed once per group (membership is final by the first apply).
+    rig.armPivotCache = rig.armPivotCache or {}
+    local c = rig.armPivotCache[groupIndex]
+    if c == nil then
+      local sum, n = 0, 0
+      for vi = 1, #base do
+        local ab = buckets[vi]
+        if ab and ab.bucket == "arm" and ab.weight > 0 then
+          sum = sum + (base[vi][FORWARD_INDEX] or 0)
+          n = n + 1
+        end
+      end
+      c = (n > 0) and (sum / n) or pivotFwd
+      rig.armPivotCache[groupIndex] = c
+    end
+    armPivot = c
+  end
   local h = rig.height or (shoulderY * 1.25)
   local minY = rig.minY or 0
 
@@ -1056,9 +1087,9 @@ function M.apply(rig, groupIndex, group, phase, blend, out, posedVertices)
         if bk == "arm" then
           local ew = smooth01((elbowY + elbowBand - up) / (2 * elbowBand))
           if ew > 0 then
-            up, fwd = rotate2(up, fwd, elbowY, pivotFwd, st.elbow * w * ew)
+            up, fwd = rotate2(up, fwd, elbowY, armPivot, st.elbow * w * ew)
           end
-          up, fwd = rotate2(up, fwd, shoulderY, pivotFwd, st.arm * w)
+          up, fwd = rotate2(up, fwd, shoulderY, armPivot, st.arm * w)
           if w > twistW then twistW = w end   -- hands must stay with the shoulder
           if w > leanW then leanW = w end
         elseif bk == "thigh" or bk == "shin" then
