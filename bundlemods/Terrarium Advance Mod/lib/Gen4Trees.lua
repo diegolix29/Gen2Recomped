@@ -117,8 +117,8 @@ local GT = {
   FACING = "camera",      -- "camera" = the lit side follows the camera like the native cards do (two meshes per land, one drawn per frame); or a fixed world side: "south" (+z), "north" (-z), "east" (+x), "west" (-x), or a compass bearing in degrees (0 = north, 90 = east, 180 = south, 270 = west). Baked into the meshes: change it with GT.setFacing(), which re-bakes
   TEX_STEP = 2,           -- texels per block edge (1 = full resolution, 4x the quads)
   MAX_BLOCKS = 40,        -- most blocks across one card, whatever the step says
-  MIN_HALF = 1,           -- a column's chord is never thinner than this many blocks each side
-  MAX_HALF = 9,           -- a tree is never deeper than 2x this many world units, however wide its run
+  MIN_HALF = 3,           -- a column's chord is never thinner than this many blocks each side
+  MAX_HALF = 15,          -- a tree is never deeper than 2x this many world units, however wide its run
   TREE_UNIT = 33,         -- width of one tree on a card (an ordinary Sinnoh tree card): wider cards are split into this many trees
   MAX_TREE_H = 220,       -- a card taller than this is not a tree
   MIN_TREE_H = 0.5,       -- ...nor one flatter than this (a ground quad)
