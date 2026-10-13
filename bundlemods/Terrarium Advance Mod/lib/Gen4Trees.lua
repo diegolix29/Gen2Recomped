@@ -102,8 +102,12 @@ local GT = {
   STRIP_LAYER_GROUP = 20, -- like LAYER_GROUP, but for border (conttree) cards: a border card joins a tree if it is this near ANY card already in it (a leaned stack of cards drifts in z, so the first-card test used for normal trees split them). Raise it if hat / middle / base still land in different groups, lower it if two trees merge. false = use LAYER_GROUP
   STRIP_LAYER_OFFSET = {  -- the same hat / middle / base nudge, but ONLY for border (conttree) trees. A table of three { x, y, z } like LAYER_OFFSET; false = border trees share LAYER_OFFSET with the normal trees
     { x = 0, y = 12, z = -3 },    -- 1 = the top layer (the hat)
-    { x = 0, y = 5, z = -8 },    -- 2 = the middle layer
-    { x = 0, y = 2, z = -10 },   -- 3 = the bottom layer (the base)
+    { x = 0, y = 0, z = 0 },    -- 2 = the middle layer
+    { x = 0, y = 5, z = -8 },   -- 3 = the bottom layer (the base)
+  },
+  STRIP_SHAPE_OFFSET = {   -- per border shape { hat, middle, base }; a shape not listed falls back to STRIP_LAYER_OFFSET
+    conttree_t = { { x=0, y=12, z=-3 }, { x=0, y=0, z=0 }, { x=0, y=5, z=-8 } },
+    conttree_b = { { x=0, y=2, z=-10 }, { x=0, y=0, z=0 }, { x=0, y=5, z=-8 } },
   },
   STRIP_SINGLE_OFFSET = false, -- a border tree drawn as ONE card: "same" = use SINGLE_OFFSET, "auto" = the average of STRIP_LAYER_OFFSET, { x =, y =, z = } by hand, or false = none
   DEBUG_LAYERS = false,   -- true: tint each layer (1 bright, 2 mid, 3 dark) so you can SEE which card took which layer
@@ -637,8 +641,13 @@ end
 
 -- LAYER OFFSETS. The offset of layer `k` (1 = hat, 2 = middle, 3 = base) as an
 -- { x, y, z } array (missing / bad values = 0), and whether it is non-zero.
-local function layerOffset(k, strip)
-  local src = (strip and type(GT.STRIP_LAYER_OFFSET) == "table") and GT.STRIP_LAYER_OFFSET or GT.LAYER_OFFSET
+local function layerOffset(k, strip, shapeKey)
+  local src = GT.LAYER_OFFSET
+  if strip then
+    local per = shapeKey and type(GT.STRIP_SHAPE_OFFSET) == "table" and GT.STRIP_SHAPE_OFFSET[shapeKey]
+    if type(per) == "table" then src = per
+    elseif type(GT.STRIP_LAYER_OFFSET) == "table" then src = GT.STRIP_LAYER_OFFSET end
+  end
   local cfg = type(src) == "table" and src or {}
   local o = type(cfg[k]) == "table" and cfg[k] or {}
   local x = tonumber(o.x or o[1]) or 0
@@ -672,7 +681,7 @@ end
 -- ONE TREE, the voxel scene's way (see the header). `uL..uR` / `vB..vT` is the
 -- art's texel window, `pivX/pivZ` the trunk's foot, `width` / `height` the
 -- card's size in world units.
-local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height, leanX, leanZ, cardLayer, isStrip)
+local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height, leanX, leanZ, cardLayer, isStrip, shapeKey)
   if width < 1 or height < 1 then return 0 end
   local nx = math.max(1, math.min(GT.MAX_BLOCKS, math.floor(math.abs(uR - uL) / GT.TEX_STEP + 0.5)))
   local ny = math.max(1, math.min(GT.MAX_BLOCKS, math.floor(math.abs(vB - vT) / GT.TEX_STEP + 0.5)))
@@ -741,10 +750,11 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
   -- Border strips and normal trees go through the same path.
   do
     local off, moved
-    if cardLayer then off, moved = layerOffset(cardLayer, isStrip) else off, moved = singleOffset(isStrip) end
+    if cardLayer then off, moved = layerOffset(cardLayer, isStrip, shapeKey) else off, moved = singleOffset(isStrip) end
     if moved then
       if isStrip then
-        V.mod.log:info("Strip emitTree layer %d applying offset x=%.1f y=%.1f z=%.1f", cardLayer, off[1], off[2], off[3])
+        V.mod.log:info("Strip emitTree %s layer %s offset x=%.1f y=%.1f z=%.1f",
+                       tostring(shapeKey), tostring(cardLayer), off[1], off[2], off[3])
       end
       pivX, baseY, pivZ = pivX + off[1], baseY + off[2], pivZ + off[3]
       originX = originX + off[1]
@@ -861,11 +871,29 @@ end
 -- highest card) and that rank is the card's layer in GT.LAYER_OFFSET. This holds
 -- for normal trees and for border (conttree) strips alike. Returns comp -> layer
 -- (nil for a card that is alone: it takes GT.SINGLE_OFFSET as one whole piece).
-local function cardLayers(positions, comps, strip)
+local function cardLayers(positions, comps, strip, shapeKey)
   local out = {}
   local dist = tonumber(GT.LAYER_GROUP) or 0
   if strip and tonumber(GT.STRIP_LAYER_GROUP) then dist = tonumber(GT.STRIP_LAYER_GROUP) end
   if dist <= 0 or #comps < 2 then
+    -- For strip trees with 1 card, assign layer based on vertical position
+    if strip and #comps == 1 then
+      local comp = comps[1]
+      local y0, y1 = math.huge, -math.huge
+      for _, i in ipairs(comp) do
+        local p = positions[i]
+        y0, y1 = math.min(y0, p[2]), math.max(y1, p[2])
+      end
+      local y = (y0 + y1) / 2
+      -- Assign layer based on height: > 15 = top (1), 8-15 = middle (2), < 8 = bottom (3)
+      if y > 15 then
+        out[1] = 1  -- Use index as key
+      elseif y > 8 then
+        out[1] = 2
+      else
+        out[1] = 3
+      end
+    end
     return out
   end
   local info = {}
@@ -933,14 +961,30 @@ local function cardLayers(positions, comps, strip)
         if a.v ~= c.v then return a.v < c.v end
         return a.cz > c.cz
       end)
+      -- For strip trees, map position in group to layer 1/2/3 based on height
+      -- If group has 2 cards: top=1, bottom=3 (skip middle)
+      -- If group has 3+ cards: top=1, middle=2, bottom=3
       for k, e in ipairs(g) do
-        local layer = math.min(k, 3)
+        local layer
+        if strip then
+          if #g == 2 then
+            layer = (k == 1) and 1 or 3  -- skip layer 2 for 2-card groups
+          else
+            layer = math.min(k, 3)
+          end
+        else
+          layer = k
+        end
         -- Find the comp index in the original comps array
         local compIndex
         for idx, c in ipairs(comps) do
           if c == e.comp then compIndex = idx; break end
         end
         if compIndex then out[compIndex] = layer end
+        if strip then
+          once("layerassign:" .. tostring(shapeKey) .. ":" .. k .. ":" .. e.y .. ":" .. layer,
+               "Strip %s card #%d at y=%.1f assigned layer %d (group size %d)", tostring(shapeKey), k, e.y, layer, #g)
+        end
       end
     end
   end
@@ -949,7 +993,7 @@ end
 
 -- One card -> trees in bucket `b`. A wide card is the same sprite tiled
 -- (`conttree*`): one tree per texture repeat.
-local function buildCard(b, tex, positions, comp, strip, layer)
+local function buildCard(b, tex, positions, comp, strip, layer, shapeKey)
   local xmin, xmax, ymin, ymax = math.huge, -math.huge, math.huge, -math.huge
   local zmin, zmax = math.huge, -math.huge
   local umin, umax, vmin, vmax = math.huge, -math.huge, math.huge, -math.huge
@@ -1053,7 +1097,7 @@ local function buildCard(b, tex, positions, comp, strip, layer)
     local mid = -width * 0.5 + (k + 0.5) * each
     local px, pz = pivX, pivZ
     if alongZ then pz = pivZ + mid else px = pivX + mid end
-    local m = emitTree(b, tex, a, c, vB, vT, px, baseY, pz, each, height, leanX, leanZ, layer, strip)
+    local m = emitTree(b, tex, a, c, vB, vT, px, baseY, pz, each, height, leanX, leanZ, layer, strip, shapeKey)
     made = made + m
   end
   once("card:" .. tostring(tex.path),
@@ -1106,6 +1150,9 @@ local function buildLand(ground, land)
     local skip
     local named = GT.isTreeName(s)
     local strip = namesOf(s):find("conttree", 1, true) ~= nil
+    local nm = namesOf(s)
+    local shapeKey = strip and (nm:find("conttree_t", 1, true) and "conttree_t"
+                         or nm:find("conttree_b", 1, true) and "conttree_b") or nil
     if out.quads >= GT.MAX_QUADS then
       skip = "quad budget"
     end
@@ -1159,7 +1206,7 @@ local function buildLand(ground, land)
     -- card in it has to have become trees; if one did not, undo the lot and
     -- leave the native shape drawing (it used to vanish with 0 quads).
     local v0, m0, built, ok, bad = #b.verts, #b.map, 0, true, 0
-    local layerOfCard = cardLayers(positions, comps, strip)
+    local layerOfCard = cardLayers(positions, comps, strip, shapeKey)
     do
       local sizes, n1 = {}, 0
       for _, k in pairs(layerOfCard) do sizes[k] = (sizes[k] or 0) + 1; n1 = n1 + 1 end
@@ -1169,7 +1216,7 @@ local function buildLand(ground, land)
            (function() local t = {} for k = 1, 6 do if sizes[k] then t[#t + 1] = k .. "=" .. sizes[k] end end return table.concat(t, " ") end)())
     end
     for idx, comp in ipairs(comps) do
-      local n, failed = buildCard(b, tex, positions, comp, strip, layerOfCard[idx])
+      local n, failed = buildCard(b, tex, positions, comp, strip, layerOfCard[idx], shapeKey)
       if failed then bad = bad + 1 end
       built = built + n
     end
@@ -1544,6 +1591,20 @@ function GT.setStripLayerOffset(layer, x, y, z)
   end
   local o = GT.STRIP_LAYER_OFFSET[layer]
   if type(o) ~= "table" then o = { x = 0, y = 0, z = 0 }; GT.STRIP_LAYER_OFFSET[layer] = o end
+  if x ~= nil then o.x = x end
+  if y ~= nil then o.y = y end
+  if z ~= nil then o.z = z end
+  GT.invalidate()
+end
+
+-- Per-shape offset setter for border trees. shape = "conttree_t" or "conttree_b",
+-- layer = 1/2/3, x/y/z = world units (nil = leave unchanged). Re-bakes at once.
+function GT.setStripShapeOffset(shape, layer, x, y, z)
+  GT.STRIP_SHAPE_OFFSET = GT.STRIP_SHAPE_OFFSET or {}
+  local t = GT.STRIP_SHAPE_OFFSET[shape]
+  if type(t) ~= "table" then t = {}; GT.STRIP_SHAPE_OFFSET[shape] = t end
+  local o = t[layer]
+  if type(o) ~= "table" then o = { x = 0, y = 0, z = 0 }; t[layer] = o end
   if x ~= nil then o.x = x end
   if y ~= nil then o.y = y end
   if z ~= nil then o.z = z end
