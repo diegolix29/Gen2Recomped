@@ -93,21 +93,21 @@ local GT = {
   SMOOTH_PASSES = 1,      -- extra blur passes over the depth field (0 = as sampled, 2-3 = rounder, softer)
   RIM = 0.35,             -- depth kept at the silhouette, as a fraction of the depth just inside it (0 = razor edge, 1 = full slab wall)
   LAYER_OFFSET = {        -- hand nudge per LAYER (hat / middle / base), counted from the top, WORLD UNITS. x = sideways (+ east), y = up, z = toward the south. Each layer moves as ONE whole sprite, never cut into parts. All zero = off. Baked: use GT.setLayerOffset(...) or reload
-    { x = 0, y = 0, z = -2 },    -- 1 = the top layer (the hat)
-    { x = 0, y = 0, z = -8 },    -- 2 = the middle layer
-    { x = 0, y = 0, z = -10 },   -- 3 = the bottom layer (the base)
+    { x = 0, y = 12, z = -3 },    -- 1 = the top layer (the hat)
+    { x = 0, y = 5, z = -8 },    -- 2 = the middle layer
+    { x = 0, y = 2, z = -10 },   -- 3 = the bottom layer (the base)
   },
   LAYER_GROUP = 8,        -- cards of one shape whose centres are within this many world units (sideways) are the hat / middle / base of ONE tree, ranked by height. Works for normal trees AND border (conttree) strips
-  SINGLE_OFFSET = "auto", -- a tree drawn as ONE card (all layers in one sprite) moves as one whole piece: "auto" = the average of LAYER_OFFSET[1..3], or { x =, y =, z = } by hand, or false = no offset
+  SINGLE_OFFSET = false, -- a tree drawn as ONE card (all layers in one sprite) moves as one whole piece: "auto" = the average of LAYER_OFFSET[1..3], or { x =, y =, z = } by hand, or false = no offset
   STRIP_LAYER_GROUP = 20, -- like LAYER_GROUP, but for border (conttree) cards: a border card joins a tree if it is this near ANY card already in it (a leaned stack of cards drifts in z, so the first-card test used for normal trees split them). Raise it if hat / middle / base still land in different groups, lower it if two trees merge. false = use LAYER_GROUP
   STRIP_LAYER_OFFSET = {  -- the same hat / middle / base nudge, but ONLY for border (conttree) trees. A table of three { x, y, z } like LAYER_OFFSET; false = border trees share LAYER_OFFSET with the normal trees
-    { x = 0, y = 0, z = -2 },    -- 1 = the top layer (the hat)
-    { x = 0, y = 0, z = -8 },    -- 2 = the middle layer
-    { x = 0, y = 0, z = -10 },   -- 3 = the bottom layer (the base)
+    { x = 0, y = 12, z = -3 },    -- 1 = the top layer (the hat)
+    { x = 0, y = 5, z = -8 },    -- 2 = the middle layer
+    { x = 0, y = 2, z = -10 },   -- 3 = the bottom layer (the base)
   },
-  STRIP_SINGLE_OFFSET = "auto", -- a border tree drawn as ONE card: "same" = use SINGLE_OFFSET, "auto" = the average of STRIP_LAYER_OFFSET, { x =, y =, z = } by hand, or false = none
+  STRIP_SINGLE_OFFSET = false, -- a border tree drawn as ONE card: "same" = use SINGLE_OFFSET, "auto" = the average of STRIP_LAYER_OFFSET, { x =, y =, z = } by hand, or false = none
   DEBUG_LAYERS = false,   -- true: tint each layer (1 bright, 2 mid, 3 dark) so you can SEE which card took which layer
-  FLAT = true,          -- front and back faces sit in (almost) the SAME place: the tree keeps the sprite's silhouette and height but has no depth, so both sides show the same art at the same spot. false = the round disc profile
+  FLAT = false,          -- front and back faces sit in (almost) the SAME place: the tree keeps the sprite's silhouette and height but has no depth, so both sides show the same art at the same spot. false = the round disc profile
   FLAT_HALF = 8.4,        -- ...half the slab's thickness in world units when FLAT (0.4 = 0.8 thick: enough that the two faces never z-fight)
   SAME_FACE = true,       -- both z ends of a tree wear the FRONT shade, like the native card that always turns its face to the camera. false = the old lit-front / dark-back pair (see FACING)
   FACING = "camera",      -- "camera" = the lit side follows the camera like the native cards do (two meshes per land, one drawn per frame); or a fixed world side: "south" (+z), "north" (-z), "east" (+x), "west" (-x), or a compass bearing in degrees (0 = north, 90 = east, 180 = south, 270 = west). Baked into the meshes: change it with GT.setFacing(), which re-bakes
