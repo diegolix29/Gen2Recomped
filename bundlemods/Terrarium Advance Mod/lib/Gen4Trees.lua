@@ -743,6 +743,9 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
     local off, moved
     if cardLayer then off, moved = layerOffset(cardLayer, isStrip) else off, moved = singleOffset(isStrip) end
     if moved then
+      if isStrip then
+        V.mod.log:info("Strip emitTree layer %d applying offset x=%.1f y=%.1f z=%.1f", cardLayer, off[1], off[2], off[3])
+      end
       pivX, baseY, pivZ = pivX + off[1], baseY + off[2], pivZ + off[3]
       originX = originX + off[1]
     end
@@ -862,7 +865,9 @@ local function cardLayers(positions, comps, strip)
   local out = {}
   local dist = tonumber(GT.LAYER_GROUP) or 0
   if strip and tonumber(GT.STRIP_LAYER_GROUP) then dist = tonumber(GT.STRIP_LAYER_GROUP) end
-  if dist <= 0 or #comps < 2 then return out end
+  if dist <= 0 or #comps < 2 then
+    return out
+  end
   local info = {}
   for n, comp in ipairs(comps) do
     local x0, x1, y0, y1, z0, z1, v0 = math.huge, -math.huge, math.huge, -math.huge, math.huge, -math.huge, math.huge
@@ -928,7 +933,15 @@ local function cardLayers(positions, comps, strip)
         if a.v ~= c.v then return a.v < c.v end
         return a.cz > c.cz
       end)
-      for k, e in ipairs(g) do out[e.comp] = strip and math.min(k, 3) or k end
+      for k, e in ipairs(g) do
+        local layer = math.min(k, 3)
+        -- Find the comp index in the original comps array
+        local compIndex
+        for idx, c in ipairs(comps) do
+          if c == e.comp then compIndex = idx; break end
+        end
+        if compIndex then out[compIndex] = layer end
+      end
     end
   end
   return out
@@ -1155,8 +1168,8 @@ local function buildLand(ground, land)
            tostring(tex.path), n1, #comps,
            (function() local t = {} for k = 1, 6 do if sizes[k] then t[#t + 1] = k .. "=" .. sizes[k] end end return table.concat(t, " ") end)())
     end
-    for _, comp in ipairs(comps) do
-      local n, failed = buildCard(b, tex, positions, comp, strip, layerOfCard[comp])
+    for idx, comp in ipairs(comps) do
+      local n, failed = buildCard(b, tex, positions, comp, strip, layerOfCard[idx])
       if failed then bad = bad + 1 end
       built = built + n
     end
