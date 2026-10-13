@@ -131,7 +131,7 @@ local GT = {
   BUILD_BUDGET = 0.006,   -- seconds, steady state
   WARM_BUDGET = 0.04,     -- seconds per frame while the window is still filling
   DENSE_FRACTION = 0.92,  -- a sprite window this opaque has no silhouette to follow (no real alpha, or a wall tile): it is rounded, never built as a slab
-  LOG = true,
+  LOG = false,            -- logging disabled for performance
   coverVersion = 0,       -- bumps whenever the set of covered shapes changes
   active = {},            -- cache shape record -> true (covered AND in the window)
   coveredNames = {},      -- texture/material names that converted in EVERY land of the window (Gen4Hide's fallback when a shape has no cache pointer)
@@ -146,9 +146,9 @@ local FX16, UV_UNITS = 4096, 16
 
 local warned = {}
 local function once(key, fmt, ...)
+  -- Logging disabled for performance
   if warned[key] then return end
   warned[key] = true
-  if V.mod and V.mod.log then V.mod.log:info("Gen4Trees: " .. fmt:format(...)) end
 end
 
 local function optional(name)
@@ -752,10 +752,7 @@ local function emitTree(b, tex, uL, uR, vB, vT, pivX, baseY, pivZ, width, height
     local off, moved
     if cardLayer then off, moved = layerOffset(cardLayer, isStrip, shapeKey) else off, moved = singleOffset(isStrip) end
     if moved then
-      if isStrip then
-        V.mod.log:info("Strip emitTree %s layer %s offset x=%.1f y=%.1f z=%.1f",
-                       tostring(shapeKey), tostring(cardLayer), off[1], off[2], off[3])
-      end
+      -- Logging disabled for performance
       pivX, baseY, pivZ = pivX + off[1], baseY + off[2], pivZ + off[3]
       originX = originX + off[1]
     end
@@ -1278,13 +1275,7 @@ local function buildLand(ground, land)
   for _, s in ipairs(out.shapes) do
     for _, k in ipairs(nameKeys(s)) do out.coveredKeys[k] = true end
   end
-  if GT.LOG and (#out.shapes > 0 or next(skipped)) then
-    local why = {}
-    for k, n in pairs(skipped) do why[#why + 1] = ("%d %s"):format(n, k) end
-    once("land" .. tostring(land),
-         "land %s: %d tree shapes voxelised (%d quads); left native: %s",
-         tostring(land), #out.shapes, out.quads, #why > 0 and table.concat(why, ", ") or "none")
-  end
+  -- Logging disabled for performance
   return out
 end
 

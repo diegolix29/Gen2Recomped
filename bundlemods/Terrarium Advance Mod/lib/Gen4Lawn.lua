@@ -43,7 +43,7 @@ local Lawn = {
     bf_ngrass = { image = "grass.png", uv = 1 },     -- lawn, another area's prefix
     -- imped is rocks AND fence banners. Gen4Rocks hides only rock-only shapes;
     -- Lawn must not paint the whole material transparent or fences vanish.
-    hage      = { image = "mix.png",   uv = 1 },
+    hage      = { image = "mulch.png",   uv = 1 },
     nsand     = { image = "mulch.png",    uv = 1 },
     nsandp    = { image = "mulch.png",  uv = 1 },
     lgreen    = { image = "highgrass.png",    uv = 1 },
@@ -63,7 +63,7 @@ local Lawn = {
     criff     = { image = "edges.png",   uv = 1 },
     criffp    = { image = "edges.png",   uv = 1 },
     searock   = { image = "edges.png",   uv = 1 },
-    fenter    = { image = "step.png",    uv = 1 },
+    fenter    = { image = "shadow tree.png",    uv = 1 },
     newstep   = { image = "9step.png",    uv = 1 },
     cyclestop = { image = "step.png",    uv = 1 },
     ["s_snow"]   = { image = "dsnow.png",   uv = 1 },
