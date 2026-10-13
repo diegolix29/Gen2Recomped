@@ -216,6 +216,10 @@ if Gen4Bridge.isGen4() and Gen4Bridge.install() then
   pcall(function()
     Gen4Bridge.register("rocks", V.require("Gen4Rocks").draw)
   end)
+  -- real 3D fences on Platinum's `imped` fence banners (also registered inside Gen4Bridge.install)
+  pcall(function()
+    Gen4Bridge.register("fence", V.require("Gen4Fence").draw)
+  end)
   -- HD Reloded roamers/followers when no Stadium/Colosseum model is bound
   pcall(function()
     Gen4Bridge.register("hd_pokemon", V.require("Gen4HdPokemon").draw)

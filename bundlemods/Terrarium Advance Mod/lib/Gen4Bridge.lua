@@ -353,6 +353,15 @@ function Bridge.install()
   else
     report("rocks", "the rock pass did not load: %s", tostring(GR))
   end
+  -- Real 3D fences (posts, rails or pickets) where Platinum draws its flat fence
+  -- banners (`imped`). Opaque, after the rocks. Gen4Hide drops the native banner
+  -- only where every card of the shape has a fence built for it.
+  local okFe, GFe = pcall(V.require, "Gen4Fence")
+  if okFe and type(GFe) == "table" and GFe.draw then
+    Bridge.register("fence", GFe.draw)
+  else
+    report("fence", "the fence pass did not load: %s", tostring(GFe))
+  end
   -- Small voxel flowers on Platinum's flower beds (`nhana`). Opaque, after the
   -- rocks. Gen4Lawn repaints the bed's floor with grass.png once they exist.
   local okF, GF = pcall(V.require, "Gen4Flowers")
@@ -379,7 +388,7 @@ end
 -- these, so a graphics reset, a mod reload or a cache reset left the old
 -- meshes (and, on a lost GL context, dead ones) in place.
 function Bridge.invalidateAll()
-  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Rocks", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass" }) do
+  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Rocks", "Gen4Fence", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass" }) do
     local ok, mod = pcall(V.require, name)
     if ok and type(mod) == "table" and type(mod.invalidate) == "function" then
       local okI, err = pcall(mod.invalidate)

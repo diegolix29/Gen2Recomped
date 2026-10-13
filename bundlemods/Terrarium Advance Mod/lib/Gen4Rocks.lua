@@ -7,7 +7,8 @@
 -- Gen4Trees replaces:
 --   * a roughly square card is a rock sprite
 --   * a long banner -- wide (east/west) OR tall (north/south / standing) -- is a fence
--- Only the square cards become voxel rocks. Banner cards stay native.
+-- Only the square cards become voxel rocks. Banner cards are Gen4Fence's: it
+-- stands real 3D fences on them (and falls back to leaving them native).
 --
 -- WHAT THIS BUILDS INSTEAD
 --
@@ -192,6 +193,9 @@ local function isFenceCard(c)
   if long >= (Rocks.FENCE_MIN_W or 40) then return true end
   return (long / short) >= (Rocks.FENCE_ASPECT or 1.75)
 end
+-- Gen4Fence classifies cards with this same test, so a card is never both a
+-- boulder and a fence.
+Rocks.isFenceCard = isFenceCard
 
 -- ------------------------------------------------------------------ mesh --
 
