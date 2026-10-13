@@ -60,6 +60,8 @@ local Lawn = {
     beachp    = { image = "sand.png",    uv = 1 },
     hamabe    = { image = "sand.png",    uv = 1 },   -- shore
     seaside3  = { image = "sand.png",    uv = 1 },
+    -- Jump-down ledges. Edges.png stays as the native fallback; Gen4Bump stands
+    -- a 3D dirt pile on these ids and Hide drops the cartridge polygons.
     criff     = { image = "edges.png",   uv = 1 },
     criffp    = { image = "edges.png",   uv = 1 },
     searock   = { image = "edges.png",   uv = 1 },

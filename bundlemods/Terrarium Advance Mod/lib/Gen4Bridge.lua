@@ -337,6 +337,14 @@ function Bridge.install()
   else
     report("lawn", "the lawn blend pass did not load: %s", tostring(GL))
   end
+  -- Small dirt piles on Platinum jump-down ledges (`criff` / `criffp`). Opaque,
+  -- after the lawn, before the trees.
+  local okB, GB = pcall(V.require, "Gen4Bump")
+  if okB and type(GB) == "table" and GB.draw then
+    Bridge.register("bump", GB.draw)
+  else
+    report("bump", "the bump pass did not load: %s", tostring(GB))
+  end
   -- The voxel scene's 3D trees in place of Platinum's flat tree cards. Opaque,
   -- after the ground passes, before grass and the actors.
   local okT, GT = pcall(V.require, "Gen4Trees")
@@ -388,7 +396,7 @@ end
 -- these, so a graphics reset, a mod reload or a cache reset left the old
 -- meshes (and, on a lost GL context, dead ones) in place.
 function Bridge.invalidateAll()
-  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Rocks", "Gen4Fence", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass" }) do
+  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Bump", "Gen4Rocks", "Gen4Fence", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass" }) do
     local ok, mod = pcall(V.require, name)
     if ok and type(mod) == "table" and type(mod.invalidate) == "function" then
       local okI, err = pcall(mod.invalidate)

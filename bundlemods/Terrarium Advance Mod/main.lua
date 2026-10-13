@@ -220,6 +220,10 @@ if Gen4Bridge.isGen4() and Gen4Bridge.install() then
   pcall(function()
     Gen4Bridge.register("fence", V.require("Gen4Fence").draw)
   end)
+  -- dirt piles on Platinum jump-down ledges (`criff` / `criffp`)
+  pcall(function()
+    Gen4Bridge.register("bump", V.require("Gen4Bump").draw)
+  end)
   -- HD Reloded roamers/followers when no Stadium/Colosseum model is bound
   pcall(function()
     Gen4Bridge.register("hd_pokemon", V.require("Gen4HdPokemon").draw)
