@@ -1,23 +1,19 @@
--- Gen4Bump: a small dirt block at Platinum's jump-down ledges.
+-- Gen4Bump: a small round dirt pile at Platinum's jump-down ledges.
 --
 -- WHICH LEDGES
 --
--- Gen4Lawn already names the cliff / jump-off terrain textures: `criff` and
--- `criffp` (Platinum's misspelling of "cliff"). Those shapes are the strip the
--- player hops down from. Lawn currently stamps edges.png onto the cartridge's
--- own polygons; this builds a real 3D block in their place, wearing the same
--- picture (assets/ground/grass/edges.png).
+-- Gen4Lawn already names the jump-off terrain texture: `allpeak`. Lawn stamps
+-- edges.png onto the cartridge's own polygons; this builds a round 3D mound in
+-- their place, wearing the same picture (assets/ground/grass/edges.png).
 --
 -- WHAT THIS BUILDS
 --
--- For every 16-unit cell that a criff shape covers: one low dirt block on the
--- TOP of that geometry (the lip you jump from), never a full cliff wall. A
--- slightly smaller cap sits on the block so it reads as a pile, not a cube.
--- Native criff is hidden only where a block was built for that shape
--- (Gen4Hide). Until then Lawn's edges.png swap stays as the fallback.
+-- For every 16-unit cell that an allpeak shape covers: one low round pile on
+-- the TOP of that geometry (the lip you jump from). Native allpeak is hidden
+-- only where a pile was built for that shape (Gen4Hide).
 --
--- KNOBS: HEIGHT, MIN_W, MAX_W, SINK, WINDOW, enabled. Bridge.disabled.bump
--- turns it off.
+-- KNOBS: HEIGHT, MIN_W, MAX_W, SINK, SIDES, WINDOW, enabled.
+-- Bridge.disabled.bump turns it off.
 
 local V = ...
 local Voxel3D = V.require("Voxel3D")
@@ -28,11 +24,12 @@ local Bump = {
   TEXTURES = { allpeak = true},
   WINDOW = 10,
   HEIGHT = 10,                      -- pile height (world units; a tile is 16)
-  CAP = 0.88,                      -- extra cap as a fraction of HEIGHT
+  CAP = 0.88,                      -- unused on the round pile (kept so your value stays)
   MIN_W = 26,                      -- never thinner than this in XZ
   MAX_W = 26,                      -- never wider than one tile
   SINK = 0,                      -- planted this far into the upper terrace
-  SHADE = Voxel3D.FACE_SHADE,      -- per-face brightness
+  SIDES = 16,                      -- how round the silhouette is (8 = chunky, 16 = smooth)
+  RINGS = 5,                       -- vertical slices from the rim to the tip
   UV = 16,                         -- world units per texture repeat
   BUILDS_PER_FRAME = 4,
   MAX_RESIDENT = 20,
@@ -130,61 +127,68 @@ end
 
 local LIGHT = { 0.35, 0.80, 0.50 }
 
-local function faceShade(fid)
-  local baked = Bump.SHADE and Bump.SHADE[fid]
-  if baked then
-    return fid == 3 and -baked or baked
-  end
-  local n = ({ [1] = { 1, 0, 0 }, [2] = { -1, 0, 0 }, [3] = { 0, 1, 0 },
-               [4] = { 0, -1, 0 }, [5] = { 0, 0, 1 }, [6] = { 0, 0, -1 } })[fid]
-  local lit = math.max(0, n[1] * LIGHT[1] + n[2] * LIGHT[2] + n[3] * LIGHT[3])
-  local shade = math.min(1.0, 0.50 + 0.55 * lit)
-  if n[2] > 0.5 then shade = -shade end
-  return shade
-end
-
--- Axis-aligned box. Origin is the minimum corner. UVs wrap edges.png by world size.
-local function box(b, x0, y0, z0, sx, sy, sz)
-  local x1, y1, z1 = x0 + sx, y0 + sy, z0 + sz
-  local U = Bump.UV
-  local faces = {
-    { 1, { { x1, y0, z0 }, { x1, y0, z1 }, { x1, y1, z1 }, { x1, y1, z0 } },
-      { { z0, y0 }, { z1, y0 }, { z1, y1 }, { z0, y1 } } },
-    { 2, { { x0, y0, z1 }, { x0, y0, z0 }, { x0, y1, z0 }, { x0, y1, z1 } },
-      { { z1, y0 }, { z0, y0 }, { z0, y1 }, { z1, y1 } } },
-    { 3, { { x0, y1, z0 }, { x1, y1, z0 }, { x1, y1, z1 }, { x0, y1, z1 } },
-      { { x0, z0 }, { x1, z0 }, { x1, z1 }, { x0, z1 } } },
-    { 5, { { x0, y0, z1 }, { x1, y0, z1 }, { x1, y1, z1 }, { x0, y1, z1 } },
-      { { x0, y0 }, { x1, y0 }, { x1, y1 }, { x0, y1 } } },
-    { 6, { { x1, y0, z0 }, { x0, y0, z0 }, { x0, y1, z0 }, { x1, y1, z0 } },
-      { { x1, y0 }, { x0, y0 }, { x0, y1 }, { x1, y1 } } },
-  }
-  for _, face in ipairs(faces) do
-    local shade = faceShade(face[1])
-    local base = #b.verts
-    for k = 1, 4 do
-      local p, uv = face[2][k], face[3][k]
-      b.verts[base + k] = { p[1], p[2], p[3], uv[1] / U, uv[2] / U, shade, 0 }
-    end
-    b.map[#b.map + 1], b.map[#b.map + 2], b.map[#b.map + 3] = base + 1, base + 2, base + 3
-    b.map[#b.map + 1], b.map[#b.map + 2], b.map[#b.map + 3] = base + 1, base + 3, base + 4
-  end
-end
-
 local function clampW(w)
   return math.max(Bump.MIN_W, math.min(Bump.MAX_W, w))
 end
 
--- One pile: a dirt block at the TOP of the native cliff, plus a smaller cap.
+local function pushTri(b, p, q, r, cx, cy, cz)
+  local ux, uy, uz = q[1] - p[1], q[2] - p[2], q[3] - p[3]
+  local vx, vy, vz = r[1] - p[1], r[2] - p[2], r[3] - p[3]
+  local nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+  local len = math.sqrt(nx * nx + ny * ny + nz * nz)
+  if len < 1e-8 then return end
+  nx, ny, nz = nx / len, ny / len, nz / len
+  local mx = (p[1] + q[1] + r[1]) / 3 - cx
+  local my = (p[2] + q[2] + r[2]) / 3 - cy
+  local mz = (p[3] + q[3] + r[3]) / 3 - cz
+  if nx * mx + ny * my + nz * mz < 0 then
+    nx, ny, nz = -nx, -ny, -nz
+    q, r = r, q
+  end
+  local lit = math.max(0, nx * LIGHT[1] + ny * LIGHT[2] + nz * LIGHT[3])
+  local shade = math.min(1.0, 0.50 + 0.55 * lit)
+  if ny > 0.55 then shade = -shade end
+  local U = Bump.UV
+  local base = #b.verts
+  b.verts[base + 1] = { p[1], p[2], p[3], p[1] / U, p[3] / U, shade, 0 }
+  b.verts[base + 2] = { q[1], q[2], q[3], q[1] / U, q[3] / U, shade, 0 }
+  b.verts[base + 3] = { r[1], r[2], r[3], r[1] / U, r[3] / U, shade, 0 }
+  b.map[#b.map + 1], b.map[#b.map + 2], b.map[#b.map + 3] = base + 1, base + 2, base + 3
+end
+
+-- Round dirt mound: circular footprint, cosine silhouette, sitting on ymax.
 local function pile(b, cx, cz, ymax, spanX, spanZ)
-  local sx, sz = clampW(spanX), clampW(spanZ)
+  local rx, rz = clampW(spanX) * 0.5, clampW(spanZ) * 0.5
   local h = Bump.HEIGHT
-  local y0 = ymax - Bump.SINK - h
-  box(b, cx - sx * 0.5, y0, cz - sz * 0.5, sx, h, sz)
-  local capH = math.max(1.2, h * Bump.CAP)
-  local capS = 0.62
-  box(b, cx - sx * 0.5 * capS, y0 + h - 0.15, cz - sz * 0.5 * capS,
-      sx * capS, capH, sz * capS)
+  local y0 = ymax - Bump.SINK
+  local sides = math.max(8, math.floor(Bump.SIDES or 16))
+  local rings = math.max(3, math.floor(Bump.RINGS or 5))
+  local midY = y0 + h * 0.4
+  local ringsPts = {}
+  for ring = 0, rings - 1 do
+    local t = ring / rings
+    local phi = t * (math.pi * 0.5)
+    local rr, yy = math.cos(phi), math.sin(phi) * h
+    local row = {}
+    for s = 0, sides - 1 do
+      local ang = (s / sides) * math.pi * 2
+      row[s] = { cx + math.cos(ang) * rx * rr, y0 + yy, cz + math.sin(ang) * rz * rr }
+    end
+    ringsPts[ring] = row
+  end
+  local tip = { cx, y0 + h, cz }
+  for ring = 0, rings - 2 do
+    local a, c = ringsPts[ring], ringsPts[ring + 1]
+    for s = 0, sides - 1 do
+      local n = (s + 1) % sides
+      pushTri(b, a[s], a[n], c[n], cx, midY, cz)
+      pushTri(b, a[s], c[n], c[s], cx, midY, cz)
+    end
+  end
+  local last = ringsPts[rings - 1]
+  for s = 0, sides - 1 do
+    pushTri(b, last[s], last[(s + 1) % sides], tip, cx, midY, cz)
+  end
 end
 
 -- ------------------------------------------------------------------ lands --
@@ -255,7 +259,7 @@ local function buildLand(ground, land)
   if #b.verts > 0 then out.mesh = Voxel3D.newMesh(b.verts, b.map) end
   if Bump.LOG and shapesSeen > 0 then
     once("land" .. tostring(land),
-         "land %s: %d criff shape(s) -> %d dirt pile(s); %d native shape(s) hidden",
+         "land %s: %d allpeak shape(s) -> %d dirt pile(s); %d native shape(s) hidden",
          tostring(land), shapesSeen, out.bumps, #out.shapes)
   end
   return out
