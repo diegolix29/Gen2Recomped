@@ -364,9 +364,11 @@ local function drawActor(scene, battle, battler, spot)
   local pic
   local isHd = false
   local HDSheets = V.HDPokemonSheets or (V.mod and V.mod.exports and V.mod.exports.hdPokemonSheets)
-  if HDSheets and type(HDSheets.frame) == "function" then
-    -- 3D battles use the FRONT sheet for both sides; back sheets are for
-    -- followers and roamers only.
+  local colosseumOwns = HDSheets and type(HDSheets.colosseumOwns) == "function"
+    and HDSheets.colosseumOwns(battle, battler)
+  if not colosseumOwns and HDSheets and type(HDSheets.frame) == "function" then
+    -- HD is the no-3D fallback. Colosseum-owned dex stay on the engine pic
+    -- (or a live GC6E01 actor elsewhere); do not stamp Reloded sheets over them.
     local side = "front"
     local mon = battler.mon or battler
     local dex = mon and (mon.dex or mon.nationalDex or mon.speciesIndex)

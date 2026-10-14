@@ -646,6 +646,56 @@ function M.isEnabled(game)
   return true
 end
 
+local function modelsEnabled(game)
+  local settings = V and V.BattleSettings
+  if settings and type(settings.pokemonModelsEnabled) == "function" then
+    local ok, value = pcall(settings.pokemonModelsEnabled, game)
+    if ok then return value ~= false end
+  end
+  local save = game and game.save
+  local p = type(save) == "table" and save.terrariumBattle
+  if type(p) == "table" and p.pokemonModelsEnabled == false then return false end
+  return true
+end
+
+-- Live Stadium/Colosseum 3D coverage for this battle side, if a host is
+-- already presenting a model. HD must not replace that with a billboard.
+local function liveModelCovers(battle, side)
+  if type(battle) ~= "table" then return false end
+  local okS, covered = pcall(function()
+    return V.require("Stadium").covers(battle, side)
+  end)
+  if okS and covered then return true end
+  local okH, host = pcall(V.require, "StandaloneHost")
+  if okH and host and type(host.coversSide) == "function" then
+    local okC, value = pcall(host.coversSide, battle, side)
+    if okC and value then return true end
+  end
+  local CSM = V and V.CurrentSpriteModels
+  if CSM and type(CSM.covers) == "function" then
+    local ctx = { battle = battle, game = gameOf(battle) }
+    local okC, value = pcall(CSM.covers, CSM, ctx, side)
+    if okC and value then return true end
+  end
+  return false
+end
+
+-- The Colosseum actor catalog structurally owns National Dex 1-386 whenever
+-- COLOSSEUM MODELS is on. HD sheets are the fallback for everything else
+-- (Sinnoh, missing disc, toggle off), never a second skin over a live model.
+function M.colosseumOwns(context, battler)
+  if not modelsEnabled(gameOf(context)) then return false end
+  local id = identify(dataOf(context), battler)
+  if not id or id.dex > M.COLOSSEUM_MAX then return false end
+  local actors = V and V.PokemonActors
+  local api = actors and actors.service
+  if api and type(api.available) == "function" then
+    local ok, available = pcall(api.available, api.SELECTED or "selected", id.dex)
+    if ok and available == false then return false end
+  end
+  return true
+end
+
 -- Every 3D battle mode (2D-3D A/B, STADIUM A/B, COLOSSEUM A/B) shows the FRONT
 -- sheet for BOTH sides: the camera looks at the player's mon from the side, so
 -- the back-view art is wrong there. Back sheets are reserved for followers and
@@ -661,6 +711,8 @@ function M.textureFor(battle, side, tex)
   if type(battle) ~= "table" or not FACINGS[facingFor(side)] then return nil end
   if type(tex) ~= "table" or tex.trainer then return nil end
   if not M.isEnabled(gameOf(battle)) then return nil end
+  if liveModelCovers(battle, side) then return nil end
+  if M.colosseumOwns(battle, battle[side]) then return nil end
   local id = identify(dataOf(battle), battle[side])
   if not id then return nil end
   local image, info = M.frame({
@@ -698,8 +750,10 @@ end
 -- draw 2D" rule for exactly these sides and nothing else.
 function M.ownsSide(context, battler)
   if not M.isEnabled(gameOf(context)) then return false end
+  if M.colosseumOwns(context, battler) then return false end
   local id = identify(dataOf(context), battler)
-  if not id or id.dex <= M.COLOSSEUM_MAX then return false end
+  if not id then return false end
+  if id.dex <= M.COLOSSEUM_MAX and modelsEnabled(gameOf(context)) then return false end
   return M.available(id.dex, "front", id.shiny, id.gender, id.form)
 end
 
@@ -720,6 +774,11 @@ M.spriteApi = {
   resolve = function(context, side, battler, image)
     local id = identify(dataOf(context), battler)
     if not id then return nil end
+    -- 3D Colosseum/Stadium actors outrank HD sheets. Serving a sheet here
+    -- is what made animated 2D win on dex 1-386 whenever CSM asked for a
+    -- sprite, even with a live GC6E01 model on the same side.
+    if M.colosseumOwns(context, battler) then return nil end
+    if liveModelCovers(context and context.battle, side) then return nil end
     local facing = facingFor(side)
     -- Size is a property of the sheet, so ask for the geometry first.
     local color = id.shiny and "shiny" or "normal"

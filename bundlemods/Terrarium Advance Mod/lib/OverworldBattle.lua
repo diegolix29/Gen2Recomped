@@ -1246,6 +1246,20 @@ function OverworldBattle.sideTexture(battle, side)
     return V.require("Stadium").covers(battle, side)
   end)
   if okS and covered then return nil end
+  -- CBE Colosseum battles present through CurrentSpriteModels / StandaloneHost,
+  -- not Stadium.lua's session.rig. Asking only Stadium.covers let HD sheets
+  -- stamp a billboard over a live GC6E01 actor.
+  local okH, hostCovered = pcall(function()
+    return V.require("StandaloneHost").coversSide(battle, side)
+  end)
+  if okH and hostCovered then return nil end
+  local CSM = V.CurrentSpriteModels
+  if CSM and type(CSM.covers) == "function" then
+    local okC, csmCovered = pcall(CSM.covers, CSM, {
+      battle = battle, game = battle.game,
+    }, side)
+    if okC and csmCovered then return nil end
+  end
   if not sideVisible(battle, side) then return nil end
   local canvas = texCanvasFor(side)
   if not canvas then return nil end
@@ -1600,64 +1614,6 @@ function OverworldBattle.install()
   -- at the scale the GB always put them -- feet on the box, 2x, back view.
   innerPics = BattleState.drawPicsLayer
   function BattleState:drawPicsLayer(slide, sx, sy, onlySide, skipMenuClip)
-    V.mod.log:info("[drawPicsLayer] Called with shot=%s onlySide=%s", tostring(self.dramaticShapeShot ~= nil), tostring(onlySide))
-    
-    -- Check if COLOSSEUM A/B mode is selected - render Colosseum models FIRST
-    -- This must happen BEFORE the shot check so it works for regular native battles
-    local mode = nil
-    if OverworldBattle and type(OverworldBattle.setting)=="table" and type(OverworldBattle.setting.get)=="function" then
-      local ok,value = pcall(OverworldBattle.setting.get, OverworldBattle.setting)
-      V.mod.log:info("[drawPicsLayer] Setting read: ok=%s value=%s", tostring(ok), tostring(value))
-      if ok then
-        if value == OverworldBattle.COLOSSEUM_A then mode = "COLOSSEUM_A"
-        elseif value == OverworldBattle.COLOSSEUM_B then mode = "COLOSSEUM_B"
-        end
-      end
-    end
-    
-    V.mod.log:info("[drawPicsLayer] Mode detected: %s", tostring(mode))
-    
-    if mode then
-      -- Use PokemonActors.service directly like the Pokemon info screen does
-      local PokemonActors = V.PokemonActors
-      local api = PokemonActors and PokemonActors.service
-      V.mod.log:info("[drawPicsLayer] PokemonActors available: %s, api=%s", tostring(PokemonActors ~= nil), tostring(api ~= nil))
-      
-      if api then
-        local sidesToRender = onlySide and {onlySide} or {"player", "enemy"}
-        for _, side in ipairs(sidesToRender) do
-          local battler = side == "player" and self.player or self.enemy
-          if battler and battler.mon then
-            local dex = battler.mon.dex
-            local shiny = battler.mon.shiny
-            local variant = shiny and "shiny" or "normal"
-            
-            -- If dex is not a number, try to look up species name to dex
-            if not dex or type(dex) ~= "number" then
-              local species = battler.mon.species
-              if species and type(species) == "string" then
-                V.mod.log:info("[drawPicsLayer] Species name: %s", tostring(species))
-                -- Try to look up dex from ColosseumDexNames
-                local okNames, ColosseumDexNames = pcall(V.require, "ColosseumDexNames")
-                if okNames and ColosseumDexNames then
-                  for i, name in ipairs(ColosseumDexNames) do
-                    if name == species then
-                      dex = i
-                      V.mod.log:info("[drawPicsLayer] Found dex %d for species %s", i, species)
-                      break
-                    end
-                  end
-                else
-                  V.mod.log:info("[drawPicsLayer] Failed to load ColosseumDexNames: %s", tostring(ColosseumDexNames))
-                end
-              end
-            end
-          end
-        end
-      end
-      return -- Skip native sprite rendering for Stadium/Colosseum modes
-    end
-    
     local shot = self.dramaticShapeShot
     
     if not shot then
