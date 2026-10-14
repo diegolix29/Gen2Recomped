@@ -25,6 +25,27 @@ Tags and packages:
 
 ## Unreleased
 
+### Colosseum battles: Transform now swaps the 3D model
+
+- **A Pokemon that uses Transform is drawn as the Pokemon it copied.** The engine
+  records a Transform by swapping the battler's picture only (`mon.species` stays
+  DITTO), and every Colosseum consumer resolved the model from `mon.species`, so the
+  actor never changed in any generation. `lib/ModelIdentity.lua` now observes the
+  engine's `pokemon.sprite` hook (generation-neutral) and Gen I's
+  `BattleState:speciesSprite`, keeps a weak, never-saved registry of what a mon
+  currently looks like, and `resolve()` returns the copied species' National Dex.
+  The registry clears on a switch and when the battle ends.
+- `CurrentSpriteModels` swaps the actor in place once the copied model is ready (the
+  old body stays up while a cold cache loads it), instead of only noticing a change
+  when the battler table is replaced.
+- Party/startup cache planning passes `resolve(game, mon, true)` so it always plans
+  the real species, never a leftover transform.
+- The transform record is also kept against the battle's live player/enemy slot, so it
+  survives Gen I rebuilding its battler/mon wrapper tables mid-fight (previously the
+  copied model was dropped and the actor retired when the move finished).
+- Transform events are logged by default (`ModelIdentity:` / `CurrentSpriteModels:`
+  lines); set env `CBE_TRANSFORM_DEBUG=0` to silence them.
+
 ### Gen 4: Pokemon height on the native world
 
 - **One sizing rule for every Pokemon on Platinum.** HD cards, Stadium models and

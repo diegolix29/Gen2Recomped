@@ -674,6 +674,10 @@ local function stadiumActor(context,side)
     -- The copied species' body is ready: drop the old one in place.
     P.stadiumActors[side]=nil
     releaseActorRecord(record,"transform")
+    if V.ModelIdentity and V.ModelIdentity.log then
+      V.ModelIdentity.log("CurrentSpriteModels: %s actor swapped in place dex %s -> %s",
+        tostring(side),tostring(record.dex),tostring(dex))
+    end
   end
   P.stadiumActors[side]={key=key,actor=actor,dex=dex,variant=variant,
     battler=battler,state="spawn"}
@@ -915,6 +919,10 @@ local function syncStadiumActor(context,side)
     if tonumber(newDex)==tonumber(record.dex) and tostring(newVariant)==tostring(record.variant) then
       record.battler=battler
     else
+      if V.ModelIdentity and V.ModelIdentity.log then
+        V.ModelIdentity.log("CurrentSpriteModels: %s battler changed and identity %s->%s; retiring actor",
+          tostring(side),tostring(record.dex),tostring(newDex))
+      end
       retireStadiumActor(side,"replacement")
       return nil
     end

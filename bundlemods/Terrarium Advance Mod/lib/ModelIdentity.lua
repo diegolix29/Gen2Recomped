@@ -33,12 +33,15 @@ local function sourceDex(species)
   return sourceDexByName[tostring(species):upper()]
 end
 
-local DEBUG=(os and os.getenv and os.getenv("CBE_TRANSFORM_DEBUG")=="1") or false
+-- Transform events are rare (a few lines per transform), so they are logged by
+-- default; set CBE_TRANSFORM_DEBUG=0 to silence them.
+local DEBUG=not (os and os.getenv and os.getenv("CBE_TRANSFORM_DEBUG")=="0")
 local function logf(fmt,...)
   if not DEBUG then return end
   local log=V.mod and V.mod.log
   if log and type(log.info)=="function" then pcall(log.info,log,fmt,...) end
 end
+M.log=logf
 
 -- species (id / name / number) -> National Dex number, or nil. `mon` is only
 -- used for the detached numeric hints a challenge clone may carry.
@@ -83,6 +86,27 @@ end
 -- ------- transform registry
 local function newRegistry() return setmetatable({},{__mode="k"}) end
 local transforms=newRegistry()
+-- Gen I rebuilds its battler/mon wrapper tables during a fight, so a record
+-- keyed only by those tables is lost mid-battle (the actor then resolves back to
+-- the real species and is retired as a "replacement"). The speciesSprite seam
+-- also tells us the side, so it is ALSO recorded against the battle's live
+-- player/enemy slot and stays valid for as long as the same species occupies it.
+local bySlot=newRegistry()   -- battle -> {player=rec, enemy=rec}
+
+local function slotTransform(battler,mon)
+  for battle,slots in pairs(bySlot) do
+    for key,rec in pairs(slots) do
+      local live=type(battle)=="table" and battle[key] or nil
+      if type(live)=="table" and (live==battler or (mon~=nil and (live.mon==mon or live==mon))) then
+        local lm=type(live.mon)=="table" and live.mon or live
+        if lookupDex(rec.defs,lm.species or lm.id,lm)==rec.ownDex then return rec end
+        slots[key]=nil  -- another species now occupies the slot: transform is over
+        logf("ModelIdentity: slot %s occupant changed species; transform dropped",tostring(key))
+      end
+    end
+  end
+  return nil
+end
 
 function M.transformDex(battler,mon)
   local rec=type(mon)=="table" and transforms[mon] or nil
@@ -92,6 +116,7 @@ function M.transformDex(battler,mon)
     -- .mon inside it, so a wrapper-keyed record is only valid for its own mon.
     if r and (not battler.__cbeGen2Slot or r.mon==mon) then rec=r end
   end
+  if not rec then rec=slotTransform(battler,mon) end
   return rec and rec.dex or nil,rec
 end
 
@@ -119,7 +144,27 @@ function M.clear(mon,battler)
   if type(battler)=="table" then transforms[battler]=nil end
 end
 
-function M.clearAll() transforms=newRegistry() end
+function M.clearAll() transforms=newRegistry();bySlot=newRegistry() end
+
+-- Record a Transform reported with its side (Gen I speciesSprite).
+function M.noteSlotTransform(battle,isPlayerSide,defs,species)
+  if type(battle)~="table" then return end
+  local key=isPlayerSide and "player" or "enemy"
+  local battler=battle[key]
+  local mon=type(battler)=="table" and type(battler.mon)=="table" and battler.mon or nil
+  if not mon then return end
+  local own=lookupDex(defs,mon.species or mon.id,mon)
+  local target=lookupDex(defs,species,nil)
+  local slots=bySlot[battle]
+  if target and own and target~=own and validDex(target) then
+    if not slots then slots={};bySlot[battle]=slots end
+    slots[key]={dex=target,species=species,ownDex=own,defs=defs}
+    logf("ModelIdentity: %s side %s now looks like dex %s (own dex %s)",tostring(mon.species or mon.id),key,tostring(target),tostring(own))
+  elseif slots and slots[key] then
+    slots[key]=nil
+    logf("ModelIdentity: %s side %s transform cleared",tostring(mon.species or mon.id),key)
+  end
+end
 
 -- ------- seams
 local state={hook=false,events=false,battleState=false,tries=0}
@@ -144,6 +189,7 @@ local function onSpeciesSprite(battle,species,isPlayerSide)
   local battler=isPlayerSide and battle.player or battle.enemy
   local mon=type(battler)=="table" and battler.mon or nil
   M.noteTransform(battleDefs(battle),mon,battler,species)
+  M.noteSlotTransform(battle,isPlayerSide,battleDefs(battle),species)
 end
 
 local function onResolveSwitch(battle,newMon,after)
@@ -151,6 +197,8 @@ local function onResolveSwitch(battle,newMon,after)
   local battler=battle.player
   if type(battler)=="table" then M.clear(battler.mon,battler) end
   if after then M.clear(newMon) end
+  local slots=bySlot[battle]
+  if slots then slots.player=nil end
 end
 
 local function installBattleState()
